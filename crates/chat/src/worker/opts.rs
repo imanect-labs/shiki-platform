@@ -2,7 +2,7 @@
 //!
 //! プロファイル既定（Chat/Autonomous）と、**ユーザー由来文字列の無害化**を置く。
 
-use agent_core::AgentOptions;
+use agent_core::{AgentOptions, ToolName};
 use chrono::{DateTime, Datelike, Utc, Weekday};
 
 use super::ChatWorker;
@@ -56,6 +56,57 @@ pub(super) fn append_system_tail(opts: &mut AgentOptions, gate_note: Option<&str
         system.push_str(note);
     }
     system.push_str(today);
+    opts.system = Some(system);
+}
+
+/// ユーザーが**この発話にだけ**指定したツール（#734）を実行オプションへ反映する。
+///
+/// - 提示されているもの（`offered`＝この run で実際に積んだツール名）だけを tool search の
+///   常時ロードへ足す（指定したのに検索の 1 手の向こうに置かない）。
+/// - system へ短い注記を足す（ユーザーの明示的な希望であること・関係する場面で使うこと）。
+///   提示されていないもの（通常チャットの shell・門で絞られた調査系など）は「この会話では
+///   使えない」とだけ添え、ユーザーへ説明できるようにする。
+///
+/// **誘導であって権限ではない**: ツールの追加・`opts.approval` の変更・認可の迂回はしない
+/// （提示集合はプロファイル・skill・門が決めたまま。指定でツールが増えることはない）。
+/// skill の指示文より後ろ（門の注記・日付より前）に置き、手順書の記述に上書きされないようにする。
+pub(super) fn apply_requested_tools(
+    opts: &mut AgentOptions,
+    requested: &[ToolName],
+    offered: &[&str],
+) {
+    if requested.is_empty() {
+        return;
+    }
+    let (available, unavailable): (Vec<&str>, Vec<&str>) = requested
+        .iter()
+        .map(|t| t.as_str())
+        .partition(|name| offered.contains(name));
+    opts.tool_search
+        .always_load
+        .extend(available.iter().map(|s| (*s).to_string()));
+    let lead = if available.is_empty() {
+        "ユーザーはこの発話でツールを指定しましたが、".to_string()
+    } else {
+        format!(
+            "ユーザーはこの発話で次のツールを使うよう明示的に指定しています: {}。\
+             依頼に関係する場面ではこれらを優先して使ってください（無関係なら無理に使わなくて構いません）。",
+            available.join(", ")
+        )
+    };
+    let missing = if unavailable.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{}次のツールはこの会話では使えません: {}。必要ならその旨をユーザーに伝えてください。",
+            if available.is_empty() { "" } else { "\n" },
+            unavailable.join(", ")
+        )
+    };
+    let mut system = opts.system.take().unwrap_or_default();
+    system.push_str("\n\n# この発話で指定されたツール\n");
+    system.push_str(&lead);
+    system.push_str(&missing);
     opts.system = Some(system);
 }
 
@@ -130,6 +181,67 @@ mod tests {
         assert_eq!(parse_timezone("Asia/Tokyo"), Ok(chrono_tz::Asia::Tokyo));
         assert!(parse_timezone("JST+9").is_err());
         assert!(parse_timezone("").is_err());
+    }
+
+    #[test]
+    fn requested_tools_are_loaded_and_noted_without_touching_approval() {
+        let mut opts = AgentOptions::chat(1);
+        opts.system = Some("基本".into());
+        let approval_before = format!("{:?}", opts.approval);
+        apply_requested_tools(
+            &mut opts,
+            &[ToolName::WebSearch, ToolName::CsvQuery],
+            &["doc_search", "web_search", "csv.query"],
+        );
+        assert_eq!(
+            opts.tool_search.always_load,
+            vec!["web_search".to_string(), "csv.query".to_string()]
+        );
+        let system = opts.system.as_deref().unwrap();
+        assert!(
+            system.starts_with("基本\n\n# この発話で指定されたツール\n"),
+            "{system}"
+        );
+        assert!(system.contains("web_search, csv.query"), "{system}");
+        assert!(!system.contains("使えません"), "{system}");
+        // 誘導であって権限ではない（承認ポリシは変えない）。
+        assert_eq!(format!("{:?}", opts.approval), approval_before);
+    }
+
+    #[test]
+    fn requested_tools_not_offered_are_neither_loaded_nor_granted() {
+        // 通常チャットで shell を指定しても提示されない（常時ロードにも載せない＝昇格しない）。
+        let mut opts = AgentOptions::chat(1);
+        apply_requested_tools(
+            &mut opts,
+            &[ToolName::Shell, ToolName::DocSearch],
+            &["doc_search"],
+        );
+        assert_eq!(opts.tool_search.always_load, vec!["doc_search".to_string()]);
+        let system = opts.system.as_deref().unwrap();
+        assert!(system.contains("指定しています: doc_search。"), "{system}");
+        assert!(
+            system.contains("次のツールはこの会話では使えません: shell。"),
+            "{system}"
+        );
+
+        let mut none_offered = AgentOptions::chat(1);
+        apply_requested_tools(&mut none_offered, &[ToolName::Shell], &[]);
+        assert!(none_offered.tool_search.always_load.is_empty());
+        let system = none_offered.system.as_deref().unwrap();
+        assert!(
+            system.contains("指定しましたが、次のツールはこの会話では使えません: shell。"),
+            "{system}"
+        );
+    }
+
+    #[test]
+    fn no_requested_tools_is_a_no_op() {
+        let mut opts = AgentOptions::chat(1);
+        opts.system = Some("基本".into());
+        apply_requested_tools(&mut opts, &[], &["doc_search"]);
+        assert_eq!(opts.system.as_deref(), Some("基本"));
+        assert!(opts.tool_search.always_load.is_empty());
     }
 
     #[test]

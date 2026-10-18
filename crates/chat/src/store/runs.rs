@@ -90,8 +90,30 @@ pub struct ClaimedRun {
     pub effort: Option<String>,
     /// ユーザーがモデルを選ばなかった（Auto）か。Auto のときだけ skill のピンが上書きできる。
     pub model_auto: bool,
+    /// ユーザーが**この発話にだけ**使ってほしいと指定したツール名（#734・0071）。
+    ///
+    /// 語彙（[`agent_core::ToolName`]）の型ではなく文字列で持つ: 後のリリースで名前が消えても
+    /// claim の行デコードを失敗させない（照合は [`Self::requested_tool_names`] で行う）。
+    pub requested_tools: Json<Vec<String>>,
     /// run の作成時刻（system プロンプトの「今日の日付」の基準・再開しても変わらない・#546）。
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl ClaimedRun {
+    /// 指定ツールを語彙で照合して返す（投入順・重複なし）。語彙に無い名前は落とす（fail-closed）。
+    #[must_use]
+    pub fn requested_tool_names(&self) -> Vec<agent_core::ToolName> {
+        let mut out: Vec<agent_core::ToolName> = Vec::new();
+        for raw in &self.requested_tools.0 {
+            match agent_core::ToolName::parse(raw) {
+                Some(t) if !out.contains(&t) => out.push(t),
+                Some(_) => {}
+                None => tracing::warn!(run_id = %self.run_id, tool = %raw,
+                    "run の requested_tools に語彙に無いツール名（無視する）"),
+            }
+        }
+        out
+    }
 }
 
 /// カードを出した run の生成材料（`chat.submit` の続きの run へ継ぐ）。
@@ -135,7 +157,8 @@ impl ChatStore {
             lease_secs,
             "run_id, thread_id, message_id, tenant_id, org, actor, agent_mode, \
              fencing_token, cancel_requested, trace_id, autonomous, autonomous_mode, checkpoint, \
-             skill_pins, mini_app_id, mini_app_version, model, effort, model_auto, created_at",
+             skill_pins, mini_app_id, mini_app_version, model, effort, model_auto, \
+             requested_tools, created_at",
         )
         .await
         .map_err(map_db)

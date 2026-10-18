@@ -161,6 +161,9 @@ impl ActionHandler for ChatSubmitHandler {
                 &run_ctx.skill_pins,
                 // ユーザーが選んだモデルも続きのターンへ継ぐ（#553）。
                 run_ctx.model.as_ref(),
+                // 発話ごとのツール指定（#734）は継がない。カードへの回答は新しい発話であり、
+                // 指定は「その 1 発話」に限る（skill ピンと違い、落としても手順は崩れない）。
+                &[],
                 trace_id,
             )
             .await

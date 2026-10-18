@@ -327,3 +327,74 @@ async fn replay_returns_events_after_cursor() {
     assert_eq!(events[0].seq, 2);
     assert_eq!(events[1].seq, 3);
 }
+
+/// 発話ごとのツール指定（#734）は run 行へスナップショットされ、claim で読み戻せる。
+/// 語彙に無い名前（後のリリースで消えた等）は claim を失敗させず、読み出し時に落ちる。
+#[tokio::test]
+async fn requested_tools_are_snapshotted_on_the_run_row() {
+    use agent_core::ToolName;
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "t", false, None, None)
+        .await
+        .unwrap();
+
+    let res = store
+        .post_message_with_model(
+            &c,
+            thread.id,
+            "調べて",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            &[ToolName::WebSearch, ToolName::CsvQuery],
+            None,
+        )
+        .await
+        .unwrap();
+    let stored: serde_json::Value =
+        sqlx::query_scalar("SELECT requested_tools FROM generation_run WHERE run_id = $1")
+            .bind(res.run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, serde_json::json!(["web_search", "csv.query"]));
+    // 語彙から消えた名前が混ざっていても claim は通り、照合で落ちる（重複も畳む）。
+    sqlx::query(
+        "UPDATE generation_run \
+         SET requested_tools = '[\"web_search\", \"gone_tool\", \"csv.query\", \"web_search\"]'::jsonb \
+         WHERE run_id = $1",
+    )
+    .bind(res.run_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let run = store
+        .claim_run(res.run_id, "w-tools", 30)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        run.requested_tool_names(),
+        vec![ToolName::WebSearch, ToolName::CsvQuery]
+    );
+
+    // 指定なし（従来の post_message）は空配列（列既定と同じ）。
+    let plain = store
+        .post_message(&c, thread.id, "hi", &[], None, None, false, &[], None)
+        .await
+        .unwrap();
+    let stored: serde_json::Value =
+        sqlx::query_scalar("SELECT requested_tools FROM generation_run WHERE run_id = $1")
+            .bind(plain.run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, serde_json::json!([]));
+}

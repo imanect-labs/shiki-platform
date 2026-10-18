@@ -268,6 +268,17 @@ impl ChatWorker {
         opts.tool_search.always_load.extend(tools_in_use);
         self.apply_skills(ctx, run, &skills, &mut opts, &mut history)
             .await?;
+        // 発話ごとのツール指定（#734）は skill の指示文より**後ろ**に置く（手順書の記述に
+        // 上書きされないように）。照合先は**提示の最終形**（門で絞った後の `tools`）なので、
+        // 指定でツールが増えることはない（誘導のみ・opts.approval にも触れない）。
+        let requested = run.requested_tool_names();
+        if !requested.is_empty() {
+            let offered: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+            tracing::info!(run_id = %run.run_id,
+                requested = ?requested.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+                "発話ごとのツール指定を適用");
+            super::opts::apply_requested_tools(&mut opts, &requested, &offered);
+        }
 
         // 門の段階（ツールが無い理由と次へ進む条件・#400）は skill の instructions より**後ろ**に
         // （手順書の記述に上書きされないように）、今日の日付（#546）は最後に置く。

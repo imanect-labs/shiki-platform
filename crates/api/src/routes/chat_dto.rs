@@ -10,6 +10,8 @@ use storage::ShareTarget;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::error::ApiError;
+
 /// keyset カーソル（更新日時＋id）。
 pub(super) type Cursor = (Option<DateTime<Utc>>, Option<Uuid>);
 
@@ -125,6 +127,57 @@ pub struct PostMessageRequest {
     /// 思考の深さ（モデルを選んだときだけ効く・Auto では組織の設定に従う）。
     #[serde(default)]
     pub effort: Option<super::llm_models::EffortLevel>,
+    /// **この発話にだけ**使ってほしいツール（ツール語彙 `ToolName` の名前・#734）。
+    ///
+    /// `skills` と同じく次の発話には持ち越さない。**誘導であって権限ではない**: 検索なしで
+    /// 定義を載せ、使うよう促すだけで、提示ツール・承認・認可は変えない（いまの会話で使えない
+    /// ツールは提示されない）。重複は除き、[`MAX_REQUESTED_TOOLS`] 件を超えるか未知の名前は 400。
+    ///
+    /// 受け口は文字列で受けて語彙照合はハンドラで行う（`ToolName` で受けると未知名が `Json`
+    /// 抽出の時点で 422 になり、他の検証エラーと同じ 400＋理由の形で返せない）。schema には
+    /// 語彙の閉集合を出し、生成クライアント側でも同じ集合が見える。
+    #[serde(default)]
+    #[schema(value_type = Option<Vec<agent_core::ToolName>>)]
+    pub tools: Option<Vec<String>>,
+}
+
+/// 発話ごとに指定できるツールの上限件数（#734）。
+pub const MAX_REQUESTED_TOOLS: usize = 8;
+
+/// 発話ごとのツール指定を語彙で照合する（投入順・重複除去・件数上限・#734）。
+///
+/// 未知の名前・上限超過は 400（`{status,title,detail}`・モデル指定の検証エラーと同じ形）。
+pub(super) fn parse_requested_tools(
+    raw: Option<&[String]>,
+) -> Result<Vec<agent_core::ToolName>, ApiError> {
+    let mut out: Vec<agent_core::ToolName> = Vec::new();
+    for name in raw.unwrap_or_default() {
+        let Some(tool) = agent_core::ToolName::parse(name) else {
+            // 応答に返す名前は短く切る（任意長の入力をそのまま反射しない）。
+            let shown: String = name.chars().take(64).collect();
+            return Err(bad_request(&format!(
+                "tools に未知のツール名があります: `{shown}`"
+            )));
+        };
+        if !out.contains(&tool) {
+            out.push(tool);
+        }
+    }
+    if out.len() > MAX_REQUESTED_TOOLS {
+        return Err(bad_request(&format!(
+            "tools は {MAX_REQUESTED_TOOLS} 件までです（重複を除いて {} 件指定されています）",
+            out.len()
+        )));
+    }
+    Ok(out)
+}
+
+fn bad_request(detail: &str) -> ApiError {
+    ApiError::UnprocessableJson(serde_json::json!({
+        "status": 400,
+        "title": "Bad Request",
+        "detail": detail,
+    }))
 }
 
 /// 発話送信レスポンス（202・生成は接続非依存ジョブで継続）。
@@ -189,4 +242,80 @@ pub struct ListThreadsQuery {
 pub struct StreamQuery {
     #[serde(default)]
     pub last_event_id: Option<i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_core::ToolName;
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn detail(err: ApiError) -> String {
+        match err {
+            ApiError::UnprocessableJson(v) => {
+                assert_eq!(v["status"], 400);
+                v["detail"].as_str().unwrap().to_string()
+            }
+            other => panic!("400 の構造化ボディを期待: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn requested_tools_dedupe_in_order() {
+        let raw = names(&["web_search", "csv.query", "web_search"]);
+        assert_eq!(
+            parse_requested_tools(Some(&raw)).unwrap(),
+            vec![ToolName::WebSearch, ToolName::CsvQuery]
+        );
+        assert!(parse_requested_tools(None).unwrap().is_empty());
+        assert!(parse_requested_tools(Some(&[])).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unknown_tool_is_rejected_with_reason() {
+        // メタツール（plan / tool_search）は語彙の外＝指定できない。
+        for bad in ["sudo", "plan", "tool_search", "WEB_SEARCH", ""] {
+            let raw = names(&["doc_search", bad]);
+            let d = detail(parse_requested_tools(Some(&raw)).unwrap_err());
+            assert!(d.contains("未知のツール名"), "{bad}: {d}");
+        }
+        let long = "x".repeat(500);
+        let d = detail(parse_requested_tools(Some(&[long])).unwrap_err());
+        assert!(d.chars().count() < 120, "{d}");
+    }
+
+    #[test]
+    fn too_many_tools_is_rejected_after_dedupe() {
+        let all: Vec<String> = ToolName::ALL
+            .iter()
+            .take(MAX_REQUESTED_TOOLS)
+            .map(|t| t.as_str().to_string())
+            .collect();
+        // 上限ちょうど（重複込みで上限超えの長さ）は通る。
+        let mut with_dups = all.clone();
+        with_dups.extend(all.iter().cloned());
+        assert_eq!(
+            parse_requested_tools(Some(&with_dups)).unwrap().len(),
+            MAX_REQUESTED_TOOLS
+        );
+        let over: Vec<String> = ToolName::ALL
+            .iter()
+            .take(MAX_REQUESTED_TOOLS + 1)
+            .map(|t| t.as_str().to_string())
+            .collect();
+        let d = detail(parse_requested_tools(Some(&over)).unwrap_err());
+        assert!(d.contains("8 件まで"), "{d}");
+    }
+
+    #[test]
+    fn post_message_request_accepts_tools_field() {
+        let req: PostMessageRequest =
+            serde_json::from_str(r#"{"text":"hi","tools":["web_search","nope"]}"#).unwrap();
+        assert_eq!(req.tools, Some(names(&["web_search", "nope"])));
+        let req: PostMessageRequest = serde_json::from_str(r#"{"text":"hi"}"#).unwrap();
+        assert!(req.tools.is_none());
+    }
 }
