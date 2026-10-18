@@ -5,7 +5,13 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { resolvePageIcon, resolvePageTitle } from "@/lib/nav-config";
 import { useSidebar } from "./sidebar/sidebar-context";
-import { ChromeActions, ChromeBackButton, ChromeBar, usePageChromeValue } from "./page-header-context";
+import {
+  ChromeActions,
+  ChromeBackButton,
+  ChromeBar,
+  ChromeDivider,
+  usePageChromeValue,
+} from "./page-header-context";
 
 /// PC（md 以上）の上部バー。ページが `usePageChrome` で登録した spec を描き、
 /// 無ければルート由来の現在地（アイコン＋タイトル）を既定表示する。
@@ -38,10 +44,45 @@ export function Header() {
   );
 }
 
-const CAPSULE = cn(
-  "pointer-events-auto flex h-[46px] items-center rounded-full border border-foreground/[0.07] px-px",
-  "bg-background/90 shadow-[0_4px_14px_-6px_rgb(0_0_0/0.18)] backdrop-blur supports-[backdrop-filter]:bg-background/75",
+/// スマホの浮いた操作群の「台」。PC の浮いたサイドバー（角丸・沈んだ面・淡い影）と同じ素材で、
+/// 角は丸めすぎない（丸いピルにしない）。
+export const CHROME_TRAY = cn(
+  "pointer-events-auto flex h-12 items-center rounded-[14px] border border-sidebar-border px-0.5",
+  "bg-sidebar/95 shadow-[var(--elevation-md)] backdrop-blur supports-[backdrop-filter]:bg-sidebar/80",
 );
+
+/// 四季の印（2×2 の角丸の升に春・夏・秋・冬の色）。ドロワを開くボタンの顔にする。
+export function SeasonMark({ className }: { className?: string }) {
+  return (
+    <span aria-hidden className={cn("grid grid-cols-2 gap-[3px]", className)}>
+      <span className="size-[7px] rounded-[2px] bg-[var(--season-spring)]" />
+      <span className="size-[7px] rounded-[2px] bg-[var(--season-summer)]" />
+      <span className="size-[7px] rounded-[2px] bg-[var(--season-winter)]" />
+      <span className="size-[7px] rounded-[2px] bg-[var(--season-autumn)]" />
+    </span>
+  );
+}
+
+/// ドロワ（ナビゲーション）を開くボタン。ハンバーガーではなく四季の印を使う。
+export function SeasonMenuButton({
+  onClick,
+  label = "メニューを開く",
+}: {
+  onClick: () => void;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="group flex size-11 items-center justify-center rounded-[10px] outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94]"
+    >
+      <SeasonMark className="transition-transform duration-[var(--duration-normal)] ease-[var(--ease-standard)] group-active:rotate-90" />
+    </button>
+  );
+}
 
 /// スマホ（md 未満）の浮いた操作群。左上にメニュー（＋戻る）、右上にページの操作を置く。
 /// タイトルバーの代わりなので、どの画面でもドロワへの導線が必ず残る（没入エディタ・
@@ -58,35 +99,22 @@ export function MobileChrome() {
       {spec?.flowUnder ? (
         <div
           aria-hidden
-          className="absolute inset-x-0 top-0 h-[calc(5.25rem+env(safe-area-inset-top))] bg-gradient-to-b from-background from-30% to-transparent"
+          className="absolute inset-x-0 top-0 h-[calc(5.5rem+env(safe-area-inset-top))] bg-gradient-to-b from-background from-30% to-transparent"
         />
       ) : null}
-      <div className="relative flex items-start justify-between gap-2 px-2.5 pt-[max(0.625rem,env(safe-area-inset-top))]">
-        <div className={CAPSULE}>
-          <button
-            type="button"
-            onClick={() => setMobileOpen(true)}
-            aria-label="メニューを開く"
-            className="flex size-11 items-center justify-center rounded-full text-foreground/75 outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94]"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              className="size-5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2}
-              strokeLinecap="round"
-              aria-hidden
-            >
-              <line x1="4" x2="20" y1="9" y2="9" />
-              <line x1="4" x2="14" y1="15" y2="15" />
-            </svg>
-          </button>
-          {spec?.back ? <ChromeBackButton back={spec.back} /> : null}
+      <div className="relative flex items-start justify-between gap-2 px-2.5 pt-[max(0.5rem,env(safe-area-inset-top))]">
+        <div className={CHROME_TRAY}>
+          <SeasonMenuButton onClick={() => setMobileOpen(true)} />
+          {spec?.back ? (
+            <>
+              <ChromeDivider />
+              <ChromeBackButton back={spec.back} />
+            </>
+          ) : null}
         </div>
         {hasRight && spec ? (
-          <div className={cn(CAPSULE, "gap-0.5", spec.primary && "pl-[5px]")}>
-            <ChromeActions spec={spec} />
+          <div className={cn(CHROME_TRAY, spec.primary && "pl-1")}>
+            <ChromeActions spec={spec} divided />
           </div>
         ) : null}
       </div>

@@ -15,7 +15,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowLeft, MoreHorizontal, Sparkles } from "lucide-react";
+import { ChevronLeft, MoreHorizontal, Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import {
@@ -111,11 +111,11 @@ export function ChromeIconButton({
       aria-pressed={pressed}
       title={label}
       className={cn(
-        "flex size-9 shrink-0 items-center justify-center rounded-full text-foreground/70 outline-none",
+        "flex size-9 shrink-0 items-center justify-center rounded-[10px] text-foreground/70 outline-none",
         "transition-colors duration-[var(--duration-fast)] hover:bg-accent hover:text-foreground",
         "focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94]",
-        "max-md:size-11 [&_svg]:size-[19px]",
-        pressed && "bg-accent text-foreground",
+        "max-md:size-11 max-md:hover:bg-sidebar-accent [&_svg]:size-[19px]",
+        pressed && "bg-accent text-foreground max-md:bg-sidebar-accent",
         className,
       )}
       {...props}
@@ -135,7 +135,7 @@ export function ChromePrimaryButton({
     <button
       type="button"
       className={cn(
-        "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-primary px-3.5 text-sm font-semibold text-primary-foreground outline-none",
+        "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[10px] bg-primary px-3.5 text-sm font-semibold text-primary-foreground shadow-[var(--elevation-xs)] outline-none",
         "transition-[background-color,transform] duration-[var(--duration-fast)] hover:bg-primary/90 active:scale-[0.97]",
         "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         "disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4",
@@ -229,16 +229,28 @@ function AssistantToggle({ assistant }: { assistant: NonNullable<PageChromeSpec[
   );
 }
 
+/// 浮いた操作群の仕切り（Shiki の荒い破線を縦に）。
+export function ChromeDivider() {
+  return <span aria-hidden className="shiki-dash-y mx-0.5 h-5 w-1.5 shrink-0" />;
+}
+
 /// 右側の操作群（主操作 → アイコン → アシスタント → ⋯ の固定順）。PC とスマホで共用する。
-export function ChromeActions({ spec }: { spec: PageChromeSpec }) {
+/// `divided` のときはグループの間に荒い破線の仕切りを入れる（スマホの浮いた操作群）。
+export function ChromeActions({ spec, divided = false }: { spec: PageChromeSpec; divided?: boolean }) {
+  const groups = [
+    spec.primary,
+    spec.actions,
+    spec.assistant ? <AssistantToggle assistant={spec.assistant} /> : null,
+    spec.menu && spec.menu.length > 0 ? <ChromeMenu items={spec.menu} title={spec.menuTitle} /> : null,
+  ].filter(Boolean);
   return (
     <>
-      {spec.primary}
-      {spec.actions}
-      {spec.assistant ? <AssistantToggle assistant={spec.assistant} /> : null}
-      {spec.menu && spec.menu.length > 0 ? (
-        <ChromeMenu items={spec.menu} title={spec.menuTitle} />
-      ) : null}
+      {groups.map((group, i) => (
+        <React.Fragment key={i}>
+          {divided && i > 0 ? <ChromeDivider /> : null}
+          {group}
+        </React.Fragment>
+      ))}
     </>
   );
 }
@@ -253,18 +265,18 @@ export function ChromeBackButton({ back }: { back: NonNullable<PageChromeSpec["b
         aria-label={label}
         title={label}
         className={cn(
-          "flex size-9 shrink-0 items-center justify-center rounded-full text-foreground/70 outline-none",
+          "flex size-9 shrink-0 items-center justify-center rounded-[10px] text-foreground/70 outline-none",
           "transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
-          "max-md:size-11",
+          "max-md:size-11 max-md:hover:bg-sidebar-accent",
         )}
       >
-        <ArrowLeft className="size-[19px]" aria-hidden />
+        <ChevronLeft className="size-[21px]" aria-hidden />
       </Link>
     );
   }
   return (
-    <ChromeIconButton label={label} onClick={back.onClick}>
-      <ArrowLeft aria-hidden />
+    <ChromeIconButton label={label} onClick={back.onClick} className="[&_svg]:size-[21px]">
+      <ChevronLeft aria-hidden />
     </ChromeIconButton>
   );
 }

@@ -302,6 +302,18 @@
      ※ 主張が強くなるため、密な一覧（ドライブ等）には使わず、ホームの区切りや
        サイドバー上端・メニューの区切りなど「間（ま）」を作る箇所にのみ使う。
      ─────────────────────────────────────────────────────────── */
+  /* 縦の荒い破線（浮いた操作群の仕切り等・dash は shiki-dash-x より短め）。 */
+  .shiki-dash-y {
+    background-image: repeating-linear-gradient(
+      to bottom,
+      var(--rule-color) 0, var(--rule-color) 4px,
+      transparent 4px, transparent 8px
+    );
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 1.5px 100%;
+  }
+
   .shiki-dash-x {
     background-image: repeating-linear-gradient(
       to right,
