@@ -280,7 +280,7 @@ fn parse_ops_points_at_the_bad_op_and_accepts_per_op_sheet() {
     use super::super::parse::parse_ops;
     let err = parse_ops(&[
         json!({"op": "merge", "range": "A1:B1"}),
-        json!({"op": "set_values", "range": "A1", "values": ["=SUM(A1:A3)"]}),
+        json!({"op": "set_values", "range": "A1", "values": "=SUM(A1:A3)"}),
     ])
     .unwrap_err();
     assert_eq!((err.index, err.op), (2, "set_values"));

@@ -33,6 +33,16 @@ pub fn normalize_doc_ops(values: &[Value]) -> Result<DocNormalized, OpError> {
         let mut v = v.clone();
         crate::engine::coerce_bools(&mut v);
         crate::engine::relax_op(&mut v);
+        if v.get("op").is_none() {
+            return Err(OpError {
+                index: i + 1,
+                op: "不明な操作",
+                message: match guess_doc_op(&v) {
+                    Some(g) => format!("\"op\" が書かれていません（項目から見ると {g} のようです。{{\"op\": \"{g}\", ...}} と書いてください）"),
+                    None => "\"op\" が書かれていません（各操作に {\"op\": \"insert\", ...} のように操作名を書いてください）".into(),
+                },
+            });
+        }
         let op: DocOp = serde_json::from_value(v).map_err(|e| OpError {
             index: i + 1,
             op: known_name(&name),
@@ -49,6 +59,30 @@ pub fn normalize_doc_ops(values: &[Value]) -> Result<DocNormalized, OpError> {
         out.ops.extend(produced);
     }
     Ok(out)
+}
+
+/// op の無い Word の操作の項目から、それらしい操作名を推す（案内だけ）。
+fn guess_doc_op(v: &Value) -> Option<&'static str> {
+    let has = |k: &str| v.get(k).is_some();
+    if has("table")
+        && (has("theme")
+            || has("total_row")
+            || has("total_rows")
+            || has("header_rows")
+            || has("banded"))
+    {
+        Some("style_table")
+    } else if has("table") && has("cell") {
+        Some("set_cells")
+    } else if has("html") && has("target") {
+        Some("replace")
+    } else if has("html") {
+        Some("insert")
+    } else if has("find") && has("replace") {
+        Some("replace_text")
+    } else {
+        None
+    }
 }
 
 fn known_name(name: &str) -> &'static str {

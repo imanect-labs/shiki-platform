@@ -30,16 +30,19 @@ pub type ParsedOp = (SheetOp, Option<String>);
 pub fn parse_ops(values: &[Value]) -> Result<Vec<ParsedOp>, OpError> {
     let mut out = Vec::with_capacity(values.len());
     for (i, v) in values.iter().enumerate() {
+        let mut v = v.clone();
+        crate::engine::coerce_bools(&mut v);
+        crate::engine::relax_op(&mut v);
         let op_name = v
             .get("op")
             .and_then(Value::as_str)
             .unwrap_or("?")
             .to_string();
-        let mut v = v.clone();
-        crate::engine::coerce_bools(&mut v);
-        crate::engine::relax_op(&mut v);
         if op_name == "format" {
             flatten_format(&mut v);
+        }
+        if op_name == "set_values" {
+            upright_flat_values(&mut v);
         }
         if op_name == "?" {
             let guess = guess_op(&v);
@@ -81,6 +84,16 @@ fn flatten_format(v: &mut Value) {
     let Some(obj) = v.as_object_mut() else {
         return;
     };
+    // 空の塗り（{}）は塗りを変えない、罫線の文字列（"thin"）は全体の罫線。
+    if obj
+        .get("fill")
+        .is_some_and(|f| f.as_object().is_some_and(serde_json::Map::is_empty))
+    {
+        obj.remove("fill");
+    }
+    if let Some(Value::String(line)) = obj.get("border").cloned() {
+        obj.insert("border".into(), serde_json::json!({ "all": line }));
+    }
     if let Some(Value::Object(inner)) = obj.remove("format") {
         for (k, x) in inner {
             obj.entry(k).or_insert(x);
@@ -124,6 +137,28 @@ fn flatten_format(v: &mut Value) {
             }
         }
     }
+}
+
+/// set_values の values を 1 次元（[a, b, c]）で書いた形を 2 次元にする。範囲が縦 1 列なら
+/// 1 行に 1 つずつ、それ以外は 1 行にする（各要素が配列でないときだけ）。
+fn upright_flat_values(v: &mut Value) {
+    let column = v
+        .get("range")
+        .and_then(Value::as_str)
+        .and_then(|r| crate::engine::a1::parse_area(r).ok())
+        .is_some_and(|a| a.width() == 1 && a.height() > 1);
+    let Some(Value::Array(items)) = v.get_mut("values") else {
+        return;
+    };
+    if items.is_empty() || items.iter().any(Value::is_array) {
+        return;
+    }
+    let flat = std::mem::take(items);
+    *items = if column {
+        flat.into_iter().map(|x| Value::Array(vec![x])).collect()
+    } else {
+        vec![Value::Array(flat)]
+    };
 }
 
 /// op の無い操作の項目から、それらしい操作名を推す（案内に使うだけで、勝手に実行はしない）。
@@ -327,6 +362,23 @@ mod tests {
         let items: Vec<_> = parsed.iter().map(|(o, s)| (o, s.as_deref())).collect();
         let n = super::super::normalize::normalize_with_sheets(&items, None).unwrap();
         assert!(n.ops[0].to_string().contains("center"), "{}", n.ops[0]);
+    }
+
+    #[test]
+    fn loose_shapes_from_weak_models_are_accepted() {
+        let parsed = parse_ops(&[
+            json!({"op": "add_sheet", "sheet": "集計"}),
+            json!({"op": "set_values", "range": "A2:A4", "values": [{"date": "2026-04-01"}, 2, 3]}),
+            json!({"column_width": {"columns": "A:F", "width": "auto"}}),
+            json!({"op": "format", "range": "A1:B2", "fill": {}, "border": "thin"}),
+        ])
+        .unwrap();
+        let items: Vec<_> = parsed.iter().map(|(o, s)| (o, s.as_deref())).collect();
+        let n = super::super::normalize::normalize_with_sheets(&items, None).unwrap();
+        assert_eq!(n.ops[0]["name"], json!("集計"));
+        assert_eq!(n.ops[1]["area"], json!([0, 1, 0, 3]));
+        assert_eq!(n.ops[2]["op"], json!("column_width"));
+        assert!(n.ops[3].to_string().contains("border"), "{}", n.ops[3]);
     }
 
     #[test]

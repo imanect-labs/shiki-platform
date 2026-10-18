@@ -112,6 +112,18 @@ pub(crate) fn relax_op(v: &mut serde_json::Value) {
     let Some(obj) = v.as_object_mut() else {
         return;
     };
+    // op を書かずに、操作名を項目名にして中身を包んだ形（{"column_width": {...}}）。
+    if !obj.contains_key("op") && obj.len() == 1 {
+        let key = obj.keys().next().cloned().unwrap_or_default();
+        if KNOWN_OPS.contains(&key.as_str()) {
+            if let Some(serde_json::Value::Object(inner)) = obj.remove(&key) {
+                obj.insert("op".into(), serde_json::Value::String(key));
+                for (k, x) in inner {
+                    obj.entry(k).or_insert(x);
+                }
+            }
+        }
+    }
     let name = obj
         .get("op")
         .and_then(serde_json::Value::as_str)
@@ -126,7 +138,68 @@ pub(crate) fn relax_op(v: &mut serde_json::Value) {
     if name == "header" || name == "footer" {
         obj.remove("target");
     }
+    // シートを足す操作の名前を sheet に書いた形。
+    if name == "add_sheet" && !obj.contains_key("name") {
+        if let Some(n) = obj.remove("sheet") {
+            obj.insert("name".into(), n);
+        }
+    }
 }
+
+/// Excel・Word の操作名（op を書き忘れて操作名で包んだ形を見分けるため）。
+const KNOWN_OPS: &[&str] = &[
+    "set_values",
+    "fill_formula",
+    "format",
+    "style_table",
+    "merge",
+    "unmerge",
+    "column_width",
+    "row_height",
+    "insert_rows",
+    "delete_rows",
+    "insert_columns",
+    "delete_columns",
+    "hide_rows",
+    "show_rows",
+    "hide_columns",
+    "show_columns",
+    "clear",
+    "sort",
+    "autofilter",
+    "freeze",
+    "add_sheet",
+    "rename_sheet",
+    "delete_sheet",
+    "move_sheet",
+    "sheet_props",
+    "conditional_format",
+    "clear_conditional_formats",
+    "data_validation",
+    "define_name",
+    "add_chart",
+    "delete_chart",
+    "page_setup",
+    "insert",
+    "replace",
+    "delete",
+    "replace_text",
+    "format_text",
+    "format_paragraph",
+    "set_style",
+    "header",
+    "footer",
+    "insert_toc",
+    "update_toc",
+    "page_break",
+    "title_page",
+    "set_cells",
+    "format_cells",
+    "table_props",
+    "track_changes",
+    "accept_all_changes",
+    "reject_all_changes",
+];
 
 /// 真偽の項目に書かれた 1 / 0 / "true" / "false" を真偽値に直す（入れ子の中も）。
 ///
