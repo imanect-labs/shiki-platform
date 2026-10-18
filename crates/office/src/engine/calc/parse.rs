@@ -37,6 +37,7 @@ pub fn parse_ops(values: &[Value]) -> Result<Vec<ParsedOp>, OpError> {
             .to_string();
         let mut v = v.clone();
         crate::engine::coerce_bools(&mut v);
+        crate::engine::relax_op(&mut v);
         if op_name == "format" {
             flatten_format(&mut v);
         }
@@ -83,6 +84,24 @@ fn flatten_format(v: &mut Value) {
     if let Some(Value::Object(inner)) = obj.remove("format") {
         for (k, x) in inner {
             obj.entry(k).or_insert(x);
+        }
+    }
+    // 整列の項目（horizontal など）を align の外に書いたら align へ入れる。
+    for key in [
+        "horizontal",
+        "vertical",
+        "wrap",
+        "shrink",
+        "indent",
+        "rotate",
+    ] {
+        if let Some(x) = obj.remove(key) {
+            let align = obj
+                .entry("align")
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Some(a) = align.as_object_mut() {
+                a.entry(key.to_string()).or_insert(x);
+            }
         }
     }
     const FONT_KEYS: &[(&str, &str)] = &[
@@ -301,6 +320,13 @@ mod tests {
         assert_eq!(n.ops[0]["number_format"], json!("yyyy/mm/dd"));
         assert_eq!(n.ops[1]["font"]["bold"], json!(true));
         assert_eq!(n.ops[1]["font"]["color"], json!("#FF0000"));
+        let parsed = parse_ops(&[
+            json!({"op": "format", "range": "A1", "horizontal": "center", "summary": "x"}),
+        ])
+        .unwrap();
+        let items: Vec<_> = parsed.iter().map(|(o, s)| (o, s.as_deref())).collect();
+        let n = super::super::normalize::normalize_with_sheets(&items, None).unwrap();
+        assert!(n.ops[0].to_string().contains("center"), "{}", n.ops[0]);
     }
 
     #[test]

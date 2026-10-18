@@ -104,6 +104,30 @@ const BOOL_KEYS: &[&str] = &[
     "wrap",
 ];
 
+/// 1 つの操作の、意味が一意な書き方の揺れを直す（Gemma 4 の評価で繰り返し見た形）:
+/// - 各操作に書かれた `summary`（一括の要約と取り違えたもの）は捨てる
+/// - 操作名と同じ項目に包んだ中身（`{"op":"page_setup","page_setup":{...}}`）は外へ出す
+/// - header / footer に書かれた `target` は捨てる（ページ全体に効く操作で対象を持たない）
+pub(crate) fn relax_op(v: &mut serde_json::Value) {
+    let Some(obj) = v.as_object_mut() else {
+        return;
+    };
+    let name = obj
+        .get("op")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    obj.remove("summary");
+    if let Some(serde_json::Value::Object(inner)) = obj.remove(&name) {
+        for (k, x) in inner {
+            obj.entry(k).or_insert(x);
+        }
+    }
+    if name == "header" || name == "footer" {
+        obj.remove("target");
+    }
+}
+
 /// 真偽の項目に書かれた 1 / 0 / "true" / "false" を真偽値に直す（入れ子の中も）。
 ///
 /// 弱いモデル（Gemma 4 の評価）は `banded: 1` のように書き、型の誤りで一括ごと弾かれていた。
@@ -138,6 +162,16 @@ pub(crate) fn coerce_bools(v: &mut serde_json::Value) {
 mod coerce_tests {
     use super::coerce_bools;
     use serde_json::json;
+
+    #[test]
+    fn relaxes_summary_wrapped_contents_and_header_targets() {
+        let mut v = json!({"op": "page_setup", "summary": "x", "page_setup": {"paper": "A4"}});
+        super::relax_op(&mut v);
+        assert_eq!(v, json!({"op": "page_setup", "paper": "A4"}));
+        let mut h = json!({"op": "header", "target": "b0-0000", "content": {"text": "社外秘"}});
+        super::relax_op(&mut h);
+        assert!(h.get("target").is_none());
+    }
 
     #[test]
     fn turns_unambiguous_numbers_and_strings_into_booleans() {

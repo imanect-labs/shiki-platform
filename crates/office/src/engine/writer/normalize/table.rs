@@ -14,7 +14,18 @@ use crate::engine::writer::ops::DocOp;
 /// 1 回の操作で触れるセルの上限（表は文書の一部なので小さめ）。
 const MAX_CELLS: u64 = 2_000;
 
+/// `table: "last"` の印（エンジンの tableOf が、この一括で最後に入れた表に解決する）。
+const LAST_TABLE: &str = "@last-table";
+
 impl Cx<'_> {
+    /// 表のブロック ID。`last` はこの一括で最後に入れた表（エンジンが解決する）。
+    fn table_id(&mut self, table: &str) -> Result<String, OpError> {
+        if table.trim().eq_ignore_ascii_case("last") {
+            return Ok(LAST_TABLE.to_string());
+        }
+        self.id(table)
+    }
+
     pub(super) fn table_op(&mut self, op: &DocOp) -> Result<Vec<Value>, OpError> {
         Ok(match op {
             DocOp::InsertRows {
@@ -31,14 +42,14 @@ impl Cx<'_> {
                     None => Value::Null,
                 };
                 vec![
-                    json!({"op": "table_insert_rows", "table": self.id(table)?, "after": after_row, "count": count, "values": values}),
+                    json!({"op": "table_insert_rows", "table": self.table_id(table)?, "after": after_row, "count": count, "values": values}),
                 ]
             }
             DocOp::DeleteRows { table, rows } => {
                 let (_, start, end) = a1::parse_rows(rows)
                     .map_err(|e| self.err(format!("行「{rows}」: {e}（例 \"3\"・\"3:5\"）")))?;
                 vec![
-                    json!({"op": "table_delete_rows", "table": self.id(table)?, "start": start, "end": end}),
+                    json!({"op": "table_delete_rows", "table": self.table_id(table)?, "start": start, "end": end}),
                 ]
             }
             DocOp::SetCells {
@@ -46,6 +57,10 @@ impl Cx<'_> {
                 cell,
                 values,
             } => {
+                // 範囲（"A2:D5"）を書いたら、その左上から書く。
+                let cell = cell
+                    .split_once(':')
+                    .map_or(cell.as_str(), |(start, _)| start);
                 let (sheet, col, row) = a1::parse_cell(cell)
                     .map_err(|e| self.err(format!("セル「{cell}」: {e}（例 \"B2\"）")))?;
                 if sheet.is_some() {
@@ -53,7 +68,7 @@ impl Cx<'_> {
                 }
                 let values = self.cell_values(values)?;
                 vec![
-                    json!({"op": "table_set_cells", "table": self.id(table)?, "col": col, "row": row, "values": values}),
+                    json!({"op": "table_set_cells", "table": self.table_id(table)?, "col": col, "row": row, "values": values}),
                 ]
             }
             DocOp::FormatCells { .. } => vec![self.format_cells(op)?],
@@ -74,7 +89,7 @@ impl Cx<'_> {
                 }
                 let (head, band, total, line) = crate::engine::calc::parse::palette(*theme);
                 vec![json!({
-                    "op": "table_style", "table": self.id(table)?, "header_rows": header_rows,
+                    "op": "table_style", "table": self.table_id(table)?, "header_rows": header_rows,
                     "total_rows": total_rows, "banded": banded.unwrap_or(true), "first_column": first_column,
                     "colors": {"head": head, "band": band, "total": total, "line": line},
                 })]
@@ -99,7 +114,7 @@ impl Cx<'_> {
         let area = self.cell_area(range)?;
         let mut m = Map::new();
         m.insert("op".into(), "table_format_cells".into());
-        m.insert("table".into(), self.id(table)?.into());
+        m.insert("table".into(), self.table_id(table)?.into());
         m.insert("area".into(), json!(area));
         if let Some(f) = fill {
             let v = match f {
@@ -146,7 +161,7 @@ impl Cx<'_> {
         };
         let mut m = Map::new();
         m.insert("op".into(), "table_props".into());
-        m.insert("table".into(), self.id(table)?.into());
+        m.insert("table".into(), self.table_id(table)?.into());
         if let Some(w) = width_mm {
             if !(10.0..=500.0).contains(w) {
                 return Err(self.err("width_mm は 10〜500 mm です"));

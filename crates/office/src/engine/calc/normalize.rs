@@ -257,7 +257,8 @@ impl Cx {
                 if rows == 0 || cols == 0 {
                     return Err(self.err("values が空です"));
                 }
-                let single = a.sc == a.ec && a.sr == a.er;
+                // 値が 1 つなら範囲の左上へ書く（「A1:E1 に表題」のように結合する範囲を書いた形）。
+                let single = (a.sc == a.ec && a.sr == a.er) || (rows == 1 && cols == 1);
                 if !single && (a.height() != rows || a.width() != cols) {
                     return Err(self.err(format!(
                         "範囲 {} は {}×{} ですが values は {rows}×{cols} です（左上セルだけを指定すると大きさは values から決まります）",

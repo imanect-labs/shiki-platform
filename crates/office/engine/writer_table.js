@@ -4,6 +4,10 @@
 // セルの座標は 0 始まりの (列, 行)。結合のある表は座標が揃わないことがあり、見つからないセルは誤りにする。
 
 function tableOf(resolved, id) {
+  if (id === "@last-table") {
+    if (!LAST_TABLE) fail("no_table", "この一括ではまだ表を差し込んでいません（table: \"last\" は同じ ops の前の操作で入れた表を指す）");
+    return LAST_TABLE;
+  }
   const t = refOf(resolved, id, "table");
   if (!t || !isTable(t)) fail("not_table", `ブロック ${id} は表ではありません（表のブロック ID を指定してください）`);
   return t;

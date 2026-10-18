@@ -32,6 +32,7 @@ pub fn normalize_doc_ops(values: &[Value]) -> Result<DocNormalized, OpError> {
             .to_string();
         let mut v = v.clone();
         crate::engine::coerce_bools(&mut v);
+        crate::engine::relax_op(&mut v);
         let op: DocOp = serde_json::from_value(v).map_err(|e| OpError {
             index: i + 1,
             op: known_name(&name),

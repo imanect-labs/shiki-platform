@@ -587,3 +587,27 @@ async fn a_replaced_id_points_at_its_replacement_in_the_same_batch() {
     assert!(blocks.contains("background"), "表が整っていない: {blocks}");
     client.close().await;
 }
+
+/// 同じ一括で入れた表は table: "last" で指せ、set_cells の範囲は左上から書く。
+#[tokio::test]
+async fn the_last_inserted_table_can_be_styled_in_the_same_batch() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let (_name, mut client) = fresh(&env).await;
+    let text = apply_ok(
+        &mut client,
+        &[
+            json!({"op": "insert", "at": "end", "html": "<table><tr><th>工程</th><th>期間</th></tr><tr><td>要件定義</td><td>-</td></tr></table>"}),
+            json!({"op": "style_table", "table": "last", "theme": "green", "summary": "表を整える"}),
+            json!({"op": "set_cells", "table": "last", "cell": "B2:B2", "values": [["11月"]]}),
+        ],
+    )
+    .await;
+    assert!(
+        text.contains("表 2行×2列「工程|期間|要件定義|11月」"),
+        "{text}"
+    );
+    client.close().await;
+}

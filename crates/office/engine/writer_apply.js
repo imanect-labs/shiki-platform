@@ -448,6 +448,9 @@ let RESOLVED = {};
  */
 let REPLACED = {};
 
+/** この一括で最後に差し込んだ表（table: "last" で指す）。 */
+let LAST_TABLE = null;
+
 /** ID の参照。role は "after" / "before" / "from" / "to" / "table"。 */
 function refOf(resolved, id, role) {
   if (!REPLACED[id]) return resolved[id];
@@ -553,6 +556,13 @@ function resetParagraph(p) {
  * anchor が null なら文書の末尾。
  */
 function insertHtml(anchor, before, html, created) {
+  const inserted = insertHtmlBlocks(anchor, before, html, created);
+  const tables = inserted.filter(isTable);
+  if (tables.length > 0) LAST_TABLE = tables[tables.length - 1];
+  return inserted;
+}
+
+function insertHtmlBlocks(anchor, before, html, created) {
   const text = DOC.getText();
   const para = emptyParagraphAt(anchor, before);
   // 差し込み前後の境界（直前のブロックと直後のブロック）を覚える。
@@ -1121,6 +1131,7 @@ HANDLERS["writer.apply"] = (req) => {
     for (const id of req.block_ids) resolved[id] = blocks[resolveBlock(blocks, id)];
     RESOLVED = resolved;
     REPLACED = {};
+    LAST_TABLE = null;
     for (let i = 0; i < req.ops.length; i++) {
       const op = req.ops[i];
       const fn = WOPS[op.op];
