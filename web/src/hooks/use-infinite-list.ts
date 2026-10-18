@@ -103,26 +103,47 @@ export function useInfiniteList<T>(
 }
 
 /// 無限スクロールの sentinel を監視し、可視になったら `onVisible` を呼ぶ。
+///
+/// IntersectionObserver は「見え方が変わったとき」しか発火しないため、読み足した行が
+/// 呼び出し側で絞り込まれて画面が埋まらない（sentinel が見えたまま）と続きが止まる。
+/// `progress`（読み込み済み件数など、取得成功で増える値。取得中は `undefined`）を渡すと、
+/// 値が変わった時点で sentinel がまだ見えていれば `onVisible` をもう一度呼ぶ。
+/// 失敗で値が変わらなければ再発火しない（失敗の連打を防ぐ。見え直したときに再試行）。
 export function useInfiniteSentinel(
   onVisible: () => void,
   enabled: boolean,
+  progress?: number,
 ): React.RefObject<HTMLDivElement | null> {
   const ref = React.useRef<HTMLDivElement | null>(null);
   const cb = React.useRef(onVisible);
   cb.current = onVisible;
+  const visible = React.useRef(false);
+  const lastProgress = React.useRef<number | undefined>(undefined);
 
   React.useEffect(() => {
     const node = ref.current;
     if (!node || !enabled) return;
     const observer = new IntersectionObserver(
       (entries) => {
+        visible.current = entries[entries.length - 1]?.isIntersecting ?? false;
         if (entries.some((e) => e.isIntersecting)) cb.current();
       },
       { rootMargin: "200px" },
     );
     observer.observe(node);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      visible.current = false;
+    };
   }, [enabled]);
+
+  // 取得完了で件数が変わり、まだ sentinel が見えていれば続きを読む（1 回に 1 ページ）。
+  React.useEffect(() => {
+    if (progress === undefined) return;
+    const changed = lastProgress.current !== undefined && lastProgress.current !== progress;
+    lastProgress.current = progress;
+    if (changed && enabled && visible.current) cb.current();
+  }, [progress, enabled]);
 
   return ref;
 }
