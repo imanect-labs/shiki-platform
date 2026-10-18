@@ -35,6 +35,7 @@ pub mod error;
 pub mod gui_actions;
 pub mod model;
 pub mod office_create_tool;
+pub mod office_engine_tool;
 pub mod office_live_tool;
 pub mod office_tool;
 pub mod selection;

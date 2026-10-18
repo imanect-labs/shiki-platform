@@ -383,6 +383,30 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     suru: true,
     nodeIdKey: "node_id",
   },
+  "office.read": {
+    icon: FileText,
+    category: "read",
+    lead: objectOf("Office ファイル"),
+    verb: "読み込み",
+    failed: "読み込めませんでした",
+    nodeIdKey: "node_id",
+  },
+  "office.excel_edit": {
+    icon: FileSpreadsheet,
+    category: "write",
+    lead: objectOf("Excel ファイル"),
+    verb: "編集",
+    suru: true,
+    nodeIdKey: "node_id",
+  },
+  "office.word_edit": {
+    icon: FileText,
+    category: "write",
+    lead: objectOf("Word ファイル"),
+    verb: "編集",
+    suru: true,
+    nodeIdKey: "node_id",
+  },
 
   // CSV（表・SQL 分析）。
   "csv.query": {
