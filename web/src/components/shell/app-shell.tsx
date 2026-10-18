@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 
 import { cn } from "@/lib/utils";
 import { isEditorRoute } from "@/lib/nav-config";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { SidebarProvider, useSidebar } from "./sidebar/sidebar-context";
 import { Sidebar } from "./sidebar/sidebar";
 import { MobileSidebar } from "./mobile-sidebar";
@@ -43,6 +44,21 @@ function ShellHeader() {
   return <Header />;
 }
 
+/// PC のバーとスマホの浮きボタンは同じ spec から描くので、両方を DOM に置くと testId・
+/// aria-label が二重になる（支援技術・E2E の strict 選択で衝突）。mount 後は画面幅に合う
+/// 片方だけを置く。SSR と hydration 直後は幅が分からないため両方を置き、CSS（md:）で隠す。
+function ShellChrome() {
+  const desktop = useMediaQuery("(min-width: 768px)");
+  const mobile = useMediaQuery("(max-width: 767.98px)");
+  const known = desktop || mobile;
+  return (
+    <>
+      {(!known || desktop) && <ShellHeader />}
+      {(!known || mobile) && <MobileChrome />}
+    </>
+  );
+}
+
 /// 本文のスクロール領域。スマホでは浮いたボタンの分だけ上端を空ける（会話のように本文を
 /// ボタンの下まで流すページは `flowUnder` で外す）。
 function ShellMain({ children }: { children: ReactNode }) {
@@ -70,8 +86,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <Sidebar />
           <MobileSidebar />
           <div className="relative flex min-w-0 flex-1 flex-col">
-            <ShellHeader />
-            <MobileChrome />
+            <ShellChrome />
             <ShellMain>{children}</ShellMain>
           </div>
           <ShellSearch />
