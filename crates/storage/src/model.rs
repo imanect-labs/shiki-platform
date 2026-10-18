@@ -310,8 +310,14 @@ pub struct ShareLinkGrant {
 }
 
 /// 共有相手 1 件（誰に・どの役割で共有したか）。
+///
+/// `display_name` / `email` は呼び出し元テナント（＋ org）のディレクトリから解決した表示用の補助
+/// （#741）。別テナント・未登録の相手は `None`（UI は短縮 ID でフォールバック表示する）。
+/// `email` は user のみ（role は常に `None`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct ShareEntry {
     pub target: ShareTarget,
     pub role: ShareRole,
+    pub display_name: Option<String>,
+    pub email: Option<String>,
 }

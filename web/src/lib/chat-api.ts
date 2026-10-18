@@ -98,7 +98,8 @@ export type Citation = Extract<ContentBlock, { type: "citation" }>;
 /// 共有語彙（backend chat::ThreadRole / storage::ShareTarget と一致）。
 export type ThreadRole = "viewer" | "commenter" | "editor";
 export type ShareTarget = { type: "user"; id: string } | { type: "role"; id: string };
-export type ThreadShareEntry = { target: ShareTarget; role: ThreadRole };
+/// 共有一覧の 1 件（表示名・email はサーバがテナント内ディレクトリから解決・#741）。
+export type ThreadShareEntry = components["schemas"]["ThreadShareEntry"];
 
 // ── スレッド一覧の購読（サイドバー履歴）────────────────────────────────
 

@@ -93,10 +93,20 @@ pub async fn list_thread_shares(
     let entries = chat_store(&state)?
         .list_thread_shares(&ctx, id, trace.as_deref())
         .await?;
+    let profiles =
+        super::share_profiles::resolve(&state, &ctx, entries.iter().map(|(t, _)| t)).await;
     Ok(Json(ThreadSharesResponse {
         shares: entries
             .into_iter()
-            .map(|(target, role)| ThreadShareEntry { target, role })
+            .map(|(target, role)| {
+                let p = profiles.get(&target);
+                ThreadShareEntry {
+                    target,
+                    role,
+                    display_name: p.display_name,
+                    email: p.email,
+                }
+            })
             .collect(),
     }))
 }

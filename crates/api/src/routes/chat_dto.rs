@@ -143,11 +143,14 @@ pub struct ShareThreadRequest {
     pub role: ThreadRole,
 }
 
-/// 共有相手 1 件。
+/// 共有相手 1 件。`display_name` / `email` は呼び出し元テナント（＋ org）のディレクトリから
+/// 解決した表示用の補助（#741・別テナント・未登録は `null`。`email` は user のみ）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ThreadShareEntry {
     pub target: ShareTarget,
     pub role: ThreadRole,
+    pub display_name: Option<String>,
+    pub email: Option<String>,
 }
 
 /// 共有相手一覧レスポンス。

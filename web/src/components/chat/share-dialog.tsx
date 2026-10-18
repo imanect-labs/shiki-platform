@@ -241,7 +241,7 @@ export function ThreadShareDialog({
                 >
                   <span className="min-w-0 truncate">
                     {s.target.type === "role" ? "部署/ロール " : ""}
-                    {s.target.id}
+                    {s.display_name ?? s.target.id}
                     <span className="ml-2 text-xs text-muted-foreground">
                       {ROLES.find((r) => r.value === s.role)?.label}
                     </span>

@@ -43,11 +43,14 @@ pub struct ShareArtifactRequest {
     pub role: ArtifactRole,
 }
 
-/// 共有相手 1 件。
+/// 共有相手 1 件。`display_name` / `email` は呼び出し元テナント（＋ org）のディレクトリから
+/// 解決した表示用の補助（#741・別テナント・未登録は `null`。`email` は user のみ）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ArtifactShareEntry {
     pub target: ShareTarget,
     pub role: ArtifactRole,
+    pub display_name: Option<String>,
+    pub email: Option<String>,
 }
 
 /// 一覧クエリ（kind 絞り込み・keyset ページング）。
@@ -387,10 +390,20 @@ pub async fn list_artifact_shares(
         .artifacts
         .list_shares(&ctx, id, trace.as_deref())
         .await?;
+    let profiles =
+        super::share_profiles::resolve(&state, &ctx, entries.iter().map(|(t, _)| t)).await;
     Ok(Json(
         entries
             .into_iter()
-            .map(|(target, role)| ArtifactShareEntry { target, role })
+            .map(|(target, role)| {
+                let p = profiles.get(&target);
+                ArtifactShareEntry {
+                    target,
+                    role,
+                    display_name: p.display_name,
+                    email: p.email,
+                }
+            })
             .collect(),
     ))
 }

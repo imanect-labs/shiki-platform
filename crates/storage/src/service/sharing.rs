@@ -113,6 +113,8 @@ impl StorageService {
     ///
     /// オブジェクトに**直接**書かれた viewer/editor タプルのみを返す（owner/parent や
     /// 親フォルダからの継承は含めない＝「このノードで誰に共有したか」の管理ビュー）。
+    /// 相手の表示名（user は email も）は呼び出し元テナント（＋ org）のディレクトリから 1 クエリで
+    /// 一括解決する（#741）。解決失敗は非致命（名前は表示補助・一覧自体は返す）。
     pub async fn list_shares(
         &self,
         ctx: &AuthContext,
@@ -123,7 +125,7 @@ impl StorageService {
             .authorize_share_admin(ctx, node_id, "node.shares.list", trace_id)
             .await?;
         let tuples = self.authz.read_tuples(&obj, None).await?;
-        let mut entries = Vec::new();
+        let mut shares = Vec::new();
         for t in tuples {
             // viewer/editor のみ共有として扱う（owner/parent は管理対象外）。
             let Some(role) = Relation::parse(&t.relation).and_then(ShareRole::from_relation) else {
@@ -132,9 +134,30 @@ impl StorageService {
             let Some(target) = ShareTarget::parse_subject(&ctx.ns(), &t.user) else {
                 continue;
             };
-            entries.push(ShareEntry { target, role });
+            shares.push((target, role));
         }
-        Ok(entries)
+        let profiles = crate::directory::resolve_share_profiles(
+            &self.db,
+            ctx,
+            shares.iter().map(|(t, _)| t),
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "共有相手の表示名解決に失敗（ID 表示へフォールバック）");
+            crate::directory::ShareProfiles::default()
+        });
+        Ok(shares
+            .into_iter()
+            .map(|(target, role)| {
+                let p = profiles.get(&target);
+                ShareEntry {
+                    target,
+                    role,
+                    display_name: p.display_name,
+                    email: p.email,
+                }
+            })
+            .collect())
     }
 
     /// 自分に共有されたノード一覧（自分が作成したものを除く・org+tenant スコープ）。

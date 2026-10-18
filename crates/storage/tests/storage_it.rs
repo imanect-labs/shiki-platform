@@ -1141,6 +1141,148 @@ async fn authz_tuples_do_not_cross_tenant() {
     );
 }
 
+/// #741: 共有相手一覧に表示名（user は email も）が載る。解決は呼び出し元の tenant（＋ org）に
+/// 限られ、別テナント・別 org・未登録の user id は名前も email も `None` になる（越境で漏らさない）。
+#[tokio::test]
+async fn list_shares_resolves_directory_names_tenant_scoped() {
+    let Some(cx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = cx;
+    let dir = DirectoryStore::new(pool.clone());
+
+    let s = Uuid::new_v4().simple().to_string();
+    let org = format!("itorg{s}");
+    let owner = format!("ituser-owner-{s}");
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+
+    // 同テナント・同 org の alice（名前/email が出る）。
+    let alice = format!("ituser-alice-{s}");
+    dir.upsert_user(
+        &alice,
+        "default",
+        &org,
+        &format!("{alice}@a.example"),
+        "Alice",
+    )
+    .await
+    .expect("seed alice");
+    // mallory は**別テナント**にだけ居る（同 org 文字列・同 id でも名前は出さない）。
+    let mallory = format!("ituser-mallory-{s}");
+    dir.upsert_user(
+        &mallory,
+        &format!("other-tenant-{s}"),
+        &org,
+        &format!("{mallory}@b.example"),
+        "Mallory",
+    )
+    .await
+    .expect("seed mallory");
+    // eve は同テナントだが別 org（org も隔離境界）。
+    let eve = format!("ituser-eve-{s}");
+    dir.upsert_user(
+        &eve,
+        "default",
+        &format!("other-org-{s}"),
+        "eve@c.example",
+        "Eve",
+    )
+    .await
+    .expect("seed eve");
+    // ghost はディレクトリ未登録。
+    let ghost = format!("ituser-ghost-{s}");
+    let dept = format!("dept-{s}");
+    dir.upsert_role(&dept, "default", &org, "開発部")
+        .await
+        .expect("seed dept");
+
+    let file = upload(&service, &http, &octx, None, "names.txt", b"names")
+        .await
+        .expect("upload");
+    let grants = [
+        (ShareTarget::User { id: alice.clone() }, ShareRole::Viewer),
+        // 同じ相手を 2 役割で共有しても両行に名前が載る（重複 id の解決）。
+        (ShareTarget::User { id: alice.clone() }, ShareRole::Editor),
+        (
+            ShareTarget::User {
+                id: mallory.clone(),
+            },
+            ShareRole::Viewer,
+        ),
+        (ShareTarget::User { id: eve.clone() }, ShareRole::Viewer),
+        (ShareTarget::User { id: ghost.clone() }, ShareRole::Viewer),
+        (ShareTarget::Role { id: dept.clone() }, ShareRole::Editor),
+    ];
+    for (target, role) in &grants {
+        service
+            .share_node(&octx, file.id, target, *role, None)
+            .await
+            .expect("share");
+    }
+
+    let shares = service
+        .list_shares(&octx, file.id, None)
+        .await
+        .expect("list shares");
+    assert_eq!(shares.len(), grants.len(), "{shares:?}");
+    let find = |target: &ShareTarget, role: ShareRole| {
+        shares
+            .iter()
+            .find(|e| &e.target == target && e.role == role)
+            .unwrap_or_else(|| panic!("missing {target:?}/{role:?}: {shares:?}"))
+    };
+    for role in [ShareRole::Viewer, ShareRole::Editor] {
+        let a = find(&ShareTarget::User { id: alice.clone() }, role);
+        assert_eq!(a.display_name.as_deref(), Some("Alice"));
+        assert_eq!(
+            a.email.as_deref(),
+            Some(format!("{alice}@a.example").as_str())
+        );
+    }
+    for id in [&mallory, &eve, &ghost] {
+        let e = find(&ShareTarget::User { id: id.clone() }, ShareRole::Viewer);
+        assert_eq!(e.display_name, None, "越境/未登録は名前を出さない: {e:?}");
+        assert_eq!(e.email, None, "越境/未登録は email を出さない: {e:?}");
+    }
+    let r = find(&ShareTarget::Role { id: dept.clone() }, ShareRole::Editor);
+    assert_eq!(r.display_name.as_deref(), Some("開発部"));
+    assert_eq!(r.email, None, "role に email は無い");
+
+    // DirectoryStore 経由（アーティファクト/スレッド共有一覧が使う）でも同じ解決になる。
+    let targets: Vec<ShareTarget> = grants.iter().map(|(t, _)| t.clone()).collect();
+    let profiles = dir
+        .resolve_share_profiles(&octx, &targets)
+        .await
+        .expect("resolve");
+    assert_eq!(
+        profiles
+            .get(&ShareTarget::User { id: alice.clone() })
+            .display_name
+            .as_deref(),
+        Some("Alice")
+    );
+    assert_eq!(
+        profiles.get(&ShareTarget::User {
+            id: mallory.clone()
+        }),
+        storage::PrincipalProfile::default()
+    );
+    // 空入力はクエリを撃たずに空。
+    let empty = dir
+        .resolve_share_profiles(&octx, std::iter::empty())
+        .await
+        .expect("empty");
+    assert_eq!(
+        empty.get(&ShareTarget::User { id: alice.clone() }),
+        storage::PrincipalProfile::default()
+    );
+}
+
 /// #76: role/部署共有。ロールのメンバー（provisioning されたタプル）が共有経由で読め、
 /// 非メンバーは読めず、list_shares に Role ターゲットが出て、unshare で即時不可になること。
 #[tokio::test]

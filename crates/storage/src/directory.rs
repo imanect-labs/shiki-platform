@@ -10,7 +10,12 @@
 use authz::AuthContext;
 use sqlx::PgPool;
 
-use crate::error::StorageError;
+use crate::{error::StorageError, model::ShareTarget};
+
+mod share_profiles;
+
+pub(crate) use share_profiles::resolve_share_profiles;
+pub use share_profiles::{PrincipalProfile, ShareProfiles};
 
 /// 1 ページの既定件数（呼び出し側が未指定のとき）。
 pub const DEFAULT_SEARCH_LIMIT: usize = 20;
@@ -181,6 +186,17 @@ impl DirectoryStore {
         .await
         .map_err(StorageError::Db)?;
         Ok(rows.into_iter().collect())
+    }
+
+    /// 共有相手群（user / role）の表示名（user は email も）を 1 クエリで一括解決する（#741）。
+    ///
+    /// テナント（＋ org）で必ず絞る。別テナント・未登録の相手は [`ShareProfiles::get`] が空を返す。
+    pub async fn resolve_share_profiles<'a>(
+        &self,
+        ctx: &AuthContext,
+        targets: impl IntoIterator<Item = &'a ShareTarget>,
+    ) -> Result<ShareProfiles, StorageError> {
+        resolve_share_profiles(&self.db, ctx, targets).await
     }
 
     /// ユーザーがテナント（＋ org）内に存在するか（Task 9.2 の user 参照整合検証）。
