@@ -1,28 +1,130 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
-import { PenSquare, Search } from "lucide-react";
+import { PenSquare, Search, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { APPS_NAV, SKILLS_NAV, WORKFLOWS_NAV, isActivePath } from "@/lib/nav-config";
+import {
+  APPS_NAV,
+  DRIVE_ICON,
+  DRIVE_ROOT,
+  SKILLS_NAV,
+  WORKFLOWS_NAV,
+  isActivePath,
+} from "@/lib/nav-config";
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { NavItem } from "./nav-item";
 import { SidebarDriveAccordion } from "./sidebar-drive-accordion";
 import { useSidebar } from "./sidebar-context";
 
+/// スマホのドロワのナビ 1 マス（アイコン上・ラベル下）。
+function NavTile({
+  icon: Icon,
+  label,
+  href,
+  active,
+  onNavigate,
+}: {
+  icon: LucideIcon;
+  label: string;
+  href: string;
+  active: boolean;
+  onNavigate?: () => void;
+}) {
+  return (
+    <Link
+      href={href}
+      onClick={onNavigate}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "flex h-[62px] min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-0.5 text-[11px] tracking-[-0.02em] outline-none transition-colors",
+        "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
+        active
+          ? "bg-sidebar-accent font-medium text-sidebar-foreground"
+          : "text-sidebar-foreground/70 active:bg-sidebar-accent/60",
+      )}
+    >
+      <Icon
+        className={cn("size-5 shrink-0", active ? "text-sidebar-foreground" : "text-sidebar-foreground/60")}
+        aria-hidden
+      />
+      <span className="max-w-full truncate">{label}</span>
+    </Link>
+  );
+}
+
+/// スマホのドロワ上部: 「新しいチャット」（主ボタン）と検索を 1 段に、その下にナビ 4 マスを 1 行。
+/// 履歴に使える縦幅を広げるため、ドライブの子メニューはここに出さない（ドライブ画面側の ⋯ が導線）。
+function MobileNav({ onNavigate }: { onNavigate?: () => void }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const { setSearchOpen } = useSidebar();
+  const tiles = [
+    { key: "drive", label: "ドライブ", href: DRIVE_ROOT, icon: DRIVE_ICON },
+    SKILLS_NAV,
+    APPS_NAV,
+    WORKFLOWS_NAV,
+  ];
+
+  return (
+    <div className="flex flex-col gap-3 px-3">
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            router.push("/");
+            onNavigate?.();
+          }}
+          className="flex h-12 min-w-0 flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[15px] font-medium text-primary-foreground outline-none transition-[transform,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar active:scale-[0.98] active:bg-primary/90"
+        >
+          <PenSquare className="size-[18px] shrink-0" aria-hidden />
+          新しいチャット
+        </button>
+        {/* 検索パレットはドロワの上に重なる。結果を選ぶとドロワも閉じる（sidebar-search の go）。 */}
+        <button
+          type="button"
+          onClick={() => setSearchOpen(true)}
+          aria-label="検索"
+          className="flex size-12 shrink-0 items-center justify-center rounded-xl border border-sidebar-border bg-sidebar-accent/40 text-sidebar-foreground/70 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring active:bg-sidebar-accent"
+        >
+          <Search className="size-5" aria-hidden />
+        </button>
+      </div>
+      <nav aria-label="メインナビゲーション" className="grid grid-cols-4 gap-1">
+        {tiles.map((t) => (
+          <NavTile
+            key={t.key}
+            icon={t.icon}
+            label={t.label}
+            href={t.href}
+            active={isActivePath(t.href, pathname)}
+            onNavigate={onNavigate}
+          />
+        ))}
+      </nav>
+    </div>
+  );
+}
+
 /// サイドバー上部: 新規チャット（主役 CTA）＋ 検索（検索ボックス風）＋ ナビ（ドライブ/スキル/アプリ/ワークフロー）。
 /// 検索ダイアログ本体はシェルで単一管理し、ここは開くトリガーのみ（多重マウント回避）。
+/// `mobile` はスマホのドロワ用の詰めたレイアウト（`MobileNav`）。
 export function SidebarNav({
   collapsed,
+  mobile = false,
   onNavigate,
 }: {
   collapsed: boolean;
+  mobile?: boolean;
   onNavigate?: () => void;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const { setSearchOpen } = useSidebar();
+
+  if (mobile) return <MobileNav onNavigate={onNavigate} />;
 
   const startNewChat = () => {
     router.push("/");
@@ -89,7 +191,8 @@ export function SidebarNav({
         >
           <Search className="size-4 shrink-0 text-sidebar-foreground/45" aria-hidden />
           <span className="flex-1 text-[13px] text-sidebar-foreground/45">検索</span>
-          <kbd className="rounded border border-sidebar-border bg-sidebar px-1.5 py-0.5 text-[10px] font-medium leading-none text-sidebar-foreground/45">
+          {/* ショートカット表記はキーボードのある（マウス操作の）端末だけ。 */}
+          <kbd className="hidden rounded border border-sidebar-border bg-sidebar px-1.5 py-0.5 text-[10px] font-medium leading-none text-sidebar-foreground/45 pointer-fine:inline-block">
             ⌘K
           </kbd>
         </button>

@@ -18,6 +18,7 @@ import { NavItem } from "./nav-item";
 /// - 親「ドライブ」クリック → /drive へ遷移し、アコーディオンを開く。
 /// - 末尾シェブロン → 遷移せず開閉だけをトグル（aria-expanded/controls 付き）。
 /// - レール（collapsed）時はアイコンのみの単一リンク（tooltip でラベル補完）。
+/// - スマホのドロワでは使わない（ナビはタイル 1 行・子ページへはドライブ画面の ⋯ から）。
 export function SidebarDriveAccordion({
   collapsed,
   onNavigate,
@@ -61,6 +62,8 @@ export function SidebarDriveAccordion({
           aria-current={pathname === DRIVE_ROOT ? "page" : undefined}
           className={cn(
             "group relative flex h-9 flex-1 items-center gap-2.5 rounded-[9px] pl-2.5 pr-9 text-[13.5px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring",
+            // タッチは行を 44px に、右端の 44px をシェブロン専用に空ける（リンクと押し分けられる）。
+            "pointer-coarse:h-11 pointer-coarse:pr-12",
             driveActive
               ? "bg-sidebar-accent font-medium text-sidebar-foreground"
               : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
@@ -79,7 +82,7 @@ export function SidebarDriveAccordion({
           aria-expanded={open}
           aria-controls={listId}
           aria-label={open ? "ドライブを閉じる" : "ドライブを開く"}
-          className="absolute right-1 flex size-7 items-center justify-center rounded-md text-sidebar-foreground/60 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+          className="absolute right-1 flex size-7 items-center justify-center rounded-md text-sidebar-foreground/60 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring pointer-coarse:right-0 pointer-coarse:size-11 pointer-coarse:rounded-[9px]"
         >
           <ChevronRight
             className={cn("size-4 transition-transform duration-150", open && "rotate-90")}

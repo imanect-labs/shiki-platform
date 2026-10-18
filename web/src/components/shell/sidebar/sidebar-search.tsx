@@ -2,7 +2,16 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUpRight, Loader2, MessageSquare, PenSquare, Search, X } from "lucide-react";
+import {
+  ArrowUpRight,
+  FileText,
+  Loader2,
+  MessageSquare,
+  NotebookPen,
+  PenSquare,
+  Search,
+  X,
+} from "lucide-react";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 
 import { cn } from "@/lib/utils";
@@ -14,12 +23,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { groupThreadsByDate, type Thread } from "@/lib/chat-api";
-import { threadHref } from "@/lib/thread-link";
+import { threadDisplay, threadHref } from "@/lib/thread-link";
 import { useInfiniteSentinel } from "@/hooks/use-infinite-list";
 import { useThreadList } from "@/hooks/use-thread-list";
 import type { DriveSearchItem } from "@/lib/drive-search";
 
 import { DriveResults, useDriveSearch } from "./sidebar-doc-results";
+import { useSidebar } from "./sidebar-context";
 
 /// チャット検索語の上限（`GET /threads?q=` のサーバ側上限と一致）。
 const MAX_CHAT_QUERY_CHARS = 200;
@@ -29,6 +39,7 @@ const MAX_CHAT_QUERY_CHARS = 200;
 /// 続けてドライブのフォルダ/ファイル（名前一致＋内容一致・スコア降順）、
 /// チャット履歴の順。未入力時は「新しいチャット」＋履歴一覧。
 /// チャットはサーバ側でタイトル検索し、スクロールで続きを読み足す（先頭 30 件に限らない・#591）。
+/// スマホ（< sm）は全画面。検索が目的の画面なので、タッチでも開いた瞬間に入力へフォーカスする。
 export function SidebarSearch({
   open,
   onOpenChange,
@@ -37,6 +48,8 @@ export function SidebarSearch({
   onOpenChange: (v: boolean) => void;
 }) {
   const router = useRouter();
+  // スマホのドロワから開いた場合も、結果を選んだらドロワごと閉じる（遷移先が隠れないように）。
+  const { setMobileOpen } = useSidebar();
   const [query, setQuery] = React.useState("");
   const drive = useDriveSearch(query, open);
   // 打鍵ごとに叩かない（ドライブ検索と同じ 300ms）。
@@ -93,6 +106,7 @@ export function SidebarSearch({
 
   const go = (href: string) => {
     onOpenChange(false);
+    setMobileOpen(false);
     router.push(href);
   };
   const openDriveItem = (item: DriveSearchItem) => {
@@ -104,7 +118,15 @@ export function SidebarSearch({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showClose={false} className="top-[12%] max-w-xl translate-y-0 gap-0 p-0">
+      <DialogContent
+        showClose={false}
+        className={cn(
+          "gap-0 p-0 sm:top-[12%] sm:max-w-xl sm:translate-y-0",
+          // スマホは全画面（下からのシートの取っ手は出さない）。結果リストだけが伸びてスクロールする。
+          "max-sm:inset-0 max-sm:flex max-sm:h-dvh max-sm:max-h-dvh max-sm:flex-col max-sm:overflow-hidden max-sm:rounded-none max-sm:border-0",
+          "max-sm:px-0 max-sm:pt-[env(safe-area-inset-top)] max-sm:pb-[env(safe-area-inset-bottom)] max-sm:[&>div:first-child]:hidden",
+        )}
+      >
         <VisuallyHidden>
           <DialogTitle>検索</DialogTitle>
           <DialogDescription>
@@ -113,32 +135,41 @@ export function SidebarSearch({
         </VisuallyHidden>
 
         {/* 検索入力＋閉じる */}
-        <div className="flex items-center gap-3 border-b border-border px-4">
+        <div className="flex shrink-0 items-center gap-3 border-b border-border px-4 max-sm:pr-1.5">
           <Search className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
           <input
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // キーボードの「検索」キー（Enter）でドライブの検索結果画面へ（IME の確定は除く）。
+              if (e.key === "Enter" && !e.nativeEvent.isComposing && query.trim()) {
+                e.preventDefault();
+                openDriveSearch();
+              }
+            }}
+            enterKeyHint="search"
+            autoComplete="off"
             placeholder="文書・チャットを検索..."
             aria-label="文書・チャットを検索"
-            className="h-14 w-full bg-transparent text-[15px] outline-none placeholder:text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0"
+            className="h-14 w-full min-w-0 bg-transparent text-base outline-none placeholder:text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0 sm:text-[15px]"
           />
           <DialogClose
             aria-label="閉じる"
-            className="rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex shrink-0 items-center justify-center rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring max-sm:size-11 pointer-coarse:size-11"
           >
             <X className="size-[18px]" aria-hidden />
           </DialogClose>
         </div>
 
         {/* 結果リスト */}
-        <div className="scrollbar-subtle max-h-[60vh] overflow-y-auto p-2">
+        <div className="scrollbar-subtle overflow-y-auto overscroll-contain p-2 max-sm:min-h-0 max-sm:flex-1 sm:max-h-[60dvh]">
           {query.trim() ? (
             /* キーワード入力中の最上段: ドライブの検索結果画面へ */
             <button
               type="button"
               onClick={openDriveSearch}
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent active:bg-accent max-sm:min-h-12 max-sm:text-[15px]"
             >
               <Search className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
               <span className="min-w-0 truncate">「{query.trim()}」で検索</span>
@@ -149,7 +180,7 @@ export function SidebarSearch({
             <button
               type="button"
               onClick={() => go("/")}
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent active:bg-accent max-sm:min-h-12 max-sm:text-[15px]"
             >
               <PenSquare className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
               新しいチャット
@@ -211,6 +242,9 @@ export function SidebarSearch({
 }
 
 function SearchResultRow({ thread, onSelect }: { thread: Thread; onSelect: () => void }) {
+  // 文書の横で始めた会話は接頭「ノート: 」等を外し、種類アイコンと補足で由来を示す（サイドバーと揃える）。
+  const { kind, title, detail } = threadDisplay(thread);
+  const Icon = kind === "note" ? NotebookPen : kind === "office" ? FileText : MessageSquare;
   return (
     <li>
       <button
@@ -218,11 +252,16 @@ function SearchResultRow({ thread, onSelect }: { thread: Thread; onSelect: () =>
         onClick={onSelect}
         className={cn(
           "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm outline-none transition-colors",
-          "text-foreground hover:bg-accent focus-visible:bg-accent",
+          "text-foreground hover:bg-accent focus-visible:bg-accent active:bg-accent max-sm:min-h-12 max-sm:text-[15px]",
         )}
       >
-        <MessageSquare className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
-        <span className="truncate">{thread.title}</span>
+        <Icon className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">{title}</span>
+          {detail ? (
+            <span className="block truncate text-xs text-muted-foreground">{detail}</span>
+          ) : null}
+        </span>
       </button>
     </li>
   );

@@ -141,6 +141,18 @@ export function groupThreadsByDate(
   );
 }
 
+/// 履歴行の右端に出す更新時刻。今日は HH:mm、今年は M/D、それより前は YYYY/M/D。
+export function formatThreadTime(updatedAt: string, now = Date.now()): string {
+  const d = new Date(updatedAt);
+  if (Number.isNaN(d.getTime())) return "";
+  const today = new Date(now);
+  if (d.toDateString() === today.toDateString()) {
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
+  const md = `${d.getMonth() + 1}/${d.getDate()}`;
+  return d.getFullYear() === today.getFullYear() ? md : `${d.getFullYear()}/${md}`;
+}
+
 /// スレッド一覧の変更通知を購読する（作成・更新時に `notifyThreadsChanged` から呼ばれる）。
 export function subscribeThreadsChanged(listener: () => void): () => void {
   threadListeners.add(listener);
