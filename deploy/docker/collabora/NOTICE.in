@@ -24,6 +24,15 @@ Collabora Online (coolwsd) and Collabora Office core (LibreOffice technology)
   repository: @ONLINE_REPO@
   tag:        @ONLINE_REF@
   commit:     @ONLINE_COMMIT@
+  The user interface translations of the core come from
+  repository: @TRANSLATIONS_REPO@
+  tag:        @TRANSLATIONS_REF@
+  commit:     @TRANSLATIONS_COMMIT@
+
+Spelling dictionaries bundled with the core          various
+  /opt/collaboraoffice/share/extensions/dict-*. Each dictionary carries its
+  own license file in its directory; some are GPL or LGPL licensed. Their
+  source is part of the core source above (engine/dictionaries).
 
 Poco C++ Libraries                         BSL-1.0
   Built as part of the core from its source archive (listed in
@@ -40,7 +49,8 @@ Poco C++ Libraries                         BSL-1.0
 Third-party libraries bundled into the core (ICU, NSS, OpenSSL, curl, cairo,
 fonts and others), as source archives with their sha256:
   core-external-tarballs.sha256 (in this directory)
-  Upstream mirror: https://dev-www.libreoffice.org/src/
+  Upstream: https://gerrit.collaboraoffice.com/src/ and
+            https://gerrit.collaboraoffice.com/extern/
 
 Ubuntu 24.04 packages in this image (source package and version):
   ubuntu-source-packages.txt (in this directory)

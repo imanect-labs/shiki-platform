@@ -44,7 +44,7 @@ jobs:
         run: |
           set -euo pipefail
           source deploy/docker/collabora/office-manifest.env
-          for v in ONLINE_REPO ONLINE_REF ONLINE_COMMIT NODE_URL NODE_SHA256; do
+          for v in ONLINE_REPO ONLINE_REF ONLINE_COMMIT TRANSLATIONS_REPO TRANSLATIONS_REF TRANSLATIONS_COMMIT NODE_URL NODE_SHA256; do
             [ -n "${!v}" ] || { echo "manifest に $v が無い"; exit 1; }
             echo "$v=${!v}" >> "$GITHUB_ENV"
           done
@@ -85,6 +85,9 @@ jobs:
             ONLINE_REPO=${{ env.ONLINE_REPO }}
             ONLINE_REF=${{ env.ONLINE_REF }}
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+            TRANSLATIONS_REPO=${{ env.TRANSLATIONS_REPO }}
+            TRANSLATIONS_REF=${{ env.TRANSLATIONS_REF }}
+            TRANSLATIONS_COMMIT=${{ env.TRANSLATIONS_COMMIT }}
             NODE_URL=${{ env.NODE_URL }}
             NODE_SHA256=${{ env.NODE_SHA256 }}
 
@@ -111,6 +114,9 @@ jobs:
             ONLINE_REPO=${{ env.ONLINE_REPO }}
             ONLINE_REF=${{ env.ONLINE_REF }}
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+            TRANSLATIONS_REPO=${{ env.TRANSLATIONS_REPO }}
+            TRANSLATIONS_REF=${{ env.TRANSLATIONS_REF }}
+            TRANSLATIONS_COMMIT=${{ env.TRANSLATIONS_COMMIT }}
             NODE_URL=${{ env.NODE_URL }}
             NODE_SHA256=${{ env.NODE_SHA256 }}
             BUILD_ID=${{ env.BUILD_ID }}
@@ -255,6 +261,9 @@ jobs:
             ONLINE_REPO=${{ env.ONLINE_REPO }}
             ONLINE_REF=${{ env.ONLINE_REF }}
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+            TRANSLATIONS_REPO=${{ env.TRANSLATIONS_REPO }}
+            TRANSLATIONS_REF=${{ env.TRANSLATIONS_REF }}
+            TRANSLATIONS_COMMIT=${{ env.TRANSLATIONS_COMMIT }}
             NODE_URL=${{ env.NODE_URL }}
             NODE_SHA256=${{ env.NODE_SHA256 }}
             BUILD_ID=${{ env.BUILD_ID }}
@@ -286,6 +295,9 @@ jobs:
             ONLINE_REPO=${{ env.ONLINE_REPO }}
             ONLINE_REF=${{ env.ONLINE_REF }}
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+            TRANSLATIONS_REPO=${{ env.TRANSLATIONS_REPO }}
+            TRANSLATIONS_REF=${{ env.TRANSLATIONS_REF }}
+            TRANSLATIONS_COMMIT=${{ env.TRANSLATIONS_COMMIT }}
             NODE_URL=${{ env.NODE_URL }}
             NODE_SHA256=${{ env.NODE_SHA256 }}
             BUILD_ID=${{ env.BUILD_ID }}

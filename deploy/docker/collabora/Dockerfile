@@ -28,6 +28,9 @@ FROM ubuntu:24.04 AS core-build
 ARG ONLINE_REPO=https://github.com/CollaboraOnline/online.mirror.git
 ARG ONLINE_REF=cp-26.04.5-1
 ARG ONLINE_COMMIT=22ce52fb5173821dd90782638afcbfb6b6d7cb40
+ARG TRANSLATIONS_REPO=https://gerrit.collaboraoffice.com/translations
+ARG TRANSLATIONS_REF=cp-26.04.5-1
+ARG TRANSLATIONS_COMMIT=ed43817bd4972e81feb228a0ad06a8aa783d3f55
 ARG NODE_URL=https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.xz
 ARG NODE_SHA256=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
 ENV DEBIAN_FRONTEND=noninteractive
@@ -70,6 +73,11 @@ RUN git clone --depth 1 --branch "$ONLINE_REF" "$ONLINE_REPO" online \
     && test "$(git rev-parse HEAD)" = "$ONLINE_COMMIT" \
     && git rev-parse HEAD > /src/ONLINE_COMMIT && cat /src/ONLINE_COMMIT \
     && test -x engine/autogen.sh
+# engine の翻訳（monorepo の外）。無いと configure は警告 1 行で英語だけに落とす。
+RUN git clone --depth 1 --branch "$TRANSLATIONS_REF" "$TRANSLATIONS_REPO" online/engine/translations \
+    && cd online/engine/translations \
+    && test "$(git rev-parse HEAD)" = "$TRANSLATIONS_COMMIT" \
+    && test -f README
 # LOKit 向けの構成（GUI 依存を切る）。--with-distro が依存/機能セットを固定する
 # （QuickJS の JS UNO＝executescript も CPLinuxCommon の --enable-quickjs で入る）。
 #
@@ -86,7 +94,9 @@ RUN git clone --depth 1 --branch "$ONLINE_REF" "$ONLINE_REPO" online \
 COPY --chown=build:build branding/core /src/branding
 RUN cd online/engine && ./autogen.sh --with-distro=CPLinux-LOKit --disable-symbols \
     --disable-epm --without-package-format \
-    --with-vendor="Imanect Labs" --with-branding=/src/branding
+    --with-vendor="Imanect Labs" --with-branding=/src/branding \
+    && grep -Eq '^WITH_LANG_LIST=.*\bja\b' config_host_lang.mk \
+    || { echo "engine の言語に ja が入っていない（翻訳を取り込めていない）"; exit 1; }
 RUN cd online/engine && make -j"$(nproc)"
 # instdir をランタイムの置き場所へ写す（上流の build.sh と同じ）。make とは別レイヤにする
 # （ここで落ちても make の結果がキャッシュに残る）。
@@ -116,7 +126,10 @@ RUN mkdir -p /src/sources \
     && cd online \
     && git ls-files --recurse-submodules -z \
        | tar --null -T - --transform "flags=r;s,^,online-$ONLINE_REF/," -czf /src/sources/online-$ONLINE_REF.tar.gz \
-    && tar tzf /src/sources/online-$ONLINE_REF.tar.gz "online-$ONLINE_REF/engine/configure.ac" >/dev/null
+    && tar tzf /src/sources/online-$ONLINE_REF.tar.gz "online-$ONLINE_REF/engine/configure.ac" >/dev/null \
+    && cd engine/translations \
+    && git ls-files -z \
+       | tar --null -T - --transform "flags=r;s,^,translations-$TRANSLATIONS_REF/," -czf /src/sources/translations-$TRANSLATIONS_REF.tar.gz
 
 # ---- Stage 2: coolwsd（Collabora Online 本体）のビルド ----
 # engine のビルドツリーの上で建てる（上の説明）。
@@ -149,6 +162,9 @@ FROM ubuntu:24.04 AS runtime
 ARG ONLINE_REPO=https://github.com/CollaboraOnline/online.mirror.git
 ARG ONLINE_REF=cp-26.04.5-1
 ARG ONLINE_COMMIT=22ce52fb5173821dd90782638afcbfb6b6d7cb40
+ARG TRANSLATIONS_REPO=https://gerrit.collaboraoffice.com/translations
+ARG TRANSLATIONS_REF=cp-26.04.5-1
+ARG TRANSLATIONS_COMMIT=ed43817bd4972e81feb228a0ad06a8aa783d3f55
 ENV DEBIAN_FRONTEND=noninteractive
 # ランタイム依存は dev パッケージで引き込む（noble の t64 リネーム等、実ライブラリの
 # パッケージ名差異に依存しないため。ヘッダ分のサイズ増は堅牢性とのトレード）。
@@ -229,6 +245,8 @@ RUN cd /usr/share/doc/shiki-office \
          test -s "/usr/share/doc/$d/copyright" || { echo "/usr/share/doc/$d/copyright が無い"; exit 1; }; \
        done \
     && sed -e "s|@ONLINE_REPO@|$ONLINE_REPO|g" \
+           -e "s|@TRANSLATIONS_REPO@|$TRANSLATIONS_REPO|g" -e "s|@TRANSLATIONS_REF@|$TRANSLATIONS_REF|g" \
+           -e "s|@TRANSLATIONS_COMMIT@|$TRANSLATIONS_COMMIT|g" \
            -e "s|@ONLINE_REF@|$ONLINE_REF|g" -e "s|@ONLINE_COMMIT@|$ONLINE_COMMIT|g" \
            -e "s|@BUILD_ID@|$BUILD_ID|g" \
            NOTICE.in > NOTICE \
