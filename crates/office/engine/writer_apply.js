@@ -280,8 +280,8 @@ function restyleImported(p, name, markers, styles, missing) {
     setParaStyle(p, bodyStyle());
     if (center) p.setPropertyValue("ParaAdjust", I.style.ParagraphAdjust.CENTER);
     if (bold) {
-      p.setPropertyValue("CharWeight", 150);
-      p.setPropertyValue("CharWeightAsian", 150);
+      p.setPropertyValue("CharWeight", float(150));
+      p.setPropertyValue("CharWeightAsian", float(150));
     }
     if (top) p.setPropertyValue("ParaTopMargin", long(0));
     if (bottom) p.setPropertyValue("ParaBottomMargin", long(0));
@@ -668,13 +668,13 @@ function applyFont(target, f) {
     target.setPropertyValue("CharFontNameAsian", f.name);
   }
   if (f.size !== undefined) {
-    target.setPropertyValue("CharHeight", f.size);
-    target.setPropertyValue("CharHeightAsian", f.size);
+    target.setPropertyValue("CharHeight", float(f.size));
+    target.setPropertyValue("CharHeightAsian", float(f.size));
   }
   if (f.bold !== undefined) {
     const w = f.bold ? 150 : 100;
-    target.setPropertyValue("CharWeight", w);
-    target.setPropertyValue("CharWeightAsian", w);
+    target.setPropertyValue("CharWeight", float(w));
+    target.setPropertyValue("CharWeightAsian", float(w));
   }
   if (f.italic !== undefined) {
     const p = f.italic ? I.awt.FontSlant.ITALIC : I.awt.FontSlant.NONE;
@@ -1052,7 +1052,7 @@ WOPS.header_footer = (op) => {
   cur.gotoStart(false);
   cur.gotoEnd(true);
   cur.setPropertyValue("ParaAdjust", I.style.ParagraphAdjust[ADJUST[op.content.align || "center"]]);
-  if (op.content.size) cur.setPropertyValue("CharHeight", op.content.size);
+  if (op.content.size) cur.setPropertyValue("CharHeight", float(op.content.size));
   return {};
 };
 

@@ -375,6 +375,7 @@ pub(super) async fn wait_matching<T>(
             Err(_) => return Err(LiveError::Timeout(phase)),
         };
         if let Some((cmd, kind)) = protocol::parse_error(&msg) {
+            tracing::warn!(phase, raw = %msg.chars().take(300).collect::<String>(), "CoolWSD がエラーを返しました");
             return Err(LiveError::Server { cmd, kind });
         }
         if let Some(reason) = protocol::parse_close_reason(&msg) {

@@ -279,6 +279,42 @@ async fn an_added_sheet_becomes_the_default_for_the_next_call() {
     client.close().await;
 }
 
+/// 題つきのグラフも xlsx へ保存でき、開き直してもグラフが残る（題の文字の太さを整数で入れると
+/// 26.04.5 の xlsx の書き出しが失敗していた）。
+#[tokio::test]
+async fn a_titled_chart_survives_saving_to_xlsx() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let name = format!("engine-{}.xlsx", uuid::Uuid::new_v4());
+    let mut client = open_blank(&env, &name).await;
+    let batch = ops(json!([
+        {"op": "set_values", "range": "A1", "values": [["項目", "4月", "5月"], ["家具", 1, 2], ["文具", 3, 4]]},
+        {"op": "add_chart", "type": "line", "data": "A1:C3", "anchor": "A6", "title": "カテゴリ別の推移"}
+    ]));
+    let out = run::apply(&mut client, "グラフ", &normalize(&batch, None).unwrap())
+        .await
+        .unwrap();
+    assert!(out.applied, "{}", out.text);
+    client.save().await.unwrap();
+    client.close().await;
+    let mut client = office::live::connect_with_retry(
+        &{
+            let mut cfg = CoolWsConfig::new(env.ws.clone());
+            cfg.total_deadline = std::time::Duration::from_mins(5);
+            cfg
+        },
+        &format!("{}/{name}", env.wopi),
+        "test-token",
+    )
+    .await
+    .unwrap();
+    let overview = run::read_overview(&mut client, &name).await.unwrap();
+    assert!(overview.contains("題「カテゴリ別の推移」"), "{overview}");
+    client.close().await;
+}
+
 /// 「自動」の列幅は、折り返しの見出し（style_table）も 1 行に収まる幅にする。
 #[tokio::test]
 async fn auto_width_fits_wrapped_headers_on_one_line() {

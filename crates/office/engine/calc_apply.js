@@ -163,13 +163,13 @@ function applyFormat(range, op, sheet) {
       range.setPropertyValue("CharFontNameAsian", f.name);
     }
     if (f.size !== undefined) {
-      range.setPropertyValue("CharHeight", f.size);
-      range.setPropertyValue("CharHeightAsian", f.size);
+      range.setPropertyValue("CharHeight", float(f.size));
+      range.setPropertyValue("CharHeightAsian", float(f.size));
     }
     if (f.bold !== undefined) {
       const w = f.bold ? 150 : 100;
-      range.setPropertyValue("CharWeight", w);
-      range.setPropertyValue("CharWeightAsian", w);
+      range.setPropertyValue("CharWeight", float(w));
+      range.setPropertyValue("CharWeightAsian", float(w));
     }
     if (f.italic !== undefined) {
       const p = f.italic ? I.awt.FontSlant.ITALIC : I.awt.FontSlant.NONE;
@@ -418,8 +418,8 @@ function conditionStyle(look, sheet) {
       st.setPropertyValue("IsCellBackgroundTransparent", false);
     }
     if (look.bold) {
-      st.setPropertyValue("CharWeight", 150);
-      st.setPropertyValue("CharWeightAsian", 150);
+      st.setPropertyValue("CharWeight", float(150));
+      st.setPropertyValue("CharWeightAsian", float(150));
     }
   }
   return name;
@@ -586,8 +586,8 @@ OPS.add_chart = (op) => {
   if (op.title) {
     const t = eo.getTitle();
     t.setPropertyValue("String", op.title);
-    t.setPropertyValue("CharHeight", 13);
-    t.setPropertyValue("CharWeight", 150);
+    t.setPropertyValue("CharHeight", float(13));
+    t.setPropertyValue("CharWeight", float(150));
   }
   eo.setPropertyValue("HasLegend", op.legend_position !== "none");
   STAGE = "グラフの見た目";

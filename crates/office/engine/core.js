@@ -65,6 +65,15 @@ function short(n) {
   return new uno.Any(uno.type.short, n | 0);
 }
 
+/**
+ * float 型の属性（CharHeight・CharWeight など）の値。グラフの題などは値の型を変換せずにそのまま持ち、
+ * JS の整数のまま入れると xlsx への書き出しが「The file could not be written」で失敗する
+ * （26.04.5 で実測。セル・段落は変換されるが、どこでも同じ書き方にそろえる）。
+ */
+function float(n) {
+  return new uno.Any(uno.type.float, Number(n));
+}
+
 /** UNO の色（0xRRGGBB・自動は -1）→ "#RRGGBB"。自動・透過は null。 */
 function colorToHex(n) {
   if (n === null || n === undefined || n < 0) return null;
