@@ -132,19 +132,21 @@ PR CI では走らない（`docker-image.yml` から除外）。`office-image.ym
 set -a; source deploy/docker/collabora/office-manifest.env; set +a
 docker build deploy/docker/collabora --target runtime \
   --build-arg ONLINE_REPO --build-arg ONLINE_REF --build-arg ONLINE_COMMIT \
+  --build-arg TRANSLATIONS_REPO --build-arg TRANSLATIONS_REF --build-arg TRANSLATIONS_COMMIT \
   --build-arg NODE_URL --build-arg NODE_SHA256 \
   -t shiki-collabora:local
 ```
 
 ## バージョン追従
 
-1. 上流のリリースタグを確認する（26.04 のタグは online.mirror にだけある）:
+1. 上流のリリースタグを確認する（26.04 のタグは online.mirror にだけある）。engine の翻訳も同じタグを選ぶ:
 
    ```bash
    git ls-remote https://github.com/CollaboraOnline/online.mirror.git 'refs/tags/cp-*'
+   git ls-remote https://gerrit.collaboraoffice.com/translations 'refs/tags/cp-*'
    ```
 
-2. `office-manifest.env` の REF と COMMIT（`^{}` の peel 済み SHA）を更新して PR。
+2. `office-manifest.env` の ONLINE_* と TRANSLATIONS_* の REF と COMMIT（`^{}` の peel 済み SHA）を、Dockerfile の ARG 既定値と一緒に更新して PR。
 3. マージ後 `office-image.yml` が新イメージを push → compose の `COLLABORA_IMAGE` を更新。
 
 ## 開発・CI の暫定フォールバック
