@@ -457,8 +457,16 @@ impl Cx<'_> {
                 title,
                 levels,
             } => {
+                // 位置を書かなければ最初の見出しの前（表紙の題・日付の後ろ）に置く。先頭に置くと
+                // 目次が表紙より前に来る（Gemma 4 の評価）。見出しが無ければ先頭。
+                let unplaced = after.is_none() && before.is_none() && at.is_none();
                 let (anchor, before, at) =
                     self.position(after.as_ref(), before.as_ref(), *at, Some(Edge::Start))?;
+                let at = if unplaced {
+                    json!("first_heading")
+                } else {
+                    json!(at)
+                };
                 if !(1..=10).contains(levels) {
                     return Err(self.err("levels は 1〜10 です"));
                 }

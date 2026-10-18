@@ -611,3 +611,29 @@ async fn the_last_inserted_table_can_be_styled_in_the_same_batch() {
     );
     client.close().await;
 }
+
+/// 位置を書かない目次は、表紙（題・日付）の後ろ、最初の見出しの前に入る。
+#[tokio::test]
+async fn an_unplaced_toc_goes_after_the_cover() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let (_name, mut client) = fresh(&env).await;
+    let text = apply_ok(
+        &mut client,
+        &[
+            json!({"op": "replace", "target": "all", "html": "<p data-style=\"Title\">報告書</p><p>2026年10月20日</p><h1>1. 概要</h1><p>本文</p>"}),
+            json!({"op": "insert_toc", "title": "目次"}),
+        ],
+    )
+    .await;
+    let title = text.find("Title「報告書」").unwrap_or(usize::MAX);
+    let toc = text.find("目次（").unwrap_or(0);
+    let heading = text.find("「1. 概要」").unwrap_or(0);
+    assert!(
+        title < toc && toc < heading,
+        "目次が表紙の後ろ・見出しの前に無い: {text}"
+    );
+    client.close().await;
+}

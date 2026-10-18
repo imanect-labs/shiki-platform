@@ -1056,12 +1056,26 @@ WOPS.header_footer = (op) => {
   return {};
 };
 
+/** 本文で最初の見出し（アウトラインの段落）。目次の既定の位置。無ければ null。 */
+function firstHeading() {
+  for (const b of bodyBlocks()) {
+    if (isTable(b) || documentIndexOf(b) !== null) continue;
+    try {
+      if (b.getPropertyValue("OutlineLevel") > 0) return b;
+    } catch (e) {
+      // アウトラインを持たない段落。
+    }
+  }
+  return null;
+}
+
 WOPS.insert_toc = (op, resolved) => {
   const text = DOC.getText();
   // 目次は文書の先頭（anchor が null）か、指定したブロックの前後に置く。
   let para;
   if (op.anchor !== null) para = emptyParagraphAt(refOf(resolved, op.anchor, op.before ? "before" : "after"), op.before);
   else if (op.at === "end") para = emptyParagraphAt(null, false);
+  else if (op.at === "first_heading") para = emptyParagraphAt(firstHeading() || bodyBlocks()[0], true);
   else para = emptyParagraphAt(bodyBlocks()[0], true);
   const toc = DOC.createInstance("com.sun.star.text.ContentIndex");
   const cur = text.createTextCursorByRange(para.getStart());

@@ -32,7 +32,7 @@ space_before_pt?, space_after_pt?, line_spacing?:倍率 または line_height_pt
 本文の書体を変える。無ければ作る）\n\
 - page_setup {paper?:A4|A3|B5|B4|A5|letter, orientation?:portrait|landscape, margins_mm?:{top,right,bottom,left}}\n\
 - header {content:{text, align?, size?} または null} / footer {同じ}（text に &[Page] &[Pages] &[Date] &[Title] &[File] を差し込める）\n\
-- insert_toc {after|before|at?（既定は先頭）, title?, levels?}（見出しから目次を作る） / update_toc {}（見出しを変えた後に目次を更新）\n\
+- insert_toc {after|before|at?（既定は最初の見出しの前＝表紙の後ろ）, title?, levels?}（見出しから目次を作る） / update_toc {}（見出しを変えた後に目次を更新）\n\
 - 表（table は表のブロック ID。同じ ops の前の操作で入れた表は \"last\"・セルは Excel と同じ A1 表記・行は 1 始まり）: insert_rows {table, after_row（0 で先頭）, count?, values?:[[...]]}\
 （新しい行は隣の行の書式を写す） / delete_rows {table, rows:\"3\" または \"3:5\"} / set_cells {table, cell:\"B2\", values:[[...]]}\
 （書式は保って文字だけ書く・null はそのセルを変えない） / format_cells {table, range:\"A1:D1\", fill?（null で塗りなし）, font?, align?, \
