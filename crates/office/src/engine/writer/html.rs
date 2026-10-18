@@ -40,6 +40,21 @@ pub const MAX_HTML_DEPTH: usize = 64;
 /// 1 段落を 1 段落で置き換えるとき、スタイルを書かなければ元の段落のスタイル（Title など）を引き継ぐ
 /// （題を `<h1>` で書き直して表題が見出し 1 に変わる、を防ぐ・Gemma 4 の評価）。
 pub fn single_plain_block(input: &str) -> bool {
+    plain_block_tag(input).is_some()
+}
+
+/// [`single_plain_block`] の段落のタグ（`h1`・`p` など）。
+pub fn plain_block_tag(input: &str) -> Option<String> {
+    if !single_plain_block_inner(input) {
+        return None;
+    }
+    let doc = Document::from(input);
+    let body = doc.body()?;
+    let only = body.children().into_iter().find(NodeRef::is_element)?;
+    only.node_name().map(|n| n.to_ascii_lowercase())
+}
+
+fn single_plain_block_inner(input: &str) -> bool {
     if input.contains("data-style") {
         return false;
     }
@@ -677,7 +692,8 @@ fn walk(cx: &mut Ctx, node: &NodeRef<'_>, inherited: &Decls) {
     }
     // HTML 4 の align 属性（<p align="right">）。モデルがよく書くので text-align として受ける
     // （style が同じ項目を書いていればそちらが勝つ）。
-    if let Some(align) = node.attr("align") {
+    // 表の align は表の置き場所（文字の揃えではない・別に扱う）なので、セルへ継がせない。
+    if let Some(align) = node.attr("align").filter(|_| tag != "table") {
         let a = align.trim().to_ascii_lowercase();
         if matches!(a.as_str(), "left" | "right" | "center" | "justify") {
             set(&mut decls, "text-align", &a);
@@ -916,6 +932,8 @@ mod tests {
     fn the_align_attribute_becomes_text_align() {
         let out = body("<p align=\"right\">2026年11月5日</p><td align=\"center\">x</td>");
         assert!(out.contains("<p style=\"text-align: right\">"), "{out}");
+        let table = body("<table align=\"center\"><tr><td>品目</td><td>1,200</td></tr></table>");
+        assert!(!table.contains("<td align=\"center\""), "{table}");
     }
 
     #[test]

@@ -127,6 +127,43 @@ fn join(toks: &[Tok]) -> String {
 /// `INDIRECT` は文字列から外部の文書への参照を組み立てられるので同じ扱いにする。
 const EXTERNAL_FUNCTIONS: &[&str] = &["WEBSERVICE", "DDE", "INDIRECT"];
 
+/// `=` で始まる文字が、文字ではなく数式を書いたものに見えるか（`{"text": "=SUM(B2:B6)"}` の判定）。
+///
+/// 語全体がセル参照（`B2`・`$A$1`）のもの、または大文字の関数名の直後が `(` のもの
+/// （`SUM(`）を数式とみなす。`=A4用紙`・`=Q1売上`・`=Note(参考)` は文字のまま通す。
+pub fn looks_like_formula(s: &str) -> bool {
+    let Some(body) = s.strip_prefix('=') else {
+        return false;
+    };
+    let Ok(toks) = tokenize(body) else {
+        return false;
+    };
+    let sig: Vec<&Tok> = toks
+        .iter()
+        .filter(|t| !matches!(t, Tok::Space(_)))
+        .collect();
+    sig.iter().enumerate().any(|(i, t)| {
+        let Tok::Word(w) = t else {
+            return false;
+        };
+        let call = matches!(sig.get(i + 1), Some(Tok::Punct('(')))
+            && w.len() >= 2
+            && w.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && w.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '.' || c == '_');
+        call || is_cell_ref(w)
+    })
+}
+
+/// 語全体が A1 形式のセル参照か（`B2`・`$A$1`・`AB12`）。
+fn is_cell_ref(w: &str) -> bool {
+    let rest = w.strip_prefix('$').unwrap_or(w);
+    let letters = rest.chars().take_while(char::is_ascii_uppercase).count();
+    let rest = &rest[letters..];
+    let rest = rest.strip_prefix('$').unwrap_or(rest);
+    (1..=3).contains(&letters) && !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+}
+
 /// 数式の長さの上限（Excel の上限と同じ 8,192 文字）。
 pub const MAX_FORMULA_CHARS: usize = 8192;
 
@@ -543,6 +580,29 @@ mod tests {
             "=HYPERLINK(\"https://example.com\", \"サイト\")",
         ] {
             assert_eq!(external_access(f), None, "{f}");
+        }
+    }
+
+    #[test]
+    fn tells_formulas_from_text_that_starts_with_an_equals_sign() {
+        for f in [
+            "=SUM(B2:B6)",
+            "=B2*C2",
+            "=IFERROR(C2/B2,0)",
+            "=$A$1",
+            "=取引!B2",
+        ] {
+            assert!(looks_like_formula(f), "{f}");
+        }
+        for t in [
+            "=A4用紙",
+            "=Q1売上",
+            "=CO2削減",
+            "=Note(参考)",
+            "=はじめに",
+            "=",
+        ] {
+            assert!(!looks_like_formula(t), "{t}");
         }
     }
 

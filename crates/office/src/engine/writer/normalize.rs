@@ -355,7 +355,7 @@ impl Cx<'_> {
                 let (from, to) = self.target(target)?;
                 vec![
                     json!({"op": "replace_html", "from": from, "to": to, "html": self.html(html)?,
-                           "inherit_style": super::html::single_plain_block(html)}),
+                           "inherit_tag": super::html::plain_block_tag(html)}),
                 ]
             }
             DocOp::Delete { target } => {

@@ -67,6 +67,8 @@ fn locale_tags_are_dropped_from_number_formats() {
     assert_eq!(v["number_format"], json!("m\"月\""));
     let v = one(json!({"op": "format", "range": "A1", "number_format": "[$¥-411]#,##0"}));
     assert_eq!(v["number_format"], json!("[$¥-411]#,##0"));
+    let v = one(json!({"op": "format", "range": "A1", "number_format": "[$-411]ggge\"年\""}));
+    assert_eq!(v["number_format"], json!("[$-411]ggge\"年\""));
 }
 
 #[test]

@@ -469,6 +469,10 @@ function rebindResolved(stale, fresh) {
   for (const k of Object.keys(RESOLVED)) {
     if (sameObject(RESOLVED[k], stale)) RESOLVED[k] = fresh;
   }
+  // 置き換え後の中身として覚えた参照も付け替える（REPLACED の説明）。
+  for (const k of Object.keys(REPLACED)) {
+    REPLACED[k] = REPLACED[k].map((b) => (sameObject(b, stale) ? fresh : b));
+  }
 }
 
 /** 変更履歴を記録中か。 */
@@ -838,8 +842,11 @@ WOPS.insert_html = (op, resolved, created) => {
 WOPS.replace_html = (op, resolved, created) => {
   const before = blockRange(resolved, op.from, op.to);
   // 1 段落を、スタイルを書いていない 1 段落で置き換えるなら、元の段落スタイルを引き継ぐ。
-  const keepStyle = op.inherit_style && before.length === 1 && !isTable(before[0])
-    ? before[0].getPropertyValue("ParaStyleName")
+  // 引き継ぐのは「表題・副題を h1 / h2 で書き直した」ときだけ（見出しを本文にする・見出しの
+  // 段を変える置き換えは、書いたタグのとおりにする）。
+  const oldStyle = before.length === 1 && !isTable(before[0]) ? before[0].getPropertyValue("ParaStyleName") : null;
+  const keepStyle = (oldStyle === "Title" || oldStyle === "Subtitle") && (op.inherit_tag === "h1" || op.inherit_tag === "h2")
+    ? oldStyle
     : null;
   const tables = before.filter(isTable).length;
   // 変更履歴の記録中は、新しい内容を古いブロックの前に入れる（古い段落の削除が新しい段落の区切りに

@@ -97,32 +97,7 @@ pub fn normalize_with_sheets(
     Ok(out)
 }
 
-/// `=` の後ろが関数の呼び出し（`SUM(`）かセル参照（`B2`）を含むか。`{"text": "=SUM(B2:B6)"}` は
-/// 数式を包み間違えたもの（Gemma 4 の評価で繰り返し起き、計算されない文字が入っていた）で、
-/// `{"text": "=はじめに"}` のような本当の文字とは区別できる。
-fn looks_like_formula(s: &str) -> bool {
-    let Some(body) = s.strip_prefix('=') else {
-        return false;
-    };
-    let b = body.as_bytes();
-    let call = b
-        .windows(2)
-        .any(|w| w[0].is_ascii_alphabetic() && w[1] == b'(');
-    let cell_ref = (0..b.len()).any(|i| {
-        let start_ok = i == 0 || !b[i - 1].is_ascii_alphanumeric();
-        let letters = b[i..].iter().take_while(|c| c.is_ascii_uppercase()).count();
-        let after = i + letters;
-        let after = if b.get(after) == Some(&b'$') {
-            after + 1
-        } else {
-            after
-        };
-        start_ok && (1..=3).contains(&letters) && b.get(after).is_some_and(u8::is_ascii_digit)
-    });
-    call || cell_ref
-}
-
-/// 表示形式からロケールだけの指定（`[$-ja-JP]`・`[$-411]`）を外す。Calc の API は `[$-ja-JP]` を
+/// 表示形式から BCP 47 の言語の指定（`[$-ja-JP]`）を外す（LCID の `[$-411]` は残す）。Calc の API は `[$-ja-JP]` を
 /// 解釈できず表示形式ごと拒否する（Gemma 4 の評価）。通貨記号つき（`[$¥-411]`）は残す。
 fn strip_locale_tags(code: &str) -> String {
     let mut out = String::with_capacity(code.len());
@@ -131,7 +106,10 @@ fn strip_locale_tags(code: &str) -> String {
         let Some(end) = rest[i..].find(']') else {
             break;
         };
-        out.push_str(&rest[..i]);
+        let tag = &rest[i + 3..i + end];
+        // LCID（[$-411]・[$-F800]）は Calc が解釈でき、和暦や曜日の言語を決めるので残す。
+        let lcid = !tag.is_empty() && tag.chars().all(|c| c.is_ascii_hexdigit());
+        out.push_str(&rest[..if lcid { i + end + 1 } else { i }]);
         rest = &rest[i + end + 1..];
     }
     out.push_str(rest);
@@ -729,7 +707,7 @@ impl Cx {
             CellInput::Text(s) if s.starts_with('=') && s.len() > 1 => {
                 json!({"t": "f", "v": self.formula(s)?})
             }
-            CellInput::Literal { text: s } if looks_like_formula(s) => {
+            CellInput::Literal { text: s } if formula::looks_like_formula(s) => {
                 return Err(self.err(format!(
                     "{{\"text\": \"{s}\"}} は計算されない文字として入ります。数式なら \"{s}\" と文字列のまま書いてください\
                      （{{\"text\"}} は先頭の = や 0 を文字として残したいときだけ使う）"

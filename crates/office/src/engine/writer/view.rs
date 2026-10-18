@@ -102,8 +102,20 @@ pub fn page_warnings(ov: &Value) -> Vec<String> {
         return Vec::new();
     }
     let mut out = Vec::new();
+    // 前のページの最後のブロックが表か長い段落なら、そのページへ続いている（ブロックは始まるページしか
+    // 持たないので、続きのあるページは「ほぼ空」「少しだけはみ出し」に見えてしまう）。
+    let continues_into = |p: u64| {
+        blocks
+            .iter()
+            .rfind(|b| b["page"].as_u64() == Some(p - 1))
+            .is_some_and(|b| s(&b["t"]) == "table" || s(&b["text"]).ends_with('…'))
+    };
     // 途中のほぼ空のページ（見出しだけ・空の段落だけ）。表紙の余白の取りすぎや、改ページの重なりで起きる。
-    for p in 1..pages {
+    // 1 ページ目（表紙の題だけ、はあり得る）と、前のページから続くページは除く。
+    for p in 2..pages {
+        if continues_into(p) {
+            continue;
+        }
         let on: Vec<&Value> = blocks
             .iter()
             .filter(|b| b["page"].as_u64() == Some(p))
@@ -136,7 +148,7 @@ pub fn page_warnings(ov: &Value) -> Vec<String> {
         && on_last
             .iter()
             .all(|b| s(&b["t"]) != "table" && s(&b["text"]).chars().count() <= 120);
-    if on_last.is_empty() || !short {
+    if on_last.is_empty() || !short || continues_into(pages) {
         return out;
     }
     let ids: Vec<String> = on_last.iter().map(|b| s(&b["id"]).to_string()).collect();
@@ -616,6 +628,15 @@ mod tests {
         single["pages"] = json!(1);
         assert!(page_warnings(&single).is_empty());
         assert!(!overview_text("", &single).contains("ページ目"));
+    }
+
+    #[test]
+    fn content_continuing_from_the_previous_page_is_not_reported() {
+        let ov = json!({"count": 2, "from": 0, "pages": 2, "page": {}, "blocks": [
+            {"t": "table", "id": "b0-0000", "page": 1, "rows": 60, "cols": 3},
+            {"t": "p", "id": "b1-0000", "page": 2, "text": "以上", "style": "Standard"},
+        ]});
+        assert!(page_warnings(&ov).is_empty(), "{:?}", page_warnings(&ov));
     }
 
     #[test]
