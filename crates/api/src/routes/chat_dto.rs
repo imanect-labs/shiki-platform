@@ -127,47 +127,62 @@ pub struct PostMessageRequest {
     /// 思考の深さ（モデルを選んだときだけ効く・Auto では組織の設定に従う）。
     #[serde(default)]
     pub effort: Option<super::llm_models::EffortLevel>,
-    /// **この発話にだけ**使ってほしいツール（ツール語彙 `ToolName` の名前・#734）。
+    /// **この発話にだけ**使ってほしいツール（利用者が指定できるツールの名前・#734）。
     ///
     /// `skills` と同じく次の発話には持ち越さない。**誘導であって権限ではない**: 検索なしで
     /// 定義を載せ、使うよう促すだけで、提示ツール・承認・認可は変えない（いまの会話で使えない
-    /// ツールは提示されない）。重複は除き、[`MAX_REQUESTED_TOOLS`] 件を超えるか未知の名前は 400。
+    /// ツールは提示されない）。指定できるのは [`agent_core::USER_SELECTABLE_TOOLS`] だけで、
+    /// 未知の名前・それ以外のツール（`shell` / `fs_delete` 等）は 400。重複は除く。
     ///
-    /// 受け口は文字列で受けて語彙照合はハンドラで行う（`ToolName` で受けると未知名が `Json`
-    /// 抽出の時点で 422 になり、他の検証エラーと同じ 400＋理由の形で返せない）。schema には
-    /// 語彙の閉集合を出し、生成クライアント側でも同じ集合が見える。
+    /// 受け口は文字列で受けて照合はハンドラで行う（enum で受けると未知名が `Json` 抽出の時点で
+    /// 422 になり、他の検証エラーと同じ 400＋理由の形で返せない）。schema には指定できる集合を
+    /// 同じ定数から出す（手書きの名前一覧は作らない）。
     #[serde(default)]
-    #[schema(value_type = Option<Vec<agent_core::ToolName>>)]
+    #[schema(schema_with = requested_tools_schema)]
     pub tools: Option<Vec<String>>,
 }
 
-/// 発話ごとに指定できるツールの上限件数（#734）。
-pub const MAX_REQUESTED_TOOLS: usize = 8;
+/// `PostMessageRequest.tools` の schema（[`agent_core::USER_SELECTABLE_TOOLS`] の名前の閉集合）。
+fn requested_tools_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    use utoipa::openapi::schema::{ArrayBuilder, ObjectBuilder, Type};
+    ArrayBuilder::new()
+        .items(
+            ObjectBuilder::new()
+                .schema_type(Type::String)
+                .enum_values(Some(
+                    agent_core::USER_SELECTABLE_TOOLS.iter().map(|t| t.as_str()),
+                )),
+        )
+        .into()
+}
 
-/// 発話ごとのツール指定を語彙で照合する（投入順・重複除去・件数上限・#734）。
+/// 発話ごとのツール指定を照合する（投入順・重複除去・#734）。
 ///
-/// 未知の名前・上限超過は 400（`{status,title,detail}`・モデル指定の検証エラーと同じ形）。
+/// 未知の名前と、語彙にはあるが利用者が指定できないツールは 400（`{status,title,detail}`・
+/// モデル指定の検証エラーと同じ形）。件数は「指定できる集合（閉集合）から重複を除いたもの」
+/// なので、その集合の大きさを超えない（別途の上限は要らない）。
 pub(super) fn parse_requested_tools(
     raw: Option<&[String]>,
 ) -> Result<Vec<agent_core::ToolName>, ApiError> {
     let mut out: Vec<agent_core::ToolName> = Vec::new();
     for name in raw.unwrap_or_default() {
+        // 応答に返す名前は短く切る（任意長の入力をそのまま反射しない）。
+        let shown = || name.chars().take(64).collect::<String>();
         let Some(tool) = agent_core::ToolName::parse(name) else {
-            // 応答に返す名前は短く切る（任意長の入力をそのまま反射しない）。
-            let shown: String = name.chars().take(64).collect();
             return Err(bad_request(&format!(
-                "tools に未知のツール名があります: `{shown}`"
+                "tools に未知のツール名があります: `{}`",
+                shown()
             )));
         };
+        if !tool.is_user_selectable() {
+            return Err(bad_request(&format!(
+                "tools には指定できないツールです: `{}`",
+                shown()
+            )));
+        }
         if !out.contains(&tool) {
             out.push(tool);
         }
-    }
-    if out.len() > MAX_REQUESTED_TOOLS {
-        return Err(bad_request(&format!(
-            "tools は {MAX_REQUESTED_TOOLS} 件までです（重複を除いて {} 件指定されています）",
-            out.len()
-        )));
     }
     Ok(out)
 }
@@ -265,13 +280,23 @@ mod tests {
 
     #[test]
     fn requested_tools_dedupe_in_order() {
-        let raw = names(&["web_search", "csv.query", "web_search"]);
+        let raw = names(&["web_search", "doc_search", "web_search"]);
         assert_eq!(
             parse_requested_tools(Some(&raw)).unwrap(),
-            vec![ToolName::WebSearch, ToolName::CsvQuery]
+            vec![ToolName::WebSearch, ToolName::DocSearch]
         );
         assert!(parse_requested_tools(None).unwrap().is_empty());
         assert!(parse_requested_tools(Some(&[])).unwrap().is_empty());
+        // 指定できる集合は全部まとめて指定できる（重複込みでも集合の大きさに収まる）。
+        let mut all: Vec<String> = agent_core::USER_SELECTABLE_TOOLS
+            .iter()
+            .map(|t| t.as_str().to_string())
+            .collect();
+        all.extend(all.clone());
+        assert_eq!(
+            parse_requested_tools(Some(&all)).unwrap(),
+            agent_core::USER_SELECTABLE_TOOLS
+        );
     }
 
     #[test]
@@ -287,27 +312,35 @@ mod tests {
         assert!(d.chars().count() < 120, "{d}");
     }
 
+    /// 語彙にはあるが利用者が指定できないツール（破壊系・内部用）は 400（格上げしない）。
     #[test]
-    fn too_many_tools_is_rejected_after_dedupe() {
-        let all: Vec<String> = ToolName::ALL
+    fn non_selectable_tool_is_rejected_with_reason() {
+        for bad in ToolName::ALL.iter().filter(|t| !t.is_user_selectable()) {
+            let raw = names(&["web_search", bad.as_str()]);
+            let d = detail(parse_requested_tools(Some(&raw)).unwrap_err());
+            assert!(
+                d.contains("指定できないツール") && d.contains(bad.as_str()),
+                "{bad:?}: {d}"
+            );
+        }
+    }
+
+    /// OpenAPI の schema は指定できる集合（同じ定数から）を出す。
+    #[test]
+    fn tools_schema_lists_only_selectable_names() {
+        let schema = serde_json::to_value(requested_tools_schema()).unwrap();
+        assert_eq!(schema["type"], "array");
+        let wire: Vec<&str> = schema["items"]["enum"]
+            .as_array()
+            .unwrap()
             .iter()
-            .take(MAX_REQUESTED_TOOLS)
-            .map(|t| t.as_str().to_string())
+            .map(|v| v.as_str().unwrap())
             .collect();
-        // 上限ちょうど（重複込みで上限超えの長さ）は通る。
-        let mut with_dups = all.clone();
-        with_dups.extend(all.iter().cloned());
-        assert_eq!(
-            parse_requested_tools(Some(&with_dups)).unwrap().len(),
-            MAX_REQUESTED_TOOLS
-        );
-        let over: Vec<String> = ToolName::ALL
+        let expected: Vec<&str> = agent_core::USER_SELECTABLE_TOOLS
             .iter()
-            .take(MAX_REQUESTED_TOOLS + 1)
-            .map(|t| t.as_str().to_string())
+            .map(|t| t.as_str())
             .collect();
-        let d = detail(parse_requested_tools(Some(&over)).unwrap_err());
-        assert!(d.contains("8 件まで"), "{d}");
+        assert_eq!(wire, expected);
     }
 
     #[test]

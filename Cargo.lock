@@ -5208,7 +5208,6 @@ dependencies = [
  "tracing",
  "ts-rs",
  "url",
- "utoipa",
  "uuid",
 ]
 

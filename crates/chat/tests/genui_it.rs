@@ -663,3 +663,64 @@ async fn card_submit_carries_run_skill_pins_and_variant() {
         "起動 variant も継がれること（ここが落ちると 2 ターン目から門が効かない）"
     );
 }
+
+/// カード回答（`chat.submit`）が**カードを出した run の発話ごとのツール指定を継ぐ**こと（#734）。
+///
+/// 実行前フェーズの門（#400）は明確化・計画の間は調査系を保留するため、ここで落とすと
+/// ユーザーの指定（例: web_search）が効くはずの実行段階に届かない。
+#[tokio::test]
+async fn card_submit_carries_requested_tools() {
+    use agent_core::ToolName;
+    use gui::ActionHandler;
+
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (store, _validator, _worker) = spawn_worker(&pool).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "t", true, None, None)
+        .await
+        .unwrap();
+    let posted = store
+        .post_message_with_model(
+            &c,
+            thread.id,
+            "調べて",
+            &[],
+            None,
+            Some(true),
+            true,
+            &[],
+            None,
+            &[ToolName::WebSearch, ToolName::DocSearch],
+            None,
+        )
+        .await
+        .unwrap();
+
+    let handler = chat::ChatSubmitHandler::new(store.clone());
+    let result = handler
+        .invoke(
+            &c,
+            &gui::ActionSource::ChatMessage {
+                thread_id: thread.id,
+                message_id: posted.assistant_message_id,
+            },
+            serde_json::json!({ "対象期間": "2020 年以降" }),
+            None,
+        )
+        .await
+        .expect("chat.submit 実行");
+    let next_run: Uuid = result["run_id"].as_str().unwrap().parse().unwrap();
+    let carried: serde_json::Value =
+        sqlx::query_scalar("SELECT requested_tools FROM generation_run WHERE run_id = $1")
+            .bind(next_run)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        carried,
+        serde_json::json!(["web_search", "doc_search"]),
+        "カード回答の続きの run へツール指定が継がれること"
+    );
+}

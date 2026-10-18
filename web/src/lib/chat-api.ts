@@ -9,7 +9,7 @@
 
 "use client";
 
-import type { ToolName } from "@/generated/gui-spec";
+import type { UserSelectableTool } from "@/generated/gui-spec";
 import type { ModelChoice } from "@/lib/model-choice";
 import { apiFetch } from "@/lib/api";
 import type { components } from "@/generated/api";
@@ -635,7 +635,7 @@ export function streamMessage(
   /// モデルと思考の深さ（#553）。`null`/省略は Auto（組織の既定）。
   model?: ModelChoice,
   /// **この発話にだけ**優先して使うツール（#734）。空・省略は指定なし。
-  tools?: ToolName[],
+  tools?: UserSelectableTool[],
 ): (opts?: { cancelServer?: boolean }) => void {
   let unsub: (() => void) | null = null;
   let runId: string | null = null;
@@ -676,7 +676,7 @@ export async function postMessage(
     /// モデルと思考の深さ（#553）。`null`/省略は Auto。
     model?: ModelChoice;
     /// この発話にだけ優先して使うツール（#734）。
-    tools?: ToolName[];
+    tools?: UserSelectableTool[];
   } = {},
 ): Promise<{ runId: string; userMessageId: string; assistantMessageId: string }> {
   const res = await apiFetch(`/threads/${threadId}/messages`, {

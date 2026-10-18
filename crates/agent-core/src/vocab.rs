@@ -4,8 +4,6 @@
 //! 共有する認可語彙であり、文字列リテラルの散在は閉じた集合の照合（ハルシネーション境界）を
 //! 壊す。workflow-engine / authz の vocab と同型の `vocab_enum!` で Rust enum を正とし、
 //! `#[derive(TS)]` で TypeScript 型を生成する（codegen が正・手書きミラー禁止）。
-//! API の受け口（発話ごとのツール指定・#734）にも載るため `utoipa::ToSchema` も同じ定義から
-//! 実装し、OpenAPI → openapi-typescript の経路でも同じ閉集合が出る。
 
 /// variant と serde/TS 名の対応を単一定義から生成する（as_str/parse の乖離を構造的に防ぐ）。
 /// workflow-engine の `vocab_enum!` と同型（クレート間で macro を共有せず同型を保つ）。
@@ -39,23 +37,6 @@ macro_rules! vocab_enum {
 
             /// 全 variant（カタログ列挙・roundtrip テスト用）。
             $vis const ALL: &'static [$enum_name] = &[ $( Self::$variant, )+ ];
-        }
-
-        // OpenAPI の schema も同じ名前の並びから作る（文字列の閉集合）。`#[derive(ToSchema)]` は
-        // macro 経由の `#[serde(rename = $name)]` を読めず variant 名を出してしまうため手で書く。
-        impl utoipa::PartialSchema for $enum_name {
-            fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-                utoipa::openapi::schema::ObjectBuilder::new()
-                    .schema_type(utoipa::openapi::schema::Type::String)
-                    .enum_values(Some([ $( $name, )+ ]))
-                    .into()
-            }
-        }
-
-        impl utoipa::ToSchema for $enum_name {
-            fn name() -> std::borrow::Cow<'static, str> {
-                std::borrow::Cow::Borrowed(stringify!($enum_name))
-            }
         }
     };
 }
@@ -165,7 +146,27 @@ pub enum ToolLoading {
     Deferred,
 }
 
+/// 利用者が**発話ごとに指定できる**ツール（チャット入力欄の「ツール」・#734）。
+///
+/// 指定は誘導（tool search の常時ロード＋system の「ユーザーが明示的に指定した」注記）で
+/// あって権限ではないが、注記はモデルの判断を強く寄せる。破壊系・内部用（`fs_delete` /
+/// `shell` / `emit_workflow` / `save_*` 等）をユーザーの明示指定として格上げしないよう、
+/// 指定できる集合をここで閉じる。API はこの外を 400 で拒み、web の選択肢はこの定数から
+/// 生成した TS（`gui-spec.ts` の `USER_SELECTABLE_TOOLS`）で束縛する（手書きの対応表を作らない）。
+pub const USER_SELECTABLE_TOOLS: &[ToolName] = &[
+    ToolName::DocSearch,
+    ToolName::WebSearch,
+    ToolName::CodeInterpreter,
+    ToolName::EmitUi,
+];
+
 impl ToolName {
+    /// 利用者が発話ごとに指定できるツールか（[`USER_SELECTABLE_TOOLS`]）。
+    #[must_use]
+    pub fn is_user_selectable(self) -> bool {
+        USER_SELECTABLE_TOOLS.contains(&self)
+    }
+
     /// 既定のロード区分。**網羅 match** なので、新ツールは追加時にここで区分を決める。
     ///
     /// 常時ロードの基準: 会話・調査・作業ファイルの**基本動作**（毎 run のように使う）。
@@ -302,21 +303,27 @@ mod tests {
         assert_eq!(t, ToolName::EmitUi);
     }
 
-    /// OpenAPI の schema は serde/TS と同じ名前の閉集合（variant 名ではない・#734）。
+    /// 発話ごとに指定できる集合は重複なく、破壊系・内部用を含まない（#734）。
     #[test]
-    fn openapi_schema_lists_the_wire_names() {
-        use utoipa::{PartialSchema, ToSchema};
-        let schema = serde_json::to_value(ToolName::schema()).unwrap();
-        assert_eq!(schema["type"], "string");
-        let wire: Vec<&str> = schema["enum"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        let expected: Vec<&str> = ToolName::ALL.iter().map(|t| t.as_str()).collect();
-        assert_eq!(wire, expected);
-        assert_eq!(ToolName::name(), "ToolName");
-        assert_eq!(MetaToolName::name(), "MetaToolName");
+    fn user_selectable_tools_exclude_destructive_and_internal() {
+        for (i, t) in USER_SELECTABLE_TOOLS.iter().enumerate() {
+            assert!(!USER_SELECTABLE_TOOLS[..i].contains(t), "{t:?} が重複");
+            assert!(t.is_user_selectable());
+        }
+        for denied in [
+            ToolName::FsDelete,
+            ToolName::Shell,
+            ToolName::EmitWorkflow,
+            ToolName::FsWrite,
+            ToolName::SaveNote,
+            ToolName::SaveDocument,
+            ToolName::CsvWrite,
+            ToolName::OfficeEdit,
+            ToolName::Skill,
+            ToolName::Subagent,
+        ] {
+            assert!(!denied.is_user_selectable(), "{denied:?} は指定できない");
+        }
+        assert!(ToolName::WebSearch.is_user_selectable());
     }
 }

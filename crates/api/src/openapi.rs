@@ -231,8 +231,6 @@ use utoipa::{
         crate::routes::chat::ThreadListResponse,
         crate::routes::chat::MessagesResponse,
         crate::routes::chat::PostMessageRequest,
-        // 発話ごとのツール指定の語彙（agent-core の単一定義・#734）。
-        agent_core::ToolName,
         crate::routes::chat::PostMessageResponse,
         crate::routes::chat::ShareThreadRequest,
         crate::routes::chat_approval::ApprovalDecisionRequest,

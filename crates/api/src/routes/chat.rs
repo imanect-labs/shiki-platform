@@ -307,7 +307,7 @@ pub async fn get_messages(
     request_body = PostMessageRequest,
     responses(
         (status = 202, description = "受理（生成は接続非依存ジョブで継続）", body = PostMessageResponse),
-        (status = 400, description = "空メッセージ・組織で使えないモデル・未知のツール名／ツール指定の件数超過"),
+        (status = 400, description = "空メッセージ・組織で使えないモデル・未知のツール名／指定できないツール"),
         (status = 403, description = "投稿権限なし"),
         (status = 404, description = "存在しない"),
         (status = 503, description = "chat 無効"),
@@ -321,7 +321,7 @@ pub async fn post_message(
     Path(id): Path<Uuid>,
     Json(req): Json<PostMessageRequest>,
 ) -> Result<(StatusCode, Json<PostMessageResponse>), ApiError> {
-    // この発話にだけ使ってほしいツール（#734）。語彙照合・重複除去・件数上限（400）。
+    // この発話にだけ使ってほしいツール（#734）。指定できる集合での照合・重複除去（400）。
     // 誘導のみで権限ではないため、ここでは認可を引かない（提示はワーカーのプロファイルが決める）。
     let requested_tools = super::chat_dto::parse_requested_tools(req.tools.as_deref())?;
     let attachments = req.attachments.unwrap_or_default();

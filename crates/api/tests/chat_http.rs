@@ -793,7 +793,8 @@ async fn chat_post_resolves_model_choice() {
     assert_eq!(row, (Some("fast".into()), Some("low".into()), true));
 }
 
-/// 発話ごとのツール指定（#734）: 未知名・件数超過は 400（理由つき）、指定は重複を除いて run に記録される。
+/// 発話ごとのツール指定（#734）: 未知名・指定できないツール（破壊系・内部用）は 400（理由つき）、
+/// 指定は重複を除いて run に記録される。
 #[tokio::test]
 async fn chat_post_records_requested_tools() {
     let Some((state, sessions)) = build_state(true).await else {
@@ -842,27 +843,33 @@ async fn chat_post_records_requested_tools() {
         "{detail}"
     );
 
-    // 重複を除いて上限超過は 400。
-    let resp = app
-        .clone()
-        .oneshot(post(
-            messages.clone(),
-            r#"{"text":"x","tools":["skill","skill_search","doc_search","doc_read","web_search","web_fetch","code_interpreter","fs_list","fs_read"]}"#.into(),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(body_json(resp).await["detail"]
-        .as_str()
-        .unwrap()
-        .contains("件まで"));
+    // 語彙にはあるが利用者が指定できないツール（shell 等）も 400（ユーザー指定へ格上げしない）。
+    for bad in ["shell", "fs_delete", "emit_workflow", "save_note"] {
+        let resp = app
+            .clone()
+            .oneshot(post(
+                messages.clone(),
+                format!(r#"{{"text":"x","tools":["web_search","{bad}"]}}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{bad}");
+        let detail = body_json(resp).await["detail"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            detail.contains(bad) && detail.contains("指定できないツール"),
+            "{bad}: {detail}"
+        );
+    }
 
     // 有効な指定は 202 で受理され、重複を除いて投入順のまま run に記録される。
     let resp = app
         .clone()
         .oneshot(post(
             messages,
-            r#"{"text":"x","tools":["web_search","csv.query","web_search"]}"#.into(),
+            r#"{"text":"x","tools":["web_search","doc_search","web_search"]}"#.into(),
         ))
         .await
         .unwrap();
@@ -878,5 +885,5 @@ async fn chat_post_records_requested_tools() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(stored, serde_json::json!(["web_search", "csv.query"]));
+    assert_eq!(stored, serde_json::json!(["web_search", "doc_search"]));
 }

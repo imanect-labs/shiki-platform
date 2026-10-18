@@ -31,7 +31,7 @@ import {
 } from "@/lib/chat-api";
 import { popPending } from "@/lib/pending-message";
 import { readModelChoice } from "@/lib/model-choice";
-import { takeToolChoice } from "@/lib/tool-choice";
+import { readToolChoice, settleToolChoice } from "@/lib/tool-choice";
 import { triggerDownload } from "@/lib/storage";
 import { linkifyCitations } from "@/lib/citation";
 import { newId } from "@/lib/chat-store";
@@ -480,8 +480,9 @@ export function Conversation({
       const runAutonomous = autonomousOverride ?? autonomous;
       // 入力欄で選んだモデル（#553）。未選択は Auto（組織の既定）。
       const model = readModelChoice(threadId);
-      // 入力欄で選んだツール（#734）。この発話にだけ効くので読み出したら空に戻す。
-      const tools = takeToolChoice(threadId);
+      // 入力欄で選んだツール（#734）。この発話にだけ効くが、空に戻すのは**受理されてから**
+      // （400・通信失敗で選択が消えると、送り直すときに選び直しになる）。
+      const tools = readToolChoice(threadId);
       // 楽観的にユーザーメッセージを表示。
       const userBlocks: ContentBlock[] = [
         ...(context ? [{ type: "selection_context" as const, context }] : []),
@@ -501,11 +502,12 @@ export function Conversation({
           model,
           tools,
         })
-          .then((posted) =>
+          .then((posted) => {
+            settleToolChoice(threadId, tools);
             setQueued((prev) =>
               prev.map((q) => (q.key === key ? { ...q, runId: posted.runId } : q)),
-            ),
-          )
+            );
+          })
           .catch((e) =>
             setQueued((prev) =>
               prev.map((q) =>
@@ -523,11 +525,19 @@ export function Conversation({
       ]);
       streamRef.current = { ...EMPTY_STREAM };
       setStream(streamRef.current);
+      const handlers = makeHandlers();
       cancelRef.current = streamMessage(
         threadId,
         text,
         attachments,
-        makeHandlers(),
+        {
+          ...handlers,
+          // run_id が来た＝POST が受理された。ここで初めて選択を空に戻す。
+          onRunId: (runId) => {
+            settleToolChoice(threadId, tools);
+            handlers.onRunId?.(runId);
+          },
+        },
         runAutonomous,
         runAutonomous,
         context,
