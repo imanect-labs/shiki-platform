@@ -54,6 +54,17 @@ function descendants(id: string): Set<string> {
 /// ロール階層（モック）。親ロールの候補から循環になるものを除外して見せる。
 export function MockRolesView() {
   const [selected, setSelected] = React.useState("sales");
+  const detailRef = React.useRef<HTMLDivElement>(null);
+
+  /// 選ぶ。スマホ（一覧と詳細が縦に並ぶ）では詳細の先頭へスクロールして、選んだ結果を見せる。
+  const choose = (id: string) => {
+    setSelected(id);
+    if (window.matchMedia("(max-width: 767px)").matches) {
+      requestAnimationFrame(() =>
+        detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      );
+    }
+  };
   const role = ROLES.find((r) => r.id === selected) ?? ROLES[0];
   const blocked = descendants(role.id);
   const children = ROLES.filter((r) => r.parent === role.id);
@@ -68,10 +79,10 @@ export function MockRolesView() {
               <li key={r.id} role="treeitem" aria-selected={r.id === selected}>
                 <button
                   type="button"
-                  onClick={() => setSelected(r.id)}
+                  onClick={() => choose(r.id)}
                   style={{ paddingLeft: 8 + depth(r.id) * 14 }}
                   className={cn(
-                    "flex w-full items-center justify-between rounded-md py-1.5 pr-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "flex w-full items-center justify-between rounded-md py-1.5 pr-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11",
                     r.id === selected ? "bg-accent font-medium" : "hover:bg-accent/50",
                   )}
                 >
@@ -82,10 +93,11 @@ export function MockRolesView() {
             ))}
           </ul>
         </Panel>
-        <div className="flex flex-col gap-4">
+        <div ref={detailRef} className="flex scroll-mt-20 flex-col gap-4">
+          <h2 className="text-[15px] font-semibold md:hidden">{role.label} の設定</h2>
           <Panel title="一般">
             <SettingRow label="ロール名" htmlFor="role-name">
-              <Input id="role-name" value={role.label} readOnly className="h-9 max-w-xs" />
+              <Input id="role-name" value={role.label} readOnly className="h-9 md:max-w-xs" />
             </SettingRow>
           </Panel>
           <Panel title="階層">
@@ -94,7 +106,7 @@ export function MockRolesView() {
               description="このロールの配下にあるロールは、循環になるため選べません。"
             >
               <Select value={role.parent ?? "none"}>
-                <SelectTrigger className="h-9 max-w-xs" aria-label="親ロール">
+                <SelectTrigger className="h-9 w-full md:max-w-xs" aria-label="親ロール">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

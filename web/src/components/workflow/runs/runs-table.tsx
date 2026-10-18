@@ -59,7 +59,7 @@ function FacetFilter({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" className="h-8 border-dashed text-xs">
+        <Button variant="outline" size="sm" className="h-8 border-dashed text-xs max-md:h-10 max-md:text-sm">
           <Filter className="size-3.5" aria-hidden />
           {label}
           {selected.length > 0 ? (
@@ -78,7 +78,7 @@ function FacetFilter({
               type="button"
               onClick={() => toggle(o.value)}
               className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs",
+                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs pointer-coarse:min-h-11 pointer-coarse:text-sm",
                 "transition-colors duration-fast hover:bg-accent",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               )}
@@ -86,7 +86,7 @@ function FacetFilter({
               <span
                 className={cn(
                   "flex size-3.5 items-center justify-center rounded border",
-                  active ? "border-primary bg-primary text-primary-foreground" : "bg-background",
+                  active ? "border-transparent bg-primary text-primary-foreground" : "bg-background",
                 )}
               >
                 {active ? <Check className="size-2.5" aria-hidden /> : null}
@@ -280,7 +280,7 @@ export function RunsTable({
           <Button
             variant="ghost"
             size="sm"
-            className="h-8 text-xs"
+            className="h-8 text-xs max-md:h-10"
             onClick={() => loadFirst(true).catch(() => undefined)}
           >
             <RefreshCw className="size-3.5" aria-hidden />
@@ -307,42 +307,76 @@ export function RunsTable({
           />
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border bg-card">
-          <table className="w-full text-left">
-            <thead>
-              {table.getHeaderGroups().map((hg) => (
-                <tr key={hg.id} className="border-b bg-muted/40">
-                  {hg.headers.map((h) => (
-                    <th
-                      key={h.id}
-                      className="px-3 py-2 text-[11px] font-medium text-muted-foreground"
-                    >
-                      {flexRender(h.column.columnDef.header, h.getContext())}
-                    </th>
-                  ))}
-                </tr>
-              ))}
-            </thead>
-            <tbody>
-              {table.getRowModel().rows.map((row) => (
-                <tr
-                  key={row.id}
-                  onClick={() => onOpenRun(row.original.runId)}
+        <div className="overflow-hidden rounded-xl border bg-card">
+          {/* PC: 7 列の表。スマホ: 1 行 1 カード（状態・日時・所要時間・きっかけ）。 */}
+          <div className="hidden overflow-x-auto md:block">
+            <table className="w-full text-left">
+              <thead>
+                {table.getHeaderGroups().map((hg) => (
+                  <tr key={hg.id} className="border-b bg-muted/40">
+                    {hg.headers.map((h) => (
+                      <th
+                        key={h.id}
+                        className="px-3 py-2 text-[11px] font-medium text-muted-foreground"
+                      >
+                        {flexRender(h.column.columnDef.header, h.getContext())}
+                      </th>
+                    ))}
+                  </tr>
+                ))}
+              </thead>
+              <tbody>
+                {table.getRowModel().rows.map((row) => (
+                  <tr
+                    key={row.id}
+                    onClick={() => onOpenRun(row.original.runId)}
+                    className={cn(
+                      "cursor-pointer border-b last:border-b-0",
+                      "transition-colors duration-fast hover:bg-accent/50",
+                      activeRunId === row.original.runId && "bg-accent/60",
+                    )}
+                  >
+                    {row.getVisibleCells().map((cell) => (
+                      <td key={cell.id} className="px-3 py-2.5 align-middle">
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <ul className="rule-soft md:hidden" aria-label="実行の一覧">
+            {(items ?? []).map((run, i) => (
+              <li key={run.runId} className={cn(i > 0 && "shiki-dash-top")}>
+                <button
+                  type="button"
+                  onClick={() => onOpenRun(run.runId)}
                   className={cn(
-                    "cursor-pointer border-b last:border-b-0",
-                    "transition-colors duration-fast hover:bg-accent/50",
-                    activeRunId === row.original.runId && "bg-accent/60",
+                    "flex min-h-[64px] w-full items-center gap-3 px-4 py-3 text-left outline-none",
+                    "transition-colors duration-fast active:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                    activeRunId === run.runId && "bg-accent/60",
                   )}
                 >
-                  {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="px-3 py-2.5 align-middle">
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  <span className="flex min-w-0 flex-1 flex-col gap-1">
+                    <span className="flex items-center gap-2">
+                      <RunStatusBadge status={run.status} />
+                      <span className="truncate text-xs text-muted-foreground">
+                        {TRIGGER_KIND_LABELS[run.triggerKind] ?? run.triggerKind}・v{run.version}
+                      </span>
+                    </span>
+                    <span className="flex items-center gap-3 text-[13px] tabular-nums">
+                      <span>{formatDateTime(run.createdAt)}</span>
+                      <span className="text-muted-foreground">
+                        {formatDuration(run.startedAt, run.finishedAt)}
+                      </span>
+                    </span>
+                  </span>
+                  <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                </button>
+              </li>
+            ))}
+          </ul>
           {!exhausted ? (
             <div className="border-t p-2 text-center">
               <Button

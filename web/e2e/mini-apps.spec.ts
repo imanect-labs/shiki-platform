@@ -46,7 +46,8 @@ test.describe("ミニアプリ（作成・実行・バンドル権限の共有�
 
     // ② UI からアプリを作成（UI スペックを選んで束ねる）。
     await page.goto("/apps");
-    await page.getByRole("button", { name: "アプリを作成" }).click();
+    // 一覧が空のときは空状態にも同名の作成ボタンが出るため先頭（見出し行）を押す。
+    await page.getByRole("button", { name: "アプリを作成" }).first().click();
     const dialog = page.getByRole("dialog");
     const appName = uniqueName("e2e-app");
     await dialog.getByLabel(/名前/).fill(appName);

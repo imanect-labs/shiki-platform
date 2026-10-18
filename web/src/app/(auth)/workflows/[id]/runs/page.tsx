@@ -4,11 +4,12 @@
 
 import * as React from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { usePageChrome } from "@/components/shell/page-header-context";
 import { RunDetailSheet } from "@/components/workflow/runs/run-detail-sheet";
 import { RunsTable } from "@/components/workflow/runs/runs-table";
+import { WorkflowTabs } from "@/components/workflow/workflow-tabs";
 import { getWorkflow } from "@/lib/workflow-api";
 
 function RunsPageBody() {
@@ -27,6 +28,16 @@ function RunsPageBody() {
       .catch(() => setTitle(""));
   }, [id]);
 
+  // 戻る（エディタへ）はシェルのクローム（PC はバー左・スマホは左上）に置く。
+  usePageChrome(
+    () => ({
+      title: "実行履歴",
+      subtitle: title || undefined,
+      back: { href: `/workflows/${id}`, label: "エディタへ戻る" },
+    }),
+    [id, title],
+  );
+
   /// ?run= だけを書き換える（履歴を汚さない replace・スクロール維持）。
   const setRun = React.useCallback(
     (runId: string | null) => {
@@ -39,23 +50,21 @@ function RunsPageBody() {
   );
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 py-6">
-      <div className="mb-5 flex items-center gap-3">
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="エディタへ戻る"
-          onClick={() => router.push(`/workflows/${id}`)}
-        >
-          <ArrowLeft className="size-4" aria-hidden />
-        </Button>
-        <div>
-          <h1 className="text-lg font-semibold">実行履歴</h1>
-          <p className="text-sm text-muted-foreground">
+    <div className="mx-auto w-full max-w-5xl px-4 pb-6 pt-1 md:py-6">
+      <div className="mb-4 flex flex-col gap-3 md:mb-5">
+        <div className="min-w-0">
+          <p className="truncate text-[12.5px] text-muted-foreground md:hidden">
             {title === null ? "…" : title || "ワークフロー"}
-            の実行の記録です。行をクリックすると詳細が開きます。
+          </p>
+          <h1 className="text-[26px] font-bold leading-tight tracking-tight md:text-lg md:font-semibold">
+            実行履歴
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            <span className="hidden md:inline">{title === null ? "…" : title || "ワークフロー"}の</span>
+            実行の記録です。行を選ぶと詳細が開きます。
           </p>
         </div>
+        <WorkflowTabs workflowId={id} current="runs" />
       </div>
 
       <RunsTable

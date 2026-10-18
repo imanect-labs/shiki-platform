@@ -7,7 +7,7 @@ import * as React from "react";
 import { use } from "react";
 import { History, Loader2, Share2 } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { ChromeIconButton, usePageChrome } from "@/components/shell/page-header-context";
 import { toast } from "@/components/ui/use-toast";
 import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
@@ -23,6 +23,27 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   const [shareOpen, setShareOpen] = React.useState(false);
   const [versionsOpen, setVersionsOpen] = React.useState(false);
 
+  // 版・共有はシェルのクローム（PC はバー右・スマホは右上）に置く。
+  const appName = app?.body.description;
+  usePageChrome(
+    () => ({
+      title: appName,
+      subtitle: app ? `v${app.version}` : undefined,
+      back: { href: "/apps", label: "アプリ一覧へ" },
+      actions: app ? (
+        <>
+          <ChromeIconButton label="バージョン" onClick={() => setVersionsOpen(true)}>
+            <History aria-hidden />
+          </ChromeIconButton>
+          <ChromeIconButton label="共有" onClick={() => setShareOpen(true)}>
+            <Share2 aria-hidden />
+          </ChromeIconButton>
+        </>
+      ) : undefined,
+    }),
+    [appName, app?.version, Boolean(app)],
+  );
+
   React.useEffect(() => {
     let active = true;
     setApp(null);
@@ -36,7 +57,7 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   }, [id, version]);
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 py-6">
+    <div className="mx-auto w-full max-w-3xl px-4 pb-6 pt-1 md:py-6">
       {error ? (
         <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-6 text-center text-sm text-destructive">
           {error}
@@ -48,25 +69,15 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
         </div>
       ) : (
         <>
-          <div className="mb-4 flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h1 className="text-lg font-semibold">{app.body.description}</h1>
-              <p className="text-xs text-muted-foreground">
-                v{app.version}
-                {app.body.skill ? "・スキル適用" : ""}
-                {app.body.workflows.length > 0 ? `・ワークフロー ${app.body.workflows.length} 件` : ""}
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
-              <Button size="sm" variant="ghost" onClick={() => setVersionsOpen(true)}>
-                <History className="size-4" aria-hidden />
-                バージョン
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setShareOpen(true)}>
-                <Share2 className="size-4" aria-hidden />
-                共有
-              </Button>
-            </div>
+          <div className="mb-4 min-w-0">
+            <h1 className="text-[26px] font-bold leading-tight tracking-tight md:text-lg md:font-semibold">
+              {app.body.description}
+            </h1>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              v{app.version}
+              {app.body.skill ? "・スキル適用" : ""}
+              {app.body.workflows.length > 0 ? `・ワークフロー ${app.body.workflows.length} 件` : ""}
+            </p>
           </div>
 
           <MiniAppGenUiProvider

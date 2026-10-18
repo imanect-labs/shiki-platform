@@ -54,7 +54,7 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
             value={(p.url as string | undefined) ?? ""}
             onChange={(e) => patchParams(dispatch, node, { url: e.target.value })}
             placeholder="https://api.example.com/v1"
-            className="h-8 font-mono text-xs"
+            className="h-8 font-mono text-xs max-md:text-base"
           />
         </Field>
       </div>
@@ -92,7 +92,7 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
               })
             }
             placeholder="例: slack-bot-token"
-            className="h-8 font-mono text-xs"
+            className="h-8 font-mono text-xs max-md:text-base"
           />
           {secret?.name ? (
             <div className="grid grid-cols-2 gap-1.5">
@@ -127,7 +127,7 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
                     })
                   }
                   placeholder="ヘッダ名"
-                  className="h-8 font-mono text-xs"
+                  className="h-8 font-mono text-xs max-md:text-base"
                 />
               ) : null}
             </div>

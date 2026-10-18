@@ -1,37 +1,63 @@
+"use client";
+
 import * as React from "react";
 
 import { cn } from "@/lib/utils";
+import { CHROME_TRAY } from "@/components/shell/header";
+import { useAdminCrumb } from "./admin-shell";
 
 /// 管理コンソールの 1 画面の枠（見出し・説明・右上の操作・本文）。
+///
+/// スマホはタイトルバーが無いので、本文の先頭にパンくず（「a-corp・アクセス管理」）と見出しを
+/// 出し、その画面の主な操作は `mobileActions`（`ChromeIconButton` 等）として右上に浮かせる。
+/// `mobileActions` を渡した画面では、本文の `actions` は PC だけに出す。
 export function AdminPage({
   title,
   description,
   actions,
+  mobileActions,
   children,
   wide = false,
 }: {
   title: string;
   description?: React.ReactNode;
   actions?: React.ReactNode;
+  /// スマホの右上に浮かせる主な操作（アイコンボタン 1〜2 個）。
+  mobileActions?: React.ReactNode;
   children: React.ReactNode;
   /// 表など横に広い画面（最大幅を広げる）。
   wide?: boolean;
 }) {
+  const crumb = useAdminCrumb();
   return (
     <div
       className={cn(
-        "mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8",
+        "mx-auto flex w-full flex-col gap-5 px-4 pb-8 pt-1 md:px-8 md:py-8",
         wide ? "max-w-7xl" : "max-w-5xl",
       )}
     >
+      {mobileActions ? (
+        <div className="pointer-events-none fixed inset-x-0 top-0 z-30 flex justify-end px-2.5 pt-[max(0.5rem,env(safe-area-inset-top))] md:hidden">
+          <div className={CHROME_TRAY}>{mobileActions}</div>
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+          {crumb ? (
+            <div className="truncate text-[12.5px] text-muted-foreground md:hidden">{crumb}</div>
+          ) : null}
+          <h1 className="text-[26px] font-bold leading-tight tracking-tight md:text-xl md:font-semibold">
+            {title}
+          </h1>
           {description ? (
             <p className="mt-1 text-[13px] text-muted-foreground">{description}</p>
           ) : null}
         </div>
-        {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+        {actions ? (
+          <div className={cn("flex flex-wrap items-center gap-2", mobileActions && "max-md:hidden")}>
+            {actions}
+          </div>
+        ) : null}
       </div>
       {children}
     </div>
