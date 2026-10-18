@@ -441,6 +441,15 @@
   html {
     /* iOS のフォントサイズ自動拡大を抑止し、レイアウトの破綻を防ぐ */
     -webkit-text-size-adjust: 100%;
+    /* タップ時の灰色の矩形は出さない（押下状態は各コンポーネントの active: で表す）。 */
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* ページ全体の端では何も起こさない（Android の引っ張って更新で生成中の画面が飛ぶ・iOS で
+     シェルごと跳ねるのを防ぐ）。内側のスクロール領域は overscroll-contain にして跳ね返りだけ残す。 */
+  html,
+  body {
+    overscroll-behavior: none;
   }
 
   /* type="search" のブラウザ既定クリアボタンは使わない（独自の × を置くため重複を避ける）。 */

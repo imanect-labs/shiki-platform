@@ -9,7 +9,9 @@ import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
   cn(
-    "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium",
+    "relative inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium",
+    // タッチ端末では見た目を変えずに当たり判定だけ広げる（44px 目安・after 疑似要素）。
+    "pointer-coarse:after:absolute pointer-coarse:after:content-['']",
     // 色に加えて transform も遷移（押下の active:scale を滑らかに）。動かすのは transform/opacity のみ。
     "transition-[color,background-color,border-color,box-shadow,transform] duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
     "active:scale-[0.97]",
@@ -30,10 +32,10 @@ const buttonVariants = cva(
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
-        sm: "h-8 rounded-md px-3 text-xs",
-        default: "h-9 px-4 py-2",
-        lg: "h-10 rounded-md px-6",
-        icon: "size-9",
+        sm: "h-8 rounded-md px-3 text-xs pointer-coarse:after:-inset-y-1.5 pointer-coarse:after:inset-x-0",
+        default: "h-9 px-4 py-2 pointer-coarse:after:-inset-y-1 pointer-coarse:after:inset-x-0",
+        lg: "h-10 rounded-md px-6 pointer-coarse:after:-inset-y-0.5 pointer-coarse:after:inset-x-0",
+        icon: "size-9 pointer-coarse:after:-inset-1",
       },
     },
     defaultVariants: { variant: "default", size: "default" },

@@ -68,7 +68,9 @@ export function SegmentedControl({
               "relative z-10 inline-flex items-center justify-center gap-1.5 rounded-md font-medium outline-none",
               "transition-colors duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
               "focus-visible:ring-2 focus-visible:ring-ring",
-              size === "sm" ? "h-6 px-2 text-[11px]" : "h-7 px-3 text-xs",
+              size === "sm"
+                ? "h-6 px-2 text-[11px] pointer-coarse:h-9 pointer-coarse:px-3 pointer-coarse:text-xs"
+                : "h-7 px-3 text-xs pointer-coarse:h-10 pointer-coarse:text-[13px]",
               active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
             )}
           >

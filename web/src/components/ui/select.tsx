@@ -45,7 +45,7 @@ function SelectContent({
         position={position}
         sideOffset={4}
         className={cn(
-          "relative z-50 max-h-72 min-w-[8rem] overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-md",
+          "relative z-50 max-h-72 min-w-[8rem] overflow-y-auto overscroll-contain rounded-md border bg-popover text-popover-foreground shadow-md",
           "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
           "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
           position === "popper" && "w-[var(--radix-select-trigger-width)]",
@@ -67,7 +67,7 @@ function SelectItem({
   return (
     <SelectPrimitive.Item
       className={cn(
-        "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 pl-2 pr-8 text-sm outline-none",
+        "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 pl-2 pr-8 text-sm outline-none pointer-coarse:min-h-11",
         "focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
         className,
       )}
