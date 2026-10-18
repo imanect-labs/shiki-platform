@@ -15,7 +15,11 @@ import type * as Y from "yjs";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { cn } from "@/lib/utils";
+
+/// Tailwind の `md`。これ以上の幅では畳まず、常に全体を見せる。
+const DESKTOP_QUERY = "(min-width: 768px)";
 
 /// パネルが扱う予約キー（title/icon は専用 UI・thread_id は非表示）。
 const RESERVED_KEYS = new Set(["title", "icon", "tags", "thread_id", "active_thread_id"]);
@@ -103,6 +107,12 @@ export function MetadataPanel({
   };
 
   const hasDetails = state.tags.length > 0 || state.extra.length > 0;
+  // 畳んだ要約と全体は、いまの幅・開閉に合う方だけを描画する。CSS で片方を隠すだけだと
+  // タグが DOM に 2 つずつ並び、支援技術・検索（ページ内の文字列）にも二重に見える。
+  // サーバ描画と初回は狭い画面扱い（false）になるので、要約には md:hidden も残して PC で
+  // 一瞬出ないようにする。
+  const desktop = useMediaQuery(DESKTOP_QUERY);
+  const collapsed = !desktop && !expanded;
 
   return (
     <section aria-label="ノートのプロパティ" className="space-y-3" data-testid="note-meta-panel">
@@ -139,7 +149,7 @@ export function MetadataPanel({
       </div>
 
       {/* スマホ: 1 行に畳んだ要約（タグは横に並べて見せ、押すと全体を開く）。 */}
-      {!expanded && (editable || hasDetails) ? (
+      {collapsed && (editable || hasDetails) ? (
         <div className="flex min-w-0 items-center gap-2 px-2 text-sm md:hidden">
           {state.tags.length > 0 ? (
             <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
@@ -173,148 +183,152 @@ export function MetadataPanel({
         </div>
       ) : null}
 
-      <div className={cn("space-y-3", !expanded && "max-md:hidden")}>
-        <div className="flex flex-wrap items-center gap-2 px-2 text-sm">
-          <Tag className="size-4 text-muted-foreground" aria-hidden />
-          {state.tags.map((tag) => (
-            <span
-              key={tag}
-              className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2.5 py-0.5 text-xs font-medium max-md:py-1"
-            >
-              {tag}
-              {editable && (
-                <button
-                  type="button"
-                  onClick={() => removeTag(tag)}
-                  aria-label={`タグ ${tag} を削除`}
-                  className="relative -mr-1 flex size-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground after:absolute after:-inset-1.5 after:content-[''] pointer-coarse:size-5 pointer-coarse:after:-inset-3"
+      {collapsed ? null : (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 px-2 text-sm">
+            <Tag className="size-4 text-muted-foreground" aria-hidden />
+            {state.tags.map((tag) => (
+              <span
+                key={tag}
+                className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2.5 py-0.5 text-xs font-medium max-md:py-1"
+              >
+                {tag}
+                {editable && (
+                  <button
+                    type="button"
+                    onClick={() => removeTag(tag)}
+                    aria-label={`タグ ${tag} を削除`}
+                    className="relative -mr-1 flex size-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground after:absolute after:-inset-1.5 after:content-[''] pointer-coarse:size-5 pointer-coarse:after:-inset-3"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                )}
+              </span>
+            ))}
+            {editable && (
+              <Input
+                value={tagDraft}
+                onChange={(e) => setTagDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addTag();
+                  }
+                }}
+                placeholder="タグを追加…"
+                aria-label="タグを追加"
+                enterKeyHint="done"
+                className="h-7 w-32 border-dashed text-base max-md:h-9 max-md:w-36 md:text-xs"
+              />
+            )}
+          </div>
+
+          {(state.extra.length > 0 || editable) && (
+            <dl className="space-y-0.5 px-2">
+              {state.extra.map(([key, value]) => (
+                <div
+                  key={key}
+                  className="group/prop flex items-center gap-2 text-sm max-md:flex-wrap max-md:gap-x-1 max-md:gap-y-0 max-md:pb-1.5"
                 >
-                  <X className="size-3.5" />
-                </button>
-              )}
-            </span>
-          ))}
-          {editable && (
-            <Input
-              value={tagDraft}
-              onChange={(e) => setTagDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  addTag();
-                }
-              }}
-              placeholder="タグを追加…"
-              aria-label="タグを追加"
-              enterKeyHint="done"
-              className="h-7 w-32 border-dashed text-base max-md:h-9 max-md:w-36 md:text-xs"
-            />
+                  {/* スマホは「名前」の行と「値＋削除」の行の 2 段組み（固定幅の名前列で値が潰れない）。 */}
+                  <dt className="w-36 shrink-0 truncate text-[13px] text-muted-foreground max-md:w-full max-md:px-2 max-md:text-[12px]">
+                    {key}
+                  </dt>
+                  <dd className="min-w-0 flex-1">
+                    <Input
+                      value={value}
+                      onChange={(e) => setKey(key, e.target.value)}
+                      disabled={!editable}
+                      aria-label={`プロパティ ${key}`}
+                      placeholder="空"
+                      className="h-8 border-transparent bg-transparent px-2 text-base shadow-none placeholder:text-muted-foreground/50 hover:bg-accent/50 focus-visible:border-input focus-visible:bg-background max-md:h-10 md:text-sm"
+                    />
+                  </dd>
+                  {editable && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => meta.delete(key)}
+                      aria-label={`プロパティ ${key} を削除`}
+                      // マウスの端末だけホバーで出す（タッチでは常に見える）。
+                      className="size-8 shrink-0 text-muted-foreground transition-opacity focus-visible:opacity-100 max-md:size-10 pointer-fine:opacity-0 pointer-fine:group-hover/prop:opacity-100"
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  )}
+                </div>
+              ))}
+              {editable &&
+                (adding ? (
+                  <div className="flex items-center gap-2 pt-1 text-sm max-md:flex-wrap">
+                    <Input
+                      value={kvDraft.key}
+                      onChange={(e) => setKvDraft((d) => ({ ...d, key: e.target.value }))}
+                      placeholder="プロパティ名"
+                      aria-label="プロパティ名"
+                      autoFocus
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") setAdding(false);
+                      }}
+                      className="h-8 w-36 shrink-0 text-base max-md:h-10 max-md:w-full md:text-sm"
+                    />
+                    <Input
+                      value={kvDraft.value}
+                      onChange={(e) => setKvDraft((d) => ({ ...d, value: e.target.value }))}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          addKv();
+                        } else if (e.key === "Escape") {
+                          setAdding(false);
+                        }
+                      }}
+                      placeholder="値"
+                      aria-label="プロパティ値"
+                      enterKeyHint="done"
+                      className="h-8 flex-1 text-base max-md:h-10 md:text-sm"
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={addKv}
+                      aria-label="プロパティを保存"
+                      className="size-8 shrink-0 text-muted-foreground max-md:size-10"
+                    >
+                      <Plus className="size-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setAdding(true)}
+                    className="mt-0.5 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground max-md:h-10"
+                  >
+                    <Plus className="size-3.5" aria-hidden />
+                    プロパティを追加
+                  </button>
+                ))}
+            </dl>
+          )}
+          {/* スマホ: 開いた全体を畳み直す。 */}
+          {desktop ? null : (
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              aria-expanded
+              className="ml-0.5 inline-flex h-9 items-center gap-1.5 rounded-full px-2.5 text-[13px] text-muted-foreground transition-colors active:bg-accent"
+            >
+              <ChevronUp className="size-3.5" aria-hidden />
+              閉じる
+            </button>
           )}
         </div>
-
-        {(state.extra.length > 0 || editable) && (
-          <dl className="space-y-0.5 px-2">
-            {state.extra.map(([key, value]) => (
-              <div
-                key={key}
-                className="group/prop flex items-center gap-2 text-sm max-md:flex-wrap max-md:gap-x-1 max-md:gap-y-0 max-md:pb-1.5"
-              >
-                {/* スマホは「名前」の行と「値＋削除」の行の 2 段組み（固定幅の名前列で値が潰れない）。 */}
-                <dt className="w-36 shrink-0 truncate text-[13px] text-muted-foreground max-md:w-full max-md:px-2 max-md:text-[12px]">
-                  {key}
-                </dt>
-                <dd className="min-w-0 flex-1">
-                  <Input
-                    value={value}
-                    onChange={(e) => setKey(key, e.target.value)}
-                    disabled={!editable}
-                    aria-label={`プロパティ ${key}`}
-                    placeholder="空"
-                    className="h-8 border-transparent bg-transparent px-2 text-base shadow-none placeholder:text-muted-foreground/50 hover:bg-accent/50 focus-visible:border-input focus-visible:bg-background max-md:h-10 md:text-sm"
-                  />
-                </dd>
-                {editable && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => meta.delete(key)}
-                    aria-label={`プロパティ ${key} を削除`}
-                    // マウスの端末だけホバーで出す（タッチでは常に見える）。
-                    className="size-8 shrink-0 text-muted-foreground transition-opacity focus-visible:opacity-100 max-md:size-10 pointer-fine:opacity-0 pointer-fine:group-hover/prop:opacity-100"
-                  >
-                    <X className="size-4" />
-                  </Button>
-                )}
-              </div>
-            ))}
-            {editable &&
-              (adding ? (
-                <div className="flex items-center gap-2 pt-1 text-sm max-md:flex-wrap">
-                  <Input
-                    value={kvDraft.key}
-                    onChange={(e) => setKvDraft((d) => ({ ...d, key: e.target.value }))}
-                    placeholder="プロパティ名"
-                    aria-label="プロパティ名"
-                    autoFocus
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") setAdding(false);
-                    }}
-                    className="h-8 w-36 shrink-0 text-base max-md:h-10 max-md:w-full md:text-sm"
-                  />
-                  <Input
-                    value={kvDraft.value}
-                    onChange={(e) => setKvDraft((d) => ({ ...d, value: e.target.value }))}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        addKv();
-                      } else if (e.key === "Escape") {
-                        setAdding(false);
-                      }
-                    }}
-                    placeholder="値"
-                    aria-label="プロパティ値"
-                    enterKeyHint="done"
-                    className="h-8 flex-1 text-base max-md:h-10 md:text-sm"
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={addKv}
-                    aria-label="プロパティを保存"
-                    className="size-8 shrink-0 text-muted-foreground max-md:size-10"
-                  >
-                    <Plus className="size-4" />
-                  </Button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setAdding(true)}
-                  className="mt-0.5 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground max-md:h-10"
-                >
-                  <Plus className="size-3.5" aria-hidden />
-                  プロパティを追加
-                </button>
-              ))}
-          </dl>
-        )}
-        {/* スマホ: 開いた全体を畳み直す。 */}
-        <button
-          type="button"
-          onClick={() => setExpanded(false)}
-          aria-expanded
-          className="ml-0.5 inline-flex h-9 items-center gap-1.5 rounded-full px-2.5 text-[13px] text-muted-foreground transition-colors active:bg-accent md:hidden"
-        >
-          <ChevronUp className="size-3.5" aria-hidden />
-          閉じる
-        </button>
-      </div>
+      )}
     </section>
   );
 }
