@@ -235,9 +235,10 @@ pub(super) fn origin_document_tools(name: Option<&str>) -> &'static [agent_core:
         .and_then(|n| n.rsplit_once('.'))
         .map(|(_, e)| e.to_ascii_lowercase());
     match ext.as_deref() {
-        Some("xlsx" | "xls" | "ods") => &[T::OfficeRead, T::OfficeExcelEdit],
+        Some("xlsx" | "ods") => &[T::OfficeRead, T::OfficeExcelEdit],
         Some("docx" | "odt") => &[T::OfficeRead, T::OfficeWordEdit],
-        Some("pptx" | "doc" | "ppt" | "odp") => &[T::OfficeLiveEdit, T::OfficeEdit],
+        // エンジンが扱わない旧形式（.xls / .doc）と pptx は従来の道具。
+        Some("pptx" | "doc" | "xls" | "ppt" | "odp") => &[T::OfficeLiveEdit, T::OfficeEdit],
         Some("csv") => selection_tools(K::CsvRange),
         Some("slide") => selection_tools(K::SlideSelection),
         _ => selection_tools(K::NoteSelection),
@@ -475,6 +476,10 @@ mod tests {
         assert_eq!(
             origin_document_tools(Some("売上.xlsx")),
             [T::OfficeRead, T::OfficeExcelEdit]
+        );
+        assert_eq!(
+            origin_document_tools(Some("旧.xls")),
+            [T::OfficeLiveEdit, T::OfficeEdit]
         );
         assert_eq!(
             origin_document_tools(Some("売上.csv")),

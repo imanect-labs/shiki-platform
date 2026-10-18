@@ -431,10 +431,21 @@ fn paragraph_html(p: &Value) -> String {
     format!("<p data-style=\"{style_name}\"{style_attr}>{inner}</p>")
 }
 
+/// 番号の文字列の最後の数字の並び（多段の番号 `1.2.` はその段の `2`・`(3)` は `3`）。
+fn last_number(label: &str) -> String {
+    let rev: Vec<char> = label
+        .chars()
+        .rev()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
+        .collect();
+    rev.into_iter().rev().collect()
+}
+
 /// 箇条書き・番号付きの段落を、その段落だけの <ul> / <ol> にする（入れ子はレベルの数だけ重ねる）。
 fn list_item_html(props: &Value, style: &str, style_attr: &str, inner: &str) -> String {
     let label = s(&props["ListLabelString"]).trim();
-    let digits: String = label.chars().filter(char::is_ascii_digit).collect();
+    let digits = last_number(label);
     let (open, close) = if digits.is_empty() {
         ("<ul>".to_string(), "</ul>")
     } else {
@@ -591,6 +602,12 @@ pub fn blocks_text(v: &Value) -> String {
         };
         let _ = writeln!(out, "[{}] {html}", s(&b["id"]));
     }
+    if let Some(next) = v["truncated_at"].as_str() {
+        let _ = writeln!(
+            out,
+            "※ 範囲が長いので {next} の手前までで打ち切りました。replace の範囲は上の最後のブロックまでにし、続きは {next} から読み直してください。"
+        );
+    }
     out
 }
 
@@ -628,6 +645,14 @@ mod tests {
         single["pages"] = json!(1);
         assert!(page_warnings(&single).is_empty());
         assert!(!overview_text("", &single).contains("ページ目"));
+    }
+
+    #[test]
+    fn list_start_uses_the_number_of_the_level() {
+        assert_eq!(last_number("1.2."), "2");
+        assert_eq!(last_number("(3)"), "3");
+        assert_eq!(last_number("第12条"), "12");
+        assert_eq!(last_number("・"), "");
     }
 
     #[test]

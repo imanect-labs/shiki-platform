@@ -464,12 +464,16 @@ HANDLERS["writer.read_blocks"] = (req) => {
   if (b < a) fail("bad_range", "範囲の終わりが始まりより前です");
   const out = { blocks: [] };
   const reds = redlineSpans();
-  for (let i = a; i <= Math.min(b, a + 100); i++) {
+  const last = Math.min(b, a + 100);
+  for (let i = a; i <= last; i++) {
     STAGE = `ブロック ${i} の詳細`;
     const blk = blocks[i];
     const item = isTable(blk) ? readTable(blk, true, reds) : readParagraph(blk, true, reds);
     item.id = blockId(i, blk);
     out.blocks.push(item);
   }
+  // 範囲の途中で打ち切ったら、続きの ID を返す（返った HTML で範囲全体を replace すると、
+  // 読んでいない残りが消えるため、結果で明示する）。
+  if (last < b) out.truncated_at = blockId(last + 1, blocks[last + 1]);
   return out;
 };

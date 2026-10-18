@@ -167,7 +167,10 @@ pub async fn apply(
     let mut warnings = Vec::new();
     // **ここから先の失敗で Err を返さない。** 適用は済んでいるので、失敗として返すと保存されず、
     // モデルがやり直して二重に適用する（改名・削除したシートの範囲は読み戻せない）。
+    let active_before = results["active_before"].as_str().map(str::to_string);
     for (sheet, area) in readback_areas(&normalized.touched) {
+        // シート名の無い範囲は、適用を始めた時点の作業中のシートに書いている。
+        let sheet = sheet.or_else(|| active_before.clone());
         let read = call(
             client,
             json!({"action": "calc.read_range", "sheet": sheet, "area": area,

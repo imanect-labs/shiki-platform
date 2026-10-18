@@ -312,9 +312,18 @@ HANDLERS["calc.read_range"] = (req) => {
   const sc = Math.max(req.area[0], used[0]);
   const sr = Math.max(req.area[1], used[1]);
   const ec = Math.min(req.area[2], used[2]);
-  const er = Math.min(req.area[3], used[3]);
+  let er = Math.min(req.area[3], used[3]);
   if (sc > ec || sr > er) return { sheet: sheet.getName(), area: null, cells: [], truncated: false, used };
-  const out = { sheet: sheet.getName(), area: [sc, sr, ec, er], used, cells: [], truncated: false };
+  // 走査する行も上限で絞る（返すセル数だけでなく、数式の配列・書式・結合・列幅の走査量を抑える。
+  // 大きな使用範囲に列全体を指定しても kit を長く止めない）。
+  const width = ec - sc + 1;
+  const maxRows = Math.max(1, Math.floor(Math.max(req.max_cells * 4, 2000) / width));
+  let scanCapped = false;
+  if (er - sr + 1 > maxRows) {
+    er = sr + maxRows - 1;
+    scanCapped = true;
+  }
+  const out = { sheet: sheet.getName(), area: [sc, sr, ec, er], used, cells: [], truncated: scanCapped };
   STAGE = "セルの読み取り";
   const range = sheet.getCellRangeByPosition(sc, sr, ec, er);
   const formulas = range.getFormulaArray();

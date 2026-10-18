@@ -738,9 +738,11 @@ function findAll(op, resolved) {
     const r = found.getByIndex(i);
     if (scope) {
       const inScope = scope.some((p) => {
+        // 表のセルの段落は本文とは別の Text に属する。比べるのはその段落の Text（違う Text の
+        // 範囲どうしは比べられず例外になる＝範囲外として扱う）。
         try {
-          const cmp = DOC.getText().compareRegionStarts(p, r) >= 0 && DOC.getText().compareRegionEnds(r, p) >= 0;
-          return cmp;
+          const text = p.getText();
+          return text.compareRegionStarts(p, r) >= 0 && text.compareRegionEnds(r, p) >= 0;
         } catch (e) {
           return false;
         }

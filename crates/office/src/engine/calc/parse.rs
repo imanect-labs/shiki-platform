@@ -253,7 +253,8 @@ impl Cx {
                 super::normalize::MAX_CELLS_PER_APPLY
             )));
         }
-        if a.height() < header_rows + total_rows + 1 || header_rows > 5 || total_rows > 5 {
+        // 上限を先に見る（大きな値の足し算があふれないように）。見出しは 0 行（「見出しなし」）でもよい。
+        if header_rows > 5 || total_rows > 5 || a.height() < header_rows + total_rows + 1 {
             return Err(self.err("表の範囲には見出し（header_rows）・集計行（total_rows）と 1 行以上の本体が要ります"));
         }
         let (head, band, total, line) = palette(theme);
@@ -268,18 +269,21 @@ impl Cx {
         let mut ops = Vec::new();
         // 全体の罫線（外枠と内側を細線で）。
         ops.push(json!({"op": "format", "sheet": sheet, "areas": [a.coords()], "borders": {"outline": thin, "inner": thin}}));
-        // 見出し。
-        let head_end = a.sr + header_rows - 1;
-        ops.push(json!({
-            "op": "format", "sheet": sheet, "areas": [rect(a.sr, head_end)],
-            "font": {"bold": true, "color": "#FFFFFF"}, "fill": head,
-            "align": {"horizontal": "center", "vertical": "center", "wrap": true},
-            "borders": {"bottom": medium_head},
-        }));
+        // 見出し（0 行なら付けない）。
+        let body_start = a.sr + header_rows;
+        if header_rows > 0 {
+            ops.push(json!({
+                "op": "format", "sheet": sheet, "areas": [rect(a.sr, body_start - 1)],
+                "font": {"bold": true, "color": "#FFFFFF"}, "fill": head,
+                "align": {"horizontal": "center", "vertical": "center", "wrap": true},
+                "borders": {"bottom": medium_head},
+            }));
+        }
         let body_end = a.er - total_rows;
         if banded {
-            let rows: Vec<Value> = ((head_end + 1)..=body_end)
-                .filter(|r| (r - head_end).is_multiple_of(2))
+            // 本体の 2 行目から 1 行おき。
+            let rows: Vec<Value> = (body_start..=body_end)
+                .filter(|r| (r - body_start) % 2 == 1)
                 .map(|r| rect(r, r))
                 .collect();
             if !rows.is_empty() {

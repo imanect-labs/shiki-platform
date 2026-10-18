@@ -315,6 +315,55 @@ async fn a_titled_chart_survives_saving_to_xlsx() {
     client.close().await;
 }
 
+/// 1 枚のシートの印刷設定は、同じページスタイルを共有する他のシートを変えない。見出し 0 行の表も整う。
+#[tokio::test]
+async fn page_setup_does_not_leak_to_sheets_sharing_the_style() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let name = format!("engine-{}.xlsx", uuid::Uuid::new_v4());
+    let mut client = open_blank(&env, &name).await;
+    let first = run::read_overview(&mut client, &name).await.unwrap();
+    let sheet1 = if first.contains("Sheet1") {
+        "Sheet1"
+    } else {
+        "シート1"
+    };
+    let batch = ops(json!([
+        {"op": "add_sheet", "name": "別紙"},
+        {"op": "set_values", "range": format!("{sheet1}!A1"), "values": [["項目", "値"], ["a", 1], ["b", 2]]},
+        {"op": "style_table", "range": format!("{sheet1}!A1:B3"), "header_rows": 0},
+        {"op": "page_setup", "sheet": sheet1, "orientation": "landscape"}
+    ]));
+    let out = run::apply(&mut client, "印刷", &normalize(&batch, None).unwrap())
+        .await
+        .unwrap();
+    assert!(out.applied, "{}", out.text);
+    let other = run::read_range(
+        &mut client,
+        &a1::parse_area("A1").unwrap(),
+        Some("別紙"),
+        10,
+        true,
+    )
+    .await
+    .unwrap();
+    let mine = run::read_range(
+        &mut client,
+        &a1::parse_area("A1").unwrap(),
+        Some(sheet1),
+        10,
+        true,
+    )
+    .await
+    .unwrap();
+    let landscape = |t: &str| t.contains("A4横") || t.contains("用紙横");
+    assert!(landscape(&mine), "{mine}");
+    assert!(!landscape(&other), "別紙まで横向きになった: {other}");
+    client.close().await;
+}
+
 /// 「自動」の列幅は、折り返しの見出し（style_table）も 1 行に収まる幅にする。
 #[tokio::test]
 async fn auto_width_fits_wrapped_headers_on_one_line() {

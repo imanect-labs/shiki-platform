@@ -53,24 +53,42 @@ impl CoolWsClient {
             download_id
         );
         let timeout = self.phase_timeout(self.script_timeout)?;
-        let response = tokio::time::timeout(timeout, reqwest::get(&url))
+        // 見出しの受信だけでなく本文の受信まで同じ期限で包み、上限を超える本文は読み切る前に止める
+        // （遅い・大きい本文でセッション枠と AI の直列化ロックを抱え続けない）。
+        tokio::time::timeout(timeout, fetch_limited(&url))
             .await
             .map_err(|_| LiveError::Timeout("download"))?
-            .map_err(|e| {
-                LiveError::Protocol(format!("書き出しの取得に失敗: {}", e.without_url()))
-            })?;
-        if !response.status().is_success() {
-            return Err(LiveError::Protocol(format!(
-                "書き出しの取得に失敗: HTTP {}",
-                response.status()
-            )));
-        }
-        let bytes = response.bytes().await.map_err(|e| {
-            LiveError::Protocol(format!("書き出しの取得に失敗: {}", e.without_url()))
-        })?;
-        if bytes.len() > MAX_DOWNLOAD_BYTES {
-            return Err(LiveError::Protocol("書き出しが大きすぎます".into()));
-        }
-        Ok(bytes.to_vec())
     }
+}
+
+/// 書き出しの本文を上限つきで取得する。
+async fn fetch_limited(url: &str) -> Result<Vec<u8>, LiveError> {
+    use futures::StreamExt;
+    let fail = |e: reqwest::Error| {
+        LiveError::Protocol(format!("書き出しの取得に失敗: {}", e.without_url()))
+    };
+    let response = reqwest::get(url).await.map_err(fail)?;
+    if !response.status().is_success() {
+        return Err(LiveError::Protocol(format!(
+            "書き出しの取得に失敗: HTTP {}",
+            response.status()
+        )));
+    }
+    let too_large = || LiveError::Protocol("書き出しが大きすぎます".into());
+    if response
+        .content_length()
+        .is_some_and(|n| n > MAX_DOWNLOAD_BYTES as u64)
+    {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(fail)?;
+        if body.len() + chunk.len() > MAX_DOWNLOAD_BYTES {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }

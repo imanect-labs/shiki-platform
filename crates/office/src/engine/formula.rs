@@ -354,9 +354,11 @@ pub fn shift_relative(formula: &str, dc: i64, dr: i64) -> Result<String, Formula
         match t {
             Tok::Word(w) => {
                 let is_function = matches!(toks.get(i + 1), Some(Tok::Punct('(')));
+                // `!` の直前の語はシート名（`Q1!A1` の Q1）。参照と同じ形でも動かさない。
+                let is_sheet = matches!(toks.get(i + 1), Some(Tok::Punct('!')));
                 let near_colon = matches!(toks.get(i + 1), Some(Tok::Punct(':')))
                     || (i > 0 && matches!(toks.get(i - 1), Some(Tok::Punct(':'))));
-                match (!is_function)
+                match (!is_function && !is_sheet)
                     .then(|| shift_ref(w, dc, dr, near_colon))
                     .flatten()
                 {
@@ -625,6 +627,15 @@ mod tests {
             relative_signature("=SUM(E2:E4)", 4, 4)
         );
         assert_eq!(relative_signature("=$A$1*B2", 2, 1), "R1C1*R[0]C[-1]");
+    }
+
+    #[test]
+    fn sheet_names_that_look_like_references_are_not_shifted() {
+        assert_eq!(shift_relative("=Q1!A1", 0, 1).unwrap(), "=Q1!A2");
+        assert_eq!(
+            shift_relative("=SUM(FY24!B2:B3)", 1, 0).unwrap(),
+            "=SUM(FY24!C2:C3)"
+        );
     }
 
     #[test]

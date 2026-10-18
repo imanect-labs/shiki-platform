@@ -637,3 +637,41 @@ async fn an_unplaced_toc_goes_after_the_cover() {
     );
     client.close().await;
 }
+
+/// 表の中の文字も within で探せ、長い範囲の詳細読み取りは打ち切りを明示する。
+#[tokio::test]
+async fn text_inside_tables_can_be_replaced_and_long_reads_say_where_they_stop() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let (name, mut client) = fresh(&env).await;
+    let body = (0..110).fold(String::new(), |mut acc, i| {
+        acc.push_str("<p>段落 ");
+        acc.push_str(&i.to_string());
+        acc.push_str("</p>");
+        acc
+    });
+    apply_ok(
+        &mut client,
+        &[json!({"op": "replace", "target": "all", "html": format!("<table><tr><th>地域</th><th>売上</th></tr><tr><td>首都圏</td><td>612</td></tr></table>{body}")})],
+    )
+    .await;
+    let overview = run::read_overview(&mut client, &name, 0).await.unwrap();
+    let table = id_of(&overview, "表 ");
+    let text = apply_ok(
+        &mut client,
+        &[json!({"op": "replace_text", "find": "612", "replace": "628", "within": table})],
+    )
+    .await;
+    assert!(text.contains("1 か所を置き換えました"), "{text}");
+    // 中身が変わったので ID を読み直す。
+    let overview = run::read_overview(&mut client, &name, 0).await.unwrap();
+    let table = id_of(&overview, "表 ");
+    let last = id_of(&overview, "「段落 109」");
+    let blocks = run::read_blocks(&mut client, &table, Some(&last))
+        .await
+        .unwrap();
+    assert!(blocks.contains("手前までで打ち切りました"), "{blocks}");
+    client.close().await;
+}

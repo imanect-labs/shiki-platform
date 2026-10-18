@@ -27,6 +27,21 @@ function numberFormatKey(code) {
   return key;
 }
 
+/**
+ * 1899-12-30 基準のシリアル値（Rust の date_serial）を、この文書の基準日（NullDate）の値にする。
+ * 1904 年方式のブックでは基準日が違い、そのまま入れると日付が 4 年ずれる。
+ */
+function docSerial(serial) {
+  let nd = null;
+  try {
+    nd = DOC.getPropertyValue("NullDate");
+  } catch (e) {
+    return serial;
+  }
+  const offset = (Date.UTC(nd.Year, nd.Month - 1, nd.Day) - Date.UTC(1899, 11, 30)) / 86400000;
+  return serial - offset;
+}
+
 function setCell(cell, v) {
   switch (v.t) {
     case "n":
@@ -42,7 +57,7 @@ function setCell(cell, v) {
       cell.setFormula(v.v ? "=TRUE()" : "=FALSE()");
       break;
     case "d":
-      cell.setValue(v.v);
+      cell.setValue(docSerial(v.v));
       // 表示形式が「標準」のままなら日付として見えるようにする（数値のまま表示されるのを防ぐ）。
       if (cell.getPropertyValue("NumberFormat") === 0) {
         cell.setPropertyValue("NumberFormat", numberFormatKey(v.fmt || "yyyy/mm/dd"));
@@ -487,8 +502,9 @@ OPS.data_validation = (op) => {
     const v = range.getPropertyValue("Validation");
     v.setPropertyValue("Type", I.sheet.ValidationType[op.type]);
     v.setPropertyValue("Operator", I.sheet.ConditionOperator[op.operator || "NONE"]);
-    v.setPropertyValue("Formula1", op.formula1 || "");
-    v.setPropertyValue("Formula2", op.formula2 || "");
+    const bound = (f) => (op.date_bounds && f !== undefined && f !== null && f !== "" ? String(docSerial(Number(f))) : f || "");
+    v.setPropertyValue("Formula1", bound(op.formula1));
+    v.setPropertyValue("Formula2", bound(op.formula2));
     v.setPropertyValue("IgnoreBlankCells", op.allow_blank !== false);
     if (op.type === "LIST") v.setPropertyValue("ShowList", short(op.show_list === false ? 0 : 1));
     if (op.input_message) {
@@ -718,9 +734,43 @@ const CALC_PAGE_PROPS = [
   "RightPageHeaderContent", "RightPageFooterContent", "PrintGrid",
 ];
 
+/**
+ * シートのページスタイル。ほかのシートと共有していたら、このシート用に複製して付け替える
+ * （Calc のページスタイルは同じスタイルを使う全シートに効くので、1 枚の印刷設定が他のシートまで変わる）。
+ */
+function ownPageStyle(sheet) {
+  const fam = DOC.getStyleFamilies().getByName("PageStyles");
+  const name = sheet.getPropertyValue("PageStyle");
+  const sheets = DOC.getSheets();
+  let shared = false;
+  for (let i = 0; i < sheets.getCount(); i++) {
+    const other = sheets.getByIndex(i);
+    if (other.getName() !== sheet.getName() && other.getPropertyValue("PageStyle") === name) shared = true;
+  }
+  if (!shared) return fam.getByName(name);
+  let own = `${name}（${sheet.getName()}）`;
+  for (let n = 2; fam.hasByName(own); n++) own = `${name}（${sheet.getName()}）${n}`;
+  const src = fam.getByName(name);
+  const copy = DOC.createInstance("com.sun.star.style.PageStyle");
+  fam.insertByName(own, copy);
+  rememberInserted(fam, own);
+  for (const prop of Array.from(src.getPropertySetInfo().getProperties())) {
+    // 読み取り専用・複製できない属性（スタイルの名前など）は飛ばす。
+    if (prop.Attributes & 16) continue;
+    try {
+      copy.setPropertyValue(prop.Name, src.getPropertyValue(prop.Name));
+    } catch (e) {
+      // 種類によって書けない属性。
+    }
+  }
+  rememberProps(sheet, ["PageStyle"]);
+  sheet.setPropertyValue("PageStyle", own);
+  return copy;
+}
+
 OPS.page_setup = (op) => {
   const sheet = getSheet(op.sheet);
-  const st = DOC.getStyleFamilies().getByName("PageStyles").getByName(sheet.getPropertyValue("PageStyle"));
+  const st = ownPageStyle(sheet);
   rememberProps(st, CALC_PAGE_PROPS);
   const areas = sheet.getPrintAreas();
   onRollback(() => sheet.setPrintAreas(areas));
@@ -810,6 +860,14 @@ OPS.page_setup = (op) => {
 HANDLERS["calc.apply"] = (req) => {
   requireKind("calc");
   const results = [];
+  // シート名の無い操作が書いた作業中のシート（add_sheet・freeze が途中で作業中のシートを変えても、
+  // 読み戻しは書いたシートを読むため）。
+  let activeBefore = null;
+  try {
+    activeBefore = DOC.getCurrentController().getActiveSheet().getName();
+  } catch (e) {
+    // view の無い読み込み。
+  }
   atomically(req.label, () => {
     for (let i = 0; i < req.ops.length; i++) {
       const op = req.ops[i];
@@ -825,5 +883,5 @@ HANDLERS["calc.apply"] = (req) => {
       }
     }
   });
-  return { results };
+  return { results, active_before: activeBefore };
 };

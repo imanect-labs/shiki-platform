@@ -106,7 +106,22 @@ impl Cx {
                 m.insert(key.into(), v);
             }
         }
-        m.insert("sheet".into(), self.sheet(sheet.as_deref()));
+        // 印刷範囲にシート名を書いたら、そのシートが対象（操作の sheet と食い違えば誤り）。
+        let area_sheet = match print_area {
+            Some(Patch::Set(r)) => self.area(r)?.sheet,
+            _ => None,
+        };
+        if let (Some(a), Some(op_sheet)) = (area_sheet.as_deref(), sheet.as_deref()) {
+            if self.resolve(a) != self.resolve(op_sheet) {
+                return Err(self.err(format!(
+                    "print_area のシート「{a}」と sheet「{op_sheet}」が違います（どちらかにそろえてください）"
+                )));
+            }
+        }
+        m.insert(
+            "sheet".into(),
+            self.sheet(area_sheet.as_deref().or(sheet.as_deref())),
+        );
         if let Some(o) = orientation {
             m.insert(
                 "landscape".into(),
@@ -213,6 +228,8 @@ impl Cx {
                 value2,
             } => {
                 m.insert("type".into(), "DATE".into());
+                // 境界は 1899-12-30 基準のシリアル値。エンジンが文書の基準日へ直す。
+                m.insert("date_bounds".into(), true.into());
                 m.insert("operator".into(), condition_operator(*operator).into());
                 let d1 = date_serial(value)
                     .ok_or_else(|| {
