@@ -137,6 +137,26 @@ pub(crate) fn relax_op(v: &mut serde_json::Value) {
     }
     if name == "header" || name == "footer" {
         obj.remove("target");
+        // 中身（text・align・size）を content の外に書いた形。
+        if !obj.contains_key("content") && obj.contains_key("text") {
+            let mut content = serde_json::Map::new();
+            for k in ["text", "align", "size"] {
+                if let Some(x) = obj.remove(k) {
+                    content.insert(k.into(), x);
+                }
+            }
+            obj.insert("content".into(), serde_json::Value::Object(content));
+        }
+    }
+    // 改ページの位置を target に書いた形。
+    if name == "page_break" && !obj.contains_key("before") {
+        if let Some(t) = obj.remove("target") {
+            obj.insert("before".into(), t);
+        }
+    }
+    // 切り替えの操作で enabled を書き忘れた形は「有効にする」。
+    if (name == "title_page" || name == "track_changes") && !obj.contains_key("enabled") {
+        obj.insert("enabled".into(), serde_json::Value::Bool(true));
     }
     // シートを足す操作の名前を sheet に書いた形。
     if name == "add_sheet" && !obj.contains_key("name") {
@@ -238,12 +258,25 @@ mod coerce_tests {
 
     #[test]
     fn relaxes_summary_wrapped_contents_and_header_targets() {
-        let mut v = json!({"op": "page_setup", "summary": "x", "page_setup": {"paper": "A4"}});
-        super::relax_op(&mut v);
-        assert_eq!(v, json!({"op": "page_setup", "paper": "A4"}));
-        let mut h = json!({"op": "header", "target": "b0-0000", "content": {"text": "社外秘"}});
-        super::relax_op(&mut h);
-        assert!(h.get("target").is_none());
+        let mut setup = json!({"op": "page_setup", "summary": "x", "page_setup": {"paper": "A4"}});
+        super::relax_op(&mut setup);
+        assert_eq!(setup, json!({"op": "page_setup", "paper": "A4"}));
+        let mut header =
+            json!({"op": "header", "target": "b0-0000", "content": {"text": "社外秘"}});
+        super::relax_op(&mut header);
+        assert!(header.get("target").is_none());
+        let mut footer = json!({"op": "footer", "text": "&[Page]", "align": "center"});
+        super::relax_op(&mut footer);
+        assert_eq!(
+            footer["content"],
+            json!({"text": "&[Page]", "align": "center"})
+        );
+        let mut page_break = json!({"op": "page_break", "target": "b3-0000"});
+        super::relax_op(&mut page_break);
+        assert_eq!(page_break["before"], json!("b3-0000"));
+        let mut track = json!({"op": "track_changes"});
+        super::relax_op(&mut track);
+        assert_eq!(track["enabled"], json!(true));
     }
 
     #[test]
