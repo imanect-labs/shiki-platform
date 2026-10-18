@@ -167,8 +167,10 @@ export function ChromeMenu({
       <DropdownMenuContent align="end" collisionPadding={12} className="w-64">
         {title ? (
           <>
-            <DropdownMenuLabel className="line-clamp-2 text-[13px] font-semibold text-foreground">
-              {title}
+            {/* 2 行で省略する。余白（py）と同じ要素に line-clamp を付けると、余白の分だけ 3 行目が
+                覗くため、省略は内側の要素で行う。 */}
+            <DropdownMenuLabel className="text-[13px] font-semibold text-foreground">
+              <span className="line-clamp-2 [overflow-wrap:anywhere]">{title}</span>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
           </>
