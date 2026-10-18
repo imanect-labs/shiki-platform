@@ -348,7 +348,7 @@ export function GenUiComparison({ comparison }: { comparison: ComparisonProps })
       title={comparison.title || "比較"}
       testId="genui-comparison"
     >
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto overscroll-x-contain">
         <table className="w-full border-collapse text-[13px]">
           <thead>
             <tr className="shiki-dash-bottom">

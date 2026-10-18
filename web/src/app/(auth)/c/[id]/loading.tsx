@@ -6,7 +6,7 @@ export default function ConversationLoading() {
   return (
     <div className="flex h-full flex-col" aria-busy aria-label="読み込み中">
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-8">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-8 max-md:pt-[calc(4.5rem+env(safe-area-inset-top))]">
           {/* ユーザー発話（右）→ アシスタント（左）の交互骨組み */}
           <div className="flex justify-end">
             <Skeleton className="h-10 w-1/2 rounded-2xl" />
@@ -27,8 +27,9 @@ export default function ConversationLoading() {
       </div>
 
       <div className="bg-background">
-        <div className="mx-auto w-full max-w-3xl px-4 py-4">
-          <Skeleton className="h-[88px] w-full rounded-[26px]" />
+        <div className="mx-auto w-full max-w-3xl px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-4 md:pt-3">
+          {/* スマホは 1 行のバー、PC は 2 段（実物の高さに合わせて跳ねないように）。 */}
+          <Skeleton className="h-[54px] w-full rounded-[26px] md:h-[88px]" />
         </div>
       </div>
     </div>

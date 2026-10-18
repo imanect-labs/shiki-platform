@@ -17,7 +17,6 @@ import { cn } from "@/lib/utils";
 import { GenUiForm } from "./form";
 import { GenUiButton } from "./gen-button";
 import { GenUiTable } from "./gen-table";
-import { GenUiChart } from "./gen-chart";
 import { GenUiStat } from "./gen-stat";
 import { GenUiQuestionCard } from "./gen-question-card";
 import { GenUiPlanCard } from "./gen-plan-card";
@@ -47,6 +46,15 @@ const GenUiMap = dynamic(() => import("./gen-map").then((m) => m.GenUiMap), {
   ),
 });
 
+/// グラフ（recharts）も重いので、chart ノードが現れたときだけ読み込む（チャットの初期表示に
+/// 載せない）。読み込み中はグラフと同じ高さの枠を置く。
+const GenUiChart = dynamic(() => import("./gen-chart").then((m) => m.GenUiChart), {
+  ssr: false,
+  loading: () => (
+    <div className="h-72 w-full animate-pulse rounded-xl border border-border/60 bg-secondary/40" />
+  ),
+});
+
 /// レンダラの深さ上限（サーバ検証の MAX_DEPTH=8 に余裕を足した防御値）。
 const MAX_RENDER_DEPTH = 10;
 
@@ -69,7 +77,7 @@ export function SpecRenderer({ spec, className }: { spec: unknown; className?: s
     <div
       data-testid="genui-root"
       className={cn(
-        "my-2 rounded-xl border border-border bg-card p-4 shadow-[var(--elevation-1,0_1px_2px_rgb(0_0_0/0.06))]",
+        "my-2 min-w-0 rounded-xl border border-border bg-card p-4 shadow-[var(--elevation-1,0_1px_2px_rgb(0_0_0/0.06))] max-md:p-3",
         className,
       )}
     >

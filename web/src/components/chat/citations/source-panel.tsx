@@ -3,8 +3,8 @@
 /// 出典パネル（issue #505・案 D）。
 ///
 /// 本文の番号や一覧の行を押すと開き、「回答の記述」と「原文」を並べて見せる。‹ › で
-/// 本文で使われた引用を番号順に送る。広い画面のチャットページでは右カラム、狭い画面と
-/// 分割ビューのチャットパネルでは右からのシートで出す。
+/// 本文で使われた引用を番号順に送る。広い画面のチャットページでは右カラム、中くらいの画面と
+/// 分割ビューのチャットパネルでは右からのシート、スマホ（md 未満）では下からのシート（約 70%）で出す。
 ///
 /// 原文は検索結果のチャンク（抜粋）まで。前後の文脈や原本上の位置へのジャンプは、
 /// 位置情報を保存するコア側の対応（提案資料の 3 章）が入ってから足す。
@@ -15,6 +15,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { cn } from "@/lib/utils";
 import { citationAt } from "@/lib/citation";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { SourceBlocks, hasBlockAnchor } from "./source-blocks";
 import { PdfCitePreview } from "./pdf-cite-preview";
 import {
@@ -54,13 +55,21 @@ export function SourcePanelAside({ className }: { className?: string }) {
   );
 }
 
-/// シート版（狭い画面・分割ビュー）。
+/// シート版（狭い画面・分割ビュー）。スマホは親指の届く下から、本文を上に少し残す高さで出す。
 export function SourcePanelSheet() {
   const panel = useSourcePanel();
   const message = usePanelMessage(panel);
+  const wide = useMediaQuery("(min-width: 768px)");
   return (
     <Sheet open={!!panel?.state} onOpenChange={(o) => (!o ? panel?.close() : undefined)}>
-      <SheetContent side="right" className="max-w-md [&>button:last-child]:hidden" data-testid="source-panel">
+      <SheetContent
+        side={wide ? "right" : "bottom"}
+        className={cn(
+          "[&>button:last-child]:hidden",
+          wide ? "max-w-md" : "h-[70dvh] max-h-[70dvh]",
+        )}
+        data-testid="source-panel"
+      >
         <DialogPrimitive.Title className="sr-only">出典</DialogPrimitive.Title>
         <DialogPrimitive.Description className="sr-only">回答の記述と、根拠にした原文</DialogPrimitive.Description>
         {panel?.state && message ? (
@@ -143,7 +152,7 @@ export function SourcePanelView({
 
   return (
     <div className="flex h-full min-h-0 flex-col" onKeyDown={onKeyDown}>
-      <div className="flex items-center gap-2.5 px-4 py-3 shiki-dash-bottom">
+      <div className="flex items-center gap-2.5 px-4 py-3 shiki-dash-bottom max-md:py-2 max-md:pr-2">
         <DocIcon meta={meta} className="shrink-0" />
         <div className="min-w-0 flex-1">
           <h2
@@ -224,11 +233,11 @@ export function SourcePanelView({
             <SourceBlocks
               key={`${citation.chunk_id}:${citation.version}`}
               citation={citation}
-              fallback={<div className="h-full overflow-y-auto scrollbar-subtle">{snippet}</div>}
+              fallback={<div className="h-full overflow-y-auto overscroll-contain scrollbar-subtle">{snippet}</div>}
               className="h-full max-h-none pr-1"
             />
           ) : (
-            <div className="h-full overflow-y-auto pr-1 scrollbar-subtle">{snippet}</div>
+            <div className="h-full overflow-y-auto overscroll-contain pr-1 scrollbar-subtle">{snippet}</div>
           )}
         </div>
 
@@ -241,7 +250,7 @@ export function SourcePanelView({
       {/* 下部は 1 本の帯: 同じ文書の他の箇所（左）と原本を開く（右）。 */}
       <div className="flex items-center gap-3 px-4 py-2.5 shiki-dash-top">
           {siblings.length > 0 ? (
-            <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scrollbar-subtle">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overscroll-x-contain scrollbar-subtle">
               <span className="shrink-0 text-[11.5px] text-muted-foreground">同じ文書</span>
               {siblings.map((p) => (
                 <button
@@ -249,7 +258,7 @@ export function SourcePanelView({
                   type="button"
                   onClick={() => onNavigate(p.n)}
                   title={(p.citation.heading_path ?? []).join(" › ") || p.citation.snippet.trim()}
-                  className="inline-flex max-w-[12rem] shrink-0 items-center gap-1.5 rounded-full border border-border py-0.5 pl-1 pr-2.5 text-[12px] text-foreground/75 transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex max-w-[12rem] shrink-0 items-center gap-1.5 rounded-full border border-border py-0.5 pl-1 pr-2.5 text-[12px] text-foreground/75 transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-9"
                 >
                   <NumberBadge n={p.n} colorIndex={color} />
                   <span className="truncate">{(p.citation.heading_path ?? []).slice(-1)[0] ?? p.citation.snippet.trim()}</span>
@@ -311,7 +320,7 @@ function NavButton({
       title={label}
       disabled={disabled}
       onClick={onClick}
-      className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-35"
+      className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-35 max-md:size-10 pointer-coarse:size-10 pointer-coarse:rounded-full"
     >
       {children}
     </button>

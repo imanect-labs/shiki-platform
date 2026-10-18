@@ -13,8 +13,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-/// 承認モードの表示定義（#350）。ラベル・説明・アイコンを一箇所に集約する。
-const MODES: {
+/// 承認モードの表示定義（#350）。ラベル・説明・アイコンを一箇所に集約する
+/// （PC のセレクタとスマホの実行モードカードで共用する）。
+export const APPROVAL_MODES: {
   mode: AutonomousMode;
   label: string;
   description: string;
@@ -42,8 +43,8 @@ const MODES: {
   },
 ];
 
-function modeDef(mode: AutonomousMode) {
-  return MODES.find((m) => m.mode === mode) ?? MODES[0];
+export function approvalModeDef(mode: AutonomousMode) {
+  return APPROVAL_MODES.find((m) => m.mode === mode) ?? APPROVAL_MODES[0];
 }
 
 /// 自律スレッドの承認モードセレクタ（実行中トグル可・#350）。
@@ -62,7 +63,7 @@ export function ApprovalModeSelect({
   bypassAllowed?: boolean;
   className?: string;
 }) {
-  const current = modeDef(mode);
+  const current = approvalModeDef(mode);
   const Icon = current.icon;
   return (
     <DropdownMenu>
@@ -73,7 +74,7 @@ export function ApprovalModeSelect({
           title={`承認モード: ${current.label} — ${current.description}`}
           data-testid="approval-mode-trigger"
           className={cn(
-            "inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-[13px] font-medium transition-colors",
+            "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[13px] font-medium transition-colors",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
             current.danger
               ? "border-destructive/40 bg-destructive/10 text-destructive"
@@ -88,7 +89,7 @@ export function ApprovalModeSelect({
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-80 p-1.5">
         <DropdownMenuLabel className="uppercase tracking-wide">承認モード</DropdownMenuLabel>
-        {MODES.map((m) => {
+        {APPROVAL_MODES.map((m) => {
           const ItemIcon = m.icon;
           const disabled = m.mode === "bypass" && !bypassAllowed;
           return (

@@ -180,7 +180,7 @@ export function DocChatPanel({
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                className="inline-flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-foreground/80 outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-foreground/80 outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-10"
                 title="会話を切り替える"
               >
                 <MessagesSquare className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
@@ -224,7 +224,7 @@ export function DocChatPanel({
               onClick={startNewConversation}
               disabled={busy}
               data-testid={`${testIdPrefix}-new-conversation`}
-              className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12px] text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12px] text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 pointer-coarse:min-h-10 pointer-coarse:text-[13px]"
               title="新しい会話を開始（この会話は履歴に残ります）"
             >
               {busy ? (

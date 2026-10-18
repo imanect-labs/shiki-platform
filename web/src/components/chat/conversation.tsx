@@ -3,11 +3,12 @@
 import * as React from "react";
 
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Clock3, FileDown, LayoutGrid, Sparkles } from "lucide-react";
+import { AlertTriangle, ArrowDown, Clock3, FileDown, LayoutGrid, Sparkles } from "lucide-react";
 
 import {
   cancelRun,
   getAutonomousMode,
+  getThread,
   getThreadMessages,
   postMessage,
   isEmptyContent,
@@ -16,6 +17,7 @@ import {
   setAutonomousMode,
   streamMessage,
   submitApproval,
+  subscribeThreadsChanged,
   ThreadNotFound,
   type ApprovalRequest,
   type AutonomousMode,
@@ -42,6 +44,7 @@ import { SaveAsAppDialog, specHasChatOnlyAction } from "@/components/artifacts/s
 import { Loader } from "@/components/prompt-kit/loader";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { useMediaQuery } from "@/hooks/use-media-query";
+import { useStickToBottom } from "@/hooks/use-stick-to-bottom";
 import { MessageFooter } from "./message-footer";
 import { MessageCitationsProvider, SourcePanelProvider } from "./citations/citation-context";
 import { CitationSources } from "./citations/citation-sources";
@@ -208,6 +211,12 @@ export function Conversation({
   const openShare = React.useCallback(() => setShareOpen(true), []);
   // UI アクション（chat.submit 等）成功後に会話を再読込するためのキー。
   const [reloadKey, setReloadKey] = React.useState(0);
+  // 確定行（memo）へ渡すので安定した参照にする（トークンごとに過去の行を描き直さない）。
+  const reload = React.useCallback(() => setReloadKey((k) => k + 1), []);
+  // スレッド名（クロームのタイトル・⋯ メニューの見出し）。page のときだけ引く。
+  const threadTitle = useThreadTitle(isPanel ? null : threadId);
+  // 追従スクロール（下端付近にいる間だけ追う・離れたら「最新へ」）。
+  const { scrollerRef, contentRef, showJump, scrollToBottom } = useStickToBottom();
   // 順番待ちの発話（サーバ受理済み・生成未開始）。ストリーム行の下に並べる。
   const [queued, setQueued] = React.useState<QueuedMessage[]>([]);
   // 生成中に押された genui アクション（質問カードの回答・計画の承認）。生成が終わって
@@ -220,7 +229,6 @@ export function Conversation({
   React.useEffect(() => {
     queuedCountRef.current = queued.length;
   }, [queued]);
-  const bottomRef = React.useRef<HTMLDivElement | null>(null);
   // 停止関数。`cancelServer` でサーバ側もキャンセル（明示停止）。離脱は継続（呼ばない）。
   const cancelRef = React.useRef<((opts?: { cancelServer?: boolean }) => void) | null>(null);
   const sentPending = React.useRef(false);
@@ -465,6 +473,8 @@ export function Conversation({
     ) => {
       setError(null);
       setNotice(null);
+      // 自分の発話は必ず見える位置へ（読み返し中に送っても、送ったものと返答を追う）。
+      scrollToBottom();
       // ホームからの初回メッセージは選択時点の値を明示指定する（state 初期化のタイミングに依存しない）。
       const runAutonomous = autonomousOverride ?? autonomous;
       // 入力欄で選んだモデル（#553）。未選択は Auto（組織の既定）。
@@ -521,7 +531,7 @@ export function Conversation({
         model,
       );
     },
-    [threadId, makeHandlers, autonomous],
+    [threadId, makeHandlers, autonomous, scrollToBottom],
   );
 
   /// 生成中に押された genui アクションを積む（生成完了時に onDone が流す）。
@@ -692,9 +702,10 @@ export function Conversation({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId, reloadKey]);
 
-  React.useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [messages.length, stream?.text, stream?.thinking, stream?.tools.length]);
+  // 免責文とアクションの常時表示は「最新の回答」にだけ付ける（生成中は新しい回答を待つ）。
+  const latestAssistantId = stream
+    ? null
+    : ([...messages].reverse().find((m) => m.role === "assistant")?.id ?? null);
 
   if (notFound) {
     return (
@@ -710,87 +721,113 @@ export function Conversation({
         <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
           {/* page: 統一ヘッダスロットへタイトル＋共有/設定を注入（横バー二重を解消）。
               panel: 注入しない（分割ビューは自前ヘッダを持つ・null を返すだけ）。 */}
-          {!isPanel ? <ChatPageHeaderSlot title="会話" onShare={openShare} /> : null}
+          {!isPanel ? (
+            <ChatPageHeaderSlot title={threadTitle || "新しいチャット"} onShare={openShare} />
+          ) : null}
           <ThreadShareDialog open={shareOpen} onOpenChange={setShareOpen} threadId={threadId} />
 
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="relative flex min-h-0 flex-1 flex-col">
             <div
-              className={cn(
-                "mx-auto flex w-full flex-col gap-6 px-4 py-8",
-                isPanel ? "max-w-none px-4 py-5" : "max-w-3xl",
-              )}
+              ref={scrollerRef}
+              className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain"
+              data-testid="conversation-scroller"
             >
-              {/* パネルの空会話は「何ができるか」を軽く案内する（空白のままにしない）。 */}
-              {isPanel && messages.length === 0 && !stream && !notFound && !error ? (
-                <div
-                  className="flex flex-col items-center gap-2 px-6 py-14 text-center"
-                  data-testid="panel-empty-hint"
-                >
-                  <Sparkles className="size-6 text-muted-foreground/70" aria-hidden />
-                  <p className="text-sm font-medium text-foreground">
-                    このドキュメントについて AI に相談できます
-                  </p>
-                  <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">
-                    質問・要約・編集の依頼ができます。本文を選択して「AI
-                    に依頼」を押すと、選択箇所を指定して指示できます。
-                  </p>
-                </div>
-              ) : null}
-              {messages.map((m) =>
-                m.role === "user" ? (
-                  <UserRow key={m.id} blocks={m.content} />
-                ) : (
-                  <AssistantRow
-                    key={m.id}
+              <div
+                ref={contentRef}
+                className={cn(
+                  "mx-auto flex w-full min-w-0 flex-col gap-6 px-4 py-8",
+                  // スマホ: 上端の浮いたボタン（メニュー・新しいチャット・⋯）の下に本文が潜り込めるよう空ける。
+                  isPanel ? "max-w-none px-4 py-5" : "max-w-3xl max-md:pt-[calc(4.5rem+env(safe-area-inset-top))]",
+                )}
+              >
+                {/* パネルの空会話は「何ができるか」を軽く案内する（空白のままにしない）。 */}
+                {isPanel && messages.length === 0 && !stream && !notFound && !error ? (
+                  <div
+                    className="flex flex-col items-center gap-2 px-6 py-14 text-center"
+                    data-testid="panel-empty-hint"
+                  >
+                    <Sparkles className="size-6 text-muted-foreground/70" aria-hidden />
+                    <p className="text-sm font-medium text-foreground">
+                      このドキュメントについて AI に相談できます
+                    </p>
+                    <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">
+                      質問・要約・編集の依頼ができます。本文を選択して「AI
+                      に依頼」を押すと、選択箇所を指定して指示できます。
+                    </p>
+                  </div>
+                ) : null}
+                {messages.map((m) =>
+                  m.role === "user" ? (
+                    <UserRow key={m.id} blocks={m.content} />
+                  ) : (
+                    <AssistantRow
+                      key={m.id}
+                      threadId={threadId}
+                      messageId={m.id}
+                      blocks={m.content}
+                      invokedActions={m.invokedActions}
+                      onUiAction={reload}
+                      latest={m.id === latestAssistantId}
+                      compactDisclaimer={isPanel}
+                    />
+                  ),
+                )}
+                {stream ? (
+                  <StreamingRow
+                    stream={stream}
+                    onApproval={decideApproval}
                     threadId={threadId}
-                    messageId={m.id}
-                    blocks={m.content}
-                    invokedActions={m.invokedActions}
-                    onUiAction={() => setReloadKey((k) => k + 1)}
+                    onQueueUiAction={onQueueUiAction}
                   />
-                ),
-              )}
-              {stream ? (
-                <StreamingRow
-                  stream={stream}
-                  onApproval={decideApproval}
-                  threadId={threadId}
-                  onQueueUiAction={onQueueUiAction}
-                />
-              ) : null}
-              {/* 順番待ちは「AI が答えている最中に積んだ次の発話」なので応答の後ろに置く。 */}
-              {queued.map((q) => (
-                <QueuedRow key={q.key} item={q} onCancel={() => cancelQueued(q)} />
-              ))}
-              {notice ? (
-                <div
-                  className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400"
-                  data-testid="mode-clamp-notice"
-                >
-                  {notice}
-                </div>
-              ) : null}
-              {error ? (
-                <div
-                  // e2e が「異常終了なのに緑」を見逃さないための足がかり（実測で 429 の run が
-                  // 完走扱いになっていた）。role="alert" は読み上げにも要る。
-                  data-testid="conversation-error"
-                  role="alert"
-                  className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-                >
-                  {error}
-                </div>
-              ) : null}
-              <div ref={bottomRef} />
+                ) : null}
+                {/* 順番待ちは「AI が答えている最中に積んだ次の発話」なので応答の後ろに置く。 */}
+                {queued.map((q) => (
+                  <QueuedRow key={q.key} item={q} onCancel={() => cancelQueued(q)} />
+                ))}
+                {notice ? (
+                  <div
+                    className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400"
+                    data-testid="mode-clamp-notice"
+                  >
+                    {notice}
+                  </div>
+                ) : null}
+                {error ? (
+                  <div
+                    // e2e が「異常終了なのに緑」を見逃さないための足がかり（実測で 429 の run が
+                    // 完走扱いになっていた）。role="alert" は読み上げにも要る。
+                    data-testid="conversation-error"
+                    role="alert"
+                    className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+                  >
+                    {error}
+                  </div>
+                ) : null}
+              </div>
             </div>
+            {/* 読み返し中に新しい内容が来たら、コンポーザの上中央に「最新へ」を浮かせる。 */}
+            {showJump ? (
+              <button
+                type="button"
+                onClick={() => scrollToBottom("smooth")}
+                aria-label="最新のメッセージへ移動"
+                data-testid="jump-to-latest"
+                className="absolute bottom-3 left-1/2 z-10 flex size-10 -translate-x-1/2 items-center justify-center rounded-full border border-border bg-background/95 text-foreground/80 shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ArrowDown className="size-[18px]" aria-hidden />
+              </button>
+            ) : null}
           </div>
 
           <div className="bg-background">
-            <div className={cn("mx-auto w-full px-4 py-4", isPanel ? "max-w-none pb-3" : "max-w-3xl")}>
+            <div
+              className={cn(
+                "mx-auto w-full px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-4 md:pt-3",
+                isPanel ? "max-w-none md:pb-3" : "max-w-3xl",
+              )}
+            >
               <Composer
-                onSubmit={(text, attachments, context, command) =>
-                  void submitFromComposer(text, attachments, context, command)
-                }
+                onSubmit={submitFromComposer}
                 onStop={stop}
                 streaming={stream !== null}
                 autonomous={autonomous}
@@ -801,13 +838,6 @@ export function Conversation({
                 threadId={threadId}
                 autoFocus
               />
-              {/* 狭い幅では前半を落として 1 行に収める（「す。」だけが次の行に落ちないように）。 */}
-              <p className="mt-2 text-center text-xs text-muted-foreground">
-                {isPanel ? null : (
-                  <span className="hidden sm:inline">Shiki は社内文書を参照して回答します。</span>
-                )}
-                誤りが含まれる場合があります。
-              </p>
             </div>
           </div>
         </div>
@@ -869,7 +899,37 @@ function finalizeStream(
 
 // ── 行レンダリング ───────────────────────────────────────────────────
 
-function UserRow({ blocks, footer }: { blocks: ContentBlock[]; footer?: React.ReactNode }) {
+/// 会話画面のスレッド名。作成直後の自動命名・改名に追従するため、一覧の変更通知で読み直す。
+function useThreadTitle(threadId: string | null): string | null {
+  const [title, setTitle] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    setTitle(null);
+    if (!threadId) return;
+    let active = true;
+    const load = () =>
+      getThread(threadId)
+        .then((t) => active && setTitle(t.title.trim() || null))
+        .catch(() => {
+          /* 読めなければ「新しいチャット」のまま（会話そのものは別に読み込む） */
+        });
+    void load();
+    const unsubscribe = subscribeThreadsChanged(() => void load());
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [threadId]);
+  return title;
+}
+
+/// 確定したユーザー発話。memo して、生成中のトークンで過去の行を描き直さない。
+const UserRow = React.memo(function UserRow({
+  blocks,
+  footer,
+}: {
+  blocks: ContentBlock[];
+  footer?: React.ReactNode;
+}) {
   const text = blocks
     .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
     .map((b) => b.text)
@@ -881,7 +941,7 @@ function UserRow({ blocks, footer }: { blocks: ContentBlock[]; footer?: React.Re
   );
   return (
     <Message className="justify-end">
-      <div className="flex max-w-[85%] flex-col items-end gap-1.5">
+      <div className="flex min-w-0 max-w-[85%] flex-col items-end gap-1.5">
         {selections.map((s, i) => (
           <span
             key={i}
@@ -896,7 +956,7 @@ function UserRow({ blocks, footer }: { blocks: ContentBlock[]; footer?: React.Re
             {files.map((f) => (
               <span
                 key={f.node_id}
-                className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[12px] text-foreground/80"
+                className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[12px] text-foreground/80 [overflow-wrap:anywhere]"
               >
                 📎 {f.name}
               </span>
@@ -904,7 +964,7 @@ function UserRow({ blocks, footer }: { blocks: ContentBlock[]; footer?: React.Re
           </div>
         ) : null}
         {text ? (
-          <MessageContent className="rounded-2xl bg-secondary px-4 py-2.5 text-[15px] leading-relaxed text-secondary-foreground">
+          <MessageContent className="max-w-full rounded-2xl bg-secondary px-4 py-2.5 text-[15px] leading-relaxed text-secondary-foreground [overflow-wrap:anywhere]">
             {text}
           </MessageContent>
         ) : null}
@@ -912,7 +972,7 @@ function UserRow({ blocks, footer }: { blocks: ContentBlock[]; footer?: React.Re
       </div>
     </Message>
   );
-}
+});
 
 /// 順番待ちの発話 1 件。吹き出しは送信済みと同じで、下に控えめな状態と取り消しだけ添える
 /// （サーバは受理済み＝本当に送れているので、見た目を弱めて「未送信」に見せない）。
@@ -943,7 +1003,7 @@ function QueuedRow({ item, onCancel }: { item: QueuedMessage; onCancel: () => vo
               <button
                 type="button"
                 onClick={onCancel}
-                className="rounded underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                className="relative rounded underline-offset-2 transition-colors after:absolute after:-inset-x-2 after:-inset-y-3 hover:text-foreground hover:underline pointer-coarse:underline"
               >
                 取り消す
               </button>
@@ -955,12 +1015,16 @@ function QueuedRow({ item, onCancel }: { item: QueuedMessage; onCancel: () => vo
   );
 }
 
-function AssistantRow({
+/// 確定したアシスタントの回答。memo して、生成中のトークンで過去の行を描き直さない
+/// （props は確定メッセージの blocks と安定したコールバックだけ）。
+const AssistantRow = React.memo(function AssistantRow({
   threadId,
   messageId,
   blocks,
   invokedActions,
   onUiAction,
+  latest = false,
+  compactDisclaimer = false,
 }: {
   threadId: string;
   messageId: string;
@@ -968,6 +1032,10 @@ function AssistantRow({
   /// このメッセージで実行済みの単発 UI アクション（サーバ記録・#410）。
   invokedActions?: readonly string[];
   onUiAction: () => void;
+  /// 最新の回答（アクションを常に出し、下に免責文を 1 回だけ添える）。
+  latest?: boolean;
+  /// 免責文を短くする（分割ビューのパネル）。
+  compactDisclaimer?: boolean;
 }) {
   const thinking = blocks
     .filter((b): b is Extract<ContentBlock, { type: "thinking" }> => b.type === "thinking")
@@ -1089,15 +1157,23 @@ function AssistantRow({
           <CitationSources />
           {evidenceOpen ? <EvidenceTable /> : null}
           {text ? (
-            <MessageFooter text={text}>
+            <MessageFooter text={text} pinned={latest}>
               <EvidenceToggle open={evidenceOpen} onToggle={() => setEvidenceOpen((v) => !v)} />
             </MessageFooter>
+          ) : null}
+          {latest ? (
+            <p className="mt-3 text-center text-[11.5px] leading-relaxed text-muted-foreground" data-testid="chat-disclaimer">
+              {compactDisclaimer ? null : (
+                <span className="hidden sm:inline">Shiki は社内文書を参照して回答します。</span>
+              )}
+              誤りが含まれる場合があります。
+            </p>
           ) : null}
         </div>
       </Message>
     </MessageCitationsProvider>
   );
-}
+});
 
 /// generative UI ブロック＝描画＋「アプリとして保存」導線（Phase 6 UX）。
 /// chat.submit（チャット専用アクション）を含むスペックはアプリにできないため非活性にする。
@@ -1123,6 +1199,12 @@ function GenUiBlock({ spec }: { spec: unknown }) {
           アプリとして保存
         </button>
       </div>
+      {/* 無効の理由は title（ホバー）だけだとタッチで読めないので、タッチ端末では文で添える。 */}
+      {chatOnly ? (
+        <p className="mt-1 hidden text-right text-[11px] text-muted-foreground pointer-coarse:block">
+          チャット専用の操作を含むため、アプリにはできません
+        </p>
+      ) : null}
       {!chatOnly ? (
         <SaveAsAppDialog open={saveOpen} onOpenChange={setSaveOpen} spec={spec} />
       ) : null}
@@ -1141,9 +1223,9 @@ function ArtifactFiles({ files }: { files: { node_id: string; name: string }[] }
           type="button"
           onClick={() => void triggerDownload(f.node_id)}
           title={`${f.name} をダウンロード`}
-          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[12px] text-foreground/80 transition-colors hover:border-primary/40 hover:bg-secondary hover:text-foreground"
+          className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[12px] text-foreground/80 transition-colors hover:border-primary/40 hover:bg-secondary hover:text-foreground pointer-coarse:min-h-9 [overflow-wrap:anywhere]"
         >
-          <FileDown className="size-3.5 text-primary" aria-hidden />
+          <FileDown className="size-3.5 shrink-0 text-primary" aria-hidden />
           {f.name}
         </button>
       ))}
