@@ -18,6 +18,7 @@ import {
   adoptVersion,
   listVersions,
   restoreVersion,
+  startDownload,
   versionDownloadUrl,
   type FileVersionResponse,
   type NodeResponse,
@@ -59,7 +60,8 @@ export function VersionsDialog({
     if (!fileId) return;
     try {
       const { url } = await versionDownloadUrl(fileId, version);
-      window.open(url, "_blank", "noopener,noreferrer");
+      // window.open は await 後だと iOS Safari でブロックされる（startDownload 参照）。
+      startDownload(url);
     } catch (e) {
       toast({
         variant: "destructive",
@@ -121,7 +123,8 @@ export function VersionsDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-80 overflow-y-auto rounded-lg border border-border">
+        {/* min-w-0: grid（DialogContent）の子が折り返さないメタ情報の幅まで広がらないように。 */}
+        <div className="min-w-0 rounded-lg border border-border sm:max-h-80 sm:overflow-y-auto sm:overscroll-contain">
           {list.loading ? (
             <LoadingRow />
           ) : list.error ? (

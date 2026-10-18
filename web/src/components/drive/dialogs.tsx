@@ -133,6 +133,8 @@ export function TextPromptDialog({
               onChange={(e) => {
                 selectionPendingRef.current = false;
                 setValue(e.target.value);
+                // 「同じ名前があります」等のサーバ由来の理由は、直し始めたら消す。
+                if (error) setError(null);
               }}
               onPointerDown={() => {
                 selectionPendingRef.current = false;
@@ -228,6 +230,10 @@ export function ConfirmDialog({
     </Dialog>
   );
 }
+
+/// パンくずの 1 段（タッチでは高さ 40px）。
+const CRUMB_BUTTON =
+  "flex h-8 shrink-0 items-center rounded-md px-1.5 transition-colors hover:bg-accent hover:text-foreground pointer-coarse:h-10";
 
 /// 移動先フォルダを選ぶダイアログ。フォルダ階層をたどって「ここへ移動」する。
 /// 移動対象（とその子孫）は循環を避けるため選択不可（サーバも 400 で拒否）。
@@ -337,21 +343,39 @@ export function MoveDialog({
           <DialogDescription>移動先のフォルダを選んでください。</DialogDescription>
         </DialogHeader>
 
-        {/* パンくず: 祖先はクリックで戻れる（現在地は非活性）。 */}
-        <nav aria-label="移動先の階層" className="flex flex-wrap items-center gap-0.5 text-sm text-muted-foreground">
+        {/* パンくず: 祖先はクリックで戻れる（現在地は非活性）。深い階層は中間を … にまとめ、
+            1 行に収める（折り返して何段にもならないように）。… は 1 つ上の隠れた階層へ戻る。 */}
+        <nav
+          aria-label="移動先の階層"
+          className="flex min-w-0 items-center gap-0.5 text-sm text-muted-foreground"
+        >
           <Home className="size-4 shrink-0" aria-hidden />
           {path.map((seg, i) => {
             const isCurrent = i === path.length - 1;
+            // 先頭（ドライブ）と末尾 2 つ以外は隠す。最初に隠れる位置に … を 1 つだけ出す。
+            const hidden = path.length > 3 && i > 0 && i < path.length - 2;
+            if (hidden && i !== 1) return null;
             return (
-              <span key={`${seg.id ?? "root"}-${i}`} className="flex items-center gap-0.5">
+              <span key={`${seg.id ?? "root"}-${i}`} className="flex min-w-0 items-center gap-0.5">
                 {i > 0 ? <ChevronRight className="size-3.5 shrink-0" aria-hidden /> : null}
-                {isCurrent ? (
-                  <span className="max-w-[160px] truncate font-medium text-foreground">{seg.name}</span>
+                {hidden ? (
+                  <button
+                    type="button"
+                    aria-label="上の階層へ戻る"
+                    onClick={() => setPath((p) => p.slice(0, p.length - 2))}
+                    className={CRUMB_BUTTON}
+                  >
+                    …
+                  </button>
+                ) : isCurrent ? (
+                  <span className="min-w-0 max-w-[160px] truncate px-1 font-medium text-foreground">
+                    {seg.name}
+                  </span>
                 ) : (
                   <button
                     type="button"
                     onClick={() => setPath((p) => p.slice(0, i + 1))}
-                    className="max-w-[160px] truncate rounded px-1 hover:bg-accent hover:text-foreground"
+                    className={cn(CRUMB_BUTTON, "min-w-0 max-w-[160px] truncate")}
                   >
                     {seg.name}
                   </button>
@@ -361,7 +385,8 @@ export function MoveDialog({
           })}
         </nav>
 
-        <div className="max-h-[55vh] min-h-[280px] overflow-y-auto rounded-lg border border-border">
+        {/* 一覧の高さはシート（92dvh）の中に収まる範囲に抑え、外側と二重に伸びないようにする。 */}
+        <div className="max-h-[min(55dvh,28rem)] min-h-[200px] min-w-0 overflow-y-auto overscroll-contain rounded-lg border border-border">
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" aria-hidden />

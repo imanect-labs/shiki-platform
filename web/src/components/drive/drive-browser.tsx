@@ -1,37 +1,15 @@
 "use client";
 
 import * as React from "react";
+import { flushSync } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import {
-  ArrowDownUp,
-  Check,
-  FileSpreadsheet,
-  FileText,
-  FolderPlus,
-  LayoutGrid,
-  List as ListIcon,
-  NotebookPen,
-  Loader2,
-  Plus,
-  Presentation,
-  Search,
-  Upload,
-  UploadCloud,
-  X,
-} from "lucide-react";
+import { FileText, FolderPlus, Loader2, Search, Upload, UploadCloud, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "@/components/ui/use-toast";
+import { MobilePageTitle } from "@/components/shell/page-header-context";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
 import { useCreateContent } from "@/hooks/use-create-content";
 import { useMe } from "@/hooks/use-me";
@@ -43,11 +21,11 @@ import {
   createFolder,
   deleteFile,
   deleteFolder,
+  isConflict,
   listChildren,
   triggerDownload,
   updateFile,
   updateFolder,
-  uploadFile,
   type CrumbResponse,
   type NodeResponse,
   type SortField,
@@ -55,21 +33,19 @@ import {
 import { cn } from "@/lib/utils";
 
 import { ConfirmDialog, MoveDialog, TextPromptDialog } from "./dialogs";
+import { DriveChrome } from "./drive-chrome";
+import { NewFab, NewMenuDesktop, type CreateHandlers } from "./new-menu";
 import { NodeCard } from "./node-card";
 import { NodeRow, type NodeAction } from "./node-row";
-import { Breadcrumbs, ListHeader, LoadingRow } from "./primitives";
+import { Breadcrumbs, ListHeader, LoadingRow, MobileBreadcrumbs } from "./primitives";
 import { ShareDialog } from "./share-dialog";
+import { SortMenu, ViewToggle, type ViewMode } from "./toolbar";
+import { UploadConflictDialog } from "./upload-conflict-dialog";
+import { useDriveUploads } from "./use-drive-uploads";
 import { VersionsDialog } from "./versions-dialog";
 
 /// 列見出しをクリックした時の既定の並び順（名前は昇順、更新日時・サイズは降順）。
 const DEFAULT_DESC: Record<SortField, boolean> = { name: false, updated: true, size: true };
-
-/// 並べ替えメニューの選択肢（ラベルは列見出しと統一）。
-const SORT_OPTIONS: { field: SortField; label: string }[] = [
-  { field: "name", label: "名前" },
-  { field: "updated", label: "更新日時" },
-  { field: "size", label: "サイズ" },
-];
 
 /// Office 文書としてブラウザ編集できる拡張子（Collabora 対応・Task 11.7）。
 const OFFICE_EXTENSIONS = [".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp"];
@@ -79,14 +55,16 @@ function isOfficeFile(name: string): boolean {
   return OFFICE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
-type ViewMode = "list" | "grid";
-
 type DialogKind = "newfolder" | "rename" | "move" | "share" | "versions" | "delete" | null;
 
-type UploadState = { name: string; fraction: number };
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /// Drive 本体。フォルダブラウズ（無限スクロール・パンくず・ソート）＋ D&D アップロード
 /// ＋ 移動/リネーム/削除/共有/版履歴を提供する。現在フォルダは `?folder=<id>` で表す。
+///
+/// スマホ（md 未満）はタイトルバーが無いので、本文の先頭に見出し（パンくず＋フォルダ名）を
+/// 置き、その右に並べ替えと表示切替を 1 段で並べる。新規作成・アップロードは右下の
+/// 「＋ 新規」に集め、検索とドライブの切替は右上の浮いたボタン（DriveChrome）から出す。
 export function DriveBrowser() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -104,13 +82,16 @@ export function DriveBrowser() {
       setDesc(DEFAULT_DESC[field]);
     }
   };
-  const activeSortLabel = SORT_OPTIONS.find((o) => o.field === sort)?.label ?? "名前";
 
   // 表示モード（一覧/グリッド）。好みは localStorage に保存して次回も維持する。
   const [view, setView] = React.useState<ViewMode>("list");
   React.useEffect(() => {
-    const saved = window.localStorage.getItem("drive:view");
-    if (saved === "grid" || saved === "list") setView(saved);
+    try {
+      const saved = window.localStorage.getItem("drive:view");
+      if (saved === "grid" || saved === "list") setView(saved);
+    } catch {
+      /* 読めない環境（プライベートモード等）は既定のまま */
+    }
   }, []);
   const changeView = (v: ViewMode) => {
     setView(v);
@@ -123,14 +104,19 @@ export function DriveBrowser() {
 
   // 新規作成（ノート/ドキュメント/スライド/CSV）→ エディタ遷移。チャット「+」の
   // 「作成」サブメニューと共用の集約フック（#333）。保存先は現在フォルダ。
-  const {
-    createNoteAndOpen,
-    createDocumentAndOpen,
-    createSheetAndOpen,
-    createSlideAndOpen,
-    createCsvAndOpen,
-  } =
-    useCreateContent({ parentId: folderId });
+  const content = useCreateContent({ parentId: folderId });
+  const create: CreateHandlers = {
+    note: () => void content.createNoteAndOpen(),
+    document: () => void content.createDocumentAndOpen(),
+    sheet: () => void content.createSheetAndOpen(),
+    slide: () => void content.createSlideAndOpen(),
+    csv: () => void content.createCsvAndOpen(),
+  };
+
+  const download = (node: NodeResponse) =>
+    triggerDownload(node.id).catch((e) =>
+      toast({ variant: "destructive", title: "ダウンロードに失敗しました", description: errorText(e) }),
+    );
 
   // Office 文書を開く。編集セッションが発行できればエディタへ、Office 未配備（503）・
   // 未対応（404）はダウンロードへフォールバックする（開けないのに遷移して空画面を見せない）。
@@ -145,13 +131,7 @@ export function DriveBrowser() {
           description: "ダウンロードで開きます。管理者に office profile の有効化を確認してください。",
         });
       }
-      triggerDownload(node.id).catch((err) =>
-        toast({
-          variant: "destructive",
-          title: "ダウンロードに失敗しました",
-          description: err instanceof Error ? err.message : String(err),
-        }),
-      );
+      void download(node);
     }
   };
 
@@ -169,12 +149,27 @@ export function DriveBrowser() {
   }, [searchInput]);
   const searching = query.length > 0;
   // 内容一致（permission-aware RAG）。名前一致と統合してスコア順で出す。
-  const content = useContentSearch(query, searching);
+  const contentSearch = useContentSearch(query, searching);
+
+  // スマホの検索欄は右上の検索アイコンで開く（入力中・?q= 付きで来た時は開いたまま）。
+  const [mobileSearchOpen, setMobileSearchOpen] = React.useState(Boolean(urlQuery));
+  const searchInputRef = React.useRef<HTMLInputElement>(null);
+  const searchVisible = mobileSearchOpen || searchInput.length > 0;
+  const toggleMobileSearch = React.useCallback(() => {
+    if (searchVisible) {
+      setMobileSearchOpen(false);
+      setSearchInput("");
+      return;
+    }
+    // 欄を出してから同じタップの中でフォーカスする（iOS はユーザー操作の外で focus しても
+    // キーボードを出さないため、effect に回さず flushSync で描画を先に確定させる）。
+    flushSync(() => setMobileSearchOpen(true));
+    searchInputRef.current?.focus();
+  }, [searchVisible]);
 
   const [crumbs, setCrumbs] = React.useState<CrumbResponse[]>([]);
   const [dialog, setDialog] = React.useState<DialogKind>(null);
   const [activeNode, setActiveNode] = React.useState<NodeResponse | null>(null);
-  const [uploads, setUploads] = React.useState<UploadState[]>([]);
   const [dragging, setDragging] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   // 「新しいバージョン」用の隠し入力と対象ノード。
@@ -198,8 +193,10 @@ export function DriveBrowser() {
   const sentinelRef = useInfiniteSentinel(list.loadMore, list.hasMore && !list.loading);
   // 表示する内容一致行（名前一致にも出るファイルは名前行に譲る）。件数表示と共有する。
   const contentRows = searching
-    ? content.hits.filter((h) => !list.items.some((n) => n.id === h.fileId))
+    ? contentSearch.hits.filter((h) => !list.items.some((n) => n.id === h.fileId))
     : [];
+
+  const uploader = useDriveUploads({ folderId, onChanged: list.reload });
 
   // パンくず（現在フォルダが変わるたび取得）。ルートは空。
   React.useEffect(() => {
@@ -220,78 +217,30 @@ export function DriveBrowser() {
     };
   }, [folderId]);
 
-  const navigateTo = (id: string | null) => {
-    router.push(id ? `/drive?folder=${id}` : "/drive", { scroll: false });
-  };
-
-  // --- アップロード（D&D / ボタン） ---
-  const runUploads = async (files: File[]) => {
-    if (files.length === 0) return;
-    let succeeded = 0;
-    let failed = 0;
-    for (const file of files) {
-      setUploads((prev) => [...prev, { name: file.name, fraction: 0 }]);
-      try {
-        await uploadFile({
-          file,
-          parentId: folderId ?? undefined,
-          onProgress: (fraction) =>
-            setUploads((prev) =>
-              prev.map((u) => (u.name === file.name ? { ...u, fraction } : u)),
-            ),
-        });
-        succeeded += 1;
-      } catch (e) {
-        failed += 1;
-        toast({
-          variant: "destructive",
-          title: `「${file.name}」のアップロードに失敗`,
-          description: e instanceof Error ? e.message : String(e),
-        });
-      } finally {
-        setUploads((prev) => prev.filter((u) => u.name !== file.name));
-      }
-    }
-    // 成功が 1 件もなければ「完了」トーストは出さない（失敗トーストと矛盾させない）。
-    if (succeeded > 0) {
-      toast({
-        title:
-          failed === 0
-            ? "アップロードが完了しました"
-            : `${succeeded} 件をアップロードしました（${failed} 件失敗）`,
-      });
-      list.reload();
-    }
-  };
+  const navigateTo = React.useCallback(
+    (id: string | null) => {
+      router.push(id ? `/drive?folder=${id}` : "/drive", { scroll: false });
+    },
+    [router],
+  );
+  // スマホ左上の「戻る」。親はパンくずの末尾の 1 つ手前（無ければドライブ直下）。
+  const parentId = crumbs.length >= 2 ? crumbs[crumbs.length - 2].id : null;
+  const goParent = React.useCallback(() => navigateTo(parentId), [navigateTo, parentId]);
+  const back = React.useMemo(
+    () => (folderId ? { onClick: goParent, label: "親フォルダへ戻る" } : undefined),
+    [folderId, goParent],
+  );
 
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
-    const files = Array.from(e.dataTransfer.files);
-    void runUploads(files);
+    void uploader.uploadFiles(Array.from(e.dataTransfer.files));
   };
 
-  // 既存ファイルへ新しいバージョンをアップロードする（target_node_id 指定）。
-  const uploadNewVersion = async (file: File, node: NodeResponse) => {
-    setUploads((prev) => [...prev, { name: file.name, fraction: 0 }]);
-    try {
-      await uploadFile({
-        file,
-        targetNodeId: node.id,
-        onProgress: (fraction) =>
-          setUploads((prev) => prev.map((u) => (u.name === file.name ? { ...u, fraction } : u))),
-      });
-      toast({ title: "新しいバージョンをアップロードしました", description: node.name });
-      list.reload();
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        title: "バージョンの追加に失敗しました",
-        description: e instanceof Error ? e.message : String(e),
-      });
-    } finally {
-      setUploads((prev) => prev.filter((u) => u.name !== file.name));
-    }
+  const openUpload = () => fileInputRef.current?.click();
+  const openNewFolder = () => {
+    setActiveNode(null);
+    setDialog("newfolder");
   };
 
   // --- 行アクション ---
@@ -306,23 +255,10 @@ export function DriveBrowser() {
         else if (node.name.toLowerCase().endsWith(".csv")) router.push(`/csv/${node.id}`);
         else if (node.name.toLowerCase().endsWith(".slide")) router.push(`/slides/${node.id}`);
         else if (isOfficeFile(node.name)) void openOffice(node);
-        else
-          triggerDownload(node.id).catch((e) =>
-            toast({
-              variant: "destructive",
-              title: "ダウンロードに失敗しました",
-              description: e instanceof Error ? e.message : String(e),
-            }),
-          );
+        else void download(node);
         break;
       case "download":
-        triggerDownload(node.id).catch((e) =>
-          toast({
-            variant: "destructive",
-            title: "ダウンロードに失敗しました",
-            description: e instanceof Error ? e.message : String(e),
-          }),
-        );
+        void download(node);
         break;
       case "newversion":
         versionTargetRef.current = node;
@@ -336,204 +272,165 @@ export function DriveBrowser() {
 
   const closeDialog = () => setDialog(null);
 
+  const currentName = crumbs.length > 0 ? crumbs[crumbs.length - 1].name : null;
+  const countLabel = !list.loading && list.items.length > 0
+    ? `${list.items.length}${list.hasMore ? "+" : ""} 件`
+    : null;
+
+  const searchCounts =
+    searching && !list.loading && !contentSearch.loading && contentRows.length + list.items.length > 0
+      ? [
+          contentRows.length > 0 ? `内容一致 ${contentRows.length} 件` : null,
+          list.items.length > 0 ? `名前一致 ${list.items.length}${list.hasMore ? "+" : ""} 件` : null,
+        ]
+          .filter(Boolean)
+          .join("・")
+      : null;
+
   return (
-    <div className="flex flex-col gap-4">
-      {/* コマンドバー: 左=新規作成＋操作＋並べ替え＋表示切替 / 右=検索。高さ(h-9)・角丸(lg)を揃える。 */}
-      <div className="flex flex-wrap items-center gap-2.5">
-        {/* 新規作成（丸＋）。ドキュメント/スライド/スプレッドシート（現状ダミー）。 */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button size="icon" className="size-9 shrink-0 rounded-full" aria-label="新規作成">
-              <Plus className="size-5" aria-hidden />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-52">
-            <DropdownMenuLabel>新規作成</DropdownMenuLabel>
-            <DropdownMenuItem
-              onSelect={() => void createNoteAndOpen()}
-              data-testid="new-note"
-            >
-              <NotebookPen className="text-primary" aria-hidden />
-              ノート
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => void createDocumentAndOpen()}
-              data-testid="new-document"
-            >
-              <FileText className="text-blue-600" aria-hidden />
-              ドキュメント
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => void createSheetAndOpen()}
-              data-testid="new-sheet"
-            >
-              <FileSpreadsheet className="text-emerald-600" aria-hidden />
-              スプレッドシート（Excel）
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => void createSlideAndOpen()}
-              data-testid="new-slide"
-            >
-              <Presentation className="text-orange-500" aria-hidden />
-              スライド
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => void createCsvAndOpen()}
-              data-testid="new-csv"
-            >
-              <FileSpreadsheet className="text-green-600" aria-hidden />
-              CSV（表・SQL 分析）
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+    <div className="flex flex-col gap-4 max-md:gap-3">
+      <DriveChrome
+        current="home"
+        back={back}
+        search={{ open: searchVisible, onToggle: toggleMobileSearch }}
+      />
 
-        <Button
-          variant="outline"
-          className="rounded-lg"
-          onClick={() => {
-            setActiveNode(null);
-            setDialog("newfolder");
-          }}
-        >
-          <FolderPlus className="size-4" aria-hidden />
-          新規フォルダ
-        </Button>
-        <Button className="rounded-lg" onClick={() => fileInputRef.current?.click()}>
-          <Upload className="size-4" aria-hidden />
-          アップロード
-        </Button>
+      {/* スマホの見出し（タイトルバーの代わり）。右に並べ替えと表示切替を 1 段で置く。
+          フォルダの中では上に短いパンくず（親へ戻る＋上の階層の …）と件数を出す。 */}
+      {folderId ? (
+        <div className="-mb-2 flex min-h-8 items-center justify-between gap-3 text-[12.5px] md:hidden">
+          <MobileBreadcrumbs crumbs={crumbs} onNavigate={navigateTo} />
+          {countLabel ? (
+            <span className="shrink-0 tabular-nums text-muted-foreground">{countLabel}</span>
+          ) : null}
+        </div>
+      ) : null}
+      <MobilePageTitle
+        className="px-0 pb-0"
+        eyebrow={folderId ? undefined : `マイドライブ${countLabel ? `・${countLabel}` : ""}`}
+        title={
+          <span className="line-clamp-2 [overflow-wrap:anywhere]">
+            {folderId ? (currentName ?? "…") : "ドライブ"}
+          </span>
+        }
+      >
+        <div className="flex shrink-0 items-center gap-1 self-end">
+          <SortMenu
+            sort={sort}
+            desc={desc}
+            onSortChange={(f) => setSort(f)}
+            onDescChange={setDesc}
+          />
+          <ViewToggle view={view} onChange={changeView} />
+        </div>
+      </MobilePageTitle>
 
-        <div className="mx-0.5 hidden h-6 w-px bg-border/70 sm:block" aria-hidden />
+      {/* コマンドバー（PC）: 左=新規作成＋操作＋並べ替え＋表示切替 / 右=検索。高さ(h-9)・角丸(lg)を揃える。
+          スマホは検索欄だけを、右上の検索アイコンで開いた時に出す。 */}
+      <div
+        className={cn(
+          "flex flex-wrap items-center gap-2.5",
+          !searchVisible && "max-md:hidden",
+        )}
+      >
+        <div className="contents max-md:hidden">
+          {/* 新規作成（丸＋）。ノート/ドキュメント/スライド/スプレッドシート/CSV。 */}
+          <NewMenuDesktop create={create} />
+          <Button variant="outline" className="rounded-lg" onClick={openNewFolder}>
+            <FolderPlus className="size-4" aria-hidden />
+            新規フォルダ
+          </Button>
+          <Button className="rounded-lg" onClick={openUpload}>
+            <Upload className="size-4" aria-hidden />
+            アップロード
+          </Button>
 
-        {/* 並べ替え */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              className="rounded-lg text-muted-foreground hover:text-foreground"
-              aria-label="並べ替え"
-            >
-              <ArrowDownUp className="size-4" aria-hidden />
-              <span className="hidden sm:inline">{activeSortLabel}</span>
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-44">
-            <DropdownMenuLabel>並べ替え</DropdownMenuLabel>
-            {SORT_OPTIONS.map((o) => (
-              <DropdownMenuItem key={o.field} onSelect={() => setSort(o.field)}>
-                <Check
-                  className={cn("size-4", sort === o.field ? "opacity-100" : "opacity-0")}
-                  aria-hidden
-                />
-                {o.label}
-              </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => setDesc(false)}>
-              <Check className={cn("size-4", !desc ? "opacity-100" : "opacity-0")} aria-hidden />
-              昇順
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => setDesc(true)}>
-              <Check className={cn("size-4", desc ? "opacity-100" : "opacity-0")} aria-hidden />
-              降順
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+          <div className="mx-0.5 h-6 w-px bg-border/70" aria-hidden />
 
-        {/* 表示切替（一覧/グリッド） */}
-        <div className="flex items-center rounded-lg border border-border p-0.5">
-          <button
-            type="button"
-            onClick={() => changeView("list")}
-            aria-label="一覧表示"
-            aria-pressed={view === "list"}
-            className={cn(
-              "flex size-7 items-center justify-center rounded-md transition-colors",
-              view === "list"
-                ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            <ListIcon className="size-4" aria-hidden />
-          </button>
-          <button
-            type="button"
-            onClick={() => changeView("grid")}
-            aria-label="グリッド表示"
-            aria-pressed={view === "grid"}
-            className={cn(
-              "flex size-7 items-center justify-center rounded-md transition-colors",
-              view === "grid"
-                ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            <LayoutGrid className="size-4" aria-hidden />
-          </button>
+          <SortMenu sort={sort} desc={desc} onSortChange={(f) => setSort(f)} onDescChange={setDesc} />
+          <ViewToggle view={view} onChange={changeView} />
         </div>
 
         {/* 検索（右寄せ） */}
-        <div className="relative ml-auto w-full sm:w-60 md:w-72">
+        <div className="relative w-full md:ml-auto md:w-72">
           <Search
             className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/70"
             aria-hidden
           />
           <Input
+            ref={searchInputRef}
             type="search"
+            enterKeyHint="search"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              // 確定でキーボードを閉じる（結果は打鍵に追従して出ているため送信はしない）。
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
             placeholder="ドライブを検索"
             aria-label="ドライブを検索"
-            className="h-9 rounded-lg pl-9 pr-9"
+            className="h-9 rounded-lg pl-9 pr-9 max-md:h-11"
           />
           {searchInput ? (
             <button
               type="button"
-              onClick={() => setSearchInput("")}
+              onClick={() => {
+                setSearchInput("");
+                searchInputRef.current?.focus();
+              }}
               aria-label="検索をクリア"
-              className="absolute right-2 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="absolute right-1.5 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground pointer-coarse:size-9"
             >
               <X className="size-4" aria-hidden />
             </button>
           ) : null}
         </div>
-
-        {/* 隠しファイル入力（アップロード／新バージョン） */}
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          hidden
-          onChange={(e) => {
-            void runUploads(Array.from(e.target.files ?? []));
-            e.target.value = "";
-          }}
-        />
-        <input
-          ref={versionInputRef}
-          type="file"
-          hidden
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            const node = versionTargetRef.current;
-            if (file && node) void uploadNewVersion(file, node);
-            versionTargetRef.current = null;
-            e.target.value = "";
-          }}
-        />
       </div>
 
+      {/* 隠しファイル入力（アップロード／新バージョン）。ツールバーの外に置き、スマホで
+          ツールバーを隠しても FAB のシートから開けるようにする。 */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          void uploader.uploadFiles(Array.from(e.target.files ?? []));
+          e.target.value = "";
+        }}
+      />
+      <input
+        ref={versionInputRef}
+        type="file"
+        hidden
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          const node = versionTargetRef.current;
+          if (file && node) void uploader.uploadNewVersion(file, node);
+          versionTargetRef.current = null;
+          e.target.value = "";
+        }}
+      />
+
       {/* 現在地（パンくず/検索結果）と件数。パンくずはサブフォルダにいる時だけ
-          （ルートはシェルの見出し「ドライブ」と重複するため出さない）。 */}
-      {searching || crumbs.length > 0 || (!list.loading && list.items.length > 0) ? (
-        <div className="flex min-h-7 items-center justify-between gap-3 px-1">
+          （ルートはシェルの見出し「ドライブ」と重複するため出さない）。スマホは見出しが
+          現在地と件数を出すので、検索中だけこの行を出す。 */}
+      {searching || crumbs.length > 0 || countLabel ? (
+        <div
+          className={cn(
+            "flex min-h-7 items-center justify-between gap-x-3 gap-y-1 px-1",
+            // 検索中だけ折り返す（件数をクエリの下へ回す）。パンくずは 1 行で省略する。
+            searching ? "flex-wrap" : "max-md:hidden",
+          )}
+        >
           <div className="min-w-0">
             {searching ? (
-              <p className="truncate text-sm text-muted-foreground">
-                「{query}」の検索結果
+              // 長いクエリでも「詳細検索」が切れないよう、クエリだけを省略する。
+              <p className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm text-muted-foreground">
+                <span className="min-w-0 max-w-full truncate">「{query}」の検索結果</span>
                 <a
                   href={`/search?q=${encodeURIComponent(query)}`}
-                  className="ml-2 text-xs text-primary underline-offset-2 hover:underline"
+                  className="relative shrink-0 text-xs text-primary underline-offset-2 hover:underline pointer-coarse:py-1.5"
                 >
                   詳細検索（引用・絞込の内訳）
                 </a>
@@ -543,35 +440,27 @@ export function DriveBrowser() {
             ) : null}
           </div>
           {searching ? (
-            !list.loading && !content.loading && contentRows.length + list.items.length > 0 ? (
-              <span className="shrink-0 text-[13px] tabular-nums text-muted-foreground">
-                {[
-                  contentRows.length > 0 ? `内容一致 ${contentRows.length} 件` : null,
-                  list.items.length > 0
-                    ? `名前一致 ${list.items.length}${list.hasMore ? "+" : ""} 件`
-                    : null,
-                ]
-                  .filter(Boolean)
-                  .join("・")}
-              </span>
+            searchCounts ? (
+              <span className="shrink-0 text-[13px] tabular-nums text-muted-foreground">{searchCounts}</span>
             ) : null
-          ) : !list.loading && list.items.length > 0 ? (
-            <span className="shrink-0 text-[13px] tabular-nums text-muted-foreground">
-              {list.items.length}
-              {list.hasMore ? "+" : ""} 件
-            </span>
+          ) : countLabel ? (
+            <span className="shrink-0 text-[13px] tabular-nums text-muted-foreground">{countLabel}</span>
           ) : null}
         </div>
       ) : null}
 
-      {/* アップロード進捗 */}
-      {uploads.length > 0 ? (
-        <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">
-          {uploads.map((u) => (
-            <div key={u.name} className="flex items-center gap-3">
+      {/* アップロード進捗（1 件ごとの一意 ID で管理） */}
+      {uploader.uploads.length > 0 ? (
+        <div
+          className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3"
+          aria-live="polite"
+          aria-label="アップロード中"
+        >
+          {uploader.uploads.map((u) => (
+            <div key={u.id} className="flex items-center gap-3">
               <Loader2 className="size-4 shrink-0 animate-spin text-primary" aria-hidden />
               <span className="min-w-0 flex-1 truncate text-sm">{u.name}</span>
-              <div className="h-1.5 w-28 overflow-hidden rounded-full bg-secondary">
+              <div className="h-1.5 w-28 shrink-0 overflow-hidden rounded-full bg-secondary max-sm:w-20">
                 <div
                   className="h-full rounded-full bg-primary transition-[width] duration-150"
                   style={{ width: `${Math.round(u.fraction * 100)}%` }}
@@ -597,6 +486,8 @@ export function DriveBrowser() {
           // 決めると、サイドバーの出現（768px で 0→288px）の分だけ一覧が狭くなり、
           // 同じ幅なのに名前列だけが潰れる（#466）。
           "@container rule-soft relative min-h-[16rem] rounded-xl transition-colors",
+          // スマホは行の余白（px-3）の分だけ外へ広げ、行の中身を見出しと同じ 16px の線に揃える。
+          "max-md:-mx-3",
           dragging && "bg-primary/5 ring-2 ring-primary/30",
         )}
       >
@@ -619,24 +510,21 @@ export function DriveBrowser() {
           <p className="px-3 py-10 text-center text-sm text-destructive">{list.error}</p>
         ) : list.items.length === 0 ? (
           searching ? (
-            content.loading ? (
+            contentSearch.loading ? (
               <LoadingRow />
-            ) : content.hits.length === 0 ? (
+            ) : contentSearch.hits.length === 0 ? (
               <EmptyState
                 icon={Search}
+                className="max-md:mx-3"
                 title="見つかりませんでした"
                 description={`「${query}」に名前・内容が一致するファイル・フォルダはありません。`}
               />
             ) : null
           ) : (
-            <EmptyState
-              icon={UploadCloud}
-              title="このフォルダは空です"
-              description="ファイルをドラッグ＆ドロップするか、アップロードボタンから追加できます。"
-            />
+            <EmptyFolder onUpload={openUpload} onNewFolder={openNewFolder} />
           )
         ) : view === "grid" ? (
-          <div className="grid grid-cols-2 gap-3 p-1 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+          <div className="grid grid-cols-2 gap-3 p-1 max-md:px-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
             {list.items.map((node) => (
               <NodeCard key={node.id} node={node} onAction={handleAction} />
             ))}
@@ -656,7 +544,15 @@ export function DriveBrowser() {
         )}
       </div>
 
+      {/* スマホの「＋ 新規」（アップロード／新規フォルダ／新規作成を 1 つに集約） */}
+      <NewFab create={create} onUpload={openUpload} onNewFolder={openNewFolder} />
+
       {/* ダイアログ群 */}
+      <UploadConflictDialog
+        conflicts={uploader.conflicts}
+        onResolve={(r) => void uploader.resolveConflicts(r)}
+      />
+
       <TextPromptDialog
         open={dialog === "newfolder"}
         onOpenChange={(o) => (o ? null : closeDialog())}
@@ -664,7 +560,13 @@ export function DriveBrowser() {
         label="フォルダ名"
         submitLabel="作成"
         onSubmit={async (name) => {
-          await createFolder(name, folderId ?? undefined);
+          try {
+            await createFolder(name, folderId ?? undefined);
+          } catch (e) {
+            // 入力欄の下に出る。番号だけのエラーにしない。
+            if (isConflict(e)) throw new Error("同じ名前のフォルダがあります");
+            throw e;
+          }
           list.reload();
         }}
       />
@@ -687,8 +589,13 @@ export function DriveBrowser() {
         submitLabel="変更"
         onSubmit={async (name) => {
           if (!activeNode) return;
-          if (activeNode.kind === "folder") await updateFolder(activeNode.id, { name });
-          else await updateFile(activeNode.id, { name });
+          try {
+            if (activeNode.kind === "folder") await updateFolder(activeNode.id, { name });
+            else await updateFile(activeNode.id, { name });
+          } catch (e) {
+            if (isConflict(e)) throw new Error("この場所に同じ名前のファイルまたはフォルダがあります");
+            throw e;
+          }
           list.reload();
         }}
       />
@@ -699,8 +606,13 @@ export function DriveBrowser() {
         node={activeNode}
         onMove={async (dest) => {
           if (!activeNode) return;
-          if (activeNode.kind === "folder") await updateFolder(activeNode.id, { move: dest });
-          else await updateFile(activeNode.id, { move: dest });
+          try {
+            if (activeNode.kind === "folder") await updateFolder(activeNode.id, { move: dest });
+            else await updateFile(activeNode.id, { move: dest });
+          } catch (e) {
+            if (isConflict(e)) throw new Error("移動先に同じ名前のファイルまたはフォルダがあります");
+            throw e;
+          }
           list.reload();
         }}
       />
@@ -736,6 +648,39 @@ export function DriveBrowser() {
   );
 }
 
+/// 空フォルダ。マウスの端末は D&D を案内し、タッチ（D&D が無い）はその場で追加できる
+/// ボタンを出す（スマホでは「＋ 新規」と同じ操作）。
+function EmptyFolder({ onUpload, onNewFolder }: { onUpload: () => void; onNewFolder: () => void }) {
+  return (
+    <EmptyState
+      icon={UploadCloud}
+      title="このフォルダは空です"
+      className="max-md:mx-3"
+      description={undefined}
+      action={
+        <div className="flex flex-col items-center gap-3">
+          <p className="max-w-sm text-sm text-muted-foreground pointer-coarse:hidden">
+            ファイルをドラッグ＆ドロップするか、アップロードボタンから追加できます。
+          </p>
+          <p className="hidden max-w-sm text-sm text-muted-foreground pointer-coarse:block">
+            ファイルをアップロードするか、フォルダを作って整理できます。
+          </p>
+          <div className="hidden flex-wrap justify-center gap-2 pointer-coarse:flex">
+            <Button variant="outline" onClick={onNewFolder}>
+              <FolderPlus className="size-4" aria-hidden />
+              新規フォルダ
+            </Button>
+            <Button onClick={onUpload}>
+              <Upload className="size-4" aria-hidden />
+              アップロード
+            </Button>
+          </div>
+        </div>
+      }
+    />
+  );
+}
+
 /// 内容一致（RAG）のヒット行。名前一致（NodeRow）の上に関連度順で並べ、
 /// スニペットで「なぜヒットしたか」を見せる。スコアは並び順にのみ使い表示しない
 /// （エンドユーザーに内部指標を見せない）。選択でファイルのあるフォルダへ移動。
@@ -754,12 +699,14 @@ function ContentHitRows({
           key={h.fileId}
           type="button"
           onClick={() => onOpen(h)}
-          className="shiki-dash-bottom flex w-full items-start gap-3 px-3 py-2.5 text-left outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+          className="shiki-dash-bottom flex w-full items-start gap-3 px-3 py-2.5 text-left outline-none transition-colors hover:bg-accent focus-visible:bg-accent active:bg-accent"
         >
           <FileText className="mt-0.5 size-[18px] shrink-0 text-primary" aria-hidden />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-medium text-foreground">{h.fileName}</span>
-            <span className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{h.snippet}</span>
+            <span className="mt-0.5 line-clamp-2 text-xs text-muted-foreground md:line-clamp-1">
+              {h.snippet}
+            </span>
           </span>
         </button>
       ))}

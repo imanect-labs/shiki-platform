@@ -11,7 +11,9 @@ export const metadata: Metadata = { title: "ドライブ" };
 /// `useSearchParams`（現在フォルダ）を含むため Suspense 境界で包む。
 export default function DriveHomePage() {
   return (
-    <PageContainer>
+    // スマホは浮いたボタンの直下から見出しを始め（上余白はシェルが確保済み）、
+    // 右下の「＋ 新規」に最後の行が隠れないよう下を空ける。
+    <PageContainer className="max-md:pb-28 max-md:pt-1">
       <Suspense fallback={<LoadingRow />}>
         <DriveBrowser />
       </Suspense>
