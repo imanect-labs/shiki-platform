@@ -75,14 +75,16 @@ export function FolderPicker({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           {stack.length > 1 ? (
             <button
               type="button"
               onClick={() => setStack((s) => s.slice(0, -1))}
-              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+              className="-ml-2 flex h-9 min-w-0 items-center gap-1 rounded-md px-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground pointer-coarse:h-11"
             >
-              <ChevronLeft className="size-4" aria-hidden /> 戻る
+              <ChevronLeft className="size-4 shrink-0" aria-hidden />
+              {/* どこへ戻るかを見せる（「戻る」だけだと深い階層で迷う）。 */}
+              <span className="truncate">{stack[stack.length - 2].name}へ戻る</span>
             </button>
           ) : (
             <span className="text-sm text-muted-foreground">{current.name}</span>
@@ -104,7 +106,8 @@ export function FolderPicker({
           ) : null}
         </div>
 
-        <div className="max-h-[55vh] min-h-[280px] overflow-y-auto rounded-lg border border-border">
+        {/* 一覧の高さはシート（92dvh）の中に収まる範囲に抑え、外側と二重に伸びないようにする。 */}
+        <div className="max-h-[min(55dvh,28rem)] min-h-[200px] min-w-0 overflow-y-auto overscroll-contain rounded-lg border border-border">
           {list.loading ? (
             <LoadingRow />
           ) : folders.length === 0 && !list.hasMore ? (
@@ -114,7 +117,7 @@ export function FolderPicker({
           ) : (
             <ul className="divide-y divide-border/60">
               {folders.map((n) => (
-                <li key={n.id} className="flex items-center gap-2 pr-2 transition-colors hover:bg-secondary">
+                <li key={n.id} className="flex items-center gap-2 pr-2 transition-colors pointer-fine:hover:bg-secondary">
                   <button
                     type="button"
                     onClick={() => setStack((s) => [...s, { id: n.id, name: n.name }])}

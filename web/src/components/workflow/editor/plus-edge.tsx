@@ -1,6 +1,7 @@
 "use client";
 
-/// エッジ（中点にホバーで現れる挿入プラスボタン付き・ポート名ラベル）。
+/// エッジ（中点の挿入プラスボタン付き・ポート名ラベル）。
+/// マウスではホバーで現れ、タッチ端末（hover が無い）では常時表示・大きめにする。
 
 import * as React from "react";
 import {
@@ -86,8 +87,8 @@ export function PlusEdge({
                   type="button"
                   aria-label="ここにブロックを挿入"
                   className={cn(
-                    "flex size-5 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-sm",
-                    "opacity-0 transition-opacity duration-fast group-hover/edge:opacity-100 focus-visible:opacity-100",
+                    "flex size-5 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-sm pointer-coarse:size-7",
+                    "transition-opacity duration-fast pointer-fine:opacity-0 pointer-fine:group-hover/edge:opacity-100 focus-visible:opacity-100",
                     "hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     (menuOpen || selected) && "opacity-100",
                   )}

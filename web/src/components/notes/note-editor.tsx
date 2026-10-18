@@ -23,12 +23,18 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import type { CollabProvider } from "@/lib/collab";
+import { cn } from "@/lib/utils";
 import { AiSuggestionMark } from "./ai-suggestion-mark";
 import { ShikiEmbed } from "./embed/shiki-embed-node";
 import { LivePreview } from "./live-preview";
 import { MarkdownClipboard } from "./markdown-clipboard";
 import { createSlashCommand, type SlashItem } from "./slash-command";
-import { NoteBubbleMenu, NoteToolbar, readNoteSelection } from "./note-toolbar";
+import {
+  NOTE_PROSE_CLASS,
+  NoteBubbleMenu,
+  NoteToolbar,
+  readNoteSelection,
+} from "./note-toolbar";
 import { YuiCodeBlock } from "./yui-code-block";
 
 /// 参加者カーソルの配色（design token に寄せた識別しやすい 8 色）。
@@ -86,7 +92,8 @@ export function NoteEditor({
         // javascript: 等のスキームを拒否（安全側の既定を明示）。
         protocols: ["http", "https", "mailto"],
       }),
-      Table.configure({ resizable: false }),
+      // 表は横スクロールの箱（tableWrapper）で包む（スマホで本文幅からはみ出さない）。
+      Table.configure({ resizable: false, renderWrapper: true }),
       TableRow,
       TableHeader,
       TableCell,
@@ -123,7 +130,7 @@ export function NoteEditor({
       immediatelyRender: false,
       editorProps: {
         attributes: {
-          class: "note-prose focus:outline-none",
+          class: NOTE_PROSE_CLASS,
           "data-testid": "note-editor",
         },
       },
@@ -161,7 +168,7 @@ export function NoteEditor({
   }, [editor, onSelectionChange]);
 
   return (
-    <div className="note-editor-root min-h-[50vh]">
+    <div className="note-editor-root flex min-h-[50vh] flex-col">
       {editor && editable ? <NoteToolbar editor={editor} /> : null}
       {editor && editable ? <NoteBubbleMenu editor={editor} /> : null}
       {editor && editable && <SuggestionReviewBar editor={editor} />}
@@ -197,11 +204,16 @@ function SuggestionReviewBar({ editor }: { editor: Editor }) {
   if (count === 0) return null;
   return (
     <div
-      className="sticky top-0 z-10 mb-3 flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm"
+      className={cn(
+        // PC: ツールバー（sticky top-0・約 45px）の直下に張り付く（裏に隠れない）。
+        "sticky top-12 z-10 mb-3 flex items-center gap-3 rounded-lg border border-primary/30 bg-[color-mix(in_oklab,var(--primary)_5%,var(--card))] px-3 py-2 text-sm shadow-sm",
+        // スマホ: 上はツールバーが張り付くので、本文の下端（シート・セーフエリアの上）に固定する。
+        "max-md:bottom-[max(0.5rem,env(safe-area-inset-bottom))] max-md:top-auto max-md:order-last max-md:mb-0 max-md:mt-4 max-md:gap-2 max-md:shadow-lg",
+      )}
       data-testid="note-suggestion-bar"
     >
       <Sparkles className="size-4 text-primary" aria-hidden />
-      <span className="flex-1 font-medium">AI からの提案があります</span>
+      <span className="min-w-0 flex-1 font-medium max-md:text-[13px]">AI からの提案があります</span>
       <Button
         type="button"
         size="sm"

@@ -86,6 +86,7 @@ function ThreadRow({
   const { kind, title, detail } = threadDisplay(thread);
   const href = threadHref(thread);
   const [menuOpen, setMenuOpen] = React.useState(false);
+  const titleId = React.useId();
   // 長押し・右クリックで開いたメニューは、閉じたときに見えない ⋯ へフォーカスを戻さない。
   const openedByGesture = React.useRef(false);
   const openByGesture = React.useCallback(() => {
@@ -145,7 +146,9 @@ function ThreadRow({
       >
         {kind ? <OriginTile kind={kind} /> : null}
         <span className="min-w-0 flex-1">
-          <span className="block truncate">{title}</span>
+          <span id={titleId} className="block truncate">
+            {title}
+          </span>
           {detail ? (
             // スマホは 2 行目に出す。PC は 1 行の密度を保ち、補足は読み上げとツールチップだけ。
             <>
@@ -178,7 +181,9 @@ function ThreadRow({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            aria-label={`「${title}」のメニュー`}
+            // 名前は固定にし、どのスレッドかは説明として読ませる（題名の語が他のボタン名と衝突しない）。
+            aria-label="スレッドの操作"
+            aria-describedby={titleId}
             className={cn(
               "absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-sidebar-foreground/55 outline-none",
               "opacity-0 transition-opacity duration-[var(--duration-fast)] focus-visible:opacity-100 data-[state=open]:opacity-100",

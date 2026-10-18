@@ -143,6 +143,9 @@ export function ShareLinksPanel({
     link: ShareLink;
     grant: ShareLinkGrant;
   } | null>(null);
+  // リンク自体の失効・公開範囲の解除も確認を挟む（受け取った全員が開けなくなる。以前は小さな
+  // ゴミ箱アイコン 1 タップで即時に失効しており、スマホでは誤タップで消えていた）。
+  const [revokeLinkTarget, setRevokeLinkTarget] = React.useState<ShareLink | null>(null);
 
   React.useEffect(() => {
     let active = true;
@@ -407,7 +410,8 @@ export function ShareLinksPanel({
                   min={minDate}
                   value={expiry}
                   onChange={(e) => setExpiry(e.target.value)}
-                  className="h-8 w-40 text-sm"
+                  // 文字サイズは Input の既定（スマホ 16px）に任せる（iOS の自動ズームを避ける）。
+                  className="h-8 w-40 max-md:h-10 max-md:w-44"
                 />
                 {expiry ? (
                   <Button type="button" variant="ghost" size="sm" onClick={() => setExpiry("")}>
@@ -443,7 +447,7 @@ export function ShareLinksPanel({
                   value={pwValue}
                   onChange={(e) => setPwValue(e.target.value)}
                   placeholder="パスワードを入力"
-                  className="h-8 text-sm"
+                  className="h-8 max-md:h-10"
                 />
               ) : null}
             </div>
@@ -485,8 +489,9 @@ export function ShareLinksPanel({
                 data-testid="link-item"
                 className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2.5"
               >
-                <div className="flex items-center gap-2">
-                  <div className="min-w-0 flex-1">
+                {/* 狭い幅では操作が 2 行目へ回る（名前を潰さない）。 */}
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                  <div className="min-w-0 flex-1 basis-44">
                     <p className="truncate text-sm font-medium">
                       {AUDIENCE_LABEL[link.audience]}
                       <span className="ml-1.5 text-xs font-normal text-muted-foreground">
@@ -504,56 +509,60 @@ export function ShareLinksPanel({
                       ) : null}
                     </p>
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    data-testid="link-copy"
-                    onClick={() => void copyUrl(link)}
-                  >
-                    {copiedId === link.link_id ? (
-                      <Check className="size-4" aria-hidden />
-                    ) : (
-                      <Copy className="size-4" aria-hidden />
-                    )}
-                    {copiedId === link.link_id ? "コピー済み" : "コピー"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    data-testid="link-extend"
-                    onClick={() => {
-                      setEditingId((id) => (id === link.link_id ? null : link.link_id));
-                      setEditExpiry(isoToDateInput(link.expires_at));
-                    }}
-                  >
-                    延長
-                  </Button>
-                  <button
-                    type="button"
-                    aria-label={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
-                    title={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
-                    data-testid="link-revoke"
-                    disabled={pendingId === link.link_id}
-                    onClick={() => void revoke(link)}
-                    className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                  >
-                    {pendingId === link.link_id ? (
-                      <Loader2 className="size-4 animate-spin" aria-hidden />
-                    ) : (
-                      <Trash2 className="size-4" aria-hidden />
-                    )}
-                  </button>
+                  <div className="ml-auto flex shrink-0 items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      data-testid="link-copy"
+                      onClick={() => void copyUrl(link)}
+                    >
+                      {copiedId === link.link_id ? (
+                        <Check className="size-4" aria-hidden />
+                      ) : (
+                        <Copy className="size-4" aria-hidden />
+                      )}
+                      {copiedId === link.link_id ? "コピー済み" : "コピー"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      data-testid="link-extend"
+                      onClick={() => {
+                        setEditingId((id) => (id === link.link_id ? null : link.link_id));
+                        setEditExpiry(isoToDateInput(link.expires_at));
+                      }}
+                    >
+                      延長
+                    </Button>
+                    <button
+                      type="button"
+                      aria-label={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
+                      title={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
+                      data-testid="link-revoke"
+                      disabled={pendingId === link.link_id}
+                      onClick={() => setRevokeLinkTarget(link)}
+                      className="flex size-8 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:size-11"
+                    >
+                      {pendingId === link.link_id ? (
+                        <Loader2 className="size-4 animate-spin" aria-hidden />
+                      ) : (
+                        <Trash2 className="size-4" aria-hidden />
+                      )}
+                    </button>
+                  </div>
                 </div>
                 {editingId === link.link_id ? (
-                  <div className="flex items-center gap-1.5">
+                  // 日付欄は残りの幅いっぱい（固定幅＋ボタン 2 つで狭い幅からはみ出していた）。
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <Input
                       type="date"
+                      aria-label="新しい有効期限"
                       min={minDate}
                       value={editExpiry}
                       onChange={(e) => setEditExpiry(e.target.value)}
-                      className="h-8 w-40 text-sm"
+                      className="h-8 min-w-0 flex-1 basis-36 max-md:h-10 md:max-w-44"
                     />
                     <Button type="button" variant="ghost" size="sm" onClick={() => setEditExpiry("")}>
                       無期限
@@ -575,7 +584,8 @@ export function ShareLinksPanel({
                       type="button"
                       data-testid="link-grants-toggle"
                       onClick={() => void toggleGrants(link)}
-                      className="flex items-center gap-1.5 self-start text-xs text-muted-foreground transition-colors hover:text-foreground"
+                      aria-expanded={grantsOpenId === link.link_id}
+                      className="flex items-center gap-1.5 self-start rounded-md text-xs text-muted-foreground transition-colors hover:text-foreground pointer-coarse:-mx-1 pointer-coarse:min-h-10 pointer-coarse:px-1"
                     >
                       <Users className="size-3.5" aria-hidden />
                       {link.redeem_count} 人が解錠済み
@@ -593,7 +603,7 @@ export function ShareLinksPanel({
                               <li
                                 key={g.user_id}
                                 data-testid="link-grant-item"
-                                className="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1"
+                                className="flex items-center gap-2 rounded-md bg-muted/40 py-0.5 pl-2 pr-0.5"
                               >
                                 <UserRound
                                   className="size-3.5 shrink-0 text-muted-foreground"
@@ -611,7 +621,7 @@ export function ShareLinksPanel({
                                   title="このユーザーのアクセスを取り消す（このリンクからは再解錠できなくなります）"
                                   data-testid="link-grant-revoke"
                                   onClick={() => setRevokeTarget({ link, grant: g })}
-                                  className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                                  className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive pointer-coarse:size-11"
                                 >
                                   <Trash2 className="size-3.5" aria-hidden />
                                 </button>
@@ -638,8 +648,25 @@ export function ShareLinksPanel({
           </ul>
         )}
       </div>
-      {/* #375: 個別取消は不可逆（un-revoke は無い）。リンクごとの失効は再発行で復元できるので
-          確認を挟まないが、こちらは「二度と解錠できない」ため必ず確認する。 */}
+      <ConfirmDialog
+        open={revokeLinkTarget !== null}
+        onOpenChange={(open) => !open && setRevokeLinkTarget(null)}
+        title={revokeLinkTarget?.has_password ? "このリンクを失効しますか？" : "この公開範囲を解除しますか？"}
+        description={
+          revokeLinkTarget
+            ? revokeLinkTarget.has_password
+              ? "このリンクを受け取った人は開けなくなります。もう一度渡す場合は新しいリンクを発行してください。"
+              : `${AUDIENCE_LABEL[revokeLinkTarget.audience]}がリンクから開けなくなります（個別に共有した相手はそのまま開けます）。`
+            : undefined
+        }
+        confirmLabel={revokeLinkTarget?.has_password ? "失効する" : "解除する"}
+        destructive
+        onConfirm={async () => {
+          if (revokeLinkTarget) await revoke(revokeLinkTarget);
+        }}
+      />
+      {/* #375: 個別取消は不可逆（un-revoke は無い）。リンクの失効は再発行で戻せるが、こちらは
+          「二度と解錠できない」ため、その旨をはっきり書いて確認する。 */}
       <ConfirmDialog
         open={revokeTarget !== null}
         onOpenChange={(open) => !open && setRevokeTarget(null)}

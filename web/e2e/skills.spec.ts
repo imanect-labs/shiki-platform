@@ -10,7 +10,8 @@ test.describe("skill（作成・共有・チャット適用）", () => {
     await page.goto("/skills");
 
     // 作成ダイアログ。
-    await page.getByRole("button", { name: "スキルを作成" }).click();
+    // 一覧が空のときは空状態にも同名の作成ボタンが出るため先頭（見出し行）を押す。
+    await page.getByRole("button", { name: "スキルを作成" }).first().click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toContainText("スキルを作成");
     const name = uniqueName("e2e-skill");
@@ -24,7 +25,9 @@ test.describe("skill（作成・共有・チャット適用）", () => {
 
     // 共有ダイアログが開き、bob に閲覧権限を付与できる（Task 6.7 ロール共有の実経路）。
     const card = page.locator("li", { has: page.getByRole("heading", { name }) });
-    await card.getByRole("button", { name: `${name} を共有` }).click();
+    // カードの操作は主ボタン＋⋯（共有・版などは ⋯ の中）。
+    await card.getByRole("button", { name: `${name} のその他の操作` }).click();
+    await page.getByRole("menuitem", { name: "共有" }).click();
     await expect(page.getByRole("dialog")).toContainText("を共有");
     await page.getByPlaceholder("名前・メールで検索").fill("bob");
     const bobRow = page.getByRole("dialog").locator("li", { hasText: "bob" }).first();
@@ -42,7 +45,8 @@ test.describe("skill（作成・共有・チャット適用）", () => {
     await expect(page.getByRole("dialog")).toBeHidden();
 
     // バージョン履歴が開く。
-    await card.getByRole("button", { name: `${name} のバージョン履歴` }).click();
+    await card.getByRole("button", { name: `${name} のその他の操作` }).click();
+    await page.getByRole("menuitem", { name: "バージョン履歴" }).click();
     // 行は data-testid で数える（#380）。`getByText("v1")` は部分一致のため行コンテナと
     // ラベル span の両方に当たり得て strict mode 違反になる（たまたま通っていた）。
     const versionsDialog = page.getByRole("dialog").filter({ hasText: "のバージョン履歴" });

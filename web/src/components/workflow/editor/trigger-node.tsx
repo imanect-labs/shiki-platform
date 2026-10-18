@@ -20,11 +20,11 @@ export type TriggerNodeData = {
 };
 
 /// きっかけの種類ごとの季節色（schedule=秋/event=夏/manual=春）。差し色で3種を識別する。
-function triggerSeasonIndex(kind: Trigger["kind"]): number {
+export function triggerSeasonIndex(kind: Trigger["kind"]): number {
   return kind === "schedule" ? 2 : kind === "event" ? 1 : 0;
 }
 
-function triggerView(trigger: Trigger): {
+export function triggerView(trigger: Trigger): {
   icon: React.ElementType;
   label: string;
   detail: string;

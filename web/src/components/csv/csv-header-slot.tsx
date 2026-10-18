@@ -1,84 +1,114 @@
 "use client";
 
-/// CSV 詳細の統一ヘッダ注入（横バー二重の解消）。戻る/名前/件数/閲覧のみ/タブ切替/保存を
-/// 共通ヘッダへ寄せる。null を返すだけなのでレイアウトには影響しない。
+/// CSV 詳細のクローム（シェルの `usePageChrome` へ登録する）。
+///
+/// - 左: 戻る。右: 保存（主操作・編集者のみ）→ 表示切替（スマホはアイコン 1 つ）→ ⋯（ダウンロード）。
+/// - PC のバー: 名前＋「N 行 × M 列」＋閲覧のみ、補助にグリッド/SQL の切替。
+/// - スマホ: 名前と状態は本文先頭（ページ側の EditorMobileHeading）に出す。
+///
+/// 読み込み中・notfound でも戻るを出すため、ページ最上位（早期 return より前）で呼ぶ。
 
-import { ArrowLeft, Eye, Save, Table2, Terminal } from "lucide-react";
-import Link from "next/link";
+import { Download, Eye, Save, Table2, Terminal } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { EditorStatusBadge, useEditorBack } from "@/components/shell/editor-loading";
+import {
+  ChromeIconButton,
+  ChromePrimaryButton,
+  usePageChrome,
+} from "@/components/shell/page-header-context";
 import { SegmentedControl } from "@/components/ui/segmented-control";
-import { usePageHeader } from "@/components/shell/page-header-context";
 
-export function CsvHeaderSlot({
-  name,
-  totalRows,
-  cols,
-  editable,
-  tab,
-  onTabChange,
-  dirty,
-  saving,
-  onSave,
-}: {
+export type CsvTab = "grid" | "sql";
+
+export type CsvChromeState = {
   name: string;
   totalRows: number;
   cols: number;
   editable: boolean;
-  tab: "grid" | "sql";
-  onTabChange: (t: "grid" | "sql") => void;
+  tab: CsvTab;
+  onTabChange: (t: CsvTab) => void;
   dirty: boolean;
   saving: boolean;
   onSave: () => void;
-}) {
-  usePageHeader(
-    () => (
-      <div className="flex min-w-0 flex-1 items-center gap-2.5">
-        <Link
-          href="/drive"
-          className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-95"
-          aria-label="ドライブへ戻る"
-        >
-          <ArrowLeft className="size-4" />
-        </Link>
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{name}</span>
-        <span className="hidden text-xs text-muted-foreground tabular-nums sm:inline">
-          {totalRows} 行 × {cols} 列
-        </span>
-        {!editable ? (
-          <span
-            className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2.5 py-0.5 text-xs font-medium text-muted-foreground"
-            data-testid="csv-readonly-badge"
-          >
-            <Eye className="size-3.5" aria-hidden />
-            閲覧のみ
+  onDownload: () => void;
+};
+
+/// クロームを登録する。`state` が null の間（読み込み中・開けない）は戻るだけを出す。
+export function useCsvChrome(state: CsvChromeState | null): void {
+  const back = useEditorBack();
+  const name = state?.name;
+  const totalRows = state?.totalRows ?? 0;
+  const cols = state?.cols ?? 0;
+  const editable = state?.editable ?? false;
+  const tab = state?.tab ?? "grid";
+  const onTabChange = state?.onTabChange;
+  const dirty = state?.dirty ?? false;
+  const saving = state?.saving ?? false;
+  const onSave = state?.onSave;
+  const onDownload = state?.onDownload;
+
+  usePageChrome(() => {
+    if (!onTabChange || !onSave || !onDownload) return { back };
+    const nextTab: CsvTab = tab === "grid" ? "sql" : "grid";
+    return {
+      title: name,
+      menuTitle: name,
+      back,
+      subtitle: (
+        <span className="inline-flex items-center gap-2">
+          <span className="tabular-nums">
+            {totalRows} 行 × {cols} 列
           </span>
-        ) : null}
+          {!editable ? (
+            <EditorStatusBadge icon={Eye} data-testid="csv-readonly-badge">
+              閲覧のみ
+            </EditorStatusBadge>
+          ) : null}
+        </span>
+      ),
+      desktopExtra: (
         <SegmentedControl
           aria-label="表示切替"
           value={tab}
-          onValueChange={(v) => onTabChange(v as "grid" | "sql")}
+          onValueChange={(v) => onTabChange(v as CsvTab)}
+          className="mr-1"
           options={[
             { value: "grid", label: "グリッド", icon: Table2, testId: "csv-tab-grid" },
             { value: "sql", label: "SQL", icon: Terminal, testId: "csv-tab-sql" },
           ]}
         />
-        {editable ? (
-          <Button
-            type="button"
-            size="sm"
-            loading={saving}
-            disabled={!dirty || saving}
-            onClick={onSave}
-            data-testid="csv-save"
-          >
-            {!saving ? <Save className="size-4" aria-hidden /> : null}
-            保存{dirty ? "*" : ""}
-          </Button>
-        ) : null}
-      </div>
-    ),
-    [name, totalRows, cols, editable, tab, onTabChange, dirty, saving, onSave],
-  );
-  return null;
+      ),
+      primary: editable ? (
+        <ChromePrimaryButton
+          onClick={onSave}
+          disabled={!dirty || saving}
+          aria-busy={saving || undefined}
+          data-testid="csv-save"
+        >
+          <Save aria-hidden />
+          {saving ? "保存中…" : `保存${dirty ? "*" : ""}`}
+        </ChromePrimaryButton>
+      ) : undefined,
+      // スマホ: グリッド ⇄ SQL を 1 つのアイコンで切り替える（PC はバーの切替を使う）。
+      actions: (
+        <ChromeIconButton
+          label={nextTab === "sql" ? "SQL コンソールを開く" : "グリッドに戻る"}
+          onClick={() => onTabChange(nextTab)}
+          className="md:hidden"
+          data-testid="csv-tab-toggle"
+        >
+          {nextTab === "sql" ? <Terminal aria-hidden /> : <Table2 aria-hidden />}
+        </ChromeIconButton>
+      ),
+      menu: [
+        {
+          key: "download",
+          label: "CSV をダウンロード",
+          icon: Download,
+          onSelect: onDownload,
+          testId: "csv-menu-download",
+        },
+      ],
+    };
+  }, [back, name, totalRows, cols, editable, tab, onTabChange, dirty, saving, onSave, onDownload]);
 }

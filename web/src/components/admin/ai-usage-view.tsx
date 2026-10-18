@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ChromeIconButton } from "@/components/shell/page-header-context";
 import { AdminPage, Panel, StatTile } from "./admin-page";
 import {
   addDays,
@@ -134,8 +135,11 @@ function downloadCsv(data: UsageResponse) {
   const a = document.createElement("a");
   a.href = url;
   a.download = `ai-usage_${data.from}_${data.to}.csv`;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  // iOS Safari はダウンロードの開始が click より遅れるため、すぐ revoke すると失敗する。
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 /// AI の利用量ダッシュボード。数字は会計（llm_usage）そのもの。
@@ -204,17 +208,29 @@ export function AiUsageView() {
           CSV
         </Button>
       }
+      mobileActions={
+        <ChromeIconButton
+          label="日別の CSV をダウンロード"
+          disabled={!data}
+          onClick={() => data && downloadCsv(data)}
+          className="disabled:opacity-40"
+        >
+          <Download aria-hidden />
+        </ChromeIconButton>
+      }
     >
-      <div className="flex flex-wrap items-center gap-2">
+      {/* スマホ: 期間を全幅 1 行、モデル・利用元を 2 列に詰める。 */}
+      <div className="grid grid-cols-2 gap-2 md:flex md:flex-wrap md:items-center">
         <SegmentedControl
           aria-label="期間"
           size="sm"
           options={PERIODS}
           value={period}
           onValueChange={(v) => setPeriod(v as Period)}
+          className="col-span-2 max-md:w-full max-md:[&>*]:flex-1"
         />
         <Select value={model} onValueChange={setModel}>
-          <SelectTrigger className="h-8 w-44 text-[13px]" aria-label="モデルで絞り込む">
+          <SelectTrigger className="h-8 w-full text-[13px] md:w-44" aria-label="モデルで絞り込む">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -227,7 +243,7 @@ export function AiUsageView() {
           </SelectContent>
         </Select>
         <Select value={source} onValueChange={setSource}>
-          <SelectTrigger className="h-8 w-40 text-[13px]" aria-label="利用元で絞り込む">
+          <SelectTrigger className="h-8 w-full text-[13px] md:w-40" aria-label="利用元で絞り込む">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -240,7 +256,7 @@ export function AiUsageView() {
           </SelectContent>
         </Select>
         {data ? (
-          <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+          <span className="col-span-2 text-xs text-muted-foreground tabular-nums md:ml-auto">
             {data.from} 〜 {data.to}
           </span>
         ) : null}

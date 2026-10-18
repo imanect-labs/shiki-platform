@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { toast } from "@/components/ui/use-toast";
 import { createMiniApp, createUiSpec } from "@/lib/artifact-api";
 import type { MiniAppBody } from "@/generated/gui-spec";
@@ -60,6 +61,8 @@ export function SaveAsAppDialog({
 }) {
   const router = useRouter();
   const [name, setName] = React.useState("");
+  // タッチで開いた瞬間にキーボードを出さない（マウス操作のときだけ自動フォーカス）。
+  const finePointer = useMediaQuery("(pointer: fine)");
   const [description, setDescription] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -116,7 +119,10 @@ export function SaveAsAppDialog({
               onChange={(e) => setName(e.target.value)}
               placeholder="月次レポート"
               required
-              autoFocus
+              autoFocus={finePointer}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
             />
           </div>
           <div className="space-y-1.5">

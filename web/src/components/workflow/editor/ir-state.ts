@@ -32,6 +32,8 @@ export type EditorState = {
 export type EditorAction =
   | { type: "add_node"; nodeType: string; position: { x: number; y: number }; from?: { id: string; port: string } }
   | { type: "insert_on_edge"; nodeType: string; edge: Edge; position: { x: number; y: number } }
+  /// 入口ノード（入エッジ 0 本）の手前に挿入する（スマホの縦一覧で「きっかけ」直後の＋）。
+  | { type: "insert_before"; nodeType: string; before: string; position: { x: number; y: number } }
   | { type: "connect"; from: string; fromPort: string; to: string }
   | { type: "delete_nodes"; ids: string[] }
   | { type: "delete_edges"; edges: Edge[] }
@@ -200,6 +202,26 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         ...state.ir,
         nodes: [...state.ir.nodes, node],
         edges,
+      });
+      return {
+        ...next,
+        layout: {
+          ...state.layout,
+          positions: { ...(state.layout.positions ?? {}), [node.id]: action.position },
+        },
+        layoutDirty: true,
+        selection: { kind: "node", id: node.id },
+      };
+    }
+    case "insert_before": {
+      const node = makeNode(state.ir, action.nodeType);
+      const next = withIr(state, {
+        ...state.ir,
+        nodes: [...state.ir.nodes, node],
+        edges: [
+          ...state.ir.edges,
+          { from: node.id, from_port: defaultOutPort(action.nodeType), to: action.before } as Edge,
+        ],
       });
       return {
         ...next,

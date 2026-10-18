@@ -60,6 +60,8 @@ test("組織内リンクを発行→別ユーザーが開ける→失効で開�
 
   // alice がリンクを失効する。
   await dialog.getByTestId("link-revoke").click();
+  // 失効（公開範囲の解除）は確認を挟む。
+  await page.getByRole("button", { name: "解除する" }).click();
   await expect(dialog.getByTestId("link-item")).toHaveCount(0, { timeout: 10_000 });
 
   // 失効後は bob は開けない（存在秘匿の「見つかりません」）。

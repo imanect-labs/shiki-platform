@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { createMiniApp, listArtifacts, type ArtifactMeta } from "@/lib/artifact-api";
 
 export function MiniAppEditorDialog({
@@ -29,6 +30,8 @@ export function MiniAppEditorDialog({
   onSaved: () => void;
 }) {
   const [name, setName] = React.useState("");
+  // タッチで開いた瞬間にキーボードを出さない（マウス操作のときだけ自動フォーカス）。
+  const finePointer = useMediaQuery("(pointer: fine)");
   const [description, setDescription] = React.useState("");
   const [uiSpecs, setUiSpecs] = React.useState<ArtifactMeta[]>([]);
   const [skills, setSkills] = React.useState<ArtifactMeta[]>([]);
@@ -107,7 +110,10 @@ export function MiniAppEditorDialog({
               onChange={(e) => setName(e.target.value)}
               placeholder="expense-app"
               required
-              autoFocus
+              autoFocus={finePointer}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
             />
           </div>
           <div className="space-y-1.5">
@@ -132,7 +138,7 @@ export function MiniAppEditorDialog({
               value={uiSpecId}
               onChange={(e) => setUiSpecId(e.target.value)}
               required
-              className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
+              className="h-9 w-full rounded-lg border border-input bg-background px-3 text-base md:text-sm pointer-coarse:h-11"
             >
               <option value="">選択してください</option>
               {uiSpecs.map((s) => (
@@ -156,7 +162,7 @@ export function MiniAppEditorDialog({
               id="app-skill"
               value={skillId}
               onChange={(e) => setSkillId(e.target.value)}
-              className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
+              className="h-9 w-full rounded-lg border border-input bg-background px-3 text-base md:text-sm pointer-coarse:h-11"
             >
               <option value="">なし</option>
               {skills.map((s) => (
@@ -180,7 +186,7 @@ export function MiniAppEditorDialog({
                     type="button"
                     aria-label={`${w.name} を外す`}
                     onClick={() => setSelectedWorkflows((prev) => prev.filter((x) => x.id !== w.id))}
-                    className="text-muted-foreground hover:text-destructive"
+                    className="relative -mr-1 flex size-5 items-center justify-center rounded-full text-muted-foreground hover:text-destructive pointer-coarse:after:absolute pointer-coarse:after:-inset-3 pointer-coarse:after:content-['']"
                   >
                     <X className="size-3" aria-hidden />
                   </button>
@@ -192,7 +198,7 @@ export function MiniAppEditorDialog({
                 aria-label="追加するワークフロー"
                 value={workflowToAdd}
                 onChange={(e) => setWorkflowToAdd(e.target.value)}
-                className="h-9 flex-1 rounded-lg border border-input bg-background px-3 text-sm"
+                className="h-9 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-base md:text-sm pointer-coarse:h-11"
               >
                 <option value="">ワークフローを選択</option>
                 {workflows

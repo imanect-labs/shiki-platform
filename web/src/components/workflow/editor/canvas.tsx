@@ -260,14 +260,15 @@ export function Canvas({ ir, layout, selection, serverErrors, dispatch }: Props)
       <Controls
         position="bottom-right"
         showInteractive={false}
-        className="!rounded-lg !border !bg-background !shadow-sm [&_button]:!border-border [&_button]:!bg-background [&_button]:!text-foreground [&_button:hover]:!bg-accent"
+        className="!rounded-lg !border !bg-background !shadow-sm [&_button]:!border-border [&_button]:!bg-background [&_button]:!text-foreground [&_button:hover]:!bg-accent pointer-coarse:[&_button]:!size-10"
       />
       <MiniMap
         position="bottom-left"
         pannable
         zoomable
         style={{ width: 160, height: 104 }}
-        className="!m-3 !rounded-lg !border !bg-background/90 !shadow-sm"
+        // スマホでは画面の 1/4 を占めて邪魔になるため出さない。
+        className="!m-3 !rounded-lg !border !bg-background/90 !shadow-sm max-md:!hidden"
         maskColor="color-mix(in oklch, var(--muted) 60%, transparent)"
         nodeColor="color-mix(in oklch, var(--primary) 70%, transparent)"
         nodeStrokeWidth={3}

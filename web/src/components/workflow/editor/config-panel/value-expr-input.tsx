@@ -205,7 +205,7 @@ export function ValueExprInput({
               } as unknown as ValueExpr)
             }
             placeholder="取り出す場所（例 /items/0/name・空で全体）"
-            className="h-8 font-mono text-xs"
+            className="h-8 font-mono text-xs max-md:text-base"
           />
         </div>
       ) : null}
@@ -260,7 +260,7 @@ function TemplateEditor({
                 onChange({ ...template, vars: next });
               }}
               placeholder="名前"
-              className="h-7 w-20 text-xs"
+              className="h-7 w-20 text-xs max-md:text-base"
               aria-label="差し込み名"
             />
             <Select
@@ -296,7 +296,7 @@ function TemplateEditor({
                 onChange({ ...template, vars: next });
               }}
               placeholder="/path"
-              className="h-7 w-24 font-mono text-[11px]"
+              className="h-7 w-24 font-mono text-[11px] max-md:text-base"
               aria-label="取り出す場所"
             />
             <Button

@@ -4,6 +4,7 @@
 ///
 /// 主導線はノードの尻尾プラスボタン（node-card.tsx）。パレットは全体を見渡して
 /// 「何ができるか」を掴む場でもあるため、カテゴリ見出し＋検索を常設する。
+/// ドラッグはマウス前提なので、タップ（クリック）でも流れの末尾へ追加できるようにする。
 
 import * as React from "react";
 import { GripVertical, Search } from "lucide-react";
@@ -27,7 +28,7 @@ function groupByCategory(entries: readonly NodeCatalogEntry[]) {
   return [...groups.values()];
 }
 
-export function Palette() {
+export function Palette({ onPick }: { onPick: (nodeType: string) => void }) {
   const [query, setQuery] = React.useState("");
   const q = query.trim().toLowerCase();
   const filtered = NODE_CATALOG.filter(
@@ -47,7 +48,7 @@ export function Palette() {
       <div className="shiki-dash-bottom px-3 py-3">
         <h2 className="text-sm font-semibold">ブロック</h2>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          ドラッグして置くか、ノードの＋から追加
+          タップで末尾に追加・ドラッグで好きな位置に置く
         </p>
         <div className="relative mt-2">
           <Search
@@ -57,13 +58,15 @@ export function Palette() {
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            type="search"
+            enterKeyHint="search"
             placeholder="検索…"
-            className="h-8 pl-8 text-sm"
+            className="h-8 pl-8 md:text-sm"
             aria-label="ブロックを検索"
           />
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto px-2 py-2 scrollbar-subtle">
+      <div className="flex-1 overflow-y-auto overscroll-y-contain px-2 py-2 scrollbar-subtle">
         {groups.map((group) => (
           <div key={group.label} className="mb-3">
             <p className="px-1.5 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -74,22 +77,24 @@ export function Palette() {
                 const Icon = nodeIcon(entry.type);
                 return (
                   <li key={entry.type}>
-                    <div
+                    <button
+                      type="button"
                       draggable
                       onDragStart={(e) => {
                         e.dataTransfer.setData(PALETTE_DND_TYPE, entry.type);
                         e.dataTransfer.effectAllowed = "move";
                       }}
+                      onClick={() => onPick(entry.type)}
                       className={cn(
-                        "flex cursor-grab items-center gap-2 rounded-md border border-transparent px-1.5 py-1.5",
-                        "transition-colors duration-fast hover:border-border hover:bg-accent/60 active:cursor-grabbing",
+                        "flex w-full cursor-grab items-center gap-2 rounded-md border border-transparent px-1.5 py-1.5 text-left outline-none pointer-coarse:py-2.5",
+                        "transition-colors duration-fast hover:border-border hover:bg-accent/60 active:cursor-grabbing focus-visible:ring-2 focus-visible:ring-ring",
                       )}
                       title={entry.description_ja}
                     >
                       <GripVertical className="size-3.5 shrink-0 text-muted-foreground/50" aria-hidden />
                       <Icon className="size-4 shrink-0" style={{ color: categoryVar(entry.category) }} aria-hidden />
                       <span className="truncate text-sm">{entry.label_ja}</span>
-                    </div>
+                    </button>
                   </li>
                 );
               })}
