@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { uploadFile, type NodeResponse } from "@/lib/storage";
 import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
 import { HOME_SCOPE } from "@/lib/model-choice";
+import { selectableTool, useToolChoice } from "@/lib/tool-choice";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { ApprovalModeSelect, approvalModeDef } from "./approval-mode-select";
 import { ComposerModeButton } from "./composer-mode";
@@ -126,6 +127,8 @@ export const Composer = React.memo(function Composer({
   const desktop = useMediaQuery("(min-width: 768px)");
   const modelScope = threadId ?? HOME_SCOPE;
   const modelLabel = useChosenModelLabel(modelScope);
+  // この発話に使うツール（#734）。送信時に会話側が読み出して空に戻す。
+  const toolChoice = useToolChoice(modelScope);
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -260,9 +263,31 @@ export const Composer = React.memo(function Composer({
     <>
       {command ? <SlashCommandPill label={command.token} onClear={() => setCommand(null)} /> : null}
       <ModelPill scope={modelScope} />
+      {toolChoice.tools.map((name) => {
+        const tool = selectableTool(name);
+        if (!tool) return null;
+        return (
+          <span
+            key={name}
+            data-testid="composer-tool-chip"
+            className="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full bg-accent pl-2.5 pr-1 text-[13px] font-medium text-foreground"
+          >
+            <tool.icon className="size-3.5 shrink-0 text-primary" aria-hidden />
+            <span className="min-w-0 truncate">{tool.label}</span>
+            <button
+              type="button"
+              onClick={() => toolChoice.clear(name)}
+              aria-label={`${tool.label}を外す`}
+              className="relative flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors after:absolute after:-inset-2 hover:bg-foreground/10 hover:text-foreground"
+            >
+              <X className="size-3.5" aria-hidden />
+            </button>
+          </span>
+        );
+      })}
     </>
   );
-  const hasChips = command !== null || modelLabel !== null;
+  const hasChips = command !== null || modelLabel !== null || toolChoice.tools.length > 0;
 
   return (
     <div className={cn("flex flex-col gap-2", className)}>

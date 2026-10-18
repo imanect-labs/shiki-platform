@@ -31,6 +31,7 @@ import {
 } from "@/lib/chat-api";
 import { popPending } from "@/lib/pending-message";
 import { readModelChoice } from "@/lib/model-choice";
+import { takeToolChoice } from "@/lib/tool-choice";
 import { triggerDownload } from "@/lib/storage";
 import { linkifyCitations } from "@/lib/citation";
 import { newId } from "@/lib/chat-store";
@@ -479,6 +480,8 @@ export function Conversation({
       const runAutonomous = autonomousOverride ?? autonomous;
       // 入力欄で選んだモデル（#553）。未選択は Auto（組織の既定）。
       const model = readModelChoice(threadId);
+      // 入力欄で選んだツール（#734）。この発話にだけ効くので読み出したら空に戻す。
+      const tools = takeToolChoice(threadId);
       // 楽観的にユーザーメッセージを表示。
       const userBlocks: ContentBlock[] = [
         ...(context ? [{ type: "selection_context" as const, context }] : []),
@@ -496,6 +499,7 @@ export function Conversation({
           context,
           skills: onceSkills,
           model,
+          tools,
         })
           .then((posted) =>
             setQueued((prev) =>
@@ -529,6 +533,7 @@ export function Conversation({
         context,
         onceSkills,
         model,
+        tools,
       );
     },
     [threadId, makeHandlers, autonomous, scrollToBottom],
