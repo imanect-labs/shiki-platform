@@ -438,6 +438,30 @@ const GONE_MESSAGE =
 /** この一括で解決済みのブロック参照（ID → UNO の参照）。writer.apply が入れる。 */
 let RESOLVED = {};
 
+/**
+ * この一括の replace で置き換えたブロックの ID → 置き換え後のブロックの並び。
+ *
+ * 「X を置き換えて、X の後ろに足す・X の表を整える」を同じ一括に書くと、X はもう無い。モデルが
+ * 自然に書く形（Gemma 4 の評価で繰り返し起きた）なので、X は置き換え後の中身を指すことにする:
+ * 後ろへの差し込みは最後のブロックの後ろ、前への差し込みは最初のブロックの前、表の操作は
+ * 中身の表（1 つのとき）、範囲は最初から最後まで。
+ */
+let REPLACED = {};
+
+/** ID の参照。role は "after" / "before" / "from" / "to" / "table"。 */
+function refOf(resolved, id, role) {
+  if (!REPLACED[id]) return resolved[id];
+  // 後片付け（表の前後の区切り）で消えたブロックは除く。
+  const all = bodyBlocks();
+  const fresh = REPLACED[id].filter((b) => indexOfBlock(all, b) >= 0);
+  if (fresh.length === 0) return resolved[id];
+  if (role === "table") {
+    const tables = fresh.filter(isTable);
+    return tables.length === 1 ? tables[0] : resolved[id];
+  }
+  return role === "before" || role === "from" ? fresh[0] : fresh[fresh.length - 1];
+}
+
 function rebindResolved(stale, fresh) {
   for (const k of Object.keys(RESOLVED)) {
     if (sameObject(RESOLVED[k], stale)) RESOLVED[k] = fresh;
@@ -679,8 +703,8 @@ function applyParagraph(p, op) {
 /** from〜to のブロック（両端を含む）。 */
 function blockRange(resolved, from, to) {
   const all = bodyBlocks();
-  const a = indexOfBlock(all, resolved[from]);
-  const b = to ? indexOfBlock(all, resolved[to]) : a;
+  const a = indexOfBlock(all, refOf(resolved, from, "from"));
+  const b = indexOfBlock(all, refOf(resolved, to || from, "to"));
   if (a < 0 || b < 0) fail("block_gone", GONE_MESSAGE);
   if (b < a) fail("bad_range", "範囲の終わりが始まりより前です");
   return all.slice(a, b + 1);
@@ -790,7 +814,7 @@ function removeBlocks(range) {
 
 WOPS.insert_html = (op, resolved, created) => {
   const blank = blankParagraph();
-  let anchor = op.anchor === null ? null : resolved[op.anchor];
+  let anchor = op.anchor === null ? null : refOf(resolved, op.anchor, op.before ? "before" : "after");
   let before = op.before;
   if (op.at === "start") {
     anchor = bodyBlocks()[0];
@@ -817,6 +841,10 @@ WOPS.replace_html = (op, resolved, created) => {
   // 差し込みで参照が付け替わることがあるので、範囲は取り直す。
   const range = blockRange(resolved, op.from, op.to);
   if (range.length >= bodyBlocks().length) fail("delete_all", "文書のすべてのブロックは消せません");
+  // 消すブロックを指していた ID は、以降の操作では置き換え後の中身を指す（REPLACED の説明）。
+  for (const k of Object.keys(resolved)) {
+    if (range.some((b) => sameObject(b, resolved[k]))) REPLACED[k] = inserted;
+  }
   removeBlocks(range);
   withoutRecording(() => trimSeparators(inserted));
   const out = { removed: range.length, blocks: inserted.length };
@@ -1022,7 +1050,7 @@ WOPS.insert_toc = (op, resolved) => {
   const text = DOC.getText();
   // 目次は文書の先頭（anchor が null）か、指定したブロックの前後に置く。
   let para;
-  if (op.anchor !== null) para = emptyParagraphAt(resolved[op.anchor], op.before);
+  if (op.anchor !== null) para = emptyParagraphAt(refOf(resolved, op.anchor, op.before ? "before" : "after"), op.before);
   else if (op.at === "end") para = emptyParagraphAt(null, false);
   else para = emptyParagraphAt(bodyBlocks()[0], true);
   const toc = DOC.createInstance("com.sun.star.text.ContentIndex");
@@ -1092,6 +1120,7 @@ HANDLERS["writer.apply"] = (req) => {
     const resolved = {};
     for (const id of req.block_ids) resolved[id] = blocks[resolveBlock(blocks, id)];
     RESOLVED = resolved;
+    REPLACED = {};
     for (let i = 0; i < req.ops.length; i++) {
       const op = req.ops[i];
       const fn = WOPS[op.op];

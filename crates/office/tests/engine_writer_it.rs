@@ -550,3 +550,40 @@ async fn single_paragraph_replace_keeps_the_style_and_table_rebuilds_are_reporte
     assert!(text.contains("表を作り直しました"), "{text}");
     client.close().await;
 }
+
+/// 同じ一括で置き換えたブロックの ID は、置き換え後の中身を指す（表を作り直して、その表を整え、
+/// その後ろに注記を足す・Gemma 4 の評価で繰り返し書かれた形）。
+#[tokio::test]
+async fn a_replaced_id_points_at_its_replacement_in_the_same_batch() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let (name, mut client) = fresh(&env).await;
+    apply_ok(
+        &mut client,
+        &[json!({"op": "replace", "target": "all", "html": "<h2>2. 地域別売上</h2><table><tr><th>地域</th><th>売上</th></tr><tr><td>首都圏</td><td>612</td></tr></table><h2>3. トピック</h2>"})],
+    )
+    .await;
+    let overview = run::read_overview(&mut client, &name, 0).await.unwrap();
+    let table = id_of(&overview, "表 ");
+    let text = apply_ok(
+        &mut client,
+        &[
+            json!({"op": "replace", "target": table, "html": "<table><tr><th>地域</th><th>売上</th></tr><tr><td>首都圏</td><td>628</td></tr><tr><td>関西</td><td>401</td></tr></table>"}),
+            json!({"op": "style_table", "table": table, "theme": "blue"}),
+            json!({"op": "insert", "after": table, "html": "<p>※単位：百万円</p>"}),
+        ],
+    )
+    .await;
+    // 注記は新しい表のすぐ後ろ、次の見出しの前に入る。
+    let after_table = text.split("表 3行×2列").nth(1).unwrap_or("");
+    let note = after_table.find("※単位：百万円").unwrap_or(usize::MAX);
+    let next = after_table.find("3. トピック").unwrap_or(0);
+    assert!(note < next, "注記が表の後ろに無い: {text}");
+    let blocks = run::read_blocks(&mut client, &id_of(&text, "表 3行×2列"), None)
+        .await
+        .unwrap();
+    assert!(blocks.contains("background"), "表が整っていない: {blocks}");
+    client.close().await;
+}

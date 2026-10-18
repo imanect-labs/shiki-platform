@@ -4,7 +4,7 @@
 // セルの座標は 0 始まりの (列, 行)。結合のある表は座標が揃わないことがあり、見つからないセルは誤りにする。
 
 function tableOf(resolved, id) {
-  const t = resolved[id];
+  const t = refOf(resolved, id, "table");
   if (!t || !isTable(t)) fail("not_table", `ブロック ${id} は表ではありません（表のブロック ID を指定してください）`);
   return t;
 }
