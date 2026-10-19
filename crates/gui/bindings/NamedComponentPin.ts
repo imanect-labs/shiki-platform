@@ -5,7 +5,7 @@
  */
 export type NamedComponentPin = { 
 /**
- * 画面のボタンが参照する別名（ミニアプリ内で一意・空白を含まない）。
+ * 画面のボタンが参照する別名（ミニアプリ内で一意・前後に空白を含まない）。
  */
 alias: string, artifact_id: string, 
 /**

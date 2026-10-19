@@ -349,8 +349,8 @@ impl ChatStore {
         else {
             return Ok(None);
         };
-        let rows: Vec<(String, Uuid, i64, String)> = sqlx::query_as(
-            "SELECT action_id, workflow_id, workflow_version, workflow_name FROM ui_action_binding \
+        let rows: Vec<(String, Uuid, i64)> = sqlx::query_as(
+            "SELECT action_id, workflow_id, workflow_version FROM ui_action_binding \
              WHERE tenant_id = $1 AND thread_id = $2 AND message_id = $3 AND action_id LIKE $4 \
              ORDER BY action_id",
         )
@@ -361,8 +361,22 @@ impl ChatStore {
         .fetch_all(&self.db)
         .await
         .map_err(|e| map_db(&e))?;
+        // 別名はボタンが書いている名前（`-> workflow 名前`）。束縛の workflow_name は解決後の
+        // 表示名で、画面の参照と一致するとは限らない。
+        let actions = yui::figure_actions(&block.figure);
         let mut workflows: Vec<(String, Uuid, i64)> = Vec::new();
-        for (_, id, version, name) in rows {
+        for (action_id, id, version) in rows {
+            let Some(name) = action_id.split_once(':').and_then(|(_, a)| {
+                actions
+                    .iter()
+                    .find(|x| x.id == a)
+                    .and_then(|x| match &x.target {
+                        yui::ActionTarget::Workflow { name } => Some(name.clone()),
+                        yui::ActionTarget::Chat => None,
+                    })
+            }) else {
+                continue;
+            };
             if !workflows.iter().any(|(n, _, _)| *n == name) {
                 workflows.push((name, id, version));
             }

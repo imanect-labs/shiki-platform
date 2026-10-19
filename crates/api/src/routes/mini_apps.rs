@@ -293,7 +293,8 @@ pub async fn save_yui_app(
         .unwrap_or_else(|| draft.title.clone());
     let body = serde_json::json!({
         "description": description,
-        "screen": format!("```ui\n{}\n```\n", draft.source.trim_end()),
+        // 会話の図は ` ```ui:app ` と見出しだけで書かれることもあるので、種類をフェンスに残す。
+        "screen": format!("```ui:app\n{}\n```\n", draft.source.trim_end()),
         "workflows": draft.workflows.iter().map(|(alias, id, version)| serde_json::json!({
             "alias": alias,
             "artifact_id": id,

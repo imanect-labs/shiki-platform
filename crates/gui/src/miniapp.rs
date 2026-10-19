@@ -36,7 +36,7 @@ pub struct ComponentPin {
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct NamedComponentPin {
-    /// 画面のボタンが参照する別名（ミニアプリ内で一意・空白を含まない）。
+    /// 画面のボタンが参照する別名（ミニアプリ内で一意・前後に空白を含まない）。
     pub alias: String,
     pub artifact_id: Uuid,
     /// JSON 経由の数値のため TS では number（bigint にしない）。
@@ -98,14 +98,16 @@ pub fn validate_miniapp_body(
     let mut ids = std::collections::HashSet::new();
     for (i, wf) in body.workflows.iter().enumerate() {
         let path = format!("workflows[{i}]");
+        // ボタンの `-> workflow 名前` と同じく途中の空白は許す（前後の空白・制御文字は不可）。
         if wf.alias.trim().is_empty()
+            || wf.alias.trim() != wf.alias
             || wf.alias.chars().count() > 64
-            || wf.alias.chars().any(char::is_whitespace)
+            || wf.alias.chars().any(char::is_control)
         {
             errors.push(
                 GuiValidationError::new(
                     "miniapp.invalid_alias",
-                    "alias は空白を含まない 1〜64 文字",
+                    "alias は前後に空白の無い 1〜64 文字（改行などの制御文字は不可）",
                 )
                 .at(&path),
             );
@@ -275,7 +277,11 @@ mod tests {
         assert_eq!(codes(&body("  ", &[])), vec!["miniapp.empty_screen"]);
         let huge = "あ".repeat(MAX_SCREEN_BYTES);
         assert_eq!(codes(&body(&huge, &[])), vec!["miniapp.screen_too_large"]);
-        assert!(codes(&body(APP, &["exp ense"])).contains(&"miniapp.invalid_alias".to_string()));
+        // 途中に空白のある名前（`-> workflow 経費 申請`）はそのまま別名にできる。
+        let spaced = APP.replace("workflow expense", "workflow 経費 申請");
+        assert!(codes(&body(&spaced, &["経費 申請"])).is_empty());
+        assert!(codes(&body(APP, &[" expense"])).contains(&"miniapp.invalid_alias".to_string()));
+        assert!(codes(&body(APP, &["exp\nense"])).contains(&"miniapp.invalid_alias".to_string()));
         // 旧形式（ui_spec）は受け付けない。
         let old = json!({ "description": "d", "ui_spec": { "artifact_id": uuid::Uuid::nil(), "version": 1 } });
         assert_eq!(codes(&old), vec!["miniapp.schema_violation"]);

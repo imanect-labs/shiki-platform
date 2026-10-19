@@ -84,14 +84,17 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
 
   // 起動の記録（本人の分）。押した後と、終わっていない起動がある間は読み直す。
   const [runsKey, setRunsKey] = React.useState(0);
+  // 読み直しを終えた回数（失敗も数える）。読めなかったときも次の読み直しを予約するため。
+  const [runsLoaded, setRunsLoaded] = React.useState(0);
   const refreshRuns = React.useCallback(() => setRunsKey((k) => k + 1), []);
   React.useEffect(() => {
     let active = true;
     listMiniAppRuns(id)
       .then((r) => active && setRuns(r))
       .catch(() => {
-        /* 記録が読めなくても画面は使える */
-      });
+        /* 記録が読めなくても画面は使える（終わっていない起動があれば下で読み直す） */
+      })
+      .finally(() => active && setRunsLoaded((n) => n + 1));
     return () => {
       active = false;
     };
@@ -101,7 +104,13 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
     if (!openRuns) return;
     const t = window.setTimeout(refreshRuns, 3000);
     return () => window.clearTimeout(t);
-  }, [openRuns, runs, refreshRuns]);
+  }, [openRuns, runsLoaded, refreshRuns]);
+
+  // 編集の対象は読み込んだ版が変わったときだけ作り直す（記録の読み直しで編集中の入力を戻さない）。
+  const editTarget = React.useMemo(
+    () => (app ? { id: app.id, version: app.version, body: app.body } : undefined),
+    [app],
+  );
 
   const host = React.useMemo<YuiActionHost | null>(
     () =>
@@ -172,7 +181,7 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
             <MiniAppEditorDialog
               open={editOpen}
               onOpenChange={setEditOpen}
-              app={{ id: app.id, version: app.version, body: app.body }}
+              app={editTarget}
               onSaved={(saved) => {
                 toast({ title: `v${saved.version} として保存しました` });
                 setVersion(undefined);
