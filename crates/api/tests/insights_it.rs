@@ -219,7 +219,12 @@ async fn seed(pool: &PgPool) -> Fixture {
         }
     }
     // 会計: u0 の呼び出しと、利用者に数えない分類器の呼び出し。
-    for (key, user) in [("k-u0", "u0"), ("k-sys", "system:insights")] {
+    // ワークフロー（予約起動は主体がワークフロー ID）の呼び出しも、利用者には数えない。
+    for (key, user) in [
+        ("k-u0", "u0"),
+        ("k-sys", "system:insights"),
+        ("k-wf", "6f1c1a52-0000-4000-8000-000000000751"),
+    ] {
         sqlx::query(
             "INSERT INTO llm_usage (tenant_id, org, idempotency_key, provider, model, \
                                     prompt_tokens, completion_tokens, cost_usd_micros, user_sub, \
@@ -246,6 +251,18 @@ async fn seed(pool: &PgPool) -> Fixture {
         .await
         .unwrap();
     }
+    // roles claim 由来のロール（部署ではない）。6 人いても絞り込みには使えない。
+    for i in 0..6 {
+        sqlx::query(
+            "INSERT INTO directory_user_role (tenant_id, org, user_id, role_id, source) \
+             VALUES ($1, 'acme', $2, 'admins', 'role')",
+        )
+        .bind(&tenant)
+        .bind(format!("u{i}"))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
     Fixture {
         tenant,
         eng,
@@ -263,7 +280,7 @@ async fn rollup_counts_per_user_and_is_idempotent() {
     let n = rollup::rollup_day(&pool, &f.tenant, "acme", day)
         .await
         .unwrap();
-    assert_eq!(n, 4, "使った 4 人だけ（分類器は除く）");
+    assert_eq!(n, 4, "使った 4 人だけ（分類器・ワークフローの主体は除く）");
     let again = rollup::rollup_day(&pool, &f.tenant, "acme", day)
         .await
         .unwrap();
@@ -346,6 +363,14 @@ async fn reports_respect_small_groups_and_individual_view() {
         Err(ReportError::GroupTooSmall)
     ));
 
+    assert!(
+        matches!(
+            svc.overview(&admin, &range(Some("admins")), None).await,
+            Err(ReportError::GroupTooSmall)
+        ),
+        "部署でないロールでは絞れない"
+    );
+
     // 個人別は既定オフ。オンにすると使った人が並ぶ。
     assert!(svc.people(&admin, &range(None)).await.unwrap().is_none());
     let a = svc.adoption(&admin, &range(None)).await.unwrap();
@@ -358,7 +383,8 @@ async fn reports_respect_small_groups_and_individual_view() {
     svc.update_settings(&admin, &patch).await.unwrap().unwrap();
     let people = svc.people(&admin, &range(None)).await.unwrap().unwrap();
     assert_eq!(people.len(), 4);
-    assert_eq!(people.iter().find(|p| p.user_id == "u0").unwrap().runs, 2);
+    let u0 = people.iter().find(|p| p.user_id == "u0").unwrap();
+    assert_eq!((u0.runs, u0.threads), (2, 2));
 
     // 用途と効果: 完了し 👎 の付いていない会話 × 前提分数。👎 の理由が数えられる。
     let u = svc.use_cases(&admin, &range(None)).await.unwrap();
@@ -513,6 +539,11 @@ async fn classify_labels_threads_without_counting_the_classifier() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let chat = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
+        .await
+        .unwrap();
+    // 集計は在籍者だけを数えるので、ディレクトリに登録しておく。
+    DirectoryStore::new(pool.clone())
+        .upsert_user("u0", &tenant, "acme", "u0@example.com", "u0")
         .await
         .unwrap();
     let c = ctx(&tenant, "u0");

@@ -200,15 +200,18 @@ pub async fn classify_org(
     let mut done = 0usize;
     for (thread_id, owner, n) in threads {
         let text = excerpt(db, tenant_id, thread_id).await?;
-        if text.trim().is_empty() {
-            continue;
-        }
-        let category = match classify_one(gw, &ctx, &model, thread_id, &text).await {
-            Ok(c) => c,
-            Err(e) => {
-                // 許可外・一時障害などはこの回は見送る（次回に再挑戦）。
-                tracing::warn!(error = %e, org, "用途分類に失敗（この回は見送り）");
-                break;
+        // 文字の発話が無い会話（添付だけ等）は AI に渡さず「その他」にする。記録しないと毎回の
+        // 対象に残り続け、たまると新しい会話の分類が進まなくなる。
+        let category = if text.trim().is_empty() {
+            "other"
+        } else {
+            match classify_one(gw, &ctx, &model, thread_id, &text).await {
+                Ok(c) => c,
+                Err(e) => {
+                    // 許可外・一時障害などはこの回は見送る（障害中に呼び続けない・次回に再挑戦）。
+                    tracing::warn!(error = %e, org, "用途分類に失敗（この回は見送り）");
+                    break;
+                }
             }
         };
         sqlx::query(

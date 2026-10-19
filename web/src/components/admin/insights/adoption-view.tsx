@@ -222,8 +222,13 @@ function People({ enabled, query }: { enabled: boolean; query: InsightsQuery }) 
   const [rows, setRows] = React.useState<InsightsPerson[] | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  // 絞り込みが変わったら閉じる（開き直し＝もう一度記録される）。
-  React.useEffect(() => setRows(null), [query]);
+  // 絞り込みが変わったら閉じる（開き直し＝もう一度記録される）。読み込み中の応答は捨てる。
+  const requestRef = React.useRef(0);
+  React.useEffect(() => {
+    requestRef.current += 1;
+    setRows(null);
+    setLoading(false);
+  }, [query]);
 
   if (!enabled) {
     return (
@@ -249,14 +254,18 @@ function People({ enabled, query }: { enabled: boolean; query: InsightsQuery }) 
   }
 
   const open = async () => {
+    const request = ++requestRef.current;
     setLoading(true);
     try {
-      setRows(await fetchPeople(query));
+      const r = await fetchPeople(query);
+      if (request !== requestRef.current) return;
+      setRows(r);
       setError(null);
     } catch (e) {
+      if (request !== requestRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (request === requestRef.current) setLoading(false);
     }
   };
 

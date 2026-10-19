@@ -8,10 +8,16 @@
 //! - `audit_log`: スキルの適用（`skill.apply`）・ミニアプリの呼び出し（`gateway.call`）
 //! - `workflow_run`: ワークフローの実行と成功（委譲者がいればその人に寄せる）
 //!
-//! 分類器の利用（[`super::CLASSIFIER_PRINCIPAL`]）など `system:` の主体は利用者に数えない。
+//! 数えるのはディレクトリに在籍する人だけ（分類器 [`super::CLASSIFIER_PRINCIPAL`] や、予約・イベントで
+//! 動いたワークフローの主体は除く）。
 
+use agent_core::ToolName;
 use chrono::{Duration, NaiveDate};
 use sqlx::PgPool;
+
+/// 定常時に毎回作り直す過去の日数。あとから終わる実行（承認待ちのワークフロー・長いエージェント）の
+/// 結果を、作成日の行へ取り込むため。
+const RECOMPUTE_DAYS: i64 = 7;
 
 /// 1 回の実行で 1 組織あたり埋める過去日数の上限。初回の遡り（[`BACKFILL_DAYS`]）は 1 回で
 /// 埋め切る（導入直後に直近の数字が欠けないように）。長く止まっていたあとの追いつきだけ分割する。
@@ -19,7 +25,7 @@ const MAX_DAYS_PER_RUN: i64 = 120;
 /// 初回に遡る日数（画面の最長期間に合わせる）。
 const BACKFILL_DAYS: i64 = 120;
 
-/// 1 日分を作り直す SQL（$1 tenant, $2 org, $3 day）。
+/// 1 日分を作り直す SQL（$1 tenant, $2 org, $3 day, $4〜$6 文書検索・Web・コード実行のツール名）。
 const ROLLUP_SQL: &str = r"
 WITH b AS (
     SELECT ($3::date)::timestamp AT TIME ZONE 'Asia/Tokyo' AS lo,
@@ -53,11 +59,11 @@ r AS (
 k AS (
     SELECT g.actor AS user_id,
            (count(*) FILTER (WHERE x.blk->>'type' = 'tool_call'
-                 AND x.blk->>'name' IN ('doc_search', 'doc_read')))::int AS doc_searches,
+                 AND x.blk->>'name' = ANY($4::text[])))::int AS doc_searches,
            (count(*) FILTER (WHERE x.blk->>'type' = 'tool_call'
-                 AND x.blk->>'name' IN ('web_search', 'web_fetch')))::int AS web_searches,
+                 AND x.blk->>'name' = ANY($5::text[])))::int AS web_searches,
            (count(*) FILTER (WHERE x.blk->>'type' = 'tool_call'
-                 AND x.blk->>'name' IN ('code_interpreter', 'shell', 'csv.query')))::int AS code_runs,
+                 AND x.blk->>'name' = ANY($6::text[])))::int AS code_runs,
            (count(*) FILTER (WHERE x.blk->>'type' IN ('document_ref', 'note_ref')))::int AS documents
     FROM generation_run g
     JOIN message m ON m.id = g.message_id
@@ -111,8 +117,17 @@ LEFT JOIN r ON r.user_id = ids.user_id
 LEFT JOIN k ON k.user_id = ids.user_id
 LEFT JOIN a ON a.user_id = ids.user_id
 LEFT JOIN w ON w.user_id = ids.user_id
-WHERE ids.user_id IS NOT NULL AND ids.user_id NOT LIKE 'system:%'
+WHERE ids.user_id IS NOT NULL
+  -- 人だけを数える（ディレクトリの在籍者）。予約・イベント起動のワークフロー（主体がワークフロー
+  -- ID）や分類器（system:）などは利用者に含めない。
+  AND EXISTS (SELECT 1 FROM directory_user du
+              WHERE du.tenant_id = $1 AND du.org = $2 AND du.user_id = ids.user_id)
 ";
+
+/// ツールの区分（名前は agent-core の語彙から取る・手書きしない）。
+fn tool_names(names: &[ToolName]) -> Vec<&'static str> {
+    names.iter().map(|n| n.as_str()).collect()
+}
 
 /// 1 組織の 1 日分を作り直す（消して入れる・1 トランザクション）。
 pub async fn rollup_day(
@@ -132,6 +147,13 @@ pub async fn rollup_day(
         .bind(tenant_id)
         .bind(org)
         .bind(day)
+        .bind(tool_names(&[ToolName::DocSearch, ToolName::DocRead]))
+        .bind(tool_names(&[ToolName::WebSearch, ToolName::WebFetch]))
+        .bind(tool_names(&[
+            ToolName::CodeInterpreter,
+            ToolName::Shell,
+            ToolName::CsvQuery,
+        ]))
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -154,12 +176,12 @@ pub struct Plan {
     pub reached: NaiveDate,
 }
 
-/// この実行で作り直す日（前日・当日は毎回。未集計の過去は古い順に上限まで）。
+/// この実行で作り直す日（直近 [`RECOMPUTE_DAYS`] 日と当日は毎回。未集計の過去は古い順に上限まで）。
 pub fn plan(today: NaiveDate, computed_through: Option<NaiveDate>) -> Plan {
     let yesterday = today - Duration::days(1);
     let start = match computed_through {
-        // 前回の到達点の前日から（その日の遅れて届いた記録も拾う）。
-        Some(d) => (d - Duration::days(1)).min(yesterday),
+        // 前回の到達点の数日前から（あとから終わった実行の結果も拾う）。
+        Some(d) => (d - Duration::days(RECOMPUTE_DAYS)).min(yesterday),
         None => today - Duration::days(BACKFILL_DAYS),
     };
     let mut days: Vec<NaiveDate> = Vec::new();
@@ -223,12 +245,15 @@ mod tests {
     }
 
     #[test]
-    fn steady_state_recomputes_yesterday_and_today() {
+    fn steady_state_recomputes_the_last_week_and_today() {
         let today = d("2026-10-19");
         let p = plan(today, Some(d("2026-10-18")));
+        assert_eq!(p.days.first(), Some(&d("2026-10-11")));
+        assert_eq!(p.days.last(), Some(&today));
         assert_eq!(
-            p.days,
-            vec![d("2026-10-17"), d("2026-10-18"), d("2026-10-19")]
+            p.days.len() as i64,
+            RECOMPUTE_DAYS + 2,
+            "10/11〜10/19 を欠けなく"
         );
         assert_eq!(p.reached, d("2026-10-18"));
     }
@@ -253,13 +278,22 @@ mod tests {
         let today = d("2026-10-19");
         let old = today - Duration::days(400);
         let p = plan(today, Some(old));
-        assert_eq!(p.days.first(), Some(&(old - Duration::days(1))));
+        assert_eq!(
+            p.days.first(),
+            Some(&(old - Duration::days(RECOMPUTE_DAYS)))
+        );
         assert!(p.days.contains(&today) && p.days.contains(&d("2026-10-18")));
         assert!(p.days.len() as i64 <= MAX_DAYS_PER_RUN + 2);
         // 到達点は追いつきの最終日（前日ではない）。次回はその続きから。
-        assert_eq!(p.reached, old + Duration::days(MAX_DAYS_PER_RUN - 2));
+        assert_eq!(
+            p.reached,
+            old - Duration::days(RECOMPUTE_DAYS) + Duration::days(MAX_DAYS_PER_RUN - 1)
+        );
         let next = plan(today, Some(p.reached));
-        assert_eq!(next.days.first(), Some(&(p.reached - Duration::days(1))));
+        assert_eq!(
+            next.days.first(),
+            Some(&(p.reached - Duration::days(RECOMPUTE_DAYS)))
+        );
         // 追いつき切ると到達点は前日。
         let mut through = Some(p.reached);
         for _ in 0..10 {

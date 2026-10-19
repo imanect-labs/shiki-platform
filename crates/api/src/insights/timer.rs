@@ -5,9 +5,11 @@
 //! セッション advisory lock で囲む（取れなければその回は何もしない）。
 //! 失敗はログに残して次の回に任せる（各日の集計は作り直しなので取りこぼしは次回で埋まる）。
 
+use std::panic::AssertUnwindSafe;
 use std::{sync::Arc, time::Duration};
 
 use chrono::Utc;
+use futures::FutureExt;
 use llm_gateway::LlmGateway;
 use sqlx::PgPool;
 
@@ -38,12 +40,19 @@ pub async fn run_once(
     if !locked {
         return Ok(false);
     }
-    let result = run_locked(db, llm, config).await;
+    // パニックしても必ず解放する（ロックは接続に残るので、解放せずにプールへ戻すと他の
+    // インスタンスがその接続の寿命まで集計できなくなる）。
+    let result = AssertUnwindSafe(run_locked(db, llm, config))
+        .catch_unwind()
+        .await;
     let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
         .bind(LOCK_KEY)
         .execute(&mut *conn)
         .await;
-    result.map(|()| true)
+    match result {
+        Ok(r) => r.map(|()| true),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 async fn run_locked(

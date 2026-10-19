@@ -38,18 +38,28 @@ export function ThreadFeedbackProvider({
   children: React.ReactNode;
 }) {
   const [entries, setEntries] = React.useState<Record<string, Entry>>({});
+  /// 同じ回答への保存は順に送る（👎 の直後に理由を選ぶと 2 本が並走し、後から届いた方で
+  /// 理由が消えることがある）。
+  const queues = React.useRef(new Map<string, Promise<void>>());
+  /// サーバに保存できている値（失敗したらここへ戻す）。
+  const saved = React.useRef<Record<string, Entry | undefined>>({});
+  /// 回答ごとの最新の操作番号（古い操作の失敗で新しい表示を巻き戻さない）。
+  const latest = React.useRef(new Map<string, number>());
 
   React.useEffect(() => {
     let active = true;
     setEntries({});
+    saved.current = {};
+    queues.current = new Map();
+    latest.current = new Map();
     fetchThreadFeedback(threadId)
       .then((items: FeedbackItem[]) => {
         if (!active) return;
-        setEntries(
-          Object.fromEntries(
-            items.map((i) => [i.message_id, { rating: i.rating, category: i.category ?? null }]),
-          ),
+        const loaded: Record<string, Entry> = Object.fromEntries(
+          items.map((i) => [i.message_id, { rating: i.rating, category: i.category ?? null }]),
         );
+        saved.current = { ...loaded };
+        setEntries(loaded);
       })
       .catch(() => {
         // 読めなくても評価は付けられる（表示が未選択から始まるだけ）
@@ -59,12 +69,8 @@ export function ThreadFeedbackProvider({
     };
   }, [threadId]);
 
-  const entriesRef = React.useRef(entries);
-  entriesRef.current = entries;
-
   const set = React.useCallback(
-    async (messageId: string, entry: Entry | null) => {
-      const prev = entriesRef.current[messageId];
+    (messageId: string, entry: Entry | null) => {
       const apply = (e: Entry | null | undefined) =>
         setEntries((cur) => {
           const next = { ...cur };
@@ -73,15 +79,23 @@ export function ThreadFeedbackProvider({
           return next;
         });
       apply(entry);
-      try {
-        if (entry) await setMessageFeedback(threadId, messageId, entry.rating, entry.category);
-        else await clearMessageFeedback(threadId, messageId);
-      } catch (e) {
-        apply(prev);
-        toast({
-          description: `評価を保存できませんでした${e instanceof Error ? `（${e.message}）` : ""}`,
-        });
-      }
+      const seq = (latest.current.get(messageId) ?? 0) + 1;
+      latest.current.set(messageId, seq);
+      const run = async () => {
+        try {
+          if (entry) await setMessageFeedback(threadId, messageId, entry.rating, entry.category);
+          else await clearMessageFeedback(threadId, messageId);
+          saved.current[messageId] = entry ?? undefined;
+        } catch (e) {
+          if (latest.current.get(messageId) === seq) apply(saved.current[messageId]);
+          toast({
+            description: `評価を保存できませんでした${e instanceof Error ? `（${e.message}）` : ""}`,
+          });
+        }
+      };
+      const next = (queues.current.get(messageId) ?? Promise.resolve()).then(run);
+      queues.current.set(messageId, next);
+      return next;
     },
     [threadId],
   );

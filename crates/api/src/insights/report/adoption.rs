@@ -264,9 +264,26 @@ async fn cohorts(db: &PgPool, s: &Scope) -> Result<Vec<Cohort>, sqlx::Error> {
     .bind(s.dept.as_deref())
     .fetch_all(db)
     .await?;
+    // 集計の遡りが途中の月から始まっていると、その月には以前から使っていた人も「初めて使った」
+    // として入り膨らむ。集計より前にも利用の記録がある（＝遡りで切れている）なら、その月は出さない。
+    let truncated_month: Option<NaiveDate> = sqlx::query_scalar(
+        "SELECT date_trunc('month', e.d)::date FROM ( \
+           SELECT min(day) AS d FROM ai_activity_daily WHERE tenant_id = $1 AND org = $2) e \
+         WHERE EXISTS (SELECT 1 FROM llm_usage l \
+                        WHERE l.tenant_id = $1 AND l.org = $2 \
+                          AND l.created_at < (e.d)::timestamp AT TIME ZONE 'Asia/Tokyo')",
+    )
+    .bind(&s.tenant_id)
+    .bind(&s.org)
+    .fetch_optional(db)
+    .await?
+    .flatten();
     let mut out = Vec::new();
     for i in 0..COHORT_MONTHS {
         let m0 = add_months(first_month, i32::try_from(i).unwrap_or(0));
+        if truncated_month.is_some_and(|t| m0 <= t) {
+            continue;
+        }
         let users = rows
             .iter()
             .find(|(c, m, _)| *c == m0 && *m == m0)
@@ -337,7 +354,11 @@ pub async fn people(db: &PgPool, s: &Scope) -> Result<Vec<PersonRow>, ReportErro
     );
     let rows: Vec<Row> = sqlx::query_as(&format!(
         "SELECT a.user_id, MAX(du.display_name), MAX(du.email), count(DISTINCT a.day), \
-                COALESCE(sum(a.runs), 0)::bigint, COALESCE(sum(a.threads), 0)::bigint, \
+                COALESCE(sum(a.runs), 0)::bigint, \
+                (SELECT count(DISTINCT g.thread_id) FROM generation_run g \
+                  WHERE g.tenant_id = a.tenant_id AND g.org = a.org AND g.actor = a.user_id \
+                    AND g.created_at >= ($3::date)::timestamp AT TIME ZONE 'Asia/Tokyo' \
+                    AND g.created_at < ($4::date + 1)::timestamp AT TIME ZONE 'Asia/Tokyo'), \
                 COALESCE(sum(a.agent_runs), 0)::bigint, \
                 COALESCE(sum(a.doc_searches + a.web_searches), 0)::bigint, \
                 COALESCE(sum(a.skill_uses), 0)::bigint, max(a.day), \

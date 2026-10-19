@@ -53,7 +53,7 @@ pub enum ReportError {
 /// 部署での絞り込み（`$5` = dept・NULL は全体）。user_id 列を持つ表に `AND` で足す。
 pub(crate) const DEPT_FILTER: &str = "($5::text IS NULL OR user_id IN ( \
     SELECT r.user_id FROM directory_user_role r \
-    WHERE r.tenant_id = $1 AND r.org = $2 AND r.role_id = $5))";
+    WHERE r.tenant_id = $1 AND r.org = $2 AND r.role_id = $5 AND r.source = 'group'))";
 
 /// 少人数の区分は伏せる。
 pub(crate) fn guarded(members: i64, value: f64) -> Option<f64> {
@@ -82,14 +82,15 @@ pub(crate) async fn population(db: &PgPool, s: &Scope) -> Result<i64, sqlx::Erro
     .await
 }
 
-/// 部署で絞るなら、その部署が少人数でないことを確かめる（PIT-17）。
+/// 部署で絞るなら、それが部署（groups 由来）で、少人数でないことを確かめる（PIT-17）。
+/// roles 由来のロール（admin 等）は部署ではないので絞り込みに使えない（人数 0 扱いで断る）。
 pub async fn check_scope(db: &PgPool, s: &Scope) -> Result<(), ReportError> {
     let Some(dept) = &s.dept else {
         return Ok(());
     };
     let members: i64 = sqlx::query_scalar(
         "SELECT count(DISTINCT user_id) FROM directory_user_role \
-         WHERE tenant_id = $1 AND org = $2 AND role_id = $3",
+         WHERE tenant_id = $1 AND org = $2 AND role_id = $3 AND source = 'group'",
     )
     .bind(&s.tenant_id)
     .bind(&s.org)

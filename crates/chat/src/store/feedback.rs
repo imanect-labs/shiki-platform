@@ -68,20 +68,22 @@ impl ChatStore {
         )
         .await?;
         // 対象の回答（このスレッド・このテナントの assistant）と、それを作った run のモデル。
-        let row: Option<(String, Option<String>)> = sqlx::query_as(
-            "SELECT m.org, \
-                    (SELECT r.model FROM generation_run r \
+        // 範囲（tenant_id ＋ org）は AuthContext から。行の値は使わない。
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT (SELECT r.model FROM generation_run r \
                       WHERE r.message_id = m.id ORDER BY r.created_at DESC LIMIT 1) \
              FROM message m \
-             WHERE m.id = $1 AND m.thread_id = $2 AND m.tenant_id = $3 AND m.role = 'assistant'",
+             WHERE m.id = $1 AND m.thread_id = $2 AND m.tenant_id = $3 AND m.org = $4 \
+               AND m.role = 'assistant'",
         )
         .bind(message_id)
         .bind(thread_id)
         .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        let (org, model) = row.ok_or(ChatError::NotFound)?;
+        let (model,) = row.ok_or(ChatError::NotFound)?;
         sqlx::query(
             "INSERT INTO message_feedback \
              (tenant_id, org, message_id, thread_id, user_id, rating, category, model) \
@@ -91,7 +93,7 @@ impl ChatStore {
                model = EXCLUDED.model, updated_at = now()",
         )
         .bind(&ctx.tenant_id)
-        .bind(&org)
+        .bind(&ctx.org)
         .bind(message_id)
         .bind(thread_id)
         .bind(&ctx.principal.id)

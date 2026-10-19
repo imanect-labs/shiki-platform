@@ -200,9 +200,9 @@ pub async fn get_people(
         .await
         .map_err(map_report)?
         .ok_or(ApiError::Forbidden)?;
-    // 誰がいつ個人別を見たかを残す（失敗しても表示は返す・欠落はログで顕在化）。
+    // 誰がいつ個人別を見たかを残す。残せなければ見せない（閲覧は必ず監査に残す約束）。
     let object_id = format!("{}|{}", ctx.tenant_id, ctx.org);
-    if let Err(e) = state
+    state
         .audit
         .record(
             &ctx,
@@ -218,9 +218,10 @@ pub async fn get_people(
             },
         )
         .await
-    {
-        tracing::error!(error = %e, "個人別の閲覧の監査記録に失敗");
-    }
+        .map_err(|e| {
+            tracing::error!(error = %e, "個人別の閲覧の監査記録に失敗（一覧は返さない）");
+            ApiError::Internal("監査ログに記録できなかったため表示を中止しました".into())
+        })?;
     Ok(Json(rows))
 }
 
