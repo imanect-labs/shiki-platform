@@ -1,7 +1,6 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { Leaf } from "lucide-react";
 
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { cn } from "@/lib/utils";
@@ -53,23 +52,34 @@ export const CHROME_TRAY = cn(
   "bg-sidebar/95 shadow-[var(--elevation-md)] backdrop-blur supports-[backdrop-filter]:bg-sidebar/80",
 );
 
-/// 季の葉（ホームの区切り・空状態と同じ葉の意匠を、今の季節の色で）。ドロワを開くボタンの顔にする。
-/// 色は描画時の月から決める（empty-state・editor-loading と同じ）。サーバとクライアントで月を
-/// 跨いだ瞬間だけ style がずれ得るため、その差分の警告は抑える（見た目は次の描画で揃う）。
-export function LeafMark({ className }: { className?: string }) {
+/// 一筋の季（いちすじのき）。三本線のメニューを Shiki の線で描く: 上の一本だけを今の季節の色の
+/// 短い実線にし、下の二本は区切り線と同じ細い破線で控えめにする。季節色は描画時の月から決める
+/// （empty-state・editor-loading と同じ）。サーバとクライアントで月を跨いだ瞬間だけ stroke が
+/// ずれ得るため、その差分の警告は抑える（見た目は次の描画で揃う）。
+export function MenuMark({ className }: { className?: string }) {
   return (
-    <Leaf
+    <svg
       aria-hidden
-      className={cn("size-[22px]", className)}
-      style={{ color: seasonVar(currentSeasonIndex()) }}
-      strokeWidth={1.9}
-      suppressHydrationWarning
-    />
+      viewBox="0 0 24 24"
+      fill="none"
+      strokeLinecap="round"
+      className={cn("size-6", className)}
+    >
+      <path
+        d="M4.5 7h8.5"
+        stroke={seasonVar(currentSeasonIndex())}
+        strokeWidth={2.6}
+        suppressHydrationWarning
+        className="origin-left [transform-box:fill-box] transition-transform duration-[var(--duration-normal)] ease-[var(--ease-standard)] group-hover:scale-x-[1.18] group-active:scale-x-[1.18]"
+      />
+      <path d="M4.5 12h15" stroke="currentColor" strokeOpacity={0.7} strokeWidth={1.6} strokeDasharray="3.4 2.2" />
+      <path d="M4.5 17h15" stroke="currentColor" strokeOpacity={0.7} strokeWidth={1.6} strokeDasharray="3.4 2.2" />
+    </svg>
   );
 }
 
-/// ドロワ（ナビゲーション）を開くボタン。ハンバーガーではなく季の葉を使う。
-export function MenuLeafButton({
+/// ドロワ（ナビゲーション）を開くボタン。顔は一筋の季（`MenuMark`）。
+export function MenuMarkButton({
   onClick,
   label = "メニューを開く",
 }: {
@@ -82,9 +92,9 @@ export function MenuLeafButton({
       onClick={onClick}
       aria-label={label}
       title={label}
-      className="group flex size-11 items-center justify-center rounded-[10px] outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94]"
+      className="group flex size-11 items-center justify-center rounded-[10px] text-foreground outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94]"
     >
-      <LeafMark className="transition-transform duration-[var(--duration-normal)] ease-[var(--ease-standard)] group-active:-rotate-12" />
+      <MenuMark />
     </button>
   );
 }
@@ -115,7 +125,7 @@ export function MobileChrome() {
 
       <div className="relative flex items-start justify-between gap-2 px-2.5 pt-[max(0.5rem,env(safe-area-inset-top))]">
         <div className={CHROME_TRAY}>
-          <MenuLeafButton onClick={() => setMobileOpen(true)} />
+          <MenuMarkButton onClick={() => setMobileOpen(true)} />
           {spec?.back ? (
             <>
               <ChromeDivider />
