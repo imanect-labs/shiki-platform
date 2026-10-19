@@ -7,24 +7,29 @@
 //!
 //! このリポジトリの整理（#344）どおり、**決定性はツール実装＋認可＋承認ゲートが担う**。
 //! ここでは「その run で何を提示するか」を状態から決め、承認前は調査系ツールを**渡さない**。
-//! モデルは物理的に調査できないので、カードを出す以外に進みようがない。
+//! モデルは物理的に調査できないので、質問や計画を書く以外に進みようがない。
+//!
+//! 質問と計画は回答の本文の ```ui ブロック（Yui の `ask`・`plan`・#604）で出す。ボタンの回答・
+//! 承認は会話への発話として返り（`ui_action_invocation` で 1 回だけ）、次の run を起こす。
 //!
 //! 段階（run のピンに `phase = plan_first` が焼かれているときのみ・[`crate::SkillPin`]）:
 //!
 //! | スレッドの状態 | 段階 | 提示するツール |
 //! |---|---|---|
-//! | 質問カードがまだ無い | 明確化 | `emit_ui` のみ |
-//! | 質問カードがある・計画カードが無い | 計画 | `emit_ui` ＋ `plan` ＋ 作業ファイル |
-//! | 計画カードがある | 実行 | 全ツール（従来どおり） |
+//! | `ask` をまだ出していない | 明確化 | なし（本文に `ask` を書くだけ） |
+//! | `ask` を出した・その後の回答に `plan` が無い | 計画 | 調査系を除く（作業ファイル・`subagent`） |
+//! | `ask` より後の回答に `plan` を出した | 実行 | 全ツール（従来どおり） |
 //!
-//! 段階の**順序**（質問が先）はツールだけでは強制できない（どちらも `emit_ui`）。ただし
-//! 明確化の段階では `emit_ui` しか無いため、調査へ逃げる経路が存在しない。
+//! 段階の**順序**（質問が先）はツールでは強制できない（どちらも本文に書くだけ）。そこで、
+//! `plan` は **`ask` を出した回答より後の回答**にあるものだけを数える。明確化の段階で `ask` と
+//! `plan` を同じ回答に書いても（#402 の実害の形）、計画は出ていないものとして扱い、次の
+//! 段階は計画になる。
 
 use agent_core::{Tool, ToolName};
 use std::sync::Arc;
 
-/// 実行前フェーズの段階。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 実行前フェーズの段階（宣言の順に進む）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum GateStage {
     /// 明確化（質問カードを出す）。`emit_ui` のみ提示する。
     Clarify,
@@ -53,30 +58,26 @@ impl GateStage {
             return true;
         };
         match self {
-            // 明確化では質問カードを出すこと以外にできることを持たせない。
-            GateStage::Clarify => tool == ToolName::EmitUi,
-            // 計画では作業ファイル・UI に加えて `subagent` を通す（#402）。委譲そのものは
+            // 明確化では質問を書くこと以外にできることを持たせない（質問は本文に書く）。
+            GateStage::Clarify => false,
+            // 計画では作業ファイルに加えて `subagent` を通す（#402）。`emit_ui` は渡さない
+            // （計画は本文の ```ui plan で出す）。委譲そのものは
             // 調査だが、**計画ロール**の子はツールを 1 つも持たず調べない（手順書を知らない
             // 文脈で「何を確かめるべきか」だけを立てる）。研究ロールで呼んでも子に調査ツールは
             // 渡るため、ここは「計画を子に書かせる」導線として開ける。
-            GateStage::Plan => tool == ToolName::Subagent || !RESEARCH_TOOLS.contains(&tool),
+            GateStage::Plan => {
+                tool == ToolName::Subagent
+                    || (tool != ToolName::EmitUi && !RESEARCH_TOOLS.contains(&tool))
+            }
             GateStage::Execute => true,
         }
     }
 
-    /// 段階に応じて提示ツールを絞り、`emit_ui` の出せる形も限定する（`Execute` は素通し）。
-    ///
-    /// ツールを落とすだけでは足りない: 明確化で `emit_ui` しか渡していないのに、その
-    /// `emit_ui` で計画カードを出されて質問フェーズが飛ばされた（#402）。この段階で
-    /// 出せるカードそのものを指定する。
+    /// 段階に応じて提示ツールを絞る（`Execute` は素通し）。
     ///
     /// 戻り値は**門が承認まで取り上げた**ツール名（積んであったのに外したもの）。発話ごとの
     /// ツール指定（#734）の注記で「使えない」ではなく「承認後に使える」と伝えるのに使う。
-    pub(super) fn filter(
-        self,
-        tools: &mut Vec<Arc<dyn Tool>>,
-        ui_validator: Option<&Arc<gui::SpecValidator>>,
-    ) -> Vec<String> {
+    pub(super) fn filter(self, tools: &mut Vec<Arc<dyn Tool>>) -> Vec<String> {
         if self == GateStage::Execute {
             return Vec::new();
         }
@@ -88,27 +89,7 @@ impl GateStage {
             }
             keep
         });
-        let Some(allowed) = self.allowed_cards() else {
-            return held;
-        };
-        let Some(validator) = ui_validator else {
-            return held;
-        };
-        // 制限つきの emit_ui へ差し替える（提示ツールの最終形に対して効かせる）。
-        tools.retain(|t| t.name() != ToolName::EmitUi.as_str());
-        tools.push(Arc::new(
-            gui::EmitUiTool::new(validator.clone()).with_allowed_root(allowed),
-        ));
         held
-    }
-
-    /// この段階で `emit_ui` のルートに出せるカード（`None` は制限なし）。
-    fn allowed_cards(self) -> Option<Vec<gui::ComponentKind>> {
-        match self {
-            GateStage::Clarify => Some(vec![gui::ComponentKind::QuestionCard]),
-            GateStage::Plan => Some(vec![gui::ComponentKind::PlanCard]),
-            GateStage::Execute => None,
-        }
     }
 
     /// system プロンプトへ足す、この段階でやることの明示。
@@ -119,21 +100,26 @@ impl GateStage {
         match self {
             GateStage::Clarify => Some(
                 "\n\n# いまのフェーズ: 明確化\n\
-                 この発話では**調査ツールを提示していません**（承認前だからです）。\
-                 `emit_ui` の `question_card` で最大 3 問だけ聞き、ターンを終えてください。\
-                 回答が返ったら次のターンで計画を出します。",
+                 この発話では**ツールを提示していません**（承認前だからです）。\
+                 回答の本文に ```ui の `ask` で最大 3 問だけ聞き、ターンを終えてください。\
+                 回答が返ったら次のターンで計画を出します。書き方:\n\
+                 ```ui\nask 確認させてください\n? 質問 1\n- 選択肢 A: 説明\n- 選択肢 B\n\
+                 ? 質問 2 multi\n- 選択肢 C\n- 選択肢 D\n- その他\n```\n\
+                 （`multi` は複数選択、`- その他` は自由記述を受ける。）",
             ),
             GateStage::Plan => Some(
                 "\n\n# いまのフェーズ: 計画\n\
                  この発話でも**調査ツールは提示していません**。brief と outline を書き、\
-                 `emit_ui` の `plan_card` を出してターンを終えてください。ユーザーが\
-                 「この計画で開始」を押すと、次のターンで調査ツールが使えるようになります。\n\
+                 回答の本文に ```ui の `plan` を書いてターンを終えてください。ユーザーが\
+                 「この計画で進める」を押すと、次のターンで調査ツールが使えるようになります。書き方:\n\
+                 ```ui\nplan 調査の計画\n1. 手順 1: 説明\n2. 手順 2\n```\n\
                  \n\
                  計画の中身は**自分で書かず** `subagent` に `role: \"plan\"` で書かせること。\
-                 `objective` にはユーザーの依頼（と質問カードの回答）だけを渡す。\
+                 `objective` にはユーザーの依頼（と質問への回答）だけを渡す。\
                  手順書を知っているあなたが書くと「brief を書く」「証拠台帳を作る」のような\
                  **自分の作業**が計画に混ざる。返ってきた JSON の `title` / `intro` / `steps` は\
-                 **書き換えずそのまま** `plan_card` に載せる。",
+                 **書き換えずそのまま** `plan` に載せる（`title` を見出し、`intro` を `> ` で始まる前置きの行、\
+                 `steps` を番号付きの行に）。",
             ),
             GateStage::Execute => None,
         }
@@ -160,16 +146,33 @@ fn declared_phase(
         .phase
 }
 
-/// スレッドに出ている genui カードの有無から段階を決める（#400）。
+/// 回答の本文（text ブロックを会話の順に）から段階を決める（#400・#604）。
 ///
-/// `has_question` / `has_plan` は「そのカードを**出した**か」。押されたかは見ない:
-/// カードは出した時点でターンが終わり、次の run はユーザーの反応（回答/承認/修正）でしか
-/// 起きないため、「出た＝ユーザーが見て次へ進めた」と同値になる。
-pub(super) fn stage_from_cards(has_question: bool, has_plan: bool) -> GateStage {
-    match (has_question, has_plan) {
-        (_, true) => GateStage::Execute,
-        (true, false) => GateStage::Plan,
-        (false, false) => GateStage::Clarify,
+/// 数えるのはトップレベルの、閉じていて、エラーの無い ```ui ブロックだけ（ボタンの経路と同じ
+/// `yui::extract_action_blocks`）。`plan` は **`ask` を最初に出した回答より後の回答**にあるものだけを
+/// 数える（明確化の段階で両方を同じ回答に書かれても、質問を飛ばして実行へ進ませない）。
+///
+/// 押されたかは見ない: 質問・計画を出した時点でターンが終わり、次の run はユーザーの反応
+/// （回答・承認・修正の依頼・自由な発話）でしか起きないため、「出た＝ユーザーが見て次へ進めた」と同値になる。
+pub(super) fn stage_from_answers<'a>(
+    texts: impl IntoIterator<Item = (uuid::Uuid, &'a str)>,
+) -> GateStage {
+    let mut asked_in: Option<uuid::Uuid> = None;
+    for (message_id, text) in texts {
+        for block in yui::extract_action_blocks(text) {
+            match block.figure {
+                yui::Figure::Ask { .. } if asked_in.is_none() => asked_in = Some(message_id),
+                yui::Figure::Plan { .. } if asked_in.is_some_and(|m| m != message_id) => {
+                    return GateStage::Execute;
+                }
+                _ => {}
+            }
+        }
+    }
+    if asked_in.is_some() {
+        GateStage::Plan
+    } else {
+        GateStage::Clarify
     }
 }
 
@@ -177,13 +180,13 @@ impl super::ChatWorker {
     /// この run の実行前フェーズ段階を決める（#400）。
     ///
     /// 判定材料は ①run のピンに焼かれた**起動 variant**（[`crate::SkillPin::command_args`]）が
-    /// 解決済み body で宣言している `phase` ②スレッドに出ているカード。**ハードコードしない**
+    /// 解決済み body で宣言している `phase` ②回答の本文に出した ```ui の `ask`・`plan`。**ハードコードしない**
     /// （どの skill が確認フェーズを要るかは skill 自身が宣言する）。
     ///
     /// 焼くのは variant の identity だけで、**意味はここで body から引き直す**。導出値
     /// （`phase`）を焼くと variant に宣言を足すたび同じ経路で落ちる。
     ///
-    /// フェーズを**毎ターン発話本文から引き直さない**のが要点。カード回答・計画承認は
+    /// フェーズを**毎ターン発話本文から引き直さない**のが要点。質問への回答・計画の承認は
     /// `chat.submit` 由来でコマンドリテラルを持たないので、本文照合では 2 ターン目以降が
     /// 必ず素通りになる（#402 の実害。実測では 1 run で `emit_ui` が 6 回走り、質問と計画が
     /// 同じターンに出た）。
@@ -201,11 +204,27 @@ impl super::ChatWorker {
         {
             return Ok(GateStage::Execute);
         }
-        let (has_question, has_plan) = self
+        let texts = self
             .store
-            .emitted_cards(run.thread_id, &ctx.tenant_id)
+            .fenced_answer_texts(run.thread_id, &ctx.tenant_id)
             .await?;
-        Ok(stage_from_cards(has_question, has_plan))
+        let stage = stage_from_answers(texts.iter().map(|(id, text)| (*id, text.as_str())));
+        // 置き換え前の emit_ui のカードで進めていた会話を巻き戻さない（#604 の 7 つ目で
+        // 旧データと一緒に消す互換処理）。
+        let (asked, planned) = self
+            .store
+            .legacy_gate_cards(run.thread_id, &ctx.tenant_id)
+            .await?;
+        Ok(stage.max(stage_from_legacy_cards(asked, planned)))
+    }
+}
+
+/// 置き換え前の emit_ui のカード（`question_card`・`plan_card`）を出したかによる段階。
+fn stage_from_legacy_cards(asked: bool, planned: bool) -> GateStage {
+    match (asked, planned) {
+        (_, true) => GateStage::Execute,
+        (true, false) => GateStage::Plan,
+        (false, false) => GateStage::Clarify,
     }
 }
 
@@ -266,20 +285,70 @@ mod tests {
         assert_eq!(declared_phase(&pin(id, Some("legacy")), &skills), None);
     }
 
+    const ASK: &str = "質問します。\n\n```ui\nask 確認\n? 対象は\n- 国内\n- 海外\n```";
+    const PLAN: &str = "```ui\nplan 調査の計画\n1. 市場規模を調べる\n2. 比べる\n```";
+
     #[test]
-    fn stage_advances_with_cards() {
-        assert_eq!(stage_from_cards(false, false), GateStage::Clarify);
-        assert_eq!(stage_from_cards(true, false), GateStage::Plan);
-        assert_eq!(stage_from_cards(true, true), GateStage::Execute);
-        // 質問を出さずに計画だけ出した run（モデルの判断）でも、承認後は実行へ進む。
-        assert_eq!(stage_from_cards(false, true), GateStage::Execute);
+    fn legacy_cards_keep_the_stage() {
+        assert_eq!(stage_from_legacy_cards(false, false), GateStage::Clarify);
+        assert_eq!(stage_from_legacy_cards(true, false), GateStage::Plan);
+        assert_eq!(stage_from_legacy_cards(true, true), GateStage::Execute);
+        // 本文の段階と合わせるときは進んでいる方を取る。
+        assert_eq!(GateStage::Plan.max(GateStage::Clarify), GateStage::Plan);
+        assert_eq!(GateStage::Plan.max(GateStage::Execute), GateStage::Execute);
     }
 
     #[test]
-    fn clarify_offers_only_emit_ui() {
+    fn stage_advances_with_ask_then_plan() {
+        let (a, b) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        assert_eq!(stage_from_answers([]), GateStage::Clarify);
+        assert_eq!(
+            stage_from_answers([(a, "```ui\nbar 売上\nA | 1\n```")]),
+            GateStage::Clarify
+        );
+        assert_eq!(stage_from_answers([(a, ASK)]), GateStage::Plan);
+        assert_eq!(
+            stage_from_answers([(a, ASK), (b, PLAN)]),
+            GateStage::Execute
+        );
+        // 質問の後に何度か回答を挟んでも、計画が出れば実行へ進む。
+        let c = uuid::Uuid::new_v4();
+        assert_eq!(
+            stage_from_answers([(a, ASK), (c, "了解しました。"), (b, PLAN)]),
+            GateStage::Execute
+        );
+    }
+
+    /// 質問と計画を同じ回答に書かれても、質問を飛ばして実行へは進ませない（#402 の形）。
+    #[test]
+    fn plan_in_the_asking_answer_does_not_count() {
+        let a = uuid::Uuid::new_v4();
+        let both = format!("{ASK}\n\n{PLAN}");
+        assert_eq!(stage_from_answers([(a, both.as_str())]), GateStage::Plan);
+        // 同じ回答の別の text ブロック（ツールを挟んで切れた）でも同じ。
+        assert_eq!(stage_from_answers([(a, ASK), (a, PLAN)]), GateStage::Plan);
+        // 質問より前の計画も数えない。
+        let b = uuid::Uuid::new_v4();
+        assert_eq!(stage_from_answers([(b, PLAN), (a, ASK)]), GateStage::Plan);
+    }
+
+    /// 引用・箇条書きの中・閉じていない・エラーのあるブロックは数えない（ボタンの経路と同じ規則）。
+    #[test]
+    fn only_top_level_valid_blocks_count() {
+        let a = uuid::Uuid::new_v4();
+        let quoted = "> ```ui\n> ask 確認\n> ? 対象は\n> - 国内\n> ```";
+        assert_eq!(stage_from_answers([(a, quoted)]), GateStage::Clarify);
+        let unclosed = "```ui\nask 確認\n? 対象は\n- 国内\n";
+        assert_eq!(stage_from_answers([(a, unclosed)]), GateStage::Clarify);
+        let empty = "```ui\nask 確認\n```";
+        assert_eq!(stage_from_answers([(a, empty)]), GateStage::Clarify);
+    }
+
+    #[test]
+    fn clarify_offers_no_tools() {
         let s = GateStage::Clarify;
-        assert!(s.allows("emit_ui"));
         for denied in [
+            "emit_ui",
             "web_search",
             "web_fetch",
             "doc_search",
@@ -293,14 +362,14 @@ mod tests {
     #[test]
     fn plan_offers_workspace_but_no_research() {
         let s = GateStage::Plan;
-        for allowed in ["emit_ui", "fs_write", "fs_append", "fs_read", "save_note"] {
+        for allowed in ["fs_write", "fs_append", "fs_read", "save_note"] {
             assert!(s.allows(allowed), "{allowed} は計画段階でも使う");
         }
         assert!(
             s.allows("subagent"),
             "計画を子に書かせる導線は開ける（#402）"
         );
-        for denied in ["web_search", "web_fetch", "doc_search"] {
+        for denied in ["web_search", "web_fetch", "doc_search", "emit_ui"] {
             assert!(!s.allows(denied), "{denied} は承認後にだけ渡す");
         }
     }
@@ -347,23 +416,18 @@ mod tests {
             "subagent",
         ];
         let mut tools = offered(&base);
-        let held = GateStage::Plan.filter(&mut tools, None);
-        assert_eq!(
-            held,
-            vec!["web_search".to_string(), "doc_search".to_string()]
-        );
+        let held = GateStage::Plan.filter(&mut tools);
+        assert_eq!(held, vec!["emit_ui", "web_search", "doc_search"]);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["emit_ui", "fs_write", "subagent"]);
+        assert_eq!(names, vec!["fs_write", "subagent"]);
 
         let mut tools = offered(&base);
-        let held = GateStage::Clarify.filter(&mut tools, None);
-        assert_eq!(
-            held,
-            vec!["web_search", "doc_search", "fs_write", "subagent"]
-        );
+        let held = GateStage::Clarify.filter(&mut tools);
+        assert_eq!(held, base.to_vec());
+        assert!(tools.is_empty(), "明確化ではツールを 1 つも渡さない");
 
         let mut tools = offered(&base);
-        assert!(GateStage::Execute.filter(&mut tools, None).is_empty());
+        assert!(GateStage::Execute.filter(&mut tools).is_empty());
         assert_eq!(tools.len(), base.len());
     }
 

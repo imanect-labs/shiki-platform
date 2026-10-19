@@ -246,16 +246,40 @@ impl ChatStore {
 }
 
 impl ChatStore {
-    /// スレッドに出ている genui カードの有無（実行前フェーズの門・#400）。
+    /// スレッドの回答の本文のうち、```ui ブロックを含みうる text ブロック（実行前フェーズの門・#400）。
     ///
-    /// 戻り値は `(質問カードを出したか, 計画カードを出したか)`。`message.content` の
-    /// `generative_ui` ブロックを走査するのではなく **jsonb で絞る**（全件取得→フィルタをしない）。
-    pub async fn emitted_cards(
+    /// 戻り値は `(メッセージ id, 本文)` を会話の順に並べたもの。ask・plan の有無は呼び出し側が
+    /// `yui::extract_action_blocks` で読む（ボタンの経路と同じく、text ブロックごとに読む）。
+    /// フェンスの無いブロックは jsonb の段階で落とす（全件取得 → フィルタをしない）。
+    pub async fn fenced_answer_texts(
+        &self,
+        thread_id: uuid::Uuid,
+        tenant_id: &str,
+    ) -> Result<Vec<(uuid::Uuid, String)>, crate::ChatError> {
+        sqlx::query_as(
+            "SELECT m.id, b.value->>'text' \
+             FROM message m, jsonb_array_elements(m.content) WITH ORDINALITY AS b(value, ord) \
+             WHERE m.thread_id = $1 AND m.tenant_id = $2 AND m.role = 'assistant' \
+               AND b.value->>'type' = 'text' AND b.value->>'text' ~ '(```|~~~)' \
+             ORDER BY m.created_at, m.id, b.ord",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| crate::ChatError::Internal(format!("回答の本文の取得に失敗: {e}")))
+    }
+
+    /// 置き換え前の emit_ui のカードを出したか（`(question_card, plan_card)`・#604 の互換）。
+    ///
+    /// 更新前に旧カードで進めていた会話の段階を引き継ぐためだけに読む。旧データを消す
+    /// 7 つ目で、この読み取りごと消す。
+    pub async fn legacy_gate_cards(
         &self,
         thread_id: uuid::Uuid,
         tenant_id: &str,
     ) -> Result<(bool, bool), crate::ChatError> {
-        let row: (bool, bool) = sqlx::query_as(
+        sqlx::query_as(
             "SELECT \
                coalesce(bool_or(b->'spec'->'root'->>'component' = 'question_card'), false), \
                coalesce(bool_or(b->'spec'->'root'->>'component' = 'plan_card'), false) \
@@ -266,7 +290,6 @@ impl ChatStore {
         .bind(tenant_id)
         .fetch_one(&self.db)
         .await
-        .map_err(|e| crate::ChatError::Internal(format!("カード有無の取得に失敗: {e}")))?;
-        Ok(row)
+        .map_err(|e| crate::ChatError::Internal(format!("旧カードの有無の取得に失敗: {e}")))
     }
 }

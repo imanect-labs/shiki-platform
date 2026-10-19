@@ -220,7 +220,7 @@ impl ChatWorker {
                 // 起動された run は、計画が承認されるまで**調査系ツールを提示しない**。
                 // ツールを積み終えた後に絞る（提示の最終形に対して効かせる）。
                 gate_stage = self.plan_gate_stage(ctx, run, &skills).await?;
-                held_by_gate = gate_stage.filter(&mut tools, self.ui_validator.as_ref());
+                held_by_gate = gate_stage.filter(&mut tools);
                 let mut opts = AgentOptions::autonomous(
                     self.config.autonomous_max_steps,
                     None,
@@ -246,6 +246,11 @@ impl ChatWorker {
                     let extra = crate::autonomous::system_workspace_writes();
                     opts.approval.auto_approve.extend(extra.iter().cloned());
                     approver = approver.with_pre_authorized(extra);
+                }
+                // 明確化の段階は本文に ask を書くだけ（ツールを 1 つも渡さない）。agent-core が
+                // 後から足す `plan` メタツールも渡さない（質問の前に計画を立て始めさせない）。
+                if gate_stage == super::gate::GateStage::Clarify {
+                    opts.offer_plan_tool = false;
                 }
                 opts.parallel_read_tools = self.config.parallel_read_tools;
                 opts.tool_search.enabled = self.config.tool_search;

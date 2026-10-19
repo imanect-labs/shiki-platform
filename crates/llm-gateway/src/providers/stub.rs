@@ -299,10 +299,10 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
     let prompt_tokens = prompt_tokens(req);
 
     // --- deep research（#387）: `/deep-research` 起動はフェーズを跨いで進むため最初に見る。 ---
-    if !req.tools.is_empty() {
-        if let Some(s) = deep_research_call(req, prompt_tokens) {
-            return s;
-        }
+    // 確認の段階（ask・plan）は門がツールを 1 つも渡さないので、ツールの有無で入口を絞らない
+    // （調査の段階のツールの要否は deep_research_call の中で見る）。
+    if let Some(s) = deep_research_call(req, prompt_tokens) {
+        return s;
     }
     // --- 遅い生成 `slow:<秒> <本文>`: 生成中の挙動（順番待ち・停止）を決定的に試す。 ---
     if let Some(rest) = user_text.strip_prefix("slow:") {
@@ -472,6 +472,20 @@ mod tests {
         let usage = done.unwrap();
         assert_eq!(usage.prompt_tokens, 2);
         assert!(usage.completion_tokens > 0);
+    }
+
+    /// deep research の確認の段階は、門がツールを 1 つも渡さない run でも ask を書く（#604）。
+    #[tokio::test]
+    async fn deep_research_asks_without_any_tools() {
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "/deep-research SaaS 市場")]);
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut text = String::new();
+        while let Some(ev) = s.next().await {
+            if let StreamDelta::TextDelta { text: t } = ev.unwrap() {
+                text.push_str(&t);
+            }
+        }
+        assert!(text.contains("```ui\nask "), "{text}");
     }
 
     #[tokio::test]
