@@ -90,8 +90,35 @@ pub struct ClaimedRun {
     pub effort: Option<String>,
     /// ユーザーがモデルを選ばなかった（Auto）か。Auto のときだけ skill のピンが上書きできる。
     pub model_auto: bool,
+    /// ユーザーが**この発話にだけ**使ってほしいと指定したツール名（#734・0071）。
+    ///
+    /// 語彙（[`agent_core::ToolName`]）の型ではなく文字列で持つ: 後のリリースで名前が消えても
+    /// claim の行デコードを失敗させない（照合は [`Self::requested_tool_names`] で行う）。
+    pub requested_tools: Json<Vec<String>>,
     /// run の作成時刻（system プロンプトの「今日の日付」の基準・再開しても変わらない・#546）。
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl ClaimedRun {
+    /// 指定ツールを語彙で照合して返す（投入順・重複なし）。語彙に無い名前は落とす（fail-closed）。
+    #[must_use]
+    pub fn requested_tool_names(&self) -> Vec<agent_core::ToolName> {
+        known_tool_names(self.run_id, &self.requested_tools.0)
+    }
+}
+
+/// run 行の `requested_tools`（文字列）を語彙で照合する（投入順・重複なし・未知名は落とす）。
+fn known_tool_names(run_id: Uuid, raw: &[String]) -> Vec<agent_core::ToolName> {
+    let mut out: Vec<agent_core::ToolName> = Vec::new();
+    for name in raw {
+        match agent_core::ToolName::parse(name) {
+            Some(t) if !out.contains(&t) => out.push(t),
+            Some(_) => {}
+            None => tracing::warn!(%run_id, tool = %name,
+                "run の requested_tools に語彙に無いツール名（無視する）"),
+        }
+    }
+    out
 }
 
 /// カードを出した run の生成材料（`chat.submit` の続きの run へ継ぐ）。
@@ -101,6 +128,9 @@ pub struct RunContext {
     pub skill_pins: Vec<SkillPin>,
     /// その run のモデル指定（ユーザーが選んだモデルを次のターンでも使う）。
     pub model: Option<crate::model::RunModel>,
+    /// その run の発話ごとのツール指定（#734）。カード回答は「カードを出した run の続き」なので
+    /// 継ぐ（実行前フェーズの門で承認まで保留したツールを、実行段階で効かせるため）。
+    pub requested_tools: Vec<agent_core::ToolName>,
 }
 
 /// いま UI が映すべき run（[`ChatStore::current_run`]）。
@@ -135,7 +165,8 @@ impl ChatStore {
             lease_secs,
             "run_id, thread_id, message_id, tenant_id, org, actor, agent_mode, \
              fencing_token, cancel_requested, trace_id, autonomous, autonomous_mode, checkpoint, \
-             skill_pins, mini_app_id, mini_app_version, model, effort, model_auto, created_at",
+             skill_pins, mini_app_id, mini_app_version, model, effort, model_auto, \
+             requested_tools, created_at",
         )
         .await
         .map_err(map_db)
@@ -458,14 +489,17 @@ impl ChatStore {
         self.require_thread(ctx, thread_id, Relation::Editor, "thread.run.get", trace_id)
             .await?;
         type Row = (
+            Uuid,
             bool,
             Json<Vec<SkillPin>>,
             Option<String>,
             Option<String>,
             bool,
+            Json<Vec<String>>,
         );
         let row: Option<Row> = sqlx::query_as(
-            "SELECT autonomous, skill_pins, model, effort, model_auto FROM generation_run \
+            "SELECT run_id, autonomous, skill_pins, model, effort, model_auto, requested_tools \
+             FROM generation_run \
              WHERE message_id = $1 AND thread_id = $2 AND tenant_id = $3 \
              ORDER BY created_at DESC, run_id DESC LIMIT 1",
         )
@@ -475,8 +509,8 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        Ok(
-            row.map(|(autonomous, pins, model, effort, model_auto)| RunContext {
+        Ok(row.map(
+            |(run_id, autonomous, pins, model, effort, model_auto, tools)| RunContext {
                 autonomous,
                 skill_pins: pins.0,
                 model: model.map(|model| crate::model::RunModel {
@@ -484,8 +518,9 @@ impl ChatStore {
                     effort: effort.as_deref().and_then(llm_gateway::Effort::parse),
                     auto: model_auto,
                 }),
-            }),
-        )
+                requested_tools: known_tool_names(run_id, &tools.0),
+            },
+        ))
     }
 
     /// run の現在状態を引く（SSE の端末判定・crash safety）。

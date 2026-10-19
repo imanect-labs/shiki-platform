@@ -1,6 +1,6 @@
 "use client";
 
-/// コンポーザ左の「+」メニュー。並びは PC・スマホとも 添付 → 作成 → モデル → スキル。
+/// コンポーザ左の「+」メニュー。並びは PC・スマホとも 添付 → 作成 → モデル → ツール → スキル。
 ///
 /// - PC（md 以上）: Radix DropdownMenu（ポータル描画＋衝突回避。画面中央のホームでも上端に
 ///   食い込まず、収まらない高さは内部スクロール）。作成はサブメニュー。
@@ -16,6 +16,7 @@
 
 import * as React from "react";
 import {
+  Check,
   ChevronRight,
   FilePlus2,
   FileSpreadsheet,
@@ -37,6 +38,7 @@ import { useCreateContent } from "@/hooks/use-create-content";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -46,6 +48,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { SELECTABLE_TOOLS, useToolChoice } from "@/lib/tool-choice";
 import { ModelMenuItem, ModelPicker, ModelSheetRow } from "./model-picker";
 import {
   SkillBrowser,
@@ -107,7 +110,7 @@ export function PlusMenu(props: PlusMenuProps) {
     <button
       type="button"
       aria-label="追加メニューを開く"
-      title="追加（添付・作成・モデル・スキル）"
+      title="追加（添付・作成・モデル・ツール・スキル）"
       aria-haspopup={desktop ? "menu" : "dialog"}
       aria-expanded={open}
       onClick={desktop ? undefined : () => onOpenChange(!open)}
@@ -237,6 +240,9 @@ function DesktopPlusMenu({
             after.pending.current = openModel;
           }}
         />
+
+        {/* ツール（#734）。選んだツールはこの発話にだけ優先して使われる。選んでもメニューは閉じない。 */}
+        <DesktopToolItems scope={modelScope} />
 
         {/* スキル（#387・#390）。最近使ったもの → 先頭の数件。残りは「すべてのスキル」から。 */}
         {skills.length > 0 && onPickSkill ? (
@@ -440,7 +446,10 @@ function PlusSheet({
         {/* ③ モデル（選べる組織だけ） */}
         <ModelSheetRow scope={modelScope} onOpen={() => thenOpen(openModel)} />
 
-        {/* ④ スキル */}
+        {/* ④ ツール（#734・この発話にだけ優先して使う） */}
+        <ToolChoiceSection scope={modelScope} />
+
+        {/* ⑤ スキル */}
         {skills.length > 0 && onPickSkill ? (
           <PlusSection title="スキル">
             <SkillSearchInput value={query} onChange={setQuery} />
@@ -474,7 +483,6 @@ function PlusSheet({
           </PlusSection>
         ) : null}
 
-        {/* ⑤ ここに「ツール」などのセクションを足す（選択状態は Composer の state に持つ）。 */}
       </DialogContent>
     </Dialog>
   );
@@ -503,5 +511,70 @@ function AttachTile({
         <span className="mt-0.5 block text-[12px] text-muted-foreground">{hint}</span>
       </span>
     </button>
+  );
+}
+
+// ── ツール（#734） ─────────────────────────────────────────────
+
+/// PC のメニュー内のツール欄（チェック項目。選んでもメニューは閉じない）。
+function DesktopToolItems({ scope }: { scope: string }) {
+  const { tools, toggle } = useToolChoice(scope);
+  return (
+    <>
+      <DropdownMenuSeparator />
+      <DropdownMenuLabel className="uppercase tracking-wide">ツール</DropdownMenuLabel>
+      {SELECTABLE_TOOLS.map((t) => (
+        <DropdownMenuCheckboxItem
+          key={t.name}
+          checked={tools.includes(t.name)}
+          onCheckedChange={() => toggle(t.name)}
+          // 複数選ぶ操作なので、選んでもメニューを閉じない。
+          onSelect={(e) => e.preventDefault()}
+          className="gap-2.5 py-2"
+          data-testid={`composer-tool-${t.name}`}
+        >
+          <t.icon className="size-4 text-muted-foreground" aria-hidden />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm">{t.label}</span>
+            <span className="mt-0.5 block truncate text-[12px] text-muted-foreground">{t.hint}</span>
+          </span>
+        </DropdownMenuCheckboxItem>
+      ))}
+    </>
+  );
+}
+
+/// スマホのシートのツール欄（押すたびに付け外しするタイル・複数選べる）。
+function ToolChoiceSection({ scope }: { scope: string }) {
+  const { tools, toggle } = useToolChoice(scope);
+  return (
+    <PlusSection title="ツール">
+      <div className="grid grid-cols-2 gap-2">
+        {SELECTABLE_TOOLS.map((t) => {
+          const on = tools.includes(t.name);
+          return (
+            <button
+              key={t.name}
+              type="button"
+              aria-pressed={on}
+              onClick={() => toggle(t.name)}
+              data-testid={`composer-tool-${t.name}`}
+              className={cn(
+                "flex min-h-12 items-center gap-2.5 rounded-xl border px-3 py-2 text-left transition-colors",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                on
+                  ? "border-transparent bg-accent text-foreground"
+                  : "border-border bg-card text-foreground/85 active:bg-accent",
+              )}
+            >
+              <t.icon className={cn("size-[18px] shrink-0", on ? "text-primary" : "text-muted-foreground")} aria-hidden />
+              <span className="min-w-0 flex-1 text-[14px] font-medium leading-tight">{t.label}</span>
+              {on ? <Check className="size-4 shrink-0 text-primary" aria-hidden /> : null}
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-1.5 px-1 text-[12px] text-muted-foreground">選んだツールを、この発話で優先して使います</p>
+    </PlusSection>
   );
 }

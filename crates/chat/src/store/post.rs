@@ -50,13 +50,14 @@ impl ChatStore {
             autonomous,
             once_skills,
             None,
+            &[],
             trace_id,
         )
         .await
     }
 
-    /// [`Self::post_message`] にモデル指定（#553）を足したもの。`model` が `None` の run は
-    /// 従来どおり（skill のピン → 既定モデル）で生成される。
+    /// [`Self::post_message`] にモデル指定（#553）と発話ごとのツール指定（#734）を足したもの。
+    /// `model` が `None` の run は従来どおり（skill のピン → 既定モデル）で生成される。
     #[allow(clippy::too_many_arguments)] // 発話の全構成要素（呼び出し元は api 1 箇所＋UI アクション）。
     pub async fn post_message_with_model(
         &self,
@@ -75,6 +76,10 @@ impl ChatStore {
         once_skills: &[SkillPin],
         // モデル指定（API がテナント設定で解決・検証済み）。run にスナップショットする。
         model: Option<&RunModel>,
+        // `requested_tools`: ユーザーが**この発話にだけ**使ってほしいと選んだツール（#734）。
+        // 語彙照合・重複除去・件数上限は API 層で済んでいる。run にスナップショットするだけで、
+        // 提示ツール・承認・認可は変えない（ワーカーが誘導＝常時ロード＋注記に使う）。
+        requested_tools: &[agent_core::ToolName],
         trace_id: Option<&str>,
     ) -> Result<PostResult, ChatError> {
         self.require_thread(ctx, thread_id, Relation::Editor, "thread.post", trace_id)
@@ -174,8 +179,8 @@ impl ChatStore {
         let run_id: Uuid = sqlx::query_scalar(
             "INSERT INTO generation_run (message_id, thread_id, org, tenant_id, actor, agent_mode, status, trace_id, autonomous, \
                                          autonomous_mode, skill_pins, mini_app_id, mini_app_version, \
-                                         model, effort, model_auto) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING run_id",
+                                         model, effort, model_auto, requested_tools) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING run_id",
         )
         .bind(asst_id)
         .bind(thread_id)
@@ -192,6 +197,7 @@ impl ChatStore {
         .bind(model.map(|m| m.model.as_str()))
         .bind(model.and_then(|m| m.effort).map(llm_gateway::Effort::as_str))
         .bind(model.is_none_or(|m| m.auto))
+        .bind(Json(requested_tools))
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;

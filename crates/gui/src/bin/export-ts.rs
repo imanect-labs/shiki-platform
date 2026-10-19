@@ -147,8 +147,21 @@ fn main() {
         NamedComponentPin,
     );
 
+    // 利用者が発話ごとに指定できるツール（#734・agent-core の単一定義）。型だけでなく値の
+    // 並びも要る（入力欄のメニューに並べる）ため定数で出し、要素型を `ToolName` に縛る。
+    let selectable = agent_core::USER_SELECTABLE_TOOLS
+        .iter()
+        .map(|t| format!("{:?}", t.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    decls.push(format!(
+        "export const USER_SELECTABLE_TOOLS = [{selectable}] as const satisfies readonly ToolName[];\n\n\
+         export type UserSelectableTool = (typeof USER_SELECTABLE_TOOLS)[number];"
+    ));
+
     let header = "// 自動生成: cargo run -p shiki-gui --bin export-gui-ts（編集禁止）\n\
-                  // 正本: crates/gui/src/{vocab,spec,chart,action,validate}.rs\n\n";
+                  // 正本: crates/gui/src/{vocab,spec,chart,action,validate}.rs・\n\
+                  //       crates/agent-core/src/vocab.rs（ToolName / USER_SELECTABLE_TOOLS）\n\n";
     let body = decls.join("\n\n");
     let path = out_dir.join("gui-spec.ts");
     std::fs::write(&path, format!("{header}{body}\n")).expect("gui-spec.ts の書き出し");

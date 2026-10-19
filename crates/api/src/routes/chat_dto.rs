@@ -10,6 +10,8 @@ use storage::ShareTarget;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::error::ApiError;
+
 /// keyset カーソル（更新日時＋id）。
 pub(super) type Cursor = (Option<DateTime<Utc>>, Option<Uuid>);
 
@@ -125,6 +127,72 @@ pub struct PostMessageRequest {
     /// 思考の深さ（モデルを選んだときだけ効く・Auto では組織の設定に従う）。
     #[serde(default)]
     pub effort: Option<super::llm_models::EffortLevel>,
+    /// **この発話にだけ**使ってほしいツール（利用者が指定できるツールの名前・#734）。
+    ///
+    /// `skills` と同じく次の発話には持ち越さない。**誘導であって権限ではない**: 検索なしで
+    /// 定義を載せ、使うよう促すだけで、提示ツール・承認・認可は変えない（いまの会話で使えない
+    /// ツールは提示されない）。指定できるのは [`agent_core::USER_SELECTABLE_TOOLS`] だけで、
+    /// 未知の名前・それ以外のツール（`shell` / `fs_delete` 等）は 400。重複は除く。
+    ///
+    /// 受け口は文字列で受けて照合はハンドラで行う（enum で受けると未知名が `Json` 抽出の時点で
+    /// 422 になり、他の検証エラーと同じ 400＋理由の形で返せない）。schema には指定できる集合を
+    /// 同じ定数から出す（手書きの名前一覧は作らない）。
+    #[serde(default)]
+    #[schema(schema_with = requested_tools_schema)]
+    pub tools: Option<Vec<String>>,
+}
+
+/// `PostMessageRequest.tools` の schema（[`agent_core::USER_SELECTABLE_TOOLS`] の名前の閉集合）。
+fn requested_tools_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    use utoipa::openapi::schema::{ArrayBuilder, ObjectBuilder, Type};
+    ArrayBuilder::new()
+        .items(
+            ObjectBuilder::new()
+                .schema_type(Type::String)
+                .enum_values(Some(
+                    agent_core::USER_SELECTABLE_TOOLS.iter().map(|t| t.as_str()),
+                )),
+        )
+        .into()
+}
+
+/// 発話ごとのツール指定を照合する（投入順・重複除去・#734）。
+///
+/// 未知の名前と、語彙にはあるが利用者が指定できないツールは 400（`{status,title,detail}`・
+/// モデル指定の検証エラーと同じ形）。件数は「指定できる集合（閉集合）から重複を除いたもの」
+/// なので、その集合の大きさを超えない（別途の上限は要らない）。
+pub(super) fn parse_requested_tools(
+    raw: Option<&[String]>,
+) -> Result<Vec<agent_core::ToolName>, ApiError> {
+    let mut out: Vec<agent_core::ToolName> = Vec::new();
+    for name in raw.unwrap_or_default() {
+        // 応答に返す名前は短く切る（任意長の入力をそのまま反射しない）。
+        let shown = || name.chars().take(64).collect::<String>();
+        let Some(tool) = agent_core::ToolName::parse(name) else {
+            return Err(bad_request(&format!(
+                "tools に未知のツール名があります: `{}`",
+                shown()
+            )));
+        };
+        if !tool.is_user_selectable() {
+            return Err(bad_request(&format!(
+                "tools には指定できないツールです: `{}`",
+                shown()
+            )));
+        }
+        if !out.contains(&tool) {
+            out.push(tool);
+        }
+    }
+    Ok(out)
+}
+
+fn bad_request(detail: &str) -> ApiError {
+    ApiError::UnprocessableJson(serde_json::json!({
+        "status": 400,
+        "title": "Bad Request",
+        "detail": detail,
+    }))
 }
 
 /// 発話送信レスポンス（202・生成は接続非依存ジョブで継続）。
@@ -189,4 +257,98 @@ pub struct ListThreadsQuery {
 pub struct StreamQuery {
     #[serde(default)]
     pub last_event_id: Option<i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_core::ToolName;
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn detail(err: ApiError) -> String {
+        match err {
+            ApiError::UnprocessableJson(v) => {
+                assert_eq!(v["status"], 400);
+                v["detail"].as_str().unwrap().to_string()
+            }
+            other => panic!("400 の構造化ボディを期待: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn requested_tools_dedupe_in_order() {
+        let raw = names(&["web_search", "doc_search", "web_search"]);
+        assert_eq!(
+            parse_requested_tools(Some(&raw)).unwrap(),
+            vec![ToolName::WebSearch, ToolName::DocSearch]
+        );
+        assert!(parse_requested_tools(None).unwrap().is_empty());
+        assert!(parse_requested_tools(Some(&[])).unwrap().is_empty());
+        // 指定できる集合は全部まとめて指定できる（重複込みでも集合の大きさに収まる）。
+        let mut all: Vec<String> = agent_core::USER_SELECTABLE_TOOLS
+            .iter()
+            .map(|t| t.as_str().to_string())
+            .collect();
+        all.extend(all.clone());
+        assert_eq!(
+            parse_requested_tools(Some(&all)).unwrap(),
+            agent_core::USER_SELECTABLE_TOOLS
+        );
+    }
+
+    #[test]
+    fn unknown_tool_is_rejected_with_reason() {
+        // メタツール（plan / tool_search）は語彙の外＝指定できない。
+        for bad in ["sudo", "plan", "tool_search", "WEB_SEARCH", ""] {
+            let raw = names(&["doc_search", bad]);
+            let d = detail(parse_requested_tools(Some(&raw)).unwrap_err());
+            assert!(d.contains("未知のツール名"), "{bad}: {d}");
+        }
+        let long = "x".repeat(500);
+        let d = detail(parse_requested_tools(Some(&[long])).unwrap_err());
+        assert!(d.chars().count() < 120, "{d}");
+    }
+
+    /// 語彙にはあるが利用者が指定できないツール（破壊系・内部用）は 400（格上げしない）。
+    #[test]
+    fn non_selectable_tool_is_rejected_with_reason() {
+        for bad in ToolName::ALL.iter().filter(|t| !t.is_user_selectable()) {
+            let raw = names(&["web_search", bad.as_str()]);
+            let d = detail(parse_requested_tools(Some(&raw)).unwrap_err());
+            assert!(
+                d.contains("指定できないツール") && d.contains(bad.as_str()),
+                "{bad:?}: {d}"
+            );
+        }
+    }
+
+    /// OpenAPI の schema は指定できる集合（同じ定数から）を出す。
+    #[test]
+    fn tools_schema_lists_only_selectable_names() {
+        let schema = serde_json::to_value(requested_tools_schema()).unwrap();
+        assert_eq!(schema["type"], "array");
+        let wire: Vec<&str> = schema["items"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        let expected: Vec<&str> = agent_core::USER_SELECTABLE_TOOLS
+            .iter()
+            .map(|t| t.as_str())
+            .collect();
+        assert_eq!(wire, expected);
+    }
+
+    #[test]
+    fn post_message_request_accepts_tools_field() {
+        let req: PostMessageRequest =
+            serde_json::from_str(r#"{"text":"hi","tools":["web_search","nope"]}"#).unwrap();
+        assert_eq!(req.tools, Some(names(&["web_search", "nope"])));
+        let req: PostMessageRequest = serde_json::from_str(r#"{"text":"hi"}"#).unwrap();
+        assert!(req.tools.is_none());
+    }
 }

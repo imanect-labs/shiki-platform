@@ -57,6 +57,11 @@ impl ChatWorker {
         for skill in skills.iter().rev() {
             skill.apply_few_shot(&mut history);
         }
+        // 発話ごとのツール指定（`run.requested_tools`・#734）はここでは使わない。classic は
+        // ツールループを持たず（`tools: Vec::new()`）、常時ロードも「使ってよい」の注記も
+        // 意味を持たない。事前検索の有無を指定で変えると、指定が能力の追加になってしまう
+        // （指定は誘導であって権限ではない）。classic は運用が明示的に選ぶ後方互換経路でもある。
+        //
         // 全ピンが doc_search を宣言に含む時のみ古典事前検索を行う（Task 6.9 の意味を
         // classic では維持する。ツールループが無い classic に「誘導」は存在しないため）。
         let search_allowed = skills

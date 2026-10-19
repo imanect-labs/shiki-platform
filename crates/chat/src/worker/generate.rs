@@ -203,6 +203,8 @@ impl ChatWorker {
         );
         // 実行前フェーズ（#400）。非自律は常に Execute（門は自律の調査フローだけの概念）。
         let mut gate_stage = super::gate::GateStage::Execute;
+        // 門が承認まで取り上げたツール（発話ごとのツール指定の注記で「承認後に使える」と言う・#734）。
+        let mut held_by_gate: Vec<String> = Vec::new();
         // 自律プロファイル: フルツール（fs CRUD/grep/shell）＋予算＋計画＋承認ゲート（Task 5.1/5.4/5.6/5.7）。
         let opts = if run.autonomous {
             if let Some(storage) = &self.storage {
@@ -218,7 +220,7 @@ impl ChatWorker {
                 // 起動された run は、計画が承認されるまで**調査系ツールを提示しない**。
                 // ツールを積み終えた後に絞る（提示の最終形に対して効かせる）。
                 gate_stage = self.plan_gate_stage(ctx, run, &skills).await?;
-                gate_stage.filter(&mut tools, self.ui_validator.as_ref());
+                held_by_gate = gate_stage.filter(&mut tools, self.ui_validator.as_ref());
                 let mut opts = AgentOptions::autonomous(
                     self.config.autonomous_max_steps,
                     None,
@@ -268,6 +270,19 @@ impl ChatWorker {
         opts.tool_search.always_load.extend(tools_in_use);
         self.apply_skills(ctx, run, &skills, &mut opts, &mut history)
             .await?;
+        // 発話ごとのツール指定（#734）は skill の指示文より**後ろ**に置く（手順書の記述に
+        // 上書きされないように）。照合先は**提示の最終形**（門で絞った後の `tools`）なので、
+        // 指定でツールが増えることはない（誘導のみ・opts.approval にも触れない）。門が承認まで
+        // 取り上げたものは「使えない」ではなく「承認後に使える」と伝える（門の注記と矛盾させない）。
+        let requested = run.requested_tool_names();
+        if !requested.is_empty() {
+            let offered: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+            let held: Vec<&str> = held_by_gate.iter().map(String::as_str).collect();
+            tracing::info!(run_id = %run.run_id,
+                requested = ?requested.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+                "発話ごとのツール指定を適用");
+            super::opts::apply_requested_tools(&mut opts, &requested, &offered, &held);
+        }
 
         // 門の段階（ツールが無い理由と次へ進む条件・#400）は skill の instructions より**後ろ**に
         // （手順書の記述に上書きされないように）、今日の日付（#546）は最後に置く。
