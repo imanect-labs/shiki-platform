@@ -341,6 +341,35 @@ struct EmbedInput {
 /// 図の記述の上限（ノート 1 つの図としては十分に大きい）。
 const MAX_FIGURE_BYTES: usize = 16 * 1024;
 
+/// 渡されたフェンスの情報文字列を、追記するフェンスの言語にする（`ui bar`・`UI:Bar`・`yui bar`
+/// → `ui:bar`。種類の無い `ui`・`yui`・空は `ui`）。ノートの画面（`normalizeYuiInfo`）と同じ形を
+/// 受け、種類の名前の正規化（別名 → 正規名）は画面側に任せる。
+fn fence_info(rest: &str) -> Result<String, &'static str> {
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return Ok("ui".into());
+    }
+    let lower = rest.to_lowercase();
+    let tail = ["yui", "ui"]
+        .iter()
+        .find_map(|p| lower.strip_prefix(p))
+        .ok_or("```ui の図の記述を渡してください。")?;
+    let kind = match tail.strip_prefix(':') {
+        Some(k) => k,
+        None if tail.is_empty() => return Ok("ui".into()),
+        None if tail.starts_with(char::is_whitespace) => tail.trim_start(),
+        None => return Err("```ui の図の記述を渡してください。"),
+    };
+    let kind = kind.split_whitespace().next().unwrap_or_default();
+    if kind.is_empty() {
+        return Ok("ui".into());
+    }
+    if kind.contains(['`', '~']) {
+        return Err("図の種類の指定が不正です。");
+    }
+    Ok(format!("ui:{kind}"))
+}
+
 /// 図の記述を、ノートへ追記する ```ui の Markdown にする（不正なら理由を返す）。
 ///
 /// ノートの図は表示だけ（ボタンを押す先が無い）なので、操作を持つ種類（app・ask・plan）は拒む。
@@ -354,10 +383,7 @@ fn figure_markdown(source: &str) -> Result<String, &'static str> {
             .strip_prefix("```")
             .or_else(|| open.strip_prefix("~~~"))
         {
-            let rest = rest.trim();
-            if rest == "ui" || rest.starts_with("ui:") {
-                info = rest.to_string();
-            }
+            info = fence_info(rest)?;
             lines.remove(0);
             if lines.last().is_some_and(|l| {
                 let l = l.trim();
@@ -486,6 +512,19 @@ mod tests {
             figure_markdown("```ui:bar\n売上\n4月 | 120\n```").unwrap(),
             "```ui:bar\n売上\n4月 | 120\n```\n"
         );
+        // 種類をフェンスの空白区切り・大文字・yui で指定しても落とさない。
+        assert_eq!(
+            figure_markdown("```ui bar\n月別売上\n1月 | 120\n```").unwrap(),
+            "```ui:bar\n月別売上\n1月 | 120\n```\n"
+        );
+        assert!(figure_markdown("```YUI:Bar\n売上\n1月 | 1\n```")
+            .unwrap()
+            .starts_with("```ui:bar\n"));
+        assert!(figure_markdown("```\nbar 売上\n1月 | 1\n```")
+            .unwrap()
+            .starts_with("```ui\n"));
+        assert!(figure_markdown("```json\n{}\n```").is_err());
+        assert!(figure_markdown("```uibar\n売上\n```").is_err());
         assert!(figure_markdown("  \n").is_err());
         assert!(figure_markdown("bar 売上\n```\n# 漏れた見出し").is_err());
         assert!(figure_markdown(&"a".repeat(super::MAX_FIGURE_BYTES + 1)).is_err());
