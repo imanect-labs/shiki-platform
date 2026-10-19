@@ -32,6 +32,7 @@ pub mod org_admin_ai;
 pub mod search;
 pub mod secrets;
 pub mod share_links;
+pub(crate) mod share_profiles;
 pub mod shares;
 pub mod skills;
 pub mod skills_catalog;

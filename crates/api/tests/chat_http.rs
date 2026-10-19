@@ -36,6 +36,16 @@ use tower::ServiceExt;
 
 struct AllowAll;
 
+/// AllowAll が返す共有タプル（tenant `default` の名前空間）。alice は同テナント・同 org の
+/// ディレクトリに居る／mallory は別テナントにだけ居る／ghost は未登録／eng は同テナントのロール。
+const SHARE_FIXTURE: &[(&str, &str)] = &[
+    ("user:default|share741-alice", "viewer"),
+    ("user:default|share741-alice", "editor"),
+    ("user:default|share741-mallory", "viewer"),
+    ("user:default|share741-ghost", "viewer"),
+    ("role:default|share741-eng#member", "editor"),
+];
+
 #[async_trait]
 impl AuthzClient for AllowAll {
     async fn check(
@@ -63,12 +73,21 @@ impl AuthzClient for AllowAll {
     ) -> Result<bool, AuthzError> {
         Ok(true)
     }
+    /// 共有一覧（ノード/アーティファクト/スレッド）が読む直接タプル。どのオブジェクトにも
+    /// [`SHARE_FIXTURE`] の共有が書かれている体にする（#741 の表示名解決の検証用）。
     async fn read_tuples(
         &self,
-        _o: &FgaObject,
+        o: &FgaObject,
         _r: Option<Relation>,
     ) -> Result<Vec<ReadTupleKey>, AuthzError> {
-        Ok(vec![])
+        Ok(SHARE_FIXTURE
+            .iter()
+            .map(|(user, relation)| ReadTupleKey {
+                user: (*user).into(),
+                relation: (*relation).into(),
+                object: o.as_str().into(),
+            })
+            .collect())
     }
     async fn list_objects(
         &self,
@@ -791,6 +810,161 @@ async fn chat_post_resolves_model_choice() {
             .await
             .unwrap();
     assert_eq!(row, (Some("fast".into()), Some("low".into()), true));
+}
+
+/// 共有一覧の各エントリが表示名を正しく持つか（#741）。同テナント・同 org の user は名前と email、
+/// 別テナントにだけ居る user・未登録 user は両方 null、ロールは名前のみ（email null）。
+fn assert_share_names(entries: &serde_json::Value) {
+    let entries = entries.as_array().expect("shares array");
+    assert_eq!(entries.len(), SHARE_FIXTURE.len(), "{entries:?}");
+    let by_id = |id: &str| -> Vec<&serde_json::Value> {
+        entries.iter().filter(|e| e["target"]["id"] == id).collect()
+    };
+    let alice = by_id("share741-alice");
+    assert_eq!(alice.len(), 2, "viewer/editor の 2 行");
+    for a in alice {
+        assert_eq!(a["target"]["type"], "user");
+        assert_eq!(a["display_name"], "Alice 741");
+        assert_eq!(a["email"], "share741-alice@acme.example");
+    }
+    for id in ["share741-mallory", "share741-ghost"] {
+        let e = by_id(id);
+        assert_eq!(e.len(), 1);
+        assert!(
+            e[0]["display_name"].is_null(),
+            "越境/未登録は名前なし: {:?}",
+            e[0]
+        );
+        assert!(
+            e[0]["email"].is_null(),
+            "越境/未登録は email なし: {:?}",
+            e[0]
+        );
+    }
+    let eng = by_id("share741-eng");
+    assert_eq!(eng.len(), 1);
+    assert_eq!(eng[0]["target"]["type"], "role");
+    assert_eq!(eng[0]["display_name"], "技術部 741");
+    assert!(eng[0]["email"].is_null());
+}
+
+/// #741: ノード・アーティファクト・スレッドの共有一覧が、呼び出し元テナント（＋ org）の
+/// ディレクトリから解決した表示名/email を同じ応答で返す（別テナントの名前は返さない）。
+#[tokio::test]
+async fn share_lists_include_directory_names_tenant_scoped() {
+    let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    // セッションの主体は tenant `default`・org `acme`（groups `/acme`）。
+    state
+        .directory
+        .upsert_user(
+            "share741-alice",
+            "default",
+            "acme",
+            "share741-alice@acme.example",
+            "Alice 741",
+        )
+        .await
+        .expect("seed alice");
+    // 同じ id・同じ org 文字列でも別テナントの行は解決に使わない。
+    state
+        .directory
+        .upsert_user(
+            "share741-mallory",
+            "other-741",
+            "acme",
+            "share741-mallory@other.example",
+            "Mallory 741",
+        )
+        .await
+        .expect("seed mallory");
+    state
+        .directory
+        .upsert_role("share741-eng", "default", "acme", "技術部 741")
+        .await
+        .expect("seed role");
+    let ctx = authz::AuthContext::new(test_principal(), "acme".into(), "default".into());
+    let art = state
+        .artifacts
+        .create(
+            &ctx,
+            artifact::NewArtifact {
+                kind: artifact::ArtifactKind::Skill,
+                name: format!("share741-{}", uuid::Uuid::new_v4().simple()),
+                body: serde_json::json!({}),
+            },
+            None,
+        )
+        .await
+        .expect("artifact");
+
+    let (cookie, csrf) = login(&sessions, "sid-share-741").await;
+    let app = build_router(state);
+    let post = |uri: &str, body: String| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(COOKIE, &cookie)
+            .header("x-csrf-token", csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let get = |uri: String| {
+        Request::builder()
+            .uri(uri)
+            .header(COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/threads",
+            r#"{"title":"share741","agent_mode":false}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let tid = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    let folder_name = format!("share741-{}", uuid::Uuid::new_v4().simple());
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/folders",
+            serde_json::json!({ "name": folder_name }).to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let fid = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(get(format!("/threads/{tid}/shares")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_share_names(&body_json(resp).await["shares"]);
+
+    let resp = app
+        .clone()
+        .oneshot(get(format!("/nodes/{fid}/shares")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_share_names(&body_json(resp).await);
+
+    let resp = app
+        .oneshot(get(format!("/artifacts/{}/shares", art.id)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_share_names(&body_json(resp).await);
 }
 
 /// 発話ごとのツール指定（#734）: 未知名・指定できないツール（破壊系・内部用）は 400（理由つき）、

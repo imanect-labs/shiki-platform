@@ -7,6 +7,7 @@
 "use client";
 
 import { apiFetch } from "@/lib/api";
+import type { components } from "@/generated/api";
 import type { MiniAppBody, SkillBody, UiSpecDoc } from "@/generated/gui-spec";
 
 export type { MiniAppBody, SkillBody, UiSpecDoc };
@@ -14,7 +15,8 @@ export type { MiniAppBody, SkillBody, UiSpecDoc };
 /// 共有語彙（backend artifact::ArtifactRole / storage::ShareTarget と一致）。
 export type ArtifactRole = "viewer" | "editor";
 export type ShareTarget = { type: "user"; id: string } | { type: "role"; id: string };
-export type ArtifactShareEntry = { target: ShareTarget; role: ArtifactRole };
+/// 共有一覧の 1 件（表示名・email はサーバがテナント内ディレクトリから解決・#741）。
+export type ArtifactShareEntry = components["schemas"]["ArtifactShareEntry"];
 
 export type ArtifactKind = "workflow" | "ui_spec" | "mini_app" | "skill" | "script";
 

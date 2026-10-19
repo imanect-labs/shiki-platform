@@ -40,7 +40,7 @@ pub mod upload_gc_timer;
 
 pub use directory::{
     escape_like, DirectoryPage, DirectoryRole, DirectoryRolePage, DirectoryStore, DirectoryUser,
-    DEFAULT_SEARCH_LIMIT,
+    PrincipalProfile, ShareProfiles, DEFAULT_SEARCH_LIMIT,
 };
 pub use error::StorageError;
 pub use event::{OutboxEvent, WriteOp};

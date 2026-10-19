@@ -4,6 +4,8 @@
 ///
 /// - 相手の種別（メンバー / 部署・ロール）を選んで検索し、**行ごとに権限（閲覧/編集）を選んで**共有する。
 /// - 共有中の相手は表示名で出し（ID は出さない）、行の中で権限を変えたり解除したりできる。
+///   表示名・email は共有一覧 API がテナント内ディレクトリから解決して返す（#741）。返らない相手
+///   （ディレクトリ未登録など）は「名前を取得できないメンバー」＋短縮 ID で区別できるようにする。
 /// - 検索は先頭ページのみ（全件取得しない）。別テナントの相手はサーバ側で出ない。
 ///
 /// 付与・解除の API は呼び出し側から受け取る（ドライブ=ノード、アーティファクト=artifact）。
@@ -25,16 +27,16 @@ import { toast } from "@/components/ui/use-toast";
 import { searchDirectory, searchRoles } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
-import {
-  principalName,
-  rememberPrincipal,
-  useResolvePrincipals,
-  type PrincipalKind,
-} from "./principal-names";
-
+export type PrincipalKind = "user" | "role";
 export type PeopleRole = "viewer" | "editor";
 export type PeopleTarget = { type: PrincipalKind; id: string };
-export type PeopleEntry = { target: PeopleTarget; role: PeopleRole };
+/// 共有一覧の 1 件。`display_name` / `email` はサーバが解決できた時だけ入る（email は user のみ）。
+export type PeopleEntry = {
+  target: PeopleTarget;
+  role: PeopleRole;
+  display_name?: string | null;
+  email?: string | null;
+};
 
 const ROLE_LABEL: Record<PeopleRole, string> = { viewer: "閲覧", editor: "編集" };
 
@@ -124,16 +126,10 @@ export function SharePeoplePanel({
       const req =
         kind === "user"
           ? searchDirectory({ q: query, limit: 8 }).then((res) =>
-              res.items.map((u) => {
-                rememberPrincipal("user", u.id, { name: u.display_name, secondary: u.email });
-                return { id: u.id, primary: u.display_name, secondary: u.email };
-              }),
+              res.items.map((u) => ({ id: u.id, primary: u.display_name, secondary: u.email })),
             )
           : searchRoles({ q: query, limit: 8 }).then((res) =>
-              res.items.map((r) => {
-                rememberPrincipal("role", r.id, { name: r.display_name, secondary: "部署・ロール" });
-                return { id: r.id, primary: r.display_name, secondary: "部署・ロール" };
-              }),
+              res.items.map((r) => ({ id: r.id, primary: r.display_name, secondary: "部署・ロール" })),
             );
       req
         .then((items) => active && setResults(items))
@@ -148,7 +144,6 @@ export function SharePeoplePanel({
 
   // (type, id, role) で既存共有を判定する（同じ役割のみ「付与済み」。役割の昇格は許可）。
   const sharedKeys = React.useMemo(() => new Set(shares.map(entryKey)), [shares]);
-  useResolvePrincipals(shares.map((s) => s.target));
 
   const refresh = async () => setShares(await loadRef.current());
 
@@ -316,26 +311,22 @@ export function SharePeoplePanel({
           <ul className="flex flex-col divide-y divide-border rounded-lg border border-border">
             {shares.map((s) => {
               const k = entryKey(s);
-              const resolved = principalName(s.target.type, s.target.id);
+              const name = s.display_name ?? undefined;
               const fallback = s.target.type === "role" ? s.target.id : "名前を取得できないメンバー";
               // 名前を引けないメンバーが複数いても行（と操作ボタンの読み上げ）を区別できるよう、短縮 ID を添える。
-              const shortId =
-                !resolved && s.target.type !== "role" ? s.target.id.slice(0, 8) : null;
-              const a11yName = shortId
-                ? `${fallback}（ID ${shortId}）`
-                : (resolved?.name ?? fallback);
+              const shortId = !name && s.target.type !== "role" ? s.target.id.slice(0, 8) : null;
+              const a11yName = shortId ? `${fallback}（ID ${shortId}）` : (name ?? fallback);
+              const secondary =
+                s.target.type === "role"
+                  ? "部署・ロール"
+                  : (s.email ?? (shortId ? `メンバー · ID ${shortId}…` : "メンバー"));
               return (
                 <li key={k} data-testid="share-entry" className="flex items-center gap-2.5 py-1.5 pl-3 pr-1">
                   <PrincipalAvatar kind={s.target.type} />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{resolved?.name ?? fallback}</p>
+                    <p className="truncate text-sm font-medium">{name ?? fallback}</p>
                     <p className="truncate text-xs text-muted-foreground" title={shortId ? s.target.id : undefined}>
-                      {resolved?.secondary ??
-                        (s.target.type === "role"
-                          ? "部署・ロール"
-                          : shortId
-                            ? `メンバー · ID ${shortId}…`
-                            : "メンバー")}
+                      {secondary}
                     </p>
                   </div>
                   <RoleSelect
