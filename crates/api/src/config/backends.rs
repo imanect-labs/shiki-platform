@@ -384,6 +384,12 @@ pub struct ChatConfig {
     /// エージェントモードの最大ステップ。
     #[serde(default = "default_max_steps")]
     pub max_steps: usize,
+    /// 通常チャット 1 発話の累積トークン上限（新規ぶん・未指定は WorkerConfig 既定 30 万・#426）。
+    #[serde(default)]
+    pub budget_max_tokens: Option<u64>,
+    /// 通常チャット 1 発話の累積コスト上限（マイクロ USD・未指定は WorkerConfig 既定 1 USD・#426）。
+    #[serde(default)]
+    pub budget_max_cost_usd_micros: Option<i64>,
     /// 1 応答の最大トークン（未指定は WorkerConfig 既定）。reasoning 系モデルは思考
     /// トークンも消費するため、長い成果物（レポート執筆・大きなツール引数）には
     /// 8192 以上が必要（2048 だとツール引数が途中で切れて空引数になる・実機で確認）。
@@ -509,6 +515,8 @@ impl Default for ChatConfig {
             lease_secs: default_lease_secs(),
             max_steps: default_max_steps(),
             max_tokens: None,
+            budget_max_tokens: None,
+            budget_max_cost_usd_micros: None,
             parallel_read_tools: None,
             tool_search: None,
             timezone: None,
