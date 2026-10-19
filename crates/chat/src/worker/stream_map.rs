@@ -62,7 +62,6 @@ pub(super) fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
             node_id: artifact.node_id.clone(),
             name: artifact.name.clone(),
         },
-        AgentEvent::GenerativeUi { spec } => StreamEventKind::GenerativeUi { spec: spec.clone() },
         AgentEvent::WorkflowRef { workflow } => StreamEventKind::WorkflowRef {
             workflow: workflow.clone(),
         },

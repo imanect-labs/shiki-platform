@@ -312,22 +312,15 @@ impl ChatStore {
             .map(MessageRow::into_message)
             .collect::<Result<_, ChatError>>()?;
 
-        // 実行済みの単発 UI アクションを同梱する（#410）。カードの「送信済み」はローカル
-        // state ではなくこれを根拠に描く（再描画・リロードで未回答へ戻さない）。
-        // スレッド 1 件につき主キー先頭 2 列で引ける 1 クエリ（メッセージ数に比例させない）。
-        // アクションを宣言できるのは generative_ui ブロックだけなので、無ければ引かない
-        // （生成ワーカーの履歴組み立てを含め、大半のスレッドで往復が 1 回減る）。
-        let has_ui = messages.iter().any(|m| {
-            m.content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::GenerativeUi { .. }))
-        });
-        // 本文の図（```ui）のボタンも同じ台帳（会話に送るボタン）と、ワークフローの束縛・起動の
-        // 記録を持つ（#604）。図の無いスレッドでは引かない。
+        // 本文の図（```ui）のボタンの実行済み（#410・#604）・ワークフローの束縛・起動の記録を
+        // 同梱する。図の「送信済み」はローカル state ではなくこれを根拠に描く（再描画・リロードで
+        // 未回答へ戻さない）。スレッド 1 件につき主キー先頭 2 列で引ける 1 クエリ（メッセージ数に
+        // 比例させない）。図の無いスレッドでは引かない（生成ワーカーの履歴組み立てを含め、
+        // 大半のスレッドで往復が減る）。
         let has_figures = messages
             .iter()
             .any(|m| m.role == Role::Assistant && crate::yui_actions::may_have_yui(&m.content));
-        if has_ui || has_figures {
+        if has_figures {
             let mut invoked = self.invoked_ui_actions(ctx, thread_id).await?;
             for m in &mut messages {
                 if let Some(ids) = invoked.remove(&m.id) {

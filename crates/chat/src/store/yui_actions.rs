@@ -108,7 +108,7 @@ pub(super) async fn insert_bindings(
 }
 
 impl ChatStore {
-    /// UI の操作（図のボタン・generative_ui のアクション）を押せるか＝会話の**編集者**か（#604）。
+    /// 図のボタンを押せるか＝会話の**編集者**か（#604）。
     ///
     /// 閲覧者に共有した会話から、ワークフローの起動や検索を走らせない。
     pub async fn require_ui_action_editor(

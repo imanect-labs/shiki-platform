@@ -318,7 +318,7 @@ impl Tool for DocumentEditTool {
 /// document.edit と同じ共同編集経路（editor@file・昇格しない）で、本文末尾に ```ui の Markdown を
 /// **append**（非破壊）する。追記のみ・図は描画時に fail-closed で読まれるため確認ゲートは不要
 /// （＝「AI が裁量で自動挿入」を確認カード無しで実現）。ツール名はスキルの `allowed_tools` に
-/// 保存されているので、genui スペックからの置き換えでも名前は変えない。
+/// 保存されているので、旧 genui スペックからの置き換えでも名前は変えない（#604）。
 pub struct DocumentEmbedTool {
     collab: Arc<CollabHub>,
     storage: Arc<StorageService>,

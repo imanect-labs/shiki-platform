@@ -181,8 +181,6 @@ fn deep_research_declares_both_command_variants() {
         "doc_read",
         // 委譲（#391）。抜けるとモデルが「調査を分けて並列に走らせる」選択肢を見失う。
         "subagent",
-        // 出典カード。質問と計画は本文の ```ui ask・plan に書く（#604）。
-        "emit_ui",
         "fs_append",
         "save_note",
     ] {
@@ -195,10 +193,18 @@ fn deep_research_declares_both_command_variants() {
             "instructions に ```ui の質問・計画の書き方（{syntax:?}）が無い"
         );
     }
+    // 撤去した生成 UI（emit_ui）を宣言も指示もしない。出典は本文の末尾のリンクで並べる（#604）。
     assert!(
-        !skill.instructions.contains("question_card") && !skill.instructions.contains("plan_card"),
-        "質問・計画をカード（emit_ui）で出す指示が残っている"
+        !tools.contains(&"emit_ui"),
+        "撤去した emit_ui を宣言している"
     );
+    for removed in ["emit_ui", "question_card", "plan_card", "source_card"] {
+        assert!(
+            !skill.instructions.contains(removed),
+            "撤去した生成 UI（{removed}）を使う指示が残っている"
+        );
+    }
+    assert!(skill.instructions.contains("## 出典"), "出典の並べ方が無い");
     // 破壊系は宣言しない（作業領域の外へ出る操作を誘導しない）。
     for forbidden in ["fs_delete", "shell", "office.live_edit"] {
         assert!(

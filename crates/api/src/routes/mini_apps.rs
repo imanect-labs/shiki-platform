@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
+use super::gui_errors::{map_gui_err, GuiValidationErrorResponse};
 use super::ui_actions::{map_yui_action_err, UiActionResponse};
-use super::ui_specs::{map_gui_err, GuiValidationErrorResponse};
 use crate::{
     error::ApiError,
     extract::{AuthContextExt, TraceIdExt},

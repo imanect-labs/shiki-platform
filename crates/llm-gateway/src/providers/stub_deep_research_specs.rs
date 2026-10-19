@@ -43,28 +43,3 @@ plan 2026 年の国内 SaaS 市場規模と成長率の検証
 button この計画で開始
 ```
 ";
-
-/// 出典カード（本文で引用したものだけ・一次を上に）。
-pub(super) fn deep_research_source_spec() -> serde_json::Value {
-    serde_json::json!({
-        "version": 1,
-        "root": {
-            "component": "source_card",
-            "title": "出典",
-            "sources": [
-                {
-                    "title": "国内 SaaS 市場調査（2026 年版）",
-                    "snippet": "市場規模は 1 兆 2000 億円に達した",
-                    "url": "https://example.com/stub-1",
-                    "label": "一次"
-                },
-                {
-                    "title": "別集計（2026 年 3 月時点）",
-                    "snippet": "9800 億円と推計",
-                    "url": "https://example.org/stub-2",
-                    "label": "二次"
-                }
-            ]
-        }
-    })
-}

@@ -1,6 +1,6 @@
-//! UI アクション → workflow 対話トリガ起動の結合テスト（Task 6.5 受け入れ条件④）。
+//! 図のボタン → workflow 対話トリガ起動の結合テスト（Task 6.5 受け入れ条件④・#604）。
 //!
-//! 実 Postgres＋実 OpenFGA で、①検証時にピンした版で run が作られ、実行主体が
+//! 実 Postgres＋実 OpenFGA で、①束縛にピンした版で run が作られ、実行主体が
 //! **呼び出しユーザー本人**（principal_kind=user）であること、②workflow を読めない
 //! ユーザーは UI アクション越しでも起動できないこと、を検証する。
 //! （ノード実行時の scope_ceiling ∩ 本人 ReBAC は engine 側のテストが担保する。）
@@ -156,20 +156,29 @@ async fn workflow_action_runs_pinned_version_as_caller() {
         .await
         .expect("save ir v2");
 
-    // v1 を明示ピンした UI スペックを検証・解決する（発話ユーザー＝alice の権限で解決）。
-    let validator = gui::SpecValidator::new(Arc::clone(&artifacts), pool.clone());
-    let spec = json!({
-        "version": 1,
-        "actions": [
-            { "type": "workflow", "id": "run",
-              "workflow": { "name": "wf-ui-pin", "version": 1 } }
-        ],
-        "root": { "component": "button", "label": "実行", "on_click": { "action": "run" } }
-    });
-    let resolved = validator
-        .validate(&alice, &spec, "test", None)
+    // ボタンの `-> workflow 名前` は回答した主体の viewer 権限で current（v2）へ固定する。
+    // 読めない主体には存在を明かさない（None）。
+    let resolver = gui::WorkflowResolver::new(Arc::clone(&artifacts));
+    let pin = resolver
+        .resolve_workflow_name(&alice, "wf-ui-pin", None)
         .await
-        .expect("resolve");
+        .expect("alice は解決できる");
+    assert_eq!(pin.artifact_id, Some(wf_id));
+    assert_eq!(pin.version, Some(2), "未指定の版は current に固定する");
+    assert!(resolver
+        .resolve_workflow_name(&bob, "wf-ui-pin", None)
+        .await
+        .is_none());
+
+    // v1 を明示ピンした束縛（回答の確定時・ミニアプリの保存時に作るものと同じ形）。
+    let binding = gui::ActionBinding::Workflow(gui::WorkflowBinding {
+        id: "run".into(),
+        workflow: gui::WorkflowPin {
+            name: Some("wf-ui-pin".into()),
+            artifact_id: Some(wf_id),
+            version: Some(1),
+        },
+    });
 
     // ディスパッチ（チャット由来＝本人 viewer 権限で v1 起動）。
     let mut dispatcher =
@@ -180,10 +189,10 @@ async fn workflow_action_runs_pinned_version_as_caller() {
         message_id: Uuid::new_v4(),
     };
     let output = dispatcher
-        .dispatch(
+        .dispatch_binding(
             &alice,
             &source,
-            &resolved.doc,
+            &binding,
             "run",
             json!({ "name": "world" }),
             None,
@@ -202,13 +211,13 @@ async fn workflow_action_runs_pinned_version_as_caller() {
     .fetch_one(&pool)
     .await
     .expect("run row");
-    assert_eq!(version, 1, "検証時にピンした版で起動する（再現性）");
+    assert_eq!(version, 1, "束縛にピンした版で起動する（再現性）");
     assert_eq!(trigger_kind, "interactive");
     assert_eq!(principal, "alice", "実行主体は呼び出しユーザー本人");
 
     // bob（workflow の viewer でない）は同じ束縛でも起動できない（存在秘匿の NotFound）。
     let err = dispatcher
-        .dispatch(&bob, &source, &resolved.doc, "run", json!({}), None)
+        .dispatch_binding(&bob, &source, &binding, "run", json!({}), None)
         .await
         .expect_err("bob は起動できない");
     assert!(matches!(err, gui::ActionError::NotFound));
@@ -257,7 +266,7 @@ async fn workflow_action_runs_pinned_version_as_caller() {
         version: 1,
     };
     let output = dispatcher
-        .dispatch(&bob, &app_source, &resolved.doc, "run", json!({}), None)
+        .dispatch_binding(&bob, &app_source, &binding, "run", json!({}), None)
         .await
         .expect("bob はバンドル権限で起動できる");
     let bob_run: Uuid = serde_json::from_value(output["run_id"].clone()).expect("run id");

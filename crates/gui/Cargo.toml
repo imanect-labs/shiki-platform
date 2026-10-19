@@ -18,7 +18,7 @@ shiki-authz.workspace = true
 shiki-artifact.workspace = true
 # 監査（AuditRecorder）は storage の単一実装を共有する。
 shiki-storage.workspace = true
-# `Tool` トレイト（emit_ui）とツール名語彙（アクション束縛の閉集合照合）。
+# ツール名語彙（skill の allowed_tools）。
 shiki-agent-core.workspace = true
 # ミニアプリの画面（Yui を含む Markdown）のボタンを読み、送られた値を検証する（#604）。
 shiki-yui.workspace = true
@@ -32,13 +32,13 @@ serde_json.workspace = true
 serde_path_to_error = "0.1"
 thiserror.workspace = true
 uuid = { workspace = true, features = ["v4"] }
-# SpecValidator が AuditRecorder を組むための PgPool（データアクセスは artifact/storage 経由のみ）。
+# ミニアプリの起動の記録（miniapp_action_run）と AuditRecorder の PgPool。
 sqlx.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 # UI アクション監査の params ダイジェスト（本文は監査に残さない）。
 sha2 = { workspace = true }
-# カタログ・UiSpec 型を TS へ生成（codegen が正）。
+# skill・ミニアプリの本文の型を TS へ生成（codegen が正）。
 ts-rs = { workspace = true }
 # GuiValidationError を API エラー body スキーマとして公開する。
 utoipa.workspace = true

@@ -318,11 +318,6 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         Arc::new(AllowAll),
     ));
     let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
-    let ui_validator = Arc::new(gui::SpecValidator::new(
-        Arc::clone(&artifacts),
-        pool.clone(),
-    ));
-    let ui_specs = Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator));
     let ui_actions = Arc::new(gui::ActionDispatcher::new(
         storage::audit::AuditRecorder::new(pool.clone()),
     ));
@@ -409,7 +404,6 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         skill_installs,
         bundles,
         app_usage,
-        ui_specs,
         ui_actions,
         skills,
         mini_apps,

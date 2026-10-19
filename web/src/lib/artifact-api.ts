@@ -1,16 +1,15 @@
-/// アーティファクト（skill / UIスペック / ミニアプリ）のクライアント側データ層（Phase 6）。
+/// アーティファクト（skill / ミニアプリ）のクライアント側データ層（Phase 6）。
 ///
-/// backend の `/skills` `/mini-apps` `/ui-specs` `/artifacts`（共有・版）と
-/// UI アクション実行 API を叩く。型は codegen（gui-spec.ts / api.d.ts）を正とし、
+/// backend の `/skills` `/mini-apps` `/artifacts`（共有・版）と図のボタンの実行 API を叩く。型は codegen（gui-spec.ts / api.d.ts）を正とし、
 /// 手書きミラーを作らない（camelCase 変換の薄いラッパのみ）。
 
 "use client";
 
 import { apiFetch } from "@/lib/api";
 import type { components } from "@/generated/api";
-import type { MiniAppBody, SkillBody, UiSpecDoc } from "@/generated/gui-spec";
+import type { MiniAppBody, SkillBody } from "@/generated/gui-spec";
 
-export type { MiniAppBody, SkillBody, UiSpecDoc };
+export type { MiniAppBody, SkillBody };
 
 /// 共有語彙（backend artifact::ArtifactRole / storage::ShareTarget と一致）。
 export type ArtifactRole = "viewer" | "editor";
@@ -18,7 +17,7 @@ export type ShareTarget = { type: "user"; id: string } | { type: "role"; id: str
 /// 共有一覧の 1 件（表示名・email はサーバがテナント内ディレクトリから解決・#741）。
 export type ArtifactShareEntry = components["schemas"]["ArtifactShareEntry"];
 
-export type ArtifactKind = "workflow" | "ui_spec" | "mini_app" | "skill" | "script";
+export type ArtifactKind = "workflow" | "mini_app" | "skill" | "script";
 
 export type ArtifactMeta = {
   id: string;
@@ -161,16 +160,6 @@ export async function getSkill(id: string, version?: number): Promise<SkillVersi
   return ok<SkillVersion>(await apiFetch(path));
 }
 
-// ── UI スペック（Task 6.2〜6.4）─────────────────────────────────────────
-
-export type UiSpecVersion = { id: string; version: number; spec: UiSpecDoc };
-
-/// 検証済み UI スペックを保存する（`POST /ui-specs`・サーバが再検証）。
-/// チャットで生成した UI を「アプリとして保存」する導線から呼ぶ。
-export async function createUiSpec(name: string, spec: unknown): Promise<UiSpecVersion> {
-  return ok<UiSpecVersion>(await apiFetch("/ui-specs", json({ name, spec })));
-}
-
 // ── ミニアプリ（Task 6.10）──────────────────────────────────────────────
 
 export type MiniAppVersion = { id: string; version: number; body: MiniAppBody };
@@ -207,33 +196,19 @@ export async function resolveMiniApp(id: string, version?: number): Promise<Reso
   return ok<ResolvedMiniApp>(await apiFetch(`/mini-apps/${id}/resolved${qs}`));
 }
 
-// ── UI アクション実行（Task 6.5・action_id + params のみ送れる）─────────
+// ── 図のボタンの実行（Task 6.5・#604・action_id + params のみ送れる）─────
 
 export type UiActionResult = { result: Record<string, unknown> };
 
-/// 同じカードの同じ操作が既に実行済み（サーバが二重送信を拒否した・#410）。
+/// 同じ図の同じ操作が既に実行済み（サーバが二重送信を拒否した・#410）。
 ///
 /// 表示の遅れ（別タブ・戻る操作・再送）で二度押しても事故にならないよう、UI はこれを
-/// 失敗ではなく「送信済み」として扱い、カードを送信済み表示へ倒す。
+/// 失敗ではなく「送信済み」として扱い、図を送信済み表示へ倒す。
 export class UiActionAlreadyInvoked extends Error {
   constructor() {
     super("この操作は送信済みです");
     this.name = "UiActionAlreadyInvoked";
   }
-}
-
-export async function invokeChatUiAction(
-  threadId: string,
-  messageId: string,
-  actionId: string,
-  params: unknown,
-): Promise<UiActionResult> {
-  const res = await apiFetch(
-    `/threads/${threadId}/messages/${messageId}/ui-actions`,
-    json({ action_id: actionId, params }),
-  );
-  if (res.status === 409) throw new UiActionAlreadyInvoked();
-  return ok<UiActionResult>(res);
 }
 
 /// 本文の図（```ui）のボタンの実行（#604）。`actionId` は `{ブロックの識別子}:{a1}`。

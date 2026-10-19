@@ -24,6 +24,7 @@ pub mod documents;
 pub mod file_versions;
 pub mod files;
 pub mod folders;
+pub mod gui_errors;
 pub mod llm_models;
 pub mod me;
 pub mod mini_apps;
@@ -40,7 +41,6 @@ pub mod skills_registry;
 pub(crate) mod sse_util;
 pub mod tabular;
 pub mod ui_actions;
-pub mod ui_specs;
 pub mod workflows;
 
 pub use me::get_me;

@@ -5,7 +5,7 @@ import { test, expect } from "@playwright/test";
 ///
 /// **実行中（ローリング）は実チャットでは検証できない**（stub LLM はミリ秒で完了し、
 /// 実 LLM はタイミングが非決定的）。固定フィクスチャのギャラリーが唯一の回帰点。
-/// `SHOTS_DIR` を渡すと各状態の PNG を保存する（genui-gallery.spec.ts と同方針）。
+/// `SHOTS_DIR` を渡すと各状態の PNG を保存する。
 const SHOTS = process.env.SHOTS_DIR;
 
 test.describe("ツール実行表示ギャラリー", () => {

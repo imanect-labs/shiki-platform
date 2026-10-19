@@ -29,11 +29,11 @@ use agent_core::{Tool, ToolName};
 use std::sync::Arc;
 
 /// 実行前フェーズの段階（宣言の順に進む）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GateStage {
-    /// 明確化（質問カードを出す）。`emit_ui` のみ提示する。
+    /// 明確化（本文に ```ui の `ask` を書く）。ツールは 1 つも提示しない。
     Clarify,
-    /// 計画（計画カードを出して承認を待つ）。調査系はまだ提示しない。
+    /// 計画（本文に ```ui の `plan` を書いて承認を待つ）。調査系はまだ提示しない。
     Plan,
     /// 実行（承認済み）。従来どおり全ツール。
     Execute,
@@ -60,15 +60,11 @@ impl GateStage {
         match self {
             // 明確化では質問を書くこと以外にできることを持たせない（質問は本文に書く）。
             GateStage::Clarify => false,
-            // 計画では作業ファイルに加えて `subagent` を通す（#402）。`emit_ui` は渡さない
-            // （計画は本文の ```ui plan で出す）。委譲そのものは
+            // 計画では作業ファイルに加えて `subagent` を通す（#402）。委譲そのものは
             // 調査だが、**計画ロール**の子はツールを 1 つも持たず調べない（手順書を知らない
             // 文脈で「何を確かめるべきか」だけを立てる）。研究ロールで呼んでも子に調査ツールは
             // 渡るため、ここは「計画を子に書かせる」導線として開ける。
-            GateStage::Plan => {
-                tool == ToolName::Subagent
-                    || (tool != ToolName::EmitUi && !RESEARCH_TOOLS.contains(&tool))
-            }
+            GateStage::Plan => tool == ToolName::Subagent || !RESEARCH_TOOLS.contains(&tool),
             GateStage::Execute => true,
         }
     }
@@ -188,8 +184,8 @@ impl super::ChatWorker {
     ///
     /// フェーズを**毎ターン発話本文から引き直さない**のが要点。質問への回答・計画の承認は
     /// `chat.submit` 由来でコマンドリテラルを持たないので、本文照合では 2 ターン目以降が
-    /// 必ず素通りになる（#402 の実害。実測では 1 run で `emit_ui` が 6 回走り、質問と計画が
-    /// 同じターンに出た）。
+    /// 必ず素通りになる（#402 の実害。実測では 1 run で質問と計画のカードが 6 回出て、
+    /// 質問と計画が同じターンに出た）。
     pub(super) async fn plan_gate_stage(
         &self,
         ctx: &authz::AuthContext,
@@ -208,23 +204,9 @@ impl super::ChatWorker {
             .store
             .fenced_answer_texts(run.thread_id, &ctx.tenant_id)
             .await?;
-        let stage = stage_from_answers(texts.iter().map(|(id, text)| (*id, text.as_str())));
-        // 置き換え前の emit_ui のカードで進めていた会話を巻き戻さない（#604 の 7 つ目で
-        // 旧データと一緒に消す互換処理）。
-        let (asked, planned) = self
-            .store
-            .legacy_gate_cards(run.thread_id, &ctx.tenant_id)
-            .await?;
-        Ok(stage.max(stage_from_legacy_cards(asked, planned)))
-    }
-}
-
-/// 置き換え前の emit_ui のカード（`question_card`・`plan_card`）を出したかによる段階。
-fn stage_from_legacy_cards(asked: bool, planned: bool) -> GateStage {
-    match (asked, planned) {
-        (_, true) => GateStage::Execute,
-        (true, false) => GateStage::Plan,
-        (false, false) => GateStage::Clarify,
+        Ok(stage_from_answers(
+            texts.iter().map(|(id, text)| (*id, text.as_str())),
+        ))
     }
 }
 
@@ -289,16 +271,6 @@ mod tests {
     const PLAN: &str = "```ui\nplan 調査の計画\n1. 市場規模を調べる\n2. 比べる\n```";
 
     #[test]
-    fn legacy_cards_keep_the_stage() {
-        assert_eq!(stage_from_legacy_cards(false, false), GateStage::Clarify);
-        assert_eq!(stage_from_legacy_cards(true, false), GateStage::Plan);
-        assert_eq!(stage_from_legacy_cards(true, true), GateStage::Execute);
-        // 本文の段階と合わせるときは進んでいる方を取る。
-        assert_eq!(GateStage::Plan.max(GateStage::Clarify), GateStage::Plan);
-        assert_eq!(GateStage::Plan.max(GateStage::Execute), GateStage::Execute);
-    }
-
-    #[test]
     fn stage_advances_with_ask_then_plan() {
         let (a, b) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
         assert_eq!(stage_from_answers([]), GateStage::Clarify);
@@ -348,7 +320,6 @@ mod tests {
     fn clarify_offers_no_tools() {
         let s = GateStage::Clarify;
         for denied in [
-            "emit_ui",
             "web_search",
             "web_fetch",
             "doc_search",
@@ -369,7 +340,7 @@ mod tests {
             s.allows("subagent"),
             "計画を子に書かせる導線は開ける（#402）"
         );
-        for denied in ["web_search", "web_fetch", "doc_search", "emit_ui"] {
+        for denied in ["web_search", "web_fetch", "doc_search"] {
             assert!(!s.allows(denied), "{denied} は承認後にだけ渡す");
         }
     }
@@ -408,16 +379,10 @@ mod tests {
     /// 門は承認まで取り上げたツール名を返す（発話ごとのツール指定の注記に使う・#734）。
     #[test]
     fn filter_reports_tools_held_until_approval() {
-        let base = [
-            "emit_ui",
-            "web_search",
-            "doc_search",
-            "fs_write",
-            "subagent",
-        ];
+        let base = ["web_search", "doc_search", "fs_write", "subagent"];
         let mut tools = offered(&base);
         let held = GateStage::Plan.filter(&mut tools);
-        assert_eq!(held, vec!["emit_ui", "web_search", "doc_search"]);
+        assert_eq!(held, vec!["web_search", "doc_search"]);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert_eq!(names, vec!["fs_write", "subagent"]);
 

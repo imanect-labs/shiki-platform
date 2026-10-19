@@ -35,7 +35,7 @@ const STATUS_META: Record<
   },
 };
 
-/// 計画ステップの 1 行（ライブの計画パネルと genui の計画カードで**表示を共有**する）。
+/// 計画ステップの 1 行（ライブの計画パネルで使う）。
 /// プラン UI を二重化しないための共有点（#387）。
 export function PlanStepRow({
   title,

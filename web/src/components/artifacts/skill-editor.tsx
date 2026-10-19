@@ -32,7 +32,6 @@ const TOOL_OPTIONS: { value: ToolName; label: string; note?: string }[] = [
   { value: "web_search", label: "Web 検索" },
   { value: "web_fetch", label: "Web ページ取得" },
   { value: "code_interpreter", label: "コード実行" },
-  { value: "emit_ui", label: "UI 生成（フォーム・チャート）" },
   { value: "shell", label: "シェル（自律・要承認）", note: "実行ごとに承認が必要" },
 ];
 

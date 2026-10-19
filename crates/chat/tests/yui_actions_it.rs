@@ -183,7 +183,7 @@ impl gui::WorkflowStarter for TestStarter {
     }
 }
 
-/// ワーカーを同時に走らせない（生成の待ち行列は DB 単位で 1 本・genui_it と同じ理由）。
+/// ワーカーを同時に走らせない（生成の待ち行列は DB 単位で 1 本）。
 static WORKER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct Env {
@@ -204,10 +204,7 @@ async fn env(pool: PgPool) -> Env {
         pool.clone(),
         Arc::clone(&authz),
     ));
-    let validator = Arc::new(gui::SpecValidator::new(
-        Arc::clone(&artifacts),
-        pool.clone(),
-    ));
+    let resolver = Arc::new(gui::WorkflowResolver::new(Arc::clone(&artifacts)));
     let worker = ChatWorker::new(
         pool.clone(),
         store.clone(),
@@ -219,7 +216,7 @@ async fn env(pool: PgPool) -> Env {
             web_search: None,
             parser: None,
             storage: None,
-            ui_validator: Some(validator),
+            workflow_resolver: Some(resolver),
             skill_artifacts: None,
             skill_catalog: None,
             workflow_store: None,

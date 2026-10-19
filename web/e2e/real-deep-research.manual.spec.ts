@@ -96,31 +96,30 @@ test("実 LLM: /deep-research が出典つきレポートまで完走する", as
   await page.getByRole("button", { name: "送信" }).click();
 
   if (FLOW !== "auto") {
-    // ── フェーズ 0: 質問カード ──
-    // `plan_first` の variant では**必ず**出る（明確化の run には `question_card` を出す
-    // `emit_ui` しか提示されない・#400）。出ないなら門が効いていないので落とす。
-    const options = page.getByTestId("genui-question-option");
-    await expect(options.first()).toBeVisible({ timeout: 4 * 60 * 1000 });
+    // ── フェーズ 0: 質問（本文の ```ui ask） ──
+    // `plan_first` の variant では**必ず**出る（明確化の run にはツールを 1 つも渡さず、本文に
+    // ask を書かせる・#400・#604）。出ないなら門が効いていないので落とす。
+    const ask = page.locator('[data-testid="ui-figure"][data-ui-kind="ask"]').last();
+    const submit = ask.getByRole("button").last();
+    await expect(submit).toBeVisible({ timeout: 4 * 60 * 1000 });
     await page.screenshot({ path: `${SHOTS}/real-dr-question.png`, fullPage: true });
-    // 各問の先頭選択肢を選び、最後の問いで送信する。問い数も submit のラベルも AI が決めるので
-    // 「次へ」が出ている限り送り、消えたら testid で送信する（文言に依存しない）。
-    const next = page.getByRole("button", { name: "次へ" });
-    for (let step = 0; step < 6; step++) {
-      await options.first().click();
-      if (!(await next.isVisible().catch(() => false))) break;
-      await next.click();
+    // 問い数も選択肢も AI が決めるので、各問の先頭の選択肢を選んで送る（文言に依存しない）。
+    const groups = ask.getByRole("radiogroup");
+    for (let i = 0; i < (await groups.count()); i++) {
+      await groups.nth(i).getByRole("radio").first().check();
     }
-    await page.getByTestId("genui-question-submit").click();
+    await submit.click();
 
-    // ── フェーズ 1: 計画カード（この依頼固有の問いが並ぶこと） ──
-    const planStart = page.getByTestId("genui-plan-start");
+    // ── フェーズ 1: 計画（本文の ```ui plan・この依頼固有の問いが並ぶこと） ──
+    const plan = page.locator('[data-testid="ui-figure"][data-ui-kind="plan"]').last();
+    const planStart = plan.getByRole("button").last();
     await expect(planStart).toBeVisible({ timeout: 5 * 60 * 1000 });
-    const titles = await page
-      .getByTestId("genui-plan-steps")
-      .getByTestId("plan-step-title")
-      .allInnerTexts();
+    // 各項目は「問い: 確かめ方」。問いの部分（最初の `:` まで）だけを見る。
+    const titles = (await plan.locator("ol > li").allInnerTexts()).map(
+      (t) => t.split(/[:：\n]/)[0],
+    );
     console.log(`=== PLAN (${titles.length} steps) ===`);
-    console.log(await page.getByTestId("genui-plan-steps").innerText());
+    console.log(await plan.innerText());
     await page.screenshot({ path: `${SHOTS}/real-dr-plan.png`, fullPage: true });
     // 計画は**問いの一覧**であること（禁止語の列挙ではなく形式で判定する。工程を並べる語彙は
     // 無限にあり、列挙は必ず漏れる。「問いの形か」なら 1 つの規則で全部を捕まえられる）。
@@ -157,11 +156,11 @@ test("実 LLM: /deep-research が出典つきレポートまで完走する", as
   if (await errorBanner.isVisible().catch(() => false)) {
     expect(await errorBanner.innerText(), "run がエラーで終了した").toBe("");
   }
-  // deep research の DoD は「出典つきレポート」。出典カードと下書きカードの両方を要求する
+  // deep research の DoD は「出典つきレポート」。出典の一覧と下書きカードの両方を要求する
   // （本文だけなら途中で切れていても通ってしまう）。
   await expect(
-    page.getByTestId("genui-source-card").first(),
-    "出典カードが出ること（P4 検証まで到達した証明）",
+    page.getByRole("heading", { name: "出典", exact: true }).first(),
+    "出典の一覧が出ること（P4 検証まで到達した証明）",
   ).toBeVisible({ timeout: 60_000 });
   await expect(
     page.getByTestId("note-draft-card").first(),
