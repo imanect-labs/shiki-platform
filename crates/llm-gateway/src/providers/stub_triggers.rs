@@ -4,7 +4,6 @@
 //! 応じて 1 回だけツールを呼ぶロジック。実 LLM 無しで chat run・承認ゲート・Yjs 反映まで
 //! パイプライン全体を決定的に叩くための入口（issue #282 / #328 / Task 11.3・11.10）。
 
-use super::stub_fixtures::genui_spec;
 use super::stub_stream::{text_stream, tool_call_stream};
 use crate::model::{Block, GenerateRequest, Role};
 use crate::provider::DeltaStream;
@@ -57,7 +56,7 @@ pub(super) fn tool_search_call(
 }
 
 /// ドキュメント下書き/編集ツールの決定的駆動（issue #282 / Task 11.3 の e2e）。
-/// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（genui chart）、
+/// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（```ui の bar）、
 /// `saveslide:<name>` → save_slide（下書きスライド・固定 3 枚）、
 /// `savecsv:<name>` → save_csv（下書き CSV・固定 3 列×3 行）、
 /// `savedoc:<name>` → save_document（新規 Word 文書・承認ゲート＋Collabora 必須・#381）、
@@ -86,7 +85,7 @@ pub(super) fn note_tool_call(
     if let Some(id) = user_text.strip_prefix("docembed:").map(str::trim) {
         return call(
             "document.embed",
-            serde_json::json!({ "node_id": id, "spec": genui_spec("chart") }),
+            serde_json::json!({ "node_id": id, "source": "bar 月別の売上\n4月 | 120\n5月 | 150" }),
         );
     }
     if let Some(name) = user_text.strip_prefix("savedoc:").map(str::trim) {

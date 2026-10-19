@@ -216,8 +216,8 @@ impl Tool for DocumentEditTool {
          指定する: append（末尾追記）/ replace_section（見出し名で節本文を置換）/ \
          insert_after_heading（見出し直後に挿入）/ replace_all（全置換）/ set_meta（\
          タイトル・タグ等のプロパティ設定）。既定は直接適用（あなたの名義で反映）。\
-         mode=\"suggest\" で提案として挿入し、人間が承認/棄却できる。グラフ等の genui\
-         コンポーネントを本文に入れたいときは document.embed を使う。"
+         mode=\"suggest\" で提案として挿入し、人間が承認/棄却できる。グラフ等の図は\
+         markdown に ```ui ブロックとして書く（末尾に図だけ足すなら document.embed）。"
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -313,11 +313,12 @@ impl Tool for DocumentEditTool {
     }
 }
 
-/// ノート本文にグラフ等の genui コンポーネントを埋め込むツール（issue #282）。
+/// ノート本文に Yui の図（```ui）を入れるツール（issue #282・#604）。
 ///
-/// document.edit と同じ共同編集経路（editor@file・昇格しない）で、本文末尾に検証済み genui
-/// スペックの埋め込みブロックを **append**（非破壊）する。追記のみ・spec は描画時に fail-closed
-/// 検証されるため確認ゲートは不要（＝「AI が裁量で自動挿入」を確認カード無しで実現）。
+/// document.edit と同じ共同編集経路（editor@file・昇格しない）で、本文末尾に ```ui の Markdown を
+/// **append**（非破壊）する。追記のみ・図は描画時に fail-closed で読まれるため確認ゲートは不要
+/// （＝「AI が裁量で自動挿入」を確認カード無しで実現）。ツール名はスキルの `allowed_tools` に
+/// 保存されているので、genui スペックからの置き換えでも名前は変えない。
 pub struct DocumentEmbedTool {
     collab: Arc<CollabHub>,
     storage: Arc<StorageService>,
@@ -333,8 +334,84 @@ impl DocumentEmbedTool {
 struct EmbedInput {
     /// 対象ノート（.md ファイル）の ID。
     node_id: Uuid,
-    /// genui スペック（emit_ui と同じ検証済みスペック）。
-    spec: serde_json::Value,
+    /// 図の記述（```ui ブロックの中身。フェンスごと渡されても外す）。
+    source: String,
+}
+
+/// 図の記述の上限（ノート 1 つの図としては十分に大きい）。
+const MAX_FIGURE_BYTES: usize = 16 * 1024;
+
+/// 渡されたフェンスの情報文字列を、追記するフェンスの言語にする（`ui bar`・`UI:Bar`・`yui bar`
+/// → `ui:bar`。種類の無い `ui`・`yui`・空は `ui`）。ノートの画面（`normalizeYuiInfo`）と同じ形を
+/// 受け、種類の名前の正規化（別名 → 正規名）は画面側に任せる。
+fn fence_info(rest: &str) -> Result<String, &'static str> {
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return Ok("ui".into());
+    }
+    let lower = rest.to_lowercase();
+    let tail = ["yui", "ui"]
+        .iter()
+        .find_map(|p| lower.strip_prefix(p))
+        .ok_or("```ui の図の記述を渡してください。")?;
+    let kind = match tail.strip_prefix(':') {
+        Some(k) => k,
+        None if tail.is_empty() => return Ok("ui".into()),
+        None if tail.starts_with(char::is_whitespace) => tail.trim_start(),
+        None => return Err("```ui の図の記述を渡してください。"),
+    };
+    let kind = kind.split_whitespace().next().unwrap_or_default();
+    if kind.is_empty() {
+        return Ok("ui".into());
+    }
+    if kind.contains(['`', '~']) {
+        return Err("図の種類の指定が不正です。");
+    }
+    Ok(format!("ui:{kind}"))
+}
+
+/// 図の記述を、ノートへ追記する ```ui の Markdown にする（不正なら理由を返す）。
+///
+/// ノートの図は表示だけ（ボタンを押す先が無い）なので、操作を持つ種類（app・ask・plan）は拒む。
+/// 記述の中のフェンスはブロックを閉じて本文へ漏れるので拒む。
+fn figure_markdown(source: &str) -> Result<String, &'static str> {
+    let mut lines: Vec<&str> = source.trim().lines().collect();
+    let mut info = "ui".to_string();
+    if let Some(first) = lines.first() {
+        let open = first.trim();
+        if let Some(rest) = open
+            .strip_prefix("```")
+            .or_else(|| open.strip_prefix("~~~"))
+        {
+            info = fence_info(rest)?;
+            lines.remove(0);
+            if lines.last().is_some_and(|l| {
+                let l = l.trim();
+                l.starts_with("```") || l.starts_with("~~~")
+            }) {
+                lines.pop();
+            }
+        }
+    }
+    let body = lines.join("\n");
+    let body = body.trim_matches('\n');
+    if body.trim().is_empty() {
+        return Err("図の記述が空です。");
+    }
+    if body.len() > MAX_FIGURE_BYTES {
+        return Err("図の記述が大きすぎます（16KB まで）。");
+    }
+    if body.lines().any(|l| {
+        let l = l.trim_start();
+        l.starts_with("```") || l.starts_with("~~~")
+    }) {
+        return Err("図の記述にフェンス（``` や ~~~）を含めないでください。");
+    }
+    let hint = info.strip_prefix("ui:").and_then(yui::resolve_kind);
+    if hint.is_some() || yui::parse_block(body, None).figure.is_some() {
+        return Err("ノートの図は表示だけです。ボタンを持つ app・ask・plan は入れられません。");
+    }
+    Ok(format!("```{info}\n{body}\n```\n"))
 }
 
 #[async_trait::async_trait]
@@ -343,18 +420,22 @@ impl Tool for DocumentEmbedTool {
         ToolName::DocumentEmbed.as_str()
     }
     fn description(&self) -> &'static str {
-        "ノート（.md ファイル）の本文末尾にグラフ等の genui コンポーネントを埋め込む。ユーザーが\
-         「このグラフをノートに入れて」「図をノートに追加して」等と依頼したときに使う。spec は\
-         emit_ui と同じ検証済み genui スペック。追記のみで既存内容は消さない。"
+        "ノート（.md ファイル）の本文末尾にグラフ・表・構成図などの図を入れる。ユーザーが\
+         「このグラフをノートに入れて」「図をノートに追加して」等と依頼したときに使う。source は\
+         回答の本文に書く ```ui ブロックの中身（Yui の記述・フェンスは不要）。表示だけの種類に限る\
+         （app・ask・plan は入れられない）。追記のみで既存内容は消さない。"
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
                 "node_id": { "type": "string", "format": "uuid", "description": "ノートのノード ID" },
-                "spec": { "type": "object", "description": "genui スペック（emit_ui と同じ検証済みスペック）" }
+                "source": {
+                    "type": "string",
+                    "description": "```ui ブロックの中身（例: \"bar 月別の売上\\n4月 | 120\\n5月 | 150\"）"
+                }
             },
-            "required": ["node_id", "spec"]
+            "required": ["node_id", "source"]
         })
     }
 
@@ -366,6 +447,10 @@ impl Tool for DocumentEmbedTool {
     ) -> Result<ToolOutcome, ToolError> {
         let input: EmbedInput = serde_json::from_value(input)
             .map_err(|e| ToolError::Invalid(format!("入力が不正です: {e}")))?;
+        let markdown = match figure_markdown(&input.source) {
+            Ok(markdown) => markdown,
+            Err(msg) => return Ok(ToolOutcome::error(msg)),
+        };
         let node = match self
             .storage
             .get_metadata(ctx, input.node_id, trace_id)
@@ -374,7 +459,7 @@ impl Tool for DocumentEmbedTool {
             Ok(node) => node,
             Err(e) => return Ok(denied_outcome(&collab::CollabError::Storage(e))),
         };
-        let ops = [collab::note::EditOp::InsertEmbed { spec: input.spec }];
+        let ops = [collab::note::EditOp::Append { markdown }];
         let report = match self
             .collab
             .apply_ai_edit(ctx, &node, &ops, collab::note::EditMode::Direct)
@@ -384,12 +469,10 @@ impl Tool for DocumentEmbedTool {
             Err(e) => return Ok(denied_outcome(&e)),
         };
         if report.applied == 0 {
-            return Ok(ToolOutcome::error(
-                "埋め込みを挿入できませんでした（スペックが不正な可能性があります）。",
-            ));
+            return Ok(ToolOutcome::error("図を入れられませんでした。"));
         }
         Ok(ToolOutcome::ok(format!(
-            "ノート「{}」にグラフを埋め込みました。",
+            "ノート「{}」に図を入れました。",
             node.name
         )))
     }
@@ -415,6 +498,40 @@ mod tests {
         ] {
             assert_eq!(denied_outcome(&e).content, expected.content);
         }
+    }
+
+    #[test]
+    fn figure_markdown_wraps_display_figures() {
+        use super::figure_markdown;
+        assert_eq!(
+            figure_markdown("bar 売上\n4月 | 120").unwrap(),
+            "```ui\nbar 売上\n4月 | 120\n```\n"
+        );
+        // フェンスごと渡されても外し、種類付きの情報文字列は保つ。
+        assert_eq!(
+            figure_markdown("```ui:bar\n売上\n4月 | 120\n```").unwrap(),
+            "```ui:bar\n売上\n4月 | 120\n```\n"
+        );
+        // 種類をフェンスの空白区切り・大文字・yui で指定しても落とさない。
+        assert_eq!(
+            figure_markdown("```ui bar\n月別売上\n1月 | 120\n```").unwrap(),
+            "```ui:bar\n月別売上\n1月 | 120\n```\n"
+        );
+        assert!(figure_markdown("```YUI:Bar\n売上\n1月 | 1\n```")
+            .unwrap()
+            .starts_with("```ui:bar\n"));
+        assert!(figure_markdown("```\nbar 売上\n1月 | 1\n```")
+            .unwrap()
+            .starts_with("```ui\n"));
+        assert!(figure_markdown("```json\n{}\n```").is_err());
+        assert!(figure_markdown("```uibar\n売上\n```").is_err());
+        assert!(figure_markdown("  \n").is_err());
+        assert!(figure_markdown("bar 売上\n```\n# 漏れた見出し").is_err());
+        assert!(figure_markdown(&"a".repeat(super::MAX_FIGURE_BYTES + 1)).is_err());
+        // 操作を持つ種類はノートに入れない。
+        assert!(figure_markdown("app 申請\n金額 = number\nbutton 送る -> chat").is_err());
+        assert!(figure_markdown("```ui:ask\n? 対象は\n- 国内\n```").is_err());
+        assert!(figure_markdown("plan 計画\n1. 調べる").is_err());
     }
 
     #[test]
