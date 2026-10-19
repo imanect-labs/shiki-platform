@@ -307,6 +307,7 @@ fn base_config() -> AppConfig {
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
+        insights: api::insights::InsightsConfig::default(),
     }
 }
 
@@ -414,6 +415,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
     ));
     AppState {
         config: Arc::new(config),
+        insights: std::sync::Arc::new(api::insights::InsightsService::new(db.clone())),
         db: api::state::ReadinessProbe::new(db),
         authz: Arc::new(AllowAll),
         jwks,
@@ -613,6 +615,13 @@ async fn org_admin_routes_reject_non_admin_members() {
         "/org-admin/ai/models",
         "/org-admin/ai/settings",
         "/org-admin/ai/usage",
+        "/org-admin/insights/overview",
+        "/org-admin/insights/adoption",
+        "/org-admin/insights/people",
+        "/org-admin/insights/use-cases",
+        "/org-admin/insights/impact",
+        "/org-admin/insights/departments",
+        "/org-admin/insights/settings",
     ] {
         let (status, _) = get_with_session(app.clone(), uri).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");

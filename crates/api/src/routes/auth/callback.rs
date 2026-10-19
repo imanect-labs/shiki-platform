@@ -174,7 +174,17 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
     let ns = ctx.ns();
 
     // あるべき集合（claims 由来・正規化済み）。
-    let desired = desired_role_ids(&ctx.principal.roles, &ctx.principal.groups, &org);
+    let sourced = desired_role_sources(&ctx.principal.roles, &ctx.principal.groups, &org);
+    let desired: Vec<String> = sourced.iter().map(|(id, _)| id.clone()).collect();
+
+    // AI 活用分析の部署集計用の写し（#751・PIT-18）。失敗しても認可には影響しない（次回同期で収束）。
+    if let Err(e) = state
+        .directory
+        .replace_user_roles(&tenant_id, &org, &ctx.principal.id, &sourced)
+        .await
+    {
+        tracing::warn!(error = %e, "directory_user_role の更新に失敗（分析の部署集計のみに影響）");
+    }
 
     // 現在の直接 role タプル（自テナント名前空間のみ・継承展開なし）。
     let current: Vec<String> = match state
@@ -251,8 +261,18 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
 ///   それは正当なロールなので除外しない（除外すると diff 同期が誤剥奪する）。
 /// - 識別子を壊す値（空・FGA 構造文字・制御文字）は [`authz::validate_local_id`]
 ///   （文字ポリシーの単一定義・#91 M-3）で除外する。
+#[cfg(test)]
 fn desired_role_ids(roles: &[String], groups: &[String], org: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+    desired_role_sources(roles, groups, org)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// [`desired_role_ids`] と同じ集合を、groups claim 由来か（部署か）と一緒に返す（#751）。
+/// 同じ id が roles と groups の両方にあれば先に出た方（roles）を採る。
+fn desired_role_sources(roles: &[String], groups: &[String], org: &str) -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> = Vec::new();
     let candidates = roles.iter().map(|r| (r.trim().to_string(), false)).chain(
         groups
             .iter()
@@ -263,8 +283,8 @@ fn desired_role_ids(roles: &[String], groups: &[String], org: &str) -> Vec<Strin
         if (from_group && id == org) || authz::validate_local_id(id).is_err() {
             continue;
         }
-        if !out.iter().any(|existing| existing == id) {
-            out.push(id.to_string());
+        if !out.iter().any(|(existing, _)| existing == id) {
+            out.push((id.to_string(), from_group));
         }
     }
     out

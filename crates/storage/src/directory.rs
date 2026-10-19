@@ -261,6 +261,42 @@ impl DirectoryStore {
         Ok(())
     }
 
+    /// 利用者の部署（ロール）の写しを、claims から作ったあるべき集合で置き換える（#751）。
+    ///
+    /// 正本は IdP claims → OpenFGA の role タプル（ログイン時の同期）。AI 活用分析の集計が
+    /// 集計のたびに OpenFGA を引かないよう（PIT-18）、同期と同じ集合を DB にも持つ。
+    /// `roles` は `(role_id, groups 由来か)`。1 トランザクションで消して入れ直す。
+    pub async fn replace_user_roles(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        user_id: &str,
+        roles: &[(String, bool)],
+    ) -> Result<(), StorageError> {
+        let mut tx = self.db.begin().await.map_err(StorageError::Db)?;
+        sqlx::query("DELETE FROM directory_user_role WHERE tenant_id = $1 AND user_id = $2")
+            .bind(tenant_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StorageError::Db)?;
+        for (role_id, from_group) in roles {
+            sqlx::query(
+                "INSERT INTO directory_user_role (tenant_id, org, user_id, role_id, source) \
+                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, user_id, role_id) DO NOTHING",
+            )
+            .bind(tenant_id)
+            .bind(org)
+            .bind(user_id)
+            .bind(role_id)
+            .bind(if *from_group { "group" } else { "role" })
+            .execute(&mut *tx)
+            .await
+            .map_err(StorageError::Db)?;
+        }
+        tx.commit().await.map_err(StorageError::Db)
+    }
+
     /// テナント（＋ org）スコープのロール/部署検索（共有ダイアログのオートコンプリート）。
     ///
     /// `query` は role_id / 表示名の部分一致（ILIKE）。空文字は先頭ページを返す。
