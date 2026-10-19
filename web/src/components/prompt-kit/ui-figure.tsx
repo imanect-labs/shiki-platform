@@ -4,7 +4,7 @@
 "use client";
 
 import * as React from "react";
-import { BarChart3, Check, Copy, Download, Table2 } from "lucide-react";
+import { AppWindow, BarChart3, Check, Copy, Download, Table2 } from "lucide-react";
 import { isEmpty, parseBlock, toText, type Kind } from "@imanect/yui";
 import { copyFigure, downloadFigure } from "@imanect/yui/export";
 import { YuiFigure, diagnosticsSummary } from "@imanect/yui/react";
@@ -137,6 +137,12 @@ export const UiFigure = React.memo(function UiFigure({
         )}
       >
         {note ? <span className="mr-auto">{note}</span> : null}
+        {actions_?.saveAsApp ? (
+          <ToolbarButton onClick={actions_.saveAsApp} label="アプリとして保存">
+            <AppWindow className="size-3.5" />
+            アプリとして保存
+          </ToolbarButton>
+        ) : null}
         {complete ? (
           <>
             <ToolbarButton onClick={() => setAsTable((v) => !v)} pressed={asTable}>

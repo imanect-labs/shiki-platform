@@ -5467,6 +5467,7 @@ name = "shiki-gui"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -5476,6 +5477,8 @@ dependencies = [
  "shiki-artifact",
  "shiki-authz",
  "shiki-storage",
+ "shiki-workflow-engine",
+ "shiki-yui",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",

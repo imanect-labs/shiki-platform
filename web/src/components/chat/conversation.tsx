@@ -3,7 +3,7 @@
 import * as React from "react";
 
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ArrowDown, Clock3, FileDown, LayoutGrid, Sparkles } from "lucide-react";
+import { AlertTriangle, ArrowDown, Clock3, FileDown, Sparkles } from "lucide-react";
 
 import {
   cancelRun,
@@ -40,9 +40,9 @@ import { selectionKindLabel, type SelectionContext } from "@/lib/selection-conte
 import type { ActiveCommand } from "@/lib/slash-command";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
 import { ChatGenUiProvider } from "@/components/genui/action-context";
-import { invokeChatUiAction, UiActionAlreadyInvoked } from "@/lib/artifact-api";
+import { invokeChatUiAction, invokeChatYuiAction, UiActionAlreadyInvoked } from "@/lib/artifact-api";
 import { SpecRenderer } from "@/components/genui/spec-renderer";
-import { SaveAsAppDialog, specHasChatOnlyAction } from "@/components/artifacts/save-as-app-dialog";
+import { SaveAsAppDialog, type SaveAsAppTarget } from "@/components/artifacts/save-as-app-dialog";
 import { Loader } from "@/components/prompt-kit/loader";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import {
@@ -221,6 +221,8 @@ export function Conversation({
   const [reloadKey, setReloadKey] = React.useState(0);
   // 確定行（memo）へ渡すので安定した参照にする（トークンごとに過去の行を描き直さない）。
   const reload = React.useCallback(() => setReloadKey((k) => k + 1), []);
+  // 回答の ```ui app を「アプリとして保存」する対象（#604）。
+  const [saveTarget, setSaveTarget] = React.useState<SaveAsAppTarget | null>(null);
   // スレッド名（クロームのタイトル・⋯ メニューの見出し）。page のときだけ引く。
   const threadTitle = useThreadTitle(isPanel ? null : threadId);
   // 追従スクロール（下端付近にいる間だけ追う・離れたら「最新へ」）。
@@ -749,6 +751,11 @@ export function Conversation({
             <ChatPageHeaderSlot title={threadTitle || "新しいチャット"} onShare={openShare} />
           ) : null}
           <ThreadShareDialog open={shareOpen} onOpenChange={setShareOpen} threadId={threadId} />
+          <SaveAsAppDialog
+            open={saveTarget != null}
+            onOpenChange={(open) => !open && setSaveTarget(null)}
+            target={saveTarget}
+          />
 
           <div className="relative flex min-h-0 flex-1 flex-col">
             <div
@@ -794,6 +801,7 @@ export function Conversation({
                       uiRuns={m.uiRuns}
                       provisional={m.provisional}
                       onUiAction={reload}
+                      onSaveAsApp={setSaveTarget}
                       latest={m.id === latestAssistantId}
                       compactDisclaimer={isPanel}
                     />
@@ -1054,6 +1062,7 @@ const AssistantRow = React.memo(function AssistantRow({
   uiRuns,
   provisional,
   onUiAction,
+  onSaveAsApp,
   latest = false,
   compactDisclaimer = false,
 }: {
@@ -1068,6 +1077,8 @@ const AssistantRow = React.memo(function AssistantRow({
   /// 生成直後の仮のメッセージ（読み直すまで図のボタンは押せない）。
   provisional?: ChatMessageT["provisional"];
   onUiAction: () => void;
+  /// 図を「アプリとして保存」するダイアログを開く。
+  onSaveAsApp: (target: SaveAsAppTarget) => void;
   /// 最新の回答（アクションを常に出し、下に免責文を 1 回だけ添える）。
   latest?: boolean;
   /// 免責文を短くする（分割ビューのパネル）。
@@ -1079,15 +1090,16 @@ const AssistantRow = React.memo(function AssistantRow({
   const onChanged = React.useCallback(() => reload.current(), []);
   const yuiHost = React.useMemo<YuiActionHost>(
     () => ({
-      threadId,
-      messageId,
-      boundActions: boundActions ?? [],
+      invoke: (key, values, idempotencyKey) =>
+        invokeChatYuiAction(threadId, messageId, key, values, idempotencyKey),
+      isBound: (key) => (boundActions ?? []).includes(key),
       invokedActions: invokedActions ?? [],
       uiRuns: uiRuns ?? [],
       unsaved: provisional,
       onChanged,
+      saveAsApp: (block, title) => onSaveAsApp({ threadId, messageId, block, title }),
     }),
-    [threadId, messageId, boundActions, invokedActions, uiRuns, provisional, onChanged],
+    [threadId, messageId, boundActions, invokedActions, uiRuns, provisional, onChanged, onSaveAsApp],
   );
   // 図のボタンで起動したワークフローが終わるまで、会話を少しずつ読み直して状態を出す。
   const openRuns = hasOpenRuns(uiRuns);
@@ -1240,41 +1252,9 @@ const AssistantRow = React.memo(function AssistantRow({
   );
 });
 
-/// generative UI ブロック＝描画＋「アプリとして保存」導線（Phase 6 UX）。
-/// chat.submit（チャット専用アクション）を含むスペックはアプリにできないため非活性にする。
+/// generative UI ブロック（emit_ui・Yui の ```ui へ置き換え中・#604）。
 function GenUiBlock({ spec }: { spec: unknown }) {
-  const [saveOpen, setSaveOpen] = React.useState(false);
-  const chatOnly = React.useMemo(() => specHasChatOnlyAction(spec), [spec]);
-  return (
-    <div className="group/gui relative">
-      <SpecRenderer spec={spec} />
-      <div className="mt-1 flex justify-end">
-        <button
-          type="button"
-          disabled={chatOnly}
-          onClick={() => setSaveOpen(true)}
-          title={
-            chatOnly
-              ? "このUIはチャット専用アクションを含むためアプリにできません"
-              : "この画面をアプリとして保存する"
-          }
-          className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[12px] text-foreground/70 transition-colors hover:border-primary/40 hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-transparent"
-        >
-          <LayoutGrid className="size-3.5" aria-hidden />
-          アプリとして保存
-        </button>
-      </div>
-      {/* 無効の理由は title（ホバー）だけだとタッチで読めないので、タッチ端末では文で添える。 */}
-      {chatOnly ? (
-        <p className="mt-1 hidden text-right text-[11px] text-muted-foreground pointer-coarse:block">
-          チャット専用の操作を含むため、アプリにはできません
-        </p>
-      ) : null}
-      {!chatOnly ? (
-        <SaveAsAppDialog open={saveOpen} onOpenChange={setSaveOpen} spec={spec} />
-      ) : null}
-    </div>
-  );
+  return <SpecRenderer spec={spec} />;
 }
 
 /// ツール成果物（保存済みファイル）のチップ列。クリックでダウンロードする。

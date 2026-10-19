@@ -33,6 +33,7 @@ pub mod form_fields;
 pub mod layout;
 pub mod map;
 pub mod miniapp;
+pub mod miniapp_actions;
 pub mod miniapp_store;
 pub mod plan_card;
 pub mod question;
@@ -52,6 +53,7 @@ pub use dispatch::{
 };
 pub use emit_tool::EmitUiTool;
 pub use miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
+pub use miniapp_actions::{MiniAppActionRequest, MiniAppRun, MiniAppRunStatus, MiniAppRunValue};
 pub use miniapp_store::{MiniAppStore, ResolvedMiniApp};
 pub use plan_card::{PlanCardProps, PlanCardStep};
 pub use skill::{

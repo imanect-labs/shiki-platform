@@ -178,10 +178,12 @@ export type MiniAppVersion = { id: string; version: number; body: MiniAppBody };
 export type ResolvedMiniApp = {
   id: string;
   version: number;
+  /// 検証済みの本文（画面＝Yui の ```ui を含む Markdown と、束ねたワークフロー）。
   body: MiniAppBody;
-  /// 検証済み UI スペック（描画の正）。
-  ui_spec: UiSpecDoc;
 };
+
+/// 画面のボタンで起動したワークフロー 1 件（本人の分・#604・codegen）。
+export type MiniAppRun = components["schemas"]["MiniAppRun"];
 
 export async function createMiniApp(name: string, body: MiniAppBody): Promise<MiniAppVersion> {
   return ok<MiniAppVersion>(await apiFetch("/mini-apps", json({ name, body })));
@@ -276,8 +278,8 @@ export class UiActionUncertain extends Error {
 
 /// 会話の閲覧者が押した（ボタンは編集者だけが使える）。
 export class UiActionForbidden extends Error {
-  constructor() {
-    super("この会話は閲覧のみのため、ボタンを使えません");
+  constructor(message = "この会話は閲覧のみのため、ボタンを使えません") {
+    super(message);
     this.name = "UiActionForbidden";
   }
 }
@@ -290,16 +292,48 @@ export class UiActionNotFound extends Error {
   }
 }
 
-export async function invokeMiniAppUiAction(
+/// ミニアプリの画面の ```ui のボタンを実行する（#604）。誤りの投げ分けは会話のボタンと同じ。
+export async function invokeMiniAppYuiAction(
   appId: string,
   version: number,
   actionId: string,
-  params: unknown,
+  values: Record<string, unknown>,
+  idempotencyKey: string,
 ): Promise<UiActionResult> {
-  return ok<UiActionResult>(
-    await apiFetch(
+  let res: Response;
+  try {
+    res = await apiFetch(
       `/mini-apps/${appId}/ui-actions`,
-      json({ version, action_id: actionId, params }),
+      json({ version, action_id: actionId, params: values, idempotency_key: idempotencyKey }),
+    );
+  } catch {
+    throw new UiActionUncertain();
+  }
+  if (res.status >= 500) throw new UiActionUncertain();
+  if (res.status === 409) throw new UiActionAlreadyInvoked();
+  if (res.status === 403) throw new UiActionForbidden("このアプリを使う権限がありません");
+  if (res.status === 404) throw new UiActionNotFound();
+  return ok<UiActionResult>(res);
+}
+
+/// 本人がミニアプリの画面のボタンで起動した記録（新しい 20 件を古い順に）。
+export async function listMiniAppRuns(appId: string): Promise<MiniAppRun[]> {
+  const res = await ok<{ runs: MiniAppRun[] }>(await apiFetch(`/mini-apps/${appId}/runs`));
+  return res.runs;
+}
+
+/// 回答の本文の ```ui app を、そのボタンの実行先ごとミニアプリとして保存する（#604）。
+export async function saveYuiBlockAsApp(
+  threadId: string,
+  messageId: string,
+  block: string,
+  name: string,
+  description?: string,
+): Promise<MiniAppVersion> {
+  return ok<MiniAppVersion>(
+    await apiFetch(
+      `/threads/${threadId}/messages/${messageId}/save-as-app`,
+      json({ block, name, ...(description ? { description } : {}) }),
     ),
   );
 }

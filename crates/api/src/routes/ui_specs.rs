@@ -64,6 +64,7 @@ pub(crate) fn map_gui_err(err: GuiError) -> ApiError {
             ApiError::UnprocessableJson(payload)
         }
         GuiError::Artifact(e) => ApiError::from(e),
+        GuiError::Internal(m) => ApiError::Internal(m),
     }
 }
 

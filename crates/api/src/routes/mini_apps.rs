@@ -1,20 +1,21 @@
-//! ミニアプリ API（Task 6.10）。
+//! ミニアプリ API（Task 6.10・#604）。
 //!
 //! 作成/更新は**作成者の権限**で全ピンを検証し、解決（実行）はミニアプリ本体の viewer のみを
 //! 要求する（部品はバンドル権限チョークポイント経由・部品の個別共有は不要）。
-//! UI アクションは解決済みスペックの宣言束縛に照合して実行する（アンビエント権限なし）。
+//! 画面（Yui の ```ui を含む Markdown）のボタンは、保存済みの版の画面から読み直し、束ねた
+//! ワークフローだけを押した本人の権限で起動する（アンビエント権限なし）。
 
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
-use gui::ActionSource;
+use gui::{MiniAppActionRequest, MiniAppRun};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
-use super::ui_actions::{map_action_err, UiActionResponse};
+use super::ui_actions::{map_yui_action_err, UiActionResponse};
 use super::ui_specs::{map_gui_err, GuiValidationErrorResponse};
 use crate::{
     error::ApiError,
@@ -26,7 +27,7 @@ use crate::{
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateMiniAppRequest {
     pub name: String,
-    /// mini_app body（ui_spec/skill/workflows のバージョンピン）。
+    /// mini_app body（description・screen・skill/workflows のバージョンピン）。
     #[schema(value_type = Object)]
     pub body: serde_json::Value,
 }
@@ -56,9 +57,6 @@ pub struct ResolvedMiniAppResponse {
     pub version: i64,
     #[schema(value_type = Object)]
     pub body: serde_json::Value,
-    /// 検証済み UI スペック（描画の正）。
-    #[schema(value_type = Object)]
-    pub ui_spec: serde_json::Value,
 }
 
 /// resolve クエリ（version 省略時は current）。
@@ -67,16 +65,22 @@ pub struct ResolveQuery {
     pub version: Option<i64>,
 }
 
-/// ミニアプリの UI アクション実行リクエスト。
+/// 本人が画面のボタンで起動した記録。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MiniAppRunsResponse {
+    pub runs: Vec<MiniAppRun>,
+}
+
+/// 回答の本文の ```ui app を「アプリとして保存」するリクエスト。
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct MiniAppActionRequest {
-    /// 実行対象のミニアプリ版（**必須**・解決済み画面の版と一致させる。current 暗黙参照だと
-    /// 画面を開いたまま新版が保存されたとき、別の束縛へ同じ action_id で到達し得る）。
-    pub version: i64,
-    pub action_id: String,
+pub struct SaveYuiAppRequest {
+    /// 保存する図のブロックの識別子（ボタンの id の `:` より前・16 桁）。
+    pub block: String,
+    /// アプリの名前（一覧の名前・テナント内で一意）。
+    pub name: String,
+    /// 説明（画面の見出し）。空なら図の見出しを使う。
     #[serde(default)]
-    #[schema(value_type = Object)]
-    pub params: serde_json::Value,
+    pub description: Option<String>,
 }
 
 /// ミニアプリを作成する（ピン検証 → version 1）。
@@ -182,23 +186,23 @@ pub async fn resolve_mini_app(
         id: resolved.id,
         version: resolved.version,
         body,
-        ui_spec: resolved.ui_spec_json,
     }))
 }
 
-/// ミニアプリの UI アクションを実行する（宣言済み束縛のみ・実行者権限・監査つき）。
+/// ミニアプリの画面のボタンを実行する（画面から読み直し・値の検証・冪等キー・実行者権限・監査つき）。
 #[utoipa::path(
     post,
     path = "/mini-apps/{id}/ui-actions",
     params(("id" = Uuid, Path, description = "ミニアプリ ID")),
     request_body = MiniAppActionRequest,
     responses(
-        (status = 200, description = "実行した", body = UiActionResponse),
-        (status = 400, description = "不正なリクエスト"),
+        (status = 200, description = "実行した（同じ冪等キーの再送は前の結果）", body = UiActionResponse),
+        (status = 400, description = "値の検証エラー・冪等キーが無い"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
-        (status = 404, description = "対象が見つからない（未宣言アクション含む）"),
-        (status = 503, description = "束縛先が無効"),
+        (status = 404, description = "ボタンが見つからない"),
+        (status = 409, description = "同じ送信が起動の途中"),
+        (status = 503, description = "実行先が無効"),
     ),
     security(("session" = [])),
 )]
@@ -209,27 +213,105 @@ pub async fn invoke_mini_app_action(
     Path(id): Path<Uuid>,
     Json(req): Json<MiniAppActionRequest>,
 ) -> Result<Json<UiActionResponse>, ApiError> {
-    // 解決（本体 viewer 認可＋部品のバンドル読み＋再検証）を通った束縛のみが照合対象。
-    let resolved = state
+    let result = state
         .mini_apps
-        .resolve(&ctx, id, Some(req.version), trace.as_deref())
+        .invoke_yui_action(&ctx, &state.ui_actions, id, req, trace.as_deref())
+        .await
+        .map_err(map_yui_action_err)?;
+    Ok(Json(UiActionResponse { result }))
+}
+
+/// 本人がミニアプリの画面のボタンで起動した記録（新しい 20 件を古い順に）。
+#[utoipa::path(
+    get,
+    path = "/mini-apps/{id}/runs",
+    params(("id" = Uuid, Path, description = "ミニアプリ ID")),
+    responses(
+        (status = 200, description = "起動の記録", body = MiniAppRunsResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限がない"),
+        (status = 404, description = "存在しない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn list_mini_app_runs(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+) -> Result<Json<MiniAppRunsResponse>, ApiError> {
+    let runs = state
+        .mini_apps
+        .my_runs(&ctx, id, trace.as_deref())
         .await
         .map_err(map_gui_err)?;
-    let source = ActionSource::MiniApp {
-        artifact_id: resolved.id,
-        version: resolved.version,
-    };
-    let result = state
-        .ui_actions
-        .dispatch(
-            &ctx,
-            &source,
-            &resolved.ui_spec,
-            &req.action_id,
-            req.params,
-            trace.as_deref(),
-        )
+    Ok(Json(MiniAppRunsResponse { runs }))
+}
+
+/// 回答の本文の ```ui app を、そのボタンの実行先ごとミニアプリとして保存する。
+///
+/// 会話を読める人が使える。実行先は回答の確定時に解決した束縛で、保存する人の権限で
+/// ピンを検証し直す（見えないワークフローは束ねられない）。
+#[utoipa::path(
+    post,
+    path = "/threads/{thread_id}/messages/{message_id}/save-as-app",
+    params(
+        ("thread_id" = Uuid, Path, description = "スレッド ID"),
+        ("message_id" = Uuid, Path, description = "メッセージ ID"),
+    ),
+    request_body = SaveYuiAppRequest,
+    responses(
+        (status = 201, description = "保存した", body = MiniAppResponse),
+        (status = 400, description = "検証エラー（全件）", body = GuiValidationErrorResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "会話を読めない"),
+        (status = 404, description = "図が見つからない"),
+        (status = 409, description = "同名が既に存在する"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn save_yui_app(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path((thread_id, message_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<SaveYuiAppRequest>,
+) -> Result<(StatusCode, Json<MiniAppResponse>), ApiError> {
+    let chat = state
+        .chat
+        .as_ref()
+        .ok_or_else(|| ApiError::ServiceUnavailable("チャットが無効です".into()))?;
+    let draft = chat
+        .yui_app_for_saving(&ctx, thread_id, message_id, &req.block, trace.as_deref())
         .await
-        .map_err(map_action_err)?;
-    Ok(Json(UiActionResponse { result }))
+        .map_err(ApiError::from)?
+        .ok_or(ApiError::NotFound)?;
+    let description = req
+        .description
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| draft.title.clone());
+    let body = serde_json::json!({
+        "description": description,
+        // 会話の図は ` ```ui:app ` と見出しだけで書かれることもあるので、種類をフェンスに残す。
+        "screen": format!("```ui:app\n{}\n```\n", draft.source.trim_end()),
+        "workflows": draft.workflows.iter().map(|(alias, id, version)| serde_json::json!({
+            "alias": alias,
+            "artifact_id": id,
+            "version": version,
+        })).collect::<Vec<_>>(),
+    });
+    let (id, _) = state
+        .mini_apps
+        .create(&ctx, req.name.trim(), &body, trace.as_deref())
+        .await
+        .map_err(map_gui_err)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(MiniAppResponse {
+            id,
+            version: 1,
+            body,
+        }),
+    ))
 }

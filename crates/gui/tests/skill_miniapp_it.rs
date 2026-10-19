@@ -1,7 +1,7 @@
 //! skill / ミニアプリの結合テスト（Task 6.7 / 6.10 受け入れ条件）。
 //!
 //! - 実 Postgres（`STORAGE_TEST_DATABASE_URL`）: 作成・新版追記・過去版不変・body 検証・
-//!   kind 不一致拒否・ピン解決。
+//!   kind 不一致拒否・ピン解決・画面のボタンの実行（値の検証・冪等キー・起動の記録・#604）。
 //! - 実 OpenFGA（`OPENFGA_TEST_URL` 併設時のみ）: ロール共有 → **部品を個別共有せずに**
 //!   共有相手がミニアプリを解決できる（バンドル権限）・部品への直接アクセスは依然 403・
 //!   旧版ピンの再現性。
@@ -22,7 +22,10 @@ use authz::{
     AuthContext, AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, Principal,
     ReadTupleKey, Relation, Subject,
 };
-use gui::{GuiError, MiniAppStore, SkillStore, SpecValidator, UiSpecStore};
+use gui::{
+    ActionDispatcher, ActionError, GuiError, MiniAppActionRequest, MiniAppRunStatus, MiniAppStore,
+    SkillStore, WorkflowStarter,
+};
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
@@ -124,16 +127,13 @@ fn unique_tenant() -> String {
 struct Stores {
     artifacts: Arc<ArtifactStore>,
     skills: SkillStore,
-    ui_specs: UiSpecStore,
     mini_apps: MiniAppStore,
 }
 
 fn stores(pool: PgPool, authz: Arc<dyn AuthzClient>) -> Stores {
     let artifacts = Arc::new(ArtifactStore::new(pool.clone(), authz));
-    let validator = Arc::new(SpecValidator::new(Arc::clone(&artifacts), pool.clone()));
     Stores {
         skills: SkillStore::new(Arc::clone(&artifacts)),
-        ui_specs: UiSpecStore::new(Arc::clone(&artifacts), validator),
         mini_apps: MiniAppStore::new(Arc::clone(&artifacts), pool),
         artifacts,
     }
@@ -155,30 +155,12 @@ fn skill_body(label: &str) -> serde_json::Value {
     })
 }
 
-fn button_spec() -> serde_json::Value {
-    // handler（chat.submit）はチャット専用でミニアプリでは保存拒否されるため、
-    // ミニアプリ用フィクスチャは表示専用スペックにする（拒否自体は別途固定する）。
-    json!({
-        "version": 1,
-        "actions": [],
-        "root": {
-            "component": "table", "title": "内容",
-            "columns": [ { "label": "項目" } ],
-            "rows": [ ["経費"] ]
-        }
-    })
-}
-
-/// chat.submit（handler 束縛）つきスペック — ミニアプリでの保存拒否検証用。
-fn chat_submit_spec() -> serde_json::Value {
-    json!({
-        "version": 1,
-        "actions": [ { "type": "handler", "id": "submit", "handler": "chat.submit" } ],
-        "root": {
-            "component": "form", "id": "f1", "submit": { "action": "submit" },
-            "fields": [ { "component": "text_input", "id": "c", "label": "内容" } ]
-        }
-    })
+/// 経費の申請の画面（`expense` ワークフローを起動するボタン）。
+fn expense_screen(title: &str) -> String {
+    format!(
+        "# {title}\n\n```ui\napp 経費の申請\n金額 = number 必須 円 as amount\n\
+         区分 = choice 交通費 | 交際費 as category\nbutton 申請する -> workflow expense\n```\n"
+    )
 }
 
 #[tokio::test]
@@ -272,6 +254,22 @@ async fn skill_create_update_and_immutable_versions() {
         .is_err());
 }
 
+async fn workflow(s: &Stores, c: &AuthContext, name: &str) -> Uuid {
+    s.artifacts
+        .create(
+            c,
+            NewArtifact {
+                kind: ArtifactKind::Workflow,
+                name: name.into(),
+                body: json!({ "rev": 1 }),
+            },
+            None,
+        )
+        .await
+        .expect("wf")
+        .id
+}
+
 #[tokio::test]
 async fn miniapp_pins_validated_and_resolve_rechecks() {
     let Some(pool) = setup().await else { return };
@@ -284,31 +282,14 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
         .create(&c, "app-skill", &skill_body("app"), None)
         .await
         .expect("skill");
-    let (spec_id, _) = s
-        .ui_specs
-        .create(&c, "app-spec", &button_spec(), None)
-        .await
-        .expect("spec");
-    let wf = s
-        .artifacts
-        .create(
-            &c,
-            NewArtifact {
-                kind: ArtifactKind::Workflow,
-                name: "app-wf".into(),
-                body: json!({ "rev": 1 }),
-            },
-            None,
-        )
-        .await
-        .expect("wf");
+    let wf = workflow(&s, &c, "app-wf").await;
 
     // 作成（ピン解決・kind 検査）→ resolve が検証済み一式を返す（6.10 受け入れ条件①）。
     let body = json!({
         "description": "経費精算アプリ",
-        "ui_spec": { "artifact_id": spec_id, "version": 1 },
+        "screen": expense_screen("経費"),
         "skill": { "artifact_id": skill_id, "version": 1 },
-        "workflows": [ { "alias": "approve", "artifact_id": wf.id, "version": 1 } ]
+        "workflows": [ { "alias": "expense", "artifact_id": wf, "version": 1 } ]
     });
     let (app_id, _) = s
         .mini_apps
@@ -321,13 +302,14 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
         .await
         .expect("resolve");
     assert_eq!(resolved.version, 1);
-    assert_eq!(resolved.ui_spec.version, 1);
+    assert!(resolved.body.screen.contains("申請する"));
     assert!(resolved.skill.is_some());
 
     // 存在しないピン・kind 不一致ピンは保存時に拒否される。
     let bad = json!({
         "description": "x",
-        "ui_spec": { "artifact_id": Uuid::new_v4(), "version": 1 }
+        "screen": expense_screen("x"),
+        "workflows": [ { "alias": "expense", "artifact_id": Uuid::new_v4(), "version": 1 } ]
     });
     let err = s
         .mini_apps
@@ -338,44 +320,21 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
         panic!("validation error expected");
     };
     assert!(errors.iter().any(|e| e.code == "miniapp.pin_unresolved"));
-
-    // handler（chat.submit）束縛つき UI スペックはミニアプリでは保存拒否される
-    // （チャット専用・実行時の ChatSubmitHandler 拒否と二重防御）。
-    let (chat_spec_id, _) = s
-        .ui_specs
-        .create(&c, "chat-spec", &chat_submit_spec(), None)
-        .await
-        .expect("chat spec");
-    let handler_app = json!({
+    let wrong_kind = json!({
         "description": "x",
-        "ui_spec": { "artifact_id": chat_spec_id, "version": 1 }
+        "screen": expense_screen("x"),
+        "workflows": [ { "alias": "expense", "artifact_id": skill_id, "version": 1 } ]
     });
-    let err = s
+    assert!(s
         .mini_apps
-        .create(&c, "handler-app", &handler_app, None)
+        .create(&c, "kind-app", &wrong_kind, None)
         .await
-        .expect_err("handler binding must be rejected");
-    let GuiError::Validation(errors) = err else {
-        panic!("validation error expected");
-    };
-    assert!(errors
-        .iter()
-        .any(|e| e.code == "miniapp.handler_not_supported"));
+        .is_err());
 
-    // UI スペックの workflow 束縛がバンドル外なら拒否される（束縛 ⊆ ピン集合）。
-    let wf_spec = json!({
-        "version": 1,
-        "actions": [ { "type": "workflow", "id": "run", "workflow": { "name": "app-wf" } } ],
-        "root": { "component": "button", "label": "実行", "on_click": { "action": "run" } }
-    });
-    let (wf_spec_id, _) = s
-        .ui_specs
-        .create(&c, "wf-spec", &wf_spec, None)
-        .await
-        .expect("wf spec");
+    // 画面のボタンの実行先が束ねたワークフローに無ければ拒否される（実行先 ⊆ ピン集合）。
     let unbundled = json!({
         "description": "x",
-        "ui_spec": { "artifact_id": wf_spec_id, "version": 1 },
+        "screen": expense_screen("x"),
         "workflows": []
     });
     let err = s
@@ -388,7 +347,157 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
     };
     assert!(errors
         .iter()
-        .any(|e| e.code == "miniapp.binding_not_bundled"));
+        .any(|e| e.code == "miniapp.workflow_not_bundled"));
+}
+
+/// 起動口の偽物（呼ばれた回数を数え、毎回新しい run id を返す）。
+#[derive(Default)]
+struct CountingStarter(std::sync::atomic::AtomicUsize);
+
+#[async_trait]
+impl WorkflowStarter for CountingStarter {
+    async fn start_pinned(
+        &self,
+        _ctx: &AuthContext,
+        _workflow_id: Uuid,
+        _version: i64,
+        _input: &serde_json::Value,
+    ) -> Result<Option<Uuid>, ActionError> {
+        unreachable!("ミニアプリはバンドル権限で起動する")
+    }
+
+    async fn start_pinned_via_bundle(
+        &self,
+        _ctx: &AuthContext,
+        _bundle_id: Uuid,
+        _workflow_id: Uuid,
+        _version: i64,
+        input: &serde_json::Value,
+    ) -> Result<Option<Uuid>, ActionError> {
+        // 起動口に届くのは検証後の値だけ（部品に無い key は捨てられる）。
+        assert!(input.get("injected").is_none(), "検証後の値だけが届く");
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Some(Uuid::new_v4()))
+    }
+}
+
+/// 画面のボタン: 画面から読み直し・値の検証・同じ冪等キーは 1 回だけ・起動の記録は本人だけ（#604）。
+#[tokio::test]
+async fn miniapp_buttons_run_once_and_record() {
+    let Some(pool) = setup().await else { return };
+    let s = stores(pool.clone(), Arc::new(AllowAll));
+    let tenant = unique_tenant();
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let wf = workflow(&s, &alice, "expense-wf").await;
+    let body = json!({
+        "description": "経費",
+        "screen": expense_screen("経費"),
+        "workflows": [ { "alias": "expense", "artifact_id": wf, "version": 1 } ]
+    });
+    let (app_id, _) = s
+        .mini_apps
+        .create(&alice, "buttons-app", &body, None)
+        .await
+        .expect("create");
+    let screen = expense_screen("経費");
+    let block = yui::extract_action_blocks(&screen).remove(0).hash;
+    let starter = Arc::new(CountingStarter::default());
+    let mut dispatcher = ActionDispatcher::new(storage::audit::AuditRecorder::new(pool.clone()));
+    dispatcher.set_workflow_starter(starter.clone());
+    let req = |values: serde_json::Value, key: Option<&str>| MiniAppActionRequest {
+        version: 1,
+        action_id: format!("{block}:a1"),
+        params: values.as_object().cloned().unwrap_or_default(),
+        idempotency_key: key.map(str::to_string),
+    };
+
+    // 値の検証（必須の金額が無い）と冪等キーの欠落は起動しない。
+    let err = s
+        .mini_apps
+        .invoke_yui_action(
+            &alice,
+            &dispatcher,
+            app_id,
+            req(json!({}), Some("key-0001")),
+            None,
+        )
+        .await
+        .expect_err("必須の値が無い");
+    assert!(
+        matches!(err, ActionError::Invalid(ref m) if m.contains("金額")),
+        "{err:?}"
+    );
+    let ok_values = json!({ "amount": 1200, "category": "交通費", "injected": true });
+    let err = s
+        .mini_apps
+        .invoke_yui_action(
+            &alice,
+            &dispatcher,
+            app_id,
+            req(ok_values.clone(), None),
+            None,
+        )
+        .await
+        .expect_err("冪等キーが無い");
+    assert!(matches!(err, ActionError::Invalid(_)));
+    // 画面に無いボタンは見つからない。
+    let mut missing = req(ok_values.clone(), Some("key-0002"));
+    missing.action_id = "0000000000000000:a1".into();
+    assert!(matches!(
+        s.mini_apps
+            .invoke_yui_action(&alice, &dispatcher, app_id, missing, None)
+            .await,
+        Err(ActionError::NotFound)
+    ));
+    assert_eq!(starter.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    // 起動し、同じ冪等キーの再送は前の結果を返す（run を増やさない）。
+    let first = s
+        .mini_apps
+        .invoke_yui_action(
+            &alice,
+            &dispatcher,
+            app_id,
+            req(ok_values.clone(), Some("key-0003")),
+            None,
+        )
+        .await
+        .expect("起動");
+    let again = s
+        .mini_apps
+        .invoke_yui_action(
+            &alice,
+            &dispatcher,
+            app_id,
+            req(ok_values.clone(), Some("key-0003")),
+            None,
+        )
+        .await
+        .expect("再送");
+    assert_eq!(again["duplicate"], true);
+    assert_eq!(again["run_id"], first["run_id"]);
+    assert_eq!(starter.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // 記録は押した本人だけ（値の表示つき）。run は workflow_run に無いので「待ち」。
+    let runs = s
+        .mini_apps
+        .my_runs(&alice, app_id, None)
+        .await
+        .expect("runs");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].workflow_name, "expense");
+    assert_eq!(runs[0].status, MiniAppRunStatus::Queued);
+    assert!(runs[0]
+        .values
+        .iter()
+        .any(|v| v.label == "金額" && v.value.contains("1,200")));
+    assert!(s
+        .mini_apps
+        .my_runs(&bob, app_id, None)
+        .await
+        .expect("bob")
+        .is_empty());
 }
 
 /// 実 OpenFGA: ロール共有 → 部品を個別共有せずに共有相手が resolve できる・
@@ -425,14 +534,9 @@ async fn live_fga_bundle_authority_and_version_pinning() {
         .create(&alice, "share-skill", &skill_body("v1"), None)
         .await
         .expect("skill");
-    let (spec_id, _) = s
-        .ui_specs
-        .create(&alice, "share-spec", &button_spec(), None)
-        .await
-        .expect("spec");
     let body_v1 = json!({
         "description": "v1 アプリ",
-        "ui_spec": { "artifact_id": spec_id, "version": 1 },
+        "screen": "# 項目\n",
         "skill": { "artifact_id": skill_id, "version": 1 },
         "workflows": []
     });
@@ -441,15 +545,9 @@ async fn live_fga_bundle_authority_and_version_pinning() {
         .create(&alice, "share-app", &body_v1, None)
         .await
         .expect("create");
-    let mut spec_v2 = button_spec();
-    spec_v2["root"]["columns"][0]["label"] = json!("感想");
-    s.ui_specs
-        .update(&alice, spec_id, &spec_v2, Some(1), None)
-        .await
-        .expect("spec v2");
     let body_v2 = json!({
         "description": "v2 アプリ",
-        "ui_spec": { "artifact_id": spec_id, "version": 2 },
+        "screen": "# 感想\n",
         "skill": { "artifact_id": skill_id, "version": 1 },
         "workflows": []
     });
@@ -505,28 +603,21 @@ async fn live_fga_bundle_authority_and_version_pinning() {
         .await
         .expect("bob resolve");
     assert_eq!(resolved.version, 2);
-    assert_eq!(
-        resolved.ui_spec_json["root"]["columns"][0]["label"], "感想",
-        "current は v2 の ui_spec"
-    );
+    assert_eq!(resolved.body.screen, "# 感想\n", "current は v2 の画面");
     assert!(resolved.skill.is_some(), "skill もバンドル権限で読める");
 
-    // 旧版ピンの resolve は旧 ui_spec を返す（再現性・6.10 受け入れ条件①）。
+    // 旧版ピンの resolve は旧画面を返す（再現性・6.10 受け入れ条件①）。
     let resolved_v1 = s
         .mini_apps
         .resolve(&bob, app_id, Some(1), None)
         .await
         .expect("bob resolve v1");
     assert_eq!(
-        resolved_v1.ui_spec_json["root"]["columns"][0]["label"], "項目",
-        "旧版ピンは旧 ui_spec のまま"
+        resolved_v1.body.screen, "# 項目\n",
+        "旧版ピンは旧画面のまま"
     );
 
     // 部品への**直接**アクセスは依然 403（バンドル越しのみ・アンビエント権限なし）。
-    assert!(matches!(
-        s.ui_specs.get_latest(&bob, spec_id, None).await,
-        Err(GuiError::Artifact(ArtifactError::Forbidden))
-    ));
     assert!(matches!(
         s.skills.get_latest(&bob, skill_id, None).await,
         Err(GuiError::Artifact(ArtifactError::Forbidden))
@@ -541,10 +632,7 @@ async fn live_fga_bundle_authority_and_version_pinning() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(
-        via_bundle >= 2,
-        "ui_spec と skill のバンドル読みが監査に残る"
-    );
+    assert!(via_bundle >= 1, "skill のバンドル読みが監査に残る");
     let resolves: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_log \
          WHERE tenant_id = $1 AND action = 'miniapp.resolve' AND actor = 'bob'",

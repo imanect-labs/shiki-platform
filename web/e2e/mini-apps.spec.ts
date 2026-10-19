@@ -2,13 +2,14 @@ import { test, expect, type Page } from "@playwright/test";
 
 import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
 
-/// ミニアプリ（Phase 6 Task 6.10/6.11）の E2E。
-/// UI スペックはチャット生成経由が本流だが、E2E では保存 API（/ui-specs・保存時検証つき）で
-/// 直接作り、①UI からアプリを作成 ②実行画面で描画 ③**本体だけ共有した相手が実行できる**
-/// （バンドル権限・部品の個別共有なし）を実ブラウザで検証する。
+/// ミニアプリ（Phase 6 Task 6.10/6.11・#604）の E2E。
+/// 画面は Yui の ```ui を含む Markdown で、ボタンは束ねたワークフローを押した本人の権限で起動する。
+/// ①UI からアプリを作成（画面の雛形・プレビュー）②実行画面で入力 → 起動 → 起動の記録が成功まで進む
+/// ③**本体だけ共有した相手**が部品の個別共有なしで使え、記録は本人の分だけ見える
+/// ④会話の ```ui app を「アプリとして保存」してそのまま使える、を実ブラウザで検証する。
 
 /// ログイン済みページのセッションで backend API を叩く（CSRF 二重送信つき）。
-async function apiPost(page: Page, path: string, body: unknown): Promise<unknown> {
+async function apiPost(page: Page, path: string, body: unknown): Promise<{ id: string }> {
   const cookies = await page.context().cookies();
   const csrf = cookies.find((c) => c.name === "shiki_csrf")?.value ?? "";
   const res = await page.request.post(`/api${path}`, {
@@ -19,68 +20,142 @@ async function apiPost(page: Page, path: string, body: unknown): Promise<unknown
   return res.json();
 }
 
-test.describe("ミニアプリ（作成・実行・バンドル権限の共有）", () => {
-  test("作成 → 実行画面で描画 → 共有相手が部品の個別共有なしで実行できる", async ({
-    page,
-    browser,
-  }) => {
-    await loginViaKeycloak(page);
-
-    // ① UI スペックを保存 API で作成（表示専用テーブル・保存時検証を通る）。
-    const specName = uniqueName("e2e-spec");
-    await apiPost(page, "/ui-specs", {
-      name: specName,
-      spec: {
-        version: 1,
-        root: {
-          component: "table",
-          title: "月次サマリ",
-          columns: [{ label: "項目" }, { label: "値", align: "right" }],
-          rows: [
-            ["売上", 120],
-            ["経費", 45],
-          ],
+/// 手動実行のワークフロー（最小の IR）を作る。
+async function createFlow(page: Page, name: string) {
+  await apiPost(page, "/workflows", {
+    ir: {
+      ir_version: 1,
+      name,
+      display_name: name,
+      triggers: [{ kind: "interactive" }],
+      nodes: [
+        {
+          id: "compute",
+          type: "script.run",
+          label: "計算する",
+          params: { source: { inline: "function main(i){ return { ok: true }; }" } },
         },
-      },
-    });
+      ],
+      edges: [],
+    },
+  });
+}
 
-    // ② UI からアプリを作成（UI スペックを選んで束ねる）。
+/// 画面の図に入力して「申請する」→ 確認 → 起動し、記録が成功になるまで待つ。
+async function apply(page: Page, amount: string) {
+  const figure = page.getByTestId("ui-figure");
+  await expect(figure.getByRole("button", { name: "申請する" })).toBeEnabled({ timeout: 15_000 });
+  await figure.getByLabel("金額").fill(amount);
+  await figure.getByRole("radio", { name: "交通費" }).click();
+  await figure.getByRole("button", { name: "申請する" }).click();
+  await figure.getByRole("group", { name: "実行の確認" }).getByRole("button", { name: "実行する" }).click();
+  await expect(figure.getByText(/を起動しました/)).toBeVisible({ timeout: 30_000 });
+}
+
+test.describe("ミニアプリ（画面の作成・実行・バンドル権限の共有）", () => {
+  test("作成 → ボタンで起動 → 共有相手も使え、記録は本人の分だけ", async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    await loginViaKeycloak(page);
+    const flow = uniqueName("app-flow");
+    await createFlow(page, flow);
+
+    // ① UI からアプリを作成（ワークフローを選ぶと画面の雛形が入る）。
     await page.goto("/apps");
-    // 一覧が空のときは空状態にも同名の作成ボタンが出るため先頭（見出し行）を押す。
     await page.getByRole("button", { name: "アプリを作成" }).first().click();
     const dialog = page.getByRole("dialog");
     const appName = uniqueName("e2e-app");
     await dialog.getByLabel(/名前/).fill(appName);
-    await dialog.getByLabel(/説明/).fill("E2E 検証用アプリ");
-    await dialog.getByLabel(/UI スペック/).selectOption({ label: `${specName}（v1）` });
+    await dialog.getByLabel(/画面の見出し/).fill("経費の申請");
+    await dialog.getByLabel("追加するワークフロー").selectOption({ label: `${flow}（v1）` });
+    await dialog.getByRole("button", { name: "追加" }).click();
+    await expect(dialog.getByRole("textbox", { name: /^画面\*?$/ })).toHaveValue(new RegExp(`-> workflow ${flow}`));
+    // プレビューで図になる（ボタンは保存前なので押せない）。
+    await dialog.getByRole("tab", { name: "プレビュー" }).click();
+    await expect(dialog.getByTestId("miniapp-preview").getByTestId("ui-figure")).toHaveAttribute(
+      "data-ui-kind",
+      "app",
+    );
     await dialog.getByRole("button", { name: "作成" }).click();
 
-    // 一覧に現れ、実行画面でテーブルが描画される。
+    // 一覧から実行画面を開く。
     const card = page.locator("li", { has: page.getByRole("heading", { name: appName }) });
     await expect(card).toBeVisible({ timeout: 15_000 });
     await card.getByRole("link", { name: "開く" }).click();
     await page.waitForURL(/\/apps\/[0-9a-f-]+/i, { timeout: 15_000 });
-    await expect(page.getByTestId("genui-table")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText("月次サマリ")).toBeVisible();
     const appUrl = page.url();
 
-    // ③ アプリ**本体だけ**を bob に共有する（UI スペックは共有しない）。
+    // ② 入力して起動 → 記録が成功まで進む（押した本人の権限で起動）。
+    await apply(page, "1200");
+    const runs = page.getByTestId("yui-runs");
+    await expect(runs).toContainText(`申請する → ${flow}`);
+    await expect(runs).toContainText("金額: 1,200円");
+    await expect(runs.locator("li").first()).toHaveAttribute("data-status", "succeeded", {
+      timeout: 60_000,
+    });
+
+    // ③ アプリ**本体だけ**を bob に共有する（ワークフローは共有しない）。
     await page.getByRole("button", { name: "共有" }).click();
     await page.getByPlaceholder("名前・メールで検索").fill("bob");
     const bobRow = page.getByRole("dialog").locator("li", { hasText: "bob" }).first();
     await bobRow.getByRole("button", { name: "共有" }).click();
     await expect(page.getByRole("dialog").getByText("共有中の相手")).toBeVisible();
 
-    // ④ bob が実行画面を開ける（部品はバンドル権限で読まれる・Task 6.10 受け入れ条件）。
     const bobContext = await browser.newContext();
     const bobPage = await bobContext.newPage();
     try {
       await loginAs(bobPage, "bob");
       await bobPage.goto(appUrl);
-      await expect(bobPage.getByTestId("genui-table")).toBeVisible({ timeout: 15_000 });
-      await expect(bobPage.getByText("月次サマリ")).toBeVisible();
+      // alice の記録（入力値）は見えない。
+      await expect(bobPage.getByTestId("ui-figure")).toBeVisible({ timeout: 15_000 });
+      await expect(bobPage.getByTestId("yui-runs")).toHaveCount(0);
+      // bob も部品の個別共有なしで起動できる（IR はバンドル権限で読む）。
+      await apply(bobPage, "800");
+      await expect(bobPage.getByTestId("yui-runs").locator("li")).toHaveCount(1);
+      await expect(bobPage.getByTestId("yui-runs")).toContainText("金額: 800円");
+      // 編集は持ち主だけ。
+      await expect(bobPage.getByRole("button", { name: "編集" })).toHaveCount(0);
     } finally {
       await bobContext.close();
     }
+  });
+
+  test("会話の ```ui app を「アプリとして保存」して、そのまま使える", async ({ page }) => {
+    test.setTimeout(180_000);
+    await loginViaKeycloak(page);
+    const flow = uniqueName("saved-flow");
+    await createFlow(page, flow);
+
+    // 会話に送るボタンを含む app は保存できない（ボタンを出さない）。
+    await page.goto("/");
+    await page.getByLabel("メッセージを入力").fill(`yui:app ${flow}`);
+    await page.getByRole("button", { name: "送信" }).click();
+    await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 30_000 });
+    const mixed = page.getByTestId("ui-figure");
+    await expect(mixed.getByRole("button", { name: "申請する" })).toBeEnabled({ timeout: 30_000 });
+    await expect(mixed.getByRole("button", { name: "アプリとして保存" })).toHaveCount(0);
+
+    // ワークフローのボタンだけの app は保存できる。
+    await page.goto("/");
+    await page.getByLabel("メッセージを入力").fill(`yui:form ${flow}`);
+    await page.getByRole("button", { name: "送信" }).click();
+    await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 30_000 });
+    const figure = page.getByTestId("ui-figure");
+    const save = figure.getByRole("button", { name: "アプリとして保存" });
+    await expect(save).toBeVisible({ timeout: 30_000 });
+    await save.click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByLabel(/画面の見出し/)).toHaveValue("経費の申請");
+    const appName = uniqueName("saved-app");
+    await dialog.getByLabel(/名前/).fill(appName);
+    await dialog.getByRole("button", { name: "保存" }).click();
+
+    // 保存したアプリの画面へ移り、同じ図のボタンで起動できる。
+    await page.waitForURL(/\/apps\/[0-9a-f-]+/i, { timeout: 30_000 });
+    await apply(page, "500");
+    await expect(page.getByTestId("yui-runs").locator("li").first()).toHaveAttribute(
+      "data-status",
+      "succeeded",
+      { timeout: 60_000 },
+    );
   });
 });
