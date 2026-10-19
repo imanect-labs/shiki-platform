@@ -13,7 +13,7 @@ use axum::response::IntoResponse;
 use axum::Router;
 use futures::stream::StreamExt;
 
-use llm_gateway::model::{GenerateRequest, Message, Role, StopReason, StreamDelta};
+use llm_gateway::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef};
 use llm_gateway::provider::{LlmError, LlmProvider};
 use llm_gateway::providers::openai::OpenAiProvider;
 
@@ -195,6 +195,70 @@ async fn openai_think_tags_pass_through_for_models_not_flagged() {
     assert_eq!(collect(&deltas, false), "<think>考え中</think>\n\n答えは2");
 }
 
+/// Gemini API の OpenAI 互換口（Gemma 4）が返す形（2026-10-19 に実測した応答を縮めたもの）。
+/// 思考は本文の `<thought>`、ツール呼び出しに `index` が無く `extra_content` に
+/// `thought_signature` が付き、ツールを呼んでも `finish_reason` は `stop`。
+const SSE_GEMINI: &str = concat!(
+    "data: {\"choices\":[{\"delta\":{\"content\":\"<thought>天気を調べる\",\"extra_content\":{\"google\":{\"thought\":true}},\"role\":\"assistant\"},\"index\":0}]}\n",
+    "data: {\"choices\":[{\"delta\":{\"content\":\"</thought>\",\"role\":\"assistant\",\"tool_calls\":[",
+    "{\"extra_content\":{\"google\":{\"thought_signature\":\"c2lnLTE=\"}},\"function\":{\"arguments\":\"{\\\"city\\\":\\\"東京\\\"}\",\"name\":\"get_weather\"},\"id\":\"call_1\",\"type\":\"function\"},",
+    "{\"function\":{\"arguments\":\"{\\\"city\\\":\\\"大阪\\\"}\",\"name\":\"get_weather\"},\"id\":\"call_2\",\"type\":\"function\"}",
+    "]},\"index\":0}]}\n",
+    "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"index\":0}],\"usage\":{\"completion_tokens\":16,\"prompt_tokens\":44,\"total_tokens\":101}}\n",
+    "data: [DONE]\n",
+);
+
+#[tokio::test]
+async fn openai_gemini_shaped_stream_runs_tools_and_keeps_signatures() {
+    let base = spawn_mock(StatusCode::OK, SSE_GEMINI).await;
+    let provider = OpenAiProvider::new(reqwest::Client::new(), base, None, "gemma")
+        .with_think_tag_models(["gemma".to_string()]);
+    let req = GenerateRequest::new(vec![Message::text(Role::User, "天気")]);
+    let deltas = drain(&provider, &req).await;
+
+    assert_eq!(collect(&deltas, true), "天気を調べる");
+    assert_eq!(collect(&deltas, false), "");
+    // index が無くても 2 つの呼び出しが混ざらない。
+    let stops: Vec<(String, String)> = deltas
+        .iter()
+        .filter_map(|d| match d {
+            StreamDelta::ToolUseStop { id, input } => {
+                Some((id.clone(), input["city"].as_str()?.to_string()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        stops,
+        [
+            ("call_1".to_string(), "東京".to_string()),
+            ("call_2".to_string(), "大阪".to_string())
+        ]
+    );
+    // 署名は付いてきた呼び出しの分だけ、送り返せる形で残る。
+    let items: Vec<&serde_json::Value> = deltas
+        .iter()
+        .filter_map(|d| match d {
+            StreamDelta::ReasoningItem { item, .. } => Some(item),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["tool_call_id"], "call_1");
+    assert_eq!(
+        items[0]["extra_content"]["google"]["thought_signature"],
+        "c2lnLTE="
+    );
+    // finish_reason は stop でも、呼び出しがあるのでツールのターンになる。
+    assert!(matches!(
+        deltas.last(),
+        Some(StreamDelta::Done {
+            stop_reason: StopReason::ToolUse,
+            ..
+        })
+    ));
+}
+
 /// 本文（false）か思考（true）のデルタをつなげる。
 fn collect(deltas: &[StreamDelta], thinking: bool) -> String {
     deltas
@@ -247,4 +311,101 @@ async fn openai_live_round_trip() {
     assert!(
         matches!(deltas.last(), Some(StreamDelta::Done { usage, .. }) if usage.prompt_tokens > 0)
     );
+}
+
+/// 実エンドポイントでツールを 1 往復させる（`OPENAI_TEST_URL` が無ければ黙ってスキップ）。
+///
+/// 署名を送り返さないと 2 往復目で落ちるプロバイダ（Gemini API の OpenAI 互換口の Gemma 4）を
+/// 確かめる。例: `OPENAI_TEST_URL=https://generativelanguage.googleapis.com/v1beta/openai`
+///     `OPENAI_TEST_MODEL=gemma-4-31b-it` `OPENAI_TEST_KEY=<キー>`
+#[tokio::test]
+async fn openai_live_tool_round_trip() {
+    let Ok(base) = std::env::var("OPENAI_TEST_URL") else {
+        return;
+    };
+    let model = std::env::var("OPENAI_TEST_MODEL").unwrap_or_else(|_| "m".into());
+    let provider = OpenAiProvider::new(
+        reqwest::Client::new(),
+        base,
+        std::env::var("OPENAI_TEST_KEY").ok(),
+        model.clone(),
+    )
+    .with_think_tag_models([model])
+    .with_user_agent(Some("shiki-it/1.0"))
+    .unwrap()
+    .with_session_header(std::env::var("OPENAI_TEST_SESSION_HEADER").ok().as_deref())
+    .unwrap();
+    let tool = ToolDef::new(
+        "weather.get",
+        "都市の今日の天気を返す",
+        serde_json::json!({
+            "type": "object",
+            "properties": { "city": { "type": "string" } },
+            "required": ["city"],
+        }),
+    );
+    let mut req = GenerateRequest::new(vec![Message::text(
+        Role::User,
+        "weather.get で東京の天気を調べて、一文で答えて",
+    )]);
+    req.tools = vec![tool];
+    req.session_id = Some(format!("shiki-it-{}", uuid::Uuid::new_v4()));
+    req.max_tokens = Some(2000);
+
+    let first = drain(&provider, &req).await;
+    assert!(
+        matches!(
+            first.last(),
+            Some(StreamDelta::Done {
+                stop_reason: StopReason::ToolUse,
+                ..
+            })
+        ),
+        "{first:?}"
+    );
+    // エージェントが積むのと同じ形で履歴を作る（推論アイテム → 呼び出し）。
+    let mut assistant = Vec::new();
+    let mut results = Vec::new();
+    let mut names = std::collections::HashMap::new();
+    for d in &first {
+        match d {
+            StreamDelta::ToolUseStart { id, name } => {
+                names.insert(id.clone(), name.clone());
+            }
+            StreamDelta::ReasoningItem { provider, item } => assistant.push(Block::Reasoning {
+                provider: provider.clone(),
+                item: item.clone(),
+            }),
+            StreamDelta::ToolUseStop { id, input } => {
+                assistant.push(Block::ToolUse {
+                    id: id.clone(),
+                    name: names[id].clone(),
+                    input: input.clone(),
+                });
+                results.push(Block::tool_result(
+                    id.clone(),
+                    "晴れ、最高気温 22 度",
+                    false,
+                ));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        names.values().next().map(String::as_str),
+        Some("weather.get")
+    );
+    req.messages.push(Message {
+        role: Role::Assistant,
+        content: assistant,
+    });
+    req.messages.push(Message {
+        role: Role::Tool,
+        content: results,
+    });
+
+    let second = drain(&provider, &req).await;
+    let text = collect(&second, false);
+    assert!(text.contains("22"), "answer: {text}");
+    assert!(!text.contains("<thought>"), "answer: {text}");
 }

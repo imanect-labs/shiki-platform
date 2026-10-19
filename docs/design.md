@@ -475,10 +475,14 @@ flowchart LR
   既定プロバイダ（`llm.backend` 等の単一設定）は `llm.display_name` で、管理コンソールとユーザーのモデル選択の
   プロバイダ見出しに使う（省略時はプロバイダ ID。既定プロバイダは `default`・#583）。
   **本文に思考を混ぜるモデル**: 思考を `reasoning_content` ではなく本文の先頭に `<think>…</think>` で返すモデル
-  （MiniMax M3 等）は、カタログで `reasoning_in_content = true` にする。Chat Completions アダプタは、そのプロバイダへ
+  （MiniMax M3 等。Gemini API の OpenAI 互換口の Gemma 4 は `<thought>…</thought>`・#743）は、カタログで `reasoning_in_content = true` にする。Chat Completions アダプタは、そのプロバイダへ
   送る実モデル ID（`real_id`、省略時は `id`）単位で本文先頭のタグを思考ブロックへ振り分ける。同じプロバイダで
   同じ実モデル ID を指す別のエントリにも効く。既定は false（`<think>` を正規に出力させる用途で、回答を思考と
   取り違えて消さないため・#584）。
+  **ツール呼び出しの付帯情報**: Chat Completions のツール呼び出しに付いてくるプロバイダ固有の `extra_content`
+  （Gemini API の `thought_signature`。送り返さないと次のターンが 500）は不透明な推論ブロックとして履歴に持ち、
+  次のターンで同じ呼び出しへ付けて返す。ツールを呼んだのに `finish_reason: "stop"` を返すプロバイダ（同）は、
+  呼び出しがあればツールのターンとして扱う（#743）。
 - **思考強度の正規化**: `effort: low/medium/high` を内部正規形に持ち、各アダプタが reasoning budget /
   thinking tokens に翻訳。UI は3段階セレクタのみ（プロバイダ固有ノブは晒さない）。
 - `LlmProvider` トレイト実装そのもの。別プロセス化しない（ホップ0、部品削減）。外部クライアント向け API も同一プロセスで公開し、別サービス化は §4.1.1 の条件（3 つ目の消費者）で再検討する。

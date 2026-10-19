@@ -5,7 +5,7 @@
 //! 逐次ストリーミングは Phase 3 では不要のため、各ツール呼び出しは累積して完了時に
 //! [`StreamDelta::ToolUseStop`]（完全な入力 JSON）を 1 回出す。
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use futures::channel::mpsc;
 use futures::stream::StreamExt;
@@ -160,15 +160,22 @@ fn to_openai_messages(m: &Message, names: &ToolNameMap, known: &HashSet<&str>) -
         })],
         Role::Assistant => {
             let text = join_text(&m.content);
+            let extras = extra_contents(&m.content);
             let tool_calls: Vec<Value> = m
                 .content
                 .iter()
                 .filter_map(|b| match b {
-                    Block::ToolUse { id, name, input } => Some(json!({
-                        "id": id,
-                        "type": "function",
-                        "function": { "name": names.wire(name), "arguments": input.to_string() },
-                    })),
+                    Block::ToolUse { id, name, input } => {
+                        let mut call = json!({
+                            "id": id,
+                            "type": "function",
+                            "function": { "name": names.wire(name), "arguments": input.to_string() },
+                        });
+                        if let Some(extra) = extras.get(id.as_str()) {
+                            call["extra_content"] = (*extra).clone();
+                        }
+                        Some(call)
+                    }
                     _ => None,
                 })
                 .collect();
@@ -201,6 +208,20 @@ pub(super) fn tool_message_content(
     with_loaded_note(content, &loaded)
 }
 
+/// 履歴のツール呼び出し ID → 受け取ったときの `extra_content`。
+fn extra_contents(blocks: &[Block]) -> HashMap<&str, &Value> {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Reasoning { provider, item } if provider == EXTRA_CONTENT_PROVIDER => Some((
+                item.get("tool_call_id")?.as_str()?,
+                item.get("extra_content")?,
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 fn join_text(blocks: &[Block]) -> String {
     blocks
         .iter()
@@ -216,6 +237,8 @@ fn join_text(blocks: &[Block]) -> String {
 #[derive(Default)]
 struct ToolAcc {
     calls: BTreeMap<i64, (String, String, String)>,
+    /// 呼び出し ID → プロバイダ固有の `extra_content`（届いたものだけ）。
+    extras: BTreeMap<String, Value>,
 }
 
 impl ToolAcc {
@@ -224,12 +247,17 @@ impl ToolAcc {
             return;
         };
         for tc in arr {
-            let idx = tc.get("index").and_then(Value::as_i64).unwrap_or(0);
+            let id = tc
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty());
+            let idx = self.index_of(tc, id);
+            if let (Some(id), Some(extra)) = (id, tc.get("extra_content")) {
+                self.extras.insert(id.to_string(), extra.clone());
+            }
             let entry = self.calls.entry(idx).or_default();
-            if let Some(id) = tc.get("id").and_then(Value::as_str) {
-                if !id.is_empty() {
-                    entry.0 = id.to_string();
-                }
+            if let Some(id) = id {
+                entry.0 = id.to_string();
             }
             if let Some(f) = tc.get("function") {
                 if let Some(name) = f.get("name").and_then(Value::as_str) {
@@ -242,6 +270,35 @@ impl ToolAcc {
                 }
             }
         }
+    }
+
+    /// 差分の行き先。`index` が無い（Gemini API は各呼び出しを 1 チャンクで丸ごと送り、
+    /// `index` を付けない）ときは、新しい ID なら新しい枠、ID が無ければ直前の枠にする。
+    /// 全部 0 に寄せると、並行の呼び出しが 1 つに混ざる。
+    fn index_of(&self, tc: &Value, id: Option<&str>) -> i64 {
+        if let Some(idx) = tc.get("index").and_then(Value::as_i64) {
+            return idx;
+        }
+        let last = self.calls.keys().next_back().copied();
+        match id {
+            Some(id) => self
+                .calls
+                .iter()
+                .find(|(_, (known, _, _))| known == id)
+                .map_or_else(|| last.map_or(0, |l| l + 1), |(idx, _)| *idx),
+            None => last.unwrap_or(0),
+        }
+    }
+
+    /// 呼び出しに付いてきた `extra_content` を、送り返すための推論アイテムにする。
+    fn drain_extras(&mut self) -> Vec<StreamDelta> {
+        std::mem::take(&mut self.extras)
+            .into_iter()
+            .map(|(id, extra)| StreamDelta::ReasoningItem {
+                provider: EXTRA_CONTENT_PROVIDER.to_string(),
+                item: json!({ "tool_call_id": id, "extra_content": extra }),
+            })
+            .collect()
     }
 
     /// 完了イベント（ToolUseStop 列）へ落とす。
@@ -276,6 +333,11 @@ fn piece_delta(piece: Piece) -> StreamDelta {
         Piece::Thinking(text) => StreamDelta::ThinkingDelta { text },
     }
 }
+
+/// [`Block::Reasoning`] の `provider`。ツール呼び出しに付いてきたプロバイダ固有の
+/// `extra_content`（Gemini API の `thought_signature` 等）を、次のターンで同じ呼び出しへ
+/// 付けて送り返すためだけに持つ。
+const EXTRA_CONTENT_PROVIDER: &str = "openai_chat.extra_content";
 
 fn map_finish_reason(fr: Option<&str>) -> StopReason {
     match fr {
@@ -409,7 +471,16 @@ impl LlmProvider for OpenAiProvider {
             {
                 let _ = tx.unbounded_send(Ok(piece_delta(piece)));
             }
-            for s in acc.drain_stops() {
+            for s in acc.drain_extras() {
+                let _ = tx.unbounded_send(Ok(s));
+            }
+            let stops = acc.drain_stops();
+            // Gemini API はツールを呼んでも `finish_reason: "stop"` を返す。呼び出しがあるのに
+            // EndTurn で返すと、エージェントがツールを実行せずに終わる。
+            if !stops.is_empty() && stop == StopReason::EndTurn {
+                stop = StopReason::ToolUse;
+            }
+            for s in stops {
                 let _ = tx.unbounded_send(Ok(s));
             }
             let _ = tx.unbounded_send(Ok(StreamDelta::Done {
@@ -459,6 +530,43 @@ mod tests {
         };
         let out = to_openai_messages(&m, &names, &HashSet::new());
         assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "document_edit");
+    }
+
+    #[test]
+    fn extra_content_goes_back_on_the_same_tool_call() {
+        // Gemini API は thought_signature を送り返さないと次のターンを 500 で落とす。
+        let m = Message {
+            role: Role::Assistant,
+            content: vec![
+                Block::Reasoning {
+                    provider: EXTRA_CONTENT_PROVIDER.into(),
+                    item: json!({"tool_call_id": "t2", "extra_content": {"google": {"thought_signature": "s"}}}),
+                },
+                Block::ToolUse {
+                    id: "t1".into(),
+                    name: "a".into(),
+                    input: json!({}),
+                },
+                Block::ToolUse {
+                    id: "t2".into(),
+                    name: "a".into(),
+                    input: json!({}),
+                },
+                // 他のアダプタの推論アイテムは送らない。
+                Block::Reasoning {
+                    provider: "openai_responses".into(),
+                    item: json!({"tool_call_id": "t1", "extra_content": {"x": 1}}),
+                },
+            ],
+        };
+        let names = ToolNameMap::new(["a"].into_iter());
+        let out = to_openai_messages(&m, &names, &HashSet::new());
+        let calls = out[0]["tool_calls"].as_array().unwrap();
+        assert!(calls[0].get("extra_content").is_none());
+        assert_eq!(
+            calls[1]["extra_content"]["google"]["thought_signature"],
+            "s"
+        );
     }
 
     #[test]
