@@ -90,8 +90,18 @@ export type Message = {
   /// このメッセージで実行済みの単発 UI アクション id（#410）。
   /// 質問カード・計画カードの「送信済み」表示の根拠（ローカル state では再描画で消える）。
   invokedActions?: string[];
+  /// 本文の図（```ui）のワークフローのボタンのうち、押せるもの（回答の確定時に束縛を解決できたもの）の id（#604）。
+  boundActions?: string[];
+  /// 本文の図のボタンで起動したワークフローの記録（押した順・メッセージごとに新しい 20 件まで）。
+  uiRuns?: UiActionRun[];
+  /// 生成直後に画面で確定した仮のメッセージ（id はサーバーのものではない）。読み直すまで図のボタンは押せない。
+  /// `reloading` はすぐ読み直す（生成の完了）、`stopped` は読み直さない（生成の停止）。
+  provisional?: "reloading" | "stopped";
   createdAt: string;
 };
+
+/// 本文の図のボタンで起動したワークフロー 1 件（#604・codegen）。
+export type UiActionRun = components["schemas"]["UiActionRun"];
 
 export type Attachment = { node_id: string; name: string };
 export type Citation = Extract<ContentBlock, { type: "citation" }>;
@@ -354,6 +364,8 @@ export async function getThreadMessages(
       content: m.content,
       agentMode: m.agent_mode,
       invokedActions: m.invoked_actions ?? [],
+      boundActions: m.bound_actions ?? [],
+      uiRuns: m.ui_runs ?? [],
       createdAt: m.created_at,
     })),
     activeRunId: data.active_run_id ?? null,
