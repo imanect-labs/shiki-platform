@@ -192,6 +192,8 @@ impl ChatWorker {
         tools.push(Arc::new(FsListTool::new(workspace.clone())));
         tools.push(Arc::new(FsReadTool::new(workspace.clone())));
         tools.push(Arc::new(GrepTool::new(workspace.clone())));
+        // 引用の実在照合（#409）: レポートの引用が証拠台帳にあるかを機械で確かめる。
+        tools.push(Arc::new(agent_core::QuoteCheckTool::new(workspace.clone())));
         tools.push(Arc::new(FsWriteTool::new(workspace.clone())));
         // 追記（#392）: 証拠台帳のような append-only メモを全文再送なしに伸ばす。
         tools.push(Arc::new(FsAppendTool::new(workspace.clone())));
@@ -225,12 +227,14 @@ impl ChatWorker {
         cancel: Arc<std::sync::atomic::AtomicBool>,
     ) {
         /// 子が使えるツール（調査に必要な読み取りだけ）。ここに破壊系を足さないこと。
-        const CHILD_TOOLS: [agent_core::ToolName; 7] = [
+        const CHILD_TOOLS: [agent_core::ToolName; 8] = [
             agent_core::ToolName::WebSearch,
             agent_core::ToolName::WebFetch,
             agent_core::ToolName::DocSearch,
             agent_core::ToolName::DocRead,
             agent_core::ToolName::FsRead,
+            // 検証ロールが最初に引用の実在を機械で確かめる（#409）。
+            agent_core::ToolName::QuoteCheck,
             agent_core::ToolName::Grep,
             agent_core::ToolName::FsList,
         ];
