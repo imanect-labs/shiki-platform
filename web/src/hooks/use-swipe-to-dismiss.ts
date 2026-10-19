@@ -17,6 +17,8 @@ const HANDLE_ZONE = 44;
 const START_SLOP = 8;
 const CLOSE_DISTANCE = 140;
 const CLOSE_VELOCITY = 0.55; // px/ms
+/// 最後の動きからこれ以上止まってから離したら、払った勢いは無かったものとする。
+const FLICK_STALE_MS = 100;
 const NO_SWIPE = 'input, textarea, select, [contenteditable="true"], [role="slider"], [data-no-swipe]';
 
 export function useSwipeToDismiss<T extends HTMLElement>({
@@ -28,9 +30,12 @@ export function useSwipeToDismiss<T extends HTMLElement>({
   close: () => void;
 }): React.RefCallback<T> {
   const closeRef = React.useRef(close);
-  closeRef.current = close;
   const enabledRef = React.useRef(enabled);
-  enabledRef.current = enabled;
+  // タッチはコミット後にしか来ないので、最新の値はコミット後に写せば足りる。
+  React.useLayoutEffect(() => {
+    closeRef.current = close;
+    enabledRef.current = enabled;
+  });
   const cleanupRef = React.useRef<(() => void) | null>(null);
 
   return React.useCallback((node: T | null) => {
@@ -46,20 +51,22 @@ export function useSwipeToDismiss<T extends HTMLElement>({
     let tracking = false;
     let dragging = false;
     let fromHandle = false;
-    let scroller: HTMLElement | null = null;
+    let scrollers: HTMLElement[] = [];
 
     const reduceMotion = () =>
       typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    // 指の下からシート本体までで、縦にスクロールできる最も近い要素。
-    const findScroller = (from: Element | null): HTMLElement | null => {
-      for (let el = from; el && el !== node.parentElement; el = el.parentElement) {
-        if (!(el instanceof HTMLElement)) continue;
-        const oy = getComputedStyle(el).overflowY;
-        if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 1) return el;
+    // 指の下からシート本体までにある、縦にスクロールできる要素すべて（入れ子の外側も含む）。
+    const findScrollers = (from: Element | null): HTMLElement[] => {
+      const out: HTMLElement[] = [];
+      for (let el = from; el; el = el.parentElement) {
+        if (el instanceof HTMLElement) {
+          const oy = getComputedStyle(el).overflowY;
+          if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 1) out.push(el);
+        }
         if (el === node) break;
       }
-      return null;
+      return out;
     };
 
     const setOffset = (y: number, animate: boolean) => {
@@ -80,7 +87,7 @@ export function useSwipeToDismiss<T extends HTMLElement>({
       lastT = e.timeStamp;
       velocity = 0;
       fromHandle = t.clientY - node.getBoundingClientRect().top <= HANDLE_ZONE;
-      scroller = findScroller(target);
+      scrollers = findScrollers(target);
       tracking = true;
       dragging = false;
     };
@@ -93,7 +100,7 @@ export function useSwipeToDismiss<T extends HTMLElement>({
         const dx = Math.abs(t.clientX - startX);
         if (dy < START_SLOP && dx < START_SLOP) return;
         // 上向き・横向き、またはスクロールの途中から始めた操作はシートを動かさない。
-        const atTop = !scroller || scroller.scrollTop <= 0;
+        const atTop = scrollers.every((el) => el.scrollTop <= 0);
         if (dy < START_SLOP || dx > dy || !(fromHandle || atTop)) {
           tracking = false;
           return;
@@ -109,14 +116,16 @@ export function useSwipeToDismiss<T extends HTMLElement>({
       setOffset(Math.max(0, dy), false);
     };
 
-    const onEnd = () => {
+    const onEnd = (e: TouchEvent) => {
       if (!tracking) return;
       tracking = false;
       if (!dragging) return;
       dragging = false;
       const dy = Math.max(0, lastY - startY);
       const threshold = Math.min(CLOSE_DISTANCE, node.offsetHeight * 0.25);
-      const flicked = velocity > CLOSE_VELOCITY && dy > START_SLOP * 3;
+      // 離す直前まで動いていたときだけ「払った」とみなす（引いて止めてから離したら距離だけで判定）。
+      const moving = e.timeStamp - lastT <= FLICK_STALE_MS;
+      const flicked = moving && velocity > CLOSE_VELOCITY && dy > START_SLOP * 3;
       if (dy > threshold || flicked) {
         // 位置はそのままにして閉じる（退場アニメーションがこの位置から続く）。
         node.style.transition = "none";
@@ -126,15 +135,24 @@ export function useSwipeToDismiss<T extends HTMLElement>({
       }
     };
 
+    // OS・ブラウザによる中断は閉じる操作ではないので、元の位置へ戻すだけにする。
+    const onCancel = () => {
+      if (!tracking) return;
+      tracking = false;
+      if (!dragging) return;
+      dragging = false;
+      setOffset(0, true);
+    };
+
     node.addEventListener("touchstart", onStart, { passive: true });
     node.addEventListener("touchmove", onMove, { passive: false });
     node.addEventListener("touchend", onEnd);
-    node.addEventListener("touchcancel", onEnd);
+    node.addEventListener("touchcancel", onCancel);
     cleanupRef.current = () => {
       node.removeEventListener("touchstart", onStart);
       node.removeEventListener("touchmove", onMove);
       node.removeEventListener("touchend", onEnd);
-      node.removeEventListener("touchcancel", onEnd);
+      node.removeEventListener("touchcancel", onCancel);
     };
   }, []);
 }

@@ -21,8 +21,15 @@ async function phonePage(browser: Browser, page: Page): Promise<Page> {
   return ctx.newPage();
 }
 
-/// (x, fromY) から (x, toY) まで指で引く。
-async function swipe(page: Page, x: number, fromY: number, toY: number, steps = 10) {
+/// (x, fromY) から (x, toY) まで指で引く。`end` が "touchCancel" なら離さずに中断し、
+/// `holdMs` があれば離す前にその場で止まる。
+async function swipe(
+  page: Page,
+  x: number,
+  fromY: number,
+  toY: number,
+  { steps = 10, end = "touchEnd", holdMs = 0 }: { steps?: number; end?: "touchEnd" | "touchCancel"; holdMs?: number } = {},
+) {
   const cdp = await page.context().newCDPSession(page);
   const point = (y: number) => [{ x, y, id: 1, radiusX: 4, radiusY: 4, force: 1 }];
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: point(fromY) });
@@ -33,16 +40,22 @@ async function swipe(page: Page, x: number, fromY: number, toY: number, steps = 
     });
     await page.waitForTimeout(16);
   }
-  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  if (holdMs) await page.waitForTimeout(holdMs);
+  await cdp.send("Input.dispatchTouchEvent", { type: end, touchPoints: [] });
   await cdp.detach();
 }
 
 /// シートの上端（取っ手の帯）を起点に引く。
-async function swipeSheet(page: Page, testId: string, distance: number) {
+async function swipeSheet(
+  page: Page,
+  testId: string,
+  distance: number,
+  opts?: Parameters<typeof swipe>[4],
+) {
   const box = await page.getByTestId(testId).boundingBox();
   if (!box) throw new Error(`${testId} が見えない`);
   const y = box.y + 12;
-  await swipe(page, box.x + box.width / 2, y, y + distance);
+  await swipe(page, box.x + box.width / 2, y, y + distance, opts);
 }
 
 test.describe("スマホのシートを払って閉じる", () => {
@@ -58,6 +71,17 @@ test.describe("スマホのシートを払って閉じる", () => {
     await expect(sheet).toBeVisible();
     // 戻ったあと、位置のずれ（transform）が残っていない。
     await expect(sheet).toHaveCSS("transform", "none");
+
+    // 引いている途中で OS がタッチを中断しても閉じない（元へ戻る）。
+    await swipeSheet(phone, "composer-plus-sheet", 320, { end: "touchCancel" });
+    await phone.waitForTimeout(400);
+    await expect(sheet).toBeVisible();
+    await expect(sheet).toHaveCSS("transform", "none");
+
+    // 素早く少しだけ引いて止めてから離すのは「払った」ではない（距離が足りなければ戻る）。
+    await swipeSheet(phone, "composer-plus-sheet", 60, { steps: 2, holdMs: 400 });
+    await phone.waitForTimeout(400);
+    await expect(sheet).toBeVisible();
 
     await swipeSheet(phone, "composer-plus-sheet", 320);
     await expect(sheet).toBeHidden();
