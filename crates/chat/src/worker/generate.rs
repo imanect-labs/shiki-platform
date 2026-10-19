@@ -247,6 +247,11 @@ impl ChatWorker {
                     opts.approval.auto_approve.extend(extra.iter().cloned());
                     approver = approver.with_pre_authorized(extra);
                 }
+                // 明確化の段階は本文に ask を書くだけ（ツールを 1 つも渡さない）。agent-core が
+                // 後から足す `plan` メタツールも渡さない（質問の前に計画を立て始めさせない）。
+                if gate_stage == super::gate::GateStage::Clarify {
+                    opts.offer_plan_tool = false;
+                }
                 opts.parallel_read_tools = self.config.parallel_read_tools;
                 opts.tool_search.enabled = self.config.tool_search;
                 opts.tool_search.embedder = self.tool_search_embedder();
