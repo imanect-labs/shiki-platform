@@ -12,7 +12,8 @@ type MessagesResponse = { messages: components["schemas"]["Message"][] };
 ///
 /// 実 LLM は使わず、スタブプロバイダの `/deep-research` 駆動
 /// （`crates/llm-gateway/src/providers/stub_deep_research.rs`）でフェーズを決定的に再現する。
-/// カードの押下は `chat.submit` で**別 run** になるため、run を跨いで状態が復元されること
+/// 質問・計画は回答の本文の ```ui（Yui の ask・plan・#604）で出る。回答・承認は会話への発話として
+/// **別 run** になるため、run を跨いで状態が復元されること
 /// （＝スキルの適用と autonomous の継承が続くこと）もここで初めて通し見できる。
 const SHOTS = process.env.SHOTS_DIR;
 
@@ -43,7 +44,9 @@ async function createDeepResearchSkill(page: import("@playwright/test").Page) {
             name: "deep-research",
             hint: "調べたいことを入力",
             variants: [
-              { args: "", summary: "質問→計画→実行（推奨）" },
+              // 本番のバンドルと同じく確認フェーズの門（#400）を掛ける。明確化・計画の段階では
+              // ツールが渡らず、本文の ask・plan で段階が進む（#604）ことまで通しで見る。
+              { args: "", summary: "質問→計画→実行（推奨）", phase: "plan_first" },
               { args: "auto", summary: "質問と計画確認を省略して即実行" },
             ],
           },
@@ -55,7 +58,24 @@ async function createDeepResearchSkill(page: import("@playwright/test").Page) {
   expect(created.status, `skill 作成: ${created.status} ${created.text}`).toBeLessThan(300);
 }
 
-test("deep research: 質問カード → 計画カード → 調査 → レポート → 出典 → 下書き", async ({
+/// 本文の ```ui ask・plan の図（会話にそれぞれ 1 つ）。
+const askFigure = (page: import("@playwright/test").Page) =>
+  page.locator('[data-testid="ui-figure"][data-ui-kind="ask"]');
+const planFigure = (page: import("@playwright/test").Page) =>
+  page.locator('[data-testid="ui-figure"][data-ui-kind="plan"]');
+
+/// 質問（スタブの 2 問・どちらも任意）に答えて送る。
+async function answerQuestions(page: import("@playwright/test").Page) {
+  const ask = askFigure(page);
+  const submit = ask.getByRole("button", { name: "この条件で進める" });
+  await expect(submit).toBeEnabled({ timeout: 60_000 });
+  await ask.getByRole("radio", { name: /^国内のみ/ }).check();
+  await ask.getByRole("radio", { name: /^意思決定用/ }).check();
+  await submit.click();
+  await expect(ask.getByRole("status")).toContainText("送信しました");
+}
+
+test("deep research: 質問（ask）→ 計画（plan）→ 調査 → レポート → 出典 → 下書き", async ({
   page,
 }) => {
   await loginViaKeycloak(page);
@@ -72,24 +92,16 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
   await input.fill("2026 年の国内 SaaS 市場規模を調べて");
   await page.getByRole("button", { name: "送信" }).click();
 
-  // ── フェーズ 0: 質問カード（最大 3 問・1 ターン・複数問はステップ送り） ──
-  const options = page.getByTestId("genui-question-option");
-  await expect(options.first()).toBeVisible({ timeout: 60_000 });
+  // ── フェーズ 0: 質問（本文の ```ui ask・最大 3 問・1 ターン） ──
+  await answerQuestions(page);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/deep-research-question.png`, fullPage: true });
-  await options.first().click();
-  // 2 問目へ送って回答する（最後の問いで submit_label のボタンになる）。
-  await page.getByRole("button", { name: "次へ" }).click();
-  await expect(options.first()).toBeVisible();
-  await options.first().click();
-  await page.getByTestId("genui-question-submit").click();
-  await expect(page.getByText("回答を送信しました")).toBeVisible();
 
-  // ── フェーズ 1: 計画カード（開始ボタンで承認を取る） ──
-  const planStart = page.getByTestId("genui-plan-start");
-  await expect(planStart).toBeVisible({ timeout: 60_000 });
+  // ── フェーズ 1: 計画（本文の ```ui plan・開始ボタンで承認を取る） ──
+  const plan = planFigure(page);
+  const planStart = plan.getByRole("button", { name: "この計画で開始" });
+  await expect(planStart).toBeEnabled({ timeout: 60_000 });
   // 計画は**この依頼固有の問い**が並ぶ（手順を並べない）。件数と、方法論の語が出ていないことを見る。
-  await expect(page.getByTestId("genui-plan-steps").locator("li")).toHaveCount(6);
-  const plan = page.getByTestId("genui-plan-steps");
+  await expect(plan.locator("ol > li")).toHaveCount(6);
   await expect(plan).toContainText("2026 年の実数はいくらか");
   for (const method of ["証拠台帳", "節ごとに執筆", "視点を分けて"]) {
     await expect(plan.getByText(method, { exact: false })).toHaveCount(0);
@@ -103,7 +115,7 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
   await expect(page.getByText("公表資料では確認できなかった").first()).toBeVisible();
 
   // ツール実行表示（#386）に取得した URL が具体的に出る。展開して全件を見る。
-  // **最後の run** のものを見る（先行 run＝質問/計画カードにも tool-activity が出る）。
+  // **最後の run** のものを見る（先行 run にも tool-activity が出ることがある）。
   // 完了後は 1 行要約に畳まれているので、ヘッダを押して全件のタイムラインを出す。
   const activity = page.getByTestId("tool-activity").last();
   await expect(activity).toBeVisible();
@@ -136,9 +148,9 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
   await expect(page.getByText("承認が必要です")).toHaveCount(0);
 });
 
-/// 回答済み・開始済みのカードが未操作へ巻き戻り、二度送信できてしまう回帰（#410）。
+/// 回答済み・開始済みの質問・計画が未操作へ巻き戻り、二度送信できてしまう回帰（#410）。
 ///
-/// 見た目だけの話ではない。計画カードの「開始」を二度押せると**調査がまるごと二重に走る**
+/// 見た目だけの話ではない。計画の「開始」を二度押せると**調査がまるごと二重に走る**
 /// （実測で 1 本あたり 253 ツール操作・十数分・実費）。表示の根拠（サーバ記録）と
 /// サーバ側の拒否は**対で**確かめる — 片方だけでは押せてしまう / 押せないのに未操作に見える。
 /// 押下がサーバの実行台帳へ届いた件数（`invoked_actions` を持つメッセージ数）。
@@ -155,7 +167,7 @@ async function invokedCount(page: import("@playwright/test").Page): Promise<numb
   });
 }
 
-test("回答済み・開始済みのカードは巻き戻らず、二度送信もできない（#410）", async ({ page }) => {
+test("回答済み・開始済みの質問・計画は巻き戻らず、二度送信もできない（#410）", async ({ page }) => {
   await loginViaKeycloak(page);
   await page.goto("/");
   await createDeepResearchSkill(page);
@@ -169,27 +181,20 @@ test("回答済み・開始済みのカードは巻き戻らず、二度送信�
   await page.getByRole("button", { name: "送信" }).click();
   await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
 
-  // 質問カードに回答する。
-  const options = page.getByTestId("genui-question-option");
-  await expect(options.first()).toBeVisible({ timeout: 60_000 });
-  await options.first().click();
-  await page.getByRole("button", { name: "次へ" }).click();
-  await expect(options.first()).toBeVisible();
-  await options.first().click();
-  await page.getByTestId("genui-question-submit").click();
+  // 質問に回答する。
+  await answerQuestions(page);
   await expect
     .poll(() => invokedCount(page), {
       timeout: 60_000,
-      message: "質問カードの回答がサーバへ記録されること",
+      message: "質問への回答がサーバへ記録されること",
     })
     .toBeGreaterThanOrEqual(1);
-  await expect(page.getByText("回答を送信しました")).toBeVisible();
 
   // リロードしても未回答へ戻らない（送信済みはローカル state ではなくサーバ記録が正）。
   await page.reload();
-  await expect(page.getByTestId("genui-question-answered")).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId("genui-question-submit")).toHaveCount(0);
-  await expect(page.getByText("回答を送信しました")).toBeVisible();
+  const ask = askFigure(page);
+  await expect(ask.getByText("回答済みです")).toBeVisible({ timeout: 30_000 });
+  await expect(ask.getByRole("button", { name: "この条件で進める" })).toBeDisabled();
 
   // サーバも二度目を拒否する（409）。拒否された送信は発話も生成も作らない。
   const retry = await page.evaluate(async () => {
@@ -208,7 +213,8 @@ test("回答済み・開始済みのカードは巻き戻らず、二度送信�
       method: "POST",
       credentials: "include",
       headers,
-      body: JSON.stringify({ action_id: card.invoked_actions?.[0], params: { 再送: "だめ" } }),
+      // 値は正しい（質問はすべて任意）。値の検証ではなく「1 回だけ」で拒否されることを見る。
+      body: JSON.stringify({ action_id: card.invoked_actions?.[0], params: {} }),
     });
     const after = await list();
     return {
@@ -222,20 +228,23 @@ test("回答済み・開始済みのカードは巻き戻らず、二度送信�
   expect(retry.status, "二度目は 409").toBe(409);
   expect(retry.after, "拒否された送信は発話を作らない").toBe(retry.before);
 
-  // 計画カードも同じ（こちらの二度押しが調査の二重実行になる）。
-  const planStart = page.getByTestId("genui-plan-start");
-  await expect(planStart).toBeVisible({ timeout: 60_000 });
+  // 計画も同じ（こちらの二度押しが調査の二重実行になる）。
+  const plan = planFigure(page);
+  const planStart = plan.getByRole("button", { name: "この計画で開始" });
+  await expect(planStart).toBeEnabled({ timeout: 60_000 });
   await planStart.click();
-  await expect(page.getByTestId("genui-plan-submitted")).toBeVisible();
+  await expect(plan.getByRole("status")).toContainText("送信しました");
   await expect
     .poll(() => invokedCount(page), {
       timeout: 60_000,
-      message: "計画カードの押下がサーバへ記録されること",
+      message: "計画の押下がサーバへ記録されること",
     })
     .toBeGreaterThanOrEqual(2);
   await page.reload();
-  await expect(page.getByTestId("genui-plan-submitted")).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId("genui-plan-start")).toHaveCount(0);
+  await expect(planFigure(page).getByText("回答済みです")).toBeVisible({ timeout: 30_000 });
+  await expect(
+    planFigure(page).getByRole("button", { name: "この計画で開始" }),
+  ).toBeDisabled();
   if (SHOTS) {
     await page.screenshot({ path: `${SHOTS}/deep-research-invoked.png`, fullPage: true });
   }
@@ -257,10 +266,9 @@ test("deep research auto: 確認を省略して 1 ターンで完走する", asy
   await input.fill("2026 年の国内 SaaS 市場規模を調べて");
   await page.getByRole("button", { name: "送信" }).click();
 
-  // 質問カードも計画カードも出さず、そのままレポートまで進む。
+  // 質問も計画も出さず、そのままレポートまで進む。
   await expect(page.getByText("結論と確度").first()).toBeVisible({ timeout: 90_000 });
-  await expect(page.getByTestId("genui-question-option")).toHaveCount(0);
-  await expect(page.getByTestId("genui-plan-start")).toHaveCount(0);
+  await expect(page.locator('[data-ui-kind="ask"], [data-ui-kind="plan"]')).toHaveCount(0);
   await expect(page.getByTestId("note-draft-card").first()).toBeVisible();
   if (SHOTS) {
     await page.screenshot({ path: `${SHOTS}/deep-research-auto.png`, fullPage: true });

@@ -1,16 +1,16 @@
 //! deep research（#387）の決定的駆動。
 //!
 //! `/deep-research` / `/deep-research auto` を**本番と同じ発話**で入口にし、
-//! 質問カード → 計画カード → 調査 → レポート → 検証委譲 → 指摘の反映 → 出典カード → 下書きの各フェーズを
+//! 質問（```ui ask）→ 計画（```ui plan）→ 調査 → レポート → 検証委譲 → 指摘の反映 → 出典カード → 下書きの各フェーズを
 //! 実 LLM 無しで再現する（e2e とローカルのデモ用）。
 //!
-//! genui カードの押下は `chat.submit` で**別 run** になるため、状態は履歴から復元する:
+//! 質問への回答・計画の承認は会話への発話として**別 run** になるため、状態は履歴から復元する:
 //! ターン数＝user メッセージ数、run 内の進行＝tool メッセージ数。
 
 use super::stub_deep_research_specs::{
-    deep_research_plan_spec, deep_research_question_spec, deep_research_source_spec,
+    deep_research_source_spec, DEEP_RESEARCH_PLAN, DEEP_RESEARCH_QUESTION,
 };
-use super::stub_stream::{text_stream, tool_call_stream, tool_calls_stream};
+use super::stub_stream::{text_stream, tool_calls_stream};
 use crate::model::{Block, GenerateRequest, Role};
 use crate::provider::DeltaStream;
 
@@ -21,11 +21,11 @@ use crate::provider::DeltaStream;
 ///
 /// | 経路 | ターン 1 | ターン 2 | ターン 3 |
 /// |---|---|---|---|
-/// | 既定 | 質問カード | 計画カード | 調査 → レポート → 検証委譲 → 反映 → 出典カード → 下書き |
+/// | 既定 | 質問（ask） | 計画（plan） | 調査 → レポート → 検証委譲 → 反映 → 出典カード → 下書き |
 /// | `auto` | 調査 → レポート → 検証委譲 → 反映 → 出典カード → 下書き | – | – |
 ///
 /// ターン数は履歴の user メッセージ数、run 内の進行は tool メッセージ数で数える
-/// （genui カードは `chat.submit` で**別 run** になるため、run を跨いでも状態が復元できる）。
+/// （回答・承認は会話への発話で**別 run** になるため、run を跨いでも状態が復元できる）。
 pub(super) fn deep_research_call(req: &GenerateRequest, prompt_tokens: u64) -> Option<DeltaStream> {
     let command = req.messages.iter().find_map(|m| {
         if m.role != Role::User {
@@ -44,22 +44,15 @@ pub(super) fn deep_research_call(req: &GenerateRequest, prompt_tokens: u64) -> O
     let turns = req.messages.iter().filter(|m| m.role == Role::User).count();
     let steps = req.messages.iter().filter(|m| m.role == Role::Tool).count();
 
-    // 既定経路の確認フェーズ（`auto` は飛ばす）。カードを出したら同 run では続けない。
+    // 既定経路の確認フェーズ（`auto` は飛ばす）。本文に ```ui の ask・plan を書いてターンを終える
+    // （門はこの段階でツールを渡さないので、本番もこの形になる・#604）。
     if !auto && turns <= 2 {
-        if steps > 0 {
-            return Some(text_stream("確認いただけたら次へ進みます。", prompt_tokens));
-        }
-        let spec = if turns <= 1 {
-            deep_research_question_spec()
+        let reply = if turns <= 1 {
+            DEEP_RESEARCH_QUESTION
         } else {
-            deep_research_plan_spec()
+            DEEP_RESEARCH_PLAN
         };
-        let tool = req.tools.iter().find(|t| t.name == "emit_ui")?;
-        return Some(tool_call_stream(
-            tool.name.clone(),
-            serde_json::json!({ "spec": spec }),
-            prompt_tokens,
-        ));
+        return Some(text_stream(reply, prompt_tokens));
     }
 
     // 調査フェーズ。1 ステップに複数ツールを載せ、冪等 read の有界並列（#349）と
@@ -290,39 +283,33 @@ mod tests {
         assert!(deep_research_call(&req(vec![user("websearch: 市場規模")], ALL), 0).is_none());
     }
 
-    /// 既定経路: 1 ターン目に質問カード、押下後（2 ターン目）に計画カードを出して止まる。
+    /// ストリームの本文を連結する。
+    async fn text_of(stream: DeltaStream) -> String {
+        use futures::StreamExt;
+        let mut out = String::new();
+        let mut s = stream;
+        while let Some(Ok(delta)) = s.next().await {
+            if let crate::model::StreamDelta::TextDelta { text } = delta {
+                out.push_str(&text);
+            }
+        }
+        out
+    }
+
+    /// 既定経路: 1 ターン目に質問（ask）、回答後（2 ターン目）に計画（plan）を本文に書いて止まる。
+    /// どちらもツールは呼ばない（門が明確化・計画の段階でツールを渡さないのと同じ形）。
     #[tokio::test]
     async fn default_path_asks_then_plans() {
-        let turn1 = deep_research_call(&req(vec![user("/deep-research SaaS 市場")], ALL), 0)
+        let turn1 = deep_research_call(&req(vec![user("/deep-research SaaS 市場")], &[]), 0)
             .expect("質問フェーズ");
-        let calls = calls_of(turn1).await;
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, "emit_ui");
-        assert_eq!(calls[0].1["spec"]["root"]["component"], "question_card");
-        assert_eq!(
-            calls[0].1["spec"]["actions"][0]["handler"], "chat.submit",
-            "回答は chat.submit へ写る"
-        );
-
-        // 同一 run 内でカードを出した後は本文で終わる（勝手に調査を始めない）。
-        let after_card = deep_research_call(
-            &req(
-                vec![
-                    user("/deep-research SaaS 市場"),
-                    assistant_tool_use("emit_ui"),
-                    tool_result(),
-                ],
-                ALL,
-            ),
-            0,
-        )
-        .expect("同 run の続き");
+        let text = text_of(turn1).await;
         assert!(
-            calls_of(after_card).await.is_empty(),
-            "ツールを呼ばず終わる"
+            text.contains("```ui\nask 調査の前に確認させてください"),
+            "{text}"
         );
+        assert!(text.contains("button この条件で進める"));
 
-        // 回答が投稿された次の run（user 2 件）は計画カード。
+        // 回答が投稿された次の run（user 2 件）は計画。
         let turn2 = deep_research_call(
             &req(
                 vec![
@@ -334,9 +321,12 @@ mod tests {
             0,
         )
         .expect("計画フェーズ");
-        let calls = calls_of(turn2).await;
-        assert_eq!(calls[0].1["spec"]["root"]["component"], "plan_card");
-        assert_eq!(calls[0].1["spec"]["root"]["submit_label"], "この計画で開始");
+        let text = text_of(turn2).await;
+        assert!(
+            text.contains("```ui\nplan 2026 年の国内 SaaS 市場規模と成長率の検証"),
+            "{text}"
+        );
+        assert!(text.contains("button この計画で開始"));
     }
 
     /// `auto` は確認を飛ばして 1 ターン目から調査に入り、

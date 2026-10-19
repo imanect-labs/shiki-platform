@@ -58,14 +58,14 @@ fn all_first_party_bundles_pass_validation() {
 /// grilling は**質問ラウンドを何度も回す**のが本体なので、それを可能にする宣言を固定する（#428）。
 ///
 /// `phase` を宣言すると実行前フェーズの門が掛かり（`crates/chat/src/worker/gate.rs`）、
-/// grilling とは 2 箇所で噛み合わない。
+/// grilling とは噛み合わない。
 ///
-/// - **調べられない**: `Clarify` 段階で渡るツールは `emit_ui` だけ（`allows`）。`subagent` も
+/// - **調べられない**: `Clarify` 段階ではツールを 1 つも渡さない（`allows`）。`subagent` も
 ///   `doc_search` も無いので、1 ラウンド目は調べずに質問を書くしかなくなる。
-/// - **質問できない**: 最初の質問カードでスレッドは `Plan` へ移り（`stage_from_cards`）、以降
-///   `emit_ui` は `plan_card` しか通さない（`allowed_cards`）。2 ラウンド目が出せない。
+/// - **2 ラウンド目以降も調べられない**: 最初の `ask` でスレッドは `Plan` へ移り
+///   （`stage_from_answers`）、`plan` を出すまで調査系（`doc_search`・`web_search`）は渡らない。
 ///
-/// 「調べられるようになった頃には質問カードが出せない」順序になるため、宣言しないことが仕様。
+/// 「事実を調べてから聞く」が面接の間ずっとできなくなるため、宣言しないことが仕様。
 /// うっかり `phase` を足すと静かに壊れるので、その不在を固定する。
 #[test]
 fn grilling_keeps_rounds_open_and_declares_safe_tools() {
@@ -86,12 +86,13 @@ fn grilling_keeps_rounds_open_and_declares_safe_tools() {
     for variant in &command.variants {
         assert!(
             variant.phase.is_none(),
-            "{}: phase を宣言すると 2 ラウンド目の質問カードが出せなくなる",
+            "{}: phase を宣言すると面接の間ずっと事実を調べられなくなる",
             variant.args
         );
     }
 
-    // 面接に要る宣言: 質問/計画カード・事実調べの委譲・台帳への追記・共通理解の保存。
+    // 面接に要る宣言: 事実調べの委譲・台帳への追記・共通理解の保存（質問と計画は本文の
+    // ```ui ask・plan に書くのでツールではない・#604）。
     let tools: Vec<&str> = skill
         .allowed_tools
         .as_ref()
@@ -99,8 +100,18 @@ fn grilling_keeps_rounds_open_and_declares_safe_tools() {
         .iter()
         .map(|t| t.as_str())
         .collect();
-    for expected in ["emit_ui", "subagent", "fs_append", "fs_read", "save_note"] {
+    for expected in ["subagent", "fs_append", "fs_read", "save_note"] {
         assert!(tools.contains(&expected), "{expected} が宣言に無い");
+    }
+    assert!(
+        !tools.contains(&"emit_ui"),
+        "質問と計画は本文の ```ui に書く（emit_ui は使わない）"
+    );
+    for syntax in ["```ui\nask ", "```ui\nplan ", "- その他"] {
+        assert!(
+            skill.instructions.contains(syntax),
+            "instructions に ```ui の質問・計画の書き方（{syntax:?}）が無い"
+        );
     }
     // 破壊系は宣言しない（deep-research と同じ禁止則）。
     for forbidden in ["fs_delete", "shell", "office.live_edit"] {
@@ -170,12 +181,24 @@ fn deep_research_declares_both_command_variants() {
         "doc_read",
         // 委譲（#391）。抜けるとモデルが「調査を分けて並列に走らせる」選択肢を見失う。
         "subagent",
+        // 出典カード。質問と計画は本文の ```ui ask・plan に書く（#604）。
         "emit_ui",
         "fs_append",
         "save_note",
     ] {
         assert!(tools.contains(&expected), "{expected} が宣言に無い");
     }
+    // 門（`plan_first`）は本文の ask・plan で段階を進めるので、書き方が手順書に無いと進めない。
+    for syntax in ["```ui\nask ", "```ui\nplan ", "button この計画で開始"] {
+        assert!(
+            skill.instructions.contains(syntax),
+            "instructions に ```ui の質問・計画の書き方（{syntax:?}）が無い"
+        );
+    }
+    assert!(
+        !skill.instructions.contains("question_card") && !skill.instructions.contains("plan_card"),
+        "質問・計画をカード（emit_ui）で出す指示が残っている"
+    );
     // 破壊系は宣言しない（作業領域の外へ出る操作を誘導しない）。
     for forbidden in ["fs_delete", "shell", "office.live_edit"] {
         assert!(
