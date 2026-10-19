@@ -236,9 +236,12 @@ fn found_in(quote: &str, entries: &[String]) -> bool {
             .collect();
     }
     let normalized: Vec<String> = parts.iter().map(|p| normalize(p)).collect();
+    // 数字を含む断片は短くても照合する（「…32%」のような数値の取り違えを素通りさせない）。
     let mut fragments: Vec<&String> = normalized
         .iter()
-        .filter(|f| f.chars().count() >= MIN_FRAGMENT_CHARS)
+        .filter(|f| {
+            f.chars().count() >= MIN_FRAGMENT_CHARS || f.chars().any(|c| c.is_ascii_digit())
+        })
         .collect();
     // 照合できる断片が無ければ、省略を除いて連結した全体で照合する（短い断片だけで素通りさせない）。
     let joined = normalized.concat();
@@ -458,6 +461,9 @@ CONFLICT | E12(1.2兆円) vs E18(9800億円) | 集計範囲が異なる可能性
             missing("「市場規模は1兆2000億円に…失業率は前年比+3.2%」").len(),
             1
         );
+        // 長い断片と短い数値の断片が混ざっても、数値の断片を照合する。
+        assert!(missing("「失業率は前年比…+3.2%」").is_empty());
+        assert_eq!(missing("「失業率は前年比…32%」").len(), 1);
         // 断片がどれも短いときは、全体を連結して照合する（素通りさせない）。
         assert_eq!(missing("「日本の…市場は…縮小し…ている」").len(), 1);
     }
