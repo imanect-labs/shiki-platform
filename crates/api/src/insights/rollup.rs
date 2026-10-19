@@ -13,8 +13,9 @@
 use chrono::{Duration, NaiveDate};
 use sqlx::PgPool;
 
-/// 1 回の実行で 1 組織あたり埋める過去日数の上限（初回の追いつきを分割する）。
-const MAX_DAYS_PER_RUN: i64 = 31;
+/// 1 回の実行で 1 組織あたり埋める過去日数の上限。初回の遡り（[`BACKFILL_DAYS`]）は 1 回で
+/// 埋め切る（導入直後に直近の数字が欠けないように）。長く止まっていたあとの追いつきだけ分割する。
+const MAX_DAYS_PER_RUN: i64 = 120;
 /// 初回に遡る日数（画面の最長期間に合わせる）。
 const BACKFILL_DAYS: i64 = 120;
 
@@ -233,15 +234,30 @@ mod tests {
     }
 
     #[test]
-    fn first_run_backfills_in_bounded_chunks_without_skipping_the_gap() {
+    fn first_run_backfills_the_whole_window_at_once() {
         let today = d("2026-10-19");
         let p = plan(today, None);
         let start = today - Duration::days(BACKFILL_DAYS);
         assert_eq!(p.days.first(), Some(&start));
+        assert_eq!(p.days.last(), Some(&today));
+        assert_eq!(
+            p.days.len() as i64,
+            BACKFILL_DAYS + 1,
+            "遡り期間＋当日を欠けなく"
+        );
+        assert_eq!(p.reached, d("2026-10-18"));
+    }
+
+    #[test]
+    fn long_outage_catches_up_in_bounded_chunks_without_skipping_the_gap() {
+        let today = d("2026-10-19");
+        let old = today - Duration::days(400);
+        let p = plan(today, Some(old));
+        assert_eq!(p.days.first(), Some(&(old - Duration::days(1))));
         assert!(p.days.contains(&today) && p.days.contains(&d("2026-10-18")));
         assert!(p.days.len() as i64 <= MAX_DAYS_PER_RUN + 2);
         // 到達点は追いつきの最終日（前日ではない）。次回はその続きから。
-        assert_eq!(p.reached, start + Duration::days(MAX_DAYS_PER_RUN - 1));
+        assert_eq!(p.reached, old + Duration::days(MAX_DAYS_PER_RUN - 2));
         let next = plan(today, Some(p.reached));
         assert_eq!(next.days.first(), Some(&(p.reached - Duration::days(1))));
         // 追いつき切ると到達点は前日。

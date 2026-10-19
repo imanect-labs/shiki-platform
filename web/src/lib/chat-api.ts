@@ -98,6 +98,9 @@ export type Message = {
   /// `reloading` はすぐ読み直す（生成の完了）、`stopped` は読み直さない（生成の停止）。
   provisional?: "reloading" | "stopped";
   createdAt: string;
+  /// 仮の行（`provisional`）のときの、サーバ上の回答 ID（`id` は画面内の仮 ID）。
+  /// 評価（👍/👎）など保存済みの回答を指す操作に使う。読み込んだ行では未設定（`id` がそれ）。
+  serverId?: string;
 };
 
 /// 本文の図のボタンで起動したワークフロー 1 件（#604・codegen）。

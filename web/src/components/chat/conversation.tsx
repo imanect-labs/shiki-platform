@@ -51,6 +51,7 @@ import {
 } from "@/components/prompt-kit/yui-actions";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useStickToBottom } from "@/hooks/use-stick-to-bottom";
+import { MessageFeedbackButtons, ThreadFeedbackProvider } from "./message-feedback";
 import { MessageFooter } from "./message-footer";
 import { MessageCitationsProvider, SourcePanelProvider } from "./citations/citation-context";
 import { CitationSources } from "./citations/citation-sources";
@@ -698,6 +699,7 @@ export function Conversation({
 
   return (
     <SourcePanelProvider key={threadId}>
+      <ThreadFeedbackProvider threadId={threadId}>
       <div className="flex h-full min-h-0">
         <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
           {/* page: 統一ヘッダスロットへタイトル＋共有/設定を注入（横バー二重を解消）。
@@ -750,6 +752,7 @@ export function Conversation({
                       key={m.id}
                       threadId={threadId}
                       messageId={m.id}
+                      savedMessageId={savedMessageId(m)}
                       blocks={m.content}
                       invokedActions={m.invokedActions}
                       boundActions={m.boundActions}
@@ -834,6 +837,7 @@ export function Conversation({
         {sourceAside ? <SourcePanelAside /> : null}
       </div>
       {!sourceAside ? <SourcePanelSheet /> : null}
+      </ThreadFeedbackProvider>
     </SourcePanelProvider>
   );
 }
@@ -842,6 +846,12 @@ export function Conversation({
 function paragraphBreak(text: string): string {
   if (!text.trim()) return text;
   return text.endsWith("\n\n") ? text : `${text.replace(/\s+$/, "")}\n\n`;
+}
+
+/// 保存済みの回答の ID。読み込んだ行は `id` そのもの、生成直後の仮の行は `serverId`
+/// （ストリームで ID を受け取れなかったときは `null`＝評価などは読み直した後に出す）。
+function savedMessageId(m: ChatMessageT): string | null {
+  return m.provisional ? (m.serverId ?? null) : m.id;
 }
 
 /// ストリーミング完了時に蓄積を確定メッセージへ変換して追加する。
@@ -881,7 +891,14 @@ function finalizeStream(
   if (blocks.length === 0) return;
   setMessages((prev) => [
     ...prev,
-    { id: newId(), role: "assistant", content: blocks, provisional, createdAt: new Date().toISOString() },
+    {
+      id: newId(),
+      role: "assistant",
+      content: blocks,
+      provisional,
+      createdAt: new Date().toISOString(),
+      serverId: s.assistantMessageId ?? undefined,
+    },
   ]);
 }
 
@@ -1008,6 +1025,7 @@ function QueuedRow({ item, onCancel }: { item: QueuedMessage; onCancel: () => vo
 const AssistantRow = React.memo(function AssistantRow({
   threadId,
   messageId,
+  savedMessageId,
   blocks,
   invokedActions,
   boundActions,
@@ -1020,6 +1038,8 @@ const AssistantRow = React.memo(function AssistantRow({
 }: {
   threadId: string;
   messageId: string;
+  /// 保存済みの回答の ID（評価に使う・まだ分からなければ null）。
+  savedMessageId: string | null;
   blocks: ContentBlock[];
   /// このメッセージで実行済みの単発 UI アクション（サーバ記録・#410）。
   invokedActions?: readonly string[];
@@ -1168,6 +1188,7 @@ const AssistantRow = React.memo(function AssistantRow({
           {evidenceOpen ? <EvidenceTable /> : null}
           {text ? (
             <MessageFooter text={text} pinned={latest}>
+              {savedMessageId ? <MessageFeedbackButtons messageId={savedMessageId} /> : null}
               <EvidenceToggle open={evidenceOpen} onToggle={() => setEvidenceOpen((v) => !v)} />
             </MessageFooter>
           ) : null}

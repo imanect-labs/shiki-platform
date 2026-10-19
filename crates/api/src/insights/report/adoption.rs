@@ -44,7 +44,7 @@ pub struct Segments {
     pub regular: i64,
     /// 1〜3 日。
     pub light: i64,
-    /// 以前は使っていたが直近 30 日は使っていない。
+    /// 以前は使っていたが直近 28 日は使っていない（区分の合計が対象者数と一致するよう 28 日でそろえる）。
     pub dormant: i64,
     /// 一度も使っていない。
     pub never: i64,
@@ -202,7 +202,7 @@ async fn segments(db: &PgPool, s: &Scope, population: i64) -> Result<Segments, s
             "WITH u AS ( \
            SELECT user_id, \
                   count(DISTINCT day) FILTER (WHERE day > $4 - 28) AS d28, \
-                  bool_or(day > $4 - 30) AS recent \
+                  bool_or(day > $4 - 28) AS recent \
            FROM ai_activity_daily \
            WHERE tenant_id = $1 AND org = $2 AND day <= $4 AND $3::date IS NOT NULL \
              AND {DEPT_FILTER} \
