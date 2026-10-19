@@ -146,7 +146,27 @@ pub enum ToolLoading {
     Deferred,
 }
 
+/// 利用者が**発話ごとに指定できる**ツール（チャット入力欄の「ツール」・#734）。
+///
+/// 指定は誘導（tool search の常時ロード＋system の「ユーザーが明示的に指定した」注記）で
+/// あって権限ではないが、注記はモデルの判断を強く寄せる。破壊系・内部用（`fs_delete` /
+/// `shell` / `emit_workflow` / `save_*` 等）をユーザーの明示指定として格上げしないよう、
+/// 指定できる集合をここで閉じる。API はこの外を 400 で拒み、web の選択肢はこの定数から
+/// 生成した TS（`gui-spec.ts` の `USER_SELECTABLE_TOOLS`）で束縛する（手書きの対応表を作らない）。
+pub const USER_SELECTABLE_TOOLS: &[ToolName] = &[
+    ToolName::DocSearch,
+    ToolName::WebSearch,
+    ToolName::CodeInterpreter,
+    ToolName::EmitUi,
+];
+
 impl ToolName {
+    /// 利用者が発話ごとに指定できるツールか（[`USER_SELECTABLE_TOOLS`]）。
+    #[must_use]
+    pub fn is_user_selectable(self) -> bool {
+        USER_SELECTABLE_TOOLS.contains(&self)
+    }
+
     /// 既定のロード区分。**網羅 match** なので、新ツールは追加時にここで区分を決める。
     ///
     /// 常時ロードの基準: 会話・調査・作業ファイルの**基本動作**（毎 run のように使う）。
@@ -281,5 +301,29 @@ mod tests {
         );
         let t: ToolName = serde_json::from_str("\"emit_ui\"").unwrap();
         assert_eq!(t, ToolName::EmitUi);
+    }
+
+    /// 発話ごとに指定できる集合は重複なく、破壊系・内部用を含まない（#734）。
+    #[test]
+    fn user_selectable_tools_exclude_destructive_and_internal() {
+        for (i, t) in USER_SELECTABLE_TOOLS.iter().enumerate() {
+            assert!(!USER_SELECTABLE_TOOLS[..i].contains(t), "{t:?} が重複");
+            assert!(t.is_user_selectable());
+        }
+        for denied in [
+            ToolName::FsDelete,
+            ToolName::Shell,
+            ToolName::EmitWorkflow,
+            ToolName::FsWrite,
+            ToolName::SaveNote,
+            ToolName::SaveDocument,
+            ToolName::CsvWrite,
+            ToolName::OfficeEdit,
+            ToolName::Skill,
+            ToolName::Subagent,
+        ] {
+            assert!(!denied.is_user_selectable(), "{denied:?} は指定できない");
+        }
+        assert!(ToolName::WebSearch.is_user_selectable());
     }
 }

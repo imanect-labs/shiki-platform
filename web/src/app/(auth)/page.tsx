@@ -9,6 +9,7 @@ import { createThread, type Attachment } from "@/lib/chat-api";
 import type { ActiveCommand } from "@/lib/slash-command";
 import { stashPending } from "@/lib/pending-message";
 import { HOME_SCOPE, moveModelChoice } from "@/lib/model-choice";
+import { moveToolChoice } from "@/lib/tool-choice";
 import { titleFrom } from "@/lib/chat-store";
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -67,6 +68,8 @@ export default function HomePage() {
       });
       // ホームで選んだモデルを新しいスレッドへ引き継ぐ（ホーム側は Auto に戻る・#553）。
       moveModelChoice(HOME_SCOPE, thread.id);
+      // ツールの選択も最初の発話に載せるため新しいスレッドへ移す（#734）。
+      moveToolChoice(HOME_SCOPE, thread.id);
       router.push(`/c/${thread.id}`);
     } catch {
       toast({ description: "チャットを開始できませんでした。ログイン状態をご確認ください。" });

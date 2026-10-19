@@ -69,26 +69,37 @@ impl GateStage {
     /// ツールを落とすだけでは足りない: 明確化で `emit_ui` しか渡していないのに、その
     /// `emit_ui` で計画カードを出されて質問フェーズが飛ばされた（#402）。この段階で
     /// 出せるカードそのものを指定する。
+    ///
+    /// 戻り値は**門が承認まで取り上げた**ツール名（積んであったのに外したもの）。発話ごとの
+    /// ツール指定（#734）の注記で「使えない」ではなく「承認後に使える」と伝えるのに使う。
     pub(super) fn filter(
         self,
         tools: &mut Vec<Arc<dyn Tool>>,
         ui_validator: Option<&Arc<gui::SpecValidator>>,
-    ) {
+    ) -> Vec<String> {
         if self == GateStage::Execute {
-            return;
+            return Vec::new();
         }
-        tools.retain(|t| self.allows(t.name()));
+        let mut held = Vec::new();
+        tools.retain(|t| {
+            let keep = self.allows(t.name());
+            if !keep {
+                held.push(t.name().to_string());
+            }
+            keep
+        });
         let Some(allowed) = self.allowed_cards() else {
-            return;
+            return held;
         };
         let Some(validator) = ui_validator else {
-            return;
+            return held;
         };
         // 制限つきの emit_ui へ差し替える（提示ツールの最終形に対して効かせる）。
         tools.retain(|t| t.name() != ToolName::EmitUi.as_str());
         tools.push(Arc::new(
             gui::EmitUiTool::new(validator.clone()).with_allowed_root(allowed),
         ));
+        held
     }
 
     /// この段階で `emit_ui` のルートに出せるカード（`None` は制限なし）。
@@ -292,6 +303,68 @@ mod tests {
         for denied in ["web_search", "web_fetch", "doc_search"] {
             assert!(!s.allows(denied), "{denied} は承認後にだけ渡す");
         }
+    }
+
+    /// 名前だけを持つ提示ツール（門の絞り込みの検証用）。
+    struct Named(&'static str);
+
+    #[async_trait::async_trait]
+    impl Tool for Named {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        async fn call(
+            &self,
+            _ctx: &authz::AuthContext,
+            _input: serde_json::Value,
+            _trace_id: Option<&str>,
+        ) -> Result<agent_core::ToolOutcome, agent_core::ToolError> {
+            unreachable!("門の検証では呼ばない")
+        }
+    }
+
+    fn offered(names: &[&'static str]) -> Vec<Arc<dyn Tool>> {
+        names
+            .iter()
+            .map(|n| Arc::new(Named(n)) as Arc<dyn Tool>)
+            .collect()
+    }
+
+    /// 門は承認まで取り上げたツール名を返す（発話ごとのツール指定の注記に使う・#734）。
+    #[test]
+    fn filter_reports_tools_held_until_approval() {
+        let base = [
+            "emit_ui",
+            "web_search",
+            "doc_search",
+            "fs_write",
+            "subagent",
+        ];
+        let mut tools = offered(&base);
+        let held = GateStage::Plan.filter(&mut tools, None);
+        assert_eq!(
+            held,
+            vec!["web_search".to_string(), "doc_search".to_string()]
+        );
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert_eq!(names, vec!["emit_ui", "fs_write", "subagent"]);
+
+        let mut tools = offered(&base);
+        let held = GateStage::Clarify.filter(&mut tools, None);
+        assert_eq!(
+            held,
+            vec!["web_search", "doc_search", "fs_write", "subagent"]
+        );
+
+        let mut tools = offered(&base);
+        assert!(GateStage::Execute.filter(&mut tools, None).is_empty());
+        assert_eq!(tools.len(), base.len());
     }
 
     #[test]

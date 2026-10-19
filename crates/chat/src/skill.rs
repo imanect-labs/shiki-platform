@@ -322,6 +322,7 @@ mod tests {
             model: None,
             effort: None,
             model_auto: true,
+            requested_tools: Json(Vec::new()),
             created_at: chrono::Utc::now(),
         }
     }

@@ -966,3 +966,98 @@ async fn share_lists_include_directory_names_tenant_scoped() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert_share_names(&body_json(resp).await);
 }
+
+/// 発話ごとのツール指定（#734）: 未知名・指定できないツール（破壊系・内部用）は 400（理由つき）、
+/// 指定は重複を除いて run に記録される。
+#[tokio::test]
+async fn chat_post_records_requested_tools() {
+    let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
+    let (cookie, csrf) = login(&sessions, "sid-chat-tools").await;
+    let app = build_router(state);
+
+    let post = |uri: String, body: String| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(COOKIE, &cookie)
+            .header("x-csrf-token", csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let resp = app
+        .clone()
+        .oneshot(post("/threads".into(), r#"{"title":"tools"}"#.into()))
+        .await
+        .unwrap();
+    let tid = body_json(resp).await["id"].as_str().unwrap().to_string();
+    let messages = format!("/threads/{tid}/messages");
+
+    // 語彙に無い名前は 400（Json 抽出の 422 ではなく、理由つきの検証エラー）。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            messages.clone(),
+            r#"{"text":"x","tools":["web_search","rm_rf"]}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let detail = body_json(resp).await["detail"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        detail.contains("rm_rf") && detail.contains("未知のツール名"),
+        "{detail}"
+    );
+
+    // 語彙にはあるが利用者が指定できないツール（shell 等）も 400（ユーザー指定へ格上げしない）。
+    for bad in ["shell", "fs_delete", "emit_workflow", "save_note"] {
+        let resp = app
+            .clone()
+            .oneshot(post(
+                messages.clone(),
+                format!(r#"{{"text":"x","tools":["web_search","{bad}"]}}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{bad}");
+        let detail = body_json(resp).await["detail"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            detail.contains(bad) && detail.contains("指定できないツール"),
+            "{bad}: {detail}"
+        );
+    }
+
+    // 有効な指定は 202 で受理され、重複を除いて投入順のまま run に記録される。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            messages,
+            r#"{"text":"x","tools":["web_search","doc_search","web_search"]}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let run_id: uuid::Uuid = body_json(resp).await["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let stored: serde_json::Value =
+        sqlx::query_scalar("SELECT requested_tools FROM generation_run WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, serde_json::json!(["web_search", "doc_search"]));
+}
