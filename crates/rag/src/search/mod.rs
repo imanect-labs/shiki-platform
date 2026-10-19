@@ -319,6 +319,8 @@ impl SearchService {
         debug.reranked = ranked.len() as u32;
         timings.rerank_ms = t.elapsed().as_millis() as u64;
 
+        let ranked = self.cut_below_min_score(ranked, &mut debug);
+
         // 7(後半). 上位 top_k を確定し、親チャンクを展開する。
         let ranked: Vec<(Uuid, f32)> = ranked.into_iter().take(top_k).collect();
         let results = self.build_results(ctx, &ranked, &rows).await?;
@@ -329,6 +331,22 @@ impl SearchService {
 
         debug.stage_ms = timings;
         Ok(SearchOutput { results, debug })
+    }
+
+    /// 足切り（#100）: reranker の生スコアが下限未満のヒットは返さない（top_k を割っても
+    /// 埋めない）。下限が未設定なら何もしない。落とした件数はデバッグに出す。
+    fn cut_below_min_score(
+        &self,
+        ranked: Vec<(Uuid, f32)>,
+        debug: &mut SearchDebug,
+    ) -> Vec<(Uuid, f32)> {
+        let Some(min) = self.config.min_rerank_score else {
+            return ranked;
+        };
+        let before = ranked.len();
+        let kept: Vec<(Uuid, f32)> = ranked.into_iter().filter(|(_, s)| *s >= min).collect();
+        debug.below_min_score = before.saturating_sub(kept.len()) as u32;
+        kept
     }
 
     /// dense / keyword を並列取得する。
