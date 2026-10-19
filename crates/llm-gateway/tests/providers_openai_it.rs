@@ -259,6 +259,35 @@ async fn openai_gemini_shaped_stream_runs_tools_and_keeps_signatures() {
     ));
 }
 
+/// 呼び出しが無い `stop` は EndTurn、`length` は呼び出しがあっても MaxTokens、
+/// finish_reason が届かずに切れたストリームは昇格させない。
+#[tokio::test]
+async fn openai_stop_is_promoted_only_with_tool_calls_and_a_real_stop() {
+    const CALL: &str = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"c1\",\"function\":{\"name\":\"a\",\"arguments\":\"{}\"}}]}}]}\n";
+    let cases: [(String, StopReason); 3] = [
+        (
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\ndata: [DONE]\n".into(),
+            StopReason::EndTurn,
+        ),
+        (
+            format!("{CALL}data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"length\"}}]}}\ndata: [DONE]\n"),
+            StopReason::MaxTokens,
+        ),
+        (format!("{CALL}data: [DONE]\n"), StopReason::EndTurn),
+    ];
+    for (body, want) in cases {
+        let body: &'static str = Box::leak(body.into_boxed_str());
+        let base = spawn_mock(StatusCode::OK, body).await;
+        let provider = OpenAiProvider::new(reqwest::Client::new(), base, None, "m");
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "x")]);
+        let deltas = drain(&provider, &req).await;
+        match deltas.last() {
+            Some(StreamDelta::Done { stop_reason, .. }) => assert_eq!(*stop_reason, want, "{body}"),
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
 /// 本文（false）か思考（true）のデルタをつなげる。
 fn collect(deltas: &[StreamDelta], thinking: bool) -> String {
     deltas
@@ -350,7 +379,7 @@ async fn openai_live_tool_round_trip() {
     )]);
     req.tools = vec![tool];
     req.session_id = Some(format!("shiki-it-{}", uuid::Uuid::new_v4()));
-    req.max_tokens = Some(2000);
+    req.max_tokens = Some(8000);
 
     let first = drain(&provider, &req).await;
     assert!(

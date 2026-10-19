@@ -252,6 +252,12 @@ mod tests {
             run(&["<thought>The user", " wants", "</thou", "ght>東京は晴れ"]),
             [think("The user wants"), text("東京は晴れ")]
         );
+        // 開きタグがチャンク境界で割れても（`<th` は両方のタグの接頭辞）。
+        assert_eq!(run(&["<th", "ought>x</thought>y"]), [think("x"), text("y")]);
+        assert_eq!(run(&["<tho", "ught>x</thought>y"]), [think("x"), text("y")]);
+        assert_eq!(run(&["<th", "ink>x</think>y"]), [think("x"), text("y")]);
+        // `<thinking>` はどちらでもないので本文。
+        assert_eq!(run(&["<thinking>x"]), [text("<thinking>x")]);
         // 開いたタグと違う閉じタグでは閉じない。
         assert_eq!(
             run(&["<thought>a</think>b</thought>c"]),

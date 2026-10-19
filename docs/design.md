@@ -480,7 +480,7 @@ flowchart LR
   同じ実モデル ID を指す別のエントリにも効く。既定は false（`<think>` を正規に出力させる用途で、回答を思考と
   取り違えて消さないため・#584）。
   **ツール呼び出しの付帯情報**: Chat Completions のツール呼び出しに付いてくるプロバイダ固有の `extra_content`
-  （Gemini API の `thought_signature`。送り返さないと次のターンが 500）は不透明な推論ブロックとして履歴に持ち、
+  （Gemini API の `thought_signature`。Gemini API は送り返すことを求める）は不透明な推論ブロックとして履歴に持ち、
   次のターンで同じ呼び出しへ付けて返す。ツールを呼んだのに `finish_reason: "stop"` を返すプロバイダ（同）は、
   呼び出しがあればツールのターンとして扱う（#743）。
 - **思考強度の正規化**: `effort: low/medium/high` を内部正規形に持ち、各アダプタが reasoning budget /

@@ -237,8 +237,8 @@ fn join_text(blocks: &[Block]) -> String {
 #[derive(Default)]
 struct ToolAcc {
     calls: BTreeMap<i64, (String, String, String)>,
-    /// 呼び出し ID → プロバイダ固有の `extra_content`（届いたものだけ）。
-    extras: BTreeMap<String, Value>,
+    /// 枠（index）→ プロバイダ固有の `extra_content`（届いたものだけ。ID は取り出すときに引く）。
+    extras: BTreeMap<i64, Value>,
 }
 
 impl ToolAcc {
@@ -252,8 +252,8 @@ impl ToolAcc {
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty());
             let idx = self.index_of(tc, id);
-            if let (Some(id), Some(extra)) = (id, tc.get("extra_content")) {
-                self.extras.insert(id.to_string(), extra.clone());
+            if let Some(extra) = tc.get("extra_content") {
+                self.extras.insert(idx, extra.clone());
             }
             let entry = self.calls.entry(idx).or_default();
             if let Some(id) = id {
@@ -274,19 +274,32 @@ impl ToolAcc {
 
     /// 差分の行き先。`index` が無い（Gemini API は各呼び出しを 1 チャンクで丸ごと送り、
     /// `index` を付けない）ときは、新しい ID なら新しい枠、ID が無ければ直前の枠にする。
-    /// 全部 0 に寄せると、並行の呼び出しが 1 つに混ざる。
+    /// 全部 0 に寄せると、並行の呼び出しが 1 つに混ざる。直前の枠の ID がまだ空なら
+    /// （ID が名前より後に届いた）、新しい ID もその枠のもの。ID も無く名前が来たら、
+    /// 名前の決まった枠の続きではなく次の呼び出しの始まり。
     fn index_of(&self, tc: &Value, id: Option<&str>) -> i64 {
         if let Some(idx) = tc.get("index").and_then(Value::as_i64) {
             return idx;
         }
-        let last = self.calls.keys().next_back().copied();
-        match id {
-            Some(id) => self
-                .calls
-                .iter()
-                .find(|(_, (known, _, _))| known == id)
-                .map_or_else(|| last.map_or(0, |l| l + 1), |(idx, _)| *idx),
-            None => last.unwrap_or(0),
+        let last = self.calls.iter().next_back();
+        let Some(id) = id else {
+            let names_call = tc
+                .pointer("/function/name")
+                .and_then(Value::as_str)
+                .is_some_and(|n| !n.is_empty());
+            return match last {
+                Some((idx, (_, name, _))) if names_call && !name.is_empty() => idx + 1,
+                Some((idx, _)) => *idx,
+                None => 0,
+            };
+        };
+        if let Some((idx, _)) = self.calls.iter().find(|(_, (known, _, _))| known == id) {
+            return *idx;
+        }
+        match last {
+            Some((idx, (known, _, _))) if known.is_empty() => *idx,
+            Some((idx, _)) => idx + 1,
+            None => 0,
         }
     }
 
@@ -294,9 +307,12 @@ impl ToolAcc {
     fn drain_extras(&mut self) -> Vec<StreamDelta> {
         std::mem::take(&mut self.extras)
             .into_iter()
-            .map(|(id, extra)| StreamDelta::ReasoningItem {
-                provider: EXTRA_CONTENT_PROVIDER.to_string(),
-                item: json!({ "tool_call_id": id, "extra_content": extra }),
+            .filter_map(|(idx, extra)| {
+                let id = self.calls.get(&idx).map(|(id, _, _)| id.as_str())?;
+                (!id.is_empty()).then(|| StreamDelta::ReasoningItem {
+                    provider: EXTRA_CONTENT_PROVIDER.to_string(),
+                    item: json!({ "tool_call_id": id, "extra_content": extra }),
+                })
             })
             .collect()
     }
@@ -393,6 +409,8 @@ impl LlmProvider for OpenAiProvider {
             let mut started: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
             let mut usage = Usage::default();
             let mut stop = StopReason::EndTurn;
+            // 最後に受け取った finish_reason が "stop" か（終端が欠けたストリームは昇格させない）。
+            let mut said_stop = false;
             let mut finished = false;
             // 本文先頭の `<think>…</think>` は思考として流す（対象モデルだけ・#584）。
             let mut think_tags = think_tags.then(ThinkSplitter::default);
@@ -460,6 +478,7 @@ impl LlmProvider for OpenAiProvider {
                     }
                     if let Some(fr) = choice.get("finish_reason").and_then(Value::as_str) {
                         stop = map_finish_reason(Some(fr));
+                        said_stop = fr == "stop";
                     }
                 }
             }
@@ -476,8 +495,9 @@ impl LlmProvider for OpenAiProvider {
             }
             let stops = acc.drain_stops();
             // Gemini API はツールを呼んでも `finish_reason: "stop"` を返す。呼び出しがあるのに
-            // EndTurn で返すと、エージェントがツールを実行せずに終わる。
-            if !stops.is_empty() && stop == StopReason::EndTurn {
+            // EndTurn で返すと、エージェントがツールを実行せずに終わる。finish_reason が
+            // 届かずに切れたストリーム（引数が途中かもしれない）は昇格させない。
+            if !stops.is_empty() && said_stop {
                 stop = StopReason::ToolUse;
             }
             for s in stops {
@@ -534,7 +554,7 @@ mod tests {
 
     #[test]
     fn extra_content_goes_back_on_the_same_tool_call() {
-        // Gemini API は thought_signature を送り返さないと次のターンを 500 で落とす。
+        // Gemini API は思考の署名（thought_signature）を同じ呼び出しへ付けて返すことを求める。
         let m = Message {
             role: Role::Assistant,
             content: vec![
@@ -597,6 +617,54 @@ mod tests {
             }
             _ => panic!("expected ToolUseStop"),
         }
+    }
+
+    #[test]
+    fn tool_acc_without_index_keeps_calls_apart_and_follows_late_ids() {
+        // Gemini API の形: index 無し・1 チャンクに丸ごと。
+        let mut acc = ToolAcc::default();
+        acc.ingest(&json!([
+            {"id":"c1","function":{"name":"a","arguments":"{\"x\":1}"},"extra_content":{"k":1}},
+            {"id":"c2","function":{"name":"a","arguments":"{\"x\":2}"}}
+        ]));
+        // ID が最初のチャンクにだけ来て、引数が続きのチャンクに分かれる。
+        acc.ingest(&json!([{"id":"c3","function":{"name":"b","arguments":"{\"y\""}}]));
+        acc.ingest(&json!([{"function":{"arguments":":3}"},"extra_content":{"k":3}}]));
+        // ID が名前より後に届く。
+        acc.ingest(&json!([{"function":{"name":"c","arguments":""}}]));
+        acc.ingest(&json!([{"id":"c4","function":{"arguments":"{}"}}]));
+        let extras: Vec<(String, Value)> = acc
+            .drain_extras()
+            .into_iter()
+            .map(|d| match d {
+                StreamDelta::ReasoningItem { item, .. } => (
+                    item["tool_call_id"].as_str().unwrap().to_string(),
+                    item["extra_content"].clone(),
+                ),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            extras,
+            [("c1".into(), json!({"k":1})), ("c3".into(), json!({"k":3}))]
+        );
+        let stops: Vec<(String, Value)> = acc
+            .drain_stops()
+            .into_iter()
+            .map(|d| match d {
+                StreamDelta::ToolUseStop { id, input } => (id, input),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            stops,
+            [
+                ("c1".into(), json!({"x":1})),
+                ("c2".into(), json!({"x":2})),
+                ("c3".into(), json!({"y":3})),
+                ("c4".into(), json!({})),
+            ]
+        );
     }
 
     #[test]

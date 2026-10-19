@@ -356,15 +356,7 @@ impl LlmGateway {
         }
         req.model = Some(entry.resolved_id().to_string());
 
-        // 接続確立前（最初のバイト前）の Unavailable のみ再試行する。
-        match slot.provider.stream(&req).await {
-            Ok(s) => Ok(s),
-            Err(LlmError::Unavailable(first)) => {
-                tracing::warn!(error = %first, "llm provider unavailable, retrying once");
-                slot.provider.stream(&req).await
-            }
-            Err(e) => Err(e),
-        }
+        stream_with_retry(slot.provider.as_ref(), &req, &UNAVAILABLE_BACKOFF).await
     }
 
     /// モデル（論理名）の振り先プロバイダの会計名。未知モデルは既定プロバイダ。
@@ -548,10 +540,100 @@ fn build_provider(
     }
 }
 
+/// 接続確立前（最初のバイト前）の Unavailable を再試行するまでの待ち時間（試行の間ごと）。
+///
+/// 最初のバイト前なので、送り直しても二重に生成されることはない。Gemini API の
+/// gemma-4-31b-it は数回に 1 回 500 を返し、すぐの 1 回だけでは足りなかった（#743）。
+const UNAVAILABLE_BACKOFF: [std::time::Duration; 2] = [
+    std::time::Duration::from_millis(500),
+    std::time::Duration::from_millis(1500),
+];
+
+/// `backoff` の数だけ、接続確立前の Unavailable を待ってから送り直す。
+async fn stream_with_retry(
+    provider: &dyn LlmProvider,
+    req: &GenerateRequest,
+    backoff: &[std::time::Duration],
+) -> Result<DeltaStream, LlmError> {
+    let mut waits = backoff.iter();
+    loop {
+        match provider.stream(req).await {
+            Err(LlmError::Unavailable(e)) => {
+                let Some(wait) = waits.next() else {
+                    return Err(LlmError::Unavailable(e));
+                };
+                tracing::warn!(error = %e, ?wait, "llm provider unavailable, retrying");
+                tokio::time::sleep(*wait).await;
+            }
+            other => return other,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{ModelCatalog, ModelEntry, ProviderConfig};
+
+    /// 最初の `fail` 回は `err` を返し、その後は空のストリームを返す。
+    struct Flaky {
+        fail: usize,
+        err: fn() -> LlmError,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for Flaky {
+        fn name(&self) -> &'static str {
+            "flaky"
+        }
+        async fn stream(&self, _req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < self.fail {
+                return Err((self.err)());
+            }
+            Ok(Box::pin(futures::stream::empty()))
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_before_first_byte_is_retried_as_many_times_as_backoff_allows() {
+        let backoff = [std::time::Duration::from_millis(1); 2];
+        let req = GenerateRequest::new(Vec::new());
+        let unavailable = || LlmError::Unavailable("500".into());
+        let calls = |p: &Flaky| p.calls.load(std::sync::atomic::Ordering::SeqCst);
+
+        let p = Flaky {
+            fail: 2,
+            err: unavailable,
+            calls: 0.into(),
+        };
+        assert!(stream_with_retry(&p, &req, &backoff).await.is_ok());
+        assert_eq!(calls(&p), 3);
+
+        let p = Flaky {
+            fail: 3,
+            err: unavailable,
+            calls: 0.into(),
+        };
+        assert!(matches!(
+            stream_with_retry(&p, &req, &backoff).await,
+            Err(LlmError::Unavailable(_))
+        ));
+        assert_eq!(calls(&p), 3);
+
+        // 直せば通るたぐいの誤りは送り直さない。
+        let p = Flaky {
+            fail: 1,
+            err: || LlmError::BadRequest("400".into()),
+            calls: 0.into(),
+        };
+        assert!(matches!(
+            stream_with_retry(&p, &req, &backoff).await,
+            Err(LlmError::BadRequest(_))
+        ));
+        assert_eq!(calls(&p), 1);
+    }
 
     /// 指定 kind ＋ base_url ＋ api_key から最小構成の設定を組む。
     fn config(kind: ProviderKind, base_url: Option<&str>, api_key: Option<&str>) -> GatewayConfig {
