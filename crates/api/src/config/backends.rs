@@ -325,7 +325,7 @@ pub struct LlmModelEntry {
     /// 組織の管理者が有効にするまで使わせない（[`llm_gateway::ModelEntry::requires_opt_in`]）。
     #[serde(default)]
     pub requires_opt_in: bool,
-    /// 本文の先頭に `<think>…</think>` で思考を返すモデル
+    /// 本文の先頭に `<think>…</think>`（`<thought>…</thought>`）で思考を返すモデル
     /// （[`llm_gateway::ModelEntry::reasoning_in_content`]）。
     #[serde(default)]
     pub reasoning_in_content: bool,

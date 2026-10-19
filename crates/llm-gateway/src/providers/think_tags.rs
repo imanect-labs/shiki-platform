@@ -1,15 +1,16 @@
 //! 本文に埋め込まれた `<think>…</think>` を思考として切り出す（#584）。
 //!
 //! 一部のモデル（MiniMax M3 等）は思考を `reasoning_content` ではなく本文（`content`）の
-//! 先頭に `<think>…</think>` で入れて返す。そのまま流すと回答に思考が出るので、本文の
+//! 先頭に `<think>…</think>` で入れて返す。Gemini API の OpenAI 互換口で動く Gemma 4 は
+//! 同じことを `<thought>…</thought>` でするので、どちらのタグも受ける。そのまま流すと回答に思考が出るので、本文の
 //! **先頭**（前置きの空白は許容）にあるものだけを思考へ振り分け、残りを本文にする。
 //! 先頭以外の `<think>` はコード例などの本文として扱い、触らない。
 //!
 //! ストリームではタグがチャンクの境目で分かれる（`<thi` + `nk>`）ので、判定がつくまで
 //! 末尾を保留する状態機械にしている。
 
-const OPEN: &str = "<think>";
-const CLOSE: &str = "</think>";
+/// 受けるタグの組（開き・閉じ）。どれも ASCII。
+const TAGS: [(&str, &str); 2] = [("<think>", "</think>"), ("<thought>", "</thought>")];
 
 /// 切り出した断片。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +45,8 @@ pub(super) struct ThinkSplitter {
     state: State,
     /// 判定を保留している末尾（タグの途中かもしれない部分）。
     pending: String,
+    /// 開いたタグに対応する閉じタグ（`InThink` の間だけ意味を持つ）。
+    close: &'static str,
 }
 
 impl Default for ThinkSplitter {
@@ -51,6 +54,7 @@ impl Default for ThinkSplitter {
         ThinkSplitter {
             state: State::Start,
             pending: String::new(),
+            close: TAGS[0].1,
         }
     }
 }
@@ -68,10 +72,14 @@ impl ThinkSplitter {
                 }
                 State::Start => {
                     let trimmed = self.pending.trim_start();
-                    if let Some(rest) = trimmed.strip_prefix(OPEN) {
+                    if let Some((rest, close)) = TAGS
+                        .iter()
+                        .find_map(|(open, close)| Some((trimmed.strip_prefix(open)?, *close)))
+                    {
                         self.pending = rest.to_string();
+                        self.close = close;
                         self.state = State::InThink;
-                    } else if OPEN.starts_with(trimmed) {
+                    } else if TAGS.iter().any(|(open, _)| open.starts_with(trimmed)) {
                         // 空白だけ、または `<thi` のようにタグの途中。続きを待つ。
                         return out;
                     } else {
@@ -79,14 +87,14 @@ impl ThinkSplitter {
                     }
                 }
                 State::InThink => {
-                    if let Some(pos) = self.pending.find(CLOSE) {
+                    if let Some(pos) = self.pending.find(self.close) {
                         let thinking = self.pending[..pos].to_string();
-                        self.pending = self.pending[pos + CLOSE.len()..].to_string();
+                        self.pending = self.pending[pos + self.close.len()..].to_string();
                         emit(&mut out, Piece::Thinking(thinking));
                         self.state = State::AfterThink;
                     } else {
                         // 末尾が `</th` のように閉じタグの途中なら、その分だけ残す。
-                        let keep = partial_suffix(&self.pending, CLOSE);
+                        let keep = partial_suffix(&self.pending, self.close);
                         let cut = self.pending.len() - keep;
                         let thinking = self.pending[..cut].to_string();
                         self.pending.drain(..cut);
@@ -235,6 +243,26 @@ mod tests {
     #[test]
     fn stream_ending_mid_open_tag_is_text() {
         assert_eq!(run(&["<thi"]), [text("<thi")]);
+    }
+
+    #[test]
+    fn thought_tags_are_thinking_too() {
+        // Gemini API の OpenAI 互換口の Gemma 4。
+        assert_eq!(
+            run(&["<thought>The user", " wants", "</thou", "ght>東京は晴れ"]),
+            [think("The user wants"), text("東京は晴れ")]
+        );
+        // 開きタグがチャンク境界で割れても（`<th` は両方のタグの接頭辞）。
+        assert_eq!(run(&["<th", "ought>x</thought>y"]), [think("x"), text("y")]);
+        assert_eq!(run(&["<tho", "ught>x</thought>y"]), [think("x"), text("y")]);
+        assert_eq!(run(&["<th", "ink>x</think>y"]), [think("x"), text("y")]);
+        // `<thinking>` はどちらでもないので本文。
+        assert_eq!(run(&["<thinking>x"]), [text("<thinking>x")]);
+        // 開いたタグと違う閉じタグでは閉じない。
+        assert_eq!(
+            run(&["<thought>a</think>b</thought>c"]),
+            [think("a</think>b"), text("c")]
+        );
     }
 
     #[test]
