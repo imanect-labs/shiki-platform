@@ -28,8 +28,8 @@
 use agent_core::{Tool, ToolName};
 use std::sync::Arc;
 
-/// 実行前フェーズの段階。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 実行前フェーズの段階（宣言の順に進む）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum GateStage {
     /// 明確化（質問カードを出す）。`emit_ui` のみ提示する。
     Clarify,
@@ -208,9 +208,23 @@ impl super::ChatWorker {
             .store
             .fenced_answer_texts(run.thread_id, &ctx.tenant_id)
             .await?;
-        Ok(stage_from_answers(
-            texts.iter().map(|(id, text)| (*id, text.as_str())),
-        ))
+        let stage = stage_from_answers(texts.iter().map(|(id, text)| (*id, text.as_str())));
+        // 置き換え前の emit_ui のカードで進めていた会話を巻き戻さない（#604 の 7 つ目で
+        // 旧データと一緒に消す互換処理）。
+        let (asked, planned) = self
+            .store
+            .legacy_gate_cards(run.thread_id, &ctx.tenant_id)
+            .await?;
+        Ok(stage.max(stage_from_legacy_cards(asked, planned)))
+    }
+}
+
+/// 置き換え前の emit_ui のカード（`question_card`・`plan_card`）を出したかによる段階。
+fn stage_from_legacy_cards(asked: bool, planned: bool) -> GateStage {
+    match (asked, planned) {
+        (_, true) => GateStage::Execute,
+        (true, false) => GateStage::Plan,
+        (false, false) => GateStage::Clarify,
     }
 }
 
@@ -273,6 +287,16 @@ mod tests {
 
     const ASK: &str = "質問します。\n\n```ui\nask 確認\n? 対象は\n- 国内\n- 海外\n```";
     const PLAN: &str = "```ui\nplan 調査の計画\n1. 市場規模を調べる\n2. 比べる\n```";
+
+    #[test]
+    fn legacy_cards_keep_the_stage() {
+        assert_eq!(stage_from_legacy_cards(false, false), GateStage::Clarify);
+        assert_eq!(stage_from_legacy_cards(true, false), GateStage::Plan);
+        assert_eq!(stage_from_legacy_cards(true, true), GateStage::Execute);
+        // 本文の段階と合わせるときは進んでいる方を取る。
+        assert_eq!(GateStage::Plan.max(GateStage::Clarify), GateStage::Plan);
+        assert_eq!(GateStage::Plan.max(GateStage::Execute), GateStage::Execute);
+    }
 
     #[test]
     fn stage_advances_with_ask_then_plan() {

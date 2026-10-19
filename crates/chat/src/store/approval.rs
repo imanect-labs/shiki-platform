@@ -269,4 +269,27 @@ impl ChatStore {
         .await
         .map_err(|e| crate::ChatError::Internal(format!("回答の本文の取得に失敗: {e}")))
     }
+
+    /// 置き換え前の emit_ui のカードを出したか（`(question_card, plan_card)`・#604 の互換）。
+    ///
+    /// 更新前に旧カードで進めていた会話の段階を引き継ぐためだけに読む。旧データを消す
+    /// 7 つ目で、この読み取りごと消す。
+    pub async fn legacy_gate_cards(
+        &self,
+        thread_id: uuid::Uuid,
+        tenant_id: &str,
+    ) -> Result<(bool, bool), crate::ChatError> {
+        sqlx::query_as(
+            "SELECT \
+               coalesce(bool_or(b->'spec'->'root'->>'component' = 'question_card'), false), \
+               coalesce(bool_or(b->'spec'->'root'->>'component' = 'plan_card'), false) \
+             FROM message m, jsonb_array_elements(m.content) b \
+             WHERE m.thread_id = $1 AND m.tenant_id = $2 AND b->>'type' = 'generative_ui'",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(|e| crate::ChatError::Internal(format!("旧カードの有無の取得に失敗: {e}")))
+    }
 }
