@@ -59,7 +59,7 @@ function OtherInput({
       onChange={(e) => onChange(e.target.value)}
       placeholder="その他（自由記述）"
       disabled={disabled}
-      className="mt-1 h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+      className="mt-1 h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm pointer-coarse:text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
     />
   );
 }
@@ -97,7 +97,7 @@ export function SelectField({
         onChange={(e) => pick(e.target.value, other)}
         required={field.required}
         disabled={disabled}
-        className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+        className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm pointer-coarse:text-base text-foreground shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
       >
         {!field.required && !field.default ? <option value="">選択してください</option> : null}
         {options.map((opt) => (
@@ -296,7 +296,7 @@ export function DateField({
   const [end, setEnd] = React.useState("");
   useInitialEmit(onChange, field.range ? "" : (field.default ?? ""));
   const inputCls =
-    "h-9 rounded-lg border border-input bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
+    "h-9 rounded-lg border border-input bg-background px-3 text-sm pointer-coarse:text-base text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
   return (
     <div className="space-y-1.5">
       <FieldLabel id={id} label={field.label} required={field.required} />

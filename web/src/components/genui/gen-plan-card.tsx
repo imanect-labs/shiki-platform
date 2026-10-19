@@ -109,7 +109,7 @@ export function GenUiPlanCard({ card }: { card: PlanCardProps }) {
             aria-label="計画の修正指示"
             rows={3}
             disabled={busy}
-            className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm leading-relaxed text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm pointer-coarse:text-base leading-relaxed text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           />
         </div>
       ) : null}

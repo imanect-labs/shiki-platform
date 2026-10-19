@@ -251,7 +251,7 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
                       aria-label="その他の回答"
                       rows={2}
                       disabled={busy}
-                      className="mt-0.5 w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                      className="mt-0.5 w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm pointer-coarse:text-base text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                     />
                   ) : null}
                 </div>
@@ -263,7 +263,7 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
                   aria-labelledby={`genui-q-${card.id}-${q.id}`}
                   rows={4}
                   disabled={busy}
-                  className="mt-3 w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 text-sm leading-relaxed text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                  className="mt-3 w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 text-sm pointer-coarse:text-base leading-relaxed text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                 />
               )}
             </motion.div>
