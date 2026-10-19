@@ -143,7 +143,8 @@ function PassageRow({
       >
         {body}
         <ChevronRight
-          className="mt-1 size-3.5 shrink-0 text-transparent transition-colors group-hover:text-muted-foreground"
+          // タッチ端末にはホバーが無いので、押せる行だと分かるよう常に薄く出す。
+          className="mt-1 size-3.5 shrink-0 text-transparent transition-colors group-hover:text-muted-foreground pointer-coarse:text-muted-foreground/60"
           aria-hidden
         />
       </button>

@@ -5,22 +5,27 @@
 /// - 下書きは**クライアント内のみ**（サーバ未作成・[`draft-store`] が真実源）。チャットで
 ///   「ドキュメントを作って」→ save_note が note_draft を返し、本画面へ遷移して本文を用意する。
 /// - 同じ会話の複数下書きは**上部タブ**で切替（別名 = 別下書き・N 本並存）。
-/// - 右上「ドライブに保存」で POST /notes → 実体化し、その会話をノートへ紐付けて /notes/{id} へ。
+/// - 右上「保存」（PC は「ドライブに保存」）で POST /notes → 実体化し、その会話をノートへ紐付けて /notes/{id} へ。
 /// - アシスタント（同じ会話）を同席させ、保存前に AI と詰められる（流し込みで再シード）。
 
-import { ArrowLeft, FileWarning, MessageSquare, PencilLine, Save, X } from "lucide-react";
-import Link from "next/link";
+import { FileWarning } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
 import type { Editor } from "@tiptap/react";
 
 import { Conversation } from "@/components/chat/conversation";
 import { DraftNoteEditor } from "@/components/notes/draft-note-editor";
-import { SaveDraftDialog, type SaveTarget } from "@/components/notes/save-draft-dialog";
-import { usePageHeader } from "@/components/shell/page-header-context";
-import { Button } from "@/components/ui/button";
-import { EmptyState } from "@/components/ui/empty-state";
-import { FadeSlide } from "@/components/ui/motion-primitives";
+import {
+  DraftBadge,
+  DraftNotFound,
+  DraftTabs,
+  SaveDraftDialog,
+  draftChrome,
+  type SaveTarget,
+} from "@/components/notes/save-draft-dialog";
+import { AssistantLayout } from "@/components/shell/assistant-sheet";
+import { EditorMobileHeading, useEditorBack } from "@/components/shell/editor-loading";
+import { usePageChrome } from "@/components/shell/page-header-context";
 import { toast } from "@/components/ui/use-toast";
 import { getThreadMessages, setThreadOriginNote } from "@/lib/chat-api";
 import { createNote } from "@/lib/notes-api";
@@ -33,7 +38,6 @@ import {
   useDrafts,
 } from "@/lib/notes/draft-store";
 import { serializeFragment } from "@/lib/notes/markdown-serialize";
-import { cn } from "@/lib/utils";
 
 /// useSearchParams を使うため Suspense 境界でラップする（静的生成の CSR bailout 要件・Next.js）。
 export default function DraftNotePage() {
@@ -96,6 +100,8 @@ function DraftNotePageInner() {
           }
         }
       })
+      // 履歴を読めなくても（会話が消えた等）ローカルの下書きで開く。
+      .catch(() => {})
       .finally(() => {
         if (!cancelled) setRecovered(true);
       });
@@ -159,96 +165,48 @@ function DraftNotePageInner() {
     [activeName, saving, threadId, router],
   );
 
-  // 統一ヘッダへ注入（戻る/下書きバッジ/保存/アシスタント切替）。
-  usePageHeader(
-    () => (
-      <div className="flex min-w-0 flex-1 items-center gap-2.5">
-        <Link
-          href="/drive"
-          className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-95"
-          aria-label="ドライブへ戻る"
-        >
-          <ArrowLeft className="size-4" />
-        </Link>
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-          {activeName || "下書きノート"}
-        </span>
-        <span
-          className="inline-flex items-center gap-1 rounded-full border border-dashed border-amber-500/50 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400"
-          data-testid="draft-badge"
-        >
-          <PencilLine className="size-3.5" aria-hidden />
-          下書き（未保存）
-        </span>
-        <Button
-          type="button"
-          size="sm"
-          onClick={() => setSaveOpen(true)}
-          disabled={!activeName}
-          data-testid="draft-save-button"
-        >
-          <Save className="mr-1.5 size-4" aria-hidden />
-          ドライブに保存
-        </Button>
-        <Button
-          type="button"
-          variant={chatOpen ? "secondary" : "ghost"}
-          size="sm"
-          onClick={() => setChatOpen((v) => !v)}
-          aria-pressed={chatOpen}
-          data-testid="note-chat-toggle"
-        >
-          <MessageSquare className="mr-1.5 size-4" aria-hidden />
-          アシスタント
-        </Button>
-      </div>
-    ),
-    [activeName, chatOpen],
+  // クローム（戻る → 保存 → アシスタント → ⋯）。下書きが無い画面でも戻るを出す。
+  const back = useEditorBack();
+  usePageChrome(
+    () =>
+      draftChrome({
+        back,
+        threadId,
+        name: activeName || "下書きノート",
+        canSave: Boolean(activeName),
+        onSave: () => setSaveOpen(true),
+        chatOpen,
+        onToggleChat: () => setChatOpen((v) => !v),
+      }),
+    [back, threadId, activeName, chatOpen],
   );
 
   if (!threadId) {
-    return (
-      <EmptyState
-        title="下書きが見つかりません"
-        description="チャットから「ドキュメントを作って」と頼むと、ここに下書きが用意されます。"
-      />
-    );
+    return <DraftNotFound what="ドキュメント" />;
   }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="relative flex min-h-0 flex-1">
-        <div
-          className={cn(
-            "min-w-0 flex-1 overflow-y-auto transition-[padding] duration-[var(--duration-normal)] ease-[var(--ease-standard)]",
-            chatOpen && "lg:pr-[28rem]",
-          )}
-        >
-          <div className="mx-auto max-w-3xl px-4 pb-24 pt-4">
+      <AssistantLayout
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        label="ノートのアシスタント"
+        panel={
+          // 下書き画面では遷移せずアクティブ下書きを切替（onNoteDraftOpened）。
+          <Conversation threadId={threadId} variant="panel" onNoteDraftOpened={onNoteDraftOpened} />
+        }
+      >
+        <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-y-contain">
+          <div className="mx-auto max-w-3xl px-4 pb-24 pt-4 max-md:pt-1">
+            {/* スマホ: 本文の大きな題名（先頭の見出し）の上に小さく状態行。 */}
+            <EditorMobileHeading className="px-2 pb-1 pt-0" status={<DraftBadge />} />
             {/* 下書きタブ（同じ会話の複数下書きを切替・別名 = 別下書き）。 */}
-            {drafts.length > 1 ? (
-              <div
-                className="mb-3 flex flex-wrap items-center gap-1.5"
-                data-testid="draft-tabs"
-              >
-                {drafts.map((d) => (
-                  <button
-                    key={d.name}
-                    type="button"
-                    onClick={() => openDraft(d.name)}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[13px] transition-colors",
-                      d.name === activeName
-                        ? "border-primary/40 bg-secondary font-medium text-foreground"
-                        : "border-border/60 bg-card/40 text-muted-foreground hover:bg-secondary hover:text-foreground",
-                    )}
-                  >
-                    <PencilLine className="size-3.5 shrink-0" aria-hidden />
-                    <span className="max-w-[12rem] truncate">{d.name}</span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
+            <DraftTabs
+              drafts={drafts}
+              activeName={activeName}
+              onOpen={openDraft}
+              className="mb-3"
+            />
 
             {activeName ? (
               <DraftNoteEditor
@@ -265,37 +223,7 @@ function DraftNotePageInner() {
             )}
           </div>
         </div>
-
-        {chatOpen && (
-          <FadeSlide
-            from="right"
-            role="complementary"
-            aria-label="ノートのアシスタント"
-            className="absolute inset-y-3 right-3 z-20 flex w-[min(420px,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border bg-card shadow-lg"
-          >
-            <div className="flex h-11 shrink-0 items-center gap-2 px-3 shiki-dash-bottom">
-              <MessageSquare className="size-4 text-muted-foreground" aria-hidden />
-              <span className="flex-1 text-sm font-medium">アシスタント</span>
-              <button
-                type="button"
-                onClick={() => setChatOpen(false)}
-                aria-label="チャットを閉じる"
-                className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-90"
-              >
-                <X className="size-4" aria-hidden />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1">
-              {/* 下書き画面では遷移せずアクティブ下書きを切替（onNoteDraftOpened）。 */}
-              <Conversation
-                threadId={threadId}
-                variant="panel"
-                onNoteDraftOpened={onNoteDraftOpened}
-              />
-            </div>
-          </FadeSlide>
-        )}
-      </div>
+      </AssistantLayout>
 
       <SaveDraftDialog
         open={saveOpen}

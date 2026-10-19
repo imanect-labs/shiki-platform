@@ -19,6 +19,8 @@ type Props = {
   onPick: (nodeType: string) => void;
   /// 呼び出し元の文脈ラベル（例: 「read_1 の後ろに追加」）。
   contextLabel?: string;
+  /// 外枠の幅・高さの上書き（スマホの下からのシートでは全幅）。
+  className?: string;
 };
 
 function groupByCategory(entries: readonly NodeCatalogEntry[]) {
@@ -31,12 +33,13 @@ function groupByCategory(entries: readonly NodeCatalogEntry[]) {
   return [...groups.values()];
 }
 
-export function AddNodeMenu({ onPick, contextLabel }: Props) {
+export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
   const [query, setQuery] = React.useState("");
   const inputRef = React.useRef<HTMLInputElement>(null);
 
+  // タッチ端末では開いた瞬間にキーボードを出さない（一覧から選ぶのが主）。
   React.useEffect(() => {
-    inputRef.current?.focus();
+    if (window.matchMedia("(pointer: fine)").matches) inputRef.current?.focus();
   }, []);
 
   const q = query.trim().toLowerCase();
@@ -52,7 +55,7 @@ export function AddNodeMenu({ onPick, contextLabel }: Props) {
   const upcoming = filtered.filter((e) => !e.available);
 
   return (
-    <div className="flex max-h-96 w-80 flex-col" data-testid="add-node-menu">
+    <div className={cn("flex max-h-96 w-80 flex-col", className)} data-testid="add-node-menu">
       {contextLabel ? (
         <p className="px-1 pb-2 text-xs text-muted-foreground">{contextLabel}</p>
       ) : null}
@@ -65,12 +68,14 @@ export function AddNodeMenu({ onPick, contextLabel }: Props) {
           ref={inputRef}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          type="search"
+          enterKeyHint="search"
           placeholder="ブロックを検索…"
-          className="h-9 pl-8"
+          className="h-9 pl-8 pointer-coarse:h-11"
           aria-label="ブロックを検索"
         />
       </div>
-      <div className="mt-2 flex-1 overflow-y-auto pr-1 scrollbar-subtle">
+      <div className="mt-2 flex-1 overflow-y-auto overscroll-y-contain pr-1 scrollbar-subtle">
         {availableGroups.map((group) => (
           <div key={group.label} className="mb-2">
             <p className="px-1 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -85,7 +90,7 @@ export function AddNodeMenu({ onPick, contextLabel }: Props) {
                       type="button"
                       onClick={() => onPick(entry.type)}
                       className={cn(
-                        "flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left",
+                        "flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left pointer-coarse:py-2.5",
                         "transition-colors duration-fast hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       )}
                     >

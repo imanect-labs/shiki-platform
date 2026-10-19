@@ -20,7 +20,14 @@ import {
   Presentation,
 } from "lucide-react";
 
-import type { CrumbResponse, SortField } from "@/lib/storage";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { formatBytes } from "@/lib/format";
+import type { CrumbResponse, NodeResponse, SortField } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
 /// 一覧の列レイアウト（ヘッダーと各行で共有）。OneDrive 風に
@@ -88,7 +95,55 @@ export function NodeIcon({
   return <Icon className={cn("size-6", color, className)} aria-hidden />;
 }
 
-/// パンくず（root→自身）。各要素クリックでそのフォルダへ遷移する。
+/// 種類の短い呼び名（行の 2 行目・アクションシートのメタ情報）。開く画面の判定
+/// （drive-browser の open）と同じ拡張子で、利用者が知っている言葉にする。
+export function nodeKindLabel(node: Pick<NodeResponse, "kind" | "name" | "content_type">): string {
+  if (node.kind === "folder") return "フォルダ";
+  const ext = node.name.toLowerCase().split(".").pop() ?? "";
+  const ct = (node.content_type ?? "").toLowerCase();
+  if (ext === "md") return "ノート";
+  if (ext === "slide") return "スライド";
+  if (ext === "csv") return "CSV";
+  if (ext === "pdf" || ct === "application/pdf") return "PDF";
+  if (["doc", "docx", "odt", "rtf"].includes(ext)) return "ドキュメント";
+  if (["xls", "xlsx", "ods"].includes(ext)) return "スプレッドシート";
+  if (["ppt", "pptx", "odp"].includes(ext)) return "プレゼンテーション";
+  if (ct.startsWith("image/")) return "画像";
+  if (ct.startsWith("video/")) return "動画";
+  if (ct.startsWith("audio/")) return "音声";
+  if (["zip", "tar", "gz", "rar", "7z"].includes(ext)) return "圧縮ファイル";
+  if (ext === "txt" || ct.startsWith("text/")) return "テキスト";
+  return "ファイル";
+}
+
+const timeFormatter = new Intl.DateTimeFormat("ja-JP", { hour: "2-digit", minute: "2-digit" });
+
+/// 狭い幅向けの短い日時（今日=時刻、今年=月/日、それ以前=年/月/日）。
+export function formatShortDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return timeFormatter.format(d);
+  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}/${d.getDate()}`;
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+/// 共有中か（shared フラグはバックエンドが後続で提供。未提供は false に倒す）。
+export function isShared(node: NodeResponse): boolean {
+  return Boolean((node as { shared?: boolean }).shared);
+}
+
+/// 行の 2 行目に出すメタ情報（種類・更新日・サイズ・共有中）を「・」区切りで並べる。
+export function nodeMetaParts(node: NodeResponse): string[] {
+  return [
+    nodeKindLabel(node),
+    `${formatShortDate(node.updated_at)} 更新`,
+    node.kind === "folder" ? null : formatBytes(node.size_bytes),
+    isShared(node) ? "共有中" : null,
+  ].filter((p): p is string => Boolean(p));
+}
+
+/// パンくず（root→自身）。各要素クリックでそのフォルダへ遷移する（PC）。
 export function Breadcrumbs({
   crumbs,
   onNavigate,
@@ -130,6 +185,64 @@ export function Breadcrumbs({
   );
 }
 
+/// スマホ見出しの上に置く短いパンくず。深い階層を横に並べると読めない幅になるため、
+/// 「親フォルダへ戻る」＋（祖父母より上があれば）… のドロップダウンにまとめる。
+/// 現在のフォルダ名は見出し本体（MobilePageTitle の title）が出すのでここには含めない。
+export function MobileBreadcrumbs({
+  crumbs,
+  onNavigate,
+}: {
+  crumbs: CrumbResponse[];
+  onNavigate: (id: string | null) => void;
+}) {
+  if (crumbs.length === 0) return null;
+  // crumbs は root→自身。親は末尾の 1 つ手前（無ければドライブ直下）。
+  const parent = crumbs.length >= 2 ? crumbs[crumbs.length - 2] : null;
+  // 親より上の祖先（ドライブ直下 → … → 祖父母）。
+  const ancestors = crumbs.slice(0, Math.max(0, crumbs.length - 2));
+  return (
+    <nav aria-label="現在の場所" className="-ml-1.5 flex min-w-0 items-center gap-0.5">
+      {ancestors.length > 0 ? (
+        <>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="上の階層を選ぶ"
+                className="relative flex h-7 shrink-0 items-center gap-0.5 rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-accent pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 pointer-coarse:after:content-['']"
+              >
+                …
+                <ChevronDown className="size-3.5" aria-hidden />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="max-w-[min(20rem,calc(100vw-2rem))]">
+              <DropdownMenuItem onSelect={() => onNavigate(null)}>
+                <Home aria-hidden />
+                ドライブ
+              </DropdownMenuItem>
+              {ancestors.map((c) => (
+                <DropdownMenuItem key={c.id} onSelect={() => onNavigate(c.id)}>
+                  <Folder className="fill-amber-400 text-amber-500" aria-hidden />
+                  <span className="truncate">{c.name}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/60" aria-hidden />
+        </>
+      ) : null}
+      <button
+        type="button"
+        onClick={() => onNavigate(parent ? parent.id : null)}
+        className="relative flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-accent pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 pointer-coarse:after:content-['']"
+      >
+        {parent ? null : <Home className="size-3.5 shrink-0" aria-hidden />}
+        <span className="truncate">{parent ? parent.name : "ドライブ"}</span>
+      </button>
+    </nav>
+  );
+}
+
 /// クリックでソートする列見出し（OneDrive 風）。非アクティブ列はホバーで ⌄ を見せ、
 /// アクティブ列は太字＋方向矢印（↑/↓）で現在の並び順を示す。
 function SortLabel({
@@ -166,8 +279,9 @@ function SortLabel({
           <ArrowUp className="size-3.5 shrink-0" aria-hidden />
         )
       ) : (
+        // マウスではホバーで ⌄ を見せる。タッチはホバーが無いので常に淡く出す。
         <ChevronDown
-          className="size-3 shrink-0 opacity-0 transition-opacity group-hover/sort:opacity-50"
+          className="size-3 shrink-0 opacity-40 transition-opacity pointer-fine:opacity-0 pointer-fine:group-hover/sort:opacity-50"
           aria-hidden
         />
       )}
@@ -177,6 +291,8 @@ function SortLabel({
 
 /// 一覧の列見出し行（OneDrive 風）。名前/更新日時/サイズはクリックでソート、
 /// 更新者/共有は表示のみ（サーバ側ソート未対応）。列の出し入れは LIST_GRID と揃える。
+/// 名前列しか無い狭い幅（`@xl` 未満）では出さない: 列見出しが「名前」1 つだけになり、
+/// メタ情報は各行の 2 行目に出る。並べ替えはツールバー（スマホは見出し横）から行う。
 export function ListHeader({
   sort,
   desc,
@@ -190,7 +306,7 @@ export function ListHeader({
     <div
       className={cn(
         LIST_GRID,
-        "shiki-dash-bottom px-3 pb-2 text-[13px] font-medium text-muted-foreground",
+        "shiki-dash-bottom hidden px-3 pb-2 text-[13px] font-medium text-muted-foreground @xl:grid",
       )}
     >
       <SortLabel label="名前" field="name" sort={sort} desc={desc} onSort={onSort} />

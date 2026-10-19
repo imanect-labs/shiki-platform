@@ -117,7 +117,7 @@ export function CommonSection({
               setIdDraft(node.id); // 不正なら reducer が無視 → 元に戻す（成功時は selection 経由で追随）。
             }
           }}
-          className="h-8 font-mono text-xs"
+          className="h-8 font-mono text-xs max-md:text-base"
         />
       </Field>
       <div className="grid grid-cols-2 gap-3">

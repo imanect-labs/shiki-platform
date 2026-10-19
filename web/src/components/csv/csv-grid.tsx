@@ -4,6 +4,9 @@
 ///
 /// 仮想化＋ページ取得で**無限スクロール**（全量ダウンロードしない）。セル編集はローカルに
 /// 蓄積し、保存（明示）で rev 付きパッチ送信 → 楽観ロック（409 は衝突ダイアログ）。
+///
+/// スマホ（タッチ・狭い幅）では、セルを選ぶと「行の詳細」を出し、下からのシートで 1 行の全列を
+/// 縦に並べて読める・直せるようにする（横に長い表をセル単位で追わなくてよい）。
 
 import "@glideapps/glide-data-grid/dist/index.css";
 
@@ -17,10 +20,19 @@ import {
   type GridSelection,
   type Item,
 } from "@glideapps/glide-data-grid";
-import { Sparkles } from "lucide-react";
+import { Rows3, Sparkles } from "lucide-react";
 import * as React from "react";
 
 import { useGlideTheme } from "@/components/csv/glide-theme";
+import {
+  Sheet,
+  SheetBody,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { getRows, type PatchOp, type TableResponse } from "@/lib/tabular-api";
 
 const PAGE_SIZE = 1_000;
@@ -91,6 +103,16 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
     rows: CompactSelection.empty(),
   });
   const selectionRange = selection.current?.range ?? null;
+  // スマホの行詳細シート（開いている行 index）。
+  const touchNarrow = useMediaQuery("(pointer: coarse) and (max-width: 767.98px)");
+  const [detailRow, setDetailRow] = React.useState<number | null>(null);
+
+  /// 1 行ぶんの現在値（キャッシュ済みセル＋未保存編集）。
+  const readRow = (row: number): string[] => {
+    const page = Math.floor(row / PAGE_SIZE);
+    const localRow = cache.current.get(page)?.[row - page * PAGE_SIZE];
+    return columns.map((_, c) => edits.current.get(`${row},${c}`) ?? localRow?.[c] ?? "");
+  };
 
   /// 選択範囲の TSV 抜粋（キャッシュ済みセル＋未保存編集を反映・上限 50×20 セル）。
   const buildSelectionInfo = (range: {
@@ -147,6 +169,14 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
     [nodeId, bump, columns.length],
   );
 
+  // 行詳細の行がまだ取得していないページにある（グリッドで描画されていない遠い行へ「次の行」で
+  // 進んだ・保存後の reset 直後など）なら、空で見せずにそのページを取得する。
+  const detailPage = detailRow != null ? Math.floor(detailRow / PAGE_SIZE) : null;
+  const detailLoaded = detailPage != null && cache.current.has(detailPage);
+  React.useEffect(() => {
+    if (detailPage != null && !detailLoaded) fetchPage(detailPage);
+  }, [detailPage, detailLoaded, fetchPage]);
+
   const getCellContent = React.useCallback(
     ([col, row]: Item): GridCell => {
       const page = Math.floor(row / PAGE_SIZE);
@@ -178,16 +208,24 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
     [editable, fetchPage, version, numericCols, editedBg],
   );
 
-  const onCellEdited = React.useCallback(
-    ([col, row]: Item, newValue: EditableGridCell) => {
-      if (!editable || newValue.kind !== GridCellKind.Text) return;
+  const commitCell = React.useCallback(
+    (col: number, row: number, value: string) => {
+      if (!editable) return;
       const key = `${row},${col}`;
-      edits.current.set(key, newValue.data);
-      patches.current.push({ op: "cell_update", row, col, value: newValue.data });
+      edits.current.set(key, value);
+      patches.current.push({ op: "cell_update", row, col, value });
       onDirtyChange?.(true);
       bump();
     },
     [editable, onDirtyChange, bump],
+  );
+
+  const onCellEdited = React.useCallback(
+    ([col, row]: Item, newValue: EditableGridCell) => {
+      if (newValue.kind !== GridCellKind.Text) return;
+      commitCell(col, row, newValue.data);
+    },
+    [commitCell],
   );
 
   React.useImperativeHandle(ref, () => ({
@@ -229,20 +267,158 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
         height="100%"
         getCellsForSelection
       />
-      {/* 選択→AI 指示（Task 11.10）: 範囲選択時にフロートボタンを出す。 */}
-      {onAskAi && selectionRange ? (
-        <button
-          type="button"
-          data-testid="csv-ask-ai"
-          onClick={() => onAskAi(buildSelectionInfo(selectionRange))}
-          className="absolute right-3 top-3 z-10 inline-flex items-center gap-1 rounded-full border border-border/60 bg-card px-3 py-1.5 text-xs font-medium text-primary shadow-sm transition-colors hover:bg-accent"
-        >
-          <Sparkles className="size-3.5" aria-hidden />
-          選択範囲を AI に依頼
-        </button>
+      {/* 選択→AI 指示（Task 11.10）: 範囲選択時にフロートボタンを出す。スマホは行の詳細も。 */}
+      {selectionRange && (onAskAi || touchNarrow) ? (
+        <div className="absolute right-3 top-3 z-10 flex items-center gap-1.5 max-md:bottom-[max(0.75rem,env(safe-area-inset-bottom))] max-md:right-1/2 max-md:top-auto max-md:translate-x-1/2">
+          {touchNarrow ? (
+            <button
+              type="button"
+              data-testid="csv-row-detail"
+              onClick={() => setDetailRow(selectionRange.y)}
+              className="inline-flex h-10 items-center gap-1.5 whitespace-nowrap rounded-full border border-border/60 bg-card px-3.5 text-[13px] font-medium text-foreground shadow-md transition-colors active:bg-accent"
+            >
+              <Rows3 className="size-4" aria-hidden />
+              行の詳細
+            </button>
+          ) : null}
+          {onAskAi ? (
+            <button
+              type="button"
+              data-testid="csv-ask-ai"
+              onClick={() => onAskAi(buildSelectionInfo(selectionRange))}
+              className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-border/60 bg-card px-3 py-1.5 text-xs font-medium text-primary shadow-sm transition-colors hover:bg-accent max-md:h-10 max-md:gap-1.5 max-md:px-3.5 max-md:text-[13px] max-md:shadow-md"
+            >
+              <Sparkles className="size-3.5" aria-hidden />
+              <span className="max-md:hidden">選択範囲を </span>AI に依頼
+            </button>
+          ) : null}
+        </div>
       ) : null}
+      <CsvRowSheet
+        row={detailRow}
+        totalRows={totalRows}
+        columns={columns}
+        values={detailRow != null ? readRow(detailRow) : []}
+        loaded={detailLoaded}
+        editable={editable}
+        onChangeRow={setDetailRow}
+        onCommit={commitCell}
+      />
       {/* Glide のオーバーレイエディタ用ポータル。 */}
       <div id="portal" style={{ position: "fixed", left: 0, top: 0, zIndex: 9999 }} />
     </div>
   );
 });
+
+/// スマホの行詳細（1 行の全列を縦に並べる）。編集者は値を直せる。
+///
+/// 入力中の値は打つたびに控えておき、フォーカスを外したときに加えて「前の行／次の行」と
+/// シートを閉じる直前にも確定する。iOS ではボタンのタップで入力欄の blur が起きないため、
+/// blur だけに頼ると行を移った・閉じた時点で編集が消える。
+function CsvRowSheet({
+  row,
+  totalRows,
+  columns,
+  values,
+  loaded,
+  editable,
+  onChangeRow,
+  onCommit,
+}: {
+  row: number | null;
+  totalRows: number;
+  columns: string[];
+  values: string[];
+  /// 表示中の行のページを取得済みか（未取得の間は入力欄を出さず読み込み中を示す）。
+  loaded: boolean;
+  editable: boolean;
+  onChangeRow: (row: number | null) => void;
+  onCommit: (col: number, row: number, value: string) => void;
+}) {
+  // 表示中の行の未確定の入力（列 index → 値）。確定したものは取り除く。
+  const pending = React.useRef<Map<number, string>>(new Map());
+
+  const commitPending = (c: number) => {
+    const v = pending.current.get(c);
+    if (v === undefined || row == null) return;
+    pending.current.delete(c);
+    if (v !== (values[c] ?? "")) onCommit(c, row, v);
+  };
+  const flush = () => {
+    for (const c of [...pending.current.keys()]) commitPending(c);
+  };
+  /// 行の移動・閉じる（null）は、必ず未確定の入力を確定してから行う。
+  const goTo = (next: number | null) => {
+    flush();
+    onChangeRow(next);
+  };
+
+  return (
+    <Sheet open={row != null} onOpenChange={(open) => !open && goTo(null)}>
+      <SheetContent side="bottom" className="max-h-[80dvh]" data-testid="csv-row-sheet">
+        <SheetHeader className="pr-14">
+          <SheetTitle>{row != null ? `${row + 1} 行目` : "行"}</SheetTitle>
+          <SheetDescription>
+            {columns.length} 列{editable ? "・値を直すと未保存の編集になります" : ""}
+          </SheetDescription>
+        </SheetHeader>
+        {row != null && !loaded ? (
+          <SheetBody className="px-4">
+            <p className="py-6 text-center text-sm text-muted-foreground" role="status">
+              読み込み中…
+            </p>
+          </SheetBody>
+        ) : row != null ? (
+          <SheetBody className="px-4">
+            <dl className="flex flex-col gap-3">
+              {columns.map((col, c) => (
+                <div key={`${row}:${c}`} className="flex flex-col gap-1">
+                  <dt className="break-all text-[12px] font-medium text-muted-foreground">{col}</dt>
+                  <dd>
+                    {editable ? (
+                      <input
+                        defaultValue={values[c] ?? ""}
+                        onChange={(e) => pending.current.set(c, e.target.value)}
+                        onBlur={() => commitPending(c)}
+                        aria-label={col}
+                        enterKeyHint="next"
+                        className="h-11 w-full rounded-md border border-input bg-background px-3 text-base outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      />
+                    ) : (
+                      <p className="whitespace-pre-wrap break-words text-[15px]">
+                        {values[c] || <span className="text-muted-foreground/60">（空）</span>}
+                      </p>
+                    )}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </SheetBody>
+        ) : null}
+        {row != null ? (
+          <div className="flex items-center justify-between gap-2 border-t px-4 py-2">
+            <button
+              type="button"
+              disabled={row <= 0}
+              onClick={() => goTo(row - 1)}
+              className="h-11 rounded-full px-4 text-sm font-medium text-foreground/80 active:bg-accent disabled:opacity-40"
+            >
+              ‹ 前の行
+            </button>
+            <span className="text-xs tabular-nums text-muted-foreground">
+              {row + 1} / {totalRows}
+            </span>
+            <button
+              type="button"
+              disabled={row >= totalRows - 1}
+              onClick={() => goTo(row + 1)}
+              className="h-11 rounded-full px-4 text-sm font-medium text-foreground/80 active:bg-accent disabled:opacity-40"
+            >
+              次の行 ›
+            </button>
+          </div>
+        ) : null}
+      </SheetContent>
+    </Sheet>
+  );
+}

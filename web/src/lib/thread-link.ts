@@ -39,3 +39,31 @@ export function threadHref(
       return `/c/${thread.id}`;
   }
 }
+
+/// 文書の横で始めた会話のタイトルに付く接頭（`note-chat-panel.tsx`「ノート: 」・
+/// `office-chat-panel.tsx`「文書: 」が付与）。履歴では種類アイコンと 2 行目で由来を示すので外す。
+const DOC_TITLE_PREFIX = /^(?:ノート|文書)[:：]\s*/u;
+const DOC_EXTENSION = /\.(?:md|docx|xlsx|pptx|odt|ods|odp)$/iu;
+
+/// 履歴・検索パレットの 1 行に出す表示用の情報。
+export type ThreadDisplay = {
+  kind: ThreadOriginKind;
+  /// 表示用タイトル（文書由来は接頭「ノート: 」等を外したもの）。
+  title: string;
+  /// 文書由来の補足行（「ノートの会話」等）。通常のチャットは null。
+  detail: string | null;
+};
+
+export function threadDisplay(
+  thread: Pick<Thread, "title" | "originNoteId" | "originNoteName">,
+): ThreadDisplay {
+  const kind = threadOriginKind(thread);
+  if (kind === null) return { kind, title: thread.title, detail: null };
+  const title = thread.title.replace(DOC_TITLE_PREFIX, "") || thread.title;
+  const docName = (thread.originNoteName ?? "").replace(DOC_EXTENSION, "");
+  const noun = kind === "note" ? "ノート" : "文書";
+  // 下書きを保存して文書由来になった会話はタイトルが元のチャットのまま。そのときは文書名を補う。
+  const detail =
+    docName && !title.startsWith(docName) ? `${noun}「${docName}」の会話` : `${noun}の会話`;
+  return { kind, title, detail };
+}

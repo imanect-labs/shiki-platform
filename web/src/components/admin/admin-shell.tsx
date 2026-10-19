@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowLeft, Menu, ShieldAlert } from "lucide-react";
+import { ArrowLeft, ShieldAlert } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useMe } from "@/hooks/use-me";
@@ -13,8 +13,17 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { CHROME_TRAY, MenuMarkButton } from "@/components/shell/header";
 import { ADMIN_SECTIONS, menuItemFor, sectionFor, type AdminSection } from "./admin-nav";
 import { MockBadge } from "./mock-banner";
+
+/// スマホの本文先頭に出すパンくず（「a-corp・アクセス管理」）。AdminPage が見出しの上に出す。
+/// スマホにはタイトルバーが無いので、現在地はここで示す。
+const AdminCrumbContext = React.createContext<string | null>(null);
+
+export function useAdminCrumb(): string | null {
+  return React.useContext(AdminCrumbContext);
+}
 
 /// 左端のアイコンレール（セクション切替）。
 function Rail({ active }: { active: AdminSection }) {
@@ -93,7 +102,7 @@ function ProductMenu({
                 onClick={onNavigate}
                 aria-current={current ? "page" : undefined}
                 className={cn(
-                  "flex items-center justify-between rounded-md px-2.5 py-1.5 text-[13px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring",
+                  "flex items-center justify-between rounded-md px-2.5 py-1.5 text-[13px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring pointer-coarse:min-h-11 pointer-coarse:text-sm",
                   current
                     ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
                     : "text-foreground/75 hover:bg-sidebar-accent/60 hover:text-foreground",
@@ -110,7 +119,7 @@ function ProductMenu({
   );
 }
 
-/// モバイル用のナビ（レール＋メニューをドロワにまとめる）。
+/// モバイル用のナビ（レール＋メニューをドロワにまとめる）。下部にテーマ切替。
 function MobileNav({
   open,
   onOpenChange,
@@ -123,17 +132,27 @@ function MobileNav({
   const close = () => onOpenChange(false);
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="left" className="max-w-72">
-        <SheetTitle className="border-b px-4 py-3 text-sm font-semibold">管理コンソール</SheetTitle>
-        <div className="flex-1 overflow-y-auto py-2">
+      <SheetContent
+        side="left"
+        className="max-w-72 bg-sidebar pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]"
+      >
+        <SheetTitle className="border-b border-sidebar-border px-4 py-3.5 text-sm font-semibold">
+          管理コンソール
+        </SheetTitle>
+        <nav aria-label="管理メニュー" className="flex-1 overflow-y-auto overscroll-y-contain py-2">
           {ADMIN_SECTIONS.map((s) => {
             const Icon = s.icon;
+            const current = sectionFor(pathname).key === s.key && !s.menu;
             return (
               <div key={s.key}>
                 <Link
                   href={s.href}
                   onClick={close}
-                  className="flex items-center gap-2.5 px-4 py-2 text-sm font-medium hover:bg-accent"
+                  aria-current={current ? "page" : undefined}
+                  className={cn(
+                    "flex min-h-10 items-center gap-2.5 px-4 py-2 text-sm font-medium outline-none hover:bg-sidebar-accent/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sidebar-ring pointer-coarse:min-h-11",
+                    current && "bg-sidebar-accent text-sidebar-accent-foreground",
+                  )}
                 >
                   <Icon className="size-4 text-muted-foreground" aria-hidden />
                   {s.label}
@@ -143,14 +162,20 @@ function MobileNav({
               </div>
             );
           })}
+        </nav>
+        <div className="flex flex-col gap-1 border-t border-sidebar-border px-2 py-2">
           <Link
             href="/"
             onClick={close}
-            className="mt-2 flex items-center gap-2 border-t px-4 py-3 text-sm text-muted-foreground hover:text-foreground"
+            className="flex min-h-11 items-center gap-2 rounded-md px-2 text-sm text-muted-foreground outline-none hover:bg-sidebar-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
           >
             <ArrowLeft className="size-4" aria-hidden />
             shiki に戻る
           </Link>
+          <div className="flex items-center justify-between gap-2 px-2 py-1">
+            <span className="text-xs text-muted-foreground">テーマ</span>
+            <ThemeToggle className="[&_button]:size-10" />
+          </div>
         </div>
       </SheetContent>
     </Sheet>
@@ -195,6 +220,8 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const item = menuItemFor(pathname);
   const { data } = useMe();
   const [mobileOpen, setMobileOpen] = React.useState(false);
+  const org = data?.org ?? "組織";
+  const crumb = section.key === "home" ? org : `${org}・${section.label}`;
 
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-background text-[13.5px]">
@@ -210,16 +237,10 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           <ProductMenu section={section} pathname={pathname} />
         </nav>
       ) : null}
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3 md:px-4">
-          <button
-            type="button"
-            onClick={() => setMobileOpen(true)}
-            aria-label="メニューを開く"
-            className="flex size-8 items-center justify-center rounded-md text-foreground/70 outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring md:hidden"
-          >
-            <Menu className="size-5" aria-hidden />
-          </button>
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        {/* PC: パンくずの上部バー。スマホはタイトルバーを出さず、左上に浮いたメニューボタン
+            （右上の操作は各画面の AdminPage が置く）。 */}
+        <header className="hidden h-12 shrink-0 items-center gap-2 border-b px-4 md:flex">
           <nav aria-label="パンくず" className="flex min-w-0 items-center gap-2 text-[13px]">
             <span className="truncate font-medium">{data?.org ?? "組織"}</span>
             {section.key !== "home" ? (
@@ -242,10 +263,19 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             ) : null}
           </nav>
           <span className="flex-1" />
-          <ThemeToggle className="hidden sm:inline-flex" />
+          <ThemeToggle />
         </header>
-        <main className="min-h-0 flex-1 overflow-y-auto">
-          <Gate>{children}</Gate>
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-30 md:hidden">
+          <div className="flex items-start justify-between gap-2 px-2.5 pt-[max(0.5rem,env(safe-area-inset-top))]">
+            <div className={CHROME_TRAY}>
+              <MenuMarkButton onClick={() => setMobileOpen(true)} label="管理メニューを開く" />
+            </div>
+          </div>
+        </div>
+        <main className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain max-md:pt-[calc(4rem+env(safe-area-inset-top))]">
+          <AdminCrumbContext.Provider value={crumb}>
+            <Gate>{children}</Gate>
+          </AdminCrumbContext.Provider>
         </main>
       </div>
       <MobileNav open={mobileOpen} onOpenChange={setMobileOpen} pathname={pathname} />

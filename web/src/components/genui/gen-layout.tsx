@@ -172,7 +172,7 @@ export function GenUiCodeBlock({ codeBlock }: { codeBlock: CodeBlockProps }) {
           {codeBlock.language}
         </figcaption>
       ) : null}
-      <pre className="overflow-x-auto rounded-xl border border-border/60 bg-secondary/40 p-3.5 text-[12px] leading-relaxed">
+      <pre className="overflow-x-auto overscroll-x-contain rounded-xl border border-border/60 bg-secondary/40 p-3.5 text-[12px] leading-relaxed">
         <code className="font-mono text-foreground/90">{codeBlock.code}</code>
       </pre>
     </figure>

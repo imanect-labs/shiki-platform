@@ -3,15 +3,15 @@
 /// チャットのモデル選択（#553・#583）。
 ///
 /// - 既定（組織の設定。ふつうは Auto）では入力欄には何も出さない。
-/// - 「＋」メニューの「モデル」から選ぶと、送信ボタンの左にピルが出る。ピルからも同じ一覧を開き、
-///   モデルの切替と思考の深さ（3 段のスライダー）を変えられる。Auto に戻すとピルが消える。
+/// - 「＋」メニューの「モデル」から選ぶと、入力欄の上にチップが出る。チップからも同じ一覧を開き、
+///   モデルの切替と思考の深さ（3 段のスライダー）を変えられる。× か Auto に戻すとチップが消える。
 /// - 一覧はプロバイダごとの見出しで分け、1 モデル 1 行（名前・国外処理・選択中の印を列で揃える）。
 ///   モデルが多いときは検索欄を出し、高さは画面に残っている分で抑えてスクロールさせる。
 /// - 狭い画面では横に開くポップオーバーが画面からはみ出すので、下からのシートで出す。
 /// 選べるのは組織の管理者が公開したモデルだけ（サーバも投稿時に検証する）。
 
 import * as React from "react";
-import { Check, ChevronDown, Search, Sparkles } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Search, Sparkles, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useMediaQuery } from "@/hooks/use-media-query";
@@ -383,11 +383,13 @@ function PickerSurface({
   const listRef = React.useRef<HTMLDivElement | null>(null);
   // 閉じたら入力欄へフォーカスを戻す。「＋」から開いた一覧には戻り先のトリガーが無く、ピルは
   // Auto に戻すと消えるので、既定の戻し先（トリガー）では body に落ちる。選んだらそのまま打てる
-  // 入力欄が自然な戻り先。
+  // 入力欄が自然な戻り先。ただしマウスの端末だけ（タッチでは入力欄へのフォーカスがソフト
+  // キーボードを出し、選び終えた直後に画面の半分を覆ってしまう）。
   const { textareaRef } = usePromptInput();
   const returnFocus = (e: Event) => {
     if (!textareaRef.current) return;
     e.preventDefault();
+    if (!window.matchMedia("(pointer: fine)").matches) return;
     textareaRef.current.focus({ preventScroll: true });
   };
   // 中身はポータルで描画されるが、React のイベントは React ツリーをたどって入力欄まで届く。
@@ -482,7 +484,8 @@ function EffortSlider({
   );
 }
 
-/// 送信ボタンの左に出すピル（モデルを選んだときだけ）。開くと一覧と思考の深さ。
+/// 入力欄の上のチップ列に出すモデルのチップ（Auto 以外を選んだときだけ）。押すと一覧と思考の深さ、
+/// × で Auto に戻す（チップごと消える）。
 export function ModelPill({ scope }: { scope: string }) {
   const data = useLlmModels();
   const { choice, setChoice, model } = useValidChoice(scope, data);
@@ -494,63 +497,99 @@ export function ModelPill({ scope }: { scope: string }) {
     : model.label;
 
   return (
-    <PickerSurface
-      open={open}
-      onOpenChange={setOpen}
-      align="end"
-      tall={data.models.length >= SEARCH_MIN_MODELS}
-      trigger={
-        <button
-          type="button"
-          aria-label={`モデル: ${summary}（変更する）`}
-          title="モデルと思考の深さ"
-          data-testid="model-pill"
-          className={cn(
-            "inline-flex h-9 min-w-0 max-w-[300px] items-center gap-1.5 rounded-full border px-3 text-[13px] font-medium transition-colors",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
-            open
-              ? "border-foreground/30 bg-secondary text-foreground"
-              : "border-border text-foreground/75 hover:bg-secondary hover:text-foreground",
-          )}
-        >
-          <Sparkles className="size-[15px] shrink-0 text-primary" aria-hidden />
-          {/* 狭い幅ではアイコンだけにして、隣のボタンを折り返させない。 */}
-          <span className="hidden truncate sm:inline">{model.label}</span>
-          {model.supports_effort ? (
-            <span className="hidden shrink-0 text-muted-foreground sm:inline">
-              ・{effortLabel(choice.effort)}
-            </span>
-          ) : null}
-          <ChevronDown className="size-3.5 shrink-0 opacity-60" aria-hidden />
-        </button>
-      }
-    >
-      {(surface, listRef) => (
-        <>
-          <ModelList
-            data={data}
-            current={model.id}
-            surface={surface}
-            listRef={listRef}
-            onPick={(id) => {
-              // Auto に戻すとピルごと消えるので閉じる。モデルの切替では思考の深さも触れるよう開いたまま。
-              if (id === null) {
-                setChoice(null);
-                setOpen(false);
-              } else {
-                setChoice({ model: id, effort: choice.effort });
-              }
-            }}
-          />
-          {model.supports_effort ? (
-            <EffortSlider
-              effort={choice.effort}
-              onChange={(effort) => setChoice({ model: model.id, effort })}
+    <span className="inline-flex h-8 min-w-0 max-w-full items-center rounded-full bg-accent pr-1 text-[13px] font-medium text-foreground">
+      <PickerSurface
+        open={open}
+        onOpenChange={setOpen}
+        align="start"
+        tall={data.models.length >= SEARCH_MIN_MODELS}
+        trigger={
+          <button
+            type="button"
+            aria-label={`モデル: ${summary}（変更する）`}
+            title="モデルと思考の深さ"
+            data-testid="model-pill"
+            className={cn(
+              "inline-flex h-full min-w-0 items-center gap-1.5 rounded-full pl-2.5 pr-1 transition-colors",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            )}
+          >
+            <Sparkles className="size-3.5 shrink-0 text-primary" aria-hidden />
+            <span className="min-w-0 truncate">{model.label}</span>
+            {model.supports_effort ? (
+              <span className="shrink-0 font-normal text-muted-foreground">
+                ・{effortLabel(choice.effort)}
+              </span>
+            ) : null}
+            <ChevronDown className="size-3.5 shrink-0 opacity-60" aria-hidden />
+          </button>
+        }
+      >
+        {(surface, listRef) => (
+          <>
+            <ModelList
+              data={data}
+              current={model.id}
+              surface={surface}
+              listRef={listRef}
+              onPick={(id) => {
+                // Auto に戻すとチップごと消えるので閉じる。モデルの切替では思考の深さも触れるよう開いたまま。
+                if (id === null) {
+                  setChoice(null);
+                  setOpen(false);
+                } else {
+                  setChoice({ model: id, effort: choice.effort });
+                }
+              }}
             />
-          ) : null}
-        </>
-      )}
-    </PickerSurface>
+            {model.supports_effort ? (
+              <EffortSlider
+                effort={choice.effort}
+                onChange={(effort) => setChoice({ model: model.id, effort })}
+              />
+            ) : null}
+          </>
+        )}
+      </PickerSurface>
+      <button
+        type="button"
+        onClick={() => setChoice(null)}
+        aria-label="モデルの指定を外す（Auto に戻す）"
+        className="relative flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors after:absolute after:-inset-2 hover:bg-foreground/10 hover:text-foreground"
+      >
+        <X className="size-3.5" aria-hidden />
+      </button>
+    </span>
+  );
+}
+
+/// 選んでいるモデルの表示名（Auto・未選択なら null）。入力欄のプレースホルダに使う。
+export function useChosenModelLabel(scope: string): string | null {
+  const data = useLlmModels();
+  const { model } = useValidChoice(scope, data);
+  return model?.label ?? null;
+}
+
+/// 「＋」メニュー（スマホのシート）の「モデル」行。押すとシートを閉じて一覧を開く。
+export function ModelSheetRow({ scope, onOpen }: { scope: string; onOpen: () => void }) {
+  const data = useLlmModels();
+  const { choice } = useValidChoice(scope, data);
+  if (!data || !data.allow_user_choice || data.models.length === 0) return null;
+  const current =
+    (choice && data.models.find((m) => m.id === choice.model)?.label) ||
+    (data.default_model === "auto" ? "Auto" : "既定");
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      data-testid="composer-model-menu"
+      className="flex h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-[15px] transition-colors hover:bg-accent active:bg-accent"
+    >
+      <Sparkles className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
+      <span className="flex-1">モデル</span>
+      <span className="max-w-[45%] truncate text-sm text-muted-foreground">{current}</span>
+      <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+    </button>
   );
 }
 

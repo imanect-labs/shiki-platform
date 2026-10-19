@@ -11,7 +11,7 @@ import { seasonVar } from "@/lib/season";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 /// ホーム下部の機能ショートカット群（カテゴリ＝縦区切りで横並び、画像1 風）。
-/// 実装済みは Link、未実装は「準備中」tooltip 付きの無効ボタン。
+/// 実装済みは Link、未実装は「準備中」バッジ（＋ PC は tooltip）付きの無効ボタン。
 /// 候補チップと揃えて、ホバー時にタイルを四季の差し色で点灯させる（全タイル通しの巡回）。
 export function ShortcutGrid() {
   return (
@@ -75,9 +75,15 @@ function ShortcutItem({ item, seasonIndex }: { item: HomeShortcut; seasonIndex: 
   );
 
   const inner = (
-    <span className="group flex w-[68px] flex-col items-center gap-2 rounded-xl py-2 text-center outline-none">
+    <span className="group flex w-[76px] flex-col items-center gap-2 rounded-xl py-2 text-center outline-none">
       {tile}
       {text}
+      {/* 準備中は Tooltip（ホバー）だけだとタッチで分からないので、文字のバッジで常に示す。 */}
+      {ready ? null : (
+        <span className="-mt-1 rounded bg-muted px-1.5 py-px text-[10px] leading-4 text-muted-foreground">
+          準備中
+        </span>
+      )}
     </span>
   );
 

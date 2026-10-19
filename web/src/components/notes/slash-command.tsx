@@ -168,7 +168,7 @@ const SlashMenu = React.forwardRef<MenuHandle, MenuProps>(function SlashMenu(
 
   if (items.length === 0) {
     return (
-      <div className="w-64 rounded-lg border bg-popover p-2 text-sm text-muted-foreground shadow-md">
+      <div className="w-64 max-w-full rounded-lg border bg-popover p-2 text-sm text-muted-foreground shadow-md">
         該当するコマンドがありません
       </div>
     );
@@ -177,7 +177,7 @@ const SlashMenu = React.forwardRef<MenuHandle, MenuProps>(function SlashMenu(
     <div
       role="menu"
       aria-label="ブロックを挿入"
-      className="scrollbar-subtle max-h-80 w-72 overflow-y-auto rounded-lg border bg-popover p-1.5 shadow-md animate-in fade-in-0 zoom-in-95 duration-[var(--duration-fast)]"
+      className="scrollbar-subtle max-h-[var(--slash-max-h,20rem)] w-72 max-w-full overflow-y-auto overscroll-contain rounded-lg border bg-popover p-1.5 shadow-md animate-in fade-in-0 zoom-in-95 duration-[var(--duration-fast)]"
       data-testid="slash-menu"
     >
       {items.map((item, index) => {
@@ -188,8 +188,10 @@ const SlashMenu = React.forwardRef<MenuHandle, MenuProps>(function SlashMenu(
             type="button"
             role="menuitem"
             onMouseEnter={() => setSelected(index)}
+            // 押下でエディタのフォーカスを奪わない（タッチでキーボードが閉じない）。
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => command(item)}
-            className={`flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left text-sm transition-colors ${
+            className={`flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left text-sm transition-colors pointer-coarse:min-h-11 ${
               index === selected ? "bg-accent text-accent-foreground" : "text-foreground"
             }`}
           >
@@ -210,18 +212,34 @@ const SlashMenu = React.forwardRef<MenuHandle, MenuProps>(function SlashMenu(
 });
 
 /// メニューの絶対配置コンテナをカーソル矩形に追従させる。
+///
+/// 基準は **visualViewport**（見えている領域）。iOS はキーボード表示中も layout viewport
+/// （innerHeight）を縮めないため、innerHeight 基準だとメニューがキーボードの裏に出る。
+/// fixed 配置は layout viewport 基準なので、visualViewport のずれ（offsetTop/Left）を足す。
 function positionPopup(popup: HTMLDivElement, clientRect: (() => DOMRect | null) | null) {
   const rect = clientRect?.();
   if (!rect) return;
+  const vv = window.visualViewport;
+  const vTop = vv?.offsetTop ?? 0;
+  const vLeft = vv?.offsetLeft ?? 0;
+  const vHeight = vv?.height ?? window.innerHeight;
+  const vWidth = vv?.width ?? window.innerWidth;
   const margin = 8;
-  popup.style.left = `${Math.min(rect.left, window.innerWidth - 300)}px`;
-  const spaceBelow = window.innerHeight - rect.bottom;
-  if (spaceBelow < 340) {
-    popup.style.top = "auto";
-    popup.style.bottom = `${window.innerHeight - rect.top + margin}px`;
-  } else {
+  const menuWidth = Math.min(288, vWidth - 16);
+  // メニューの高さは表示域に収まる範囲に抑える（狭い画面・キーボード表示中）。
+  const spaceBelow = vTop + vHeight - rect.bottom - margin;
+  const spaceAbove = rect.top - vTop - margin;
+  const below = spaceBelow >= Math.min(320, spaceAbove);
+  const maxHeight = Math.max(120, Math.min(320, (below ? spaceBelow : spaceAbove) - margin));
+  popup.style.maxWidth = `${menuWidth}px`;
+  popup.style.setProperty("--slash-max-h", `${maxHeight}px`);
+  popup.style.left = `${Math.max(vLeft + 8, Math.min(rect.left, vLeft + vWidth - menuWidth - 8))}px`;
+  if (below) {
     popup.style.bottom = "auto";
     popup.style.top = `${rect.bottom + margin}px`;
+  } else {
+    popup.style.top = "auto";
+    popup.style.bottom = `${window.innerHeight - rect.top + margin}px`;
   }
 }
 
@@ -249,6 +267,11 @@ export function createSlashCommand(extraItems: () => SlashItem[] = () => []) {
           render: () => {
             let component: ReactRenderer<MenuHandle, MenuProps> | null = null;
             let popup: HTMLDivElement | null = null;
+            let lastRect: (() => DOMRect | null) | null = null;
+            // キーボードの出入り・ピンチで見えている領域が変わったら置き直す。
+            const reposition = () => {
+              if (popup) positionPopup(popup, lastRect);
+            };
             return {
               onStart: (props: SuggestionProps<SlashItem, SlashItem>) => {
                 component = new ReactRenderer(SlashMenu, {
@@ -263,14 +286,18 @@ export function createSlashCommand(extraItems: () => SlashItem[] = () => []) {
                 popup.style.zIndex = "50";
                 popup.appendChild(component.element);
                 document.body.appendChild(popup);
-                positionPopup(popup, props.clientRect ?? null);
+                lastRect = props.clientRect ?? null;
+                positionPopup(popup, lastRect);
+                window.visualViewport?.addEventListener("resize", reposition);
+                window.visualViewport?.addEventListener("scroll", reposition);
               },
               onUpdate: (props: SuggestionProps<SlashItem, SlashItem>) => {
                 component?.updateProps({
                   items: props.items,
                   command: (item: SlashItem) => props.command(item),
                 });
-                if (popup) positionPopup(popup, props.clientRect ?? null);
+                lastRect = props.clientRect ?? null;
+                if (popup) positionPopup(popup, lastRect);
               },
               onKeyDown: ({ event }) => {
                 if (event.key === "Escape") {
@@ -280,6 +307,8 @@ export function createSlashCommand(extraItems: () => SlashItem[] = () => []) {
                 return component?.ref?.onKeyDown(event) ?? false;
               },
               onExit: () => {
+                window.visualViewport?.removeEventListener("resize", reposition);
+                window.visualViewport?.removeEventListener("scroll", reposition);
                 popup?.remove();
                 component?.destroy();
                 component = null;

@@ -11,7 +11,7 @@
 
 import * as React from "react";
 
-import { Sparkles } from "lucide-react";
+import { Sparkles, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { SlashSuggestion } from "@/lib/slash-command";
@@ -51,7 +51,7 @@ export function SlashCommandMenu({
       aria-label="スキルコマンド"
       data-testid="slash-command-menu"
       className={cn(
-        "absolute bottom-full left-0 z-50 mb-2 max-h-72 w-full max-w-lg overflow-y-auto",
+        "absolute bottom-full left-0 z-50 mb-2 max-h-72 w-full max-w-lg overflow-y-auto overscroll-contain",
         "rounded-xl border border-border/60 bg-popover p-1.5 shadow-md",
       )}
     >
@@ -71,7 +71,7 @@ export function SlashCommandMenu({
             onPick(s);
           }}
           className={cn(
-            "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left",
+            "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left pointer-coarse:py-2.5",
             "transition-colors duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
             i === activeIndex ? "bg-accent" : "hover:bg-accent/50",
           )}
@@ -92,7 +92,7 @@ export function SlashCommandMenu({
   );
 }
 
-/// 確定したコマンドのピル（入力欄の左に置く・ChatGPT 相当の「確定が分かる」表示）。
+/// 確定したコマンドのピル（入力欄の上のチップ列に置く・ChatGPT 相当の「確定が分かる」表示）。
 export function SlashCommandPill({
   label,
   onClear,
@@ -104,19 +104,20 @@ export function SlashCommandPill({
     <span
       data-testid="slash-command-pill"
       className={cn(
-        "inline-flex shrink-0 items-center gap-1.5 rounded-md bg-accent px-2 py-1",
+        "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full bg-accent pl-2.5 pr-1",
         "text-[13px] font-medium text-foreground",
       )}
     >
-      <Sparkles className="size-3.5 text-primary" aria-hidden />
-      /{label}
+      <Sparkles className="size-3.5 shrink-0 text-primary" aria-hidden />
+      <span className="min-w-0 truncate">/{label}</span>
+      {/* 見た目は小さいまま、押せる範囲だけ広げる（指で外せるように）。 */}
       <button
         type="button"
         onClick={onClear}
         aria-label="コマンドを外す"
-        className="text-muted-foreground transition-colors hover:text-foreground"
+        className="relative flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors after:absolute after:-inset-2 hover:bg-foreground/10 hover:text-foreground"
       >
-        ×
+        <X className="size-3.5" aria-hidden />
       </button>
     </span>
   );

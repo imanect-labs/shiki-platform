@@ -1,13 +1,16 @@
 "use client";
 
 import * as React from "react";
-import { Search, UserPlus } from "lucide-react";
+import { ChevronRight, Search, UserPlus } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { IconInput } from "@/components/ui/icon-input";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Sheet, SheetBody, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { ChromeIconButton } from "@/components/shell/page-header-context";
+import { useMediaQuery } from "@/hooks/use-media-query";
+import { cn } from "@/lib/utils";
 import { AdminPage, Panel } from "./admin-page";
 import { MockBanner } from "./mock-banner";
 
@@ -30,17 +33,27 @@ const MEMBERS: Member[] = [
   { id: "u_e810…77c9", name: "中村 誠", email: "nakamura@example.co.jp", role: "経理部", status: "disabled", last: "8/02 18:40" },
 ];
 
+/// 状態は文字のバッジで示す（有効=淡い緑・招待中=淡い琥珀・無効=淡い灰。ドットは使わない）。
 const STATUS = {
   active: { label: "有効", variant: "success" },
-  invited: { label: "招待中", variant: "secondary" },
+  invited: { label: "招待中", variant: "warning" },
   disabled: { label: "無効", variant: "muted" },
 } as const;
 
-/// メンバー一覧（モック）。行を選ぶと右のシートに詳細とアクセスの理由を出す。
+const FILTERS = [
+  { value: "all", label: "すべて" },
+  { value: "active", label: "有効" },
+  { value: "invited", label: "招待中" },
+  { value: "disabled", label: "無効" },
+];
+
+/// メンバー一覧（モック）。行を選ぶと詳細とアクセスの理由をシートに出す
+/// （PC は右から・スマホは下から）。スマホは表をやめて 1 人 1 行のカードにする。
 export function MockMembersView() {
   const [filter, setFilter] = React.useState("all");
   const [query, setQuery] = React.useState("");
   const [selected, setSelected] = React.useState<Member | null>(null);
+  const desktop = useMediaQuery("(min-width: 768px)");
   const rows = MEMBERS.filter(
     (m) =>
       (filter === "all" || m.status === filter) &&
@@ -58,31 +71,98 @@ export function MockMembersView() {
           メンバーを招待
         </Button>
       }
+      mobileActions={
+        <ChromeIconButton label="メンバーを招待（準備中）" disabled className="disabled:opacity-40">
+          <UserPlus aria-hidden />
+        </ChromeIconButton>
+      }
     >
       <MockBanner what="メンバー管理の API は Task 8.4 で実装予定" />
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-col gap-3 md:flex-row md:flex-wrap md:items-center md:gap-2">
         <IconInput
           icon={Search}
+          type="search"
+          enterKeyHint="search"
           value={query}
           onValueChange={setQuery}
           placeholder="名前・メールで検索"
           aria-label="メンバーを検索"
-          containerClassName="w-64"
+          className="max-md:h-12 max-md:rounded-xl"
+          containerClassName="w-full md:w-64"
         />
         <SegmentedControl
           aria-label="状態で絞り込む"
           size="sm"
           value={filter}
           onValueChange={setFilter}
-          options={[
-            { value: "all", label: "すべて" },
-            { value: "active", label: "有効" },
-            { value: "invited", label: "招待中" },
-            { value: "disabled", label: "無効" },
-          ]}
+          options={FILTERS}
+          className="max-md:hidden"
         />
+        {/* スマホ: 横に並ぶチップ（はみ出したら横スクロール）。 */}
+        <div
+          role="radiogroup"
+          aria-label="状態で絞り込む"
+          className="-mx-4 flex gap-2 overflow-x-auto overscroll-x-contain px-4 md:hidden"
+        >
+          {FILTERS.map((f) => {
+            const active = filter === f.value;
+            return (
+              <button
+                key={f.value}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                onClick={() => setFilter(f.value)}
+                className={cn(
+                  "h-10 shrink-0 rounded-full border px-4 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+                  active
+                    ? "border-transparent bg-accent font-medium text-accent-foreground"
+                    : "bg-background text-muted-foreground",
+                )}
+              >
+                {f.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
-      <Panel>
+
+      {/* スマホ: 1 人 1 行のカード（行全体をタップで詳細）。 */}
+      <ul className="rule-soft overflow-hidden rounded-xl border bg-card md:hidden" aria-label="メンバー">
+        {rows.length === 0 ? (
+          <li className="px-4 py-8 text-center text-sm text-muted-foreground">該当するメンバーはいません</li>
+        ) : null}
+        {rows.map((m, i) => (
+          <li key={m.id} className={cn(i > 0 && "shiki-dash-top")}>
+            <button
+              type="button"
+              onClick={() => setSelected(m)}
+              className="flex min-h-[72px] w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors active:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            >
+              <span
+                aria-hidden
+                className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold text-foreground/80"
+              >
+                {m.name.slice(0, 1)}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[15px] font-medium">{m.name}</span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {m.role}
+                  <span className="mx-1.5" />
+                  {m.email}
+                </span>
+              </span>
+              <Badge variant={STATUS[m.status].variant} className="shrink-0">
+                {STATUS[m.status].label}
+              </Badge>
+              <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      <Panel className="max-md:hidden">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[760px] border-collapse text-[13px]">
             <thead>
@@ -122,7 +202,7 @@ export function MockMembersView() {
       </Panel>
 
       <Sheet open={!!selected} onOpenChange={(o) => !o && setSelected(null)}>
-        <SheetContent className="max-w-md">
+        <SheetContent side={desktop ? "right" : "bottom"} className="md:max-w-md">
           {selected ? (
             <>
               <SheetHeader>

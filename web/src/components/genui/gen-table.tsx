@@ -21,7 +21,7 @@ export function GenUiTable({ table }: { table: TableProps }) {
           {table.title}
         </figcaption>
       ) : null}
-      <div className="overflow-x-auto rounded-lg border border-border">
+      <div className="overflow-x-auto overscroll-x-contain rounded-lg border border-border">
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="border-b border-border bg-secondary/60">
@@ -30,7 +30,7 @@ export function GenUiTable({ table }: { table: TableProps }) {
                   key={i}
                   scope="col"
                   className={cn(
-                    "px-3 py-2 text-xs font-semibold text-foreground/70",
+                    "whitespace-nowrap px-3 py-2 text-xs font-semibold text-foreground/70",
                     col.align === "right"
                       ? "text-right"
                       : col.align === "center"

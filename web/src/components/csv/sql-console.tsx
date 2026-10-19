@@ -97,7 +97,7 @@ export function SqlConsole({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2 p-3" data-testid="sql-console">
+    <div className="flex h-full min-h-0 flex-col gap-2 p-3 max-md:px-1" data-testid="sql-console">
       <div className="flex items-start gap-2">
         <textarea
           value={sql}
@@ -110,9 +110,11 @@ export function SqlConsole({
           }}
           rows={3}
           spellCheck={false}
+          autoCapitalize="none"
+          autoCorrect="off"
           aria-label="SQL"
           data-testid="sql-input"
-          className="scrollbar-subtle min-h-16 flex-1 resize-y rounded-md border bg-background p-2 font-mono text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="scrollbar-subtle min-h-16 min-w-0 flex-1 resize-y rounded-md border bg-background p-2 font-mono text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm"
         />
         <div className="flex flex-col gap-2">
           <Button
@@ -137,7 +139,8 @@ export function SqlConsole({
             <Save className="size-4" aria-hidden />
             新規 CSV
           </Button>
-          <kbd className="rounded border bg-muted/50 px-1.5 py-0.5 text-center text-[10px] font-medium text-muted-foreground">
+          {/* キーボードショートカットの案内はマウスの端末だけ（タッチでは押せない）。 */}
+          <kbd className="rounded border bg-muted/50 px-1.5 py-0.5 text-center text-[10px] font-medium text-muted-foreground pointer-coarse:hidden">
             ⌘↵ で実行
           </kbd>
         </div>
@@ -160,7 +163,7 @@ export function SqlConsole({
         </div>
       )}
       {result && (
-        <div className="scrollbar-subtle min-h-0 flex-1 overflow-auto rounded-lg border shadow-xs">
+        <div className="scrollbar-subtle min-h-0 flex-1 overflow-auto overscroll-contain rounded-lg border shadow-xs">
           <table className="w-full border-collapse text-sm">
             <thead className="sticky top-0 bg-muted/60">
               <tr>
@@ -218,6 +221,10 @@ export function SqlConsole({
                 }
               }}
               autoFocus
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              enterKeyHint="done"
               placeholder="query-result"
             />
           </div>

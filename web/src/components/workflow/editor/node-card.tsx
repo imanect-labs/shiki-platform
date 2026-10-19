@@ -63,7 +63,7 @@ const PORT_LABELS: Record<string, string> = {
   timeout: "時間切れ",
 };
 
-function portLabel(port: string): string {
+export function portLabel(port: string): string {
   return PORT_LABELS[port] ?? port;
 }
 
@@ -100,7 +100,7 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
       <Handle
         type="target"
         position={Position.Left}
-        className="!size-2.5 !border-2 !border-background !bg-muted-foreground transition-transform duration-[var(--duration-fast)] hover:!scale-125"
+        className="!size-2.5 !border-2 !border-background !bg-muted-foreground transition-transform duration-[var(--duration-fast)] hover:!scale-125 pointer-coarse:!size-4"
       />
 
       <div className="flex items-start gap-2.5 px-3.5 py-3">
@@ -157,7 +157,7 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
           type="source"
           position={Position.Right}
           className={cn(
-            "!size-2.5 !border-2 !border-background transition-transform duration-[var(--duration-fast)] hover:!scale-125",
+            "!size-2.5 !border-2 !border-background transition-transform duration-[var(--duration-fast)] hover:!scale-125 pointer-coarse:!size-4",
             portColor(ports[0]),
           )}
         />
@@ -172,7 +172,7 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
                 position={Position.Right}
                 style={{ top: `${i * 24 + 12}px` }}
                 className={cn(
-                  "!absolute !-right-[13px] !size-2.5 !border-2 !border-background",
+                  "!absolute !-right-[13px] !size-2.5 !border-2 !border-background pointer-coarse:!size-4",
                   portColor(port),
                 )}
               />
@@ -188,10 +188,11 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
             type="button"
             aria-label="次のブロックを追加"
             className={cn(
-              "nodrag absolute -right-9 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center",
+              "nodrag absolute -right-9 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center pointer-coarse:-right-11 pointer-coarse:size-8",
               "rounded-full border bg-background text-muted-foreground shadow-sm",
-              // 常時うっすら表示し（発見性）、ホバー/フォーカスで全表示＋プライマリ強調。
-              "opacity-60 transition-all duration-fast group-hover/node:opacity-100 focus-visible:opacity-100",
+              // マウスでは常時うっすら表示し（発見性）、ホバー/フォーカスで全表示＋プライマリ強調。
+              // タッチ端末には hover が無いので最初から全表示にする。
+              "transition-all duration-fast pointer-fine:opacity-60 pointer-fine:group-hover/node:opacity-100 focus-visible:opacity-100",
               "hover:border-primary hover:bg-primary hover:text-primary-foreground hover:scale-110",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               menuOpen && "opacity-100 border-primary bg-primary text-primary-foreground",

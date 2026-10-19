@@ -38,8 +38,11 @@ test("共有ダイアログ: テナント分離と共有付与", async ({ page, 
   await search.fill("bob");
   const bobRow = share.locator("li", { hasText: "bob@a-corp.example.com" });
   await bobRow.getByRole("button", { name: "共有", exact: true }).click();
-  // 共有中のメンバーに bob が現れる。
-  await expect(share.getByText("00000000-0000-0000-0000-000000000002")).toBeVisible();
+  // 共有中の相手に bob が表示名で現れる（OIDC sub の ID は出さない）。
+  await expect(
+    share.getByTestId("share-entry").filter({ hasText: "bob@a-corp.example.com" }),
+  ).toBeVisible({ timeout: 10_000 });
+  await expect(share.getByText("00000000-0000-0000-0000-000000000002")).toHaveCount(0);
 
   // --- bob として別コンテキストでログインし、共有済みに当該フォルダが出ることを確認 ---
   const bobCtx = await browser.newContext();
@@ -51,7 +54,7 @@ test("共有ダイアログ: テナント分離と共有付与", async ({ page, 
 });
 
 /// 部署・ロール共有（#76）を検証する。alice が「営業部」ロール（dev_seed: alice/bob 所属）へ
-/// 共有すると、その id が共有一覧に「部署・ロール」バッジ付きで現れる。
+/// 共有すると、共有一覧に表示名（営業部）が「部署・ロール」として現れる。
 test("共有ダイアログ: 部署・ロールへ共有", async ({ page }) => {
   await loginViaKeycloak(page); // alice
   await page.goto("/drive");
@@ -75,7 +78,9 @@ test("共有ダイアログ: 部署・ロールへ共有", async ({ page }) => {
   const salesRow = share.locator("li", { hasText: "営業部" });
   await expect(salesRow).toBeVisible({ timeout: 10_000 });
 
-  // 営業部へ閲覧権限を付与 → 共有一覧に role id が現れる。
+  // 営業部へ閲覧権限を付与 → 共有中の相手に「営業部」が部署・ロールとして現れる（ID ではなく表示名）。
   await salesRow.getByRole("button", { name: "共有", exact: true }).click();
-  await expect(share.getByText("sales", { exact: true })).toBeVisible({ timeout: 10_000 });
+  const salesEntry = share.getByTestId("share-entry").filter({ hasText: "営業部" });
+  await expect(salesEntry).toBeVisible({ timeout: 10_000 });
+  await expect(salesEntry).toContainText("部署・ロール");
 });

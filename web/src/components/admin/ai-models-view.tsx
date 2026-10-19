@@ -98,6 +98,42 @@ function validate(models: AdminModel[], d: Draft): string | null {
   return null;
 }
 
+/// スマホのモデルカードの「既定にする」（行全体がラベル＝どこをタップしても選べる）。
+function DefaultRadio({
+  name,
+  ariaLabel,
+  checked,
+  disabled,
+  onChange,
+}: {
+  name: string;
+  ariaLabel: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: () => void;
+}) {
+  return (
+    <label
+      className={cn(
+        "mt-2.5 flex min-h-11 cursor-pointer items-center gap-2.5 rounded-lg border px-3 text-sm transition-colors",
+        checked ? "border-transparent bg-accent font-medium" : "bg-background",
+        disabled && "cursor-not-allowed opacity-50",
+      )}
+    >
+      <input
+        type="radio"
+        name={name}
+        aria-label={ariaLabel}
+        checked={checked}
+        disabled={disabled}
+        onChange={onChange}
+        className="size-4 accent-[var(--primary)]"
+      />
+      {checked ? "既定のモデル" : disabled ? "公開すると既定にできます" : "既定にする"}
+    </label>
+  );
+}
+
 /// モデルカタログ（公開・既定・Auto）とユーザーの選択肢・円換算レート。
 export function AiModelsView() {
   const [models, setModels] = React.useState<AdminModel[] | null>(null);
@@ -181,7 +217,71 @@ export function AiModelsView() {
         title="モデルカタログ"
         description="公開したモデルだけが使えます。保存後にデプロイ設定へ追加されたモデルは、ここで公開するまで使えません。"
       >
-        <div className="overflow-x-auto">
+        {/* スマホ: モデルごとのカード（公開スイッチ・既定は行全体がラベルのラジオ・単価）。 */}
+        <ul className="rule-soft md:hidden" aria-label="モデル">
+          <li className="px-4 py-3.5">
+            <div className="flex items-center gap-1.5 text-[15px] font-medium">
+              <Sparkles className="size-4 text-primary" aria-hidden />
+              Auto
+            </div>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              ユーザーがモデルを選ばないときに使います。いまの振り先: {label(settings.auto_target_model)}
+              {settings.auto_target_effort ? `（${EFFORT_LABEL[settings.auto_target_effort]}）` : ""}
+            </p>
+            <DefaultRadio
+              name="default-model-mobile"
+              ariaLabel="Auto を既定にする"
+              checked={draft.default_model === AUTO}
+              onChange={() => set({ default_model: AUTO })}
+            />
+          </li>
+          {models.map((m) => {
+            const on = draft.enabled[m.id];
+            return (
+              <li key={m.id} className="shiki-dash-top px-4 py-3.5">
+                <div className="flex items-start gap-3">
+                  <div className={cn("min-w-0 flex-1", !on && "text-muted-foreground")}>
+                    <div className="flex flex-wrap items-center gap-1.5 text-[15px] font-medium">
+                      {m.label}
+                      {m.processed_abroad ? (
+                        <Badge variant="warning" className="gap-1 px-1.5 py-0 text-[10.5px]">
+                          <Globe2 className="size-3" aria-hidden />
+                          国外処理
+                        </Badge>
+                      ) : null}
+                    </div>
+                    {m.description ? (
+                      <p className="mt-0.5 text-xs text-muted-foreground">{m.description}</p>
+                    ) : null}
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {m.provider_label}・思考の深さ {m.supports_effort ? "3 段階" : "なし"}
+                    </p>
+                    <p className="mt-0.5 font-mono text-xs text-muted-foreground">
+                      入力 {formatPrice(m.prompt_price_micros_per_mtok)} / 出力{" "}
+                      {formatPrice(m.completion_price_micros_per_mtok)}（100 万トークン）
+                    </p>
+                  </div>
+                  <label className="flex shrink-0 items-center gap-2 pt-0.5 text-xs text-muted-foreground">
+                    公開
+                    <Switch
+                      checked={on}
+                      onCheckedChange={(v) => set({ enabled: { ...draft.enabled, [m.id]: v } })}
+                      aria-label={`${m.label} を公開`}
+                    />
+                  </label>
+                </div>
+                <DefaultRadio
+                  name="default-model-mobile"
+                  ariaLabel={`${m.label} を既定にする`}
+                  checked={draft.default_model === m.id}
+                  disabled={!on}
+                  onChange={() => set({ default_model: m.id })}
+                />
+              </li>
+            );
+          })}
+        </ul>
+        <div className="overflow-x-auto max-md:hidden">
           <table className="w-full min-w-[820px] border-collapse text-[13px]">
             <thead>
               <tr className="bg-muted/40 text-left text-xs text-muted-foreground">
@@ -367,7 +467,7 @@ export function AiModelsView() {
       </Panel>
 
       {dirty ? (
-        <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3 shadow-md">
+        <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3 shadow-md max-md:bottom-[max(0.75rem,env(safe-area-inset-bottom))]">
           <p className={cn("text-[13px]", problem ? "text-destructive" : "text-muted-foreground")}>
             {problem ?? "保存していない変更があります"}
           </p>

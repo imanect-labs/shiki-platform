@@ -19,6 +19,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useMediaQuery } from "@/hooks/use-media-query";
+import { cn } from "@/lib/utils";
 import { createSkill, updateSkill, type SkillVersion } from "@/lib/artifact-api";
 import { FolderPicker } from "./folder-picker";
 
@@ -137,6 +139,8 @@ export function SkillEditorDialog({
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = React.useState(false);
+  // タッチで開いた瞬間にキーボードを出さない（マウス操作のときだけ名前欄へ自動フォーカス）。
+  const finePointer = useMediaQuery("(pointer: fine)");
 
   React.useEffect(() => {
     if (open) {
@@ -180,7 +184,7 @@ export function SkillEditorDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>{editing ? `スキルを編集（v${editing.version} → 新版）` : "スキルを作成"}</DialogTitle>
           <DialogDescription>
@@ -190,20 +194,25 @@ export function SkillEditorDialog({
 
         <form onSubmit={save} className="space-y-4">
           {!editing ? (
-            <Field label="名前" required>
+            <Field label="名前" htmlFor="skill-name" required>
               <Input
+                id="skill-name"
                 value={draft.name}
                 onChange={(e) => set("name", e.target.value)}
                 placeholder="expense-assistant"
                 aria-label="名前"
                 required
-                autoFocus
+                autoFocus={finePointer}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
               />
             </Field>
           ) : null}
 
-          <Field label="説明" required>
+          <Field label="説明" htmlFor="skill-description" required>
             <Input
+              id="skill-description"
               value={draft.description}
               onChange={(e) => set("description", e.target.value)}
               placeholder="経費精算の質問に規程を根拠に答える"
@@ -212,8 +221,9 @@ export function SkillEditorDialog({
             />
           </Field>
 
-          <Field label="指示文（SKILL.md 本文）" required>
+          <Field label="指示文（SKILL.md 本文）" htmlFor="skill-instructions" required>
             <Textarea
+              id="skill-instructions"
               value={draft.instructions}
               onChange={(e) => set("instructions", e.target.value)}
               placeholder={"あなたは経費規程に詳しいアシスタントです。\n規程に基づいて回答してください。"}
@@ -241,7 +251,7 @@ export function SkillEditorDialog({
                         draft.scopeFolders.filter((x) => x.id !== f.id),
                       )
                     }
-                    className="text-muted-foreground hover:text-destructive"
+                    className={REMOVE_CHIP}
                   >
                     <X className="size-3" aria-hidden />
                   </button>
@@ -255,7 +265,7 @@ export function SkillEditorDialog({
           </Field>
 
           <Field label="許可ツール">
-            <label className="mb-1.5 flex items-center gap-2 text-sm">
+            <label className="mb-1.5 flex min-h-9 cursor-pointer items-center gap-2 text-sm pointer-coarse:min-h-11">
               <input
                 type="checkbox"
                 checked={draft.allowedTools === null}
@@ -265,9 +275,12 @@ export function SkillEditorDialog({
               すべてのツールを許可（既定）
             </label>
             {draft.allowedTools !== null ? (
-              <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-border p-3">
+              <div className="grid grid-cols-1 gap-1 rounded-lg border border-border p-2 sm:grid-cols-2 sm:p-3">
                 {TOOL_OPTIONS.map((t) => (
-                  <label key={t.value} className="flex items-center gap-2 text-sm">
+                  <label
+                    key={t.value}
+                    className="flex min-h-9 cursor-pointer items-center gap-2 rounded-md px-1.5 text-sm pointer-coarse:min-h-11"
+                  >
                     <input
                       type="checkbox"
                       checked={draft.allowedTools?.includes(t.value) ?? false}
@@ -287,27 +300,38 @@ export function SkillEditorDialog({
           </Field>
 
           <Field label="モデル既定（未指定はシステム既定）">
-            <div className="grid grid-cols-3 gap-2">
-              <Input
-                value={draft.model}
-                onChange={(e) => set("model", e.target.value)}
-                placeholder="モデル名"
-                aria-label="モデル名"
-              />
-              <Input
-                value={draft.temperature}
-                onChange={(e) => set("temperature", e.target.value)}
-                placeholder="temperature (0〜2)"
-                aria-label="temperature"
-                inputMode="decimal"
-              />
-              <Input
-                value={draft.maxTokens}
-                onChange={(e) => set("maxTokens", e.target.value)}
-                placeholder="max tokens"
-                aria-label="max tokens"
-                inputMode="numeric"
-              />
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <SubField label="モデル名" htmlFor="skill-model">
+                <Input
+                  id="skill-model"
+                  value={draft.model}
+                  onChange={(e) => set("model", e.target.value)}
+                  placeholder="例: claude-sonnet"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
+              </SubField>
+              <SubField label="temperature（0〜2）" htmlFor="skill-temperature">
+                <Input
+                  id="skill-temperature"
+                  value={draft.temperature}
+                  onChange={(e) => set("temperature", e.target.value)}
+                  placeholder="例: 0.3"
+                  aria-label="temperature"
+                  inputMode="decimal"
+                />
+              </SubField>
+              <SubField label="最大トークン数" htmlFor="skill-max-tokens">
+                <Input
+                  id="skill-max-tokens"
+                  value={draft.maxTokens}
+                  onChange={(e) => set("maxTokens", e.target.value)}
+                  placeholder="例: 2000"
+                  aria-label="max tokens"
+                  inputMode="numeric"
+                />
+              </SubField>
             </div>
           </Field>
 
@@ -321,7 +345,7 @@ export function SkillEditorDialog({
                       type="button"
                       aria-label={`例 ${i + 1} を削除`}
                       onClick={() => set("fewShot", draft.fewShot.filter((_, j) => j !== i))}
-                      className="text-muted-foreground hover:text-destructive"
+                      className={REMOVE_ROW}
                     >
                       <X className="size-4" aria-hidden />
                     </button>
@@ -334,7 +358,7 @@ export function SkillEditorDialog({
                         draft.fewShot.map((x, j) => (j === i ? { ...x, user: e.target.value } : x)),
                       )
                     }
-                    placeholder="ユーザーの発話"
+                    placeholder="ユーザーの発話（例: 交通費は何日以内に申請？）"
                     aria-label={`例 ${i + 1} のユーザー発話`}
                   />
                   <Textarea
@@ -380,7 +404,10 @@ export function SkillEditorDialog({
                       }
                       placeholder={`scripts/example${SCRIPT_KINDS.find((k) => k.value === sc.kind)?.ext}`}
                       aria-label={`script ${i + 1} のパス`}
-                      className="flex-1"
+                      className="min-w-0 flex-1"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                     />
                     <select
                       value={sc.kind}
@@ -393,7 +420,7 @@ export function SkillEditorDialog({
                         )
                       }
                       aria-label={`script ${i + 1} の種別`}
-                      className="h-9 rounded-lg border border-input bg-background px-2 text-sm"
+                      className="h-9 rounded-lg border border-input bg-background px-2 text-base md:text-sm"
                     >
                       {SCRIPT_KINDS.map((k) => (
                         <option key={k.value} value={k.value}>
@@ -405,7 +432,7 @@ export function SkillEditorDialog({
                       type="button"
                       aria-label={`script ${i + 1} を削除`}
                       onClick={() => set("scripts", draft.scripts.filter((_, j) => j !== i))}
-                      className="text-muted-foreground hover:text-destructive"
+                      className={REMOVE_ROW}
                     >
                       <X className="size-4" aria-hidden />
                     </button>
@@ -421,7 +448,10 @@ export function SkillEditorDialog({
                     placeholder="スクリプト本文"
                     aria-label={`script ${i + 1} の本文`}
                     rows={3}
-                    className="font-mono text-xs"
+                    className="font-mono text-xs max-md:text-base"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                   />
                 </div>
               ))}
@@ -445,7 +475,8 @@ export function SkillEditorDialog({
             </p>
           ) : null}
 
-          <DialogFooter>
+          {/* 長いフォームでも保存ボタンが常に見えるよう、フッタはスクロール領域の下端に貼り付ける。 */}
+          <DialogFooter className="sticky -bottom-6 z-10 -mx-6 -mb-6 border-t bg-card px-6 py-3 max-sm:-bottom-[max(1.25rem,env(safe-area-inset-bottom))] max-sm:-mx-5 max-sm:-mb-[max(1.25rem,env(safe-area-inset-bottom))] max-sm:px-5 max-sm:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
               キャンセル
             </Button>
@@ -470,21 +501,55 @@ export function SkillEditorDialog({
   );
 }
 
+/// 削除ボタンの当たり判定（見た目は小さいまま、指では 44px 四方に広げる）。
+const REMOVE_CHIP = cn(
+  "relative -mr-1 flex size-5 items-center justify-center rounded-full text-muted-foreground outline-none",
+  "hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring",
+  "pointer-coarse:after:absolute pointer-coarse:after:-inset-3 pointer-coarse:after:content-['']",
+);
+const REMOVE_ROW = cn(
+  "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none",
+  "hover:bg-accent hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:size-11",
+);
+
 function Field({
   label,
+  htmlFor,
   required,
   children,
 }: {
   label: string;
+  htmlFor?: string;
   required?: boolean;
   children: React.ReactNode;
 }) {
+  const Tag = htmlFor ? "label" : "span";
   return (
     <div className="space-y-1.5">
-      <span className="block text-xs font-medium text-foreground/70">
+      <Tag htmlFor={htmlFor} className="block text-xs font-medium text-foreground/70">
         {label}
         {required ? <span className="ml-0.5 text-destructive">*</span> : null}
-      </span>
+      </Tag>
+      {children}
+    </div>
+  );
+}
+
+/// 複数の入力を並べる欄の、入力ごとの小さな見出し（placeholder をラベル代わりにしない）。
+function SubField({
+  label,
+  htmlFor,
+  children,
+}: {
+  label: string;
+  htmlFor: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1">
+      <label htmlFor={htmlFor} className="block text-[11px] text-muted-foreground">
+        {label}
+      </label>
       {children}
     </div>
   );

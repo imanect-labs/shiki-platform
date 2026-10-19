@@ -10,6 +10,10 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
+  // キーボード表示時にレイアウトビューポートごと縮める（Android Chrome・下端の入力欄を隠さない）。
+  interactiveWidget: "resizes-content",
+  // ノッチ・ホームバーの内側まで描き、各コンポーネントが env(safe-area-inset-*) で避ける。
+  viewportFit: "cover",
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#ffffff" },
     { media: "(prefers-color-scheme: dark)", color: "#1a1a1c" },

@@ -50,7 +50,7 @@ export function ResultCard({
   const driveHref = result.folder_id ? `/drive?folder=${result.folder_id}` : "/drive";
 
   return (
-    <article className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-shadow hover:shadow-md">
+    <article className="rounded-xl border border-border bg-card p-4 shadow-sm transition-shadow hover:shadow-md max-sm:p-3.5">
       {/* ヘッダ: ファイル名 → 見出しパス → ページ */}
       <div className="mb-2 flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
@@ -75,9 +75,11 @@ export function ResultCard({
               p.{result.page}
             </span>
           ) : null}
+          {/* 常に見せる（ホバーでだけ出すとタッチでは一度も見えない）。タッチでは当たり判定を 44px に。 */}
           <Link
             href={driveHref}
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100"
+            className="relative inline-flex items-center gap-1 rounded-md border border-border/70 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground pointer-coarse:after:absolute pointer-coarse:after:-inset-x-1 pointer-coarse:after:-inset-y-2 pointer-coarse:after:content-['']"
+            aria-label={`「${result.file_name}」をドライブで開く`}
             title="ドライブで開く"
           >
             <ExternalLink className="size-3.5" aria-hidden />
@@ -115,7 +117,7 @@ export function ResultCard({
           <button
             type="button"
             onClick={() => setShowParent((v) => !v)}
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            className="inline-flex items-center gap-1 rounded-md text-xs text-muted-foreground transition-colors hover:text-foreground pointer-coarse:-my-2 pointer-coarse:min-h-11 pointer-coarse:px-1"
             aria-expanded={showParent}
           >
             <ChevronDown

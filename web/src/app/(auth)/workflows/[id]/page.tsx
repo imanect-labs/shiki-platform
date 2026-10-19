@@ -1,15 +1,17 @@
 "use client";
 
 /// dnd ワークフローエディタ（Task 10.12）。full-bleed（PageContainer 不使用）。
+/// 読み込み中・エラーでも一覧への戻り口を出す（スマホはタイトルバーが無いため）。
 
 import * as React from "react";
 import { useParams } from "next/navigation";
 import { Loader2, Workflow } from "lucide-react";
 
 import { EmptyState } from "@/components/ui/empty-state";
+import { usePageChrome } from "@/components/shell/page-header-context";
 import { ConfigPanel } from "@/components/workflow/editor/config-panel";
 import { WorkflowEditor } from "@/components/workflow/editor/workflow-editor";
-import { WorkflowHeaderActions } from "@/components/workflow/header-actions";
+import { WorkflowChrome } from "@/components/workflow/header-actions";
 import { getLayout, getWorkflow, type EditorLayout } from "@/lib/workflow-api";
 import type { WorkflowIr } from "@/generated/workflow-ir";
 
@@ -34,25 +36,7 @@ export default function WorkflowEditorPage() {
     };
   }, [id]);
 
-  if (loaded === null) {
-    return (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" aria-hidden />
-        読み込み中…
-      </div>
-    );
-  }
-  if (loaded === "error") {
-    return (
-      <div className="flex h-full items-center justify-center p-8">
-        <EmptyState
-          icon={Workflow}
-          title="ワークフローを開けません"
-          description="削除されたか、閲覧する権限がない可能性があります。"
-        />
-      </div>
-    );
-  }
+  if (loaded === null || loaded === "error") return <PendingBody error={loaded === "error"} />;
   return (
     <WorkflowEditor
       // id ごとに reducer を作り直す（同一コンポーネント再利用で前の workflow の IR を
@@ -63,7 +47,29 @@ export default function WorkflowEditorPage() {
       initialVersion={loaded.version}
       initialLayout={loaded.layout}
       renderSidePanel={(ctx) => <ConfigPanel ctx={ctx} />}
-      renderHeaderActions={(ctx) => <WorkflowHeaderActions ctx={ctx} />}
+      renderChrome={(ctx) => <WorkflowChrome ctx={ctx} />}
     />
+  );
+}
+
+/// 読み込み中・開けないとき（エディタがクロームを登録する前の戻り口）。
+function PendingBody({ error }: { error: boolean }) {
+  usePageChrome(() => ({ back: { href: "/workflows", label: "ワークフロー一覧へ" } }), []);
+  if (!error) {
+    return (
+      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" aria-hidden />
+        読み込み中…
+      </div>
+    );
+  }
+  return (
+    <div className="flex h-full items-center justify-center p-8">
+      <EmptyState
+        icon={Workflow}
+        title="ワークフローを開けません"
+        description="削除されたか、閲覧する権限がない可能性があります。"
+      />
+    </div>
   );
 }
