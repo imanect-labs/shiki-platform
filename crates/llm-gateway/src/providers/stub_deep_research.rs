@@ -54,6 +54,10 @@ pub(super) fn deep_research_call(req: &GenerateRequest, prompt_tokens: u64) -> O
         };
         return Some(text_stream(reply, prompt_tokens));
     }
+    // 調査の段階はツールで進む。ツールの無い要求（要約など）はここでは扱わない。
+    if req.tools.is_empty() {
+        return None;
+    }
 
     // 調査フェーズ。1 ステップに複数ツールを載せ、冪等 read の有界並列（#349）と
     // 逐次書込が同じステップに混在する実際の形を再現する。
@@ -281,6 +285,13 @@ mod tests {
     fn ignores_other_prompts() {
         assert!(deep_research_call(&req(vec![user("こんにちは")], ALL), 0).is_none());
         assert!(deep_research_call(&req(vec![user("websearch: 市場規模")], ALL), 0).is_none());
+    }
+
+    /// 調査の段階（`auto`・3 ターン目以降）はツールで進むので、ツールの無い要求は扱わない。
+    #[test]
+    fn research_phase_needs_tools() {
+        assert!(deep_research_call(&req(vec![user("/deep-research auto SaaS")], &[]), 0).is_none());
+        assert!(deep_research_call(&req(vec![user("/deep-research auto SaaS")], ALL), 0).is_some());
     }
 
     /// ストリームの本文を連結する。
