@@ -272,6 +272,15 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/mini-apps/{id}/ui-actions", &["POST"], Session, || {
             post(routes::mini_apps::invoke_mini_app_action)
         }),
+        r("/mini-apps/{id}/runs", &["GET"], Session, || {
+            get(routes::mini_apps::list_mini_app_runs)
+        }),
+        r(
+            "/threads/{thread_id}/messages/{message_id}/save-as-app",
+            &["POST"],
+            Session,
+            || post(routes::mini_apps::save_yui_app),
+        ),
         // --- ワークフロー IR（Task 10.1a・保存時検証 V1〜V7・artifact の上） ---
         r("/workflows", &["GET", "POST"], Session, || {
             get(routes::workflows::list_workflows).post(routes::workflows::create_workflow)

@@ -74,39 +74,18 @@ pub fn workflow_buttons(content: &[ContentBlock]) -> Vec<(String, String)> {
 }
 
 /// id のボタンを探す（同じソースのブロックが 2 つあれば同じ id になり、先のものを返す。
-/// 中身が同じなので、どちらを押しても同じ操作になる）。
+/// 中身が同じなので、どちらを押しても同じ操作になる）。本文の文字のブロックは 1 つずつ読む。
 pub fn find_action(content: &[ContentBlock], action_id: &str) -> Option<(ActionBlock, AppAction)> {
-    let (hash, id) = action_id.split_once(':')?;
-    action_blocks(content)
-        .into_iter()
-        .filter(|b| b.hash == hash)
-        .find_map(|b| {
-            let action = yui::figure_actions(&b.figure)
-                .into_iter()
-                .find(|a| a.id == id)?;
-            Some((b, action))
-        })
+    yui::find_action(
+        content.iter().filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        }),
+        action_id,
+    )
 }
 
-/// 冪等キーの形（英数字・`-`・`_` の 8〜64 文字。UUID がそのまま通る）。
-pub fn valid_idempotency_key(key: &str) -> bool {
-    (8..=64).contains(&key.len())
-        && key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
-fn answer_text(v: &Value) -> String {
-    match v {
-        Value::Array(items) => items
-            .iter()
-            .map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string))
-            .collect::<Vec<_>>()
-            .join("、"),
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
+pub use yui::{error_text, valid_idempotency_key};
 
 /// 送った値の表示（部品の表示名と表示用の値・記録と会話に送る文に使う）。
 pub fn summary(
@@ -114,41 +93,13 @@ pub fn summary(
     action_id: &str,
     values: &Map<String, Value>,
 ) -> Vec<UiActionValue> {
-    match figure {
-        Figure::App { sections, .. } => sections
-            .iter()
-            .find(|s| s.actions.iter().any(|a| a.id == action_id))
-            .map(|s| {
-                s.fields
-                    .iter()
-                    .filter_map(|f| {
-                        let v = values.get(&f.key)?;
-                        Some(UiActionValue {
-                            label: f.label.clone(),
-                            value: yui::display_value(f, Some(v), true),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-        Figure::Ask { questions, .. } => questions
-            .iter()
-            .filter_map(|q| {
-                Some(UiActionValue {
-                    label: q.text.clone(),
-                    value: answer_text(values.get(&q.id)?),
-                })
-            })
-            .collect(),
-        Figure::Plan { .. } => values
-            .get("comment")
-            .map(|c| UiActionValue {
-                label: "修正の内容".into(),
-                value: answer_text(c),
-            })
-            .into_iter()
-            .collect(),
-    }
+    yui::summary(figure, action_id, values)
+        .into_iter()
+        .map(|v| UiActionValue {
+            label: v.label,
+            value: v.value,
+        })
+        .collect()
 }
 
 /// 会話に送るボタン（ask・plan・`-> chat`）の、利用者の発話として送る文。
@@ -182,38 +133,6 @@ pub fn chat_text(figure: &Figure, action: &AppAction, values: &Map<String, Value
             _ => "この計画で進めてください。".into(),
         },
     }
-}
-
-/// 値の検証の誤りを、部品の表示名つきの文にする（400 の本文）。
-pub fn error_text(figure: &Figure, errors: &Map<String, Value>) -> String {
-    let label = |key: &str| -> Option<String> {
-        if key.is_empty() {
-            return None;
-        }
-        match figure {
-            Figure::App { sections, .. } => sections
-                .iter()
-                .flat_map(|s| s.fields.iter())
-                .find(|f| f.key == key)
-                .map(|f| f.label.clone()),
-            Figure::Ask { questions, .. } => questions
-                .iter()
-                .find(|q| q.id == key)
-                .map(|q| q.text.clone()),
-            Figure::Plan { .. } => Some("修正の内容".into()),
-        }
-    };
-    errors
-        .iter()
-        .map(|(k, v)| {
-            let msg = v.as_str().unwrap_or("値が正しくありません");
-            match label(k) {
-                Some(l) => format!("{l}: {msg}"),
-                None => msg.to_string(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[cfg(test)]

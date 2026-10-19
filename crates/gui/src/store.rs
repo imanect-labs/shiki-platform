@@ -21,6 +21,9 @@ pub enum GuiError {
     Validation(Vec<GuiValidationError>),
     #[error(transparent)]
     Artifact(#[from] ArtifactError),
+    /// 内部エラー（DB 等・利用者に詳細を見せない）。
+    #[error("内部エラー: {0}")]
+    Internal(String),
 }
 
 impl GuiError {
@@ -28,7 +31,7 @@ impl GuiError {
     pub fn validation_errors(&self) -> Option<&[GuiValidationError]> {
         match self {
             GuiError::Validation(v) => Some(v),
-            GuiError::Artifact(_) => None,
+            GuiError::Artifact(_) | GuiError::Internal(_) => None,
         }
     }
 }

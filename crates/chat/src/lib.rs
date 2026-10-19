@@ -73,7 +73,7 @@ pub use skill_catalog::{
 pub use slide_tool::{SaveSlideTool, SlideEditTool, SlideReadTool};
 pub use store::{
     ChatStore, ClaimedRun, CurrentRun, PostResult, RunContext, ThreadOrigin, YuiActionRequest,
-    CHAT_GENERATION_QUEUE,
+    YuiAppDraft, CHAT_GENERATION_QUEUE,
 };
 pub use worker::{parse_timezone, with_yui_guide, ChatWorker, WorkerConfig, WorkerDeps};
 pub use workflow_tool::{EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};

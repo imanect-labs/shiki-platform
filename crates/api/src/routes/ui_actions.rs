@@ -93,7 +93,7 @@ fn declaring_doc(
 /// 図のボタンの誤り。値の検証（部品の定義・ワークフローの `input_schema`）の誤りは、画面が
 /// 部品の横に出せるよう文言を `errors` に載せて返す（`BadRequest` は本文が `{status,title}` に潰れる）。
 /// 文言は利用者が入れた値の検証結果で、内部の情報は含まない。
-fn map_yui_action_err(e: ActionError) -> ApiError {
+pub(crate) fn map_yui_action_err(e: ActionError) -> ApiError {
     match e {
         ActionError::Invalid(m) => ApiError::UnprocessableJson(serde_json::json!({
             "status": 400,

@@ -1,38 +1,44 @@
-// 回答の本文の ```ui（Yui）のボタン（app・ask・plan）を会話につなぐ（#604）。
+// Markdown の ```ui（Yui）のボタン（app・ask・plan）を、会話の回答・ミニアプリの画面につなぐ（#604）。
 //
 // ボタンの id はブロックのソースの SHA-256 の先頭 16 桁と図の中の id（a1 など）を合わせた
 // `{hash}:{a1}`。サーバー（crates/yui の block_hash）と同じ規則で求める。押せるか・何を送るかの
-// 判断はサーバーが保存済みの本文から読み直して行うので、ここは値を送って結果を出すだけ。
+// 判断はサーバーが保存済みの本文（画面）から読み直して行うので、ここは値を送って結果を出すだけ。
+// どこへ送るかは置き場所（[`YuiActionHost`]）が決める。
 "use client";
 
 import * as React from "react";
 import type { AppActionEvent, AppActionResult } from "@imanect/yui/react";
-import type { Figure } from "@imanect/yui";
+import { figureActions, type Figure } from "@imanect/yui";
 import { CheckCircle2, CircleDashed, Loader2, MinusCircle, XCircle } from "lucide-react";
 
-import {
-  invokeChatYuiAction,
-  UiActionAlreadyInvoked,
-  UiActionUncertain,
-} from "@/lib/artifact-api";
+import { UiActionAlreadyInvoked, UiActionUncertain } from "@/lib/artifact-api";
 import type { UiActionRun } from "@/lib/chat-api";
 import { cn } from "@/lib/utils";
 
-/// 図のボタンを実行できる場所（確定した回答のメッセージ）。無ければボタンは無効（表示だけ）。
+/// 起動したワークフローの記録 1 件（会話の記録・ミニアプリの記録の共通の形）。
+export type YuiRun = Pick<UiActionRun, "action_id" | "label" | "workflow_name" | "status" | "invoked_at"> & {
+  run_id?: string | null;
+  values?: { label: string; value: string }[];
+};
+
+/// 図のボタンを実行できる場所（確定した回答のメッセージ・ミニアプリの画面）。無ければボタンは無効（表示だけ）。
 export type YuiActionHost = {
-  threadId: string;
-  messageId: string;
-  /// 押せるワークフローのボタン（回答の確定時にサーバーが束縛を解決できたもの）。
-  boundActions: readonly string[];
+  /// ボタンを実行する（成功で解決し、誤りは `@/lib/artifact-api` の `UiAction*` を投げる）。
+  /// 冪等キーはワークフローのボタンにだけ付く。
+  invoke: (key: string, values: Record<string, unknown>, idempotencyKey: string | undefined) => Promise<unknown>;
+  /// ワークフローのボタンが押せるか（実行先がサーバーで解決できているか）。
+  isBound: (key: string) => boolean;
   /// 送り済みの 1 回だけのボタン（会話に送るボタン）。
   invokedActions: readonly string[];
   /// 起動したワークフローの記録。
-  uiRuns: readonly UiActionRun[];
+  uiRuns: readonly YuiRun[];
   /// 生成直後の仮のメッセージ（id がサーバーのものではないので、読み直すまで押せない）。
   /// `reloading` はすぐ読み直される、`stopped`（生成の停止）は読み直さない。
   unsaved?: "reloading" | "stopped";
-  /// 実行の後に会話を読み直す（新しい発話・起動の記録を出す）。
+  /// 実行の後に読み直す（新しい発話・起動の記録を出す）。
   onChanged: () => void;
+  /// `app` の図を「アプリとして保存」する（会話の回答の図だけ）。
+  saveAsApp?: (block: string, title: string) => void;
 };
 
 export const YuiActionContext = React.createContext<YuiActionHost | null>(null);
@@ -61,7 +67,9 @@ export type YuiActionProps = {
   actionDisabledReason?: string;
   invokedActions?: readonly string[];
   /// このブロックのボタンで起動したワークフロー（新しいものが後ろ）。
-  runs: readonly UiActionRun[];
+  runs: readonly YuiRun[];
+  /// 「アプリとして保存」（会話の回答の `app` の図だけ）。
+  saveAsApp?: () => void;
 };
 
 /// 図に渡すボタンの props。操作を持たない種類は `null`。
@@ -96,20 +104,14 @@ export function useYuiActions(
       if (!host || host.unsaved || !hash) return { ok: false, message: "いまは実行できません" };
       const key = `${hash}:${e.actionId}`;
       const target = e.action.target;
-      if (target.kind === "workflow" && !host.boundActions.includes(key)) {
+      if (target.kind === "workflow" && !host.isBound(key)) {
         return { ok: false, message: `ワークフロー「${target.name}」が見つからないか、使う権限がありません` };
       }
       const sent = `${key}\u0000${JSON.stringify(e.values)}`;
       const idempotencyKey =
         target.kind === "workflow" ? (pendingKeys.current.get(sent) ?? newIdempotencyKey()) : undefined;
       try {
-        await invokeChatYuiAction(
-          host.threadId,
-          host.messageId,
-          key,
-          e.values as Record<string, unknown>,
-          idempotencyKey,
-        );
+        await host.invoke(key, e.values as Record<string, unknown>, idempotencyKey);
         pendingKeys.current.delete(sent);
         host.onChanged();
         return {
@@ -143,10 +145,15 @@ export function useYuiActions(
   }
   if (host.unsaved || !hash) return { actionDisabledReason: "準備しています…", runs: [] };
   const prefix = `${hash}:`;
+  const save = host.saveAsApp;
   return {
     onAction,
     invokedActions: host.invokedActions.filter((a) => a.startsWith(prefix)).map((a) => a.slice(prefix.length)),
     runs: host.uiRuns.filter((r) => r.action_id.startsWith(prefix)),
+    // 会話に送るボタン（-> chat）を持つ図は、会話の無いアプリにできない（保存時に弾かれる）。
+    ...(save && figure?.kind === "app" && figureActions(figure).every((a) => a.target.kind === "workflow")
+      ? { saveAsApp: () => save(hash, figure.title) }
+      : {}),
   };
 }
 
@@ -168,7 +175,7 @@ function time(iso: string): string {
 }
 
 /// 図のボタンで起動したワークフローの記録（図の下・新しいものが下）。
-export function YuiRunList({ runs }: { runs: readonly UiActionRun[] }) {
+export function YuiRunList({ runs }: { runs: readonly YuiRun[] }) {
   if (runs.length === 0) return null;
   return (
     <ul className="mt-2 space-y-1 text-[12px]" aria-label="起動したワークフロー" data-testid="yui-runs">
@@ -206,6 +213,6 @@ export function hasYuiBlock(text: string): boolean {
 }
 
 /// まだ終わっていない起動があるか（あれば会話を少しずつ読み直して状態を更新する）。
-export function hasOpenRuns(runs: readonly UiActionRun[] | undefined): boolean {
+export function hasOpenRuns(runs: readonly YuiRun[] | undefined): boolean {
   return (runs ?? []).some((r) => r.status === "starting" || r.status === "queued" || r.status === "running");
 }
