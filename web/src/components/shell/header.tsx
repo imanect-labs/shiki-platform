@@ -10,7 +10,6 @@ import {
   ChromeActions,
   ChromeBackButton,
   ChromeBar,
-  ChromeDivider,
   usePageChromeValue,
 } from "./page-header-context";
 
@@ -52,6 +51,13 @@ export const CHROME_TRAY = cn(
   "bg-sidebar/95 shadow-[var(--elevation-md)] backdrop-blur supports-[backdrop-filter]:bg-sidebar/80",
 );
 
+/// スマホ左上（メニュー・戻る）の並び。台（枠・面・影）は敷かず、アイコンだけを浮かせる。
+/// 各ボタンの丸い下地は背景色と同じ半透明＋ぼかしで、何も無い上では見えず、本文が下を
+/// 流れたときだけアイコンを読めるようにする。
+export const CHROME_BARE = "pointer-events-auto flex h-12 items-center gap-1";
+export const CHROME_BARE_BUTTON =
+  "rounded-full bg-background/70 backdrop-blur-md max-md:hover:bg-sidebar-accent";
+
 /// 一筋の季（いちすじのき）。三本線のメニューを Shiki の線で描く: 上の一本だけを今の季節の色の
 /// 短い実線にし、下の二本は区切り線と同じ細い破線で控えめにする。季節色は描画時の月から決める
 /// （empty-state・editor-loading と同じ）。サーバとクライアントで月を跨いだ瞬間だけ stroke が
@@ -82,9 +88,11 @@ export function MenuMark({ className }: { className?: string }) {
 export function MenuMarkButton({
   onClick,
   label = "メニューを開く",
+  className,
 }: {
   onClick: () => void;
   label?: string;
+  className?: string;
 }) {
   return (
     <button
@@ -92,7 +100,10 @@ export function MenuMarkButton({
       onClick={onClick}
       aria-label={label}
       title={label}
-      className="group flex size-11 items-center justify-center rounded-[10px] text-foreground outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94]"
+      className={cn(
+        "group flex size-11 items-center justify-center rounded-[10px] text-foreground outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94]",
+        className,
+      )}
     >
       <MenuMark />
     </button>
@@ -125,14 +136,9 @@ export function MobileChrome() {
       />
 
       <div className="relative flex items-start justify-between gap-2 px-2.5 pt-[max(0.5rem,env(safe-area-inset-top))]">
-        <div className={CHROME_TRAY}>
-          <MenuMarkButton onClick={() => setMobileOpen(true)} />
-          {spec?.back ? (
-            <>
-              <ChromeDivider />
-              <ChromeBackButton back={spec.back} />
-            </>
-          ) : null}
+        <div className={CHROME_BARE}>
+          <MenuMarkButton onClick={() => setMobileOpen(true)} className={CHROME_BARE_BUTTON} />
+          {spec?.back ? <ChromeBackButton back={spec.back} className={CHROME_BARE_BUTTON} /> : null}
         </div>
         {hasRight && spec ? (
           <div className={cn(CHROME_TRAY, spec.primary && "pl-1")}>

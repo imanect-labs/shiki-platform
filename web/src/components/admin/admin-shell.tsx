@@ -13,7 +13,7 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { CHROME_TRAY, MenuMarkButton } from "@/components/shell/header";
+import { CHROME_BARE, CHROME_BARE_BUTTON, MenuMarkButton } from "@/components/shell/header";
 import { ADMIN_SECTIONS, menuItemFor, sectionFor, type AdminSection } from "./admin-nav";
 import { MockBadge } from "./mock-banner";
 
@@ -267,8 +267,12 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         </header>
         <div className="pointer-events-none absolute inset-x-0 top-0 z-30 md:hidden">
           <div className="flex items-start justify-between gap-2 px-2.5 pt-[max(0.5rem,env(safe-area-inset-top))]">
-            <div className={CHROME_TRAY}>
-              <MenuMarkButton onClick={() => setMobileOpen(true)} label="管理メニューを開く" />
+            <div className={CHROME_BARE}>
+              <MenuMarkButton
+                onClick={() => setMobileOpen(true)}
+                label="管理メニューを開く"
+                className={CHROME_BARE_BUTTON}
+              />
             </div>
           </div>
         </div>
