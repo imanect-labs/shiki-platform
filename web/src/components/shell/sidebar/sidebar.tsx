@@ -6,13 +6,14 @@ import { PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { BrandLogo } from "../brand-logo";
 import { useSidebar } from "./sidebar-context";
 import { SidebarNav } from "./sidebar-nav";
 import { SidebarChatHistory } from "./sidebar-chat-history";
 import { SidebarAccount } from "./sidebar-account";
 import { SidebarResizer } from "./sidebar-resizer";
 
-/// ワードマーク（四季のグラデーション）。ホームへのリンクを兼ねる。
+/// ロゴ（四つの点＋ワードマーク）。ホームへのリンクを兼ねる。
 function Wordmark({ onNavigate, mobile }: { onNavigate?: () => void; mobile?: boolean }) {
   return (
     <Link
@@ -21,18 +22,7 @@ function Wordmark({ onNavigate, mobile }: { onNavigate?: () => void; mobile?: bo
       className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
       aria-label="ホームへ"
     >
-      <span
-        className={cn(
-          "bg-clip-text font-bold tracking-[-0.02em] text-transparent",
-          mobile ? "text-[19px]" : "text-[17px]",
-        )}
-        style={{
-          backgroundImage:
-            "linear-gradient(100deg, var(--season-spring), var(--season-summer) 38%, var(--season-autumn) 66%, var(--season-winter))",
-        }}
-      >
-        Shiki
-      </span>
+      <BrandLogo size={mobile ? "touch" : "md"} />
     </Link>
   );
 }
