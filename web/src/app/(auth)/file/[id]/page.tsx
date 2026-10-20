@@ -4,7 +4,8 @@
 ///
 /// ドライブの「開く」や共有リンクで、専用ビューア（ノート・CSV・スライド・Office・PDF）を
 /// 持たない形式を開いたときに来る。開いただけでダウンロードは始めず、ファイルの情報と
-/// 「ダウンロード」ボタンを出す。ビューアのある形式で直接来たら、そのビューアへ置き換える。
+/// 「ダウンロード」ボタンを出す。ビューアのある形式で直接来たら、そのビューアへ置き換える
+/// （Office は編集サービス未起動時のフォールバック先として、この画面に留める）。
 import * as React from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -55,8 +56,10 @@ export default function FilePage() {
       .then((node) => {
         if (!active) return;
         // ビューアのある形式（古いリンク・URL 直打ち）はそのビューアで開き直す。
+        // Office は除く: 編集サービス未起動時のフォールバック先がこの画面なので、戻すと
+        // /office ↔ /file を往復してダウンロード導線に辿り着けない。
         const path = resourcePath(node);
-        if (!path.startsWith("/file/")) router.replace(path);
+        if (!path.startsWith("/file/") && !path.startsWith("/office/")) router.replace(path);
         else setState({ phase: "ready", node });
       })
       .catch(() => {
