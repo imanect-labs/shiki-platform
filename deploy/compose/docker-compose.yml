@@ -78,6 +78,8 @@ services:
       KC_HEALTH_ENABLED: "true"
     volumes:
       - ../keycloak:/opt/keycloak/data/import:ro
+      # Shiki のログインテーマ（realm の loginTheme=shiki・deploy/keycloak/README.md）。
+      - ../keycloak/themes/shiki:/opt/keycloak/themes/shiki:ro
     ports:
       - "8081:8080"
     depends_on:

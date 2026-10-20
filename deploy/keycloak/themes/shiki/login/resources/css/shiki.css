@@ -1,0 +1,897 @@
+/* Shiki ログインテーマ。トークン値は web/src/app/globals.css（セマンティックトークンの正本）に
+   合わせる。Keycloak 側は Tailwind を持たないため、ここでは同じ値を素の CSS 変数で持つ。
+   ダークは OS 設定（prefers-color-scheme）に従う（アプリのテーマ設定はログイン前に読めない）。 */
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(0.99 0 0);
+  --foreground: oklch(0.21 0.006 285.9);
+  --card: oklch(1 0 0);
+  --primary: oklch(0.28 0.055 264);
+  --primary-foreground: oklch(0.98 0.005 264);
+  --secondary: oklch(0.967 0.001 286.4);
+  --muted: oklch(0.967 0.001 286.4);
+  --muted-foreground: oklch(0.552 0.014 285.9);
+  --accent: oklch(0.955 0.002 286.4);
+  --destructive: oklch(0.577 0.245 27.3);
+  --success: oklch(0.52 0.11 155);
+  --warning: oklch(0.6 0.12 70);
+  --border: oklch(0.92 0.004 286.3);
+  --input: oklch(0.88 0.004 286.3);
+  --ring: oklch(0.4 0.07 264);
+  --season-spring: oklch(0.70 0.10 10);
+  --season-summer: oklch(0.64 0.10 160);
+  --season-autumn: oklch(0.67 0.12 52);
+  --season-winter: oklch(0.62 0.07 235);
+  --elevation-sm: 0 1px 3px 0 oklch(0 0 0 / 0.06), 0 1px 2px -1px oklch(0 0 0 / 0.06);
+  --duration-fast: 120ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.16 0.004 285.8);
+    --foreground: oklch(0.96 0.001 286.4);
+    --card: oklch(0.2 0.006 285.9);
+    --primary: oklch(0.72 0.08 262);
+    --primary-foreground: oklch(0.22 0.03 264);
+    --secondary: oklch(0.27 0.006 286);
+    --muted: oklch(0.27 0.006 286);
+    --muted-foreground: oklch(0.71 0.01 286);
+    --accent: oklch(0.28 0.007 286);
+    --destructive: oklch(0.7 0.19 22);
+    --success: oklch(0.74 0.12 155);
+    --warning: oklch(0.8 0.12 75);
+    --border: oklch(1 0 0 / 0.1);
+    --input: oklch(1 0 0 / 0.16);
+    --ring: oklch(0.62 0.08 262);
+    --season-spring: oklch(0.78 0.09 12);
+    --season-summer: oklch(0.74 0.09 162);
+    --season-autumn: oklch(0.77 0.10 56);
+    --season-winter: oklch(0.74 0.07 238);
+    --elevation-sm: 0 1px 3px 0 oklch(0 0 0 / 0.4), 0 1px 2px -1px oklch(0 0 0 / 0.4);
+    color-scheme: dark;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body.sk-body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    "Noto Sans JP", Meiryo, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── 骨格 ─────────────────────────────────────────────── */
+
+.sk-login {
+  display: flex;
+  min-height: 100dvh;
+  align-items: center;
+  justify-content: center;
+  padding: max(2rem, env(safe-area-inset-top)) 1rem max(2rem, env(safe-area-inset-bottom));
+  /* 四季の差し色を背景の隅にごく薄く置く（主張しない程度）。 */
+  background:
+    radial-gradient(40rem 24rem at 0% 0%, color-mix(in oklch, var(--season-spring) 9%, transparent), transparent 70%),
+    radial-gradient(40rem 24rem at 100% 100%, color-mix(in oklch, var(--season-winter) 9%, transparent), transparent 70%),
+    var(--background);
+}
+
+.sk-main {
+  width: 100%;
+  max-width: 24rem;
+}
+
+.sk-brand {
+  margin-bottom: 1.75rem;
+  text-align: center;
+}
+
+.sk-wordmark {
+  display: inline-block;
+  background-image: linear-gradient(100deg, var(--season-spring), var(--season-summer) 38%, var(--season-autumn) 66%, var(--season-winter));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.sk-tagline {
+  margin: 0.375rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 13.5px;
+}
+
+.sk-card {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 6px);
+  background: var(--card);
+  box-shadow: var(--elevation-sm);
+  padding: 1.75rem 1.5rem 1.5rem;
+}
+
+@media (max-width: 480px) {
+  .sk-card {
+    padding: 1.5rem 1.25rem 1.25rem;
+  }
+}
+
+.sk-card-header {
+  margin-bottom: 1.25rem;
+}
+
+.sk-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-align: center;
+}
+
+.sk-required-note {
+  margin: 0.5rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-align: center;
+}
+
+.sk-required {
+  color: var(--destructive);
+}
+
+.sk-footnote {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  margin: 1.25rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* ログイン中のユーザー（OTP・パスキー等の 2 段目以降で出る）。 */
+.sk-identity {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-top: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.3rem 0.75rem 0.3rem 0.3rem;
+}
+
+.sk-identity-avatar {
+  display: inline-flex;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sk-identity-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.sk-identity-reset {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.sk-identity-reset:hover {
+  color: var(--foreground);
+  text-decoration: underline;
+}
+
+/* ── フォーム ─────────────────────────────────────────── */
+
+.sk-form,
+#kc-form,
+.sk-content form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.sk-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin: 0;
+}
+
+.sk-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.sk-label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.sk-input {
+  width: 100%;
+  height: 2.5rem;
+  border: 1px solid var(--input);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
+  color: var(--foreground);
+  padding: 0 0.75rem;
+  font: inherit;
+  font-size: 15px;
+  outline: none;
+  transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+.sk-textarea {
+  height: auto;
+  min-height: 6rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.sk-input:focus-visible {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 22%, transparent);
+}
+
+.sk-input[aria-invalid="true"] {
+  border-color: var(--destructive);
+}
+
+.sk-input[aria-invalid="true"]:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--destructive) 20%, transparent);
+}
+
+.sk-input-group {
+  position: relative;
+  display: flex;
+}
+
+.sk-input-group .sk-input {
+  padding-right: 2.75rem;
+}
+
+.sk-input-addon {
+  position: absolute;
+  top: 50%;
+  right: 0.25rem;
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: calc(var(--radius) - 4px);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.sk-input-addon:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.sk-input-addon:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.sk-field-error {
+  color: var(--destructive);
+  font-size: 12.5px;
+}
+
+.sk-help {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+}
+
+.sk-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.sk-check-input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--primary);
+}
+
+.sk-options,
+.sk-options-wrap {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 13px;
+}
+
+.sk-options-wrap:empty,
+.sk-options:empty {
+  display: none;
+}
+
+.sk-buttons,
+.sk-buttons-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* ── ボタン・リンク ─────────────────────────────────────── */
+
+.sk-btn {
+  display: inline-flex;
+  height: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius) - 2px);
+  padding: 0 1rem;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-standard), opacity var(--duration-fast) var(--ease-standard);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.sk-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.sk-btn:disabled,
+.sk-btn-disabled {
+  cursor: default;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.sk-btn-block {
+  width: 100%;
+}
+
+.sk-btn-lg {
+  height: 2.625rem;
+}
+
+.sk-btn-primary {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.sk-btn-primary:hover {
+  background: color-mix(in oklch, var(--primary) 88%, var(--foreground));
+}
+
+.sk-btn-secondary {
+  border-color: var(--input);
+  background: var(--card);
+  color: var(--foreground);
+}
+
+.sk-btn-secondary:hover {
+  background: var(--accent);
+}
+
+/* base のテンプレートは「キャンセル」等を primary と secondary の 2 つ並びで出す。 */
+.sk-buttons .sk-btn-secondary,
+.sk-buttons-wrap .sk-btn-secondary {
+  order: 2;
+}
+
+.sk-link,
+.sk-content a:not(.sk-btn):not(.sk-identity-reset) {
+  color: var(--foreground);
+  font-size: 13px;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--foreground) 30%, transparent);
+  text-underline-offset: 3px;
+}
+
+.sk-label-row .sk-link {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  text-decoration: none;
+}
+
+.sk-label-row .sk-link:hover {
+  color: var(--foreground);
+  text-decoration: underline;
+}
+
+.sk-link-button {
+  border: 0;
+  background: none;
+  color: var(--muted-foreground);
+  padding: 0.25rem;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.sk-link-button:hover {
+  color: var(--foreground);
+  text-decoration: underline;
+}
+
+.sk-try-another {
+  margin-top: 1rem;
+  align-items: center;
+}
+
+.sk-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.sk-divider::before,
+.sk-divider::after {
+  height: 1px;
+  flex: 1;
+  background: var(--border);
+  content: "";
+}
+
+/* ── メッセージ ─────────────────────────────────────────── */
+
+.sk-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--muted);
+  padding: 0.625rem 0.75rem;
+  font-size: 13px;
+}
+
+.sk-alert .sk-i {
+  margin-top: 0.15rem;
+  flex-shrink: 0;
+}
+
+.sk-alert-error {
+  background: color-mix(in oklch, var(--destructive) 10%, transparent);
+  color: var(--destructive);
+}
+
+.sk-alert-warning {
+  background: color-mix(in oklch, var(--warning) 14%, transparent);
+  color: color-mix(in oklch, var(--warning) 70%, var(--foreground));
+}
+
+.sk-alert-success {
+  background: color-mix(in oklch, var(--success) 12%, transparent);
+  color: color-mix(in oklch, var(--success) 75%, var(--foreground));
+}
+
+.sk-info {
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* 情報・エラー画面（info.ftl / error.ftl）の本文。 */
+#kc-info-message p,
+#kc-error-message p {
+  margin: 0 0 0.75rem;
+}
+
+.instruction {
+  margin: 0 0 0.75rem;
+  color: var(--muted-foreground);
+  font-size: 13.5px;
+}
+
+/* ── 方法の選択（select-authenticator・パスキー一覧） ─────────── */
+
+.sk-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sk-choices-title {
+  margin: 0 0 0.5rem;
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+}
+
+.sk-choice {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
+  color: var(--foreground);
+  padding: 0.75rem;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.sk-choice:hover {
+  background: var(--accent);
+}
+
+.sk-choice:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.sk-choice-icon {
+  display: inline-flex;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--muted);
+  font-size: 18px;
+}
+
+.sk-choice-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.sk-choice-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.sk-choice-desc {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+}
+
+.sk-choice-fill {
+  display: none;
+}
+
+.sk-choice-arrow {
+  color: var(--muted-foreground);
+}
+
+/* OTP が複数あるときの選択（login-otp.ftl）。 */
+.sk-otp-choice-input {
+  position: absolute;
+  opacity: 0;
+}
+
+.sk-otp-choice {
+  display: block;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  padding: 0.625rem 0.75rem;
+  cursor: pointer;
+}
+
+.sk-otp-choice-input:checked + .sk-otp-choice {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 1px var(--ring);
+}
+
+.sk-otp-choice-input:focus-visible + .sk-otp-choice {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.sk-otp-choice-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 13.5px;
+}
+
+/* 認証アプリの設定（login-config-totp.ftl）。手順リストと QR。 */
+#kc-totp-settings {
+  margin: 0 0 1rem;
+  padding-left: 1.25rem;
+  color: var(--foreground);
+  font-size: 13.5px;
+}
+
+#kc-totp-settings li {
+  margin-bottom: 0.75rem;
+}
+
+#kc-totp-settings ul {
+  margin: 0.375rem 0 0;
+  padding-left: 1.125rem;
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+}
+
+#kc-totp-secret-qr-code {
+  display: block;
+  width: 10rem;
+  height: 10rem;
+  margin: 0.5rem 0;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: #fff;
+  padding: 0.375rem;
+}
+
+#kc-totp-secret-key {
+  display: inline-block;
+  margin: 0.25rem 0;
+  border-radius: 4px;
+  background: var(--muted);
+  padding: 0.25rem 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+/* ── 言語メニュー ───────────────────────────────────────── */
+
+.sk-locale {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+}
+
+.sk-locale-dropdown {
+  position: relative;
+}
+
+.sk-locale-dropdown > button {
+  display: inline-flex;
+  height: 1.75rem;
+  align-items: center;
+  gap: 0.25rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  padding: 0 0.5rem;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sk-locale-dropdown > button:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.sk-locale-list {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 0.25rem);
+  right: 0;
+  display: none;
+  min-width: 8rem;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
+  box-shadow: var(--elevation-sm);
+  padding: 0.25rem;
+  list-style: none;
+}
+
+/* menu-button-links.js が aria-expanded を切り替える。 */
+.sk-locale-dropdown > button[aria-expanded="true"] + .sk-locale-list,
+.sk-locale-dropdown:focus-within .sk-locale-list {
+  display: block;
+}
+
+.sk-locale-link {
+  display: block;
+  border-radius: 6px;
+  color: var(--foreground);
+  padding: 0.375rem 0.625rem;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.sk-locale-link:hover,
+.sk-locale-link:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
+/* ── その他 ─────────────────────────────────────────────── */
+
+.sk-social-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sk-codes {
+  margin: 0 0 1rem;
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--muted);
+  padding: 0.75rem 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  list-style: none;
+}
+
+/* base のテンプレートが持つ非表示指定（hidden 属性・PatternFly の非表示クラス）。 */
+[hidden],
+.pf-m-hidden,
+.hidden {
+  display: none !important;
+}
+
+.no-bottom-margin {
+  margin-bottom: 0;
+}
+
+/* ── アイコン（lucide のパスを mask で描く。currentColor に従う） ── */
+
+.sk-i {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  flex-shrink: 0;
+  background-color: currentColor;
+  vertical-align: -0.125em;
+  -webkit-mask: var(--sk-i) center / contain no-repeat;
+  mask: var(--sk-i) center / contain no-repeat;
+}
+
+.sk-btn .sk-i {
+  font-size: 16px;
+}
+
+.sk-i-eye {
+  --sk-i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E");
+}
+
+.sk-i-eye-off {
+  --sk-i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.73 5.08A10.43 10.43 0 0 1 12 5c4.97 0 8.08 3.6 9.94 6.65a1 1 0 0 1 0 .7 13.16 13.16 0 0 1-1.67 2.68'/%3E%3Cpath d='M14.08 14.16a3 3 0 0 1-4.24-4.24'/%3E%3Cpath d='M17.48 17.5A10.75 10.75 0 0 1 2.06 12.35a1 1 0 0 1 0-.7 13.2 13.2 0 0 1 4.46-5.15'/%3E%3Cpath d='m2 2 20 20'/%3E%3C/svg%3E");
+}
+
+.sk-i-key {
+  --sk-i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.59 18.41A2 2 0 0 0 2 19.83V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.17a2 2 0 0 0 1.42-.59l.81-.81a6.5 6.5 0 1 0-4.17-4.17z'/%3E%3Ccircle cx='16.5' cy='7.5' r='.5' fill='black'/%3E%3C/svg%3E");
+}
+
+.sk-i-fingerprint {
+  --sk-i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4'/%3E%3Cpath d='M14 13.12c0 2.38 0 6.38-1 8.88'/%3E%3Cpath d='M17.29 21.02c.12-.6.43-2.3.5-3.02'/%3E%3Cpath d='M2 12a10 10 0 0 1 18-6'/%3E%3Cpath d='M2 16h.01'/%3E%3Cpath d='M21.8 16c.2-2 .13-5.35 0-6'/%3E%3Cpath d='M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2'/%3E%3Cpath d='M8.65 22c.21-.66.45-1.32.57-2'/%3E%3Cpath d='M9 6.8a6 6 0 0 1 9 5.2v2'/%3E%3C/svg%3E");
+}
+
+.sk-i-lock {
+  --sk-i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='18' height='11' x='3' y='11' rx='2' ry='2'/%3E%3Cpath d='M7 11V7a5 5 0 0 1 10 0v4'/%3E%3C/svg%3E");
+}
+
+.sk-i-phone {
+  --sk-i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='14' height='20' x='5' y='2' rx='2' ry='2'/%3E%3Cpath d='M12 18h.01'/%3E%3C/svg%3E");
+}
+
+.sk-i-shield {
+  --sk-i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z'/%3E%3Cpath d='m9 12 2 2 4-4'/%3E%3C/svg%3E");
+}
+
+.sk-i-alert {
+  --sk-i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cline x1='12' x2='12' y1='8' y2='12'/%3E%3Cline x1='12' x2='12.01' y1='16' y2='16'/%3E%3C/svg%3E");
+}
+
+.sk-i-info {
+  --sk-i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4'/%3E%3Cpath d='M12 8h.01'/%3E%3C/svg%3E");
+}
+
+.sk-i-check {
+  --sk-i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='m9 12 2 2 4-4'/%3E%3C/svg%3E");
+}
+
+.sk-i-chevron {
+  --sk-i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E");
+}
+
+.sk-i-restart {
+  --sk-i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8'/%3E%3Cpath d='M3 3v5h5'/%3E%3C/svg%3E");
+}
+
+.sk-i-globe {
+  --sk-i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20'/%3E%3Cpath d='M2 12h20'/%3E%3C/svg%3E");
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}
+
+/* base の素のチェックボックス（「他のデバイスからサインアウト」等）。 */
+.sk-content .checkbox label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.sk-content input[type="checkbox"],
+.sk-content input[type="radio"] {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--primary);
+}
+
+/* 1 画面に form が 2 つ並ぶ（登録＋キャンセル等）ときの間隔。 */
+#kc-content-wrapper > form + form,
+#kc-content-wrapper > div + form,
+.sk-content form + form {
+  margin-top: 0.5rem;
+}
+
+/* 資格情報の削除確認（delete-credential.ftl）。説明文とボタンの間をあけ、確定は破壊的な色にする。 */
+#kc-delete-text {
+  margin-bottom: 1.25rem;
+  color: var(--muted-foreground);
+  font-size: 13.5px;
+}
+
+body[data-page-id="login-delete-credential"] .sk-btn-primary {
+  background: var(--destructive);
+  color: #fff;
+}
+
+body[data-page-id="login-delete-credential"] .sk-btn-primary:hover {
+  background: color-mix(in oklch, var(--destructive) 88%, black);
+}
