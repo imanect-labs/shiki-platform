@@ -205,7 +205,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             web_search: None,
             parser: None,
             storage: None,
-            ui_validator: None,
+            workflow_resolver: None,
             skill_artifacts: Some(artifacts),
             skill_catalog: None,
             workflow_store: None,

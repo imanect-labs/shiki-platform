@@ -64,7 +64,7 @@ export interface NoteEditorProps {
   extraSlashItems?: () => SlashItem[];
   /// 選択の変化（Task 11.10）。選択が空なら null。アシスタントパネルが選択を自動挿入する。
   onSelectionChange?: (selection: { text: string; headingPath: string[] } | null) => void;
-  /// エディタ生成/破棄の通知（#334・エクスポートで md 直列化と genui スナップショットに使う）。
+  /// エディタ生成/破棄の通知（#334・エクスポートで md 直列化に使う）。
   onEditorReady?: (editor: Editor | null) => void;
 }
 

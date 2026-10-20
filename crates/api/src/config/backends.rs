@@ -70,7 +70,7 @@ fn default_upload_gc_enabled() -> bool {
     true
 }
 
-/// 既定オン。評価（Gemma・Luna）で、今の emit_ui より正確で軽いことを確かめた（#559）。
+/// 既定オン。評価（Gemma・Luna）で、当時の emit_ui より正確で軽いことを確かめた（#559・emit_ui は #604 で撤去）。
 fn default_yui() -> bool {
     true
 }

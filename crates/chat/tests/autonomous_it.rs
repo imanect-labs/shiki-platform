@@ -188,7 +188,7 @@ async fn workspace_harness(pool: PgPool) -> (ChatStore, Arc<StorageService>) {
             web_search: None,
             parser: None,
             storage: Some(storage.clone()),
-            ui_validator: None,
+            workflow_resolver: None,
             skill_artifacts: None,
             skill_catalog: None,
             workflow_store: None,

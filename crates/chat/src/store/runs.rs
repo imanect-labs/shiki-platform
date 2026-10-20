@@ -137,7 +137,7 @@ pub struct RunContext {
 #[derive(Debug, Clone, Copy)]
 pub struct CurrentRun {
     pub run_id: Uuid,
-    /// 生成先の assistant メッセージ id。この run が出す genui カードのアクション照合先。
+    /// 生成先の assistant メッセージ id（この run が本文に書く図のボタンの照合先）。
     pub message_id: Uuid,
     pub status: RunStatus,
     /// 自律プロファイルか（再訪時の UI 復元・#350）。
@@ -467,7 +467,7 @@ impl ChatStore {
 
     /// そのメッセージを生成した run の**生成材料**（自律か・適用中の skill ピン）を引く（#387）。
     ///
-    /// genui のカード（質問カード・計画カード）は自律 run の途中で出る。回答を投稿する
+    /// 本文の図（```ui の ask・plan）は自律 run の途中で出る。回答を投稿する
     /// `chat.submit` が素の設定で run を起こすと、続きが別物になる:
     ///
     /// - 非自律だと `max_steps=6`・`plan` ツール無しの制約版になる

@@ -79,8 +79,8 @@ pub struct MessagesResponse {
     /// 進行中 run が自律プロファイルか（再訪時にエージェントモード UI・モードセレクタを復元する・#350）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_run_autonomous: Option<bool>,
-    /// 進行中 run の生成先 assistant メッセージ id。この run が出す genui カードの
-    /// アクション照合先であり、**run 完了後に**実行できるようになる（それまでは順番待ち）。
+    /// 進行中 run の生成先 assistant メッセージ id。この run が本文に書く図のボタンは
+    /// **run 完了後に**押せるようになる（回答の確定時に束縛を解決する・#604）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_assistant_message_id: Option<Uuid>,
     /// **順番待ち**の発話（投入順）。生成中でも発話は受け付けてサーバ側で直列化するため、

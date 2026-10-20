@@ -129,9 +129,12 @@ test("deep research: 質問（ask）→ 計画（plan）→ 調査 → レポー
   await expect(expanded).toContainText("report.md");
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/deep-research-activity.png`, fullPage: true });
 
-  // 出典カード（web 出典の唯一の構造化表示）と保存ボタン（下書きノート）。
-  await expect(page.getByText("出典", { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole("link", { name: /example\.com/ }).first()).toBeVisible();
+  // 出典は会話の最後にリンクの一覧で並ぶ（旧 emit_ui の出典カードの置き換え・#604）と、
+  // 保存ボタン（下書きノート）。
+  await expect(page.getByRole("heading", { name: "出典", exact: true }).first()).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "国内 SaaS 市場調査（2026 年版）" }).first(),
+  ).toHaveAttribute("href", "https://example.com/stub-1");
   const draft = page.getByTestId("note-draft-card").first();
   await expect(draft).toBeVisible();
   await expect(draft).toContainText("2026年 国内SaaS市場の調査");

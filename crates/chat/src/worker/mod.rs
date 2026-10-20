@@ -65,8 +65,8 @@ pub struct ChatWorker {
     parser: Option<Arc<dyn rag::DocumentParser>>,
     /// StorageService（自律プロファイルのワークスペース）。
     storage: Option<Arc<storage::StorageService>>,
-    /// UI スペック検証（emit_ui ツール・Task 6.4）。
-    ui_validator: Option<Arc<gui::SpecValidator>>,
+    /// 図のボタンのワークフロー名の解決（#604）。
+    workflow_resolver: Option<Arc<gui::WorkflowResolver>>,
     /// skill / ミニアプリのピン解決（Task 6.9）。
     skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
     /// skill カタログ源（skill ツール・#344）。
@@ -100,7 +100,7 @@ impl ChatWorker {
             web_search,
             parser,
             storage,
-            ui_validator,
+            workflow_resolver,
             skill_artifacts,
             skill_catalog,
             workflow_store,
@@ -122,7 +122,7 @@ impl ChatWorker {
             web_search,
             parser,
             storage,
-            ui_validator,
+            workflow_resolver,
             skill_artifacts,
             skill_catalog,
             workflow_store,

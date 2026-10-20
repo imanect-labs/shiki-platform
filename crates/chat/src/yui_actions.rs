@@ -151,7 +151,10 @@ mod tests {
         let content = vec![
             text("前置き"),
             text(APP),
-            ContentBlock::GenerativeUi { spec: json!({}) },
+            ContentBlock::FileRef {
+                node_id: "n".into(),
+                name: "a.csv".into(),
+            },
         ];
         assert!(may_have_yui(&content));
         let buttons = workflow_buttons(&content);

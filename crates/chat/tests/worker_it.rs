@@ -151,7 +151,7 @@ fn test_deps(gateway: LlmGateway) -> chat::WorkerDeps {
         web_search: None,
         parser: None,
         storage: None,
-        ui_validator: None,
+        workflow_resolver: None,
         skill_artifacts: None,
         skill_catalog: None,
         workflow_store: None,

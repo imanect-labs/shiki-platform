@@ -273,7 +273,7 @@ pub(crate) async fn wire_chat(
     // parser: 文書パーサ（web_fetch の PDF/Office 経路・#405）。RAG 配線と同一インスタンス。
     parser: Option<&Arc<dyn rag::DocumentParser>>,
     storage: &Arc<storage::StorageService>,
-    ui_validator: &Arc<gui::SpecValidator>,
+    workflow_resolver: &Arc<gui::WorkflowResolver>,
     skill_artifacts: &Arc<artifact::ArtifactStore>,
     workflows: &Arc<workflow_engine::WorkflowStore>,
     secrets: Option<&Arc<secrets::SecretStore>>,
@@ -361,8 +361,8 @@ pub(crate) async fn wire_chat(
             parser: parser.cloned(),
             // 自律プロファイルのワークスペース（file CRUD/shell・Task 5.4）。
             storage: Some(Arc::clone(storage)),
-            // generative UI（emit_ui・Task 6.4）。
-            ui_validator: Some(Arc::clone(ui_validator)),
+            // 図のボタンの `-> workflow 名前` を回答の確定時に版へ固定する（#604）。
+            workflow_resolver: Some(Arc::clone(workflow_resolver)),
             // skill / ミニアプリのピン解決（Task 6.9・fail-closed）。
             skill_artifacts: Some(Arc::clone(skill_artifacts)),
             // skill ツールのカタログ源（インストール済み ∪ 本人 owner・#344）。

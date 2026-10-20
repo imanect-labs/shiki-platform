@@ -260,15 +260,15 @@ mod tests {
             &mut opts,
             &[
                 ToolName::WebSearch,
-                ToolName::EmitUi,
+                ToolName::DocSearch,
                 ToolName::CodeInterpreter,
             ],
-            &["emit_ui", "fs_write"],
-            &["web_search", "web_fetch", "doc_search"],
+            &["doc_search", "fs_write"],
+            &["web_search", "web_fetch"],
         );
-        assert_eq!(opts.tool_search.always_load, vec!["emit_ui".to_string()]);
+        assert_eq!(opts.tool_search.always_load, vec!["doc_search".to_string()]);
         let system = opts.system.as_deref().unwrap();
-        assert!(system.contains("指定しています: emit_ui。"), "{system}");
+        assert!(system.contains("指定しています: doc_search。"), "{system}");
         assert!(
             system.contains("次のツールは計画の承認後（実行段階）に使えます: web_search。"),
             "{system}"
@@ -285,7 +285,7 @@ mod tests {
         apply_requested_tools(
             &mut clarify,
             &[ToolName::WebSearch, ToolName::DocSearch],
-            &["emit_ui"],
+            &[],
             &["web_search", "doc_search", "fs_write"],
         );
         assert!(clarify.tool_search.always_load.is_empty());

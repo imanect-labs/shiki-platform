@@ -72,7 +72,7 @@ pub async fn create_thread(
             .mini_apps
             .resolve(&ctx, pin.artifact_id, pin.version, trace.as_deref())
             .await
-            .map_err(super::ui_specs::map_gui_err)?;
+            .map_err(super::gui_errors::map_gui_err)?;
         mini_app_pin = Some((resolved.id, resolved.version));
         skill_pins = resolved
             .body

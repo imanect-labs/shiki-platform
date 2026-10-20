@@ -1,7 +1,7 @@
 //! skill を artifact（kind=skill）として保存・取得する薄い層（Task 6.7）。
 //!
 //! バージョン管理・ReBAC 共有・不変バージョンは [`artifact::ArtifactStore`] が担い、
-//! 本層は保存前に [`validate_skill_body`] を必ず通す（UiSpecStore / WorkflowStore と同型）。
+//! 本層は保存前に [`validate_skill_body`] を必ず通す（WorkflowStore と同型）。
 
 use std::sync::Arc;
 

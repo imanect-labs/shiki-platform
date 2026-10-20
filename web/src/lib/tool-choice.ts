@@ -11,7 +11,7 @@
 /// 表示の過不足が型エラーになる（手書きの選択肢一覧は作らない）。
 
 import * as React from "react";
-import { Globe, LayoutTemplate, Search, Terminal, type LucideIcon } from "lucide-react";
+import { Globe, Search, Terminal, type LucideIcon } from "lucide-react";
 
 import { USER_SELECTABLE_TOOLS, type UserSelectableTool } from "@/generated/gui-spec";
 
@@ -28,7 +28,6 @@ const DISPLAY: Record<UserSelectableTool, Omit<SelectableTool, "name">> = {
   doc_search: { label: "社内文書検索", hint: "閲覧できる社内文書から探す", icon: Search },
   web_search: { label: "Web 検索", hint: "インターネットで最新の情報を調べる", icon: Globe },
   code_interpreter: { label: "コード実行", hint: "計算・集計・グラフ作成をコードで行う", icon: Terminal },
-  emit_ui: { label: "表・グラフで表示", hint: "結果を表やグラフ、フォームで見せる", icon: LayoutTemplate },
 };
 
 /// 利用者が選べるツール（並びは codegen の定数の順）。

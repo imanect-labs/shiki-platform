@@ -5,7 +5,7 @@
 //! 解決し（[`ChatWorker::yui_bindings`]）、押されたときはサーバーが本文を読み直して検証する
 //! （`store::yui_actions`・#604）。
 
-/// 書き方の説明（評価で最も正確だった版をもとに、`emit_ui` との使い分けを足したもの）。
+/// 書き方の説明（評価で最も正確だった版をもとにしたもの）。
 const GUIDE: &str = include_str!("yui_guide.md");
 
 impl super::ChatWorker {
@@ -17,7 +17,11 @@ impl super::ChatWorker {
         content: &[crate::model::ContentBlock],
     ) -> Vec<crate::yui_actions::UiWorkflowBinding> {
         let buttons = crate::yui_actions::workflow_buttons(content);
-        let Some(validator) = self.ui_validator.as_ref().filter(|_| !buttons.is_empty()) else {
+        let Some(resolver) = self
+            .workflow_resolver
+            .as_ref()
+            .filter(|_| !buttons.is_empty())
+        else {
             return Vec::new();
         };
         let mut pins: std::collections::HashMap<String, Option<gui::WorkflowPin>> =
@@ -25,7 +29,7 @@ impl super::ChatWorker {
         let mut out = Vec::new();
         for (action_id, name) in buttons {
             if !pins.contains_key(&name) {
-                let pin = validator.resolve_workflow_name(ctx, &name, None).await;
+                let pin = resolver.resolve_workflow_name(ctx, &name, None).await;
                 pins.insert(name.clone(), pin);
             }
             let Some(Some(pin)) = pins.get(&name) else {
@@ -58,9 +62,10 @@ mod tests {
     fn appends_guide_after_base_prompt() {
         let out = with_yui_guide("あなたはアシスタントです。\n");
         assert!(out.starts_with("あなたはアシスタントです。\n\n# 図の書き方"));
-        // 5 種類すべての書き方と、emit_ui との使い分けを含む。
-        for kind in ["```ui", "bar", "line", "stat", "flow", "stack", "emit_ui"] {
+        // 5 種類すべての書き方を含み、撤去した emit_ui には触れない（#604）。
+        for kind in ["```ui", "bar", "line", "stat", "flow", "stack"] {
             assert!(out.contains(kind), "{kind} が無い");
         }
+        assert!(!out.contains("emit_ui"));
     }
 }

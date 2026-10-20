@@ -54,8 +54,6 @@ pub enum StreamEventKind {
     Citation(Citation),
     /// ツール成果物のファイル参照（code_interpreter の保存済み成果物・Task 4.11）。
     FileRef { node_id: String, name: String },
-    /// 宣言的 UI（Phase 6）。
-    GenerativeUi { spec: serde_json::Value },
     /// 保存済みワークフローへの参照カード（emit_workflow・Task 10.13）。
     WorkflowRef { workflow: serde_json::Value },
     /// 保存済みノートへの参照カード（save_note・Task 11P.5）。
@@ -126,7 +124,6 @@ impl StreamEventKind {
             StreamEventKind::ToolResult { .. } => "tool_result",
             StreamEventKind::Citation(_) => "citation",
             StreamEventKind::FileRef { .. } => "file_ref",
-            StreamEventKind::GenerativeUi { .. } => "generative_ui",
             StreamEventKind::WorkflowRef { .. } => "workflow_ref",
             StreamEventKind::NoteRef { .. } => "note_ref",
             StreamEventKind::NoteDraft { .. } => "note_draft",

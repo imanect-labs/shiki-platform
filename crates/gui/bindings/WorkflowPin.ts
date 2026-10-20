@@ -3,7 +3,7 @@
 /**
  * ワークフロー参照（検証・解決で **artifact_id＋version が焼き込まれる**＝再現性）。
  *
- * LLM は `name` だけ書けばよく、[`SpecValidator`](crate::validator::SpecValidator) が
+ * ボタンは `name` だけ書けばよく、[`WorkflowResolver`](crate::resolver::WorkflowResolver) が
  * 発話ユーザーの viewer 権限で解決し、未指定 version は current にピンする。
  */
 export type WorkflowPin = { 
@@ -12,11 +12,11 @@ export type WorkflowPin = {
  */
 name: string | null, 
 /**
- * 解決済み artifact id（保存済みスペックでは常に Some）。
+ * 解決済み artifact id（解決後は常に Some）。
  */
 artifact_id: string | null, 
 /**
- * 解決済みバージョン（保存済みスペックでは常に Some）。
+ * 解決済みバージョン（解決後は常に Some）。
  * JSON 経由の数値のため TS では number（bigint にしない）。
  */
 version: number | null, };

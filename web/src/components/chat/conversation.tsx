@@ -39,9 +39,7 @@ import { newId } from "@/lib/chat-store";
 import { selectionKindLabel, type SelectionContext } from "@/lib/selection-context";
 import type { ActiveCommand } from "@/lib/slash-command";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
-import { ChatGenUiProvider } from "@/components/genui/action-context";
-import { invokeChatUiAction, invokeChatYuiAction, UiActionAlreadyInvoked } from "@/lib/artifact-api";
-import { SpecRenderer } from "@/components/genui/spec-renderer";
+import { invokeChatYuiAction } from "@/lib/artifact-api";
 import { SaveAsAppDialog, type SaveAsAppTarget } from "@/components/artifacts/save-as-app-dialog";
 import { Loader } from "@/components/prompt-kit/loader";
 import { Markdown } from "@/components/prompt-kit/markdown";
@@ -84,8 +82,6 @@ type StreamState = {
   citations: Citation[];
   /// ツール成果物（code_interpreter が保存したファイル参照）。
   files: Attachment[];
-  /// 検証済み generative UI スペック（Phase 6・emit_ui）。
-  uiSpecs: unknown[];
   /// 保存済みワークフロー参照（Task 10.13・emit_workflow）。
   workflowRefs: unknown[];
   /// 保存済みノート参照（Task 11P.5・save_note）。
@@ -103,8 +99,8 @@ type StreamState = {
   approval: ApprovalRequest | null;
   budget: { kind: string; used: number; limit: number } | null;
   runId: string | null;
-  /// 生成先の assistant メッセージ id（genui アクションの照合先）。run 完了までは
-  /// **保存されていない**ので実行はできないが、id は POST 応答で分かっている。
+  /// 生成先の assistant メッセージ id。run 完了までは**保存されていない**ので、図の
+  /// ボタンはまだ押せない（確定後に読み直して有効になる）。
   assistantMessageId: string | null;
   approvalPending: boolean;
 };
@@ -129,7 +125,6 @@ const EMPTY_STREAM: StreamState = {
   tools: [],
   citations: [],
   files: [],
-  uiSpecs: [],
   workflowRefs: [],
   noteRefs: [],
   noteDrafts: [],
@@ -229,11 +224,6 @@ export function Conversation({
   const { scrollerRef, contentRef, showJump, scrollToBottom } = useStickToBottom();
   // 順番待ちの発話（サーバ受理済み・生成未開始）。ストリーム行の下に並べる。
   const [queued, setQueued] = React.useState<QueuedMessage[]>([]);
-  // 生成中に押された genui アクション（質問カードの回答・計画の承認）。生成が終わって
-  // assistant メッセージが保存された瞬間に、押された順で実行する。
-  const queuedActionsRef = React.useRef<
-    { messageId: string; actionId: string; params: unknown }[]
-  >([]);
   // onDone は makeHandlers の中で閉じ込められるため、最新の件数を ref で見る。
   const queuedCountRef = React.useRef(0);
   React.useEffect(() => {
@@ -244,7 +234,7 @@ export function Conversation({
   const sentPending = React.useRef(false);
   // stream の正は ref に置き、state は描画用の写しとする。setState updater 経由の
   // 遅延同期（useEffect）だと、SSE が同一マイクロタスクで連続到達したとき ref が
-  // 1 レンダー分古いまま onDone に入り、最後のバッチ（generative_ui 等）が確定から
+  // 1 レンダー分古いまま onDone に入り、最後のバッチ（下書き・参照など）が確定から
   // 欠落する（stub LLM の高速バーストで顕在化）。ref を同期更新して確実に拾う。
   const streamRef = React.useRef<StreamState | null>(null);
   const updateStream = React.useCallback(
@@ -343,8 +333,6 @@ export function Conversation({
         }),
       onCitation: (c) => updateStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
       onFileRef: (f) => updateStream((s) => (s ? { ...s, files: [...s.files, f] } : s)),
-      onGenerativeUi: (spec) =>
-        updateStream((s) => (s ? { ...s, uiSpecs: [...s.uiSpecs, spec] } : s)),
       onWorkflowRef: (workflow) =>
         updateStream((s) =>
           s ? { ...s, workflowRefs: [...s.workflowRefs, workflow] } : s,
@@ -417,32 +405,12 @@ export function Conversation({
         if (status === "cancelled" || status === "failed") pendingOpenRef.current = null;
       },
       onDone: () => {
-        // generative UI を含む応答はサーバ確定の message id が要る（UI アクションの照合先）
-        // ため、ローカル確定ではなく再読込で置き換える。
-        // 本文の ```ui の図のボタンも同じ（束縛はサーバーが回答の確定時に解決する・#604）。
-        const hadUi =
-          (streamRef.current?.uiSpecs.length ?? 0) > 0 || hasYuiBlock(streamRef.current?.text ?? "");
+        // 本文の ```ui の図を含む応答はサーバ確定の message id が要る（ボタンの照合先・
+        // 束縛はサーバーが回答の確定時に解決する・#604）ため、ローカル確定ではなく再読込で置き換える。
+        const hadUi = hasYuiBlock(streamRef.current?.text ?? "");
         flushStream("reloading");
         cancelRef.current = null;
         notifyThreadsChanged();
-        // 生成中に押されたカード操作を、保存済みになった今この瞬間に流す（押した順）。
-        const actions = queuedActionsRef.current.splice(0);
-        if (actions.length > 0) {
-          void (async () => {
-            for (const a of actions) {
-              try {
-                await invokeChatUiAction(threadId, a.messageId, a.actionId, a.params);
-              } catch (e) {
-                // 既に送信済み（二重に積まれた・別タブから押した）はエラーにしない。
-                // 再読込でカードが送信済み表示になるので、それが答えになる（#410）。
-                if (e instanceof UiActionAlreadyInvoked) continue;
-                setError(e instanceof Error ? e.message : "回答の送信に失敗しました");
-              }
-            }
-            setReloadKey((k) => k + 1);
-          })();
-          return;
-        }
         // 順番待ちがあるなら読み直す: サーバは次の run を「いま映すべき run」として返すので、
         // 再ロードがそのまま次への購読の張り直しになる（クライアントで順序を持たない）。
         if (hadUi || queuedCountRef.current > 0) setReloadKey((k) => k + 1);
@@ -559,19 +527,6 @@ export function Conversation({
     },
     [threadId, makeHandlers, autonomous, scrollToBottom],
   );
-
-  /// 生成中に押された genui アクションを積む（生成完了時に onDone が流す）。
-  ///
-  /// 送り先は**この run の生成先 assistant メッセージ**。ストリーム中に id が分かっている
-  /// （POST 応答 or 再訪時の active_assistant_message_id）ので、確定を待つのは保存だけ。
-  const onQueueUiAction = React.useCallback((actionId: string, params: unknown) => {
-    const messageId = streamRef.current?.assistantMessageId;
-    if (!messageId) {
-      setError("いまは回答を受け付けられませんでした。生成が終わってからもう一度お試しください。");
-      return;
-    }
-    queuedActionsRef.current.push({ messageId, actionId, params });
-  }, []);
 
   /// 順番待ちを取り消す（サーバの run もキャンセルする＝離脱後に走り出さない）。
   const cancelQueued = React.useCallback(
@@ -812,7 +767,6 @@ export function Conversation({
                     stream={stream}
                     onApproval={decideApproval}
                     threadId={threadId}
-                    onQueueUiAction={onQueueUiAction}
                   />
                 ) : null}
                 {/* 順番待ちは「AI が答えている最中に積んだ次の発話」なので応答の後ろに置く。 */}
@@ -912,8 +866,6 @@ function finalizeStream(
   for (const c of s.citations) blocks.push(c);
   // ツール成果物（保存済みファイル）も確定メッセージへ残す。
   for (const f of s.files) blocks.push({ type: "file_ref", node_id: f.node_id, name: f.name });
-  // 検証済み generative UI ブロック（アクションは確定 id で再読込後に有効化される）。
-  for (const spec of s.uiSpecs) blocks.push({ type: "generative_ui", spec });
   // 保存済みワークフロー参照カード（Task 10.13）。
   for (const workflow of s.workflowRefs) blocks.push({ type: "workflow_ref", workflow });
   // 保存済みノート参照カード（Task 11P.5）。
@@ -1157,9 +1109,6 @@ const AssistantRow = React.memo(function AssistantRow({
   const files = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "file_ref" }> => b.type === "file_ref",
   );
-  const uiSpecs = blocks.filter(
-    (b): b is Extract<ContentBlock, { type: "generative_ui" }> => b.type === "generative_ui",
-  );
   const workflowRefs = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "workflow_ref" }> => b.type === "workflow_ref",
   );
@@ -1192,22 +1141,6 @@ const AssistantRow = React.memo(function AssistantRow({
             <YuiActionContext.Provider value={yuiHost}>
               <Markdown>{linkifyCitations(text, citations)}</Markdown>
             </YuiActionContext.Provider>
-          ) : null}
-          {uiSpecs.length > 0 ? (
-            <ChatGenUiProvider
-              threadId={threadId}
-              messageId={messageId}
-              invokedActions={invokedActions}
-              onActionCompleted={(result) => {
-                // chat.submit は新しい発話と生成を作るため会話を再読込する。
-                // 結果なし（409 を受けた）も再読込する＝送信済みかどうかはサーバに聞き直す。
-                if (!result || result.result.kind === "handler") onUiAction();
-              }}
-            >
-              {uiSpecs.map((b, i) => (
-                <GenUiBlock key={i} spec={b.spec} />
-              ))}
-            </ChatGenUiProvider>
           ) : null}
           {workflowRefs.map((b, i) => (
             <WorkflowRefCard key={i} raw={b.workflow} />
@@ -1252,11 +1185,6 @@ const AssistantRow = React.memo(function AssistantRow({
   );
 });
 
-/// generative UI ブロック（emit_ui・Yui の ```ui へ置き換え中・#604）。
-function GenUiBlock({ spec }: { spec: unknown }) {
-  return <SpecRenderer spec={spec} />;
-}
-
 /// ツール成果物（保存済みファイル）のチップ列。クリックでダウンロードする。
 function ArtifactFiles({ files }: { files: { node_id: string; name: string }[] }) {
   if (files.length === 0) return null;
@@ -1282,13 +1210,10 @@ function StreamingRow({
   stream,
   onApproval,
   threadId,
-  onQueueUiAction,
 }: {
   stream: StreamState;
   onApproval: (approved: boolean) => void;
   threadId: string;
-  /// 生成中に押されたカード操作の受け皿（生成完了後に実行する）。
-  onQueueUiAction: (actionId: string, params: unknown) => void;
 }) {
   const showLoader =
     !stream.text &&
@@ -1327,15 +1252,6 @@ function StreamingRow({
             <div className="text-[15px] leading-relaxed">
               <Markdown streaming>{linkifyCitations(stream.text, stream.citations)}</Markdown>
             </div>
-          ) : null}
-          {stream.uiSpecs.length > 0 ? (
-            // messageId は null（＝まだ保存されていないので即時実行できない）。押された操作は
-            // onQueue で受け取り、生成完了時に確定した assistant メッセージへ流す。
-            <ChatGenUiProvider threadId={threadId} messageId={null} onQueue={onQueueUiAction}>
-              {stream.uiSpecs.map((spec, i) => (
-                <SpecRenderer key={i} spec={spec} />
-              ))}
-            </ChatGenUiProvider>
           ) : null}
           {stream.workflowRefs.map((workflow, i) => (
             <WorkflowRefCard key={i} raw={workflow} />

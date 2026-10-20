@@ -211,19 +211,7 @@ pub fn route_table() -> Vec<RouteDecl> {
             },
         ),
         // --- 構造化データ（Task 9.2/9.3/9.5）: 宣言は data_route_decls に分離 ---
-        // --- generative UI（Phase 6・保存時検証つき ui_spec ＋ 宣言的アクション） ---
-        r("/ui-specs", &["POST"], Session, || {
-            post(routes::ui_specs::create_ui_spec)
-        }),
-        r("/ui-specs/{id}", &["GET", "PUT"], Session, || {
-            get(routes::ui_specs::get_ui_spec).put(routes::ui_specs::update_ui_spec)
-        }),
-        r(
-            "/ui-specs/{id}/versions/{version}",
-            &["GET"],
-            Session,
-            || get(routes::ui_specs::get_ui_spec_version),
-        ),
+        // --- 会話の図（Yui の ```ui）のボタン（#604） ---
         r(
             "/threads/{thread_id}/messages/{message_id}/ui-actions",
             &["POST"],

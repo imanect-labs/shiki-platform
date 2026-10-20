@@ -144,7 +144,7 @@ fn skill_body(label: &str) -> serde_json::Value {
         "description": format!("経費精算のアシスタント（{label}）"),
         "instructions": "あなたは経費規程に詳しいアシスタントです。規程に基づいて回答してください。",
         "knowledge_scope": { "folders": [Uuid::new_v4()], "files": [] },
-        "allowed_tools": ["doc_search", "emit_ui"],
+        "allowed_tools": ["doc_search", "web_search"],
         "model": { "model": "skill-model", "temperature": 0.2, "max_tokens": 1024 },
         "few_shot": [ { "user": "交通費は？", "assistant": "領収書が必要です。" } ],
         "scripts": [

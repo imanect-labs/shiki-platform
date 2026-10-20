@@ -294,6 +294,7 @@ test("埋め込み: 3 種の描画・md 往復・生 HTML 非実行", async ({ p
       editor.chain().focus().insertShikiEmbed(p).run();
     }, payload);
 
+  // genui は撤去した旧形式（#604）。既存のノートに残っていても描画せず、旧形式だと伝える。
   await insertEmbed({
     kind: "genui",
     spec: { version: 1, actions: [], root: { component: "text", text: "GenUI 埋め込み" } },
@@ -302,9 +303,8 @@ test("埋め込み: 3 種の描画・md 往復・生 HTML 非実行", async ({ p
   // drive は存在しない node → アクセス不可プレースホルダ（作成者の権限を借用しない）。
   await insertEmbed({ kind: "drive", node_id: "00000000-0000-0000-0000-000000000abc" });
 
-  // genui はシキコンポーネントとして描画される（HTML 実行なし）。
-  await expect(editor.getByTestId("embed-genui")).toBeVisible();
-  await expect(editor.getByText("GenUI 埋め込み")).toBeVisible();
+  await expect(editor.getByTestId("embed-genui")).toContainText("旧形式の図のため表示できません");
+  await expect(editor.getByText("GenUI 埋め込み")).toHaveCount(0);
   // iframe は sandbox 属性付き・same-origin なし（別オリジン分離）。
   const iframe = editor.getByTestId("embed-iframe").locator("iframe");
   await expect(iframe).toHaveAttribute("sandbox", /allow-scripts/);

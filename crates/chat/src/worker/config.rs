@@ -115,8 +115,9 @@ pub struct WorkerDeps {
     /// StorageService（自律プロファイルの file CRUD/shell ワークスペース・Task 5.4）。
     /// 未配線なら自律ツール（fs_*/grep/shell）を提示しない。
     pub storage: Option<Arc<storage::StorageService>>,
-    /// UI スペック検証（emit_ui ツール・Task 6.4）。未配線なら emit_ui を提示しない。
-    pub ui_validator: Option<Arc<gui::SpecValidator>>,
+    /// 図のボタンの `-> workflow 名前` を回答の確定時に版へ固定する（#604）。未配線なら
+    /// ワークフローのボタンは束縛されない＝押せない。
+    pub workflow_resolver: Option<Arc<gui::WorkflowResolver>>,
     /// skill / ミニアプリのピン解決（Task 6.7/6.9/6.10）。未配線でピンがある run は失敗する
     /// （fail-closed・skill 無しで黙って生成しない）。
     pub skill_artifacts: Option<Arc<artifact::ArtifactStore>>,

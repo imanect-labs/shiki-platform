@@ -7,9 +7,7 @@
 //! 質問への回答・計画の承認は会話への発話として**別 run** になるため、状態は履歴から復元する:
 //! ターン数＝user メッセージ数、run 内の進行＝tool メッセージ数。
 
-use super::stub_deep_research_specs::{
-    deep_research_source_spec, DEEP_RESEARCH_PLAN, DEEP_RESEARCH_QUESTION,
-};
+use super::stub_deep_research_specs::{DEEP_RESEARCH_PLAN, DEEP_RESEARCH_QUESTION};
 use super::stub_stream::{text_stream, tool_calls_stream};
 use crate::model::{Block, GenerateRequest, Role};
 use crate::provider::DeltaStream;
@@ -138,16 +136,8 @@ pub(super) fn deep_research_call(req: &GenerateRequest, prompt_tokens: u64) -> O
                 }),
             )],
         ),
-        // ⑥ 出典一覧（web 出典の唯一の構造化表示）。
+        // ⑥ レポート全文を下書きノート化（本文の下に保存ボタンが出る）。
         5 => tools_of(
-            req,
-            &[(
-                "emit_ui",
-                serde_json::json!({ "spec": deep_research_source_spec() }),
-            )],
-        ),
-        // ⑦ レポート全文を下書きノート化（本文の下に保存ボタンが出る）。
-        6 => tools_of(
             req,
             &[(
                 "save_note",
@@ -161,8 +151,12 @@ pub(super) fn deep_research_call(req: &GenerateRequest, prompt_tokens: u64) -> O
     };
     if calls.is_empty() {
         // 最後の発話も**反映後**の本文にする。検証で直した箇所を会話で言い直したら、
-        // ユーザーが受け取るものとして直っていないのと同じ。
-        return Some(text_stream(&deep_research_final(), prompt_tokens));
+        // ユーザーが受け取るものとして直っていないのと同じ。出典は本文の末尾にリンクで並べる
+        // （#604・旧 emit_ui の出典カードの置き換え）。
+        return Some(text_stream(
+            &format!("{}{DEEP_RESEARCH_SOURCES}", deep_research_final()),
+            prompt_tokens,
+        ));
     }
     Some(tool_calls_stream(calls, prompt_tokens))
 }
@@ -188,6 +182,9 @@ const DEEP_RESEARCH_COMMAND: &str = "/deep-research";
 
 /// 決定的なレポート本文（出典つき・両論併記・未確認の明示を含む最小形）。
 const DEEP_RESEARCH_REPORT: &str = "## 結論と確度\n\n国内 SaaS 市場は 2026 年時点で 1.2 兆円規模とみられる（独立 2 系統が一致）。\n成長率は出典 1 系統のみで、確度は低い。\n\n## 市場規模\n\n2026 年の国内市場規模は 1 兆 2000 億円と公表されている（https://example.com/stub-1）。\n一方、3 月時点の別集計では 9800 億円とされ、集計範囲の違いが残る（https://example.org/stub-2）。\n\n## 見つからなかったこと\n\n地域別の内訳は公表資料では確認できなかった。\n";
+
+/// 会話の最後に並べる出典（本文で引用したものだけ・一次を上に）。
+const DEEP_RESEARCH_SOURCES: &str = "\n## 出典\n\n- [国内 SaaS 市場調査（2026 年版）](https://example.com/stub-1)（一次）\n- [別集計（2026 年 3 月時点）](https://example.org/stub-2)（二次）\n";
 
 /// 検証者が突く**過剰な一般化**（証拠は E1 の 1 系統しか無いのに「独立 2 系統が一致」と断定）。
 const DEEP_RESEARCH_UNVERIFIED: &str = "1.2 兆円規模とみられる（独立 2 系統が一致）";
@@ -272,7 +269,6 @@ mod tests {
         "web_search",
         "web_fetch",
         "doc_search",
-        "emit_ui",
         "fs_write",
         "fs_append",
         "fs_edit",
@@ -380,12 +376,11 @@ mod tests {
             "証拠台帳は fs_append（全文置換ではない）"
         );
 
-        // ③〜⑦ レポート保存 → 検証委譲 → **指摘の反映** → 出典カード → 下書きノート。
+        // ③〜⑥ レポート保存 → 検証委譲 → **指摘の反映** → 下書きノート。
         for (tool, expect) in [
             ("fs_write", "report.md"),
             ("subagent", "verify"),
             ("fs_edit", "出典 1 系統"),
-            ("emit_ui", "source_card"),
             ("save_note", "2026年 国内SaaS市場の調査"),
         ] {
             messages.push(assistant_tool_use("prev"));
@@ -398,14 +393,18 @@ mod tests {
             assert!(rendered.contains(expect), "{tool}: {rendered}");
         }
 
-        // 最後は本文（レポート）で終わる。
+        // 最後は本文（レポート＋出典のリンク）で終わる。
         messages.push(assistant_tool_use("save_note"));
         messages.push(tool_result());
-        let last = deep_research_call(&req(messages, ALL), 0).expect("終了ターン");
+        let last = deep_research_call(&req(messages.clone(), ALL), 0).expect("終了ターン");
         assert!(
             calls_of(last).await.is_empty(),
             "レポート本文で自然終了する"
         );
+        let last = deep_research_call(&req(messages, ALL), 0).expect("終了ターン");
+        let text = text_of(last).await;
+        assert!(text.contains("## 出典"), "{text}");
+        assert!(text.contains("](https://example.com/stub-1)"), "{text}");
     }
 
     /// 未配線のツールは呼ばない（web 検索が無い構成でも run が壊れない）。
