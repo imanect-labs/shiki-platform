@@ -358,7 +358,8 @@ export const Composer = React.memo(function Composer({
         maxHeight={desktop ? 200 : 136}
         data-testid="composer"
         className={cn(
-          "relative rounded-[26px] border-border bg-card shadow-sm transition-shadow",
+          // 本文の上に重ねるので面を少し透かし、背後はぼかす。
+          "relative rounded-[26px] border-border bg-card/80 shadow-sm backdrop-blur-xl transition-shadow",
           "focus-within:border-ring/25 focus-within:shadow-md focus-within:ring-4 focus-within:ring-ring/10",
           // スマホ: 1 行の丸いバー（6px ＋ 40px ＋ 6px ＋ 枠 = 54px）。伸びてもボタンは下端に揃える。
           "grid grid-cols-[auto_minmax(0,1fr)_auto] items-end gap-x-1 p-1.5",

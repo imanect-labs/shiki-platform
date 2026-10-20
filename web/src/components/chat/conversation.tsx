@@ -222,6 +222,15 @@ export function Conversation({
   const threadTitle = useThreadTitle(isPanel ? null : threadId);
   // 追従スクロール（下端付近にいる間だけ追う・離れたら「最新へ」）。
   const { scrollerRef, contentRef, showJump, scrollToBottom } = useStickToBottom();
+  // 入力欄は本文の上に重ねる（背後を透かす）。その高さだけ本文の末尾と「最新へ」を持ち上げる。
+  const [composerBox, setComposerBox] = React.useState<HTMLDivElement | null>(null);
+  const [composerHeight, setComposerHeight] = React.useState(0);
+  React.useEffect(() => {
+    if (!composerBox || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setComposerHeight(composerBox.offsetHeight));
+    ro.observe(composerBox);
+    return () => ro.disconnect();
+  }, [composerBox]);
   // 順番待ちの発話（サーバ受理済み・生成未開始）。ストリーム行の下に並べる。
   const [queued, setQueued] = React.useState<QueuedMessage[]>([]);
   // onDone は makeHandlers の中で閉じ込められるため、最新の件数を ref で見る。
@@ -725,6 +734,8 @@ export function Conversation({
                   // スマホ: 上端の浮いたボタン（メニュー・新しいチャット・⋯）の下に本文が潜り込めるよう空ける。
                   isPanel ? "max-w-none px-4 py-5" : "max-w-3xl max-md:pt-[calc(4.5rem+env(safe-area-inset-top))]",
                 )}
+                // 下端は重ねた入力欄の下に潜らないよう、その高さぶん空ける（py の下側を置き換える）。
+                style={{ paddingBottom: composerHeight + (isPanel ? 20 : 32) }}
               >
                 {/* パネルの空会話は「何ができるか」を軽く案内する（空白のままにしない）。 */}
                 {isPanel && messages.length === 0 && !stream && !notFound && !error ? (
@@ -801,32 +812,39 @@ export function Conversation({
                 onClick={() => scrollToBottom("smooth")}
                 aria-label="最新のメッセージへ移動"
                 data-testid="jump-to-latest"
-                className="absolute bottom-3 left-1/2 z-10 flex size-10 -translate-x-1/2 items-center justify-center rounded-full border border-border bg-background/95 text-foreground/80 shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                style={{ bottom: composerHeight + 12 }}
+                className="absolute left-1/2 z-20 flex size-10 -translate-x-1/2 items-center justify-center rounded-full border border-border bg-background/95 text-foreground/80 shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <ArrowDown className="size-[18px]" aria-hidden />
               </button>
             ) : null}
-          </div>
 
-          <div className="bg-background">
-            <div
-              className={cn(
-                "mx-auto w-full px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-4 md:pt-3",
-                isPanel ? "max-w-none md:pb-3" : "max-w-3xl",
-              )}
-            >
-              <Composer
-                onSubmit={submitFromComposer}
-                onStop={stop}
-                streaming={stream !== null}
-                autonomous={autonomous}
-                onAutonomousChange={setAutonomous}
-                approvalMode={approvalMode}
-                onApprovalModeChange={changeApprovalMode}
-                bypassAllowed={bypassAllowed}
-                threadId={threadId}
-                autoFocus
+            {/* 入力欄は帯で区切らず本文の上に浮かせる。入力欄の下半分から下端だけ背景色へ
+                ぼかし、潜り込んだ本文が入力欄の下の隙間でちらつかないようにする。 */}
+            <div ref={setComposerBox} className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
+              <div
+                aria-hidden
+                className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-background from-40% to-transparent"
               />
+              <div
+                className={cn(
+                  "pointer-events-auto relative mx-auto w-full px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-4 md:pt-3",
+                  isPanel ? "max-w-none md:pb-3" : "max-w-3xl",
+                )}
+              >
+                <Composer
+                  onSubmit={submitFromComposer}
+                  onStop={stop}
+                  streaming={stream !== null}
+                  autonomous={autonomous}
+                  onAutonomousChange={setAutonomous}
+                  approvalMode={approvalMode}
+                  onApprovalModeChange={changeApprovalMode}
+                  bypassAllowed={bypassAllowed}
+                  threadId={threadId}
+                  autoFocus
+                />
+              </div>
             </div>
           </div>
         </div>

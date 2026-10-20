@@ -111,15 +111,16 @@ export function MobileChrome() {
 
   return (
     <div className="pointer-events-none absolute inset-x-0 top-0 z-30 md:hidden">
-      {/* スクロールした本文がボタンの間に透けて見えないよう、上端を背景色でぼかす。本文を
-          ボタンの下まで流すページは深め、それ以外は本文の開始位置（4rem）で消える。 */}
+      {/* スクロールした本文がボタンの間でくっきり重ならないよう、上端を背景色でぼかす。本文を
+          ボタンの下まで流すページ（会話）は、潜った本文がボタンの高さまで薄く透けて見えるよう
+          浅く・淡くする。それ以外は本文の開始位置（4rem）で消える。 */}
       <div
         aria-hidden
         className={cn(
-          "absolute inset-x-0 top-0 bg-gradient-to-b from-background from-30% to-transparent",
+          "absolute inset-x-0 top-0 bg-gradient-to-b to-transparent",
           spec?.flowUnder
-            ? "h-[calc(5.5rem+env(safe-area-inset-top))]"
-            : "h-[calc(4rem+env(safe-area-inset-top))]",
+            ? "h-[calc(4rem+env(safe-area-inset-top))] from-background/90 via-background/50"
+            : "h-[calc(4rem+env(safe-area-inset-top))] from-background from-30%",
         )}
       />
 

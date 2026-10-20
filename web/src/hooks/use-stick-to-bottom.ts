@@ -52,9 +52,10 @@ export function useStickToBottom() {
       if (stick.current) pin(scroller);
       setShowJump(distance(scroller) > NEAR_BOTTOM_PX);
     });
-    // 中身（伸びる本文）と、スクロール領域そのもの（入力欄が伸びた・キーボードが出た）の両方。
+    // 中身（伸びる本文）と、スクロール領域そのもの（キーボードが出た）の両方。本文は padding も
+    // 含めて見る（重ねた入力欄が伸びると、本文の下の padding が伸びる）。
     ro.observe(scroller);
-    if (content) ro.observe(content);
+    if (content) ro.observe(content, { box: "border-box" });
     return () => ro.disconnect();
   }, [scroller, content, pin]);
 
