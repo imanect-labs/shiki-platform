@@ -114,6 +114,21 @@ pub fn route_table() -> Vec<RouteDecl> {
         }),
         // --- Session（メタ操作・標準 30s） ---
         r("/me", &["GET"], Session, || get(routes::get_me)),
+        // ログイン方法・端末（本人の token で Keycloak Account API を読む／セッションを切る）。
+        r("/me/security", &["GET"], Session, || {
+            get(routes::me_security::get_security)
+        }),
+        r("/me/sessions", &["GET", "DELETE"], Session, || {
+            get(routes::me_security::list_sessions)
+                .delete(routes::me_security::sign_out_other_sessions)
+        }),
+        r("/me/sessions/{id}", &["DELETE"], Session, || {
+            delete(routes::me_security::sign_out_session)
+        }),
+        // パスキー登録・OTP 設定・パスワード変更・資格情報削除を Keycloak の画面で始める（302）。
+        r("/auth/action", &["GET"], Session, || {
+            get(routes::auth::start_account_action)
+        }),
         r("/folders", &["POST"], Session, || {
             post(routes::folders::create_folder)
         }),

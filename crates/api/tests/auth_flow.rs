@@ -1553,3 +1553,379 @@ async fn backchannel_logout_rejects_missing_jti() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "jti 欠落は 400");
     assert!(store.get("default", "sess-a").await.unwrap().is_some());
 }
+
+// ---------------------------------------------------------------------------
+// 設定 → ログイン方法・端末（Keycloak Account API の中継・アカウント操作の往復）
+// ---------------------------------------------------------------------------
+
+/// token / JWKS に加えて Account REST（credentials・sessions）を返すモック IdP。
+/// 受けた Account API 呼び出しを `"METHOD path?query auth"` 形式で `calls` に記録する。
+async fn spawn_idp_with_account(calls: Arc<std::sync::Mutex<Vec<String>>>) -> String {
+    use axum::{
+        extract::{OriginalUri, Request as AxRequest},
+        routing::{any, get, post},
+        Json, Router,
+    };
+    let token_body = serde_json::json!({
+        "access_token": valid_access_token(),
+        "refresh_token": "rt",
+        "expires_in": 3600,
+    });
+    let jwks = jwks_body(KID);
+    let record = move |req: AxRequest| {
+        let calls = calls.clone();
+        async move {
+            let auth = req
+                .headers()
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| {
+                    if v.starts_with("Bearer ") {
+                        "bearer"
+                    } else {
+                        "other"
+                    }
+                })
+                .unwrap_or("none")
+                .to_string();
+            let uri = req
+                .extensions()
+                .get::<OriginalUri>()
+                .map(|u| u.0.clone())
+                .unwrap_or_else(|| req.uri().clone());
+            let line = format!("{} {} {auth}", req.method(), uri);
+            calls.lock().unwrap().push(line);
+            let path = uri.path().to_string();
+            if path.ends_with("/account/credentials") {
+                return Json(serde_json::json!([
+                    { "type": "password", "removeable": false, "userCredentialMetadatas": [
+                        { "credential": { "id": "pw-1", "createdDate": 1_700_000_000_000_i64 } }
+                    ]},
+                    { "type": "otp", "removeable": true, "userCredentialMetadatas": [] },
+                    { "type": "webauthn-passwordless", "removeable": true, "userCredentialMetadatas": [
+                        { "credential": { "id": "pk-1", "userLabel": "MacBook", "createdDate": 1_710_000_000_000_i64 } }
+                    ]}
+                ]))
+                .into_response();
+            }
+            if path.ends_with("/account/sessions/devices") {
+                return Json(serde_json::json!([{
+                    "os": "Mac OS X", "osVersion": "14", "device": "Mac", "lastAccess": 1_792_468_923,
+                    "current": true, "mobile": false,
+                    "sessions": [{
+                        "id": "4a08901a-ab06-4096-87bb-2d90fc30c148", "ipAddress": "10.0.0.1",
+                        "started": 1_792_468_000, "lastAccess": 1_792_468_923, "expires": 1_792_504_923,
+                        "browser": "Chrome/141", "current": true,
+                        "clients": [{ "clientId": "shiki-web", "clientName": "shiki web" }]
+                    }]
+                }]))
+                .into_response();
+            }
+            if path.ends_with("/account/sessions/00000000-0000-0000-0000-00000000dead") {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
+    };
+    use axum::response::IntoResponse;
+    let app = Router::new()
+        .route(
+            "/realms/shiki/protocol/openid-connect/token",
+            post(move || {
+                let body = token_body.clone();
+                async move { Json(body) }
+            }),
+        )
+        .route(
+            "/realms/shiki/protocol/openid-connect/certs",
+            get(move || {
+                let jwks = jwks.clone();
+                async move { Json(jwks) }
+            }),
+        )
+        .route("/realms/shiki/account/{*rest}", any(record));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}/realms/shiki")
+}
+
+/// login → callback を通してセッション Cookie と CSRF トークンを得る。
+async fn establish_session(app: axum::Router) -> (String, String) {
+    let (state, flow_cookie) = do_login(app.clone()).await;
+    let cb = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/auth/callback?code=abc&state={state}"))
+                .header(COOKIE, flow_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cookies = set_cookies(&cb);
+    (
+        cookie_value(&cookies, "shiki_session").expect("セッション Cookie"),
+        cookie_value(&cookies, "shiki_csrf").expect("CSRF Cookie"),
+    )
+}
+
+async fn send(
+    app: axum::Router,
+    method: Method,
+    uri: &str,
+    session: &str,
+    csrf: Option<&str>,
+) -> axum::http::Response<Body> {
+    let mut cookie = format!("shiki_session={session}");
+    let mut req = Request::builder().method(method).uri(uri);
+    if let Some(csrf) = csrf {
+        cookie.push_str(&format!("; shiki_csrf={csrf}"));
+        req = req.header("x-csrf-token", csrf);
+    }
+    app.oneshot(req.header(COOKIE, cookie).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn json_body(resp: axum::http::Response<Body>) -> serde_json::Value {
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&body).unwrap()
+}
+
+#[tokio::test]
+async fn me_security_and_sessions_relay_account_api_with_user_token() {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let idp = spawn_idp_with_account(calls.clone()).await;
+    let app = build_router(state_with(config_with(&idp, vec![])));
+    let (session, csrf) = establish_session(app.clone()).await;
+
+    // ログイン方法: パスワード・パスキー・OTP に要約される。
+    let resp = send(app.clone(), Method::GET, "/me/security", &session, None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let sec = json_body(resp).await;
+    assert_eq!(sec["password"]["configured"], true);
+    assert_eq!(sec["passkeys"][0]["id"], "pk-1");
+    assert_eq!(sec["passkeys"][0]["label"], "MacBook");
+    assert_eq!(sec["otp"].as_array().unwrap().len(), 0);
+    assert_eq!(sec["passkey_available"], true);
+    assert_eq!(sec["otp_available"], true);
+
+    // 端末とセッション。
+    let resp = send(app.clone(), Method::GET, "/me/sessions", &session, None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let s = json_body(resp).await;
+    assert_eq!(s["devices"][0]["os"], "Mac OS X");
+    assert_eq!(s["devices"][0]["sessions"][0]["current"], true);
+    assert_eq!(s["devices"][0]["sessions"][0]["apps"][0], "shiki web");
+
+    // 状態変更は CSRF 必須（無ければ Account API まで届かない）。
+    let id = "4a08901a-ab06-4096-87bb-2d90fc30c148";
+    let resp = send(
+        app.clone(),
+        Method::DELETE,
+        &format!("/me/sessions/{id}"),
+        &session,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let resp = send(
+        app.clone(),
+        Method::DELETE,
+        &format!("/me/sessions/{id}"),
+        &session,
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    // UUID 以外の ID は Account API に渡さない。
+    let resp = send(
+        app.clone(),
+        Method::DELETE,
+        "/me/sessions/..%2Fcredentials",
+        &session,
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    // Keycloak の 404 は 404。
+    let resp = send(
+        app.clone(),
+        Method::DELETE,
+        "/me/sessions/00000000-0000-0000-0000-00000000dead",
+        &session,
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let resp = send(
+        app.clone(),
+        Method::DELETE,
+        "/me/sessions",
+        &session,
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(
+        calls,
+        vec![
+            "GET /realms/shiki/account/credentials bearer".to_string(),
+            "GET /realms/shiki/account/sessions/devices bearer".to_string(),
+            format!("DELETE /realms/shiki/account/sessions/{id} bearer"),
+            "DELETE /realms/shiki/account/sessions/00000000-0000-0000-0000-00000000dead bearer"
+                .to_string(),
+            "DELETE /realms/shiki/account/sessions?current=false bearer".to_string(),
+        ],
+        "本人の token で Account API を呼ぶ（不正 ID・CSRF 欠落は届かない）"
+    );
+}
+
+#[tokio::test]
+async fn me_security_requires_session() {
+    let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
+    let app = build_router(state_with(config_with(&idp, vec![])));
+    for uri in [
+        "/me/security",
+        "/me/sessions",
+        "/auth/action?action=passkey",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn account_action_round_trip_returns_to_settings_and_drops_old_session() {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let idp = spawn_idp_with_account(calls).await;
+    let store = Arc::new(MemorySessionStore::new());
+    let app = build_router(state_with_store(config_with(&idp, vec![]), store.clone()));
+    let (old_session, _) = establish_session(app.clone()).await;
+
+    // 不正な削除対象は 400（kc_action に埋め込まない）。
+    let resp = send(
+        app.clone(),
+        Method::GET,
+        "/auth/action?action=delete_credential&credential_id=x",
+        &old_session,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // パスキー登録: kc_action 付きで authorize へ。
+    let resp = send(
+        app.clone(),
+        Method::GET,
+        "/auth/action?action=passkey",
+        &old_session,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let location = resp
+        .headers()
+        .get(axum::http::header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let url = reqwest::Url::parse(&location).unwrap();
+    let q: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+    assert_eq!(q["kc_action"], "webauthn-register-passwordless");
+    assert_eq!(q["code_challenge_method"], "S256");
+    let flow = cookie_value(&set_cookies(&resp), "shiki_oidc_flow").unwrap();
+
+    // Keycloak から戻る: 結果付きで設定画面へ。旧セッションは捨てられる。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/auth/callback?code=abc&state={}&kc_action=webauthn-register-passwordless&kc_action_status=success",
+                    q["state"]
+                ))
+                .header(
+                    COOKIE,
+                    format!("shiki_oidc_flow={flow}; shiki_session={old_session}"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        resp.headers().get(axum::http::header::LOCATION).unwrap(),
+        "/settings/security?action=passkey&status=success"
+    );
+    let new_session = cookie_value(&set_cookies(&resp), "shiki_session").unwrap();
+    assert_ne!(new_session, old_session);
+    let (old_id, old_tenant) = old_session.split_once('.').unwrap();
+    assert!(
+        store.get(old_tenant, old_id).await.unwrap().is_none(),
+        "旧セッションは削除される"
+    );
+
+    // 操作中の IdP エラー（state 一致）は 401 ではなく設定画面へ error で戻す。
+    let resp = send(
+        app.clone(),
+        Method::GET,
+        "/auth/action?action=otp",
+        &new_session,
+        None,
+    )
+    .await;
+    let location = resp
+        .headers()
+        .get(axum::http::header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let state = reqwest::Url::parse(&location)
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.to_string())
+        .unwrap();
+    let flow = cookie_value(&set_cookies(&resp), "shiki_oidc_flow").unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/auth/callback?error=access_denied&state={state}"))
+                .header(COOKIE, format!("shiki_oidc_flow={flow}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        resp.headers().get(axum::http::header::LOCATION).unwrap(),
+        "/settings/security?action=otp&status=error"
+    );
+    // state 不一致なら従来どおり 401。
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/auth/callback?error=access_denied&state=other")
+                .header(COOKIE, format!("shiki_oidc_flow={flow}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
