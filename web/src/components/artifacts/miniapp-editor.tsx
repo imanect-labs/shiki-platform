@@ -51,7 +51,7 @@ function templateScreen(workflow: string): string {
 
 const FIELD = "block text-xs font-medium text-foreground/70";
 const SELECT =
-  "h-9 w-full rounded-lg border border-input bg-background px-3 text-base md:text-sm pointer-coarse:h-11";
+  "h-9 w-full rounded-lg border border-input bg-background px-3 text-base md:text-sm pointer-coarse:h-11 pointer-coarse:text-base";
 
 export function MiniAppEditorDialog({
   open,
