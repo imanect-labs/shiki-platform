@@ -51,9 +51,11 @@ test("未ログイン保護ページ→ログイン→戻り先復帰→ダミ�
     await page.locator("#kc-logout, button[type=submit], input[type=submit]").first().click();
   }
 
-  // セッションが破棄され、保護ページへ行くとログインへ戻る（負例の確認）。
-  await page.goto("/drive");
-  await expect(page).toHaveURL(/\/login/, { timeout: 20_000 });
+  // セッションが破棄され、保護ページへ行くと Keycloak のログイン画面へ戻る（負例の確認）。
+  // /login は未ログインなら即 Keycloak へ送るため、goto の load 待ちはリダイレクトで中断され得る。
+  await page.goto("/drive", { waitUntil: "commit" });
+  await page.waitForURL(/:8081\/realms\/shiki\/protocol\/openid-connect\/auth/, { timeout: 20_000 });
+  await expect(page.getByRole("heading", { name: "ログイン" })).toBeVisible();
 });
 
 test("ログイン済みで /login に来たらアプリへリダイレクトする", async ({ page }) => {
