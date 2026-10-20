@@ -29,6 +29,10 @@ pub enum ApiError {
     /// 機能が無効/未準備（RAG 無効設定など）。理由はログのみ（クライアントへ漏らさない）。
     #[error("利用できません: {0}")]
     ServiceUnavailable(String),
+    /// 利用上限・レート制限（429）。文言は**そのままユーザーへ出せる**ものだけを入れる
+    /// （会話に表示される・llm-gateway 側で整形済み）。
+    #[error("{0}")]
+    RateLimited(String),
     #[error("内部エラー: {0}")]
     Internal(String),
 }
@@ -42,6 +46,7 @@ impl ApiError {
             ApiError::Conflict | ApiError::ConflictJson(_) => StatusCode::CONFLICT,
             ApiError::BadRequest(_) | ApiError::UnprocessableJson(_) => StatusCode::BAD_REQUEST,
             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -115,7 +120,7 @@ impl From<chat::ChatError> for ApiError {
             CE::Invalid(msg) => ApiError::BadRequest(msg),
             CE::Unavailable(msg) => ApiError::ServiceUnavailable(format!("chat: {msg}")),
             // 整形済みの文言をそのまま返す（`chat:` を前置しない・会話に表示されるため）。
-            CE::RateLimited(msg) => ApiError::ServiceUnavailable(msg),
+            CE::RateLimited(msg) => ApiError::RateLimited(msg),
             CE::Internal(msg) => ApiError::Internal(format!("chat: {msg}")),
         }
     }
@@ -187,7 +192,7 @@ impl From<llm_gateway::LlmError> for ApiError {
             LE::Unavailable(msg) => ApiError::ServiceUnavailable(format!("llm: {msg}")),
             // 上限超過は**そのまま出せる文言**（provider.rs で整形済み）。`llm:` 等の接頭辞を
             // 付けない — この文字列は会話にそのまま表示される。
-            LE::RateLimited(msg) => ApiError::ServiceUnavailable(msg),
+            LE::RateLimited(msg) => ApiError::RateLimited(msg),
             LE::BadRequest(msg) => ApiError::BadRequest(msg),
             LE::Config(msg) | LE::Internal(msg) => ApiError::Internal(format!("llm: {msg}")),
         }
