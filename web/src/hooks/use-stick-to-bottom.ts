@@ -72,5 +72,12 @@ export function useStickToBottom() {
     [scroller, pin],
   );
 
-  return { scrollerRef: setScroller, contentRef: setContent, showJump, scrollToBottom };
+  return {
+    scrollerRef: setScroller,
+    contentRef: setContent,
+    scroller,
+    content,
+    showJump,
+    scrollToBottom,
+  };
 }

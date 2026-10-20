@@ -3,7 +3,15 @@
 import * as React from "react";
 
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ArrowDown, Clock3, FileDown, Sparkles } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDown,
+  ChevronDown,
+  ChevronUp,
+  Clock3,
+  FileDown,
+  Sparkles,
+} from "lucide-react";
 
 import {
   cancelRun,
@@ -51,6 +59,7 @@ import {
 } from "@/components/prompt-kit/yui-actions";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useStickToBottom } from "@/hooks/use-stick-to-bottom";
+import { useTurnJump } from "@/hooks/use-turn-jump";
 import { MessageFooter } from "./message-footer";
 import { MessageCitationsProvider, SourcePanelProvider } from "./citations/citation-context";
 import { CitationSources } from "./citations/citation-sources";
@@ -221,7 +230,10 @@ export function Conversation({
   // スレッド名（クロームのタイトル・⋯ メニューの見出し）。page のときだけ引く。
   const threadTitle = useThreadTitle(isPanel ? null : threadId);
   // 追従スクロール（下端付近にいる間だけ追う・離れたら「最新へ」）。
-  const { scrollerRef, contentRef, showJump, scrollToBottom } = useStickToBottom();
+  const { scrollerRef, contentRef, scroller, content, showJump, scrollToBottom } =
+    useStickToBottom();
+  // 読み返し中の「一つ前／一つ後の自分の発話へ」。
+  const turnJump = useTurnJump(scroller, content);
   // 入力欄は本文の上に重ねる（背後を透かす）。その高さだけ本文の末尾と「最新へ」を持ち上げる。
   const [composerBox, setComposerBox] = React.useState<HTMLDivElement | null>(null);
   const [composerHeight, setComposerHeight] = React.useState(0);
@@ -805,18 +817,45 @@ export function Conversation({
                 ) : null}
               </div>
             </div>
-            {/* 読み返し中に新しい内容が来たら、コンポーザの上中央に「最新へ」を浮かせる。 */}
+            {/* 読み返し中は、コンポーザの上中央に「最新へ」を浮かせ、その左右に「一つ前／一つ後の
+                自分の発話へ」を添える（長い回答を挟んだ往復を発話単位で辿る）。 */}
             {showJump ? (
-              <button
-                type="button"
-                onClick={() => scrollToBottom("smooth")}
-                aria-label="最新のメッセージへ移動"
-                data-testid="jump-to-latest"
+              <div
                 style={{ bottom: composerHeight + 12 }}
-                className="absolute left-1/2 z-20 flex size-10 -translate-x-1/2 items-center justify-center rounded-full border border-border bg-background/95 text-foreground/80 shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="absolute left-1/2 z-20 flex -translate-x-1/2 items-center gap-2"
               >
-                <ArrowDown className="size-[18px]" aria-hidden />
-              </button>
+                <button
+                  type="button"
+                  onClick={turnJump.jumpPrev}
+                  disabled={!turnJump.canPrev}
+                  aria-label="一つ前の自分の発言へ移動"
+                  data-testid="jump-to-prev-turn"
+                  className={cn(JUMP_PILL, "pl-2.5 pr-3.5")}
+                >
+                  <ChevronUp className="size-4" aria-hidden />
+                  一つ前
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollToBottom("smooth")}
+                  aria-label="最新のメッセージへ移動"
+                  data-testid="jump-to-latest"
+                  className={cn(JUMP_PILL, "size-10 justify-center")}
+                >
+                  <ArrowDown className="size-[18px]" aria-hidden />
+                </button>
+                <button
+                  type="button"
+                  onClick={turnJump.jumpNext}
+                  disabled={!turnJump.canNext}
+                  aria-label="一つ後の自分の発言へ移動"
+                  data-testid="jump-to-next-turn"
+                  className={cn(JUMP_PILL, "pl-3.5 pr-2.5")}
+                >
+                  一つ後
+                  <ChevronDown className="size-4" aria-hidden />
+                </button>
+              </div>
             ) : null}
 
             {/* 入力欄は帯で区切らず本文の上に浮かせる。入力欄の下半分から下端だけ背景色へ
@@ -928,6 +967,10 @@ function useThreadTitle(threadId: string | null): string | null {
   return title;
 }
 
+/// 読み返し中に浮かせる移動ボタン（最新へ・一つ前・一つ後）の共通の面。
+const JUMP_PILL =
+  "flex h-10 items-center gap-1 whitespace-nowrap rounded-full border border-border bg-background/95 text-[13px] font-medium text-foreground/80 shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-45";
+
 /// 確定したユーザー発話。memo して、生成中のトークンで過去の行を描き直さない。
 const UserRow = React.memo(function UserRow({
   blocks,
@@ -946,7 +989,8 @@ const UserRow = React.memo(function UserRow({
       b.type === "selection_context",
   );
   return (
-    <Message className="justify-end">
+    // data-user-turn: 「一つ前／一つ後」の移動先（use-turn-jump の USER_TURN_ATTR）。
+    <Message className="justify-end" data-user-turn="">
       <div className="flex min-w-0 max-w-[85%] flex-col items-end gap-1.5">
         {selections.map((s, i) => (
           <span
