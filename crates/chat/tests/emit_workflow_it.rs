@@ -180,7 +180,7 @@ async fn spawn_worker(pool: &PgPool) -> (ChatStore, Arc<WorkflowStore>) {
             web_search: None,
             parser: None,
             storage: None,
-            ui_validator: None,
+            workflow_resolver: None,
             skill_artifacts: None,
             skill_catalog: None,
             workflow_store: Some(Arc::clone(&workflows)),
@@ -222,7 +222,7 @@ async fn run_to_done(
     let mut events = Vec::new();
     for _ in 0..500 {
         // Coverage（cargo-llvm-cov）実行時は計装＋並列テストバイナリで大きく遅くなるため
-        // 余裕を持つ（60s では稀に claim 前にタイムアウトする・genui_it と同型の flake 対策）。
+        // 余裕を持つ（60s では稀に claim 前にタイムアウトする・flake 対策）。
         let next = tokio::time::timeout(Duration::from_secs(180), rx.next())
             .await
             .expect("イベント待ちがタイムアウト");

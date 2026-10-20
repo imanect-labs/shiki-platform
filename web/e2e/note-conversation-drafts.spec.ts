@@ -7,7 +7,7 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 /// - 「ドライブに保存」でノート実体化し、その会話が「ノート由来」になる（サイドバー履歴）
 /// - 同じ会話で複数の下書き（別名）をタブで切り替えられる
 /// - ノート分割ビューで会話を切替え・新しい会話（リセット）を作れる
-/// - AI が genui グラフをノート本文へ自動挿入できる（document.embed・確認カード無し）
+/// - AI が図（```ui）をノート本文へ自動挿入できる（document.embed・確認カード無し）
 ///
 /// stub 駆動: `savenote:<name>` → save_note（下書き）/ `docembed:<node_id>` → document.embed。
 
@@ -131,7 +131,7 @@ test("分割ビュー: 会話の切替と「新しい会話」（1:N・旧会話
   await expect(page.getByRole("menuitem", { name: /会話 2/ })).toBeVisible();
 });
 
-test("genui 挿入: AI がグラフをノート本文へ自動挿入する（document.embed）", async ({ page }) => {
+test("図の挿入: AI が ```ui の図をノート本文へ自動挿入する（document.embed）", async ({ page }) => {
   await loginViaKeycloak(page);
   const nodeId = await createNoteViaApi(page, uniqueName("embed-ai"));
   await openNote(page, nodeId);
@@ -143,8 +143,9 @@ test("genui 挿入: AI がグラフをノート本文へ自動挿入する（doc
   await composer.fill(`docembed:${nodeId}`);
   await page.getByTestId("note-chat-panel").getByRole("button", { name: "送信" }).click();
 
-  // 本文に genui 埋め込み（chart）が現れる（確認カード無し・自動）。Yjs ブロードキャストで反映。
-  await expect(page.getByTestId("note-editor").getByTestId("embed-genui")).toBeVisible({
-    timeout: 30_000,
-  });
+  // 本文に ```ui の図（bar）が現れる（確認カード無し・自動）。Yjs ブロードキャストで反映。
+  const figure = page.getByTestId("note-editor").getByTestId("ui-figure");
+  await expect(figure).toBeVisible({ timeout: 30_000 });
+  await expect(figure).toHaveAttribute("data-ui-kind", "bar");
+  await expect(figure).toContainText("月別の売上");
 });

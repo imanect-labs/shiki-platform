@@ -64,7 +64,7 @@ function NotePageInner() {
   );
   const [status, setStatus] = React.useState<CollabStatus>("connecting");
   const [synced, setSynced] = React.useState(false);
-  // 本文エディタ（エクスポートの md 直列化・genui スナップショットに使う・#334）。
+  // 本文エディタ（エクスポートの md 直列化に使う・#334）。
   const [editor, setEditor] = React.useState<Editor | null>(null);
   // ?thread= 指定時はアシスタントを開いた状態で見せる（その会話を辿るのが目的のため・#598）。
   const { chatOpen, setChatOpen, deepLinkThreadId } = useDocThreadDeepLink(initialThreadId);

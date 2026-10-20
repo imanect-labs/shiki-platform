@@ -90,8 +90,18 @@ export type Message = {
   /// このメッセージで実行済みの単発 UI アクション id（#410）。
   /// 質問カード・計画カードの「送信済み」表示の根拠（ローカル state では再描画で消える）。
   invokedActions?: string[];
+  /// 本文の図（```ui）のワークフローのボタンのうち、押せるもの（回答の確定時に束縛を解決できたもの）の id（#604）。
+  boundActions?: string[];
+  /// 本文の図のボタンで起動したワークフローの記録（押した順・メッセージごとに新しい 20 件まで）。
+  uiRuns?: UiActionRun[];
+  /// 生成直後に画面で確定した仮のメッセージ（id はサーバーのものではない）。読み直すまで図のボタンは押せない。
+  /// `reloading` はすぐ読み直す（生成の完了）、`stopped` は読み直さない（生成の停止）。
+  provisional?: "reloading" | "stopped";
   createdAt: string;
 };
+
+/// 本文の図のボタンで起動したワークフロー 1 件（#604・codegen）。
+export type UiActionRun = components["schemas"]["UiActionRun"];
 
 export type Attachment = { node_id: string; name: string };
 export type Citation = Extract<ContentBlock, { type: "citation" }>;
@@ -333,7 +343,7 @@ export async function getThreadMessages(
   messages: Message[];
   activeRunId: string | null;
   activeRunAutonomous: boolean;
-  /// 進行中 run の生成先 assistant メッセージ id（genui アクションの照合先）。
+  /// 進行中 run の生成先 assistant メッセージ id。
   activeAssistantMessageId: string | null;
   /// まだ生成が始まっていない発話（順番待ち・投入順）。
   queuedRuns: { userMessageId: string; runId: string }[];
@@ -354,6 +364,8 @@ export async function getThreadMessages(
       content: m.content,
       agentMode: m.agent_mode,
       invokedActions: m.invoked_actions ?? [],
+      boundActions: m.bound_actions ?? [],
+      uiRuns: m.ui_runs ?? [],
       createdAt: m.created_at,
     })),
     activeRunId: data.active_run_id ?? null,
@@ -437,7 +449,6 @@ export type StreamHandlers = {
   onCitation?: (c: Citation) => void;
   onFileRef?: (f: Attachment) => void;
   /// 検証済み generative UI スペック（Phase 6・emit_ui）。
-  onGenerativeUi?: (spec: unknown) => void;
   /// 保存済みワークフローへの参照（Task 10.13・emit_workflow）。
   onWorkflowRef?: (workflow: unknown) => void;
   onNoteRef?: (note: unknown) => void;
@@ -462,8 +473,8 @@ export type StreamHandlers = {
   onFailureRecovery?: (r: { detail: string; action: string }) => void;
   /// 生成 run_id（承認 API 呼び出しに使う）。
   onRunId?: (runId: string) => void;
-  /// 生成先の assistant メッセージ id。**まだ本文は保存されていない**が、この run で出る
-  /// genui カードのアクション照合先はこの id になる（run 完了後に有効になる）。
+  /// 生成先の assistant メッセージ id（**まだ本文は保存されていない**・本文の図のボタンは
+  /// run 完了後に読み直してから押せる）。
   onAssistantMessageId?: (messageId: string) => void;
   onDone?: () => void;
   onError?: (message: string) => void;
@@ -534,9 +545,6 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "file_ref":
         handlers.onFileRef?.({ node_id: kind.node_id, name: kind.name });
-        break;
-      case "generative_ui":
-        handlers.onGenerativeUi?.(kind.spec);
         break;
       case "workflow_ref":
         handlers.onWorkflowRef?.(kind.workflow);

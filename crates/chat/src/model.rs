@@ -167,8 +167,6 @@ pub enum ContentBlock {
     },
     /// 引用（doc_search / 古典 RAG 注入の戻り）。
     Citation(Citation),
-    /// 宣言的 UI（Phase 6 で実体化。Phase 3 はプレースホルダ）。
-    GenerativeUi { spec: serde_json::Value },
     /// 保存済みワークフローへの参照カード（emit_workflow・Task 10.13）。
     /// `workflow = {id, name, display_name, version}`（保存パイプライン通過済みのみ）。
     WorkflowRef { workflow: serde_json::Value },

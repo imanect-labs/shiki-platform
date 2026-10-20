@@ -190,7 +190,7 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
             web_search: None,
             parser: None,
             storage: None,
-            ui_validator: None,
+            workflow_resolver: None,
             skill_artifacts: Some(artifacts.clone()),
             skill_catalog: Some(Arc::new(chat::OwnedSkillCatalog::new(artifacts))),
             workflow_store: None,

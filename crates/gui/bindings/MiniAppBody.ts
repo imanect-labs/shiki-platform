@@ -7,14 +7,15 @@ import type { NamedComponentPin } from "./NamedComponentPin.js";
  */
 export type MiniAppBody = { description: string, 
 /**
- * 初期描画する UI スペック（kind=ui_spec・必須）。
+ * 画面（Yui の ```ui ブロックを含む Markdown）。ボタンを持てるのはトップレベルの `app`
+ * だけで、実行先は `workflows` の別名に限る。
  */
-ui_spec: ComponentPin, 
+screen: string, 
 /**
  * 初期コンテキストに適用する skill（kind=skill・任意）。
  */
 skill: ComponentPin | null, 
 /**
- * 束ねるワークフロー（kind=workflow・UI スペックの workflow 束縛はこの集合に限る）。
+ * 束ねるワークフロー（kind=workflow・画面のボタンの実行先はこの集合に限る）。
  */
 workflows: Array<NamedComponentPin>, };

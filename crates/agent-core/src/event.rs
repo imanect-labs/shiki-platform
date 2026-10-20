@@ -63,9 +63,6 @@ pub enum AgentEvent {
         tool_call_id: String,
         artifact: ArtifactRef,
     },
-    /// 検証済み generative UI スペック（emit_ui・Phase 6 Task 6.4）。
-    /// **検証層（gui::SpecValidator）を通過した JSON のみ**がここへ乗る（生スペックは流さない）。
-    GenerativeUi { spec: serde_json::Value },
     /// 保存済みワークフローへの参照（emit_workflow・Task 10.13）。
     /// **保存パイプライン（V1〜V7）を通過し artifact 化された参照のみ**がここへ乗る。
     WorkflowRef { workflow: serde_json::Value },

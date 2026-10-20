@@ -249,10 +249,6 @@ async fn setup() -> Option<Env> {
         (*workflows).clone(),
         runs.clone(),
     ));
-    let ui_validator = Arc::new(gui::SpecValidator::new(
-        Arc::clone(&artifacts),
-        pool.clone(),
-    ));
     // 構造化データ（Phase 9）: workflow ルートは触らないが AppState 構築に必要。
     let data_directory = Arc::new(storage::DirectoryStore::new(pool.clone()));
     let data_storage = Arc::new(storage::StorageService::new(
@@ -355,7 +351,6 @@ async fn setup() -> Option<Env> {
         collab: collab_hub,
         tabular: tabular_svc,
         artifacts: Arc::clone(&artifacts),
-        ui_specs: Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator)),
         ui_actions: Arc::new(gui::ActionDispatcher::new(
             storage::audit::AuditRecorder::new(pool.clone()),
         )),

@@ -284,3 +284,13 @@ fn command_variants_are_capped() {
         "skill.too_many_command_variants",
     );
 }
+
+/// 撤去した emit_ui（#604）を `allowed_tools` に書いた保存済みの skill も読める
+/// （名前だけ語彙に残す。読めないと、その skill を使う会話・ミニアプリが壊れる）。
+#[test]
+fn stored_body_with_removed_emit_ui_still_loads() {
+    let mut raw = minimal();
+    raw["allowed_tools"] = json!(["doc_search", "emit_ui"]);
+    let body = validate_skill_body(&raw).expect("撤去したツール名を含む旧 body も読める");
+    assert_eq!(body.allowed_tools.map(|t| t.len()), Some(2));
+}

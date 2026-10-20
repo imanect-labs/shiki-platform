@@ -218,7 +218,7 @@ async fn main() -> anyhow::Result<()> {
         search.as_ref(),
         doc_parser.as_ref(),
         &storage,
-        &gui_stores.validator,
+        &gui_stores.workflow_resolver,
         &artifacts,
         &workflows,
         secrets.as_ref(),
@@ -256,14 +256,7 @@ async fn main() -> anyhow::Result<()> {
     let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(db.clone()));
 
     // 宣言的 UI アクションの実行系（Task 6.5）: chat.submit・安全ツール・workflow 起動を束ねる。
-    let ui_actions = wiring_gui::wire_ui_actions(
-        &config,
-        &http,
-        &db,
-        chat.as_ref(),
-        search.as_ref(),
-        workflow_launcher.as_ref(),
-    )?;
+    let ui_actions = wiring_gui::wire_ui_actions(&db, chat.as_ref(), workflow_launcher.as_ref());
 
     // md→docx 合成（POST /documents・#332）: worker のみ必要なので office フラグに載せず常時配線。
     // 共有クライアントは無期限のため、worker 遅延がハンドラを永久ブロックしないよう専用に切る。
@@ -323,7 +316,6 @@ async fn main() -> anyhow::Result<()> {
         skill_installs,
         bundles,
         app_usage,
-        ui_specs: gui_stores.ui_specs,
         ui_actions,
         skills: gui_stores.skills,
         mini_apps: gui_stores.mini_apps,

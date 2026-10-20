@@ -1,22 +1,20 @@
-//! 宣言的アクションの実行系（Task 6.5）。
+//! 宣言的アクションの実行系（Task 6.5・#604）。
 //!
-//! UI からの操作は、**保存済み検証済みスペックの束縛**（[`ActionBinding`]）を API 層が引き、
-//! ここで照合・実行する。クライアントが送れるのは `action_id + params` のみで、束縛定義は
-//! 一切信用しない（アンビエント権限なし）。実行は常に**呼び出しユーザー自身の権限**
+//! 図のボタン（Yui の ```ui）からの操作は、**サーバーが保存済みの本文と束縛から引いた**
+//! [`ActionBinding`] をここで実行する。クライアントが送れるのは `action_id + params` のみで、
+//! 束縛定義は一切信用しない（アンビエント権限なし）。実行は常に**呼び出しユーザー自身の権限**
 //! （`AuthContext`）で認可され、全経路が `ui_action.invoke` として監査に残る（Task 6.12）。
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agent_core::{Tool, ToolName};
 use authz::AuthContext;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
 
-use crate::action::{ActionBinding, ALLOWED_ACTION_TOOLS};
-use crate::spec::UiSpecDoc;
+use crate::action::ActionBinding;
 use crate::vocab::HandlerKind;
 
 /// params の直列化サイズ上限（防御的・フォーム値として十分）。
@@ -25,9 +23,9 @@ const MAX_PARAMS_BYTES: usize = 64 * 1024;
 /// アクションの発生源（監査・ハンドラの文脈）。
 #[derive(Debug, Clone)]
 pub enum ActionSource {
-    /// チャットメッセージ内の generative_ui ブロック。
+    /// 会話の回答の本文の図。
     ChatMessage { thread_id: Uuid, message_id: Uuid },
-    /// ミニアプリの UI スペック（バージョンピン済み）。
+    /// ミニアプリの画面（バージョンピン済み）。
     MiniApp { artifact_id: Uuid, version: i64 },
 }
 
@@ -148,7 +146,6 @@ pub trait ActionLedger: Send + Sync {
 /// アクション実行の合流点（照合・認可・監査の単一チョークポイント）。
 pub struct ActionDispatcher {
     handlers: HashMap<HandlerKind, Arc<dyn ActionHandler>>,
-    tools: HashMap<&'static str, Arc<dyn Tool>>,
     workflows: Option<Arc<dyn WorkflowStarter>>,
     ledger: Option<Arc<dyn ActionLedger>>,
     audit: AuditRecorder,
@@ -158,7 +155,6 @@ impl ActionDispatcher {
     pub fn new(audit: AuditRecorder) -> Self {
         ActionDispatcher {
             handlers: HashMap::new(),
-            tools: HashMap::new(),
             workflows: None,
             ledger: None,
             audit,
@@ -168,21 +164,6 @@ impl ActionDispatcher {
     /// ハンドラを登録する（[`HandlerKind`] の閉語彙）。
     pub fn register_handler(&mut self, handler: Arc<dyn ActionHandler>) {
         self.handlers.insert(handler.kind(), handler);
-    }
-
-    /// UI アクションとして呼べるツールを登録する。
-    ///
-    /// [`ALLOWED_ACTION_TOOLS`] 外・破壊系（`requires_confirmation`）は**登録自体を拒否**する
-    /// （検証層と独立した二重防御・fail-closed）。
-    pub fn register_tool(&mut self, name: ToolName, tool: Arc<dyn Tool>) {
-        if !ALLOWED_ACTION_TOOLS.contains(&name) || tool.requires_confirmation() {
-            tracing::error!(
-                tool = name.as_str(),
-                "UI アクションに登録できないツールを拒否"
-            );
-            return;
-        }
-        self.tools.insert(name.as_str(), tool);
     }
 
     pub fn set_workflow_starter(&mut self, starter: Arc<dyn WorkflowStarter>) {
@@ -198,32 +179,11 @@ impl ActionDispatcher {
         self.ledger = Some(ledger);
     }
 
-    /// 宣言済み束縛（検証済み文書）から `action_id` を照合し、本人権限で実行する。
-    ///
-    /// 未宣言 id・認可失敗・実行失敗は全て Deny として監査に残す。
-    pub async fn dispatch(
-        &self,
-        ctx: &AuthContext,
-        source: &ActionSource,
-        doc: &UiSpecDoc,
-        action_id: &str,
-        params: serde_json::Value,
-        trace_id: Option<&str>,
-    ) -> Result<serde_json::Value, ActionError> {
-        let Some(binding) = doc.actions.iter().find(|b| b.id() == action_id) else {
-            self.deny(ctx, source, action_id, "undeclared_action", trace_id)
-                .await;
-            return Err(ActionError::NotFound);
-        };
-        self.dispatch_binding(ctx, source, binding, action_id, params, trace_id)
-            .await
-    }
-
     /// サーバーが引いた束縛をそのまま実行する（会話の図のボタン: 束縛は回答の確定時に
     /// 保存した宣言、または本文から読んだ「会話に送る」）。`action_id` は監査と台帳の鍵。
     ///
     /// 束縛は**呼び出し側がサーバーの状態から作ったもの**に限る（クライアントの値を束縛に
-    /// しない）。上限・単発の確保・監査は [`Self::dispatch`] と同じ。
+    /// しない）。params の上限・単発の確保・監査をここで一手に行う。
     pub async fn dispatch_binding(
         &self,
         ctx: &AuthContext,
@@ -406,42 +366,18 @@ impl ActionDispatcher {
                 let result = handler.invoke(ctx, source, params, trace_id).await?;
                 Ok(json!({ "kind": "handler", "result": result }))
             }
-            ActionBinding::Tool(b) => {
-                // 検証層と独立の二重防御: 許可リスト外は保存済みスペックでも実行しない。
-                if !ALLOWED_ACTION_TOOLS.contains(&b.tool) {
-                    return Err(ActionError::Forbidden);
-                }
-                let tool = self.tools.get(b.tool.as_str()).ok_or_else(|| {
-                    ActionError::Unavailable(format!("ツール '{}' は無効です", b.tool.as_str()))
-                })?;
-                if tool.requires_confirmation() {
-                    return Err(ActionError::Forbidden);
-                }
-                // ツールは本人 ctx で実行（doc_search は二段 authz を内部で通る）。
-                let outcome = tool
-                    .call(ctx, params, trace_id)
-                    .await
-                    .map_err(|e| ActionError::Unavailable(format!("tool: {e}")))?;
-                Ok(json!({
-                    "kind": "tool",
-                    "ok": !outcome.is_error,
-                    "content": outcome.content,
-                }))
-            }
             ActionBinding::Workflow(b) => {
                 let starter = self
                     .workflows
                     .as_ref()
                     .ok_or_else(|| ActionError::Unavailable("workflow 実行時が無効です".into()))?;
-                // 保存済みスペックは解決済み（ピン必須）。欠落は不正データとして拒否。
+                // 束縛は解決済み（ピン必須）。欠落は不正データとして拒否。
                 let (Some(id), Some(version)) = (b.workflow.artifact_id, b.workflow.version) else {
-                    return Err(ActionError::Invalid(
-                        "workflow 束縛が未解決です（検証済みスペックではありません）".into(),
-                    ));
+                    return Err(ActionError::Invalid("workflow 束縛が未解決です".into()));
                 };
-                // ミニアプリ由来はバンドル権限で IR を読む（保存時に束縛 ⊆ バンドルのピン集合を
-                // 照合済み・resolve で再検証済みのスペックのみここへ来る）。チャット由来は本人の
-                // viewer 権限のまま（発話者がピンした版＝本人が読める版）。
+                // ミニアプリ由来はバンドル権限で IR を読む（保存時に画面のボタン ⊆ バンドルの
+                // ピン集合を照合済み・resolve で再検証済みの画面のみここへ来る）。チャット由来は
+                // 本人の viewer 権限のまま（回答の確定時に発話者がピンした版＝本人が読める版）。
                 let run_id = match source {
                     ActionSource::MiniApp { artifact_id, .. } => {
                         starter

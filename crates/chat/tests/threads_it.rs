@@ -828,7 +828,7 @@ async fn agent_mode_worker_runs_to_done() {
             web_search: None,
             parser: None,
             storage: None,
-            ui_validator: None,
+            workflow_resolver: None,
             skill_artifacts: None,
             skill_catalog: None,
             workflow_store: None,

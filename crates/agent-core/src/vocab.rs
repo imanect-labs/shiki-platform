@@ -72,7 +72,8 @@ vocab_enum! {
         /// 調査の**委譲**（隔離コンテキストのサブエージェントを 1 体走らせる・#391）。
         /// 子は新しい履歴・read-only ツールのみで走り、**合成済み findings だけ**を返す。
         Subagent => "subagent",
-        /// generative UI スペックの発話ツール（Phase 6 Task 6.4）。
+        /// 撤去した generative UI の発話ツール（#604）。図は回答の本文に ```ui で書く。
+        /// 保存済みのスキルの `allowed_tools` が読めるよう**名前だけ**残す（どこにも提示しない）。
         EmitUi => "emit_ui",
         /// ワークフロー IR の生成/更新ツール（保存パイプライン検証・Task 10.13）。
         EmitWorkflow => "emit_workflow",
@@ -157,7 +158,6 @@ pub const USER_SELECTABLE_TOOLS: &[ToolName] = &[
     ToolName::DocSearch,
     ToolName::WebSearch,
     ToolName::CodeInterpreter,
-    ToolName::EmitUi,
 ];
 
 impl ToolName {
@@ -299,6 +299,7 @@ mod tests {
             serde_json::to_string(&ToolName::DocSearch).unwrap(),
             "\"doc_search\""
         );
+        // 撤去したツールの名前も、保存済みのスキルが読めるよう残す（#604）。
         let t: ToolName = serde_json::from_str("\"emit_ui\"").unwrap();
         assert_eq!(t, ToolName::EmitUi);
     }
@@ -321,6 +322,7 @@ mod tests {
             ToolName::OfficeEdit,
             ToolName::Skill,
             ToolName::Subagent,
+            ToolName::EmitUi,
         ] {
             assert!(!denied.is_user_selectable(), "{denied:?} は指定できない");
         }

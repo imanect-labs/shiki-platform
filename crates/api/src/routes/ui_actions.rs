@@ -1,15 +1,14 @@
-//! UI アクション実行 API（Task 6.5）。
+//! 会話の図（Yui の ```ui）のボタンの実行 API（Task 6.5・#604）。
 //!
-//! クライアントは `action_id + params` のみ送れる。束縛定義は**保存済み検証済みの
-//! generative_ui ブロック**からサーバが引き、`gui::ActionDispatcher` が照合・本人認可・
-//! 監査を行う（アンビエント権限なし）。
+//! クライアントは `action_id + params` のみ送れる。ボタンは**保存済みの回答の本文**から
+//! サーバが読み直し、束縛は回答の確定時に解決したものを引く。`gui::ActionDispatcher` が
+//! 本人認可・監査を行う（アンビエント権限なし）。
 
 use axum::{
     extract::{Path, State},
     Json,
 };
-use chat::ContentBlock;
-use gui::{ActionError, ActionSource, UiSpecDoc};
+use gui::{ActionError, ActionSource};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -48,46 +47,23 @@ fn is_yui_action(action_id: &str) -> bool {
 /// アクション実行レスポンス。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UiActionResponse {
-    /// 束縛種別ごとの結果（handler: 実行結果 / tool: content / workflow: run_id）。
+    /// 束縛種別ごとの結果（handler: 実行結果 / workflow: run_id）。
     #[schema(value_type = Object)]
     pub result: serde_json::Value,
 }
 
-/// 同じ `action_id` を宣言する UI ブロックが複数あった（実行対象を決められない）。
-#[derive(Debug)]
-struct Ambiguous;
-
-/// メッセージ内の検証済み generative_ui ブロックから `action_id` を宣言する文書を選ぶ。
-///
-/// 保存経路（emit_ui → 検証 → 永続化）を通った本文のみが存在するため、パース失敗は
-/// 想定外データとして黙って読み飛ばす（実行面を fail-closed に保つ）。
-///
-/// action id の一意性を保証しているのは**スペック 1 件の中だけ**で、1 メッセージには複数の
-/// generative_ui ブロックが載る。別々のカードが `submit` のような一般的な id を再利用して
-/// いると「どの束縛を実行するか」も「どのカードを送信済みにするか」（#410 の実行台帳）も
-/// 決まらない。先頭に当てて黙って進むと**押していないカードの束縛が動く**ので、曖昧さは
-/// 実行前に拒否する（fail-closed）。
-fn declaring_doc(
-    content: &[ContentBlock],
-    action_id: &str,
-) -> Result<Option<UiSpecDoc>, Ambiguous> {
-    let mut found: Option<UiSpecDoc> = None;
-    for block in content {
-        let ContentBlock::GenerativeUi { spec } = block else {
-            continue;
-        };
-        let Ok(doc) = serde_json::from_value::<UiSpecDoc>(spec.clone()) else {
-            continue;
-        };
-        if !doc.actions.iter().any(|a| a.id() == action_id) {
-            continue;
-        }
-        if found.is_some() {
-            return Err(Ambiguous);
-        }
-        found = Some(doc);
+/// 図のボタンの誤り。値の検証（部品の定義・ワークフローの `input_schema`）の誤りは、画面が
+/// 部品の横に出せるよう文言を `errors` に載せて返す（`BadRequest` は本文が `{status,title}` に潰れる）。
+/// 文言は利用者が入れた値の検証結果で、内部の情報は含まない。
+pub(crate) fn map_yui_action_err(e: ActionError) -> ApiError {
+    match e {
+        ActionError::Invalid(m) => ApiError::UnprocessableJson(serde_json::json!({
+            "status": 400,
+            "title": "Bad Request",
+            "errors": [{ "code": "ui_action.invalid", "message": m }],
+        })),
+        other => map_action_err(other),
     }
-    Ok(found)
 }
 
 pub(crate) fn map_action_err(e: ActionError) -> ApiError {
@@ -103,7 +79,7 @@ pub(crate) fn map_action_err(e: ActionError) -> ApiError {
     }
 }
 
-/// チャットメッセージ内 generative_ui ブロックのアクションを実行する。
+/// 回答の本文の図のボタンを実行する。
 #[utoipa::path(
     post,
     path = "/threads/{thread_id}/messages/{message_id}/ui-actions",
@@ -135,80 +111,12 @@ pub async fn invoke_chat_ui_action(
         .as_ref()
         .ok_or_else(|| ApiError::ServiceUnavailable("チャットが無効です".into()))?;
 
-    // 本文の図のボタン: 編集者・本文からの読み直しと値の検証・回数・記録は chat 側の 1 か所で。
-    if is_yui_action(&req.action_id) {
-        let values = match req.params {
-            serde_json::Value::Object(map) => map,
-            serde_json::Value::Null => serde_json::Map::new(),
-            _ => {
-                return Err(ApiError::BadRequest(
-                    "params は項目と値の組（object）で送ってください".into(),
-                ))
-            }
+    // 図のボタンの id でなければ宣言されていない操作（Deny 監査を残して存在秘匿の 404）。
+    if !is_yui_action(&req.action_id) {
+        let source = ActionSource::ChatMessage {
+            thread_id,
+            message_id,
         };
-        let result = chat
-            .invoke_yui_action(
-                &ctx,
-                &state.ui_actions,
-                thread_id,
-                message_id,
-                chat::YuiActionRequest {
-                    action_id: req.action_id,
-                    values,
-                    idempotency_key: req.idempotency_key,
-                },
-                trace.as_deref(),
-            )
-            .await
-            .map_err(map_action_err)?;
-        return Ok(Json(UiActionResponse { result }));
-    }
-
-    // 押せるのは会話の編集者だけ（閲覧者に共有した会話からワークフローや検索を走らせない・#604）。
-    let source = ActionSource::ChatMessage {
-        thread_id,
-        message_id,
-    };
-    if let Err(e) = chat
-        .require_ui_action_editor(&ctx, thread_id, trace.as_deref())
-        .await
-    {
-        state
-            .ui_actions
-            .deny(
-                &ctx,
-                &source,
-                &req.action_id,
-                "not_editor",
-                trace.as_deref(),
-            )
-            .await;
-        return Err(e.into());
-    }
-
-    // thread viewer 認可つきでメッセージを引く（存在秘匿は store 側の 404/403）。
-    let message = chat
-        .get_message(&ctx, thread_id, message_id, trace.as_deref())
-        .await?;
-
-    let Ok(doc) = declaring_doc(&message.content, &req.action_id) else {
-        state
-            .ui_actions
-            .deny(
-                &ctx,
-                &source,
-                &req.action_id,
-                "ambiguous_action",
-                trace.as_deref(),
-            )
-            .await;
-        return Err(ApiError::BadRequest(
-            "このメッセージには同じ id のアクションが複数あり、実行対象を決められません".into(),
-        ));
-    };
-
-    let Some(doc) = doc else {
-        // 未宣言アクション（またはUIブロックなし）: Deny 監査を残して存在秘匿の 404。
         state
             .ui_actions
             .deny(
@@ -220,20 +128,32 @@ pub async fn invoke_chat_ui_action(
             )
             .await;
         return Err(ApiError::NotFound);
+    }
+    // 編集者・本文からの読み直しと値の検証・回数・記録は chat 側の 1 か所で。
+    let values = match req.params {
+        serde_json::Value::Object(map) => map,
+        serde_json::Value::Null => serde_json::Map::new(),
+        _ => {
+            return Err(ApiError::BadRequest(
+                "params は項目と値の組（object）で送ってください".into(),
+            ))
+        }
     };
-
-    let result = state
-        .ui_actions
-        .dispatch(
+    let result = chat
+        .invoke_yui_action(
             &ctx,
-            &source,
-            &doc,
-            &req.action_id,
-            req.params,
+            &state.ui_actions,
+            thread_id,
+            message_id,
+            chat::YuiActionRequest {
+                action_id: req.action_id,
+                values,
+                idempotency_key: req.idempotency_key,
+            },
             trace.as_deref(),
         )
         .await
-        .map_err(map_action_err)?;
+        .map_err(map_yui_action_err)?;
     Ok(Json(UiActionResponse { result }))
 }
 
@@ -242,14 +162,18 @@ pub async fn invoke_chat_ui_action(
 mod tests {
     use super::*;
 
-    fn ui(action_id: &str) -> ContentBlock {
-        ContentBlock::GenerativeUi {
-            spec: serde_json::json!({
-                "version": 1,
-                "actions": [{ "type": "handler", "id": action_id, "handler": "chat.submit" }],
-                "root": { "component": "text", "text": "こんにちは" },
-            }),
-        }
+    #[test]
+    fn yui_validation_errors_carry_the_message() {
+        let ApiError::UnprocessableJson(body) =
+            map_yui_action_err(ActionError::Invalid("金額: 入力してください".into()))
+        else {
+            unreachable!("検証の誤りは本文つきの 400")
+        };
+        assert_eq!(body["errors"][0]["message"], "金額: 入力してください");
+        assert!(matches!(
+            map_yui_action_err(ActionError::AlreadyInvoked),
+            ApiError::Conflict
+        ));
     }
 
     #[test]
@@ -260,34 +184,5 @@ mod tests {
         assert!(!is_yui_action("0123456789ABCDEF:a1"));
         assert!(!is_yui_action("0123456789abcdef:"));
         assert!(!is_yui_action("0123456789abcde:a1"));
-    }
-
-    #[test]
-    fn declaring_doc_finds_the_only_block_that_declares_it() {
-        let content = vec![
-            ContentBlock::Text {
-                text: "本文".into(),
-            },
-            ui("submit"),
-        ];
-        let doc = declaring_doc(&content, "submit").unwrap().unwrap();
-        assert_eq!(doc.actions[0].id(), "submit");
-        assert!(declaring_doc(&content, "other").unwrap().is_none());
-    }
-
-    /// 1 メッセージに複数のカードが載り、同じ id を再利用していたら実行しない（#410）。
-    /// 先頭に当てて進むと、押していないカードの束縛が動いてしまう。
-    #[test]
-    fn duplicate_action_id_across_blocks_is_ambiguous() {
-        let content = vec![ui("submit"), ui("submit")];
-        assert!(declaring_doc(&content, "submit").is_err());
-        // 壊れたスペックは読み飛ばす（曖昧扱いにしない）。
-        let content = vec![
-            ContentBlock::GenerativeUi {
-                spec: serde_json::json!({ "こわれている": true }),
-            },
-            ui("submit"),
-        ];
-        assert!(declaring_doc(&content, "submit").unwrap().is_some());
     }
 }

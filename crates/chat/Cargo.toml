@@ -23,7 +23,7 @@ shiki-rag.workspace = true
 shiki-llm-gateway.workspace = true
 shiki-agent-core.workspace = true
 shiki-websearch.workspace = true
-# generative UI（emit_ui ツール・chat.submit ハンドラ・Task 6.4/6.5）＋skill 適用（Task 6.9）。
+# 図のボタンの実行系（chat.submit ハンドラ・ワークフロー名の解決・Task 6.5・#604）＋skill 適用（Task 6.9）。
 shiki-gui.workspace = true
 # 回答の本文の ```ui（Yui）のボタン: ブロックの読み直しと値の検証（#604）。
 shiki-yui.workspace = true
