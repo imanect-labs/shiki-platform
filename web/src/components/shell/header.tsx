@@ -2,9 +2,9 @@
 
 import { usePathname } from "next/navigation";
 
-import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { cn } from "@/lib/utils";
 import { resolvePageIcon, resolvePageTitle } from "@/lib/nav-config";
+import { BrandMark } from "./brand-logo";
 import { useSidebar } from "./sidebar/sidebar-context";
 import {
   ChromeActions,
@@ -58,33 +58,7 @@ export const CHROME_BARE = "pointer-events-auto flex h-12 items-center gap-1";
 export const CHROME_BARE_BUTTON =
   "rounded-full bg-background/70 backdrop-blur-md max-md:hover:bg-sidebar-accent";
 
-/// 一筋の季（いちすじのき）。三本線のメニューを Shiki の線で描く: 上の一本だけを今の季節の色の
-/// 短い実線にし、下の二本は区切り線と同じ細い破線で控えめにする。季節色は描画時の月から決める
-/// （empty-state・editor-loading と同じ）。サーバとクライアントで月を跨いだ瞬間だけ stroke が
-/// ずれ得るため、その差分の警告は抑える（見た目は次の描画で揃う）。
-export function MenuMark({ className }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 24 24"
-      fill="none"
-      strokeLinecap="round"
-      className={cn("size-6", className)}
-    >
-      <path
-        d="M4.5 7h8.5"
-        stroke={seasonVar(currentSeasonIndex())}
-        strokeWidth={2.6}
-        suppressHydrationWarning
-        className="origin-left [transform-box:fill-box] transition-transform duration-[var(--duration-normal)] ease-[var(--ease-standard)] group-hover:scale-x-[1.18] group-active:scale-x-[1.18]"
-      />
-      <path d="M4.5 12h15" stroke="currentColor" strokeOpacity={0.7} strokeWidth={1.6} strokeDasharray="3.4 2.2" />
-      <path d="M4.5 17h15" stroke="currentColor" strokeOpacity={0.7} strokeWidth={1.6} strokeDasharray="3.4 2.2" />
-    </svg>
-  );
-}
-
-/// ドロワ（ナビゲーション）を開くボタン。顔は一筋の季（`MenuMark`）。
+/// ドロワ（ナビゲーション）を開くボタン。顔はロゴの四つの点（`BrandMark`）。
 export function MenuMarkButton({
   onClick,
   label = "メニューを開く",
@@ -105,7 +79,7 @@ export function MenuMarkButton({
         className,
       )}
     >
-      <MenuMark />
+      <BrandMark className="size-6 transition-transform duration-[var(--duration-normal)] ease-[var(--ease-standard)] group-hover:scale-110" />
     </button>
   );
 }
