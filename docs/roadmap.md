@@ -107,10 +107,10 @@ flowchart LR
 **依存**: Phase 3 ＋ **Phase 10 Stage A（前倒し・#121。workflow-engine・script-runtime・secrets・artifact共通基盤）**。
 6.5（宣言的バックエンド束縛）・6.10（ミニアプリ実行）が workflow-engine の対話トリガ起動へ直接依存するため、
 Stage A 完了前に本フェーズへ着手する場合はこの2タスクを後回しにする。
-- 宣言的コンポーネント・カタログ＋レンダラ。
+- 宣言的コンポーネント・カタログ＋レンダラ（2026-10・#604 で回答の本文の図ブロック（Yui）に置き換え、カタログは撤去）。
 - skill（旧 prompt template を統合: SKILL.md相当の指示文＋知識スコープ／許可ツール／モデル既定／few-shot＋
   任意script。shiki script(`.shiki`)/shell script(`.sh`)のどちらも可）。
-- ミニアプリ（skill＋UIスペック＋ワークフロー）をアーティファクト化、ReBAC共有。宣言的バックエンド束縛は
+- ミニアプリ（skill＋画面＋ワークフロー。画面は #604 で Yui を含む Markdown に）をアーティファクト化、ReBAC共有。宣言的バックエンド束縛は
   workflow-engine 対話トリガ起動も含む。**テーブル（構造化データ）を含む完全な定義は Phase 9 合流後、
   [miniapp-platform.md §6](./miniapp-platform.md) が正本**。
 - **成果物**: ロール共有可能な社内ミニアプリが増殖し始める。
