@@ -416,6 +416,10 @@ async fn reports_respect_small_groups_and_individual_view() {
         1
     );
     assert_eq!(i.outputs.documents, 1);
+    assert_eq!(
+        i.cost_usd_micros, 3000,
+        "利用料は利用量画面と同じ会計（分類器・ワークフローの分も含む）"
+    );
 
     // 部署の一覧（絞り込みの選択肢）。
     let depts = svc.departments(&admin).await.unwrap();
@@ -628,4 +632,63 @@ async fn classify_labels_threads_without_counting_the_classifier() {
             .await
             .unwrap();
     assert_eq!(users, vec!["u0".to_string()]);
+}
+
+/// ログインした人をディレクトリに載せる: 新規だけ true、表示名は上書きしない。
+/// 新しく載ったら、その組織の集計を遡ってやり直させる（到達点を消す）。
+#[tokio::test]
+async fn login_registers_users_and_requests_backfill() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let dir = DirectoryStore::new(pool.clone());
+    assert!(dir
+        .ensure_user("n1", &tenant, "acme", Some("taro@example.com"))
+        .await
+        .unwrap());
+    assert!(!dir
+        .ensure_user("n1", &tenant, "acme", Some("taro@example.com"))
+        .await
+        .unwrap());
+    // 管理者が付けた表示名は、ログインで仮の名前に戻さない（email の変更は反映する）。
+    sqlx::query("UPDATE directory_user SET display_name = '山田 太郎' WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(!dir
+        .ensure_user("n1", &tenant, "acme", Some("yamada@example.com"))
+        .await
+        .unwrap());
+    let (email, name): (String, String) = sqlx::query_as(
+        "SELECT email, display_name FROM directory_user WHERE tenant_id = $1 AND user_id = 'n1'",
+    )
+    .bind(&tenant)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (email.as_str(), name.as_str()),
+        ("yamada@example.com", "山田 太郎")
+    );
+    // email の無い IdP ユーザーも載る（sub を仮に使う）。
+    assert!(dir.ensure_user("n2", &tenant, "acme", None).await.unwrap());
+
+    let today = today_jst();
+    rollup::rollup_org(&pool, &tenant, "acme", today)
+        .await
+        .unwrap();
+    // 2 回目は定常（直近の作り直し＋あとから終わったワークフローの作成日の確認）。
+    rollup::rollup_org(&pool, &tenant, "acme", today)
+        .await
+        .unwrap();
+    rollup::request_backfill(&pool, &tenant, "acme")
+        .await
+        .unwrap();
+    let n: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM ai_insight_rollup_state WHERE tenant_id = $1")
+            .bind(&tenant)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 0, "次の実行は初回と同じく遡る");
 }

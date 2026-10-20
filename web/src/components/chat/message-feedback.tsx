@@ -58,8 +58,19 @@ export function ThreadFeedbackProvider({
         const loaded: Record<string, Entry> = Object.fromEntries(
           items.map((i) => [i.message_id, { rating: i.rating, category: i.category ?? null }]),
         );
-        saved.current = { ...loaded };
-        setEntries(loaded);
+        // 読み込み中に押された回答は、押した結果のほうが新しいので上書きしない。
+        const touched = latest.current;
+        // 保存済みの基準は、押した回答でもまだ保存が返っていなければ読み込んだ値にする
+        // （その保存が失敗したら、ここへ戻す）。
+        for (const [id, entry] of Object.entries(loaded)) {
+          if (!touched.has(id) || !(id in saved.current)) saved.current[id] = entry;
+        }
+        setEntries((cur) => {
+          const next: Record<string, Entry> = {};
+          for (const [id, entry] of Object.entries(loaded)) if (!touched.has(id)) next[id] = entry;
+          for (const id of touched.keys()) if (cur[id]) next[id] = cur[id];
+          return next;
+        });
       })
       .catch(() => {
         // 読めなくても評価は付けられる（表示が未選択から始まるだけ）

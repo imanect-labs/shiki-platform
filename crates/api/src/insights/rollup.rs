@@ -12,7 +12,7 @@
 //! 動いたワークフローの主体は除く）。
 
 use agent_core::ToolName;
-use chrono::{Duration, NaiveDate};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use sqlx::PgPool;
 
 /// 定常時に毎回作り直す過去の日数。あとから終わる実行（承認待ちのワークフロー・長いエージェント）の
@@ -21,9 +21,9 @@ const RECOMPUTE_DAYS: i64 = 7;
 
 /// 1 回の実行で 1 組織あたり埋める過去日数の上限。初回の遡り（[`BACKFILL_DAYS`]）は 1 回で
 /// 埋め切る（導入直後に直近の数字が欠けないように）。長く止まっていたあとの追いつきだけ分割する。
-const MAX_DAYS_PER_RUN: i64 = 120;
-/// 初回に遡る日数（画面の最長期間に合わせる）。
-const BACKFILL_DAYS: i64 = 120;
+const MAX_DAYS_PER_RUN: i64 = 200;
+/// 初回に遡る日数。画面の最長期間（90 日）と、その前期比に使う直前の 90 日を合わせた分。
+const BACKFILL_DAYS: i64 = 180;
 
 /// 1 日分を作り直す SQL（$1 tenant, $2 org, $3 day, $4〜$6 文書検索・Web・コード実行のツール名）。
 const ROLLUP_SQL: &str = r"
@@ -210,15 +210,24 @@ pub async fn rollup_org(
     org: &str,
     today: NaiveDate,
 ) -> Result<usize, sqlx::Error> {
-    let through: Option<NaiveDate> = sqlx::query_scalar(
-        "SELECT computed_through FROM ai_insight_rollup_state WHERE tenant_id = $1 AND org = $2",
+    let state: Option<(NaiveDate, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT computed_through, updated_at FROM ai_insight_rollup_state \
+         WHERE tenant_id = $1 AND org = $2",
     )
     .bind(tenant_id)
     .bind(org)
     .fetch_optional(db)
     .await?;
-    let plan = plan(today, through);
-    for d in &plan.days {
+    let plan = plan(today, state.map(|(d, _)| d));
+    let mut days = plan.days.clone();
+    if let (Some((_, last_run)), Some(first)) = (state, plan.days.first().copied()) {
+        // 作り直しの範囲より前に作られ、前回以降に終わったワークフロー（長い待ちを含む実行は最長
+        // 30 日かかる）。結果は作成日の行に入るので、その日も作り直す。
+        days.extend(late_finished_days(db, tenant_id, org, last_run, first).await?);
+        days.sort_unstable();
+        days.dedup();
+    }
+    for d in &days {
         rollup_day(db, tenant_id, org, *d).await?;
     }
     sqlx::query(
@@ -233,7 +242,42 @@ pub async fn rollup_org(
     .bind(plan.reached)
     .execute(db)
     .await?;
-    Ok(plan.days.len())
+    Ok(days.len())
+}
+
+/// 次の実行で、この組織を初回と同じく遡って作り直させる（到達点を消す）。
+pub async fn request_backfill(db: &PgPool, tenant_id: &str, org: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM ai_insight_rollup_state WHERE tenant_id = $1 AND org = $2")
+        .bind(tenant_id)
+        .bind(org)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// `before` より前の日に作られ、`since`（前回の集計。取りこぼさないよう 1 時間ゆとりを持つ）以降に
+/// 終わったワークフローの作成日（日本時間）。上限つき。
+async fn late_finished_days(
+    db: &PgPool,
+    tenant_id: &str,
+    org: &str,
+    since: DateTime<Utc>,
+    before: NaiveDate,
+) -> Result<Vec<NaiveDate>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT (created_at AT TIME ZONE 'Asia/Tokyo')::date FROM workflow_run \
+         WHERE tenant_id = $1 AND org = $2 \
+           AND status IN ('succeeded', 'failed', 'cancelled') \
+           AND finished_at >= $3 - interval '1 hour' \
+           AND created_at < ($4::date)::timestamp AT TIME ZONE 'Asia/Tokyo' \
+         ORDER BY 1 LIMIT 31",
+    )
+    .bind(tenant_id)
+    .bind(org)
+    .bind(since)
+    .bind(before)
+    .fetch_all(db)
+    .await
 }
 
 #[cfg(test)]

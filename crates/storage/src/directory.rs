@@ -104,6 +104,46 @@ impl DirectoryStore {
         Ok(())
     }
 
+    /// ログインしたユーザーをディレクトリに載せる（無ければ作る・あれば org と email を最新に）。
+    ///
+    /// 表示名は既にあれば変えない（管理者の作成や dev seed が入れた名前を、IdP に名前のクレームが
+    /// 無いときの仮の名前で上書きしない）。新規は email の @ より前（email も無ければ sub）を仮に使う。
+    /// 共有ダイアログの相手検索と、AI 活用分析の対象者（在籍者）の材料になる。
+    /// 新しく載せたときだけ `true` を返す。
+    pub async fn ensure_user(
+        &self,
+        user_id: &str,
+        tenant_id: &str,
+        org: &str,
+        email: Option<&str>,
+    ) -> Result<bool, StorageError> {
+        let email = email.map(str::trim).filter(|e| !e.is_empty());
+        let display = email
+            .and_then(|e| e.split('@').next())
+            .filter(|n| !n.is_empty())
+            .unwrap_or(user_id);
+        let inserted: Option<bool> = sqlx::query_scalar(
+            "INSERT INTO directory_user (user_id, tenant_id, org, email, display_name) \
+             VALUES ($1, $2, $3, COALESCE($4, $1), $5) \
+             ON CONFLICT (tenant_id, user_id) DO UPDATE \
+               SET org = excluded.org, \
+                   email = COALESCE($4, directory_user.email), updated_at = now() \
+               WHERE directory_user.org IS DISTINCT FROM excluded.org \
+                  OR ($4::text IS NOT NULL AND directory_user.email IS DISTINCT FROM $4) \
+             RETURNING (xmax = 0)",
+        )
+        .bind(user_id)
+        .bind(tenant_id)
+        .bind(org)
+        .bind(email)
+        .bind(display)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(StorageError::Db)?;
+        // 変更が無ければ行は返らない。返ったら xmax = 0 が新規作成。
+        Ok(inserted.unwrap_or(false))
+    }
+
     /// テナント（＋ org）スコープのユーザー検索。自分自身は除外。
     ///
     /// `query` は email / 表示名の部分一致（ILIKE）。空文字は同テナントの先頭ページを返す

@@ -82,6 +82,13 @@ pub(crate) async fn population(db: &PgPool, s: &Scope) -> Result<i64, sqlx::Erro
     .await
 }
 
+/// 期間内に動いた会話（その期間に run がある）だけを数える条件（`ti` = thread_insight・
+/// `$3`〜`$4` が日本時間の期間）。用途は分類した日時ではなく、会話が使われた日で数える。
+pub(crate) const ACTIVE_THREAD: &str = "EXISTS (SELECT 1 FROM generation_run g \
+    WHERE g.tenant_id = ti.tenant_id AND g.thread_id = ti.thread_id \
+      AND g.created_at >= ($3::date)::timestamp AT TIME ZONE 'Asia/Tokyo' \
+      AND g.created_at < ($4::date + 1)::timestamp AT TIME ZONE 'Asia/Tokyo')";
+
 /// 部署で絞るなら、それが部署（groups 由来）で、少人数でないことを確かめる（PIT-17）。
 /// roles 由来のロール（admin 等）は部署ではないので絞り込みに使えない（人数 0 扱いで断る）。
 pub async fn check_scope(db: &PgPool, s: &Scope) -> Result<(), ReportError> {

@@ -30,6 +30,14 @@ impl InsightsService {
         InsightsService { db }
     }
 
+    /// 次の定期実行で、この組織の集計を遡ってやり直させる（新しい在籍者の過去の利用を入れる）。
+    /// best-effort（失敗しても次の登録・手動の再集計で埋まる）。
+    pub async fn request_backfill(&self, tenant_id: &str, org: &str) {
+        if let Err(e) = super::rollup::request_backfill(&self.db, tenant_id, org).await {
+            tracing::warn!(error = %e, "分析の遡り集計の予約に失敗");
+        }
+    }
+
     fn scope(ctx: &AuthContext, r: &Range) -> Scope {
         Scope {
             tenant_id: ctx.tenant_id.clone(),

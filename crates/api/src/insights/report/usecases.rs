@@ -5,15 +5,10 @@ use sqlx::PgPool;
 use utoipa::ToSchema;
 
 use super::{
-    check_scope, departments, dept_label, guarded, ratio, ReportError, Scope, DEPT_FILTER,
+    check_scope, departments, dept_label, guarded, ratio, ReportError, Scope, ACTIVE_THREAD,
+    DEPT_FILTER,
 };
 use crate::insights::{category_label, settings::InsightSettings, MIN_GROUP_SIZE};
-
-/// 期間内に動いた会話（この期間に run がある）だけを数える条件（`ti` = thread_insight）。
-const ACTIVE_THREAD: &str = "EXISTS (SELECT 1 FROM generation_run g \
-    WHERE g.thread_id = ti.thread_id \
-      AND g.created_at >= ($3::date)::timestamp AT TIME ZONE 'Asia/Tokyo' \
-      AND g.created_at < ($4::date + 1)::timestamp AT TIME ZONE 'Asia/Tokyo')";
 
 /// 用途 1 行。
 #[derive(Debug, Serialize, ToSchema)]

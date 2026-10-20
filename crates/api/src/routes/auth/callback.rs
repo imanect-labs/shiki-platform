@@ -177,6 +177,29 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
     let sourced = desired_role_sources(&ctx.principal.roles, &ctx.principal.groups, &org);
     let desired: Vec<String> = sourced.iter().map(|(id, _)| id.clone()).collect();
 
+    // ディレクトリへの登録（共有の相手検索・AI 活用分析の在籍者）。人だけ（workflow 主体は除く）。
+    // 失敗しても認可には影響しない（次回のログイン・refresh で再試行）。
+    if ctx.principal.kind == authz::PrincipalKind::User {
+        match state
+            .directory
+            .ensure_user(
+                &ctx.principal.id,
+                &tenant_id,
+                &org,
+                ctx.principal.email.as_deref(),
+            )
+            .await
+        {
+            // 新しく載った人の過去の利用も分析に入るよう、その組織の集計を遡ってやり直させる
+            // （次の定期実行で 1 回だけ。在籍者だけを数えるので、載る前の日は 0 人で作られている）。
+            Ok(true) => state.insights.request_backfill(&tenant_id, &org).await,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "directory_user の登録に失敗（共有の相手検索・分析の在籍者に影響）");
+            }
+        }
+    }
+
     // AI 活用分析の部署集計用の写し（#751・PIT-18）。失敗しても認可には影響しない（次回同期で収束）。
     if let Err(e) = state
         .directory

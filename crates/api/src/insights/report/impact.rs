@@ -252,6 +252,11 @@ pub async fn impact(
         .bind(s.dept.as_deref())
         .fetch_one(db)
         .await?;
+    let cost = if s.dept.is_some() {
+        cost
+    } else {
+        org_cost(db, s).await?
+    };
     let workflow = SavingRow {
         key: "workflow".into(),
         label: "ワークフロー（自動化）".into(),
@@ -330,6 +335,23 @@ pub async fn impact(
         cost_jpy,
         return_ratio,
     })
+}
+
+/// 組織全体の利用料（利用量画面と同じ会計・llm_usage）。部署で絞っていないときに使う。
+/// ロールアップは在籍者の行しか持たないので、分類器や予約起動のワークフローの分が落ちる。
+async fn org_cost(db: &PgPool, s: &Scope) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COALESCE(sum(cost_usd_micros), 0)::bigint FROM llm_usage \
+         WHERE tenant_id = $1 AND org = $2 \
+           AND created_at >= ($3::date)::timestamp AT TIME ZONE 'Asia/Tokyo' \
+           AND created_at < ($4::date + 1)::timestamp AT TIME ZONE 'Asia/Tokyo'",
+    )
+    .bind(&s.tenant_id)
+    .bind(&s.org)
+    .bind(s.from)
+    .bind(s.to)
+    .fetch_one(db)
+    .await
 }
 
 #[cfg(test)]

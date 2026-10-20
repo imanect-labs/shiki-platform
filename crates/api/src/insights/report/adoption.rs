@@ -7,7 +7,7 @@ use utoipa::ToSchema;
 
 use super::{
     check_scope, departments, dept_label, guarded, population, ratio, ReportError, Scope,
-    DEPT_FILTER,
+    ACTIVE_THREAD, DEPT_FILTER,
 };
 use crate::insights::{category_label, MIN_GROUP_SIZE};
 
@@ -138,20 +138,21 @@ async fn dept_rows(
     };
     let w7 = window(7).await?;
     let w30 = window(30).await?;
-    let top: Vec<(String, String)> = sqlx::query_as(
+    // 主な用途は、表の週の範囲に使われた会話で数える（用途画面と同じ条件）。
+    let top: Vec<(String, String)> = sqlx::query_as(&format!(
         "SELECT DISTINCT ON (role_id) role_id, category FROM ( \
            SELECT r.role_id, ti.category, count(*) AS n \
            FROM thread_insight ti \
            JOIN directory_user_role r ON r.tenant_id = ti.tenant_id AND r.org = ti.org \
             AND r.user_id = ti.owner AND r.source = 'group' \
-           WHERE ti.tenant_id = $1 AND ti.org = $2 \
-             AND ti.classified_at >= ($3::date)::timestamp AT TIME ZONE 'Asia/Tokyo' \
+           WHERE ti.tenant_id = $1 AND ti.org = $2 AND {ACTIVE_THREAD} \
            GROUP BY 1, 2) x \
-         ORDER BY role_id, n DESC",
-    )
+         ORDER BY role_id, n DESC, category"
+    ))
     .bind(&s.tenant_id)
     .bind(&s.org)
     .bind(from)
+    .bind(s.to)
     .fetch_all(db)
     .await?;
     let get = |rows: &[(String, i64)], id: &str| {
