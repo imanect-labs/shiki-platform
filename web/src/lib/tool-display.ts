@@ -205,6 +205,14 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
 
   // 自律エージェントのワークスペース操作。
   fs_list: { icon: Files, category: "read", lead: () => "ファイル一覧を", verb: "取得", suru: true },
+  quote_check: {
+    // レポートの引用が証拠台帳に実在するかの機械照合（#409）。
+    icon: FileText,
+    category: "read",
+    lead: () => "引用の実在を",
+    verb: "照合",
+    suru: true,
+  },
   fs_read: {
     icon: FileText,
     category: "read",
