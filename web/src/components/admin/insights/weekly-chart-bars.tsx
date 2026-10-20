@@ -6,7 +6,7 @@
 import * as React from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
-import { AXIS_TICK, TOOLTIP_STYLE } from "@/components/genui/chart/palette";
+import { AXIS_TICK, TOOLTIP_STYLE } from "../chart-style";
 import { formatInt } from "../format";
 import { WEEKLY_SERIES, type WeekRow } from "./weekly-chart";
 
