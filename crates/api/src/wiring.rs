@@ -318,6 +318,14 @@ pub(crate) async fn wire_chat(
             .chat
             .max_tokens
             .unwrap_or_else(|| chat::WorkerConfig::default().max_tokens),
+        chat_max_tokens: config
+            .chat
+            .budget_max_tokens
+            .unwrap_or_else(|| chat::WorkerConfig::default().chat_max_tokens),
+        chat_max_cost_usd_micros: config
+            .chat
+            .budget_max_cost_usd_micros
+            .unwrap_or_else(|| chat::WorkerConfig::default().chat_max_cost_usd_micros),
         parallel_read_tools: config
             .chat
             .parallel_read_tools

@@ -90,7 +90,8 @@ impl Spent {
     }
 }
 
-/// 予算上限。`None` は当該軸を無制限にする（Chat プロファイルは token/cost を付けない）。
+/// 予算上限。`None` は当該軸を無制限にする（`Budget::chat` は token/cost を付けない。通常チャットの
+/// 上限は chat ワーカーが設定値から入れる・#426）。
 #[derive(Debug, Clone)]
 pub struct Budget {
     /// LLM 呼び出し回数の上限（安全停止・必須）。
@@ -108,7 +109,7 @@ pub struct Budget {
 }
 
 impl Budget {
-    /// Chat プロファイル既定（短ホライズン・token/cost 無制限・現行挙動と互換）。
+    /// Chat プロファイル既定（短ホライズン・token/cost は呼び出し側が入れる・現行挙動と互換）。
     #[must_use]
     pub fn chat(max_steps: usize) -> Self {
         Budget {

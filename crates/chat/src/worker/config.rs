@@ -22,6 +22,14 @@ pub struct WorkerConfig {
     /// 通常チャットで旧・無条件 RAG 注入経路（`run_classic_mode`）を使うか（既定 false）。
     /// false ならモデル裁量ループ（issue #102）。運用で確実に毎ターン検索したい場合のみ true。
     pub classic_rag: bool,
+    /// 通常チャット 1 発話の累積トークン上限（新規ぶん・#426）。
+    ///
+    /// 通常チャットはこれまで max_steps だけで止まり、検索・本文の読み出しが積む量にも課金にも
+    /// 上限が無かった。8 割で警告を出し、超えたらツールを外した 1 ターンで回答をまとめて止まる
+    /// （自律と同じ経路）。
+    pub chat_max_tokens: u64,
+    /// 通常チャット 1 発話の累積コスト上限（マイクロ USD・#426）。
+    pub chat_max_cost_usd_micros: i64,
     /// 自律プロファイルの最大ステップ（長ホライズン）。
     pub autonomous_max_steps: usize,
     /// 自律プロファイルの累積トークン上限（予算ガード・Task 5.7）。
@@ -69,6 +77,10 @@ impl Default for WorkerConfig {
             lease_secs: 30,
             max_steps: 6,
             classic_rag: false,
+            // 既定: 新規ぶん 30 万トークン・1 USD（自律の 1 割強）。6 ステップで検索と本文の
+            // 読み出しを重ねても届かない量で、暴走だけを止める。
+            chat_max_tokens: 300_000,
+            chat_max_cost_usd_micros: 1_000_000,
             autonomous_max_steps: 50,
             // 既定: 新規ぶん 250 万トークン・課金 8 USD。**委譲込みの累計**（子の消費は
             // 親へ積まれる）。100 件規模の調査を 16 体へ委譲すると、子だけで新規 120k × 16
