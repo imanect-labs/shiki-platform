@@ -24,8 +24,6 @@ import {
 } from "@/lib/account-api";
 import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { AdminPage, Panel, SettingRow } from "@/components/admin/admin-page";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -36,6 +34,15 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  IconTile,
+  SettingsEmpty,
+  SettingsItem,
+  SettingsPage,
+  SettingsRow,
+  SettingsSection,
+  StatusDot,
+} from "./settings-ui";
 
 /// Keycloak から戻ってきたときの結果表示（`?action=…&status=…`。値は BFF が閉じた語彙に丸めている）。
 const ACTION_LABEL: Record<string, string> = {
@@ -50,15 +57,23 @@ function ResultNotice({ action, status }: { action: string; status: string }) {
   if (!label) return null;
   const tone =
     status === "success"
-      ? { icon: CheckCircle2, text: `${label}が完了しました。`, cls: "border-transparent bg-[oklch(0.95_0.04_150)] text-[oklch(0.35_0.09_150)] dark:bg-[oklch(0.28_0.05_150)] dark:text-[oklch(0.86_0.08_150)]" }
+      ? {
+          icon: CheckCircle2,
+          text: `${label}が完了しました。`,
+          cls: "border-[var(--season-summer)]/35 bg-[var(--season-summer)]/[0.08] [&>svg]:text-[var(--season-summer)]",
+        }
       : status === "cancelled"
-        ? { icon: XCircle, text: `${label}をキャンセルしました。`, cls: "bg-muted/50 text-muted-foreground" }
-        : { icon: TriangleAlert, text: `${label}に失敗しました。もう一度お試しください。`, cls: "border-transparent bg-destructive/10 text-destructive" };
+        ? { icon: XCircle, text: `${label}をキャンセルしました。`, cls: "border-dashed text-muted-foreground" }
+        : {
+            icon: TriangleAlert,
+            text: `${label}に失敗しました。もう一度お試しください。`,
+            cls: "border-destructive/30 bg-destructive/[0.06] text-destructive",
+          };
   const Icon = tone.icon;
   return (
     <div
       role={status === "error" ? "alert" : "status"}
-      className={cn("flex items-center gap-2.5 rounded-lg border px-3.5 py-2.5 text-[13px]", tone.cls)}
+      className={cn("-mb-3 flex items-center gap-2.5 rounded-xl border px-4 py-3 text-[13px]", tone.cls)}
     >
       <Icon className="size-4 shrink-0" aria-hidden />
       {tone.text}
@@ -85,37 +100,28 @@ function CredentialList({
   empty: string;
   onDelete: (c: CredentialInfo) => void;
 }) {
-  const Icon = kind === "passkey" ? Fingerprint : Smartphone;
-  if (items.length === 0) {
-    return <p className="px-4 py-5 text-center text-[13px] text-muted-foreground">{empty}</p>;
-  }
+  if (items.length === 0) return <SettingsEmpty>{empty}</SettingsEmpty>;
   return (
-    <ul className="divide-y">
+    <ul>
       {items.map((c) => (
-        <li key={c.id} className="flex items-center gap-3 px-4 py-3">
-          <span
-            aria-hidden
-            className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground/70"
-          >
-            <Icon className="size-[18px]" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[13.5px] font-medium">{credentialName(kind, c)}</div>
-            <div className="text-xs text-muted-foreground">
-              {c.created_at ? `${formatDateTime(c.created_at)} に追加` : "追加日時不明"}
-            </div>
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onDelete(c)}
-            aria-label={`${credentialName(kind, c)}を削除`}
-            className="text-muted-foreground hover:text-destructive"
-          >
-            <Trash2 aria-hidden />
-            <span className="max-sm:sr-only">削除</span>
-          </Button>
-        </li>
+        <SettingsItem
+          key={c.id}
+          icon={<IconTile icon={kind === "passkey" ? Fingerprint : Smartphone} />}
+          title={<span className="truncate">{credentialName(kind, c)}</span>}
+          meta={c.created_at ? `${formatDateTime(c.created_at)} に追加` : "追加日時不明"}
+          action={
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onDelete(c)}
+              aria-label={`${credentialName(kind, c)}を削除`}
+              className="text-muted-foreground hover:text-destructive"
+            >
+              <Trash2 aria-hidden />
+              <span className="max-sm:sr-only">削除</span>
+            </Button>
+          }
+        />
       ))}
     </ul>
   );
@@ -173,14 +179,14 @@ export function SecurityView() {
   const twoFactorOn = (data?.otp.length ?? 0) > 0;
 
   return (
-    <AdminPage
+    <SettingsPage
       title="ログイン方法"
-      description="パスワード・パスキー・2 段階認証を管理します。変更は認証画面で本人確認してから反映されます。"
+      description="パスワード・パスキー・2 段階認証を管理します。変更は本人確認をしてから反映されます。"
     >
       {notice ? <ResultNotice action={notice.action} status={notice.status} /> : null}
 
       {error ? (
-        <div className="flex flex-col items-start gap-3 rounded-lg border px-4 py-4 text-[13px]">
+        <div className="flex flex-col items-start gap-3 rounded-2xl border border-dashed px-5 py-5 text-[13px]">
           <p className="text-muted-foreground">ログイン方法を読み込めませんでした（{error}）</p>
           <Button variant="outline" size="sm" onClick={() => setReloadKey((k) => k + 1)}>
             <RotateCw aria-hidden />
@@ -188,15 +194,15 @@ export function SecurityView() {
           </Button>
         </div>
       ) : !data ? (
-        <div className="flex flex-col gap-4" aria-busy="true" aria-label="読み込み中">
-          <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-40 w-full" />
-          <Skeleton className="h-32 w-full" />
+        <div className="flex flex-col gap-9" aria-busy="true" aria-label="読み込み中">
+          <Skeleton className="h-[74px] w-full rounded-2xl" />
+          <Skeleton className="h-40 w-full rounded-2xl" />
+          <Skeleton className="h-32 w-full rounded-2xl" />
         </div>
       ) : (
         <>
-          <Panel>
-            <SettingRow
+          <SettingsSection>
+            <SettingsRow
               label="パスワード"
               description={
                 data.password.configured
@@ -211,15 +217,14 @@ export function SecurityView() {
                 size="sm"
                 onClick={() => go("password")}
                 disabled={leaving !== null}
-                className="md:ml-auto"
               >
                 {leaving === "password" ? <Loader2 className="animate-spin" aria-hidden /> : <KeyRound aria-hidden />}
                 {data.password.configured ? "パスワードを変更" : "パスワードを設定"}
               </Button>
-            </SettingRow>
-          </Panel>
+            </SettingsRow>
+          </SettingsSection>
 
-          <Panel
+          <SettingsSection
             title="パスキー"
             description="指紋・顔認証・端末の画面ロックで、パスワードを入力せずにログインできます。"
             actions={
@@ -239,18 +244,16 @@ export function SecurityView() {
                 onDelete={(c) => setPending({ kind: "passkey", credential: c })}
               />
             ) : (
-              <p className="px-4 py-5 text-[13px] text-muted-foreground">
-                この組織ではパスキーが有効になっていません。
-              </p>
+              <SettingsEmpty>この組織ではパスキーが有効になっていません。</SettingsEmpty>
             )}
-          </Panel>
+          </SettingsSection>
 
-          <Panel
+          <SettingsSection
             title={
-              <span className="flex items-center gap-2">
+              <>
                 2 段階認証
-                <Badge variant={twoFactorOn ? "success" : "muted"}>{twoFactorOn ? "有効" : "無効"}</Badge>
-              </span>
+                <StatusDot on={twoFactorOn}>{twoFactorOn ? "有効" : "無効"}</StatusDot>
+              </>
             }
             description="パスワードでログインするとき、認証アプリの確認コードも求めます。"
             actions={
@@ -275,11 +278,9 @@ export function SecurityView() {
                 onDelete={(c) => setPending({ kind: "otp", credential: c })}
               />
             ) : (
-              <p className="px-4 py-5 text-[13px] text-muted-foreground">
-                この組織では認証アプリが有効になっていません。
-              </p>
+              <SettingsEmpty>この組織では認証アプリが有効になっていません。</SettingsEmpty>
             )}
-          </Panel>
+          </SettingsSection>
         </>
       )}
 
@@ -293,7 +294,7 @@ export function SecurityView() {
               {pending?.kind === "passkey"
                 ? "削除すると、このパスキーではログインできなくなります。"
                 : "削除すると、この認証アプリの確認コードは使えなくなります。最後の 1 つを削除すると 2 段階認証は無効になります。"}
-              認証画面で本人確認をしてから削除します。
+              本人確認をしてから削除します。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -315,6 +316,6 @@ export function SecurityView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </AdminPage>
+    </SettingsPage>
   );
 }

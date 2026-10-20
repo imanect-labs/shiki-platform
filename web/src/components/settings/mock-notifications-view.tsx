@@ -2,10 +2,9 @@
 
 import * as React from "react";
 
-import { AdminPage, Panel, SettingRow } from "@/components/admin/admin-page";
-import { MockBanner } from "@/components/admin/mock-banner";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Switch } from "@/components/ui/switch";
+import { PreviewNote, SettingsPage, SettingsRow, SettingsSection } from "./settings-ui";
 
 const EVENTS = [
   { key: "share", label: "ファイルやノートが共有されたとき", email: true, inApp: true },
@@ -25,21 +24,21 @@ export function MockNotificationsView() {
     setState((s) => ({ ...s, [key]: { ...s[key], [channel]: value } }));
 
   return (
-    <AdminPage title="通知" description="どの出来事を、どこで知らせるかを選びます。">
-      <MockBanner what="通知の配信基盤は未実装" />
-      <Panel title="通知する出来事">
-        <div className="hidden grid-cols-[minmax(0,1fr)_5rem_5rem] border-b px-4 py-2 text-xs text-muted-foreground md:grid">
+    <SettingsPage title="通知" description="どの出来事を、どこで知らせるかを選びます。">
+      <PreviewNote />
+      <SettingsSection title="通知する出来事">
+        <div className="hidden grid-cols-[minmax(0,1fr)_5rem_5rem] px-5 pb-2 pt-3.5 text-xs text-muted-foreground md:grid">
           <span>出来事</span>
           <span className="text-center">アプリ内</span>
           <span className="text-center">メール</span>
         </div>
-        <ul className="divide-y">
+        <ul>
           {EVENTS.map((e) => (
             <li
               key={e.key}
-              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_5rem_5rem]"
+              className="shiki-dash-top grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-5 py-3.5 max-md:first:bg-none md:grid-cols-[minmax(0,1fr)_5rem_5rem]"
             >
-              <span className="text-[13px]">{e.label}</span>
+              <span className="text-[13.5px]">{e.label}</span>
               <span className="flex items-center justify-center gap-2 max-md:justify-end">
                 <span className="text-xs text-muted-foreground md:hidden">アプリ内</span>
                 <Switch
@@ -59,9 +58,9 @@ export function MockNotificationsView() {
             </li>
           ))}
         </ul>
-      </Panel>
-      <Panel title="メールのまとめ">
-        <SettingRow label="送る頻度" description="すぐに送らない通知を、まとめて 1 通にします。">
+      </SettingsSection>
+      <SettingsSection title="メールのまとめ">
+        <SettingsRow label="送る頻度" description="すぐに送らない通知を、まとめて 1 通にします。">
           <SegmentedControl
             aria-label="まとめの頻度"
             size="sm"
@@ -73,8 +72,8 @@ export function MockNotificationsView() {
               { value: "weekly", label: "毎週" },
             ]}
           />
-        </SettingRow>
-      </Panel>
-    </AdminPage>
+        </SettingsRow>
+      </SettingsSection>
+    </SettingsPage>
   );
 }

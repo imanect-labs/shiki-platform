@@ -1,52 +1,66 @@
-import { Settings } from "lucide-react";
+import {
+  Bell,
+  KeyRound,
+  MonitorSmartphone,
+  Palette,
+  Plug,
+  Sparkles,
+  UserRound,
+  type LucideIcon,
+} from "lucide-react";
 
-import type { AdminMenuItem, AdminSection } from "@/components/admin/admin-nav";
-
-/// ユーザー設定のナビの単一定義（メニュー・パンくず）。管理コンソールと同じ型で持ち、
-/// 2 列目のメニュー（ProductMenu）をそのまま使う。`mock` は API が未実装の画面。
-export const SETTINGS_SECTION: AdminSection = {
-  key: "settings",
-  label: "設定",
-  icon: Settings,
-  href: "/settings/profile",
-  prefix: "/settings",
-  menu: [
-    {
-      label: "アカウント",
-      items: [{ label: "プロフィール", href: "/settings/profile" }],
-    },
-    {
-      label: "セキュリティ",
-      items: [
-        { label: "ログイン方法", href: "/settings/security" },
-        { label: "端末とセッション", href: "/settings/sessions" },
-      ],
-    },
-    {
-      label: "環境設定",
-      items: [
-        { label: "表示", href: "/settings/appearance" },
-        { label: "通知", href: "/settings/notifications", mock: true },
-      ],
-    },
-    {
-      label: "AI",
-      items: [{ label: "パーソナライズ", href: "/settings/ai", mock: true }],
-    },
-    {
-      label: "連携",
-      items: [{ label: "接続済みアプリ", href: "/settings/connections", mock: true }],
-    },
-  ],
+export type SettingsNavItem = {
+  label: string;
+  href: string;
+  icon: LucideIcon;
+  /// API が未実装の画面（メニューに「準備中」を添える）。
+  mock?: boolean;
 };
 
-/// パスに対応するメニュー項目とそのグループ名（パンくず用）。
+export type SettingsNavGroup = { label: string; items: SettingsNavItem[] };
+
+/// ユーザー設定のナビの単一定義（メニュー・現在地）。
+export const SETTINGS_NAV: SettingsNavGroup[] = [
+  {
+    label: "アカウント",
+    items: [{ label: "プロフィール", href: "/settings/profile", icon: UserRound }],
+  },
+  {
+    label: "セキュリティ",
+    items: [
+      { label: "ログイン方法", href: "/settings/security", icon: KeyRound },
+      { label: "端末とセッション", href: "/settings/sessions", icon: MonitorSmartphone },
+    ],
+  },
+  {
+    label: "環境設定",
+    items: [
+      { label: "表示", href: "/settings/appearance", icon: Palette },
+      { label: "通知", href: "/settings/notifications", icon: Bell, mock: true },
+    ],
+  },
+  {
+    label: "AI",
+    items: [{ label: "パーソナライズ", href: "/settings/ai", icon: Sparkles, mock: true }],
+  },
+  {
+    label: "連携",
+    items: [{ label: "接続済みアプリ", href: "/settings/connections", icon: Plug, mock: true }],
+  },
+];
+
+/// パスに対応するメニュー項目とそのグループ名・通し番号（四季の差し色の巡回に使う）。
 export function settingsItemFor(
   pathname: string,
-): { group: string; item: AdminMenuItem } | undefined {
-  for (const group of SETTINGS_SECTION.menu ?? []) {
-    const item = group.items.find((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
-    if (item) return { group: group.label, item };
+): { group: string; item: SettingsNavItem; index: number } | undefined {
+  let index = 0;
+  for (const group of SETTINGS_NAV) {
+    for (const item of group.items) {
+      if (pathname === item.href || pathname.startsWith(`${item.href}/`)) {
+        return { group: group.label, item, index };
+      }
+      index += 1;
+    }
   }
   return undefined;
 }

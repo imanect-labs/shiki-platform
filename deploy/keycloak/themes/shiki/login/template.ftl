@@ -66,12 +66,13 @@
     </#if>
 </head>
 
-<body class="${properties.kcBodyClass!} ${bodyClass}" data-page-id="login-${pageId}">
+<#assign month = .now?string("M")?number>
+<#assign season = (month gte 3 && month lte 5)?then("spring", (month gte 6 && month lte 8)?then("summer", (month gte 9 && month lte 11)?then("autumn", "winter")))>
+<body class="${properties.kcBodyClass!} ${bodyClass}" data-page-id="login-${pageId}" data-season="${season}">
 <div class="${properties.kcLoginClass!}">
     <main class="sk-main">
         <div class="sk-brand" id="kc-header">
             <span class="sk-wordmark" id="kc-header-wrapper">Shiki</span>
-            <p class="sk-tagline">${msg("shikiTagline")}</p>
         </div>
 
         <div class="${properties.kcFormCardClass!}">
@@ -151,11 +152,6 @@
                 </div>
             </div>
         </div>
-
-        <p class="sk-footnote">
-            <i class="sk-i sk-i-shield" aria-hidden="true"></i>
-            ${msg("shikiFootnote")}
-        </p>
     </main>
 </div>
 </body>

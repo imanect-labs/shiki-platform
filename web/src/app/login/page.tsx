@@ -67,7 +67,6 @@ function LoginInner() {
           >
             Shiki
           </span>
-          <p className="mt-1.5 text-sm text-muted-foreground">権限考慮 AI ワークスペース</p>
         </div>
 
         {status === "failed" ? (

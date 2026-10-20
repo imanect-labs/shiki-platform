@@ -4,10 +4,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 import { CHROME_TRAY } from "@/components/shell/header";
-
-/// スマホの本文先頭に出すパンくず（「a-corp・アクセス管理」）。AdminPage が見出しの上に出す。
-/// スマホにはタイトルバーが無いので、現在地はここで示す。管理コンソールとユーザー設定の両シェルが渡す。
-export const ConsoleCrumbContext = React.createContext<string | null>(null);
+import { useAdminCrumb } from "./admin-shell";
 
 /// 管理コンソールの 1 画面の枠（見出し・説明・右上の操作・本文）。
 ///
@@ -31,7 +28,7 @@ export function AdminPage({
   /// 表など横に広い画面（最大幅を広げる）。
   wide?: boolean;
 }) {
-  const crumb = React.useContext(ConsoleCrumbContext);
+  const crumb = useAdminCrumb();
   return (
     <div
       className={cn(

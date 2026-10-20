@@ -11,8 +11,6 @@ import {
   type SessionInfo,
 } from "@/lib/account-api";
 import { formatDateTime } from "@/lib/format";
-import { AdminPage, Panel } from "@/components/admin/admin-page";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -24,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
+import { IconTile, SettingsEmpty, SettingsItem, SettingsPage, SettingsSection, StatusDot } from "./settings-ui";
 
 /// 「3 分前」「2 日前」のような相対時刻（1 週間以上前は日時）。
 function relativeTime(iso: string | null | undefined, now: number): string {
@@ -121,23 +120,12 @@ export function SessionsView() {
   };
 
   return (
-    <AdminPage
+    <SettingsPage
       title="端末とセッション"
       description="あなたのアカウントでログインしている端末です。心当たりのない端末はログアウトさせてください。"
-      actions={
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setConfirmAll(true)}
-          disabled={!rows || others.length === 0 || busy !== null}
-        >
-          <LogOut aria-hidden />
-          他の端末からすべてログアウト
-        </Button>
-      }
     >
       {error ? (
-        <div className="flex flex-col items-start gap-3 rounded-lg border px-4 py-4 text-[13px]">
+        <div className="flex flex-col items-start gap-3 rounded-2xl border border-dashed px-5 py-5 text-[13px]">
           <p className="text-muted-foreground">セッションを読み込めませんでした（{error}）</p>
           <Button variant="outline" size="sm" onClick={() => setReloadKey((k) => k + 1)}>
             <RotateCw aria-hidden />
@@ -145,75 +133,95 @@ export function SessionsView() {
           </Button>
         </div>
       ) : !rows ? (
-        <div className="flex flex-col gap-2" aria-busy="true" aria-label="読み込み中">
-          <Skeleton className="h-16 w-full" />
-          <Skeleton className="h-16 w-full" />
+        <div className="flex flex-col gap-3" aria-busy="true" aria-label="読み込み中">
+          <Skeleton className="ml-1 h-5 w-40" />
+          <Skeleton className="h-36 w-full rounded-2xl" />
         </div>
       ) : (
-        <Panel
-          title="ログイン中の端末"
-          description={`${rows.length} 件のセッション`}
-          actions={
-            <Button variant="ghost" size="sm" onClick={() => setReloadKey((k) => k + 1)}>
-              <RotateCw aria-hidden />
-              更新
-            </Button>
-          }
-        >
-          {rows.length === 0 ? (
-            <p className="px-4 py-6 text-center text-[13px] text-muted-foreground">
-              ログイン中のセッションはありません。
-            </p>
-          ) : (
-            <ul className="divide-y">
-              {rows.map((row) => {
-                const Icon = row.device.mobile ? Smartphone : Laptop;
-                const { session } = row;
-                return (
-                  <li key={session.id} className="flex items-center gap-3 px-4 py-3.5">
-                    <span
-                      aria-hidden
-                      className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground/70"
-                    >
-                      <Icon className="size-5" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-[13.5px] font-medium">
-                          {deviceTitle(row.device, session)}
-                        </span>
-                        {session.current ? <Badge variant="success">このブラウザ</Badge> : null}
-                      </div>
-                      <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-                        {session.ip_address ? <span>IP {session.ip_address}</span> : null}
-                        <span>最終アクセス {relativeTime(session.last_access_at, now)}</span>
-                        <span className="max-sm:hidden">
-                          ログイン {session.started_at ? formatDateTime(session.started_at) : "—"}
-                        </span>
-                      </div>
-                    </div>
-                    {session.current ? null : (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => void revoke(row)}
-                        disabled={busy !== null}
-                        aria-label={`${deviceTitle(row.device, session)}からログアウト`}
-                      >
-                        {busy === session.id ? (
-                          <Loader2 className="animate-spin" aria-hidden />
-                        ) : (
-                          <LogOut aria-hidden />
-                        )}
-                        <span className="max-sm:sr-only">ログアウト</span>
-                      </Button>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </Panel>
+        <>
+          <SettingsSection
+            title="ログイン中の端末"
+            description={`${rows.length} 件のセッション`}
+            actions={
+              <Button variant="ghost" size="sm" onClick={() => setReloadKey((k) => k + 1)}>
+                <RotateCw aria-hidden />
+                更新
+              </Button>
+            }
+          >
+            {rows.length === 0 ? (
+              <SettingsEmpty>ログイン中のセッションはありません。</SettingsEmpty>
+            ) : (
+              <ul>
+                {rows.map((row) => {
+                  const { session } = row;
+                  return (
+                    <SettingsItem
+                      key={session.id}
+                      icon={<IconTile icon={row.device.mobile ? Smartphone : Laptop} />}
+                      title={
+                        <>
+                          <span className="truncate">{deviceTitle(row.device, session)}</span>
+                          {session.current ? <StatusDot>このブラウザ</StatusDot> : null}
+                        </>
+                      }
+                      meta={
+                        <>
+                          {session.ip_address ? <span>IP {session.ip_address}</span> : null}
+                          <span>最終アクセス {relativeTime(session.last_access_at, now)}</span>
+                          <span className="max-sm:hidden">
+                            ログイン {session.started_at ? formatDateTime(session.started_at) : "—"}
+                          </span>
+                        </>
+                      }
+                      action={
+                        session.current ? null : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void revoke(row)}
+                            disabled={busy !== null}
+                            aria-label={`${deviceTitle(row.device, session)}からログアウト`}
+                          >
+                            {busy === session.id ? (
+                              <Loader2 className="animate-spin" aria-hidden />
+                            ) : (
+                              <LogOut aria-hidden />
+                            )}
+                            <span className="max-sm:sr-only">ログアウト</span>
+                          </Button>
+                        )
+                      }
+                    />
+                  );
+                })}
+              </ul>
+            )}
+          </SettingsSection>
+
+          {others.length > 0 ? (
+            <SettingsSection>
+              <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
+                <div className="min-w-0">
+                  <div className="text-[13.5px] font-medium">他の端末からすべてログアウト</div>
+                  <p className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
+                    このブラウザ以外の {others.length} 件のセッションを終了します。
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setConfirmAll(true)}
+                  disabled={busy !== null}
+                  className="text-destructive hover:text-destructive sm:shrink-0"
+                >
+                  <LogOut aria-hidden />
+                  すべてログアウト
+                </Button>
+              </div>
+            </SettingsSection>
+          ) : null}
+        </>
       )}
 
       <Dialog open={confirmAll} onOpenChange={(open) => busy === null && setConfirmAll(open)}>
@@ -235,6 +243,6 @@ export function SessionsView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </AdminPage>
+    </SettingsPage>
   );
 }
