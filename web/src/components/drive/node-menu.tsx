@@ -134,10 +134,9 @@ export function NodeActionsMenu({
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent
             side="bottom"
-            className="gap-0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2"
+            className="gap-0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-5.5"
             data-testid="node-action-sheet"
           >
-            <div aria-hidden className="mx-auto mb-2 h-1.5 w-9 rounded-full bg-muted-foreground/25" />
             <div className="flex items-center gap-3 pb-3 pr-10">
               <NodeIcon
                 kind={node.kind}

@@ -4,6 +4,7 @@ import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 
+import { useMergedRef, useSwipeToDismiss } from "@/hooks/use-swipe-to-dismiss";
 import { cn } from "@/lib/utils";
 
 /// 画面端からスライドインするパネル（Radix Dialog ベース・実行履歴の詳細等）。
@@ -48,10 +49,18 @@ function SheetContent({
   className,
   children,
   side = "right",
+  ref,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   side?: keyof typeof SIDE_CLASSES;
 }) {
+  // 下からのシートは、取っ手（上端）や先頭までスクロールした本文を下へ払って閉じられる。
+  const closeRef = React.useRef<HTMLButtonElement>(null);
+  const swipeRef = useSwipeToDismiss<HTMLDivElement>({
+    enabled: side === "bottom",
+    close: () => closeRef.current?.click(),
+  });
+  const contentRef = useMergedRef(ref, swipeRef);
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay
@@ -61,6 +70,7 @@ function SheetContent({
         )}
       />
       <DialogPrimitive.Content
+        ref={contentRef}
         className={cn(
           "fixed z-50 flex flex-col gap-0 overflow-hidden bg-background shadow-lg outline-none",
           "duration-normal data-[state=open]:animate-in data-[state=closed]:animate-out",
@@ -69,8 +79,16 @@ function SheetContent({
         )}
         {...props}
       >
+        {side === "bottom" ? (
+          // つかめることを示す取っ手。レイアウトに影響しないよう上端に重ねる。
+          <div
+            aria-hidden
+            className="pointer-events-none absolute left-1/2 top-2 h-1.5 w-9 -translate-x-1/2 rounded-full bg-muted-foreground/25"
+          />
+        ) : null}
         {children}
         <DialogPrimitive.Close
+          ref={closeRef}
           className={cn(
             "absolute right-2 top-2 flex size-9 items-center justify-center rounded-md text-muted-foreground pointer-coarse:size-11",
             "transition-colors hover:bg-accent hover:text-foreground",

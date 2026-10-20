@@ -4,6 +4,7 @@ import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 
+import { useMergedRef, useSwipeToDismiss } from "@/hooks/use-swipe-to-dismiss";
 import { cn } from "@/lib/utils";
 
 const Dialog = DialogPrimitive.Root;
@@ -52,16 +53,27 @@ function DialogOverlay({
   );
 }
 
+/// スマホ幅（sm 未満）でだけ下からのシートになる。そのときだけ下へ払って閉じられる。
+const SHEET_QUERY = "(max-width: 639.98px)";
+
 function DialogContent({
   className,
   children,
   showClose = true,
+  ref,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & { showClose?: boolean }) {
+  const closeRef = React.useRef<HTMLButtonElement>(null);
+  const swipeRef = useSwipeToDismiss<HTMLDivElement>({
+    enabled: () => window.matchMedia(SHEET_QUERY).matches,
+    close: () => closeRef.current?.click(),
+  });
+  const contentRef = useMergedRef(ref, swipeRef);
   return (
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
+        ref={contentRef}
         data-slot="dialog-content"
         className={cn(
           "fixed z-50 grid gap-4 border border-border bg-card p-6 text-card-foreground shadow-lg",
@@ -85,12 +97,16 @@ function DialogContent({
         {children}
         {showClose ? (
           <DialogPrimitive.Close
+            ref={closeRef}
             aria-label="閉じる"
             className="absolute right-2.5 top-2.5 flex size-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:size-11 max-sm:top-4"
           >
             <X className="size-4" aria-hidden />
           </DialogPrimitive.Close>
-        ) : null}
+        ) : (
+          // 閉じるボタンを出さない画面でも、スワイプで閉じるための押し先を置く（見えない・Tab で来ない）。
+          <DialogPrimitive.Close ref={closeRef} tabIndex={-1} aria-hidden className="sr-only" />
+        )}
       </DialogPrimitive.Content>
     </DialogPortal>
   );
