@@ -5,7 +5,7 @@
  */
 export type GuiValidationError = { 
 /**
- * エラーコード（例: `gui.unknown_action_ref`）。
+ * エラーコード（例: `miniapp.workflow_not_bundled`）。
  */
 code: string, 
 /**
@@ -13,6 +13,6 @@ code: string,
  */
 message: string, 
 /**
- * 紐付くツリー位置（例: `root.children[2].on_click`）。
+ * 紐付く位置（例: `workflows[0]`）。
  */
 path: string | null, };

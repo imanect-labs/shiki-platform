@@ -420,10 +420,10 @@ async fn replace_section_replaces_body_keeps_heading() {
     );
 }
 
-/// insert_embed で genui 埋め込みブロックが本文へ挿入され、md に ```shiki-embed フェンス
-/// （kind=genui）として往復することを確認する（issue #282・DB 不要）。
+/// append した ```ui ブロック（document.embed が入れる図・#604）が、md へ ```ui フェンスのまま
+/// 往復することを確認する（DB 不要）。
 #[test]
-fn insert_embed_writes_genui_fence() {
+fn appended_ui_block_round_trips() {
     let live = LiveDoc::restore(
         Uuid::new_v4(),
         Some(collab::DocKind::Note),
@@ -433,12 +433,12 @@ fn insert_embed_writes_genui_fence() {
     live.import_markdown("# レポート\n\n本文。\n")
         .expect("seed");
 
-    let spec = serde_json::json!({ "type": "chart", "chartType": "bar", "data": [] });
+    let markdown = "```ui\nbar 月別の売上\n4月 | 120\n5月 | 150\n```\n".to_string();
     let (update, report) = live
-        .apply_ai_edit(&[EditOp::InsertEmbed { spec }], EditMode::Direct)
-        .expect("insert embed");
+        .apply_ai_edit(&[EditOp::Append { markdown }], EditMode::Direct)
+        .expect("append");
     assert_eq!(report.applied, 1);
-    assert!(!update.is_empty(), "埋め込み挿入の update が生成される");
+    assert!(!update.is_empty(), "追記の update が生成される");
 
     // 別クライアントへ取り込み、md へ直列化して往復を確認する。
     let human = Doc::new();
@@ -449,37 +449,10 @@ fn insert_embed_writes_genui_fence() {
         .expect("apply");
     let md = collab::note::doc_to_markdown(&human);
     assert!(
-        md.contains("```shiki-embed"),
-        "shiki-embed フェンスが出る: {md}"
-    );
-    assert!(
-        md.contains("\"kind\":\"genui\""),
-        "kind=genui が埋め込まれる: {md}"
+        md.contains("```ui\nbar 月別の売上\n4月 | 120\n5月 | 150\n```"),
+        "```ui フェンスのまま出る: {md}"
     );
     assert!(md.contains("# レポート"), "既存本文は保持される");
-}
-
-/// insert_embed の spec がオブジェクトでない（不正）場合は挿入せず skip する（fail-closed・#282）。
-#[test]
-fn insert_embed_rejects_non_object_spec() {
-    let live = LiveDoc::restore(
-        Uuid::new_v4(),
-        Some(collab::DocKind::Note),
-        &empty_persisted(),
-    )
-    .expect("restore");
-    live.import_markdown("# 本文\n").expect("seed");
-    let report = live
-        .apply_ai_edit(
-            &[EditOp::InsertEmbed {
-                spec: serde_json::json!("not-an-object"),
-            }],
-            EditMode::Direct,
-        )
-        .map(|(_, r)| r)
-        .expect("edit");
-    assert_eq!(report.applied, 0, "不正 spec は適用されない");
-    assert_eq!(report.skipped.len(), 1, "skip として記録される");
 }
 
 /// 見つからない見出しへの操作は skip される（部分適用・fail-open で本文は保持）。

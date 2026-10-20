@@ -389,8 +389,6 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
     let rag_admin = std::sync::Arc::new(rag::RagAdmin::new(db.clone(), None, None));
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), Arc::new(AllowAll)));
     let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
-    let ui_validator = Arc::new(gui::SpecValidator::new(Arc::clone(&artifacts), db.clone()));
-    let ui_specs = Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator));
     let ui_actions = Arc::new(gui::ActionDispatcher::new(
         storage::audit::AuditRecorder::new(db.clone()),
     ));
@@ -477,7 +475,6 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         skill_installs,
         bundles,
         app_usage,
-        ui_specs,
         ui_actions,
         skills,
         mini_apps,

@@ -110,8 +110,7 @@ export function NewFab({
         新規
       </button>
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="bottom" className="gap-0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
-          <div aria-hidden className="mx-auto mb-2 h-1.5 w-9 rounded-full bg-muted-foreground/25" />
+        <SheetContent side="bottom" className="gap-0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-5.5">
           <SheetTitle className="px-1 pb-3 pt-1 text-[17px]">新規</SheetTitle>
           <SheetDescription className="sr-only">
             ファイルのアップロード、フォルダや文書の新規作成ができます。

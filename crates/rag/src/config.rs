@@ -65,6 +65,13 @@ pub struct RagConfig {
     pub relevance_high: f32,
     #[serde(default = "default_relevance_low")]
     pub relevance_low: f32,
+    /// reranker の生スコアがこれ未満のヒットを結果から落とす（#100）。既定 None（足切りしない）。
+    ///
+    /// 足切りで top_k を割るのは正しい挙動（関連の薄いヒットで無理に埋めない）。既定を無効に
+    /// しているのは、#424 の較正で無関係なヒットにも 0.57 程度のスコアが付いていたため
+    /// （閾値を上げると関連あるヒットも落ちる）。モデルとセットで実データから決めること。
+    #[serde(default, deserialize_with = "empty_as_none")]
+    pub min_rerank_score: Option<f32>,
     /// 上の閾値を測った reranker のモデル名。worker が返す `model_version` と違えば警告する
     /// （閾値はモデルごとのスコアのスケールに依存し、食い違うと全件「低」等に化ける）。
     #[serde(default = "default_relevance_model")]
@@ -129,6 +136,29 @@ fn default_relevance_high() -> f32 {
 fn default_relevance_low() -> f32 {
     0.45
 }
+/// 数値か数値の文字列を受け、空文字は None にする（compose は未設定の env を空文字で渡す）。
+fn empty_as_none<'de, D>(d: D) -> Result<Option<f32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Num(f32),
+        Str(String),
+    }
+    match Option::<Raw>::deserialize(d)? {
+        None => Ok(None),
+        Some(Raw::Num(n)) => Ok(Some(n)),
+        Some(Raw::Str(s)) if s.trim().is_empty() => Ok(None),
+        Some(Raw::Str(s)) => s
+            .trim()
+            .parse()
+            .map(Some)
+            .map_err(|e| serde::de::Error::custom(format!("min_rerank_score: {e}"))),
+    }
+}
+
 fn default_relevance_model() -> String {
     "hotchpotch/japanese-reranker-cross-encoder-xsmall-v1".to_string()
 }
@@ -162,6 +192,7 @@ impl Default for RagConfig {
             rerank_pool: default_rerank_pool(),
             relevance_high: default_relevance_high(),
             relevance_low: default_relevance_low(),
+            min_rerank_score: None,
             relevance_model: default_relevance_model(),
             consumer_concurrency: default_consumer_concurrency(),
             relay_poll_ms: default_relay_poll_ms(),

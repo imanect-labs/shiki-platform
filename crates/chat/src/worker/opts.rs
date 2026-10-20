@@ -132,7 +132,7 @@ pub fn parse_timezone(name: &str) -> Result<chrono_tz::Tz, String> {
 
 /// Chat プロファイルの実行オプション（制約版・現行挙動）。
 pub(super) fn chat_opts(worker: &ChatWorker) -> AgentOptions {
-    let mut opts = AgentOptions::chat(worker.config.max_steps);
+    let mut opts = chat_budget_opts(&worker.config);
     opts.system = Some(worker.config.system_prompt.clone());
     worker.config.model.clone_into(&mut opts.model);
     // 1 応答の出力上限（プロファイル既定 2048 は reasoning モデルの思考で尽き、
@@ -141,6 +141,16 @@ pub(super) fn chat_opts(worker: &ChatWorker) -> AgentOptions {
     opts.parallel_read_tools = worker.config.parallel_read_tools;
     opts.tool_search.enabled = worker.config.tool_search;
     opts.tool_search.embedder = worker.tool_search_embedder();
+    opts
+}
+
+/// 通常チャットの予算（ステップ＋累積トークン・コスト）を入れた AgentOptions。
+///
+/// agent-core の chat 既定は token/cost 無制限なので、ここで設定値を入れる（#426）。
+fn chat_budget_opts(config: &super::WorkerConfig) -> AgentOptions {
+    let mut opts = AgentOptions::chat(config.max_steps);
+    opts.budget.max_tokens = Some(config.chat_max_tokens);
+    opts.budget.max_cost_usd_micros = Some(config.chat_max_cost_usd_micros);
     opts
 }
 
@@ -169,6 +179,16 @@ impl ChatWorker {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn chat_profile_caps_tokens_and_cost() {
+        let config = super::super::WorkerConfig::default();
+        let opts = super::chat_budget_opts(&config);
+        assert_eq!(opts.budget.max_steps, config.max_steps);
+        assert_eq!(opts.budget.max_tokens, Some(300_000));
+        assert_eq!(opts.budget.max_cost_usd_micros, Some(1_000_000));
+    }
+
     use super::*;
     use chrono::TimeZone;
 
@@ -260,15 +280,15 @@ mod tests {
             &mut opts,
             &[
                 ToolName::WebSearch,
-                ToolName::EmitUi,
+                ToolName::DocSearch,
                 ToolName::CodeInterpreter,
             ],
-            &["emit_ui", "fs_write"],
-            &["web_search", "web_fetch", "doc_search"],
+            &["doc_search", "fs_write"],
+            &["web_search", "web_fetch"],
         );
-        assert_eq!(opts.tool_search.always_load, vec!["emit_ui".to_string()]);
+        assert_eq!(opts.tool_search.always_load, vec!["doc_search".to_string()]);
         let system = opts.system.as_deref().unwrap();
-        assert!(system.contains("指定しています: emit_ui。"), "{system}");
+        assert!(system.contains("指定しています: doc_search。"), "{system}");
         assert!(
             system.contains("次のツールは計画の承認後（実行段階）に使えます: web_search。"),
             "{system}"
@@ -285,7 +305,7 @@ mod tests {
         apply_requested_tools(
             &mut clarify,
             &[ToolName::WebSearch, ToolName::DocSearch],
-            &["emit_ui"],
+            &[],
             &["web_search", "doc_search", "fs_write"],
         );
         assert!(clarify.tool_search.always_load.is_empty());

@@ -40,6 +40,17 @@ fn map_db(e: &sqlx::Error) -> ChatError {
     ChatError::Internal(format!("db: {e}"))
 }
 
+/// 回答の本文の ```ui `app` を「アプリとして保存」するための材料（#604）。
+#[derive(Debug, Clone)]
+pub struct YuiAppDraft {
+    /// ブロックの中身（フェンスを除く）。
+    pub source: String,
+    /// 図の見出し。
+    pub title: String,
+    /// ボタンの実行先（別名＝ボタンが参照するワークフローの名前・解決した版）。重複は除く。
+    pub workflows: Vec<(String, Uuid, i64)>,
+}
+
 /// 図のボタンの実行の依頼（画面から送れるのはこれだけ）。
 #[derive(Debug, Clone)]
 pub struct YuiActionRequest {
@@ -97,7 +108,7 @@ pub(super) async fn insert_bindings(
 }
 
 impl ChatStore {
-    /// UI の操作（図のボタン・generative_ui のアクション）を押せるか＝会話の**編集者**か（#604）。
+    /// 図のボタンを押せるか＝会話の**編集者**か（#604）。
     ///
     /// 閲覧者に共有した会話から、ワークフローの起動や検索を走らせない。
     pub async fn require_ui_action_editor(
@@ -302,6 +313,84 @@ impl ChatStore {
             }
         }
         result
+    }
+
+    /// 回答の本文の ```ui `app`（識別子 `block_hash`）と、そのボタンの実行先を返す
+    /// （「アプリとして保存」の材料）。会話を読める人（viewer）なら使える。
+    ///
+    /// 実行先は回答の確定時に解決した束縛（`ui_action_binding`）だけ。解決できなかったボタンは
+    /// 実行先が無いまま返り、保存時の検証（束ねたワークフローに無い）で弾かれる。保存は保存する人の
+    /// 権限でピンを検証し直す（`MiniAppStore::create`）。
+    pub async fn yui_app_for_saving(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        message_id: Uuid,
+        block_hash: &str,
+        trace_id: Option<&str>,
+    ) -> Result<Option<YuiAppDraft>, ChatError> {
+        self.require_thread(
+            ctx,
+            thread_id,
+            Relation::Viewer,
+            "thread.yui_save_as_app",
+            trace_id,
+        )
+        .await?;
+        let message = self
+            .get_message(ctx, thread_id, message_id, trace_id)
+            .await?;
+        if message.role != Role::Assistant {
+            return Ok(None);
+        }
+        let Some(block) = ya::action_blocks(&message.content)
+            .into_iter()
+            .find(|b| b.hash == block_hash && matches!(b.figure, yui::Figure::App { .. }))
+        else {
+            return Ok(None);
+        };
+        let rows: Vec<(String, Uuid, i64)> = sqlx::query_as(
+            "SELECT action_id, workflow_id, workflow_version FROM ui_action_binding \
+             WHERE tenant_id = $1 AND thread_id = $2 AND message_id = $3 AND action_id LIKE $4 \
+             ORDER BY action_id",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(thread_id)
+        .bind(message_id)
+        .bind(format!("{block_hash}:%"))
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| map_db(&e))?;
+        // 別名はボタンが書いている名前（`-> workflow 名前`）。束縛の workflow_name は解決後の
+        // 表示名で、画面の参照と一致するとは限らない。
+        let actions = yui::figure_actions(&block.figure);
+        let mut workflows: Vec<(String, Uuid, i64)> = Vec::new();
+        for (action_id, id, version) in rows {
+            let Some(name) = action_id.split_once(':').and_then(|(_, a)| {
+                actions
+                    .iter()
+                    .find(|x| x.id == a)
+                    .and_then(|x| match &x.target {
+                        yui::ActionTarget::Workflow { name } => Some(name.clone()),
+                        yui::ActionTarget::Chat => None,
+                    })
+            }) else {
+                continue;
+            };
+            if !workflows.iter().any(|(n, _, _)| *n == name) {
+                workflows.push((name, id, version));
+            }
+        }
+        let title = match &block.figure {
+            yui::Figure::App { base, .. }
+            | yui::Figure::Ask { base, .. }
+            | yui::Figure::Plan { base, .. } => base.title.clone(),
+        };
+        Ok(Some(YuiAppDraft {
+            source: block.source,
+            title,
+            workflows,
+        }))
     }
 
     async fn ui_binding(

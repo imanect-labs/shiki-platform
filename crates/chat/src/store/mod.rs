@@ -23,7 +23,7 @@ mod yui_actions;
 pub use post::PostResult;
 pub use runs::{ClaimedRun, CurrentRun, RunContext, CHAT_GENERATION_QUEUE};
 pub use threads::ThreadOrigin;
-pub use yui_actions::YuiActionRequest;
+pub use yui_actions::{YuiActionRequest, YuiAppDraft};
 
 use std::sync::Arc;
 

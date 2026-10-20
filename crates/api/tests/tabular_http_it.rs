@@ -393,10 +393,6 @@ fn build_app(
         Arc::clone(authz),
         Arc::clone(&storage),
     ));
-    let ui_validator = Arc::new(gui::SpecValidator::new(
-        Arc::clone(&artifacts),
-        pool.clone(),
-    ));
     let mini_app_code = Arc::new(app_platform::MiniAppCodeStore::new(
         Arc::clone(&artifacts),
         app_platform::Registry::new(pool.clone()),
@@ -455,7 +451,6 @@ fn build_app(
         skill_installs,
         bundles,
         app_usage,
-        ui_specs: Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator)),
         ui_actions: Arc::new(gui::ActionDispatcher::new(
             storage::audit::AuditRecorder::new(pool.clone()),
         )),

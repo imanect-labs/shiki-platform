@@ -4,7 +4,7 @@
 "use client";
 
 import * as React from "react";
-import { BarChart3, Check, Copy, Download, Table2 } from "lucide-react";
+import { AppWindow, BarChart3, Check, Copy, Download, Table2 } from "lucide-react";
 import { isEmpty, parseBlock, toText, type Kind } from "@imanect/yui";
 import { copyFigure, downloadFigure } from "@imanect/yui/export";
 import { YuiFigure, diagnosticsSummary } from "@imanect/yui/react";
@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { CodeBlock } from "./code-block";
+import { useYuiActions, YuiRunList } from "./yui-actions";
 
 /// 生成中の本文はトークンごとに再描画されるので、props が変わらない限り描き直さない
 /// （確定済みの図・書きかけの行しか変わっていない図の解析とレイアウトを繰り返さない）。
@@ -24,6 +25,7 @@ export const UiFigure = React.memo(function UiFigure({
   source,
   raw,
   complete,
+  closed,
   truncated,
   kind,
   lang,
@@ -34,6 +36,9 @@ export const UiFigure = React.memo(function UiFigure({
   source: string;
   /// ブロックが書き終わっているか（フェンスが閉じた・生成完了）。
   complete: boolean;
+  /// フェンスが閉じ行で閉じているか（省略時は complete と同じ）。閉じていないブロックはサーバーが
+  /// 操作の対象にしないので、ボタンを押せなくする。
+  closed?: boolean;
   /// 生成が途中で終わり（停止・閉じ忘れ）、書きかけの最終行を落としたか。
   truncated?: boolean;
   /// 図にできないときにそのまま見せる記述（書きかけの最終行も含む全体）。省略時は source。
@@ -57,6 +62,8 @@ export const UiFigure = React.memo(function UiFigure({
   const text = React.useMemo(() => (figure && !failed ? toText(figure) : ""), [figure, failed]);
   const [asTable, setAsTable] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
+  // 操作を持つ図（app・ask・plan）のボタン。確定した回答の中でだけ押せる（#604）。
+  const actions_ = useYuiActions(failed ? null : figure, source, complete, closed ?? complete);
 
   if (failed) {
     return (
@@ -113,8 +120,15 @@ export const UiFigure = React.memo(function UiFigure({
         <div className="text-[14px]">{renderTable(text)}</div>
       ) : (
         // 図の内側の余白（幅 400px 未満は 12px、それ以上は 16px）だけ外へ広げ、見出しを本文の左端に揃える。
-        <YuiFigure figure={figure} className="-mx-3 sm:-mx-4" />
+        <YuiFigure
+          figure={figure}
+          className="-mx-3 sm:-mx-4"
+          {...(actions_?.onAction ? { onAction: actions_.onAction } : {})}
+          {...(actions_?.actionDisabledReason ? { actionDisabledReason: actions_.actionDisabledReason } : {})}
+          {...(actions_?.invokedActions ? { invokedActions: actions_.invokedActions } : {})}
+        />
       )}
+      {actions_ ? <YuiRunList runs={actions_.runs} /> : null}
       <figcaption
         className={cn(
           "mt-1 flex items-center justify-end gap-1 text-[11px] text-muted-foreground",
@@ -123,6 +137,12 @@ export const UiFigure = React.memo(function UiFigure({
         )}
       >
         {note ? <span className="mr-auto">{note}</span> : null}
+        {actions_?.saveAsApp ? (
+          <ToolbarButton onClick={actions_.saveAsApp} label="アプリとして保存">
+            <AppWindow className="size-3.5" />
+            アプリとして保存
+          </ToolbarButton>
+        ) : null}
         {complete ? (
           <>
             <ToolbarButton onClick={() => setAsTable((v) => !v)} pressed={asTable}>

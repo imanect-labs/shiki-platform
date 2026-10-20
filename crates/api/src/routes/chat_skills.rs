@@ -61,7 +61,7 @@ pub(super) async fn resolve_skill_pins(
                     .await
             }
         }
-        .map_err(super::ui_specs::map_gui_err)?;
+        .map_err(super::gui_errors::map_gui_err)?;
         out.push(chat::SkillPin {
             skill_id: pin.artifact_id,
             skill_version: version,

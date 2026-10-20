@@ -72,10 +72,6 @@ impl ChatWorker {
             }
             tools.push(Arc::new(fetch));
         }
-        // generative UI（emit_ui・Task 6.4）: 検証層が配線されている時のみ提示する。
-        if let Some(validator) = &self.ui_validator {
-            tools.push(Arc::new(gui::EmitUiTool::new(validator.clone())));
-        }
         // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）:
         // ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。
         if let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) {
@@ -112,7 +108,7 @@ impl ChatWorker {
             storage.clone(),
         )));
         tools.push(Arc::new(crate::document_tool::DocumentEmbedTool::new(
-            collab.clone(), // 本文への genui 埋め込み（非破壊 append・確認不要・#282）。
+            collab.clone(), // 本文への ```ui の図の追記（非破壊 append・確認不要・#282・#604）。
             storage.clone(),
         )));
         // AI スライド共同編集（slide.read / slide.edit・Task 11.3）: ノートと同じ

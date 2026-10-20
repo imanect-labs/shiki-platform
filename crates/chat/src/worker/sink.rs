@@ -150,11 +150,6 @@ impl WorkerSink {
                     name: name.clone(),
                 });
             }
-            // 検証済みスペックのみが emit_ui から届く（Task 6.4・検証は gui 側の信頼境界）。
-            StreamEventKind::GenerativeUi { spec } => {
-                self.content
-                    .push(ContentBlock::GenerativeUi { spec: spec.clone() });
-            }
             // 保存パイプライン通過済みの参照のみが emit_workflow から届く（Task 10.13）。
             StreamEventKind::WorkflowRef { workflow } => {
                 self.content.push(ContentBlock::WorkflowRef {

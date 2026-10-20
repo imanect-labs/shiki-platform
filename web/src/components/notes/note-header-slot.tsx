@@ -30,7 +30,7 @@ export type NoteChromeState = {
   chatOpen: boolean;
   onToggleChat: () => void;
   provider: CollabProvider | null;
-  /// 本文エディタ（エクスポートの md 直列化・genui スナップショットに使う・未生成は null）。
+  /// 本文エディタ（エクスポートの md 直列化に使う・未生成は null）。
   editor: Editor | null;
 };
 

@@ -171,6 +171,8 @@ pub struct SearchDebug {
     pub hydrate_dropped: u32,
     /// reranker に渡した候補数。
     pub reranked: u32,
+    /// reranker の生スコアが設定の下限（`min_rerank_score`）未満で落としたヒット数（#100）。
+    pub below_min_score: u32,
     pub stage_ms: StageTimings,
 }
 

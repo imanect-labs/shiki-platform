@@ -8,10 +8,6 @@
 //!   既知のプレフィックス（`search:` / `python:` / `websearch:` / `webfetch:`）で始まるとき、
 //!   対応するツールを 1 回だけ呼び出す（agent ループ・各ツールの決定的検証）。プレフィックス
 //!   に対応するツールが提示されていなければ最初のツールへフォールバックする（後方互換）。
-//! - generative UI（Phase 6）検証用の駆動プレフィックス `genui:`:
-//!   `genui:form|table|chart|stat` は検証を通る固定スペック（`genui:chart:<kind>` で
-//!   scatter/radar/... を種別指定）、`genui:bad` は不正スペック、
-//!   `genui:workflow <name>` は名前参照のワークフロー起動ボタンで `emit_ui` を呼ぶ。
 //! - 自律プロファイル（Phase 5）検証用の駆動プレフィックス:
 //!   - `plan: A, B, C` … 1 ターン目に `plan` メタツールをカンマ区切りのサブタスクで呼ぶ（計画分解の検証）。
 //!   - `loop:` … tool_result の有無に関わらず**毎ターン** tools[0] を空入力で呼び続ける
@@ -26,7 +22,7 @@ use std::time::Duration;
 use futures::stream::{self, StreamExt};
 
 use super::stub_deep_research::deep_research_call;
-use super::stub_fixtures::{genui_spec, yui_reply};
+use super::stub_fixtures::yui_reply;
 use super::stub_stream::{
     paced_chunks_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
 };
@@ -299,10 +295,10 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
     let prompt_tokens = prompt_tokens(req);
 
     // --- deep research（#387）: `/deep-research` 起動はフェーズを跨いで進むため最初に見る。 ---
-    if !req.tools.is_empty() {
-        if let Some(s) = deep_research_call(req, prompt_tokens) {
-            return s;
-        }
+    // 確認の段階（ask・plan）は門がツールを 1 つも渡さないので、ツールの有無で入口を絞らない
+    // （調査の段階のツールの要否は deep_research_call の中で見る）。
+    if let Some(s) = deep_research_call(req, prompt_tokens) {
+        return s;
     }
     // --- 遅い生成 `slow:<秒> <本文>`: 生成中の挙動（順番待ち・停止）を決定的に試す。 ---
     if let Some(rest) = user_text.strip_prefix("slow:") {
@@ -367,23 +363,6 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
                 return tool_call_stream(
                     plan_tool.name.clone(),
                     serde_json::json!({ "subtasks": subtasks }),
-                    prompt_tokens,
-                );
-            }
-        }
-    }
-
-    // --- generative UI 駆動 `genui:`（Phase 6 Task 6.4 の決定的検証）。 ---
-    // `genui:form|table|chart` は検証を通る固定スペックで emit_ui を呼び、
-    // `genui:bad` はカタログ外コンポーネントを含む不正スペック（フォールバック検証用）、
-    // `genui:workflow <name>` は名前参照のワークフロー起動ボタンを出す。
-    if !has_tool_result(req) {
-        if let Some(rest) = user_text.strip_prefix("genui:") {
-            if let Some(t) = req.tools.iter().find(|t| t.name == "emit_ui") {
-                let spec = genui_spec(rest.trim());
-                return tool_call_stream(
-                    t.name.clone(),
-                    serde_json::json!({ "spec": spec }),
                     prompt_tokens,
                 );
             }
@@ -472,6 +451,20 @@ mod tests {
         let usage = done.unwrap();
         assert_eq!(usage.prompt_tokens, 2);
         assert!(usage.completion_tokens > 0);
+    }
+
+    /// deep research の確認の段階は、門がツールを 1 つも渡さない run でも ask を書く（#604）。
+    #[tokio::test]
+    async fn deep_research_asks_without_any_tools() {
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "/deep-research SaaS 市場")]);
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut text = String::new();
+        while let Some(ev) = s.next().await {
+            if let StreamDelta::TextDelta { text: t } = ev.unwrap() {
+                text.push_str(&t);
+            }
+        }
+        assert!(text.contains("```ui\nask "), "{text}");
     }
 
     #[tokio::test]

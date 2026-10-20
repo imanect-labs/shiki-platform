@@ -91,9 +91,6 @@ pub struct ToolOutcome {
     pub citations: Vec<Citation>,
     /// ツールが保存した成果物（code_interpreter のみ・他ツールは空）。
     pub artifacts: Vec<ArtifactRef>,
-    /// 検証済み generative UI スペック（emit_ui のみ・他ツールは空・Phase 6 Task 6.4）。
-    /// **検証層を通過した JSON のみ**を入れること（chat 側で generative_ui ブロックへ写る）。
-    pub ui_specs: Vec<serde_json::Value>,
     /// 保存済みワークフローへの参照（emit_workflow のみ・Task 10.13）。
     /// `{id, name, display_name, version}` の JSON。**保存パイプライン（V1〜V7）を通過し
     /// artifact 化されたもののみ**を入れること（chat 側で workflow_ref ブロックへ写る）。
@@ -151,7 +148,6 @@ impl ToolOutcome {
             content: content.into(),
             citations: Vec::new(),
             artifacts: Vec::new(),
-            ui_specs: Vec::new(),
             workflow_refs: Vec::new(),
             note_refs: Vec::new(),
             note_drafts: Vec::new(),
@@ -171,7 +167,6 @@ impl ToolOutcome {
             content: content.into(),
             citations: Vec::new(),
             artifacts: Vec::new(),
-            ui_specs: Vec::new(),
             workflow_refs: Vec::new(),
             note_refs: Vec::new(),
             note_drafts: Vec::new(),

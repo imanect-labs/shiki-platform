@@ -9,6 +9,7 @@
 mod app;
 mod ask;
 mod ir;
+mod shown;
 mod text;
 mod values;
 
@@ -16,6 +17,7 @@ pub use ir::{
     ActionTarget, AppAction, AppField, AppSection, AskOption, AskQuestion, Base, ChoiceOption,
     FieldKind, Figure, Kind, Step,
 };
+pub use shown::{error_text, find_action, summary, valid_idempotency_key, ShownValue};
 pub use text::Diagnostic;
 pub use values::{display_value, figure_actions, validate_action_values, Check};
 

@@ -695,3 +695,34 @@ async fn file_in_scope_follows_the_tree() {
         .await
         .unwrap());
 }
+
+/// reranker の生スコアが下限未満のヒットは結果から落とし、件数をデバッグに出す（#100）。
+#[tokio::test]
+async fn min_rerank_score_drops_weak_hits() {
+    let Some(env) = setup().await else { return };
+    let folder = Uuid::new_v4();
+    // FakeReranker のスコア = 本文（「strong の本文」「weak の本文」）の文字のうちクエリに含まれる数。
+    seed_chunk(&env, "strong", "strong", 0.9, folder).await;
+    seed_chunk(&env, "weak", "strong", 0.8, folder).await;
+    let config = RagConfig {
+        min_rerank_score: Some(6.0),
+        ..RagConfig::default()
+    };
+    let svc = service(&env, allow_all_authz(&env, &[folder]), config);
+    let out = svc
+        .search(&env.ctx, "strong", Some(5), SearchMode::Dense, None, None)
+        .await
+        .unwrap();
+    let names: Vec<&str> = out.results.iter().map(|r| r.file_name.as_str()).collect();
+    assert_eq!(names, vec!["strong"], "下限未満は top_k を割っても埋めない");
+    assert_eq!(out.debug.below_min_score, 1);
+
+    // 既定（None）は足切りしない。
+    let svc = service(&env, allow_all_authz(&env, &[folder]), RagConfig::default());
+    let out = svc
+        .search(&env.ctx, "strong", Some(5), SearchMode::Dense, None, None)
+        .await
+        .unwrap();
+    assert_eq!(out.results.len(), 2);
+    assert_eq!(out.debug.below_min_score, 0);
+}
