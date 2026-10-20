@@ -5,13 +5,14 @@ import { loginViaKeycloak, submitKeycloakLogin } from "./helpers";
 test("未ログイン保護ページ→ログイン→戻り先復帰→ダミー送信→ログアウト", async ({
   page,
 }) => {
-  // 1. 未ログインで保護ページへ → /login?next=/drive へ誘導される。
+  // 1. 未ログインで保護ページへ → /login?next=/drive を経て、そのまま Keycloak の
+  //    ログイン画面（Shiki テーマ）へ送られる。
   await page.goto("/drive");
-  await expect(page).toHaveURL(/\/login\?next=%2Fdrive/);
+  await page.waitForURL(/:8081\/realms\/shiki\/protocol\/openid-connect\/auth/);
   await expect(page.getByRole("heading", { name: "ログイン" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "パスキーでログイン" })).toBeVisible();
 
-  // 2. Keycloak でログイン。
-  await page.getByRole("button", { name: "Keycloak でログイン" }).click();
+  // 2. ユーザー名とパスワードでログイン。
   await submitKeycloakLogin(page);
 
   // 3. ログイン後は元の遷移先（/drive）へ復帰する（next 復帰）。

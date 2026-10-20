@@ -15,15 +15,8 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CHROME_TRAY, MenuMarkButton } from "@/components/shell/header";
 import { ADMIN_SECTIONS, menuItemFor, sectionFor, type AdminSection } from "./admin-nav";
+import { ConsoleCrumbContext } from "./admin-page";
 import { MockBadge } from "./mock-banner";
-
-/// スマホの本文先頭に出すパンくず（「a-corp・アクセス管理」）。AdminPage が見出しの上に出す。
-/// スマホにはタイトルバーが無いので、現在地はここで示す。
-const AdminCrumbContext = React.createContext<string | null>(null);
-
-export function useAdminCrumb(): string | null {
-  return React.useContext(AdminCrumbContext);
-}
 
 /// 左端のアイコンレール（セクション切替）。
 function Rail({ active }: { active: AdminSection }) {
@@ -75,8 +68,8 @@ function Rail({ active }: { active: AdminSection }) {
   );
 }
 
-/// 2 列目のプロダクトメニュー（セクション内のページ）。
-function ProductMenu({
+/// 2 列目のプロダクトメニュー（セクション内のページ）。ユーザー設定（SettingsShell）も使う。
+export function ProductMenu({
   section,
   pathname,
   onNavigate,
@@ -273,9 +266,9 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
         <main className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain max-md:pt-[calc(4rem+env(safe-area-inset-top))]">
-          <AdminCrumbContext.Provider value={crumb}>
+          <ConsoleCrumbContext.Provider value={crumb}>
             <Gate>{children}</Gate>
-          </AdminCrumbContext.Provider>
+          </ConsoleCrumbContext.Provider>
         </main>
       </div>
       <MobileNav open={mobileOpen} onOpenChange={setMobileOpen} pathname={pathname} />
