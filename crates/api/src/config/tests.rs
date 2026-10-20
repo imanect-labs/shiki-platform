@@ -559,3 +559,22 @@ fn zero_llm_timeouts_are_rejected() {
         assert!(err.contains(name), "{err}");
     }
 }
+
+#[test]
+fn empty_min_rerank_score_env_means_disabled() {
+    // compose は未設定を空文字で渡す（`${SHIKI__RAG__MIN_RERANK_SCORE:-}`）。空なら足切りしない。
+    let parsed: rag::RagConfig = figment::Figment::from(figment::providers::Serialized::defaults(
+        rag::RagConfig::default(),
+    ))
+    .merge(("min_rerank_score", ""))
+    .extract()
+    .unwrap();
+    assert_eq!(parsed.min_rerank_score, None);
+    let parsed: rag::RagConfig = figment::Figment::from(figment::providers::Serialized::defaults(
+        rag::RagConfig::default(),
+    ))
+    .merge(("min_rerank_score", "0.45"))
+    .extract()
+    .unwrap();
+    assert_eq!(parsed.min_rerank_score, Some(0.45));
+}

@@ -25,6 +25,12 @@ export function DebugPanel({ debug }: { debug: SearchDebug }) {
       accent: "denied" as const,
     },
     { label: "rerank", value: debug.reranked },
+    // reranker の生スコアが下限未満で落とした分（#100・下限は設定 min_rerank_score）。
+    {
+      label: "低関連 足切り",
+      value: debug.below_min_score,
+      accent: "denied" as const,
+    },
   ];
   const stages = [
     ["可読集合", debug.stage_ms.readable_set_ms],
