@@ -67,6 +67,16 @@ impl IntoResponse for ApiError {
         if let ApiError::UnprocessableJson(payload) | ApiError::ConflictJson(payload) = self {
             return (status, Json(payload)).into_response();
         }
+        // 429 だけは文言を `detail` に載せる。上限額と再開の目安を含み、**そのまま出せる**
+        // ものに限られている（他の種別は上流の詳細を含むため載せない）。
+        if let ApiError::RateLimited(ref detail) = self {
+            let body = Json(json!({
+                "status": status.as_u16(),
+                "title": status.canonical_reason().unwrap_or("Error"),
+                "detail": detail,
+            }));
+            return (status, body).into_response();
+        }
         let body = Json(json!({
             "status": status.as_u16(),
             "title": status.canonical_reason().unwrap_or("Error"),
@@ -335,5 +345,30 @@ mod tests {
         assert_eq!(ApiError::Unauthorized.to_string(), "認証が必要です");
         assert_eq!(ApiError::Forbidden.to_string(), "権限がありません");
         assert_eq!(ApiError::Internal("x".into()).to_string(), "内部エラー: x");
+    }
+
+    #[tokio::test]
+    async fn rate_limited_returns_429_with_the_message_in_detail() {
+        use axum::body::to_bytes;
+        // 429 の文言は上限額と再開の目安を含み、そのままユーザーへ出せる（llm-gateway が整形）。
+        const MSG: &str =
+            "プレビュー環境の今月の利用上限（$5.00）に達しました。翌月 1 日にリセットされます。";
+        let res = ApiError::RateLimited(MSG.into()).into_response();
+        assert_eq!(res.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["status"], 429);
+        assert_eq!(v["detail"], MSG);
+    }
+
+    #[tokio::test]
+    async fn other_errors_do_not_leak_detail_into_the_body() {
+        use axum::body::to_bytes;
+        // 429 以外は上流の詳細を含み得るので、ボディへ載せない（ログにのみ残す）。
+        let res = ApiError::ServiceUnavailable("qdrant: connection refused".into()).into_response();
+        let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(v.get("detail").is_none(), "{v}");
+        assert_eq!(v["status"], 503);
     }
 }
