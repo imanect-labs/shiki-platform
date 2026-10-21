@@ -23,6 +23,12 @@ ignore = [
     # unmaintained 通知で、既知脆弱性は無い（安全な更新先も無い）。lindera 上流が置換するまで
     # cargo update では到達できない。上流更新で外す（要追跡）。
     { id = "RUSTSEC-2024-0449", reason = "lindera 推移依存の unsafe-libyaml unmaintained 通知。脆弱性ではなく lindera 上流の置換待ち。" },
+    # webpki-roots 0.26.11 は sqlx-core・tokio-tungstenite の推移依存で、自前の証明書を持たず
+    # webpki-roots v1 を再エクスポートするだけの互換用クレート（semver trick）。0.26 系に修正版は
+    # 出ないため advisory 上は残るが、実体の v1 は 1.0.10（emSign ルートを外した版）に上げてある。
+    # advisory は ID でしか外せないため、v1 側が 1.0.10 未満に戻ってもこの ID では止まらない
+    # （Cargo.lock の差分で見る）。sqlx・tokio-tungstenite が v1 へ移ったら外す（要追跡）。
+    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26.11 は v1 の再エクスポートのみ。実体の v1 は修正済みの 1.0.10。" },
 ]
 
 [licenses]
