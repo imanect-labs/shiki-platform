@@ -1,6 +1,7 @@
 "use client";
 
-/// コンポーザ左の「+」メニュー。並びは PC・スマホとも 添付 → 作成 → モデル → ツール → スキル。
+/// コンポーザ左の「+」メニュー。並びは PC・スマホとも 添付 → 作成 → ツール → スキル。
+/// モデルは送信ボタンの左のボタンで選ぶ（#768）。
 ///
 /// - PC（md 以上）: Radix DropdownMenu（ポータル描画＋衝突回避。画面中央のホームでも上端に
 ///   食い込まず、収まらない高さは内部スクロール）。作成はサブメニュー。
@@ -10,7 +11,7 @@
 /// セクションは `PlusSection` で区切った独立の部品にしてある。新しいセクション（例: 使うツールを
 /// 選ぶ）は、選択状態を Composer の state に持たせ、props で渡してここへ 1 ブロック足せばよい。
 ///
-/// 別の面（モデル一覧・ドライブの選択・スキル一覧）を開く項目は、メニュー/シートが閉じきってから
+/// 別の面（ドライブの選択・スキル一覧）を開く項目は、メニュー/シートが閉じきってから
 /// 開く。閉じる途中で開くと、閉じる側の後始末（フォーカスを「+」へ戻す）が新しい面の外側操作と
 /// 見なされて即座に閉じてしまう。
 
@@ -49,7 +50,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { SELECTABLE_TOOLS, useToolChoice } from "@/lib/tool-choice";
-import { ModelMenuItem, ModelPicker, ModelSheetRow } from "./model-picker";
 import {
   SkillBrowser,
   SkillRow,
@@ -79,7 +79,7 @@ export type PlusMenuProps = {
   onPickSkill?: (s: SlashSuggestion) => void;
 };
 
-/// 閉じきってから走らせる操作の予約（モデル一覧・ドライブ・スキル一覧を開く）。
+/// 閉じきってから走らせる操作の予約（ドライブ・スキル一覧を開く）。
 function useAfterClose() {
   const pending = React.useRef<(() => void) | null>(null);
   const onCloseAutoFocus = React.useCallback((e: Event) => {
@@ -94,10 +94,8 @@ function useAfterClose() {
 
 export function PlusMenu(props: PlusMenuProps) {
   const desktop = useMediaQuery("(min-width: 768px)");
-  // モデル一覧は「+」の上に別のポップオーバー（狭い画面はシート）で開く（#583）。
-  const [modelOpen, setModelOpen] = React.useState(false);
   const [skillsOpen, setSkillsOpen] = React.useState(false);
-  const { open, onOpenChange, modelScope, skills = [], onPickSkill } = props;
+  const { open, onOpenChange, skills = [], onPickSkill } = props;
   const pickSkill = React.useCallback(
     (s: SlashSuggestion) => {
       recordRecentSkill(s.key);
@@ -110,7 +108,7 @@ export function PlusMenu(props: PlusMenuProps) {
     <button
       type="button"
       aria-label="追加メニューを開く"
-      title="追加（添付・作成・モデル・ツール・スキル）"
+      title="追加（添付・作成・ツール・スキル）"
       aria-haspopup={desktop ? "menu" : "dialog"}
       aria-expanded={open}
       onClick={desktop ? undefined : () => onOpenChange(!open)}
@@ -126,15 +124,15 @@ export function PlusMenu(props: PlusMenuProps) {
     </button>
   );
 
-  const shared = { ...props, pickSkill, openModel: () => setModelOpen(true), openSkills: () => setSkillsOpen(true) };
+  const shared = { ...props, pickSkill, openSkills: () => setSkillsOpen(true) };
 
   return (
     <>
       {desktop ? (
-        <DesktopPlusMenu {...shared} modelOpen={modelOpen} setModelOpen={setModelOpen} button={button} />
+        <DesktopPlusMenu {...shared} button={button} />
       ) : (
         <>
-          <ModelPicker scope={modelScope} open={modelOpen} onOpenChange={setModelOpen} anchor={button} />
+          {button}
           <PlusSheet {...shared} />
         </>
       )}
@@ -147,7 +145,6 @@ export function PlusMenu(props: PlusMenuProps) {
 
 type SharedProps = PlusMenuProps & {
   pickSkill: (s: SlashSuggestion) => void;
-  openModel: () => void;
   openSkills: () => void;
 };
 
@@ -163,14 +160,9 @@ function DesktopPlusMenu({
   onPickSkill,
   pickSkill,
   modelScope,
-  modelOpen,
-  setModelOpen,
-  openModel,
   openSkills,
   button,
 }: SharedProps & {
-  modelOpen: boolean;
-  setModelOpen: (v: boolean) => void;
   button: React.ReactElement;
 }) {
   // 作成ロジックはドライブの「新規作成」と共通（use-create-content・重複実装しない）。
@@ -179,12 +171,7 @@ function DesktopPlusMenu({
   const ranked = useRankedSkills(skills, open);
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
-      <ModelPicker
-        scope={modelScope}
-        open={modelOpen}
-        onOpenChange={setModelOpen}
-        anchor={<DropdownMenuTrigger asChild>{button}</DropdownMenuTrigger>}
-      />
+      <DropdownMenuTrigger asChild>{button}</DropdownMenuTrigger>
 
       <DropdownMenuContent
         side="top"
@@ -232,14 +219,6 @@ function DesktopPlusMenu({
             ))}
           </DropdownMenuSubContent>
         </DropdownMenuSub>
-
-        {/* モデル（#553）。選ぶと入力欄の上にチップが出る。 */}
-        <ModelMenuItem
-          scope={modelScope}
-          onOpen={() => {
-            after.pending.current = openModel;
-          }}
-        />
 
         {/* ツール（#734）。選んだツールはこの発話にだけ優先して使われる。選んでもメニューは閉じない。 */}
         <DesktopToolItems scope={modelScope} />
@@ -372,7 +351,6 @@ function PlusSheet({
   onPickSkill,
   pickSkill,
   modelScope,
-  openModel,
   openSkills,
 }: SharedProps) {
   const create = useCreateContent({ parentId: createParentId });
@@ -401,7 +379,7 @@ function PlusSheet({
       >
         <div className="pr-10">
           <DialogTitle className="text-base">追加</DialogTitle>
-          <DialogDescription className="sr-only">添付・作成・モデル・スキル</DialogDescription>
+          <DialogDescription className="sr-only">添付・作成・ツール・スキル</DialogDescription>
         </div>
 
         {/* ① 添付 */}
@@ -443,13 +421,10 @@ function PlusSheet({
           </div>
         </PlusSection>
 
-        {/* ③ モデル（選べる組織だけ） */}
-        <ModelSheetRow scope={modelScope} onOpen={() => thenOpen(openModel)} />
-
-        {/* ④ ツール（#734・この発話にだけ優先して使う） */}
+        {/* ③ ツール（#734・この発話にだけ優先して使う） */}
         <ToolChoiceSection scope={modelScope} />
 
-        {/* ⑤ スキル */}
+        {/* ④ スキル */}
         {skills.length > 0 && onPickSkill ? (
           <PlusSection title="スキル">
             <SkillSearchInput value={query} onChange={setQuery} />

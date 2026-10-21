@@ -2,7 +2,7 @@ import { expect, test, type Browser, type Page } from "@playwright/test";
 
 import { loginViaKeycloak } from "./helpers";
 
-/// スマホのチャット（#733）: 1 行の入力バー・はみ出し・免責文・実行モードのカード。
+/// スマホのチャット（#733）: 2 段の入力欄（#768）・はみ出し・免責文・実行モードのカード。
 /// 前提: chat.spec と同じ（LLM=stub は「回答: <質問>」を返す）。
 ///
 /// ログインは PC の画面で済ませ、そのセッションをタッチ端末の文脈へ持ち込む
@@ -24,18 +24,21 @@ async function phonePage(browser: Browser, page: Page): Promise<Page> {
 }
 
 test.describe("スマホのチャット", () => {
-  test("入力バーは 1 行の丸いバーで、長い URL があっても会話が横にはみ出さない", async ({
+  test("入力欄は文字の段と操作の段の 2 段で、長い URL があっても会話が横にはみ出さない", async ({
     browser,
     page,
   }) => {
     const phone = await phonePage(browser, page);
     await phone.goto("/");
 
-    // 1 行のバー（約 54px）。
+    // 2 段（文字の段 ＋ 「+」・モデル・送信の段・#768）。空のときは約 108px に収まる。
     const bar = phone.getByTestId("composer");
     await expect(bar).toBeVisible();
     const box = await bar.boundingBox();
-    expect(box?.height ?? 0).toBeLessThanOrEqual(58);
+    expect(box?.height ?? 0).toBeLessThanOrEqual(116);
+    const textBox = await phone.getByLabel("メッセージを入力").boundingBox();
+    const modelBox = await phone.getByTestId("model-button").boundingBox();
+    expect((textBox?.y ?? 0) + (textBox?.height ?? 0)).toBeLessThanOrEqual((modelBox?.y ?? 0) + 1);
 
     // タッチ端末では Enter は改行（送信はボタン）。
     const input = phone.getByLabel("メッセージを入力");

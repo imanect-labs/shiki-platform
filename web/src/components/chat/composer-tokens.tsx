@@ -1,0 +1,83 @@
+"use client";
+
+/// 入力欄の本文の先頭に入る語（選んだツール・/ コマンド・#768）。
+///
+/// ChatGPT の入力欄のように、選んだものを本文の一部として見せる。textarea の 1 行目の先頭に
+/// 重ねて置き、textarea には語の幅だけ `text-indent` を付ける。続けて打った文字は語の右から始まり、
+/// 折り返した 2 行目以降は左端から始まる。語を押すと外れる（本文の先頭で Backspace も同じ・
+/// Composer 側）。
+///
+/// 位置は textarea の 1 行目に合わせる（呼び出し側が textarea の余白と同じ top/left を渡す）。
+
+import * as React from "react";
+import type { LucideIcon } from "lucide-react";
+
+import { cn } from "@/lib/utils";
+
+export type ComposerToken = {
+  key: string;
+  label: string;
+  icon: LucideIcon;
+  /// 押したときの説明（読み上げ・ツールチップ）。例:「Web 検索を外す」。
+  removeLabel: string;
+  onRemove: () => void;
+  testId?: string;
+};
+
+/// 語と本文の間の空き。
+export const TOKEN_GAP = 6;
+
+export function ComposerTokens({
+  tokens,
+  onWidthChange,
+  className,
+}: {
+  tokens: ComposerToken[];
+  /// 並びの幅（px）。textarea の `text-indent` に使う。
+  onWidthChange: (width: number) => void;
+  className?: string;
+}) {
+  const ref = React.useRef<HTMLSpanElement | null>(null);
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const report = () => onWidthChange(Math.ceil(el.getBoundingClientRect().width));
+    report();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(report);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [onWidthChange, tokens]);
+
+  return (
+    <span
+      ref={ref}
+      className={cn(
+        "absolute z-[1] inline-flex max-w-[calc(100%-4rem)] items-center gap-1 overflow-hidden whitespace-nowrap",
+        className,
+      )}
+    >
+      {tokens.map((t) => (
+        <button
+          key={t.key}
+          type="button"
+          onClick={(e) => {
+            // 入力欄の枠のクリック（textarea へフォーカス）より先に外す。
+            e.stopPropagation();
+            t.onRemove();
+          }}
+          aria-label={t.removeLabel}
+          title={t.removeLabel}
+          data-testid={t.testId}
+          className={cn(
+            "-mx-0.5 inline-flex min-w-0 shrink-0 items-center gap-1 rounded-md px-0.5 font-medium text-primary transition-colors",
+            "hover:bg-primary/10 hover:line-through focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          )}
+        >
+          <t.icon className="size-[1.05em] shrink-0" aria-hidden />
+          <span className="truncate">{t.label}</span>
+        </button>
+      ))}
+    </span>
+  );
+}
