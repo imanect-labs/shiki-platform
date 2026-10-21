@@ -19,12 +19,12 @@ import {
   type NodeResponse,
   type ShareTarget,
 } from "@/lib/storage";
-import { resourcePath } from "@/lib/resource-link";
+import { resourcePath, supportsPasswordUnlock } from "@/lib/resource-link";
 
 /// 共有対象の最小形。NodeResponse は構造的に適合するため既存のドライブ呼び出しは無変更で、
-/// ノート/Office エディタは `{ id, name }` を直接渡せる（kind/parent_id はリンク解決の任意情報）。
+/// ノート/Office エディタは `{ id, name }` を直接渡せる（kind/content_type はリンク解決の任意情報）。
 export type ShareTargetNode = Pick<NodeResponse, "id" | "name"> &
-  Partial<Pick<NodeResponse, "kind" | "parent_id">>;
+  Partial<Pick<NodeResponse, "kind" | "content_type">>;
 
 /// 共有ダイアログ（#342）。2 タブ構成（スマホは下からのシート・Dialog が自動で切り替える）:
 /// - **メンバー・部署**: 特定のメンバー/部署・ロールへ直接共有（ReBAC 付与）。権限は相手ごとに選ぶ。
@@ -49,7 +49,7 @@ export function ShareDialog({
 
   const linkPath =
     shareUrl ??
-    resourcePath({ id: node.id, name: node.name, kind: node.kind, parent_id: node.parent_id });
+    resourcePath({ id: node.id, name: node.name, kind: node.kind, content_type: node.content_type });
   const pointerUrl = () => {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
     return `${origin}${linkPath}`;
@@ -92,8 +92,8 @@ export function ShareDialog({
               nodeId={node.id}
               linkPath={linkPath}
               // パスワード付きリンクは解錠画面のあるページ（ノート/Office/スライド/CSV）でしか開けない。
-              // フォルダ・非プレビューファイルは drive へ解決されるため、パスワード発行を無効化する（C-1）。
-              passwordSupported={!linkPath.startsWith("/drive")}
+              // フォルダ・PDF・ビューアの無いファイルは解錠画面が無いため、パスワード発行を無効化する（C-1）。
+              passwordSupported={supportsPasswordUnlock(linkPath)}
             />
           </TabsContent>
         </Tabs>

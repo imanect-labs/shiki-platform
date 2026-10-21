@@ -325,9 +325,10 @@ function SidebarChatHistoryInner({
     ));
   }
 
+  // 見出しと種類フィルタは一覧と一緒にスクロールして上へ流す（固定すると一覧の縦幅を常に食う）。
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center justify-between gap-2 px-5 pt-2 max-md:pt-3">
+    <div className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-2.5 pb-2 max-md:px-2">
+      <div className="flex items-center justify-between gap-2 px-2.5 pt-2 max-md:px-3 max-md:pt-3">
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.07em] text-sidebar-foreground/45 max-md:text-xs">
           履歴
         </h2>
@@ -340,16 +341,14 @@ function SidebarChatHistoryInner({
           className="border-sidebar-border bg-sidebar-accent/40"
         />
       </div>
-      <div className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-2.5 pb-2 max-md:px-2">
-        {body}
-        {!loading && hasMore ? (
-          <div ref={sentinelRef} className="flex h-8 items-center justify-center" aria-hidden>
-            {loadingMore ? (
-              <Loader2 className="size-3.5 animate-spin text-sidebar-foreground/40" />
-            ) : null}
-          </div>
-        ) : null}
-      </div>
+      {body}
+      {!loading && hasMore ? (
+        <div ref={sentinelRef} className="flex h-8 items-center justify-center" aria-hidden>
+          {loadingMore ? (
+            <Loader2 className="size-3.5 animate-spin text-sidebar-foreground/40" />
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
