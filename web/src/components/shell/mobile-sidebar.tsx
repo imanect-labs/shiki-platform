@@ -74,7 +74,7 @@ function useSwipeToClose(onClose: () => void) {
   return { ref, handlers: { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd } };
 }
 
-/// モバイル（< md）でのサイドバー。左からスライドするドロワ。
+/// モバイル（< md）でのサイドバー。左からスライドする浮いたドロワ（角丸・PC の aside と同じ素材）。
 /// Radix Dialog でフォーカストラップ・Esc・スクロールロック・aria-modal を担保する。
 export function MobileSidebar() {
   const { mobileOpen, setMobileOpen } = useSidebar();
@@ -94,10 +94,13 @@ export function MobileSidebar() {
           ref={swipe.ref}
           {...swipe.handlers}
           className={cn(
-            "fixed inset-y-0 left-0 z-50 w-[min(330px,88vw)] border-r border-sidebar-border bg-sidebar pt-[env(safe-area-inset-top)] shadow-lg outline-none md:hidden",
+            // PC と同じ「浮いたパネル」: 画面端から 8px 離し（ノッチ・ホームバーの内側）、角丸で切る。
+            "fixed left-2 top-[max(0.5rem,env(safe-area-inset-top))] bottom-[max(0.5rem,env(safe-area-inset-bottom))] z-50 w-[min(330px,calc(88vw-0.5rem))]",
+            "overflow-hidden rounded-xl border border-sidebar-border bg-sidebar shadow-lg outline-none md:hidden",
             // 横の指の動きはスワイプで閉じる処理に回し、縦のスクロールはブラウザに任せる。
             "touch-pan-y",
-            "data-[state=open]:animate-in data-[state=open]:slide-in-from-left data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left",
+            // 左に 8px 空けているので、自分の幅より少し多く動かして画面外から出入りさせる。
+            "data-[state=open]:animate-in data-[state=open]:slide-in-from-left-[110%] data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left-[110%]",
             "duration-200",
           )}
         >
