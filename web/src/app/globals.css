@@ -723,3 +723,42 @@
 ::highlight(pdf-find-active) {
   background-color: rgb(249 115 22 / 0.55);
 }
+
+/* ---- テキストのプレビュー（#784）。shiki の出力に行番号を付け、ダークでは 2 つ目のテーマの色にする。 */
+.file-code .shiki {
+  margin: 0;
+  background: transparent !important;
+}
+.file-code code {
+  counter-reset: line;
+  display: block;
+}
+.file-code .line {
+  display: block;
+  position: relative;
+  min-height: 1.6em;
+  padding-left: calc(var(--gutter, 3ch) + 2.25rem);
+  white-space: pre;
+}
+.file-code .line::before {
+  counter-increment: line;
+  content: counter(line);
+  position: absolute;
+  left: 0;
+  width: calc(var(--gutter, 3ch) + 1rem);
+  text-align: right;
+  color: var(--muted-foreground);
+  opacity: 0.7;
+  user-select: none;
+}
+.file-code-wrap .line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dark .file-code .shiki,
+.dark .file-code .shiki span {
+  color: var(--shiki-dark) !important;
+}
+.file-code:not([data-highlighted]) .line {
+  color: var(--foreground);
+}
