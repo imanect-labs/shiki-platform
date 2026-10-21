@@ -75,7 +75,7 @@ pub fn estimate_static_tokens<'a>(
 }
 
 /// ASCII は 4 バイト ≒ 1 トークン、それ以外は 1 文字 ≒ 1 トークン。
-fn text_tokens(s: &str) -> usize {
+pub(crate) fn text_tokens(s: &str) -> usize {
     let ascii = s.bytes().filter(u8::is_ascii).count();
     let non_ascii = s.chars().filter(|c| !c.is_ascii()).count();
     ascii / 4 + non_ascii

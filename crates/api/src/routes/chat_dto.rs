@@ -87,6 +87,10 @@ pub struct MessagesResponse {
     /// 再訪時に「送ったがまだ生成が始まっていない」を復元して取り消せるようにする。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued_runs: Vec<QueuedRun>,
+    /// 最後の LLM リクエストのコンテキスト使用量（再訪時のコンテキスト表示）。生成中は SSE の
+    /// `context_usage` が新しい値を届ける。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_usage: Option<agent_core::ContextUsage>,
 }
 
 /// 順番待ちの発話 1 件。

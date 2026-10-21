@@ -28,9 +28,18 @@ test.describe("chat (permission-aware RAG チャット)", () => {
     // エージェントモードのトグルが UI に存在する（切り替え可能・Task 3.10）。
     await expect(page.getByRole("switch", { name: "エージェントモード" })).toBeVisible();
 
+    // 入力欄にコンテキストの使用量が出る（context_usage イベント）。開くと内訳が並ぶ。
+    const meter = page.getByRole("button", { name: /^コンテキスト:/ });
+    await expect(meter).toBeVisible({ timeout: 20_000 });
+    await meter.click();
+    await expect(page.getByRole("dialog").getByText("システムプロンプト")).toBeVisible();
+    await page.keyboard.press("Escape");
+
     // ページ再訪しても確定回答が残る（generation_event の projection・Task 3.11）。
     await page.reload();
     await expect(page.getByText(/回答/).first()).toBeVisible({ timeout: 20_000 });
+    // 使用量も再訪時に復元される（最後の run の context_usage）。
+    await expect(meter).toBeVisible({ timeout: 20_000 });
   });
 
   test("共有ダイアログを開ける（Task 3.7）", async ({ page }) => {

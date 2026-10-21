@@ -97,6 +97,9 @@ pub enum StreamEventKind {
     },
     /// 失敗回復の判断（自己修正リトライ／ループ検出停止・Task 5.5）。
     FailureRecovery { detail: String, action: String },
+    /// 直前の LLM リクエストのコンテキスト使用量（チャット画面のコンテキスト表示）。
+    /// 生成のたびに出る（後のものが最新）。content へは projection しない。
+    ContextUsage { usage: agent_core::ContextUsage },
     /// 状態遷移（running/waiting_approval/done/failed/cancelled）。UI の生成状態表示に使う。
     Status { status: RunStatus },
     /// エラー（生成失敗）。
@@ -138,6 +141,7 @@ impl StreamEventKind {
             StreamEventKind::ApprovalRequested { .. } => "approval_requested",
             StreamEventKind::ApprovalResolved { .. } => "approval_resolved",
             StreamEventKind::FailureRecovery { .. } => "failure_recovery",
+            StreamEventKind::ContextUsage { .. } => "context_usage",
             StreamEventKind::Status { .. } => "status",
             StreamEventKind::Error { .. } => "error",
             StreamEventKind::Done { .. } => "done",

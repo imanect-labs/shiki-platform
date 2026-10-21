@@ -291,7 +291,9 @@ pub async fn get_messages(
     } else {
         Vec::new()
     };
+    let context_usage = store.latest_context_usage(id, &ctx.tenant_id).await?;
     Ok(Json(MessagesResponse {
+        context_usage,
         messages,
         active_run_id: active.map(|r| r.run_id),
         active_run_autonomous: active.map(|r| r.autonomous),

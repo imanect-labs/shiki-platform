@@ -32,6 +32,7 @@ import {
   type Attachment,
   type Citation,
   type ContentBlock,
+  type ContextUsage,
   type Message as ChatMessageT,
   type PlanSubtask,
   type RunStatus,
@@ -194,6 +195,8 @@ export function Conversation({
   // null=未ロード（セレクタ非表示）。bypass の可否は org 管理者ポリシ。
   const [approvalMode, setApprovalModeState] = React.useState<AutonomousMode | null>(null);
   const [bypassAllowed, setBypassAllowed] = React.useState(true);
+  /// 直前の LLM リクエストのコンテキスト使用量（入力欄のメーター）。読み込みと SSE で更新する。
+  const [contextUsage, setContextUsage] = React.useState<ContextUsage | null>(null);
   // PUT を直列化するチェーン（連打時の応答順逆転で危険な実効ポリシを誤表示しない）。
   // 各成功応答のサーバ確定値で状態を上書きし、失敗時はサーバの真実を読み直して収束させる。
   const modeRequestChain = React.useRef<Promise<unknown>>(Promise.resolve());
@@ -408,6 +411,7 @@ export function Conversation({
       onPlan: (subtasks) =>
         updateStream((s) => (s ? { ...s, plan: mergePlan(s.plan, subtasks) } : s)),
       onBudgetWarning: (b) => updateStream((s) => (s ? { ...s, budget: b } : s)),
+      onContextUsage: setContextUsage,
       onApprovalRequested: (req) =>
         updateStream((s) => (s ? { ...s, approval: req, approvalPending: false } : s)),
       onApprovalResolved: (res) =>
@@ -640,8 +644,10 @@ export function Conversation({
           activeRunAutonomous,
           activeAssistantMessageId,
           queuedRuns,
+          contextUsage: usage,
         }) => {
         if (!active) return;
+        setContextUsage(usage);
         // 空の assistant は**生成先のプレースホルダ**（進行中・順番待ち・中断のいずれか）。
         // 描画するものが無く、順番待ちがあると末尾以外にも現れるので一律に落とす。
         const shown = msgs.filter((m) => !(m.role === "assistant" && isEmptyContent(m.content)));
@@ -885,6 +891,7 @@ export function Conversation({
                   onApprovalModeChange={changeApprovalMode}
                   bypassAllowed={bypassAllowed}
                   threadId={threadId}
+                  contextUsage={contextUsage}
                   autoFocus
                 />
               </div>

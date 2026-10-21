@@ -134,6 +134,9 @@ pub(super) fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
             detail: detail.clone(),
             action: action.as_str().to_string(),
         },
+        AgentEvent::ContextUsage(usage) => StreamEventKind::ContextUsage {
+            usage: usage.clone(),
+        },
     }
 }
 

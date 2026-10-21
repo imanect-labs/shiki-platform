@@ -485,6 +485,19 @@ async fn run_step(
         .add_step(usage.prompt_tokens, usage.completion_tokens, cost);
     // チェックポイントの step を消費ステップ数に追従させる（再開時の起点・監査の整合）。
     state.step = state.spent.steps;
+    // 送った中身（このステップの応答を積む前の履歴）でコンテキストの内訳を出す。
+    sink.emit(AgentEvent::ContextUsage(
+        crate::context_usage::ContextUsage::of_request(
+            gateway,
+            opts.model.as_deref(),
+            opts.max_tokens,
+            opts.system.as_deref(),
+            llm_gateway::tool_loading::context_tools(tool_defs, &state.messages),
+            &state.messages,
+            usage.prompt_tokens,
+        ),
+    ))
+    .await?;
 
     // **本文もツール呼び出しも無い応答は「完了」ではない**。思考にだけ書いて content を空で
     // 返すプロバイダが実在する（実測: 委譲の子が 8 体中 3 体、本文ゼロで「正常終了」した）。

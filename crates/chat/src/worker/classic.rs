@@ -123,6 +123,9 @@ impl ChatWorker {
         let effective_model = model
             .clone()
             .unwrap_or_else(|| self.gateway.default_model().to_string());
+        // コンテキスト表示の内訳（送る中身から見積り、応答の実測で総量を合わせる）。
+        let context_estimate = agent_core::context_usage::estimate(Some(&system), [], &history);
+        let window_tokens = self.gateway.context_window_tokens(model.as_deref());
         let req = GenerateRequest {
             model,
             system: Some(system),
@@ -141,33 +144,18 @@ impl ChatWorker {
             return Ok(());
         };
         let mut stream = stream.map_err(map_llm_error)?;
-
-        let mut text_acc = String::new();
-        let mut usage = llm_gateway::Usage::default();
-        loop {
-            // 黙っている間も停止を見張り、止まったらストリームを手放す（#602）。
-            let delta = match agent_core::next_unless_cancelled(&mut stream, sink).await {
-                agent_core::NextDelta::Item(delta) => delta,
-                agent_core::NextDelta::End | agent_core::NextDelta::Cancelled => break,
-            };
-            match delta.map_err(map_llm_error)? {
-                StreamDelta::TextDelta { text } => {
-                    text_acc.push_str(&text);
-                    sink.emit(AgentEvent::Text(text))
-                        .await
-                        .map_err(|e| ChatError::Internal(e.to_string()))?;
-                }
-                StreamDelta::ThinkingDelta { text } => {
-                    sink.emit(AgentEvent::Thinking(text))
-                        .await
-                        .map_err(|e| ChatError::Internal(e.to_string()))?;
-                }
-                StreamDelta::Done { usage: u, .. } => usage = u,
-                _ => {} // 通常チャットはツールを使わない
-            }
-        }
+        let (text_acc, usage) = consume(&mut stream, sink).await?;
 
         drop(stream); // 会計（DB・Langfuse）を待つ間も上流を握り続けないよう、先に手放す。
+        let context = agent_core::ContextUsage::new(
+            effective_model.clone(),
+            window_tokens,
+            max_tokens,
+            agent_core::context_usage::fit(context_estimate, usage.prompt_tokens),
+        );
+        sink.emit(AgentEvent::ContextUsage(context))
+            .await
+            .map_err(|e| ChatError::Internal(e.to_string()))?;
         self.gateway
             .record_generation(
                 ctx,
@@ -189,6 +177,41 @@ impl ChatWorker {
             .await;
         Ok(())
     }
+}
+
+/// 応答ストリームを読み切り、本文・思考をイベントへ流す（停止要求で打ち切る・#602）。
+/// 戻り値は本文と usage（打ち切ったときは報告が無く既定値）。
+async fn consume(
+    stream: &mut llm_gateway::DeltaStream,
+    sink: &mut WorkerSink,
+) -> Result<(String, llm_gateway::Usage), ChatError> {
+    use agent_core::{AgentEvent, EventSink};
+
+    let mut text_acc = String::new();
+    let mut usage = llm_gateway::Usage::default();
+    loop {
+        // 黙っている間も停止を見張り、止まったらストリームを手放す（#602）。
+        let delta = match agent_core::next_unless_cancelled(stream, sink).await {
+            agent_core::NextDelta::Item(delta) => delta,
+            agent_core::NextDelta::End | agent_core::NextDelta::Cancelled => break,
+        };
+        let event = match delta.map_err(map_llm_error)? {
+            StreamDelta::TextDelta { text } => {
+                text_acc.push_str(&text);
+                AgentEvent::Text(text)
+            }
+            StreamDelta::ThinkingDelta { text } => AgentEvent::Thinking(text),
+            StreamDelta::Done { usage: u, .. } => {
+                usage = u;
+                continue;
+            }
+            _ => continue, // 通常チャットはツールを使わない
+        };
+        sink.emit(event)
+            .await
+            .map_err(|e| ChatError::Internal(e.to_string()))?;
+    }
+    Ok((text_acc, usage))
 }
 
 #[cfg(test)]
