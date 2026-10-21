@@ -51,12 +51,14 @@ export const CHROME_TRAY = cn(
   "bg-sidebar/95 shadow-[var(--elevation-md)] backdrop-blur supports-[backdrop-filter]:bg-sidebar/80",
 );
 
-/// スマホ左上（メニュー・戻る）の並び。台（枠・面・影）は敷かず、アイコンだけを浮かせる。
-/// 各ボタンの丸い下地は背景色と同じ半透明＋ぼかしで、何も無い上では見えず、本文が下を
-/// 流れたときだけアイコンを読めるようにする。
-export const CHROME_BARE = "pointer-events-auto flex h-12 items-center gap-1";
-export const CHROME_BARE_BUTTON =
-  "rounded-full bg-background/70 backdrop-blur-md max-md:hover:bg-sidebar-accent";
+/// スマホ左上（メニュー・戻る）の並び。四角い台にまとめず、1 つずつ丸いボタンとして浮かせる。
+/// 面・枠・影は右上の台（`CHROME_TRAY`）と同じ素材にして、押せるものだと分かるようにする。
+export const CHROME_BARE = "pointer-events-auto flex h-12 items-center gap-2";
+export const CHROME_BARE_BUTTON = cn(
+  "size-12 rounded-full border border-sidebar-border max-md:size-12",
+  "bg-sidebar/95 shadow-[var(--elevation-md)] backdrop-blur supports-[backdrop-filter]:bg-sidebar/80",
+  "max-md:hover:bg-sidebar-accent",
+);
 
 /// ドロワ（ナビゲーション）を開くボタン。顔はロゴの四つの点（`BrandMark`）。
 export function MenuMarkButton({
