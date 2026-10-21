@@ -52,6 +52,9 @@ pub struct AppConfig {
     /// Office 統合（Collabora＋WOPI ホスト・Task 11.5/11.6）。既定は無効。
     #[serde(default)]
     pub office: OfficeConfig,
+    /// AI 活用分析の定期集計（#751）。既定は有効・1 時間ごと。
+    #[serde(default)]
+    pub insights: crate::insights::InsightsConfig,
 }
 
 /// Office 統合（Collabora＋WOPI ホスト）の設定（`SHIKI__OFFICE__*`）。

@@ -114,6 +114,21 @@ pub fn route_table() -> Vec<RouteDecl> {
         }),
         // --- Session（メタ操作・標準 30s） ---
         r("/me", &["GET"], Session, || get(routes::get_me)),
+        // ログイン方法・端末（本人の token で Keycloak Account API を読む／セッションを切る）。
+        r("/me/security", &["GET"], Session, || {
+            get(routes::me_security::get_security)
+        }),
+        r("/me/sessions", &["GET", "DELETE"], Session, || {
+            get(routes::me_security::list_sessions)
+                .delete(routes::me_security::sign_out_other_sessions)
+        }),
+        r("/me/sessions/{id}", &["DELETE"], Session, || {
+            delete(routes::me_security::sign_out_session)
+        }),
+        // パスキー登録・OTP 設定・パスワード変更・資格情報削除を Keycloak の画面で始める（302）。
+        r("/auth/action", &["GET"], Session, || {
+            get(routes::auth::start_account_action)
+        }),
         r("/folders", &["POST"], Session, || {
             post(routes::folders::create_folder)
         }),
@@ -362,6 +377,19 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/threads/{id}/skills", &["PUT"], Session, || {
             put(routes::chat_skills::set_thread_skills)
         }),
+        // 回答への評価（👍 / 👎・#751）。
+        r("/threads/{id}/feedback", &["GET"], Session, || {
+            get(routes::chat_feedback::get_thread_feedback)
+        }),
+        r(
+            "/threads/{id}/messages/{message_id}/feedback",
+            &["PUT", "DELETE"],
+            Session,
+            || {
+                put(routes::chat_feedback::set_message_feedback)
+                    .delete(routes::chat_feedback::clear_message_feedback)
+            },
+        ),
         r("/threads/{id}/messages", &["GET", "POST"], Session, || {
             get(routes::chat::get_messages).post(routes::chat::post_message)
         }),
@@ -495,6 +523,7 @@ pub fn route_table() -> Vec<RouteDecl> {
     table.extend(routes::office::office_route_decls());
     table.extend(routes::llm_models::llm_model_route_decls());
     table.extend(routes::org_admin_ai::org_admin_ai_route_decls());
+    table.extend(routes::org_admin_insights::org_admin_insights_route_decls());
     table
 }
 

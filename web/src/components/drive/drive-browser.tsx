@@ -16,6 +16,7 @@ import { useMe } from "@/hooks/use-me";
 import { createOfficeSession, OfficeSessionError } from "@/lib/office-api";
 import { useContentSearch, type ContentHit } from "@/lib/drive-search";
 import { extensionChangeError, stemRange } from "@/lib/file-name";
+import { isOfficeFile, resourcePath } from "@/lib/resource-link";
 import {
   breadcrumb,
   createFolder,
@@ -46,14 +47,6 @@ import { VersionsDialog } from "./versions-dialog";
 
 /// 列見出しをクリックした時の既定の並び順（名前は昇順、更新日時・サイズは降順）。
 const DEFAULT_DESC: Record<SortField, boolean> = { name: false, updated: true, size: true };
-
-/// Office 文書としてブラウザ編集できる拡張子（Collabora 対応・Task 11.7）。
-const OFFICE_EXTENSIONS = [".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp"];
-
-function isOfficeFile(name: string): boolean {
-  const lower = name.toLowerCase();
-  return OFFICE_EXTENSIONS.some((ext) => lower.endsWith(ext));
-}
 
 type DialogKind = "newfolder" | "rename" | "move" | "share" | "versions" | "delete" | null;
 
@@ -119,7 +112,8 @@ export function DriveBrowser() {
     );
 
   // Office 文書を開く。編集セッションが発行できればエディタへ、Office 未配備（503）・
-  // 未対応（404）はダウンロードへフォールバックする（開けないのに遷移して空画面を見せない）。
+  // 未対応（404）はファイル画面（プレビューできません＋ダウンロード）へフォールバックする
+  // （開けないのに遷移して空画面を見せない・黙ってダウンロードもしない）。
   const openOffice = async (node: NodeResponse) => {
     try {
       await createOfficeSession(node.id);
@@ -128,10 +122,10 @@ export function DriveBrowser() {
       if (e instanceof OfficeSessionError && e.kind === "unavailable") {
         toast({
           title: "Office 編集サービスが未起動です",
-          description: "ダウンロードで開きます。管理者に office profile の有効化を確認してください。",
+          description: "ダウンロードして開けます。管理者に office profile の有効化を確認してください。",
         });
       }
-      void download(node);
+      router.push(`/file/${node.id}`);
     }
   };
 
@@ -247,15 +241,12 @@ export function DriveBrowser() {
   const handleAction = (action: NodeAction, node: NodeResponse) => {
     switch (action) {
       case "open":
-        // フォルダは配下をブラウズ。ノート（.md）は共同編集エディタで開き（Task 11P.3）、
-        // Office 文書（docx/xlsx/pptx/odt/ods/odp）は Collabora エディタ（Task 11.7）、
-        // その他ファイルはダウンロードで内容を取得する（インラインプレビューは未提供）。
+        // フォルダは配下をブラウズ。Office 文書は編集セッションを確かめてから Collabora へ。
+        // それ以外は resource-link の拡張子→ルート対応に従う（ノート・CSV・スライド・PDF の
+        // 各ビューア、ビューアの無い形式は「プレビューできません」画面）。開くでダウンロードはしない。
         if (node.kind === "folder") navigateTo(node.id);
-        else if (node.name.toLowerCase().endsWith(".md")) router.push(`/notes/${node.id}`);
-        else if (node.name.toLowerCase().endsWith(".csv")) router.push(`/csv/${node.id}`);
-        else if (node.name.toLowerCase().endsWith(".slide")) router.push(`/slides/${node.id}`);
         else if (isOfficeFile(node.name)) void openOffice(node);
-        else void download(node);
+        else router.push(resourcePath(node));
         break;
       case "download":
         void download(node);

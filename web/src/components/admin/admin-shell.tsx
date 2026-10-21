@@ -14,7 +14,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CHROME_TRAY, MenuMarkButton } from "@/components/shell/header";
-import { ADMIN_SECTIONS, menuItemFor, sectionFor, type AdminSection } from "./admin-nav";
+import {
+  ADMIN_SECTIONS,
+  isMenuItemActive,
+  menuItemFor,
+  sectionFor,
+  type AdminSection,
+} from "./admin-nav";
 import { MockBadge } from "./mock-banner";
 
 /// スマホの本文先頭に出すパンくず（「a-corp・アクセス管理」）。AdminPage が見出しの上に出す。
@@ -94,7 +100,7 @@ function ProductMenu({
             {group.label}
           </div>
           {group.items.map((item) => {
-            const current = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const current = isMenuItemActive(item, pathname);
             return (
               <Link
                 key={item.href}

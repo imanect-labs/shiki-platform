@@ -82,6 +82,25 @@ fn admin_base_derivation() {
 }
 
 #[test]
+fn account_base_prefers_internal_base() {
+    // サーバ側から叩くので内部 base 優先。無ければ issuer 由来（末尾スラッシュは除去）。
+    let cfg = auth_config(
+        "https://kc.example.com/realms/shiki",
+        Some("http://keycloak:8080/realms/shiki/"),
+        None,
+    );
+    assert_eq!(
+        cfg.account_base(),
+        "http://keycloak:8080/realms/shiki/account"
+    );
+    let cfg2 = auth_config("https://kc.example.com/realms/shiki", None, None);
+    assert_eq!(
+        cfg2.account_base(),
+        "https://kc.example.com/realms/shiki/account"
+    );
+}
+
+#[test]
 fn provisioner_credentials_require_both() {
     let mut cfg = auth_config("https://kc.example.com/realms/shiki", None, None);
     assert_eq!(cfg.provisioner_credentials(), None);

@@ -21,7 +21,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM node:22-bookworm-slim AS editor-sandbox
 WORKDIR /web
 RUN npm install -g pnpm@9
-COPY web/package.json web/pnpm-lock.yaml ./
+# .npmrc（Takumi Guard registry）もコピーして悪性パッケージをブロックする。
+COPY web/package.json web/pnpm-lock.yaml web/.npmrc ./
 RUN pnpm install --frozen-lockfile
 COPY web/editor-sandbox ./editor-sandbox
 RUN node editor-sandbox/build.mjs

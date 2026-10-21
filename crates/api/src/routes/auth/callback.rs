@@ -11,14 +11,18 @@ use serde::Deserialize;
 
 use authz::{AuthContext, Principal, Relation};
 
-use super::{build_cookie, parse_flow, removal_cookie, FLOW_COOKIE};
+use super::{
+    action::{normalize_action_status, AccountAction},
+    build_cookie, parse_flow, removal_cookie, FLOW_COOKIE,
+};
 use crate::{
     error::ApiError,
     extract::{resolve_org, resolve_tenant_id},
     middleware::{auth::verify_access_token, claims},
     oidc,
     session::{
-        encode_session_cookie, new_opaque_token, SessionRecord, CSRF_COOKIE, SESSION_COOKIE,
+        decode_session_cookie, encode_session_cookie, new_opaque_token, SessionRecord, CSRF_COOKIE,
+        SESSION_COOKIE,
     },
     state::AppState,
 };
@@ -28,6 +32,8 @@ pub struct CallbackQuery {
     code: Option<String>,
     state: Option<String>,
     error: Option<String>,
+    /// アカウント操作（`kc_action`）の結果（success / cancelled / error）。
+    kc_action_status: Option<String>,
 }
 
 /// OIDC callback。state 検証 → token 交換 → access token 検証 → セッション発行。
@@ -38,6 +44,12 @@ pub async fn callback(
 ) -> Result<(CookieJar, Redirect), ApiError> {
     if let Some(err) = query.error {
         tracing::warn!(%err, "IdP がエラーを返した");
+        // 設定画面から始めたアカウント操作の失敗は、state 一致を確かめたうえで設定画面へ戻す
+        // （JSON の 401 を見せない）。それ以外のログイン失敗は従来どおり 401。
+        if let Some(back) = action_error_redirect(&jar, query.state.as_deref()) {
+            let jar = jar.add(removal_cookie(FLOW_COOKIE, state.config.session.secure));
+            return Ok((jar, Redirect::to(&back)));
+        }
         return Err(ApiError::Unauthorized);
     }
     let code = query.code.ok_or(ApiError::Unauthorized)?;
@@ -64,6 +76,13 @@ pub async fn callback(
     let keycloak_sid = verified.sid.clone();
     let principal = claims::principal_from_claims(verified);
     let tenant_id = resolve_tenant_id(&principal, &state.config.auth)?;
+
+    // アカウント操作の往復で、Keycloak 側の SSO セッションが始めたユーザーと別人だった場合
+    // （同じブラウザで別アカウントに入り直した等）は、セッションを差し替えずに設定画面へ戻す。
+    if let Some(back) = action_subject_mismatch(flow.action.as_ref(), &principal.id) {
+        let jar = jar.add(removal_cookie(FLOW_COOKIE, state.config.session.secure));
+        return Ok((jar, Redirect::to(&back)));
+    }
 
     // 撤去中/撤去済みテナントは新規ログインを拒否する（SAAS.2。セッション失効と IdP ユーザー
     // 削除の間に完了するログイン競合を塞ぐ）。レジストリ未登録（dev fixture 等）は許可。
@@ -95,6 +114,13 @@ pub async fn callback(
         tenant_id.clone(),
     ));
 
+    // 同じブラウザの旧セッション（アカウント操作の往復・再ログイン）。新セッションの保存に
+    // 成功してから捨てる（先に消すと、保存失敗時に旧セッションだけ失ってログアウト状態になる）。
+    let old_session = jar
+        .get(SESSION_COOKIE)
+        .and_then(|c| decode_session_cookie(c.value()))
+        .map(|(sid, tenant)| (sid.to_owned(), tenant.to_owned()));
+
     // セッション本体を作成（トークンはサーバ側のみに保持）。
     let session_id = new_opaque_token();
     let csrf_token = new_opaque_token();
@@ -120,6 +146,13 @@ pub async fn callback(
         )
         .await?;
 
+    // Cookie は下で上書きされるため、残すとストアに孤児レコードが TTL まで残る。best-effort。
+    if let Some((old_sid, old_tenant)) = &old_session {
+        if let Err(e) = state.sessions.delete(old_tenant, old_sid).await {
+            tracing::warn!(error = %e, "旧セッションの削除に失敗（TTL で消える）");
+        }
+    }
+
     // Cookie: セッション(httpOnly) + CSRF(JS 読取可) を発行し、相関 Cookie を破棄。
     let secure = state.config.session.secure;
     let max_age = ttl_secs as i64;
@@ -142,7 +175,29 @@ pub async fn callback(
         ))
         .add(removal_cookie(FLOW_COOKIE, secure));
 
-    Ok((jar, Redirect::to("/")))
+    // 設定画面から始めた操作は結果付きで設定画面へ、通常ログインはトップへ戻す。
+    let target = flow.action.map_or_else(
+        || "/".to_string(),
+        |action| action.return_url(normalize_action_status(query.kc_action_status.as_deref())),
+    );
+    Ok((jar, Redirect::to(&target)))
+}
+
+/// アカウント操作の開始ユーザーと認証後のユーザーが食い違えば、設定画面への error の戻り先を返す。
+fn action_subject_mismatch(action: Option<&AccountAction>, principal_id: &str) -> Option<String> {
+    let action = action?;
+    if action.subject.as_deref().is_some_and(|s| s != principal_id) {
+        tracing::warn!("アカウント操作の開始ユーザーと認証後のユーザーが一致しない");
+        return Some(action.return_url("error"));
+    }
+    None
+}
+
+/// IdP エラー時、相関 Cookie がアカウント操作で state も一致すれば設定画面の戻り先を返す。
+fn action_error_redirect(jar: &CookieJar, returned_state: Option<&str>) -> Option<String> {
+    let flow = jar.get(FLOW_COOKIE).and_then(|c| parse_flow(c.value()))?;
+    let action = flow.action?;
+    (returned_state? == flow.state).then(|| action.return_url("error"))
 }
 
 /// IdP claim（roles ＋ groups）由来のロール/部署メンバーシップを OpenFGA へ **diff 同期**する
@@ -174,7 +229,40 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
     let ns = ctx.ns();
 
     // あるべき集合（claims 由来・正規化済み）。
-    let desired = desired_role_ids(&ctx.principal.roles, &ctx.principal.groups, &org);
+    let sourced = desired_role_sources(&ctx.principal.roles, &ctx.principal.groups, &org);
+    let desired: Vec<String> = sourced.iter().map(|(id, _)| id.clone()).collect();
+
+    // ディレクトリへの登録（共有の相手検索・AI 活用分析の在籍者）。人だけ（workflow 主体は除く）。
+    // 失敗しても認可には影響しない（次回のログイン・refresh で再試行）。
+    if ctx.principal.kind == authz::PrincipalKind::User {
+        match state
+            .directory
+            .ensure_user(
+                &ctx.principal.id,
+                &tenant_id,
+                &org,
+                ctx.principal.email.as_deref(),
+            )
+            .await
+        {
+            // 新しく載った人の過去の利用も分析に入るよう、その組織の集計を遡ってやり直させる
+            // （次の定期実行で 1 回だけ。在籍者だけを数えるので、載る前の日は 0 人で作られている）。
+            Ok(true) => state.insights.request_backfill(&tenant_id, &org).await,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "directory_user の登録に失敗（共有の相手検索・分析の在籍者に影響）");
+            }
+        }
+    }
+
+    // AI 活用分析の部署集計用の写し（#751・PIT-18）。失敗しても認可には影響しない（次回同期で収束）。
+    if let Err(e) = state
+        .directory
+        .replace_user_roles(&tenant_id, &org, &ctx.principal.id, &sourced)
+        .await
+    {
+        tracing::warn!(error = %e, "directory_user_role の更新に失敗（分析の部署集計のみに影響）");
+    }
 
     // 現在の直接 role タプル（自テナント名前空間のみ・継承展開なし）。
     let current: Vec<String> = match state
@@ -251,8 +339,18 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
 ///   それは正当なロールなので除外しない（除外すると diff 同期が誤剥奪する）。
 /// - 識別子を壊す値（空・FGA 構造文字・制御文字）は [`authz::validate_local_id`]
 ///   （文字ポリシーの単一定義・#91 M-3）で除外する。
+#[cfg(test)]
 fn desired_role_ids(roles: &[String], groups: &[String], org: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+    desired_role_sources(roles, groups, org)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// [`desired_role_ids`] と同じ集合を、groups claim 由来か（部署か）と一緒に返す（#751）。
+/// 同じ id が roles と groups の両方にあれば先に出た方（roles）を採る。
+fn desired_role_sources(roles: &[String], groups: &[String], org: &str) -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> = Vec::new();
     let candidates = roles.iter().map(|r| (r.trim().to_string(), false)).chain(
         groups
             .iter()
@@ -263,8 +361,8 @@ fn desired_role_ids(roles: &[String], groups: &[String], org: &str) -> Vec<Strin
         if (from_group && id == org) || authz::validate_local_id(id).is_err() {
             continue;
         }
-        if !out.iter().any(|existing| existing == id) {
-            out.push(id.to_string());
+        if !out.iter().any(|(existing, _)| existing == id) {
+            out.push((id.to_string(), from_group));
         }
     }
     out

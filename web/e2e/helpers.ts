@@ -4,7 +4,7 @@ import { expect, type Page } from "@playwright/test";
 export const USER = process.env.E2E_USER ?? "alice";
 export const PASS = process.env.E2E_PASS ?? "password";
 
-/// Keycloak のログインフォームに資格情報を入力して送信する。
+/// Keycloak のログインフォーム（Shiki テーマ）に資格情報を入力して送信する。
 export async function submitKeycloakLogin(page: Page, user = USER, pass = PASS) {
   await page.waitForURL(/:8081\/realms\/shiki\/protocol\/openid-connect\/auth/);
   await page.locator("#username").fill(user);
@@ -19,8 +19,8 @@ export async function loginViaKeycloak(page: Page) {
 
 /// 指定ユーザーでログインする（マルチユーザー検証用。bob/charlie 等）。
 export async function loginAs(page: Page, user: string, pass = PASS) {
+  // /login は未ログインならそのまま Keycloak のログイン画面へ送る。
   await page.goto("/login");
-  await page.getByRole("button", { name: "Keycloak でログイン" }).click();
   await submitKeycloakLogin(page, user, pass);
   // ログイン完了＝/login 以外のアプリ画面に着地（オリジン非依存）。
   await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 20_000 });

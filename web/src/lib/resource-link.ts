@@ -11,13 +11,14 @@ export type LinkableNode = {
   name: string;
   /// "file" | "folder"（生成型では string。folder のみ判定に使う）。
   kind?: string;
-  /// 非プレビューファイルのフォールバック（親フォルダを開く）に使う。
-  parent_id?: string | null;
+  /// PDF の判定に使う（名前に拡張子が無くても content-type で PDF ビューアへ振る）。
+  content_type?: string | null;
 };
 
+/// Office 文書としてブラウザ編集できる拡張子（Collabora 対応・Task 11.7）。
 const OFFICE_EXTENSIONS = [".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp"];
 
-function isOfficeFile(name: string): boolean {
+export function isOfficeFile(name: string): boolean {
   const lower = name.toLowerCase();
   return OFFICE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
@@ -30,8 +31,15 @@ export function resourcePath(node: LinkableNode): string {
   if (lower.endsWith(".csv")) return `/csv/${node.id}`;
   if (lower.endsWith(".slide")) return `/slides/${node.id}`;
   if (isOfficeFile(node.name)) return `/office/${node.id}`;
-  // 専用ページを持たないファイル（画像・PDF 等）は格納フォルダを開く（無ければドライブ直下）。
-  return node.parent_id ? `/drive?folder=${node.parent_id}` : "/drive";
+  if (lower.endsWith(".pdf") || node.content_type === "application/pdf") return `/pdf/${node.id}`;
+  // ビューアを持たないファイルは「プレビューできません」画面（ダウンロード導線つき）を開く。
+  // 「開く」で黙ってダウンロードを始めない（Google ドライブと同じ振る舞い）。
+  return `/file/${node.id}`;
+}
+
+/// パスワード付き共有リンクを開ける（解錠画面を持つ）ページか。
+export function supportsPasswordUnlock(path: string): boolean {
+  return /^\/(notes|office|slides|csv)\//.test(path);
 }
 
 /// ノードを開くための**絶対 URL**（クリップボードにコピーする値）。

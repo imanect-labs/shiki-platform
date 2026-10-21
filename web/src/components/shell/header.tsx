@@ -2,9 +2,9 @@
 
 import { usePathname } from "next/navigation";
 
-import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { cn } from "@/lib/utils";
 import { resolvePageIcon, resolvePageTitle } from "@/lib/nav-config";
+import { BrandMark } from "./brand-logo";
 import { useSidebar } from "./sidebar/sidebar-context";
 import {
   ChromeActions,
@@ -45,40 +45,14 @@ export function Header() {
   );
 }
 
-/// スマホの浮いた操作群の「台」。PC の浮いたサイドバー（角丸・沈んだ面・淡い影）と同じ素材で、
-/// 角は丸めすぎない（丸いピルにしない）。
+/// スマホの浮いた操作群の「台」。PC の浮いたサイドバーと同じ沈んだ面・枠・角丸（丸いピルにしない）。
+/// 面は半透明にして後ろをぼかし、下を流れる本文の上に軽く浮かせる（ぼかせない環境では不透明寄り）。
 export const CHROME_TRAY = cn(
   "pointer-events-auto flex h-12 items-center rounded-[14px] border border-sidebar-border px-0.5",
-  "bg-sidebar/95 shadow-[var(--elevation-md)] backdrop-blur supports-[backdrop-filter]:bg-sidebar/80",
+  "bg-sidebar/85 shadow-[var(--elevation-sm)] backdrop-blur-md supports-[backdrop-filter]:bg-sidebar/55",
 );
 
-/// 一筋の季（いちすじのき）。三本線のメニューを Shiki の線で描く: 上の一本だけを今の季節の色の
-/// 短い実線にし、下の二本は区切り線と同じ細い破線で控えめにする。季節色は描画時の月から決める
-/// （empty-state・editor-loading と同じ）。サーバとクライアントで月を跨いだ瞬間だけ stroke が
-/// ずれ得るため、その差分の警告は抑える（見た目は次の描画で揃う）。
-export function MenuMark({ className }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 24 24"
-      fill="none"
-      strokeLinecap="round"
-      className={cn("size-6", className)}
-    >
-      <path
-        d="M4.5 7h8.5"
-        stroke={seasonVar(currentSeasonIndex())}
-        strokeWidth={2.6}
-        suppressHydrationWarning
-        className="origin-left [transform-box:fill-box] transition-transform duration-[var(--duration-normal)] ease-[var(--ease-standard)] group-hover:scale-x-[1.18] group-active:scale-x-[1.18]"
-      />
-      <path d="M4.5 12h15" stroke="currentColor" strokeOpacity={0.7} strokeWidth={1.6} strokeDasharray="3.4 2.2" />
-      <path d="M4.5 17h15" stroke="currentColor" strokeOpacity={0.7} strokeWidth={1.6} strokeDasharray="3.4 2.2" />
-    </svg>
-  );
-}
-
-/// ドロワ（ナビゲーション）を開くボタン。顔は一筋の季（`MenuMark`）。
+/// ドロワ（ナビゲーション）を開くボタン。顔はロゴの四つの点（`BrandMark`）。
 export function MenuMarkButton({
   onClick,
   label = "メニューを開く",
@@ -94,7 +68,7 @@ export function MenuMarkButton({
       title={label}
       className="group flex size-11 items-center justify-center rounded-[10px] text-foreground outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94]"
     >
-      <MenuMark />
+      <BrandMark className="size-6 transition-transform duration-[var(--duration-normal)] ease-[var(--ease-standard)] group-hover:scale-110" />
     </button>
   );
 }
@@ -111,15 +85,16 @@ export function MobileChrome() {
 
   return (
     <div className="pointer-events-none absolute inset-x-0 top-0 z-30 md:hidden">
-      {/* スクロールした本文がボタンの間に透けて見えないよう、上端を背景色でぼかす。本文を
-          ボタンの下まで流すページは深め、それ以外は本文の開始位置（4rem）で消える。 */}
+      {/* スクロールした本文がボタンの間でくっきり重ならないよう、上端を背景色でぼかす。本文を
+          ボタンの下まで流すページ（会話）は、潜った本文がボタンの高さまで薄く透けて見えるよう
+          浅く・淡くする。それ以外は本文の開始位置（4rem）で消える。 */}
       <div
         aria-hidden
         className={cn(
-          "absolute inset-x-0 top-0 bg-gradient-to-b from-background from-30% to-transparent",
+          "absolute inset-x-0 top-0 bg-gradient-to-b to-transparent",
           spec?.flowUnder
-            ? "h-[calc(5.5rem+env(safe-area-inset-top))]"
-            : "h-[calc(4rem+env(safe-area-inset-top))]",
+            ? "h-[calc(4rem+env(safe-area-inset-top))] from-background/90 via-background/50"
+            : "h-[calc(4rem+env(safe-area-inset-top))] from-background from-30%",
         )}
       />
 
