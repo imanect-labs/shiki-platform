@@ -655,3 +655,12 @@
   --yui-grid: var(--border);
   --yui-focus: var(--ring);
 }
+
+/* Yui のフォーム（ask・plan・app）は入力欄を 14px で描く。iOS Safari は 16px 未満の欄に
+   フォーカスすると画面をズームするので、タッチ端末では 16px にする。Yui が差し込む
+   `.<id> input[type=text]` より詳細度を高くして上書きする（PC の見た目は変えない）。 */
+@media (pointer: coarse) {
+  :root [data-yui] :is(input[type="text"], input[type="date"], textarea, select) {
+    font-size: 16px;
+  }
+}
