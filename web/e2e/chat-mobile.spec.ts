@@ -36,6 +36,7 @@ test.describe("スマホのチャット", () => {
     await expect(bar).toBeVisible();
     const box = await bar.boundingBox();
     expect(box?.height ?? 0).toBeLessThanOrEqual(116);
+    await expect(phone.getByTestId("model-button")).toBeVisible();
     const textBox = await phone.getByLabel("メッセージを入力").boundingBox();
     const modelBox = await phone.getByTestId("model-button").boundingBox();
     expect((textBox?.y ?? 0) + (textBox?.height ?? 0)).toBeLessThanOrEqual((modelBox?.y ?? 0) + 1);
@@ -90,12 +91,13 @@ test.describe("スマホのチャット", () => {
     await expect(phone.getByLabel("メッセージを入力")).not.toBeFocused();
     await phone.keyboard.press("Escape");
 
-    // 「+」は下からのシート（添付 → 作成 → モデル → スキル）。
+    // 「+」は下からのシート（添付 → 作成 → ツール → スキル）。モデルは送信の左のボタン（#768）。
     await phone.getByRole("button", { name: "追加メニューを開く" }).click();
     const sheet = phone.getByTestId("composer-plus-sheet");
     await expect(sheet).toBeVisible();
     await expect(sheet.getByRole("button", { name: /ファイル・写真/ })).toBeVisible();
     await expect(sheet.getByTestId("composer-create-note")).toBeVisible();
+    await expect(sheet.getByTestId("composer-model-menu")).toHaveCount(0);
     await phone.context().close();
   });
 });

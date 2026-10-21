@@ -187,25 +187,20 @@ export const Composer = React.memo(function Composer({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // 本文の先頭での Backspace は、最後の語（ツール、無ければコマンド）を外す（ChatGPT と同じ操作感）。
+    // 本文の先頭での Backspace は、見えている最後の語を外す（ChatGPT と同じ操作感）。
     const el = e.currentTarget;
+    const last = tokens[tokens.length - 1];
     if (
+      last &&
       e.key === "Backspace" &&
       !e.nativeEvent.isComposing &&
+      e.keyCode !== 229 &&
       el.selectionStart === 0 &&
       el.selectionEnd === 0
     ) {
-      const lastTool = toolChoice.tools[toolChoice.tools.length - 1];
-      if (lastTool) {
-        e.preventDefault();
-        toolChoice.clear(lastTool);
-        return;
-      }
-      if (command) {
-        e.preventDefault();
-        setCommand(null);
-        return;
-      }
+      e.preventDefault();
+      last.onRemove();
+      return;
     }
     if (!slashOpen) {
       // `/` を打ち直したら再び候補を出す。
@@ -294,6 +289,7 @@ export const Composer = React.memo(function Composer({
     });
   }
   const [tokensWidth, setTokensWidth] = React.useState(0);
+  const [textScroll, setTextScroll] = React.useState(0);
 
   return (
     <div className={cn("flex flex-col gap-2", className)}>
@@ -380,6 +376,43 @@ export const Composer = React.memo(function Composer({
           />
         ) : null}
 
+        {/* 入力欄（DOM では先に置き、Tab の順を見た目の上→下に揃える）。 */}
+        <div className="relative col-span-2 col-start-1 row-start-1 min-w-0 overflow-hidden px-1.5 pt-1 md:px-2">
+          {tokens.length > 0 ? (
+            // 1 行目の先頭に重ねる（textarea の上の余白・行高と揃える）。
+            <ComposerTokens
+              tokens={tokens}
+              onWidthChange={setTokensWidth}
+              scrollTop={textScroll}
+              className="left-1.5 top-[calc(0.25rem+0.5rem)] h-6 text-base md:left-2 md:top-1 md:h-[1.625em] md:text-[15px]"
+            />
+          ) : null}
+          {/* 補完中は combobox として関連付ける（Codex P2）。フォーカスは textarea に
+              残るため、aria-activedescendant が無いとスクリーンリーダーへ選択が伝わらない。 */}
+          <PromptInputTextarea
+            placeholder={effectivePlaceholder}
+            autoFocus={autoFocus}
+            aria-label="メッセージを入力"
+            role={slashOpen ? "combobox" : undefined}
+            aria-expanded={slashOpen || undefined}
+            aria-controls={slashOpen ? SLASH_LISTBOX_ID : undefined}
+            aria-autocomplete={slashOpen ? "list" : undefined}
+            aria-activedescendant={
+              slashOpen ? slashOptionId(Math.min(slashIndex, slashHits!.length - 1)) : undefined
+            }
+            onKeyDown={onKeyDown}
+            onScroll={(e) => setTextScroll(e.currentTarget.scrollTop)}
+            // 先頭の語の幅だけ 1 行目を下げる（続けて打った文字は語の右から、2 行目以降は左端から）。
+            style={tokens.length > 0 ? { textIndent: tokensWidth + TOKEN_GAP } : undefined}
+            className={cn(
+              "min-h-10 min-w-0 px-0 py-2 text-base leading-6 placeholder:text-muted-foreground/70",
+              // 長いプレースホルダは折り返さずに切る（入力欄を 2 行に押し広げない）。
+              "placeholder-shown:overflow-hidden placeholder-shown:text-ellipsis placeholder-shown:whitespace-nowrap",
+              "md:min-h-[44px] md:pb-1 md:pt-0 md:text-[15px] md:leading-relaxed",
+            )}
+          />
+        </div>
+
         {/* 左: 「+」（PC はエージェントモード等も同じ段に並べる）。 */}
         <div className="col-start-1 row-start-2 flex min-w-0 items-center gap-1.5 pb-0.5 pl-0.5">
           <PlusMenu
@@ -443,40 +476,6 @@ export const Composer = React.memo(function Composer({
               ) : null}
             </div>
           ) : null}
-        </div>
-
-        <div className="relative col-span-2 col-start-1 row-start-1 min-w-0 px-1.5 pt-1 md:px-2">
-          {tokens.length > 0 ? (
-            // 1 行目の先頭に重ねる（textarea の上の余白・行高と揃える）。
-            <ComposerTokens
-              tokens={tokens}
-              onWidthChange={setTokensWidth}
-              className="left-1.5 top-[calc(0.25rem+0.5rem)] h-6 text-base md:left-2 md:top-1 md:h-[1.625em] md:text-[15px]"
-            />
-          ) : null}
-          {/* 補完中は combobox として関連付ける（Codex P2）。フォーカスは textarea に
-              残るため、aria-activedescendant が無いとスクリーンリーダーへ選択が伝わらない。 */}
-          <PromptInputTextarea
-            placeholder={effectivePlaceholder}
-            autoFocus={autoFocus}
-            aria-label="メッセージを入力"
-            role={slashOpen ? "combobox" : undefined}
-            aria-expanded={slashOpen || undefined}
-            aria-controls={slashOpen ? SLASH_LISTBOX_ID : undefined}
-            aria-autocomplete={slashOpen ? "list" : undefined}
-            aria-activedescendant={
-              slashOpen ? slashOptionId(Math.min(slashIndex, slashHits!.length - 1)) : undefined
-            }
-            onKeyDown={onKeyDown}
-            // 先頭の語の幅だけ 1 行目を下げる（続けて打った文字は語の右から、2 行目以降は左端から）。
-            style={tokens.length > 0 ? { textIndent: tokensWidth + TOKEN_GAP } : undefined}
-            className={cn(
-              "min-h-10 min-w-0 px-0 py-2 text-base leading-6 placeholder:text-muted-foreground/70",
-              // 長いプレースホルダは折り返さずに切る（入力欄を 2 行に押し広げない）。
-              "placeholder-shown:overflow-hidden placeholder-shown:text-ellipsis placeholder-shown:whitespace-nowrap",
-              "md:min-h-[44px] md:pb-1 md:pt-0 md:text-[15px] md:leading-relaxed",
-            )}
-          />
         </div>
 
         {/* 右: スマホは実行モード → 送信。生成中は停止を出し、書きかけがあれば送信（＝順番待ちへ

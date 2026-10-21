@@ -18,7 +18,6 @@ import type { EffortLevel, LlmModelOption, LlmModelsResponse } from "@/lib/admin
 import { useLlmModels, useModelChoice } from "@/lib/model-choice";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { usePromptInput } from "@/components/prompt-kit/prompt-input";
 
 const EFFORTS: { value: EffortLevel; label: string; hint: string }[] = [
   { value: "low", label: "速い", hint: "短く素早く答えます" },
@@ -376,15 +375,6 @@ function PickerSurface({
 }) {
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const listRef = React.useRef<HTMLDivElement | null>(null);
-  // 閉じたら入力欄へフォーカスを戻す（選んだらそのまま打てるように）。ただしマウスの端末だけ
-  // （タッチでは入力欄へのフォーカスがソフトキーボードを出し、選び終えた直後に画面の半分を覆う）。
-  const { textareaRef } = usePromptInput();
-  const returnFocus = (e: Event) => {
-    if (!textareaRef.current) return;
-    e.preventDefault();
-    if (!window.matchMedia("(pointer: fine)").matches) return;
-    textareaRef.current.focus({ preventScroll: true });
-  };
   // 中身はポータルで描画されるが、React のイベントは React ツリーをたどって入力欄まで届く。
   // 入力欄はクリックで textarea にフォーカスするので、そのままだと一覧の外へのフォーカスと
   // 見なされて閉じる。一覧の中のクリックはここで止める。
@@ -402,7 +392,6 @@ function PickerSurface({
           className="flex max-h-[min(var(--radix-popover-content-available-height),32rem)] w-80 flex-col p-1.5"
           data-testid="model-picker"
           onClick={stop}
-          onCloseAutoFocus={returnFocus}
         >
           {children("popover", listRef)}
         </PopoverContent>
@@ -426,7 +415,6 @@ function PickerSurface({
         )}
         data-testid="model-picker"
         onClick={stop}
-        onCloseAutoFocus={returnFocus}
       >
         <SheetTitle className="mb-3 px-1.5 pr-10">モデル</SheetTitle>
         {children("sheet", listRef)}

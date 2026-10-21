@@ -13,6 +13,7 @@ import * as React from "react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { usePromptInput } from "@/components/prompt-kit/prompt-input";
 
 export type ComposerToken = {
   key: string;
@@ -30,14 +31,20 @@ export const TOKEN_GAP = 6;
 export function ComposerTokens({
   tokens,
   onWidthChange,
+  scrollTop = 0,
   className,
 }: {
   tokens: ComposerToken[];
   /// 並びの幅（px）。textarea の `text-indent` に使う。
   onWidthChange: (width: number) => void;
+  /// textarea のスクロール量。長文でスクロールしたら、語も 1 行目と一緒に上へ流す。
+  scrollTop?: number;
   className?: string;
 }) {
   const ref = React.useRef<HTMLSpanElement | null>(null);
+  const { textareaRef } = usePromptInput();
+  // 語の並びが変わったときだけ測り直す（毎回の入力で ResizeObserver を作り直さない）。
+  const signature = tokens.map((t) => `${t.key}:${t.label}`).join("|");
   React.useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -47,11 +54,12 @@ export function ComposerTokens({
     const ro = new ResizeObserver(report);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [onWidthChange, tokens]);
+  }, [onWidthChange, signature]);
 
   return (
     <span
       ref={ref}
+      style={scrollTop ? { transform: `translateY(${-scrollTop}px)` } : undefined}
       className={cn(
         "absolute z-[1] inline-flex max-w-[calc(100%-4rem)] items-center gap-1 overflow-hidden whitespace-nowrap",
         className,
@@ -65,13 +73,18 @@ export function ComposerTokens({
             // 入力欄の枠のクリック（textarea へフォーカス）より先に外す。
             e.stopPropagation();
             t.onRemove();
+            // 押したボタンは消えるので、続けて打てるよう入力欄へ移す（キーボード操作、またはマウス）。
+            if (e.detail === 0 || window.matchMedia("(pointer: fine)").matches) {
+              textareaRef.current?.focus({ preventScroll: true });
+            }
           }}
           aria-label={t.removeLabel}
           title={t.removeLabel}
           data-testid={t.testId}
           className={cn(
-            "-mx-0.5 inline-flex min-w-0 shrink-0 items-center gap-1 rounded-md px-0.5 font-medium text-primary transition-colors",
-            "hover:bg-primary/10 hover:line-through focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            // 並びが長いときは名前を省略して縮める（語ごと見えなくならないように）。
+            "-mx-0.5 inline-flex min-w-0 max-w-[11rem] shrink items-center gap-1 rounded-md px-0.5 font-medium text-primary transition-colors",
+            "hover:bg-primary/10 hover:line-through focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
           )}
         >
           <t.icon className="size-[1.05em] shrink-0" aria-hidden />
