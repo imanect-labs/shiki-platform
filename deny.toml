@@ -11,19 +11,24 @@ all-features = true
 version = 2
 yanked = "deny"
 # 誤検知・対応保留は理由付きでここに列挙する。
-# 下記 3 件は aws-sdk-s3 が推移的に抱える古い TLS スタック（hyper-rustls 0.24 →
-# tokio-rustls 0.24.1 → rustls-webpki 0.101.7）由来。現行の aws-sdk-s3 では上流が
-# hyper-rustls を更新するまで解消できない（cargo update で到達不可）。
-# 実害は「誤発行された証明書の name constraint 迂回 / CRL パース panic」であり、
-# 本system の S3 クライアントは内部 MinIO か正規発行の AWS 証明書にのみ接続するため
-# 悪用条件を満たしにくい。上流更新で解消次第この ignore を外す（要追跡）。
 ignore = [
-    { id = "RUSTSEC-2026-0098", reason = "aws-sdk-s3 推移依存の rustls-webpki 0.101.7。上流更新待ち・内部MinIO/正規AWS証明書のみで低リスク。" },
-    { id = "RUSTSEC-2026-0099", reason = "同上（wildcard name の name constraint 迂回）。" },
-    { id = "RUSTSEC-2026-0104", reason = "同上（CRL パースの reachable panic）。" },
     # smallstr は yrs（共同編集 CRDT）の推移依存。unmaintained 通知であり既知脆弱性は無い。
     # yrs 上流が置換（compact_str 等）するまで解消不可。上流更新で外す（要追跡）。
     { id = "RUSTSEC-2026-0215", reason = "yrs 推移依存の smallstr unmaintained 通知。脆弱性ではなく yrs 上流の置換待ち。" },
+    # smartstring は swc_ecma_parser（shiki script の TS/JS パーサ）の推移依存。
+    # smallstr と同型の unmaintained 通知で、既知脆弱性は無い。swc 上流が置換するまで
+    # cargo update では到達できない。上流更新で外す（要追跡）。
+    { id = "RUSTSEC-2026-0249", reason = "swc_ecma_parser 推移依存の smartstring unmaintained 通知。脆弱性ではなく swc 上流の置換待ち。" },
+    # unsafe-libyaml は lindera（日本語形態素解析）→ serde_yaml_ng の推移依存。smallstr と同型の
+    # unmaintained 通知で、既知脆弱性は無い（安全な更新先も無い）。lindera 上流が置換するまで
+    # cargo update では到達できない。上流更新で外す（要追跡）。
+    { id = "RUSTSEC-2024-0449", reason = "lindera 推移依存の unsafe-libyaml unmaintained 通知。脆弱性ではなく lindera 上流の置換待ち。" },
+    # webpki-roots 0.26.11 は sqlx-core・tokio-tungstenite の推移依存で、自前の証明書を持たず
+    # webpki-roots v1 を再エクスポートするだけの互換用クレート（semver trick）。0.26 系に修正版は
+    # 出ないため advisory 上は残るが、実体の v1 は 1.0.10（emSign ルートを外した版）に上げてある。
+    # advisory は ID でしか外せないため、v1 側が 1.0.10 未満に戻ってもこの ID では止まらない
+    # （Cargo.lock の差分で見る）。sqlx・tokio-tungstenite が v1 へ移ったら外す（要追跡）。
+    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26.11 は v1 の再エクスポートのみ。実体の v1 は修正済みの 1.0.10。" },
 ]
 
 [licenses]

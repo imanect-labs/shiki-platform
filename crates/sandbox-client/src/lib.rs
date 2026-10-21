@@ -12,6 +12,8 @@ mod client;
 mod convert;
 mod error;
 mod fake;
+/// egress 宛先の IP 分類（SSRF/DNS リバインディング防御・issue #348）。
+pub mod net_guard;
 mod spec;
 
 /// tonic 生成の proto 型（codegen が正・OUT_DIR）。

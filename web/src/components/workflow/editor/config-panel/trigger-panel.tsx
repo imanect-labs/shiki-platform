@@ -211,7 +211,7 @@ function ScheduleEditor({
         <Input
           value={trigger.cron}
           onChange={(e) => onChange({ ...trigger, cron: e.target.value })}
-          className="h-8 font-mono text-xs"
+          className="h-8 font-mono text-xs max-md:text-base"
         />
       </Field>
       <Field label="タイムゾーン">
@@ -267,7 +267,7 @@ function EventEditor({
             value={folderName ?? folder}
             readOnly
             placeholder="フォルダを選択…"
-            className="h-8 flex-1 text-xs"
+            className="h-8 flex-1 text-xs max-md:text-base"
           />
           <Button
             variant="outline"

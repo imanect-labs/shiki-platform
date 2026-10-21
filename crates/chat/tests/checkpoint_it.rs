@@ -128,7 +128,7 @@ async fn checkpoint_survives_takeover_and_clears_on_finalize() {
         .await
         .unwrap();
     let res = store
-        .post_message(&c, thread.id, "goal", &[], None, None, true, None)
+        .post_message(&c, thread.id, "goal", &[], None, None, true, &[], None)
         .await
         .unwrap();
 
@@ -221,7 +221,7 @@ async fn waiting_approval_run_can_be_taken_over_after_lease_expiry() {
         .await
         .unwrap();
     let res = store
-        .post_message(&c, thread.id, "goal", &[], None, None, true, None)
+        .post_message(&c, thread.id, "goal", &[], None, None, true, &[], None)
         .await
         .unwrap();
 

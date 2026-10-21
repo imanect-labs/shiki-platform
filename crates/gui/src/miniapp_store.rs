@@ -1,7 +1,7 @@
 //! ミニアプリの保存・解決（Task 6.10）。
 //!
-//! 保存時は**作成者の権限**で全ピン（skill/ui_spec/workflow）の存在・kind・viewer を検証し、
-//! UI スペック内の workflow 束縛がバンドルのピン集合に含まれることを照合する。
+//! 保存時は**作成者の権限**で全ピン（skill/workflow）の存在・kind・viewer を検証する。画面の
+//! ボタンの実行先がバンドルの別名に限られることは body の検証（[`validate_miniapp_body`]）が見る。
 //! 解決（実行）時は**ミニアプリ本体の viewer**のみを要求し、部品はバンドル権限
 //! チョークポイント（[`ArtifactStore::get_version_via_bundle`]）で読む — 共有相手は
 //! 部品を個別共有されなくても実行できる（miniapp-platform §7）。
@@ -15,23 +15,18 @@ use sqlx::PgPool;
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
 
-use crate::action::ActionBinding;
 use crate::miniapp::{validate_miniapp_body, ComponentPin, MiniAppBody};
 use crate::skill::{validate_skill_body, SkillBody};
-use crate::spec::UiSpecDoc;
 use crate::store::GuiError;
-use crate::validate::{validate_spec, GuiValidationError};
+use crate::validate::GuiValidationError;
 
 /// 解決済みミニアプリ（実行面が使う一式・全て検証済み）。
 #[derive(Debug, Clone)]
 pub struct ResolvedMiniApp {
     pub id: Uuid,
     pub version: i64,
+    /// 検証済みの本文（画面のボタンの実行先は `workflows` の別名に限る）。
     pub body: MiniAppBody,
-    /// 検証済み UI スペック（描画・アクション束縛照合の正）。
-    pub ui_spec: UiSpecDoc,
-    /// UI スペックの生 JSON（レスポンス用）。
-    pub ui_spec_json: serde_json::Value,
     /// skill 本文（ピンがある場合）。
     pub skill: Option<SkillBody>,
 }
@@ -39,15 +34,18 @@ pub struct ResolvedMiniApp {
 /// ミニアプリの保存/解決。
 #[derive(Clone)]
 pub struct MiniAppStore {
-    artifacts: Arc<ArtifactStore>,
-    audit: AuditRecorder,
+    pub(crate) artifacts: Arc<ArtifactStore>,
+    pub(crate) audit: AuditRecorder,
+    /// 画面のボタンの起動の記録（`miniapp_action_run`）。
+    pub(crate) db: PgPool,
 }
 
 impl MiniAppStore {
     pub fn new(artifacts: Arc<ArtifactStore>, db: PgPool) -> Self {
         MiniAppStore {
             artifacts,
-            audit: AuditRecorder::new(db),
+            audit: AuditRecorder::new(db.clone()),
+            db,
         }
     }
 
@@ -118,22 +116,8 @@ impl MiniAppStore {
             .artifacts
             .get_version(ctx, id, version, trace_id)
             .await?;
+        // 描画前再検証: 保存済みでも壊れた本文（旧形式を含む）を実行面へ流さない。
         let body = validate_miniapp_body(&v.body).map_err(GuiError::Validation)?;
-
-        // 部品はバンドル権限チョークポイントで読む（部品の個別共有は不要）。
-        let ui = self
-            .artifacts
-            .get_version_via_bundle(
-                ctx,
-                id,
-                body.ui_spec.artifact_id,
-                body.ui_spec.version,
-                trace_id,
-            )
-            .await?;
-        // 描画前再検証（Task 6.3 の「描画取得路」）: 保存済みでも壊れた部品を実行面へ流さない。
-        let ui_spec = validate_spec(&ui.body).map_err(GuiError::Validation)?;
-        Self::check_bindings_subset(&ui_spec, &body)?;
 
         let skill = match &body.skill {
             Some(pin) => {
@@ -155,7 +139,6 @@ impl MiniAppStore {
             trace_id,
             metadata: json!({
                 "version": version,
-                "ui_spec": body.ui_spec,
                 "skill": body.skill,
                 "workflows": body.workflows,
             }),
@@ -168,55 +151,11 @@ impl MiniAppStore {
             id,
             version,
             body,
-            ui_spec,
-            ui_spec_json: ui.body,
             skill,
         })
     }
 
-    /// UI スペック内の束縛がミニアプリで成立することを照合する:
-    /// workflow 束縛はバンドルのピン集合 ⊆（バンドル外のワークフローへ UI から到達できない）、
-    /// handler 束縛（chat.submit）はチャット文脈専用のため**保存時に拒否**する
-    /// （実行時も ChatSubmitHandler が MiniApp source を拒む二重防御）。
-    fn check_bindings_subset(ui_spec: &UiSpecDoc, body: &MiniAppBody) -> Result<(), GuiError> {
-        let mut errors = Vec::new();
-        for binding in &ui_spec.actions {
-            if let ActionBinding::Handler(h) = binding {
-                errors.push(GuiValidationError::new(
-                    "miniapp.handler_not_supported",
-                    format!(
-                        "handler 束縛 '{}'（{}）はチャット専用のためミニアプリでは使えません",
-                        h.id,
-                        h.handler.as_str()
-                    ),
-                ));
-            }
-            if let ActionBinding::Workflow(b) = binding {
-                let pinned = b.workflow.artifact_id.zip(b.workflow.version);
-                let in_bundle = pinned.is_some_and(|(id, ver)| {
-                    body.workflows
-                        .iter()
-                        .any(|w| w.artifact_id == id && w.version == ver)
-                });
-                if !in_bundle {
-                    errors.push(GuiValidationError::new(
-                        "miniapp.binding_not_bundled",
-                        format!(
-                            "UI スペックの workflow 束縛 '{}' がバンドルのピン集合にありません",
-                            b.id
-                        ),
-                    ));
-                }
-            }
-        }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(GuiError::Validation(errors))
-        }
-    }
-
-    /// 保存時のピン解決（**作成者の権限**で存在・kind・viewer を検証し、束縛 ⊆ ピンを照合）。
+    /// 保存時のピン解決（**作成者の権限**で存在・kind・viewer を検証する）。
     async fn validate_pins(
         &self,
         ctx: &AuthContext,
@@ -225,24 +164,6 @@ impl MiniAppStore {
     ) -> Result<MiniAppBody, GuiError> {
         let body = validate_miniapp_body(raw_body).map_err(GuiError::Validation)?;
         let mut errors = Vec::new();
-
-        let ui = self
-            .check_pin(ctx, &body.ui_spec, ArtifactKind::UiSpec, trace_id)
-            .await
-            .map_err(|e| errors.push(e.at("ui_spec")))
-            .ok();
-        if let Some(ui_body) = ui {
-            match validate_spec(&ui_body) {
-                Ok(ui_spec) => {
-                    if let Err(GuiError::Validation(mut e)) =
-                        Self::check_bindings_subset(&ui_spec, &body)
-                    {
-                        errors.append(&mut e);
-                    }
-                }
-                Err(mut e) => errors.append(&mut e),
-            }
-        }
         if let Some(pin) = &body.skill {
             if let Err(e) = self
                 .check_pin(ctx, pin, ArtifactKind::Skill, trace_id)

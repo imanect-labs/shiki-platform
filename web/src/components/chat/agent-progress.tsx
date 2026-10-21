@@ -8,15 +8,63 @@
  * チャットの content blocks レンダリングと同じ器に差し込む（既存 UI を再利用）。
  */
 
+import type * as React from "react";
+import { CheckCircle2, Circle, Loader2, PauseCircle } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 import type { ApprovalRequest, PlanSubtask } from "@/lib/chat-api";
 
-const STATUS_META: Record<string, { label: string; dot: string; text: string }> = {
-  todo: { label: "未着手", dot: "bg-muted-foreground/40", text: "text-foreground/70" },
-  doing: { label: "進行中", dot: "bg-primary animate-pulse", text: "text-foreground" },
-  done: { label: "完了", dot: "bg-emerald-500", text: "text-foreground/50 line-through" },
-  blocked: { label: "保留", dot: "bg-amber-500", text: "text-amber-600 dark:text-amber-400" },
+/// 状態はドットではなくアイコンで示す（色だけに頼らず、形でも区別できるように）。
+const STATUS_META: Record<
+  string,
+  { label: string; icon: React.ComponentType<{ className?: string }>; iconClass: string; text: string }
+> = {
+  todo: { label: "未着手", icon: Circle, iconClass: "text-muted-foreground/50", text: "text-foreground/70" },
+  doing: { label: "進行中", icon: Loader2, iconClass: "animate-spin text-primary", text: "text-foreground" },
+  done: {
+    label: "完了",
+    icon: CheckCircle2,
+    iconClass: "text-emerald-600 dark:text-emerald-400",
+    text: "text-foreground/50 line-through",
+  },
+  blocked: {
+    label: "保留",
+    icon: PauseCircle,
+    iconClass: "text-amber-600 dark:text-amber-400",
+    text: "text-amber-600 dark:text-amber-400",
+  },
 };
+
+/// 計画ステップの 1 行（ライブの計画パネルで使う）。
+/// プラン UI を二重化しないための共有点（#387）。
+export function PlanStepRow({
+  title,
+  status = "todo",
+  description,
+}: {
+  title: string;
+  status?: string;
+  description?: string | null;
+}) {
+  const meta = STATUS_META[status] ?? STATUS_META.todo;
+  const Icon = meta.icon;
+  return (
+    <li className="flex items-start gap-2 text-[13px]">
+      <Icon className={cn("mt-[3px] size-3.5 shrink-0", meta.iconClass)} aria-hidden />
+      <span className="sr-only">{meta.label}: </span>
+      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+        <span className={meta.text} data-testid="plan-step-title">
+          {title}
+        </span>
+        {description ? (
+          <span className="mt-0.5 block text-[12px] leading-relaxed text-muted-foreground">
+            {description}
+          </span>
+        ) : null}
+      </span>
+    </li>
+  );
+}
 
 /** 計画（サブタスク列）のチェックリスト。 */
 export function PlanPanel({ subtasks }: { subtasks: PlanSubtask[] }) {
@@ -31,15 +79,9 @@ export function PlanPanel({ subtasks }: { subtasks: PlanSubtask[] }) {
         </span>
       </div>
       <ol className="space-y-1.5">
-        {subtasks.map((s) => {
-          const meta = STATUS_META[s.status] ?? STATUS_META.todo;
-          return (
-            <li key={s.id} className="flex items-start gap-2 text-[13px]">
-              <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", meta.dot)} aria-hidden />
-              <span className={meta.text}>{s.title}</span>
-            </li>
-          );
-        })}
+        {subtasks.map((s) => (
+          <PlanStepRow key={s.id} title={s.title} status={s.status} />
+        ))}
       </ol>
     </div>
   );
@@ -77,19 +119,20 @@ export function ApprovalCard({
         </span>
         <span className="text-[13px] font-semibold text-foreground">承認が必要です</span>
       </div>
-      <p className="mb-1 text-[13px] text-foreground/80">
+      <p className="mb-1 text-[13px] text-foreground/80 [overflow-wrap:anywhere]">
         ツール <code className="rounded bg-secondary px-1 py-0.5 text-[12px]">{request.name}</code> の実行に承認が必要です。
       </p>
       <p className="mb-2 text-[12px] text-muted-foreground">{request.reason}</p>
-      <pre className="mb-2 max-h-24 overflow-auto rounded-lg bg-secondary/60 p-2 text-[11px] text-foreground/70">
+      <pre className="mb-2 max-h-24 overflow-auto overscroll-contain rounded-lg bg-secondary/60 p-2 text-[11px] text-foreground/70">
         {safeJson(request.input)}
       </pre>
-      <div className="flex items-center gap-2">
+      {/* スマホは親指で押しやすいよう幅いっぱいの 2 分割（誤タップしないよう間隔を空ける）。 */}
+      <div className="flex items-center gap-2 max-md:gap-3">
         <button
           type="button"
           disabled={pending}
           onClick={() => onDecision(true)}
-          className="inline-flex h-8 items-center rounded-full bg-primary px-3 text-[13px] font-medium text-primary-foreground disabled:opacity-50"
+          className="inline-flex h-8 items-center justify-center rounded-full bg-primary px-3 text-[13px] font-medium text-primary-foreground disabled:opacity-50 max-md:h-11 max-md:flex-1 max-md:text-sm"
         >
           承認して続行
         </button>
@@ -97,7 +140,7 @@ export function ApprovalCard({
           type="button"
           disabled={pending}
           onClick={() => onDecision(false)}
-          className="inline-flex h-8 items-center rounded-full border border-border px-3 text-[13px] font-medium text-foreground/80 hover:bg-secondary disabled:opacity-50"
+          className="inline-flex h-8 items-center justify-center rounded-full border border-border px-3 text-[13px] font-medium text-foreground/80 hover:bg-secondary disabled:opacity-50 max-md:h-11 max-md:flex-1 max-md:text-sm"
         >
           却下
         </button>

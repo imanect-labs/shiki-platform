@@ -286,7 +286,7 @@
 
 ### Task 10.13: AI 編集
 - **area**: ai / **path**: `crates/agent-core`, `web/`
-- **仕様**: チャット/エディタ内 AI に「IR を生成・変更するツール」を与える（generative UI と同じ検証済みスペック方式）。
+- **仕様**: チャット/エディタ内 AI に「IR を生成・変更するツール」を与える（旧 `emit_ui` と同じ検証済みスペック方式。`emit_ui` は #604 で撤去）。
   AI 出力は必ず 10.1 検証を通り、**dnd でそのまま人間が続きを編集できる**。
 - **受け入れ条件**:
   - [x] 自然言語からワークフローが生成され、dnd に表示・編集できる
@@ -309,3 +309,6 @@
         `.shiki` script → `Shiki.http.request`・束縛外拒否は executor e2e で検証・#344）
   - [x] first-party 署名により管理者の個別同意なしで利用可能（信頼ティア動作確認。
         `POST /skills/registry/import` の署名検証 → 本人インストールのみで利用可）
+  - [x] 対話系の公式 skill も同じ経路で配れる（`sdk/first-party-skills/grilling`・
+        設計ツリーを質問カードのラウンドで詰め切る面接プリミティブ・`/grill`・#428。
+        上流 [mattpocock/skills](https://github.com/mattpocock/skills) の MIT 派生）

@@ -1,0 +1,289 @@
+"""レポートのデータを results/ から組み立て、template.html に埋めて tool-search-eval.html を作る。
+
+eval/tool-search で `PYTHONPATH=. uv run python report/build.py` として実行する。
+"""
+
+import collections
+import glob
+import json
+import math
+from pathlib import Path
+
+from tseval.catalog import load_catalog, names_service
+from tseval.metrics import summarize
+
+HERE = Path(__file__).resolve().parent
+R = Path("results")
+M = ("bm25", "emb", "rrf", "rrf_rerank")
+
+
+def load(name):
+    for p in (R / f"{name}.json", R / "superseded" / f"{name}.json"):
+        if p.exists():
+            return json.loads(p.read_text())
+    return None
+
+
+out = {}
+out["e1"] = [
+    {
+        "n": r["n"],
+        "q": r["queries"],
+        **{m: r["metrics"].get(m, {}).get("recall@5") for m in M},
+        "bm25_prod": r["metrics"]["bm25_prod"]["recall@5"],
+        **{m + "_mrr": r["metrics"].get(m, {}).get("mrr") for m in M},
+    }
+    for r in load("e1_growth")
+]
+out["e2"] = [
+    {"n": r["n"], "q": r["queries"], **{m: r["metrics"].get(m, {}).get("recall@5") for m in M}}
+    for r in load("e2_fixed")
+]
+out["e3"] = [
+    {
+        "lang": r["catalog_lang"],
+        "kind": r["query_kind"],
+        "q": r["queries"],
+        **{m: r["metrics"][m]["recall@5"] for m in M},
+    }
+    for r in load("e3_lang")
+]
+out["e4"] = load("e4_limit")
+out["e5"] = load("e5_latency")
+
+svc = {t.name: t.service for t in load_catalog()}
+qs = {q["id"]: q for q in json.loads(Path("data/queries.json").read_text())}
+g = collections.defaultdict(list)
+for r in load("ranks_full"):
+    clean = names_service(qs[r["id"]]["text"], svc[r["target"]])
+    for kind in (r["kind"], "all"):
+        g[(r["catalog_lang"], kind, clean, r["method"])].append(r["rank"])
+out["subset"] = [
+    {
+        "lang": lang,
+        "kind": k,
+        "clean": c,
+        "q": len(g[(lang, k, c, "bm25")]),
+        **{m: summarize(g[(lang, k, c, m)])["recall@5"] for m in M},
+    }
+    for lang in ("ja", "en")
+    for k in ("all", "ja", "en", "ja_para", "agent")
+    for c in (True, False)
+]
+out["ablation"] = [
+    {
+        "lang": r.get("lang", "ja"),
+        "doc": r["doc"],
+        "method": r["method"],
+        "k": r.get("k"),
+        "w": r.get("w_emb"),
+        "all": r["all"]["recall@5"],
+        "clean": r["clean"]["recall@5"],
+    }
+    for r in load("ablation")
+]
+
+
+def agg_e2e(rows):
+    a = collections.defaultdict(list)
+    for r in rows:
+        if not r.get("error"):
+            a[(r["n"], r["condition"])].append(r)
+    res = []
+    for (n, c), rs in sorted(a.items()):
+        v2 = "calls" in rs[0]
+        k = len(rs)
+        res.append(
+            {
+                "n": n,
+                "cond": c,
+                "k": k,
+                "ok": sum(r["correct"] for r in rs) / k,
+                "first": sum((r["first_correct"] if v2 else r["correct"]) for r in rs) / k,
+                "none": sum(1 for r in rs if not (r["calls"] if v2 else r["called"])) / k,
+                # ツールは呼んだが正解ではなかった（選び間違い）。
+                "wrong": sum(
+                    1 for r in rs if (r["calls"] if v2 else r["called"]) and not r["correct"]
+                )
+                / k,
+                # 正解を読み込めていたのに、どのツールも呼ばずに終えた（聞き返しなど）。
+                "none_loaded": sum(
+                    1
+                    for r in rs
+                    if v2
+                    and not r["calls"]
+                    and any(r["target"] in s["hits"] for s in r["searches"])
+                )
+                / k,
+                "tok": sum(r["prompt_tokens"] for r in rs) / k,
+                "search": sum(len(r["searches"]) for r in rs) / k,
+            }
+        )
+    return res
+
+
+out["e2e_v1"] = agg_e2e(load("e2e_v1_first_call") or [])
+v2 = load("e2e") or [json.loads(Path(p).read_text()) for p in glob.glob("data/cache/e2e/v3-*.json")]
+out["e2e_v2"] = agg_e2e(v2)
+sk = load("skills_e2e") or []
+a = collections.defaultdict(list)
+for r in sk:
+    if not r.get("error"):
+        a[(r["n"], r["condition"])].append(r)
+out["skills"] = [
+    {
+        "n": n,
+        "cond": c,
+        "k": len(rs),
+        "ok": sum(r["correct"] for r in rs) / len(rs),
+        "invoked": sum(1 for r in rs if r["called"]) / len(rs),
+        "cond_ok": (
+            sum(r["correct"] for r in rs if r["called"]) / max(1, sum(1 for r in rs if r["called"]))
+        ),
+        "tok": sum(r["prompt_tokens"] for r in rs) / len(rs),
+    }
+    for (n, c), rs in sorted(a.items())
+]
+out["skills_final"] = (R / "skills_e2e.json").exists()
+
+# 聞き返しの切り分け（#545）: 全会話を終わり方で分ける。正解ツールを呼ばずに文章で終えた会話は
+# LLM 判定で「避けられた聞き返し／正当な聞き返し／その他」に分ける。上限で打ち切られた会話は別に数える。
+from tseval.ask_probe import stop_reason  # noqa: E402
+
+probe = [r for r in (load("e2e_ask_probe") or []) if not r.get("error")]
+verdict = {
+    (j["id"], j["n"], j["condition"], j["prompt"], j["mock"]): j["category"]
+    for j in (load("e2e_ask_judge") or [])
+}
+pa = collections.defaultdict(list)
+for r in probe:
+    pa[(r["n"], r["condition"], r["prompt"], r["mock"])].append(r)
+
+
+def _bucket(r, key):
+    stop = stop_reason(r)
+    if stop == "target":
+        return "ok"
+    if stop == "max_steps":
+        return "max_steps"
+    # 判定の無い会話（判定の失敗・未実行）は「その他」に混ぜず、別に数える。
+    return verdict.get((r["id"], *key), "unjudged")
+
+
+out["ask_probe"] = []
+for key, rs in sorted(pa.items()):
+    n, c, pr, mk = key
+    b = collections.Counter(_bucket(r, (n, c, pr, mk)) for r in rs)
+    k = len(rs)
+    out["ask_probe"].append(
+        {
+            "n": n,
+            "cond": c,
+            "prompt": pr,
+            "mock": mk,
+            "k": k,
+            **{
+                x: b[x] / k
+                for x in ("ok", "avoidable", "legit", "other", "max_steps", "error", "unjudged")
+            },
+            # 一覧・検索などのツールを呼んでから終えた会話の割合（正解を除く）。
+            "looked_up": sum(1 for r in rs if r["calls"] and not r["correct"]) / k,
+            "tok": sum(r["prompt_tokens"] for r in rs) / k,
+        }
+    )
+
+# 主要な比較（1,000 件・現行の system prompt・一律の応答）は目視の分類を正とする（LLM の判定は
+# 検算の前は「避けられた」を多く、検算の後は少なく見積もったため）。
+manual = load("e2e_ask_manual_1000") or {}
+out["ask_manual"] = []
+for cond in ("all", "search_rrf_prod"):
+    rs = [
+        r
+        for r in probe
+        if r["n"] == 1000
+        and r["condition"] == cond
+        and r["prompt"] == "minimal"
+        and r["mock"] == "generic"
+    ]
+    if not rs or cond not in manual:
+        continue
+    cats = collections.Counter(v[0] for v in manual[cond].values())
+    k = len(rs)
+    out["ask_manual"].append(
+        {
+            "cond": cond,
+            "k": k,
+            "ok": sum(r["correct"] for r in rs) / k,
+            **{c: cats[c] / k for c in ("avoidable", "legit", "other")},
+        }
+    )
+
+# 依頼データ v2（#547）: 集計は tseval.e2e_v2.summarize（目視の分類を優先）が書いたものを使う。
+out["e2e_data_v2"] = []
+for x in load("e2e_v2_summary") or []:
+    k = x["full"] or 1
+    out["e2e_data_v2"].append(
+        {
+            "n": x["n"],
+            "cond": x["condition"],
+            "k": x["full"],
+            "ok": x["correct"] / k,
+            **{c: x[c] / k for c in ("avoidable", "legit", "other", "max_steps", "unjudged")},
+            "chain": x["chain"] / k,
+            "tok": x["mean_prompt_tokens"],
+            "km": x["missing"],
+            "asked": x["missing_asked"],
+            "called_target": x["missing_called_target"],
+            "filled": x["missing_filled"],
+            "omitted": x["missing_omitted"],
+            "other_service": x["missing_other_service"],
+        }
+    )
+
+# 下調べが要る依頼の評価セット（#565）: 同じ依頼の対で、同時読み込みあり／なしを比べる。
+# 同時読み込みは製品に入れていない実装（ブランチ feat/tool-search-companions）で測った記録。
+lk = [r for r in (load("e2e_lookup_companions") or []) if not r.get("error")]
+by = collections.defaultdict(dict)
+for r in lk:
+    by[r["id"]][r["condition"]] = r
+pairs = [v for v in by.values() if {"search_rrf_prod", "search_rrf_comp"} <= v.keys()]
+wins = sum(
+    1 for v in pairs if v["search_rrf_comp"]["correct"] and not v["search_rrf_prod"]["correct"]
+)
+losses = sum(
+    1 for v in pairs if v["search_rrf_prod"]["correct"] and not v["search_rrf_comp"]["correct"]
+)
+m = wins + losses
+# 符号検定（両側・正確）。
+p_sign = (
+    min(1.0, 2 * sum(math.comb(m, i) for i in range(min(wins, losses) + 1)) / 2**m) if m else None
+)
+out["lookup"] = {
+    "rows": [
+        {
+            "cond": x["condition"],
+            "k": x["full"],
+            "ok": x["correct"] / x["full"],
+            **{
+                c: x[c] / x["full"]
+                for c in ("avoidable", "legit", "other", "max_steps", "unjudged")
+            },
+            "tok": x["mean_prompt_tokens"],
+        }
+        for x in (load("e2e_lookup_companions_summary") or [])
+    ],
+    "pairs": len(pairs),
+    "wins": wins,
+    "losses": losses,
+    "p": p_sign,
+    "targets": len({v["search_rrf_prod"]["target"] for v in pairs}),
+    "skipped": len(json.loads(Path("data/e2e_queries_lookup_skipped.json").read_text()))
+    if Path("data/e2e_queries_lookup_skipped.json").exists()
+    else 0,
+}
+
+t = (HERE / "template.html").read_text()
+(HERE / "tool-search-eval.html").write_text(
+    t.replace("__DATA__", json.dumps(out, ensure_ascii=False))
+)
+print("built", {k: (len(v) if isinstance(v, list) else v) for k, v in out.items() if k != "e5"})

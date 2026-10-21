@@ -1,5 +1,5 @@
 //! data レコード検証（validate_record_data / validate_field_value）の検証マトリクス。
-//! validate.rs の 500 行上限を守るため #[path] で分離する（純粋・fake resolver）。
+//! validate.rs の行数上限を守るため #[path] で分離する（純粋・fake resolver）。
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

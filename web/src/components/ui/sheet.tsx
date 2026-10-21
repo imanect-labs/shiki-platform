@@ -4,6 +4,7 @@ import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 
+import { useMergedRef, useSwipeToDismiss } from "@/hooks/use-swipe-to-dismiss";
 import { cn } from "@/lib/utils";
 
 /// 画面端からスライドインするパネル（Radix Dialog ベース・実行履歴の詳細等）。
@@ -41,17 +42,25 @@ const SIDE_CLASSES = {
     "inset-y-0 right-0 h-full w-full max-w-xl border-l data-[state=open]:slide-in-from-right data-[state=closed]:slide-out-to-right",
   left: "inset-y-0 left-0 h-full w-full max-w-xl border-r data-[state=open]:slide-in-from-left data-[state=closed]:slide-out-to-left",
   bottom:
-    "inset-x-0 bottom-0 max-h-[85vh] border-t data-[state=open]:slide-in-from-bottom data-[state=closed]:slide-out-to-bottom",
+    "inset-x-0 bottom-0 max-h-[85dvh] rounded-t-2xl border-t pb-[env(safe-area-inset-bottom)] data-[state=open]:slide-in-from-bottom data-[state=closed]:slide-out-to-bottom",
 } as const;
 
 function SheetContent({
   className,
   children,
   side = "right",
+  ref,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   side?: keyof typeof SIDE_CLASSES;
 }) {
+  // 下からのシートは、取っ手（上端）や先頭までスクロールした本文を下へ払って閉じられる。
+  const closeRef = React.useRef<HTMLButtonElement>(null);
+  const swipeRef = useSwipeToDismiss<HTMLDivElement>({
+    enabled: side === "bottom",
+    close: () => closeRef.current?.click(),
+  });
+  const contentRef = useMergedRef(ref, swipeRef);
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay
@@ -61,6 +70,7 @@ function SheetContent({
         )}
       />
       <DialogPrimitive.Content
+        ref={contentRef}
         className={cn(
           "fixed z-50 flex flex-col gap-0 overflow-hidden bg-background shadow-lg outline-none",
           "duration-normal data-[state=open]:animate-in data-[state=closed]:animate-out",
@@ -69,10 +79,18 @@ function SheetContent({
         )}
         {...props}
       >
+        {side === "bottom" ? (
+          // つかめることを示す取っ手。レイアウトに影響しないよう上端に重ねる。
+          <div
+            aria-hidden
+            className="pointer-events-none absolute left-1/2 top-2 h-1.5 w-9 -translate-x-1/2 rounded-full bg-muted-foreground/25"
+          />
+        ) : null}
         {children}
         <DialogPrimitive.Close
+          ref={closeRef}
           className={cn(
-            "absolute right-3 top-3 rounded-md p-1.5 text-muted-foreground",
+            "absolute right-2 top-2 flex size-9 items-center justify-center rounded-md text-muted-foreground pointer-coarse:size-11",
             "transition-colors hover:bg-accent hover:text-foreground",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           )}
@@ -97,7 +115,7 @@ function SheetHeader({ className, ...props }: React.ComponentProps<"div">) {
 function SheetBody({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
-      className={cn("flex-1 overflow-y-auto px-5 py-4 scrollbar-subtle", className)}
+      className={cn("flex-1 overflow-y-auto overscroll-contain px-5 py-4 scrollbar-subtle", className)}
       {...props}
     />
   );

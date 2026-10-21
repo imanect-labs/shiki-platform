@@ -19,6 +19,9 @@ pub struct MeResponse {
     pub org: String,
     /// テナント識別子（SaaS の隔離境界。オンプレは単一固定）。
     pub tenant_id: String,
+    /// 組織管理者か（管理コンソールの入口を出すか・`organization#admin`）。
+    /// 表示のための値で、管理 API 自体はルートのポリシーで毎回確かめる。
+    pub is_admin: bool,
 }
 
 /// 認証済みユーザー自身の情報を返す。
@@ -37,20 +40,32 @@ pub async fn get_me(
     AuthContextExt(ctx): AuthContextExt,
 ) -> Result<Json<MeResponse>, ApiError> {
     // 認可: 自分が自 org の member か（単一チョークポイント経由の check）。
-    let allowed = state
-        .authz
-        .check(
-            &ctx.subject(),
-            Relation::Member,
-            &ctx.ns().organization(&ctx.org),
-            Consistency::MinimizeLatency,
+    // 管理者かどうかはメニューの表示にだけ使うので、並べて低遅延で引く（操作はゲートが強い整合性で再判定）。
+    let org = ctx.ns().organization(&ctx.org);
+    let subject = ctx.subject();
+    let member = async {
+        Ok::<_, ApiError>(
+            state
+                .authz
+                .check(
+                    &subject,
+                    Relation::Member,
+                    &org,
+                    Consistency::MinimizeLatency,
+                )
+                .await?,
         )
-        .await?;
+    };
+    let (allowed, is_admin) = tokio::try_join!(
+        member,
+        crate::middleware::org_admin::is_org_admin(&state, &ctx, Consistency::MinimizeLatency),
+    )?;
     if !allowed {
         return Err(ApiError::Forbidden);
     }
 
     Ok(Json(MeResponse {
+        is_admin,
         id: ctx.principal.id,
         email: ctx.principal.email,
         roles: ctx.principal.roles,

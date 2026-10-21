@@ -1,12 +1,8 @@
-//! generative UI の語彙（Single Source of Truth・Task 6.2）。
+//! gui の語彙（Single Source of Truth・Task 6.2）。
 //!
-//! 信頼コンポーネント・カタログ／ハンドラ種／チャート種を Rust enum で**閉じた集合**として
-//! 定義し、`#[derive(TS)]` で TypeScript 型を生成する（codegen が正・手書きミラー禁止）。
-//! カタログは design-caveats の指摘どおり**信頼境界**であり、この閉集合の外は
-//! [`validate`](crate::validate) が保存・描画の前段で拒否する。
-//!
-//! authz / workflow-engine の vocab と同型。将来コンポーネントは variant を先行予約して
-//! serde 名を凍結し（後方互換の固定）、`available()` が false の間は検証で拒否する。
+//! ハンドラ種などを Rust enum で**閉じた集合**として定義し、`#[derive(TS)]` で TypeScript 型を
+//! 生成する（codegen が正・手書きミラー禁止）。閉集合の外は表現できない（fail-closed）。
+//! authz / workflow-engine の vocab と同型。
 
 /// variant と serde/TS 名の対応を単一定義から生成する（as_str/parse の乖離を構造的に防ぐ）。
 macro_rules! vocab_enum {
@@ -45,105 +41,10 @@ macro_rules! vocab_enum {
 pub(crate) use vocab_enum;
 
 vocab_enum! {
-    /// 信頼コンポーネント・カタログ（Task 6.2）。
-    ///
-    /// [`UiNode`](crate::spec::UiNode) の serde タグ（`component`）と 1:1 対応する
-    /// （対応は `UiNode::kind()` に単一化し、drift はテストで固定）。
-    /// `text_input` / `select` はフォーム部品としてのみ出現する（[`FormField`](crate::spec::FormField)）。
-    pub enum ComponentKind {
-        Container => "container",
-        Text => "text",
-        Link => "link",
-        Form => "form",
-        TextInput => "text_input",
-        Select => "select",
-        // ---- リッチ入力フォーム部品（PR3・FormField として出現） ----
-        Checkbox => "checkbox",
-        Radio => "radio",
-        Date => "date",
-        Slider => "slider",
-        Rating => "rating",
-        Button => "button",
-        Table => "table",
-        Chart => "chart",
-        /// KPI スタットタイル（数値＋前期比デルタ＋インライン sparkline）。
-        Stat => "stat",
-        // ---- レイアウト/コンテンツ基盤（PR2・すべて表示専用） ----
-        /// 注意喚起カード（info/success/warning/danger）。
-        Callout => "callout",
-        /// アコーディオン（折りたたみ節・子ツリーを持つ）。
-        Accordion => "accordion",
-        /// タブ（子ツリーを持つ）。
-        Tabs => "tabs",
-        /// ステッパー（工程の進捗）。
-        Stepper => "stepper",
-        /// バッジ列（タグの集まり）。
-        BadgeList => "badge_list",
-        /// 定義リスト（キー: 値）。
-        KeyValue => "key_value",
-        /// コードブロック（表示専用）。
-        CodeBlock => "code_block",
-        /// 質問カード（AI がユーザーへ複数質問・回答は chat.submit へ・PR4）。
-        QuestionCard => "question_card",
-        // ---- ドメインカード（PR6・表示専用） ----
-        /// RAG 引用元カード（タイトル＋抜粋＋スコア＋出典リンク）。
-        SourceCard => "source_card",
-        /// 旅程カード（日ごとの時系列タイムライン）。
-        Itinerary => "itinerary",
-        /// 天気カード（地点＋日別の天候）。
-        Weather => "weather",
-        /// 比較カード（2〜N 列の項目別比較表）。
-        Comparison => "comparison",
-        /// タイムライン（時系列イベント列）。
-        Timeline => "timeline",
-        /// 地図（マーカー＋ルート・タイルはサーバ設定で注入・PR5）。
-        Map => "map",
-        // ---- 将来予約（serde 名を凍結・検証が拒否する） ----
-        /// 画像（ストレージ node 参照のみ許す設計を確定してから有効化する）。
-        Image => "image",
-    }
-}
-
-impl ComponentKind {
-    /// 描画・保存を許すカタログ部分集合（予約 variant は false）。
-    pub fn available(self) -> bool {
-        !matches!(self, ComponentKind::Image)
-    }
-}
-
-vocab_enum! {
     /// 明示登録のサーバ側ハンドラ束縛（Task 6.5 の②）。閉じた集合＝未知ハンドラは表現不可能。
     pub enum HandlerKind {
-        /// フォーム値を整形テキストとしてスレッドへ投稿する（チャット UI 専用）。
+        /// 図の値を整形テキストとしてスレッドへ投稿する（会話の図の ask・plan・`-> chat` 専用）。
         ChatSubmit => "chat.submit",
-    }
-}
-
-vocab_enum! {
-    /// チャート種（vega-lite 的サブセット・design §4.7）。
-    ///
-    /// いずれも宣言的な `{x, y, series}` データ点だけで描け、式・外部参照は持たない。
-    /// `stacked` / `line_series` フラグ（[`ChartSpec`](crate::chart::ChartSpec)）で
-    /// 積み上げ・複合（bar+line）を切り替える。
-    pub enum ChartKind {
-        Bar => "bar",
-        Line => "line",
-        Area => "area",
-        Pie => "pie",
-        /// 中央に穴を空けた円グラフ（構成比）。
-        Donut => "donut",
-        /// 散布図（数値 x は `ChartPoint::xv`・省略時は配列インデックス）。
-        Scatter => "scatter",
-        /// レーダー（系列を多角形で重ねる・項目間バランス）。
-        Radar => "radar",
-        /// 放射状バー（ゲージ/進捗の比較）。
-        RadialBar => "radial_bar",
-        /// 複合（既定は bar＋`line_series` 指定系列を line で重ねる）。
-        Combo => "combo",
-        /// ファネル（段階ごとの減衰）。
-        Funnel => "funnel",
-        /// ツリーマップ（面積で大小）。
-        Treemap => "treemap",
     }
 }
 
@@ -153,25 +54,9 @@ mod tests {
 
     #[test]
     fn roundtrip_all_vocab() {
-        for c in ComponentKind::ALL {
-            assert_eq!(ComponentKind::parse(c.as_str()), Some(*c));
-        }
         for h in HandlerKind::ALL {
             assert_eq!(HandlerKind::parse(h.as_str()), Some(*h));
         }
-        for k in ChartKind::ALL {
-            assert_eq!(ChartKind::parse(k.as_str()), Some(*k));
-        }
-        assert_eq!(ComponentKind::parse("iframe"), None);
         assert_eq!(HandlerKind::parse("exec"), None);
-    }
-
-    #[test]
-    fn reserved_components_are_unavailable() {
-        // image のみ予約（map は PR5 で有効化済み）。
-        assert!(!ComponentKind::Image.available());
-        assert!(ComponentKind::Map.available());
-        assert!(ComponentKind::Form.available());
-        assert!(ComponentKind::Chart.available());
     }
 }

@@ -8,6 +8,9 @@ import { History, LayoutGrid, Loader2, Play, Share2, Trash2 } from "lucide-react
 
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { PageContainer } from "@/components/shell/page-container";
+import { ConfirmDialog } from "@/components/drive/dialogs";
+import { ArtifactCard } from "@/components/artifacts/artifact-card";
 import { toast } from "@/components/ui/use-toast";
 import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { MiniAppEditorDialog } from "@/components/artifacts/miniapp-editor";
@@ -19,7 +22,8 @@ type DialogState =
   | { kind: "closed" }
   | { kind: "create" }
   | { kind: "share"; meta: ArtifactMeta }
-  | { kind: "versions"; meta: ArtifactMeta };
+  | { kind: "versions"; meta: ArtifactMeta }
+  | { kind: "delete"; meta: ArtifactMeta };
 
 export default function AppsPage() {
   const [items, setItems] = React.useState<ArtifactMeta[] | null>(null);
@@ -33,38 +37,32 @@ export default function AppsPage() {
   }, []);
   React.useEffect(reload, [reload]);
 
+  /// 削除は確認ダイアログから（失敗はダイアログ内に出す）。
   const remove = async (meta: ArtifactMeta) => {
-    if (!window.confirm(`アプリ「${meta.name}」を削除しますか？（バージョン履歴は保持されます）`)) return;
     setPending(meta.id);
     try {
       await deleteArtifact(meta.id);
       reload();
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        title: "削除に失敗しました",
-        description: e instanceof Error ? e.message : String(e),
-      });
+      toast({ title: `「${meta.name}」を削除しました` });
     } finally {
       setPending(null);
     }
   };
 
-  return (
-    <div className="mx-auto w-full max-w-4xl px-4 py-6">
-      <div className="mb-5 flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold">アプリ</h1>
-          <p className="text-sm text-muted-foreground">
-            スキル・UI・ワークフローを束ねたミニアプリを共有して実行できます。
-          </p>
-        </div>
-        <Button onClick={() => setDialog({ kind: "create" })}>
-          <LayoutGrid className="size-4" aria-hidden />
-          アプリを作成
-        </Button>
-      </div>
+  const createButton = (
+    <Button onClick={() => setDialog({ kind: "create" })}>
+      <LayoutGrid className="size-4" aria-hidden />
+      アプリを作成
+    </Button>
+  );
 
+  return (
+    <PageContainer
+      title="アプリ"
+      description="スキル・UI・ワークフローを束ねたミニアプリを共有して実行できます。"
+      className="max-w-4xl"
+      actions={createButton}
+    >
       {items === null ? (
         <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
           <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -74,61 +72,43 @@ export default function AppsPage() {
         <EmptyState
           icon={LayoutGrid}
           title="アプリはまだありません"
-          description="「アプリを作成」から、UI スペックとワークフローを束ねましょう。"
+          description="UI スペックとワークフローを束ねて、繰り返し使える画面にしましょう。"
+          action={createButton}
         />
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2">
           {items.map((meta) => (
-            <li
+            <ArtifactCard
               key={meta.id}
-              className="group flex flex-col gap-2 rounded-xl border border-border bg-card p-4 transition-shadow hover:shadow-[var(--elevation-1,0_1px_3px_rgb(0_0_0/0.08))]"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <h2 className="truncate text-[15px] font-semibold">{meta.name}</h2>
-                  <p className="text-xs text-muted-foreground">
-                    v{meta.currentVersion}・更新 {new Date(meta.updatedAt).toLocaleDateString("ja-JP")}
-                  </p>
-                </div>
-                {pending === meta.id ? (
-                  <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />
-                ) : null}
-              </div>
-              <div className="mt-auto flex flex-wrap items-center gap-1 pt-1">
+              name={meta.name}
+              meta={`v${meta.currentVersion}・更新 ${new Date(meta.updatedAt).toLocaleDateString("ja-JP")}`}
+              pending={pending === meta.id}
+              primary={
                 <Button size="sm" asChild>
                   <Link href={`/apps/${meta.id}`}>
                     <Play className="size-4" aria-hidden />
                     開く
                   </Link>
                 </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={`${meta.name} を共有`}
-                  onClick={() => setDialog({ kind: "share", meta })}
-                >
-                  <Share2 className="size-4" aria-hidden />
-                  共有
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={`${meta.name} のバージョン履歴`}
-                  onClick={() => setDialog({ kind: "versions", meta })}
-                >
-                  <History className="size-4" aria-hidden />
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={`${meta.name} を削除`}
-                  onClick={() => void remove(meta)}
-                  className="text-muted-foreground hover:text-destructive"
-                >
-                  <Trash2 className="size-4" aria-hidden />
-                </Button>
-              </div>
-            </li>
+              }
+              menu={[
+                { key: "share", label: "共有", icon: Share2, onSelect: () => setDialog({ kind: "share", meta }) },
+                {
+                  key: "versions",
+                  label: "バージョン履歴",
+                  icon: History,
+                  onSelect: () => setDialog({ kind: "versions", meta }),
+                },
+                {
+                  key: "delete",
+                  label: "削除",
+                  icon: Trash2,
+                  destructive: true,
+                  separatorBefore: true,
+                  onSelect: () => setDialog({ kind: "delete", meta }),
+                },
+              ]}
+            />
           ))}
         </ul>
       )}
@@ -155,6 +135,21 @@ export default function AppsPage() {
         artifactId={dialog.kind === "versions" ? dialog.meta.id : null}
         name={dialog.kind === "versions" ? dialog.meta.name : ""}
       />
-    </div>
+      <ConfirmDialog
+        open={dialog.kind === "delete"}
+        onOpenChange={(open) => !open && setDialog({ kind: "closed" })}
+        title="アプリを削除しますか？"
+        description={
+          dialog.kind === "delete"
+            ? `「${dialog.meta.name}」を削除します。バージョン履歴は保持されます。`
+            : undefined
+        }
+        confirmLabel="削除する"
+        destructive
+        onConfirm={async () => {
+          if (dialog.kind === "delete") await remove(dialog.meta);
+        }}
+      />
+    </PageContainer>
   );
 }

@@ -144,6 +144,12 @@ impl StorageService {
             Some(target) => target,
             None => fresh.parent_id,
         };
+        // ファイルの拡張子は変えさせない（#617）。開く画面（ノート / Office 等）は拡張子で決まるが、
+        // 改名では中身も content_type も変わらないため、拡張子だけ変えると中身と画面が食い違い、
+        // 文字化けや別形式での上書きを招く。大文字小文字の違いだけは許す。ロック下の最新名と比べる。
+        if let (NodeKind::File, Some(name)) = (expect, new_name) {
+            ensure_same_extension(&fresh.name, name)?;
+        }
         let final_name = new_name.unwrap_or(fresh.name.as_str());
         let parent_changed = new_parent.is_some() && final_parent != old_parent;
 
@@ -239,6 +245,20 @@ impl StorageService {
                 .execute(&mut *tx)
                 .await?;
             }
+            // system 属性（#392）を新しい親から**サブツリー全体へ引き直す**。
+            //
+            // 作成時の継承だけだと、移動でシステム領域へ入った/出たノードの可視性が食い違う
+            // （隠し領域の中に見えるファイルができる／出したのに検索に出てこない・
+            // レビュー指摘 Codex P2）。closure を張り直した直後に、移動ノード自身と子孫へ
+            // 新親の値を書く（新親なし＝ルート直下は false＝可視）。
+            sqlx::query(
+                "UPDATE node SET system = coalesce(                      (SELECT p.system FROM node p WHERE p.id = $2), false)                  WHERE tenant_id = $3                    AND id IN (SELECT descendant FROM node_closure                               WHERE tenant_id = $3 AND ancestor = $1)",
+            )
+            .bind(node_id)
+            .bind(final_parent)
+            .bind(&ctx.tenant_id)
+            .execute(&mut *tx)
+            .await?;
         }
         audit::record_on(
             &mut tx,

@@ -14,6 +14,8 @@ struct SeedUser {
     org: &'static str,
     email: &'static str,
     display_name: &'static str,
+    /// 組織管理者（`organization#admin`・管理コンソールの検証用・#553）。
+    admin: bool,
 }
 
 /// dev/E2E の固定ユーザー群。**alice/bob は tenant `a-corp`、charlie は別 tenant `b-corp`**。
@@ -25,6 +27,7 @@ const SEED_USERS: &[SeedUser] = &[
         org: "a-corp",
         email: "alice@a-corp.example.com",
         display_name: "Alice",
+        admin: true,
     },
     SeedUser {
         id: "00000000-0000-0000-0000-000000000002",
@@ -32,6 +35,7 @@ const SEED_USERS: &[SeedUser] = &[
         org: "a-corp",
         email: "bob@a-corp.example.com",
         display_name: "Bob",
+        admin: false,
     },
     SeedUser {
         id: "00000000-0000-0000-0000-000000000003",
@@ -39,6 +43,7 @@ const SEED_USERS: &[SeedUser] = &[
         org: "b-corp",
         email: "charlie@b-corp.example.com",
         display_name: "Charlie",
+        admin: false,
     },
 ];
 
@@ -114,6 +119,7 @@ pub(crate) async fn dev_seed(
                 .context("dev seed tuple の書き込みに失敗")?;
             tracing::info!(user = %u.id, org = %u.org, tenant = %seed_tenant, "dev seed: org member tuple を投入");
         }
+        seed_org_admin(fga, &subject, &object, u.admin).await?;
         // ディレクトリ（共有相手検索）へ投入。ON CONFLICT 更新で冪等。
         directory
             .upsert_user(u.id, seed_tenant, u.org, u.email, u.display_name)
@@ -155,6 +161,11 @@ pub(crate) async fn dev_seed(
                     .await
                     .context("dev seed: role member tuple の書き込みに失敗")?;
             }
+            // AI 活用分析の部署集計用の写し（#751）。ログイン時の同期で claims の集合に置き換わる。
+            directory
+                .replace_user_roles(seed_tenant, r.org, member, &[(r.id.to_string(), true)])
+                .await
+                .context("dev seed: directory_user_role の投入に失敗")?;
         }
         directory
             .upsert_role(r.id, seed_tenant, r.org, r.display_name)
@@ -162,6 +173,31 @@ pub(crate) async fn dev_seed(
             .context("dev seed: directory_role の投入に失敗")?;
     }
     tracing::info!(count = SEED_ROLES.len(), "dev seed: ロール群を投入");
+    Ok(())
+}
+
+/// 組織管理者のタプルを冪等に投入する（#553・管理コンソールの検証用）。
+async fn seed_org_admin(
+    fga: &OpenFgaClient,
+    subject: &authz::Subject,
+    object: &authz::FgaObject,
+    admin: bool,
+) -> anyhow::Result<()> {
+    if admin
+        && !fga
+            .check(
+                subject,
+                Relation::Admin,
+                object,
+                Consistency::HigherConsistency,
+            )
+            .await?
+    {
+        fga.write_tuple(subject, Relation::Admin, object)
+            .await
+            .context("dev seed: org admin tuple の書き込みに失敗")?;
+        tracing::info!(subject = %subject, "dev seed: org admin tuple を投入");
+    }
     Ok(())
 }
 

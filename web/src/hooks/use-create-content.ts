@@ -9,6 +9,7 @@
 /// - ノート: POST /notes（同名はサーバ側 create_file_unique が連番リネーム）
 /// - ドキュメント(.docx): POST /documents（blank.docx テンプレはサーバ正本・#332。
 ///   markdown 省略なので ingestion-worker 非稼働でも作成できる）
+/// - Excel(.xlsx): POST /sheets（blank.xlsx テンプレはサーバ正本・#381。変換なし）
 /// - スライド: POST /slides（同名はサーバ側連番リネーム）
 /// - CSV: POST /tabular/save（同名 409 はクライアント側で連番リトライ）
 
@@ -16,12 +17,12 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 
 import { toast } from "@/components/ui/use-toast";
-import { createDocument } from "@/lib/documents-api";
+import { createDocument, createSheet } from "@/lib/documents-api";
 import { createNote } from "@/lib/notes-api";
 import { createSlide } from "@/lib/slides-api";
 import { saveNewCsv, TabularConflict } from "@/lib/tabular-api";
 
-export type CreateContentKind = "note" | "document" | "slide" | "csv";
+export type CreateContentKind = "note" | "document" | "sheet" | "slide" | "csv";
 
 export function useCreateContent({ parentId }: { parentId?: string | null }) {
   const router = useRouter();
@@ -75,6 +76,20 @@ export function useCreateContent({ parentId }: { parentId?: string | null }) {
     [run, parentId],
   );
 
+  // Excel ブック（xlsx・#381）: サーバ側テンプレから作成して Collabora Calc へ遷移する。
+  // CSV（グリッド＋SQL 分析）とは別物として並べる — 「Excel が欲しい」に CSV を出さない。
+  const createSheetAndOpen = React.useCallback(
+    () =>
+      run("sheet", "Excel ブックの作成に失敗しました", async () => {
+        const node = await createSheet({
+          parentId: parentId ?? undefined,
+          name: "無題のブック",
+        });
+        return `/office/${node.id}`;
+      }),
+    [run, parentId],
+  );
+
   // スライド（自前実装・Task 11.1）を作成してビューアへ遷移する。
   const createSlideAndOpen = React.useCallback(
     () =>
@@ -114,6 +129,7 @@ export function useCreateContent({ parentId }: { parentId?: string | null }) {
   return {
     createNoteAndOpen,
     createDocumentAndOpen,
+    createSheetAndOpen,
     createSlideAndOpen,
     createCsvAndOpen,
     /// 実行中の種別（ボタンの二重発火防止・スピナー表示用）。

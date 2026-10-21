@@ -1,4 +1,4 @@
-//! 同意計画（consent_plan）の静的分析（registration.rs の 500 行ゲート対応で分離）。
+//! 同意計画（consent_plan）の静的分析（registration.rs の行数ゲート対応で分離）。
 
 use super::{RegistrationService, SuggestedGrant};
 use crate::ir::{Trigger, WorkflowIr};

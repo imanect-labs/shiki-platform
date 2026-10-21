@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # （不一致はインジェスト時に version 突合ガードで拒否される）。
     embed_model: str = "cl-nagoya/ruri-v3-30m"
     # 日本語 cross-encoder reranker（CPU 可）。
+    # ここを変えたら Rust 側の関連度の閾値 SHIKI__RAG__RELEVANCE_HIGH / _LOW を実クエリで
+    # 測り直し、SHIKI__RAG__RELEVANCE_MODEL も揃えること（スコアのスケールはモデルごとに違う・
+    # 食い違いはサーバのログに警告が出る・#424）。
     rerank_model: str = "hotchpotch/japanese-reranker-cross-encoder-xsmall-v1"
     # /parse がダウンロードする blob の上限（bytes）。Rust 側の max_parse_bytes と対にする。
     max_download_bytes: int = 50 * 1024 * 1024
@@ -20,6 +23,13 @@ class Settings(BaseSettings):
     embed_batch_size: int = 16
     # /edit が受け付ける文書バイトの上限（デコード後）。Rust 側 office と対にする。
     max_edit_bytes: int = 20 * 1024 * 1024
+    # 同時に走らせる Docling 解析の上限。Docling は同期でキャンセルできないため、
+    # 呼び出し側が諦めても解析スレッドは走り続ける。上限を超える要求は待たせずに
+    # 503 で返し、取り残しがスレッドプールと CPU を食い潰さないようにする（#405）。
+    max_concurrent_parses: int = 2
+    # 起動時にモデルを読み込んで空打ちしておく（バックグラウンド）。しないと、起動後や
+    # 久しぶりの最初の検索が reranker の読み込み（torch の import を含めて十数秒）を待つ。
+    warmup_models: bool = True
 
 
 @lru_cache

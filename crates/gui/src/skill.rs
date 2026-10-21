@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::skill_command::{validate_command, SkillCommand};
 use crate::validate::GuiValidationError;
 use crate::vocab::vocab_enum;
 
@@ -37,6 +38,12 @@ pub mod skill_limits {
     pub const MAX_TEMPERATURE: f32 = 2.0;
     /// モデル既定 max_tokens の上限（暴走的な生成コストを skill 定義で強制できない）。
     pub const MAX_MAX_TOKENS: u32 = 32_768;
+    /// スラッシュコマンド名の最大文字数（`/` を除く）。
+    pub const MAX_COMMAND_NAME_CHARS: usize = 32;
+    /// コマンドのバリアント（引数プリセット）の最大数。
+    pub const MAX_COMMAND_VARIANTS: usize = 8;
+    /// コマンドの hint / variant.args / variant.summary の最大文字数。
+    pub const MAX_COMMAND_TEXT_CHARS: usize = 120;
 }
 
 /// skill 本文（artifact kind=skill の body JSONB）。
@@ -67,6 +74,10 @@ pub struct SkillBody {
     /// 参照資料（storage node 参照のみ・実体二重持ちなし）。
     #[serde(default)]
     pub references: Vec<Uuid>,
+    /// スラッシュコマンド宣言（コンポーザの `/` 補完に載る・#387）。
+    /// 宣言しないスキルはコマンドを持たない（カタログには載るがコマンドでは呼べない）。
+    #[serde(default)]
+    pub command: Option<SkillCommand>,
 }
 
 /// 知識スコープ（folders は配下全体・files は個別）。両方空の Some は保存時に拒否。
@@ -256,6 +267,9 @@ pub fn validate_skill_body(raw: &serde_json::Value) -> Result<SkillBody, Vec<Gui
         }
     }
     validate_scripts(&body.scripts, &mut errors);
+    if let Some(command) = &body.command {
+        validate_command(command, &mut errors);
+    }
     if body.references.len() > skill_limits::MAX_REFERENCES {
         errors.push(
             GuiValidationError::new(

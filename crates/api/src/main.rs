@@ -21,6 +21,7 @@ mod miniapp_triggers;
 mod wiring;
 mod wiring_gateway;
 mod wiring_gui;
+mod wiring_office;
 mod wiring_websearch;
 // main はアプリ全体（ストレージ/RAG/チャット/ワークフロー/data/ゲートウェイ等）の配線点で
 // あり、各フェーズの依存を順に組み上げる性質上どうしても長くなる（各配線は wire_* ヘルパへ
@@ -34,10 +35,19 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(service = %config.telemetry.service_name, "shiki-server 起動中");
 
     // Postgres は lazy 接続（compose の起動順に耐性を持たせ、/readyz で疎通を表現）。
+    //
+    // application_name を必ず載せる。これが無いと `pg_stat_activity` の接続が全て空欄で並び、
+    // 「今 DB を詰まらせているのは誰か」を障害時に切り分けられない（shiki-admin の retenant や
+    // ingestion 系と区別が付かない）。**`application_name` は `shiki-server` に固定**する
+    // （sqlx の setter は URL 側の指定を上書きする）。それ以外の接続 URL のオプションは維持される。
+    let db_options: sqlx::postgres::PgConnectOptions = config
+        .database
+        .url
+        .parse()
+        .context("DATABASE_URL の解析に失敗")?;
     let db = PgPoolOptions::new()
         .max_connections(config.database.max_connections)
-        .connect_lazy(&config.database.url)
-        .context("Postgres プールの初期化に失敗")?;
+        .connect_lazy_with(db_options.application_name("shiki-server"));
 
     // スキーマ・マイグレーションを適用（起動時 fail-fast）。
     // ここで初めて実接続が張られる。compose は depends_on で postgres healthy を待つ。
@@ -47,15 +57,38 @@ async fn main() -> anyhow::Result<()> {
         .context("DB マイグレーションの適用に失敗")?;
     tracing::info!("DB マイグレーション適用完了");
 
-    // JWKS 取得・OpenFGA で共用する HTTP クライアント。
+    // 汎用 HTTP クライアント（LLM gateway・Office editor・その他 AppState 経由の外部呼び出し）。
+    // **timeout を付けない**: LLM のストリーミングや Office の編集は正常系で数十秒〜かかるため、
+    // 短い上限を被せると正当な処理を殺す（各利用側が用途に応じた上限を持つ・Codex P1）。
     let http = reqwest::Client::new();
+
+    // OpenFGA / JWKS 専用クライアント（**timeout 必須**・#376）。
+    //
+    // 共有リンクの reconcile / redeem は `pg_advisory_xact_lock` 保持下で OpenFGA を叩くが、
+    // advisory lock にはタイムアウトが無い。FGA が hang するとノードロックと PG コネクションが
+    // 張り付き、そのノードの共有操作すべてが止まる。上限を明示して fail-fast させる
+    // （HTTP ハンドラのタイムアウトに救われるのは偶然の性質であって設計された保証ではない）。
+    // authz/JWKS は「短時間で答えるべき問い合わせ」なので、汎用クライアントとは分ける。
+    let authz_http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("authz/JWKS 用 HTTP クライアントの初期化に失敗")?;
+
+    // Keycloak admin（同意インストール時の client 登録）専用クライアント（CodeRabbit）。
+    // 汎用 `http` を渡すと Keycloak の hang でインストール要求が永久に返らない。authz より緩い
+    // 上限にするのは、稀に走る provisioning の書き込み（token 取得＋client 登録）であって
+    // ホットパスの認可問い合わせではないため。
+    let keycloak_http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("Keycloak admin 用 HTTP クライアントの初期化に失敗")?;
 
     // OpenFGA（store/model を冪等にロード）。
     let fga_config = OpenFgaConfig {
         base_url: config.authz.base_url.clone(),
         store_name: config.authz.store_name.clone(),
     };
-    let fga = OpenFgaClient::connect(http.clone(), &fga_config, &model::default_model())
+    let fga = OpenFgaClient::connect(authz_http.clone(), &fga_config, &model::default_model())
         .await
         .context("OpenFGA への接続に失敗")?;
     // ユーザーディレクトリ（共有相手検索。storage と同じ db プールを共有）。dev_seed で使う。
@@ -70,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
     let (object_store, storage) = wiring::wire_storage(&config, &db, &authz).await?;
 
     let jwks = Arc::new(JwksCache::new(
-        http.clone(),
+        authz_http,
         config.auth.effective_jwks_uri(),
         Duration::from_secs(config.auth.jwks_ttl_secs),
     ));
@@ -83,7 +116,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // RAG（Phase 2）: enabled のときのみインジェスト・パイプラインと検索を配線する。
-    let (search, rag_admin) = wiring::wire_rag(&config, &http, &db, &object_store, &authz)?;
+    // parser は web_fetch の PDF/Office 経路にも渡す（同一インスタンス共有・#405）。
+    let (search, rag_admin, doc_parser) =
+        wiring::wire_rag(&config, &http, &db, &object_store, &authz)?;
 
     // アーティファクト共通枠（Task 6.1）: authz と同一インスタンスを共有（単一チョークポイント）。
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
@@ -127,7 +162,7 @@ async fn main() -> anyhow::Result<()> {
     // 同意インストール（Task 9.13b）: Keycloak admin（provisioner）があれば client 登録も行う。
     let installs = Arc::new(wiring_gateway::wire_installs(
         &config,
-        &http,
+        &keycloak_http,
         &db,
         &authz,
         &mini_app_code,
@@ -160,6 +195,11 @@ async fn main() -> anyhow::Result<()> {
     // storage はツール成果物（code_interpreter）の保存先として渡す（Task 4.11）。
     // workflows/secrets は AI ワークフロー編集（emit_workflow・Task 10.13）のカタログ源。
     // collab は AI ノート共同編集（document.edit・Task 11P.4）。
+    // Office 統合（Task 11.5/11.6）: enabled のときのみ Collabora suite ＋ WOPI を配線する。
+    // office.live_edit（issue #352）がトークン鍵を共有するため wire_chat より先に組む。
+    let office = wiring_office::wire_office(&config, &http, &db, &authz, &storage)?;
+    // ブラウザ ↔ Collabora の中継（PIT-68）。ブラウザはここを通してだけ Collabora に触れる。
+    wiring_office::spawn_office_relay(&config).await?;
     // skill の publish / 同意インストール（Phase 9 レジストリ流用・ユーザー単位・#344）。
     // chat の skill カタログ（インストール済み ∪ 本人）と V4 skill 照合の材料になる。
     let skill_installs = Arc::new(app_platform::SkillInstallService::new(
@@ -176,18 +216,21 @@ async fn main() -> anyhow::Result<()> {
         &db,
         &authz,
         search.as_ref(),
+        doc_parser.as_ref(),
         &storage,
-        &gui_stores.validator,
+        &gui_stores.workflow_resolver,
         &artifacts,
         &workflows,
         secrets.as_ref(),
         &collab,
         &tabular,
+        office.as_ref(),
         &skill_installs,
     )
     .await?;
 
     // ワークフロー実行時（Stage A W3）: enabled のとき launcher/runs を組み、worker/scheduler/relay を spawn。
+    // 履歴 GC ワーカーは enabled に依らず起動する（保持は新規実行の可否と独立・#448）。
     let (workflow_launcher, workflow_runs) = wiring::wire_workflow(
         &config,
         &http,
@@ -213,17 +256,8 @@ async fn main() -> anyhow::Result<()> {
     let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(db.clone()));
 
     // 宣言的 UI アクションの実行系（Task 6.5）: chat.submit・安全ツール・workflow 起動を束ねる。
-    let ui_actions = wiring_gui::wire_ui_actions(
-        &config,
-        &http,
-        &db,
-        chat.as_ref(),
-        search.as_ref(),
-        workflow_launcher.as_ref(),
-    )?;
+    let ui_actions = wiring_gui::wire_ui_actions(&db, chat.as_ref(), workflow_launcher.as_ref());
 
-    // Office 統合（Task 11.5/11.6）: enabled のときのみ Collabora suite ＋ WOPI を配線する。
-    let office = wiring::wire_office(&config, &http, &db, &authz, &storage)?;
     // md→docx 合成（POST /documents・#332）: worker のみ必要なので office フラグに載せず常時配線。
     // 共有クライアントは無期限のため、worker 遅延がハンドラを永久ブロックしないよう専用に切る。
     let compose_http = reqwest::Client::builder()
@@ -252,7 +286,19 @@ async fn main() -> anyhow::Result<()> {
         secrets: secrets.as_ref(),
     })
     .await?;
+    // 管理コンソール・モデル一覧・チャットのモデル解決が使うゲートウェイ（同一設定から構築）。
+    // 未実装 backend 等で組めない構成でも、AI 以外の API は動かす（該当 API だけ 503）。
+    let llm = match wiring::build_gateway(&config, &http, &db) {
+        Ok(gw) => Some(Arc::new(gw)),
+        Err(e) => {
+            tracing::warn!(error = %e, "llm-gateway を構築できません（/llm/models・/org-admin/ai は 503）");
+            None
+        }
+    };
+    // AI 活用分析（#751）: 利用者×日のロールアップと用途分類を定期実行する。
+    api::insights::timer::spawn(db.clone(), llm.clone(), config.insights.clone());
     let state = AppState {
+        insights: Arc::new(api::insights::InsightsService::new(db.clone())),
         config: Arc::new(config),
         // 生 PgPool は StorageService 等のチョークポイントにのみ渡し、AppState には
         // readiness 専用の newtype で載せる（#91 M-2・ハンドラの生 SQL を型で防ぐ）。
@@ -273,7 +319,6 @@ async fn main() -> anyhow::Result<()> {
         skill_installs,
         bundles,
         app_usage,
-        ui_specs: gui_stores.ui_specs,
         ui_actions,
         skills: gui_stores.skills,
         mini_apps: gui_stores.mini_apps,
@@ -289,6 +334,7 @@ async fn main() -> anyhow::Result<()> {
         tenants,
         search,
         chat,
+        llm,
         rag_admin,
         office,
         docx_composer,

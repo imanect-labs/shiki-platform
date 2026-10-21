@@ -66,9 +66,7 @@ pub struct AppState {
     pub bundles: Arc<app_platform::BundleStore>,
     /// アプリ利用量集計（Task 9.15・capability＋llm）。
     pub app_usage: Arc<app_platform::AppUsageStore>,
-    /// UI スペックの保存/取得（Task 6.3・artifact kind=ui_spec の上に保存時検証を載せる）。
-    pub ui_specs: Arc<gui::UiSpecStore>,
-    /// 宣言的 UI アクションの実行系（Task 6.5・照合/本人認可/監査の合流点）。
+    /// 図のボタンの実行系（Task 6.5・#604・照合/本人認可/監査の合流点）。
     pub ui_actions: Arc<gui::ActionDispatcher>,
     /// skill の保存/取得（Task 6.7・artifact kind=skill の上に保存時検証を載せる）。
     pub skills: Arc<gui::SkillStore>,
@@ -99,6 +97,11 @@ pub struct AppState {
     /// チャット（Phase 3）。`chat.enabled=false` では `None`（/threads 系は 503）。
     /// 生成ワーカーは別途 spawn 済み。ここは API（CRUD/SSE/post/cancel/share）が使うストア。
     pub chat: Option<Arc<chat::ChatStore>>,
+    /// LLM ゲートウェイ（モデル一覧・テナントの AI 設定・利用量集計・チャットのモデル解決）。
+    /// LLM 未構成（未実装 backend 等）では `None`（/llm/models・/org-admin/ai/* は 503）。
+    pub llm: Option<Arc<llm_gateway::LlmGateway>>,
+    /// AI 活用分析（`/org-admin/insights/*`・#751）。範囲は常に AuthContext から。
+    pub insights: Arc<crate::insights::InsightsService>,
     /// RAG のテナント消去（rag_chunk/jobq/Qdrant/Tantivy）。テナント削除フローから呼ぶ。
     /// RAG 無効構成でも DB 行の消去は行う（過去に有効だった残骸を残さない）。
     pub rag_admin: Arc<rag::RagAdmin>,
@@ -121,4 +124,10 @@ pub struct OfficeRuntime {
     pub suite: Arc<dyn office::OfficeSuite>,
     pub wopi: office::WopiState,
     pub wopi_base_url: String,
+    /// AI ライブ編集（office.live_edit・CoolWSD headless 参加・issue #352）。
+    /// WOPI と同一のトークン鍵を共有する（wire_office で一括構築）。
+    pub live: Arc<office::live::LiveEditor>,
+    /// Excel・Word のレイアウト編集エンジン（office.read / office.excel_edit / office.word_edit・#725）。
+    /// LiveEditor のセッション（認可・直列化・保存）に包んで使う。
+    pub engine: Arc<office::engine::OfficeEngine>,
 }

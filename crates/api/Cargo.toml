@@ -79,7 +79,7 @@ async-trait.workspace = true
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
 # collab WS 結合テスト（collab_ws_it.rs）: 実 WS クライアント＋yrs クライアント文書。
-tokio-tungstenite = "0.29"
+tokio-tungstenite.workspace = true
 yrs = { workspace = true, features = ["sync"] }
 hex.workspace = true
 ed25519-dalek.workspace = true

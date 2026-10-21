@@ -21,7 +21,17 @@ import {
 import { toast } from "@/components/ui/use-toast";
 import { exportNoteDocx, exportNoteMarkdown } from "@/lib/notes/export-note";
 
-export function NoteExportMenu({
+export type NoteExport = {
+  /// エディタ未生成・出力中・初期同期未完了のいずれか（空 md/docx の出力を防ぐ）。
+  disabled: boolean;
+  busy: boolean;
+  onMd: () => void;
+  onDocx: () => Promise<void>;
+  onPdf: () => void;
+};
+
+/// エクスポート操作の実体（PC のメニューとクロームの ⋯ で共用する）。
+export function useNoteExport({
   editor,
   nodeId,
   name,
@@ -34,36 +44,44 @@ export function NoteExportMenu({
   name: string;
   /// 初期同期が完了しているか。未同期のまま出力すると空/不完全な本文になるため無効化する。
   synced: boolean;
-}) {
+}): NoteExport {
   const [busy, setBusy] = React.useState(false);
-  // エディタ未生成・出力中・初期同期未完了のいずれかでは無効化する（空 md/docx の出力を防ぐ）。
   const disabled = !editor || busy || !synced;
 
-  const onMd = () => {
-    if (!editor) return;
-    exportNoteMarkdown(editor, name);
-  };
+  return React.useMemo(
+    () => ({
+      disabled,
+      busy,
+      onMd: () => {
+        if (!editor) return;
+        exportNoteMarkdown(editor, name);
+      },
+      onDocx: async () => {
+        if (!editor || busy) return;
+        setBusy(true);
+        try {
+          await exportNoteDocx(editor, name);
+        } catch (e) {
+          toast({
+            variant: "destructive",
+            description: e instanceof Error ? e.message : "docx のエクスポートに失敗しました。",
+          });
+        } finally {
+          setBusy(false);
+        }
+      },
+      // 印刷専用ビューを開く（同期完了後に自動で印刷ダイアログを出す）。
+      onPdf: () => {
+        window.open(`/notes/${nodeId}/print`, "_blank", "noopener");
+      },
+    }),
+    [disabled, busy, editor, name, nodeId],
+  );
+}
 
-  const onDocx = async () => {
-    if (!editor || busy) return;
-    setBusy(true);
-    try {
-      await exportNoteDocx(editor, name);
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        description: e instanceof Error ? e.message : "docx のエクスポートに失敗しました。",
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onPdf = () => {
-    // 印刷専用ビューを開く（同期完了後に自動で印刷ダイアログを出す）。
-    window.open(`/notes/${nodeId}/print`, "_blank", "noopener");
-  };
-
+/// PC のバーに置くエクスポートメニュー（スマホはクロームの ⋯ に同じ項目を出す）。
+export function NoteExportMenu({ exp, synced }: { exp: NoteExport; synced: boolean }) {
+  const { disabled, busy, onMd, onDocx, onPdf } = exp;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -73,14 +91,14 @@ export function NoteExportMenu({
           aria-label="エクスポート"
           title={!synced ? "同期の完了後にエクスポートできます" : undefined}
           data-testid="note-export"
-          className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+          className="inline-flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 sm:px-2.5"
         >
           {busy ? (
             <Loader2 className="size-4 animate-spin" aria-hidden />
           ) : (
             <Download className="size-4" aria-hidden />
           )}
-          エクスポート
+          <span className="hidden sm:inline">エクスポート</span>
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48 p-1.5">

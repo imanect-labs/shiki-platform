@@ -5,6 +5,8 @@
 /// 文字列は backend の RunStatus/StepStatus/RunEventKind（vocab 単一定義）と対応する。
 /// 未知の値はそのまま表示する（新語彙が増えても UI が壊れない fail-open 表示）。
 
+import { Loader2 } from "lucide-react";
+
 import { Badge } from "@/components/ui/badge";
 
 type BadgeVariant = "success" | "warning" | "destructive" | "muted" | "secondary";
@@ -40,13 +42,8 @@ export function RunStatusBadge({ status }: { status: string }) {
   const s = RUN_STATUS[status] ?? { label: status, variant: "muted" as const };
   return (
     <Badge variant={s.variant}>
-      {/* 実行中は控えめな pulse リング（ping）付きのドットで生きている感を出す。 */}
-      <span className="relative flex size-1.5 items-center justify-center" aria-hidden>
-        {s.live ? (
-          <span className="absolute inline-flex size-1.5 animate-ping rounded-full bg-current opacity-75" />
-        ) : null}
-        <span className="relative size-1.5 rounded-full bg-current" />
-      </span>
+      {/* 状態は文字で示す（ドットは使わない）。実行中だけ回転アイコンで生きている感を出す。 */}
+      {s.live ? <Loader2 className="size-3 animate-spin" aria-hidden /> : null}
       {s.label}
     </Badge>
   );

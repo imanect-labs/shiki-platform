@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import threading
@@ -18,7 +20,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException
 
-from .schemas import BlockType, ParsedBlock, ParseRequest, ParseResponse
+from .schemas import BlockType, ParsedBlock, ParseRequest, ParseResponse, Prov
 from .settings import get_settings
 
 router = APIRouter()
@@ -80,6 +82,48 @@ def get_converter_holder() -> _ConverterHolder:
     return _holder
 
 
+class ParseSlots:
+    """同時に走る Docling 解析の有界カウンタ（スレッド安全）。
+
+    Docling の `convert` は同期で**キャンセルできない**。`asyncio.to_thread` は待つのを
+    やめるだけなので、呼び出し側（web_fetch は 90 秒）が諦めても解析スレッドは走り続ける。
+    モデルが失敗後に別の文書を試すと、応答済みの解析がスレッドに残り続けて CPU と
+    スレッドプールを食い潰す。よって**同時に走る解析数そのものを有界にする**。
+
+    - 上限に達している間の要求は**待たせずに 503**（キューに積むと、既に諦められた
+      クライアントぶんの仕事が延々と積み上がる＝有界にした意味が消える）。
+    - 解放は**スレッド側の finally** で行う。ハンドラ側の finally だと、切断で await が
+      中断された瞬間に「空いた」と誤認し、走り続けているスレッドを数え落とす。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active = 0
+
+    def try_acquire(self, limit: int) -> bool:
+        with self._lock:
+            if self._active >= limit:
+                return False
+            self._active += 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            self._active = max(0, self._active - 1)
+
+    @property
+    def active(self) -> int:
+        with self._lock:
+            return self._active
+
+
+_slots = ParseSlots()
+
+
+def get_parse_slots() -> ParseSlots:
+    return _slots
+
+
 def _parse_error(error: str, detail: str) -> HTTPException:
     return HTTPException(status_code=422, detail={"error": error, "detail": detail})
 
@@ -104,6 +148,33 @@ async def _download(url: str) -> bytes:
         raise _parse_error("source_fetch_failed", str(exc)) from exc
 
 
+def _decode_inline(content_base64: str) -> bytes:
+    """インラインバイト列を取り出す（呼び出し側が取得済み・worker は取りに行かない）。
+
+    上限はダウンロード経路と同じ値を使う（経路で緩まないようにする）。
+    """
+    limit = get_settings().max_download_bytes
+    # base64 は 4/3 に膨らむ。デコード前に弾いてメモリを踏まない。
+    if len(content_base64) > limit // 3 * 4 + 4:
+        raise _parse_error("source_too_large", f"blob が上限 {limit} bytes を超えています")
+    try:
+        data = base64.b64decode(content_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise _parse_error("invalid_content", f"content_base64 が不正です: {exc}") from exc
+    if len(data) > limit:
+        raise _parse_error("source_too_large", f"blob が上限 {limit} bytes を超えています")
+    return data
+
+
+async def _load(req: ParseRequest) -> bytes:
+    """要求からバイト列を得る。URL 指定のときだけ worker がダウンロードする。"""
+    if req.content_base64 is not None:
+        return _decode_inline(req.content_base64)
+    # スキーマの検証で片方は必ず入っている。
+    assert req.source_url is not None
+    return await _download(req.source_url)
+
+
 def _plain_text_blocks(data: bytes) -> list[ParsedBlock]:
     """text/plain は段落（空行区切り）に落とす。Docling を経由しない軽量経路。"""
     text = data.decode("utf-8", errors="replace")
@@ -124,8 +195,21 @@ class _HtmlTextExtractor(HTMLParser):
     """
 
     _BLOCK_TAGS = {
-        "p", "div", "section", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
-        "blockquote", "figcaption", "br", "hr",
+        "p",
+        "div",
+        "section",
+        "li",
+        "tr",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "blockquote",
+        "figcaption",
+        "br",
+        "hr",
     }
     _SKIP_TAGS = {"script", "style", "template", "noscript"}
 
@@ -211,20 +295,127 @@ def _page_of(item: Any) -> int | None:
     return None
 
 
+def _prov_of(item: Any) -> list[Prov]:
+    """Docling の prov（ページ・bbox・charspan）をすべて写す（引用箇所を原本の上に描く・#508）。"""
+    out: list[Prov] = []
+    for p in getattr(item, "prov", None) or []:
+        bbox = getattr(p, "bbox", None)
+        if bbox is None:
+            continue
+        origin = str(getattr(bbox, "coord_origin", "BOTTOMLEFT")).upper()
+        span = getattr(p, "charspan", None)
+        out.append(
+            Prov(
+                page=int(p.page_no),
+                bbox=(float(bbox.l), float(bbox.t), float(bbox.r), float(bbox.b)),
+                origin="top_left" if "TOPLEFT" in origin else "bottom_left",
+                charspan=(int(span[0]), int(span[1])) if span else None,
+            )
+        )
+    return out
+
+
+def _list_marker(item: Any, document: Any) -> str:
+    """箇条書きの見た目の記号。Docling が記号を持たなければ、番号付きは兄弟内の順番から作る。"""
+    marker = (getattr(item, "marker", "") or "").strip()
+    if marker:
+        return marker
+    if not getattr(item, "enumerated", False):
+        return "•"
+    parent = getattr(item, "parent", None)
+    try:
+        group = parent.resolve(document) if parent is not None else None
+        refs = [c.cref for c in getattr(group, "children", [])]
+        return f"{refs.index(item.self_ref) + 1}."
+    except (AttributeError, ValueError):
+        return "•"
+
+
+def _join_inline(parts: list[str]) -> str:
+    """インラインの断片をつなぐ。
+
+    Docling は断片の前後の空白を落とすので、英文の語の境目（英数字どうし・英文の句読点の後）に
+    だけ空白を戻す。和文の境目には足さない（「申出書は**1か月前**まで」が空白入りにならない）。
+    """
+    out = ""
+    for part in parts:
+        if out and part and _needs_space(out[-1], part[0]):
+            out += " "
+        out += part
+    return out
+
+
+def _needs_space(left: str, right: str) -> bool:
+    word = left.isascii() and (left.isalnum() or left in ",.;:!?)]") and left not in "(["
+    return word and right.isascii() and (right.isalnum() or right in "([")
+
+
+def _inline_text(group: Any, document: Any, seen: set[str]) -> tuple[str, list[Any]]:
+    """inline グループ配下のテキストを読み順につなぐ（太字・リンクなどで分かれた断片）。"""
+    parts: list[str] = []
+    items: list[Any] = []
+    for ref in getattr(group, "children", []) or []:
+        child = ref.resolve(document)
+        seen.add(child.self_ref)
+        if getattr(child, "children", None) and not getattr(child, "text", ""):
+            text, sub = _inline_text(child, document, seen)
+            parts.append(text)
+            items.extend(sub)
+            continue
+        parts.append((getattr(child, "text", "") or "").strip())
+        items.append(child)
+    return _join_inline([p for p in parts if p]), items
+
+
 def _docling_blocks(document: Any) -> list[ParsedBlock]:
-    """DoclingDocument を読み順の構造化ブロック列へ落とす。"""
-    from docling_core.types.doc import DocItemLabel
+    """DoclingDocument を読み順の構造化ブロック列へ落とす。
+
+    Docling は太字・リンクなどを含む段落を「inline グループ＋断片のテキスト群」として返す
+    （装飾を含む箇条書きは、項目自身の本文が空で子に inline グループを持つ）。断片ごとに
+    ブロックにすると 1 段落が何行にも割れるので、inline グループは 1 ブロックにまとめる。
+    """
+    from docling_core.types.doc import DocItemLabel, GroupLabel
 
     blocks: list[ParsedBlock] = []
-    for item, _level in document.iterate_items():
+    # inline グループとしてまとめ済みの要素（iterate_items が個別にも返すので飛ばす）。
+    seen: set[str] = set()
+    for item, _level in document.iterate_items(with_groups=True):
+        if item.self_ref in seen:
+            continue
         label = getattr(item, "label", None)
+        if label == GroupLabel.INLINE:
+            text, parts = _inline_text(item, document, seen)
+            if not text:
+                continue
+            parent = item.parent.resolve(document) if item.parent is not None else None
+            prov = [p for part in parts for p in _prov_of(part)]
+            page = next((_page_of(part) for part in parts if _page_of(part) is not None), None)
+            if getattr(parent, "label", None) == DocItemLabel.LIST_ITEM:
+                blocks.append(
+                    ParsedBlock(
+                        type=BlockType.LIST_ITEM,
+                        text=text,
+                        page=page,
+                        prov=prov,
+                        list_marker=_list_marker(parent, document),
+                    )
+                )
+            else:
+                blocks.append(
+                    ParsedBlock(type=BlockType.PARAGRAPH, text=text, page=page, prov=prov)
+                )
+            continue
+        if not hasattr(item, "text") and label != DocItemLabel.TABLE:
+            # その他のグループ（list / body など）は入れ物なので飛ばす。
+            continue
         if label in (DocItemLabel.PAGE_HEADER, DocItemLabel.PAGE_FOOTER):
             continue
+        page, prov = _page_of(item), _prov_of(item)
         if label == DocItemLabel.TABLE:
             markdown = item.export_to_markdown(doc=document)
             if markdown.strip():
                 blocks.append(
-                    ParsedBlock(type=BlockType.TABLE, text=markdown, page=_page_of(item))
+                    ParsedBlock(type=BlockType.TABLE, text=markdown, page=page, prov=prov)
                 )
             continue
         text = (getattr(item, "text", "") or "").strip()
@@ -232,26 +423,36 @@ def _docling_blocks(document: Any) -> list[ParsedBlock]:
             continue
         if label == DocItemLabel.TITLE:
             blocks.append(
-                ParsedBlock(type=BlockType.HEADING, level=1, text=text, page=_page_of(item))
+                ParsedBlock(type=BlockType.HEADING, level=1, text=text, page=page, prov=prov)
             )
         elif label == DocItemLabel.SECTION_HEADER:
             # SectionHeaderItem.level は 1 始まり。TITLE を 1 とし、その下に続ける。
             level = int(getattr(item, "level", 1)) + 1
             blocks.append(
-                ParsedBlock(type=BlockType.HEADING, level=level, text=text, page=_page_of(item))
+                ParsedBlock(type=BlockType.HEADING, level=level, text=text, page=page, prov=prov)
             )
         elif label == DocItemLabel.CAPTION:
-            blocks.append(ParsedBlock(type=BlockType.CAPTION, text=text, page=_page_of(item)))
+            blocks.append(ParsedBlock(type=BlockType.CAPTION, text=text, page=page, prov=prov))
+        elif label == DocItemLabel.LIST_ITEM:
+            blocks.append(
+                ParsedBlock(
+                    type=BlockType.LIST_ITEM,
+                    text=text,
+                    page=page,
+                    prov=prov,
+                    list_marker=_list_marker(item, document),
+                )
+            )
         else:
-            # TEXT / PARAGRAPH / LIST_ITEM / CODE / FOOTNOTE などは段落として扱う。
-            blocks.append(ParsedBlock(type=BlockType.PARAGRAPH, text=text, page=_page_of(item)))
+            # TEXT / PARAGRAPH / CODE / FOOTNOTE などは段落として扱う。
+            blocks.append(ParsedBlock(type=BlockType.PARAGRAPH, text=text, page=page, prov=prov))
     return blocks
 
 
 @router.post("/parse")
 async def parse(req: ParseRequest) -> ParseResponse:
     content_type = req.content_type.split(";")[0].strip().lower()
-    data = await _download(req.source_url)
+    data = await _load(req)
 
     if content_type in _PLAIN_TEXT_TYPES:
         return ParseResponse(blocks=_plain_text_blocks(data), used_ocr=False)
@@ -265,18 +466,54 @@ async def parse(req: ParseRequest) -> ParseResponse:
     if content_type not in _DOCLING_TYPES:
         raise _parse_error("unsupported_content_type", content_type)
 
+    # 重い準備（モデルのロード）に入る前に枠を取る。取れなければ即 503。
+    slots = get_parse_slots()
+    limit = get_settings().max_concurrent_parses
+    if not slots.try_acquire(limit):
+        busy = f"解析の同時実行が上限 {limit} に達しています。時間を置いて再試行してください"
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "parser_busy", "detail": busy},
+            headers={"Retry-After": "30"},
+        )
+    started = threading.Event()
+    try:
+        return await _docling_parse(req, data, content_type, started, slots)
+    finally:
+        # スレッドが起動していれば、解放は**スレッド側**（走り切った時点）で行う。
+        # 起動前に失敗・切断した場合だけここで戻す（二重解放しない）。
+        if not started.is_set():
+            slots.release()
+
+
+async def _docling_parse(
+    req: ParseRequest,
+    data: bytes,
+    content_type: str,
+    started: threading.Event,
+    slots: ParseSlots,
+) -> ParseResponse:
+    """Docling 本体。枠（`slots`）は呼び出し側が取得済みで、解放はスレッド側で行う。"""
     from docling.datamodel.base_models import ConversionStatus, DocumentStream
 
     logger.info("parse tenant=%s file=%s type=%s", req.tenant_id, req.file_name, content_type)
     converter = get_converter_holder().get()
+
+    def _convert() -> Any:
+        started.set()
+        try:
+            return converter.convert(
+                DocumentStream(name=req.file_name, stream=BytesIO(data)),
+                raises_on_error=False,
+            )
+        finally:
+            # 走り切った時点で解放する（呼び出し側が既に諦めていても同じ）。
+            slots.release()
+
     try:
         # Docling（OCR・表構造解析）は重い同期処理。イベントループをブロックすると
         # /healthz 含む全リクエストが止まるため、スレッドプールへ逃がす。
-        result = await asyncio.to_thread(
-            converter.convert,
-            DocumentStream(name=req.file_name, stream=BytesIO(data)),
-            raises_on_error=False,
-        )
+        result = await asyncio.to_thread(_convert)
     except Exception as exc:  # Docling 内部の予期しない失敗も 422 に正規化する。
         raise _parse_error("parse_failed", str(exc)) from exc
 

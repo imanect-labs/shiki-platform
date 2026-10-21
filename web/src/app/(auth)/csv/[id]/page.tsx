@@ -6,13 +6,19 @@
 /// - 編集は明示保存（Cmd/Ctrl+S）で rev 付きパッチ→楽観ロック（409 は衝突ダイアログ）。
 /// - SQL コンソール（RO・隔離 DuckDB 経由）を併設し、結果を「新規 CSV」として保存できる。
 
-import { EditorLoading } from "@/components/shell/editor-loading";
+import { Eye, FileWarning } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import * as React from "react";
 
 import { CsvGrid, type CsvGridHandle } from "@/components/csv/csv-grid";
-import { CsvHeaderSlot } from "@/components/csv/csv-header-slot";
+import { useCsvChrome } from "@/components/csv/csv-header-slot";
 import { SqlConsole } from "@/components/csv/sql-console";
+import {
+  EditorLoading,
+  EditorMobileHeading,
+  EditorStatusBadge,
+  EditorUnavailable,
+} from "@/components/shell/editor-loading";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -22,10 +28,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState } from "@/components/ui/empty-state";
+import { ShareLinkUnlock, unlockTokenFromUrl } from "@/components/share/share-link-unlock";
 import { toast } from "@/components/ui/use-toast";
 import { setPendingSelection } from "@/lib/selection-context";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
+import { downloadUrl } from "@/lib/storage";
 import { applyPatch, getSchema, TabularConflict, type SchemaResponse } from "@/lib/tabular-api";
 
 type Loaded = {
@@ -110,32 +117,70 @@ export default function CsvPage() {
     gridRef.current?.reset();
   };
 
+  // 保存済みの最新版をダウンロードする（未保存の編集は含まない）。
+  const download = React.useCallback(() => {
+    downloadUrl(nodeId)
+      .then(({ url }) => {
+        window.location.href = url;
+      })
+      .catch(() => toast({ variant: "destructive", description: "ダウンロードできませんでした。" }));
+  }, [nodeId]);
+
+  const ready = loaded !== null && loaded !== "notfound" ? loaded : null;
+  // クロームはページ最上位で登録する（読み込み中・notfound でも戻る導線を残す）。
+  useCsvChrome(
+    ready
+      ? {
+          name: ready.access.name,
+          totalRows: ready.schema.total_rows ?? 0,
+          cols: ready.schema.columns.length,
+          editable: !!editable,
+          tab,
+          onTabChange: setTab,
+          dirty,
+          saving,
+          onSave: save,
+          onDownload: download,
+        }
+      : null,
+  );
+
   if (loaded === null) {
-    return (
-      <EditorLoading kind="sheet" message="CSV を開いています…" />
-    );
+    return <EditorLoading kind="sheet" message="CSV を開いています…" />;
   }
   if (loaded === "notfound") {
     return (
-      <EmptyState
+      <EditorUnavailable
+        icon={FileWarning}
         title="CSV が見つかりません"
-        description="削除されたか、アクセス権がありません。"
-      />
+        description="削除されたか、アクセス権がありません。パスワード付き共有リンクの場合はパスワードで開けます。"
+      >
+        {unlockTokenFromUrl() ? (
+          <ShareLinkUnlock
+            token={unlockTokenFromUrl()!}
+            onUnlocked={() => void load()}
+            autoFocus
+          />
+        ) : null}
+      </EditorUnavailable>
     );
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col p-3">
-      <CsvHeaderSlot
+    <div className="flex h-full min-h-0 flex-col p-3 max-md:px-2 max-md:pb-[max(0.5rem,env(safe-area-inset-bottom))] max-md:pt-0">
+      {/* スマホ: 文書名＋状態（PC はバーに出す）。 */}
+      <EditorMobileHeading
+        className="px-2"
         name={loaded.access.name}
-        totalRows={loaded.schema.total_rows ?? 0}
-        cols={loaded.schema.columns.length}
-        editable={!!editable}
-        tab={tab}
-        onTabChange={setTab}
-        dirty={dirty}
-        saving={saving}
-        onSave={save}
+        status={
+          <>
+            <span className="text-[12px] tabular-nums text-muted-foreground">
+              {loaded.schema.total_rows ?? 0} 行・{loaded.schema.columns.length} 列
+            </span>
+            {!editable ? <EditorStatusBadge icon={Eye}>閲覧のみ</EditorStatusBadge> : null}
+            {dirty ? <EditorStatusBadge tone="draft">未保存の編集あり</EditorStatusBadge> : null}
+          </>
+        }
       />
 
       <div className="min-h-0 flex-1">

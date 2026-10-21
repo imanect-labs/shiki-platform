@@ -1,35 +1,33 @@
 "use client";
 
-import { Menu } from "lucide-react";
 import { usePathname } from "next/navigation";
 
+import { cn } from "@/lib/utils";
 import { resolvePageIcon, resolvePageTitle } from "@/lib/nav-config";
+import { BrandMark } from "./brand-logo";
 import { useSidebar } from "./sidebar/sidebar-context";
-import { usePageHeaderValue } from "./page-header-context";
+import {
+  ChromeActions,
+  ChromeBackButton,
+  ChromeBar,
+  ChromeDivider,
+  usePageChromeValue,
+} from "./page-header-context";
 
-/// シェル上部の唯一のバー。モバイルではハンバーガでドロワを開く。
-/// 各ページが usePageHeader でタイトル/アクションを注入した場合はそれを描画し、
+/// PC（md 以上）の上部バー。ページが `usePageChrome` で登録した spec を描き、
 /// 無ければルート由来の現在地（アイコン＋タイトル）を既定表示する。
 /// 下端は破線ルール（shiki-dash-bottom）で本文とやわらかく分ける。
+/// スマホではタイトルバーを出さない（`MobileChrome` が角に操作を浮かせる）。
 export function Header() {
-  const { setMobileOpen } = useSidebar();
   const pathname = usePathname();
-  const injected = usePageHeaderValue();
+  const spec = usePageChromeValue();
   const PageIcon = resolvePageIcon(pathname);
   const title = resolvePageTitle(pathname);
 
   return (
-    <header className="shiki-dash-bottom flex h-14 shrink-0 items-center gap-2.5 bg-background/80 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:px-6">
-      <button
-        type="button"
-        onClick={() => setMobileOpen(true)}
-        aria-label="メニューを開く"
-        className="flex size-9 items-center justify-center rounded-md text-foreground/70 outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring md:hidden"
-      >
-        <Menu className="size-5" aria-hidden />
-      </button>
-      {injected ? (
-        injected
+    <header className="shiki-dash-bottom hidden h-14 shrink-0 items-center gap-2.5 bg-background/80 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:flex">
+      {spec ? (
+        <ChromeBar spec={spec} />
       ) : (
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <span
@@ -44,5 +42,78 @@ export function Header() {
         </div>
       )}
     </header>
+  );
+}
+
+/// スマホの浮いた操作群の「台」。PC の浮いたサイドバーと同じ沈んだ面・枠・角丸（丸いピルにしない）。
+/// 面は半透明にして後ろをぼかし、下を流れる本文の上に軽く浮かせる（ぼかせない環境では不透明寄り）。
+export const CHROME_TRAY = cn(
+  "pointer-events-auto flex h-12 items-center rounded-[14px] border border-sidebar-border px-0.5",
+  "bg-sidebar/85 shadow-[var(--elevation-sm)] backdrop-blur-md supports-[backdrop-filter]:bg-sidebar/55",
+);
+
+/// ドロワ（ナビゲーション）を開くボタン。顔はロゴの四つの点（`BrandMark`）。
+export function MenuMarkButton({
+  onClick,
+  label = "メニューを開く",
+}: {
+  onClick: () => void;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="group flex size-11 items-center justify-center rounded-[10px] text-foreground outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94]"
+    >
+      <BrandMark className="size-6 transition-transform duration-[var(--duration-normal)] ease-[var(--ease-standard)] group-hover:scale-110" />
+    </button>
+  );
+}
+
+/// スマホ（md 未満）の浮いた操作群。左上にメニュー（＋戻る）、右上にページの操作を置く。
+/// タイトルバーの代わりなので、どの画面でもドロワへの導線が必ず残る（没入エディタ・
+/// 読み込み中・notfound でも消えない）。
+export function MobileChrome() {
+  const { setMobileOpen } = useSidebar();
+  const spec = usePageChromeValue();
+  const hasRight = Boolean(
+    spec && (spec.primary || spec.actions || spec.assistant || (spec.menu && spec.menu.length > 0)),
+  );
+
+  return (
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-30 md:hidden">
+      {/* スクロールした本文がボタンの間でくっきり重ならないよう、上端を背景色でぼかす。本文を
+          ボタンの下まで流すページ（会話）は、潜った本文がボタンの高さまで薄く透けて見えるよう
+          浅く・淡くする。それ以外は本文の開始位置（4rem）で消える。 */}
+      <div
+        aria-hidden
+        className={cn(
+          "absolute inset-x-0 top-0 bg-gradient-to-b to-transparent",
+          spec?.flowUnder
+            ? "h-[calc(4rem+env(safe-area-inset-top))] from-background/90 via-background/50"
+            : "h-[calc(4rem+env(safe-area-inset-top))] from-background from-30%",
+        )}
+      />
+
+      <div className="relative flex items-start justify-between gap-2 px-2.5 pt-[max(0.5rem,env(safe-area-inset-top))]">
+        <div className={CHROME_TRAY}>
+          <MenuMarkButton onClick={() => setMobileOpen(true)} />
+          {spec?.back ? (
+            <>
+              <ChromeDivider />
+              <ChromeBackButton back={spec.back} />
+            </>
+          ) : null}
+        </div>
+        {hasRight && spec ? (
+          <div className={cn(CHROME_TRAY, spec.primary && "pl-1")}>
+            <ChromeActions spec={spec} divided />
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }

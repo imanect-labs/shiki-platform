@@ -9,37 +9,19 @@
 
 "use client";
 
-import * as React from "react";
-
+import type { UserSelectableTool } from "@/generated/gui-spec";
+import type { ModelChoice } from "@/lib/model-choice";
 import { apiFetch } from "@/lib/api";
+import type { components } from "@/generated/api";
 import { newId } from "@/lib/chat-store";
 import type { SelectionContext } from "@/lib/selection-context";
 
-// ── content-block（backend chat::ContentBlock と一致）───────────────────
+// ── content-block / SSE イベント（backend の単一定義から生成）───────────────
 
-export type ContentBlock =
-  | { type: "text"; text: string }
-  | { type: "thinking"; text: string }
-  | { type: "tool_call"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; tool_call_id: string; content: string }
-  | {
-      type: "citation";
-      node_id: string;
-      chunk_id: string;
-      snippet: string;
-      page?: number | null;
-      heading_path?: string[];
-      score: number;
-    }
-  | { type: "generative_ui"; spec: unknown }
-  | { type: "workflow_ref"; workflow: unknown }
-  | { type: "note_ref"; note: unknown }
-  | { type: "note_draft"; draft: unknown }
-  | { type: "slide_draft"; draft: unknown }
-  | { type: "csv_draft"; draft: unknown }
-  | { type: "document_draft"; draft: unknown }
-  | { type: "file_ref"; node_id: string; name: string }
-  | { type: "selection_context"; context: SelectionContext };
+/// メッセージ本文の構造化ブロック。**`crates/chat` の `ContentBlock` から生成**した型を使う
+/// （utoipa `ToSchema` → OpenAPI → openapi-typescript）。手書きのミラーは作らない —
+/// CLAUDE.md の「codegen が正」に従い、Rust 側にフィールドを足したらここは自動で追随する。
+export type ContentBlock = components["schemas"]["ContentBlock"];
 
 /// 未保存の下書きノート（save_note の下書き確定型・issue #282）。
 export type NoteDraft = { name: string; markdown: string };
@@ -50,11 +32,19 @@ export type SlideDraft = { name: string; content: string };
 /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。csv=CSV 本文。
 export type CsvDraft = { name: string; csv: string };
 
-/// 未保存の下書き Word 文書（save_document の下書き確定型・#332）。markdown=本文 md。
-export type DocumentDraft = { name: string; markdown: string };
+/// AI が作成/編集した文書への参照（#381）。kind=office/note/slide/csv/file。
+export type DocumentRefPayload = {
+  id: string;
+  name: string;
+  kind: string;
+  version: number | null;
+  created: boolean;
+};
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
-export type RunStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+/// 生成 run の状態（backend の `RunStatus` から生成）。手書きミラーには
+/// `waiting_approval`（承認待ち・#350）が欠落していた。
+export type RunStatus = components["schemas"]["RunStatus"];
 
 /// 自律 run の承認モード（backend chat::AutonomousMode と一致・#350）。
 /// require_approval=承認必須（既定）/ auto=版管理で復元可能な書込のみ自動 / bypass=全自動（危険）。
@@ -97,8 +87,24 @@ export type Message = {
   role: ChatRole;
   content: ContentBlock[];
   agentMode?: boolean;
+  /// このメッセージで実行済みの単発 UI アクション id（#410）。
+  /// 質問カード・計画カードの「送信済み」表示の根拠（ローカル state では再描画で消える）。
+  invokedActions?: string[];
+  /// 本文の図（```ui）のワークフローのボタンのうち、押せるもの（回答の確定時に束縛を解決できたもの）の id（#604）。
+  boundActions?: string[];
+  /// 本文の図のボタンで起動したワークフローの記録（押した順・メッセージごとに新しい 20 件まで）。
+  uiRuns?: UiActionRun[];
+  /// 生成直後に画面で確定した仮のメッセージ（id はサーバーのものではない）。読み直すまで図のボタンは押せない。
+  /// `reloading` はすぐ読み直す（生成の完了）、`stopped` は読み直さない（生成の停止）。
+  provisional?: "reloading" | "stopped";
   createdAt: string;
+  /// 仮の行（`provisional`）のときの、サーバ上の回答 ID（`id` は画面内の仮 ID）。
+  /// 評価（👍/👎）など保存済みの回答を指す操作に使う。読み込んだ行では未設定（`id` がそれ）。
+  serverId?: string;
 };
+
+/// 本文の図のボタンで起動したワークフロー 1 件（#604・codegen）。
+export type UiActionRun = components["schemas"]["UiActionRun"];
 
 export type Attachment = { node_id: string; name: string };
 export type Citation = Extract<ContentBlock, { type: "citation" }>;
@@ -106,7 +112,8 @@ export type Citation = Extract<ContentBlock, { type: "citation" }>;
 /// 共有語彙（backend chat::ThreadRole / storage::ShareTarget と一致）。
 export type ThreadRole = "viewer" | "commenter" | "editor";
 export type ShareTarget = { type: "user"; id: string } | { type: "role"; id: string };
-export type ThreadShareEntry = { target: ShareTarget; role: ThreadRole };
+/// 共有一覧の 1 件（表示名・email はサーバがテナント内ディレクトリから解決・#741）。
+export type ThreadShareEntry = components["schemas"]["ThreadShareEntry"];
 
 // ── スレッド一覧の購読（サイドバー履歴）────────────────────────────────
 
@@ -149,35 +156,24 @@ export function groupThreadsByDate(
   );
 }
 
-/// 自分のスレッド一覧を購読する React フック（更新日降順の先頭ページ）。
-/// `loading` で「取得前」と「本当に空」を区別できる（空状態フラッシュ/スケルトン用）。
-export function useThreadsState(): { threads: Thread[]; loading: boolean } {
-  const [threads, setThreads] = React.useState<Thread[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const reload = React.useCallback(() => {
-    listThreads()
-      .then((r) => {
-        setThreads(r.threads);
-        setLoading(false);
-      })
-      .catch(() => {
-        setThreads([]);
-        setLoading(false);
-      });
-  }, []);
-  React.useEffect(() => {
-    reload();
-    threadListeners.add(reload);
-    return () => {
-      threadListeners.delete(reload);
-    };
-  }, [reload]);
-  return { threads, loading };
+/// 履歴行の右端に出す更新時刻。今日は HH:mm、今年は M/D、それより前は YYYY/M/D。
+export function formatThreadTime(updatedAt: string, now = Date.now()): string {
+  const d = new Date(updatedAt);
+  if (Number.isNaN(d.getTime())) return "";
+  const today = new Date(now);
+  if (d.toDateString() === today.toDateString()) {
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
+  const md = `${d.getMonth() + 1}/${d.getDate()}`;
+  return d.getFullYear() === today.getFullYear() ? md : `${d.getFullYear()}/${md}`;
 }
 
-/// スレッド一覧（配列のみ）。既存呼び出し互換のため useThreadsState を薄くラップする。
-export function useThreads(): Thread[] {
-  return useThreadsState().threads;
+/// スレッド一覧の変更通知を購読する（作成・更新時に `notifyThreadsChanged` から呼ばれる）。
+export function subscribeThreadsChanged(listener: () => void): () => void {
+  threadListeners.add(listener);
+  return () => {
+    threadListeners.delete(listener);
+  };
 }
 
 // ── REST ──────────────────────────────────────────────────────────────
@@ -220,13 +216,15 @@ async function ok<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
+/// スレッド一覧の 1 ページ。`q` はタイトルの部分一致（サーバ側で全件から探す・#591）。
 export async function listThreads(
   cursor?: string,
-  opts?: { originNoteId?: string },
+  opts?: { originNoteId?: string; q?: string },
 ): Promise<{ threads: Thread[]; nextCursor: string | null }> {
   const params = new URLSearchParams();
   if (cursor) params.set("cursor", cursor);
   if (opts?.originNoteId) params.set("origin_note_id", opts.originNoteId);
+  if (opts?.q?.trim()) params.set("q", opts.q.trim());
   const qs = params.toString() ? `?${params.toString()}` : "";
   const data = await ok<{ threads: ApiThread[]; next_cursor: string | null }>(
     await apiFetch(`/threads${qs}`),
@@ -337,23 +335,30 @@ export async function getThread(id: string): Promise<Thread> {
   return toThread(await ok<ApiThread>(res));
 }
 
-type ApiMessage = {
-  id: string;
-  role: ChatRole;
-  content: ContentBlock[];
-  agent_mode?: boolean;
-  created_at: string;
-};
+/// メッセージのワイヤ型は **Rust の `chat::Message`（utoipa）から生成**したものを使う
+/// （手書きミラーを増やさない・codegen が正）。フィールドの必須性・名前・要素型が変われば
+/// ここが型エラーになる。
+type ApiMessage = components["schemas"]["Message"];
 
 export async function getThreadMessages(
   id: string,
-): Promise<{ messages: Message[]; activeRunId: string | null; activeRunAutonomous: boolean }> {
+): Promise<{
+  messages: Message[];
+  activeRunId: string | null;
+  activeRunAutonomous: boolean;
+  /// 進行中 run の生成先 assistant メッセージ id。
+  activeAssistantMessageId: string | null;
+  /// まだ生成が始まっていない発話（順番待ち・投入順）。
+  queuedRuns: { userMessageId: string; runId: string }[];
+}> {
   const res = await apiFetch(`/threads/${id}/messages`);
   if (res.status === 404 || res.status === 403) throw new ThreadNotFound();
   const data = await ok<{
     messages: ApiMessage[];
     active_run_id?: string | null;
     active_run_autonomous?: boolean | null;
+    active_assistant_message_id?: string | null;
+    queued_runs?: { user_message_id: string; run_id: string }[] | null;
   }>(res);
   return {
     messages: data.messages.map((m) => ({
@@ -361,10 +366,18 @@ export async function getThreadMessages(
       role: m.role,
       content: m.content,
       agentMode: m.agent_mode,
+      invokedActions: m.invoked_actions ?? [],
+      boundActions: m.bound_actions ?? [],
+      uiRuns: m.ui_runs ?? [],
       createdAt: m.created_at,
     })),
     activeRunId: data.active_run_id ?? null,
     activeRunAutonomous: data.active_run_autonomous ?? false,
+    activeAssistantMessageId: data.active_assistant_message_id ?? null,
+    queuedRuns: (data.queued_runs ?? []).map((q) => ({
+      userMessageId: q.user_message_id,
+      runId: q.run_id,
+    })),
   };
 }
 
@@ -380,6 +393,41 @@ export type SkillInvocation = {
   name: string;
 };
 
+/// `skill_invoked` の payload を検査する（生成型では `unknown`）。
+function parseSkillInvocation(raw: unknown): SkillInvocation | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.skill_id !== "string" || typeof o.name !== "string") return null;
+  if (typeof o.skill_version !== "number") return null;
+  return { skill_id: o.skill_id, skill_version: o.skill_version, name: o.name };
+}
+
+/// サブエージェント委譲の記録 1 件（subagent_run イベント・#391）。
+///
+/// 子の生イベント（取得本文・思考）は親へ流れない。UI が出せるのは**この要約だけ**で、
+/// 「どの範囲を担当し、何ステップ・何回のツール呼び出しで調べたか」を展開時に見せる。
+export type SubagentRun = {
+  tool_call_id: string;
+  objective: string;
+  boundary: string;
+  steps: number;
+  tool_calls: string[];
+};
+
+/// `subagent_run` の payload を検査する（生成型では `unknown`）。
+function parseSubagentRun(raw: unknown): SubagentRun | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.tool_call_id !== "string" || typeof o.boundary !== "string") return null;
+  return {
+    tool_call_id: o.tool_call_id,
+    objective: typeof o.objective === "string" ? o.objective : "",
+    boundary: o.boundary,
+    steps: typeof o.steps === "number" ? o.steps : 0,
+    tool_calls: Array.isArray(o.tool_calls) ? o.tool_calls.filter((t) => typeof t === "string") : [],
+  };
+}
+
 /// 承認要求（破壊系/egress/高コスト・Task 5.6）。
 export type ApprovalRequest = {
   tool_call_id: string;
@@ -391,12 +439,19 @@ export type ApprovalRequest = {
 export type StreamHandlers = {
   onToken?: (text: string) => void;
   onThinking?: (text: string) => void;
-  onToolCall?: (call: { id: string; name: string; input: unknown }) => void;
-  onToolResult?: (res: { id: string; ok: boolean }) => void;
+  onToolCall?: (call: {
+    id: string;
+    name: string;
+    input: unknown;
+    step?: number;
+    /// サブエージェントが中継した呼び出し（#391）。親の step 空間には属さない。
+    viaSubagent?: boolean;
+  }) => void;
+  /// ツール結果。`content` は観測テキスト（成功要約 or エラー）。UI は成否と要約を出す（#358/#386）。
+  onToolResult?: (res: { id: string; ok: boolean; content: string }) => void;
   onCitation?: (c: Citation) => void;
   onFileRef?: (f: Attachment) => void;
   /// 検証済み generative UI スペック（Phase 6・emit_ui）。
-  onGenerativeUi?: (spec: unknown) => void;
   /// 保存済みワークフローへの参照（Task 10.13・emit_workflow）。
   onWorkflowRef?: (workflow: unknown) => void;
   onNoteRef?: (note: unknown) => void;
@@ -406,14 +461,12 @@ export type StreamHandlers = {
   onSlideDraft?: (draft: unknown) => void;
   /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。下書き画面を開く/流し込む。
   onCsvDraft?: (draft: unknown) => void;
-  /// 未保存の下書き Word 文書（save_document の下書き確定型・#332）。下書き画面を開く/流し込む。
-  onDocumentDraft?: (draft: unknown) => void;
-  /// 開いている Office セッションへの AI ライブ編集（office.live_edit・#328）。ライブ専用
-  /// （履歴 projection されない）。対象 node_id が開いている文書と一致するとき Collabora へ
-  /// Action_Paste で現在の選択を置換注入する。
-  onOfficeLiveEdit?: (edit: { node_id: string; html: string }) => void;
+  /// AI が作成/編集した文書への参照（#381）。カード化し、新規作成ならエディタへ遷移する。
+  onDocumentRef?: (document: unknown) => void;
   /// skill ツールの発動記録（#344）。会話中に読み込んだスキルのチップ表示に使う。
   onSkillInvoked?: (skill: SkillInvocation) => void;
+  /// サブエージェント委譲の記録（#391）。担当範囲とステップ数を展開表示に足す。
+  onSubagentRun?: (run: SubagentRun) => void;
   onStatus?: (status: RunStatus) => void;
   // 自律エージェント（Phase 5）。
   onPlan?: (subtasks: PlanSubtask[]) => void;
@@ -423,35 +476,16 @@ export type StreamHandlers = {
   onFailureRecovery?: (r: { detail: string; action: string }) => void;
   /// 生成 run_id（承認 API 呼び出しに使う）。
   onRunId?: (runId: string) => void;
+  /// 生成先の assistant メッセージ id（**まだ本文は保存されていない**・本文の図のボタンは
+  /// run 完了後に読み直してから押せる）。
+  onAssistantMessageId?: (messageId: string) => void;
   onDone?: () => void;
   onError?: (message: string) => void;
 };
 
-/// 生成イベント種別（backend chat::StreamEventKind と一致・内部タグ `type`）。
-type StreamEventKind =
-  | { type: "token"; text: string }
-  | { type: "thinking"; text: string }
-  | { type: "tool_call"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; tool_call_id: string; ok: boolean; content: string }
-  | ({ type: "citation" } & Omit<Citation, "type">)
-  | { type: "file_ref"; node_id: string; name: string }
-  | { type: "generative_ui"; spec: unknown }
-  | { type: "workflow_ref"; workflow: unknown }
-  | { type: "note_ref"; note: unknown }
-  | { type: "note_draft"; draft: unknown }
-  | { type: "slide_draft"; draft: unknown }
-  | { type: "csv_draft"; draft: unknown }
-  | { type: "document_draft"; draft: unknown }
-  | { type: "office_live_edit"; node_id: string; html: string }
-  | { type: "skill_invoked"; skill: SkillInvocation }
-  | { type: "plan"; subtasks: PlanSubtask[] }
-  | { type: "budget_warning"; kind: string; used: number; limit: number }
-  | ({ type: "approval_requested" } & ApprovalRequest)
-  | { type: "approval_resolved"; tool_call_id: string; approved: boolean }
-  | { type: "failure_recovery"; detail: string; action: string }
-  | { type: "status"; status: RunStatus }
-  | { type: "error"; message: string }
-  | { type: "done"; message_id: string };
+/// 生成イベント種別。**`crates/chat` の `StreamEventKind` から生成**した型を使う（同上）。
+/// 追加 variant を握りつぶすのは `subscribe` の `default` 分岐が担う。
+type StreamEventKind = components["schemas"]["StreamEventKind"];
 
 /// SSE 購読を開始し、イベントを handlers へ振り分ける。返り値でストリームを閉じる。
 function subscribe(threadId: string, handlers: StreamHandlers): () => void {
@@ -477,27 +511,43 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         handlers.onThinking?.(kind.text);
         break;
       case "tool_call":
-        handlers.onToolCall?.({ id: kind.id, name: kind.name, input: kind.input });
+        handlers.onToolCall?.({
+          id: kind.id,
+          name: kind.name,
+          input: kind.input,
+          // 旧 run の replay では step が無い。**0 で埋めない**（逐次実行だった過去の
+          // ツール群が「並行して N 件」に化ける）。不明は undefined のまま流す。
+          step: kind.step ?? undefined,
+          viaSubagent: kind.via_subagent ?? false,
+        });
         break;
       case "tool_result":
-        handlers.onToolResult?.({ id: kind.tool_call_id, ok: kind.ok });
+        handlers.onToolResult?.({
+          id: kind.tool_call_id,
+          ok: kind.ok,
+          content: kind.content,
+        });
         break;
       case "citation":
         handlers.onCitation?.({
           type: "citation",
+          cite_id: kind.cite_id,
           node_id: kind.node_id,
           chunk_id: kind.chunk_id,
           snippet: kind.snippet,
           page: kind.page,
           heading_path: kind.heading_path,
           score: kind.score,
+          version: kind.version,
+          anchor: kind.anchor,
+          quote: kind.quote,
+          boxes: kind.boxes,
+          // 閲覧者が読めない文書の引用は、サーバが番号だけの出典に置き換えて送る（#513）。
+          withheld: kind.withheld,
         });
         break;
       case "file_ref":
         handlers.onFileRef?.({ node_id: kind.node_id, name: kind.name });
-        break;
-      case "generative_ui":
-        handlers.onGenerativeUi?.(kind.spec);
         break;
       case "workflow_ref":
         handlers.onWorkflowRef?.(kind.workflow);
@@ -514,15 +564,21 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
       case "csv_draft":
         handlers.onCsvDraft?.(kind.draft);
         break;
-      case "document_draft":
-        handlers.onDocumentDraft?.(kind.draft);
+      case "document_ref":
+        handlers.onDocumentRef?.(kind.document);
         break;
-      case "office_live_edit":
-        handlers.onOfficeLiveEdit?.({ node_id: kind.node_id, html: kind.html });
+      case "subagent_run": {
+        // payload は serde_json::Value（生成型では unknown）。形を検査してから渡す。
+        const run = parseSubagentRun(kind.subagent);
+        if (run) handlers.onSubagentRun?.(run);
         break;
-      case "skill_invoked":
-        handlers.onSkillInvoked?.(kind.skill);
+      }
+      case "skill_invoked": {
+        // payload は serde_json::Value（生成型では unknown）。形を検査してから渡す。
+        const skill = parseSkillInvocation(kind.skill);
+        if (skill) handlers.onSkillInvoked?.(skill);
         break;
+      }
       case "plan":
         handlers.onPlan?.(kind.subtasks);
         break;
@@ -585,22 +641,24 @@ export function streamMessage(
   autonomous?: boolean,
   // エディタの選択コンテキスト（選択→AI 指示・Task 11.10）。
   context?: SelectionContext,
+  /// **この発話にだけ**適用する skill（スラッシュコマンド起動・#387）。
+  /// thread のピンは変えない＝次の発話へ持ち越さない。
+  skills?: ArtifactPin[],
+  /// モデルと思考の深さ（#553）。`null`/省略は Auto（組織の既定）。
+  model?: ModelChoice,
+  /// **この発話にだけ**優先して使うツール（#734）。空・省略は指定なし。
+  tools?: UserSelectableTool[],
 ): (opts?: { cancelServer?: boolean }) => void {
   let unsub: (() => void) | null = null;
   let runId: string | null = null;
   let stopped = false;
 
-  apiFetch(`/threads/${threadId}/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, attachments, context: context ?? null, agent_mode: agentMode, autonomous }),
-  })
-    .then(async (res) => {
-      if (!res.ok) throw new Error(`送信に失敗しました (${res.status})`);
-      const body = (await res.json()) as { run_id: string };
-      runId = body.run_id;
+  postMessage(threadId, text, attachments, { agentMode, autonomous, context, skills, model, tools })
+    .then((posted) => {
+      runId = posted.runId;
       // 承認 API 呼び出しのため run_id を UI へ渡す（自律プロファイル・Task 5.6）。
       handlers.onRunId?.(runId);
+      handlers.onAssistantMessageId?.(posted.assistantMessageId);
       if (stopped) return;
       unsub = subscribe(threadId, handlers);
     })
@@ -610,6 +668,66 @@ export function streamMessage(
     stopped = true;
     unsub?.();
     if (opts?.cancelServer && runId) void cancelRun(threadId, runId);
+  };
+}
+
+/// 発話を投入する（**購読しない**）。
+///
+/// 生成中に送った発話は「順番待ち」としてサーバが受理し、先行 run が終わってから走る
+/// （直列化はワーカー側・`blocked_by_earlier_run`）。購読対象はスレッドで 1 本なので、
+/// 積むだけのときは SSE を開かず、先行 run の完了後に張り直す。
+export async function postMessage(
+  threadId: string,
+  text: string,
+  attachments: Attachment[],
+  opts: {
+    agentMode?: boolean;
+    autonomous?: boolean;
+    context?: SelectionContext;
+    skills?: ArtifactPin[];
+    /// モデルと思考の深さ（#553）。`null`/省略は Auto。
+    model?: ModelChoice;
+    /// この発話にだけ優先して使うツール（#734）。
+    tools?: UserSelectableTool[];
+  } = {},
+): Promise<{ runId: string; userMessageId: string; assistantMessageId: string }> {
+  const res = await apiFetch(`/threads/${threadId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text,
+      attachments,
+      context: opts.context ?? null,
+      agent_mode: opts.agentMode,
+      autonomous: opts.autonomous,
+      skills: opts.skills?.map((p) => ({
+        artifact_id: p.artifactId,
+        version: p.version ?? undefined,
+      })),
+      model: opts.model?.model,
+      effort: opts.model?.effort,
+      tools: opts.tools && opts.tools.length > 0 ? opts.tools : undefined,
+    }),
+  });
+  if (!res.ok) {
+    // 組織で使えないモデル等の 400 は理由を出す（「モデルが使えない」と分かるように）。
+    let detail = "";
+    try {
+      detail = ((await res.json()) as { detail?: string }).detail ?? "";
+    } catch {
+      // 本文なし
+    }
+    throw new Error(detail || `送信に失敗しました (${res.status})`);
+  }
+  const body = (await res.json()) as {
+    run_id: string;
+    user_message_id: string;
+    assistant_message_id: string;
+  };
+  return {
+    runId: body.run_id,
+    userMessageId: body.user_message_id,
+    assistantMessageId: body.assistant_message_id,
   };
 }
 

@@ -13,30 +13,41 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use authz::AuthContext;
-use futures::stream::StreamExt;
 use llm_gateway::{
     Block, GenerateRequest, GenerationRecord, LlmGateway, Message as LlmMessage, Role as LlmRole,
     StopReason, StreamDelta, ToolDef, Usage,
 };
 
-use crate::agent_gate::{authorize, emit_tool_events, execute_tool, Authz};
+use crate::agent_observation::{
+    append_budget_observation, demand_final_answer, nudge_empty_response,
+};
 use crate::approval::Approver;
 use crate::budget::BudgetCheck;
 use crate::checkpoint::Checkpoint;
-use crate::event::{AgentError, AgentEvent, EventSink, RecoveryAction};
+use crate::event::{
+    await_unless_cancelled, next_unless_cancelled, AgentError, AgentEvent, EventSink, NextDelta,
+    RecoveryAction,
+};
 use crate::loop_detect::LoopDetector;
-use crate::plan::{self, Plan};
-use crate::profile::{AgentOptions, AgentOutcome, AgentProfile};
+use crate::plan;
+use crate::profile::{AgentOptions, AgentOutcome};
 use crate::tool::Tool;
 
 /// 計画メタツールの名前（自律版のみ提示・ループが横取りしてツールへは dispatch しない）。
-const PLAN_TOOL: &str = "plan";
+pub(crate) const PLAN_TOOL: &str = crate::vocab::MetaToolName::Plan.as_str();
 
 /// ループの停止理由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentStop {
     /// モデルが自然終了した。
     Completed,
+    /// **1 応答の出力上限**（`max_tokens`）で切れた。完了ではない。
+    ///
+    /// `Completed` に潰すと、空の成果物が「正常終了」として報告される。実測（#407 の検証委譲）
+    /// では、検証ロールの子が思考で 1 応答の枠を使い切って本文ゼロで終わり、親には
+    /// 「停止理由: Completed なのに findings が無い」と届いた（親のログに「which is odd」と
+    /// 残っている）。原因が言えないと、やり直すべきか自分でやるべきかも判断できない。
+    Truncated,
     /// 最大ステップ/時間/トークン/コストの予算に達した（安全停止・Task 5.7）。
     Budget(crate::budget::BudgetKind),
     /// 同一失敗のループを検出して安全停止した（Task 5.5）。
@@ -55,6 +66,12 @@ pub struct RunContext<'a> {
     pub input_preview: String,
     /// 呼び出し元ミニアプリ（ゲートウェイ agent.invoke・Task 9.9）。chat 等は `None`。
     pub app_id: Option<uuid::Uuid>,
+    /// **この run が trace の起点か。**
+    ///
+    /// サブエージェントは親と同じ `trace_id` を受け継ぐ（tools/subagent.rs）。
+    /// step は子でも 0 から始まるので、これが無いと子の目的文が
+    /// Langfuse の trace input を上書きし、利用者の最初の質問が消える。
+    pub owns_trace: bool,
 }
 
 /// 累積中のツール呼び出し（1 ステップ分）。
@@ -80,13 +97,44 @@ pub async fn run_agent(
     sink: &mut dyn EventSink,
 ) -> Result<AgentOutcome, AgentError> {
     let tool_map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
-    let tool_defs = build_tool_defs(tools, opts.profile);
+    // 出番の限られるツールは定義を遅延にし、`tool_search` で読み込ませる（候補は提示済みの
+    // ツールだけ＝検索で認可は広がらない・tool_search.rs）。
+    let (tool_defs, tool_search) =
+        crate::tool_search::prepare(build_tool_defs(tools, opts), &opts.tool_search);
+    // 文書の埋め込みを先に温めておく（モデルが最初に検索するまでに間に合えば融合で返せる）。
+    if let Some(search) = &tool_search {
+        search.prewarm(run.ctx);
+    }
 
     // 再開 or 新規開始の状態。ループ検出器はチェックポイントから復元する（resume で失敗履歴を失わない）。
     let mut state = resume.unwrap_or_else(|| Checkpoint::start(messages));
     let mut detector = state.loop_detector.clone();
     let mut warned: std::collections::HashSet<crate::budget::BudgetKind> =
         std::collections::HashSet::new();
+    // 剪定閾値はモデルの窓を天井にする（#529）。見積りは各ステップの実測 prompt で補正する。
+    let limits = crate::context::ContextLimits::resolve(
+        opts.context_soft_limit_tokens,
+        opts.context_keep_recent,
+        gateway.context_window_tokens(opts.model.as_deref()),
+        opts.max_tokens,
+    );
+    // 実測の補正がまだ無い（新規開始・旧チェックポイント）なら、固定分（system＋ツール定義）を
+    // 概算で入れておく。最初の 1 回で溢れて拒否されると、補正に必要な実測すら得られない。
+    // 実測済みなら（0 でも）その値を使う。
+    // 遅延ロードで未読込のツール定義は文脈に載らないので数えない。
+    let context_tool_tokens = |messages: &[llm_gateway::Message]| {
+        crate::context::estimate_static_tokens(
+            None,
+            llm_gateway::tool_loading::context_tools(&tool_defs, messages),
+        )
+    };
+    let tool_tokens = context_tool_tokens(&state.messages);
+    let initial_overhead = state.context_overhead_tokens.unwrap_or_else(|| {
+        crate::context::estimate_static_tokens(opts.system.as_deref(), [])
+            .saturating_add(tool_tokens)
+    });
+    let mut gauge =
+        crate::context::ContextGauge::with_overhead(initial_overhead).with_tool_tokens(tool_tokens);
 
     let stop = loop {
         if sink.is_cancelled() {
@@ -94,7 +142,14 @@ pub async fn run_agent(
         }
         // --- 予算ガード（ステップに入る前に判定・Task 5.7）。 ---
         match opts.budget.check(&state.spent, Instant::now()) {
-            BudgetCheck::Exceeded(kind) => break AgentStop::Budget(kind),
+            // 上限で畳む前に、**ツールを外した 1 ターンだけ**回して成果物を書かせる。
+            BudgetCheck::Exceeded(kind) => {
+                // 着地の最中に止められたら、予算超過ではなくユーザー停止として返す。
+                if land_on_budget(gateway, run, opts, &mut state, sink).await? {
+                    break AgentStop::Cancelled;
+                }
+                break AgentStop::Budget(kind);
+            }
             BudgetCheck::Warn(kind, used, limit) => {
                 if warned.insert(kind) {
                     sink.emit(AgentEvent::BudgetWarning { kind, used, limit })
@@ -105,18 +160,23 @@ pub async fn run_agent(
         }
 
         // --- コンテキスト剪定（自律版のみ・古い大きなツール出力を畳む・Task 5.3）。 ---
-        if opts.profile.is_autonomous() && opts.context_soft_limit_tokens > 0 {
-            crate::context::prune_history(
-                &mut state.messages,
-                opts.context_soft_limit_tokens,
-                opts.context_keep_recent,
-            );
+        if opts.profile.is_autonomous() {
+            // tool_search で読み込んだ定義の増分を見積りに足す（次の実測で置き換わる）。
+            gauge.observe_tools(context_tool_tokens(&state.messages));
+            limits.apply(&mut state.messages, &gauge);
         }
 
+        // 補正の基準（送る履歴の見積り）。剪定するのは自律版だけなので Chat では測らない。
+        let sent_estimate = opts
+            .profile
+            .is_autonomous()
+            .then(|| crate::context::estimate_prompt_tokens(&state.messages));
+        let steps_before = state.spent.steps;
         let step_outcome = run_step(
             gateway,
             &tool_defs,
             &tool_map,
+            tool_search.as_ref(),
             run,
             opts,
             approver,
@@ -125,6 +185,14 @@ pub async fn run_agent(
             &mut detector,
         )
         .await?;
+        // 生成まで進んだステップだけ実測で補正する（途中キャンセルは報告が無い）。
+        if let Some(sent) = sent_estimate.filter(|_| state.spent.steps > steps_before) {
+            gauge.calibrate(sent, state.spent.last_prompt_tokens());
+            // このステップで読み込んだ定義は実測に入っていない。保存前に足しておく（再開時の
+            // 基準は履歴から求めるので、ここで足さないと再開直後に見落とす）。
+            gauge.observe_tools(context_tool_tokens(&state.messages));
+            state.context_overhead_tokens = Some(gauge.overhead_tokens());
+        }
         // ステップ境界でループ検出器の状態をチェックポイントへ畳み込む（中断/再開に耐える）。
         state.loop_detector = detector.clone();
         match step_outcome {
@@ -150,12 +218,145 @@ enum StepOutcome {
     Stop(AgentStop),
 }
 
+/// LLM エラーをループのエラーへ写す。
+///
+/// **利用枠超過だけは種別を保つ**。文字列に潰すと「LLM が壊れた」と「枠を使い切った」の
+/// 区別が消え、ユーザーにはプロバイダの生 JSON が出る（実測でその状態だった）。
+fn map_llm_error(e: llm_gateway::LlmError) -> AgentError {
+    match e {
+        llm_gateway::LlmError::RateLimited(msg) => AgentError::RateLimited(msg),
+        other => AgentError::Llm(other.to_string()),
+    }
+}
+
+/// 予算超過でループを畳む直前に、**ツールを外した 1 ターン**だけ回して成果物を書かせる。
+///
+/// 残量を観測に載せる（`[予算]`）だけでは取りこぼす。実測では、着地指示を読んでいるはずの
+/// 調査サブエージェントの 1/3 が最後までツールを呼び続け、**findings ゼロのまま上限で切られた**
+/// ——トークンを使って何も返らない、純粋な損失になる。ここで機械的に保証する。
+///
+/// - **ツールを渡さない**ので、追加の取得は起こり得ない（上限を超えて調べ続けない）。
+/// - コストは 1 生成ぶん。「それまでの仕事が丸ごと消える」方がはるかに高くつく。
+///   トークン/コスト上限で切れた場合も同じ理由で書かせる（超過は 1 生成ぶんに留まる）。
+/// - **キャンセル時は書かせない**（ユーザーが止めたのだから、そこで止める）。
+/// - 添える先（ツール結果）が無い＝1 手も実行していないので、書かせる材料も無い。
+///
+/// 戻り値は**ユーザー停止で打ち切ったか**。呼び出し元はそれを予算超過ではなく停止として返す
+/// （公開の `AgentOutcome.stop` やサブエージェントの監査に正しい理由を残す）。
+async fn land_on_budget(
+    gateway: &LlmGateway,
+    run: &RunContext<'_>,
+    opts: &AgentOptions,
+    state: &mut Checkpoint,
+    sink: &mut dyn EventSink,
+) -> Result<bool, AgentError> {
+    if sink.is_cancelled() {
+        return Ok(true);
+    }
+    if !demand_final_answer(&mut state.messages) {
+        return Ok(false);
+    }
+    let step = state.spent.steps;
+    // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
+    let started_at = chrono::Utc::now();
+
+    let setup = gateway.stream(
+        run.ctx,
+        GenerateRequest {
+            model: opts.model.clone(),
+            system: opts.system.clone(),
+            messages: state.messages.clone(),
+            tools: Vec::new(), // ← 追加の取得を構造的に不可能にする
+            effort: opts.effort,
+            max_tokens: opts.max_tokens,
+            temperature: opts.temperature,
+            session_id: opts.session_id.clone(),
+        },
+    );
+    let Some(stream) = await_unless_cancelled(setup, sink).await else {
+        return Ok(true);
+    };
+    let mut stream = stream.map_err(map_llm_error)?;
+
+    let mut text_acc = String::new();
+    let mut usage = Usage::default();
+    let mut cancelled = false;
+    loop {
+        // 最終回答の生成中に止められたら、そこで打ち切る（#602）。
+        let delta = match next_unless_cancelled(&mut stream, sink).await {
+            NextDelta::Item(delta) => delta,
+            NextDelta::End => break,
+            NextDelta::Cancelled => {
+                cancelled = true;
+                break;
+            }
+        };
+        match delta.map_err(map_llm_error)? {
+            StreamDelta::TextDelta { text } => {
+                text_acc.push_str(&text);
+                sink.emit(AgentEvent::Text(text)).await?;
+            }
+            StreamDelta::ThinkingDelta { text } => sink.emit(AgentEvent::Thinking(text)).await?,
+            StreamDelta::Done { usage: u, .. } => usage = u,
+            _ => {}
+        }
+    }
+
+    // 会計（DB・Langfuse）を待つ間も上流を握り続けないよう、先に手放す。
+    drop(stream);
+    // 会計は通常ステップと同じ扱い（実際に 1 回呼んでいるので、隠さず積む）。
+    let cost = gateway.estimate_cost_usd_micros(
+        opts.model
+            .as_deref()
+            .unwrap_or_else(|| gateway.default_model()),
+        usage,
+    );
+    gateway
+        .record_generation(
+            run.ctx,
+            &GenerationRecord {
+                idempotency_key: format!("{}:{step}:land", run.idempotency_prefix),
+                model: opts
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| gateway.default_model().to_string()),
+                usage,
+                trace_id: run.trace_id.clone(),
+                input_preview: run.input_preview.clone(),
+                output_preview: preview(&text_acc),
+                app_id: run.app_id,
+                source: usage_source(opts, run.app_id),
+                // step 0 がそのリクエストの最初の生成。
+                first_in_trace: run.owns_trace && step == 0,
+                started_at: Some(started_at),
+            },
+        )
+        .await;
+    // **ステップは進めない**（`add_external`）。`spent.steps` はループの回数であり予算の軸で、
+    // 着地は予算を使い切った**外側**で起こる。ここで +1 すると `steps > max_steps` になり、
+    // チェックポイントから再開したときに「最初から予算超過」の状態が復元される。
+    // トークンとコストは実際に使ったぶんを隠さず積む。
+    state.spent.add_external(
+        usage.prompt_tokens.saturating_add(usage.completion_tokens),
+        usage.completion_tokens,
+        cost,
+    );
+    if !text_acc.is_empty() {
+        state.messages.push(LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![Block::Text { text: text_acc }],
+        });
+    }
+    Ok(cancelled)
+}
+
 /// 1 ステップ（1 LLM 生成＋そのツール実行）を回し、状態を進める。
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // ストリーム分岐＋ツール実行で伸びる。
 async fn run_step(
     gateway: &LlmGateway,
     tool_defs: &[ToolDef],
     tool_map: &HashMap<&str, &Arc<dyn Tool>>,
+    tool_search: Option<&crate::tool_search::ToolSearch>,
     run: &RunContext<'_>,
     opts: &AgentOptions,
     approver: Option<&dyn Approver>,
@@ -173,24 +374,41 @@ async fn run_step(
         max_tokens: opts.max_tokens,
         // skill のモデル既定（Task 6.9）。None は provider 既定。
         temperature: opts.temperature,
+        session_id: opts.session_id.clone(),
     };
-    let mut stream = gateway
-        .stream(req)
-        .await
-        .map_err(|e| AgentError::Llm(e.to_string()))?;
+    // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
+    let started_at = chrono::Utc::now();
+    // 確立待ち（応答ヘッダ・再試行）の間に止められても手放す（#602）。
+    let Some(stream) = await_unless_cancelled(gateway.stream(run.ctx, req), sink).await else {
+        return Ok(StepOutcome::Stop(AgentStop::Cancelled));
+    };
+    let mut stream = stream.map_err(map_llm_error)?;
 
     let mut text_acc = String::new();
     let mut pending_names: HashMap<String, String> = HashMap::new();
     let mut calls: Vec<PendingCall> = Vec::new();
+    // assistant メッセージのブロックを**届いた順**に積む（推論アイテムは直後の本文・ツール呼び出しと
+    // 対で送り返す必要があり、並べ替えると Responses が拒否する・#542）。本文は直前のブロックが本文なら
+    // そこへ足し、推論アイテム・ツール呼び出しの後なら新しい本文ブロックを始める。
+    let mut ordered: Vec<Block> = Vec::new();
     let mut usage = Usage::default();
     let mut final_stop = StopReason::EndTurn;
 
-    while let Some(delta) = stream.next().await {
-        if sink.is_cancelled() {
-            return Ok(StepOutcome::Stop(AgentStop::Cancelled));
-        }
-        match delta.map_err(|e| AgentError::Llm(e.to_string()))? {
+    loop {
+        // 黙っている間も停止を見張り、止まったらストリームを drop して上流を手放す（#602）。
+        let delta = match next_unless_cancelled(&mut stream, sink).await {
+            NextDelta::Item(delta) => delta,
+            NextDelta::End => break,
+            NextDelta::Cancelled => return Ok(StepOutcome::Stop(AgentStop::Cancelled)),
+        };
+        match delta.map_err(map_llm_error)? {
             StreamDelta::TextDelta { text } => {
+                if !text.is_empty() {
+                    match ordered.last_mut() {
+                        Some(Block::Text { text: last }) => last.push_str(&text),
+                        _ => ordered.push(Block::Text { text: text.clone() }),
+                    }
+                }
                 text_acc.push_str(&text);
                 sink.emit(AgentEvent::Text(text)).await?;
             }
@@ -201,6 +419,9 @@ async fn run_step(
                 pending_names.insert(id, name);
             }
             StreamDelta::ToolUseInputDelta { .. } => {}
+            StreamDelta::ReasoningItem { provider, item } => {
+                ordered.push(Block::Reasoning { provider, item });
+            }
             StreamDelta::ToolUseStop { id, input } => {
                 let name = pending_names
                     .get(&id)
@@ -210,8 +431,15 @@ async fn run_step(
                     id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
+                    // 同一ステップの呼び出しは同じ番号になる（UI の並行表示のグルーピング根拠）。
+                    step: u32::try_from(step).unwrap_or(u32::MAX),
                 })
                 .await?;
+                ordered.push(Block::ToolUse {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                });
                 calls.push(PendingCall { id, name, input });
             }
             StreamDelta::Done {
@@ -245,96 +473,90 @@ async fn run_step(
                 input_preview: run.input_preview.clone(),
                 output_preview: preview(&text_acc),
                 app_id: run.app_id,
+                source: usage_source(opts, run.app_id),
+                // step 0 がそのリクエストの最初の生成。
+                first_in_trace: run.owns_trace && step == 0,
+                started_at: Some(started_at),
             },
         )
         .await;
     state
         .spent
-        .add_step(usage.prompt_tokens + usage.completion_tokens, cost);
+        .add_step(usage.prompt_tokens, usage.completion_tokens, cost);
     // チェックポイントの step を消費ステップ数に追従させる（再開時の起点・監査の整合）。
     state.step = state.spent.steps;
 
-    // assistant メッセージを履歴へ。
-    let mut assistant_blocks: Vec<Block> = Vec::new();
-    if !text_acc.is_empty() {
-        assistant_blocks.push(Block::Text { text: text_acc });
+    // **本文もツール呼び出しも無い応答は「完了」ではない**。思考にだけ書いて content を空で
+    // 返すプロバイダが実在する（実測: 委譲の子が 8 体中 3 体、本文ゼロで「正常終了」した）。
+    // そのまま畳むと成果物が消えるので、**1 度だけ**書き直させる。空の assistant メッセージは
+    // 積まない（content が空のメッセージを拒否するプロバイダがある）。
+    if text_acc.is_empty() && calls.is_empty() && nudge_empty_response(&mut state.messages) {
+        return Ok(StepOutcome::Continue);
     }
-    for c in &calls {
-        assistant_blocks.push(Block::ToolUse {
-            id: c.id.clone(),
-            name: c.name.clone(),
-            input: c.input.clone(),
-        });
-    }
+
+    // assistant メッセージを履歴へ（届いた順のまま）。
     state.messages.push(LlmMessage {
         role: LlmRole::Assistant,
-        content: assistant_blocks,
+        content: ordered,
     });
 
-    // 終了判定: ツール呼び出しが無ければ完了。
+    // 終了判定: ツール呼び出しが無ければ終わり。ただし **max_tokens で切れたのは完了ではない**。
     if final_stop != StopReason::ToolUse || calls.is_empty() {
-        return Ok(StepOutcome::Stop(AgentStop::Completed));
+        return Ok(StepOutcome::Stop(if final_stop == StopReason::MaxTokens {
+            AgentStop::Truncated
+        } else {
+            AgentStop::Completed
+        }));
     }
 
-    // ツール実行 → 観測を履歴へ。plan メタツールはループが横取りする（5.2）。
-    let mut result_blocks: Vec<Block> = Vec::new();
-    let mut looping = false;
-    for c in calls {
-        let content = if opts.profile.is_autonomous() && c.name == PLAN_TOOL {
-            handle_plan_tool(&c, &mut state.plan, sink).await?
-        } else {
-            // 承認ゲート（Task 5.6）: 破壊系は事前許可 or ユーザー承認まで実行しない。
-            match authorize(tool_map, &c, opts, approver, sink).await? {
-                Authz::Cancel => return Ok(StepOutcome::Stop(AgentStop::Cancelled)),
-                Authz::Reject(msg) => {
-                    // 却下も観測イベントとして外部化する（UI が結果を表示できるように）。
-                    sink.emit(AgentEvent::ToolResult {
-                        tool_call_id: c.id.clone(),
-                        ok: false,
-                        content: msg.clone(),
-                    })
-                    .await?;
-                    // 却下も失敗としてループ検出へ流す（同じ却下操作の反復を安全停止する）。
-                    if opts.profile.is_autonomous() && detector.observe(&c.name, &c.input, true) {
-                        looping = true;
-                    }
-                    ToolResultParts {
-                        content: msg,
-                        is_error: true,
-                    }
-                }
-                Authz::Proceed => {
-                    let outcome =
-                        execute_tool(tool_map, run.ctx, &c, run.trace_id.as_deref()).await;
-                    emit_tool_events(sink, &c, &outcome).await?;
-                    // 失敗ループ検出（自律版のみ・5.5）。
-                    if opts.profile.is_autonomous() {
-                        if outcome.is_error {
-                            sink.emit(AgentEvent::FailureRecovery {
-                                detail: format!(
-                                    "tool '{}' failed; retrying with observation",
-                                    c.name
-                                ),
-                                action: RecoveryAction::Retry,
-                            })
-                            .await?;
-                        }
-                        if detector.observe(&c.name, &c.input, outcome.is_error) {
-                            looping = true;
-                        }
-                    }
-                    ToolResultParts {
-                        content: outcome.content,
-                        is_error: outcome.is_error,
-                    }
-                }
-            }
-        };
-        result_blocks.push(Block::ToolResult {
-            tool_use_id: c.id,
-            content: content.content,
-            is_error: content.is_error,
-        });
+    // ツール実行 → 観測を履歴へ。冪等 read は有界並列・それ以外は逐次（#349・agent_tools）。
+    let phase = crate::agent_tools::ToolPhase {
+        tool_map,
+        tool_search,
+        ctx: run.ctx,
+        trace_id: run.trace_id.as_deref(),
+        opts,
+        approver,
+    };
+    let (mut result_blocks, looping, external) = match crate::agent_tools::run_tool_calls(
+        &phase,
+        calls,
+        &mut state.plan,
+        &mut state.citations,
+        sink,
+        detector,
+    )
+    .await?
+    {
+        crate::agent_tools::ToolPhaseOutcome::Cancelled { external } => {
+            // キャンセルでも走った分は計上してから止める（「止めれば無料」を作らない）。
+            state.spent.add_external(
+                external.tokens,
+                external.fresh_tokens,
+                external.cost_usd_micros,
+            );
+            return Ok(StepOutcome::Stop(AgentStop::Cancelled));
+        }
+        crate::agent_tools::ToolPhaseOutcome::Executed {
+            blocks,
+            looping,
+            external,
+        } => (blocks, looping, external),
+    };
+    // ツールの内側で起きた LLM 消費（サブエージェント委譲・#391）を親の会計へ積む。
+    // steps は増やさない（親のループ回数の指標を保つ）。次のステップ境界の `Budget::check` が
+    // 子の消費込みで判定するため、**トークン/コスト上限で確実に止まる**。
+    if external.tokens > 0 || external.cost_usd_micros > 0 {
+        state.spent.add_external(
+            external.tokens,
+            external.fresh_tokens,
+            external.cost_usd_micros,
+        );
+    }
+    // 残り予算を**観測として**添える（#407）。`BudgetWarning` は sink 専用でモデルに届かず、
+    // エージェントは残量を知らないまま上限で切られていた（実測: 委譲 7 体中 6 体が Budget(Steps)）。
+    if opts.profile.is_autonomous() {
+        append_budget_observation(&mut result_blocks, &opts.budget, &state.spent);
     }
     state.messages.push(LlmMessage {
         role: LlmRole::Tool,
@@ -352,64 +574,22 @@ async fn run_step(
     Ok(StepOutcome::Continue)
 }
 
-/// ツール結果の本文＋エラー有無（plan/通常ツールの合流点）。
-struct ToolResultParts {
-    content: String,
-    is_error: bool,
-}
-
 /// 提示するツール定義を組み立てる（自律版は `plan` メタツールを足す）。
-fn build_tool_defs(tools: &[Arc<dyn Tool>], profile: AgentProfile) -> Vec<ToolDef> {
+fn build_tool_defs(tools: &[Arc<dyn Tool>], opts: &AgentOptions) -> Vec<ToolDef> {
     let mut defs: Vec<ToolDef> = tools
         .iter()
-        .map(|t| ToolDef {
-            name: t.name().to_string(),
-            description: t.description().to_string(),
-            input_schema: t.input_schema(),
-        })
+        .map(|t| ToolDef::new(t.name(), t.description(), t.input_schema()))
         .collect();
-    if profile.is_autonomous() {
-        defs.push(ToolDef {
-            name: PLAN_TOOL.to_string(),
-            description:
-                "現在の計画（サブタスク列）を提示/改訂する。目標を数個のサブタスクに分解し、\
-                進捗に応じて全置換で更新する（各要素に status: todo/doing/done/blocked）。\
-                計画は UI に表示され進捗が追跡される。"
-                    .to_string(),
-            input_schema: plan::plan_tool_schema(),
-        });
+    if opts.profile.is_autonomous() && opts.offer_plan_tool {
+        defs.push(ToolDef::new(
+            PLAN_TOOL,
+            "現在の計画（サブタスク列）を提示/改訂する。目標を数個のサブタスクに分解し、\
+            進捗に応じて全置換で更新する（各要素に status: todo/doing/done/blocked）。\
+            計画は UI に表示され進捗が追跡される。",
+            plan::plan_tool_schema(),
+        ));
     }
     defs
-}
-
-/// `plan` メタツールを処理する（計画を改訂し、変化を [`AgentEvent::PlanUpdated`] で外部化）。
-async fn handle_plan_tool(
-    call: &PendingCall,
-    current: &mut Plan,
-    sink: &mut dyn EventSink,
-) -> Result<ToolResultParts, AgentError> {
-    let inputs = plan::parse_plan_input(&call.input);
-    // 空入力（不正 JSON・subtasks 欠落）で既存の計画を消さない（誤消去防止）。空なら現状維持。
-    let content = if inputs.is_empty() && !current.subtasks.is_empty() {
-        "計画の更新入力が空だったため、現在の計画を維持しました。".to_string()
-    } else {
-        if current.revise(inputs) {
-            sink.emit(AgentEvent::PlanUpdated(current.clone())).await?;
-        }
-        let (done, total) = current.progress();
-        format!("計画を更新しました（{done}/{total} 完了）。")
-    };
-    // plan メタツールの結果もツール結果イベントとして外部化する（UI のツール表示を閉じる）。
-    sink.emit(AgentEvent::ToolResult {
-        tool_call_id: call.id.clone(),
-        ok: true,
-        content: content.clone(),
-    })
-    .await?;
-    Ok(ToolResultParts {
-        content,
-        is_error: false,
-    })
 }
 
 /// Langfuse 表示用に長文を切り詰める。
@@ -423,4 +603,16 @@ fn preview(s: &str) -> String {
         end -= 1;
     }
     format!("{}…", &s[..end])
+}
+
+/// 会計の利用元（管理画面の利用元別集計・#553）。ミニアプリ経由はミニアプリ、
+/// チャット制約版はチャット、自律版はエージェントとして数える。
+fn usage_source(opts: &AgentOptions, app_id: Option<uuid::Uuid>) -> llm_gateway::UsageSource {
+    if app_id.is_some() {
+        llm_gateway::UsageSource::MiniApp
+    } else if opts.profile.is_autonomous() {
+        llm_gateway::UsageSource::Agent
+    } else {
+        llm_gateway::UsageSource::Chat
+    }
 }

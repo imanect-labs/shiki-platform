@@ -12,6 +12,7 @@
 
 use uuid::Uuid;
 
+use crate::anchor::{utf16_len, Anchor};
 use crate::types::{BlockType, Chunk, ChunkKind, ParsedBlock};
 
 /// チャンクサイズの調整点。既定は日本語ビジネス文書想定。
@@ -33,17 +34,21 @@ impl Default for ChunkParams {
 }
 
 /// ブロック列を親子チャンクへ落とす。
+///
+/// `blocks` の添字がブロック番号（ordinal）。leaf / table にはその範囲のアンカー
+/// （ブロック番号＋ブロック内の UTF-16 オフセット）と前後の文脈を付ける（#508）。
 pub fn chunk_document(
     node_id: Uuid,
     version: i64,
     blocks: &[ParsedBlock],
     params: &ChunkParams,
 ) -> Vec<Chunk> {
-    let mut builder = ChunkBuilder::new(node_id, version, params.clone());
+    let mut builder = ChunkBuilder::new(node_id, version, blocks, params.clone());
     // 見出しスタック（(level, text)）。heading_path はここから導出する。
     let mut headings: Vec<(u32, String)> = Vec::new();
 
-    for block in blocks {
+    for (index, block) in blocks.iter().enumerate() {
+        let ordinal = i32::try_from(index).unwrap_or(i32::MAX);
         match block.block_type {
             BlockType::Heading => {
                 // セクション境界: 進行中のセクションを確定してから見出しスタックを更新する。
@@ -55,10 +60,10 @@ pub fn chunk_document(
                 headings.push((level, block.text.trim().to_string()));
             }
             BlockType::Table => {
-                builder.push_table(block, &heading_path(&headings));
+                builder.push_table(ordinal, block, &heading_path(&headings));
             }
-            BlockType::Paragraph | BlockType::Caption => {
-                builder.push_paragraph(block);
+            BlockType::Paragraph | BlockType::Caption | BlockType::ListItem => {
+                builder.push_paragraph(ordinal, block);
             }
         }
     }
@@ -70,24 +75,58 @@ fn heading_path(headings: &[(u32, String)]) -> Vec<String> {
     headings.iter().map(|(_, t)| t.clone()).collect()
 }
 
+/// ブロック上の位置（ブロック番号・ブロック内のバイト位置と UTF-16 位置）。
+#[derive(Debug, Clone, Copy)]
+struct Pos {
+    block: i32,
+    byte: usize,
+    u16: i32,
+}
+
+/// 進行中セクションの段落 1 個。
+struct Para {
+    block: i32,
+    /// 前後の空白を除いた本文（ブロック本文の `lead` バイト目から）。
+    text: String,
+    lead: usize,
+    page: Option<i32>,
+}
+
+/// 前後の文脈として残す文字数。
+const CONTEXT_CHARS: usize = crate::anchor::QUOTE_CONTEXT_CHARS;
+
 /// セクション（見出し境界）単位で parent + leaves を組み立てる内部状態。
-struct ChunkBuilder {
+struct ChunkBuilder<'a> {
     node_id: Uuid,
     version: i64,
+    blocks: &'a [ParsedBlock],
     params: ChunkParams,
     chunks: Vec<Chunk>,
     ordinal: i32,
-    /// 進行中セクションの段落（text, page）。表は即確定するためここには入らない。
-    pending: Vec<(String, Option<i32>)>,
+    /// 進行中セクションの段落。表は即確定するためここには入らない。
+    pending: Vec<Para>,
     /// 進行中セクションの表チャンク（parent 確定時に parent_id を埋める）。
     pending_tables: Vec<Chunk>,
 }
 
-impl ChunkBuilder {
-    fn new(node_id: Uuid, version: i64, params: ChunkParams) -> Self {
+/// 組み立て中の leaf。
+#[derive(Default)]
+struct LeafAcc {
+    text: String,
+    /// `text.chars().count()` を毎回やり直さないための累積。断片が短い文書
+    /// （字幕・チャットログ）ほど数え直しの倍率が上がる。
+    chars: usize,
+    page: Option<i32>,
+    start: Option<Pos>,
+    end: Option<Pos>,
+}
+
+impl<'a> ChunkBuilder<'a> {
+    fn new(node_id: Uuid, version: i64, blocks: &'a [ParsedBlock], params: ChunkParams) -> Self {
         ChunkBuilder {
             node_id,
             version,
+            blocks,
             params,
             chunks: Vec::new(),
             ordinal: 0,
@@ -107,29 +146,58 @@ impl ChunkBuilder {
         (id, ordinal)
     }
 
-    fn push_paragraph(&mut self, block: &ParsedBlock) {
+    fn block_text(&self, block: i32) -> &'a str {
+        usize::try_from(block)
+            .ok()
+            .and_then(|i| self.blocks.get(i))
+            .map_or("", |b| b.text.as_str())
+    }
+
+    fn push_paragraph(&mut self, ordinal: i32, block: &ParsedBlock) {
         let text = block.text.trim();
         if !text.is_empty() {
-            self.pending.push((text.to_string(), block.page));
+            self.pending.push(Para {
+                block: ordinal,
+                text: text.to_string(),
+                lead: block.text.len() - block.text.trim_start().len(),
+                page: block.page,
+            });
         }
     }
 
     /// 表は表単位で 1 チャンク（分割禁止）。parent_id はセクション確定時に埋める。
-    fn push_table(&mut self, block: &ParsedBlock, path: &[String]) {
+    fn push_table(&mut self, ordinal: i32, block: &ParsedBlock, path: &[String]) {
         let text = block.text.trim();
         if text.is_empty() {
             return;
         }
-        let (id, ordinal) = self.next_id();
-        self.pending_tables.push(Chunk {
+        let lead = block.text.len() - block.text.trim_start().len();
+        let start = Pos {
+            block: ordinal,
+            byte: lead,
+            u16: utf16_len(&block.text[..lead]),
+        };
+        let end = Pos {
+            block: ordinal,
+            byte: lead + text.len(),
+            u16: start.u16 + utf16_len(text),
+        };
+        let (id, chunk_ordinal) = self.next_id();
+        let mut chunk = Chunk {
             id,
             parent_id: None, // flush_section で設定
             kind: ChunkKind::Table,
-            ordinal,
+            ordinal: chunk_ordinal,
             page: block.page,
             heading_path: path.to_vec(),
             content: text.to_string(),
-        });
+            anchor: None,
+            quote_prefix: String::new(),
+            quote_suffix: String::new(),
+            boxes: Vec::new(),
+        };
+        self.locate(&mut chunk, start, end);
+        self.pending_tables.push(chunk);
     }
 
     /// 進行中セクションを確定する: parent 1 個＋段落 leaf 群＋表チャンク群。
@@ -144,7 +212,7 @@ impl ChunkBuilder {
         let mut parent_content = String::new();
         for text in paragraphs
             .iter()
-            .map(|(t, _)| t.as_str())
+            .map(|p| p.text.as_str())
             .chain(tables.iter().map(|t| t.content.as_str()))
         {
             if !parent_content.is_empty() {
@@ -163,7 +231,7 @@ impl ChunkBuilder {
         let (parent_uuid, parent_ordinal) = self.next_id();
         let first_page = paragraphs
             .iter()
-            .map(|(_, p)| *p)
+            .map(|p| p.page)
             .chain(tables.iter().map(|t| t.page))
             .find(Option::is_some)
             .flatten();
@@ -175,24 +243,59 @@ impl ChunkBuilder {
             page: first_page,
             heading_path: path.to_vec(),
             content: parent_content,
+            anchor: None,
+            quote_prefix: String::new(),
+            quote_suffix: String::new(),
+            boxes: Vec::new(),
         });
 
-        // 段落を max_leaf_chars まで詰めて leaf 化（段落境界でのみ分割）。
-        let mut leaf_text = String::new();
-        let mut leaf_page: Option<i32> = None;
-        for (text, page) in &paragraphs {
-            let would_be = leaf_text.chars().count() + text.chars().count();
-            if !leaf_text.is_empty() && would_be > self.params.max_leaf_chars {
-                self.emit_leaf(&mut leaf_text, &mut leaf_page, parent_uuid, path);
+        // 段落を max_leaf_chars まで詰めて leaf 化。段落境界で切るのが基本だが、
+        // 1 段落だけで上限を超える場合は段落内でも割る（下記 split_oversized）。
+        let mut leaf = LeafAcc::default();
+        for para in &paragraphs {
+            let lead_u16 = utf16_len(&self.block_text(para.block)[..para.lead]);
+            // 断片は順に並ぶので、UTF-16 位置は前の断片の続きから数える（全体で線形）。
+            let (mut at_byte, mut at_u16) = (0usize, 0i32);
+            for (offset, piece) in split_oversized_at(&para.text, self.params.max_leaf_chars) {
+                at_u16 += utf16_len(&para.text[at_byte..offset]);
+                let start = Pos {
+                    block: para.block,
+                    byte: para.lead + offset,
+                    u16: lead_u16 + at_u16,
+                };
+                at_byte = offset + piece.len();
+                at_u16 += utf16_len(piece);
+                let end = Pos {
+                    block: para.block,
+                    byte: para.lead + at_byte,
+                    u16: lead_u16 + at_u16,
+                };
+
+                let piece_chars = piece.chars().count();
+                // 区切りの "\n\n" も leaf の文字数に乗るので判定に含める。含めないと
+                // ちょうど上限で収まる組み合わせのときだけ max+2 文字の leaf ができる。
+                let sep = if leaf.text.is_empty() { 0 } else { 2 };
+                // 段落の間に表（別チャンク）を挟むなら、そこで leaf を切る。続けると leaf の
+                // 範囲が表まで含み、出典パネルや PDF の枠で表まで引用箇所に見えてしまう。
+                let gap = leaf.end.is_some_and(|e| para.block > e.block + 1);
+                if !leaf.text.is_empty()
+                    && (gap || leaf.chars + sep + piece_chars > self.params.max_leaf_chars)
+                {
+                    self.emit_leaf(&mut leaf, parent_uuid, path);
+                }
+                if leaf.text.is_empty() {
+                    leaf.page = para.page;
+                    leaf.start = Some(start);
+                } else {
+                    leaf.text.push_str("\n\n");
+                    leaf.chars += 2;
+                }
+                leaf.text.push_str(piece);
+                leaf.chars += piece_chars;
+                leaf.end = Some(end);
             }
-            if leaf_text.is_empty() {
-                leaf_page = *page;
-            } else {
-                leaf_text.push_str("\n\n");
-            }
-            leaf_text.push_str(text);
         }
-        self.emit_leaf(&mut leaf_text, &mut leaf_page, parent_uuid, path);
+        self.emit_leaf(&mut leaf, parent_uuid, path);
 
         // 表チャンクへ parent を結線して確定する。
         for mut table in tables {
@@ -201,26 +304,89 @@ impl ChunkBuilder {
         }
     }
 
-    fn emit_leaf(
-        &mut self,
-        text: &mut String,
-        page: &mut Option<i32>,
-        parent_id: Uuid,
-        path: &[String],
-    ) {
-        if text.is_empty() {
+    fn emit_leaf(&mut self, leaf: &mut LeafAcc, parent_id: Uuid, path: &[String]) {
+        let acc = std::mem::take(leaf);
+        if acc.text.is_empty() {
             return;
         }
         let (id, ordinal) = self.next_id();
-        self.chunks.push(Chunk {
+        let mut chunk = Chunk {
             id,
             parent_id: Some(parent_id),
             kind: ChunkKind::Leaf,
             ordinal,
-            page: page.take(),
+            page: acc.page,
             heading_path: path.to_vec(),
-            content: std::mem::take(text),
+            content: acc.text,
+            anchor: None,
+            quote_prefix: String::new(),
+            quote_suffix: String::new(),
+            boxes: Vec::new(),
+        };
+        if let (Some(start), Some(end)) = (acc.start, acc.end) {
+            self.locate(&mut chunk, start, end);
+        }
+        self.chunks.push(chunk);
+    }
+
+    /// チャンクに範囲のアンカー・前後の文脈・原本上の枠を付ける。
+    fn locate(&self, chunk: &mut Chunk, start: Pos, end: Pos) {
+        chunk.anchor = Some(Anchor {
+            block_start: start.block,
+            off_start: start.u16,
+            block_end: end.block,
+            off_end: end.u16,
         });
+        chunk.quote_prefix = self.context_before(start);
+        chunk.quote_suffix = self.context_after(end);
+        for i in start.block..=end.block {
+            let Some(block) = usize::try_from(i).ok().and_then(|i| self.blocks.get(i)) else {
+                continue;
+            };
+            for b in &block.prov {
+                if !chunk.boxes.contains(b) {
+                    chunk.boxes.push(b.clone());
+                }
+            }
+        }
+    }
+
+    /// 範囲の直前の文脈（同じブロックで足りなければ、前のブロックの末尾を改行でつなぐ）。
+    fn context_before(&self, at: Pos) -> String {
+        let head = &self.block_text(at.block)[..at.byte];
+        let mut out: Vec<char> = head.chars().rev().take(CONTEXT_CHARS).collect();
+        if out.len() < CONTEXT_CHARS && at.block > 0 {
+            out.push('\n');
+            let prev = self.block_text(at.block - 1).trim_end();
+            out.extend(prev.chars().rev().take(CONTEXT_CHARS - out.len()));
+        }
+        out.into_iter()
+            .rev()
+            .collect::<String>()
+            .trim_start()
+            .to_string()
+    }
+
+    /// 範囲の直後の文脈（同じブロックで足りなければ、次のブロックの先頭を改行でつなぐ）。
+    fn context_after(&self, at: Pos) -> String {
+        let tail = &self.block_text(at.block)[at.byte..];
+        let mut out: String = tail.chars().take(CONTEXT_CHARS).collect();
+        let taken = out.chars().count();
+        let next = usize::try_from(at.block + 1)
+            .ok()
+            .and_then(|i| self.blocks.get(i));
+        if taken < CONTEXT_CHARS {
+            if let Some(next) = next {
+                out.push('\n');
+                out.extend(
+                    next.text
+                        .trim_start()
+                        .chars()
+                        .take(CONTEXT_CHARS - taken - 1),
+                );
+            }
+        }
+        out.trim_end().to_string()
     }
 
     fn finish(mut self) -> Vec<Chunk> {
@@ -228,6 +394,81 @@ impl ChunkBuilder {
         self.chunks.sort_by_key(|c| c.ordinal);
         self.chunks
     }
+}
+
+/// 上限を超える 1 段落を、上限以下の断片へ割る（上限以下ならそのまま 1 個返す）。
+///
+/// パーサが段落を刻めなかった文書（空行を使わない議事録・字幕・ログ、改行を持たない
+/// PDF 抽出結果など）が、そのまま数万文字の leaf になるのを防ぐ最後の砦。巨大 leaf は
+/// 埋め込みが文書全体の平均に薄まって意味検索から消え、BM25 でも長文ペナルティで沈む。
+///
+/// 切れ目は「文末（。！？!?）→ 改行 → 空白 → 文字数」の順に優先する。空白を見るのは
+/// 英文で語の途中が切れるのを防ぐため。ASCII の `.` は小数や略語にも出るので文末には
+/// 含めない（空白へのフォールバックがあれば語中分割は起きない）。
+///
+/// 見つけた切れ目が手前すぎる場合は使わず次の候補へ送る。窓の先頭近くに句点が 1 個だけ
+/// ある文書（「開会します。」＋句読点の無い長い羅列）で、1 文字の leaf が索引に入るため。
+///
+/// 計算量は入力長に対して線形。**残り文字数を数え直さない**こと（`rest.chars().count()`
+/// をループ条件に置くと O(n^2) になり、改行も句点も無い 50MB の text/plain で
+/// チャンク化だけに数分かかる。`chunk_document` は `spawn_blocking` の外で呼ばれるため
+/// tokio ワーカを占有し、`job_vt_secs` 超過でジョブが再配信されて DLQ に落ちる）。
+fn split_oversized_at(text: &str, max_chars: usize) -> Vec<(usize, &str)> {
+    let max = max_chars.max(1);
+    // 断片の位置は入力 `text` 先頭からのバイト位置で返す（アンカーの基準・#508）。
+    let lead = text.len() - text.trim_start().len();
+    let text = text.trim();
+    let mut pieces = Vec::new();
+    let mut rest = text;
+    let mut consumed = lead;
+    // nth(max) は高々 max 文字ぶんしか進まないので、1 周あたり O(max)。
+    // 各周で rest は min_fill 以上縮むため、全体でも入力長に線形。
+    while let Some((limit, _)) = rest.char_indices().nth(max) {
+        let head = &rest[..limit];
+        // 断片が短くなりすぎる切れ目は採らない（ノイズ chunk を作らないための下限）。
+        let min_fill = limit / 2;
+        let cut = [
+            sentence_end(head),
+            head.rfind('\n').map(|i| i + 1),
+            head.rfind(char::is_whitespace)
+                .map(|i| i + head[i..].chars().next().map_or(1, char::len_utf8)),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|&c| c >= min_fill)
+        // どの候補も無い/手前すぎるなら max 文字で強制的に割る。
+        // cut は必ず 1 以上になるので rest は毎周必ず縮む（無限ループしない）。
+        .unwrap_or(limit);
+        let (piece, tail) = rest.split_at(cut);
+        push_trimmed(&mut pieces, consumed, piece);
+        consumed += cut;
+        rest = tail;
+    }
+    push_trimmed(&mut pieces, consumed, rest);
+    pieces
+}
+
+/// 前後の空白を除いた断片を、その開始位置つきで積む（空なら積まない）。
+fn push_trimmed<'t>(pieces: &mut Vec<(usize, &'t str)>, at: usize, piece: &'t str) {
+    let trimmed = piece.trim();
+    if !trimmed.is_empty() {
+        pieces.push((at + piece.len() - piece.trim_start().len(), trimmed));
+    }
+}
+
+/// [`split_oversized_at`] の断片だけ（テストで切れ目を見る用）。
+#[cfg(test)]
+fn split_oversized(text: &str, max_chars: usize) -> Vec<&str> {
+    split_oversized_at(text, max_chars)
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect()
+}
+
+/// `head` 内で最後に現れる文末の直後のバイト位置。
+fn sentence_end(head: &str) -> Option<usize> {
+    head.rfind(['。', '！', '？', '!', '?'])
+        .map(|i| i + head[i..].chars().next().map_or(1, char::len_utf8))
 }
 
 #[cfg(test)]
@@ -241,6 +482,8 @@ mod tests {
             level: Some(level),
             text: text.into(),
             page: Some(1),
+            prov: Vec::new(),
+            list_marker: None,
         }
     }
 
@@ -250,6 +493,8 @@ mod tests {
             level: None,
             text: text.into(),
             page: Some(1),
+            prov: Vec::new(),
+            list_marker: None,
         }
     }
 
@@ -259,6 +504,8 @@ mod tests {
             level: None,
             text: text.into(),
             page: Some(2),
+            prov: Vec::new(),
+            list_marker: None,
         }
     }
 
@@ -408,5 +655,296 @@ mod tests {
         let chunks = chunk_document(node(), 1, &blocks, &ChunkParams::default());
         let leaf = chunks.iter().find(|c| c.kind == ChunkKind::Leaf).unwrap();
         assert_eq!(leaf.searchable_text(), "報告 > 概要\n本文。");
+    }
+
+    /// 実バグの回帰: 空行を持たない議事録 TXT はパーサが 1 段落として返すため、
+    /// 段落境界だけを見る実装では数万文字の leaf が 1 個できていた。
+    #[test]
+    fn single_oversized_paragraph_is_split_into_bounded_leaves() {
+        let body = ("あ".repeat(200) + "。").repeat(50);
+        let blocks = vec![heading(1, "会議録"), para(&body)];
+        let params = ChunkParams {
+            max_leaf_chars: 600,
+            max_parent_chars: 4000,
+        };
+        let chunks = chunk_document(node(), 1, &blocks, &params);
+        let leaves: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.kind == ChunkKind::Leaf)
+            .collect();
+        assert!(leaves.len() > 10, "1 段落でも分割される: {}", leaves.len());
+        for leaf in &leaves {
+            assert!(
+                leaf.content.chars().count() <= params.max_leaf_chars,
+                "leaf が上限超過: {}",
+                leaf.content.chars().count()
+            );
+        }
+        // 本文が欠けていないこと。区切り "\n\n" のぶんだけ増えるので下限で見る。
+        let total: usize = leaves.iter().map(|c| c.content.chars().count()).sum();
+        assert!(
+            total >= body.chars().count(),
+            "本文が落ちている: {total} < {}",
+            body.chars().count()
+        );
+    }
+
+    #[test]
+    fn oversized_paragraph_prefers_sentence_then_newline_boundaries() {
+        assert_eq!(
+            split_oversized("あいう。えおか。きくけ。", 8),
+            vec!["あいう。えおか。", "きくけ。"]
+        );
+        assert_eq!(
+            split_oversized("あいうえお\nかきくけこ\nさし", 7),
+            vec!["あいうえお", "かきくけこ", "さし"]
+        );
+    }
+
+    /// 切れ目が無い（句読点も改行も無い）場合でも必ず上限以下に割れること。
+    /// 全角文字でバイト境界を割らないことも同時に見る。
+    #[test]
+    fn oversized_paragraph_without_boundaries_is_hard_split() {
+        let text = "あ".repeat(1000);
+        let pieces = split_oversized(&text, 300);
+        assert_eq!(pieces.len(), 4);
+        assert!(pieces.iter().all(|p| p.chars().count() <= 300));
+        assert_eq!(pieces.concat().chars().count(), 1000);
+    }
+
+    #[test]
+    fn text_within_limit_is_returned_untouched() {
+        assert_eq!(split_oversized("短い。", 600), vec!["短い。"]);
+    }
+
+    /// 区切り "\n\n" を上限判定に含めていないと leaf が max+2 文字になる回帰。
+    #[test]
+    fn separator_is_counted_against_the_limit() {
+        let half = "あ".repeat(300);
+        let blocks = vec![heading(1, "章"), para(&half), para(&half)];
+        let params = ChunkParams {
+            max_leaf_chars: 600,
+            max_parent_chars: 4000,
+        };
+        let chunks = chunk_document(node(), 1, &blocks, &params);
+        for leaf in chunks.iter().filter(|c| c.kind == ChunkKind::Leaf) {
+            assert!(
+                leaf.content.chars().count() <= params.max_leaf_chars,
+                "leaf が上限超過: {}",
+                leaf.content.chars().count()
+            );
+        }
+    }
+
+    /// 英文は文末記号（。！？）が無いため、空白に落ちないと語の途中で切れる。
+    #[test]
+    fn english_text_splits_at_word_boundaries() {
+        let sentence = "The quick brown fox jumps over the lazy dog. ";
+        let body = sentence.repeat(3);
+        let pieces = split_oversized(&body, 100);
+        for piece in &pieces {
+            assert!(
+                !piece.ends_with(|c: char| c.is_alphanumeric()) || piece.chars().count() <= 100,
+                "語中で切れている: {piece:?}"
+            );
+            // 断片の先頭・末尾が語の断片になっていないこと。
+            assert!(
+                piece.split_whitespace().all(|w| sentence.contains(w)),
+                "語が壊れている: {piece:?}"
+            );
+        }
+    }
+
+    /// 窓の先頭付近にだけ文末がある文書で、1 文字の leaf を作らない。
+    #[test]
+    fn early_sentence_end_does_not_produce_a_tiny_leaf() {
+        let body = "。".to_string() + &"い".repeat(1500);
+        let blocks = vec![heading(1, "章"), para(&body)];
+        let params = ChunkParams {
+            max_leaf_chars: 600,
+            max_parent_chars: 4000,
+        };
+        let chunks = chunk_document(node(), 1, &blocks, &params);
+        for leaf in chunks.iter().filter(|c| c.kind == ChunkKind::Leaf) {
+            assert!(
+                leaf.content.chars().count() > 1,
+                "1 文字の leaf が生成された: {:?}",
+                leaf.content
+            );
+        }
+    }
+
+    /// 文末と改行の両方があるとき、文末が優先されること（優先順位そのものの検証）。
+    #[test]
+    fn sentence_end_wins_over_newline_when_both_are_available() {
+        // 窓内には文末（3 文字目）と改行（6 文字目）の両方があるが、より手前の
+        // 文末で切れる＝改行より文末が優先されている。
+        assert_eq!(
+            split_oversized("あいう。えお\nかきくけこ", 8),
+            vec!["あいう。", "えお\nかきくけこ"]
+        );
+    }
+
+    /// 空・空白のみは断片を生まない（呼び出し側で "\n\n" だけが積まれるのを防ぐ）。
+    #[test]
+    fn blank_input_yields_no_pieces() {
+        assert!(split_oversized("", 600).is_empty());
+        assert!(split_oversized("   ", 600).is_empty());
+        assert!(split_oversized(&" ".repeat(2000), 600).is_empty());
+    }
+
+    /// 切れ目を持たない巨大入力でも線形時間で終わること。
+    ///
+    /// 残り文字数をループ条件で数え直す実装（O(n^2)）だと、この入力は debug ビルドで
+    /// 分単位になる。閾値は環境差を吸収できる大きさに取り、二次オーダだけを検出する。
+    #[test]
+    fn huge_input_without_boundaries_stays_linear() {
+        let body = "あ".repeat(400_000);
+        let started = std::time::Instant::now();
+        let pieces = split_oversized(&body, 600);
+        let elapsed = started.elapsed();
+        assert_eq!(pieces.len(), 400_000 / 600 + 1);
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "分割に時間がかかりすぎ（二次オーダの疑い）: {elapsed:?}"
+        );
+    }
+
+    fn leaves(chunks: &[Chunk]) -> Vec<&Chunk> {
+        chunks
+            .iter()
+            .filter(|c| c.kind != ChunkKind::Parent)
+            .collect()
+    }
+
+    /// アンカーの範囲を doc_block（＝入力ブロック列）から UTF-16 で切り出す（ブラウザと同じ数え方）。
+    #[allow(clippy::cast_sign_loss)] // テストの入力は非負の番号・オフセットだけ。
+    fn slice(blocks: &[ParsedBlock], a: &Anchor) -> String {
+        let mut out = Vec::new();
+        for i in a.block_start..=a.block_end {
+            let units: Vec<u16> = blocks[i as usize].text.encode_utf16().collect();
+            let from = if i == a.block_start {
+                a.off_start as usize
+            } else {
+                0
+            };
+            let to = if i == a.block_end {
+                a.off_end as usize
+            } else {
+                units.len()
+            };
+            out.push(String::from_utf16(&units[from..to]).unwrap());
+        }
+        out.join("\n\n")
+    }
+
+    #[test]
+    fn leaf_anchor_points_back_to_its_text_in_the_blocks() {
+        let blocks = vec![
+            heading(1, "第5章 休業"),
+            para("  従業員は育児休業をすることができる。"),
+            para("𠮷野家の例: 申出は1か月前まで。"),
+            table("| a | b |\n|---|---|"),
+        ];
+        let chunks = chunk_document(node(), 1, &blocks, &ChunkParams::default());
+        let leaf = chunks.iter().find(|c| c.kind == ChunkKind::Leaf).unwrap();
+        let table = chunks.iter().find(|c| c.kind == ChunkKind::Table).unwrap();
+        // 2 段落を詰めた leaf は、ブロック 1 の先頭（空白を除く）からブロック 2 の末尾まで。
+        let a = leaf.anchor.unwrap();
+        assert_eq!((a.block_start, a.off_start, a.block_end), (1, 2, 2));
+        assert_eq!(slice(&blocks, &a), leaf.content);
+        // 表はブロック全体。
+        let t = table.anchor.unwrap();
+        assert_eq!((t.block_start, t.block_end), (3, 3));
+        assert_eq!(slice(&blocks, &t), table.content);
+        // parent は位置を持たない。
+        assert!(chunks
+            .iter()
+            .any(|c| c.kind == ChunkKind::Parent && c.anchor.is_none()));
+    }
+
+    #[test]
+    fn split_paragraph_pieces_have_offsets_inside_the_block() {
+        let body = "あいうえお。".repeat(30); // 180 文字
+        let blocks = vec![para(&format!(" {body}"))];
+        let params = ChunkParams {
+            max_leaf_chars: 60,
+            ..ChunkParams::default()
+        };
+        let chunks = chunk_document(node(), 1, &blocks, &params);
+        let ls = leaves(&chunks);
+        assert!(ls.len() >= 3);
+        let mut last_end = 0;
+        for leaf in ls {
+            let a = leaf.anchor.unwrap();
+            assert_eq!((a.block_start, a.block_end), (0, 0));
+            assert!(a.off_start >= last_end, "断片は前から順に並ぶ");
+            assert_eq!(slice(&blocks, &a), leaf.content);
+            last_end = a.off_end;
+        }
+    }
+
+    #[test]
+    fn quote_context_spans_neighbouring_blocks() {
+        let blocks = vec![
+            para("前の段落の終わり。"),
+            heading(2, "提出期限"),
+            para("申出書は1か月前までに提出する。"),
+            para("期限後も申請できる。"),
+        ];
+        let params = ChunkParams {
+            max_leaf_chars: 18,
+            ..ChunkParams::default()
+        };
+        let chunks = chunk_document(node(), 1, &blocks, &params);
+        let leaf = leaves(&chunks)
+            .into_iter()
+            .find(|c| c.content.starts_with("申出書"))
+            .unwrap();
+        // 直前は見出し、直後は次の段落の先頭（改行でつなぐ）。
+        assert_eq!(leaf.quote_prefix, "提出期限\n");
+        assert!(leaf.quote_suffix.starts_with("\n期限後も"));
+    }
+
+    #[test]
+    fn leaf_collects_pdf_boxes_of_its_blocks() {
+        use crate::anchor::{BoxOrigin, PageBox};
+        let boxed = |page: i32| PageBox {
+            page,
+            bbox: [72.0, 700.0, 540.0, 640.0],
+            origin: BoxOrigin::BottomLeft,
+        };
+        let mut a = para("一つ目。");
+        a.prov = vec![boxed(1)];
+        let mut b = para("二つ目。");
+        b.prov = vec![boxed(1), boxed(2)];
+        let chunks = chunk_document(node(), 1, &[a, b], &ChunkParams::default());
+        let leaf = leaves(&chunks)[0];
+        assert_eq!(leaf.boxes, vec![boxed(1), boxed(2)]);
+    }
+
+    #[test]
+    fn leaf_does_not_span_a_table_between_paragraphs() {
+        let blocks = vec![
+            para("前の段落。"),
+            table("| a |\n|---|"),
+            para("後の段落。"),
+        ];
+        let chunks = chunk_document(node(), 1, &blocks, &ChunkParams::default());
+        let ranges: Vec<(i32, i32)> = chunks
+            .iter()
+            .filter(|c| c.kind == ChunkKind::Leaf)
+            .map(|c| (c.anchor.unwrap().block_start, c.anchor.unwrap().block_end))
+            .collect();
+        assert_eq!(ranges, vec![(0, 0), (2, 2)]);
+    }
+
+    #[test]
+    fn list_items_are_chunked_like_paragraphs() {
+        let mut item = para("Workday を開く");
+        item.block_type = BlockType::ListItem;
+        item.list_marker = Some("1.".into());
+        let chunks = chunk_document(node(), 1, &[item], &ChunkParams::default());
+        assert_eq!(leaves(&chunks)[0].content, "Workday を開く");
     }
 }

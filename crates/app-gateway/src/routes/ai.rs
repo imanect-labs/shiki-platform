@@ -127,6 +127,7 @@ pub(crate) async fn llm_invoke(
     check_model_allowed(pin, req.model.as_deref())?;
     check_budget(&llm, &ctx, state.caps.ai_daily_cap_usd_micros).await?;
     req.max_tokens = cap_max_tokens(req.max_tokens, pin.budget_max_tokens);
+    strip_reasoning(&mut req);
 
     let logical_model = req
         .model
@@ -138,7 +139,9 @@ pub(crate) async fn llm_invoke(
         .map(|m| format!("{:?}", m.content).chars().take(200).collect())
         .unwrap_or_default();
 
-    let deltas = llm.stream(req).await.map_err(map_llm_err)?;
+    // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
+    let started_at = chrono::Utc::now();
+    let deltas = llm.stream(&ctx.auth, req).await.map_err(map_llm_err)?;
 
     // driver task: クライアント切断でも Done まで消費して会計を落とさない。
     let (tx, rx) = mpsc::channel::<AiEvent>(64);
@@ -158,7 +161,9 @@ pub(crate) async fn llm_invoke(
                     if let StreamDelta::Done { usage, .. } = &d {
                         done_usage = Some(*usage);
                     }
-                    let _ = tx.send(delta_event(&d)).await;
+                    if let Some(ev) = delta_event(&d) {
+                        let _ = tx.send(ev).await;
+                    }
                 }
                 Err(e) => {
                     let _ = tx
@@ -182,6 +187,10 @@ pub(crate) async fn llm_invoke(
                     input_preview,
                     output_preview: text_acc.chars().take(2000).collect(),
                     app_id: Some(app_id),
+                    source: llm_gateway::UsageSource::MiniApp,
+                    // この経路は 1 リクエスト 1 生成。
+                    first_in_trace: true,
+                    started_at: Some(started_at),
                 },
             )
             .await;
@@ -190,9 +199,20 @@ pub(crate) async fn llm_invoke(
     Ok(sse_from_events(rx))
 }
 
+/// アプリから来たリクエストの不透明な推論アイテムを落とす。推論アイテムは llm-gateway が受け取って
+/// 同じプロバイダへ送り返すためだけのもので、アプリが作るものではない（任意の入力の差し込み口にしない）。
+fn strip_reasoning(req: &mut GenerateRequest) {
+    for m in &mut req.messages {
+        m.content
+            .retain(|b| !matches!(b, llm_gateway::model::Block::Reasoning { .. }));
+    }
+}
+
 /// [`StreamDelta`] → SSE イベント（event=type タグ・data=中立形 JSON）。
-fn delta_event(d: &StreamDelta) -> AiEvent {
+/// プロバイダ固有の不透明な推論アイテムはアプリへ出さない（次のターンへ戻すためだけのもの）。
+fn delta_event(d: &StreamDelta) -> Option<AiEvent> {
     let name = match d {
+        StreamDelta::ReasoningItem { .. } => return None,
         StreamDelta::TextDelta { .. } => "text",
         StreamDelta::ThinkingDelta { .. } => "thinking",
         StreamDelta::ToolUseStart { .. } => "tool_use_start",
@@ -200,10 +220,10 @@ fn delta_event(d: &StreamDelta) -> AiEvent {
         StreamDelta::ToolUseStop { .. } => "tool_use_stop",
         StreamDelta::Done { .. } => "done",
     };
-    AiEvent {
+    Some(AiEvent {
         event: name.into(),
         data: serde_json::to_value(d).unwrap_or_else(|_| json!({})),
-    }
+    })
 }
 
 fn map_llm_err(e: llm_gateway::LlmError) -> GatewayError {
@@ -242,6 +262,19 @@ pub(crate) async fn agent_invoke(
         prompt: req.prompt,
         model: req.model,
         declared_tools: pin.agent_tools.clone(),
+        // 経路の二重ゲートと同じく granted_scopes ∩ トークンの scope（ツールの提示条件）。
+        scopes: ctx
+            .identity
+            .token_scopes
+            .iter()
+            .filter(|s| {
+                ctx.installation
+                    .granted_scopes
+                    .iter()
+                    .any(|g| g == s.as_str())
+            })
+            .copied()
+            .collect(),
         max_tokens: pin.budget_max_tokens,
         max_steps: req.max_steps,
         max_cost_usd_micros: remaining,
@@ -281,6 +314,26 @@ mod tokio_stream_compat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_requests_cannot_carry_reasoning_items() {
+        use llm_gateway::model::{Block, Message, Role};
+        let mut req = GenerateRequest::new(vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                Block::Reasoning {
+                    provider: "openai_responses".into(),
+                    item: json!({"role": "user", "content": [{"type": "input_file", "file_id": "file-x"}]}),
+                },
+                Block::Text { text: "hi".into() },
+            ],
+        }]);
+        strip_reasoning(&mut req);
+        assert_eq!(
+            req.messages[0].content,
+            vec![Block::Text { text: "hi".into() }]
+        );
+    }
 
     fn pin(models: &[&str], daily: Option<i64>, max_tokens: Option<i64>) -> AiPin {
         AiPin {

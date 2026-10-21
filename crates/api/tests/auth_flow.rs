@@ -329,9 +329,10 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
             log_format: LogFormat::Json,
         },
         storage: StorageConfig {
-            backend: ObjectStoreBackend::Minio,
+            backend: ObjectStoreBackend::S3,
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
+            upload_gc: api::config::UploadGcConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -343,7 +344,11 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
             api_key: None,
             default_model: None,
             models: vec![],
+            context_window_tokens: None,
             langfuse: None,
+            user_agent: None,
+            session_header: None,
+            ..Default::default()
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
@@ -352,6 +357,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
+        insights: api::insights::InsightsConfig::default(),
     }
 }
 
@@ -384,8 +390,6 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
     let rag_admin = std::sync::Arc::new(rag::RagAdmin::new(db.clone(), None, None));
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), Arc::new(AllowAll)));
     let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
-    let ui_validator = Arc::new(gui::SpecValidator::new(Arc::clone(&artifacts), db.clone()));
-    let ui_specs = Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator));
     let ui_actions = Arc::new(gui::ActionDispatcher::new(
         storage::audit::AuditRecorder::new(db.clone()),
     ));
@@ -455,6 +459,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
     ));
     AppState {
         config: Arc::new(config),
+        insights: std::sync::Arc::new(api::insights::InsightsService::new(db.clone())),
         db: api::state::ReadinessProbe::new(db),
         authz: Arc::new(AllowAll),
         jwks,
@@ -472,7 +477,6 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         skill_installs,
         bundles,
         app_usage,
-        ui_specs,
         ui_actions,
         skills,
         mini_apps,
@@ -488,6 +492,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         tenants,
         search: None,
         chat: None,
+        llm: None,
         rag_admin,
         office: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(
@@ -1045,7 +1050,7 @@ async fn spawn_idp_with_admin() -> String {
     format!("http://{addr}/realms/shiki")
 }
 
-/// SAAS.2 テナント・ライフサイクル e2e（作成→冪等再作成→削除→tombstone 再利用拒否）。
+/// SAAS.2 テナント・ライフサイクル e2e（作成→冪等再作成→保持期間設定→削除→tombstone 再利用拒否）。
 /// 実 Postgres が必要（`STORAGE_TEST_DATABASE_URL` 設定時のみ・CI の coverage ジョブで実走）。
 #[tokio::test]
 async fn admin_tenant_lifecycle_end_to_end() {
@@ -1114,6 +1119,59 @@ async fn admin_tenant_lifecycle_end_to_end() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED, "再実行も成功（冪等）");
+
+    // --- 保持期間の設定: 204・値が永続する（#448）。 ---
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(format!("/admin/tenants/{tenant_id}/workflow-retention"))
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"retention_days": 30}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let days: i32 =
+        sqlx::query_scalar("SELECT workflow_retention_days FROM tenant WHERE tenant_id = $1")
+            .bind(&tenant_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(days, 30, "日次 GC はこの値で消す");
+
+    // --- 範囲外は 400（DB の CHECK は `> 0` しか見ないのでアプリ側が境界を持つ）。 ---
+    // i32 に収まらない値も「範囲外」として 400 に畳む（422 に化けさせない）。
+    for bad in ["0", "-1", "3651", "4000000000", "-4000000000"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri(format!("/admin/tenants/{tenant_id}/workflow-retention"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"retention_days": {bad}}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "retention_days={bad}"
+        );
+    }
+    let days: i32 =
+        sqlx::query_scalar("SELECT workflow_retention_days FROM tenant WHERE tenant_id = $1")
+            .bind(&tenant_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(days, 30, "拒否された値で上書きされない");
 
     // --- 削除: 204・tombstone 化。 ---
     let resp = app

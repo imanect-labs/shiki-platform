@@ -30,7 +30,8 @@ import { ShikiEmbed } from "./embed/shiki-embed-node";
 import { LivePreview } from "./live-preview";
 import { MarkdownClipboard } from "./markdown-clipboard";
 import { createSlashCommand } from "./slash-command";
-import { NoteBubbleMenu, NoteToolbar } from "./note-toolbar";
+import { NOTE_PROSE_CLASS, NoteBubbleMenu, NoteToolbar } from "./note-toolbar";
+import { YuiCodeBlock } from "./yui-code-block";
 
 /// md → エディタ doc（空でも段落 1 つは保証される）。
 function docFromMarkdown(md: string) {
@@ -48,9 +49,11 @@ export function DraftNoteEditor({ seed, onChangeMarkdown, onReady }: DraftNoteEd
   const extensions = React.useMemo(
     () => [
       // 下書きはローカル履歴を持つ（Collaboration が無いため undoRedo を有効化）。
-      StarterKit.configure({ link: false }),
+      StarterKit.configure({ link: false, codeBlock: false }),
+      YuiCodeBlock,
       Link.configure({ openOnClick: false, autolink: true, protocols: ["http", "https", "mailto"] }),
-      Table.configure({ resizable: false }),
+      // 表は横スクロールの箱（tableWrapper）で包む（スマホで本文幅からはみ出さない）。
+      Table.configure({ resizable: false, renderWrapper: true }),
       TableRow,
       TableHeader,
       TableCell,
@@ -72,7 +75,7 @@ export function DraftNoteEditor({ seed, onChangeMarkdown, onReady }: DraftNoteEd
       immediatelyRender: false,
       content: docFromMarkdown(seed.markdown),
       editorProps: {
-        attributes: { class: "note-prose focus:outline-none", "data-testid": "draft-note-editor" },
+        attributes: { class: NOTE_PROSE_CLASS, "data-testid": "draft-note-editor" },
       },
       onUpdate: ({ editor }) => {
         onChangeMarkdown(serializeFragment(editor.state.doc.content));
@@ -107,7 +110,7 @@ export function DraftNoteEditor({ seed, onChangeMarkdown, onReady }: DraftNoteEd
   }, [editor]);
 
   return (
-    <div className="note-editor-root min-h-[50vh]">
+    <div className="note-editor-root flex min-h-[50vh] flex-col">
       {editor ? <NoteToolbar editor={editor} /> : null}
       {editor ? <NoteBubbleMenu editor={editor} /> : null}
       <EditorContent editor={editor} />

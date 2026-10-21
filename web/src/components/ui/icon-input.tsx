@@ -35,7 +35,7 @@ export const IconInput = React.forwardRef<HTMLInputElement, Props>(function Icon
         onChange={(e) => onValueChange(e.target.value)}
         data-slot="input"
         className={cn(
-          "flex h-9 w-full rounded-md border border-input bg-background py-1 text-sm shadow-xs",
+          "flex h-9 w-full rounded-md border border-input bg-background py-1 text-base shadow-xs md:text-sm pointer-coarse:h-11 pointer-coarse:text-base",
           "transition-[color,box-shadow] duration-[var(--duration-fast)]",
           "placeholder:text-muted-foreground",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
@@ -52,7 +52,7 @@ export const IconInput = React.forwardRef<HTMLInputElement, Props>(function Icon
           onClick={() => onValueChange("")}
           aria-label={clearLabel}
           className={cn(
-            "absolute right-2 flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none",
+            "absolute right-1.5 flex size-7 items-center justify-center rounded-md text-muted-foreground outline-none pointer-coarse:size-9",
             "transition-colors duration-[var(--duration-fast)] hover:bg-accent hover:text-foreground",
             "focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94]",
           )}

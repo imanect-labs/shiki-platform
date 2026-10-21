@@ -4,10 +4,13 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { History, Loader2, MessageSquareText, Pencil, Share2, Sparkles, Trash2, UploadCloud } from "lucide-react";
+import { History, Loader2, MessageSquareText, Pencil, Share2, Sparkles, Store, Trash2, UploadCloud } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { PageContainer } from "@/components/shell/page-container";
+import { ConfirmDialog } from "@/components/drive/dialogs";
+import { ArtifactCard } from "@/components/artifacts/artifact-card";
 import { toast } from "@/components/ui/use-toast";
 import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { SkillEditorDialog } from "@/components/artifacts/skill-editor";
@@ -28,7 +31,8 @@ type DialogState =
   | { kind: "create" }
   | { kind: "edit"; meta: ArtifactMeta; skill: SkillVersion }
   | { kind: "share"; meta: ArtifactMeta }
-  | { kind: "versions"; meta: ArtifactMeta };
+  | { kind: "versions"; meta: ArtifactMeta }
+  | { kind: "delete"; meta: ArtifactMeta };
 
 export default function SkillsPage() {
   const router = useRouter();
@@ -95,38 +99,36 @@ export default function SkillsPage() {
     }
   };
 
+  /// 削除は確認ダイアログから（失敗はダイアログ内に出す）。
   const remove = async (meta: ArtifactMeta) => {
-    if (!window.confirm(`スキル「${meta.name}」を削除しますか？（バージョン履歴は保持されます）`)) return;
     setPending(meta.id);
     try {
       await deleteArtifact(meta.id);
       reload();
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        title: "削除に失敗しました",
-        description: e instanceof Error ? e.message : String(e),
-      });
+      toast({ title: `「${meta.name}」を削除しました` });
     } finally {
       setPending(null);
     }
   };
 
+  const scrollToStore = () => {
+    const store = document.getElementById("skill-store");
+    if (store) store.scrollIntoView({ behavior: "smooth", block: "start" });
+    else toast({ title: "ストアに公開されたスキルはまだありません" });
+  };
+
   return (
-    <div className="mx-auto w-full max-w-4xl px-4 py-6">
-      <div className="mb-5 flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold">スキル</h1>
-          <p className="text-sm text-muted-foreground">
-            指示文・知識スコープ・許可ツールをまとめて、チャットに適用できます。
-          </p>
-        </div>
+    <PageContainer
+      title="スキル"
+      description="指示文・知識スコープ・許可ツールをまとめて、チャットに適用できます。"
+      className="max-w-4xl"
+      actions={
         <Button onClick={() => setDialog({ kind: "create" })}>
           <Sparkles className="size-4" aria-hidden />
           スキルを作成
         </Button>
-      </div>
-
+      }
+    >
       {items === null ? (
         <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
           <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -136,81 +138,64 @@ export default function SkillsPage() {
         <EmptyState
           icon={Sparkles}
           title="スキルはまだありません"
-          description="「スキルを作成」から、業務知識をチャットに教え込みましょう。"
+          description="業務知識をまとめたスキルを作るか、組織のスキルストアから追加しましょう。"
+          action={
+            <div className="flex flex-wrap justify-center gap-2">
+              <Button onClick={() => setDialog({ kind: "create" })}>
+                <Sparkles className="size-4" aria-hidden />
+                スキルを作成
+              </Button>
+              <Button variant="outline" onClick={scrollToStore}>
+                <Store className="size-4" aria-hidden />
+                ストアから追加
+              </Button>
+            </div>
+          }
         />
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2">
-          {items.map((meta) => (
-            <li
-              key={meta.id}
-              className="group flex flex-col gap-2 rounded-xl border border-border bg-card p-4 transition-shadow hover:shadow-[var(--elevation-1,0_1px_3px_rgb(0_0_0/0.08))]"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <h2 className="truncate text-[15px] font-semibold">{meta.name}</h2>
-                  <p className="text-xs text-muted-foreground">
-                    v{meta.currentVersion}・更新 {new Date(meta.updatedAt).toLocaleDateString("ja-JP")}
-                  </p>
-                </div>
-                {pending === meta.id ? (
-                  <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />
-                ) : null}
-              </div>
-              <div className="mt-auto flex flex-wrap items-center gap-1 pt-1">
-                <Button size="sm" onClick={() => void startChat(meta)} disabled={pending === meta.id}>
-                  <MessageSquareText className="size-4" aria-hidden />
-                  このスキルでチャット
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={`${meta.name} を編集`}
-                  onClick={() => void openEdit(meta)}
-                  disabled={pending === meta.id}
-                >
-                  <Pencil className="size-4" aria-hidden />
-                  編集
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={`${meta.name} を共有`}
-                  onClick={() => setDialog({ kind: "share", meta })}
-                >
-                  <Share2 className="size-4" aria-hidden />
-                  共有
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={`${meta.name} をレジストリへ公開`}
-                  title="レジストリへ公開（スキルストアからインストール可能になる）"
-                  onClick={() => void publish(meta)}
-                  disabled={pending === meta.id}
-                >
-                  <UploadCloud className="size-4" aria-hidden />
-                  公開
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={`${meta.name} のバージョン履歴`}
-                  onClick={() => setDialog({ kind: "versions", meta })}
-                >
-                  <History className="size-4" aria-hidden />
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={`${meta.name} を削除`}
-                  onClick={() => void remove(meta)}
-                  className="text-muted-foreground hover:text-destructive"
-                >
-                  <Trash2 className="size-4" aria-hidden />
-                </Button>
-              </div>
-            </li>
-          ))}
+          {items.map((meta) => {
+            const busy = pending === meta.id;
+            return (
+              <ArtifactCard
+                key={meta.id}
+                name={meta.name}
+                meta={`v${meta.currentVersion}・更新 ${new Date(meta.updatedAt).toLocaleDateString("ja-JP")}`}
+                pending={busy}
+                primary={
+                  <Button size="sm" onClick={() => void startChat(meta)} disabled={busy}>
+                    <MessageSquareText className="size-4" aria-hidden />
+                    このスキルでチャット
+                  </Button>
+                }
+                menu={[
+                  { key: "edit", label: "編集", icon: Pencil, onSelect: () => void openEdit(meta), disabled: busy },
+                  { key: "share", label: "共有", icon: Share2, onSelect: () => setDialog({ kind: "share", meta }) },
+                  {
+                    key: "publish",
+                    label: "ストアへ公開",
+                    icon: UploadCloud,
+                    onSelect: () => void publish(meta),
+                    disabled: busy,
+                  },
+                  {
+                    key: "versions",
+                    label: "バージョン履歴",
+                    icon: History,
+                    onSelect: () => setDialog({ kind: "versions", meta }),
+                  },
+                  {
+                    key: "delete",
+                    label: "削除",
+                    icon: Trash2,
+                    destructive: true,
+                    separatorBefore: true,
+                    onSelect: () => setDialog({ kind: "delete", meta }),
+                  },
+                ]}
+              />
+            );
+          })}
         </ul>
       )}
 
@@ -238,6 +223,21 @@ export default function SkillsPage() {
         artifactId={dialog.kind === "versions" ? dialog.meta.id : null}
         name={dialog.kind === "versions" ? dialog.meta.name : ""}
       />
-    </div>
+      <ConfirmDialog
+        open={dialog.kind === "delete"}
+        onOpenChange={(open) => !open && setDialog({ kind: "closed" })}
+        title="スキルを削除しますか？"
+        description={
+          dialog.kind === "delete"
+            ? `「${dialog.meta.name}」を削除します。バージョン履歴は保持されます。`
+            : undefined
+        }
+        confirmLabel="削除する"
+        destructive
+        onConfirm={async () => {
+          if (dialog.kind === "delete") await remove(dialog.meta);
+        }}
+      />
+    </PageContainer>
   );
 }

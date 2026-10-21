@@ -6,24 +6,31 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use agent_core::{
-    run_agent, AgentOptions, CodeInterpreterTool, DocSearchTool, RunContext, Tool, WebFetchTool,
-    WebSearchTool, WorkspaceStore,
-};
+use agent_core::{run_agent, AgentOptions, RunContext, Tool, WorkspaceStore};
 use authz::AuthContext;
-use futures::stream::StreamExt;
-use llm_gateway::{
-    GenerateRequest, GenerationRecord, Message as LlmMessage, Role as LlmRole, StreamDelta,
-};
+use llm_gateway::{Message as LlmMessage, Role as LlmRole};
 use uuid::Uuid;
 
 use super::approval_policy::restore_checkpoint;
 use super::history::{message_preview, message_text};
+use super::opts::{autonomous_system_prompt, chat_opts, sanitize_for_prompt};
 use super::sink::WorkerSink;
 use super::ChatWorker;
 use crate::model::Role;
 use crate::store::ClaimedRun;
 use crate::ChatError;
+
+/// 履歴 1 回の読み出しから取れるもの（LLM メッセージ＋会話の添付）。
+///
+/// 添付は `code_interpreter` の `/workspace` seed に使う（#379）。同じ `get_messages` から
+/// 取るのは、別途取り直すと DB 往復が二重になるため。
+pub(super) struct ThreadHistory {
+    pub messages: Vec<LlmMessage>,
+    /// 会話に添付されたファイル（古い順・同名は新しい方が残る）。
+    pub attachments: Vec<agent_core::AttachmentRef>,
+    /// この会話で使われている（使う前提の）ツール名（tool search で常時ロードに回す）。
+    pub tools_in_use: Vec<String>,
+}
 
 impl ChatWorker {
     /// 直前までのメッセージを LLM 履歴へ写す（テキストのみ・短ホライズン）。
@@ -32,25 +39,109 @@ impl ChatWorker {
         ctx: &AuthContext,
         thread_id: Uuid,
         assistant_message_id: Uuid,
-    ) -> Result<Vec<LlmMessage>, ChatError> {
+    ) -> Result<ThreadHistory, ChatError> {
         let msgs = self.store.get_messages(ctx, thread_id, None).await?;
         let mut out = Vec::new();
+        let mut attachments: Vec<agent_core::AttachmentRef> = Vec::new();
+        let mut tools_in_use: Vec<String> = Vec::new();
         for m in msgs {
             if m.id == assistant_message_id {
                 continue; // 生成対象のプレースホルダは履歴に含めない
+            }
+            super::history::tools_in_use(&m.content, &mut tools_in_use);
+            // 添付はプレースホルダ以外の全メッセージから拾う（role で絞らない）。assistant 側の
+            // FileRef＝code_interpreter が保存した成果物も含む: 前ターンで作った CSV を次の
+            // ターンで読み直せる方が自然で、上限は seed 側が持つ（#379）。
+            for block in &m.content {
+                if let crate::model::ContentBlock::FileRef { node_id, name } = block {
+                    // 同名の添付は**新しい方**を残す（guest のファイル名が衝突するため）。
+                    attachments.retain(|a: &agent_core::AttachmentRef| a.name != *name);
+                    attachments.push(agent_core::AttachmentRef {
+                        node_id: node_id.clone(),
+                        name: name.clone(),
+                    });
+                }
             }
             let role = match m.role {
                 Role::User => LlmRole::User,
                 Role::Assistant => LlmRole::Assistant,
                 _ => continue,
             };
-            let text = message_text(&m.content);
+            let mut text = message_text(&m.content);
+            // 本文の図のボタンで起動したワークフローと、その結果（#604）。モデルが次の回答で
+            // 「さっきの申請はどうなった」に答えられるように、回答の後ろに添える。
+            if let Some(runs) = super::history::ui_runs_text(&m.ui_runs) {
+                text.push_str(&runs);
+            }
             if text.trim().is_empty() {
                 continue;
             }
             out.push(LlmMessage::text(role, text));
         }
-        Ok(out)
+        Ok(ThreadHistory {
+            messages: out,
+            attachments,
+            tools_in_use,
+        })
+    }
+
+    /// この run のスレッドに紐づく「開いているドキュメント」（ノート/Office）を返す。
+    ///
+    /// ドキュメントアシスタント（`/notes/:id`・`/office/:id` のパネル）から作られた会話は
+    /// `thread.origin_note_id` を持つ。編集対象の解決に使う（無ければ `None`）。
+    async fn origin_document(&self, run: &ClaimedRun) -> Option<(Uuid, Option<String>)> {
+        let row: Option<(Option<Uuid>, Option<String>)> = sqlx::query_as(
+            "SELECT origin_note_id, origin_note_name FROM thread WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(run.thread_id)
+        .bind(&run.tenant_id)
+        .fetch_optional(&self.db)
+        .await
+        .inspect_err(|e| tracing::warn!(error = %e, "origin_note の取得に失敗"))
+        .ok()
+        .flatten();
+        match row {
+            Some((Some(id), name)) => Some((id, name)),
+            _ => None,
+        }
+    }
+
+    /// system プロンプトへ「開いているドキュメント」の node_id を足す。
+    ///
+    /// これが無いと「この文書に書いて」に対し対象 id が分からず、モデルは新規下書き
+    /// （save_note / save_document）へ逃げてしまう（実 LLM 検証で確認）。
+    ///
+    /// 開いているドキュメントの読み書きツールは遅延にしない（`always_load` へ足す）。
+    /// system プロンプトがそれらを使えと指示しているのに、毎ターン検索の 1 手を挟ませない。
+    async fn system_with_origin_document(&self, run: &ClaimedRun, opts: &mut AgentOptions) {
+        let base = opts
+            .system
+            .take()
+            .unwrap_or_else(|| self.config.system_prompt.clone());
+        opts.system = Some(match self.origin_document(run).await {
+            Some((node_id, name)) => {
+                opts.tool_search.always_load.extend(
+                    super::history::origin_document_tools(name.as_deref())
+                        .iter()
+                        .map(|t| t.as_str().to_string()),
+                );
+                // ドキュメント名はユーザーが自由に付けられる文字列。system プロンプトへ
+                // 無加工で連結すると「以降の指示を無視せよ」等を**システム発話として**
+                // 注入できてしまうため、改行を潰して長さを切り、引用で括る。
+                let named = name
+                    .map(|n| format!("・名前: 「{}」", sanitize_for_prompt(&n)))
+                    .unwrap_or_default();
+                format!(
+                    "{base}\n\nこの会話は開いているドキュメントに紐づいています\
+                     （node_id: {node_id}{named}）。ユーザーが「この文書」「開いているノート」\
+                     「このシート」等と言う場合は、新規作成や下書きではなく**この node_id を対象**に\
+                     編集ツール（document.edit / office.excel_edit / office.word_edit / office.live_edit / csv.patch 等）を使ってください。\
+                     Excel・Word はまず office.read で表の位置や文書の構成・書式を確かめてから、Excel は office.excel_edit、\
+                     Word は office.word_edit で編集してください。"
+                )
+            }
+            None => base,
+        });
     }
 
     /// エージェントモード（agent-core ループ）。`run.autonomous` で Chat/Autonomous を切り替える。
@@ -58,10 +149,15 @@ impl ChatWorker {
         &self,
         ctx: &AuthContext,
         run: &ClaimedRun,
-        history: Vec<LlmMessage>,
+        thread_history: ThreadHistory,
         cancel: Arc<AtomicBool>,
         sink: &mut WorkerSink,
     ) -> Result<(), ChatError> {
+        let ThreadHistory {
+            messages: history,
+            attachments,
+            tools_in_use,
+        } = thread_history;
         // skill のピン解決（複数可・Task 6.9/#344・fail-closed: 読めないピンは run を失敗させる）。
         let skills = crate::skill::AppliedSkill::load_pins(
             ctx,
@@ -71,44 +167,11 @@ impl ChatWorker {
         )
         .await?;
 
-        // 共通ツール（doc_search / code_interpreter / web）。
+        // 提示ツール一式（共通＋ドキュメント/Office/CSV）は worker/toolset.rs に集約する。
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-        if let Some(search) = &self.search {
-            // skill の知識スコープを doc_search に反映する（Task 6.8・絞り込みのみ・
-            // 複数ピンは全ピンが scope を持つ時のみ union・#344）。
-            let scope = crate::skill::combined_scope(&skills);
-            tools.push(Arc::new(DocSearchTool::with_scope(search.clone(), scope)));
-        }
+        self.push_core_tools(&mut tools, &skills, attachments);
         // skill ツール（カタログ引き・#344 Task 10.11）。
         self.push_skill_tool(&mut tools, ctx, run, &skills).await;
-        if let Some(sandbox) = &self.sandbox {
-            tools.push(Arc::new(CodeInterpreterTool::new(
-                sandbox.clone(),
-                self.artifacts.clone(),
-                self.config.sandbox_backend,
-            )));
-        }
-        if let Some(provider) = &self.web_search {
-            tools.push(Arc::new(WebSearchTool::new(provider.clone())));
-            if let Some(sandbox) = &self.sandbox {
-                tools.push(Arc::new(WebFetchTool::new(sandbox.clone())));
-            }
-        }
-        // generative UI（emit_ui・Task 6.4）: 検証層が配線されている時のみ提示する。
-        if let Some(validator) = &self.ui_validator {
-            tools.push(Arc::new(gui::EmitUiTool::new(validator.clone())));
-        }
-        // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）:
-        // ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。
-        if let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) {
-            tools.push(Arc::new(crate::workflow_tool::EmitWorkflowTool::new(
-                store.clone(),
-                catalog.clone(),
-            )));
-            tools.push(Arc::new(crate::workflow_tool::ReadWorkflowTool::new(
-                store.clone(),
-            )));
-        }
         // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋
         // Office 編集/CSV ツール（worker/toolset.rs に集約）。
         self.push_collab_tools(&mut tools);
@@ -122,6 +185,8 @@ impl ChatWorker {
             trace_id: run.trace_id.clone(),
             input_preview,
             app_id: None,
+            // チャットの 1 ターンが trace の起点。
+            owns_trace: true,
         };
 
         // 承認者は自律/通常チャットの双方へ配線する。破壊系ツール（document.edit / slide.edit /
@@ -134,13 +199,28 @@ impl ChatWorker {
             self.store.clone(),
             run.run_id,
             run.fencing_token,
-            cancel,
+            cancel.clone(),
         );
+        // 実行前フェーズ（#400）。非自律は常に Execute（門は自律の調査フローだけの概念）。
+        let mut gate_stage = super::gate::GateStage::Execute;
+        // 門が承認まで取り上げたツール（発話ごとのツール指定の注記で「承認後に使える」と言う・#734）。
+        let mut held_by_gate: Vec<String> = Vec::new();
         // 自律プロファイル: フルツール（fs CRUD/grep/shell）＋予算＋計画＋承認ゲート（Task 5.1/5.4/5.6/5.7）。
         let opts = if run.autonomous {
             if let Some(storage) = &self.storage {
-                let workspace = self.ensure_workspace(ctx, run.thread_id, storage).await?;
+                // ワークスペースは遅延生成（使わない run で空フォルダを作らない・#392）。
+                let (workspace, system_workspace) =
+                    self.lazy_workspace(ctx, run.thread_id, storage).await?;
                 self.push_autonomous_tools(&mut tools, workspace);
+                // 委譲（#391）は**自律プロファイルのみ**。子へ渡す read-only の allowlist は
+                // ここまでに積んだツールから拾うため、必ず他のツールを積んだ後に呼ぶ。
+                // cancel を共有して run 停止で子も止める。
+                self.push_subagent_tool(&mut tools, run, cancel.clone());
+                // 実行前フェーズの門（#400）: skill が `plan_first` を宣言した variant で
+                // 起動された run は、計画が承認されるまで**調査系ツールを提示しない**。
+                // ツールを積み終えた後に絞る（提示の最終形に対して効かせる）。
+                gate_stage = self.plan_gate_stage(ctx, run, &skills).await?;
+                held_by_gate = gate_stage.filter(&mut tools);
                 let mut opts = AgentOptions::autonomous(
                     self.config.autonomous_max_steps,
                     None,
@@ -159,6 +239,22 @@ impl ChatWorker {
                     ctx.principal.id.clone(),
                     snapshot,
                 );
+                // システム領域（自動生成の使い捨てワークスペース）への書込は承認カードを出さない
+                // （#392）。**opts.approval と approver の両方**へ足す: current_policy が
+                // opts.approval を上書きするため、片方だけでは run 中盤で書込が止まる。
+                if system_workspace {
+                    let extra = crate::autonomous::system_workspace_writes();
+                    opts.approval.auto_approve.extend(extra.iter().cloned());
+                    approver = approver.with_pre_authorized(extra);
+                }
+                // 明確化の段階は本文に ask を書くだけ（ツールを 1 つも渡さない）。agent-core が
+                // 後から足す `plan` メタツールも渡さない（質問の前に計画を立て始めさせない）。
+                if gate_stage == super::gate::GateStage::Clarify {
+                    opts.offer_plan_tool = false;
+                }
+                opts.parallel_read_tools = self.config.parallel_read_tools;
+                opts.tool_search.enabled = self.config.tool_search;
+                opts.tool_search.embedder = self.tool_search_embedder();
                 opts
             } else {
                 // storage 未配線: 自律不能。制約版に落とす（黙って弱くしない・警告）。
@@ -167,30 +263,39 @@ impl ChatWorker {
             }
         } else {
             // 通常チャット: deny_all（既定）のまま。破壊系は都度ユーザー承認が要る（要確認ツールの設計意図）。
-            chat_opts(self)
+            let mut opts = chat_opts(self);
+            self.system_with_origin_document(run, &mut opts).await;
+            opts
         };
         let approver = Some(approver);
 
-        // skill を最後に適用する（system 追記・few-shot・モデル既定。ピン順・モデル既定は
-        // 指定フィールドのみ後勝ち・#344）。`allowed_tools` は誘導テキスト（apply_system 内）で
-        // あり提示ツールは縮小しない（#344 の再定義。決定性はツール実装＋認可＋承認ゲート）。
-        // ⚠️ opts.approval には触れない（破壊系の明示許可は skill で無効化できない・Task 6.9）。
         let (mut opts, mut history) = (opts, history);
-        if !skills.is_empty() {
-            let mut system = opts.system.take().unwrap_or_default();
-            for skill in &skills {
-                skill.apply_system(&mut system);
-                skill.apply_model_defaults(&mut opts);
-            }
-            opts.system = Some(system);
-            // few-shot は「ピン順に前から並ぶ」よう逆順で先頭 splice する。
-            for skill in skills.iter().rev() {
-                skill.apply_few_shot(&mut history);
-            }
-            for skill in &skills {
-                skill.audit_apply(&self.db, ctx, run).await;
-            }
+        opts.session_id = Some(run.thread_id.to_string());
+        // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
+        opts.tool_search.always_load.extend(tools_in_use);
+        self.apply_skills(ctx, run, &skills, &mut opts, &mut history)
+            .await?;
+        // 発話ごとのツール指定（#734）は skill の指示文より**後ろ**に置く（手順書の記述に
+        // 上書きされないように）。照合先は**提示の最終形**（門で絞った後の `tools`）なので、
+        // 指定でツールが増えることはない（誘導のみ・opts.approval にも触れない）。門が承認まで
+        // 取り上げたものは「使えない」ではなく「承認後に使える」と伝える（門の注記と矛盾させない）。
+        let requested = run.requested_tool_names();
+        if !requested.is_empty() {
+            let offered: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+            let held: Vec<&str> = held_by_gate.iter().map(String::as_str).collect();
+            tracing::info!(run_id = %run.run_id,
+                requested = ?requested.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+                "発話ごとのツール指定を適用");
+            super::opts::apply_requested_tools(&mut opts, &requested, &offered, &held);
         }
+
+        // 門の段階（ツールが無い理由と次へ進む条件・#400）は skill の instructions より**後ろ**に
+        // （手順書の記述に上書きされないように）、今日の日付（#546）は最後に置く。
+        super::opts::append_system_tail(
+            &mut opts,
+            gate_stage.system_note(),
+            &super::opts::today_note(run.created_at, self.config.timezone),
+        );
 
         // resume 配線（#351）: 保存済みチェックポイントがあればステップ境界から再開する。
         let resume = match restore_checkpoint(run) {
@@ -216,272 +321,94 @@ impl ChatWorker {
             sink,
         )
         .await
-        .map_err(|e| ChatError::Unavailable(format!("agent: {e}")))?;
+        .map_err(|e| match e {
+            // 利用枠超過は**そのまま会話に出す文言**（llm-gateway で整形済み）。`agent:` を
+            // 前置すると、ユーザーには読めない内部語が残る。
+            agent_core::AgentError::RateLimited(msg) => ChatError::RateLimited(msg),
+            other => ChatError::Unavailable(format!("agent: {other}")),
+        })?;
         let _ = outcome; // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理
         Ok(())
     }
 
-    /// skill ツール（カタログ引き・#344 Task 10.11）を提示ツールに加える。
+    /// skill を最後に適用する（system 追記・few-shot・モデル既定。ピン順・モデル既定は
+    /// 指定フィールドのみ後勝ち・#344）。`allowed_tools` は誘導テキスト（apply_system 内）で
+    /// あり提示ツールは縮小しない（#344 の再定義。決定性はツール実装＋認可＋承認ゲート）。
+    /// ⚠️ opts.approval には触れない（破壊系の明示許可は skill で無効化できない・Task 6.9）。
     ///
-    /// artifact ストアとカタログ源が配線されている時のみ。カタログはピン済み ∪ 本人 owner
-    /// （PR2 でインストール済みを追加）。掲載一覧の取得失敗は run を落とさない
-    /// （ピンの fail-closed とは別・warn してツールを出さない）。
-    async fn push_skill_tool(
+    /// 最後にモデルと思考強度を決め直す（ユーザーの選択 → skill → Auto の振り先 → 設定・#553）。
+    async fn apply_skills(
         &self,
-        tools: &mut Vec<Arc<dyn Tool>>,
         ctx: &AuthContext,
         run: &ClaimedRun,
         skills: &[crate::skill::AppliedSkill],
-    ) {
-        let (Some(artifacts), Some(catalog)) = (&self.skill_artifacts, &self.skill_catalog) else {
-            return;
-        };
-        match catalog.entries(ctx, run.trace_id.as_deref()).await {
-            Ok(entries) => {
-                let pinned = skills
+        opts: &mut AgentOptions,
+        history: &mut Vec<llm_gateway::Message>,
+    ) -> Result<(), ChatError> {
+        if !skills.is_empty() {
+            let mut system = opts.system.take().unwrap_or_default();
+            for skill in skills {
+                skill.apply_system(&mut system);
+                skill.apply_model_defaults(opts);
+            }
+            opts.system = Some(system);
+            // few-shot は「ピン順に前から並ぶ」よう逆順で先頭 splice する。
+            for skill in skills.iter().rev() {
+                skill.apply_few_shot(history);
+            }
+            for skill in skills {
+                skill.audit_apply(&self.db, ctx, run).await;
+            }
+            // 手順書が名指しするツールは遅延にしない（毎回の検索の 1 手を払わせない）。
+            opts.tool_search.always_load.extend(
+                skills
                     .iter()
-                    .map(|s| crate::skill_catalog::SkillCatalogEntry {
-                        id: s.id,
-                        version: s.version,
-                        name: s.name.clone(),
-                        description: s.body.description.clone(),
-                        pinned: true,
-                    })
-                    .collect();
-                if let Some(tool) = crate::skill_tool::SkillTool::build(
-                    artifacts.clone(),
-                    self.db.clone(),
-                    run,
-                    pinned,
-                    entries,
-                ) {
-                    tools.push(Arc::new(tool));
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, run_id = %run.run_id, "skill カタログ取得に失敗（skill ツールを提示しない）");
-            }
+                    .flat_map(crate::skill::AppliedSkill::declared_tools)
+                    .map(str::to_string),
+            );
         }
+        super::run_model::apply_to_opts(&self.gateway, ctx, run, skills, opts).await
     }
 
-    /// thread のワークスペースフォルダを解決 or 作成し、`WorkspaceStore` を返す（Durable Workspace）。
-    async fn ensure_workspace(
+    /// thread のワークスペース（Durable Workspace）を**遅延生成**で束ねる（#392）。
+    ///
+    /// フォルダは fs ツールが実際に呼ばれた時に初めて作られる（使わない run で空フォルダを
+    /// 増やさない）。戻り値の `system` は「システム領域か」で、承認の事前許可判断に使う:
+    ///
+    /// - 既にフォルダがある → **その実際の `system` 属性**（過去 run の設定を勝手に変えない）
+    /// - まだ無い → 「このフォルダで作業」の明示選択が**無ければ** system（自動生成の使い捨て領域）
+    async fn lazy_workspace(
         &self,
         ctx: &AuthContext,
         thread_id: Uuid,
         storage: &Arc<storage::StorageService>,
-    ) -> Result<Arc<dyn WorkspaceStore>, ChatError> {
-        let folder_id = if let Some(id) = self
+    ) -> Result<(Arc<dyn WorkspaceStore>, bool), ChatError> {
+        let system = match self
             .store
             .workspace_folder_id(thread_id, &ctx.tenant_id)
             .await?
         {
-            id
-        } else {
-            // 初回自律 run: ワークスペースフォルダを作り thread に紐づける。作成先の親は
-            // 利用者が選んだ workspace_parent_folder_id（無ければ Drive 直下＝None）。親フォルダの
-            // editor は create_folder 内で本人 ctx により検証される（confused-deputy 防止）。
-            // **thread ごとに一意な名前**にする（`node` の (parent,name) unique・別 thread と衝突しない）。
-            let parent = self
+            Some(folder_id) => storage
+                .is_system_node(ctx, folder_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!(thread_id = %thread_id, error = %e,
+                        "workspace の system 属性を読めなかった（可視領域として扱う）");
+                })
+                // 読めないときは**可視領域として扱う**（＝承認を緩めない安全側）。
+                .unwrap_or(false),
+            None => self
                 .store
                 .workspace_parent_folder_id(thread_id, &ctx.tenant_id)
-                .await?;
-            let name = format!("agent-workspace-{thread_id}");
-            match storage.create_folder(ctx, parent, &name, None).await {
-                Ok(node) => {
-                    self.store
-                        .set_workspace_folder_if_absent(thread_id, &ctx.tenant_id, node.id)
-                        .await?
-                }
-                // 作成失敗は 2 種を区別する: ①同一 thread の並行 run が先に作った（unique 衝突）
-                // なら workspace_folder_id が既に埋まっている → それを使う。②親フォルダが選択後に
-                // 削除された/editor が剥奪された等の**実失敗**なら未設定のまま → 元エラーを伝播して
-                // run を失敗させる（黙って別の場所に作らない・fail-closed）。
-                Err(e) => match self
-                    .store
-                    .workspace_folder_id(thread_id, &ctx.tenant_id)
-                    .await?
-                {
-                    Some(id) => id,
-                    None => {
-                        return Err(match e {
-                            storage::StorageError::Forbidden => ChatError::Forbidden,
-                            storage::StorageError::NotFound => ChatError::NotFound,
-                            other => ChatError::Internal(format!("workspace 作成に失敗: {other}")),
-                        });
-                    }
-                },
-            }
+                .await?
+                .is_none(),
         };
-        // 共有中の thread editor/owner にワークスペースフォルダの editor を行き渡らせる（Task 5.6(a)・冪等）。
-        // 失敗は run を止めない（本人の書込には影響せず、次 run で再同期される）。
-        if let Err(e) = self.store.grant_workspace_to_members(ctx, thread_id).await {
-            tracing::warn!(thread_id = %thread_id, error = %e, "workspace メンバー同期に失敗（次 run で再試行）");
-        }
-        Ok(Arc::new(crate::workspace::StorageWorkspaceStore::new(
+        let workspace = Arc::new(crate::workspace::LazyWorkspace::new(
+            self.store.clone(),
             storage.clone(),
-            folder_id,
-        )))
+            thread_id,
+            system,
+        ));
+        Ok((workspace, system))
     }
-
-    /// 通常チャット（OFF）。古典 RAG 注入＋llm-gateway 直叩き（ツールループ無し）。
-    pub(super) async fn run_classic_mode(
-        &self,
-        ctx: &AuthContext,
-        run: &ClaimedRun,
-        history: Vec<LlmMessage>,
-        sink: &mut WorkerSink,
-    ) -> Result<(), ChatError> {
-        use agent_core::{run_doc_search, AgentEvent, EventSink};
-
-        // skill のピン解決（通常チャットにも適用する・複数可・fail-closed・Task 6.9/#344）。
-        let skills = crate::skill::AppliedSkill::load_pins(
-            ctx,
-            self.skill_artifacts.as_ref(),
-            run,
-            run.trace_id.as_deref(),
-        )
-        .await?;
-        let scope = crate::skill::combined_scope(&skills);
-        let mut history = history;
-
-        // 直近ユーザー発話で事前検索し、文脈注入＋引用イベント。
-        let query = history.last().map(message_preview).unwrap_or_default();
-        let mut system = self.config.system_prompt.clone();
-        for skill in &skills {
-            skill.apply_system(&mut system);
-            skill.audit_apply(&self.db, ctx, run).await;
-        }
-        // few-shot は「ピン順に前から並ぶ」よう逆順で先頭 splice する。
-        for skill in skills.iter().rev() {
-            skill.apply_few_shot(&mut history);
-        }
-        // 全ピンが doc_search を宣言に含む時のみ古典事前検索を行う（Task 6.9 の意味を
-        // classic では維持する。ツールループが無い classic に「誘導」は存在しないため）。
-        let search_allowed = skills
-            .iter()
-            .all(|s| s.allows(agent_core::ToolName::DocSearch.as_str()));
-        if let (Some(search), true) = (&self.search, search_allowed) {
-            match run_doc_search(
-                search,
-                ctx,
-                &query,
-                None,
-                scope.as_ref(),
-                run.trace_id.as_deref(),
-            )
-            .await
-            {
-                Ok(result) => {
-                    system.push_str("\n\n# 参考（社内文書検索の結果）\n");
-                    system.push_str(&result.context_text);
-                    for c in result.citations {
-                        // 古典注入でも引用を UI/監査へ流す（post-filter は検索内で済み）。
-                        sink.emit(AgentEvent::Citation(agent_core::Citation {
-                            node_id: c.node_id,
-                            chunk_id: c.chunk_id,
-                            snippet: c.snippet,
-                            page: c.page,
-                            heading_path: c.heading_path,
-                            score: c.score,
-                        }))
-                        .await
-                        .map_err(|e| ChatError::Internal(e.to_string()))?;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "classic doc_search failed; continuing without");
-                }
-            }
-        }
-
-        // skill のモデル既定（Task 6.9・指定があるものだけ上書き・複数ピンは後勝ち・#344）。
-        let (model, max_tokens, temperature) = match crate::skill::combined_model_defaults(&skills)
-        {
-            Some(defaults) => (
-                defaults.model.clone().or_else(|| self.config.model.clone()),
-                defaults.max_tokens.or(Some(2048)),
-                defaults.temperature,
-            ),
-            None => (self.config.model.clone(), Some(2048), None),
-        };
-        let effective_model = model
-            .clone()
-            .unwrap_or_else(|| self.gateway.default_model().to_string());
-        let req = GenerateRequest {
-            model,
-            system: Some(system),
-            messages: history,
-            tools: Vec::new(),
-            effort: None,
-            max_tokens,
-            temperature,
-        };
-        let mut stream = self
-            .gateway
-            .stream(req)
-            .await
-            .map_err(|e| ChatError::Unavailable(format!("llm: {e}")))?;
-
-        let mut text_acc = String::new();
-        let mut usage = llm_gateway::Usage::default();
-        while let Some(delta) = stream.next().await {
-            if sink.is_cancelled() {
-                break;
-            }
-            match delta.map_err(|e| ChatError::Unavailable(e.to_string()))? {
-                StreamDelta::TextDelta { text } => {
-                    text_acc.push_str(&text);
-                    sink.emit(AgentEvent::Text(text))
-                        .await
-                        .map_err(|e| ChatError::Internal(e.to_string()))?;
-                }
-                StreamDelta::ThinkingDelta { text } => {
-                    sink.emit(AgentEvent::Thinking(text))
-                        .await
-                        .map_err(|e| ChatError::Internal(e.to_string()))?;
-                }
-                StreamDelta::Done { usage: u, .. } => usage = u,
-                _ => {} // 通常チャットはツールを使わない
-            }
-        }
-
-        self.gateway
-            .record_generation(
-                ctx,
-                &GenerationRecord {
-                    idempotency_key: format!("{}:{}:0", run.run_id, run.fencing_token),
-                    // 会計は実効モデル（skill 既定の上書き込み）で刻む。
-                    model: effective_model,
-                    usage,
-                    trace_id: run.trace_id.clone(),
-                    input_preview: query,
-                    output_preview: text_acc.chars().take(2000).collect(),
-                    app_id: None,
-                },
-            )
-            .await;
-        Ok(())
-    }
-}
-
-/// Chat プロファイルの実行オプション（制約版・現行挙動）。
-fn chat_opts(worker: &ChatWorker) -> AgentOptions {
-    let mut opts = AgentOptions::chat(worker.config.max_steps);
-    opts.system = Some(worker.config.system_prompt.clone());
-    worker.config.model.clone_into(&mut opts.model);
-    opts
-}
-
-/// 自律プロファイルの system プロンプト（計画・ワークスペース・承認の作法を足す）。
-fn autonomous_system_prompt(base: &str) -> String {
-    format!(
-        "{base}\n\n\
-         あなたは自律エージェントです。与えられた目標を達成するため、次の作法で進めてください:\n\
-         - まず `plan` ツールで目標を数個のサブタスクに分解し、進捗に応じて計画を更新する。\n\
-         - 作業ディレクトリ（ワークスペース）のファイルは fs_list/fs_read/grep で調べ、fs_write/fs_edit で編集する。\n\
-         - コマンド実行が必要なら shell を使う（1 コマンドずつ・ネットワークは遮断）。\n\
-         - 破壊的な操作（shell・削除）は承認が必要な場合がある。承認待ちで停止したら結果を待つ。\n\
-         - 目標を達成したら簡潔に要約して終了する。"
-    )
 }

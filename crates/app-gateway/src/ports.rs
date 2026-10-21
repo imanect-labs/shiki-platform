@@ -57,6 +57,10 @@ pub struct AgentInvokeSpec {
     pub model: Option<String>,
     /// インストール時ピンの宣言ツール（実装側で ToolName 閉集合 ∩ 実配線と交差する）。
     pub declared_tools: Vec<String>,
+    /// アプリに実際に効いている能力スコープ（`granted_scopes` ∩ トークンの scope）。
+    /// 読み取り系ツールは対応する API と同じスコープが無ければ提示しない（doc_search は
+    /// `rag.query`・doc_read は `storage.read`）。agent.invoke を迂回路にしない。
+    pub scopes: Vec<authz::CapabilityScope>,
     /// 1 生成の出力トークン上限（インストール時ピン）。
     pub max_tokens: Option<i64>,
     pub max_steps: Option<usize>,

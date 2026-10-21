@@ -43,38 +43,14 @@ pub fn classify(port: u16, peeked: &[u8], egress: &Egress) -> (Option<String>, D
 
 /// SSRF 防御: プロキシが中継してはいけない解決先 IP か（内部/予約レンジ）。
 ///
-/// allowlist はホスト名で判定するが、`web_fetch` の動的許可などホスト名が実質攻撃者制御の経路では、
-/// そのホストがクラウドメタデータ（169.254.169.254）・loopback・私設/リンクローカル/ULA 等へ解決され得る。
+/// allowlist はホスト名で判定するが、ホスト名が実質攻撃者制御の経路では、そのホストが
+/// クラウドメタデータ（169.254.169.254）・loopback・私設/リンクローカル/ULA 等へ解決され得る。
 /// 解決後 IP をここで弾く。テスト用に `SANDBOX_EGRESS_ALLOW_PRIVATE=1` で私設許可（本番は設定しない）。
+///
+/// 判定そのものは [`sandbox_client::net_guard`] が単一の正（#348・アプリ層の web_fetch と同じ表）。
 #[must_use]
 pub(super) fn is_forbidden_upstream(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                || v4.is_unspecified()
-                || v4.octets()[0] == 0
-                // CGNAT 100.64.0.0/10 / benchmarking 198.18.0.0/15 も内部扱い。
-                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
-                || (v4.octets()[0] == 198 && (v4.octets()[1] & 0xfe) == 18)
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                // リンクローカル fe80::/10・ULA fc00::/7。
-                || (v6.segments()[0] & 0xffc0) == 0xfe80
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-                // IPv4-mapped は v4 側の判定へ委ねる。
-                || v6.to_ipv4_mapped().is_some_and(is_forbidden_v4_mapped)
-        }
-    }
-}
-
-fn is_forbidden_v4_mapped(v4: std::net::Ipv4Addr) -> bool {
-    is_forbidden_upstream(IpAddr::V4(v4))
+    !sandbox_client::net_guard::is_public_ip(ip)
 }
 
 /// SSRF フィルタ緩和フラグを env から一度だけ読む（`EgressStack` 起動時に評価してタスクへ渡す）。

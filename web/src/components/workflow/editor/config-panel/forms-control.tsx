@@ -292,7 +292,7 @@ export function SwitchForm({ node, dispatch, refCandidates, inMapRegion, fieldEr
                   });
                 }}
                 placeholder="出口名"
-                className="h-8 w-24 font-mono text-xs"
+                className="h-8 w-24 font-mono text-xs max-md:text-base"
                 aria-label="出口名"
               />
               <Button
@@ -472,7 +472,7 @@ export function WaitForm({ node, dispatch, refCandidates, inMapRegion, fieldErro
                 })
               }
               placeholder="フォルダ ID"
-              className="h-8 font-mono text-xs"
+              className="h-8 font-mono text-xs max-md:text-base"
             />
           </Field>
           <Field label="待ちの上限（秒・省略可）" hint="空欄で無期限" error={fieldErrors.get("timeout_sec")}>

@@ -74,6 +74,24 @@ struct MessageRow {
     created_at: DateTime<Utc>,
 }
 
+impl MessageRow {
+    /// 行を DTO へ写す（`invoked_actions` は行に無いので呼び出し側が後から埋める・#410）。
+    fn into_message(self) -> Result<Message, ChatError> {
+        Ok(Message {
+            id: self.id,
+            role: Role::parse(&self.role)
+                .ok_or_else(|| ChatError::Internal(format!("bad role: {}", self.role)))?,
+            content: self.content.0,
+            agent_mode: self.agent_mode,
+            parent_id: self.parent_id,
+            invoked_actions: Vec::new(),
+            bound_actions: Vec::new(),
+            ui_runs: Vec::new(),
+            created_at: self.created_at,
+        })
+    }
+}
+
 impl ChatStore {
     /// スレッドを新規作成する（作成者を owner タプルで付与）。
     pub async fn create_thread(
@@ -202,20 +220,27 @@ impl ChatStore {
     ///
     /// `origin_note_id` を渡すと当該ノート由来のスレッドのみに絞る（ノート側の会話一覧・issue #282）。
     /// 未指定（None）はサイドバー履歴の全件（現行挙動）。
+    /// `title_query` はタイトルの部分一致（大小無視・ワイルドカードは無害化・#591）。空白のみは無指定扱い。
     pub async fn list_threads(
         &self,
         ctx: &AuthContext,
         before_updated_at: Option<DateTime<Utc>>,
         before_id: Option<Uuid>,
         origin_note_id: Option<Uuid>,
+        title_query: Option<&str>,
         limit: i64,
     ) -> Result<Vec<Thread>, ChatError> {
         let limit = limit.clamp(1, 100);
+        let title_pattern = title_query
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .map(|q| format!("%{}%", storage::escape_like(q)));
         let rows: Vec<ThreadRow> = sqlx::query_as(&format!(
             "SELECT {THREAD_COLUMNS} FROM thread \
              WHERE tenant_id = $1 AND org = $2 AND owner = $3 AND deleted_at IS NULL \
                AND ($4::timestamptz IS NULL OR (updated_at, id) < ($4::timestamptz, $5)) \
                AND ($7::uuid IS NULL OR origin_note_id = $7) \
+               AND ($8::text IS NULL OR title ILIKE $8 ESCAPE '\\') \
              ORDER BY updated_at DESC, id DESC LIMIT $6",
         ))
         .bind(&ctx.tenant_id)
@@ -225,6 +250,7 @@ impl ChatStore {
         .bind(before_id)
         .bind(limit)
         .bind(origin_note_id)
+        .bind(title_pattern)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -283,23 +309,39 @@ impl ChatStore {
         .map_err(map_db)?;
         let mut messages: Vec<Message> = rows
             .into_iter()
-            .map(|r| {
-                Ok(Message {
-                    id: r.id,
-                    role: Role::parse(&r.role)
-                        .ok_or_else(|| ChatError::Internal(format!("bad role: {}", r.role)))?,
-                    content: r.content.0,
-                    agent_mode: r.agent_mode,
-                    parent_id: r.parent_id,
-                    created_at: r.created_at,
-                })
-            })
+            .map(MessageRow::into_message)
             .collect::<Result<_, ChatError>>()?;
+
+        // 本文の図（```ui）のボタンの実行済み（#410・#604）・ワークフローの束縛・起動の記録を
+        // 同梱する。図の「送信済み」はローカル state ではなくこれを根拠に描く（再描画・リロードで
+        // 未回答へ戻さない）。スレッド 1 件につき主キー先頭 2 列で引ける 1 クエリ（メッセージ数に
+        // 比例させない）。図の無いスレッドでは引かない（生成ワーカーの履歴組み立てを含め、
+        // 大半のスレッドで往復が減る）。
+        let has_figures = messages
+            .iter()
+            .any(|m| m.role == Role::Assistant && crate::yui_actions::may_have_yui(&m.content));
+        if has_figures {
+            let mut invoked = self.invoked_ui_actions(ctx, thread_id).await?;
+            for m in &mut messages {
+                if let Some(ids) = invoked.remove(&m.id) {
+                    m.invoked_actions = ids;
+                }
+            }
+        }
+        if has_figures {
+            self.attach_yui_state(ctx, thread_id, &mut messages).await?;
+        }
 
         // 共有されたスレッドの閲覧は**閲覧者自身の権限で引用を再評価**する（#37・
         // 「他人の引用をそのまま見せない」）。閲覧者が読めない引用チャンクは落とす
         // （所有者は自分の引用を全て読めるため実質そのまま）。
         self.filter_citations_for_viewer(ctx, &mut messages).await?;
+        // ツール結果の観測本文は**実行主体本人にだけ**見せる（#386 でチャットに描画するようにした）。
+        // 引用と違い tool_result は node に紐づかないため個別に再認可できず、doc_search の
+        // スニペット・document.read の本文・csv.query の行・shell の出力などが、共有スレッドの
+        // 閲覧者（元ファイルの閲覧権限なし）へそのまま渡り得る。
+        self.redact_tool_results_for_viewer(ctx, &mut messages)
+            .await?;
         Ok(messages)
     }
 
@@ -323,61 +365,9 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        let r = row.ok_or(ChatError::NotFound)?;
-        Ok(Message {
-            id: r.id,
-            role: Role::parse(&r.role)
-                .ok_or_else(|| ChatError::Internal(format!("bad role: {}", r.role)))?,
-            content: r.content.0,
-            agent_mode: r.agent_mode,
-            parent_id: r.parent_id,
-            created_at: r.created_at,
-        })
-    }
-
-    /// 各メッセージの citation ブロックを閲覧者の viewer 権限で再評価し、読めない引用を落とす。
-    async fn filter_citations_for_viewer(
-        &self,
-        ctx: &AuthContext,
-        messages: &mut [Message],
-    ) -> Result<(), ChatError> {
-        use std::collections::HashMap;
-        // 引用対象ファイルの重複を除いて一括判定（同一ファイルの複数引用を一度に）。
-        let mut decisions: HashMap<String, bool> = HashMap::new();
-        for m in messages.iter() {
-            for b in &m.content {
-                if let ContentBlock::Citation(c) = b {
-                    if !decisions.contains_key(&c.node_id) {
-                        let allowed = self.can_view_file(ctx, &c.node_id).await;
-                        decisions.insert(c.node_id.clone(), allowed);
-                    }
-                }
-            }
-        }
-        if decisions.values().all(|v| *v) {
-            return Ok(()); // 全て閲覧可（所有者/十分な権限）なら何もしない
-        }
-        for m in messages.iter_mut() {
-            m.content.retain(|b| match b {
-                ContentBlock::Citation(c) => *decisions.get(&c.node_id).unwrap_or(&false),
-                _ => true,
-            });
-        }
-        Ok(())
-    }
-
-    /// 閲覧者が該当ファイルを閲覧できるか（citation 再評価用・失敗時は保守的に false）。
-    async fn can_view_file(&self, ctx: &AuthContext, node_id: &str) -> bool {
-        let obj = ctx.ns().file(node_id);
-        self.authz
-            .check(
-                &ctx.subject(),
-                Relation::Viewer,
-                &obj,
-                Consistency::MinimizeLatency,
-            )
-            .await
-            .unwrap_or(false)
+        // 束縛の照合が用途なので `invoked_actions` は埋めない（二重送信の判定は台帳の
+        // 確保そのもので行う・#410）。一覧取得（`get_messages`）だけが UI へ同梱する。
+        row.ok_or(ChatError::NotFound)?.into_message()
     }
 
     /// スレッドへの relation を要求し、FGA object を返す（不足は監査 deny＋Forbidden）。
@@ -422,7 +412,7 @@ impl ChatStore {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn map_db(e: sqlx::Error) -> ChatError {
+pub(super) fn map_db(e: sqlx::Error) -> ChatError {
     ChatError::Internal(format!("db: {e}"))
 }
 

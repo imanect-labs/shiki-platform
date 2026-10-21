@@ -219,9 +219,10 @@ fn base_config(db_url: &str) -> AppConfig {
             log_format: LogFormat::Json,
         },
         storage: StorageConfig {
-            backend: ObjectStoreBackend::Minio,
+            backend: ObjectStoreBackend::S3,
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
+            upload_gc: api::config::UploadGcConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -233,7 +234,11 @@ fn base_config(db_url: &str) -> AppConfig {
             api_key: None,
             default_model: None,
             models: vec![],
+            context_window_tokens: None,
             langfuse: None,
+            user_agent: None,
+            session_header: None,
+            ..Default::default()
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
@@ -242,6 +247,7 @@ fn base_config(db_url: &str) -> AppConfig {
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
+        insights: api::insights::InsightsConfig::default(),
     }
 }
 
@@ -304,11 +310,6 @@ async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStor
         Arc::new(AllowAll),
     ));
     let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
-    let ui_validator = Arc::new(gui::SpecValidator::new(
-        Arc::clone(&artifacts),
-        pool.clone(),
-    ));
-    let ui_specs = Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator));
     let ui_actions = Arc::new(gui::ActionDispatcher::new(
         storage::audit::AuditRecorder::new(pool.clone()),
     ));
@@ -376,20 +377,40 @@ async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStor
         tabular::RunnerConfig::new("shiki-tabular-runner", Duration::from_secs(5)),
         tabular::Quotas::default(),
     ));
-    let office_runtime = with_office.then(|| api::state::OfficeRuntime {
-        suite: Arc::new(FixedSuite),
-        wopi_base_url: "http://shiki-server:8080".into(),
-        wopi: office::WopiState {
-            storage: Arc::clone(&storage),
-            authz: Arc::new(AllowAll),
-            pool: pool.clone(),
-            token_key: office::OfficeTokenKey::random(),
-            web_origin: Some("http://localhost:3000".into()),
-            max_body_bytes: 64 * 1024 * 1024,
-        },
+    let office_runtime = with_office.then(|| {
+        let token_key = office::OfficeTokenKey::random();
+        // HTTP テストでは CoolWSD へ接続しない（配線形だけ揃える）。
+        let live = Arc::new(office::live::LiveEditor::new(
+            Arc::clone(&storage),
+            Arc::new(AllowAll),
+            pool.clone(),
+            token_key.clone(),
+            "http://shiki-server:8080",
+            office::live::CoolWsConfig::new("ws://collabora:9980"),
+        ));
+        let engine = Arc::new(office::engine::OfficeEngine::new(
+            Arc::clone(&live),
+            reqwest::Client::new(),
+            "http://collabora:9980",
+        ));
+        api::state::OfficeRuntime {
+            suite: Arc::new(FixedSuite),
+            wopi_base_url: "http://shiki-server:8080".into(),
+            wopi: office::WopiState {
+                storage: Arc::clone(&storage),
+                authz: Arc::new(AllowAll),
+                pool: pool.clone(),
+                token_key: token_key.clone(),
+                web_origin: Some("http://localhost:3000".into()),
+                max_body_bytes: 64 * 1024 * 1024,
+            },
+            live,
+            engine,
+        }
     });
     let state = AppState {
         config: Arc::new(config),
+        insights: std::sync::Arc::new(api::insights::InsightsService::new(pool.clone())),
         db: api::state::ReadinessProbe::new(pool),
         authz: Arc::new(AllowAll),
         jwks,
@@ -407,7 +428,6 @@ async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStor
         skill_installs,
         bundles,
         app_usage,
-        ui_specs,
         ui_actions,
         skills,
         mini_apps,
@@ -423,6 +443,7 @@ async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStor
         tenants,
         search: None,
         chat: None,
+        llm: None,
         rag_admin,
         office: office_runtime,
         docx_composer: Arc::new(office::DocxComposer::new(
@@ -620,9 +641,9 @@ async fn office_session_rejects_unsupported_and_missing_files() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
 
-/// #332/#334: /documents（作成）と /documents/export（変換 DL）は office フラグ非依存で
-/// 常時配線される。空 markdown は ingestion-worker を呼ばず blank.docx テンプレを返すため、
-/// worker 未到達（127.0.0.1:1）でも作成/エクスポートが成立することを検証する。
+/// #332/#334/#381: /documents・/sheets（作成）と /documents/export（変換 DL）は office フラグ
+/// 非依存で常時配線される。作成は空テンプレ（blank.docx / blank.xlsx）をそのまま書くだけで、
+/// export の空 markdown も worker を呼ばないため、worker 未到達（127.0.0.1:1）でも成立する。
 #[tokio::test]
 async fn documents_create_and_export_work_without_office_or_worker() {
     let Some((state, sessions)) = build_state(false).await else {
@@ -664,6 +685,25 @@ async fn documents_create_and_export_work_without_office_or_worker() {
     assert_eq!(
         node["content_type"],
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+
+    // 作成（Excel・#381）: 空テンプレから .xlsx ノードが作られる（worker/Collabora 非依存）。
+    let res = app
+        .clone()
+        .oneshot(session_post(
+            "/sheets",
+            &cookie,
+            csrf,
+            serde_json::json!({"name": "売上", "parent_id": null}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let node = body_json(res).await;
+    assert_eq!(node["name"], "売上.xlsx");
+    assert_eq!(
+        node["content_type"],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
 
     // エクスポート: 空 markdown → .docx バイナリを attachment で返す（worker 非依存）。

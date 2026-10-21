@@ -162,9 +162,10 @@ fn config(db_url: &str) -> AppConfig {
             log_format: LogFormat::Json,
         },
         storage: StorageConfig {
-            backend: ObjectStoreBackend::Minio,
+            backend: ObjectStoreBackend::S3,
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
+            upload_gc: api::config::UploadGcConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -176,7 +177,11 @@ fn config(db_url: &str) -> AppConfig {
             api_key: None,
             default_model: None,
             models: vec![],
+            context_window_tokens: None,
             langfuse: None,
+            user_agent: None,
+            session_header: None,
+            ..Default::default()
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
@@ -185,6 +190,7 @@ fn config(db_url: &str) -> AppConfig {
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
+        insights: api::insights::InsightsConfig::default(),
     }
 }
 
@@ -237,16 +243,12 @@ async fn setup() -> Option<Env> {
         Arc::clone(&authz),
     ));
     let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
-    let runs = RunStore::new(pool.clone());
+    let runs = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let delegation = workflow_engine::DelegationStore::new(pool.clone(), Arc::clone(&authz));
     let launcher = Arc::new(workflow_engine::WorkflowRunLauncher::new(
         delegation.clone(),
         (*workflows).clone(),
         runs.clone(),
-    ));
-    let ui_validator = Arc::new(gui::SpecValidator::new(
-        Arc::clone(&artifacts),
-        pool.clone(),
     ));
     // 構造化データ（Phase 9）: workflow ルートは触らないが AppState 構築に必要。
     let data_directory = Arc::new(storage::DirectoryStore::new(pool.clone()));
@@ -330,6 +332,7 @@ async fn setup() -> Option<Env> {
     ));
     let state = AppState {
         config: Arc::new(config(&db_url)),
+        insights: std::sync::Arc::new(api::insights::InsightsService::new(pool.clone())),
         db: api::state::ReadinessProbe::new(pool.clone()),
         authz: Arc::clone(&authz),
         jwks: Arc::new(api::middleware::JwksCache::new(
@@ -350,7 +353,6 @@ async fn setup() -> Option<Env> {
         collab: collab_hub,
         tabular: tabular_svc,
         artifacts: Arc::clone(&artifacts),
-        ui_specs: Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator)),
         ui_actions: Arc::new(gui::ActionDispatcher::new(
             storage::audit::AuditRecorder::new(pool.clone()),
         )),
@@ -379,6 +381,7 @@ async fn setup() -> Option<Env> {
         tenants: Arc::new(storage::TenantStore::new(pool.clone())),
         search: None,
         chat: None,
+        llm: None,
         rag_admin: Arc::new(rag::RagAdmin::new(pool.clone(), None, None)),
         office: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(
@@ -510,7 +513,7 @@ async fn workflow_http_end_to_end() {
     let name_ok = format!("http-ok-{}", &suffix[..12]);
     let name_fail = format!("http-fail-{}", &suffix[..12]);
     let worker = WorkflowWorker::new(
-        RunStore::new(env.pool.clone()),
+        RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
         Arc::new(PassExecutor),
         WorkerConfig::default(),
     )

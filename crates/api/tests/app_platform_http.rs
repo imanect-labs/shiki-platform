@@ -215,9 +215,10 @@ fn base_config(db_url: &str) -> AppConfig {
             log_format: LogFormat::Json,
         },
         storage: StorageConfig {
-            backend: ObjectStoreBackend::Minio,
+            backend: ObjectStoreBackend::S3,
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
+            upload_gc: api::config::UploadGcConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -229,7 +230,11 @@ fn base_config(db_url: &str) -> AppConfig {
             api_key: None,
             default_model: None,
             models: vec![],
+            context_window_tokens: None,
             langfuse: None,
+            user_agent: None,
+            session_header: None,
+            ..Default::default()
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
@@ -238,6 +243,7 @@ fn base_config(db_url: &str) -> AppConfig {
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
+        insights: api::insights::InsightsConfig::default(),
     }
 }
 
@@ -263,8 +269,6 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
     let rag_admin = Arc::new(rag::RagAdmin::new(db.clone(), None, None));
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), Arc::new(AllowAll)));
     let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
-    let ui_validator = Arc::new(gui::SpecValidator::new(Arc::clone(&artifacts), db.clone()));
-    let ui_specs = Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator));
     let ui_actions = Arc::new(gui::ActionDispatcher::new(
         storage::audit::AuditRecorder::new(db.clone()),
     ));
@@ -334,6 +338,7 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
     ));
     AppState {
         config: Arc::new(config),
+        insights: std::sync::Arc::new(api::insights::InsightsService::new(db.clone())),
         db: api::state::ReadinessProbe::new(db),
         authz: Arc::new(AllowAll),
         jwks,
@@ -351,7 +356,6 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         skill_installs,
         bundles,
         app_usage,
-        ui_specs,
         ui_actions,
         skills,
         mini_apps,
@@ -367,6 +371,7 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         tenants,
         search: None,
         chat: None,
+        llm: None,
         rag_admin,
         office: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(

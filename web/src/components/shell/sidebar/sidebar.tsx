@@ -2,67 +2,69 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { BrandLogo } from "../brand-logo";
 import { useSidebar } from "./sidebar-context";
 import { SidebarNav } from "./sidebar-nav";
 import { SidebarChatHistory } from "./sidebar-chat-history";
 import { SidebarAccount } from "./sidebar-account";
 import { SidebarResizer } from "./sidebar-resizer";
 
-/// セクション見出し（参照デザインの小さな大文字ラベル）。
-function SectionLabel({ children }: { children: React.ReactNode }) {
+/// ロゴ（四つの点＋ワードマーク）。ホームへのリンクを兼ねる。
+function Wordmark({ onNavigate, mobile }: { onNavigate?: () => void; mobile?: boolean }) {
   return (
-    <div className="flex h-7 items-center px-2.5 pt-1">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.07em] text-sidebar-foreground/45">
-        {children}
-      </span>
-    </div>
+    <Link
+      href="/"
+      onClick={onNavigate}
+      className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+      aria-label="ホームへ"
+    >
+      <BrandLogo size={mobile ? "touch" : "md"} />
+    </Link>
   );
 }
 
 /// サイドバー内部レイアウト（デスクトップ aside / モバイルドロワで共用）。
+/// `mobile` はスマホのドロワ: 折りたたみトグルの代わりに閉じる ×、ナビはタイル 1 行、履歴は大きい行。
 export function SidebarContent({
   collapsed,
   onNavigate,
-  showCollapseToggle = true,
+  mobile = false,
 }: {
   collapsed: boolean;
   onNavigate?: () => void;
-  showCollapseToggle?: boolean;
+  mobile?: boolean;
 }) {
-  const { toggleCollapsed } = useSidebar();
+  const { toggleCollapsed, setMobileOpen } = useSidebar();
 
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
-      {/* ヘッダ: ワードマーク＋折りたたみトグル（装飾アイコンは置かない） */}
-      <div
-        className={cn(
-          "flex h-14 shrink-0 items-center px-3",
-          collapsed ? "justify-center" : "gap-1.5",
-        )}
-      >
-        {!collapsed ? (
-          <>
-            <Link
-              href="/"
-              onClick={onNavigate}
-              className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
-              aria-label="ホームへ"
-            >
-              <span
-                className="bg-clip-text text-[17px] font-bold tracking-[-0.02em] text-transparent"
-                style={{
-                  backgroundImage:
-                    "linear-gradient(100deg, var(--season-spring), var(--season-summer) 38%, var(--season-autumn) 66%, var(--season-winter))",
-                }}
-              >
-                Shiki
-              </span>
-            </Link>
-            {showCollapseToggle ? (
+      {/* ヘッダ: ワードマーク＋折りたたみトグル（スマホは閉じる）。装飾アイコンは置かない */}
+      {mobile ? (
+        <div className="flex h-14 shrink-0 items-center pl-4 pr-2">
+          <Wordmark onNavigate={onNavigate} mobile />
+          <button
+            type="button"
+            onClick={() => setMobileOpen(false)}
+            aria-label="メニューを閉じる"
+            className="ml-auto flex size-11 items-center justify-center rounded-lg text-sidebar-foreground/60 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring active:bg-sidebar-accent"
+          >
+            <X className="size-5" aria-hidden />
+          </button>
+        </div>
+      ) : (
+        <div
+          className={cn(
+            "flex h-14 shrink-0 items-center px-3",
+            collapsed ? "justify-center" : "gap-1.5",
+          )}
+        >
+          {!collapsed ? (
+            <>
+              <Wordmark onNavigate={onNavigate} />
               <button
                 type="button"
                 onClick={toggleCollapsed}
@@ -72,43 +74,43 @@ export function SidebarContent({
               >
                 <PanelLeftClose className="size-[18px]" aria-hidden />
               </button>
-            ) : null}
-          </>
-        ) : showCollapseToggle ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={toggleCollapsed}
-                aria-label="サイドバーを開く"
-                aria-expanded={false}
-                className="flex size-9 items-center justify-center rounded-[9px] text-sidebar-foreground/55 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
-              >
-                <PanelLeftOpen className="size-[18px]" aria-hidden />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">サイドバーを開く</TooltipContent>
-          </Tooltip>
-        ) : null}
-      </div>
+            </>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={toggleCollapsed}
+                  aria-label="サイドバーを開く"
+                  aria-expanded={false}
+                  className="flex size-9 items-center justify-center rounded-[9px] text-sidebar-foreground/55 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                >
+                  <PanelLeftOpen className="size-[18px]" aria-hidden />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">サイドバーを開く</TooltipContent>
+            </Tooltip>
+          )}
+        </div>
+      )}
 
       {/* 上部固定ナビ（新しいチャット＋検索＋ドライブ） */}
       <div className="shrink-0">
-        <SidebarNav collapsed={collapsed} onNavigate={onNavigate} />
+        <SidebarNav collapsed={collapsed} mobile={mobile} onNavigate={onNavigate} />
       </div>
 
       {/* ナビと履歴の間を荒い破線で区切る（和のシグネチャ・rule-soft で控えめに）。 */}
-      <div className="shrink-0 px-2.5 pt-3" aria-hidden>
+      <div className={cn("shrink-0 pt-3", mobile ? "px-4" : "px-2.5")} aria-hidden>
         <div className="rule-soft shiki-dash-x h-1.5" />
       </div>
 
-      {/* 中段: チャット履歴 */}
-      {!collapsed ? <SectionLabel>チャット履歴</SectionLabel> : <div className="h-1" />}
-      <SidebarChatHistory collapsed={collapsed} />
+      {/* 中段: チャット履歴（見出し「履歴」と種類フィルタを含む） */}
+      {collapsed ? <div className="h-1" /> : null}
+      <SidebarChatHistory collapsed={collapsed} mobile={mobile} onNavigate={onNavigate} />
 
       {/* 最下部: アカウント（上端は荒い破線で区切る） */}
       <div className="shrink-0 shiki-dash-top">
-        <SidebarAccount collapsed={collapsed} onNavigate={onNavigate} />
+        <SidebarAccount collapsed={collapsed} mobile={mobile} onNavigate={onNavigate} />
       </div>
     </div>
   );

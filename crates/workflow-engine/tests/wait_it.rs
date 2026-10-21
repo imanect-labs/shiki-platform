@@ -111,7 +111,7 @@ async fn create_run(store: &RunStore, tenant: &str, ir: &Value) -> uuid::Uuid {
 
 fn worker(pool: PgPool, tenant: &str) -> workflow_engine::WorkflowWorker {
     workflow_engine::WorkflowWorker::new(
-        RunStore::new(pool),
+        RunStore::new(pool, workflow_engine::DEFAULT_LEASE_SECS),
         Arc::new(WaitMapExecutor),
         workflow_engine::WorkerConfig::default(),
     )
@@ -134,7 +134,7 @@ fn wait_ir(wait_params: Value) -> Value {
 #[tokio::test]
 async fn wait_duration_is_durable_across_worker_release() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let run_id = create_run(
         &store,
@@ -184,7 +184,7 @@ async fn wait_duration_is_durable_across_worker_release() {
 #[tokio::test]
 async fn wait_event_is_woken_by_matching_event() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     // folder scope 無しの event 待ち（source 一致で起床）。
     let ir = wait_ir(json!({ "kind": "event", "source": "storage.write" }));
@@ -231,7 +231,7 @@ async fn wait_event_with_non_folder_scope_never_wakes() {
     // fail-closed: folder 以外のキーだけを持つ scope（未対応形状）はワイルドカードに縮退せず
     // 一切マッチしない（誤形状の購読が全イベントで起床する事故を防ぐ・Codex P1）。
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let ir = wait_ir(json!({
         "kind": "event", "source": "storage.write", "scope": { "table": "expense" }
@@ -263,7 +263,7 @@ async fn wait_event_with_non_folder_scope_never_wakes() {
 #[tokio::test]
 async fn wait_event_timeout_continue_takes_timeout_port() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     // timeout ポートに繋いだ後続を用意する。
     let ir = json!({
@@ -309,7 +309,7 @@ async fn wait_event_timeout_continue_takes_timeout_port() {
 #[tokio::test]
 async fn run_failure_cancels_waiting_step() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     // 2 つの独立エントリ: w(wait) と f(fail)。f を後から走らせ、w が waiting_timer の間に run を失敗させる。
     let ir = json!({
@@ -374,7 +374,7 @@ async fn run_failure_cancels_waiting_step() {
 #[tokio::test]
 async fn wait_event_timeout_fail_fails_run() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let ir = wait_ir(
         json!({ "kind": "event", "source": "storage.write", "timeout_sec": 0, "on_timeout": "fail" }),

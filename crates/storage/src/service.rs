@@ -4,7 +4,7 @@
 //! - 全 read/write メソッドは第 1 引数に `&AuthContext` を取り、OpenFGA `check` を必ず通す。
 //! - ハンドラに `db`/`store` を直接触らせない（このサービス経由でのみアクセス）。
 //! - 各操作は allow/deny を監査ログに残す（書込系は同一 txn で原子的に）。
-//! - バイトは presigned URL でクライアント↔MinIO 直転送し、アプリはメタ操作のみ（PIT-6）。
+//! - バイトは presigned URL でクライアント↔オブジェクトストア直転送し、アプリはメタ操作のみ（PIT-6）。
 
 use std::{sync::Arc, time::Duration};
 
@@ -15,6 +15,7 @@ use authz::{
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::{PgConnection, PgPool};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::{
@@ -55,6 +56,12 @@ pub struct StorageService {
     /// 1 ファイルの最大アップロードサイズ（バイト）。declare の宣言サイズがこれを超えたら拒否し、
     /// 認証ユーザーによる無制限アップロードでのストレージ枯渇を防ぐ（容量ガード）。
     max_upload_size: i64,
+    /// 共有リンク有効期限の失効タイマを起こす通知（#342）。リンク発行/延長/redeem で今より早い
+    /// 期限を設定したら `notify_one()` し、タイマが次回起床時刻を再計算する（定期ポーリング回避）。
+    expiry_notify: Arc<Notify>,
+    /// redeem の総当たり/Argon2 CPU DoS を抑える固定窓レート制限（#342 レビュー B-3・プロセス内）。
+    /// principal / token を prefix 付き鍵で同じ器に載せる。
+    redeem_limiter: share_link_ratelimit::RedeemRateLimiter,
 }
 
 #[derive(sqlx::FromRow)]
@@ -135,7 +142,15 @@ impl StorageService {
             presign_get_ttl,
             presign_put_ttl,
             max_upload_size,
+            expiry_notify: Arc::new(Notify::new()),
+            redeem_limiter: share_link_ratelimit::RedeemRateLimiter::default(),
         }
+    }
+
+    /// 共有リンク失効タイマ用の通知ハンドル（#342）。タイマ spawner がこれを購読し、
+    /// `next_share_link_expiry()` まで sleep しつつ、新期限設定の `notify_one()` で起きる。
+    pub fn expiry_notify(&self) -> Arc<Notify> {
+        Arc::clone(&self.expiry_notify)
     }
 }
 
@@ -148,9 +163,17 @@ mod move_rename;
 mod proposal;
 mod read;
 mod restore;
+mod share_link;
+mod share_link_expiry;
+mod share_link_grant;
+mod share_link_ratelimit;
+mod share_link_reconcile;
+mod share_link_redeem;
+mod share_link_util;
 mod sharing;
 mod trash;
 mod upload;
+mod upload_gc;
 mod versions;
 mod workspace_io;
 
@@ -176,28 +199,6 @@ fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {
         created_at: row.created_at,
         updated_at: row.updated_at,
     })
-}
-
-/// 共有先 subject の検証。subject 識別子（`user:<tenant>|<id>` / `role:<tenant>|<id>#member`）を
-/// 壊す/曖昧化する id を弾く。文字ポリシーの正本は [`authz::validate_local_id`]
-/// （`:`/`#`＝型/userset 区切り・`|`＝tenant 名前空間区切り・制御文字・空を拒否。単一定義・#91 M-3）。
-/// 前後空白の拒否（trim で往復が変わる混乱の防止）だけは共有 API 固有のルールとしてここで足す。
-///
-/// role の**存在**（当該テナントに実在するロールか）はここでは強制しない: 全メンバーのログイン前でも
-/// 部署（AD group 由来 role）へ共有できるようにするため（dangling grant 回避は共有ダイアログの
-/// `directory_role` オートコンプリートで担保し、厳格な存在ゲートは IdP フル同期後に足す）。
-fn validate_share_target(target: &ShareTarget) -> Result<(), StorageError> {
-    let id = match target {
-        ShareTarget::User { id } | ShareTarget::Role { id } => id,
-    };
-    if id != id.trim() {
-        return Err(StorageError::Invalid(
-            "共有先 id の前後に空白は使えません".into(),
-        ));
-    }
-    authz::validate_local_id(id)
-        .map_err(|violation| StorageError::Invalid(format!("共有先 id が不正です: {violation}")))?;
-    Ok(())
 }
 
 /// admin プレーン操作（テナント・プロビジョニング/撤去）用の合成コンテキスト。
@@ -337,6 +338,35 @@ fn validate_name(name: &str) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// ファイル名の拡張子（最後の `.` より後ろ）。末尾がドットのものは拡張子なしとみなす。
+///
+/// `.docx` のような先頭ドットだけの名前も拡張子ありとして扱う。開く画面の判定（web の
+/// `endsWith`・Office API の `rsplit_once`）がそう読むので、ここで「拡張子なし」とみなすと
+/// `README` → `.docx` のような改名が素通りし、中身と画面が食い違う。
+fn file_extension(name: &str) -> Option<&str> {
+    match name.rsplit_once('.') {
+        Some((_, ext)) if !ext.is_empty() => Some(ext),
+        _ => None,
+    }
+}
+
+/// 改名で拡張子が変わらないことを確かめる（大文字小文字の違いは同じとみなす・#617）。
+fn ensure_same_extension(current: &str, new_name: &str) -> Result<(), StorageError> {
+    let (cur, new) = (file_extension(current), file_extension(new_name));
+    let same = match (cur, new) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.to_lowercase() == b.to_lowercase(),
+        _ => false,
+    };
+    if same {
+        return Ok(());
+    }
+    Err(StorageError::Invalid(match cur {
+        Some(ext) => format!("拡張子は変更できません（.{ext} のままにしてください）"),
+        None => "拡張子のないファイルに拡張子は付けられません".into(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,6 +403,24 @@ mod tests {
         assert!(validate_name("report.pdf").is_ok());
         assert!(validate_name("日本語.txt").is_ok());
         assert!(validate_name("a.b.c").is_ok()); // ドットを含む通常名は可
+    }
+
+    #[test]
+    fn rename_keeps_file_extension() {
+        assert!(ensure_same_extension("提案書.docx", "提案書_改訂.docx").is_ok());
+        assert!(ensure_same_extension("提案書.docx", "提案書.DOCX").is_ok()); // 大小のみ
+        assert!(ensure_same_extension("a.tar.gz", "b.tar.gz").is_ok());
+        assert!(ensure_same_extension("README", "README2").is_ok());
+        assert!(ensure_same_extension(".env", "local.env").is_ok());
+        // 先頭ドットだけの名前も拡張子として読む（開く画面の判定と揃える）。
+        assert!(ensure_same_extension("README", ".docx").is_err());
+        assert!(ensure_same_extension(".md", ".docx").is_err());
+        assert!(ensure_same_extension(".env", ".env.local").is_err());
+        assert!(ensure_same_extension("メモ.md", "メモ.docx").is_err());
+        assert!(ensure_same_extension("表.xlsx", "表.md").is_err());
+        assert!(ensure_same_extension("メモ.md", "メモ").is_err()); // 外す
+        assert!(ensure_same_extension("README", "README.md").is_err()); // 付ける
+        assert!(ensure_same_extension("a.tar.gz", "a.tar").is_err());
     }
 
     #[test]
@@ -436,29 +484,6 @@ mod tests {
         raw.extend(std::iter::repeat_n(b'a', 35));
         raw.extend_from_slice("あ".as_bytes()); // 3 バイト → uuid 境界が文字途中
         assert!(decode_child_cursor(sort, &hex::encode(raw)).is_err());
-    }
-
-    #[test]
-    fn validate_share_target_rejects_bad_ids() {
-        use crate::model::ShareTarget;
-        // user / role とも同一ルール。正常系（role は AD group 由来の `/` を含んでも可）。
-        assert!(validate_share_target(&ShareTarget::User { id: "alice".into() }).is_ok());
-        assert!(validate_share_target(&ShareTarget::Role { id: "sales".into() }).is_ok());
-        assert!(validate_share_target(&ShareTarget::Role {
-            id: "sales/team-1".into()
-        })
-        .is_ok());
-        // 異常系（`|`＝tenant 区切りも拒否）。
-        for bad in ["", " alice", "alice ", "a:b", "a#member", "a|b", "bad\nid"] {
-            assert!(
-                validate_share_target(&ShareTarget::User { id: bad.into() }).is_err(),
-                "user should reject {bad:?}"
-            );
-            assert!(
-                validate_share_target(&ShareTarget::Role { id: bad.into() }).is_err(),
-                "role should reject {bad:?}"
-            );
-        }
     }
 
     #[test]

@@ -1,31 +1,22 @@
-//! 宣言的バックエンド束縛（Task 6.5）。
+//! 宣言的バックエンド束縛（Task 6.5・#604）。
 //!
-//! UI から実行できる操作は、スペックに宣言された束縛（本モジュール）**のみ**。束縛は
-//! ①安全ツール（閉語彙・破壊系は保存時に拒否）②明示登録サーバハンドラ（閉語彙）
-//! ③workflow-engine 対話トリガ起動（バージョンピン）の 3 系統に閉じる。
-//! クライアントは実行時に `action_id + params` しか送れず、束縛定義は保存済み検証済み
-//! スペックからサーバが引く（アンビエント権限なし）。
+//! 図のボタンから実行できる操作は、本モジュールの束縛**のみ**。束縛は
+//! ①明示登録サーバハンドラ（閉語彙・会話に送る `chat.submit`）
+//! ②workflow-engine 対話トリガ起動（バージョンピン）の 2 系統に閉じる。
+//! クライアントは実行時に `action_id + params` しか送れず、束縛はサーバーが保存済みの
+//! 本文（回答・ミニアプリの画面）と確定時の解決から作る（アンビエント権限なし）。
 
-use agent_core::ToolName;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::vocab::HandlerKind;
 
-/// UI アクションとして束縛できる安全ツールの閉集合（Task 6.5 の①）。
-///
-/// `requires_confirmation` なツール（shell/fs_delete 等）と UI 発話専用の emit_ui は
-/// **保存時点で拒否**する（UI 直接アクションに承認フローは設けない・fail-closed）。
-pub const ALLOWED_ACTION_TOOLS: &[ToolName] = &[ToolName::DocSearch, ToolName::WebSearch];
-
-/// アクション束縛（3 系統の閉集合）。
+/// アクション束縛（2 系統の閉集合）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum ActionBinding {
-    /// 許可ツールの呼び出し（[`ALLOWED_ACTION_TOOLS`] のみ・実行ユーザー権限）。
-    Tool(ToolBinding),
     /// 明示登録のサーバ側ハンドラ（[`HandlerKind`] の閉語彙）。
     Handler(HandlerBinding),
     /// workflow-engine の対話トリガ起動（本人 ReBAC ∩ 宣言スコープ ∩ ノード設定）。
@@ -33,10 +24,9 @@ pub enum ActionBinding {
 }
 
 impl ActionBinding {
-    /// 束縛 id（[`ActionRef`](crate::spec::ActionRef) が参照する）。
+    /// 束縛 id。
     pub fn id(&self) -> &str {
         match self {
-            ActionBinding::Tool(b) => &b.id,
             ActionBinding::Handler(b) => &b.id,
             ActionBinding::Workflow(b) => &b.id,
         }
@@ -45,21 +35,28 @@ impl ActionBinding {
     /// 監査用の束縛種別。
     pub fn kind_str(&self) -> &'static str {
         match self {
-            ActionBinding::Tool(_) => "tool",
             ActionBinding::Handler(_) => "handler",
             ActionBinding::Workflow(_) => "workflow",
         }
     }
-}
 
-/// ツール束縛。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-#[ts(export)]
-pub struct ToolBinding {
-    pub id: String,
-    /// ツール名（閉語彙・[`ALLOWED_ACTION_TOOLS`] 外は検証で拒否）。
-    pub tool: ToolName,
+    /// **1 メッセージにつき 1 回だけ**実行できる束縛か（#410）。
+    ///
+    /// true の束縛は [`ActionLedger`](crate::ActionLedger) で実行前に確保され、二度目は
+    /// [`ActionError::AlreadyInvoked`](crate::ActionError::AlreadyInvoked) で拒否される。
+    /// 閉語彙の網羅 match にしてあるので、束縛を足すときに必ずここで判断を迫られる。
+    pub fn single_use(&self) -> bool {
+        match self {
+            // chat.submit は**発話と生成 run をまるごと作る**。ask の回答も plan の「開始」も
+            // これで、二度押しは会話の二重化・調査の二重実行（実費）に直結する。
+            ActionBinding::Handler(b) => match b.handler {
+                HandlerKind::ChatSubmit => true,
+            },
+            // ワークフロー起動は「もう一度回す」があり得るので抑止しない（同じ送信の再送は
+            // 呼び出し側の冪等キーで 1 回にする）。
+            ActionBinding::Workflow(_) => false,
+        }
+    }
 }
 
 /// サーバハンドラ束縛。
@@ -82,7 +79,7 @@ pub struct WorkflowBinding {
 
 /// ワークフロー参照（検証・解決で **artifact_id＋version が焼き込まれる**＝再現性）。
 ///
-/// LLM は `name` だけ書けばよく、[`SpecValidator`](crate::validator::SpecValidator) が
+/// ボタンは `name` だけ書けばよく、[`WorkflowResolver`](crate::resolver::WorkflowResolver) が
 /// 発話ユーザーの viewer 権限で解決し、未指定 version は current にピンする。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -91,10 +88,10 @@ pub struct WorkflowPin {
     /// 参照名（tenant 内の workflow artifact 名）。
     #[serde(default)]
     pub name: Option<String>,
-    /// 解決済み artifact id（保存済みスペックでは常に Some）。
+    /// 解決済み artifact id（解決後は常に Some）。
     #[serde(default)]
     pub artifact_id: Option<Uuid>,
-    /// 解決済みバージョン（保存済みスペックでは常に Some）。
+    /// 解決済みバージョン（解決後は常に Some）。
     /// JSON 経由の数値のため TS では number（bigint にしない）。
     #[serde(default)]
     #[ts(type = "number | null")]
@@ -115,12 +112,6 @@ mod tests {
         assert_eq!(b.kind_str(), "handler");
 
         let b: ActionBinding = serde_json::from_value(serde_json::json!({
-            "type": "tool", "id": "search", "tool": "doc_search"
-        }))
-        .unwrap();
-        assert_eq!(b.kind_str(), "tool");
-
-        let b: ActionBinding = serde_json::from_value(serde_json::json!({
             "type": "workflow", "id": "run", "workflow": { "name": "wf-1" }
         }))
         .unwrap();
@@ -129,19 +120,29 @@ mod tests {
 
     #[test]
     fn unknown_binding_type_is_unrepresentable() {
-        // 「任意 URL への fetch」のような未知の束縛種はスキーマ上表現できない。
-        assert!(serde_json::from_value::<ActionBinding>(serde_json::json!({
-            "type": "http", "id": "x", "url": "https://evil.example"
-        }))
-        .is_err());
+        // 「任意 URL への fetch」のような未知の束縛種・撤去したツール束縛はスキーマ上表現できない。
+        for v in [
+            serde_json::json!({ "type": "http", "id": "x", "url": "https://evil.example" }),
+            serde_json::json!({ "type": "tool", "id": "search", "tool": "doc_search" }),
+        ] {
+            assert!(serde_json::from_value::<ActionBinding>(v).is_err());
+        }
     }
 
+    /// 1 回だけ実行できる束縛（#410）。`chat.submit` は発話と生成 run を作るので単発、
+    /// ワークフロー起動は繰り返して当然なので抑止しない。
     #[test]
-    fn allowed_action_tools_are_safe_subset() {
-        // 破壊系（shell/fs_*）と emit_ui は UI 束縛に含めない。
-        assert!(ALLOWED_ACTION_TOOLS.contains(&ToolName::DocSearch));
-        assert!(!ALLOWED_ACTION_TOOLS.contains(&ToolName::Shell));
-        assert!(!ALLOWED_ACTION_TOOLS.contains(&ToolName::FsDelete));
-        assert!(!ALLOWED_ACTION_TOOLS.contains(&ToolName::EmitUi));
+    fn only_chat_submit_is_single_use() {
+        let handler: ActionBinding = serde_json::from_value(serde_json::json!({
+            "type": "handler", "id": "submit", "handler": "chat.submit"
+        }))
+        .unwrap();
+        assert!(handler.single_use());
+
+        let workflow: ActionBinding = serde_json::from_value(serde_json::json!({
+            "type": "workflow", "id": "run", "workflow": { "name": "wf-1" }
+        }))
+        .unwrap();
+        assert!(!workflow.single_use());
     }
 }

@@ -33,9 +33,12 @@ pub(crate) fn spawn_miniapp_triggers(deps: TriggerDeps) {
     let deps = Arc::new(deps);
     let event_deps = Arc::clone(&deps);
     tokio::spawn(async move {
-        // 台帳コンシューマ登録（初回のみ効果・冪等）。
-        if let Ok(mut conn) = event_deps.db.acquire().await {
-            let _ = storage::event::register_consumer(&mut conn, "miniapp-functions").await;
+        // 台帳コンシューマ登録（初回のみ効果・冪等）。登録と fast-forward の原子性が要るので
+        // pool 版（自前で txn を張る）を使う。
+        if let Err(e) =
+            storage::event::register_consumer_on_pool(&event_deps.db, "miniapp-functions").await
+        {
+            tracing::error!(error = %e, "miniapp-functions consumer 登録に失敗");
         }
         loop {
             if let Err(e) = event_tick(&event_deps).await {

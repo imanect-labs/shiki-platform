@@ -93,7 +93,7 @@ async fn create_run(store: &RunStore, tenant: &str, ir: &Value) -> uuid::Uuid {
 
 fn worker(pool: PgPool, tenant: &str) -> workflow_engine::WorkflowWorker {
     workflow_engine::WorkflowWorker::new(
-        RunStore::new(pool),
+        RunStore::new(pool, workflow_engine::DEFAULT_LEASE_SECS),
         Arc::new(MapExecutor),
         workflow_engine::WorkerConfig::default(),
     )
@@ -121,7 +121,7 @@ fn map_ir(map_params: Value, work_params: Value) -> Value {
 #[tokio::test]
 async fn map_fans_out_and_aggregates_in_order() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let run_id = create_run(&store, &tenant, &map_ir(json!({}), json!({}))).await;
 
@@ -181,7 +181,7 @@ async fn map_fans_out_and_aggregates_in_order() {
 #[tokio::test]
 async fn map_fail_map_fails_run_but_completes_other_items() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     // 既定 fail_map・要素 1 を失敗させる。
     let run_id = create_run(
@@ -217,7 +217,7 @@ async fn nested_map_fail_map_is_contained_in_outer_item() {
     // ネスト map（深さ 2）: 内側 fail_map の失敗は run を落とさず「外側要素の失敗」として
     // 封じ込め、外側 map の集約（collect）に委ねる（要素失敗の封じ込め規則の一貫性・Codex P2）。
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let ir = json!({
         "ir_version": 1, "name": "nested-map",
@@ -276,7 +276,7 @@ async fn nested_map_fail_map_is_contained_in_outer_item() {
 #[tokio::test]
 async fn map_collect_gathers_errors_and_succeeds() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let run_id = create_run(
         &store,

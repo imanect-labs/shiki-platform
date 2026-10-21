@@ -28,6 +28,14 @@ pub struct RunTableSpec {
     pub queued_status: &'static str,
     /// 実行中ステータス値（例: `running`）。
     pub running_status: &'static str,
+    /// イベント seq の採番カウンタ列（bigint・追記のたびに +1）。イベントログを持たない
+    /// ドメイン（workflow の step 等）は `None`。
+    ///
+    /// **`max(seq) + 1` を数えてはいけない**。READ COMMITTED では行ロックを取っても、
+    /// 数える側のスナップショットは古いままなので、並行追記が同じ seq を得て主キー違反になる
+    /// （実測: 子エージェントのイベント中継と親のトークン列が衝突して run ごと落ちた）。
+    /// ロックする行そのものを `UPDATE ... RETURNING` すれば EvalPlanQual で確定値が返る。
+    pub event_seq_column: Option<&'static str>,
     /// `running` 以外で「リース失効時に takeover 可能」な非端末ステータス（例: chat の
     /// `waiting_approval`）。プロセスが承認待ち中にクラッシュしても、リース失効後に別ワーカーが
     /// checkpoint から resume できるようにする（#351）。これを持たないと承認待ちで死んだ run が
@@ -62,6 +70,9 @@ impl RunTableSpec {
             assert_ident(c);
         }
         if let Some(c) = self.updated_at_column {
+            assert_ident(c);
+        }
+        if let Some(c) = self.event_seq_column {
             assert_ident(c);
         }
         assert_ident(self.queued_status);

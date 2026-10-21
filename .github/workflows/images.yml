@@ -1,0 +1,507 @@
+# shiki-server / shiki-ingestion-worker / shiki-web のコンテナイメージを
+# GHCR へ publish する。
+#
+# **これが無いと K8s へ載せられない。** compose は `build:` 指定だけで `image:`
+# タグを持たず、CI も push していなかったため、GHCR にあるのは自前ビルドの
+# Collabora (office-image.yml) だけだった。K8s は pull しかできないので、
+# プレビュー環境を compose から K8s へ移す前提条件がこれだった (移行済み)。
+#
+# **タグは commit SHA を正とする。** GitOps 側 (imanect-labs/giken-ops) は
+# `sha-<短縮SHA>` をピンして「いまデプロイされているのはどのコミットか」を
+# 一意に決める。`main` は人が手で引くとき用の別名で、ピン先には使わない。
+#
+# **3 つのタグを揃えるのはベストエフォート。** chart は 3 イメージを 1 つの
+# imageTag で指すため、1 つでも欠けるとその SHA はデプロイできない。中身が
+# 変わっていないイメージは焼き直さず、retag job が既存 digest へ今回の SHA を
+# 別名で付けることで、「変更が無いせいで欠ける」ことは無くす。
+#
+# ただし **run が cancel されたコミットと、ビルドが落ちたイメージは揃わない。**
+# そのため消費側 (giken-ops の deploy-preview.yml) の「3 つとも存在するか」の
+# 確認は依然として必要で、揃っていない版はそこで止まる。
+#
+# 注意: deploy/Dockerfile の Rust ビルドは `--mount=type=cache` を使っている。
+# cache mount はレイヤキャッシュに含まれず GHA キャッシュへ export されない
+# ため、**buildx のキャッシュを足しても Rust のコンパイルは毎回フルで走る**
+# (20 分前後)。焼く対象を差分で絞っているのはこのため。
+name: images
+
+on:
+  # **main の全コミットで回す。** `paths` で絞ると、docs だけのコミットでは
+  # 1 つもイメージが作られず、その SHA をピンできない。どれを焼くかは select
+  # job が差分で決め、焼かないものには retag job が別名を付ける。
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  # **走行中の run は cancel しない。** 以前は `paths` で絞っていたので docs
+  # だけの push ではそもそも起動せず、走行中のビルドを殺すことは無かった。
+  # 全コミットで回すいま cancel を残すと、docs 1 行の push が 20 分のビルドを
+  # 殺し、そのコミットにはタグが 1 つも付かない。公開リポジトリなので runner
+  # の分は無料で、焼き切らせた方が得。
+  #
+  # ただし **保留中の run は GitHub が 1 本しか保たない** (同じ group に新しい
+  # run が来ると、それまで保留だった run を cancel する)。連続 push では
+  # 中間コミットのタグは揃わないままで、揃うのは走り切った run と最後の 1 本
+  # だけ — 上の「ベストエフォート」の範囲。
+  #
+  # 直列であることは、retag が参照する digest が走行中に動かないことの
+  # 担保にもなっている。
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # **何を焼くかは「そのイメージを前回焼いたコミット」との差分で決める。**
+  # TSX を 1 行直しただけで shiki-server のフルビルド (約 20 分) が走るのは
+  # 無駄が大きい。
+  #
+  # 比較元は HEAD~1 ではなく **`:main` が指す digest を焼いたコミット**
+  # (push 時に org.opencontainers.image.revision ラベルへ埋めている)。HEAD~1
+  # を基準にすると、連続 push で前の run が cancel された場合にその間の変更を
+  # 永久に取りこぼす。「前回焼いた版」なら取りこぼしは次の run が自動で拾う。
+  #
+  # workflow_dispatch では全部作る (手で叩くのは作り直したいときなので)。
+  select:
+    name: 何を焼くか決める
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+      any: ${{ steps.pick.outputs.any }}
+      # 焼かない = 別名を付けるもの。[{"name":..,"rev":..,"digest":..}]。
+      retag: ${{ steps.pick.outputs.retag }}
+      sha_tag: ${{ steps.pick.outputs.sha_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # 比較元は任意の過去コミットになりうる (直前とは限らない)。
+          fetch-depth: 0
+          persist-credentials: false
+
+      # ラベルを読むだけだが、GHCR から引くので認証が要る。
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: pick
+        env:
+          DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          # GHCR のパスは小文字でなければならない。
+          owner=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+          sha_tag="sha-$(git rev-parse --short=12 HEAD)"
+
+          # そのイメージの中身に影響するパス。deploy/Dockerfile は `COPY . .`
+          # でリポジトリルートを context に取るので、Rust のビルドに効くものを
+          # 明示列挙している (rust-toolchain.toml や .cargo/ を含む)。
+          pattern_of() {
+            case "$1" in
+              shiki-server)
+                echo '^(crates/|vendor/|migrations/|Cargo[.](toml|lock)$|rust-toolchain[.]toml$|[.]cargo/|deploy/Dockerfile$|web/editor-sandbox/|web/package[.]json$|web/pnpm-lock[.]yaml$|[.]github/workflows/images[.]yml$)' ;;
+              shiki-ingestion-worker)
+                echo '^(ingestion-worker/|[.]github/workflows/images[.]yml$)' ;;
+              # web のイメージは gen:api (cargo run を 4 本) の生成物を前提に
+              # ビルドするので、Rust のビルドに効くものは server と同じだけ要る。
+              shiki-web)
+                echo '^(web/|crates/|vendor/|Cargo[.](toml|lock)$|rust-toolchain[.]toml$|[.]cargo/|scripts/gen-api[.]sh$|[.]github/workflows/images[.]yml$)' ;;
+              *) echo "未知のイメージ: $1" >&2; return 1 ;;
+            esac
+          }
+
+          # `:main` の digest と、それを焼いたコミットを `base_digest` /
+          # `base_rev` へ入れる。**結果を stdout で返さない** — コマンド置換で
+          # 捕まえると、下の警告まで値に混ざってログが壊れる。
+          #
+          # **1 回の inspect で両方取る。** 2 回に分けると、その間に `:main` が
+          # 動いたとき「比較したイメージ」と「別名を付けるイメージ」がずれる。
+          #
+          # 引けなければ空にする (呼び出し側は「焼く」へ倒す)。**失敗の原因は
+          # ログに出す。** 5xx やレート制限を「:main が無い」と読み替えると、
+          # 毎回 3 つフルビルドしている理由が分からなくなる。run ごと落とさない
+          # のは、GHCR が未作成のパッケージに 404 ではなく 403 を返すことがあり、
+          # 初回ビルドを塞いでしまうため。
+          err_f=$(mktemp)
+          base_digest=""; base_rev=""
+          read_base() {
+            local out
+            base_digest=""; base_rev=""
+            if ! out=$(docker buildx imagetools inspect "ghcr.io/$owner/$1:main" \
+                         --format '{{.Manifest.Digest}} {{json .Image}}' 2>"$err_f"); then
+              if ! grep -qiE 'not found|unknown|404' "$err_f"; then
+                echo "::warning::$1 の :main を引けなかった。安全側に倒して焼く"
+                sed 's/^/    /' "$err_f"
+              fi
+              return 0
+            fi
+            # 単一 platform では image config そのもの、attestation が付くと
+            # platform をキーにした map になる。形に依らず再帰で拾う。
+            base_rev=$(jq -r '[.. | objects | .Labels? // empty
+                               | ."org.opencontainers.image.revision"? // empty]
+                              | first // ""' <<< "${out#* }")
+            if [ -n "$base_rev" ]; then base_digest=${out%% *}; fi
+          }
+
+          build_f=$(mktemp); retag_f=$(mktemp)
+          for name in shiki-server shiki-ingestion-worker shiki-web; do
+            if [ "$DISPATCH" = true ]; then
+              echo "$name: 手動実行なので焼く"
+              echo "$name" >> "$build_f"
+              continue
+            fi
+            read_base "$name"
+            if [ -z "$base_rev" ]; then
+              echo "$name: :main が無い (または revision ラベルが無い) ので焼く"
+              echo "$name" >> "$build_f"
+              continue
+            fi
+            rev=$base_rev
+            digest=$base_digest
+            if ! git cat-file -e "$rev^{commit}" 2>/dev/null; then
+              echo "$name: 前回焼いた $rev がこのリポジトリに無いので焼く"
+              echo "$name" >> "$build_f"
+              continue
+            fi
+            # **`--no-renames` が要る。** 既定では rename が畳まれて移動先の
+            # パスだけが出るため、watch 対象から外へ出ていく移動 (例:
+            # crates/x.rs → docs/x.rs) が「変更なし」に見えてしまう。
+            changed=$(git diff --name-only --no-renames "$rev" HEAD)
+            # `printf | grep -q` は grep の早期終了で printf が EPIPE になり、
+            # pipefail のもとで成功が失敗に化ける。here-string を使う。
+            if grep -qE "$(pattern_of "$name")" <<< "$changed"; then
+              echo "$name: $rev からの差分に影響があるので焼く"
+              echo "$name" >> "$build_f"
+            else
+              # 別名の元は tag ではなく digest で渡す。ここで比較したイメージと
+              # retag job が別名を付けるイメージが同じであることを保証する。
+              echo "$name: $rev から影響する変更が無いので別名を付ける ($digest)"
+              echo "$name $rev $digest" >> "$retag_f"
+            fi
+          done
+
+          matrix=$(jq -Rsc 'split("\n") | map(select(length > 0) | {name: .})
+                            | {include: .}' < "$build_f")
+          retag=$(jq -Rsc 'split("\n")
+                           | map(select(length > 0) | split(" ")
+                                 | {name: .[0], rev: .[1], digest: .[2]})' < "$retag_f")
+          any=$([ -s "$build_f" ] && echo true || echo false)
+          {
+            echo "any=$any"
+            echo "matrix=$matrix"
+            echo "retag=$retag"
+            echo "sha_tag=$sha_tag"
+          } >> "$GITHUB_OUTPUT"
+
+          # 空行で while が偽を返して set -e に殺されないよう if で書く
+          # (`[ -n "$x" ] && echo` 形は #528 で踏んだ)。
+          {
+            echo "### $sha_tag の内訳"
+            echo ""
+            echo "| イメージ | 扱い |"
+            echo "| --- | --- |"
+            while read -r n; do
+              if [ -n "$n" ]; then echo "| $n | 焼く |"; fi
+            done < "$build_f"
+            while read -r n r _d; do
+              if [ -n "$n" ]; then echo "| $n | \`$r\` のイメージへ別名を付ける |"; fi
+            done < "$retag_f"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-and-push:
+    needs: select
+    if: needs.select.outputs.any == 'true'
+    name: ${{ matrix.name }} → GHCR
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      # **片方が落ちても他方は作り切る。** 両方揃わないと K8s 側は古い SHA を
+      # 使い続けるだけなので、部分的な成功にも意味がある。
+      fail-fast: false
+      # 対象は select job が変更パスから決める（名前だけの配列）。
+      matrix: ${{ fromJson(needs.select.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # イメージ名から固有の設定を引く。matrix に持たせると select 側で
+      # 全部を組み立てる必要があり、2 箇所に同じ知識が散る。
+      - name: このイメージの設定を決める
+        run: |
+          set -euo pipefail
+          case "${{ matrix.name }}" in
+            shiki-server)
+              # deploy/Dockerfile はリポジトリルートを context に取る。
+              echo "CONTEXT=." >> "$GITHUB_ENV"
+              echo "DOCKERFILE=deploy/Dockerfile" >> "$GITHUB_ENV"
+              # Rust の release ビルドと node のエディタ砂箱でディスクを食う。
+              echo "FREE_DISK=1" >> "$GITHUB_ENV"
+              echo "NEEDS_GEN=0" >> "$GITHUB_ENV"
+              echo "BUILD_ARGS=" >> "$GITHUB_ENV"
+              ;;
+            shiki-ingestion-worker)
+              echo "CONTEXT=ingestion-worker" >> "$GITHUB_ENV"
+              echo "DOCKERFILE=ingestion-worker/Dockerfile" >> "$GITHUB_ENV"
+              echo "FREE_DISK=0" >> "$GITHUB_ENV"
+              echo "NEEDS_GEN=0" >> "$GITHUB_ENV"
+              echo "BUILD_ARGS=" >> "$GITHUB_ENV"
+              ;;
+            shiki-web)
+              echo "CONTEXT=web" >> "$GITHUB_ENV"
+              echo "DOCKERFILE=web/Dockerfile" >> "$GITHUB_ENV"
+              echo "FREE_DISK=1" >> "$GITHUB_ENV"
+              # **gen:api が要る。** web/Dockerfile は生成物が揃っている前提で、
+              # 無ければ明示的に失敗する。生成は cargo を 4 本走らせるので
+              # イメージの中ではやらない。
+              echo "NEEDS_GEN=1" >> "$GITHUB_ENV"
+              # **ビルド時にバンドルへ焼き込まれる値。** 実行時の env では直せない。
+              # BACKEND_ORIGIN はサーバ側のプロキシ先（クラスタ内 DNS）、
+              # NEXT_PUBLIC_* はブラウザが見る先（公開ホスト）。
+              {
+                echo "BUILD_ARGS<<EOF"
+                echo "BACKEND_ORIGIN=http://shiki-preview-server:8080"
+                echo "NEXT_PUBLIC_GATEWAY_ORIGIN=https://shiki-preview.imanect.app"
+                echo "NEXT_PUBLIC_B1_ORIGIN=https://shiki-preview.imanect.app"
+                echo "NEXT_PUBLIC_OIDC_ISSUER=https://shiki-preview-auth.imanect.app/realms/shiki"
+                echo "EOF"
+              } >> "$GITHUB_ENV"
+              ;;
+            *) echo "未知のイメージ: ${{ matrix.name }}" >&2; exit 1 ;;
+          esac
+
+      - name: free disk space (不要プリインストール削除)
+        if: env.FREE_DISK == '1' 
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+
+      - name: タグを決める (SHA を正とする)
+        env:
+          # 出所を 1 つにする。select と各ビルドで別々に rev-parse しない。
+          SHA_TAG: ${{ needs.select.outputs.sha_tag }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+          image="ghcr.io/$owner/${{ matrix.name }}"
+          {
+            echo "IMAGE=$image"
+            echo "SHA_TAG=$SHA_TAG"
+            # **`:main` は main のツリーだけを指す。** select がこのタグの
+            # revision ラベルを比較基準に使うので、別ブランチの手動実行で
+            # 上書きされると基準が汚れ、焼くべきものを焼かなくなる。
+            if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+              echo "TAGS=$image:$SHA_TAG,$image:main"
+            else
+              echo "TAGS=$image:$SHA_TAG"
+            fi
+          } >> "$GITHUB_ENV"
+
+      # ---- web だけ: gen:api で型を生成してからビルドする ----
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        if: env.NEEDS_GEN == '1'
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: env.NEEDS_GEN == '1'
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: env.NEEDS_GEN == '1'
+        with:
+          version: 9
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: env.NEEDS_GEN == '1'
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: install (web)
+        if: env.NEEDS_GEN == '1'
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: gen:api (Rust 定義から型生成)
+        if: env.NEEDS_GEN == '1'
+        working-directory: web
+        run: pnpm gen:api
+      - name: 生成物が揃っていることを確認
+        if: env.NEEDS_GEN == '1'
+        run: |
+          set -euo pipefail
+          # **Dockerfile 側でも確認しているが、ここで落とした方が原因が分かりやすい**
+          # （docker build のログに埋もれない）。
+          for f in web/src/generated/openapi.json web/src/generated/api.d.ts \
+                   web/src/generated/authz-vocab.ts; do
+            [ -s "$f" ] || { echo "生成物が無い: $f"; exit 1; }
+          done
+          ls -la web/src/generated/
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # **smoke を通してから publish する。** 1 段で push すると、起動して
+      # 500 を返すイメージや root で動くイメージが先に `:main` を上書きしてから
+      # smoke が落ちる。ワークフローが赤でも壊れたものが配られてしまう。
+      #
+      # そこで「ローカルへ load → smoke → 同じキャッシュで push」に分ける。
+      # 2 回目は cache-from が効くので再ビルドにはならない。
+      - name: build (ローカルへ load・まだ publish しない)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ env.CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:smoke
+          platforms: linux/amd64
+          build-args: ${{ env.BUILD_ARGS }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.name }}
+
+      - name: smoke (shiki-server — 3 つの COPY 先が揃っていること)
+        if: matrix.name == 'shiki-server'
+        run: |
+          set -euo pipefail
+          IMG="${IMAGE}:smoke"
+          # **バイナリだけ確認しても足りない。** deploy/Dockerfile は別ビルドの
+          # tabular runner と、node で作ったエディタ砂箱 dist を COPY している。
+          # COPY 元のパスが変わると、起動はするのに機能だけ欠けた
+          # イメージが出来上がる (SHIKI__GATEWAY__BUILTIN_DIR が空になる)。
+          docker run --rm --entrypoint sh "$IMG" -c '
+            set -e
+            command -v shiki-server
+            command -v shiki-tabular-runner
+            test -n "$(ls -A /opt/shiki/builtin)" || { echo "builtin dir が空"; exit 1; }
+            ls /opt/shiki/builtin
+          '
+
+      - name: smoke (web — standalone が起動して応答すること)
+        if: matrix.name == 'shiki-web'
+        run: |
+          set -euo pipefail
+          IMG="${IMAGE}:smoke"
+          # **「起動した」だけでは足りない。** standalone の COPY 漏れは起動後に
+          # 初めて 500 になるので、実際にページを引いて中身を見る。
+          docker run -d --name web-smoke -p 127.0.0.1:13000:3000 "$IMG"
+          # カウンタを明示的に使う（未使用変数の警告を避ける）。
+          tries=0
+          until curl -sf -o /dev/null http://127.0.0.1:13000/login; do
+            tries=$((tries + 1))
+            [ "$tries" -ge 60 ] && { echo "起動しない"; docker logs web-smoke; exit 1; }
+            sleep 2
+          done
+          code=$(curl -s -o /tmp/body -w '%{http_code}' http://127.0.0.1:13000/login)
+          echo "GET /login => $code"
+          [ "$code" = "200" ] || { echo "200 でない"; docker logs web-smoke; exit 1; }
+          # Next.js が実際にレンダリングしたか（静的アセットの参照があるか）。
+          grep -q '/_next/static' /tmp/body || { echo "描画されていない"; head -c 400 /tmp/body; exit 1; }
+          echo "  /login が 200 で _next/static を含む"
+          # 非 root で動いていること。
+          u=$(docker exec web-smoke id -u)
+          echo "  uid=$u"
+          [ "$u" != "0" ] || { echo "root で動いている"; exit 1; }
+          docker rm -f web-smoke
+
+      - name: smoke (ingestion-worker — アプリが import 可能であること)
+        if: matrix.name == 'shiki-ingestion-worker'
+        run: |
+          set -euo pipefail
+          IMG="${IMAGE}:smoke"
+          # find_spec はモジュールを実行しない。import してしまうと HF から
+          # モデルを取りに行きかねないので、解決できることだけを見る。
+          docker run --rm --entrypoint uv "$IMG" \
+            run --no-sync python -c '
+          import importlib.util, sys
+          for m in ("ingestion_worker.main", "uvicorn"):
+              if importlib.util.find_spec(m) is None:
+                  print(f"{m} が解決できない"); sys.exit(1)
+          print("import OK")
+          '
+
+      # smoke が全部通ってから publish する。build はキャッシュから再利用される。
+      - name: push (smoke 通過後に publish)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ env.CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
+          push: true
+          platforms: linux/amd64
+          tags: ${{ env.TAGS }}
+          build-args: ${{ env.BUILD_ARGS }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: 公開されたタグを出す
+        run: |
+          {
+            echo "### ${{ matrix.name }}"
+            echo '```'
+            printf '%s\n' "${TAGS//,/$'\n'}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # **焼かなかったイメージへ、今回の SHA を既存 digest の別名として付ける。**
+  # chart は 3 イメージを 1 つの imageTag で指すので、1 つでも欠けると
+  # その版はデプロイできない (giken-ops の deploy-preview.yml が存在確認で
+  # 止まり、毎回 images.yml の手動実行が必要になっていた)。
+  #
+  # `imagetools create` はレジストリ側でマニフェストを参照するだけなので、
+  # ビルドも layer の転送も発生しない (数秒)。
+  #
+  # 同じ digest に複数の `sha-` タグが付くが出所は失われない:
+  # `org.opencontainers.image.revision` ラベルに実際に焼いたコミットが残る。
+  retag:
+    needs: [select, build-and-push]
+    # ビルドが落ちても、焼かなかった分の別名は付けてよい (落ちた方のタグが
+    # 欠けるので deploy 側の存在確認は従来どおり止まる)。run ごと cancel
+    # された時だけ何もしない — 中途半端な組み合わせに別名を付けないため。
+    if: ${{ !cancelled() && needs.select.result == 'success' && needs.select.outputs.retag != '[]' }}
+    name: 変更の無いイメージへ別名を付ける
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: imagetools create で別名を付ける
+        env:
+          RETAG: ${{ needs.select.outputs.retag }}
+          SHA_TAG: ${{ needs.select.outputs.sha_tag }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+          {
+            echo "### 別名を付けたイメージ"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          # jq を先にコマンド置換で回して、失敗を set -e に拾わせる
+          # (`mapfile < <(jq …)` はプロセス置換なので jq の終了ステータスが
+          # 捨てられる)。配列にするのはループ本体で set -e を効かせるため。
+          rows_raw=$(jq -r '.[] | "\(.name) \(.rev) \(.digest)"' <<< "$RETAG")
+          mapfile -t rows <<< "$rows_raw"
+          for row in "${rows[@]}"; do
+            if [ -z "$row" ]; then continue; fi
+            read -r name rev digest <<< "$row"
+            img="ghcr.io/$owner/$name"
+            echo "$img@$digest → $img:$SHA_TAG (焼いたコミット: $rev)"
+            # **`--prefer-index=false` が要る。** 既定 (true) はソースが単一
+            # manifest のとき index で包み直すので digest が変わる。carbon copy
+            # なら index でも単一 manifest でも元と同じ digest になる。
+            docker buildx imagetools create --prefer-index=false \
+              --tag "$img:$SHA_TAG" "$img@$digest"
+            echo "- \`$img:$SHA_TAG\` = \`$digest\` (焼いたコミット \`$rev\`)" \
+              >> "$GITHUB_STEP_SUMMARY"
+          done

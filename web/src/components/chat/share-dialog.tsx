@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/use-toast";
+import { CopyLinkButton } from "@/components/share/copy-link-button";
 import { searchDirectory, searchRoles } from "@/lib/storage";
 import {
   listThreadShares,
@@ -44,10 +45,13 @@ export function ThreadShareDialog({
   open,
   onOpenChange,
   threadId,
+  shareUrl,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   threadId: string | null;
+  /// コピーするリンク（省略時は現在のページ URL＝会話ページから開くため妥当）。
+  shareUrl?: string;
 }) {
   const [kind, setKind] = React.useState<TargetKind>("user");
   const [query, setQuery] = React.useState("");
@@ -237,7 +241,7 @@ export function ThreadShareDialog({
                 >
                   <span className="min-w-0 truncate">
                     {s.target.type === "role" ? "部署/ロール " : ""}
-                    {s.target.id}
+                    {s.display_name ?? s.target.id}
                     <span className="ml-2 text-xs text-muted-foreground">
                       {ROLES.find((r) => r.value === s.role)?.label}
                     </span>
@@ -255,6 +259,15 @@ export function ThreadShareDialog({
               ))}
             </ul>
           )}
+        </div>
+
+        <div className="shiki-dash-x" />
+        <div className="flex justify-start">
+          <CopyLinkButton
+            url={() =>
+              shareUrl ?? (typeof window !== "undefined" ? window.location.href : "")
+            }
+          />
         </div>
       </DialogContent>
     </Dialog>

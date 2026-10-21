@@ -1,6 +1,6 @@
 //! CapabilityNodeExecutor の未被覆ノード種別（rag.search/llm.invoke/agent.invoke/storage.list）と
 //! ポートエラー写像・不正 params・scope 天井外を fake ポートで検証する（DB 不要・純ロジック）。
-//! executor_it.rs が happy path 中心・500 行近いため、error/追加ノードは本ファイルに分離する。
+//! executor_it.rs が happy path 中心で肥大化しているため、error/追加ノードは本ファイルに分離する。
 //! journal を要するノード（workflow.start/csv.patch/csv.write）は実 DB が必要なので e2e で検証する。
 
 #![allow(

@@ -1,4 +1,4 @@
-//! generative UI のカタログ・スペック型を TypeScript へ書き出す（codegen が正）。
+//! gui の語彙と skill・ミニアプリの本文の型を TypeScript へ書き出す（codegen が正）。
 //!
 //! workflow-engine の `export-workflow-ts` と同型。scripts/gen-api.sh から呼ぶ。
 
@@ -8,32 +8,14 @@ use std::path::PathBuf;
 
 use ts_rs::TS;
 
-use gui::action::{ActionBinding, HandlerBinding, ToolBinding, WorkflowBinding, WorkflowPin};
-use gui::chart::{ChartPoint, ChartSpec};
-use gui::domain::{
-    ComparisonProps, ComparisonRow, ItineraryDay, ItineraryItem, ItineraryKind, ItineraryProps,
-    SourceCardProps, SourceItem, TimelineEvent, TimelineProps, WeatherCondition, WeatherDay,
-    WeatherProps,
-};
-use gui::form_fields::{CheckboxGroupProps, DateProps, RadioGroupProps, RatingProps, SliderProps};
-use gui::layout::{
-    AccordionItem, AccordionProps, BadgeItem, BadgeListProps, BadgeTone, CalloutProps, CalloutTone,
-    CodeBlockProps, KeyValueItem, KeyValueProps, StepItem, StepStatus, StepperProps, TabItem,
-    TabsProps,
-};
-use gui::map::{GeoBounds, GeoPoint, MapMarker, MapProps, MapRoute, MarkerKind, RouteMode};
+use gui::action::{ActionBinding, HandlerBinding, WorkflowBinding, WorkflowPin};
 use gui::miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
-use gui::question::{QuestionCardProps, QuestionItem, QuestionOption};
 use gui::skill::{
     FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody, SkillScript,
 };
-use gui::spec::{
-    ActionRef, ButtonProps, ButtonVariant, CellAlign, CellValue, ContainerProps, FormField,
-    FormProps, Layout, LinkProps, ReservedProps, SelectOption, SelectProps, StatProps, TableColumn,
-    TableProps, TextInputProps, TextProps, TextVariant, UiNode, UiSpecDoc,
-};
+use gui::skill_command::{CommandPhase, SkillCommand, SkillCommandVariant};
 use gui::validate::GuiValidationError;
-use gui::vocab::{ChartKind, ComponentKind, HandlerKind};
+use gui::vocab::HandlerKind;
 
 fn main() {
     let out_dir = std::env::args()
@@ -49,79 +31,12 @@ fn main() {
         };
     }
     export!(
-        ComponentKind,
         HandlerKind,
-        ChartKind,
-        // ツール名語彙は agent-core が単一ソース（アクション束縛が参照する）。
+        // ツール名語彙は agent-core が単一ソース（skill の allowed_tools が参照する）。
         agent_core::ToolName,
-        UiSpecDoc,
-        UiNode,
-        ActionRef,
-        ContainerProps,
-        Layout,
-        TextProps,
-        TextVariant,
-        LinkProps,
-        FormProps,
-        FormField,
-        TextInputProps,
-        SelectProps,
-        SelectOption,
-        CheckboxGroupProps,
-        RadioGroupProps,
-        DateProps,
-        SliderProps,
-        RatingProps,
-        ButtonProps,
-        ButtonVariant,
-        TableProps,
-        TableColumn,
-        CellAlign,
-        CellValue,
-        ReservedProps,
-        ChartSpec,
-        ChartPoint,
-        StatProps,
-        CalloutProps,
-        CalloutTone,
-        AccordionProps,
-        AccordionItem,
-        TabsProps,
-        TabItem,
-        StepperProps,
-        StepItem,
-        StepStatus,
-        BadgeListProps,
-        BadgeItem,
-        BadgeTone,
-        KeyValueProps,
-        KeyValueItem,
-        CodeBlockProps,
-        QuestionCardProps,
-        QuestionItem,
-        QuestionOption,
-        MapProps,
-        GeoPoint,
-        MapMarker,
-        MarkerKind,
-        MapRoute,
-        RouteMode,
-        GeoBounds,
-        SourceCardProps,
-        SourceItem,
-        ItineraryProps,
-        ItineraryDay,
-        ItineraryItem,
-        ItineraryKind,
-        WeatherProps,
-        WeatherDay,
-        WeatherCondition,
-        ComparisonProps,
-        ComparisonRow,
-        TimelineProps,
-        TimelineEvent,
+        // ループが横取りするメタツール（plan / tool_search）。表示辞書が引く。
+        agent_core::MetaToolName,
         ActionBinding,
-        ToolBinding,
         HandlerBinding,
         WorkflowBinding,
         WorkflowPin,
@@ -133,13 +48,29 @@ fn main() {
         FewShotExample,
         SkillScript,
         ScriptKind,
+        SkillCommand,
+        SkillCommandVariant,
+        CommandPhase,
         MiniAppBody,
         ComponentPin,
         NamedComponentPin,
     );
 
+    // 利用者が発話ごとに指定できるツール（#734・agent-core の単一定義）。型だけでなく値の
+    // 並びも要る（入力欄のメニューに並べる）ため定数で出し、要素型を `ToolName` に縛る。
+    let selectable = agent_core::USER_SELECTABLE_TOOLS
+        .iter()
+        .map(|t| format!("{:?}", t.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    decls.push(format!(
+        "export const USER_SELECTABLE_TOOLS = [{selectable}] as const satisfies readonly ToolName[];\n\n\
+         export type UserSelectableTool = (typeof USER_SELECTABLE_TOOLS)[number];"
+    ));
+
     let header = "// 自動生成: cargo run -p shiki-gui --bin export-gui-ts（編集禁止）\n\
-                  // 正本: crates/gui/src/{vocab,spec,chart,action,validate}.rs\n\n";
+                  // 正本: crates/gui/src/{vocab,action,validate,skill,miniapp}.rs・\n\
+                  //       crates/agent-core/src/vocab.rs（ToolName / USER_SELECTABLE_TOOLS）\n\n";
     let body = decls.join("\n\n");
     let path = out_dir.join("gui-spec.ts");
     std::fs::write(&path, format!("{header}{body}\n")).expect("gui-spec.ts の書き出し");

@@ -103,6 +103,71 @@ impl AuthzClient for AllowAll {
     }
 }
 
+/// 組織管理者（`organization#admin`）だけを `admin` で切り替え、他は allow する認可モック（#553）。
+struct AdminGate {
+    admin: bool,
+}
+
+#[async_trait]
+impl AuthzClient for AdminGate {
+    async fn check(
+        &self,
+        _subject: &Subject,
+        relation: Relation,
+        _object: &FgaObject,
+        _consistency: Consistency,
+    ) -> Result<bool, AuthzError> {
+        Ok(relation != Relation::Admin || self.admin)
+    }
+
+    async fn write_tuple(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
+    }
+
+    async fn delete_tuple(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
+    }
+
+    async fn read_tuples(
+        &self,
+        _object: &FgaObject,
+        _relation: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        Ok(vec![])
+    }
+
+    async fn list_objects(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
+
+    async fn delete_object_tuples(&self, _object: &FgaObject) -> Result<u32, AuthzError> {
+        Ok(0)
+    }
+
+    async fn read_subject_objects(
+        &self,
+        _subject: &Subject,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
+}
+
 /// ストレージのバイト層スタブ（/me・認証フローのテストでは呼ばれない）。
 struct FakeStore;
 
@@ -214,9 +279,10 @@ fn base_config() -> AppConfig {
             log_format: LogFormat::Json,
         },
         storage: StorageConfig {
-            backend: ObjectStoreBackend::Minio,
+            backend: ObjectStoreBackend::S3,
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
+            upload_gc: api::config::UploadGcConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -228,7 +294,11 @@ fn base_config() -> AppConfig {
             api_key: None,
             default_model: None,
             models: vec![],
+            context_window_tokens: None,
             langfuse: None,
+            user_agent: None,
+            session_header: None,
+            ..Default::default()
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
@@ -237,6 +307,15 @@ fn base_config() -> AppConfig {
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
+        insights: api::insights::InsightsConfig::default(),
+    }
+}
+
+/// 認可チョークポイント（`AppState::authz`）だけ差し替えた AppState。
+fn state_with_authz(sessions: Arc<dyn SessionStore>, authz: Arc<dyn AuthzClient>) -> AppState {
+    AppState {
+        authz,
+        ..state_with(sessions, None)
     }
 }
 
@@ -267,8 +346,6 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
     let rag_admin = Arc::new(rag::RagAdmin::new(db.clone(), None, None));
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), Arc::new(AllowAll)));
     let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
-    let ui_validator = Arc::new(gui::SpecValidator::new(Arc::clone(&artifacts), db.clone()));
-    let ui_specs = Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator));
     let ui_actions = Arc::new(gui::ActionDispatcher::new(
         storage::audit::AuditRecorder::new(db.clone()),
     ));
@@ -338,6 +415,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
     ));
     AppState {
         config: Arc::new(config),
+        insights: std::sync::Arc::new(api::insights::InsightsService::new(db.clone())),
         db: api::state::ReadinessProbe::new(db),
         authz: Arc::new(AllowAll),
         jwks,
@@ -355,7 +433,6 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         skill_installs,
         bundles,
         app_usage,
-        ui_specs,
         ui_actions,
         skills,
         mini_apps,
@@ -371,6 +448,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         tenants,
         search: None,
         chat: None,
+        llm: None,
         rag_admin,
         office: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(
@@ -488,6 +566,98 @@ async fn me_with_valid_session_is_ok() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// 有効セッションを 1 つ入れたストア。
+async fn store_with_valid_session() -> Arc<MemorySessionStore> {
+    let store = Arc::new(MemorySessionStore::new());
+    store
+        .put(
+            "default",
+            "sid-valid",
+            &session_record(now() + 3600, None, "csrf"),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    store
+}
+
+async fn get_with_session(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(COOKIE, "shiki_session=sid-valid.default")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn org_admin_routes_reject_non_admin_members() {
+    // 組織管理者でなければ /org-admin/* は 403（管理 API に入れない・#553）。
+    let store = store_with_valid_session().await;
+    let app = build_router(state_with_authz(
+        store,
+        Arc::new(AdminGate { admin: false }),
+    ));
+    for uri in [
+        "/org-admin/ai/providers",
+        "/org-admin/ai/models",
+        "/org-admin/ai/settings",
+        "/org-admin/ai/usage",
+        "/org-admin/insights/overview",
+        "/org-admin/insights/adoption",
+        "/org-admin/insights/people",
+        "/org-admin/insights/use-cases",
+        "/org-admin/insights/impact",
+        "/org-admin/insights/departments",
+        "/org-admin/insights/settings",
+    ] {
+        let (status, _) = get_with_session(app.clone(), uri).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+    }
+    let (status, me) = get_with_session(app, "/me").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(me["is_admin"], false);
+}
+
+#[tokio::test]
+async fn org_admin_routes_pass_the_gate_for_admins() {
+    // 管理者はゲートを通る（この構成は LLM 未構成なので 503＝ハンドラまで届いた）。
+    let store = store_with_valid_session().await;
+    let app = build_router(state_with_authz(store, Arc::new(AdminGate { admin: true })));
+    let (status, _) = get_with_session(app.clone(), "/org-admin/ai/models").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let (_, me) = get_with_session(app, "/me").await;
+    assert_eq!(me["is_admin"], true);
+}
+
+#[tokio::test]
+async fn org_admin_routes_require_a_session() {
+    let app = build_router(state_with_authz(
+        Arc::new(MemorySessionStore::new()),
+        Arc::new(AdminGate { admin: true }),
+    ));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/org-admin/ai/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -748,6 +918,44 @@ async fn session_store_is_tenant_scoped() {
         .unwrap();
     assert!(store.get("tenant-b", "sid").await.unwrap().is_none());
     assert!(store.get("tenant-a", "sid").await.unwrap().is_some());
+}
+
+/// 版のブロック列（出典パネル・#508）: セッション必須、RAG 無効なら 503（DB に触れる前に止まる）。
+#[tokio::test]
+async fn version_blocks_requires_session_and_rag() {
+    let path = format!(
+        "/files/{}/versions/1/blocks?from=0&limit=10",
+        uuid::Uuid::new_v4()
+    );
+    let app = build_router(state_with(Arc::new(MemorySessionStore::new()), None));
+    let resp = app
+        .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let store = Arc::new(MemorySessionStore::new());
+    store
+        .put(
+            "default",
+            "sid-blocks",
+            &session_record(now() + 3600, None, "csrf"),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with(store, None));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&path)
+                .header(COOKIE, "shiki_session=sid-blocks.default")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]

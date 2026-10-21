@@ -53,7 +53,76 @@ pub struct AgentOptions {
     pub context_soft_limit_tokens: usize,
     /// 剪定時に無傷で残す直近メッセージ数（自律版のみ）。
     pub context_keep_recent: usize,
+    /// `plan` メタツールを提示するか（自律版の既定 true・#391）。
+    ///
+    /// サブエージェントは 1 つの `objective` を調べて findings を返すだけなので計画は要らない。
+    /// 提示すると限られたステップ予算を計画更新に使ってしまうため、委譲側で false にする。
+    pub offer_plan_tool: bool,
+    /// 同一ステップ内で並列実行する冪等 read ツールの上限（issue #349・0/1 は逐次と等価）。
+    ///
+    /// deep research の `web_search`→複数 `web_fetch` ファンアウトを直列にしないための有界並列度。
+    /// 同一ホストへの `web_fetch` は本値によらず互いに直列化される（礼儀）。
+    pub parallel_read_tools: usize,
+    /// 会話（スレッド）ごとに安定した ID。プロバイダのルーティング・キャッシュの手がかりとして
+    /// llm-gateway へそのまま渡す（`GenerateRequest::session_id`）。
+    pub session_id: Option<String>,
+    /// tool search（遅延ツールを検索して読み込む）の設定。
+    pub tool_search: ToolSearchOptions,
 }
+
+/// tool search の設定（[`crate::tool_search`]）。
+///
+/// 遅延にできるツール（[`crate::ToolName::loading`] が `Deferred`）の定義が十分大きいときだけ
+/// 有効になる。小さいなら全部載せる方が安い（検索の 1 手と、その往復のトークンを払わない）。
+#[derive(Clone)]
+pub struct ToolSearchOptions {
+    /// 有効にするか（false なら常に全ツールを載せる）。
+    pub enabled: bool,
+    /// 遅延にできる定義の推定トークン合計がこれ未満なら使わない。
+    pub min_deferred_tokens: usize,
+    /// 語彙の既定によらず**常に載せる**ツール名（skill の `allowed_tools` 等・run 単位の上書き）。
+    pub always_load: Vec<String>,
+    /// 埋め込み（配線されていれば自然文の検索を BM25 と RRF で融合する・#517）。
+    /// RAG と同じ `EmbeddingProvider`（ingestion-worker）。`None` なら BM25 のみ。
+    pub embedder: Option<std::sync::Arc<dyn rag::EmbeddingProvider>>,
+}
+
+impl std::fmt::Debug for ToolSearchOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolSearchOptions")
+            .field("enabled", &self.enabled)
+            .field("min_deferred_tokens", &self.min_deferred_tokens)
+            .field("always_load", &self.always_load)
+            .field(
+                "embedder",
+                &self
+                    .embedder
+                    .as_ref()
+                    .map(|e| e.model_version().to_string()),
+            )
+            .finish()
+    }
+}
+
+/// tool search を有効にする遅延定義の既定下限（推定トークン）。
+///
+/// Anthropic の目安（定義が 10k トークン超・ツール 10 個以上で効く）より低めに置く:
+/// 選択精度の劣化はトークン量より**候補数**で効くため、中規模でも絞る価値がある。
+pub const DEFAULT_TOOL_SEARCH_MIN_DEFERRED_TOKENS: usize = 2_000;
+
+impl Default for ToolSearchOptions {
+    fn default() -> Self {
+        ToolSearchOptions {
+            enabled: true,
+            min_deferred_tokens: DEFAULT_TOOL_SEARCH_MIN_DEFERRED_TOKENS,
+            always_load: Vec::new(),
+            embedder: None,
+        }
+    }
+}
+
+/// 冪等 read ツールの既定並列度（#349）。検索 API/取得先への負荷と体感速度の折衷。
+pub const DEFAULT_PARALLEL_READ_TOOLS: usize = 4;
 
 impl AgentOptions {
     /// チャット制約版の既定（現行挙動と互換・max_steps=8・token/cost 無制限・剪定/計画/ループ検出なし）。
@@ -70,6 +139,10 @@ impl AgentOptions {
             budget: Budget::chat(max_steps),
             context_soft_limit_tokens: 0,
             context_keep_recent: 0,
+            offer_plan_tool: true,
+            parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
+            session_id: None,
+            tool_search: ToolSearchOptions::default(),
         }
     }
 
@@ -94,6 +167,10 @@ impl AgentOptions {
             // 既定: 約 24k トークンで古いツール出力を畳み、直近 6 メッセージは残す。
             context_soft_limit_tokens: 24_000,
             context_keep_recent: 6,
+            offer_plan_tool: true,
+            parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
+            session_id: None,
+            tool_search: ToolSearchOptions::default(),
         }
     }
 }

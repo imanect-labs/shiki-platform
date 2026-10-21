@@ -23,6 +23,8 @@ futures = { workspace = true }
 thiserror = { workspace = true }
 # SandboxBackend の serde 表現（admin ポリシー設定から backend ティアを選ぶ導線）。
 serde = { workspace = true }
+# net_guard の名前解決（SSRF/DNS リバインディング防御・#348）。
+tokio = { workspace = true, features = ["net"] }
 
 [build-dependencies]
 tonic-build = { workspace = true }

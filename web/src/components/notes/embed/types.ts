@@ -5,7 +5,8 @@
 /// ```shiki-embed フェンス（JSON）へ往復する（backend の Block::Embed と対）。
 
 export type EmbedPayload =
-  /// ①genui 検証済みシキコンポーネントスペック（Phase 6 レンダラで描画）。
+  /// ①genui 撤去した旧形式の図（#604）。既存のノートに残ったものを読めるよう型だけ残し、
+  /// 描画は「旧形式」のプレースホルダにする（新しい図は本文の ```ui）。
   | { kind: "genui"; spec: unknown }
   /// ②ミニアプリ/artifact の別オリジン iframe（sandbox＋CSP・B1 と同じ分離）。
   | { kind: "iframe"; src: string; title?: string }

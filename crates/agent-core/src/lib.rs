@@ -25,15 +25,22 @@
 
 pub mod agent;
 pub(crate) mod agent_gate;
+/// ステップ境界でモデルへ渡す観測（残り予算・空応答の催促）の組み立て。
+mod agent_observation;
+pub(crate) mod agent_tools;
 pub mod approval;
 pub mod budget;
 pub mod checkpoint;
+pub mod cite;
 pub mod context;
+pub mod context_replay;
 pub mod event;
 pub mod loop_detect;
 pub mod plan;
 pub mod profile;
 pub mod tool;
+/// tool search（遅延ツールを検索して読み込む `tool_search` メタツール）。
+mod tool_search;
 pub mod tools;
 pub mod vocab;
 pub mod workspace;
@@ -42,18 +49,27 @@ pub use agent::{run_agent, AgentStop, RunContext};
 pub use approval::{ApprovalDecision, ApprovalPolicy, Approver};
 pub use budget::{Budget, BudgetCheck, BudgetKind, Spent};
 pub use checkpoint::Checkpoint;
-pub use event::{AgentError, AgentEvent, EventSink, RecoveryAction};
+pub use cite::CitationLedger;
+pub use event::{
+    await_unless_cancelled, next_unless_cancelled, AgentError, AgentEvent, EventSink, NextDelta,
+    RecoveryAction,
+};
 pub use plan::{Plan, Subtask, SubtaskStatus};
-pub use profile::{AgentOptions, AgentOutcome, AgentProfile};
+pub use profile::{
+    AgentOptions, AgentOutcome, AgentProfile, ToolSearchOptions, DEFAULT_PARALLEL_READ_TOOLS,
+    DEFAULT_TOOL_SEARCH_MIN_DEFERRED_TOKENS,
+};
 pub use tool::{
-    ArtifactRef, ArtifactStore, Citation, CsvDraft, OfficeLiveEdit, SlideDraft, Tool, ToolError,
-    ToolOutcome,
+    ArtifactRef, ArtifactStore, AttachmentRef, AttachmentStore, Citation, CsvDraft, SlideDraft,
+    Tool, ToolError, ToolOutcome, ToolUsage,
 };
+pub use tool_search::CatalogSearch;
 pub use tools::{
-    run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsDeleteTool, FsEditTool,
-    FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool, WebFetchTool, WebSearchTool,
+    run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsAppendTool,
+    FsDeleteTool, FsEditTool, FsListTool, FsReadTool, FsWriteTool, GrepTool, QuoteCheckTool,
+    ShellTool, SubagentLimits, SubagentTool, WebFetchTool, WebSearchTool,
 };
-pub use vocab::ToolName;
+pub use vocab::{MetaToolName, ToolLoading, ToolName, USER_SELECTABLE_TOOLS};
 pub use workspace::{WorkspaceEntry, WorkspaceStore, WorkspaceWrite};
 // サンドボックス契約を再輸出（chat は agent-core 経由で code_interpreter を配線する）。
 // `SandboxBackend` は admin ポリシーで隔離ティアを選ぶ導線で chat 側が渡す。

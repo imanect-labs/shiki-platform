@@ -2,7 +2,7 @@
 
 `crates/script-runtime/assets/shiki_qjs_guest.wasm` は **リポジトリにコミットされたバイナリ**
 （in-repo vendor）である。`vendor/secure-exec/` と同じ統治モデルに従い、品質ゲート
-（500 行/ファイル・カバレッジ・clippy）から除外し、出所と再現手順を本書に固定する。
+（1000 行/ファイル・カバレッジ・clippy）から除外し、出所と再現手順を本書に固定する。
 
 ## なぜバイナリを vendor するのか
 

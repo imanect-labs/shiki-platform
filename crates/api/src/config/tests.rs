@@ -300,6 +300,44 @@ fn validate_rejects_negative_leeway() {
 }
 
 #[test]
+fn validate_rejects_zero_upload_gc_ttl() {
+    // ttl_secs=0 は初回 sweep が全テナントの進行中アップロードを一掃する（#468）。
+    let mut cfg = valid_config();
+    cfg.storage.upload_gc.ttl_secs = 0;
+    assert!(cfg.validate().is_err());
+}
+
+#[test]
+fn validate_rejects_zero_upload_gc_interval() {
+    // interval_secs=0 は sweep が休みなく回り、DB/オブジェクトストアを飽和させる（#468）。
+    let mut cfg = valid_config();
+    cfg.storage.upload_gc.interval_secs = 0;
+    assert!(cfg.validate().is_err());
+}
+
+#[test]
+fn validate_rejects_upload_gc_ttl_not_longer_than_presign_put() {
+    // presigned PUT がまだ有効なうちに declare を回収する設定を起動時に弾く（#468）。
+    let mut cfg = valid_config();
+    cfg.storage.s3 = Some(storage::S3Config {
+        internal_endpoint: "http://minio:9000".into(),
+        public_endpoint: "http://localhost:9000".into(),
+        bucket: "shiki".into(),
+        access_key: "key".into(),
+        secret_key: "secret".into(),
+        region: "us-east-1".into(),
+        presign_get_ttl_secs: 120,
+        presign_put_ttl_secs: 3600,
+        cors_allowed_origins: vec![],
+    });
+
+    cfg.storage.upload_gc.ttl_secs = 3600; // 同値も不可（URL 有効中に消える）。
+    assert!(cfg.validate().is_err());
+    cfg.storage.upload_gc.ttl_secs = 3601;
+    assert!(cfg.validate().is_ok());
+}
+
+#[test]
 fn validate_accepts_multi_tenancy() {
     // SAAS.1（#84）で全隔離層が tenant_id スコープになり、tenancy=multi は設定だけで validate を通る
     // （旧 dev opt-in ゲートは撤去）。
@@ -345,4 +383,198 @@ fn defaults_deserialize_into_partial_config() {
     assert_eq!(value["auth"]["tenancy"], serde_json::json!("single"));
     assert_eq!(value["session"]["ttl_secs"], serde_json::json!(86400));
     assert_eq!(value["telemetry"]["log_format"], serde_json::json!("json"));
+}
+
+#[test]
+fn object_store_backend_parses_canonical_and_legacy_names() {
+    // 正式名。実装が S3 互換汎用（S3ObjectStore）なので enum も S3。
+    assert_eq!(
+        serde_json::from_str::<ObjectStoreBackend>(r#""s3""#).unwrap(),
+        ObjectStoreBackend::S3
+    );
+    // **旧名 `minio` を受け付け続けること。** RustFS へ差し替えるときに
+    // enum を Minio → S3 へ改名したが、既存の .env / TOML に
+    // `SHIKI__STORAGE__BACKEND=minio` が書かれている環境を壊してはいけない。
+    // ここが落ちたら、既存環境は起動時の設定パースで死ぬ。
+    assert_eq!(
+        serde_json::from_str::<ObjectStoreBackend>(r#""minio""#).unwrap(),
+        ObjectStoreBackend::S3
+    );
+    assert_eq!(
+        serde_json::from_str::<ObjectStoreBackend>(r#""gcs""#).unwrap(),
+        ObjectStoreBackend::Gcs
+    );
+    // 知らない値は黙って既定に落とさず失敗させる（設定ミスを起動時に出す）。
+    assert!(serde_json::from_str::<ObjectStoreBackend>(r#""rustfs""#).is_err());
+}
+
+// ---- llm.model_catalog（env だけの構成で既定モデルの窓を渡す・#529） ----
+
+#[test]
+fn context_window_reaches_synthesized_default_model() {
+    let window = |w: Option<u32>| {
+        let mut cfg = valid_config();
+        cfg.llm.models.clear();
+        cfg.llm.default_model = Some("m".into());
+        cfg.llm.context_window_tokens = w;
+        let catalog = cfg.llm.model_catalog();
+        assert_eq!(catalog.default_model, "m");
+        catalog
+            .default_entry()
+            .and_then(|e| e.context_window_tokens)
+    };
+    assert_eq!(window(Some(32_768)), Some(32_768));
+    // 0 は未設定（Compose の env 既定値）。窓を知らない扱いで固定閾値のまま。
+    assert_eq!(window(Some(0)), None);
+    assert_eq!(window(None), None);
+}
+
+#[test]
+fn explicit_catalog_keeps_per_model_windows() {
+    let mut cfg = valid_config();
+    cfg.llm.context_window_tokens = Some(8_192); // カタログがあれば使わない
+    cfg.llm.models = vec![LlmModelEntry {
+        id: "big".into(),
+        real_id: None,
+        prompt_price_micros_per_mtok: 0,
+        completion_price_micros_per_mtok: 0,
+        context_window_tokens: Some(200_000),
+        ..Default::default()
+    }];
+    let catalog = cfg.llm.model_catalog();
+    assert_eq!(catalog.default_model, "big");
+    assert_eq!(catalog.models.len(), 1);
+    assert_eq!(catalog.models[0].context_window_tokens, Some(200_000));
+}
+
+#[test]
+fn chat_yui_defaults_on() {
+    // 節ごと省略しても、節はあって yui だけ省略しても既定オン（#530）。明示の false は効く。
+    assert!(ChatConfig::default().yui);
+    let partial: ChatConfig =
+        serde_json::from_value(serde_json::json!({ "enabled": true })).unwrap();
+    assert!(partial.yui);
+    let off: ChatConfig = serde_json::from_value(serde_json::json!({ "yui": false })).unwrap();
+    assert!(!off.yui);
+}
+
+#[test]
+fn catalog_carries_provider_and_display_metadata() {
+    // 複数プロバイダ（#553）: モデルの振り先・表示名・国外処理・思考強度の指定が gateway へ届く。
+    let mut cfg = valid_config();
+    cfg.llm.models = vec![LlmModelEntry {
+        id: "gpt-6-luna".into(),
+        provider: Some("opencode".into()),
+        display_name: Some("GPT-6 Luna".into()),
+        description: Some("速い".into()),
+        processed_abroad: true,
+        supports_effort: Some(true),
+        reasoning_in_content: true,
+        ..Default::default()
+    }];
+    let m = &cfg.llm.model_catalog().models[0];
+    assert_eq!(m.provider_id(), "opencode");
+    assert_eq!(m.label(), "GPT-6 Luna");
+    assert_eq!(m.description.as_deref(), Some("速い"));
+    assert!(m.processed_abroad);
+    assert_eq!(m.supports_effort, Some(true));
+    assert!(m.reasoning_in_content);
+}
+
+#[test]
+fn catalog_reads_cache_prices_from_toml() {
+    // キャッシュ単価（#581）: TOML のキーがそのまま gateway のカタログへ届き、省略は None
+    // （＝プロンプト単価で数える）。
+    use figment::providers::{Format, Toml};
+    let toml = r#"
+        [[models]]
+        id = "luna"
+        prompt_price_micros_per_mtok = 200000
+        completion_price_micros_per_mtok = 1200000
+        cache_read_price_micros_per_mtok = 20000
+        cache_write_price_micros_per_mtok = 250000
+
+        [[models]]
+        id = "plain"
+        prompt_price_micros_per_mtok = 100000
+    "#;
+    #[derive(serde::Deserialize)]
+    struct Models {
+        models: Vec<LlmModelEntry>,
+    }
+    let parsed: Models = figment::Figment::from(Toml::string(toml))
+        .extract()
+        .expect("toml");
+    let mut cfg = valid_config();
+    cfg.llm.models = parsed.models;
+    let catalog = cfg.llm.model_catalog();
+    let luna = catalog.get("luna").expect("luna");
+    assert_eq!(luna.cache_read_price(), 20_000);
+    assert_eq!(luna.cache_write_price(), 250_000);
+    let plain = catalog.get("plain").expect("plain");
+    assert_eq!(plain.cache_read_price_micros_per_mtok, None);
+    assert_eq!(plain.cache_read_price(), 100_000);
+    assert_eq!(plain.cache_write_price(), 100_000);
+}
+
+#[test]
+fn llm_timeouts_default_and_reach_the_gateway() {
+    // 省略時は 60 秒 / 120 秒 / 15 分（#554）。
+    let llm: LlmConfig = serde_json::from_value(serde_json::json!({ "backend": "stub" })).unwrap();
+    assert_eq!(
+        llm.timeouts(),
+        llm_gateway::LlmTimeouts::from_secs(60, 120, 900)
+    );
+    assert_eq!(
+        LlmConfig::default().timeouts(),
+        llm_gateway::LlmTimeouts::default()
+    );
+    let llm: LlmConfig = serde_json::from_value(serde_json::json!({
+        "backend": "stub",
+        "first_response_timeout_secs": 5,
+        "idle_timeout_secs": 30,
+        "total_timeout_secs": 3600,
+    }))
+    .unwrap();
+    assert_eq!(
+        llm.timeouts(),
+        llm_gateway::LlmTimeouts::from_secs(5, 30, 3600)
+    );
+}
+
+#[test]
+fn zero_llm_timeouts_are_rejected() {
+    for name in [
+        "first_response_timeout_secs",
+        "idle_timeout_secs",
+        "total_timeout_secs",
+    ] {
+        let mut cfg = valid_config();
+        match name {
+            "first_response_timeout_secs" => cfg.llm.first_response_timeout_secs = 0,
+            "idle_timeout_secs" => cfg.llm.idle_timeout_secs = 0,
+            _ => cfg.llm.total_timeout_secs = 0,
+        }
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains(name), "{err}");
+    }
+}
+
+#[test]
+fn empty_min_rerank_score_env_means_disabled() {
+    // compose は未設定を空文字で渡す（`${SHIKI__RAG__MIN_RERANK_SCORE:-}`）。空なら足切りしない。
+    let parsed: rag::RagConfig = figment::Figment::from(figment::providers::Serialized::defaults(
+        rag::RagConfig::default(),
+    ))
+    .merge(("min_rerank_score", ""))
+    .extract()
+    .unwrap();
+    assert_eq!(parsed.min_rerank_score, None);
+    let parsed: rag::RagConfig = figment::Figment::from(figment::providers::Serialized::defaults(
+        rag::RagConfig::default(),
+    ))
+    .merge(("min_rerank_score", "0.45"))
+    .extract()
+    .unwrap();
+    assert_eq!(parsed.min_rerank_score, Some(0.45));
 }

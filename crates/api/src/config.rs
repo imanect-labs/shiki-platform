@@ -52,12 +52,15 @@ pub struct AppConfig {
     /// Office 統合（Collabora＋WOPI ホスト・Task 11.5/11.6）。既定は無効。
     #[serde(default)]
     pub office: OfficeConfig,
+    /// AI 活用分析の定期集計（#751）。既定は有効・1 時間ごと。
+    #[serde(default)]
+    pub insights: crate::insights::InsightsConfig,
 }
 
 /// Office 統合（Collabora＋WOPI ホスト）の設定（`SHIKI__OFFICE__*`）。
 ///
 /// `enabled=false` なら `/wopi` も `/office/sessions` も配線しない（fail-closed）。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OfficeConfig {
     /// Office 統合を有効化するか（既定 false）。
     #[serde(default)]
@@ -77,6 +80,30 @@ pub struct OfficeConfig {
     /// ブラウザから見た web の origin（CheckFileInfo の PostMessageOrigin）。
     #[serde(default)]
     pub web_origin: Option<String>,
+    /// ブラウザ ↔ Collabora の中継（PIT-68）を待ち受けるポート。既定 9980。
+    ///
+    /// ブラウザは Collabora に直接つながず、必ずこの中継を通す（スクリプト実行命令を落とすため）。
+    /// Collabora の `server_name` はこの中継の公開ホストに合わせ、Collabora 自体のポートは
+    /// ブラウザへ公開しない。`0` で中継を起動しない（Collabora を別の中継の裏に置く構成のみ）。
+    #[serde(default = "default_office_relay_port")]
+    pub relay_port: u16,
+}
+
+fn default_office_relay_port() -> u16 {
+    9980
+}
+
+impl Default for OfficeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            collabora_base_url: None,
+            wopi_base_url: None,
+            token_secret: None,
+            web_origin: None,
+            relay_port: default_office_relay_port(),
+        }
+    }
 }
 
 /// 公開 API ゲートウェイ（ミニアプリ用・第2リスナ）の設定。
@@ -180,9 +207,9 @@ mod tests;
 
 pub use auth::{AuthConfig, SessionConfig, Tenancy};
 pub use backends::{
-    AuthzConfig, ChatConfig, LangfuseConfig, LlmBackend, LlmConfig, LlmModelEntry, LogFormat,
-    ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig, VectorConfig,
-    VectorStoreBackend, WebSearchBackend, WebSearchConfig,
+    AuthzConfig, ChatConfig, LangfuseConfig, LlmAutoConfig, LlmBackend, LlmConfig, LlmModelEntry,
+    LlmProviderEntry, LogFormat, ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig,
+    UploadGcConfig, VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -215,7 +242,7 @@ fn defaults() -> serde_json::Value {
             "refresh_leeway_secs": 60,
         },
         "telemetry": { "service_name": "shiki-server", "log_format": "json" },
-        "storage": { "backend": "minio" },
+        "storage": { "backend": "s3" },
         "vector": { "backend": "qdrant" },
         "llm": { "backend": "vllm" },
     })
@@ -261,6 +288,8 @@ impl AppConfig {
             return Err(ConfigError::Invalid("session.redis_url が空です".into()));
         }
         Self::check_session_bounds(&self.session)?;
+        Self::check_upload_gc_bounds(&self.storage)?;
+        Self::check_llm_timeouts(&self.llm)?;
         // 必須 URL。
         let mut urls: Vec<(&str, &str)> = vec![
             ("auth.issuer", self.auth.issuer.as_str()),
@@ -312,6 +341,23 @@ impl AppConfig {
         Ok(())
     }
 
+    /// LLM のタイムアウトを検証する（0 秒は全呼び出しを即時に失敗させるため弾く・#554）。
+    fn check_llm_timeouts(llm: &LlmConfig) -> Result<(), ConfigError> {
+        for (name, secs) in [
+            (
+                "llm.first_response_timeout_secs",
+                llm.first_response_timeout_secs,
+            ),
+            ("llm.idle_timeout_secs", llm.idle_timeout_secs),
+            ("llm.total_timeout_secs", llm.total_timeout_secs),
+        ] {
+            if secs == 0 {
+                return Err(ConfigError::Invalid(format!("{name} は 1 以上が必要です")));
+            }
+        }
+        Ok(())
+    }
+
     /// セッション数値設定の境界を検証する（失効/更新判定を壊す不正値を弾く）。
     fn check_session_bounds(session: &SessionConfig) -> Result<(), ConfigError> {
         if session.ttl_secs == 0 {
@@ -323,6 +369,44 @@ impl AppConfig {
             return Err(ConfigError::Invalid(
                 "session.refresh_leeway_secs は 0 以上が必要です".into(),
             ));
+        }
+        Ok(())
+    }
+
+    /// 中断アップロード回収（#468）の数値設定の境界を検証する。
+    ///
+    /// この GC は**全テナントの pending_upload とオブジェクトを消す**ので、不正値の影響が
+    /// 設定ミスの範囲に留まらない。
+    ///
+    /// - `ttl_secs = 0` を通すと、起動直後の初回 sweep が全テナントの pending_upload を
+    ///   一掃する。その瞬間に PUT 中だった全ユーザーの finalize が NotFound になり、
+    ///   アップロード済みのバイトは復旧できない。
+    /// - `interval_secs = 0` を通すと、sweep が休みなく連続実行され、DB とオブジェクト
+    ///   ストアを自前で飽和させる。
+    /// - presigned PUT の TTL 以下だと、URL がまだ有効なうちに declare が回収される。
+    ///   低速回線での大きいファイルほど確実に踏む。
+    fn check_upload_gc_bounds(storage: &StorageConfig) -> Result<(), ConfigError> {
+        let gc = &storage.upload_gc;
+        if gc.ttl_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "storage.upload_gc.ttl_secs は 1 以上が必要です（0 は進行中のアップロードを\
+                 即座に回収します）"
+                    .into(),
+            ));
+        }
+        if gc.interval_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "storage.upload_gc.interval_secs は 1 以上が必要です".into(),
+            ));
+        }
+        if let Some(s3) = storage.s3.as_ref() {
+            if gc.ttl_secs <= s3.presign_put_ttl_secs {
+                return Err(ConfigError::Invalid(format!(
+                    "storage.upload_gc.ttl_secs ({}) は storage.s3.presign_put_ttl_secs ({}) より\
+                     大きい必要があります（URL がまだ有効なうちに declare を回収してしまいます）",
+                    gc.ttl_secs, s3.presign_put_ttl_secs
+                )));
+            }
         }
         Ok(())
     }

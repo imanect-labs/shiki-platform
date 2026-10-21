@@ -47,11 +47,11 @@
 - **依存**: 0.2
 - **path**: `crates/storage`
 - **仕様**:
-  - `ObjectStore` トレイト（put/get/delete/presigned-url）。実装は MinIO(S3)。**GCS実装はPhase 8**。
+  - `ObjectStore` トレイト（put/get/delete/presigned-url）。実装は S3 互換（当初は MinIO、現在は RustFS）。**GCS実装はPhase 8**。
   - **コンテンツアドレッシング**: blob は内容ハッシュ（例 sha256）をキーに保存→自動重複排除。
     node メタは `blob_hash` を参照。大容量はストリーミング/マルチパート。
   - バケットは内部専用、**直アクセス禁止**（必ず StorageService 経由）。
-  - **PIT-6 の決定（presigned 採用）**: バイト転送は **presigned URL 方式**（クライアント↔MinIO 直）。
+  - **PIT-6 の決定（presigned 採用）**: バイト転送は **presigned URL 方式**（クライアント↔オブジェクトストア直）。
     ただし単一チョークポイントを守るため**メタ・認可・監査・content-addressing は必ず StorageService 経由**。
     アップロードは**二相**（declare→presigned PUT(staging)→finalize で server-side 再ハッシュ検証→content-addressed へ昇格）、
     DL は**短 TTL の presigned GET**（発行時に viewer check＋監査）。発行後 TTL 満了までは失効しない残存ウィンドウと、
@@ -118,7 +118,7 @@
 - **role/部署共有（#76・実装済み）**: SAAS.1（#84・識別子の tenant 名前空間化）で越境が構造的に不能化されたため
   有効化した。`ShareTarget::Role` を追加し、FGA モデルの folder/file editor/viewer へ `role#member` を再付与。
   role メンバーシップは Keycloak claim（roles ＋ groups＝AD 部署）由来のタプルをログイン時に冪等同期する
-  （最小の role provisioning。離脱時の失効は **diff 同期 reconciliation（#89）で実装済み**＝次ログインで剥奪。本番フル同期は SK.6）。
+  （最小の role provisioning。離脱時の失効は **diff 同期 reconciliation（#89）で実装済み**＝次ログインで剥奪。本番フル同期は SAAS.6）。
 - **なお defer 継続**: **個別例外**（フォルダ共有でも特定ファイル除外＝`but not`）は別途扱う。
 - **受け入れ条件**:
   - [x] user 共有で対象ユーザーがアクセスでき、非対象には漏れない

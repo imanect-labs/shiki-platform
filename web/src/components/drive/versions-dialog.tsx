@@ -18,6 +18,7 @@ import {
   adoptVersion,
   listVersions,
   restoreVersion,
+  startDownload,
   versionDownloadUrl,
   type FileVersionResponse,
   type NodeResponse,
@@ -59,7 +60,8 @@ export function VersionsDialog({
     if (!fileId) return;
     try {
       const { url } = await versionDownloadUrl(fileId, version);
-      window.open(url, "_blank", "noopener,noreferrer");
+      // window.open は await 後だと iOS Safari でブロックされる（startDownload 参照）。
+      startDownload(url);
     } catch (e) {
       toast({
         variant: "destructive",
@@ -121,7 +123,8 @@ export function VersionsDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-80 overflow-y-auto rounded-lg border border-border">
+        {/* min-w-0: grid（DialogContent）の子が折り返さないメタ情報の幅まで広がらないように。 */}
+        <div className="min-w-0 rounded-lg border border-border sm:max-h-80 sm:overflow-y-auto sm:overscroll-contain">
           {list.loading ? (
             <LoadingRow />
           ) : list.error ? (
@@ -140,10 +143,14 @@ export function VersionsDialog({
                     (x) => !x.is_proposal && x.version > v.version && x.blob_sha256 === v.blob_sha256,
                   );
                 return (
-                  <li key={v.version} className="flex items-center gap-3 px-3 py-2.5">
+                  <li
+                    key={v.version}
+                    className="flex items-center gap-3 px-3 py-2.5"
+                    data-testid="version-row"
+                  >
                     <div className="min-w-0 flex-1">
                       <p className="flex items-center gap-2 text-sm font-medium">
-                        バージョン {v.version}
+                        <span data-testid="version-label">バージョン {v.version}</span>
                         {latest ? (
                           <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">最新</span>
                         ) : null}

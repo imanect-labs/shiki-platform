@@ -3,8 +3,8 @@
 > フェーズの直線（Phase 0→8）に乗らない作業を、トラックごとにまとめる。
 > 各トラックは独立した起動タイミングを持ち、対応する基盤フェーズが安定してから着手する。
 > タスク粒度は各 Phase ファイルと同じ**イシュー粒度**（1タスク=1 GitHub Issue）。
-> task ID はトラック接頭辞（SK / V2 / SAAS / GUI2 / BR）を使う。
-> 関連: [要件定義書](../requirements.md)（6. スコープ外/将来, FR-1 skillex統合）/ [設計書](../design.md) / [ROADMAP](../roadmap.md)
+> task ID はトラック接頭辞（SK / V2 / SAAS / GUI2 / BR / ASR / JTD）を使う。
+> 関連: [要件定義書](../requirements.md)（6. スコープ外/将来, FR-1.1 skillex 連携）/ [設計書](../design.md) / [ROADMAP](../roadmap.md)
 
 ---
 
@@ -24,130 +24,123 @@
 
 ---
 
-## トラックSK — SaaS共有コントロールプレーン＆skillex統合（接頭辞 SK.x）
+## トラックSK — llm-gateway 外部クライアント連携（skillex）（接頭辞 SK.x）
 
-> **重要**: 統一は **SaaS版限定**。オンプレ版は shiki・skillex とも認証基盤を切り離し単独運用（本トラック対象外）。
-> 詳細境界は `docs/requirements.md` FR-1.1 / `docs/design.md` 4.1.1 を参照。
+> **2026-09-29 決定（human）**: 旧「SaaS 共有コントロールプレーン＆skillex 統合」（User 統一・サービスアクセス権・
+> 統一請求・統一シェル＋マイクロフロントエンド）は**廃止**（運用負荷／shiki と skillex の顧客が重ならない）。
+> 実装済みは realm の `skillex` client と CI の疎通 smoke のみ（`contracts/` は未作成・SK.3〜SK.7 は未着手）。
+> 詳細境界は `docs/requirements.md` FR-1.1 / `docs/design.md` §4.1.1・§4.5、契約は `docs/auth/skillex-identity.md`。
 
-- **目的**: SaaS版で、shiki と skillex を束ねる**マルチテナントな共有コントロールプレーン**
-  （Keycloak＝統一User／Org・メンバー招待・サービスアクセス権／統一請求／管理ダッシュボード）を、
-  **shiki repo 所有の SaaS専用モジュール**として構築する。
-  **3層境界**: ①User=統一 ②サービスへの入場券＋管理者バッジ=統一 ③サービス内の細かいロール/ReBAC/設定=分離。
-  **請求=統一（Org単位1請求・サービス別内訳）／利用量=分離（集約値のみ受領・クォータ強制は各サービス）**。
-- **契約の正本**: skillex は**別リポ**。参照する契約（OIDC設定・サービスアクセス権API・利用量集約イベント・
-  トークン aud/scope）の正本は **shiki repo `contracts/`** に置き公開する（SK.1/SK.4 で具体化、バージョン管理）。
-- **タイミング**: **Phase 0 の認証が安定したら並行**。skillex は並行進行中のため**ブロックしないこと**を最優先。
-  Phase 0 で AuthN 向き先の設定差し替え（共有issuer ⇔ ローカルKeycloak）の継ぎ目を織り込む。
+- **目的**: llm-gateway を**全社共通 LLM ゲートウェイ**とし、社内他製品（最初の外部クライアント＝skillex）が
+  **machine-to-machine** で呼べるようにする。shiki-server が同一バイナリで外部クライアント向け LLM API を公開し、
+  会計・監査・Langfuse・認可のチョークポイントは内部利用と同じ経路を通す（llm-gateway は in-process のまま）。
+- **範囲外**: ユーザー認証の共有（skillex は SaaS/オンプレとも自前の専用 Keycloak）、サービスアクセス権、統一請求、統一管理画面。
+  shiki 自身の SaaS コントロールプレーン（Keycloak・テナント・ベンダーコンソール・課金）は **トラック SAAS / Phase 12** の範囲。
+  **オンプレは対象外**（skillex オンプレはローカル vLLM を使う）。
+- **契約の正本**: skillex は**別リポ**。**shiki repo `contracts/`**（未作成）に外部 LLM API 仕様＋m2m トークン契約
+  （issuer・`aud`・`azp`・scope）＋後方互換ポリシのみを置く（SK.8 で作成）。
+- **タイミング**: skillex 側の必要時期に合わせて並行。skillex を**ブロックしないこと**を優先。
+  llm-gateway の別サービス化は 3 つ目の消費者が現れるまで保留。
 
 ### タスク一覧
 
 | ID | タイトル | area | 依存 |
 |----|---------|------|------|
-| SK.1 | 共有realm設計＋skillex client/scope/audience 定義 | auth | 0.2 |
-| SK.2 | skillex DLC/LLM 用トークン発行（client credentials / token exchange） | auth | SK.1 |
-| SK.3 | サービスアクセス権モデル（統一）×サービス内認可（分離）の境界実装 | auth | SK.1 |
-| SK.4 | skillex web app 向け認証認可エンドポイント連携 | auth | SK.2, SK.3 |
-| SK.5 | skillex トークンの監査・失効・ローテーション | auth | SK.2 |
-| SK.6 | 共有コントロールプレーン：Org・メンバー招待・サービスアクセス権＋管理ダッシュボード | auth | SK.3 |
-| SK.7 | 統一請求：Org単位1請求・サービス別内訳＋利用量集約イベント受信 | infra | SK.6 |
+| SK.1 | llm-gateway 外部クライアント登録（realm `shiki` の `skillex` client・`aud=shiki-llm`）〔縮小〕 | auth | 0.2 |
+| SK.2 | 外部クライアント用 m2m トークン（client_credentials, `aud=shiki-llm`）の検証〔一般化〕 | auth | SK.1 |
+| ~~SK.3~~ | ~~サービスアクセス権モデル（統一）×サービス内認可（分離）の境界実装~~ **廃止（2026-09-29）** | – | – |
+| ~~SK.4~~ | ~~skillex web app 向け認証認可エンドポイント連携~~ **廃止（2026-09-29）** | – | – |
+| SK.5 | 外部クライアントトークンの監査・失効・ローテーション | auth | SK.2, SK.8 |
+| ~~SK.6~~ | ~~共有コントロールプレーン：Org・メンバー招待・サービスアクセス権＋管理ダッシュボード~~ **skillex 部分廃止・残りは SAAS.6 / Phase 12 へ移管** | – | – |
+| ~~SK.7~~ | ~~統一請求：Org単位1請求・サービス別内訳＋利用量集約イベント受信~~ **廃止（2026-09-29）** | – | – |
+| SK.8 | 外部クライアント向け LLM API エンドポイント＋クライアント別会計＋`contracts/` | api | SK.2, 3.2 |
 
 ---
 
-### Task SK.1: 共有realm設計＋skillex client/scope/audience 定義
-- **area**: auth / **path**: `deploy/keycloak/`, `docs/design.md`
+### Task SK.1: llm-gateway 外部クライアント登録（縮小）
+- **area**: auth / **path**: `deploy/keycloak/`, `docs/auth/skillex-identity.md`
 - **依存**: 0.2（Keycloak/OIDCログイン配線）
+- **2026-09-29**: 旧「共有 realm 設計＋skillex を同一 realm へフェデレート」から、**外部クライアントの client 登録のみ**に縮小。
 - **仕様**:
-  - shiki の Keycloak realm を**共有アイデンティティプール**として設計し、skillex を同一 realm に
-    フェデレートさせる構成を確定（別 realm 案との比較・決定根拠を記す）。
-  - skillex 用の OIDC client、必要 scope、`audience`（DLC/LLM リソースサーバ向け）を定義。
-  - skillex 側ユーザーと shiki ユーザーが**同一プール**で衝突しない命名/属性マッピングを決める。
+  - realm `shiki` に外部クライアント用の confidential client（service account）を登録する（最初は `skillex`）。
+  - service account は**テナント属性（`tenant` claim）を持たない**。外部クライアント API は通常のテナント解決を使わない（SK.8）。
+  - `aud=shiki-llm` を audience mapper で付与する。ユーザーフェデレーションは行わない。
 - **受け入れ条件**:
-  - [ ] skillex client が realm に登録され、想定 scope/audience でトークンを取得できる
-  - [ ] 共有プール構成が design.md に図入りで記録される
-  - [ ] shiki ユーザーと skillex ユーザーが同一プール上で一意に識別される
+  - [x] `skillex` client が realm に登録され、client_credentials で `aud=shiki-llm` のトークンを取得できる（CI compose smoke）
+  - [ ] service account がテナント属性を持たないことが確認・文書化される
 
-### Task SK.2: skillex DLC/LLM 用トークン発行
-- **area**: auth / **path**: `deploy/keycloak/`, `crates/auth`
+### Task SK.2: 外部クライアント用 m2m トークン（一般化）
+- **area**: auth / **path**: `crates/api`, `crates/auth`
 - **依存**: SK.1
+- **2026-09-29**: 旧「skillex DLC/LLM 用トークン発行（client credentials / token exchange）」を外部クライアント全般へ一般化。
+  token exchange（ユーザー文脈）は範囲外。
 - **仕様**:
-  - skillex の **DLC/LLM 利用**に必要なアクセストークンを Keycloak が発行する。
-    machine-to-machine は client credentials、ユーザー文脈が要る場合は token exchange を使う。
-  - トークンに DLC/LLM リソース向けの `audience` と最小 scope を載せ、過剰権限を与えない。
-  - skillex 側の検証手順（公開鍵/JWKS、`aud`/`iss` 検証）をドキュメント化する。
+  - OAuth2 client_credentials・`aud=shiki-llm` のトークンを、外部クライアント LLM API の入口で検証する
+    （`iss`/`aud`/`azp` の**厳密検証**、登録済み `azp` のみ受理）。
+  - **shiki の通常ユーザー API は m2m トークンを拒否**する（confused-deputy 防御・PIT-27）。
+  - 検証手順（JWKS・`iss`/`aud`/`azp`）を契約として文書化する。
 - **受け入れ条件**:
-  - [ ] skillex が発行トークンで DLC/LLM エンドポイントにアクセスできる
-  - [ ] トークンの audience/scope が想定リソースに限定される
-  - [ ] skillex 側の検証手順が文書化され、サンプルで検証成功する
+  - [ ] `aud`/`iss`/`azp` のいずれかが不一致のトークンが拒否される
+  - [ ] m2m トークンで shiki の通常ユーザー API を叩くと拒否される（テストで担保）
+  - [ ] 検証手順が文書化され、サンプルで検証成功する
 
-### Task SK.3: サービスアクセス権モデル（統一）×サービス内認可（分離）の境界実装
-- **area**: auth / **path**: `crates/auth`, `crates/authz`, 共有コントロールプレーン
-- **依存**: SK.1
-- **仕様**:
-  - **統一層**: 共有コントロールプレーンが `Org × Member × サービスアクセス権`（`shiki: なし/利用者/サービス管理者`,
-    `skillex: なし/利用者/管理者` の粗い区分）を保持。User は同一プールで両サービス共通。
-  - **分離層**: サービス内の細かい認可は各サービスが独立に保持。**shiki の ReBAC（OpenFGA）は shiki データプレーンに閉じる**。
-    skillex も自前の認可を持つ。共有プレーンは「入場券＋管理者バッジ」までしか知らない。
-  - skillex 由来ユーザーに shiki リソースへのアンビエント権限が漏れないよう、shiki の認可判定は
-    `サービスアクセス権あり` を前提に shiki 自身の ReBAC で決定する（認可コンテキスト `principal + org` で評価）。
-- **受け入れ条件**:
-  - [ ] サービスアクセス権なしのユーザーは該当サービスに入れない
-  - [ ] shiki 内の細かい認可が shiki の authz store のみで決まる（共有プレーンに依存しない）
-  - [ ] 同一ユーザーが両サービスで同一 principal として扱われる
+### ~~Task SK.3: サービスアクセス権モデル（統一）×サービス内認可（分離）の境界実装~~
+- **廃止（2026-09-29）**: User・サービスアクセス権を skillex と共有しないため不要。
 
-### Task SK.4: skillex web app 向け認証認可エンドポイント連携
-- **area**: auth / **path**: `crates/api`, `deploy/keycloak/`
-- **依存**: SK.2, SK.3
-- **仕様**:
-  - skillex の web app（訓練フィードバック閲覧・各種設定）が必要とする
-    認証認可エンドポイント（OIDC ログイン/コールバック、トークン introspection、必要なら userinfo）
-    との連携を確立する。
-  - CORS / リダイレクト URI / セッション境界を skillex web app の origin 向けに設定する。
-- **受け入れ条件**:
-  - [ ] skillex web app から OIDC ログインが完走しトークンを取得できる
-  - [ ] 訓練フィードバック閲覧・設定画面が認証済みで保護される
-  - [ ] 許可された origin のみが認証フローを利用できる
+### ~~Task SK.4: skillex web app 向け認証認可エンドポイント連携~~
+- **廃止（2026-09-29）**: skillex web app は自前の IdP（専用 Keycloak）へログインし、shiki の realm を使わない。
 
-### Task SK.5: skillex トークンの監査・失効・ローテーション
-- **area**: auth / **path**: `crates/auth`, `deploy/keycloak/`
-- **依存**: SK.2
+### Task SK.5: 外部クライアントトークンの監査・失効・ローテーション
+- **area**: auth / **path**: `crates/api`, `crates/auth`, `deploy/keycloak/`
+- **依存**: SK.2, SK.8（監査・失効の対象となる外部クライアント LLM API が SK.8 で実装されるため。外部クライアントへの本番公開は SK.5 完了後）
+- **2026-09-29**: 対象を skillex から**外部クライアント全般**へ。
 - **仕様**:
-  - skillex 向けに発行したトークンの発行/失効を監査ログに記録し、shiki の監査と突合可能にする。
-  - client secret / 署名鍵のローテーション手順、失効（セッション/トークン無効化）を整備する。
+  - 外部クライアントによる LLM API 呼び出しを `azp` 付きで監査ログに記録し、shiki の監査と突合可能にする。
+  - client secret / 署名鍵のローテーション手順、失効（client 無効化・secret 再発行）を整備する。
+  - Keycloak の client 無効化だけでは発行済み JWT が exp まで有効（realm 既定 `accessTokenLifespan` 1800 秒）なため、
+    ゲートウェイ側に**取り消し可能な登録 `azp` 許可リスト**をリクエスト毎に照合し、m2m トークンの TTL を短くする。
+  - **失効の正は許可リスト**。失効は単一の管理操作で「許可リストから削除 → Keycloak の client 無効化」の順に行い、
+    許可リスト削除の時点で発行済みトークンも拒否されるようにする（Keycloak だけを操作する経路を作らない）。
 - **受け入れ条件**:
-  - [ ] skillex トークンの発行・失効が監査ログに残る
+  - [ ] 外部クライアントの呼び出しが `azp` 付きで監査ログに残る
   - [ ] client secret/鍵のローテーション手順が文書化・実行できる
-  - [ ] 失効後のトークンが DLC/LLM/web app で拒否される
+  - [ ] 失効操作（許可リスト削除＋client 無効化）の直後から、発行済みトークンが外部クライアント LLM API で拒否される
 
-### Task SK.6: 共有コントロールプレーン（Org・メンバー招待・サービスアクセス権＋管理ダッシュボード）
-- **area**: auth / **path**: 共有コントロールプレーン（SaaS専用モジュール, shiki repo所有）, `web/`
-- **依存**: SK.3
-- **仕様**:
-  - **SaaS専用モジュール**として、Organization・Membership・サービスアクセス権を保持するデータモデルとAPI。
-    Keycloak（統一User）と連携し、メンバー招待（メール招待→Org参加）、サービスロール付与（粗い区分）を提供。
-  - **統一「アカウント管理画面」（web）**: 統一シェル＋共有ページ（メンバー招待・サービスアクセス権付与・ロール/グループ・請求閲覧）。
-    各サービスの設定ページは**マイクロフロントエンドで合成**（ページが分かれているだけの一体UI）。
-    各ページは自サービスのAPI/ストアを叩き、**authz・設定データは分離**。合成の契約は `contracts/` に置く。
-    各サービス管理ページは「シェル埋め込み／単独」両対応の自己完結モジュール（オンプレは単独管理画面として動作）。
-  - shiki/skillex の各データプレーンはこのモジュールからサービスアクセス権を読む（OIDCクレーム or API）。
-  - **オンプレ shiki はこのモジュールを積まない**（マルチテナント・外部依存のため SaaS限定）。
-- **受け入れ条件**:
-  - [ ] Org管理者がメンバーを招待し、サービスアクセス権を付与できる
-  - [ ] 付与/剥奪が shiki・skillex の入場可否に即時反映される
-  - [ ] 各サービス設定ページがシェル埋め込み／単独の両方で動く
-  - [ ] このモジュールがオンプレ構成に含まれない（ビルド/デプロイで分離）
+### ~~Task SK.6: 共有コントロールプレーン（Org・メンバー招待・サービスアクセス権＋管理ダッシュボード）~~
+- **skillex 部分は廃止（2026-09-29）**: サービスアクセス権・統一「アカウント管理画面」（統一シェル＋マイクロフロントエンド合成・
+  「シェル埋め込み／単独」両対応）は不要。shiki の管理画面は通常ページとして作る。
+- **残り（shiki 自身の SaaS 機能）は移管**: メンバー招待・本番のグループ完全同期（SCIM）→ **SAAS.6**、
+  管理ダッシュボード → **Phase 12**（12.2 顧客管理者ダッシュボード／12.4 ベンダーコンソール）。
 
-### Task SK.7: 統一請求（Org単位1請求・サービス別内訳＋利用量集約イベント受信）
-- **area**: infra / **path**: 共有コントロールプレーン（請求）, `crates/llm-gateway`（計測連携）
-- **依存**: SK.6
+### ~~Task SK.7: 統一請求（Org単位1請求・サービス別内訳＋利用量集約イベント受信）~~
+- **廃止（2026-09-29）**: 統一請求はしない。shiki の顧客請求は SAAS.3、skillex の LLM 利用は SK.8 のクライアント別会計による
+  製品間の内部原価精算。
+
+### Task SK.8: 外部クライアント向け LLM API エンドポイント＋クライアント別会計（新設・2026-09-29）
+- **area**: api / **path**: `crates/api`, `crates/llm-gateway`, `contracts/`
+- **依存**: SK.2, 3.2（llm-gateway）
+- **現状**: `aud=shiki-llm` のトークンを受け付けるエンドポイントは `crates/` に**未実装**。
 - **仕様**:
-  - 各サービスが**自前で計測した集約使用量**（shiki=LLMトークン/コスト、skillex=DLC/LLM利用量）を、
-    **集約イベントとして**共有請求プレーンへ送る（生ログは送らない＝利用量は分離保持）。
-  - 共有請求プレーンが支払い方法・サブスク・**請求書生成**を担い、**Org単位で1請求・サービス別ライン内訳**を出す。
-    プラン/サブスクはサービス別、束ねて1請求。**クォータ/上限の強制は各サービス側**、ここは金額集約のみ。
+  - shiki-server が**同一バイナリで**外部クライアント向け LLM API を公開する（OpenAI 互換を想定。パス・形は本タスクで確定。
+    例: chat completions 相当）。llm-gateway は in-process のまま（design §4.5「別プロセス化しない」）。
+  - **配置**: 現行 SaaS のプール型データプレーン（SAAS.1 フルプール）で提供する。顧客ごとの cell（将来オプション）を
+    導入する場合は、外部クライアント用の ingress・配置先（共通 cell 等）を顧客 cell と分けて別途決める（要 human 判断）。
+    任意の顧客 cell へ外部クライアントの要求を流さない。
+  - 会計・監査・Langfuse・認可のチョークポイントは**内部利用と同じ経路**を通す（外部用の別経路を作らない）。
+  - 会計は `azp` をキーにした**外部クライアント別名前空間**。消費側が渡す自社 org id は**会計ラベルのみ**（認可根拠にしない）。
+    会計ラベルは `AuthContext.org` には入れず、会計レコードの別フィールドで運ぶ（`AuthContext` は認可スコープであり、
+    未信頼の入力で切り替わってはならない）。
+  - `contracts/` を作成し、外部 LLM API 仕様＋m2m トークン契約（issuer・`aud`・`azp`・scope）＋後方互換ポリシを置く。
+  - **要 human 判断（着手前）**: m2m 呼び出しの `AuthContext { principal, org, tenant_id }` の作り方。llm-gateway の会計は
+    `tenant_id`＋`org` を必須カラムとし（§4.5）、`tenant_id` が落ちる経路は作らない不変条件がある。案: 予約名前空間
+    `tenant_id = "ext-<azp>"`（`validate_tenant_id` の禁止文字 `| : # @ /` を含まない形。`azp` 自体も同じ規則で検証し、
+    顧客テナント ID と衝突しないよう `ext-` 接頭辞を顧客側で予約する）・`org` = サーバ側の固定値（例: `azp`）。
+    外部クライアントに適用するモデルカタログ（許可モデル・単価）も併せて決める。
 - **受け入れ条件**:
-  - [ ] shiki/skillex の集約使用量が請求プレーンに届く
-  - [ ] Org単位の1請求書にサービス別内訳が出る
-  - [ ] 生の利用量ログが請求プレーンに渡らない（分離が保たれる）
+  - [ ] skillex の m2m トークンで外部クライアント LLM API から推論できる
+  - [ ] 呼び出しが `azp` 別に会計され、テナントの会計（SAAS.3）と混ざらない
+  - [ ] 消費側 org id を変えても認可結果が変わらない（会計ラベルのみ）
+  - [ ] `contracts/` に API 仕様・トークン契約・後方互換ポリシが置かれる
 
 ---
 
@@ -236,7 +229,7 @@
 
 ## トラックSAAS — マルチテナントSaaS 拡充（接頭辞 SAAS.x）
 
-- **目的**: **SaaS は優先ターゲット**（requirements §1.1）。共有コントロールプレーン＋**フルプールのデータプレーン**（design §4.1）と
+- **目的**: **SaaS は優先ターゲット**（requirements §1.1）。shiki の SaaS コントロールプレーン＋**フルプールのデータプレーン**（design §4.1）と
   認可コンテキストの `tenant_id` は **Phase 0 で day-1 導入済み**。本トラックはその上に
   **テナント分離の強制・オンボーディング自動化・課金/メータリング・プラン制限**を載せる。
   データプレーン完全相乗り（フルプール）は **SAAS.5 で達成済み・既定トポロジ**。
@@ -252,6 +245,7 @@
 | SAAS.3 | 課金・使用量メータリング | infra | SAAS.1 |
 | SAAS.4 | プラン制限・クォータ enforcement | infra | SAAS.3 |
 | SAAS.5 | データプレーン完全相乗り（フルプール）— ✅ 達成済み・**既定トポロジ** | infra | SAAS.1 |
+| SAAS.6 | メンバー招待・グループ完全同期（SCIM）（旧 SK.6 の shiki 部分を移管） | auth | SAAS.2, 8.4 |
 
 > ⚠️ 旧 SAAS.1「認可コンテキストへ `tenant_id` 追加」は **Phase 0 Task 0.5 に前倒し（day-1 で `AuthContext { principal, org, tenant_id }`）**。本トラックは tenant_id 継ぎ目の*実装*ではなく、その上の分離強制・運用・課金を扱う。
 
@@ -334,6 +328,21 @@
   - [x] 移行（cell→プール）がデータ整合を保って実行できる — `shiki-admin retenant`（#89・
     LEGACY→名前空間形式 / cell→pool の tenant リネーム。DB/FGA/オブジェクト/セッション一括・
     dry-run 既定・冪等。手順は `docs/guides/tenant-ops.md`）
+
+### Task SAAS.6: メンバー招待・グループ完全同期（SCIM）（旧 SK.6 から移管・2026-09-29）
+- **area**: auth / **path**: `crates/api`, `crates/authz`, `web/`
+- **依存**: SAAS.2, 8.4（招待時の Keycloak ユーザー作成と FGA タプル付与は 8.4 の単一管理経路を拡張して行う）
+- **経緯**: 旧 SK.6（共有コントロールプレーン）のうち、skillex と無関係な **shiki 自身の SaaS 機能**を移管。
+  サービスアクセス権・統一シェル／マイクロフロントエンド合成は廃止（管理画面は Phase 12 の通常ページ）。
+- **仕様**:
+  - テナント管理者によるメンバー招待（メール招待→テナント参加）。招待 UI は 8.3、Keycloak/OpenFGA の整合 CRUD は 8.4 の経路を拡張し、
+    別の管理経路を作らない。realm `shiki`（単一 realm・テナント=ユーザー属性 `tenant`／org=group）の上で行う。
+  - 本番のグループ完全同期（SCIM 等）。現状はログイン時の diff 同期（#89・次ログインで剥奪）のみ。
+  - オンプレ（シングルテナント）でも同じ経路で動く（本体を分岐させない）。
+- **受け入れ条件**:
+  - [ ] テナント管理者がメンバーを招待し、招待されたユーザーがそのテナントにのみ参加できる
+  - [ ] IdP 側のグループ変更がログインを待たずに FGA の role タプルへ反映される
+  - [ ] 招待・同期の操作が監査ログに残る
 
 ---
 
@@ -476,3 +485,160 @@
   - [ ] 分岐点でブランチを前後に切り替えられる
   - [ ] 編集/再生成で生まれた枝が UI から辿れる
   - [ ] 既定は線形表示でブランチが邪魔をしない
+
+---
+
+## トラックASR — 音声入力（接頭辞 ASR.x）
+
+> 目的: **マイクの発話を文字にしてチャットの入力欄へ入れる**（requirements FR-4 の音声入力）。
+> 認識は `SpeechToText` トレイト裏に置き、オンプレ版は自環境の GPU 上で完結させて音声を外へ出さない。
+> Phase 3（チャット UI・SSE）の後ならいつでも着手できる独立トラック。
+>
+> **スコープ外**: 会議の逐次書き起こしと議事録生成（別スコープ・requirements §6）。
+> 音声合成（`ai.speech`）も本トラックには含めない。
+>
+> **目安**: 認識結果の表示まで 10 秒以内・同時利用者数と同数の同時入力。
+> **単一 GPU のオンプレ構成でも GPU を追加せず、対話用 GPU に CUDA MPS で同居させて成立させる**
+> （実機計測で見込みを確認済み）。
+
+### タスク一覧
+
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| ASR.1 | `SpeechToText` トレイト＋オンプレ実装（ReazonSpeech / NeMo） | ai | 3.5 |
+| ASR.2 | GPU 同居の配備（CUDA MPS の SM 配分・起動順序と再起動時の復帰）＋オフライン更新手順 | infra | ASR.1 |
+| ASR.3 | 音声入力 UI（マイク取得 → ストリーミング → 逐次表示 → 送信前の編集） | frontend | ASR.1, 3.10 |
+| ASR.4 | 用語辞書（テナント単位の登録と認識への反映） | ai/frontend | ASR.1 |
+| ASR.5 | 音声データの保存可否設定（テナント設定・保存する場合は ReBAC と監査の対象） | api | ASR.3 |
+| ASR.6 | 受入試験（同時本数ごとの遅延・認識精度・対話との同居劣化） | qa | ASR.3, ASR.5 |
+
+### Task ASR.1: `SpeechToText` トレイト＋オンプレ実装
+- **area**: ai / **path**: `crates/llm-gateway` もしくは新規 `crates/asr`
+- **仕様**: 差し替えはトレイト裏で（不変条件）。オンプレは自環境の GPU 上で動く実装、クラウドは
+  プロバイダ実装を後から足せる形にする。**エアギャップ環境では音声も認識結果も外へ出さない。**
+  モデル・依存物の持ち込みは可搬媒体経由（オフラインリポジトリ）。
+- **受け入れ条件**:
+  - [ ] トレイト境界がアプリ本体を分岐させない
+  - [ ] エアギャップ構成で外向き通信が発生しない（negative）
+
+### Task ASR.2: GPU 同居の配備
+- **area**: infra / **path**: `deploy/`
+- **仕様**: 対話（LLM 推論）と同一 GPU に CUDA MPS で同居させる。**SM 配分は 1 点しか計測しておらず、
+  対話側の余裕が薄い**（実測で TTFT が 4.11 → 4.96 秒）。配分比を振って決める。
+  MPS はメモリ保護を持たないため、**デーモンの起動順序と異常終了時の復帰を運用手順として定める**。
+- **受け入れ条件**:
+  - [ ] MPS デーモンの停止・再起動から自動復帰する
+  - [ ] 音声側の異常終了が対話側を巻き込まない運用手順が文書化されている
+
+### Task ASR.5: 音声データの保存可否設定
+- **area**: api / **path**: `crates/api`
+- **仕様**: 保存するか否かを管理者が設定できる。**保存する場合は文書と同じ ReBAC と監査の対象**にし、
+  音声のためだけの権限判定を作らない（不変条件「単一チョークポイント」）。
+- **受け入れ条件**:
+  - [ ] 保存 OFF のとき、認識後に音声が残らない
+  - [ ] 保存 ON のとき、閲覧が ReBAC で制御され監査に残る
+
+---
+
+## トラックJTD — 一太郎（JTD）→ docx 変換（接頭辞 JTD.x）
+
+> 目的: **日本の官公庁・学会が現在も配布している一太郎形式（.jtd）を shiki で扱えるようにする**。
+> 原本は保持したまま docx へ変換し、以後は RAG・プレビュー・共有・編集の既存 docx 経路に乗せる。
+> Phase 1（ストレージ）と Phase 2（RAG）が入っていれば着手できる独立トラック。
+>
+> **なぜ自前で持つのか**: **Collabora / LibreOffice は JTD を読めない**。Linux 版に一太郎フィルタが無く、
+> `soffice --headless --convert-to docx` は Writer 扱いにこそなるが実体はテキストフィルタへの
+> フォールバックで、CFB の生バイトをそのまま吐く（実機で確認）。かつて OpenOffice.org にあった
+> Ichitaro Document Filter は Windows 専用拡張で、我々のデプロイ先には存在しない。
+> よって Phase 11 の Office 経路は流用できず、変換器を自前で持つ。
+>
+> **どこまでが自前か**: CFB コンテナの読解と `DocumentText` のトークン化は所有フォーク
+> [OpenJTD](https://github.com/KimEJ/OpenJTD)（`vendor/openjtd`・Apache-2.0）に任せる。
+> 上流の文書モデルは `Block = Paragraph | Unknown` で**表を持たず**、ページ幾何は上流自身が
+> 未解読と明示している。**表・罫線・ページ幾何の解読と OOXML への写像が我々の担当分**。
+> 運用方針は [docs/jtd/fork-policy.md](../jtd/fork-policy.md) が正本。
+>
+> **対象**: 一太郎 8〜13 系（CFB ＋ `/DocumentText`）。
+> **スコープ外**: 一太郎 2004（v14）以降 / `.jtdc` 圧縮形式（認識のみ行い変換しない）。
+> JTD への書き戻しも行わない（原本は常に不変）。
+>
+> **到達目標**: 判定用サンプル 3 本（厚労省「研究計画書」`f1.jtd` / 厚労省「第一種使用規程」`betu.jtd` /
+> 日本コンクリート工学会「和文原稿作成テンプレート」`tpwin_jp.jtd`）を、原本の配布 PDF と
+> 並べて見て遜色ないレベルで docx に写せること。**PR3（表・罫線）と PR4（ページ幾何）は
+> リバースエンジニアリングであり、ページ割りの完全一致は達成できない可能性がある。**
+> その場合は到達水準を正直に報告して妥協点を human に判断してもらう。
+
+### タスク一覧
+
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| JTD.1 | OpenJTD を `vendor/openjtd` に所有フォークとして取り込む | infra | — |
+| JTD.2 | `crates/jtd`: 本文・段落の中間モデル ＋ OOXML ライタ ＋ 忠実度ハーネス | api | JTD.1 |
+| JTD.3 | 表と罫線の解読（`0x001C`…`0x001F` レコード・`0x000E` セル区切り）→ `w:tbl` | api | JTD.2 |
+| JTD.4 | ページ・段組・余白の解読（`PageMark` / `PaperMark` / `PageLayoutStyle`）→ `w:sectPr` | api | JTD.2 |
+| JTD.5 | 文字書式・ルビ・フォント（`Font` / `TextLayoutStyle` / `DocumentEditStyles`）→ `w:rPr` / `w:ruby` | api | JTD.2 |
+| JTD.6 | 画像・数式・オブジェクト（`EmbedItems` / `Equation Native` / `Frame`）→ `w:drawing` / OMML | api | JTD.2 |
+| JTD.7 | プロダクト結線（rendition 生成・RAG・UI・E2E） | storage/rag/frontend | JTD.3, JTD.4, JTD.5, JTD.6 |
+
+### Task JTD.1: OpenJTD を所有フォークとして取り込む
+- **area**: infra / **path**: `vendor/openjtd/`, `crates/jtd/`, `Cargo.toml`, `scripts/update-openjtd.sh`
+- **仕様**: `vendor/secure-exec` と同じ所有フォーク運用（独自 workspace・`exclude`・品質ゲート除外・
+  再 vendor スクリプト・`patches/` による最小 diff）。shiki 本体が依存するのは `rjtd-core` のみとし、
+  同梱の `rjtd-cli`（解読プローブ）・`rjtd-export`・`rjtd-wasm` には依存しない。
+  **JTD は外部由来バイナリで、パースは worker 往復ではなく shiki-server のプロセス内で走る**ため、
+  資源上限を上流既定より締め、細工入力に対して**有界な時間とメモリで返る**ことをテストで固定する。
+- **受け入れ条件**:
+  - [ ] `cargo deny --all-features check` が通り、増える依存が把握できている
+  - [ ] カバレッジ 80% ゲートが上流コードに当たらない
+  - [ ] 細工した CFB ヘッダでプロセスが落ちない（negative・時間もアサートする）
+
+### Task JTD.2: 本文・段落 ＋ OOXML ライタ ＋ 忠実度ハーネス
+- **area**: api / **path**: `crates/jtd/`
+- **仕様**: `DocumentText` トークン列 → 中間モデル `JtdDocument` → docx bytes。docx 生成は
+  `zip` ＋ `quick-xml` で自前に書く（既存の `DocxComposer` は Python worker の python-docx 経由で、
+  セル単位の罫線・絶対配置フレーム・ルビ・段組・OMML を組むには足りない）。
+  **忠実度ハーネスを同時に入れ、以後のタスクのゲートにする**: 生成した docx を Collabora で PDF 化し、
+  原本の配布 PDF と比べる。指標は ①正規化テキスト一致率 ②表の構造一致 ③ページ数一致 ④ページ画像の差分率。
+  ①②③を CI ゲートにし、④は PR にスクリーンショットを貼って目視で確認する。
+- **受け入れ条件**:
+  - [ ] サンプル 3 本の本文テキストが原本 PDF の抽出テキストと一致する（正規化後）
+  - [ ] 忠実度ハーネスが Collabora 不在の環境で**黙ってスキップせず**明示的に失敗する
+
+### Task JTD.3: 表と罫線
+- **area**: api / **path**: `crates/jtd/`
+- **仕様**: `0x001C` で開き `0x001F` で閉じる制御レコード（上流の `RECORD_CLASS_TABLE_CELL = 0x0030`）から
+  セルの水平範囲を取り、`0x000E` のセル区切りで行を束ねる。罫線は**セルごとに上下左右が独立**なので
+  `w:tcBorders` に個別に写す。結合は `w:gridSpan` / `w:vMerge`。
+  解読の出発点は `vendor/openjtd/openjtd-spec/rfc/0009-document-text-paragraph-record` と同 `0003`。
+- **受け入れ条件**:
+  - [ ] `f1.jtd` の申請者テーブルが原本 PDF と同じ行数・列数・結合で出る（視覚確認必須）
+
+### Task JTD.4: ページ・段組・余白
+- **area**: api / **path**: `crates/jtd/`
+- **仕様**: `PageMark` / `PaperMark` / `PageLayoutStyle` の幾何を解読して `w:sectPr` に写す。
+  **上流が `page-mark-u16-geometry-semantics-unproven` として踏み込んでいない領域**で、ここは
+  我々のリバースエンジニアリングになる。出発点は同 RFC `0007-layout-mark-streams`。
+- **受け入れ条件**:
+  - [ ] ページ数が原本 PDF と一致する（`f1` = 11 / `betu` = 9 / `tpwin_jp` = 4）
+  - [ ] 達成できない場合、到達水準と妥協点を PR に明記して human の判断を仰いでいる
+
+### Task JTD.7: プロダクト結線
+- **area**: storage / rag / frontend / **path**: `crates/storage`, `crates/rag`, `crates/api`, `web/`, `migrations/`
+- **前提（JTD.1 時点で未決定・human 判断が要る）**: **JTD パーサをどこで走らせるか。**
+  既存の文書パースのチョークポイントは `DocumentParser` トレイト（`crates/rag/src/parser.rs`）で、
+  既定実装は ingestion-worker への HTTP 呼び出し。JTD を `shiki-server` の**プロセス内**で解くのは
+  その差し替え点の外に経路を作る決定であり、CLAUDE.md の「トレイト境界の変更は human に確認」に当たる。
+  選択肢は ①`DocumentParser` の裏に入れる ②worker／別プロセスへ出す
+  ③in-process のまま semaphore ＋ `spawn_blocking` ＋ wall-clock timeout を必須にする。
+  **本タスクの着手前に決め、結論を `docs/design.md` に書く。**
+  判断材料: JTD.1 の独立レビューで、細工した 1 KiB〜1 MiB のファイルがプロセスごと落とせることを
+  実測している（`vendor/openjtd/patches/000{1,2,3}`）。in-process は被害が API 全体に及ぶ。
+- **仕様**: 変換は **StorageService チョークポイントの内側**でのみ走らせる（`AuthContext` 必須）。
+  派生 docx は原本ノードに**完全従属する rendition** として持ち、**rendition 固有の ReBAC タプルは作らない**
+  （権限は常に原本 node のもの＝認可の分岐点を増やさない）。RAG は rendition の docx bytes を
+  既存 Docling 経路へ流す。**JTD への書き戻しはしない**ので、編集は「Word として複製して編集」＝
+  新規 docx ノードの作成として UI に明示する。
+- **受け入れ条件**:
+  - [ ] JTD をアップロードすると RAG 検索でヒットする
+  - [ ] rendition の閲覧可否が原本 node の ReBAC に完全に従う（negative 含む）
+  - [ ] 原本 JTD が変換・編集のどちらでも書き換わらない

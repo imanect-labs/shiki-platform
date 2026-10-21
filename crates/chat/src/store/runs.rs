@@ -28,6 +28,7 @@ pub const CHAT_GENERATION_QUEUE: &str = "chat_generation";
 
 /// `generation_run` の durable テーブル記述子（migrations/0012_chat.sql の列に対応）。
 pub(super) const RUN_SPEC: RunTableSpec = RunTableSpec {
+    event_seq_column: Some("event_seq"),
     table: "generation_run",
     status_column: "status",
     fencing_column: "fencing_token",
@@ -54,6 +55,9 @@ pub(super) const EVENT_SPEC: EventTableSpec = EventTableSpec {
 pub(super) const RUN_KEY_COLUMNS: &[&str] = &["run_id"];
 
 /// ワーカーが claim した run（生成に必要な材料一式）。
+// generation_run の行の射影（DB の boolean 列をそのまま写す）。状態機械に畳むと
+// 列との対応が崩れるので bool のまま持つ。
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ClaimedRun {
     pub run_id: Uuid,
@@ -80,9 +84,67 @@ pub struct ClaimedRun {
     /// ミニアプリ経由のセッション（Task 6.10・skill はバンドル権限で読む）。
     pub mini_app_id: Option<Uuid>,
     pub mini_app_version: Option<i64>,
+    /// 投入時に解決したモデル（#553）。`None` はカラム追加前の run（従来の既定で生成）。
+    pub model: Option<String>,
+    /// 投入時に解決した思考強度（`low` / `medium` / `high`）。
+    pub effort: Option<String>,
+    /// ユーザーがモデルを選ばなかった（Auto）か。Auto のときだけ skill のピンが上書きできる。
+    pub model_auto: bool,
+    /// ユーザーが**この発話にだけ**使ってほしいと指定したツール名（#734・0071）。
+    ///
+    /// 語彙（[`agent_core::ToolName`]）の型ではなく文字列で持つ: 後のリリースで名前が消えても
+    /// claim の行デコードを失敗させない（照合は [`Self::requested_tool_names`] で行う）。
+    pub requested_tools: Json<Vec<String>>,
+    /// run の作成時刻（system プロンプトの「今日の日付」の基準・再開しても変わらない・#546）。
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-// `post_message`（Transactional Outbox）は [`super::post`] に分離（500 行規約）。
+impl ClaimedRun {
+    /// 指定ツールを語彙で照合して返す（投入順・重複なし）。語彙に無い名前は落とす（fail-closed）。
+    #[must_use]
+    pub fn requested_tool_names(&self) -> Vec<agent_core::ToolName> {
+        known_tool_names(self.run_id, &self.requested_tools.0)
+    }
+}
+
+/// run 行の `requested_tools`（文字列）を語彙で照合する（投入順・重複なし・未知名は落とす）。
+fn known_tool_names(run_id: Uuid, raw: &[String]) -> Vec<agent_core::ToolName> {
+    let mut out: Vec<agent_core::ToolName> = Vec::new();
+    for name in raw {
+        match agent_core::ToolName::parse(name) {
+            Some(t) if !out.contains(&t) => out.push(t),
+            Some(_) => {}
+            None => tracing::warn!(%run_id, tool = %name,
+                "run の requested_tools に語彙に無いツール名（無視する）"),
+        }
+    }
+    out
+}
+
+/// カードを出した run の生成材料（`chat.submit` の続きの run へ継ぐ）。
+#[derive(Debug, Clone, Default)]
+pub struct RunContext {
+    pub autonomous: bool,
+    pub skill_pins: Vec<SkillPin>,
+    /// その run のモデル指定（ユーザーが選んだモデルを次のターンでも使う）。
+    pub model: Option<crate::model::RunModel>,
+    /// その run の発話ごとのツール指定（#734）。カード回答は「カードを出した run の続き」なので
+    /// 継ぐ（実行前フェーズの門で承認まで保留したツールを、実行段階で効かせるため）。
+    pub requested_tools: Vec<agent_core::ToolName>,
+}
+
+/// いま UI が映すべき run（[`ChatStore::current_run`]）。
+#[derive(Debug, Clone, Copy)]
+pub struct CurrentRun {
+    pub run_id: Uuid,
+    /// 生成先の assistant メッセージ id（この run が本文に書く図のボタンの照合先）。
+    pub message_id: Uuid,
+    pub status: RunStatus,
+    /// 自律プロファイルか（再訪時の UI 復元・#350）。
+    pub autonomous: bool,
+}
+
+// `post_message`（Transactional Outbox）は [`super::post`] に分離（行数規約）。
 
 impl ChatStore {
     /// run を claim する（queued かリース失効 running を running へ・fencing_token +1）。
@@ -103,7 +165,8 @@ impl ChatStore {
             lease_secs,
             "run_id, thread_id, message_id, tenant_id, org, actor, agent_mode, \
              fencing_token, cancel_requested, trace_id, autonomous, autonomous_mode, checkpoint, \
-             skill_pins, mini_app_id, mini_app_version",
+             skill_pins, mini_app_id, mini_app_version, model, effort, model_auto, \
+             requested_tools, created_at",
         )
         .await
         .map_err(map_db)
@@ -190,6 +253,33 @@ impl ChatStore {
         last_error: Option<&str>,
         terminal_event: Option<&StreamEventKind>,
     ) -> Result<bool, ChatError> {
+        self.finalize_run_with_ui(
+            run_id,
+            fencing_token,
+            status,
+            content,
+            last_error,
+            terminal_event,
+            &[],
+        )
+        .await
+    }
+
+    /// [`Self::finalize_run`] に、本文の図のワークフローのボタンの束縛（#604）を添えて確定する。
+    ///
+    /// 束縛は本文と**同じトランザクション**で書く。確定した直後に押されても束縛が見え、
+    /// 本文が確定しなかった（fencing 不一致）ときは束縛も残らない。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finalize_run_with_ui(
+        &self,
+        run_id: Uuid,
+        fencing_token: i64,
+        status: RunStatus,
+        content: &[ContentBlock],
+        last_error: Option<&str>,
+        terminal_event: Option<&StreamEventKind>,
+        ui_bindings: &[crate::yui_actions::UiWorkflowBinding],
+    ) -> Result<bool, ChatError> {
         let mut tx = self.db.begin().await.map_err(map_db)?;
         let kv = [KeyValue::Uuid(run_id)];
         let message_id: Option<Uuid> = durable::fenced_finalize(
@@ -213,6 +303,7 @@ impl ChatStore {
             .execute(&mut *tx)
             .await
             .map_err(map_db)?;
+        super::yui_actions::insert_bindings(&mut tx, message_id, ui_bindings).await?;
         // 端末確定でチェックポイントを落とす（再開対象でなくなった run の履歴 JSON を残さない・#351）。
         sqlx::query("UPDATE generation_run SET checkpoint = NULL WHERE run_id = $1")
             .bind(run_id)
@@ -281,23 +372,155 @@ impl ChatStore {
         Ok(())
     }
 
-    /// このスレッドの最新 run（SSE 購読対象）を返す。`autonomous` は再訪 UI の復元用
-    /// （自律 run 進行中ならモードセレクタ等を出す・#350）。
-    pub async fn latest_run(
+    /// このスレッドで**いま UI が映すべき run**（SSE 購読対象）を返す。
+    ///
+    /// 非端末の run があれば**その最も古いもの**。生成は 1 スレッド 1 本ずつ直列に走るので
+    /// （[`Self::blocked_by_earlier_run`]）、これが「いま動いている run」であり、後ろに
+    /// 積まれた run は順番待ち。**最新**を返すと、生成中に届いた発話へ購読が飛び移り、
+    /// 進行中の応答が画面から消える。
+    ///
+    /// 非端末が無ければ最新（＝直前に終わった run）を返す。再訪時のリプレイ先。
+    /// `autonomous` は再訪 UI の復元用（自律 run 進行中ならモードセレクタ等を出す・#350）。
+    pub async fn current_run(
         &self,
         thread_id: Uuid,
         tenant_id: &str,
-    ) -> Result<Option<(Uuid, RunStatus, bool)>, ChatError> {
-        let row: Option<(Uuid, String, bool)> = sqlx::query_as(
-            "SELECT run_id, status, autonomous FROM generation_run \
-             WHERE thread_id = $1 AND tenant_id = $2 ORDER BY created_at DESC, run_id DESC LIMIT 1",
+    ) -> Result<Option<CurrentRun>, ChatError> {
+        let row: Option<(Uuid, Uuid, String, bool)> = sqlx::query_as(
+            "SELECT run_id, message_id, status, autonomous FROM generation_run \
+             WHERE thread_id = $1 AND tenant_id = $2 \
+             ORDER BY (status IN ('queued', 'running')) DESC, \
+                      CASE WHEN status IN ('queued', 'running') THEN created_at END ASC, \
+                      created_at DESC, run_id DESC \
+             LIMIT 1",
         )
         .bind(thread_id)
         .bind(tenant_id)
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        Ok(row.and_then(|(id, s, autonomous)| RunStatus::parse(&s).map(|st| (id, st, autonomous))))
+        Ok(row.and_then(|(run_id, message_id, s, autonomous)| {
+            RunStatus::parse(&s).map(|status| CurrentRun {
+                run_id,
+                message_id,
+                status,
+                autonomous,
+            })
+        }))
+    }
+
+    /// この run より**先に投入された未完了 run**が同じスレッドにあるか（＝順番待ちか）。
+    ///
+    /// 1 スレッドの生成を直列化するための唯一の判定。並行に走らせると、後の run が前の run の
+    /// 出力を含まない履歴で生成し（発話順と応答が食い違う）、同じワークスペースへ同時に書き、
+    /// 承認カードが 2 本同時に出る。
+    ///
+    /// 待ちは有限時間で解ける: 先行 run は必ず done/failed/cancelled へ到達する
+    /// （完走・明示キャンセル・リース失効の takeover・jobq の DLQ 移送時の `force_fail_run`）。
+    pub async fn blocked_by_earlier_run(&self, run_id: Uuid) -> Result<bool, ChatError> {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM generation_run earlier, generation_run me \
+                 WHERE me.run_id = $1 \
+                   AND earlier.thread_id = me.thread_id \
+                   AND earlier.tenant_id = me.tenant_id \
+                   AND earlier.status IN ('queued', 'running') \
+                   AND (earlier.created_at, earlier.run_id) < (me.created_at, me.run_id) \
+             )",
+        )
+        .bind(run_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(map_db)
+    }
+
+    /// 生成がまだ始まっていない発話（＝順番待ち）の `(user メッセージ id, run id)`。
+    ///
+    /// 再訪時に「送ったが順番待ち」を復元し、取り消せるようにするための材料。`queued` は
+    /// claim 前の run＝1 件も生成イベントが出ていない run で、`running` は既に進行中なので
+    /// 含めない。
+    ///
+    /// **いま映している run（`current_run_id`）は必ず除く。** ワーカーが claim する前は
+    /// 「最も古い未完了 run」と「queued な run」が同じものを指すため、除かないと*これから
+    /// 流れてくる発話*が順番待ちとして扱われる。実際、計画を承認した発話が調査の実況の下に
+    /// 「順番待ち」で居座り、承認したのに送られていないように見えていた。
+    pub async fn queued_user_messages(
+        &self,
+        thread_id: Uuid,
+        tenant_id: &str,
+        current_run_id: Uuid,
+    ) -> Result<Vec<(Uuid, Uuid)>, ChatError> {
+        sqlx::query_as::<_, (Uuid, Uuid)>(
+            "SELECT m.parent_id, r.run_id FROM generation_run r JOIN message m ON m.id = r.message_id \
+             WHERE r.thread_id = $1 AND r.tenant_id = $2 AND r.status = 'queued' \
+               AND r.run_id <> $3 \
+               AND m.parent_id IS NOT NULL \
+             ORDER BY r.created_at, r.run_id",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .bind(current_run_id)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)
+    }
+
+    /// そのメッセージを生成した run の**生成材料**（自律か・適用中の skill ピン）を引く（#387）。
+    ///
+    /// 本文の図（```ui の ask・plan）は自律 run の途中で出る。回答を投稿する
+    /// `chat.submit` が素の設定で run を起こすと、続きが別物になる:
+    ///
+    /// - 非自律だと `max_steps=6`・`plan` ツール無しの制約版になる
+    /// - skill ピンが落ちると、スラッシュコマンド起動の skill（run 単位ピン）は**1 ターン目に
+    ///   しか適用されない**。手順書もフェーズ宣言（#400）も 2 ターン目から消え、
+    ///   「質問 → 計画 → 実行」は最初の 1 手だけ守られて残りが素通りになる（#402 の実害）。
+    ///
+    /// **カードを出した run の生成材料を継ぐ**ための問い合わせ。
+    ///
+    /// **認可はこのメソッド内で先に取る**（呼び出し側の後段 `post_message` に委ねると、
+    /// 未認可の読み取りが先に走り、単独利用で confused deputy になる）。
+    pub async fn message_run_context(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        message_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<Option<RunContext>, ChatError> {
+        self.require_thread(ctx, thread_id, Relation::Editor, "thread.run.get", trace_id)
+            .await?;
+        type Row = (
+            Uuid,
+            bool,
+            Json<Vec<SkillPin>>,
+            Option<String>,
+            Option<String>,
+            bool,
+            Json<Vec<String>>,
+        );
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT run_id, autonomous, skill_pins, model, effort, model_auto, requested_tools \
+             FROM generation_run \
+             WHERE message_id = $1 AND thread_id = $2 AND tenant_id = $3 \
+             ORDER BY created_at DESC, run_id DESC LIMIT 1",
+        )
+        .bind(message_id)
+        .bind(thread_id)
+        .bind(&ctx.tenant_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(row.map(
+            |(run_id, autonomous, pins, model, effort, model_auto, tools)| RunContext {
+                autonomous,
+                skill_pins: pins.0,
+                model: model.map(|model| crate::model::RunModel {
+                    model,
+                    effort: effort.as_deref().and_then(llm_gateway::Effort::parse),
+                    auto: model_auto,
+                }),
+                requested_tools: known_tool_names(run_id, &tools.0),
+            },
+        ))
     }
 
     /// run の現在状態を引く（SSE の端末判定・crash safety）。

@@ -72,6 +72,19 @@ fn service(env: &Env, authz: ScriptedAuthz, config: RagConfig) -> SearchService 
 /// node＋rag_chunk 行を直接作り、FakeVectorStore に指定スコアのベクタを積む。
 /// クエリベクトル（`fake_vector(query)`）との内積が `weight` になるよう仕込む。
 async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_tag: &str) -> Uuid {
+    seed_chunk_in_org(env, name, query, weight, folder_tag, &env.ctx.org).await
+}
+
+/// `seed_chunk` の org 指定版。`env.ctx.org` 以外を渡すと、**同一テナントの別 org** の文書になる
+/// （pre-filter/post-filter は通るが hydrate の org 述語で落ちる状況を作れる・#377/PIT-45）。
+async fn seed_chunk_in_org(
+    env: &Env,
+    name: &str,
+    query: &str,
+    weight: f32,
+    folder_tag: &str,
+    org: &str,
+) -> Uuid {
     let ctx = &env.ctx;
     let sha = format!("{:0>64}", Uuid::new_v4().simple().to_string());
     sqlx::query(
@@ -79,9 +92,9 @@ async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_tag:
          values ($1, $2, $3, 10, 'text/plain', $4, 1)",
     )
     .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(org)
     .bind(&sha)
-    .bind(format!("{}/{}/{}", ctx.tenant_id, ctx.org, sha))
+    .bind(format!("{}/{}/{}", ctx.tenant_id, org, sha))
     .execute(&env.pool)
     .await
     .unwrap();
@@ -91,7 +104,7 @@ async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_tag:
                            created_by, updated_by) \
          values ($1, $2, 'file', $3, $4, 10, 'text/plain', $5, $5) returning id",
     )
-    .bind(&ctx.org)
+    .bind(org)
     .bind(&ctx.tenant_id)
     .bind(name)
     .bind(&sha)
@@ -112,7 +125,7 @@ async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_tag:
     )
     .bind(chunk_id)
     .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(org)
     .bind(node_id)
     .bind(format!("{name} の本文"))
     .bind(&tags)
@@ -185,6 +198,79 @@ async fn backfill_recovers_top_k_after_mass_deny() {
     assert!(output.debug.backfill_rounds >= 2, "バックフィルが働いた");
     assert_eq!(output.debug.authz_denied_files, 3);
     assert_eq!(output.debug.prefilter_mode, "tags");
+}
+
+/// #377: 別 org の高スコアチャンクが pool を埋めても、要求 `top_k` が同 org 文書で埋まる。
+///
+/// org は pre-filter（`readable_set` のタグ／索引）に無く hydrate の SQL 述語で絞るため、
+/// 「マルチ org テナントで別 org の file にも直接 viewer を持つ」ユーザーでは、別 org の候補が
+/// pre/post-filter を通過して枠を食う。hydrate をバックフィルループ内に置き「行が引けたか」を
+/// 採択条件にすることで、落ちた分を同 org 候補で埋め直す（漏洩は元々しない・fail-closed）。
+#[tokio::test]
+async fn backfill_recovers_top_k_when_cross_org_chunks_outrank() {
+    let Some(env) = setup().await else { return };
+    let folder_tag = env.ctx.ns().folder("shared").as_str().to_string();
+    let query = "四半期売上";
+    let other_org = format!("other-{}", Uuid::new_v4().simple());
+
+    // dense スコア降順: 上位 3 件は **別 org**（hydrate で落ちる）、下位 3 件が自 org。
+    let mut cross = Vec::new();
+    for (name, weight) in [("cross-a", 0.9), ("cross-b", 0.8), ("cross-c", 0.7)] {
+        cross.push(seed_chunk_in_org(&env, name, query, weight, &folder_tag, &other_org).await);
+    }
+    let mine_a = seed_chunk(&env, "mine-a", query, 0.6, &folder_tag).await;
+    let mine_b = seed_chunk(&env, "mine-b", query, 0.5, &folder_tag).await;
+    let mine_c = seed_chunk(&env, "mine-c", query, 0.4, &folder_tag).await;
+
+    // 別 org の file にも **直接 viewer を持つ**ユーザー（これが跨ぎ viewer の稀ケース）。
+    // pre-filter のタグにも post-filter の許可にも入るので、hydrate まで生き残る。
+    let authz = ScriptedAuthz {
+        readable_folders: vec![folder_tag.clone()],
+        readable_files: cross
+            .iter()
+            .map(|id| env.ctx.ns().file(&id.to_string()).as_str().to_string())
+            .collect(),
+        denied_files: HashSet::new(),
+    };
+    // pool_target = max(top_k=3, rerank_pool=3) = 3・over_fetch=1 → fetch_k=3。
+    // 1 ラウンド目は上位 3 件が全て別 org → バックフィルで自 org の 3 件を取得して回復する。
+    let config = RagConfig {
+        enabled: true,
+        rerank_pool: 3,
+        over_fetch_tags: 1,
+        ..RagConfig::default()
+    };
+    let output = service(&env, authz, config)
+        .search(&env.ctx, query, Some(3), SearchMode::Dense, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        output.results.len(),
+        3,
+        "別 org の候補が上位を占めても top_k を下回らない（#377）"
+    );
+    let hit_files: HashSet<Uuid> = output.results.iter().map(|r| r.file_id).collect();
+    assert_eq!(
+        hit_files,
+        [mine_a, mine_b, mine_c].into_iter().collect::<HashSet<_>>(),
+        "自 org の文書だけで埋まる"
+    );
+    for id in &cross {
+        assert!(
+            !hit_files.contains(id),
+            "別 org の文書は混入しない（org は隔離境界・PIT-45）"
+        );
+    }
+    assert!(output.debug.backfill_rounds >= 2, "バックフィルが働いた");
+    assert_eq!(
+        output.debug.hydrate_dropped, 3,
+        "hydrate で落ちた件数が可観測（他 org 3 件）"
+    );
+    assert_eq!(
+        output.debug.authz_denied_files, 0,
+        "post-filter では落ちていない（跨ぎ viewer なので許可される）"
+    );
 }
 
 #[tokio::test]

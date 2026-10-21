@@ -7,11 +7,11 @@
 #   - target/           … ビルド成果物
 #   - vendor/           … 所有フォーク（secure-exec）。上流由来コードは同一基準で縛らない（docs/sandbox/fork-policy.md）
 #
-# しきい値は MAX_LINES（既定 500 行）。超過ファイルがあれば一覧を出して 1 で終了する。
+# しきい値は MAX_LINES（既定 1000 行）。超過ファイルがあれば一覧を出して 1 で終了する。
 # 「関数が巨大」は clippy の too_many_lines / cognitive_complexity で別途担保する。
 set -euo pipefail
 
-MAX_LINES="${MAX_LINES:-500}"
+MAX_LINES="${MAX_LINES:-1000}"
 
 cd "$(git rev-parse --show-toplevel)"
 

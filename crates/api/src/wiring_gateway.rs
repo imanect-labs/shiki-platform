@@ -1,4 +1,4 @@
-//! 公開 API ゲートウェイ（Task 9.6/9.8）の配線。wiring.rs から切り出す（1 ファイル 500 行規約）。
+//! 公開 API ゲートウェイ（Task 9.6/9.8）の配線。wiring.rs から切り出す（1 ファイル行数規約）。
 
 use std::sync::Arc;
 
@@ -83,6 +83,7 @@ pub(crate) fn wire_gateway(
         Some(llm) => Arc::new(crate::gateway_ai::GatewayAgentPort {
             llm: Arc::clone(llm),
             search: search.map(Arc::clone),
+            storage: Some(Arc::clone(storage_service)),
         }),
         None => Arc::new(app_gateway::NoAgent),
     };

@@ -1,4 +1,4 @@
-//! `SecretStore` の内部ヘルパ（メタ変換・入力検証・宛先ホスト正規化）。500 行ゲート対応で分離。
+//! `SecretStore` の内部ヘルパ（メタ変換・入力検証・宛先ホスト正規化）。行数ゲート対応で分離。
 
 use crate::store::{SecretMeta, SecretRow, MAX_NAME_LEN};
 use crate::SecretError;

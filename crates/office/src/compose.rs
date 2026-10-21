@@ -9,13 +9,7 @@ use base64::Engine as _;
 
 use crate::edit::{map_worker_error, WorkerEditResponse};
 use crate::error::OfficeError;
-
-/// Word 文書（.docx）の content_type（[`crate::EDITABLE_CONTENT_TYPES`] の先頭と同値）。
-pub const DOCX_CONTENT_TYPE: &str =
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-
-/// 空の Word 文書テンプレ（ドライブ「新規作成 > ドキュメント」と同一の正本）。
-const BLANK_DOCX: &[u8] = include_bytes!("../templates/blank.docx");
+use crate::templates::{BLANK_DOCX, DOCX_CONTENT_TYPE};
 
 /// Markdown から .docx bytes を合成する（保存しない・Collabora 非依存・worker のみ必要）。
 pub struct DocxComposer {

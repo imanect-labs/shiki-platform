@@ -1,6 +1,6 @@
 # Phase 8 — エンプラ硬化（クラウド/オンプレ運用硬化）
 
-> 目的: 製品を**本番運用可能なエンプラ製品**へ硬化する。**SaaS が優先ターゲット**（requirements §1.1）であり、SaaS トポロジ（共有コントロールプレーン＋**フルプールのデータプレーン**・design §4.1）と
+> 目的: 製品を**本番運用可能なエンプラ製品**へ硬化する。**SaaS が優先ターゲット**（requirements §1.1）であり、SaaS トポロジ（shiki の SaaS コントロールプレーン＋**フルプールのデータプレーン**・design §4.1）と
 > クラウド向けトレイト実装は **Phase 0 から各フェーズで漸進的に構築済み**。本フェーズはそれらを**運用に耐える形へ集約・硬化**する：
 > 監査ダッシュボード・管理画面・監視整備で運用の顔を備え、トレイト差し替えだけで SaaS/クラウド↔オンプレを吸収することを**検証**し、
 > k8s/Helm による本番配布と**テナントプロビジョニング（論理）の自動化**、受注用HWサイジング、バックアップ/DR・シークレット・アップグレード手順を整える。
@@ -74,7 +74,7 @@
 - **仕様**:
   - 管理画面の裏にあたるAPI: Keycloak Admin（ユーザー/グループ）と OpenFGA（タプル）を**整合させる単一経路**でCRUD。
     ロール管理者への**委任管理**（自ロールのみ操作可）を認可コンテキストで制限。
-  - すべての管理操作は監査記録。skillex と共有プールのため Keycloak realm 操作は破壊系に明示確認。
+  - すべての管理操作は監査記録。全テナント共用の単一 realm のため Keycloak realm 操作は破壊系に明示確認。
 - **受け入れ条件**:
   - [ ] ユーザー/ロール/権限のCRUDが Keycloak と OpenFGA の双方に整合して反映される
   - [ ] 委任されたロール管理者は自ロールのみ操作できる
@@ -123,12 +123,16 @@
 - **依存**: 0.x（compose 構成）
 - **仕様**:
   - 既存 `docker compose` に**加えて** k8s マニフェスト/Helm チャートを整備（compose は小規模オンプレ用に維持）。
-    `shiki-server` / `sandbox-orchestrator`（特権・別 PodSecurity）/ `ingestion-worker` と、ステートフル依存（Postgres/Qdrant/OpenFGA/Keycloak/MinIO/監視/Langfuse）を Helm 値で構成。
+    `shiki-server` / `sandbox-orchestrator`（特権・別 PodSecurity）/ `ingestion-worker` と、ステートフル依存（Postgres/Qdrant/OpenFGA/Keycloak/RustFS/監視/Langfuse）を Helm 値で構成。
   - 特権サンドボックスのノード隔離（taint/affinity、KVMノード選択）、GPUノードへの推論スケジューリングを values 化。
+  - ステートフル依存の**実行時上限**（Qdrant 等の nofile・メモリ）を values で固定する。
+    既定のままだと文書増で枯渇し、コンテナは `running` のまま意味検索とインジェストが
+    壊れる（[PIT-67](../design-caveats.md)）。compose 側だけ直しても k8s 経路で再発する。
 - **受け入れ条件**:
   - [ ] Helm install でフルスタックが k8s 上に起動する
   - [ ] 特権オーケストレータと推論がノード隔離/GPU指定で配置される
   - [ ] compose と k8s が同一イメージ・同一設定キーで構成される
+  - [ ] ステートフル依存の nofile 等の実行時上限が compose と同値で設定される
 
 ### Task 8.9: プロビジョニング自動化（テナント論理＋プール実体）
 - **area**: infra / **path**: `deploy/helm`, `deploy/provisioning`
@@ -162,7 +166,7 @@
 - **area**: infra / **path**: `deploy/`, `deploy/dr`
 - **依存**: 8.8
 - **仕様**:
-  - ステートフル要素のバックアップ: Postgres（PITR）、オブジェクトストア（GCS/MinIO のバージョン＋クロスサイト）、Qdrant スナップショット、
+  - ステートフル要素のバックアップ: Postgres（PITR）、オブジェクトストア（GCS/RustFS のバージョン＋クロスサイト）、Qdrant スナップショット、
     OpenFGA タプル、Keycloak realm。**整合点（consistency point）**の取り方を定義（メタ↔実体↔ベクタ↔authz の不整合回避）。
   - **DR手順とRPO/RTO目標**、定期リストア演習のスクリプト。ベクタ等は**再構築可能な派生データ**として扱い復旧コストを下げる（`embedding_model_version` 単位の再索引）。
 - **受け入れ条件**:

@@ -1,4 +1,4 @@
-//! first-party skill バンドルの署名検証つき import（10.15・#344・500 行規約で分離）。
+//! first-party skill バンドルの署名検証つき import（10.15・#344・行数規約で分離）。
 //!
 //! 本体の publish / インストールは [`super::skill_install`]。
 

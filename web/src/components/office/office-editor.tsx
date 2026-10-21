@@ -15,25 +15,48 @@ import { buildOfficeFrameUrl, type OfficeSession } from "@/lib/office-api";
 export interface OfficeEditorHandle {
   /// 現在の選択テキストを取得する（無選択・タイムアウトは null）。
   getSelectionText: () => Promise<string | null>;
-  /// AI ライブ編集: 現在の選択範囲を指定 HTML で置き換える（Collabora Action_Paste・#328）。
-  /// セッション内へ注入するため CoolWSD 協調プロトコル経由で全参加者へ即反映する。
-  applyLiveEdit: (html: string) => void;
 }
 
 /// 選択取得のタイムアウト（Collabora 応答なし＝無選択とみなす。初回コピーは LO kit の
 /// ウォームアップで数百 ms〜1 秒かかることがあるため余裕を持つ）。
 const SELECTION_TIMEOUT_MS = 4000;
 
+/// 文書内検索（引用箇所へ移る・#508）。Collabora の `.uno:ExecuteSearch` を送る。
+/// 見つかると該当箇所が選択され、そこまでスクロールされる。段落をまたぐ文字列は当たらないため、
+/// 呼び出し側は 1 段落に収まる一節を渡す。
+function searchCommand(text: string): Record<string, unknown> {
+  return {
+    MessageId: "Send_UNO_Command",
+    Values: {
+      Command: ".uno:ExecuteSearch",
+      Args: {
+        "SearchItem.SearchString": { type: "string", value: text },
+        "SearchItem.Backward": { type: "boolean", value: false },
+        // 0 = FIND（次を検索）。先頭から探すため、読み込み直後（カーソルが文頭）に送る。
+        "SearchItem.Command": { type: "long", value: 0 },
+      },
+    },
+  };
+}
+
 export const OfficeEditor = React.forwardRef<
   OfficeEditorHandle,
-  { session: OfficeSession; onClose: () => void }
->(function OfficeEditor({ session, onClose }, ref) {
+  {
+    session: OfficeSession;
+    onClose: () => void;
+    /// 読み込み完了後に文書内で探す一節（引用箇所へのディープリンク）。
+    findText?: string | null;
+  }
+>(function OfficeEditor({ session, onClose, findText }, ref) {
   const iframeRef = React.useRef<HTMLIFrameElement>(null);
   const [frameReady, setFrameReady] = React.useState(false);
   const collaboraOrigin = React.useMemo(
     () => new URL(session.action_url).origin,
     [session.action_url],
   );
+  // 文書の読み込みが終わったか / どの一節まで検索を送ったか。
+  const loaded = React.useRef(false);
+  const searched = React.useRef<string | null>(null);
   // Action_Copy_Resp を待つ解決関数（選択取得の 1 回きりの待ち受け）。
   const selectionWaiterRef = React.useRef<((text: string | null) => void) | null>(null);
 
@@ -68,6 +91,12 @@ export const OfficeEditor = React.forwardRef<
           // 埋め込み表示では横幅を圧迫し見栄えを損ねるため既定オフにする（ユーザーは
           // Collabora の「表示」メニューからいつでも再表示できる）。
           postToFrame({ MessageId: "Send_UNO_Command", Values: { Command: ".uno:SidebarHide" } });
+          loaded.current = true;
+          // 引用箇所へ移る（同じ一節は 1 回だけ。再接続で Document_Loaded が再送されても選択を奪わない）。
+          if (findText && searched.current !== findText) {
+            searched.current = findText;
+            postToFrame(searchCommand(findText));
+          }
         }
       } else if (msg.MessageId === "UI_Close") {
         onClose();
@@ -80,7 +109,14 @@ export const OfficeEditor = React.forwardRef<
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [collaboraOrigin, onClose, postToFrame]);
+  }, [collaboraOrigin, onClose, postToFrame, findText]);
+
+  // 読み込み後に別の引用を開いた（同じページのまま ?cite= が変わった）ときも探し直す。
+  React.useEffect(() => {
+    if (!findText || !loaded.current || searched.current === findText) return;
+    searched.current = findText;
+    postToFrame(searchCommand(findText));
+  }, [findText, postToFrame]);
 
   React.useImperativeHandle(
     ref,
@@ -101,25 +137,6 @@ export const OfficeEditor = React.forwardRef<
             }
           }, SELECTION_TIMEOUT_MS);
         }),
-      applyLiveEdit: (html: string) => {
-        // 現在の選択範囲を AI の内容で置き換える（セッション内注入・CoolWSD 経由で全参加者へ即反映・
-        // ファイル版競合を回避・#328）。Collabora への確実な注入は `.uno:InsertText`（選択があれば
-        // 置換・無選択ならカーソル位置へ挿入）。HTML はプレーンテキストへ落として渡す（書式は
-        // セッション内編集の対象外・リッチ変換は将来）。併せて Action_Paste（HTML 対応版がある構成）も
-        // 送り、いずれか有効な方で反映されるようにする。
-        const text = new DOMParser().parseFromString(html, "text/html").body.textContent ?? "";
-        postToFrame({
-          MessageId: "Send_UNO_Command",
-          Values: {
-            Command: ".uno:InsertText",
-            Values: { Text: { type: "string", value: text } },
-          },
-        });
-        postToFrame({
-          MessageId: "Action_Paste",
-          Values: { Mimetype: "text/html;charset=utf-8", Data: html },
-        });
-      },
     }),
     [postToFrame],
   );

@@ -1,6 +1,6 @@
 //! run/step エンジンの結合テスト（Task 10.2 受け入れ条件・実 Postgres）。
 //!
-//! - ワーカー kill →別ワーカーが完了済みステップを再実行せずに run を継続する
+//! - ワーカー kill →sweeper が回収し、別ワーカーが完了済みステップを再実行せずに run を継続する
 //! - `(run_id, seq)` unique で追記が exactly-once に潰れる
 //! - fan-out→join の待ち合わせ・skip 伝播
 //! - checkpoint 済み step の再 claim は fencing で no-op（再実行なし）
@@ -136,7 +136,7 @@ impl NodeExecutor for FailingExecutor {
 #[tokio::test]
 async fn failure_cancels_siblings_and_fails_run() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     // src → {l, r}。l を失敗させると run が failed になり r は cancelled（副作用を起こさない）。
     let run_id = create_run(&store, &tenant, &fanout_join_ir()).await;
@@ -195,7 +195,7 @@ fn worker(
     counts: Arc<dashmap_like::Map>,
     tenant: &str,
 ) -> workflow_engine::WorkflowWorker {
-    let store = RunStore::new(pool);
+    let store = RunStore::new(pool, workflow_engine::DEFAULT_LEASE_SECS);
     let exec = Arc::new(CountingExecutor { counts });
     workflow_engine::WorkflowWorker::new(store, exec, workflow_engine::WorkerConfig::default())
         .scoped_to_tenant(tenant)
@@ -204,7 +204,7 @@ fn worker(
 #[tokio::test]
 async fn linear_run_completes_each_step_once() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let run_id = create_run(&store, &tenant, &linear_ir()).await;
 
@@ -245,7 +245,7 @@ async fn linear_run_completes_each_step_once() {
 #[tokio::test]
 async fn zombie_recheckpoint_does_not_reexecute() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let run_id = create_run(&store, &tenant, &linear_ir()).await;
 
@@ -257,7 +257,8 @@ async fn zombie_recheckpoint_does_not_reexecute() {
         .expect("claim a");
     assert_eq!(claimed.node_id, "a");
 
-    // リースを失効させ、別ワーカーが再 claim（fencing 2）。
+    // リースを失効させ、sweeper が ready へ戻してから別ワーカーが再 claim（fencing 2）。
+    // claim 自体は ready 専用で失効 running を拾わない（#438・engine.md §9.5）。
     sqlx::query(
         "UPDATE step_execution SET lease_expires_at = now() - interval '1 second' \
          WHERE tenant_id = $1 AND run_id = $2 AND step_path = 'a'",
@@ -267,12 +268,18 @@ async fn zombie_recheckpoint_does_not_reexecute() {
     .execute(&pool)
     .await
     .unwrap();
+    assert_eq!(
+        store.reclaim_expired_leases(Some(&tenant)).await.unwrap(),
+        1
+    );
     let claimed2 = store
         .claim_ready_step("w2", 60, Some(&tenant))
         .await
         .unwrap()
         .expect("reclaim a");
-    assert_eq!(claimed2.fencing_token, claimed.fencing_token + 1);
+    // 回収と再 claim がそれぞれ fencing を進めるので、旧 token より必ず大きい
+    //（sweeper が回収時点で旧ワーカーを失効させる・#439）。
+    assert!(claimed2.fencing_token > claimed.fencing_token);
 
     let graph = RunGraph::build(&workflow_engine::WorkflowIr::from_json(&linear_ir()).unwrap());
     // 旧ワーカー（fencing 1）の checkpoint は no-op（ゾンビ）。
@@ -314,7 +321,7 @@ async fn zombie_recheckpoint_does_not_reexecute() {
 #[tokio::test]
 async fn fanout_join_waits_and_completes() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let run_id = create_run(&store, &tenant, &fanout_join_ir()).await;
 
@@ -337,7 +344,7 @@ async fn fanout_join_waits_and_completes() {
 #[tokio::test]
 async fn rate_limited_retry_does_not_consume_attempt() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let run_id = create_run(&store, &tenant, &linear_ir()).await;
     let graph = RunGraph::build(&workflow_engine::WorkflowIr::from_json(&linear_ir()).unwrap());
@@ -409,7 +416,7 @@ async fn rate_limited_retry_does_not_consume_attempt() {
 #[tokio::test]
 async fn tenant_isolation_in_claim() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let t1 = format!("t-{}", uuid::Uuid::new_v4());
     let t2 = format!("t-{}", uuid::Uuid::new_v4());
     let r1 = create_run(&store, &t1, &linear_ir()).await;
@@ -463,7 +470,7 @@ fn on_error_ir(connect_error_port: bool, on_error_continue: bool) -> Value {
 #[tokio::test]
 async fn on_error_continue_routes_to_error_port_and_run_succeeds() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let run_id = create_run(&store, &tenant, &on_error_ir(true, true)).await;
 
@@ -531,7 +538,7 @@ async fn on_error_continue_routes_to_error_port_and_run_succeeds() {
 #[tokio::test]
 async fn fail_run_without_error_port_fails_run() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     // 同じ DAG だが on_error=fail_run（既定）・error ポート未接続。
     let run_id = create_run(&store, &tenant, &on_error_ir(false, false)).await;
@@ -563,7 +570,7 @@ async fn fail_run_without_error_port_fails_run() {
 #[tokio::test]
 async fn on_error_continue_without_error_edge_still_fails_run() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     // on_error=continue だが error ポートに何も繋がっていない（error の行き先が無い）。
     let run_id = create_run(&store, &tenant, &on_error_ir(false, true)).await;

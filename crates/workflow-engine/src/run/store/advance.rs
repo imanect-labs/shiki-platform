@@ -102,8 +102,8 @@ pub(super) async fn checkpoint_and_advance(
     }
 
     // リトライ判定（engine.md §7.4）: エラーを分類し ready へ戻すか terminal 化するか決める。
-    // - RateLimited: attempt を消費せず再試行（次 claim の +1 を打ち消すため attempt-1）。
-    // - Retryable: attempt 未枯渇なら backoff 再試行。
+    // - RateLimited: 試行として数えず再試行（claim の +1 を打ち消す）。
+    // - Retryable: attempt 未枯渇なら backoff 再試行（claim が数えた 1 回をそのまま消費）。
     // - Permanent / 枯渇: 下の checkpoint で terminal（失敗）化。
     if !result.ok {
         use crate::retry::RetryClass;
@@ -117,7 +117,9 @@ pub(super) async fn checkpoint_and_advance(
         };
         if retry {
             let delay = next_retry_delay_secs(run_id, &claimed.step_path, claimed.attempt);
-            // rate_limited は attempt を消費しない（次 claim で +1 されるぶんを相殺）。
+            // attempt の会計は「claim が +1 → 数えない実行を ready へ戻す経路が -1」（store/claim.rs
+            // のモジュールドキュメントが正）。rate_limited は失敗ではなく並行上限の順番待ちなので
+            // 試行として数えず、ready へ戻すこの UPDATE で打ち消す（engine.md §8.2）。
             let attempt_delta: i32 = if class == RetryClass::RateLimited {
                 -1
             } else {

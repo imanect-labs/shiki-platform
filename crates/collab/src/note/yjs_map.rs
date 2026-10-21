@@ -18,7 +18,7 @@ use yrs::{
 
 use super::ast::{Block, Inline, Marks, Table, TaskItem};
 
-// 書き込み（AST → Yjs）は yjs_write に分離（本ファイルの 500 行超過対策）。
+// 書き込み（AST → Yjs）は yjs_write に分離（本ファイルの行数ゲート超過対策）。
 pub use super::yjs_write::{insert_blocks_at, write_blocks};
 
 /// TipTap Collaboration 既定の本文フラグメント名。

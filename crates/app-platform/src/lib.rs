@@ -13,6 +13,7 @@ mod install_ops;
 mod manifest;
 mod registry;
 mod sign;
+mod skill_catalog_queries;
 mod skill_import;
 mod skill_install;
 mod store;

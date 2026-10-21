@@ -71,9 +71,13 @@ export default function NotePrintPage() {
       {session ? (
         <>
           <h1 className="mb-4 text-2xl font-bold">{access.name.replace(/\.md$/i, "")}</h1>
-          <MetadataPanel meta={session.doc.getMap("meta")} editable={false} />
+          <MetadataPanel
+            meta={session.doc.getMap("meta")}
+            editable={false}
+            fallbackTitle={access.name.replace(/\.md$/i, "")}
+          />
           <div className="mt-4">
-            {/* 読み取り専用（editable=false）で本文を描画。genui/チャートはそのまま印刷される。 */}
+            {/* 読み取り専用（editable=false）で本文を描画。```ui の図はそのまま印刷される。 */}
             <NoteEditor
               provider={session.provider}
               editable={false}

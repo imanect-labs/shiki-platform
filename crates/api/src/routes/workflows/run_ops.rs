@@ -225,7 +225,11 @@ pub async fn retry_workflow_run(
             let new_run = launcher
                 .start_interactive_version(&ctx, id, detail.version, &detail.input)
                 .await
-                .map_err(|e| ApiError::Internal(format!("再実行: {e}")))?;
+                .map_err(|e| match e {
+                    // 元の入力が今の input_schema に合わない（版を固定しても入力は過去のもの）。
+                    workflow_engine::run::LauncherError::Input(m) => ApiError::BadRequest(m),
+                    other => ApiError::Internal(format!("再実行: {other}")),
+                })?;
             Ok((
                 axum::http::StatusCode::ACCEPTED,
                 Json(RetryResponse {

@@ -4,7 +4,7 @@
 //! root 外の同名ファイルは解決されない（read/delete/list）・トラバーサル的な名前（`..`・`/` 入り）は
 //! 拒否される・書込は常に root 直下に落ちる。詳細は `crates/chat/src/workspace.rs` のモジュール doc。
 //!
-//! 実 Postgres＋MinIO が必要（`STORAGE_TEST_DATABASE_URL`＋`STORAGE_TEST_S3_ENDPOINT`）。
+//! 実 Postgres＋RustFS（S3 互換）が必要（`STORAGE_TEST_DATABASE_URL`＋`STORAGE_TEST_S3_ENDPOINT`）。
 //! worker/jobq は使わない（アダプタ単体の構造検証・他テストバイナリと jobq を奪い合わない）。
 
 #![allow(
@@ -173,7 +173,7 @@ async fn workspace_cannot_escape_root_folder() {
         .await
         .unwrap();
 
-    let ws = StorageWorkspaceStore::new(storage.clone(), root.id);
+    let ws = StorageWorkspaceStore::new(storage.clone(), root.id, false);
 
     // ── root 外は名前解決されない（read / delete / list の全経路） ──
     let read = ws.read(&c, "secret.txt", None).await;

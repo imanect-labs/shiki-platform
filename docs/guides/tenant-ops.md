@@ -33,6 +33,21 @@ curl -s -X POST "$SHIKI/admin/tenants" \
 - `tenant_id` は FGA/オブジェクトキーの名前空間になるため `| : # @` 空白は不可。
 - 削除済み（tombstone）の tenant_id は再利用**不可**（名前空間衝突防止）。別 id を使う。
 
+## ワークフロー実行履歴の保持期間
+
+```bash
+curl -s -X PUT "$SHIKI/admin/tenants/acme/workflow-retention" \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"retention_days": 30}'
+# → 204
+```
+
+- 既定 90 日・範囲 1〜3650 日（範囲外は 400）。active でないテナントは 404。
+- 起算は **run が terminal になった時刻**。実行中の run は保持期間を跨いでも消えない。
+- 期限切れの run と、その step/イベント/wait 購読・副作用 journal を日次 GC が消す（不可逆）。
+- **短くする方向は次回の日次 GC で効く。** 監査要件で履歴が要るなら縮める前に退避する。
+- GC の状態確認・詰まったときの調べ方は [db-maintenance.md](./db-maintenance.md) §3。
+
 ## テナント削除（破壊的・不可逆）
 
 ```bash
@@ -47,6 +62,17 @@ curl -s -X DELETE "$SHIKI/admin/tenants/acme" -H "Authorization: Bearer $TOKEN"
 4. データ purge: FGA タプル（node/role/org）→ オブジェクト `{tenant}/` prefix → DB 行（1 txn・FK 順）
 5. tenant 行を `deleted`（tombstone）へ
 
+DB 行の対象は `information_schema` から `tenant_id` 列を持つ実テーブルを**実行時に導出**し、FK 依存の
+子→親順で削除する（`storage::tenant_scope`・#420）。保持するのは `audit_log`（削除証跡）と `tenant`
+（tombstone）だけで、それ以外は自動的に対象になる —— 新しいテーブルが増えても消し忘れない。
+撤去したテーブル数と行数は `tenant.purge` 監査の `tables_purged` / `rows_deleted_direct` に残る。
+`rows_deleted_direct` は各 `DELETE` が**直接**消した行数で、`tenant_id` を持たず親から
+`ON DELETE CASCADE` される従属行（`generation_event` / `collab_update` 等）は含まない
+——消滅証明に使う際はこの定義に注意する。
+
+> ⚠️ 2026-08 以前はテーブル名を手で列挙しており、**51 テーブル中 13 しか消していなかった**。
+> チャット履歴・RAG の本文・構造化データ・ワークフロー履歴・利用量が撤去後も残っていた（#420）。
+
 **audit_log は削除証跡として保持**される（`tenant.purge` エントリがチェーンに残る）。
 完全消去（GDPR 型）が要件になったら別途手当てする。
 
@@ -55,7 +81,7 @@ curl -s -X DELETE "$SHIKI/admin/tenants/acme" -H "Authorization: Bearer $TOKEN"
 ログイン時に IdP claims（`roles` ＋ `groups`＝AD 部署）と FGA の直接 role タプルを **diff 同期**する。
 部署異動・ロール剥奪は**次回ログインで自動反映**（それまではセッション TTL 内は旧権限が残る点に注意。
 即時失効が必要ならセッション削除を併用）。role タプルの正は IdP claims — **FGA へ手動で role
-member タプルを足しても次回ログインで剥がれる**。本番の SCIM/グループ完全同期は SK.6。
+member タプルを足しても次回ログインで剥がれる**。本番の SCIM/グループ完全同期は SAAS.6。
 
 ## テナント名前空間の移行（shiki-admin retenant）
 
@@ -73,7 +99,20 @@ shiki-admin retenant --from default --to acme --execute
 
 - 対象: FGA タプル（node/role/org・subject 込み）・オブジェクトキー（copy→delete）・
   DB 全テーブル（rename 時。audit_log/tenant 行含む）・セッション（rename 時に失効）。
+  「DB 全テーブル」は `information_schema` から `tenant_id` 列を持つ実テーブルを**実行時に導出**する
+  （`storage::tenant_scope`・#420）。テーブル名を手で列挙していた頃は 51 中 11 しか移行せず、
+  チャット履歴・RAG 本文・構造化データ・ワークフロー履歴・利用量が旧テナントに取り残されていた。
+  dry-run は**行のある全テーブルの件数**を出すので、実行前に対象範囲を必ず確認すること。
 - 冪等: 再実行はコピー済み/削除済み/移行済みをスキップして収束する。
+- **実行者の記録**: 監査の `actor` 列は固定値 **`cli`**（＝CLI 経由の管理操作）。`--actor <id>`
+  （省略時は `$SUDO_USER` → `$USER`）は**認証されていない自己申告**なので actor 列には入れず、
+  `tenant.retenant` の metadata に `actor_claimed`（申告 ID）と `actor_source`
+  （`flag` / `sudo_user` / `user` / `none`）として残る。**実行者を調べるときは actor 列ではなく
+  metadata を見ること**。CLI は DB/FGA/S3 の資格情報を直接持つため OpenFGA 認可は境界にならないが、
+  誰が実行したと主張したかは追えるようにしている（#420）。
+- **副産物を移送できないテナントは拒否**する（fail-closed・#420）。artifact/secret/構造化データ/
+  RAG/ワークフロー/ミニアプリの行があると、FGA タプル・索引・バンドル実体が旧テナントに残り
+  不整合になるため、dry-run の時点で止まる。該当サブシステムの移行実装が入るまで移行できない。
 - 他テナントの識別子には触れない（移行元名前空間に属さないタプルは skipped として報告）。
 - **監査チェーンの注意**: audit_log の `entry_hash` は tenant_id を含んで計算されるため、
   リネーム**以前**の chained エントリは**旧 tenant_id で検証**する必要がある。CLI は

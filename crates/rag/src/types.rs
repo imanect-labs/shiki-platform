@@ -1,19 +1,58 @@
 //! RAG のドメイン型（パース中間表現・チャンク）。
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::anchor::{Anchor, PageBox};
+
 /// worker `/parse` が返す構造化ブロックの種別。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum BlockType {
     Heading,
     Paragraph,
     Table,
     Caption,
+    /// 箇条書きの 1 項目（`list_marker` に見た目の番号・記号）。
+    ListItem,
+}
+
+impl TryFrom<String> for BlockType {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        BlockType::parse(&s).ok_or_else(|| format!("unknown block type: {s}"))
+    }
+}
+
+impl BlockType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BlockType::Heading => "heading",
+            BlockType::Paragraph => "paragraph",
+            BlockType::Table => "table",
+            BlockType::Caption => "caption",
+            BlockType::ListItem => "list_item",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "heading" => BlockType::Heading,
+            "paragraph" => BlockType::Paragraph,
+            "table" => BlockType::Table,
+            "caption" => BlockType::Caption,
+            "list_item" => BlockType::ListItem,
+            _ => return None,
+        })
+    }
 }
 
 /// 文書の読み順に並んだ構造化ブロック（パース中間表現）。
+///
+/// 配列の並び（0 起点）がそのまま版の中のブロック番号（ordinal）になる。`doc_block` に
+/// この順で保存し、引用のアンカーはこの番号とブロック内オフセットで指す（#508）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ParsedBlock {
     #[serde(rename = "type")]
@@ -22,6 +61,12 @@ pub struct ParsedBlock {
     pub level: Option<u32>,
     pub text: String,
     pub page: Option<i32>,
+    /// PDF など座標を持つ形式のみ: 原本上の枠（worker の prov。charspan は使わない）。
+    #[serde(default)]
+    pub prov: Vec<PageBox>,
+    /// list_item のみ: 見た目の番号・記号。
+    #[serde(default)]
+    pub list_marker: Option<String>,
 }
 
 /// パース結果（DocumentParser の出力）。
@@ -65,6 +110,13 @@ pub struct Chunk {
     pub page: Option<i32>,
     pub heading_path: Vec<String>,
     pub content: String,
+    /// `doc_block` 上の範囲（parent は持たない・#508）。
+    pub anchor: Option<Anchor>,
+    /// 引用箇所の前後の文脈（元エディタで一節を探すための TextQuote の prefix / suffix）。
+    pub quote_prefix: String,
+    pub quote_suffix: String,
+    /// PDF の原本上の枠（範囲に含まれるブロックの prov）。
+    pub boxes: Vec<PageBox>,
 }
 
 impl Chunk {

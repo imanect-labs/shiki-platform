@@ -25,25 +25,34 @@
 
 pub mod approver;
 pub mod artifacts;
+pub mod attachments;
 pub mod autonomous;
 pub mod csv_tool;
+pub mod doc_read_tool;
+pub mod document_ref;
 pub mod document_tool;
 pub mod error;
 pub mod gui_actions;
 pub mod model;
-pub mod office_draft_tool;
+pub mod office_create_tool;
+pub mod office_engine_tool;
 pub mod office_live_tool;
 pub mod office_tool;
 pub mod selection;
 pub(crate) mod skill;
 pub mod skill_catalog;
+pub(crate) mod skill_search_tool;
 pub(crate) mod skill_tool;
 pub mod slide_templates;
 pub mod slide_tool;
 pub mod store;
+/// SSE の生成イベント（ワイヤ形式）。`model` から再エクスポートしている。
+pub mod stream_event;
 pub mod worker;
 pub mod workflow_tool;
 pub mod workspace;
+/// 回答の本文の ```ui（Yui）のボタン（#604）。
+pub mod yui_actions;
 
 pub use approver::DbApprover;
 pub use artifacts::StorageArtifactStore;
@@ -51,14 +60,21 @@ pub use autonomous::{effective_mode, AutonomousMode, ModeClamp};
 pub use csv_tool::{CsvPatchTool, CsvQueryTool, CsvWriteTool, SaveCsvTool};
 pub use document_tool::{DocumentEditTool, DocumentEmbedTool, DocumentReadTool, SaveNoteTool};
 pub use error::ChatError;
-pub use gui_actions::ChatSubmitHandler;
+pub use gui_actions::{ChatActionLedger, ChatSubmitHandler};
 pub use model::{
-    Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunStatus, SelectionContext,
-    SelectionKind, SkillPin, StreamEvent, StreamEventKind, Thread, ThreadRole,
+    Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunModel, RunStatus,
+    SelectionContext, SelectionKind, SkillPin, StreamEvent, StreamEventKind, Thread, ThreadRole,
+    UiActionRun, UiActionRunStatus, UiActionValue,
 };
-pub use skill_catalog::{OwnedSkillCatalog, SkillCatalogEntry, SkillCatalogSource};
+pub use skill_catalog::{
+    merge_entries as merge_skill_catalog_entries, OwnedSkillCatalog, SkillCatalogEntry,
+    SkillCatalogSource,
+};
 pub use slide_tool::{SaveSlideTool, SlideEditTool, SlideReadTool};
-pub use store::{ChatStore, ClaimedRun, PostResult, ThreadOrigin, CHAT_GENERATION_QUEUE};
-pub use worker::{ChatWorker, WorkerConfig, WorkerDeps};
+pub use store::{
+    ChatStore, ClaimedRun, CurrentRun, MessageFeedback, PostResult, RunContext, ThreadOrigin,
+    YuiActionRequest, YuiAppDraft, CHAT_GENERATION_QUEUE, FEEDBACK_CATEGORIES,
+};
+pub use worker::{parse_timezone, with_yui_guide, ChatWorker, WorkerConfig, WorkerDeps};
 pub use workflow_tool::{EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};
 pub use workspace::StorageWorkspaceStore;

@@ -8,9 +8,7 @@
 //! sync-back は 2 系統で漏れなく拾う: ①`list_dir` に現れる**新規**ファイル ②seed 済み名の `get_file` を
 //! 取り直しハッシュ比較した**変更**ファイル（実 sidecar は put_file 済みを readdir に出さない quirk があるため）。
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use authz::AuthContext;
@@ -18,6 +16,7 @@ use sandbox_client::{
     ExecRequest, Sandbox, SandboxBackend, SandboxError, SandboxHandle, SandboxSpec,
 };
 
+use super::artifacts::hash_bytes;
 use super::mime::content_type_for;
 use super::sandbox_exec::{collect_output, truncate};
 use crate::tool::{ArtifactRef, Tool, ToolError, ToolOutcome};
@@ -38,6 +37,8 @@ pub struct ShellTool {
     software: Vec<String>,
     /// 隔離ティア（admin ポリシー・design §4.6）。既定は gVisor（フル Linux コマンド・#346）。
     backend: SandboxBackend,
+    /// ティアでシェル行の解釈が違うため、description は構築時に確定させる（#504）。
+    description: String,
 }
 
 impl ShellTool {
@@ -52,8 +53,28 @@ impl ShellTool {
             workspace,
             software,
             backend,
+            description: describe(backend),
         }
     }
+}
+
+/// ティア別のツール説明（宣伝と実体を一致させる・#504。code_interpreter の #384 と同じ方針）。
+///
+/// native ティア（gVisor/Firecracker）はゲストの `/bin/sh -c` が解釈するのでパイプ・`&&`・
+/// リダイレクトが使える。wasm ティアは brush の PTY 問題で単一コマンドのまま。宣伝と実体が
+/// ずれると、モデルは使える書き方を避けるか、使えない書き方で 1 ステップ空費する。
+fn describe(backend: SandboxBackend) -> String {
+    let syntax = match backend {
+        SandboxBackend::Gvisor | SandboxBackend::Firecracker => {
+            "コマンド行は /bin/sh で解釈されるので、パイプ・`&&`・リダイレクトが使える"
+        }
+        SandboxBackend::Wasm => "パイプや `&&` は使えない（1 コマンドずつ実行する）",
+    };
+    format!(
+        "隔離サンドボックスでシェルコマンドを実行する（cwd=/workspace）。作業ディレクトリの\
+         ファイルは実行前に読み込まれ、変更/新規ファイルは実行後に自動保存される（再索引される）。\
+         ネットワークは遮断。{syntax}。"
+    )
 }
 
 #[async_trait::async_trait]
@@ -62,16 +83,13 @@ impl Tool for ShellTool {
     fn name(&self) -> &str {
         crate::vocab::ToolName::Shell.as_str()
     }
-    #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
-        "隔離サンドボックスで単一のシェルコマンドを実行する（cwd=/workspace）。作業ディレクトリの\
-         ファイルは実行前に読み込まれ、変更/新規ファイルは実行後に自動保存される（再索引される）。\
-         ネットワークは遮断。パイプや `&&` は使えない（1 コマンドずつ実行する）。"
+        &self.description
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
-            "properties": { "cmd": { "type": "string", "description": "実行する単一コマンド（例 `ls -la`）" } },
+            "properties": { "cmd": { "type": "string", "description": "実行するコマンド行（例 `ls -la`）" } },
             "required": ["cmd"],
             "additionalProperties": false
         })
@@ -244,12 +262,6 @@ fn guest_path(name: &str) -> String {
     format!("{WORKSPACE_DIR}/{name}")
 }
 
-fn hash_bytes(bytes: &[u8]) -> u64 {
-    let mut h = DefaultHasher::new();
-    bytes.hash(&mut h);
-    h.finish()
-}
-
 /// stdout/stderr/exit ＋ 保存ファイルを tool_result へ整形する。
 fn render(
     stdout: &str,
@@ -314,6 +326,21 @@ mod tests {
     use sandbox_client::{FakeExecResult, FakeSandbox};
     use std::sync::Mutex;
 
+    /// #504: パイプ・`&&` を宣伝するのは `/bin/sh -c` で解釈する native ティアだけ。
+    #[test]
+    fn description_advertises_pipes_only_on_native_tiers() {
+        for native in [SandboxBackend::Gvisor, SandboxBackend::Firecracker] {
+            let text = describe(native);
+            assert!(
+                text.contains("パイプ・`&&`・リダイレクトが使える"),
+                "{native:?}: {text}"
+            );
+            assert!(!text.contains("使えない"), "{native:?}: {text}");
+        }
+        let wasm = describe(SandboxBackend::Wasm);
+        assert!(wasm.contains("パイプや `&&` は使えない"), "{wasm}");
+    }
+
     #[derive(Default)]
     struct FakeWorkspace {
         files: Mutex<HashMap<String, Vec<u8>>>,
@@ -369,6 +396,26 @@ mod tests {
                 name: name.to_string(),
                 version: 1,
                 created,
+            })
+        }
+        async fn append(
+            &self,
+            _c: &AuthContext,
+            name: &str,
+            suffix: &str,
+            _ct: &str,
+            _t: Option<&str>,
+        ) -> Result<WorkspaceWrite, ToolError> {
+            let mut files = self.files.lock().unwrap();
+            files
+                .entry(name.to_string())
+                .or_default()
+                .extend_from_slice(suffix.as_bytes());
+            Ok(WorkspaceWrite {
+                node_id: format!("node-{name}"),
+                name: name.to_string(),
+                version: 1,
+                created: false,
             })
         }
         async fn delete(

@@ -1,7 +1,7 @@
 //! **実 Drive API（StorageService）経由**のアップロード → 自動索引 → 検索の結合テスト。
 //!
 //! pipeline_it が DB 直挿入で経路を検証するのに対し、本テストは実サービスの
-//! declare → **presigned PUT（実 MinIO）** → finalize → outbox → relay → consumer
+//! declare → **presigned PUT（実 RustFS）** → finalize → outbox → relay → consumer
 //! → 索引 → SearchService（実 OpenFGA の二段 authz）を通し、パーサも
 //! **内部 presigned GET で実際に blob を読む**（IndexerStorage の presign 経路の実証）。
 //!
@@ -47,7 +47,7 @@ use storage::{
 use uuid::Uuid;
 
 /// **presigned GET を実際に fetch** して本文をブロック化するパーサ
-/// （IndexerStorage → MinIO 内部署名 URL の経路を実証する）。
+/// （IndexerStorage → オブジェクトストア内部署名 URL の経路を実証する）。
 struct FetchingParser {
     http: reqwest::Client,
 }
@@ -59,7 +59,13 @@ impl DocumentParser for FetchingParser {
         _ctx: &AuthContext,
         req: ParseRequest<'_>,
     ) -> Result<ParsedDocument, RagError> {
-        let resp = self.http.get(req.source_url).send().await?;
+        // インジェスト経路は presigned URL を渡す（ParseSource::Url が正）。
+        let rag::ParseSource::Url(source_url) = req.source else {
+            return Err(RagError::Worker(
+                "インジェストは presigned URL で渡すこと".into(),
+            ));
+        };
+        let resp = self.http.get(source_url).send().await?;
         if !resp.status().is_success() {
             return Err(RagError::Worker(format!(
                 "presigned GET が失敗: {}",
@@ -75,6 +81,8 @@ impl DocumentParser for FetchingParser {
                 level: None,
                 text: p.trim().to_string(),
                 page: None,
+                prov: Vec::new(),
+                list_marker: None,
             })
             .collect();
         Ok(ParsedDocument {
@@ -231,7 +239,7 @@ async fn setup() -> Option<Env> {
     })
 }
 
-/// 実 API: declare → presigned PUT（実 MinIO）→ finalize。
+/// 実 API: declare → presigned PUT（実 RustFS）→ finalize。
 async fn upload(env: &Env, parent: Option<Uuid>, name: &str, content: &str) -> Node {
     let bytes = content.as_bytes();
     let ticket = env

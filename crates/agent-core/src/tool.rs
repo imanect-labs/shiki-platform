@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 /// フロント `chat-api.ts` / `chat::Citation` と同型のフィールドを持つ。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Citation {
+    /// 応答内の通し番号（本文の `[n]`）。ループの [`crate::cite::CitationLedger`] が振る。
+    /// 0 は未採番（ツールが返した直後・旧データ）。
+    #[serde(default)]
+    pub cite_id: u32,
     pub node_id: String,
     pub chunk_id: String,
     pub snippet: String,
@@ -18,6 +22,18 @@ pub struct Citation {
     #[serde(default)]
     pub heading_path: Vec<String>,
     pub score: f32,
+    /// 引用時点のファイルの版（`doc_block` を引く鍵・#508）。
+    #[serde(default)]
+    pub version: Option<i64>,
+    /// `doc_block` 上の範囲。位置情報を持たない旧インデックスは None。
+    #[serde(default)]
+    pub anchor: Option<rag::Anchor>,
+    /// 元エディタで探すための一節。
+    #[serde(default)]
+    pub quote: Option<rag::TextQuote>,
+    /// PDF のページ上の枠（PDF 以外は空）。
+    #[serde(default)]
+    pub boxes: Vec<rag::PageBox>,
 }
 
 /// ツール実行のエラー。
@@ -66,18 +82,6 @@ pub struct CsvDraft {
     pub csv: String,
 }
 
-/// 開いている Office 文書セッションへの AI ライブ編集（office.live_edit・#328）。
-/// ファイルは書き換えず、開いている Collabora セッションの**現在の選択範囲**を `html` で置換する
-/// よう指示する（フロントが Action_Paste を実行）。`node_id` は対象ファイルの storage node id、
-/// `html` は書込サニタイズ済み（PIT-40 準拠・ammonia）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OfficeLiveEdit {
-    /// 対象 Office ファイルの storage node id。
-    pub node_id: String,
-    /// 現在の選択範囲を置き換えるサニタイズ済み HTML。
-    pub html: String,
-}
-
 /// ツール実行結果。`content` はモデルへ返すテキスト、`citations` は UI 引用へ。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolOutcome {
@@ -87,9 +91,6 @@ pub struct ToolOutcome {
     pub citations: Vec<Citation>,
     /// ツールが保存した成果物（code_interpreter のみ・他ツールは空）。
     pub artifacts: Vec<ArtifactRef>,
-    /// 検証済み generative UI スペック（emit_ui のみ・他ツールは空・Phase 6 Task 6.4）。
-    /// **検証層を通過した JSON のみ**を入れること（chat 側で generative_ui ブロックへ写る）。
-    pub ui_specs: Vec<serde_json::Value>,
     /// 保存済みワークフローへの参照（emit_workflow のみ・Task 10.13）。
     /// `{id, name, display_name, version}` の JSON。**保存パイプライン（V1〜V7）を通過し
     /// artifact 化されたもののみ**を入れること（chat 側で workflow_ref ブロックへ写る）。
@@ -110,21 +111,34 @@ pub struct ToolOutcome {
     /// **まだ StorageService へ作成していない**下書き CSV を入れる（chat 側で csv_draft
     /// ブロックへ写り、フロントが下書き CSV 画面で詰めてから「ドライブに保存」で確定する）。
     pub csv_drafts: Vec<CsvDraft>,
-    /// 未保存の下書き Word 文書（save_document の下書き確定型・#332）。
-    /// `{name, markdown}` の JSON（note_drafts と同表現）。**まだ .docx 化も保存もしていない**
-    /// 下書き本文を入れる（chat 側で document_draft ブロックへ写り、フロントが下書き画面で
-    /// 詰めてから「ドライブに保存」で .docx 化・確定保存する）。
-    pub document_drafts: Vec<serde_json::Value>,
-    /// 開いている Office セッションへの AI ライブ編集（office.live_edit のみ・他ツールは空・#328）。
-    /// **ファイルは書き換えない**（現在の選択範囲を置換する指示のみ）。ライブ専用イベントとして
-    /// SSE へ流れ、message.content へは projection しない（履歴再生で二重 paste しないため）。
-    pub office_live_edits: Vec<OfficeLiveEdit>,
+    /// AI が作成/編集した文書への参照（#381）。
+    /// `{id, name, kind, version}` の JSON。**StorageService へ作成済み/編集済みのノードのみ**
+    /// を入れる（chat 側で document_ref ブロックへ写り、成果物への導線カードになる）。
+    /// 作成系（save_document / save_sheet）と編集系（office.* / document.edit / csv.patch）が共有する。
+    pub document_refs: Vec<serde_json::Value>,
     /// skill ツールの発動記録（skill のみ・他ツールは空・#344 Task 10.11）。
     /// `{skill_id, skill_version, name}` の JSON。**発話ユーザー権限で解決に成功した**発動のみ
     /// を入れる（run イベントへ append され「何をいつ適用したか」の完全な列が残る＝監査・再現性）。
     pub skill_invocations: Vec<serde_json::Value>,
+    /// サブエージェント委譲の記録（`subagent` のみ・他ツールは空・#391）。
+    /// `{objective, boundary, steps, tool_calls, tokens}` の JSON。**監査と再現性のため**に
+    /// run イベントへ append される（`message.content` へは projection しない＝親の履歴を汚さない）。
+    pub subagent_runs: Vec<serde_json::Value>,
+    /// ツールの内側で起きた LLM 消費（`subagent` のみ・#391）。
+    /// ループが親の [`Spent`](crate::budget::Spent) へ `add_external` で積む。
+    pub usage: Option<ToolUsage>,
     /// 実行がエラーだったか（tool_result.is_error）。
     pub is_error: bool,
+}
+
+/// ツール内部で起きた LLM 消費（親の予算へ積む・#391）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ToolUsage {
+    /// 課金の累計（親のコスト会計へ積む）。
+    pub tokens: u64,
+    /// 新規ぶんの累計（親の**上限判定**へ積む・`Spent::fresh_tokens`）。
+    pub fresh_tokens: u64,
+    pub cost_usd_micros: i64,
 }
 
 impl ToolOutcome {
@@ -134,15 +148,15 @@ impl ToolOutcome {
             content: content.into(),
             citations: Vec::new(),
             artifacts: Vec::new(),
-            ui_specs: Vec::new(),
             workflow_refs: Vec::new(),
             note_refs: Vec::new(),
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
-            document_drafts: Vec::new(),
-            office_live_edits: Vec::new(),
+            document_refs: Vec::new(),
             skill_invocations: Vec::new(),
+            subagent_runs: Vec::new(),
+            usage: None,
             is_error: false,
         }
     }
@@ -153,15 +167,15 @@ impl ToolOutcome {
             content: content.into(),
             citations: Vec::new(),
             artifacts: Vec::new(),
-            ui_specs: Vec::new(),
             workflow_refs: Vec::new(),
             note_refs: Vec::new(),
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
-            document_drafts: Vec::new(),
-            office_live_edits: Vec::new(),
+            document_refs: Vec::new(),
             skill_invocations: Vec::new(),
+            subagent_runs: Vec::new(),
+            usage: None,
             is_error: true,
         }
     }
@@ -185,6 +199,35 @@ pub trait ArtifactStore: Send + Sync {
     ) -> Result<ArtifactRef, ToolError>;
 }
 
+/// 会話に添付されたファイル 1 件（storage node 参照のみ・実体二重持ち無し）。
+///
+/// chat の `ContentBlock::FileRef` と同型。`code_interpreter` はこれを guest の
+/// `/workspace/<name>` へ seed する（#379）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentRef {
+    /// storage node id。
+    pub node_id: String,
+    /// 表示ファイル名（guest 上のファイル名にもなる）。
+    pub name: String,
+}
+
+/// 添付ファイルの実体取得（差し替え点・#379）。
+///
+/// 実装は shiki-server 側で `StorageService`（認可・監査の単一チョークポイント）へ配線する。
+/// 読み取りは**発話ユーザーの `AuthContext`** で行い昇格しない（confused-deputy 回避）。
+#[async_trait::async_trait]
+pub trait AttachmentStore: Send + Sync {
+    /// 添付の実体を読む。`max_bytes` を超えるものは [`ToolError::Invalid`] で断る
+    /// （サンドボックスへの巨大コピーを実体取得**前**に構造的に防ぐ）。
+    async fn read(
+        &self,
+        ctx: &AuthContext,
+        node_id: &str,
+        max_bytes: u64,
+        trace_id: Option<&str>,
+    ) -> Result<Vec<u8>, ToolError>;
+}
+
 /// ツール（LLM に提示し、モデルが自律的に呼ぶ）。
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
@@ -198,6 +241,16 @@ pub trait Tool: Send + Sync {
     /// **破壊的/権限/高コスト系**なら true（明示許可が要る・Task 3.9）。
     /// 既定は false（doc_search 等の安全なツール）。true のツールは確認なしに実行されない。
     fn requires_confirmation(&self) -> bool {
+        false
+    }
+
+    /// **冪等・副作用なしの read** なら true（issue #349）。
+    ///
+    /// true のツールだけが同一ステップ内で**有界並列**に実行される（deep research の
+    /// 検索→複数取得のファンアウトが直列にならない）。既定は false の**オプトイン**:
+    /// 「確認不要 ＝ 並列にしてよい」ではない（承認不要でも副作用を持つツールはある）ため、
+    /// 並列化の可否は各ツールが自分で表明する。
+    fn is_read_only(&self) -> bool {
         false
     }
 

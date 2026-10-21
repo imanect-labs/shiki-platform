@@ -1,4 +1,4 @@
-//! HTTP ミドルウェア補助（CORS・リクエスト span）。server.rs の 500 行ゲート対応で分離。
+//! HTTP ミドルウェア補助（CORS・リクエスト span）。server.rs の行数ゲート対応で分離。
 
 use axum::extract::Request;
 use axum::http::{header, HeaderName, HeaderValue, Method};

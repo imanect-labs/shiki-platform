@@ -20,7 +20,7 @@
 flowchart TB
   subgraph Client["フロント (Next.js / TS)"]
     UI[チャットUI / Drive UI / 管理画面]
-    GUI[generative UI レンダラ<br/>宣言的カタログ]
+    GUI[図ブロックのレンダラ<br/>Yui]
   end
 
   subgraph Server["shiki-server (Rust モジュラモノリス)"]
@@ -44,7 +44,7 @@ flowchart TB
     TV[(Tantivy 全文)]
     FGA[(OpenFGA / SpiceDB)]
     KC[(Keycloak)]
-    OBJ[(MinIO / GCS)]
+    OBJ[(RustFS / GCS)]
     RD[(Redis<br/>セッション)]
   end
 
@@ -86,7 +86,7 @@ flowchart LR
     S1[shiki-server]
     O1[sandbox-orchestrator]
     I1[ingestion-worker]
-    DEP1[(Postgres/Qdrant/OpenFGA<br/>Keycloak/MinIO/Redis)]
+    DEP1[(Postgres/Qdrant/OpenFGA<br/>Keycloak/RustFS/Redis)]
     INF1[vLLM/埋め込み/reranker/OCR<br/>ローカルGPU]
   end
 
@@ -105,7 +105,7 @@ flowchart LR
 
 | トレイト | オンプレ実装 | クラウド実装 |
 |----------|-------------|-------------|
-| `ObjectStore` | MinIO (S3) | GCS |
+| `ObjectStore` | RustFS (S3 互換) | GCS |
 | `VectorStore` | Qdrant（小規模は pgvector） | Qdrant / マネージド |
 | `LlmProvider` | vLLM（ローカル） | Vertex / 外部API / LiteLLM アダプタ（§4.5） |
 | `Sandbox` | wasm（agentos）/ Firecracker（KVM有）/ gVisor | wasm（agentos）/ gVisor / Firecracker（§4.6 3ティア） |
@@ -130,8 +130,8 @@ flowchart LR
   ⚠️ **個別リソースの共有解除（Task 1.6）はトークン/セッション形式に依らず OpenFGA のリクエスト毎チェック（＋PIT-11 の `HIGHER_CONSISTENCY`）で担保する**（セッション削除では代替できない・混同しないこと）。
   access token の期限切れに備え、**BFF（`crates/api`）が refresh token をサーバ側で保持・更新・ローテーション**し、downstream への token-exchange を継続させる（ブラウザ上はログイン済みなのに内部呼び出しだけ 401 になるのを防ぐ）。
   CSRF は SameSite ＋ double-submit トークンで防御。Cookie を first-party にするため **web/api は同一オリジン配信**（リバースプロキシ / Next rewrites）を前提とする。
-  SSE は Cookie が自動添付されヘッダ注入が不要になる。ただし **POST で発話を送るチャットストリーム（Task 3.5）は `EventSource` が GET 専用・body 不可のため**、fetch-stream を維持するか「POST で stream を作成 → GET `EventSource` で購読」に分離する。downstream/サービス間（skillex 等）へは引き続き **JWT/token-exchange** で identity を運ぶ（内部はステートレス）。
-  shiki-server の **AuthN 向き先は設定で差し替え**（SaaS=共有コントロールプレーンのissuer / オンプレ=ローカルKeycloak）。
+  SSE は Cookie が自動添付されヘッダ注入が不要になる。ただし **POST で発話を送るチャットストリーム（Task 3.5）は `EventSource` が GET 専用・body 不可のため**、fetch-stream を維持するか「POST で stream を作成 → GET `EventSource` で購読」に分離する。downstream/サービス間へは引き続き **JWT/token-exchange** で identity を運ぶ（内部はステートレス）。外部クライアント（skillex）→ llm-gateway の m2m 呼び出しも **JWT（client_credentials・§4.1.1）** で受け、BFF セッションは使わない。
+  shiki-server の **AuthN 向き先は設定で差し替え**（SaaS=shiki の SaaS コントロールプレーンの Keycloak realm `shiki` の issuer / オンプレ=ローカルKeycloak）。
   > 経緯と比較・影響範囲は [design-caveats PIT-30](./design-caveats.md) / [docs/auth/browser-token-strategy.md](./auth/browser-token-strategy.md) を参照。
 - **AuthZ = ReBAC（OpenFGA/SpiceDB）**: タプル `object#relation@subject` で表現。
 
@@ -150,6 +150,24 @@ flowchart LR
 - フォルダは親→子へ、ロールは**配下ロール→親ロールへメンバーシップを継承**（上方向ロールアップ。
   親ロールは配下ロールのメンバーを含む。例: 営業部ロール ⊇ 営業1課ロール）。**可読性判定は単一の authz クエリ**に帰着し、
   ファイル共有も permission-aware RAG も同じ問いを使う。
+- **共有リンクの有効期限は eventual（best-effort・#342/#368）**: OpenFGA にネイティブ TTL が無いため、期限は
+  ① セッション開始点の遅延失効（`get_metadata`／`list_children` の親フォルダで reconcile 先行剥奪）と
+  ② イベント駆動タイマ（全レプリカが各自 spawn・リーダー選出なし・指数バックオフ）で強制する。**check 時点評価ではない**ため、
+  タイマ停止中や遅延失効を通していない経路（download/versions/collab WS/WOPI・list_children の子ごと判定）では
+  期限直後にごく短時間アクセスが残り得る。UI の「〜まで」表示は公称であり厳密な瞬間失効ではない。
+  中期的には FGA conditions / contextual tuples で check 時点評価へ寄せる（#368）。
+- **共有リンクの per-user 取消は deny 台帳で durable（#375/#376）**: パスワードリンクの解錠（redeem）は
+  `node_share_link_grant` に台帳行を作り、`viewer_via_link`/`editor_via_link` タプルを張る。取消は行を
+  **DELETE せずソフト失効**（`revoked_at`）させ、`revoked_at IS NULL ⇔ その (link,user) の付与が live`
+  を唯一の不変条件にする。台帳を読む全クエリ（参照カウント・一覧・`redeem_count`）はこの述語で絞る。
+  redeem 側は条件付き upsert（`ON CONFLICT … WHERE revoked_at IS NULL`）で revoked 行を復活させないため、
+  **リンクが active なままでも取り消したユーザーは同じ URL＋パスワードで再解錠できない**。
+  redeem は `lock_node`（node 単位 advisory lock）配下の単一 tx で失効/期限失効と直列化する（Argon2id と
+  レート制限はロック外＝誤パスワード連打で owner の共有操作を止められないようにする）。
+  **deny のスコープは per-(link,user)**: 「このリンクはこの人向けではない」の表明であり、node 単位の
+  否定 ACL ではない（OpenFGA に否定は無く、明示共有は別 relation なので触らない）。再度渡すなら新規発行。
+  per-user 付与の回収契機は ①リンク失効/期限失効 ②owner の個別取消 ③テナント撤去 の 3 つで、
+  org/テナントのメンバーシップ変化は**含まれない**（[PIT-53](design-caveats.md) の follow-up）。
 - **認可コンテキスト**: 全データアクセスは `principal + org + tenant_id` を持つコンテキスト経由（SaaS マルチテナントを day-1 前提・後付けで隔離境界を壊さない）。
 - **authz のテナント分離（SAAS.1 / #84）**: OpenFGA は **全テナント共有の単一ストア＋識別子名前空間化**（フルプール）で分離する。
   FGA 識別子を `<type>:<tenant_id>|<local_id>` へ名前空間化し（区切り `|` = `authz::TENANT_SEP`。AD group パスの `/` と衝突しない）、
@@ -163,56 +181,46 @@ flowchart LR
   → タイポ・存在しないスコープ/ツール/relation 参照を**コンパイル時／検証時に閉じた集合へ照合して弾く**。
 - これは **集中PEP** と対になる: app-gateway / StorageService の単一チョークポイントが
   「エンドポイント→必要スコープ」の**宣言的マップ**を一律強制（個別ハンドラでチェックさせない＝抜け漏れを構造的に不可能化）。
-- **AIハルシネーション境界**: LLM／エージェント／ミニアプリ（特に開発者・LLMが書くマニフェストやUIスペック）が
+- **AIハルシネーション境界**: LLM／エージェント／ミニアプリ（特に開発者・LLMが書くマニフェストや画面）が
   **実在しない権限名・ツール名・スコープを参照しても、この閉じた語彙集合で拒否**される。
-  Phase 6.3（UIスペック検証）・**Phase 9.1（ミニアプリ・マニフェスト検証）** はこの生成語彙に依存する。
+  Phase 6.3（UIスペック検証。#604 で撤去）・**Phase 9.1（ミニアプリ・マニフェスト検証）** はこの生成語彙に依存する。
 - 注: ここで codegen するのは**粗い語彙（スコープ/relation名/ツール名）**であり、
   **インスタンス単位の実認可は依然 OpenFGA（ReBAC）＋行レベル ABAC 述語**で行う（語彙の型安全 ≠ 認可判定）。
   RBAC のロール×権限表をコアにはしない（ロール階層・個別共有で RBAC ロールが爆発するため／ReBAC維持）。
 
-#### 4.1.1 マルチサービス境界（shiki × skillex）— SaaS版のみ
+#### 4.1.1 SaaS コントロールプレーンと外部クライアント境界（skillex）
 
-統一は **SaaS版限定**。オンプレは shiki・skillex とも認証基盤を切り離し単独運用（外部依存ゼロ）。
+> **2026-09-29 決定（human）**: 旧「マルチサービス境界（shiki × skillex の共有コントロールプレーン）」
+> ——User 統一・サービスアクセス権（入場券/管理者バッジ）統一・統一請求・統一シェル＋マイクロフロントエンドの管理画面——は**廃止**。
+> 理由は運用負荷と、shiki・skillex の顧客が重ならないこと。経緯と旧リスクは [PIT-26〜29](./design-caveats.md)（各項に更新注記）。
 
-> ⚠️ 共有プレーンが全顧客・両サービスの blast radius になる点、aud/scope の厳密束縛と失効伝播、
-> 利用量＝金額クリティカルの整合、「設定差し替えだけでオンプレ化」の過大主張は [PIT-26〜29](./design-caveats.md)。
+- **shiki 自身の SaaS コントロールプレーン**（skillex とは共有しない）: Keycloak realm `shiki`（**shiki ユーザー専用**・
+  単一 realm・テナントはユーザー属性 `tenant`／org は group＝SAAS.2）、テナント・プロビジョニング（SAAS.2 の admin プレーン）、
+  ベンダーコンソール（§4.12）、Stripe 課金（SAAS.3）。オンプレはこれを積まず、AuthN をローカル Keycloak へ向ける（設定差し替え）。
+  データプレーンは**全テナント共有のフルプール**で、テナント分離は §4.1「authz のテナント分離」（SAAS.1）を参照
+  （顧客ごと専用ストア＝cell は専用環境契約向けの将来オプション・スケール戦略は [data-platform.md §12](./data-platform.md)）。
+- **ユーザー認証は SaaS でも分離**: skillex は SaaS/オンプレとも**自前の専用 Keycloak（別インスタンス）**を持つ（skillex 側の関心事）。
+  shiki の realm に skillex ユーザーは存在しない。
+- **残る結合は skillex → llm-gateway の machine-to-machine のみ**。llm-gateway は**全社共通 LLM ゲートウェイ**と位置づけ、
+  skillex はその最初の外部クライアント（外部クライアント向け API は §4.5）。
 
 ```mermaid
-flowchart TB
-  subgraph CP["共有コントロールプレーン (SaaS専用 / shiki repo所有 / マルチテナント)"]
-    KC[Keycloak<br/>User=統一]
-    ORGB[Org・Member・サービスアクセス権<br/>＋請求＋管理ダッシュボード=統一]
-  end
-  subgraph SHIKI["shiki データプレーン (全テナント共有=フルプール / tenant_id 論理分離)"]
-    SAUTHZ[ReBAC/ロール/設定=サービス間で分離]
-    SMETER[LLM利用量計測=サービス間で分離]
-  end
-  subgraph SKILLEX["skillex データプレーン"]
-    KAUTHZ[訓練/DLC権限/設定=分離]
-    KMETER[DLC/LLM利用量計測=分離]
-  end
-  KC -->|OIDC| SHIKI
-  KC -->|OIDC| SKILLEX
-  ORGB -->|サービスアクセス権参照| SHIKI
-  ORGB -->|サービスアクセス権参照| SKILLEX
-  SMETER -->|集約使用量のみ| ORGB
-  KMETER -->|集約使用量のみ| ORGB
+flowchart LR
+  SKX[skillex バックエンド<br/>自前 Keycloak] -->|client_credentials<br/>aud=shiki-llm| KC[Keycloak realm shiki<br/>client skillex]
+  SKX -->|Bearer m2m トークン| EXT[shiki-server<br/>外部クライアント LLM API]
+  EXT --> GW[llm-gateway in-process<br/>会計・監査・Langfuse・認可]
 ```
 
-> 📌 **「分離」の意味に注意（2026-07 正本化）**: 本節の「データプレーン=分離」は **shiki と skillex という
-> サービス間の分離**であって、**顧客ごとの物理分離ではない**。shiki のデータプレーンは全テナントが共有する
-> フルプールであり、テナント隔離は `tenant_id` の論理分離＋識別子名前空間化で担保する（§4.1 SAAS.1）。
-> 顧客ごと専用ストア（cell）は将来オプション。スケール戦略の全体像は [data-platform.md §12](./data-platform.md)。
-
-- **3層境界**: ①User=統一 ②サービスへの入場券＋管理者バッジ=統一 ③館内ルール（細かい認可/設定）=分離。
-- **サービスロール付与**は `利用可否＋サービス管理者か` の粗い粒度のみ。細かい権限は各サービス内。
-- **請求=統一（Org単位1請求・サービス別内訳）／利用量=分離（集約値のみ請求へ・クォータ強制は各サービス）**。
-- **オンプレ**: 共有プレーンを積まず、`shiki-server` の AuthN をローカルKeycloakへ向ける（設定差し替え）。
-- **契約の正本 = shiki repo `contracts/`**: skillex（別リポ）が参照する OIDC設定・サービスアクセス権API・
-  利用量集約イベント・トークンの aud/scope の正本を公開し、skillex が取り込む（バージョン管理＋後方互換ポリシ）。
-- **管理画面はUIのみ統一・データ分離**: SaaSは統一シェル（共有ページ）＋各サービス設定ページをマイクロフロントエンドで合成。
-  各ページは自サービスのAPI/ストアを叩き authz・設定データは分離。各ページは「シェル埋め込み／単独」両対応の自己完結モジュール
-  （オンプレは単独管理画面として動作）。
+- **認証**: realm `shiki` の client `skillex`（confidential・service account）で OAuth2 client_credentials。
+  service account は**テナント属性（`tenant` claim）を持たない**。ただしテナント解決は claim だけで決まらない（single テナンシーでは設定値で固定される）ため、外部クライアント API は通常の `AuthContext` テナント解決を**使わず**、外部クライアント用の予約名前空間に固定する（SK.8）。
+  ゲートウェイは `iss`/`aud`（`shiki-llm`）/`azp` を**厳密検証**し、**shiki の通常ユーザー API はこの m2m トークンを拒否**する
+  （confused-deputy 防御・[PIT-27](./design-caveats.md)）。契約は [docs/auth/skillex-identity.md](./auth/skillex-identity.md)。
+- **会計**: 外部クライアントは**クライアント別の名前空間**（`azp` をキー）で計測。消費側が渡す自社 org id は
+  **会計ラベルとしてのみ**扱い、認可根拠にしない。skillex 分は製品間の内部原価精算（統一請求はしない）。
+- **オンプレ**: 対象外（skillex オンプレは自前のローカル vLLM を使う）。
+- **契約の正本 = shiki repo `contracts/`**（未作成）: 外部 LLM API 仕様＋m2m トークン契約（issuer・`aud`・`azp`・scope）＋
+  後方互換ポリシのみ。skillex（別リポ）が取り込む。
+- llm-gateway の**別サービス化は 3 つ目の消費者が現れるまで保留**（それまでは §4.5 の in-process のまま）。
 
 ### 4.2 ストレージ（3層分離 ＋ FUSE）
 
@@ -224,7 +232,7 @@ flowchart TB
     evt[書込イベント発行]
   end
   meta[(Postgres: ツリー/メタ<br/>closure table)]
-  blob[(MinIO/GCS: 実体<br/>content-addressed)]
+  blob[(RustFS/GCS: 実体<br/>content-addressed)]
   client1[Drive UI] --> SS
   client2[RAG インデクサ] --> SS
   client3[サンドボックス FUSE] --> SS
@@ -301,8 +309,38 @@ flowchart LR
   （ゼロダウンタイム・[PIT-8](./design-caveats.md)）。
 - 親子チャンク（small-to-big）で日本語長文の文脈を保つ。チャンク ID は
   `uuid5(node_id, version/ordinal)` の決定的生成（再インジェスト＝上書きで冪等）。
+- **leaf は必ず `max_leaf_chars` 以下**（[PIT-67](./design-caveats.md)）。切れ目は見出し →
+  段落の順に尊重するが、パーサが段落を刻めない文書（空行を使わない議事録・字幕・ログ、
+  改行を持たない PDF 抽出結果）では 1 段落が上限を超える。その場合は段落**内**も
+  文末 → 改行 → 空白 → 文字数の順で強制分割する。巨大 leaf は埋め込みが文書全体の
+  平均に薄まって意味検索から消え、BM25 でも長文ペナルティで沈むため、
+  「上限以下」はサイズの目標ではなく検索品質の不変条件として扱う。
 - 引用監査は既存 `audit_log`（storage の監査チョークポイント）に `action="rag.search"` で記録
   （引用 chunk_id 群・file 粒度の認可判定・クエリ sha256・trace_id）。
+- **引用の番号と位置（#508）**:
+  - 本文の `[n]` は**応答内の通し番号**（`Citation.cite_id`）。doc_search は結果に仮の印を書くだけで、
+    agent-core のループが呼び出し順に振る（同じチャンクの再ヒットは同じ番号・台帳はチェックポイント
+    に載せて再開しても続く・サブエージェントの番号は親の台帳で振り直す）。共有スレッドで閲覧者が
+    読めない引用は、番号だけの `withheld` 引用に置き換えて返す（番号は詰めない）。
+  - 引用は**版ごとの正規化ブロック列（`doc_block`）の中の範囲**で位置を指す。原本（docx の XML・
+    md のバイト列）の位置には戻さない。ブロック番号（ordinal）は worker の出力順、ブロック内の
+    オフセットは **UTF-16**（読むのはブラウザだけ）。`rag_chunk` は最新版だけを持つが、`doc_block`
+    は**直近 20 版**まで残し（古い版を引用した会話の出典パネル用・ノートの頻繁な版で増え続けない
+    上限）、ノード削除・テナント撤去で消す。
+  - Citation は anchor（ブロック範囲）・quote（前後の文脈 32 字。本文は snippet と同じなので持たない）・
+    boxes（PDF のページ上の枠＝Docling の prov）を持つ。元エディタでは一節を本文検索して探す
+    （ノート: ProseMirror の Decoration・Collabora: `.uno:ExecuteSearch`・PDF: pdf.js に枠を重ねる）。
+    一節は URL に載せない（クリック時に localStorage で渡す）。
+  - 出典パネルは `GET /files/{id}/versions/{version}/blocks`（StorageService の viewer 判定を通った
+    `Node` を受け取って `doc_block` を窓で返す・上限 200 件）で前後の原文を描く。本文の読み出しは
+    `action="file.blocks.read"` で監査に残す。
+- **本文の読み出し（`doc_read`・#425）**: 検索で当たった文書を引用の外まで読むエージェントのツール。
+  原本は再パースせず、索引にある**最新版**の `doc_block` を読む（#508 より前の索引でブロック列が
+  無ければ `rag_chunk` の leaf / table を ordinal 順に連結する。parent はセクションの写しなので含めない）。
+  認可は `StorageService::get_metadata`（viewer）を通った `Node` を受け取る形で、tenant / org でも絞る。
+  skill の知識スコープは検索と同じく課す（スコープ ∩ ReBAC）。権限なしと不存在は同じ文言。
+  窓（既定 8000 字）で返し、続きは単位の ordinal ＋単位内の字数で指す（巨大な表も途中から読める）。
+  読み出し（見出し一覧を返す場合も）は `action="rag.doc_read"` で版・範囲つきで監査に残す。
 
 - **テナント分離（SAAS.1 の RAG 適用・#91 で明文化）**: Qdrant/Tantivy は DB/blob/FGA/session と同じく
   `tenant_id` 境界を持つ。これは `authz_tags`（テナント**内** ReBAC 可読性・PIT-1）とは**別レイヤ**の
@@ -337,11 +375,22 @@ flowchart LR
   - 自律 = フルツール（shell/任意コマンド/CRUD）＋長ホライズン＋FUSEストレージ。
 - 共通化: llm-gateway、Langfuseトレース、監査、トークン会計、権限境界。
 - **ツール選択**: デフォルト全提示・モデル自動選択。権限/破壊/コスト系のみ明示許可。
+  - **tool search（#511）**: 出番の限られるツール（`ToolName::loading()` が `Deferred`）は名前だけを
+    `tool_search` の説明に載せ、定義はモデルが検索（BM25F・`select:` 名指し）して読み込む。候補は
+    その run に提示済みのツールだけ（検索で認可は広がらない）。読み込み状態は履歴の
+    `ToolResult.tool_references` が正で、Anthropic は `defer_loading`＋`tool_reference`、OpenAI 互換は
+    読み込んだ定義を `tools` 末尾へ追記して写す。遅延にできる定義が閾値未満の run・
+    `SHIKI__CHAT__TOOL_SEARCH=false` では全定義を提示する。開いている文書・会話で使ったツール・
+    skill の `allowed_tools` は常時ロードに回す。
+    - 自然文の検索は BM25F と埋め込み（RAG と同じ `EmbeddingProvider`）の **RRF（k=10）**で順位付けする
+      （#517）。文書は名前＋説明＋引数で、ベクトルはプロセス内で使い回す。埋め込みが未配線・失敗なら
+      BM25F のみ（相対カットオフ 0.1・#518）。名前の一覧は 100 件を超えたら名前空間ごとの件数に要約する（#519）。
+    - 根拠と再実行手順は `eval/tool-search/`（評価基盤・#516）。
 - **自律の承認 3 モード（#350・thread 単位・実行中トグル可）**: 承認必須（既定・全破壊系が承認カードで停止）/
   オート（版管理で復元可能な書込のみ自動・fs_delete/shell 等の不可逆は承認維持）/ 全自動（危険・明示オプトイン・
   `tenant.allow_autonomous_bypass=false` の org キャップで禁止可・違反は明示エラー/警告でクランプ）。
   モード→`ApprovalPolicy` の写像は `crates/chat/src/autonomous.rs` に集約。read-only（web_search/web_fetch/
-  doc_search）はどのモードでも止まらない。**skill はモードを緩められない**（Task 6.9 不変条件維持）。
+  doc_search/doc_read）はどのモードでも止まらない。**skill はモードを緩められない**（Task 6.9 不変条件維持）。
   実行中の緩和は **run の actor 本人による設定のみ有効**（共有スレッドの別編集者が他人の権限の run の承認を
   緩められない・confused-deputy 防御）。
 - **ワークスペース封じ込め（#350 で明示化）**: 自律 fs ツールは thread の起動フォルダ（`root_folder_id`）配下限定。
@@ -350,10 +399,25 @@ flowchart LR
   不変条件テスト: `crates/chat/tests/workspace_containment_it.rs`。
 - **web ツール**: 新トレイト `SearchProvider`（SaaS=Brave Search API / オンプレ=SearXNG / エアギャップ=機能無効）。
   **ページ取得は検索と別ポリシー**: allowlist に検索プロバイダだけ載せると検索結果 URL が開けないため、
-  web ツール有効時は「検索結果由来のホストへの**時限的な動的 allowlist**（当該 run 限定・宛先を監査記録・
-  シークレット添付は不可）」をサンドボックスの egress 制御に追加する。管理者ポリシーでドメイン拒否リストを重ねられる。
+  web ツール有効時、取得はサンドボックスを介さずホスト側で行い（#348・§4.6）、**宛先は解決後 IP の検証＋
+  接続アドレス固定**で公開ホストに限定する（シークレット添付なし・リダイレクト非追従）。
+  管理者ポリシーのドメイン拒否リストを重ねられる。
+- **冪等 read はステップ内で並列実行する（#349）**: 1 ステップでモデルが出した呼び出しのうち、
+  `Tool::is_read_only()` を表明したもの（`web_search` / `web_fetch` / `doc_search` / `doc_read`）だけを有界並列
+  （既定 4・`chat.parallel_read_tools`）で走らせる。承認要・破壊系は従来どおり逐次で `Approver` を待ち、
+  read はその待ちと並行して進む。**観測（`ToolResult`）とイベントは常に呼び出し順**に整列してから積む
+  （再現性・監査）。同一ホストへの `web_fetch` はレーンを分けて直列化する（相手先への礼儀）。
+  deep research の「検索 → 複数ページ取得」ファンアウトが直列にならないための土台（PIT-49）。
 - **deepresearch = agent-core のプリセット**（専用エンジンを作らない）: 「長ホライズン＋web.search/rag.search/
   document.write＋サンドボックス」構成の first-party skill（FR-7 の枠）。成果物はストレージ保存→自動 RAG 対象化。
+- **委譲（`subagent`）はロールで役割を分ける（#391・#402・#407）**: 子は**新しい履歴**で回し、親へ返すのは
+  合成済みの成果だけ（生の取得本文は返さない）。`AuthContext` は親と同一・ツールは read-only の明示
+  allowlist・`subagent` 自身は渡さない（入れ子の入れ子が構造的に不可能）。ロールは 3 つ:
+  **research**（調べて findings。`boundary` 必須で重複なく割る）/ **plan**（ツールを渡さず、手元の知識だけで
+  「何を確かめるべきか」を返す）/ **verify**（書き上がったレポートと証拠台帳を突き合わせ、**指摘リストだけ**を
+  返す。書き直しはさせない）。**執筆は委譲しない**が、**検証は執筆ではないので委譲する** — 書いた本人が
+  同じコンテキストで自分の主張を確かめると確証バイアスがそのまま残るため（#407）。子の消費は
+  `Spent::add_external` で親へ積み、親の予算で止まる（トークンが十数倍になり得る機構の唯一の安全弁）。
 - **会話履歴は tenant スコープのスキーマで新設（SAAS.1 / #91）**: thread/message テーブルは既存規約を踏襲し
   全行 `tenant_id text not null`＋複合 PK/unique に `tenant_id` を含める（例: `node` の
   `(org, tenant_id, parent_id, name)`）。thread の OpenFGA オブジェクトも `thread:<tenant>|<id>` になるよう
@@ -386,18 +450,49 @@ flowchart LR
 
 - 内部正規形=OpenAI互換スキーマ（⚠️ 中立 content-block 案は [PIT-9](./design-caveats.md)。Task 3.2 着手時に確定）。
   薄いアダプタで vLLM / Anthropic / Gemini /（必要なら Azure）。
+  Chat Completions を話さないモデル（Responses API 専用）は OpenAI Responses アダプタで受ける
+  （`llm.backend=openai_responses`・#535）。会話ごとの ID（スレッド ID）はルーティング・キャッシュの
+  手がかりとしてだけ渡す（`llm.session_header` で指定したヘッダ・`prompt_cache_key`）。
+  会話はサーバに持たせない（`store: false`）ので、推論モデルの推論アイテムは暗号化された中身ごと受け取り、
+  中立形の不透明なブロック（`Block::Reasoning`・プロバイダ名付き）として履歴に積んで、同じプロバイダへの
+  次のツールのターンでだけ送り返す（他のプロバイダ・アプリ向け SSE には出さない・#542）。
 - **LiteLLM は `LlmProvider` 実装の一つ（オプションアダプタ）**（2026-07-05 確定・#32）:
   雑多な外部プロバイダを一括で足したい時だけ LiteLLM Proxy アダプタを有効化。
   **チョークポイント（会計・認可・監査・Langfuse）は Rust in-process から動かさない**。
   エアギャップ構成では LiteLLM を積まない（vLLM 直結のみ・NFR-2 無傷）。
 - 機能は必要分のみ（フォールバック/リトライ/トークン会計/Langfuse計装/権限注入）。
   セマンティックキャッシュ・高度ルーティング・仮想キーは後追い。
-- **モデルカタログ**: テナント管理者が「許可モデルリスト＋既定モデル＋モデル別単価（課金単価表と同居）＋
-  国外処理バッジ（データレジデンシ明示）」を管理。ユーザーのモデル選択 UI はカタログの範囲内。
-  skill のモデル既定（FR-7）もここに整合。
+- **モデルカタログ**: モデルの実体（接続先・API キー）・**モデル別単価（課金単価表と同居）**・国外処理バッジ
+  （データレジデンシ明示）は**デプロイ設定（運営側）が正**で、組織の管理者（`organization#admin`）は管理コンソールで
+  「許可モデルリスト＋既定モデル（Auto かモデル）＋ユーザーに選ばせるか＋Auto の振り先」を管理する（単価は閲覧のみ・#553）。
+  設定の粒度は **tenant_id ＋ org**（権限・利用量集計と同じ単位）。許可リストは管理者が保存した時点で確定し、
+  それ以降にカタログへ足したモデルは管理者が有効にするまで使えない。未保存の組織はカタログの既定を使え、
+  同意を取ってから使わせたいモデル（国外処理など）はカタログ側で `requires_opt_in` にする。
+  許可外モデルは投稿時（400）に加えて **gateway の `stream` が経路によらず拒否する**（チャット・ミニアプリ・
+  ワークフロー・エージェント）。ユーザーのモデル選択 UI はカタログの範囲内。
+  skill のモデル既定（FR-7）もここに整合（実行時点の許可リストと選択可否で照らし、外れていれば Auto の振り先へ戻す）。任意でモデル別の**コンテキスト窓**を持ち、agent-core は
+  これを剪定閾値の天井に使う（有効窓の 0.6 で古いツール出力を畳み、0.85 で最後のツール結果以外を全て畳む・#529）。Compose 等の env だけの構成では `SHIKI__LLM__CONTEXT_WINDOW_TOKENS` で既定モデルの窓を渡す。
+  **表示名**: モデルの `display_name` に加えて、プロバイダにも表示名を持たせる。追加プロバイダは `llm.providers[].display_name`、
+  既定プロバイダ（`llm.backend` 等の単一設定）は `llm.display_name` で、管理コンソールとユーザーのモデル選択の
+  プロバイダ見出しに使う（省略時はプロバイダ ID。既定プロバイダは `default`・#583）。
+  **本文に思考を混ぜるモデル**: 思考を `reasoning_content` ではなく本文の先頭に `<think>…</think>` で返すモデル
+  （MiniMax M3 等。Gemini API の OpenAI 互換口の Gemma 4 は `<thought>…</thought>`・#743）は、カタログで `reasoning_in_content = true` にする。Chat Completions アダプタは、そのプロバイダへ
+  送る実モデル ID（`real_id`、省略時は `id`）単位で本文先頭のタグを思考ブロックへ振り分ける。同じプロバイダで
+  同じ実モデル ID を指す別のエントリにも効く。既定は false（`<think>` を正規に出力させる用途で、回答を思考と
+  取り違えて消さないため・#584）。
+  **ツール呼び出しの付帯情報**: Chat Completions のツール呼び出しに付いてくるプロバイダ固有の `extra_content`
+  （Gemini API の `thought_signature`。Gemini API は送り返すことを求める）は不透明な推論ブロックとして履歴に持ち、
+  次のターンで同じ呼び出しへ付けて返す。ツールを呼んだのに `finish_reason: "stop"` を返すプロバイダ（同）は、
+  呼び出しがあればツールのターンとして扱う（#743）。
 - **思考強度の正規化**: `effort: low/medium/high` を内部正規形に持ち、各アダプタが reasoning budget /
   thinking tokens に翻訳。UI は3段階セレクタのみ（プロバイダ固有ノブは晒さない）。
-- `LlmProvider` トレイト実装そのもの。別プロセス化しない（ホップ0、部品削減）。
+- `LlmProvider` トレイト実装そのもの。別プロセス化しない（ホップ0、部品削減）。外部クライアント向け API も同一プロセスで公開し、別サービス化は §4.1.1 の条件（3 つ目の消費者）で再検討する。
+- **外部クライアント向け LLM API（全社共通ゲートウェイ・§4.1.1・2026-09-29 決定）**: skillex 等の社内他製品向けに、
+  shiki-server が**同一バイナリで** LLM API を公開する（OpenAI 互換を想定。パス・形は実装タスク〔parallel-tracks SK.8〕で確定）。
+  会計・監査・Langfuse・認可のチョークポイントは内部利用と**同じ経路**を通す（外部用の別経路を作らない）。
+  認証は realm `shiki` の client_credentials トークン（`aud=shiki-llm`・`iss`/`aud`/`azp` 厳密検証）、
+  会計は `azp` をキーにした**外部クライアント別名前空間**（消費側の org id は会計ラベルのみ・認可根拠にしない）。
+  ⚠️ **未実装**: 現時点で `aud=shiki-llm` のトークンを受け付けるエンドポイントは `crates/` に存在しない。
 - **トークン会計は `tenant_id` + `org` スコープで day-1 から刻む（SAAS.3 課金の集計元・#91）**:
   計測レコード（prompt/completion tokens・model・cost・trace_id）に `tenant_id` + `org` を**必須カラム**とし、
   監査ハッシュチェーンが `tenant_id|org` で直列化・スコープする前例に倣う。金額クリティカル
@@ -413,20 +508,20 @@ flowchart LR
 **Python 実行が exec ごとの Pyodide 初期化で ~6s** かかる。gVisor は create 132ms・104MB と重いものの
 **native CPython が 82ms（~75×速い）**。code_interpreter の実効体感は「create + 実行」の総時間で決まるため、
 create レイテンシだけを見て wasm を選んだ #97 の判断は誤りだった。wasm ティアは廃止せず、
-**web_fetch のような「egress を単一ホストへ固定する短命・読み取り専用実行」で引き続き使う**
-（wasm を選ぶ理由は速度ではなく egress モデル＝下記の ⚠️ 参照）。
+**runsc の動かない環境（開発ホスト等）でコード実行を退避させる明示指定のティア**として残す。
+なお web_fetch は 2026-07（#348）に**サンドボックスを使わないホストネイティブ取得へ移した**（下記）。
 
 > **実装ノート（2026-07・Phase 4）**: [agentos](https://github.com/rivet-dev/agentos) はカーネルを含まず
 > TS SDK/ACP 層であり、カーネル実体はその依存 **[secure-exec](https://github.com/rivet-dev/secure-exec)**（Rust・
 > Apache-2.0）にある。よって我々が **フォークして所有するのは secure-exec** で、`vendor/secure-exec/` に取り込む
 > （[fork-policy](./sandbox/fork-policy.md)）。隔離の実体は **V8 アイソレート＋WASI polyfill＋wasm32-wasip1 ゲスト**
 > であり wasmtime ではない（「ブラウザ級」隔離）。sidecar（V8/Pyodide を抱える）は per-sandbox の非特権子プロセスとして
-> orchestrator が spawn する。code_interpreter は **numpy/pandas**（matplotlib は非同梱・可視化は §4.7 の generative UI）。
+> orchestrator が spawn する。code_interpreter は **numpy/pandas**（matplotlib は非同梱・可視化は §4.7 の図ブロック）。
 
 ```mermaid
 flowchart TB
   ORCH[sandbox-orchestrator] --> TIER{Sandbox トレイト<br/>3ティア}
-  TIER -->|web_fetch 等・egress を単一ホストに固定する短命実行| WASM["wasm: secure-exec フォーク<br/>vendor/secure-exec・per-sandbox 非特権 sidecar 子プロセス<br/>V8＋Pyodide・仮想FS/PTY/仮想net内蔵"]
+  TIER -->|runsc 不在ホストの退避先（明示指定）| WASM["wasm: secure-exec フォーク<br/>vendor/secure-exec・per-sandbox 非特権 sidecar 子プロセス<br/>V8＋Pyodide・仮想FS/PTY/仮想net内蔵"]
   TIER -->|既定・フルLinux/native CPython| GV[gVisor]
   TIER -->|最強隔離/GPU 契約要件| FC[Firecracker microVM]
   WASM --> VFS["仮想FS → StorageService 直結<br/>（Stage B・Phase 5。アルファは成果物をサーバ回収）"]
@@ -438,7 +533,7 @@ flowchart TB
 | ティア | 用途 | 隔離保証（正直な主張） | アルファ |
 |--------|------|----------------------|---------|
 | **gVisor（既定）** | エージェント実行・skill・code_interpreter（native CPython・任意 pip）・ネイティブツールチェーン | ユーザー空間カーネル（VM 級ではない・PIT-24） | ✅ |
-| wasm | web_fetch（egress を単一ホストに固定・短命・読み取り専用） | プロセス分離＋wasm 二層（ブラウザ級・VM級ではない） | ✅ |
+| wasm | runsc 不在ホストでの code_interpreter 退避（明示指定・Pyodide） | プロセス分離＋wasm 二層（ブラウザ級・VM級ではない） | ✅ |
 | Firecracker | 契約上 VM 級隔離が要件の顧客・GPU | VM 級（KVM 前提） | ポストアルファ |
 
 - **wasm ティアの構造**: agentos は仮想FS・プロセステーブル・PTY・仮想ネットワークスタックを自前に持ち
@@ -457,32 +552,89 @@ flowchart TB
   `firecracker`）で選ぶ。ユーザー/ノード設定には
   出さない。gVisor/FC は orchestrator 側で当該ティアが構成済み（runsc/rootfs 等）であることが前提で、未構成なら create は
   `Unimplemented` で fail する（静かに wasm へ降格しない・監査に残す）。native Python が ~75x 速いことが既定を
-  gVisor にした根拠（[bench](./sandbox/bench.md)）。**web_fetch は egress を単一ホストへ固定する短命 sandbox のため常に wasm**
-  （この設定の対象外・egress allowlist を wasm の仮想 net ホスト関数で実効化する）。
-  ⚠️ web_fetch は内部で urllib（Python）を実行する（`crates/agent-core/src/tools/web_fetch.rs`）ため、wasm でも exec ごとに
-  Pyodide 初期化コストを払う。**wasm を選ぶ理由は速度ではなく egress モデル**であり、fetch レイテンシの是正（native fetch 経路の
-  用意 or gVisor 化）は別途 issue で検討する（既知の課題）。
+  gVisor にした根拠（[bench](./sandbox/bench.md)）。
+
+- **web_fetch はサンドボックスを使わない（2026-07・#348）**: 以前は「egress を単一ホストへ固定する短命 wasm sandbox」
+  として実装していたが、GET 1 回のために exec ごと Pyodide 初期化（~6s）を払う構造で、隔離が守っていたのは
+  **宛先の限定だけ**だった（実行するコードは我々が書いた固定の urllib 呼び出しで、untrusted コードではない）。
+  現在は `crates/agent-core/src/tools/web_fetch.rs` がホスト側の reqwest で取得し、**封じ込めはポリシ層で等価に維持**する:
+  ① アプリ層の URL 検証（http/https のみ・userinfo 不可・IP リテラル/単一ラベル/内部ドメイン拒否）、
+  ② **解決後 IP の再検証**（全解決先が公開 IP であること・`sandbox_client::net_guard`）、
+  ③ **検証済みアドレスへの接続固定**（`resolve_to_addrs`。接続時に再解決させない＝DNS リバインディング遮断）、
+  ④ リダイレクト非追従（PIT-36）、⑤ シークレット非添付・プロキシ非経由、⑥ 本文 256KiB 上限・テキストのみ。
+  IP 分類は **net_guard が単一の正**で、egress プロキシ（gVisor/FC ティア）とミニアプリ HTTP（app-platform）も同じ表を使う。
   **前提条件（#346 で充足済み）**: code_interpreter が宣伝する numpy/pandas は、native rootfs へビルド時に同梱する
   （`deploy/sandbox-assets/rootfs-requirements.txt`・digest pin × wheel ハッシュ全固定 `--require-hashes` の二層で再現）。
+  同梱物はティアで異なる（native のみ openpyxl・#384）ため、**ツール description はティアから導出**して
+  宣伝と実体を一致させる（`agent-core/src/tools/code_interpreter.rs` の `describe`・PIT-51）。
   runsc・rootfs は orchestrator イメージへ焼き込み（`deploy/docker/sandbox-orchestrator.Dockerfile`・実行時 DL 無し＝PIT-33）。
   gVisor のメモリ上限は OCI spec の `linux.resources.memory.limit`（sentry が解釈するゲスト側上限。
   現行 runsc に旧 `--total-memory` フラグは無い）＋orchestrator 側メモリ watchdog
   （`runsc events --stats` 周期監視・超過 kill）の二重防御で、cgroups の使えない rootless 環境でもソフト強制が効く
   （ハード強制は cgroups が使える環境の cgroup 上限・PIT-24）。
+- **web_fetch は生 HTML をモデルへ渡さない（2026-08・#405）**: 取得したバイト列は 4 段で本文へ落とす
+  （`crates/agent-core/src/tools/web_fetch/`）。① `decode` — Content-Type / `<meta charset>` / BOM、
+  最後に chardetng で文字コードを決める（Shift_JIS・EUC-JP の国内サイトが `from_utf8_lossy` で全滅するため）
+  ② `extract` — ノイズ除去（script/style/nav/隠し要素）→ Readability 相当の本文特定（`dom_smoothie`）→
+  構造保持 Markdown 化（`htmd`）。**掃除した DOM をそのまま本文特定へ渡す**（`dom_query` を共有＝二重パースしない）
+  ③ `doc` — PDF/Office は ingestion-worker（Docling）へ回す。**URL ではなくバイト列**を渡す（PIT-55）。
+  文書かどうかは Content-Type だけで決めない（官公庁の配信は PDF を `application/octet-stream` で返す）。
+  宣言 → URL の拡張子 → 取得後の magic bytes の順に判定し、**上限で切れたバイト列はパーサへ渡さない**
+  （末尾の索引が欠けた PDF/OOXML は必ず解析に失敗するため、「大きすぎる」と返す）。Docling は同期で
+  キャンセルできないので、クライアント側の 90 秒期限は worker 側の**同時解析数の上限**（超過は即 503）と
+  対で運用する（諦めた解析がスレッドプールを食い潰さないようにする）
+  ④ `render` / `envelope` — 自己要約ヘッダ（タイトル/節一覧/出典/日付）＋ `query` による節の絞り込み ／
+  `offset` の続き読み ＋ untrusted 封筒。上限は**バイトではなく文字**（既定 12,000 字）で数える
+  （日本語が英語の 1/3 しか読めない歪みを消す）。**ページ由来の値は 1 つ残らず封筒の内側**に置き
+  （タイトル・著者・節一覧を含む）、封筒タグは中和し、ヘッダも予算の内に収める（PIT-56）。
+  DOM 構築は CPU バウンドなので `spawn_blocking` へ逃がす（敵対的な巨大 DOM で全 run を止めない・PIT-23）。
+  削減率・抽出器・文字コードは `web_fetch` ターゲットの構造化ログで観測する
+  （抽出が壊れても静かにトークンだけ焼けるため・PIT-54）。パーサは RAG 配線と**同一インスタンスを共有**し、
+  RAG 無効時は `None`＝バイナリ文書を従来どおり拒否する（宣伝と実体を description で一致させる・PIT-51）。
 - ⚠️ 落とし穴: gVisor/FC 制御層は [PIT-22〜25](./design-caveats.md)、wasm ティア固有は [PIT-32〜33](./design-caveats.md)
   （フォーク保守・wasm 脱出時の blast radius・wasm コマンドパッケージのサプライチェーン）。
+  web_fetch のコンテキスト効率・文書パーサへの委譲・封筒の境界は
+  [PIT-54・PIT-55・PIT-56](./design-caveats.md)。
 
 ### 4.7 generative UI / ミニアプリ / skill
 
 > 📝 **2026-07-07 改訂（#97・[miniapp-platform.md §6](./miniapp-platform.md)）**: Phase 10 Stage A
 > （workflow-engine・script-runtime・secrets・artifact共通基盤）が前倒しで実装済みのため、本節は
 > **workflow-engine が既にある前提**で書く。また**旧 prompt template は skill に統合**する（呼称・定義をFR-7/FR-14へ一本化）。
-> ミニアプリの完全な定義（UIスペック＋**テーブル**＋ワークフロー＋skill＋script）のうち**テーブル（構造化データ）だけが
+> ミニアプリの完全な定義（画面＋**テーブル**＋ワークフロー＋skill＋script）のうち**テーブル（構造化データ）だけが
 > Phase 9 待ち**。詳細・出典は [miniapp-platform.md §6](./miniapp-platform.md)。
+>
+> 📝 **2026-10 改訂（エピック #604）**: 生成 UI を回答の本文の図ブロック（`` ```ui ``・Yui）に一本化した。
+> 旧方式（`emit_ui` ツール → 検証済み JSON スペック（`UiSpecDoc`）→ 信頼コンポーネントカタログ・`generative_ui`
+> ブロック・`ui_spec` アーティファクト）は #763 で撤去し、既存のデータは migration 0073 で消した。
+> 図ブロックの操作を持つ種類（app・ask・plan）は押せる（旧版の「表示専用」を改めた）。
 
-- **生成UI**: LLM→検証済みJSONスペック→信頼コンポーネントカタログで描画（任意コード実行なし）。
-- **ミニアプリ** = skill ＋ UIスペック ＋ ワークフロー（＋Phase 9合流後はテーブル）、のバージョン付きアーティファクト。
-  バックエンド束縛は宣言済み・認可済みアクション経由のみ（アンビエント権限なし）。ReBACで共有。
+- **生成UI**: LLM が回答の本文に図ブロック（`` ```ui ``）を書き、フロントの `@imanect/yui` が描く（任意コード実行なし）。
+  表・コード・リンク・本文は Markdown に任せる。図を出す専用ツールは持たない。
+- **図ブロック（`` ```ui ``・#530）**: 回答の Markdown の中に、図（棒・折れ線・数値カード・流れ図・構成図など）を
+  行単位の宣言で書かせ、フロントの `@imanect/yui` が描く（モデルへの書き方の指示は `chat.yui` で切り替え・既定オン。
+  フロントは設定に関わらず `` ```ui `` フェンスを図として描き、描けなければコードブロックに戻す）。表示だけの種類は
+  URL・HTML を持たず、描くのは文字と数値だけ＝扱いは Markdown の表と同じ信頼水準なので、別のスペックは持たず
+  本文と一緒に保存・再送する。
+  ノート本文の `` ```ui `` コードブロックも同じ部品で図として描く（#597）。保存は language=`ui` の通常の
+  コードブロックのままで、図にするのは表示（TipTap の NodeView）だけ。Yjs・md 往復・サーバ側の扱いは変えない。
+- **操作を持つ図（app・ask・plan・#604）**: 入力部品とボタン（`-> workflow 名前`・`-> chat`）、
+  質問、計画の承認を、同じ `` ```ui `` で書く（2026-10 の human 決定・エピック #604）。本文は文字のまま保存し、
+  **信頼の境界はサーバー側の次の経路**に置く（画面の図・画面の検証は信用しない）。
+  - **束縛**: 回答が確定したとき、サーバーが本文の操作を持つブロック（トップレベル・エラーの無いもの）を読み
+    （`crates/yui`・TS 版と共有の課題集で一致を確かめる Rust 版のパーサ）、`-> workflow 名前` を**回答した主体**の
+    権限で解決して版を固定し、本文と同じトランザクションで保存する。ボタンの id は
+    `{ブロックのソースの SHA-256 の先頭 16 桁}:{a1}`。画面から送れるのは id・値・冪等キーだけで、束縛は送れない。
+  - **押せる人**: 会話の**編集者**だけ。実行は押した人の権限（ワークフローは本人 ReBAC ∩ declared_scopes）。
+  - **値**: 押されるたびに保存済みの本文からブロックを読み直し、部品の定義で検証する。ワークフローは run を作る前に
+    `input_schema` でも検証する（対話起動の全経路）。
+  - **回数**: 会話に送るボタンは 1 回だけ、ワークフローは送信ごとの冪等キーで 1 回だけ起動する。
+  - **結果**: 起動と結果（run の終端）を会話に記録し、画面とモデル（次の回答の履歴）に渡す。
+  確認・計画の段階（skill の `plan_first`）も本文の ask・plan で進む。質問の段階ではツールを渡さず、回答の
+  ask・plan への応答で段階を進める（`crates/chat/src/worker/gate.rs`・#755）。
+- **ミニアプリ** = 画面（Yui の `` ```ui `` を含む Markdown）＋ skill ＋ ワークフロー（＋Phase 9合流後はテーブル）、の
+  バージョン付きアーティファクト。画面のボタンの実行先は、そのアプリに固定したワークフローの中からだけ選べる
+  （`crates/gui/src/miniapp.rs`）。アンビエント権限なし。ReBACで共有。
   完全な定義・出典は [miniapp-platform.md §6](./miniapp-platform.md)。
 - **skill**（旧 prompt template を統合）= **SKILL.md 相当の指示文**（frontmatter: name/description ＋ 用途・
   振る舞いを書く本文。Claude Code の skill と同型）＋知識スコープ（RAG範囲限定）＋許可ツール＋モデル既定＋few-shot
@@ -493,8 +645,9 @@ flowchart TB
   知識スコープで絞っても最終可読性は個人ReBACで再チェック。呼び出し面は①チャット開始時の初期コンテキスト適用
   ②エージェントへのツールマウント（agent.invoke）③ワークフローの skill ノード、の3つ。
 - すべて「共有可能アーティファクト＋ReBAC＋監査」の共通枠に収まる。
-- カタログにはチャート（vega-lite 的サブセットのチャートスペック）と地図（タイル表示＋ピン）を含む。
-  地図タイルは外部依存（OSM タイルサーバ）＝「外部接続必須機能」区分（NFR-2 参照）。オンプレは自己ホストタイル or 無効。
+- 図の種類（棒・折れ線・円・散布図・流れ図・構成図・地図など）の正本は Yui の仕様（`@imanect/yui`）。
+  地図（`map`）は地点の位置関係と道順だけを描き、背景の地図タイルは読まない（外部接続なし）。タイル表示を足すなら
+  「外部接続必須機能」区分（NFR-2 参照）として扱う。
 - ワークフロー・ミニアプリの編集面（dnd / AI 編集 / shiki script）は [miniapp-platform.md](./miniapp-platform.md) が正本。
 
 ### 4.8 資料作成・Office 統合（Collabora＝docx/xlsx 系・スライドは §4.8.3 の自前実装）
@@ -515,19 +668,66 @@ flowchart TB
     トークンのクレームに tenant_id/org を焼き込み、他テナントのファイルに流用できない。
     PutFile → `update_file_content_internal` → 新バージョン → 既存の書込イベント → RAG 再索引が無改造で動く。
   - **デプロイ（ライセンス方針込み・2026-07 確定）**: Collabora はステートレスコンテナ。
-    **配布物は MPLv2 ソースからの自前ビルド**（公式 CODE バイナリの 10 文書/20 接続制限と商用契約を回避。
+    **配布物は MPLv2 ソースからの自前ビルド**（公式 CODE バイナリは Collabora が本番利用を想定しておらず、
+    無償で本番に使う条件として「MPLv2 ソースから自前でビルド・自前のブランドで出す・自前でサポートする」ことを
+    求めている。自前ビルドは **Shiki Office** としてブランドし、Collabora の名称・ロゴ・EULA を外す（#549。
+    エンジンの内部名 "Collabora Office" は About の「powered by」等に残る。詳細は `deploy/docker/collabora/README.md`）。
     `deploy/docker/collabora/` にタグ pin＋sha256 manifest のビルドパイプライン・fork-policy 準拠・PIT-43）。
     ビルドは重いため別 CI ワークフローでレジストリへ push し、**開発/CI は暫定で upstream CODE イメージ pin 可**
     （配布物は必ず自前ビルド）。SaaS はテナント共有プール、オンプレ/エアギャップは同一イメージ同梱
     （実行時ダウンロードなし・PIT-33 と同型）。compose は `profiles: ["office"]` のオプトイン。
-  - **AI の読み書き（3段・「人間編集中は AI 編集不可」は Collabora 文書のみに限定）**:
+  - **ブラウザ ↔ Collabora は shiki-server の中継を通す（PIT-68・2026-10）**: 26.04 の `executescript`
+    （kit 内で完全な UNO API の JS を走らせる命令）は閲覧専用セッションからも通るため、ブラウザの経路を
+    `office::relay`（`office.relay_port`・既定 9980）へ一本化し、編集セッションのフレームから
+    `executescript`/`proxyreturn` を落とす。HTTP は編集画面が使う経路だけの許可リスト。Collabora 自体は
+    ブラウザへ公開せず、`server_name` は中継の公開ホストを指す。AI 参加者は内部網から直接つなぐ。
+  - **AI の読み書き（3段・issue #352 でライブ参加を実装済み）**:
     ① read = Docling パース（構造保持）を正、convert-to は補助
-    ② edit（非セッション時）= ファイルレベル編集（ingestion-worker の編集系 `edit.py`・
-    python-docx/openpyxl/python-pptx）→ 新バージョン保存（セッション有無は WOPI ロックで判定）
-    ③ edit（セッション中）= **提案バージョンとして保存**（`node_version.is_proposal`・current を進めない・
-    RAG 索引除外・バージョン履歴 UI から editor が「採用」して初めて通常の新バージョン化。PIT-44）。
-    Collabora セッションへのライブ参加はポストアルファの研究課題（postMessage API 経由が候補）。
-    **ネイティブ 3 種（ノート/スライド/CSV）にはこの制限を適用しない**（AI は常時共同編集参加者）。
+    ② edit（ライブ・`office.live_edit`）= **AI が CoolWSD セッションの headless 参加者**
+    （`crates/office` の `live::LiveEditor`・独立 view・参加者リストに「Shiki AI」表示）として接続し、
+    **自 view の選択**でアンカー指定編集（`replace_text`=ExecuteSearch→選択照合→paste /
+    `append_html` / `set_cells`=GoToCell→表 paste→貼った矩形の列幅自動調整）。
+    ユーザーの選択に依存しない（TOCTOU なし）。`set_cells` は値を数値のまま入れて**表示だけ**を整える
+    （桁区切りは `sdval`/`sdnum`・見出し行は `<th>`・列幅は `.uno:SetOptimalColumnWidthDirect`。
+    幅調整の失敗は不発扱いにしない・#385/PIT-52）。
+    編集は CoolWSD の協調プロトコルで全 view へ即時反映され、保存は CoolWSD 自身の WOPI PutFile →
+    既存チョークポイント（版・監査・outbox→RAG 再索引）。文書が開かれていなくても実行できる
+    （AI 単独セッションが立ち、新バージョンとして保存）。WOPI トークンは `ai_actor` クレーム付きで発行し、
+    認可は常に実行を依頼した実ユーザーの editor@file（毎呼び出し HigherConsistency・PIT-11）。
+    ③ edit（ファイルレベル・`office.edit`）= ingestion-worker の編集系 `edit.py`
+    （python-docx/openpyxl/python-pptx）による構造編集・バッチ編集。非ロック時=新バージョン／
+    WOPI ロック中=**提案バージョン**（`node_version.is_proposal`・current を進めない・RAG 索引除外・
+    バージョン履歴 UI から editor が「採用」して通常の新バージョン化。PIT-44）。
+    ④ read / edit（レイアウト水準・`office.read` / `office.excel_edit` / `office.word_edit`・#725・2026-10）=
+    **Shiki Office Engine**。AI は②と同じ headless 参加者として接続し、Collabora 26.04 の `executescript`
+    で **kit 内の固定 JS インタプリタ**（`crates/office/engine/*.js`・リポジトリ管理）を走らせる。LLM が書くのは
+    検証済みの JSON 引数だけで、LLM のコードは kit に入れない（PIT-68）。Excel は値・数式・数値書式・罫線・
+    結合・列幅・条件付き書式・グラフ・印刷設定、Word は ID 付きのブロック一覧・書式つき HTML の差し込みと
+    置換・スタイル・ページ設定・ヘッダー/フッター・目次・表の直接編集・変更履歴まで扱う。一括は UndoManager の
+    1 文脈にまとめ、**途中で失敗したら丸ごと取り消す**（人は 1 回の「元に戻す」で取り消せる）。結果に最新の
+    読み取りを返し、読む→書く→確かめるが 1 本で閉じる。権限は毎呼び出し OpenFGA（読み取り=viewer・
+    編集=editor）、編集系は承認ゲート対象。docx/odt・xlsx/ods を開いたドキュメントアシスタントは④を使い、
+    pptx などは②③のまま。
+    **ネイティブ 3 種（ノート/スライド/CSV）と Collabora の別なく、AI は共同編集参加者**。
+  - **新規作成も Collabora へ一本化（#381・2026-07 確定）**: Word/Excel の**新規作成**は
+    「**空テンプレ（`crates/office/templates/blank.docx` / `blank.xlsx`）を StorageService へ実体化
+    → 同じ HTML paste で本文を流し込む**」の 2 段（`office::OfficeCreator`）。md 下書き画面は廃止した。
+    理由は 2 つ: ①同じ「Word 文書」なのに新規作成だけ md エディタになり編集体験が割れる
+    ②md→docx の自前サブセット（`append_markdown`）は太字/リンク/ネスト箇条書き/引用が落ち、
+    **対応記法を足し続けるいたちごっこ**になる。本物のエンジン（LibreOffice の HTML インポート）に
+    docx 化させる方が忠実度が高い。AI 側は `save_document` / `save_sheet`（いずれも**承認ゲート対象**＝
+    AI が黙ってドライブへファイルを作らない）で、Collabora 未配備の構成では**ツール自体を提示しない**。
+    `append_markdown` は `office.edit`（非ライブのファイル単位編集）が使うため残るが、新規作成経路からは外れた。
+  - **編集結果の可視化（#381）**: 作成/編集ツールは `ToolOutcome.document_refs`（`{id, name, kind, version}`）を
+    返し、`AgentEvent::DocumentRef` → `StreamEventKind::DocumentRef` → `ContentBlock::DocumentRef` を通って
+    チャットに成果物カードとして残る（`note_ref` と同型）。遷移先を決める `kind` の判定は**サーバ側 1 箇所**
+    （`chat::document_ref::kind_for`）。履歴にも `[編集済み文書: name（node_id: id）]` として載せ、
+    「さっき編集した Excel をもう一度直して」が node_id 解決できるようにする。
+  - **AI 同時編集の一貫性モデル（#352）**: 同一ファイルへ複数のサブエージェント／複数チャットから
+    並行 AI 編集が走るケースは面ごとに担保する。ノート/スライド=`LiveDoc` の原子適用＋Yjs CRDT 収束
+    ＋アンカー不一致の skipped 報告／CSV=`base_rev` 楽観ロック（RevConflict→再読込リトライ）／
+    Collabora=**ファイル単位の advisory lock で AI↔AI を直列化**（取得待ち超過は busy 観測・
+    人間↔AI は view 別選択の共同編集に委ねて制限しない）。
   - **スプレッドシート×GAS 相当**: シートのカスタム関数/マクロは shiki script（[miniapp-platform §3](./miniapp-platform.md)）。
     （Phase 11 完遂スコープ外・将来イシュー）
 
@@ -542,13 +742,16 @@ flowchart TB
 - **AI 編集は共同編集参加者**: エージェントの `document.edit` ツールは Yjs トランザクションを発行する専用クライアント
   として同一セッションに参加（awareness に「AI」表示・**既定=直接適用**（AI 名義・undo 可）/サジェストは切替）。
   ファイル直接上書きで人間の編集と衝突する経路を作らない。権限は人間と同じ editor relation チェック。
-  genui グラフ等の本文埋め込みは **`document.embed`**（非破壊 append・確認不要）で行う（通常チャットは
+  図の本文への追記は **`document.embed`**（本文の末尾へ `` ```ui `` の Markdown を非破壊 append・確認不要）で行う（通常チャットは
   確認要ツールを承認者無しで拒否するため `document.edit`（要確認）とは別ツールにする・#282）。
 - **メタデータは frontmatter 型軽量属性**（タイトル・アイコン・タグ・任意 key-value・アクティブ会話 active_thread_id）。
   シリアライズ時に YAML frontmatter へ往復可能に落とす。型付きプロパティ DB（Notion 型）はやらない（将来トラック）。
-- **埋め込み境界（stored XSS 遮断）**: ノートに埋め込めるのは ①genui 検証済みシキコンポーネントスペック
-  ②ミニアプリ/artifact の**別オリジン iframe**（B1 と同じ分離）③ドライブファイル参照（**閲覧者本人の ReBAC で解決**）
-  の 3 種のみ。**生 HTML/JSX はレンダリングしない**（コードブロック表示のみ）。既存の信頼境界以外を作らない。
+- **埋め込み境界（stored XSS 遮断）**: ノートに埋め込めるのは ①ミニアプリ/artifact の**別オリジン iframe**
+  （B1 と同じ分離）②ドライブファイル参照（**閲覧者本人の ReBAC で解決**）の 2 種のみ。**生 HTML/JSX はレンダリングしない**
+  （コードブロック表示のみ）。既存の信頼境界以外を作らない。
+  `` ```ui `` の図ブロックは埋め込みではなくコードブロックの表示の一種（文字と数値だけを描く・Markdown の表と同じ
+  信頼水準）で、この 2 種には加えない。旧 ①genui スペックの埋め込みは #604 で撤去した。既存のノートに残るものは
+  「旧形式の図」と表示するだけで描かない（Yjs の中にあるため migration では書き換えられない）。
 - **ノート×チャット UI**: ノートページが分割ビューを一元ホストし、チャットスレッド UI をサイドパネルとして再利用。
   ノート:会話は **1:N**（実態は M:N）— 会話に由来ノート `thread.origin_note_id` を持ち、アシスタントパネルで
   会話を切替・「新しい会話」でリセット（旧会話は履歴に残る）、サイドバー履歴は「ノート由来」表示＋ノートへ辿れる。
@@ -640,11 +843,16 @@ FR-8。スライドは Collabora に委任せず**自前の第一級ドキュメ
   これを対象に編集する際も `document.edit`/`csv.patch`/`slide.edit` が自身の認可チェック
   （editor relation）を通る（SelectionContext は認可をバイパスしない）。
   サーバは「データであり指示ではない」明示デリミタで LLM メッセージへ織り込む（注入対策）。
+- **HTML ページへの基盤流用**: 本節の資産（`DocKind` の Yjs collab・別オリジン砂箱＋MessagePort ブリッジ・
+  下書き確定型・選択→AI）は §4.13 の HTML ページがそのまま再利用する。**流用しないのはサニタイズだけ**で、
+  スライドは script を禁じるので ammonia が防御として効くのに対し、ページは任意 JS を許すため
+  オリジン分離＋CSP に守りを移す（§4.13・PIT-59）。
 
 ### 4.9 監視
 
 - OTel計装（axum/tonic/agent-core）→ Tempo/Loki/Prometheus（クラウドはエクスポータ差し替え）。
 - Langfuse で LLM 可視化。**監査ログ（権限・引用chunk）と Langfuse を trace_id で突合**（早期に種を蒔く）。
+- DB は `pg_stat_statements` ＋ `auto_explain` ＋ `postgres_exporter` → 既存 Prometheus/Grafana。商用 SaaS（pganalyze 等）を正に据えない理由（オンプレ/エアギャップでクエリ形状を外へ出せない・部品点数最小）と実際の見方は [guides/db-observability.md](./guides/db-observability.md)。
 
 ### 4.10 ミニアプリ／業務アプリ基盤
 
@@ -654,7 +862,7 @@ FR-11。FR-6(A:宣言的) の上に B(コードベース) を足した二層。�
 ```mermaid
 flowchart TB
   subgraph UT["ミニアプリ（out-of-trust）"]
-    A["A 宣言的(FR-6)<br/>検証済UIスペック"]
+    A["A 宣言的(FR-6)<br/>図ブロックの画面"]
     B1["B1 薄型: フロントのみ<br/>別オリジン+CSP"]
     B2["B2 厚型: +サーバ側関数<br/>サンドボックス上"]
   end
@@ -697,6 +905,8 @@ flowchart TB
   IR（JSON DAG）・shiki script・skill・シークレット・実行主体/委譲モデルを含む設計正本は
   **[miniapp-platform.md](./miniapp-platform.md)**。
 - **ランタイム**: B1=別オリジン+CSP（connect-srcゲートウェイ限定・ホスト無権限）／B2=既存サンドボックス（Firecracker/gVisor）+egress allowlist。
+  B1 の「匿名・cookieless・content-address 検証つきで別オリジンに静的バンドルを配る」構造は、
+  §4.13 のサイト公開リスナがそのまま雛形として継ぐ（差分はマニフェストによる複数アセット対応とホスト名解決）。
 - **配布**: マニフェストartifact→内部レジストリへ不変publish→同意インストール（所有テーブル自動プロビジョン＋ReBAC付与）。
   信頼ティア（first-party署名/in-house同意/将来marketplace審査）、オンプレ署名バンドル（ネット不要）、SDK＋CLI（`shiki app init/dev/publish`）。
 
@@ -711,7 +921,7 @@ envelope encryption（マスターキーは `KeyProvider` トレイト）・利�
 ### 4.12 SaaS 運用面（アルファ必須）
 
 - **フィードバック（テナント境界を跨ぐ唯一のデータフロー）**: 二段構え。
-  ①既定=メタデータのみ（評価＋カテゴリ＋run_id/trace_id・**会話本文なし**）を共有コントロールプレーンの
+  ①既定=メタデータのみ（評価＋カテゴリ＋run_id/trace_id・**会話本文なし**）を shiki の SaaS コントロールプレーンの
   feedback ストアへ。ベンダー側は Langfuse/監査と trace_id 突合（本文は見えない）。
   ②内容の共有（本文添付・**自由記述コメントも同格の「顧客コンテンツ」として扱う**。コメント欄に会話の抜粋を
   貼れば本文添付と同じため）=報告ダイアログでのユーザー明示同意時のみ。さらに**組織管理者ポリシーで禁止可能**
@@ -721,10 +931,27 @@ envelope encryption（マスターキーは `KeyProvider` トレイト）・利�
   ①ヘルプセンター UI ②**RAG 組み込み知識スコープ「shiki-help」**（全テナント同梱・事前インデックス・テナントデータと別イン
   デックス）の両面に出す。チャットの doc_search が help コーパスに当たり「できること」の質問に答える。
 - **管理ダッシュボードは2枚**:
-  ①**顧客管理者**（統一シェル＋マイクロフロントエンドの既存設計）: メンバー/ロール・モデルカタログ/予算・
+  ①**顧客管理者**（shiki web の通常ページ。SaaS/オンプレ共通）: メンバー/ロール・モデルカタログ/予算・
   使用量（org/ユーザー/アプリ/ワークフロー別）・監査ビューア＋エクスポート・**同意/委譲の一覧/棚卸し/失効**
   （ワークフロー委譲・skill インストール・secret 利用）・プラン/請求（Stripe ポータル）・組織ポリシー。
-  ②**ベンダーコンソール**（共有コントロールプレーンの新モジュール・Imanect 専用）: テナントライフサイクル
+  **AI 活用分析（#751）**: 使用量（会計）とは別に、浸透・用途・効果を見る管理画面。
+  - 集計は利用者×日のロールアップ（`ai_activity_daily`）を既存の記録（`llm_usage`・`generation_run`・
+    メッセージの content blocks・監査ログ・`workflow_run`）から定期的に作り直す（日付は Asia/Tokyo・
+    直近 7 日と、その前に作られて後から終わったワークフローの作成日は毎回作り直し・作り直しなので at-least-once で冪等）。
+    数えるのはディレクトリの在籍者だけ。在籍者はログイン（と refresh）のたびに `directory_user` へ載せ、
+    新しく載った人がいればその組織の集計を遡ってやり直す（初回の遡りは 180 日＝最長の期間と前期比の分）。
+  - 部署はログイン時の groups claim から作るロールの写し（`directory_user_role`・source=group）。
+    部署で絞れるのは部署まるごとだけで、5 人未満の部署・区分は値を伏せ、絞り込みも断る（PIT-17）。
+  - 用途は組織の設定でオンのときだけ、会話の最初の発話（最大 3 件・2,000 文字）を llm-gateway 経由で
+    分類し、ラベルだけを保存する（本文は保存しない・管理者は読めない）。分類器の呼び出しは利用量に計上し、
+    利用者には数えない。
+  - 個人別（人ごとの利用日数・会話数・機能）は組織の設定で既定オフ。閲覧のたびに監査へ記録し、
+    記録できなければ返さない。
+  - 回答への 👍/👎（理由は定型カテゴリのみ・自由記述なし）は組織内の `message_feedback` に持ち、満足度と
+    👎 の理由に使う。上の「フィードバック」（ベンダーへのメタデータ送信）とは別で、テナント境界を越えない。
+  - 推定削減時間 =（正常に終わり 👎 の付かない会話）× 用途ごとの前提分数（管理者が調整可）＋
+    成功したワークフロー × 手作業の分数。前提にもとづく推定値で、会計・請求の数字ではない。
+  ②**ベンダーコンソール**（shiki の SaaS コントロールプレーン〔§4.1.1〕のモジュール・Imanect 専用）: テナントライフサイクル
   （テナントプロビジョニング/停止/解約・専用ストア契約時は cell 払い出し）・プラン/サブスク・テナント別機能フラグ・
   全テナント横断の**集約**使用量/SLO/ヘルス（顧客データ本文には構造的に到達不能）。
   サポートアクセスは **break-glass 方式のみ**: 顧客管理者の明示許可→時限→全操作監査→顧客画面にバナー。
@@ -748,6 +975,257 @@ envelope encryption（マスターキーは `KeyProvider` トレイト）・利�
   専用ストア（cell）契約時のみ `tofu apply` でプール実体を追加する。オンプレは compose/k8s のまま。
 - **API レート制限**: テナント単位。workflow-engine のトークンバケット（Redis）を API 面にも適用。
 
+### 4.13 HTML ページ／サイト公開（アーティファクト・CMS・フォーム）
+
+2026-08 確定。用途は2つある。①**アーティファクト**＝AI が資料を文字ではなく HTML で組んで見やすくする
+（シキの中で読まれるドキュメント）②**サイト**＝対外的な Web ページを作って公開する（CMS・フォーム・
+マーケティング計測を伴う）。**保存実体・エディタ・レンダラ・砂箱・AI 編集ツールは完全に共有し、
+束ねる器だけを分ける** — アーティファクトは site に属さない単体ページ、サイトは複数ページを束ねて
+ルーティング/ナビ/公開設定/テーマを持つ。スライド（§4.8.3）とは独立の機能だが、基盤（Yjs collab・
+別オリジン砂箱・下書き確定型）はそのまま流用する。ドメインロジックは `crates/site`、
+匿名配信は app-gateway の新リスナに置く（app-platform と app-gateway の分担と同型）。
+
+```mermaid
+flowchart LR
+  subgraph DRIVE["ドライブ（ReBAC・StorageService）"]
+    F["フォルダ = site"]
+    P[".page × N"]
+    N["ノート = collection"]
+    F --> P
+    F --> N
+  end
+  P -- publish --> PUB["publication<br/>不変マニフェスト<br/>path → sha256"]
+  N -- ビルド時生成 --> PUB
+  PUB --> OBJ["ObjectStore<br/>site_bundle_key()"]
+  SITES["第4リスナ: sites オリジン<br/>AuthContext なし・FGA 不介在"] --> PUB
+  SITES --> OBJ
+  BROWSER["匿名ブラウザ<br/>{site}.sites.example"] --> SITES
+  BROWSER -- POST --> FORM["フォーム受付<br/>匿名 principal"]
+  FORM --> DT["data_table<br/>(crates/data)"]
+```
+
+- **モデル**:
+  - **`page`**: `.page`・MIME `application/vnd.shiki.page+json`。真実は **Yjs**（`DocKind::Page`・§4.8.1 の
+    collab 基盤を共有）。`Map "meta"` はノート/スライドと同一マップ名/型を共用（メタデータパネル・
+    アシスタントパネルの実装を共通化するため）。人間の GrapesJS 編集と AI の op 編集が
+    **同一 Yjs ドキュメントへ収束する**ことが Yjs を選ぶ理由で、明示保存＋楽観ロックでは両者が `rev` 衝突で戦う。
+    ただし**収束は HTML の構文健全性を保証しない** — 本文を単一の `Y.Text` に持つ以上、CodeMirror・GrapesJS・AI が
+    同じタグの周辺を並行編集すると文字粒度のマージでタグが割れる。スライドが PIT-41 で採った防御
+    （取り込み時の DOMParser parse→serialize 正規化・編集中プレゼンス・収束後の well-formed 検査）を
+    **そのまま適用する**。
+  - **`site`**: **ドライブのフォルダ node ＋ それを指す `site` メタ**（slug・ドメイン・テーマ・公開設定）。
+    フォルダを器にすることで権限・移動・削除・共有・全文検索・ゴミ箱・版が ReBAC の folder→file 継承で
+    そのまま効き、StorageService の単一チョークポイントを迂回しない。
+  - **`publication`**: **不変の公開スナップショット**（マニフェスト `path → {sha256, content_type}`・
+    `indexable`・**そのページが参照するフォーム定義の版**）。公開読み取りが FGA を通さずに引く唯一の表なので、
+    node とは別テーブルに切る。
+  - **`form`**: `data_table` を指すメタ（公開するフィールドのサブセット・既定値）。1 テーブルに複数フォームから
+    入る（問い合わせとセミナー申込が同じ顧客テーブル）ため、`data_table` 直結にはしない。
+    **定義は版を持ち、publication がその版をピン留めする** — `form` は可変メタなので、不変 HTML が
+    「現在の定義」を参照すると、**再 publish なしに過去ページの宛先・スキーマ・既定値が変わる**
+    （バンドルから外部参照を断った PIT-60 と同じ穴が、アセットではなく定義で開く）。受付は送信が属する
+    publication からピン留め版を解決して検証し、署名済み送信トークンと冪等キーも同じ版に束縛する。
+    定義を変えたら**再 publish を要求する**（ミニアプリが同意時に `frontend_bundle` を焼くのと同型）。
+  - **`collection`**: site フォルダ配下のノート群（`posts/` 等）を記事集合として登録したもの。
+- **配信は2経路**（本節の最重要判断）: 一般公開は性能とコストの理由で **FGA を通さない**。
+  - **匿名公開** = app-gateway に**第4リスナ（sites オリジン）**を新設し、B1（§4.10）と同型に
+    **`AuthContext` を作らない**。ゲートは「host → site → active publication → マニフェスト」の 1 引きと
+    sha256 照合だけで、認証コードがそもそも存在しないという B1 の保証を継ぐ。
+  - **限定共有** = 既存の Session＋FGA 経路（共有リンク・§4.1）。下書きを関係者に見せるのはこちら。
+  - **Next 側 SSR は採らない**: 「生 HTML をアプリオリジンでレンダリングしない」不変条件（§4.8.3・PIT-40）に
+    反し、任意 JS 可と組み合わせるとセッションを取られる。
+  - **FGA を通さないことと、チョークポイントを持たないことは別**: 配信リスナは DB と ObjectStore を
+    直接触らず、`crates/site` の **`PublicSiteService`（公開読み取りの単一チョークポイント）**だけを呼ぶ。
+    Host からの site/tenant/org 解決・publication 引き・blob 取得・監査・バックエンド差し替えを
+    ここ 1 箇所に閉じ、リスナには HTTP の作法しか置かない。FGA を参照しないのは
+    **publication が publish 時点で認可済みの不変スナップショットだから**であって、
+    認可判断を各リスナへ散らしてよいという意味ではない。なお `AuthContext` に匿名 principal を足すことは
+    しない（PIT-58 の「やってはいけない代替」）— 公開読み取りが運ぶのは Host 由来の
+    `PublicSiteContext {site_id, tenant_id, org}` であり、これは認可の根拠ではなく監査と多テナント絞り込みの帰属情報である。
+- **バンドル**: publish はページ HTML と参照アセット（CSS/JS/画像）を **content-address でバンドルへ取り込む**
+  （ドライブ参照を残さない理由は PIT-60）。キーは `content_address.rs` に `site_bundle_key()` として単一定義
+  （書込側/配信側の drift 防止・B1 と同じ理由）。配信時に sha256 を再計算して照合する。
+  **ロールバックは active ポインタの差し替え**で済む（スナップショットが不変なので再ビルド不要）。
+  - **キャッシュは URL の性質で二分する**（B1 をそのまま真似ない）。B1 の URL は `/a/{app_id}/{sha256}` で
+    内容が URL に含まれるため `immutable` が正当だが、サイトの公開 URL は Host と通常のパスから
+    **active publication を引く安定 URL** なので同じ扱いにできない。`immutable` を付けると共有キャッシュが
+    最長 1 年古い HTML を配り続け、publish もロールバックも、とりわけ **unpublish が温まった CDN に届かない**。
+    したがって **HTML と active マニフェストは再検証可能**（`no-cache` ＋ 現行 publication の ETag。
+    切り替えは ETag が変わるので次の要求で反映される）とし、**`immutable` は URL に sha を含めたアセットにのみ**
+    与える（publish 時にアセット URL を sha 付きへ書き換える）。
+  - **A/B を有効にしたページは、既定では共有キャッシュに置けない**。割当をサーバ側で決めても、安定 URL の
+    キャッシュキーはバリアント間で同一なので、共有キャッシュが A の HTML を B の訪問者へ配り、
+    publication 単位の ETag ではバリアント差を表せないため**日次ソルトを切り替えても 304 で古い方が返る**。
+    したがって既定は `private, no-store`（CDN キャッシュを捨てるのが対価）。
+    **バリアントとソルト世代をキャッシュキーと ETag の両方に含める構成が取れる場合に限り、共有キャッシュを許す** —
+    どちらか一方だけでは足りない（キーだけだと 304 で古い方が返り、ETag だけだと別バリアントに当たる）。
+- **オリジンと URL**: `{site}.sites.<domain>`。**サイトごとに独立したオリジン**にするのは任意 JS を許すための
+  前提条件で、パスベース相乗りではサイト A の JS がサイト B の localStorage に届く（PIT-59）。
+  名前は **publish 時に発番する不透明 ID が既定**で、望むテナントだけ vanity を申請する
+  （グローバル先着・予約語リスト）。既定が不透明なら 404/403 の差から他テナントのサイト名を推測できない。
+  ワイルドカード証明書を 1 階層で済ませるためテナント名はホストに出さない。独自ドメインは
+  ACME on-demand ＋ CNAME 所有確認で後段。**ホスト名でのルーティングは本節が初出**であり、
+  セッション cookie は従来どおりテナントを値に埋め込む（`crates/api/src/session`）— 匿名面は cookie を読まない。
+- **CSP とサニタイズ**: `site_csp()` を `bundle_csp()`/`builtin_csp()` と同型の純粋関数＋golden テストで固定する。
+  許可は self ＋ シキ CDN のみ、`connect-src` はフォーム受付と計測ビーコンの 2 宛先だけ、
+  **外部 CDN と外部 fetch は全面禁止**。**`default-src` が届かない 3 つを明示する**（PIT-62）—
+  `form-action` はシキの受付先のみ（`connect-src` は fetch/XHR/beacon にしか効かず、`<form>` の送信を止めない。
+  `builtin_csp()` が同じ理由で `form-action 'none'` を明示している）、`base-uri` は自オリジン固定
+  （`<base>` で相対 action を外部へ向けられる）、`worker-src 'none'`
+  （Service Worker は publication 切替後も生き残り、ロールバックと unpublish を無効化する）。
+  **サニタイズはしない** — ammonia は `<script>` を落とすことが防御の本体
+  なので、script を許した時点で防御力を失い、正当な HTML を理由も告げず壊すだけの機構が残る
+  （§4.8.3 のスライドは script を禁じているので ammonia が効く。前提が違う）。守りはオリジン分離と CSP に
+  集約し、構造的上限（バンドル合計サイズ・ファイル数・1 ファイルサイズ）だけ B1 と同型に置く。
+- **インデックス制御（既定 noindex）**: 四重で守る。①配信レスポンスの `X-Robots-Tag: noindex, nofollow`
+  ②配信オリジンの `robots.txt` 既定 `Disallow: /` ③publication の `indexable`（既定 false）
+  ④`sitemap.xml` は indexable なページからのみ生成。`indexable=true` にできるのは「公開範囲＝匿名」かつ
+  「テナント管理者がテナント設定で許可（既定 OFF）」の**二重ゲート**（PIT-61）。
+- **エディタ**: 1 ページ＝1 HTML ドキュメントで、タブは**プレビュー／ビジュアル／コード**の 3 つ。
+  アセットは同じドライブフォルダの普通のファイルとして置き publish 時に集める（マルチファイル IDE は作らない）。
+  ビジュアルは §4.8.3 の GrapesJS 砂箱を一般化して再利用し、コードは **CodeMirror 6**
+  （`y-codemirror.next` で Yjs 直結・TipTap＋y-prosemirror と同型）。プレビューは opaque origin iframe を既定とし、
+  実機同等の確認が要るときだけ sites オリジンの短命プレビュー URL を使う
+  （未公開ページを推測不能 URL で常時配るのは採らない）。共通シェル（`usePageHeader`・没入モード・
+  新規作成フック）は既存 3 エディタと共用する。
+- **AI 生成とデザイン規範**: 生成は `save_page` の**下書き確定型**（`save_slide` と同型: 下書きカード→下書き画面→
+  「ドライブに保存」）、編集は `page.edit` が Yjs トランザクションを発行する共同編集参加者
+  （§4.8.3 と同一原則・排他なし）。デザイン規範は**アーティファクト＝シキのデザイン言語**
+  （`globals.css` のトークン。§4.7 の図ブロックを既存画面へ合わせるのと同じ理由）、**サイト＝site テーマ**
+  （色・フォント・角丸・余白・アニメの強さ）。テーマ値は CSS カスタムプロパティとプロンプトの
+  **両方へ 1 箇所から注入**する（人間が見るものと AI が知るものを分けない）。
+- **フォーム**: 正本は**生 HTML の `<form>`**（`action` が受付エンドポイント・JS 無効でも動く）で、
+  ノーコード用に `<div data-shiki-form="...">` の埋込タグを併設する（自前 CDN の JS が §4.7 の Form を描画）。
+  送信フィールド名は自己申告なので信用せず、`form` 定義に照らして検証する（`crates/data` のスキーマ検証を再利用）。
+  **蓄積先は `data_table`。CSV は使わない** — CSV は「ファイルが真実」（§4.8.2）で 1 送信ごとに全読み全書きの
+  新バージョンになり、同時送信が `base_rev` 409 で落ちる。CSV は `csv.write` によるエクスポート先に留める。
+  受付は**メイン API ではなく sites リスナ側**に置く（匿名 principal・レート制限・冪等台帳・監査の要件は PIT-58）。
+  送信は `data.record.created` を outbox へ出してワークフロー（§4.10）のトリガにする。
+  - **冪等性は 2 段構えにする**。静的 publication に焼かれた生 HTML は、JS も cookie も動的レンダリングも
+    使わないので**閲覧ごとに一意な冪等キーを埋め込めない**（publish 時に焼けば全訪問者が同じ値になり、
+    省けば再送を識別できない）。したがって、JS がある経路（埋込タグ・生 HTML＋任意 JS）は
+    **受付が発行する短命の署名済み送信トークン**を冪等キーとして使い、**no-JS 経路は
+    `(publication_id, form_id, フォーム定義版, 正規化ペイロードのハッシュ, クライアント IP ハッシュ)` を鍵に短い時間窓で重複排除する**という
+    縮退した冪等性に留める。後者は「同じ内容の正当な再送信が窓の間だけ落ちる」ことを意図した縮退として受け入れる
+    （窓は分単位）。**全経路で一様な冪等性が成り立つ、とは書かない**。
+  - **レート制限は分散でなければ意味がない**。`share_link_redeem` の limiter は自ら
+    「プロセス内 best-effort（各レプリカ独立）」と宣言しているので、匿名フォームに流用すると
+    許容量がレプリカ数だけ増え、再起動で消える。**workflow-engine の Redis トークンバケット**
+    （Lua でアトミック・キーは自由形式）を基盤として流用するが、**キー契約は新たに定義する** —
+    既存の呼び出し側は能力呼び出し向けに `tenant_id:capability` を使い、名前空間も `wf:ratelimit:` なので、
+    sites リスナ用の契約はまだ存在しない。決めるのは ①バケットキー（`tenant_id` ＋ 制限対象の種別
+    （IP / `form_id`）＋ 正規化した値）②IP 単位・`form_id` 単位・テナント全体の 3 段の上限と**適用順序**
+    ③実クライアント IP の入力契約（trusted-proxy 境界から得た値のみ）④sites 用の名前空間。
+    既存 API で表現できなければ、キー生成と適用を sites 側の薄い API として足す。流用するのは
+    `share_link_redeem` の**構造**（ロック外での重い検証・advisory lock による直列化・deny 台帳・
+    理由を区別しない失敗）であって、limiter の実装ではない。
+  - **クライアント IP は信頼境界を決めてから使う**。sites リスナは ingress の背後に置かれるため、
+    ソケットの peer IP では全訪問者が 1 アドレスに潰れ、`X-Forwarded-For` を無条件に信じれば
+    値を偽って制限を回避できる。**ingress がヘッダを上書きし、設定済みの proxy hop からのみ実 IP を採る**契約を
+    構成として持つ（リポジトリに前例が無いので本節が初出）。
+- **CMS**: コンテンツ本体は**ノート**（§4.8.1）。frontmatter に `status`/`date`/`slug`/`category` を持たせ
+  （`NoteMeta` の任意 kv をそのまま使う）、site フォルダ配下のコレクションとして登録する。publish 時に
+  テンプレート `.page` を当てて記事 HTML と一覧を**ビルド時に生成**する。publish がバンドル生成である以上、
+  動的レンダリングを持たない静的サイトジェネレータ型が「FGA を通さない配信」と整合する。
+  一覧・ページネーション・カテゴリ絞り込みはビルド時、サイト内検索は静的 index JSON。
+  構造化コンテンツ（商品カタログ等）を `data_table` から生成するのは後段。
+- **アニメーション**: 外部 CDN を塞ぐため、シキ製の薄い CSS ライブラリを**自前 CDN**（`builtin` 配信の一般化）に
+  置き、クラス付与だけで効く形にする。スクロール連動は小さな IntersectionObserver フォールバックを同梱し、
+  URL にバージョンを焼いて不変配信する。`prefers-reduced-motion` での一括停止は `globals.css` と同型で必ず入れる
+  （「JS は見せ場だけ」という既存方針を公開ページにも適用する）。
+- **A/B テストと計測**: 割当は配信リスナ側で行うが **cookie は焼かない** — 日次ソルト付きハッシュ（IP＋UA）で
+  決定的に算出する。これが避けるのは **ePrivacy が要求する「端末への保存/読み出し」への同意**であって、
+  **IP と UA の処理そのものが不要になるわけではない** — ソルト付きハッシュは匿名化ではなく仮名化なので、
+  法的根拠・利用目的・保持期間・ソルト（または HMAC 鍵）の保護方法・オプトアウト手段を定める必要がある。
+  **同意バナーの要否は法務確認事項として残し、設計側で「同意不要」と断定しない**。A/B の既定有効化は
+  この確認が済むまで行わない。計測は**専用テーブル `site_event`**
+  （`llm_usage` と同型だが、一意制約は **`unique(tenant_id, site_id, idempotency_key)`** —
+  `tenant_id` だけで括ると、同一テナントの別サイトが同じ鍵を使ったイベントまで重複排除され、
+  片方のサイトの計測が黙って落ちる）を新設する。outbox は `node_id not null` かつ
+  配送後に GC されるため分析ストアにならない。生の IP/UA は保存せず日次ソルト付きハッシュのみ、
+  **計測も既定 OFF**。集計は jobq 経由の非同期だが、`jobq` は at-least-once（PIT-31）なので
+  **一意制約が守るのは受信行の重複だけで、集計値の二重加算は防がない** — 集計は `site_event` を真実として
+  導出するか、増分を持つなら集計更新と「集計済みの印」を同一トランザクションで行う。
+  未投入（行は残ったが enqueue 前に落ちた）は at-least-once では回復しないので、
+  `jobq::enqueue_on` を `site_event` の挿入と**同一トランザクション**で呼ぶ（`crates/jobq` の本質価値）。
+  **ビーコンもフォームと同じ匿名書き込み面**なので、PIT-58 の境界（Host/publication からの site/tenant/org 束縛・
+  サイズ上限・分散レート制限・クォータ・監査）を**そのまま適用する**。`unique(tenant_id, site_id, idempotency_key)` は
+  同じキーの再送しか止めず、鍵を作り変え続ける相手には `site_event` と jobq を埋められる。
+- **オンプレの縮退**: サイト公開はワイルドカード DNS ＋ ワイルドカード証明書 ＋ ingress が構成されている場合に
+  のみ有効化する。未構成なら**機能フラグ OFF** でアーティファクト（シキ内閲覧＋共有リンク）だけが使える。
+  パスベースへのフォールバックは採らない — オリジン分離という前提条件が崩れ、オンプレだけサイト間 XSS が
+  成立する。コードは同一で、構成による無効化に留める。
+- **公開範囲の現段階**: 匿名公開の解禁自体は PIT-46（テナント跨ぎ閲覧共有の安全包絡）と同じ包絡に属し、
+  human 承認を要する。**「同一テナント内に閉じた公開」の意味を取り違えない** — 匿名リスナは閲覧者の
+  テナントを持たないので、これは「閲覧者が同じテナントに属することを検査する」という意味ではない。
+  本設計の境界は**所有テナント基準**で、`Host → site → publication` で解決した所有テナント/org に対して
+  publish 時に検査し、以後は不変 publication を匿名へ配る。**閲覧者テナントによる制限が要件なら、
+  匿名配信ではなく Session＋FGA 経路（共有リンク）を使う**。したがって現段階の縮退は「匿名到達を既定 OFF に
+  したまま、限定共有だけで配る」ことであり、**将来のパブリック公開を前提に境界（別オリジン・noindex 既定・
+  匿名 principal の束縛・参照断ち・定義の版ピン）を先に敷く**。
+
+### 4.14 職員間メッセージ（チャンネル／DM・`crates/messaging`）
+
+2026-08 追加。**人と人が会話する面**。§4.4 のチャット（人と LLM）とは別機能だが、**content blocks・
+配信・監査・ReBAC はすべて既存の枠に載せる**。メッセージ機能のために権限判定を新設しないことが設計の要。
+
+```mermaid
+flowchart LR
+  subgraph FGA["OpenFGA"]
+    CH["channel<br/>member / admin / parent→org"]
+    FILE["file<br/>既存の relation"]
+  end
+  subgraph MSG["crates/messaging"]
+    C["channel"] --> M["message<br/>blocks: text/file_ref/mention"]
+    M --> R["reaction"]
+    C --> RS["read_state"]
+  end
+  M -- file_ref --> SS["StorageService<br/>（表示時に FGA 評価）"]
+  SS --> FILE
+  C --> FGA
+  M -- 索引 --> FT["全文検索<br/>二段 authz"]
+  M -- 文脈 --> AC["agent-core<br/>AuthContext は照会者"]
+  M --> AUD["audit_log"]
+  API["SSE + Redis pub/sub<br/>topic に tenant_id"] --> M
+```
+
+**ドメイン**（`crates/messaging`）。`channel`（`kind` = Public / Private / Dm）・`channel_member`・
+`message`（`parent_id` でスレッド返信）・`message_reaction`・`read_state`。
+**DM は独立テーブルにせず `kind = Dm` のチャンネルとして持つ** — 検索・監査・配信・保持期間の経路を
+1 本に保てる。グループ DM も同型になる。未読は `read_state.last_read_at` より新しい件数で導出し、
+既読フラグを行ごとに持たない（1,000 接続 × 発言数の書き込みを避ける）。
+
+**本文は §4.4 の content blocks を共有する。** `text` / `file_ref` / `mention` の部分集合。
+`file_ref` は **file_id を持つだけで本文を複製しない**。表示のたびに StorageService 経由で ReBAC を
+評価し、権限が無い相手には「参照できない添付」として出す。共有した後に文書の権限を絞れば、
+過去の発言からも見えなくなる。
+
+**認可は OpenFGA に `channel` 型を新設**して表す。公開チャンネルは `member from parent`（org 継承）、
+非公開と DM は明示タプルのみ。**relation schema はポリシ決定であり human 承認が要る**（AGENTS.md）。
+`can_post` を `member` と同一にするか分けるか、`admin` を org 管理者から継承させるかは未決。
+
+**配信**は SSE ＋ Redis pub/sub。**トピック名に必ず `tenant_id` を含める**（アンビエント権限の禁止）。
+購読開始時に FGA でチャンネル可視性を解決するが、**開始時の 1 回では足りない** — メンバーシップを
+剥奪された接続が購読を持ち続ける。剥奪イベントで接続側へ leave を push し、あわせて購読の再評価に
+上限 TTL を置く（PIT-64）。
+
+**検索**は RAG の索引には入れず、発言専用のコレクションを全文検索側に持つ。**二段 authz** は RAG と同型で、
+pre-filter が「検索者が member のチャンネル」に絞り、post-filter が結果の `channel_id` を再評価する。
+索引はメンバーシップ変更に追従させる（退出後のチャンネルの発言が pre-filter をすり抜けても
+post-filter で落ちること）。
+
+**メッセージからの対話呼出し**は agent-core を呼ぶ。`AuthContext` は**照会者**のもので、チャンネルの
+発言を文脈として渡す。**渡してよいのは照会者が読める発言だけ** — 参照文書側は RAG の二段 authz が守るが、
+発言そのものの混入は messaging 側でしか止められない（PIT-63）。
+
+**管理者の閲覧（eDiscovery）は通常の read 経路に相乗りさせない。** 専用の管理 API に分け、
+公開チャンネルは管理者ロールで、DM と非公開チャンネルは**承認レコード（承認者・対象・期間）を作った
+場合に限り、その期間内だけ**読めるようにする。全操作を `audit_log` へ落とす。承認者を誰にするかは
+テナントの規程に依存するため設定可能にする（PIT-65）。
+
+**外部ユーザーは参加できない。** principal はテナント内に限り、Phase 13 の匿名 `PrincipalKind` を
+messaging の経路へ流さない。
+
 ## 5. リポジトリ構成（モノレポ・Rustワークスペース）
 
 ```
@@ -764,14 +1242,15 @@ crates/
   sandbox-wasm/    # agentos フォーク（wasm ティア・非特権別プロセス）
   fuse/            # StorageService の FUSE 表現（gVisor/FC ティア用）
   data/            # 構造化データサービス・record/schema・行authz述語・FSMガード
-  app-gateway/     # 公開APIゲートウェイ(BFF)・OAuth2/スコープ・能力面
+  app-gateway/     # 公開APIゲートウェイ(BFF)・OAuth2/スコープ・能力面・B1配信・sites 匿名配信リスナ
   app-platform/    # ミニアプリ artifact・マニフェスト・レジストリ・skill
   workflow-engine/ # ワークフロー IR・Durable Execution・スケジューラ・トリガ
   script-runtime/  # shiki script 実行（swc＋wasmtime/QuickJS・非特権別プロセス）
   secrets/         # シークレット管理・KeyProvider
   office/          # OfficeSuite トレイト・WOPI ホスト（Collabora）
-  collab/          # Yjs(yrs) 共同編集同期サーバ・DocKind（ノート md／スライド）シリアライズ
+  collab/          # Yjs(yrs) 共同編集同期サーバ・DocKind（ノート md／スライド／HTML ページ）シリアライズ
   tabular/         # CSV クエリ/パッチ単一チョークポイント（DuckDB は非特権別プロセスに隔離）
+  site/            # サイト/ページ/publication・publish パイプライン・マニフェスト・フォーム定義
 ingestion-worker/  # Python: Docling パース・docx/pptx 生成/編集
 web/               # Next.js / TypeScript（generative UIレンダラ・ミニアプリB1配信・dnd/TipTap エディタ・
                    # editor-sandbox=GrapesJS スライドエディタの別オリジン砂箱バンドル）

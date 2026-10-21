@@ -15,6 +15,10 @@ impl StorageService {
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
         let node = self.load_node(ctx, file_id, false).await?;
+        // 共有リンクの遅延失効（#342・defense-in-depth）: 期限切れなら FGA タプルを先行剥奪して
+        // から viewer 判定する（新規 open が期限後のタプルで通らないようにする）。
+        self.enforce_share_link_expiry(ctx, file_id, node.kind)
+            .await?;
         self.require_read(
             ctx,
             &ctx.ns().file(&file_id.to_string()),
@@ -53,6 +57,7 @@ impl StorageService {
     /// 読み飛ばす）。継承を pre-filter にした「親が読めれば全子可視」の最適化は採らない:
     /// move 直後は DB の `parent_id` が先に見え、新親の FGA `parent` タプルが遅延し得るため、
     /// DB 親子関係を認可の近道にすると未認可の子を露出し得る（FGA を真実とする）。
+    #[allow(clippy::too_many_arguments)] // 認可 ctx ＋ 親 ＋ ソート ＋ ページング ＋ 可視性 ＋ trace。
     pub async fn list_children(
         &self,
         ctx: &AuthContext,
@@ -60,12 +65,19 @@ impl StorageService {
         sort: ChildSort,
         cursor: Option<&str>,
         limit: usize,
+        include_system: bool,
         trace_id: Option<&str>,
     ) -> Result<ChildPage, StorageError> {
         // 親の閲覧可否を先に確認（ルートは org メンバー）。読めない親は存在秘匿で空扱い。
         match parent_id {
             Some(p) => {
                 self.ensure_folder(ctx, p).await?;
+                // 共有リンクの遅延失効（#368/A-3・defense-in-depth）: 親フォルダの期限切れ broad
+                // タプルを先行剥奪してから viewer 判定する（get_metadata と同じ経路を列挙にも通す）。
+                // 子ごとの遅延失効は列挙のホットパスに reconcile を撒くコストが高いため通さない
+                // （子はイベント駆動タイマ＋各 open 時の get_metadata で eventual に失効する）。
+                self.enforce_share_link_expiry(ctx, p, NodeKind::Folder)
+                    .await?;
                 self.require_read(
                     ctx,
                     &ctx.ns().folder(&p.to_string()),
@@ -118,9 +130,12 @@ impl StorageService {
         while items.len() < limit && !exhausted {
             // keyset: (sort_col, id) cmp (after_val, after_id)。parent_id は IS NOT DISTINCT FROM で
             // NULL（ルート）も同値比較する。after_val は text で受けて列型へキャストして比較する。
+            // `include_system=false`（ドライブ UI 等）はシステム領域（#392）を除外する。
+            // true はエージェント自身のワークスペース列挙だけが使う（chat::StorageWorkspaceStore）。
             let sql = format!(
                 "SELECT {NODE_COLS} FROM node \
                  WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL \
+                   AND ($7 OR system = false) \
                    AND parent_id IS NOT DISTINCT FROM $3 \
                    AND ($4::text IS NULL OR ({sort_col}, id) {keyset_cmp} ($4::{sort_cast}, $5)) \
                  ORDER BY {sort_col} {order_dir}, id {order_dir} LIMIT $6"
@@ -132,6 +147,7 @@ impl StorageService {
                 .bind(after_val.as_deref())
                 .bind(after_id)
                 .bind(batch)
+                .bind(include_system)
                 .fetch_all(&self.db)
                 .await?;
             if (rows.len() as i64) < batch {
@@ -251,9 +267,11 @@ impl StorageService {
         let mut items: Vec<Node> = Vec::with_capacity(limit);
         let mut exhausted = false;
         while items.len() < limit && !exhausted {
+            // 名前検索はユーザー向けの導線のみ（システム領域は常に対象外・#392）。
+            // エージェントのワークスペースは名前解決（`resolve_child_file`）で引く。
             let sql = format!(
                 "SELECT {NODE_COLS} FROM node \
-                 WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL \
+                 WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL AND system = false \
                    AND name ILIKE ALL($3) \
                    AND ($4::text IS NULL OR ({sort_col}, id) {keyset_cmp} ($4::{sort_cast}, $5)) \
                  ORDER BY {sort_col} {order_dir}, id {order_dir} LIMIT $6"

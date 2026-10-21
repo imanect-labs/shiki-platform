@@ -46,10 +46,14 @@ impl Role {
 
 /// 引用チャンク（RAG 検索結果 → 会話内の citation ブロック / SSE citation イベント）。
 ///
-/// 元文書へジャンプできるよう node_id/folder_id/page/heading_path を持つ。RAG の
-/// `SearchResult` には文字オフセットが無いため、粒度は page＋heading_path まで。
+/// 本文の `[n]` は `cite_id` で引く（配列の位置ではない）。権限で一部の引用を落としても
+/// 残りの番号はずれない（#508）。位置情報（anchor / quote / boxes）は引用時点の版
+/// （`version`）の `doc_block` を指す。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct Citation {
+    /// 応答内の通し番号（本文の `[n]`）。0 は採番前に保存された旧データ（配列の位置で引く）。
+    #[serde(default)]
+    pub cite_id: u32,
     /// 引用元ファイルの storage node id。
     pub node_id: String,
     /// 引用チャンク id（監査突合の鍵）。
@@ -64,6 +68,67 @@ pub struct Citation {
     pub heading_path: Vec<String>,
     /// ランクベースの正規化スコア。
     pub score: f32,
+    /// 引用時点のファイルの版。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<i64>,
+    /// `doc_block` 上の範囲（位置情報を持たない旧インデックスは無し）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<rag::Anchor>,
+    /// 元エディタで探すための一節（前後の文脈つき）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<rag::TextQuote>,
+    /// PDF のページ上の枠（PDF 以外は空）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boxes: Vec<rag::PageBox>,
+    /// 閲覧者の権限では読めない引用（共有された会話）。番号だけを残し、中身は空にする。
+    /// 本文の `[n]` を「閲覧できない出典」として描くために使う（番号は本文に既に出ている）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub withheld: bool,
+}
+
+impl Citation {
+    /// 番号だけを残した「閲覧できない出典」（ファイル・本文・位置情報は一切持たない）。
+    #[must_use]
+    pub fn withheld(cite_id: u32) -> Self {
+        Citation {
+            cite_id,
+            node_id: String::new(),
+            chunk_id: String::new(),
+            snippet: String::new(),
+            page: None,
+            heading_path: Vec::new(),
+            score: 0.0,
+            version: None,
+            anchor: None,
+            quote: None,
+            boxes: Vec::new(),
+            withheld: true,
+        }
+    }
+}
+
+impl From<&agent_core::Citation> for Citation {
+    fn from(c: &agent_core::Citation) -> Self {
+        Citation {
+            cite_id: c.cite_id,
+            node_id: c.node_id.clone(),
+            chunk_id: c.chunk_id.clone(),
+            snippet: c.snippet.clone(),
+            page: c.page,
+            heading_path: c.heading_path.clone(),
+            score: c.score,
+            version: c.version,
+            anchor: c.anchor,
+            quote: c.quote.clone(),
+            boxes: c.boxes.clone(),
+            withheld: false,
+        }
+    }
+}
+
+/// 旧行（フィールド追加前に永続化された `content`）を成功として読むための serde 既定。
+fn default_true() -> bool {
+    true
 }
 
 /// メッセージ本文の構造化ブロック。`content = ContentBlock[]`。
@@ -77,20 +142,31 @@ pub enum ContentBlock {
     /// 思考（extended thinking の可視化。表示は任意）。
     Thinking { text: String },
     /// ツール呼び出し（エージェントモード）。
+    ///
+    /// `step` は同一ループステップの通し番号。ライブ表示と同じ「並行して N 件」の
+    /// グルーピングを履歴でも再現するために残す。
+    ///
+    /// **`None` は「不明」であって 0 ではない**（フィールド追加前の行）。既定 0 にすると、
+    /// 逐次実行だった過去の応答が再訪時に「並行して N 件」と誤表示される。
     ToolCall {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<u32>,
     },
     /// ツール結果。
+    ///
+    /// `ok=false` は観測エラー。これが無いと履歴で失敗が成功と同じ見た目になる（#358/#386）。
+    /// 旧行は成功として扱う（既定 true）。
     ToolResult {
         tool_call_id: String,
         content: String,
+        #[serde(default = "default_true")]
+        ok: bool,
     },
     /// 引用（doc_search / 古典 RAG 注入の戻り）。
     Citation(Citation),
-    /// 宣言的 UI（Phase 6 で実体化。Phase 3 はプレースホルダ）。
-    GenerativeUi { spec: serde_json::Value },
     /// 保存済みワークフローへの参照カード（emit_workflow・Task 10.13）。
     /// `workflow = {id, name, display_name, version}`（保存パイプライン通過済みのみ）。
     WorkflowRef { workflow: serde_json::Value },
@@ -109,9 +185,13 @@ pub enum ContentBlock {
     /// `draft = {name, csv}`（csv=CSV 本文・StorageService 未作成）。
     /// フロントは下書き CSV 画面を開いて詰めてから「ドライブに保存」で確定する。
     CsvDraft { draft: serde_json::Value },
-    /// 未保存の下書き Word 文書カード（save_document の下書き確定型・#332）。
-    /// `draft = {name, markdown}`（まだ .docx 化も StorageService 作成もしていない）。
-    /// フロントは /office/draft を開いて詰めてから「ドライブに保存」で .docx 化・確定する。
+    /// AI が作成/編集した文書への参照カード（#381）。
+    /// `document = {id, name, kind, version}`（kind=office/note/csv/slide・実在ノードのみ）。
+    /// フロントは kind に応じて /office/{id}・/notes/{id}・/csv/{id}・/slides/{id} へ導線を出す。
+    DocumentRef { document: serde_json::Value },
+    /// **レガシー**: 未保存の下書き Word 文書カード（#332・#381 で廃止）。
+    /// 新規に生成されることは無い。**過去履歴の読み込み互換のためだけ**に残す
+    /// （variant を消すと `document_draft` を含む既存メッセージが復号できず会話が開けなくなる）。
     DocumentDraft { draft: serde_json::Value },
     /// 添付ファイル参照（ストレージ node 参照のみ）。
     FileRef { node_id: String, name: String },
@@ -128,11 +208,36 @@ pub struct Attachment {
     pub name: String,
 }
 
+/// チャット run のモデル指定（投入時に API がテナント設定で解決・検証した値・#553）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunModel {
+    /// 論理モデル名（カタログ内）。
+    pub model: String,
+    /// 思考強度（モデルが対応しなければ `None`）。
+    pub effort: Option<llm_gateway::Effort>,
+    /// ユーザーが選ばなかった（Auto）か。Auto のときだけ skill のピンがモデルを上書きできる。
+    pub auto: bool,
+}
+
 /// skill のバージョンピン 1 件（thread の「最初からロード済み」スキル・#344 Task 10.11）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SkillPin {
     pub skill_id: Uuid,
     pub skill_version: i64,
+    /// この発話が起動したコマンド variant の `args`（`/deep-research auto …` なら `"auto"`、
+    /// 引数なしの既定 variant なら `""`）。コマンド起動でなければ `None`。
+    ///
+    /// **variant の同一性だけを焼き、意味は skill body から引く。** 発話は
+    /// `/deep-research <依頼>` というリテラルだが、続くターン（質問カードの回答・計画の承認）は
+    /// `chat.submit` から来るのでリテラルを持たない。毎ターン本文から引き直す実装は 2 ターン目
+    /// 以降が必ず素通りになる（#402 の実害）。
+    ///
+    /// ここで `phase` のような**導出値**を焼くと、variant に足す宣言が増えるたびに同じ理由で
+    /// 落ちる。識別子を焼いておけば、ワーカーは解決済み body から
+    /// [`gui::SkillCommand::variant_by_args`] でその variant 全体を引ける。
+    /// thread の永続ピンはコマンド起動ではないので `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_args: Option<String>,
 }
 
 /// スレッド（会話）。API DTO 兼ドメイン。
@@ -175,7 +280,95 @@ pub struct Message {
     /// ブランチ構造の親（UI は線形取得）。
     #[serde(default)]
     pub parent_id: Option<Uuid>,
+    /// このメッセージで**実行済み**の単発 UI アクション id（#410）。
+    ///
+    /// 質問カード・計画カードの「送信済み」はこれを根拠に描く。ローカル state だけだと
+    /// 会話の再描画・リロードで未回答へ巻き戻り、同じカードから二度送信できてしまう。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invoked_actions: Vec<String>,
+    /// 本文の図（```ui）のワークフローのボタンのうち、**押せる**もの（回答の確定時に束縛を
+    /// 解決できたもの）の id（#604）。ここに無いワークフローのボタンは押せない。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bound_actions: Vec<String>,
+    /// 本文の図のボタンで起動したワークフローの記録（押した順・#604）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ui_runs: Vec<UiActionRun>,
     pub created_at: DateTime<Utc>,
+}
+
+/// 会話の図のボタンで起動したワークフローの状態（#604）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UiActionRunStatus {
+    /// 起動の途中（run はまだ無い）。
+    Starting,
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+    /// 同時実行の上限で起動を見送った（`on_trigger_overflow=skip`）。
+    Skipped,
+}
+
+impl UiActionRunStatus {
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Skipped
+        )
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Skipped => "skipped",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "starting" => Self::Starting,
+            "queued" => Self::Queued,
+            "running" => Self::Running,
+            "succeeded" => Self::Succeeded,
+            "failed" => Self::Failed,
+            "cancelled" => Self::Cancelled,
+            "skipped" => Self::Skipped,
+            _ => return None,
+        })
+    }
+}
+
+/// 送った値の 1 項目（部品の表示名と表示用の値）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UiActionValue {
+    pub label: String,
+    pub value: String,
+}
+
+/// 会話の図のボタンで起動したワークフロー 1 件（#604）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct UiActionRun {
+    /// ボタンの id（`{ブロックの識別子}:{a1}`）。
+    pub action_id: String,
+    /// ボタンの文言（押した時点）。
+    pub label: String,
+    pub workflow_name: String,
+    /// 起動した run（起動の途中・見送りは無い）。
+    #[serde(default)]
+    pub run_id: Option<Uuid>,
+    pub status: UiActionRunStatus,
+    #[serde(default)]
+    pub values: Vec<UiActionValue>,
+    /// 押したユーザー（principal id）。
+    pub invoked_by: String,
+    pub invoked_at: DateTime<Utc>,
 }
 
 /// 生成 run の状態。
@@ -224,130 +417,9 @@ impl RunStatus {
     }
 }
 
-/// SSE で配信する構造化イベント（`generation_event.payload` と一致）。
-///
-/// フロント `StreamHandlers`（onToken/onThinking/onToolCall/onToolResult/onCitation/onError）
-/// と対応する。各イベントは `generation_event(run_id, seq)` に append され、SSE では
-/// `id: <seq>` を付けて配信する（Last-Event-ID で replay-then-subscribe）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum StreamEventKind {
-    /// 本文トークン（差分）。
-    Token { text: String },
-    /// 思考トークン（差分）。
-    Thinking { text: String },
-    /// ツール呼び出し開始（エージェントモード可視化）。
-    ToolCall {
-        id: String,
-        name: String,
-        input: serde_json::Value,
-    },
-    /// ツール結果。
-    ToolResult {
-        tool_call_id: String,
-        ok: bool,
-        content: String,
-    },
-    /// 引用。
-    Citation(Citation),
-    /// ツール成果物のファイル参照（code_interpreter の保存済み成果物・Task 4.11）。
-    FileRef { node_id: String, name: String },
-    /// 宣言的 UI（Phase 6）。
-    GenerativeUi { spec: serde_json::Value },
-    /// 保存済みワークフローへの参照カード（emit_workflow・Task 10.13）。
-    WorkflowRef { workflow: serde_json::Value },
-    /// 保存済みノートへの参照カード（save_note・Task 11P.5）。
-    NoteRef { note: serde_json::Value },
-    /// 未保存の下書きノートカード（save_note の下書き確定型・issue #282）。
-    NoteDraft { draft: serde_json::Value },
-    /// 未保存の下書きスライドカード（save_slide の下書き確定型・Task 11.3）。
-    SlideDraft { draft: serde_json::Value },
-    /// 未保存の下書き CSV カード（save_csv の下書き確定型・Task 11.11）。
-    CsvDraft { draft: serde_json::Value },
-    /// 未保存の下書き Word 文書カード（save_document の下書き確定型・#332）。
-    DocumentDraft { draft: serde_json::Value },
-    /// 開いている Office セッションへの AI ライブ編集指示（office.live_edit・#328）。
-    /// **ライブ専用**（content へ projection されない）。フロントは /office フレームで対象 node_id が
-    /// 一致するとき Collabora Action_Paste（現在の選択を置換）を実行する。
-    OfficeLiveEdit { node_id: String, html: String },
-    /// skill ツールの発動記録（#344）。`skill = {skill_id, skill_version, name}`。
-    /// `generation_event` に append され replay 可能（監査・再現性）。content へは projection
-    /// しない（instructions は tool_result block として履歴に残る）。UI はチップ表示に使う。
-    SkillInvoked { skill: serde_json::Value },
-    /// 計画の改訂（自律エージェント・Task 5.2）。サブタスク列を丸ごと配信する。
-    Plan { subtasks: Vec<PlanSubtask> },
-    /// 予算上限への接近警告（Task 5.7）。
-    BudgetWarning { kind: String, used: u64, limit: u64 },
-    /// 承認要求（破壊系/egress/高コスト・Task 5.6）。UI が承認ダイアログを出す。
-    ApprovalRequested {
-        tool_call_id: String,
-        name: String,
-        input: serde_json::Value,
-        reason: String,
-    },
-    /// 承認結果（許可/却下・Task 5.6）。
-    ApprovalResolved {
-        tool_call_id: String,
-        approved: bool,
-    },
-    /// 失敗回復の判断（自己修正リトライ／ループ検出停止・Task 5.5）。
-    FailureRecovery { detail: String, action: String },
-    /// 状態遷移（running/waiting_approval/done/failed/cancelled）。UI の生成状態表示に使う。
-    Status { status: RunStatus },
-    /// エラー（生成失敗）。
-    Error { message: String },
-    /// 完了（確定した assistant message id）。
-    Done { message_id: Uuid },
-}
-
-/// 計画のサブタスク 1 件（SSE `plan` イベント用・agent-core `Subtask` のミラー）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct PlanSubtask {
-    pub id: String,
-    pub title: String,
-    /// todo / doing / done / blocked。
-    pub status: String,
-}
-
-impl StreamEventKind {
-    /// `generation_event.type` 列に入れる短い種別名（デバッグ/索引用）。
-    pub fn tag(&self) -> &'static str {
-        match self {
-            StreamEventKind::Token { .. } => "token",
-            StreamEventKind::Thinking { .. } => "thinking",
-            StreamEventKind::ToolCall { .. } => "tool_call",
-            StreamEventKind::ToolResult { .. } => "tool_result",
-            StreamEventKind::Citation(_) => "citation",
-            StreamEventKind::FileRef { .. } => "file_ref",
-            StreamEventKind::GenerativeUi { .. } => "generative_ui",
-            StreamEventKind::WorkflowRef { .. } => "workflow_ref",
-            StreamEventKind::NoteRef { .. } => "note_ref",
-            StreamEventKind::NoteDraft { .. } => "note_draft",
-            StreamEventKind::SlideDraft { .. } => "slide_draft",
-            StreamEventKind::CsvDraft { .. } => "csv_draft",
-            StreamEventKind::DocumentDraft { .. } => "document_draft",
-            StreamEventKind::OfficeLiveEdit { .. } => "office_live_edit",
-            StreamEventKind::SkillInvoked { .. } => "skill_invoked",
-            StreamEventKind::Plan { .. } => "plan",
-            StreamEventKind::BudgetWarning { .. } => "budget_warning",
-            StreamEventKind::ApprovalRequested { .. } => "approval_requested",
-            StreamEventKind::ApprovalResolved { .. } => "approval_resolved",
-            StreamEventKind::FailureRecovery { .. } => "failure_recovery",
-            StreamEventKind::Status { .. } => "status",
-            StreamEventKind::Error { .. } => "error",
-            StreamEventKind::Done { .. } => "done",
-        }
-    }
-}
-
-/// SSE / replay の 1 イベント（seq 付き）。`id: <seq>` で重複排除する。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct StreamEvent {
-    /// run ごと単調増加の seq（＝SSE の `id` / `Last-Event-ID`）。
-    pub seq: i64,
-    #[serde(flatten)]
-    pub event: StreamEventKind,
-}
+// SSE の生成イベント（ワイヤ形式）は `stream_event` へ切り出した（1 ファイル行数ゲート）。
+// 利用側の `chat::model::StreamEventKind` などのパスは変えない。
+pub use crate::stream_event::{PlanSubtask, StreamEvent, StreamEventKind};
 
 /// 共有で付与できる役割（thread ReBAC・#37）。viewer/commenter/editor のみ許す
 /// （owner の横展開を防ぐ閉じた共有語彙）。
@@ -399,18 +471,45 @@ mod tests {
     #[test]
     fn citation_block_matches_frontend_fields() {
         let block = ContentBlock::Citation(Citation {
+            cite_id: 4,
             node_id: "n1".into(),
             chunk_id: "c1".into(),
             snippet: "s".into(),
             page: Some(3),
             heading_path: vec!["A".into(), "B".into()],
             score: 0.5,
+            version: Some(2),
+            anchor: None,
+            quote: None,
+            boxes: Vec::new(),
+            withheld: false,
         });
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "citation");
         assert_eq!(json["node_id"], "n1");
         assert_eq!(json["page"], 3);
         assert_eq!(json["heading_path"][1], "B");
+        assert_eq!(json["cite_id"], 4);
+        assert_eq!(json["version"], 2);
+        // 位置情報が無ければ出さない（旧クライアント・保存量）。
+        assert!(json.get("anchor").is_none());
+        assert!(json.get("boxes").is_none());
+        assert!(json.get("withheld").is_none());
+    }
+
+    #[test]
+    fn withheld_citation_keeps_only_the_number() {
+        let json = serde_json::to_value(ContentBlock::Citation(Citation::withheld(7))).unwrap();
+        assert_eq!(json["cite_id"], 7);
+        assert_eq!(json["withheld"], true);
+        assert_eq!(json["node_id"], "");
+        assert_eq!(json["snippet"], "");
+        for key in ["anchor", "quote", "boxes", "version", "page"] {
+            assert!(
+                json.get(key).is_none() || json[key].is_null(),
+                "{key} を出さない"
+            );
+        }
     }
 
     #[test]
@@ -424,6 +523,9 @@ mod tests {
             ContentBlock::Citation(c) => {
                 assert!(c.page.is_none());
                 assert!(c.heading_path.is_empty());
+                // 採番前の旧データは 0（UI は配列の位置で引く）。
+                assert_eq!(c.cite_id, 0);
+                assert!(c.version.is_none());
             }
             _ => panic!("citation でない"),
         }
@@ -450,6 +552,52 @@ mod tests {
         assert_eq!(json["type"], "file_ref");
         assert_eq!(json["node_id"], "n1");
         assert_eq!(json["name"], "result.csv");
+    }
+
+    #[test]
+    fn tool_call_and_result_carry_step_and_ok() {
+        // フロントは step で「並行して N 件」を、ok で失敗表示を出す（#386）。
+        let call = ContentBlock::ToolCall {
+            id: "t1".into(),
+            name: "web_fetch".into(),
+            input: serde_json::json!({"url": "https://example.com/"}),
+            step: Some(2),
+        };
+        let json = serde_json::to_value(&call).unwrap();
+        assert_eq!(json["step"], 2);
+        let result = ContentBlock::ToolResult {
+            tool_call_id: "t1".into(),
+            content: "取得に失敗しました".into(),
+            ok: false,
+        };
+        assert_eq!(serde_json::to_value(&result).unwrap()["ok"], false);
+    }
+
+    #[test]
+    fn legacy_blocks_without_step_or_ok_still_deserialize() {
+        // 既存メッセージ（フィールド追加前の永続 content）を壊さない。
+        // step は **None（不明）**、ok は成功として読む。0 で埋めると逐次実行だった
+        // 過去の応答が「並行して N 件」に化け、ok を false にすると全部失敗に見える。
+        let call: ContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "tool_call", "id": "t1", "name": "doc_search", "input": {"query": "x"}
+        }))
+        .unwrap();
+        assert!(matches!(call, ContentBlock::ToolCall { step: None, .. }));
+        let result: ContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "tool_result", "tool_call_id": "t1", "content": "ok"
+        }))
+        .unwrap();
+        assert!(matches!(result, ContentBlock::ToolResult { ok: true, .. }));
+    }
+
+    #[test]
+    fn legacy_stream_tool_call_without_step_replays() {
+        // generation_event に残る過去 run の payload も読めること（replay 互換）。
+        let ev: StreamEventKind = serde_json::from_value(serde_json::json!({
+            "type": "tool_call", "id": "t1", "name": "web_search", "input": {"query": "x"}
+        }))
+        .unwrap();
+        assert!(matches!(ev, StreamEventKind::ToolCall { step: None, .. }));
     }
 
     #[test]

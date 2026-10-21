@@ -3,33 +3,52 @@
 //! 実 LLM を持たない環境（CI・オフライン）でパイプライン全体（chat run・SSE・会計・
 //! agent-core ループ）をエンドツーエンドで検証するための決定的アダプタ。挙動:
 //! - 直近 user メッセージ本文を語単位でストリーミングして返す。
+//! - `slow:<秒> <本文>` は本文を出したあと指定秒だけ生成を続ける（生成中の UI＝順番待ち・停止の検証用）。
 //! - リクエストにツールがあり、かつ最初のターン（tool_result がまだ無い）で本文が
 //!   既知のプレフィックス（`search:` / `python:` / `websearch:` / `webfetch:`）で始まるとき、
 //!   対応するツールを 1 回だけ呼び出す（agent ループ・各ツールの決定的検証）。プレフィックス
 //!   に対応するツールが提示されていなければ最初のツールへフォールバックする（後方互換）。
-//! - generative UI（Phase 6）検証用の駆動プレフィックス `genui:`:
-//!   `genui:form|table|chart|stat` は検証を通る固定スペック（`genui:chart:<kind>` で
-//!   scatter/radar/... を種別指定）、`genui:bad` は不正スペック、
-//!   `genui:workflow <name>` は名前参照のワークフロー起動ボタンで `emit_ui` を呼ぶ。
 //! - 自律プロファイル（Phase 5）検証用の駆動プレフィックス:
 //!   - `plan: A, B, C` … 1 ターン目に `plan` メタツールをカンマ区切りのサブタスクで呼ぶ（計画分解の検証）。
 //!   - `loop:` … tool_result の有無に関わらず**毎ターン** tools[0] を空入力で呼び続ける
 //!     （ループ検出・ステップ/予算上限・長ホライズンの決定的駆動）。
+//! - tool search 検証用の `toolsearch:<query>` … `tool_search` で検索し、読み込んだ先頭の
+//!   遅延ツールを次のターンで呼ぶ（[`super::stub_triggers::tool_search_call`]）。
+//! - `echosystem:` … 受け取った system プロンプトをそのまま本文で返す（system の組み立て
+//!   ＝今日の日付などが実際にモデルへ届くことの検証用・#546）。
+
+use std::time::Duration;
 
 use futures::stream::{self, StreamExt};
 
-use super::stub_fixtures::genui_spec;
-use super::stub_triggers::note_tool_call;
+use super::stub_deep_research::deep_research_call;
+use super::stub_fixtures::yui_reply;
+use super::stub_stream::{
+    paced_chunks_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
+};
+use super::stub_triggers::{echo_system_call, note_tool_call, tool_search_call};
+use super::timeouts::RequestClock;
+use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 
 /// 決定的スタブ。
 #[derive(Debug, Default, Clone)]
-pub struct StubProvider;
+pub struct StubProvider {
+    /// `slow:` の待ちにも実プロバイダと同じ上限を掛ける（#554）。
+    timeouts: LlmTimeouts,
+}
 
 impl StubProvider {
     pub fn new() -> Self {
-        StubProvider
+        StubProvider::default()
+    }
+
+    /// タイムアウト（最初の応答・無通信・全体）を指定する。既定は [`LlmTimeouts::default`]。
+    #[must_use]
+    pub fn with_timeouts(mut self, timeouts: LlmTimeouts) -> Self {
+        self.timeouts = timeouts;
+        self
     }
 }
 
@@ -52,6 +71,23 @@ fn last_user_text(req: &GenerateRequest) -> String {
         .unwrap_or_default()
 }
 
+/// 履歴の語数を prompt トークンとみなす。**ツール結果も数える**（実プロバイダと同じく観測は
+/// prompt に載る）。本文だけにすると、ツールを回し続けるループで prompt が伸びず、
+/// `Spent::fresh_tokens`（#404 で上限判定に使う軸）が永久に増えないため、トークン予算が
+/// 「ステップ上限で先に止まる」ことでしか終われなくなる。
+fn prompt_tokens(req: &GenerateRequest) -> u64 {
+    req.messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::Text { text } | Block::ToolResult { content: text, .. } => {
+                Some(text.split_whitespace().count() as u64)
+            }
+            _ => None,
+        })
+        .sum()
+}
+
 /// これまでにツール結果があるか（＝2 ターン目以降）。
 fn has_tool_result(req: &GenerateRequest) -> bool {
     req.messages.iter().any(|m| {
@@ -59,6 +95,62 @@ fn has_tool_result(req: &GenerateRequest) -> bool {
             .iter()
             .any(|b| matches!(b, Block::ToolResult { .. }))
     })
+}
+
+/// `reasoning:` で始まり、ツールが提示されていれば [`reasoning_round_trip`] で返す。
+fn reasoning_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    (!req.tools.is_empty() && user_text.starts_with("reasoning:"))
+        .then(|| reasoning_round_trip(req, prompt_tokens))
+}
+
+/// `reasoning:` の決定的駆動（[`Block::Reasoning`] の往復を agent-core の結合テストで確かめる）。
+fn reasoning_round_trip(req: &GenerateRequest, prompt_tokens: u64) -> DeltaStream {
+    if has_tool_result(req) {
+        // 1 ターン目の assistant メッセージが、届いた順（本文・推論アイテム・本文・ツール呼び出し）の
+        // まま戻っているか。本文を 1 か所にまとめると推論アイテムの後ろの本文が前へ動く。
+        let carried = req.messages.iter().any(|m| {
+            matches!(
+                m.content.as_slice(),
+                [
+                    Block::Text { text: before },
+                    Block::Reasoning { provider, item },
+                    Block::Text { text: after },
+                    Block::ToolUse { .. },
+                ] if before == "考えます。"
+                    && provider == "stub"
+                    && item["n"] == 1
+                    && after == "呼びます。"
+            )
+        });
+        let reply = if carried {
+            "推論を引き継ぎました"
+        } else {
+            "推論が戻っていません"
+        };
+        return text_stream(reply, prompt_tokens);
+    }
+    let call = tool_call_stream(
+        req.tools[0].name.clone(),
+        serde_json::json!({}),
+        prompt_tokens,
+    );
+    let head = stream::iter([
+        Ok(StreamDelta::TextDelta {
+            text: "考えます。".to_string(),
+        }),
+        Ok(StreamDelta::ReasoningItem {
+            provider: "stub".to_string(),
+            item: serde_json::json!({ "n": 1 }),
+        }),
+        Ok(StreamDelta::TextDelta {
+            text: "呼びます。".to_string(),
+        }),
+    ]);
+    head.chain(call).boxed()
 }
 
 /// プレフィックス → (対応ツール名, 入力 JSON のキー)。入力値は本文の残り。
@@ -102,28 +194,85 @@ fn emitwf_ir(kind: &str) -> serde_json::Value {
     })
 }
 
-/// 単一ツール呼び出し（ToolUse で停止）のストリームを組む決定的ヘルパ。
-pub(super) fn tool_call_stream(
-    name: String,
-    input: serde_json::Value,
+/// `subagent:<テーマ>` — 1 ステップで `subagent` を**3 体**呼ぶ（境界を重複なく割った形）。
+///
+/// 委譲の並列（#391）と UI の「並行して N 件」表示を決定的に再現する唯一の入口。提示ツールに
+/// `subagent` が無ければ `None`（呼び出し側が通常経路へ落ちる）。
+fn subagent_call(
+    req: &GenerateRequest,
+    user_text: &str,
     prompt_tokens: u64,
-) -> DeltaStream {
-    let id = "stubtool_1".to_string();
-    let events = vec![
-        Ok(StreamDelta::ToolUseStart {
-            id: id.clone(),
-            name,
-        }),
-        Ok(StreamDelta::ToolUseStop { id, input }),
-        Ok(StreamDelta::Done {
-            stop_reason: StopReason::ToolUse,
-            usage: Usage {
-                prompt_tokens,
-                completion_tokens: 0,
-            },
-        }),
-    ];
-    stream::iter(events).boxed()
+) -> Option<DeltaStream> {
+    let topic = user_text.strip_prefix("subagent:")?.trim();
+    let tool = req.tools.iter().find(|t| t.name == "subagent")?;
+    let calls = [
+        ("国内・直近 3 年の実数", "国内"),
+        ("同期間の海外比較", "北米・欧州"),
+        ("規制・政策の動き", "法改正のみ"),
+    ]
+    .into_iter()
+    .map(|(objective, boundary)| {
+        (
+            tool.name.clone(),
+            serde_json::json!({
+                "objective": format!("{topic}: {objective}"),
+                "boundary": boundary,
+            }),
+        )
+    })
+    .collect();
+    Some(tool_calls_stream(calls, prompt_tokens))
+}
+
+/// `parallel:<クエリ>` — 1 ステップで `web_search` ＋ **別ホスト**の `web_fetch` ×3 を呼ぶ。
+///
+/// agent-core の有界並列（#349・同一ホストは politeness_key で直列化される）と、
+/// UI の「並行して N 件」表示・step グルーピング（#386）を決定的に再現する唯一の入口。
+/// 提示ツールに web 系が無ければ `None`（呼び出し側が通常経路へ落ちる）。
+fn parallel_read_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let query = user_text.strip_prefix("parallel:")?.trim();
+    let mut calls: Vec<(String, serde_json::Value)> = Vec::new();
+    if let Some(t) = req.tools.iter().find(|t| t.name == "web_search") {
+        calls.push((t.name.clone(), serde_json::json!({ "query": query })));
+    }
+    if let Some(t) = req.tools.iter().find(|t| t.name == "web_fetch") {
+        // ホストを分けないと同一レーンへ入り、並列にならない。
+        for url in [
+            "https://example.com/stub-1",
+            "https://example.org/stub-2",
+            "https://example.net/stub-3",
+        ] {
+            calls.push((t.name.clone(), serde_json::json!({ "url": url })));
+        }
+    }
+    (!calls.is_empty()).then(|| tool_calls_stream(calls, prompt_tokens))
+}
+
+/// 本文を決め打ちで返す駆動（図・推論の引き継ぎ・受け取った system の返却）をまとめて試す。
+fn fixed_reply_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    yui_call(user_text, prompt_tokens)
+        .or_else(|| reasoning_call(req, user_text, prompt_tokens))
+        .or_else(|| echo_system_call(req, user_text, prompt_tokens))
+}
+
+/// 図の回答 `yui:<kind>`（#530）: ```ui ブロックを含む本文を数文字ずつ流す
+/// （行の途中で区切れる＝書きかけの値を描かないことを e2e で確かめられる）。
+fn yui_call(user_text: &str, prompt_tokens: u64) -> Option<DeltaStream> {
+    let kind = user_text.strip_prefix("yui:")?;
+    Some(paced_chunks_stream(
+        &yui_reply(kind.trim()),
+        prompt_tokens,
+        3,
+        Duration::from_millis(25),
+    ))
 }
 
 #[async_trait::async_trait]
@@ -133,147 +282,151 @@ impl LlmProvider for StubProvider {
     }
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
-        let user_text = last_user_text(req);
-        let prompt_tokens = req
-            .messages
-            .iter()
-            .flat_map(|m| &m.content)
-            .filter_map(|b| match b {
-                Block::Text { text } => Some(text.split_whitespace().count() as u64),
-                _ => None,
-            })
-            .sum::<u64>();
-
-        // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
-        if !req.tools.is_empty() && user_text.starts_with("loop:") {
-            return Ok(tool_call_stream(
-                req.tools[0].name.clone(),
-                serde_json::json!({}),
-                prompt_tokens,
-            ));
-        }
-        // --- 自律駆動 `fswrite:`: 1 ターン目に fs_write を固定名で呼ぶ（ワークスペース書込の e2e）。 ---
-        if !has_tool_result(req) {
-            if let Some(rest) = user_text.strip_prefix("fswrite:") {
-                if let Some(t) = req.tools.iter().find(|t| t.name == "fs_write") {
-                    return Ok(tool_call_stream(
-                        t.name.clone(),
-                        serde_json::json!({ "name": "agent-note.txt", "content": rest.trim() }),
-                        prompt_tokens,
-                    ));
-                }
-            }
-        }
-        // --- 自律駆動 `plan:`: 1 ターン目に plan メタツールをカンマ区切りサブタスクで呼ぶ。 ---
-        if !has_tool_result(req) {
-            if let Some(rest) = user_text.strip_prefix("plan:") {
-                if let Some(plan_tool) = req.tools.iter().find(|t| t.name == "plan") {
-                    let subtasks: Vec<serde_json::Value> = rest
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(|title| serde_json::json!({ "title": title }))
-                        .collect();
-                    return Ok(tool_call_stream(
-                        plan_tool.name.clone(),
-                        serde_json::json!({ "subtasks": subtasks }),
-                        prompt_tokens,
-                    ));
-                }
-            }
-        }
-
-        // --- generative UI 駆動 `genui:`（Phase 6 Task 6.4 の決定的検証）。 ---
-        // `genui:form|table|chart` は検証を通る固定スペックで emit_ui を呼び、
-        // `genui:bad` はカタログ外コンポーネントを含む不正スペック（フォールバック検証用）、
-        // `genui:workflow <name>` は名前参照のワークフロー起動ボタンを出す。
-        if !has_tool_result(req) {
-            if let Some(rest) = user_text.strip_prefix("genui:") {
-                if let Some(t) = req.tools.iter().find(|t| t.name == "emit_ui") {
-                    let spec = genui_spec(rest.trim());
-                    return Ok(tool_call_stream(
-                        t.name.clone(),
-                        serde_json::json!({ "spec": spec }),
-                        prompt_tokens,
-                    ));
-                }
-            }
-        }
-
-        // --- ノートツール駆動（issue #282 の e2e）: savenote:<name>→save_note / docembed:<id>→document.embed。 ---
-        if !has_tool_result(req) {
-            if let Some(s) = note_tool_call(req, &user_text, prompt_tokens) {
-                return Ok(s);
-            }
-        }
-
-        // --- AI ワークフロー編集駆動 `emitwf:`（Task 10.13 の決定的検証）。 ---
-        if !has_tool_result(req) {
-            if let Some(rest) = user_text.strip_prefix("emitwf:") {
-                if let Some(t) = req.tools.iter().find(|t| t.name == "emit_workflow") {
-                    let ir = emitwf_ir(rest.trim());
-                    return Ok(tool_call_stream(
-                        t.name.clone(),
-                        serde_json::json!({ "ir": ir }),
-                        prompt_tokens,
-                    ));
-                }
-            }
-        }
-
-        // ツール呼び出し分岐（決定的）: 1 ターン目に既知プレフィックスで始まれば対応ツールを呼ぶ。
-        if !req.tools.is_empty() && !has_tool_result(req) {
-            if let Some((tool_name, key, value)) = tool_trigger(&user_text) {
-                // 対応ツールが提示にあればそれを、無ければ tools[0] を呼ぶ（後方互換）。
-                let name = req
-                    .tools
-                    .iter()
-                    .find(|t| t.name == tool_name)
-                    .map_or_else(|| req.tools[0].name.clone(), |t| t.name.clone());
-                let id = "stubtool_1".to_string();
-                let input = serde_json::json!({ key: value });
-                let events = vec![
-                    Ok(StreamDelta::ToolUseStart {
-                        id: id.clone(),
-                        name,
-                    }),
-                    Ok(StreamDelta::ToolUseStop { id, input }),
-                    Ok(StreamDelta::Done {
-                        stop_reason: StopReason::ToolUse,
-                        usage: Usage {
-                            prompt_tokens,
-                            completion_tokens: 0,
-                        },
-                    }),
-                ];
-                return Ok(stream::iter(events).boxed());
-            }
-        }
-
-        // 通常応答: 本文を語単位でストリーミング。
-        let reply = if user_text.is_empty() {
-            "（空の質問です）".to_string()
-        } else {
-            format!("回答: {user_text}")
-        };
-        let words: Vec<String> = reply
-            .split_inclusive(char::is_whitespace)
-            .map(str::to_string)
-            .collect();
-        let completion_tokens = words.len() as u64;
-        let mut events: Vec<Result<StreamDelta, LlmError>> = words
-            .into_iter()
-            .map(|w| Ok(StreamDelta::TextDelta { text: w }))
-            .collect();
-        events.push(Ok(StreamDelta::Done {
-            stop_reason: StopReason::EndTurn,
-            usage: Usage {
-                prompt_tokens,
-                completion_tokens,
-            },
-        }));
-        Ok(stream::iter(events).boxed())
+        // 実プロバイダと同じ無通信・全体の上限を、どの応答（`slow:` の待ち・`yui:` の
+        // 間隔付きの流し方など）にも掛ける（#554）。
+        Ok(RequestClock::start(self.timeouts, "stub").guard(stub_stream(req)))
     }
+}
+
+/// 入力に応じた決定的な応答（タイムアウトは [`StubProvider::stream`] が掛ける）。
+#[allow(clippy::too_many_lines)] // 既知プレフィックスごとの分岐で行数が伸びる。
+fn stub_stream(req: &GenerateRequest) -> DeltaStream {
+    let user_text = last_user_text(req);
+    let prompt_tokens = prompt_tokens(req);
+
+    // --- deep research（#387）: `/deep-research` 起動はフェーズを跨いで進むため最初に見る。 ---
+    // 確認の段階（ask・plan）は門がツールを 1 つも渡さないので、ツールの有無で入口を絞らない
+    // （調査の段階のツールの要否は deep_research_call の中で見る）。
+    if let Some(s) = deep_research_call(req, prompt_tokens) {
+        return s;
+    }
+    // --- 遅い生成 `slow:<秒> <本文>`: 生成中の挙動（順番待ち・停止）を決定的に試す。 ---
+    if let Some(rest) = user_text.strip_prefix("slow:") {
+        let (secs, body) = rest.split_once(' ').unwrap_or((rest, ""));
+        let secs: u64 = secs.trim().parse().unwrap_or(3);
+        return slow_text_stream(
+            &format!("回答: {}", body.trim()),
+            prompt_tokens,
+            Duration::from_secs(secs),
+        );
+    }
+    // --- 図 `yui:<kind>`（#530）・推論の引き継ぎ `reasoning:`（#542）・`echosystem:`（#546）。 ---
+    if let Some(s) = fixed_reply_call(req, &user_text, prompt_tokens) {
+        return s;
+    }
+    // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
+    if !req.tools.is_empty() && user_text.starts_with("loop:") {
+        return tool_call_stream(
+            req.tools[0].name.clone(),
+            serde_json::json!({}),
+            prompt_tokens,
+        );
+    }
+    // --- tool search 駆動 `toolsearch:`（検索→読み込み→呼び出しを 2 ターンに跨いで進む）。 ---
+    if let Some(s) = tool_search_call(req, &user_text, prompt_tokens) {
+        return s;
+    }
+    // --- 並行 read 駆動 `parallel:`（#386）。 ---
+    if !has_tool_result(req) {
+        if let Some(s) = parallel_read_call(req, &user_text, prompt_tokens) {
+            return s;
+        }
+    }
+    // --- 委譲の並列駆動 `subagent:`（#391）。 ---
+    if !has_tool_result(req) {
+        if let Some(s) = subagent_call(req, &user_text, prompt_tokens) {
+            return s;
+        }
+    }
+    // --- 自律駆動 `fswrite:`: 1 ターン目に fs_write を固定名で呼ぶ（ワークスペース書込の e2e）。 ---
+    if !has_tool_result(req) {
+        if let Some(rest) = user_text.strip_prefix("fswrite:") {
+            if let Some(t) = req.tools.iter().find(|t| t.name == "fs_write") {
+                return tool_call_stream(
+                    t.name.clone(),
+                    serde_json::json!({ "name": "agent-note.txt", "content": rest.trim() }),
+                    prompt_tokens,
+                );
+            }
+        }
+    }
+    // --- 自律駆動 `plan:`: 1 ターン目に plan メタツールをカンマ区切りサブタスクで呼ぶ。 ---
+    if !has_tool_result(req) {
+        if let Some(rest) = user_text.strip_prefix("plan:") {
+            if let Some(plan_tool) = req.tools.iter().find(|t| t.name == "plan") {
+                let subtasks: Vec<serde_json::Value> = rest
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|title| serde_json::json!({ "title": title }))
+                    .collect();
+                return tool_call_stream(
+                    plan_tool.name.clone(),
+                    serde_json::json!({ "subtasks": subtasks }),
+                    prompt_tokens,
+                );
+            }
+        }
+    }
+
+    // --- ノートツール駆動（issue #282 の e2e）: savenote:<name>→save_note / docembed:<id>→document.embed。 ---
+    if !has_tool_result(req) {
+        if let Some(s) = note_tool_call(req, &user_text, prompt_tokens) {
+            return s;
+        }
+    }
+
+    // --- AI ワークフロー編集駆動 `emitwf:`（Task 10.13 の決定的検証）。 ---
+    if !has_tool_result(req) {
+        if let Some(rest) = user_text.strip_prefix("emitwf:") {
+            if let Some(t) = req.tools.iter().find(|t| t.name == "emit_workflow") {
+                let ir = emitwf_ir(rest.trim());
+                return tool_call_stream(
+                    t.name.clone(),
+                    serde_json::json!({ "ir": ir }),
+                    prompt_tokens,
+                );
+            }
+        }
+    }
+
+    // ツール呼び出し分岐（決定的）: 1 ターン目に既知プレフィックスで始まれば対応ツールを呼ぶ。
+    if !req.tools.is_empty() && !has_tool_result(req) {
+        if let Some((tool_name, key, value)) = tool_trigger(&user_text) {
+            // 対応ツールが提示にあればそれを、無ければ tools[0] を呼ぶ（後方互換）。
+            let name = req
+                .tools
+                .iter()
+                .find(|t| t.name == tool_name)
+                .map_or_else(|| req.tools[0].name.clone(), |t| t.name.clone());
+            let id = "stubtool_1".to_string();
+            let input = serde_json::json!({ key: value });
+            let events = vec![
+                Ok(StreamDelta::ToolUseStart {
+                    id: id.clone(),
+                    name,
+                }),
+                Ok(StreamDelta::ToolUseStop { id, input }),
+                Ok(StreamDelta::Done {
+                    stop_reason: StopReason::ToolUse,
+                    usage: Usage {
+                        prompt_tokens,
+                        completion_tokens: 0,
+                        ..Default::default()
+                    },
+                }),
+            ];
+            return stream::iter(events).boxed();
+        }
+    }
+
+    // 通常応答: 本文を語単位でストリーミング。
+    let reply = if user_text.is_empty() {
+        "（空の質問です）".to_string()
+    } else {
+        format!("回答: {user_text}")
+    };
+    text_stream(&reply, prompt_tokens)
 }
 
 #[cfg(test)]
@@ -300,14 +453,45 @@ mod tests {
         assert!(usage.completion_tokens > 0);
     }
 
+    /// deep research の確認の段階は、門がツールを 1 つも渡さない run でも ask を書く（#604）。
+    #[tokio::test]
+    async fn deep_research_asks_without_any_tools() {
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "/deep-research SaaS 市場")]);
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut text = String::new();
+        while let Some(ev) = s.next().await {
+            if let StreamDelta::TextDelta { text: t } = ev.unwrap() {
+                text.push_str(&t);
+            }
+        }
+        assert!(text.contains("```ui\nask "), "{text}");
+    }
+
+    #[tokio::test]
+    async fn stub_streams_ui_block_in_small_chunks() {
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "yui:flow")]);
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut chunks = Vec::new();
+        while let Some(ev) = s.next().await {
+            if let StreamDelta::TextDelta { text } = ev.unwrap() {
+                chunks.push(text);
+            }
+        }
+        let text = chunks.concat();
+        assert!(text.contains("```ui\nflow 経費精算\n"));
+        // 数文字ずつ、行の途中でも区切れて届く（書きかけの行を試せる）。
+        assert!(chunks.iter().all(|c| c.chars().count() <= 3));
+        assert!(chunks.iter().any(|c| !c.ends_with('\n')));
+    }
+
     #[tokio::test]
     async fn stub_calls_tool_on_search_prefix() {
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "search: 経費規程")]);
-        req.tools.push(crate::model::ToolDef {
-            name: "doc_search".into(),
-            description: "d".into(),
-            input_schema: serde_json::json!({}),
-        });
+        req.tools.push(crate::model::ToolDef::new(
+            "doc_search",
+            "d",
+            serde_json::json!({}),
+        ));
         let mut s = StubProvider::new().stream(&req).await.unwrap();
         let mut tool_name = None;
         let mut stop = None;
@@ -327,11 +511,8 @@ mod tests {
         // websearch: プレフィックスは提示ツールの中から web_search を選ぶ（順序非依存）。
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "websearch: rust")]);
         for name in ["code_interpreter", "web_search", "web_fetch"] {
-            req.tools.push(crate::model::ToolDef {
-                name: name.into(),
-                description: "d".into(),
-                input_schema: serde_json::json!({}),
-            });
+            req.tools
+                .push(crate::model::ToolDef::new(name, "d", serde_json::json!({})));
         }
         let mut s = StubProvider::new().stream(&req).await.unwrap();
         let mut tool_name = None;
@@ -350,11 +531,11 @@ mod tests {
     #[tokio::test]
     async fn stub_python_prefix_selects_code_interpreter() {
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "python: print(1)")]);
-        req.tools.push(crate::model::ToolDef {
-            name: "code_interpreter".into(),
-            description: "d".into(),
-            input_schema: serde_json::json!({}),
-        });
+        req.tools.push(crate::model::ToolDef::new(
+            "code_interpreter",
+            "d",
+            serde_json::json!({}),
+        ));
         let mut s = StubProvider::new().stream(&req).await.unwrap();
         let mut tool_name = None;
         let mut input = None;
@@ -373,11 +554,11 @@ mod tests {
     async fn stub_falls_back_to_first_tool_when_named_absent() {
         // websearch: だが web_search が提示に無い → tools[0]（doc_search）にフォールバック。
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "websearch: x")]);
-        req.tools.push(crate::model::ToolDef {
-            name: "doc_search".into(),
-            description: "d".into(),
-            input_schema: serde_json::json!({}),
-        });
+        req.tools.push(crate::model::ToolDef::new(
+            "doc_search",
+            "d",
+            serde_json::json!({}),
+        ));
         let mut s = StubProvider::new().stream(&req).await.unwrap();
         let mut tool_name = None;
         while let Some(ev) = s.next().await {

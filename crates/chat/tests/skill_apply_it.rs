@@ -128,7 +128,9 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
             kind: ProviderKind::Stub,
             base_url: None,
             api_key: None,
-            timeout_secs: 120,
+            user_agent: None,
+            session_header: None,
+            ..Default::default()
         },
         catalog: ModelCatalog {
             default_model: "m".into(),
@@ -138,16 +140,21 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
                     real_id: None,
                     prompt_price_micros_per_mtok: 0,
                     completion_price_micros_per_mtok: 0,
+                    context_window_tokens: None,
+                    ..Default::default()
                 },
                 ModelEntry {
                     id: "skill-model".into(),
                     real_id: None,
                     prompt_price_micros_per_mtok: 0,
                     completion_price_micros_per_mtok: 0,
+                    context_window_tokens: None,
+                    ..Default::default()
                 },
             ],
         },
         langfuse: None,
+        ..Default::default()
     };
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
@@ -196,8 +203,9 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             sandbox: None,
             artifacts: None,
             web_search: None,
+            parser: None,
             storage: None,
-            ui_validator: None,
+            workflow_resolver: None,
             skill_artifacts: Some(artifacts),
             skill_catalog: None,
             workflow_store: None,
@@ -205,7 +213,9 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             collab: None,
             tabular: None,
             office: None,
-            authz: None,
+            office_live: None,
+            office_creator: None,
+            office_engine: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
@@ -231,6 +241,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             &[chat::SkillPin {
                 skill_id,
                 skill_version: 1,
+                command_args: None,
             }],
             None,
             None,
@@ -247,6 +258,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             None,
             Some(false),
             false,
+            &[],
             None,
         )
         .await

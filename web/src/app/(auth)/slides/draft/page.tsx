@@ -7,27 +7,32 @@
 /// - 左はローカル Y.Doc に流し込んだ [`SlideWorkspace`]（editable・サーバ collab 非接続）。
 ///   編集は Y.Doc → 下書きストアへ書き戻す（リロード復元）。
 /// - 同じ会話の複数下書きは**上部タブ**で切替（別名 = 別下書き・N 本並存）。
-/// - 右上「ドライブに保存」で POST /slides → 実体化して /slides/{id} へ（ノート下書きと同型）。
+/// - 右上「保存」（PC は「ドライブに保存」）で POST /slides → 実体化して /slides/{id} へ（ノート下書きと同型）。
 
-import { ArrowLeft, FileWarning, MessageSquare, PencilLine, Save, X } from "lucide-react";
-import Link from "next/link";
+import { FileWarning } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
 import * as Y from "yjs";
 
 import { Conversation } from "@/components/chat/conversation";
-import { SaveDraftDialog, type SaveTarget } from "@/components/notes/save-draft-dialog";
-import { usePageHeader } from "@/components/shell/page-header-context";
-import { SlideWorkspace } from "@/components/slides/slide-workspace";
-import { Button } from "@/components/ui/button";
-import { EmptyState } from "@/components/ui/empty-state";
-import { FadeSlide } from "@/components/ui/motion-primitives";
+import {
+  DraftBadge,
+  DraftNotFound,
+  DraftTabs,
+  SaveDraftDialog,
+  draftChrome,
+  type SaveTarget,
+} from "@/components/notes/save-draft-dialog";
+import { AssistantLayout } from "@/components/shell/assistant-sheet";
+import { EditorMobileHeading, useEditorBack } from "@/components/shell/editor-loading";
+import { usePageChrome } from "@/components/shell/page-header-context";
+import { SlideDesktopActions, slideMenuItems } from "@/components/slides/slide-header-slot";
+import { SlideWorkspace, useSlideOverlays } from "@/components/slides/slide-workspace";
 import { toast } from "@/components/ui/use-toast";
 import { getThreadMessages } from "@/lib/chat-api";
 import { createSlide } from "@/lib/slides-api";
 import { parseSlideDraft, slideDraftStore } from "@/lib/slides/draft";
 import { parseSlideDocJson, readSlidesJson, seedSlides } from "@/lib/slides-doc";
-import { cn } from "@/lib/utils";
 
 /// useSearchParams を使うため Suspense 境界でラップする（静的生成の CSR bailout 要件・Next.js）。
 export default function DraftSlidePage() {
@@ -122,6 +127,8 @@ function DraftSlidePageInner() {
           }
         }
       })
+      // 履歴を読めなくても（会話が消えた等）ローカルの下書きで開く。
+      .catch(() => {})
       .finally(() => {
         if (!cancelled) setRecovered(true);
       });
@@ -171,138 +178,78 @@ function DraftSlidePageInner() {
     [activeName, doc, saving, threadId, router],
   );
 
-  // 統一ヘッダへ注入（戻る/下書きバッジ/保存/アシスタント切替・ノート下書きと同型）。
-  usePageHeader(
-    () => (
-      <div className="flex min-w-0 flex-1 items-center gap-2.5">
-        <Link
-          href="/drive"
-          className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-95"
-          aria-label="ドライブへ戻る"
-        >
-          <ArrowLeft className="size-4" />
-        </Link>
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-          {activeName || "下書きスライド"}
-        </span>
-        <span
-          className="inline-flex items-center gap-1 rounded-full border border-dashed border-amber-500/50 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400"
-          data-testid="draft-badge"
-        >
-          <PencilLine className="size-3.5" aria-hidden />
-          下書き（未保存）
-        </span>
-        <Button
-          type="button"
-          size="sm"
-          onClick={() => setSaveOpen(true)}
-          disabled={!activeName}
-          data-testid="draft-save-button"
-        >
-          <Save className="mr-1.5 size-4" aria-hidden />
-          ドライブに保存
-        </Button>
-        <Button
-          type="button"
-          variant={chatOpen ? "secondary" : "ghost"}
-          size="sm"
-          onClick={() => setChatOpen((v) => !v)}
-          aria-pressed={chatOpen}
-          data-testid="note-chat-toggle"
-        >
-          <MessageSquare className="mr-1.5 size-4" aria-hidden />
-          アシスタント
-        </Button>
-      </div>
-    ),
-    [activeName, chatOpen],
+  // クローム（戻る → 保存 → アシスタント → ⋯）。エクスポート・プレゼンは ⋯（PC はバーにも）。
+  const back = useEditorBack();
+  const overlays = useSlideOverlays();
+  const { onExport, onPresent } = overlays;
+  const hasDoc = Boolean(doc && activeName);
+  usePageChrome(
+    () =>
+      draftChrome({
+        back,
+        threadId,
+        name: activeName || "下書きスライド",
+        canSave: Boolean(activeName),
+        onSave: () => setSaveOpen(true),
+        chatOpen,
+        onToggleChat: () => setChatOpen((v) => !v),
+        extraMenu: hasDoc ? slideMenuItems({ onExport, onPresent }) : [],
+        desktopExtra: hasDoc ? (
+          <SlideDesktopActions onExport={onExport} onPresent={onPresent} />
+        ) : undefined,
+      }),
+    [back, threadId, activeName, chatOpen, hasDoc, onExport, onPresent],
   );
 
   if (!threadId) {
-    return (
-      <EmptyState
-        title="下書きが見つかりません"
-        description="チャットから「スライドを作って」と頼むと、ここに下書きが用意されます。"
-      />
-    );
+    return <DraftNotFound what="スライド" />;
   }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="relative flex min-h-0 flex-1">
-        <div
-          className={cn(
-            "flex min-w-0 flex-1 flex-col transition-[padding] duration-[var(--duration-normal)] ease-[var(--ease-standard)]",
-            chatOpen && "lg:pr-[28rem]",
+      {/* スマホ: 文書名＋状態（PC はバーに出す）。 */}
+      <EditorMobileHeading name={activeName || "下書きスライド"} status={<DraftBadge />} />
+      <AssistantLayout
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        label="スライドのアシスタント"
+        panel={
+          // 下書き画面では遷移せずアクティブ下書きを切替（onSlideDraftOpened）。
+          <Conversation
+            threadId={threadId}
+            variant="panel"
+            onSlideDraftOpened={onSlideDraftOpened}
+          />
+        }
+      >
+        {/* 下書きタブ（同じ会話の複数下書きを切替・別名 = 別下書き）。 */}
+        <DraftTabs
+          drafts={drafts}
+          activeName={activeName}
+          onOpen={openDraft}
+          className="px-4 pt-3 max-md:pb-1 max-md:pt-0"
+        />
+
+        <div className="min-h-0 flex-1">
+          {doc && activeName ? (
+            <SlideWorkspace
+              key={activeName}
+              doc={doc}
+              editable
+              name={activeName}
+              presenting={overlays.presenting}
+              onPresentingChange={overlays.setPresenting}
+              exporting={overlays.exporting}
+              onExportingChange={overlays.setExporting}
+            />
+          ) : (
+            <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+              <FileWarning className="size-6 text-muted-foreground/60" aria-hidden />
+              下書きを読み込んでいます…
+            </div>
           )}
-        >
-          {/* 下書きタブ（同じ会話の複数下書きを切替・別名 = 別下書き）。 */}
-          {drafts.length > 1 ? (
-            <div
-              className="flex flex-wrap items-center gap-1.5 px-4 pt-3"
-              data-testid="draft-tabs"
-            >
-              {drafts.map((d) => (
-                <button
-                  key={d.name}
-                  type="button"
-                  onClick={() => openDraft(d.name)}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[13px] transition-colors",
-                    d.name === activeName
-                      ? "bg-accent font-medium text-foreground"
-                      : "border-border/60 bg-card/40 text-muted-foreground hover:bg-secondary hover:text-foreground",
-                  )}
-                >
-                  <PencilLine className="size-3.5 shrink-0" aria-hidden />
-                  <span className="max-w-[12rem] truncate">{d.name}</span>
-                </button>
-              ))}
-            </div>
-          ) : null}
-
-          <div className="min-h-0 flex-1">
-            {doc && activeName ? (
-              <SlideWorkspace key={activeName} doc={doc} editable />
-            ) : (
-              <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
-                <FileWarning className="size-6 text-muted-foreground/60" aria-hidden />
-                下書きを読み込んでいます…
-              </div>
-            )}
-          </div>
         </div>
-
-        {chatOpen && (
-          <FadeSlide
-            from="right"
-            role="complementary"
-            aria-label="スライドのアシスタント"
-            className="absolute inset-y-3 right-3 z-20 flex w-[min(420px,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border bg-card shadow-lg"
-          >
-            <div className="flex h-11 shrink-0 items-center gap-2 px-3 shiki-dash-bottom">
-              <MessageSquare className="size-4 text-muted-foreground" aria-hidden />
-              <span className="flex-1 text-sm font-medium">アシスタント</span>
-              <button
-                type="button"
-                onClick={() => setChatOpen(false)}
-                aria-label="チャットを閉じる"
-                className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-90"
-              >
-                <X className="size-4" aria-hidden />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1">
-              {/* 下書き画面では遷移せずアクティブ下書きを切替（onSlideDraftOpened）。 */}
-              <Conversation
-                threadId={threadId}
-                variant="panel"
-                onSlideDraftOpened={onSlideDraftOpened}
-              />
-            </div>
-          </FadeSlide>
-        )}
-      </div>
+      </AssistantLayout>
 
       <SaveDraftDialog
         open={saveOpen}

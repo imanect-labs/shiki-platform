@@ -6,8 +6,9 @@
 """
 
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class BlockType(StrEnum):
@@ -17,24 +18,61 @@ class BlockType(StrEnum):
     PARAGRAPH = "paragraph"
     TABLE = "table"
     CAPTION = "caption"
+    LIST_ITEM = "list_item"
+
+
+class Prov(BaseModel):
+    """ブロックの原本上の位置（PDF など、ページ座標を持つ形式のみ）。
+
+    Docling の ProvenanceItem をそのまま写す。bbox は PDF ポイント座標で (l, t, r, b)。
+    原点は `origin`（Docling の既定は左下）。ブロックがページをまたぐと複数になる。
+    """
+
+    page: int
+    bbox: tuple[float, float, float, float]
+    origin: Literal["bottom_left", "top_left"] = "bottom_left"
+    charspan: tuple[int, int] | None = None
 
 
 class ParsedBlock(BaseModel):
-    """文書の読み順に並んだ構造化ブロック。表は Markdown 化したテキストを持つ。"""
+    """文書の読み順に並んだ構造化ブロック。表は Markdown 化したテキストを持つ。
+
+    配列の並び（0 起点）がそのまま版の中のブロック番号（ordinal）になる。引用は
+    この番号とブロック内オフセットで位置を指すので、並びを変えないこと（#508）。
+    """
 
     type: BlockType
     # heading のみ: 見出しレベル（1 が最上位）。
     level: int | None = None
     text: str
     page: int | None = None
+    # PDF など座標を持つ形式のみ。引用箇所を原本の上で枠として描く。
+    prov: list[Prov] = Field(default_factory=list)
+    # list_item のみ: 見た目の番号・記号（「1.」「•」など、取れる範囲で）。
+    list_marker: str | None = None
 
 
 class ParseRequest(BaseModel):
+    """パース要求。入力は URL か**インラインバイト列のどちらか一方**。
+
+    `source_url` は worker が自分で取りに行く（httpx・SSRF ガード無し）。したがって
+    **StorageService が発行した内部向け・短 TTL の presigned GET URL に限る**。
+    外部 URL 由来の文書（web_fetch の PDF 等）は、呼び出し側がガード済み経路で取得した
+    バイト列を `content_base64` で渡すこと。ここに任意 URL を渡せると worker が
+    confused deputy になり、呼び出し側の宛先制限を丸ごと迂回できる（#405・PIT-48）。
+    """
+
     tenant_id: str = Field(min_length=1)
-    # StorageService が発行した内部向け・短 TTL の presigned GET URL。
-    source_url: str = Field(min_length=1)
+    source_url: str | None = Field(default=None, min_length=1)
+    content_base64: str | None = Field(default=None, min_length=1)
     content_type: str = Field(min_length=1)
     file_name: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> "ParseRequest":
+        if (self.source_url is None) == (self.content_base64 is None):
+            raise ValueError("source_url と content_base64 はどちらか一方だけ指定してください")
+        return self
 
 
 class ParseResponse(BaseModel):

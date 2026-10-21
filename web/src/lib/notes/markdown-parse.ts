@@ -15,6 +15,8 @@
 
 import { marked } from "marked";
 
+import { normalizeYuiInfo } from "./yui-language";
+
 /// ProseMirror ノード JSON（`Node.fromJSON` が受ける最小形）。
 export interface PmJson {
   type: string;
@@ -136,9 +138,15 @@ function codeBlockNode(tok: Tok): PmJson {
   // 際に `Block::Embed` へ昇格し、任意ペーストが実埋め込みになる（confused-deputy）。
   // language を無害化して昇格経路を断つ（ペイロードは inert なコードとして残す）。
   if (lang === RESERVED_EMBED_LANG) lang = "";
+  // ```ui bar（Yui・#530）は情報文字列の 2 語目が図の種類なので、`ui:bar` に寄せて残す
+  // （1 語に切り詰めると種類が落ちて図にできない。`ui:bar` は class 1 つで HTML 往復も保つ）。
+  // 種類として分かるものだけ寄せ、小文字にする（`ui a```b` は寄せない＝md 往復を壊さない）。
+  const yui = normalizeYuiInfo(tok.lang ?? "");
+  if (yui) lang = yui;
   return codeBlock(lang, tok.text ?? "");
 }
 
+/// コードブロックのノード（language はそのまま。```ui は正規化済みの名前を受け取る）。
 function codeBlock(language: string, code: string): PmJson {
   return {
     type: "codeBlock",

@@ -155,7 +155,8 @@
 - **依存**: 9.6, 6.9, 5.1
 - **仕様**:
   - **raw `llm.invoke`**（アプリがプロンプト供給）＋ **`agent.invoke`**（agent-core起動・ツール実行＋RAG＋構造化データ参照）。
-  - `agent.invoke` のツール = **アプリ宣言ツール ∩ template ∩ ユーザーReBAC**。コンテキストにアプリデータ/RAGスコープを渡せるが
+  - `agent.invoke` のツール = **アプリ宣言ツール ∩ template ∩ アプリに効いている能力スコープ ∩ ユーザーReBAC**
+    （読み取り系ツールは同じものを読む API と同じスコープを要する: `doc_search` = `rag.query`・`doc_read` = `storage.read`）。コンテキストにアプリデータ/RAGスコープを渡せるが
     **RAGは個人ReBACで再チェック**。モデル/トークン予算ガードレール（アプリ登録時宣言＋管理者キャップ）。
   - コストは (ユーザー×アプリ) で計上、llm-gateway 経由で Langfuse に `app_id+user+trace_id`。SSEストリーミングを通す。
 - **受け入れ条件**:

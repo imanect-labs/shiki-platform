@@ -15,7 +15,7 @@
 `crates/workflow-engine` は shiki-server の in-process サブシステムとして動く。外形は 3 つの協調する構成要素からなる。
 
 - **ワーカープール**: ready な step を `FOR UPDATE SKIP LOCKED` で claim し、ノード実装を実行してチェックポイントを書き、DAG を前進させる（§4）。
-- **リーダー選出スケジューラ**: 単一リースを CAS 取得したインスタンスだけが、cron 評価・タイマー起床・リース heartbeat を回す（§5）。
+- **リーダー選出スケジューラ**: 単一リースを CAS 取得したインスタンスだけが、cron 評価・タイマー起床・失効リースの回収 sweeper（§9.5）を回す（§5）。
 - **トリガマッチャ**: 既存 outbox イベントを購読し、イベントトリガと `wait(event)` 購読を照合して run を起こす／step を起こす（§5）。
 
 設計の骨子は「新規ステートフル依存ゼロ」である。永続化は Postgres、配信は既存 Redis の pub/sub のみを使う。Temporal 等の外部 Durable Execution エンジンは持ち込まない（部品点数最小化・エアギャップ・認可/監査/テナント分離を心臓部に編み込むため。miniapp-platform §2.2）。durability は **ノード境界にのみ存在**し、決定論的リプレイは採らない（§7 でこの帰結を明示する）。
@@ -175,11 +175,17 @@ create table step_execution (
     updated_at        timestamptz not null default now(),
     primary key (tenant_id, run_id, step_path)
 );
--- ready/再試行の claim 対象抽出（claim はテナント横断・公平性は §8 の tenant 上限で担保）。
-create index step_ready_idx on step_execution (next_retry_at)
+-- ready の claim 対象抽出。claim は **ready 専用**であり、リース失効 running は拾わない（§9.5）。
+-- 1 本の OR で両方を拾うと partial index 2 本の BitmapOr になって index の並び順が失われ、
+-- `ORDER BY next_retry_at LIMIT 1` が「候補全件を Sort してから 1 件」に退化する
+-- （＝claim コストが実行待ち件数に比例する。実測 2,539 → 22 バッファ・#438）。
+-- 全テナント横断ワーカー（既定）は next_retry_at 先頭、tenant シャーディングは tenant_id 先頭を使う。
+create index step_ready_global_idx on step_execution (next_retry_at)
+    where status = 'ready';
+create index step_ready_idx on step_execution (tenant_id, next_retry_at)
     where status = 'ready';
 -- 孤児回収 sweeper: リース失効の running を拾う。
-create index step_lease_idx on step_execution (lease_expires_at)
+create index step_lease_idx on step_execution (tenant_id, lease_expires_at)
     where status = 'running';
 
 -- 追記ログ。chat generation_event と同型パターン（本表は #91 規約どおり tenant_id を持つ）。
@@ -445,7 +451,9 @@ join の再発火防止と「初回 live」の判定は §4.1 手順 3 の readi
 1. **due な cron の評価**: enable 中の schedule トリガについて、前回発火〜現在の間に来た論理発火時刻を cron から算出し、各 `scheduled_at` について占有 TX（§5.3）を実行する。
 2. **due な waiting_timer の起床**: `wake_at <= now()` の `waiting_timer` step を **terminal 化（out）して前進 TX を実行**する（§9.1・ready に戻して wait を再実行させない）。
 3. **waiting_event の期限処理**: `timeout_at <= now()` の `wait_subscription` を消し込み、`on_timeout` に従い terminal 化（timeout ポート）or failed にして前進する（§9.2）。
-4. **リース heartbeat**: `scheduler_lease.expires_at` を延長。失効すれば別インスタンスが CAS で引き継ぐ。
+4. **失効リースの回収（sweeper）**: `step_lease_idx` で `lease_expires_at < now()` の running step を拾い、`ready` へ戻す（§9.5）。ワーカーの claim は ready 専用なのでここが唯一の takeover 経路。
+5. **concurrency カウンタの突合**: running の実数からカウンタを再計算する（§8.1）。**必ず sweeper の後**に置く——回収で running から外れた分をこの突合が回収するため、順序が逆だと 1 tick ぶん古い値が残る。
+6. **リース heartbeat**: `scheduler_lease.expires_at` を延長。失効すれば別インスタンスが CAS で引き継ぐ。
 
 ```mermaid
 flowchart TB
@@ -454,7 +462,9 @@ flowchart TB
     CAS -- 成功 --> CRON[due な cron を列挙<br/>前回〜now を逆算]
     CRON --> OCC[各 scheduled_at で<br/>占有 TX §5.3]
     OCC --> TIMER[wake_at<=now の waiting_timer を<br/>terminal 化して前進 §9.1]
-    TIMER --> HB[lease heartbeat]
+    TIMER --> SWEEP[失効リースの running を<br/>ready へ回収 §9.5]
+    SWEEP --> RECON[concurrency カウンタ突合<br/>running 実数から再計算 §8.1]
+    RECON --> HB[lease heartbeat]
     HB --> END([次 tick へ])
 ```
 
@@ -695,12 +705,19 @@ step の `timeout_sec`（ノード種ごとに既定・上限あり・ir.md §7�
 
 ### 9.5 リース失効（ワーカー死）
 
-リース失効した step は別ワーカーが claim する（`fencing_token` +1）。
+リース失効した step は **sweeper が `ready` へ戻し**、それを別ワーカーが claim する（`fencing_token` +1）。
 
 - **完了済み（terminal）step は再実行しない**（checkpoint が正・§7.1）。
 - running のまま死んだ step は attempt そのままで re-run する（at-least-once・冪等キー不変）。
 
-sweeper（§5 のスケジューラ内 or 専用ループ）が `step_lease_idx` で失効 running を拾い、concurrency カウンタの減分リークも同時に回収する（§8.1）。
+sweeper はスケジューラリーダーの tick が回し、`step_lease_idx` で失効 running を拾う。**ワーカーの claim は ready 専用**であり失効 running を拾わない（§2.2 の index コメント・#438）。concurrency カウンタの減分リークは同一 tick の `reconcile` が running の実数から再計算して回収するため、sweeper は reconcile より前に走らせる（§8.1）。
+
+cancel 要求済み run の失効リースは sweeper の対象外とする。claim が cancel 要求済み run を除外する以上 ready に戻しても誰も拾えないため、`drain_cancel_requested`（§9.3）が `cancelled` へ回収する担当になる。
+
+**`attempt` の会計**（実行履歴 UI が「N 回目」としてそのまま表示するため、running 中も現在値であること）:
+
+1. claim が +1 する（実行を 1 つ始めた）。
+2. 「この実行は試行として数えない」と決めた経路が、`ready` へ戻すのと**同一 UPDATE で** -1 する。該当は (a) 本節のリース失効回収＝ワーカーのクラッシュ、(b) `rate_limited` ＝並行上限の順番待ち（§8.2）。
 
 ---
 
@@ -754,6 +771,8 @@ v1 は次の 2 つだけを提供する。step 単位の入力編集リプレイ
 - **失敗 step からの再開**: 同一 run 内で failed step を `ready` に戻す。成功済み checkpoint は再利用する（再実行しない）。
 - **run の再実行**: 新規 run（同一 input）を作成する。
 
+**claim 済みで中断された step（失敗ドレインで `cancelled` になった `attempt > 0`）は、旧リースが切れるまでの猶予を置いてから `ready` に戻す。** 猶予 > `lease_secs` が不変条件（初期値は `lease_secs` ＋ 5 秒）。失敗直後の resume では旧ワーカーがまだ生きている可能性があり、別ワーカーが即座に再 claim すると**外部副作用が併走する**（checkpoint 自体は fencing が無害化するが、`http.request` 等は二度出る）。猶予は固定秒ではなく `lease_secs` から導出する — 固定値だと `lease_secs` を既定より大きく設定した構成で猶予がリースより短くなり、不変条件が破れる（#446）。
+
 ### 11.5 メトリクス
 
 queue 滞留・step 実行時間・リトライ率・リース失効率・スケジューラ遅延を Prometheus に出す。
@@ -767,12 +786,21 @@ queue 滞留・step 実行時間・リトライ率・リース失効率・スケ
 - `≤256KB` は `step_execution.output` に JSONB インライン。
 - 超過は ObjectStore（`workflow-io/{tenant}/{run_id}/{step_path}`）へ spill し、参照を保存する。
 - 上限 `32MB`（超過は step 失敗）。
+- **spill は未実装**（#444 時点）。実装する際は §12.2 の GC への blob 削除追加を**同時に行う**こと。DB だけ消して blob が残ると、参照する行が無い＝発見手段の無い孤児が永久に溜まる。
 - run の `input` も同型（≤256KB インライン・超過 blob 参照・§2.2）。
 
 ### 12.2 run 履歴の保持
 
-- 保持期間はテナント設定（初期値 90 日）。
-- GC ジョブが `workflow_run`・`run_event`・`effect_journal`・spill blob を **同時に**消す（§7.3 の journal TTL は run 保持期間と同じ）。
+- 保持期間はテナント設定 `tenant.workflow_retention_days`（初期値 90 日・範囲 1〜3650 日）。設定は `PUT /admin/tenants/{tenant_id}/workflow-retention`（provisioner トークン）。下限が 1 日でよいのは、`effect_journal` の削除条件が**所有 run 行の不在**であり、run 行は terminal になるまで消えないため（保持を `run_timeout_sec` の上限 30 日より短くしても実行中 run の副作用記録は消えない）。
+- GC ジョブが `workflow_run`（`step_execution`・`run_event`・`wait_subscription` は FK の `ON DELETE CASCADE` で連動）と `effect_journal` を消す（§7.3 の journal TTL は run 保持期間と同じ）。spill blob は §12.1 のとおり未実装のため現時点では対象外。
 
-- **GC の実行主体**: 専用の jobq ジョブとし、スケジューラリーダーが日次で enqueue する（tick ループに重い削除を同居させない）。
-- **保持期間の起算は run の terminal 時刻**。terminal でない run は保持期間を跨いでも GC 対象外（`run_timeout_sec` 最大 30 日 < 保持初期値 90 日のため実質的に衝突しない）。
+- **GC の実行主体**: 専用の jobq ジョブ（キュー `workflow_gc`）。投入・消費の両方を `HistoryGcWorker`（step 実行のプールとは別タスク）が持つ。投入状態は `maintenance_schedule` に持ち、判定・投入・台帳更新を同一 TX ＋ `FOR UPDATE` で行って二重投入を潰すため、**全レプリカが無条件に呼んでよい**（スケジューラの単一リーダーである必要がない）。
+- **GC は `workflow.enabled` から独立して起動する**（#448）。保持期間はプライバシー/コンプライアンス側の義務であり、「新規 run を受け付けるか」とは別の責務である。ワークフローランタイム（`spawn_workflow_runtime`）の中に置くと、過去にワークフローを使っていたデプロイが機能を無効化した瞬間に保持義務まで止まり、既存履歴が期限を過ぎても永久に残る。配線は `wiring::wire_workflow` の enabled ゲートの**手前**。
+- **テナント横断の削除は公開しない**。`RunStore` の公開入口は対象テナントが引数に現れる `purge_tenant_history` だけで、横断版は `pub(crate)`（`HistoryGcWorker` 専用）。保守ジョブに `AuthContext` は載らない（実行主体が存在しない）ので、境界は可視性で担保する。
+- **削除は必ずバッチ**（run は 50 件・journal は 2000 行ごとにコミット。run は CASCADE で子行が桁で増えるので小さく取る）。数百万行を 1 TX で消すと長時間のロックと巨大な WAL で本番が止まる。途中失敗しても消えた分は確定済みで、次回が続きから再開する（冪等）。
+- **走査はテナント単位**（`workflow_run (tenant_id, finished_at)` の partial index）。全テナントを 1 クエリで舐めると、保持期間が最短のテナントに引きずられて長期保持テナントの履歴まで毎日走査する。
+- **候補は `FOR UPDATE SKIP LOCKED` で固定する**。ロックしないと、候補を読んでから DELETE するまでの間に `resume_failed` が同じ run を再開でき、再開済みの run を消してしまう。
+- **`effect_journal` は「期限切れ かつ 所有 run が消えている」ものだけ消す**。保持期間は run の生存期間より短く設定できるため、`created_at` だけで消すと実行中 run の副作用記録が先に消え、再開時に二重実行される（PIT-31）。
+- `wait_subscription` は `(tenant_id, run_id)` の FK（`ON DELETE CASCADE`）で道連れにする。FK が無いと run 削除のたびに確実に孤児が残る。
+- 運用手順（保持日数の変更・GC の状態確認・大規模 DB への index 事前作成）は `docs/guides/db-maintenance.md`。
+- **保持期間の起算は run の terminal 時刻**。terminal でない run は保持期間を跨いでも GC 対象外。保持日数は 1 日まで縮められる（`run_timeout_sec` 最大 30 日より短くできる）ので既定 90 日のときだけ衝突しない、ではなく**条件として明示的に効かせる**。journal 側も所有 run 行の不在を条件にするので、衝突しても実行中 run の副作用記録は消えない（上記）。

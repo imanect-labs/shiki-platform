@@ -1,4 +1,4 @@
-//! `ExecCtx` → 実行主体 `AuthContext` の変換（`ports.rs` から分割・500 行規約）。
+//! `ExecCtx` → 実行主体 `AuthContext` の変換（`ports.rs` から分割・行数規約）。
 
 use authz::{AuthContext, Principal, PrincipalKind};
 use workflow_engine::ExecCtx;

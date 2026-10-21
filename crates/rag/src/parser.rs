@@ -10,10 +10,24 @@ use authz::AuthContext;
 use crate::error::RagError;
 use crate::types::ParsedDocument;
 
-/// パース要求。`source_url` は StorageService（IndexerStorage）が発行した
-/// 内部向け・短 TTL の presigned GET URL。
+/// パース対象の与え方。
+///
+/// **どちらを使うかはセキュリティ上の選択**であって、利便性の選択ではない（#405）。
+/// worker は `Url` を渡されると**自分で取りに行く**（httpx・SSRF ガード無し）。
+/// したがって、我々が検証していない URL を `Url` で渡すと worker が confused deputy になり、
+/// `web_fetch` が積み上げた宛先制限（解決後 IP 検証＋アドレス固定・PIT-48）を丸ごと迂回できる。
+pub enum ParseSource<'a> {
+    /// StorageService（IndexerStorage）が発行した内部向け・短 TTL の presigned GET URL。
+    /// **我々のオブジェクトストアを指す URL に限る。**
+    Url(&'a str),
+    /// 呼び出し側が**既にガード済み経路で取得した**バイト列。worker は取得を行わない。
+    /// 外部 URL 由来の文書（`web_fetch` の PDF 等）は必ずこちらを使う。
+    Bytes(&'a [u8]),
+}
+
+/// パース要求。
 pub struct ParseRequest<'a> {
-    pub source_url: &'a str,
+    pub source: ParseSource<'a>,
     pub content_type: &'a str,
     pub file_name: &'a str,
 }

@@ -5,13 +5,86 @@
 use std::sync::Arc;
 
 use agent_core::{
-    FsDeleteTool, FsEditTool, FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool, Tool,
+    AttachmentRef, CodeInterpreterTool, DocSearchTool, FsAppendTool, FsDeleteTool, FsEditTool,
+    FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool, Tool, WebFetchTool, WebSearchTool,
     WorkspaceStore,
 };
 
+use authz::AuthContext;
+
 use super::ChatWorker;
+use crate::store::ClaimedRun;
 
 impl ChatWorker {
+    /// 全プロファイル共通のツール（検索・コード実行・web・generative UI・ワークフロー）。
+    ///
+    /// `attachments` は会話の添付で、`code_interpreter` が実行前に `/workspace` へ置く（#379）。
+    pub(super) fn push_core_tools(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        skills: &[crate::skill::AppliedSkill],
+        attachments: Vec<AttachmentRef>,
+    ) {
+        if let Some(search) = &self.search {
+            // skill の知識スコープを doc_search に反映する（Task 6.8・絞り込みのみ・
+            // 複数ピンは全ピンが scope を持つ時のみ union・#344）。
+            let scope = crate::skill::combined_scope(skills);
+            let doc_search = DocSearchTool::with_scope(search.clone(), scope.clone());
+            // 当たった文書を引用の外まで読む（#425）。認可は StorageService の viewer 判定で、
+            // 知識スコープは検索と同じものを課す（スコープ ∩ ReBAC）。
+            if let Some(storage) = &self.storage {
+                tools.push(Arc::new(doc_search.with_doc_read()));
+                tools.push(Arc::new(crate::doc_read_tool::DocReadTool::with_scope(
+                    search.clone(),
+                    storage.clone(),
+                    scope,
+                )));
+            } else {
+                tools.push(Arc::new(doc_search));
+            }
+        }
+        if let Some(sandbox) = &self.sandbox {
+            let mut code = CodeInterpreterTool::new(
+                sandbox.clone(),
+                self.artifacts.clone(),
+                self.config.sandbox_backend,
+            );
+            // 会話の添付を実行前に /workspace へ置く（#379）。storage が無い構成では
+            // 従来どおり seed しない（description の注記どおり結果に理由が付く）。
+            if let (Some(storage), false) = (&self.storage, attachments.is_empty()) {
+                code = code.with_attachments(
+                    Arc::new(crate::attachments::StorageAttachmentStore::new(
+                        storage.clone(),
+                    )),
+                    attachments,
+                );
+            }
+            tools.push(Arc::new(code));
+        }
+        if let Some(provider) = &self.web_search {
+            tools.push(Arc::new(WebSearchTool::new(provider.clone())));
+            // web_fetch はホスト側で取得する（#348）。sandbox 配線の有無に依存しない。
+            // parser があれば PDF/Office も読める（#405）。取得は web_fetch のガード済み経路が行い、
+            // worker へはバイト列だけ渡す（URL を渡すと宛先制限を迂回される）。
+            let mut fetch = WebFetchTool::new();
+            if let Some(parser) = &self.parser {
+                fetch = fetch.with_parser(parser.clone());
+            }
+            tools.push(Arc::new(fetch));
+        }
+        // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）:
+        // ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。
+        if let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) {
+            tools.push(Arc::new(crate::workflow_tool::EmitWorkflowTool::new(
+                store.clone(),
+                catalog.clone(),
+            )));
+            tools.push(Arc::new(crate::workflow_tool::ReadWorkflowTool::new(
+                store.clone(),
+            )));
+        }
+    }
+
     /// ドキュメント共同編集ツールの配線（ノート=Task 11P.4／スライド=Task 11.3）。
     ///
     /// collab ハブと storage が両方配線されている時のみ提示する。編集は共有 Yjs へ
@@ -23,8 +96,6 @@ impl ChatWorker {
         tools.push(Arc::new(crate::slide_tool::SaveSlideTool::new()));
         // 下書き CSV（csv_draft・下書き確定型・Task 11.11・storage 非依存・確定は UI 保存）。
         tools.push(Arc::new(crate::csv_tool::SaveCsvTool::new()));
-        // 下書き Word 文書（document_draft・下書き確定型・#332・storage 非依存・確定は UI 保存）。
-        tools.push(Arc::new(crate::office_draft_tool::SaveDocumentTool::new()));
         let (Some(collab), Some(storage)) = (&self.collab, &self.storage) else {
             return;
         };
@@ -37,7 +108,7 @@ impl ChatWorker {
             storage.clone(),
         )));
         tools.push(Arc::new(crate::document_tool::DocumentEmbedTool::new(
-            collab.clone(), // 本文への genui 埋め込み（非破壊 append・確認不要・#282）。
+            collab.clone(), // 本文への ```ui の図の追記（非破壊 append・確認不要・#282・#604）。
             storage.clone(),
         )));
         // AI スライド共同編集（slide.read / slide.edit・Task 11.3）: ノートと同じ
@@ -54,20 +125,46 @@ impl ChatWorker {
 
     /// AI Office 編集＋CSV ツールの配線。
     ///
-    /// office.edit（ファイル単位・非ロック=新版/ロック中=提案・PIT-44・Task 11.8）＋
-    /// office.live_edit（開いているセッションへ Action_Paste 注入・authz 必須・#328）は office
-    /// 有効時のみ。CSV（csv.query / csv.patch / csv.write・Task 11P.9）は tabular 配線時のみで、
+    /// office.edit（ファイル単位・非ロック=新版/ロック中=提案・PIT-44・Task 11.8）は office
+    /// 有効時のみ。office.live_edit（CoolWSD headless 参加・#352）は LiveEditor 配線時のみ。
+    /// CSV（csv.query / csv.patch / csv.write・Task 11P.9）は tabular 配線時のみで、
     /// 認可は操作別のファイル ReBAC（TabularService が StorageService 経由で強制）。
     pub(super) fn push_office_and_csv_tools(&self, tools: &mut Vec<Arc<dyn Tool>>) {
         if let Some(office) = &self.office {
             tools.push(Arc::new(crate::office_tool::OfficeEditTool::new(
                 office.clone(),
             )));
-            if let Some(authz) = &self.authz {
-                tools.push(Arc::new(crate::office_live_tool::OfficeLiveEditTool::new(
-                    authz.clone(),
-                )));
-            }
+        }
+        // office.live_edit は CoolWSD の headless 参加者として編集する（#352）。authz は
+        // LiveEditor が内部で持つ（ツール側は昇格経路を持たない）。
+        if let Some(live) = &self.office_live {
+            tools.push(Arc::new(crate::office_live_tool::OfficeLiveEditTool::new(
+                live.clone(),
+            )));
+        }
+        // Excel・Word のレイアウト編集（office.read / office.excel_edit / office.word_edit・#725）。kit 内の固定エンジンへ
+        // 検証済みの JSON だけを渡す（PIT-68）。authz は OfficeEngine が内部で持つ。
+        if let Some(engine) = &self.office_engine {
+            tools.push(Arc::new(crate::office_engine_tool::OfficeReadTool::new(
+                engine.clone(),
+            )));
+            tools.push(Arc::new(
+                crate::office_engine_tool::OfficeExcelEditTool::new(engine.clone()),
+            ));
+            tools.push(Arc::new(
+                crate::office_engine_tool::OfficeWordEditTool::new(engine.clone()),
+            ));
+        }
+        // Office の**新規作成**（save_document / save_sheet・#381）。実体は「空テンプレを
+        // 作成 → Collabora へ paste」なので Collabora が要る＝office_creator 配線時のみ提示する
+        // （md 下書き画面は廃止。Collabora 無しで「Word を作る」導線だけ残す方が嘘になる）。
+        if let Some(creator) = &self.office_creator {
+            tools.push(Arc::new(crate::office_create_tool::SaveDocumentTool::new(
+                creator.clone(),
+            )));
+            tools.push(Arc::new(crate::office_create_tool::SaveSheetTool::new(
+                creator.clone(),
+            )));
         }
         if let Some(tabular) = &self.tabular {
             tools.push(Arc::new(crate::csv_tool::CsvQueryTool::new(
@@ -91,7 +188,11 @@ impl ChatWorker {
         tools.push(Arc::new(FsListTool::new(workspace.clone())));
         tools.push(Arc::new(FsReadTool::new(workspace.clone())));
         tools.push(Arc::new(GrepTool::new(workspace.clone())));
+        // 引用の実在照合（#409）: レポートの引用が証拠台帳にあるかを機械で確かめる。
+        tools.push(Arc::new(agent_core::QuoteCheckTool::new(workspace.clone())));
         tools.push(Arc::new(FsWriteTool::new(workspace.clone())));
+        // 追記（#392）: 証拠台帳のような append-only メモを全文再送なしに伸ばす。
+        tools.push(Arc::new(FsAppendTool::new(workspace.clone())));
         tools.push(Arc::new(FsEditTool::new(workspace.clone())));
         tools.push(Arc::new(FsDeleteTool::new(workspace.clone())));
         // shell はワークスペースを seed→sync する（sandbox 必須）。
@@ -102,6 +203,134 @@ impl ChatWorker {
                 self.config.sandbox_software.clone(),
                 self.config.sandbox_backend,
             )));
+        }
+    }
+
+    /// 委譲ツール（`subagent`・#391）を提示ツールに加える（自律プロファイルのみ）。
+    ///
+    /// 子へ渡すのは**明示 allowlist の read-only ツールだけ**を、いま提示している中から拾う
+    /// （配線されていないツールは子にも無い）。`subagent` 自身は渡さない＝**入れ子の入れ子が
+    /// 構造的に起きない**。破壊系を渡さないので入れ子の承認問題も生じない。
+    /// 委譲ツールを提示し、**子のツール実行を親の run のイベント列へ中継する**タスクを起こす。
+    ///
+    /// 中継しないと、調査を委譲した瞬間に画面から「何を調べているか」が消える（`subagent` の
+    /// 行が数本出るだけになる）。中継先は `generation_event`＝イベント経路で、親の LLM
+    /// コンテキストにも確定メッセージにも入らない（`SkillInvoked` と同じ扱い）。
+    pub(super) fn push_subagent_tool(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        run: &ClaimedRun,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        /// 子が使えるツール（調査に必要な読み取りだけ）。ここに破壊系を足さないこと。
+        const CHILD_TOOLS: [agent_core::ToolName; 8] = [
+            agent_core::ToolName::WebSearch,
+            agent_core::ToolName::WebFetch,
+            agent_core::ToolName::DocSearch,
+            agent_core::ToolName::DocRead,
+            agent_core::ToolName::FsRead,
+            // 検証ロールが最初に引用の実在を機械で確かめる（#409）。
+            agent_core::ToolName::QuoteCheck,
+            agent_core::ToolName::Grep,
+            agent_core::ToolName::FsList,
+        ];
+        let child: Vec<Arc<dyn Tool>> = tools
+            .iter()
+            .filter(|t| {
+                agent_core::ToolName::parse(t.name()).is_some_and(|n| CHILD_TOOLS.contains(&n))
+            })
+            .map(Arc::clone)
+            .collect();
+        // 調査できる道具が 1 つも無ければ委譲は無意味（提示しない）。
+        if child.is_empty() {
+            return;
+        }
+        // 子のツール実行を UI へ中継する。イベント列への追記は `append_stream_event` が
+        // 単調 seq で原子的に行うので、親の sink と並行に書いても順序は壊れない。
+        // fencing 不一致（リース喪失）は Ok(None) が返るだけ＝ゾンビ書込にならない。
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<agent_core::AgentEvent>();
+        let store = self.store.clone();
+        let (run_id, fencing) = (run.run_id, run.fencing_token);
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                let kind = super::stream_map::to_child_stream_kind(&event);
+                if store
+                    .append_stream_event(run_id, fencing, &kind)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        tools.push(Arc::new(
+            agent_core::SubagentTool::new(
+                self.gateway.clone(),
+                child,
+                self.config.subagent,
+                format!("{}:{}", run.run_id, run.fencing_token),
+                cancel,
+            )
+            .with_model(self.config.model.clone())
+            .with_session_id(Some(run.thread_id.to_string()))
+            .with_tool_events(tx)
+            // 子は親の system を引き継がないので、今日の日付は明示して渡す（#546）。
+            .with_system_note(super::opts::today_note(
+                run.created_at,
+                self.config.timezone,
+            )),
+        ));
+    }
+
+    /// skill ツール（カタログ引き・#344 Task 10.11）を提示ツールに加える。
+    ///
+    /// artifact ストアとカタログ源が配線されている時のみ。カタログはピン済み ∪ 本人 owner
+    /// （PR2 でインストール済みを追加）。掲載一覧の取得失敗は run を落とさない
+    /// （ピンの fail-closed とは別・warn してツールを出さない）。
+    pub(super) async fn push_skill_tool(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        ctx: &AuthContext,
+        run: &ClaimedRun,
+        skills: &[crate::skill::AppliedSkill],
+    ) {
+        let (Some(artifacts), Some(catalog)) = (&self.skill_artifacts, &self.skill_catalog) else {
+            return;
+        };
+        match catalog.entries(ctx, run.trace_id.as_deref()).await {
+            Ok(entries) => {
+                let pinned = skills
+                    .iter()
+                    .map(|s| crate::skill_catalog::SkillCatalogEntry {
+                        id: s.id,
+                        version: s.version,
+                        name: s.name.clone(),
+                        description: s.body.description.clone(),
+                        pinned: true,
+                        command: s.body.command.clone(),
+                    })
+                    .collect();
+                let entries = crate::skill_catalog::merge_entries(pinned, entries);
+                // 一覧の上限を超えたら検索も足す（載らない分を探せるように・#520）。
+                if let Some(search) = crate::skill_search_tool::SkillSearchTool::build(
+                    &entries,
+                    self.tool_search_embedder(),
+                ) {
+                    search.prewarm(ctx);
+                    tools.push(Arc::new(search));
+                }
+                if let Some(tool) = crate::skill_tool::SkillTool::build(
+                    artifacts.clone(),
+                    self.db.clone(),
+                    run,
+                    entries,
+                ) {
+                    tools.push(Arc::new(tool));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, run_id = %run.run_id, "skill カタログ取得に失敗（skill ツールを提示しない）");
+            }
         }
     }
 }

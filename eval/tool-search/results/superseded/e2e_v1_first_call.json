@@ -1,0 +1,6449 @@
+[
+ {
+  "id": "save_csv:ja",
+  "target": "save_csv",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25174,
+  "completion_tokens": 251,
+  "error": null,
+  "latency_s": 7.14630347955972,
+  "correct": false
+ },
+ {
+  "id": "save_csv:en",
+  "target": "save_csv",
+  "condition": "all",
+  "n": 200,
+  "called": "moneyforward_search_deals",
+  "searches": [],
+  "prompt_tokens": 25173,
+  "completion_tokens": 67,
+  "error": null,
+  "latency_s": 3.7987139597535133,
+  "correct": false
+ },
+ {
+  "id": "gitlab_get_project:ja",
+  "target": "gitlab_get_project",
+  "condition": "all",
+  "n": 200,
+  "called": "gitlab_get_project",
+  "searches": [],
+  "prompt_tokens": 25175,
+  "completion_tokens": 30,
+  "error": null,
+  "latency_s": 3.0827743485569954,
+  "correct": true
+ },
+ {
+  "id": "gitlab_get_project:en",
+  "target": "gitlab_get_project",
+  "condition": "all",
+  "n": 200,
+  "called": "gitlab_get_project",
+  "searches": [],
+  "prompt_tokens": 25176,
+  "completion_tokens": 30,
+  "error": null,
+  "latency_s": 3.221897884272039,
+  "correct": true
+ },
+ {
+  "id": "jira_update_sprint:ja",
+  "target": "jira_update_sprint",
+  "condition": "all",
+  "n": 200,
+  "called": "jira_list_boards",
+  "searches": [],
+  "prompt_tokens": 25177,
+  "completion_tokens": 443,
+  "error": null,
+  "latency_s": 10.110856493003666,
+  "correct": false
+ },
+ {
+  "id": "jira_update_sprint:en",
+  "target": "jira_update_sprint",
+  "condition": "all",
+  "n": 200,
+  "called": "jira_list_boards",
+  "searches": [],
+  "prompt_tokens": 25177,
+  "completion_tokens": 59,
+  "error": null,
+  "latency_s": 2.9141581831499934,
+  "correct": false
+ },
+ {
+  "id": "slack_add_reaction:ja",
+  "target": "slack_add_reaction",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25184,
+  "completion_tokens": 158,
+  "error": null,
+  "latency_s": 4.5812704768031836,
+  "correct": false
+ },
+ {
+  "id": "slack_add_reaction:en",
+  "target": "slack_add_reaction",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25180,
+  "completion_tokens": 175,
+  "error": null,
+  "latency_s": 4.608534530736506,
+  "correct": false
+ },
+ {
+  "id": "teams_send_message:ja",
+  "target": "teams_send_message",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25173,
+  "completion_tokens": 142,
+  "error": null,
+  "latency_s": 4.0834611700847745,
+  "correct": false
+ },
+ {
+  "id": "teams_send_message:en",
+  "target": "teams_send_message",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25172,
+  "completion_tokens": 60,
+  "error": null,
+  "latency_s": 2.81963521707803,
+  "correct": false
+ },
+ {
+  "id": "chatwork_get_file:ja",
+  "target": "chatwork_get_file",
+  "condition": "all",
+  "n": 200,
+  "called": "chatwork_get_file",
+  "searches": [],
+  "prompt_tokens": 25181,
+  "completion_tokens": 49,
+  "error": null,
+  "latency_s": 2.63090683426708,
+  "correct": true
+ },
+ {
+  "id": "chatwork_get_file:en",
+  "target": "chatwork_get_file",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25181,
+  "completion_tokens": 53,
+  "error": null,
+  "latency_s": 2.7361162500455976,
+  "correct": false
+ },
+ {
+  "id": "outlook_search_emails:ja",
+  "target": "outlook_search_emails",
+  "condition": "all",
+  "n": 200,
+  "called": "outlook_search_emails",
+  "searches": [],
+  "prompt_tokens": 25178,
+  "completion_tokens": 67,
+  "error": null,
+  "latency_s": 3.517335593700409,
+  "correct": true
+ },
+ {
+  "id": "outlook_search_emails:en",
+  "target": "outlook_search_emails",
+  "condition": "all",
+  "n": 200,
+  "called": "outlook_search_emails",
+  "searches": [],
+  "prompt_tokens": 25177,
+  "completion_tokens": 68,
+  "error": null,
+  "latency_s": 3.1852478850632906,
+  "correct": true
+ },
+ {
+  "id": "outlook_delete_event:ja",
+  "target": "outlook_delete_event",
+  "condition": "all",
+  "n": 200,
+  "called": "outlook_search_emails",
+  "searches": [],
+  "prompt_tokens": 25178,
+  "completion_tokens": 68,
+  "error": null,
+  "latency_s": 2.8918035682290792,
+  "correct": false
+ },
+ {
+  "id": "outlook_delete_event:en",
+  "target": "outlook_delete_event",
+  "condition": "all",
+  "n": 200,
+  "called": "outlook_search_emails",
+  "searches": [],
+  "prompt_tokens": 25172,
+  "completion_tokens": 68,
+  "error": null,
+  "latency_s": 3.109061948955059,
+  "correct": false
+ },
+ {
+  "id": "gdrive_upload_file:ja",
+  "target": "gdrive_upload_file",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25177,
+  "completion_tokens": 102,
+  "error": null,
+  "latency_s": 3.4764024736359715,
+  "correct": false
+ },
+ {
+  "id": "gdrive_upload_file:en",
+  "target": "gdrive_upload_file",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25175,
+  "completion_tokens": 113,
+  "error": null,
+  "latency_s": 3.8530955901369452,
+  "correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:ja",
+  "target": "gdrive_list_revisions",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25173,
+  "completion_tokens": 141,
+  "error": null,
+  "latency_s": 4.508382805623114,
+  "correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:en",
+  "target": "gdrive_list_revisions",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25174,
+  "completion_tokens": 111,
+  "error": null,
+  "latency_s": 3.9346815599128604,
+  "correct": false
+ },
+ {
+  "id": "dropbox_share_folder:ja",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25181,
+  "completion_tokens": 190,
+  "error": null,
+  "latency_s": 4.973211312666535,
+  "correct": false
+ },
+ {
+  "id": "dropbox_share_folder:en",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25176,
+  "completion_tokens": 106,
+  "error": null,
+  "latency_s": 4.269082055427134,
+  "correct": false
+ },
+ {
+  "id": "notion_delete_block:ja",
+  "target": "notion_delete_block",
+  "condition": "all",
+  "n": 200,
+  "called": "notion_search_pages",
+  "searches": [],
+  "prompt_tokens": 25181,
+  "completion_tokens": 130,
+  "error": null,
+  "latency_s": 3.931420926935971,
+  "correct": false
+ },
+ {
+  "id": "notion_delete_block:en",
+  "target": "notion_delete_block",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25180,
+  "completion_tokens": 175,
+  "error": null,
+  "latency_s": 4.598672395572066,
+  "correct": false
+ },
+ {
+  "id": "trello_create_board:ja",
+  "target": "trello_create_board",
+  "condition": "all",
+  "n": 200,
+  "called": "trello_create_board",
+  "searches": [],
+  "prompt_tokens": 25175,
+  "completion_tokens": 41,
+  "error": null,
+  "latency_s": 2.9860785603523254,
+  "correct": true
+ },
+ {
+  "id": "trello_create_board:en",
+  "target": "trello_create_board",
+  "condition": "all",
+  "n": 200,
+  "called": "trello_create_board",
+  "searches": [],
+  "prompt_tokens": 25176,
+  "completion_tokens": 58,
+  "error": null,
+  "latency_s": 2.935202400200069,
+  "correct": true
+ },
+ {
+  "id": "trello_remove_member_from_card:ja",
+  "target": "trello_remove_member_from_card",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25179,
+  "completion_tokens": 313,
+  "error": null,
+  "latency_s": 7.169459700584412,
+  "correct": false
+ },
+ {
+  "id": "trello_remove_member_from_card:en",
+  "target": "trello_remove_member_from_card",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25181,
+  "completion_tokens": 229,
+  "error": null,
+  "latency_s": 5.583893657661974,
+  "correct": false
+ },
+ {
+  "id": "trello_get_board_details:ja",
+  "target": "trello_get_board_details",
+  "condition": "all",
+  "n": 200,
+  "called": "trello_get_board_details",
+  "searches": [],
+  "prompt_tokens": 25183,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 3.5119715500622988,
+  "correct": true
+ },
+ {
+  "id": "trello_get_board_details:en",
+  "target": "trello_get_board_details",
+  "condition": "all",
+  "n": 200,
+  "called": "trello_get_board_details",
+  "searches": [],
+  "prompt_tokens": 25187,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 2.5049947733059525,
+  "correct": true
+ },
+ {
+  "id": "garoon_list_messages:ja",
+  "target": "garoon_list_messages",
+  "condition": "all",
+  "n": 200,
+  "called": "garoon_list_messages",
+  "searches": [],
+  "prompt_tokens": 25170,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 3.2131483405828476,
+  "correct": true
+ },
+ {
+  "id": "garoon_list_messages:en",
+  "target": "garoon_list_messages",
+  "condition": "all",
+  "n": 200,
+  "called": "garoon_list_messages",
+  "searches": [],
+  "prompt_tokens": 25171,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 2.2689025746658444,
+  "correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "all",
+  "n": 200,
+  "called": "rakurakuseisan_get_expense_detail",
+  "searches": [],
+  "prompt_tokens": 25193,
+  "completion_tokens": 43,
+  "error": null,
+  "latency_s": 2.692396404221654,
+  "correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:en",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "all",
+  "n": 200,
+  "called": "rakurakuseisan_get_expense_detail",
+  "searches": [],
+  "prompt_tokens": 25192,
+  "completion_tokens": 43,
+  "error": null,
+  "latency_s": 2.6719024842604995,
+  "correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja",
+  "target": "smarthr_create_employee_draft",
+  "condition": "all",
+  "n": 200,
+  "called": "smarthr_create_employee_draft",
+  "searches": [],
+  "prompt_tokens": 25183,
+  "completion_tokens": 83,
+  "error": null,
+  "latency_s": 3.616777260787785,
+  "correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:en",
+  "target": "smarthr_create_employee_draft",
+  "condition": "all",
+  "n": 200,
+  "called": "smarthr_create_employee_draft",
+  "searches": [],
+  "prompt_tokens": 25189,
+  "completion_tokens": 85,
+  "error": null,
+  "latency_s": 4.041466833092272,
+  "correct": true
+ },
+ {
+  "id": "docusign_create_webhook:ja",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 200,
+  "called": "docusign_list_templates",
+  "searches": [],
+  "prompt_tokens": 25198,
+  "completion_tokens": 89,
+  "error": null,
+  "latency_s": 3.7023583305999637,
+  "correct": false
+ },
+ {
+  "id": "docusign_create_webhook:en",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25184,
+  "completion_tokens": 79,
+  "error": null,
+  "latency_s": 3.2535596853122115,
+  "correct": false
+ },
+ {
+  "id": "zendesk_list_tags:ja",
+  "target": "zendesk_list_tags",
+  "condition": "all",
+  "n": 200,
+  "called": "zendesk_list_tags",
+  "searches": [],
+  "prompt_tokens": 25170,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 1.8853614134714007,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_tags:en",
+  "target": "zendesk_list_tags",
+  "condition": "all",
+  "n": 200,
+  "called": "zendesk_list_tags",
+  "searches": [],
+  "prompt_tokens": 25171,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 2.291643623262644,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:ja",
+  "target": "zendesk_list_organizations",
+  "condition": "all",
+  "n": 200,
+  "called": "zendesk_list_organizations",
+  "searches": [],
+  "prompt_tokens": 25170,
+  "completion_tokens": 17,
+  "error": null,
+  "latency_s": 2.3020176412537694,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:en",
+  "target": "zendesk_list_organizations",
+  "condition": "all",
+  "n": 200,
+  "called": "zendesk_list_organizations",
+  "searches": [],
+  "prompt_tokens": 25171,
+  "completion_tokens": 17,
+  "error": null,
+  "latency_s": 2.1490601068362594,
+  "correct": true
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25190,
+  "completion_tokens": 257,
+  "error": null,
+  "latency_s": 6.090056594461203,
+  "correct": false
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25184,
+  "completion_tokens": 91,
+  "error": null,
+  "latency_s": 3.5482091140002012,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25183,
+  "completion_tokens": 1495,
+  "error": null,
+  "latency_s": 27.062559311278164,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "all",
+  "n": 200,
+  "called": "aws_cloudwatch_search_logs_by_pattern",
+  "searches": [],
+  "prompt_tokens": 25181,
+  "completion_tokens": 743,
+  "error": null,
+  "latency_s": 14.71494793239981,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "all",
+  "n": 200,
+  "called": "aws_cloudwatch_search_logs_by_pattern",
+  "searches": [],
+  "prompt_tokens": 25184,
+  "completion_tokens": 175,
+  "error": null,
+  "latency_s": 5.2351567363366485,
+  "correct": true
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25178,
+  "completion_tokens": 125,
+  "error": null,
+  "latency_s": 3.8280329452827573,
+  "correct": false
+ },
+ {
+  "id": "stripe_create_customer:ja",
+  "target": "stripe_create_customer",
+  "condition": "all",
+  "n": 200,
+  "called": "stripe_create_customer",
+  "searches": [],
+  "prompt_tokens": 25175,
+  "completion_tokens": 55,
+  "error": null,
+  "latency_s": 3.181040017865598,
+  "correct": true
+ },
+ {
+  "id": "stripe_create_customer:en",
+  "target": "stripe_create_customer",
+  "condition": "all",
+  "n": 200,
+  "called": "stripe_create_customer",
+  "searches": [],
+  "prompt_tokens": 25176,
+  "completion_tokens": 43,
+  "error": null,
+  "latency_s": 2.5831053890287876,
+  "correct": true
+ },
+ {
+  "id": "stripe_list_invoices:ja",
+  "target": "stripe_list_invoices",
+  "condition": "all",
+  "n": 200,
+  "called": "stripe_list_invoices",
+  "searches": [],
+  "prompt_tokens": 25187,
+  "completion_tokens": 46,
+  "error": null,
+  "latency_s": 2.541858335956931,
+  "correct": true
+ },
+ {
+  "id": "stripe_list_invoices:en",
+  "target": "stripe_list_invoices",
+  "condition": "all",
+  "n": 200,
+  "called": "stripe_list_invoices",
+  "searches": [],
+  "prompt_tokens": 25181,
+  "completion_tokens": 35,
+  "error": null,
+  "latency_s": 2.7555104233324528,
+  "correct": true
+ },
+ {
+  "id": "shopify_list_customers:ja",
+  "target": "shopify_list_customers",
+  "condition": "all",
+  "n": 200,
+  "called": "shopify_list_customers",
+  "searches": [],
+  "prompt_tokens": 25176,
+  "completion_tokens": 31,
+  "error": null,
+  "latency_s": 2.194033410400152,
+  "correct": true
+ },
+ {
+  "id": "shopify_list_customers:en",
+  "target": "shopify_list_customers",
+  "condition": "all",
+  "n": 200,
+  "called": "shopify_list_customers",
+  "searches": [],
+  "prompt_tokens": 25173,
+  "completion_tokens": 31,
+  "error": null,
+  "latency_s": 2.871355727314949,
+  "correct": true
+ },
+ {
+  "id": "shopify_search_products:ja",
+  "target": "shopify_search_products",
+  "condition": "all",
+  "n": 200,
+  "called": "shopify_search_products",
+  "searches": [],
+  "prompt_tokens": 25175,
+  "completion_tokens": 31,
+  "error": null,
+  "latency_s": 2.4849191047251225,
+  "correct": true
+ },
+ {
+  "id": "shopify_search_products:en",
+  "target": "shopify_search_products",
+  "condition": "all",
+  "n": 200,
+  "called": "shopify_search_products",
+  "searches": [],
+  "prompt_tokens": 25172,
+  "completion_tokens": 42,
+  "error": null,
+  "latency_s": 2.305658135563135,
+  "correct": true
+ },
+ {
+  "id": "figma_delete_comment:ja",
+  "target": "figma_delete_comment",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25177,
+  "completion_tokens": 63,
+  "error": null,
+  "latency_s": 3.153929424472153,
+  "correct": false
+ },
+ {
+  "id": "figma_delete_comment:en",
+  "target": "figma_delete_comment",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25178,
+  "completion_tokens": 53,
+  "error": null,
+  "latency_s": 3.0484606875106692,
+  "correct": false
+ },
+ {
+  "id": "tableau_add_user_to_site:ja",
+  "target": "tableau_add_user_to_site",
+  "condition": "all",
+  "n": 200,
+  "called": "tableau_add_user_to_site",
+  "searches": [],
+  "prompt_tokens": 25177,
+  "completion_tokens": 165,
+  "error": null,
+  "latency_s": 4.623537994921207,
+  "correct": true
+ },
+ {
+  "id": "tableau_add_user_to_site:en",
+  "target": "tableau_add_user_to_site",
+  "condition": "all",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 25173,
+  "completion_tokens": 88,
+  "error": null,
+  "latency_s": 3.691344610415399,
+  "correct": false
+ },
+ {
+  "id": "save_csv:ja",
+  "target": "save_csv",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "sales revenue report spreadsheet csv",
+    "hits": [
+     "save_csv",
+     "csv.write",
+     "rakurakuseisan_list_reports",
+     "ga4_run_report",
+     "ga4_run_realtime_report"
+    ]
+   }
+  ],
+  "prompt_tokens": 4267,
+  "completion_tokens": 318,
+  "error": null,
+  "latency_s": 8.088749984279275,
+  "correct": false
+ },
+ {
+  "id": "save_csv:en",
+  "target": "save_csv",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "sales performance report",
+    "hits": [
+     "rakurakuseisan_list_reports",
+     "ga4_run_report",
+     "ga4_run_realtime_report",
+     "rakurakuseisan_get_approval_status",
+     "outlook_search_emails"
+    ]
+   },
+   {
+    "query": "sales data items products",
+    "hits": [
+     "shopify_search_products",
+     "miro_update_item",
+     "miro_get_item",
+     "freee_update_item",
+     "ga4_get_data_stream"
+    ]
+   },
+   {
+    "query": "shopify orders sales transactions",
+    "hits": [
+     "rakurakuseisan_import_transaction",
+     "shopify_search_products",
+     "shopify_list_customers",
+     "shopify_create_customer"
+    ]
+   },
+   {
+    "query": "orders transactions revenue",
+    "hits": [
+     "rakurakuseisan_import_transaction"
+    ]
+   }
+  ],
+  "prompt_tokens": 11075,
+  "completion_tokens": 246,
+  "error": null,
+  "latency_s": 10.907446158118546,
+  "correct": false
+ },
+ {
+  "id": "gitlab_get_project:ja",
+  "target": "gitlab_get_project",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "github_get_repository",
+  "searches": [
+   {
+    "query": "github_get_repository",
+    "hits": [
+     "github_get_repository"
+    ]
+   }
+  ],
+  "prompt_tokens": 3424,
+  "completion_tokens": 72,
+  "error": null,
+  "latency_s": 4.0759237119928,
+  "correct": false
+ },
+ {
+  "id": "gitlab_get_project:en",
+  "target": "gitlab_get_project",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "github_get_repository",
+  "searches": [
+   {
+    "query": "get repository details",
+    "hits": [
+     "github_get_repository",
+     "trello_get_board_details",
+     "rakurakuseisan_get_expense_detail",
+     "gitlab_list_repository_tree",
+     "gitlab_get_project"
+    ]
+   }
+  ],
+  "prompt_tokens": 3926,
+  "completion_tokens": 72,
+  "error": null,
+  "latency_s": 4.069516527466476,
+  "correct": false
+ },
+ {
+  "id": "jira_update_sprint:ja",
+  "target": "jira_update_sprint",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "jira_list_sprints",
+  "searches": [],
+  "prompt_tokens": 1618,
+  "completion_tokens": 127,
+  "error": null,
+  "latency_s": 3.5497524067759514,
+  "correct": false
+ },
+ {
+  "id": "jira_update_sprint:en",
+  "target": "jira_update_sprint",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "jira_list_boards",
+  "searches": [
+   {
+    "query": "jira update sprint",
+    "hits": [
+     "jira_update_sprint",
+     "jira_close_sprint",
+     "jira_list_sprints",
+     "jira_delete_issue",
+     "jira_list_boards"
+    ]
+   }
+  ],
+  "prompt_tokens": 3987,
+  "completion_tokens": 44,
+  "error": null,
+  "latency_s": 3.7575790928676724,
+  "correct": false
+ },
+ {
+  "id": "slack_add_reaction:ja",
+  "target": "slack_add_reaction",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "slack_add_reaction",
+    "hits": [
+     "slack_add_reaction"
+    ]
+   }
+  ],
+  "prompt_tokens": 3519,
+  "completion_tokens": 655,
+  "error": null,
+  "latency_s": 14.171093290671706,
+  "correct": false
+ },
+ {
+  "id": "slack_add_reaction:en",
+  "target": "slack_add_reaction",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "add reaction slack",
+    "hits": [
+     "slack_add_reaction",
+     "slack_unpin_message"
+    ]
+   },
+   {
+    "query": "slack list channels",
+    "hits": [
+     "slack_unpin_message",
+     "slack_add_reaction",
+     "trello_list_lists"
+    ]
+   },
+   {
+    "query": "slack search",
+    "hits": [
+     "slack_add_reaction",
+     "slack_unpin_message",
+     "docusign_search_envelopes",
+     "outlook_search_emails",
+     "shopify_search_products"
+    ]
+   }
+  ],
+  "prompt_tokens": 9519,
+  "completion_tokens": 1037,
+  "error": null,
+  "latency_s": 23.53127030096948,
+  "correct": false
+ },
+ {
+  "id": "teams_send_message:ja",
+  "target": "teams_send_message",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "send message chat slack teams chatwork",
+    "hits": [
+     "teams_send_message",
+     "slack_unpin_message",
+     "chatwork_get_messages",
+     "slack_add_reaction",
+     "figma_get_team_styles"
+    ]
+   },
+   {
+    "query": "list chats teams",
+    "hits": [
+     "teams_send_message",
+     "figma_get_team_styles",
+     "teams_get_user_profile",
+     "trello_list_lists",
+     "gdrive_list_revisions"
+    ]
+   },
+   {
+    "query": "slack post message channel list",
+    "hits": [
+     "slack_unpin_message",
+     "lineworks_list_posts",
+     "slack_add_reaction",
+     "garoon_list_messages",
+     "lineworks_search_posts"
+    ]
+   },
+   {
+    "query": "chatwork post message room list",
+    "hits": [
+     "chatwork_get_messages",
+     "chatwork_delete_room",
+     "chatwork_create_room",
+     "chatwork_list_schedules",
+     "lineworks_list_posts"
+    ]
+   }
+  ],
+  "prompt_tokens": 11156,
+  "completion_tokens": 595,
+  "error": null,
+  "latency_s": 16.64489794243127,
+  "correct": false
+ },
+ {
+  "id": "teams_send_message:en",
+  "target": "teams_send_message",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "send message chat",
+    "hits": [
+     "teams_send_message",
+     "gmail_unstar_message",
+     "garoon_list_messages",
+     "slack_unpin_message",
+     "chatwork_get_messages"
+    ]
+   }
+  ],
+  "prompt_tokens": 4183,
+  "completion_tokens": 347,
+  "error": null,
+  "latency_s": 8.43827736005187,
+  "correct": false
+ },
+ {
+  "id": "chatwork_get_file:ja",
+  "target": "chatwork_get_file",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "chatwork_get_file",
+  "searches": [],
+  "prompt_tokens": 1622,
+  "completion_tokens": 32,
+  "error": null,
+  "latency_s": 2.0319789024069905,
+  "correct": true
+ },
+ {
+  "id": "chatwork_get_file:en",
+  "target": "chatwork_get_file",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "chatwork_get_file",
+  "searches": [],
+  "prompt_tokens": 1622,
+  "completion_tokens": 48,
+  "error": null,
+  "latency_s": 2.180297656916082,
+  "correct": true
+ },
+ {
+  "id": "outlook_search_emails:ja",
+  "target": "outlook_search_emails",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "outlook_search_emails",
+  "searches": [
+   {
+    "query": "outlook search emails",
+    "hits": [
+     "outlook_search_emails",
+     "outlook_list_emails",
+     "outlook_reply_to_email",
+     "outlook_delete_event",
+     "outlook_get_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 3947,
+  "completion_tokens": 95,
+  "error": null,
+  "latency_s": 4.677847075276077,
+  "correct": true
+ },
+ {
+  "id": "outlook_search_emails:en",
+  "target": "outlook_search_emails",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "outlook_search_emails",
+  "searches": [
+   {
+    "query": "search emails",
+    "hits": [
+     "outlook_search_emails",
+     "docusign_search_envelopes",
+     "hubspot_create_draft_email",
+     "shopify_search_products",
+     "moneyforward_search_deals"
+    ]
+   }
+  ],
+  "prompt_tokens": 4029,
+  "completion_tokens": 95,
+  "error": null,
+  "latency_s": 4.66477376781404,
+  "correct": true
+ },
+ {
+  "id": "outlook_delete_event:ja",
+  "target": "outlook_delete_event",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "gcal_list_calendars",
+  "searches": [
+   {
+    "query": "calendar list events",
+    "hits": [
+     "gcal_list_calendars",
+     "gcal_get_calendar_metadata",
+     "outlook_get_event",
+     "outlook_update_event",
+     "outlook_delete_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 3946,
+  "completion_tokens": 76,
+  "error": null,
+  "latency_s": 4.0609455751255155,
+  "correct": false
+ },
+ {
+  "id": "outlook_delete_event:en",
+  "target": "outlook_delete_event",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "cancel delete calendar event",
+    "hits": [
+     "outlook_delete_event",
+     "gcal_get_calendar_metadata",
+     "gcal_list_calendars",
+     "bigquery_cancel_job",
+     "outlook_get_event"
+    ]
+   },
+   {
+    "query": "outlook list events search",
+    "hits": [
+     "outlook_get_event",
+     "outlook_update_event",
+     "outlook_delete_event",
+     "outlook_search_emails",
+     "outlook_list_folders"
+    ]
+   },
+   {
+    "query": "google calendar delete event list events",
+    "hits": [
+     "outlook_delete_event",
+     "gcal_list_calendars",
+     "gdrive_delete_file",
+     "gcal_get_calendar_metadata",
+     "outlook_get_event"
+    ]
+   },
+   {
+    "query": "delete event calendar",
+    "hits": [
+     "outlook_delete_event",
+     "gcal_get_calendar_metadata",
+     "gcal_list_calendars",
+     "outlook_get_event",
+     "outlook_update_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 10530,
+  "completion_tokens": 580,
+  "error": null,
+  "latency_s": 15.43160664383322,
+  "correct": false
+ },
+ {
+  "id": "gdrive_upload_file:ja",
+  "target": "gdrive_upload_file",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "gdrive_upload_file",
+    "hits": [
+     "gdrive_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 3871,
+  "completion_tokens": 666,
+  "error": null,
+  "latency_s": 14.29407047573477,
+  "correct": false
+ },
+ {
+  "id": "gdrive_upload_file:en",
+  "target": "gdrive_upload_file",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "gdrive_upload_file",
+  "searches": [],
+  "prompt_tokens": 1616,
+  "completion_tokens": 50,
+  "error": null,
+  "latency_s": 2.3254987969994545,
+  "correct": true
+ },
+ {
+  "id": "gdrive_list_revisions:ja",
+  "target": "gdrive_list_revisions",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 1614,
+  "completion_tokens": 155,
+  "error": null,
+  "latency_s": 3.9933994710445404,
+  "correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:en",
+  "target": "gdrive_list_revisions",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 1615,
+  "completion_tokens": 92,
+  "error": null,
+  "latency_s": 2.5990066593512893,
+  "correct": false
+ },
+ {
+  "id": "dropbox_share_folder:ja",
+  "target": "dropbox_share_folder",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "dropbox_list_folder",
+  "searches": [
+   {
+    "query": "gdrive list files search folder",
+    "hits": [
+     "gdrive_upload_file",
+     "gdrive_list_revisions",
+     "gdrive_delete_file",
+     "gdrive_copy_file",
+     "gdrive_list_permissions"
+    ]
+   },
+   {
+    "query": "dropbox share folder list",
+    "hits": [
+     "dropbox_share_folder",
+     "dropbox_list_folder",
+     "outlook_list_folders",
+     "dropbox_delete_item",
+     "dropbox_get_thumbnail"
+    ]
+   }
+  ],
+  "prompt_tokens": 7584,
+  "completion_tokens": 579,
+  "error": null,
+  "latency_s": 14.086841597221792,
+  "correct": false
+ },
+ {
+  "id": "dropbox_share_folder:en",
+  "target": "dropbox_share_folder",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "list files or folders in Google Drive",
+    "hits": [
+     "gdrive_upload_file",
+     "gdrive_delete_file",
+     "outlook_list_folders",
+     "dropbox_list_folder",
+     "box_upload_file"
+    ]
+   },
+   {
+    "query": "search or list files in Google Drive",
+    "hits": [
+     "gdrive_delete_file",
+     "gdrive_upload_file",
+     "garoon_search_schedules",
+     "gdrive_list_revisions",
+     "kintone_upload_file"
+    ]
+   },
+   {
+    "query": "gdrive",
+    "hits": [
+     "gdrive_upload_file",
+     "gdrive_list_revisions",
+     "gdrive_copy_file",
+     "gdrive_list_permissions",
+     "gdrive_create_permission"
+    ]
+   }
+  ],
+  "prompt_tokens": 10560,
+  "completion_tokens": 370,
+  "error": null,
+  "latency_s": 12.783334732055664,
+  "correct": false
+ },
+ {
+  "id": "notion_delete_block:ja",
+  "target": "notion_delete_block",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "notion_search_pages",
+  "searches": [],
+  "prompt_tokens": 1622,
+  "completion_tokens": 434,
+  "error": null,
+  "latency_s": 8.670140558853745,
+  "correct": false
+ },
+ {
+  "id": "notion_delete_block:en",
+  "target": "notion_delete_block",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "notion_search_pages",
+  "searches": [],
+  "prompt_tokens": 1621,
+  "completion_tokens": 72,
+  "error": null,
+  "latency_s": 2.6799786342307925,
+  "correct": false
+ },
+ {
+  "id": "trello_create_board:ja",
+  "target": "trello_create_board",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "trello_create_board",
+  "searches": [
+   {
+    "query": "trello_create_board",
+    "hits": [
+     "trello_create_board"
+    ]
+   }
+  ],
+  "prompt_tokens": 3438,
+  "completion_tokens": 69,
+  "error": null,
+  "latency_s": 4.350211380049586,
+  "correct": true
+ },
+ {
+  "id": "trello_create_board:en",
+  "target": "trello_create_board",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "trello_create_board",
+  "searches": [],
+  "prompt_tokens": 1617,
+  "completion_tokens": 46,
+  "error": null,
+  "latency_s": 2.126033103093505,
+  "correct": true
+ },
+ {
+  "id": "trello_remove_member_from_card:ja",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "trello get card details or search cards",
+    "hits": [
+     "trello_get_board_details",
+     "trello_delete_card",
+     "trello_remove_member_from_card",
+     "rakurakuseisan_get_expense_detail",
+     "trello_create_board"
+    ]
+   },
+   {
+    "query": "trello search card or get card by name",
+    "hits": [
+     "trello_delete_card",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "trello_remove_member_from_card",
+     "trello_get_board_details",
+     "trello_create_board"
+    ]
+   }
+  ],
+  "prompt_tokens": 7208,
+  "completion_tokens": 793,
+  "error": null,
+  "latency_s": 19.389855973422527,
+  "correct": false
+ },
+ {
+  "id": "trello_remove_member_from_card:en",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "trello get card details or list cards",
+    "hits": [
+     "trello_get_board_details",
+     "trello_delete_card",
+     "trello_remove_member_from_card",
+     "rakurakuseisan_get_expense_detail",
+     "trello_list_lists"
+    ]
+   },
+   {
+    "query": "trello search card or get member id",
+    "hits": [
+     "trello_remove_member_from_card",
+     "trello_delete_card",
+     "trello_get_board_details",
+     "trello_create_board",
+     "trello_list_lists"
+    ]
+   }
+  ],
+  "prompt_tokens": 6909,
+  "completion_tokens": 609,
+  "error": null,
+  "latency_s": 14.707063651643693,
+  "correct": false
+ },
+ {
+  "id": "trello_get_board_details:ja",
+  "target": "trello_get_board_details",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "trello_get_board_details",
+  "searches": [],
+  "prompt_tokens": 1624,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 2.1084128571674228,
+  "correct": true
+ },
+ {
+  "id": "trello_get_board_details:en",
+  "target": "trello_get_board_details",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "trello_get_board_details",
+  "searches": [],
+  "prompt_tokens": 1628,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 2.07315687648952,
+  "correct": true
+ },
+ {
+  "id": "garoon_list_messages:ja",
+  "target": "garoon_list_messages",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "garoon_list_messages",
+  "searches": [],
+  "prompt_tokens": 1611,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 1.8658733405172825,
+  "correct": true
+ },
+ {
+  "id": "garoon_list_messages:en",
+  "target": "garoon_list_messages",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "garoon_list_messages",
+  "searches": [],
+  "prompt_tokens": 1612,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 1.6302849976345897,
+  "correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "rakurakuseisan_get_expense_detail",
+  "searches": [],
+  "prompt_tokens": 1634,
+  "completion_tokens": 71,
+  "error": null,
+  "latency_s": 2.6389556722715497,
+  "correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:en",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "rakurakuseisan_get_expense_detail",
+  "searches": [],
+  "prompt_tokens": 1633,
+  "completion_tokens": 43,
+  "error": null,
+  "latency_s": 2.056113372556865,
+  "correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "smarthr_create_employee_draft",
+  "searches": [
+   {
+    "query": "smarthr_create_employee_draft",
+    "hits": [
+     "smarthr_create_employee_draft"
+    ]
+   }
+  ],
+  "prompt_tokens": 3494,
+  "completion_tokens": 113,
+  "error": null,
+  "latency_s": 4.804126700386405,
+  "correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:en",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "smarthr_create_employee_draft",
+  "searches": [
+   {
+    "query": "save employee draft smarthr",
+    "hits": [
+     "smarthr_create_employee_draft",
+     "save_csv",
+     "smarthr_list_documents",
+     "smarthr_get_payroll_statement",
+     "smarthr_get_leave_balance"
+    ]
+   }
+  ],
+  "prompt_tokens": 4113,
+  "completion_tokens": 115,
+  "error": null,
+  "latency_s": 5.01669267937541,
+  "correct": true
+ },
+ {
+  "id": "docusign_create_webhook:ja",
+  "target": "docusign_create_webhook",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "docusign_create_webhook",
+    "hits": [
+     "docusign_create_webhook"
+    ]
+   }
+  ],
+  "prompt_tokens": 3588,
+  "completion_tokens": 99,
+  "error": null,
+  "latency_s": 4.483117589727044,
+  "correct": false
+ },
+ {
+  "id": "docusign_create_webhook:en",
+  "target": "docusign_create_webhook",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "docusign_create_webhook",
+  "searches": [],
+  "prompt_tokens": 1625,
+  "completion_tokens": 191,
+  "error": null,
+  "latency_s": 4.6229343097656965,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_tags:ja",
+  "target": "zendesk_list_tags",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "zendesk_list_tags",
+  "searches": [
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags"
+    ]
+   }
+  ],
+  "prompt_tokens": 3367,
+  "completion_tokens": 44,
+  "error": null,
+  "latency_s": 3.9209897434338927,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_tags:en",
+  "target": "zendesk_list_tags",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags"
+    ]
+   },
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags"
+    ]
+   },
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags"
+    ]
+   },
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags"
+    ]
+   }
+  ],
+  "prompt_tokens": 7135,
+  "completion_tokens": 112,
+  "error": null,
+  "latency_s": 8.408434130251408,
+  "correct": false
+ },
+ {
+  "id": "zendesk_list_organizations:ja",
+  "target": "zendesk_list_organizations",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "zendesk_list_organizations",
+  "searches": [
+   {
+    "query": "zendesk_list_organizations",
+    "hits": [
+     "zendesk_list_organizations"
+    ]
+   }
+  ],
+  "prompt_tokens": 3375,
+  "completion_tokens": 46,
+  "error": null,
+  "latency_s": 4.127425227314234,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:en",
+  "target": "zendesk_list_organizations",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "zendesk_list_organizations",
+  "searches": [
+   {
+    "query": "zendesk_list_organizations",
+    "hits": [
+     "zendesk_list_organizations"
+    ]
+   }
+  ],
+  "prompt_tokens": 3377,
+  "completion_tokens": 46,
+  "error": null,
+  "latency_s": 4.014613864943385,
+  "correct": true
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "pagerduty trigger webhook",
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "docusign_create_webhook",
+     "linear_list_webhooks",
+     "pagerduty_list_vendors",
+     "pagerduty_get_schedule"
+    ]
+   }
+  ],
+  "prompt_tokens": 3972,
+  "completion_tokens": 645,
+  "error": null,
+  "latency_s": 13.54603358451277,
+  "correct": false
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "pagerduty_trigger_webhook",
+    "hits": [
+     "pagerduty_trigger_webhook"
+    ]
+   }
+  ],
+  "prompt_tokens": 3462,
+  "completion_tokens": 149,
+  "error": null,
+  "latency_s": 5.445795548148453,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "CloudWatch Logs get log events",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "outlook_get_event",
+     "aws_cloudwatch_put_metric_data",
+     "outlook_update_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 4078,
+  "completion_tokens": 152,
+  "error": null,
+  "latency_s": 5.572733674198389,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "aws_cloudwatch_get_log_events",
+  "searches": [],
+  "prompt_tokens": 1622,
+  "completion_tokens": 69,
+  "error": null,
+  "latency_s": 2.5113092847168446,
+  "correct": true
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "aws_cloudwatch_search_logs_by_pattern",
+  "searches": [],
+  "prompt_tokens": 1625,
+  "completion_tokens": 63,
+  "error": null,
+  "latency_s": 2.631628348492086,
+  "correct": true
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "aws_cloudwatch_search_logs_by_pattern",
+  "searches": [
+   {
+    "query": "search CloudWatch logs by pattern",
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_log_events"
+    ]
+   }
+  ],
+  "prompt_tokens": 3697,
+  "completion_tokens": 78,
+  "error": null,
+  "latency_s": 4.288013900630176,
+  "correct": true
+ },
+ {
+  "id": "stripe_create_customer:ja",
+  "target": "stripe_create_customer",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "stripe_create_customer",
+  "searches": [],
+  "prompt_tokens": 1616,
+  "completion_tokens": 42,
+  "error": null,
+  "latency_s": 2.185032621026039,
+  "correct": true
+ },
+ {
+  "id": "stripe_create_customer:en",
+  "target": "stripe_create_customer",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "stripe_create_customer",
+  "searches": [],
+  "prompt_tokens": 1617,
+  "completion_tokens": 43,
+  "error": null,
+  "latency_s": 2.2144930055364966,
+  "correct": true
+ },
+ {
+  "id": "stripe_list_invoices:ja",
+  "target": "stripe_list_invoices",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "stripe_list_invoices",
+  "searches": [
+   {
+    "query": "stripe_list_invoices",
+    "hits": [
+     "stripe_list_invoices"
+    ]
+   }
+  ],
+  "prompt_tokens": 3461,
+  "completion_tokens": 63,
+  "error": null,
+  "latency_s": 3.6758171543478966,
+  "correct": true
+ },
+ {
+  "id": "stripe_list_invoices:en",
+  "target": "stripe_list_invoices",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "stripe_list_invoices",
+  "searches": [],
+  "prompt_tokens": 1622,
+  "completion_tokens": 34,
+  "error": null,
+  "latency_s": 1.9588155783712864,
+  "correct": true
+ },
+ {
+  "id": "shopify_list_customers:ja",
+  "target": "shopify_list_customers",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "shopify_list_customers",
+  "searches": [],
+  "prompt_tokens": 1617,
+  "completion_tokens": 17,
+  "error": null,
+  "latency_s": 1.8369406517595053,
+  "correct": true
+ },
+ {
+  "id": "shopify_list_customers:en",
+  "target": "shopify_list_customers",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "shopify_list_customers",
+  "searches": [],
+  "prompt_tokens": 1614,
+  "completion_tokens": 17,
+  "error": null,
+  "latency_s": 1.8396171228960156,
+  "correct": true
+ },
+ {
+  "id": "shopify_search_products:ja",
+  "target": "shopify_search_products",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "shopify_search_products",
+  "searches": [
+   {
+    "query": "shopify search products",
+    "hits": [
+     "shopify_search_products",
+     "shopify_list_customers",
+     "shopify_create_customer"
+    ]
+   }
+  ],
+  "prompt_tokens": 3641,
+  "completion_tokens": 59,
+  "error": null,
+  "latency_s": 3.719065316952765,
+  "correct": true
+ },
+ {
+  "id": "shopify_search_products:en",
+  "target": "shopify_search_products",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "shopify_search_products",
+  "searches": [],
+  "prompt_tokens": 1613,
+  "completion_tokens": 29,
+  "error": null,
+  "latency_s": 1.818399758078158,
+  "correct": true
+ },
+ {
+  "id": "figma_delete_comment:ja",
+  "target": "figma_delete_comment",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "figma_delete_comment",
+  "searches": [],
+  "prompt_tokens": 1618,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 2.239412668161094,
+  "correct": true
+ },
+ {
+  "id": "figma_delete_comment:en",
+  "target": "figma_delete_comment",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "figma_delete_comment",
+  "searches": [],
+  "prompt_tokens": 1619,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 1.8490134170278907,
+  "correct": true
+ },
+ {
+  "id": "tableau_add_user_to_site:ja",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "tableau add user",
+    "hits": [
+     "tableau_add_user_to_site",
+     "tableau_list_workbooks",
+     "tableau_list_datasources",
+     "tableau_create_group",
+     "tableau_update_workbook_permissions"
+    ]
+   }
+  ],
+  "prompt_tokens": 4022,
+  "completion_tokens": 488,
+  "error": null,
+  "latency_s": 11.06105708796531,
+  "correct": false
+ },
+ {
+  "id": "tableau_add_user_to_site:en",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_bm25",
+  "n": 200,
+  "called": "tableau_add_user_to_site",
+  "searches": [],
+  "prompt_tokens": 1614,
+  "completion_tokens": 60,
+  "error": null,
+  "latency_s": 2.366518468596041,
+  "correct": true
+ },
+ {
+  "id": "save_csv:ja",
+  "target": "save_csv",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "salesforce opportunity list",
+    "hits": [
+     "salesforce_get_opportunity",
+     "salesforce_list_accounts",
+     "trello_list_lists",
+     "stripe_list_invoices",
+     "jira_list_sprints"
+    ]
+   },
+   {
+    "query": "freee invoice deal list",
+    "hits": [
+     "freee_list_items",
+     "stripe_list_invoices",
+     "freee_create_item",
+     "freee_update_item",
+     "freee_create_partner"
+    ]
+   },
+   {
+    "query": "moneyforward deal list",
+    "hits": [
+     "moneyforward_search_deals",
+     "moneyforward_list_business_partners",
+     "tableau_list_datasources",
+     "rakurakuseisan_list_reports",
+     "garoon_list_messages"
+    ]
+   },
+   {
+    "query": "shopify order list",
+    "hits": [
+     "shopify_list_customers",
+     "shopify_search_products",
+     "shopify_create_customer",
+     "zendesk_list_organizations",
+     "stripe_list_invoices"
+    ]
+   }
+  ],
+  "prompt_tokens": 11626,
+  "completion_tokens": 531,
+  "error": null,
+  "latency_s": 16.840673461556435,
+  "correct": false
+ },
+ {
+  "id": "save_csv:en",
+  "target": "save_csv",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "sales performance by item",
+    "hits": [
+     "freee_update_item",
+     "miro_get_item",
+     "freee_create_item",
+     "freee_list_items",
+     "miro_update_item"
+    ]
+   },
+   {
+    "query": "get sales data or reports",
+    "hits": [
+     "ga4_run_report",
+     "ga4_get_data_stream",
+     "ga4_run_realtime_report",
+     "rakurakuseisan_get_approval_status",
+     "rakurakuseisan_list_reports"
+    ]
+   }
+  ],
+  "prompt_tokens": 7248,
+  "completion_tokens": 290,
+  "error": null,
+  "latency_s": 11.40096160210669,
+  "correct": false
+ },
+ {
+  "id": "gitlab_get_project:ja",
+  "target": "gitlab_get_project",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "gitlab_get_project",
+  "searches": [
+   {
+    "query": "gitlab_get_project",
+    "hits": [
+     "gitlab_get_project",
+     "gitlab_delete_project",
+     "gitlab_delete_file",
+     "gitlab_list_repository_tree",
+     "sentry_list_projects"
+    ]
+   }
+  ],
+  "prompt_tokens": 4012,
+  "completion_tokens": 58,
+  "error": null,
+  "latency_s": 4.568703536875546,
+  "correct": true
+ },
+ {
+  "id": "gitlab_get_project:en",
+  "target": "gitlab_get_project",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "github_get_repository",
+  "searches": [
+   {
+    "query": "get repository details",
+    "hits": [
+     "github_get_repository",
+     "rakurakuseisan_get_expense_detail",
+     "gitlab_list_repository_tree",
+     "trello_get_board_details",
+     "ga4_get_data_stream"
+    ]
+   }
+  ],
+  "prompt_tokens": 3912,
+  "completion_tokens": 72,
+  "error": null,
+  "latency_s": 5.329566219821572,
+  "correct": false
+ },
+ {
+  "id": "jira_update_sprint:ja",
+  "target": "jira_update_sprint",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "jira_list_boards",
+  "searches": [
+   {
+    "query": "jira list sprints update sprint",
+    "hits": [
+     "jira_list_sprints",
+     "jira_update_sprint",
+     "jira_close_sprint",
+     "jira_list_boards",
+     "jira_delete_issue"
+    ]
+   }
+  ],
+  "prompt_tokens": 4008,
+  "completion_tokens": 94,
+  "error": null,
+  "latency_s": 5.647528854198754,
+  "correct": false
+ },
+ {
+  "id": "jira_update_sprint:en",
+  "target": "jira_update_sprint",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "jira_list_boards",
+  "searches": [
+   {
+    "query": "jira update sprint",
+    "hits": [
+     "jira_update_sprint",
+     "jira_close_sprint",
+     "jira_list_sprints",
+     "jira_delete_issue",
+     "jira_list_boards"
+    ]
+   }
+  ],
+  "prompt_tokens": 4011,
+  "completion_tokens": 116,
+  "error": null,
+  "latency_s": 5.365332419984043,
+  "correct": false
+ },
+ {
+  "id": "slack_add_reaction:ja",
+  "target": "slack_add_reaction",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 1625,
+  "completion_tokens": 162,
+  "error": null,
+  "latency_s": 4.10648750513792,
+  "correct": false
+ },
+ {
+  "id": "slack_add_reaction:en",
+  "target": "slack_add_reaction",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "slack add reaction",
+    "hits": [
+     "slack_add_reaction",
+     "slack_unpin_message",
+     "backlog_add_comment",
+     "asana_add_comment",
+     "servicenow_add_comment_to_ticket"
+    ]
+   }
+  ],
+  "prompt_tokens": 4024,
+  "completion_tokens": 86,
+  "error": null,
+  "latency_s": 4.4038294004276395,
+  "correct": false
+ },
+ {
+  "id": "teams_send_message:ja",
+  "target": "teams_send_message",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 1614,
+  "completion_tokens": 204,
+  "error": null,
+  "latency_s": 4.796922706998885,
+  "correct": false
+ },
+ {
+  "id": "teams_send_message:en",
+  "target": "teams_send_message",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "send message chat slack teams chatwork",
+    "hits": [
+     "teams_send_message",
+     "slack_add_reaction",
+     "chatwork_get_messages",
+     "slack_unpin_message",
+     "chatwork_delete_room"
+    ]
+   }
+  ],
+  "prompt_tokens": 3997,
+  "completion_tokens": 323,
+  "error": null,
+  "latency_s": 8.693382052704692,
+  "correct": false
+ },
+ {
+  "id": "chatwork_get_file:ja",
+  "target": "chatwork_get_file",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "chatwork_get_file",
+  "searches": [],
+  "prompt_tokens": 1622,
+  "completion_tokens": 32,
+  "error": null,
+  "latency_s": 1.6927621588110924,
+  "correct": true
+ },
+ {
+  "id": "chatwork_get_file:en",
+  "target": "chatwork_get_file",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "chatwork_get_file",
+  "searches": [],
+  "prompt_tokens": 1622,
+  "completion_tokens": 48,
+  "error": null,
+  "latency_s": 2.088419766165316,
+  "correct": true
+ },
+ {
+  "id": "outlook_search_emails:ja",
+  "target": "outlook_search_emails",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "outlook_search_emails",
+  "searches": [
+   {
+    "query": "outlook search emails",
+    "hits": [
+     "outlook_search_emails",
+     "outlook_list_emails",
+     "outlook_reply_to_email",
+     "docusign_search_envelopes",
+     "outlook_list_folders"
+    ]
+   }
+  ],
+  "prompt_tokens": 3987,
+  "completion_tokens": 95,
+  "error": null,
+  "latency_s": 5.412014506757259,
+  "correct": true
+ },
+ {
+  "id": "outlook_search_emails:en",
+  "target": "outlook_search_emails",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "outlook_search_emails",
+  "searches": [
+   {
+    "query": "outlook search emails",
+    "hits": [
+     "outlook_search_emails",
+     "outlook_list_emails",
+     "outlook_reply_to_email",
+     "docusign_search_envelopes",
+     "outlook_list_folders"
+    ]
+   }
+  ],
+  "prompt_tokens": 3985,
+  "completion_tokens": 97,
+  "error": null,
+  "latency_s": 4.941397880204022,
+  "correct": true
+ },
+ {
+  "id": "outlook_delete_event:ja",
+  "target": "outlook_delete_event",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "gcal_list_calendars",
+  "searches": [
+   {
+    "query": "calendar list events",
+    "hits": [
+     "gcal_list_calendars",
+     "gcal_get_calendar_metadata",
+     "outlook_get_event",
+     "outlook_delete_event",
+     "trello_list_lists"
+    ]
+   }
+  ],
+  "prompt_tokens": 3942,
+  "completion_tokens": 76,
+  "error": null,
+  "latency_s": 4.559133093804121,
+  "correct": false
+ },
+ {
+  "id": "outlook_delete_event:en",
+  "target": "outlook_delete_event",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "gcal_list_calendars",
+  "searches": [
+   {
+    "query": "outlook list events or gcal list events",
+    "hits": [
+     "outlook_get_event",
+     "outlook_delete_event",
+     "outlook_update_event",
+     "gcal_list_colors",
+     "gcal_list_calendars"
+    ]
+   },
+   {
+    "query": "outlook list events",
+    "hits": [
+     "outlook_get_event",
+     "outlook_delete_event",
+     "outlook_update_event",
+     "outlook_list_folders",
+     "outlook_list_emails"
+    ]
+   }
+  ],
+  "prompt_tokens": 6698,
+  "completion_tokens": 287,
+  "error": null,
+  "latency_s": 10.815415823832154,
+  "correct": false
+ },
+ {
+  "id": "gdrive_upload_file:ja",
+  "target": "gdrive_upload_file",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "gdrive_upload_file",
+  "searches": [],
+  "prompt_tokens": 1618,
+  "completion_tokens": 49,
+  "error": null,
+  "latency_s": 2.2583453841507435,
+  "correct": true
+ },
+ {
+  "id": "gdrive_upload_file:en",
+  "target": "gdrive_upload_file",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "gdrive_upload_file",
+  "searches": [],
+  "prompt_tokens": 1616,
+  "completion_tokens": 50,
+  "error": null,
+  "latency_s": 2.273353336378932,
+  "correct": true
+ },
+ {
+  "id": "gdrive_list_revisions:ja",
+  "target": "gdrive_list_revisions",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 1614,
+  "completion_tokens": 122,
+  "error": null,
+  "latency_s": 3.2229259088635445,
+  "correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:en",
+  "target": "gdrive_list_revisions",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "list file revisions history",
+    "hits": [
+     "gdrive_list_revisions",
+     "gdrive_copy_file",
+     "gdrive_list_permissions",
+     "garoon_list_messages",
+     "box_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 3928,
+  "completion_tokens": 144,
+  "error": null,
+  "latency_s": 5.858483701013029,
+  "correct": false
+ },
+ {
+  "id": "dropbox_share_folder:ja",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 1622,
+  "completion_tokens": 266,
+  "error": null,
+  "latency_s": 5.980649631470442,
+  "correct": false
+ },
+ {
+  "id": "dropbox_share_folder:en",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "gdrive list files or search for folder",
+    "hits": [
+     "gdrive_list_revisions",
+     "gdrive_upload_file",
+     "gdrive_delete_file",
+     "gdrive_list_permissions",
+     "gdrive_copy_file"
+    ]
+   },
+   {
+    "query": "google drive list files search folder",
+    "hits": [
+     "gdrive_delete_file",
+     "gdrive_upload_file",
+     "dropbox_list_folder",
+     "gdrive_list_revisions",
+     "garoon_search_schedules"
+    ]
+   },
+   {
+    "query": "gdrive",
+    "hits": [
+     "gdrive_upload_file",
+     "gdrive_list_revisions",
+     "gdrive_copy_file",
+     "gdrive_delete_file",
+     "gdrive_create_permission"
+    ]
+   }
+  ],
+  "prompt_tokens": 9919,
+  "completion_tokens": 325,
+  "error": null,
+  "latency_s": 12.52088194899261,
+  "correct": false
+ },
+ {
+  "id": "notion_delete_block:ja",
+  "target": "notion_delete_block",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "notion_search_pages",
+  "searches": [],
+  "prompt_tokens": 1622,
+  "completion_tokens": 348,
+  "error": null,
+  "latency_s": 7.177137257531285,
+  "correct": false
+ },
+ {
+  "id": "notion_delete_block:en",
+  "target": "notion_delete_block",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "notion_search_pages",
+  "searches": [
+   {
+    "query": "notion delete block",
+    "hits": [
+     "notion_delete_block",
+     "notion_list_comments",
+     "notion_restore_page",
+     "notion_search_pages",
+     "figma_delete_comment"
+    ]
+   }
+  ],
+  "prompt_tokens": 3875,
+  "completion_tokens": 60,
+  "error": null,
+  "latency_s": 4.370590574108064,
+  "correct": false
+ },
+ {
+  "id": "trello_create_board:ja",
+  "target": "trello_create_board",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "trello_create_board",
+  "searches": [
+   {
+    "query": "trello_create_board",
+    "hits": [
+     "trello_create_board",
+     "trello_get_board_details",
+     "trello_list_lists",
+     "trello_delete_card",
+     "miro_create_frame"
+    ]
+   }
+  ],
+  "prompt_tokens": 3942,
+  "completion_tokens": 69,
+  "error": null,
+  "latency_s": 4.574028008617461,
+  "correct": true
+ },
+ {
+  "id": "trello_create_board:en",
+  "target": "trello_create_board",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "trello_create_board",
+  "searches": [],
+  "prompt_tokens": 1617,
+  "completion_tokens": 46,
+  "error": null,
+  "latency_s": 2.092914827167988,
+  "correct": true
+ },
+ {
+  "id": "trello_remove_member_from_card:ja",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "trello_get_board_details",
+  "searches": [],
+  "prompt_tokens": 1620,
+  "completion_tokens": 218,
+  "error": null,
+  "latency_s": 4.952644027769566,
+  "correct": false
+ },
+ {
+  "id": "trello_remove_member_from_card:en",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "trello search card",
+    "hits": [
+     "trello_delete_card",
+     "trello_list_lists",
+     "trello_get_board_details",
+     "trello_remove_member_from_card",
+     "trello_create_board"
+    ]
+   },
+   {
+    "query": "trello list members",
+    "hits": [
+     "trello_list_lists",
+     "trello_remove_member_from_card",
+     "trello_create_board",
+     "trello_get_board_details",
+     "trello_delete_card"
+    ]
+   }
+  ],
+  "prompt_tokens": 7637,
+  "completion_tokens": 968,
+  "error": null,
+  "latency_s": 21.77692702319473,
+  "correct": false
+ },
+ {
+  "id": "trello_get_board_details:ja",
+  "target": "trello_get_board_details",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "trello_get_board_details",
+  "searches": [],
+  "prompt_tokens": 1624,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 2.28870964422822,
+  "correct": true
+ },
+ {
+  "id": "trello_get_board_details:en",
+  "target": "trello_get_board_details",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "trello_get_board_details",
+  "searches": [],
+  "prompt_tokens": 1628,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 2.2054481245577335,
+  "correct": true
+ },
+ {
+  "id": "garoon_list_messages:ja",
+  "target": "garoon_list_messages",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "garoon_list_messages",
+  "searches": [],
+  "prompt_tokens": 1611,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 2.025939983315766,
+  "correct": true
+ },
+ {
+  "id": "garoon_list_messages:en",
+  "target": "garoon_list_messages",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "garoon_list_messages",
+  "searches": [],
+  "prompt_tokens": 1612,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 1.8274310063570738,
+  "correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "rakurakuseisan_get_expense_detail",
+  "searches": [],
+  "prompt_tokens": 1634,
+  "completion_tokens": 71,
+  "error": null,
+  "latency_s": 2.5178584763780236,
+  "correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:en",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "rakurakuseisan_get_expense_detail",
+  "searches": [
+   {
+    "query": "rakurakuseisan_get_expense_detail",
+    "hits": [
+     "rakurakuseisan_get_expense_detail",
+     "rakurakuseisan_delete_expense",
+     "rakurakuseisan_get_approval_status",
+     "rakurakuseisan_import_transaction",
+     "rakurakuseisan_list_reports"
+    ]
+   }
+  ],
+  "prompt_tokens": 3932,
+  "completion_tokens": 76,
+  "error": null,
+  "latency_s": 4.586886269971728,
+  "correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "smarthr_create_employee_draft",
+  "searches": [
+   {
+    "query": "smarthr_create_employee_draft",
+    "hits": [
+     "smarthr_create_employee_draft",
+     "smarthr_get_payroll_statement",
+     "kintone_create_draft_app",
+     "smarthr_list_documents",
+     "hubspot_create_draft_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 4017,
+  "completion_tokens": 113,
+  "error": null,
+  "latency_s": 5.263540315441787,
+  "correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:en",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "smarthr_create_employee_draft",
+  "searches": [
+   {
+    "query": "save employee draft smarthr",
+    "hits": [
+     "smarthr_create_employee_draft",
+     "smarthr_get_leave_balance",
+     "smarthr_get_payroll_statement",
+     "smarthr_list_documents",
+     "gmail_delete_draft"
+    ]
+   }
+  ],
+  "prompt_tokens": 3973,
+  "completion_tokens": 115,
+  "error": null,
+  "latency_s": 5.398977586068213,
+  "correct": true
+ },
+ {
+  "id": "docusign_create_webhook:ja",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "docusign_create_webhook",
+    "hits": [
+     "docusign_create_webhook",
+     "docusign_create_brand",
+     "pagerduty_trigger_webhook",
+     "docusign_create_envelope_from_template",
+     "docusign_create_template"
+    ]
+   }
+  ],
+  "prompt_tokens": 4236,
+  "completion_tokens": 561,
+  "error": null,
+  "latency_s": 12.494456231594086,
+  "correct": false
+ },
+ {
+  "id": "docusign_create_webhook:en",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "docusign webhook",
+    "hits": [
+     "docusign_create_webhook",
+     "pagerduty_trigger_webhook",
+     "docusign_create_brand",
+     "linear_list_webhooks",
+     "docusign_void_envelope"
+    ]
+   }
+  ],
+  "prompt_tokens": 4050,
+  "completion_tokens": 244,
+  "error": null,
+  "latency_s": 7.333107589744031,
+  "correct": false
+ },
+ {
+  "id": "zendesk_list_tags:ja",
+  "target": "zendesk_list_tags",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "asana_add_tag_to_task",
+     "zendesk_get_user",
+     "trello_list_lists"
+    ]
+   },
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "asana_add_tag_to_task",
+     "zendesk_get_user",
+     "trello_list_lists"
+    ]
+   },
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "asana_add_tag_to_task",
+     "zendesk_get_user",
+     "trello_list_lists"
+    ]
+   },
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "asana_add_tag_to_task",
+     "zendesk_get_user",
+     "trello_list_lists"
+    ]
+   }
+  ],
+  "prompt_tokens": 8634,
+  "completion_tokens": 112,
+  "error": null,
+  "latency_s": 9.86828256957233,
+  "correct": false
+ },
+ {
+  "id": "zendesk_list_tags:en",
+  "target": "zendesk_list_tags",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "asana_add_tag_to_task",
+     "zendesk_get_user",
+     "trello_list_lists"
+    ]
+   },
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "asana_add_tag_to_task",
+     "zendesk_get_user",
+     "trello_list_lists"
+    ]
+   },
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "asana_add_tag_to_task",
+     "zendesk_get_user",
+     "trello_list_lists"
+    ]
+   },
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "asana_add_tag_to_task",
+     "zendesk_get_user",
+     "trello_list_lists"
+    ]
+   }
+  ],
+  "prompt_tokens": 8638,
+  "completion_tokens": 112,
+  "error": null,
+  "latency_s": 9.669108429923654,
+  "correct": false
+ },
+ {
+  "id": "zendesk_list_organizations:ja",
+  "target": "zendesk_list_organizations",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "zendesk_list_organizations",
+  "searches": [
+   {
+    "query": "zendesk_list_organizations",
+    "hits": [
+     "zendesk_list_organizations",
+     "zendesk_list_tags",
+     "zendesk_get_user",
+     "sentry_list_projects",
+     "tableau_list_workbooks"
+    ]
+   }
+  ],
+  "prompt_tokens": 3804,
+  "completion_tokens": 46,
+  "error": null,
+  "latency_s": 4.593824566341937,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:en",
+  "target": "zendesk_list_organizations",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "zendesk_list_organizations",
+  "searches": [
+   {
+    "query": "zendesk list organizations",
+    "hits": [
+     "zendesk_list_organizations",
+     "zendesk_list_tags",
+     "zendesk_get_user",
+     "sentry_list_projects",
+     "trello_list_lists"
+    ]
+   }
+  ],
+  "prompt_tokens": 3810,
+  "completion_tokens": 45,
+  "error": null,
+  "latency_s": 4.63264705426991,
+  "correct": true
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "pagerduty trigger webhook",
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "docusign_create_webhook",
+     "linear_list_webhooks",
+     "pagerduty_get_schedule",
+     "pagerduty_acknowledge_incident"
+    ]
+   }
+  ],
+  "prompt_tokens": 4009,
+  "completion_tokens": 235,
+  "error": null,
+  "latency_s": 7.637179320678115,
+  "correct": false
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "pagerduty_trigger_webhook",
+  "searches": [],
+  "prompt_tokens": 1625,
+  "completion_tokens": 34,
+  "error": null,
+  "latency_s": 1.9581905715167522,
+  "correct": true
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "aws_cloudwatch_get_log_events",
+  "searches": [
+   {
+    "query": "CloudWatch Logs get log events",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_put_metric_data",
+     "outlook_get_event",
+     "servicenow_get_incident"
+    ]
+   }
+  ],
+  "prompt_tokens": 4066,
+  "completion_tokens": 112,
+  "error": null,
+  "latency_s": 5.65851163584739,
+  "correct": true
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "aws_cloudwatch_get_log_events",
+  "searches": [],
+  "prompt_tokens": 1622,
+  "completion_tokens": 77,
+  "error": null,
+  "latency_s": 2.6662493804469705,
+  "correct": true
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "aws_cloudwatch_search_logs_by_pattern",
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_log_events",
+     "aws_ec2_list_instances",
+     "aws_cloudwatch_put_metric_data",
+     "backlog_search_issues"
+    ]
+   }
+  ],
+  "prompt_tokens": 4181,
+  "completion_tokens": 143,
+  "error": null,
+  "latency_s": 5.75096498709172,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "search CloudWatch logs by pattern",
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_log_events",
+     "backlog_search_issues",
+     "garoon_search_schedules",
+     "lineworks_search_posts"
+    ]
+   }
+  ],
+  "prompt_tokens": 4105,
+  "completion_tokens": 114,
+  "error": null,
+  "latency_s": 5.174402296543121,
+  "correct": false
+ },
+ {
+  "id": "stripe_create_customer:ja",
+  "target": "stripe_create_customer",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "stripe_create_customer",
+  "searches": [],
+  "prompt_tokens": 1616,
+  "completion_tokens": 42,
+  "error": null,
+  "latency_s": 2.2267155591398478,
+  "correct": true
+ },
+ {
+  "id": "stripe_create_customer:en",
+  "target": "stripe_create_customer",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "stripe_create_customer",
+  "searches": [],
+  "prompt_tokens": 1617,
+  "completion_tokens": 43,
+  "error": null,
+  "latency_s": 1.867132306098938,
+  "correct": true
+ },
+ {
+  "id": "stripe_list_invoices:ja",
+  "target": "stripe_list_invoices",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "stripe_list_invoices",
+  "searches": [
+   {
+    "query": "stripe_list_invoices",
+    "hits": [
+     "stripe_list_invoices",
+     "stripe_create_customer",
+     "stripe_create_price",
+     "trello_list_lists",
+     "shopify_list_customers"
+    ]
+   }
+  ],
+  "prompt_tokens": 4013,
+  "completion_tokens": 63,
+  "error": null,
+  "latency_s": 4.089758988469839,
+  "correct": true
+ },
+ {
+  "id": "stripe_list_invoices:en",
+  "target": "stripe_list_invoices",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "stripe_list_invoices",
+  "searches": [],
+  "prompt_tokens": 1622,
+  "completion_tokens": 34,
+  "error": null,
+  "latency_s": 2.0195708833634853,
+  "correct": true
+ },
+ {
+  "id": "shopify_list_customers:ja",
+  "target": "shopify_list_customers",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "shopify_list_customers",
+  "searches": [
+   {
+    "query": "shopify_list_customers",
+    "hits": [
+     "shopify_list_customers",
+     "shopify_create_customer",
+     "shopify_search_products",
+     "stripe_create_customer",
+     "stripe_list_invoices"
+    ]
+   }
+  ],
+  "prompt_tokens": 3907,
+  "completion_tokens": 60,
+  "error": null,
+  "latency_s": 4.335999220609665,
+  "correct": true
+ },
+ {
+  "id": "shopify_list_customers:en",
+  "target": "shopify_list_customers",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "shopify_list_customers",
+  "searches": [],
+  "prompt_tokens": 1614,
+  "completion_tokens": 17,
+  "error": null,
+  "latency_s": 1.7573984321206808,
+  "correct": true
+ },
+ {
+  "id": "shopify_search_products:ja",
+  "target": "shopify_search_products",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "shopify_search_products",
+  "searches": [
+   {
+    "query": "shopify search products",
+    "hits": [
+     "shopify_search_products",
+     "shopify_list_customers",
+     "moneyforward_search_deals",
+     "shopify_create_customer",
+     "notion_search_pages"
+    ]
+   }
+  ],
+  "prompt_tokens": 3916,
+  "completion_tokens": 59,
+  "error": null,
+  "latency_s": 4.095737454481423,
+  "correct": true
+ },
+ {
+  "id": "shopify_search_products:en",
+  "target": "shopify_search_products",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "shopify_search_products",
+  "searches": [],
+  "prompt_tokens": 1613,
+  "completion_tokens": 29,
+  "error": null,
+  "latency_s": 1.7927369521930814,
+  "correct": true
+ },
+ {
+  "id": "figma_delete_comment:ja",
+  "target": "figma_delete_comment",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "figma_delete_comment",
+  "searches": [],
+  "prompt_tokens": 1618,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 1.9242757251486182,
+  "correct": true
+ },
+ {
+  "id": "figma_delete_comment:en",
+  "target": "figma_delete_comment",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "figma_delete_comment",
+  "searches": [],
+  "prompt_tokens": 1619,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 1.9104221649467945,
+  "correct": true
+ },
+ {
+  "id": "tableau_add_user_to_site:ja",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": null,
+  "searches": [
+   {
+    "query": "tableau add user",
+    "hits": [
+     "tableau_add_user_to_site",
+     "tableau_create_group",
+     "tableau_update_workbook_permissions",
+     "notion_get_user",
+     "zendesk_get_user"
+    ]
+   }
+  ],
+  "prompt_tokens": 3950,
+  "completion_tokens": 39,
+  "error": null,
+  "latency_s": 3.831613660790026,
+  "correct": false
+ },
+ {
+  "id": "tableau_add_user_to_site:en",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_rrf",
+  "n": 200,
+  "called": "tableau_add_user_to_site",
+  "searches": [],
+  "prompt_tokens": 1614,
+  "completion_tokens": 60,
+  "error": null,
+  "latency_s": 2.275361598469317,
+  "correct": true
+ },
+ {
+  "id": "save_csv:ja",
+  "target": "save_csv",
+  "condition": "all",
+  "n": 1000,
+  "called": "salesforce_list_accounts",
+  "searches": [],
+  "prompt_tokens": 124953,
+  "completion_tokens": 140,
+  "error": null,
+  "latency_s": 9.752813961356878,
+  "correct": false
+ },
+ {
+  "id": "save_csv:en",
+  "target": "save_csv",
+  "condition": "all",
+  "n": 1000,
+  "called": "shopify_list_orders",
+  "searches": [],
+  "prompt_tokens": 124952,
+  "completion_tokens": 172,
+  "error": null,
+  "latency_s": 10.726851573213935,
+  "correct": false
+ },
+ {
+  "id": "gitlab_get_project:ja",
+  "target": "gitlab_get_project",
+  "condition": "all",
+  "n": 1000,
+  "called": "gitlab_get_project",
+  "searches": [],
+  "prompt_tokens": 124954,
+  "completion_tokens": 41,
+  "error": null,
+  "latency_s": 8.734845009632409,
+  "correct": true
+ },
+ {
+  "id": "gitlab_get_project:en",
+  "target": "gitlab_get_project",
+  "condition": "all",
+  "n": 1000,
+  "called": "gitlab_get_project",
+  "searches": [],
+  "prompt_tokens": 124955,
+  "completion_tokens": 30,
+  "error": null,
+  "latency_s": 9.897886222228408,
+  "correct": true
+ },
+ {
+  "id": "jira_update_sprint:ja",
+  "target": "jira_update_sprint",
+  "condition": "all",
+  "n": 1000,
+  "called": "jira_list_boards",
+  "searches": [],
+  "prompt_tokens": 124956,
+  "completion_tokens": 121,
+  "error": null,
+  "latency_s": 5.774698950350285,
+  "correct": false
+ },
+ {
+  "id": "jira_update_sprint:en",
+  "target": "jira_update_sprint",
+  "condition": "all",
+  "n": 1000,
+  "called": "jira_list_boards",
+  "searches": [],
+  "prompt_tokens": 124956,
+  "completion_tokens": 210,
+  "error": null,
+  "latency_s": 7.289671336300671,
+  "correct": false
+ },
+ {
+  "id": "slack_add_reaction:ja",
+  "target": "slack_add_reaction",
+  "condition": "all",
+  "n": 1000,
+  "called": "slack_list_channels",
+  "searches": [],
+  "prompt_tokens": 124963,
+  "completion_tokens": 144,
+  "error": null,
+  "latency_s": 5.833849978633225,
+  "correct": false
+ },
+ {
+  "id": "slack_add_reaction:en",
+  "target": "slack_add_reaction",
+  "condition": "all",
+  "n": 1000,
+  "called": "slack_list_channels",
+  "searches": [],
+  "prompt_tokens": 124959,
+  "completion_tokens": 66,
+  "error": null,
+  "latency_s": 4.3250700840726495,
+  "correct": false
+ },
+ {
+  "id": "teams_send_message:ja",
+  "target": "teams_send_message",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124952,
+  "completion_tokens": 201,
+  "error": null,
+  "latency_s": 7.196913533844054,
+  "correct": false
+ },
+ {
+  "id": "teams_send_message:en",
+  "target": "teams_send_message",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124951,
+  "completion_tokens": 51,
+  "error": null,
+  "latency_s": 5.306616000831127,
+  "correct": false
+ },
+ {
+  "id": "chatwork_get_file:ja",
+  "target": "chatwork_get_file",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124960,
+  "completion_tokens": 197,
+  "error": null,
+  "latency_s": 6.975051578134298,
+  "correct": false
+ },
+ {
+  "id": "chatwork_get_file:en",
+  "target": "chatwork_get_file",
+  "condition": "all",
+  "n": 1000,
+  "called": "chatwork_get_file",
+  "searches": [],
+  "prompt_tokens": 124960,
+  "completion_tokens": 49,
+  "error": null,
+  "latency_s": 4.347213808447123,
+  "correct": true
+ },
+ {
+  "id": "outlook_search_emails:ja",
+  "target": "outlook_search_emails",
+  "condition": "all",
+  "n": 1000,
+  "called": "outlook_search_emails",
+  "searches": [],
+  "prompt_tokens": 124957,
+  "completion_tokens": 52,
+  "error": null,
+  "latency_s": 5.145665128715336,
+  "correct": true
+ },
+ {
+  "id": "outlook_search_emails:en",
+  "target": "outlook_search_emails",
+  "condition": "all",
+  "n": 1000,
+  "called": "outlook_search_emails",
+  "searches": [],
+  "prompt_tokens": 124956,
+  "completion_tokens": 98,
+  "error": null,
+  "latency_s": 4.890637627802789,
+  "correct": true
+ },
+ {
+  "id": "outlook_delete_event:ja",
+  "target": "outlook_delete_event",
+  "condition": "all",
+  "n": 1000,
+  "called": "outlook_search_events",
+  "searches": [],
+  "prompt_tokens": 124957,
+  "completion_tokens": 68,
+  "error": null,
+  "latency_s": 5.212990610860288,
+  "correct": false
+ },
+ {
+  "id": "outlook_delete_event:en",
+  "target": "outlook_delete_event",
+  "condition": "all",
+  "n": 1000,
+  "called": "gcal_list_calendars",
+  "searches": [],
+  "prompt_tokens": 124951,
+  "completion_tokens": 283,
+  "error": null,
+  "latency_s": 8.421306879259646,
+  "correct": false
+ },
+ {
+  "id": "gdrive_upload_file:ja",
+  "target": "gdrive_upload_file",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124956,
+  "completion_tokens": 88,
+  "error": null,
+  "latency_s": 5.352601470425725,
+  "correct": false
+ },
+ {
+  "id": "gdrive_upload_file:en",
+  "target": "gdrive_upload_file",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124954,
+  "completion_tokens": 96,
+  "error": null,
+  "latency_s": 4.861328585073352,
+  "correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:ja",
+  "target": "gdrive_list_revisions",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124952,
+  "completion_tokens": 349,
+  "error": null,
+  "latency_s": 9.55203739926219,
+  "correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:en",
+  "target": "gdrive_list_revisions",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124953,
+  "completion_tokens": 132,
+  "error": null,
+  "latency_s": 4.597007012926042,
+  "correct": false
+ },
+ {
+  "id": "dropbox_share_folder:ja",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 1000,
+  "called": "gdrive_search_files",
+  "searches": [],
+  "prompt_tokens": 124960,
+  "completion_tokens": 82,
+  "error": null,
+  "latency_s": 5.020074659958482,
+  "correct": false
+ },
+ {
+  "id": "dropbox_share_folder:en",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124955,
+  "completion_tokens": 130,
+  "error": null,
+  "latency_s": 5.357656246982515,
+  "correct": false
+ },
+ {
+  "id": "notion_delete_block:ja",
+  "target": "notion_delete_block",
+  "condition": "all",
+  "n": 1000,
+  "called": "notion_search_pages",
+  "searches": [],
+  "prompt_tokens": 124960,
+  "completion_tokens": 158,
+  "error": null,
+  "latency_s": 6.077994817867875,
+  "correct": false
+ },
+ {
+  "id": "notion_delete_block:en",
+  "target": "notion_delete_block",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124959,
+  "completion_tokens": 144,
+  "error": null,
+  "latency_s": 6.753619340248406,
+  "correct": false
+ },
+ {
+  "id": "trello_create_board:ja",
+  "target": "trello_create_board",
+  "condition": "all",
+  "n": 1000,
+  "called": "trello_create_board",
+  "searches": [],
+  "prompt_tokens": 124954,
+  "completion_tokens": 41,
+  "error": null,
+  "latency_s": 3.6740711480379105,
+  "correct": true
+ },
+ {
+  "id": "trello_create_board:en",
+  "target": "trello_create_board",
+  "condition": "all",
+  "n": 1000,
+  "called": "trello_create_board",
+  "searches": [],
+  "prompt_tokens": 124955,
+  "completion_tokens": 58,
+  "error": null,
+  "latency_s": 4.745076355524361,
+  "correct": true
+ },
+ {
+  "id": "trello_remove_member_from_card:ja",
+  "target": "trello_remove_member_from_card",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124958,
+  "completion_tokens": 227,
+  "error": null,
+  "latency_s": 8.233444127254188,
+  "correct": false
+ },
+ {
+  "id": "trello_remove_member_from_card:en",
+  "target": "trello_remove_member_from_card",
+  "condition": "all",
+  "n": 1000,
+  "called": "trello_list_boards",
+  "searches": [],
+  "prompt_tokens": 124960,
+  "completion_tokens": 272,
+  "error": null,
+  "latency_s": 8.471938985399902,
+  "correct": false
+ },
+ {
+  "id": "trello_get_board_details:ja",
+  "target": "trello_get_board_details",
+  "condition": "all",
+  "n": 1000,
+  "called": "trello_get_board_details",
+  "searches": [],
+  "prompt_tokens": 124962,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 3.918144492432475,
+  "correct": true
+ },
+ {
+  "id": "trello_get_board_details:en",
+  "target": "trello_get_board_details",
+  "condition": "all",
+  "n": 1000,
+  "called": "trello_get_board_details",
+  "searches": [],
+  "prompt_tokens": 124966,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 4.50685777515173,
+  "correct": true
+ },
+ {
+  "id": "garoon_list_messages:ja",
+  "target": "garoon_list_messages",
+  "condition": "all",
+  "n": 1000,
+  "called": "garoon_list_messages",
+  "searches": [],
+  "prompt_tokens": 124949,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 4.0063039399683475,
+  "correct": true
+ },
+ {
+  "id": "garoon_list_messages:en",
+  "target": "garoon_list_messages",
+  "condition": "all",
+  "n": 1000,
+  "called": "garoon_list_messages",
+  "searches": [],
+  "prompt_tokens": 124950,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 3.5633380254730582,
+  "correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "all",
+  "n": 1000,
+  "called": "rakurakuseisan_get_expense_detail",
+  "searches": [],
+  "prompt_tokens": 124972,
+  "completion_tokens": 43,
+  "error": null,
+  "latency_s": 3.5945153841748834,
+  "correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:en",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "all",
+  "n": 1000,
+  "called": "rakurakuseisan_get_expense_detail",
+  "searches": [],
+  "prompt_tokens": 124971,
+  "completion_tokens": 43,
+  "error": null,
+  "latency_s": 3.753343998454511,
+  "correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja",
+  "target": "smarthr_create_employee_draft",
+  "condition": "all",
+  "n": 1000,
+  "called": "smarthr_create_employee_draft",
+  "searches": [],
+  "prompt_tokens": 124962,
+  "completion_tokens": 83,
+  "error": null,
+  "latency_s": 4.630269666202366,
+  "correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:en",
+  "target": "smarthr_create_employee_draft",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124968,
+  "completion_tokens": 169,
+  "error": null,
+  "latency_s": 6.6819918267428875,
+  "correct": false
+ },
+ {
+  "id": "docusign_create_webhook:ja",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124977,
+  "completion_tokens": 774,
+  "error": null,
+  "latency_s": 16.46129762288183,
+  "correct": false
+ },
+ {
+  "id": "docusign_create_webhook:en",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 1000,
+  "called": "docusign_create_webhook",
+  "searches": [],
+  "prompt_tokens": 124963,
+  "completion_tokens": 140,
+  "error": null,
+  "latency_s": 5.682383557781577,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_tags:ja",
+  "target": "zendesk_list_tags",
+  "condition": "all",
+  "n": 1000,
+  "called": "zendesk_list_tags",
+  "searches": [],
+  "prompt_tokens": 124949,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 6.37451668549329,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_tags:en",
+  "target": "zendesk_list_tags",
+  "condition": "all",
+  "n": 1000,
+  "called": "zendesk_list_tags",
+  "searches": [],
+  "prompt_tokens": 124950,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 4.728368567302823,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:ja",
+  "target": "zendesk_list_organizations",
+  "condition": "all",
+  "n": 1000,
+  "called": "zendesk_list_organizations",
+  "searches": [],
+  "prompt_tokens": 124949,
+  "completion_tokens": 17,
+  "error": null,
+  "latency_s": 4.15452710352838,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:en",
+  "target": "zendesk_list_organizations",
+  "condition": "all",
+  "n": 1000,
+  "called": "zendesk_list_organizations",
+  "searches": [],
+  "prompt_tokens": 124950,
+  "completion_tokens": 17,
+  "error": null,
+  "latency_s": 4.523281044326723,
+  "correct": true
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "all",
+  "n": 1000,
+  "called": "pagerduty_trigger_webhook",
+  "searches": [],
+  "prompt_tokens": 124969,
+  "completion_tokens": 367,
+  "error": null,
+  "latency_s": 9.511323408223689,
+  "correct": true
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "all",
+  "n": 1000,
+  "called": "pagerduty_trigger_webhook",
+  "searches": [],
+  "prompt_tokens": 124963,
+  "completion_tokens": 119,
+  "error": null,
+  "latency_s": 6.1700178775936365,
+  "correct": true
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "all",
+  "n": 1000,
+  "called": "aws_cloudwatch_search_logs_by_pattern",
+  "searches": [],
+  "prompt_tokens": 124962,
+  "completion_tokens": 1090,
+  "error": null,
+  "latency_s": 22.470271175727248,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124960,
+  "completion_tokens": 225,
+  "error": null,
+  "latency_s": 7.735938351601362,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124963,
+  "completion_tokens": 93,
+  "error": null,
+  "latency_s": 4.811973054893315,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "all",
+  "n": 1000,
+  "called": "aws_cloudwatch_search_logs_by_pattern",
+  "searches": [],
+  "prompt_tokens": 124957,
+  "completion_tokens": 50,
+  "error": null,
+  "latency_s": 4.539556208066642,
+  "correct": true
+ },
+ {
+  "id": "stripe_create_customer:ja",
+  "target": "stripe_create_customer",
+  "condition": "all",
+  "n": 1000,
+  "called": "stripe_create_customer",
+  "searches": [],
+  "prompt_tokens": 124954,
+  "completion_tokens": 42,
+  "error": null,
+  "latency_s": 4.612182980403304,
+  "correct": true
+ },
+ {
+  "id": "stripe_create_customer:en",
+  "target": "stripe_create_customer",
+  "condition": "all",
+  "n": 1000,
+  "called": "stripe_create_customer",
+  "searches": [],
+  "prompt_tokens": 124955,
+  "completion_tokens": 43,
+  "error": null,
+  "latency_s": 4.267887030728161,
+  "correct": true
+ },
+ {
+  "id": "stripe_list_invoices:ja",
+  "target": "stripe_list_invoices",
+  "condition": "all",
+  "n": 1000,
+  "called": "stripe_list_invoices",
+  "searches": [],
+  "prompt_tokens": 124966,
+  "completion_tokens": 75,
+  "error": null,
+  "latency_s": 4.952484638430178,
+  "correct": true
+ },
+ {
+  "id": "stripe_list_invoices:en",
+  "target": "stripe_list_invoices",
+  "condition": "all",
+  "n": 1000,
+  "called": "stripe_list_invoices",
+  "searches": [],
+  "prompt_tokens": 124960,
+  "completion_tokens": 46,
+  "error": null,
+  "latency_s": 4.426152363419533,
+  "correct": true
+ },
+ {
+  "id": "shopify_list_customers:ja",
+  "target": "shopify_list_customers",
+  "condition": "all",
+  "n": 1000,
+  "called": "shopify_list_customers",
+  "searches": [],
+  "prompt_tokens": 124955,
+  "completion_tokens": 51,
+  "error": null,
+  "latency_s": 4.552058519795537,
+  "correct": true
+ },
+ {
+  "id": "shopify_list_customers:en",
+  "target": "shopify_list_customers",
+  "condition": "all",
+  "n": 1000,
+  "called": "shopify_list_customers",
+  "searches": [],
+  "prompt_tokens": 124952,
+  "completion_tokens": 31,
+  "error": null,
+  "latency_s": 5.286387033760548,
+  "correct": true
+ },
+ {
+  "id": "shopify_search_products:ja",
+  "target": "shopify_search_products",
+  "condition": "all",
+  "n": 1000,
+  "called": "shopify_search_products",
+  "searches": [],
+  "prompt_tokens": 124954,
+  "completion_tokens": 31,
+  "error": null,
+  "latency_s": 4.394755172543228,
+  "correct": true
+ },
+ {
+  "id": "shopify_search_products:en",
+  "target": "shopify_search_products",
+  "condition": "all",
+  "n": 1000,
+  "called": "shopify_search_products",
+  "searches": [],
+  "prompt_tokens": 124951,
+  "completion_tokens": 29,
+  "error": null,
+  "latency_s": 4.482537098228931,
+  "correct": true
+ },
+ {
+  "id": "figma_delete_comment:ja",
+  "target": "figma_delete_comment",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124956,
+  "completion_tokens": 72,
+  "error": null,
+  "latency_s": 4.817607224918902,
+  "correct": false
+ },
+ {
+  "id": "figma_delete_comment:en",
+  "target": "figma_delete_comment",
+  "condition": "all",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 124957,
+  "completion_tokens": 51,
+  "error": null,
+  "latency_s": 5.994524331763387,
+  "correct": false
+ },
+ {
+  "id": "tableau_add_user_to_site:ja",
+  "target": "tableau_add_user_to_site",
+  "condition": "all",
+  "n": 1000,
+  "called": "tableau_list_sites",
+  "searches": [],
+  "prompt_tokens": 124956,
+  "completion_tokens": 83,
+  "error": null,
+  "latency_s": 7.141237364150584,
+  "correct": false
+ },
+ {
+  "id": "tableau_add_user_to_site:en",
+  "target": "tableau_add_user_to_site",
+  "condition": "all",
+  "n": 1000,
+  "called": "tableau_add_user_to_site",
+  "searches": [],
+  "prompt_tokens": 124952,
+  "completion_tokens": 42,
+  "error": null,
+  "latency_s": 5.190895332023501,
+  "correct": true
+ },
+ {
+  "id": "save_csv:ja",
+  "target": "save_csv",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "hubspot_list_deals",
+  "searches": [
+   {
+    "query": "salesforce list opportunities",
+    "hits": [
+     "salesforce_list_accounts",
+     "salesforce_list_products",
+     "salesforce_get_user",
+     "salesforce_get_account",
+     "salesforce_get_opportunity"
+    ]
+   },
+   {
+    "query": "hubspot list deals",
+    "hits": [
+     "hubspot_list_deals",
+     "hubspot_get_deal",
+     "hubspot_create_deal",
+     "hubspot_update_deal_stage",
+     "freee_list_deals"
+    ]
+   },
+   {
+    "query": "moneyforward list deals",
+    "hits": [
+     "moneyforward_list_deals",
+     "moneyforward_delete_deal",
+     "moneyforward_update_deal",
+     "moneyforward_search_deals",
+     "moneyforward_create_deal"
+    ]
+   }
+  ],
+  "prompt_tokens": 29036,
+  "completion_tokens": 541,
+  "error": null,
+  "latency_s": 15.98958591464907,
+  "correct": false
+ },
+ {
+  "id": "save_csv:en",
+  "target": "save_csv",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "sales performance by item",
+    "hits": [
+     "kintone_search_records_by_keyword",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_ec2_search_instances_by_tag",
+     "aws_s3_search_objects_by_prefix",
+     "freee_delete_item"
+    ]
+   },
+   {
+    "query": "sales report invoice item",
+    "hits": [
+     "rakurakuseisan_add_items_to_report",
+     "moneyforward_create_invoice_draft",
+     "stripe_void_invoice",
+     "freee_get_invoice",
+     "moneyforward_send_invoice"
+    ]
+   },
+   {
+    "query": "list invoices sales items",
+    "hits": [
+     "stripe_list_invoices",
+     "freee_list_invoices",
+     "moneyforward_list_invoices",
+     "moneyforward_create_invoice_draft",
+     "stripe_void_invoice"
+    ]
+   }
+  ],
+  "prompt_tokens": 28949,
+  "completion_tokens": 271,
+  "error": null,
+  "latency_s": 11.567468305118382,
+  "correct": false
+ },
+ {
+  "id": "gitlab_get_project:ja",
+  "target": "gitlab_get_project",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "github_get_repository",
+  "searches": [
+   {
+    "query": "github_get_repository",
+    "hits": [
+     "github_get_repository"
+    ]
+   }
+  ],
+  "prompt_tokens": 12288,
+  "completion_tokens": 72,
+  "error": null,
+  "latency_s": 4.727734412997961,
+  "correct": false
+ },
+ {
+  "id": "gitlab_get_project:en",
+  "target": "gitlab_get_project",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "github_get_repository",
+  "searches": [],
+  "prompt_tokens": 6049,
+  "completion_tokens": 28,
+  "error": null,
+  "latency_s": 2.306407790631056,
+  "correct": false
+ },
+ {
+  "id": "jira_update_sprint:ja",
+  "target": "jira_update_sprint",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "jira_update_sprint",
+  "searches": [
+   {
+    "query": "jira_update_sprint",
+    "hits": [
+     "jira_update_sprint"
+    ]
+   }
+  ],
+  "prompt_tokens": 12326,
+  "completion_tokens": 79,
+  "error": null,
+  "latency_s": 4.380639221519232,
+  "correct": true
+ },
+ {
+  "id": "jira_update_sprint:en",
+  "target": "jira_update_sprint",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "jira_list_boards",
+  "searches": [
+   {
+    "query": "jira list sprints",
+    "hits": [
+     "jira_list_sprints",
+     "jira_get_sprint",
+     "jira_close_sprint",
+     "jira_update_sprint",
+     "jira_create_sprint"
+    ]
+   },
+   {
+    "query": "jira list boards",
+    "hits": [
+     "jira_list_boards",
+     "jira_get_board",
+     "jira_list_sprints",
+     "jira_list_issues",
+     "jira_list_projects"
+    ]
+   }
+  ],
+  "prompt_tokens": 20577,
+  "completion_tokens": 303,
+  "error": null,
+  "latency_s": 9.971805529668927,
+  "correct": false
+ },
+ {
+  "id": "slack_add_reaction:ja",
+  "target": "slack_add_reaction",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "slack_search_channels",
+  "searches": [
+   {
+    "query": "slack add reaction",
+    "hits": [
+     "slack_add_reaction",
+     "slack_remove_reaction",
+     "slack_unpin_message",
+     "slack_search_channels",
+     "slack_create_channel"
+    ]
+   }
+  ],
+  "prompt_tokens": 12959,
+  "completion_tokens": 53,
+  "error": null,
+  "latency_s": 4.210177235305309,
+  "correct": false
+ },
+ {
+  "id": "slack_add_reaction:en",
+  "target": "slack_add_reaction",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "slack_list_channels",
+  "searches": [
+   {
+    "query": "slack list channels",
+    "hits": [
+     "slack_list_channels",
+     "slack_rename_channel",
+     "slack_archive_channel",
+     "slack_search_channels",
+     "slack_create_channel"
+    ]
+   }
+  ],
+  "prompt_tokens": 13010,
+  "completion_tokens": 158,
+  "error": null,
+  "latency_s": 5.940170087851584,
+  "correct": false
+ },
+ {
+  "id": "teams_send_message:ja",
+  "target": "teams_send_message",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "slack_search_channels",
+  "searches": [
+   {
+    "query": "slack search channels",
+    "hits": [
+     "slack_search_channels",
+     "slack_search_messages",
+     "slack_rename_channel",
+     "slack_archive_channel",
+     "slack_create_channel"
+    ]
+   }
+  ],
+  "prompt_tokens": 12971,
+  "completion_tokens": 153,
+  "error": null,
+  "latency_s": 5.453798008151352,
+  "correct": false
+ },
+ {
+  "id": "teams_send_message:en",
+  "target": "teams_send_message",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "chatwork_list_rooms",
+  "searches": [
+   {
+    "query": "chatwork list rooms",
+    "hits": [
+     "chatwork_list_rooms",
+     "chatwork_delete_room",
+     "chatwork_get_room",
+     "chatwork_list_files",
+     "chatwork_update_room"
+    ]
+   }
+  ],
+  "prompt_tokens": 12833,
+  "completion_tokens": 165,
+  "error": null,
+  "latency_s": 5.981307818554342,
+  "correct": false
+ },
+ {
+  "id": "chatwork_get_file:ja",
+  "target": "chatwork_get_file",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "chatwork_get_file",
+  "searches": [],
+  "prompt_tokens": 6054,
+  "completion_tokens": 32,
+  "error": null,
+  "latency_s": 2.341936136595905,
+  "correct": true
+ },
+ {
+  "id": "chatwork_get_file:en",
+  "target": "chatwork_get_file",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "chatwork_get_file",
+  "searches": [],
+  "prompt_tokens": 6054,
+  "completion_tokens": 48,
+  "error": null,
+  "latency_s": 2.1968432758003473,
+  "correct": true
+ },
+ {
+  "id": "outlook_search_emails:ja",
+  "target": "outlook_search_emails",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "outlook_search_emails",
+  "searches": [
+   {
+    "query": "outlook search emails",
+    "hits": [
+     "outlook_search_emails",
+     "outlook_get_email",
+     "outlook_move_email",
+     "outlook_delete_email",
+     "outlook_forward_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 12789,
+  "completion_tokens": 95,
+  "error": null,
+  "latency_s": 4.830752965062857,
+  "correct": true
+ },
+ {
+  "id": "outlook_search_emails:en",
+  "target": "outlook_search_emails",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "outlook_search_emails",
+  "searches": [
+   {
+    "query": "outlook search emails",
+    "hits": [
+     "outlook_search_emails",
+     "outlook_get_email",
+     "outlook_move_email",
+     "outlook_delete_email",
+     "outlook_forward_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 12787,
+  "completion_tokens": 97,
+  "error": null,
+  "latency_s": 4.781276299618185,
+  "correct": true
+ },
+ {
+  "id": "outlook_delete_event:ja",
+  "target": "outlook_delete_event",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "outlook_search_events",
+  "searches": [],
+  "prompt_tokens": 6051,
+  "completion_tokens": 64,
+  "error": null,
+  "latency_s": 2.4430509097874165,
+  "correct": false
+ },
+ {
+  "id": "outlook_delete_event:en",
+  "target": "outlook_delete_event",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "outlook_search_events",
+  "searches": [
+   {
+    "query": "search events",
+    "hits": [
+     "gcal_search_events",
+     "ga4_search_events",
+     "outlook_search_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "outlook_get_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 13018,
+  "completion_tokens": 212,
+  "error": null,
+  "latency_s": 6.731668120250106,
+  "correct": false
+ },
+ {
+  "id": "gdrive_upload_file:ja",
+  "target": "gdrive_upload_file",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "gdrive_upload_file",
+  "searches": [],
+  "prompt_tokens": 6050,
+  "completion_tokens": 49,
+  "error": null,
+  "latency_s": 2.43273195810616,
+  "correct": true
+ },
+ {
+  "id": "gdrive_upload_file:en",
+  "target": "gdrive_upload_file",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "gdrive_upload_file",
+  "searches": [],
+  "prompt_tokens": 6048,
+  "completion_tokens": 50,
+  "error": null,
+  "latency_s": 2.1608901852741838,
+  "correct": true
+ },
+ {
+  "id": "gdrive_list_revisions:ja",
+  "target": "gdrive_list_revisions",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "gdrive list revisions",
+    "hits": [
+     "gdrive_list_revisions",
+     "gdrive_restore_revision",
+     "gdrive_list_permissions",
+     "gdrive_list_files",
+     "gdrive_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 13024,
+  "completion_tokens": 305,
+  "error": null,
+  "latency_s": 8.09394718054682,
+  "correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:en",
+  "target": "gdrive_list_revisions",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 6047,
+  "completion_tokens": 103,
+  "error": null,
+  "latency_s": 2.882878770120442,
+  "correct": false
+ },
+ {
+  "id": "dropbox_share_folder:ja",
+  "target": "dropbox_share_folder",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 6054,
+  "completion_tokens": 164,
+  "error": null,
+  "latency_s": 4.177071486599743,
+  "correct": false
+ },
+ {
+  "id": "dropbox_share_folder:en",
+  "target": "dropbox_share_folder",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 6049,
+  "completion_tokens": 105,
+  "error": null,
+  "latency_s": 3.1589824790135026,
+  "correct": false
+ },
+ {
+  "id": "notion_delete_block:ja",
+  "target": "notion_delete_block",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "notion_search_pages",
+  "searches": [],
+  "prompt_tokens": 6054,
+  "completion_tokens": 181,
+  "error": null,
+  "latency_s": 4.389317005872726,
+  "correct": false
+ },
+ {
+  "id": "notion_delete_block:en",
+  "target": "notion_delete_block",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "notion_search_pages",
+  "searches": [],
+  "prompt_tokens": 6053,
+  "completion_tokens": 72,
+  "error": null,
+  "latency_s": 2.5650396533310413,
+  "correct": false
+ },
+ {
+  "id": "trello_create_board:ja",
+  "target": "trello_create_board",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "trello_create_board",
+  "searches": [
+   {
+    "query": "trello_create_board",
+    "hits": [
+     "trello_create_board"
+    ]
+   }
+  ],
+  "prompt_tokens": 12302,
+  "completion_tokens": 69,
+  "error": null,
+  "latency_s": 4.323719896376133,
+  "correct": true
+ },
+ {
+  "id": "trello_create_board:en",
+  "target": "trello_create_board",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "trello_create_board",
+  "searches": [],
+  "prompt_tokens": 6049,
+  "completion_tokens": 46,
+  "error": null,
+  "latency_s": 2.2625991087406874,
+  "correct": true
+ },
+ {
+  "id": "trello_remove_member_from_card:ja",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "trello_list_boards",
+  "searches": [],
+  "prompt_tokens": 6052,
+  "completion_tokens": 143,
+  "error": null,
+  "latency_s": 3.827263473533094,
+  "correct": false
+ },
+ {
+  "id": "trello_remove_member_from_card:en",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "trello_search_cards",
+  "searches": [
+   {
+    "query": "trello search cards",
+    "hits": [
+     "trello_search_cards",
+     "trello_delete_card",
+     "trello_move_card",
+     "trello_update_card",
+     "trello_create_card"
+    ]
+   }
+  ],
+  "prompt_tokens": 12986,
+  "completion_tokens": 99,
+  "error": null,
+  "latency_s": 4.954712779261172,
+  "correct": false
+ },
+ {
+  "id": "trello_get_board_details:ja",
+  "target": "trello_get_board_details",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "trello_get_board_details",
+  "searches": [],
+  "prompt_tokens": 6056,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 2.26186612714082,
+  "correct": true
+ },
+ {
+  "id": "trello_get_board_details:en",
+  "target": "trello_get_board_details",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "trello_get_board_details",
+  "searches": [],
+  "prompt_tokens": 6060,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 2.191161419264972,
+  "correct": true
+ },
+ {
+  "id": "garoon_list_messages:ja",
+  "target": "garoon_list_messages",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "garoon_list_messages",
+  "searches": [],
+  "prompt_tokens": 6043,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 1.7156541952863336,
+  "correct": true
+ },
+ {
+  "id": "garoon_list_messages:en",
+  "target": "garoon_list_messages",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "garoon_list_messages",
+  "searches": [],
+  "prompt_tokens": 6044,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 1.8606507498770952,
+  "correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "rakurakuseisan_get_expense_detail",
+  "searches": [],
+  "prompt_tokens": 6066,
+  "completion_tokens": 71,
+  "error": null,
+  "latency_s": 2.7775918282568455,
+  "correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:en",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "rakurakuseisan_get_expense_detail",
+  "searches": [
+   {
+    "query": "rakurakuseisan_get_expense_detail",
+    "hits": [
+     "rakurakuseisan_get_expense_detail"
+    ]
+   }
+  ],
+  "prompt_tokens": 12322,
+  "completion_tokens": 76,
+  "error": null,
+  "latency_s": 4.473193805664778,
+  "correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "smarthr_create_employee_draft",
+  "searches": [
+   {
+    "query": "smarthr_create_employee_draft",
+    "hits": [
+     "smarthr_create_employee_draft"
+    ]
+   }
+  ],
+  "prompt_tokens": 12358,
+  "completion_tokens": 113,
+  "error": null,
+  "latency_s": 4.929690771736205,
+  "correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:en",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "smarthr create employee draft",
+    "hits": [
+     "smarthr_create_employee_draft",
+     "smarthr_submit_employee_registration",
+     "smarthr_get_employee",
+     "smarthr_search_employees",
+     "smarthr_list_employees"
+    ]
+   }
+  ],
+  "prompt_tokens": 12929,
+  "completion_tokens": 559,
+  "error": null,
+  "latency_s": 12.42428539134562,
+  "correct": false
+ },
+ {
+  "id": "docusign_create_webhook:ja",
+  "target": "docusign_create_webhook",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "docusign webhook",
+    "hits": [
+     "docusign_list_webhooks",
+     "docusign_create_webhook",
+     "linear_delete_webhook",
+     "figma_delete_webhook",
+     "figma_put_webhook"
+    ]
+   },
+   {
+    "query": "docusign account",
+    "hits": [
+     "docusign_list_brands",
+     "docusign_list_webhooks",
+     "docusign_delete_template",
+     "docusign_send_draft_envelope",
+     "docusign_get_envelope_status"
+    ]
+   }
+  ],
+  "prompt_tokens": 21696,
+  "completion_tokens": 1872,
+  "error": null,
+  "latency_s": 36.65430458728224,
+  "correct": false
+ },
+ {
+  "id": "docusign_create_webhook:en",
+  "target": "docusign_create_webhook",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "docusign create webhook",
+    "hits": [
+     "docusign_create_webhook",
+     "docusign_list_webhooks",
+     "linear_create_webhook",
+     "stripe_create_webhook_endpoint",
+     "docusign_create_brand"
+    ]
+   }
+  ],
+  "prompt_tokens": 13008,
+  "completion_tokens": 1093,
+  "error": null,
+  "latency_s": 21.469409455545247,
+  "correct": false
+ },
+ {
+  "id": "zendesk_list_tags:ja",
+  "target": "zendesk_list_tags",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "zendesk_list_tags",
+  "searches": [
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags"
+    ]
+   }
+  ],
+  "prompt_tokens": 12231,
+  "completion_tokens": 44,
+  "error": null,
+  "latency_s": 4.116304746828973,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_tags:en",
+  "target": "zendesk_list_tags",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags"
+    ]
+   },
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags"
+    ]
+   },
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags"
+    ]
+   },
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags"
+    ]
+   }
+  ],
+  "prompt_tokens": 24863,
+  "completion_tokens": 112,
+  "error": null,
+  "latency_s": 8.425065179355443,
+  "correct": false
+ },
+ {
+  "id": "zendesk_list_organizations:ja",
+  "target": "zendesk_list_organizations",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "zendesk_list_organizations",
+    "hits": [
+     "zendesk_list_organizations"
+    ]
+   },
+   {
+    "query": "zendesk_list_organizations",
+    "hits": [
+     "zendesk_list_organizations"
+    ]
+   },
+   {
+    "query": "zendesk_list_organizations",
+    "hits": [
+     "zendesk_list_organizations"
+    ]
+   },
+   {
+    "query": "zendesk_list_organizations",
+    "hits": [
+     "zendesk_list_organizations"
+    ]
+   }
+  ],
+  "prompt_tokens": 24892,
+  "completion_tokens": 116,
+  "error": null,
+  "latency_s": 8.281466928310692,
+  "correct": false
+ },
+ {
+  "id": "zendesk_list_organizations:en",
+  "target": "zendesk_list_organizations",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "zendesk_list_organizations",
+  "searches": [
+   {
+    "query": "zendesk_list_organizations",
+    "hits": [
+     "zendesk_list_organizations"
+    ]
+   }
+  ],
+  "prompt_tokens": 12241,
+  "completion_tokens": 46,
+  "error": null,
+  "latency_s": 4.011388114653528,
+  "correct": true
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "pagerduty_trigger_webhook",
+  "searches": [],
+  "prompt_tokens": 6063,
+  "completion_tokens": 266,
+  "error": null,
+  "latency_s": 6.278632341884077,
+  "correct": true
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "pagerduty_trigger_webhook",
+  "searches": [],
+  "prompt_tokens": 6057,
+  "completion_tokens": 34,
+  "error": null,
+  "latency_s": 2.0739247938618064,
+  "correct": true
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "CloudWatch Logs get log events",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "datadog_get_log_detail",
+     "cloudsign_get_audit_log",
+     "aws_cloudwatch_get_metric_statistics"
+    ]
+   }
+  ],
+  "prompt_tokens": 13019,
+  "completion_tokens": 214,
+  "error": null,
+  "latency_s": 6.602644601836801,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "aws_cloudwatch_get_log_events",
+  "searches": [],
+  "prompt_tokens": 6054,
+  "completion_tokens": 69,
+  "error": null,
+  "latency_s": 2.4810666451230645,
+  "correct": true
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "aws_cloudwatch_search_logs_by_pattern",
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern"
+    ]
+   }
+  ],
+  "prompt_tokens": 12407,
+  "completion_tokens": 106,
+  "error": null,
+  "latency_s": 4.4463853146880865,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "aws_cloudwatch_search_logs_by_pattern",
+  "searches": [],
+  "prompt_tokens": 6051,
+  "completion_tokens": 110,
+  "error": null,
+  "latency_s": 3.6601102389395237,
+  "correct": true
+ },
+ {
+  "id": "stripe_create_customer:ja",
+  "target": "stripe_create_customer",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "stripe_create_customer",
+  "searches": [],
+  "prompt_tokens": 6048,
+  "completion_tokens": 42,
+  "error": null,
+  "latency_s": 2.113116850145161,
+  "correct": true
+ },
+ {
+  "id": "stripe_create_customer:en",
+  "target": "stripe_create_customer",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "stripe_create_customer",
+  "searches": [],
+  "prompt_tokens": 6049,
+  "completion_tokens": 58,
+  "error": null,
+  "latency_s": 2.2026459332555532,
+  "correct": true
+ },
+ {
+  "id": "stripe_list_invoices:ja",
+  "target": "stripe_list_invoices",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "stripe_list_invoices",
+  "searches": [],
+  "prompt_tokens": 6060,
+  "completion_tokens": 63,
+  "error": null,
+  "latency_s": 2.1946925539523363,
+  "correct": true
+ },
+ {
+  "id": "stripe_list_invoices:en",
+  "target": "stripe_list_invoices",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "stripe_list_invoices",
+  "searches": [],
+  "prompt_tokens": 6054,
+  "completion_tokens": 34,
+  "error": null,
+  "latency_s": 1.9442954612895846,
+  "correct": true
+ },
+ {
+  "id": "shopify_list_customers:ja",
+  "target": "shopify_list_customers",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "shopify_list_customers",
+  "searches": [],
+  "prompt_tokens": 6049,
+  "completion_tokens": 17,
+  "error": null,
+  "latency_s": 2.0084195965901017,
+  "correct": true
+ },
+ {
+  "id": "shopify_list_customers:en",
+  "target": "shopify_list_customers",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "shopify_list_customers",
+  "searches": [],
+  "prompt_tokens": 6046,
+  "completion_tokens": 17,
+  "error": null,
+  "latency_s": 1.6938943322747946,
+  "correct": true
+ },
+ {
+  "id": "shopify_search_products:ja",
+  "target": "shopify_search_products",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "shopify_search_products",
+  "searches": [
+   {
+    "query": "shopify search products",
+    "hits": [
+     "shopify_search_products",
+     "shopify_get_product",
+     "shopify_delete_product",
+     "shopify_update_product",
+     "shopify_list_products"
+    ]
+   }
+  ],
+  "prompt_tokens": 12738,
+  "completion_tokens": 72,
+  "error": null,
+  "latency_s": 4.297787740826607,
+  "correct": true
+ },
+ {
+  "id": "shopify_search_products:en",
+  "target": "shopify_search_products",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "shopify_search_products",
+  "searches": [],
+  "prompt_tokens": 6045,
+  "completion_tokens": 29,
+  "error": null,
+  "latency_s": 1.9601977122947574,
+  "correct": true
+ },
+ {
+  "id": "figma_delete_comment:ja",
+  "target": "figma_delete_comment",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "figma_delete_comment",
+  "searches": [],
+  "prompt_tokens": 6050,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 2.7796322936192155,
+  "correct": true
+ },
+ {
+  "id": "figma_delete_comment:en",
+  "target": "figma_delete_comment",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "figma_delete_comment",
+  "searches": [],
+  "prompt_tokens": 6051,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 2.0235743448138237,
+  "correct": true
+ },
+ {
+  "id": "tableau_add_user_to_site:ja",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "tableau_list_sites",
+  "searches": [],
+  "prompt_tokens": 6050,
+  "completion_tokens": 353,
+  "error": null,
+  "latency_s": 7.392939466051757,
+  "correct": false
+ },
+ {
+  "id": "tableau_add_user_to_site:en",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_bm25",
+  "n": 1000,
+  "called": "tableau_add_user_to_site",
+  "searches": [],
+  "prompt_tokens": 6046,
+  "completion_tokens": 60,
+  "error": null,
+  "latency_s": 2.5578555203974247,
+  "correct": true
+ },
+ {
+  "id": "save_csv:ja",
+  "target": "save_csv",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "moneyforward_list_deals",
+  "searches": [
+   {
+    "query": "moneyforward list deals invoices",
+    "hits": [
+     "moneyforward_list_invoices",
+     "moneyforward_list_deals",
+     "moneyforward_get_deal_detail",
+     "moneyforward_create_deal",
+     "freee_list_invoices"
+    ]
+   }
+  ],
+  "prompt_tokens": 12963,
+  "completion_tokens": 219,
+  "error": null,
+  "latency_s": 6.823007434606552,
+  "correct": false
+ },
+ {
+  "id": "save_csv:en",
+  "target": "save_csv",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "sales performance report item",
+    "hits": [
+     "garoon_list_reports",
+     "freee_list_reports_pl",
+     "garoon_create_report",
+     "ga4_run_realtime_report",
+     "zoom_list_reports"
+    ]
+   },
+   {
+    "query": "invoice deal sales item",
+    "hits": [
+     "moneyforward_create_deal",
+     "stripe_finalize_invoice",
+     "freee_get_invoice",
+     "moneyforward_send_invoice",
+     "moneyforward_update_deal"
+    ]
+   },
+   {
+    "query": "freee list invoices deals",
+    "hits": [
+     "freee_list_invoices",
+     "freee_list_deals",
+     "freee_get_invoice",
+     "freee_list_items",
+     "moneyforward_list_invoices"
+    ]
+   },
+   {
+    "query": "shopify stripe sales order product",
+    "hits": [
+     "shopify_get_order",
+     "stripe_create_product",
+     "shopify_list_products",
+     "shopify_list_orders",
+     "shopify_get_product"
+    ]
+   }
+  ],
+  "prompt_tokens": 29060,
+  "completion_tokens": 500,
+  "error": null,
+  "latency_s": 17.26407579705119,
+  "correct": false
+ },
+ {
+  "id": "gitlab_get_project:ja",
+  "target": "gitlab_get_project",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "github_get_repository",
+    "hits": [
+     "github_get_repository",
+     "github_create_repository",
+     "github_list_repository_files",
+     "github_list_repository_branches",
+     "github_get_issue"
+    ]
+   }
+  ],
+  "prompt_tokens": 12866,
+  "completion_tokens": 63,
+  "error": null,
+  "latency_s": 4.58664576523006,
+  "correct": false
+ },
+ {
+  "id": "gitlab_get_project:en",
+  "target": "gitlab_get_project",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "get repository details backend-api",
+    "hits": [
+     "github_get_repository",
+     "ga4_get_metadata",
+     "github_create_repository",
+     "github_update_repository_settings",
+     "github_list_repository_files"
+    ]
+   }
+  ],
+  "prompt_tokens": 12838,
+  "completion_tokens": 68,
+  "error": null,
+  "latency_s": 5.188487708568573,
+  "correct": false
+ },
+ {
+  "id": "jira_update_sprint:ja",
+  "target": "jira_update_sprint",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "jira_list_boards",
+  "searches": [
+   {
+    "query": "jira_list_sprints",
+    "hits": [
+     "jira_list_sprints",
+     "jira_get_sprint",
+     "jira_list_issues",
+     "jira_list_boards",
+     "jira_get_issue"
+    ]
+   }
+  ],
+  "prompt_tokens": 12870,
+  "completion_tokens": 110,
+  "error": null,
+  "latency_s": 5.324014242738485,
+  "correct": false
+ },
+ {
+  "id": "jira_update_sprint:en",
+  "target": "jira_update_sprint",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "jira_list_boards",
+  "searches": [
+   {
+    "query": "jira list sprints",
+    "hits": [
+     "jira_list_sprints",
+     "jira_get_sprint",
+     "jira_close_sprint",
+     "jira_create_sprint",
+     "jira_update_sprint"
+    ]
+   },
+   {
+    "query": "jira list boards",
+    "hits": [
+     "jira_list_boards",
+     "jira_get_board",
+     "jira_list_sprints",
+     "jira_list_issues",
+     "jira_list_projects"
+    ]
+   }
+  ],
+  "prompt_tokens": 20639,
+  "completion_tokens": 365,
+  "error": null,
+  "latency_s": 11.568693522363901,
+  "correct": false
+ },
+ {
+  "id": "slack_add_reaction:ja",
+  "target": "slack_add_reaction",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "slack_search_messages",
+  "searches": [
+   {
+    "query": "slack add reaction",
+    "hits": [
+     "slack_add_reaction",
+     "slack_remove_reaction",
+     "slack_post_message",
+     "slack_create_channel",
+     "slack_search_messages"
+    ]
+   }
+  ],
+  "prompt_tokens": 12977,
+  "completion_tokens": 59,
+  "error": null,
+  "latency_s": 4.439640155993402,
+  "correct": false
+ },
+ {
+  "id": "slack_add_reaction:en",
+  "target": "slack_add_reaction",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "slack_search_channels",
+  "searches": [
+   {
+    "query": "slack search messages",
+    "hits": [
+     "slack_search_messages",
+     "slack_delete_message",
+     "slack_search_users",
+     "slack_post_message",
+     "slack_search_channels"
+    ]
+   }
+  ],
+  "prompt_tokens": 12981,
+  "completion_tokens": 143,
+  "error": null,
+  "latency_s": 5.542359910905361,
+  "correct": false
+ },
+ {
+  "id": "teams_send_message:ja",
+  "target": "teams_send_message",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "slack_search_channels",
+  "searches": [
+   {
+    "query": "slack list channels",
+    "hits": [
+     "slack_list_channels",
+     "slack_search_channels",
+     "slack_archive_channel",
+     "slack_get_channel_info",
+     "slack_create_channel"
+    ]
+   }
+  ],
+  "prompt_tokens": 13015,
+  "completion_tokens": 178,
+  "error": null,
+  "latency_s": 6.439589656889439,
+  "correct": false
+ },
+ {
+  "id": "teams_send_message:en",
+  "target": "teams_send_message",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 6045,
+  "completion_tokens": 129,
+  "error": null,
+  "latency_s": 3.498565971851349,
+  "correct": false
+ },
+ {
+  "id": "chatwork_get_file:ja",
+  "target": "chatwork_get_file",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "chatwork_get_file",
+  "searches": [],
+  "prompt_tokens": 6054,
+  "completion_tokens": 32,
+  "error": null,
+  "latency_s": 1.7557754907757044,
+  "correct": true
+ },
+ {
+  "id": "chatwork_get_file:en",
+  "target": "chatwork_get_file",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "chatwork_get_file",
+  "searches": [],
+  "prompt_tokens": 6054,
+  "completion_tokens": 32,
+  "error": null,
+  "latency_s": 2.1139345029368997,
+  "correct": true
+ },
+ {
+  "id": "outlook_search_emails:ja",
+  "target": "outlook_search_emails",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "outlook_search_emails",
+  "searches": [
+   {
+    "query": "outlook search emails",
+    "hits": [
+     "outlook_search_emails",
+     "outlook_get_email",
+     "outlook_list_emails",
+     "outlook_delete_email",
+     "outlook_move_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 12790,
+  "completion_tokens": 95,
+  "error": null,
+  "latency_s": 5.0007567796856165,
+  "correct": true
+ },
+ {
+  "id": "outlook_search_emails:en",
+  "target": "outlook_search_emails",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "outlook_search_emails",
+  "searches": [
+   {
+    "query": "search emails",
+    "hits": [
+     "outlook_search_emails",
+     "hubspot_send_email",
+     "outlook_list_emails",
+     "outlook_get_email",
+     "docusign_search_envelopes"
+    ]
+   }
+  ],
+  "prompt_tokens": 12889,
+  "completion_tokens": 94,
+  "error": null,
+  "latency_s": 5.029993275180459,
+  "correct": true
+ },
+ {
+  "id": "outlook_delete_event:ja",
+  "target": "outlook_delete_event",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "gcal_search_events",
+  "searches": [],
+  "prompt_tokens": 6051,
+  "completion_tokens": 61,
+  "error": null,
+  "latency_s": 2.579326657578349,
+  "correct": false
+ },
+ {
+  "id": "outlook_delete_event:en",
+  "target": "outlook_delete_event",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "outlook list events",
+    "hits": [
+     "outlook_list_events",
+     "outlook_get_event",
+     "outlook_create_event",
+     "outlook_delete_event",
+     "outlook_update_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 12888,
+  "completion_tokens": 686,
+  "error": null,
+  "latency_s": 15.334825010970235,
+  "correct": false
+ },
+ {
+  "id": "gdrive_upload_file:ja",
+  "target": "gdrive_upload_file",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "gdrive_upload_file",
+  "searches": [],
+  "prompt_tokens": 6050,
+  "completion_tokens": 49,
+  "error": null,
+  "latency_s": 2.1842786371707916,
+  "correct": true
+ },
+ {
+  "id": "gdrive_upload_file:en",
+  "target": "gdrive_upload_file",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "gdrive_upload_file",
+  "searches": [],
+  "prompt_tokens": 6048,
+  "completion_tokens": 50,
+  "error": null,
+  "latency_s": 2.3248937390744686,
+  "correct": true
+ },
+ {
+  "id": "gdrive_list_revisions:ja",
+  "target": "gdrive_list_revisions",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "gdrive_search_files",
+  "searches": [
+   {
+    "query": "gdrive search files",
+    "hits": [
+     "gdrive_search_files",
+     "gdrive_download_file",
+     "gdrive_delete_file",
+     "gdrive_list_files",
+     "gdrive_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 12961,
+  "completion_tokens": 235,
+  "error": null,
+  "latency_s": 7.294518994167447,
+  "correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:en",
+  "target": "gdrive_list_revisions",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 6047,
+  "completion_tokens": 111,
+  "error": null,
+  "latency_s": 3.2734830575063825,
+  "correct": false
+ },
+ {
+  "id": "dropbox_share_folder:ja",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "gdrive_search_files",
+  "searches": [
+   {
+    "query": "gdrive search files",
+    "hits": [
+     "gdrive_search_files",
+     "gdrive_download_file",
+     "gdrive_delete_file",
+     "gdrive_list_files",
+     "gdrive_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 12901,
+  "completion_tokens": 124,
+  "error": null,
+  "latency_s": 5.700976779684424,
+  "correct": false
+ },
+ {
+  "id": "dropbox_share_folder:en",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [],
+  "prompt_tokens": 6049,
+  "completion_tokens": 123,
+  "error": null,
+  "latency_s": 3.4455596720799804,
+  "correct": false
+ },
+ {
+  "id": "notion_delete_block:ja",
+  "target": "notion_delete_block",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "notion_search_pages",
+  "searches": [],
+  "prompt_tokens": 6054,
+  "completion_tokens": 212,
+  "error": null,
+  "latency_s": 5.041402514092624,
+  "correct": false
+ },
+ {
+  "id": "notion_delete_block:en",
+  "target": "notion_delete_block",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "notion_search_pages",
+  "searches": [],
+  "prompt_tokens": 6053,
+  "completion_tokens": 71,
+  "error": null,
+  "latency_s": 2.593859008513391,
+  "correct": false
+ },
+ {
+  "id": "trello_create_board:ja",
+  "target": "trello_create_board",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "trello_create_board",
+  "searches": [],
+  "prompt_tokens": 6048,
+  "completion_tokens": 38,
+  "error": null,
+  "latency_s": 2.1024381341412663,
+  "correct": true
+ },
+ {
+  "id": "trello_create_board:en",
+  "target": "trello_create_board",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "trello_create_board",
+  "searches": [],
+  "prompt_tokens": 6049,
+  "completion_tokens": 46,
+  "error": null,
+  "latency_s": 2.2409085342660546,
+  "correct": true
+ },
+ {
+  "id": "trello_remove_member_from_card:ja",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "trello_list_boards",
+  "searches": [],
+  "prompt_tokens": 6052,
+  "completion_tokens": 154,
+  "error": null,
+  "latency_s": 4.096451842226088,
+  "correct": false
+ },
+ {
+  "id": "trello_remove_member_from_card:en",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "trello_search_cards",
+  "searches": [
+   {
+    "query": "trello search cards",
+    "hits": [
+     "trello_search_cards",
+     "trello_create_card",
+     "trello_get_card_details",
+     "trello_delete_card",
+     "trello_list_cards_in_list"
+    ]
+   }
+  ],
+  "prompt_tokens": 12915,
+  "completion_tokens": 99,
+  "error": null,
+  "latency_s": 5.006459665484726,
+  "correct": false
+ },
+ {
+  "id": "trello_get_board_details:ja",
+  "target": "trello_get_board_details",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "trello_get_board_details",
+  "searches": [],
+  "prompt_tokens": 6056,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 1.9932095743715763,
+  "correct": true
+ },
+ {
+  "id": "trello_get_board_details:en",
+  "target": "trello_get_board_details",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "trello_get_board_details",
+  "searches": [],
+  "prompt_tokens": 6060,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 2.1703409869223833,
+  "correct": true
+ },
+ {
+  "id": "garoon_list_messages:ja",
+  "target": "garoon_list_messages",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "garoon_list_messages",
+  "searches": [],
+  "prompt_tokens": 6043,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 1.8015672182664275,
+  "correct": true
+ },
+ {
+  "id": "garoon_list_messages:en",
+  "target": "garoon_list_messages",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "garoon_list_messages",
+  "searches": [],
+  "prompt_tokens": 6044,
+  "completion_tokens": 16,
+  "error": null,
+  "latency_s": 1.853945242241025,
+  "correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "rakurakuseisan_get_expense_detail",
+  "searches": [],
+  "prompt_tokens": 6066,
+  "completion_tokens": 71,
+  "error": null,
+  "latency_s": 2.6613329388201237,
+  "correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:en",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "rakurakuseisan_get_expense_detail",
+  "searches": [
+   {
+    "query": "rakurakuseisan_get_expense_detail",
+    "hits": [
+     "rakurakuseisan_get_expense_detail",
+     "rakurakuseisan_delete_expense",
+     "rakurakuseisan_submit_expense",
+     "rakurakuseisan_search_expenses",
+     "rakurakuseisan_update_expense"
+    ]
+   }
+  ],
+  "prompt_tokens": 12850,
+  "completion_tokens": 76,
+  "error": null,
+  "latency_s": 4.885085496120155,
+  "correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "smarthr_create_employee_draft",
+  "searches": [
+   {
+    "query": "smarthr_create_employee_draft",
+    "hits": [
+     "smarthr_create_employee_draft",
+     "smarthr_submit_employee_registration",
+     "smarthr_create_contract",
+     "smarthr_get_employee",
+     "gmail_create_draft"
+    ]
+   }
+  ],
+  "prompt_tokens": 12908,
+  "completion_tokens": 113,
+  "error": null,
+  "latency_s": 5.507640512660146,
+  "correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:en",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "smarthr create employee draft",
+    "hits": [
+     "smarthr_create_employee_draft",
+     "smarthr_submit_employee_registration",
+     "smarthr_get_employee",
+     "smarthr_create_contract",
+     "smarthr_assign_employee_to_department"
+    ]
+   }
+  ],
+  "prompt_tokens": 12972,
+  "completion_tokens": 743,
+  "error": null,
+  "latency_s": 15.934131337329745,
+  "correct": false
+ },
+ {
+  "id": "docusign_create_webhook:ja",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "docusign create webhook",
+    "hits": [
+     "docusign_create_webhook",
+     "docusign_list_webhooks",
+     "docusign_create_brand",
+     "docusign_create_envelope_from_document",
+     "docusign_create_envelope_from_template"
+    ]
+   },
+   {
+    "query": "docusign get account info",
+    "hits": [
+     "docusign_get_envelope_status",
+     "docusign_list_brands",
+     "docusign_list_webhooks",
+     "docusign_get_folder_items",
+     "docusign_download_audit_log"
+    ]
+   }
+  ],
+  "prompt_tokens": 21622,
+  "completion_tokens": 1063,
+  "error": null,
+  "latency_s": 23.50876500364393,
+  "correct": false
+ },
+ {
+  "id": "docusign_create_webhook:en",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "docusign create webhook",
+    "hits": [
+     "docusign_create_webhook",
+     "docusign_list_webhooks",
+     "docusign_create_brand",
+     "docusign_create_envelope_from_document",
+     "docusign_create_envelope_from_template"
+    ]
+   },
+   {
+    "query": "docusign account info",
+    "hits": [
+     "docusign_list_brands",
+     "docusign_get_envelope_status",
+     "docusign_list_webhooks",
+     "docusign_create_brand",
+     "docusign_download_audit_log"
+    ]
+   }
+  ],
+  "prompt_tokens": 21296,
+  "completion_tokens": 765,
+  "error": null,
+  "latency_s": 18.739766356535256,
+  "correct": false
+ },
+ {
+  "id": "zendesk_list_tags:ja",
+  "target": "zendesk_list_tags",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "zendesk_list_tags",
+  "searches": [
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags",
+     "asana_list_tags",
+     "zendesk_add_tags_to_ticket",
+     "zendesk_list_organizations",
+     "zendesk_list_tickets"
+    ]
+   }
+  ],
+  "prompt_tokens": 12659,
+  "completion_tokens": 44,
+  "error": null,
+  "latency_s": 4.252417133189738,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_tags:en",
+  "target": "zendesk_list_tags",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "zendesk_list_tags",
+  "searches": [
+   {
+    "query": "zendesk_list_tags",
+    "hits": [
+     "zendesk_list_tags",
+     "asana_list_tags",
+     "zendesk_add_tags_to_ticket",
+     "zendesk_list_organizations",
+     "zendesk_list_tickets"
+    ]
+   }
+  ],
+  "prompt_tokens": 12661,
+  "completion_tokens": 44,
+  "error": null,
+  "latency_s": 4.124095653183758,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:ja",
+  "target": "zendesk_list_organizations",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "zendesk_list_organizations",
+  "searches": [
+   {
+    "query": "zendesk_list_organizations",
+    "hits": [
+     "zendesk_list_organizations",
+     "zendesk_get_organization",
+     "zendesk_list_users",
+     "zendesk_list_groups",
+     "zendesk_list_tags"
+    ]
+   }
+  ],
+  "prompt_tokens": 12575,
+  "completion_tokens": 46,
+  "error": null,
+  "latency_s": 4.370457945391536,
+  "correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:en",
+  "target": "zendesk_list_organizations",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "zendesk_list_organizations",
+  "searches": [
+   {
+    "query": "zendesk_list_organizations",
+    "hits": [
+     "zendesk_list_organizations",
+     "zendesk_get_organization",
+     "zendesk_list_users",
+     "zendesk_list_groups",
+     "zendesk_list_tags"
+    ]
+   }
+  ],
+  "prompt_tokens": 12577,
+  "completion_tokens": 46,
+  "error": null,
+  "latency_s": 4.249958409927785,
+  "correct": true
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "pagerduty_list_services",
+  "searches": [
+   {
+    "query": "pagerduty_trigger_webhook",
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "docusign_create_webhook",
+     "figma_post_webhook",
+     "gitlab_trigger_pipeline",
+     "figma_put_webhook"
+    ]
+   },
+   {
+    "query": "pagerduty_list_services",
+    "hits": [
+     "pagerduty_list_services",
+     "pagerduty_get_service",
+     "pagerduty_delete_service",
+     "pagerduty_create_service",
+     "pagerduty_list_users"
+    ]
+   }
+  ],
+  "prompt_tokens": 21420,
+  "completion_tokens": 587,
+  "error": null,
+  "latency_s": 15.804670666344464,
+  "correct": false
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "pagerduty_trigger_webhook",
+  "searches": [],
+  "prompt_tokens": 6057,
+  "completion_tokens": 34,
+  "error": null,
+  "latency_s": 2.129635874181986,
+  "correct": true
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "CloudWatch Logs get log events",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_put_alarm",
+     "aws_cloudwatch_describe_alarms",
+     "aws_cloudwatch_get_metric_statistics"
+    ]
+   }
+  ],
+  "prompt_tokens": 13153,
+  "completion_tokens": 187,
+  "error": null,
+  "latency_s": 6.543760710395873,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "CloudWatch get log events",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_metric_statistics",
+     "aws_cloudwatch_put_alarm",
+     "aws_cloudwatch_put_metric_data"
+    ]
+   }
+  ],
+  "prompt_tokens": 13145,
+  "completion_tokens": 175,
+  "error": null,
+  "latency_s": 6.083790797740221,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "aws_cloudwatch_search_logs_by_pattern",
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_log_events",
+     "aws_ec2_search_instances_by_tag",
+     "aws_s3_search_objects_by_prefix",
+     "aws_cloudwatch_describe_alarms"
+    ]
+   }
+  ],
+  "prompt_tokens": 13085,
+  "completion_tokens": 117,
+  "error": null,
+  "latency_s": 5.476181048899889,
+  "correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": null,
+  "searches": [
+   {
+    "query": "search CloudWatch logs by pattern",
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_log_events",
+     "datadog_search_logs",
+     "aws_cloudwatch_describe_alarms",
+     "gcp_search_logging_entries"
+    ]
+   }
+  ],
+  "prompt_tokens": 13006,
+  "completion_tokens": 112,
+  "error": null,
+  "latency_s": 5.148562416434288,
+  "correct": false
+ },
+ {
+  "id": "stripe_create_customer:ja",
+  "target": "stripe_create_customer",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "stripe_create_customer",
+  "searches": [],
+  "prompt_tokens": 6048,
+  "completion_tokens": 42,
+  "error": null,
+  "latency_s": 2.292914116755128,
+  "correct": true
+ },
+ {
+  "id": "stripe_create_customer:en",
+  "target": "stripe_create_customer",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "stripe_create_customer",
+  "searches": [],
+  "prompt_tokens": 6049,
+  "completion_tokens": 59,
+  "error": null,
+  "latency_s": 2.535329489968717,
+  "correct": true
+ },
+ {
+  "id": "stripe_list_invoices:ja",
+  "target": "stripe_list_invoices",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "stripe_list_invoices",
+  "searches": [
+   {
+    "query": "stripe list invoices",
+    "hits": [
+     "stripe_list_invoices",
+     "moneyforward_list_invoices",
+     "freee_list_invoices",
+     "stripe_list_balance_transactions",
+     "stripe_list_customers"
+    ]
+   }
+  ],
+  "prompt_tokens": 12868,
+  "completion_tokens": 62,
+  "error": null,
+  "latency_s": 4.732620622031391,
+  "correct": true
+ },
+ {
+  "id": "stripe_list_invoices:en",
+  "target": "stripe_list_invoices",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "stripe_list_invoices",
+  "searches": [],
+  "prompt_tokens": 6054,
+  "completion_tokens": 34,
+  "error": null,
+  "latency_s": 2.159048257395625,
+  "correct": true
+ },
+ {
+  "id": "shopify_list_customers:ja",
+  "target": "shopify_list_customers",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "shopify_list_customers",
+  "searches": [],
+  "prompt_tokens": 6049,
+  "completion_tokens": 59,
+  "error": null,
+  "latency_s": 2.5274519436061382,
+  "correct": true
+ },
+ {
+  "id": "shopify_list_customers:en",
+  "target": "shopify_list_customers",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "shopify_list_customers",
+  "searches": [],
+  "prompt_tokens": 6046,
+  "completion_tokens": 17,
+  "error": null,
+  "latency_s": 1.8064687745645642,
+  "correct": true
+ },
+ {
+  "id": "shopify_search_products:ja",
+  "target": "shopify_search_products",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "shopify_search_products",
+  "searches": [
+   {
+    "query": "shopify search products",
+    "hits": [
+     "shopify_search_products",
+     "shopify_get_product",
+     "shopify_list_products",
+     "shopify_delete_product",
+     "shopify_search_customers"
+    ]
+   }
+  ],
+  "prompt_tokens": 12715,
+  "completion_tokens": 72,
+  "error": null,
+  "latency_s": 4.564134840853512,
+  "correct": true
+ },
+ {
+  "id": "shopify_search_products:en",
+  "target": "shopify_search_products",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "shopify_search_products",
+  "searches": [],
+  "prompt_tokens": 6045,
+  "completion_tokens": 29,
+  "error": null,
+  "latency_s": 2.1775752222165465,
+  "correct": true
+ },
+ {
+  "id": "figma_delete_comment:ja",
+  "target": "figma_delete_comment",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "figma_delete_comment",
+  "searches": [],
+  "prompt_tokens": 6050,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 1.8749962337315083,
+  "correct": true
+ },
+ {
+  "id": "figma_delete_comment:en",
+  "target": "figma_delete_comment",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "figma_delete_comment",
+  "searches": [],
+  "prompt_tokens": 6051,
+  "completion_tokens": 33,
+  "error": null,
+  "latency_s": 2.2429314581677318,
+  "correct": true
+ },
+ {
+  "id": "tableau_add_user_to_site:ja",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "tableau_list_sites",
+  "searches": [
+   {
+    "query": "Tableau add user",
+    "hits": [
+     "tableau_add_user_to_group",
+     "tableau_add_user_to_site",
+     "tableau_list_users",
+     "tableau_list_sites",
+     "tableau_remove_user_from_site"
+    ]
+   }
+  ],
+  "prompt_tokens": 12795,
+  "completion_tokens": 44,
+  "error": null,
+  "latency_s": 4.317454321309924,
+  "correct": false
+ },
+ {
+  "id": "tableau_add_user_to_site:en",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_rrf",
+  "n": 1000,
+  "called": "tableau_add_user_to_site",
+  "searches": [],
+  "prompt_tokens": 6046,
+  "completion_tokens": 60,
+  "error": null,
+  "latency_s": 2.4236041009426117,
+  "correct": true
+ }
+]

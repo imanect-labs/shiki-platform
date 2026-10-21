@@ -1,0 +1,54 @@
+[
+ {
+  "target": "figma_get_team_styles",
+  "reason": "figma_get_team_styles（n=1000, missing=None）: 検査を通らない: ['手順 0（figma_get_me）: pick の ja の該当箇所「自分のアカウント情報」が依頼文に無い', '手順 0（figma_get_me）: pick の en の該当箇所「my account information」が依頼文に無い']"
+ },
+ {
+  "target": "asana_list_tags",
+  "reason": "asana_list_tags（n=1000, missing=None）: 検査を通らない: ['ja: 判定者は workspace_id を埋められないと判断した（「missing」・「マーケティング部」ワークスペースのGIDを取得する手段がない。asana_list_workspacesは名前での絞り込みができず、asana_get_workspaceはGIDが必要であるため、一意に特定できない。）', 'en: 判定者は workspace_id を埋められないと判断した（「missing」・「Marketing Department」がワークスペース名なのかプロジェクト名なのか不明"
+ },
+ {
+  "target": "kintone_get_space_info",
+  "reason": "kintone_get_space_info（n=1000, missing=None）: 検査を通らない: ['下調べの手順が無い。ID を依頼文に書かず、上のツールで調べる手順を plan に入れる']"
+ },
+ {
+  "target": "moneyforward_reject_expense_claim",
+  "reason": "moneyforward_reject_expense_claim（n=1000, missing=None）: 検査を通らない: ['ja: 判定者は claim_id を埋められないと判断した（「missing」・却下対象の申請ID（claim_id）を取得するためのツールが存在しない。moneyforward_list_expense_claimsはemployee_idが必要だが、田中太郎のemployee_idは不明であり、それを検索する手段も提供されていないため、IDを特定できない。）', 'en: 判定者は claim_id を埋められないと判断した（「missing」・申請ID"
+ },
+ {
+  "target": "garoon_check_facility_availability",
+  "reason": "garoon_check_facility_availability（n=1000, missing=None）: 検査を通らない: ['下調べの手順が無い。ID を依頼文に書かず、上のツールで調べる手順を plan に入れる']"
+ },
+ {
+  "target": "garoon_create_workflow_draft",
+  "reason": "garoon_create_workflow_draft（n=1000, missing=None）: 検査を通らない: ['下調べの手順が無い。ID を依頼文に書かず、上のツールで調べる手順を plan に入れる']"
+ },
+ {
+  "target": "miro_create_sticky_note",
+  "reason": "miro_create_sticky_note（n=1000, missing=None）: 検査を通らない: ['下調べの手順が無い。ID を依頼文に書かず、上のツールで調べる手順を plan に入れる']"
+ },
+ {
+  "target": "hubspot_update_deal_stage",
+  "reason": "hubspot_update_deal_stage（n=1000, missing=None）: 検査を通らない: ['ja: 判定者は deal_id を埋められないと判断した（「missing」・取引IDを取得するための企業検索や取引検索ツールが存在しないため、deal_idを特定できない。）', 'en: 判定者は deal_id を埋められないと判断した（「missing」・取引IDを取得するための検索ツール（hubspot_search_deals等）が存在しないため、会社名からdeal_idを特定できない。）']"
+ },
+ {
+  "target": "smarthr_approve_leave_request",
+  "reason": "smarthr_approve_leave_request（n=1000, missing=None）: 検査を通らない: ['ja: 判定者は request_id を埋められないと判断した（「missing」・休暇申請IDを取得するためのツール（例：休暇申請一覧取得）が存在しないため、request_idを特定できない。）', 'en: 判定者は request_id を埋められないと判断した（「missing」・休暇申請ID（request_id）を取得するためのツール（例：休暇申請一覧取得など）が存在しないため、特定できない。）']"
+ },
+ {
+  "target": "kintone_get_comments",
+  "reason": "kintone_get_comments（n=1000, missing=None）: 検査を通らない: ['下調べの手順が無い。ID を依頼文に書かず、上のツールで調べる手順を plan に入れる']"
+ },
+ {
+  "target": "docusign_get_folder_items",
+  "reason": "docusign_get_folder_items（n=1000, missing=None）: 検査を通らない: ['下調べの手順が無い。ID を依頼文に書かず、上のツールで調べる手順を plan に入れる']"
+ },
+ {
+  "target": "docusign_remove_recipient",
+  "reason": "docusign_remove_recipient（n=1000, missing=None）: 検査を通らない: ['ja: 判定者は recipient_id を埋められないと判断した（「missing」・封筒IDは検索ツールで特定可能だが、削除対象の受信者ID（recipient_id）を取得するための封筒詳細取得ツール（docusign_get_envelopeなど）が利用可能なツールリストに含まれていないため。）', 'en: 判定者は recipient_id を埋められないと判断した（「missing」・封筒IDは検索ツールで取得可能だが、削除対象の受信者IDを取得するためのツー"
+ },
+ {
+  "target": "smarthr_reject_leave_request",
+  "reason": "smarthr_reject_leave_request（n=1000, missing=None）: 検査を通らない: ['ja: 判定者は request_id を埋められないと判断した（「missing」・休暇申請IDを取得するためのツール（例：休暇申請一覧取得）が存在しないため、IDを特定できません。）', 'en: 判定者は request_id を埋められないと判断した（「missing」・休暇申請IDを取得するツールが存在しないため、利用者に尋ねる必要がある。）']"
+ }
+]

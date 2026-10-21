@@ -229,3 +229,41 @@ async fn tenant_erasure_drops_queued_and_dead_jobs() {
     assert_eq!(survivors.len(), 1);
     assert_eq!(survivors[0].tenant_id, "other-corp");
 }
+
+/// `defer` は**試行回数を消費しない**（順番待ちは失敗ではない）。
+///
+/// これが崩れると、先行 run を待っているだけのジョブが max_attempts を食い潰して DLQ へ
+/// 落ち、ユーザーが送ったメッセージが静かに消える。
+#[tokio::test]
+async fn defer_reschedules_without_consuming_attempts() {
+    let Some(pool) = setup().await else { return };
+    let queue = unique_queue("defer");
+    let id = enqueue(&pool, &queue, "t1", 2).await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    // max_attempts=2 を超える回数だけ先送りしても DLQ へ行かない。
+    for _ in 0..5 {
+        let jobs = jobq::claim(&mut conn, &queue, Duration::from_secs(60), 10)
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1, "先送りしたジョブは再び claim できる");
+        assert_eq!(
+            jobs[0].attempts, 1,
+            "attempts は claim の +1 だけで増え続けない"
+        );
+        jobq::defer(&mut conn, id, Duration::ZERO).await.unwrap();
+    }
+    let dead = jobq::dead_jobs(&mut conn, &queue, 10).await.unwrap();
+    assert!(dead.is_empty(), "先送りは DLQ を作らない");
+
+    // 先送り後も通常どおり ack できる。
+    let jobs = jobq::claim(&mut conn, &queue, Duration::from_secs(60), 10)
+        .await
+        .unwrap();
+    assert_eq!(jobs.len(), 1);
+    jobq::ack(&mut conn, id).await.unwrap();
+    let jobs = jobq::claim(&mut conn, &queue, Duration::from_secs(60), 10)
+        .await
+        .unwrap();
+    assert!(jobs.is_empty(), "ack 済みは再配信されない");
+}

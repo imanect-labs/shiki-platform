@@ -17,7 +17,8 @@ shiki-storage.workspace = true
 yrs = { workspace = true, features = ["sync"] }
 
 # md シリアライズ往復（Task 11P.2）: 正規化 md ⇔ ノート AST ⇔ Yjs XmlFragment。
-pulldown-cmark.workspace = true
+# html: md → HTML レンダラ（#381・Office 新規作成の本文を Collabora へ paste する）。
+pulldown-cmark = { workspace = true, features = ["html"] }
 serde = { workspace = true }
 serde_json.workspace = true
 

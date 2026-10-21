@@ -39,6 +39,9 @@ pub struct SkillSummary {
     pub current_version: i64,
     /// current_version の body `description`（保存時検証済み・最大 1024 字）。
     pub description: String,
+    /// current_version の body `command`（スラッシュコマンド宣言・#387）。
+    /// body 全体は読まない（カタログは name+description+command だけで足りる）。
+    pub command: Option<serde_json::Value>,
 }
 
 /// artifact 行。
@@ -274,7 +277,8 @@ impl ArtifactStore {
         let limit = limit.clamp(1, 200);
         let rows: Vec<SkillSummary> = sqlx::query_as(
             "SELECT a.id, a.name, a.current_version, \
-                    coalesce(v.body->>'description', '') AS description \
+                    coalesce(v.body->>'description', '') AS description, \
+                    v.body->'command' AS command \
              FROM artifact a \
              JOIN artifact_version v \
                ON v.tenant_id = a.tenant_id AND v.artifact_id = a.id AND v.version = a.current_version \

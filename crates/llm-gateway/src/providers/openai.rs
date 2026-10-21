@@ -5,16 +5,20 @@
 //! 逐次ストリーミングは Phase 3 では不要のため、各ツール呼び出しは累積して完了時に
 //! [`StreamDelta::ToolUseStop`]（完全な入力 JSON）を 1 回出す。
 
-use std::collections::BTreeMap;
-use std::time::Duration;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use futures::channel::mpsc;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
-use super::openai_names::ToolNameMap;
+use super::identity::IdentityHeaders;
+use super::think_tags::{split_content, Piece, ThinkSplitter};
+use super::timeouts::RequestClock;
+use super::tool_names::ToolNameMap;
+use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
+use crate::tool_loading::{context_tools, with_loaded_note};
 
 /// OpenAI 互換アダプタ。
 pub struct OpenAiProvider {
@@ -22,6 +26,10 @@ pub struct OpenAiProvider {
     base_url: String,
     api_key: Option<String>,
     default_model: String,
+    identity: IdentityHeaders,
+    timeouts: LlmTimeouts,
+    /// 本文の先頭に `<think>…</think>` で思考を返すモデル（実 ID・#584）。
+    think_tag_models: HashSet<String>,
 }
 
 impl OpenAiProvider {
@@ -37,7 +45,38 @@ impl OpenAiProvider {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key,
             default_model: default_model.into(),
+            identity: IdentityHeaders::default(),
+            timeouts: LlmTimeouts::default(),
+            think_tag_models: HashSet::new(),
         }
+    }
+
+    /// 送出する User-Agent を指定する。ヘッダ値にできない文字列は設定エラーにする
+    /// （起動時に気づけるように。リクエストごとに失敗させない）。
+    pub fn with_user_agent(mut self, user_agent: Option<&str>) -> Result<Self, LlmError> {
+        self.identity.set_user_agent(user_agent)?;
+        Ok(self)
+    }
+
+    /// 会話 ID を載せるヘッダ名を指定する。ヘッダ名にできない文字列は設定エラーにする。
+    pub fn with_session_header(mut self, header: Option<&str>) -> Result<Self, LlmError> {
+        self.identity.set_session_header(header)?;
+        Ok(self)
+    }
+
+    /// タイムアウト（最初の応答・無通信・全体）を指定する。既定は [`LlmTimeouts::default`]。
+    #[must_use]
+    pub fn with_timeouts(mut self, timeouts: LlmTimeouts) -> Self {
+        self.timeouts = timeouts;
+        self
+    }
+
+    /// 本文の先頭に `<think>…</think>` で思考を返すモデル（実 ID）を指定する。
+    /// ここに無いモデルの本文はタグを含めてそのまま本文として流す。
+    #[must_use]
+    pub fn with_think_tag_models(mut self, models: impl IntoIterator<Item = String>) -> Self {
+        self.think_tag_models = models.into_iter().collect();
+        self
     }
 
     fn build_body(&self, req: &GenerateRequest, names: &ToolNameMap) -> Value {
@@ -49,8 +88,9 @@ impl OpenAiProvider {
         if let Some(sys) = &req.system {
             messages.push(json!({ "role": "system", "content": sys }));
         }
+        let known: HashSet<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
         for m in &req.messages {
-            messages.extend(to_openai_messages(m, names));
+            messages.extend(to_openai_messages(m, names, &known));
         }
         let mut body = json!({
             "model": model,
@@ -64,9 +104,15 @@ impl OpenAiProvider {
         if let Some(t) = req.temperature {
             body["temperature"] = json!(t);
         }
-        if !req.tools.is_empty() {
-            body["tools"] = json!(req
-                .tools
+        // 思考強度（OpenAI の reasoning 系）。対応しないモデル（vLLM の多く）には gateway が
+        // 載せない（カタログの supports_effort で落とす）ので、ここに来たら素直に写す。
+        if let Some(effort) = req.effort {
+            body["reasoning_effort"] = json!(effort.as_str());
+        }
+        // 遅延ツールは読み込まれた分だけ載せる（OpenAI 互換に参照の展開は無い・tool_loading）。
+        let tools = context_tools(&req.tools, &req.messages);
+        if !tools.is_empty() {
+            body["tools"] = json!(tools
                 .iter()
                 .map(|t| json!({
                     "type": "function",
@@ -84,7 +130,8 @@ impl OpenAiProvider {
 
 /// 中立メッセージ 1 件を OpenAI messages（複数になり得る）へ写す。
 /// 履歴中のツール名も wire 名へ写す（厳格プロバイダは履歴の tool_calls 名も検証する）。
-fn to_openai_messages(m: &Message, names: &ToolNameMap) -> Vec<Value> {
+/// `known` はこのリクエストで提示するツール名（読み込み参照の表示に使う）。
+fn to_openai_messages(m: &Message, names: &ToolNameMap, known: &HashSet<&str>) -> Vec<Value> {
     match m.role {
         Role::Tool => m
             .content
@@ -93,11 +140,12 @@ fn to_openai_messages(m: &Message, names: &ToolNameMap) -> Vec<Value> {
                 Block::ToolResult {
                     tool_use_id,
                     content,
+                    tool_references,
                     ..
                 } => Some(json!({
                     "role": "tool",
                     "tool_call_id": tool_use_id,
-                    "content": content,
+                    "content": tool_message_content(content, tool_references, names, known),
                 })),
                 _ => None,
             })
@@ -112,15 +160,22 @@ fn to_openai_messages(m: &Message, names: &ToolNameMap) -> Vec<Value> {
         })],
         Role::Assistant => {
             let text = join_text(&m.content);
+            let extras = extra_contents(&m.content);
             let tool_calls: Vec<Value> = m
                 .content
                 .iter()
                 .filter_map(|b| match b {
-                    Block::ToolUse { id, name, input } => Some(json!({
-                        "id": id,
-                        "type": "function",
-                        "function": { "name": names.wire(name), "arguments": input.to_string() },
-                    })),
+                    Block::ToolUse { id, name, input } => {
+                        let mut call = json!({
+                            "id": id,
+                            "type": "function",
+                            "function": { "name": names.wire(name), "arguments": input.to_string() },
+                        });
+                        if let Some(extra) = extras.get(id.as_str()) {
+                            call["extra_content"] = (*extra).clone();
+                        }
+                        Some(call)
+                    }
                     _ => None,
                 })
                 .collect();
@@ -134,6 +189,37 @@ fn to_openai_messages(m: &Message, names: &ToolNameMap) -> Vec<Value> {
             vec![msg]
         }
     }
+}
+
+/// tool メッセージの本文。読み込み参照があれば、追加されたツールの **wire 名**を本文に
+/// 書き足す（定義そのものは `tools` に足される・[`context_tools`]。本文の名前は中立名の
+/// ままなので、呼び出しに使う名前をここで示す）。参照先が 1 つも提示に無ければ本文のまま。
+pub(super) fn tool_message_content(
+    content: &str,
+    references: &[String],
+    names: &ToolNameMap,
+    known: &HashSet<&str>,
+) -> String {
+    let loaded: Vec<String> = references
+        .iter()
+        .filter(|r| known.contains(r.as_str()))
+        .map(|r| names.wire(r))
+        .collect();
+    with_loaded_note(content, &loaded)
+}
+
+/// 履歴のツール呼び出し ID → 受け取ったときの `extra_content`。
+fn extra_contents(blocks: &[Block]) -> HashMap<&str, &Value> {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Reasoning { provider, item } if provider == EXTRA_CONTENT_PROVIDER => Some((
+                item.get("tool_call_id")?.as_str()?,
+                item.get("extra_content")?,
+            )),
+            _ => None,
+        })
+        .collect()
 }
 
 fn join_text(blocks: &[Block]) -> String {
@@ -151,6 +237,8 @@ fn join_text(blocks: &[Block]) -> String {
 #[derive(Default)]
 struct ToolAcc {
     calls: BTreeMap<i64, (String, String, String)>,
+    /// 枠（index）→ プロバイダ固有の `extra_content`（届いたものだけ。ID は取り出すときに引く）。
+    extras: BTreeMap<i64, Value>,
 }
 
 impl ToolAcc {
@@ -159,12 +247,17 @@ impl ToolAcc {
             return;
         };
         for tc in arr {
-            let idx = tc.get("index").and_then(Value::as_i64).unwrap_or(0);
+            let id = tc
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty());
+            let idx = self.index_of(tc, id);
+            if let Some(extra) = tc.get("extra_content") {
+                self.extras.insert(idx, extra.clone());
+            }
             let entry = self.calls.entry(idx).or_default();
-            if let Some(id) = tc.get("id").and_then(Value::as_str) {
-                if !id.is_empty() {
-                    entry.0 = id.to_string();
-                }
+            if let Some(id) = id {
+                entry.0 = id.to_string();
             }
             if let Some(f) = tc.get("function") {
                 if let Some(name) = f.get("name").and_then(Value::as_str) {
@@ -177,6 +270,51 @@ impl ToolAcc {
                 }
             }
         }
+    }
+
+    /// 差分の行き先。`index` が無い（Gemini API は各呼び出しを 1 チャンクで丸ごと送り、
+    /// `index` を付けない）ときは、新しい ID なら新しい枠、ID が無ければ直前の枠にする。
+    /// 全部 0 に寄せると、並行の呼び出しが 1 つに混ざる。直前の枠の ID がまだ空なら
+    /// （ID が名前より後に届いた）、新しい ID もその枠のもの。ID も無く名前が来たら、
+    /// 名前の決まった枠の続きではなく次の呼び出しの始まり。
+    fn index_of(&self, tc: &Value, id: Option<&str>) -> i64 {
+        if let Some(idx) = tc.get("index").and_then(Value::as_i64) {
+            return idx;
+        }
+        let last = self.calls.iter().next_back();
+        let Some(id) = id else {
+            let names_call = tc
+                .pointer("/function/name")
+                .and_then(Value::as_str)
+                .is_some_and(|n| !n.is_empty());
+            return match last {
+                Some((idx, (_, name, _))) if names_call && !name.is_empty() => idx + 1,
+                Some((idx, _)) => *idx,
+                None => 0,
+            };
+        };
+        if let Some((idx, _)) = self.calls.iter().find(|(_, (known, _, _))| known == id) {
+            return *idx;
+        }
+        match last {
+            Some((idx, (known, _, _))) if known.is_empty() => *idx,
+            Some((idx, _)) => idx + 1,
+            None => 0,
+        }
+    }
+
+    /// 呼び出しに付いてきた `extra_content` を、送り返すための推論アイテムにする。
+    fn drain_extras(&mut self) -> Vec<StreamDelta> {
+        std::mem::take(&mut self.extras)
+            .into_iter()
+            .filter_map(|(idx, extra)| {
+                let id = self.calls.get(&idx).map(|(id, _, _)| id.as_str())?;
+                (!id.is_empty()).then(|| StreamDelta::ReasoningItem {
+                    provider: EXTRA_CONTENT_PROVIDER.to_string(),
+                    item: json!({ "tool_call_id": id, "extra_content": extra }),
+                })
+            })
+            .collect()
     }
 
     /// 完了イベント（ToolUseStop 列）へ落とす。
@@ -204,6 +342,19 @@ impl ToolAcc {
     }
 }
 
+/// 本文から切り出した断片を中立デルタへ写す。
+fn piece_delta(piece: Piece) -> StreamDelta {
+    match piece {
+        Piece::Text(text) => StreamDelta::TextDelta { text },
+        Piece::Thinking(text) => StreamDelta::ThinkingDelta { text },
+    }
+}
+
+/// [`Block::Reasoning`] の `provider`。ツール呼び出しに付いてきたプロバイダ固有の
+/// `extra_content`（Gemini API の `thought_signature` 等）を、次のターンで同じ呼び出しへ
+/// 付けて送り返すためだけに持つ。
+const EXTRA_CONTENT_PROVIDER: &str = "openai_chat.extra_content";
+
 fn map_finish_reason(fr: Option<&str>) -> StopReason {
     match fr {
         Some("tool_calls") => StopReason::ToolUse,
@@ -221,32 +372,29 @@ impl LlmProvider for OpenAiProvider {
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let url = format!("{}/chat/completions", self.base_url);
-        // 現在のツール集合に加えて**履歴中の ToolUse 名**も同じ写像に通す（resume 等で
-        // 履歴のツールが現在の tools に無い場合でも、fallback サニタイズによる衝突を防ぐ）。
-        let names = ToolNameMap::new(req.tools.iter().map(|t| t.name.as_str()).chain(
-            req.messages.iter().flat_map(|m| {
-                m.content.iter().filter_map(|b| match b {
-                    Block::ToolUse { name, .. } => Some(name.as_str()),
-                    _ => None,
-                })
-            }),
-        ));
+        let names = ToolNameMap::for_request(req);
         let body = self.build_body(req, &names);
-        let mut builder = self
-            .http
-            .post(&url)
-            .timeout(Duration::from_mins(5))
-            .json(&body);
+        let think_tags = body["model"]
+            .as_str()
+            .is_some_and(|m| self.think_tag_models.contains(m));
+        let mut builder = self.http.post(&url).json(&body);
         if let Some(key) = &self.api_key {
             builder = builder.bearer_auth(key);
         }
-        let resp = builder
-            .send()
-            .await
-            .map_err(|e| LlmError::Unavailable(format!("openai request failed: {e}")))?;
+        let builder = self.identity.apply(builder, req.session_id.as_deref());
+        let clock = RequestClock::start(self.timeouts, "openai");
+        let resp = clock.send(builder).await?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = clock.error_text(resp).await?;
+            // 429 は 4xx だが**こちらの組み立てが悪いわけではない**（プロバイダ側の枠）。
+            // BadRequest に落とすと「直せば通る」と誤解され、リトライ方針も表示も間違える。
+            // `LlmError::Unavailable` の doc どおり一時障害として扱う。
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err(LlmError::RateLimited(crate::provider::rate_limit_message(
+                    &text,
+                )));
+            }
             if status.is_client_error() {
                 return Err(LlmError::BadRequest(format!("openai {status}: {text}")));
             }
@@ -261,14 +409,17 @@ impl LlmProvider for OpenAiProvider {
             let mut started: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
             let mut usage = Usage::default();
             let mut stop = StopReason::EndTurn;
+            // 最後に受け取った finish_reason が "stop" か（終端が欠けたストリームは昇格させない）。
+            let mut said_stop = false;
             let mut finished = false;
+            // 本文先頭の `<think>…</think>` は思考として流す（対象モデルだけ・#584）。
+            let mut think_tags = think_tags.then(ThinkSplitter::default);
 
-            'outer: while let Some(chunk) = byte_stream.next().await {
+            'outer: while let Some(chunk) = clock.next_chunk(&mut byte_stream, &tx).await {
                 let chunk = match chunk {
                     Ok(c) => c,
                     Err(e) => {
-                        let _ =
-                            tx.unbounded_send(Err(LlmError::Unavailable(format!("stream: {e}"))));
+                        let _ = tx.unbounded_send(Err(e));
                         return;
                     }
                 };
@@ -289,22 +440,15 @@ impl LlmProvider for OpenAiProvider {
                         continue;
                     };
                     if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
-                        usage.prompt_tokens =
-                            u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
-                        usage.completion_tokens = u
-                            .get("completion_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0);
+                        usage = super::usage::chat_completions(u);
                     }
                     let Some(choice) = v.get("choices").and_then(|c| c.get(0)) else {
                         continue;
                     };
                     if let Some(delta) = choice.get("delta") {
                         if let Some(text) = delta.get("content").and_then(Value::as_str) {
-                            if !text.is_empty() {
-                                let _ = tx.unbounded_send(Ok(StreamDelta::TextDelta {
-                                    text: text.to_string(),
-                                }));
+                            for piece in split_content(think_tags.as_mut(), text) {
+                                let _ = tx.unbounded_send(Ok(piece_delta(piece)));
                             }
                         }
                         // vLLM / 一部モデルは reasoning_content で思考を返す。
@@ -334,11 +478,29 @@ impl LlmProvider for OpenAiProvider {
                     }
                     if let Some(fr) = choice.get("finish_reason").and_then(Value::as_str) {
                         stop = map_finish_reason(Some(fr));
+                        said_stop = fr == "stop";
                     }
                 }
             }
             let _ = finished;
-            for s in acc.drain_stops() {
+            for piece in think_tags
+                .as_mut()
+                .map(ThinkSplitter::finish)
+                .unwrap_or_default()
+            {
+                let _ = tx.unbounded_send(Ok(piece_delta(piece)));
+            }
+            for s in acc.drain_extras() {
+                let _ = tx.unbounded_send(Ok(s));
+            }
+            let stops = acc.drain_stops();
+            // Gemini API はツールを呼んでも `finish_reason: "stop"` を返す。呼び出しがあるのに
+            // EndTurn で返すと、エージェントがツールを実行せずに終わる。finish_reason が
+            // 届かずに切れたストリーム（引数が途中かもしれない）は昇格させない。
+            if !stops.is_empty() && said_stop {
+                stop = StopReason::ToolUse;
+            }
+            for s in stops {
                 let _ = tx.unbounded_send(Ok(s));
             }
             let _ = tx.unbounded_send(Ok(StreamDelta::Done {
@@ -366,14 +528,14 @@ mod tests {
             }],
         };
         let names = ToolNameMap::new(["doc_search"].into_iter());
-        let out = to_openai_messages(&m, &names);
+        let out = to_openai_messages(&m, &names, &HashSet::new());
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["tool_calls"][0]["id"], "t1");
         assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "doc_search");
     }
 
     // 写像そのもの（サニタイズ・衝突回避・64 文字制約）の単体テストは
-    // `openai_names.rs` 側にある。ここでは messages への適用のみ検証する。
+    // `tool_names.rs` 側にある。ここでは messages への適用のみ検証する。
     #[test]
     fn dotted_tool_names_map_in_history_tool_calls() {
         // 履歴メッセージのツール名も wire 名（ドット→`_`）で送られる。
@@ -386,22 +548,55 @@ mod tests {
                 input: json!({"path": "a.md"}),
             }],
         };
-        let out = to_openai_messages(&m, &names);
+        let out = to_openai_messages(&m, &names, &HashSet::new());
         assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "document_edit");
+    }
+
+    #[test]
+    fn extra_content_goes_back_on_the_same_tool_call() {
+        // Gemini API は思考の署名（thought_signature）を同じ呼び出しへ付けて返すことを求める。
+        let m = Message {
+            role: Role::Assistant,
+            content: vec![
+                Block::Reasoning {
+                    provider: EXTRA_CONTENT_PROVIDER.into(),
+                    item: json!({"tool_call_id": "t2", "extra_content": {"google": {"thought_signature": "s"}}}),
+                },
+                Block::ToolUse {
+                    id: "t1".into(),
+                    name: "a".into(),
+                    input: json!({}),
+                },
+                Block::ToolUse {
+                    id: "t2".into(),
+                    name: "a".into(),
+                    input: json!({}),
+                },
+                // 他のアダプタの推論アイテムは送らない。
+                Block::Reasoning {
+                    provider: "openai_responses".into(),
+                    item: json!({"tool_call_id": "t1", "extra_content": {"x": 1}}),
+                },
+            ],
+        };
+        let names = ToolNameMap::new(["a"].into_iter());
+        let out = to_openai_messages(&m, &names, &HashSet::new());
+        let calls = out[0]["tool_calls"].as_array().unwrap();
+        assert!(calls[0].get("extra_content").is_none());
+        assert_eq!(
+            calls[1]["extra_content"]["google"]["thought_signature"],
+            "s"
+        );
     }
 
     #[test]
     fn tool_result_maps_to_tool_role() {
         let m = Message {
             role: Role::Tool,
-            content: vec![Block::ToolResult {
-                tool_use_id: "t1".into(),
-                content: "result".into(),
-                is_error: false,
-            }],
+            content: vec![Block::tool_result("t1", "result", false)],
         };
         let names = ToolNameMap::new(std::iter::empty::<&str>());
-        let out = to_openai_messages(&m, &names);
+        let out = to_openai_messages(&m, &names, &HashSet::new());
         assert_eq!(out[0]["role"], "tool");
         assert_eq!(out[0]["tool_call_id"], "t1");
     }
@@ -422,5 +617,105 @@ mod tests {
             }
             _ => panic!("expected ToolUseStop"),
         }
+    }
+
+    #[test]
+    fn tool_acc_without_index_keeps_calls_apart_and_follows_late_ids() {
+        // Gemini API の形: index 無し・1 チャンクに丸ごと。
+        let mut acc = ToolAcc::default();
+        acc.ingest(&json!([
+            {"id":"c1","function":{"name":"a","arguments":"{\"x\":1}"},"extra_content":{"k":1}},
+            {"id":"c2","function":{"name":"a","arguments":"{\"x\":2}"}}
+        ]));
+        // ID が最初のチャンクにだけ来て、引数が続きのチャンクに分かれる。
+        acc.ingest(&json!([{"id":"c3","function":{"name":"b","arguments":"{\"y\""}}]));
+        acc.ingest(&json!([{"function":{"arguments":":3}"},"extra_content":{"k":3}}]));
+        // ID が名前より後に届く。
+        acc.ingest(&json!([{"function":{"name":"c","arguments":""}}]));
+        acc.ingest(&json!([{"id":"c4","function":{"arguments":"{}"}}]));
+        let extras: Vec<(String, Value)> = acc
+            .drain_extras()
+            .into_iter()
+            .map(|d| match d {
+                StreamDelta::ReasoningItem { item, .. } => (
+                    item["tool_call_id"].as_str().unwrap().to_string(),
+                    item["extra_content"].clone(),
+                ),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            extras,
+            [("c1".into(), json!({"k":1})), ("c3".into(), json!({"k":3}))]
+        );
+        let stops: Vec<(String, Value)> = acc
+            .drain_stops()
+            .into_iter()
+            .map(|d| match d {
+                StreamDelta::ToolUseStop { id, input } => (id, input),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            stops,
+            [
+                ("c1".into(), json!({"x":1})),
+                ("c2".into(), json!({"x":2})),
+                ("c3".into(), json!({"y":3})),
+                ("c4".into(), json!({})),
+            ]
+        );
+    }
+
+    #[test]
+    fn effort_maps_to_reasoning_effort_only_when_set() {
+        let p = OpenAiProvider::new(reqwest::Client::new(), "http://x/v1", None, "m");
+        let names = ToolNameMap::new(std::iter::empty::<&str>());
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        assert!(p.build_body(&req, &names).get("reasoning_effort").is_none());
+        req.effort = Some(crate::model::Effort::Low);
+        assert_eq!(p.build_body(&req, &names)["reasoning_effort"], "low");
+    }
+
+    #[test]
+    fn deferred_tools_are_sent_only_after_being_loaded_and_named_by_wire_name() {
+        use crate::model::ToolDef;
+        let p = OpenAiProvider::new(reqwest::Client::new(), "http://x/v1", None, "m");
+        let mut csv = ToolDef::new("csv.query", "q", json!({"type": "object"}));
+        csv.defer_loading = true;
+        let mut office = ToolDef::new("office.edit", "e", json!({"type": "object"}));
+        office.defer_loading = true;
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        req.tools = vec![
+            ToolDef::new("tool_search", "s", json!({"type": "object"})),
+            csv,
+            office,
+        ];
+        let names = ToolNameMap::new(req.tools.iter().map(|t| t.name.as_str()));
+        let wire = |b: &Value| -> Vec<String> {
+            b["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(wire(&p.build_body(&req, &names)), ["tool_search"]);
+
+        req.messages.push(Message {
+            role: Role::Tool,
+            content: vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "fallback".into(),
+                is_error: false,
+                tool_references: vec!["csv.query".into()],
+            }],
+        });
+        let body = p.build_body(&req, &names);
+        assert_eq!(wire(&body), ["tool_search", "csv_query"]);
+        let shown = body["messages"][1]["content"].as_str().unwrap();
+        assert!(shown.contains("csv_query"), "{shown}");
+        // 本文（ループが書き足した観測を含む）は落とさない。
+        assert!(shown.starts_with("fallback"), "{shown}");
     }
 }

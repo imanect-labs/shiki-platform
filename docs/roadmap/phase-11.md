@@ -12,7 +12,8 @@
 > 3エディタで選択→AI 指示ができる。Collabora で Office 文書を共同編集でき、保存が WOPI→StorageService→
 > バージョニング→RAG 再索引に流れる。
 > **スコープ外**: 11.9（スプレッドシート×shiki script）は本フェーズ完遂の対象外（将来イシュー）。
-> Collabora セッションへの AI ライブ参加もポストアルファ（issue 起票のみ）。
+> Collabora セッションへの AI ライブ参加は**ポストアルファから前倒しで実装済み**
+> （#328 → issue #352・`office.live_edit`／AI が CoolWSD の headless 参加者・design §4.8）。
 > ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-11（WOPI トークンと共有解除の即時性）・
 > PIT-40〜44（スライド XSS/並行編集/pptx 忠実度/Collabora サプライチェーン/提案保存）を確認すること。**
 
@@ -121,11 +122,20 @@
   （ingestion-worker `edit.py`・python-docx/openpyxl/python-pptx・ステートレス bytes 入出力）→新バージョン。
   **ロック中は「提案バージョン」**（`node_version.is_proposal`・current を進めない・RAG 索引除外・
   履歴 UI で editor が採用→通常新バージョン化・PIT-44）。ツール=`office.read`/`office.edit`（要確認）。
-  Collabora へのライブ参加はスコープ外（ポストアルファ issue）。
+  Collabora へのライブ参加は本タスクのスコープ外だったが、issue #352 で実装済み
+  （`office.live_edit`＝AI が CoolWSD セッションの headless 参加者としてアンカー指定編集）。
+  **新規作成**（`save_document` / `save_sheet`）は issue #381 で Collabora へ一本化した
+  （空テンプレ実体化→HTML/セル paste。md 下書き画面 `/office/draft` は廃止・design §4.8・PIT-50）。
+  作成/編集の結果は `document_ref` カードとしてチャットに残る（#358 の実害を解消）。
+  Excel・Word のレイアウト水準の読み書きは #725 の Shiki Office Engine（`office.read` /
+  `office.excel_edit` / `office.word_edit`・kit 内の固定 JS へ JSON を渡す・全部成功か全部取り消し）で実装した
+  （design §4.8 ④・PIT-68。前提として Collabora 26.04 の自前ビルド #727 と中継 #726）。
 - **受け入れ条件**:
   - [ ] AI が pptx/docx/xlsx を読み・編集し新バージョンとして保存できる
   - [ ] 編集セッション中の AI 編集要求が上書きせず提案保存に落ちる（negative テスト）
   - [ ] 提案の採用で通常バージョンに昇格し書込イベントが流れる
+  - [ ] 「Word/Excel で作って」→ 承認 → Collabora Writer/Calc が開く（md エディタを経由しない・#381）
+  - [ ] AI が承認なしにドライブへファイルを作らない（#381）
 
 ### Task 11.9: スプレッドシート×shiki script（スコープ外・据え置き）
 - **area**: data / **path**: `crates/office`, `crates/script-runtime`

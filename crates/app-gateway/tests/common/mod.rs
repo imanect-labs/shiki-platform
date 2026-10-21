@@ -305,6 +305,7 @@ impl AgentPort for StubAgent {
                 event: "agent_stub".into(),
                 data: serde_json::json!({
                     "declared_tools": spec.declared_tools,
+                    "scopes": spec.scopes,
                     "max_cost_usd_micros": spec.max_cost_usd_micros,
                     "prompt": spec.prompt,
                 }),
@@ -347,7 +348,9 @@ pub fn stub_llm(pool: PgPool) -> Arc<llm_gateway::LlmGateway> {
             kind: ProviderKind::Stub,
             base_url: None,
             api_key: None,
-            timeout_secs: 5,
+            user_agent: None,
+            session_header: None,
+            ..Default::default()
         },
         catalog: ModelCatalog {
             default_model: "stub-m".into(),
@@ -357,9 +360,12 @@ pub fn stub_llm(pool: PgPool) -> Arc<llm_gateway::LlmGateway> {
                 // 有償単価（1M tok = 1 USD）＝トークン消費でコストが載る。
                 prompt_price_micros_per_mtok: 1_000_000,
                 completion_price_micros_per_mtok: 1_000_000,
+                context_window_tokens: None,
+                ..Default::default()
             }],
         },
         langfuse: None,
+        ..Default::default()
     };
     Arc::new(llm_gateway::LlmGateway::build(pool, reqwest::Client::new(), cfg).expect("stub llm"))
 }

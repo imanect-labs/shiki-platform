@@ -9,11 +9,17 @@ import * as React from "react";
 import { use } from "react";
 
 import { MiniAppFrame, MiniAppFrameFallback } from "@/components/miniapp/miniapp-frame";
+import { usePageChrome } from "@/components/shell/page-header-context";
 import { listInstallations, type AppInstallation } from "@/lib/miniapp-b1-api";
 
 export default function MiniAppB1Page({ params }: { params: Promise<{ appId: string }> }) {
   const { appId } = use(params);
   const [app, setApp] = React.useState<AppInstallation | null | undefined>(undefined);
+
+  usePageChrome(
+    () => ({ title: app?.app_name, back: { href: "/apps", label: "アプリ一覧へ" } }),
+    [app?.app_name],
+  );
 
   React.useEffect(() => {
     let active = true;
@@ -29,7 +35,7 @@ export default function MiniAppB1Page({ params }: { params: Promise<{ appId: str
   }, [appId]);
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-5xl flex-col px-4 py-6">
+    <div className="mx-auto flex h-full w-full max-w-5xl flex-col px-4 pb-4 pt-1 md:py-6">
       {app === undefined ? (
         <MiniAppFrameFallback />
       ) : app === null ? (
@@ -39,7 +45,9 @@ export default function MiniAppB1Page({ params }: { params: Promise<{ appId: str
       ) : (
         <>
           <div className="mb-3 min-w-0">
-            <h1 className="truncate text-lg font-semibold">{app.app_name}</h1>
+            <h1 className="truncate text-[26px] font-bold leading-tight tracking-tight md:text-lg md:font-semibold">
+              {app.app_name}
+            </h1>
             <p className="text-xs text-muted-foreground">
               v{app.installed_version}・sandboxed（ゲートウェイ経由のみ通信可能）
             </p>

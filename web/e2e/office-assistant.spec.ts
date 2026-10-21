@@ -88,15 +88,16 @@ test("ファイルレベル AI 編集→承認で提案バージョンが作成�
   });
 });
 
-test("選択→AI→承認で開いているセッションへライブ反映される（Action_Paste・#328）", async ({
+test("選択→AI→承認で AI が参加者としてライブ編集する（headless 参加・#352）", async ({
   page,
 }) => {
   await loginViaKeycloak(page);
   await openNewDocument(page);
 
-  // 本文を打って全選択 → 選択→AI（office_selection）。開いているセッションなので、承認後は
-  // office.live_edit が Collabora の Action_Paste で現在の選択を置換し、その場でライブ反映される
-  // （ファイルレベルの版競合を回避）。
+  // 本文を打って全選択 → 選択→AI（office_selection）。stub は選択本文をアンカー
+  // （replace_text.find）にした office.live_edit を発行し、承認後にバックエンドの AI が
+  // CoolWSD セッションへ headless 参加者として接続 → 自 view で検索・照合 → paste → save する。
+  // ユーザーの選択には依存しない（承認までに選択を動かしても対象はずれない）。
   const inner = page.frameLocator('[data-testid="office-frame"]');
   await inner
     .locator("#main-document-content, #document-container")
@@ -110,7 +111,7 @@ test("選択→AI→承認で開いているセッションへライブ反映さ
   await page.getByTestId("office-ask-ai").click();
   await expect(page.getByTestId("selection-chip")).toBeVisible({ timeout: 15_000 });
 
-  // 編集キーワードを含む依頼 → stub が office.live_edit を呼ぶ。
+  // 編集キーワードを含む依頼 → stub が office.live_edit（replace_text）を呼ぶ。
   const input = page.getByTestId("office-chat-panel").getByPlaceholder(/尋ねて|メッセージ|指示/);
   await input.fill("この選択範囲を、丁寧な文章に書き直して");
   await input.press("Enter");
@@ -119,12 +120,12 @@ test("選択→AI→承認で開いているセッションへライブ反映さ
   await expect(approve).toBeVisible({ timeout: 25_000 });
   await approve.click();
 
-  // 承認後、office.live_edit → SSE → Action_Paste/.uno:InsertText でセッション内の選択が置換される。
-  // Collabora は canvas 描画のため DOM テキストでは検証できない。置換後に文書を全選択すると、
-  // アシスタントパネルの選択ポーリング（Action_Copy）が新しい本文を拾ってチップへ反映するので、
-  // そのチップ本文に AI の差し替え内容が含まれることでセッションへ反映されたことを裏取りする。
-  // （前提: Collabora の welcome オーバーレイが無効化された構成。有効だと文書が覆われ注入不可。）
-  await page.waitForTimeout(4000);
+  // 承認後、バックエンドの AI が CoolWSD セッションへ headless 参加 → 自 view で検索・照合 →
+  // paste → save（WOPI PutFile）まで実行する。Collabora は canvas 描画のため DOM テキストでは
+  // 検証できないので、編集完了を待ってから全選択→選択ポーリング（Action_Copy）のチップ本文に
+  // 差し替え内容が現れることでライブ反映を裏取りする（ツール結果テキストは UI 非描画）。
+  // （前提: Collabora の welcome オーバーレイが無効化された構成。有効だと文書が覆われ検証不可。）
+  await page.waitForTimeout(8000);
   await page.keyboard.press("Escape");
   await inner
     .locator("#main-document-content, #document-container")

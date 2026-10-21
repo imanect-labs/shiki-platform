@@ -6,6 +6,8 @@ import type { Theme } from "@glideapps/glide-data-grid";
 import { useTheme } from "next-themes";
 import * as React from "react";
 
+import { useMediaQuery } from "@/hooks/use-media-query";
+
 /// ⚠️ glide-data-grid の内部カラーパーサは oklch()/oklab()/color-mix() を解釈できず黒に
 /// フォールバックする（ダークでは黒がたまたま馴染み、ライトで破綻する）。canvas.fillStyle は
 /// oklch を rgb へ正規化してくれない（そのまま保持する）ため、1px 実際に塗って getImageData で
@@ -35,6 +37,8 @@ export function resolveColor(input: string): string {
 /// テーマ切替（next-themes）で再計算する。編集セルのハイライト色も同時に返す。
 export function useGlideTheme(): { theme: Partial<Theme>; editedBg: string } {
   const { resolvedTheme } = useTheme();
+  // タッチ端末ではセル編集の入力を 16px にする（iOS はそれ未満でフォーカス時に拡大する）。
+  const coarse = useMediaQuery("(pointer: coarse)");
   const [state, setState] = React.useState<{ theme: Partial<Theme>; editedBg: string }>({
     theme: {},
     editedBg: "rgba(0,0,0,0.05)",
@@ -71,12 +75,13 @@ export function useGlideTheme(): { theme: Partial<Theme>; editedBg: string } {
           fontFamily: v("--font-sans") || "ui-sans-serif, system-ui, sans-serif",
           baseFontStyle: "13px",
           headerFontStyle: "600 12px",
+          editorFontSize: coarse ? "16px" : "13px",
         },
         editedBg: resolveColor(`color-mix(in oklab, ${v("--primary")} 12%, ${v("--card")})`),
       });
     });
     return () => cancelAnimationFrame(id);
-  }, [resolvedTheme]);
+  }, [resolvedTheme, coarse]);
 
   return state;
 }

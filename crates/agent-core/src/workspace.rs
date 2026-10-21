@@ -38,6 +38,16 @@ pub struct WorkspaceWrite {
 /// 書込イベント→再索引に自動で乗る（Task 5.8）。
 #[async_trait]
 pub trait WorkspaceStore: Send + Sync {
+    /// このワークスペースが**システム領域**（ドライブに出さない使い捨て領域・#392）か。
+    ///
+    /// true のとき書込系ツールは [`ArtifactRef`](crate::tool::ArtifactRef) を**出さない**:
+    /// ドライブ一覧・検索・ゴミ箱から外したファイルへの「開く」導線を会話に置くと、
+    /// 開いた後に二度と辿れない行き止まりになる（隠すと決めた場所へリンクを出さない）。
+    /// 何を書いたかはツール実行表示（ファイル名＋結果要約）で分かる。既定 false。
+    fn is_system(&self) -> bool {
+        false
+    }
+
     /// ワークスペース直下のファイルを列挙する。
     async fn list(
         &self,
@@ -59,6 +69,20 @@ pub trait WorkspaceStore: Send + Sync {
         ctx: &AuthContext,
         name: &str,
         bytes: Vec<u8>,
+        content_type: &str,
+        trace_id: Option<&str>,
+    ) -> Result<WorkspaceWrite, ToolError>;
+
+    /// ファイル末尾へ追記する（無ければ作成・#392）。
+    ///
+    /// `write` との違いは「既存内容を呼び出し側が持たなくてよい」こと。証拠台帳のような
+    /// append-only のメモで、毎回全文を LLM に出し直させる（トークンが二次で増える）のを避ける。
+    /// 実装は既存内容の読み出しを**書込ロック下で**行うこと（並行追記で片方が消えないように）。
+    async fn append(
+        &self,
+        ctx: &AuthContext,
+        name: &str,
+        suffix: &str,
         content_type: &str,
         trace_id: Option<&str>,
     ) -> Result<WorkspaceWrite, ToolError>;

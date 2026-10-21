@@ -6,7 +6,7 @@
 //! control.branch/switch/join。rag.search は dispatch＋未構成ゲートのみ（happy path の
 //! SearchService 本体は rag クレートの結合テストが担保）。map/wait は Stage A 未実装
 //! （`unsupported_stage_a`）のため対象外。
-//! 実 PG＋OpenFGA＋MinIO が要る env ゲート（未設定はスキップ）。
+//! 実 PG＋OpenFGA＋RustFS が要る env ゲート（未設定はスキップ）。
 
 #![allow(
     clippy::unwrap_used,
@@ -114,7 +114,9 @@ async fn setup() -> Option<Harness> {
                     kind: llm_gateway::ProviderKind::Stub,
                     base_url: None,
                     api_key: None,
-                    timeout_secs: 30,
+                    user_agent: None,
+                    session_header: None,
+                    ..Default::default()
                 },
                 catalog: llm_gateway::ModelCatalog {
                     default_model: "stub".into(),
@@ -123,9 +125,12 @@ async fn setup() -> Option<Harness> {
                         real_id: None,
                         prompt_price_micros_per_mtok: 0,
                         completion_price_micros_per_mtok: 0,
+                        context_window_tokens: None,
+                        ..Default::default()
                     }],
                 },
                 langfuse: None,
+                ..Default::default()
             },
         )
         .expect("gateway"),
@@ -156,7 +161,7 @@ async fn setup() -> Option<Harness> {
 
     let artifacts = Arc::new(artifact::ArtifactStore::new(pool.clone(), Arc::clone(&fga)));
     let workflows = WorkflowStore::new(Arc::clone(&artifacts));
-    let runs = RunStore::new(pool.clone());
+    let runs = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let delegation = DelegationStore::new(pool.clone(), Arc::clone(&fga));
     let launcher = WorkflowRunLauncher::new(delegation, workflows.clone(), runs.clone());
 

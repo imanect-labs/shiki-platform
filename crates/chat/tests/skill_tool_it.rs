@@ -127,7 +127,9 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
             kind: ProviderKind::Stub,
             base_url: None,
             api_key: None,
-            timeout_secs: 120,
+            user_agent: None,
+            session_header: None,
+            ..Default::default()
         },
         catalog: ModelCatalog {
             default_model: "m".into(),
@@ -136,9 +138,12 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
                 real_id: None,
                 prompt_price_micros_per_mtok: 0,
                 completion_price_micros_per_mtok: 0,
+                context_window_tokens: None,
+                ..Default::default()
             }],
         },
         langfuse: None,
+        ..Default::default()
     };
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
@@ -183,8 +188,9 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
             sandbox: None,
             artifacts: None,
             web_search: None,
+            parser: None,
             storage: None,
-            ui_validator: None,
+            workflow_resolver: None,
             skill_artifacts: Some(artifacts.clone()),
             skill_catalog: Some(Arc::new(chat::OwnedSkillCatalog::new(artifacts))),
             workflow_store: None,
@@ -192,7 +198,10 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
             collab: None,
             tabular: None,
             office: None,
-            authz: None,
+            // office.live_edit の authz は office::live::LiveEditor 側が持つ（#352）。
+            office_live: None,
+            office_creator: None,
+            office_engine: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
@@ -218,6 +227,7 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
             None,
             Some(true),
             false,
+            &[],
             None,
         )
         .await
@@ -299,6 +309,7 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
             None,
             Some(true),
             false,
+            &[],
             None,
         )
         .await

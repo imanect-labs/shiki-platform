@@ -1,0 +1,34 @@
+diff --git a/rjtd/crates/rjtd-core/src/document_text.rs b/rjtd/crates/rjtd-core/src/document_text.rs
+index 16bf5d6..e433cd9 100644
+--- a/rjtd/crates/rjtd-core/src/document_text.rs
++++ b/rjtd/crates/rjtd-core/src/document_text.rs
+@@ -1,3 +1,5 @@
++use std::collections::HashSet;
++
+ use crate::compressed_document::{
+     decompress_just_compressed_document_with_budget, is_just_compressed_document,
+ };
+@@ -413,6 +415,14 @@ fn embedded_document_text(data: &[u8]) -> Option<DocumentTextPayload> {
+     let offsets = find_document_text_magic_offsets(data);
+     let mut bytes = Vec::new();
+     let mut text_parts = Vec::new();
++    // shiki patch 0003: de-duplicate through a set instead of a linear scan of `text_parts`.
++    //
++    // `SsmgV.01` can appear anywhere in the input, and an 18-byte fragment is enough to produce a
++    // distinct text. With the linear scan every new fragment compared against every previous one,
++    // so a file made of N such fragments cost O(N^2): 576 KiB took 18.8 s, and the default 32 MiB
++    // input limit extrapolated to hours. Both `detect_format` and the payload read reach this
++    // function, so the cost was paid twice.
++    let mut seen = HashSet::new();
+ 
+     for (index, start) in offsets.iter().copied().enumerate() {
+         let next_start = offsets.get(index + 1).copied().unwrap_or(data.len());
+@@ -422,7 +432,7 @@ fn embedded_document_text(data: &[u8]) -> Option<DocumentTextPayload> {
+         }
+         let fragment = &data[start..end];
+         let text = clean_embedded_text(&extract_document_text(fragment));
+-        if text.trim().is_empty() || text_parts.iter().any(|part| part == &text) {
++        if text.trim().is_empty() || !seen.insert(text.clone()) {
+             continue;
+         }
+ 

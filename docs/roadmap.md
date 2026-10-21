@@ -9,8 +9,8 @@
 > [Phase 3](./roadmap/phase-3.md) ・ [Phase 4](./roadmap/phase-4.md) ・ [Phase 5](./roadmap/phase-5.md) ・
 > [Phase 6](./roadmap/phase-6.md) ・ [Phase 7](./roadmap/phase-7.md) ・ [Phase 8](./roadmap/phase-8.md) ・
 > [Phase 9](./roadmap/phase-9.md) ・ [Phase 10](./roadmap/phase-10.md) ・ [Phase 11-pre](./roadmap/phase-11-pre.md) ・
-> [Phase 11](./roadmap/phase-11.md) ・ [Phase 12](./roadmap/phase-12.md) ・ [Phase 15](./roadmap/phase-15.md) ・
-> [並行/将来トラック](./roadmap/parallel-tracks.md)
+> [Phase 11](./roadmap/phase-11.md) ・ [Phase 12](./roadmap/phase-12.md) ・ [Phase 13](./roadmap/phase-13.md) ・
+> [Phase 14](./roadmap/phase-14.md) ・ [Phase 15](./roadmap/phase-15.md) ・ [並行/将来トラック](./roadmap/parallel-tracks.md)
 >
 > 各タスクは1つのGitHub Issueに対応（area:* ラベル）。
 
@@ -50,11 +50,17 @@ flowchart LR
   P10 --> ALPHA
   P11 --> ALPHA
   P12 --> ALPHA
-  P0 -.->|並行| SK["skillex 認証統合"]
+  ALPHA --> P13["Phase 13<br/>HTMLページ/サイト公開<br/>アーティファクト/CMS/フォーム"]
+  ALPHA --> P14["Phase 14<br/>職員間メッセージ<br/>チャンネル/DM"]
+  P3 -.->|content blocks/配信/agent-core| P14
+  P2 -.->|全文検索の二段authz| P14
+  P11 -.->|collab/砂箱の流用| P13
+  P9 -.->|B1匿名配信の型| P13
+  P0 -.->|並行| SK["llm-gateway 外部クライアント<br/>（skillex m2m）"]
   P8 -.->|将来オプション| CELL["専用ストア cell<br/>専用環境契約向け"]
 ```
 
-> **SaaS を優先ターゲットとする**（requirements §1.1）。**SaaS トポロジ（共有コントロールプレーン＋フルプールのデータプレーン・design §4.1）と `tenant_id` を Phase 0 の歩く骨格から前提**にし、クラウド向けトレイト実装（GCS/Cloud SQL/Vertex 等）は各フェーズで該当機能を作る都度に実装する（旧 Phase 8「クラウド対応」を解体し各フェーズへ溶かした）。オンプレ版は同一コードベースをトレイト差し替え＋デプロイ構成で吸収する従ターゲット。
+> **SaaS を優先ターゲットとする**（requirements §1.1）。**SaaS トポロジ（shiki の SaaS コントロールプレーン＋フルプールのデータプレーン・design §4.1・§4.1.1）と `tenant_id` を Phase 0 の歩く骨格から前提**にし、クラウド向けトレイト実装（GCS/Cloud SQL/Vertex 等）は各フェーズで該当機能を作る都度に実装する（旧 Phase 8「クラウド対応」を解体し各フェーズへ溶かした）。オンプレ版は同一コードベースをトレイト差し替え＋デプロイ構成で吸収する従ターゲット。「データプレーン完全相乗り（フルプール）」だけが将来最適化として残る。
 >
 > 📌 **テナンシー方式の正本化（2026-07）**: データプレーンは**フルプール（全テナント共有ストア＋`tenant_id` 論理分離）が既定**であり、**顧客ごと専用ストア（cell）は専用環境契約向けの将来オプション**へ降格した。実装（全テーブル `tenant_id`・FGA 識別子名前空間化・Qdrant 単一 collection・プール型 Redis）は当初からフルプールで、requirements/roadmap 側の「cell 隔離が正」という記述が実装と乖離していたため本改訂で統一した。**この前提は「テナント数に比例して物理オブジェクト（索引・テーブル）が増える設計を禁じる」という制約を全フェーズに課す**（→ Phase 15）。スケール戦略は [data-platform.md §12](./data-platform.md)。
 
@@ -65,14 +71,14 @@ flowchart LR
 - モノレポ／Rustワークスペース、axum、Postgres、Next.js。
 - Keycloak（OIDCログイン）、OpenFGA（authz）配線、認証付きエンドポイント1本をE2E。
 - **認証は BFF + オパークセッション Cookie**（Redis セッションストア。Task 0.11/#55）。ブラウザにトークンを置かない。
-- **SaaS トポロジを前提**: 共有コントロールプレーン（Keycloak/Org）＋**フルプールのデータプレーン**（全テナント共有ストア＋`tenant_id` 論理分離・design §4.1）。ローカル開発は compose、優先デプロイ先はクラウド（GCP）。
+- **SaaS トポロジを前提**: shiki の SaaS コントロールプレーン（Keycloak/テナント）＋**フルプールのデータプレーン**（全テナント共有ストア＋`tenant_id` 論理分離・design §4.1）。ローカル開発は compose、優先デプロイ先はクラウド（GCP）。
 - OTel計装の土台、`docker compose` 一発起動。
 - 認可コンテキスト（**principal + org + `tenant_id`**）を最初から導入（SaaS マルチテナントを day-1 前提・後付けで隔離境界を壊さない）。
 - **成果物**: ログインして認可された空のアプリが起動する（SaaS トポロジで `tenant_id` スコープが通っている）。
 
 ## Phase 1 — ストレージ
 **依存**: Phase 0。
-- StorageService（MinIO＋メタPostgres＋OpenFGA権限、単一チョークポイント）。
+- StorageService（S3 互換ストア RustFS＋メタPostgres＋OpenFGA権限、単一チョークポイント）。
 - Drive風UI（アップロード/閲覧/フォルダ・ファイル共有）、バージョニング、コンテンツアドレッシング。
 - 書込イベント発行（後段RAGのトリガ）。
 - **成果物**: 権限付きでファイル/フォルダを操作・共有できる。
@@ -109,10 +115,10 @@ flowchart LR
 **依存**: Phase 3 ＋ **Phase 10 Stage A（前倒し・#121。workflow-engine・script-runtime・secrets・artifact共通基盤）**。
 6.5（宣言的バックエンド束縛）・6.10（ミニアプリ実行）が workflow-engine の対話トリガ起動へ直接依存するため、
 Stage A 完了前に本フェーズへ着手する場合はこの2タスクを後回しにする。
-- 宣言的コンポーネント・カタログ＋レンダラ。
+- 宣言的コンポーネント・カタログ＋レンダラ（2026-10・#604 で回答の本文の図ブロック（Yui）に置き換え、カタログは撤去）。
 - skill（旧 prompt template を統合: SKILL.md相当の指示文＋知識スコープ／許可ツール／モデル既定／few-shot＋
   任意script。shiki script(`.shiki`)/shell script(`.sh`)のどちらも可）。
-- ミニアプリ（skill＋UIスペック＋ワークフロー）をアーティファクト化、ReBAC共有。宣言的バックエンド束縛は
+- ミニアプリ（skill＋画面＋ワークフロー。画面は #604 で Yui を含む Markdown に）をアーティファクト化、ReBAC共有。宣言的バックエンド束縛は
   workflow-engine 対話トリガ起動も含む。**テーブル（構造化データ）を含む完全な定義は Phase 9 合流後、
   [miniapp-platform.md §6](./miniapp-platform.md) が正本**。
 - **成果物**: ロール共有可能な社内ミニアプリが増殖し始める。
@@ -125,7 +131,7 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 ## Phase 8 — エンプラ硬化
 **依存**: Phase 3 以降随時。
 - 監査ダッシュボード、アカウント/管理画面、監視整備。
-- **オンプレ版の硬化**: 同一コードベースのトレイト差し替え（MinIO/vLLM 等）＋ k8s 化、受注用 HW サイジング表、エアギャップ縮退（PIT-29）の検証。
+- **オンプレ版の硬化**: 同一コードベースのトレイト差し替え（RustFS/vLLM 等）＋ k8s 化、受注用 HW サイジング表、エアギャップ縮退（PIT-29）の検証。
   ※ **クラウド向けトレイト実装（GCS/Cloud SQL/Vertex）は本フェーズに集約せず、各フェーズで該当機能を作る都度に実装する**（SaaS が優先ターゲットのため）。
 - **成果物**: SaaS（フルプール＋テナント論理プロビジョニング）が本番運用可能で、オンプレ版も同一成果物として運用可能。
 
@@ -179,8 +185,45 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 - 顧客管理者ダッシュボード完成（モデルカタログ/予算・同意/委譲棚卸し・監査エクスポート・Stripe ポータル）。
 - **ベンダーコンソール**（テナントライフサイクル・機能フラグ・集約使用量/SLO・break-glass）。
 - フィードバック（二段同意）・ヘルプ（`help/`→UI＋shiki-help RAG スコープ）。
-- IaC（OpenTofu・cell プロビジョニング自動化）・テナント消去機構・バックアップ/DR（整合スナップショット）・API レート制限。
+- IaC（OpenTofu＝共有プール基盤・テナントは論理プロビジョニングを自動化）・テナント消去機構・バックアップ/DR（整合スナップショット）・API レート制限。
 - **成果物**: プライベートアルファを顧客に配れる運用体制（契約→プロビジョニング→サポート→解約消去が回る）。
+
+---
+
+> **プライベートアルファ = Phase 0〜12 ＋ Phase 15.1〜15.3 ＋ SAAS.1〜4 の完成形**（requirements §1.1 のリリース定義）。
+> Phase 13・14 と Phase 15.4 以降はポストアルファ（15.4 以降はアルファと並走可）。
+
+---
+
+## Phase 13 — HTML ページ／サイト公開（ポストアルファ）
+**依存**: Phase 11（collab 基盤・GrapesJS 砂箱・下書き確定型）・Phase 9（B1 匿名配信の型）・
+Phase 10（ワークフロートリガ）・Phase 8/12（インフラ・IaC）。詳細: [phase-13.md](./roadmap/phase-13.md)
+- **アーティファクト**（AI が資料を HTML で組む・`.page` ＝ Yjs collab ドキュメント・3タブエディタ・design §4.13）。
+- **サイト公開**: 匿名配信は app-gateway 第4リスナで **`AuthContext` を作らず FGA を通さない**。
+  サイトごとのサブドメインでオリジンを分離し、**インデックスは既定 noindex**（二重ゲート）。
+- **フォーム**（生 HTML の `<form>`＋埋込タグ・蓄積は `data_table`・送信でワークフロー起動）と
+  **CMS**（ノートコレクション→テンプレート適用→ビルド時生成）。
+- 自前 CDN のアニメーション CSS ライブラリ、A/B テスト（cookie なし割当）、`site_event` 計測、独自ドメイン。
+- **成果物**: 資料を HTML で作って社内に配れ、対外サイトを公開してフォームの反響が業務データとして溜まる。
+
+---
+
+## Phase 14 — 職員間メッセージ（チャンネル／DM・ポストアルファ）
+**依存**: Phase 3（content blocks・SSE 配信・agent-core）・Phase 2（全文検索の二段 authz）・
+Phase 1（ストレージ・ReBAC）・Phase 8（監査）。詳細: [phase-14.md](./roadmap/phase-14.md)
+- **人と人が会話する面**。§4.4 のチャット（人と LLM）とは別機能だが、**content blocks・配信・監査・
+  ReBAC はすべて既存の枠に載せる**。メッセージ機能のために権限判定を新設しない。
+- チャンネル（公開／非公開）・DM・スレッド返信・リアクション・メンション・未読。
+  **DM は独立テーブルにせず `kind = Dm` のチャンネル**として持つ（design §4.14）。
+- **文書共有は `file_ref` のみを持ち本文を複製しない。** 閲覧可否は文書側の ReBAC が毎回決める。
+- **発言の検索は RAG と同型の二段 authz。**発言は RAG の索引には入れない。
+- **メッセージからの対話呼出しは照会者の `AuthContext`** で行い、文脈に渡す発言も照会者が読めるものに限る。
+- **管理者の閲覧は通常の read 経路に相乗りさせない。** DM は承認レコードのある期間内だけ。
+- 🔒 OpenFGA `channel` relation schema と、DM の閲覧手続は human 承認事項。
+- **規模と応答の目安**: 同時接続は登録利用者数と同数（オンプレ構成では 1,000）。
+  送信から相手方への表示まで 3 秒以内。
+- **成果物**: 職員同士が閉域内で会話でき、その文脈のまま権限を守った AI 照会ができる。
+
 
 ## Phase 15 — 構造化データ基盤 v2（Teable / Microsoft Lists 級）
 **依存**: Phase 9（data v1）・Phase 10（IR 語彙・ノードカタログ）・Phase 6（genUI 束縛）・Phase 11-pre（グリッド UI 前例）。
@@ -208,21 +251,18 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 
 ---
 
-> **プライベートアルファ = Phase 0〜12 ＋ Phase 15.1〜15.3 ＋ SAAS.1〜4 の完成形**（requirements §1.1 のリリース定義）。
-> Phase 15.4 以降はアルファ後の継続開発。
-
----
-
 ## 並行 / 将来トラック
 
 | トラック | タイミング | 備考 |
 |----------|-----------|------|
 | **Phase 10 Stage A（WF エンジン核心 前倒し）** | **完了（2026-07-10・#203〜）**。dnd/AI 編集/実行履歴 UI も完了し、残りは Phase 9 依存分（skill/data 系）のみ | 6.1 先行＋既存基盤のみで Phase 5〜9 と並走。Stage 分割は [phase-10.md](./roadmap/phase-10.md) |
-| **skillex 認証統合** | Phase 0 の認証が安定したら**並行**（skillexは並行進行中） | 共有プール、DLC/LLM利用トークン発行を Phase 0 設計に織り込む |
+| **llm-gateway 外部クライアント（skillex）** | skillex 側の必要時期に合わせて**並行** | **2026-09-29 に縮小**: ユーザー認証の共有（共有プール）・統一請求・統一管理画面は廃止。残るのは skillex → llm-gateway の m2m（client_credentials・`aud=shiki-llm`）と外部クライアント向け LLM API（[parallel-tracks SK](./roadmap/parallel-tracks.md)） |
 | ~~資料作成 v2（ブラウザ内編集）~~ | **Phase 11 に昇格**（2026-07） | V2 トラックは Phase 11（Collabora）へ統合 |
 | 専用ストア（cell 隔離）＋テナント単位プール分割 | 専用環境契約 or 数千社規模になったら | **既定はフルプール**（design §4.1・2026-07 正本化で本項と旧「フルプール最適化」項が反転）。数十〜数百社の一次目標は単一プールで充足するため、Phase 15 では**プール解決の継ぎ目とシャード安全の禁止事項の明文化のみ**を行い、実分割・テナント引越ツールは需要発生時に着手する（[data-platform.md §12](./data-platform.md)） |
 | ミニアプリ marketplace（第三者公開） | Phase 9 安定後 | 信頼ティアに審査付き第三者枠を追加 |
 | 会話ブランチUI | 任意 | データ構造は Phase 3 で用意済み |
+| **音声入力（トラックASR）** | Phase 3 の後ならいつでも | マイクの発話を文字にして入力欄へ。認識は `SpeechToText` トレイト裏でオンプレ完結。対話用 GPU に CUDA MPS で同居（GPU 追加なし）。[parallel-tracks.md](./roadmap/parallel-tracks.md) |
+| **一太郎（JTD）→ docx 変換（トラックJTD）** | Phase 1・2 の後ならいつでも | 官公庁・学会が現在も配布する `.jtd` を扱う。**Collabora / LibreOffice は JTD を読めない**ため Phase 11 の Office 経路は流用できず、変換器を自前で持つ（所有フォーク `vendor/openjtd`）。原本は保持し docx 派生を rendition として生成、以後は既存 docx 経路に乗せる。[parallel-tracks.md](./roadmap/parallel-tracks.md) / [fork-policy](./jtd/fork-policy.md) |
 
 ## マイルストーン要約
 
@@ -236,5 +276,7 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 - **M6.5（Phase 15.1–15.3）**: 🔴 構造化データの**再基盤化**（pivot 索引・識別子・クエリ IR）。
   フルプールで顧客を載せる前提条件であり、アルファのブロッカー。データが小さいうちに実施する。
 - **M7（Phase 12 ＋ Phase 15.1–15.3）**: ★★プライベートアルファ・リリース（運用体制込み）。
+- **M8（Phase 13–14・ポストアルファ）**: HTML ページ／サイト公開と、職員間メッセージ。
+  閉域構成では外部のチャットツール・音声入力を併用できないため、この2つは優先度が上がる。
 - **M9（Phase 15.4–15.8）**: Teable / Microsoft Lists 級の表体験（リンク・数式・ビュー・リアルタイム・全面公開）。
   アルファと並走。

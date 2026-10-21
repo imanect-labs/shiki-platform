@@ -1,15 +1,22 @@
 # native rootfs（gVisor/Firecracker）へ同梱する Python パッケージ（#346・design §4.6 前提条件）。
 #
 # code_interpreter のツール description が numpy/pandas を宣伝しているため、既定ティアを
-# gVisor に反転する前提として rootfs に同梱する。再現性は二層で閉じる:
+# gVisor に反転する前提として rootfs に同梱する。openpyxl は **添付 xlsx を読むため**（#384）:
+# #379 で会話の添付を /workspace へ置くようにした結果、モデルは xlsx も pandas.read_excel で
+# 読もうとするが、openpyxl が無いと ModuleNotFoundError で 1〜2 ステップを空費していた。
+# 再現性は二層で閉じる:
 #   1. ベースイメージの digest pin（scripts/build-sandbox-rootfs.sh の PIN_IMAGE）
 #   2. wheel の --hash 全固定（pip install --require-hashes --only-binary=:all:）
 #
 # 更新手順: PIN_IMAGE 内で `pip download <pkgs> --only-binary=:all: -d /wheels && pip hash /wheels/*.whl`
 # を実行し、本ファイルの version と hash を差し替える（Pyodide 側 vendor の numpy/pandas と
 # バージョン近傍を保つ・docs/sandbox/third-party-assets.md）。
+et-xmlfile==2.0.0 \
+    --hash=sha256:7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa
 numpy==2.2.5 \
     --hash=sha256:3a801fef99668f309b88640e28d261991bfad9617c27beda4a3aec4f217ea073
+openpyxl==3.1.5 \
+    --hash=sha256:5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2
 pandas==2.3.3 \
     --hash=sha256:b3d11d2fda7eb164ef27ffc14b4fcab16a80e1ce67e9f57e19ec0afaf715ba89
 python-dateutil==2.9.0.post0 \

@@ -28,6 +28,9 @@ use uuid::Uuid;
 use crate::error::OfficeError;
 use crate::wopi::{lock, token};
 
+/// AI headless 参加者の表示名（参加者リスト・カーソルラベルに出る）。
+pub const AI_DISPLAY_NAME: &str = "Shiki AI";
+
 /// WOPI ルータの共有状態。
 #[derive(Clone)]
 pub struct WopiState {
@@ -78,6 +81,15 @@ enum AccessMode {
     Viewer,
 }
 
+/// 認証済みリクエストの文脈（AuthContext＋アクセスモード＋トークンクレーム）。
+struct Authenticated {
+    ctx: AuthContext,
+    mode: AccessMode,
+    /// AI headless 参加者のトークンか（CheckFileInfo の表示 identity 切替のみに
+    /// 使う。認可は常に `ctx`＝実ユーザーの ReBAC で決まる・issue #352）。
+    ai_actor: bool,
+}
+
 /// 全 WOPI ハンドラ共通の前段: トークン検証 → AuthContext 再構成 → 毎回 ReBAC。
 ///
 /// editor → 読み書き / viewer → 読み取りのみ / どちらも無ければ 404（存在秘匿）。
@@ -86,36 +98,27 @@ async fn authenticate(
     state: &WopiState,
     file_id: Uuid,
     access_token: &str,
-) -> Result<(AuthContext, AccessMode), WopiFailure> {
+) -> Result<Authenticated, WopiFailure> {
     let claims = token::verify(&state.token_key, access_token, file_id)?;
     let ctx = claims.to_auth_context();
     let object = ctx.ns().file(&file_id.to_string());
     let subject = ctx.subject();
-    if state
-        .authz
-        .check(
-            &subject,
-            Relation::Editor,
-            &object,
-            Consistency::HigherConsistency,
-        )
-        .await
-        .map_err(OfficeError::from)?
-    {
-        return Ok((ctx, AccessMode::Editor));
-    }
-    if state
-        .authz
-        .check(
-            &subject,
-            Relation::Viewer,
-            &object,
-            Consistency::HigherConsistency,
-        )
-        .await
-        .map_err(OfficeError::from)?
-    {
-        return Ok((ctx, AccessMode::Viewer));
+    for (relation, mode) in [
+        (Relation::Editor, AccessMode::Editor),
+        (Relation::Viewer, AccessMode::Viewer),
+    ] {
+        if state
+            .authz
+            .check(&subject, relation, &object, Consistency::HigherConsistency)
+            .await
+            .map_err(OfficeError::from)?
+        {
+            return Ok(Authenticated {
+                ctx,
+                mode,
+                ai_actor: claims.ai_actor,
+            });
+        }
     }
     Err(WopiFailure(OfficeError::NotFound))
 }
@@ -128,6 +131,8 @@ struct CheckFileInfo {
     size: i64,
     /// node.version の文字列表現（PutFile 応答の X-WOPI-ItemVersion と同系）。
     version: String,
+    /// 最終更新時刻（ISO8601）。CoolWSD が保存時の競合検知に使う。
+    last_modified_time: String,
     user_id: String,
     user_friendly_name: String,
     user_can_write: bool,
@@ -143,22 +148,34 @@ async fn check_file_info(
     Path(file_id): Path<Uuid>,
     Query(q): Query<AccessTokenQuery>,
 ) -> Result<Response, WopiFailure> {
-    let (ctx, mode) = authenticate(&state, file_id, &q.access_token).await?;
+    let auth = authenticate(&state, file_id, &q.access_token).await?;
     let node = state
         .storage
-        .get_metadata(&ctx, file_id, None)
+        .get_metadata(&auth.ctx, file_id, None)
         .await
         .map_err(conceal)?;
     if node.kind != NodeKind::File {
         return Err(WopiFailure(OfficeError::NotFound));
     }
+    // AI headless 参加者は**別 view identity**として名乗る（issue #352）。
+    // UserId を実ユーザーと変えることで CoolWSD が独立 view として扱い、
+    // viewinfo で全参加者に「Shiki AI」が表示される（コワークの可視化）。
+    let (user_id, user_friendly_name) = if auth.ai_actor {
+        (
+            format!("shiki-ai:{}", auth.ctx.principal.id),
+            AI_DISPLAY_NAME.to_string(),
+        )
+    } else {
+        (auth.ctx.principal.id.clone(), auth.ctx.principal.id.clone())
+    };
     let info = CheckFileInfo {
         base_file_name: node.name,
         size: node.size_bytes.unwrap_or(0),
         version: node.version.to_string(),
-        user_id: ctx.principal.id.clone(),
-        user_friendly_name: ctx.principal.id,
-        user_can_write: mode == AccessMode::Editor,
+        last_modified_time: node.updated_at.to_rfc3339(),
+        user_id,
+        user_friendly_name,
+        user_can_write: auth.mode == AccessMode::Editor,
         supports_locks: true,
         supports_update: true,
         post_message_origin: state.web_origin.clone(),
@@ -172,10 +189,10 @@ async fn get_file(
     Path(file_id): Path<Uuid>,
     Query(q): Query<AccessTokenQuery>,
 ) -> Result<Response, WopiFailure> {
-    let (ctx, _mode) = authenticate(&state, file_id, &q.access_token).await?;
+    let auth = authenticate(&state, file_id, &q.access_token).await?;
     let (node, bytes) = state
         .storage
-        .read_file_internal(&ctx, file_id, None)
+        .read_file_internal(&auth.ctx, file_id, None)
         .await
         .map_err(conceal)?;
     let content_type = node
@@ -206,17 +223,18 @@ async fn put_file(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, WopiFailure> {
-    let (ctx, mode) = authenticate(&state, file_id, &q.access_token).await?;
-    if mode != AccessMode::Editor {
+    let auth = authenticate(&state, file_id, &q.access_token).await?;
+    if auth.mode != AccessMode::Editor {
         // viewer は存在を知り得る（読める）ため 403 で明示する。
         return Err(WopiFailure(OfficeError::Forbidden));
     }
+    let ctx = &auth.ctx;
     // ロック保持者のみ書ける（未ロック時は許可＝Collabora の初回保存互換）。
     lock::check_write_lock(&state.pool, &ctx.tenant_id, file_id, wopi_lock(&headers)?).await?;
     // content_type は既存値を維持（WOPI PutFile は型を運ばない）。
     let node = state
         .storage
-        .get_metadata(&ctx, file_id, None)
+        .get_metadata(ctx, file_id, None)
         .await
         .map_err(conceal)?;
     let content_type = node
@@ -224,15 +242,20 @@ async fn put_file(
         .unwrap_or_else(|| "application/octet-stream".to_string());
     let updated = state
         .storage
-        .update_file_content_internal(&ctx, file_id, &body, &content_type, None)
+        .update_file_content_internal(ctx, file_id, &body, &content_type, None)
         .await
         .map_err(conceal)?;
+    // CoolWSD は 200 応答の JSON に LastModifiedTime を期待する（無いと
+    // 「Invalid or missing JSON in WOPI::PutFile」警告→競合検知が無効化される）。
     Ok((
         StatusCode::OK,
         [(
             header::HeaderName::from_static("x-wopi-itemversion"),
             updated.version.to_string(),
         )],
+        Json(serde_json::json!({
+            "LastModifiedTime": updated.updated_at.to_rfc3339(),
+        })),
     )
         .into_response())
 }
@@ -245,10 +268,11 @@ async fn lock_operations(
     Query(q): Query<AccessTokenQuery>,
     headers: HeaderMap,
 ) -> Result<Response, WopiFailure> {
-    let (ctx, mode) = authenticate(&state, file_id, &q.access_token).await?;
-    if mode != AccessMode::Editor {
+    let auth = authenticate(&state, file_id, &q.access_token).await?;
+    if auth.mode != AccessMode::Editor {
         return Err(WopiFailure(OfficeError::Forbidden));
     }
+    let ctx = auth.ctx;
     let operation = headers
         .get("x-wopi-override")
         .and_then(|v| v.to_str().ok())

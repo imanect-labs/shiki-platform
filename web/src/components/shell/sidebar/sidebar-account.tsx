@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ChevronsUpDown, LogIn, LogOut, Settings } from "lucide-react";
+import { ChevronsUpDown, LogIn, LogOut, Settings, ShieldCheck } from "lucide-react";
 
 import { cn, initialsFrom } from "@/lib/utils";
 import { login, logout } from "@/lib/auth";
@@ -21,20 +21,29 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-/// 最下部のアカウントバナー。/me を表示し、クリックで設定・テーマ・ログアウトの
+/// 最下部のアカウントバナー。/me（表示名＋メール）を表示し、クリックで設定・テーマ・ログアウトの
 /// メニューを開く。未認証ならログイン導線、ロード中はスケルトン。
+/// スマホのドロワ（`mobile`）は行を大きくし、右に設定への直通ボタン（44px）を添える。
 export function SidebarAccount({
   collapsed,
+  mobile = false,
   onNavigate,
 }: {
   collapsed: boolean;
+  mobile?: boolean;
   onNavigate?: () => void;
 }) {
   const { data, unauthenticated, loading } = useMe();
 
   if (loading) {
     return (
-      <div className={cn("flex items-center gap-3 p-3", collapsed && "justify-center")}>
+      <div
+        className={cn(
+          "flex items-center gap-3 p-3",
+          collapsed && "justify-center",
+          mobile && "px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))]",
+        )}
+      >
         <Skeleton className="size-8 rounded-full" />
         {!collapsed ? (
           <div className="flex flex-1 flex-col gap-1.5">
@@ -48,7 +57,7 @@ export function SidebarAccount({
 
   if (unauthenticated || !data) {
     return (
-      <div className="p-2">
+      <div className={cn("p-2", mobile && "px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))]")}>
         <Button
           variant="default"
           size={collapsed ? "icon" : "default"}
@@ -63,8 +72,10 @@ export function SidebarAccount({
     );
   }
 
-  // 表示名はメール（無ければ id）から導出する（表示名フィールドは後続の BFF/バックエンド PR で対応）。
-  const displayName = data.email ?? data.id;
+  // 表示名はメールのローカル部（無ければ id）から導出する（表示名フィールドは後続の
+  // BFF/バックエンド PR で対応）。2 行目はメール（無ければ組織）で、同じ文字列を 2 回出さない。
+  const displayName = data.email ? data.email.slice(0, data.email.indexOf("@")) || data.email : data.id;
+  const subLine = data.email ?? data.org;
   const initials = initialsFrom(data.email ?? data.id);
 
   const trigger = (
@@ -73,7 +84,9 @@ export function SidebarAccount({
       aria-label="アカウントメニューを開く"
       className={cn(
         "flex items-center gap-3 rounded-lg outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring",
-        collapsed ? "justify-center p-1" : "w-full p-2 hover:bg-sidebar-accent",
+        collapsed
+          ? "justify-center p-1"
+          : "min-w-0 flex-1 p-2 hover:bg-sidebar-accent active:bg-sidebar-accent max-md:min-h-14",
       )}
     >
       <Avatar>
@@ -82,11 +95,11 @@ export function SidebarAccount({
       {!collapsed ? (
         <>
           <span className="flex min-w-0 flex-1 flex-col text-left">
-            <span className="truncate text-sm font-medium text-sidebar-foreground">
+            <span className="truncate text-sm font-medium text-sidebar-foreground max-md:text-[15px]">
               {displayName}
             </span>
-            <span className="truncate text-xs text-sidebar-foreground/50">
-              {data.email ?? data.org}
+            <span className="truncate text-xs text-sidebar-foreground/50 max-md:text-[13px]">
+              {subLine}
             </span>
           </span>
           <ChevronsUpDown className="size-4 shrink-0 text-sidebar-foreground/50" aria-hidden />
@@ -96,7 +109,13 @@ export function SidebarAccount({
   );
 
   return (
-    <div className="p-2">
+    <div
+      className={cn(
+        "flex items-center gap-1 p-2",
+        collapsed && "justify-center",
+        mobile && "px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]",
+      )}
+    >
       <DropdownMenu>
         {collapsed ? (
           // 折りたたみ時は Tooltip と Dropdown の両トリガーを同じボタンへ重ねる。
@@ -129,7 +148,7 @@ export function SidebarAccount({
           <DropdownMenuSeparator />
           <div className="flex items-center justify-between gap-2 px-2 py-1.5">
             <span className="text-sm">テーマ</span>
-            <ThemeToggle />
+            <ThemeToggle className="pointer-coarse:[&_button]:size-10" />
           </div>
           <DropdownMenuSeparator />
           <DropdownMenuItem asChild>
@@ -138,12 +157,30 @@ export function SidebarAccount({
               設定
             </Link>
           </DropdownMenuItem>
+          {data.is_admin ? (
+            <DropdownMenuItem asChild>
+              <Link href="/admin" onClick={onNavigate}>
+                <ShieldCheck aria-hidden />
+                管理コンソール
+              </Link>
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem variant="destructive" onSelect={() => void logout()}>
             <LogOut aria-hidden />
             ログアウト
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      {mobile ? (
+        <Link
+          href="/settings"
+          onClick={onNavigate}
+          aria-label="設定"
+          className="flex size-11 shrink-0 items-center justify-center rounded-lg text-sidebar-foreground/60 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring active:bg-sidebar-accent"
+        >
+          <Settings className="size-5" aria-hidden />
+        </Link>
+      ) : null}
     </div>
   );
 }

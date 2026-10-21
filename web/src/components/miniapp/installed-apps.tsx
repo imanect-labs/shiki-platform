@@ -19,6 +19,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/use-toast";
+import { ConfirmDialog } from "@/components/drive/dialogs";
 import {
   fetchManifest,
   installApp,
@@ -38,6 +39,7 @@ export function InstalledAppsSection() {
     granted: Set<string>;
   } | null>(null);
   const [pending, setPending] = React.useState<string | null>(null);
+  const [removing, setRemoving] = React.useState<AppInstallation | null>(null);
 
   const reload = React.useCallback(() => {
     listInstallations()
@@ -89,20 +91,13 @@ export function InstalledAppsSection() {
     }
   };
 
+  /// アンインストール（確認ダイアログから呼ぶ。失敗はダイアログ内に出す）。
   const doUninstall = async (app: AppInstallation) => {
-    if (!window.confirm(`「${app.app_name}」をアンインストールしますか？（所有テーブルはアーカイブされます）`))
-      return;
     setPending(app.app_id);
     try {
       await uninstallApp(app.app_id);
       toast({ title: "アンインストールしました" });
       reload();
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        title: "アンインストールに失敗しました",
-        description: e instanceof Error ? e.message : String(e),
-      });
     } finally {
       setPending(null);
     }
@@ -115,10 +110,10 @@ export function InstalledAppsSection() {
 
   return (
     <section className="mt-8">
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3">
         <div>
           <h2 className="text-base font-semibold">インストール済みアプリ（コード）</h2>
-          <p className="text-xs text-muted-foreground">
+          <p className="mt-0.5 text-xs text-muted-foreground">
             レジストリから同意インストールした B1/B2 アプリ。宣言的アプリと同じくここから起動できます。
           </p>
         </div>
@@ -154,7 +149,7 @@ export function InstalledAppsSection() {
                   size="sm"
                   variant="ghost"
                   aria-label={`${app.app_name} をアンインストール`}
-                  onClick={() => void doUninstall(app)}
+                  onClick={() => setRemoving(app)}
                   className="text-muted-foreground hover:text-destructive"
                 >
                   {pending === app.app_id ? (
@@ -179,7 +174,7 @@ export function InstalledAppsSection() {
             {installable.map((entry) => (
               <li
                 key={entry.id}
-                className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2"
+                className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2.5"
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{entry.name}</p>
@@ -208,23 +203,24 @@ export function InstalledAppsSection() {
               （付与しない権限に依存する機能は動きません）。
             </DialogDescription>
           </DialogHeader>
-          <ul className="space-y-2 py-2">
+          {/* スコープが多くても同意ボタンが画面外に出ないよう、一覧だけを内側でスクロールさせる。
+              行全体を label にして、チェックボックスの外をタップしても切り替わるようにする。 */}
+          <ul className="max-h-[min(18rem,45dvh)] divide-y divide-border overflow-y-auto overscroll-y-contain rounded-lg border">
             {consent?.requested.map((scope) => (
-              <li key={scope} className="flex items-center gap-2">
-                <input
-                  id={`scope-${scope}`}
-                  type="checkbox"
-                  className="size-4 accent-primary"
-                  checked={consent.granted.has(scope)}
-                  onChange={(e) => {
-                    const next = new Set(consent.granted);
-                    if (e.target.checked) next.add(scope);
-                    else next.delete(scope);
-                    setConsent({ ...consent, granted: next });
-                  }}
-                />
-                <label htmlFor={`scope-${scope}`} className="font-mono text-sm">
-                  {scope}
+              <li key={scope}>
+                <label className="flex min-h-11 cursor-pointer items-center gap-3 px-3 py-2 transition-colors hover:bg-accent/50">
+                  <input
+                    type="checkbox"
+                    className="size-4 shrink-0 accent-primary"
+                    checked={consent.granted.has(scope)}
+                    onChange={(e) => {
+                      const next = new Set(consent.granted);
+                      if (e.target.checked) next.add(scope);
+                      else next.delete(scope);
+                      setConsent({ ...consent, granted: next });
+                    }}
+                  />
+                  <span className="min-w-0 break-all font-mono text-sm">{scope}</span>
                 </label>
               </li>
             ))}
@@ -240,6 +236,19 @@ export function InstalledAppsSection() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        open={removing !== null}
+        onOpenChange={(open) => !open && setRemoving(null)}
+        title="アプリをアンインストールしますか？"
+        description={
+          removing ? `「${removing.app_name}」をアンインストールします。所有テーブルはアーカイブされます。` : undefined
+        }
+        confirmLabel="アンインストール"
+        destructive
+        onConfirm={async () => {
+          if (removing) await doUninstall(removing);
+        }}
+      />
     </section>
   );
 }

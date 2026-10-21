@@ -39,10 +39,16 @@ pub enum AgentEvent {
     /// 思考テキストの差分。
     Thinking(String),
     /// ツール呼び出し（id/name/入力確定）。
+    ///
+    /// `step` は**そのループステップの通し番号**（0 始まり）。1 ステップで LLM が出した呼び出しは
+    /// すべて同じ値を持つため、UI 側は「同一ステップ＝並行実行」をイベントだけで判別できる
+    /// （`tool_call` の到達順から推測しない）。結果はステップ内の全ツール完了後に呼び出し順で
+    /// まとめて流れる（`agent_tools` の観測順の決定性）。
     ToolCall {
         id: String,
         name: String,
         input: serde_json::Value,
+        step: u32,
     },
     /// ツール結果。
     ToolResult {
@@ -57,9 +63,6 @@ pub enum AgentEvent {
         tool_call_id: String,
         artifact: ArtifactRef,
     },
-    /// 検証済み generative UI スペック（emit_ui・Phase 6 Task 6.4）。
-    /// **検証層（gui::SpecValidator）を通過した JSON のみ**がここへ乗る（生スペックは流さない）。
-    GenerativeUi { spec: serde_json::Value },
     /// 保存済みワークフローへの参照（emit_workflow・Task 10.13）。
     /// **保存パイプライン（V1〜V7）を通過し artifact 化された参照のみ**がここへ乗る。
     WorkflowRef { workflow: serde_json::Value },
@@ -78,20 +81,22 @@ pub enum AgentEvent {
     /// `{name, csv}`（csv=CSV 本文）。**まだ作成していない**下書き
     /// （chat 側で csv_draft へ写り、フロントが下書き CSV 画面で詰めてから確定する）。
     CsvDraft { draft: serde_json::Value },
-    /// 未保存の下書き Word 文書（save_document の下書き確定型・#332）。
-    /// `{name, markdown}`。**まだ .docx 化も保存もしていない**下書き本文
-    /// （chat 側で document_draft へ写り、フロントが下書き画面で詰めてから確定する）。
-    DocumentDraft { draft: serde_json::Value },
+    /// AI が作成/編集した文書への参照（#381）。`{id, name, kind, version}`。
+    /// **StorageService 上に実在するノードのみ**がここへ乗る（chat 側で document_ref へ写り、
+    /// 「〜を編集しました（v3）→ 開く」カードになる）。作成系と編集系が共有する。
+    DocumentRef { document: serde_json::Value },
     /// skill ツールの発動記録（#344 Task 10.11）。`skill = {skill_id, skill_version, name}`。
     /// **発話ユーザー権限で解決に成功した**発動のみが乗る（`generation_event` に append され
     /// replay 可能＝「何をいつ適用したか」の完全な列。message.content へは projection しない —
     /// instructions は ToolResult block として既に履歴に残る）。
     SkillInvoked { skill: serde_json::Value },
-    /// 開いている Office 文書のセッションへ AI 編集をライブ注入する指示（office.live_edit・#328）。
-    /// **ライブ専用**（`generation_event` に append され replay 可能だが message.content へは
-    /// projection しない）。フロントは /office フレームで Collabora の Action_Paste（現在の選択を
-    /// 置換）を実行して全参加者へ即反映する。`html` は書込サニタイズ済み（PIT-40 準拠）。
-    OfficeLiveEdit { node_id: String, html: String },
+    /// サブエージェント委譲の記録（#391）。
+    /// `subagent = {objective, boundary, steps, tool_calls, tokens}`。
+    ///
+    /// **`SkillInvoked` と同型**: `generation_event` へ append して replay/監査に残すが、
+    /// `message.content` へは projection しない（親のコンテキストも履歴も汚さない）。子の生の
+    /// イベント（取得本文・思考）は親へ一切流れない。
+    SubagentRun { subagent: serde_json::Value },
     /// 計画が改訂された（全サブタスク列・revision 付き・Task 5.2）。
     PlanUpdated(Plan),
     /// 単一サブタスクの状態遷移（軽量更新・Task 5.2）。
@@ -128,6 +133,10 @@ pub enum AgentError {
     /// LLM ゲートウェイ側の障害。
     #[error("llm error: {0}")]
     Llm(String),
+    /// プロバイダの利用枠超過（429）。**文言はそのままユーザーへ出せる**ものが入る
+    /// （`llm-gateway` が整形済み）ので、Display に接頭辞を付けない。
+    #[error("{0}")]
+    RateLimited(String),
     /// イベント永続化（sink）側の障害。
     #[error("sink error: {0}")]
     Sink(String),
@@ -158,5 +167,205 @@ pub trait EventSink: Send {
     ) -> Result<(), AgentError> {
         let _ = checkpoint;
         Ok(())
+    }
+}
+
+/// 停止フラグを見直す間隔。差分が届かない間もこの間隔で [`EventSink::is_cancelled`] を確かめる。
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// [`next_unless_cancelled`] の結果。
+#[derive(Debug)]
+pub enum NextDelta<T> {
+    /// 次の要素が届いた。
+    Item(T),
+    /// ストリームが尽きた。
+    End,
+    /// 停止要求が来た。呼び出し側はストリームを drop して上流の読み取りを打ち切ること。
+    Cancelled,
+}
+
+/// ストリームの次の要素を待ちつつ、その間も停止要求を見張る。
+///
+/// `stream.next().await` だけだと、プロバイダが黙っている間（推論モデルの思考中など）は次の差分か
+/// 無通信のタイムアウトまで停止に気付けず、上流の生成と接続を握り続ける（#602）。
+/// 待ちを [`CANCEL_POLL`] ごとに区切って停止フラグを見直す。`next()` は取り消しても要素を
+/// 落とさないので、区切りで待ちを作り直しても取りこぼさない。
+///
+/// sink は読むだけだが `&mut` で受ける（`EventSink` は `Sync` を要求しないので、`&` を await を
+/// またいで持つとループの future が `Send` でなくなる）。
+pub async fn next_unless_cancelled<S>(
+    stream: &mut S,
+    sink: &mut dyn EventSink,
+) -> NextDelta<S::Item>
+where
+    S: futures::Stream + Unpin + ?Sized,
+{
+    use futures::StreamExt;
+    loop {
+        if sink.is_cancelled() {
+            return NextDelta::Cancelled;
+        }
+        let Ok(next) = tokio::time::timeout(CANCEL_POLL, stream.next()).await else {
+            continue;
+        };
+        // 待っている間に止められていたら、届いた要素・終端・エラーより停止を優先する
+        // （止められた run のエラーを再試行対象にしない・着地を予算超過と記録しない）。
+        if sink.is_cancelled() {
+            return NextDelta::Cancelled;
+        }
+        return match next {
+            Some(item) => NextDelta::Item(item),
+            None => NextDelta::End,
+        };
+    }
+}
+
+/// 停止要求を見張りながら future を待つ。停止したら future を drop して `None` を返す。
+///
+/// ストリームの**確立**（`LlmGateway::stream`）は応答ヘッダを待ち、失敗すれば再試行もする。
+/// その間に止められても [`next_unless_cancelled`] にはまだ届かないので、確立待ちもこれで包む。
+/// drop すれば送信中のリクエストも再試行も打ち切られる。
+pub async fn await_unless_cancelled<F>(fut: F, sink: &mut dyn EventSink) -> Option<F::Output>
+where
+    F: std::future::Future,
+{
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        if sink.is_cancelled() {
+            return None;
+        }
+        if let Ok(out) = tokio::time::timeout(CANCEL_POLL, fut.as_mut()).await {
+            // 待っている間に止められていたら、確立できたストリームやエラーも捨てる。
+            return (!sink.is_cancelled()).then_some(out);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct FlagSink(Arc<AtomicBool>);
+
+    #[async_trait::async_trait]
+    impl EventSink for FlagSink {
+        async fn emit(&mut self, _event: AgentEvent) -> Result<(), AgentError> {
+            Ok(())
+        }
+        fn is_cancelled(&self) -> bool {
+            self.0.load(Ordering::Relaxed)
+        }
+    }
+
+    #[tokio::test]
+    async fn silent_stream_is_released_soon_after_cancel() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut sink = FlagSink(flag.clone());
+        // 何も返さないまま黙り続けるストリーム（思考中のプロバイダ）。
+        let mut stream = futures::stream::pending::<u32>();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        let got = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            next_unless_cancelled(&mut stream, &mut sink),
+        )
+        .await
+        .expect("停止後も待ち続けた");
+        assert!(matches!(got, NextDelta::Cancelled));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn passes_items_through_then_ends() {
+        let mut sink = FlagSink(Arc::new(AtomicBool::new(false)));
+        let mut stream = futures::stream::iter([1, 2]);
+        assert!(matches!(
+            next_unless_cancelled(&mut stream, &mut sink).await,
+            NextDelta::Item(1)
+        ));
+        assert!(matches!(
+            next_unless_cancelled(&mut stream, &mut sink).await,
+            NextDelta::Item(2)
+        ));
+        assert!(matches!(
+            next_unless_cancelled(&mut stream, &mut sink).await,
+            NextDelta::End
+        ));
+    }
+
+    #[tokio::test]
+    async fn slow_item_is_not_lost_across_poll_boundaries() {
+        let mut sink = FlagSink(Arc::new(AtomicBool::new(false)));
+        // 区切り（250ms）を何度かまたいでから届く要素も取りこぼさない。
+        let mut stream = Box::pin(futures::stream::once(async {
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            7
+        }));
+        assert!(matches!(
+            next_unless_cancelled(&mut stream, &mut sink).await,
+            NextDelta::Item(7)
+        ));
+    }
+
+    #[tokio::test]
+    async fn pending_setup_is_abandoned_after_cancel() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut sink = FlagSink(flag.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        // 応答ヘッダが返らないまま待ち続ける確立処理。
+        let got = await_unless_cancelled(std::future::pending::<u32>(), &mut sink).await;
+        assert!(got.is_none());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn slow_setup_result_is_returned() {
+        let mut sink = FlagSink(Arc::new(AtomicBool::new(false)));
+        let fut = async {
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            5
+        };
+        assert_eq!(await_unless_cancelled(fut, &mut sink).await, Some(5));
+    }
+
+    #[tokio::test]
+    async fn cancel_during_wait_wins_over_the_result() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut sink = FlagSink(flag.clone());
+        // 待ちの最中に停止フラグが立ち、同じ待ちで終端が返る（heartbeat と競合したとき）。
+        let f = flag.clone();
+        let mut stream = Box::pin(futures::stream::once(async move {
+            f.store(true, Ordering::Relaxed);
+        }));
+        assert!(matches!(
+            next_unless_cancelled(&mut stream, &mut sink).await,
+            NextDelta::Cancelled
+        ));
+        flag.store(false, Ordering::Relaxed);
+        let f = flag.clone();
+        let setup = async move {
+            f.store(true, Ordering::Relaxed);
+            Err::<u32, &str>("upstream failed")
+        };
+        assert!(await_unless_cancelled(setup, &mut sink).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn already_cancelled_returns_without_polling() {
+        let mut sink = FlagSink(Arc::new(AtomicBool::new(true)));
+        let mut stream = futures::stream::iter([1]);
+        assert!(matches!(
+            next_unless_cancelled(&mut stream, &mut sink).await,
+            NextDelta::Cancelled
+        ));
     }
 }

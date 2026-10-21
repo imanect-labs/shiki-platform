@@ -3,7 +3,9 @@
 // prompt-kit (https://www.prompt-kit.com) の PromptInput を本リポジトリへ vendoring
 // したもの（shadcn 同様にソースを取り込んで保守する方式）。MIT License。
 // 変更点: import を本リポジトリの primitive に合わせ、日本語 IME 変換確定中の
-// Enter を送信扱いしないガード（!isComposing）を追加している。
+// Enter を送信扱いしないガード（isComposing / keyCode 229）を追加している。
+// タッチ端末（pointer: coarse）では Enter を改行にし（送信はボタンのみ）、autoFocus は
+// マウスの端末だけで効かせる（開いた瞬間にソフトキーボードを出さない）。
 import * as React from "react";
 import {
   createContext,
@@ -14,6 +16,7 @@ import {
 } from "react";
 
 import { Textarea } from "@/components/ui/textarea";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import {
   Tooltip,
   TooltipContent,
@@ -78,7 +81,16 @@ function PromptInput({
   };
 
   const handleClick: React.MouseEventHandler<HTMLDivElement> = (e) => {
-    if (!disabled) textareaRef.current?.focus();
+    // 余白を押したら入力欄へ。ボタン・リンク・メニュー項目を押したときは移さない（タッチでは
+    // フォーカスがソフトキーボードを出し、開いたメニューやシートを隠してしまう）。ポータルで
+    // 描かれた中身（シート・ポップオーバー）のクリックも React のツリーを伝ってここへ届くので、
+    // DOM 上この枠の外なら何もしない。
+    const target = e.target as Element | null;
+    const inside = target && e.currentTarget.contains(target);
+    const onControl = target?.closest(
+      "button,a,input,select,[role=menuitem],[role=switch],[role=option],[role=radio]",
+    );
+    if (!disabled && inside && !onControl) textareaRef.current?.focus();
     onClick?.(e);
   };
 
@@ -115,19 +127,43 @@ export type PromptInputTextareaProps = {
   disableAutosize?: boolean;
 } & React.ComponentProps<typeof Textarea>;
 
+/// タッチが主の端末か（Enter を改行にする・autoFocus しない判定に使う）。
+function isCoarsePointer(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
+}
+
 function PromptInputTextarea({
   className,
   onKeyDown,
   disableAutosize = false,
+  autoFocus = false,
+  enterKeyHint,
   ...props
 }: PromptInputTextareaProps) {
   const { value, setValue, maxHeight, onSubmit, disabled, textareaRef } =
     usePromptInput();
+  // マウスの端末だけ開いた瞬間にフォーカスする。`autoFocus` 属性は初回描画（ハイドレーション
+  // 中はメディアクエリが分からない）で決まってしまうので、マウント後に判定して自分で移す。
+  React.useEffect(() => {
+    if (!autoFocus || typeof window === "undefined") return;
+    if (window.matchMedia("(pointer: fine)").matches) {
+      textareaRef.current?.focus({ preventScroll: true });
+    }
+    // マウント時だけ（スレッドを開いたとき・ホーム）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Enter のキー表示（送信 / 改行）。タッチでは Enter が改行なので「改行」を出す。
+  const coarse = useMediaQuery("(pointer: coarse)");
 
   const adjustHeight = (el: HTMLTextAreaElement | null) => {
     if (!el || disableAutosize) return;
 
     el.style.height = "auto";
+    // 空のときは 1 行に固定する（長いプレースホルダが折り返して高さを押し上げないように）。
+    if (!el.value) {
+      el.style.height = "";
+      return;
+    }
 
     if (typeof maxHeight === "number") {
       el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
@@ -146,6 +182,10 @@ function PromptInputTextarea({
 
     const el = textareaRef.current;
     el.style.height = "auto";
+    if (!el.value) {
+      el.style.height = "";
+      return;
+    }
 
     if (typeof maxHeight === "number") {
       el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
@@ -160,12 +200,18 @@ function PromptInputTextarea({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // IME 変換確定中（日本語入力）の Enter は送信せず確定に使わせる。
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    // 呼び出し側に先に処理させる（スラッシュコマンド補完が Enter で候補を確定する等・#387）。
+    // 先に送信してしまうと補完の Enter が握れない。`preventDefault()` した場合は送信しない。
+    onKeyDown?.(e);
+    if (e.defaultPrevented) return;
+    // IME 変換確定中（日本語入力）の Enter は送信せず確定に使わせる。Safari は確定の Enter で
+    // isComposing を落とすことがあるので keyCode 229 も見る。タッチ端末の Enter は改行
+    // （ソフトキーボードの Enter で誤送信しない。送信はボタンだけ）。
+    const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+    if (e.key === "Enter" && !e.shiftKey && !composing && !isCoarsePointer()) {
       e.preventDefault();
       onSubmit?.();
     }
-    onKeyDown?.(e);
   };
 
   return (
@@ -180,6 +226,7 @@ function PromptInputTextarea({
       )}
       rows={1}
       disabled={disabled}
+      enterKeyHint={enterKeyHint ?? (coarse ? "enter" : "send")}
       {...props}
     />
   );
@@ -236,4 +283,5 @@ export {
   PromptInputTextarea,
   PromptInputActions,
   PromptInputAction,
+  usePromptInput,
 };

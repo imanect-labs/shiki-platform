@@ -36,6 +36,16 @@ use tower::ServiceExt;
 
 struct AllowAll;
 
+/// AllowAll が返す共有タプル（tenant `default` の名前空間）。alice は同テナント・同 org の
+/// ディレクトリに居る／mallory は別テナントにだけ居る／ghost は未登録／eng は同テナントのロール。
+const SHARE_FIXTURE: &[(&str, &str)] = &[
+    ("user:default|share741-alice", "viewer"),
+    ("user:default|share741-alice", "editor"),
+    ("user:default|share741-mallory", "viewer"),
+    ("user:default|share741-ghost", "viewer"),
+    ("role:default|share741-eng#member", "editor"),
+];
+
 #[async_trait]
 impl AuthzClient for AllowAll {
     async fn check(
@@ -63,12 +73,21 @@ impl AuthzClient for AllowAll {
     ) -> Result<bool, AuthzError> {
         Ok(true)
     }
+    /// 共有一覧（ノード/アーティファクト/スレッド）が読む直接タプル。どのオブジェクトにも
+    /// [`SHARE_FIXTURE`] の共有が書かれている体にする（#741 の表示名解決の検証用）。
     async fn read_tuples(
         &self,
-        _o: &FgaObject,
+        o: &FgaObject,
         _r: Option<Relation>,
     ) -> Result<Vec<ReadTupleKey>, AuthzError> {
-        Ok(vec![])
+        Ok(SHARE_FIXTURE
+            .iter()
+            .map(|(user, relation)| ReadTupleKey {
+                user: (*user).into(),
+                relation: (*relation).into(),
+                object: o.as_str().into(),
+            })
+            .collect())
     }
     async fn list_objects(
         &self,
@@ -200,9 +219,10 @@ fn base_config(db_url: &str) -> AppConfig {
             log_format: LogFormat::Json,
         },
         storage: StorageConfig {
-            backend: ObjectStoreBackend::Minio,
+            backend: ObjectStoreBackend::S3,
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
+            upload_gc: api::config::UploadGcConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -214,7 +234,11 @@ fn base_config(db_url: &str) -> AppConfig {
             api_key: None,
             default_model: None,
             models: vec![],
+            context_window_tokens: None,
             langfuse: None,
+            user_agent: None,
+            session_header: None,
+            ..Default::default()
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
@@ -223,6 +247,7 @@ fn base_config(db_url: &str) -> AppConfig {
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
+        insights: api::insights::InsightsConfig::default(),
     }
 }
 
@@ -294,11 +319,6 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         Arc::new(AllowAll),
     ));
     let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
-    let ui_validator = Arc::new(gui::SpecValidator::new(
-        Arc::clone(&artifacts),
-        pool.clone(),
-    ));
-    let ui_specs = Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator));
     let ui_actions = Arc::new(gui::ActionDispatcher::new(
         storage::audit::AuditRecorder::new(pool.clone()),
     ));
@@ -368,6 +388,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
     ));
     let state = AppState {
         config: Arc::new(config),
+        insights: std::sync::Arc::new(api::insights::InsightsService::new(pool.clone())),
         db: api::state::ReadinessProbe::new(pool),
         authz: Arc::new(AllowAll),
         jwks,
@@ -385,7 +406,6 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         skill_installs,
         bundles,
         app_usage,
-        ui_specs,
         ui_actions,
         skills,
         mini_apps,
@@ -401,6 +421,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         tenants,
         search: None,
         chat,
+        llm: None,
         rag_admin,
         office: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(
@@ -652,4 +673,387 @@ async fn chat_authz_and_availability_edges() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// 投稿時のモデル指定（#553）: 組織で使えないモデルは 400、指定・Auto は run に記録される。
+#[tokio::test]
+async fn chat_post_resolves_model_choice() {
+    let Some((mut state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
+    // stub プロバイダに 2 モデル（"fast" は思考強度を受ける・"local" は受けない）。
+    let gw = llm_gateway::LlmGateway::build(
+        pool.clone(),
+        reqwest::Client::new(),
+        llm_gateway::GatewayConfig {
+            catalog: llm_gateway::ModelCatalog {
+                default_model: "fast".into(),
+                models: vec![
+                    llm_gateway::ModelEntry {
+                        id: "fast".into(),
+                        supports_effort: Some(true),
+                        ..Default::default()
+                    },
+                    llm_gateway::ModelEntry {
+                        id: "local".into(),
+                        ..Default::default()
+                    },
+                ],
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    state.llm = Some(Arc::new(gw));
+    let (cookie, csrf) = login(&sessions, "sid-chat-model").await;
+    let app = build_router(state);
+
+    let post = |uri: String, body: String| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(COOKIE, &cookie)
+            .header("x-csrf-token", csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let resp = app
+        .clone()
+        .oneshot(post("/threads".into(), r#"{"title":"model"}"#.into()))
+        .await
+        .unwrap();
+    let tid = body_json(resp).await["id"].as_str().unwrap().to_string();
+    let messages = format!("/threads/{tid}/messages");
+
+    // カタログに無いモデルは 400（理由つき）。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            messages.clone(),
+            r#"{"text":"x","model":"ghost"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(body_json(resp).await["detail"]
+        .as_str()
+        .unwrap()
+        .contains("ghost"));
+
+    // 選んだモデル＋思考強度は run に記録される。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            messages.clone(),
+            r#"{"text":"x","model":"fast","effort":"high"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let run_id: uuid::Uuid = body_json(resp).await["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let row: (Option<String>, Option<String>, bool) =
+        sqlx::query_as("SELECT model, effort, model_auto FROM generation_run WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row, (Some("fast".into()), Some("high".into()), false));
+
+    // 思考強度に対応しないモデルは effort を記録しない。省略は Auto（ここでは既定モデルへ）。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            messages.clone(),
+            r#"{"text":"x","model":"local","effort":"high"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    let run_id: uuid::Uuid = body_json(resp).await["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let row: (Option<String>, Option<String>, bool) =
+        sqlx::query_as("SELECT model, effort, model_auto FROM generation_run WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row, (Some("local".into()), None, false));
+
+    let resp = app
+        .clone()
+        .oneshot(post(messages, r#"{"text":"x"}"#.into()))
+        .await
+        .unwrap();
+    let run_id: uuid::Uuid = body_json(resp).await["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let row: (Option<String>, Option<String>, bool) =
+        sqlx::query_as("SELECT model, effort, model_auto FROM generation_run WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row, (Some("fast".into()), Some("low".into()), true));
+}
+
+/// 共有一覧の各エントリが表示名を正しく持つか（#741）。同テナント・同 org の user は名前と email、
+/// 別テナントにだけ居る user・未登録 user は両方 null、ロールは名前のみ（email null）。
+fn assert_share_names(entries: &serde_json::Value) {
+    let entries = entries.as_array().expect("shares array");
+    assert_eq!(entries.len(), SHARE_FIXTURE.len(), "{entries:?}");
+    let by_id = |id: &str| -> Vec<&serde_json::Value> {
+        entries.iter().filter(|e| e["target"]["id"] == id).collect()
+    };
+    let alice = by_id("share741-alice");
+    assert_eq!(alice.len(), 2, "viewer/editor の 2 行");
+    for a in alice {
+        assert_eq!(a["target"]["type"], "user");
+        assert_eq!(a["display_name"], "Alice 741");
+        assert_eq!(a["email"], "share741-alice@acme.example");
+    }
+    for id in ["share741-mallory", "share741-ghost"] {
+        let e = by_id(id);
+        assert_eq!(e.len(), 1);
+        assert!(
+            e[0]["display_name"].is_null(),
+            "越境/未登録は名前なし: {:?}",
+            e[0]
+        );
+        assert!(
+            e[0]["email"].is_null(),
+            "越境/未登録は email なし: {:?}",
+            e[0]
+        );
+    }
+    let eng = by_id("share741-eng");
+    assert_eq!(eng.len(), 1);
+    assert_eq!(eng[0]["target"]["type"], "role");
+    assert_eq!(eng[0]["display_name"], "技術部 741");
+    assert!(eng[0]["email"].is_null());
+}
+
+/// #741: ノード・アーティファクト・スレッドの共有一覧が、呼び出し元テナント（＋ org）の
+/// ディレクトリから解決した表示名/email を同じ応答で返す（別テナントの名前は返さない）。
+#[tokio::test]
+async fn share_lists_include_directory_names_tenant_scoped() {
+    let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    // セッションの主体は tenant `default`・org `acme`（groups `/acme`）。
+    state
+        .directory
+        .upsert_user(
+            "share741-alice",
+            "default",
+            "acme",
+            "share741-alice@acme.example",
+            "Alice 741",
+        )
+        .await
+        .expect("seed alice");
+    // 同じ id・同じ org 文字列でも別テナントの行は解決に使わない。
+    state
+        .directory
+        .upsert_user(
+            "share741-mallory",
+            "other-741",
+            "acme",
+            "share741-mallory@other.example",
+            "Mallory 741",
+        )
+        .await
+        .expect("seed mallory");
+    state
+        .directory
+        .upsert_role("share741-eng", "default", "acme", "技術部 741")
+        .await
+        .expect("seed role");
+    let ctx = authz::AuthContext::new(test_principal(), "acme".into(), "default".into());
+    let art = state
+        .artifacts
+        .create(
+            &ctx,
+            artifact::NewArtifact {
+                kind: artifact::ArtifactKind::Skill,
+                name: format!("share741-{}", uuid::Uuid::new_v4().simple()),
+                body: serde_json::json!({}),
+            },
+            None,
+        )
+        .await
+        .expect("artifact");
+
+    let (cookie, csrf) = login(&sessions, "sid-share-741").await;
+    let app = build_router(state);
+    let post = |uri: &str, body: String| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(COOKIE, &cookie)
+            .header("x-csrf-token", csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let get = |uri: String| {
+        Request::builder()
+            .uri(uri)
+            .header(COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/threads",
+            r#"{"title":"share741","agent_mode":false}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let tid = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    let folder_name = format!("share741-{}", uuid::Uuid::new_v4().simple());
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/folders",
+            serde_json::json!({ "name": folder_name }).to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let fid = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(get(format!("/threads/{tid}/shares")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_share_names(&body_json(resp).await["shares"]);
+
+    let resp = app
+        .clone()
+        .oneshot(get(format!("/nodes/{fid}/shares")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_share_names(&body_json(resp).await);
+
+    let resp = app
+        .oneshot(get(format!("/artifacts/{}/shares", art.id)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_share_names(&body_json(resp).await);
+}
+
+/// 発話ごとのツール指定（#734）: 未知名・指定できないツール（破壊系・内部用）は 400（理由つき）、
+/// 指定は重複を除いて run に記録される。
+#[tokio::test]
+async fn chat_post_records_requested_tools() {
+    let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
+    let (cookie, csrf) = login(&sessions, "sid-chat-tools").await;
+    let app = build_router(state);
+
+    let post = |uri: String, body: String| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(COOKIE, &cookie)
+            .header("x-csrf-token", csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let resp = app
+        .clone()
+        .oneshot(post("/threads".into(), r#"{"title":"tools"}"#.into()))
+        .await
+        .unwrap();
+    let tid = body_json(resp).await["id"].as_str().unwrap().to_string();
+    let messages = format!("/threads/{tid}/messages");
+
+    // 語彙に無い名前は 400（Json 抽出の 422 ではなく、理由つきの検証エラー）。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            messages.clone(),
+            r#"{"text":"x","tools":["web_search","rm_rf"]}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let detail = body_json(resp).await["detail"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        detail.contains("rm_rf") && detail.contains("未知のツール名"),
+        "{detail}"
+    );
+
+    // 語彙にはあるが利用者が指定できないツール（shell 等）も 400（ユーザー指定へ格上げしない）。
+    for bad in ["shell", "fs_delete", "emit_workflow", "save_note"] {
+        let resp = app
+            .clone()
+            .oneshot(post(
+                messages.clone(),
+                format!(r#"{{"text":"x","tools":["web_search","{bad}"]}}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{bad}");
+        let detail = body_json(resp).await["detail"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            detail.contains(bad) && detail.contains("指定できないツール"),
+            "{bad}: {detail}"
+        );
+    }
+
+    // 有効な指定は 202 で受理され、重複を除いて投入順のまま run に記録される。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            messages,
+            r#"{"text":"x","tools":["web_search","doc_search","web_search"]}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let run_id: uuid::Uuid = body_json(resp).await["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let stored: serde_json::Value =
+        sqlx::query_scalar("SELECT requested_tools FROM generation_run WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, serde_json::json!(["web_search", "doc_search"]));
 }

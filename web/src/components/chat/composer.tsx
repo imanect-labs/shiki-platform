@@ -1,29 +1,18 @@
 "use client";
 
 import * as React from "react";
-import {
-  ArrowUp,
-  FilePlus2,
-  FileSpreadsheet,
-  FileText,
-  Globe,
-  Bot,
-  Loader2,
-  HardDrive,
-  NotebookPen,
-  Paperclip,
-  Plus,
-  Presentation,
-  Square,
-  TextSelect,
-  Upload,
-  X,
-} from "lucide-react";
+import { ArrowUp, Bot, HardDrive, Loader2, Paperclip, Square, TextSelect, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { uploadFile, type NodeResponse } from "@/lib/storage";
 import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
-import { ApprovalModeSelect } from "./approval-mode-select";
+import { HOME_SCOPE } from "@/lib/model-choice";
+import { selectableTool, useToolChoice } from "@/lib/tool-choice";
+import { useMediaQuery } from "@/hooks/use-media-query";
+import { ApprovalModeSelect, approvalModeDef } from "./approval-mode-select";
+import { ComposerModeButton } from "./composer-mode";
+import { PlusMenu } from "./composer-plus-menu";
+import { ModelPill, useChosenModelLabel } from "./model-picker";
 import {
   clearPendingSelection,
   selectionKindLabel,
@@ -32,34 +21,56 @@ import {
   type SelectionContext,
 } from "@/lib/selection-context";
 import { FolderPicker } from "@/components/artifacts/folder-picker";
+import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt-input";
 import {
-  PromptInput,
-  PromptInputActions,
-  PromptInputTextarea,
-} from "@/components/prompt-kit/prompt-input";
+  SlashCommandMenu,
+  SlashCommandPill,
+  slashOptionId,
+  SLASH_LISTBOX_ID,
+} from "./slash-command-menu";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+  composeText,
+  fetchSkillCatalog,
+  matchSuggestions,
+  resolveTypedCommand,
+  toSuggestions,
+  type ActiveCommand,
+  type SlashSuggestion,
+} from "@/lib/slash-command";
 import { toast } from "@/components/ui/use-toast";
-import { useCreateContent } from "@/hooks/use-create-content";
 import { DrivePicker } from "./drive-picker";
+
+/// 小さな × の押せる範囲を、見た目を変えずに周囲へ広げる（指で外せるように）。
+const HIT_AREA = "relative after:absolute after:-inset-2";
 
 type Uploading = { name: string; fraction: number };
 
+/// 補完候補を確定済みコマンドへ写す。
+function toActiveCommand(s: SlashSuggestion): ActiveCommand {
+  return {
+    token: s.token,
+    command: s.command,
+    args: s.args,
+    skillName: s.skillName,
+    skillId: s.skillId,
+    skillVersion: s.skillVersion,
+    hint: s.hint,
+  };
+}
+
 /// チャット入力。ローカル/ドライブからの添付、送信を担う。
 /// 添付ファイルはアップロード後に自動でベクトル化され、doc_search の対象になる。
-export function Composer({
+///
+/// レイアウトは 1 つの DOM をグリッドで組み替える（PC とスマホでメニューや状態を二重に持たない）:
+/// - スマホ（md 未満）: 1 行の丸いバー「+ ／ 入力欄 ／ 実行モード ／ 送信」。入力すると 5 行まで伸びる。
+/// - PC: 入力欄の下に操作の段（+・エージェントモード・ワークスペース・承認モード ／ 送信）。
+/// 選んだスキル（スラッシュコマンド）とモデルは、どちらも入力欄の上にチップで出す。
+///
+/// 会話のトークンごとに親が再描画されても描き直さないよう memo する（入力中の状態は自前で持つ）。
+export const Composer = React.memo(function Composer({
   onSubmit,
   onStop,
-  placeholder = "何でも尋ねて、社内文書も検索",
+  placeholder,
   autoFocus = false,
   disabled = false,
   streaming = false,
@@ -70,6 +81,7 @@ export function Composer({
   approvalMode = null,
   onApprovalModeChange,
   bypassAllowed = true,
+  threadId,
   className,
 }: {
   onSubmit: (
@@ -77,6 +89,8 @@ export function Composer({
     attachments: Attachment[],
     /// エディタの選択コンテキスト（選択→AI 指示・Task 11.10。無ければ undefined）。
     context?: SelectionContext,
+    /// 確定中のスラッシュコマンド（#387）。呼び出し側が skill のピンとモードを整える。
+    command?: ActiveCommand,
   ) => void;
   /// 生成中に停止する（指定時は送信ボタンが停止ボタンに変わる）。
   onStop?: () => void;
@@ -101,27 +115,106 @@ export function Composer({
   onApprovalModeChange?: (m: AutonomousMode) => void;
   /// org 管理者ポリシで bypass（全自動）を選べるか（false なら選択肢を無効化・#350）。
   bypassAllowed?: boolean;
+  /// スレッド内のコンポーザなら thread id。カタログにスレッドのピンを統合するのに使う
+  /// （モデルが見ている集合と補完候補を一致させる・#387）。ホームでは未指定。
+  threadId?: string;
   className?: string;
 }) {
   const [value, setValue] = React.useState("");
   const [attachments, setAttachments] = React.useState<Attachment[]>([]);
   const [uploading, setUploading] = React.useState<Uploading | null>(null);
   const [menuOpen, setMenuOpen] = React.useState(false);
+  const desktop = useMediaQuery("(min-width: 768px)");
+  const modelScope = threadId ?? HOME_SCOPE;
+  const modelLabel = useChosenModelLabel(modelScope);
+  // この発話に使うツール（#734）。送信時に会話側が読み出して空に戻す。
+  const toolChoice = useToolChoice(modelScope);
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
+  // スラッシュコマンド（#387）。候補はカタログ（モデルが見ているものと同一）由来。
+  const [suggestions, setSuggestions] = React.useState<SlashSuggestion[]>([]);
+  const [command, setCommand] = React.useState<ActiveCommand | null>(null);
+  const [slashIndex, setSlashIndex] = React.useState(0);
+  const [slashDismissed, setSlashDismissed] = React.useState(false);
+
+  React.useEffect(() => {
+    let active = true;
+    // カタログが引けない環境（chat 無効等）でもコンポーザは壊さない＝候補ゼロで動く。
+    fetchSkillCatalog(threadId)
+      .then((items) => active && setSuggestions(toSuggestions(items)))
+      .catch(() => active && setSuggestions([]));
+    return () => {
+      active = false;
+    };
+  }, [threadId]);
+
+  // 確定済みコマンドがある間は補完を出さない（ピルが既に状態を示している）。
+  const slashHits = command || slashDismissed ? null : matchSuggestions(value, suggestions);
+  const slashOpen = (slashHits?.length ?? 0) > 0;
+  const activeSlash = slashOpen ? slashHits![Math.min(slashIndex, slashHits!.length - 1)] : null;
+
   // エディタの選択コンテキスト（選択→AI 指示・Task 11.10）。チップ表示し送信時に消費する。
   const selection = usePendingSelection();
 
-  const canSend = value.trim().length > 0 && !disabled && !uploading && !streaming;
+  // コマンド確定後は本文が空でも送れる（コマンド自体が指示になる）。
+  // 生成中でも送信できる（サーバが 1 スレッド 1 本ずつ直列化し、順番待ちとして受け付ける）。
+  // 「返答を待たないと次を書けない」体験を作らないための土台。
+  const canSend = (value.trim().length > 0 || command !== null) && !disabled && !uploading;
+
+  const pickSuggestion = (s: SlashSuggestion) => {
+    setCommand(toActiveCommand(s));
+    // コマンド部分は入力欄から取り除き、以降はピルが持つ（本文だけを打てる状態にする）。
+    setValue("");
+    setSlashIndex(0);
+  };
 
   const submit = () => {
-    const text = value.trim();
-    if (!text || disabled || uploading || streaming) return;
-    onSubmit(text, attachments, takePendingSelection() ?? undefined);
+    if (disabled || uploading) return;
+    // 補完で確定していなくても、既知のコマンドが直接打たれていれば拾う（#387・Codex P2）。
+    // 拾わないと skill のピン処理を通らず、コマンドがただのテキストとして流れる。
+    const typed = command ? null : resolveTypedCommand(value, suggestions);
+    const active = command ?? (typed ? toActiveCommand(typed.suggestion) : null);
+    const body = typed ? typed.rest : value;
+    const text = composeText(active, body);
+    if (!text) return;
+    onSubmit(text, attachments, takePendingSelection() ?? undefined, active ?? undefined);
     setValue("");
     setAttachments([]);
+    setCommand(null);
+    setSlashDismissed(false);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // キャレット先頭での Backspace はピルを外す（ChatGPT と同じ操作感）。
+    if (e.key === "Backspace" && command && value.length === 0) {
+      e.preventDefault();
+      setCommand(null);
+      return;
+    }
+    if (!slashOpen) {
+      // `/` を打ち直したら再び候補を出す。
+      if (e.key !== "Escape") setSlashDismissed(false);
+      return;
+    }
+    const len = slashHits!.length;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSlashIndex((i) => (i + 1) % len);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSlashIndex((i) => (i - 1 + len) % len);
+    } else if (
+      (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) ||
+      e.key === "Tab"
+    ) {
+      e.preventDefault();
+      if (activeSlash) pickSuggestion(activeSlash);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setSlashDismissed(true);
+    }
   };
 
   const addAttachment = (node: NodeResponse) => {
@@ -149,6 +242,53 @@ export function Composer({
     }
   };
 
+
+  // プレースホルダで「いま何に頼むか」を伝える（スマホは状態を出すボタンが小さいので特に）。
+  // 1 行のバーに収まる長さにする（折り返すと入力欄が 2 行に伸びる）。
+  const approvalLabel =
+    autonomous && approvalMode ? approvalModeDef(approvalMode).label : null;
+  const effectivePlaceholder = command
+    ? (command.hint ?? `/${command.token} に依頼`)
+    : onAutonomousChange && autonomous
+      ? desktop
+        ? `エージェントに依頼${approvalLabel ? `（${approvalLabel}）` : ""}`
+        : `エージェント${approvalLabel ? `・${approvalLabel}` : "に依頼"}`
+      : modelLabel
+        ? `${modelLabel} に依頼`
+        : (placeholder ?? (desktop ? "何でも尋ねて、社内文書も検索" : "Shiki に質問・依頼"));
+
+  // 入力欄の上のチップ（選んだスキル・モデル）。何も無ければスマホは 1 行のまま。
+  // ツールの選択などを足すときもここに並べる。
+  const chips = (
+    <>
+      {command ? <SlashCommandPill label={command.token} onClear={() => setCommand(null)} /> : null}
+      <ModelPill scope={modelScope} />
+      {toolChoice.tools.map((name) => {
+        const tool = selectableTool(name);
+        if (!tool) return null;
+        return (
+          <span
+            key={name}
+            data-testid="composer-tool-chip"
+            className="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full bg-accent pl-2.5 pr-1 text-[13px] font-medium text-foreground"
+          >
+            <tool.icon className="size-3.5 shrink-0 text-primary" aria-hidden />
+            <span className="min-w-0 truncate">{tool.label}</span>
+            <button
+              type="button"
+              onClick={() => toolChoice.clear(name)}
+              aria-label={`${tool.label}を外す`}
+              className="relative flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors after:absolute after:-inset-2 hover:bg-foreground/10 hover:text-foreground"
+            >
+              <X className="size-3.5" aria-hidden />
+            </button>
+          </span>
+        );
+      })}
+    </>
+  );
+  const hasChips = command !== null || modelLabel !== null || toolChoice.tools.length > 0;
+
   return (
     <div className={cn("flex flex-col gap-2", className)}>
       {/* 選択コンテキストチップ（選択→AI 指示・Task 11.10） */}
@@ -166,7 +306,10 @@ export function Composer({
             type="button"
             onClick={clearPendingSelection}
             aria-label="選択コンテキストを外す"
-            className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className={cn(
+              "flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+              HIT_AREA,
+            )}
           >
             <X className="size-3.5" aria-hidden />
           </button>
@@ -178,15 +321,18 @@ export function Composer({
           {attachments.map((a) => (
             <span
               key={a.node_id}
-              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[13px] text-foreground/85"
+              className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-border bg-card py-1 pl-2.5 pr-1.5 text-[13px] text-foreground/85"
             >
-              <Paperclip className="size-3.5 text-muted-foreground" />
-              <span className="max-w-[160px] truncate">{a.name}</span>
+              <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 max-w-[160px] truncate">{a.name}</span>
               <button
                 type="button"
                 onClick={() => setAttachments((prev) => prev.filter((x) => x.node_id !== a.node_id))}
                 aria-label="添付を外す"
-                className="text-muted-foreground hover:text-foreground"
+                className={cn(
+                  "flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground",
+                  HIT_AREA,
+                )}
               >
                 <X className="size-3.5" />
               </button>
@@ -208,32 +354,50 @@ export function Composer({
         onSubmit={submit}
         disabled={disabled}
         isLoading={streaming}
-        maxHeight={200}
+        // スマホは 5 行（16px × 行高 24px ＋ 上下の余白）まで、PC は 200px まで伸ばす。
+        maxHeight={desktop ? 200 : 136}
+        data-testid="composer"
         className={cn(
-          "rounded-[26px] border-border bg-card shadow-sm transition-shadow",
+          // 本文の上に重ねるので面を少し透かし、背後はぼかす。
+          "relative rounded-[26px] border-border bg-card/85 shadow-sm backdrop-blur-xl transition-shadow",
           "focus-within:border-ring/25 focus-within:shadow-md focus-within:ring-4 focus-within:ring-ring/10",
+          // スマホ: 1 行の丸いバー（6px ＋ 40px ＋ 6px ＋ 枠 = 54px）。伸びてもボタンは下端に揃える。
+          "grid grid-cols-[auto_minmax(0,1fr)_auto] items-end gap-x-1 p-1.5",
+          // PC: 入力欄 → 操作の段の 2 段。
+          "md:grid-cols-[minmax(0,1fr)_auto] md:gap-x-2 md:p-2",
         )}
       >
-        <PromptInputTextarea
-          placeholder={placeholder}
-          autoFocus={autoFocus}
-          aria-label="メッセージを入力"
-          className="px-3 pt-2 pb-1 text-[15px] leading-relaxed placeholder:text-muted-foreground/70"
-        />
+        {slashOpen ? (
+          <SlashCommandMenu
+            suggestions={slashHits!}
+            activeIndex={Math.min(slashIndex, slashHits!.length - 1)}
+            onPick={pickSuggestion}
+            onHover={setSlashIndex}
+          />
+        ) : null}
 
-        <PromptInputActions className="justify-between px-1 pb-1">
-          {/* 左下: 「+」一つに集約（添付）。狭い列でも潰れない。 */}
-          <div className="flex min-w-0 items-center gap-1.5">
-            <PlusMenu
-              open={menuOpen}
-              onOpenChange={setMenuOpen}
-              onUploadLocal={() => fileInputRef.current?.click()}
-              onOpenDrive={() => setPickerOpen(true)}
-              // ワークスペース（作業フォルダ）はエージェントモード ON のときだけ意味を持つ。
-              // OFF のときは残存する workspace 選択を無視し、既定（マイドライブ直下）へ作成する。
-              createParentId={autonomous ? (workspace?.folderId ?? null) : null}
-            />
-            {onAutonomousChange ? (
+        {hasChips ? (
+          <div className="col-span-full row-start-1 flex min-w-0 flex-wrap items-center gap-1.5 px-1 pb-1.5 pt-0.5 md:px-1.5 md:pb-1 md:pt-0.5">
+            {chips}
+          </div>
+        ) : null}
+
+        {/* 左: 「+」（PC はエージェントモード等も同じ段に並べる）。 */}
+        <div className="col-start-1 row-start-2 flex min-w-0 items-center gap-1.5 md:row-start-3 md:pb-0.5 md:pl-0.5">
+          <PlusMenu
+            open={menuOpen}
+            onOpenChange={setMenuOpen}
+            onUploadLocal={() => fileInputRef.current?.click()}
+            onOpenDrive={() => setPickerOpen(true)}
+            skills={suggestions}
+            onPickSkill={pickSuggestion}
+            // ワークスペース（作業フォルダ）はエージェントモード ON のときだけ意味を持つ。
+            // OFF のときは残存する workspace 選択を無視し、既定（マイドライブ直下）へ作成する。
+            createParentId={autonomous ? (workspace?.folderId ?? null) : null}
+            modelScope={modelScope}
+          />
+          {onAutonomousChange ? (
+            <div className="hidden min-w-0 items-center gap-1.5 md:flex">
               <button
                 type="button"
                 role="switch"
@@ -246,7 +410,7 @@ export function Composer({
                 }
                 onClick={() => onAutonomousChange(!autonomous)}
                 className={cn(
-                  "inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-[13px] font-medium transition-colors",
+                  "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[13px] font-medium transition-colors",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
                   autonomous
                     ? "border-primary/40 bg-primary/10 text-primary"
@@ -256,65 +420,105 @@ export function Composer({
                 <Bot className="size-[15px]" aria-hidden />
                 エージェントモード
               </button>
-            ) : null}
-            {/* エージェントモード ON 時のみ: ワークスペースの作成場所を選べる */}
-            {onAutonomousChange && autonomous && onWorkspaceChange ? (
-              <button
-                type="button"
-                onClick={() => setWsPickerOpen(true)}
-                title="エージェントが作業するワークスペースの場所を選ぶ"
-                className="inline-flex h-9 min-w-0 items-center gap-1.5 rounded-full border border-border px-3 text-[13px] text-foreground/70 transition-colors hover:bg-secondary hover:text-foreground"
-              >
-                <HardDrive className="size-[15px] shrink-0" aria-hidden />
-                <span className="max-w-[160px] truncate">
-                  {workspace ? workspace.folderName : "マイドライブ"}
-                </span>
-              </button>
-            ) : null}
-            {/* エージェントモード ON 時のみ: 承認モード（承認必須/オート/全自動・#350）。
-                生成中も切替可（承認待ちカードはモード緩和で自動解決される）。 */}
-            {autonomous && approvalMode && onApprovalModeChange ? (
-              <ApprovalModeSelect
-                mode={approvalMode}
-                onChange={onApprovalModeChange}
-                bypassAllowed={bypassAllowed}
-              />
-            ) : null}
-          </div>
+              {/* エージェントモード ON 時のみ: ワークスペースの作成場所を選べる */}
+              {autonomous && onWorkspaceChange ? (
+                <button
+                  type="button"
+                  onClick={() => setWsPickerOpen(true)}
+                  title="エージェントが作業するワークスペースの場所を選ぶ"
+                  className="inline-flex h-9 min-w-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border px-3 text-[13px] text-foreground/70 transition-colors hover:bg-secondary hover:text-foreground"
+                >
+                  <HardDrive className="size-[15px] shrink-0" aria-hidden />
+                  <span className="max-w-[160px] truncate">
+                    {workspace ? workspace.folderName : "マイドライブ"}
+                  </span>
+                </button>
+              ) : null}
+              {/* エージェントモード ON 時のみ: 承認モード（承認必須/オート/全自動・#350）。
+                  生成中も切替可（承認待ちカードはモード緩和で自動解決される）。 */}
+              {autonomous && approvalMode && onApprovalModeChange ? (
+                <ApprovalModeSelect
+                  mode={approvalMode}
+                  onChange={onApprovalModeChange}
+                  bypassAllowed={bypassAllowed}
+                />
+              ) : null}
+            </div>
+          ) : null}
+        </div>
 
-          <div className="flex items-center gap-1.5">
-            {streaming ? (
-              <button
-                type="button"
-                onClick={onStop}
-                aria-label="生成を停止"
-                title="生成を停止"
-                className={cn(
-                  "flex size-9 items-center justify-center rounded-full bg-foreground text-background transition-colors hover:bg-foreground/85",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
-                )}
-              >
-                <Square className="size-3.5 fill-current" aria-hidden />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={submit}
-                disabled={!canSend}
-                aria-label="送信"
-                className={cn(
-                  "flex size-9 items-center justify-center rounded-full transition-colors",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
-                  canSend
-                    ? "bg-primary text-primary-foreground hover:bg-primary/90"
-                    : "bg-muted text-muted-foreground",
-                )}
-              >
-                <ArrowUp className="size-[18px]" aria-hidden />
-              </button>
+        <div className="col-start-2 row-start-2 min-w-0 md:col-span-2 md:col-start-1 md:px-2 md:pt-1">
+          {/* 補完中は combobox として関連付ける（Codex P2）。フォーカスは textarea に
+              残るため、aria-activedescendant が無いとスクリーンリーダーへ選択が伝わらない。 */}
+          <PromptInputTextarea
+            placeholder={effectivePlaceholder}
+            autoFocus={autoFocus}
+            aria-label="メッセージを入力"
+            role={slashOpen ? "combobox" : undefined}
+            aria-expanded={slashOpen || undefined}
+            aria-controls={slashOpen ? SLASH_LISTBOX_ID : undefined}
+            aria-autocomplete={slashOpen ? "list" : undefined}
+            aria-activedescendant={
+              slashOpen ? slashOptionId(Math.min(slashIndex, slashHits!.length - 1)) : undefined
+            }
+            onKeyDown={onKeyDown}
+            className={cn(
+              "min-h-10 min-w-0 px-1.5 py-2 text-base leading-6 placeholder:text-muted-foreground/70",
+              // 長いプレースホルダは折り返さずに切る（1 行のバーを 2 行に押し広げない）。
+              "placeholder-shown:overflow-hidden placeholder-shown:text-ellipsis placeholder-shown:whitespace-nowrap",
+              "md:min-h-[44px] md:px-0 md:pb-1 md:pt-0 md:text-[15px] md:leading-relaxed",
             )}
-          </div>
-        </PromptInputActions>
+          />
+        </div>
+
+        {/* 右: スマホは実行モード → 送信。生成中は停止を出し、書きかけがあれば送信（＝順番待ちへ
+            積む）も並べる。書きかけが無いのに無効な送信ボタンを置くと、押せないボタンが常駐して邪魔。 */}
+        <div className="col-start-3 row-start-2 flex items-center justify-end gap-1 md:col-start-2 md:row-start-3 md:gap-1.5 md:pb-0.5 md:pr-0.5">
+          {onAutonomousChange ? (
+            <ComposerModeButton
+              className="md:hidden"
+              autonomous={autonomous}
+              onAutonomousChange={onAutonomousChange}
+              approvalMode={approvalMode}
+              onApprovalModeChange={onApprovalModeChange}
+              bypassAllowed={bypassAllowed}
+              workspace={workspace}
+              onPickWorkspace={onWorkspaceChange ? () => setWsPickerOpen(true) : undefined}
+            />
+          ) : null}
+          {streaming ? (
+            <button
+              type="button"
+              onClick={onStop}
+              aria-label="生成を停止"
+              title="生成を停止"
+              className={cn(
+                "flex size-10 shrink-0 items-center justify-center rounded-full bg-foreground text-background transition-colors hover:bg-foreground/85 md:size-9",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
+              )}
+            >
+              <Square className="size-3.5 fill-current" aria-hidden />
+            </button>
+          ) : null}
+          {!streaming || canSend ? (
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!canSend}
+              aria-label={streaming ? "順番待ちに追加" : "送信"}
+              title={streaming ? "生成が終わったら自動で送信します" : undefined}
+              className={cn(
+                "flex size-10 shrink-0 items-center justify-center rounded-full transition-colors md:size-9",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
+                canSend
+                  ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                  : "bg-muted text-muted-foreground",
+              )}
+            >
+              <ArrowUp className="size-5 md:size-[18px]" aria-hidden />
+            </button>
+          ) : null}
+        </div>
       </PromptInput>
 
       <input
@@ -337,120 +541,4 @@ export function Composer({
       ) : null}
     </div>
   );
-}
-
-/// 左下「+」の統合メニュー。添付（ローカル/ドライブ）と「作成」サブメニュー（#333）を集約する。
-/// Radix DropdownMenu でポータル描画＋衝突回避するため、画面中央のコンポーザ（ホーム）でも
-/// メニューがビューポート上端に食い込まず、収まらない高さは内部スクロールに落ちる。
-function PlusMenu({
-  open,
-  onOpenChange,
-  onUploadLocal,
-  onOpenDrive,
-  createParentId = null,
-}: {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-  onUploadLocal: () => void;
-  onOpenDrive: () => void;
-  /// 「作成」の保存先フォルダ（エージェントモードのワークスペース選択時はそれ・既定はマイドライブ直下）。
-  createParentId?: string | null;
-}) {
-  // 作成ロジックはドライブの「新規作成」と共通（use-create-content・重複実装しない）。
-  const { createNoteAndOpen, createDocumentAndOpen, createSlideAndOpen, createCsvAndOpen } =
-    useCreateContent({ parentId: createParentId });
-  return (
-    <DropdownMenu open={open} onOpenChange={onOpenChange}>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label="追加メニューを開く"
-          title="追加（添付・作成）"
-          className={cn(
-            "flex size-9 items-center justify-center rounded-full border transition-colors",
-            open
-              ? "border-foreground/30 bg-secondary text-foreground"
-              : "border-border text-foreground/70 hover:bg-secondary hover:text-foreground",
-          )}
-        >
-          <Plus className={cn("size-[18px] transition-transform", open && "rotate-45")} aria-hidden />
-        </button>
-      </DropdownMenuTrigger>
-
-      <DropdownMenuContent
-        side="top"
-        align="start"
-        sideOffset={8}
-        collisionPadding={12}
-        className="max-h-[var(--radix-dropdown-menu-content-available-height)] w-72 overflow-y-auto p-1.5"
-      >
-        {/* 添付 */}
-        <DropdownMenuLabel className="uppercase tracking-wide">添付</DropdownMenuLabel>
-        <DropdownMenuItem className="gap-2.5 px-2.5 py-2" onSelect={onUploadLocal}>
-          <Upload className="text-muted-foreground" />
-          ローカルからアップロード
-        </DropdownMenuItem>
-        <DropdownMenuItem className="gap-2.5 px-2.5 py-2" onSelect={onOpenDrive}>
-          <HardDrive className="text-muted-foreground" />
-          ドライブから選択
-        </DropdownMenuItem>
-
-        <DropdownMenuSeparator />
-
-        {/* 作成（ノート/ドキュメント/スライド/CSV・#333）。ドライブの「新規作成」と同じ
-            作成関数を共用し、作成後は対応エディタへ遷移する。 */}
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger
-            className="gap-2.5 px-2.5 py-2"
-            data-testid="composer-create-menu"
-          >
-            <FilePlus2 className="text-muted-foreground" />
-            作成
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="w-56 p-1.5">
-            <DropdownMenuItem
-              className="gap-2.5 px-2.5 py-2"
-              onSelect={() => void createNoteAndOpen()}
-              data-testid="composer-create-note"
-            >
-              <NotebookPen className="text-primary" aria-hidden />
-              ノート
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="gap-2.5 px-2.5 py-2"
-              onSelect={() => void createDocumentAndOpen()}
-              data-testid="composer-create-document"
-            >
-              <FileText className="text-blue-600" aria-hidden />
-              ドキュメント（Word）
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="gap-2.5 px-2.5 py-2"
-              onSelect={() => void createSlideAndOpen()}
-              data-testid="composer-create-slide"
-            >
-              <Presentation className="text-orange-500" aria-hidden />
-              スライド
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="gap-2.5 px-2.5 py-2"
-              onSelect={() => void createCsvAndOpen()}
-              data-testid="composer-create-csv"
-            >
-              <FileSpreadsheet className="text-green-600" aria-hidden />
-              スプレッドシート（CSV）
-            </DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-
-        <DropdownMenuSeparator />
-
-        {/* Web 検索（近日対応） */}
-        <DropdownMenuItem disabled className="gap-2.5 px-2.5 py-2">
-          <Globe className="text-muted-foreground" />
-          Web 検索（近日対応）
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
+});

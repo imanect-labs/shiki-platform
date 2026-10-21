@@ -24,7 +24,7 @@ swc_ecma_transforms_typescript = "51"
 swc_ecma_transforms_base = "45"
 
 # wasmtime 上で QuickJS ゲスト wasm を駆動（fuel/メモリ/epoch 上限）。
-wasmtime = "46"
+wasmtime = "49"
 
 # gRPC over UDS（双方向ストリーム・server/client 両スタブ）。
 tonic = { workspace = true }

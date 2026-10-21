@@ -6,17 +6,24 @@
 /// - 本 PR は閲覧ビューのみ。編集（GrapesJS 砂箱エディタ・Task 11.2）は本ページの
 ///   editable 分岐に載る。描画は SlideFrame（DOMPurify＋sandbox iframe・PIT-40）。
 
-import { EditorLoading } from "@/components/shell/editor-loading";
-import { MessageSquare, X } from "lucide-react";
+import { Eye, FileWarning } from "lucide-react";
 import { useParams } from "next/navigation";
 import * as React from "react";
 import * as Y from "yjs";
 
 import { NoteChatPanel } from "@/components/notes/note-chat-panel";
-import { SlideHeaderSlot } from "@/components/slides/slide-header-slot";
-import { SlideWorkspace } from "@/components/slides/slide-workspace";
-import { EmptyState } from "@/components/ui/empty-state";
-import { FadeSlide } from "@/components/ui/motion-primitives";
+import { SyncPill } from "@/components/notes/note-status";
+import { PresenceAvatars } from "@/components/notes/presence";
+import { AssistantLayout } from "@/components/shell/assistant-sheet";
+import {
+  EditorLoading,
+  EditorMobileHeading,
+  EditorStatusBadge,
+  EditorUnavailable,
+} from "@/components/shell/editor-loading";
+import { useSlideChrome } from "@/components/slides/slide-header-slot";
+import { SlideWorkspace, useSlideOverlays } from "@/components/slides/slide-workspace";
+import { ShareLinkUnlock, unlockTokenFromUrl } from "@/components/share/share-link-unlock";
 import { CollabProvider, type CollabStatus } from "@/lib/collab";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
 import { setPendingSelection } from "@/lib/selection-context";
@@ -70,19 +77,17 @@ export default function SlidePage() {
     provider: CollabProvider;
   } | null>(null);
 
-  React.useEffect(() => {
-    let cancelled = false;
+  // アクセス判定の取得（解錠後に再取得できるよう callback 化）。
+  const loadAccess = React.useCallback(() => {
+    setAccess("loading");
     getCollabAccess(nodeId)
-      .then((a) => {
-        if (!cancelled) setAccess(a ?? "notfound");
-      })
-      .catch(() => {
-        if (!cancelled) setAccess("notfound");
-      });
-    return () => {
-      cancelled = true;
-    };
+      .then((a) => setAccess(a ?? "notfound"))
+      .catch(() => setAccess("notfound"));
   }, [nodeId]);
+
+  React.useEffect(() => {
+    loadAccess();
+  }, [loadAccess]);
 
   React.useEffect(() => {
     if (typeof access === "string" || access === null) return;
@@ -102,79 +107,94 @@ export default function SlidePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeId, typeof access === "string" ? access : "ready"]);
 
+  const overlays = useSlideOverlays();
+  const ready = typeof access === "object" && access !== null;
+  const displayName = ready ? access.name.replace(/\.slide$/i, "") : "";
+  const editable = ready && access.mode === "editor";
+  // クロームはページ最上位で登録する（読み込み中・notfound でも戻る導線を残す）。
+  useSlideChrome(
+    ready
+      ? {
+          name: displayName,
+          editable,
+          status,
+          synced,
+          provider: session?.provider ?? null,
+          chatOpen,
+          onToggleChat: openAssistant,
+          onExport: overlays.onExport,
+          onPresent: overlays.onPresent,
+        }
+      : null,
+  );
+
   if (access === "loading") {
-    return (
-      <EditorLoading kind="slide" message="スライドを開いています…" />
-    );
+    return <EditorLoading kind="slide" message="スライドを開いています…" />;
   }
   if (access === "notfound" || access === null) {
     return (
-      <EmptyState
+      <EditorUnavailable
+        icon={FileWarning}
         title="スライドが見つかりません"
-        description="削除されたか、アクセス権がありません。"
-      />
+        description="削除されたか、アクセス権がありません。パスワード付き共有リンクの場合はパスワードで開けます。"
+      >
+        {unlockTokenFromUrl() ? (
+          <ShareLinkUnlock token={unlockTokenFromUrl()!} onUnlocked={loadAccess} autoFocus />
+        ) : null}
+      </EditorUnavailable>
     );
   }
 
-  const editable = access.mode === "editor";
-
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <SlideHeaderSlot
-        name={access.name.replace(/\.slide$/i, "")}
-        editable={editable}
-        status={status}
-        synced={synced}
-        provider={session?.provider ?? null}
-        chatOpen={chatOpen}
-        onToggleChat={openAssistant}
+      {/* スマホ: 文書名＋状態（PC はバーに出す）。 */}
+      <EditorMobileHeading
+        name={displayName}
+        status={
+          <>
+            {!editable ? <EditorStatusBadge icon={Eye}>閲覧のみ</EditorStatusBadge> : null}
+            <SyncPill status={status} synced={synced} showSynced testId={null} />
+            {session ? (
+              <PresenceAvatars provider={session.provider} max={1} testId={null} />
+            ) : null}
+          </>
+        }
       />
-      <div className="relative min-h-0 flex-1">
-        {session && synced ? (
-          <div className={chatOpen ? "h-full lg:pr-[28rem]" : "h-full"}>
+      {/* アシスタント（ノートページと同型・meta active_thread_id 共用）。 */}
+      <AssistantLayout
+        open={Boolean(session) && chatOpen}
+        onClose={() => setChatOpen(false)}
+        label="スライドのアシスタント"
+        panel={
+          session ? (
+            <NoteChatPanel
+              meta={session.doc.getMap("meta")}
+              noteId={nodeId}
+              noteName={access.name}
+              editable={editable}
+              initialThreadId={null}
+            />
+          ) : null
+        }
+      >
+        <div className="min-h-0 flex-1">
+          {session && synced ? (
             <SlideWorkspace
               doc={session.doc}
               editable={editable}
-              name={access.name.replace(/\.slide$/i, "")}
+              name={displayName}
               // 選択→AI 指示（Task 11.10）: パネルが開いていれば選択要素を自動挿入する。
               onSelectionChange={handleSelectionChange}
+              presenting={overlays.presenting}
+              onPresentingChange={overlays.setPresenting}
+              exporting={overlays.exporting}
+              onExportingChange={overlays.setExporting}
             />
-          </div>
-        ) : (
-          <EditorLoading kind="slide" message="同期しています…" />
-        )}
-        {/* アシスタントパネル（ノートページと同型の浮遊カード・meta active_thread_id 共用） */}
-        {session && chatOpen ? (
-          <FadeSlide
-            from="right"
-            role="complementary"
-            aria-label="スライドのアシスタント"
-            className="absolute inset-y-3 right-3 z-20 flex w-[min(420px,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border bg-card shadow-lg"
-          >
-            <div className="flex h-11 shrink-0 items-center gap-2 px-3 shiki-dash-bottom">
-              <MessageSquare className="size-4 text-muted-foreground" aria-hidden />
-              <span className="flex-1 text-sm font-medium">アシスタント</span>
-              <button
-                type="button"
-                onClick={() => setChatOpen(false)}
-                aria-label="チャットを閉じる"
-                className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-90"
-              >
-                <X className="size-4" aria-hidden />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1">
-              <NoteChatPanel
-                meta={session.doc.getMap("meta")}
-                noteId={nodeId}
-                noteName={access.name}
-                editable={editable}
-                initialThreadId={null}
-              />
-            </div>
-          </FadeSlide>
-        ) : null}
-      </div>
+          ) : (
+            <EditorLoading kind="slide" message="同期しています…" />
+          )}
+        </div>
+      </AssistantLayout>
     </div>
   );
 }

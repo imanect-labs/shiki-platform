@@ -7,14 +7,13 @@ use uuid::Uuid;
 
 /// アーティファクト種別（閉じた集合）。
 ///
-/// Stage A で使用するのは `workflow`（IR）のみ。他 variant は Phase 6（ui_spec / mini_app / skill。
+/// Stage A で使用するのは `workflow`（IR）のみ。他 variant は Phase 6（mini_app / skill。
 /// skill は旧 prompt template を統合した kind）・Phase 10 Stage B（script）の予約で、追加はこの enum と
 /// migration の CHECK 制約の両方を更新する（DB と語彙の二重定義はここで閉じる）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
     Workflow,
-    UiSpec,
     MiniApp,
     /// 構造化データの保存ビュー（宣言的クエリ＋表示設定・Task 9.4）。
     DataView,
@@ -31,7 +30,6 @@ impl ArtifactKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             ArtifactKind::Workflow => "workflow",
-            ArtifactKind::UiSpec => "ui_spec",
             ArtifactKind::MiniApp => "mini_app",
             ArtifactKind::DataView => "data_view",
             ArtifactKind::Fsm => "fsm",
@@ -45,7 +43,6 @@ impl ArtifactKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "workflow" => Some(ArtifactKind::Workflow),
-            "ui_spec" => Some(ArtifactKind::UiSpec),
             "mini_app" => Some(ArtifactKind::MiniApp),
             "data_view" => Some(ArtifactKind::DataView),
             "fsm" => Some(ArtifactKind::Fsm),
@@ -131,7 +128,6 @@ mod tests {
     fn kind_str_roundtrip_all_variants() {
         for k in [
             ArtifactKind::Workflow,
-            ArtifactKind::UiSpec,
             ArtifactKind::MiniApp,
             ArtifactKind::DataView,
             ArtifactKind::Fsm,

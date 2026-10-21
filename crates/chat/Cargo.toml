@@ -23,8 +23,10 @@ shiki-rag.workspace = true
 shiki-llm-gateway.workspace = true
 shiki-agent-core.workspace = true
 shiki-websearch.workspace = true
-# generative UI（emit_ui ツール・chat.submit ハンドラ・Task 6.4/6.5）＋skill 適用（Task 6.9）。
+# 図のボタンの実行系（chat.submit ハンドラ・ワークフロー名の解決・Task 6.5・#604）＋skill 適用（Task 6.9）。
 shiki-gui.workspace = true
+# 回答の本文の ```ui（Yui）のボタン: ブロックの読み直しと値の検証（#604）。
+shiki-yui.workspace = true
 # AI 編集ツール emit_workflow / read_workflow（保存パイプライン検証・Task 10.13）。
 shiki-workflow-engine.workspace = true
 shiki-artifact.workspace = true
@@ -40,6 +42,7 @@ tracing.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 chrono.workspace = true
+chrono-tz = "0.10"
 uuid = { workspace = true, features = ["v4"] }
 # チャットの DTO / SSE イベント型を単一定義し api 層に手書きミラーを作らない（codegen が正）。
 utoipa.workspace = true
@@ -71,6 +74,7 @@ ignored = [
     "shiki-agent-core",
     "shiki-websearch",
     "shiki-gui",
+    "shiki-yui",
     "shiki-workflow-engine",
     "shiki-artifact",
     "shiki-durable",

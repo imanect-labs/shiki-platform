@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::ui_specs::{map_gui_err, GuiValidationErrorResponse};
+use super::gui_errors::{map_gui_err, GuiValidationErrorResponse};
 use crate::{
     error::ApiError,
     extract::{AuthContextExt, TraceIdExt},

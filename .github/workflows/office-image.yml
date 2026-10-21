@@ -33,7 +33,7 @@ jobs:
     # LibreOffice core のフルビルドを含むため長い（キャッシュ無しで 4〜5 時間を見込む）。
     timeout-minutes: 340
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -44,53 +44,271 @@ jobs:
         run: |
           set -euo pipefail
           source deploy/docker/collabora/office-manifest.env
-          for v in CORE_REPO CORE_REF CORE_COMMIT ONLINE_REPO ONLINE_REF ONLINE_COMMIT; do
+          for v in ONLINE_REPO ONLINE_REF ONLINE_COMMIT TRANSLATIONS_REPO TRANSLATIONS_REF TRANSLATIONS_COMMIT NODE_URL NODE_SHA256; do
             [ -n "${!v}" ] || { echo "manifest に $v が無い"; exit 1; }
             echo "$v=${!v}" >> "$GITHUB_ENV"
           done
+          # ビルドごとに不変のタグに使う（run_id は再実行でも変わらないので attempt も付ける）。
+          echo "BUILD_ID=b${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+          # Ubuntu スナップショットの時刻。runtime（load）・sources・push の 3 回のビルドで
+          # 同じ値を使い、本体と -sources の Ubuntu パッケージの版を揃える（Dockerfile 参照）。
+          echo "UBUNTU_SNAPSHOT=$(date -u +%Y%m%dT%H%M%SZ)" >> "$GITHUB_ENV"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: build & push
-        uses: docker/build-push-action@v6
+      # **core だけ先に建ててキャッシュへ出す。**
+      # cache-to はビルドが**成功したときしか**書き出されない。core の後ろ
+      # （coolwsd・ランタイム）で落ちると、3 時間かけた core も毎回捨てられる
+      # ——実際それで 4 回連続フルビルドになった。core 単体なら必ず成功するので、
+      # ここで確実にキャッシュへ載せてから全体を建てる。
+      #
+      # **週次だけはキャッシュを使わない。** あの schedule の目的は
+      # 「キャッシュ無しのクリーンビルドで腐敗を検知する」ことなので、
+      # 効かせると目的を失う。
+      - name: build core（キャッシュ投入のみ・成果物は捨てる）
+        if: github.event_name != 'schedule'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: deploy/docker/collabora
-          push: true
+          target: core-build
+          load: false
+          push: false
+          cache-from: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache', github.repository_owner) || '' }}
+          cache-to: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache,mode=max', github.repository_owner) || '' }}
+          build-args: |
+            ONLINE_REPO=${{ env.ONLINE_REPO }}
+            ONLINE_REF=${{ env.ONLINE_REF }}
+            ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+            TRANSLATIONS_REPO=${{ env.TRANSLATIONS_REPO }}
+            TRANSLATIONS_REF=${{ env.TRANSLATIONS_REF }}
+            TRANSLATIONS_COMMIT=${{ env.TRANSLATIONS_COMMIT }}
+            NODE_URL=${{ env.NODE_URL }}
+            NODE_SHA256=${{ env.NODE_SHA256 }}
+
+
+      # **push する前に smoke する。** 以前はこの step が push: true で、
+      # ビルドが通っただけのイメージが latest として公開されていた。
+      # 起動しないイメージを掴まされると、利用側は原因がイメージ側にあると
+      # 気づけない。load してローカルで検証し、通ってから push する。
+      - name: build（load のみ・まだ push しない）
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: deploy/docker/collabora
+          # 後ろに sources ステージが続くので、無指定だとそちらが建つ。
+          target: runtime
+          load: true
+          push: false
+          # 上の step が入れた core のキャッシュを使う。成功したら全層を更新する。
+          cache-from: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache', github.repository_owner) || '' }}
+          cache-to: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache,mode=max', github.repository_owner) || '' }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest
           build-args: |
-            CORE_REPO=${{ env.CORE_REPO }}
-            CORE_REF=${{ env.CORE_REF }}
-            CORE_COMMIT=${{ env.CORE_COMMIT }}
             ONLINE_REPO=${{ env.ONLINE_REPO }}
             ONLINE_REF=${{ env.ONLINE_REF }}
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+            TRANSLATIONS_REPO=${{ env.TRANSLATIONS_REPO }}
+            TRANSLATIONS_REF=${{ env.TRANSLATIONS_REF }}
+            TRANSLATIONS_COMMIT=${{ env.TRANSLATIONS_COMMIT }}
+            NODE_URL=${{ env.NODE_URL }}
+            NODE_SHA256=${{ env.NODE_SHA256 }}
+            BUILD_ID=${{ env.BUILD_ID }}
+            UBUNTU_SNAPSHOT=${{ env.UBUNTU_SNAPSHOT }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=MPL-2.0
-            io.shiki.collabora.core=${{ env.CORE_REF }}@${{ env.CORE_COMMIT }}
             io.shiki.collabora.online=${{ env.ONLINE_REF }}@${{ env.ONLINE_COMMIT }}
+            io.shiki.collabora.sources=${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}-sources
 
+      # **--rm を付けない。** 付けていると coolwsd が起動直後に落ちたとき
+      # コンテナごとログが消え、「No such container」しか残らなかった。
+      # **command を上書きしない。** 配布するのはイメージの CMD なので、それ自体を検証する
+      # （以前は引数をここに再掲していて、CMD の不備を素通りさせうる形だった）。
       - name: smoke（discovery が取れること）
         run: |
           set -euo pipefail
-          docker run -d --rm --name collabora-smoke -p 127.0.0.1:19980:9980 \
-            "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}" \
-            coolwsd --o:sys_template_path=/opt/cool/systemplate \
-              --o:child_root_path=/opt/cool/child-roots \
-              --o:lo_template_path=/opt/collaboraoffice \
-              --o:ssl.enable=false --o:ssl.termination=false
+          trap 'docker rm -f collabora-smoke >/dev/null 2>&1 || true' EXIT
+          # **Shiki Office としてブランドされていること（#549）。** 設定やファイルの置き場所が
+          # ずれると、ビルドは通っても UI に Collabora の名前が戻る。利用者の目に入る
+          # 経路（capabilities・エディタのページ・branding.css）と同梱物を実物で確かめる。
+          check_brand() {
+            local base=http://127.0.0.1:19980 caps disc path html
+            caps="$(curl -fsS --max-time 5 "$base/hosting/capabilities")"
+            echo "$caps" | grep -Eq '"productName" *: *"Shiki Office"' \
+              || { echo "capabilities の productName が Shiki Office でない: $caps"; return 1; }
+            # head で途中から読むのをやめると、pipefail の下では前段が SIGPIPE で落ちて
+            # パイプライン全体が失敗する（urlsrc は数百件ある）。最後まで読む sed -n で 1 件目を取る。
+            disc="$(curl -fsS --max-time 5 "$base/hosting/discovery")"
+            path="$(printf '%s\n' "$disc" | grep -o 'urlsrc="[^"]*/cool.html' \
+              | sed -n -E '1{s#urlsrc="https?://[^/]+##;p}')"
+            [ -n "$path" ] || { echo "discovery に cool.html の urlsrc が無い"; return 1; }
+            html="$(curl -fsS --max-time 10 "$base$path")"
+            echo "$html" | grep -q 'id="init-product-branding-name" value="Shiki Office"' \
+              || { echo "エディタのページの製品名が Shiki Office でない"; return 1; }
+            echo "$html" | grep -q 'id="init-product-branding-url" value="https://www.imanect.co.jp/"' \
+              || { echo "エディタのページの製品 URL が想定と違う"; return 1; }
+            css="$(curl -fsS --max-time 5 "$base${path%/cool.html}/branding.css")"
+            echo "$css" | grep -q 'menu-forum' \
+              || { echo "branding.css が配信されていない"; return 1; }
+            # About の著作権表示の vendor（上流のテンプレートが空白で切るので branding.js で入れ直す）
+            js="$(curl -fsS --max-time 5 "$base${path%/cool.html}/branding.js")"
+            echo "$js" | grep -qF "window.vendor = 'the Collabora Online and LibreOffice contributors';" \
+              || { echo "branding.js が vendor を入れ直していない"; return 1; }
+            docker exec collabora-smoke sh -ec \
+              'test ! -e /opt/collaboraoffice/EULA.odt; test ! -e /opt/collaboraoffice/EULA_en-US.rtf
+               test -s /usr/share/doc/shiki-office/NOTICE
+               test -s /usr/share/doc/shiki-office/ubuntu-source-packages.txt
+               test -s /usr/share/doc/shiki-office/core-external-tarballs.sha256
+               test -s /usr/share/doc/shiki-office/poco-LICENSE
+               grep -q "shiki-collabora:.*-b[0-9].*-sources" /usr/share/doc/shiki-office/NOTICE
+               grep -q "^Vendor=Imanect Labs" /opt/collaboraoffice/program/versionrc' \
+              || { echo "同梱物（EULA の除去・NOTICE・ベンダー）が想定と違う"; return 1; }
+            snap="$(docker exec collabora-smoke cat /usr/share/doc/shiki-office/ubuntu-snapshot.txt)"
+            [ "$snap" = "$UBUNTU_SNAPSHOT" ] \
+              || { echo "Ubuntu スナップショットの時刻が渡した値と違う: $snap != $UBUNTU_SNAPSHOT"; return 1; }
+            echo "brand OK"
+          }
+          # **日本語フォントの別名が描画で効くこと（#725）。** 游ゴシック（ゴシック）と游明朝（明朝）を
+          # 指定した文書を PDF にし、日本語版の Noto Sans / Serif CJK が埋め込まれることを見る。
+          # 別名が無いとゴシックが明朝で出たり、中国語版の字形で描かれたりする。
+          check_fonts() {
+            local doc pdf fonts
+            doc="$(mktemp --suffix=.docx)"; pdf="$(mktemp --suffix=.pdf)"
+            # 東アジアの書体（w:eastAsia）に 游ゴシック と 游明朝 を指定した最小の docx。
+            # HTML は font-family が欧文の書体にしか付かず、日本語の文字は既定の書体で描かれるので使わない。
+            python3 - "$doc" <<'PY'
+          import sys, zipfile
+          W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+          def para(text, font):
+              return (f'<w:p><w:r><w:rPr><w:rFonts w:ascii="{font}" w:eastAsia="{font}"/></w:rPr>'
+                      f'<w:t>{text}</w:t></w:r></w:p>')
+          body = para("見出しの書体", "游ゴシック") + para("本文の書体", "游明朝")
+          with zipfile.ZipFile(sys.argv[1], "w") as z:
+              z.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                  '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                  '<Default Extension="xml" ContentType="application/xml"/>'
+                  '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+              z.writestr("_rels/.rels", '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                  '<Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
+              z.writestr("word/document.xml", f'<?xml version="1.0"?><w:document {W}><w:body>{body}</w:body></w:document>')
+          PY
+            curl -fsS --max-time 60 -F "data=@$doc" http://127.0.0.1:19980/cool/convert-to/pdf -o "$pdf" \
+              || { echo "convert-to/pdf に失敗した"; return 1; }
+            # 書体名は版で大文字小文字が違う（Noto CJK 2.x は NotoSansCJKJP）ので小文字にして比べる。
+            fonts="$(grep -a -o '/BaseFont */[A-Za-z0-9+_-]*' "$pdf" | sed 's|.*/||' | sort -u | tr '\n' ' ' || true)"
+            echo "PDF の書体: $fonts"
+            lower="$(printf '%s' "$fonts" | tr '[:upper:]' '[:lower:]')"
+            # 別名（fonts/65-shiki-ja-aliases.conf）が効くと、ゴシックは Noto Sans の日本語版、明朝は Noto Serif の
+            # 日本語版になる（OS の CJK JP か engine 同梱の JP）。効かないと明朝もゴシックで描かれる。
+            case "$lower" in *notosanscjkjp*|*notosansjp*) ;; *) echo "ゴシックが Noto Sans の日本語版で描かれていない"; return 1;; esac
+            case "$lower" in *notoserifcjkjp*|*notoserifjp*) ;; *) echo "明朝が Noto Serif の日本語版で描かれていない"; return 1;; esac
+            echo "fonts OK"
+          }
+          docker run -d --name collabora-smoke -p 127.0.0.1:19980:9980 \
+            "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}"
           for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
-              echo "discovery OK"; docker stop collabora-smoke; exit 0
+            # --max-time: 無いと coolwsd が子プロセス待ちで応答を返さないとき
+            # curl が固まり、120 秒の打ち切りが効かない（実際 17 分待った）。
+            if curl -fsS --max-time 5 http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
+              echo "discovery OK"; check_brand; check_fonts; exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' collabora-smoke)" != true ]; then
+              echo "coolwsd が終了した（exit code: $(docker inspect -f '{{.State.ExitCode}}' collabora-smoke)）"
+              docker logs collabora-smoke 2>&1 | tail -200; exit 1
             fi
             sleep 2
           done
-          echo "discovery が 120 秒で応答しない"; docker logs collabora-smoke; exit 1
+          echo "discovery が 120 秒で応答しない"; docker logs collabora-smoke 2>&1 | tail -200; exit 1
+
+      # smoke を通ったものだけ公開する。
+      #
+      # **ソースを先に公開し、成功してから本体を公開する（#549）。** 本体の NOTICE は
+      # 「対応するソース一式は -sources イメージにある」と案内している。逆順だと、
+      # ソース側が失敗したとき（snapshot の取得失敗・ディスク不足・タイムアウト）に
+      # 対応ソースの無い本体だけが公開される。
+      #
+      # **タグはビルドごとに不変のもの（<ONLINE_REF>-<BUILD_ID>）も付ける。** 週次の
+      # 再ビルドで <ONLINE_REF> は上書きされる（Ubuntu パッケージの版が変わる）ので、
+      # 不変タグが無いと古い本体に対応するソースが引けなくなる。本体の NOTICE には
+      # この不変タグのソースイメージを書き込んでいる。配布・デプロイでは不変タグを指す。
+      #
+      # smoke で load したイメージはもう使わない（push は BuildKit から行う）ので、
+      # Ubuntu のソース取得に使うディスクを空けるために消す。
+      - name: ローカルのイメージを消す（sources のためにディスクを空ける）
+        run: |
+          docker image rm "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}" \
+            "ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest" || true
+          df -h /
+
+      - name: sources（対応するソース一式）を建てて push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: deploy/docker/collabora
+          target: sources
+          push: true
+          cache-from: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache', github.repository_owner) || '' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}-sources
+            ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}-sources
+          build-args: |
+            ONLINE_REPO=${{ env.ONLINE_REPO }}
+            ONLINE_REF=${{ env.ONLINE_REF }}
+            ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+            TRANSLATIONS_REPO=${{ env.TRANSLATIONS_REPO }}
+            TRANSLATIONS_REF=${{ env.TRANSLATIONS_REF }}
+            TRANSLATIONS_COMMIT=${{ env.TRANSLATIONS_COMMIT }}
+            NODE_URL=${{ env.NODE_URL }}
+            NODE_SHA256=${{ env.NODE_SHA256 }}
+            BUILD_ID=${{ env.BUILD_ID }}
+            UBUNTU_SNAPSHOT=${{ env.UBUNTU_SNAPSHOT }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=Complete corresponding source of shiki-collabora:${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}
+
+      # **BuildKit から push する（docker push にしない）。** load したイメージを
+      # docker push すると、build-push-action が付ける provenance（どのコミット・
+      # どのワークフローから建てたか）が付かない（load: true では attestation が
+      # 付かないと Docker の文書にある）。同じビルダーで上の build と同じ入力を
+      # 建て直すので全層キャッシュに当たり、smoke したものと同じ中身になる。
+      # sbom: 配布物の構成要素の一覧をイメージに添える（ライセンス順守・#549）。
+      - name: push（provenance と SBOM を付けて）
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: deploy/docker/collabora
+          target: runtime
+          push: true
+          provenance: mode=max
+          sbom: true
+          cache-from: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache', github.repository_owner) || '' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}
+            ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}
+            ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest
+          build-args: |
+            ONLINE_REPO=${{ env.ONLINE_REPO }}
+            ONLINE_REF=${{ env.ONLINE_REF }}
+            ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+            TRANSLATIONS_REPO=${{ env.TRANSLATIONS_REPO }}
+            TRANSLATIONS_REF=${{ env.TRANSLATIONS_REF }}
+            TRANSLATIONS_COMMIT=${{ env.TRANSLATIONS_COMMIT }}
+            NODE_URL=${{ env.NODE_URL }}
+            NODE_SHA256=${{ env.NODE_SHA256 }}
+            BUILD_ID=${{ env.BUILD_ID }}
+            UBUNTU_SNAPSHOT=${{ env.UBUNTU_SNAPSHOT }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=MPL-2.0
+            io.shiki.collabora.online=${{ env.ONLINE_REF }}@${{ env.ONLINE_COMMIT }}
+            io.shiki.collabora.sources=${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}-sources
+
+      - name: 公開したタグ
+        run: |
+          echo "本体:   ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}-${BUILD_ID}" >> "$GITHUB_STEP_SUMMARY"
+          echo "ソース: ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}-${BUILD_ID}-sources" >> "$GITHUB_STEP_SUMMARY"

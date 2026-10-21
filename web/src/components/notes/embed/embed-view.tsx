@@ -5,7 +5,6 @@
 import { AlertTriangle, ExternalLink, FileText, Loader2 } from "lucide-react";
 import * as React from "react";
 
-import { SpecRenderer } from "@/components/genui/spec-renderer";
 import { downloadUrl, getNode, triggerDownload, type NodeResponse } from "@/lib/storage";
 import { parseEmbedPayload, type EmbedPayload } from "./types";
 
@@ -24,7 +23,7 @@ export function EmbedView({ payloadJson }: { payloadJson: string }) {
   if (!payload) return <InvalidEmbed reason="未対応の形式" />;
   switch (payload.kind) {
     case "genui":
-      return <GenuiEmbed payload={payload} />;
+      return <LegacyGenuiEmbed />;
     case "iframe":
       return <IframeEmbed payload={payload} />;
     case "drive":
@@ -32,11 +31,16 @@ export function EmbedView({ payloadJson }: { payloadJson: string }) {
   }
 }
 
-/// ①genui: 検証済みスペックを Phase 6 レンダラで描画（HTML 実行なし・静的カタログ）。
-function GenuiEmbed({ payload }: { payload: Extract<EmbedPayload, { kind: "genui" }> }) {
+/// ①genui: 撤去した旧形式の図（#604）。新しい図は本文の ```ui で描く。ノートの Yjs に
+/// 残った旧データは SQL では書き換えられないので、消さずに旧形式だと伝える。
+function LegacyGenuiEmbed() {
   return (
-    <div className="my-2 rounded-lg border bg-card p-3" data-testid="embed-genui">
-      <SpecRenderer spec={payload.spec} />
+    <div
+      className="my-2 flex items-center gap-2 rounded-lg border border-dashed bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
+      data-testid="embed-genui"
+    >
+      <AlertTriangle className="size-4 shrink-0" aria-hidden />
+      旧形式の図のため表示できません。必要なら図を作り直してください。
     </div>
   );
 }
@@ -55,7 +59,7 @@ function IframeEmbed({ payload }: { payload: Extract<EmbedPayload, { kind: "ifra
         sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
         referrerPolicy="no-referrer"
         loading="lazy"
-        className="h-[420px] w-full bg-background print:hidden"
+        className="h-[min(420px,60dvh)] w-full bg-background print:hidden"
       />
       <div
         className="hidden items-center gap-2 px-3 py-4 text-sm text-muted-foreground print:flex"

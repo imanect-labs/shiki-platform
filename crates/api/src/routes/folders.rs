@@ -194,6 +194,8 @@ pub async fn list_children(
                     sort,
                     q.cursor.as_deref(),
                     limit,
+                    // ドライブ UI にシステム領域（エージェントのワークスペース）は出さない（#392）。
+                    false,
                     trace.as_deref(),
                 )
                 .await?

@@ -131,6 +131,8 @@ impl NodePorts for ProdNodePorts {
                 ChildSort::default(),
                 None,
                 100,
+                // ワークフローの ls もユーザー向けの列挙（システム領域は出さない・#392）。
+                false,
                 ec.trace_id.as_deref(),
             )
             .await
@@ -193,16 +195,15 @@ impl NodePorts for ProdNodePorts {
         greq.model = req.model.clone();
         greq.system = req.system.clone();
         greq.max_tokens = req.max_tokens;
+        // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
+        let started_at = chrono::Utc::now();
         let mut stream = self
             .gateway
-            .stream(greq)
+            .stream(&ctx, greq)
             .await
-            .map_err(|e| PortError::unavailable(format!("llm: {e}")))?;
+            .map_err(|e| llm_port_error(&e))?;
         let mut text = String::new();
-        let mut usage = Usage {
-            prompt_tokens: 0,
-            completion_tokens: 0,
-        };
+        let mut usage = Usage::default();
         while let Some(item) = stream.next().await {
             match item.map_err(|e| PortError::unavailable(format!("llm stream: {e}")))? {
                 StreamDelta::TextDelta { text: t } => text.push_str(&t),
@@ -226,6 +227,14 @@ impl NodePorts for ProdNodePorts {
                     input_preview: preview(&req.prompt),
                     output_preview: preview(&text),
                     app_id: None,
+                    source: llm_gateway::UsageSource::Workflow,
+                    // **false 固定。** 1 つの run に llm.invoke ノードが複数あると、
+                    // 全ノードが run レベルの同じ trace_id を共有する。true にすると
+                    // 後続ノードのプロンプトが trace input を上書きして、
+                    // 最初のノードの入力が消える。ここからは「run 全体の入力」を
+                    // 知る術が無いので、trace input は送らない（generation 側には残る）。
+                    first_in_trace: false,
+                    started_at: Some(started_at),
                 },
             )
             .await;
@@ -405,7 +414,13 @@ impl NodePorts for ProdNodePorts {
             .launcher
             .start_interactive(&ctx, workflow_id, input)
             .await
-            .map_err(|e| PortError::unavailable(format!("workflow.start: {e}")))?;
+            .map_err(|e| match e {
+                // 入力が子ワークフローの input_schema に合わない＝何度やっても通らない（再試行しない）。
+                workflow_engine::run::LauncherError::Input(m) => {
+                    PortError::invalid(format!("workflow.start の入力: {m}"))
+                }
+                other => PortError::unavailable(format!("workflow.start: {other}")),
+            })?;
         Ok(json!({ "run_id": run_id.map(|r| r.to_string()) }))
     }
 
@@ -493,4 +508,34 @@ fn cell_to_json(cell: Option<&str>) -> Value {
 fn preview(s: &str) -> String {
     let flat: String = s.chars().take(200).collect();
     flat.replace('\n', " ")
+}
+
+/// gateway の失敗をワークフローの再試行分類へ写す。
+///
+/// 設定・入力の誤り（未知のモデル・組織が許可していないモデル・プロバイダの 4xx）は、設定を
+/// 変えない限り何度やっても通らないので再試行しない。到達障害やレート制限だけを再試行する。
+fn llm_port_error(e: &llm_gateway::LlmError) -> PortError {
+    match e {
+        llm_gateway::LlmError::Config(_) | llm_gateway::LlmError::BadRequest(_) => {
+            PortError::invalid(format!("llm: {e}"))
+        }
+        _ => PortError::unavailable(format!("llm: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn llm_config_errors_are_not_retried() {
+        use llm_gateway::LlmError;
+        // 組織が許可していないモデルは設定を変えるまで通らない → 再試行しない。
+        let e = llm_port_error(&LlmError::Config("model is not enabled".into()));
+        assert!(!e.retryable);
+        assert!(!llm_port_error(&LlmError::BadRequest("bad".into())).retryable);
+        // 到達障害・レート制限は再試行する。
+        assert!(llm_port_error(&LlmError::Unavailable("down".into())).retryable);
+        assert!(llm_port_error(&LlmError::RateLimited("429".into())).retryable);
+    }
 }

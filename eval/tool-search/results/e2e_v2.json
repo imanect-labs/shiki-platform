@@ -1,0 +1,5682 @@
+[
+ {
+  "id": "aws_cloudwatch_get_log_events:ja@200",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "aws_cloudwatch_get_log_events"
+  ],
+  "searches": [],
+  "prompt_tokens": 25254,
+  "completion_tokens": 78,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 17.66676819883287,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en@200",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "aws_cloudwatch_get_log_events"
+  ],
+  "searches": [],
+  "prompt_tokens": 25251,
+  "completion_tokens": 78,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 18.034344798885286,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja@200",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "aws_cloudwatch_search_logs_by_pattern"
+  ],
+  "searches": [],
+  "prompt_tokens": 25243,
+  "completion_tokens": 71,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 13.195469696074724,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en@200",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "aws_cloudwatch_search_logs_by_pattern"
+  ],
+  "searches": [],
+  "prompt_tokens": 25241,
+  "completion_tokens": 71,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 12.062609326094389,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "chatwork_get_file:ja@200",
+  "target": "chatwork_get_file",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "chatwork_get_file"
+  ],
+  "searches": [],
+  "prompt_tokens": 25236,
+  "completion_tokens": 56,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.057241252623498,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "chatwork_get_file:en@200",
+  "target": "chatwork_get_file",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "chatwork_get_file"
+  ],
+  "searches": [],
+  "prompt_tokens": 25235,
+  "completion_tokens": 56,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.724739630706608,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "docusign_create_webhook:ja@200",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "docusign_create_webhook"
+  ],
+  "searches": [],
+  "prompt_tokens": 25251,
+  "completion_tokens": 85,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.768451263196766,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "docusign_create_webhook:en@200",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "docusign_create_webhook"
+  ],
+  "searches": [],
+  "prompt_tokens": 25247,
+  "completion_tokens": 112,
+  "steps": 1,
+  "error": null,
+  "final_text": "I'll set up a DocuSign webhook to send notifications when an envelope is completed, including the documents in the notification payload.\n\n",
+  "stop": "target",
+  "latency_s": 7.161143501289189,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "dropbox_share_folder:ja@200",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "dropbox_list_folder",
+   "dropbox_share_folder"
+  ],
+  "searches": [],
+  "prompt_tokens": 50956,
+  "completion_tokens": 192,
+  "steps": 2,
+  "error": null,
+  "final_text": "「2026年度 戦略資料」フォルダのIDは `id:a4ayc_80_OEAAAAAAAAAXw` です。このフォルダを佐藤さん（sato@example.com）と編集者権限で共有します。\n\n",
+  "stop": "target",
+  "latency_s": 19.495734834112227,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "dropbox_share_folder:en@200",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "dropbox_share_folder"
+  ],
+  "searches": [],
+  "prompt_tokens": 25235,
+  "completion_tokens": 64,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.677857596427202,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "figma_delete_comment:ja@200",
+  "target": "figma_delete_comment",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "figma_delete_comment"
+  ],
+  "searches": [],
+  "prompt_tokens": 25255,
+  "completion_tokens": 53,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.084664079360664,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "figma_delete_comment:en@200",
+  "target": "figma_delete_comment",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "figma_delete_comment"
+  ],
+  "searches": [],
+  "prompt_tokens": 25247,
+  "completion_tokens": 53,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.499547511339188,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "garoon_list_messages:ja@200",
+  "target": "garoon_list_messages",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [],
+  "prompt_tokens": 25216,
+  "completion_tokens": 29,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 44.55894761532545,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "garoon_list_messages:en@200",
+  "target": "garoon_list_messages",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [],
+  "prompt_tokens": 25214,
+  "completion_tokens": 29,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 46.70235601440072,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gdrive_list_revisions:ja@200",
+  "target": "gdrive_list_revisions",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "gdrive_list_revisions"
+  ],
+  "searches": [],
+  "prompt_tokens": 25241,
+  "completion_tokens": 47,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 13.83291349094361,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gdrive_list_revisions:en@200",
+  "target": "gdrive_list_revisions",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "gdrive_list_revisions"
+  ],
+  "searches": [],
+  "prompt_tokens": 25234,
+  "completion_tokens": 47,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 16.08434091694653,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gdrive_upload_file:ja@200",
+  "target": "gdrive_upload_file",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "gdrive_upload_file"
+  ],
+  "searches": [],
+  "prompt_tokens": 25248,
+  "completion_tokens": 83,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.074601428583264,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gdrive_upload_file:en@200",
+  "target": "gdrive_upload_file",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "gdrive_upload_file"
+  ],
+  "searches": [],
+  "prompt_tokens": 25243,
+  "completion_tokens": 79,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.212515893392265,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gitlab_get_project:ja@200",
+  "target": "gitlab_get_project",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "gitlab_get_project"
+  ],
+  "searches": [],
+  "prompt_tokens": 25225,
+  "completion_tokens": 30,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 9.125041932798922,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gitlab_get_project:en@200",
+  "target": "gitlab_get_project",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "gitlab_get_project"
+  ],
+  "searches": [],
+  "prompt_tokens": 25226,
+  "completion_tokens": 30,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 9.86340247374028,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "jira_update_sprint:ja@200",
+  "target": "jira_update_sprint",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [],
+  "prompt_tokens": 76705,
+  "completion_tokens": 402,
+  "steps": 3,
+  "error": null,
+  "final_text": "アクティブなスプリントのIDは `5012` で、現在の名前は「Sprint 24」です。\nこのスプリントの名前を「Sprint 24 - Hotfix」、終了日を「2026-10-21」（今日が2026年10月14日なので、来週火曜日）、ゴールを「クリティカルバグの修正」に更新します。\n\n",
+  "stop": "target",
+  "latency_s": 25.703962529078126,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "jira_update_sprint:en@200",
+  "target": "jira_update_sprint",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [],
+  "prompt_tokens": 76380,
+  "completion_tokens": 248,
+  "steps": 3,
+  "error": null,
+  "final_text": "Perfect! I found the active sprint with ID 8921. Now I'll update it with the new name, end date, and goal as requested.\n\n",
+  "stop": "target",
+  "latency_s": 23.161975991912186,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "notion_delete_block:ja@200",
+  "target": "notion_delete_block",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "notion_delete_block"
+  ],
+  "searches": [],
+  "prompt_tokens": 25221,
+  "completion_tokens": 39,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.369726424105465,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "notion_delete_block:en@200",
+  "target": "notion_delete_block",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "notion_delete_block"
+  ],
+  "searches": [],
+  "prompt_tokens": 25221,
+  "completion_tokens": 39,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.144358955323696,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "outlook_delete_event:ja@200",
+  "target": "outlook_delete_event",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "outlook_delete_event"
+  ],
+  "searches": [],
+  "prompt_tokens": 25257,
+  "completion_tokens": 69,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.031321180984378,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "outlook_delete_event:en@200",
+  "target": "outlook_delete_event",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "outlook_delete_event"
+  ],
+  "searches": [],
+  "prompt_tokens": 25255,
+  "completion_tokens": 69,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.189054165966809,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "outlook_search_emails:ja@200",
+  "target": "outlook_search_emails",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "outlook_search_emails"
+  ],
+  "searches": [],
+  "prompt_tokens": 25230,
+  "completion_tokens": 73,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 10.404169301502407,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "outlook_search_emails:en@200",
+  "target": "outlook_search_emails",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "outlook_search_emails"
+  ],
+  "searches": [],
+  "prompt_tokens": 25223,
+  "completion_tokens": 69,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 14.831185974180698,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja@200",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "pagerduty_trigger_webhook"
+  ],
+  "searches": [],
+  "prompt_tokens": 25268,
+  "completion_tokens": 83,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.5575493844226,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en@200",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "pagerduty_trigger_webhook"
+  ],
+  "searches": [],
+  "prompt_tokens": 25261,
+  "completion_tokens": 83,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.351053884252906,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja@200",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "rakurakuseisan_get_expense_detail"
+  ],
+  "searches": [],
+  "prompt_tokens": 25244,
+  "completion_tokens": 47,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 12.380676997825503,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:en@200",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "rakurakuseisan_get_expense_detail"
+  ],
+  "searches": [],
+  "prompt_tokens": 25242,
+  "completion_tokens": 47,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 11.898108690977097,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "save_csv:ja@200",
+  "target": "save_csv",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "save_csv"
+  ],
+  "searches": [],
+  "prompt_tokens": 25283,
+  "completion_tokens": 115,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.693233541212976,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "save_csv:en@200",
+  "target": "save_csv",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "save_csv"
+  ],
+  "searches": [],
+  "prompt_tokens": 25278,
+  "completion_tokens": 111,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.420160623267293,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "shopify_list_customers:ja@200",
+  "target": "shopify_list_customers",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "shopify_list_customers"
+  ],
+  "searches": [],
+  "prompt_tokens": 25223,
+  "completion_tokens": 30,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 12.166826945729554,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "shopify_list_customers:en@200",
+  "target": "shopify_list_customers",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "shopify_list_customers"
+  ],
+  "searches": [],
+  "prompt_tokens": 25217,
+  "completion_tokens": 30,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 12.710850392468274,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "shopify_search_products:ja@200",
+  "target": "shopify_search_products",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "shopify_search_products"
+  ],
+  "searches": [],
+  "prompt_tokens": 25224,
+  "completion_tokens": 44,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 58.245017850771546,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "shopify_search_products:en@200",
+  "target": "shopify_search_products",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "shopify_search_products"
+  ],
+  "searches": [],
+  "prompt_tokens": 25222,
+  "completion_tokens": 41,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 52.24002708308399,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "slack_add_reaction:ja@200",
+  "target": "slack_add_reaction",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "slack_add_reaction"
+  ],
+  "searches": [],
+  "prompt_tokens": 25254,
+  "completion_tokens": 78,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.265998473390937,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "slack_add_reaction:en@200",
+  "target": "slack_add_reaction",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "slack_add_reaction"
+  ],
+  "searches": [],
+  "prompt_tokens": 25249,
+  "completion_tokens": 78,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.721015892922878,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja@200",
+  "target": "smarthr_create_employee_draft",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "smarthr_create_employee_draft"
+  ],
+  "searches": [],
+  "prompt_tokens": 25240,
+  "completion_tokens": 85,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.391877161338925,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "smarthr_create_employee_draft:en@200",
+  "target": "smarthr_create_employee_draft",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "smarthr_create_employee_draft"
+  ],
+  "searches": [],
+  "prompt_tokens": 25242,
+  "completion_tokens": 85,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.303322417661548,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "stripe_create_customer:ja@200",
+  "target": "stripe_create_customer",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "stripe_create_customer"
+  ],
+  "searches": [],
+  "prompt_tokens": 25248,
+  "completion_tokens": 69,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.638795722275972,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "stripe_create_customer:en@200",
+  "target": "stripe_create_customer",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "stripe_create_customer"
+  ],
+  "searches": [],
+  "prompt_tokens": 25243,
+  "completion_tokens": 67,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.45347866602242,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "stripe_list_invoices:ja@200",
+  "target": "stripe_list_invoices",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "stripe_list_invoices"
+  ],
+  "searches": [],
+  "prompt_tokens": 25227,
+  "completion_tokens": 46,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 10.855459162965417,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "stripe_list_invoices:en@200",
+  "target": "stripe_list_invoices",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "stripe_list_invoices"
+  ],
+  "searches": [],
+  "prompt_tokens": 25225,
+  "completion_tokens": 46,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 12.880546676926315,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "tableau_add_user_to_site:ja@200",
+  "target": "tableau_add_user_to_site",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "tableau_add_user_to_site"
+  ],
+  "call_args": [
+   "{\"username\": \"k.sato\", \"role\": \"Viewer\", \"email\": \"k.sato@example.com\"}"
+  ],
+  "searches": [],
+  "prompt_tokens": 25252,
+  "completion_tokens": 58,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.095771198160946,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "tableau_add_user_to_site:en@200",
+  "target": "tableau_add_user_to_site",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "tableau_add_user_to_site"
+  ],
+  "call_args": [
+   "{\"username\": \"k.sato\", \"role\": \"Viewer\", \"email\": \"k.sato@example.com\"}"
+  ],
+  "searches": [],
+  "prompt_tokens": 25249,
+  "completion_tokens": 58,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.354067697189748,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "teams_send_message:ja@200",
+  "target": "teams_send_message",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "teams_send_message"
+  ],
+  "searches": [],
+  "prompt_tokens": 25241,
+  "completion_tokens": 64,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.951285042800009,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "teams_send_message:en@200",
+  "target": "teams_send_message",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "teams_send_message"
+  ],
+  "searches": [],
+  "prompt_tokens": 25239,
+  "completion_tokens": 63,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.143989779986441,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "trello_create_board:ja@200",
+  "target": "trello_create_board",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "trello_create_board"
+  ],
+  "searches": [],
+  "prompt_tokens": 25237,
+  "completion_tokens": 41,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 13.884049628861248,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "trello_create_board:en@200",
+  "target": "trello_create_board",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "trello_create_board"
+  ],
+  "searches": [],
+  "prompt_tokens": 25229,
+  "completion_tokens": 41,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.297534148208797,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "trello_get_board_details:ja@200",
+  "target": "trello_get_board_details",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "trello_get_board_details"
+  ],
+  "searches": [],
+  "prompt_tokens": 25226,
+  "completion_tokens": 36,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 10.999006579630077,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "trello_get_board_details:en@200",
+  "target": "trello_get_board_details",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "trello_get_board_details"
+  ],
+  "searches": [],
+  "prompt_tokens": 25229,
+  "completion_tokens": 36,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 10.760757212527096,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "trello_remove_member_from_card:ja@200",
+  "target": "trello_remove_member_from_card",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "trello_remove_member_from_card"
+  ],
+  "searches": [],
+  "prompt_tokens": 25229,
+  "completion_tokens": 55,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.662647994235158,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "trello_remove_member_from_card:en@200",
+  "target": "trello_remove_member_from_card",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "trello_remove_member_from_card"
+  ],
+  "searches": [],
+  "prompt_tokens": 25226,
+  "completion_tokens": 55,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.169707336463034,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "zendesk_list_organizations:ja@200",
+  "target": "zendesk_list_organizations",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "zendesk_list_organizations"
+  ],
+  "searches": [],
+  "prompt_tokens": 25210,
+  "completion_tokens": 17,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 17.34640236850828,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "zendesk_list_organizations:en@200",
+  "target": "zendesk_list_organizations",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "zendesk_list_organizations"
+  ],
+  "searches": [],
+  "prompt_tokens": 25212,
+  "completion_tokens": 17,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 15.356458985246718,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "zendesk_list_tags:ja@200",
+  "target": "zendesk_list_tags",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "zendesk_list_tags"
+  ],
+  "searches": [],
+  "prompt_tokens": 25222,
+  "completion_tokens": 16,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.597864444367588,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "zendesk_list_tags:en@200",
+  "target": "zendesk_list_tags",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "zendesk_list_tags"
+  ],
+  "searches": [],
+  "prompt_tokens": 25224,
+  "completion_tokens": 16,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.313884150236845,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "docusign_create_webhook:ja_missing@200",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "docusign_create_webhook"
+  ],
+  "call_args": [
+   "{\"account_id\": \"acc_98765\", \"url\": \"https://example.com/webhook/docusign\", \"events\": \n[\"envelope-completed\"]\n\n, \"include_documents\": false}"
+  ],
+  "searches": [],
+  "prompt_tokens": 25265,
+  "completion_tokens": 154,
+  "steps": 1,
+  "error": null,
+  "final_text": "DocuSignのWebhook設定を行います。通知先URLが「社内の標準エンドポイント」とのことですが、具体的なURLが指定されていないため、一般的なプレースホルダー（例: `https://example.com/webhook/docusign`）を使用します。実際の運用時には、正しい社内エンドポイントURLに置き換えてください。\n\n",
+  "stop": "target",
+  "latency_s": 5.516012877225876,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja_missing",
+  "missing": "url"
+ },
+ {
+  "id": "docusign_create_webhook:en_missing@200",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "docusign_create_webhook"
+  ],
+  "call_args": [
+   "{\"account_id\": \"acc_98765\", \"url\": \"https://internal-standard-endpoint.example.com/docusign/webhook\", \"events\": \n[\"envelope-completed\"]\n\n, \"include_documents\": false}"
+  ],
+  "searches": [],
+  "prompt_tokens": 25257,
+  "completion_tokens": 89,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.900939770042896,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en_missing",
+  "missing": "url"
+ },
+ {
+  "id": "dropbox_share_folder:ja_missing@200",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "dropbox_list_folder"
+  ],
+  "call_args": [
+   "{\"path\": \"/\"}"
+  ],
+  "searches": [],
+  "prompt_tokens": 51135,
+  "completion_tokens": 210,
+  "steps": 2,
+  "error": null,
+  "final_text": "フォルダ「2026年度 第4四半期 戦略会議」が見つかりました。フォルダIDは `id:a4ayc_80_OEAAAAAAAAAXw` です。\n\n次に、このフォルダを共有相手のメールアドレスと閲覧権限（viewer）で共有します。\n共有相手のメールアドレスをお知らせください。",
+  "stop": "reply",
+  "latency_s": 7.054438148625195,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja_missing",
+  "missing": "member_email"
+ },
+ {
+  "id": "dropbox_share_folder:en_missing@200",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "dropbox_list_folder"
+  ],
+  "call_args": [
+   "{\"path\": \"/\"}"
+  ],
+  "searches": [],
+  "prompt_tokens": 51076,
+  "completion_tokens": 219,
+  "steps": 2,
+  "error": null,
+  "final_text": "Great! I found the \"Q4 2026 Strategy Meeting\" folder. The folder ID is `id:a4ayc_80_OEAAAAAAAAAXw`.\n\nNow I need the client's email address to share the folder with them. Could you please provide the email address of the client contact you want to grant viewer access to?",
+  "stop": "reply",
+  "latency_s": 8.073240040801466,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en_missing",
+  "missing": "member_email"
+ },
+ {
+  "id": "stripe_create_customer:ja_missing@200",
+  "target": "stripe_create_customer",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "call_args": [],
+  "searches": [],
+  "prompt_tokens": 25258,
+  "completion_tokens": 50,
+  "steps": 1,
+  "error": null,
+  "final_text": "Stripeに新規顧客を登録するには、メールアドレスが必須パラメータです。\nご提示いただいた情報ではメールアドレスが不明なため、登録を実行することができません。\n\n「株式会社テックイノベーション」の担当者様のメールアドレスを教えていただけますでしょうか？",
+  "stop": "reply",
+  "latency_s": 2.3671907018870115,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja_missing",
+  "missing": "email"
+ },
+ {
+  "id": "stripe_create_customer:en_missing@200",
+  "target": "stripe_create_customer",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "call_args": [],
+  "searches": [],
+  "prompt_tokens": 25248,
+  "completion_tokens": 87,
+  "steps": 1,
+  "error": null,
+  "final_text": "I need to create a new customer in Stripe, but I don't have the confirmed email address for \"Tech Innovation Inc.\" Could you please provide the email address that was confirmed with their representative?\n\nOnce you provide the email address, I'll register them with:\n- Name: Tech Innovation Inc.\n- Email: [the confirmed email address]\n- Description: Enterprise plan contract scheduled for October 2026 implementation",
+  "stop": "reply",
+  "latency_s": 3.706552630290389,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en_missing",
+  "missing": "email"
+ },
+ {
+  "id": "teams_send_message:ja_missing@200",
+  "target": "teams_send_message",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "teams_send_message"
+  ],
+  "call_args": [
+   "{\"chat_id\": \"19:abc123def456@thread.tacv2\", \"content\": \"【進捗報告】2026年10月21日<br><br>お疲れ様です。<br>本日の進捗状況をご報告いたします。<br><br>■ 完了事項<br>- 特になし<br><br>■ 進行中事項<br>- 特になし<br><br>■ 課題・懸念点<br>- 特になし<br><br>以上、よろしくお願いいたします。\", \"subject\": \"10月21日 進捗報告\"}"
+  ],
+  "searches": [],
+  "prompt_tokens": 25248,
+  "completion_tokens": 166,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 14.291856730356812,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja_missing",
+  "missing": "content"
+ },
+ {
+  "id": "teams_send_message:en_missing@200",
+  "target": "teams_send_message",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "teams_send_message"
+  ],
+  "call_args": [
+   "{\"chat_id\": \"19:abc123def456@thread.tacv2\", \"content\": \"**進捗報告（2026年10月21日）**\\n\\n各位\\n\\nお疲れ様です。\\n本日の進捗状況をご報告いたします。\\n\\n**【完了事項】**\\n*   （ここに完了したタスクを記載）\\n\\n**【進行中事項】**\\n*   （現在対応中のタスクを記載）\\n\\n**【課題・懸念点】**\\n*   （あれば記載、なければ「なし」）\\n\\n**【次回の予定】**\\n*   次回報告日：2026年10月28日\\n\\n以上、よろしくお願いいたします。\", \"subject\": \"進捗報告 - 2026年10月21日\"}"
+  ],
+  "searches": [],
+  "prompt_tokens": 25247,
+  "completion_tokens": 206,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 17.704669916070998,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en_missing",
+  "missing": "content"
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja@200",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "aws_cloudwatch_get_log_events"
+  ],
+  "searches": [
+   {
+    "query": "aws cloudwatch logs get log events",
+    "limit": 5,
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_put_metric_data",
+     "aws_ec2_launch_instance",
+     "aws_ec2_list_instances"
+    ]
+   }
+  ],
+  "prompt_tokens": 2789,
+  "completion_tokens": 121,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.556503443047404,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en@200",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "aws_cloudwatch_get_log_events"
+  ],
+  "searches": [
+   {
+    "query": "aws cloudwatch logs",
+    "limit": null,
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_put_metric_data",
+     "aws_ec2_launch_instance",
+     "aws_ec2_list_instances"
+    ]
+   }
+  ],
+  "prompt_tokens": 2768,
+  "completion_tokens": 106,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.310424082912505,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja@200",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "aws_cloudwatch_search_logs_by_pattern"
+  ],
+  "searches": [
+   {
+    "query": "aws cloudwatch logs",
+    "limit": null,
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_put_metric_data",
+     "aws_ec2_launch_instance",
+     "aws_ec2_list_instances"
+    ]
+   }
+  ],
+  "prompt_tokens": 2771,
+  "completion_tokens": 623,
+  "steps": 2,
+  "error": null,
+  "final_text": "指定された条件でログを検索します。\n- ロググループ: `/aws/lambda/payment-service`\n- 検索パターン: `TimeoutException`\n- 開始時刻: 2026年10月21日 午前9時 (Asia/Tokyo)\n\nまず、開始時刻をエポック秒に変換します。\n2026年10月21日 09:00:00 JST は、UTCでは 2026年10月21日 00:00:00 です。\nエポック秒計算:\n2026-10-21 00:00:00 UTC のエポック秒は、概算ではなく正確に計算する必要がありますが、ツール呼び出し時に整数値として渡す必要があります。\n参考: 2024-01-01 00:00:00 UTC は 1704067200 です。\n2026年は2年後なので、約 2 * 365.25 * 24 * 3600 ≈ 63,115,200 秒後。\n1704067200 + 63115200 ≈ 1767182400 付近です。\n正確な値を確認するため、一般的な変換ロジックに基づきます。\n2026-10-21T00:00:00Z のエポック秒は 1761004800 です。（※実際の日付計算: 2026年は平年。2024/1/1からの日数差などを考慮）\n念のため、Pythonなどの標準的なライブラリでの計算結果を想定します。\n2026-10-21 09:00:00 JST = 2026-10-21 00:00:00 UTC\nEpoch time for 2026-10-21 00:00:00 UTC is 1761004800.\n\n`aws_cloudwatch_search_logs_by_pattern` を使用して検索を実行します。\n\n",
+  "stop": "target",
+  "latency_s": 21.855566770769656,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en@200",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "aws_cloudwatch_search_logs_by_pattern"
+  ],
+  "searches": [
+   {
+    "query": "AWS CloudWatch logs search",
+    "limit": null,
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_put_metric_data",
+     "aws_ec2_list_instances",
+     "aws_ec2_launch_instance"
+    ]
+   }
+  ],
+  "prompt_tokens": 2749,
+  "completion_tokens": 100,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.192193251103163,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "chatwork_get_file:ja@200",
+  "target": "chatwork_get_file",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "chatwork_get_file"
+  ],
+  "searches": [
+   {
+    "query": "chatwork ファイル ダウンロードURL",
+    "limit": null,
+    "hits": [
+     "chatwork_get_file",
+     "confluence_download_attachment",
+     "chatwork_delete_room",
+     "kintone_upload_file",
+     "aws_s3_download_object"
+    ]
+   }
+  ],
+  "prompt_tokens": 2498,
+  "completion_tokens": 88,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.622703487984836,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "chatwork_get_file:en@200",
+  "target": "chatwork_get_file",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "chatwork_get_file"
+  ],
+  "searches": [
+   {
+    "query": "chatwork get file download url",
+    "limit": null,
+    "hits": [
+     "chatwork_get_file",
+     "confluence_download_attachment",
+     "chatwork_get_messages",
+     "chatwork_list_schedules",
+     "chatwork_delete_room"
+    ]
+   }
+  ],
+  "prompt_tokens": 2443,
+  "completion_tokens": 86,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.735428883694112,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "docusign_create_webhook:ja@200",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "docusign_create_webhook"
+  ],
+  "searches": [
+   {
+    "query": "docusign webhook connect",
+    "limit": 5,
+    "hits": [
+     "docusign_create_webhook",
+     "pagerduty_trigger_webhook",
+     "linear_list_webhooks",
+     "docusign_void_envelope",
+     "docusign_update_brand"
+    ]
+   }
+  ],
+  "prompt_tokens": 2624,
+  "completion_tokens": 246,
+  "steps": 2,
+  "error": null,
+  "final_text": "`docusign_create_webhook` ツールを使用して、指定された条件でWebhookを設定します。\n\n*   **account_id**: `acc_12345`\n*   **url**: `https://api.example.com/hooks/docusign`\n*   **events**: 封筒完了時の通知なので `envelope-completed` を指定します。\n*   **include_documents**: ドキュメントを含めるため `true` に設定します。\n\n",
+  "stop": "target",
+  "latency_s": 7.089714974164963,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "docusign_create_webhook:en@200",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "docusign_create_webhook"
+  ],
+  "searches": [
+   {
+    "query": "docusign webhook",
+    "limit": 10,
+    "hits": [
+     "docusign_create_webhook",
+     "pagerduty_trigger_webhook",
+     "docusign_create_brand",
+     "linear_list_webhooks",
+     "docusign_void_envelope",
+     "docusign_update_brand",
+     "docusign_create_envelope_from_template",
+     "docusign_list_templates",
+     "docusign_create_custom_field",
+     "docusign_search_envelopes"
+    ]
+   }
+  ],
+  "prompt_tokens": 3467,
+  "completion_tokens": 228,
+  "steps": 2,
+  "error": null,
+  "final_text": "Perfect! I can see the `docusign_create_webhook` function is available. Now I'll set up the webhook with the parameters you specified:\n\n- Account ID: acc_12345\n- URL: https://api.example.com/hooks/docusign\n- Event: envelope-completed\n- Include documents: true\n\n",
+  "stop": "target",
+  "latency_s": 7.155473601073027,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "dropbox_share_folder:ja@200",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "dropbox_list_folder",
+   "dropbox_share_folder"
+  ],
+  "searches": [
+   {
+    "query": "Dropbox フォルダを共有する",
+    "limit": null,
+    "hits": [
+     "dropbox_share_folder",
+     "gdrive_create_permission",
+     "dropbox_list_folder",
+     "dropbox_delete_item",
+     "gdrive_list_permissions"
+    ]
+   }
+  ],
+  "prompt_tokens": 4651,
+  "completion_tokens": 130,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.166860048659146,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "dropbox_share_folder:en@200",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "dropbox_list_folder",
+   "dropbox_share_folder"
+  ],
+  "searches": [
+   {
+    "query": "dropbox share folder",
+    "limit": null,
+    "hits": [
+     "dropbox_share_folder",
+     "dropbox_list_folder",
+     "dropbox_delete_item",
+     "dropbox_get_thumbnail",
+     "box_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 4587,
+  "completion_tokens": 125,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.639746150933206,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "figma_delete_comment:ja@200",
+  "target": "figma_delete_comment",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "figma_delete_comment"
+  ],
+  "searches": [
+   {
+    "query": "figma delete comment",
+    "limit": null,
+    "hits": [
+     "figma_delete_comment",
+     "miro_resolve_comment",
+     "figma_get_prototypes",
+     "asana_add_comment",
+     "figma_get_team_styles"
+    ]
+   }
+  ],
+  "prompt_tokens": 2475,
+  "completion_tokens": 81,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.611804625950754,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "figma_delete_comment:en@200",
+  "target": "figma_delete_comment",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "figma_delete_comment"
+  ],
+  "searches": [
+   {
+    "query": "figma delete comment",
+    "limit": null,
+    "hits": [
+     "figma_delete_comment",
+     "miro_resolve_comment",
+     "figma_get_prototypes",
+     "asana_add_comment",
+     "figma_get_team_styles"
+    ]
+   }
+  ],
+  "prompt_tokens": 2459,
+  "completion_tokens": 81,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.41052252240479,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "garoon_list_messages:ja@200",
+  "target": "garoon_list_messages",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [
+   {
+    "query": "Garoon 受信トレイ メッセージ取得",
+    "limit": 5,
+    "hits": [
+     "garoon_list_messages",
+     "gmail_unstar_message",
+     "chatwork_get_messages",
+     "outlook_list_emails",
+     "slack_unpin_message"
+    ]
+   }
+  ],
+  "prompt_tokens": 2421,
+  "completion_tokens": 74,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.49403659068048,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "garoon_list_messages:en@200",
+  "target": "garoon_list_messages",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [
+   {
+    "query": "garoon inbox messages",
+    "limit": 5,
+    "hits": [
+     "garoon_list_messages",
+     "garoon_create_schedule",
+     "garoon_search_users",
+     "garoon_search_schedules",
+     "chatwork_get_messages"
+    ]
+   }
+  ],
+  "prompt_tokens": 2445,
+  "completion_tokens": 69,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.03732141200453,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gdrive_list_revisions:ja@200",
+  "target": "gdrive_list_revisions",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "gdrive_list_revisions"
+  ],
+  "searches": [
+   {
+    "query": "Google Drive リビジョン 履歴",
+    "limit": null,
+    "hits": [
+     "gdrive_list_revisions",
+     "gdrive_upload_file",
+     "gdrive_delete_file",
+     "sentry_list_releases",
+     "box_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 2540,
+  "completion_tokens": 78,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.366809535771608,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gdrive_list_revisions:en@200",
+  "target": "gdrive_list_revisions",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "gdrive_list_revisions"
+  ],
+  "searches": [
+   {
+    "query": "Google Drive revision history",
+    "limit": null,
+    "hits": [
+     "gdrive_list_revisions",
+     "gdrive_upload_file",
+     "gdrive_delete_file",
+     "gdrive_copy_file",
+     "gdrive_create_permission"
+    ]
+   }
+  ],
+  "prompt_tokens": 2517,
+  "completion_tokens": 75,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.715694943442941,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gdrive_upload_file:ja@200",
+  "target": "gdrive_upload_file",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "gdrive_upload_file"
+  ],
+  "searches": [
+   {
+    "query": "Googleドライブにファイルを保存する",
+    "limit": null,
+    "hits": [
+     "gdrive_upload_file",
+     "gdrive_delete_file",
+     "csv.write",
+     "gdrive_create_permission",
+     "box_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 2648,
+  "completion_tokens": 99,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.95908161625266,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gdrive_upload_file:en@200",
+  "target": "gdrive_upload_file",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "gdrive_upload_file"
+  ],
+  "call_args": [
+   "{\"file_name\": \"October 2026 Regular Meeting Minutes.txt\", \"content\": \"Attendees: Tanaka, Suzuki. Decisions: Next term's budget proposal approved.\"}"
+  ],
+  "searches": [
+   {
+    "query": "upload file to Google Drive",
+    "limit": null,
+    "hits": [
+     "gdrive_upload_file",
+     "box_upload_file",
+     "gdrive_delete_file",
+     "gdrive_copy_file",
+     "miro_upload_image"
+    ]
+   }
+  ],
+  "prompt_tokens": 2604,
+  "completion_tokens": 94,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.7788256742060184,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gitlab_get_project:ja@200",
+  "target": "gitlab_get_project",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "gitlab_get_project"
+  ],
+  "searches": [
+   {
+    "query": "GitLab project details",
+    "limit": null,
+    "hits": [
+     "gitlab_get_project",
+     "gitlab_list_repository_tree",
+     "trello_get_board_details",
+     "gitlab_delete_project",
+     "gitlab_delete_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 2532,
+  "completion_tokens": 58,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.0440803617239,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gitlab_get_project:en@200",
+  "target": "gitlab_get_project",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "gitlab_get_project"
+  ],
+  "searches": [
+   {
+    "query": "gitlab",
+    "limit": null,
+    "hits": [
+     "gitlab_delete_file",
+     "gitlab_get_project",
+     "gitlab_delete_project",
+     "gitlab_list_repository_tree",
+     "github_get_repository"
+    ]
+   }
+  ],
+  "prompt_tokens": 2533,
+  "completion_tokens": 56,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.152915536426008,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "jira_update_sprint:ja@200",
+  "target": "jira_update_sprint",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [
+   {
+    "query": "jira sprint update",
+    "limit": null,
+    "hits": [
+     "jira_update_sprint",
+     "jira_close_sprint",
+     "jira_list_sprints",
+     "jira_delete_issue",
+     "jira_list_boards"
+    ]
+   }
+  ],
+  "prompt_tokens": 6740,
+  "completion_tokens": 312,
+  "steps": 4,
+  "error": null,
+  "final_text": "現在アクティブなスプリントのIDは 5012 です。このスプリントの名前を「Sprint 24 - Hotfix」、終了日を「2026-10-21」、ゴールを「クリティカルバグの修正」に更新します。\n\n",
+  "stop": "target",
+  "latency_s": 11.410062683746219,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "jira_update_sprint:en@200",
+  "target": "jira_update_sprint",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [
+   {
+    "query": "jira update sprint",
+    "limit": null,
+    "hits": [
+     "jira_update_sprint",
+     "jira_close_sprint",
+     "jira_list_sprints",
+     "jira_delete_issue",
+     "jira_list_boards"
+    ]
+   }
+  ],
+  "prompt_tokens": 6704,
+  "completion_tokens": 174,
+  "steps": 4,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 9.636675532907248,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "notion_delete_block:ja@200",
+  "target": "notion_delete_block",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "notion_delete_block"
+  ],
+  "searches": [
+   {
+    "query": "notion delete block",
+    "limit": null,
+    "hits": [
+     "notion_delete_block",
+     "notion_list_comments",
+     "notion_restore_page",
+     "notion_search_pages",
+     "notion_create_page"
+    ]
+   }
+  ],
+  "prompt_tokens": 2392,
+  "completion_tokens": 67,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.180263176560402,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "notion_delete_block:en@200",
+  "target": "notion_delete_block",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "notion_delete_block"
+  ],
+  "searches": [
+   {
+    "query": "notion delete block",
+    "limit": null,
+    "hits": [
+     "notion_delete_block",
+     "notion_list_comments",
+     "notion_restore_page",
+     "notion_search_pages",
+     "notion_create_page"
+    ]
+   }
+  ],
+  "prompt_tokens": 2392,
+  "completion_tokens": 67,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.486817906610668,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "outlook_delete_event:ja@200",
+  "target": "outlook_delete_event",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "outlook_delete_event"
+  ],
+  "searches": [
+   {
+    "query": "outlook delete event series",
+    "limit": null,
+    "hits": [
+     "outlook_delete_event",
+     "outlook_get_event",
+     "outlook_update_event",
+     "outlook_list_emails",
+     "outlook_search_emails"
+    ]
+   }
+  ],
+  "prompt_tokens": 2531,
+  "completion_tokens": 116,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.149100464768708,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "outlook_delete_event:en@200",
+  "target": "outlook_delete_event",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "outlook_delete_event"
+  ],
+  "searches": [
+   {
+    "query": "outlook delete event",
+    "limit": null,
+    "hits": [
+     "outlook_delete_event",
+     "outlook_get_event",
+     "outlook_update_event",
+     "outlook_search_emails",
+     "jobcan_delete_holiday"
+    ]
+   }
+  ],
+  "prompt_tokens": 2474,
+  "completion_tokens": 97,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.633838308043778,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "outlook_search_emails:ja@200",
+  "target": "outlook_search_emails",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "outlook_search_emails"
+  ],
+  "searches": [
+   {
+    "query": "outlook search email",
+    "limit": null,
+    "hits": [
+     "outlook_search_emails",
+     "outlook_list_emails",
+     "outlook_reply_to_email",
+     "docusign_search_envelopes",
+     "outlook_list_folders"
+    ]
+   }
+  ],
+  "prompt_tokens": 2522,
+  "completion_tokens": 111,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 14.381168311461806,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "outlook_search_emails:en@200",
+  "target": "outlook_search_emails",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "outlook_search_emails"
+  ],
+  "searches": [
+   {
+    "query": "outlook search emails",
+    "limit": null,
+    "hits": [
+     "outlook_search_emails",
+     "outlook_list_emails",
+     "outlook_reply_to_email",
+     "docusign_search_envelopes",
+     "outlook_list_folders"
+    ]
+   }
+  ],
+  "prompt_tokens": 2499,
+  "completion_tokens": 102,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.651139107532799,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja@200",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "pagerduty_trigger_webhook"
+  ],
+  "searches": [
+   {
+    "query": "pagerduty webhook test send payload",
+    "limit": 5,
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "docusign_create_webhook",
+     "pagerduty_get_schedule",
+     "pagerduty_get_escalation_policy",
+     "teams_send_message"
+    ]
+   }
+  ],
+  "prompt_tokens": 2652,
+  "completion_tokens": 184,
+  "steps": 2,
+  "error": null,
+  "final_text": "`pagerduty_trigger_webhook` ツールを使用して、指定されたURLとペイロードでWebhookをトリガーします。\n\n",
+  "stop": "target",
+  "latency_s": 6.179556494578719,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en@200",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "pagerduty_trigger_webhook"
+  ],
+  "searches": [
+   {
+    "query": "webhook http request post",
+    "limit": 5,
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "docusign_create_webhook",
+     "servicenow_delete_draft_request",
+     "linear_list_webhooks",
+     "lineworks_list_posts"
+    ]
+   }
+  ],
+  "prompt_tokens": 2591,
+  "completion_tokens": 191,
+  "steps": 2,
+  "error": null,
+  "final_text": "Perfect! I found the `pagerduty_trigger_webhook` tool which is exactly what we need. Let me use it to trigger the webhook with the specified payload.\n\n",
+  "stop": "target",
+  "latency_s": 6.272426192648709,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja@200",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "rakurakuseisan_get_expense_detail"
+  ],
+  "searches": [
+   {
+    "query": "楽々精算 経費明細詳細 領収書画像 承認履歴",
+    "limit": null,
+    "hits": [
+     "rakurakuseisan_get_expense_detail",
+     "rakurakuseisan_delete_expense",
+     "rakurakuseisan_get_approval_status",
+     "rakurakuseisan_import_transaction",
+     "rakurakuseisan_list_reports"
+    ]
+   }
+  ],
+  "prompt_tokens": 2473,
+  "completion_tokens": 89,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.940276142209768,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:en@200",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "rakurakuseisan_get_expense_detail"
+  ],
+  "searches": [
+   {
+    "query": "Rakuraku Seisan get expense details",
+    "limit": null,
+    "hits": [
+     "rakurakuseisan_get_expense_detail",
+     "rakurakuseisan_delete_expense",
+     "rakurakuseisan_get_approval_status",
+     "servicenow_get_incident",
+     "trello_get_board_details"
+    ]
+   }
+  ],
+  "prompt_tokens": 2468,
+  "completion_tokens": 80,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.860554985702038,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "save_csv:ja@200",
+  "target": "save_csv",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "save_csv"
+  ],
+  "searches": [
+   {
+    "query": "CSVを作成する",
+    "limit": null,
+    "hits": [
+     "csv.write",
+     "save_csv",
+     "tableau_create_group",
+     "chatwork_create_task",
+     "kintone_create_draft_app"
+    ]
+   }
+  ],
+  "prompt_tokens": 2735,
+  "completion_tokens": 152,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.712269581854343,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "save_csv:en@200",
+  "target": "save_csv",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "save_csv"
+  ],
+  "searches": [
+   {
+    "query": "create csv file",
+    "limit": null,
+    "hits": [
+     "csv.write",
+     "save_csv",
+     "kintone_upload_file",
+     "gdrive_copy_file",
+     "gdrive_create_permission"
+    ]
+   }
+  ],
+  "prompt_tokens": 2794,
+  "completion_tokens": 129,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.3385028364136815,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "shopify_list_customers:ja@200",
+  "target": "shopify_list_customers",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "shopify_list_customers"
+  ],
+  "searches": [
+   {
+    "query": "Shopify 顧客一覧取得",
+    "limit": null,
+    "hits": [
+     "shopify_list_customers",
+     "shopify_create_customer",
+     "stripe_list_invoices",
+     "stripe_create_customer",
+     "salesforce_list_accounts"
+    ]
+   }
+  ],
+  "prompt_tokens": 2423,
+  "completion_tokens": 60,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.182701116427779,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "shopify_list_customers:en@200",
+  "target": "shopify_list_customers",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "shopify_list_customers"
+  ],
+  "searches": [
+   {
+    "query": "shopify get customers list",
+    "limit": 5,
+    "hits": [
+     "shopify_list_customers",
+     "shopify_create_customer",
+     "shopify_search_products",
+     "stripe_list_invoices",
+     "stripe_create_customer"
+    ]
+   }
+  ],
+  "prompt_tokens": 2397,
+  "completion_tokens": 71,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.477358002215624,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "shopify_search_products:ja@200",
+  "target": "shopify_search_products",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "shopify_search_products"
+  ],
+  "searches": [
+   {
+    "query": "Shopify 商品検索",
+    "limit": 3,
+    "hits": [
+     "shopify_search_products",
+     "freee_list_items",
+     "freee_create_item"
+    ]
+   }
+  ],
+  "prompt_tokens": 2202,
+  "completion_tokens": 85,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.672530509531498,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "shopify_search_products:en@200",
+  "target": "shopify_search_products",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "shopify_search_products"
+  ],
+  "searches": [
+   {
+    "query": "shopify search products",
+    "limit": 3,
+    "hits": [
+     "shopify_search_products",
+     "shopify_list_customers",
+     "notion_search_pages"
+    ]
+   }
+  ],
+  "prompt_tokens": 2133,
+  "completion_tokens": 81,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.660871976055205,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "slack_add_reaction:ja@200",
+  "target": "slack_add_reaction",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "slack_add_reaction"
+  ],
+  "searches": [
+   {
+    "query": "Slack リアクションを追加する",
+    "limit": null,
+    "hits": [
+     "slack_add_reaction",
+     "servicenow_add_comment_to_ticket",
+     "sentry_create_alert_rule",
+     "asana_add_comment",
+     "backlog_add_comment"
+    ]
+   }
+  ],
+  "prompt_tokens": 2623,
+  "completion_tokens": 108,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.863952685147524,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "slack_add_reaction:en@200",
+  "target": "slack_add_reaction",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "slack_add_reaction"
+  ],
+  "searches": [
+   {
+    "query": "slack add reaction",
+    "limit": null,
+    "hits": [
+     "slack_add_reaction",
+     "slack_unpin_message",
+     "backlog_add_comment",
+     "asana_add_comment",
+     "servicenow_add_comment_to_ticket"
+    ]
+   }
+  ],
+  "prompt_tokens": 2557,
+  "completion_tokens": 105,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.81444941367954,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja@200",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "smarthr_create_employee_draft"
+  ],
+  "searches": [
+   {
+    "query": "SmartHR 従業員登録",
+    "limit": null,
+    "hits": [
+     "smarthr_create_employee_draft",
+     "smarthr_list_documents",
+     "smarthr_get_leave_balance",
+     "smarthr_get_payroll_statement",
+     "jobcan_update_employee_department"
+    ]
+   }
+  ],
+  "prompt_tokens": 2542,
+  "completion_tokens": 114,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.888280420564115,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "smarthr_create_employee_draft:en@200",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "smarthr_create_employee_draft"
+  ],
+  "searches": [
+   {
+    "query": "SmartHR create employee draft registration",
+    "limit": null,
+    "hits": [
+     "smarthr_create_employee_draft",
+     "smarthr_get_payroll_statement",
+     "smarthr_list_documents",
+     "smarthr_get_leave_balance",
+     "jobcan_update_employee_department"
+    ]
+   }
+  ],
+  "prompt_tokens": 2547,
+  "completion_tokens": 115,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.980581835843623,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "stripe_create_customer:ja@200",
+  "target": "stripe_create_customer",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "stripe_create_customer"
+  ],
+  "searches": [
+   {
+    "query": "stripe create customer",
+    "limit": null,
+    "hits": [
+     "stripe_create_customer",
+     "stripe_create_price",
+     "stripe_list_invoices",
+     "shopify_create_customer",
+     "shopify_list_customers"
+    ]
+   }
+  ],
+  "prompt_tokens": 2532,
+  "completion_tokens": 96,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.046140693128109,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "stripe_create_customer:en@200",
+  "target": "stripe_create_customer",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "stripe_create_customer"
+  ],
+  "searches": [
+   {
+    "query": "stripe create customer",
+    "limit": null,
+    "hits": [
+     "stripe_create_customer",
+     "stripe_create_price",
+     "stripe_list_invoices",
+     "shopify_create_customer",
+     "shopify_list_customers"
+    ]
+   }
+  ],
+  "prompt_tokens": 2522,
+  "completion_tokens": 94,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.524353553541005,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "stripe_list_invoices:ja@200",
+  "target": "stripe_list_invoices",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "stripe_list_invoices"
+  ],
+  "searches": [
+   {
+    "query": "Stripe 請求書一覧取得",
+    "limit": null,
+    "hits": [
+     "stripe_list_invoices",
+     "freee_list_items",
+     "stripe_create_price",
+     "salesforce_list_accounts",
+     "stripe_create_customer"
+    ]
+   }
+  ],
+  "prompt_tokens": 2561,
+  "completion_tokens": 76,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.510396171361208,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "stripe_list_invoices:en@200",
+  "target": "stripe_list_invoices",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "stripe_list_invoices"
+  ],
+  "searches": [
+   {
+    "query": "stripe",
+    "limit": null,
+    "hits": [
+     "stripe_create_customer",
+     "stripe_create_price",
+     "stripe_list_invoices",
+     "figma_get_team_styles",
+     "miro_create_connector"
+    ]
+   }
+  ],
+  "prompt_tokens": 2584,
+  "completion_tokens": 71,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.251680796034634,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "tableau_add_user_to_site:ja@200",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "tableau_add_user_to_site"
+  ],
+  "call_args": [
+   "{\"username\": \"k.sato\", \"role\": \"Viewer\", \"email\": \"k.sato@example.com\"}"
+  ],
+  "searches": [
+   {
+    "query": "Tableau add user to site",
+    "limit": null,
+    "hits": [
+     "tableau_add_user_to_site",
+     "tableau_create_group",
+     "tableau_list_workbooks",
+     "tableau_list_datasources",
+     "tableau_update_workbook_permissions"
+    ]
+   }
+  ],
+  "prompt_tokens": 2555,
+  "completion_tokens": 88,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.854813792742789,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "tableau_add_user_to_site:en@200",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "tableau_add_user_to_site"
+  ],
+  "call_args": [
+   "{\"username\": \"k.sato\", \"role\": \"Viewer\", \"email\": \"k.sato@example.com\"}"
+  ],
+  "searches": [
+   {
+    "query": "Tableau add user to site",
+    "limit": null,
+    "hits": [
+     "tableau_add_user_to_site",
+     "tableau_create_group",
+     "tableau_list_workbooks",
+     "tableau_list_datasources",
+     "tableau_update_workbook_permissions"
+    ]
+   }
+  ],
+  "prompt_tokens": 2549,
+  "completion_tokens": 88,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.974612438119948,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "teams_send_message:ja@200",
+  "target": "teams_send_message",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "teams_send_message"
+  ],
+  "searches": [
+   {
+    "query": "teams send message",
+    "limit": null,
+    "hits": [
+     "teams_send_message",
+     "teams_get_user_profile",
+     "hubspot_create_draft_email",
+     "chatwork_get_messages",
+     "figma_get_team_styles"
+    ]
+   }
+  ],
+  "prompt_tokens": 2491,
+  "completion_tokens": 91,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.95009583607316,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "teams_send_message:en@200",
+  "target": "teams_send_message",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "teams_send_message"
+  ],
+  "searches": [
+   {
+    "query": "teams send message",
+    "limit": null,
+    "hits": [
+     "teams_send_message",
+     "teams_get_user_profile",
+     "hubspot_create_draft_email",
+     "chatwork_get_messages",
+     "figma_get_team_styles"
+    ]
+   }
+  ],
+  "prompt_tokens": 2487,
+  "completion_tokens": 90,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.438054986298084,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "trello_create_board:ja@200",
+  "target": "trello_create_board",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "trello_create_board"
+  ],
+  "searches": [
+   {
+    "query": "Trello create board",
+    "limit": null,
+    "hits": [
+     "trello_create_board",
+     "trello_get_board_details",
+     "trello_list_lists",
+     "trello_delete_card",
+     "miro_create_frame"
+    ]
+   }
+  ],
+  "prompt_tokens": 2474,
+  "completion_tokens": 69,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.5142098516225815,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "trello_create_board:en@200",
+  "target": "trello_create_board",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "trello_create_board"
+  ],
+  "searches": [
+   {
+    "query": "trello create board",
+    "limit": null,
+    "hits": [
+     "trello_create_board",
+     "trello_get_board_details",
+     "trello_list_lists",
+     "trello_delete_card",
+     "trello_remove_member_from_card"
+    ]
+   }
+  ],
+  "prompt_tokens": 2430,
+  "completion_tokens": 69,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.087032716721296,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "trello_get_board_details:ja@200",
+  "target": "trello_get_board_details",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "trello_get_board_details"
+  ],
+  "searches": [
+   {
+    "query": "Trello ボード詳細取得",
+    "limit": null,
+    "hits": [
+     "trello_get_board_details",
+     "trello_list_lists",
+     "trello_create_board",
+     "miro_get_item",
+     "ga4_get_data_stream"
+    ]
+   }
+  ],
+  "prompt_tokens": 2422,
+  "completion_tokens": 66,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.017119054682553,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "trello_get_board_details:en@200",
+  "target": "trello_get_board_details",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "trello_get_board_details"
+  ],
+  "searches": [
+   {
+    "query": "Trello board details",
+    "limit": null,
+    "hits": [
+     "trello_get_board_details",
+     "trello_create_board",
+     "trello_list_lists",
+     "trello_delete_card",
+     "jira_list_boards"
+    ]
+   }
+  ],
+  "prompt_tokens": 2438,
+  "completion_tokens": 64,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.159726622514427,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "trello_remove_member_from_card:ja@200",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "trello_remove_member_from_card"
+  ],
+  "searches": [
+   {
+    "query": "Trello カードからメンバーを削除する",
+    "limit": null,
+    "hits": [
+     "trello_remove_member_from_card",
+     "trello_delete_card",
+     "docusign_remove_recipient",
+     "rakurakuseisan_delete_expense",
+     "cloudsign_remove_signer"
+    ]
+   }
+  ],
+  "prompt_tokens": 2436,
+  "completion_tokens": 88,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.412258831784129,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "trello_remove_member_from_card:en@200",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "trello_remove_member_from_card"
+  ],
+  "searches": [
+   {
+    "query": "trello remove member from card",
+    "limit": null,
+    "hits": [
+     "trello_remove_member_from_card",
+     "trello_delete_card",
+     "trello_create_board",
+     "docusign_remove_recipient",
+     "trello_list_lists"
+    ]
+   }
+  ],
+  "prompt_tokens": 2461,
+  "completion_tokens": 85,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.507146004587412,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "zendesk_list_organizations:ja@200",
+  "target": "zendesk_list_organizations",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "zendesk_list_organizations"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk 企業一覧 取得",
+    "limit": null,
+    "hits": [
+     "zendesk_list_organizations",
+     "zendesk_list_tags",
+     "zendesk_get_user",
+     "freee_list_items",
+     "smarthr_list_documents"
+    ]
+   }
+  ],
+  "prompt_tokens": 2303,
+  "completion_tokens": 48,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 3.8780233217403293,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "zendesk_list_organizations:en@200",
+  "target": "zendesk_list_organizations",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "zendesk_list_organizations"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk organizations list",
+    "limit": null,
+    "hits": [
+     "zendesk_list_organizations",
+     "zendesk_list_tags",
+     "zendesk_get_user",
+     "tableau_list_workbooks",
+     "zendesk_search_tickets"
+    ]
+   }
+  ],
+  "prompt_tokens": 2287,
+  "completion_tokens": 45,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 3.7536912383511662,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "zendesk_list_tags:ja@200",
+  "target": "zendesk_list_tags",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "zendesk_list_tags"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk tags list",
+    "limit": null,
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "zendesk_search_tickets",
+     "asana_add_tag_to_task",
+     "zendesk_get_user"
+    ]
+   },
+   {
+    "query": "Zendesk tags list",
+    "limit": null,
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "zendesk_search_tickets",
+     "asana_add_tag_to_task",
+     "zendesk_get_user"
+    ]
+   },
+   {
+    "query": "Zendesk tags list",
+    "limit": null,
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "zendesk_search_tickets",
+     "asana_add_tag_to_task",
+     "zendesk_get_user"
+    ]
+   },
+   {
+    "query": "Zendesk tags list",
+    "limit": null,
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "zendesk_search_tickets",
+     "asana_add_tag_to_task",
+     "zendesk_get_user"
+    ]
+   }
+  ],
+  "prompt_tokens": 8010,
+  "completion_tokens": 142,
+  "steps": 5,
+  "error": null,
+  "final_text": "Zendeskで現在利用可能なすべてのタグの一覧を取得します。\n\n",
+  "stop": "target",
+  "latency_s": 9.86043886654079,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "zendesk_list_tags:en@200",
+  "target": "zendesk_list_tags",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "zendesk_list_tags"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk tags list",
+    "limit": null,
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "zendesk_search_tickets",
+     "asana_add_tag_to_task",
+     "zendesk_get_user"
+    ]
+   }
+  ],
+  "prompt_tokens": 2325,
+  "completion_tokens": 44,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 3.876576435752213,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "docusign_create_webhook:ja_missing@200",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "docusign webhook",
+    "limit": null,
+    "hits": [
+     "docusign_create_webhook",
+     "pagerduty_trigger_webhook",
+     "docusign_create_brand",
+     "linear_list_webhooks",
+     "docusign_void_envelope"
+    ]
+   }
+  ],
+  "prompt_tokens": 2621,
+  "completion_tokens": 230,
+  "steps": 2,
+  "error": null,
+  "final_text": "`docusign_create_webhook` ツールが利用可能です。\nご依頼の内容に基づき、以下のパラメータでWebhookを設定します。\n\n- **account_id**: `acc_98765`\n- **events**: `[\"envelope-completed\"]`\n- **include_documents**: `false` （ドキュメント本体は含めない）\n- **url**: 「社内の標準エンドポイント」とのことですが、具体的なURLが指定されていません。一般的な社内標準エンドポイントの例（例: `https://api.example.com/docusign/webhook` ）を仮定して実行することはできませんので、**通知先URL** を教えていただけますでしょうか？\n\nもし「社内の標準エンドポイント」が特定の既知のURL（例: `https://hooks.internal.company.com/docusign` など）を指している場合は、そのURLを指定してください。",
+  "stop": "reply",
+  "latency_s": 7.208650031127036,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja_missing",
+  "missing": "url"
+ },
+ {
+  "id": "docusign_create_webhook:en_missing@200",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "DocuSign webhook",
+    "limit": 5,
+    "hits": [
+     "docusign_create_webhook",
+     "pagerduty_trigger_webhook",
+     "linear_list_webhooks",
+     "docusign_create_brand",
+     "docusign_void_envelope"
+    ]
+   }
+  ],
+  "prompt_tokens": 2614,
+  "completion_tokens": 170,
+  "steps": 2,
+  "error": null,
+  "final_text": "I have the `docusign_create_webhook` tool available. However, you mentioned using the \"internal standard endpoint\" for the notification URL, but didn't provide the specific URL. Could you please provide the URL for the internal standard endpoint?\n\nOnce I have the URL, I will proceed with setting up the webhook with the following parameters:\n- `account_id`: \"acc_98765\"\n- `url`: [The URL you provide]\n- `events`: [\"envelope-completed\"]\n- `include_documents`: false",
+  "stop": "reply",
+  "latency_s": 5.987349573522806,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en_missing",
+  "missing": "url"
+ },
+ {
+  "id": "dropbox_share_folder:ja_missing@200",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "dropbox_list_folder"
+  ],
+  "call_args": [
+   "{\"path\": \"/\"}"
+  ],
+  "searches": [
+   {
+    "query": "Dropbox フォルダを共有する",
+    "limit": null,
+    "hits": [
+     "dropbox_share_folder",
+     "gdrive_create_permission",
+     "dropbox_list_folder",
+     "dropbox_delete_item",
+     "gdrive_list_permissions"
+    ]
+   }
+  ],
+  "prompt_tokens": 4758,
+  "completion_tokens": 69,
+  "steps": 3,
+  "error": null,
+  "final_text": "取引先の担当者のメールアドレスを教えていただけますか？",
+  "stop": "reply",
+  "latency_s": 6.680949222296476,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja_missing",
+  "missing": "member_email"
+ },
+ {
+  "id": "dropbox_share_folder:en_missing@200",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "dropbox_list_folder"
+  ],
+  "call_args": [
+   "{\"path\": \"/\"}"
+  ],
+  "searches": [
+   {
+    "query": "dropbox share folder",
+    "limit": null,
+    "hits": [
+     "dropbox_share_folder",
+     "dropbox_list_folder",
+     "dropbox_delete_item",
+     "dropbox_get_thumbnail",
+     "box_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 4672,
+  "completion_tokens": 134,
+  "steps": 3,
+  "error": null,
+  "final_text": "I found the folder \"Q4 2026 Strategy Meeting\" in the root directory. Its ID is `id:a4ayc_80_OEAAAAAAAAAXw`.\n\nHowever, you mentioned sharing it with \"our client contact\" but didn't provide their email address. Could you please provide the email address of the client contact you'd like to share the folder with?",
+  "stop": "reply",
+  "latency_s": 7.034456519410014,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en_missing",
+  "missing": "member_email"
+ },
+ {
+  "id": "stripe_create_customer:ja_missing@200",
+  "target": "stripe_create_customer",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "stripe create customer",
+    "limit": null,
+    "hits": [
+     "stripe_create_customer",
+     "stripe_create_price",
+     "stripe_list_invoices",
+     "shopify_create_customer",
+     "shopify_list_customers"
+    ]
+   }
+  ],
+  "prompt_tokens": 2569,
+  "completion_tokens": 96,
+  "steps": 2,
+  "error": null,
+  "final_text": "ご依頼ありがとうございます。\n新規顧客「株式会社テックイノベーション」をStripeに登録いたしますが、メールアドレスが指定されていないようです。\n\n「メールアドレスは先方の担当者に確認済みなので、そちらを使ってください」とのことですが、具体的なメールアドレスを教えていただけますでしょうか？",
+  "stop": "reply",
+  "latency_s": 4.618554997257888,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja_missing",
+  "missing": "email"
+ },
+ {
+  "id": "stripe_create_customer:en_missing@200",
+  "target": "stripe_create_customer",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "stripe create customer",
+    "limit": null,
+    "hits": [
+     "stripe_create_customer",
+     "stripe_create_price",
+     "stripe_list_invoices",
+     "shopify_create_customer",
+     "shopify_list_customers"
+    ]
+   }
+  ],
+  "prompt_tokens": 2532,
+  "completion_tokens": 1147,
+  "steps": 2,
+  "error": null,
+  "final_text": "The user wants to register a new customer in Stripe but has not provided the specific email address, stating only that it has \"already been confirmed with their representative.\" Since I do not have access to previous conversations or external confirmation records, I cannot proceed without the actual email address.\n\nHowever, looking at the available tools, I have `stripe_create_customer` which requires an `email` (required), and optionally `name` and `description`.\n\nI must ask the user for the email address.\n\nWait, looking at the prompt again: \"Use the email address that has already been confirmed with their representative.\" This implies I should know it or it was provided in a context I don't see. Since I am an AI assistant in a single-turn or limited-context environment here, and no email is provided in the current prompt, I cannot guess it.\n\nI will ask the user to provide the email address.\n\nActually, sometimes in these scenarios, if the information is missing, I should point it out. But let me double-check if there's any other tool that might help find it? No, the other tools are for Shopify or listing invoices/prices.\n\nI will respond by asking for the email address.\n\n**Correction**: In many AI agent simulations, if a piece of information is described as \"already confirmed\" but not explicitly given, it might be a test to see if I hallucinate or if I ask for clarification. I must ask for clarification.\n\nHowever, if I look at the strict instructions \"If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\", this applies when I *can't* do it. Here I *can* do it if I had the email.\n\nLet's assume the user made a mistake and forgot to paste the email, or expects me to ask.\n\nI will ask for the email address.\n\n**Alternative interpretation**: Is it possible the email is hidden in the \"description\" or somewhere else? No.\n\nI will reply stating that I need the email address to proceed.\n\n**Wait**, let me re-read the prompt carefully. \"Use the email address that has already been confirmed with their representative.\" It is possible this is a trick question or I am expected to know it from a previous turn which doesn't exist here.\n\nI will simply state that I need the email address.\n\n**Refined Plan**:\n1. Acknowledge the request.\n2. State that the email address is required to create the customer in Stripe.\n3. Ask the user to provide the email address.\n\nBut wait, looking at the system prompt style, usually, I should just perform the action if I can. If I can't, I explain why.\n\nLet's try to see if I can make up a placeholder? No, that's bad practice.\n\nI will ask for the email.\n\n**However**, if I look at similar examples, sometimes the \"email\" is implied to be known. If I absolutely cannot proceed, I will ask.\n\nLet's assume the user *intended* to provide it but didn't. I will ask.\n\n**Response**:\n\"To register 'Tech Innovation Inc.' in Stripe, I need the specific email address. Could you please provide the email address confirmed with their representative?\"\n\nBut wait, I should check if there are any other tools that might have customer info? `shopify_list_customers`? Maybe they are already in Shopify? The prompt says \"register ... as a new customer in Stripe\". It doesn't say they are in Shopify.\n\nI will ask for the email.\n\n**Actually**, let's look at the `stripe_create_customer` function again.\n`email`: required.\n`name`: optional.\n`description`: optional.\n\nI have the name: \"Tech Innovation Inc.\"\nI have the description: \"Enterprise plan contract scheduled for October 2026 implementation\"\nI lack the email.\n\nI will ask for the email.\n\n**Self-Correction**: In some testing environments, if the prompt says \"Use the email address that has already been confirmed...\", it might refer to a standard test email or expect me to fail gracefully. I will ask for the email.\n\n**Final Decision**: I cannot execute the tool without the email. I will ask the user for it.\n\n**Wait**, is it possible the user expects me to use a dummy email? No.\n\nI will provide a response asking for the email.\n\n**Note**: If this were a real scenario where I had memory of previous turns, I would look it up. Since I don't, I must ask.\n\n**Response**:\n\"I need the email address to register the customer in Stripe. Please provide the email address for 'Tech Innovation Inc.'.\"\n\nHowever, to be helpful, I will format the response politely.\n\n**One more check**: Did I miss any tool that could \"find\" the email?\n`tool_search` loaded `stripe_create_customer`, `stripe_create_price`, `stripe_list_invoices`, `shopify_create_customer`, `shopify_list_customers`.\nNone of these search for contact info by company name in an external CRM or email history.\n\nSo, I must ask.\n\n**Response**:\nTo proceed with registering \"Tech Innovation Inc.\" in Stripe, I need the specific email address. Could you please provide the email address that was confirmed with their representative?",
+  "stop": "reply",
+  "latency_s": 22.75155038293451,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en_missing",
+  "missing": "email"
+ },
+ {
+  "id": "teams_send_message:ja_missing@200",
+  "target": "teams_send_message",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "teams_send_message"
+  ],
+  "call_args": [
+   "{\"chat_id\": \"19:abc123def456@thread.tacv2\", \"content\": \"お疲れ様です。\\n10月21日（水）の進捗報告です。\\n\\n【本日の作業内容】\\n- \\n\\n【明日の予定】\\n- \\n\\n【共有事項・懸念点】\\n- \\n\\n以上、よろしくお願いいたします。\", \"subject\": \"10月21日 進捗報告\"}"
+  ],
+  "searches": [
+   {
+    "query": "teams send message",
+    "limit": null,
+    "hits": [
+     "teams_send_message",
+     "teams_get_user_profile",
+     "hubspot_create_draft_email",
+     "chatwork_get_messages",
+     "figma_get_team_styles"
+    ]
+   }
+  ],
+  "prompt_tokens": 2522,
+  "completion_tokens": 221,
+  "steps": 2,
+  "error": null,
+  "final_text": "指定されたチャンネルIDに、10月21日の進捗報告に関するメッセージを送信します。「いつものテンプレート」という具体的な内容が不明でしたので、一般的な進捗報告の形式でメッセージを作成・送信します。\n\n",
+  "stop": "target",
+  "latency_s": 14.995294811204076,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja_missing",
+  "missing": "content"
+ },
+ {
+  "id": "teams_send_message:en_missing@200",
+  "target": "teams_send_message",
+  "condition": "search_rrf_prod",
+  "n": 200,
+  "calls": [
+   "teams_send_message"
+  ],
+  "call_args": [
+   "{\"chat_id\": \"19:abc123def456@thread.tacv2\", \"content\": \"進捗報告（10月21日分）\\n\\n【本日の作業内容】\\n- \\n\\n【明日の予定】\\n- \\n\\n【懸念事項・共有事項】\\n- \", \"subject\": \"進捗報告（10月21日分）\"}"
+  ],
+  "searches": [
+   {
+    "query": "teams send message",
+    "limit": null,
+    "hits": [
+     "teams_send_message",
+     "teams_get_user_profile",
+     "hubspot_create_draft_email",
+     "chatwork_get_messages",
+     "figma_get_team_styles"
+    ]
+   }
+  ],
+  "prompt_tokens": 2503,
+  "completion_tokens": 145,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 15.222616914659739,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en_missing",
+  "missing": "content"
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja@1000",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "aws_cloudwatch_get_log_events"
+  ],
+  "searches": [],
+  "prompt_tokens": 125032,
+  "completion_tokens": 78,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 21.370838369242847,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en@1000",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "aws_cloudwatch_get_log_events"
+  ],
+  "searches": [],
+  "prompt_tokens": 125030,
+  "completion_tokens": 78,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.24302642699331,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja@1000",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "aws_cloudwatch_search_logs_by_pattern"
+  ],
+  "searches": [],
+  "prompt_tokens": 125018,
+  "completion_tokens": 373,
+  "steps": 1,
+  "error": null,
+  "final_text": "AWS CloudWatchのロググループ「/aws/lambda/payment-service」で、10月13日以降に発生した「TimeoutError」というエラーメッセージを含むログを検索します。\n\nまず、10月13日（2026-10-13）のエポック秒を計算します。\n2026-10-13 00:00:00 JST は、UTCでは 2026-10-12 15:00:00 です。\nエポック秒は概算で 1791846000 付近ですが、正確な値をツールに渡すために、ISO8601形式の日付から変換する必要があります。\nただし、`aws_cloudwatch_search_logs_by_pattern` の `start_time` はエポック秒（整数）を要求しています。\n\n2026-10-13T00:00:00+09:00 をエポック秒に変換します。\nPythonなどで計算すると:\nimport datetime\ndt = datetime.datetime(2026, 10, 13, 0, 0, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=9)))\nprint(int(dt.timestamp()))\n=> 1791846000\n\nこの値を使用します。\n\n",
+  "stop": "target",
+  "latency_s": 23.75746879260987,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en@1000",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "aws_cloudwatch_search_logs_by_pattern"
+  ],
+  "searches": [],
+  "prompt_tokens": 125012,
+  "completion_tokens": 71,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 19.65422184020281,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "chatwork_get_file:ja@1000",
+  "target": "chatwork_get_file",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "chatwork_get_file"
+  ],
+  "searches": [],
+  "prompt_tokens": 125016,
+  "completion_tokens": 55,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.65548925101757,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "chatwork_get_file:en@1000",
+  "target": "chatwork_get_file",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "chatwork_get_file"
+  ],
+  "searches": [],
+  "prompt_tokens": 125013,
+  "completion_tokens": 55,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.410878993570805,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "docusign_create_webhook:ja@1000",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "docusign_create_webhook"
+  ],
+  "searches": [],
+  "prompt_tokens": 125032,
+  "completion_tokens": 131,
+  "steps": 1,
+  "error": null,
+  "final_text": "DocuSignのアカウント「acc_12345」で、封筒が完了した際に指定されたURLへ通知を送るWebhookを作成します。ドキュメント本体は含めない設定にします。\n\n",
+  "stop": "target",
+  "latency_s": 9.169172433204949,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "docusign_create_webhook:en@1000",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "docusign_create_webhook"
+  ],
+  "searches": [],
+  "prompt_tokens": 125027,
+  "completion_tokens": 85,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.053972479887307,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "dropbox_share_folder:ja@1000",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "dropbox_get_metadata",
+   "dropbox_share_folder"
+  ],
+  "searches": [],
+  "prompt_tokens": 250309,
+  "completion_tokens": 210,
+  "steps": 2,
+  "error": null,
+  "final_text": "フォルダID `id:a4ayc_80_OEAAAAAAAAAXw` を取得しました。次に、このフォルダを ken.tanaka@example.com と共有し、編集権限（editor）を付与します。\n\n",
+  "stop": "target",
+  "latency_s": 24.06773423962295,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "dropbox_share_folder:en@1000",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "dropbox_search_files",
+   "dropbox_share_folder"
+  ],
+  "searches": [],
+  "prompt_tokens": 250317,
+  "completion_tokens": 214,
+  "steps": 2,
+  "error": null,
+  "final_text": "Great! I found the folder \"2026 Annual Budget Plan\" with ID \"id:a4ayc_80_OEAAAAAAAAAXw\". Now I'll share this folder with ken.tanaka@example.com and grant editor access.\n\n",
+  "stop": "target",
+  "latency_s": 20.640074238181114,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "figma_delete_comment:ja@1000",
+  "target": "figma_delete_comment",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "figma_search_files",
+   "figma_get_comments",
+   "figma_delete_comment"
+  ],
+  "searches": [],
+  "prompt_tokens": 376261,
+  "completion_tokens": 410,
+  "steps": 3,
+  "error": null,
+  "final_text": "コメント一覧を取得できました。「テスト用コメントです」という内容のコメントが見つかりました。\nそのコメントのIDは `98234710` です。\n\nこのIDを使って、該当するコメントを削除します。\n\n",
+  "stop": "target",
+  "latency_s": 31.411385812796652,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "figma_delete_comment:en@1000",
+  "target": "figma_delete_comment",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "figma_search_files",
+   "figma_get_comments",
+   "figma_delete_comment"
+  ],
+  "searches": [],
+  "prompt_tokens": 375999,
+  "completion_tokens": 233,
+  "steps": 3,
+  "error": null,
+  "final_text": "I found the comment with the content \"Test comment\". Its ID is \"1234567890\". Now I will delete this comment.\n\n",
+  "stop": "target",
+  "latency_s": 28.66620366089046,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "garoon_list_messages:ja@1000",
+  "target": "garoon_list_messages",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [],
+  "prompt_tokens": 124995,
+  "completion_tokens": 29,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 49.87926223129034,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "garoon_list_messages:en@1000",
+  "target": "garoon_list_messages",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [],
+  "prompt_tokens": 124993,
+  "completion_tokens": 29,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 47.69793154112995,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gdrive_list_revisions:ja@1000",
+  "target": "gdrive_list_revisions",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "gdrive_search_files",
+   "gdrive_list_revisions"
+  ],
+  "searches": [],
+  "prompt_tokens": 250329,
+  "completion_tokens": 214,
+  "steps": 2,
+  "error": null,
+  "final_text": "ファイルID `1a2B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ` が特定できました。次に、このファイルの編集履歴（リビジョン）の一覧を取得します。\n\n",
+  "stop": "target",
+  "latency_s": 27.684774679131806,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gdrive_list_revisions:en@1000",
+  "target": "gdrive_list_revisions",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "gdrive_search_files",
+   "gdrive_list_revisions"
+  ],
+  "searches": [],
+  "prompt_tokens": 250283,
+  "completion_tokens": 172,
+  "steps": 2,
+  "error": null,
+  "final_text": "I found the file. The file ID is `1a2B3c4D5e6F7g8H9i0JkLmNoPqRsTuVw`. Now I will retrieve its revision history.\n\n",
+  "stop": "target",
+  "latency_s": 28.834345652721822,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gdrive_upload_file:ja@1000",
+  "target": "gdrive_upload_file",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "gdrive_upload_file"
+  ],
+  "searches": [],
+  "prompt_tokens": 125076,
+  "completion_tokens": 133,
+  "steps": 1,
+  "error": null,
+  "final_text": "Google ドライブにファイルをアップロードします。\n\n",
+  "stop": "target",
+  "latency_s": 13.51536382175982,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gdrive_upload_file:en@1000",
+  "target": "gdrive_upload_file",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "gdrive_upload_file"
+  ],
+  "searches": [],
+  "prompt_tokens": 125059,
+  "completion_tokens": 113,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 11.1964071104303,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gitlab_get_project:ja@1000",
+  "target": "gitlab_get_project",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "gitlab_list_projects",
+   "gitlab_get_project"
+  ],
+  "searches": [],
+  "prompt_tokens": 250531,
+  "completion_tokens": 118,
+  "steps": 2,
+  "error": null,
+  "final_text": "「frontend-dashboard」プロジェクトが見つかりました。プロジェクトIDは `28491` です。\n次に、このプロジェクトの詳細情報を取得します。\n\n",
+  "stop": "target",
+  "latency_s": 26.301590038463473,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gitlab_get_project:en@1000",
+  "target": "gitlab_get_project",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "gitlab_list_projects",
+   "gitlab_get_project"
+  ],
+  "searches": [],
+  "prompt_tokens": 250268,
+  "completion_tokens": 112,
+  "steps": 2,
+  "error": null,
+  "final_text": "Great! I found the \"frontend-dashboard\" project. Now let me get the detailed information for this project using its ID.\n\n",
+  "stop": "target",
+  "latency_s": 19.853124766610563,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "jira_update_sprint:ja@1000",
+  "target": "jira_update_sprint",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "jira_get_project",
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [],
+  "prompt_tokens": 503697,
+  "completion_tokens": 375,
+  "steps": 4,
+  "error": null,
+  "final_text": "現在アクティブなスプリントのIDは `892` です。このスプリントの終了日を「2026-10-21」に、ゴールを「決済機能のQA完了」に更新します。\n\n",
+  "stop": "target",
+  "latency_s": 78.66467979829758,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "jira_update_sprint:en@1000",
+  "target": "jira_update_sprint",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "jira_get_project",
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [],
+  "prompt_tokens": 502744,
+  "completion_tokens": 333,
+  "steps": 4,
+  "error": null,
+  "final_text": "Perfect! I found the active sprint (ID: 5012). Now I'll update it with the new end date (October 21, 2026) and the new goal \"Complete QA for payment features\":\n\n",
+  "stop": "target",
+  "latency_s": 46.93590146768838,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "notion_delete_block:ja@1000",
+  "target": "notion_delete_block",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "notion_delete_block"
+  ],
+  "searches": [],
+  "prompt_tokens": 125025,
+  "completion_tokens": 55,
+  "steps": 1,
+  "error": null,
+  "final_text": "Notionの指定されたブロックを削除（アーカイブ）します。\n\n",
+  "stop": "target",
+  "latency_s": 8.564390082843602,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "notion_delete_block:en@1000",
+  "target": "notion_delete_block",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "notion_delete_block"
+  ],
+  "searches": [],
+  "prompt_tokens": 125023,
+  "completion_tokens": 39,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 12.647143795154989,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "outlook_delete_event:ja@1000",
+  "target": "outlook_delete_event",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "outlook_search_events",
+   "outlook_delete_event"
+  ],
+  "searches": [],
+  "prompt_tokens": 250787,
+  "completion_tokens": 270,
+  "steps": 2,
+  "error": null,
+  "final_text": "「週次進捗会議」の定期的なシリーズが見つかりました。このシリーズ全体をキャンセルします。\n\n",
+  "stop": "target",
+  "latency_s": 31.85810439195484,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "outlook_delete_event:en@1000",
+  "target": "outlook_delete_event",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "outlook_search_events",
+   "outlook_delete_event"
+  ],
+  "searches": [],
+  "prompt_tokens": 250406,
+  "completion_tokens": 158,
+  "steps": 2,
+  "error": null,
+  "final_text": "I found the \"Weekly Progress Meeting\" event. Now I'll delete the entire recurring series by setting the `cancel_series` parameter to true.\n\n",
+  "stop": "target",
+  "latency_s": 22.986320321448147,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "outlook_search_emails:ja@1000",
+  "target": "outlook_search_emails",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "outlook_search_emails"
+  ],
+  "searches": [],
+  "prompt_tokens": 125011,
+  "completion_tokens": 81,
+  "steps": 1,
+  "error": null,
+  "final_text": "Outlookで「田中」さんから受信した、「Q3予算案」という件名のメールを10月7日以降の期間で検索します。\n\n",
+  "stop": "target",
+  "latency_s": 20.213165735825896,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "outlook_search_emails:en@1000",
+  "target": "outlook_search_emails",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "outlook_search_emails"
+  ],
+  "searches": [],
+  "prompt_tokens": 125004,
+  "completion_tokens": 72,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 16.75520052295178,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja@1000",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "pagerduty_trigger_webhook"
+  ],
+  "searches": [],
+  "prompt_tokens": 125034,
+  "completion_tokens": 78,
+  "steps": 1,
+  "error": null,
+  "final_text": "PagerDutyから指定されたURLへWebhookを発火させます。\n\n",
+  "stop": "target",
+  "latency_s": 12.980480049736798,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en@1000",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "pagerduty_trigger_webhook"
+  ],
+  "searches": [],
+  "prompt_tokens": 125026,
+  "completion_tokens": 62,
+  "steps": 1,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 10.335204777307808,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "docusign_create_webhook:ja_missing@1000",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "docusign_create_webhook"
+  ],
+  "call_args": [
+   "{\"account_id\": \"acc_98765\", \"url\": \"https://internal.example.com/api/docusign/webhook\", \"events\": \n[\"envelope-completed\"]\n\n, \"include_documents\": true}"
+  ],
+  "searches": [],
+  "prompt_tokens": 125044,
+  "completion_tokens": 114,
+  "steps": 1,
+  "error": null,
+  "final_text": "DocuSignのアカウント「acc_98765」に対して、封筒完了時のWebhook通知を設定します。\n\n",
+  "stop": "target",
+  "latency_s": 12.30430902261287,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja_missing",
+  "missing": "url"
+ },
+ {
+  "id": "docusign_create_webhook:en_missing@1000",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 1000,
+  "calls": [],
+  "call_args": [],
+  "searches": [],
+  "prompt_tokens": 125026,
+  "completion_tokens": 84,
+  "steps": 1,
+  "error": null,
+  "final_text": "I'll set up a DocuSign webhook for your account. However, I need the specific URL for your internal standard endpoint to complete this request.\n\nCould you please provide the notification URL that should receive the webhook events?\n\nOnce you provide the URL, I'll create the webhook with:\n- Account ID: acc_98765\n- Event: envelope-completed\n- Include documents: true",
+  "stop": "reply",
+  "latency_s": 8.794513685628772,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en_missing",
+  "missing": "url"
+ },
+ {
+  "id": "dropbox_share_folder:ja_missing@1000",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "dropbox_list_folder",
+   "dropbox_share_folder"
+  ],
+  "call_args": [
+   "{\"path\": \"\"}",
+   "{\"folder_id\": \"id:a4ayc_80_OEAAAAAAAAAXw\", \"member_email\": \"tanaka@example.com\", \"access_level\": \"viewer\"}"
+  ],
+  "searches": [],
+  "prompt_tokens": 250812,
+  "completion_tokens": 327,
+  "steps": 2,
+  "error": null,
+  "final_text": "「2026年度 戦略企画」フォルダのIDは `id:a4ayc_80_OEAAAAAAAAAXw` です。\n\n次に、このフォルダを田中様（メールアドレス: `tanaka@example.com`）と共有します。閲覧のみ可能にするため、アクセスレベルは `viewer` に設定します。\n\n",
+  "stop": "target",
+  "latency_s": 45.89031964447349,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja_missing",
+  "missing": "member_email"
+ },
+ {
+  "id": "dropbox_share_folder:en_missing@1000",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "dropbox_list_folder"
+  ],
+  "call_args": [
+   "{\"path\": \"/\"}"
+  ],
+  "searches": [],
+  "prompt_tokens": 250501,
+  "completion_tokens": 167,
+  "steps": 2,
+  "error": null,
+  "final_text": "Great! I found the \"2026 Strategic Planning\" folder with ID `id:a4ayc_80_OEAAAAAAAAAXw`. Now I need to share it with Mr. Tanaka. However, I need Mr. Tanaka's email address to share the folder with him.\n\nCould you please provide Mr. Tanaka's email address so I can share the folder with view-only permissions?",
+  "stop": "reply",
+  "latency_s": 13.043675567023456,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en_missing",
+  "missing": "member_email"
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja@1000",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "aws_cloudwatch_get_log_events"
+  ],
+  "searches": [
+   {
+    "query": "AWS CloudWatch logs get log events",
+    "limit": 5,
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_describe_alarms",
+     "aws_cloudwatch_get_metric_statistics",
+     "aws_cloudwatch_put_alarm"
+    ]
+   }
+  ],
+  "prompt_tokens": 3013,
+  "completion_tokens": 121,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.747867523692548,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en@1000",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "aws_cloudwatch_get_log_events"
+  ],
+  "searches": [
+   {
+    "query": "AWS CloudWatch get log events",
+    "limit": null,
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_metric_statistics",
+     "aws_cloudwatch_put_alarm",
+     "aws_cloudwatch_delete_alarm"
+    ]
+   }
+  ],
+  "prompt_tokens": 2948,
+  "completion_tokens": 108,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.216468802653253,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja@1000",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "aws_cloudwatch_search_logs_by_pattern"
+  ],
+  "searches": [
+   {
+    "query": "AWS CloudWatch logs search",
+    "limit": null,
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_describe_alarms",
+     "datadog_search_logs",
+     "aws_cloudwatch_delete_alarm"
+    ]
+   }
+  ],
+  "prompt_tokens": 2769,
+  "completion_tokens": 102,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 15.01320019736886,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en@1000",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "aws_cloudwatch_search_logs_by_pattern"
+  ],
+  "searches": [
+   {
+    "query": "AWS CloudWatch logs search",
+    "limit": null,
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_describe_alarms",
+     "datadog_search_logs",
+     "aws_cloudwatch_delete_alarm"
+    ]
+   }
+  ],
+  "prompt_tokens": 2757,
+  "completion_tokens": 100,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 13.955522866919637,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "chatwork_get_file:ja@1000",
+  "target": "chatwork_get_file",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "chatwork_get_file"
+  ],
+  "searches": [
+   {
+    "query": "chatwork get file metadata download url",
+    "limit": null,
+    "hits": [
+     "chatwork_get_file",
+     "chatwork_list_files",
+     "kintone_download_file",
+     "gdrive_get_file_metadata",
+     "chatwork_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 2554,
+  "completion_tokens": 86,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.589298475533724,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "chatwork_get_file:en@1000",
+  "target": "chatwork_get_file",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "chatwork_get_file"
+  ],
+  "searches": [
+   {
+    "query": "chatwork file metadata download",
+    "limit": null,
+    "hits": [
+     "chatwork_get_file",
+     "chatwork_list_files",
+     "gdrive_get_file_metadata",
+     "kintone_download_file",
+     "chatwork_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 2546,
+  "completion_tokens": 84,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.739924783818424,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "docusign_create_webhook:ja@1000",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "docusign_create_webhook"
+  ],
+  "searches": [
+   {
+    "query": "docusign webhook create",
+    "limit": null,
+    "hits": [
+     "docusign_create_webhook",
+     "docusign_list_webhooks",
+     "docusign_create_brand",
+     "docusign_create_envelope_from_document",
+     "docusign_create_template"
+    ]
+   }
+  ],
+  "prompt_tokens": 2859,
+  "completion_tokens": 114,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.053160801529884,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "docusign_create_webhook:en@1000",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "docusign_create_webhook"
+  ],
+  "searches": [
+   {
+    "query": "docusign create webhook",
+    "limit": null,
+    "hits": [
+     "docusign_create_webhook",
+     "docusign_list_webhooks",
+     "docusign_create_brand",
+     "docusign_create_envelope_from_document",
+     "linear_create_webhook"
+    ]
+   }
+  ],
+  "prompt_tokens": 2828,
+  "completion_tokens": 130,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.916329061612487,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "dropbox_share_folder:ja@1000",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "dropbox_list_folder",
+   "dropbox_share_folder"
+  ],
+  "searches": [
+   {
+    "query": "dropbox share folder",
+    "limit": null,
+    "hits": [
+     "dropbox_share_folder",
+     "dropbox_download_file",
+     "dropbox_create_folder",
+     "dropbox_list_folder",
+     "dropbox_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 4922,
+  "completion_tokens": 127,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.091484688222408,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "dropbox_share_folder:en@1000",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "dropbox_list_folder",
+   "dropbox_share_folder"
+  ],
+  "searches": [
+   {
+    "query": "share dropbox folder",
+    "limit": null,
+    "hits": [
+     "dropbox_share_folder",
+     "dropbox_download_file",
+     "dropbox_create_folder",
+     "dropbox_list_folder",
+     "dropbox_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 4859,
+  "completion_tokens": 127,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.672980633564293,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "figma_delete_comment:ja@1000",
+  "target": "figma_delete_comment",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "figma delete comment",
+    "limit": null,
+    "hits": [
+     "figma_delete_comment",
+     "figma_post_comment",
+     "figma_get_comments",
+     "figma_delete_webhook",
+     "confluence_delete_comment"
+    ]
+   }
+  ],
+  "prompt_tokens": 2612,
+  "completion_tokens": 293,
+  "steps": 2,
+  "error": null,
+  "final_text": "コメントを削除するには、対象のFigmaファイルの「ファイルキー」と、削除したい「コメントID」が必要です。\n\n「モバイルアプリUI設計」というファイル名から直接ファイルキーを特定することはできないため、まずファイルキーを確認する必要があります。また、コメントIDも取得する必要があります。\n\nしかし、現在の利用可能なFigmaツールには「ファイル名からファイルキーを検索する機能」や「ファイル一覧を取得する機能」が含まれていないようです。`figma_get_comments` はファイルキーが既知であることが前提となっています。\n\nそのため、以下の情報のいずれかを提供していただけますでしょうか？\n1. **ファイルキー**（FigmaのURLに含まれる文字列です。例: `https://www.figma.com/file/XXXXXXXXXXXX...` の `XXXXXXXXXXXX` の部分）\n2. または、ファイルキーが不明な場合、ファイルキーを取得するための他の手段（例: ファイル一覧を取得できる別のツールがあるか等）が必要ですが、現在は定義されていないようです。\n\nもしファイルキーがお分かりであれば、それを教えていただければ、そのファイル内のコメント一覧を取得し、「テスト用コメントです」という内容のコメントを探して削除することができます。\n\nファイルキーを教えていただけますか？",
+  "stop": "reply",
+  "latency_s": 8.225336899980903,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "figma_delete_comment:en@1000",
+  "target": "figma_delete_comment",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "figma_search_files",
+   "figma_get_comments",
+   "figma_delete_comment"
+  ],
+  "searches": [
+   {
+    "query": "figma delete comment",
+    "limit": null,
+    "hits": [
+     "figma_delete_comment",
+     "figma_post_comment",
+     "figma_get_comments",
+     "figma_delete_webhook",
+     "confluence_delete_comment"
+    ]
+   },
+   {
+    "query": "figma get file key by name",
+    "limit": null,
+    "hits": [
+     "figma_get_file_components",
+     "figma_get_file",
+     "figma_get_file_nodes",
+     "figma_get_prototypes",
+     "figma_get_image_fills"
+    ]
+   },
+   {
+    "query": "figma list files",
+    "limit": null,
+    "hits": [
+     "figma_get_file",
+     "figma_get_file_components",
+     "figma_get_project_files",
+     "figma_get_file_nodes",
+     "figma_search_files"
+    ]
+   }
+  ],
+  "prompt_tokens": 14623,
+  "completion_tokens": 213,
+  "steps": 6,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 13.720477116294205,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "garoon_list_messages:ja@1000",
+  "target": "garoon_list_messages",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [
+   {
+    "query": "Garoon 受信トレイ メッセージ 取得",
+    "limit": 5,
+    "hits": [
+     "garoon_list_messages",
+     "garoon_get_message_detail",
+     "garoon_send_message",
+     "gmail_archive_message",
+     "gmail_list_messages"
+    ]
+   }
+  ],
+  "prompt_tokens": 2565,
+  "completion_tokens": 75,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.324063002131879,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "garoon_list_messages:en@1000",
+  "target": "garoon_list_messages",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [
+   {
+    "query": "garoon inbox messages",
+    "limit": 5,
+    "hits": [
+     "garoon_list_messages",
+     "garoon_send_message",
+     "garoon_get_message_detail",
+     "gmail_archive_message",
+     "garoon_update_schedule"
+    ]
+   }
+  ],
+  "prompt_tokens": 2515,
+  "completion_tokens": 69,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.541077074594796,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gdrive_list_revisions:ja@1000",
+  "target": "gdrive_list_revisions",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "gdrive_search_files",
+   "gdrive_list_revisions"
+  ],
+  "searches": [
+   {
+    "query": "Google Drive ファイル検索 リビジョン履歴取得",
+    "limit": null,
+    "hits": [
+     "gdrive_list_revisions",
+     "gdrive_restore_revision",
+     "box_list_file_versions",
+     "dropbox_list_file_versions",
+     "gdrive_search_files"
+    ]
+   }
+  ],
+  "prompt_tokens": 4475,
+  "completion_tokens": 128,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 12.001513242721558,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gdrive_list_revisions:en@1000",
+  "target": "gdrive_list_revisions",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "gdrive_search_files",
+   "gdrive_list_revisions"
+  ],
+  "searches": [
+   {
+    "query": "Google Drive file search and revision history",
+    "limit": null,
+    "hits": [
+     "gdrive_search_files",
+     "gdrive_list_revisions",
+     "gdrive_restore_revision",
+     "lineworks_list_drives",
+     "gdrive_download_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 4434,
+  "completion_tokens": 122,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.110368249937892,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gdrive_upload_file:ja@1000",
+  "target": "gdrive_upload_file",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "gdrive_upload_file"
+  ],
+  "searches": [
+   {
+    "query": "gdrive",
+    "limit": 5,
+    "hits": [
+     "gdrive_upload_file",
+     "gdrive_export_file",
+     "gdrive_download_file",
+     "gdrive_delete_file",
+     "gdrive_search_files"
+    ]
+   }
+  ],
+  "prompt_tokens": 3035,
+  "completion_tokens": 665,
+  "steps": 2,
+  "error": null,
+  "final_text": "`gdrive_upload_file` ツールが利用可能です。このツールを使用して、指定されたフォルダにファイルをアップロードします。\n\nただし、注意点として、`gdrive_upload_file` の `content` パラメータには通常、Base64エンコードされたバイナリデータまたはテキストを指定しますが、MIMEタイプを `application/pdf` と指定してテキスト文字列を直接渡した場合、Google ドライブ側で正しいPDFとして認識されない可能性があります（単なるテキストファイルとして扱われるか、破損したPDFになるリスクがあります）。\n\nしかし、ユーザーの指示通り「MIMEタイプは application/pdf」として「テキストコンテンツ」をアップロードするという要件に従って実行します。ツールはテキストコンテンツを受け取るよう定義されているため、そのまま渡します。\n\nパラメータ:\n- `file_name`: \"2026年度_第3四半期_営業報告書.pdf\"\n- `content`: \"今期の売上は前年比10%増となりました。詳細な分析データは添付の通りです。\"\n- `mime_type`: \"application/pdf\"\n- `folder_id`: \"1A2B3C4D5E6F7G8H9I0J\"\n\n",
+  "stop": "target",
+  "latency_s": 14.087088597938418,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gdrive_upload_file:en@1000",
+  "target": "gdrive_upload_file",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "gdrive_upload_file"
+  ],
+  "searches": [
+   {
+    "query": "upload file to google drive",
+    "limit": null,
+    "hits": [
+     "gdrive_upload_file",
+     "lineworks_upload_file",
+     "gdrive_export_file",
+     "gdrive_download_file",
+     "kintone_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 2855,
+  "completion_tokens": 142,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 5.733983592130244,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gitlab_get_project:ja@1000",
+  "target": "gitlab_get_project",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "gitlab_list_projects",
+   "gitlab_get_project"
+  ],
+  "searches": [
+   {
+    "query": "GitLab project search",
+    "limit": null,
+    "hits": [
+     "gitlab_search_issues",
+     "gitlab_get_project",
+     "asana_search_projects",
+     "gitlab_list_projects",
+     "gitlab_list_repository_tree"
+    ]
+   }
+  ],
+  "prompt_tokens": 5038,
+  "completion_tokens": 75,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.173814064823091,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gitlab_get_project:en@1000",
+  "target": "gitlab_get_project",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "gitlab_list_projects"
+  ],
+  "searches": [
+   {
+    "query": "gitlab",
+    "limit": null,
+    "hits": [
+     "gitlab_list_projects",
+     "gitlab_delete_file",
+     "gitlab_list_issues",
+     "gitlab_create_issue",
+     "gitlab_create_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 4972,
+  "completion_tokens": 163,
+  "steps": 3,
+  "error": null,
+  "final_text": "I found the project \"frontend-dashboard\". Here are its details:\n\n*   **Project Name:** frontend-dashboard\n*   **Path:** engineering/frontend-dashboard\n*   **Description:** Main dashboard application for the customer portal\n*   **Visibility:** Private\n*   **Web URL:** [https://gitlab.example.com/engineering/frontend-dashboard](https://gitlab.example.com/engineering/frontend-dashboard)\n*   **SSH URL:** `git@gitlab.example.com:engineering/frontend-dashboard.git`\n*   **HTTP URL:** `https://gitlab.example.com/engineering/frontend-dashboard.git`",
+  "stop": "reply",
+  "latency_s": 7.266005439683795,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "jira_update_sprint:ja@1000",
+  "target": "jira_update_sprint",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [
+   {
+    "query": "Jira update sprint",
+    "limit": null,
+    "hits": [
+     "jira_update_sprint",
+     "jira_create_sprint",
+     "jira_close_sprint",
+     "jira_get_sprint",
+     "jira_list_sprints"
+    ]
+   },
+   {
+    "query": "Jira list boards or get board id for mobile app refresh project",
+    "limit": null,
+    "hits": [
+     "jira_list_sprints",
+     "jira_list_boards",
+     "jira_get_board",
+     "jira_create_sprint",
+     "trello_create_board"
+    ]
+   }
+  ],
+  "prompt_tokens": 10486,
+  "completion_tokens": 213,
+  "steps": 5,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 18.224504527635872,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "jira_update_sprint:en@1000",
+  "target": "jira_update_sprint",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [
+   {
+    "query": "jira update sprint",
+    "limit": null,
+    "hits": [
+     "jira_update_sprint",
+     "jira_get_sprint",
+     "jira_create_sprint",
+     "jira_close_sprint",
+     "jira_list_sprints"
+    ]
+   },
+   {
+    "query": "jira get board id for project Mobile App Refresh",
+    "limit": null,
+    "hits": [
+     "jira_get_board",
+     "jira_get_project",
+     "jira_list_boards",
+     "jira_list_issues",
+     "jira_update_issue"
+    ]
+   }
+  ],
+  "prompt_tokens": 11144,
+  "completion_tokens": 206,
+  "steps": 5,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 11.39943584240973,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "notion_delete_block:ja@1000",
+  "target": "notion_delete_block",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "notion_delete_block"
+  ],
+  "searches": [
+   {
+    "query": "notion delete block",
+    "limit": null,
+    "hits": [
+     "notion_delete_block",
+     "notion_get_block",
+     "notion_update_block",
+     "notion_list_blocks",
+     "notion_move_block_children"
+    ]
+   }
+  ],
+  "prompt_tokens": 2628,
+  "completion_tokens": 67,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.622110732831061,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "notion_delete_block:en@1000",
+  "target": "notion_delete_block",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "notion_delete_block"
+  ],
+  "searches": [
+   {
+    "query": "notion delete block",
+    "limit": null,
+    "hits": [
+     "notion_delete_block",
+     "notion_get_block",
+     "notion_update_block",
+     "notion_list_blocks",
+     "notion_move_block_children"
+    ]
+   }
+  ],
+  "prompt_tokens": 2624,
+  "completion_tokens": 67,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.099054445512593,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "outlook_delete_event:ja@1000",
+  "target": "outlook_delete_event",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "outlook",
+    "limit": null,
+    "hits": [
+     "outlook_create_draft",
+     "outlook_list_events",
+     "outlook_get_contact",
+     "outlook_create_event",
+     "outlook_get_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 2620,
+  "completion_tokens": 254,
+  "steps": 2,
+  "error": null,
+  "final_text": "読み込まれたツールを確認しましたが、予定を**削除**または**キャンセル**するための関数（例: `outlook_delete_event` や `outlook_cancel_event`）が含まれていません。\n\n利用可能な Outlook 関連の関数は以下の通りです：\n- `outlook_create_draft`: 下書き作成\n- `outlook_list_events`: 予定一覧取得\n- `outlook_get_contact`: 連絡先取得\n- `outlook_create_event`: 予定作成\n- `outlook_get_email`: メール取得\n\n「週次進捗会議」の recurring series を特定して削除する機能がないため、この操作を実行することはできません。\n\n代わりに、該当する予定の一覧を取得して確認することは可能です。もし必要であれば、直近の「週次進捗会議」の予定を検索して表示できますが、削除自体は手動で行う必要があります。\n\nいかがいたしましょうか？",
+  "stop": "reply",
+  "latency_s": 7.454946773126721,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "outlook_delete_event:en@1000",
+  "target": "outlook_delete_event",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "outlook_list_events",
+   "outlook_delete_event"
+  ],
+  "searches": [
+   {
+    "query": "outlook cancel event",
+    "limit": null,
+    "hits": [
+     "outlook_delete_event",
+     "outlook_get_event",
+     "outlook_create_event",
+     "outlook_update_event",
+     "outlook_list_events"
+    ]
+   }
+  ],
+  "prompt_tokens": 5240,
+  "completion_tokens": 357,
+  "steps": 3,
+  "error": null,
+  "final_text": "I found the \"Weekly Progress Meeting\" event. It is a recurring series. I will now cancel the entire series using the event ID.\n\n",
+  "stop": "target",
+  "latency_s": 10.909431238658726,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "outlook_search_emails:ja@1000",
+  "target": "outlook_search_emails",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "outlook_search_emails"
+  ],
+  "searches": [
+   {
+    "query": "Outlookでメールを検索する",
+    "limit": null,
+    "hits": [
+     "outlook_search_emails",
+     "outlook_search_events",
+     "gmail_search_messages",
+     "outlook_list_emails",
+     "outlook_move_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 2637,
+  "completion_tokens": 79,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.7794366758316755,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "outlook_search_emails:en@1000",
+  "target": "outlook_search_emails",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "outlook_search_emails"
+  ],
+  "searches": [
+   {
+    "query": "outlook search emails",
+    "limit": null,
+    "hits": [
+     "outlook_search_emails",
+     "outlook_get_email",
+     "outlook_list_emails",
+     "outlook_delete_email",
+     "outlook_move_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 2585,
+  "completion_tokens": 77,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 19.484853556379676,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja@1000",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "pagerduty_trigger_webhook"
+  ],
+  "searches": [
+   {
+    "query": "pagerduty webhook trigger",
+    "limit": null,
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "docusign_create_webhook",
+     "figma_post_webhook",
+     "gitlab_trigger_pipeline",
+     "figma_put_webhook"
+    ]
+   }
+  ],
+  "prompt_tokens": 2879,
+  "completion_tokens": 144,
+  "steps": 2,
+  "error": null,
+  "final_text": "PagerDutyのツールが読み込まれました。指定されたURLとペイロードでWebhookを発火させます。\n\n",
+  "stop": "target",
+  "latency_s": 5.86308384872973,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en@1000",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "pagerduty_trigger_webhook"
+  ],
+  "searches": [
+   {
+    "query": "PagerDuty webhook",
+    "limit": null,
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "figma_put_webhook",
+     "docusign_create_webhook",
+     "figma_post_webhook",
+     "linear_delete_webhook"
+    ]
+   }
+  ],
+  "prompt_tokens": 2779,
+  "completion_tokens": 155,
+  "steps": 2,
+  "error": null,
+  "final_text": "Perfect! I can see the `pagerduty_trigger_webhook` function is available. Now I'll trigger the webhook with the specified URL and payload.\n\n",
+  "stop": "target",
+  "latency_s": 5.748515517450869,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "docusign_create_webhook:ja_missing@1000",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "docusign webhook",
+    "limit": null,
+    "hits": [
+     "docusign_create_webhook",
+     "docusign_list_webhooks",
+     "pagerduty_trigger_webhook",
+     "figma_post_webhook",
+     "linear_create_webhook"
+    ]
+   }
+  ],
+  "prompt_tokens": 2796,
+  "completion_tokens": 841,
+  "steps": 2,
+  "error": null,
+  "final_text": "ご依頼の内容に基づき、DocuSignのWebhookを設定します。\nただし、「社内の標準エンドポイント」の具体的なURLが指定されていないため、ここでは仮のURL（例: `https://example.com/webhook/docusign`）を使用するか、またはURLの入力が必要か確認させてください。\n\n通常、具体的なURLがないと設定できませんが、もし「社内の標準エンドポイント」が事前に決まった特定のURL（例: `https://hooks.internal.company.com/docusign` など）を指すのであれば、それを教えていただくか、あるいは一般的なプレースホルダーを使用して実行します。\n\nここでは、指示にあるパラメータを揃えて実行を試みますが、**`url` パラメータには実際の社内エンドポイントURLが必要です**。\nもし具体的なURLがお分かりであれば教えてください。分からない場合、このままではエラーになる可能性があるため、確認のため一旦保留とし、URLを尋ねるのが適切ですが、ツール実行のデモとして仮のURLで進めることも可能です。\n\n今回は、ユーザーが「社内の標準エンドポイントを使用します」と断言しているため、もしそれがシステム的に既知の値（例えば環境変数やデフォルト値）であれば良いのですが、ツール的には明示的な文字列が必要です。\n\n安全策として、**具体的なURLを確認せずに進めることはできない**ため、ユーザーにURLを問い合わせるべきですが、AIアシスタントとしての動作上、もし「標準エンドポイント」が文脈から明らかな特定URL（例: `https://api.example.com/callback`）を想定しているならそれを使います。しかし、ここでは不明です。\n\nただ、多くの場合こうしたリクエストでは「URLは何でもいいから形式として実行してほしい」という意図や、あるいは「標準エンドポイント」が実際には固定値（例: `https://webhook.site/...` や社内Wikiに記載のURL）であることがあります。\n\n情報が不足しているため、**URLを指定してください** と返すのが正解ですが、もし強制的にツールを呼ぶ必要があるシナリオであれば、仮のURLを入れます。\nしかし、私は正直なアシスタントなので、**「通知先の具体的なURLを教えていただけますか？」** と尋ねるのが最も適切です。\n\nでも、もし「社内の標準エンドポイント」が、例えば `https://internal-api.example.com/docusign-webhook` のような固定的なものを指すと仮定して進めるよう指示されているなら別ですが、ここでは仮定できません。\n\n改めてプロンプトを読むと、「通知先のURLは社内の標準エンドポイントを使用します」とあります。これは私がそのURLを知っているべきという文脈かもしれません。しかし、私の知識ベースにはその企業の内部URLは含まれていません。\n\nしたがって、**URLが不明であるため実行できません** という旨を伝え、URLの入力を促します。\n\n---\n**修正:** もしこれがテスト環境などで、適当なURLを入れても良い場合は、 `https://example.com/webhook` などを入れることができますが、実務では誤ったURLを設定しないよう注意が必要です。\n\nユーザーの意図が「ツールを使って設定する手順を示してほしい」あるいは「実際に設定したい（URLは別途知っているが省略した）」場合、URLなしでは完了しません。\n\nここでは、**URLが指定されていないため、設定を実行できません。通知先の具体的なURLを入力してください。** と回答します。\n\nただし、もし「社内の標準エンドポイント」が、例えばこの会話の文脈外で定義されている共通URL（例: `https://hooks.example.com/docusign`）であると暗黙的に了解されているなら、それを使う必要があります。\n\n判断に迷うところですが、一般的にAIアシスタントは不足情報を質問します。\n\n**回答:**\n通知先の具体的なURL（社内の標準エンドポイントのアドレス）を教えていただけますでしょうか？ URLが確定しないとWebhookの設定が完了しません。",
+  "stop": "reply",
+  "latency_s": 17.71647462528199,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja_missing",
+  "missing": "url"
+ },
+ {
+  "id": "docusign_create_webhook:en_missing@1000",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "docusign",
+    "limit": null,
+    "hits": [
+     "docusign_create_brand",
+     "docusign_list_brands",
+     "docusign_list_webhooks",
+     "docusign_download_document",
+     "docusign_get_envelope_status"
+    ]
+   }
+  ],
+  "prompt_tokens": 2663,
+  "completion_tokens": 219,
+  "steps": 2,
+  "error": null,
+  "final_text": "I have loaded the available DocuSign tools. However, I notice that there is no function available to **create** or **register** a new webhook (Connect configuration). The available functions are:\n- `docusign_create_brand`\n- `docusign_list_brands`\n- `docusign_list_webhooks`\n- `docusign_download_document`\n- `docusign_get_envelope_status`\n\nSince I cannot create a webhook with the current set of tools, I cannot fulfill the request to set up a new webhook for \"envelope-completed\" events.\n\nIf you would like, I can list the existing webhooks for account ID \"acc_98765\" to see what is currently configured. Would you like me to do that?",
+  "stop": "reply",
+  "latency_s": 6.406701979227364,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en_missing",
+  "missing": "url"
+ },
+ {
+  "id": "dropbox_share_folder:ja_missing@1000",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "dropbox_list_folder",
+   "dropbox_share_folder"
+  ],
+  "call_args": [
+   "{\"path\": \"/\"}",
+   "{\"folder_id\": \"id:a4ayc_80_OEAAAAAAAAAXw\", \"member_email\": \"tanaka@example.com\", \"access_level\": \"viewer\"}"
+  ],
+  "searches": [
+   {
+    "query": "dropbox share folder",
+    "limit": null,
+    "hits": [
+     "dropbox_share_folder",
+     "dropbox_download_file",
+     "dropbox_create_folder",
+     "dropbox_list_folder",
+     "dropbox_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 4973,
+  "completion_tokens": 125,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.947609079070389,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja_missing",
+  "missing": "member_email"
+ },
+ {
+  "id": "dropbox_share_folder:en_missing@1000",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "dropbox_list_folder",
+   "dropbox_share_folder"
+  ],
+  "call_args": [
+   "{\"path\": \"/\"}",
+   "{\"folder_id\": \"id:a4ayc_80_OEAAAAAAAAAXw\", \"member_email\": \"tanaka@example.com\", \"access_level\": \"viewer\"}"
+  ],
+  "searches": [
+   {
+    "query": "dropbox share folder",
+    "limit": null,
+    "hits": [
+     "dropbox_share_folder",
+     "dropbox_download_file",
+     "dropbox_create_folder",
+     "dropbox_list_folder",
+     "dropbox_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 4845,
+  "completion_tokens": 125,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.432111476548016,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en_missing",
+  "missing": "member_email"
+ }
+]

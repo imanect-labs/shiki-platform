@@ -91,7 +91,9 @@ fn default_node_kind_steps() -> i32 {
     8
 }
 fn default_lease_secs() -> i64 {
-    30
+    // エンジン側の既定と単一ソースにする。ここに 30 を書くと、RunStore の resume 猶予が
+    // 見ている既定とドリフトし得る（#457）。
+    workflow_engine::DEFAULT_LEASE_SECS
 }
 fn default_http_timeout_ms() -> u64 {
     30_000
@@ -231,6 +233,9 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
         "ワークフロー run ワーカーを起動しました"
     );
 
+    // 実行履歴 GC（engine.md §12.2）はここでは起動しない。`workflow.enabled` と独立した保守
+    // ランタイムとして `wiring::wire_workflow` が enabled ゲートの外で起動する（#448）。
+
     // ② スケジューラ ③ イベント relay（単一リーダー・tick ループ・detach）。
     let leader_id = format!("wf-sched-{}", std::process::id());
     let lease = LeaderLease::new(deps.db.clone(), leader_id, deps.config.lease_secs);
@@ -242,17 +247,11 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
     let tick_concurrency = concurrency_store;
 
     // event consumer を登録し、現バックログ（有効化前の storage.write）を飛ばす。
-    {
-        let mut conn = match relay_db.acquire().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!(error = %e, "workflow consumer 登録用接続に失敗");
-                return;
-            }
-        };
-        if let Err(e) = storage::event::register_consumer(&mut conn, "workflow").await {
-            tracing::error!(error = %e, "workflow consumer 登録に失敗");
-        }
+    // 登録と「バックログの fast-forward」は原子的でなければならない（autocommit で呼ぶと登録だけ
+    // 先にコミットされ、fast-forward 失敗時に relay がバックログ全件を拾って一斉発火する）。
+    // pool 版が自前で txn を張る。
+    if let Err(e) = storage::event::register_consumer_on_pool(&relay_db, "workflow").await {
+        tracing::error!(error = %e, "workflow consumer 登録に失敗");
     }
 
     tokio::spawn(async move {
@@ -285,6 +284,14 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                     }
                     if let Err(e) = tick_runs.expire_run_timeouts(now, None).await {
                         tracing::warn!(error = %e, "run timeout 回収でエラー");
+                    }
+                    // リース失効 step の回収（engine.md §9.5）。claim を ready 専用にした分の
+                    // takeover はここが担う（#438）。並行カウンタの減分リークは直後の reconcile が
+                    // running の実数から再計算して回収するため、**reconcile より前**に呼ぶ。
+                    match tick_runs.reclaim_expired_leases(None).await {
+                        Ok(0) => {}
+                        Ok(n) => tracing::info!(reclaimed = n, "リース失効 step を回収しました"),
+                        Err(e) => tracing::warn!(error = %e, "リース失効回収でエラー"),
                     }
                     if let Err(e) = tick_concurrency.reconcile().await {
                         tracing::warn!(error = %e, "並行カウンタ reconcile でエラー");

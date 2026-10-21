@@ -3,16 +3,22 @@
 > ✅ **実装済み（2026-07-08・#156〜#165 / 6 本 stacked PR）**。以下の確定事項で 5.1〜5.11 を実装:
 > - **Durable Workspace モデル**（human 承認済み・ライブ FUSE/永続サンドボックスは post-alpha のため不採用）:
 >   ワークスペース = thread ごとの StorageService フォルダ（`thread.workspace_folder_id`・durable・版管理・監査・
->   書込→outbox→自動再索引）。**FUSE マウントの読み替え先**はこれ。file CRUD（`fs_list`/`fs_read`/`grep`/`fs_write`/
+>   書込→outbox）。**FUSE マウントの読み替え先**はこれ。
+>   **⚠️ #392 で更新**: 自動生成のワークスペースは**システム領域**（`node.system`）になり、
+>   ドライブ一覧・名前検索・ゴミ箱に出さず、**書込イベントを RAG へ relay しない**（使い捨ての
+>   作業メモを社内検索に載せない）。フォルダは fs ツールの初回呼び出しで**遅延生成**する。
+>   「このフォルダで作業」を明示選択した run は**従来どおり可視・索引**（Task 5.8 の性質が効く）。
+>   成果物をドライブへ出すのは `save_note` の下書き確定（＝ユーザーの保存操作）。file CRUD（`fs_list`/`fs_read`/`grep`/`fs_write`/
 >   `fs_edit`/`fs_delete`）は StorageService 直読み/直書き（read-after-write 成立＝**PIT-5 の「ワークスペース直読み経路」**を
 >   具現化・RAG 非同期索引とは経路分離）。`shell` のみ ephemeral sandbox に seed→exec→sync-back。
 > - 同一 `agent-core` を `AgentProfile{Chat,Autonomous}` で切替（5.1）。計画（`plan` メタツール・5.2）・コンテキスト剪定（5.3）・
 >   失敗ループ検出＋チェックポイント（5.5）・**ブロッキング承認ゲート**（`waiting_approval`＋`run_approval`＋監査・5.6）・
 >   予算ガード（step/time/token/cost・5.7）・trace_id 相関＋自律イベントのライブ SSE（5.9）・UI（計画/承認/予算・5.11）。
 > - **既知の未実装（後続）**: ①プロセス再起動を跨ぐチェックポイント run 再開（承認ベースの suspend は動作）
->   ②ページ再訪後の承認（run_id 再取得が要る・ライブセッション中は動作）③Playwright 自律 e2e（CI に MinIO＋
+>   ②ページ再訪後の承認（run_id 再取得が要る・ライブセッション中は動作）③Playwright 自律 e2e（CI に RustFS＋
 >   autonomous 対応の web-e2e 環境が要る・Rust e2e `autonomous_run_writes_workspace_file_e2e` で DoD を担保済み）
->   ④shell のパイプ/`&&`（brush 制約・ポストアルファ）。
+>   ④**wasm ティアの** shell のパイプ/`&&`（brush 制約・ポストアルファ。gVisor/Firecracker は #504 で
+>   ゲストの `/bin/sh -c` が解釈するよう対応済み）。
 
 
 > 📝 **方針転換（2026-07-05・#97・design §4.6）**: アルファのサンドボックスは **wasm ティア（Task 4.12）**。
@@ -152,6 +158,15 @@
   - [ ] ステップ/時間/トークン/コスト上限で安全に停止する
   - [ ] 消費トークン・コストがセッション単位で計上・参照できる
   - [ ] 上限値を設定で変更でき、超過前に警告が出る
+- **⚠️ #407 での追加**: 警告イベント（`BudgetWarning`）は sink＝イベントログ／UI へしか流れず、
+  **モデルのコンテキストには入っていなかった**。エージェントは残量を知らないまま上限に当たって
+  切られ、まとめる余裕も切り上げる判断も持てない（実測: 委譲 7 体中 6 体が `Budget(Steps)`）。
+  自律プロファイルでは**毎ステップ、最後のツール結果へ残り予算を観測として添える**
+  （`Budget::remaining` → `[予算] 残り N ステップ / トークン 約 Xk`）。上限が近いときは
+  「新しい調査を始めず、手元の材料で結論を書いて終える」着地指示を併記する。
+  独立した user メッセージにも system プロンプトにもできない（前者は Anthropic が user の連続を
+  拒否し OpenAI 互換は `Role::Tool` の Text を捨てる、後者はプロンプトキャッシュの前置きを
+  毎ステップ壊す）ため、両プロバイダに確実に届くツール結果の content に乗せる。
 
 ### Task 5.8: 書込→ストレージイベント→自動再索引の配線確認
 - **area**: agent / **path**: `crates/fuse`, `crates/storage`, `crates/rag`
@@ -165,6 +180,9 @@
   - [ ] エージェントが作成した成果物が自動で索引され検索/引用できる
   - [ ] エージェントによる削除/移動が索引に正しく反映される
   - [ ] エージェント書込が版管理され、過去版に戻せる
+- **⚠️ #392 での範囲変更**: 上記が成立するのは**明示選択したワークスペース**（可視領域）。
+  自動生成のシステム領域は relay 時点で除外され索引されない（版管理・監査・read-after-write は
+  そのまま効く）。成果物をユーザーへ渡す経路は `save_note` の下書き確定に一本化した。
 
 ### Task 5.9: 進捗の可観測化（計画・ステップ・ツールのライブ可視化＋Langfuse）
 - **area**: obs / **path**: `crates/agent-core`, `crates/api`, `crates/llm-gateway`

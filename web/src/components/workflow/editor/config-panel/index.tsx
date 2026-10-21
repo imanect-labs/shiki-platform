@@ -4,12 +4,17 @@
 ///
 /// フォームは codegen の typed 契約（NodeParamsByType）で型検査された per-node 実装。
 /// サーバ検証エラー（path 付き）を該当フィールドへ写像して表示する。
+///
+/// PC（md 以上）はキャンバス右の浮いたパネル（w-80）、スマホは下からのシートで同じ中身を出す。
 
 import * as React from "react";
 import { Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { FadeSlide } from "@/components/ui/motion-primitives";
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import type { Node as IrNode, Trigger } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { EditorContext } from "../workflow-editor";
@@ -75,7 +80,7 @@ function ancestorsOf(ctx: EditorContext, nodeId: string): RefCandidate[] {
     }));
 }
 
-function NodePanel({ ctx, node }: { ctx: EditorContext; node: IrNode }) {
+function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; sheet: boolean }) {
   const entry = NODE_CATALOG.find((c) => c.type === node.type);
   const Icon = nodeIcon(node.type);
   const Form = FORMS[node.type];
@@ -100,27 +105,28 @@ function NodePanel({ ctx, node }: { ctx: EditorContext; node: IrNode }) {
 
   return (
     <>
-      <div className="flex items-start gap-2.5 border-b px-4 py-3">
+      <div className={cn("flex items-start gap-2.5 border-b px-4 py-3", sheet && "pr-14")}>
         <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
           <Icon className="size-4" aria-hidden />
         </span>
         <div className="min-w-0 flex-1">
-          <h2 className="truncate text-sm font-semibold">
-            {node.label || entry?.label_ja || node.type}
-          </h2>
-          <p className="truncate text-xs text-muted-foreground">{entry?.description_ja}</p>
+          <PanelTitle sheet={sheet}>{node.label || entry?.label_ja || node.type}</PanelTitle>
+          <PanelDescription sheet={sheet}>{entry?.description_ja}</PanelDescription>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7"
-          aria-label="パネルを閉じる"
-          onClick={() => ctx.dispatch({ type: "select", selection: { kind: "none" } })}
-        >
-          <X className="size-4" aria-hidden />
-        </Button>
+        {/* シートは右上に共通の閉じるボタンがある（二重にしない）。 */}
+        {sheet ? null : (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            aria-label="パネルを閉じる"
+            onClick={() => ctx.dispatch({ type: "select", selection: { kind: "none" } })}
+          >
+            <X className="size-4" aria-hidden />
+          </Button>
+        )}
       </div>
-      <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4 scrollbar-subtle">
+      <div className="flex-1 space-y-5 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle">
         {unmappedErrors.length > 0 ? (
           <ul className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-2 text-[11px] text-destructive">
             {unmappedErrors.map((e, i) => (
@@ -158,43 +164,92 @@ function NodePanel({ ctx, node }: { ctx: EditorContext; node: IrNode }) {
 
 export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
   const { selection, ir } = ctx.state;
+  const desktop = useMediaQuery("(min-width: 768px)");
+  const sheet = !desktop;
+  const close = () => ctx.dispatch({ type: "select", selection: { kind: "none" } });
 
+  let label: string | null = null;
+  let content: React.ReactNode = null;
   if (selection.kind === "node") {
     const node = ir.nodes.find((n) => n.id === selection.id);
     if (node) {
-      return (
-        <PanelShell label="ブロックの設定">
-          <NodePanel ctx={ctx} node={node} />
-        </PanelShell>
-      );
+      label = "ブロックの設定";
+      content = <NodePanel ctx={ctx} node={node} sheet={sheet} />;
     }
-  }
-  if (selection.kind === "trigger") {
-    return (
-      <PanelShell label="きっかけの設定">
-        <div className="flex items-center justify-between shiki-dash-bottom px-4 py-3">
-          <h2 className="text-sm font-semibold">きっかけ</h2>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7"
-            aria-label="パネルを閉じる"
-            onClick={() => ctx.dispatch({ type: "select", selection: { kind: "none" } })}
-          >
-            <X className="size-4" aria-hidden />
-          </Button>
+  } else if (selection.kind === "trigger") {
+    label = "きっかけの設定";
+    content = (
+      <>
+        <div className={cn("flex items-center justify-between shiki-dash-bottom px-4 py-3", sheet && "min-h-14 pr-14")}>
+          <PanelTitle sheet={sheet}>きっかけ</PanelTitle>
+          {sheet ? (
+            <PanelDescription sheet className="sr-only">
+              いつ・何をきっかけに動かすかを設定します。
+            </PanelDescription>
+          ) : (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              aria-label="パネルを閉じる"
+              onClick={close}
+            >
+              <X className="size-4" aria-hidden />
+            </Button>
+          )}
         </div>
-        <div className="flex-1 overflow-y-auto px-4 py-4 scrollbar-subtle">
+        <div className="flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle">
           <TriggerPanel
             triggers={ir.triggers as Trigger[]}
             index={selection.index}
             onChange={(triggers) => ctx.dispatch({ type: "set_triggers", triggers })}
           />
         </div>
-      </PanelShell>
+      </>
     );
   }
-  return null;
+
+  if (sheet) {
+    // スマホ: 選択中だけ下からのシートで開く。閉じる＝選択解除。
+    return (
+      <Sheet open={content !== null} onOpenChange={(open) => !open && close()}>
+        <SheetContent
+          side="bottom"
+          aria-label={label ?? undefined}
+          className="h-[85dvh]"
+          // 開いた瞬間に先頭の入力へフォーカスしてキーボードを出さない（まず全体を見せる）。
+          onOpenAutoFocus={(e) => e.preventDefault()}
+        >
+          {content}
+        </SheetContent>
+      </Sheet>
+    );
+  }
+  if (!content || !label) return null;
+  return <PanelShell label={label}>{content}</PanelShell>;
+}
+
+/// シートでは Radix の Title/Description（読み上げの見出し）、パネルでは素の見出し。
+function PanelTitle({ sheet, children }: { sheet: boolean; children: React.ReactNode }) {
+  if (sheet) return <SheetTitle className="truncate text-[15px] leading-snug">{children}</SheetTitle>;
+  return <h2 className="truncate text-sm font-semibold">{children}</h2>;
+}
+
+function PanelDescription({
+  sheet,
+  className,
+  children,
+}: {
+  sheet: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  if (sheet) {
+    return (
+      <SheetDescription className={cn("truncate text-xs", className)}>{children}</SheetDescription>
+    );
+  }
+  return <p className={cn("truncate text-xs text-muted-foreground", className)}>{children}</p>;
 }
 
 /// 設定パネルの外殻。キャンバスから少し浮かせた elevated カード（右から fade/slide 入場）。

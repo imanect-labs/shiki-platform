@@ -6,6 +6,19 @@ use sqlx::PgExecutor;
 
 use crate::spec::{assert_ident, bind_key, EventTableSpec, Key, RunTableSpec};
 
+/// 採番カウンタ列名。イベントログを持つドメインでは必須（設定漏れはプログラミングエラー）。
+fn event_seq_column(run: &RunTableSpec) -> &'static str {
+    // 設定漏れはプログラミングエラー。`assert_ident` と同じく**リリースでも**落として、
+    // 不正な SQL を組ませない（silently seq が壊れる方が高くつく）。
+    let col = run.event_seq_column.unwrap_or_default();
+    assert!(
+        !col.is_empty(),
+        "イベントを追記するドメインは RunTableSpec::event_seq_column が必要: {}",
+        run.table
+    );
+    col
+}
+
 /// イベントを append-only で追記する（単調 seq・exactly-once）。
 ///
 /// **fencing 一致（＝現リース保持ワーカー）時のみ**追記する（ゾンビ書込拒否）。
@@ -23,15 +36,14 @@ pub async fn append_event<'e>(
     run.validate();
     ev.validate();
     let n = key.len();
-    // fencing チェックの run 行を **FOR UPDATE** で確保し、同一キーの追記を直列化する。
-    // これにより並行 appender（fenced 追記と unfenced backstop）が同じ max(seq) を読んで
-    // (key, seq) PK 衝突を起こすのを防ぎ、単調 seq／exactly-once を保つ（DB=truth）。
+    // seq は run 行のカウンタを `UPDATE ... RETURNING` で採る（`max(seq)+1` を数えない）。
+    // 同じ UPDATE が行ロックと採番を兼ねるので、並行追記でも seq は重複しない。
+    // 詳細は `RunTableSpec::event_seq_column` のコメント。
     let sql = format!(
-        "INSERT INTO {evt} ({key_cols}, {seq}, {kind_col}, {payload_col}) \
-         SELECT {key_vals}, \
-                coalesce((SELECT max({seq}) FROM {evt} WHERE {pred}), 0) + 1, \
-                ${k}, ${p} \
-         WHERE (SELECT {fencing} FROM {run_table} WHERE {pred} FOR UPDATE) = ${f} \
+        "WITH bumped AS (UPDATE {run_table} SET {ctr} = {ctr} + 1 \
+                         WHERE {pred} AND {fencing} = ${f} RETURNING {ctr} AS next_seq) \
+         INSERT INTO {evt} ({key_cols}, {seq}, {kind_col}, {payload_col}) \
+         SELECT {key_vals}, bumped.next_seq, ${k}, ${p} FROM bumped \
          RETURNING {seq}",
         evt = ev.table,
         key_cols = key.column_list(),
@@ -40,6 +52,7 @@ pub async fn append_event<'e>(
         payload_col = ev.payload_column,
         key_vals = key.placeholders(),
         pred = key.predicate(),
+        ctr = event_seq_column(run),
         k = n + 1,
         p = n + 2,
         fencing = run.fencing_column,
@@ -79,12 +92,10 @@ pub async fn append_event_unfenced<'e>(
         .join(", ");
     let n = key.len();
     let sql = format!(
-        "INSERT INTO {evt} ({key_cols}, {seq}, {kind_col}, {payload_col}) \
-         SELECT {key_vals}, \
-                coalesce((SELECT max({seq}) FROM {evt} WHERE {pred}), 0) + 1, \
-                ${k}, ${p} \
-         WHERE EXISTS (SELECT 1 FROM {run_table} \
-                       WHERE {pred} AND {status} IN ({statuses}) FOR UPDATE) \
+        "WITH bumped AS (UPDATE {run_table} SET {ctr} = {ctr} + 1 \
+                         WHERE {pred} AND {status} IN ({statuses}) RETURNING {ctr} AS next_seq) \
+         INSERT INTO {evt} ({key_cols}, {seq}, {kind_col}, {payload_col}) \
+         SELECT {key_vals}, bumped.next_seq, ${k}, ${p} FROM bumped \
          RETURNING {seq}",
         evt = ev.table,
         key_cols = key.column_list(),
@@ -93,6 +104,7 @@ pub async fn append_event_unfenced<'e>(
         payload_col = ev.payload_column,
         key_vals = key.placeholders(),
         pred = key.predicate(),
+        ctr = event_seq_column(run),
         k = n + 1,
         p = n + 2,
         run_table = run.table,

@@ -6,6 +6,28 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+/// 共有先 subject の検証。subject 識別子（`user:<tenant>|<id>` / `role:<tenant>|<id>#member`）を
+/// 壊す/曖昧化する id を弾く。文字ポリシーの正本は [`authz::validate_local_id`]
+/// （`:`/`#`＝型/userset 区切り・`|`＝tenant 名前空間区切り・制御文字・空を拒否。単一定義・#91 M-3）。
+/// 前後空白の拒否（trim で往復が変わる混乱の防止）だけは共有 API 固有のルールとしてここで足す。
+///
+/// role の**存在**（当該テナントに実在するロールか）はここでは強制しない: 全メンバーのログイン前でも
+/// 部署（AD group 由来 role）へ共有できるようにするため（dangling grant 回避は共有ダイアログの
+/// `directory_role` オートコンプリートで担保し、厳格な存在ゲートは IdP フル同期後に足す）。
+fn validate_share_target(target: &ShareTarget) -> Result<(), StorageError> {
+    let id = match target {
+        ShareTarget::User { id } | ShareTarget::Role { id } => id,
+    };
+    if id != id.trim() {
+        return Err(StorageError::Invalid(
+            "共有先 id の前後に空白は使えません".into(),
+        ));
+    }
+    authz::validate_local_id(id)
+        .map_err(|violation| StorageError::Invalid(format!("共有先 id が不正です: {violation}")))?;
+    Ok(())
+}
+
 impl StorageService {
     /// ファイル/フォルダを **user** へ viewer/editor で共有する（role 共有は #76 で defer）。
     ///
@@ -91,6 +113,8 @@ impl StorageService {
     ///
     /// オブジェクトに**直接**書かれた viewer/editor タプルのみを返す（owner/parent や
     /// 親フォルダからの継承は含めない＝「このノードで誰に共有したか」の管理ビュー）。
+    /// 相手の表示名（user は email も）は呼び出し元テナント（＋ org）のディレクトリから 1 クエリで
+    /// 一括解決する（#741）。解決失敗は非致命（名前は表示補助・一覧自体は返す）。
     pub async fn list_shares(
         &self,
         ctx: &AuthContext,
@@ -101,7 +125,7 @@ impl StorageService {
             .authorize_share_admin(ctx, node_id, "node.shares.list", trace_id)
             .await?;
         let tuples = self.authz.read_tuples(&obj, None).await?;
-        let mut entries = Vec::new();
+        let mut shares = Vec::new();
         for t in tuples {
             // viewer/editor のみ共有として扱う（owner/parent は管理対象外）。
             let Some(role) = Relation::parse(&t.relation).and_then(ShareRole::from_relation) else {
@@ -110,9 +134,30 @@ impl StorageService {
             let Some(target) = ShareTarget::parse_subject(&ctx.ns(), &t.user) else {
                 continue;
             };
-            entries.push(ShareEntry { target, role });
+            shares.push((target, role));
         }
-        Ok(entries)
+        let profiles = crate::directory::resolve_share_profiles(
+            &self.db,
+            ctx,
+            shares.iter().map(|(t, _)| t),
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "共有相手の表示名解決に失敗（ID 表示へフォールバック）");
+            crate::directory::ShareProfiles::default()
+        });
+        Ok(shares
+            .into_iter()
+            .map(|(target, role)| {
+                let p = profiles.get(&target);
+                ShareEntry {
+                    target,
+                    role,
+                    display_name: p.display_name,
+                    email: p.email,
+                }
+            })
+            .collect())
     }
 
     /// 自分に共有されたノード一覧（自分が作成したものを除く・org+tenant スコープ）。
@@ -207,7 +252,8 @@ impl StorageService {
     }
 
     /// 共有管理（share/unshare/list）の前段: ノードの存在確認＋owner 認可。FGA object を返す。
-    async fn authorize_share_admin(
+    /// 一般アクセス（#338）の set/clear/get も同じ owner ゲートを再利用する（confused-deputy 防御）。
+    pub(crate) async fn authorize_share_admin(
         &self,
         ctx: &AuthContext,
         node_id: Uuid,
@@ -269,4 +315,32 @@ impl StorageService {
     }
 
     // --- テナント・プロビジョニング/撤去（SAAS.2 / #87・admin プレーン） ---
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_share_target;
+    use crate::model::ShareTarget;
+
+    #[test]
+    fn validate_share_target_rejects_bad_ids() {
+        // user / role とも同一ルール。正常系（role は AD group 由来の `/` を含んでも可）。
+        assert!(validate_share_target(&ShareTarget::User { id: "alice".into() }).is_ok());
+        assert!(validate_share_target(&ShareTarget::Role { id: "sales".into() }).is_ok());
+        assert!(validate_share_target(&ShareTarget::Role {
+            id: "sales/team-1".into()
+        })
+        .is_ok());
+        // 異常系（`|`＝tenant 区切りも拒否）。
+        for bad in ["", " alice", "alice ", "a:b", "a#member", "a|b", "bad\nid"] {
+            assert!(
+                validate_share_target(&ShareTarget::User { id: bad.into() }).is_err(),
+                "user should reject {bad:?}"
+            );
+            assert!(
+                validate_share_target(&ShareTarget::Role { id: bad.into() }).is_err(),
+                "role should reject {bad:?}"
+            );
+        }
+    }
 }

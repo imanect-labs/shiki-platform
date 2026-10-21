@@ -1,6 +1,6 @@
 //! AI によるワークフロー生成/編集ツール（emit_workflow / read_workflow・Task 10.13）。
 //!
-//! emit_ui（gui::EmitUiTool）と同型の「検証済みスペック方式」: モデルが出した IR を
+//! 「検証済みスペック方式」: モデルが出した IR を
 //! **保存 API と同一のパイプライン（V1〜V7＋カタログ照合）**に通し、
 //! - 通れば artifact として保存して参照カード（workflow_ref）を外部化する
 //! - 通らなければ検証エラー**全件**を is_error の tool_result で返し、モデルに自己修正させる

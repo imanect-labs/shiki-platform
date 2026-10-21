@@ -1,4 +1,5 @@
-//! サンドボックス実行の共通ヘルパ（code_interpreter / web_fetch で共用）。
+//! サンドボックス実行の共通ヘルパ（code_interpreter / shell で共用）。
+//! `truncate` はモデル向け整形上限として web_fetch（ホスト取得・#348）からも使う。
 
 use futures::StreamExt;
 use sandbox_client::ExecEvent;

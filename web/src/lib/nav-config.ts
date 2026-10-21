@@ -1,10 +1,13 @@
 import {
   Clock,
+  File as FileIcon,
+  FileText,
   FolderOpen,
   Home,
   LayoutGrid,
   type LucideIcon,
   MessageSquareText,
+  Search,
   Settings,
   Share2,
   Sparkles,
@@ -73,6 +76,9 @@ export function resolvePageTitle(pathname: string): string {
   if (pathname === "/") return "ホーム";
   if (pathname.startsWith("/c/")) return "チャット";
   if (pathname === "/settings") return "設定";
+  if (pathname === "/search") return "文書検索";
+  if (pathname.startsWith("/pdf/")) return "PDF";
+  if (pathname.startsWith("/file/")) return "ファイル";
   if (isActivePath(SKILLS_NAV.href, pathname)) return "スキル";
   if (isActivePath(APPS_NAV.href, pathname)) return "アプリ";
   if (isActivePath(WORKFLOWS_NAV.href, pathname)) return "ワークフロー";
@@ -88,6 +94,9 @@ export function resolvePageIcon(pathname: string): LucideIcon {
   if (pathname === "/") return MessageSquareText;
   if (pathname.startsWith("/c/")) return MessageSquareText;
   if (pathname === "/settings") return Settings;
+  if (pathname === "/search") return Search;
+  if (pathname.startsWith("/pdf/")) return FileText;
+  if (pathname.startsWith("/file/")) return FileIcon;
   if (isActivePath(SKILLS_NAV.href, pathname)) return SKILLS_NAV.icon;
   if (isActivePath(APPS_NAV.href, pathname)) return APPS_NAV.icon;
   if (isActivePath(WORKFLOWS_NAV.href, pathname)) return WORKFLOWS_NAV.icon;

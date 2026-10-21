@@ -45,7 +45,7 @@ test("詳細検索ページ（デバッグ）が表示され、検索 UI が結�
 
   await page.goto("/search");
   await expect(page.getByRole("heading", { name: "文書検索" })).toBeVisible();
-  await expect(page.getByRole("textbox", { name: "検索クエリ" })).toBeVisible();
+  await expect(page.getByRole("searchbox", { name: "検索クエリ" })).toBeVisible();
   await expect(page.getByRole("radio", { name: "ハイブリッド" })).toBeVisible();
   // クエリ未入力では検索ボタンは押せない（exact: 他の「検索」ボタンと区別）。
   await expect(page.getByRole("button", { name: "検索", exact: true })).toBeDisabled();

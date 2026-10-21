@@ -24,6 +24,9 @@ enum WriteCoreOut {
     Deduped(Value),
 }
 
+/// 最大リネーム試行回数（`無題のノート (2).md` … を試す上限）。
+const MAX_NAME_ATTEMPTS: u32 = 50;
+
 /// 書込結果の要約（effect_journal / 次ノードへ渡す・**本文は含めない**）。
 fn write_summary(node: &Node) -> Value {
     json!({
@@ -60,6 +63,44 @@ impl StorageService {
                 "idem 無し書込が dedup を返した".into(),
             )),
         }
+    }
+
+    /// 同名衝突時に ` (2)` `(3)` … を付けてリトライする新規作成（Drive 風・上限あり・#381）。
+    ///
+    /// 「新規作成」の入口（`/notes`・`/slides`・`/documents`・AI の Office 作成ツール）が共有する
+    /// 振る舞い。呼び出し側で写すと連番規則が分岐するため、チョークポイント側に置く。
+    /// 上限まで空きが無ければ [`StorageError::Conflict`]（黙って上書きしない・fail-closed）。
+    pub async fn write_file_unique_internal(
+        &self,
+        ctx: &AuthContext,
+        parent_id: Option<Uuid>,
+        file_name: &str,
+        bytes: &[u8],
+        content_type: &str,
+        trace_id: Option<&str>,
+    ) -> Result<Node, StorageError> {
+        let (stem, ext) = file_name
+            .rsplit_once('.')
+            .map_or((file_name, ""), |(s, e)| (s, e));
+        for attempt in 1..=MAX_NAME_ATTEMPTS {
+            let candidate = if attempt == 1 {
+                file_name.to_string()
+            } else if ext.is_empty() {
+                format!("{stem} ({attempt})")
+            } else {
+                format!("{stem} ({attempt}).{ext}")
+            };
+            match self
+                .write_file_internal(ctx, parent_id, &candidate, bytes, content_type, trace_id)
+                .await
+            {
+                Ok(node) => return Ok(node),
+                // 名前衝突は次候補（連番付き）へ。それ以外の失敗はそのまま返す。
+                Err(StorageError::Conflict) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Err(StorageError::Conflict)
     }
 
     /// バイト列を **冪等キー付きで** 保存する（チョークポイント側 in-TX effect_journal・PIT-31）。

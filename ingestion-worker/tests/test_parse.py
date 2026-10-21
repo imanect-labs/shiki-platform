@@ -5,6 +5,7 @@
   （CI 既定は除外、`pytest -m slow` またはローカル/コンテナ検証で実行）。
 """
 
+import base64
 import os
 from pathlib import Path
 
@@ -64,7 +65,14 @@ def test_parse_slide_extracts_text_per_slide(
     assert resp.status_code == 200
     blocks = resp.json()["blocks"]
     # 文書タイトル → スライド1（見出し＋段落＋ノート）→ スライド2（見出し＋箇条書き）。
-    assert blocks[0] == {"type": "heading", "level": 1, "text": "提案書", "page": None}
+    assert blocks[0] == {
+        "type": "heading",
+        "level": 1,
+        "text": "提案書",
+        "page": None,
+        "prov": [],
+        "list_marker": None,
+    }
     texts = [b["text"] for b in blocks]
     for expected in ["表紙", "ご提案の概要", "最初に挨拶", "課題", "コスト", "速度"]:
         assert expected in texts, f"{expected} が抽出されていない: {texts}"
@@ -160,6 +168,85 @@ def test_parse_markdown_preserves_table_structure(
 
 
 @pytest.mark.slow
+def test_parse_markdown_keeps_list_items_with_markers(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """箇条書きは list_item として、見た目の番号・記号つきで返る（出典パネルで再現・#508）。"""
+    md = "# 手引き\n\n手順:\n\n1. 申請書を開く\n2. 提出する\n\n- 期限後も申請できる\n"
+    _stub_download(monkeypatch, md.encode())
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "source_url": "http://minio:9000/blob",
+            "content_type": "text/markdown",
+            "file_name": "guide.md",
+        },
+    )
+    assert resp.status_code == 200
+    blocks = resp.json()["blocks"]
+    items = [(b["text"], b["list_marker"]) for b in blocks if b["type"] == "list_item"]
+    assert items == [("申請書を開く", "1."), ("提出する", "2."), ("期限後も申請できる", "•")]
+
+
+@pytest.mark.slow
+def test_parse_markdown_keeps_inline_formatting_in_one_block(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """太字などで分かれた断片を 1 段落・1 項目にまとめる（出典パネルで段落が割れない・#508）。"""
+    md = "# T\n\n申出書は**1か月前**までに提出。\n\n- 項目は **太字** を含む\n- 普通の項目\n"
+    _stub_download(monkeypatch, md.encode())
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "source_url": "http://minio:9000/blob",
+            "content_type": "text/markdown",
+            "file_name": "inline.md",
+        },
+    )
+    assert resp.status_code == 200
+    got = [(b["type"], b["text"]) for b in resp.json()["blocks"]]
+    assert got == [
+        ("heading", "T"),
+        ("paragraph", "申出書は1か月前までに提出。"),
+        ("list_item", "項目は太字を含む"),
+        ("list_item", "普通の項目"),
+    ]
+
+
+def test_join_inline_spaces_only_between_ascii_words() -> None:
+    assert parse_mod._join_inline(["申出書は", "1か月前", "までに"]) == "申出書は1か月前までに"
+    assert parse_mod._join_inline(["see", "docs", "now"]) == "see docs now"
+    assert parse_mod._join_inline(["Note:", "important", "thing"]) == "Note: important thing"
+
+
+def test_prov_of_copies_every_page_box() -> None:
+    """Docling の prov はページ・bbox・原点・charspan をすべて写す（ページをまたぐブロックも）。"""
+
+    class _Box:
+        def __init__(self, box: tuple[float, float, float, float], origin: str) -> None:
+            self.l, self.t, self.r, self.b = box
+            self.coord_origin = origin
+
+    class _Prov:
+        def __init__(self, page: int, box: _Box, span: tuple[int, int] | None) -> None:
+            self.page_no, self.bbox, self.charspan = page, box, span
+
+    class _Item:
+        prov = [
+            _Prov(3, _Box((72, 700, 540, 640), "CoordOrigin.BOTTOMLEFT"), (0, 120)),
+            _Prov(4, _Box((72, 90, 540, 60), "CoordOrigin.TOPLEFT"), None),
+        ]
+
+    out = [p.model_dump() for p in parse_mod._prov_of(_Item())]
+    first = {"page": 3, "bbox": (72.0, 700.0, 540.0, 640.0), "origin": "bottom_left"}
+    second = {"page": 4, "bbox": (72.0, 90.0, 540.0, 60.0), "origin": "top_left"}
+    assert out == [{**first, "charspan": (0, 120)}, {**second, "charspan": None}]
+    assert parse_mod._prov_of(object()) == []
+
+
+@pytest.mark.slow
 @pytest.mark.skipif(
     os.environ.get("WORKER_MODEL_TESTS") != "1",
     reason="PDF 変換はレイアウトモデル DL と tesseract を要するため opt-in",
@@ -230,3 +317,133 @@ def test_parse_matrix_preserves_structure(
     tables = [b for b in blocks if b["type"] == "table"]
     assert tables, f"{name}: 表が表ブロックとして抽出される"
     assert any(table_text in t["text"] for t in tables), f"{name}: 表セルが保持される"
+
+
+def test_parse_accepts_inline_bytes_without_downloading(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """content_base64 経路は worker が一切ダウンロードしない（#405）。
+
+    web_fetch の PDF はガード済み経路で取得済みのバイト列として届く。ここで worker が
+    URL を引きに行けるままだと、宛先制限を迂回する confused deputy になる。
+    """
+
+    async def forbidden_download(_url: str) -> bytes:
+        raise AssertionError("content_base64 経路でダウンロードしてはいけない")
+
+    monkeypatch.setattr(parse_mod, "_download", forbidden_download)
+    payload = base64.b64encode("本文の段落。\n\n次の段落。".encode()).decode()
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "content_base64": payload,
+            "content_type": "text/plain",
+            "file_name": "fetched.txt",
+        },
+    )
+    assert resp.status_code == 200
+    assert [b["text"] for b in resp.json()["blocks"]] == ["本文の段落。", "次の段落。"]
+
+
+def test_parse_rejects_both_or_neither_source(client: TestClient) -> None:
+    """source_url と content_base64 は排他（どちらも／両方は 422）。"""
+    both = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "source_url": "http://minio:9000/blob",
+            "content_base64": base64.b64encode(b"x").decode(),
+            "content_type": "text/plain",
+            "file_name": "a.txt",
+        },
+    )
+    assert both.status_code == 422
+    neither = client.post(
+        "/parse",
+        json={"tenant_id": "a-corp", "content_type": "text/plain", "file_name": "a.txt"},
+    )
+    assert neither.status_code == 422
+
+
+def test_parse_rejects_invalid_base64(client: TestClient) -> None:
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "content_base64": "これはbase64ではない!!!",
+            "content_type": "text/plain",
+            "file_name": "a.txt",
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "invalid_content"
+
+
+def test_parse_slots_are_bounded_and_released() -> None:
+    """枠は上限で頭打ちになり、解放すると戻る。"""
+    slots = parse_mod.ParseSlots()
+    assert slots.try_acquire(2)
+    assert slots.try_acquire(2)
+    assert not slots.try_acquire(2)
+    assert slots.active == 2
+    slots.release()
+    assert slots.try_acquire(2)
+    assert slots.active == 2
+    slots.release()
+    slots.release()
+    # 過剰な解放でも負にならない（負になると上限が事実上無くなる）。
+    slots.release()
+    assert slots.active == 0
+
+
+def test_parse_returns_503_when_all_slots_are_busy(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同時解析が上限に達していたら、待たせずに 503 で断る（#405 レビュー指摘）。
+
+    Docling はキャンセルできないので、呼び出し側が諦めた解析はスレッドに残り続ける。
+    キューに積むと取り残しが積み上がって有界にした意味が消えるため、即座に断る。
+    """
+    from ingestion_worker.settings import Settings
+
+    monkeypatch.setattr(parse_mod, "get_settings", lambda: Settings(max_concurrent_parses=1))
+    slots = parse_mod.get_parse_slots()
+    assert slots.try_acquire(1)
+    try:
+        resp = client.post(
+            "/parse",
+            json={
+                "tenant_id": "a-corp",
+                "content_base64": base64.b64encode(b"%PDF-1.7\n").decode(),
+                "content_type": "application/pdf",
+                "file_name": "a.pdf",
+            },
+        )
+    finally:
+        slots.release()
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "parser_busy"
+    assert resp.headers["Retry-After"] == "30"
+    # 断った要求は枠を消費しない。
+    assert slots.active == 0
+
+
+def test_parse_rejects_oversized_inline_bytes(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """インライン経路も上限はダウンロード経路と同じ（経路で緩まない）。"""
+    from ingestion_worker.settings import Settings
+
+    monkeypatch.setattr(parse_mod, "get_settings", lambda: Settings(max_download_bytes=64))
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "content_base64": base64.b64encode(b"x" * 4096).decode(),
+            "content_type": "text/plain",
+            "file_name": "a.txt",
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "source_too_large"

@@ -9,7 +9,14 @@ shiki-platform の開発タスクを進める標準手順。docs/roadmap.md の�
 
 ## 1. 着手前
 
-- 必ずブランチを切る。main で直接作業しない。ブランチ名はタスク内容が分かる名前にする。
+- **main は古いことがある。** 必ず最新化してからブランチを切る（main で直接作業しない）。
+
+  ```bash
+  git fetch origin main
+  git switch -c <branch-name> origin/main   # 作業中のブランチは git rebase origin/main
+  ```
+
+  ブランチ名はタスク内容が分かる名前にする。
 - human から issue URL が指定されていない場合は、着手前にタスク内容を Issue 化する。
   - ラベル: 領域に応じた area:*（auth / storage / rag / chat / sandbox / agent / gateway / data / web / obs など）。
 - どのフェーズ・どの依存に属するタスクか docs/roadmap.md で確認する（依存: 認証→ストレージ→RAG→チャット→サンドボックス→…）。
@@ -22,8 +29,11 @@ shiki-platform の開発タスクを進める標準手順。docs/roadmap.md の�
 
 ## 3. 完了時
 
-- ローカル/CI のチェックを通す: cargo fmt --check / cargo clippy -- -D warnings / cargo test、web は pnpm lint / pnpm build、compose smoke。
-- PR を作成する（/pull-request スキルが利用可能ならそれを使う）。PR 本文には目的・対応 Issue・検証方法を書く。
+- 変更したレイヤの検証コマンドを実際に流して通す。CI の正は .github/workflows/ci.yml、
+  ローカルでの回し方は /pr の references/gates.md。ゲートのコマンド一覧をここに重複させない（陳腐化するため）。
+- PR は /pr スキルで作る。ローカル品質ゲート（CI と同一）・動作確認・パフォーマンス評価・
+  ドキュメント整合・独立レビュー・bot レビュー解消までを一通り回す手順がそこにある。
+- PR 本文には目的・対応 Issue（Closes #<n>）・検証方法を書く。
 - 対応する Issue に close コメントを付けてクローズする（PR 説明に Closes #<n> を含める）。
 
 ## 注意

@@ -1,0 +1,6 @@
+# LLM・埋め込み・reranker の応答キャッシュ（再生成できる・大きい）。
+data/cache/
+.venv/
+*.log
+__pycache__/
+report/tool-search-eval.html

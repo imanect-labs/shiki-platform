@@ -25,9 +25,13 @@ type workflow
 # アーティファクト（artifact 型）の owner ReBAC が担う。
 type miniapp
 
+# 組織。admin は管理コンソール（管理 API）を使える組織管理者（#553）。
+# **admin は閲覧権に連鎖させない**（PIT-65）: folder/file/thread 等の viewer/editor の
+# 計算式から organization#admin を参照しない。管理者でも中身は通常の共有でしか読めない。
 type organization
   relations
     define member: [user]
+    define admin: [user]
 
 # ロール: テナント内のメンバーシップ集合。階層は親ロールが子ロールを含む（上方向ロールアップ）。
 # 例: role:営業部#member@role:営業1課#member を書くと、営業1課 のメンバーが営業部のメンバーになる。
@@ -44,12 +48,25 @@ type role
 # 識別子名前空間化（role:<tenant>|<id>）で担保済み。editor/viewer に role#member を許すと
 # 「そのロールのメンバー（配下ロール込みの階層展開）」が編集/閲覧できる。owner は付与しない
 # （共有語彙は viewer/editor のみ・owner の横展開を防ぐ）。
+# 共有リンク（#342・旧 #338 一般アクセス）: viewer/editor は organization#member（社内＝現テナント）を
+# 受理する。owner が発行したリンクの reconcile でのみタプルが書かれる。
+# viewer だけが user:*（type-bound public＝すべての認証済みユーザー）も受理する。これは将来の
+# 「テナント跨ぎ閲覧共有（authenticated）」用に**閲覧のみ**を構造的に予約したもので（#342 レビュー A-2）、
+# editor からは意図的に外している（跨ぎを開いた日に跨ぎ書き込みへ昇格させない）。現状の共有リンクは
+# broad_subject が organization#member しか張らないため user:* タプルは書かれない。
+# なお user:* が「同一テナント内」に閉じているのは付与先オブジェクトの名前空間化（folder:<tenant>|<id>）に
+# 依存しており（越境は subject 側では防いでいない）、跨ぎ公開はこの前提を緩める独立作業になる。
 type folder
   relations
     define parent: [folder]
     define owner: [user, workflow]
-    define editor: [user, role#member, workflow] or owner or editor from parent
-    define viewer: [user, role#member, workflow] or editor or viewer from parent
+    # 共有リンク（パスワード redeem）由来の per-user 付与専用 relation（#366）。明示共有の
+    # viewer/editor とタプルの出自を分け、リンク失効時の reconcile が明示共有を誤剥奪しない。
+    # 付与は redeem 経路でのみ書かれ、editor/viewer へ union して含意させる。
+    define editor_via_link: [user]
+    define viewer_via_link: [user]
+    define editor: [user, role#member, organization#member, workflow] or owner or editor from parent or editor_via_link
+    define viewer: [user, user:*, role#member, organization#member, workflow] or editor or viewer from parent or viewer_via_link
 
 # ストレージ: ファイル（ツリーの葉・認可の最小オブジェクト）。
 # ルート直下のファイルは parent を持たず、作成者の owner タプルのみで到達する。
@@ -58,8 +75,11 @@ type file
   relations
     define parent: [folder]
     define owner: [user, workflow]
-    define editor: [user, role#member, workflow] or owner or editor from parent
-    define viewer: [user, role#member, workflow] or editor or viewer from parent
+    # 共有リンク（パスワード redeem）由来の per-user 付与専用 relation（#366・folder と同一ポリシ）。
+    define editor_via_link: [user]
+    define viewer_via_link: [user]
+    define editor: [user, role#member, organization#member, workflow] or owner or editor from parent or editor_via_link
+    define viewer: [user, user:*, role#member, organization#member, workflow] or editor or viewer from parent or viewer_via_link
 
 # チャット: スレッド（会話・#37）。ツリー継承は持たず、作成者 owner ＋明示共有のみ。
 # 共有語彙は viewer / commenter / editor（owner の横展開は防ぐため付与しない）。
@@ -77,11 +97,15 @@ type thread
 # thread と同型の非階層共有（作成者 owner ＋明示共有・共有語彙は viewer/editor のみ）。
 # viewer/editor は workflow プリンシパル subject を受理する（Task 10.4a・実装済み）
 # （schedule/event run が IR/script artifact を読む委譲経路・engine.md §6.6）。
+# viewer は organization#member（社内＝現テナント）も受理する（#387）。**署名検証済みの
+# first-party skill を publish した時だけ**その 1 本が書かれ、公式スキルを個別共有なしで
+# org 全員のカタログへ載せる（folder/file が #342 で同じ subject 型を受理している前例に揃える）。
+# editor には入れない（公式部品を org 全員が書き換えられるようにはしない）。
 type artifact
   relations
     define owner: [user]
     define editor: [user, role#member, workflow] or owner
-    define viewer: [user, role#member, workflow] or editor
+    define viewer: [user, role#member, organization#member, workflow] or editor
 
 # シークレット（Task 10.9）。write-only/use-only。
 # can_use は「解決して使える」であり平文の読み返しではない（owner が含意）。

@@ -39,7 +39,8 @@ function itemClasses(active: boolean, collapsed: boolean, depth: number) {
     // （サイドバー背景の下へ潜って見えなくなる事故を防ぐ）。
     "group/navitem relative isolate flex h-9 items-center gap-2.5 rounded-[9px] text-[13.5px] outline-none transition-colors",
     "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
-    collapsed ? "w-9 justify-center px-0" : "w-full px-2.5",
+    // タッチ（md 以上のタブレット等）は行の当たり判定を 44px に広げる。
+    collapsed ? "w-9 justify-center px-0" : "w-full px-2.5 pointer-coarse:h-11",
     active
       ? "font-medium text-sidebar-foreground"
       : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",

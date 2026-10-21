@@ -12,7 +12,7 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 use super::runs::{map_db, CHAT_GENERATION_QUEUE};
-use crate::model::{Attachment, ContentBlock, SkillPin};
+use crate::model::{Attachment, ContentBlock, RunModel, SkillPin};
 
 /// `post_message` の結果（202 で返す）。
 #[derive(Debug, Clone)]
@@ -34,11 +34,52 @@ impl ChatStore {
         thread_id: Uuid,
         text: &str,
         attachments: &[Attachment],
+        selection: Option<crate::model::SelectionContext>,
+        agent_mode_override: Option<bool>,
+        autonomous: bool,
+        once_skills: &[SkillPin],
+        trace_id: Option<&str>,
+    ) -> Result<PostResult, ChatError> {
+        self.post_message_with_model(
+            ctx,
+            thread_id,
+            text,
+            attachments,
+            selection,
+            agent_mode_override,
+            autonomous,
+            once_skills,
+            None,
+            &[],
+            trace_id,
+        )
+        .await
+    }
+
+    /// [`Self::post_message`] にモデル指定（#553）と発話ごとのツール指定（#734）を足したもの。
+    /// `model` が `None` の run は従来どおり（skill のピン → 既定モデル）で生成される。
+    #[allow(clippy::too_many_arguments)] // 発話の全構成要素（呼び出し元は api 1 箇所＋UI アクション）。
+    pub async fn post_message_with_model(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        text: &str,
+        attachments: &[Attachment],
         // エディタの選択コンテキスト（Task 11.10）。node_id の可読性検証は api 層の責務
         // （storage.get_metadata の viewer 判定・監査つき）。ここでは上限の切り詰めのみ行う。
         selection: Option<crate::model::SelectionContext>,
         agent_mode_override: Option<bool>,
         autonomous: bool,
+        // `once_skills`: **この run にだけ**適用する skill（スラッシュコマンド起動・#387）。
+        // thread のピン（＝「最初からロード済み」）とは別で、次の発話には持ち越さない
+        // （積み上がる「専門家モード」ではなく「1 発の指示」という体験にするため）。
+        once_skills: &[SkillPin],
+        // モデル指定（API がテナント設定で解決・検証済み）。run にスナップショットする。
+        model: Option<&RunModel>,
+        // `requested_tools`: ユーザーが**この発話にだけ**使ってほしいと選んだツール（#734）。
+        // 語彙照合・重複除去・件数上限は API 層で済んでいる。run にスナップショットするだけで、
+        // 提示ツール・承認・認可は変えない（ワーカーが誘導＝常時ロード＋注記に使う）。
+        requested_tools: &[agent_core::ToolName],
         trace_id: Option<&str>,
     ) -> Result<PostResult, ChatError> {
         self.require_thread(ctx, thread_id, Relation::Editor, "thread.post", trace_id)
@@ -67,8 +108,25 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        let (thread_default, autonomous_mode, skill_pins, mini_app_id, mini_app_version) =
+        let (thread_default, autonomous_mode, mut skill_pins, mini_app_id, mini_app_version) =
             thread_row.ok_or(ChatError::NotFound)?;
+        // run 単位の skill を**スナップショットへ追記**する（thread のピンは変えない）。
+        // run 行が生成材料の単一ソースなので、ここに載れば claim 1 行で解決でき、
+        // 適用の認可・fail-closed も既存のピン経路（AppliedSkill::load_pins）がそのまま効く。
+        for once in once_skills {
+            // 同一 skill が thread に古い version でピン済みでも、**発話単位の指定を優先**する
+            // （そうしないと「version 指定」「省略なら current」という要求が run へ届かない）。
+            // thread の永続ピンそのものは変更しない。
+            if let Some(existing) = skill_pins
+                .0
+                .iter_mut()
+                .find(|p| p.skill_id == once.skill_id)
+            {
+                *existing = once.clone();
+            } else {
+                skill_pins.0.push(once.clone());
+            }
+        }
         // 自律プロファイルはエージェントモードを含意する（ツールループが前提）。
         let agent_mode = agent_mode_override.unwrap_or(thread_default) || autonomous;
 
@@ -120,8 +178,9 @@ impl ChatStore {
         // ＝その水準での実行に同意・実行中の緩和は actor 本人設定のみ有効・#350）。
         let run_id: Uuid = sqlx::query_scalar(
             "INSERT INTO generation_run (message_id, thread_id, org, tenant_id, actor, agent_mode, status, trace_id, autonomous, \
-                                         autonomous_mode, skill_pins, mini_app_id, mini_app_version) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $11, $12) RETURNING run_id",
+                                         autonomous_mode, skill_pins, mini_app_id, mini_app_version, \
+                                         model, effort, model_auto, requested_tools) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING run_id",
         )
         .bind(asst_id)
         .bind(thread_id)
@@ -135,6 +194,10 @@ impl ChatStore {
         .bind(&skill_pins)
         .bind(mini_app_id)
         .bind(mini_app_version)
+        .bind(model.map(|m| m.model.as_str()))
+        .bind(model.and_then(|m| m.effort).map(llm_gateway::Effort::as_str))
+        .bind(model.is_none_or(|m| m.auto))
+        .bind(Json(requested_tools))
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;

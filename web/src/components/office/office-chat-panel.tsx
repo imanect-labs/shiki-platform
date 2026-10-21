@@ -14,9 +14,12 @@ import { DocChatPanel, useLocalActiveThreadStore } from "@/components/chat/doc-c
 export function OfficeChatPanel({
   fileId,
   fileName,
+  initialThreadId,
 }: {
   fileId: string;
   fileName: string;
+  /// サイドバー等から特定会話を開くときの初期アクティブ（?thread=・#598）。
+  initialThreadId?: string | null;
 }) {
   const store = useLocalActiveThreadStore(fileId);
   const cleanName = React.useMemo(() => fileName.replace(/\.(docx|xlsx|pptx|odt|ods|odp)$/i, ""), [fileName]);
@@ -30,6 +33,7 @@ export function OfficeChatPanel({
       // editor@file をサーバ側で再判定するため、ここを editor に限定しない。
       editable
       testIdPrefix="office"
+      initialThreadId={initialThreadId}
     />
   );
 }

@@ -10,7 +10,12 @@
 use authz::AuthContext;
 use sqlx::PgPool;
 
-use crate::error::StorageError;
+use crate::{error::StorageError, model::ShareTarget};
+
+mod share_profiles;
+
+pub(crate) use share_profiles::resolve_share_profiles;
+pub use share_profiles::{PrincipalProfile, ShareProfiles};
 
 /// 1 ページの既定件数（呼び出し側が未指定のとき）。
 pub const DEFAULT_SEARCH_LIMIT: usize = 20;
@@ -99,6 +104,46 @@ impl DirectoryStore {
         Ok(())
     }
 
+    /// ログインしたユーザーをディレクトリに載せる（無ければ作る・あれば org と email を最新に）。
+    ///
+    /// 表示名は既にあれば変えない（管理者の作成や dev seed が入れた名前を、IdP に名前のクレームが
+    /// 無いときの仮の名前で上書きしない）。新規は email の @ より前（email も無ければ sub）を仮に使う。
+    /// 共有ダイアログの相手検索と、AI 活用分析の対象者（在籍者）の材料になる。
+    /// 新しく載せたときだけ `true` を返す。
+    pub async fn ensure_user(
+        &self,
+        user_id: &str,
+        tenant_id: &str,
+        org: &str,
+        email: Option<&str>,
+    ) -> Result<bool, StorageError> {
+        let email = email.map(str::trim).filter(|e| !e.is_empty());
+        let display = email
+            .and_then(|e| e.split('@').next())
+            .filter(|n| !n.is_empty())
+            .unwrap_or(user_id);
+        let inserted: Option<bool> = sqlx::query_scalar(
+            "INSERT INTO directory_user (user_id, tenant_id, org, email, display_name) \
+             VALUES ($1, $2, $3, COALESCE($4, $1), $5) \
+             ON CONFLICT (tenant_id, user_id) DO UPDATE \
+               SET org = excluded.org, \
+                   email = COALESCE($4, directory_user.email), updated_at = now() \
+               WHERE directory_user.org IS DISTINCT FROM excluded.org \
+                  OR ($4::text IS NOT NULL AND directory_user.email IS DISTINCT FROM $4) \
+             RETURNING (xmax = 0)",
+        )
+        .bind(user_id)
+        .bind(tenant_id)
+        .bind(org)
+        .bind(email)
+        .bind(display)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(StorageError::Db)?;
+        // 変更が無ければ行は返らない。返ったら xmax = 0 が新規作成。
+        Ok(inserted.unwrap_or(false))
+    }
+
     /// テナント（＋ org）スコープのユーザー検索。自分自身は除外。
     ///
     /// `query` は email / 表示名の部分一致（ILIKE）。空文字は同テナントの先頭ページを返す
@@ -183,6 +228,17 @@ impl DirectoryStore {
         Ok(rows.into_iter().collect())
     }
 
+    /// 共有相手群（user / role）の表示名（user は email も）を 1 クエリで一括解決する（#741）。
+    ///
+    /// テナント（＋ org）で必ず絞る。別テナント・未登録の相手は [`ShareProfiles::get`] が空を返す。
+    pub async fn resolve_share_profiles<'a>(
+        &self,
+        ctx: &AuthContext,
+        targets: impl IntoIterator<Item = &'a ShareTarget>,
+    ) -> Result<ShareProfiles, StorageError> {
+        resolve_share_profiles(&self.db, ctx, targets).await
+    }
+
     /// ユーザーがテナント（＋ org）内に存在するか（Task 9.2 の user 参照整合検証）。
     pub async fn user_exists(
         &self,
@@ -245,6 +301,42 @@ impl DirectoryStore {
         Ok(())
     }
 
+    /// 利用者の部署（ロール）の写しを、claims から作ったあるべき集合で置き換える（#751）。
+    ///
+    /// 正本は IdP claims → OpenFGA の role タプル（ログイン時の同期）。AI 活用分析の集計が
+    /// 集計のたびに OpenFGA を引かないよう（PIT-18）、同期と同じ集合を DB にも持つ。
+    /// `roles` は `(role_id, groups 由来か)`。1 トランザクションで消して入れ直す。
+    pub async fn replace_user_roles(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        user_id: &str,
+        roles: &[(String, bool)],
+    ) -> Result<(), StorageError> {
+        let mut tx = self.db.begin().await.map_err(StorageError::Db)?;
+        sqlx::query("DELETE FROM directory_user_role WHERE tenant_id = $1 AND user_id = $2")
+            .bind(tenant_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StorageError::Db)?;
+        for (role_id, from_group) in roles {
+            sqlx::query(
+                "INSERT INTO directory_user_role (tenant_id, org, user_id, role_id, source) \
+                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, user_id, role_id) DO NOTHING",
+            )
+            .bind(tenant_id)
+            .bind(org)
+            .bind(user_id)
+            .bind(role_id)
+            .bind(if *from_group { "group" } else { "role" })
+            .execute(&mut *tx)
+            .await
+            .map_err(StorageError::Db)?;
+        }
+        tx.commit().await.map_err(StorageError::Db)
+    }
+
     /// テナント（＋ org）スコープのロール/部署検索（共有ダイアログのオートコンプリート）。
     ///
     /// `query` は role_id / 表示名の部分一致（ILIKE）。空文字は先頭ページを返す。
@@ -303,7 +395,7 @@ impl DirectoryStore {
 
 /// ILIKE のワイルドカード（`%` `_`）とエスケープ文字（`\`）を無害化する。
 /// `ESCAPE '\'` と併用し、ユーザー入力がパターンメタ文字として効かないようにする。
-pub(crate) fn escape_like(input: &str) -> String {
+pub fn escape_like(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
         if matches!(ch, '\\' | '%' | '_') {

@@ -233,4 +233,17 @@ async fn agent_invoke_passes_pinned_tools_and_remaining_budget() {
     assert!(sse.contains("doc_search"), "{sse}");
     assert!(sse.contains("\"max_cost_usd_micros\":1000"), "{sse}");
     assert!(sse.contains("event: done"), "{sse}");
+
+    // ツールの提示条件に使うスコープは granted ∩ トークン（granted に llm.invoke があっても、
+    // トークンに無ければ渡さない・rag.query は granted に無いので渡らない）。
+    let tok = token(&client, "agent.invoke", &tenant);
+    let (s, sse) = post_sse(
+        &app,
+        "/gw/ai/agent/invoke",
+        &tok,
+        &json!({ "prompt": "経費規程を調べて" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{sse}");
+    assert!(sse.contains("\"scopes\":[\"agent.invoke\"]"), "{sse}");
 }

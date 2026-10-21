@@ -220,6 +220,76 @@ def test_docx_append_invalid_data_url_degrades_to_alt(client: TestClient) -> Non
     assert any("壊れた図" in p.text for p in edited.paragraphs)
 
 
+def test_docx_append_markdown_table_becomes_real_table(client: TestClient) -> None:
+    """GFM のテーブルは **docx の表**になる（生のパイプ文字列を本文に残さない）。
+
+    経営資料の要は表であり、`| Q1 | 2,380 |` がそのまま本文に落ちると成果物として使えない。
+    """
+    markdown = (
+        "## 四半期トレンド\n"
+        "| 四半期 | 受注額 | 前四半期比 |\n"
+        "| --- | ---: | :---: |\n"
+        "| Q1 | 2,380 | - |\n"
+        "| Q2 | **2,800** | +17.6% |\n"
+        "\n本文の続き。"
+    )
+    body = _edit(client, DOCX, _make_docx(), [{"op": "append_markdown", "markdown": markdown}])
+    assert body["report"]["applied_ops"] == 1
+    # 見出し・表・段落の 3 ブロック（表は 1 件として数える）。
+    assert body["report"]["results"][0]["applied"] == 3
+
+    from docx import Document
+
+    edited = Document(io.BytesIO(base64.b64decode(body["data_base64"])))
+    assert len(edited.tables) == 1
+    table = edited.tables[0]
+    assert len(table.rows) == 3
+    assert len(table.columns) == 3
+    assert [c.text for c in table.rows[0].cells] == ["四半期", "受注額", "前四半期比"]
+    assert [c.text for c in table.rows[2].cells] == ["Q2", "2,800", "+17.6%"]  # ** は除去
+    # ヘッダ行は太字。
+    assert table.cell(0, 0).paragraphs[0].runs[0].bold is True
+    # 本文段落にパイプが残らない（＝表として解釈されている）。
+    assert not any("|" in p.text for p in edited.paragraphs)
+
+
+def test_docx_pipe_paragraph_without_separator_stays_text(client: TestClient) -> None:
+    """区切り行が無い `|` 入りの行は表にしない（誤変換で本文を壊さない）。"""
+    markdown = "設定は `a | b` のように書く。\n| これは表ではない |"
+    body = _edit(client, DOCX, _make_docx(), [{"op": "append_markdown", "markdown": markdown}])
+
+    from docx import Document
+
+    edited = Document(io.BytesIO(base64.b64decode(body["data_base64"])))
+    assert len(edited.tables) == 0
+    assert any("これは表ではない" in p.text for p in edited.paragraphs)
+
+
+def test_docx_table_insert_after_heading_lands_in_place(client: TestClient) -> None:
+    """アンカー挿入でも表は見出しの直後へ入る（表は段落と別要素なので移動経路が違う）。"""
+    markdown = "| 指標 | 値 |\n| --- | --- |\n| 勝率 | 75% |"
+    body = _edit(
+        client,
+        DOCX,
+        _make_docx(),
+        [{"op": "insert_after_heading", "heading": "概要", "markdown": markdown}],
+    )
+    assert body["report"]["results"][0]["applied"] == 1
+
+    from docx import Document
+
+    edited = Document(io.BytesIO(base64.b64decode(body["data_base64"])))
+    assert len(edited.tables) == 1
+    tags = [el.tag.split("}")[-1] for el in edited.element.body]
+    # 見出し「概要」の直後が表であること。
+    heading_idx = next(
+        i
+        for i, el in enumerate(edited.element.body)
+        if el.tag.endswith("}p") and "概要" in "".join(el.itertext())
+    )
+    assert tags[heading_idx + 1] == "tbl"
+
+
 def test_docx_missing_heading_is_warning_not_error(client: TestClient) -> None:
     body = _edit(
         client,

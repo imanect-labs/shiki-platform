@@ -32,6 +32,8 @@ export type EditorState = {
 export type EditorAction =
   | { type: "add_node"; nodeType: string; position: { x: number; y: number }; from?: { id: string; port: string } }
   | { type: "insert_on_edge"; nodeType: string; edge: Edge; position: { x: number; y: number } }
+  /// 入口ノード（入エッジ 0 本）の手前に挿入する（スマホの縦一覧で「きっかけ」直後の＋）。
+  | { type: "insert_before"; nodeType: string; before: string; position: { x: number; y: number } }
   | { type: "connect"; from: string; fromPort: string; to: string }
   | { type: "delete_nodes"; ids: string[] }
   | { type: "delete_edges"; edges: Edge[] }
@@ -106,13 +108,17 @@ export function defaultParams(nodeType: string): unknown {
   }
 }
 
-function makeNode(ir: WorkflowIr, nodeType: string): Node {
+/// 新規ノードを作る。`near` を渡すとそのノードと同じ領域（`parent`）に置く。
+/// 繋ぐ相手と領域が違うとエッジが領域境界を跨ぎ、サーバが `ir.region_leak` で拒否するため
+/// （control.map の本体内へ挿入する場合など）、エッジで繋ぐ挿入は必ず相手の parent を継ぐ。
+function makeNode(ir: WorkflowIr, nodeType: string, near?: string): Node {
   const entry = NODE_CATALOG.find((c) => c.type === nodeType);
+  const parent = near ? (ir.nodes.find((n) => n.id === near)?.parent ?? null) : null;
   return {
     id: newNodeId(ir, nodeType),
     type: nodeType,
     label: entry?.label_ja ?? null,
-    parent: null,
+    parent,
     params: defaultParams(nodeType),
     retry: { max_attempts: 1, backoff: { base_sec: 2, max_sec: 300, jitter: true } },
     timeout_sec: null,
@@ -160,7 +166,7 @@ function withIr(state: EditorState, ir: WorkflowIr): EditorState {
 export function editorReducer(state: EditorState, action: EditorAction): EditorState {
   switch (action.type) {
     case "add_node": {
-      const node = makeNode(state.ir, action.nodeType);
+      const node = makeNode(state.ir, action.nodeType, action.from?.id);
       const edges = action.from
         ? [
             ...state.ir.edges,
@@ -183,7 +189,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       };
     }
     case "insert_on_edge": {
-      const node = makeNode(state.ir, action.nodeType);
+      const node = makeNode(state.ir, action.nodeType, action.edge.from);
       const edges = state.ir.edges.flatMap((e) =>
         e.from === action.edge.from &&
         e.to === action.edge.to &&
@@ -200,6 +206,26 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         ...state.ir,
         nodes: [...state.ir.nodes, node],
         edges,
+      });
+      return {
+        ...next,
+        layout: {
+          ...state.layout,
+          positions: { ...(state.layout.positions ?? {}), [node.id]: action.position },
+        },
+        layoutDirty: true,
+        selection: { kind: "node", id: node.id },
+      };
+    }
+    case "insert_before": {
+      const node = makeNode(state.ir, action.nodeType, action.before);
+      const next = withIr(state, {
+        ...state.ir,
+        nodes: [...state.ir.nodes, node],
+        edges: [
+          ...state.ir.edges,
+          { from: node.id, from_port: defaultOutPort(action.nodeType), to: action.before } as Edge,
+        ],
       });
       return {
         ...next,

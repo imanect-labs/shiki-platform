@@ -1,4 +1,4 @@
-//! CSV クエリ/パッチ API のルートレベル結合テスト（Task 11P.7・実 Postgres＋MinIO＋隔離ランナー）。
+//! CSV クエリ/パッチ API のルートレベル結合テスト（Task 11P.7・実 Postgres＋RustFS＋隔離ランナー）。
 //!
 //! `STORAGE_TEST_DATABASE_URL`＋`STORAGE_TEST_S3_ENDPOINT`＋隔離ランナーバイナリが揃う時のみ
 //! 実行する（未設定はスキップ）。HTTP ルータ経由で schema/rows/query/patch/save を通し、
@@ -226,9 +226,10 @@ fn config(db_url: &str) -> AppConfig {
             log_format: LogFormat::Json,
         },
         storage: StorageConfig {
-            backend: ObjectStoreBackend::Minio,
+            backend: ObjectStoreBackend::S3,
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
+            upload_gc: api::config::UploadGcConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -240,7 +241,11 @@ fn config(db_url: &str) -> AppConfig {
             api_key: None,
             default_model: None,
             models: vec![],
+            context_window_tokens: None,
             langfuse: None,
+            user_agent: None,
+            session_header: None,
+            ..Default::default()
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
@@ -249,6 +254,7 @@ fn config(db_url: &str) -> AppConfig {
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
+        insights: api::insights::InsightsConfig::default(),
     }
 }
 
@@ -388,10 +394,6 @@ fn build_app(
         Arc::clone(authz),
         Arc::clone(&storage),
     ));
-    let ui_validator = Arc::new(gui::SpecValidator::new(
-        Arc::clone(&artifacts),
-        pool.clone(),
-    ));
     let mini_app_code = Arc::new(app_platform::MiniAppCodeStore::new(
         Arc::clone(&artifacts),
         app_platform::Registry::new(pool.clone()),
@@ -423,6 +425,7 @@ fn build_app(
     ));
     let state = AppState {
         config: Arc::new(config),
+        insights: std::sync::Arc::new(api::insights::InsightsService::new(pool.clone())),
         db: api::state::ReadinessProbe::new(pool.clone()),
         authz: Arc::clone(authz),
         jwks: Arc::new(api::middleware::JwksCache::new(
@@ -450,7 +453,6 @@ fn build_app(
         skill_installs,
         bundles,
         app_usage,
-        ui_specs: Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator)),
         ui_actions: Arc::new(gui::ActionDispatcher::new(
             storage::audit::AuditRecorder::new(pool.clone()),
         )),
@@ -471,6 +473,7 @@ fn build_app(
         tenants: Arc::new(storage::TenantStore::new(pool.clone())),
         search: None,
         chat: None,
+        llm: None,
         rag_admin: Arc::new(rag::RagAdmin::new(pool.clone(), None, None)),
         office: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(

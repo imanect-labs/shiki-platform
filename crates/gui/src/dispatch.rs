@@ -1,22 +1,20 @@
-//! 宣言的アクションの実行系（Task 6.5）。
+//! 宣言的アクションの実行系（Task 6.5・#604）。
 //!
-//! UI からの操作は、**保存済み検証済みスペックの束縛**（[`ActionBinding`]）を API 層が引き、
-//! ここで照合・実行する。クライアントが送れるのは `action_id + params` のみで、束縛定義は
-//! 一切信用しない（アンビエント権限なし）。実行は常に**呼び出しユーザー自身の権限**
+//! 図のボタン（Yui の ```ui）からの操作は、**サーバーが保存済みの本文と束縛から引いた**
+//! [`ActionBinding`] をここで実行する。クライアントが送れるのは `action_id + params` のみで、
+//! 束縛定義は一切信用しない（アンビエント権限なし）。実行は常に**呼び出しユーザー自身の権限**
 //! （`AuthContext`）で認可され、全経路が `ui_action.invoke` として監査に残る（Task 6.12）。
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agent_core::{Tool, ToolName};
 use authz::AuthContext;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
 
-use crate::action::{ActionBinding, ALLOWED_ACTION_TOOLS};
-use crate::spec::UiSpecDoc;
+use crate::action::ActionBinding;
 use crate::vocab::HandlerKind;
 
 /// params の直列化サイズ上限（防御的・フォーム値として十分）。
@@ -25,9 +23,9 @@ const MAX_PARAMS_BYTES: usize = 64 * 1024;
 /// アクションの発生源（監査・ハンドラの文脈）。
 #[derive(Debug, Clone)]
 pub enum ActionSource {
-    /// チャットメッセージ内の generative_ui ブロック。
+    /// 会話の回答の本文の図。
     ChatMessage { thread_id: Uuid, message_id: Uuid },
-    /// ミニアプリの UI スペック（バージョンピン済み）。
+    /// ミニアプリの画面（バージョンピン済み）。
     MiniApp { artifact_id: Uuid, version: i64 },
 }
 
@@ -53,6 +51,9 @@ impl ActionSource {
 pub enum ActionError {
     #[error("対象が見つかりません")]
     NotFound,
+    /// 1 回だけ実行できるアクションが既に実行済み（#410・API 層は 409）。
+    #[error("この操作は送信済みです")]
+    AlreadyInvoked,
     #[error("権限がありません")]
     Forbidden,
     #[error("不正なリクエスト: {0}")]
@@ -107,11 +108,46 @@ pub trait WorkflowStarter: Send + Sync {
     ) -> Result<Option<Uuid>, ActionError>;
 }
 
+/// 1 回だけ実行できるアクション（[`ActionBinding::single_use`]）の実行台帳（#410）。
+///
+/// 「どのメッセージのどの action が実行されたか」は**UI の状態そのもの**であり、
+/// 監査ログ（追記専用・保持ポリシ別）とは別に一級の状態として持つ。実装は所有ドメイン側
+/// （chat の `ChatActionLedger`）に置き、`AuthContext` のテナントで必ず絞る。
+#[async_trait::async_trait]
+pub trait ActionLedger: Send + Sync {
+    /// **実行前に**確保する。既に確保されていれば `Ok(false)`（実行してはいけない）。
+    ///
+    /// 実装は**副作用の無い認可**（chat なら thread editor）をここで済ませること。実行時の
+    /// 認可まで待つと、権限の無い相手でも確保だけは取れてしまう。
+    async fn claim(
+        &self,
+        ctx: &AuthContext,
+        source: &ActionSource,
+        action_id: &str,
+        trace_id: Option<&str>,
+    ) -> Result<bool, ActionError>;
+
+    /// 実行に失敗したときに確保を解く（押し直せる状態へ戻す・best-effort）。
+    async fn release(&self, ctx: &AuthContext, source: &ActionSource, action_id: &str);
+
+    /// **実行が完了した**ことを記録する（`run_id` があれば紐づける・best-effort）。
+    ///
+    /// 確保はハンドラ実行の前に取るので、確保と完了は別の事実として持つ。完了できなくても
+    /// 実行は成功しているため、確保はそのまま残す（奪わせない）。
+    async fn complete(
+        &self,
+        ctx: &AuthContext,
+        source: &ActionSource,
+        action_id: &str,
+        run_id: Option<Uuid>,
+    );
+}
+
 /// アクション実行の合流点（照合・認可・監査の単一チョークポイント）。
 pub struct ActionDispatcher {
     handlers: HashMap<HandlerKind, Arc<dyn ActionHandler>>,
-    tools: HashMap<&'static str, Arc<dyn Tool>>,
     workflows: Option<Arc<dyn WorkflowStarter>>,
+    ledger: Option<Arc<dyn ActionLedger>>,
     audit: AuditRecorder,
 }
 
@@ -119,8 +155,8 @@ impl ActionDispatcher {
     pub fn new(audit: AuditRecorder) -> Self {
         ActionDispatcher {
             handlers: HashMap::new(),
-            tools: HashMap::new(),
             workflows: None,
+            ledger: None,
             audit,
         }
     }
@@ -130,48 +166,67 @@ impl ActionDispatcher {
         self.handlers.insert(handler.kind(), handler);
     }
 
-    /// UI アクションとして呼べるツールを登録する。
-    ///
-    /// [`ALLOWED_ACTION_TOOLS`] 外・破壊系（`requires_confirmation`）は**登録自体を拒否**する
-    /// （検証層と独立した二重防御・fail-closed）。
-    pub fn register_tool(&mut self, name: ToolName, tool: Arc<dyn Tool>) {
-        if !ALLOWED_ACTION_TOOLS.contains(&name) || tool.requires_confirmation() {
-            tracing::error!(
-                tool = name.as_str(),
-                "UI アクションに登録できないツールを拒否"
-            );
-            return;
-        }
-        self.tools.insert(name.as_str(), tool);
-    }
-
     pub fn set_workflow_starter(&mut self, starter: Arc<dyn WorkflowStarter>) {
         self.workflows = Some(starter);
     }
 
-    /// 宣言済み束縛（検証済み文書）から `action_id` を照合し、本人権限で実行する。
+    /// 単発アクションの実行台帳を配線する（#410）。
     ///
-    /// 未宣言 id・認可失敗・実行失敗は全て Deny として監査に残す。
-    pub async fn dispatch(
+    /// 未配線のまま単発束縛が来たら**実行せず 503**にする（二重送信の抑止が無い状態で
+    /// 発話と run を作らせない・fail-closed）。台帳と `chat.submit` ハンドラは同じ
+    /// `chat` 由来なので、配線は必ず対で行う。
+    pub fn set_ledger(&mut self, ledger: Arc<dyn ActionLedger>) {
+        self.ledger = Some(ledger);
+    }
+
+    /// サーバーが引いた束縛をそのまま実行する（会話の図のボタン: 束縛は回答の確定時に
+    /// 保存した宣言、または本文から読んだ「会話に送る」）。`action_id` は監査と台帳の鍵。
+    ///
+    /// 束縛は**呼び出し側がサーバーの状態から作ったもの**に限る（クライアントの値を束縛に
+    /// しない）。params の上限・単発の確保・監査をここで一手に行う。
+    pub async fn dispatch_binding(
         &self,
         ctx: &AuthContext,
         source: &ActionSource,
-        doc: &UiSpecDoc,
+        binding: &ActionBinding,
         action_id: &str,
         params: serde_json::Value,
         trace_id: Option<&str>,
     ) -> Result<serde_json::Value, ActionError> {
-        let Some(binding) = doc.actions.iter().find(|b| b.id() == action_id) else {
-            self.deny(ctx, source, action_id, "undeclared_action", trace_id)
-                .await;
-            return Err(ActionError::NotFound);
-        };
         if serde_json::to_vec(&params).map_or(0, |v| v.len()) > MAX_PARAMS_BYTES {
             self.deny(ctx, source, action_id, "params_too_large", trace_id)
                 .await;
             return Err(ActionError::Invalid("params が大きすぎます".into()));
         }
         let params_digest = format!("{:x}", Sha256::digest(params.to_string().as_bytes()));
+
+        // 1 回だけの束縛は**実行前に確保**する。表示だけ直しても押せてしまうので、
+        // 二重送信はここで潰す（#410）。確保できなければ実行そのものを行わない。
+        // 台帳側の失敗（未配線・DB エラー）も実行を止める側なので Deny として残す
+        // — 公開 API で操作が拒否された事実は理由込みで追えるようにする。
+        let ledger = match self.single_use_ledger(binding) {
+            Ok(ledger) => ledger,
+            Err(e) => {
+                self.deny(ctx, source, action_id, "ledger_unavailable", trace_id)
+                    .await;
+                return Err(e);
+            }
+        };
+        if let Some(ledger) = ledger {
+            match ledger.claim(ctx, source, action_id, trace_id).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.deny(ctx, source, action_id, "already_invoked", trace_id)
+                        .await;
+                    return Err(ActionError::AlreadyInvoked);
+                }
+                Err(e) => {
+                    self.deny(ctx, source, action_id, "claim_failed", trace_id)
+                        .await;
+                    return Err(e);
+                }
+            }
+        }
 
         let result = self.execute(ctx, source, binding, params, trace_id).await;
         match &result {
@@ -182,6 +237,13 @@ impl ActionDispatcher {
                     .or_else(|| output.get("result").and_then(|r| r.get("run_id")))
                     .cloned()
                     .unwrap_or(json!(null));
+                // ここで初めて「実行された」ことが確定する。確保だけの行も UI へは送信済みと
+                // して出る（確保は奪わないので、そのカードはもう押せない）。この記録は監査との
+                // 突合と、詰まりの発見（未完了のまま古くなった行）に使う。
+                if let Some(ledger) = ledger {
+                    let id = run_id.as_str().and_then(|s| Uuid::parse_str(s).ok());
+                    ledger.complete(ctx, source, action_id, id).await;
+                }
                 self.record(
                     ctx,
                     action_id,
@@ -197,6 +259,10 @@ impl ActionDispatcher {
                 .await;
             }
             Err(e) => {
+                // 実行できなかったものを「送信済み」にしたままにしない（押し直せる）。
+                if let Some(ledger) = ledger {
+                    ledger.release(ctx, source, action_id).await;
+                }
                 self.record(
                     ctx,
                     action_id,
@@ -213,6 +279,53 @@ impl ActionDispatcher {
             }
         }
         result
+    }
+
+    /// 単発束縛なら台帳を返す（未配線は fail-closed で 503）。繰り返せる束縛は `None`。
+    fn single_use_ledger(
+        &self,
+        binding: &ActionBinding,
+    ) -> Result<Option<&Arc<dyn ActionLedger>>, ActionError> {
+        if !binding.single_use() {
+            return Ok(None);
+        }
+        let Some(ledger) = self.ledger.as_ref() else {
+            tracing::error!(
+                binding = binding.kind_str(),
+                "単発アクションの実行台帳が未配線（二重送信を抑止できないため実行しない）"
+            );
+            return Err(ActionError::Unavailable(
+                "この操作はいま実行できません".into(),
+            ));
+        };
+        Ok(Some(ledger))
+    }
+
+    /// 実行せずに前の結果を返した（同じ冪等キーの再送）ことを監査に残す。
+    ///
+    /// 副作用は起こしていないが、送信があった事実は Allow として残す（再送・競合の試行が
+    /// 監査から消えないように）。
+    pub async fn record_replay(
+        &self,
+        ctx: &AuthContext,
+        source: &ActionSource,
+        action_id: &str,
+        run_id: Option<Uuid>,
+        trace_id: Option<&str>,
+    ) {
+        self.record(
+            ctx,
+            action_id,
+            Decision::Allow,
+            trace_id,
+            json!({
+                "source": source.audit_json(),
+                "binding": "workflow",
+                "replay": true,
+                "run_id": run_id,
+            }),
+        )
+        .await;
     }
 
     /// 束縛照合前の拒否（未宣言 id 等）を監査に残す（API 層からも利用できる）。
@@ -253,42 +366,18 @@ impl ActionDispatcher {
                 let result = handler.invoke(ctx, source, params, trace_id).await?;
                 Ok(json!({ "kind": "handler", "result": result }))
             }
-            ActionBinding::Tool(b) => {
-                // 検証層と独立の二重防御: 許可リスト外は保存済みスペックでも実行しない。
-                if !ALLOWED_ACTION_TOOLS.contains(&b.tool) {
-                    return Err(ActionError::Forbidden);
-                }
-                let tool = self.tools.get(b.tool.as_str()).ok_or_else(|| {
-                    ActionError::Unavailable(format!("ツール '{}' は無効です", b.tool.as_str()))
-                })?;
-                if tool.requires_confirmation() {
-                    return Err(ActionError::Forbidden);
-                }
-                // ツールは本人 ctx で実行（doc_search は二段 authz を内部で通る）。
-                let outcome = tool
-                    .call(ctx, params, trace_id)
-                    .await
-                    .map_err(|e| ActionError::Unavailable(format!("tool: {e}")))?;
-                Ok(json!({
-                    "kind": "tool",
-                    "ok": !outcome.is_error,
-                    "content": outcome.content,
-                }))
-            }
             ActionBinding::Workflow(b) => {
                 let starter = self
                     .workflows
                     .as_ref()
                     .ok_or_else(|| ActionError::Unavailable("workflow 実行時が無効です".into()))?;
-                // 保存済みスペックは解決済み（ピン必須）。欠落は不正データとして拒否。
+                // 束縛は解決済み（ピン必須）。欠落は不正データとして拒否。
                 let (Some(id), Some(version)) = (b.workflow.artifact_id, b.workflow.version) else {
-                    return Err(ActionError::Invalid(
-                        "workflow 束縛が未解決です（検証済みスペックではありません）".into(),
-                    ));
+                    return Err(ActionError::Invalid("workflow 束縛が未解決です".into()));
                 };
-                // ミニアプリ由来はバンドル権限で IR を読む（保存時に束縛 ⊆ バンドルのピン集合を
-                // 照合済み・resolve で再検証済みのスペックのみここへ来る）。チャット由来は本人の
-                // viewer 権限のまま（発話者がピンした版＝本人が読める版）。
+                // ミニアプリ由来はバンドル権限で IR を読む（保存時に画面のボタン ⊆ バンドルの
+                // ピン集合を照合済み・resolve で再検証済みの画面のみここへ来る）。チャット由来は
+                // 本人の viewer 権限のまま（回答の確定時に発話者がピンした版＝本人が読める版）。
                 let run_id = match source {
                     ActionSource::MiniApp { artifact_id, .. } => {
                         starter

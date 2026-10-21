@@ -16,7 +16,7 @@ function ToastViewport({
   return (
     <ToastPrimitive.Viewport
       className={cn(
-        "fixed bottom-0 right-0 z-[100] flex max-h-screen w-full flex-col gap-2 p-4 sm:bottom-4 sm:right-4 sm:max-w-sm",
+        "fixed top-0 right-0 z-[100] flex max-h-dvh w-full flex-col gap-2 p-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:top-auto sm:bottom-4 sm:right-4 sm:max-w-sm sm:p-4",
         className,
       )}
       {...props}
@@ -27,7 +27,7 @@ function ToastViewport({
 const toastVariants = cva(
   cn(
     "group pointer-events-auto relative flex w-full items-start gap-3 overflow-hidden rounded-lg border p-4 pr-9 shadow-lg",
-    "data-[state=open]:animate-in data-[state=open]:slide-in-from-bottom-2 data-[state=open]:fade-in-0",
+    "data-[state=open]:animate-in data-[state=open]:slide-in-from-top-2 sm:data-[state=open]:slide-in-from-bottom-2 data-[state=open]:fade-in-0",
     "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right-full",
     "data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[swipe=cancel]:translate-x-0 data-[swipe=end]:animate-out data-[swipe=end]:slide-out-to-right-full",
   ),
@@ -85,7 +85,7 @@ function ToastClose({
     <ToastPrimitive.Close
       aria-label="閉じる"
       className={cn(
-        "absolute right-2 top-2 rounded-md p-1 text-current/60 transition-colors hover:text-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "absolute right-1.5 top-1.5 flex size-8 items-center justify-center rounded-md text-current/60 pointer-coarse:size-10 transition-colors hover:text-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         className,
       )}
       {...props}

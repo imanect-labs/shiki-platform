@@ -7,10 +7,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use agent_core::{AgentError, AgentEvent, Checkpoint, Citation as AgentCitation, EventSink};
+use agent_core::{AgentError, AgentEvent, Checkpoint, EventSink};
 use uuid::Uuid;
 
-use crate::model::{Citation, ContentBlock, PlanSubtask, StreamEventKind};
+use super::stream_map::to_stream_kind;
+use crate::model::{ContentBlock, StreamEventKind};
 use crate::store::ChatStore;
 
 /// durable 保存するチェックポイントの封筒（#351）。
@@ -114,21 +115,29 @@ impl WorkerSink {
                     .content
                     .push(ContentBlock::Thinking { text: text.clone() }),
             },
-            StreamEventKind::ToolCall { id, name, input } => {
+            StreamEventKind::ToolCall {
+                id,
+                name,
+                input,
+                step,
+                ..
+            } => {
                 self.content.push(ContentBlock::ToolCall {
                     id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
+                    step: *step,
                 });
             }
             StreamEventKind::ToolResult {
                 tool_call_id,
                 content,
-                ..
+                ok,
             } => {
                 self.content.push(ContentBlock::ToolResult {
                     tool_call_id: tool_call_id.clone(),
                     content: content.clone(),
+                    ok: *ok,
                 });
             }
             StreamEventKind::Citation(c) => {
@@ -140,11 +149,6 @@ impl WorkerSink {
                     node_id: node_id.clone(),
                     name: name.clone(),
                 });
-            }
-            // 検証済みスペックのみが emit_ui から届く（Task 6.4・検証は gui 側の信頼境界）。
-            StreamEventKind::GenerativeUi { spec } => {
-                self.content
-                    .push(ContentBlock::GenerativeUi { spec: spec.clone() });
             }
             // 保存パイプライン通過済みの参照のみが emit_workflow から届く（Task 10.13）。
             StreamEventKind::WorkflowRef { workflow } => {
@@ -174,17 +178,24 @@ impl WorkerSink {
                     draft: draft.clone(),
                 });
             }
+            // AI が作成/編集した文書への参照（#381）。成果物への導線として履歴に残す。
+            StreamEventKind::DocumentRef { document } => {
+                self.content.push(ContentBlock::DocumentRef {
+                    document: document.clone(),
+                });
+            }
+            // レガシー（#381 で廃止）。新規発火は無いが replay 経路の網羅性のため残す。
             StreamEventKind::DocumentDraft { draft } => {
                 self.content.push(ContentBlock::DocumentDraft {
                     draft: draft.clone(),
                 });
             }
-            // ライブ専用/進捗/端末イベントは projection しない。
-            // Office ライブ編集は履歴再生で二重 paste しないため（#328）、skill 発動記録は
-            // instructions が tool_result block として既に履歴に残るため（#344・完全な列は
-            // generation_event 側が監査・再現性を担う）除外する。
-            StreamEventKind::OfficeLiveEdit { .. }
-            | StreamEventKind::SkillInvoked { .. }
+            // 進捗/端末イベントは projection しない。skill 発動記録は instructions が
+            // tool_result block として既に履歴に残るため（#344・完全な列は generation_event
+            // 側が監査・再現性を担う）除外する。
+            // （旧 office_live_edit の SSE 注入イベントは #352 で廃止＝この列から消えた）
+            StreamEventKind::SkillInvoked { .. }
+            | StreamEventKind::SubagentRun { .. }
             | StreamEventKind::Plan { .. }
             | StreamEventKind::BudgetWarning { .. }
             | StreamEventKind::ApprovalRequested { .. }
@@ -194,131 +205,6 @@ impl WorkerSink {
             | StreamEventKind::Error { .. }
             | StreamEventKind::Done { .. } => {}
         }
-    }
-}
-
-/// AgentEvent → SSE イベント種別。全 AgentEvent が SSE 種別へ写る（`generation_event` に append され
-/// replay 可能）。message.content への projection 有無は [`WorkerSink::accumulate`] が別に決める。
-fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
-    match event {
-        AgentEvent::Text(t) => StreamEventKind::Token { text: t.clone() },
-        AgentEvent::Thinking(t) => StreamEventKind::Thinking { text: t.clone() },
-        AgentEvent::ToolCall { id, name, input } => StreamEventKind::ToolCall {
-            id: id.clone(),
-            name: name.clone(),
-            input: input.clone(),
-        },
-        AgentEvent::ToolResult {
-            tool_call_id,
-            ok,
-            content,
-        } => StreamEventKind::ToolResult {
-            tool_call_id: tool_call_id.clone(),
-            ok: *ok,
-            content: content.clone(),
-        },
-        AgentEvent::Citation(c) => StreamEventKind::Citation(to_citation(c)),
-        AgentEvent::Artifact { artifact, .. } => StreamEventKind::FileRef {
-            node_id: artifact.node_id.clone(),
-            name: artifact.name.clone(),
-        },
-        AgentEvent::GenerativeUi { spec } => StreamEventKind::GenerativeUi { spec: spec.clone() },
-        AgentEvent::WorkflowRef { workflow } => StreamEventKind::WorkflowRef {
-            workflow: workflow.clone(),
-        },
-        AgentEvent::NoteRef { note } => StreamEventKind::NoteRef { note: note.clone() },
-        AgentEvent::NoteDraft { draft } => StreamEventKind::NoteDraft {
-            draft: draft.clone(),
-        },
-        AgentEvent::SlideDraft { draft } => StreamEventKind::SlideDraft {
-            draft: draft.clone(),
-        },
-        AgentEvent::CsvDraft { draft } => StreamEventKind::CsvDraft {
-            draft: draft.clone(),
-        },
-        AgentEvent::DocumentDraft { draft } => StreamEventKind::DocumentDraft {
-            draft: draft.clone(),
-        },
-        // 開いている Office セッションへのライブ編集（#328）。ライブ SSE のみ（content 非 projection）。
-        AgentEvent::OfficeLiveEdit { node_id, html } => StreamEventKind::OfficeLiveEdit {
-            node_id: node_id.clone(),
-            html: html.clone(),
-        },
-        // skill 発動記録（#344）。generation_event に残り replay 可能（UI はチップ表示）。
-        AgentEvent::SkillInvoked { skill } => StreamEventKind::SkillInvoked {
-            skill: skill.clone(),
-        },
-        // 自律プロファイルの構造化イベント（Task 5.9 ライブ配信）。generation_event に append され
-        // replay 可能（監査・5.10）だが message.content へは projection しない。
-        AgentEvent::PlanUpdated(plan) => StreamEventKind::Plan {
-            subtasks: plan
-                .subtasks
-                .iter()
-                .map(|s| PlanSubtask {
-                    id: s.id.clone(),
-                    title: s.title.clone(),
-                    status: subtask_status_str(s.status).to_string(),
-                })
-                .collect(),
-        },
-        AgentEvent::SubtaskUpdated { id, status } => StreamEventKind::Plan {
-            // 単一サブタスク更新は最小の Plan イベントに畳む（UI は id で差し込む）。
-            subtasks: vec![PlanSubtask {
-                id: id.clone(),
-                title: String::new(),
-                status: subtask_status_str(*status).to_string(),
-            }],
-        },
-        AgentEvent::BudgetWarning { kind, used, limit } => StreamEventKind::BudgetWarning {
-            kind: kind.as_str().to_string(),
-            used: *used,
-            limit: *limit,
-        },
-        AgentEvent::ApprovalRequested {
-            tool_call_id,
-            name,
-            input,
-            reason,
-        } => StreamEventKind::ApprovalRequested {
-            tool_call_id: tool_call_id.clone(),
-            name: name.clone(),
-            input: input.clone(),
-            reason: reason.clone(),
-        },
-        AgentEvent::ApprovalResolved {
-            tool_call_id,
-            approved,
-        } => StreamEventKind::ApprovalResolved {
-            tool_call_id: tool_call_id.clone(),
-            approved: *approved,
-        },
-        AgentEvent::FailureRecovery { detail, action } => StreamEventKind::FailureRecovery {
-            detail: detail.clone(),
-            action: action.as_str().to_string(),
-        },
-    }
-}
-
-/// agent-core の `SubtaskStatus` を snake_case 文字列へ。
-fn subtask_status_str(s: agent_core::SubtaskStatus) -> &'static str {
-    use agent_core::SubtaskStatus;
-    match s {
-        SubtaskStatus::Todo => "todo",
-        SubtaskStatus::Doing => "doing",
-        SubtaskStatus::Done => "done",
-        SubtaskStatus::Blocked => "blocked",
-    }
-}
-
-/// agent-core の Citation → chat の Citation（同型フィールド）。
-fn to_citation(c: &AgentCitation) -> Citation {
-    Citation {
-        node_id: c.node_id.clone(),
-        chunk_id: c.chunk_id.clone(),
-        snippet: c.snippet.clone(),
-        page: c.page,
-        heading_path: c.heading_path.clone(),
-        score: c.score,
     }
 }
 
@@ -441,23 +327,6 @@ mod tests {
         };
         match to_stream_kind(&ev) {
             StreamEventKind::CsvDraft { draft: d } => assert_eq!(d, draft),
-            other => panic!("unexpected: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn office_live_edit_maps_to_sse() {
-        // AgentEvent::OfficeLiveEdit → SSE office_live_edit（ライブ配信）。content への
-        // projection は accumulate 側の no-op アームで抑止する（履歴再生で二重 paste しない・#328）。
-        let ev = AgentEvent::OfficeLiveEdit {
-            node_id: "file-1".into(),
-            html: "<p>置換</p>".into(),
-        };
-        match to_stream_kind(&ev) {
-            StreamEventKind::OfficeLiveEdit { node_id, html } => {
-                assert_eq!(node_id, "file-1");
-                assert_eq!(html, "<p>置換</p>");
-            }
             other => panic!("unexpected: {other:?}"),
         }
     }

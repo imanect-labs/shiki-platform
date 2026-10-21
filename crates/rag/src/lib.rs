@@ -10,6 +10,7 @@
 //! - 公開トレイトの第一引数は `&AuthContext`。
 
 pub mod admin;
+pub mod anchor;
 pub mod authz_filter;
 pub mod chunker;
 pub mod config;
@@ -30,18 +31,23 @@ pub mod vector_qdrant;
 pub mod vector_store;
 
 pub use admin::RagAdmin;
+pub use anchor::{Anchor, BoxOrigin, PageBox, TextQuote};
 pub use config::RagConfig;
-pub use embedding::{EmbedInput, EmbeddingProvider, HttpEmbeddingProvider};
+pub use embedding::{EmbedInput, EmbedResponse, EmbeddingProvider, HttpEmbeddingProvider};
 pub use error::RagError;
 pub use fulltext::{FulltextDoc, FulltextIndex};
 pub use fulltext_tantivy::TantivyFulltext;
-pub use parser::{DocumentParser, ParseRequest};
+pub use parser::{DocumentParser, ParseRequest, ParseSource};
 pub use parser_http::HttpDocumentParser;
 pub use pipeline::{spawn_pipeline, IngestMessage, PipelineDeps, RAG_INGEST_QUEUE};
 pub use rerank::{HttpReranker, Reranker};
-pub use search::{SearchOutput, SearchService};
+pub use search::{
+    Cursor, DocRead, DocReadPage, ReadFrom, ReadSource, SearchOutput, SearchService,
+    DEFAULT_READ_CHARS, MAX_READ_CHARS,
+};
 pub use search_types::{
-    SearchDebug, SearchMode, SearchRequest, SearchResponse, SearchResult, SearchScope, StageTimings,
+    DocBlock, DocBlocksPage, Relevance, SearchDebug, SearchMode, SearchRequest, SearchResponse,
+    SearchResult, SearchScope, StageTimings,
 };
 pub use vector_qdrant::QdrantVectorStore;
 pub use vector_store::{ChunkPoint, PreFilter, ScoredChunk, VectorSearch, VectorStore};

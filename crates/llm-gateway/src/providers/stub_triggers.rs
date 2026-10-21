@@ -4,16 +4,63 @@
 //! 応じて 1 回だけツールを呼ぶロジック。実 LLM 無しで chat run・承認ゲート・Yjs 反映まで
 //! パイプライン全体を決定的に叩くための入口（issue #282 / #328 / Task 11.3・11.10）。
 
-use super::stub::tool_call_stream;
-use super::stub_fixtures::genui_spec;
-use crate::model::GenerateRequest;
+use super::stub_stream::{text_stream, tool_call_stream};
+use crate::model::{Block, GenerateRequest, Role};
 use crate::provider::DeltaStream;
 
+/// `echosystem:` … 受け取った system プロンプトをそのまま本文で返す（system の組み立て＝
+/// 今日の日付などが実際にモデルへ届くことの検証・#546）。
+pub(super) fn echo_system_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    user_text.starts_with("echosystem:").then(|| {
+        let system = req.system.as_deref().unwrap_or_default();
+        text_stream(&format!("system: {system}"), prompt_tokens)
+    })
+}
+
+/// tool search の決定的駆動 `toolsearch:<query>`（遅延ツールの検索→読み込み→呼び出しの e2e）。
+///
+/// 1 ターン目に `tool_search` を `{query}` で呼び、直前の観測が読み込み参照を持てば
+/// その**先頭のツール**を空入力で 1 回呼ぶ。それ以外（参照なし・呼び出し後）は `None`
+/// （通常の本文応答へ落ちる）。
+pub(super) fn tool_search_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let query = user_text.strip_prefix("toolsearch:")?.trim();
+    let last = req.messages.last()?;
+    if last.role == Role::User {
+        let t = req.tools.iter().find(|t| t.name == "tool_search")?;
+        return Some(tool_call_stream(
+            t.name.clone(),
+            serde_json::json!({ "query": query }),
+            prompt_tokens,
+        ));
+    }
+    let loaded = last.content.iter().find_map(|b| match b {
+        Block::ToolResult {
+            tool_references, ..
+        } => tool_references.first(),
+        _ => None,
+    })?;
+    let t = req.tools.iter().find(|t| &t.name == loaded)?;
+    Some(tool_call_stream(
+        t.name.clone(),
+        serde_json::json!({}),
+        prompt_tokens,
+    ))
+}
+
 /// ドキュメント下書き/編集ツールの決定的駆動（issue #282 / Task 11.3 の e2e）。
-/// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（genui chart）、
+/// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（```ui の bar）、
 /// `saveslide:<name>` → save_slide（下書きスライド・固定 3 枚）、
 /// `savecsv:<name>` → save_csv（下書き CSV・固定 3 列×3 行）、
-/// `savedoc:<name>` → save_document（下書き Word 文書・#332）。
+/// `savedoc:<name>` → save_document（新規 Word 文書・承認ゲート＋Collabora 必須・#381）、
+/// `savesheet:<name>` → save_sheet（新規 Excel ブック・承認ゲート＋Collabora 必須・#381）。
 pub(super) fn note_tool_call(
     req: &GenerateRequest,
     user_text: &str,
@@ -38,13 +85,29 @@ pub(super) fn note_tool_call(
     if let Some(id) = user_text.strip_prefix("docembed:").map(str::trim) {
         return call(
             "document.embed",
-            serde_json::json!({ "node_id": id, "spec": genui_spec("chart") }),
+            serde_json::json!({ "node_id": id, "source": "bar 月別の売上\n4月 | 120\n5月 | 150" }),
         );
     }
     if let Some(name) = user_text.strip_prefix("savedoc:").map(str::trim) {
+        // 太字/リンク/ネスト箇条書きを含める（Collabora 側で Word 書式になることの e2e 素材）。
         return call(
             "save_document",
-            serde_json::json!({ "name": name, "markdown": format!("# {name}\n\nAI が用意した下書き本文。\n") }),
+            serde_json::json!({
+                "name": name,
+                "markdown": format!(
+                    "# {name}\n\n**重要**な提案です。詳細は[こちら](https://example.com)。\n\n\
+                     - 背景\n  - 補足\n- 提案\n"
+                ),
+            }),
+        );
+    }
+    if let Some(name) = user_text.strip_prefix("savesheet:").map(str::trim) {
+        return call(
+            "save_sheet",
+            serde_json::json!({
+                "name": name,
+                "rows": [["商品", "数量", "単価"], ["りんご", 10, 120], ["みかん", 24, 80]]
+            }),
         );
     }
     if let Some(name) = user_text.strip_prefix("savecsv:").map(str::trim) {
@@ -113,16 +176,41 @@ pub(super) fn note_tool_call(
             }),
         );
     }
+    // Office 表計算のライブセル編集（office.live_edit set_cells）: `officecells:<node_id>` で
+    // 明示駆動する。開いている xlsx セッションへ AI が headless 参加してセル矩形を貼り込む
+    // （文書を閉じていても実行でき、新バージョンとして保存される・issue #352）。
+    if let Some(node_id) = user_text.strip_prefix("officecells:").map(str::trim) {
+        return call(
+            "office.live_edit",
+            serde_json::json!({
+                "node_id": node_id,
+                "ops": [{
+                    "op": "set_cells",
+                    "anchor": "A1",
+                    // 売上は**桁区切りが要る大きさ**にしてある（#385）。既定の列幅のままだと
+                    // Calc が指数表記へ縮退する値なので、貼り込み後の書式・列幅調整が
+                    // 効いているかを e2e/デモでそのまま目視できる。
+                    "rows": [
+                        ["商品", "売上", "前年比"],
+                        ["りんご", 12_800_000, "+18%"],
+                        ["みかん", 9_400_000, "+6%"],
+                        ["合計", 22_200_000, "+12%"],
+                    ],
+                }],
+            }),
+        );
+    }
     // Office 文書の選択（office_selection・node_id 付き）＋編集キーワード → office.live_edit。
-    // 開いている Collabora セッションの現在の選択範囲を丸ごと置換し、Action_Paste による
-    // セッション内ライブ反映を実パイプライン（承認 → authz → emitter → /office フレーム）で叩く（#328）。
+    // 選択本文をアンカー（replace_text.find）に使い、AI の headless 参加（CoolWSD 接続 →
+    // 自 view で検索・照合 → paste → save）を実パイプラインで叩く（issue #352）。
     if let Some(node_id) = selection_node_id(user_text, "office_selection") {
         if wants_edit(user_text) {
+            let find = selection_excerpt(user_text, "office_selection").unwrap_or_default();
             return call(
                 "office.live_edit",
                 serde_json::json!({
                     "node_id": node_id,
-                    "html": MOCK_OFFICE_LIVE_HTML,
+                    "ops": [{ "op": "replace_text", "find": find, "html": MOCK_OFFICE_LIVE_HTML }],
                 }),
             );
         }
@@ -184,6 +272,19 @@ fn strip_selection_blocks(text: &str) -> String {
 }
 
 /// 注入された選択デリミタ `<selection kind="<kind>" node_id="UUID" ...>` から node_id を取る。
+/// 選択デリミタの本文（excerpt）を取り出す（office.live_edit の replace_text.find 用）。
+///
+/// history.rs の織り込み形 `<selection kind="..." ...>\n{excerpt}\n</selection>` 前提。
+fn selection_excerpt(user_text: &str, kind: &str) -> Option<String> {
+    let marker = format!("kind=\"{kind}\"");
+    let start = user_text.find(&marker)?;
+    let after = &user_text[start..];
+    let body_start = after.find('>')? + 1;
+    let body = &after[body_start..];
+    let body_end = body.find("</selection>")?;
+    Some(body[..body_end].trim().to_string())
+}
+
 fn selection_node_id(user_text: &str, kind: &str) -> Option<String> {
     let marker = format!("kind=\"{kind}\"");
     let start = user_text.find(&marker)?;

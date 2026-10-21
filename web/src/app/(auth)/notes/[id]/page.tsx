@@ -7,8 +7,7 @@
 ///   /collab/docs/{id}/access の表示用ヒントで editable を切り替える。
 /// - 11P.5 で本ページが「ノート×チャット分割ビュー」のホストになる。
 
-import { EditorLoading } from "@/components/shell/editor-loading";
-import { MessageSquare, X } from "lucide-react";
+import { Eye, FileWarning, MessageSquare } from "lucide-react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import * as React from "react";
@@ -16,17 +15,29 @@ import type { Editor } from "@tiptap/react";
 import * as Y from "yjs";
 
 import { embedSlashItems } from "@/components/notes/embed/embed-slash-items";
+import { useCiteHighlight } from "@/components/notes/cite-highlight";
+import { useCiteLocator } from "@/lib/citation-locate";
+import { CiteHint, shortPhrase } from "@/components/shell/cite-hint";
 import { MetadataPanel } from "@/components/notes/metadata-panel";
 import { NoteChatPanel } from "@/components/notes/note-chat-panel";
 import { NoteEditor } from "@/components/notes/note-editor";
-import { NoteSyncSlot } from "@/components/notes/note-header-slot";
-import { EmptyState } from "@/components/ui/empty-state";
-import { FadeSlide } from "@/components/ui/motion-primitives";
+import { useNoteChrome } from "@/components/notes/note-header-slot";
+import { SyncPill } from "@/components/notes/note-status";
+import { PresenceAvatars } from "@/components/notes/presence";
+import { AssistantLayout } from "@/components/shell/assistant-sheet";
+import {
+  EditorLoading,
+  EditorMobileHeading,
+  EditorStatusBadge,
+  EditorUnavailable,
+} from "@/components/shell/editor-loading";
+import { ShareLinkUnlock } from "@/components/share/share-link-unlock";
+import { Button } from "@/components/ui/button";
+import { useDocThreadDeepLink } from "@/hooks/use-doc-thread-deep-link";
 import { useMe } from "@/hooks/use-me";
 import { CollabProvider, type CollabStatus } from "@/lib/collab";
 import { setPendingSelection } from "@/lib/selection-context";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
-import { cn } from "@/lib/utils";
 
 /// useSearchParams を使うため Suspense 境界でラップする（App Router の CSR bailout 対策・#282）。
 export default function NotePage() {
@@ -53,10 +64,18 @@ function NotePageInner() {
   );
   const [status, setStatus] = React.useState<CollabStatus>("connecting");
   const [synced, setSynced] = React.useState(false);
-  // 本文エディタ（エクスポートの md 直列化・genui スナップショットに使う・#334）。
+  // 本文エディタ（エクスポートの md 直列化に使う・#334）。
   const [editor, setEditor] = React.useState<Editor | null>(null);
-  // ?thread= 指定時はアシスタントを開いた状態で見せる（その会話を辿るのが目的のため）。
-  const [chatOpen, setChatOpen] = React.useState(Boolean(initialThreadId));
+  // ?thread= 指定時はアシスタントを開いた状態で見せる（その会話を辿るのが目的のため・#598）。
+  const { chatOpen, setChatOpen, deepLinkThreadId } = useDocThreadDeepLink(initialThreadId);
+  // 引用箇所から開いたとき（?cite=）: その一節をハイライトしてスクロールする（#508）。
+  // 一節そのものは URL に載せず、クリック時に置かれた手がかりを読む。
+  const locator = useCiteLocator(searchParams.get("cite"));
+  const cite = useCiteHighlight(editor, synced, {
+    find: locator?.find ?? null,
+    end: locator?.end ?? null,
+    heading: locator?.heading ?? null,
+  });
   // 直近の選択（ヘッダの「AI に依頼」で開いた瞬間に挿入する材料）。
   const latestSelRef = React.useRef<{ text: string; headingPath: string[] } | null>(null);
 
@@ -81,7 +100,7 @@ function NotePageInner() {
         return open;
       });
     },
-    [insertSelection],
+    [insertSelection, setChatOpen],
   );
 
   // 「AI に依頼」= アシスタントパネルを開く（＋その時の選択があればチャットへ挿入）。
@@ -90,7 +109,7 @@ function NotePageInner() {
       if (!open && latestSelRef.current) insertSelection(latestSelRef.current);
       return !open;
     });
-  }, [insertSelection]);
+  }, [insertSelection, setChatOpen]);
 
   // Yjs ドキュメントとプロバイダ（ノート単位で 1 つ・アンマウントで破棄）。
   const [session, setSession] = React.useState<{
@@ -98,19 +117,17 @@ function NotePageInner() {
     provider: CollabProvider;
   } | null>(null);
 
-  React.useEffect(() => {
-    let cancelled = false;
+  // アクセス判定の取得（解錠後に再取得できるよう callback 化）。
+  const loadAccess = React.useCallback(() => {
+    setAccess("loading");
     getCollabAccess(nodeId)
-      .then((a) => {
-        if (!cancelled) setAccess(a ?? "notfound");
-      })
-      .catch(() => {
-        if (!cancelled) setAccess("notfound");
-      });
-    return () => {
-      cancelled = true;
-    };
+      .then((a) => setAccess(a ?? "notfound"))
+      .catch(() => setAccess("notfound"));
   }, [nodeId]);
+
+  React.useEffect(() => {
+    loadAccess();
+  }, [loadAccess]);
 
   React.useEffect(() => {
     if (typeof access === "string" || access === null) return;
@@ -130,65 +147,113 @@ function NotePageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeId, typeof access === "string" ? access : "ready"]);
 
+  const ready = typeof access === "object" && access !== null && !me.loading;
+  // 拡張子を落としたファイル名（バー・タイトル欄のフォールバックで共有する表示名）。
+  const displayName = ready ? access.name.replace(/\.md$/i, "") : "";
+  const editable = ready && access.mode === "editor";
+  // クロームはページ最上位で登録する（読み込み中・notfound でも戻る導線を残す）。
+  const shareDialog = useNoteChrome(
+    nodeId,
+    ready
+      ? {
+          name: displayName,
+          editable,
+          status,
+          synced,
+          chatOpen,
+          onToggleChat: openAssistant,
+          provider: session?.provider ?? null,
+          editor,
+        }
+      : null,
+  );
+
   if (access === "loading" || me.loading) {
-    return (
-      <EditorLoading kind="doc" message="ノートを開いています…" />
-    );
+    return <EditorLoading kind="doc" message="ノートを開いています…" />;
   }
   if (access === "notfound" || access === null) {
     // ノート由来履歴（?thread=）から来てノートが読めない（削除/権限剥奪）場合でも、会話自体が
     // 閲覧可能なら通常のチャットへ辿れるようにする（履歴からの導線を失わせない・#282）。
     return (
-      <EmptyState
+      <EditorUnavailable
+        icon={FileWarning}
         title="ノートが見つかりません"
-        description="削除されたか、アクセス権がありません。"
-        action={
+        description="削除されたか、アクセス権がありません。パスワード付き共有リンクの場合はパスワードで開けます。"
+        actions={
           initialThreadId ? (
-            <Link
-              href={`/c/${initialThreadId}`}
-              className="inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-medium transition-colors hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <MessageSquare className="size-4" aria-hidden />
-              この会話をチャットで開く
-            </Link>
+            <Button asChild>
+              <Link href={`/c/${initialThreadId}`}>
+                <MessageSquare aria-hidden />
+                この会話をチャットで開く
+              </Link>
+            </Button>
           ) : undefined
         }
-      />
+      >
+        {/* パスワード付き共有リンクの解錠（#342）。?lt=<token> がある時のみ表示。 */}
+        {searchParams.get("lt") ? (
+          <ShareLinkUnlock token={searchParams.get("lt")!} onUnlocked={loadAccess} autoFocus />
+        ) : null}
+      </EditorUnavailable>
     );
   }
 
-  const editable = access.mode === "editor";
   const userId = me.data?.id ?? "unknown";
   const userName = me.data?.email?.split("@")[0] ?? userId;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* 統一ヘッダへ注入（横バー二重を解消・null を返すだけ） */}
-      <NoteSyncSlot
-        nodeId={nodeId}
-        name={access.name.replace(/\.md$/i, "")}
-        editable={editable}
-        status={status}
-        synced={synced}
-        chatOpen={chatOpen}
-        onToggleChat={openAssistant}
-        provider={session?.provider ?? null}
-        editor={editor}
-      />
-
+      {shareDialog}
       {/* 分割ビュー: 本ページが一元ホスト（Conversation を再利用・実装は一箇所）。
-          アシスタントは「きっかけ」のように浮遊した角丸カード（本文の右側に重ねる）。 */}
-      <div className="relative flex min-h-0 flex-1">
+          アシスタントは PC では本文の右に浮かぶカード、スマホでは下からのシート。 */}
+      <AssistantLayout
+        open={Boolean(session) && chatOpen}
+        onClose={() => setChatOpen(false)}
+        label="ノートのアシスタント"
+        overlay={
+          cite ? (
+            <CiteHint tone={cite.status === "found" ? "found" : cite.status === "heading" ? "approx" : "missing"}>
+              {cite.status === "found"
+                ? `引用箇所「${shortPhrase(cite.phrase)}」をハイライトしています`
+                : cite.status === "heading"
+                  ? `該当の一節は編集されています。見出し「${shortPhrase(cite.heading)}」へ移動しました`
+                  : "引用した一節が見つかりませんでした（編集・削除された可能性があります）"}
+            </CiteHint>
+          ) : null
+        }
+        panel={
+          session ? (
+            <NoteChatPanel
+              meta={session.doc.getMap("meta")}
+              noteId={nodeId}
+              noteName={access.name}
+              editable={editable}
+              initialThreadId={deepLinkThreadId}
+            />
+          ) : null
+        }
+      >
         {session && (
-          <div
-            className={cn(
-              "min-w-0 flex-1 overflow-y-auto transition-[padding] duration-[var(--duration-normal)] ease-[var(--ease-standard)]",
-              // アシスタント表示中は本文を「パネルを除いた領域」の中央へ寄せる（右寄り解消）。
-              chatOpen && "lg:pr-[28rem]",
-            )}
-          >
-            <div className="mx-auto max-w-3xl px-4 pb-24 pt-4">
-              <MetadataPanel meta={session.doc.getMap("meta")} editable={editable} />
+          <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-y-contain">
+            <div className="mx-auto max-w-3xl px-4 pb-24 pt-4 max-md:pt-1">
+              {/* スマホ: 大きな題名の上に小さく状態行（PC はバーに出す）。 */}
+              <EditorMobileHeading
+                className="px-2 pb-1 pt-0"
+                status={
+                  <>
+                    {!editable ? (
+                      <EditorStatusBadge icon={Eye}>閲覧のみ</EditorStatusBadge>
+                    ) : null}
+                    <SyncPill status={status} synced={synced} showSynced testId={null} />
+                    <PresenceAvatars provider={session.provider} max={1} testId={null} />
+                  </>
+                }
+              />
+              <MetadataPanel
+                meta={session.doc.getMap("meta")}
+                editable={editable}
+                fallbackTitle={displayName}
+              />
               <div className="mt-4">
                 <NoteEditor
                   provider={session.provider}
@@ -203,38 +268,7 @@ function NotePageInner() {
             </div>
           </div>
         )}
-        {session && chatOpen && (
-          <FadeSlide
-            from="right"
-            role="complementary"
-            aria-label="ノートのアシスタント"
-            className="absolute inset-y-3 right-3 z-20 flex w-[min(420px,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border bg-card shadow-lg"
-          >
-            {/* 浮遊カードの自前ヘッダ＋幅いっぱいの会話（variant=panel） */}
-            <div className="flex h-11 shrink-0 items-center gap-2 px-3 shiki-dash-bottom">
-              <MessageSquare className="size-4 text-muted-foreground" aria-hidden />
-              <span className="flex-1 text-sm font-medium">アシスタント</span>
-              <button
-                type="button"
-                onClick={() => setChatOpen(false)}
-                aria-label="チャットを閉じる"
-                className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-90"
-              >
-                <X className="size-4" aria-hidden />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1">
-              <NoteChatPanel
-                meta={session.doc.getMap("meta")}
-                noteId={nodeId}
-                noteName={access.name}
-                editable={editable}
-                initialThreadId={initialThreadId}
-              />
-            </div>
-          </FadeSlide>
-        )}
-      </div>
+      </AssistantLayout>
     </div>
   );
 }

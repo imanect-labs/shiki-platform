@@ -180,7 +180,9 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
             kind: ProviderKind::Stub,
             base_url: None,
             api_key: None,
-            timeout_secs: 120,
+            user_agent: None,
+            session_header: None,
+            ..Default::default()
         },
         catalog: ModelCatalog {
             default_model: "m".into(),
@@ -189,9 +191,12 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
                 real_id: None,
                 prompt_price_micros_per_mtok: 0,
                 completion_price_micros_per_mtok: 0,
+                context_window_tokens: None,
+                ..Default::default()
             }],
         },
         langfuse: None,
+        ..Default::default()
     };
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
@@ -207,6 +212,8 @@ fn run_context<'a>(ctx: &'a AuthContext, preview: &str) -> RunContext<'a> {
         trace_id: None,
         input_preview: preview.to_string(),
         app_id: None,
+        // テストは単独 run。
+        owns_trace: true,
     }
 }
 

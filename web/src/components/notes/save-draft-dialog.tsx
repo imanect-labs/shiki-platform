@@ -1,15 +1,23 @@
 "use client";
 
-/// 下書きノートを「ドライブに保存」するダイアログ（issue #282）。
+/// 下書きノートを「ドライブに保存」するダイアログ（issue #282）と、下書き画面（ノート・
+/// スライド・CSV）共通のクローム・状態バッジ・タブ・空状態。
 ///
 /// 名前と保存先フォルダ（既定＝ルート／マイドライブ）を選び、POST /notes で実体化する。
 /// 保存先は human 決定「保存先ピッカー（既定=ルート）」に従い、既定はルート直下・任意で
 /// フォルダを選べる（後で移動も可）。保存自体は呼び出し側（onConfirm）が行う。
 
-import { Folder, FolderInput } from "lucide-react";
+import { FileWarning, Folder, FolderInput, MessageSquare, PencilLine, Save } from "lucide-react";
+import Link from "next/link";
 import * as React from "react";
 
 import { FolderPicker } from "@/components/artifacts/folder-picker";
+import { EditorStatusBadge, EditorUnavailable } from "@/components/shell/editor-loading";
+import {
+  ChromePrimaryButton,
+  type ChromeMenuItem,
+  type PageChromeSpec,
+} from "@/components/shell/page-header-context";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -20,6 +28,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 export type SaveTarget = { name: string; parentId: string | null };
 
@@ -130,5 +139,136 @@ export function SaveDraftDialog({
         onSelect={(f) => setFolder({ id: f.id, name: f.name })}
       />
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 下書き画面（ノート・スライド・CSV）共通のクローム・状態バッジ・タブ・空状態。
+// ---------------------------------------------------------------------------
+
+/// 「下書き・未保存」バッジ（文字で示す・ドットは使わない）。
+export function DraftBadge({ testId }: { testId?: string }) {
+  return (
+    <EditorStatusBadge tone="draft" icon={PencilLine} data-testid={testId}>
+      下書き・未保存
+    </EditorStatusBadge>
+  );
+}
+
+/// 下書き画面のクローム: 戻る → 保存（主操作）→ アシスタント → ⋯（会話をチャットで開く）。
+/// PC はバーに名前と「下書き・未保存」、スマホは本文先頭の状態行に出す（ページ側）。
+export function draftChrome({
+  back,
+  threadId,
+  name,
+  canSave,
+  onSave,
+  chatOpen,
+  onToggleChat,
+  extraMenu = [],
+  desktopExtra,
+}: {
+  back: NonNullable<PageChromeSpec["back"]>;
+  threadId: string;
+  name: string;
+  canSave: boolean;
+  onSave: () => void;
+  chatOpen: boolean;
+  onToggleChat: () => void;
+  /// ⋯ に足す画面固有の項目（スライドのエクスポート・プレゼン等）。
+  extraMenu?: ChromeMenuItem[];
+  desktopExtra?: React.ReactNode;
+}): PageChromeSpec {
+  if (!threadId) return { back };
+  const menu: ChromeMenuItem[] = [
+    ...extraMenu,
+    {
+      key: "chat",
+      label: "会話をチャットで開く",
+      icon: MessageSquare,
+      href: `/c/${threadId}`,
+      separatorBefore: extraMenu.length > 0,
+    },
+  ];
+  return {
+    title: name,
+    menuTitle: name,
+    back,
+    subtitle: <DraftBadge testId="draft-badge" />,
+    desktopExtra,
+    primary: (
+      <ChromePrimaryButton onClick={onSave} disabled={!canSave} data-testid="draft-save-button">
+        <Save aria-hidden />
+        <span>
+          <span className="max-md:hidden">ドライブに</span>保存
+        </span>
+      </ChromePrimaryButton>
+    ),
+    assistant: { active: chatOpen, onToggle: onToggleChat, testId: "note-chat-toggle" },
+    menu,
+  };
+}
+
+/// 同じ会話の複数下書きの切替タブ（別名 = 別下書き）。1 本だけなら出さない。
+/// スマホでは折り返さず横スクロール（縦に積み上がって本文を押し下げない）。
+export function DraftTabs({
+  drafts,
+  activeName,
+  onOpen,
+  className,
+}: {
+  drafts: ReadonlyArray<{ name: string }>;
+  activeName: string;
+  onOpen: (name: string) => void;
+  className?: string;
+}) {
+  if (drafts.length <= 1) return null;
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1.5 md:flex-wrap",
+        "max-md:overflow-x-auto max-md:overscroll-x-contain max-md:[scrollbar-width:none]",
+        className,
+      )}
+      data-testid="draft-tabs"
+    >
+      {drafts.map((d) => (
+        <button
+          key={d.name}
+          type="button"
+          onClick={() => onOpen(d.name)}
+          aria-current={d.name === activeName ? "true" : undefined}
+          className={cn(
+            "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-[13px] transition-colors max-md:h-9",
+            d.name === activeName
+              ? "border-transparent bg-accent font-medium text-foreground"
+              : "border-border/60 bg-card/40 text-muted-foreground hover:bg-secondary hover:text-foreground",
+          )}
+        >
+          <PencilLine className="size-3.5 shrink-0" aria-hidden />
+          <span className="max-w-[12rem] truncate">{d.name}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/// 下書きが見つからない（?thread= なしで開いた等）ときの案内。チャットで作る導線と
+/// ドライブへ戻る導線の 2 つを出す。
+export function DraftNotFound({ what }: { what: string }) {
+  return (
+    <EditorUnavailable
+      icon={FileWarning}
+      title="下書きが見つかりません"
+      description={`チャットから「${what}を作って」と頼むと、ここに下書きが用意されます。`}
+      actions={
+        <Button asChild>
+          <Link href="/">
+            <MessageSquare aria-hidden />
+            チャットで作成する
+          </Link>
+        </Button>
+      }
+    />
   );
 }

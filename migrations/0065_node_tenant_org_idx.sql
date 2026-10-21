@@ -1,0 +1,12 @@
+-- #468: 孤児 sweep が走査対象の (tenant_id, org) を安く列挙するための索引。
+--
+-- staging/incoming のオブジェクトキーは `{tenant_id}/{org}/...` なので、孤児 sweep は
+-- 「どの (tenant_id, org) プレフィックスを見るか」を DB から引く必要がある。node の既存索引は
+-- いずれも org 先頭（node_parent_idx・node_blob_idx）で tenant_id から始まるものが無く、
+-- 素直に DISTINCT を取ると node 全表スキャンになる。node はドライブの中心テーブルで最も
+-- 行数が伸びるため、1 時間ごとの sweep が毎回全表を舐めるのは割に合わない。
+--
+-- この索引があると、sweep 側は再帰 CTE の loose index scan（前の組より大きい組を索引で
+-- 1 件ずつ辿る）で **組数 × log n** に落とせる。行数ではなく異なる (tenant_id, org) の
+-- 個数にしか比例しない。
+create index if not exists node_tenant_org_idx on node (tenant_id, org);

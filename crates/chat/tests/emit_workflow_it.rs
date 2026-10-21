@@ -125,7 +125,9 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
             kind: ProviderKind::Stub,
             base_url: None,
             api_key: None,
-            timeout_secs: 120,
+            user_agent: None,
+            session_header: None,
+            ..Default::default()
         },
         catalog: ModelCatalog {
             default_model: "m".into(),
@@ -134,9 +136,12 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
                 real_id: None,
                 prompt_price_micros_per_mtok: 0,
                 completion_price_micros_per_mtok: 0,
+                context_window_tokens: None,
+                ..Default::default()
             }],
         },
         langfuse: None,
+        ..Default::default()
     };
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
@@ -173,8 +178,9 @@ async fn spawn_worker(pool: &PgPool) -> (ChatStore, Arc<WorkflowStore>) {
             sandbox: None,
             artifacts: None,
             web_search: None,
+            parser: None,
             storage: None,
-            ui_validator: None,
+            workflow_resolver: None,
             skill_artifacts: None,
             skill_catalog: None,
             workflow_store: Some(Arc::clone(&workflows)),
@@ -182,7 +188,9 @@ async fn spawn_worker(pool: &PgPool) -> (ChatStore, Arc<WorkflowStore>) {
             collab: None,
             tabular: None,
             office: None,
-            authz: None,
+            office_live: None,
+            office_creator: None,
+            office_engine: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
@@ -207,14 +215,14 @@ async fn run_to_done(
     text: &str,
 ) -> (Uuid, Vec<StreamEventKind>) {
     let res = store
-        .post_message(c, thread_id, text, &[], None, Some(true), false, None)
+        .post_message(c, thread_id, text, &[], None, Some(true), false, &[], None)
         .await
         .unwrap();
     let mut rx = store.event_stream(res.run_id, 0);
     let mut events = Vec::new();
     for _ in 0..500 {
         // Coverage（cargo-llvm-cov）実行時は計装＋並列テストバイナリで大きく遅くなるため
-        // 余裕を持つ（60s では稀に claim 前にタイムアウトする・genui_it と同型の flake 対策）。
+        // 余裕を持つ（60s では稀に claim 前にタイムアウトする・flake 対策）。
         let next = tokio::time::timeout(Duration::from_secs(180), rx.next())
             .await
             .expect("イベント待ちがタイムアウト");

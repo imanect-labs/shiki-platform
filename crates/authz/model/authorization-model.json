@@ -21,11 +21,21 @@
       "relations": {
         "member": {
           "this": {}
+        },
+        "admin": {
+          "this": {}
         }
       },
       "metadata": {
         "relations": {
           "member": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              }
+            ]
+          },
+          "admin": {
             "directly_related_user_types": [
               {
                 "type": "user"
@@ -87,6 +97,11 @@
                     "relation": "editor"
                   }
                 }
+              },
+              {
+                "computedUserset": {
+                  "relation": "editor_via_link"
+                }
               }
             ]
           }
@@ -111,9 +126,20 @@
                     "relation": "viewer"
                   }
                 }
+              },
+              {
+                "computedUserset": {
+                  "relation": "viewer_via_link"
+                }
               }
             ]
           }
+        },
+        "editor_via_link": {
+          "this": {}
+        },
+        "viewer_via_link": {
+          "this": {}
         }
       },
       "metadata": {
@@ -145,6 +171,10 @@
                 "relation": "member"
               },
               {
+                "type": "organization",
+                "relation": "member"
+              },
+              {
                 "type": "workflow"
               }
             ]
@@ -155,11 +185,33 @@
                 "type": "user"
               },
               {
+                "type": "user",
+                "wildcard": {}
+              },
+              {
                 "type": "role",
                 "relation": "member"
               },
               {
+                "type": "organization",
+                "relation": "member"
+              },
+              {
                 "type": "workflow"
+              }
+            ]
+          },
+          "editor_via_link": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              }
+            ]
+          },
+          "viewer_via_link": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
               }
             ]
           }
@@ -195,6 +247,11 @@
                     "relation": "editor"
                   }
                 }
+              },
+              {
+                "computedUserset": {
+                  "relation": "editor_via_link"
+                }
               }
             ]
           }
@@ -219,9 +276,20 @@
                     "relation": "viewer"
                   }
                 }
+              },
+              {
+                "computedUserset": {
+                  "relation": "viewer_via_link"
+                }
               }
             ]
           }
+        },
+        "editor_via_link": {
+          "this": {}
+        },
+        "viewer_via_link": {
+          "this": {}
         }
       },
       "metadata": {
@@ -253,6 +321,10 @@
                 "relation": "member"
               },
               {
+                "type": "organization",
+                "relation": "member"
+              },
+              {
                 "type": "workflow"
               }
             ]
@@ -263,11 +335,33 @@
                 "type": "user"
               },
               {
+                "type": "user",
+                "wildcard": {}
+              },
+              {
                 "type": "role",
                 "relation": "member"
               },
               {
+                "type": "organization",
+                "relation": "member"
+              },
+              {
                 "type": "workflow"
+              }
+            ]
+          },
+          "editor_via_link": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              }
+            ]
+          },
+          "viewer_via_link": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
               }
             ]
           }
@@ -433,6 +527,10 @@
               },
               {
                 "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "organization",
                 "relation": "member"
               },
               {

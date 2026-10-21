@@ -36,12 +36,18 @@ use storage::model::ShareTarget;
 struct AllowAll {
     /// `list_thread_shares` が読み出すタプル（テストが事前に注入する）。
     tuples: std::sync::Mutex<Vec<ReadTupleKey>>,
+    /// 例外的に拒否するオブジェクト（`FgaObject::as_str()`）。閲覧権限の無いファイルの再現用。
+    deny: std::sync::Mutex<Vec<String>>,
+    /// 特定の主体にだけ拒否する（主体, オブジェクト）。**誰の権限で判定したか**を検証する用。
+    deny_for: std::sync::Mutex<Vec<(String, String)>>,
 }
 
 impl AllowAll {
     fn new() -> Self {
         Self {
             tuples: std::sync::Mutex::new(vec![]),
+            deny: std::sync::Mutex::new(vec![]),
+            deny_for: std::sync::Mutex::new(vec![]),
         }
     }
 }
@@ -50,12 +56,19 @@ impl AllowAll {
 impl AuthzClient for AllowAll {
     async fn check(
         &self,
-        _s: &Subject,
+        s: &Subject,
         _r: Relation,
-        _o: &FgaObject,
+        o: &FgaObject,
         _c: Consistency,
     ) -> Result<bool, AuthzError> {
-        Ok(true)
+        let subject = s.to_string();
+        let denied_for = self
+            .deny_for
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(ds, d)| *ds == subject && d == o.as_str());
+        Ok(!denied_for && !self.deny.lock().unwrap().iter().any(|d| d == o.as_str()))
     }
     async fn write_tuple(
         &self,
@@ -158,7 +171,9 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
             kind: ProviderKind::Stub,
             base_url: None,
             api_key: None,
-            timeout_secs: 120,
+            user_agent: None,
+            session_header: None,
+            ..Default::default()
         },
         catalog: ModelCatalog {
             default_model: "m".into(),
@@ -167,9 +182,12 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
                 real_id: None,
                 prompt_price_micros_per_mtok: 0,
                 completion_price_micros_per_mtok: 0,
+                context_window_tokens: None,
+                ..Default::default()
             }],
         },
         langfuse: None,
+        ..Default::default()
     };
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
@@ -189,7 +207,10 @@ async fn create_list_get_thread_roundtrips() {
     assert_eq!(created.title, "設計相談");
 
     // list_threads は作成したスレッドを含む。
-    let listed = store.list_threads(&c, None, None, None, 50).await.unwrap();
+    let listed = store
+        .list_threads(&c, None, None, None, None, 50)
+        .await
+        .unwrap();
     assert!(
         listed.iter().any(|t| t.id == created.id),
         "作成したスレッドが一覧に含まれること"
@@ -256,7 +277,7 @@ async fn thread_origin_note_filter_and_backfill() {
 
     // origin フィルタ = note_a → t1, t2 のみ（通常は出ない）。
     let a_only = store
-        .list_threads(&c, None, None, Some(note_a), 50)
+        .list_threads(&c, None, None, Some(note_a), None, 50)
         .await
         .unwrap();
     let ids: std::collections::HashSet<_> = a_only.iter().map(|t| t.id).collect();
@@ -268,13 +289,16 @@ async fn thread_origin_note_filter_and_backfill() {
 
     // note_b はまだ空。
     let b_only = store
-        .list_threads(&c, None, None, Some(note_b), 50)
+        .list_threads(&c, None, None, Some(note_b), None, 50)
         .await
         .unwrap();
     assert!(b_only.is_empty());
 
     // フィルタ無し（全件）は通常スレッドも含む。
-    let all = store.list_threads(&c, None, None, None, 50).await.unwrap();
+    let all = store
+        .list_threads(&c, None, None, None, None, 50)
+        .await
+        .unwrap();
     assert!(all.iter().any(|t| t.id == plain.id));
 
     // 後付け: 通常スレッドを note_b 由来にする（下書き確定→ノート実体化の紐付け）。
@@ -283,7 +307,7 @@ async fn thread_origin_note_filter_and_backfill() {
         .await
         .unwrap();
     let b_after = store
-        .list_threads(&c, None, None, Some(note_b), 50)
+        .list_threads(&c, None, None, Some(note_b), None, 50)
         .await
         .unwrap();
     assert!(
@@ -383,6 +407,7 @@ async fn get_messages_returns_ordered_roles_and_content() {
             None,
             Some(false),
             false,
+            &[],
             None,
         )
         .await
@@ -396,6 +421,7 @@ async fn get_messages_returns_ordered_roles_and_content() {
             None,
             Some(false),
             false,
+            &[],
             None,
         )
         .await
@@ -614,13 +640,16 @@ async fn list_threads_keyset_pagination() {
     }
 
     // 1 ページ目（limit=2）。
-    let page1 = store.list_threads(&c, None, None, None, 2).await.unwrap();
+    let page1 = store
+        .list_threads(&c, None, None, None, None, 2)
+        .await
+        .unwrap();
     assert_eq!(page1.len(), 2, "1 ページ目は 2 件");
 
     // カーソルで 2 ページ目。
     let last = page1.last().unwrap();
     let page2 = store
-        .list_threads(&c, Some(last.updated_at), Some(last.id), None, 2)
+        .list_threads(&c, Some(last.updated_at), Some(last.id), None, None, 2)
         .await
         .unwrap();
     assert_eq!(page2.len(), 2, "2 ページ目は 2 件");
@@ -632,6 +661,81 @@ async fn list_threads_keyset_pagination() {
             "ページ間でスレッドが重複しないこと"
         );
     }
+}
+
+/// list_threads の title_query がタイトルの部分一致（大小無視）で絞り、ワイルドカードを文字として扱う
+/// （検索パレットが先頭 30 件以外も探せる・#591）。カーソルとも併用できる。
+#[tokio::test]
+async fn list_threads_filters_by_title_query() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool, Arc::new(AllowAll::new())).await;
+    let c = ctx(&tenant);
+
+    for title in [
+        "予算の相談 Alpha",
+        "予算レビュー alpha",
+        "議事録",
+        "100% 達成",
+        "1000 達成",
+    ] {
+        store
+            .create_thread(&c, title, false, None, None)
+            .await
+            .unwrap();
+    }
+    let titles = |ts: &[chat::Thread]| {
+        let mut v: Vec<String> = ts.iter().map(|t| t.title.clone()).collect();
+        v.sort();
+        v
+    };
+
+    let hit = store
+        .list_threads(&c, None, None, None, Some("ALPHA"), 50)
+        .await
+        .unwrap();
+    assert_eq!(
+        titles(&hit),
+        vec!["予算の相談 Alpha", "予算レビュー alpha"],
+        "大小を無視して部分一致する"
+    );
+
+    let pct = store
+        .list_threads(&c, None, None, None, Some("0%"), 50)
+        .await
+        .unwrap();
+    assert_eq!(
+        titles(&pct),
+        vec!["100% 達成"],
+        "% はワイルドカードにならない"
+    );
+
+    let blank = store
+        .list_threads(&c, None, None, None, Some("  "), 50)
+        .await
+        .unwrap();
+    assert_eq!(blank.len(), 5, "空白のみは絞り込まない");
+
+    // 検索語とカーソルの併用で、残りのヒットだけが続く。
+    let p1 = store
+        .list_threads(&c, None, None, None, Some("予算"), 1)
+        .await
+        .unwrap();
+    let last = p1.last().unwrap();
+    let p2 = store
+        .list_threads(
+            &c,
+            Some(last.updated_at),
+            Some(last.id),
+            None,
+            Some("予算"),
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(p2.len(), 1);
+    assert_ne!(p1[0].id, p2[0].id, "ページ間で重複しない");
+    assert!(p2[0].title.contains("予算"));
 }
 
 /// event_stream(run_id, 0) が追記済みイベントを seq 順にリプレイし、Done で終了する。
@@ -647,7 +751,17 @@ async fn event_stream_replays_appended_events() {
         .await
         .unwrap();
     let res = store
-        .post_message(&c, thread.id, "hi", &[], None, Some(false), false, None)
+        .post_message(
+            &c,
+            thread.id,
+            "hi",
+            &[],
+            None,
+            Some(false),
+            false,
+            &[],
+            None,
+        )
         .await
         .unwrap();
     let run_id = res.run_id;
@@ -712,8 +826,9 @@ async fn agent_mode_worker_runs_to_done() {
             sandbox: None,
             artifacts: None,
             web_search: None,
+            parser: None,
             storage: None,
-            ui_validator: None,
+            workflow_resolver: None,
             skill_artifacts: None,
             skill_catalog: None,
             workflow_store: None,
@@ -721,7 +836,9 @@ async fn agent_mode_worker_runs_to_done() {
             collab: None,
             tabular: None,
             office: None,
-            authz: None,
+            office_live: None,
+            office_creator: None,
+            office_engine: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
@@ -742,7 +859,17 @@ async fn agent_mode_worker_runs_to_done() {
         .await
         .unwrap();
     let res = store
-        .post_message(&c, thread.id, "hello agent", &[], None, None, false, None)
+        .post_message(
+            &c,
+            thread.id,
+            "hello agent",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            None,
+        )
         .await
         .unwrap();
 
@@ -783,7 +910,17 @@ async fn db_approver_blocks_until_decision() {
         .await
         .unwrap();
     let res = store
-        .post_message(&c, thread.id, "do danger", &[], None, None, false, None)
+        .post_message(
+            &c,
+            thread.id,
+            "do danger",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            None,
+        )
         .await
         .unwrap();
     let run_id = res.run_id;
@@ -866,7 +1003,17 @@ async fn db_approver_cancelled_by_flag() {
         .await
         .unwrap();
     let res = store
-        .post_message(&c, thread.id, "do danger", &[], None, None, false, None)
+        .post_message(
+            &c,
+            thread.id,
+            "do danger",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            None,
+        )
         .await
         .unwrap();
     let run_id = res.run_id;
@@ -889,4 +1036,382 @@ async fn db_approver_cancelled_by_flag() {
         .expect("キャンセルがタイムアウトしない")
         .unwrap();
     assert_eq!(decision, agent_core::ApprovalDecision::Cancelled);
+}
+
+/// ツール結果の観測本文は**実行主体本人にだけ**返す（#386 のレビュー指摘・P1）。
+///
+/// 引用（citation）は node_id で個別に再認可できるが、tool_result は node に紐づかず
+/// 再認可できない。共有スレッドの閲覧者（元ファイルの閲覧権限なし）に doc_search の
+/// スニペットや document.read の本文が渡らないよう、本人以外には本文を落とす。
+#[tokio::test]
+async fn tool_result_bodies_are_hidden_from_other_viewers() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool, Arc::new(AllowAll::new())).await;
+    let owner = ctx(&tenant);
+
+    let thread = store
+        .create_thread(&owner, "共有スレッド", false, None, None)
+        .await
+        .unwrap();
+    let posted = store
+        .post_message(
+            &owner,
+            thread.id,
+            "社内文書を調べて",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+
+    // ワーカーが確定させる content を模して、ツール呼び出しと結果を直接書き込む。
+    let content = vec![
+        ContentBlock::ToolCall {
+            id: "t1".into(),
+            name: "doc_search".into(),
+            input: serde_json::json!({ "query": "就業規則" }),
+            step: Some(0),
+        },
+        ContentBlock::ToolResult {
+            tool_call_id: "t1".into(),
+            content: "社外秘: 給与テーブルの抜粋".into(),
+            ok: true,
+        },
+    ];
+    sqlx::query("UPDATE message SET content = $2 WHERE id = $1")
+        .bind(posted.assistant_message_id)
+        .bind(sqlx::types::Json(&content))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // 本人（run の actor）は本文を見られる。
+    let mine = store.get_messages(&owner, thread.id, None).await.unwrap();
+    assert!(
+        mine.iter().any(|m| m.content.iter().any(|b| matches!(
+            b,
+            ContentBlock::ToolResult { content, .. } if content.contains("社外秘")
+        ))),
+        "実行主体本人には観測本文が見える"
+    );
+
+    // 別ユーザー（共有された閲覧者）には本文を返さない。ブロック自体と成否は残す。
+    let mut other = ctx(&tenant);
+    other.principal.id = "bob".into();
+    let theirs = store.get_messages(&other, thread.id, None).await.unwrap();
+    let results: Vec<&ContentBlock> = theirs
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter(|b| matches!(b, ContentBlock::ToolResult { .. }))
+        .collect();
+    assert_eq!(results.len(), 1, "ブロック自体は残す（成否は見せる）");
+    assert!(
+        matches!(results[0], ContentBlock::ToolResult { content, .. } if content.is_empty()),
+        "他人には観測本文を返さない: {results:?}"
+    );
+}
+
+/// 閲覧者が読めない文書の引用は、番号だけの「閲覧できない出典」に置き換わる（#508）。
+///
+/// 落とすと本文の `[n]` が欠番として描けない（読めないのが最大番号だと、残りの引用からは
+/// 欠番だと分からない）。ファイル・本文・位置情報は一切残さない。
+#[tokio::test]
+async fn unreadable_citations_become_number_only_stubs() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(AllowAll::new());
+    let store = store(&pool, Arc::clone(&authz) as _).await;
+    let owner = ctx(&tenant);
+    let thread = store
+        .create_thread(&owner, "共有スレッド", false, None, None)
+        .await
+        .unwrap();
+    let posted = store
+        .post_message(
+            &owner,
+            thread.id,
+            "調べて",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+
+    let cite = |cite_id: u32, node: &str| {
+        let mut c = chat::Citation::withheld(cite_id);
+        c.withheld = false;
+        c.node_id = node.into();
+        c.chunk_id = format!("chunk-{cite_id}");
+        c.snippet = format!("{node} の本文");
+        c.version = Some(1);
+        ContentBlock::Citation(c)
+    };
+    let readable = uuid::Uuid::new_v4().to_string();
+    let secret = uuid::Uuid::new_v4().to_string();
+    let content = vec![
+        ContentBlock::Text {
+            text: "条件です[1]。期限です[2]。".into(),
+        },
+        cite(1, &readable),
+        cite(2, &secret),
+    ];
+    sqlx::query("UPDATE message SET content = $2 WHERE id = $1")
+        .bind(posted.assistant_message_id)
+        .bind(sqlx::types::Json(&content))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mut viewer = ctx(&tenant);
+    viewer.principal.id = "bob".into();
+    authz
+        .deny
+        .lock()
+        .unwrap()
+        .push(viewer.ns().file(&secret).as_str().to_string());
+    let theirs = store.get_messages(&viewer, thread.id, None).await.unwrap();
+    let cites: Vec<&chat::Citation> = theirs
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            ContentBlock::Citation(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cites.len(), 2, "番号は詰めない");
+    assert!(!cites[0].withheld && cites[0].node_id == readable);
+    let stub = cites[1];
+    assert!(stub.withheld && stub.cite_id == 2);
+    assert!(stub.node_id.is_empty() && stub.snippet.is_empty() && stub.version.is_none());
+}
+
+/// 生成中の SSE 再送も、保存済みメッセージと同じく閲覧者の権限で見直す（#513）。
+///
+/// 引用は読めないファイルのものを番号だけの出典に、ツール結果は実行主体以外には本文を落とす。
+/// 実行主体本人には何も落とさない（読めるファイルの引用・自分のツール結果はそのまま）。
+#[tokio::test]
+async fn viewer_event_stream_redacts_for_other_viewers() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(AllowAll::new());
+    let store = store(&pool, Arc::clone(&authz) as _).await;
+    let owner = ctx(&tenant);
+    let thread = store
+        .create_thread(&owner, "共有スレッド", false, None, None)
+        .await
+        .unwrap();
+    let res = store
+        .post_message(
+            &owner,
+            thread.id,
+            "調べて",
+            &[],
+            None,
+            Some(false),
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_run(res.run_id, "w1", 30)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let readable = uuid::Uuid::new_v4().to_string();
+    let secret = uuid::Uuid::new_v4().to_string();
+    let cite = |cite_id: u32, node: &str| {
+        let mut c = chat::Citation::withheld(cite_id);
+        c.withheld = false;
+        c.node_id = node.into();
+        c.snippet = format!("{node} の本文");
+        StreamEventKind::Citation(c)
+    };
+    for ev in [
+        StreamEventKind::ToolResult {
+            tool_call_id: "t1".into(),
+            ok: true,
+            content: "社外秘: 給与テーブルの抜粋".into(),
+        },
+        cite(1, &readable),
+        cite(2, &secret),
+        // 同じファイルの 2 つ目の引用（判定の使い回しでも結果が変わらないこと）。
+        cite(3, &secret),
+        StreamEventKind::Done {
+            message_id: res.assistant_message_id,
+        },
+    ] {
+        store
+            .append_stream_event(res.run_id, claimed.fencing_token, &ev)
+            .await
+            .unwrap();
+    }
+
+    let mut viewer = ctx(&tenant);
+    viewer.principal.id = "bob".into();
+    // **閲覧者（bob）にだけ**拒否する。実装が誤って実行主体（alice）の権限で判定すると、
+    // bob にも抜粋が流れてこのテストが落ちる。
+    authz.deny_for.lock().unwrap().push((
+        viewer.subject().to_string(),
+        viewer.ns().file(&secret).as_str().to_string(),
+    ));
+
+    let collect = |ctx: AuthContext| {
+        let store = store.clone();
+        async move {
+            let mut s = store
+                .viewer_event_stream(&ctx, thread.id, res.run_id, 0, None)
+                .await
+                .unwrap();
+            let mut out = vec![];
+            while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(10), s.next()).await {
+                let done = matches!(ev.event, StreamEventKind::Done { .. });
+                out.push(ev.event);
+                if done {
+                    break;
+                }
+            }
+            out
+        }
+    };
+
+    // 閲覧者（bob）: 読めない引用は番号だけ・ツール結果は本文なし。
+    let theirs = collect(viewer.clone()).await;
+    assert!(
+        matches!(theirs.last(), Some(StreamEventKind::Done { .. })),
+        "Done まで届く"
+    );
+    assert!(
+        theirs.iter().any(|e| matches!(
+            e,
+            StreamEventKind::ToolResult { content, ok: true, .. } if content.is_empty()
+        )),
+        "他人にはツール結果の本文を流さない（成否は残す）: {theirs:?}"
+    );
+    let cites: Vec<&chat::Citation> = theirs
+        .iter()
+        .filter_map(|e| match e {
+            StreamEventKind::Citation(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cites.len(), 3, "番号は詰めない");
+    assert!(!cites[0].withheld && cites[0].node_id == readable);
+    for stub in &cites[1..] {
+        assert!(stub.withheld && stub.node_id.is_empty() && stub.snippet.is_empty());
+    }
+
+    // 実行主体（alice）: 自分のツール結果は見える。読める引用はそのまま（bob への拒否は効かない）。
+    let mine = collect(owner.clone()).await;
+    assert!(mine.iter().any(|e| matches!(
+        e,
+        StreamEventKind::ToolResult { content, .. } if content.contains("社外秘")
+    )));
+    assert!(mine
+        .iter()
+        .filter_map(|e| match e {
+            StreamEventKind::Citation(c) => Some(c),
+            _ => None,
+        })
+        .all(|c| !c.withheld));
+}
+
+/// SSE の見直しは run がそのスレッドのものかを確かめ、番号の無い旧形式の読めない引用は落とす（#513）。
+#[tokio::test]
+async fn viewer_event_stream_checks_thread_and_drops_legacy_citations() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(AllowAll::new());
+    let store = store(&pool, Arc::clone(&authz) as _).await;
+    let owner = ctx(&tenant);
+    let thread = store
+        .create_thread(&owner, "共有スレッド", false, None, None)
+        .await
+        .unwrap();
+    let other_thread = store
+        .create_thread(&owner, "別スレッド", false, None, None)
+        .await
+        .unwrap();
+    let res = store
+        .post_message(
+            &owner,
+            thread.id,
+            "調べて",
+            &[],
+            None,
+            Some(false),
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_run(res.run_id, "w1", 30)
+        .await
+        .unwrap()
+        .unwrap();
+    let secret = uuid::Uuid::new_v4().to_string();
+    let mut legacy = chat::Citation::withheld(0);
+    legacy.withheld = false;
+    legacy.node_id = secret.clone();
+    legacy.snippet = "旧形式の抜粋".into();
+    for ev in [
+        StreamEventKind::Citation(legacy),
+        StreamEventKind::Done {
+            message_id: res.assistant_message_id,
+        },
+    ] {
+        store
+            .append_stream_event(res.run_id, claimed.fencing_token, &ev)
+            .await
+            .unwrap();
+    }
+
+    // run が属さないスレッドを名乗っても読めない（同じテナントの他スレッドの run を覗かせない）。
+    let err = store
+        .viewer_event_stream(&owner, other_thread.id, res.run_id, 0, None)
+        .await
+        .err()
+        .expect("別スレッドの run は読めない");
+    assert!(matches!(err, chat::ChatError::NotFound), "{err:?}");
+
+    // 番号の無い旧形式の引用は、読めなければ番号だけの出典にもできないので落とす。
+    let mut viewer = ctx(&tenant);
+    viewer.principal.id = "bob".into();
+    authz
+        .deny
+        .lock()
+        .unwrap()
+        .push(viewer.ns().file(&secret).as_str().to_string());
+    let mut s = store
+        .viewer_event_stream(&viewer, thread.id, res.run_id, 0, None)
+        .await
+        .unwrap();
+    let mut events = vec![];
+    while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(10), s.next()).await {
+        let done = matches!(ev.event, StreamEventKind::Done { .. });
+        events.push(ev.event);
+        if done {
+            break;
+        }
+    }
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEventKind::Citation(_))),
+        "読めない旧形式の引用は流さない: {events:?}"
+    );
+    assert!(matches!(events.last(), Some(StreamEventKind::Done { .. })));
 }

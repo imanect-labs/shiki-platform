@@ -3,7 +3,7 @@
 //!
 //! 対話トリガで [script.run（実 script-runtime）→ storage.write（実 StorageService・in-TX 冪等）] を
 //! 実行し、run 完走・ノード間 dataflow・ファイル書込・effect_journal・run/step 監査を確認する。
-//! 実 Postgres＋OpenFGA＋MinIO が要るため env ゲート（未設定はスキップ）。
+//! 実 Postgres＋OpenFGA＋RustFS が要るため env ゲート（未設定はスキップ）。
 
 #![allow(
     clippy::unwrap_used,
@@ -151,7 +151,9 @@ async fn setup() -> Option<Env> {
                     kind: llm_gateway::ProviderKind::Stub,
                     base_url: None,
                     api_key: None,
-                    timeout_secs: 30,
+                    user_agent: None,
+                    session_header: None,
+                    ..Default::default()
                 },
                 catalog: llm_gateway::ModelCatalog {
                     default_model: "stub".into(),
@@ -160,9 +162,12 @@ async fn setup() -> Option<Env> {
                         real_id: None,
                         prompt_price_micros_per_mtok: 0,
                         completion_price_micros_per_mtok: 0,
+                        context_window_tokens: None,
+                        ..Default::default()
                     }],
                 },
                 langfuse: None,
+                ..Default::default()
             },
         )
         .expect("gateway"),
@@ -191,7 +196,7 @@ async fn interactive_run_completes_through_production_executor() {
         Arc::clone(&env.fga),
     ));
     let workflows = WorkflowStore::new(Arc::clone(&artifacts));
-    let runs = RunStore::new(env.pool.clone());
+    let runs = RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let delegation = DelegationStore::new(env.pool.clone(), Arc::clone(&env.fga));
     let launcher = WorkflowRunLauncher::new(delegation, workflows.clone(), runs.clone());
 

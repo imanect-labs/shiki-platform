@@ -8,10 +8,24 @@
 //! - **協調キャンセル**: ユーザー明示停止（cancel_requested）のみ。ページ離脱はキャンセルしない。
 
 mod approval_policy;
+/// 古典 RAG 注入経路（generate.rs から分割）。
+mod classic;
+/// ワーカーの設定と依存束（mod.rs から分割・行数規約）。
+mod config;
+mod gate;
 mod generate;
 mod history;
+/// 実行オプション/system プロンプト（generate.rs から分割）。
+mod opts;
+mod run_model;
+pub use opts::parse_timezone;
 mod sink;
+mod stream_map;
 mod toolset;
+/// 記録済みスレッド → 剪定再生のステップ列（#532・`context-replay` CLI が使う）。
+pub mod trajectory;
+/// ```ui ブロック（Yui）の図の書き方（#530）。
+mod yui;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -26,101 +40,13 @@ use uuid::Uuid;
 use crate::model::{ContentBlock, RunStatus, StreamEventKind};
 use crate::store::{ChatStore, ClaimedRun, CHAT_GENERATION_QUEUE};
 use crate::ChatError;
+pub use config::{WorkerConfig, WorkerDeps};
 use sink::WorkerSink;
+pub use yui::with_yui_guide;
 
-/// ワーカーの設定。
-#[derive(Debug, Clone)]
-pub struct WorkerConfig {
-    /// システムプロンプト。
-    pub system_prompt: String,
-    /// 論理モデル名（未指定は gateway 既定）。
-    pub model: Option<String>,
-    /// リース秒（ハートビート間隔の数倍を推奨）。
-    pub lease_secs: i64,
-    /// エージェントモードの最大ステップ。
-    pub max_steps: usize,
-    /// 通常チャットで旧・無条件 RAG 注入経路（`run_classic_mode`）を使うか（既定 false）。
-    /// false ならモデル裁量ループ（issue #102）。運用で確実に毎ターン検索したい場合のみ true。
-    pub classic_rag: bool,
-    /// 自律プロファイルの最大ステップ（長ホライズン）。
-    pub autonomous_max_steps: usize,
-    /// 自律プロファイルの累積トークン上限（予算ガード・Task 5.7）。
-    pub autonomous_max_tokens: u64,
-    /// 自律プロファイルの累積コスト上限（マイクロ USD・Task 5.7）。
-    pub autonomous_max_cost_usd_micros: i64,
-    /// 自律 shell に同梱するゲストコマンドパッケージ（coreutils 等・Task 5.4）。
-    pub sandbox_software: Vec<String>,
-    /// コード実行系（code_interpreter / shell）の隔離ティア（admin ポリシー・design §4.6）。
-    /// 既定は gVisor（#346・native Python。rootfs は numpy/pandas 同梱がビルドで保証される）。
-    /// runsc の無い開発ホストは wasm へ明示退避する（自動降格はしない）。
-    /// web_fetch は egress 限定の短命 sandbox なので常に wasm（この設定の対象外）。
-    pub sandbox_backend: agent_core::SandboxBackend,
-}
-
-impl Default for WorkerConfig {
-    fn default() -> Self {
-        WorkerConfig {
-            system_prompt: "あなたは社内文書に基づいて日本語で丁寧に回答するアシスタントです。\
-                根拠がある場合は検索結果を活用し、分からない場合は正直に伝えてください。"
-                .to_string(),
-            model: None,
-            lease_secs: 30,
-            max_steps: 6,
-            classic_rag: false,
-            autonomous_max_steps: 50,
-            // 既定: 約 20 万トークン・1 USD 上限（テナント/skill で上書き可・Task 5.7）。
-            autonomous_max_tokens: 200_000,
-            autonomous_max_cost_usd_micros: 1_000_000,
-            sandbox_software: vec!["coreutils".to_string()],
-            // 既定ティアの単一ソースは enum の `#[default]`（gVisor・#346）。ここに別のリテラルを
-            // 持たない（「もう一つの正」を作らない）。
-            sandbox_backend: agent_core::SandboxBackend::default(),
-        }
-    }
-}
-
-/// ワーカーの依存一式（トレイト裏の差し替え点を束ねる）。
-///
-/// `Option` の依存は未配線ならその機能（ツール）を提示しない。個別引数で渡すと
-/// 依存追加のたびに全呼び出し箇所が壊れるため struct で束ねる。
-pub struct WorkerDeps {
-    /// LLM ゲートウェイ（単一チョークポイント）。
-    pub gateway: LlmGateway,
-    /// 社内文書検索（doc_search / 古典 RAG 注入）。
-    pub search: Option<Arc<SearchService>>,
-    /// サンドボックス（code_interpreter / web_fetch 用）。
-    pub sandbox: Option<Arc<dyn agent_core::Sandbox>>,
-    /// 成果物の保存先（code_interpreter が /workspace のファイルを保存する・Task 4.11）。
-    pub artifacts: Option<Arc<dyn agent_core::ArtifactStore>>,
-    /// web 検索プロバイダ（web_search 用・Brave/SearXNG/Stub）。
-    pub web_search: Option<Arc<dyn websearch::SearchProvider>>,
-    /// StorageService（自律プロファイルの file CRUD/shell ワークスペース・Task 5.4）。
-    /// 未配線なら自律ツール（fs_*/grep/shell）を提示しない。
-    pub storage: Option<Arc<storage::StorageService>>,
-    /// UI スペック検証（emit_ui ツール・Task 6.4）。未配線なら emit_ui を提示しない。
-    pub ui_validator: Option<Arc<gui::SpecValidator>>,
-    /// skill / ミニアプリのピン解決（Task 6.7/6.9/6.10）。未配線でピンがある run は失敗する
-    /// （fail-closed・skill 無しで黙って生成しない）。
-    pub skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
-    /// skill カタログ源（skill ツールの動的 description・#344 Task 10.11）。
-    /// skill_artifacts と両方揃った時のみ skill ツールを提示する。
-    pub skill_catalog: Option<Arc<dyn crate::skill_catalog::SkillCatalogSource>>,
-    /// ワークフロー IR ストア（emit_workflow / read_workflow・Task 10.13）。
-    /// カタログ源と両方揃った時のみツールを提示する。
-    pub workflow_store: Option<Arc<workflow_engine::WorkflowStore>>,
-    /// 保存 API と同一のカタログ源（secret 名→許可ホスト・モデル一覧・Task 10.13）。
-    pub workflow_catalog: Option<Arc<dyn crate::workflow_tool::WorkflowCatalogSource>>,
-    /// ノート共同編集ハブ（document.edit / document.read・Task 11P.4）。
-    /// storage と両方揃った時のみノート編集ツールを提示する。
-    pub collab: Option<Arc<collab::CollabHub>>,
-    /// CSV クエリ/パッチサービス（csv.query / csv.patch / csv.write・Task 11P.9）。
-    pub tabular: Option<Arc<tabular::TabularService>>,
-    /// AI Office 編集（office.edit・Task 11.8）。office 有効時のみ配線し、
-    /// 未配線なら office.edit を提示しない。
-    pub office: Option<Arc<office::OfficeEditor>>,
-    /// 認可クライアント（office.live_edit の editor@file 再判定・#328）。
-    pub authz: Option<Arc<dyn authz::AuthzClient>>,
-}
+/// 順番待ちのジョブを見直す間隔。先行 run の完了はイベントで通知されないため短くポーリングする
+/// （`defer` は attempts を消費しないので、何度見直しても DLQ には影響しない）。
+const QUEUE_WAIT_POLL: Duration = Duration::from_secs(2);
 
 /// チャット生成ワーカー。複数タスクで並行消費できる（各タスクが claim ループを回す）。
 #[derive(Clone)]
@@ -135,10 +61,12 @@ pub struct ChatWorker {
     artifacts: Option<Arc<dyn agent_core::ArtifactStore>>,
     /// web 検索プロバイダ。未配線なら web_search / web_fetch ツールを提示しない。
     web_search: Option<Arc<dyn websearch::SearchProvider>>,
+    /// 文書パーサ（web_fetch の PDF/Office 経路・#405）。
+    parser: Option<Arc<dyn rag::DocumentParser>>,
     /// StorageService（自律プロファイルのワークスペース）。
     storage: Option<Arc<storage::StorageService>>,
-    /// UI スペック検証（emit_ui ツール・Task 6.4）。
-    ui_validator: Option<Arc<gui::SpecValidator>>,
+    /// 図のボタンのワークフロー名の解決（#604）。
+    workflow_resolver: Option<Arc<gui::WorkflowResolver>>,
     /// skill / ミニアプリのピン解決（Task 6.9）。
     skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
     /// skill カタログ源（skill ツール・#344）。
@@ -153,8 +81,12 @@ pub struct ChatWorker {
     tabular: Option<Arc<tabular::TabularService>>,
     /// AI Office 編集（office.edit・Task 11.8）。
     office: Option<Arc<office::OfficeEditor>>,
-    /// 認可クライアント（office.live_edit の editor@file 再判定・#328）。
-    authz: Option<Arc<dyn authz::AuthzClient>>,
+    /// AI ライブ編集（office.live_edit・CoolWSD headless 参加・issue #352）。
+    office_live: Option<Arc<office::live::LiveEditor>>,
+    /// Office の新規作成（save_document / save_sheet・#381）。
+    office_creator: Option<Arc<office::OfficeCreator>>,
+    /// Excel・Word のレイアウト編集エンジン（office.read / office.excel_edit / office.word_edit・#725）。
+    office_engine: Option<Arc<office::engine::OfficeEngine>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -166,8 +98,9 @@ impl ChatWorker {
             sandbox,
             artifacts,
             web_search,
+            parser,
             storage,
-            ui_validator,
+            workflow_resolver,
             skill_artifacts,
             skill_catalog,
             workflow_store,
@@ -175,7 +108,9 @@ impl ChatWorker {
             collab,
             tabular,
             office,
-            authz,
+            office_live,
+            office_creator,
+            office_engine,
         } = deps;
         ChatWorker {
             db,
@@ -185,8 +120,9 @@ impl ChatWorker {
             sandbox,
             artifacts,
             web_search,
+            parser,
             storage,
-            ui_validator,
+            workflow_resolver,
             skill_artifacts,
             skill_catalog,
             workflow_store,
@@ -194,7 +130,9 @@ impl ChatWorker {
             collab,
             tabular,
             office,
-            authz,
+            office_live,
+            office_creator,
+            office_engine,
             config: Arc::new(config),
         }
     }
@@ -252,6 +190,16 @@ impl ChatWorker {
             return Ok(true);
         };
 
+        // 1 スレッド 1 本ずつ直列に生成する。先行 run が終わるまでこのジョブは**失敗ではなく
+        // 順番待ち**として戻す（`defer` は attempts を消費しないので DLQ へ落ちない）。
+        // 生成中でも発話を受け付けられるのはこの直列化が前提（キューはサーバが持つ）。
+        if self.store.blocked_by_earlier_run(run_id).await? {
+            jobq::defer(&mut conn, job.id, QUEUE_WAIT_POLL)
+                .await
+                .map_err(|e| ChatError::Internal(format!("jobq defer: {e}")))?;
+            return Ok(true);
+        }
+
         let last_attempt = job.attempts >= job.max_attempts;
         match self.process_run(run_id, worker_id).await {
             Ok(()) => {
@@ -261,9 +209,13 @@ impl ChatWorker {
             }
             Err(e) => {
                 tracing::warn!(error = %e, run_id = %run_id, last_attempt, "generation failed");
-                // 最終試行なら run を failed 化し UI に反映（DLQ 行き）。
+                // 最終試行なら run を failed 化し UI に反映（DLQ 行き）。会話には定型文だけを
+                // 出し、上流の生エラー（プロバイダ JSON・URL 等）は last_error と tracing に留める。
                 if last_attempt {
-                    let _ = self.store.force_fail_run(run_id, &e.to_string()).await;
+                    let _ = self
+                        .store
+                        .force_fail_run(run_id, &e.user_message(), &e.to_string())
+                        .await;
                 }
                 let backoff = jobq::backoff_for(job.attempts);
                 let _ = jobq::fail(&mut conn, job.id, &e.to_string(), backoff).await;
@@ -320,13 +272,15 @@ impl ChatWorker {
 
         // ハートビート（リース延長＋cancel 検知）。共有フラグでキャンセルを伝える。
         let cancel = Arc::new(AtomicBool::new(false));
-        let hb = spawn_heartbeat(
+        // 確定（束縛の解決と最終トランザクション）が終わるまでリースを延ばし続ける。止めるのは
+        // この関数を抜けるとき（Drop）。束縛の解決で時間がかかってもリースを失わない。
+        let _hb = HeartbeatGuard(spawn_heartbeat(
             self.store.clone(),
             run_id,
             fencing,
             self.config.lease_secs,
             cancel.clone(),
-        );
+        ));
 
         // 生成開始（running）。
         let _ = self
@@ -354,14 +308,13 @@ impl ChatWorker {
         // （classic_rag はあくまで「未指定の通常チャット」の既定を旧挙動に戻すだけ）。
         let use_classic = self.config.classic_rag && !run.autonomous && !run.agent_mode;
         let gen_result = if use_classic {
-            self.run_classic_mode(&ctx, &run, history, &mut worker_sink)
+            // 古典経路はツールを持たない＝添付 seed の対象外（messages だけ渡す）。
+            self.run_classic_mode(&ctx, &run, history.messages, &mut worker_sink)
                 .await
         } else {
             self.run_agent_mode(&ctx, &run, history, cancel.clone(), &mut worker_sink)
                 .await
         };
-
-        hb.abort();
 
         // リースを失っていたら（別ワーカー takeover）確定しない。
         if worker_sink.lost_lease() {
@@ -370,11 +323,17 @@ impl ChatWorker {
 
         let content: Vec<ContentBlock> = worker_sink.content().to_vec();
         let cancelled = cancel.load(Ordering::Relaxed);
+        // 本文の図のワークフローのボタンを、回答した主体の権限で解決して版を固定する（#604）。
+        let ui_bindings = if gen_result.is_ok() {
+            self.yui_bindings(&ctx, &content).await
+        } else {
+            Vec::new()
+        };
 
         match gen_result {
             Ok(()) if cancelled => {
                 self.store
-                    .finalize_run(
+                    .finalize_run_with_ui(
                         run_id,
                         fencing,
                         RunStatus::Cancelled,
@@ -383,12 +342,13 @@ impl ChatWorker {
                         Some(&StreamEventKind::Status {
                             status: RunStatus::Cancelled,
                         }),
+                        &ui_bindings,
                     )
                     .await?;
             }
             Ok(()) => {
                 self.store
-                    .finalize_run(
+                    .finalize_run_with_ui(
                         run_id,
                         fencing,
                         RunStatus::Done,
@@ -397,6 +357,7 @@ impl ChatWorker {
                         Some(&StreamEventKind::Done {
                             message_id: run.message_id,
                         }),
+                        &ui_bindings,
                     )
                     .await?;
             }
@@ -435,6 +396,15 @@ fn build_ctx(run: &ClaimedRun) -> AuthContext {
         run.org.clone(),
         run.tenant_id.clone(),
     )
+}
+
+/// ハートビートを、持ち主が抜けるときに止める。
+struct HeartbeatGuard(tokio::task::JoinHandle<()>);
+
+impl Drop for HeartbeatGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// ハートビートタスク（リース延長＋cancel 検知）。リース喪失/キャンセルで cancel フラグを立てる。

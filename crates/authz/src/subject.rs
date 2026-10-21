@@ -18,6 +18,20 @@ impl Subject {
         Subject(format!("{}:{}", ObjectType::User.as_str(), id))
     }
 
+    /// 型束縛パブリックワイルドカード subject `user:*`（type-bound public access）。
+    ///
+    /// 「すべての認証済みユーザー」を表す。**意図的に tenant 名前空間化しない**（OpenFGA の
+    /// ワイルドカードは subject 側でグローバル）。テナント隔離は subject 側では**担保していない**:
+    /// 実際に越境を止めているのは上位2層 —（1）付与先オブジェクトが名前空間化されていること
+    /// （`file:<tenant>|<id>`）と、アクセス側が `AuthContext::ns()` で自テナントの識別子しか
+    /// 組めないこと（`crate::Namespace`）、（2）storage の `load_node` が `org`/`tenant_id` で
+    /// 事前に絞ること — に依存する。この2層を緩めると `user:*` タプルは即座に越境公開になる
+    /// （#342 レビュー A-2）。よって共有リンクの broad 付与は `user:*` を使わず organization#member に
+    /// 寄せ、`user:*` は将来の viewer 限定「跨ぎ閲覧共有（authenticated）」実装まで書かない予約枠とする。
+    pub fn public() -> Self {
+        Subject(format!("{}:*", ObjectType::User.as_str()))
+    }
+
     /// オブジェクトを subject として参照する（userset 親子の結線に使う）。
     ///
     /// 例: `file:<id>#parent@folder:<parent>` の右辺 `folder:<parent>`。
@@ -66,6 +80,12 @@ mod tests {
             Subject::object(&FgaObject::folder("f1")).as_str(),
             "folder:f1"
         );
+    }
+
+    #[test]
+    fn subject_public_is_user_wildcard() {
+        // Subject::public は type-bound public `user:*`（テナント名前空間化しない）。
+        assert_eq!(Subject::public().as_str(), "user:*");
     }
 
     #[test]

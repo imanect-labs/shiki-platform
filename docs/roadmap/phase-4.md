@@ -46,9 +46,21 @@
 >   同一不変条件）＋`ArtifactStore` トレイト。code_interpreter が `/workspace` の成果物を発話ユーザー権限で保存し、
 >   `AgentEvent::Artifact`→SSE `file_ref`→チャット UI のダウンロードチップとして表示。
 > - web ツール: `crates/websearch`（`SearchProvider` トレイト＝Brave/SearXNG/Stub・ホスト側）＋
->   `web_search`/`web_fetch` ツール。web_fetch は **run 限定 dynamic_allow** に取得先ホストのみを載せた
->   短命サンドボックスで取得（リダイレクト非追従 PIT-36・IP/内部ホスト拒否・シークレット非添付）。
->   compose に SearXNG（websearch profile）を追加。
+>   `web_search`/`web_fetch` ツール。compose に SearXNG（websearch profile）を追加。
+>   web_fetch は当初 **run 限定 dynamic_allow** の短命サンドボックスで取得していたが、**2026-07（#348）に
+>   ホストネイティブ取得へ変更**した（GET 1 回のために Pyodide 初期化 ~6s を払う割に、隔離が守るのは
+>   宛先限定だけだったため）。封じ込めはポリシ層で維持: 解決後 IP の再検証＋**検証済みアドレスへの接続固定**
+>   （DNS リバインディング遮断・`sandbox_client::net_guard` が IP 分類の単一の正）・リダイレクト非追従
+>   （PIT-36）・IP/内部ホスト拒否・シークレット非添付・サイズ上限（design §4.6・PIT-48）。
+>   さらに **2026-08（#405）に本文抽出を入れた**: 生 HTML の先頭切りでは本文が 1 文字も入らず
+>   トークンだけ焼けていたため、文字コード判定（chardetng）→ ノイズ除去 → Readability 相当の本文特定
+>   （dom_smoothie）→ Markdown 化（htmd）→ 自己要約ヘッダ＋`query` 絞り込み／`offset` 続き読みへ変更。
+>   PDF/Office は ingestion-worker（Docling）で読むが、**URL ではなくバイト列**を渡す
+>   （worker に取りに行かせると宛先制限を迂回する confused deputy になる・PIT-54/PIT-55）。
+> - **冪等 read のステップ内並列（#349）**: `web_search`/`web_fetch`/`doc_search` は `Tool::is_read_only()`
+>   を表明し、1 ステップ内で有界並列（既定 4・`chat.parallel_read_tools`）に走る。承認要・破壊系は逐次のまま
+>   `Approver` を待ち、read はその待ちと並行して進む。観測とイベントは**常に呼び出し順**（PIT-49）。
+>   deep research の「検索 → 複数ページ取得」ファンアウトが直列にならないための土台。
 > - ゲストコマンドスイート（4.12 software）: `scripts/build-sandbox-commands.sh` が registry/native を
 >   nightly+wasm32-wasip1 でビルドしフラットなコマンドディレクトリにステージ（Docker `commands-builder`
 >   ステージ・`SANDBOX__COMMANDS_DIR`）。orchestrator は `spec.software` を検証（PIT-23: 名前検証・
@@ -206,10 +218,15 @@
   - 入力＝Pythonコード、出力＝stdout/stderr/生成成果物（content blocks の tool_result に変換）。温機プールから高速起動。
   - **破壊/コスト系の扱い**: ツール自動選択ポリシ（Task 3.9）に従い、実行の確認/許可制御を尊重する。
   - 制約インスタンスのため初版は **FUSE マウント無し**（まっさら短命）。永続ワークスペース＋FUSE は Phase 5 の自律エージェント。
+  - **会話の添付は実行前に `/workspace/<ファイル名>` へ seed する**（issue #379）。添付は履歴に
+    名前しか現れず、モデルは `/workspace/<name>` を読もうとして毎回 `FileNotFoundError` で 1 ステップを
+    空費していた（#352 実機デモ）。件数/サイズ上限つきで、超過・失敗は黙らせず
+    「node_id で `csv.query` / `doc_search` を使え」という**行動可能な注記**を観測へ載せる。
 - **受け入れ条件**:
   - [ ] LLM が `code_interpreter` を呼ぶと Python が実行され結果が会話に返る
   - [ ] インスタンスはネット遮断・短命で、実行後に破棄される
   - [ ] 実行（コード・結果）が監査/Langfuse に記録される
+  - [ ] 添付 CSV を渡した会話で 1 回目から `/workspace/<name>` を読める（#379）
 
 ### Task 4.11: チャットでのコード実行可視化＋成果物のストレージ保存
 - **area**: frontend / **path**: `web/`, `crates/api`

@@ -27,6 +27,8 @@ futures.workspace = true
 utoipa.workspace = true
 # 引用監査に載せるクエリの sha256（生クエリ文字列を監査ログへ残さない）。
 sha2.workspace = true
+# ParseSource::Bytes（外部 URL 由来の文書を worker に取りに行かせない・#405）の転送。
+base64.workspace = true
 # チャンク ID は uuid5(node_id, version, ordinal) の決定的生成（冪等 upsert の鍵）。
 uuid = { workspace = true, features = ["v5"] }
 

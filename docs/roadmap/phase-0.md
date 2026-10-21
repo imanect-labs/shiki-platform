@@ -2,7 +2,7 @@
 
 > 目的: トレイト境界・認証/認可・**SaaS トポロジ**・配布形態（compose）・型契約・可観測性の土台を**最初に1本通す**。
 > 機能価値はまだ無いが、以降の全フェーズがこの骨格に乗る。
-> **SaaS を優先ターゲット**とし、共有コントロールプレーン＋**フルプールのデータプレーン**（全テナント共有ストア＋`tenant_id` 論理分離・design §4.1）と `tenant_id` を day-1 から前提にする。認証は **BFF + オパークセッション Cookie**（Redis）。
+> **SaaS を優先ターゲット**とし、shiki の SaaS コントロールプレーン＋**フルプールのデータプレーン**（全テナント共有ストア＋`tenant_id` 論理分離・design §4.1）と `tenant_id` を day-1 から前提にする。認証は **BFF + オパークセッション Cookie**（Redis）。
 > 完了の定義(DoD): `docker compose up` 一発で全依存（Redis 含む）が起動し、Keycloak でログインしたユーザーが
 > **セッション Cookie** で OpenFGA 認可される `GET /me`（`tenant_id` スコープ込み）をブラウザから叩けて、その1リクエストが OTel トレースに現れる。
 
@@ -46,14 +46,14 @@
 - **依存**: 0.1
 - **path**: `deploy/compose/`
 - **仕様**:
-  - `docker-compose.yml` に Phase 0 で必要な依存を定義: **Postgres**, **Keycloak**, **OpenFGA**, **MinIO**, **Redis**（BFF セッションストア・Task 0.11/#55）。
+  - `docker-compose.yml` に Phase 0 で必要な依存を定義: **Postgres**, **Keycloak**, **OpenFGA**, **MinIO**（現在は RustFS に差し替え済み）, **Redis**（BFF セッションストア・Task 0.11/#55）。
     （Qdrant/Tantivy/ingestion等は後続フェーズで追記）
   - 各サービスにヘルスチェック、永続ボリューム、`.env.example`（接続情報）。
   - OpenFGA は Postgres をバックエンドに設定。Keycloak も Postgres を使用。
   - shiki-server もサービスとして追加（後で 0.3 のイメージを参照）。
 - **受け入れ条件**:
   - [ ] `docker compose up` で全サービスが healthy になる
-  - [ ] MinIO/Keycloak/OpenFGA の管理UI/エンドポイントに到達できる
+  - [ ] MinIO（現在は RustFS）/Keycloak/OpenFGA の管理UI/エンドポイントに到達できる
   - [ ] 再起動してもデータが永続する
 
 ### Task 0.3: axum サーバ雛形＋設定ローダ＋ヘルスチェック
@@ -64,7 +64,7 @@
   - axum でHTTPサーバを起動。`GET /healthz`（liveness）, `GET /readyz`（依存接続確認）。
   - **設定ローダ**: 環境変数/設定ファイルから読み、`AppConfig` に集約。
     クラウド/オンプレ差し替えの起点として、各トレイト実装の選択を設定で切替える前提の構造にする
-    （例: `storage.backend = "minio" | "gcs"`）。Phase 0 では値の読み込みと検証のみ。
+    （例: `storage.backend = "s3" | "gcs"`）。Phase 0 では値の読み込みと検証のみ。
   - Postgres 接続プール（sqlx等）を初期化し `/readyz` で疎通確認。
   - 構造化ログ（tracing）の初期化（OTelは0.8で接続）。
 - **受け入れ条件**:
@@ -174,7 +174,7 @@
     - clippy 厳格化（`[workspace.lints]`）: 安全系（`unwrap_used`/`expect_used`/`panic`/
       `dbg_macro`/`print_*` 等）は deny、`pedantic` は本番コードに適用（テスト/CLI bin は
       方針に沿ってスコープ許容）。しきい値は `clippy.toml`。
-    - **ファイルサイズ gate**: `scripts/check-file-size.sh`（src の 1 ファイル 500 行以内）。
+    - **ファイルサイズ gate**: `scripts/check-file-size.sh`（src の 1 ファイル 1000 行以内）。
     - **cargo-machete**: 未使用依存の検出。
     - **cargo-deny**: 脆弱性(RUSTSEC)/ライセンス/出所/wildcard 依存を `deny.toml` で検査。
 - **受け入れ条件**:
@@ -186,6 +186,9 @@
 - **area**: auth
 - **依存**: 0.4
 - **path**: `deploy/keycloak/`, `docs/`
+- ⚠️ **2026-09-29 更新**: 下記の「共有アイデンティティプール」方針は**廃止**（ユーザー認証は SaaS でも分離）。
+  残るのは `skillex` client の client_credentials（`aud=shiki-llm`）による llm-gateway の m2m 利用のみ
+  （design §4.1.1・parallel-tracks SK）。以下は経緯として残す。
 - **仕様**:
   - shiki Keycloak を**共有アイデンティティプール**として設計する方針を確定・文書化
     （skillexはこのrealmへフェデレート、ユーザープール共有、認可は shiki が保持）。

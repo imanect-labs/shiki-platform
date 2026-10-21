@@ -72,7 +72,7 @@ pub async fn create_thread(
             .mini_apps
             .resolve(&ctx, pin.artifact_id, pin.version, trace.as_deref())
             .await
-            .map_err(super::ui_specs::map_gui_err)?;
+            .map_err(super::gui_errors::map_gui_err)?;
         mini_app_pin = Some((resolved.id, resolved.version));
         skill_pins = resolved
             .body
@@ -81,6 +81,8 @@ pub async fn create_thread(
                 vec![chat::SkillPin {
                     skill_id: p.artifact_id,
                     skill_version: p.version,
+                    // バンドル同梱の skill はコマンド起動ではない。
+                    command_args: None,
                 }]
             })
             .unwrap_or_default();
@@ -91,9 +93,15 @@ pub async fn create_thread(
             (None, Some(single)) => vec![single],
             (None, None) => Vec::new(),
         };
-        skill_pins =
-            super::chat_skills::resolve_skill_pins(&state, &ctx, &requested, trace.as_deref())
-                .await?;
+        // スレッド作成時のピンは「最初からロード済み」の宣言であり起動ではない（`None`）。
+        skill_pins = super::chat_skills::resolve_skill_pins(
+            &state,
+            &ctx,
+            &requested,
+            None,
+            trace.as_deref(),
+        )
+        .await?;
     }
 
     // ワークスペース場所は **thread 作成前に**認可検証する（不正なら孤児 thread を残さない）。
@@ -158,6 +166,9 @@ pub async fn create_thread(
     Ok(Json(thread))
 }
 
+/// スレッド一覧の検索語の上限（文字数）。タイトル検索に十分で、巨大なパターンを DB へ流さない。
+const MAX_THREAD_QUERY_CHARS: usize = 200;
+
 /// 自分のスレッド一覧（更新日降順・keyset ページング）。
 #[utoipa::path(
     get, path = "/threads",
@@ -165,9 +176,11 @@ pub async fn create_thread(
         ("cursor" = Option<String>, Query, description = "続きのカーソル"),
         ("limit" = Option<i64>, Query, description = "件数（既定 30・上限 100）"),
         ("origin_note_id" = Option<Uuid>, Query, description = "由来ノートで絞り込む（ノート側の会話一覧・#282）"),
+        ("q" = Option<String>, Query, description = "タイトルの部分一致（大小無視・200 文字まで・#591）"),
     ),
     responses(
         (status = 200, description = "スレッド一覧", body = ThreadListResponse),
+        (status = 400, description = "検索語が長すぎる"),
         (status = 401, description = "未認証"),
         (status = 503, description = "chat 無効"),
     ),
@@ -179,12 +192,27 @@ pub async fn list_threads(
     Query(q): Query<ListThreadsQuery>,
 ) -> Result<Json<ThreadListResponse>, ApiError> {
     let limit = q.limit.unwrap_or(30).clamp(1, 100);
+    if q.q
+        .as_deref()
+        .is_some_and(|s| s.chars().count() > MAX_THREAD_QUERY_CHARS)
+    {
+        return Err(ApiError::BadRequest(format!(
+            "検索語は {MAX_THREAD_QUERY_CHARS} 文字以内で指定してください"
+        )));
+    }
     let (before_ts, before_id) = match &q.cursor {
         Some(c) => decode_cursor(c)?,
         None => (None, None),
     };
     let threads = chat_store(&state)?
-        .list_threads(&ctx, before_ts, before_id, q.origin_note_id, limit)
+        .list_threads(
+            &ctx,
+            before_ts,
+            before_id,
+            q.origin_note_id,
+            q.q.as_deref(),
+            limit,
+        )
         .await?;
     let next_cursor = if threads.len() as i64 == limit {
         threads.last().map(|t| encode_cursor(t.updated_at, t.id))
@@ -245,13 +273,30 @@ pub async fn get_messages(
     // 進行中（非端末）の run があれば id と自律フラグを返す（再訪時の承認送信・進捗復元・
     // 自律 UI（モードセレクタ）の復元に使う・#350）。
     let active = store
-        .latest_run(id, &ctx.tenant_id)
+        .current_run(id, &ctx.tenant_id)
         .await?
-        .filter(|(_, status, _)| !status.is_terminal());
+        .filter(|r| !r.status.is_terminal());
+    // 順番待ちの発話（生成が始まっていない run の発話）。認可は上の get_messages が済ませている。
+    // 進行中 run が無ければ順番待ちも存在し得ない（先頭が走り出しているはず）ので引かない。
+    let queued_runs = if let Some(current) = active {
+        store
+            .queued_user_messages(id, &ctx.tenant_id, current.run_id)
+            .await?
+            .into_iter()
+            .map(|(user_message_id, run_id)| super::chat_dto::QueuedRun {
+                user_message_id,
+                run_id,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(Json(MessagesResponse {
         messages,
-        active_run_id: active.map(|(run_id, _, _)| run_id),
-        active_run_autonomous: active.map(|(_, _, autonomous)| autonomous),
+        active_run_id: active.map(|r| r.run_id),
+        active_run_autonomous: active.map(|r| r.autonomous),
+        active_assistant_message_id: active.map(|r| r.message_id),
+        queued_runs,
     }))
 }
 
@@ -262,7 +307,7 @@ pub async fn get_messages(
     request_body = PostMessageRequest,
     responses(
         (status = 202, description = "受理（生成は接続非依存ジョブで継続）", body = PostMessageResponse),
-        (status = 400, description = "空メッセージ"),
+        (status = 400, description = "空メッセージ・組織で使えないモデル・未知のツール名／指定できないツール"),
         (status = 403, description = "投稿権限なし"),
         (status = 404, description = "存在しない"),
         (status = 503, description = "chat 無効"),
@@ -276,13 +321,32 @@ pub async fn post_message(
     Path(id): Path<Uuid>,
     Json(req): Json<PostMessageRequest>,
 ) -> Result<(StatusCode, Json<PostMessageResponse>), ApiError> {
+    // この発話にだけ使ってほしいツール（#734）。指定できる集合での照合・重複除去（400）。
+    // 誘導のみで権限ではないため、ここでは認可を引かない（提示はワーカーのプロファイルが決める）。
+    let requested_tools = super::chat_dto::parse_requested_tools(req.tools.as_deref())?;
     let attachments = req.attachments.unwrap_or_default();
     // 選択コンテキストの受理検証（fail-closed・存在秘匿・chat_selection.rs 参照）。
     let selection =
         super::chat_selection::resolve_selection(&state, &ctx, req.context, trace.as_deref())
             .await?;
+    // この発話にだけ適用する skill（スラッシュコマンド起動・#387）。**発話者の権限で解決**し、
+    // 読めなければここで落ちる（fail-closed）。thread のピンは変えない＝次の発話へ持ち越さない。
+    let once_skills = match &req.skills {
+        Some(pins) if !pins.is_empty() => {
+            super::chat_skills::resolve_skill_pins(
+                &state,
+                &ctx,
+                pins,
+                Some(req.text.as_str()),
+                trace.as_deref(),
+            )
+            .await?
+        }
+        _ => Vec::new(),
+    };
+    let model = resolve_run_model(&state, &ctx, req.model.as_deref(), req.effort).await?;
     let r = chat_store(&state)?
-        .post_message(
+        .post_message_with_model(
             &ctx,
             id,
             &req.text,
@@ -290,6 +354,9 @@ pub async fn post_message(
             selection,
             req.agent_mode,
             req.autonomous.unwrap_or(false),
+            &once_skills,
+            model.as_ref(),
+            &requested_tools,
             trace.as_deref(),
         )
         .await?;
@@ -302,6 +369,46 @@ pub async fn post_message(
             agent_mode: r.agent_mode,
         }),
     ))
+}
+
+/// 発話のモデル指定をテナント設定で解決する（#553）。組織で使えないモデルは 400。
+///
+/// LLM ゲートウェイが無い構成（テスト・未構成）では、指定が無ければ従来どおり run にモデルを
+/// 載せない（ワーカーの既定で生成）。指定があるのに解決できないなら 503。
+async fn resolve_run_model(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    model: Option<&str>,
+    effort: Option<super::llm_models::EffortLevel>,
+) -> Result<Option<chat::RunModel>, ApiError> {
+    let Some(gw) = state.llm.as_ref() else {
+        if model.is_some() || effort.is_some() {
+            return Err(ApiError::ServiceUnavailable(
+                "llm gateway is not configured".into(),
+            ));
+        }
+        return Ok(None);
+    };
+    let choice = llm_gateway::ModelChoice {
+        model: model.map(str::to_string),
+        effort: effort.map(Into::into),
+    };
+    match gw
+        .resolve_choice(ctx, &choice)
+        .await
+        .map_err(|e| ApiError::Internal(format!("tenant llm settings: {e}")))?
+    {
+        Ok(r) => Ok(Some(chat::RunModel {
+            model: r.model,
+            effort: r.effort,
+            auto: r.auto,
+        })),
+        Err(e) => Err(ApiError::UnprocessableJson(serde_json::json!({
+            "status": 400,
+            "title": "Bad Request",
+            "detail": e.to_string(),
+        }))),
+    }
 }
 
 /// スレッドの最新 run を SSE で購読する（replay-then-subscribe）。
@@ -328,14 +435,16 @@ pub async fn stream_thread(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let chat = chat_store(&state)?;
-    // viewer 認可（403/404）。共有スレッドの引用は get_messages 側で閲覧者権限に再評価される。
+    // viewer 認可（403/404）。引用とツール結果は viewer_event_stream が閲覧者の権限で見直す（#513）。
     chat.get_thread(&ctx, id, trace.as_deref()).await?;
 
     let from_seq = last_event_id(&headers, &q);
-    // 最新 run のイベントを購読する。run が無ければ即終了の空ストリーム。
-    let stream: SseEventStream = match chat.latest_run(id, &ctx.tenant_id).await? {
-        Some((run_id, _status, _autonomous)) => chat
-            .event_stream(run_id, from_seq)
+    // いま映すべき run（＝最も古い未完了 run）を購読する。run が無ければ即終了の空ストリーム。
+    // 順番待ちの run を購読した場合はイベント 0 件で待機し、ワーカーが着手した時点で流れ出す。
+    let stream: SseEventStream = match chat.current_run(id, &ctx.tenant_id).await? {
+        Some(current) => chat
+            .viewer_event_stream(&ctx, id, current.run_id, from_seq, trace.as_deref())
+            .await?
             .map(|ev| {
                 let data = serde_json::to_string(&ev.event).unwrap_or_else(|_| "{}".to_string());
                 Ok(Event::default().id(ev.seq.to_string()).data(data))
@@ -376,87 +485,6 @@ pub async fn cancel_run(
         .request_cancel(&ctx, id, run_id, trace.as_deref())
         .await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// スレッドを共有する（owner 権限）。
-#[utoipa::path(
-    post, path = "/threads/{id}/shares",
-    params(("id" = Uuid, Path, description = "スレッド ID")),
-    request_body = ShareThreadRequest,
-    responses(
-        (status = 204, description = "共有を付与"),
-        (status = 403, description = "owner でない"),
-        (status = 404, description = "存在しない"),
-        (status = 503, description = "chat 無効"),
-    ),
-    security(("session" = [])),
-)]
-pub async fn share_thread(
-    State(state): State<AppState>,
-    AuthContextExt(ctx): AuthContextExt,
-    trace: TraceIdExt,
-    Path(id): Path<Uuid>,
-    Json(req): Json<ShareThreadRequest>,
-) -> Result<StatusCode, ApiError> {
-    chat_store(&state)?
-        .share_thread(&ctx, id, &req.target, req.role, trace.as_deref())
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-/// 共有を解除する（owner 権限・冪等）。
-#[utoipa::path(
-    delete, path = "/threads/{id}/shares",
-    params(("id" = Uuid, Path, description = "スレッド ID")),
-    request_body = ShareThreadRequest,
-    responses(
-        (status = 204, description = "共有を解除"),
-        (status = 403, description = "owner でない"),
-        (status = 404, description = "存在しない"),
-        (status = 503, description = "chat 無効"),
-    ),
-    security(("session" = [])),
-)]
-pub async fn unshare_thread(
-    State(state): State<AppState>,
-    AuthContextExt(ctx): AuthContextExt,
-    trace: TraceIdExt,
-    Path(id): Path<Uuid>,
-    Json(req): Json<ShareThreadRequest>,
-) -> Result<StatusCode, ApiError> {
-    chat_store(&state)?
-        .unshare_thread(&ctx, id, &req.target, req.role, trace.as_deref())
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-/// 共有相手一覧（owner 権限）。
-#[utoipa::path(
-    get, path = "/threads/{id}/shares",
-    params(("id" = Uuid, Path, description = "スレッド ID")),
-    responses(
-        (status = 200, description = "共有相手一覧", body = ThreadSharesResponse),
-        (status = 403, description = "owner でない"),
-        (status = 404, description = "存在しない"),
-        (status = 503, description = "chat 無効"),
-    ),
-    security(("session" = [])),
-)]
-pub async fn list_thread_shares(
-    State(state): State<AppState>,
-    AuthContextExt(ctx): AuthContextExt,
-    trace: TraceIdExt,
-    Path(id): Path<Uuid>,
-) -> Result<Json<ThreadSharesResponse>, ApiError> {
-    let entries = chat_store(&state)?
-        .list_thread_shares(&ctx, id, trace.as_deref())
-        .await?;
-    Ok(Json(ThreadSharesResponse {
-        shares: entries
-            .into_iter()
-            .map(|(target, role)| ThreadShareEntry { target, role })
-            .collect(),
-    }))
 }
 
 // ── ヘルパ ───────────────────────────────────────────────────────────

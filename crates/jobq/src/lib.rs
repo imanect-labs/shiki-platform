@@ -169,6 +169,29 @@ pub async fn fail(
     Ok(FailOutcome::Retry { attempts })
 }
 
+/// **まだ処理できない**ジョブを後回しにする（失敗ではない）。
+///
+/// [`fail`] との違いは `attempts` を消費しないこと。claim が +1 した分を戻すので、何度
+/// 先送りしても DLQ へ落ちない。「順番待ち」のように、待てば必ず処理できる条件で使う
+/// （consumer 側の都合で処理できないだけなら、それは失敗ではない）。
+///
+/// 待ち条件が永久に解けないと無限に先送りされるため、**その条件自体が有限時間で
+/// 解けること**を呼び出し側が保証すること（chat の run 直列化なら、先行 run は
+/// 完了・キャンセル・DLQ のいずれかで必ず端末状態になる）。
+pub async fn defer(conn: &mut PgConnection, id: i64, delay: Duration) -> Result<(), JobqError> {
+    sqlx::query(
+        "update job_queue \
+         set visible_at = now() + $2 * interval '1 second', \
+             attempts = greatest(attempts - 1, 0) \
+         where id = $1",
+    )
+    .bind(id)
+    .bind(delay.as_secs_f64())
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// ジョブを試行回数に関わらず即 DLQ へ移送する（恒久エラー: リトライしても直らない
 /// パース失敗・設定不整合など）。移送したら `true`、既に無ければ `false`。
 pub async fn kill(conn: &mut PgConnection, id: i64, error: &str) -> Result<bool, JobqError> {

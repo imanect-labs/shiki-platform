@@ -16,17 +16,25 @@ use crate::vocab::RunEventKind;
 
 mod advance;
 mod backoff;
+mod claim;
+mod gc;
 mod history;
 mod limits;
 mod map_region;
 mod ops;
 mod wait;
 
+pub use gc::{GcReport, HistoryGcWorker, WORKFLOW_GC_QUEUE};
 pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
 pub use ops::{CancelOutcome, ResumeOutcome};
 
-/// step の durable テーブル記述子（複合キー・attempt は claim で増やさない・engine.md §9.5）。
+/// step の durable テーブル記述子（複合キー・engine.md §9.5）。
+///
+/// `attempt_column: None` は「`durable::claim` の無条件 +1 に乗らない」という意味。workflow は
+/// クラッシュ takeover で試行を消費しない（§9.5）ため、+1 と、それを打ち消す -1 を対で持つ独自の
+/// 会計が要る。規則は `claim` モジュールのドキュメントが正（#438）。
 const STEP_SPEC: RunTableSpec = RunTableSpec {
+    event_seq_column: None,
     table: "step_execution",
     status_column: "status",
     fencing_column: "fencing_token",
@@ -77,15 +85,37 @@ pub struct ClaimedStep {
     pub ir_snapshot: Json<Value>,
 }
 
+/// resume がリース失効を待つときの上乗せ（秒）。旧 worker のリースが切れた「直後」を狙わず、
+/// 時計ずれと最後の heartbeat の遅延を吸収するための余白。
+const RESUME_GRACE_MARGIN_SECS: i64 = 5;
+
 /// run/step のデータチョークポイント。
 #[derive(Clone)]
 pub struct RunStore {
     db: PgPool,
+    /// ワーカーが取るリース期間（秒）。`resume_failed` の猶予をここから導出する。
+    lease_secs: i64,
 }
 
 impl RunStore {
-    pub fn new(db: PgPool) -> Self {
-        RunStore { db }
+    /// ワーカーと同じ `lease_secs` を渡して組む。
+    ///
+    /// **`lease_secs` は必須引数にしてある。** `resume_failed` の猶予をここから導出するので、
+    /// ビルダで後付けにすると「呼び忘れると既定 30 のまま」という壊し方ができてしまう
+    /// （`WorkerConfig` 側だけ 120 に上げた構成で、猶予 35 秒 < リース 120 秒になる・#446）。
+    /// 必須にすれば新しい配線を書く人が必ず値を選ぶことになり、自然な選択が
+    /// `config.workflow.lease_secs` になる。resume 経路を持たない用途（GC ワーカー等）は
+    /// [`crate::DEFAULT_LEASE_SECS`] を渡してよい。
+    pub fn new(db: PgPool, lease_secs: i64) -> Self {
+        RunStore { db, lease_secs }
+    }
+
+    /// `resume_failed` が claim 済み step を `ready` へ戻すときに置く猶予（秒）。
+    ///
+    /// 旧 worker が有効リースを保持したまま別 worker が再 claim すると、checkpoint は fencing が
+    /// 無害化するものの**外部副作用が併走する**。リース期間より必ず長くすることでこれを避ける。
+    pub(crate) fn resume_grace_secs(&self) -> i64 {
+        self.lease_secs.saturating_add(RESUME_GRACE_MARGIN_SECS)
     }
 
     /// run を作成し本体ノードを一括実体化する（root=ready・他=pending・run.started 追記）。
@@ -217,50 +247,6 @@ impl RunStore {
         }
         tx.commit().await.map_err(map_db)?;
         Ok(Some(run_id))
-    }
-
-    /// ready な step を 1 つ claim する（`FOR UPDATE SKIP LOCKED`・fencing +1・lease）。
-    ///
-    /// `tenant_scope` を渡すとそのテナントの step のみ claim する（ワーカーの tenant シャーディング・
-    /// テスト分離）。`None` は全テナント横断（既定のワーカー動作）。
-    pub async fn claim_ready_step(
-        &self,
-        worker_id: &str,
-        lease_secs: i64,
-        tenant_scope: Option<&str>,
-    ) -> Result<Option<ClaimedStep>, RunStoreError> {
-        // ready（次実行時刻到来）か、リース失効した running（takeover）を 1 件 claim する
-        // （SKIP LOCKED・at-least-once）。takeover でも attempt は増やさない
-        // （engine.md §9.5・冪等キーは attempt 非依存）。
-        let claimed: Option<ClaimedStep> = sqlx::query_as(
-            "UPDATE step_execution s SET status = 'running', lease_owner = $1, \
-                 lease_expires_at = now() + ($2 || ' seconds')::interval, \
-                 fencing_token = s.fencing_token + 1, \
-                 attempt = s.attempt + (CASE WHEN s.status = 'ready' THEN 1 ELSE 0 END), \
-                 updated_at = now() \
-             FROM ( \
-                 SELECT s2.tenant_id, s2.run_id, s2.step_path FROM step_execution s2 \
-                 JOIN workflow_run r2 ON r2.tenant_id = s2.tenant_id AND r2.run_id = s2.run_id \
-                 WHERE (($3::text IS NULL) OR (s2.tenant_id = $3)) \
-                   AND NOT r2.cancel_requested \
-                   AND ((s2.status = 'ready' AND s2.next_retry_at <= now()) \
-                        OR (s2.status = 'running' AND s2.lease_expires_at < now())) \
-                 ORDER BY s2.next_retry_at FOR UPDATE OF s2 SKIP LOCKED LIMIT 1 \
-             ) picked \
-             JOIN workflow_run r ON r.tenant_id = picked.tenant_id AND r.run_id = picked.run_id \
-             WHERE s.tenant_id = picked.tenant_id AND s.run_id = picked.run_id \
-               AND s.step_path = picked.step_path \
-             RETURNING s.run_id, r.workflow_id, s.step_path, s.node_id, s.tenant_id, r.org, \
-                       r.principal, r.principal_kind, s.attempt, s.fencing_token, \
-                       s.idempotency_key, r.input, s.input AS step_input, r.ir_snapshot",
-        )
-        .bind(worker_id)
-        .bind(lease_secs)
-        .bind(tenant_scope)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(map_db)?;
-        Ok(claimed)
     }
 
     /// step のリースを延長し cancel_requested を返す（heartbeat）。
@@ -482,5 +468,46 @@ mod tests {
         // a が別ポート（out 以外）→ b は Skip。
         ports.insert("a".into(), vec!["error".into()]);
         assert_eq!(r(&ports), Readiness::Skip);
+    }
+}
+
+/// run の状態だけを読む口（run を作らない側が使う・会話の図のボタンで起動した run の表示など）。
+///
+/// `AuthContext` のテナントで必ず絞る。run 単位の ReBAC は見ないので、**呼び出し側が
+/// 自分の境界で認可を済ませてから**呼ぶこと（チャットは会話の閲覧者の確認の後、その会話から
+/// 起動した run だけを渡す）。返すのは状態（queued〜cancelled）だけで、入力・出力・履歴は
+/// 返さない（それらは run の閲覧権限で引く API の役目）。
+#[derive(Clone)]
+pub struct RunStatusReader {
+    db: PgPool,
+}
+
+impl RunStatusReader {
+    pub fn new(db: PgPool) -> Self {
+        RunStatusReader { db }
+    }
+
+    /// 複数の run の状態をまとめて引く（無い run は結果に含めない）。
+    pub async fn statuses(
+        &self,
+        ctx: &authz::AuthContext,
+        run_ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, RunStatus>, RunStoreError> {
+        let tenant_id = ctx.tenant_id.as_str();
+        if run_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT run_id, status FROM workflow_run WHERE tenant_id = $1 AND run_id = ANY($2)",
+        )
+        .bind(tenant_id)
+        .bind(run_ids)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id, s)| RunStatus::parse(&s).map(|st| (id, st)))
+            .collect())
     }
 }

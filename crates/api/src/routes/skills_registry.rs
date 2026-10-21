@@ -1,4 +1,4 @@
-//! skill のレジストリ publish / 同意インストール API（#344 Task 10.11・500 行規約で分離）。
+//! skill のレジストリ publish / 同意インストール API（#344 Task 10.11・行数規約で分離）。
 //!
 //! 実体は `app_platform::SkillInstallService`（Phase 9 レジストリの流用・信頼ティア検証・
 //! ユーザー単位インストール・監査）。認可は publish=artifact owner、install=本人の明示行為

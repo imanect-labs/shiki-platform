@@ -1,5 +1,5 @@
 # shiki-platform — docker compose 一発起動。
-# 依存（Postgres/Keycloak/OpenFGA/MinIO/Qdrant/ingestion-worker）＋ shiki-server。
+# 依存（Postgres/Keycloak/OpenFGA/RustFS/Qdrant/ingestion-worker）＋ shiki-server。
 # `cp .env.example .env && docker compose up --build`。
 #
 # 監視スタック（OTel collector/Tempo/Loki/Prometheus/Grafana）は `observability` profile に
@@ -13,7 +13,38 @@ name: shiki
 
 services:
   postgres:
+    restart: unless-stopped
     image: postgres:16-alpine
+    # クエリ性能の観測手段を最初から載せる（docs/guides/db-observability.md が使い方の正）。
+    # pg_stat_statements / auto_explain はどちらも shared_preload_libraries 経由でしか有効化
+    # できず、後付けには再起動が要る。商用 APM も中身はこの 2 つを読んでいるだけなので、
+    # SaaS を足す前にここを土台にする（オンプレ/エアギャップでも動く）。
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements,auto_explain
+      # 正規化したクエリごとの累積統計。追跡するのはトップレベル文のみ（関数内部まで数えない）。
+      - -c
+      - pg_stat_statements.max=10000
+      - -c
+      - pg_stat_statements.track=top
+      # 遅かった瞬間の実行計画をログへ残す。「本番では遅いのに後から再現しない」を潰すため。
+      - -c
+      - auto_explain.log_min_duration=200ms
+      - -c
+      - auto_explain.log_analyze=on
+      # **バインドパラメータの値をログに出さない。** PG16 の既定 -1 は値を無制限に出力するため、
+      # 遅いクエリのメールアドレス・トークン・文書本文が Postgres のログへ流れ、
+      # `docker compose logs postgres` や集約ログから読めてしまう。計画の形が見たいだけなので値は要らない。
+      - -c
+      - auto_explain.log_parameter_max_length=0
+      # log_timing はノード単位の計時で、それ自体が重い。log_analyze と併用する際に off にするのが定石。
+      - -c
+      - auto_explain.log_timing=off
+      - -c
+      - auto_explain.log_buffers=on
+      - -c
+      - auto_explain.log_nested_statements=on
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -29,6 +60,7 @@ services:
       retries: 10
 
   keycloak:
+    restart: unless-stopped
     # 26.2 で Standard Token Exchange（RFC 8693・V2）が GA（プレビュー flag 不要）。
     # ミニアプリ B2 の on-behalf-of は client 属性 standard.token.exchange.enabled=true で有効化する
     # （Task 9.7・crates/app-gateway/src/oauth.rs）。
@@ -71,6 +103,7 @@ services:
     restart: "no"
 
   openfga:
+    restart: unless-stopped
     image: openfga/openfga:v1.8.0
     command: run
     environment:
@@ -93,6 +126,7 @@ services:
       retries: 20
 
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     # BFF セッションストア（オパーク Cookie の実体。tenant_id スコープのキーで論理分離）。
     command: ["redis-server", "--save", "", "--appendonly", "no"]
@@ -104,28 +138,86 @@ services:
       timeout: 5s
       retries: 20
 
-  minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    command: server /data --console-address ":9001"
+  # S3 互換オブジェクトストア。**MinIO から RustFS へ差し替えた。**
+  #
+  # MinIO のコンテナイメージは配布が止まっている。Docker Hub は
+  # `minio/minio` ごと消えており (リポジトリ API が 404)、quay.io は private、
+  # ghcr にも無い。**認証を足しても解決しない。** これが CI の
+  # compose smoke / Web E2E / Coverage を 3 週間止めていた原因 (Issue #490)。
+  #
+  # RustFS は shiki が実際に使う S3 API を満たすことを実測で確認している
+  # (14/14 PASS)。要点は 3 つ:
+  #   * **path-style のみ**。`RUSTFS_SERVER_DOMAINS` 未設定だと
+  #     virtual-hosted-style は通らない。shiki 側は既に
+  #     `force_path_style(true)` なので問題ない
+  #   * **CORS の経路が 2 つあり、既定ではどちらも無効。**
+  #     対照実験の結果 (バケット CORS 未設定・preflight の
+  #     Access-Control-Allow-Origin を見た):
+  #       env なし                      → acao なし (= ブラウザ直 PUT は失敗)
+  #       RUSTFS_CORS_ALLOWED_ORIGINS   → 指定オリジンのみ acao あり・他は拒否
+  #       PutBucketCors                 → 同じく有効
+  #     `RUSTFS_CORS_ALLOWED_ORIGINS` は `server --help` に出てこないが実際に
+  #     効く。ここでは **S3 API の `PutBucketCors` 側を使う** —
+  #     AWS S3 / MinIO / RustFS のどれでも同じ経路で、shiki が既に実装を
+  #     持っているため (設定は下の SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS)。
+  #     **ここを取り違えると Drive のアップロードが壊れる。** shiki の
+  #     `put_bucket_cors` は `storage.s3.cors_allowed_origins` が空でないときだけ
+  #     呼ばれる実装で、compose はこれを設定していなかった。つまりブラウザ直
+  #     PUT は MinIO のサーバ側 CORS だけで成立していた。RustFS では
+  #     `SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS` を明示する (下記)
+  #   * **オンディスク形式は MinIO と非互換。** 既存環境を移すときは
+  #     ボリュームを使い回さず S3 レベルでオブジェクトをコピーすること
+  rustfs:
+    restart: unless-stopped
+    # **digest でピンする。** タグは可変で、上流が差し替えたり消したりできる。
+    # MinIO はまさにリポジトリごと消えてこの PR の原因になったので、同じ轍を踏まない。
+    # 更新時は Docker Hub の tags API で digest を取り直す。
+    image: rustfs/rustfs:1.0.1@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      # ブラウザからの presigned PUT/GET（別オリジン: web → MinIO）を許可する CORS。
-      # Drive UI（Task 1.10）はクライアント直転送のため必須。dev は全オリジン許可。
-      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-*}
+      # **旧 MINIO_ROOT_USER / MINIO_ROOT_PASSWORD をフォールバックとして受ける。**
+      # 独自の資格情報を .env に書いている既存環境が、アップグレード後に黙って
+      # 公開既定値 minioadmin へ落ちるのを防ぐ (9000/9001 は全 IF へ publish
+      # されるため、正常に見えたまま管理資格情報が弱体化する)。
+      #
+      # 既定値が minioadmin のままなのは意図的。結合テストは
+      # STORAGE_TEST_S3_ACCESS_KEY の未設定時フォールバックに同じ文字列を
+      # 持っており (crates/*/tests/*.rs の 10 ファイル)、ここを変えると
+      # 両者がずれて IT が落ちる。dev 用の固定文字列であって MinIO 依存ではない。
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
+      RUSTFS_VOLUMES: /data
+      # コンソール (:9001) は既定で無効。dev では中身を目で見たいので有効化する。
+      RUSTFS_CONSOLE_ENABLE: "true"
     volumes:
-      - minio-data:/data
+      - rustfs-data:/data
     ports:
       - "9000:9000"
       - "9001:9001"
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      # `mc` は無い。**`/health` ではなく `/health/ready` を見る。**
+      # 実測では /health は起動から 0.00 秒で 200 を返すのに対し、
+      # /health/ready と S3 エンドポイントの実働はどちらも 0.16 秒だった。
+      # /health で待つと、まだ S3 が応答しない RustFS に対して shiki-server が
+      # ensure_bucket を叩き、遅い環境で断続的に失敗する。
+      # S3 のルート `GET /` は認証を要求して 403 を返すため `curl -f` では使えない。
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/health/ready"]
       interval: 5s
       timeout: 5s
       retries: 20
 
   qdrant:
+    restart: unless-stopped
     image: qdrant/qdrant:v1.12.5
+    # Docker 既定の nofile ソフト上限（1024）では、文書が増えて RocksDB のセグメントが
+    # 育つと必ず枯渇する。枯渇すると Qdrant は接続の受付にも書き込みの flush にも失敗するが、
+    # コンテナは running のままなので気づきにくい。既定の hybrid 検索は try_join で
+    # dense と keyword を待つため丸ごと失敗し、SearchMode::Keyword だけが生き残る
+    # （Tantivy で完結し Qdrant を触らないため）。インジェスト側は upsert 失敗として
+    # リトライののち DLQ に落ちる。
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - qdrant-data:/qdrant/storage
     ports:
@@ -138,6 +230,7 @@ services:
       retries: 20
 
   ingestion-worker:
+    restart: unless-stopped
     build:
       context: ../../ingestion-worker
     environment:
@@ -146,12 +239,18 @@ services:
       # server 側 SHIKI__RAG__EMBEDDING_MODEL_VERSION と必ず一致させる（不一致は
       # インジェスト時の版突合ガードで拒否される）。
       EMBED_MODEL: ${SHIKI__RAG__EMBEDDING_MODEL_VERSION:-cl-nagoya/ruri-v3-30m}
+      # 替えたら server 側の SHIKI__RAG__RELEVANCE_*（関連度の閾値と、それを測ったモデル）も揃える。
+      RERANK_MODEL: ${RERANK_MODEL:-hotchpotch/japanese-reranker-cross-encoder-xsmall-v1}
     volumes:
       - hf-cache:/models
     ports:
       # /parse は任意 URL を fetch する内部サービスのため、ホスト公開はローカルに限定する
       # （共有ホストでの SSRF/計算資源の踏み台化を防ぐ。コンテナ間は compose 網内で到達可能）。
-      - "127.0.0.1:8090:8000"
+      #
+      # ホスト側もコンテナと同じ 8000 に揃える。8090 は shiki-server の公開 API ゲートウェイ
+      # （第2リスナ）が publish しており、両サービスを同時起動すると
+      # `Bind for 0.0.0.0:8090 failed: port is already allocated` で必ず衝突する（#453）。
+      - "127.0.0.1:8000:8000"
     deploy:
       resources:
         limits:
@@ -172,6 +271,7 @@ services:
   # サンドボックス orchestrator（非特権・code_interpreter 用）。gRPC を compose 網内で待ち受ける。
   # per-sandbox の secure-exec-sidecar 子プロセスを spawn する。ストレージ/DB クレデンシャルは持たない。
   sandbox-orchestrator:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: deploy/docker/sandbox-orchestrator.Dockerfile
@@ -214,7 +314,10 @@ services:
   # web 検索（オンプレ向け SearXNG・websearch profile でオプトイン起動）。
   # SaaS は Brave（SHIKI__WEBSEARCH__BRAVE_API_KEY）、テストは stub を使う。
   searxng:
-    image: searxng/searxng:2025.6.20-f45eb1eec
+    restart: unless-stopped
+    # SearXNG は rolling tag で古いタグが GC される（2025.6.20 は upstream から消滅・
+    # `--profile websearch` が pull 不能になっていた）。digest 併記で再現性を担保する。
+    image: searxng/searxng:2026.7.24-4f64d9501@sha256:f68e460a549631cd0c09f943fc9d7befc4c0ff8c75e38accd734c7ac9f0b537c
     profiles: ["websearch"]
     environment:
       # JSON format を有効化した設定を読み込む（web_search プロバイダの応答形式）。
@@ -223,7 +326,8 @@ services:
       - ../searxng/settings.yml:/etc/searxng/settings.yml:ro
     ports:
       # ローカル確認用のみ公開（compose 網内は searxng:8080 で到達）。
-      - "127.0.0.1:8081:8080"
+      # 8081 は keycloak が使うため 8099 を割り当てる（衝突回避）。
+      - "127.0.0.1:8099:8080"
     security_opt:
       - no-new-privileges:true
     deploy:
@@ -235,7 +339,8 @@ services:
   # 既定はソース自前ビルドイメージ（deploy/docker/collabora/・office-image.yml が GHCR へ push）。
   # 開発と CI に限り COLLABORA_IMAGE=collabora/code:<pin> のフォールバック可（配布物は自前ビルド必須）。
   collabora:
-    image: ${COLLABORA_IMAGE:-ghcr.io/syuya2036/shiki-collabora:cp-25.04.9-5}
+    restart: unless-stopped
+    image: ${COLLABORA_IMAGE:-ghcr.io/imanect-labs/shiki-collabora:cp-26.04.5-1}
     profiles: ["office"]
     # command で環境依存値を注入する（イメージの CMD を丸ごと置き換えるため基本引数も再掲）:
     #   - storage.wopi.host: WOPI ホスト（shiki-server）以外からの文書取得を拒否（SSRF 抑止）。
@@ -245,6 +350,8 @@ services:
       - --o:sys_template_path=/opt/cool/systemplate
       - --o:child_root_path=/opt/cool/child-roots
       - --o:lo_template_path=/opt/collaboraoffice
+      # discovery.xml と browser/ の置き場所。無いと coolwsd が起動直後に落ちる（Dockerfile の CMD 参照）。
+      - --o:file_server_root_path=/usr/share/coolwsd
       - --o:ssl.enable=false
       - --o:ssl.termination=false
       - --o:storage.wopi.host[0]=${COLLABORA_WOPI_HOST:-shiki-server}
@@ -252,9 +359,13 @@ services:
       - --o:server_name=${COLLABORA_PUBLIC_HOST:-localhost:9980}
       # 初回のウェルカム/新機能ダイアログを出さない（shiki の UI に埋め込む前提・体験を邪魔しない）。
       - --o:welcome.enable=false
-    ports:
-      # ブラウザが iframe で直接読むためローカル公開する（compose 網内は collabora:9980）。
-      - "127.0.0.1:9980:9980"
+    # **ポートを公開しない（PIT-68）。** Collabora 26.04 は編集セッションの WebSocket に
+    # `executescript` を 1 行送るだけで kit 内で任意の UNO スクリプトを走らせ、閲覧専用の
+    # セッションからでも通る。ブラウザは shiki-server の中継（127.0.0.1:9980・スクリプト命令を落とす）
+    # だけを通し、Collabora には compose 網内（collabora:9980）からしか届かないようにする。
+    # server_name（上記）は中継の公開ホストを指す。
+    expose:
+      - "9980"
     # ⚠️ no-new-privileges を付けないこと: coolforkit の file capability（chroot jail 生成）が
     # 獲得できず起動しない（deploy/docker/collabora/README.md 参照）。
     deploy:
@@ -272,6 +383,7 @@ services:
 
   # --- 監視スタック（observability profile・オプトイン起動） ---
   tempo:
+    restart: unless-stopped
     image: grafana/tempo:2.6.1
     profiles: ["observability"]
     command: ["-config.file=/etc/tempo.yaml"]
@@ -282,6 +394,7 @@ services:
       - "3200:3200"
 
   loki:
+    restart: unless-stopped
     image: grafana/loki:3.2.1
     profiles: ["observability"]
     command: ["-config.file=/etc/loki/local-config.yaml"]
@@ -289,6 +402,7 @@ services:
       - "3100:3100"
 
   prometheus:
+    restart: unless-stopped
     image: prom/prometheus:v3.0.1
     profiles: ["observability"]
     command: ["--config.file=/etc/prometheus/prometheus.yml"]
@@ -297,7 +411,31 @@ services:
     ports:
       - "9090:9090"
 
+  # Postgres のメトリクスを既存の Prometheus/Grafana へ流す。SaaS（pganalyze 等）を足さないのは
+  # オンプレ/エアギャップ配布が前提で、テナントのクエリ形状を外へ出せないため（design.md §4.9・
+  # 「新規ステートフル依存ゼロ」）。中身は pg_stat_* を読んでいるだけなのでここで完結する。
+  postgres-exporter:
+    restart: unless-stopped
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0
+    profiles: ["observability"]
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/shiki?sslmode=disable"
+      # 既定のコレクタに加えて、本プロジェクトで見たいものを明示的に足す。
+      #   stat_statements   … クエリ別の累積時間（総時間で見る・平均では高頻度クエリが埋もれる）
+      #   stat_user_tables  … n_dead_tup / last_autovacuum（#440 の設定が効いているかの観測点）
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "false"
+    command:
+      - --collector.stat_statements
+      - --collector.stat_user_tables
+      - --collector.stat_activity_autovacuum
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   otel-collector:
+    restart: unless-stopped
     image: otel/opentelemetry-collector-contrib:0.115.1
     profiles: ["observability"]
     command: ["--config=/etc/otel-collector-config.yaml"]
@@ -312,6 +450,7 @@ services:
       - loki
 
   grafana:
+    restart: unless-stopped
     image: grafana/grafana:11.4.0
     profiles: ["observability"]
     environment:
@@ -331,6 +470,7 @@ services:
   # OTel trace_id を Langfuse trace id に使い、監査ログ↔Langfuse↔OTel を同一 trace_id で突合する。
   # 初回起動時に LANGFUSE_INIT_* で org/project/API キーを headless 作成する（gateway が使う鍵）。
   langfuse:
+    restart: unless-stopped
     image: langfuse/langfuse:2
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/langfuse
@@ -357,6 +497,7 @@ services:
       start_period: 30s
 
   shiki-server:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: deploy/Dockerfile
@@ -398,15 +539,32 @@ services:
       SHIKI__TELEMETRY__OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
       SHIKI__TELEMETRY__SERVICE_NAME: shiki-server
       SHIKI__TELEMETRY__LOG_FORMAT: json
-      SHIKI__STORAGE__BACKEND: minio
-      # server→MinIO は内部ホスト、presigned URL はブラウザ到達可能ホストで署名する。
-      SHIKI__STORAGE__S3__INTERNAL_ENDPOINT: http://minio:9000
+      # **`s3` は enum 改名後のバイナリでしか読めない。** 旧バイナリのイメージが
+      # 残っている環境で compose だけ更新して `up -d`（`--build` 無し）すると
+      #   unknown variant: found `s3`, expected `minio` or `gcs`
+      # で起動ループする（実際に踏んだ）。compose を更新したらイメージも作り直すこと。
+      # 逆方向（新バイナリが旧 `minio` を読む）は serde alias で通る。
+      SHIKI__STORAGE__BACKEND: s3
+      # server→ストア は内部ホスト、presigned URL はブラウザ到達可能ホストで署名する。
+      SHIKI__STORAGE__S3__INTERNAL_ENDPOINT: http://rustfs:9000
       SHIKI__STORAGE__S3__PUBLIC_ENDPOINT: ${SHIKI__STORAGE__S3__PUBLIC_ENDPOINT:-http://localhost:9000}
       SHIKI__STORAGE__S3__BUCKET: ${SHIKI__STORAGE__S3__BUCKET:-shiki-blobs}
-      SHIKI__STORAGE__S3__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      SHIKI__STORAGE__S3__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      # ブラウザ直 PUT/GET（別オリジン）には MinIO バケット CORS が要る。Drive UI（1.10）導入時に
-      # config/TOML で storage.s3.cors_allowed_origins を配列指定する（env スカラは Vec に展開できない）。
+      SHIKI__STORAGE__S3__ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      SHIKI__STORAGE__S3__SECRET_KEY: ${RUSTFS_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
+      # ブラウザ直 PUT/GET（別オリジン）にはバケット CORS が要る。これを設定しないと
+      # `put_bucket_cors` が呼ばれず、Drive のアップロードが CORS で失敗する
+      # （MinIO 時代はサーバ側 env の CORS で代替されていたため露見していなかった）。
+      #
+      # **figment は env 値をブラケット記法で配列として読む。** 以前のコメントは
+      # 「env スカラは Vec に展開できない」としていたが誤りで、実測では
+      #   [a,b] / ["a", "b"] / [*]  → OK
+      #   a,b（裸のカンマ区切り）    → invalid type: expected a sequence
+      # となる。
+      #
+      # 既定は `[*]`。MinIO の `MINIO_API_CORS_ALLOW_ORIGIN: *` と同じ挙動で、
+      # dev/CI の複数オリジン（web :3000・ゲートウェイ :8090）を網羅する。
+      # **本番では配信元オリジンを列挙して絞ること。**
+      SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS: "${SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS:-[*]}"
       SHIKI__VECTOR__BACKEND: qdrant
       # LLM プロバイダ（Phase 3）。既定はオフラインで動く決定的スタブ（API キー不要でフルスタック
       # デモ/CI が回る）。実運用は BACKEND=openai＋BASE_URL＋API_KEY で OpenAI 互換（vLLM 含む）へ。
@@ -414,6 +572,18 @@ services:
       SHIKI__LLM__BASE_URL: ${SHIKI__LLM__BASE_URL:-}
       SHIKI__LLM__API_KEY: ${SHIKI__LLM__API_KEY:-}
       SHIKI__LLM__DEFAULT_MODEL: ${SHIKI__LLM__DEFAULT_MODEL:-shiki-default}
+      # Responses API（BACKEND=openai_responses）のプロバイダが名乗り・会話 ID を求める場合
+      # （例 OpenCode Go: USER_AGENT=shiki/1.0・SESSION_HEADER=x-opencode-session）。
+      SHIKI__LLM__USER_AGENT: ${SHIKI__LLM__USER_AGENT:-}
+      SHIKI__LLM__SESSION_HEADER: ${SHIKI__LLM__SESSION_HEADER:-}
+      # 既定モデルのコンテキスト窓（例: 32768）。設定すると自律エージェントの剪定閾値がこの窓を
+      # 天井にする（#529）。0 は未設定（固定閾値のまま）。
+      SHIKI__LLM__CONTEXT_WINDOW_TOKENS: ${SHIKI__LLM__CONTEXT_WINDOW_TOKENS:-0}
+      # LLM 呼び出しのタイムアウト秒（#554・全プロバイダ共通）。送信〜応答ヘッダ／ストリームの
+      # 無通信／生成全体。オンプレの遅い vLLM や長い推論ではここを伸ばす。
+      SHIKI__LLM__FIRST_RESPONSE_TIMEOUT_SECS: ${SHIKI__LLM__FIRST_RESPONSE_TIMEOUT_SECS:-60}
+      SHIKI__LLM__IDLE_TIMEOUT_SECS: ${SHIKI__LLM__IDLE_TIMEOUT_SECS:-120}
+      SHIKI__LLM__TOTAL_TIMEOUT_SECS: ${SHIKI__LLM__TOTAL_TIMEOUT_SECS:-900}
       # Langfuse 計装（gateway 層が正・trace_id 起点で突合）。self-host の内部エンドポイント。
       SHIKI__LLM__LANGFUSE__BASE_URL: ${SHIKI__LLM__LANGFUSE__BASE_URL:-http://langfuse:3000}
       SHIKI__LLM__LANGFUSE__PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-pk-lf-shiki-dev}
@@ -421,6 +591,13 @@ services:
       # チャット（Phase 3）。生成ワーカーを有効化（接続非依存生成）。
       SHIKI__CHAT__ENABLED: ${SHIKI__CHAT__ENABLED:-true}
       SHIKI__CHAT__WORKER_CONCURRENCY: ${SHIKI__CHAT__WORKER_CONCURRENCY:-4}
+      # 1 応答の最大トークン（既定 8192）。reasoning 系モデルは思考トークンも消費するため、
+      # 長い成果物（レポート執筆・大きなツール引数）を作らせる場合はさらに引き上げる。
+      SHIKI__CHAT__MAX_TOKENS: ${SHIKI__CHAT__MAX_TOKENS:-8192}
+      # 回答の中に ```ui ブロック（Yui）で図を書かせる（#530・既定オン）。false で書き方の指示を外す。
+      SHIKI__CHAT__YUI: ${SHIKI__CHAT__YUI:-true}
+      # system プロンプトに入れる「今日の日付」のタイムゾーン（IANA 名・#546）。
+      SHIKI__CHAT__TIMEZONE: ${SHIKI__CHAT__TIMEZONE:-Asia/Tokyo}
       # ワークフロー実行時（Phase 10）。launcher/worker/scheduler を有効化（エディタからの実行・
       # スケジュール発火・実行履歴 SSE が動く）。
       SHIKI__WORKFLOW__ENABLED: ${SHIKI__WORKFLOW__ENABLED:-true}
@@ -455,6 +632,14 @@ services:
       SHIKI__RAG__QDRANT_URL: http://qdrant:6333
       SHIKI__RAG__EMBEDDING_MODEL_VERSION: ${SHIKI__RAG__EMBEDDING_MODEL_VERSION:-cl-nagoya/ruri-v3-30m}
       SHIKI__RAG__INDEX_DATA_DIR: /var/lib/shiki/index
+      # reranker へ渡す候補数（遅さは候補数に比例・#561）。
+      SHIKI__RAG__RERANK_POOL: ${SHIKI__RAG__RERANK_POOL:-16}
+      # reranker の生スコアの下限（空 = 足切りしない・#100）。
+      SHIKI__RAG__MIN_RERANK_SCORE: ${SHIKI__RAG__MIN_RERANK_SCORE:-}
+      # 関連度ラベル（高/中/低）の閾値と、それを測った reranker のモデル（#424）。
+      SHIKI__RAG__RELEVANCE_HIGH: ${SHIKI__RAG__RELEVANCE_HIGH:-0.55}
+      SHIKI__RAG__RELEVANCE_LOW: ${SHIKI__RAG__RELEVANCE_LOW:-0.45}
+      SHIKI__RAG__RELEVANCE_MODEL: ${SHIKI__RAG__RELEVANCE_MODEL:-hotchpotch/japanese-reranker-cross-encoder-xsmall-v1}
       # dev seed は明示フラグでのみ有効化（本番では設定しない）。
       SHIKI_DEV_SEED: ${SHIKI_DEV_SEED:-true}
       SHIKI_DEV_SEED_USER: ${SHIKI_DEV_SEED_USER:-00000000-0000-0000-0000-000000000001}
@@ -465,6 +650,9 @@ services:
       # 第2リスナ（ゲートウェイ・別オリジン）と第3リスナ（B1 配信）。
       - "8090:8090"
       - "8091:8091"
+      # ブラウザ ↔ Collabora の中継（office.relay_port・PIT-68）。ブラウザはここから Collabora を開く
+      # （Collabora 自体はポートを公開しない）。office 無効時は中継が起動しないので何も応答しない。
+      - "127.0.0.1:9980:9980"
     volumes:
       # Tantivy 全文インデックス（index-per-tenant）の永続化先。
       - shiki-index-data:/var/lib/shiki/index
@@ -477,7 +665,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
+      rustfs:
         condition: service_healthy
       # qdrant / ingestion-worker には依存しない: 検索・インジェストは遅延接続＋
       # リトライで吸収され、server 単体起動（CI smoke 等）で worker のビルドを
@@ -491,7 +679,7 @@ services:
 
 volumes:
   postgres-data:
-  minio-data:
+  rustfs-data:
   tempo-data:
   qdrant-data:
   hf-cache:

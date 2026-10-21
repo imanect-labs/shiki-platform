@@ -36,6 +36,9 @@ pub enum AccessPolicy {
     /// BFF セッション必須・**タイムアウト無し**（SSE ストリーミング。生成の逐次配信で
     /// 接続が長時間開いたままになるため 30s/300s のタイムアウトと衝突させない）。
     SessionStreaming,
+    /// BFF セッション必須＋**組織管理者**（`organization#admin`・管理コンソールの API・標準 30s）。
+    /// パスは `/org-admin/*` に限る（プロビジョナの `/admin/*` と混ぜない）。
+    OrgAdmin,
     /// provisioner service account の Bearer JWT 必須（admin プレーン・300s）。
     /// config（provisioner 資格情報＋admin base）が無ければルートごと不在（fail-closed）。
     Provisioner,
@@ -142,6 +145,32 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/shares/shared-with-me", &["GET"], Session, || {
             get(routes::shares::shared_with_me)
         }),
+        // 共有リンク（#342）。発行/一覧/失効/延長は owner ゲート、redeem は認証のみ（失敗は一律 403）。
+        r("/nodes/{id}/share-links", &["GET", "POST"], Session, || {
+            get(routes::share_links::list_share_links).post(routes::share_links::create_share_link)
+        }),
+        r(
+            "/share-links/{link_id}",
+            &["DELETE", "PATCH"],
+            Session,
+            || {
+                delete(routes::share_links::revoke_share_link)
+                    .patch(routes::share_links::extend_share_link)
+            },
+        ),
+        r("/share-links/redeem", &["POST"], Session, || {
+            post(routes::share_links::redeem_share_link)
+        }),
+        // redeem 済み user の可視化と per-user 個別取消（owner ゲート・#369 C-3 / #375）。
+        r("/share-links/{link_id}/grants", &["GET"], Session, || {
+            get(routes::share_links::list_share_link_grants)
+        }),
+        r(
+            "/share-links/{link_id}/grants/{user_id}",
+            &["DELETE"],
+            Session,
+            || delete(routes::share_links::revoke_share_link_grant),
+        ),
         r("/directory/users", &["GET"], Session, || {
             get(routes::directory::search_users)
         }),
@@ -182,19 +211,7 @@ pub fn route_table() -> Vec<RouteDecl> {
             },
         ),
         // --- 構造化データ（Task 9.2/9.3/9.5）: 宣言は data_route_decls に分離 ---
-        // --- generative UI（Phase 6・保存時検証つき ui_spec ＋ 宣言的アクション） ---
-        r("/ui-specs", &["POST"], Session, || {
-            post(routes::ui_specs::create_ui_spec)
-        }),
-        r("/ui-specs/{id}", &["GET", "PUT"], Session, || {
-            get(routes::ui_specs::get_ui_spec).put(routes::ui_specs::update_ui_spec)
-        }),
-        r(
-            "/ui-specs/{id}/versions/{version}",
-            &["GET"],
-            Session,
-            || get(routes::ui_specs::get_ui_spec_version),
-        ),
+        // --- 会話の図（Yui の ```ui）のボタン（#604） ---
         r(
             "/threads/{thread_id}/messages/{message_id}/ui-actions",
             &["POST"],
@@ -202,6 +219,9 @@ pub fn route_table() -> Vec<RouteDecl> {
             || post(routes::ui_actions::invoke_chat_ui_action),
         ),
         // --- skill（Task 6.7・保存時検証つき。共有は /artifacts/{id}/shares を流用） ---
+        r("/skills/catalog", &["GET"], Session, || {
+            get(routes::skills_catalog::list_skill_catalog)
+        }),
         r("/skills/registry", &["GET"], Session, || {
             get(routes::skills_registry::list_skill_registry)
         }),
@@ -240,6 +260,15 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/mini-apps/{id}/ui-actions", &["POST"], Session, || {
             post(routes::mini_apps::invoke_mini_app_action)
         }),
+        r("/mini-apps/{id}/runs", &["GET"], Session, || {
+            get(routes::mini_apps::list_mini_app_runs)
+        }),
+        r(
+            "/threads/{thread_id}/messages/{message_id}/save-as-app",
+            &["POST"],
+            Session,
+            || post(routes::mini_apps::save_yui_app),
+        ),
         // --- ワークフロー IR（Task 10.1a・保存時検証 V1〜V7・artifact の上） ---
         r("/workflows", &["GET", "POST"], Session, || {
             get(routes::workflows::list_workflows).post(routes::workflows::create_workflow)
@@ -333,6 +362,19 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/threads/{id}/skills", &["PUT"], Session, || {
             put(routes::chat_skills::set_thread_skills)
         }),
+        // 回答への評価（👍 / 👎・#751）。
+        r("/threads/{id}/feedback", &["GET"], Session, || {
+            get(routes::chat_feedback::get_thread_feedback)
+        }),
+        r(
+            "/threads/{id}/messages/{message_id}/feedback",
+            &["PUT", "DELETE"],
+            Session,
+            || {
+                put(routes::chat_feedback::set_message_feedback)
+                    .delete(routes::chat_feedback::clear_message_feedback)
+            },
+        ),
         r("/threads/{id}/messages", &["GET", "POST"], Session, || {
             get(routes::chat::get_messages).post(routes::chat::post_message)
         }),
@@ -367,13 +409,13 @@ pub fn route_table() -> Vec<RouteDecl> {
             &["POST", "DELETE", "GET"],
             Session,
             || {
-                post(routes::chat::share_thread)
-                    .delete(routes::chat::unshare_thread)
-                    .get(routes::chat::list_thread_shares)
+                post(routes::chat_sharing::share_thread)
+                    .delete(routes::chat_sharing::unshare_thread)
+                    .get(routes::chat_sharing::list_thread_shares)
             },
         ),
         // --- SessionLongRunning（300s。finalize は staging のサーバ側ハッシュ＋コピーが
-        //     大容量で 30s を超え、バイトは MinIO にあるのに file が作れない事故を防ぐ） ---
+        //     大容量で 30s を超え、バイトはオブジェクトストアにあるのに file が作れない事故を防ぐ） ---
         r("/files", &["POST"], SessionLongRunning, || {
             post(routes::files::begin_upload)
         }),
@@ -412,6 +454,12 @@ pub fn route_table() -> Vec<RouteDecl> {
             || get(routes::file_versions::version_download_url),
         ),
         r(
+            "/files/{id}/versions/{version}/blocks",
+            &["GET"],
+            SessionLongRunning,
+            || get(routes::doc_blocks::list_blocks),
+        ),
+        r(
             "/files/{id}/versions/{version}/restore",
             &["POST"],
             SessionLongRunning,
@@ -440,6 +488,13 @@ pub fn route_table() -> Vec<RouteDecl> {
             Provisioner,
             || put(routes::admin::set_tenant_autonomous_policy),
         ),
+        // ワークフロー実行履歴の保持期間（日次 GC の起算・#448）。
+        r(
+            "/admin/tenants/{tenant_id}/workflow-retention",
+            &["PUT"],
+            Provisioner,
+            || put(routes::admin::set_tenant_workflow_retention),
+        ),
     ];
     table.extend(routes::collab::collab_route_decls());
     table.extend(routes::documents::documents_route_decls());
@@ -451,6 +506,9 @@ pub fn route_table() -> Vec<RouteDecl> {
     table.extend(routes::app_install::app_install_route_decls());
     table.extend(routes::app_install::trusted_key_route_decls());
     table.extend(routes::office::office_route_decls());
+    table.extend(routes::llm_models::llm_model_route_decls());
+    table.extend(routes::org_admin_ai::org_admin_ai_route_decls());
+    table.extend(routes::org_admin_insights::org_admin_insights_route_decls());
     table
 }
 

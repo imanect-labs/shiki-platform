@@ -221,6 +221,29 @@ async fn checkfileinfo_getfile_putfile_happy_path() {
     assert_eq!(audit_count, 1, "書込の監査記録が残る");
 }
 
+/// AI headless 参加者トークン（issue_ai）: CheckFileInfo が別 view identity
+/// 「Shiki AI」を名乗り、認可は実ユーザーの ReBAC のまま（剥奪で即 404）。
+#[tokio::test]
+async fn ai_actor_token_gets_ai_identity() {
+    let Some(env) = setup().await else { return };
+    let alice = ctx_for("alice", "default");
+    let node = create_docx(&env, &alice, "ai-doc").await;
+    let token = office::wopi::token::issue_ai(&env.key, &alice, node.id).expect("issue_ai");
+
+    let res = send(&env, get_req(node.id, &token, false)).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let info = body_json(res).await;
+    assert_eq!(info["UserId"], "shiki-ai:alice");
+    assert_eq!(info["UserFriendlyName"], "Shiki AI");
+    assert_eq!(info["UserCanWrite"], true, "editor 権限は実ユーザー由来");
+
+    // 認可は実ユーザーの ReBAC（剥奪すれば AI トークンも即 404・存在秘匿）。
+    env.authz.revoke(&alice.subject(), Relation::Editor);
+    env.authz.revoke(&alice.subject(), Relation::Viewer);
+    let res = send(&env, get_req(node.id, &token, false)).await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
 /// 受け入れ条件: 共有解除が次の WOPI 呼び出しで即時反映される
 /// （トークンが有効期限内でも relation 剥奪で 404）。
 #[tokio::test]

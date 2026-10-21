@@ -230,9 +230,13 @@ impl StorageService {
         size: i64,
         content_type: &str,
     ) -> Result<Node, StorageError> {
+        // system は**親から継承**する（#392）。システム領域（エージェントのワークスペース等）に
+        // 置かれたファイルは、ドライブ一覧・名前検索・RAG 索引から一律で外れる。
         let sql = format!(
-            "INSERT INTO node (org, tenant_id, kind, name, parent_id, blob_sha256, size_bytes, content_type, created_by, updated_by) \
-             VALUES ($1, $2, 'file', $3, $4, $5, $6, $7, $8, $8) RETURNING {NODE_COLS}"
+            "INSERT INTO node (org, tenant_id, kind, name, parent_id, blob_sha256, size_bytes, content_type, created_by, updated_by, system) \
+             VALUES ($1, $2, 'file', $3, $4, $5, $6, $7, $8, $8, \
+                     coalesce((SELECT n.system FROM node n WHERE n.id = $4), false)) \
+             RETURNING {NODE_COLS}"
         );
         let row: NodeRow = sqlx::query_as(&sql)
             .bind(&ctx.org)

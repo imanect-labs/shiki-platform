@@ -22,10 +22,12 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
+import { PageContainer } from "@/components/shell/page-container";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/use-toast";
 import { deleteArtifact } from "@/lib/artifact-api";
@@ -158,25 +160,25 @@ export default function WorkflowsPage() {
     }
   };
 
-  return (
-    <div className="mx-auto w-full max-w-4xl px-4 py-6">
-      <div className="mb-5 flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold">ワークフロー</h1>
-          <p className="text-sm text-muted-foreground">
-            ブロックをつないで、定型作業を自動で動く流れにできます。
-          </p>
-        </div>
-        <Button onClick={create} disabled={creating}>
-          {creating ? (
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-          ) : (
-            <Plus className="size-4" aria-hidden />
-          )}
-          新しいワークフロー
-        </Button>
-      </div>
+  const createButton = (
+    <Button onClick={create} disabled={creating}>
+      {creating ? (
+        <Loader2 className="size-4 animate-spin" aria-hidden />
+      ) : (
+        <Plus className="size-4" aria-hidden />
+      )}
+      <span className="sm:hidden">新規作成</span>
+      <span className="hidden sm:inline">新しいワークフロー</span>
+    </Button>
+  );
 
+  return (
+    <PageContainer
+      title="ワークフロー"
+      description="ブロックをつないで、定型作業を自動で動く流れにできます。"
+      className="max-w-4xl"
+      actions={createButton}
+    >
       {items === null ? (
         <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
           <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -187,7 +189,13 @@ export default function WorkflowsPage() {
           seasonal
           icon={Workflow}
           title="まだワークフローがありません"
-          description="「新しいワークフロー」から作成すると、ドラッグ＆ドロップで流れを組み立てられます。"
+          description="作成すると、ブロックを順に足して流れを組み立てられます。"
+          action={
+            <Button variant="outline" onClick={create} disabled={creating}>
+              <Plus className="size-4" aria-hidden />
+              ワークフローを作成
+            </Button>
+          }
         />
       ) : (
         <ul className="rule-soft overflow-hidden rounded-xl border bg-card">
@@ -243,7 +251,8 @@ export default function WorkflowsPage() {
                 variant="ghost"
                 size="icon"
                 aria-label={`「${wf.displayName || wf.name}」を削除`}
-                className="mr-2 shrink-0 text-muted-foreground opacity-0 transition-opacity duration-fast focus-visible:opacity-100 group-hover/row:opacity-100"
+                // マウスではホバーで出す。タッチ端末には hover が無いので常に出す。
+                className="mr-2 shrink-0 text-muted-foreground transition-opacity duration-fast hover:text-destructive focus-visible:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/row:opacity-100"
                 onClick={() => setDeleting(wf)}
               >
                 <Trash2 className="size-4" aria-hidden />
@@ -270,20 +279,16 @@ export default function WorkflowsPage() {
               を削除します。スケジュール等の自動実行も止まります。
             </DialogDescription>
           </DialogHeader>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={() => setDeleting(null)}>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleting(null)}>
               キャンセル
             </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => deleting && void remove(deleting)}
-            >
+            <Button variant="destructive" onClick={() => deleting && void remove(deleting)}>
               削除する
             </Button>
-          </div>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </PageContainer>
   );
 }

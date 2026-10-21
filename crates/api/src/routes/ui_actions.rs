@@ -1,15 +1,14 @@
-//! UI アクション実行 API（Task 6.5）。
+//! 会話の図（Yui の ```ui）のボタンの実行 API（Task 6.5・#604）。
 //!
-//! クライアントは `action_id + params` のみ送れる。束縛定義は**保存済み検証済みの
-//! generative_ui ブロック**からサーバが引き、`gui::ActionDispatcher` が照合・本人認可・
-//! 監査を行う（アンビエント権限なし）。
+//! クライアントは `action_id + params` のみ送れる。ボタンは**保存済みの回答の本文**から
+//! サーバが読み直し、束縛は回答の確定時に解決したものを引く。`gui::ActionDispatcher` が
+//! 本人認可・監査を行う（アンビエント権限なし）。
 
 use axum::{
     extract::{Path, State},
     Json,
 };
-use chat::ContentBlock;
-use gui::{ActionError, ActionSource, UiSpecDoc};
+use gui::{ActionError, ActionSource};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -28,19 +27,51 @@ pub struct UiActionRequest {
     #[serde(default)]
     #[schema(value_type = Object)]
     pub params: serde_json::Value,
+    /// 送信ごとの冪等キー（本文の図のワークフローのボタンでは必須・英数字と `-` `_` の 8〜64 文字）。
+    /// 同じキーの再送は前の起動の結果を返し、run を増やさない（#604）。
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+/// 本文の図（```ui）のボタンの id か（`{16 桁の 16 進}:{ボタンの id}`・#604）。
+fn is_yui_action(action_id: &str) -> bool {
+    action_id.split_once(':').is_some_and(|(hash, id)| {
+        hash.len() == 16
+            && hash
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            && !id.is_empty()
+    })
 }
 
 /// アクション実行レスポンス。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UiActionResponse {
-    /// 束縛種別ごとの結果（handler: 実行結果 / tool: content / workflow: run_id）。
+    /// 束縛種別ごとの結果（handler: 実行結果 / workflow: run_id）。
     #[schema(value_type = Object)]
     pub result: serde_json::Value,
+}
+
+/// 図のボタンの誤り。値の検証（部品の定義・ワークフローの `input_schema`）の誤りは、画面が
+/// 部品の横に出せるよう文言を `errors` に載せて返す（`BadRequest` は本文が `{status,title}` に潰れる）。
+/// 文言は利用者が入れた値の検証結果で、内部の情報は含まない。
+pub(crate) fn map_yui_action_err(e: ActionError) -> ApiError {
+    match e {
+        ActionError::Invalid(m) => ApiError::UnprocessableJson(serde_json::json!({
+            "status": 400,
+            "title": "Bad Request",
+            "errors": [{ "code": "ui_action.invalid", "message": m }],
+        })),
+        other => map_action_err(other),
+    }
 }
 
 pub(crate) fn map_action_err(e: ActionError) -> ApiError {
     match e {
         ActionError::NotFound => ApiError::NotFound,
+        // 二重送信（同じカードの同じ操作を二度実行しようとした）。クライアントは 409 を
+        // 「既に送信済み」として扱い、カードを送信済み表示へ倒す（#410）。
+        ActionError::AlreadyInvoked => ApiError::Conflict,
         ActionError::Forbidden => ApiError::Forbidden,
         ActionError::Invalid(m) => ApiError::BadRequest(m),
         ActionError::Unavailable(m) => ApiError::ServiceUnavailable(m),
@@ -48,7 +79,7 @@ pub(crate) fn map_action_err(e: ActionError) -> ApiError {
     }
 }
 
-/// チャットメッセージ内 generative_ui ブロックのアクションを実行する。
+/// 回答の本文の図のボタンを実行する。
 #[utoipa::path(
     post,
     path = "/threads/{thread_id}/messages/{message_id}/ui-actions",
@@ -63,6 +94,7 @@ pub(crate) fn map_action_err(e: ActionError) -> ApiError {
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "対象が見つからない（未宣言アクション含む）"),
+        (status = 409, description = "この操作は送信済み（単発アクションの二重送信）・同じ冪等キーの起動が途中"),
         (status = 503, description = "チャットまたは束縛先が無効"),
     ),
     security(("session" = [])),
@@ -79,31 +111,12 @@ pub async fn invoke_chat_ui_action(
         .as_ref()
         .ok_or_else(|| ApiError::ServiceUnavailable("チャットが無効です".into()))?;
 
-    // thread viewer 認可つきでメッセージを引く（存在秘匿は store 側の 404/403）。
-    let message = chat
-        .get_message(&ctx, thread_id, message_id, trace.as_deref())
-        .await?;
-    let source = ActionSource::ChatMessage {
-        thread_id,
-        message_id,
-    };
-
-    // メッセージ内の検証済み generative_ui ブロックから action_id を持つ文書を探す。
-    // 保存経路（emit_ui → 検証 → 永続化）を通った本文のみが存在するため、パース失敗は
-    // 想定外データとして黙って読み飛ばす（実行面を fail-closed に保つ）。
-    let doc = message
-        .content
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::GenerativeUi { spec } => {
-                serde_json::from_value::<UiSpecDoc>(spec.clone()).ok()
-            }
-            _ => None,
-        })
-        .find(|doc| doc.actions.iter().any(|a| a.id() == req.action_id));
-
-    let Some(doc) = doc else {
-        // 未宣言アクション（またはUIブロックなし）: Deny 監査を残して存在秘匿の 404。
+    // 図のボタンの id でなければ宣言されていない操作（Deny 監査を残して存在秘匿の 404）。
+    if !is_yui_action(&req.action_id) {
+        let source = ActionSource::ChatMessage {
+            thread_id,
+            message_id,
+        };
         state
             .ui_actions
             .deny(
@@ -115,19 +128,61 @@ pub async fn invoke_chat_ui_action(
             )
             .await;
         return Err(ApiError::NotFound);
+    }
+    // 編集者・本文からの読み直しと値の検証・回数・記録は chat 側の 1 か所で。
+    let values = match req.params {
+        serde_json::Value::Object(map) => map,
+        serde_json::Value::Null => serde_json::Map::new(),
+        _ => {
+            return Err(ApiError::BadRequest(
+                "params は項目と値の組（object）で送ってください".into(),
+            ))
+        }
     };
-
-    let result = state
-        .ui_actions
-        .dispatch(
+    let result = chat
+        .invoke_yui_action(
             &ctx,
-            &source,
-            &doc,
-            &req.action_id,
-            req.params,
+            &state.ui_actions,
+            thread_id,
+            message_id,
+            chat::YuiActionRequest {
+                action_id: req.action_id,
+                values,
+                idempotency_key: req.idempotency_key,
+            },
             trace.as_deref(),
         )
         .await
-        .map_err(map_action_err)?;
+        .map_err(map_yui_action_err)?;
     Ok(Json(UiActionResponse { result }))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn yui_validation_errors_carry_the_message() {
+        let ApiError::UnprocessableJson(body) =
+            map_yui_action_err(ActionError::Invalid("金額: 入力してください".into()))
+        else {
+            unreachable!("検証の誤りは本文つきの 400")
+        };
+        assert_eq!(body["errors"][0]["message"], "金額: 入力してください");
+        assert!(matches!(
+            map_yui_action_err(ActionError::AlreadyInvoked),
+            ApiError::Conflict
+        ));
+    }
+
+    #[test]
+    fn yui_action_ids_are_recognised() {
+        assert!(is_yui_action("0123456789abcdef:a1"));
+        assert!(is_yui_action("0123456789abcdef:approve"));
+        assert!(!is_yui_action("submit"));
+        assert!(!is_yui_action("0123456789ABCDEF:a1"));
+        assert!(!is_yui_action("0123456789abcdef:"));
+        assert!(!is_yui_action("0123456789abcde:a1"));
+    }
 }

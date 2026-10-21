@@ -23,7 +23,7 @@ use crate::chunker::{chunk_document, ChunkParams};
 use crate::embedding::EmbedInput;
 use crate::error::RagError;
 use crate::fulltext::FulltextDoc;
-use crate::parser::ParseRequest;
+use crate::parser::{ParseRequest, ParseSource};
 use crate::store;
 use crate::types::ChunkKind;
 use crate::vector_store::ChunkPoint;
@@ -188,7 +188,7 @@ async fn index_node(
         .parse(
             ctx,
             ParseRequest {
-                source_url: &source_url,
+                source: ParseSource::Url(&source_url),
                 content_type: &base_type,
                 file_name: &snapshot.name,
             },
@@ -209,6 +209,8 @@ async fn index_node(
         .iter()
         .filter(|c| c.kind != ChunkKind::Parent)
         .collect();
+    // searchable_text() は本文の String を新規に作る。埋め込みと Tantivy で 2 度呼ぶと
+    // 文書全文ぶんの確保が二重に走るので、1 度だけ作って使い回す。
     let texts: Vec<String> = embeddable.iter().map(|c| c.searchable_text()).collect();
     let embedded = deps
         .embedder
@@ -230,6 +232,7 @@ async fn index_node(
         message.node_id,
         message.version,
         &chunks,
+        &parsed.blocks,
         &authz_tags,
         deps.embedder.model_version(),
     )
@@ -264,7 +267,9 @@ async fn index_node(
         message.node_id,
         embeddable
             .iter()
-            .map(|c| (c.id, message.version, c.searchable_text()))
+            .map(|c| c.id)
+            .zip(texts)
+            .map(|(id, text)| (id, message.version, text))
             .collect(),
         authz_tags,
     )
