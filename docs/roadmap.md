@@ -239,7 +239,7 @@ Phase 1（ストレージ・ReBAC）・Phase 8（監査）。詳細: [phase-14.m
   ランタイム DDL を完全にゼロにする。`HASH(table_int)` パーティション。
 - **識別子 3 層**（id / key / display_name）で**日本語の列名**とゼロコストのリネームを可能にする。
 - **クエリ IR 刷新**: AND/OR/NOT 条件木（workflow IR の `Condition` と同語彙）・複数ソート・keyset ページング（OFFSET 廃止）・
-  上限付き件数・駆動索引をコンパイラが選択（＋EXPLAIN 回帰の CI ゲート）。
+  上限付き件数・**自前クエリオプティマイザ**（統計と閲覧者の認可材料からソート駆動／フィルタ駆動／認可駆動を選び、推定が外れたら予算で切り替える・[data/query-optimizer.md](./data/query-optimizer.md)）＋EXPLAIN 回帰の CI ゲート。
 - **リンク／ロールアップ／数式**（閉じた AST＋依存 DAG）。計算列の材料化は**参照先の authz 不変性**で決める
   （`Invariant` のみ材料化可。PIT-20 の全面解決）。
 - **型付き ViewSpec**（grid/kanban/calendar/gallery）＋フロント一式、**サーバ権威の SSE 差分配信**（CRDT は不採用）、
