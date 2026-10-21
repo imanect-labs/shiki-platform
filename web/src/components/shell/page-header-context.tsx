@@ -258,13 +258,7 @@ export function ChromeActions({ spec, divided = false }: { spec: PageChromeSpec;
 }
 
 /// 戻るボタン（href なら Link、onClick ならボタン）。
-export function ChromeBackButton({
-  back,
-  className,
-}: {
-  back: NonNullable<PageChromeSpec["back"]>;
-  className?: string;
-}) {
+export function ChromeBackButton({ back }: { back: NonNullable<PageChromeSpec["back"]> }) {
   const label = back.label ?? "戻る";
   if (back.href) {
     return (
@@ -276,7 +270,6 @@ export function ChromeBackButton({
           "flex size-9 shrink-0 items-center justify-center rounded-[10px] text-foreground/70 outline-none",
           "transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
           "max-md:size-11 max-md:hover:bg-sidebar-accent",
-          className,
         )}
       >
         <ChevronLeft className="size-[21px]" aria-hidden />
@@ -284,11 +277,7 @@ export function ChromeBackButton({
     );
   }
   return (
-    <ChromeIconButton
-      label={label}
-      onClick={back.onClick}
-      className={cn("[&_svg]:size-[21px]", className)}
-    >
+    <ChromeIconButton label={label} onClick={back.onClick} className="[&_svg]:size-[21px]">
       <ChevronLeft aria-hidden />
     </ChromeIconButton>
   );

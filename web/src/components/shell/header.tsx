@@ -10,6 +10,7 @@ import {
   ChromeActions,
   ChromeBackButton,
   ChromeBar,
+  ChromeDivider,
   usePageChromeValue,
 } from "./page-header-context";
 
@@ -51,24 +52,13 @@ export const CHROME_TRAY = cn(
   "bg-sidebar/95 shadow-[var(--elevation-md)] backdrop-blur supports-[backdrop-filter]:bg-sidebar/80",
 );
 
-/// スマホ左上（メニュー・戻る）の並び。四角い台にまとめず、1 つずつ丸いボタンとして浮かせる。
-/// 面・枠・影は右上の台（`CHROME_TRAY`）と同じ素材にして、押せるものだと分かるようにする。
-export const CHROME_BARE = "pointer-events-auto flex h-12 items-center gap-2";
-export const CHROME_BARE_BUTTON = cn(
-  "size-12 rounded-full border border-sidebar-border max-md:size-12",
-  "bg-sidebar/95 shadow-[var(--elevation-md)] backdrop-blur supports-[backdrop-filter]:bg-sidebar/80",
-  "max-md:hover:bg-sidebar-accent",
-);
-
 /// ドロワ（ナビゲーション）を開くボタン。顔はロゴの四つの点（`BrandMark`）。
 export function MenuMarkButton({
   onClick,
   label = "メニューを開く",
-  className,
 }: {
   onClick: () => void;
   label?: string;
-  className?: string;
 }) {
   return (
     <button
@@ -76,10 +66,7 @@ export function MenuMarkButton({
       onClick={onClick}
       aria-label={label}
       title={label}
-      className={cn(
-        "group flex size-11 items-center justify-center rounded-[10px] text-foreground outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94]",
-        className,
-      )}
+      className="group flex size-11 items-center justify-center rounded-[10px] text-foreground outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94]"
     >
       <BrandMark className="size-6 transition-transform duration-[var(--duration-normal)] ease-[var(--ease-standard)] group-hover:scale-110" />
     </button>
@@ -112,9 +99,14 @@ export function MobileChrome() {
       />
 
       <div className="relative flex items-start justify-between gap-2 px-2.5 pt-[max(0.5rem,env(safe-area-inset-top))]">
-        <div className={CHROME_BARE}>
-          <MenuMarkButton onClick={() => setMobileOpen(true)} className={CHROME_BARE_BUTTON} />
-          {spec?.back ? <ChromeBackButton back={spec.back} className={CHROME_BARE_BUTTON} /> : null}
+        <div className={CHROME_TRAY}>
+          <MenuMarkButton onClick={() => setMobileOpen(true)} />
+          {spec?.back ? (
+            <>
+              <ChromeDivider />
+              <ChromeBackButton back={spec.back} />
+            </>
+          ) : null}
         </div>
         {hasRight && spec ? (
           <div className={cn(CHROME_TRAY, spec.primary && "pl-1")}>
