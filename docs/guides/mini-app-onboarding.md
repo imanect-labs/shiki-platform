@@ -332,7 +332,7 @@ shiki ならではの差別化。ミニアプリは2種類の AI 呼び出しを
 ```mermaid
 flowchart TB
   subgraph UT["ミニアプリ（out-of-trust = 信頼しない）"]
-    A["A 宣言的(FR-6)<br/>検証済UIスペック"]
+    A["A 宣言的(FR-6)<br/>図ブロックの画面"]
     B1["B1 薄型: フロントのみ<br/>別オリジン+CSP"]
     B2["B2 厚型: +サーバ側関数<br/>サンドボックス上"]
   end

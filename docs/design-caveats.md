@@ -165,7 +165,8 @@
 data 行authz（§4.10/Phase 9, PIT-17〜21）・サンドボックス（§4.6/Phase 4, PIT-22〜25）・
 skillex 境界（§4.1.1, PIT-26〜29。2026-09-29 に共有プレーン廃止で大半解消・各項の更新注記参照）を対象にした。残る未精査領域:
 
-- **§4.7 / Phase 6 generative UI・宣言的UIスペック検証**（信頼カタログの境界・スペック注入）。
+- **§4.7 / Phase 6 generative UI**（2026-10・#604 で本文の図ブロックに置き換え。信頼の境界はボタンの実行経路＝
+  編集者の確認・束縛の固定・値の検証・冪等キーへ移った。精査は未了）。
 - **§4.4 chat / Phase 3 SSE 再接続・content blocks の改竄/サイズ**（未深掘り）。
 - **§4.8 / Phase 7 資料作成**（テンプレ穴埋めのインジェクション・生成物の権限）。
 
@@ -811,6 +812,10 @@ skillex 境界（§4.1.1, PIT-26〜29。2026-09-29 に共有プレーン廃止�
 
 - **箇所**: design §4.7（generative UI・`crates/gui/src/dispatch.rs`・`crates/api/src/routes/ui_actions.rs`・
   `web/src/components/genui/*`・issue #410）。
+- **2026-10 改訂（#604）**: 質問カード・計画カードは本文の `` ```ui `` の ask・plan に置き換わり、web の genui は撤去した
+  （現在の箇所は `crates/chat/src/store/yui_actions.rs`・`web/src/components/prompt-kit/yui-actions.tsx`）。
+  会話に送るボタン（ask・plan・`-> chat`）の「1 回だけ」は引き続き `ui_action_invocation` が持つ。ワークフローを
+  起動するボタンは送信ごとの冪等キーで 1 回だけ起動する（`ui_action_run`・migration 0070）。以下の原則は変わらない。
 - **リスク**: 質問カード・計画カードの「送信済み」を React の state だけで持つと、**押した事実が
   どこにも残らない**。会話は押下のたびに再描画され（新しい run が生まれる）、生成完了時にカードは
   ストリーム側から確定メッセージ側へ作り直され、リロードでは保存済みスペックから素のカードが
