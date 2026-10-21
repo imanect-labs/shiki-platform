@@ -18,20 +18,26 @@ export function login(next?: string): void {
   window.location.href = "/auth/login";
 }
 
-/// /login が Keycloak へ自動で送った時刻の控え。ログイン済みになったら消す。
+/// /login が Keycloak へ自動で送った時刻の控え（直近の数件）。ログイン済みになったら消す。
 const AUTO_LOGIN_AT_KEY = "shiki:auto-login-at";
-/// この間に再び未ログインで /login へ戻ってきたら、自動では送らない。
-const AUTO_LOGIN_GUARD_MS = 30_000;
+/// この時間内に自動で送った回数を数える。
+const AUTO_LOGIN_WINDOW_MS = 10_000;
+/// 時間内にこの回数送っても未ログインのまま戻ってくるなら、ループとみなして止める。
+/// ログアウト直後に保護ページを開き直す（2 回目）のような通常の往復は止めない。
+const AUTO_LOGIN_MAX_IN_WINDOW = 2;
 
-/// /login から Keycloak へ自動で送ってよいか。直前に送ったのにまだ未ログインで戻ってきた場合
+/// /login から Keycloak へ自動で送ってよいか。短時間に何度送っても未ログインで戻ってくる場合
 /// （Cookie が保存されない設定など）は false を返し、リダイレクトの無限ループを止める。
 /// 送ってよいときは時刻を控える。sessionStorage が使えないときは常に送る（従来どおり）。
 export function claimAutoLogin(): boolean {
   try {
-    const last = Number(sessionStorage.getItem(AUTO_LOGIN_AT_KEY) ?? "0");
     const now = Date.now();
-    if (last > 0 && now - last < AUTO_LOGIN_GUARD_MS) return false;
-    sessionStorage.setItem(AUTO_LOGIN_AT_KEY, String(now));
+    const raw = JSON.parse(sessionStorage.getItem(AUTO_LOGIN_AT_KEY) ?? "[]") as unknown;
+    const recent = (Array.isArray(raw) ? raw : []).filter(
+      (t): t is number => typeof t === "number" && now - t < AUTO_LOGIN_WINDOW_MS,
+    );
+    if (recent.length >= AUTO_LOGIN_MAX_IN_WINDOW) return false;
+    sessionStorage.setItem(AUTO_LOGIN_AT_KEY, JSON.stringify([...recent, now]));
   } catch {
     // ストレージが使えない環境では止め役を持たない。
   }
@@ -45,7 +51,7 @@ export function consumePostLoginNext(): string | null {
   try {
     sessionStorage.removeItem(AUTO_LOGIN_AT_KEY);
   } catch {
-    // 消せなくても次の判定が 30 秒で切れるだけ。
+    // 消せなくても控えは 10 秒で数えなくなるだけ。
   }
   const next = sessionStorage.getItem(POST_LOGIN_NEXT_KEY);
   if (next) sessionStorage.removeItem(POST_LOGIN_NEXT_KEY);
