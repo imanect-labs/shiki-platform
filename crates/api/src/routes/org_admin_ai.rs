@@ -250,7 +250,7 @@ pub async fn get_settings(
 
 /// 欠落（変えない）と `null`（上書きを外す）を区別して読む。
 #[allow(clippy::option_option)] // 「変えない／外す／値」の 3 状態をそのまま表す。
-fn nullable<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+pub(crate) fn nullable<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,
@@ -376,7 +376,7 @@ pub async fn update_settings(
 }
 
 /// 利用者へ理由を返す 400（`BadRequest` は本文が潰れるので構造化ボディで返す）。
-fn invalid(detail: &str) -> ApiError {
+pub(crate) fn invalid(detail: &str) -> ApiError {
     ApiError::UnprocessableJson(json!({
         "status": 400,
         "title": "Bad Request",

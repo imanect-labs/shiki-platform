@@ -6,19 +6,9 @@
 import * as React from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
+import { AXIS_TICK, TOOLTIP_STYLE } from "./chart-style";
 import { formatCompact, formatDay, formatInt, formatUsd } from "./format";
 import type { UsageMetric } from "./usage-chart";
-
-const AXIS_TICK = { fontSize: 11, fill: "var(--muted-foreground)" } as const;
-
-const TOOLTIP_STYLE = {
-  backgroundColor: "var(--card)",
-  border: "1px solid var(--border)",
-  borderRadius: 10,
-  fontSize: 12,
-  color: "var(--foreground)",
-  boxShadow: "var(--shadow-md, 0 4px 12px rgb(0 0 0 / 0.08))",
-} as const;
 
 const FORMAT: Record<UsageMetric, (n: number) => string> = {
   cost: formatUsd,
