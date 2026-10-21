@@ -99,6 +99,12 @@ impl AuthConfig {
         )
     }
 
+    /// Keycloak Account REST の base URL（ユーザー自身の資格情報・セッション）。
+    /// サーバ側から叩くため内部 base（無ければ issuer）由来。
+    pub fn account_base(&self) -> String {
+        format!("{}/account", self.backchannel_base())
+    }
+
     /// Keycloak admin REST の base URL（SAAS.2 プロビジョニング）。
     ///
     /// `admin_base_url` 上書きが無ければ、内部 base（例 `http://keycloak:8080/realms/shiki`）

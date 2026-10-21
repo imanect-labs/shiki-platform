@@ -18,7 +18,7 @@ use axum_extra::extract::cookie::CookieJar;
 
 use crate::{
     error::ApiError,
-    extract::TenantId,
+    extract::{SessionAccessToken, TenantId},
     middleware::claims,
     oidc,
     routes::auth::CSRF_HEADER,
@@ -90,6 +90,9 @@ pub async fn require_session(
     }
 
     // principal + tenant_id を extension に載せる（AuthContext extractor が取り出す）。
+    // IdP の access token（本人権限で Keycloak Account API を呼ぶハンドラ用。外へは出さない）。
+    req.extensions_mut()
+        .insert(SessionAccessToken(record.access_token));
     req.extensions_mut().insert(record.principal);
     req.extensions_mut().insert(TenantId(tenant_id));
     Ok(next.run(req).await)
