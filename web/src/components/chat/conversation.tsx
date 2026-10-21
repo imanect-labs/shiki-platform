@@ -822,7 +822,7 @@ export function Conversation({
             {showJump ? (
               <div
                 style={{ bottom: composerHeight + 12 }}
-                className="absolute left-1/2 z-20 flex -translate-x-1/2 items-center gap-2"
+                className="absolute left-1/2 z-10 flex -translate-x-1/2 items-center gap-2"
               >
                 <button
                   type="button"
@@ -859,8 +859,9 @@ export function Conversation({
             ) : null}
 
             {/* 入力欄は帯で区切らず本文の上に浮かせる。入力欄の下半分から下端だけ背景色へ
-                ぼかし、潜り込んだ本文が入力欄の下の隙間でちらつかないようにする。 */}
-            <div ref={setComposerBox} className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
+                ぼかし、潜り込んだ本文が入力欄の下の隙間でちらつかないようにする。入力欄の上へ開く
+                「/」の補完が「一つ前・最新へ・一つ後」より前に出るよう、こちらを上の層にする。 */}
+            <div ref={setComposerBox} className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
               <div
                 aria-hidden
                 className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-background from-40% to-transparent"
