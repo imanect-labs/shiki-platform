@@ -109,7 +109,7 @@ function Breakdown({
                 </div>
                 <div className="mt-1.5 h-1.5 rounded-full bg-muted">
                   <div
-                    className="h-full rounded-full bg-primary"
+                    className="h-full rounded-full bg-[var(--chart-1)]"
                     style={{ width: basis > 0 ? `${Math.max(2, (basis / max) * 100)}%` : "0%" }}
                   />
                 </div>

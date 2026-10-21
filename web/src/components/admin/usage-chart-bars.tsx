@@ -76,7 +76,7 @@ export default function UsageChartBars({
             formatter={(v) => [FORMAT[metric](Number(v)), ""]}
             separator=""
           />
-          <Bar dataKey="value" fill="var(--primary)" radius={[4, 4, 0, 0]} maxBarSize={28} />
+          <Bar dataKey="value" fill="var(--chart-1)" radius={[4, 4, 0, 0]} maxBarSize={28} />
         </BarChart>
       </ResponsiveContainer>
     </div>

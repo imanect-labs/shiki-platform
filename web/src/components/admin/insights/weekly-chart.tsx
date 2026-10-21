@@ -15,18 +15,18 @@ export type WeekRow = {
   partial: boolean;
 };
 
-/// 使った日数の区分（順序のある 3 段階なので `--primary` の濃淡 1 色で表す）。
+/// 使った日数の区分（順序のある 3 段階なので、系列の 1 番目の色〔冬・雪空〕の濃淡で表す・#783）。
 export const WEEKLY_SERIES = [
-  { key: "heavy", label: "ヘビー（週 4 日以上）", color: "var(--primary)" },
+  { key: "heavy", label: "ヘビー（週 4 日以上）", color: "var(--chart-1-strong)" },
   {
     key: "regular",
     label: "レギュラー（週 2〜3 日）",
-    color: "var(--ordinal-2)",
+    color: "var(--chart-1)",
   },
   {
     key: "light",
     label: "ライト（週 1 日）",
-    color: "var(--ordinal-3)",
+    color: "var(--chart-1-weak)",
   },
 ] as const;
 

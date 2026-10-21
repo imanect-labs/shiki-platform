@@ -70,10 +70,21 @@
   --elevation-md: 0 4px 12px -2px oklch(0 0 0 / 0.1), 0 2px 6px -3px oklch(0 0 0 / 0.08);
   --elevation-lg: 0 12px 32px -8px oklch(0 0 0 / 0.16), 0 4px 12px -6px oklch(0 0 0 / 0.1);
 
-  /* 順序のある 3 段階（濃 → 淡: --primary / --ordinal-2 / --ordinal-3）。活用分析の区分に使う。
-     淡い端も面に対して 2:1 以上（dataviz の validate_palette --ordinal で確認）。 */
-  --ordinal-2: color-mix(in oklab, var(--primary) 62%, var(--card));
-  --ordinal-3: color-mix(in oklab, var(--primary) 33%, var(--card));
+  /* グラフの系列色（#783）。チャットの本文の図（@imanect/yui の render/theme.js の s1〜s8）と同じ値で、
+     四季の色相を彩度を抑えて並べ、色覚多様性のシミュレーションで隣どうしを区別できることを検証済み。
+     冬（雪空）・秋（紅葉）・夏（新緑）・紺・春（桜）・山吹・青磁・鳶。単系列の量は --chart-1 で塗る。 */
+  --chart-1: #398cb8;
+  --chart-2: #cc7d49;
+  --chart-3: #1e7751;
+  --chart-4: #395490;
+  --chart-5: #c1707e;
+  --chart-6: #cca754;
+  --chart-7: #2ca59f;
+  --chart-8: #944b39;
+  /* --chart-1 の濃淡（順序のある 3 段階は 強 / --chart-1 / 弱）。淡い端も面に対して 2:1 以上
+     （dataviz の validate_palette --ordinal で確認）。 */
+  --chart-1-strong: #2d6c90;
+  --chart-1-weak: #7db1cf;
 
   /* モーション */
   --duration-fast: 120ms;
@@ -127,9 +138,17 @@
   --season-autumn: oklch(0.77 0.10 56);
   --season-winter: oklch(0.74 0.07 238);
 
-  /* 順序のある 3 段階（暗い面では淡い端が沈むので混ぜる割合を上げる） */
-  --ordinal-2: color-mix(in oklab, var(--primary) 68%, var(--card));
-  --ordinal-3: color-mix(in oklab, var(--primary) 42%, var(--card));
+  /* グラフの系列色（ダーク・Yui の DARK と同じ値）。暗い面では「強」が明るい側になる。 */
+  --chart-1: #4d9ac8;
+  --chart-2: #c5804c;
+  --chart-3: #1a7854;
+  --chart-4: #3e62a8;
+  --chart-5: #a75864;
+  --chart-6: #b48c2c;
+  --chart-7: #179a94;
+  --chart-8: #a15744;
+  --chart-1-strong: #93c0de;
+  --chart-1-weak: #437799;
 
   /* ダークはシャドウを濃く・広く */
   --elevation-xs: 0 1px 2px 0 oklch(0 0 0 / 0.3);
