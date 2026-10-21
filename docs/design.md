@@ -684,7 +684,7 @@ flowchart TB
   フィールド型に user/dept/file/record 参照。
   **行認可 = テーブルReBAC（OpenFGA・有界）＋クエリ時述語（ABAC・WHERE強制付与・集計にも適用・バイパス不可）＋フィールドマスク＋個別共有のみスパースtuple**。
   宣言的クエリ/保存ビュー（生SQL非公開）、リビジョン履歴、`rev`で楽観ロック。
-  **正本は [data-platform.md](./data-platform.md)**（Teable/Lists 級への再設計・Phase 13）。要点:
+  **正本は [data-platform.md](./data-platform.md)**（Teable/Lists 級への再設計・Phase 15）。要点:
   索引はフィールドごとの式インデックスではなく**型付き pivot 索引テーブル**（Salesforce `MT_Indexes` /
   SharePoint `NameValuePair` と同型）に載せ、**物理オブジェクト数をテナント数・テーブル数から独立させる**
   （フルプール §4.1 が課す制約。ランタイム DDL は完全にゼロになる）。

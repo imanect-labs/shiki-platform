@@ -9,7 +9,7 @@
 > [Phase 3](./roadmap/phase-3.md) ・ [Phase 4](./roadmap/phase-4.md) ・ [Phase 5](./roadmap/phase-5.md) ・
 > [Phase 6](./roadmap/phase-6.md) ・ [Phase 7](./roadmap/phase-7.md) ・ [Phase 8](./roadmap/phase-8.md) ・
 > [Phase 9](./roadmap/phase-9.md) ・ [Phase 10](./roadmap/phase-10.md) ・ [Phase 11-pre](./roadmap/phase-11-pre.md) ・
-> [Phase 11](./roadmap/phase-11.md) ・ [Phase 12](./roadmap/phase-12.md) ・ [Phase 13](./roadmap/phase-13.md) ・
+> [Phase 11](./roadmap/phase-11.md) ・ [Phase 12](./roadmap/phase-12.md) ・ [Phase 15](./roadmap/phase-15.md) ・
 > [並行/将来トラック](./roadmap/parallel-tracks.md)
 >
 > 各タスクは1つのGitHub Issueに対応（area:* ラベル）。
@@ -41,12 +41,12 @@ flowchart LR
   P10A -.->|csvワークフロー公開 11P.9| P11P
   P11P --> P11["Phase 11<br/>スライド自前＋Office統合<br/>GrapesJS/Yjs・Collabora"]
   P8 --> P12["Phase 12<br/>SaaSアルファ運用<br/>管理2枚/フィードバック/IaC"]
-  P9 --> P13A["Phase 13.1-13.3<br/>構造化データ再基盤化<br/>pivot索引/識別子/クエリIR"]
-  P13A --> P13B["Phase 13.4-13.8<br/>Teable/Lists 級の表体験<br/>リンク・数式/ビュー/SSE/各面公開"]
-  P10 --> P13B
-  P6 --> P13B
-  P11P --> P13B
-  P13A -->|アルファ前必須| ALPHA["★プライベートアルファ"]
+  P9 --> P15A["Phase 15.1-15.3<br/>構造化データ再基盤化<br/>pivot索引/識別子/クエリIR"]
+  P15A --> P15B["Phase 15.4-15.8<br/>Teable/Lists 級の表体験<br/>リンク・数式/ビュー/SSE/各面公開"]
+  P10 --> P15B
+  P6 --> P15B
+  P11P --> P15B
+  P15A -->|アルファ前必須| ALPHA["★プライベートアルファ"]
   P10 --> ALPHA
   P11 --> ALPHA
   P12 --> ALPHA
@@ -56,7 +56,7 @@ flowchart LR
 
 > **SaaS を優先ターゲットとする**（requirements §1.1）。**SaaS トポロジ（共有コントロールプレーン＋フルプールのデータプレーン・design §4.1）と `tenant_id` を Phase 0 の歩く骨格から前提**にし、クラウド向けトレイト実装（GCS/Cloud SQL/Vertex 等）は各フェーズで該当機能を作る都度に実装する（旧 Phase 8「クラウド対応」を解体し各フェーズへ溶かした）。オンプレ版は同一コードベースをトレイト差し替え＋デプロイ構成で吸収する従ターゲット。
 >
-> 📌 **テナンシー方式の正本化（2026-07）**: データプレーンは**フルプール（全テナント共有ストア＋`tenant_id` 論理分離）が既定**であり、**顧客ごと専用ストア（cell）は専用環境契約向けの将来オプション**へ降格した。実装（全テーブル `tenant_id`・FGA 識別子名前空間化・Qdrant 単一 collection・プール型 Redis）は当初からフルプールで、requirements/roadmap 側の「cell 隔離が正」という記述が実装と乖離していたため本改訂で統一した。**この前提は「テナント数に比例して物理オブジェクト（索引・テーブル）が増える設計を禁じる」という制約を全フェーズに課す**（→ Phase 13）。スケール戦略は [data-platform.md §12](./data-platform.md)。
+> 📌 **テナンシー方式の正本化（2026-07）**: データプレーンは**フルプール（全テナント共有ストア＋`tenant_id` 論理分離）が既定**であり、**顧客ごと専用ストア（cell）は専用環境契約向けの将来オプション**へ降格した。実装（全テーブル `tenant_id`・FGA 識別子名前空間化・Qdrant 単一 collection・プール型 Redis）は当初からフルプールで、requirements/roadmap 側の「cell 隔離が正」という記述が実装と乖離していたため本改訂で統一した。**この前提は「テナント数に比例して物理オブジェクト（索引・テーブル）が増える設計を禁じる」という制約を全フェーズに課す**（→ Phase 15）。スケール戦略は [data-platform.md §12](./data-platform.md)。
 
 ---
 
@@ -182,14 +182,14 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 - IaC（OpenTofu・cell プロビジョニング自動化）・テナント消去機構・バックアップ/DR（整合スナップショット）・API レート制限。
 - **成果物**: プライベートアルファを顧客に配れる運用体制（契約→プロビジョニング→サポート→解約消去が回る）。
 
-## Phase 13 — 構造化データ基盤 v2（Teable / Microsoft Lists 級）
+## Phase 15 — 構造化データ基盤 v2（Teable / Microsoft Lists 級）
 **依存**: Phase 9（data v1）・Phase 10（IR 語彙・ノードカタログ）・Phase 6（genUI 束縛）・Phase 11-pre（グリッド UI 前例）。
-詳細: [phase-13.md](./roadmap/phase-13.md) ／ 設計正本: [data-platform.md](./data-platform.md)
+詳細: [phase-15.md](./roadmap/phase-15.md) ／ 設計正本: [data-platform.md](./data-platform.md)
 
-> 🔴 **13.1〜13.3（再基盤化）はアルファ前必須**。v1 は索引宣言フィールドごとに `data_record` へ partial 式インデックスを張るため、
+> 🔴 **15.1〜15.3（再基盤化）はアルファ前必須**。v1 は索引宣言フィールドごとに `data_record` へ partial 式インデックスを張るため、
 > 索引本数が **テナント数 × テーブル数 × 索引列数** で増え、1 行の INSERT で全索引を open する構造になっている。
 > **フルプール前提では顧客 20〜50 社で劣化し数百社で停止する**（リリースブロッカー）。
-> かつ移行はレコード数に比例するため、**データが小さい今が最安の時機**。13.4 以降はアルファと並走可。
+> かつ移行はレコード数に比例するため、**データが小さい今が最安の時機**。15.4 以降はアルファと並走可。
 
 - **物理設計の作り直し**: フィールドごとの式インデックス →**型付き pivot 索引テーブル**
   （Salesforce `MT_Indexes` ／ SharePoint `NameValuePair` と同型）。**索引の物理本数をテナント数・テーブル数から独立させ**、
@@ -208,8 +208,8 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 
 ---
 
-> **プライベートアルファ = Phase 0〜12 ＋ Phase 13.1〜13.3 ＋ SAAS.1〜4 の完成形**（requirements §1.1 のリリース定義）。
-> Phase 13.4 以降はアルファ後の継続開発。
+> **プライベートアルファ = Phase 0〜12 ＋ Phase 15.1〜15.3 ＋ SAAS.1〜4 の完成形**（requirements §1.1 のリリース定義）。
+> Phase 15.4 以降はアルファ後の継続開発。
 
 ---
 
@@ -220,7 +220,7 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 | **Phase 10 Stage A（WF エンジン核心 前倒し）** | **完了（2026-07-10・#203〜）**。dnd/AI 編集/実行履歴 UI も完了し、残りは Phase 9 依存分（skill/data 系）のみ | 6.1 先行＋既存基盤のみで Phase 5〜9 と並走。Stage 分割は [phase-10.md](./roadmap/phase-10.md) |
 | **skillex 認証統合** | Phase 0 の認証が安定したら**並行**（skillexは並行進行中） | 共有プール、DLC/LLM利用トークン発行を Phase 0 設計に織り込む |
 | ~~資料作成 v2（ブラウザ内編集）~~ | **Phase 11 に昇格**（2026-07） | V2 トラックは Phase 11（Collabora）へ統合 |
-| 専用ストア（cell 隔離）＋テナント単位プール分割 | 専用環境契約 or 数千社規模になったら | **既定はフルプール**（design §4.1・2026-07 正本化で本項と旧「フルプール最適化」項が反転）。数十〜数百社の一次目標は単一プールで充足するため、Phase 13 では**プール解決の継ぎ目とシャード安全の禁止事項の明文化のみ**を行い、実分割・テナント引越ツールは需要発生時に着手する（[data-platform.md §12](./data-platform.md)） |
+| 専用ストア（cell 隔離）＋テナント単位プール分割 | 専用環境契約 or 数千社規模になったら | **既定はフルプール**（design §4.1・2026-07 正本化で本項と旧「フルプール最適化」項が反転）。数十〜数百社の一次目標は単一プールで充足するため、Phase 15 では**プール解決の継ぎ目とシャード安全の禁止事項の明文化のみ**を行い、実分割・テナント引越ツールは需要発生時に着手する（[data-platform.md §12](./data-platform.md)） |
 | ミニアプリ marketplace（第三者公開） | Phase 9 安定後 | 信頼ティアに審査付き第三者枠を追加 |
 | 会話ブランチUI | 任意 | データ構造は Phase 3 で用意済み |
 
@@ -233,8 +233,8 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 - **M5（Phase 9）**: ★コードベース業務アプリ基盤（構造化データ＋ワークフロー＋セキュア内部API＋AI）。
 - **M6（Phase 10–11）**: ★ワークフロー基盤（n8n 相当）＋エディタ（ノート/CSV=11-pre）＋Office 統合 = 業務自動化と文書作成の完成形
   （エンジン核心 Stage A は 2026-07 前倒しで M3 以降と並走・#121）。
-- **M6.5（Phase 13.1–13.3）**: 🔴 構造化データの**再基盤化**（pivot 索引・識別子・クエリ IR）。
+- **M6.5（Phase 15.1–15.3）**: 🔴 構造化データの**再基盤化**（pivot 索引・識別子・クエリ IR）。
   フルプールで顧客を載せる前提条件であり、アルファのブロッカー。データが小さいうちに実施する。
-- **M7（Phase 12 ＋ Phase 13.1–13.3）**: ★★プライベートアルファ・リリース（運用体制込み）。
-- **M8（Phase 13.4–13.8）**: Teable / Microsoft Lists 級の表体験（リンク・数式・ビュー・リアルタイム・全面公開）。
+- **M7（Phase 12 ＋ Phase 15.1–15.3）**: ★★プライベートアルファ・リリース（運用体制込み）。
+- **M9（Phase 15.4–15.8）**: Teable / Microsoft Lists 級の表体験（リンク・数式・ビュー・リアルタイム・全面公開）。
   アルファと並走。

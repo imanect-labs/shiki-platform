@@ -1,4 +1,4 @@
-# Phase 13 — 構造化データ基盤 v2（Teable / Microsoft Lists 級）
+# Phase 15 — 構造化データ基盤 v2（Teable / Microsoft Lists 級）
 
 > 目的: Phase 9 で立ち上げた `crates/data` を、**業務アプリ基盤として通用するテーブル基盤**へ引き上げ、
 > **workflow / shiki script / generative UI / chat の全面から同一のクエリ IR とビュー定義で参照できる**ようにする。
@@ -13,17 +13,17 @@
 
 ## 位置づけと緊急度
 
-**13.1〜13.3（再基盤化）はプライベートアルファ前の必須項目**である。理由は 2 つ。
+**15.1〜15.3（再基盤化）はプライベートアルファ前の必須項目**である。理由は 2 つ。
 
 1. **現行の索引方式はフルプールで破綻する。** v1 は索引宣言フィールドごとに `data_record` 上へ
    partial 式インデックスを張るため、索引本数が**テナント数 × テーブル数 × 索引列数**で増え、
    それが単一 relation にぶら下がる。PostgreSQL は 1 行の INSERT で全索引を open し partial 述語を
    全件評価するため、**顧客 20〜50 社で劣化し数百社で停止する**（data-platform.md §1.1）。
    SaaS のデータプレーンはフルプール（design §4.1・SAAS.5 達成済み）なので、これはリリースブロッカー。
-2. **データが小さい今が移行の最安時機。** 13.1（JSONB キー書換）と 13.2（索引バックフィル）は
+2. **データが小さい今が移行の最安時機。** 15.1（JSONB キー書換）と 15.2（索引バックフィル）は
    レコード数に比例する。顧客が入ってからでは移行コストが跳ね上がる。
 
-13.4 以降（機能拡張・UI・各面公開）はアルファと並走してよい。
+15.4 以降（機能拡張・UI・各面公開）はアルファと並走してよい。
 
 ## 依存
 
@@ -32,39 +32,39 @@
 - **Phase 6**（generative UI の `ActionBinding` / `ActionDispatcher`）
 - **Phase 11-pre**（グリッド UI の前例 `web/src/components/csv/csv-grid.tsx`・glide-data-grid）
 
-> ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-45〜50 を確認すること。**
+> ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-69〜74 を確認すること。**
 > v1 の PIT-17〜21（集計からの特定・述語材料の量・マスク列での並べ替え・テーブル間の権限素通り・
 > WHERE 強制注入の限界）は**そのまま生き続ける**。v2 はこれに加えて、
-> pivot 索引のプランナ統計欠如と駆動索引の不在（PIT-45）・SSE の権限材料鮮度と述語グループ化の破綻（PIT-46）・
-> 計算列の材料化残留（PIT-47）・書込増幅と肥大化とバックフィル競合（PIT-48）・
-> 可視性を失った行の配信漏れ（PIT-49）・**SQL 互換面が authz バイパスの最短経路になり得ること（PIT-50）**
+> pivot 索引のプランナ統計欠如と駆動索引の不在（PIT-69）・SSE の権限材料鮮度と述語グループ化の破綻（PIT-70）・
+> 計算列の材料化残留（PIT-71）・書込増幅と肥大化とバックフィル競合（PIT-72）・
+> 可視性を失った行の配信漏れ（PIT-73）・**SQL 互換面が authz バイパスの最短経路になり得ること（PIT-74）**
 > を持ち込む。
 >
-> **PIT-50 は Task 13.10 の主要な脅威である。** AST を IR に落とさずそのまま SQL テキストへ
+> **PIT-74 は Task 15.10 の主要な脅威である。** AST を IR に落とさずそのまま SQL テキストへ
 > 組み立て直すのが最も自然な近道であり最も危険。`SELECT *` はマスク列を射影へ紛れ込ませ、
 > 任意 `JOIN` は PIT-20 の穴を SQL 面から再び開く。エラーメッセージの差分は列の存在オラクルになる。
 > 入口の資源上限（`statement_timeout` は DB 実行時間の上限でしかない）も忘れやすい。
 
 | ID | タイトル | area | 依存 |
 |----|---------|------|------|
-| 13.0 | フルプール正本化（ドキュメント整合）＋ data-platform.md 制定 | infra | – |
-| 13.1 | フィールド識別子 3 層移行＋内部整数キーレジストリ＋PoolRouter 継ぎ目 | data | 13.0 |
-| 13.2 | pivot 索引テーブル導入＋二重書込＋オンラインバックフィル | data | 13.1 |
-| 13.3 | クエリコンパイラ v2（条件木・keyset・統計・EXPLAIN ゲート）＋読取切替＋旧方式撤去 | data | 13.2 |
-| 13.4 | リンク／ルックアップ／ロールアップ／数式＋Materialization 規則 | data | 13.3 |
-| 13.5 | 型付き ViewSpec ＋ フロント（テーブル一覧・グリッド・スキーマエディタ） | frontend | 13.3 |
-| 13.6 | レコード変更 outbox ＋ SSE 差分配信 ＋ 索引の自動昇格 | data | 13.3 |
-| 13.7 | 各面公開: workflow data ノード／shiki script／generative UI 束縛／chat ツール | api | 13.3, 13.4 |
-| 13.8 | RAG 統合スパイク（構造化データの permission-aware 検索） | rag | 13.3 |
-| 13.9 | 性能: 認可材料のリクエストスコープ memo＋BatchCheck＋スキーマキャッシュ | data | 13.3 |
-| 13.10 | 性能: SQL 互換インターフェース（parse→IR）＋最適化層＋プランキャッシュ | data | 13.3, **13.4**（リンク JOIN のため） |
-| 13.11 | 性能: 一括書込パス（COPY・チャンク Tx・索引遅延構築） | data | 13.2 |
+| 15.0 | フルプール正本化（ドキュメント整合）＋ data-platform.md 制定 | infra | – |
+| 15.1 | フィールド識別子 3 層移行＋内部整数キーレジストリ＋PoolRouter 継ぎ目 | data | 15.0 |
+| 15.2 | pivot 索引テーブル導入＋二重書込＋オンラインバックフィル | data | 15.1 |
+| 15.3 | クエリコンパイラ v2（条件木・keyset・統計・EXPLAIN ゲート）＋読取切替＋旧方式撤去 | data | 15.2 |
+| 15.4 | リンク／ルックアップ／ロールアップ／数式＋Materialization 規則 | data | 15.3 |
+| 15.5 | 型付き ViewSpec ＋ フロント（テーブル一覧・グリッド・スキーマエディタ） | frontend | 15.3 |
+| 15.6 | レコード変更 outbox ＋ SSE 差分配信 ＋ 索引の自動昇格 | data | 15.3 |
+| 15.7 | 各面公開: workflow data ノード／shiki script／generative UI 束縛／chat ツール | api | 15.3, 15.4 |
+| 15.8 | RAG 統合スパイク（構造化データの permission-aware 検索） | rag | 15.3 |
+| 15.9 | 性能: 認可材料のリクエストスコープ memo＋BatchCheck＋スキーマキャッシュ | data | 15.3 |
+| 15.10 | 性能: SQL 互換インターフェース（parse→IR）＋最適化層＋プランキャッシュ | data | 15.3, **15.4**（リンク JOIN のため） |
+| 15.11 | 性能: 一括書込パス（COPY・チャンク Tx・索引遅延構築） | data | 15.2 |
 
 ---
 
 ## 詳細
 
-### Task 13.0: フルプール正本化（ドキュメント整合）＋ data-platform.md 制定
+### Task 15.0: フルプール正本化（ドキュメント整合）＋ data-platform.md 制定
 - **area**: infra / **path**: `docs/`
 - **依存**: –
 - **仕様**:
@@ -80,9 +80,9 @@
   - [ ] design §4.1 ⇔ §4.1.1 ⇔ requirements §1.1 ⇔ roadmap の SaaS トポロジ記述が矛盾しない
   - [ ] テナント消去（design §4.12・Phase 12.9）が「ストアごと捨てられない」前提で書き直されている
 
-### Task 13.1: フィールド識別子 3 層移行＋内部整数キーレジストリ＋PoolRouter 継ぎ目
+### Task 15.1: フィールド識別子 3 層移行＋内部整数キーレジストリ＋PoolRouter 継ぎ目
 - **area**: data / **path**: `crates/data/src/model.rs`, `crates/data/src/schema.rs`, `crates/storage/src/tenant.rs`, migrations
-- **依存**: 13.0
+- **依存**: 15.0
 - **仕様**:
   - `FieldDef` を **`id`（u16・不変・JSONB キー `f{id}`・索引の `field_id`。`0` は owner 擬似列に予約）/
     `key`（`^[a-z][a-z0-9_]{0,63}$`・不変・script/IR/SDK の参照名）/ `display_name`（自由文・**日本語可**・可変）**
@@ -102,9 +102,9 @@
   - [ ] 移行後も v1 の IT（`data_it.rs` / `policy_threat_it.rs` / `query_view_it.rs` / `fsm_it.rs`）が全て通る
   - [ ] `crates/data` 内から `PgPool` を直接参照している箇所が無い（PoolRouter 経由に統一）
 
-### Task 13.2: pivot 索引テーブル導入＋二重書込＋オンラインバックフィル
+### Task 15.2: pivot 索引テーブル導入＋二重書込＋オンラインバックフィル
 - **area**: data / **path**: `crates/data/src/index/`, migrations, `crates/jobq`
-- **依存**: 13.1
+- **依存**: 15.1
 - **仕様**:
   - 索引テーブル群を追加（data-platform.md §3.3。すべて `PARTITION BY HASH (table_int)` 64 分割）:
     `data_index_text`（text/select/multi_select/date/datetime/*_ref/status＋システム擬似列）/
@@ -142,8 +142,8 @@
     索引更新は**変更のあったフィールドのみ**（v1 の `FieldPatch` を使う）。
   - 既存データのバックフィルを jobq のチャンクジョブで実装（冪等・中断再開可・進捗観測可）。
   - `COLLATE "C"` を採用（決定性・collation version 変更で索引が壊れるのを避ける）。
-    **代償として漢字の並び順は符号位置順**になるため、読み仮名列でのソート指定を 13.5 の ViewSpec で受ける。
-  - 多値列（`multi_select` / `link`）の 1 レコードあたり要素数上限を設ける（PIT-48）。
+    **代償として漢字の並び順は符号位置順**になるため、読み仮名列でのソート指定を 15.5 の ViewSpec で受ける。
+  - 多値列（`multi_select` / `link`）の 1 レコードあたり要素数上限を設ける（PIT-72）。
 - **受け入れ条件**:
   - [ ] 索引テーブルの本数がテーブル数・テナント数に依存しないことを、テーブルを大量生成する IT で確認する
   - [ ] バックフィルが中断・再開でき、完了後に旧索引と新索引の内容が一致する（parity 検証ジョブ）
@@ -162,9 +162,9 @@
   - [ ] **切り詰めが起きる列でのソートが keyset で重複・欠落しない**
         （`(val_prefix, record_id)` のタプル比較が決定的であることを、同一プレフィクス多数のデータで確認）
 
-### Task 13.3: クエリコンパイラ v2 ＋読取切替＋旧方式撤去
+### Task 15.3: クエリコンパイラ v2 ＋読取切替＋旧方式撤去
 - **area**: data / **path**: `crates/data/src/query/`, `crates/data/src/policy/compile.rs`
-- **依存**: 13.2
+- **依存**: 15.2
 - **仕様**:
   - **クエリ IR を刷新**（data-platform.md §5）: `Condition` の AND/OR/NOT 条件木・型別演算子・
     複数ソートキー・**keyset カーソル（OFFSET 廃止）**・投影（`select`）・`group_by` ＋ 複数 `aggregate`・
@@ -174,11 +174,11 @@
     fail-closed の閾値はそのまま。`IsOwner` は owner 擬似列（`field_id=0`）で評価する。
     **`row_policy` が参照するフィールドは `indexed` 必須**とし、スキーマ検証で強制する（data-platform.md §6.3）。
   - **駆動索引の選択をコンパイラが行う**。フィールド単位の粗いカーディナリティ統計をレジストリに持ち、
-    背景ジョブで更新する。プランナ任せにしない（PIT-45）。
+    背景ジョブで更新する。プランナ任せにしない（PIT-69）。
   - 索引到達可能性の強制（§5.2）: filter/sort/group_by/aggregate は `indexed || unique` 宣言済みのみ、
     マスク列は 403、`Contains`/`EndsWith` は `searchable` 宣言済みのみ、`statement_timeout`。
     条件は「**駆動索引が 1 つ以上決まること**」とし、「条件木に索引可能な述語を最低 1 つ」という
-    強い形にはしない（`filter = None` の初期グリッド＝13.5 の要件が常に拒否されるため）。
+    強い形にはしない（`filter = None` の初期グリッド＝15.5 の要件が常に拒否されるため）。
     システム擬似列は常に駆動になれるので初期グリッドは成立する。
   - **複数ソートの最悪ケースを設計に含める**。pivot 索引はフィールドごとに別行なので複合順序の btree が
     存在せず、第 1 キー同値群が大きいと第 2 キー以降の再ソートが要る。既定は同値群をページサイズの
@@ -200,7 +200,7 @@
   - [ ] `policy_threat_it.rs` が新旧両実装で通る／parity 検証が全代表クエリで一致
   - [ ] **EXPLAIN 回帰テストが CI にある**（選択的フィルタ×非選択的ソート／その逆／多条件 AND／OR 木／
         keyset 継続／**任意列ソート**／**第 1 キーが偏った複数ソート**の各パターンで駆動索引と実測行数を
-        アサート・PIT-45）
+        アサート・PIT-69）
   - [ ] **任意列（null あり）でソートしても可視行が欠落しない**（未設定レコードが結果から消えない）
   - [ ] `filter = None` の初期グリッド（フィルタなし 100 行）が拒否されず p95 < 100ms で返る
   - [ ] `row_policy` が未索引フィールドを参照するスキーマが 422 で拒否される
@@ -208,9 +208,9 @@
   - [ ] 集計のスモールセル抑制と集計クエリ監査が v1 と同じ挙動（PIT-17 継承）
   - [ ] `grep -r "CREATE INDEX" crates/data/src` が 0 件（ランタイム DDL ゼロ）
 
-### Task 13.4: リンク／ルックアップ／ロールアップ／数式＋Materialization 規則
+### Task 15.4: リンク／ルックアップ／ロールアップ／数式＋Materialization 規則
 - **area**: data / **path**: `crates/data/src/derived/`, `crates/data/src/formula/`
-- **依存**: 13.3
+- **依存**: 15.3
 - **仕様**:
   - **双方向リンク**を `data_link` の順引き PK と逆引き索引で実装する（1:1 / 1:N / N:N を `ord` の多値で表現）。
     対称フィールド（参照先に現れる逆リンク列）は**スキーマ上のメタデータ**とし、
@@ -225,7 +225,7 @@
     ②参照先の `row_policy` ③参照先の `field_policy` ④参照先の**レコード個別共有タプルの存在**。
     多段参照は推移的に辿る。`Now` を含む式は `Volatile`。
   - **降格トリガは 4 階層すべての変化**（policy 追加・ReBAC 変更・個別共有の発生）。降格時は
-    材料化データと索引行を**同一トランザクションで破棄**する。これを忘れると漏洩が残留する（PIT-47）。
+    材料化データと索引行を**同一トランザクションで破棄**する。これを忘れると漏洩が残留する（PIT-71）。
   - **参照先レコードの変更でも材料化値は陳腐化する**（金額更新・行の作成/削除・リンク付け替え）。
     依存 DAG を**実データの逆依存追跡**にも使い、参照先の変更 Tx から影響する参照元を特定して
     同一 Tx で再計算するか世代付きジョブへ enqueue し、**再計算完了まで当該列をクエリ対象外にする**。
@@ -239,18 +239,18 @@
   - [ ] `OneToOne` / `OneToMany` の一意性違反が 422 で拒否される
   - [ ] `PerViewer` / `Volatile` 列への `indexed`/`unique` 宣言が 422 で拒否される
   - [ ] **参照先テーブルの viewer 権限を持たないユーザーに、参照先の全件から計算したロールアップが
-        見えない**（テーブル ReBAC 迂回の negative IT・PIT-47）
+        見えない**（テーブル ReBAC 迂回の negative IT・PIT-71）
   - [ ] **材料化済みテーブルの参照先に `row_policy` を後付け／個別共有を 1 件作成／ReBAC を変更**した
-        いずれの場合も、材料化データが破棄され値が読めなくなる（`policy_threat_it.rs` に追加・PIT-47）
+        いずれの場合も、材料化データが破棄され値が読めなくなる（`policy_threat_it.rs` に追加・PIT-71）
   - [ ] 参照先レコードの金額を更新すると、参照元の材料化ロールアップが再計算される
         （再計算完了までは当該列がクエリ対象外になる）
   - [ ] 見えない参照先の lookup/rollup 値が null / 抑制される（PIT-20）
   - [ ] 数式の循環参照が 422 で拒否される
   - [ ] 金額の四則演算・集計が `numeric` で正確（浮動小数点誤差が出ない）
 
-### Task 13.5: 型付き ViewSpec ＋ フロント
+### Task 15.5: 型付き ViewSpec ＋ フロント
 - **area**: frontend / **path**: `crates/data/src/view.rs`, `web/src/app/(auth)/data/`, `web/src/components/data/`
-- **依存**: 13.3
+- **依存**: 15.3
 - **仕様**:
   - `DataViewBody.display`（サーバ非解釈の JSON）を **型付き `ViewSpec`** へ置き換える。
     `#[serde(tag = "kind")]` のタグ付き enum: `Grid` / `Kanban` / `Calendar` / `Gallery`
@@ -271,9 +271,9 @@
   - [ ] 保存ビューを別ユーザーが開くと、そのユーザーの権限で行が絞られる
   - [ ] E2E（`web/e2e/data-grid.spec.ts`）でテーブル作成→列追加→レコード編集→ビュー保存が通る
 
-### Task 13.6: レコード変更 outbox ＋ SSE 差分配信 ＋ 索引の自動昇格
+### Task 15.6: レコード変更 outbox ＋ SSE 差分配信 ＋ 索引の自動昇格
 - **area**: data / **path**: `crates/data/src/record.rs`, `crates/api/src/routes/data_stream.rs`
-- **依存**: 13.3
+- **依存**: 15.3
 - **仕様**:
   - `create_record` / `update_record` / `delete_record` に **outbox 書込**を追加する
     （現状 outbox を出すのは FSM 遷移のみ）。既存の per-consumer fan-out リレー
@@ -308,10 +308,10 @@
   - **権限材料の TTL**: SSE 購読中のみ TTL（既定 5 秒）付き再解決を許し、
     **「権限剥奪の配信反映は最大 TTL 分遅れる」を製品の約束として文書化**する。
     REST 読取経路は従来どおり毎回解決（例外を SSE に閉じる）。ロール変更・共有解除・権限剥奪イベントを
-    検知した購読は TTL を待たず即時無効化する（PIT-46）。
+    検知した購読は TTL を待たず即時無効化する（PIT-70）。
   - **索引の自動昇格**: 未索引列でのフィルタ/ソート要求を 403 で終わらせず、
     小さいテーブルは即座にバックフィルして透過的に有効化、大きいテーブルは jobq で
-    進捗表示つきバックフィル。テーブルあたりの索引列数に上限を設け、超過時は明示承認を要求する（PIT-48）。
+    進捗表示つきバックフィル。テーブルあたりの索引列数に上限を設け、超過時は明示承認を要求する（PIT-72）。
   - **索引状態を `absent` / `building` / `active` の 3 値にし、`building` 中は write-through する**。
     「進行中はクエリに使わない」だけでは競合を防げない——走査済み領域のレコードが有効化前に更新されると、
     その変更は**完成後の索引から永久に欠落する**。`building` に遷移した時点から新規書込を索引へ二重反映し、
@@ -327,13 +327,13 @@
         保持期間外は `stream.reset` が返る
   - [ ] **飛び番を受信した直後に切断しても、間の `delivery_seq` が再開後に配信される**
         （low-water mark 方式の確認・順序非依存リレーとの組み合わせで欠落しない）
-  - [ ] 権限剥奪後 TTL 以内に配信が止まる／TTL を超えて配信が続かない／REST 経路は TTL の影響を受けない（PIT-46）
+  - [ ] 権限剥奪後 TTL 以内に配信が止まる／TTL を超えて配信が続かない／REST 経路は TTL の影響を受けない（PIT-70）
   - [ ] **`IsOwner` ＋ 個別共有を含む行ポリシーで、購読者 1,000 人・ロール 3 種のとき述語評価が 3 回**（計測）
   - [ ] バックフィル進行中の列がクエリ対象にならない／**`building` 中の書込が完成後の索引に反映される**
 
-### Task 13.7: 各面公開（workflow / shiki script / generative UI / chat）
+### Task 15.7: 各面公開（workflow / shiki script / generative UI / chat）
 - **area**: api / **path**: `crates/workflow-engine`, `crates/script-runtime`, `crates/gui`, `crates/chat`
-- **依存**: 13.3, 13.4
+- **依存**: 15.3, 15.4
 - **仕様**:
   - **ワークフロー data ノードの解禁**: `NodeType::{DataQuery, DataRecordCreate, DataRecordUpdate,
     DataRecordDelete, DataTransition, DataBulkUpsert}` を `available_stage_a` へ入れ、
@@ -361,9 +361,9 @@
   - [ ] generative UI のテーブルがデータ束縛で描画され、**閲覧者本人の権限**で毎回再評価される
   - [ ] 全面で同一の `DataQuery` 型が使われている（面ごとの独自フィルタ表現が存在しない）
 
-### Task 13.8: RAG 統合スパイク（構造化データの permission-aware 検索）
+### Task 15.8: RAG 統合スパイク（構造化データの permission-aware 検索）
 - **area**: rag / **path**: `crates/rag`（設計スパイク）
-- **依存**: 13.3
+- **依存**: 15.3
 - **仕様**:
   - テーブル単位で「検索対象にする」をオプトイン。レコード 1 件 = 1 チャンク。
     投影テンプレート（タイトル列・本文列）を指定する。
@@ -376,7 +376,7 @@
     （全社員に見える人事レコードの給与列を隠しても RAG 経由で出る）。v1 は fail-closed に倒し、
     **投影テンプレートにマスク対象列を含められない**ようスキーマ検証で拒否する。
     対象テーブルに `field_policy` が後から付いたら索引を破棄して再構築する。
-  - 増分索引は 13.6 の outbox に相乗り。`SearchResult` の多型化（file 前提を崩す）が必要。
+  - 増分索引は 15.6 の outbox に相乗り。`SearchResult` の多型化（file 前提を崩す）が必要。
   - **本タスクは設計スパイクまで**。実装はポストアルファ可。
 - **受け入れ条件**:
   - [ ] `SearchResult` 多型化と post-filter 一般化の設計が docs に落ちている
@@ -387,14 +387,14 @@
 ## 参照
 
 - 設計正本: [data-platform.md](../data-platform.md)
-- 落とし穴: [design-caveats.md](../design-caveats.md) PIT-17〜21（v1 から継承）・**PIT-45〜50**（v2 が持ち込む）
+- 落とし穴: [design-caveats.md](../design-caveats.md) PIT-17〜21（v1 から継承）・**PIT-69〜74**（v2 が持ち込む）
 - v1 の実装: [phase-9.md](./phase-9.md) Task 9.2〜9.5・9.10
 - ワークフロー連携: [phase-10.md](./phase-10.md)（Stage B の data 系ノード）
 - テナンシー前提: [design.md](../design.md) §4.1（フルプール）
 
-### Task 13.9: 認可材料のリクエストスコープ memo ＋ BatchCheck ＋ スキーマキャッシュ
+### Task 15.9: 認可材料のリクエストスコープ memo ＋ BatchCheck ＋ スキーマキャッシュ
 - **area**: data / **path**: `crates/data/src/policy/material.rs`, `crates/authz/src/client.rs`
-- **依存**: 13.3
+- **依存**: 15.3
 - **仕様**（data-platform.md §16.4・§16.6）:
   - グリッド 1 ページの読取で OpenFGA へ 2 往復（`list_objects(Role)` ＋ `list_objects(DataRecord)`）。
     ページ＋件数＋lookup 解決を合わせると **1 画面で 6 往復以上**になり、p95 < 100ms を食い潰す。
@@ -420,9 +420,9 @@
   - [ ] スキーマ改訂後の最初のクエリが新スキーマで動く／**テーブル削除・テナント purge 後に
         古い世代が読まれない**（世代切替の原子性）
 
-### Task 13.10: SQL 互換インターフェース ＋ 最適化層 ＋ プランキャッシュ
+### Task 15.10: SQL 互換インターフェース ＋ 最適化層 ＋ プランキャッシュ
 - **area**: data / **path**: `crates/data/src/sql/`, `crates/data/src/query/`
-- **依存**: 13.3, **13.4**（リンク JOIN は `LinkDef` を要するため。13.4 未完なら JOIN 抜きで先行可）
+- **依存**: 15.3, **15.4**（リンク JOIN は `LinkDef` を要するため。15.4 未完なら JOIN 抜きで先行可）
 - **仕様**（data-platform.md §16.1〜§16.3）:
   - **SQL を前段言語として受ける**。`sqlparser`（既にワークスペース依存）でパースし、
     閉じた部分集合に照合してから **`DataQuery` IR へ変換**する。
@@ -475,9 +475,9 @@
         SQL 入力が **+15 ポイント以上**改善すること。失敗は「構文エラー／部分集合外／列・テーブル名誤り／
         意味的に不正（意図と異なる結果）」に分類して記録する
 
-### Task 13.11: 一括書込パス
+### Task 15.11: 一括書込パス
 - **area**: data / **path**: `crates/data/src/bulk.rs`, `crates/jobq`
-- **依存**: 13.2
+- **依存**: 15.2
 - **仕様**（data-platform.md §16.7）:
   - 10 万行インポートは本体 10 万行 ＋ 索引 80 万行。1 行ずつ INSERT では成立しない。
   - **COPY を authoritative table へ直接流さない。** 速いが、通常書込が担保する不変条件が
@@ -488,7 +488,7 @@
   - **チャンク境界で冪等**（取込 ID ＋ 行キーで二重適用を防ぐ）。
   - **索引の遅延構築**は §10 の `building` 状態を流用し、**`building` 中も write-through** する
     （一括取込中の並行書込を取りこぼさない）。
-  - **Phase 13.2 のバックフィル自体がこの経路を要求する**ため、13.2 と同時か先行して着手する。
+  - **Phase 15.2 のバックフィル自体がこの経路を要求する**ため、15.2 と同時か先行して着手する。
 - **受け入れ条件**:
   - [ ] 10 万行のインポートが所定時間内に完了し、途中で他テナントの p95 を悪化させない
   - [ ] 中断・再開でき、再実行が冪等（チャンク境界で二重適用が起きない）
