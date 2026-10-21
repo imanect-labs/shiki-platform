@@ -770,7 +770,11 @@ button.sk-choice:hover {
 .sk-locale-link:hover,
 .sk-locale-link:focus-visible {
   background: var(--accent);
-  outline: none;
+}
+
+.sk-locale-link:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }
 
 /* ── その他 ─────────────────────────────────────────────── */

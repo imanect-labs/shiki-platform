@@ -37,6 +37,10 @@ pub struct AccountAction {
     pub kind: AccountActionKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_id: Option<String>,
+    /// 操作を始めたユーザー（principal id）。callback で認証後のユーザーと照合し、
+    /// Keycloak の SSO セッションが別ユーザーのものだった場合にセッションを差し替えない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
 }
 
 impl AccountAction {
@@ -122,6 +126,7 @@ pub async fn start_account_action(
         Some(AccountAction {
             kind: query.action,
             credential_id,
+            subject: Some(ctx.principal.id.clone()),
         }),
     )
 }
@@ -134,6 +139,7 @@ mod tests {
         AccountAction {
             kind,
             credential_id: id.map(str::to_string),
+            subject: None,
         }
     }
 

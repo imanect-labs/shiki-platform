@@ -1931,3 +1931,76 @@ async fn account_action_round_trip_returns_to_settings_and_drops_old_session() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn account_action_callback_rejects_a_different_user() {
+    use base64::Engine as _;
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let idp = spawn_idp_with_account(calls).await;
+    let store = Arc::new(MemorySessionStore::new());
+    let app = build_router(state_with_store(config_with(&idp, vec![]), store.clone()));
+    let (old_session, _) = establish_session(app.clone()).await;
+
+    let resp = send(
+        app.clone(),
+        Method::GET,
+        "/auth/action?action=passkey",
+        &old_session,
+        None,
+    )
+    .await;
+    let location = resp
+        .headers()
+        .get(axum::http::header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let state = reqwest::Url::parse(&location)
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.to_string())
+        .unwrap();
+    // 開始ユーザーを別人に差し替えた相関 Cookie（＝ Keycloak の SSO セッションが別ユーザー）。
+    let flow = cookie_value(&set_cookies(&resp), "shiki_oidc_flow").unwrap();
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&engine.decode(&flow).unwrap()).unwrap();
+    assert!(
+        json["action"]["subject"].is_string(),
+        "開始ユーザーを控える"
+    );
+    json["action"]["subject"] = serde_json::Value::from("someone-else");
+    let forged = engine.encode(serde_json::to_vec(&json).unwrap());
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/auth/callback?code=abc&state={state}&kc_action_status=success"
+                ))
+                .header(
+                    COOKIE,
+                    format!("shiki_oidc_flow={forged}; shiki_session={old_session}"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        resp.headers().get(axum::http::header::LOCATION).unwrap(),
+        "/settings/security?action=passkey&status=error"
+    );
+    assert!(
+        cookie_value(&set_cookies(&resp), "shiki_session").is_none(),
+        "新しいセッションは発行しない"
+    );
+    let (old_id, old_tenant) = old_session.split_once('.').unwrap();
+    assert!(
+        store.get(old_tenant, old_id).await.unwrap().is_some(),
+        "旧セッションは残る"
+    );
+}

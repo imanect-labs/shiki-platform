@@ -12,7 +12,8 @@ use serde::Deserialize;
 use authz::{AuthContext, Principal, Relation};
 
 use super::{
-    action::normalize_action_status, build_cookie, parse_flow, removal_cookie, FLOW_COOKIE,
+    action::{normalize_action_status, AccountAction},
+    build_cookie, parse_flow, removal_cookie, FLOW_COOKIE,
 };
 use crate::{
     error::ApiError,
@@ -75,6 +76,13 @@ pub async fn callback(
     let keycloak_sid = verified.sid.clone();
     let principal = claims::principal_from_claims(verified);
     let tenant_id = resolve_tenant_id(&principal, &state.config.auth)?;
+
+    // アカウント操作の往復で、Keycloak 側の SSO セッションが始めたユーザーと別人だった場合
+    // （同じブラウザで別アカウントに入り直した等）は、セッションを差し替えずに設定画面へ戻す。
+    if let Some(back) = action_subject_mismatch(flow.action.as_ref(), &principal.id) {
+        let jar = jar.add(removal_cookie(FLOW_COOKIE, state.config.session.secure));
+        return Ok((jar, Redirect::to(&back)));
+    }
 
     // 撤去中/撤去済みテナントは新規ログインを拒否する（SAAS.2。セッション失効と IdP ユーザー
     // 削除の間に完了するログイン競合を塞ぐ）。レジストリ未登録（dev fixture 等）は許可。
@@ -173,6 +181,16 @@ pub async fn callback(
         |action| action.return_url(normalize_action_status(query.kc_action_status.as_deref())),
     );
     Ok((jar, Redirect::to(&target)))
+}
+
+/// アカウント操作の開始ユーザーと認証後のユーザーが食い違えば、設定画面への error の戻り先を返す。
+fn action_subject_mismatch(action: Option<&AccountAction>, principal_id: &str) -> Option<String> {
+    let action = action?;
+    if action.subject.as_deref().is_some_and(|s| s != principal_id) {
+        tracing::warn!("アカウント操作の開始ユーザーと認証後のユーザーが一致しない");
+        return Some(action.return_url("error"));
+    }
+    None
 }
 
 /// IdP エラー時、相関 Cookie がアカウント操作で state も一致すれば設定画面の戻り先を返す。
