@@ -6,6 +6,7 @@ import { Loader2, LogIn, ShieldCheck } from "lucide-react";
 
 import { checkSession, login } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
+import { BrandLogo } from "@/components/shell/brand-logo";
 
 /// `?next=` はクエリ由来の未信頼値。オープンリダイレクト / XSS（`javascript:` や
 /// `//evil.example.com`・絶対 URL）を防ぐため、同一オリジンの相対パス
@@ -58,15 +59,7 @@ function LoginInner() {
     <div className="flex min-h-dvh items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center text-center">
-          <span
-            className="bg-clip-text text-[26px] font-bold tracking-[-0.02em] text-transparent"
-            style={{
-              backgroundImage:
-                "linear-gradient(100deg, var(--season-spring), var(--season-summer) 38%, var(--season-autumn) 66%, var(--season-winter))",
-            }}
-          >
-            Shiki
-          </span>
+          <BrandLogo size="lg" />
           <p className="mt-1.5 text-sm text-muted-foreground">
             権限考慮 AI ワークスペース
           </p>
