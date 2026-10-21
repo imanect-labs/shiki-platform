@@ -31,8 +31,8 @@ ARG ONLINE_COMMIT=22ce52fb5173821dd90782638afcbfb6b6d7cb40
 ARG TRANSLATIONS_REPO=https://gerrit.collaboraoffice.com/translations
 ARG TRANSLATIONS_REF=cp-26.04.5-1
 ARG TRANSLATIONS_COMMIT=ed43817bd4972e81feb228a0ad06a8aa783d3f55
-ARG NODE_URL=https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.xz
-ARG NODE_SHA256=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
+ARG NODE_URL=https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz
+ARG NODE_SHA256=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce
 ENV DEBIAN_FRONTEND=noninteractive
 # engine と online の両方のビルド依存（online は同じツリーで後から建てる）。
 # **fakeroot / unzip / gettext**: engine の configure が要求する（欠けると数秒で落ちる・25.04 で実測）。
