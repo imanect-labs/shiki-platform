@@ -12,9 +12,17 @@
 //!
 //! [`crate::keycloak_admin`] と同じ薄いパターン（`&reqwest::Client`＋専用 error enum・リトライ無し）。
 
+use std::time::Duration;
+
 use serde::Deserialize;
 
 use crate::config::AuthConfig;
+
+/// 1 リクエストの上限。AppState の汎用 `http` は timeout を持たない（LLM ストリーミング用）ため、
+/// ここで明示して Keycloak の hang を fail-fast させる（ハンドラの TimeoutLayer に救われるのは
+/// 偶然であって設計された保証ではない・503 で「接続できない」と返すため）。画面表示の問い合わせ
+/// なので authz と同じ短い上限にする。
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeycloakAccountError {
@@ -165,6 +173,7 @@ impl<'a> KeycloakAccount<'a> {
             .get(self.url(path)?)
             .bearer_auth(self.access_token)
             .header(reqwest::header::ACCEPT, "application/json")
+            .timeout(REQUEST_TIMEOUT)
             .send()
             .await
             .map_err(|e| KeycloakAccountError::Transport(e.to_string()))?;
@@ -180,6 +189,7 @@ impl<'a> KeycloakAccount<'a> {
             .delete(url)
             .bearer_auth(self.access_token)
             .header(reqwest::header::ACCEPT, "application/json")
+            .timeout(REQUEST_TIMEOUT)
             .send()
             .await
             .map_err(|e| KeycloakAccountError::Transport(e.to_string()))?;

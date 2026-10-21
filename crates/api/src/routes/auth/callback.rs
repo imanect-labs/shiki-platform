@@ -106,16 +106,12 @@ pub async fn callback(
         tenant_id.clone(),
     ));
 
-    // 同じブラウザの旧セッション（アカウント操作の往復・再ログイン）はここで捨てる。
-    // Cookie は下で上書きされるため、残すとストアに孤児レコードが TTL まで残る。best-effort。
-    if let Some((old_sid, old_tenant)) = jar
+    // 同じブラウザの旧セッション（アカウント操作の往復・再ログイン）。新セッションの保存に
+    // 成功してから捨てる（先に消すと、保存失敗時に旧セッションだけ失ってログアウト状態になる）。
+    let old_session = jar
         .get(SESSION_COOKIE)
         .and_then(|c| decode_session_cookie(c.value()))
-    {
-        if let Err(e) = state.sessions.delete(old_tenant, old_sid).await {
-            tracing::warn!(error = %e, "旧セッションの削除に失敗（TTL で消える）");
-        }
-    }
+        .map(|(sid, tenant)| (sid.to_owned(), tenant.to_owned()));
 
     // セッション本体を作成（トークンはサーバ側のみに保持）。
     let session_id = new_opaque_token();
@@ -141,6 +137,13 @@ pub async fn callback(
             Duration::from_secs(ttl_secs),
         )
         .await?;
+
+    // Cookie は下で上書きされるため、残すとストアに孤児レコードが TTL まで残る。best-effort。
+    if let Some((old_sid, old_tenant)) = &old_session {
+        if let Err(e) = state.sessions.delete(old_tenant, old_sid).await {
+            tracing::warn!(error = %e, "旧セッションの削除に失敗（TTL で消える）");
+        }
+    }
 
     // Cookie: セッション(httpOnly) + CSRF(JS 読取可) を発行し、相関 Cookie を破棄。
     let secure = state.config.session.secure;

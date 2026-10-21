@@ -4,7 +4,7 @@ import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Loader2, LogIn } from "lucide-react";
 
-import { checkSession, login } from "@/lib/auth";
+import { checkSession, claimAutoLogin, login } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/shell/brand-logo";
 
@@ -22,7 +22,8 @@ function safeNext(value: string | null): string {
 /// - 既にログイン済みなら戻り先（無ければ "/"）へ即リダイレクト。
 /// - 未ログインならそのまま Keycloak のログイン画面へ送る（ボタンを挟まない）。`?next=` は
 ///   OIDC ラウンドトリップを跨いで保持するため login() が sessionStorage に控える。
-/// - `?error=` が付いていれば自動では送らず、失敗メッセージと再試行ボタンを出す（ループ防止）。
+/// - `?error=` が付いている、または直前に自動で送ったのに未ログインのまま戻ってきた場合は
+///   自動では送らず、失敗メッセージと再試行ボタンを出す（ループ防止・claimAutoLogin）。
 function LoginInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -38,7 +39,7 @@ function LoginInner() {
       if (authenticated) {
         setStatus("redirecting");
         router.replace(next);
-      } else if (hasError) {
+      } else if (hasError || !claimAutoLogin()) {
         setStatus("failed");
       } else {
         setStatus("redirecting");

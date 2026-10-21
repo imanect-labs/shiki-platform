@@ -18,9 +18,35 @@ export function login(next?: string): void {
   window.location.href = "/auth/login";
 }
 
+/// /login が Keycloak へ自動で送った時刻の控え。ログイン済みになったら消す。
+const AUTO_LOGIN_AT_KEY = "shiki:auto-login-at";
+/// この間に再び未ログインで /login へ戻ってきたら、自動では送らない。
+const AUTO_LOGIN_GUARD_MS = 30_000;
+
+/// /login から Keycloak へ自動で送ってよいか。直前に送ったのにまだ未ログインで戻ってきた場合
+/// （Cookie が保存されない設定など）は false を返し、リダイレクトの無限ループを止める。
+/// 送ってよいときは時刻を控える。sessionStorage が使えないときは常に送る（従来どおり）。
+export function claimAutoLogin(): boolean {
+  try {
+    const last = Number(sessionStorage.getItem(AUTO_LOGIN_AT_KEY) ?? "0");
+    const now = Date.now();
+    if (last > 0 && now - last < AUTO_LOGIN_GUARD_MS) return false;
+    sessionStorage.setItem(AUTO_LOGIN_AT_KEY, String(now));
+  } catch {
+    // ストレージが使えない環境では止め役を持たない。
+  }
+  return true;
+}
+
 /// 控えておいたログイン後の戻り先を取り出して消費する（無ければ null）。
+/// ログイン済みで呼ばれるので、自動ログインの控えもここで消す。
 export function consumePostLoginNext(): string | null {
   if (typeof sessionStorage === "undefined") return null;
+  try {
+    sessionStorage.removeItem(AUTO_LOGIN_AT_KEY);
+  } catch {
+    // 消せなくても次の判定が 30 秒で切れるだけ。
+  }
   const next = sessionStorage.getItem(POST_LOGIN_NEXT_KEY);
   if (next) sessionStorage.removeItem(POST_LOGIN_NEXT_KEY);
   return next;
