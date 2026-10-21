@@ -18,9 +18,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /usr/local/bin/uv
 
 WORKDIR /app
+# UV_DEFAULT_INDEX: pyproject / uv.lock の Takumi Guard と二重で、
+# lock 外の解決も Guard 経由にする（ブロックのみ。トークンはイメージに焼かない）。
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
-    HF_HOME=/models
+    HF_HOME=/models \
+    UV_DEFAULT_INDEX=https://pypi.flatt.tech/simple/
 
 # 依存だけ先に解決してレイヤキャッシュを効かせる。
 COPY pyproject.toml uv.lock ./

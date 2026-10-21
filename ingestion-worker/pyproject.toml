@@ -27,6 +27,14 @@ dev = [
     "pytest-asyncio>=0.24",
 ]
 
+# Takumi Guard — 悪性 PyPI パッケージをインストール前にブロックする。
+# https://shisho.dev/docs/t/guard/quickstart/pypi/
+# 追跡・通知用トークンはリポジトリに書かず UV_DEFAULT_INDEX 等で渡す。
+[[tool.uv.index]]
+name = "takumi-guard"
+url = "https://pypi.flatt.tech/simple/"
+default = true
+
 # torch/torchvision は CPU ホイールに固定する（GPU CUDA 一式で数 GB 膨らむのを防ぐ。
 # GPU サービングへ移行する時はこの index 固定を外す）。
 [[tool.uv.index]]
