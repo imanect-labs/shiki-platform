@@ -7,11 +7,11 @@
 /// 倍率を変えても、指やカーソルの下にあった場所がそのまま残るようにスクロールを合わせる。
 /// 透過のある画像が背景に溶けないよう、市松模様の上に置く。SVG も `<img>` で出す（スクリプトは動かない）。
 import * as React from "react";
-import { Maximize, Minus, Plus } from "lucide-react";
+import { Maximize, Minus, Plus, Scan } from "lucide-react";
 
 import { usePinchZoom } from "@/components/pdf/use-pinch-zoom";
 import { EditorLoading } from "@/components/shell/editor-loading";
-import { ChromeIconButton } from "@/components/shell/page-header-context";
+import { FloatingToolbar, ToolbarButton, ToolbarSeparator } from "@/components/ui/floating-toolbar";
 import { nodeKindLabel } from "@/components/drive/primitives";
 import { downloadUrl, type NodeResponse } from "@/lib/storage";
 import { cn } from "@/lib/utils";
@@ -22,8 +22,9 @@ import type { PreviewFailure } from "./text-preview";
 const ZOOM_MIN = 0.05;
 const ZOOM_MAX = 8;
 const ZOOM_STEPS = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8];
-/// 画像の周りの余白（CSS px）。
-const PAD = 16;
+/// 画像の周りの余白（CSS px）。下は浮いた操作バーのぶん広く取る。
+const PAD = 24;
+const PAD_BOTTOM = 76;
 
 type Focal = { x: number; y: number };
 
@@ -66,7 +67,7 @@ export function ImagePreview({
 
   // 画面に収める倍率（小さい画像は引き伸ばさない）。
   const fit = natural && box.w > 0
-    ? Math.min(1, (box.w - PAD * 2) / natural.w, (box.h - PAD * 2) / natural.h)
+    ? Math.min(1, (box.w - PAD * 2) / natural.w, (box.h - PAD - PAD_BOTTOM) / natural.h)
     : 1;
   const scale = zoom ?? fit;
 
@@ -152,30 +153,12 @@ export function ImagePreview({
     onDownload,
     {
       subtitle: natural ? (
-        <span className="inline-flex items-center gap-2">
-          <span>
-            {nodeKindLabel(node)}・{natural.w.toLocaleString("ja-JP")} × {natural.h.toLocaleString("ja-JP")}
-          </span>
-          <span className="tabular-nums" data-testid="image-zoom-percent">
-            {percent}%
-          </span>
+        <span>
+          {nodeKindLabel(node)}・{natural.w.toLocaleString("ja-JP")} × {natural.h.toLocaleString("ja-JP")}
         </span>
       ) : undefined,
-      actions: natural ? (
-        <>
-          <ChromeIconButton label="縮小（⌘−）" disabled={scale <= ZOOM_MIN} onClick={() => step(-1)} className="max-md:hidden" data-testid="image-zoom-out">
-            <Minus aria-hidden />
-          </ChromeIconButton>
-          <ChromeIconButton label="拡大（⌘＋）" disabled={scale >= ZOOM_MAX} onClick={() => step(1)} className="max-md:hidden" data-testid="image-zoom-in">
-            <Plus aria-hidden />
-          </ChromeIconButton>
-          <ChromeIconButton label="画面に合わせる（⌘0）" pressed={zoom == null} onClick={() => zoomTo(null)} data-testid="image-fit">
-            <Maximize aria-hidden />
-          </ChromeIconButton>
-        </>
-      ) : undefined,
     },
-    [natural, percent, scale, zoom, step, zoomTo],
+    [natural],
   );
 
   const w = natural ? Math.max(1, Math.round(natural.w * scale)) : undefined;
@@ -196,7 +179,7 @@ export function ImagePreview({
         <div
           ref={contentRef}
           className="flex min-h-full min-w-full w-max items-center justify-center"
-          style={{ padding: PAD }}
+          style={{ padding: `${PAD}px ${PAD}px ${PAD_BOTTOM}px` }}
         >
           {src ? (
             // 署名付き URL を直接読む（next/image の最適化サーバを経由させない）。
@@ -212,8 +195,10 @@ export function ImagePreview({
                 toggleFit(r ? { x: e.clientX - r.left, y: e.clientY - r.top } : undefined);
               }}
               className={cn(
-                "max-w-none select-none rounded-sm shadow-sm ring-1 ring-black/[0.06]",
+                "max-w-none select-none rounded-md shadow-[0_1px_2px_rgb(0_0_0/0.06),0_12px_32px_-8px_rgb(0_0_0/0.18)] ring-1 ring-black/[0.06] dark:ring-white/[0.06]",
                 "bg-[repeating-conic-gradient(var(--muted)_0_25%,transparent_0_50%)] bg-[length:16px_16px]",
+                "transition-opacity duration-[var(--duration-normal)]",
+                natural ? "opacity-100" : "opacity-0",
                 zoom == null && fit >= 1 ? "cursor-default" : zoom == null ? "cursor-zoom-in" : "cursor-zoom-out",
               )}
               style={{ width: w, height: h }}
@@ -222,6 +207,48 @@ export function ImagePreview({
           ) : null}
         </div>
       </div>
+      {natural ? (
+        // 拡大縮小の操作は画像の上に浮かべる（PC もスマホも同じ場所）。
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center">
+          <FloatingToolbar className="pointer-events-auto rounded-full px-1.5 shadow-lg" aria-label="拡大縮小">
+            <ToolbarButton
+              aria-label="縮小（⌘−）"
+              title="縮小（⌘−）"
+              disabled={scale <= ZOOM_MIN}
+              onClick={() => step(-1)}
+              className="rounded-full disabled:opacity-35 pointer-coarse:size-10"
+              data-testid="image-zoom-out"
+            >
+              <Minus aria-hidden />
+            </ToolbarButton>
+            <span className="w-12 text-center text-xs font-medium tabular-nums text-foreground/80" data-testid="image-zoom-percent">
+              {percent}%
+            </span>
+            <ToolbarButton
+              aria-label="拡大（⌘＋）"
+              title="拡大（⌘＋）"
+              disabled={scale >= ZOOM_MAX}
+              onClick={() => step(1)}
+              className="rounded-full disabled:opacity-35 pointer-coarse:size-10"
+              data-testid="image-zoom-in"
+            >
+              <Plus aria-hidden />
+            </ToolbarButton>
+            <ToolbarSeparator />
+            <ToolbarButton
+              aria-label={zoom == null ? "等倍で表示" : "画面に合わせる（⌘0）"}
+              title={zoom == null ? "等倍で表示" : "画面に合わせる（⌘0）"}
+              onClick={() => zoomTo(zoom == null ? 1 : null)}
+              disabled={zoom == null && fit >= 1}
+              className="w-auto gap-1 rounded-full px-2.5 text-xs font-medium disabled:opacity-35 pointer-coarse:h-10"
+              data-testid="image-fit"
+            >
+              {zoom == null ? <Scan aria-hidden /> : <Maximize aria-hidden />}
+              {zoom == null ? "等倍" : "全体"}
+            </ToolbarButton>
+          </FloatingToolbar>
+        </div>
+      ) : null}
     </div>
   );
 }

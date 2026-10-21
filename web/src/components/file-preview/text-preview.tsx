@@ -8,11 +8,17 @@
 import * as React from "react";
 import { Check, Copy, WrapText } from "lucide-react";
 
-import { nodeKindLabel } from "@/components/drive/primitives";
-import { EditorLoading, EditorStatusBadge } from "@/components/shell/editor-loading";
-import { ChromeIconButton } from "@/components/shell/page-header-context";
+import { EditorLoading } from "@/components/shell/editor-loading";
 import { toast } from "@/components/ui/use-toast";
-import { HIGHLIGHT_MAX_BYTES, TEXT_MAX_BYTES, looksBinary, textLanguage } from "@/lib/file-preview";
+import { formatBytes } from "@/lib/format";
+import {
+  HIGHLIGHT_MAX_BYTES,
+  TEXT_MAX_BYTES,
+  languageColor,
+  languageLabel,
+  looksBinary,
+  textLanguage,
+} from "@/lib/file-preview";
 import { downloadUrl, type NodeResponse } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
@@ -121,43 +127,79 @@ export function TextPreview({
     }
   }, [loaded]);
 
-  useFileChrome(
-    node,
-    onDownload,
-    {
-      subtitle: loaded ? (
-        <span className="inline-flex items-center gap-2">
-          <span>
-            {nodeKindLabel(node)}・{loaded.lines.toLocaleString("ja-JP")} 行
-          </span>
-          {loaded.encoding === "shift_jis" ? <EditorStatusBadge>Shift_JIS</EditorStatusBadge> : null}
-        </span>
-      ) : undefined,
-      actions: loaded ? (
-        <>
-          <ChromeIconButton label="折り返して表示" pressed={wrap} onClick={() => setWrap((w) => !w)} data-testid="text-wrap-toggle">
-            <WrapText aria-hidden />
-          </ChromeIconButton>
-          <ChromeIconButton label={copied ? "コピーしました" : "すべてコピー"} onClick={() => void copyAll()} data-testid="text-copy">
-            {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
-          </ChromeIconButton>
-        </>
-      ) : undefined,
-    },
-    [loaded, wrap, copied, copyAll],
-  );
+  useFileChrome(node, onDownload, {}, []);
 
   if (!loaded) return <EditorLoading kind="doc" message="ファイルを開いています…" />;
   const gutter = String(loaded.lines).length;
+  const meta = [
+    `${loaded.lines.toLocaleString("ja-JP")} 行`,
+    formatBytes(node.size_bytes),
+    loaded.encoding === "shift_jis" ? "Shift_JIS" : null,
+  ].filter(Boolean);
   return (
-    <div className="h-full min-h-0 overflow-auto bg-background" data-testid="text-preview" tabIndex={0}>
-      <div
-        className={cn("file-code min-w-max py-3 pr-6 font-mono text-[13px] leading-[1.6]", wrap && "file-code-wrap min-w-0")}
-        style={{ ["--gutter" as string]: `${gutter}ch` }}
-        data-highlighted={loaded.highlighted ? "" : undefined}
-        // 中身は shiki か escapeHtml を通した文字列だけ（ファイルの HTML をそのまま差し込まない）。
-        dangerouslySetInnerHTML={{ __html: loaded.html }}
-      />
+    <div className="h-full min-h-0 overflow-auto bg-muted/40 md:px-6 md:py-5" data-testid="text-preview" tabIndex={0}>
+      <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col bg-card md:min-h-0 md:overflow-hidden md:rounded-xl md:border md:border-border/70 md:shadow-sm">
+        {/* ファイルの見出し（言語・行数・サイズと操作）。本文をスクロールしても上に残す。 */}
+        <div className="sticky top-0 z-[1] flex items-center gap-2 border-b border-border/70 bg-card/95 py-1.5 pl-4 pr-1.5 backdrop-blur max-md:pl-3">
+          <span className="inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground/80">
+            <span className="size-2 rounded-full" style={{ background: languageColor(lang) }} aria-hidden />
+            {languageLabel(lang, node.name)}
+          </span>
+          <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">{meta.join("・")}</span>
+          <span className="ml-auto flex shrink-0 items-center gap-0.5">
+            <HeaderButton label="折り返して表示" pressed={wrap} onClick={() => setWrap((w) => !w)} testId="text-wrap-toggle">
+              <WrapText aria-hidden />
+              <span className="max-sm:hidden">折り返し</span>
+            </HeaderButton>
+            <HeaderButton label={copied ? "コピーしました" : "すべてコピー"} onClick={() => void copyAll()} testId="text-copy">
+              {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
+              <span className="max-sm:hidden">{copied ? "コピーしました" : "コピー"}</span>
+            </HeaderButton>
+          </span>
+        </div>
+        <div className="overflow-x-auto overscroll-x-contain">
+          <div
+            className={cn("file-code min-w-max py-2 font-mono text-[13px] leading-[1.65]", wrap && "file-code-wrap min-w-0")}
+            style={{ ["--gutter" as string]: `${gutter}ch` }}
+            data-highlighted={loaded.highlighted ? "" : undefined}
+            // 中身は shiki か escapeHtml を通した文字列だけ（ファイルの HTML をそのまま差し込まない）。
+            dangerouslySetInnerHTML={{ __html: loaded.html }}
+          />
+        </div>
+      </div>
     </div>
+  );
+}
+
+function HeaderButton({
+  label,
+  pressed,
+  onClick,
+  testId,
+  children,
+}: {
+  label: string;
+  pressed?: boolean;
+  onClick: () => void;
+  testId?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={pressed}
+      title={label}
+      onClick={onClick}
+      data-testid={testId}
+      className={cn(
+        "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium outline-none transition-colors",
+        "text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+        "pointer-coarse:h-9 pointer-coarse:px-2.5 [&_svg]:size-3.5",
+        pressed && "bg-accent text-foreground",
+      )}
+    >
+      {children}
+    </button>
   );
 }

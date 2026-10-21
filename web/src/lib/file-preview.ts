@@ -147,3 +147,91 @@ export function looksBinary(bytes: Uint8Array): boolean {
   for (let i = 0; i < n; i++) if (bytes[i] === 0) return true;
   return false;
 }
+
+/// 見出しに出す言語名。
+const LANGUAGE_LABELS: Record<string, string> = {
+  javascript: "JavaScript",
+  typescript: "TypeScript",
+  jsx: "JSX",
+  tsx: "TSX",
+  python: "Python",
+  ruby: "Ruby",
+  rust: "Rust",
+  go: "Go",
+  java: "Java",
+  kotlin: "Kotlin",
+  swift: "Swift",
+  c: "C",
+  cpp: "C++",
+  csharp: "C#",
+  php: "PHP",
+  shellscript: "Shell",
+  powershell: "PowerShell",
+  sql: "SQL",
+  graphql: "GraphQL",
+  proto: "Protocol Buffers",
+  hcl: "HCL",
+  json: "JSON",
+  jsonc: "JSON",
+  yaml: "YAML",
+  toml: "TOML",
+  xml: "XML",
+  html: "HTML",
+  css: "CSS",
+  scss: "SCSS",
+  ini: "INI",
+  docker: "Dockerfile",
+  make: "Makefile",
+  diff: "Diff",
+  vue: "Vue",
+  svelte: "Svelte",
+  lua: "Lua",
+  r: "R",
+  dart: "Dart",
+  scala: "Scala",
+  markdown: "Markdown",
+};
+
+export function languageLabel(lang: string, name: string): string {
+  if (lang !== "text") return LANGUAGE_LABELS[lang] ?? lang;
+  const ext = extension(name);
+  if (ext === "log") return "ログ";
+  if (ext === "tsv") return "TSV";
+  return "テキスト";
+}
+
+/// 言語の目印の色（GitHub の言語色に近いもの。無いものは灰色）。
+const LANGUAGE_COLORS: Record<string, string> = {
+  javascript: "#f1e05a",
+  jsx: "#f1e05a",
+  typescript: "#3178c6",
+  tsx: "#3178c6",
+  python: "#3572a5",
+  ruby: "#701516",
+  rust: "#dea584",
+  go: "#00add8",
+  java: "#b07219",
+  kotlin: "#a97bff",
+  swift: "#f05138",
+  c: "#555555",
+  cpp: "#f34b7d",
+  csharp: "#178600",
+  php: "#4f5d95",
+  shellscript: "#89e051",
+  sql: "#e38c00",
+  json: "#cbcb41",
+  jsonc: "#cbcb41",
+  yaml: "#cb171e",
+  toml: "#9c4221",
+  html: "#e34c26",
+  css: "#563d7c",
+  scss: "#c6538c",
+  vue: "#41b883",
+  svelte: "#ff3e00",
+  dart: "#00b4ab",
+  markdown: "#083fa1",
+};
+
+export function languageColor(lang: string): string {
+  return LANGUAGE_COLORS[lang] ?? "var(--muted-foreground)";
+}
