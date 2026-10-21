@@ -42,9 +42,10 @@ export function useTurnJump(scroller: HTMLElement | null, content: HTMLElement |
     if (!scroller) return;
     refresh();
     scroller.addEventListener("scroll", refresh, { passive: true });
-    // 発話が増えた・本文が伸びた（スクロールせずに前後が変わる）ときも測り直す。
+    // 発話が増えた・本文が伸びた（スクロールせずに前後が変わる）ときも測り直す。本文の下の
+    // padding（重ねた入力欄の高さ）が変わると下端も動くので、padding 込みの大きさで見る。
     const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(refresh);
-    if (content) ro?.observe(content);
+    if (content) ro?.observe(content, { box: "border-box" });
     return () => {
       scroller.removeEventListener("scroll", refresh);
       ro?.disconnect();
