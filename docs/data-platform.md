@@ -384,8 +384,10 @@ pivot 索引は**値が無いレコードには行が無い**。ソートキー�
 両方を解く鍵になる。
 
 > 当初は「擬似列を駆動にしてソート値を `LEFT JOIN` し `NULLS LAST`」としていたが、これでは早期終了が効かない。
-> 2 区間走査に改め、null センチネル行（未設定レコードにも行を持たせる案）は不要になった。
-> カーソルには区間番号を含める（query-optimizer.md §6.3）。
+> 2 区間走査に改めた。値なしの位置は昇順・降順とも末尾に固定する（`NULLS FIRST` は受け付けない）。
+> 区間 2（値なしの行）は擬似列の走査になり、値なしが疎な列では末尾ページが O(n) になる。末尾ページを
+> 頻繁に使う列に限り、値なしの印の行（未設定レコードにも行を持たせる）を §10 の昇格で材料化して範囲走査にする。
+> カーソルには区間番号を含める（query-optimizer.md §5.1・§6.3）。
 
 **どの戦略を選ぶか（統計・コスト・予算付きの切替）は [query-optimizer.md](./data/query-optimizer.md) が正本**。
 上表は戦略の種類を示すもので、表の行を固定的に当てはめるのではない。
@@ -588,9 +590,10 @@ pub enum CmpOp {
 
 **演算子語彙は workflow IR の `Condition`（`crates/workflow-engine/src/ir/`）に合わせる。**
 そうすることで `data.query` ノードは IR 条件を**変換なしで**渡せる。
-**意味論も揃えて 2 値論理とする**（値なしに対する `Neq` は真・`Not` は補集合。workflow の評価器
-`control/eval.rs` と同じ）。値なし・多値列での各演算子の定義と、SQL 前段（3 値論理）からの翻訳規則は
-[query-optimizer.md §3.1](./data/query-optimizer.md) を正とする。
+**意味論も揃えて 2 値論理とする案を提案中（human の確認待ち）**（値なしに対する `Neq` は真・`Not` は補集合。
+workflow の評価器 `control/eval.rs` と単値では同じ。多値列と数値の等値では現行の `eval.rs` と食い違うので、
+どちらに寄せるかも併せて決める）。値なし・多値列での各演算子の定義、SQL 前段（3 値論理）からの翻訳規則、
+**行述語は v1 の意味論のまま（値なしの `Ne` は偽）であること**は [query-optimizer.md §3.1・§3.3](./data/query-optimizer.md) を正とする。
 `matches`（正規表現）は索引が効かず DoS 面にもなるため**採用しない**（IR 側にはあるが data では拒否）。
 
 > **`Not` の扱い**: `row_policy`（`PolicyExpr`）は意図的に `Not` を持たない（フィールドマスクとの
@@ -697,16 +700,16 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 （`HasRole` はホスト側で解決済みの定数になる・v1 の挙動）。
 
 ```text
-(f1 = "佐藤") OR (f5 IN ("営業"))          ← f1=申請者, f5=部門
+(f16 = "佐藤") OR (f20 IN ("営業"))        ← f16=申請者, f20=部門（ユーザー定義列は 16 以降・§3.2）
 ```
 
-`f1` も `f5` も索引テーブルに載っているので、**この判定が索引内で完結する**。
+`f16` も `f20` も索引テーブルに載っているので、**この判定が索引内で完結する**。
 
 ```sql
 AND ( EXISTS (SELECT 1 FROM data_index_text p WHERE p.tenant_int=$1 AND p.table_int=$2
-                AND p.field_id = 1 AND p.val = $owner_id AND p.record_id = i.record_id)
+                AND p.field_id = 16 AND p.val = $user_id AND p.record_id = i.record_id)
    OR EXISTS (SELECT 1 FROM data_index_text p WHERE p.tenant_int=$1 AND p.table_int=$2
-                AND p.field_id = 5 AND p.val = ANY($dept_array) AND p.record_id = i.record_id)
+                AND p.field_id = 20 AND p.val = ANY($dept_array) AND p.record_id = i.record_id)
    OR i.record_id = ANY($shared_ids::uuid[]) )                    -- ④ 個別共有
 ```
 
