@@ -7,7 +7,14 @@ export type AdminMenuItem = {
   href: string;
   /// API が未実装のモック画面（バッジを出す）。
   mock?: boolean;
+  /// 配下のパスでは選択中にしない（下位の画面が別の項目として並ぶとき）。
+  exact?: boolean;
 };
+
+/// パスがこの項目（またはその配下）か。
+export function isMenuItemActive(item: AdminMenuItem, pathname: string): boolean {
+  return pathname === item.href || (!item.exact && pathname.startsWith(`${item.href}/`));
+}
 
 export type AdminMenuGroup = { label: string; items: AdminMenuItem[] };
 
@@ -49,12 +56,22 @@ export const ADMIN_SECTIONS: AdminSection[] = [
     href: "/admin/ai/usage",
     prefix: "/admin/ai",
     menu: [
-      { label: "分析", items: [{ label: "利用量", href: "/admin/ai/usage" }] },
+      {
+        label: "分析",
+        items: [
+          { label: "活用状況", href: "/admin/ai/insights", exact: true },
+          { label: "利用者と部署", href: "/admin/ai/insights/adoption" },
+          { label: "用途", href: "/admin/ai/insights/use-cases" },
+          { label: "効果", href: "/admin/ai/insights/impact" },
+          { label: "利用量", href: "/admin/ai/usage" },
+        ],
+      },
       {
         label: "設定",
         items: [
           { label: "モデル", href: "/admin/ai/models" },
           { label: "プロバイダ", href: "/admin/ai/providers" },
+          { label: "分析の設定", href: "/admin/ai/insights/settings" },
         ],
       },
     ],
@@ -81,5 +98,5 @@ export function sectionFor(pathname: string): AdminSection {
 export function menuItemFor(pathname: string): AdminMenuItem | undefined {
   return sectionFor(pathname)
     .menu?.flatMap((g) => g.items)
-    .find((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
+    .find((i) => isMenuItemActive(i, pathname));
 }

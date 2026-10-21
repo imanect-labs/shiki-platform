@@ -419,7 +419,7 @@ export function SkillEditorDialog({
                         )
                       }
                       aria-label={`script ${i + 1} の種別`}
-                      className="h-9 rounded-lg border border-input bg-background px-2 text-base md:text-sm"
+                      className="h-9 rounded-lg border border-input bg-background px-2 text-base md:text-sm pointer-coarse:text-base"
                     >
                       {SCRIPT_KINDS.map((k) => (
                         <option key={k.value} value={k.value}>

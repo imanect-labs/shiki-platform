@@ -70,6 +70,11 @@
   --elevation-md: 0 4px 12px -2px oklch(0 0 0 / 0.1), 0 2px 6px -3px oklch(0 0 0 / 0.08);
   --elevation-lg: 0 12px 32px -8px oklch(0 0 0 / 0.16), 0 4px 12px -6px oklch(0 0 0 / 0.1);
 
+  /* 順序のある 3 段階（濃 → 淡: --primary / --ordinal-2 / --ordinal-3）。活用分析の区分に使う。
+     淡い端も面に対して 2:1 以上（dataviz の validate_palette --ordinal で確認）。 */
+  --ordinal-2: color-mix(in oklab, var(--primary) 62%, var(--card));
+  --ordinal-3: color-mix(in oklab, var(--primary) 33%, var(--card));
+
   /* モーション */
   --duration-fast: 120ms;
   --duration-normal: 200ms;
@@ -121,6 +126,10 @@
   --season-summer: oklch(0.74 0.09 162);
   --season-autumn: oklch(0.77 0.10 56);
   --season-winter: oklch(0.74 0.07 238);
+
+  /* 順序のある 3 段階（暗い面では淡い端が沈むので混ぜる割合を上げる） */
+  --ordinal-2: color-mix(in oklab, var(--primary) 68%, var(--card));
+  --ordinal-3: color-mix(in oklab, var(--primary) 42%, var(--card));
 
   /* ダークはシャドウを濃く・広く */
   --elevation-xs: 0 1px 2px 0 oklch(0 0 0 / 0.3);
@@ -654,4 +663,13 @@
   --yui-border: var(--border);
   --yui-grid: var(--border);
   --yui-focus: var(--ring);
+}
+
+/* Yui のフォーム（ask・plan・app）は入力欄を 14px で描く。iOS Safari は 16px 未満の欄に
+   フォーカスすると画面をズームするので、タッチ端末では 16px にする。Yui が差し込む
+   `.<id> input[type=text]` より詳細度を高くして上書きする（PC の見た目は変えない）。 */
+@media (pointer: coarse) {
+  :root [data-yui] :is(input[type="text"], input[type="date"], textarea, select) {
+    font-size: 16px;
+  }
 }

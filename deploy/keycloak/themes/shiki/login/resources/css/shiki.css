@@ -111,16 +111,32 @@ body.sk-body {
   text-align: center;
 }
 
+/* ロゴ（四つの点＋ワードマーク）。色を持つのは点だけで、文字はネイビー一色（ダークは前景色）。
+   web/src/components/shell/brand-logo.tsx の lg と同じ大きさ。 */
+.sk-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sk-logo-mark {
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+}
+
 .sk-wordmark {
-  display: inline-block;
-  background-image: linear-gradient(100deg, var(--season-spring), var(--season-summer) 38%, var(--season-autumn) 66%, var(--season-winter));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  font-size: 30px;
+  color: var(--primary);
+  font-size: 26px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  line-height: 1.2;
+  line-height: 1;
+}
+
+@media (prefers-color-scheme: dark) {
+  .sk-wordmark {
+    color: var(--foreground);
+  }
 }
 
 .sk-card {

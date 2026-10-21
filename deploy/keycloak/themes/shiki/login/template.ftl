@@ -72,7 +72,16 @@
 <div class="${properties.kcLoginClass!}">
     <main class="sk-main">
         <div class="sk-brand" id="kc-header">
-            <span class="sk-wordmark" id="kc-header-wrapper">Shiki</span>
+            <span class="sk-logo" id="kc-header-wrapper">
+                <#-- 四つの点（左上から時計回りに春・夏・秋・冬）。web/src/components/shell/brand-logo.tsx と同じ形。 -->
+                <svg class="sk-logo-mark" viewBox="0 0 64 64" aria-hidden="true">
+                    <circle cx="21" cy="21" r="8.6" fill="var(--season-spring)"/>
+                    <circle cx="43" cy="21" r="8.6" fill="var(--season-summer)"/>
+                    <circle cx="43" cy="43" r="8.6" fill="var(--season-autumn)"/>
+                    <circle cx="21" cy="43" r="8.6" fill="var(--season-winter)"/>
+                </svg>
+                <span class="sk-wordmark">Shiki</span>
+            </span>
         </div>
 
         <div class="${properties.kcFormCardClass!}">

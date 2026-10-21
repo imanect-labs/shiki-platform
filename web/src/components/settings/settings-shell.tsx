@@ -7,6 +7,7 @@ import { ArrowLeft } from "lucide-react";
 
 import { cn, initialsFrom } from "@/lib/utils";
 import { useMe } from "@/hooks/use-me";
+import { BrandLogo } from "@/components/shell/brand-logo";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -15,8 +16,8 @@ import { NavItem } from "@/components/shell/sidebar/nav-item";
 import { SETTINGS_NAV, settingsItemFor } from "./settings-nav";
 import { SettingsCrumbContext, SoonBadge } from "./settings-ui";
 
-/// ワードマーク（四季のグラデーション）。アプリのサイドバーと同じ。
-function Wordmark({ onNavigate }: { onNavigate?: () => void }) {
+/// ロゴ（四つの点＋ワードマーク）。アプリのサイドバーと同じ。ホームへのリンクを兼ねる。
+function Wordmark({ onNavigate, mobile }: { onNavigate?: () => void; mobile?: boolean }) {
   return (
     <Link
       href="/"
@@ -24,15 +25,7 @@ function Wordmark({ onNavigate }: { onNavigate?: () => void }) {
       aria-label="ホームへ"
       className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
     >
-      <span
-        className="bg-clip-text text-[17px] font-bold tracking-[-0.02em] text-transparent"
-        style={{
-          backgroundImage:
-            "linear-gradient(100deg, var(--season-spring), var(--season-summer) 38%, var(--season-autumn) 66%, var(--season-winter))",
-        }}
-      >
-        Shiki
-      </span>
+      <BrandLogo size={mobile ? "touch" : "md"} />
     </Link>
   );
 }
@@ -99,7 +92,7 @@ function SidebarBody({ pathname, onNavigate, mobile }: { pathname: string; onNav
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
       <div className={cn("flex h-14 shrink-0 items-center gap-2.5", mobile ? "pl-4 pr-2" : "px-3")}>
-        <Wordmark onNavigate={onNavigate} />
+        <Wordmark onNavigate={onNavigate} mobile={mobile} />
         <span aria-hidden className="shiki-dash-y h-4 w-1.5" />
         <span className="text-[13.5px] font-medium text-sidebar-foreground/70">設定</span>
       </div>

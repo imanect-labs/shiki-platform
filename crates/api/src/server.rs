@@ -377,6 +377,19 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/threads/{id}/skills", &["PUT"], Session, || {
             put(routes::chat_skills::set_thread_skills)
         }),
+        // 回答への評価（👍 / 👎・#751）。
+        r("/threads/{id}/feedback", &["GET"], Session, || {
+            get(routes::chat_feedback::get_thread_feedback)
+        }),
+        r(
+            "/threads/{id}/messages/{message_id}/feedback",
+            &["PUT", "DELETE"],
+            Session,
+            || {
+                put(routes::chat_feedback::set_message_feedback)
+                    .delete(routes::chat_feedback::clear_message_feedback)
+            },
+        ),
         r("/threads/{id}/messages", &["GET", "POST"], Session, || {
             get(routes::chat::get_messages).post(routes::chat::post_message)
         }),
@@ -510,6 +523,7 @@ pub fn route_table() -> Vec<RouteDecl> {
     table.extend(routes::office::office_route_decls());
     table.extend(routes::llm_models::llm_model_route_decls());
     table.extend(routes::org_admin_ai::org_admin_ai_route_decls());
+    table.extend(routes::org_admin_insights::org_admin_insights_route_decls());
     table
 }
 

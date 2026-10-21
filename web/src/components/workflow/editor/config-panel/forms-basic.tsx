@@ -257,7 +257,7 @@ export function SkillInvokeForm({ node, dispatch, refCandidates, inMapRegion, fi
       >
         {installed && installed.length > 0 ? (
           <select
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm pointer-coarse:text-base"
             value={current}
             onChange={(e) => patchParams(dispatch, node, { skill: e.target.value })}
           >
