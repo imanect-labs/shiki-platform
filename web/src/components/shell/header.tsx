@@ -45,11 +45,11 @@ export function Header() {
   );
 }
 
-/// スマホの浮いた操作群の「台」。PC の浮いたサイドバー（角丸・沈んだ面・淡い影）と同じ素材で、
-/// 角は丸めすぎない（丸いピルにしない）。
+/// スマホの浮いた操作群の「台」。PC の浮いたサイドバーと同じ沈んだ面・枠・角丸（丸いピルにしない）。
+/// 面は半透明にして後ろをぼかし、下を流れる本文の上に軽く浮かせる（ぼかせない環境では不透明寄り）。
 export const CHROME_TRAY = cn(
   "pointer-events-auto flex h-12 items-center rounded-[14px] border border-sidebar-border px-0.5",
-  "bg-sidebar/95 shadow-[var(--elevation-md)] backdrop-blur supports-[backdrop-filter]:bg-sidebar/80",
+  "bg-sidebar/85 shadow-[var(--elevation-sm)] backdrop-blur-md supports-[backdrop-filter]:bg-sidebar/55",
 );
 
 /// ドロワ（ナビゲーション）を開くボタン。顔はロゴの四つの点（`BrandMark`）。
