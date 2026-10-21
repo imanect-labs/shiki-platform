@@ -23,6 +23,10 @@ ignore = [
     # unmaintained 通知で、既知脆弱性は無い（安全な更新先も無い）。lindera 上流が置換するまで
     # cargo update では到達できない。上流更新で外す（要追跡）。
     { id = "RUSTSEC-2024-0449", reason = "lindera 推移依存の unsafe-libyaml unmaintained 通知。脆弱性ではなく lindera 上流の置換待ち。" },
+    # webpki-roots 0.26.11 は 1.x を再エクスポートするだけの互換 shim（証明書を同梱しない）。
+    # 実体は lock で 1.0.10（emSign ルート除去済み）に解決されるので影響は無いが、advisory は
+    # 版数で一致する。0.26 系に修正版は出ない。sqlx-core / tokio-tungstenite が 1.x へ移ったら外す。
+    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26.11 は 1.x の再エクスポート shim。実体は修正済みの 1.0.10 に解決されている。" },
 ]
 
 [licenses]
