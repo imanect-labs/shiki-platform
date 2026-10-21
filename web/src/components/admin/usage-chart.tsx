@@ -8,12 +8,18 @@ export type UsageMetric = "cost" | "tokens" | "calls";
 
 type Day = { day: string; cost_usd_micros: number; tokens: number; calls: number };
 
-/// 指標ごとの値（記法に書く素の数値）と単位。
-const METRIC: Record<UsageMetric, { name: string; unit: string; value: (d: Day) => string }> = {
-  cost: { name: "コスト", unit: "ドル", value: (d) => yuiNumber(d.cost_usd_micros / 1_000_000, 4) },
-  tokens: { name: "トークン", unit: "トークン", value: (d) => yuiNumber(d.tokens) },
-  calls: { name: "呼び出し", unit: "回", value: (d) => yuiNumber(d.calls) },
-};
+type MetricDef = { name: string; unit: string; value: (d: Day) => string };
+
+/// 指標ごとの値（記法に書く素の数値）と単位。コストは日ごとの最大が 1 ドル未満ならセントで書く
+/// （小さなドルの値では目盛りの丸めで同じ数字が並ぶため）。
+function metricDef(metric: UsageMetric, days: Day[]): MetricDef {
+  if (metric === "tokens") return { name: "トークン", unit: "トークン", value: (d) => yuiNumber(d.tokens) };
+  if (metric === "calls") return { name: "呼び出し", unit: "回", value: (d) => yuiNumber(d.calls) };
+  const cents = Math.max(0, ...days.map((d) => d.cost_usd_micros)) < 1_000_000;
+  return cents
+    ? { name: "コスト", unit: "セント", value: (d) => yuiNumber(d.cost_usd_micros / 10_000, 2) }
+    : { name: "コスト", unit: "ドル", value: (d) => yuiNumber(d.cost_usd_micros / 1_000_000, 2) };
+}
 
 const EMPTY_LABEL: Record<UsageMetric, string> = {
   cost: "この期間のコストは $0 です（単価未設定のモデルは $0 で集計されます）",
@@ -31,7 +37,7 @@ export function metricWithData(days: Day[]): UsageMetric {
 /// 日別の推移（単一系列）。0 埋め済みの全日付を受け取る。チャットの本文の図と同じ Yui で描く（#783）。
 /// 2 週間までは棒、それより長い期間は折れ線（Yui は 15 本以上の棒を横向きにするため）。
 export function UsageChart({ days, metric }: { days: Day[]; metric: UsageMetric }) {
-  const m = METRIC[metric];
+  const m = React.useMemo(() => metricDef(metric, days), [metric, days]);
   const source = React.useMemo(() => {
     const kind = days.length <= 14 ? "bar" : "line";
     const label = (iso: string) => {

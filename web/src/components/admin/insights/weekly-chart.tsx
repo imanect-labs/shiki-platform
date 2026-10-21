@@ -37,7 +37,7 @@ export function WeeklyChart({
       "stacked: true",
       "unit: 人",
       ...(weeks.some((w) => partial(w.week_start))
-        ? ["note: * は期間に一部の日だけ含まれる週"]
+        ? ["note: 日付の末尾の * は、期間に一部の日だけ含まれる週"]
         : []),
       `週 | ${WEEKLY_SERIES.map((s) => s.label).join(" | ")}`,
       ...weeks.map(

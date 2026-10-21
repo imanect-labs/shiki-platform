@@ -33,8 +33,9 @@ function Funnel({ f }: { f: InsightsOverview["funnel"] }) {
     `利用対象者 | ${yuiNumber(f.population)}`,
     `一度でも使った | ${yuiNumber(f.ever)}`,
     `直近 30 日に使った | ${yuiNumber(f.last_30_days)}`,
-    `毎週使う（4 週中 3 週以上） | ${yuiNumber(f.weekly)}`,
-    `ほぼ毎日（28 日中 16 日以上） | ${yuiNumber(f.heavy)}`,
+    `毎週使う | ${yuiNumber(f.weekly)}`,
+    `ほぼ毎日 | ${yuiNumber(f.heavy)}`,
+    "note: 毎週使う＝直近 4 週のうち 3 週以上、ほぼ毎日＝直近 28 日のうち 16 日以上",
   ].join("\n");
   return (
     <div className="px-1 pb-1 pt-2">
