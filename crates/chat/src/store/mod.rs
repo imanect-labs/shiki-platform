@@ -9,6 +9,7 @@
 
 mod approval;
 mod autonomous;
+mod feedback;
 mod message_view;
 mod post;
 mod reaper;
@@ -20,6 +21,7 @@ mod threads;
 mod ui_actions;
 mod yui_actions;
 
+pub use feedback::{MessageFeedback, FEEDBACK_CATEGORIES};
 pub use post::PostResult;
 pub use runs::{ClaimedRun, CurrentRun, RunContext, CHAT_GENERATION_QUEUE};
 pub use threads::ThreadOrigin;

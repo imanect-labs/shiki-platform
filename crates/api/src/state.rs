@@ -100,6 +100,8 @@ pub struct AppState {
     /// LLM ゲートウェイ（モデル一覧・テナントの AI 設定・利用量集計・チャットのモデル解決）。
     /// LLM 未構成（未実装 backend 等）では `None`（/llm/models・/org-admin/ai/* は 503）。
     pub llm: Option<Arc<llm_gateway::LlmGateway>>,
+    /// AI 活用分析（`/org-admin/insights/*`・#751）。範囲は常に AuthContext から。
+    pub insights: Arc<crate::insights::InsightsService>,
     /// RAG のテナント消去（rag_chunk/jobq/Qdrant/Tantivy）。テナント削除フローから呼ぶ。
     /// RAG 無効構成でも DB 行の消去は行う（過去に有効だった残骸を残さない）。
     pub rag_admin: Arc<rag::RagAdmin>,

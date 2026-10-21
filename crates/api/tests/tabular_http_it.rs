@@ -254,6 +254,7 @@ fn config(db_url: &str) -> AppConfig {
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
+        insights: api::insights::InsightsConfig::default(),
     }
 }
 
@@ -424,6 +425,7 @@ fn build_app(
     ));
     let state = AppState {
         config: Arc::new(config),
+        insights: std::sync::Arc::new(api::insights::InsightsService::new(pool.clone())),
         db: api::state::ReadinessProbe::new(pool.clone()),
         authz: Arc::clone(authz),
         jwks: Arc::new(api::middleware::JwksCache::new(

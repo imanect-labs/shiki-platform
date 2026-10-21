@@ -357,6 +357,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
+        insights: api::insights::InsightsConfig::default(),
     }
 }
 
@@ -458,6 +459,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
     ));
     AppState {
         config: Arc::new(config),
+        insights: std::sync::Arc::new(api::insights::InsightsService::new(db.clone())),
         db: api::state::ReadinessProbe::new(db),
         authz: Arc::new(AllowAll),
         jwks,

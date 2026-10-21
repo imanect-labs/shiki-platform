@@ -161,6 +161,11 @@ pub(crate) async fn dev_seed(
                     .await
                     .context("dev seed: role member tuple の書き込みに失敗")?;
             }
+            // AI 活用分析の部署集計用の写し（#751）。ログイン時の同期で claims の集合に置き換わる。
+            directory
+                .replace_user_roles(seed_tenant, r.org, member, &[(r.id.to_string(), true)])
+                .await
+                .context("dev seed: directory_user_role の投入に失敗")?;
         }
         directory
             .upsert_role(r.id, seed_tenant, r.org, r.display_name)

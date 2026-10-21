@@ -295,7 +295,10 @@ async fn main() -> anyhow::Result<()> {
             None
         }
     };
+    // AI 活用分析（#751）: 利用者×日のロールアップと用途分類を定期実行する。
+    api::insights::timer::spawn(db.clone(), llm.clone(), config.insights.clone());
     let state = AppState {
+        insights: Arc::new(api::insights::InsightsService::new(db.clone())),
         config: Arc::new(config),
         // 生 PgPool は StorageService 等のチョークポイントにのみ渡し、AppState には
         // readiness 専用の newtype で載せる（#91 M-2・ハンドラの生 SQL を型で防ぐ）。

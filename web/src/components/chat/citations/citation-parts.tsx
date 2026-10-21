@@ -70,7 +70,7 @@ function isPdf(meta: NodeMeta): boolean {
   return meta.contentType === "application/pdf" || /\.pdf$/i.test(meta.name);
 }
 
-/// 「原本で開く」の遷移先と文言。専用エディタの無い形式は格納フォルダを開く。
+/// 「原本で開く」の遷移先と文言。専用ビューアの無い形式はファイル画面（ダウンロード導線つき）を開く。
 ///
 /// `citation` を渡すと、引用箇所を探す手がかりをクエリに足す（ノート・Office は一節で探し、
 /// PDF はページと枠で開く・#508）。
@@ -83,13 +83,13 @@ export function openTarget(
   const at = citation ? citeLocatorQuery(citation) : "";
   const withCite = (href: string) => (at ? `${href}${href.includes("?") ? "&" : "?"}${at}` : href);
   if (isPdf(meta)) return { href: withCite(`/pdf/${nodeId}`), label: citation ? "PDF で該当ページを開く" : "PDF で開く" };
-  const href = resourcePath({ id: nodeId, name: meta.name, kind: "file", parent_id: meta.parentId });
+  const href = resourcePath({ id: nodeId, name: meta.name, kind: "file", content_type: meta.contentType });
   if (href.startsWith("/notes/")) return { href: withCite(href), label: citation ? "ノートで該当箇所を開く" : "ノートで開く" };
   if (href.startsWith("/office/"))
     return { href: withCite(href), label: citation ? "Office で該当箇所を開く" : "Office で開く" };
   if (href.startsWith("/csv/")) return { href, label: "表で開く" };
   if (href.startsWith("/slides/")) return { href, label: "スライドで開く" };
-  return { href, label: "フォルダを開く" };
+  return { href, label: "ファイルを開く" };
 }
 
 export function OpenOriginalLink({
