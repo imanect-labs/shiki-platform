@@ -83,11 +83,13 @@ export function ComposerTokens({
           data-testid={t.testId}
           className={cn(
             // 並びが長いときは名前を省略して縮める（語ごと見えなくならないように）。
-            "-mx-0.5 inline-flex min-w-0 max-w-[11rem] shrink items-center gap-1 rounded-md px-0.5 font-medium text-primary transition-colors",
-            "hover:bg-primary/10 hover:line-through focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+            // 色は四季の冬（雪空）を淡く敷き、文字は前景色と混ぜて読める濃さにする（Shiki のバッジと同じ作り）。
+            "inline-flex min-w-0 max-w-[11rem] shrink items-center gap-1 rounded-md px-1.5 font-medium transition-colors",
+            "bg-season-winter/18 text-[color-mix(in_oklab,var(--season-winter)_82%,var(--foreground))] hover:bg-season-winter/30",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
           )}
         >
-          <t.icon className="size-[1.05em] shrink-0" aria-hidden />
+          <t.icon className="size-[1.05em] shrink-0 text-season-winter" aria-hidden />
           <span className="truncate">{t.label}</span>
         </button>
       ))}
