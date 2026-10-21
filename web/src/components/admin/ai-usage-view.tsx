@@ -312,14 +312,8 @@ export function AiUsageView() {
               />
             }
           >
-            <div className="px-3 pb-3 pt-4">
-              <UsageChart
-                days={data.daily}
-                metric={metric}
-                label={`${data.from} から ${data.to} までの日別の${
-                  metric === "cost" ? "コスト" : metric === "tokens" ? "トークン数" : "呼び出し回数"
-                }`}
-              />
+            <div className="px-1 pb-1 pt-2">
+              <UsageChart days={data.daily} metric={metric} />
             </div>
           </Panel>
 

@@ -97,13 +97,8 @@ export function AdminHomeView() {
               </Link>
             }
           >
-            <div className="px-3 pb-3 pt-4">
-              <UsageChart
-                days={usage.daily}
-                metric={metricWithData(usage.daily)}
-                height={180}
-                label={`${usage.from} から ${usage.to} までの${METRIC_TITLE[metricWithData(usage.daily)]}`}
-              />
+            <div className="px-1 pb-1 pt-2">
+              <UsageChart days={usage.daily} metric={metricWithData(usage.daily)} />
             </div>
           </Panel>
         </>

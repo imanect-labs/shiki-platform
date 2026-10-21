@@ -72,7 +72,9 @@
 
   /* グラフの系列色（#783）。チャットの本文の図（@imanect/yui の render/theme.js の s1〜s8）と同じ値で、
      四季の色相を彩度を抑えて並べ、色覚多様性のシミュレーションで隣どうしを区別できることを検証済み。
-     冬（雪空）・秋（紅葉）・夏（新緑）・紺・春（桜）・山吹・青磁・鳶。単系列の量は --chart-1 で塗る。 */
+     冬（雪空）・秋（紅葉）・夏（新緑）・紺・春（桜）・山吹・青磁・鳶。単系列の量は --chart-1 で塗る。
+     グラフそのものは Yui で描き（components/admin/yui-chart）、Yui で描けない表（ヒートマップ・
+     横棒の一覧）だけがこれを直接使う。 */
   --chart-1: #398cb8;
   --chart-2: #cc7d49;
   --chart-3: #1e7751;
@@ -81,10 +83,6 @@
   --chart-6: #cca754;
   --chart-7: #2ca59f;
   --chart-8: #944b39;
-  /* --chart-1 の濃淡（順序のある 3 段階は 強 / --chart-1 / 弱）。淡い端も面に対して 2:1 以上
-     （dataviz の validate_palette --ordinal で確認）。 */
-  --chart-1-strong: #2d6c90;
-  --chart-1-weak: #7db1cf;
 
   /* モーション */
   --duration-fast: 120ms;
@@ -147,8 +145,6 @@
   --chart-6: #b48c2c;
   --chart-7: #179a94;
   --chart-8: #a15744;
-  --chart-1-strong: #93c0de;
-  --chart-1-weak: #437799;
 
   /* ダークはシャドウを濃く・広く */
   --elevation-xs: 0 1px 2px 0 oklch(0 0 0 / 0.3);
@@ -682,6 +678,11 @@
   --yui-border: var(--border);
   --yui-grid: var(--border);
   --yui-focus: var(--ring);
+}
+
+/* 管理画面のグラフ（#783）はパネル（card）の上に置くので、図の地もパネルの面に合わせる。 */
+[data-yui].admin-yui {
+  --yui-surface: var(--card);
 }
 
 /* Yui のフォーム（ask・plan・app）は入力欄を 14px で描く。iOS Safari は 16px 未満の欄に
