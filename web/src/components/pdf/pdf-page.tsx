@@ -59,6 +59,9 @@ export function PdfPage({
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const textRef = React.useRef<HTMLDivElement>(null);
   const [size, setSize] = React.useState<Size | null>(null);
+  // ページの縦横比（その回転での 高さ / 幅）。倍率・回転を変えた瞬間にも高さを同じ描画で決めるために持つ
+  // （寸法の取り直しは非同期なので、待つと呼び出し側が見ている場所を保てない）。
+  const [ratio, setRatio] = React.useState<{ rotation: number; value: number } | null>(null);
   const [near, setNear] = React.useState(eager);
   // テキスト層の描画結果（span と、検索と同じ文字位置）。描き直すたびに差し替わる。
   const [text, setText] = React.useState<{ divs: HTMLElement[]; page: PageText } | null>(null);
@@ -83,9 +86,12 @@ export function PdfPage({
       .getPage(pageNumber)
       .then((page) => {
         if (!active) return;
-        const base = page.getViewport({ scale: 1, rotation });
-        const viewport = page.getViewport({ scale: width / base.width, rotation });
+        // 表示の回転は、PDF がページに持つ回転（/Rotate）に足す（上書きすると元から横向きの文書が崩れる）。
+        const total = (page.rotate + rotation) % 360;
+        const base = page.getViewport({ scale: 1, rotation: total });
+        const viewport = page.getViewport({ scale: width / base.width, rotation: total });
         setSize({ w: width, h: viewport.height, viewport });
+        setRatio({ rotation, value: base.height / base.width });
       })
       .catch(() => undefined);
     return () => {
@@ -183,7 +189,9 @@ export function PdfPage({
   React.useEffect(() => () => setPageHighlights(highlightKey, [], null), [highlightKey]);
 
   const mine = boxes.filter((b) => b.page === pageNumber);
-  const height = size?.h ?? estimate ?? width * 1.414;
+  const height = ratio
+    ? width * ((ratio.rotation - rotation) % 180 === 0 ? ratio.value : 1 / ratio.value)
+    : (estimate ?? width * 1.414);
   return (
     <div
       ref={wrapRef}
