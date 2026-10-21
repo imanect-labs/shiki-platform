@@ -918,3 +918,10 @@ body[data-page-id="login-delete-credential"] .sk-btn-primary {
 body[data-page-id="login-delete-credential"] .sk-btn-primary:hover {
   background: color-mix(in oklch, var(--destructive) 88%, black);
 }
+
+/* ダークの --destructive は明るい赤なので、白文字ではコントラストが足りない（WCAG AA）。 */
+@media (prefers-color-scheme: dark) {
+  body[data-page-id="login-delete-credential"] .sk-btn-primary {
+    color: oklch(0.2 0.02 22);
+  }
+}

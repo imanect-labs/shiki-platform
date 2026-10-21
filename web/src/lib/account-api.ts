@@ -21,8 +21,16 @@ export class AccountApiError extends Error {
 
 async function check(res: Response): Promise<Response> {
   if (res.ok) return res;
+  // 画面を開いたままセッションが切れた場合。AuthGate はマウント時にしか確認しないので、
+  // ここでログインへ送る（戻り先は今の画面）。
+  if (res.status === 401 && typeof window !== "undefined") {
+    const next = `${window.location.pathname}${window.location.search}`;
+    window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+  }
   const message =
-    res.status === 503
+    res.status === 401
+      ? "ログインの有効期限が切れました。もう一度ログインしてください"
+      : res.status === 503
       ? "認証サーバ（Keycloak）に接続できません"
       : res.status === 404
         ? "対象のセッションが見つかりません（すでに終了している可能性があります）"

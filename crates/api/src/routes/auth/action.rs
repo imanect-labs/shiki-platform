@@ -97,7 +97,7 @@ fn validate_credential_id(id: Option<&str>) -> Result<String, ApiError> {
     path = "/auth/action",
     params(AccountActionQuery),
     responses(
-        (status = 302, description = "Keycloak の操作画面へリダイレクト"),
+        (status = 303, description = "Keycloak の操作画面へリダイレクト"),
         (status = 400, description = "操作または credential_id が不正"),
         (status = 401, description = "未認証"),
     ),
