@@ -172,9 +172,12 @@ shiki は顧客の文書・チャットを預かり、顧客従業員（エン�
   Docling・vLLM 等の OSS ライセンス（Apache-2.0 / AGPL 等）を棚卸しし、再配布条件を確認（特に **AGPL 系**に注意）。
   - [x] **Office 編集（Shiki Office = Collabora Online / LibreOffice core の自前ビルド・#549）**: 棚卸し済み。
     詳細は `deploy/docker/collabora/README.md`。
-    - 著作権: core / online は MPL-2.0（core は `--enable-mpl-subset` で MPL より制約の強い部品を除外）、
-      Poco は BSL-1.0、同梱フォントは OFL 等。shiki 本体とは HTTP / WOPI / iframe でつながるだけでリンクしないため、
-      copyleft は shiki に及ばない。
+    - 著作権: core / online は MPL-2.0、Poco は BSL-1.0、同梱フォントは OFL 等。
+      **綴り辞書は GPL / LGPL のものを含む**: distro 設定（CPLinux-LOKit）の `--with-myspell-dicts` で
+      `/opt/collaboraoffice/share/extensions/dict-*` に同梱される（26.04 の configure の MPL subset 検査は中身が空で、
+      これを拒まない）。辞書は core が実行時に読むデータで、ライセンスは各ディレクトリに同梱、ソースは
+      engine/dictionaries として `-sources` イメージに入る。NOTICE にもそう記載済み。
+      shiki 本体とは HTTP / WOPI / iframe でつながるだけでリンクしないため、copyleft は shiki に及ばない。
     - 商標: Collabora の商標ポリシーに従い **Shiki Office**（ベンダー Imanect Labs）としてブランドし、
       Collabora の名称・ロゴ・有償 EULA を外した。**Collabora への書面での確認（trademark@collaboraoffice.com）は未実施**
       （human 判断で後回し）。
