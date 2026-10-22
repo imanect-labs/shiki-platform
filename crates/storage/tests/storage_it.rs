@@ -5439,3 +5439,93 @@ async fn audit_chain_lock_uses_64bit_key() {
     .unwrap();
     assert!(linked, "chained 行が直列に連結している");
 }
+
+/// #816: 1 テナントが複数 org を持つとき、purge は**全 org** の FGA タプルを剥がす
+/// （登録簿の org 1 つだけではない）。同じ org slug を持つ別テナントのタプルは残る。
+#[tokio::test]
+async fn purge_tenant_strips_tuples_of_every_org_in_the_tenant() {
+    let Some(cx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        ..
+    } = cx;
+    let ta = format!("ta{}", Uuid::new_v4().simple());
+    let tb = format!("tb{}", Uuid::new_v4().simple());
+    // org_main = 登録簿の org、org_sub = 同テナントの 2 つ目の org（B と slug を共有する）。
+    let org_main = format!("main{}", Uuid::new_v4().simple());
+    let org_sub = format!("sub{}", Uuid::new_v4().simple());
+    let a_main = make_ctx_tenant(&org_main, &ta, "ua-main");
+    let a_sub = make_ctx_tenant(&org_sub, &ta, "ua-sub");
+    let b_sub = make_ctx_tenant(&org_sub, &tb, "ub-sub");
+    let dir = DirectoryStore::new(pool.clone());
+    for c in [&a_main, &a_sub, &b_sub] {
+        dir.upsert_user(&c.principal.id, &c.tenant_id, &c.org, "x@example.com", "x")
+            .await
+            .expect("directory");
+        for rel in [Relation::Member, Relation::Admin] {
+            authz
+                .write_tuple(&c.subject(), rel, &c.ns().organization(&c.org))
+                .await
+                .expect("org タプル");
+        }
+    }
+    let has = |c: AuthContext, rel: Relation| {
+        let authz = Arc::clone(&authz);
+        async move {
+            authz
+                .check(
+                    &c.subject(),
+                    rel,
+                    &c.ns().organization(&c.org),
+                    Consistency::HigherConsistency,
+                )
+                .await
+                .unwrap()
+        }
+    };
+    assert!(
+        has(a_sub.clone(), Relation::Member).await,
+        "前提: A の 2 つ目の org"
+    );
+
+    service
+        .purge_tenant(&ta, &org_main, "provisioner:test")
+        .await
+        .expect("purge A");
+
+    for c in [&a_main, &a_sub] {
+        for rel in [Relation::Member, Relation::Admin] {
+            assert!(
+                !has(c.clone(), rel).await,
+                "A の org {} の {} タプルが剥がれる",
+                c.org,
+                rel.as_str()
+            );
+        }
+    }
+    // 同じ slug の org を持つ別テナントは無傷（tenant 名前空間で分離）。
+    assert!(
+        has(b_sub.clone(), Relation::Member).await,
+        "B の member は残る"
+    );
+    assert!(
+        has(b_sub.clone(), Relation::Admin).await,
+        "B の admin は残る"
+    );
+
+    // 撤去の証跡に剥がした org 一覧が残る。
+    let orgs: serde_json::Value = sqlx::query_scalar(
+        "SELECT metadata->'orgs' FROM audit_log WHERE tenant_id = $1 AND action = 'tenant.purge'",
+    )
+    .bind(&ta)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let orgs: Vec<String> = serde_json::from_value(orgs).unwrap();
+    assert!(
+        orgs.contains(&org_main) && orgs.contains(&org_sub),
+        "{orgs:?}"
+    );
+}

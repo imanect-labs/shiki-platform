@@ -210,6 +210,68 @@ pub fn format_row_report(counts: &[(String, i64)], label: &str) -> String {
     out
 }
 
+/// テナント配下の**全 org** を、`tenant_id` と `org` の両列を持つテーブルの行から導出する（#816）。
+///
+/// 1 テナントが複数 org を持つ構成（部署ごとの org 等）では、org ごとに
+/// `organization:<tenant>|<org>` の FGA タプルがある。撤去が「登録簿の org 1 つ」しか剥がさないと、
+/// 残りの org のタプルが列挙元（行）を失った孤児として共有ストアに残る（墓標化した名前空間の中
+/// なので漏れはしないが、撤去の約束に反する）。一覧を手で持たず pg_catalog から導出するのは
+/// [`tenant_scoped_tables`] と同じ理由（新テーブルが自動で対象に入る）。
+///
+/// **[`PURGE_RETAINED`] のテーブルは走査しない**: `audit_log` は全テナントで最大の表で、
+/// `tenant_id` 先頭の汎用索引が無い（部分索引のみ）ため走査が全表になる。org のタプルは
+/// その org の行（`directory_user` 等）と併存するので、保持対象を除いても取りこぼさない。
+/// `tenant` 台帳の org は呼び出し側が引数で渡す（[`crate::StorageService::purge_tenant`]）。
+pub async fn tenant_orgs(pool: &PgPool, tenant_id: &str) -> Result<Vec<String>, StorageError> {
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT c.relname::text FROM pg_class c \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         JOIN pg_attribute t ON t.attrelid = c.oid AND t.attname = 'tenant_id' \
+              AND t.attnum > 0 AND NOT t.attisdropped \
+         JOIN pg_attribute o ON o.attrelid = c.oid AND o.attname = 'org' \
+              AND o.attnum > 0 AND NOT o.attisdropped \
+         WHERE n.nspname = 'public' AND c.relkind = 'r' \
+         ORDER BY c.relname",
+    )
+    .fetch_all(pool)
+    .await?;
+    let Some(sql) = tenant_orgs_sql(&tables)? else {
+        return Ok(Vec::new());
+    };
+    let orgs: Vec<String> = sqlx::query_scalar(&sql)
+        .bind(tenant_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(orgs)
+}
+
+/// [`tenant_orgs`] の UNION クエリを組む（対象が無ければ `None`）。保持対象は走査しない。
+fn tenant_orgs_sql(tables: &[String]) -> Result<Option<String>, StorageError> {
+    let mut selects = Vec::new();
+    for t in tables {
+        if PURGE_RETAINED.iter().any(|(retained, _)| retained == t) {
+            continue;
+        }
+        // 導出したテーブル名は SQL へ直接埋め込むため、識別子として安全な形だけを通す。
+        if !is_plain_ident(t) {
+            return Err(StorageError::Integrity(format!(
+                "テナント境界テーブル名が識別子として不正: {t}"
+            )));
+        }
+        selects.push(format!(
+            "SELECT org::text FROM public.{t} WHERE tenant_id = $1 AND org <> ''"
+        ));
+    }
+    if selects.is_empty() {
+        return Ok(None);
+    }
+    // UNION（ALL ではない）で重複を DB 側で畳む。順序は決定的にしておく（ログ・テスト用）。
+    Ok(Some(format!(
+        "SELECT org FROM ({}) o ORDER BY org",
+        selects.join(" UNION ")
+    )))
+}
+
 /// 識別子として安全か（小文字英数と `_` のみ）。
 fn is_plain_ident(s: &str) -> bool {
     !s.is_empty()
@@ -329,6 +391,28 @@ mod tests {
             !msg.contains("node("),
             "移送できるテーブルは理由に挙げない: {msg}"
         );
+    }
+
+    #[test]
+    fn tenant_orgs_sql_skips_retained_and_unions_the_rest() {
+        let sql = tenant_orgs_sql(&s(&["audit_log", "directory_user", "node", "tenant"]))
+            .expect("組める")
+            .expect("対象あり");
+        assert!(sql.contains("FROM public.directory_user WHERE tenant_id = $1"));
+        assert!(sql.contains("FROM public.node WHERE tenant_id = $1"));
+        assert!(sql.contains(" UNION "), "{sql}");
+        // 保持対象（巨大な audit_log・台帳 tenant）は走査しない。
+        assert!(!sql.contains("audit_log"), "{sql}");
+        assert!(!sql.contains("public.tenant "), "{sql}");
+        // 保持対象しか無ければクエリ自体を出さない。
+        assert!(tenant_orgs_sql(&s(&["audit_log", "tenant"]))
+            .expect("組める")
+            .is_none());
+        // 不正な識別子は埋め込まずに落とす。
+        assert!(matches!(
+            tenant_orgs_sql(&s(&["node; drop table x"])),
+            Err(StorageError::Integrity(_))
+        ));
     }
 
     #[test]
