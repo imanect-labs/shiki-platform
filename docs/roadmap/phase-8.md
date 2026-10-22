@@ -22,7 +22,7 @@
 | 8.8 | k8s マニフェスト／Helm チャート化 | infra | 0.x |
 | 8.9 | プロビジョニング自動化（テナント論理＋プール実体・パラメタ化） | infra | 8.8, 8.6 |
 | 8.10 | シークレット管理（External Secrets / Vault・キーローテーション） | infra | 8.8 |
-| 8.11 | バックアップ／DR（Postgres/オブジェクト/Qdrant/OpenFGA・復旧手順） | infra | 8.8 |
+| 8.11 | バックアップ／DR（Postgres/オブジェクト/OpenFGA の整合スナップショット・Qdrant/Tantivy は再構築・復旧手順） | infra | 8.8 |
 | 8.12 | アップグレード手順（ゼロ/低ダウンタイム・DBマイグレーション・ロールバック） | infra | 8.8 |
 | 8.13 | 受注用HWサイジング表（同時実行×モデル×コンテキスト長→必要VRAM） | infra | – |
 
@@ -139,8 +139,9 @@
 - **依存**: 8.8, 8.6
 - **仕様**:
   - **既定はフルプール**（design §4.1）。したがって**新規顧客の追加はインフラ操作ではなく論理プロビジョニング**:
-    tenant レジストリ登録（`TenantStore::upsert_active`）・Keycloak group/realm・DNS サブドメイン・
-    OpenFGA 名前空間・初期管理者招待を 1 操作で実行する（インフラは既存プールを共用）。
+    tenant レジストリ登録（`TenantStore::upsert_active`）・**共有 realm `shiki` 内のテナント属性／group**・DNS サブドメイン・
+    OpenFGA 名前空間・初期管理者招待を 1 操作で実行する（インフラは既存プールを共用。**新しい realm は作らない**）。
+    **realm の新規作成は専用ストア（cell）契約時に限る**（下の「プール環境そのもの」の生成に含まれる）。
   - **プール環境そのもの**（および専用ストア=cell 契約時の追加プール）を**同一マニフェストのパラメタ化**で量産:
     環境ID/ドメイン/リソース枠/プロファイル（onprem|cloud）/シークレット参照を入力に、
     namespace（or プロジェクト）・DB/バケット・Keycloak・OpenFGA store・監視先を一括生成する（スクリプト or GitOps）。
@@ -166,13 +167,23 @@
 - **area**: infra / **path**: `deploy/`, `deploy/dr`
 - **依存**: 8.8
 - **仕様**:
-  - ステートフル要素のバックアップ: Postgres（PITR）、オブジェクトストア（GCS/RustFS のバージョン＋クロスサイト）、Qdrant スナップショット、
-    OpenFGA タプル、Keycloak realm。**整合点（consistency point）**の取り方を定義（メタ↔実体↔ベクタ↔authz の不整合回避）。
+  - ステートフル要素のバックアップ: Postgres（PITR）、オブジェクトストア（GCS/RustFS のバージョン＋クロスサイト）、
+    OpenFGA タプル、Keycloak realm。**整合点（consistency point）の対象は Postgres・オブジェクト・OpenFGA の 3 つ**
+    （メタ↔実体↔authz の不整合回避）。**Qdrant / Tantivy は Postgres から再構築する派生索引**として扱い、整合点に含めない
+    （スナップショットを取る場合も復旧時間短縮のための任意の補助で、正本は再構築・Phase 12.10 と同じ方針）。
+  - **Keycloak realm とテナントレジストリの復旧契約**: 共有 realm `shiki` のテナント属性／group は、Postgres の
+    テナントレジストリ（`tenant_placement` を含む）から導出できる状態として扱う。**正本はテナントレジストリ**とし、
+    復旧順序は ①Postgres（レジストリ）②Keycloak realm のエクスポート ③OpenFGA ④オブジェクト。realm の復元時点が
+    レジストリとずれた場合は、**論理プロビジョニング（Task 8.9）を全テナントへ冪等に再実行**してテナント属性／group を
+    レジストリに合わせる（ユーザーの資格情報は realm 側が正本なので、realm は可能な限り同じ整合点に近いエクスポートを使う）。
   - **DR手順とRPO/RTO目標**、定期リストア演習のスクリプト。ベクタ等は**再構築可能な派生データ**として扱い復旧コストを下げる（`embedding_model_version` 単位の再索引）。
 - **受け入れ条件**:
-  - [ ] 全ステートフル要素のバックアップが定期取得される
+  - [ ] 整合点の対象（Postgres・オブジェクト・OpenFGA）と Keycloak realm のバックアップが定期取得される
+        （Qdrant / Tantivy は再構築対象。スナップショットは任意の補助で、無くても復旧できること）
   - [ ] 文書化された手順でRPO/RTO内に復旧できる（リストア演習で実証）
   - [ ] 再構築可能な派生データ（ベクタ等）の復旧戦略が定義されている
+  - [ ] リストア演習で、レジストリと realm の復元時点をずらしてもテナント解決とログインが回復する
+        （論理プロビジョニングの再実行で一致させる）
 
 ### Task 8.12: アップグレード手順
 - **area**: infra / **path**: `deploy/`, migrations, `docs/`

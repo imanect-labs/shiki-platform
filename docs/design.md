@@ -888,7 +888,7 @@ flowchart TB
 - **認可（FR-11最重要）**: ユーザー委譲OAuth2(PKCE)。実効権限 = アプリスコープ ∩ ユーザーReBAC。
   内部APIは晒さずゲートウェイが能力面を再公開。B2はtoken-exchangeでユーザー代理を維持、自動化のみ所有データ限定サービスidentity。
 - **能力カタログ**: storage/data/rag/ai/identity/events。`能力.操作`＋リソース束縛、実認可OpenFGA、アプリ所有リソースあり。
-- **構造化データ**（`crates/data`）: `record(table_id,id,data JSONB,rev)` ＋ `table_schema`。
+- **構造化データ**（`crates/data`）: 概念表記として `record(tenant_int,table_int,id,record_int,data JSONB,rev)` ＋ `table_schema`。物理定義は [data-platform.md](./data-platform.md) §3.3 に従う。
   フィールド型に user/dept/file/record 参照。
   **行認可 = テーブルReBAC（OpenFGA・有界）＋クエリ時述語（ABAC・WHERE強制付与・集計にも適用・バイパス不可）＋フィールドマスク＋個別共有のみスパースtuple**。
   宣言的クエリ/保存ビュー（生SQL非公開）、リビジョン履歴、`rev`で楽観ロック。
@@ -962,8 +962,9 @@ envelope encryption（マスターキーは `KeyProvider` トレイト）・利�
   **フルプールでは「ストアごと捨てる」ができないため、消去の網羅性を機械的に保証する仕組みが要る**:
   tenant スコープを持つ全テーブル/全ストアの台帳を単一定義から生成し、消去経路の抜けを CI で検出する
   （テーブル追加時に purge 実装を強制）。専用ストア（cell）契約時のみ物理消去が使える。
-- **バックアップ/DR**: テナント単位バックアップ・復元手順・RPO/RTO 宣言。Postgres・blob・Qdrant・FGA の
-  **整合スナップショット**（バラバラ復元は FGA タプルとファイルがズレて権限事故 → PIT-38）。
+- **バックアップ/DR**: テナント単位バックアップ・復元手順・RPO/RTO 宣言。**整合スナップショットの対象は Postgres・blob・FGA の 3 つ**
+  （バラバラ復元は FGA タプルとファイルがズレて権限事故 → PIT-38）。**Qdrant / Tantivy は Postgres から再構築する派生索引**で、
+  整合点には含めない（復元後に再索引する・Phase 12.10）。
   **フルプールの弱点**: 「A 社だけ 3 日前に戻す」は共有ストアでは自明でない（全体復旧か論理エクスポート/
   インポートかの二択になる）。テナント単位 PITR は未解決課題として明示し、論理エクスポートによる
   部分復旧手順を用意する（Phase 12・[data-platform.md §12](./data-platform.md)）。
