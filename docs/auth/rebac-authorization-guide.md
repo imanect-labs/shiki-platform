@@ -253,18 +253,19 @@ flowchart LR
   アプリ層（storage/api…）はこれらを直接呼べない。
 - 識別子を作る唯一の入口が `AuthContext::ns()`（`context.rs:76`）。ここは必ず `self.tenant_id` で名前空間化する。
   → **tenant を渡さずに識別子を組むことが型レベルで不可能**。acme のコンテキストからは `folder:beta|...` を組めない。
-- FGA から読み戻す側も対称的に守る: `strip_object_id`（`object.rs:188`）は自 tenant プレフィクスに一致しなければ `None`。
+- FGA から読み戻す側も対称的に守る: `strip_object_id`（`object.rs:237`）は自 tenant プレフィクスに一致しなければ `None`。
   他テナントのオブジェクトが混ざっても防御的に除外される。
 
 > **例外（背景ジョブ用の入口）**: 「型レベルで越境不能」が成り立つのは **`AuthContext` を持つリクエスト経路**。
 > `AuthContext` が無い背景処理には 2 つの `pub` な入口があり、そこでは**呼び出し側が tenant 境界を負う**:
 >
-> - `Namespace::for_tenant(tenant_id)`（`object.rs:115`）: tenant_id を明示してビルダを得る。委譲チェック・棚卸し
+> - `Namespace::for_tenant(tenant_id)`（`object.rs:138`）: tenant_id を明示してビルダを得る。委譲チェック・棚卸し
 >   （`workflow-engine` の delegation/inventory）など `AuthContext` が無い経路専用。渡す tenant_id は信頼できる源
 >   （台帳・キュー行）由来にし、必要なら `validate_tenant_id` を通すこと。
-> - `FgaObject::from_qualified(qualified)`（`object.rs:87`）: 保存済みの**完全修飾識別子**（委譲台帳
+> - `FgaObject::from_qualified(qualified, expected_tenant)`（`object.rs:106`）: 保存済みの**完全修飾識別子**（委譲台帳
 >   `workflow_delegation.object_ref` など、一度 `Namespace` を通して生成・保存したもの）を読み戻す専用。
->   形式（`<type>:<tenant>|<local>`）を最低限検証し、崩れていれば `None`（台帳破損・改竄を弾く）。**新規の生 id 組み立てには使わない**。
+>   形式（`<type>:<tenant>|<local>`）に加え、tenant 部が `expected_tenant`（台帳行の `tenant_id`）と一致することを検証し、
+>   崩れ・不一致は `None`（fail-closed。台帳破損・改竄で他テナントの object を指す行を弾く・#813）。**新規の生 id 組み立てには使わない**。
 >
 > レビュー時の含意: 背景ジョブのコードでは「tenant 越境は型が防ぐ」と思い込まず、これらの入口に渡す文字列の**出所と検証**を確認する。
 
