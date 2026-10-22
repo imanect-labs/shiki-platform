@@ -205,6 +205,7 @@ pub async fn create_tenant(
     responses(
         (status = 204, description = "テナントを撤去した（不在/撤去済みでも成功）"),
         (status = 401, description = "provisioner トークンが無効"),
+        (status = 409, description = "auth.tenancy=single のためテナントを削除できない"),
     ),
     security(("provisioner_token" = [])),
 )]
@@ -213,6 +214,10 @@ pub async fn delete_tenant(
     Extension(actor): Extension<ProvisionerIdentity>,
     Path(tenant_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    // single では全利用者が固定の `auth.tenant_id` に載っている。`mark_deleting` は登録簿に行が
+    // 無くても冪等成功で先へ進むため、ここを通すと固定テナント（全データ）を purge し得る。
+    // 作成と対称に fail-closed で拒否する（#808）。
+    reject_unless_multi_tenant(&state.config.auth)?;
     validate_tenant_id(&tenant_id)
         .map_err(|_| ApiError::BadRequest("tenant_id に使用できない文字が含まれています".into()))?;
     // 1. deleting へ（不在なら冪等成功）。org は登録簿から得る（無ければ tenant_id と同値とみなす）。
@@ -425,11 +430,11 @@ fn reject_unless_multi_tenant(auth: &AuthConfig) -> Result<(), ApiError> {
         return Ok(());
     }
     tracing::warn!(
-        "admin API: auth.tenancy=single のためテナント作成を拒否（SaaS なら auth.tenancy=multi を設定）"
+        "admin API: auth.tenancy=single のためテナントの作成・削除を拒否（SaaS なら auth.tenancy=multi を設定）"
     );
     Err(ApiError::ConflictJson(serde_json::json!({
         "code": "tenancy_single",
-        "message": "auth.tenancy=single ではテナントを作成できません（SaaS は auth.tenancy=multi を設定してください）",
+        "message": "auth.tenancy=single ではテナントを作成・削除できません（SaaS は auth.tenancy=multi を設定してください）",
     })))
 }
 

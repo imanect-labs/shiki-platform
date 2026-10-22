@@ -6,6 +6,9 @@ SaaS のテナント作成・削除・名前空間移行の運用手順。実装
 
 - `auth.provisioner_client_id` / `auth.provisioner_client_secret` が設定されていること
   （未設定なら `/admin/*` はルート自体が存在しない＝fail-closed）。
+- `auth.tenancy=multi` であること（`SHIKI__AUTH__TENANCY=multi`）。single のままテナント作成を呼ぶと
+  409 `tenancy_single` で拒否される（single は全ユーザーを固定テナントに解決するため、作ったテナントに誰も入れない・#808）。
+  single＋provisioner 設定時は起動ログに warn が出る。
 - provisioner は Keycloak の confidential client（service account 有効・realm-management ロール
   `manage-users` / `manage-realm` / `query-*` 付与・audience `shiki-api`）。dev は realm import 済み。
 

@@ -992,7 +992,28 @@ async fn admin_create_tenant_rejected_in_single_tenancy() {
 
     // 正しい provisioner でも single なら 409（固定テナントへの融合を防ぐ）。
     let resp = app
+        .clone()
         .oneshot(create(Some(provisioner_token("shiki-provisioner"))))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["code"], "tenancy_single");
+
+    // 削除も対称に 409（固定テナント `default` を丸ごと purge させない）。
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri("/admin/tenants/default")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", provisioner_token("shiki-provisioner")),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CONFLICT);
