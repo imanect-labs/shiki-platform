@@ -12,9 +12,19 @@ pub struct RagConfig {
     #[serde(default = "default_worker_base_url")]
     pub worker_base_url: String,
 
+    /// ingestion-worker に送る共有トークン（`Authorization: Bearer`・#812）。worker 側の
+    /// `WORKER_AUTH_TOKEN` と同じ値にする。未設定（空）は無認証で送り、起動時に警告する。
+    #[serde(default, deserialize_with = "empty_str_as_none", skip_serializing)]
+    pub worker_auth_token: Option<String>,
+
     /// Qdrant REST のベース URL。
     #[serde(default = "default_qdrant_url")]
     pub qdrant_url: String,
+
+    /// Qdrant の API キー（`api-key` ヘッダ・#812）。Qdrant 側の `QDRANT__SERVICE__API_KEY` と
+    /// 同じ値にする。未設定（空）は無認証で送り、起動時に警告する。
+    #[serde(default, deserialize_with = "empty_str_as_none", skip_serializing)]
+    pub qdrant_api_key: Option<String>,
 
     /// 埋め込みモデル版。worker の応答と突合し、不一致はインジェスト拒否（PIT-8）。
     /// Qdrant collection 名にも織り込まれ、変更＝shadow index 再構築＋alias 切替。
@@ -159,6 +169,14 @@ where
     }
 }
 
+/// 空文字（compose が未設定の env を渡す形）を None にする。秘密値の「未設定」判定用。
+fn empty_str_as_none<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(d)?.filter(|s| !s.trim().is_empty()))
+}
+
 fn default_relevance_model() -> String {
     "hotchpotch/japanese-reranker-cross-encoder-xsmall-v1".to_string()
 }
@@ -180,7 +198,9 @@ impl Default for RagConfig {
         RagConfig {
             enabled: false,
             worker_base_url: default_worker_base_url(),
+            worker_auth_token: None,
             qdrant_url: default_qdrant_url(),
+            qdrant_api_key: None,
             embedding_model_version: default_embedding_model_version(),
             index_data_dir: default_index_data_dir(),
             max_parse_bytes: default_max_parse_bytes(),

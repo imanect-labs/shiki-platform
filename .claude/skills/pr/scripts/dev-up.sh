@@ -18,6 +18,9 @@
 #                   SHIKI_DEV_S3_PUBLIC_ENDPOINT ブラウザが presigned URL で叩く先（既定は上と同じ）
 #                   SHIKI_DEV_S3_BUCKET          **開発環境ごとに別のバケット**にする（後述）
 #                   SHIKI_DEV_S3_ACCESS_KEY / SHIKI_DEV_S3_SECRET_KEY
+#                   SHIKI_DEV_RAG_WORKER_TOKEN   worker の共有トークン（worker が WORKER_AUTH_TOKEN を
+#                                 設定しているなら必須・#812）。worker 側の SOURCE_URL_ALLOWED_HOSTS には
+#                                 SHIKI_DEV_S3_ENDPOINT のホストが入っていること（無いと索引だけ入らない）
 #                 バケットを他の開発環境と共有しない。オブジェクトキーは
 #                 {tenant_id}/{org}/{sha256} で環境を区別せず、参照カウントも各自の DB にしか
 #                 無いため、別環境のテナント削除（{tenant_id}/ 以下の一括削除）が自分の blob を消す。
@@ -236,7 +239,8 @@ if [ "$RAG_REMOTE" = 1 ]; then
   # 引き継ぐので、非 export の変数へ退避して元を消す（shiki-server の起動時にだけ渡す）。
   REMOTE_S3_AK=$SHIKI_DEV_S3_ACCESS_KEY
   REMOTE_S3_SK=$SHIKI_DEV_S3_SECRET_KEY
-  unset SHIKI_DEV_S3_ACCESS_KEY SHIKI_DEV_S3_SECRET_KEY
+  REMOTE_WORKER_TOKEN=${SHIKI_DEV_RAG_WORKER_TOKEN:-}
+  unset SHIKI_DEV_S3_ACCESS_KEY SHIKI_DEV_S3_SECRET_KEY SHIKI_DEV_RAG_WORKER_TOKEN
 fi
 
 # --- 1. compose 依存サービス ---
@@ -410,6 +414,13 @@ else
   }
   RUSTFS_AK=$(rustfs_env RUSTFS_ACCESS_KEY minioadmin)
   RUSTFS_SK=$(rustfs_env RUSTFS_SECRET_KEY minioadmin)
+  # Qdrant の API キー・worker の共有トークンも起動済みコンテナから読む（#812）。
+  # 未起動、またはキー導入前に作られたコンテナ（無認証）なら空のまま＝無認証で繋ぐ。
+  svc_env() {  # svc_env <service> <VAR>
+    ( cd deploy/compose && docker compose exec -T "$1" printenv "$2" 2>/dev/null | tr -d '\r\n' ) || true
+  }
+  QDRANT_KEY=""
+  [ "$WITH_RAG" = 1 ] && QDRANT_KEY=$(svc_env qdrant QDRANT__SERVICE__API_KEY)
   # 任意サービス（フラグを付けた時だけ起動している）。未起動ならフォールバック値のまま。
   WORKER_PORT=$(host_port ingestion-worker 8000 8000)
   SANDBOX_PORT=$(host_port sandbox-orchestrator 50000 50000)
@@ -444,6 +455,7 @@ else
     EFF_S3_AK=$REMOTE_S3_AK
     EFF_S3_SK=$REMOTE_S3_SK
     EFF_WORKER_URL=$SHIKI_DEV_RAG_WORKER_URL
+    EFF_WORKER_TOKEN=$REMOTE_WORKER_TOKEN
     EMBED_LINE="export SHIKI__RAG__EMBEDDING_MODEL_VERSION=$(printf '%q' "$REMOTE_EMBED_MODEL")"
     # 外部のバケットの CORS は、指定された時だけ設定する（既存の設定を勝手に書き換えない）。
     EFF_CORS=${SHIKI_DEV_S3_CORS_ALLOWED_ORIGINS:-}
@@ -454,6 +466,8 @@ else
     EFF_S3_AK=$RUSTFS_AK
     EFF_S3_SK=$RUSTFS_SK
     EFF_WORKER_URL=http://localhost:${WORKER_PORT}
+    EFF_WORKER_TOKEN=""
+    [ "$WITH_RAG" = 1 ] && EFF_WORKER_TOKEN=$(svc_env ingestion-worker WORKER_AUTH_TOKEN)
     EFF_CORS='[*]'
     EMBED_LINE="# 埋め込みの版は server の既定値（ローカルの worker と同じ）"
   fi
@@ -533,6 +547,9 @@ export SHIKI__WEBSEARCH__BACKEND=stub
 export SHIKI__RAG__ENABLED=$([ "$WITH_RAG" = 1 ] && echo true || echo false)
 export SHIKI__RAG__QDRANT_URL=http://localhost:${QDRANT_PORT}
 export SHIKI__RAG__WORKER_BASE_URL=${Q_WORKER_URL}
+# Qdrant の API キーと worker の共有トークン（#812）も資格情報と同じくプロセスの環境で渡す。
+export SHIKI__RAG__QDRANT_API_KEY="\${SHIKI_DEV_RUN_QDRANT_API_KEY:-}"
+export SHIKI__RAG__WORKER_AUTH_TOKEN="\${SHIKI_DEV_RUN_WORKER_TOKEN:-}"
 ${EMBED_LINE}
 export SHIKI__RAG__INDEX_DATA_DIR="$RUNDIR/index"
 export SHIKI__CHAT__SANDBOX_ENDPOINT=http://localhost:${SANDBOX_PORT}
@@ -595,6 +612,7 @@ EOF
 
   apply_store_switch
   SHIKI_DEV_RUN_S3_ACCESS_KEY="$EFF_S3_AK" SHIKI_DEV_RUN_S3_SECRET_KEY="$EFF_S3_SK" \
+    SHIKI_DEV_RUN_QDRANT_API_KEY="$QDRANT_KEY" SHIKI_DEV_RUN_WORKER_TOKEN="$EFF_WORKER_TOKEN" \
     setsid nohup "$RUNDIR/run-server.sh" > "$SERVER_LOG" 2>&1 < /dev/null &
   echo $! > "$SERVER_PID"
   disown || true

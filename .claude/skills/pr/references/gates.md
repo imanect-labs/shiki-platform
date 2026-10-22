@@ -54,6 +54,7 @@ export OPENFGA_TEST_URL=http://localhost:58080                                  
 export REDIS_TEST_URL=redis://localhost:6379
 export STORAGE_TEST_S3_ENDPOINT=http://localhost:9000
 export RAG_TEST_QDRANT_URL=http://localhost:6333
+export RAG_TEST_QDRANT_API_KEY=shiki-qdrant-dev-key  # compose の Qdrant は API キー付き（#812）
 ```
 
 - migration checksum 不一致（`VersionMismatch(n)`）は別ブランチの残骸。使い捨てなのでリセットしてよい:

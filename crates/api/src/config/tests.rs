@@ -597,3 +597,39 @@ fn empty_min_rerank_score_env_means_disabled() {
     .unwrap();
     assert_eq!(parsed.min_rerank_score, Some(0.45));
 }
+
+#[test]
+fn rag_service_secrets_treat_empty_as_unset_and_never_serialize() {
+    // compose は未設定を空文字で渡す。空なら「未設定」（無認証で送り、起動時に警告する）。
+    let extract = |key: &str, value: &str| -> rag::RagConfig {
+        figment::Figment::from(figment::providers::Serialized::defaults(
+            rag::RagConfig::default(),
+        ))
+        .merge((key, value))
+        .extract()
+        .unwrap()
+    };
+    assert_eq!(extract("qdrant_api_key", "").qdrant_api_key, None);
+    assert_eq!(extract("worker_auth_token", "  ").worker_auth_token, None);
+    assert_eq!(
+        extract("qdrant_api_key", "k-1").qdrant_api_key.as_deref(),
+        Some("k-1")
+    );
+    assert_eq!(
+        extract("worker_auth_token", "t-1")
+            .worker_auth_token
+            .as_deref(),
+        Some("t-1")
+    );
+    // 秘密値は直列化に出さない（設定のダンプ・デバッグ出力経由の漏えいを防ぐ）。
+    let cfg = rag::RagConfig {
+        qdrant_api_key: Some("k-secret".into()),
+        worker_auth_token: Some("t-secret".into()),
+        ..rag::RagConfig::default()
+    };
+    let json = serde_json::to_string(&cfg).unwrap();
+    assert!(
+        !json.contains("k-secret") && !json.contains("t-secret"),
+        "{json}"
+    );
+}
