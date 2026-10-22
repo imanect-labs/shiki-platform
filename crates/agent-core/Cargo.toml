@@ -40,6 +40,8 @@ chardetng.workspace = true
 tracing.workspace = true
 # ツール名語彙（vocab.rs）を TS へ生成する（codegen が正・workflow-engine と同型）。
 ts-rs = { workspace = true }
+# quote_check の照合で、PDF 由来の康熙部首（⼊・⽇）や半角カナなどの字形を寄せる（NFKC・#409）。
+unicode-normalization = "0.1"
 
 [dev-dependencies]
 # 結合テスト（agent_it）は authz モック＋DB 直操作＋stub gateway で run_agent ループを走らせる。
