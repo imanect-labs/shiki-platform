@@ -22,12 +22,14 @@
 -- 食い違い自体が調査対象のバグなので、運用者が確認してから流し直す）。
 --
 -- ⚠️ 大量データでの所要時間・ロック（単一 txn なので取ったロックは commit まで保持される）:
---   - `add constraint ... unique` は索引を新規構築する（SHARE ロック＝その表への書込を止める）。
---   - `add constraint ... foreign key` は子を全件走査して検証する（親子とも SHARE ROW EXCLUSIVE）。
+--   - `alter table ... add constraint ... unique` / `drop constraint` は ACCESS EXCLUSIVE を取る
+--     （その表への**読み取りも**止まる）。単一 txn なので、node / thread / message / generation_run /
+--     collab_doc 等は 2. のバックフィル完了〜commit まで読めない＝ドライブ・チャットは全停止する。
+--   - `add constraint ... foreign key` は子を全件走査して検証する（親子とも SHARE ROW EXCLUSIVE 以上）。
 --   - 2. のバックフィル UPDATE は対象表の全行を書き換える（行数ぶんの新タプル＝一時的に約 2 倍に膨らむ）。
 --     `set not null` も全件走査（ACCESS EXCLUSIVE）。最も重いのは generation_event（トークン単位の
 --     イベントログ）で、メンテナンス窓での適用を前提にする。
---   - 4. の索引置換も新規構築（audit_log は追記が多い表なので、構築中は監査追記＝データ操作が止まる）。
+--   - 4. の索引置換も新規構築（構築中はその表への書込が止まる）。
 --   - 列追加（default 無し）と主キー差し替え以外にテーブル本体の書換えは無い。
 
 -- ---------------------------------------------------------------------------
@@ -203,6 +205,9 @@ alter table generation_event
         foreign key (tenant_id, run_id) references generation_run (tenant_id, run_id)
         on delete cascade
         deferrable initially immediate;
+-- purge / retenant / 件数集計は `where tenant_id = $1` で直接引く（tenant_scope）。主キーは
+-- (run_id, seq) なので、tenant 先頭の索引が無いと共用プールの最大表を全件走査する。
+create index generation_event_tenant_idx on generation_event (tenant_id, run_id);
 
 alter table collab_update add column tenant_id text;
 update collab_update u set tenant_id = d.tenant_id
@@ -214,6 +219,7 @@ alter table collab_update
         foreign key (tenant_id, node_id) references collab_doc (tenant_id, node_id)
         on delete cascade
         deferrable initially immediate;
+create index collab_update_tenant_idx on collab_update (tenant_id, node_id);
 
 alter table app_function_run add column tenant_id text;
 update app_function_run r set tenant_id = s.tenant_id
@@ -225,6 +231,7 @@ alter table app_function_run
         foreign key (tenant_id, schedule_id) references app_function_schedule (tenant_id, id)
         on delete cascade
         deferrable initially immediate;
+create index app_function_run_tenant_idx on app_function_run (tenant_id, schedule_id);
 
 -- ---------------------------------------------------------------------------
 -- 3. 一意性。
@@ -266,8 +273,5 @@ create index node_parent_idx on node (tenant_id, org, parent_id) where deleted_a
 drop index node_blob_idx;
 create index node_blob_idx on node (tenant_id, org, blob_sha256);
 
-drop index audit_log_object_idx;
-create index audit_log_object_idx on audit_log (tenant_id, org, object_type, object_id, created_at);
-
-drop index audit_log_actor_idx;
-create index audit_log_actor_idx on audit_log (tenant_id, org, actor, created_at);
+-- audit_log の object/actor 索引は 0075（#834）で tenant 先頭（audit_log_tenant_{object,actor}_idx）に
+-- 置き換え済みなので、ここでは触らない。
