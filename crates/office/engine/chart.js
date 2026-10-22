@@ -51,11 +51,14 @@ function shapeChart(eo, op, fmts) {
   eo.setPropertyValue("HasLegend", op.legend_position !== "none");
   STAGE = "グラフの見た目";
   styleChart(eo, d, op, fmts);
-  if (op.x_title) {
+  // 円・ドーナツは軸を持たないので、軸の題（単位つきの円の図の単位など）は付けない。
+  // 26.04.5 では付けても落ちないが、見えない題を文書に残さない。
+  const pie = op.kind === "pie" || op.kind === "doughnut";
+  if (op.x_title && !pie) {
     d.setPropertyValue("HasXAxisTitle", true);
     d.getXAxisTitle().setPropertyValue("String", op.x_title);
   }
-  if (op.y_title) {
+  if (op.y_title && !pie) {
     d.setPropertyValue("HasYAxisTitle", true);
     d.getYAxisTitle().setPropertyValue("String", op.y_title);
   }

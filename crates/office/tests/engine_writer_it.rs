@@ -696,7 +696,9 @@ async fn inserts_native_charts_that_survive_a_docx_round_trip() {
                "series": [{"name": "東京", "values": [120, 150, null]}, {"name": "大阪", "values": [80, 95, 110]}],
                "y_title": "百万円", "y_number_format": "#,##0", "data_labels": true}),
         json!({"op": "insert_chart", "type": "pie", "title": "構成比", "categories": ["A", "B"],
-               "series": [{"name": "比率", "values": [60, 40]}], "colors": ["#1F3864", "#ED7D31"], "legend_position": "right"}),
+               "series": [{"name": "比率", "values": [60, 40]}], "colors": ["#1F3864", "#ED7D31"], "legend_position": "right",
+               // 円は軸を持たないので、単位（縦軸の題）は付けずに入る。
+               "y_title": "%"}),
     ])
     .unwrap();
     let out = run::apply(&mut client, "グラフ", &ops).await.unwrap();

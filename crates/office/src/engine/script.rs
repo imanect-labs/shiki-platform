@@ -75,6 +75,7 @@ mod tests {
             "calc.overview",
             "calc.read_range",
             "calc.apply",
+            "calc.sheet_names",
         ] {
             assert!(
                 ENGINE_SOURCE.contains(&format!("HANDLERS[\"{action}\"]")),

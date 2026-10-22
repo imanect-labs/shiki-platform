@@ -234,6 +234,12 @@ function namedRanges() {
   return out;
 }
 
+/** シート名だけ（グラフの挿入で空いている名前を選ぶため・#731）。概要のような各シートの読み取りはしない。 */
+HANDLERS["calc.sheet_names"] = () => {
+  requireKind("calc");
+  return { sheets: sheetNames() };
+};
+
 HANDLERS["calc.overview"] = () => {
   requireKind("calc");
   const sheets = DOC.getSheets();

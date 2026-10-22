@@ -331,13 +331,15 @@ impl OfficeEngine {
                         return Ok((None, o.applied, o.text));
                     }
                     chart.check_for_sheet().map_err(invalid)?;
-                    let overview =
-                        super::call(client, serde_json::json!({"action": "calc.overview"})).await?;
-                    let existing: Vec<String> = overview["sheets"]
+                    // 空いているシート名を選ぶため、名前だけを読む（概要は全シートを読むので重い）。
+                    let names =
+                        super::call(client, serde_json::json!({"action": "calc.sheet_names"}))
+                            .await?;
+                    let existing: Vec<String> = names["sheets"]
                         .as_array()
                         .into_iter()
                         .flatten()
-                        .filter_map(|s| s["name"].as_str().map(str::to_string))
+                        .filter_map(|s| s.as_str().map(str::to_string))
                         .collect();
                     let sheet = chart_insert::sheet_name_for(chart.title.as_deref(), &existing);
                     let parsed = parse_ops(&chart_insert::sheet_ops(chart, &sheet))?;

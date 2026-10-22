@@ -458,7 +458,7 @@ async fn unnamed_charts_on_different_sheets_get_distinct_names() {
         {"op": "add_chart", "type": "column", "data": "A1:B3", "anchor": "D2"},
         {"op": "add_sheet", "name": "二枚目"},
         {"op": "set_values", "range": "二枚目!A1", "values": table},
-        {"op": "add_chart", "type": "pie", "data": "二枚目!A1:B3", "anchor": "二枚目!D2"}
+        {"op": "add_chart", "type": "pie", "data": "二枚目!A1:B3", "anchor": "二枚目!D2", "y_title": "件"}
     ]));
     let out = run::apply(&mut client, "グラフ", &normalize(&batch, None).unwrap())
         .await
