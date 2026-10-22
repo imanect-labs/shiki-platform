@@ -37,7 +37,9 @@ pub mod scope;
 pub mod subject;
 pub mod vocab;
 
-pub use client::{AuthzClient, Consistency, OpenFgaClient, OpenFgaConfig, ReadTupleKey};
+pub use client::{
+    AuthzClient, CheckTuple, Consistency, OpenFgaClient, OpenFgaConfig, ReadTupleKey,
+};
 pub use context::{AuthContext, Principal, PrincipalKind};
 pub use error::AuthzError;
 pub use ident::{validate_local_id, validate_tenant_id, IdentViolation};
