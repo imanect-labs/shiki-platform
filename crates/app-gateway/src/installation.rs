@@ -218,7 +218,7 @@ impl AppInstallationStore {
             .await
             .map_err(|e| match &e {
                 // ON CONFLICT は (tenant_id, app_id) のみを吸収する。残る一意制約は
-                // active な app_id の大域一意（migration 0075・B1 配信のテナント解決の前提）で、
+                // active な app_id の大域一意（migration 0077・B1 配信のテナント解決の前提）で、
                 // 別テナントに同じ app_id の active 行がある＝解決先が曖昧になるため拒否する。
                 sqlx::Error::Database(db) if db.is_unique_violation() => GatewayError::Conflict(
                     "同じ app_id の有効なインストールが別テナントに存在します".into(),
@@ -279,7 +279,7 @@ impl AppInstallationStore {
     /// content address）を組む。仮に URL にテナントを載せても未認証の入力でしかなく、認可の
     /// 根拠にはならない。
     ///
-    /// **一意性**: active な `app_id` の大域一意は DB の部分一意索引で保証する（migration 0075
+    /// **一意性**: active な `app_id` の大域一意は DB の部分一意索引で保証する（migration 0077
     /// `app_installation_active_app_id_uidx`）。それでも 2 行返れば不変条件違反として
     /// fail-closed（Internal）にし、任意の 1 行を選ぶ `LIMIT 1` には戻さない。
     /// バンドルはアプリ自身のフロント資産（content-addressed・ピン一致必須）でユーザーデータを
