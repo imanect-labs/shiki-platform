@@ -347,12 +347,13 @@ impl DataStore {
         }
         // システム擬似列の初回バックフィル中（Task 15.2 より前のテーブル）などは本体経路
         // （正しいが遅い・statement_timeout で上限を切る）。
-        let body_path =
-            tuning.read_path == ReadPath::Body || !needed.iter().all(|n| active.contains(n));
-        // 材料化した派生列は索引行だけが値を持つ（本体に無い）。本体経路では評価できないので、
-        // 索引が使えない間・再計算待ちがある間はクエリ対象外（古い値で絞らない・PIT-71）。
+        // 材料化した派生列は索引行だけが値を持つ（本体に無い）。本体経路では評価できないので、機能フラグで
+        // 本体経路を選んでいても索引経路で実行する。索引が使えない間・再計算待ちがある間はクエリ対象外
+        // （古い値で絞らない・PIT-71）。
         let derived: Vec<&super::bound::BField> =
             bq.fields.values().filter(|f| f.derived).collect();
+        let all_active = needed.iter().all(|n| active.contains(n));
+        let body_path = !all_active || (tuning.read_path == ReadPath::Body && derived.is_empty());
         if let Some(f) = derived.first().filter(|_| body_path) {
             return Err(DataError::Conflict(format!(
                 "フィールド '{}' の索引は準備中です（構築が終わるまでお待ちください）",

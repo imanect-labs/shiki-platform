@@ -14,7 +14,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::store::DataStore;
-use crate::DataError;
+use crate::{map_db, DataError};
 
 /// 個別共有の役割（共有語彙は viewer/editor のみ・owner の横展開は防ぐ）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -46,6 +46,10 @@ impl DataStore {
     ) -> Result<(), DataError> {
         self.require_record_share_right(ctx, table_id, record_id, "data.record.share", trace_id)
             .await?;
+        // タプルを書く**前に**「個別共有あり」を立て、このテーブルを参照先にする材料化列を降格する
+        // （共有の有無で行集合が変わる＝材料化の前提の第 4 階層が崩れる・PIT-71）。タプルの書込に
+        // 失敗しても旗は立ったまま（安全側）。
+        self.mark_record_shared(ctx, table_id).await?;
         let obj = ctx.ns().data_record(&record_id.to_string());
         let subject = target.subject(&ctx.ns());
         let wrote = self
@@ -121,6 +125,39 @@ impl DataStore {
             return Err(e);
         }
         Ok(())
+    }
+
+    /// テーブルに「レコード個別共有あり」を立て、依存する材料化列を同一 Tx で降格する。
+    async fn mark_record_shared(&self, ctx: &AuthContext, table_id: Uuid) -> Result<(), DataError> {
+        let mut table = self.fetch_live(ctx, table_id).await?;
+        let mut tx = self
+            .pools
+            .for_tenant(&ctx.tenant_id)
+            .begin()
+            .await
+            .map_err(map_db)?;
+        sqlx::query(
+            "UPDATE data_table SET has_record_shares = true \
+             WHERE tenant_id = $1 AND id = $2 AND NOT has_record_shares",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(table_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db)?;
+        table.has_record_shares = true;
+        crate::derived::materialize::demote_dependents(
+            &mut tx,
+            &ctx.tenant_id,
+            table.keys,
+            Some((
+                table.id,
+                &crate::derived::materialize::catalog_entry(&table),
+            )),
+            "参照先にレコード個別共有が作られた",
+        )
+        .await?;
+        tx.commit().await.map_err(map_db)
     }
 
     /// 共有権限の検査: テーブル owner または当該レコードの作成者（本人に可視な行のみ）。

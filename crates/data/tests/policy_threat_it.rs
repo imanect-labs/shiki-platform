@@ -4,6 +4,9 @@
 //! ① 不可視行の 404 形状一致（存在オラクルなし） ② クライアントフィルタでの述語バイパス不能
 //! ③ 集計（count）からの不可視行除外 ④ lookup 越しの釣り出し失敗（PIT-20）
 //! ⑤ 共有上限フォールバックが可視減方向（PIT-18） ⑥ rev オラクル封じ ⑦ 共有剥奪の即時反映。
+//! ⑧ リンク越しの lookup / rollup / 数式が参照先の 4 階層を閲覧者本人の権限で適用する（PIT-20）
+//! ⑨ 材料化した計算列が、参照先の権限の後付け（row_policy / field_policy / 個別共有 / ReBAC）で
+//!    同一 Tx に破棄され、値が読めず・ソートに使えなくなる（PIT-71）
 //!
 //! 実 Postgres（`STORAGE_TEST_DATABASE_URL`）＋実 OpenFGA（`OPENFGA_TEST_URL`）で実行する。
 
@@ -11,7 +14,8 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stderr
+    clippy::print_stderr,
+    clippy::too_many_lines
 )]
 
 use std::sync::Arc;
@@ -23,8 +27,10 @@ use authz::{
     ReadTupleKey, Relation, Subject,
 };
 use data::{
-    CmpOp, DataError, DataStore, FieldDef, FieldType, ListRecordsOptions, NewDataTable, PolicyExpr,
-    PolicyOperand, RecordFilter, RecordShareRole, RefResolver, RowPolicy, TableSchema,
+    CmpOp, DataError, DataQuery, DataStore, FieldDef, FieldPolicy, FieldType, LinkCardinality,
+    LinkDef, ListRecordsOptions, LookupDef, Materialization, NewDataTable, PolicyExpr,
+    PolicyOperand, RecordFilter, RecordShareRole, RefResolver, RollupDef, RollupOp, RowPolicy,
+    SortKey, TableSchema,
 };
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
@@ -774,4 +780,650 @@ async fn share_overflow_fails_closed_with_truncation_flag() {
         page.items.iter().all(|r| r.id != f.alice_rec),
         "超過分の共有は**見えない方向**に倒れること（見えすぎない）"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ⑧ リンク越しの lookup / rollup / 数式（Task 15.4・PIT-20）
+// ---------------------------------------------------------------------------
+
+fn plain(fields: Vec<FieldDef>) -> TableSchema {
+    TableSchema {
+        fields,
+        status_field: None,
+        row_policy: None,
+        field_policy: vec![],
+        aggregate_min_rows: Some(1),
+        fsm_ref: None,
+    }
+}
+
+fn items_link(to: Uuid) -> FieldDef {
+    let mut f = field("items", FieldType::RecordRef);
+    f.ref_table = Some(to);
+    f.link = Some(LinkDef {
+        cardinality: LinkCardinality::ManyToMany,
+        symmetric_field: None,
+        symmetric_key: None,
+        reverse: false,
+    });
+    f
+}
+
+fn total_rollup(indexed: bool) -> FieldDef {
+    let mut f = field("total", FieldType::Rollup);
+    f.rollup = Some(RollupDef {
+        link: "items".into(),
+        target: Some("amount".into()),
+        op: RollupOp::Sum,
+    });
+    f.indexed = indexed;
+    f
+}
+
+fn derived_fields(lines: Uuid) -> Vec<FieldDef> {
+    let mut names = field("names", FieldType::Lookup);
+    names.lookup = Some(LookupDef {
+        via_field: "items".into(),
+        target_field: "name".into(),
+    });
+    let mut n = field("n", FieldType::Rollup);
+    n.rollup = Some(RollupDef {
+        link: "items".into(),
+        target: None,
+        op: RollupOp::Count,
+    });
+    let mut doubled = field("doubled", FieldType::Formula);
+    doubled.formula =
+        Some(serde_json::from_value(json!({"mul": [{"field": "total"}, {"lit": 2}]})).unwrap());
+    vec![items_link(lines), total_rollup(false), names, n, doubled]
+}
+
+fn ids(v: &[Uuid]) -> serde_json::Value {
+    serde_json::Value::Array(v.iter().map(|u| json!(u.to_string())).collect())
+}
+
+async fn grant(authz: &Arc<dyn AuthzClient>, who: &AuthContext, rel: Relation, table: Uuid) {
+    authz
+        .write_tuple(
+            &who.subject(),
+            rel,
+            &who.ns().data_table(&table.to_string()),
+        )
+        .await
+        .expect("grant");
+}
+
+/// ⑧-1 参照先テーブルの viewer 権限を持たない閲覧者には、参照先の全件から計算したロールアップも
+/// lookup も見えない（テーブル ReBAC＝第 1 層の迂回を塞ぐ・PIT-71 ①・既定の per_viewer）。
+#[tokio::test]
+async fn rollup_does_not_bypass_reference_table_rebac() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let store = DataStore::new(pool, Arc::clone(&authz), Arc::new(AllowRefs));
+    let lines = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "lines".into(),
+                schema: plain(vec![
+                    field("name", FieldType::Text),
+                    field("amount", FieldType::Number),
+                ]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let orders = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "orders".into(),
+                schema: plain(derived_fields(lines.id)),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        orders.schema.field("total").unwrap().materialization,
+        Some(Materialization::PerViewer),
+        "包含を証明できないので既定は per_viewer"
+    );
+    let mut ls = Vec::new();
+    for (n, a) in [("l1", 100), ("l2", 250)] {
+        ls.push(
+            store
+                .create_record(&alice, lines.id, json!({"name": n, "amount": a}), None)
+                .await
+                .unwrap()
+                .id,
+        );
+    }
+    let o = store
+        .create_record(&alice, orders.id, json!({"items": ids(&ls)}), None)
+        .await
+        .unwrap();
+    let got = store
+        .get_record(&alice, orders.id, o.id, None)
+        .await
+        .unwrap();
+    assert_eq!(got.data["total"], json!(350));
+    assert_eq!(got.data["names"], json!(["l1", "l2"]));
+    assert_eq!(got.data["doubled"], json!(700));
+
+    // bob は orders の viewer だが lines の viewer ではない。
+    grant(&authz, &bob, Relation::Viewer, orders.id).await;
+    for got in [
+        store.get_record(&bob, orders.id, o.id, None).await.unwrap(),
+        store
+            .run_query(&bob, orders.id, &DataQuery::default(), None)
+            .await
+            .unwrap()
+            .items
+            .unwrap()
+            .remove(0),
+    ] {
+        assert_eq!(
+            got.data["total"],
+            serde_json::Value::Null,
+            "全件の合計が漏れない"
+        );
+        assert_eq!(got.data["n"], serde_json::Value::Null, "件数も漏れない");
+        assert_eq!(got.data["names"], json!([]), "lookup も空");
+        assert_eq!(
+            got.data["doubled"],
+            serde_json::Value::Null,
+            "数式越しにも漏れない"
+        );
+    }
+    // per_viewer 列は並べ替えにも使えない（順序から値を推測させない）。
+    let q = DataQuery {
+        sort: vec![SortKey {
+            field: "total".into(),
+            descending: true,
+        }],
+        ..DataQuery::default()
+    };
+    let r = store.run_query(&bob, orders.id, &q, None).await;
+    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+}
+
+/// ⑧-2 参照先の行述語・個別共有・フィールドマスクを閲覧者本人の権限で透過適用する（PIT-20）。
+/// 見えない参照先は null / 件数外になり、個別共有した行だけが追加で入る。
+#[tokio::test]
+async fn rollup_and_lookup_apply_reference_row_policy_per_viewer() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let store = DataStore::new(pool, Arc::clone(&authz), Arc::new(AllowRefs));
+    let mut person = field("person", FieldType::UserRef);
+    person.indexed = true;
+    let mut scope = field("scope", FieldType::Select);
+    scope.options = vec!["all".into(), "private".into()];
+    scope.indexed = true;
+    let mut lines_schema = plain(vec![
+        person,
+        scope,
+        field("name", FieldType::Text),
+        field("amount", FieldType::Number),
+        field("cost", FieldType::Number),
+    ]);
+    lines_schema.row_policy = Some(RowPolicy {
+        read: PolicyExpr::Any(vec![
+            PolicyExpr::FieldCmp {
+                field: "person".into(),
+                op: CmpOp::Eq,
+                value: PolicyOperand::UserId,
+            },
+            PolicyExpr::FieldCmp {
+                field: "scope".into(),
+                op: CmpOp::Eq,
+                value: PolicyOperand::Lit(json!("all")),
+            },
+        ]),
+        write: None,
+    });
+    // 原価（cost）は keiri ロールだけが読める。
+    lines_schema.field_policy = vec![FieldPolicy {
+        field: "cost".into(),
+        readable_by: PolicyExpr::HasRole {
+            role: "keiri".into(),
+            subtree: false,
+        },
+    }];
+    let lines = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "lines".into(),
+                schema: lines_schema,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let mut fields = derived_fields(lines.id);
+    let mut cost = field("cost_total", FieldType::Rollup);
+    cost.rollup = Some(RollupDef {
+        link: "items".into(),
+        target: Some("cost".into()),
+        op: RollupOp::Sum,
+    });
+    fields.push(cost);
+    let orders = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "orders".into(),
+                schema: plain(fields),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let public = store
+        .create_record(
+            &alice,
+            lines.id,
+            json!({"person": "alice", "scope": "all", "name": "公開", "amount": 100, "cost": 60}),
+            None,
+        )
+        .await
+        .unwrap();
+    let private = store
+        .create_record(
+            &alice,
+            lines.id,
+            json!({"person": "alice", "scope": "private", "name": "非公開", "amount": 250, "cost": 1}),
+            None,
+        )
+        .await
+        .unwrap();
+    let o = store
+        .create_record(
+            &alice,
+            orders.id,
+            json!({"items": ids(&[public.id, private.id])}),
+            None,
+        )
+        .await
+        .unwrap();
+    grant(&authz, &bob, Relation::Viewer, orders.id).await;
+    grant(&authz, &bob, Relation::Viewer, lines.id).await;
+    let alice_view = store
+        .get_record(&alice, orders.id, o.id, None)
+        .await
+        .unwrap();
+    assert_eq!(alice_view.data["total"], json!(350));
+    assert_eq!(alice_view.data["n"], json!(2));
+    // alice も keiri ではないので原価は集計に入らない（マスク列は持ち出さない・PIT-19）。
+    assert_eq!(alice_view.data["cost_total"], json!(0));
+    // bob には非公開行が見えない → 合計・件数・lookup・数式から消える（null ではなく可視分だけ）。
+    let bob_view = store.get_record(&bob, orders.id, o.id, None).await.unwrap();
+    assert_eq!(bob_view.data["total"], json!(100));
+    assert_eq!(bob_view.data["n"], json!(1));
+    assert_eq!(bob_view.data["names"], json!(["公開"]));
+    assert_eq!(bob_view.data["doubled"], json!(200));
+    // 個別共有した行だけが追加で集計に入る（解除すれば即時に戻る）。
+    let target = storage::ShareTarget::User { id: "bob".into() };
+    store
+        .share_record(
+            &alice,
+            lines.id,
+            private.id,
+            &target,
+            RecordShareRole::Viewer,
+            None,
+        )
+        .await
+        .unwrap();
+    let bob_view = store.get_record(&bob, orders.id, o.id, None).await.unwrap();
+    assert_eq!(bob_view.data["total"], json!(350));
+    store
+        .unshare_record(
+            &alice,
+            lines.id,
+            private.id,
+            &target,
+            RecordShareRole::Viewer,
+            None,
+        )
+        .await
+        .unwrap();
+    let bob_view = store.get_record(&bob, orders.id, o.id, None).await.unwrap();
+    assert_eq!(bob_view.data["total"], json!(100));
+    // bob は見えない参照先へのリンクを書き込めない（存在オラクルなし・同一応答）。
+    grant(&authz, &bob, Relation::Editor, orders.id).await;
+    let r = store
+        .create_record(&bob, orders.id, json!({"items": ids(&[private.id])}), None)
+        .await;
+    assert!(
+        matches!(&r, Err(DataError::Invalid(m)) if m.contains("見つかりません")),
+        "{r:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⑨ 材料化した計算列の残留（PIT-71）
+// ---------------------------------------------------------------------------
+
+/// 同一ミニアプリの 2 テーブル（参照先 lines・参照元 orders の材料化ロールアップ）。
+struct Materialized {
+    store: DataStore,
+    pool: PgPool,
+    authz: Arc<dyn AuthzClient>,
+    alice: AuthContext,
+    bob: AuthContext,
+    lines: Uuid,
+    orders: Uuid,
+    line_ids: Vec<Uuid>,
+    order_id: Uuid,
+    total_field: i16,
+}
+
+async fn materialized_fixture(pool: PgPool, authz: Arc<dyn AuthzClient>) -> Materialized {
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let store = DataStore::new(pool.clone(), Arc::clone(&authz), Arc::new(AllowRefs));
+    let app = Uuid::new_v4();
+    let mut person = field("person", FieldType::UserRef);
+    person.indexed = true;
+    let lines = store
+        .create_table_for_app(
+            &alice,
+            NewDataTable {
+                name: "lines".into(),
+                schema: plain(vec![
+                    person,
+                    field("name", FieldType::Text),
+                    field("amount", FieldType::Number),
+                ]),
+            },
+            app,
+            None,
+        )
+        .await
+        .unwrap();
+    let orders = store
+        .create_table_for_app(
+            &alice,
+            NewDataTable {
+                name: "orders".into(),
+                schema: plain(vec![items_link(lines.id), total_rollup(true)]),
+            },
+            app,
+            None,
+        )
+        .await
+        .unwrap();
+    let total = orders.schema.field("total").unwrap();
+    assert_eq!(
+        total.materialization,
+        Some(Materialization::Invariant),
+        "前提: 同一ミニアプリ・包含の証明・行述語/マスク/個別共有なし → 材料化"
+    );
+    let mut line_ids = Vec::new();
+    for (who, a) in [("alice", 100), ("bob", 250)] {
+        line_ids.push(
+            store
+                .create_record(
+                    &alice,
+                    lines.id,
+                    json!({"person": who, "name": who, "amount": a}),
+                    None,
+                )
+                .await
+                .unwrap()
+                .id,
+        );
+    }
+    let order = store
+        .create_record(&alice, orders.id, json!({"items": ids(&line_ids)}), None)
+        .await
+        .unwrap();
+    let m = Materialized {
+        store,
+        pool,
+        authz,
+        alice,
+        bob,
+        lines: lines.id,
+        orders: orders.id,
+        line_ids,
+        order_id: order.id,
+        total_field: i16::try_from(total.id).unwrap(),
+    };
+    assert_eq!(
+        m.materialized_rows().await,
+        2,
+        "前提: 材料化した索引行（1 件）と依存登録（1 件）がある"
+    );
+    m.store
+        .run_query(&m.alice, m.orders, &m.by_total(), None)
+        .await
+        .expect("前提: 材料化列でソートできる");
+    m
+}
+
+impl Materialized {
+    #[allow(clippy::unused_self)] // 呼び出し側を m.by_total() で揃える。
+    fn by_total(&self) -> DataQuery {
+        DataQuery {
+            sort: vec![SortKey {
+                field: "total".into(),
+                descending: true,
+            }],
+            ..DataQuery::default()
+        }
+    }
+
+    /// 材料化データ（索引行・再計算待ち・依存登録）の行数（テスト専用に DB から直接数える）。
+    async fn materialized_rows(&self) -> i64 {
+        let (ti, tb): (i32, i64) = sqlx::query_as(
+            "SELECT tenant_int, table_int FROM data_table WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(&self.alice.tenant_id)
+        .bind(self.orders)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap();
+        sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM data_index_num WHERE tenant_int = $1 AND table_int = $2 \
+                       AND field_id = $3) \
+                  + (SELECT count(*) FROM data_index_text WHERE tenant_int = $1 AND table_int = $2 \
+                       AND field_id = $3) \
+                  + (SELECT count(*) FROM data_derived_pending WHERE tenant_int = $1 \
+                       AND table_int = $2 AND field_id = $3) \
+                  + (SELECT count(*) FROM data_derived_dep WHERE tenant_int = $1 AND table_int = $2 \
+                       AND field_id = $3)",
+        )
+        .bind(ti)
+        .bind(tb)
+        .bind(self.total_field)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+
+    /// 材料化データが破棄され、値がソートに使えず、宣言が per_viewer へ降格していること。
+    async fn assert_discarded(&self, case: &str) {
+        assert_eq!(
+            self.materialized_rows().await,
+            0,
+            "{case}: 材料化データが残っている"
+        );
+        let t = self
+            .store
+            .get_table(&self.alice, self.orders, None)
+            .await
+            .unwrap();
+        let f = t.schema.field("total").unwrap();
+        assert_eq!(
+            f.materialization,
+            Some(Materialization::PerViewer),
+            "{case}"
+        );
+        assert!(!f.indexed, "{case}: 降格した列は索引宣言も外れる");
+        let r = self
+            .store
+            .run_query(&self.alice, self.orders, &self.by_total(), None)
+            .await;
+        assert!(
+            matches!(r, Err(DataError::Invalid(_))),
+            "{case}: 降格した列はソートに使えない: {r:?}"
+        );
+    }
+
+    async fn total_seen_by(&self, who: &AuthContext) -> serde_json::Value {
+        self.store
+            .get_record(who, self.orders, self.order_id, None)
+            .await
+            .unwrap()
+            .data["total"]
+            .clone()
+    }
+}
+
+/// ⑨-1 参照先へ row_policy を後付けすると、材料化データが同一 Tx で破棄され、閲覧者本人の
+/// 可視行だけの値になる（後から権限を厳しくした＝安全側の操作で漏洩源が残らない）。
+#[tokio::test]
+async fn materialized_rollup_is_discarded_when_reference_gets_row_policy() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let m = materialized_fixture(pool, authz).await;
+    // bob は両テーブルの viewer（包含は保たれる＝ReBAC は変えない）。
+    grant(&m.authz, &m.bob, Relation::Viewer, m.lines).await;
+    grant(&m.authz, &m.bob, Relation::Viewer, m.orders).await;
+    let mut s = m
+        .store
+        .get_table(&m.alice, m.lines, None)
+        .await
+        .unwrap()
+        .schema;
+    s.row_policy = Some(RowPolicy {
+        read: PolicyExpr::FieldCmp {
+            field: "person".into(),
+            op: CmpOp::Eq,
+            value: PolicyOperand::UserId,
+        },
+        write: None,
+    });
+    m.store
+        .update_table_schema(&m.alice, m.lines, s, None, None)
+        .await
+        .unwrap();
+    m.assert_discarded("row_policy 後付け").await;
+    // 値は閲覧者本人の可視行だけ（全件の 350 は誰にも見えない）。
+    assert_eq!(m.total_seen_by(&m.alice).await, json!(100));
+    assert_eq!(m.total_seen_by(&m.bob).await, json!(250));
+}
+
+/// ⑨-2 参照先にレコード個別共有を 1 件作ると、材料化データが破棄される。
+#[tokio::test]
+async fn materialized_rollup_is_discarded_when_reference_record_is_shared() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let m = materialized_fixture(pool, authz).await;
+    m.store
+        .share_record(
+            &m.alice,
+            m.lines,
+            m.line_ids[0],
+            &storage::ShareTarget::User { id: "bob".into() },
+            RecordShareRole::Viewer,
+            None,
+        )
+        .await
+        .unwrap();
+    m.assert_discarded("個別共有の発生").await;
+    assert_eq!(m.total_seen_by(&m.alice).await, json!(350));
+    // 共有を解除しても材料化には戻らない（旗は単調・安全側）。
+    let t = m.store.get_table(&m.alice, m.orders, None).await.unwrap();
+    let mut s = t.schema.clone();
+    s.fields
+        .iter_mut()
+        .find(|f| f.key == "total")
+        .unwrap()
+        .indexed = true;
+    let r = m
+        .store
+        .update_table_schema(&m.alice, m.orders, s, None, None)
+        .await;
+    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+}
+
+/// ⑨-3 テーブル ReBAC を変えて viewer 集合の包含が崩れると（参照元だけを bob に見せる）、次の読取の
+/// 入口で材料化データが破棄され、bob には参照先の全件から計算した値が見えない（第 1 層の迂回を塞ぐ）。
+#[tokio::test]
+async fn materialized_rollup_is_discarded_when_table_rebac_changes() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let m = materialized_fixture(pool, authz).await;
+    grant(&m.authz, &m.bob, Relation::Viewer, m.orders).await;
+    // bob は lines を見られない → 合計は null（材料化した 350 は返らない）。
+    assert_eq!(m.total_seen_by(&m.bob).await, serde_json::Value::Null);
+    m.assert_discarded("ReBAC の変更").await;
+    // bob のソートも同じく拒否される（順序から値を推測させない）。
+    let r = m
+        .store
+        .run_query(&m.bob, m.orders, &m.by_total(), None)
+        .await;
+    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    // 明示の再検査の入口（ReBAC を変えた経路から呼ぶ）は、降格済みなら何もしない。
+    assert!(!m
+        .store
+        .reverify_materialization(&m.alice, m.orders)
+        .await
+        .unwrap());
+}
+
+/// ⑨-4 ReBAC の変更をクエリ（ソート）の入口で検出した場合も、その場で破棄して拒否する。
+/// 参照先へ field_policy（マスク）を後付けした場合も同様に破棄される。
+#[tokio::test]
+async fn materialized_rollup_is_discarded_on_query_and_on_field_policy() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let m = materialized_fixture(pool.clone(), Arc::clone(&authz)).await;
+    grant(&m.authz, &m.bob, Relation::Viewer, m.orders).await;
+    let r = m
+        .store
+        .run_query(&m.bob, m.orders, &m.by_total(), None)
+        .await;
+    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    m.assert_discarded("ReBAC の変更（クエリの入口）").await;
+
+    let m = materialized_fixture(pool, authz).await;
+    let mut s = m
+        .store
+        .get_table(&m.alice, m.lines, None)
+        .await
+        .unwrap()
+        .schema;
+    s.field_policy = vec![FieldPolicy {
+        field: "amount".into(),
+        readable_by: PolicyExpr::HasRole {
+            role: "keiri".into(),
+            subtree: false,
+        },
+    }];
+    m.store
+        .update_table_schema(&m.alice, m.lines, s, None, None)
+        .await
+        .unwrap();
+    m.assert_discarded("field_policy 後付け").await;
+    // マスクされた列は集計の材料にもならない（alice も keiri ではない）。
+    assert_eq!(m.total_seen_by(&m.alice).await, json!(0));
 }
