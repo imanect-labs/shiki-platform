@@ -42,17 +42,7 @@ fn ctx() -> AuthContext {
 }
 
 fn field(name: &str, ty: FieldType) -> FieldDef {
-    FieldDef {
-        name: name.into(),
-        field_type: ty,
-        required: false,
-        unique: false,
-        indexed: false,
-        options: vec![],
-        ref_table: None,
-        lookup: None,
-        computed: None,
-    }
+    FieldDef::new(name, ty)
 }
 
 fn schema(fields: Vec<FieldDef>) -> TableSchema {

@@ -93,17 +93,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
 }
 
 fn field(name: &str, ty: FieldType) -> FieldDef {
-    FieldDef {
-        name: name.into(),
-        field_type: ty,
-        required: false,
-        unique: false,
-        indexed: false,
-        options: vec![],
-        ref_table: None,
-        lookup: None,
-        computed: None,
-    }
+    FieldDef::new(name, ty)
 }
 
 /// 申請者本人 or 経理ロール（subtree）だけが読める経費テーブル。

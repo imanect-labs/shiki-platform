@@ -137,7 +137,7 @@ PostgreSQL は 1 行の INSERT で当該 relation の**全索引を open し、p
 | 論理キー | 内部キー | 型 | 採番 |
 |---|---|---|---|
 | `tenant_id text` | `tenant_int` | `int4` | tenant レジストリ（`crates/storage/src/tenant.rs`）で採番・不変・再利用しない |
-| `table_id uuid` | `table_int` | `int8` | `data_table` 作成時にグローバル連番。**パーティションキー** |
+| `table_id uuid` | `table_int` | `int8` | `data_table` 作成時にグローバル連番（**採番サービス経由**・列 default にしない・[shard-safety.md](./data/shard-safety.md)）。**パーティションキー** |
 | `field.name text` | `field_id` | `int2` | テーブル内で採番・不変・再利用しない。`0..15` はシステム擬似列に予約 |
 | `record.id uuid` | `record_int` | `int8` | **プール共通のシーケンス**（`data_record_int_seq`）で採番・不変・再利用しない。**索引テーブルとリンクは全てこちらで持つ** |
 
@@ -189,7 +189,7 @@ create table data_record (
     id         uuid     not null,   -- 外部向けの ID（API・SSE・監査・OpenFGA）
     record_int bigint   not null default nextval('data_record_int_seq'),  -- 内部キー（§3.2）
     org        text     not null,
-    data       jsonb    not null,   -- {"f1": "...", "f2": 12000}
+    data       jsonb    not null,   -- {"f16": "...", "f17": 12000}
     rev        bigint   not null default 1,
     owner      text     not null,
     created_at timestamptz not null default now(),
@@ -575,11 +575,18 @@ pub enum RoundingMode { HalfUp, HalfEven, Down, Up }
 
 ```text
 既存 name = "applicant"
-  → id = 宣言順に 1 から採番
+  → id = 宣言順に 16 から採番（0..15 はシステム擬似列に予約・§3.2）
   → key = "applicant"（そのまま）
   → display_name = "applicant"（後からユーザーが日本語へ変更）
-JSONB: {"applicant": "佐藤"} → {"f1": "佐藤"}
+JSONB: {"applicant": "佐藤"} → {"f16": "佐藤"}
 ```
+
+実装（Task 15.1）: テーブル単位の jobq ジョブ（`crates/data/src/key_migration.rs`）。1 テーブル = 1 トランザクションで
+`data_table.key_format` を 1 → 2 へ一方向に進めるので冪等で、中断したテーブルはロールバックされて次回やり直す。
+未移行テーブルへのアクセスはその場で同じ関数により移行してから処理する（旧形式を読む経路を残さない）。
+外部契約は `key` で受けて `key` で返し、`"f{id}"` は保存形と SQL 生成に閉じる。v1 の入力 `name` は `key` の別名として受け、
+`id` を省略したフィールドは既存の同じ `key` の `id` を引き継ぐ。次の `id` は `data_table.next_field_id` が持つ
+（削除済みフィールドの `id` も再利用しないため、スキーマ JSONB の外に置く）。
 
 ---
 
@@ -1263,7 +1270,7 @@ v1 スコープでは**設計スパイクまで**（実装はポストアルフ�
 
 - **`tenant → pool` の解決を単一チョークポイントに置く**（`DataStore` が `PgPool` を直接持つのをやめ、
   `PoolRouter` から取る）。tenant レジストリに pool 割当を持たせる。**この継ぎ目を後から入れるのは高い**ので先に入れる
-- **シャード安全の禁止事項リスト**を明文化し、CI で検査する:
+- **シャード安全の禁止事項リスト**を明文化し、CI で検査する（正本は [data/shard-safety.md](./data/shard-safety.md)・Task 15.1）:
   - テナント横断の JOIN を書かない
   - グローバル連番に依存しない（`table_int` は採番サービス経由・シャード跨ぎで衝突しないこと）
   - テナント横断の集計は「各プールへ問い合わせて合算」する形にする（単一クエリで書かない）

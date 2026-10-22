@@ -14,6 +14,7 @@ tracing.workspace = true
 shiki-authz.workspace = true
 shiki-storage.workspace = true
 shiki-artifact.workspace = true
+shiki-jobq.workspace = true
 
 sqlx.workspace = true
 serde.workspace = true
@@ -25,14 +26,19 @@ sha2.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 # DTO を単一定義し api 層に手書きミラーを作らない（codegen が正）。
 utoipa.workspace = true
+# keyset カーソルの AEAD（Task 15.1・secrets と同じ AES-256-GCM）。
+aes-gcm = { version = "0.10", features = ["aes", "alloc"] }
+rand.workspace = true
+base64.workspace = true
+# 識別子移行ジョブの常駐ワーカー。
+tokio.workspace = true
 
 [dev-dependencies]
-tokio.workspace = true
 reqwest.workspace = true
 
 # lib 名 authz/storage で参照するため machete が誤検出する。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-storage", "shiki-artifact"]
+ignored = ["shiki-authz", "shiki-storage", "shiki-artifact", "shiki-jobq"]
 
 [lints]
 workspace = true

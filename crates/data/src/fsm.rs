@@ -113,33 +113,11 @@ mod tests {
     use crate::policy::ast::{CmpOp, PolicyOperand};
 
     fn schema() -> TableSchema {
-        let mut status = FieldDef {
-            name: "status".into(),
-            field_type: FieldType::Select,
-            required: false,
-            unique: false,
-            indexed: true,
-            options: vec!["draft".into(), "submitted".into(), "approved".into()],
-            ref_table: None,
-            lookup: None,
-            computed: None,
-        };
+        let mut status = FieldDef::new("status", FieldType::Select);
+        status.indexed = true;
         status.options = vec!["draft".into(), "submitted".into(), "approved".into()];
         TableSchema {
-            fields: vec![
-                FieldDef {
-                    name: "approver".into(),
-                    field_type: FieldType::UserRef,
-                    required: false,
-                    unique: false,
-                    indexed: false,
-                    options: vec![],
-                    ref_table: None,
-                    lookup: None,
-                    computed: None,
-                },
-                status,
-            ],
+            fields: vec![FieldDef::new("approver", FieldType::UserRef), status],
             status_field: Some("status".into()),
             row_policy: None,
             field_policy: vec![],
@@ -184,7 +162,7 @@ mod tests {
         assert!(validate_fsm(&b, &schema()).is_err());
         // options 不一致。
         let mut s = schema();
-        if let Some(f) = s.fields.iter_mut().find(|f| f.name == "status") {
+        if let Some(f) = s.fields.iter_mut().find(|f| f.key == "status") {
             f.options = vec!["draft".into()];
         }
         assert!(validate_fsm(&body(), &s).is_err());

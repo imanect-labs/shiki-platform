@@ -15,6 +15,7 @@ use storage::audit::{AuditEntry, Chain, Decision};
 use storage::event::{emit_on, WriteEvent, WriteOp};
 use uuid::Uuid;
 
+use crate::field_key::{decode_record, encode_record};
 use crate::fsm::FsmBody;
 use crate::revision::{insert_revision, RevisionInsert};
 use crate::store::DataStore;
@@ -52,7 +53,8 @@ impl DataStore {
         .await?;
         let table = self.fetch_live(ctx, table_id).await?;
 
-        let mut tx = self.db.begin().await.map_err(map_db)?;
+        let db = self.pools.for_tenant(&ctx.tenant_id);
+        let mut tx = db.begin().await.map_err(map_db)?;
         // ①行ロック（行述語込み・不可視は 404＝存在オラクルなし）。
         let current = self
             .lock_visible_by_id(ctx, &mut tx, &table, record_id)
@@ -64,9 +66,9 @@ impl DataStore {
                 current.rev
             )));
         }
-        let from = current
-            .data
-            .0
+        // 保存形（"f{id}"）を外部形（key）へ戻してから status を読む。
+        let mut data = decode_record(&table.schema, &current.data.0);
+        let from = data
             .get(status_field)
             .and_then(Value::as_str)
             .ok_or_else(|| {
@@ -101,17 +103,20 @@ impl DataStore {
 
         // ④status 更新＋rev+1＋revision。
         let new_rev = current.rev + 1;
-        let mut data = current.data.0.as_object().cloned().unwrap_or_default();
         data.insert(status_field.to_string(), Value::String(to.to_string()));
-        let row: crate::record::RecordRow = sqlx::query_as(
+        let row: crate::record::RecordRow = sqlx::query_as(&format!(
             "UPDATE data_record SET data = $4, rev = $5, updated_at = now() \
              WHERE tenant_id = $1 AND table_id = $2 AND id = $3 \
-             RETURNING id, table_id, data, rev, owner, created_at, updated_at",
-        )
+             RETURNING {}",
+            crate::record::RECORD_RETURNING
+        ))
         .bind(&ctx.tenant_id)
         .bind(table_id)
         .bind(record_id)
-        .bind(sqlx::types::Json(Value::Object(data)))
+        .bind(sqlx::types::Json(Value::Object(encode_record(
+            &table.schema,
+            &data,
+        ))))
         .bind(new_rev)
         .fetch_one(&mut *tx)
         .await
@@ -171,6 +176,6 @@ impl DataStore {
         .await
         .map_err(|e| DataError::Internal(format!("audit: {e}")))?;
         tx.commit().await.map_err(map_db)?;
-        Ok(row.into_record())
+        Ok(row.into_record(&table.schema))
     }
 }

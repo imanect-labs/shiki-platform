@@ -2,7 +2,8 @@
 //!
 //! 各関数はプレースホルダを次の順で採番する:
 //! `$1 = tenant_id, $2 = table_id, $3.. = 行述語バインド, その後 = 追加条件（id/filter/limit/offset）`。
-//! 値は全てバインド。SQL テキストへ埋め込むのは検証済みフィールド名と固定エイリアスのみ。
+//! 値は全てバインド。SQL テキストへ埋め込むのは内部 ID 由来の JSONB キー（`"f{id}"`・
+//! [`crate::field_key::is_json_key`] で再検証）と固定エイリアスのみ。
 
 use std::fmt::Write as _;
 
@@ -12,6 +13,7 @@ use sqlx::query::QueryAs;
 use sqlx::{PgConnection, Postgres};
 use uuid::Uuid;
 
+use crate::field_key::is_json_key;
 use crate::model::DataTable;
 use crate::policy::compile::{compile_expr, compile_read_predicate, Bind, BindSet, RECORD_ALIAS};
 use crate::policy::material;
@@ -20,6 +22,8 @@ use crate::store::DataStore;
 use crate::{map_db, DataError};
 
 /// 一覧の追加フィルタ（record_list が型検証済みで渡す・閉じた形）。
+///
+/// `field` は保存形の JSONB キー（`"f{id}"`）。参照名（key）からの変換は呼び出し側が行う。
 #[derive(Debug, Clone)]
 pub(crate) enum ListFilter {
     /// text 系（text/select/date/datetime/user_ref/role_ref/file_ref/record_ref）の等値。
@@ -68,11 +72,14 @@ impl ReadPredicate {
 }
 
 /// レコード行を DTO へ変換する（宣言的クエリ層から使う）。
-pub(crate) fn row_into_record(row: RecordRow) -> crate::model::DataRecord {
-    row.into_record()
+pub(crate) fn row_into_record(
+    row: RecordRow,
+    schema: &crate::model::TableSchema,
+) -> crate::model::DataRecord {
+    row.into_record(schema)
 }
 
-const SELECT_COLS: &str = "r.id, r.table_id, r.data, r.rev, r.owner, r.created_at, r.updated_at";
+use crate::record::RECORD_COLS as SELECT_COLS;
 
 impl DataStore {
     /// 読取述語を解決する（材料解決込み・プレースホルダは $3 起点）。
@@ -124,7 +131,9 @@ impl DataStore {
             &pred.binds,
         )
         .bind(id);
-        q.fetch_optional(&self.db).await.map_err(map_db)
+        q.fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
+            .await
+            .map_err(map_db)
     }
 
     /// id 指定の可視行を `FOR UPDATE` でロックして引く（update/delete/遷移の入口）。
@@ -194,7 +203,7 @@ impl DataStore {
         let rows = q
             .bind(limit)
             .bind(offset)
-            .fetch_all(&self.db)
+            .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
             .await
             .map_err(map_db)?;
         Ok((rows, pred.shares_truncated))
@@ -224,7 +233,9 @@ impl DataStore {
         if let Some(b) = filter_bind {
             q = push_bind_scalar(q, b);
         }
-        q.fetch_one(&self.db).await.map_err(map_db)
+        q.fetch_one(self.pools.for_tenant(&ctx.tenant_id))
+            .await
+            .map_err(map_db)
     }
 
     /// actor 述語（FSM 遷移認可・Task 9.10）を**当該行に対し**評価する。
@@ -259,7 +270,10 @@ impl DataStore {
         for b in &binds.binds {
             q = push_bind_scalar(q, b.clone());
         }
-        q.bind(record_id).fetch_one(&self.db).await.map_err(map_db)
+        q.bind(record_id)
+            .fetch_one(self.pools.for_tenant(&ctx.tenant_id))
+            .await
+            .map_err(map_db)
     }
 
     /// 対象行への**書込可否**（write 述語 or 個別共有 editor・Task 9.3）。
@@ -299,7 +313,7 @@ impl DataStore {
         }
         let by_policy = q
             .bind(record_id)
-            .fetch_one(&self.db)
+            .fetch_one(self.pools.for_tenant(&ctx.tenant_id))
             .await
             .map_err(map_db)?;
         if by_policy {
@@ -321,24 +335,25 @@ impl DataStore {
 impl DataStore {
     /// lookup 射影のバッチ取得（参照先テーブルの行述語つき・Task 9.3 / PIT-20）。
     ///
+    /// `target_json_key` は参照先フィールドの保存形キー（`"f{id}"`）。
     /// 述語で不可視の参照先は結果に含まれない（呼び出し側で null になる）。
     pub(crate) async fn select_lookup_values(
         &self,
         ctx: &AuthContext,
         ref_table: &DataTable,
-        target_field: &str,
+        target_json_key: &str,
         ids: &[Uuid],
     ) -> Result<std::collections::HashMap<Uuid, serde_json::Value>, DataError> {
-        // target_field は呼び出し側（derived）で参照先スキーマ照合＋識別子検証済み。二重検証。
-        if !crate::schema::is_valid_field_name(target_field) {
+        // 呼び出し側（derived）で参照先スキーマ照合済み。埋め込み直前に形式を再検証（二重化）。
+        if !is_json_key(target_json_key) {
             return Err(DataError::Internal(format!(
-                "lookup 対象フィールド名 '{target_field}' が識別子規約外"
+                "lookup 対象の JSONB キー '{target_json_key}' が内部 ID 形式ではありません"
             )));
         }
         let pred = self.read_predicate(ctx, ref_table).await?;
         let ids_ph = 3 + pred.binds.len();
         let sql = format!(
-            "SELECT r.id, r.data -> '{target_field}' FROM data_record {RECORD_ALIAS} \
+            "SELECT r.id, r.data -> '{target_json_key}' FROM data_record {RECORD_ALIAS} \
              WHERE r.tenant_id = $1 AND r.table_id = $2 AND ({}) AND r.id = ANY(${ids_ph}::uuid[])",
             pred.sql
         );
@@ -355,13 +370,43 @@ impl DataStore {
         }
         let rows = q
             .bind(ids.to_vec())
-            .fetch_all(&self.db)
+            .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
             .await
             .map_err(map_db)?;
         Ok(rows
             .into_iter()
             .map(|(id, v)| (id, v.unwrap_or(serde_json::Value::Null)))
             .collect())
+    }
+
+    /// 外部 ID（uuid）を内部キー `record_int` へ**1 本のクエリで**引き直す（data-platform §3.2）。
+    ///
+    /// 個別共有（OpenFGA の `data_record` タプルは uuid）を pivot 索引側の述語へ渡すための入口。
+    /// 呼び出し側は材料の上限（`MAX_SHARED_IDS`）で切り詰め済みの集合を渡すこと。結果は
+    /// リクエストスコープでのみ使い、**外へ出さない**（PIT-75）。Task 15.3 の材料解決が使う。
+    #[allow(dead_code)] // Task 15.3 の材料解決が使う（継ぎ目として先に置く）。
+    pub(crate) async fn record_ints_for(
+        &self,
+        ctx: &AuthContext,
+        table: &DataTable,
+        ids: &[Uuid],
+    ) -> Result<Vec<i64>, DataError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ints: Vec<i64> = sqlx::query_scalar(
+            "SELECT record_int FROM data_record \
+             WHERE tenant_int = $1 AND table_int = $2 AND tenant_id = $3 AND id = ANY($4::uuid[]) \
+             ORDER BY record_int",
+        )
+        .bind(table.keys.tenant_int)
+        .bind(table.keys.table_int)
+        .bind(&ctx.tenant_id)
+        .bind(ids.to_vec())
+        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .await
+        .map_err(map_db)?;
+        Ok(ints)
     }
 }
 
@@ -386,15 +431,15 @@ fn push_filter_sql(
             Bind::Text(value.clone()),
         ),
     };
-    // フィールド名は record_list が indexed_field で検証済み（識別子規約）。
+    // JSONB キーは呼び出し側が宣言フィールドから生成済み。埋め込み直前に形式を再検証する。
     let field = match f {
         ListFilter::TextEq { field, .. }
         | ListFilter::NumberEq { field, .. }
         | ListFilter::MultiContains { field, .. } => field,
     };
-    if !crate::schema::is_valid_field_name(field) {
+    if !is_json_key(field) {
         return Err(DataError::Internal(format!(
-            "フィルタのフィールド名 '{field}' が識別子規約外"
+            "フィルタの JSONB キー '{field}' が内部 ID 形式ではありません"
         )));
     }
     sql.push_str(&fragment);
@@ -403,9 +448,9 @@ fn push_filter_sql(
 }
 
 fn sort_expr(s: &ListSort) -> Result<String, DataError> {
-    if !crate::schema::is_valid_field_name(&s.field) {
+    if !is_json_key(&s.field) {
         return Err(DataError::Internal(format!(
-            "ソートのフィールド名 '{}' が識別子規約外",
+            "ソートの JSONB キー '{}' が内部 ID 形式ではありません",
             s.field
         )));
     }

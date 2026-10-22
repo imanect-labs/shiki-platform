@@ -78,17 +78,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
 }
 
 fn field(name: &str, ty: FieldType) -> FieldDef {
-    FieldDef {
-        name: name.into(),
-        field_type: ty,
-        required: false,
-        unique: false,
-        indexed: false,
-        options: vec![],
-        ref_table: None,
-        lookup: None,
-        computed: None,
-    }
+    FieldDef::new(name, ty)
 }
 
 /// dept/amount/salary（マスク）を持つ人事テーブル。全 viewer が全行可視（行制限なし）。

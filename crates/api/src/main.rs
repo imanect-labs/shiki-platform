@@ -123,7 +123,8 @@ async fn main() -> anyhow::Result<()> {
     // アーティファクト共通枠（Task 6.1）: authz と同一インスタンスを共有（単一チョークポイント）。
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
     // 構造化データサービス（Task 9.2〜9.10）: data ストア＋保存ビュー＋FSM を束ねて配線する。
-    let (data_store, data_views, fsms) = wire_data(&db, &authz, &directory, &storage, &artifacts);
+    let (data_store, data_views, fsms) =
+        wire_data(&config, &db, &authz, &directory, &storage, &artifacts)?;
     // ミニアプリ基盤（Task 9.1/9.13a）: マニフェスト store ＋汎用レジストリ。
     let mini_app_code = Arc::new(app_platform::MiniAppCodeStore::new(
         Arc::clone(&artifacts),
@@ -351,30 +352,51 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// data ストア・保存ビュー・FSM の組。
+type DataStores = (
+    std::sync::Arc<data::DataStore>,
+    std::sync::Arc<data::DataViewStore>,
+    std::sync::Arc<data::FsmStore>,
+);
+
 /// 構造化データ（Task 9.2〜9.10）の 3 ストアを配線する。
 ///
 /// data ストア（テーブル/レコード/行述語）・保存ビュー（9.4）・FSM 宣言的ガード（9.10）は
 /// いずれも同じ data チョークポイントと artifact 共通枠の上に載る。
 fn wire_data(
+    config: &AppConfig,
     db: &sqlx::PgPool,
     authz: &std::sync::Arc<dyn AuthzClient>,
     directory: &std::sync::Arc<DirectoryStore>,
     storage: &std::sync::Arc<storage::StorageService>,
     artifacts: &std::sync::Arc<artifact::ArtifactStore>,
-) -> (
-    std::sync::Arc<data::DataStore>,
-    std::sync::Arc<data::DataViewStore>,
-    std::sync::Arc<data::FsmStore>,
-) {
+) -> anyhow::Result<DataStores> {
     // 参照整合（user/role/file）は directory / StorageService のチョークポイントへ委譲する。
-    let data_store = Arc::new(data::DataStore::new(
-        db.clone(),
+    // 接続プールは PoolRouter 経由（tenant → pool の継ぎ目・Task 15.1。現状は単一プール）。
+    let mut store = data::DataStore::new(
+        storage::PoolRouter::single(db.clone()),
         authz.clone(),
         Arc::new(api::data_refs::ApiRefResolver {
             directory: Arc::clone(directory),
             storage: Arc::clone(storage),
         }),
-    ));
+    );
+    // keyset カーソルの鍵（secrets のマスターキーファイルと同じ形式）。
+    if let Some(path) = &config.data.cursor_key_file {
+        let raw = std::fs::read(path)
+            .with_context(|| format!("data カーソル鍵ファイルを読めません: {path}"))?;
+        let key = secrets::decode_key_material(&raw)
+            .map_err(|e| anyhow::anyhow!("data カーソル鍵の形式が不正です: {e}"))?;
+        store = store.with_cursor_key(&data::CursorKey::from_bytes(key));
+        tracing::info!("data カーソル鍵を設定ファイルから読み込みました");
+    } else {
+        tracing::warn!(
+            "data.cursor_key_file 未設定: カーソル鍵は起動時乱数（再起動・レプリカ間でカーソルは無効）"
+        );
+    }
+    let data_store = Arc::new(store);
+    // v1 形式テーブルのフィールド識別子移行（jobq・テーブル単位・冪等・完了で停止）。
+    data::FieldKeyMigrationWorker::new((*data_store).clone()).spawn();
     let data_views = Arc::new(data::DataViewStore::new(
         Arc::clone(artifacts),
         (*data_store).clone(),
@@ -383,7 +405,7 @@ fn wire_data(
         Arc::clone(artifacts),
         (*data_store).clone(),
     ));
-    (data_store, data_views, fsms)
+    Ok((data_store, data_views, fsms))
 }
 
 // シグナルハンドラの登録失敗はプロセス起動直後の致命的な環境不整合であり、

@@ -62,20 +62,20 @@ pub(crate) async fn validate_record_data(
 
     let mut out = Map::with_capacity(obj.len());
     for f in &schema.fields {
-        let value = obj.get(&f.name);
+        let value = obj.get(&f.key);
         match value {
             None | Some(Value::Null) => {
                 if f.required {
                     return Err(DataError::Invalid(format!(
                         "必須フィールド '{}' がありません",
-                        f.name
+                        f.key
                     )));
                 }
                 // 省略・null は「値なし」（保存形にキーを残さない）。
             }
             Some(v) => {
                 let normalized = validate_field_value(ctx, f, v, resolver).await?;
-                out.insert(f.name.clone(), normalized);
+                out.insert(f.key.clone(), normalized);
             }
         }
     }
@@ -89,7 +89,7 @@ async fn validate_field_value(
     v: &Value,
     resolver: &dyn RefResolver,
 ) -> Result<Value, DataError> {
-    let name = &f.name;
+    let name = &f.key;
     let type_err = |want: &str| {
         DataError::Invalid(format!(
             "フィールド '{name}' は {want} である必要があります"

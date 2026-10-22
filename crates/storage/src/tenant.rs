@@ -5,7 +5,7 @@
 //! 全操作は冪等（プロビジョニング/撤去の再実行で収束する）。
 
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::error::StorageError;
 
@@ -158,7 +158,28 @@ impl TenantStore {
         .bind(display_name)
         .fetch_one(&self.db)
         .await?;
+        // 内部整数キー（tenant_int）をプロビジョニング時点で確定させる（冪等・data-platform §3.2）。
+        let mut conn = self.db.acquire().await?;
+        ensure_placement(&mut conn, tenant_id).await?;
         row.try_into()
+    }
+
+    /// テナントの配置（`tenant_int` / 所属プール）を返す。未採番なら `None`。
+    pub async fn placement(
+        &self,
+        tenant_id: &str,
+    ) -> Result<Option<TenantPlacement>, StorageError> {
+        let row: Option<(String, i32, String)> = sqlx::query_as(
+            "SELECT tenant_id, tenant_int, pool_id FROM tenant_placement WHERE tenant_id = $1",
+        )
+        .bind(tenant_id)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row.map(|(tenant_id, tenant_int, pool_id)| TenantPlacement {
+            tenant_id,
+            tenant_int,
+            pool_id,
+        }))
     }
 
     /// 撤去処理中へ遷移する（冪等: 既に deleting/deleted でも成功）。無ければ `None`。
@@ -265,6 +286,75 @@ impl TenantStore {
         .await?;
         row.map(TryInto::try_into).transpose()
     }
+}
+
+/// テナントの配置（内部整数キーと所属プール・data-platform §3.2 / §12 第 2 段）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantPlacement {
+    pub tenant_id: String,
+    /// 内部整数キー（int4・不変・再利用しない）。索引テーブル・`data_record` の先頭キー。
+    /// **外へ出さない**（API・SSE・監査は `tenant_id` を使う）。
+    pub tenant_int: i32,
+    /// 所属プール（[`crate::pool_router::PoolRouter`] の解決先）。
+    pub pool_id: String,
+}
+
+/// テナントの配置を返す。未採番なら採番して登録する（冪等・並行安全）。
+///
+/// **`tenant_int` の採番はここだけ**（シーケンス `tenant_int_seq` はレジストリのプールにのみ
+/// 存在する・docs/data/shard-safety.md）。行は物理削除しないので、同じ `tenant_id` には
+/// 常に同じ `tenant_int` が返り、値は再利用されない。
+///
+/// `conn` は [`crate::pool_router::PoolRouter::registry`] のプールから取ること。
+pub async fn ensure_placement(
+    conn: &mut PgConnection,
+    tenant_id: &str,
+) -> Result<TenantPlacement, StorageError> {
+    if tenant_id.is_empty() {
+        return Err(StorageError::Invalid("tenant_id が空です".into()));
+    }
+    // 既存なら採番しない（ON CONFLICT でも nextval は消費されるため、先に引く）。
+    let existing: Option<(i32, String)> =
+        sqlx::query_as("SELECT tenant_int, pool_id FROM tenant_placement WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    if let Some((tenant_int, pool_id)) = existing {
+        return Ok(TenantPlacement {
+            tenant_id: tenant_id.to_string(),
+            tenant_int,
+            pool_id,
+        });
+    }
+    // 並行初回は ON CONFLICT で片方だけ入り、負けた側は勝者の値を読み直す（番号は欠番になるだけ）。
+    sqlx::query(
+        "INSERT INTO tenant_placement (tenant_id, tenant_int) \
+         VALUES ($1, nextval('tenant_int_seq')) ON CONFLICT (tenant_id) DO NOTHING",
+    )
+    .bind(tenant_id)
+    .execute(&mut *conn)
+    .await?;
+    let (tenant_int, pool_id): (i32, String) =
+        sqlx::query_as("SELECT tenant_int, pool_id FROM tenant_placement WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .fetch_one(&mut *conn)
+            .await?;
+    Ok(TenantPlacement {
+        tenant_id: tenant_id.to_string(),
+        tenant_int,
+        pool_id,
+    })
+}
+
+/// 構造化データのテーブル内部キー `table_int` を採番する（グローバル連番・不変・再利用しない）。
+///
+/// **採番サービスはここだけ**。列 default にしないのは、プール分割後に各プールのシーケンスが
+/// 独立して衝突するのを避けるため（`conn` は必ずレジストリのプールから取る）。
+pub async fn allocate_table_int(conn: &mut PgConnection) -> Result<i64, StorageError> {
+    let v: i64 = sqlx::query_scalar("SELECT nextval('data_table_int_seq')")
+        .fetch_one(conn)
+        .await?;
+    Ok(v)
 }
 
 #[cfg(test)]

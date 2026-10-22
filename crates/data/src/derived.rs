@@ -76,7 +76,7 @@ impl DataStore {
                     .and_then(|id| resolved.get(&id).cloned())
                     .unwrap_or(Value::Null);
                 if let Some(obj) = row.data.as_object_mut() {
-                    obj.insert(f.name.clone(), value);
+                    obj.insert(f.key.clone(), value);
                 }
             }
         }
@@ -108,7 +108,7 @@ impl DataStore {
                     }
                 };
                 if let Some(obj) = row.data.as_object_mut() {
-                    obj.insert(f.name.clone(), value);
+                    obj.insert(f.key.clone(), value);
                 }
             }
         }
@@ -148,17 +148,19 @@ impl DataStore {
             Err(DataError::NotFound) => return Ok(HashMap::new()),
             Err(e) => return Err(e),
         };
-        // 射影対象はスカラーの実フィールドのみ（派生の連鎖・再帰はしない）。
-        let ok_target = ref_table
+        // 射影対象はスカラーの実フィールドのみ（派生の連鎖・再帰はしない）。参照名（key）を
+        // 参照先スキーマで内部 ID へ解決し、保存形の JSONB キー（"f{id}"）で引く。
+        let Some(target) = ref_table
             .schema
             .field(target_field)
-            .is_some_and(|tf| !matches!(tf.field_type, FieldType::Lookup | FieldType::Computed));
-        if !ok_target || !crate::schema::is_valid_field_name(target_field) {
+            .filter(|tf| !matches!(tf.field_type, FieldType::Lookup | FieldType::Computed))
+        else {
             return Ok(HashMap::new());
-        }
+        };
+        let target_json_key = target.json_key();
         let id_vec: Vec<Uuid> = ids.iter().copied().collect();
         let rows = self
-            .select_lookup_values(ctx, &ref_table, target_field, &id_vec)
+            .select_lookup_values(ctx, &ref_table, &target_json_key, &id_vec)
             .await?;
         Ok(rows)
     }

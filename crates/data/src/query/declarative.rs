@@ -129,7 +129,7 @@ impl DataStore {
             Some(s) => {
                 let field = Self::indexed_queryable(&table, &masked, &s.field)?;
                 Some(ListSort {
-                    field: field.name.clone(),
+                    field: field.json_key(),
                     numeric: field.field_type == FieldType::Number,
                     descending: s.descending,
                 })
@@ -156,7 +156,7 @@ impl DataStore {
             .await?;
         let mut items: Vec<DataRecord> = rows
             .into_iter()
-            .map(super::executor::row_into_record)
+            .map(|r| super::executor::row_into_record(r, &table.schema))
             .collect();
         self.resolve_derived_fields(ctx, &table, &mut items).await?;
         Self::apply_mask_records(&masked, &mut items);
@@ -205,7 +205,7 @@ impl DataStore {
                     DataError::Invalid(format!("フィルタ '{}' は数値で指定してください", f.field))
                 })?;
                 Ok(ListFilter::NumberEq {
-                    field: field.name.clone(),
+                    field: field.json_key(),
                     value: n,
                 })
             }
@@ -214,7 +214,7 @@ impl DataStore {
                     DataError::Invalid(format!("フィルタ '{}' は文字列で指定してください", f.field))
                 })?;
                 Ok(ListFilter::MultiContains {
-                    field: field.name.clone(),
+                    field: field.json_key(),
                     value: v.to_string(),
                 })
             }
@@ -223,7 +223,7 @@ impl DataStore {
                     DataError::Invalid(format!("フィルタ '{}' は文字列で指定してください", f.field))
                 })?;
                 Ok(ListFilter::TextEq {
-                    field: field.name.clone(),
+                    field: field.json_key(),
                     value: v.to_string(),
                 })
             }
@@ -266,21 +266,12 @@ mod tests {
     use std::collections::HashSet;
 
     fn field(name: &str, ty: FieldType, indexed: bool) -> FieldDef {
-        FieldDef {
-            name: name.into(),
-            field_type: ty,
-            required: false,
-            unique: false,
-            indexed,
-            options: if matches!(ty, FieldType::MultiSelect | FieldType::Select) {
-                vec!["a".into(), "b".into()]
-            } else {
-                vec![]
-            },
-            ref_table: None,
-            lookup: None,
-            computed: None,
+        let mut f = FieldDef::new(name, ty);
+        f.indexed = indexed;
+        if matches!(ty, FieldType::MultiSelect | FieldType::Select) {
+            f.options = vec!["a".into(), "b".into()];
         }
+        f
     }
 
     fn table() -> DataTable {
@@ -289,23 +280,28 @@ mod tests {
             id: uuid::Uuid::nil(),
             name: "t".into(),
             app_id: None,
-            schema: TableSchema {
-                fields: vec![
-                    field("title", FieldType::Text, true),
-                    field("amount", FieldType::Number, true),
-                    field("tags", FieldType::MultiSelect, true),
-                    field("memo", FieldType::Text, false),
-                ],
-                status_field: None,
-                row_policy: None,
-                field_policy: vec![],
-                aggregate_min_rows: None,
-                fsm_ref: None,
+            schema: {
+                let mut s = TableSchema {
+                    fields: vec![
+                        field("title", FieldType::Text, true),
+                        field("amount", FieldType::Number, true),
+                        field("tags", FieldType::MultiSelect, true),
+                        field("memo", FieldType::Text, false),
+                    ],
+                    status_field: None,
+                    row_policy: None,
+                    field_policy: vec![],
+                    aggregate_min_rows: None,
+                    fsm_ref: None,
+                };
+                crate::field_key::assign_field_ids(None, &mut s).unwrap();
+                s
             },
             schema_version: 1,
             created_by: "alice".into(),
             created_at: ts,
             updated_at: ts,
+            keys: crate::model::TableKeys::default(),
         }
     }
 
@@ -341,7 +337,7 @@ mod tests {
         // number → NumberEq（非数値は拒否）。
         assert!(matches!(
             DataStore::compile_query_filter(&t, &m, &qf("amount", serde_json::json!(5))).unwrap(),
-            ListFilter::NumberEq { .. }
+            ListFilter::NumberEq { field, .. } if field == "f17"
         ));
         assert!(
             DataStore::compile_query_filter(&t, &m, &qf("amount", serde_json::json!("x"))).is_err()

@@ -14,11 +14,22 @@
 //!   `rev` の楽観ロックで同時更新を 409 にする（Task 9.5）。
 //! - **lookup / 計算フィールドの読み出し解決は Task 9.3 まで封印**: 参照先テーブルの
 //!   行ポリシー透過適用（PIT-20）なしに参照解決を出荷しない。定義の保存と検証のみ行う。
+//! - **フィールド識別子 3 層（Task 15.1）**: 外部契約は不変の参照名 `key` で受けて返し、
+//!   保存形（JSONB）は不変の内部 ID 由来の `"f{id}"` に閉じる（[`field_key`]）。表示名
+//!   （`display_name`・日本語可）の変更はスキーマ 1 行の書き換えで完結する。
+//! - **内部整数キーは外へ出さない（Task 15.1・PIT-75）**: `tenant_int` / `table_int` /
+//!   `record_int` は DTO・監査・エラー文言に載せない。keyset カーソルは AEAD で暗号化する
+//!   （[`cursor`]）。
+//! - **接続プールは `PoolRouter` から引く（Task 15.1）**: 本 crate は接続プールを保持しない
+//!   （シャード安全の禁止事項は docs/data/shard-safety.md・CI で検査）。
 
+mod cursor;
 mod derived;
+mod field_key;
 mod fsm;
 mod fsm_store;
 mod index;
+mod key_migration;
 mod mask;
 mod model;
 pub mod policy;
@@ -34,11 +45,16 @@ mod transition;
 mod validate;
 mod view;
 
+pub use cursor::{CursorKey, CURSOR_KEY_LEN};
 pub use fsm::{FsmBody, FsmRef, FsmTransition};
 pub use fsm_store::FsmStore;
+pub use key_migration::{
+    FieldKeyMigrationWorker, KeyMigrationProgress, FIELD_KEY_MIGRATION_QUEUE, MIGRATION_BATCH,
+};
 pub use model::{
-    ComputedDef, ComputedOp, DataRecord, DataTable, FieldDef, FieldPatch, FieldPolicy, FieldType,
-    LookupDef, RecordRevision, TableSchema,
+    ComputedDef, ComputedOp, DataRecord, DataTable, FieldDef, FieldId, FieldPatch, FieldPolicy,
+    FieldType, LookupDef, RecordRevision, TableSchema, FIRST_USER_FIELD_ID, MAX_FIELD_ID,
+    SYSTEM_FIELD_CREATED_AT, SYSTEM_FIELD_OWNER, SYSTEM_FIELD_UPDATED_AT,
 };
 pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
 pub use query::declarative::{

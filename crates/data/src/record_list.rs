@@ -1,8 +1,8 @@
 //! レコード一覧（Task 9.2・宣言フィールドの等値フィルタ＋ソート）。
 //!
 //! フィルタ/ソート対象は `indexed` / `unique` 宣言されたフィールドに限る（未索引フィールド
-//! への全走査クエリを API から作れないようにする）。フィールド名はスキーマ検証済みの
-//! 宣言名のみ SQL へ埋め込み、値は常にバインドする。宣言的クエリ API（filter/sort/page/
+//! への全走査クエリを API から作れないようにする）。フィールドは参照名（key）で受け、SQL へは
+//! 内部 ID 由来の JSONB キー（`"f{id}"`）だけを埋め込み、値は常にバインドする。宣言的クエリ API（filter/sort/page/
 //! aggregate の合成・行述語との無条件 AND 合成）は Task 9.3/9.4 でここに載る。
 
 use authz::{AuthContext, Relation};
@@ -11,7 +11,6 @@ use uuid::Uuid;
 
 use crate::model::{DataRecord, FieldType, TableSchema};
 use crate::query::executor::{ListFilter, ListSort};
-use crate::record::RecordRow;
 use crate::store::DataStore;
 use crate::DataError;
 
@@ -90,7 +89,7 @@ impl DataStore {
                             )));
                         };
                         ListFilter::NumberEq {
-                            field: f.name.clone(),
+                            field: f.json_key(),
                             value: n,
                         }
                     }
@@ -102,7 +101,7 @@ impl DataStore {
                             )));
                         };
                         ListFilter::MultiContains {
-                            field: f.name.clone(),
+                            field: f.json_key(),
                             value: v.to_string(),
                         }
                     }
@@ -114,7 +113,7 @@ impl DataStore {
                             )));
                         };
                         ListFilter::TextEq {
-                            field: f.name.clone(),
+                            field: f.json_key(),
                             value: v.to_string(),
                         }
                     }
@@ -132,7 +131,7 @@ impl DataStore {
                     ));
                 }
                 Some(ListSort {
-                    field: f.name.clone(),
+                    field: f.json_key(),
                     numeric: f.field_type == FieldType::Number,
                     descending: st.descending,
                 })
@@ -148,7 +147,10 @@ impl DataStore {
                 offset,
             )
             .await?;
-        let mut items: Vec<DataRecord> = rows.into_iter().map(RecordRow::into_record).collect();
+        let mut items: Vec<DataRecord> = rows
+            .into_iter()
+            .map(|r| r.into_record(&table.schema))
+            .collect();
         self.resolve_derived_fields(ctx, &table, &mut items).await?;
         Self::apply_mask_records(&masked, &mut items);
         Ok(ListRecordsPage {
@@ -191,7 +193,7 @@ impl DataStore {
                             )));
                         };
                         ListFilter::NumberEq {
-                            field: f.name.clone(),
+                            field: f.json_key(),
                             value: n,
                         }
                     }
@@ -203,7 +205,7 @@ impl DataStore {
                             )));
                         };
                         ListFilter::MultiContains {
-                            field: f.name.clone(),
+                            field: f.json_key(),
                             value: v.to_string(),
                         }
                     }
@@ -215,7 +217,7 @@ impl DataStore {
                             )));
                         };
                         ListFilter::TextEq {
-                            field: f.name.clone(),
+                            field: f.json_key(),
                             value: v.to_string(),
                         }
                     }

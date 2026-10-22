@@ -60,12 +60,56 @@ pub struct ComputedDef {
     pub fields: Vec<String>,
 }
 
-/// フィールド定義。
+/// フィールドの内部 ID（テーブル内で採番・不変・再利用しない・data-platform §4）。
+///
+/// JSONB キー（`"f{id}"`）と索引テーブルの `field_id`（`int2`）に使う。PostgreSQL に unsigned は
+/// 無いため上限は [`MAX_FIELD_ID`]。`0..16` はシステム擬似列に予約（[`FIRST_USER_FIELD_ID`]）。
+pub type FieldId = u16;
+
+/// `FieldId` の上限（`int2` の正の最大値。採番時とスキーマ検証で強制・data-platform §3.2）。
+pub const MAX_FIELD_ID: FieldId = 32_767;
+/// ユーザー定義フィールドの最初の ID（`0..16` はシステム擬似列に予約）。
+pub const FIRST_USER_FIELD_ID: FieldId = 16;
+/// システム擬似列: レコード作成者（owner）。
+pub const SYSTEM_FIELD_OWNER: FieldId = 0;
+/// システム擬似列: 作成時刻。
+pub const SYSTEM_FIELD_CREATED_AT: FieldId = 1;
+/// システム擬似列: 更新時刻。
+pub const SYSTEM_FIELD_UPDATED_AT: FieldId = 2;
+
+/// フィールド定義（識別子 3 層・data-platform §4）。
+///
+/// | 層 | 役割 | 変更 |
+/// |---|---|---|
+/// | `id` | JSONB キー（`"f{id}"`）・索引の `field_id` | 不可 |
+/// | `key` | API / shiki script / workflow / SDK の参照名 | 不可 |
+/// | `display_name` | 画面表示（日本語可） | 自由（データは 1 行も動かない） |
+///
+/// 外部契約（レコードの `data`・フィルタ・ソート・集計・row_policy・field_policy・lookup・
+/// computed・status_field）は **`key` で受けて `key` で返す**。`"f{id}"` への変換は
+/// `crates/data` 内（保存・SQL 生成）に閉じる。
+///
+/// 入力の後方互換（§4.3）: v1 の `name` は `key` の別名として受ける。`id` を省略したフィールドは
+/// 既存フィールドの `key` と照合して ID を引き継ぎ、無ければ新規採番する。`display_name` を
+/// 省略したら `key` を使う。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[allow(clippy::struct_excessive_bools)] // 宣言フラグ群（required/unique/indexed/searchable）は API 契約そのもの。
 pub struct FieldDef {
-    /// フィールド名（`^[a-z][a-z0-9_]{0,63}$`・SQL の式インデックス DDL に埋め込むため
-    /// スキーマ検証で厳格に制限する）。
-    pub name: String,
+    /// 内部 ID（サーバ採番・不変）。入力で省略（0）したら採番・照合する。
+    #[serde(default)]
+    pub id: FieldId,
+    /// 参照名（`^[a-z][a-z0-9_]{0,63}$`・**不変**。v1 の `name` も別名として受理する）。
+    #[serde(alias = "name")]
+    pub key: String,
+    /// 表示名（自由文・日本語可・いつでも変更可）。省略時は `key`。
+    #[serde(default)]
+    pub display_name: String,
+    /// 既定の表示順（ビューが上書き可能）。全フィールド省略時は宣言順。
+    #[serde(default)]
+    pub order: i32,
+    /// 説明（列ヘッダのツールチップ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(rename = "type")]
     pub field_type: FieldType,
     /// 必須（create 時に存在・null 不可。update でも除去不可）。
@@ -77,6 +121,9 @@ pub struct FieldDef {
     /// フィルタ/ソート対象（式インデックスを生成する）。
     #[serde(default)]
     pub indexed: bool,
+    /// 部分一致検索の対象（Task 15.2 の `data_index_search` へ載せる・text 型のみ）。
+    #[serde(default)]
+    pub searchable: bool,
     /// select / multi_select の選択肢（閉じた集合）。
     #[serde(default)]
     pub options: Vec<String>,
@@ -89,6 +136,34 @@ pub struct FieldDef {
     /// 計算定義（field_type=computed のとき必須）。
     #[serde(default)]
     pub computed: Option<ComputedDef>,
+}
+
+impl FieldDef {
+    /// 最小のフィールド定義（`id` 未採番・`display_name` = `key`）。
+    pub fn new(key: impl Into<String>, field_type: FieldType) -> Self {
+        let key = key.into();
+        FieldDef {
+            id: 0,
+            display_name: key.clone(),
+            key,
+            order: 0,
+            description: None,
+            field_type,
+            required: false,
+            unique: false,
+            indexed: false,
+            searchable: false,
+            options: Vec::new(),
+            ref_table: None,
+            lookup: None,
+            computed: None,
+        }
+    }
+
+    /// 保存形（`data_record.data`）の JSONB キー `"f{id}"`。
+    pub(crate) fn json_key(&self) -> String {
+        crate::field_key::json_key(self.id)
+    }
 }
 
 /// フィールドマスク（Task 9.4・PIT-19）。
@@ -132,9 +207,14 @@ pub struct TableSchema {
 }
 
 impl TableSchema {
-    /// フィールド定義を名前で引く。
-    pub fn field(&self, name: &str) -> Option<&FieldDef> {
-        self.fields.iter().find(|f| f.name == name)
+    /// フィールド定義を参照名（`key`）で引く。
+    pub fn field(&self, key: &str) -> Option<&FieldDef> {
+        self.fields.iter().find(|f| f.key == key)
+    }
+
+    /// フィールド定義を内部 ID で引く。
+    pub fn field_by_id(&self, id: FieldId) -> Option<&FieldDef> {
+        self.fields.iter().find(|f| f.id == id)
     }
 }
 
@@ -150,6 +230,16 @@ pub struct DataTable {
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// 内部整数キー（`tenant_int` / `table_int`）。**外へ出さない**（serde・OpenAPI から除外）。
+    #[serde(skip)]
+    pub(crate) keys: TableKeys,
+}
+
+/// テーブルの内部整数キー（data-platform §3.2）。crate 外から読めない・直列化しない。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TableKeys {
+    pub tenant_int: i32,
+    pub table_int: i64,
 }
 
 /// レコード。
@@ -220,10 +310,82 @@ mod tests {
         )
         .unwrap();
         assert_eq!(schema.fields.len(), 1);
+        // v1 の `name` は `key` の別名として読める（§4.3 の後方互換）。
+        assert_eq!(schema.fields[0].key, "title");
+        assert_eq!(schema.fields[0].id, 0, "id は未採番（サーバが採番する）");
         assert!(schema.fields[0].required);
         assert!(!schema.fields[0].unique);
         assert!(schema.status_field.is_none());
         assert!(schema.field("title").is_some());
         assert!(schema.field("missing").is_none());
+    }
+
+    #[test]
+    fn field_def_serializes_three_layers_without_name() {
+        let mut f = FieldDef::new("applicant", FieldType::UserRef);
+        f.id = 17;
+        f.display_name = "申請者".into();
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["id"], 17);
+        assert_eq!(v["key"], "applicant");
+        assert_eq!(v["display_name"], "申請者");
+        assert!(v.get("name").is_none(), "v1 の name は出力しない");
+        assert_eq!(f.json_key(), "f17");
+    }
+
+    #[test]
+    fn data_table_never_serializes_internal_keys() {
+        let ts = chrono::DateTime::from_timestamp(0, 0).unwrap();
+        let t = DataTable {
+            id: Uuid::nil(),
+            name: "t".into(),
+            app_id: None,
+            schema: TableSchema {
+                fields: vec![],
+                status_field: None,
+                row_policy: None,
+                field_policy: vec![],
+                aggregate_min_rows: None,
+                fsm_ref: None,
+            },
+            schema_version: 1,
+            created_by: "u".into(),
+            created_at: ts,
+            updated_at: ts,
+            keys: TableKeys {
+                tenant_int: 424_242,
+                table_int: 7_777_777,
+            },
+        };
+        let s = serde_json::to_string(&t).unwrap();
+        assert!(!s.contains("tenant_int") && !s.contains("table_int"), "{s}");
+        assert!(!s.contains("424242") && !s.contains("7777777"), "{s}");
+    }
+
+    #[test]
+    fn openapi_schema_has_three_layer_fields_and_no_internal_keys() {
+        use utoipa::PartialSchema;
+        let field = serde_json::to_string(&<FieldDef as PartialSchema>::schema()).unwrap();
+        for p in [
+            "\"id\"",
+            "\"key\"",
+            "\"display_name\"",
+            "\"order\"",
+            "\"searchable\"",
+        ] {
+            assert!(field.contains(p), "FieldDef に {p} が無い: {field}");
+        }
+        for schema in [
+            serde_json::to_string(&<DataTable as PartialSchema>::schema()).unwrap(),
+            serde_json::to_string(&<DataRecord as PartialSchema>::schema()).unwrap(),
+            serde_json::to_string(&<RecordRevision as PartialSchema>::schema()).unwrap(),
+        ] {
+            for k in ["record_int", "table_int", "tenant_int"] {
+                assert!(
+                    !schema.contains(k),
+                    "{k} が API スキーマに出ている: {schema}"
+                );
+            }
+        }
     }
 }

@@ -254,6 +254,18 @@ pub async fn delete_tenant(conn: &mut PgConnection, tenant_id: &str) -> Result<u
     Ok(queued + dead)
 }
 
+/// キューに待機中（配信中を含む）のジョブがあるか。単発の保守ジョブを二重投入しないための判定。
+///
+/// 判定と投入を原子的にしたい場合は、呼び出し側が同じトランザクションで advisory lock を取ること。
+pub async fn has_pending(conn: &mut PgConnection, queue: &str) -> Result<bool, JobqError> {
+    let exists: bool =
+        sqlx::query_scalar("select exists(select 1 from job_queue where queue = $1)")
+            .bind(queue)
+            .fetch_one(conn)
+            .await?;
+    Ok(exists)
+}
+
 /// 指数バックオフ（30s → 2m → 8m → 32m → …、上限 1h）。consumer の既定リトライ方針。
 pub fn backoff_for(attempts: i32) -> Duration {
     let exp = u32::try_from(attempts.saturating_sub(1).clamp(0, 6)).unwrap_or(0);

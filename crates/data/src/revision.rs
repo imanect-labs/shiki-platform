@@ -93,7 +93,7 @@ impl DataStore {
             .bind(&ctx.tenant_id)
             .bind(table_id)
             .bind(record_id)
-            .fetch_one(&self.db)
+            .fetch_one(self.pools.for_tenant(&ctx.tenant_id))
             .await
             .map_err(map_db)?;
             if exists {
@@ -122,7 +122,7 @@ impl DataStore {
         .bind(record_id)
         .bind(before_rev)
         .bind(limit)
-        .fetch_all(&self.db)
+        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
         .await
         .map_err(map_db)?;
         let masked = self.masked_fields(ctx, &table).await?;

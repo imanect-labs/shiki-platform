@@ -32,6 +32,10 @@ pub const PURGE_RETAINED: &[(&str, &str)] = &[
         "tenant",
         "テナント台帳。行は tombstone（deleted）として残し、同名での再作成を検知する",
     ),
+    (
+        "tenant_placement",
+        "内部整数キー tenant_int の台帳（data-platform §3.2）。採番は不変・再利用しないため台帳と同じく残す",
+    ),
 ];
 
 /// retenant が **副産物（sidecar）まで含めて**移行できるテーブル。
@@ -71,6 +75,9 @@ pub const RETENANT_SIDECAR_COMPLETE: &[&str] = &[
     // 監査チェーンとテナント台帳は retenant 本体が扱う（監査は旧 tenant_id で検証・docs 参照）。
     "audit_log",
     "tenant",
+    // 配置レジストリ（tenant_int / pool）は外部状態を持たない。tenant_id ごと付け替えれば
+    // 内部整数キーが新 tenant_id へ移り、data_record 等の tenant_int と整合したままになる。
+    "tenant_placement",
 ];
 
 /// 副産物を移送できないサブシステムに行があれば、拒否理由を返す（`None` なら移行してよい）。

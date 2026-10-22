@@ -30,9 +30,12 @@ impl DataStore {
         k: i64,
     ) -> Result<(Vec<AggregateGroup>, bool, bool), DataError> {
         // group_by / metric 対象は宣言フィールドかつマスク非対象（PIT-19）。
+        // SQL へは保存形の JSONB キー（"f{id}"）を、結果の列名・応答キーには参照名（key）を使う。
+        let mut groups_sql: Vec<(String, String)> = Vec::with_capacity(agg.group_by.len());
         for g in &agg.group_by {
             Self::ensure_queryable(masked, g)?;
-            Self::require_scalar_field(table, g)?;
+            let f = Self::require_scalar_field(table, g)?;
+            groups_sql.push((f.key.clone(), f.json_key()));
         }
         let metric_field = match agg.metric {
             Metric::Count => None,
@@ -47,13 +50,13 @@ impl DataStore {
                         "集計対象 '{name}' は number である必要があります"
                     )));
                 }
-                Some(name.clone())
+                Some(f.json_key())
             }
         };
 
         let pred = self.read_predicate(ctx, table).await?;
         let sql = build_aggregate_sql(
-            &agg.group_by,
+            &groups_sql,
             agg.metric,
             metric_field.as_deref(),
             &pred,
@@ -69,7 +72,10 @@ impl DataStore {
         if let Some(f) = filter {
             q = bind_dyn(q, filter_bind(f));
         }
-        let rows = q.fetch_all(&self.db).await.map_err(map_db)?;
+        let rows = q
+            .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+            .await
+            .map_err(map_db)?;
 
         let mut groups = Vec::with_capacity(rows.len());
         let mut suppressed = false;
@@ -121,32 +127,36 @@ impl DataStore {
 
 /// 集計 SQL を組む（group_by・metric・行述語・任意フィルタ）。
 ///
-/// フィールド名は呼び出し側で宣言＋索引＋マスク検証済み。ここでも識別子検証で二重化する。
+/// `group_by` は `(参照名 key, JSONB キー "f{id}")` の組。参照名は結果列の別名（二重引用符内）、
+/// JSONB キーはアクセサに埋め込む。呼び出し側で宣言＋索引＋マスク検証済みだが、
+/// ここでも両方の形式を再検証して二重化する（PIT-21）。規約外は空集計へ倒す。
 fn build_aggregate_sql(
-    group_by: &[String],
+    group_by: &[(String, String)],
     metric: Metric,
-    metric_field: Option<&str>,
+    metric_json_key: Option<&str>,
     pred: &super::executor::ReadPredicate,
     filter: Option<&ListFilter>,
 ) -> String {
     use std::fmt::Write as _;
     let alias = RECORD_ALIAS;
-    // フィールド名は呼び出し側で宣言＋索引＋マスク検証済みだが、DDL/JSONB アクセサに
-    // 埋め込む前に識別子規約で再検証する（PIT-21・二重化）。規約外は空集計へ倒す。
-    let safe = |f: &str| crate::schema::is_valid_field_name(f);
-    if group_by.iter().any(|g| !safe(g)) || metric_field.is_some_and(|f| !safe(f)) {
+    let ok_group = |(k, j): &(String, String)| {
+        crate::field_key::is_valid_field_key(k) && crate::field_key::is_json_key(j)
+    };
+    if !group_by.iter().all(ok_group)
+        || metric_json_key.is_some_and(|f| !crate::field_key::is_json_key(f))
+    {
         return "SELECT 0 AS grp_count WHERE false".to_string();
     }
     let mut select = String::from("count(*) AS grp_count");
-    // group キーを text で射影。
-    for g in group_by {
-        let _ = write!(select, ", ({alias}.data ->> '{g}') AS \"{g}\"");
+    // group キーを text で射影（列名は参照名）。
+    for (key, jk) in group_by {
+        let _ = write!(select, ", ({alias}.data ->> '{jk}') AS \"{key}\"");
     }
     // メトリクス列。
     match metric {
         Metric::Count => {}
         Metric::Sum | Metric::Avg | Metric::Min | Metric::Max => {
-            let field = metric_field.unwrap_or("");
+            let field = metric_json_key.unwrap_or("");
             let func = match metric {
                 Metric::Sum => "sum",
                 Metric::Avg => "avg",
@@ -176,7 +186,7 @@ fn build_aggregate_sql(
     if !group_by.is_empty() {
         let cols: Vec<String> = group_by
             .iter()
-            .map(|g| format!("({alias}.data ->> '{g}')"))
+            .map(|(_, jk)| format!("({alias}.data ->> '{jk}')"))
             .collect();
         let _ = write!(sql, " GROUP BY {}", cols.join(", "));
     }
@@ -185,6 +195,13 @@ fn build_aggregate_sql(
 
 fn filter_fragment(f: &ListFilter, ph: usize) -> String {
     let alias = RECORD_ALIAS;
+    let (ListFilter::TextEq { field, .. }
+    | ListFilter::NumberEq { field, .. }
+    | ListFilter::MultiContains { field, .. }) = f;
+    if !crate::field_key::is_json_key(field) {
+        // 内部 ID 形式以外は埋め込まない（不成立へ倒す・PIT-21 の二重化）。
+        return format!(" AND FALSE AND ${ph}::text IS NULL");
+    }
     match f {
         ListFilter::TextEq { field, .. } => {
             format!(" AND ({alias}.data ->> '{field}') = ${ph}")
@@ -244,6 +261,10 @@ mod tests {
         ReadPredicate::for_test("r.owner = $1", vec![])
     }
 
+    fn g(key: &str, json_key: &str) -> (String, String) {
+        (key.to_string(), json_key.to_string())
+    }
+
     #[test]
     fn count_without_group_has_no_group_by() {
         let sql = build_aggregate_sql(&[], Metric::Count, None, &pred(), None);
@@ -256,36 +277,28 @@ mod tests {
 
     #[test]
     fn group_by_projects_key_and_group_clause() {
-        let sql = build_aggregate_sql(&["status".to_string()], Metric::Count, None, &pred(), None);
-        assert!(sql.contains("->> 'status'"));
-        assert!(sql.contains("GROUP BY"));
+        let sql = build_aggregate_sql(&[g("status", "f18")], Metric::Count, None, &pred(), None);
+        assert!(sql.contains("->> 'f18') AS \"status\""), "{sql}");
+        assert!(sql.contains("GROUP BY (r.data ->> 'f18')"), "{sql}");
     }
 
     #[test]
     fn numeric_metric_projects_float8_value() {
-        let sql = build_aggregate_sql(
-            &["dept".to_string()],
-            Metric::Sum,
-            Some("amount"),
-            &pred(),
-            None,
-        );
+        let sql = build_aggregate_sql(&[g("dept", "f20")], Metric::Sum, Some("f17"), &pred(), None);
         assert!(sql.contains("sum("));
-        assert!(sql.contains("'amount'"));
+        assert!(sql.contains("'f17'"));
         assert!(sql.contains("::float8 AS metric_value"));
     }
 
     #[test]
     fn invalid_field_name_collapses_to_empty_aggregate() {
         // 識別子規約外（空白）は空集計へ倒す（PIT-21・二重化）。
-        let sql = build_aggregate_sql(
-            &["bad name".to_string()],
-            Metric::Count,
-            None,
-            &pred(),
-            None,
-        );
+        let sql = build_aggregate_sql(&[g("bad name", "f16")], Metric::Count, None, &pred(), None);
         assert_eq!(sql, "SELECT 0 AS grp_count WHERE false");
+        // JSONB キーが内部 ID 形式でなければ同様（参照名をそのまま埋め込ませない）。
+        let sql1 =
+            build_aggregate_sql(&[g("status", "status")], Metric::Count, None, &pred(), None);
+        assert_eq!(sql1, "SELECT 0 AS grp_count WHERE false");
         // metric_field が不正でも同様。
         let sql2 = build_aggregate_sql(&[], Metric::Max, Some("x;y"), &pred(), None);
         assert_eq!(sql2, "SELECT 0 AS grp_count WHERE false");
@@ -294,27 +307,27 @@ mod tests {
     #[test]
     fn filter_is_appended_after_predicate_placeholders() {
         let f = ListFilter::TextEq {
-            field: "cat".to_string(),
+            field: "f21".to_string(),
             value: "x".to_string(),
         };
         let sql = build_aggregate_sql(&[], Metric::Count, None, &pred(), Some(&f));
         // next_ph = 3 + pred.binds().len()(=0) = 3。
-        assert!(sql.contains("AND (r.data ->> 'cat') = $3"), "{sql}");
+        assert!(sql.contains("AND (r.data ->> 'f21') = $3"), "{sql}");
     }
 
     #[test]
     fn filter_fragment_per_kind() {
         let t = filter_fragment(
             &ListFilter::TextEq {
-                field: "f".into(),
+                field: "f16".into(),
                 value: "v".into(),
             },
             5,
         );
-        assert!(t.contains("->> 'f') = $5"));
+        assert!(t.contains("->> 'f16') = $5"));
         let n = filter_fragment(
             &ListFilter::NumberEq {
-                field: "f".into(),
+                field: "f17".into(),
                 value: 1.0,
             },
             6,
@@ -322,12 +335,21 @@ mod tests {
         assert!(n.contains("::numeric = $6::numeric"));
         let m = filter_fragment(
             &ListFilter::MultiContains {
-                field: "f".into(),
+                field: "f18".into(),
                 value: "v".into(),
             },
             7,
         );
         assert!(m.contains("? $7"));
+        // 参照名（内部 ID 形式以外）は埋め込まれない。
+        let bad = filter_fragment(
+            &ListFilter::TextEq {
+                field: "cat".into(),
+                value: "v".into(),
+            },
+            8,
+        );
+        assert!(!bad.contains("cat") && bad.contains("FALSE"), "{bad}");
     }
 
     #[test]

@@ -11,17 +11,27 @@ use super::*;
 use crate::model::{ComputedDef, LookupDef};
 
 fn field(name: &str, ty: FieldType) -> FieldDef {
-    FieldDef {
-        name: name.into(),
-        field_type: ty,
-        required: false,
-        unique: false,
-        indexed: false,
-        options: vec![],
-        ref_table: None,
-        lookup: None,
-        computed: None,
-    }
+    FieldDef::new(name, ty)
+}
+
+/// 入力（id 未採番）を新規作成と同じ規則で採番してから検証する（実経路と同じ順序）。
+fn validate_table_schema(s: &TableSchema) -> Result<(), DataError> {
+    let mut assigned = s.clone();
+    crate::field_key::assign_field_ids(None, &mut assigned)?;
+    super::validate_table_schema(&assigned)
+}
+
+/// 現スキーマを採番し、次スキーマを現スキーマと照合・採番してから改訂検証する。
+fn validate_schema_update(cur: &TableSchema, next: &TableSchema) -> Result<(), DataError> {
+    let mut cur = cur.clone();
+    let n = crate::field_key::assign_field_ids(None, &mut cur)?;
+    let mut next = next.clone();
+    crate::field_key::assign_field_ids(Some((&cur, n)), &mut next)?;
+    super::validate_schema_update(&cur, &next)
+}
+
+fn is_valid_field_name(k: &str) -> bool {
+    crate::field_key::is_valid_field_key(k)
 }
 
 fn schema(fields: Vec<FieldDef>) -> TableSchema {
@@ -154,6 +164,27 @@ fn schema_update_is_additive_only() {
     assert!(
         validate_schema_update(&cur, &schema(vec![field("title", FieldType::Number)])).is_err()
     );
+    // 表示名・説明・表示順の変更は許可（key/id は同じ）。
+    let mut renamed = field("title", FieldType::Text);
+    renamed.display_name = "件名".into();
+    renamed.description = Some("申請の件名".into());
+    renamed.order = 5;
+    assert!(validate_schema_update(&cur, &schema(vec![renamed])).is_ok());
+}
+
+#[test]
+fn schema_update_rejects_key_change_by_id() {
+    // 採番済みの現スキーマ（title = 16）に対し、id 16 のまま key を変える改訂は拒否。
+    let mut cur = schema(vec![field("title", FieldType::Text)]);
+    let n = crate::field_key::assign_field_ids(None, &mut cur).unwrap();
+    let mut changed = field("subject", FieldType::Text);
+    changed.id = 16;
+    let mut next = schema(vec![changed]);
+    assert!(crate::field_key::assign_field_ids(Some((&cur, n)), &mut next).is_err());
+    // 照合を経ずに直接渡されても（防御の二重化）改訂検証が拒否する。
+    let mut forged = field("subject", FieldType::Text);
+    forged.id = 16;
+    assert!(super::validate_schema_update(&cur, &schema(vec![forged])).is_err());
 }
 
 // ---- 追加: 未被覆ブランチ（options/lookup/computed/status/aggregate/上限） ----

@@ -4,12 +4,15 @@
 //! JSONB 式インデックスを冪等に適用する。**ランタイム DDL は打たない**（レコード
 //! 書込経路に DDL は存在しない）。
 //!
+//! Task 15.1 以降、式は保存形の JSONB キー `"f{id}"`（不変の内部 ID 由来）を参照する。
+//! 本モジュールは Task 15.3（クエリコンパイラ v2・pivot 索引テーブルへの読取切替）で撤去する。
+//!
 //! # SQL 埋め込みの安全性
 //!
-//! インデックス DDL はプレースホルダを使えないため、式にフィールド名・述語に
+//! インデックス DDL はプレースホルダを使えないため、式に JSONB キー・述語に
 //! tenant_id / table_id を埋め込む。安全性は次で担保する:
-//! - フィールド名: スキーマ検証（`^[a-z][a-z0-9_]{0,63}$`・[`crate::schema`]）を通過した値のみ。
-//!   さらに本モジュールでも埋め込み直前に再検証する（防御の二重化）。
+//! - JSONB キー: 内部 ID から生成した `"f{id}"` のみ。埋め込み直前に形式を再検証する
+//!   （[`crate::field_key::is_json_key`]・防御の二重化）。参照名（key）や表示名は埋め込まない。
 //! - table_id: `uuid::Uuid` の Display（hex とハイフンのみ）。
 //! - tenant_id: 単一引用符を含む値を拒否する（正規のテナント id は英数字）。
 
@@ -17,8 +20,8 @@ use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use crate::field_key::is_json_key;
 use crate::model::{FieldDef, FieldType, TableSchema};
-use crate::schema::is_valid_field_name;
 use crate::{map_db, DataError};
 
 /// インデックス種別（台帳 `data_index_registry.kind`）。
@@ -68,15 +71,18 @@ fn plan_for_field(f: &FieldDef) -> Vec<IndexKind> {
     plan
 }
 
-/// 決定的なインデックス名 `dr_<table 全32hex>_<sha256(field:kind) 先頭8hex>`。
+/// 決定的なインデックス名 `dr_<table 全32hex>_<sha256(jsonkey:kind) 先頭8hex>`。
+///
+/// ハッシュの入力は JSONB キー（`"f{id}"`）。v1（フィールド名）由来の名前と必ず異なるため、
+/// 移行時に旧式の索引と取り違えない。
 ///
 /// インデックス名は PostgreSQL スキーマ全体で一意のため、table id は**全桁**含める
 /// （先頭 8hex だけでは別テーブル間で衝突し 2 個目の作成が黙って失敗する）。
 /// 3+32+1+8=44 文字で識別子上限（63 バイト）に収まる。
-fn index_name(table_id: Uuid, field: &str, kind: IndexKind) -> String {
+fn index_name(table_id: Uuid, json_key: &str, kind: IndexKind) -> String {
     let tid = table_id.simple().to_string();
     let mut hasher = Sha256::new();
-    hasher.update(field.as_bytes());
+    hasher.update(json_key.as_bytes());
     hasher.update(b":");
     hasher.update(kind.as_str().as_bytes());
     let digest = hex_prefix(&hasher.finalize(), 8);
@@ -106,11 +112,11 @@ fn safe_tenant(tenant_id: &str) -> Result<&str, DataError> {
     Ok(tenant_id)
 }
 
-/// インデックス式（フィールド名は検証済み前提＋直前再検証）。
+/// インデックス式（JSONB キーは `"f{id}"` 形式を直前再検証）。
 fn index_expression(field: &str, kind: IndexKind) -> Result<String, DataError> {
-    if !is_valid_field_name(field) {
+    if !is_json_key(field) {
         return Err(DataError::Internal(format!(
-            "フィールド名 '{field}' が識別子規約外です"
+            "JSONB キー '{field}' が内部 ID 形式（f{{id}}）ではありません"
         )));
     }
     Ok(match kind {
@@ -163,11 +169,13 @@ pub(crate) async fn ensure_indexes(
     table_id: Uuid,
     schema: &TableSchema,
 ) -> Result<(), DataError> {
-    // 望ましい状態: (field, kind, index_name)。
-    let mut desired: Vec<(String, IndexKind, String)> = Vec::new();
+    // 望ましい状態: (台帳の field = key, JSONB キー, kind, index_name)。
+    let mut desired: Vec<(String, String, IndexKind, String)> = Vec::new();
     for f in &schema.fields {
+        let jk = f.json_key();
         for kind in plan_for_field(f) {
-            desired.push((f.name.clone(), kind, index_name(table_id, &f.name, kind)));
+            let name = index_name(table_id, &jk, kind);
+            desired.push((f.key.clone(), jk.clone(), kind, name));
         }
     }
 
@@ -185,7 +193,7 @@ pub(crate) async fn ensure_indexes(
     for row in &existing {
         let still_wanted = desired
             .iter()
-            .any(|(_, kind, name)| *name == row.index_name && kind.as_str() == row.kind);
+            .any(|(_, _, kind, name)| *name == row.index_name && kind.as_str() == row.kind);
         if !still_wanted {
             // index_name は台帳経由（過去に本モジュールが決定的命名で作ったもの）のみ。
             sqlx::query(&format!("DROP INDEX IF EXISTS {}", row.index_name))
@@ -206,14 +214,14 @@ pub(crate) async fn ensure_indexes(
     }
 
     // 不足分を作成し台帳へ記録する。
-    for (field, kind, name) in &desired {
+    for (field, json_key, kind, name) in &desired {
         let already = existing
             .iter()
             .any(|row| row.index_name == *name && row.kind == kind.as_str());
         if already {
             continue;
         }
-        let ddl = create_ddl(name, tenant_id, table_id, field, *kind)?;
+        let ddl = create_ddl(name, tenant_id, table_id, json_key, *kind)?;
         sqlx::query(&ddl).execute(&mut *conn).await.map_err(|e| {
             // unique インデックス作成は既存データの重複で失敗し得る → 409 として返す。
             if matches!(kind, IndexKind::UniqueText | IndexKind::UniqueNumeric) {
@@ -242,22 +250,49 @@ pub(crate) async fn ensure_indexes(
     Ok(())
 }
 
+/// 台帳に載った全インデックスを DROP し台帳行を消す（識別子移行の前処理・Task 15.1）。
+///
+/// 呼び出し側のトランザクション上で実行する。名前は本モジュールが決定的命名で作った台帳由来のみ。
+pub(crate) async fn drop_registered_indexes(
+    conn: &mut PgConnection,
+    tenant_id: &str,
+    table_id: Uuid,
+) -> Result<(), DataError> {
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT index_name FROM data_index_registry WHERE tenant_id = $1 AND table_id = $2",
+    )
+    .bind(tenant_id)
+    .bind(table_id)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(map_db)?;
+    for name in names {
+        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        sqlx::query(&format!("DROP INDEX IF EXISTS {name}"))
+            .execute(&mut *conn)
+            .await
+            .map_err(map_db)?;
+    }
+    sqlx::query("DELETE FROM data_index_registry WHERE tenant_id = $1 AND table_id = $2")
+        .bind(tenant_id)
+        .bind(table_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(map_db)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn field(name: &str, ty: FieldType, indexed: bool, unique: bool) -> FieldDef {
-        FieldDef {
-            name: name.into(),
-            field_type: ty,
-            required: false,
-            unique,
-            indexed,
-            options: vec![],
-            ref_table: None,
-            lookup: None,
-            computed: None,
-        }
+        let mut f = FieldDef::new(name, ty);
+        f.indexed = indexed;
+        f.unique = unique;
+        f
     }
 
     #[test]
@@ -285,34 +320,37 @@ mod tests {
     #[test]
     fn index_name_is_deterministic_and_short() {
         let tid = Uuid::parse_str("6f1b24a0-0000-0000-0000-000000000000").unwrap();
-        let a = index_name(tid, "title", IndexKind::BtreeText);
-        let b = index_name(tid, "title", IndexKind::BtreeText);
+        let a = index_name(tid, "f16", IndexKind::BtreeText);
+        let b = index_name(tid, "f16", IndexKind::BtreeText);
         assert_eq!(a, b);
         assert!(a.starts_with("dr_6f1b24a0"));
         assert!(a.len() <= 63);
         // table id は全桁を含む（先頭 8hex 共有の別テーブルと衝突しない）。
         let other = Uuid::parse_str("6f1b24a0-0000-0000-0000-000000000001").unwrap();
-        assert_ne!(a, index_name(other, "title", IndexKind::BtreeText));
+        assert_ne!(a, index_name(other, "f16", IndexKind::BtreeText));
         // 種別が違えば名前も違う（型変更時に別インデックスとして張り替わる）。
-        assert_ne!(a, index_name(tid, "title", IndexKind::UniqueText));
+        assert_ne!(a, index_name(tid, "f16", IndexKind::UniqueText));
+        // v1（フィールド名由来）の名前とは別物になる（移行時に旧式の索引と取り違えない）。
+        assert_ne!(a, index_name(tid, "title", IndexKind::BtreeText));
     }
 
     #[test]
     fn ddl_embeds_only_validated_parts() {
         let tid = Uuid::nil();
-        let ddl = create_ddl("dr_x_y", "acme", tid, "price", IndexKind::UniqueNumeric).unwrap();
+        let ddl = create_ddl("dr_x_y", "acme", tid, "f17", IndexKind::UniqueNumeric).unwrap();
         assert!(ddl.contains("CREATE UNIQUE INDEX IF NOT EXISTS dr_x_y"));
-        assert!(ddl.contains("(((data ->> 'price'))::numeric)"));
+        assert!(ddl.contains("(((data ->> 'f17'))::numeric)"));
         assert!(ddl.contains("tenant_id = 'acme'"));
-        // 不正なフィールド名・tenant は拒否（防御の二重化）。
+        // 内部 ID 形式以外（参照名・注入文字列）と不正 tenant は拒否（防御の二重化）。
+        assert!(create_ddl("i", "acme", tid, "price", IndexKind::BtreeText).is_err());
         assert!(create_ddl("i", "acme", tid, "p'; drop", IndexKind::BtreeText).is_err());
-        assert!(create_ddl("i", "ac'me", tid, "price", IndexKind::BtreeText).is_err());
+        assert!(create_ddl("i", "ac'me", tid, "f17", IndexKind::BtreeText).is_err());
     }
 
     #[test]
     fn gin_ddl_uses_gin_method() {
-        let ddl = create_ddl("i", "acme", Uuid::nil(), "tags", IndexKind::Gin).unwrap();
+        let ddl = create_ddl("i", "acme", Uuid::nil(), "f18", IndexKind::Gin).unwrap();
         assert!(ddl.contains("USING gin"));
-        assert!(ddl.contains("((data -> 'tags'))"));
+        assert!(ddl.contains("((data -> 'f18'))"));
     }
 }

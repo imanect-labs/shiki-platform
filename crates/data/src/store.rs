@@ -1,7 +1,14 @@
-//! `DataStore` — 構造化データの単一チョークポイント（`&AuthContext` 経由・PgPool 内包）。
+//! `DataStore` — 構造化データの単一チョークポイント（`&AuthContext` 経由）。
 //!
 //! テーブルの作成・取得・一覧・スキーマ改訂・論理削除。レコード操作は
 //! [`crate::record`]、リビジョンは [`crate::revision`]（同じ struct の impl 分割）。
+//!
+//! # 接続プールは `PoolRouter` から引く（Task 15.1・data-platform §12 第 2 段）
+//!
+//! 本 crate は接続プールを直接保持しない。テナントの行は必ず
+//! `self.pools.for_tenant(&ctx.tenant_id)` から引いたプールで読み書きし、横断一意の採番
+//! （`tenant_int` / `table_int`）はレジストリのプールで行う。プール分割（第 2 段）はルータの
+//! 差し替えだけで済む。禁止事項は docs/data/shard-safety.md（CI: `tests/shard_safety_lint.rs`）。
 
 use std::sync::Arc;
 
@@ -9,12 +16,15 @@ use authz::{AuthContext, AuthzClient, Consistency, Relation};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::types::Json;
-use sqlx::PgPool;
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
+use storage::PoolRouter;
 use uuid::Uuid;
 
+use crate::cursor::{CursorCodec, CursorKey};
+use crate::field_key::{assign_field_ids, upgrade_legacy_schema};
 use crate::index::ensure_indexes;
-use crate::model::{DataTable, TableSchema};
+use crate::key_migration::KEY_FORMAT_LEGACY;
+use crate::model::{DataTable, TableKeys, TableSchema};
 use crate::schema::{validate_schema_update, validate_table_name, validate_table_schema};
 use crate::validate::RefResolver;
 use crate::{map_db, DataError};
@@ -26,30 +36,49 @@ pub struct NewDataTable {
     pub schema: TableSchema,
 }
 
+/// data_table 行の SELECT 列（[`TableRow`] と同じ並び）。
+pub(crate) const TABLE_COLS: &str = "id, name, app_id, schema, schema_version, created_by, \
+     created_at, updated_at, tenant_int, table_int, key_format, next_field_id";
+
 /// data_table 行。
 #[derive(sqlx::FromRow)]
 pub(crate) struct TableRow {
-    id: Uuid,
+    pub(crate) id: Uuid,
     name: String,
     app_id: Option<Uuid>,
-    schema: Json<TableSchema>,
+    pub(crate) schema: Json<TableSchema>,
     schema_version: i64,
     created_by: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    pub(crate) tenant_int: i32,
+    pub(crate) table_int: i64,
+    pub(crate) key_format: i16,
+    pub(crate) next_field_id: i32,
 }
 
 impl TableRow {
+    /// DTO へ変換する。v1 形式（未移行）のスキーマは**表示用に**決定的に 3 層へ引き上げる
+    /// （移行ジョブが同じ規則で採番するため、移行の前後で `id` は変わらない）。
     pub(crate) fn into_table(self) -> DataTable {
+        let schema = if self.key_format == KEY_FORMAT_LEGACY {
+            upgrade_legacy_schema(&self.schema.0).map_or(self.schema.0, |(s, _)| s)
+        } else {
+            self.schema.0
+        };
         DataTable {
             id: self.id,
             name: self.name,
             app_id: self.app_id,
-            schema: self.schema.0,
+            schema,
             schema_version: self.schema_version,
             created_by: self.created_by,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            keys: TableKeys {
+                tenant_int: self.tenant_int,
+                table_int: self.table_int,
+            },
         }
     }
 }
@@ -57,21 +86,43 @@ impl TableRow {
 /// 構造化データのチョークポイント。
 #[derive(Clone)]
 pub struct DataStore {
-    pub(crate) db: PgPool,
+    /// `tenant → pool` の解決（接続プールを直接持たない・Task 15.1）。
+    pub(crate) pools: PoolRouter,
     pub(crate) authz: Arc<dyn AuthzClient>,
     pub(crate) audit: AuditRecorder,
     pub(crate) resolver: Arc<dyn RefResolver>,
+    /// keyset カーソルの AEAD コーデック（Task 15.3 のクエリコンパイラ v2 が使う）。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) cursor: Arc<CursorCodec>,
 }
 
 impl DataStore {
-    pub fn new(db: PgPool, authz: Arc<dyn AuthzClient>, resolver: Arc<dyn RefResolver>) -> Self {
-        let audit = AuditRecorder::new(db.clone());
+    /// ストアを組む。`pools` は `PoolRouter`（単一プールなら接続プールからの `From` で可）。
+    ///
+    /// カーソル鍵は起動ごとの乱数鍵になる（再起動・レプリカ間でカーソルが無効になる）。
+    /// 本番は [`DataStore::with_cursor_key`] で設定由来の鍵を注入すること。
+    pub fn new(
+        pools: impl Into<PoolRouter>,
+        authz: Arc<dyn AuthzClient>,
+        resolver: Arc<dyn RefResolver>,
+    ) -> Self {
+        let pools = pools.into();
+        // 監査ログは現状レジストリと同じプールに置く（分割時に監査の置き場を決め直す）。
+        let audit = AuditRecorder::new(pools.registry().clone());
         DataStore {
-            db,
+            pools,
             authz,
             audit,
             resolver,
+            cursor: Arc::new(CursorCodec::new(&CursorKey::ephemeral())),
         }
+    }
+
+    /// keyset カーソルの暗号鍵を設定する（全レプリカで同じ鍵を使うこと）。
+    #[must_use]
+    pub fn with_cursor_key(mut self, key: &CursorKey) -> Self {
+        self.cursor = Arc::new(CursorCodec::new(key));
+        self
     }
 
     /// テーブルを作成する（スキーマ検証＋式インデックス適用＋作成者 owner タプル）。
@@ -107,20 +158,29 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<DataTable, DataError> {
         let name = validate_table_name(&input.name)?;
-        validate_table_schema(&input.schema)?;
+        let mut schema = input.schema;
+        let next_field_id = assign_field_ids(None, &mut schema)?;
+        validate_table_schema(&schema)?;
+        // 内部整数キーはレジストリで採番する（不変・再利用しない・失敗時は欠番になるだけ）。
+        let keys = self.allocate_table_keys(&ctx.tenant_id).await?;
 
-        let mut tx = self.db.begin().await.map_err(map_db)?;
-        let row: TableRow = sqlx::query_as(
-            "INSERT INTO data_table (tenant_id, org, name, schema, created_by, app_id) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
-             RETURNING id, name, app_id, schema, schema_version, created_by, created_at, updated_at",
-        )
+        let db = self.pools.for_tenant(&ctx.tenant_id);
+        let mut tx = db.begin().await.map_err(map_db)?;
+        let row: TableRow = sqlx::query_as(&format!(
+            "INSERT INTO data_table (tenant_id, org, name, schema, created_by, app_id, \
+               tenant_int, table_int, key_format, next_field_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 2, $9) \
+             RETURNING {TABLE_COLS}"
+        ))
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(name)
-        .bind(Json(&input.schema))
+        .bind(Json(&schema))
         .bind(&ctx.principal.id)
         .bind(app_id)
+        .bind(keys.tenant_int)
+        .bind(keys.table_int)
+        .bind(next_field_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| match &e {
@@ -130,7 +190,7 @@ impl DataStore {
             _ => map_db(e),
         })?;
         // 作成直後（空テーブル）に宣言インデックスを張る（同一 Tx・即時完了）。
-        ensure_indexes(&mut tx, &ctx.tenant_id, row.id, &input.schema).await?;
+        ensure_indexes(&mut tx, &ctx.tenant_id, row.id, &schema).await?;
         tx.commit().await.map_err(map_db)?;
 
         // 作成者を owner に（FGA）。失敗したら行を補償削除して孤立行を残さない。
@@ -150,7 +210,7 @@ impl DataStore {
                 sqlx::query("DELETE FROM data_table WHERE tenant_id = $1 AND id = $2")
                     .bind(&ctx.tenant_id)
                     .bind(id)
-                    .execute(&self.db)
+                    .execute(db)
                     .await
             {
                 tracing::error!(error = %cleanup, table_id = %id, "owner タプル書込失敗後の補償削除にも失敗（孤立行が残存）");
@@ -198,12 +258,14 @@ impl DataStore {
             trace_id,
         )
         .await?;
-        let mut tx = self.db.begin().await.map_err(map_db)?;
-        let current: Option<TableRow> = sqlx::query_as(
-            "SELECT id, name, app_id, schema, schema_version, created_by, created_at, updated_at \
-             FROM data_table \
-             WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE",
-        )
+        // 未移行（v1 形式）なら先に 3 層へ移行させる（一方向・冪等）。
+        self.fetch_live(ctx, id).await?;
+        let db = self.pools.for_tenant(&ctx.tenant_id);
+        let mut tx = db.begin().await.map_err(map_db)?;
+        let current: Option<TableRow> = sqlx::query_as(&format!(
+            "SELECT {TABLE_COLS} FROM data_table \
+             WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE"
+        ))
         .bind(&ctx.tenant_id)
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -218,16 +280,30 @@ impl DataStore {
                 )));
             }
         }
+        if current.key_format == KEY_FORMAT_LEGACY {
+            // fetch_live が移行済みのはず（一方向）。ここへ来るのは並行の異常系のみ。
+            return Err(DataError::Conflict(
+                "テーブルの識別子移行が完了していません。再試行してください".into(),
+            ));
+        }
+        // id の照合・採番（同じ id の key 変更・存在しない id の指定は 422）→ 互換性検証。
+        let mut next = next;
+        let next_field_id =
+            assign_field_ids(Some((&current.schema.0, current.next_field_id)), &mut next)?;
         validate_schema_update(&current.schema.0, &next)?;
-        let row: TableRow = sqlx::query_as(
+        // display_name / order / description の変更はここ（data_table の 1 行）だけで完結し、
+        // data_record は 1 行も更新しない（JSONB キーは不変の id 由来・data-platform §4.2）。
+        let row: TableRow = sqlx::query_as(&format!(
             "UPDATE data_table \
-             SET schema = $3, schema_version = schema_version + 1, updated_at = now() \
+             SET schema = $3, schema_version = schema_version + 1, next_field_id = $4, \
+                 updated_at = now() \
              WHERE tenant_id = $1 AND id = $2 \
-             RETURNING id, name, app_id, schema, schema_version, created_by, created_at, updated_at",
-        )
+             RETURNING {TABLE_COLS}"
+        ))
         .bind(&ctx.tenant_id)
         .bind(id)
         .bind(Json(&next))
+        .bind(next_field_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -261,7 +337,7 @@ impl DataStore {
         )
         .bind(&ctx.tenant_id)
         .bind(id)
-        .execute(&self.db)
+        .execute(self.pools.for_tenant(&ctx.tenant_id))
         .await
         .map_err(map_db)?;
         if updated.rows_affected() == 0 {
@@ -281,9 +357,10 @@ impl DataStore {
     /// テナント消去（SAAS.2）: data_table（CASCADE で record/registry/revision も）と
     /// 物理式インデックス・FGA タプルを撤去する。監査ログは保持（purge 方針は storage と同一）。
     pub async fn purge_tenant(&self, tenant_id: &str) -> Result<u32, DataError> {
+        let db = self.pools.for_tenant(tenant_id);
         let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM data_table WHERE tenant_id = $1")
             .bind(tenant_id)
-            .fetch_all(&self.db)
+            .fetch_all(db)
             .await
             .map_err(map_db)?;
         let ns = authz::Namespace::for_tenant(tenant_id);
@@ -299,7 +376,7 @@ impl DataStore {
         }
         sqlx::query("DELETE FROM data_table WHERE tenant_id = $1")
             .bind(tenant_id)
-            .execute(&self.db)
+            .execute(db)
             .await
             .map_err(map_db)?;
         Ok(purged)
@@ -316,7 +393,7 @@ impl DataStore {
         )
         .bind(tenant_id)
         .bind(table_id)
-        .fetch_all(&self.db)
+        .fetch_all(self.pools.for_tenant(tenant_id))
         .await
         .map_err(map_db)?;
         for name in names {
@@ -325,7 +402,7 @@ impl DataStore {
                 continue;
             }
             sqlx::query(&format!("DROP INDEX IF EXISTS {name}"))
-                .execute(&self.db)
+                .execute(self.pools.for_tenant(tenant_id))
                 .await
                 .map_err(map_db)?;
         }
@@ -333,23 +410,50 @@ impl DataStore {
     }
 
     /// 生存テーブル行を引く（認可済み前提の内部ヘルパ）。
+    ///
+    /// v1 形式（`key_format = 1`）のテーブルは**その場で 3 層へ移行してから**返す（移行ジョブと
+    /// 同じ関数・テーブル行ロックで直列化・冪等）。返るテーブルは常に `"f{id}"` 形式なので、
+    /// 呼び出し側は旧形式を扱わない。
     pub(crate) async fn fetch_live(
         &self,
         ctx: &AuthContext,
         id: Uuid,
     ) -> Result<DataTable, DataError> {
-        let row: Option<TableRow> = sqlx::query_as(
-            "SELECT id, name, app_id, schema, schema_version, created_by, created_at, updated_at \
-             FROM data_table \
-             WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(id)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(map_db)?;
-        Ok(row.ok_or(DataError::NotFound)?.into_table())
+        for _ in 0..2 {
+            let row: Option<TableRow> = sqlx::query_as(&format!(
+                "SELECT {TABLE_COLS} FROM data_table \
+                 WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL"
+            ))
+            .bind(&ctx.tenant_id)
+            .bind(&ctx.org)
+            .bind(id)
+            .fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
+            .await
+            .map_err(map_db)?;
+            let row = row.ok_or(DataError::NotFound)?;
+            if row.key_format != KEY_FORMAT_LEGACY {
+                return Ok(row.into_table());
+            }
+            self.migrate_table_field_keys(&ctx.tenant_id, id).await?;
+        }
+        Err(DataError::Internal(
+            "テーブルの識別子移行が収束しません".into(),
+        ))
+    }
+
+    /// テーブルの内部整数キーを採番する（`tenant_int` は配置レジストリ・`table_int` は採番サービス）。
+    async fn allocate_table_keys(&self, tenant_id: &str) -> Result<TableKeys, DataError> {
+        let mut conn = self.pools.registry().acquire().await.map_err(map_db)?;
+        let placement = storage::tenant::ensure_placement(&mut conn, tenant_id)
+            .await
+            .map_err(|e| DataError::Internal(format!("tenant placement: {e}")))?;
+        let table_int = storage::tenant::allocate_table_int(&mut conn)
+            .await
+            .map_err(|e| DataError::Internal(format!("table_int: {e}")))?;
+        Ok(TableKeys {
+            tenant_int: placement.tenant_int,
+            table_int,
+        })
     }
 
     /// テーブルへの relation を要求する（不足は監査 deny＋Forbidden・剥奪即時反映）。

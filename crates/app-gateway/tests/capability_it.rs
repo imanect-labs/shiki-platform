@@ -28,17 +28,7 @@ const ALL_SCOPES: &str = "data.read data.write data.schema storage.read storage.
                           rag.query identity.read events.subscribe notify.send";
 
 fn field(name: &str, ty: FieldType) -> FieldDef {
-    FieldDef {
-        name: name.into(),
-        field_type: ty,
-        required: false,
-        unique: false,
-        indexed: false,
-        options: vec![],
-        ref_table: None,
-        lookup: None,
-        computed: None,
-    }
+    FieldDef::new(name, ty)
 }
 
 fn simple_schema() -> TableSchema {

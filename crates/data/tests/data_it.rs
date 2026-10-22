@@ -143,17 +143,7 @@ fn unique_tenant() -> String {
 }
 
 fn field(name: &str, ty: FieldType) -> FieldDef {
-    FieldDef {
-        name: name.into(),
-        field_type: ty,
-        required: false,
-        unique: false,
-        indexed: false,
-        options: vec![],
-        ref_table: None,
-        lookup: None,
-        computed: None,
-    }
+    FieldDef::new(name, ty)
 }
 
 /// 経費テーブル相当のスキーマ（title 必須・amount 索引・status 選択・申請者 user 参照）。
@@ -368,9 +358,11 @@ async fn expression_indexes_created_and_used() {
         .execute(&mut *conn)
         .await
         .expect("disable seqscan");
+    // Task 15.1: 保存形の JSONB キーは不変の内部 ID 由来（"f{id}"）。式インデックスも同じ式で張られる。
+    let status_id = table.schema.field("status").expect("status").id;
     let plan: Value = sqlx::query_scalar(&format!(
         "EXPLAIN (FORMAT JSON) SELECT id FROM data_record \
-         WHERE tenant_id = '{tenant}' AND table_id = '{}' AND (data ->> 'status') = 'draft'",
+         WHERE tenant_id = '{tenant}' AND table_id = '{}' AND (data ->> 'f{status_id}') = 'draft'",
         table.id
     ))
     .fetch_one(&mut *conn)

@@ -42,6 +42,9 @@ pub struct AppConfig {
     /// シークレット管理（Task 10.9）。既定は無効（マスターキー未設定なら /secrets は 503）。
     #[serde(default)]
     pub secrets: SecretsConfig,
+    /// 構造化データ（Task 15.1: keyset カーソルの暗号鍵）。
+    #[serde(default)]
+    pub data: DataConfig,
     /// ワークフロー実行時（run ワーカー/スケジューラ/イベント relay・Task 10・Stage A W3）。
     /// 既定は無効（/workflows は保存のみ）。
     #[serde(default)]
@@ -181,6 +184,16 @@ pub struct SecretsConfig {
     /// クラウド KMS 実装（KeyProvider）は Stage B/Phase 8 で追加する。
     #[serde(default)]
     pub master_key_file: Option<String>,
+}
+
+/// 構造化データの設定（`SHIKI__DATA__*`）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DataConfig {
+    /// keyset カーソル（`record_int` を含む不透明トークン）の AES-256-GCM 鍵ファイルのパス。
+    /// 形式は secrets のマスターキーと同じ（32 バイト生 or base64）。未設定なら起動時乱数鍵
+    /// （再起動でカーソル失効＝許容。**複数レプリカでは全レプリカに同じ鍵の設定が必須**）。
+    #[serde(default)]
+    pub cursor_key_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -143,17 +143,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
 }
 
 fn table_schema() -> TableSchema {
-    let mut title = FieldDef {
-        name: "title".into(),
-        field_type: FieldType::Text,
-        required: true,
-        unique: false,
-        indexed: false,
-        options: vec![],
-        ref_table: None,
-        lookup: None,
-        computed: None,
-    };
+    let mut title = FieldDef::new("title", FieldType::Text);
     title.required = true;
     TableSchema {
         fields: vec![title],

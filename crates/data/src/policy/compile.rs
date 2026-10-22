@@ -1,15 +1,16 @@
 //! row_policy AST → SQL 述語コンパイラ（Task 9.3）。
 //!
 //! 出力はプレースホルダ付き SQL 断片と [`Bind`] 列。**値は必ずバインド**し、
-//! SQL テキストへ埋め込むのは検証済みフィールド名（`^[a-z][a-z0-9_]{0,63}$`）と
-//! 固定エイリアスのみ（PIT-21: 文字列連結で値を埋め込む経路を作らない）。
+//! SQL テキストへ埋め込むのは内部 ID 由来の JSONB キー（`"f{id}"`・Task 15.1）と
+//! 固定エイリアスのみ（PIT-21: 文字列連結で値を埋め込む経路を作らない）。述語は参照名（key）で
+//! 宣言され、コンパイル時にスキーマで `"f{id}"` へ解決する（key は不変なので解決は一意）。
 //!
 //! コンパイルは同期・材料（[`PolicyMaterial`]）は事前解決済みを受け取る。
 
+use crate::field_key::is_json_key;
 use crate::model::{FieldType, TableSchema};
 use crate::policy::ast::{CmpOp, PolicyExpr, PolicyOperand};
 use crate::policy::material::PolicyMaterial;
-use crate::schema::is_valid_field_name;
 use crate::DataError;
 
 /// SQL バインド値（クエリ実行チョークポイントが順番どおり bind する）。
@@ -117,13 +118,14 @@ fn compile_field_cmp(
     let f = schema.field(field).ok_or_else(|| {
         DataError::Internal(format!("row_policy が未知フィールド '{field}' を参照"))
     })?;
-    // 埋め込み直前の再検証（スキーマ検証と二重・PIT-21）。
-    if !is_valid_field_name(field) {
+    // 埋め込み直前の再検証（スキーマ検証と二重・PIT-21）。埋め込むのは "f{id}" のみ。
+    let jk = f.json_key();
+    if !is_json_key(&jk) {
         return Err(DataError::Internal(format!(
-            "row_policy のフィールド名 '{field}' が識別子規約外"
+            "row_policy の JSONB キー '{jk}' が内部 ID 形式ではありません"
         )));
     }
-    let accessor = format!("({alias}.data ->> '{field}')");
+    let accessor = format!("({alias}.data ->> '{jk}')");
     match value {
         PolicyOperand::UserId => {
             let ph = binds.push(Bind::Text(ctx_user_id.to_string()));
@@ -221,21 +223,12 @@ mod tests {
     use std::sync::Arc;
 
     fn field(name: &str, ty: FieldType) -> FieldDef {
-        FieldDef {
-            name: name.into(),
-            field_type: ty,
-            required: false,
-            unique: false,
-            indexed: false,
-            options: vec![],
-            ref_table: None,
-            lookup: None,
-            computed: None,
-        }
+        FieldDef::new(name, ty)
     }
 
+    /// applicant = f16 / dept = f17 / amount = f18（宣言順に 16 から採番）。
     fn schema_with_policy(read: PolicyExpr) -> TableSchema {
-        TableSchema {
+        let mut s = TableSchema {
             fields: vec![
                 field("applicant", FieldType::UserRef),
                 field("dept", FieldType::RoleRef),
@@ -246,7 +239,9 @@ mod tests {
             field_policy: vec![],
             aggregate_min_rows: None,
             fsm_ref: None,
-        }
+        };
+        crate::field_key::assign_field_ids(None, &mut s).unwrap();
+        s
     }
 
     fn material(roles: &[&str], shared: &[uuid::Uuid]) -> PolicyMaterial {
@@ -277,12 +272,14 @@ mod tests {
         let sql = compile_read_predicate(&schema, &m, "alice", "r", &mut binds).unwrap();
         assert_eq!(
             sql,
-            "((((r.data ->> 'applicant') = $3) OR ((r.data ->> 'dept') = ANY($4::text[]))))"
+            "((((r.data ->> 'f16') = $3) OR ((r.data ->> 'f17') = ANY($4::text[]))))"
         );
         assert_eq!(binds.binds.len(), 2);
         // 値は SQL テキストに現れない（全てバインド）。
         assert!(!sql.contains("alice"));
         assert!(!sql.contains("sales"));
+        // 参照名は SQL テキストに現れない（埋め込むのは内部 ID 由来のキーのみ）。
+        assert!(!sql.contains("applicant") && !sql.contains("dept"));
     }
 
     #[test]
@@ -362,11 +359,11 @@ mod tests {
         let sql =
             compile_read_predicate(&schema, &material(&[], &[]), "u", "r", &mut binds).unwrap();
         assert!(
-            sql.contains("((r.data ->> 'amount'))::numeric <> $1::numeric"),
+            sql.contains("((r.data ->> 'f18'))::numeric <> $1::numeric"),
             "{sql}"
         );
         assert!(
-            sql.contains("(r.data ->> 'dept') = ANY($2::text[])"),
+            sql.contains("(r.data ->> 'f17') = ANY($2::text[])"),
             "{sql}"
         );
     }

@@ -1,10 +1,12 @@
 //! テーブルスキーマの検証（登録時・改訂時）。
 //!
-//! フィールド名は式インデックス DDL（[`crate::index`]）と JSONB アクセサに埋め込むため、
-//! `^[a-z][a-z0-9_]{0,63}$` に厳格制限する（SQL への埋め込みを構造的に安全化）。
+//! フィールドの参照名（`key`）は `^[a-z][a-z0-9_]{0,63}$` に厳格制限する。SQL（式インデックス
+//! DDL・JSONB アクセサ）へ埋め込むのは `key` ではなく内部 ID 由来の `"f{id}"` だけ
+//! （[`crate::field_key`]・Task 15.1）。検証は `id` 採番後のスキーマに対して行う。
 
 use std::collections::HashSet;
 
+use crate::field_key::{is_valid_field_key, validate_identity};
 use crate::model::{ComputedOp, FieldDef, FieldType, TableSchema};
 use crate::DataError;
 
@@ -31,23 +33,13 @@ pub(crate) fn validate_table_name(name: &str) -> Result<&str, DataError> {
     Ok(name)
 }
 
-/// フィールド名が識別子規約（`^[a-z][a-z0-9_]{0,63}$`）を満たすか。
-pub(crate) fn is_valid_field_name(name: &str) -> bool {
-    let bytes = name.as_bytes();
-    if bytes.is_empty() || bytes.len() > 64 {
-        return false;
-    }
-    if !bytes[0].is_ascii_lowercase() {
-        return false;
-    }
-    bytes
-        .iter()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
-}
-
-/// スキーマ全体を検証する（登録時）。
+/// スキーマ全体を検証する（登録時・ミニアプリのマニフェスト検証など外部から使う入口）。
+///
+/// `id` 未採番の入力も受ける（新規作成と同じ規則で採番した複製を検証する）。
 pub fn validate_table_schema_public(schema: &TableSchema) -> Result<(), DataError> {
-    validate_table_schema(schema)
+    let mut assigned = schema.clone();
+    crate::field_key::assign_field_ids(None, &mut assigned)?;
+    validate_table_schema(&assigned)
 }
 
 pub(crate) fn validate_table_schema(schema: &TableSchema) -> Result<(), DataError> {
@@ -59,22 +51,23 @@ pub(crate) fn validate_table_schema(schema: &TableSchema) -> Result<(), DataErro
             "フィールド数が多すぎます（最大 {MAX_FIELDS}）"
         )));
     }
-    let mut names = HashSet::new();
+    let mut keys = HashSet::new();
     for f in &schema.fields {
-        if !is_valid_field_name(&f.name) {
+        if !is_valid_field_key(&f.key) {
             return Err(DataError::Invalid(format!(
-                "フィールド名 '{}' が不正です（^[a-z][a-z0-9_]{{0,63}}$）",
-                f.name
+                "フィールドの key '{}' が不正です（^[a-z][a-z0-9_]{{0,63}}$）",
+                f.key
             )));
         }
-        if !names.insert(f.name.as_str()) {
+        if !keys.insert(f.key.as_str()) {
             return Err(DataError::Invalid(format!(
-                "フィールド名 '{}' が重複しています",
-                f.name
+                "フィールドの key '{}' が重複しています",
+                f.key
             )));
         }
         validate_field(schema, f)?;
     }
+    validate_identity(schema)?;
     if let Some(policy) = &schema.row_policy {
         crate::policy::validate::validate_row_policy(schema, policy)?;
     }
@@ -116,7 +109,7 @@ pub(crate) fn validate_table_schema(schema: &TableSchema) -> Result<(), DataErro
 
 /// 単一フィールド定義の型別検証。
 fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
-    let name = &f.name;
+    let name = &f.key;
     // 型ごとの付帯定義。
     match f.field_type {
         FieldType::Select | FieldType::MultiSelect => {
@@ -162,7 +155,7 @@ fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
                     def.via_field
                 )));
             }
-            if !is_valid_field_name(&def.target_field) {
+            if !is_valid_field_key(&def.target_field) {
                 return Err(DataError::Invalid(format!(
                     "'{name}': lookup.target_field が不正です"
                 )));
@@ -228,38 +221,46 @@ fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
 
 /// スキーマ改訂の互換性検証（additive のみ・Task 9.2）。
 ///
-/// 既存フィールドの**型変更・削除は拒否**する（保存済み JSONB と式インデックスの整合を
-/// 崩さない）。追加・required/unique/indexed/options の変更は許す（options の縮小で
-/// 既存値が外れるのは読み出しに影響しないため許容。厳格化は書込時にのみ効く）。
+/// `next` は [`crate::field_key::assign_field_ids`] で `current` と照合・採番済みであること
+/// （同じ `id` は同じ `key`＝key 不変はそこで強制済み）。既存フィールドの**型変更・削除は拒否**
+/// する（保存済み JSONB と式インデックスの整合を崩さない）。追加・required/unique/indexed/
+/// options・**display_name / order / description の変更は許す**（表示名の変更はスキーマ 1 箇所の
+/// 書き換えで完結し、レコードは 1 行も動かない・data-platform §4.2）。
 pub(crate) fn validate_schema_update(
     current: &TableSchema,
     next: &TableSchema,
 ) -> Result<(), DataError> {
     validate_table_schema(next)?;
     for cur in &current.fields {
-        let Some(nf) = next.field(&cur.name) else {
+        let Some(nf) = next.field_by_id(cur.id) else {
             return Err(DataError::Invalid(format!(
                 "フィールド '{}' は削除できません（additive 変更のみ）",
-                cur.name
+                cur.key
             )));
         };
+        if nf.key != cur.key {
+            return Err(DataError::Invalid(format!(
+                "フィールド id {} の key は変更できません（'{}' → '{}'）",
+                cur.id, cur.key, nf.key
+            )));
+        }
         if nf.field_type != cur.field_type {
             return Err(DataError::Invalid(format!(
                 "フィールド '{}' の型は変更できません",
-                cur.name
+                cur.key
             )));
         }
         // 型固有の定義（参照先・派生定義）も不変（保存済み値の解釈が変わるため）。
         if nf.ref_table != cur.ref_table {
             return Err(DataError::Invalid(format!(
                 "フィールド '{}' の ref_table は変更できません",
-                cur.name
+                cur.key
             )));
         }
         if nf.lookup != cur.lookup || nf.computed != cur.computed {
             return Err(DataError::Invalid(format!(
                 "フィールド '{}' の lookup/computed 定義は変更できません",
-                cur.name
+                cur.key
             )));
         }
     }
