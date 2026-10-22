@@ -55,17 +55,26 @@ def parse_allowed_hosts(raw: str) -> list[tuple[str, int | None]]:
         entry = item.strip().lower()
         if not entry:
             continue
+        has_port = False
         if entry.startswith("["):
-            host, _, rest = entry[1:].partition("]")
-            if rest and not rest.startswith(":"):
+            host, closed, rest = entry[1:].partition("]")
+            if not closed or (rest and not rest.startswith(":")):
                 raise ValueError(f"許可ホストの書式が不正です: {item!r}")
+            has_port = bool(rest)
             port_text = rest[1:]
-        elif entry.count(":") == 1:
+        elif ":" in entry:
+            # IPv6 は角括弧必須（`fd00::1:9000` はホストとポートの境目が決まらない）。
+            if entry.count(":") != 1:
+                raise ValueError(f"許可ホストの書式が不正です（IPv6 は [..] で囲む）: {item!r}")
             host, port_text = entry.split(":")
+            has_port = True
         else:
             host, port_text = entry, ""
-        if not host or "/" in host or "@" in host:
+        if not host or "/" in host or "@" in host or "[" in host or "]" in host:
             raise ValueError(f"許可ホストの書式が不正です: {item!r}")
+        if has_port and not port_text:
+            # `host:` や `[::1]:` を「全ポート許可」と黙って解釈しない。
+            raise ValueError(f"許可ホストのポートが空です: {item!r}")
         port = None
         if port_text:
             if not port_text.isdigit() or not 0 < int(port_text) < 65536:
@@ -88,13 +97,15 @@ def source_url_rejection(url: str, allowed_hosts: str) -> str | None:
         return "source_url の許可ホストが未設定です（SOURCE_URL_ALLOWED_HOSTS）"
     try:
         parsed = httpx.URL(url)
+        # `.host` は取得時に IDNA デコードするため、不正な A-label（`xn--rustfs-` 等）の例外も
+        # ここで拾って 422 にする（try の外だと 500 になり Rust 側が一時エラーとして再試行する）。
+        host = parsed.host.lower()
     except (httpx.InvalidURL, TypeError, ValueError) as exc:
         return f"source_url を解釈できません: {exc}"
     if parsed.scheme not in _DEFAULT_PORTS:
         return f"source_url のスキームは http/https に限ります: {parsed.scheme!r}"
     if parsed.userinfo:
         return "資格情報を含む source_url は受け付けません"
-    host = parsed.host.lower()
     if not host:
         return "source_url にホストがありません"
     port = parsed.port or _DEFAULT_PORTS[parsed.scheme]

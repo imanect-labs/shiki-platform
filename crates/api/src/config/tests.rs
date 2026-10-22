@@ -621,7 +621,7 @@ fn rag_service_secrets_treat_empty_as_unset_and_never_serialize() {
             .as_deref(),
         Some("t-1")
     );
-    // 秘密値は直列化に出さない（設定のダンプ・デバッグ出力経由の漏えいを防ぐ）。
+    // 秘密値は直列化に出さない（設定の直列化ダンプ経由の漏えいを防ぐ。`Debug` は対象外で、config を Debug 出力する箇所は無い）。
     let cfg = rag::RagConfig {
         qdrant_api_key: Some("k-secret".into()),
         worker_auth_token: Some("t-secret".into()),

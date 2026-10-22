@@ -212,9 +212,29 @@ def test_allowed_hosts_parsing() -> None:
         ("storage.googleapis.com", None),
         ("fd00::1", 9000),
     ]
-    for bad in ["rustfs:abc", "rustfs:0", "rustfs:70000", "http://rustfs", "u@rustfs", "[::1]x"]:
+    for bad in [
+        "rustfs:abc",
+        "rustfs:0",
+        "rustfs:70000",
+        "http://rustfs",
+        "u@rustfs",
+        "[::1]x",
+        # 黙って「どの URL にも一致しない」「全ポート許可」に化けていた書き損じ
+        "fd00::1:9000",
+        "rustfs:9000:1",
+        "[::1]:",
+        "rustfs:",
+        "[::1",
+    ]:
         with pytest.raises(ValueError):
             parse_allowed_hosts(bad)
+
+
+def test_invalid_idna_host_is_rejected_not_500() -> None:
+    # `.host` の IDNA デコードで落ちる A-label は 500 ではなく拒否理由になる。
+    reason = source_url_rejection("http://xn--rustfs-:9000/obj", "rustfs:9000")
+    assert reason is not None
+    assert "解釈できません" in reason
 
 
 def test_port_less_entry_allows_any_port_and_scheme_default_ports() -> None:
