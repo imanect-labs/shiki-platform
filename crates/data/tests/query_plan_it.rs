@@ -16,7 +16,8 @@
     clippy::expect_used,
     clippy::panic,
     clippy::print_stderr,
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    clippy::many_single_char_names
 )]
 
 mod common;
@@ -464,4 +465,92 @@ async fn policy_drive_plan_for_users_who_see_few_rows() {
     assert_point_probes(&plan, 1);
     assert_single_partition(&plan);
     assert_generic_plan(&pool, st).await;
+}
+
+#[tokio::test]
+async fn substring_search_is_driven_by_the_scoped_trigram_gin() {
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool.clone());
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let mut title = common::field("title", data::FieldType::Text);
+    title.indexed = true;
+    title.searchable = true;
+    let table = common::create_table(&store, &c, "search-plan", common::schema(vec![title])).await;
+    let (ti, tb) = common::keys_of(&pool, &tenant, table.id).await;
+    let f = i16::try_from(table.schema.field("title").unwrap().id).unwrap();
+    // 2 万行（一致は 20 行）。本体・擬似列・値索引・部分一致索引を直接投入する。
+    sqlx::query(
+        "INSERT INTO data_record (id, table_id, table_int, record_int, tenant_int, tenant_id, org, owner, data) \
+         SELECT gen_random_uuid(), $1, $2, nextval('data_record_int_seq'), $3, $4, 'acme', 'alice', \
+                jsonb_build_object('f' || $5::int, CASE WHEN g % 1000 = 0 THEN '見積書 zebra-' || g ELSE '議事録 ' || md5(g::text) END) \
+         FROM generate_series(1, 20000) g",
+    )
+    .bind(table.id)
+    .bind(tb)
+    .bind(ti)
+    .bind(&tenant)
+    .bind(i32::from(f))
+    .execute(&pool)
+    .await
+    .unwrap();
+    for (fid, expr) in [
+        (0i16, "owner".to_string()),
+        (
+            1,
+            "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')".into(),
+        ),
+        (
+            2,
+            "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')".into(),
+        ),
+        (f, format!("data ->> 'f{f}'")),
+    ] {
+        sqlx::query(&format!(
+            "INSERT INTO data_index_text (tenant_int, table_int, field_id, record_int, ord, val, truncated) \
+             SELECT tenant_int, table_int, $3, record_int, 0, {expr}, false FROM data_record \
+             WHERE tenant_int = $1 AND table_int = $2"
+        ))
+        .bind(ti)
+        .bind(tb)
+        .bind(fid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(&format!(
+        "INSERT INTO data_index_search (tenant_int, table_int, field_id, record_int, ord, val) \
+         SELECT tenant_int, table_int, $3, record_int, 0, data ->> 'f{f}' FROM data_record \
+         WHERE tenant_int = $1 AND table_int = $2"
+    ))
+    .bind(ti)
+    .bind(tb)
+    .bind(f)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("ANALYZE data_index_search")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let q = DataQuery {
+        search: Some("zebra".into()),
+        limit: Some(50),
+        ..Default::default()
+    };
+    let (r, d) = store
+        .run_query_debug(&c, table.id, &q, &QueryTuning::default())
+        .await
+        .unwrap();
+    assert_eq!(r.items.unwrap().len(), 20);
+    assert_eq!(d.stats.strategy, "filter", "{:?}", d.stats);
+    let st = main_stmt(&d.statements, "candidates");
+    let plan = explain(&pool, st, true).await;
+    let text = plan.to_string();
+    assert!(
+        text.contains("\"Node Type\":\"Bitmap Index Scan\"")
+            && text.contains("\"Index Name\":\"data_index_search_p"),
+        "部分一致はスコープ列つきの trigram GIN から入る: {plan}"
+    );
+    assert_single_partition(&plan);
 }
