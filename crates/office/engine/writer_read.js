@@ -189,6 +189,11 @@ function readParagraph(p, withRuns, reds) {
     // 概要の文字列は、挿入を［＋…］、削除を［－…］で示す（連結すると読めないため）。
     if (!withRuns) out.text = markedText(p, reds);
   }
+  // 埋め込みのグラフは文字を持たないので、概要では［グラフ: 題］として見せる（#731）。
+  if (!withRuns) {
+    const charts = chartLabelsOf(p);
+    if (charts) out.text = out.text ? `${out.text} ${charts}` : charts;
+  }
   // 目次などの索引の中の段落（読み取りでは 1 ブロックにまとめる）。
   try {
     if (p.getPropertyValue("DocumentIndex")) out.index = true;

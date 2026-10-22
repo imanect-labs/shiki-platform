@@ -11,14 +11,16 @@
 
 pub mod a1;
 pub mod calc;
+pub mod chart;
+pub mod chart_insert;
 pub mod formula;
 pub mod script;
 mod service;
 pub mod writer;
 
 pub use service::{
-    OfficeEngine, OfficeEngineError, SheetEditReport, SheetReadRequest, DOC_CONTENT_TYPES,
-    SHEET_CONTENT_TYPES,
+    ChartInsertReport, OfficeEngine, OfficeEngineError, SheetEditReport, SheetReadRequest,
+    DOC_CONTENT_TYPES, SHEET_CONTENT_TYPES,
 };
 
 use serde_json::Value;

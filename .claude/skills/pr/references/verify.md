@@ -92,7 +92,7 @@ cd web && E2E_BASE_URL=http://localhost:3000 pnpm exec playwright test e2e/_shot
 
 撮ったら**必ず自分の目で見る**。崩れ・違和感を直して再撮影し、納得いくまで反復する。
 
-`fullPage: true` はライブラリによっては壊れる（recharts など、遅延レイアウトするコンポーネントは可視領域外が描画されない）。その場合はビューポートを大きくして `fullPage: false` で撮る。
+`fullPage: true` はライブラリによっては壊れる（遅延レイアウトするコンポーネントは可視領域外が描画されない）。その場合はビューポートを大きくして `fullPage: false` で撮る。
 
 ### デザイン言語の確認軸
 

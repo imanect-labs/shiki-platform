@@ -1,91 +1,59 @@
 "use client";
 
 import * as React from "react";
-import dynamic from "next/dynamic";
 
 import type { InsightsOverview } from "@/lib/insights-api";
 import { addDays } from "../format";
+import { YuiChart, yuiNumber } from "../yui-chart";
 
-export type WeekRow = {
-  week: string;
-  heavy: number;
-  regular: number;
-  light: number;
-  /// 期間に一部の日だけ含まれる週（人数が少なく見えるのは途中だから）。
-  partial: boolean;
-};
-
-/// 使った日数の区分（順序のある 3 段階なので `--primary` の濃淡 1 色で表す）。
+/// 使った日数の区分。色は Yui の系列の順（冬・秋・夏）で、利用区分の表と揃える（#783）。
 export const WEEKLY_SERIES = [
-  { key: "heavy", label: "ヘビー（週 4 日以上）", color: "var(--primary)" },
-  {
-    key: "regular",
-    label: "レギュラー（週 2〜3 日）",
-    color: "var(--ordinal-2)",
-  },
-  {
-    key: "light",
-    label: "ライト（週 1 日）",
-    color: "var(--ordinal-3)",
-  },
+  { key: "heavy", label: "ヘビー（週 4 日以上）", color: "var(--chart-1)" },
+  { key: "regular", label: "レギュラー（週 2〜3 日）", color: "var(--chart-2)" },
+  { key: "light", label: "ライト（週 1 日）", color: "var(--chart-3)" },
 ] as const;
 
-const Bars = dynamic(() => import("./weekly-chart-bars"), {
-  ssr: false,
-  loading: () => <div className="h-full animate-pulse rounded-md bg-muted/60" />,
-});
+const md = (iso: string) => {
+  const [, m, d] = iso.split("-").map(Number);
+  return `${m}/${d}`;
+};
 
-/// 週ごとのアクティブ利用者（凡例つき）。
+/// 週ごとのアクティブ利用者（使った日数で 3 区分の積み上げ）。チャットの本文の図と同じ Yui で描く。
 export function WeeklyChart({
   weeks,
   from,
   to,
-  height = 220,
 }: {
   weeks: InsightsOverview["weekly"];
   /// 期間（両端含む）。週の一部だけが入る端の週を見分ける。
   from: string;
   to: string;
-  height?: number;
 }) {
-  const rows: WeekRow[] = weeks.map((w) => ({
-    week: w.week_start,
-    heavy: w.heavy,
-    regular: w.regular,
-    light: w.light,
-    partial: w.week_start < from || addDays(w.week_start, 6) > to,
-  }));
-  const anyPartial = rows.some((r) => r.partial);
-  const total = rows.reduce((n, r) => n + r.heavy + r.regular + r.light, 0);
-  return (
-    <div className="flex flex-col gap-3">
-      <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        {WEEKLY_SERIES.map((s) => (
-          <li key={s.key} className="inline-flex items-center gap-1.5">
-            <span className="size-2.5 rounded-[3px]" style={{ backgroundColor: s.color }} aria-hidden />
-            {s.label}
-          </li>
-        ))}
-        {anyPartial ? <li className="md:ml-auto">* 期間に一部の日だけ含まれる週</li> : null}
-      </ul>
-      {total === 0 ? (
-        <div
-          className="flex items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground"
-          style={{ height }}
-        >
-          この期間に AI を使った人はいません
-        </div>
-      ) : (
-        <div style={{ height }}>
-          <Bars
-            rows={rows}
-            height={height}
-            label={`週ごとのアクティブ利用者。${rows
-              .map((r) => `${r.week} の週 ${r.heavy + r.regular + r.light} 人`)
-              .join("、")}`}
-          />
-        </div>
-      )}
-    </div>
-  );
+  const total = weeks.reduce((n, w) => n + w.heavy + w.regular + w.light, 0);
+  const source = React.useMemo(() => {
+    const partial = (w: string) => w < from || addDays(w, 6) > to;
+    const lines = [
+      "bar",
+      "stacked: true",
+      "unit: 人",
+      ...(weeks.some((w) => partial(w.week_start))
+        ? ["note: 日付の末尾の * は、期間に一部の日だけ含まれる週"]
+        : []),
+      `週 | ${WEEKLY_SERIES.map((s) => s.label).join(" | ")}`,
+      ...weeks.map(
+        (w) =>
+          `${md(w.week_start)}${partial(w.week_start) ? "*" : ""} | ${yuiNumber(w.heavy)} | ${yuiNumber(w.regular)} | ${yuiNumber(w.light)}`,
+      ),
+    ];
+    return lines.join("\n");
+  }, [weeks, from, to]);
+
+  if (total === 0) {
+    return (
+      <div className="flex h-[220px] items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
+        この期間に AI を使った人はいません
+      </div>
+    );
+  }
+  return <YuiChart source={source} label="週ごとのアクティブ利用者（使った日数の区分ごとの人数）" minHeight={330} />;
 }

@@ -55,7 +55,9 @@ struct CheckReport {
 /// 照合用の正規化。空白・約物・括弧を落とし、全角英数記号を半角へ、英字を小文字へ寄せる。
 /// 数字に接した `.` `+` `-` `%` は残し、数字に挟まれた `,` は落とす（桁区切り）。
 fn normalize(text: &str) -> String {
-    let chars: Vec<char> = text.chars().map(fold).collect();
+    use unicode_normalization::UnicodeNormalization as _;
+    // NFKC で全角英数・半角カナ・康熙部首（PDF 抽出に混ざる ⼊ ⽇ など）を通常の字形へ寄せる。
+    let chars: Vec<char> = text.nfkc().map(fold).collect();
     let digit_at = |i: Option<usize>| {
         i.and_then(|i| chars.get(i))
             .is_some_and(char::is_ascii_digit)
@@ -209,8 +211,8 @@ fn ledger_entries(ledger: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with("CONFLICT"))
         .map(|l| match l.rfind('|') {
-            // 証拠行は最後の列（逐語引用）だけ。要約列はモデル自身が書いた文。
-            Some(i) if is_evidence_row(l) => normalize(&l[i + 1..]),
+            // 証拠行は逐語引用の列だけ。要約列はモデル自身が書いた文。
+            Some(_) if is_evidence_row(l) => normalize(evidence_quote(l)),
             // 区切りの無い行（崩れた行・改行で割れた引用）は行全体。
             None => normalize(l),
             // それ以外の表（見出し行など）は照合先にしない。
@@ -219,6 +221,19 @@ fn ledger_entries(ledger: &str) -> Vec<String> {
         .filter(|e| !e.is_empty())
         .collect()
 }
+
+/// 証拠行の逐語引用の列。台帳は `証拠ID | URL | 取得日 | 種別 | 要約 | 逐語引用` の 6 列なので、
+/// 5 つ目の区切りより後ろを全部とる（引用の中に `|` が混ざっても、最後のセルだけにならない）。
+/// 列が足りない行は最後の区切りより後ろ。
+fn evidence_quote(line: &str) -> &str {
+    match line.splitn(EVIDENCE_COLUMNS, '|').nth(EVIDENCE_COLUMNS - 1) {
+        Some(quote) => quote,
+        None => line.rfind('|').map_or(line, |i| &line[i + 1..]),
+    }
+}
+
+/// 台帳の証拠行の列数（skill の書式）。
+const EVIDENCE_COLUMNS: usize = 6;
 
 /// `E12 | …` の形の証拠行か。
 fn is_evidence_row(line: &str) -> bool {
@@ -466,6 +481,30 @@ CONFLICT | E12(1.2兆円) vs E18(9800億円) | 集計範囲が異なる可能性
         assert_eq!(missing("「失業率は前年比…32%」").len(), 1);
         // 断片がどれも短いときは、全体を連結して照合する（素通りさせない）。
         assert_eq!(missing("「日本の…市場は…縮小し…ている」").len(), 1);
+    }
+
+    #[test]
+    fn pipes_inside_the_quote_column_do_not_hide_the_quote() {
+        // 逐語引用の中に `|` が混ざった行（表を写した引用）でも、6 列目以降を全部見る。
+        let ledger = "E17 | 社内: 手引き.md | 2026-10-22 | 一次 | 期限表 | | 手続き | 期限 | 提出先 |／| 延長の申出 | 1歳の誕生日の2週間前 | 人事部 |\n";
+        let r = check("「| 延長の申出 | 1歳の誕生日の2週間前 | 人事部 |」", ledger);
+        assert_eq!((r.checked, r.missing.len()), (1, 0));
+        // 要約列（5 列目）には一致させない。
+        assert_eq!(
+            check("「期限表を手引きから写した」", ledger).missing.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn pdf_radical_forms_are_folded() {
+        // PDF 抽出で混ざる康熙部首（⼊ U+2F0A・⽇ U+2F47）と通常の漢字を同じに扱う。
+        let ledger = "E18 | 社内: 協定.pdf | 2026-10-22 | 一次 | 協定 | ⼊社1年未満の従業員／申出の⽇から1年以内\n";
+        assert!(
+            check("「入社1年未満の従業員」と「申出の日から1年以内」", ledger)
+                .missing
+                .is_empty()
+        );
     }
 
     #[test]
