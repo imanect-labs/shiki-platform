@@ -95,7 +95,7 @@ N+1 でいい」など、実際には確かめていない前提で）。**意�
 ### web
 
 - **不要な `"use client"`。** サーバコンポーネントで済むものをクライアントに落としていないか。
-- **重いライブラリの静的 import。** エディタ（TipTap / GrapesJS / glide-data-grid）・チャート（recharts）・地図（MapLibre）は `next/dynamic` で遅延させる。
+- **重いライブラリの静的 import。** エディタ（TipTap / GrapesJS / glide-data-grid）・チャート（Yui）・地図（MapLibre）は `next/dynamic` で遅延させる。
 - **再レンダリングの誘発。** レンダーごとに新しいオブジェクト/配列/関数を props に渡していないか。リストの `key` にインデックスを使っていないか。
 - **クライアント側の全件フェッチ → 絞り込み。** サーバ側のクエリパラメータで絞る。
 

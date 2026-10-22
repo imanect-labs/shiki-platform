@@ -92,7 +92,7 @@ function Categories({ u }: { u: InsightsUseCases }) {
                     <div className="flex items-center gap-2">
                       <div className="h-1.5 flex-1 rounded-full bg-muted">
                         <div
-                          className="h-full rounded-full bg-primary"
+                          className="h-full rounded-full bg-[var(--chart-1)]"
                           style={{ width: `${Math.max(2, (c.share / max) * 100)}%` }}
                         />
                       </div>
