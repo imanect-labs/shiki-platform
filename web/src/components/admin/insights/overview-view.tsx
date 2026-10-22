@@ -31,15 +31,15 @@ function Funnel({ f }: { f: InsightsOverview["funnel"] }) {
     "unit: 人",
     "段階 | 人数",
     `利用対象者 | ${yuiNumber(f.population)}`,
-    `一度でも使った | ${yuiNumber(f.ever)}`,
-    `直近 30 日に使った | ${yuiNumber(f.last_30_days)}`,
+    `利用経験あり | ${yuiNumber(f.ever)}`,
+    `直近 30 日 | ${yuiNumber(f.last_30_days)}`,
     `毎週使う | ${yuiNumber(f.weekly)}`,
     `ほぼ毎日 | ${yuiNumber(f.heavy)}`,
-    "note: 毎週使う＝直近 4 週のうち 3 週以上、ほぼ毎日＝直近 28 日のうち 16 日以上",
+    "note: 直近 30 日＝直近 30 日に使った、毎週使う＝直近 4 週のうち 3 週以上、ほぼ毎日＝直近 28 日のうち 16 日以上",
   ].join("\n");
   return (
     <div className="px-1 pb-1 pt-2">
-      <YuiChart source={source} />
+      <YuiChart source={source} label="浸透のファネル（段階ごとの人数）" minHeight={280} />
     </div>
   );
 }
@@ -89,7 +89,10 @@ function Body({ o, from, to }: { o: InsightsOverview; from: string; to: string }
       </Panel>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <Panel title="浸透のファネル" description="分母はディレクトリの在籍者（利用対象者）。">
+        <Panel
+          title="浸透のファネル"
+          description="利用対象者はディレクトリの在籍者。右の % は一つ前の段階からの割合です。"
+        >
           <Funnel f={o.funnel} />
           <Note>「一度使って離れた人」が多いときは、研修や使い方の周知が効きやすいサインです。</Note>
         </Panel>

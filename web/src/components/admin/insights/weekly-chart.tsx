@@ -55,5 +55,5 @@ export function WeeklyChart({
       </div>
     );
   }
-  return <YuiChart source={source} />;
+  return <YuiChart source={source} label="週ごとのアクティブ利用者（使った日数の区分ごとの人数）" minHeight={330} />;
 }

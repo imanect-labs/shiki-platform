@@ -340,13 +340,15 @@ export function HeatCell({
     );
   }
   const v = Math.max(0, Math.min(1, value));
-  // 6〜75% の濃さ。文字は本文の色のまま（どの濃さでもライト 5.5:1・ダーク 4.4:1 以上を保てる上限）。
-  const strength = Math.round(6 + Math.min(1, v / Math.max(scale, 0.0001)) * 69);
+  // 6% 〜 --heat-max の濃さ。文字は本文の色のまま（上限はライト 6.9:1・ダーク 5.0:1 を保つ値・globals.css）。
+  const t = Math.min(1, v / Math.max(scale, 0.0001)).toFixed(3);
   return (
     <td className="px-1 py-1">
       <div
         className="flex h-8 items-center justify-center rounded-[4px] text-xs tabular-nums text-foreground"
-        style={{ backgroundColor: `color-mix(in oklab, var(--chart-1) ${strength}%, transparent)` }}
+        style={{
+          backgroundColor: `color-mix(in oklab, var(--chart-1) calc(6% + (var(--heat-max) - 6%) * ${t}), transparent)`,
+        }}
         title={title ? `${title}: ${pct(v)}` : pct(v)}
       >
         {pct(v)}
@@ -364,7 +366,7 @@ export function HeatLegend({ max = 1 }: { max?: number }) {
         className="h-2 w-24 rounded-full"
         style={{
           background:
-            "linear-gradient(to right, color-mix(in oklab, var(--chart-1) 6%, transparent), color-mix(in oklab, var(--chart-1) 75%, transparent))",
+            "linear-gradient(to right, color-mix(in oklab, var(--chart-1) 6%, transparent), color-mix(in oklab, var(--chart-1) var(--heat-max), transparent))",
         }}
       />
       {pct(max)}

@@ -8,17 +8,23 @@ export type UsageMetric = "cost" | "tokens" | "calls";
 
 type Day = { day: string; cost_usd_micros: number; tokens: number; calls: number };
 
-type MetricDef = { name: string; unit: string; value: (d: Day) => string };
+type MetricDef = { name: string; unit: string; raw: (d: Day) => number; value: (d: Day) => string };
+
+/// 有効数字 3 桁（1 セント未満の日も 0 に丸めない）。
+const sig3 = (n: number) => String(Number(n.toPrecision(3)));
 
 /// 指標ごとの値（記法に書く素の数値）と単位。コストは日ごとの最大が 1 ドル未満ならセントで書く
 /// （小さなドルの値では目盛りの丸めで同じ数字が並ぶため）。
 function metricDef(metric: UsageMetric, days: Day[]): MetricDef {
-  if (metric === "tokens") return { name: "トークン", unit: "トークン", value: (d) => yuiNumber(d.tokens) };
-  if (metric === "calls") return { name: "呼び出し", unit: "回", value: (d) => yuiNumber(d.calls) };
-  const cents = Math.max(0, ...days.map((d) => d.cost_usd_micros)) < 1_000_000;
+  if (metric === "tokens")
+    return { name: "トークン", unit: "トークン", raw: (d) => d.tokens, value: (d) => yuiNumber(d.tokens) };
+  if (metric === "calls")
+    return { name: "呼び出し", unit: "回", raw: (d) => d.calls, value: (d) => yuiNumber(d.calls) };
+  const raw = (d: Day) => d.cost_usd_micros;
+  const cents = Math.max(0, ...days.map(raw)) < 1_000_000;
   return cents
-    ? { name: "コスト", unit: "セント", value: (d) => yuiNumber(d.cost_usd_micros / 10_000, 2) }
-    : { name: "コスト", unit: "ドル", value: (d) => yuiNumber(d.cost_usd_micros / 1_000_000, 2) };
+    ? { name: "コスト", unit: "セント", raw, value: (d) => sig3(d.cost_usd_micros / 10_000) }
+    : { name: "コスト", unit: "ドル", raw, value: (d) => yuiNumber(d.cost_usd_micros / 1_000_000, 2) };
 }
 
 const EMPTY_LABEL: Record<UsageMetric, string> = {
@@ -49,7 +55,7 @@ export function UsageChart({ days, metric }: { days: Day[]; metric: UsageMetric 
     );
   }, [days, m]);
 
-  const empty = days.every((d) => Number(m.value(d)) === 0);
+  const empty = days.every((d) => m.raw(d) === 0);
   if (empty) {
     return (
       <div className="flex h-[200px] items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
@@ -57,5 +63,11 @@ export function UsageChart({ days, metric }: { days: Day[]; metric: UsageMetric 
       </div>
     );
   }
-  return <YuiChart source={source} />;
+  return (
+    <YuiChart
+      source={source}
+      label={`日別の${m.name}（単位: ${m.unit}）`}
+      minHeight={280}
+    />
+  );
 }
