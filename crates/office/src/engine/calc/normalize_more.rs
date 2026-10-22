@@ -5,9 +5,10 @@
 use serde_json::{json, Map, Value};
 
 use super::normalize::{date_serial, Cx, OpError};
-use super::ops::{LegendPosition, Orientation, Patch, SeriesIn, SheetOp, ValidationRule};
-use super::units::{absolute, chart_kind, cm_to_mm100, condition_operator, paper_size, trim_float};
+use super::ops::{Orientation, Patch, SeriesIn, SheetOp, ValidationRule};
+use super::units::{absolute, cm_to_mm100, condition_operator, paper_size, trim_float};
 use crate::engine::a1;
+use crate::engine::chart::ChartLook;
 
 impl Cx {
     pub(super) fn add_chart_op(&mut self, op: &SheetOp) -> Result<Vec<Value>, OpError> {
@@ -48,33 +49,39 @@ impl Cx {
             };
             ranges.push(json!([data_sheet, a.sc, a.sr, a.ec, a.er]));
         }
-        let w = width_cm.unwrap_or(15.0);
-        let h = height_cm.unwrap_or(9.0);
-        if !(3.0..=60.0).contains(&w) || !(3.0..=60.0).contains(&h) {
-            return Err(self.err("グラフの大きさは 3〜60 cm で指定してください"));
-        }
         if name.as_deref().is_some_and(|n| n.trim().is_empty()) {
             return Err(self.err("グラフの name が空です"));
         }
-        let mut palette = Vec::new();
-        for c in colors.iter().flatten() {
-            palette.push(self.color(c)?);
-        }
-        let legend_pos = match (legend, legend_position) {
-            (false, _) | (_, Some(LegendPosition::None)) => "none",
-            (_, Some(LegendPosition::Right)) => "right",
-            (_, Some(LegendPosition::Top)) => "top",
-            (_, Some(LegendPosition::Left)) => "left",
-            _ => "bottom",
+        let look = ChartLook {
+            kind: *kind,
+            title: title.as_deref(),
+            width_cm: *width_cm,
+            height_cm: *height_cm,
+            legend: *legend,
+            legend_position: *legend_position,
+            colors: colors.as_deref(),
+            data_labels: *data_labels,
+            y_number_format: y_number_format.as_deref(),
+            stacked: *stacked,
+            percent: *percent,
+            x_title: x_title.as_deref(),
+            y_title: y_title.as_deref(),
         };
-        Ok(vec![json!({
-            "op": "add_chart", "sheet": chart_sheet, "name": name, "kind": chart_kind(*kind),
-            "ranges": ranges, "anchor": [col, row], "size": [cm_to_mm100(w), cm_to_mm100(h)],
-            "title": title, "legend_position": legend_pos, "colors": palette, "data_labels": data_labels,
-            "y_number_format": y_number_format, "series_in_rows": matches!(series, SeriesIn::Rows),
-            "stacked": stacked, "percent": percent, "x_title": x_title, "y_title": y_title,
-            "first_row_header": first_row_is_header, "first_col_header": first_column_is_header,
-        })])
+        let mut out = look.normalize().map_err(|e| self.err(e))?;
+        out.extend([
+            ("op".into(), json!("add_chart")),
+            ("sheet".into(), chart_sheet),
+            ("name".into(), json!(name)),
+            ("ranges".into(), json!(ranges)),
+            ("anchor".into(), json!([col, row])),
+            (
+                "series_in_rows".into(),
+                json!(matches!(series, SeriesIn::Rows)),
+            ),
+            ("first_row_header".into(), json!(first_row_is_header)),
+            ("first_col_header".into(), json!(first_column_is_header)),
+        ]);
+        Ok(vec![Value::Object(out)])
     }
 
     pub(super) fn page_setup_op(&mut self, op: &SheetOp) -> Result<Vec<Value>, OpError> {

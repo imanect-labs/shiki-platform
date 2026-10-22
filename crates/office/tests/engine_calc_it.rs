@@ -441,3 +441,79 @@ async fn font_colors_and_border_styles_survive_an_xlsx_round_trip() {
     assert!(read.contains("中線"), "中線: {read}");
     client.close().await;
 }
+
+/// グラフの名前はブック全体で一意（#731）。名前を省いたグラフを別のシートにも置くと、空いている
+/// 名前が付く（以前はシートの中だけを見て「グラフ1」を付け、kit が理由なしで落ちていた）。
+#[tokio::test]
+async fn unnamed_charts_on_different_sheets_get_distinct_names() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let name = format!("engine-{}.xlsx", uuid::Uuid::new_v4());
+    let mut client = open_blank(&env, &name).await;
+    let table = json!([["項目", "値"], ["a", 1], ["b", 2]]);
+    let batch = ops(json!([
+        {"op": "set_values", "range": "A1", "values": table},
+        {"op": "add_chart", "type": "column", "data": "A1:B3", "anchor": "D2"},
+        {"op": "add_sheet", "name": "二枚目"},
+        {"op": "set_values", "range": "二枚目!A1", "values": table},
+        {"op": "add_chart", "type": "pie", "data": "二枚目!A1:B3", "anchor": "二枚目!D2"}
+    ]));
+    let out = run::apply(&mut client, "グラフ", &normalize(&batch, None).unwrap())
+        .await
+        .unwrap();
+    assert!(out.applied, "{}", out.text);
+    let overview = run::read_overview(&mut client, &name).await.unwrap();
+    assert!(overview.contains("グラフ1"), "{overview}");
+    assert!(overview.contains("グラフ2"), "{overview}");
+    client.close().await;
+}
+
+/// 画面のボタンと同じ操作（#731）で、同じ図を 2 回入れると 2 枚目は空いている名前のシートになる。
+#[tokio::test]
+async fn the_same_chart_can_be_inserted_twice() {
+    use office::engine::chart_insert::{sheet_name_for, sheet_ops, ChartInsert};
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let name = format!("engine-{}.xlsx", uuid::Uuid::new_v4());
+    let mut client = open_blank(&env, &name).await;
+    let chart: ChartInsert = serde_json::from_value(json!({
+        "type": "column", "title": "四半期ごとの売上と利益", "label": "四半期", "unit": "百万円",
+        "categories": ["Q1", "Q2"], "series": [{"name": "売上", "values": [120, 150]}, {"name": "利益", "values": [30, -5]}],
+    }))
+    .unwrap();
+    let mut existing = vec!["Sheet1".to_string()];
+    for expected in ["四半期ごとの売上と利益", "四半期ごとの売上と利益 (2)"] {
+        let sheet = sheet_name_for(chart.title.as_deref(), &existing);
+        assert_eq!(sheet, expected);
+        let batch: Vec<SheetOp> = sheet_ops(&chart, &sheet)
+            .into_iter()
+            .map(|v| serde_json::from_value(v).unwrap())
+            .collect();
+        let out = run::apply(
+            &mut client,
+            "グラフを挿入",
+            &normalize(&batch, None).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(out.applied, "{sheet}: {}", out.text);
+        existing.push(sheet);
+        // 1 回ごとに保存して閉じ、開き直す（画面で誰も開いていないときは、挿入ごとに文書が読み直される）。
+        client.save().await.unwrap();
+        client.close().await;
+        client = reopen(&env, &name).await;
+    }
+    client.close().await;
+}
+
+async fn reopen(env: &Env, name: &str) -> CoolWsClient {
+    let mut cfg = CoolWsConfig::new(env.ws.clone());
+    cfg.total_deadline = std::time::Duration::from_mins(5);
+    office::live::connect_with_retry(&cfg, &format!("{}/{name}", env.wopi), "test-token")
+        .await
+        .unwrap()
+}

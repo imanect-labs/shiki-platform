@@ -64,7 +64,9 @@ pub fn normalize_doc_ops(values: &[Value]) -> Result<DocNormalized, OpError> {
 /// op の無い Word の操作の項目から、それらしい操作名を推す（案内だけ）。
 fn guess_doc_op(v: &Value) -> Option<&'static str> {
     let has = |k: &str| v.get(k).is_some();
-    if has("table")
+    if has("categories") && has("series") {
+        Some("insert_chart")
+    } else if has("table")
         && (has("theme")
             || has("total_row")
             || has("total_rows")
@@ -110,6 +112,7 @@ fn known_name(name: &str) -> &'static str {
         "style_table",
         "accept_all_changes",
         "reject_all_changes",
+        "insert_chart",
     ];
     KNOWN
         .iter()
@@ -522,6 +525,19 @@ impl Cx<'_> {
             | DocOp::TableProps { .. }
             | DocOp::StyleTable { .. } => self.table_op(op)?,
             DocOp::TitlePage { enabled } => vec![json!({"op": "title_page", "enabled": enabled})],
+            DocOp::InsertChart {
+                after, before, at, ..
+            } => {
+                // 位置を書かなければ文書の末尾。
+                let (anchor, before, at) =
+                    self.position(after.as_ref(), before.as_ref(), *at, Some(Edge::End))?;
+                let mut m = super::chart::normalize_chart(op).map_err(|e| self.err(e))?;
+                m.insert("op".into(), json!("insert_chart"));
+                m.insert("anchor".into(), anchor);
+                m.insert("before".into(), json!(before));
+                m.insert("at".into(), at);
+                vec![Value::Object(m)]
+            }
             DocOp::AcceptAllChanges {} => vec![json!({"op": "all_changes", "accept": true})],
             DocOp::RejectAllChanges {} => vec![json!({"op": "all_changes", "accept": false})],
         })

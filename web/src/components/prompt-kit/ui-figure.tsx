@@ -4,7 +4,7 @@
 "use client";
 
 import * as React from "react";
-import { AppWindow, BarChart3, Check, Copy, Download, Table2 } from "lucide-react";
+import { AppWindow, BarChart3, Check, Copy, Download, FileSpreadsheet, FileText, Loader2, Table2 } from "lucide-react";
 import { isEmpty, parseBlock, toText, type Kind } from "@imanect/yui";
 import { copyFigure, downloadFigure } from "@imanect/yui/export";
 import { YuiFigure, diagnosticsSummary } from "@imanect/yui/react";
@@ -15,6 +15,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useOfficeTarget } from "@/components/office/office-target";
+import { toast } from "@/components/ui/use-toast";
+import { ChartInsertError, figureToChartInsert, insertChart } from "@/lib/office/chart-insert";
 import { cn } from "@/lib/utils";
 import { CodeBlock } from "./code-block";
 import { useYuiActions, YuiRunList } from "./yui-actions";
@@ -64,6 +67,13 @@ export const UiFigure = React.memo(function UiFigure({
   const [copied, setCopied] = React.useState(false);
   // 操作を持つ図（app・ask・plan）のボタン。確定した回答の中でだけ押せる（#604）。
   const actions_ = useYuiActions(failed ? null : figure, source, complete, closed ?? complete);
+  // Office の画面のチャットでは、棒・折れ線・円の図を開いている文書へグラフとして入れられる（#731）。
+  const office = useOfficeTarget();
+  const chart = React.useMemo(
+    () => (office && complete && figure && !failed ? figureToChartInsert(figure) : null),
+    [office, complete, figure, failed],
+  );
+  const [inserting, setInserting] = React.useState(false);
 
   if (failed) {
     return (
@@ -105,6 +115,25 @@ export const UiFigure = React.memo(function UiFigure({
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
       /* クリップボード不可は無視 */
+    }
+  };
+  const insert = async () => {
+    if (!office || !chart || inserting) return;
+    setInserting(true);
+    try {
+      const r = await insertChart(office.fileId, chart);
+      toast({
+        title: "グラフを入れました",
+        description: r.sheet ? `シート「${r.sheet}」に表とグラフを置きました` : "文書の末尾にグラフを入れました",
+      });
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: "グラフを入れられませんでした",
+        description: e instanceof ChartInsertError ? e.message : "時間をおいてもう一度試してください",
+      });
+    } finally {
+      setInserting(false);
     }
   };
   // 書き出す図は明るい配色で色を焼き込む（画面がダークでも、文書に貼る前提の見た目にする）。
@@ -165,6 +194,24 @@ export const UiFigure = React.memo(function UiFigure({
                 <DropdownMenuItem onSelect={() => save("svg")}>SVG で保存</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            {office && chart ? (
+              <ToolbarButton
+                onClick={() => void insert()}
+                disabled={inserting}
+                label={office.kind === "sheet" ? "開いている Excel に、表とグラフを入れる" : "開いている Word の末尾に、グラフを入れる"}
+                data-testid="ui-figure-insert"
+                className="disabled:opacity-60"
+              >
+                {inserting ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : office.kind === "sheet" ? (
+                  <FileSpreadsheet className="size-3.5" />
+                ) : (
+                  <FileText className="size-3.5" />
+                )}
+                {office.kind === "sheet" ? "Excel に挿入" : "Word に挿入"}
+              </ToolbarButton>
+            ) : null}
           </>
         ) : null}
         {actions}

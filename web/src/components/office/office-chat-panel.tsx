@@ -10,6 +10,9 @@
 import * as React from "react";
 
 import { DocChatPanel, useLocalActiveThreadStore } from "@/components/chat/doc-chat-panel";
+import { officeTargetKind } from "@/lib/office/chart-insert";
+
+import { OfficeTargetProvider } from "./office-target";
 
 export function OfficeChatPanel({
   fileId,
@@ -23,17 +26,24 @@ export function OfficeChatPanel({
 }) {
   const store = useLocalActiveThreadStore(fileId);
   const cleanName = React.useMemo(() => fileName.replace(/\.(docx|xlsx|pptx|odt|ods|odp)$/i, ""), [fileName]);
+  // 回答の図（棒・折れ線・円）を、この文書へグラフとして入れられるようにする（#731）。
+  const target = React.useMemo(() => {
+    const kind = officeTargetKind(fileName);
+    return kind ? { fileId, kind } : null;
+  }, [fileId, fileName]);
   return (
-    <DocChatPanel
-      store={store}
-      nodeId={fileId}
-      title={`文書: ${cleanName}`}
-      label="この文書の会話"
-      // 文書を開けている（＝viewer 以上）なら会話を作れる。AI の編集自体は office.edit が
-      // editor@file をサーバ側で再判定するため、ここを editor に限定しない。
-      editable
-      testIdPrefix="office"
-      initialThreadId={initialThreadId}
-    />
+    <OfficeTargetProvider target={target}>
+      <DocChatPanel
+        store={store}
+        nodeId={fileId}
+        title={`文書: ${cleanName}`}
+        label="この文書の会話"
+        // 文書を開けている（＝viewer 以上）なら会話を作れる。AI の編集自体は office.edit が
+        // editor@file をサーバ側で再判定するため、ここを editor に限定しない。
+        editable
+        testIdPrefix="office"
+        initialThreadId={initialThreadId}
+      />
+    </OfficeTargetProvider>
   );
 }

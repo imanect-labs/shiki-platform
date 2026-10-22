@@ -637,7 +637,8 @@ pub enum TableTheme {
     Orange,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+/// グラフの種類（bar は横棒・column は縦棒）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ChartKind {
     Column,

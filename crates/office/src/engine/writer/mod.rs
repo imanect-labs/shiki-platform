@@ -6,7 +6,9 @@
 //! - `view`: 読み取り結果を LLM 向けに整形
 //! - `run`: 接続済みセッションへの読み書き
 //! - `describe`: ツールの説明文と入力スキーマ
+//! - `chart`: グラフ（insert_chart）の検証
 
+mod chart;
 pub mod describe;
 pub mod html;
 pub mod normalize;
