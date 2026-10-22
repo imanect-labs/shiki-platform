@@ -20,6 +20,37 @@
 - `sslRequired = external`、redirect URI / `webOrigins` を実ホストに限定。
 - provisioner client は confidential・最小権限（realm 管理の必要スコープのみ）。
 - `accessTokenLifespan` は失効遅延とのトレードオフで決める。
+- **ユーザー属性 `tenant` / `roles` は管理者だけが閲覧・編集できる**（#809）。下記
+  「User Profile」の設定を本番 realm にも必ず入れる。
+
+## User Profile（`tenant` / `roles` は管理者のみ・#809）
+
+shiki-server の `tenant_id` と `roles` は、ユーザー属性 `tenant` / `roles` を `shiki-web` の
+protocol mapper で claim にしたものから来る（`crates/api/src/middleware/claims.rs`）。ユーザーが
+アカウントコンソールや Account REST API（`/realms/<realm>/account`）で自分の `tenant` を書き換え
+られる設定にすると、**次のログインで他テナントに入れる**（テナント越境）。`roles` も同様に
+自己昇格になる。そのため realm の User Profile（`components` の
+`org.keycloak.userprofile.UserProfileProvider` → `declarative-user-profile`）で次を必須とする:
+
+- `tenant`（単一値）・`roles`（多値・`multivalued: true`）を**宣言する**。permissions は
+  `view: ["admin"]` / `edit: ["admin"]`（ユーザー本人には見せず・書かせない）。
+- **unmanaged attributes は無効**（`unmanagedAttributePolicy` を設定しない）。ユーザーが未宣言の
+  属性を足せないようにする。`ENABLED`（ユーザーも編集可）は不可。
+- 宣言を省いてはいけない。Keycloak 24 以降は unmanaged 無効のとき**未宣言属性を admin REST でも
+  書けない・単体 GET で返さない**ため、テナント・プロビジョニング（`crates/api/src/keycloak_admin.rs`
+  の作成時 `attributes.tenant`／`update_user_tenant`）が黙って効かなくなる（tenant claim の無い
+  ユーザーは SaaS では fail-closed でログイン不可）。
+- `groups` claim（org 解決）の元はグループ所属で、Account API からは変更できない（admin のみ）。
+
+dev fixture の `shiki-realm.json` は上記を設定済み。`deploy/compose/smoke-keycloak-user-profile.sh`
+（CI の compose smoke でも実行）が、設定の確認・一般ユーザーが Account API で `tenant` / `roles` /
+未宣言属性を書けないこと（再ログイン後の claim 不変）・管理者は admin REST で設定/検索/更新できる
+ことを実機で確かめる。本番 realm でも、設定の確認（手順 1）は管理者資格情報で同じ API
+（`GET /admin/realms/<realm>/users/profile`）を叩いて確かめること。
+
+compose の Keycloak は `--import-realm`（既存 realm は `IGNORE_EXISTING`）のため、この設定より前に
+realm を import 済みの dev DB には反映されない。Keycloak の DB（compose の postgres の `keycloak`
+DB）を作り直すか、管理コンソールの「Realm settings → User profile」で同じ設定を入れること。
 
 ## Back-Channel Logout（#91）
 

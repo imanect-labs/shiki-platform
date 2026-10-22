@@ -483,6 +483,11 @@ jobs:
         working-directory: deploy/compose
         run: bash smoke-bff.sh
 
+      # tenant / roles 属性はユーザーが Account API で書き換えられない（越境防止）・管理者は書ける（#809）。
+      - name: smoke test (Keycloak User Profile — tenant / roles は管理者のみ)
+        working-directory: deploy/compose
+        run: bash smoke-keycloak-user-profile.sh
+
       - name: smoke test (skillex)
         working-directory: deploy/compose
         run: |
