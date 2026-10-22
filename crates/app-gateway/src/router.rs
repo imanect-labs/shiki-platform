@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use authz::{AuthContext, AuthzClient, Principal, PrincipalKind};
+use authz::{AuthContext, AuthzClient, GroupLayout, Principal, PrincipalKind};
 use axum::{
     extract::{MatchedPath, State},
     http::{header, header::AUTHORIZATION, HeaderMap, HeaderValue, Method, Request, StatusCode},
@@ -244,9 +244,11 @@ async fn authorize(
         }
         _ => state.default_tenant.clone(),
     };
-    // org はグループの先頭セグメントから解決する（内部 API の resolve_org と同一規則）。
-    // グループ未付与のトークンは設定の default_org へフォールバックする。
-    let org = org_from_groups(&identity.groups).unwrap_or_else(|| state.default_org.clone());
+    // org は解決済み tenant 配下の group（`/tenants/<tenant>/<org>`）から解決する
+    // （内部 API の resolve_org と同一規則・authz::org_group が単一定義・#811）。
+    // 該当 group の無いトークンは設定の default_org へフォールバックする。
+    let org = authz::org_group::resolve_org(&identity.groups, &tenant, group_layout(state))
+        .unwrap_or_else(|| state.default_org.clone());
     let auth = AuthContext::new(
         Principal {
             kind: PrincipalKind::User,
@@ -290,13 +292,14 @@ async fn authorize(
     })
 }
 
-/// グループパスの先頭セグメントを org として解決する（api::extract::resolve_org と同一規則）。
-fn org_from_groups(groups: &[String]) -> Option<String> {
-    groups
-        .iter()
-        .filter_map(|g| g.trim_start_matches('/').split('/').next())
-        .find(|seg| !seg.is_empty())
-        .map(str::to_string)
+/// テナンシーモードから group パスの解釈方式を決める（内部 API の `group_layout` と同じ写し）。
+/// multi（tenant クレーム必須）は自テナント配下のみ、single は旧形式（直下 group）も許す。
+fn group_layout(state: &GatewayState) -> GroupLayout {
+    if state.require_tenant_claim {
+        GroupLayout::TenantScoped
+    } else {
+        GroupLayout::TenantScopedOrLegacy
+    }
 }
 
 /// ゲートウェイ判定を監査へ残す（拒否は security タグ・trace_id は後続 PR12 で貫通強化）。
@@ -346,21 +349,44 @@ async fn whoami(Extension(ctx): Extension<GatewayCtx>) -> Json<serde_json::Value
 
 #[cfg(test)]
 mod tests {
-    use super::org_from_groups;
+    use authz::{org_group::resolve_org, GroupLayout};
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(ToString::to_string).collect()
+    }
 
     #[test]
     fn org_resolution_matches_internal_rule() {
-        // 先頭グループの最上位セグメント（api::extract::resolve_org と同一規則）。
+        // 自テナント配下の org（内部 API の resolve_org と同一規則）。
         assert_eq!(
-            org_from_groups(&["/acme/dev".into(), "/other".into()]),
+            resolve_org(
+                &v(&["/tenants/t/acme/dev", "/tenants/u/other"]),
+                "t",
+                GroupLayout::TenantScoped
+            ),
             Some("acme".to_string())
         );
+        // multi: 他テナント配下・無修飾の旧 group はフォールバック（None）。
         assert_eq!(
-            org_from_groups(&["sales".into()]),
+            resolve_org(
+                &v(&["/tenants/u/x", "/sales"]),
+                "t",
+                GroupLayout::TenantScoped
+            ),
+            None
+        );
+        // single: 旧形式も使える。空・スラッシュのみはフォールバック。
+        assert_eq!(
+            resolve_org(&v(&["sales"]), "t", GroupLayout::TenantScopedOrLegacy),
             Some("sales".to_string())
         );
-        // 空・スラッシュのみはフォールバック（None）。
-        assert_eq!(org_from_groups(&[]), None);
-        assert_eq!(org_from_groups(&["/".into()]), None);
+        assert_eq!(
+            resolve_org(&[], "t", GroupLayout::TenantScopedOrLegacy),
+            None
+        );
+        assert_eq!(
+            resolve_org(&v(&["/"]), "t", GroupLayout::TenantScopedOrLegacy),
+            None
+        );
     }
 }

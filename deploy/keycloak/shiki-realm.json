@@ -138,12 +138,30 @@
   ],
   "groups": [
     {
-      "name": "a-corp",
-      "path": "/a-corp"
-    },
-    {
-      "name": "b-corp",
-      "path": "/b-corp"
+      "name": "tenants",
+      "path": "/tenants",
+      "subGroups": [
+        {
+          "name": "a-corp",
+          "path": "/tenants/a-corp",
+          "subGroups": [
+            {
+              "name": "a-corp",
+              "path": "/tenants/a-corp/a-corp"
+            }
+          ]
+        },
+        {
+          "name": "b-corp",
+          "path": "/tenants/b-corp",
+          "subGroups": [
+            {
+              "name": "b-corp",
+              "path": "/tenants/b-corp/b-corp"
+            }
+          ]
+        }
+      ]
     }
   ],
   "clients": [
@@ -296,7 +314,7 @@
         ]
       },
       "groups": [
-        "/a-corp"
+        "/tenants/a-corp/a-corp"
       ],
       "credentials": [
         {
@@ -327,7 +345,7 @@
         ]
       },
       "groups": [
-        "/a-corp"
+        "/tenants/a-corp/a-corp"
       ],
       "credentials": [
         {
@@ -357,7 +375,7 @@
         ]
       },
       "groups": [
-        "/b-corp"
+        "/tenants/b-corp/b-corp"
       ],
       "credentials": [
         {

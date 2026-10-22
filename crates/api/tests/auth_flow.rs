@@ -995,6 +995,16 @@ async fn spawn_idp_with_admin() -> String {
             "/admin/realms/shiki/groups/{id}",
             delete(|Path(_id): Path<String>| async { StatusCode::NO_CONTENT }),
         )
+        // テナント修飾 group（`/tenants/<tenant>/<org>`）は親 id ＋ 名前で 1 段ずつ辿る（#811）。
+        .route(
+            "/admin/realms/shiki/groups/{id}/children",
+            post(|| async { StatusCode::CREATED }).get(
+                |Path(id): Path<String>, Query(q): Query<Value>| async move {
+                    let name = q.get("search").and_then(Value::as_str).unwrap_or("");
+                    Json(json!([{ "id": format!("{id}-{name}"), "name": name }]))
+                },
+            ),
+        )
         .route("/admin/realms/shiki/users", {
             let created_post = created.clone();
             let created_get = created.clone();

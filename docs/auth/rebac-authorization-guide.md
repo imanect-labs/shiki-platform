@@ -316,10 +316,10 @@ sequenceDiagram
   R-->>M: SessionRecord { principal, ... }
   M->>M: Cookie tenant と record.tenant_id 一致検証（改竄拒否）
   M->>M: 状態変更系は double-submit CSRF 検証
-  M->>M: req.extensions に Principal と TenantId を載せる
+  M->>M: resolve_org(principal, tenant_id)（/tenants/<tenant>/<org> の org）
+  M->>M: req.extensions に Principal・TenantId・OrgId を載せる
   M->>H: next（保護ルートへ）
   H->>E: AuthContextExt を extract
-  E->>E: resolve_org(principal)（group 先頭セグメント）
   E-->>H: AuthContext { principal, org, tenant_id }
   H->>H: サービス呼び出し（第一引数に &AuthContext）
 ```
@@ -328,8 +328,14 @@ sequenceDiagram
 
 - **BFF（Backend-for-Frontend）**: ブラウザには**不透明セッション Cookie だけ**。トークンはブラウザに置かない。
   `Authorization: Bearer` 入口は撤去済み（`middleware/auth.rs:3-6`）。
-- middleware（`session.rs:30` の `require_session`）が state を使い、`Principal` と `TenantId` を
-  request extension に載せる（`session.rs:92-95`）。
+- middleware（`session.rs:30` の `require_session`）が state を使い、`Principal`・`TenantId`・`OrgId` を
+  request extension に載せる（`session.rs:92-95`）。org の解決はテナンシー設定に依存するため、ここで解く。
+- **org の解決（`resolve_org`・規則の本体は `authz::org_group`・#811）**: Keycloak group は
+  `/tenants/<tenant>/<org>[/<dept>]` に置き、**解決済み tenant_id の配下だけ**を見る（tenant はセグメント単位で比較し、
+  `/tenants/acme2/...` は `acme` に一致しない）。テナントルート（`/tenants/<tenant>`）だけでは org にならず、
+  候補が複数ならソートして最小を採る（claim の並び順に依存しない）。該当無しは `default`。
+  multi（SaaS）ではテナント無修飾の旧 group（`/acme`）を org にも部署にもしない。single（オンプレ）は
+  自テナント配下が無ければ従来の直下 group（`/acme`・`/acme/eng`）を使う。公開 API ゲートウェイも同じ関数を使う。
 - extractor（`auth_context.rs` の `AuthContextExt`）は **state 非依存**で extension を読むだけ。
   「middleware が載せる → extractor が読む」の分業で、AuthContext を経由しないデータアクセスを構造的に書きにくくしている。
 - middleware はグループ単位で**一律適用**される。`route_table()`（`server.rs`）の `AccessPolicy`
@@ -792,7 +798,7 @@ JWT の `roles` claim はあくまで識別メタデータで、認可判定に�
 
 ```mermaid
 flowchart TB
-  claims["IdP claims<br/>roles[] + groups[]"] --> desired["desired: あるべき role 集合<br/>（org グループ /org は除外・validate_local_id）"]
+  claims["IdP claims<br/>roles[] + groups[]（自テナント配下のみ）"] --> desired["desired: あるべき role 集合<br/>（org グループは除外・validate_local_id）"]
   fga["read_subject_objects(user, role)<br/>= 現在の直接タプル"] --> current["current: 現在の role 集合"]
   desired --> diff{差分}
   current --> diff
@@ -800,8 +806,10 @@ flowchart TB
   diff -->|"desired − current"| grant["directory_role upsert<br/>→ write_tuple(user, member, role)<br/>付与"]
 ```
 
-- **desired**（`desired_role_ids`, `callback.rs:254`）: `roles` claim ＋ `groups` claim を統合。org 同名グループ（`/org`）は
-  organization タプルの責務なので除外。`validate_local_id` で構造文字を弾く。
+- **desired**（`desired_role_ids`, `callback.rs:254`）: `roles` claim ＋ `groups` claim を統合。groups は
+  自テナント配下（`/tenants/<tenant>/...`）だけを、テナントルートからの相対パス（`/tenants/acme/acme/eng` → `acme/eng`）で
+  role id にする（他テナント配下は捨てる・#811）。org そのもののグループ（`acme`）は organization タプルの責務なので除外。
+  `validate_local_id` で構造文字を弾く。
 - **current**（`read_subject_objects`, `callback.rs:180`）: **直接タプルのみ**（継承展開しない）を自テナント名前空間で抽出。
   剥奪対象は「直接付与されたもの」が正なので `list_objects` ではなく `read_subject_objects` を使う。
 - **剥奪 → 付与**の順。付与時は台帳 `directory_role` を FGA タプルより先に upsert（purge 漏れ防止・#91）。

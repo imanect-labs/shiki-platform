@@ -1,10 +1,11 @@
 //! Keycloak admin REST クライアント（SAAS.2 テナント・プロビジョニング / #87）。
 //!
 //! `shiki-provisioner` service account（client_credentials）でトークンを取得し、
-//! realm 内の group / user を管理する。テナント作成＝group `/{org}` ＋ 初期 admin ユーザー
-//! （`attributes.tenant` / 一時パスワード＋初回変更必須）、テナント削除＝tenant 属性一致
-//! ユーザーと group の撤去。全操作は**冪等**（既存/不在を成功に倒す）で、削除フローの
-//! 再実行で収束する。
+//! realm 内の group / user を管理する。テナント作成＝group `/tenants/<tenant>/<org>` ＋ 初期 admin
+//! ユーザー（`attributes.tenant` / 一時パスワード＋初回変更必須）、テナント削除＝tenant 属性一致
+//! ユーザーと `/tenants/<tenant>` subtree の撤去。group をテナントで修飾するのは、単一 realm で
+//! 同じ org slug を使うテナント同士が group（とそこに付く role・マッパー）を共有しないため（#811）。
+//! 全操作は**冪等**（既存/不在を成功に倒す）で、削除フローの再実行で収束する。
 //!
 //! [`crate::oidc`] と同じ薄いパターン（`&reqwest::Client`＋専用 error enum・リトライ無し）。
 
@@ -12,6 +13,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::config::AuthConfig;
+
+mod groups;
+pub mod org_group_migration;
+pub use groups::{GroupPathReferences, KcGroup, RenameOutcome};
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeycloakAdminError {
@@ -41,7 +46,7 @@ pub struct KcUser {
 
 impl KcUser {
     /// `attributes.tenant` の先頭値。
-    fn tenant(&self) -> Option<&str> {
+    pub fn tenant(&self) -> Option<&str> {
         self.attributes
             .get("tenant")
             .and_then(|v| v.first())
@@ -103,50 +108,6 @@ impl<'a> KeycloakAdmin<'a> {
         Ok(t.access_token)
     }
 
-    /// トップレベル group `/{name}` を冪等に用意し、その id を返す。
-    pub async fn ensure_group(&self, name: &str) -> Result<String, KeycloakAdminError> {
-        let token = self.admin_token().await?;
-        // 409（既存）は成功に倒し、検索で id を引く。
-        let resp = self
-            .http
-            .post(format!("{}/groups", self.base))
-            .bearer_auth(&token)
-            .json(&json!({ "name": name }))
-            .send()
-            .await
-            .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
-        if !resp.status().is_success() && resp.status().as_u16() != 409 {
-            return Err(status_error(resp).await);
-        }
-        // 作成応答は body が空のため、検索で id を解決する（exact 一致）。
-        let resp = self
-            .http
-            .get(format!("{}/groups", self.base))
-            .bearer_auth(&token)
-            .query(&[("search", name), ("exact", "true")])
-            .send()
-            .await
-            .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
-        let resp = ensure_ok(resp).await?;
-        #[derive(Deserialize)]
-        struct Group {
-            id: String,
-            name: String,
-        }
-        let groups: Vec<Group> = resp
-            .json()
-            .await
-            .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
-        groups
-            .into_iter()
-            .find(|g| g.name == name)
-            .map(|g| g.id)
-            .ok_or_else(|| KeycloakAdminError::Status {
-                status: 404,
-                body: format!("group '{name}' が作成後も見つかりません"),
-            })
-    }
-
     /// username で 1 ユーザーを引く（不在は `None`）。
     pub async fn find_user_by_username(
         &self,
@@ -172,7 +133,8 @@ impl<'a> KeycloakAdmin<'a> {
     /// テナント初期 admin ユーザーを冪等に作成し、`(user_id, 新規作成なら一時パスワード)` を返す。
     ///
     /// - `attributes.tenant` / `attributes.roles` を設定（claim マッパーの取得元）
-    /// - group `/{org}` へ参加（`groups` claim ＝ org 解決の取得元）
+    /// - group `/tenants/<tenant>/<org>` へ参加（`groups` claim ＝ org 解決の取得元・
+    ///   group は [`Self::ensure_org_group`] で先に用意しておく）
     /// - 一時パスワード＋ `UPDATE_PASSWORD` 必須アクション（初回ログインで変更を強制）
     /// - 既存ユーザーなら**作り直さず**現状を維持。ただし **初回ログイン前
     ///   （`UPDATE_PASSWORD` 未消化）なら一時パスワードを再発行して返す**（#91 M-6:
@@ -199,7 +161,7 @@ impl<'a> KeycloakAdmin<'a> {
             "enabled": true,
             "emailVerified": true,
             "attributes": { "tenant": [tenant_id], "roles": [] },
-            "groups": [format!("/{org_group}")],
+            "groups": [authz::org_group::org_group_path(tenant_id, org_group)],
             "credentials": [{ "type": "password", "value": temp_password, "temporary": true }],
             "requiredActions": ["UPDATE_PASSWORD"],
         });
@@ -381,42 +343,6 @@ impl<'a> KeycloakAdmin<'a> {
         let resp = self
             .http
             .delete(format!("{}/users/{}", self.base, user_id))
-            .bearer_auth(&token)
-            .send()
-            .await
-            .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
-        if resp.status().is_success() || resp.status().as_u16() == 404 {
-            return Ok(());
-        }
-        Err(status_error(resp).await)
-    }
-
-    /// トップレベル group `/{name}` を削除する（不在は成功に倒す＝冪等）。
-    pub async fn delete_group_by_name(&self, name: &str) -> Result<(), KeycloakAdminError> {
-        let token = self.admin_token().await?;
-        let resp = self
-            .http
-            .get(format!("{}/groups", self.base))
-            .bearer_auth(&token)
-            .query(&[("search", name), ("exact", "true")])
-            .send()
-            .await
-            .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
-        let resp = ensure_ok(resp).await?;
-        let groups: Vec<Value> = resp
-            .json()
-            .await
-            .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
-        let Some(id) = groups
-            .iter()
-            .find(|g| g.get("name").and_then(Value::as_str) == Some(name))
-            .and_then(|g| g.get("id").and_then(Value::as_str))
-        else {
-            return Ok(()); // 不在＝冪等成功。
-        };
-        let resp = self
-            .http
-            .delete(format!("{}/groups/{}", self.base, id))
             .bearer_auth(&token)
             .send()
             .await

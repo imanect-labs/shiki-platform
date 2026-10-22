@@ -1,6 +1,6 @@
 //! セッションミドルウェア（Cookie → セッション → `Principal`）。Bearer 版を置換する。
 //!
-//! - 不透明セッション Cookie からストアのセッションを引き、`Principal` + `tenant_id` を
+//! - 不透明セッション Cookie からストアのセッションを引き、`Principal` + `tenant_id` + org を
 //!   extension に載せる（`claims.rs` / `extract/*` / OpenFGA 経路は再利用）。
 //! - access token が期限前ならサーバ側で refresh ローテーション（downstream の
 //!   token-exchange が 401 にならないように）。refresh も失効ならセッション破棄→401。
@@ -18,7 +18,7 @@ use axum_extra::extract::cookie::CookieJar;
 
 use crate::{
     error::ApiError,
-    extract::{SessionAccessToken, TenantId},
+    extract::{resolve_org, OrgId, SessionAccessToken, TenantId},
     middleware::claims,
     oidc,
     routes::auth::CSRF_HEADER,
@@ -91,10 +91,13 @@ pub async fn require_session(
 
     // principal + tenant_id を extension に載せる（AuthContext extractor が取り出す）。
     // IdP の access token（本人権限で Keycloak Account API を呼ぶハンドラ用。外へは出さない）。
+    // org は解決済み tenant_id 配下の group だけから解く（#811・他テナントの group を拾わない）。
+    let org = resolve_org(&record.principal, &tenant_id, &state.config.auth);
     req.extensions_mut()
         .insert(SessionAccessToken(record.access_token));
     req.extensions_mut().insert(record.principal);
     req.extensions_mut().insert(TenantId(tenant_id));
+    req.extensions_mut().insert(OrgId(org));
     Ok(next.run(req).await)
 }
 

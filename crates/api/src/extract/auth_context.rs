@@ -4,7 +4,7 @@
 //! ハンドラはこの extractor 経由でしか `AuthContext` を得られないため、
 //! 「AuthContext を経由しないデータアクセス」を構造的に書きにくくする継ぎ目になる。
 
-use authz::{AuthContext, Principal};
+use authz::{AuthContext, GroupLayout, Principal};
 use axum::{extract::FromRequestParts, http::request::Parts};
 
 use crate::{
@@ -31,7 +31,13 @@ where
             .get::<TenantId>()
             .map(|t| t.0.clone())
             .ok_or(ApiError::Unauthorized)?;
-        let org = resolve_org(&principal);
+        // org も同じ middleware が tenant_id に紐づけて解決済み（`resolve_org` は tenancy 設定に
+        // 依存するため state を持つ側で解く）。無ければ fail-closed。
+        let org = parts
+            .extensions
+            .get::<OrgId>()
+            .map(|o| o.0.clone())
+            .ok_or(ApiError::Unauthorized)?;
         Ok(AuthContextExt(AuthContext::new(principal, org, tenant_id)))
     }
 }
@@ -46,19 +52,33 @@ pub struct AuthContextExt(pub AuthContext);
 #[derive(Debug, Clone)]
 pub(crate) struct TenantId(pub String);
 
-/// 認証主体から所属組織 ID を解決する。
+/// 解決済み org を request extension で運ぶ newtype（[`resolve_org`] の結果）。
+#[derive(Debug, Clone)]
+pub(crate) struct OrgId(pub String);
+
+/// group を持たない主体の org。
+const DEFAULT_ORG: &str = "default";
+
+/// 認証主体から所属組織 ID を解決する（解決済み `tenant_id` に閉じる・#811）。
 ///
-/// Phase 0 はシングルテナント想定で、Keycloak group（例: `/acme` や `/acme/eng`）の
-/// 先頭セグメントを org とみなす。group が無い場合は `default`。
-/// 後続フェーズで専用 claim や DB ルックアップに差し替える。
-pub(crate) fn resolve_org(principal: &Principal) -> String {
-    principal
-        .groups
-        .iter()
-        .filter_map(|g| g.trim_start_matches('/').split('/').next())
-        .find(|seg| !seg.is_empty())
-        .unwrap_or("default")
-        .to_string()
+/// Keycloak group は `/tenants/<tenant>/<org>[/<dept>]` に置く。規則の本体は
+/// [`authz::org_group::resolve_org`]（公開 API ゲートウェイと単一定義）で、ここは
+/// テナンシーモード → [`GroupLayout`] の写しと、該当無しの既定 org（`default`）だけを持つ。
+pub(crate) fn resolve_org(principal: &Principal, tenant_id: &str, auth: &AuthConfig) -> String {
+    authz::org_group::resolve_org(&principal.groups, tenant_id, group_layout(auth))
+        .unwrap_or_else(|| DEFAULT_ORG.to_string())
+}
+
+/// テナンシーモードから group パスの解釈方式を決める。
+///
+/// - `multi`（SaaS）: 自テナント配下（`/tenants/<tenant>/...`）だけ。テナント無修飾の旧 group は
+///   他テナントと共有され得るため org にも部署にもしない。
+/// - `single`（オンプレ）: 自テナント配下を優先し、無ければ従来の直下 group（`/acme`）を使う。
+pub(crate) fn group_layout(auth: &AuthConfig) -> GroupLayout {
+    match auth.tenancy {
+        Tenancy::Multi => GroupLayout::TenantScoped,
+        Tenancy::Single => GroupLayout::TenantScopedOrLegacy,
+    }
 }
 
 /// 認証主体と設定から `tenant_id` を解決する（取得元の継ぎ目を一点に集約）。
@@ -148,10 +168,58 @@ mod tests {
     }
 
     #[test]
-    fn org_from_group_path() {
-        assert_eq!(resolve_org(&principal_with_groups(&["/acme/eng"])), "acme");
-        assert_eq!(resolve_org(&principal_with_groups(&["acme"])), "acme");
-        assert_eq!(resolve_org(&principal_with_groups(&[])), "default");
+    fn org_from_tenant_scoped_group_path() {
+        let multi = auth_config(Tenancy::Multi, None);
+        let p = principal_with_groups(&["/tenants/acme/acme/eng"]);
+        assert_eq!(resolve_org(&p, "acme", &multi), "acme");
+        // 他テナント配下・旧形式（無修飾）は multi では org にならず既定へ。
+        assert_eq!(resolve_org(&p, "other", &multi), "default");
+        let legacy = principal_with_groups(&["/acme/eng"]);
+        assert_eq!(resolve_org(&legacy, "acme", &multi), "default");
+        assert_eq!(
+            resolve_org(&principal_with_groups(&[]), "acme", &multi),
+            "default"
+        );
+    }
+
+    #[test]
+    fn single_tenant_keeps_legacy_group_path() {
+        let single = auth_config(Tenancy::Single, Some("default"));
+        assert_eq!(
+            resolve_org(&principal_with_groups(&["/acme/eng"]), "default", &single),
+            "acme"
+        );
+        assert_eq!(
+            resolve_org(&principal_with_groups(&["acme"]), "default", &single),
+            "acme"
+        );
+        // 自テナント配下があればそちらを優先する。
+        let both = principal_with_groups(&["/legacy", "/tenants/default/acme"]);
+        assert_eq!(resolve_org(&both, "default", &single), "acme");
+        assert_eq!(group_layout(&single), GroupLayout::TenantScopedOrLegacy);
+        assert_eq!(
+            group_layout(&auth_config(Tenancy::Multi, None)),
+            GroupLayout::TenantScoped
+        );
+    }
+
+    #[tokio::test]
+    async fn extractor_requires_resolved_org() {
+        // middleware が org を載せていなければ fail-closed（principal から推測し直さない）。
+        let (mut parts, ()) = axum::http::Request::new(()).into_parts();
+        parts
+            .extensions
+            .insert(principal_with_groups(&["/tenants/t/acme"]));
+        parts.extensions.insert(TenantId("t".into()));
+        assert!(matches!(
+            AuthContextExt::from_request_parts(&mut parts, &()).await,
+            Err(ApiError::Unauthorized)
+        ));
+        parts.extensions.insert(OrgId("acme".into()));
+        let AuthContextExt(ctx) = AuthContextExt::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+        assert_eq!((ctx.org.as_str(), ctx.tenant_id.as_str()), ("acme", "t"));
     }
 
     #[test]

@@ -122,8 +122,8 @@ pub async fn create_tenant(
     if org.trim().is_empty() || req.display_name.trim().is_empty() {
         return Err(ApiError::BadRequest("org / display_name が空です".into()));
     }
-    // org は Keycloak group パス（`/{org}`）と FGA 識別子・runtime org 解決（先頭セグメント）に
-    // 使われるため、tenant_id と同じ禁止文字ルール（`/` 含む）を適用する。
+    // org は Keycloak group パス（`/tenants/<tenant>/<org>`）の 1 セグメントと FGA 識別子・
+    // runtime org 解決に使われるため、tenant_id と同じ禁止文字ルール（`/` 含む）を適用する。
     validate_tenant_id(&org)
         .map_err(|_| ApiError::BadRequest("org に使用できない文字が含まれています".into()))?;
     let username = req
@@ -137,10 +137,11 @@ pub async fn create_tenant(
         .upsert_active(&req.tenant_id, &org, &req.display_name)
         .await?;
 
-    // 2. Keycloak: group と初期 admin ユーザー（冪等）。
+    // 2. Keycloak: テナント修飾の org group（`/tenants/<tenant>/<org>`）と初期 admin ユーザー（冪等）。
+    //    素の `/{org}` にすると同じ slug の別テナントと group を共有してしまう（#811）。
     let kc = KeycloakAdmin::from_config(&state.http, &state.config.auth)
         .map_err(|e| ApiError::Internal(format!("keycloak admin: {e}")))?;
-    kc.ensure_group(&org)
+    kc.ensure_org_group(&req.tenant_id, &org)
         .await
         .map_err(|e| ApiError::Internal(format!("keycloak group: {e}")))?;
     let temp_password = generate_temp_password();
@@ -216,7 +217,7 @@ pub async fn delete_tenant(
     let sessions = state.sessions.delete_tenant(&tenant_id).await?;
     tracing::info!(%tenant_id, sessions, "tenant purge: セッションを失効");
 
-    // 3. Keycloak: tenant 属性一致ユーザーと org group を撤去（冪等）。
+    // 3. Keycloak: tenant 属性一致ユーザーとテナントの group subtree を撤去（冪等）。
     let kc = KeycloakAdmin::from_config(&state.http, &state.config.auth)
         .map_err(|e| ApiError::Internal(format!("keycloak admin: {e}")))?;
     let users = kc
@@ -228,15 +229,11 @@ pub async fn delete_tenant(
             .await
             .map_err(|e| ApiError::Internal(format!("keycloak user 削除: {e}")))?;
     }
-    // org group は**他の未削除テナントが同じ org slug を使っていない時のみ**削除する
-    // （共有 org の group を消すと他テナントの groups claim / org 解決が壊れる）。
-    if state.tenants.org_shared_by_others(&org, &tenant_id).await? {
-        tracing::info!(%tenant_id, %org, "tenant purge: org group は他テナントと共有中のため保持");
-    } else {
-        kc.delete_group_by_name(&org)
-            .await
-            .map_err(|e| ApiError::Internal(format!("keycloak group 削除: {e}")))?;
-    }
+    // group はテナントで修飾されている（`/tenants/<tenant>/...`）ので、同じ org slug を使う
+    // 他テナントの group を巻き込まずに subtree ごと消せる（#811）。
+    kc.delete_tenant_groups(&tenant_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("keycloak group 削除: {e}")))?;
     // ステップ 2 と IdP ユーザー削除の間に完了したログインが新セッションを作る競合に備え、
     // IdP 側を塞いだ後にもう一度セッションを失効させる（belt-and-braces）。
     let late_sessions = state.sessions.delete_tenant(&tenant_id).await?;

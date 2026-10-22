@@ -3,9 +3,13 @@
 //! ```text
 //! shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]
 //! shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]
+//! shiki-admin migrate-org-groups [--execute]
 //! ```
 //!
 //! `audit-viewer`: 監査閲覧者（`organization#audit_viewer`・#634）を付ける・外す（即時実行）。
+//!
+//! `migrate-org-groups` はテナント無修飾の旧 org group（`/acme`）を `/tenants/<tenant>/...` へ
+//! 移す（#811・`shiki_admin/org_groups.rs`）。以下は `retenant` の説明。
 //!
 //! - `--legacy`: SAAS.1（#84）以前の**旧無印 FGA 識別子/オブジェクトキー**を tenant 名前空間形式へ
 //!   移す（DB 行は day-1 で tenant_id を持つため不変・blob.object_key のみ書き換え）。
@@ -21,7 +25,10 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use anyhow::{bail, Context};
-use api::{config::AppConfig, keycloak_admin::KeycloakAdmin};
+use api::{
+    config::AppConfig,
+    keycloak_admin::{KeycloakAdmin, RenameOutcome},
+};
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
     migrate::{retenant_object_tuples, FromNs},
@@ -37,6 +44,8 @@ use uuid::Uuid;
 mod audit_viewer;
 #[path = "shiki_admin/keys.rs"]
 mod keys;
+#[path = "shiki_admin/org_groups.rs"]
+mod org_groups;
 use keys::{pre_migration_object_key, renamespace_object_key};
 
 // 移行対象テーブルは `storage::tenant_scope` が information_schema から導出する（#420）。
@@ -50,9 +59,10 @@ async fn main() -> anyhow::Result<()> {
     match args.first().map(String::as_str) {
         Some("retenant") => retenant(&args[1..]).await,
         Some("audit-viewer") => audit_viewer::run(&args[1..]).await,
+        Some("migrate-org-groups") => org_groups::run(&args[1..]).await,
         _ => {
             eprintln!(
-                "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]\n       shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]"
+                "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]\n       shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]\n       shiki-admin migrate-org-groups [--execute]"
             );
             bail!("不明なサブコマンド");
         }
@@ -416,25 +426,33 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                 .build()
                 .context("Keycloak 用 HTTP クライアントの初期化に失敗")?;
             match KeycloakAdmin::from_config(&kc_http, &config.auth) {
-                Ok(kc) => match kc.find_users_by_tenant(f).await {
-                    Ok(users) => {
-                        let mut updated = 0usize;
-                        for u in &users {
-                            match kc.update_user_tenant(&u.id, &to).await {
-                                Ok(()) => updated += 1,
-                                Err(e) => eprintln!(
-                                    "IdP tenant 属性の更新に失敗 user={}: {e}（手動で対応要）",
-                                    u.username
-                                ),
+                Ok(kc) => {
+                    match kc.find_users_by_tenant(f).await {
+                        Ok(users) => {
+                            let mut updated = 0usize;
+                            for u in &users {
+                                match kc.update_user_tenant(&u.id, &to).await {
+                                    Ok(()) => updated += 1,
+                                    Err(e) => eprintln!(
+                                        "IdP tenant 属性の更新に失敗 user={}: {e}（手動で対応要）",
+                                        u.username
+                                    ),
+                                }
                             }
+                            println!("IdP: tenant 属性を {updated}/{} 件更新", users.len());
                         }
-                        println!("IdP: tenant 属性を {updated}/{} 件更新", users.len());
+                        Err(e) => {
+                            eprintln!("IdP ユーザー検索に失敗（tenant 属性は手動更新要）: {e}");
+                        }
                     }
-                    Err(e) => eprintln!("IdP ユーザー検索に失敗（tenant 属性は手動更新要）: {e}"),
-                },
+                    // org/部署 group は `/tenants/<tenant>/...` に居るので、テナントルートを
+                    // リネームすれば配下ごと新しいパスで claim に載る（#811）。
+                    report_group_rename(f, &to, kc.rename_tenant_group(f, &to).await);
+                }
                 Err(_) => eprintln!(
-                    "⚠️ provisioner 未設定のため IdP の tenant 属性は更新していません。\
-                     Keycloak 側で attributes.tenant を '{f}' → '{to}' へ手動更新してください"
+                    "⚠️ provisioner 未設定のため IdP の tenant 属性と group は更新していません。\
+                     Keycloak 側で attributes.tenant を '{f}' → '{to}' へ、group /tenants/{f} を \
+                     /tenants/{to} へ手動で変更してください"
                 ),
             }
 
@@ -452,4 +470,23 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
         println!("DRY-RUN のため書き換えなし。--execute で実行します。");
     }
     Ok(())
+}
+
+/// retenant の group リネーム結果を報告する（失敗は手動対応を促す・best-effort）。
+fn report_group_rename(
+    from: &str,
+    to: &str,
+    outcome: Result<RenameOutcome, api::keycloak_admin::KeycloakAdminError>,
+) {
+    match outcome {
+        Ok(RenameOutcome::Renamed) => println!("IdP: group /tenants/{from} → /tenants/{to}"),
+        Ok(RenameOutcome::Missing) => println!(
+            "IdP: group /tenants/{from} が無い（旧 group のままなら先に migrate-org-groups を実行）"
+        ),
+        Ok(RenameOutcome::TargetExists) => eprintln!(
+            "⚠️ group /tenants/{to} が既にあるためリネームしていません。\
+             /tenants/{from} 配下のメンバーを手で移してください"
+        ),
+        Err(e) => eprintln!("IdP group のリネームに失敗（手動で対応要）: {e}"),
+    }
 }
