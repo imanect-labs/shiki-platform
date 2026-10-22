@@ -19,6 +19,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { createThread, getThread, listThreads, type Thread } from "@/lib/chat-api";
+import { readScoped, subscribeStorageScope, writeScoped } from "@/lib/user-storage";
 import { cn } from "@/lib/utils";
 
 /// アクティブ会話 id の保存先の抽象（ノート=Yjs meta・Office=localStorage）。
@@ -261,27 +262,38 @@ export function DocChatPanel({
 }
 
 /// localStorage をアクティブ会話 id の保存先にする [`ActiveThreadStore`]（Office 文書用・
-/// Yjs を持たないドキュメントの per-user 会話継続）。
+/// Yjs を持たないドキュメントの per-user 会話継続）。キーはユーザー＋テナント単位で、
+/// ログアウトで消える（[`@/lib/user-storage`]・#817）。
 export function useLocalActiveThreadStore(key: string): ActiveThreadStore {
   return React.useMemo<ActiveThreadStore>(() => {
     const storageKey = `docchat:active:${key}`;
     return {
       read: () => {
         try {
-          return window.localStorage.getItem(storageKey);
+          return readScoped(storageKey);
         } catch {
           return null;
         }
       },
       write: (id) => {
         try {
-          window.localStorage.setItem(storageKey, id);
+          writeScoped(storageKey, id);
         } catch {
           /* プライベートモード等では保存できない（セッション内は state が保持する） */
         }
       },
-      // localStorage は同一タブ内の setItem では storage イベントが出ないため購読対象なし。
-      subscribe: () => () => {},
+      // localStorage は同一タブ内の setItem では storage イベントが出ない。ユーザーの確定
+      // （/me 応答）だけを購読し、確定前に読んだ空の値をそのユーザーの保存値で読み直す。
+      // 保存値が無い変化（ログアウトでスコープが解けた等）は通知しない（アクティブを null に
+      // 戻すと「会話が無い」とみなして新しい会話を作りに行くため）。
+      subscribe: (onChange) =>
+        subscribeStorageScope(() => {
+          try {
+            if (readScoped(storageKey) !== null) onChange();
+          } catch {
+            /* 読めない環境では追従しない */
+          }
+        }),
     };
   }, [key]);
 }

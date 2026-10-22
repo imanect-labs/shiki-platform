@@ -42,6 +42,14 @@ test("未ログイン保護ページ→ログイン→戻り先復帰→ダミ�
   await expect(page.getByPlaceholder("チャットを検索...")).toBeVisible();
   await page.keyboard.press("Escape");
 
+  // 5.6 localStorage のユーザーのデータはユーザー＋テナント単位のキーに置かれ、
+  //     ログアウトで消える（共用 PC で次の人に残さない・#817）。画面の好みは残す。
+  await page.evaluate(() => {
+    window.localStorage.setItem("shiki.note-drafts.v1", "{}"); // #817 以前の素のキー
+    window.localStorage.setItem("docchat:active:legacy-file", "t-legacy");
+    window.localStorage.setItem("shiki.slide-drafts.v1@other-corp|someone", "{}");
+    window.localStorage.setItem("shiki:sidebar:width", "280");
+  });
   // 6. ログアウト → セッション破棄。BFF は id_token_hint を出さないため Keycloak が
   //    ログアウト確認画面を挟むことがある。出たら確定する。
   await page.getByRole("button", { name: "アカウントメニューを開く" }).click();
@@ -50,6 +58,20 @@ test("未ログイン保護ページ→ログイン→戻り先復帰→ダミ�
   if (page.url().includes(":8081")) {
     await page.locator("#kc-logout, button[type=submit], input[type=submit]").first().click();
   }
+
+  // ユーザーのデータのキーは（他ユーザー分・旧来の素のキーも含め）消え、画面の好みは残る。
+  // /reference は middleware の保護外なので、未ログインでも同一オリジンで localStorage を覗ける。
+  await page.goto("/reference");
+  const remaining = await page.evaluate(() => Object.keys(window.localStorage));
+  expect(
+    remaining.filter(
+      (k) =>
+        k.startsWith("shiki.composer.recent-skills") ||
+        k.startsWith("docchat:active:") ||
+        /^shiki\.[a-z]+-drafts\.v1/.test(k),
+    ),
+  ).toEqual([]);
+  expect(remaining).toContain("shiki:sidebar:width");
 
   // セッションが破棄され、保護ページへ行くと Keycloak のログイン画面へ戻る（負例の確認）。
   // /login は未ログインなら即 Keycloak へ送るため、goto の load 待ちはリダイレクトで中断され得る。

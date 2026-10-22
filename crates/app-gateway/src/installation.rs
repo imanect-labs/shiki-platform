@@ -216,7 +216,15 @@ impl AppInstallationStore {
             .bind(&new.server_spec)
             .fetch_one(&self.db)
             .await
-            .map_err(map_db)?;
+            .map_err(|e| match &e {
+                // ON CONFLICT は (tenant_id, app_id) のみを吸収する。残る一意制約は
+                // active な app_id の大域一意（migration 0075・B1 配信のテナント解決の前提）で、
+                // 別テナントに同じ app_id の active 行がある＝解決先が曖昧になるため拒否する。
+                sqlx::Error::Database(db) if db.is_unique_violation() => GatewayError::Conflict(
+                    "同じ app_id の有効なインストールが別テナントに存在します".into(),
+                ),
+                _ => map_db(e),
+            })?;
         Ok(row.into())
     }
 
@@ -264,9 +272,16 @@ impl AppInstallationStore {
 
     /// app_id から**有効な**インストールを引く（テナント跨ぎ・B1 配信用）。
     ///
-    /// B1 第3リスナは cookie/token を持たず URL にテナントを含まない（opaque origin 配信）。
-    /// `app_id`（mini_app_code アーティファクトの UUID）はテナント跨ぎで一意なため、これで
-    /// 解決し、返った `tenant_id` でバンドルキー（tenant スコープの content address）を組む。
+    /// **テナントで絞れない理由**: B1 第3リスナ（`/a/{app_id}/{sha256}`）は cookie/token を持たず
+    /// URL にもテナントを含まない（opaque origin・cookieless 配信・iframe の `src` がそのまま
+    /// immutable キャッシュの鍵）。呼び出し文脈にテナントが無いので、`app_id` から active
+    /// インストールと所属テナントを解決し、返った `tenant_id` でバンドルキー（tenant スコープの
+    /// content address）を組む。仮に URL にテナントを載せても未認証の入力でしかなく、認可の
+    /// 根拠にはならない。
+    ///
+    /// **一意性**: active な `app_id` の大域一意は DB の部分一意索引で保証する（migration 0075
+    /// `app_installation_active_app_id_uidx`）。それでも 2 行返れば不変条件違反として
+    /// fail-closed（Internal）にし、任意の 1 行を選ぶ `LIMIT 1` には戻さない。
     /// バンドルはアプリ自身のフロント資産（content-addressed・ピン一致必須）でユーザーデータを
     /// 含まないため、この解決でテナント隔離は損なわれない。
     pub async fn resolve_active_by_app_global(
@@ -274,16 +289,24 @@ impl AppInstallationStore {
         app_id: Uuid,
     ) -> Result<Option<(String, AppInstallation)>, GatewayError> {
         // tenant を先に解決してから tenant スコープの取得へ（Row の FromRow を汚さない）。
-        let tenant: Option<(String,)> = sqlx::query_as(
+        // LIMIT 2 で「複数該当」を検知できる最小限だけ読む。
+        let tenants: Vec<(String,)> = sqlx::query_as(
             "SELECT tenant_id FROM app_installation \
-             WHERE app_id = $1 AND status = 'active' LIMIT 1",
+             WHERE app_id = $1 AND status = 'active' LIMIT 2",
         )
         .bind(app_id)
-        .fetch_optional(&self.db)
+        .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
-        let Some((tenant_id,)) = tenant else {
-            return Ok(None);
+        let tenant_id = match tenants.as_slice() {
+            [] => return Ok(None),
+            [(tenant_id,)] => tenant_id.clone(),
+            _ => {
+                tracing::error!(%app_id, "active な app_id が複数テナントに存在（不変条件違反）");
+                return Err(GatewayError::Internal(
+                    "インストールの解決先が一意ではありません".into(),
+                ));
+            }
         };
         let installation = self.resolve_active_by_app(&tenant_id, app_id).await?;
         Ok(installation.map(|i| (tenant_id, i)))

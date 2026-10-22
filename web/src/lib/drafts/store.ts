@@ -8,11 +8,19 @@
 ///
 /// キーは **(threadId, name)**。同じ会話で別名なら別の下書き（N 本並存）、同名なら同じ下書きを
 /// 更新（refine・流し込み）。離脱/リロードでも消えないよう localStorage に退避する。
+/// localStorage のキーはユーザー（＋テナント）単位で、ログアウトで消える（[`@/lib/user-storage`]・#817）。
 ///
 /// `rev` / `source` は editor↔store の再帰更新を断ち切るために持つ: AI の流し込み（source=ai）は
 /// エディタへ再シードするが、エディタ自身の書き戻し（source=user）は再シードしない。
 
 import * as React from "react";
+
+import {
+  readScoped,
+  scopedStorageKey,
+  subscribeStorageScope,
+  writeScoped,
+} from "@/lib/user-storage";
 
 export type DraftKind = "note" | "slide" | "csv" | "document";
 
@@ -51,21 +59,45 @@ type PersistedEntry = DraftEntry & {
 
 const EMPTY: DraftEntry[] = [];
 
-/// kind 別の下書きストアを作る。localStorage キーは `shiki.<kind>-drafts.v1`
-/// （note はリファクタ前の `shiki.note-drafts.v1` と同一＝既存の下書きを引き継ぐ）。
+/// kind 別の下書きストアを作る。localStorage キーは `shiki.<kind>-drafts.v1@<tenant>|<user>`
+/// （素の `shiki.<kind>-drafts.v1` は #817 以前の形で、初回読み取りで今のユーザーへ移す）。
 export function createDraftStore(kind: DraftKind): DraftStore {
   const storageKey = `shiki.${kind}-drafts.v1`;
   const keyOf = (threadId: string, name: string) => `${threadId} ${name}`;
 
   type Store = Record<string, DraftEntry>;
   let cache: Store | null = null;
+  /// `cache` を読んだときのユーザー（スコープ付きキー）。null = 未確定でメモリ上だけ。
+  let cacheKey: string | null = null;
   const listeners = new Set<() => void>();
+
+  // ユーザーが確定・変化したら（/me 応答・ログアウト）そのユーザーのキーを読み直す。
+  // 未確定の間にメモリ上だけで作った下書き（履歴からの復元など）は、この画面を開いている
+  // 本人のものなので、確定したユーザーの保存分へ合流させる。ログアウト（確定→未確定）では捨てる。
+  if (typeof window !== "undefined") {
+    subscribeStorageScope(() => {
+      const pending = cache !== null && cacheKey === null ? cache : null;
+      cache = null;
+      if (pending && Object.keys(pending).length > 0 && scopedStorageKey(storageKey)) {
+        const persisted = read();
+        const merged: Store = { ...persisted };
+        for (const [k, entry] of Object.entries(pending)) {
+          const prevRev = persisted[k]?.rev ?? 0;
+          merged[k] = { ...entry, rev: Math.max(entry.rev, prevRev + 1) };
+        }
+        write(merged);
+        return;
+      }
+      for (const l of listeners) l();
+    });
+  }
 
   function read(): Store {
     if (cache) return cache;
     if (typeof window === "undefined") return {};
+    cacheKey = scopedStorageKey(storageKey);
     try {
-      const raw = window.localStorage.getItem(storageKey);
+      const raw = readScoped(storageKey);
       const parsed = raw ? (JSON.parse(raw) as Record<string, PersistedEntry>) : {};
       // 旧ノート形式（markdown フィールド）を content へ移行する（読み取り時に一度だけ）。
       for (const entry of Object.values(parsed)) {
@@ -85,7 +117,8 @@ export function createDraftStore(kind: DraftKind): DraftStore {
     cache = next;
     if (typeof window !== "undefined") {
       try {
-        window.localStorage.setItem(storageKey, JSON.stringify(next));
+        // ユーザー未確定（/me 応答前）は書かない＝メモリ上だけで機能させる。
+        writeScoped(storageKey, JSON.stringify(next));
       } catch {
         // localStorage 不可（プライベートモード等）でもメモリキャッシュで機能させる。
       }

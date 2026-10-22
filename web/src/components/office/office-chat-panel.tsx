@@ -8,9 +8,11 @@
 /// ノートと同じく `origin_note_id` = ファイルの node id で引く。
 
 import * as React from "react";
+import { Loader2 } from "lucide-react";
 
 import { DocChatPanel, useLocalActiveThreadStore } from "@/components/chat/doc-chat-panel";
 import { officeTargetKind } from "@/lib/office/chart-insert";
+import { useStorageScopeReady } from "@/lib/user-storage";
 
 import { OfficeTargetProvider } from "./office-target";
 
@@ -31,6 +33,17 @@ export function OfficeChatPanel({
     const kind = officeTargetKind(fileName);
     return kind ? { fileId, kind } : null;
   }, [fileId, fileName]);
+  // アクティブ会話 id はユーザー単位の localStorage にある（#817）。ユーザーが確定する前に
+  // 読むと「保存値なし」とみなして新しい会話を作ってしまうため、確定まで待つ。
+  const scopeReady = useStorageScopeReady();
+  if (!scopeReady) {
+    return (
+      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" aria-hidden />
+        チャットを準備しています…
+      </div>
+    );
+  }
   return (
     <OfficeTargetProvider target={target}>
       <DocChatPanel

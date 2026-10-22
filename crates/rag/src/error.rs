@@ -44,6 +44,13 @@ pub enum RagError {
 
     #[error("設定エラー: {0}")]
     Config(String),
+
+    /// 決定的 chunk_id が**別ノード／別テナント**の既存行と衝突した（#817）。
+    ///
+    /// `on conflict (id) do nothing` のまま黙って欠落させない。node.id は大域 PK なので
+    /// 正常系では起きず、再試行しても直らない恒久エラーとして job を失敗させ可視化する。
+    #[error("chunk_id が別ノードの既存チャンクと衝突しました: node={node_id} 件数={count}")]
+    ChunkIdConflict { node_id: uuid::Uuid, count: i64 },
 }
 
 impl RagError {
@@ -63,7 +70,8 @@ impl RagError {
             RagError::Parse { .. }
             | RagError::EmbeddingVersionMismatch { .. }
             | RagError::Serde(_)
-            | RagError::Config(_) => false,
+            | RagError::Config(_)
+            | RagError::ChunkIdConflict { .. } => false,
         }
     }
 }

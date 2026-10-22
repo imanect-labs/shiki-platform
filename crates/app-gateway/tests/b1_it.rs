@@ -4,6 +4,7 @@
 //! - 配信: 200 ＋ CSP（sandbox・connect-src=gateway・frame-ancestors=host）＋ immutable
 //! - 改竄: オブジェクトストア内容が sha と不一致なら配信拒否（500）
 //! - 入力: sha が hex64 でなければ 404（キー注入防止）
+//! - テナント解決: active な app_id は大域一意（別テナントの同一 app_id は install 時に 409・#817）
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -11,7 +12,9 @@ mod common;
 
 use std::sync::Arc;
 
-use app_gateway::{build_b1_router, AiPin, AppInstallationStore, B1State, NewAppInstallation};
+use app_gateway::{
+    build_b1_router, AiPin, AppInstallationStore, B1State, GatewayError, NewAppInstallation,
+};
 use axum::{body::Body, http::Request, http::StatusCode};
 use common::{ctx, setup, MemStore};
 use http_body_util::BodyExt;
@@ -128,4 +131,94 @@ async fn serves_pinned_bundle_with_isolation_headers() {
         .insert(miniapp_bundle_key(&tenant, &sha), b"tampered".to_vec());
     let (s, _, _) = get(&app, &format!("/a/{app_id}/{sha}")).await;
     assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+fn pinned<'a>(app_id: Uuid, sha: &'a str, scopes: &'a [String]) -> NewAppInstallation<'a> {
+    NewAppInstallation {
+        app_id,
+        app_name: "b1-app",
+        installed_version: "1.0.0",
+        granted_scopes: scopes,
+        client_id_b1: None,
+        client_id_b2: None,
+        ai: AiPin::default(),
+        frontend_bundle: Some(sha),
+        server_bundle: None,
+        server_spec: None,
+    }
+}
+
+/// テナント無しの解決（`resolve_active_by_app_global`）が曖昧にならないこと（#817）。
+///
+/// 同じ app_id を別テナントが active にしようとすると install 時点で 409（fail-closed）。
+/// 先のテナントが revoke すれば（active 行が消えれば）別テナントでインストールでき、
+/// B1 はそのテナントのバンドルキーで配信する。
+#[tokio::test]
+async fn active_app_id_is_globally_unique_across_tenants() {
+    let Some(pool) = setup().await else { return };
+    let tenant_a = format!("t-{}", Uuid::new_v4());
+    let tenant_b = format!("t-{}", Uuid::new_v4());
+    let app_id = Uuid::new_v4();
+    let sha = sha256_hex(BUNDLE);
+    let scopes = ["data.read".to_string()];
+
+    let store = Arc::new(MemStore::default());
+    store
+        .0
+        .lock()
+        .unwrap()
+        .insert(miniapp_bundle_key(&tenant_b, &sha), BUNDLE.to_vec());
+    let installations = AppInstallationStore::new(pool.clone());
+    let app = build_b1_router(B1State {
+        installations: installations.clone(),
+        store: store.clone(),
+        gateway_origin: "http://gw.example:8090".into(),
+        host_origin: "http://host.example:3000".into(),
+    });
+
+    installations
+        .upsert(&ctx(&tenant_a), pinned(app_id, &sha, &scopes))
+        .await
+        .expect("tenant a install");
+    // 同一テナントの再インストール（upsert）は従来どおり通る。
+    installations
+        .upsert(&ctx(&tenant_a), pinned(app_id, &sha, &scopes))
+        .await
+        .expect("tenant a reinstall");
+
+    // 別テナントが同じ app_id を active にしようとすると 409。
+    let err = installations
+        .upsert(&ctx(&tenant_b), pinned(app_id, &sha, &scopes))
+        .await
+        .expect_err("cross-tenant duplicate must be rejected");
+    assert!(matches!(err, GatewayError::Conflict(_)), "{err:?}");
+
+    // 解決先はテナント a のまま（バンドルはテナント b のキーにしか無いので 404）。
+    let (resolved, _) = installations
+        .resolve_active_by_app_global(app_id)
+        .await
+        .expect("resolve")
+        .expect("active");
+    assert_eq!(resolved, tenant_a);
+    let (s, _, _) = get(&app, &format!("/a/{app_id}/{sha}")).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // a が revoke すれば active 行が消え、b でインストールでき、b のキーで配信される。
+    installations
+        .revoke(&ctx(&tenant_a), app_id)
+        .await
+        .expect("revoke a");
+    installations
+        .upsert(&ctx(&tenant_b), pinned(app_id, &sha, &scopes))
+        .await
+        .expect("tenant b install after revoke");
+    let (resolved, _) = installations
+        .resolve_active_by_app_global(app_id)
+        .await
+        .expect("resolve")
+        .expect("active");
+    assert_eq!(resolved, tenant_b);
+    let (s, _, body) = get(&app, &format!("/a/{app_id}/{sha}")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(body, BUNDLE);
 }

@@ -63,6 +63,19 @@ impl Default for RedeemRateLimiter {
     }
 }
 
+/// principal 単位の鍵（テナント内で一意な principal.id をテナントで名前空間化）。
+pub(super) fn principal_key(tenant_id: &str, principal_id: &str) -> String {
+    format!("p:{tenant_id}|{principal_id}")
+}
+
+/// token 単位の鍵。token はテナント**かつ** org スコープでしか一致しない（redeem の lookup が
+/// `tenant_id = $2 AND org = $3` で絞る）ので、鍵も同じ単位で名前空間化する（#817）。
+/// 素の token だけだと、他テナント／他 org からの空打ちで自テナントのリンクの窓を使い切らせる
+/// （redeem を DoS する）余地が残る。`tenant_id`・`org` は `|` を含まない（識別子ポリシー）。
+pub(super) fn token_key(tenant_id: &str, org: &str, token: &str) -> String {
+    format!("t:{tenant_id}|{org}|{token}")
+}
+
 /// 現在時刻での既定ヘルパ（本番経路）。
 #[allow(dead_code)]
 pub(super) fn now() -> DateTime<Utc> {
@@ -94,6 +107,27 @@ mod tests {
         assert!(!rl.check("k", t(2)));
         // 窓越え後はリセットされる。
         assert!(rl.check("k", t(61)));
+    }
+
+    #[test]
+    fn token_key_is_scoped_by_tenant_and_org() {
+        // 同じ token 文字列でも、テナント／org が違えば別の窓で数える。
+        let rl = RedeemRateLimiter::new(Duration::seconds(60), 1);
+        assert!(rl.check(&token_key("a-corp", "a-corp", "tok"), t(0)));
+        assert!(!rl.check(&token_key("a-corp", "a-corp", "tok"), t(0)));
+        // 他テナント・他 org の試行は a-corp の窓を消費しない（逆も同様）。
+        assert!(rl.check(&token_key("b-corp", "a-corp", "tok"), t(0)));
+        assert!(rl.check(&token_key("a-corp", "sales", "tok"), t(0)));
+        assert_ne!(
+            token_key("a-corp", "a-corp", "tok"),
+            token_key("b-corp", "a-corp", "tok")
+        );
+        assert_ne!(
+            principal_key("a-corp", "alice"),
+            principal_key("b-corp", "alice")
+        );
+        // principal 鍵と token 鍵は接頭辞で衝突しない。
+        assert_ne!(principal_key("a-corp", "x"), token_key("a-corp", "x", ""));
     }
 
     #[test]

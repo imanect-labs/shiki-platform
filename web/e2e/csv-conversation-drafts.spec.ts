@@ -48,7 +48,11 @@ test("下書き: リロードしてもスレッド履歴から復元される", 
   await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 20_000 });
 
   // localStorage を消してリロード → 会話履歴の csv_draft ブロックから復元される。
-  await page.evaluate(() => window.localStorage.removeItem("shiki.csv-drafts.v1"));
+  // キーはユーザー単位（`shiki.csv-drafts.v1@<tenant>|<user>`・#817）なので接頭辞で消す。
+  await page.evaluate(() => {
+    const keys = Object.keys(window.localStorage).filter((k) => k.startsWith("shiki.csv-drafts.v1"));
+    for (const k of keys) window.localStorage.removeItem(k);
+  });
   await page.reload();
   await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 25_000 });
   await expect(page.getByTestId("draft-badge")).toBeVisible();
