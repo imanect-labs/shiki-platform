@@ -35,6 +35,8 @@ tokio.workspace = true
 
 [dev-dependencies]
 reqwest.workspace = true
+# 内部整数キーの計測（uuid 集合 vs Roaring ビットマップ・tests/internal_key_bench_it.rs）。
+roaring = "0.10"
 
 # lib 名 authz/storage で参照するため machete が誤検出する。
 [package.metadata.cargo-machete]
