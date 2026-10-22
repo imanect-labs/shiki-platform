@@ -258,7 +258,7 @@ services:
       # /parse が source_url で取りに行ってよいホスト（presigned URL の発行元＝server の
       # SHIKI__STORAGE__S3__INTERNAL_ENDPOINT のホスト）。それ以外（qdrant:6333 等の内部ホスト・
       # IP リテラル・リダイレクト先）は取りに行かない。空は URL 経路を全て拒否する（#812）。
-      SOURCE_URL_ALLOWED_HOSTS: ${INGESTION_SOURCE_URL_ALLOWED_HOSTS:-rustfs:9000}
+      SOURCE_URL_ALLOWED_HOSTS: ${INGESTION_SOURCE_URL_ALLOWED_HOSTS-rustfs:9000}
     volumes:
       - hf-cache:/models
     ports:

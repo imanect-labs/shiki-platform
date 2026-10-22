@@ -456,6 +456,15 @@ else
     EFF_S3_SK=$REMOTE_S3_SK
     EFF_WORKER_URL=$SHIKI_DEV_RAG_WORKER_URL
     EFF_WORKER_TOKEN=$REMOTE_WORKER_TOKEN
+    # 共有トークンは Bearer で毎リクエスト送られる。ループバック以外へ平文 HTTP で送ると経路上で
+    # 盗聴され得るので警告する（LAN のプレビュー worker は TLS 無しのため拒否まではしない）。
+    case "$EFF_WORKER_URL" in
+      http://localhost*|http://127.*|http://\[::1\]*|https://*) ;;
+      http://*)
+        if [ -n "$EFF_WORKER_TOKEN" ]; then
+          err "   ⚠️  worker のトークンを平文 HTTP（$EFF_WORKER_URL）で送ります。信頼できる LAN 以外では https を使ってください"
+        fi ;;
+    esac
     EMBED_LINE="export SHIKI__RAG__EMBEDDING_MODEL_VERSION=$(printf '%q' "$REMOTE_EMBED_MODEL")"
     # 外部のバケットの CORS は、指定された時だけ設定する（既存の設定を勝手に書き換えない）。
     EFF_CORS=${SHIKI_DEV_S3_CORS_ALLOWED_ORIGINS:-}
