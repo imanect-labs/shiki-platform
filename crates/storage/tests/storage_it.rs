@@ -1449,6 +1449,104 @@ async fn updated_by_tracks_editor() {
     assert_eq!(history[1].author, alice, "初版の author は作成者");
 }
 
+/// 内容更新の楽観ロック（#827）。開いた版（base_version）が古ければ declare でも finalize でも
+/// 409 にし、間に入った保存を上書きしない。合っていれば通常どおり新版になる。
+#[tokio::test]
+async fn content_update_base_version_conflict() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let alice = format!("ituser{}", Uuid::new_v4().simple());
+    seed_org_member(&authz, &org, &alice).await;
+    let actx = make_ctx(&org, &alice);
+
+    let file = upload(&service, &http, &actx, None, "edit.txt", b"v1")
+        .await
+        .expect("upload v1");
+    assert_eq!(file.version, 1);
+
+    // 版が合っていれば新版になる。
+    let declare = |content: &'static [u8], base: i64| {
+        let service = &service;
+        let actx = &actx;
+        async move {
+            service
+                .begin_upload_with_base(
+                    actx,
+                    None,
+                    "",
+                    "text/plain",
+                    &sha256_hex(content),
+                    content.len() as i64,
+                    Some(file.id),
+                    Some(base),
+                    None,
+                )
+                .await
+        }
+    };
+    let put = |url: String, content: &'static [u8]| {
+        let http = &http;
+        async move {
+            let resp = http
+                .put(&url)
+                .body(content.to_vec())
+                .send()
+                .await
+                .expect("PUT");
+            assert!(resp.status().is_success(), "PUT status: {}", resp.status());
+        }
+    };
+    let ok = declare(b"v2 from editor", 1).await.expect("declare base=1");
+    put(ok.upload_url, b"v2 from editor").await;
+    let v2 = service
+        .finalize_upload(&actx, ok.upload_id, None)
+        .await
+        .expect("finalize base=1");
+    assert_eq!(v2.version, 2);
+
+    // 古い版を申告した declare は、バイトを送る前に 409（今の版を返す）。
+    let stale = declare(b"stale", 1).await;
+    assert!(
+        matches!(stale, Err(StorageError::VersionConflict { current: 2 })),
+        "{stale:?}"
+    );
+
+    // declare の後・finalize の前に別の保存が入ったら、finalize が 409 で上書きしない。
+    let racing = declare(b"racing edit", 2).await.expect("declare base=2");
+    put(racing.upload_url, b"racing edit").await;
+    let other = upload_new_version(&service, &http, &actx, file.id, b"someone else")
+        .await
+        .expect("other save");
+    assert_eq!(other.version, 3);
+    let lost = service.finalize_upload(&actx, racing.upload_id, None).await;
+    assert!(
+        matches!(lost, Err(StorageError::VersionConflict { current: 3 })),
+        "{lost:?}"
+    );
+    let now = service
+        .get_metadata(&actx, file.id, None)
+        .await
+        .expect("get");
+    assert_eq!(now.version, 3, "他の保存が残る");
+    assert_eq!(
+        now.blob_sha256.as_deref(),
+        Some(sha256_hex(b"someone else").as_str())
+    );
+    assert_eq!(
+        node_version_count(&pool, file.id).await,
+        3,
+        "衝突した保存は版を増やさない"
+    );
+}
+
 #[tokio::test]
 async fn versioning_end_to_end() {
     let Some(ctx) = setup().await else { return };

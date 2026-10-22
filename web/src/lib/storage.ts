@@ -218,10 +218,12 @@ export function getNode(id: string): Promise<NodeResponse> {
 
 /// 1 ファイルをアップロードする。`targetNodeId` 指定で既存ファイルへの新バージョン。
 /// `name` 指定でファイル名を差し替える（同名衝突時に「両方残す」で連番名にする）。
+/// `baseVersion` は新バージョンの元にした版（#827）。今の版と違えば 409 の StorageApiError になる。
 export async function uploadFile(opts: {
   file: File;
   parentId?: string;
   targetNodeId?: string;
+  baseVersion?: number;
   name?: string;
   onProgress?: (fraction: number) => void;
 }): Promise<NodeResponse> {
@@ -242,6 +244,7 @@ export async function uploadFile(opts: {
       size: file.size,
       sha256,
       target_node_id: opts.targetNodeId ?? null,
+      base_version: opts.targetNodeId ? (opts.baseVersion ?? null) : null,
     }),
   }).then((r) => okJson<UploadTicketResponse>(r));
 

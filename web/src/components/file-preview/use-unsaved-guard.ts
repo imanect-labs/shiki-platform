@@ -4,15 +4,29 @@
 ///
 /// - タブを閉じる・再読み込み: ブラウザの確認を出す（`beforeunload`）。
 /// - アプリ内のリンク（サイドバーなど）: クリックを止めて `confirm(go)` に回す。`go` を呼ぶと移動する。
-///
-/// ブラウザの「戻る」は止められない（App Router に遷移を止める仕組みが無い）。
+/// - ブラウザの「戻る」: 編集中は同じ URL の履歴を 1 つ積んでおき、戻るでそれが消費されたら
+///   （＝まだ同じ画面にいる）、未保存なら積み直して確認を出す。未保存でなければそのままもう 1 つ戻る。
+///   App Router は遷移を止める仕組みを持たないため、履歴を 1 つ余分に持つ形で受け止める。
 import * as React from "react";
 import { useRouter } from "next/navigation";
 
-export function useUnsavedGuard(dirty: boolean, confirm: (go: () => void) => void): void {
+/// 積んだ履歴の目印（Next の pushState パッチは独自キーを残したまま内部状態を足す）。
+const GUARD_KEY = "__shikiUnsavedGuard";
+
+export function useUnsavedGuard({
+  editing,
+  dirty,
+  confirm,
+}: {
+  editing: boolean;
+  dirty: boolean;
+  confirm: (go: () => void) => void;
+}): void {
   const router = useRouter();
   const confirmRef = React.useRef(confirm);
   confirmRef.current = confirm;
+  const dirtyRef = React.useRef(dirty);
+  dirtyRef.current = dirty;
 
   React.useEffect(() => {
     if (!dirty) return;
@@ -42,4 +56,37 @@ export function useUnsavedGuard(dirty: boolean, confirm: (go: () => void) => voi
       document.removeEventListener("click", onClick, true);
     };
   }, [dirty, router]);
+
+  React.useEffect(() => {
+    if (!editing) return;
+    const href = window.location.href;
+    const pushGuard = () => window.history.pushState({ [GUARD_KEY]: true }, "", href);
+    pushGuard();
+    let leaving = false;
+    const onPopState = () => {
+      // 目印の上から戻った（同じ画面に留まっている）ときだけ扱う。進む・別の画面への戻りは触らない。
+      if (leaving || window.location.href !== href || isGuard(window.history.state)) return;
+      if (!dirtyRef.current) {
+        leaving = true;
+        window.history.back();
+        return;
+      }
+      pushGuard();
+      confirmRef.current(() => {
+        leaving = true;
+        // 積み直した目印と、元の画面の 2 つを戻る。
+        window.history.go(-2);
+      });
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      // 編集を終えて同じ画面に残るなら、積んだ目印を外す（戻るが 1 回で済むように）。
+      if (!leaving && window.location.href === href && isGuard(window.history.state)) window.history.back();
+    };
+  }, [editing]);
+}
+
+function isGuard(state: unknown): boolean {
+  return typeof state === "object" && state != null && GUARD_KEY in state;
 }

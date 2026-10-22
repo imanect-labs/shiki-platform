@@ -7,8 +7,9 @@
 /// 中身は必ず文字列として描く（HTML や SVG のソースを実行しない）。
 ///
 /// 編集者には「編集」を出し、押すと同じ場所で CodeMirror に切り替える（エディタは押したときに読み込む）。
-/// 保存は明示保存（⌘S・保存ボタン）で新しい版を作る。保存の直前に今の版を確かめ、開いた後に
-/// 誰かが保存していたら確かめる。改行コードと BOM は開いたときのまま保つ（Shift_JIS は UTF-8 で保存する）。
+/// 保存は明示保存（⌘S・保存ボタン）で新しい版を作る。開いた版を添えて保存し（サーバが版を比べる）、
+/// 開いた後に誰かが保存していたら 409 になるので確かめる。改行コードと BOM は開いたときのまま保つ
+/// （Shift_JIS は UTF-8 で保存する）。
 import * as React from "react";
 import { Check, Copy, Eye, Pencil, Save, WrapText } from "lucide-react";
 
@@ -273,25 +274,17 @@ export function TextPreview({
     }
   }, [opening, node, baseVersion]);
 
+  /// `base` を渡すと、その版の上に保存する（衝突の確認で「このまま保存」を選んだとき）。
   const save = React.useCallback(
-    async (opts?: { force?: boolean }) => {
+    async (opts?: { base?: number }) => {
       const editor = editorRef.current;
       // 変更が無ければ版を増やさない（⌘S の押しっぱなし・連打）。
       if (!editor || !content || saving || !dirtyRef.current) return;
       const snap = editor.snapshot();
       setSaving(true);
       try {
-        if (!opts?.force) {
-          const latest = await getCollabAccess(node.id);
-          // 版が分からないまま上書きしない（読めない・消えた）。
-          if (!latest) throw new Error("access not found");
-          if (latest.version !== baseVersion) {
-            if (mounted.current) setConflict(true);
-            return;
-          }
-        }
         const file = new File([encode(snap.text, content.bom)], node.name, { type: saveContentType(node.content_type) });
-        const saved = await uploadFile({ file, targetNodeId: node.id });
+        const saved = await uploadFile({ file, targetNodeId: node.id, baseVersion: opts?.base ?? baseVersion });
         if (!mounted.current) return;
         setBaseVersion(saved.version);
         setSize(saved.size_bytes);
@@ -299,6 +292,11 @@ export function TextPreview({
         editor.markSaved(snap.doc);
         toast({ title: "保存しました", description: `版 ${saved.version} として保存しました。` });
       } catch (e) {
+        // 開いた後に他の保存が入っていた（サーバが版を比べて断った）。
+        if (e instanceof StorageApiError && e.status === 409) {
+          if (mounted.current) setConflict(true);
+          return;
+        }
         const denied = e instanceof StorageApiError && e.status === 403;
         toast({
           variant: "destructive",
@@ -311,6 +309,17 @@ export function TextPreview({
     },
     [content, saving, node, baseVersion],
   );
+  // 衝突の確認で「このまま保存」: 今の版を取り直し、その上に保存する（その間にまた保存が入れば再び確認）。
+  const overwrite = React.useCallback(async () => {
+    setConflict(false);
+    try {
+      const latest = await getCollabAccess(node.id);
+      if (!latest) throw new Error("access not found");
+      await save({ base: latest.version });
+    } catch {
+      toast({ variant: "destructive", title: "保存できませんでした", description: "時間をおいてもう一度お試しください。編集した内容はそのまま残っています。" });
+    }
+  }, [node.id, save]);
   const saveRef = React.useRef(save);
   saveRef.current = save;
   const onEditorSave = React.useCallback(() => void saveRef.current(), []);
@@ -337,7 +346,7 @@ export function TextPreview({
     },
     [mode, dirty, saving],
   );
-  useUnsavedGuard(mode === "edit" && (dirty || saving), guard);
+  useUnsavedGuard({ editing: mode === "edit", dirty: mode === "edit" && (dirty || saving), confirm: guard });
 
   const stopEdit = React.useCallback(() => {
     guard(() => {
@@ -454,10 +463,7 @@ export function TextPreview({
       <ConflictDialog
         open={conflict}
         onClose={() => setConflict(false)}
-        onOverwrite={() => {
-          setConflict(false);
-          void save({ force: true });
-        }}
+        onOverwrite={() => void overwrite()}
         onReload={() => void reloadLatest()}
       />
       <DiscardDialog
