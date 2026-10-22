@@ -90,6 +90,43 @@ impl Driver {
         )
     }
 
+    /// 件数探索の文（値索引の並びで `LIMIT` に固定する・値ごとに分ける・[`super::lower::probe_union`]）。
+    pub(crate) fn probe_sql(&self, cap: i64, sql: &mut SqlBuf) -> String {
+        use super::lower::{probe_union, MAX_PROBE_TERMS};
+        match self {
+            Driver::Shared(ints) => {
+                let ph = sql.push(Bind::I64Array(ints.clone()));
+                let cph = sql.typed(Bind::I64(cap));
+                format!("SELECT count(*) FROM (SELECT unnest({ph}::int8[]) LIMIT {cph}) s")
+            }
+            Driver::Owner(user) => {
+                let c = text_eq_cond("x", user, None, sql);
+                probe_union(IndexTable::Text, SYSTEM_FIELD_OWNER, &[c], cap, sql)
+            }
+            Driver::Text { field, vals } if vals.len() <= MAX_PROBE_TERMS => {
+                let conds: Vec<String> = vals
+                    .iter()
+                    .map(|v| text_eq_cond("x", v, Some(*field), sql))
+                    .collect();
+                probe_union(IndexTable::Text, *field, &conds, cap, sql)
+            }
+            Driver::Text { field, vals } => {
+                let c = text_in_cond("x", vals, Some(*field), sql);
+                probe_union(IndexTable::Text, *field, &[c], cap, sql)
+            }
+            Driver::Num { field, val } => {
+                let ph = sql.typed(Bind::Numeric(val.clone()));
+                probe_union(
+                    IndexTable::Num,
+                    *field,
+                    &[format!("x.val = {ph}")],
+                    cap,
+                    sql,
+                )
+            }
+        }
+    }
+
     /// 件数が材料だけで分かるか（個別共有）。
     pub(crate) fn known_count(&self) -> Option<u64> {
         match self {

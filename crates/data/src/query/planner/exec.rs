@@ -36,7 +36,7 @@ const C_FETCH: f64 = 10.0;
 /// 複数ソートの同値群の先読み倍率・予算の初期倍率（K）。
 pub(crate) const K_PREFETCH: i64 = 8;
 /// 予算切れのたびに件数を測り直す回数の上限。
-const MAX_REPROBES: u32 = 3;
+const MAX_REPROBES: u32 = 8;
 
 /// 強制する戦略（検証用・計画の形の回帰と全戦略一致テスト）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

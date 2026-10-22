@@ -130,9 +130,7 @@ impl Prober<'_> {
             return Ok(None);
         }
         let mut sql = SqlBuf::scoped(self.keys.tenant_int, self.keys.table_int);
-        let src = d.source_sql(&mut sql);
-        let ph = sql.typed(Bind::I64(cap.max(1)));
-        let text = format!("SELECT count(*) FROM ({src} LIMIT {ph}) s");
+        let text = d.probe_sql(cap.max(1), &mut sql);
         let n = self.run(conn, text, sql.binds).await?;
         Ok(Some(Probe {
             count: n,

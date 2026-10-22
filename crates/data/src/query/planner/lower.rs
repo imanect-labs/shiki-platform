@@ -531,10 +531,31 @@ impl Lowerer<'_> {
     }
 
     /// 上限付き件数探索（§4.3）。
+    ///
+    /// 値索引の並び（`val, record_int`）で `ORDER BY … LIMIT` にして、上限に達した所で必ず止まる
+    /// 索引走査に固定する（ビットマップ走査は一致する全エントリを先に読むので、件数が多い値ほど遅くなる・
+    /// プール統計の推定に左右されない・PIT-69）。多値の重複は数える（上限として使うので足りる・§4.3）。
     pub(crate) fn probe_sql(&self, a: &Atom, cap: i64, sql: &mut SqlBuf) -> String {
-        let src = self.atom_source(a, sql);
-        let ph = sql.typed(Bind::I64(cap));
-        format!("SELECT count(*) FROM ({src} LIMIT {ph}) s")
+        let table = self.atom_table(a);
+        // `= ANY(配列)` は値索引の並びと両立しない（索引条件にならず全件を読む）ので、値ごとの
+        // 等値に分けて並べる。
+        let conds: Vec<String> = match (&a.leaf, table) {
+            (Leaf::In(vals), IndexTable::Text | IndexTable::Num)
+                if vals.len() <= MAX_PROBE_TERMS =>
+            {
+                vals.iter()
+                    .map(|v| {
+                        let one = Atom {
+                            field: a.field,
+                            leaf: Leaf::Eq(v.clone()),
+                        };
+                        self.leaf_cond(&one, "x", sql)
+                    })
+                    .collect()
+            }
+            _ => vec![self.leaf_cond(a, "x", sql)],
+        };
+        probe_union(table, a.field, &conds, cap, sql)
     }
 
     /// 集計（候補 → 検査 → 索引値でグループ化・数値は numeric で正確に）。
@@ -594,6 +615,46 @@ impl Lowerer<'_> {
             select.join(", "),
             inner.join(", ")
         )
+    }
+}
+
+/// 件数探索で値ごとに分ける上限（超えたら 1 本の `ANY` で数える）。
+pub(crate) const MAX_PROBE_TERMS: usize = 32;
+
+/// 上限付き件数探索の文（条件ごとに値索引の並びで `LIMIT` した和を、さらに上限で切る）。
+pub(crate) fn probe_union(
+    table: IndexTable,
+    field: FieldId,
+    conds: &[String],
+    cap: i64,
+    sql: &mut SqlBuf,
+) -> String {
+    let rel = table.relation();
+    let fph = sql.typed(Bind::I16(field_i16(field)));
+    let ph = sql.typed(Bind::I64(cap));
+    let order = index_order(table);
+    let parts: Vec<String> = conds
+        .iter()
+        .map(|c| {
+            format!(
+                "(SELECT 1 FROM {rel} x WHERE x.tenant_int = $1 AND x.table_int = $2 \
+                 AND x.field_id = {fph} AND {c} ORDER BY {order} LIMIT {ph})"
+            )
+        })
+        .collect();
+    format!(
+        "SELECT count(*) FROM (SELECT 1 FROM ({}) u LIMIT {ph}) s",
+        parts.join(" UNION ALL ")
+    )
+}
+
+/// 索引表の値索引の並び（件数探索を早期終了する索引走査に固定するため）。
+pub(crate) fn index_order(table: IndexTable) -> &'static str {
+    match table {
+        IndexTable::Text | IndexTable::Num => "x.val, x.record_int",
+        IndexTable::Link => "x.src_record, x.ord",
+        // 部分一致（GIN）は並びを持たない（一致の全件を読む）。
+        IndexTable::Unique | IndexTable::Search => "x.record_int",
     }
 }
 

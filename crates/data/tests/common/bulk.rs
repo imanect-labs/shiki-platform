@@ -29,12 +29,16 @@ pub fn bench_schema(policy: bool) -> TableSchema {
     assignee.indexed = true;
     let mut s = schema(vec![status, amount, assignee]);
     if policy {
+        // 担当者本人か作成者（投入は全行 alice）だけが見える。alice は全行・`u{n}` は 0.01%。
         s.row_policy = Some(RowPolicy {
-            read: PolicyExpr::FieldCmp {
-                field: "assignee".into(),
-                op: CmpOp::Eq,
-                value: PolicyOperand::UserId,
-            },
+            read: PolicyExpr::Any(vec![
+                PolicyExpr::FieldCmp {
+                    field: "assignee".into(),
+                    op: CmpOp::Eq,
+                    value: PolicyOperand::UserId,
+                },
+                PolicyExpr::IsOwner,
+            ]),
             write: None,
         });
     }
