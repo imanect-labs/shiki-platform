@@ -22,6 +22,9 @@
 //!   （[`cursor`]）。
 //! - **接続プールは `PoolRouter` から引く（Task 15.1）**: 本 crate は接続プールを保持しない
 //!   （シャード安全の禁止事項は docs/data/shard-safety.md・CI で検査）。
+//! - **pivot 索引テーブル（Task 15.2）**: 索引は共有の索引テーブルへの行として持ち、物理本数は
+//!   テナント数・テーブル数・列数に依存しない。書込は同一 Tx で変更フィールドの索引行だけを
+//!   書き換える（旧方式の式インデックスとの二重書込期間・[`index`]）。
 
 mod cursor;
 mod derived;
@@ -32,6 +35,7 @@ mod index;
 mod key_migration;
 mod mask;
 mod model;
+mod numeric;
 pub mod policy;
 mod query;
 mod record;
@@ -48,13 +52,19 @@ mod view;
 pub use cursor::{CursorKey, CURSOR_KEY_LEN};
 pub use fsm::{FsmBody, FsmRef, FsmTransition};
 pub use fsm_store::FsmStore;
+pub use index::{
+    sort_precision, IndexBackfillStatus, IndexBackfillStep, IndexBackfillWorker,
+    IndexParityMismatch, IndexParityReport, IndexState, SortPrecision, BACKFILL_CHUNK,
+    DEFAULT_MAX_MULTI_VALUES, INDEX_BACKFILL_QUEUE, MAX_INDEX_KEY_BYTES,
+};
 pub use key_migration::{
     FieldKeyMigrationWorker, KeyMigrationProgress, FIELD_KEY_MIGRATION_QUEUE, MIGRATION_BATCH,
 };
 pub use model::{
-    ComputedDef, ComputedOp, DataRecord, DataTable, FieldDef, FieldId, FieldPatch, FieldPolicy,
-    FieldType, LookupDef, RecordRevision, TableSchema, FIRST_USER_FIELD_ID, MAX_FIELD_ID,
-    SYSTEM_FIELD_CREATED_AT, SYSTEM_FIELD_OWNER, SYSTEM_FIELD_UPDATED_AT,
+    ComputedDef, ComputedOp, DataRecord, DataTable, ExcessScale, FieldDef, FieldId, FieldPatch,
+    FieldPolicy, FieldType, LookupDef, NumericSpec, RecordRevision, RoundingMode, TableSchema,
+    FIRST_USER_FIELD_ID, MAX_FIELD_ID, SYSTEM_FIELD_CREATED_AT, SYSTEM_FIELD_OWNER,
+    SYSTEM_FIELD_UPDATED_AT,
 };
 pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
 pub use query::declarative::{

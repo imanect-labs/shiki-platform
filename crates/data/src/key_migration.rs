@@ -28,7 +28,7 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 use crate::field_key::upgrade_legacy_schema;
-use crate::index::{drop_registered_indexes, ensure_indexes};
+use crate::index::legacy::{drop_registered_indexes, ensure_indexes};
 use crate::model::{FieldType, TableSchema};
 use crate::store::DataStore;
 use crate::{map_db, DataError};
@@ -67,8 +67,8 @@ impl DataStore {
     ) -> Result<bool, DataError> {
         let db = self.pools.for_tenant(tenant_id);
         let mut tx = db.begin().await.map_err(map_db)?;
-        let row: Option<(Json<TableSchema>, i16)> = sqlx::query_as(
-            "SELECT schema, key_format FROM data_table \
+        let row: Option<(Json<TableSchema>, i16, i32, i64)> = sqlx::query_as(
+            "SELECT schema, key_format, tenant_int, table_int FROM data_table \
              WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(tenant_id)
@@ -76,7 +76,7 @@ impl DataStore {
         .fetch_optional(&mut *tx)
         .await
         .map_err(map_db)?;
-        let (legacy, format) = row.ok_or(DataError::NotFound)?;
+        let (legacy, format, tenant_int, table_int) = row.ok_or(DataError::NotFound)?;
         if format != KEY_FORMAT_LEGACY {
             tx.rollback().await.map_err(map_db)?;
             return Ok(false);
@@ -99,18 +99,20 @@ impl DataStore {
                  FROM jsonb_each(data_record.data) d \
                  JOIN unnest($3::text[], $4::text[]) AS m(old_key, new_key) \
                    ON m.old_key = d.key) \
-             WHERE tenant_id = $1 AND table_id = $2",
+             WHERE tenant_int = $5 AND table_int = $6 AND tenant_id = $1 AND table_id = $2",
         )
         .bind(tenant_id)
         .bind(table_id)
         .bind(&old_keys)
         .bind(&new_keys)
+        .bind(tenant_int)
+        .bind(table_int)
         .execute(&mut *tx)
         .await
         .map_err(map_db)?
         .rows_affected();
         // ③ 新キー（"f{id}"）で宣言インデックスを張り直す。
-        ensure_indexes(&mut tx, tenant_id, table_id, &schema).await?;
+        ensure_indexes(&mut tx, tenant_id, table_id, table_int, &schema).await?;
         // ④ スキーマと形式を確定する（schema_version は上げない＝意味は変わらない）。
         sqlx::query(
             "UPDATE data_table SET schema = $3, key_format = $4, next_field_id = $5 \

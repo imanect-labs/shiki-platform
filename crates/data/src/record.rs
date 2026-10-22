@@ -14,6 +14,8 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 use crate::field_key::{decode_record, encode_record};
+use crate::index::state::{lock_plan, IndexPlan};
+use crate::index::write::{IndexWriter, IndexedRecord};
 use crate::model::{DataRecord, FieldType, TableSchema};
 use crate::revision::{diff_fields, insert_revision, RevisionInsert};
 use crate::store::DataStore;
@@ -32,14 +34,24 @@ pub(crate) struct RecordRow {
     pub(crate) updated_at: DateTime<Utc>,
 }
 
+/// 書込の RETURNING（索引行の書込に `record_int` が要る）。**`record_int` は crate 内に閉じる**
+/// （DTO へは [`RecordRow`] だけを渡す・PIT-75）。
+#[derive(sqlx::FromRow)]
+pub(crate) struct WrittenRow {
+    pub(crate) record_int: i64,
+    #[sqlx(flatten)]
+    pub(crate) row: RecordRow,
+}
+
 /// data_record の SELECT 列（[`RecordRow`] と同じ並び・エイリアス `r` 付き）。
 ///
 /// **`record_int` / `tenant_int` / `table_int` は選ばない**（外部 DTO に載る経路へ内部キーを
 /// 流さない・PIT-75）。
 pub(crate) const RECORD_COLS: &str =
     "r.id, r.table_id, r.data, r.rev, r.owner, r.created_at, r.updated_at";
-/// RETURNING 用（エイリアスなし）。
-pub(crate) const RECORD_RETURNING: &str = "id, table_id, data, rev, owner, created_at, updated_at";
+/// 書込の RETURNING（[`WrittenRow`]・crate 内専用）。
+pub(crate) const WRITTEN_RETURNING: &str =
+    "record_int, id, table_id, data, rev, owner, created_at, updated_at";
 
 impl RecordRow {
     /// 保存形（`"f{id}"` キー）を外部形（`key`）へ戻して DTO にする。
@@ -57,6 +69,21 @@ impl RecordRow {
 }
 
 impl DataStore {
+    /// 書込 Tx 上の索引ライタ（[`lock_plan`] の計画に従う）。
+    pub(crate) fn index_writer<'a>(
+        &self,
+        plan: &'a IndexPlan,
+        schema: &'a TableSchema,
+        tenant_id: &'a str,
+    ) -> IndexWriter<'a> {
+        IndexWriter {
+            plan,
+            schema,
+            tenant_id,
+            max_multi_values: self.max_multi_values,
+        }
+    }
+
     /// レコードを作成する（editor・サーバ検証・rev=1・リビジョン同時記録）。
     pub async fn create_record(
         &self,
@@ -74,8 +101,14 @@ impl DataStore {
         )
         .await?;
         let table = self.fetch_live(ctx, table_id).await?;
-        let normalized =
-            validate_record_data(ctx, &table.schema, &data, self.resolver.as_ref()).await?;
+        let normalized = validate_record_data(
+            ctx,
+            &table.schema,
+            &data,
+            self.resolver.as_ref(),
+            self.max_multi_values,
+        )
+        .await?;
         // FSM 管理テーブルでも create は初期 status を置ける（以降の status 変更は遷移 API 経由・
         // Task 9.10）。「初期状態のみ許可」の厳密化は FSM 定義の参照が要るため後続で行う。
         self.check_record_refs(ctx, &table.schema, &normalized)
@@ -87,11 +120,20 @@ impl DataStore {
             .begin()
             .await
             .map_err(map_db)?;
+        // 索引の計画（テーブル行を FOR KEY SHARE・レコード行より先に取る）。
+        let plan = lock_plan(
+            &mut tx,
+            &ctx.tenant_id,
+            table_id,
+            table.keys,
+            table.schema_version,
+        )
+        .await?;
         // record_int は列 default（プール共通シーケンス）で採番し、外へは返さない。
-        let row: RecordRow = sqlx::query_as(&format!(
+        let written: WrittenRow = sqlx::query_as(&format!(
             "INSERT INTO data_record (tenant_id, table_id, org, data, owner, tenant_int, table_int) \
              VALUES ($1, $2, $3, $4, $5, $6, $7) \
-             RETURNING {RECORD_RETURNING}"
+             RETURNING {WRITTEN_RETURNING}"
         ))
         .bind(&ctx.tenant_id)
         .bind(table_id)
@@ -103,6 +145,20 @@ impl DataStore {
         .fetch_one(&mut *tx)
         .await
         .map_err(map_unique)?;
+        // 索引行（全フィールド＋擬似列）を同一 Tx で書く（二重書込期間・旧方式の式インデックスは DB が更新）。
+        self.index_writer(&plan, &table.schema, &ctx.tenant_id)
+            .on_create(
+                &mut tx,
+                &IndexedRecord {
+                    record_int: written.record_int,
+                    owner: &written.row.owner,
+                    created_at: written.row.created_at,
+                    updated_at: written.row.updated_at,
+                    data: &normalized,
+                },
+            )
+            .await?;
+        let row = written.row;
         let patch = diff_fields(&Map::new(), &normalized);
         insert_revision(
             &mut tx,
@@ -187,6 +243,14 @@ impl DataStore {
             .begin()
             .await
             .map_err(map_db)?;
+        let plan = lock_plan(
+            &mut tx,
+            &ctx.tenant_id,
+            table_id,
+            table.keys,
+            table.schema_version,
+        )
+        .await?;
         // 行述語つきロック: 不可視行は NotFound（rev オラクル封じ・PIT-21）。
         let current = self
             .lock_visible_by_id(ctx, &mut tx, &table, id)
@@ -220,6 +284,7 @@ impl DataStore {
             &table.schema,
             &Value::Object(merged),
             self.resolver.as_ref(),
+            self.max_multi_values,
         )
         .await?;
         // FSM 管理テーブルの status は直接 update できない（遷移 API 経由でのみ・Task 9.10）。
@@ -232,10 +297,11 @@ impl DataStore {
             return Ok(current);
         }
         let new_rev = current.rev + 1;
-        let row: RecordRow = sqlx::query_as(&format!(
+        let written: WrittenRow = sqlx::query_as(&format!(
             "UPDATE data_record SET data = $4, rev = $5, updated_at = now() \
-             WHERE tenant_id = $1 AND table_id = $2 AND id = $3 \
-             RETURNING {RECORD_RETURNING}"
+             WHERE tenant_int = $6 AND table_int = $7 AND tenant_id = $1 AND table_id = $2 \
+               AND id = $3 \
+             RETURNING {WRITTEN_RETURNING}"
         ))
         .bind(&ctx.tenant_id)
         .bind(table_id)
@@ -245,9 +311,21 @@ impl DataStore {
             &normalized,
         ))))
         .bind(new_rev)
+        .bind(table.keys.tenant_int)
+        .bind(table.keys.table_int)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_unique)?;
+        // 変更のあったフィールド（patches）の索引行と updated_at だけを書き換える（差分更新）。
+        self.index_writer(&plan, &table.schema, &ctx.tenant_id)
+            .on_update(
+                &mut tx,
+                written.record_int,
+                &patches,
+                written.row.updated_at,
+            )
+            .await?;
+        let row = written.row;
         insert_revision(
             &mut tx,
             ctx,
@@ -299,6 +377,14 @@ impl DataStore {
             .begin()
             .await
             .map_err(map_db)?;
+        let plan = lock_plan(
+            &mut tx,
+            &ctx.tenant_id,
+            table_id,
+            table.keys,
+            table.schema_version,
+        )
+        .await?;
         // 行述語つきロック: 不可視行は NotFound（rev オラクル封じ・PIT-21）。
         let current = self
             .lock_visible_by_id(ctx, &mut tx, &table, id)
@@ -313,14 +399,25 @@ impl DataStore {
                 current.rev
             )));
         }
-        sqlx::query("DELETE FROM data_record WHERE tenant_id = $1 AND table_id = $2 AND id = $3")
-            .bind(&ctx.tenant_id)
-            .bind(table_id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db)?;
+        let record_int: i64 = sqlx::query_scalar(
+            "DELETE FROM data_record \
+             WHERE tenant_int = $4 AND table_int = $5 AND tenant_id = $1 AND table_id = $2 \
+               AND id = $3 \
+             RETURNING record_int",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(table_id)
+        .bind(id)
+        .bind(table.keys.tenant_int)
+        .bind(table.keys.table_int)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_db)?;
         let old_map = decode_record(&table.schema, &current.data.0);
+        // そのレコードの索引行を全て消す（同一 Tx）。
+        self.index_writer(&plan, &table.schema, &ctx.tenant_id)
+            .on_delete(&mut tx, record_int, &old_map)
+            .await?;
         let patches = diff_fields(&old_map, &Map::new());
         insert_revision(
             &mut tx,

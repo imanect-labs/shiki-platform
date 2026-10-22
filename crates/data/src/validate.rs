@@ -12,10 +12,9 @@ use uuid::Uuid;
 use crate::model::{FieldDef, FieldType, TableSchema};
 use crate::DataError;
 
-/// text フィールドの値の上限長（防御的上限）。
-const MAX_TEXT_LEN: usize = 10_000;
-/// multi_select の選択数上限。
-const MAX_MULTI_SELECT: usize = 50;
+/// text フィールドの値の上限長（防御的上限）。索引テーブルには先頭
+/// [`crate::index::MAX_INDEX_KEY_BYTES`] だけを載せるので、この長さでも btree キー上限で落ちない。
+pub(crate) const MAX_TEXT_LEN: usize = 10_000;
 
 /// 参照整合の解決器（user/role/file の存在・可読チェック）。
 ///
@@ -36,11 +35,14 @@ pub trait RefResolver: Send + Sync {
 /// - 未宣言フィールド・派生フィールド（lookup/computed）への書込は拒否。
 /// - `full` = create（required の欠落を拒否）。update は merge 後の完全形を渡す。
 /// - datetime は UTC 固定幅 ISO-8601 へ正規化する（辞書順＝時刻順）。
+/// - number は `numeric_spec` に従って正規化する（data-platform §4.2）。
+/// - 多値（multi_select）の要素数は `max_multi_values` まで（PIT-72・超過は 422）。
 pub(crate) async fn validate_record_data(
     ctx: &AuthContext,
     schema: &TableSchema,
     data: &Value,
     resolver: &dyn RefResolver,
+    max_multi_values: usize,
 ) -> Result<Map<String, Value>, DataError> {
     let obj = data.as_object().ok_or_else(|| {
         DataError::Invalid("data は JSON オブジェクトである必要があります".into())
@@ -74,7 +76,8 @@ pub(crate) async fn validate_record_data(
                 // 省略・null は「値なし」（保存形にキーを残さない）。
             }
             Some(v) => {
-                let normalized = validate_field_value(ctx, f, v, resolver).await?;
+                let normalized =
+                    validate_field_value(ctx, f, v, resolver, max_multi_values).await?;
                 out.insert(f.key.clone(), normalized);
             }
         }
@@ -88,6 +91,7 @@ async fn validate_field_value(
     f: &FieldDef,
     v: &Value,
     resolver: &dyn RefResolver,
+    max_multi_values: usize,
 ) -> Result<Value, DataError> {
     let name = &f.key;
     let type_err = |want: &str| {
@@ -110,7 +114,7 @@ async fn validate_field_value(
             if !n.is_finite() {
                 return Err(type_err("有限の数値"));
             }
-            Ok(v.clone())
+            crate::numeric::normalize_number(f, v)
         }
         FieldType::Date => {
             let s = v.as_str().ok_or_else(|| type_err("YYYY-MM-DD 文字列"))?;
@@ -140,9 +144,9 @@ async fn validate_field_value(
         }
         FieldType::MultiSelect => {
             let arr = v.as_array().ok_or_else(|| type_err("文字列配列"))?;
-            if arr.len() > MAX_MULTI_SELECT {
+            if arr.len() > max_multi_values {
                 return Err(DataError::Invalid(format!(
-                    "'{name}' の選択数が多すぎます（最大 {MAX_MULTI_SELECT}）"
+                    "'{name}' の選択数が多すぎます（最大 {max_multi_values}）"
                 )));
             }
             let mut seen = std::collections::HashSet::new();

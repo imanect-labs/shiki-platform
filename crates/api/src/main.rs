@@ -397,6 +397,8 @@ fn wire_data(
     let data_store = Arc::new(store);
     // v1 形式テーブルのフィールド識別子移行（jobq・テーブル単位・冪等・完了で停止）。
     data::FieldKeyMigrationWorker::new((*data_store).clone()).spawn();
+    // pivot 索引の台帳初期化＋オンラインバックフィル＋parity 検証（jobq・チャンク・冪等・常駐）。
+    data::IndexBackfillWorker::new((*data_store).clone()).spawn();
     let data_views = Arc::new(data::DataViewStore::new(
         Arc::clone(artifacts),
         (*data_store).clone(),

@@ -110,6 +110,8 @@ pub(crate) fn validate_table_schema(schema: &TableSchema) -> Result<(), DataErro
 /// 単一フィールド定義の型別検証。
 fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
     let name = &f.key;
+    // number の精度宣言（data-platform §4.2）。number 以外への指定・scale 範囲外・min > max は 422。
+    crate::numeric::validate_spec(f)?;
     // 型ごとの付帯定義。
     match f.field_type {
         FieldType::Select | FieldType::MultiSelect => {
@@ -254,6 +256,14 @@ pub(crate) fn validate_schema_update(
         if nf.ref_table != cur.ref_table {
             return Err(DataError::Invalid(format!(
                 "フィールド '{}' の ref_table は変更できません",
+                cur.key
+            )));
+        }
+        // 精度宣言も不変（保存済みの値と索引は宣言時の規則で正規化されている。変えるなら
+        // 既存値の再正規化が要るため、改訂経路では受けない）。
+        if nf.numeric_spec != cur.numeric_spec {
+            return Err(DataError::Invalid(format!(
+                "フィールド '{}' の numeric_spec は変更できません",
                 cur.key
             )));
         }

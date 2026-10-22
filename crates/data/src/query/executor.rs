@@ -1,7 +1,9 @@
 //! 読取 SQL の唯一の組み立て点（行述語の無条件合成・Task 9.3）。
 //!
 //! 各関数はプレースホルダを次の順で採番する:
-//! `$1 = tenant_id, $2 = table_id, $3.. = 行述語バインド, その後 = 追加条件（id/filter/limit/offset）`。
+//! `$1 = tenant_id, $2 = table_id, $3 = tenant_int, $4 = table_int, $5.. = 行述語バインド,
+//! その後 = 追加条件（id/filter/limit/offset）`。`tenant_int` / `table_int` は `data_record` の
+//! ハッシュパーティションを 1 つへ枝刈りし主キーで引くための条件（Task 15.2）。外へは出さない。
 //! 値は全てバインド。SQL テキストへ埋め込むのは内部 ID 由来の JSONB キー（`"f{id}"`・
 //! [`crate::field_key::is_json_key`] で再検証）と固定エイリアスのみ。
 
@@ -41,6 +43,11 @@ pub(crate) struct ListSort {
     pub numeric: bool,
     pub descending: bool,
 }
+
+/// 全読取 SQL の先頭条件（`r.tenant_id = $1 AND r.table_id = $2 AND r.tenant_int = $3 AND
+/// r.table_int = $4`・tenant スコープ＋パーティション枝刈り）が占有するプレースホルダ数
+/// （行述語は `$5` から）。
+pub(crate) const SCOPE_BINDS: usize = 4;
 
 /// 読取述語の解決結果（1 リクエスト分）。
 pub(crate) struct ReadPredicate {
@@ -95,7 +102,7 @@ impl DataStore {
             .map(|p| vec![&p.read])
             .unwrap_or_default();
         let m = material::resolve(ctx, self.authz.as_ref(), &exprs).await?;
-        let mut binds = BindSet::new(2);
+        let mut binds = BindSet::new(SCOPE_BINDS);
         let sql = compile_read_predicate(
             &table.schema,
             &m,
@@ -118,16 +125,17 @@ impl DataStore {
         id: Uuid,
     ) -> Result<Option<RecordRow>, DataError> {
         let pred = self.read_predicate(ctx, table).await?;
-        let id_ph = 3 + pred.binds.len();
+        let id_ph = SCOPE_BINDS + 1 + pred.binds.len();
         let sql = format!(
             "SELECT {SELECT_COLS} FROM data_record {RECORD_ALIAS} \
-             WHERE r.tenant_id = $1 AND r.table_id = $2 AND ({}) AND r.id = ${id_ph}",
+             WHERE r.tenant_id = $1 AND r.table_id = $2 \
+               AND r.tenant_int = $3 AND r.table_int = $4 AND ({}) AND r.id = ${id_ph}",
             pred.sql
         );
         let q = bind_all(
             sqlx::query_as::<Postgres, RecordRow>(&sql),
             ctx,
-            table.id,
+            table,
             &pred.binds,
         )
         .bind(id);
@@ -147,16 +155,17 @@ impl DataStore {
         id: Uuid,
     ) -> Result<Option<RecordRow>, DataError> {
         let pred = self.read_predicate(ctx, table).await?;
-        let id_ph = 3 + pred.binds.len();
+        let id_ph = SCOPE_BINDS + 1 + pred.binds.len();
         let sql = format!(
             "SELECT {SELECT_COLS} FROM data_record {RECORD_ALIAS} \
-             WHERE r.tenant_id = $1 AND r.table_id = $2 AND ({}) AND r.id = ${id_ph} FOR UPDATE",
+             WHERE r.tenant_id = $1 AND r.table_id = $2 \
+               AND r.tenant_int = $3 AND r.table_int = $4 AND ({}) AND r.id = ${id_ph} FOR UPDATE",
             pred.sql
         );
         let q = bind_all(
             sqlx::query_as::<Postgres, RecordRow>(&sql),
             ctx,
-            table.id,
+            table,
             &pred.binds,
         )
         .bind(id);
@@ -176,10 +185,11 @@ impl DataStore {
         let pred = self.read_predicate(ctx, table).await?;
         let mut sql = format!(
             "SELECT {SELECT_COLS} FROM data_record {RECORD_ALIAS} \
-             WHERE r.tenant_id = $1 AND r.table_id = $2 AND ({})",
+             WHERE r.tenant_id = $1 AND r.table_id = $2 \
+               AND r.tenant_int = $3 AND r.table_int = $4 AND ({})",
             pred.sql
         );
-        let mut next_ph = 3 + pred.binds.len();
+        let mut next_ph = SCOPE_BINDS + 1 + pred.binds.len();
         let filter_bind = push_filter_sql(&mut sql, filter, &mut next_ph)?;
         match sort {
             Some(s) => {
@@ -194,7 +204,7 @@ impl DataStore {
         let mut q = bind_all(
             sqlx::query_as::<Postgres, RecordRow>(&sql),
             ctx,
-            table.id,
+            table,
             &pred.binds,
         );
         if let Some(b) = filter_bind {
@@ -219,14 +229,17 @@ impl DataStore {
         let pred = self.read_predicate(ctx, table).await?;
         let mut sql = format!(
             "SELECT count(*) FROM data_record {RECORD_ALIAS} \
-             WHERE r.tenant_id = $1 AND r.table_id = $2 AND ({})",
+             WHERE r.tenant_id = $1 AND r.table_id = $2 \
+               AND r.tenant_int = $3 AND r.table_int = $4 AND ({})",
             pred.sql
         );
-        let mut next_ph = 3 + pred.binds.len();
+        let mut next_ph = SCOPE_BINDS + 1 + pred.binds.len();
         let filter_bind = push_filter_sql(&mut sql, filter, &mut next_ph)?;
         let mut q = sqlx::query_scalar::<Postgres, i64>(&sql)
             .bind(&ctx.tenant_id)
-            .bind(table.id);
+            .bind(table.id)
+            .bind(table.keys.tenant_int)
+            .bind(table.keys.table_int);
         for b in &pred.binds {
             q = push_bind_scalar(q, b.clone());
         }
@@ -250,7 +263,7 @@ impl DataStore {
         actor: &crate::policy::PolicyExpr,
     ) -> Result<bool, DataError> {
         let m = material::resolve(ctx, self.authz.as_ref(), &[actor]).await?;
-        let mut binds = BindSet::new(2);
+        let mut binds = BindSet::new(SCOPE_BINDS);
         let pred = compile_expr(
             actor,
             &table.schema,
@@ -259,14 +272,17 @@ impl DataStore {
             RECORD_ALIAS,
             &mut binds,
         )?;
-        let id_ph = 3 + binds.binds.len();
+        let id_ph = SCOPE_BINDS + 1 + binds.binds.len();
         let sql = format!(
             "SELECT EXISTS(SELECT 1 FROM data_record {RECORD_ALIAS} \
-             WHERE r.tenant_id = $1 AND r.table_id = $2 AND ({pred}) AND r.id = ${id_ph})"
+             WHERE r.tenant_id = $1 AND r.table_id = $2 \
+               AND r.tenant_int = $3 AND r.table_int = $4 AND ({pred}) AND r.id = ${id_ph})"
         );
         let mut q = sqlx::query_scalar::<Postgres, bool>(&sql)
             .bind(&ctx.tenant_id)
-            .bind(table.id);
+            .bind(table.id)
+            .bind(table.keys.tenant_int)
+            .bind(table.keys.table_int);
         for b in &binds.binds {
             q = push_bind_scalar(q, b.clone());
         }
@@ -291,7 +307,7 @@ impl DataStore {
         };
         let write_expr = policy.write_expr();
         let m = material::resolve(ctx, self.authz.as_ref(), &[write_expr]).await?;
-        let mut binds = BindSet::new(2);
+        let mut binds = BindSet::new(SCOPE_BINDS);
         let pred = compile_expr(
             write_expr,
             &table.schema,
@@ -300,14 +316,17 @@ impl DataStore {
             RECORD_ALIAS,
             &mut binds,
         )?;
-        let id_ph = 3 + binds.binds.len();
+        let id_ph = SCOPE_BINDS + 1 + binds.binds.len();
         let sql = format!(
             "SELECT EXISTS(SELECT 1 FROM data_record {RECORD_ALIAS} \
-             WHERE r.tenant_id = $1 AND r.table_id = $2 AND ({pred}) AND r.id = ${id_ph})"
+             WHERE r.tenant_id = $1 AND r.table_id = $2 \
+               AND r.tenant_int = $3 AND r.table_int = $4 AND ({pred}) AND r.id = ${id_ph})"
         );
         let mut q = sqlx::query_scalar::<Postgres, bool>(&sql)
             .bind(&ctx.tenant_id)
-            .bind(table.id);
+            .bind(table.id)
+            .bind(table.keys.tenant_int)
+            .bind(table.keys.table_int);
         for b in &binds.binds {
             q = push_bind_scalar(q, b.clone());
         }
@@ -351,15 +370,18 @@ impl DataStore {
             )));
         }
         let pred = self.read_predicate(ctx, ref_table).await?;
-        let ids_ph = 3 + pred.binds.len();
+        let ids_ph = SCOPE_BINDS + 1 + pred.binds.len();
         let sql = format!(
             "SELECT r.id, r.data -> '{target_json_key}' FROM data_record {RECORD_ALIAS} \
-             WHERE r.tenant_id = $1 AND r.table_id = $2 AND ({}) AND r.id = ANY(${ids_ph}::uuid[])",
+             WHERE r.tenant_id = $1 AND r.table_id = $2 \
+               AND r.tenant_int = $3 AND r.table_int = $4 AND ({}) AND r.id = ANY(${ids_ph}::uuid[])",
             pred.sql
         );
         let mut q = sqlx::query_as::<Postgres, (Uuid, Option<serde_json::Value>)>(&sql)
             .bind(&ctx.tenant_id)
-            .bind(ref_table.id);
+            .bind(ref_table.id)
+            .bind(ref_table.keys.tenant_int)
+            .bind(ref_table.keys.table_int);
         for b in &pred.binds {
             q = match b.clone() {
                 Bind::Text(v) => q.bind(v),
@@ -465,10 +487,14 @@ fn sort_expr(s: &ListSort) -> Result<String, DataError> {
 fn bind_all<'q>(
     q: QueryAs<'q, Postgres, RecordRow, PgArguments>,
     ctx: &'q AuthContext,
-    table_id: Uuid,
+    table: &DataTable,
     binds: &[Bind],
 ) -> QueryAs<'q, Postgres, RecordRow, PgArguments> {
-    let mut q = q.bind(&ctx.tenant_id).bind(table_id);
+    let mut q = q
+        .bind(&ctx.tenant_id)
+        .bind(table.id)
+        .bind(table.keys.tenant_int)
+        .bind(table.keys.table_int);
     for b in binds {
         q = push_bind(q, b.clone());
     }

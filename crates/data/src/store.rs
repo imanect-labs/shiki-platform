@@ -22,12 +22,27 @@ use uuid::Uuid;
 
 use crate::cursor::{CursorCodec, CursorKey};
 use crate::field_key::{assign_field_ids, upgrade_legacy_schema};
-use crate::index::ensure_indexes;
+use crate::index::backfill::{start_backfill, table_has_rows};
+use crate::index::legacy::ensure_indexes;
+use crate::index::state::sync_ledger;
+use crate::index::{DEFAULT_MAX_MULTI_VALUES, MAX_MULTI_VALUES_CEILING};
 use crate::key_migration::KEY_FORMAT_LEGACY;
 use crate::model::{DataTable, TableKeys, TableSchema};
 use crate::schema::{validate_schema_update, validate_table_name, validate_table_schema};
 use crate::validate::RefResolver;
 use crate::{map_db, DataError};
+
+/// `tenant_int` で持つ構造化データの表（purge の対象・子 → 親の順）。
+const PURGE_TENANT_INT_TABLES: &[&str] = &[
+    "data_index_text",
+    "data_index_num",
+    "data_link",
+    "data_link_field",
+    "data_unique",
+    "data_index_search",
+    "data_index_state",
+    "data_index_backfill",
+];
 
 /// 新規テーブルの入力。
 #[derive(Debug, Clone)]
@@ -38,7 +53,7 @@ pub struct NewDataTable {
 
 /// data_table 行の SELECT 列（[`TableRow`] と同じ並び）。
 pub(crate) const TABLE_COLS: &str = "id, name, app_id, schema, schema_version, created_by, \
-     created_at, updated_at, tenant_int, table_int, key_format, next_field_id";
+     created_at, updated_at, tenant_int, table_int, key_format, next_field_id, pivot_index_init";
 
 /// data_table 行。
 #[derive(sqlx::FromRow)]
@@ -55,6 +70,8 @@ pub(crate) struct TableRow {
     pub(crate) table_int: i64,
     pub(crate) key_format: i16,
     pub(crate) next_field_id: i32,
+    /// 索引台帳を初期化済みか（Task 15.2 より前に作られたテーブルは false）。
+    pub(crate) pivot_index_init: bool,
 }
 
 impl TableRow {
@@ -94,6 +111,8 @@ pub struct DataStore {
     /// keyset カーソルの AEAD コーデック（Task 15.3 のクエリコンパイラ v2 が使う）。
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) cursor: Arc<CursorCodec>,
+    /// 多値（multi_select / リンク）の 1 レコードあたり要素数の上限（PIT-72・超過は 422）。
+    pub(crate) max_multi_values: usize,
 }
 
 impl DataStore {
@@ -115,7 +134,16 @@ impl DataStore {
             audit,
             resolver,
             cursor: Arc::new(CursorCodec::new(&CursorKey::ephemeral())),
+            max_multi_values: DEFAULT_MAX_MULTI_VALUES,
         }
+    }
+
+    /// 多値（multi_select / リンク）の 1 レコードあたり要素数の上限を設定する（既定
+    /// [`DEFAULT_MAX_MULTI_VALUES`]・1〜32,767）。既存の値は検証しない（下げても過去の行は読める）。
+    #[must_use]
+    pub fn with_max_multi_values(mut self, n: usize) -> Self {
+        self.max_multi_values = n.clamp(1, MAX_MULTI_VALUES_CEILING);
+        self
     }
 
     /// keyset カーソルの暗号鍵を設定する（全レプリカで同じ鍵を使うこと）。
@@ -168,8 +196,8 @@ impl DataStore {
         let mut tx = db.begin().await.map_err(map_db)?;
         let row: TableRow = sqlx::query_as(&format!(
             "INSERT INTO data_table (tenant_id, org, name, schema, created_by, app_id, \
-               tenant_int, table_int, key_format, next_field_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 2, $9) \
+               tenant_int, table_int, key_format, next_field_id, pivot_index_init) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 2, $9, true) \
              RETURNING {TABLE_COLS}"
         ))
         .bind(&ctx.tenant_id)
@@ -190,7 +218,9 @@ impl DataStore {
             _ => map_db(e),
         })?;
         // 作成直後（空テーブル）に宣言インデックスを張る（同一 Tx・即時完了）。
-        ensure_indexes(&mut tx, &ctx.tenant_id, row.id, &schema).await?;
+        ensure_indexes(&mut tx, &ctx.tenant_id, row.id, keys.table_int, &schema).await?;
+        // 索引台帳（空テーブルなので全て active・バックフィル不要）とリンク列の宣言。
+        sync_ledger(&mut tx, keys, &schema, false).await?;
         tx.commit().await.map_err(map_db)?;
 
         // 作成者を owner に（FGA）。失敗したら行を補償削除して孤立行を残さない。
@@ -307,7 +337,17 @@ impl DataStore {
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
-        ensure_indexes(&mut tx, &ctx.tenant_id, id, &next).await?;
+        ensure_indexes(&mut tx, &ctx.tenant_id, id, current.table_int, &next).await?;
+        // 索引台帳を宣言へ合わせる（増えた索引は既存レコードがあれば building にしてバックフィルを積む・
+        // テーブル行は FOR UPDATE 済みなので、並行する書込は遷移の前後どちらかに直列化される）。
+        let keys = TableKeys {
+            tenant_int: current.tenant_int,
+            table_int: current.table_int,
+        };
+        let has_rows = table_has_rows(&mut tx, keys).await?;
+        if sync_ledger(&mut tx, keys, &next, has_rows).await? {
+            start_backfill(&mut tx, keys, &ctx.tenant_id, id).await?;
+        }
         // 実データ変更のためスキーマ更新と同一 Tx で監査を残す（原子的・Chain=Yes）。
         self.record_audit_on(
             &mut tx,
@@ -355,9 +395,16 @@ impl DataStore {
     }
 
     /// テナント消去（SAAS.2）: data_table（CASCADE で record/registry/revision も）と
-    /// 物理式インデックス・FGA タプルを撤去する。監査ログは保持（purge 方針は storage と同一）。
+    /// 物理式インデックス・FGA タプル・**索引テーブルと台帳**（`tenant_int` で持つ表・Task 15.2）を撤去する。
+    /// 監査ログは保持（purge 方針は storage と同一）。
     pub async fn purge_tenant(&self, tenant_id: &str) -> Result<u32, DataError> {
         let db = self.pools.for_tenant(tenant_id);
+        let tenant_int: Option<i32> =
+            sqlx::query_scalar("SELECT tenant_int FROM tenant_placement WHERE tenant_id = $1")
+                .bind(tenant_id)
+                .fetch_optional(self.pools.registry())
+                .await
+                .map_err(map_db)?;
         let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM data_table WHERE tenant_id = $1")
             .bind(tenant_id)
             .fetch_all(db)
@@ -374,11 +421,23 @@ impl DataStore {
                 .map_err(|e| DataError::Internal(format!("fga purge: {e}")))?;
             purged += 1;
         }
+        let mut tx = db.begin().await.map_err(map_db)?;
+        if let Some(tenant_int) = tenant_int {
+            // 子（data_link は data_link_field を参照）→ 親の順。表名は固定集合のみ。
+            for table in PURGE_TENANT_INT_TABLES {
+                sqlx::query(&format!("DELETE FROM {table} WHERE tenant_int = $1"))
+                    .bind(tenant_int)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(map_db)?;
+            }
+        }
         sqlx::query("DELETE FROM data_table WHERE tenant_id = $1")
             .bind(tenant_id)
-            .execute(db)
+            .execute(&mut *tx)
             .await
             .map_err(map_db)?;
+        tx.commit().await.map_err(map_db)?;
         Ok(purged)
     }
 
@@ -419,7 +478,7 @@ impl DataStore {
         ctx: &AuthContext,
         id: Uuid,
     ) -> Result<DataTable, DataError> {
-        for _ in 0..2 {
+        for _ in 0..3 {
             let row: Option<TableRow> = sqlx::query_as(&format!(
                 "SELECT {TABLE_COLS} FROM data_table \
                  WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL"
@@ -431,10 +490,17 @@ impl DataStore {
             .await
             .map_err(map_db)?;
             let row = row.ok_or(DataError::NotFound)?;
-            if row.key_format != KEY_FORMAT_LEGACY {
-                return Ok(row.into_table());
+            if row.key_format == KEY_FORMAT_LEGACY {
+                self.migrate_table_field_keys(&ctx.tenant_id, id).await?;
+                continue;
             }
-            self.migrate_table_field_keys(&ctx.tenant_id, id).await?;
+            if !row.pivot_index_init {
+                // Task 15.2 より前に作られたテーブル: 索引台帳を作ってから使う（以降の書込は
+                // write-through・既存レコードはバックフィル）。冪等・テーブル行ロックで直列化。
+                self.init_pivot_index(&ctx.tenant_id, id).await?;
+                continue;
+            }
+            return Ok(row.into_table());
         }
         Err(DataError::Internal(
             "テーブルの識別子移行が収束しません".into(),

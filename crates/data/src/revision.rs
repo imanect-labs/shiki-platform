@@ -88,11 +88,15 @@ impl DataStore {
             .is_none()
         {
             let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM data_record WHERE tenant_id = $1 AND table_id = $2 AND id = $3)",
+                "SELECT EXISTS(SELECT 1 FROM data_record \
+                 WHERE tenant_int = $4 AND table_int = $5 AND tenant_id = $1 AND table_id = $2 \
+                   AND id = $3)",
             )
             .bind(&ctx.tenant_id)
             .bind(table_id)
             .bind(record_id)
+            .bind(table.keys.tenant_int)
+            .bind(table.keys.table_int)
             .fetch_one(self.pools.for_tenant(&ctx.tenant_id))
             .await
             .map_err(map_db)?;

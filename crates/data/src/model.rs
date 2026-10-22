@@ -136,6 +136,57 @@ pub struct FieldDef {
     /// 計算定義（field_type=computed のとき必須）。
     #[serde(default)]
     pub computed: Option<ComputedDef>,
+    /// number 型のみ: 小数桁数と範囲の宣言（data-platform §4.2）。本体・索引・集計はすべて
+    /// この規則で正規化した同一値を使う。省略時は入力値をそのまま保存する（v1 互換）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numeric_spec: Option<NumericSpec>,
+}
+
+/// `number` フィールドの精度宣言（data-platform §4.2）。
+///
+/// 書込時に値を `scale` 桁へ正規化し（超過桁は `on_excess_scale` に従う）、**正規化後の値**で
+/// `min` / `max` を検証する。境界値は 10 進表記の最短表現として解釈する（`0.1` は 0.1 ちょうど）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct NumericSpec {
+    /// 小数桁数（0..=9）。
+    pub scale: u8,
+    /// scale を超える桁が来たときの扱い（既定 `reject`）。
+    #[serde(default)]
+    pub on_excess_scale: ExcessScale,
+    /// 許容範囲の下限（含む）。省略時は型の上限のみ。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// 許容範囲の上限（含む）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+}
+
+// min/max は有限値しか受け付けない（スキーマ検証で NaN/∞ を拒否する）ので Eq を名乗ってよい。
+impl Eq for NumericSpec {}
+
+/// scale を超える桁の扱い。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExcessScale {
+    /// 拒否する（既定。入力ミスを黙って変えない）。
+    #[default]
+    Reject,
+    /// 指定の丸めモードで丸める。
+    Round(RoundingMode),
+}
+
+/// 丸めモード（曖昧さを残さないため明示列挙）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RoundingMode {
+    /// 0.5 は 0 から遠い方へ。
+    HalfUp,
+    /// 0.5 は偶数へ（銀行丸め）。
+    HalfEven,
+    /// 0 へ向けて切り捨て。
+    Down,
+    /// 0 から遠い方へ切り上げ。
+    Up,
 }
 
 impl FieldDef {
@@ -157,6 +208,7 @@ impl FieldDef {
             ref_table: None,
             lookup: None,
             computed: None,
+            numeric_spec: None,
         }
     }
 

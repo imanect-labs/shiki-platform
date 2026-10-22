@@ -276,7 +276,8 @@ async fn expression_indexes_created_and_used() {
         .await
         .expect("create table");
 
-    // 台帳に載る（amount=btree_numeric, status=btree_text, code=unique_text）。
+    // 台帳に載る（amount=btree_numeric, status=btree_text, code=unique_text_digest）。
+    // Task 15.2: text 型の unique は md5 の一意 btree（MAX_TEXT_LEN の値で btree キー上限を超えないため）。
     let kinds: Vec<(String, String)> = sqlx::query_as(
         "SELECT field, kind FROM data_index_registry WHERE tenant_id = $1 AND table_id = $2 ORDER BY field",
     )
@@ -289,7 +290,7 @@ async fn expression_indexes_created_and_used() {
         kinds,
         vec![
             ("amount".to_string(), "btree_numeric".to_string()),
-            ("code".to_string(), "unique_text".to_string()),
+            ("code".to_string(), "unique_text_digest".to_string()),
             ("status".to_string(), "btree_text".to_string()),
         ]
     );

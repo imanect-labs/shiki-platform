@@ -65,7 +65,9 @@ impl DataStore {
 
         let mut q = sqlx::query::<Postgres>(&sql)
             .bind(&ctx.tenant_id)
-            .bind(table.id);
+            .bind(table.id)
+            .bind(table.keys.tenant_int)
+            .bind(table.keys.table_int);
         for b in pred.binds() {
             q = bind_dyn(q, b.clone());
         }
@@ -173,10 +175,11 @@ fn build_aggregate_sql(
     }
     let mut sql = format!(
         "SELECT {select} FROM data_record {alias} \
-         WHERE {alias}.tenant_id = $1 AND {alias}.table_id = $2 AND ({})",
+         WHERE {alias}.tenant_id = $1 AND {alias}.table_id = $2 \
+           AND {alias}.tenant_int = $3 AND {alias}.table_int = $4 AND ({})",
         pred.sql()
     );
-    let mut next_ph = 3 + pred.binds().len();
+    let mut next_ph = super::executor::SCOPE_BINDS + 1 + pred.binds().len();
     if let Some(f) = filter {
         let frag = filter_fragment(f, next_ph);
         sql.push_str(&frag);
@@ -311,8 +314,8 @@ mod tests {
             value: "x".to_string(),
         };
         let sql = build_aggregate_sql(&[], Metric::Count, None, &pred(), Some(&f));
-        // next_ph = 3 + pred.binds().len()(=0) = 3。
-        assert!(sql.contains("AND (r.data ->> 'f21') = $3"), "{sql}");
+        // next_ph = SCOPE_BINDS(4) + 1 + pred.binds().len()(=0) = 5。
+        assert!(sql.contains("AND (r.data ->> 'f21') = $5"), "{sql}");
     }
 
     #[test]

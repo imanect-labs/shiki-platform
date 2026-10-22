@@ -32,6 +32,7 @@ impl DataStore {
     /// `fsm` / `status_field` は呼び出し側（api 層）が fsm_ref のピンバージョンを
     /// artifact チョークポイント経由で解決して渡す（data crate は artifact へ直接依存しない）。
     #[allow(clippy::too_many_arguments)] // 遷移の入力束（fsm 定義＋行識別＋楽観ロック）。
+    #[allow(clippy::too_many_lines)] // 1 Tx の手順列（①〜⑥＋索引）。分けると Tx 境界が追いにくい。
     pub async fn transition_record(
         &self,
         ctx: &AuthContext,
@@ -55,6 +56,15 @@ impl DataStore {
 
         let db = self.pools.for_tenant(&ctx.tenant_id);
         let mut tx = db.begin().await.map_err(map_db)?;
+        // 索引の計画（テーブル行を FOR KEY SHARE・レコード行より先に取る・Task 15.2）。
+        let plan = crate::index::state::lock_plan(
+            &mut tx,
+            &ctx.tenant_id,
+            table_id,
+            table.keys,
+            table.schema_version,
+        )
+        .await?;
         // ①行ロック（行述語込み・不可視は 404＝存在オラクルなし）。
         let current = self
             .lock_visible_by_id(ctx, &mut tx, &table, record_id)
@@ -104,11 +114,12 @@ impl DataStore {
         // ④status 更新＋rev+1＋revision。
         let new_rev = current.rev + 1;
         data.insert(status_field.to_string(), Value::String(to.to_string()));
-        let row: crate::record::RecordRow = sqlx::query_as(&format!(
+        let written: crate::record::WrittenRow = sqlx::query_as(&format!(
             "UPDATE data_record SET data = $4, rev = $5, updated_at = now() \
-             WHERE tenant_id = $1 AND table_id = $2 AND id = $3 \
+             WHERE tenant_int = $6 AND table_int = $7 AND tenant_id = $1 AND table_id = $2 \
+               AND id = $3 \
              RETURNING {}",
-            crate::record::RECORD_RETURNING
+            crate::record::WRITTEN_RETURNING
         ))
         .bind(&ctx.tenant_id)
         .bind(table_id)
@@ -118,6 +129,8 @@ impl DataStore {
             &data,
         ))))
         .bind(new_rev)
+        .bind(table.keys.tenant_int)
+        .bind(table.keys.table_int)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -126,6 +139,11 @@ impl DataStore {
             old: Value::String(from.clone()),
             new: Value::String(to.to_string()),
         }];
+        // status の索引行と updated_at だけを書き換える（差分更新・同一 Tx）。
+        self.index_writer(&plan, &table.schema, &ctx.tenant_id)
+            .on_update(&mut tx, written.record_int, &patch, written.row.updated_at)
+            .await?;
+        let row = written.row;
         insert_revision(
             &mut tx,
             ctx,

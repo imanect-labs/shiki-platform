@@ -22,6 +22,15 @@ const DATA_TABLES: &[&str] = &[
     "data_record",
     "data_record_revision",
     "data_index_registry",
+    // pivot 索引テーブルと台帳（Task 15.2・tenant_int で持つ）。
+    "data_index_text",
+    "data_index_num",
+    "data_link",
+    "data_link_field",
+    "data_unique",
+    "data_index_search",
+    "data_index_state",
+    "data_index_backfill",
 ];
 
 /// 文字列リテラル（開始行・中身）。
