@@ -1427,3 +1427,123 @@ async fn materialized_rollup_is_discarded_on_query_and_on_field_policy() {
     // マスクされた列は集計の材料にもならない（alice も keiri ではない）。
     assert_eq!(m.total_seen_by(&m.alice).await, json!(0));
 }
+
+/// ⑩ 材料化した派生列（text）の切り詰めキー（§3.3）は、行述語を迂回する判定材料にならない。
+/// 長い比較値の 422 は比較値だけで決まり（データに依存しない）、group_by の 422 は閲覧者に見える行
+/// だけで決まる（見えない行の値の長さは漏れない）。受け付けた比較は見える行の中で厳密。
+#[tokio::test]
+async fn long_derived_text_checks_do_not_leak_invisible_rows() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let store = DataStore::new(pool, Arc::clone(&authz), Arc::new(AllowRefs));
+    let mut s = expense_schema_with_policy();
+    let mut body = field("body", FieldType::Text);
+    body.indexed = true;
+    let mut label = field("label", FieldType::Formula);
+    label.formula = Some(serde_json::from_value(json!({"concat": [{"field": "body"}]})).unwrap());
+    label.indexed = true;
+    s.fields.push(body);
+    s.fields.push(label);
+    s.aggregate_min_rows = Some(1);
+    let table = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "notes".into(),
+                schema: s,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        table.schema.field("label").unwrap().materialization,
+        Some(Materialization::Invariant),
+        "自テーブルの列だけの数式は閲覧者に依らない（行述語は行の可視性だけを決める）"
+    );
+    grant(&authz, &bob, Relation::Editor, table.id).await;
+    let long = format!("{}X", "a".repeat(2000));
+    store
+        .create_record(
+            &alice,
+            table.id,
+            json!({"applicant": "alice", "amount": 1, "status": "draft", "body": long}),
+            None,
+        )
+        .await
+        .unwrap();
+    let bob_rec = store
+        .create_record(
+            &bob,
+            table.id,
+            json!({"applicant": "bob", "amount": 2, "status": "draft", "body": "short"}),
+            None,
+        )
+        .await
+        .unwrap();
+    let group = DataQuery {
+        group_by: vec!["label".into()],
+        aggregate: vec![data::MetricSpec {
+            metric: data::Metric::Count,
+            field: None,
+        }],
+        ..DataQuery::default()
+    };
+    // bob: alice の長い行は見えないので group_by は通り、bob の行だけが数えられる。
+    let r = store.run_query(&bob, table.id, &group, None).await.unwrap();
+    let groups = r.groups.unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].key["label"], json!("short"));
+    assert_eq!(groups[0].value, json!(1));
+    // alice: 自分に見える長い行があるので 422（違う値を 1 グループに混ぜない）。
+    let r = store.run_query(&alice, table.id, &group, None).await;
+    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    // 長い比較値は誰が投げても・行があってもなくても同じ 422（存在・長さのオラクルにならない）。
+    for who in [&alice, &bob] {
+        for v in [long.clone(), format!("{}Z", "a".repeat(2000))] {
+            let q = DataQuery {
+                filter: Some(data::Condition::cmp(
+                    "label",
+                    data::CondOp::Neq,
+                    Some(json!(v)),
+                )),
+                ..DataQuery::default()
+            };
+            let r = store.run_query(who, table.id, &q, None).await;
+            assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+        }
+    }
+    // 受け付けた比較は見える行の中で厳密（bob の前方一致に alice の行は出ない）。
+    for (op, v, want) in [
+        (data::CondOp::StartsWith, json!("a".repeat(1000)), vec![]),
+        (data::CondOp::Neq, json!("short"), vec![]),
+        (
+            data::CondOp::Exists,
+            serde_json::Value::Null,
+            vec![bob_rec.id],
+        ),
+    ] {
+        let q = DataQuery {
+            filter: Some(data::Condition::cmp(
+                "label",
+                op,
+                (!v.is_null()).then_some(v),
+            )),
+            ..DataQuery::default()
+        };
+        let got: Vec<Uuid> = store
+            .run_query(&bob, table.id, &q, None)
+            .await
+            .unwrap()
+            .items
+            .unwrap()
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(got, want, "{op:?}");
+    }
+}

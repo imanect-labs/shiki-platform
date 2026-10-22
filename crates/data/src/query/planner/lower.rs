@@ -27,7 +27,7 @@ use crate::query::bound::{Atom, BField, BSort, BoundQuery, Expr, FieldKind, Leaf
 use crate::query::sql::{like_escape, Bind, SqlBuf};
 
 /// 長い境界値は切り詰め行の本体で比べる（プレフィクスの長さは最小で上限−3 バイト）。
-const SAFE_BOUND_BYTES: usize = MAX_INDEX_KEY_BYTES - 4;
+pub(crate) const SAFE_BOUND_BYTES: usize = MAX_INDEX_KEY_BYTES - 4;
 
 /// 降下の文脈（1 リクエスト分）。
 pub(crate) struct Lowerer<'a> {
@@ -91,7 +91,9 @@ impl Lowerer<'_> {
     /// 索引行 `x` についての葉の条件（`EXISTS (行 ∧ 条件)` ⇔ 原子式が真・2 値論理）。
     pub(crate) fn leaf_cond(&self, a: &Atom, x: &str, sql: &mut SqlBuf) -> String {
         let f = self.field(a.field);
-        let body_field = (!f.is_pseudo()).then_some(f.id);
+        // 切り詰め行の再確認先（本体の完全値）。擬似列は長い値を持たず、材料化した派生列は本体に値が無い
+        // （束縛で長い比較値を 422 にしているので、派生列の比較は切り詰め行の再確認を要しない）。
+        let body_field = (!f.is_pseudo() && !f.derived).then_some(f.id);
         match (&a.leaf, f.kind) {
             (Leaf::Exists, _) => "TRUE".into(),
             (Leaf::Contains(s), _) => {
@@ -576,12 +578,33 @@ impl Lowerer<'_> {
             let f = self.field(*g);
             let rel = f.value_table().relation();
             let fph = sql.typed(Bind::I16(field_i16(f.id)));
-            inner.push(format!(
-                "(SELECT g.val::text FROM {rel} g WHERE g.tenant_int = $1 AND g.table_int = $2 \
-                 AND g.field_id = {fph} AND g.record_int = p.record_int AND g.ord = 0 OFFSET 0) AS g{i}"
-            ));
+            let text = f.value_table() == IndexTable::Text;
+            // 切り詰め行（data-platform §3.3）はプレフィクスでは値を区別できない。実フィールドは本体の
+            // 完全値でグループ化する。材料化した派生列は本体に値が無いので、切り詰め行がグループに入ったか
+            // （gt{i}）を返し、組み立てで 422 にする（可視・条件を満たした行だけで判定する）。
+            let val = if text && !f.is_pseudo() && !f.derived {
+                let kph = sql.push(Bind::Text(crate::field_key::json_key(f.id)));
+                format!(
+                    "CASE WHEN g.truncated THEN (SELECT b.data ->> {kph} FROM data_record b \
+                     WHERE b.tenant_int = $1 AND b.table_int = $2 AND b.record_int = p.record_int) \
+                     ELSE g.val::text END"
+                )
+            } else {
+                "g.val::text".to_string()
+            };
+            let probe = |col: &str| {
+                format!(
+                    "(SELECT {col} FROM {rel} g WHERE g.tenant_int = $1 AND g.table_int = $2 \
+                     AND g.field_id = {fph} AND g.record_int = p.record_int AND g.ord = 0 OFFSET 0)"
+                )
+            };
+            inner.push(format!("{} AS g{i}", probe(&val)));
             select.push(format!("z.g{i}"));
             group.push(format!("z.g{i}"));
+            if text && f.derived {
+                inner.push(format!("{} AS gt{i}", probe("g.truncated")));
+                select.push(format!("bool_or(z.gt{i}) AS gt{i}"));
+            }
         }
         for (i, (m, field)) in self.q.metrics.iter().enumerate() {
             use crate::query::ir::Metric;

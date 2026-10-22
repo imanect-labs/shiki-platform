@@ -9,7 +9,7 @@
 use serde_json::{Map, Value};
 use sqlx::Row;
 
-use super::bound::BoundQuery;
+use super::bound::{BoundQuery, FieldKind};
 use super::ir::AggregateGroup;
 use crate::{map_db, DataError};
 
@@ -25,6 +25,20 @@ pub(crate) fn assemble(
         let cnt: i64 = row.try_get("grp_count").map_err(map_db)?;
         let mut key = Map::new();
         for (i, g) in q.group_by.iter().enumerate() {
+            let f = q.field(*g);
+            if f.derived && f.kind == FieldKind::Text {
+                // 材料化した派生列の切り詰め行（先頭 2,000B だけ）は値を区別できない（§3.3・本体で再確認
+                // できない）。違う値を 1 つのグループに混ぜた集計を返さない。
+                let truncated: Option<bool> =
+                    row.try_get(format!("gt{i}").as_str()).map_err(map_db)?;
+                if truncated == Some(true) {
+                    return Err(DataError::Invalid(format!(
+                        "派生フィールド '{}' に索引キーの上限（{} バイト）を超える値があるため group_by に使えません",
+                        f.key,
+                        crate::index::MAX_INDEX_KEY_BYTES
+                    )));
+                }
+            }
             let v: Option<String> = row.try_get(format!("g{i}").as_str()).map_err(map_db)?;
             key.insert(
                 q.field(*g).key.clone(),

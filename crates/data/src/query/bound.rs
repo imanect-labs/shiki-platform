@@ -26,6 +26,7 @@ use crate::model::{
     SYSTEM_FIELD_UPDATED_AT,
 };
 use crate::numeric::Dec;
+use crate::query::planner::lower::SAFE_BOUND_BYTES;
 use crate::DataError;
 
 /// 擬似列の参照名（ユーザー定義の key は `[a-z]` 始まりなので衝突しない）。
@@ -517,6 +518,46 @@ pub(crate) fn bind_query(
 
 /// 比較 1 つを束縛する（§3.1 の表: `neq` = `not eq`・`is_null` = `not exists`・比較の否定は呼び出し側）。
 fn compare(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, DataError> {
+    let e = compare_inner(f, op, value)?;
+    if f.derived && f.kind == FieldKind::Text {
+        check_derived_text_operands(f, &e)?;
+    }
+    Ok(e)
+}
+
+/// 材料化した派生列（text）の比較値の長さ（data-platform §3.3 の切り詰めキーの契約）。
+///
+/// 索引には先頭 `MAX_INDEX_KEY_BYTES` だけを持ち、切り詰めた行の等値・前方一致・長い境界の大小比較は
+/// **本体の完全値で再確認**する契約だが、派生列は本体に値を持たない（再確認できない）。比較値を
+/// [`SAFE_BOUND_BYTES`] 以下に限れば、どの比較もプレフィクスだけで厳密に決まる（切り詰め行は
+/// 比較値より長いので等値にならず、大小・前方一致は比較値の長さの内側で決まる）。超える比較値は
+/// 偽陰性（と、その否定による偽陽性）を返す代わりに 422 にする。判定は比較値だけで決まり、
+/// データに依存しない（行の有無・値の長さのオラクルにならない）。
+fn check_derived_text_operands(f: &BField, e: &Expr) -> Result<(), DataError> {
+    let too_long = |s: &str| s.len() > SAFE_BOUND_BYTES;
+    let long = match e {
+        Expr::Not(x) => return check_derived_text_operands(f, x),
+        Expr::Atom(a) => match &a.leaf {
+            Leaf::Eq(Val::Text(s)) | Leaf::StartsWith(s) => too_long(s),
+            Leaf::In(vs) => vs.iter().any(|v| v.as_text().is_some_and(too_long)),
+            Leaf::Range { lo, hi } => [lo, hi]
+                .into_iter()
+                .flatten()
+                .any(|(v, _)| v.as_text().is_some_and(too_long)),
+            _ => false,
+        },
+        _ => false,
+    };
+    if long {
+        return Err(DataError::Invalid(format!(
+            "派生フィールド '{}' の比較値が長すぎます（最大 {SAFE_BOUND_BYTES} バイト。派生値は索引に先頭部分だけを持つため、長い値では厳密に比較できません）",
+            f.key
+        )));
+    }
+    Ok(())
+}
+
+fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, DataError> {
     let key = &f.key;
     let need = || DataError::Invalid(format!("'{key}' の比較には value が必要です"));
     let leaf = |l: Leaf| Ok(Expr::atom(f.id, l));

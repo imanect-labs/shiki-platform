@@ -938,3 +938,166 @@ async fn reverse_link_reads_are_bounded_and_rollups_do_not_undercount() {
     assert_eq!(d["spokes"].as_array().unwrap().len(), cap);
     assert_eq!(d["spoke_count"], Value::Null);
 }
+
+/// 材料化した派生列（text）の切り詰めキー（data-platform §3.3）。索引には先頭 2,000B だけを持ち、
+/// 派生値は本体に無い（再確認できない）ので、比較値が上限（`MAX_INDEX_KEY_BYTES - 4`）を超える比較は
+/// 422 にし、受け付けた比較はプレフィクスだけで厳密に決まる（偽陽性・偽陰性なし）。
+/// group_by は切り詰め行が入ったら 422（実フィールドは本体の完全値でグループ化する）。
+#[tokio::test]
+async fn long_derived_text_comparisons_are_exact_or_refused() {
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool);
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let mut body = field("body", FieldType::Text);
+    body.indexed = true;
+    let mut label = formula("label", json!({"concat": [{"field": "body"}]}));
+    label.indexed = true;
+    let mut s = schema(vec![body, label]);
+    s.aggregate_min_rows = Some(1);
+    let t = create_table(&store, &c, "long", s).await;
+    assert_eq!(
+        t.schema.field("label").unwrap().materialization,
+        Some(Materialization::Invariant)
+    );
+    // 先頭 2,000B が同じで末尾だけ違う 2 件と、短い 1 件。
+    let long1 = format!("{}X", "a".repeat(2000));
+    let long2 = format!("{}Y", "a".repeat(2000));
+    let short = "a".repeat(10);
+    let mut by = std::collections::HashMap::new();
+    for v in [&long1, &long2, &short] {
+        by.insert(v.clone(), rec(&store, &c, t.id, json!({"body": v})).await);
+    }
+    let run = |filter: Condition| {
+        let store = &store;
+        let c = &c;
+        async move {
+            let q = DataQuery {
+                filter: Some(filter),
+                ..DataQuery::default()
+            };
+            store.run_query(c, t.id, &q, None).await.map(|r| {
+                let mut v: Vec<Uuid> = r.items.unwrap().into_iter().map(|i| i.id).collect();
+                v.sort();
+                v
+            })
+        }
+    };
+    let set = |vs: &[&String]| {
+        let mut v: Vec<Uuid> = vs.iter().map(|k| by[*k]).collect();
+        v.sort();
+        v
+    };
+    let bound = data::MAX_INDEX_KEY_BYTES - 4;
+    // 上限を超える比較値は、どの演算子でも（否定でも）422。データに依存しない（空でも同じ）。
+    for (op, v) in [
+        (CondOp::Eq, json!(long1)),
+        (CondOp::Neq, json!(long1)),
+        (CondOp::In, json!([short, long2])),
+        // 前方一致は 1,000 文字までだが、多バイト文字なら上限のバイト数を超える。
+        (CondOp::StartsWith, json!("あ".repeat(700))),
+        (CondOp::Gt, json!("a".repeat(bound + 1))),
+        (CondOp::Lte, json!("a".repeat(bound + 1))),
+    ] {
+        let r = run(Condition::cmp("label", op, Some(v))).await;
+        match r {
+            Err(DataError::Invalid(m)) => assert!(m.contains("label"), "{m}"),
+            other => panic!("{op:?}: {other:?}"),
+        }
+    }
+    // 上限以内の比較は厳密（切り詰め行も正しく判定される）。
+    assert_eq!(
+        run(Condition::cmp("label", CondOp::Eq, Some(json!(short))))
+            .await
+            .unwrap(),
+        set(&[&short])
+    );
+    assert_eq!(
+        run(Condition::cmp("label", CondOp::Neq, Some(json!(short))))
+            .await
+            .unwrap(),
+        set(&[&long1, &long2])
+    );
+    let prefix = "a".repeat(bound);
+    assert_eq!(
+        run(Condition::cmp(
+            "label",
+            CondOp::StartsWith,
+            Some(json!("a".repeat(1000)))
+        ))
+        .await
+        .unwrap(),
+        set(&[&long1, &long2])
+    );
+    for op in [CondOp::Gt, CondOp::Gte] {
+        assert_eq!(
+            run(Condition::cmp("label", op, Some(json!(prefix))))
+                .await
+                .unwrap(),
+            set(&[&long1, &long2]),
+            "{op:?}"
+        );
+    }
+    assert_eq!(
+        run(Condition::cmp("label", CondOp::Lt, Some(json!(prefix))))
+            .await
+            .unwrap(),
+        set(&[&short])
+    );
+    // 実フィールドは長い値でも本体で再確認する（同じ比較が厳密に通る）。
+    assert_eq!(
+        run(Condition::cmp("body", CondOp::Eq, Some(json!(long1))))
+            .await
+            .unwrap(),
+        set(&[&long1])
+    );
+    assert_eq!(
+        run(Condition::cmp("body", CondOp::Neq, Some(json!(long1))))
+            .await
+            .unwrap(),
+        set(&[&long2, &short])
+    );
+
+    // group_by: 派生列は切り詰め行が入れば 422、入らなければ通る。実フィールドは完全値で分かれる。
+    let agg = |key: &str, filter: Option<Condition>| DataQuery {
+        filter,
+        group_by: vec![key.into()],
+        aggregate: vec![data::MetricSpec {
+            metric: data::Metric::Count,
+            field: None,
+        }],
+        ..DataQuery::default()
+    };
+    let r = store.run_query(&c, t.id, &agg("label", None), None).await;
+    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    let only_short = Condition::cmp("body", CondOp::Eq, Some(json!(short)));
+    let r = store
+        .run_query(&c, t.id, &agg("label", Some(only_short)), None)
+        .await
+        .unwrap();
+    let groups = r.groups.unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].key["label"], json!(short));
+    for tuning in [
+        QueryTuning::default(),
+        QueryTuning {
+            read_path: data::ReadPath::Body,
+            ..QueryTuning::default()
+        },
+    ] {
+        let (r, _) = store
+            .run_query_debug(&c, t.id, &agg("body", None), &tuning)
+            .await
+            .unwrap();
+        let mut keys: Vec<String> = r
+            .groups
+            .unwrap()
+            .iter()
+            .map(|g| g.key["body"].as_str().unwrap().to_string())
+            .collect();
+        keys.sort();
+        let mut want = vec![long1.clone(), long2.clone(), short.clone()];
+        want.sort();
+        assert_eq!(keys, want, "{:?}", tuning.read_path);
+    }
+}
