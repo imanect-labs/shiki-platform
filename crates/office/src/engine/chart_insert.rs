@@ -79,10 +79,13 @@ pub fn sheet_name_for(title: Option<&str>, existing: &[String]) -> String {
         })
         .collect();
     let cleaned = cleaned.trim().trim_matches('\'').trim();
-    let base: String = if cleaned.is_empty() {
-        "グラフ".into()
+    // 切った後にもう一度端を整える（切り口が空白や ' だとシート名に使えない）。
+    let cut: String = cleaned.chars().take(SHEET_BASE_CHARS).collect();
+    let cut = cut.trim().trim_matches('\'').trim();
+    let base = if cut.is_empty() {
+        "グラフ".to_string()
     } else {
-        cleaned.chars().take(SHEET_BASE_CHARS).collect()
+        cut.to_string()
     };
     let taken = |name: &str| existing.iter().any(|s| s.eq_ignore_ascii_case(name));
     if !taken(&base) {
@@ -174,6 +177,9 @@ mod tests {
         assert_eq!(sheet_name_for(Some(" "), &existing), "グラフ (3)");
         let long = "あ".repeat(40);
         assert_eq!(sheet_name_for(Some(&long), &[]).chars().count(), 25);
+        // 切り口が ' や空白なら落とす。
+        let edge = format!("{}' x", "い".repeat(24));
+        assert_eq!(sheet_name_for(Some(&edge), &[]), "い".repeat(24));
     }
 
     #[test]

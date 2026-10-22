@@ -224,6 +224,7 @@ use utoipa::{
         crate::routes::office::OfficeSessionResponse,
         crate::routes::office::InsertOfficeChartRequest,
         crate::routes::office::InsertOfficeChartResponse,
+        crate::routes::office::ChartSaveState,
         office::engine::chart_insert::ChartInsert,
         office::engine::chart_insert::ChartInsertSeries,
         office::engine::calc::ops::ChartKind,

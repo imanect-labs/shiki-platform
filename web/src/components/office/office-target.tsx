@@ -1,9 +1,9 @@
 "use client";
 
-/// チャットの隣で開いている Office 文書（#731）。図の「Excel / Word に挿入」ボタンが入れる先。
+/// チャットの隣で開いている Office 文書（#731）。図の「Excel / Word に挿入」ボタンが直接入れる先。
 ///
 /// Office の画面のチャット欄（[`OfficeChatPanel`]）だけが与える。ほかの画面（通常のチャット・
-/// ノート）では null で、ボタンは出ない。
+/// ノート・グラフを入れられない pptx の画面）では null で、ボタンはドライブから入れる先を選ばせる。
 
 import * as React from "react";
 

@@ -131,6 +131,20 @@ pub struct InsertOfficeChartRequest {
 pub struct InsertOfficeChartResponse {
     /// Excel のとき、表とグラフを置いた新しいシートの名前（Word は null）。
     pub sheet: Option<String>,
+    /// 保存の結果。
+    pub save: ChartSaveState,
+}
+
+/// グラフを入れた後の保存の結果。
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChartSaveState {
+    /// 新しい版として保存した。
+    Saved,
+    /// 文書には入ったが、保存の確認が期限内に取れなかった（開いている人の保存か自動保存で確定する）。
+    Unverified,
+    /// 保存に失敗した。誰も開いていない文書では、入れたグラフは残らない。
+    Failed,
 }
 
 /// チャットの図を、開いている Excel・Word へ編集できるグラフとして入れる（#731）。
@@ -170,7 +184,21 @@ pub async fn insert_office_chart(
         .insert_chart(&ctx, req.file_id, &label, &req.chart)
         .await
     {
-        Ok(r) if r.applied => Ok(Json(InsertOfficeChartResponse { sheet: r.sheet })),
+        Ok(r) if r.applied => {
+            use office::live::LiveSaveResult as S;
+            let save = match r.save {
+                S::Saved { .. } => ChartSaveState::Saved,
+                S::Unverified | S::NotAttempted => ChartSaveState::Unverified,
+                S::Failed(reason) => {
+                    tracing::warn!(%reason, "グラフを入れた文書を保存できなかった");
+                    ChartSaveState::Failed
+                }
+            };
+            Ok(Json(InsertOfficeChartResponse {
+                sheet: r.sheet,
+                save,
+            }))
+        }
         // エンジンが丸ごと取り消した（文書は変わっていない）。理由の行だけを返す。
         Ok(r) => Err(rejected(&cause_of(&r.text))),
         Err(E::Invalid(e)) => Err(rejected(&e.message)),

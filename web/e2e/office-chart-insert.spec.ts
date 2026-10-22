@@ -74,7 +74,8 @@ test("Excel: 回答の棒グラフを、新しいシートに表とグラフと�
   await page
     .frameLocator('[data-testid="office-frame"]')
     .getByText("四半期ごとの売上と利益", { exact: true })
-    .click();
+    // シートのタブは Collabora の描画で揺れ続け「stable」にならないことがあるので force で押す。
+    .click({ force: true });
   await page.waitForTimeout(3000);
   await page.screenshot({ path: "test-results/office-chart-insert-excel.png" });
   await expect.poll(() => savedFileHas(page, fileId, "xl/charts/chart"), { timeout: 30_000 }).toBe(true);

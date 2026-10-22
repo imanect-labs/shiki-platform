@@ -758,3 +758,34 @@ fn insert_chart_checks_the_shape_of_the_data() {
         "op の書き忘れは案内する: {ok}"
     );
 }
+
+/// グラフの途中で失敗したら（解釈できない表示形式）、入れかけの段落とグラフも残らない。
+#[tokio::test]
+async fn a_failing_chart_leaves_the_document_untouched() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let name = format!("engine-chart-{}.docx", uuid::Uuid::new_v4());
+    std::fs::write(
+        format!("{}/{name}", env.files),
+        office::blank_template(office::OfficeKind::Document),
+    )
+    .unwrap();
+    let mut client = open(&env, &name).await;
+    let before = run::read_overview(&mut client, &name, 0).await.unwrap();
+    let ops = normalize_doc_ops(&[
+        json!({"op": "insert", "at": "end", "html": "<p>残ってはいけない</p>"}),
+        json!({"op": "insert_chart", "type": "line", "categories": ["a", "b"],
+               "series": [{"name": "x", "values": [1, 2]}], "y_number_format": "[[[壊れた"}),
+    ])
+    .unwrap();
+    let out = run::apply(&mut client, "失敗するグラフ", &ops)
+        .await
+        .unwrap();
+    assert!(!out.applied, "{}", out.text);
+    let after = run::read_overview(&mut client, &name, 0).await.unwrap();
+    assert_eq!(before, after, "取り消し後の文書: {after}");
+    assert!(!after.contains("グラフ"), "{after}");
+    client.close().await;
+}

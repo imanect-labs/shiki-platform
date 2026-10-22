@@ -66,6 +66,7 @@ export async function insertChart(fileId: string, chart: ChartInsert): Promise<C
     throw new ChartInsertError(body?.message ?? "このグラフは入れられませんでした");
   }
   if (res.status === 403) throw new ChartInsertError("この文書を編集する権限がありません");
+  if (res.status === 404) throw new ChartInsertError("この環境では Office の編集を使えません");
   if (res.status === 409) {
     throw new ChartInsertError("この文書では AI の編集が進んでいます。終わってからもう一度試してください");
   }

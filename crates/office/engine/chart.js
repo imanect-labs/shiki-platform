@@ -96,10 +96,13 @@ function styleChart(eo, d, op, fmts) {
     legend.setPropertyValue("Alignment", I.chart.ChartLegendPosition[pos]);
   }
   if (op.y_number_format) {
+    // 解釈できない表示形式は誤りとして止める（下の try に入れると、縦軸の無い種類と一緒に黙って
+    // 捨てられる）。
+    const key = formatKeyIn(fmts, op.y_number_format);
     try {
       const axis = d.getYAxis();
       axis.setPropertyValue("LinkNumberFormatToSource", false);
-      axis.setPropertyValue("NumberFormat", formatKeyIn(fmts, op.y_number_format));
+      axis.setPropertyValue("NumberFormat", key);
     } catch (e) {
       // 縦軸を持たない種類（円など）。
     }

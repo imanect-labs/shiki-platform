@@ -313,8 +313,6 @@ impl OfficeEngine {
                 message,
             })
         };
-        // Word の形の誤り（系列の数など）はセッションを開く前に返す。
-        let doc = writer::normalize::normalize_doc_ops(&chart_insert::doc_ops(chart))?;
         if !self.is_supported().await {
             return Err(OfficeEngineError::Unsupported);
         }
@@ -326,6 +324,9 @@ impl OfficeEngine {
             async |client, info| {
                 let r: Result<(Option<String>, bool, String), OfficeEngineError> = async {
                     if DOC_CONTENT_TYPES.contains(&info.content_type.as_str()) {
+                        // Word の検証（散布図・円の系列の数など）は Word のときだけかける。
+                        let doc =
+                            writer::normalize::normalize_doc_ops(&chart_insert::doc_ops(chart))?;
                         let o = writer::run::apply(client, label, &doc).await?;
                         return Ok((None, o.applied, o.text));
                     }

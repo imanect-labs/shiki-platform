@@ -130,17 +130,30 @@ export const UiFigure = React.memo(function UiFigure({
       const where = r.sheet
         ? `シート「${r.sheet}」に表とグラフを置きました`
         : "文書の末尾にグラフを入れました";
+      const open = office ? null : (
+        <Link href={`/office/${fileId}`} className="underline underline-offset-2">
+          {kind === "sheet" ? "Excel を開く" : "Word を開く"}
+        </Link>
+      );
+      if (r.save === "failed") {
+        // 誰も開いていない文書では、保存できなかった編集は残らない。
+        toast({
+          variant: "destructive",
+          title: "グラフを入れましたが、保存できませんでした",
+          description: office
+            ? "文書の保存ボタンから保存してください"
+            : "誰も開いていない文書には残りません。時間をおいてもう一度試してください",
+        });
+        return;
+      }
       toast({
         title: name ? `「${name}」にグラフを入れました` : "グラフを入れました",
         // 開いていない文書へ入れたときは、その文書を開けるようにする。
-        description: office ? (
-          where
-        ) : (
+        description: (
           <>
-            {where}。{" "}
-            <Link href={`/office/${fileId}`} className="underline underline-offset-2">
-              {kind === "sheet" ? "Excel を開く" : "Word を開く"}
-            </Link>
+            {where}
+            {r.save === "unverified" ? "（保存は確認中です）" : ""}
+            {open ? <>。 {open}</> : null}
           </>
         ),
       });
@@ -216,7 +229,8 @@ export const UiFigure = React.memo(function UiFigure({
               <ToolbarButton
                 onClick={() => (office ? void insert(office.fileId, office.kind) : setPicking(true))}
                 disabled={inserting}
-                label={
+                // 見えている文字をそのまま読ませ、補足はツールチップにする（aria-label で上書きしない）。
+                title={
                   !office
                     ? "ドライブの Excel・Word を選んで、グラフを入れる"
                     : office.kind === "sheet"
