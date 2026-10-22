@@ -267,7 +267,9 @@ impl StorageService {
                     // 撤去範囲の証跡（#420）: 何テーブル・何行消したかを削除証明として残す。
                     "tables_purged": tables_purged,
                     // 各 DELETE が**直接**消した行数。tenant_id を持たず親から ON DELETE CASCADE される
-                    // 従属行（generation_event / collab_update 等）は含まない（Codex P2）。
+                    // 従属行は含まない（Codex P2）。#815 で generation_event / collab_update /
+                    // app_function_run も tenant_id を持ち子→親順で直接消すようになり、現スキーマでは
+                    // cascade だけで消える tenant 行は無い（tenant_id を持たないのは全体共有の表だけ）。
                     "rows_deleted_direct": rows_deleted,
                 }),
             },

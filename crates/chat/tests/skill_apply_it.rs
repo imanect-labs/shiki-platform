@@ -263,7 +263,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
         )
         .await
         .unwrap();
-    let mut rx = store.event_stream(res.run_id, 0);
+    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
     let mut done = false;
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(180), rx.next())
