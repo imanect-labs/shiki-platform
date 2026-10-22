@@ -83,6 +83,24 @@ DB 行の対象は `information_schema` から `tenant_id` 列を持つ実テー
 即時失効が必要ならセッション削除を併用）。role タプルの正は IdP claims — **FGA へ手動で role
 member タプルを足しても次回ログインで剥がれる**。本番の SCIM/グループ完全同期は SAAS.6。
 
+## シークレット暗号文の行束縛への移行（shiki-admin secrets-reencrypt）
+
+#814 以降、シークレットの暗号文は AAD で行（`tenant_id`・`org`・`secret_id`）に束縛される（`enc_version=1`）。
+それ以前に作られた行（`enc_version=0`）は読み出し時に遅延で移行されるが、**使われない行は旧版のまま残り、
+暗号素材を別の行へ複製すると復号できてしまう**。デプロイ後に一度、明示的に移行する。
+
+```bash
+shiki-admin secrets-reencrypt                     # dry-run（旧版の件数だけ表示）
+shiki-admin secrets-reencrypt --execute           # 行単位に再暗号化（DEK 再利用・冪等・稼働中に実行可）
+shiki-admin secrets-reencrypt --execute --batch 500
+```
+
+- 復号できない行は書き換えずに残し、件数を表示して**非 0 で終了**する（改竄・鍵不一致の疑い。調査対象）。
+- 新版で書かれた行は旧バイナリでは復号できない。**移行後のバイナリのロールバックは不可**と考えること。
+- **旧バイナリと新バイナリを並走させない**（ローリング更新しない・停止して入れ替える）。旧バイナリの rotate は
+  `enc_version` を書かないため、新バイナリが移行した行を旧バイナリが書き直すと復号不能な行ができる。
+- バックアップ内の旧版暗号文は引き続き旧形式で有効（保持期限の経過で消える）。
+
 ## テナント名前空間の移行（shiki-admin retenant）
 
 **メンテナンスウィンドウ中**（対象テナントの書込停止）に実行する。既定は dry-run。

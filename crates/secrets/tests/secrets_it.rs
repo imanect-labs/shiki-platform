@@ -162,6 +162,23 @@ async fn setup() -> Option<PgPool> {
     Some(pool)
 }
 
+/// 全テナントを走査する一括再暗号化と「旧版行の状態」を観測するテストを直列化する。
+/// nextest はテストを別プロセスで並列に走らせ DB を共有するため、一括再暗号化が他テストの
+/// 旧版行を先に移行すると観測が崩れる。専用接続のセッション advisory lock で排他し、
+/// 返した接続を drop（＝切断）した時点で解放する。
+async fn legacy_scan_guard() -> sqlx::PgConnection {
+    use sqlx::Connection;
+    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").expect("setup 済み");
+    let mut conn = sqlx::PgConnection::connect(&db_url)
+        .await
+        .expect("connect guard");
+    sqlx::query("SELECT pg_advisory_lock(814)")
+        .execute(&mut conn)
+        .await
+        .expect("advisory lock");
+    conn
+}
+
 fn ctx(tenant: &str, user: &str) -> AuthContext {
     AuthContext::new(
         Principal {
@@ -613,6 +630,7 @@ async fn enc_version_downgrade_or_unknown_fails() {
 #[tokio::test]
 async fn legacy_row_resolves_and_is_lazily_reencrypted() {
     let Some(pool) = setup().await else { return };
+    let _guard = legacy_scan_guard().await;
     let s = store(pool.clone(), Arc::new(AllowAll));
     let (t, tb) = (tenant(), tenant());
     let c = ctx(&t, "alice");
@@ -667,6 +685,7 @@ async fn rotate_writes_current_version() {
 #[tokio::test]
 async fn bulk_reencrypt_upgrades_legacy_rows_and_keeps_broken_ones() {
     let Some(pool) = setup().await else { return };
+    let _guard = legacy_scan_guard().await;
     let s = store(pool.clone(), Arc::new(AllowAll));
     let kp = provider();
     let t = tenant();

@@ -6,8 +6,11 @@
 --
 -- **既存行は書き換えない**（列追加のみ・既定 0 = 既存の暗号文はそのまま有効）。旧版行の一括再暗号化は
 -- `shiki-admin secrets-reencrypt` が行単位・条件付き UPDATE で行う（元の暗号文と同じ DEK を使う）。
--- 既定を 0 にするのは、ローリングデプロイ中の旧バイナリ（enc_version を書かない）の INSERT が
--- 正しく「AAD なし」として記録されるため。
+-- 既定を 0 にするのは、migration 適用後に旧バイナリ（enc_version を書かない）が INSERT しても
+-- 「AAD なし」として正しく記録されるため（INSERT に限った安全網）。
+-- **旧バイナリと新バイナリを並走させないこと**: 旧バイナリの rotate は enc_version に触れないので、
+-- 新バイナリが遅延移行した行（enc_version=1）を旧バイナリが書き直すと「AAD なしの暗号文で 1」の
+-- 復号不能な行ができる。停止して入れ替える（docs/guides/tenant-ops.md）。
 alter table secret add column enc_version smallint not null default 0;
 
 -- 再暗号化の走査（旧版行のみ・keyset ページング）用。旧版行が無くなれば空の索引になる。
