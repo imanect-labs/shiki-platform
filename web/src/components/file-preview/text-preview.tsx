@@ -14,6 +14,7 @@ import { formatBytes } from "@/lib/format";
 import {
   HIGHLIGHT_MAX_BYTES,
   TEXT_MAX_BYTES,
+  TEXT_MAX_LINES,
   languageColor,
   languageLabel,
   looksBinary,
@@ -107,6 +108,13 @@ export function TextPreview({
       }
       const { text, encoding } = decode(bytes);
       const lines = text.length === 0 ? 1 : text.split("\n").length;
+      if (lines > TEXT_MAX_LINES) {
+        failRef.current({
+          title: "行数が多すぎるためプレビューできません",
+          description: `${TEXT_MAX_LINES.toLocaleString("ja-JP")} 行を超えるテキストは、ダウンロードして開いてください。`,
+        });
+        return;
+      }
       const base = { text, encoding, lines } as const;
       if (!active) return;
       // まず色なしで出し、色付けが終わったら差し替える（大きめのファイルでも待たせない）。

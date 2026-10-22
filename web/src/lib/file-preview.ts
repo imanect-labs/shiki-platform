@@ -119,8 +119,8 @@ export function previewKind(node: { name: string; content_type?: string | null }
   if (IMAGE_EXTENSIONS.includes(ext)) return "image";
   if (VIDEO_EXTENSIONS.includes(ext)) return "video";
   if (AUDIO_EXTENSIONS.includes(ext)) return "audio";
-  if (ext in LANGUAGES || TEXT_EXTENSIONS.includes(ext)) return "text";
-  if (node.name.toLowerCase() in TEXT_FILENAMES) return "text";
+  if (Object.hasOwn(LANGUAGES, ext) || TEXT_EXTENSIONS.includes(ext)) return "text";
+  if (Object.hasOwn(TEXT_FILENAMES, node.name.toLowerCase())) return "text";
   // 拡張子で決まらないものは content-type を見る。
   const ct = baseContentType(node.content_type);
   if (ct.startsWith("image/") && !UNSUPPORTED_IMAGE_TYPES.includes(ct)) return "image";
@@ -134,14 +134,18 @@ export function previewKind(node: { name: string; content_type?: string | null }
 /// テキストの言語（shiki の言語名）。分からなければ "text"。
 export function textLanguage(name: string): string {
   const lower = name.toLowerCase();
-  if (lower in TEXT_FILENAMES) return TEXT_FILENAMES[lower];
-  return LANGUAGES[extension(name)] ?? "text";
+  // 辞書は自身のキーだけを見る（`__proto__` という名前のファイルで Object.prototype を拾わない）。
+  if (Object.hasOwn(TEXT_FILENAMES, lower)) return TEXT_FILENAMES[lower];
+  const ext = extension(name);
+  return Object.hasOwn(LANGUAGES, ext) ? LANGUAGES[ext] : "text";
 }
 
 /// 中身を取りに行くテキストの上限。これを超えるものは開かずに「大きすぎる」と出す。
 /// 全行を DOM に置く（仮想化しない）ので、数十万行で描画が固まらない大きさに抑える。
 export const TEXT_MAX_BYTES = 2 * 1024 * 1024;
 export const HIGHLIGHT_MAX_BYTES = 256 * 1024;
+/// 行数の上限。短い行（改行だけなど）が大量にあると、2MB 未満でも行の要素が数百万になって固まる。
+export const TEXT_MAX_LINES = 50_000;
 
 /// 先頭に NUL 文字があるものはバイナリとみなす（拡張子が .txt でも中身が違うことがある）。
 export function looksBinary(bytes: Uint8Array): boolean {
@@ -195,7 +199,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
 };
 
 export function languageLabel(lang: string, name: string): string {
-  if (lang !== "text") return LANGUAGE_LABELS[lang] ?? lang;
+  if (lang !== "text") return Object.hasOwn(LANGUAGE_LABELS, lang) ? LANGUAGE_LABELS[lang] : lang;
   const ext = extension(name);
   if (ext === "log") return "ログ";
   if (ext === "tsv") return "TSV";
@@ -235,5 +239,5 @@ const LANGUAGE_COLORS: Record<string, string> = {
 };
 
 export function languageColor(lang: string): string {
-  return LANGUAGE_COLORS[lang] ?? "var(--muted-foreground)";
+  return Object.hasOwn(LANGUAGE_COLORS, lang) ? LANGUAGE_COLORS[lang] : "var(--muted-foreground)";
 }

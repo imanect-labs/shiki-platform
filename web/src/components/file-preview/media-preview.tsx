@@ -41,9 +41,19 @@ export function MediaPreview({
   };
   const failRef = React.useRef(onUnsupported);
   failRef.current = onUnsupported;
+  // 画面を離れた後に、取り直しの結果（成功・失敗とも）を反映しない（別のファイルの画面を壊さない）。
+  const mounted = React.useRef(true);
+  React.useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const load = React.useCallback(() => {
-    return downloadUrl(node.id).then(({ url }) => setSrc(url));
+    return downloadUrl(node.id).then(({ url }) => {
+      if (mounted.current) setSrc(url);
+    });
   }, [node.id]);
 
   React.useEffect(() => {
@@ -76,7 +86,9 @@ export function MediaPreview({
     retried.current = true;
     playable.current = false;
     resume.current = { time: el.currentTime, playing: !el.paused };
-    load().catch(() => failRef.current(unsupported));
+    load().catch(() => {
+      if (mounted.current) failRef.current(unsupported);
+    });
   };
   const onLoadedMetadata = () => {
     const el = mediaRef.current;
