@@ -5361,3 +5361,81 @@ async fn provision_tenant_admin_grants_admin_and_upgrades_existing_member() {
         .await
         .expect("冪等");
 }
+
+/// #816: chained 監査の直列化は **64bit キー**（`hashtextextended('audit_chain:' || tenant|org, 0)`）で
+/// 取る。旧実装の 32bit（`hashtext(tenant|org)`）は誕生日衝突で無関係なテナント同士を待たせていた。
+///
+/// - 新キーを別コネクションで掴むと chained 記録はそこで待つ（直列化が新キーで効いている）
+/// - 旧 32bit キーを掴んでも chained 記録は待たない（旧キーにはもう乗っていない）
+#[tokio::test]
+async fn audit_chain_lock_uses_64bit_key() {
+    let Some(cx) = setup().await else { return };
+    let pool = cx.pool;
+    let tenant = format!("tlock{}", Uuid::new_v4().simple());
+    let ctx = make_ctx_tenant("org1", &tenant, "u-lock");
+    let lock_input = format!("{tenant}|org1");
+    let entry = || storage::audit::AuditEntry {
+        action: "file.delete",
+        object_type: "file",
+        object_id: "f-lock",
+        decision: storage::audit::Decision::Allow,
+        trace_id: None,
+        metadata: serde_json::json!({}),
+    };
+    let record = |pool: PgPool, ctx: AuthContext| {
+        tokio::spawn(async move {
+            let mut tx = pool.begin().await.expect("tx");
+            storage::audit::record_on(&mut tx, &ctx, entry(), storage::audit::Chain::Yes)
+                .await
+                .expect("record_on");
+            tx.commit().await.expect("commit");
+        })
+    };
+
+    // 旧 32bit キーを保持しても待たされない。
+    let legacy: i64 = sqlx::query_scalar("SELECT hashtext($1)::bigint")
+        .bind(&lock_input)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let mut hold_legacy = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(legacy)
+        .execute(&mut *hold_legacy)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), record(pool.clone(), ctx.clone()))
+        .await
+        .expect("旧 32bit キーで待たされない")
+        .expect("join");
+    hold_legacy.rollback().await.unwrap();
+
+    // 新 64bit キーを保持すると待たされ、解放で進む。
+    let key: i64 = sqlx::query_scalar("SELECT hashtextextended('audit_chain:' || $1, 0)")
+        .bind(&lock_input)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let mut hold = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(key)
+        .execute(&mut *hold)
+        .await
+        .unwrap();
+    let task = record(pool.clone(), ctx.clone());
+    await_advisory_wait(&pool, key).await;
+    hold.rollback().await.unwrap();
+    task.await.expect("join");
+
+    // 2 件とも同じチェーンに連結している（2 件目の prev_hash = 1 件目の entry_hash）。
+    let linked: bool = sqlx::query_scalar(
+        "SELECT bool_and(prev_hash IS NOT DISTINCT FROM lag_hash) FROM ( \
+            SELECT prev_hash, lag(entry_hash) OVER (ORDER BY id) AS lag_hash \
+            FROM audit_log WHERE tenant_id = $1 AND org = 'org1' AND chained) t",
+    )
+    .bind(&tenant)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(linked, "chained 行が直列に連結している");
+}
