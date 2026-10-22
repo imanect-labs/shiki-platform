@@ -31,6 +31,7 @@ use crate::index::normalize::text_key;
 use crate::index::state::{derived_table, field_id_i16, sync_ledger};
 use crate::index::IndexTable;
 use crate::model::{DataTable, FieldId, TableKeys, TableSchema};
+use crate::policy::memo::AuthzMemo;
 use crate::store::{DataStore, TableRow, TABLE_COLS};
 use crate::{map_db, DataError, DEFAULT_AGGREGATE_MIN_ROWS};
 
@@ -653,7 +654,7 @@ pub(crate) fn catalog_entry(t: &DataTable) -> CatalogTable {
 /// `src` の各タプルの主体が `dst` に owner / editor / viewer のいずれかで載っていれば包含が成り立つ
 /// （健全だが完全ではない＝証明できなければ `per_viewer`）。`src_tuples` が `None` なら `src` を読む。
 pub(crate) async fn viewers_contained(
-    authz: &dyn authz::AuthzClient,
+    az: &AuthzMemo<'_>,
     ctx: &AuthContext,
     src: Option<Uuid>,
     predicted_src_owner: Option<&Subject>,
@@ -662,25 +663,20 @@ pub(crate) async fn viewers_contained(
     let rels = [Relation::Owner, Relation::Editor, Relation::Viewer];
     let read = |id: Uuid| {
         let obj = ctx.ns().data_table(&id.to_string());
-        async move {
-            authz
-                .read_tuples(&obj, None)
-                .await
-                .map_err(|e| DataError::Internal(format!("authz: {e}")))
-        }
+        async move { az.read_tuples(&obj, None).await }
     };
     let dst_users: HashSet<String> = read(dst)
         .await?
-        .into_iter()
+        .iter()
         .filter(|t| rels.iter().any(|r| r.as_str() == t.relation))
-        .map(|t| t.user)
+        .map(|t| t.user.clone())
         .collect();
     let src_users: Vec<String> = match (src, predicted_src_owner) {
         (Some(id), _) => read(id)
             .await?
-            .into_iter()
+            .iter()
             .filter(|t| rels.iter().any(|r| r.as_str() == t.relation))
-            .map(|t| t.user)
+            .map(|t| t.user.clone())
             .collect(),
         (None, Some(owner)) => vec![owner.to_string()],
         (None, None) => return Ok(false),
@@ -691,10 +687,12 @@ pub(crate) async fn viewers_contained(
 impl DataStore {
     /// 材料化した列の前提（4 階層）を今の状態で検査し直し、崩れた列を降格する。降格したら `true`。
     ///
-    /// 認可材料（OpenFGA のタプル・参照先のスキーマと共有フラグ）は毎回引く（PIT-18）。
+    /// 認可材料（OpenFGA のタプル・参照先のスキーマと共有フラグ）はリクエストごとに引く（リクエスト内は
+    /// `az` のメモ・跨いで持たない・PIT-18）。
     pub(crate) async fn verify_materialized(
         &self,
         ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
         table: &DataTable,
     ) -> Result<bool, DataError> {
         if !has_materialized(&table.schema) {
@@ -712,7 +710,7 @@ impl DataStore {
                 Err(DataError::NotFound) => continue,
                 Err(e) => return Err(e),
             };
-            if viewers_contained(self.authz.as_ref(), ctx, Some(table.id), None, rt).await? {
+            if viewers_contained(az, ctx, Some(table.id), None, rt).await? {
                 contained.insert(rt);
             }
             cat.tables.insert(rt, catalog_entry(&r));
@@ -769,7 +767,8 @@ impl DataStore {
         table_id: Uuid,
     ) -> Result<bool, DataError> {
         let table = self.fetch_live(ctx, table_id).await?;
-        self.verify_materialized(ctx, &table).await
+        self.verify_materialized(ctx, &self.authz_memo(), &table)
+            .await
     }
 
     /// 再計算ジョブの 1 チャンク（再計算待ちを `record_int` 順に処理する）。待ちが尽きたら `true`。

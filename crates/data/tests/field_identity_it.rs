@@ -38,6 +38,9 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 /// 全許可モック。`tables` は list_objects(data_table) が返す可視テーブル（一覧の検査用）。
+///
+/// ロールには誰も所属しない（`list_objects(role)` が空なのと同じく、`role#member` の check も偽）。
+/// 名指しロールは check で判定されるため（Task 15.9）、両者を OpenFGA と同じく整合させる。
 #[derive(Default)]
 struct AllowAll {
     tables: Vec<String>,
@@ -49,10 +52,10 @@ impl AuthzClient for AllowAll {
         &self,
         _s: &Subject,
         _r: Relation,
-        _o: &FgaObject,
+        o: &FgaObject,
         _c: Consistency,
     ) -> Result<bool, AuthzError> {
-        Ok(true)
+        Ok(!o.as_str().starts_with("role:"))
     }
     async fn write_tuple(
         &self,

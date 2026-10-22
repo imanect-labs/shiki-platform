@@ -27,6 +27,10 @@
 //! - **pivot 索引テーブル（Task 15.2）**: 索引は共有の索引テーブルへの行として持ち、物理本数は
 //!   テナント数・テーブル数・列数に依存しない。書込は同一 Tx で変更フィールドの索引行だけを
 //!   書き換える（[`index`]）。旧方式の式インデックスは Task 15.3 で撤去し、ランタイム DDL はゼロ。
+//! - **認可材料のリクエストスコープ memo（Task 15.9）**: 同じリクエストの OpenFGA の問いを覚えて
+//!   投げ直さず、読取の入口でテーブル・参照先・名指しロールの check を BatchCheck 1 往復に束ねる。
+//!   メモは `DataStore` の借用で作るのでリクエストの外へ持ち出せない（PIT-18）。`data_table.schema` は
+//!   `(tenant_id, table_id, schema_version)` のプロセス内キャッシュ（認可材料は載せない）。
 //! - **クエリコンパイラ v2（Task 15.3）**: 条件木・複数ソート・keyset・自前オプティマイザ O1
 //!   （上限付き件数探索・4 戦略・予算付き切替・`Guard(P)`・事後検査）。[`query`]
 
@@ -51,8 +55,10 @@ mod record_list;
 mod record_share;
 mod revision;
 mod schema;
+mod schema_cache;
 mod store;
 mod table_list;
+mod table_load;
 mod tenant_settings;
 mod transition;
 mod validate;

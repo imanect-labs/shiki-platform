@@ -8,8 +8,9 @@
 //! - 応答に推定値・統計値・戦略名を載せない（PIT-75）。`record_int` は暗号化カーソルの中にだけ入る。
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use authz::{AuthContext, Relation};
+use authz::AuthContext;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
@@ -234,14 +235,20 @@ impl DataStore {
         action: &str,
         tuning: &QueryTuning,
     ) -> Result<(QueryResult, QueryDebug), DataError> {
-        self.require(ctx, table_id, Relation::Viewer, action, trace_id)
+        // このリクエストの認可メモ（ページ・件数・lookup / rollup の解決で同じ問いを OpenFGA へ
+        // 投げ直さない・リクエストの外へは持ち出せない・Task 15.9・PIT-18）。テーブル viewer・参照先
+        // テーブル viewer・名指しロールの check は入口で BatchCheck 1 往復に束ねる。
+        let az = self.authz_memo();
+        let mut table = self
+            .open_for_read(ctx, &az, table_id, action, trace_id)
             .await?;
-        let mut table = self.fetch_live(ctx, table_id).await?;
-        let masked = self.masked_fields(ctx, &table).await?;
+        let masked = self.masked_fields(ctx, &az, &table).await?;
         let mut bq = bind_query(&table.schema, &masked, query)?;
         // 材料化した派生列で絞る・並べるなら、その前提（4 階層）を今の認可状態で検査し直す。崩れていれば
         // 降格（索引行を同一 Tx で破棄）してから束縛し直す＝その列はフィルタ/ソートに使えなくなる（PIT-71）。
-        if bq.fields.values().any(|f| f.derived) && self.verify_materialized(ctx, &table).await? {
+        if bq.fields.values().any(|f| f.derived)
+            && self.verify_materialized(ctx, &az, &table).await?
+        {
             table = self.fetch_live(ctx, table_id).await?;
             bq = bind_query(&table.schema, &masked, query)?;
         }
@@ -257,10 +264,10 @@ impl DataStore {
             .await;
         }
         bq.filter = normalize(bq.filter, &bq.fields, Rules::ALL);
-        // 行述語の材料（毎回 FGA・キャッシュしない・PIT-18）。row_policy なしは共有も効かない。
+        // 行述語の材料（リクエストごとに FGA・跨いでキャッシュしない・PIT-18）。row_policy なしは共有も効かない。
         let m = match &table.schema.row_policy {
-            Some(p) => material::resolve(ctx, self.authz.as_ref(), &[&p.read]).await?,
-            None => PolicyMaterial::default(),
+            Some(p) => material::resolve(ctx, &az, &[&p.read]).await?,
+            None => Arc::new(PolicyMaterial::default()),
         };
 
         let db = self.pools.for_tenant(&ctx.tenant_id);
@@ -296,7 +303,7 @@ impl DataStore {
         }
         // 本体の後段（派生フィールド・マスク・投影）はトランザクションの外で行う。
         if let Some(mut items) = rows {
-            self.resolve_derived_fields(ctx, &table, &masked, &mut items)
+            self.resolve_derived_fields(ctx, &az, &table, &masked, &mut items)
                 .await?;
             Self::apply_mask_records(&masked, &mut items);
             if let Some(sel) = &bq.select {

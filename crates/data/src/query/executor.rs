@@ -7,7 +7,7 @@
 //! 値は全てバインド。SQL テキストへ埋め込むのは内部 ID 由来の JSONB キー（`"f{id}"`・
 //! [`crate::field_key::is_json_key`] で再検証）と固定エイリアスのみ。
 
-use authz::{AuthContext, Consistency, Relation};
+use authz::{AuthContext, Relation};
 use sqlx::postgres::PgArguments;
 use sqlx::query::QueryAs;
 use sqlx::{PgConnection, Postgres};
@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::model::DataTable;
 use crate::policy::compile::{compile_expr, compile_read_predicate, Bind, BindSet, RECORD_ALIAS};
 use crate::policy::material;
+use crate::policy::memo::AuthzMemo;
 use crate::record::RecordRow;
 use crate::store::DataStore;
 use crate::{map_db, DataError};
@@ -39,6 +40,7 @@ impl DataStore {
     pub(crate) async fn read_predicate(
         &self,
         ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
         table: &DataTable,
     ) -> Result<ReadPredicate, DataError> {
         let exprs: Vec<&crate::policy::PolicyExpr> = table
@@ -47,7 +49,7 @@ impl DataStore {
             .as_ref()
             .map(|p| vec![&p.read])
             .unwrap_or_default();
-        let m = material::resolve(ctx, self.authz.as_ref(), &exprs).await?;
+        let m = material::resolve(ctx, az, &exprs).await?;
         let mut binds = BindSet::new(SCOPE_BINDS);
         let sql = compile_read_predicate(
             &table.schema,
@@ -66,10 +68,11 @@ impl DataStore {
     pub(crate) async fn select_visible_by_id(
         &self,
         ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
         table: &DataTable,
         id: Uuid,
     ) -> Result<Option<RecordRow>, DataError> {
-        let pred = self.read_predicate(ctx, table).await?;
+        let pred = self.read_predicate(ctx, az, table).await?;
         let id_ph = SCOPE_BINDS + 1 + pred.binds.len();
         let sql = format!(
             "SELECT {SELECT_COLS} FROM data_record {RECORD_ALIAS} \
@@ -95,11 +98,12 @@ impl DataStore {
     pub(crate) async fn lock_visible_by_id(
         &self,
         ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
         conn: &mut PgConnection,
         table: &DataTable,
         id: Uuid,
     ) -> Result<Option<RecordRow>, DataError> {
-        let pred = self.read_predicate(ctx, table).await?;
+        let pred = self.read_predicate(ctx, az, table).await?;
         let id_ph = SCOPE_BINDS + 1 + pred.binds.len();
         let sql = format!(
             "SELECT {SELECT_COLS} FROM data_record {RECORD_ALIAS} \
@@ -124,11 +128,12 @@ impl DataStore {
     pub(crate) async fn actor_allows(
         &self,
         ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
         table: &DataTable,
         record_id: Uuid,
         actor: &crate::policy::PolicyExpr,
     ) -> Result<bool, DataError> {
-        let m = material::resolve(ctx, self.authz.as_ref(), &[actor]).await?;
+        let m = material::resolve(ctx, az, &[actor]).await?;
         let mut binds = BindSet::new(SCOPE_BINDS);
         let pred = compile_expr(
             actor,
@@ -165,6 +170,7 @@ impl DataStore {
     pub(crate) async fn write_allowed(
         &self,
         ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
         table: &DataTable,
         record_id: Uuid,
     ) -> Result<bool, DataError> {
@@ -172,7 +178,7 @@ impl DataStore {
             return Ok(true);
         };
         let write_expr = policy.write_expr();
-        let m = material::resolve(ctx, self.authz.as_ref(), &[write_expr]).await?;
+        let m = material::resolve(ctx, az, &[write_expr]).await?;
         let mut binds = BindSet::new(SCOPE_BINDS);
         let pred = compile_expr(
             write_expr,
@@ -205,15 +211,12 @@ impl DataStore {
             return Ok(true);
         }
         // 個別共有 editor（スパースタプル）による書込許可。
-        self.authz
-            .check(
-                &ctx.subject(),
-                Relation::Editor,
-                &ctx.ns().data_record(&record_id.to_string()),
-                Consistency::HigherConsistency,
-            )
-            .await
-            .map_err(|e| DataError::Internal(e.to_string()))
+        az.check(
+            ctx,
+            Relation::Editor,
+            &ctx.ns().data_record(&record_id.to_string()),
+        )
+        .await
     }
 }
 

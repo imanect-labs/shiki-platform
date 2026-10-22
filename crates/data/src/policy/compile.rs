@@ -79,7 +79,7 @@ pub(crate) fn compile_expr<B: PushBind>(
         }
         PolicyExpr::HasRole { role, subtree } => {
             // ロール所属はホスト側で確定できる（材料に解決済み）。SQL には定数として畳み込む。
-            let holds = material.roles(*subtree).iter().any(|r| r == role);
+            let holds = material.has_role(role, *subtree);
             Ok(if holds { "TRUE" } else { "FALSE" }.to_string())
         }
         PolicyExpr::Any(children) => {
@@ -261,6 +261,7 @@ mod tests {
             roles_effective: Some(Arc::new(roles.iter().map(|s| (*s).into()).collect())),
             shared_record_ids: shared.to_vec(),
             shares_truncated: false,
+            role_members: std::collections::HashMap::new(),
         }
     }
 

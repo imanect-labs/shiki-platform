@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use authz::{AuthContext, AuthzClient, Consistency, Relation};
+use authz::{AuthContext, AuthzClient, Relation};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::types::Json;
@@ -28,10 +28,12 @@ use crate::index::state::sync_ledger;
 use crate::index::{DEFAULT_MAX_MULTI_VALUES, MAX_MULTI_VALUES_CEILING};
 use crate::key_migration::KEY_FORMAT_LEGACY;
 use crate::model::{DataTable, TableKeys, TableSchema};
+use crate::policy::memo::AuthzMemo;
 use crate::query::planner::feedback::Feedback;
 use crate::query::planner::ProbeCache;
 use crate::query::run::{QueryTuning, DEFAULT_COUNT_CAP, DEFAULT_READ_TIMEOUT_MS};
 use crate::schema::{validate_schema_update, validate_table_name, validate_table_schema};
+use crate::schema_cache::SchemaCache;
 use crate::validate::RefResolver;
 use crate::{map_db, DataError};
 
@@ -60,8 +62,7 @@ pub struct NewDataTable {
 
 /// data_table 行の SELECT 列（[`TableRow`] と同じ並び）。
 pub(crate) const TABLE_COLS: &str = "id, name, app_id, schema, schema_version, created_by, \
-     created_at, updated_at, tenant_int, table_int, key_format, next_field_id, pivot_index_init, \
-     has_record_shares";
+     created_at, updated_at, tenant_int, table_int, key_format, next_field_id, has_record_shares";
 
 /// data_table 行。
 #[derive(sqlx::FromRow)]
@@ -78,8 +79,6 @@ pub(crate) struct TableRow {
     pub(crate) table_int: i64,
     pub(crate) key_format: i16,
     pub(crate) next_field_id: i32,
-    /// 索引台帳を初期化済みか（Task 15.2 より前に作られたテーブルは false）。
-    pub(crate) pivot_index_init: bool,
     /// レコード個別共有タプルが作られたか（§7.4 第 4 階層）。
     pub(crate) has_record_shares: bool,
 }
@@ -133,6 +132,8 @@ pub struct DataStore {
     pub(crate) probe_cache: Arc<ProbeCache>,
     /// 走査効率などの運用指標。
     pub(crate) feedback: Arc<Feedback>,
+    /// スキーマ本文のキャッシュ（`(tenant_id, table_id, schema_version)`・認可材料は載せない・Task 15.9）。
+    pub(crate) schema_cache: Arc<SchemaCache>,
 }
 
 impl DataStore {
@@ -160,6 +161,7 @@ impl DataStore {
             read_timeout_ms: DEFAULT_READ_TIMEOUT_MS,
             probe_cache: Arc::new(ProbeCache::default()),
             feedback: Arc::new(Feedback::default()),
+            schema_cache: Arc::new(SchemaCache::default()),
         }
     }
 
@@ -456,6 +458,8 @@ impl DataStore {
         )
         .await?;
         tx.commit().await.map_err(map_db)?;
+        // 版は DB 照合で必ず変わって見えるが、古い本文はここで落としておく（世代切替）。
+        self.schema_cache.invalidate_table(&ctx.tenant_id, id);
         Ok(row)
     }
 
@@ -500,6 +504,7 @@ impl DataStore {
         )
         .await?;
         tx.commit().await.map_err(map_db)?;
+        self.schema_cache.invalidate_table(&ctx.tenant_id, id);
         self.record_audit_best_effort(
             ctx,
             "data.table.delete",
@@ -559,46 +564,9 @@ impl DataStore {
             .await
             .map_err(map_db)?;
         tx.commit().await.map_err(map_db)?;
+        // 撤去したテナントのスキーマを世代ごと落とす（purge 前に読み始めた読取も載せ戻せない）。
+        self.schema_cache.invalidate_tenant(tenant_id);
         Ok(purged)
-    }
-
-    /// 生存テーブル行を引く（認可済み前提の内部ヘルパ）。
-    ///
-    /// v1 形式（`key_format = 1`）のテーブルは**その場で 3 層へ移行してから**返す（移行ジョブと
-    /// 同じ関数・テーブル行ロックで直列化・冪等）。返るテーブルは常に `"f{id}"` 形式なので、
-    /// 呼び出し側は旧形式を扱わない。
-    pub(crate) async fn fetch_live(
-        &self,
-        ctx: &AuthContext,
-        id: Uuid,
-    ) -> Result<DataTable, DataError> {
-        for _ in 0..3 {
-            let row: Option<TableRow> = sqlx::query_as(&format!(
-                "SELECT {TABLE_COLS} FROM data_table \
-                 WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL"
-            ))
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
-            .bind(id)
-            .fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
-            .await
-            .map_err(map_db)?;
-            let row = row.ok_or(DataError::NotFound)?;
-            if row.key_format == KEY_FORMAT_LEGACY {
-                self.migrate_table_field_keys(&ctx.tenant_id, id).await?;
-                continue;
-            }
-            if !row.pivot_index_init {
-                // Task 15.2 より前に作られたテーブル: 索引台帳を作ってから使う（以降の書込は
-                // write-through・既存レコードはバックフィル）。冪等・テーブル行ロックで直列化。
-                self.init_pivot_index(&ctx.tenant_id, id).await?;
-                continue;
-            }
-            return Ok(row.into_table());
-        }
-        Err(DataError::Internal(
-            "テーブルの識別子移行が収束しません".into(),
-        ))
     }
 
     /// テーブルの内部整数キーを採番する（`tenant_int` は配置レジストリ・`table_int` は採番サービス）。
@@ -616,6 +584,20 @@ impl DataStore {
         })
     }
 
+    /// このリクエストの認可メモを作る（Task 15.9）。
+    ///
+    /// メモは `self` の authz を借用するので `'static` ではなく、リクエスト（公開メソッドの 1 回）の
+    /// 外へ持ち出せない（PIT-18: リクエストを跨いだ再利用を型で禁止する）。
+    pub(crate) fn authz_memo(&self) -> AuthzMemo<'_> {
+        AuthzMemo::new(self.authz.as_ref())
+    }
+
+    /// 検証用: テナントについてスキーマキャッシュが保持する `(table_id, schema_version)`。
+    #[doc(hidden)]
+    pub fn cached_schema_versions(&self, tenant_id: &str) -> Vec<(Uuid, i64)> {
+        self.schema_cache.cached_versions(tenant_id)
+    }
+
     /// テーブルへの relation を要求する（不足は監査 deny＋Forbidden・剥奪即時反映）。
     pub(crate) async fn require(
         &self,
@@ -625,17 +607,22 @@ impl DataStore {
         action: &str,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
-        let obj = ctx.ns().data_table(&id.to_string());
-        let ok = self
-            .authz
-            .check(
-                &ctx.subject(),
-                relation,
-                &obj,
-                Consistency::HigherConsistency,
-            )
+        self.require_in(&self.authz_memo(), ctx, id, relation, action, trace_id)
             .await
-            .map_err(|e| DataError::Internal(e.to_string()))?;
+    }
+
+    /// [`Self::require`] のリクエストメモ版（同じリクエストで先に引いた答えを使う）。
+    pub(crate) async fn require_in(
+        &self,
+        az: &AuthzMemo<'_>,
+        ctx: &AuthContext,
+        id: Uuid,
+        relation: Relation,
+        action: &str,
+        trace_id: Option<&str>,
+    ) -> Result<(), DataError> {
+        let obj = ctx.ns().data_table(&id.to_string());
+        let ok = az.check(ctx, relation, &obj).await?;
         if !ok {
             let _ = self
                 .audit

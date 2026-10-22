@@ -29,8 +29,9 @@ pub(crate) mod types;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
-use authz::{AuthContext, Consistency, Relation};
+use authz::{AuthContext, Relation};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
@@ -40,6 +41,7 @@ use crate::formula::FormulaExpr;
 use crate::model::{DataRecord, DataTable, FieldType};
 use crate::policy::compile::{compile_read_predicate, BindSet, RECORD_ALIAS};
 use crate::policy::material::{self, PolicyMaterial};
+use crate::policy::memo::AuthzMemo;
 use crate::query::executor::SCOPE_BINDS;
 use crate::query::planner::verify::{PolicyEnv, RowView};
 use crate::store::DataStore;
@@ -104,6 +106,29 @@ fn link_uses(table: &DataTable) -> HashMap<String, LinkUse> {
     uses
 }
 
+/// 読取時の解決が 1 段目に辿る参照先テーブル（派生フィールドのリンク先・対称列の参照元）。
+///
+/// 読取の入口が参照先テーブル viewer の check を BatchCheck へ束ねるために使う（Task 15.9）。
+pub(crate) fn first_hop_tables(table: &DataTable) -> Vec<Uuid> {
+    if !needs_resolution(table) {
+        return Vec::new();
+    }
+    let mut out: BTreeSet<Uuid> = link_uses(table)
+        .into_values()
+        .filter_map(|u| u.ref_table)
+        .collect();
+    out.extend(
+        table
+            .schema
+            .fields
+            .iter()
+            .filter(|f| f.is_reverse_link())
+            .filter_map(|f| f.ref_table),
+    );
+    out.remove(&table.id);
+    out.into_iter().collect()
+}
+
 impl DataStore {
     /// 取得済み行へ派生フィールドと対称列を埋める（get / list / query の出口で呼ぶ）。
     ///
@@ -111,6 +136,7 @@ impl DataStore {
     pub(crate) async fn resolve_derived_fields(
         &self,
         ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
         table: &DataTable,
         masked: &HashSet<String>,
         rows: &mut [DataRecord],
@@ -120,13 +146,15 @@ impl DataStore {
         }
         // 材料化の前提（4 階層）が今も成り立つかを確かめ、崩れていれば同一 Tx で破棄する（PIT-71）。
         // 表示は下の読取時計算なので、ここでの降格は「索引に残った漏洩源を消す」ためのもの。
-        self.verify_materialized(ctx, table).await?;
-        self.resolve_derived_at(ctx, table, masked, rows, 0).await
+        self.verify_materialized(ctx, az, table).await?;
+        self.resolve_derived_at(ctx, az, table, masked, rows, 0)
+            .await
     }
 
     fn resolve_derived_at<'a>(
         &'a self,
         ctx: &'a AuthContext,
+        az: &'a AuthzMemo<'_>,
         table: &'a DataTable,
         masked: &'a HashSet<String>,
         rows: &'a mut [DataRecord],
@@ -150,7 +178,8 @@ impl DataStore {
                 let rv = if depth >= MAX_RESOLVE_DEPTH || masked.contains(&f.key) {
                     links::ReverseValues::default()
                 } else {
-                    self.reverse_link_values(ctx, table, f, rows, depth).await?
+                    self.reverse_link_values(ctx, az, table, f, rows, depth)
+                        .await?
                 };
                 for (i, r) in rows.iter_mut().enumerate() {
                     let ids: Vec<Value> = rv
@@ -182,7 +211,7 @@ impl DataStore {
                         .into_iter()
                         .collect();
                     let r = self
-                        .visible_ref_rows(ctx, rt, &ids, &u.targets, depth + 1)
+                        .visible_ref_rows(ctx, az, rt, &ids, &u.targets, depth + 1)
                         .await?;
                     refs.insert(link, r);
                 }
@@ -215,6 +244,7 @@ impl DataStore {
     pub(crate) fn visible_ref_rows<'a>(
         &'a self,
         ctx: &'a AuthContext,
+        az: &'a AuthzMemo<'_>,
         ref_table_id: Uuid,
         ids: &'a [Uuid],
         targets: &'a BTreeSet<String>,
@@ -229,17 +259,14 @@ impl DataStore {
             if ids.is_empty() {
                 return Ok(empty);
             }
-            // 第 1 層: 参照先テーブルの viewer（閲覧者本人・剥奪は即時反映）。
-            let can_view = self
-                .authz
+            // 第 1 層: 参照先テーブルの viewer（閲覧者本人・剥奪は即時反映・リクエスト内はメモ）。
+            let can_view = az
                 .check(
-                    &ctx.subject(),
+                    ctx,
                     Relation::Viewer,
                     &ctx.ns().data_table(&ref_table_id.to_string()),
-                    Consistency::HigherConsistency,
                 )
-                .await
-                .map_err(|e| DataError::Internal(e.to_string()))?;
+                .await?;
             if !can_view {
                 return Ok(empty);
             }
@@ -248,11 +275,12 @@ impl DataStore {
                 Err(DataError::NotFound) => return Ok(empty),
                 Err(e) => return Err(e),
             };
-            let ref_masked = self.masked_fields(ctx, &ref_table).await?;
-            // 第 2 層: 行述語（材料は毎回 OpenFGA から・PIT-18）。SQL 前段 → Rust 事後検査。
+            let ref_masked = self.masked_fields(ctx, az, &ref_table).await?;
+            // 第 2 層: 行述語（材料はリクエストごとに OpenFGA から・跨いで持たない・PIT-18）。
+            // SQL 前段 → Rust 事後検査。
             let m = match &ref_table.schema.row_policy {
-                Some(p) => material::resolve(ctx, self.authz.as_ref(), &[&p.read]).await?,
-                None => PolicyMaterial::default(),
+                Some(p) => material::resolve(ctx, az, &[&p.read]).await?,
+                None => Arc::new(PolicyMaterial::default()),
             };
             let fetched = self.select_ref_rows(ctx, &ref_table, &m, ids).await?;
             let shared: HashSet<Uuid> = m.shared_record_ids.iter().copied().collect();
@@ -293,7 +321,7 @@ impl DataStore {
                     .is_some_and(|f| f.field_type.is_derived() || f.is_reverse_link())
             });
             if needs_derived {
-                self.resolve_derived_at(ctx, &ref_table, &ref_masked, &mut recs, depth)
+                self.resolve_derived_at(ctx, az, &ref_table, &ref_masked, &mut recs, depth)
                     .await?;
             }
             let rows = recs

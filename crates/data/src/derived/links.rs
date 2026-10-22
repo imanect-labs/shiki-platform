@@ -81,6 +81,7 @@ impl DataStore {
     pub(crate) async fn reverse_link_values(
         &self,
         ctx: &AuthContext,
+        az: &crate::policy::memo::AuthzMemo<'_>,
         table: &DataTable,
         f: &FieldDef,
         rows: &[DataRecord],
@@ -113,7 +114,7 @@ impl DataStore {
             .into_iter()
             .collect();
         let visible = self
-            .visible_ref_rows(ctx, src_table_id, &dsts, &BTreeSet::new(), depth + 1)
+            .visible_ref_rows(ctx, az, src_table_id, &dsts, &BTreeSet::new(), depth + 1)
             .await?;
         let mut out = ReverseValues::default();
         let mut seen: HashMap<i64, i64> = HashMap::new();

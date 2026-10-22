@@ -246,7 +246,7 @@ fn fold(e: &PolicyExpr, m: &crate::policy::material::PolicyMaterial) -> Folded {
     match e {
         PolicyExpr::Public => Folded::True,
         PolicyExpr::HasRole { role, subtree } => {
-            if m.roles(*subtree).iter().any(|r| r == role) {
+            if m.has_role(role, *subtree) {
                 Folded::True
             } else {
                 Folded::False
@@ -322,6 +322,7 @@ mod tests {
             roles_effective: Some(Arc::new(roles.iter().map(|s| (*s).into()).collect())),
             shared_record_ids: vec![],
             shares_truncated: false,
+            role_members: std::collections::HashMap::new(),
         }
     }
 

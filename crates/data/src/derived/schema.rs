@@ -280,15 +280,11 @@ impl DataStore {
                 .filter(|rt| cat.tables.get(rt).is_some_and(|t| t.app_id == app_id))
                 .collect();
             let owner = ctx.subject();
+            let az = self.authz_memo();
             for rt in refs {
-                let ok = viewers_contained(
-                    self.authz.as_ref(),
-                    ctx,
-                    table_id,
-                    table_id.is_none().then_some(&owner),
-                    rt,
-                )
-                .await?;
+                let ok =
+                    viewers_contained(&az, ctx, table_id, table_id.is_none().then_some(&owner), rt)
+                        .await?;
                 if ok {
                     contained.insert(rt);
                 }

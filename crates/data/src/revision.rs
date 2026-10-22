@@ -81,9 +81,10 @@ impl DataStore {
         .await?;
         // テーブルが生存していること（削除済みテーブルの履歴を残存タプルで読ませない）。
         let table = self.fetch_live(ctx, table_id).await?;
+        let az = self.authz_memo();
         // 行可視性ゲート: 現存かつ不可視なら 404。削除済み実在履歴は owner のみ。
         if self
-            .select_visible_by_id(ctx, &table, record_id)
+            .select_visible_by_id(ctx, &az, &table, record_id)
             .await?
             .is_none()
         {
@@ -129,7 +130,7 @@ impl DataStore {
         .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
         .await
         .map_err(map_db)?;
-        let masked = self.masked_fields(ctx, &table).await?;
+        let masked = self.masked_fields(ctx, &az, &table).await?;
         Ok(rows
             .into_iter()
             .map(|r| {

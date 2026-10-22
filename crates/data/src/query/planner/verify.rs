@@ -53,9 +53,7 @@ pub(crate) fn eval_read(env: &PolicyEnv<'_>, row: &RowView<'_>) -> bool {
 fn eval(e: &PolicyExpr, env: &PolicyEnv<'_>, row: &RowView<'_>) -> bool {
     match e {
         PolicyExpr::Public => true,
-        PolicyExpr::HasRole { role, subtree } => {
-            env.material.roles(*subtree).iter().any(|r| r == role)
-        }
+        PolicyExpr::HasRole { role, subtree } => env.material.has_role(role, *subtree),
         PolicyExpr::IsOwner => row.owner == env.user,
         PolicyExpr::Any(v) => !v.is_empty() && v.iter().any(|c| eval(c, env, row)),
         PolicyExpr::All(v) => !v.is_empty() && v.iter().all(|c| eval(c, env, row)),
@@ -168,6 +166,7 @@ mod tests {
             roles_effective: Some(Arc::new(vec![])),
             shared_record_ids: vec![],
             shares_truncated: false,
+            role_members: std::collections::HashMap::new(),
         }
     }
 

@@ -17,6 +17,7 @@ use serde_json::Value;
 use crate::model::{DataRecord, DataTable, FieldPatch};
 use crate::policy::ast::PolicyExpr;
 use crate::policy::material::{self, PolicyMaterial};
+use crate::policy::memo::AuthzMemo;
 use crate::store::DataStore;
 use crate::DataError;
 
@@ -27,7 +28,7 @@ use crate::DataError;
 fn eval_role_level(expr: &PolicyExpr, material: &PolicyMaterial) -> bool {
     match expr {
         PolicyExpr::Public => true,
-        PolicyExpr::HasRole { role, subtree } => material.roles(*subtree).iter().any(|r| r == role),
+        PolicyExpr::HasRole { role, subtree } => material.has_role(role, *subtree),
         PolicyExpr::Any(children) => children.iter().any(|c| eval_role_level(c, material)),
         PolicyExpr::All(children) => children.iter().all(|c| eval_role_level(c, material)),
         PolicyExpr::FieldCmp { .. } | PolicyExpr::IsOwner => false,
@@ -39,6 +40,7 @@ impl DataStore {
     pub(crate) async fn masked_fields(
         &self,
         ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
         table: &DataTable,
     ) -> Result<HashSet<String>, DataError> {
         if table.schema.field_policy.is_empty() {
@@ -50,7 +52,7 @@ impl DataStore {
             .iter()
             .map(|p| &p.readable_by)
             .collect();
-        let m = material::resolve(ctx, self.authz.as_ref(), &exprs).await?;
+        let m = material::resolve_roles(ctx, az, &exprs).await?;
         Ok(table
             .schema
             .field_policy
@@ -113,6 +115,7 @@ mod tests {
             roles_effective: Some(Arc::new(roles.iter().map(|s| (*s).into()).collect())),
             shared_record_ids: vec![],
             shares_truncated: false,
+            role_members: std::collections::HashMap::new(),
         }
     }
 

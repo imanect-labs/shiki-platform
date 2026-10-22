@@ -53,6 +53,7 @@ impl DataStore {
         )
         .await?;
         let table = self.fetch_live(ctx, table_id).await?;
+        let az = self.authz_memo();
 
         let db = self.pools.for_tenant(&ctx.tenant_id);
         let mut tx = db.begin().await.map_err(map_db)?;
@@ -67,7 +68,7 @@ impl DataStore {
         .await?;
         // ①行ロック（行述語込み・不可視は 404＝存在オラクルなし）。
         let current = self
-            .lock_visible_by_id(ctx, &mut tx, &table, record_id)
+            .lock_visible_by_id(ctx, &az, &mut tx, &table, record_id)
             .await?
             .ok_or(DataError::NotFound)?;
         if current.rev != expected_rev {
@@ -91,7 +92,7 @@ impl DataStore {
             .ok_or_else(|| DataError::Invalid(format!("定義外の遷移です（{from} → {to}）")))?;
         // ③actor 述語を当該行に評価（不許可 403）。読取述語ではなく actor 述語を使う。
         if !self
-            .actor_allows(ctx, &table, record_id, &transition.actor)
+            .actor_allows(ctx, &az, &table, record_id, &transition.actor)
             .await?
         {
             let _ = self

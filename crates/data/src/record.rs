@@ -206,18 +206,20 @@ impl DataStore {
         id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<DataRecord, DataError> {
-        self.require(ctx, table_id, Relation::Viewer, "data.record.get", trace_id)
-            .await?;
         // テーブルの生存チェック込み（削除済みテーブルの残存 FGA タプルで読ませない）。
-        let table = self.fetch_live(ctx, table_id).await?;
+        // 認可の問いはリクエストのメモに束ねる（Task 15.9）。
+        let az = self.authz_memo();
+        let table = self
+            .open_for_read(ctx, &az, table_id, "data.record.get", trace_id)
+            .await?;
         let row = self
-            .select_visible_by_id(ctx, &table, id)
+            .select_visible_by_id(ctx, &az, &table, id)
             .await?
             .ok_or(DataError::NotFound)?;
         let mut records = vec![row.into_record(&table.schema)];
         // 派生値は閲覧者本人の権限で計算し、マスク列は計算にも応答にも出さない（PIT-19・PIT-20）。
-        let masked = self.masked_fields(ctx, &table).await?;
-        self.resolve_derived_fields(ctx, &table, &masked, &mut records)
+        let masked = self.masked_fields(ctx, &az, &table).await?;
+        self.resolve_derived_fields(ctx, &az, &table, &masked, &mut records)
             .await?;
         Self::apply_mask_records(&masked, &mut records);
         Ok(records.remove(0))
@@ -227,6 +229,7 @@ impl DataStore {
     ///
     /// `patch` は変更フィールドのみの部分オブジェクト。`null` はフィールド除去
     /// （required は除去不可＝マージ後検証で拒否）。`expected_rev` 不一致は 409。
+    #[allow(clippy::too_many_lines)] // 検証・ロック・マスク・リビジョン・索引を 1 Tx で順に行う。
     pub async fn update_record(
         &self,
         ctx: &AuthContext,
@@ -236,7 +239,9 @@ impl DataStore {
         expected_rev: i64,
         trace_id: Option<&str>,
     ) -> Result<DataRecord, DataError> {
-        self.require(
+        let az = self.authz_memo();
+        self.require_in(
+            &az,
             ctx,
             table_id,
             Relation::Editor,
@@ -248,7 +253,6 @@ impl DataStore {
         let patch_obj = patch.as_object().ok_or_else(|| {
             DataError::Invalid("patch は JSON オブジェクトである必要があります".into())
         })?;
-
         let mut tx = self
             .pools
             .for_tenant(&ctx.tenant_id)
@@ -265,10 +269,10 @@ impl DataStore {
         .await?;
         // 行述語つきロック: 不可視行は NotFound（rev オラクル封じ・PIT-21）。
         let current = self
-            .lock_visible_by_id(ctx, &mut tx, &table, id)
+            .lock_visible_by_id(ctx, &az, &mut tx, &table, id)
             .await?
             .ok_or(DataError::NotFound)?;
-        if !self.write_allowed(ctx, &table, id).await? {
+        if !self.write_allowed(ctx, &az, &table, id).await? {
             return Err(DataError::Forbidden);
         }
         if current.rev != expected_rev {
@@ -279,7 +283,7 @@ impl DataStore {
         }
         let current = current.into_record(&table.schema);
         // マスク対象フィールドへの書込（変更）は拒否（盲目上書き防止・PIT-19）。
-        let masked = self.masked_fields(ctx, &table).await?;
+        let masked = self.masked_fields(ctx, &az, &table).await?;
         Self::ensure_writable_fields(&masked, patch_obj)?;
         // merge: null は除去・それ以外は上書き。
         let old_map = current.data.as_object().cloned().unwrap_or_default();
@@ -381,7 +385,9 @@ impl DataStore {
         expected_rev: i64,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
-        self.require(
+        let az = self.authz_memo();
+        self.require_in(
+            &az,
             ctx,
             table_id,
             Relation::Editor,
@@ -407,10 +413,10 @@ impl DataStore {
         .await?;
         // 行述語つきロック: 不可視行は NotFound（rev オラクル封じ・PIT-21）。
         let current = self
-            .lock_visible_by_id(ctx, &mut tx, &table, id)
+            .lock_visible_by_id(ctx, &az, &mut tx, &table, id)
             .await?
             .ok_or(DataError::NotFound)?;
-        if !self.write_allowed(ctx, &table, id).await? {
+        if !self.write_allowed(ctx, &az, &table, id).await? {
             return Err(DataError::Forbidden);
         }
         if current.rev != expected_rev {
@@ -530,7 +536,14 @@ impl DataStore {
             let not_found =
                 || DataError::Invalid(format!("'{}' の参照先レコードが見つかりません", f.key));
             let visible = self
-                .visible_ref_rows(ctx, ref_table, &ids, &std::collections::BTreeSet::new(), 0)
+                .visible_ref_rows(
+                    ctx,
+                    &self.authz_memo(),
+                    ref_table,
+                    &ids,
+                    &std::collections::BTreeSet::new(),
+                    0,
+                )
                 .await?;
             if ids.iter().any(|id| !visible.rows.contains_key(id)) {
                 return Err(not_found());

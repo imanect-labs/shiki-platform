@@ -65,7 +65,7 @@ pub(crate) fn compile_index_expr(
     match expr {
         PolicyExpr::Public => Ok("TRUE".into()),
         PolicyExpr::HasRole { role, subtree } => {
-            let holds = g.material.roles(*subtree).iter().any(|r| r == role);
+            let holds = g.material.has_role(role, *subtree);
             Ok(if holds { "TRUE" } else { "FALSE" }.into())
         }
         PolicyExpr::IsOwner => {
@@ -306,6 +306,7 @@ mod tests {
             roles_effective: Some(Arc::new(vec!["keiri".into()])),
             shared_record_ids: vec![],
             shares_truncated: false,
+            role_members: std::collections::HashMap::new(),
         }
     }
 

@@ -170,11 +170,12 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
         // 前段: テーブル viewer（第1層）＋行可視性（第2層）。不可視は 404（オラクルなし）。
-        self.require(ctx, table_id, Relation::Viewer, action, trace_id)
+        let az = self.authz_memo();
+        self.require_in(&az, ctx, table_id, Relation::Viewer, action, trace_id)
             .await?;
         let table = self.fetch_live(ctx, table_id).await?;
         let row = self
-            .select_visible_by_id(ctx, &table, record_id)
+            .select_visible_by_id(ctx, &az, &table, record_id)
             .await?
             .ok_or(DataError::NotFound)?;
         if row.owner == ctx.principal.id {
