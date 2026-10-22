@@ -267,3 +267,76 @@ async fn defer_reschedules_without_consuming_attempts() {
         .unwrap();
     assert!(jobs.is_empty(), "ack 済みは再配信されない");
 }
+
+/// 1 件 claim → ack を繰り返し、取り出したテナント順を返す。
+async fn drain_tenants(pool: &PgPool, queue: &str, n: usize) -> Vec<(String, i64)> {
+    let mut conn = pool.acquire().await.unwrap();
+    let mut out = Vec::new();
+    for _ in 0..n {
+        let jobs = jobq::claim(&mut conn, queue, Duration::from_secs(300), 1)
+            .await
+            .unwrap();
+        let Some(job) = jobs.into_iter().next() else {
+            break;
+        };
+        jobq::ack(&mut conn, job.id).await.unwrap();
+        out.push((job.tenant_id, job.id));
+    }
+    out
+}
+
+/// #816: 1 テナントが先に大量投入しても、後から来たテナントは洪水が捌けるのを待たずに
+/// 交互に取り出される（到着順 `ORDER BY id` だと後着は 30 件待たされる）。
+#[tokio::test]
+async fn claim_interleaves_tenants_instead_of_draining_the_flood_first() {
+    let Some(pool) = setup().await else { return };
+    let queue = unique_queue("fair");
+    let mut flood_ids = Vec::new();
+    for _ in 0..30 {
+        flood_ids.push(enqueue(&pool, &queue, "flood", 5).await);
+    }
+    let late_a = enqueue(&pool, &queue, "late-a", 5).await;
+    let late_b = enqueue(&pool, &queue, "late-b", 5).await;
+
+    let order = drain_tenants(&pool, &queue, 40).await;
+    assert_eq!(
+        order.len(),
+        32,
+        "全件取り出せる（取りこぼし・二重配信なし）"
+    );
+    let pos = |id: i64| order.iter().position(|(_, j)| *j == id).unwrap();
+    assert!(
+        pos(late_a) < 3 && pos(late_b) < 3,
+        "後着テナントは先頭近くで取り出される: {order:?}"
+    );
+    // テナント内の順序（投入順）は保たれる。
+    let flood_order: Vec<i64> = order
+        .iter()
+        .filter(|(t, _)| t == "flood")
+        .map(|(_, id)| *id)
+        .collect();
+    assert_eq!(flood_order, flood_ids, "テナント内は投入順");
+}
+
+/// #816: 後着テナントが続けて投入しても、洪水テナントを飢えさせない（1:1 で交互）。
+/// 公平はキュー単位で、別キューの投入は順序に影響しない。
+#[tokio::test]
+async fn claim_alternates_between_two_backlogged_tenants() {
+    let Some(pool) = setup().await else { return };
+    let queue = unique_queue("fair2");
+    let other = unique_queue("fair2-other");
+    for _ in 0..10 {
+        enqueue(&pool, &queue, "a", 5).await;
+    }
+    // 別キューに b の大量投入があっても、このキューの b の開始位置は変わらない。
+    for _ in 0..20 {
+        enqueue(&pool, &other, "b", 5).await;
+    }
+    for _ in 0..10 {
+        enqueue(&pool, &queue, "b", 5).await;
+    }
+    let order = drain_tenants(&pool, &queue, 20).await;
+    let tenants: Vec<&str> = order.iter().map(|(t, _)| t.as_str()).collect();
+    let expected: Vec<&str> = std::iter::repeat_n(["a", "b"], 10).flatten().collect();
+    assert_eq!(tenants, expected, "2 テナントが 1:1 で交互に取り出される");
+}

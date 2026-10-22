@@ -14,6 +14,19 @@
 //!   `job_queue_dead` へ移送＝DLQ）。DLQ からは [`requeue_dead`] で再投入する。
 //!
 //! 消費側は payload の冪等キー（RAG なら `(node_id, version, op)`）で二重処理を防ぐこと。
+//!
+//! # テナント間の公平性（#816）
+//!
+//! フルプールでは 1 キューを全テナントが共有する。取り出しを到着順（`id`）にすると、1 テナントの
+//! 大量投入が捌けるまで他テナントが待たされる。そこで投入時に **`fair_seq`**（start-time fair
+//! queuing の開始タグ）を振り、[`claim`] は `fair_seq` 順に取る:
+//!
+//! `fair_seq = max(そのテナントのキュー内の最大 fair_seq + 1, キューの最小 fair_seq)`
+//!
+//! 各テナントは 1 ジョブにつき fair_seq を 1 しか進められないので、洪水テナントのジョブは先へ
+//! 伸び、後から来たテナントはキュー先頭の値から始まって洪水と交互に取り出される。保証は
+//! **ジョブ件数**の公平（ジョブの重さは見ない）で、テナント内の順序は投入順のまま。
+//! 同時投入で同じ値になったら `id` 順（厳密な公平ではなく近似で足りる）。
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -75,10 +88,18 @@ pub struct DeadJob {
 }
 
 /// ジョブを 1 件投入する。ドメイン書込と同一トランザクション上で呼べる。
+///
+/// `fair_seq`（テナント間の公平性・モジュール冒頭）を同じ文で振る。参照は索引 2 本の端点 1 件ずつ
+/// （`job_queue_tenant_idx` の後端・`job_queue_fair_idx` の先端）で、キュー長に依らない。
 pub async fn enqueue_on(conn: &mut PgConnection, job: NewJob<'_>) -> Result<i64, JobqError> {
     let id: i64 = sqlx::query_scalar(
-        "insert into job_queue (queue, tenant_id, payload, max_attempts, trace_id) \
-         values ($1, $2, $3, $4, $5) returning id",
+        "insert into job_queue (queue, tenant_id, payload, max_attempts, trace_id, fair_seq) \
+         values ($1, $2, $3, $4, $5, greatest( \
+             coalesce((select fair_seq + 1 from job_queue \
+                       where tenant_id = $2 and queue = $1 order by fair_seq desc limit 1), 0), \
+             coalesce((select fair_seq from job_queue \
+                       where queue = $1 order by fair_seq limit 1), 0))) \
+         returning id",
     )
     .bind(job.queue)
     .bind(job.tenant_id)
@@ -94,6 +115,9 @@ pub async fn enqueue_on(conn: &mut PgConnection, job: NewJob<'_>) -> Result<i64,
 ///
 /// 単一 UPDATE 文（サブクエリに `FOR UPDATE SKIP LOCKED`）なので複数 consumer が
 /// 競合しても同一ジョブを二重確保しない。`attempts` はここで +1 される。
+///
+/// 取り出し順は `fair_seq, id`（テナント間の公平性・モジュール冒頭）。`job_queue_fair_idx` を
+/// キュー内で先頭から辿り、読み飛ばすのは処理中・バックオフ中の行だけ。
 pub async fn claim(
     conn: &mut PgConnection,
     queue: &str,
@@ -106,7 +130,7 @@ pub async fn claim(
          where id in ( \
              select id from job_queue \
              where queue = $1 and visible_at <= now() \
-             order by id \
+             order by fair_seq, id \
              limit $2 \
              for update skip locked \
          ) \
@@ -210,11 +234,20 @@ pub async fn kill(conn: &mut PgConnection, id: i64, error: &str) -> Result<bool,
 }
 
 /// DLQ の 1 件を元キューへ再投入する（attempts はリセット）。無ければ `false`。
+///
+/// `fair_seq` は [`enqueue_on`] と同じ式で振り直す（新規投入と同じ扱い。DLQ に落ちた時点の
+/// 古い値で割り込ませない）。
 pub async fn requeue_dead(conn: &mut PgConnection, id: i64) -> Result<bool, JobqError> {
     let requeued = sqlx::query_scalar::<_, i64>(
         "with revived as (delete from job_queue_dead where id = $1 returning *) \
-         insert into job_queue (queue, tenant_id, payload, max_attempts, trace_id) \
-         select queue, tenant_id, payload, max_attempts, trace_id from revived returning id",
+         insert into job_queue (queue, tenant_id, payload, max_attempts, trace_id, fair_seq) \
+         select r.queue, r.tenant_id, r.payload, r.max_attempts, r.trace_id, greatest( \
+             coalesce((select q.fair_seq + 1 from job_queue q \
+                       where q.tenant_id = r.tenant_id and q.queue = r.queue \
+                       order by q.fair_seq desc limit 1), 0), \
+             coalesce((select q.fair_seq from job_queue q \
+                       where q.queue = r.queue order by q.fair_seq limit 1), 0)) \
+         from revived r returning id",
     )
     .bind(id)
     .fetch_optional(conn)
