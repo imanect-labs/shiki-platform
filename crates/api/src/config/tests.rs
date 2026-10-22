@@ -6,8 +6,40 @@ use super::*;
 fn both_tenancies_supported() {
     // SAAS.1（#84）で全隔離層が tenant_id スコープになり、multi は設定だけで運用可能
     // （旧 dev opt-in ゲートは撤去）。single も従来どおり可。
-    assert!(AppConfig::check_tenancy_supported(Tenancy::Multi).is_ok());
-    assert!(AppConfig::check_tenancy_supported(Tenancy::Single).is_ok());
+    let mut auth = auth_config("http://localhost/realms/shiki", None, None);
+    assert!(AppConfig::check_tenancy_supported(&auth).is_ok());
+    auth.tenancy = Tenancy::Multi;
+    assert!(AppConfig::check_tenancy_supported(&auth).is_ok());
+}
+
+#[test]
+fn single_with_provisioner_still_starts() {
+    // provisioner はミニアプリ同意インストールの client 登録（オンプレでも使う）を兼ねるため、
+    // single＋provisioner でも起動は止めない（テナント作成だけをハンドラで拒否する・#808）。
+    let mut auth = auth_config("http://localhost/realms/shiki", None, None);
+    auth.provisioner_client_id = Some("shiki-provisioner".into());
+    auth.provisioner_client_secret = Some("secret".into());
+    assert!(AppConfig::check_tenancy_supported(&auth).is_ok());
+}
+
+#[test]
+fn tenant_source_follows_tenancy() {
+    // 内部 API と公開 API ゲートウェイが共有する解決規則への写し（#808）。
+    let mut auth = auth_config("http://localhost/realms/shiki", None, None);
+    auth.tenant_id = Some("cell-onprem".into());
+    assert_eq!(
+        auth.tenant_source(),
+        authz::TenantSource::Fixed("cell-onprem".into())
+    );
+    // single の固定値が未設定なら空として渡し、解決時に設定ミスで拒否させる（"default" を補わない）。
+    auth.tenant_id = None;
+    assert_eq!(
+        auth.tenant_source(),
+        authz::TenantSource::Fixed(String::new())
+    );
+    assert!(auth.tenant_source().resolve(Some("acme")).is_err());
+    auth.tenancy = Tenancy::Multi;
+    assert_eq!(auth.tenant_source(), authz::TenantSource::Claim);
 }
 
 fn session(ttl_secs: u64, refresh_leeway_secs: i64) -> SessionConfig {
