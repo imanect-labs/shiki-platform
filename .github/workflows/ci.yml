@@ -119,6 +119,10 @@ jobs:
       # CI で拾えなかった実績があるので、ファイル名だけで判定できるここで止める（#413）。
       - name: migration version gate (バージョン番号の重複禁止)
         run: bash scripts/check-migration-versions.sh
+      # プール分割（data-platform §12 第 2 段）を壊す書き方を字句で止める（Task 15.1）。
+      # SQL リテラル単位の検査は crates/data/tests/shard_safety_lint.rs（cargo test）が担う。
+      - name: shard-safety gate (PgPool 直参照・シーケンス直呼びの禁止)
+        run: bash scripts/check-shard-safety.sh
       # 同じく CI で拾えない構造的バグ（#453）。CI は全サービスをまとめて起動せず必要な
       # ものだけ名指しで起動するため、ホストポートの二重 publish が衝突する組み合わせは
       # 一度も同時に立ち上がらない。ローカルの `docker compose up` だけが壊れる。
