@@ -23,6 +23,11 @@ import type { SelectionContext } from "@/lib/selection-context";
 /// CLAUDE.md の「codegen が正」に従い、Rust 側にフィールドを足したらここは自動で追随する。
 export type ContentBlock = components["schemas"]["ContentBlock"];
 
+/// 直前の LLM リクエストのコンテキスト使用量（チャット画面のコンテキスト表示）。
+/// **`agent-core` の `ContextUsage` から生成**した型を使う。
+export type ContextUsage = components["schemas"]["ContextUsage"];
+export type ContextCategory = components["schemas"]["ContextCategory"];
+
 /// 未保存の下書きノート（save_note の下書き確定型・issue #282）。
 export type NoteDraft = { name: string; markdown: string };
 
@@ -350,6 +355,8 @@ export async function getThreadMessages(
   activeAssistantMessageId: string | null;
   /// まだ生成が始まっていない発話（順番待ち・投入順）。
   queuedRuns: { userMessageId: string; runId: string }[];
+  /// 最後の LLM リクエストのコンテキスト使用量（まだ生成していなければ null）。
+  contextUsage: ContextUsage | null;
 }> {
   const res = await apiFetch(`/threads/${id}/messages`);
   if (res.status === 404 || res.status === 403) throw new ThreadNotFound();
@@ -359,6 +366,7 @@ export async function getThreadMessages(
     active_run_autonomous?: boolean | null;
     active_assistant_message_id?: string | null;
     queued_runs?: { user_message_id: string; run_id: string }[] | null;
+    context_usage?: ContextUsage | null;
   }>(res);
   return {
     messages: data.messages.map((m) => ({
@@ -378,6 +386,7 @@ export async function getThreadMessages(
       userMessageId: q.user_message_id,
       runId: q.run_id,
     })),
+    contextUsage: data.context_usage ?? null,
   };
 }
 
@@ -474,6 +483,8 @@ export type StreamHandlers = {
   onApprovalRequested?: (req: ApprovalRequest) => void;
   onApprovalResolved?: (res: { tool_call_id: string; approved: boolean }) => void;
   onFailureRecovery?: (r: { detail: string; action: string }) => void;
+  /// 直前の LLM リクエストのコンテキスト使用量（生成のたびに届く・後のものが最新）。
+  onContextUsage?: (usage: ContextUsage) => void;
   /// 生成 run_id（承認 API 呼び出しに使う）。
   onRunId?: (runId: string) => void;
   /// 生成先の assistant メッセージ id（**まだ本文は保存されていない**・本文の図のボタンは
@@ -601,6 +612,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "failure_recovery":
         handlers.onFailureRecovery?.({ detail: kind.detail, action: kind.action });
+        break;
+      case "context_usage":
+        handlers.onContextUsage?.(kind.usage);
         break;
       case "status":
         handlers.onStatus?.(kind.status);

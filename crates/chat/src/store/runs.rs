@@ -409,6 +409,37 @@ impl ChatStore {
         }))
     }
 
+    /// スレッドで最後に記録されたコンテキスト使用量（再訪時のコンテキスト表示）。
+    ///
+    /// 新しい run から順に、その run の最後の `context_usage` イベントを引く（取り消しや失敗で
+    /// 1 度も生成しなかった run は飛ばす）。イベントは PK (run_id, seq) を逆順に辿る。
+    pub async fn latest_context_usage(
+        &self,
+        thread_id: Uuid,
+        tenant_id: &str,
+    ) -> Result<Option<agent_core::ContextUsage>, ChatError> {
+        let row: Option<(Json<StreamEventKind>,)> = sqlx::query_as(
+            "SELECT e.payload FROM generation_run r \
+             CROSS JOIN LATERAL ( \
+                 SELECT payload FROM generation_event \
+                 WHERE run_id = r.run_id AND type = 'context_usage' \
+                 ORDER BY seq DESC LIMIT 1 \
+             ) e \
+             WHERE r.thread_id = $1 AND r.tenant_id = $2 \
+             ORDER BY r.created_at DESC, r.run_id DESC \
+             LIMIT 1",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(row.and_then(|(Json(kind),)| match kind {
+            StreamEventKind::ContextUsage { usage } => Some(usage),
+            _ => None,
+        }))
+    }
+
     /// この run より**先に投入された未完了 run**が同じスレッドにあるか（＝順番待ちか）。
     ///
     /// 1 スレッドの生成を直列化するための唯一の判定。並行に走らせると、後の run が前の run の

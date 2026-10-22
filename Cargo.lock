@@ -5209,6 +5209,7 @@ dependencies = [
  "ts-rs",
  "unicode-normalization",
  "url",
+ "utoipa",
  "uuid",
 ]
 

@@ -34,6 +34,7 @@ pub mod checkpoint;
 pub mod cite;
 pub mod context;
 pub mod context_replay;
+pub mod context_usage;
 pub mod event;
 pub mod loop_detect;
 pub mod plan;
@@ -50,6 +51,7 @@ pub use approval::{ApprovalDecision, ApprovalPolicy, Approver};
 pub use budget::{Budget, BudgetCheck, BudgetKind, Spent};
 pub use checkpoint::Checkpoint;
 pub use cite::CitationLedger;
+pub use context_usage::{ContextCategory, ContextCategoryUsage, ContextUsage};
 pub use event::{
     await_unless_cancelled, next_unless_cancelled, AgentError, AgentEvent, EventSink, NextDelta,
     RecoveryAction,
