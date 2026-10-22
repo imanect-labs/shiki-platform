@@ -388,7 +388,7 @@ async fn expression_indexes_created_and_used() {
         .iter()
         .find(|s| s.label != "probe" && s.label != "fetch")
         .expect("drive statement");
-    let plan = common::explain(&pool, drive, false).await;
+    let plan = common::explain_small(&pool, drive).await;
     let names = common::index_names(&plan);
     assert!(
         names.iter().any(|n| n.starts_with("data_index_text")),

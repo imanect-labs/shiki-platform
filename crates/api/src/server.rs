@@ -523,6 +523,7 @@ pub fn route_table() -> Vec<RouteDecl> {
     table.extend(routes::office::office_route_decls());
     table.extend(routes::llm_models::llm_model_route_decls());
     table.extend(routes::org_admin_ai::org_admin_ai_route_decls());
+    table.extend(routes::org_admin_data::org_admin_data_route_decls());
     table.extend(routes::org_admin_insights::org_admin_insights_route_decls());
     table
 }

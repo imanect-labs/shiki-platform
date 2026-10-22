@@ -32,6 +32,7 @@ pub mod me_security;
 pub mod mini_apps;
 pub mod office;
 pub mod org_admin_ai;
+pub mod org_admin_data;
 pub mod org_admin_insights;
 pub mod search;
 pub mod secrets;

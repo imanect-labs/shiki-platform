@@ -254,7 +254,27 @@ pub fn rich_schema() -> TableSchema {
 ///
 /// `plan_cache_mode` は読取経路と同じ `force_custom_plan`（`generic = true` なら `force_generic_plan`）。
 pub async fn explain(pool: &PgPool, st: &data::DebugStatement, analyze: bool) -> Value {
+    explain_with(pool, st, analyze, false).await
+}
+
+/// 小さいデータ用（統計が少なく seq scan が選ばれ得るので無効化して索引の使い方だけを見る）。
+pub async fn explain_small(pool: &PgPool, st: &data::DebugStatement) -> Value {
+    explain_with(pool, st, false, true).await
+}
+
+async fn explain_with(
+    pool: &PgPool,
+    st: &data::DebugStatement,
+    analyze: bool,
+    no_seqscan: bool,
+) -> Value {
     let mut tx = pool.begin().await.unwrap();
+    if no_seqscan {
+        sqlx::query("SET LOCAL enable_seqscan = off")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
     sqlx::query("SET LOCAL plan_cache_mode = force_custom_plan")
         .execute(&mut *tx)
         .await

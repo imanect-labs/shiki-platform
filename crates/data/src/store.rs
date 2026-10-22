@@ -468,6 +468,11 @@ impl DataStore {
             .execute(&mut *tx)
             .await
             .map_err(map_db)?;
+        sqlx::query("DELETE FROM data_tenant_settings WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db)?;
         tx.commit().await.map_err(map_db)?;
         Ok(purged)
     }

@@ -123,8 +123,8 @@ pub(crate) async fn lock_plan(
     keys: TableKeys,
     schema_version: i64,
 ) -> Result<IndexPlan, DataError> {
-    let live: Option<i64> = sqlx::query_scalar(
-        "SELECT schema_version FROM data_table \
+    let live: Option<(i64, sqlx::types::Json<TableSchema>)> = sqlx::query_as(
+        "SELECT schema_version, schema FROM data_table \
          WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR KEY SHARE",
     )
     .bind(tenant_id)
@@ -132,20 +132,37 @@ pub(crate) async fn lock_plan(
     .fetch_optional(&mut *conn)
     .await
     .map_err(map_db)?;
-    match live {
+    let schema = match live {
         None => return Err(DataError::NotFound),
-        Some(v) if v != schema_version => {
+        Some((v, _)) if v != schema_version => {
             return Err(DataError::Conflict(
                 "テーブルのスキーマが更新されました。再試行してください".into(),
             ));
         }
-        Some(_) => {}
-    }
+        Some((_, s)) => s.0,
+    };
     let mut maintained: BTreeMap<FieldId, Vec<IndexTable>> = BTreeMap::new();
+    let mut unique_active: BTreeSet<FieldId> = BTreeSet::new();
     for (field, table, state) in load_states(conn, keys).await? {
         if state.is_maintained() {
             maintained.entry(field).or_default().push(table);
         }
+        if table == IndexTable::Unique && state == IndexState::Active {
+            unique_active.insert(field);
+        }
+    }
+    // unique の強制に空白期間を作らない: 宣言された unique の索引（data_unique）が active でなければ
+    // 書込を通さない（全行が載っていない一意索引では既存行との重複を検出できないため）。
+    // unique は台帳の初期化・スキーマ改訂のいずれでも同じ Tx で同期構築されるので、通常は起きない。
+    if let Some(f) = schema
+        .fields
+        .iter()
+        .find(|f| f.unique && !unique_active.contains(&f.id))
+    {
+        return Err(DataError::Conflict(format!(
+            "フィールド '{}' の一意性の索引を準備中です。再試行してください",
+            f.key
+        )));
     }
     Ok(IndexPlan { keys, maintained })
 }

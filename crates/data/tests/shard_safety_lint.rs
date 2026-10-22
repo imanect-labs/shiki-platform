@@ -30,6 +30,8 @@ const DATA_TABLES: &[&str] = &[
     "data_index_search",
     "data_index_state",
     "data_index_backfill",
+    // テナント設定（Task 15.3）。
+    "data_tenant_settings",
 ];
 
 /// 文字列リテラル（開始行・中身）。

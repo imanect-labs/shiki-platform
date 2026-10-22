@@ -718,6 +718,9 @@ async fn legacy_tables_migrate_idempotently_and_v1_operations_still_work() {
     assert_eq!(b.schema.fields[0].key, "bad_name");
 
     // --- 移行後も v1 の操作が通る ---
+    // 索引のバックフィルが終わるまで、その列での絞り込み・並べ替えは「準備中」（data-platform §10）。
+    store.get_table(&alice, expense, None).await.unwrap();
+    store.backfill_table_index(&tenant, expense).await.unwrap();
     // row_policy: alice は自分の 2 件だけ、bob は 1 件。
     let mine = store
         .list_records(

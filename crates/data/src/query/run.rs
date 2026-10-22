@@ -306,14 +306,29 @@ impl DataStore {
         tuning: &QueryTuning,
     ) -> Result<(QueryResult, QueryDebug, Option<Vec<DataRecord>>), DataError> {
         let keys = table.keys;
-        let active: HashSet<(FieldId, IndexTable)> = load_states(conn, keys)
-            .await?
-            .into_iter()
+        let states = load_states(conn, keys).await?;
+        let active: HashSet<(FieldId, IndexTable)> = states
+            .iter()
             .filter(|(_, _, s)| *s == IndexState::Active)
-            .map(|(f, t, _)| (f, t))
+            .map(|(f, t, _)| (*f, *t))
             .collect();
-        let body_path = tuning.read_path == ReadPath::Body
-            || !needed_indexes(bq).iter().all(|n| active.contains(n));
+        let needed = needed_indexes(bq);
+        // 利用者が指定した列の索引がバックフィル中なら「準備中」（data-platform §10: building の間は
+        // 駆動にもフィルタにも使わせない・完了までその列での操作は準備中と表示する）。
+        if let Some((f, _, _)) = states.iter().find(|(f, t, s)| {
+            *s == IndexState::Building
+                && *f >= crate::model::FIRST_USER_FIELD_ID
+                && needed.contains(&(*f, *t))
+        }) {
+            let key = bq.field(*f).key.clone();
+            return Err(DataError::Conflict(format!(
+                "フィールド '{key}' の索引は準備中です（構築が終わるまでお待ちください）"
+            )));
+        }
+        // システム擬似列の初回バックフィル中（Task 15.2 より前のテーブル）などは本体経路
+        // （正しいが遅い・statement_timeout で上限を切る）。
+        let body_path =
+            tuning.read_path == ReadPath::Body || !needed.iter().all(|n| active.contains(n));
         // 個別共有（uuid）→ record_int（このテーブルに属するものだけ・外へ出さない）。
         let shared_ints: Vec<i64> = if body_path {
             Vec::new()
@@ -420,12 +435,14 @@ impl DataStore {
         };
 
         if bq.with_count {
+            // 件数の上限はテナント設定（既定 10,000・data-platform §5.4）。
+            let count_cap = self.count_cap_for(ex.conn, &ctx.tenant_id).await?;
             result.count = Some(if body_path {
                 let mut sql = SqlBuf::scoped(keys.tenant_int, keys.table_int);
                 let policy =
                     compile_read_predicate(&table.schema, m, &ctx.principal.id, "r", &mut sql)?;
                 let w = super::v1::where_sql(bq, &ctx.tenant_id, &policy, &mut sql)?;
-                let text = super::v1::count_sql(&w, self.count_cap as i64, &mut sql);
+                let text = super::v1::count_sql(&w, count_cap as i64, &mut sql);
                 ex.stats.count_issued = true;
                 let rows = ex.run_raw("count", text, sql.binds).await?;
                 let n: i64 = rows
@@ -435,14 +452,14 @@ impl DataStore {
                     .map_err(map_db)?
                     .unwrap_or(0);
                 let n = n.max(0) as u64;
-                if n > self.count_cap {
-                    CountResult::AtLeast(self.count_cap)
+                if n > count_cap {
+                    CountResult::AtLeast(count_cap)
                 } else {
                     CountResult::Exact(n)
                 }
             } else {
                 let strategy = ex.stats.strategy;
-                let c = ex.count(&bq.filter, self.count_cap).await?;
+                let c = ex.count(&bq.filter, count_cap).await?;
                 ex.stats.strategy = strategy;
                 c
             });

@@ -49,6 +49,7 @@ mod revision;
 mod schema;
 mod store;
 mod table_list;
+mod tenant_settings;
 mod transition;
 mod validate;
 mod view;
@@ -85,6 +86,7 @@ pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordS
 pub use record_share::RecordShareRole;
 pub use schema::validate_table_schema_public;
 pub use store::{DataStore, NewDataTable};
+pub use tenant_settings::{DataTenantSettings, MAX_COUNT_CAP};
 pub use transition::TRANSITION_EVENT_TYPE;
 pub use validate::RefResolver;
 pub use view::{DataViewBody, DataViewStore};
