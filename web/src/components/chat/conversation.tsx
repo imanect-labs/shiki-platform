@@ -32,6 +32,7 @@ import {
   type Attachment,
   type Citation,
   type ContentBlock,
+  type ContextUsage,
   type Message as ChatMessageT,
   type PlanSubtask,
   type RunStatus,
@@ -81,6 +82,7 @@ import { parseSlideDraft, slideDraftHref, slideDraftStore } from "@/lib/slides/d
 import { csvDraftHref, csvDraftStore, parseCsvDraft } from "@/lib/csv/draft";
 import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
+import { ContextUsageDialog } from "./context-meter";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
 import { cn } from "@/lib/utils";
 
@@ -194,6 +196,8 @@ export function Conversation({
   // null=未ロード（セレクタ非表示）。bypass の可否は org 管理者ポリシ。
   const [approvalMode, setApprovalModeState] = React.useState<AutonomousMode | null>(null);
   const [bypassAllowed, setBypassAllowed] = React.useState(true);
+  /// 直前の LLM リクエストのコンテキスト使用量（⋯ メニューの「コンテキスト」）。読み込みと SSE で更新する。
+  const [contextUsage, setContextUsage] = React.useState<ContextUsage | null>(null);
   // PUT を直列化するチェーン（連打時の応答順逆転で危険な実効ポリシを誤表示しない）。
   // 各成功応答のサーバ確定値で状態を上書きし、失敗時はサーバの真実を読み直して収束させる。
   const modeRequestChain = React.useRef<Promise<unknown>>(Promise.resolve());
@@ -222,6 +226,9 @@ export function Conversation({
   const [shareOpen, setShareOpen] = React.useState(false);
   // ヘッダスロットへ渡すため安定した参照にする（streaming の毎レンダーで再注入しない）。
   const openShare = React.useCallback(() => setShareOpen(true), []);
+  // コンテキストの使用量（⋯ メニューから開く）。
+  const [contextOpen, setContextOpen] = React.useState(false);
+  const openContext = React.useCallback(() => setContextOpen(true), []);
   // UI アクション（chat.submit 等）成功後に会話を再読込するためのキー。
   const [reloadKey, setReloadKey] = React.useState(0);
   // 確定行（memo）へ渡すので安定した参照にする（トークンごとに過去の行を描き直さない）。
@@ -408,6 +415,7 @@ export function Conversation({
       onPlan: (subtasks) =>
         updateStream((s) => (s ? { ...s, plan: mergePlan(s.plan, subtasks) } : s)),
       onBudgetWarning: (b) => updateStream((s) => (s ? { ...s, budget: b } : s)),
+      onContextUsage: setContextUsage,
       onApprovalRequested: (req) =>
         updateStream((s) => (s ? { ...s, approval: req, approvalPending: false } : s)),
       onApprovalResolved: (res) =>
@@ -640,8 +648,10 @@ export function Conversation({
           activeRunAutonomous,
           activeAssistantMessageId,
           queuedRuns,
+          contextUsage: usage,
         }) => {
         if (!active) return;
+        setContextUsage(usage);
         // 空の assistant は**生成先のプレースホルダ**（進行中・順番待ち・中断のいずれか）。
         // 描画するものが無く、順番待ちがあると末尾以外にも現れるので一律に落とす。
         const shown = msgs.filter((m) => !(m.role === "assistant" && isEmptyContent(m.content)));
@@ -726,9 +736,15 @@ export function Conversation({
           {/* page: 統一ヘッダスロットへタイトル＋共有/設定を注入（横バー二重を解消）。
               panel: 注入しない（分割ビューは自前ヘッダを持つ・null を返すだけ）。 */}
           {!isPanel ? (
-            <ChatPageHeaderSlot title={threadTitle || "新しいチャット"} onShare={openShare} />
+            <ChatPageHeaderSlot
+              title={threadTitle || "新しいチャット"}
+              onShare={openShare}
+              contextUsage={contextUsage}
+              onOpenContext={openContext}
+            />
           ) : null}
           <ThreadShareDialog open={shareOpen} onOpenChange={setShareOpen} threadId={threadId} />
+          <ContextUsageDialog usage={contextUsage} open={contextOpen} onOpenChange={setContextOpen} />
           <SaveAsAppDialog
             open={saveTarget != null}
             onOpenChange={(open) => !open && setSaveTarget(null)}

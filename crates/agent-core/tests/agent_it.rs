@@ -598,6 +598,22 @@ async fn autonomous_token_budget_stops_safely() {
         sink.count(|e| matches!(e, AgentEvent::BudgetWarning { .. })) >= 1,
         "予算警告イベントが流れる"
     );
+    // 最後のコンテキスト表示は着地の生成（ツール定義を送らない）を指す。
+    let last = sink
+        .events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            AgentEvent::ContextUsage(u) => Some(u),
+            _ => None,
+        })
+        .expect("context_usage が流れる");
+    let tools = last
+        .categories
+        .iter()
+        .find(|c| c.category == agent_core::ContextCategory::Tools)
+        .expect("ツール定義のカテゴリ");
+    assert_eq!(tools.tokens, 0, "着地の生成はツール定義を送らない");
 }
 
 /// 承認が必要な決定的ツール（`requires_confirmation=true`）。実行回数を数える。
