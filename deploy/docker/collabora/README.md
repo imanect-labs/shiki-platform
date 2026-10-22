@@ -181,3 +181,8 @@ COLLABORA_IMAGE=collabora/code:26.04.5.1.1 docker compose --profile office up -d
   - `storage.wopi.host`（shiki-server）は設定では外せず、許可先に残る。名前は完全一致で、shiki-server の口は
     外に出ている API と同じ認証を通る。
   - 開発用の代替（上流の CODE イメージ）にはこの対策が入らない。
+  - **ネットワーク側の二重目の守りは K8s（プレビュー）にだけある**（Collabora の外向き通信を shiki-server と DNS に
+    絞る NetworkPolicy・giken-ops）。compose・オンプレの Collabora は postgres や openfga と同じ網にいるので、
+    設定を変えるときは lok_allow を開けないこと。オンプレでもネットワークで絞れるなら絞る。
+  - ビルド時の照合は件数を見るだけで、効き目そのものは確かめない。上流を上げたら、セルに
+    `=WEBSERVICE("http://<内部>/")` を入れて `#VALUE!` になることを実機で確かめる。
