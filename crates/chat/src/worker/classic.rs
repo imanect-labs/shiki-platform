@@ -153,9 +153,6 @@ impl ChatWorker {
             max_tokens,
             agent_core::context_usage::fit(context_estimate, usage.prompt_tokens),
         );
-        sink.emit(AgentEvent::ContextUsage(context))
-            .await
-            .map_err(|e| ChatError::Internal(e.to_string()))?;
         self.gateway
             .record_generation(
                 ctx,
@@ -175,6 +172,10 @@ impl ChatWorker {
                 },
             )
             .await;
+        // 表示用の付加情報なので、会計を記録してから送る（送出の失敗で会計を落とさない）。
+        sink.emit(AgentEvent::ContextUsage(context))
+            .await
+            .map_err(|e| ChatError::Internal(e.to_string()))?;
         Ok(())
     }
 }
