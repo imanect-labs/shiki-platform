@@ -55,9 +55,14 @@ pub(crate) async fn validate_record_data(
                 "フィールド '{key}' はスキーマに存在しません"
             )));
         };
-        if matches!(f.field_type, FieldType::Lookup | FieldType::Computed) {
+        if f.field_type.is_derived() {
             return Err(DataError::Invalid(format!(
                 "フィールド '{key}' は派生フィールドのため書込できません"
+            )));
+        }
+        if f.is_reverse_link() {
+            return Err(DataError::Invalid(format!(
+                "フィールド '{key}' は対称列（逆リンク）のため書込できません。リンク元の列を更新してください"
             )));
         }
     }
@@ -205,15 +210,55 @@ async fn validate_field_value(
             }
             Ok(v.clone())
         }
-        FieldType::RecordRef => {
-            // 形式のみここで検証。存在検証は record 層（DB アクセス）が行う。
-            require_uuid_str(v, name)?;
-            Ok(v.clone())
+        FieldType::RecordRef => validate_link_value(f, v, max_multi_values),
+        FieldType::Lookup | FieldType::Computed | FieldType::Rollup | FieldType::Formula => {
+            Err(DataError::Invalid(format!(
+                "フィールド '{name}' は派生フィールドのため書込できません"
+            )))
         }
-        FieldType::Lookup | FieldType::Computed => Err(DataError::Invalid(format!(
-            "フィールド '{name}' は派生フィールドのため書込できません"
-        ))),
     }
+}
+
+/// record_ref の値（形式のみ。存在検証は record 層が DB で行う）。
+fn validate_link_value(
+    f: &FieldDef,
+    v: &Value,
+    max_multi_values: usize,
+) -> Result<Value, DataError> {
+    let name = &f.key;
+    let Some(link) = &f.link else {
+        // v1 の record_ref: 単一 UUID 文字列。
+        require_uuid_str(v, name)?;
+        return Ok(v.clone());
+    };
+    // リンク定義つき: 値は常に UUID の配列（重複なし・単一値の側は 1 件まで・PIT-72 の上限）。
+    let arr = v.as_array().ok_or_else(|| {
+        DataError::Invalid(format!(
+            "フィールド '{name}' は UUID 文字列の配列 である必要があります"
+        ))
+    })?;
+    let max = if link.cardinality.src_single() {
+        1
+    } else {
+        max_multi_values
+    };
+    if arr.len() > max {
+        return Err(DataError::Invalid(format!(
+            "'{name}' のリンク先が多すぎます（最大 {max}）"
+        )));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let id = require_uuid_str(item, name)?;
+        if !seen.insert(id) {
+            return Err(DataError::Invalid(format!(
+                "'{name}' に重複するリンク先があります"
+            )));
+        }
+        out.push(Value::String(id.to_string()));
+    }
+    Ok(Value::Array(out))
 }
 
 fn require_nonempty_str<'v>(v: &'v Value, name: &str) -> Result<&'v str, DataError> {

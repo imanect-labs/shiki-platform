@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use sqlx::PgConnection;
 
-use super::link::{replace_forward, LinkResolver};
+use super::link::{replace_forward, replace_link, LinkResolver};
 use super::normalize::{field_keys, format_timestamp, text_key, FieldKeys};
 use super::state::{field_id_i16, IndexPlan};
 use super::IndexTable;
@@ -309,10 +309,12 @@ impl IndexWriter<'_> {
         .await?;
         let mut resolver = LinkResolver::default();
         for (field, targets) in links {
-            let ref_table = self
+            let def = self
                 .schema
                 .field_by_id(field)
-                .and_then(|d| d.ref_table)
+                .ok_or_else(|| DataError::Internal(format!("リンク列 {field} の定義が不明")))?;
+            let ref_table = def
+                .ref_table
                 .ok_or_else(|| DataError::Internal(format!("リンク列 {field} の参照先が不明")))?;
             let mut edges = Vec::with_capacity(targets.len());
             for (ord, id) in targets {
@@ -323,7 +325,22 @@ impl IndexWriter<'_> {
                     edges.push((ord, dt, dr));
                 }
             }
-            replace_forward(conn, keys, field, record_int, &edges).await?;
+            // 対称列があれば逆方向行も同じ Tx で書く（両方向が食い違う状態を作らない・§7.1）。
+            let symmetric = def
+                .link
+                .as_ref()
+                .filter(|l| !l.reverse)
+                .and_then(|l| l.symmetric_field);
+            let ref_int = match symmetric {
+                Some(_) => resolver.table_int(conn, self.tenant_id, ref_table).await?,
+                None => None,
+            };
+            match (symmetric, ref_int) {
+                (Some(sym), Some(rt)) => {
+                    replace_link(conn, keys, field, record_int, &edges, (sym, rt)).await?;
+                }
+                _ => replace_forward(conn, keys, field, record_int, &edges).await?,
+            }
         }
         Ok(())
     }

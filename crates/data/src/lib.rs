@@ -12,8 +12,10 @@
 //! - **書込はサーバ検証**: 型・必須・unique・参照整合を書込時に強制（[`validate`]）。
 //! - **追記型リビジョン**: 全書込がフィールド単位差分の changelog を同一 Tx で残し、
 //!   `rev` の楽観ロックで同時更新を 409 にする（Task 9.5）。
-//! - **lookup / 計算フィールドの読み出し解決は Task 9.3 まで封印**: 参照先テーブルの
-//!   行ポリシー透過適用（PIT-20）なしに参照解決を出荷しない。定義の保存と検証のみ行う。
+//! - **リンク・lookup・ロールアップ・数式（Task 15.4）**: 参照先テーブルの 4 階層 authz を
+//!   **閲覧者本人の権限で**透過適用して読取時に計算する（PIT-20）。書込時の材料化は全閲覧者で同値と
+//!   証明できた列（`Materialization::Invariant`）だけで、前提が崩れたら同一 Tx で破棄する（PIT-71）。
+//!   数式は閉じた AST ＋ Rust インタプリタ（`numeric` 精度）。[`derived`]・[`formula`]
 //! - **フィールド識別子 3 層（Task 15.1）**: 外部契約は不変の参照名 `key` で受けて返し、
 //!   保存形（JSONB）は不変の内部 ID 由来の `"f{id}"` に閉じる（[`field_key`]）。表示名
 //!   （`display_name`・日本語可）の変更はスキーマ 1 行の書き換えで完結する。
@@ -31,6 +33,7 @@
 mod cursor;
 mod derived;
 mod field_key;
+mod formula;
 mod fsm;
 mod fsm_store;
 mod index;
@@ -55,6 +58,11 @@ mod validate;
 mod view;
 
 pub use cursor::{CursorKey, CURSOR_KEY_LEN};
+pub use derived::links::LINK_TRAVERSAL_SQL;
+pub use derived::types::{
+    LinkCardinality, LinkDef, Materialization, ResultType, RollupDef, RollupOp,
+};
+pub use formula::{FormulaCmpOp, FormulaExpr, SwitchCase, MAX_FORMULA_DEPTH};
 pub use fsm::{FsmBody, FsmRef, FsmTransition};
 pub use fsm_store::FsmStore;
 pub use index::{

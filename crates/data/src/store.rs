@@ -21,6 +21,7 @@ use storage::PoolRouter;
 use uuid::Uuid;
 
 use crate::cursor::{CursorCodec, CursorKey};
+use crate::derived::links::create_symmetric_fields;
 use crate::field_key::{assign_field_ids, upgrade_legacy_schema};
 use crate::index::backfill::{build_unique_now, start_backfill, table_has_rows};
 use crate::index::state::sync_ledger;
@@ -36,6 +37,8 @@ use crate::{map_db, DataError};
 
 /// `tenant_int` で持つ構造化データの表（purge の対象・子 → 親の順）。
 const PURGE_TENANT_INT_TABLES: &[&str] = &[
+    "data_derived_pending",
+    "data_derived_dep",
     "data_index_text",
     "data_index_num",
     "data_link",
@@ -57,14 +60,15 @@ pub struct NewDataTable {
 
 /// data_table 行の SELECT 列（[`TableRow`] と同じ並び）。
 pub(crate) const TABLE_COLS: &str = "id, name, app_id, schema, schema_version, created_by, \
-     created_at, updated_at, tenant_int, table_int, key_format, next_field_id, pivot_index_init";
+     created_at, updated_at, tenant_int, table_int, key_format, next_field_id, pivot_index_init, \
+     has_record_shares";
 
 /// data_table 行。
 #[derive(sqlx::FromRow)]
 pub(crate) struct TableRow {
     pub(crate) id: Uuid,
     name: String,
-    app_id: Option<Uuid>,
+    pub(crate) app_id: Option<Uuid>,
     pub(crate) schema: Json<TableSchema>,
     schema_version: i64,
     created_by: String,
@@ -76,6 +80,8 @@ pub(crate) struct TableRow {
     pub(crate) next_field_id: i32,
     /// 索引台帳を初期化済みか（Task 15.2 より前に作られたテーブルは false）。
     pub(crate) pivot_index_init: bool,
+    /// レコード個別共有タプルが作られたか（§7.4 第 4 階層）。
+    pub(crate) has_record_shares: bool,
 }
 
 impl TableRow {
@@ -100,6 +106,7 @@ impl TableRow {
                 tenant_int: self.tenant_int,
                 table_int: self.table_int,
             },
+            has_record_shares: self.has_record_shares,
         }
     }
 }
@@ -227,6 +234,10 @@ impl DataStore {
         let name = validate_table_name(&input.name)?;
         let mut schema = input.schema;
         let next_field_id = assign_field_ids(None, &mut schema)?;
+        // 派生フィールド: 循環検出・値の型・材料化可否（4 階層）をサーバが決める（Task 15.4）。
+        let prep = self
+            .prepare_derived(ctx, None, app_id, false, &mut schema, None)
+            .await?;
         validate_table_schema(&schema)?;
         // 内部整数キーはレジストリで採番する（不変・再利用しない・失敗時は欠番になるだけ）。
         let keys = self.allocate_table_keys(&ctx.tenant_id).await?;
@@ -256,12 +267,30 @@ impl DataStore {
             }
             _ => map_db(e),
         })?;
+        // 対称列（参照先に置く逆リンク）を作り、採番した ID をこのテーブルのスキーマへ書き戻す。
+        let row = if prep.needs_symmetric {
+            create_symmetric_fields(&mut tx, &ctx.tenant_id, row.id, &mut schema, None).await?;
+            sqlx::query_as(&format!(
+                "UPDATE data_table SET schema = $3 WHERE tenant_id = $1 AND id = $2 \
+                 RETURNING {TABLE_COLS}"
+            ))
+            .bind(&ctx.tenant_id)
+            .bind(row.id)
+            .bind(Json(&schema))
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(map_db)?
+        } else {
+            row
+        };
         // 索引台帳（空テーブルなので全て active・バックフィル不要）とリンク列の宣言。
         sync_ledger(&mut tx, keys, &schema, false).await?;
+        let table = row.into_table();
+        Self::finish_derived_save(&mut tx, &ctx.tenant_id, &table, None, &prep, false).await?;
         tx.commit().await.map_err(map_db)?;
 
         // 作成者を owner に（FGA）。失敗したら行を補償削除して孤立行を残さない。
-        let id = row.id;
+        let id = table.id;
         let obj = ctx.ns().data_table(&id.to_string());
         if let Err(e) = self
             .authz
@@ -289,7 +318,7 @@ impl DataStore {
             json!({ "name": name }),
         )
         .await;
-        Ok(row.into_table())
+        Ok(table)
     }
 
     /// テーブルのメタ＋スキーマを取得する（viewer）。
@@ -353,6 +382,27 @@ impl DataStore {
         let mut next = next;
         let next_field_id =
             assign_field_ids(Some((&current.schema.0, current.next_field_id)), &mut next)?;
+        // 派生フィールド: 循環検出・値の型・材料化可否（4 階層）をサーバが決める（Task 15.4）。
+        let prep = self
+            .prepare_derived(
+                ctx,
+                Some(id),
+                current.app_id,
+                current.has_record_shares,
+                &mut next,
+                Some(&current.schema.0),
+            )
+            .await?;
+        if prep.needs_symmetric {
+            create_symmetric_fields(
+                &mut tx,
+                &ctx.tenant_id,
+                id,
+                &mut next,
+                Some(&current.schema.0),
+            )
+            .await?;
+        }
         validate_schema_update(&current.schema.0, &next)?;
         // display_name / order / description の変更はここ（data_table の 1 行）だけで完結し、
         // data_record は 1 行も更新しない（JSONB キーは不変の id 由来・data-platform §4.2）。
@@ -382,6 +432,18 @@ impl DataStore {
             build_unique_now(&mut tx, keys, &next, &ctx.tenant_id).await?;
             start_backfill(&mut tx, keys, &ctx.tenant_id, id).await?;
         }
+        let current_schema = current.schema.0.clone();
+        let row = row.into_table();
+        // 材料化の依存登録・昇格した列の再計算待ち・このテーブルを参照先にする列の降格（PIT-71）。
+        Self::finish_derived_save(
+            &mut tx,
+            &ctx.tenant_id,
+            &row,
+            Some(&current_schema),
+            &prep,
+            has_rows,
+        )
+        .await?;
         // 実データ変更のためスキーマ更新と同一 Tx で監査を残す（原子的・Chain=Yes）。
         self.record_audit_on(
             &mut tx,
@@ -393,7 +455,7 @@ impl DataStore {
         )
         .await?;
         tx.commit().await.map_err(map_db)?;
-        Ok(row.into_table())
+        Ok(row)
     }
 
     /// テーブルを論理削除する（owner・レコード/履歴は保持・名前は再利用可能になる）。
@@ -405,18 +467,38 @@ impl DataStore {
     ) -> Result<(), DataError> {
         self.require(ctx, id, Relation::Owner, "data.table.delete", trace_id)
             .await?;
-        let updated = sqlx::query(
+        let mut tx = self
+            .pools
+            .for_tenant(&ctx.tenant_id)
+            .begin()
+            .await
+            .map_err(map_db)?;
+        let updated: Option<(i32, i64)> = sqlx::query_as(
             "UPDATE data_table SET deleted_at = now(), updated_at = now() \
-             WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
+             WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL \
+             RETURNING tenant_int, table_int",
         )
         .bind(&ctx.tenant_id)
         .bind(id)
-        .execute(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_optional(&mut *tx)
         .await
         .map_err(map_db)?;
-        if updated.rows_affected() == 0 {
+        let Some((tenant_int, table_int)) = updated else {
             return Err(DataError::NotFound);
-        }
+        };
+        // このテーブルを参照先にしていた材料化列は前提が無くなるので降格する（同一 Tx・PIT-71）。
+        crate::derived::materialize::demote_dependents(
+            &mut tx,
+            &ctx.tenant_id,
+            TableKeys {
+                tenant_int,
+                table_int,
+            },
+            None,
+            "参照先テーブルが削除された",
+        )
+        .await?;
+        tx.commit().await.map_err(map_db)?;
         self.record_audit_best_effort(
             ctx,
             "data.table.delete",

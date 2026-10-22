@@ -143,6 +143,14 @@ impl DataStore {
         self.index_writer(&plan, &table.schema, &ctx.tenant_id)
             .on_update(&mut tx, written.record_int, &patch, written.row.updated_at)
             .await?;
+        crate::derived::materialize::after_record_write(
+            &mut tx,
+            &ctx.tenant_id,
+            &table,
+            written.record_int,
+            Some(&data),
+        )
+        .await?;
         let row = written.row;
         insert_revision(
             &mut tx,

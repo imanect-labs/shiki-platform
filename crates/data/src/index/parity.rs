@@ -169,6 +169,8 @@ async fn check_one(
         SYSTEM_FIELD_CREATED_AT => ("created_at".to_string(), Source::CreatedAt, None),
         SYSTEM_FIELD_UPDATED_AT => ("updated_at".to_string(), Source::UpdatedAt, None),
         _ => match schema.field_by_id(field) {
+            // 材料化した派生列の索引行は本体ではなく再計算が書く（本体に値を持たない・Task 15.4）。
+            Some(d) if d.field_type.is_derived() => return Ok(None),
             Some(d) => (d.key.clone(), Source::Json, Some(d)),
             None => return Ok(None),
         },
@@ -314,22 +316,31 @@ async fn link_counts(
 ) -> Result<(i64, i64), DataError> {
     // 参照先が存在するエッジだけを比べる（宙に浮いた参照は索引に載せない・参照先の削除後に残る
     // 順方向行は本体側の参照も宙に浮いているので数えない）。
-    let sql = "WITH e AS (SELECT r.record_int AS src, \
+    // v1 の record_ref は単一 UUID 文字列（ord 0）、リンク定義つきは配列（ord = 配列内の位置）。
+    let sql = "WITH e AS (SELECT r.record_int AS src, 0::int2 AS ord, \
                             (SELECT d.record_int FROM data_record d \
                               WHERE d.tenant_int = $1 AND d.table_int = $5 \
                                 AND d.id = (r.data ->> $3)::uuid) AS dst \
                          FROM data_record r WHERE r.tenant_int = $1 AND r.table_int = $2 \
-                           AND jsonb_typeof(r.data -> $3) = 'string'), \
+                           AND jsonb_typeof(r.data -> $3) = 'string' \
+                         UNION ALL \
+                         SELECT r.record_int, (x.n - 1)::int2, \
+                            (SELECT d.record_int FROM data_record d \
+                              WHERE d.tenant_int = $1 AND d.table_int = $5 AND d.id = x.v::uuid) \
+                         FROM data_record r CROSS JOIN LATERAL jsonb_array_elements_text( \
+                             CASE WHEN jsonb_typeof(r.data -> $3) = 'array' THEN r.data -> $3 \
+                                  ELSE '[]'::jsonb END) WITH ORDINALITY AS x(v, n) \
+                         WHERE r.tenant_int = $1 AND r.table_int = $2), \
                     a AS (SELECT l.src_record, l.ord, l.dst_table_int, l.dst_record FROM data_link l \
                          WHERE l.tenant_int = $1 AND l.table_int = $2 AND l.field_id = $4 \
                            AND NOT l.is_reverse \
                            AND EXISTS (SELECT 1 FROM data_record d WHERE d.tenant_int = $1 \
                                 AND d.table_int = l.dst_table_int AND d.record_int = l.dst_record)) \
                SELECT (SELECT count(*) FROM e WHERE e.dst IS NOT NULL AND NOT EXISTS ( \
-                         SELECT 1 FROM a WHERE a.src_record = e.src AND a.ord = 0 \
+                         SELECT 1 FROM a WHERE a.src_record = e.src AND a.ord = e.ord \
                            AND a.dst_table_int = $5 AND a.dst_record = e.dst)), \
                       (SELECT count(*) FROM a WHERE NOT EXISTS (SELECT 1 FROM e \
-                         WHERE a.src_record = e.src AND a.ord = 0 \
+                         WHERE a.src_record = e.src AND a.ord = e.ord \
                            AND a.dst_table_int = $5 AND a.dst_record = e.dst))";
     let (m, x): (i64, i64) = sqlx::query_as(sql)
         .bind(keys.tenant_int)

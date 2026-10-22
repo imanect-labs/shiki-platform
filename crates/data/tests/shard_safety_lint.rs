@@ -35,6 +35,9 @@ const DATA_TABLES: &[&str] = &[
     "data_sort_set",
     // テナント設定（Task 15.3）。
     "data_tenant_settings",
+    // 派生値の材料化（Task 15.4）。
+    "data_derived_pending",
+    "data_derived_dep",
 ];
 
 /// 文字列リテラル（開始行・中身）。

@@ -38,7 +38,9 @@ use crate::{map_db, DataError};
 /// - `indexed || unique` は型に応じた値索引（number = num、それ以外 = text。filter/sort の到達可能性は
 ///   `indexed || unique` で判定するため unique 列にも値索引を持たせる・§5.2）
 /// - `unique` は `data_unique`、`searchable`（text のみ）は `data_index_search`
-/// - lookup / computed は索引しない（書込不可・派生値の材料化は Task 15.4）
+/// - 派生フィールドは**材料化する列**（`invariant` かつ `indexed`・Task 15.4）だけ、値の型に応じて
+///   num / text。行は材料化（[`crate::derived::materialize`]）が書く（本体からのバックフィルは対象外）
+/// - 対称列（逆リンク・読取専用）は持たない（逆方向行は参照元の書込が同じ Tx で書く）
 pub(crate) fn desired(schema: &TableSchema) -> BTreeSet<(FieldId, IndexTable)> {
     let mut out = BTreeSet::new();
     for sys in [
@@ -49,8 +51,14 @@ pub(crate) fn desired(schema: &TableSchema) -> BTreeSet<(FieldId, IndexTable)> {
         out.insert((sys, IndexTable::Text));
     }
     for f in &schema.fields {
+        if f.field_type.is_derived() {
+            if f.is_materialized() {
+                out.insert((f.id, derived_table(f)));
+            }
+            continue;
+        }
         match f.field_type {
-            FieldType::Lookup | FieldType::Computed => continue,
+            FieldType::RecordRef if f.is_reverse_link() => continue,
             FieldType::RecordRef => {
                 out.insert((f.id, IndexTable::Link));
             }
@@ -70,6 +78,15 @@ pub(crate) fn desired(schema: &TableSchema) -> BTreeSet<(FieldId, IndexTable)> {
         }
     }
     out
+}
+
+/// 材料化する派生フィールドの値索引の表（number は num・それ以外は text）。
+pub(crate) fn derived_table(f: &crate::model::FieldDef) -> IndexTable {
+    if f.result_type == Some(crate::derived::types::ResultType::Number) {
+        IndexTable::Num
+    } else {
+        IndexTable::Text
+    }
 }
 
 /// 書込経路が保守する索引（`building` / `active`）。書込 Tx の間だけ有効。
@@ -233,7 +250,13 @@ pub(crate) async fn sync_ledger(
         IndexState::Active
     };
     for (field, table) in want.difference(&maintained) {
-        set_state(conn, keys, *field, *table, start).await?;
+        // 材料化する派生列は本体からのバックフィルを使わない（行は再計算ジョブが書き、書き終わるまでは
+        // 再計算待ちの行がクエリを止める・derived::materialize）。台帳は最初から active。
+        let derived = schema
+            .field_by_id(*field)
+            .is_some_and(|f| f.field_type.is_derived());
+        let state = if derived { IndexState::Active } else { start };
+        set_state(conn, keys, *field, *table, state).await?;
     }
     for (field, table) in maintained.difference(&want) {
         set_state(conn, keys, *field, *table, IndexState::Absent).await?;

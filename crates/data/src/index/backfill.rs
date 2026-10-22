@@ -114,6 +114,16 @@ async fn enqueue(
     tenant_id: &str,
     table_id: Uuid,
 ) -> Result<(), DataError> {
+    enqueue_op(conn, op, tenant_id, table_id).await
+}
+
+/// 索引系ジョブ（`backfill` / `composite` / `parity` / `derived`）を同じ Tx で積む。
+pub(crate) async fn enqueue_op(
+    conn: &mut PgConnection,
+    op: &str,
+    tenant_id: &str,
+    table_id: Uuid,
+) -> Result<(), DataError> {
     jobq::enqueue_on(
         conn,
         jobq::NewJob {
@@ -617,7 +627,13 @@ impl DataStore {
                 Ok(continue_backfill) => {
                     if continue_backfill {
                         if let Some(table_id) = job_table(&job.payload) {
-                            enqueue(&mut tx, "backfill", &job.tenant_id, table_id).await?;
+                            // 続きは同じ op で積む（composite / derived の続きを backfill にしない）。
+                            let op = job
+                                .payload
+                                .get("op")
+                                .and_then(Value::as_str)
+                                .unwrap_or("backfill");
+                            enqueue(&mut tx, op, &job.tenant_id, table_id).await?;
                         }
                     }
                     jobq::ack(&mut tx, job.id)
@@ -673,6 +689,24 @@ impl DataStore {
                         .await
                     {
                         Ok(true) | Err(DataError::NotFound) => return Ok(false), // 完了・テーブルが消えた
+                        Ok(false) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(true)
+            }
+            Some("derived") => {
+                // 材料化した派生列の再計算待ち（Task 15.4・derived::materialize）。
+                for _ in 0..CHUNKS_PER_JOB {
+                    match self
+                        .derived_recompute_step(
+                            &job.tenant_id,
+                            table_id,
+                            crate::derived::materialize::RECOMPUTE_CHUNK,
+                        )
+                        .await
+                    {
+                        Ok(true) | Err(DataError::NotFound) => return Ok(false),
                         Ok(false) => {}
                         Err(e) => return Err(e),
                     }

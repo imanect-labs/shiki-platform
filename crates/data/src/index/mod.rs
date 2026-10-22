@@ -14,7 +14,7 @@
 
 pub(crate) mod backfill;
 pub(crate) mod composite;
-mod link;
+pub(crate) mod link;
 pub(crate) mod normalize;
 pub(crate) mod parity;
 pub(crate) mod scan;

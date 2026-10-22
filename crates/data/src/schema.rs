@@ -39,6 +39,12 @@ pub(crate) fn validate_table_name(name: &str) -> Result<&str, DataError> {
 pub fn validate_table_schema_public(schema: &TableSchema) -> Result<(), DataError> {
     let mut assigned = schema.clone();
     crate::field_key::assign_field_ids(None, &mut assigned)?;
+    // 材料化可否・値の型はサーバが参照先を読んで決める（入力の宣言は信用しない）。ここでは決められない
+    // ので、派生フィールドの indexed は拒否側に倒す（作成時の検証で改めて判定する）。
+    for f in &mut assigned.fields {
+        f.materialization = None;
+        f.result_type = None;
+    }
     validate_table_schema(&assigned)
 }
 
@@ -112,6 +118,8 @@ fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
     let name = &f.key;
     // number の精度宣言（data-platform §4.2）。number 以外への指定・scale 範囲外・min > max は 422。
     crate::numeric::validate_spec(f)?;
+    // リンク定義・ロールアップ・数式（Task 15.4）。
+    crate::derived::schema::validate_derived_field(schema, f)?;
     // 型ごとの付帯定義。
     match f.field_type {
         FieldType::Select | FieldType::MultiSelect => {
@@ -192,12 +200,11 @@ fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
         }
         _ => {}
     }
-    // 派生フィールド（書込不可）に unique/required/indexed は意味を持たないため拒否する。
-    if matches!(f.field_type, FieldType::Lookup | FieldType::Computed)
-        && (f.unique || f.required || f.indexed)
-    {
+    // 派生フィールド（書込不可）に unique/required は意味を持たないため拒否する。indexed は
+    // 材料化できる（invariant）列だけ（validate_derived_field・data-platform §7.4）。
+    if f.field_type.is_derived() && (f.unique || f.required) {
         return Err(DataError::Invalid(format!(
-            "'{name}': lookup/computed に required/unique/indexed は指定できません"
+            "'{name}': 派生フィールド（lookup/computed/rollup/formula）に required/unique は指定できません"
         )));
     }
     // unique は式インデックスで強制できるスカラー型のみ。
@@ -267,9 +274,20 @@ pub(crate) fn validate_schema_update(
                 cur.key
             )));
         }
-        if nf.lookup != cur.lookup || nf.computed != cur.computed {
+        if nf.lookup != cur.lookup
+            || nf.computed != cur.computed
+            || nf.rollup != cur.rollup
+            || nf.formula != cur.formula
+        {
             return Err(DataError::Invalid(format!(
-                "フィールド '{}' の lookup/computed 定義は変更できません",
+                "フィールド '{}' の lookup/computed/rollup/formula 定義は変更できません",
+                cur.key
+            )));
+        }
+        // リンク定義（カーディナリティ・対称列）も不変（変えるなら既存行の再検証が要る・§7.1）。
+        if nf.link != cur.link {
+            return Err(DataError::Invalid(format!(
+                "フィールド '{}' の link は変更できません",
                 cur.key
             )));
         }

@@ -236,9 +236,15 @@ impl DataStore {
     ) -> Result<(QueryResult, QueryDebug), DataError> {
         self.require(ctx, table_id, Relation::Viewer, action, trace_id)
             .await?;
-        let table = self.fetch_live(ctx, table_id).await?;
+        let mut table = self.fetch_live(ctx, table_id).await?;
         let masked = self.masked_fields(ctx, &table).await?;
         let mut bq = bind_query(&table.schema, &masked, query)?;
+        // 材料化した派生列で絞る・並べるなら、その前提（4 階層）を今の認可状態で検査し直す。崩れていれば
+        // 降格（索引行を同一 Tx で破棄）してから束縛し直す＝その列はフィルタ/ソートに使えなくなる（PIT-71）。
+        if bq.fields.values().any(|f| f.derived) && self.verify_materialized(ctx, &table).await? {
+            table = self.fetch_live(ctx, table_id).await?;
+            bq = bind_query(&table.schema, &masked, query)?;
+        }
         if bq.is_aggregate() {
             // 集計クエリは監査に残す（PIT-17: 反復差分の検知可能性）。
             self.record_audit_best_effort(
@@ -290,7 +296,8 @@ impl DataStore {
         }
         // 本体の後段（派生フィールド・マスク・投影）はトランザクションの外で行う。
         if let Some(mut items) = rows {
-            self.resolve_derived_fields(ctx, &table, &mut items).await?;
+            self.resolve_derived_fields(ctx, &table, &masked, &mut items)
+                .await?;
             Self::apply_mask_records(&masked, &mut items);
             if let Some(sel) = &bq.select {
                 for r in &mut items {
@@ -342,6 +349,32 @@ impl DataStore {
         // （正しいが遅い・statement_timeout で上限を切る）。
         let body_path =
             tuning.read_path == ReadPath::Body || !needed.iter().all(|n| active.contains(n));
+        // 材料化した派生列は索引行だけが値を持つ（本体に無い）。本体経路では評価できないので、
+        // 索引が使えない間・再計算待ちがある間はクエリ対象外（古い値で絞らない・PIT-71）。
+        let derived: Vec<&super::bound::BField> =
+            bq.fields.values().filter(|f| f.derived).collect();
+        if let Some(f) = derived.first().filter(|_| body_path) {
+            return Err(DataError::Conflict(format!(
+                "フィールド '{}' の索引は準備中です（構築が終わるまでお待ちください）",
+                f.key
+            )));
+        }
+        if !derived.is_empty() {
+            let ids: Vec<i16> = derived
+                .iter()
+                .filter_map(|f| i16::try_from(f.id).ok())
+                .collect();
+            let stale = crate::derived::materialize::pending_fields(conn, keys, &ids).await?;
+            if let Some(f) = derived
+                .iter()
+                .find(|f| i16::try_from(f.id).is_ok_and(|i| stale.contains(&i)))
+            {
+                return Err(DataError::Conflict(format!(
+                    "フィールド '{}' は参照先の変更を受けて再計算中です（完了までフィルタ/ソートに使えません）",
+                    f.key
+                )));
+            }
+        }
         // 個別共有（uuid）→ record_int（このテーブルに属するものだけ・外へ出さない）。
         let shared_ints: Vec<i64> = if body_path {
             Vec::new()

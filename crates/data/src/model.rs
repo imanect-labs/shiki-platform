@@ -29,10 +29,24 @@ pub enum FieldType {
     FileRef,
     /// 他テーブルのレコード参照（`ref_table` 必須・同一テナント内で存在検証）。
     RecordRef,
-    /// record 参照を辿った参照先フィールドの射影（書込不可・解決は Task 9.3）。
+    /// record 参照を辿った参照先フィールドの射影（書込不可・参照先の行ポリシーを閲覧者本人の権限で適用）。
     Lookup,
-    /// 他フィールドからの計算値（書込不可・評価は Task 9.4 のクエリ層）。
+    /// 他フィールドからの計算値（書込不可・v1 の sum/concat。新規は `formula` を使う）。
     Computed,
+    /// リンク先の集合に対する集計（count/sum/avg/min/max/concat・書込不可・Task 15.4）。
+    Rollup,
+    /// 数式（閉じた AST・`numeric` 精度・書込不可・Task 15.4）。
+    Formula,
+}
+
+impl FieldType {
+    /// 書込不可の派生フィールド（lookup / computed / rollup / formula）か。
+    pub fn is_derived(self) -> bool {
+        matches!(
+            self,
+            FieldType::Lookup | FieldType::Computed | FieldType::Rollup | FieldType::Formula
+        )
+    }
 }
 
 /// lookup 定義: `via_field`（自テーブルの record_ref フィールド）を辿り、
@@ -140,6 +154,22 @@ pub struct FieldDef {
     /// この規則で正規化した同一値を使う。省略時は入力値をそのまま保存する（v1 互換）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub numeric_spec: Option<NumericSpec>,
+    /// record_ref のリンク定義（カーディナリティ・対称列・data-platform §7.1）。省略時は v1 互換の
+    /// 単一 UUID 文字列（片方向）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<crate::derived::types::LinkDef>,
+    /// ロールアップ定義（field_type=rollup のとき必須）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollup: Option<crate::derived::types::RollupDef>,
+    /// 数式（field_type=formula のとき必須）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formula: Option<crate::formula::FormulaExpr>,
+    /// 派生フィールドの材料化可否（**サーバがスキーマ保存時に決める**・入力は無視・§7.4）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialization: Option<crate::derived::types::Materialization>,
+    /// 派生フィールドの値の型（**サーバが推論する**・入力は無視）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_type: Option<crate::derived::types::ResultType>,
 }
 
 /// `number` フィールドの精度宣言（data-platform §4.2）。
@@ -209,7 +239,24 @@ impl FieldDef {
             lookup: None,
             computed: None,
             numeric_spec: None,
+            link: None,
+            rollup: None,
+            formula: None,
+            materialization: None,
+            result_type: None,
         }
+    }
+
+    /// 対称列（参照先から見た逆方向のリンク・読取専用）か。
+    pub fn is_reverse_link(&self) -> bool {
+        self.link.as_ref().is_some_and(|l| l.reverse)
+    }
+
+    /// 書込時に材料化する派生フィールド（`invariant` かつ `indexed`）か。
+    pub(crate) fn is_materialized(&self) -> bool {
+        self.field_type.is_derived()
+            && self.indexed
+            && self.materialization == Some(crate::derived::types::Materialization::Invariant)
     }
 
     /// 保存形（`data_record.data`）の JSONB キー `"f{id}"`。
@@ -285,6 +332,9 @@ pub struct DataTable {
     /// 内部整数キー（`tenant_int` / `table_int`）。**外へ出さない**（serde・OpenAPI から除外）。
     #[serde(skip)]
     pub(crate) keys: TableKeys,
+    /// レコード個別共有タプルが 1 件でも作られたか（材料化可否の第 4 階層・§7.4）。外へ出さない。
+    #[serde(skip)]
+    pub(crate) has_record_shares: bool,
 }
 
 /// テーブルの内部整数キー（data-platform §3.2）。crate 外から読めない・直列化しない。
@@ -408,6 +458,7 @@ mod tests {
                 tenant_int: 424_242,
                 table_int: 7_777_777,
             },
+            has_record_shares: false,
         };
         let s = serde_json::to_string(&t).unwrap();
         assert!(!s.contains("tenant_int") && !s.contains("table_int"), "{s}");

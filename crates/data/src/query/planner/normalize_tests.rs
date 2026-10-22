@@ -43,6 +43,7 @@ fn fields() -> BTreeMap<FieldId, BField> {
         kind,
         searchable: true,
         ref_table: None,
+        derived: false,
     };
     [
         (SINGLE, mk(SINGLE, FieldKind::Text)),

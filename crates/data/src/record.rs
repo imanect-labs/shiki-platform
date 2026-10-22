@@ -158,6 +158,15 @@ impl DataStore {
                 },
             )
             .await?;
+        // 材料化した派生列の値と、このテーブルを参照先にする列の再計算待ち（同一 Tx・Task 15.4）。
+        crate::derived::materialize::after_record_write(
+            &mut tx,
+            &ctx.tenant_id,
+            &table,
+            written.record_int,
+            Some(&normalized),
+        )
+        .await?;
         let row = written.row;
         let patch = diff_fields(&Map::new(), &normalized);
         insert_revision(
@@ -206,8 +215,11 @@ impl DataStore {
             .await?
             .ok_or(DataError::NotFound)?;
         let mut records = vec![row.into_record(&table.schema)];
-        self.resolve_derived_fields(ctx, &table, &mut records)
+        // 派生値は閲覧者本人の権限で計算し、マスク列は計算にも応答にも出さない（PIT-19・PIT-20）。
+        let masked = self.masked_fields(ctx, &table).await?;
+        self.resolve_derived_fields(ctx, &table, &masked, &mut records)
             .await?;
+        Self::apply_mask_records(&masked, &mut records);
         Ok(records.remove(0))
     }
 
@@ -325,6 +337,14 @@ impl DataStore {
                 written.row.updated_at,
             )
             .await?;
+        crate::derived::materialize::after_record_write(
+            &mut tx,
+            &ctx.tenant_id,
+            &table,
+            written.record_int,
+            Some(&normalized),
+        )
+        .await?;
         let row = written.row;
         insert_revision(
             &mut tx,
@@ -418,6 +438,14 @@ impl DataStore {
         self.index_writer(&plan, &table.schema, &ctx.tenant_id)
             .on_delete(&mut tx, record_int, &old_map)
             .await?;
+        crate::derived::materialize::after_record_write(
+            &mut tx,
+            &ctx.tenant_id,
+            &table,
+            record_int,
+            None,
+        )
+        .await?;
         let patches = diff_fields(&old_map, &Map::new());
         insert_revision(
             &mut tx,
@@ -478,44 +506,33 @@ impl DataStore {
                 continue;
             }
             let Some(v) = data.get(&f.key) else { continue };
-            let Some(s) = v.as_str() else { continue };
-            let Ok(ref_id) = Uuid::parse_str(s) else {
-                return Err(DataError::Invalid(format!(
-                    "'{}' は UUID 文字列である必要があります",
-                    f.key
-                )));
+            // v1 は単一 UUID 文字列、リンク定義つきは UUID の配列（書込検証で形は確認済み）。
+            let ids: Vec<Uuid> = match v {
+                Value::String(s) => vec![Uuid::parse_str(s).map_err(|_| {
+                    DataError::Invalid(format!("'{}' は UUID 文字列である必要があります", f.key))
+                })?],
+                Value::Array(a) => a
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter_map(|s| Uuid::parse_str(s).ok())
+                    .collect(),
+                _ => continue,
             };
+            if ids.is_empty() {
+                continue;
+            }
             let Some(ref_table) = f.ref_table else {
                 continue;
             };
-            // 参照整合は「書き手が参照先を**見える**こと」まで要求する（PIT-20:
-            // テーブル viewer ＋ 参照先テーブルの行述語。存在オラクル・不可視行への
-            // 参照持ち込みの双方を塞ぐ）。不可視は「見つからない」と同一応答。
+            // 参照整合は「書き手が参照先を**見える**こと」まで要求する（PIT-20: テーブル viewer ＋
+            // 参照先テーブルの行述語の二段。存在オラクル・不可視行への参照持ち込みの双方を塞ぐ）。
+            // 不可視・不在・テーブル削除済みは「見つからない」と同一応答。
             let not_found =
                 || DataError::Invalid(format!("'{}' の参照先レコードが見つかりません", f.key));
-            let can_view_ref = self
-                .authz
-                .check(
-                    &ctx.subject(),
-                    Relation::Viewer,
-                    &ctx.ns().data_table(&ref_table.to_string()),
-                    authz::Consistency::HigherConsistency,
-                )
-                .await
-                .map_err(|e| DataError::Internal(e.to_string()))?;
-            if !can_view_ref {
-                return Err(not_found());
-            }
-            let ref_meta = match self.fetch_live(ctx, ref_table).await {
-                Ok(t) => t,
-                Err(DataError::NotFound) => return Err(not_found()),
-                Err(e) => return Err(e),
-            };
-            if self
-                .select_visible_by_id(ctx, &ref_meta, ref_id)
-                .await?
-                .is_none()
-            {
+            let visible = self
+                .visible_ref_rows(ctx, ref_table, &ids, &std::collections::BTreeSet::new(), 0)
+                .await?;
+            if ids.iter().any(|id| !visible.rows.contains_key(id)) {
                 return Err(not_found());
             }
         }

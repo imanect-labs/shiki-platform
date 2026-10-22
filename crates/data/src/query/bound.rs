@@ -19,6 +19,7 @@ use super::ir::{
     CondOp, Condition, DataQuery, Metric, DEFAULT_LIMIT, MAX_CONDITION_DEPTH, MAX_CONDITION_LEAVES,
     MAX_IN_VALUES, MAX_LIMIT, MAX_SORT_KEYS,
 };
+use crate::derived::types::ResultType;
 use crate::index::{IndexTable, SortPrecision};
 use crate::model::{
     FieldId, FieldType, TableSchema, SYSTEM_FIELD_CREATED_AT, SYSTEM_FIELD_OWNER,
@@ -56,6 +57,8 @@ pub(crate) struct BField {
     pub searchable: bool,
     /// record_ref の参照先テーブル。
     pub ref_table: Option<Uuid>,
+    /// 材料化した派生フィールド（索引行は再計算が書く・再計算待ちの間はクエリ対象外）。
+    pub derived: bool,
 }
 
 impl BField {
@@ -183,6 +186,7 @@ static FALLBACK_FIELD: BField = BField {
     kind: FieldKind::Text,
     searchable: false,
     ref_table: None,
+    derived: false,
 };
 
 /// 擬似列の束縛。
@@ -200,6 +204,7 @@ fn pseudo(key: &str) -> Option<BField> {
         kind: FieldKind::Text,
         searchable: false,
         ref_table: None,
+        derived: false,
     })
 }
 
@@ -238,9 +243,35 @@ impl<'a> Binder<'a> {
         let f = self.schema.field(key).ok_or_else(|| {
             DataError::Invalid(format!("フィールド '{key}' はスキーマに存在しません"))
         })?;
-        if matches!(f.field_type, FieldType::Lookup | FieldType::Computed) {
+        if f.field_type.is_derived() {
+            // 材料化した（invariant かつ indexed の）列だけ。閲覧者ごと・時刻依存の値で並べたり絞ったり
+            // すると見えない行の値が順序から漏れる（PIT-71・PIT-19 と同型）。
+            if !f.is_materialized() {
+                return Err(DataError::Invalid(format!(
+                    "派生フィールド '{key}' はフィルタ/ソート/集計に使えません（閲覧者ごと・時刻依存の値、または indexed でない列）"
+                )));
+            }
+            let (ty, kind) = match f.result_type {
+                Some(ResultType::Number) => (FieldType::Number, FieldKind::Num),
+                Some(ResultType::Date) => (FieldType::Date, FieldKind::Text),
+                Some(ResultType::DateTime) => (FieldType::DateTime, FieldKind::Text),
+                _ => (FieldType::Text, FieldKind::Text),
+            };
+            let b = BField {
+                id: f.id,
+                key: f.key.clone(),
+                ty: Some(ty),
+                kind,
+                searchable: false,
+                ref_table: None,
+                derived: true,
+            };
+            self.fields.insert(b.id, b.clone());
+            return Ok(b);
+        }
+        if f.is_reverse_link() {
             return Err(DataError::Invalid(format!(
-                "派生フィールド '{key}' はフィルタ/ソート/集計に使えません"
+                "対称列 '{key}' はフィルタ/ソートに使えません（リンク元の列で絞り込んでください）"
             )));
         }
         if !(f.indexed || f.unique) {
@@ -261,6 +292,7 @@ impl<'a> Binder<'a> {
             kind,
             searchable: f.searchable && f.field_type == FieldType::Text,
             ref_table: f.ref_table,
+            derived: false,
         };
         self.fields.insert(b.id, b.clone());
         Ok(b)
@@ -395,6 +427,13 @@ pub(crate) fn bind_query(
         }
         if f.ty == Some(FieldType::Text) {
             precision = SortPrecision::Prefix;
+        }
+        // 材料化した派生列は複数ソートの複合索引を持たない（第 1 キーか単独のソートだけ）。
+        if f.derived && q.sort.len() > 1 {
+            return Err(DataError::Invalid(format!(
+                "派生フィールド '{}' は複数キーのソートに使えません",
+                k.field
+            )));
         }
         sort.push(BSort {
             field: f.id,
