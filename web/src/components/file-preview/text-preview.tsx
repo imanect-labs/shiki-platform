@@ -264,6 +264,15 @@ export function TextPreview({
         }
         setContent(c);
         setBaseVersion(access.version);
+        // 新しい版が UTF-8・Shift_JIS 以外なら、保存で中身が壊れるので閲覧のみに留める。
+        if (c.encoding === "unknown") {
+          toast({
+            variant: "destructive",
+            title: "このファイルは編集できません",
+            description: "新しい版の文字コードを判別できないため、閲覧のみになります。",
+          });
+          return;
+        }
         toast({ title: "最新の内容を読み込みました", description: "開いた後に新しい版が保存されていました。" });
       }
       setMode("edit");
