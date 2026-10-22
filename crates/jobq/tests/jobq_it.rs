@@ -340,3 +340,53 @@ async fn claim_alternates_between_two_backlogged_tenants() {
     let expected: Vec<&str> = std::iter::repeat_n(["a", "b"], 10).flatten().collect();
     assert_eq!(tenants, expected, "2 テナントが 1:1 で交互に取り出される");
 }
+
+/// #816: 先頭の行が**不可視**（バックオフ中・defer 中・長時間の処理中）でも、後着テナントに
+/// その古い fair_seq が振られて先行テナントの残りを追い越すことはない（仮想時刻は可視な先頭）。
+/// 旧実装（キュー全体の最小 fair_seq）だと後着の 5 件が先行テナントの残り 5 件より全部先に出る。
+#[tokio::test]
+async fn invisible_head_does_not_let_late_tenant_jump_the_backlog() {
+    let Some(pool) = setup().await else { return };
+    for mode in ["fail", "defer", "in_flight"] {
+        let queue = unique_queue(&format!("fair-{mode}"));
+        for _ in 0..10 {
+            enqueue(&pool, &queue, "a", 5).await;
+        }
+        let mut conn = pool.acquire().await.unwrap();
+        // a の先頭（fair_seq 最小）を 1 時間不可視にする。
+        let head = jobq::claim(&mut conn, &queue, Duration::from_hours(1), 1)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        match mode {
+            "fail" => {
+                let outcome = jobq::fail(&mut conn, head.id, "transient", Duration::from_hours(1))
+                    .await
+                    .unwrap();
+                assert!(matches!(outcome, FailOutcome::Retry { .. }));
+            }
+            "defer" => jobq::defer(&mut conn, head.id, Duration::from_hours(1))
+                .await
+                .unwrap(),
+            _ => {} // claim したまま ack しない（vt 1 時間の長い処理）。
+        }
+        // a は先へ進む（4 件処理）。
+        assert_eq!(drain_tenants(&pool, &queue, 4).await.len(), 4);
+        // 後着テナント b が 5 件投入する。
+        for _ in 0..5 {
+            enqueue(&pool, &queue, "b", 5).await;
+        }
+        let order = drain_tenants(&pool, &queue, 20).await;
+        let tenants: Vec<&str> = order.iter().map(|(t, _)| t.as_str()).collect();
+        let expected: Vec<&str> = std::iter::repeat_n(["a", "b"], 5).flatten().collect();
+        assert_eq!(
+            tenants, expected,
+            "{mode}: 後着 b は a の残りと交互（不可視の先頭に引きずられない）"
+        );
+        assert!(
+            !order.iter().any(|(_, id)| *id == head.id),
+            "{mode}: 不可視の行は出てこない"
+        );
+    }
+}
