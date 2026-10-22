@@ -48,6 +48,11 @@ impl AuditRecorder {
         AuditRecorder { db }
     }
 
+    /// 同じ接続プールで監査ログを読む窓口（#634）。書き込みとは型を分ける。
+    pub fn viewer(&self) -> crate::audit_view::AuditViewer {
+        crate::audit_view::AuditViewer::new(self.db.clone())
+    }
+
     /// 専用トランザクションで 1 件記録する（読取/deny 経路用）。**チェーンしない**:
     /// 読取（URL 発行・メタ取得）や deny まで per-org の単一ロックに乗せると、読取主体の org の
     /// スループットが監査 insert の直列実行で頭打ちになるため、これらは prev_hash 連結も

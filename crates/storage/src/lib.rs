@@ -24,6 +24,7 @@
 )]
 
 pub mod audit;
+pub mod audit_view;
 pub mod content_address;
 pub mod directory;
 pub mod error;

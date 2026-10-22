@@ -16,6 +16,8 @@ struct SeedUser {
     display_name: &'static str,
     /// 組織管理者（`organization#admin`・管理コンソールの検証用・#553）。
     admin: bool,
+    /// 監査閲覧者（`organization#audit_viewer`・監査ログの検証用・#634）。admin とは独立。
+    auditor: bool,
 }
 
 /// dev/E2E の固定ユーザー群。**alice/bob は tenant `a-corp`、charlie は別 tenant `b-corp`**。
@@ -28,6 +30,7 @@ const SEED_USERS: &[SeedUser] = &[
         email: "alice@a-corp.example.com",
         display_name: "Alice",
         admin: true,
+        auditor: true,
     },
     SeedUser {
         id: "00000000-0000-0000-0000-000000000002",
@@ -36,6 +39,7 @@ const SEED_USERS: &[SeedUser] = &[
         email: "bob@a-corp.example.com",
         display_name: "Bob",
         admin: false,
+        auditor: false,
     },
     SeedUser {
         id: "00000000-0000-0000-0000-000000000003",
@@ -44,6 +48,8 @@ const SEED_USERS: &[SeedUser] = &[
         email: "charlie@b-corp.example.com",
         display_name: "Charlie",
         admin: false,
+        // 管理者でない監査担当者（監査ログだけ開ける・#634 の E2E）。
+        auditor: true,
     },
 ];
 
@@ -119,7 +125,12 @@ pub(crate) async fn dev_seed(
                 .context("dev seed tuple の書き込みに失敗")?;
             tracing::info!(user = %u.id, org = %u.org, tenant = %seed_tenant, "dev seed: org member tuple を投入");
         }
-        seed_org_admin(fga, &subject, &object, u.admin).await?;
+        if u.admin {
+            seed_org_relation(fga, &subject, &object, Relation::Admin).await?;
+        }
+        if u.auditor {
+            seed_org_relation(fga, &subject, &object, Relation::AuditViewer).await?;
+        }
         // ディレクトリ（共有相手検索）へ投入。ON CONFLICT 更新で冪等。
         directory
             .upsert_user(u.id, seed_tenant, u.org, u.email, u.display_name)
@@ -176,27 +187,21 @@ pub(crate) async fn dev_seed(
     Ok(())
 }
 
-/// 組織管理者のタプルを冪等に投入する（#553・管理コンソールの検証用）。
-async fn seed_org_admin(
+/// 組織の relation（管理者 #553・監査閲覧者 #634）のタプルを冪等に投入する。
+async fn seed_org_relation(
     fga: &OpenFgaClient,
     subject: &authz::Subject,
     object: &authz::FgaObject,
-    admin: bool,
+    relation: Relation,
 ) -> anyhow::Result<()> {
-    if admin
-        && !fga
-            .check(
-                subject,
-                Relation::Admin,
-                object,
-                Consistency::HigherConsistency,
-            )
-            .await?
+    if !fga
+        .check(subject, relation, object, Consistency::HigherConsistency)
+        .await?
     {
-        fga.write_tuple(subject, Relation::Admin, object)
+        fga.write_tuple(subject, relation, object)
             .await
-            .context("dev seed: org admin tuple の書き込みに失敗")?;
-        tracing::info!(subject = %subject, "dev seed: org admin tuple を投入");
+            .with_context(|| format!("dev seed: org {relation} tuple の書き込みに失敗"))?;
+        tracing::info!(subject = %subject, %relation, "dev seed: org tuple を投入");
     }
     Ok(())
 }

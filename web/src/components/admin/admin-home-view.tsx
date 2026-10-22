@@ -5,7 +5,9 @@ import Link from "next/link";
 import { ArrowRight, BarChart3, ScrollText, Sparkles, Users } from "lucide-react";
 
 import { fetchAdminModels, fetchUsage, type AdminModelsResponse, type UsageResponse } from "@/lib/admin-ai-api";
+import { useMe } from "@/hooks/use-me";
 import { Skeleton } from "@/components/ui/skeleton";
+import { canOpen } from "./admin-nav";
 import { AdminPage, Panel, StatTile } from "./admin-page";
 import { periodRange } from "./ai-usage-view";
 import { EFFORT_LABEL, formatCompact, formatInt, formatJpy, formatUsd } from "./format";
@@ -16,13 +18,16 @@ const SHORTCUTS = [
   { href: "/admin/ai/insights", icon: BarChart3, title: "活用分析", body: "浸透・用途・効果（部署別）" },
   { href: "/admin/ai/models", icon: Sparkles, title: "モデル", body: "公開するモデル・既定・Auto・円換算" },
   { href: "/admin/members", icon: Users, title: "メンバー", body: "招待・無効化・アクセスの理由", mock: true },
-  { href: "/admin/audit", icon: ScrollText, title: "監査ログ", body: "操作・権限判定・引用の記録", mock: true },
+  // 監査ログは audit_viewer（admin とは独立）を持つ管理者にだけ出す（#634）。
+  { href: "/admin/audit", icon: ScrollText, title: "監査ログ", body: "操作・権限判定・引用の記録", audit: true },
 ];
 
 const METRIC_TITLE = { cost: "日別コスト", tokens: "日別トークン", calls: "日別の呼び出し" } as const;
 
 /// 管理コンソールのホーム（今月の AI 利用量とモデル設定の要約）。
 export function AdminHomeView() {
+  const { data: me } = useMe();
+  const shortcuts = SHORTCUTS.filter((s) => !("audit" in s) || canOpen("audit", me));
   const [usage, setUsage] = React.useState<UsageResponse | null>(null);
   const [models, setModels] = React.useState<AdminModelsResponse | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -104,7 +109,7 @@ export function AdminHomeView() {
         </>
       )}
       <section aria-label="ショートカット" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {SHORTCUTS.map((s) => {
+        {shortcuts.map((s) => {
           const Icon = s.icon;
           return (
             <Link
