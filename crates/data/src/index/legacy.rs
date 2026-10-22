@@ -1,4 +1,4 @@
-//! 宣言フィールドへの式インデックス管理（Task 9.2）。
+//! 旧方式: 宣言フィールドへの式インデックス管理（Task 9.2・Task 15.2 の二重書込期間）。
 //!
 //! スキーマ登録/改訂時（管理操作）に、`indexed` / `unique` 宣言されたフィールドへ
 //! JSONB 式インデックスを冪等に適用する。**ランタイム DDL は打たない**（レコード
@@ -6,6 +6,16 @@
 //!
 //! Task 15.1 以降、式は保存形の JSONB キー `"f{id}"`（不変の内部 ID 由来）を参照する。
 //! 本モジュールは Task 15.3（クエリコンパイラ v2・pivot 索引テーブルへの読取切替）で撤去する。
+//!
+//! # Task 15.2 での変更（二重書込期間の旧方式）
+//!
+//! - `data_record` はハッシュパーティション表になった。式インデックスを親へ張ると**全パーティションに
+//!   1 本ずつ**できて本数が分割数倍に膨らむので、テーブルの `table_int` が載る **leaf パーティション
+//!   にだけ**張る（読取は `table_int` 条件で枝刈りされるので leaf の索引が使える）。
+//! - text 型（`MAX_TEXT_LEN` = 10,000B まで書ける）は全文を btree キーにすると
+//!   `index row size exceeds maximum` で**書込自体が落ちる**。等値用は hash 索引（キー長の制約が無い）、
+//!   unique 用は `md5(値)` の一意 btree にする。並べ替えの索引は持たない（読取は正しいまま遅くなるだけ。
+//!   新索引テーブルはプレフィクス格納で並べ替えにも使える・Task 15.3 で切替）。
 //!
 //! # SQL 埋め込みの安全性
 //!
@@ -36,6 +46,10 @@ pub(crate) enum IndexKind {
     /// unique 宣言フィールドの一意 btree（型別式は Btree* と同じ）。
     UniqueText,
     UniqueNumeric,
+    /// text 型の等値用 hash 索引（btree キー長の上限を受けない・Task 15.2）。
+    HashText,
+    /// text 型の unique（`md5(値)` の一意 btree・長い値でも書込が落ちない・Task 15.2）。
+    UniqueTextDigest,
 }
 
 impl IndexKind {
@@ -46,6 +60,8 @@ impl IndexKind {
             IndexKind::Gin => "gin",
             IndexKind::UniqueText => "unique_text",
             IndexKind::UniqueNumeric => "unique_numeric",
+            IndexKind::HashText => "hash_text",
+            IndexKind::UniqueTextDigest => "unique_text_digest",
         }
     }
 }
@@ -57,6 +73,7 @@ fn plan_for_field(f: &FieldDef) -> Vec<IndexKind> {
         // unique インデックスは検索にも使えるため、indexed 併用時も 1 本で足りる。
         plan.push(match f.field_type {
             FieldType::Number => IndexKind::UniqueNumeric,
+            FieldType::Text => IndexKind::UniqueTextDigest,
             _ => IndexKind::UniqueText,
         });
         return plan;
@@ -65,6 +82,7 @@ fn plan_for_field(f: &FieldDef) -> Vec<IndexKind> {
         plan.push(match f.field_type {
             FieldType::Number => IndexKind::BtreeNumeric,
             FieldType::MultiSelect => IndexKind::Gin,
+            FieldType::Text => IndexKind::HashText,
             _ => IndexKind::BtreeText,
         });
     }
@@ -120,7 +138,10 @@ fn index_expression(field: &str, kind: IndexKind) -> Result<String, DataError> {
         )));
     }
     Ok(match kind {
-        IndexKind::BtreeText | IndexKind::UniqueText => format!("((data ->> '{field}'))"),
+        IndexKind::BtreeText | IndexKind::UniqueText | IndexKind::HashText => {
+            format!("((data ->> '{field}'))")
+        }
+        IndexKind::UniqueTextDigest => format!("(md5(data ->> '{field}'))"),
         IndexKind::BtreeNumeric | IndexKind::UniqueNumeric => {
             format!("(((data ->> '{field}'))::numeric)")
         }
@@ -128,9 +149,23 @@ fn index_expression(field: &str, kind: IndexKind) -> Result<String, DataError> {
     })
 }
 
-/// 1 本分の CREATE INDEX DDL。
+fn is_unique(kind: IndexKind) -> bool {
+    matches!(
+        kind,
+        IndexKind::UniqueText | IndexKind::UniqueNumeric | IndexKind::UniqueTextDigest
+    )
+}
+
+/// leaf パーティション名（`data_record_p<n>`）か。DDL へ埋め込む直前に再検証する。
+fn is_partition_name(s: &str) -> bool {
+    s.strip_prefix("data_record_p")
+        .is_some_and(|n| !n.is_empty() && n.len() <= 4 && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// 1 本分の CREATE INDEX DDL（`relation` は `table_int` が載る leaf パーティション）。
 fn create_ddl(
     name: &str,
+    relation: &str,
     tenant_id: &str,
     table_id: Uuid,
     field: &str,
@@ -138,17 +173,38 @@ fn create_ddl(
 ) -> Result<String, DataError> {
     let expr = index_expression(field, kind)?;
     let tenant = safe_tenant(tenant_id)?;
-    let unique = matches!(kind, IndexKind::UniqueText | IndexKind::UniqueNumeric);
-    let method = if kind == IndexKind::Gin {
-        " USING gin"
-    } else {
-        ""
+    if !is_partition_name(relation) {
+        return Err(DataError::Internal(format!(
+            "式インデックスの対象 '{relation}' が data_record の leaf パーティションではありません"
+        )));
+    }
+    let method = match kind {
+        IndexKind::Gin => " USING gin",
+        IndexKind::HashText => " USING hash",
+        _ => "",
     };
     Ok(format!(
-        "CREATE {unique_kw}INDEX IF NOT EXISTS {name} ON data_record{method} ({expr}) \
+        "CREATE {unique_kw}INDEX IF NOT EXISTS {name} ON {relation}{method} ({expr}) \
          WHERE tenant_id = '{tenant}' AND table_id = '{table_id}'",
-        unique_kw = if unique { "UNIQUE " } else { "" },
+        unique_kw = if is_unique(kind) { "UNIQUE " } else { "" },
     ))
+}
+
+/// `table_int` が載る `data_record` の leaf パーティション名を引く（ハッシュの剰余で決まる）。
+async fn leaf_partition(conn: &mut PgConnection, table_int: i64) -> Result<String, DataError> {
+    let name: Option<String> = sqlx::query_scalar(
+        "SELECT c.relname::text FROM pg_inherits i \
+         JOIN pg_class c ON c.oid = i.inhrelid \
+         CROSS JOIN LATERAL regexp_match(pg_get_expr(c.relpartbound, c.oid), \
+                                         'modulus (\\d+), remainder (\\d+)') AS m \
+         WHERE i.inhparent = 'data_record'::regclass \
+           AND satisfies_hash_partition('data_record'::regclass, m[1]::int, m[2]::int, $1::bigint)",
+    )
+    .bind(table_int)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(map_db)?;
+    name.ok_or_else(|| DataError::Internal("data_record のパーティションが見つかりません".into()))
 }
 
 /// 台帳 1 行。
@@ -167,6 +223,7 @@ pub(crate) async fn ensure_indexes(
     conn: &mut PgConnection,
     tenant_id: &str,
     table_id: Uuid,
+    table_int: i64,
     schema: &TableSchema,
 ) -> Result<(), DataError> {
     // 望ましい状態: (台帳の field = key, JSONB キー, kind, index_name)。
@@ -214,6 +271,7 @@ pub(crate) async fn ensure_indexes(
     }
 
     // 不足分を作成し台帳へ記録する。
+    let mut relation: Option<String> = None;
     for (field, json_key, kind, name) in &desired {
         let already = existing
             .iter()
@@ -221,10 +279,18 @@ pub(crate) async fn ensure_indexes(
         if already {
             continue;
         }
-        let ddl = create_ddl(name, tenant_id, table_id, json_key, *kind)?;
+        let rel = match &relation {
+            Some(r) => r.clone(),
+            None => {
+                let r = leaf_partition(conn, table_int).await?;
+                relation = Some(r.clone());
+                r
+            }
+        };
+        let ddl = create_ddl(name, &rel, tenant_id, table_id, json_key, *kind)?;
         sqlx::query(&ddl).execute(&mut *conn).await.map_err(|e| {
             // unique インデックス作成は既存データの重複で失敗し得る → 409 として返す。
-            if matches!(kind, IndexKind::UniqueText | IndexKind::UniqueNumeric) {
+            if is_unique(*kind) {
                 DataError::Conflict(format!(
                     "フィールド '{field}' に重複値があるため unique を適用できません: {e}"
                 ))
@@ -298,7 +364,7 @@ mod tests {
     #[test]
     fn plan_maps_types_to_kinds() {
         assert_eq!(
-            plan_for_field(&field("t", FieldType::Text, true, false)),
+            plan_for_field(&field("d", FieldType::Date, true, false)),
             vec![IndexKind::BtreeText]
         );
         assert_eq!(
@@ -311,8 +377,17 @@ mod tests {
         );
         // unique は 1 本に集約（indexed 併用でも unique インデックスが検索を兼ねる）。
         assert_eq!(
-            plan_for_field(&field("u", FieldType::Text, true, true)),
+            plan_for_field(&field("u", FieldType::Select, true, true)),
             vec![IndexKind::UniqueText]
+        );
+        // text 型は長い値（MAX_TEXT_LEN）で btree キー上限を超えるため hash / md5 にする。
+        assert_eq!(
+            plan_for_field(&field("t", FieldType::Text, true, false)),
+            vec![IndexKind::HashText]
+        );
+        assert_eq!(
+            plan_for_field(&field("u", FieldType::Text, true, true)),
+            vec![IndexKind::UniqueTextDigest]
         );
         assert!(plan_for_field(&field("x", FieldType::Text, false, false)).is_empty());
     }
@@ -337,20 +412,31 @@ mod tests {
     #[test]
     fn ddl_embeds_only_validated_parts() {
         let tid = Uuid::nil();
-        let ddl = create_ddl("dr_x_y", "acme", tid, "f17", IndexKind::UniqueNumeric).unwrap();
-        assert!(ddl.contains("CREATE UNIQUE INDEX IF NOT EXISTS dr_x_y"));
+        let p = "data_record_p7";
+        let ddl = create_ddl("dr_x_y", p, "acme", tid, "f17", IndexKind::UniqueNumeric).unwrap();
+        assert!(ddl.contains("CREATE UNIQUE INDEX IF NOT EXISTS dr_x_y ON data_record_p7"));
         assert!(ddl.contains("(((data ->> 'f17'))::numeric)"));
         assert!(ddl.contains("tenant_id = 'acme'"));
         // 内部 ID 形式以外（参照名・注入文字列）と不正 tenant は拒否（防御の二重化）。
-        assert!(create_ddl("i", "acme", tid, "price", IndexKind::BtreeText).is_err());
-        assert!(create_ddl("i", "acme", tid, "p'; drop", IndexKind::BtreeText).is_err());
-        assert!(create_ddl("i", "ac'me", tid, "f17", IndexKind::BtreeText).is_err());
+        assert!(create_ddl("i", p, "acme", tid, "price", IndexKind::BtreeText).is_err());
+        assert!(create_ddl("i", p, "acme", tid, "p'; drop", IndexKind::BtreeText).is_err());
+        assert!(create_ddl("i", p, "ac'me", tid, "f17", IndexKind::BtreeText).is_err());
+        // 対象は leaf パーティション名だけ（親や任意の表へは張らない）。
+        for bad in ["data_record", "data_table", "data_record_p", "data_record_p1; x"] {
+            assert!(create_ddl("i", bad, "acme", tid, "f17", IndexKind::BtreeText).is_err());
+        }
     }
 
     #[test]
-    fn gin_ddl_uses_gin_method() {
-        let ddl = create_ddl("i", "acme", Uuid::nil(), "f18", IndexKind::Gin).unwrap();
+    fn gin_and_hash_ddl_use_their_methods() {
+        let p = "data_record_p0";
+        let ddl = create_ddl("i", p, "acme", Uuid::nil(), "f18", IndexKind::Gin).unwrap();
         assert!(ddl.contains("USING gin"));
         assert!(ddl.contains("((data -> 'f18'))"));
+        let h = create_ddl("i", p, "acme", Uuid::nil(), "f16", IndexKind::HashText).unwrap();
+        assert!(h.contains("USING hash ((data ->> 'f16'))") && !h.contains("UNIQUE"));
+        let u =
+            create_ddl("i", p, "acme", Uuid::nil(), "f16", IndexKind::UniqueTextDigest).unwrap();
+        assert!(u.contains("CREATE UNIQUE INDEX") && u.contains("(md5(data ->> 'f16'))"));
     }
 }

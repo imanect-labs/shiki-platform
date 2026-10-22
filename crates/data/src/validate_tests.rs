@@ -12,6 +12,9 @@ use authz::{AuthContext, Principal, PrincipalKind};
 use serde_json::json;
 
 /// 全参照を「存在する」とみなすテスト用リゾルバ。
+/// 多値要素数の上限（既定値・PIT-72）。
+const MAX_MULTI: usize = crate::index::DEFAULT_MAX_MULTI_VALUES;
+
 struct AllowAll;
 #[async_trait]
 impl RefResolver for AllowAll {
@@ -59,7 +62,7 @@ fn schema(fields: Vec<FieldDef>) -> TableSchema {
 #[tokio::test]
 async fn rejects_undeclared_and_derived_fields() {
     let s = schema(vec![field("title", FieldType::Text)]);
-    let err = validate_record_data(&ctx(), &s, &json!({"nope": 1}), &AllowAll)
+    let err = validate_record_data(&ctx(), &s, &json!({"nope": 1}), &AllowAll, MAX_MULTI)
         .await
         .unwrap_err();
     assert!(matches!(err, DataError::Invalid(_)));
@@ -72,7 +75,7 @@ async fn rejects_undeclared_and_derived_fields() {
     let mut rf = field("r", FieldType::RecordRef);
     rf.ref_table = Some(Uuid::nil());
     let s = schema(vec![rf, lk]);
-    let err = validate_record_data(&ctx(), &s, &json!({"d": "v"}), &AllowAll)
+    let err = validate_record_data(&ctx(), &s, &json!({"d": "v"}), &AllowAll, MAX_MULTI)
         .await
         .unwrap_err();
     assert!(matches!(err, DataError::Invalid(_)));
@@ -84,17 +87,17 @@ async fn required_and_types_enforced() {
     t.required = true;
     let s = schema(vec![t, field("count", FieldType::Number)]);
     // 必須欠落。
-    assert!(validate_record_data(&ctx(), &s, &json!({}), &AllowAll)
+    assert!(validate_record_data(&ctx(), &s, &json!({}), &AllowAll, MAX_MULTI)
         .await
         .is_err());
     // 型不一致。
     assert!(
-        validate_record_data(&ctx(), &s, &json!({"title": "a", "count": "x"}), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({"title": "a", "count": "x"}), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
     // 正常＋null は「値なし」。
-    let out = validate_record_data(&ctx(), &s, &json!({"title": "a", "count": null}), &AllowAll)
+    let out = validate_record_data(&ctx(), &s, &json!({"title": "a", "count": null}), &AllowAll, MAX_MULTI)
         .await
         .unwrap();
     assert_eq!(out.get("title"), Some(&json!("a")));
@@ -109,13 +112,14 @@ async fn datetime_normalized_to_utc_fixed_width() {
         &s,
         &json!({"at": "2026-07-10T09:00:00+09:00"}),
         &AllowAll,
+        MAX_MULTI,
     )
     .await
     .unwrap();
     assert_eq!(out.get("at"), Some(&json!("2026-07-10T00:00:00.000000Z")));
     // 不正形式は拒否。
     assert!(
-        validate_record_data(&ctx(), &s, &json!({"at": "2026/07/10"}), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({"at": "2026/07/10"}), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
@@ -129,22 +133,22 @@ async fn select_and_multi_select_closed_options() {
     ms.options = vec!["a".into(), "b".into()];
     let s = schema(vec![sel, ms]);
     assert!(
-        validate_record_data(&ctx(), &s, &json!({"st": "open", "tags": ["a"]}), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({"st": "open", "tags": ["a"]}), &AllowAll, MAX_MULTI)
             .await
             .is_ok()
     );
     assert!(
-        validate_record_data(&ctx(), &s, &json!({"st": "unknown"}), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({"st": "unknown"}), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
     assert!(
-        validate_record_data(&ctx(), &s, &json!({"tags": ["a", "a"]}), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({"tags": ["a", "a"]}), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
     assert!(
-        validate_record_data(&ctx(), &s, &json!({"tags": ["z"]}), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({"tags": ["z"]}), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
@@ -154,12 +158,12 @@ async fn select_and_multi_select_closed_options() {
 async fn user_ref_checked_via_resolver() {
     let s = schema(vec![field("assignee", FieldType::UserRef)]);
     assert!(
-        validate_record_data(&ctx(), &s, &json!({"assignee": "bob"}), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({"assignee": "bob"}), &AllowAll, MAX_MULTI)
             .await
             .is_ok()
     );
     assert!(
-        validate_record_data(&ctx(), &s, &json!({"assignee": "ghost"}), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({"assignee": "ghost"}), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
@@ -171,7 +175,7 @@ async fn record_ref_requires_uuid_format() {
     rf.ref_table = Some(Uuid::nil());
     let s = schema(vec![rf]);
     assert!(
-        validate_record_data(&ctx(), &s, &json!({"parent": "not-a-uuid"}), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({"parent": "not-a-uuid"}), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
@@ -179,7 +183,8 @@ async fn record_ref_requires_uuid_format() {
         &ctx(),
         &s,
         &json!({"parent": Uuid::nil().to_string()}),
-        &AllowAll
+        &AllowAll,
+        MAX_MULTI
     )
     .await
     .is_ok());
@@ -209,18 +214,18 @@ async fn text_length_and_number_type_limits() {
     // text 上限超過。
     let long = "x".repeat(10_001);
     assert!(
-        validate_record_data(&ctx(), &s, &json!({ "t": long }), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({ "t": long }), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
     // number に文字列は不可・数値は可。
     assert!(
-        validate_record_data(&ctx(), &s, &json!({ "n": "5" }), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({ "n": "5" }), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
     assert!(
-        validate_record_data(&ctx(), &s, &json!({ "n": 5 }), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({ "n": 5 }), &AllowAll, MAX_MULTI)
             .await
             .is_ok()
     );
@@ -230,18 +235,18 @@ async fn text_length_and_number_type_limits() {
 async fn date_normalizes_and_rejects_bad_format() {
     let s = schema(vec![field("d", FieldType::Date)]);
     // ゼロ詰めなしを正準形へ正規化。
-    let out = validate_record_data(&ctx(), &s, &json!({ "d": "2026-7-5" }), &AllowAll)
+    let out = validate_record_data(&ctx(), &s, &json!({ "d": "2026-7-5" }), &AllowAll, MAX_MULTI)
         .await
         .unwrap();
     assert_eq!(out.get("d"), Some(&json!("2026-07-05")));
     // 非日付・非文字列は拒否。
     assert!(
-        validate_record_data(&ctx(), &s, &json!({ "d": "07/05/2026" }), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({ "d": "07/05/2026" }), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
     assert!(
-        validate_record_data(&ctx(), &s, &json!({ "d": 20260705 }), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({ "d": 20260705 }), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
@@ -251,12 +256,12 @@ async fn date_normalizes_and_rejects_bad_format() {
 async fn role_ref_and_file_ref_checked_via_resolver() {
     let role = schema(vec![field("dept", FieldType::RoleRef)]);
     assert!(
-        validate_record_data(&ctx(), &role, &json!({ "dept": "sales" }), &AllowAll)
+        validate_record_data(&ctx(), &role, &json!({ "dept": "sales" }), &AllowAll, MAX_MULTI)
             .await
             .is_ok()
     );
     assert!(
-        validate_record_data(&ctx(), &role, &json!({ "dept": "ghost" }), &AllowAll)
+        validate_record_data(&ctx(), &role, &json!({ "dept": "ghost" }), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
@@ -279,14 +284,14 @@ async fn multi_select_shape_and_count_limits() {
     let s = schema(vec![ms]);
     // 配列でない。
     assert!(
-        validate_record_data(&ctx(), &s, &json!({ "tags": "o1" }), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({ "tags": "o1" }), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
     // 選択数上限（50）超過。
     let too_many: Vec<String> = (0..51).map(|i| format!("o{i}")).collect();
     assert!(
-        validate_record_data(&ctx(), &s, &json!({ "tags": too_many }), &AllowAll)
+        validate_record_data(&ctx(), &s, &json!({ "tags": too_many }), &AllowAll, MAX_MULTI)
             .await
             .is_err()
     );
