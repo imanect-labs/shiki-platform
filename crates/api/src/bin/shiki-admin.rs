@@ -2,7 +2,10 @@
 //!
 //! ```text
 //! shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]
+//! shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]
 //! ```
+//!
+//! `audit-viewer`: 監査閲覧者（`organization#audit_viewer`・#634）を付ける・外す（即時実行）。
 //!
 //! - `--legacy`: SAAS.1（#84）以前の**旧無印 FGA 識別子/オブジェクトキー**を tenant 名前空間形式へ
 //!   移す（DB 行は day-1 で tenant_id を持つため不変・blob.object_key のみ書き換え）。
@@ -30,6 +33,8 @@ use sqlx::postgres::PgPoolOptions;
 use storage::{ObjectStore, S3ObjectStore};
 use uuid::Uuid;
 
+#[path = "shiki_admin/audit_viewer.rs"]
+mod audit_viewer;
 #[path = "shiki_admin/keys.rs"]
 mod keys;
 use keys::{pre_migration_object_key, renamespace_object_key};
@@ -42,13 +47,15 @@ use keys::{pre_migration_object_key, renamespace_object_key};
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some("retenant") = args.first().map(String::as_str) {
-        retenant(&args[1..]).await
-    } else {
-        eprintln!(
-            "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]"
-        );
-        bail!("不明なサブコマンド");
+    match args.first().map(String::as_str) {
+        Some("retenant") => retenant(&args[1..]).await,
+        Some("audit-viewer") => audit_viewer::run(&args[1..]).await,
+        _ => {
+            eprintln!(
+                "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]\n       shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]"
+            );
+            bail!("不明なサブコマンド");
+        }
     }
 }
 

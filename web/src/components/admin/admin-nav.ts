@@ -1,5 +1,7 @@
 import { Home, type LucideIcon, ScrollText, Sparkles, Users } from "lucide-react";
 
+import type { MeResponse } from "@/lib/api";
+
 /// 管理コンソールのナビの単一定義（レール・プロダクトメニュー・パンくず）。
 
 export type AdminMenuItem = {
@@ -29,16 +31,30 @@ export type AdminSection = {
   /// 2 列目のプロダクトメニュー（無いセクションは 1 画面だけ）。
   menu?: AdminMenuGroup[];
   mock?: boolean;
+  /// 誰が開けるか。`admin` は組織管理者（`organization#admin`）、`audit` は監査閲覧者
+  /// （`organization#audit_viewer`・#634）。両者は独立で、互いに含意しない。
+  access: AdminAccess;
 };
 
+export type AdminAccess = "admin" | "audit";
+
+/// 管理コンソールの入口に必要な権限（`/me` の値）。
+export type AdminPermissions = Pick<MeResponse, "is_admin" | "can_view_audit">;
+
+export function canOpen(access: AdminAccess, me: AdminPermissions | null | undefined): boolean {
+  if (!me) return false;
+  return access === "audit" ? me.can_view_audit : me.is_admin;
+}
+
 export const ADMIN_SECTIONS: AdminSection[] = [
-  { key: "home", label: "ホーム", icon: Home, href: "/admin", prefix: "/admin" },
+  { key: "home", label: "ホーム", icon: Home, href: "/admin", prefix: "/admin", access: "admin" },
   {
     key: "access",
     label: "アクセス管理",
     icon: Users,
     href: "/admin/members",
     prefix: "/admin/(members|roles)",
+    access: "admin",
     menu: [
       {
         label: "メンバー",
@@ -55,6 +71,7 @@ export const ADMIN_SECTIONS: AdminSection[] = [
     icon: Sparkles,
     href: "/admin/ai/usage",
     prefix: "/admin/ai",
+    access: "admin",
     menu: [
       {
         label: "分析",
@@ -82,9 +99,21 @@ export const ADMIN_SECTIONS: AdminSection[] = [
     icon: ScrollText,
     href: "/admin/audit",
     prefix: "/admin/audit",
-    mock: true,
+    access: "audit",
   },
 ];
+
+/// その人が開けるセクション（レール・モバイルのメニューに出すもの）。
+export function visibleSections(me: AdminPermissions | null | undefined): AdminSection[] {
+  return ADMIN_SECTIONS.filter((s) => canOpen(s.access, me));
+}
+
+/// 管理コンソールの入口（管理者はホーム、監査閲覧者だけの人は監査ログ）。どちらでもなければ null。
+export function adminEntry(me: AdminPermissions | null | undefined): string | null {
+  if (me?.is_admin) return "/admin";
+  if (me?.can_view_audit) return "/admin/audit";
+  return null;
+}
 
 /// パスが属するセクション（最長一致・ホームは完全一致のみ）。
 export function sectionFor(pathname: string): AdminSection {
