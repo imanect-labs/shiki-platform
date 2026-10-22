@@ -114,6 +114,8 @@ function baseContentType(contentType?: string | null): string {
 /// このファイルをどう見せるか。表示できない形式は null。
 export function previewKind(node: { name: string; content_type?: string | null }): PreviewKind | null {
   const ext = extension(node.name);
+  // .ts は TypeScript と MPEG-TS（動画）で重なる。content-type が動画ならそちらを採る。
+  if (ext === "ts" && baseContentType(node.content_type).startsWith("video/")) return "video";
   if (IMAGE_EXTENSIONS.includes(ext)) return "image";
   if (VIDEO_EXTENSIONS.includes(ext)) return "video";
   if (AUDIO_EXTENSIONS.includes(ext)) return "audio";
@@ -137,8 +139,8 @@ export function textLanguage(name: string): string {
 }
 
 /// 中身を取りに行くテキストの上限。これを超えるものは開かずに「大きすぎる」と出す。
-export const TEXT_MAX_BYTES = 5 * 1024 * 1024;
-/// シンタックスハイライトを掛ける上限（大きいと shiki が重い。超えたら色なしで出す）。
+/// 全行を DOM に置く（仮想化しない）ので、数十万行で描画が固まらない大きさに抑える。
+export const TEXT_MAX_BYTES = 2 * 1024 * 1024;
 export const HIGHLIGHT_MAX_BYTES = 256 * 1024;
 
 /// 先頭に NUL 文字があるものはバイナリとみなす（拡張子が .txt でも中身が違うことがある）。

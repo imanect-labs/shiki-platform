@@ -30,6 +30,7 @@ export function AudioPlayer({
   mediaRef,
   onError,
   onLoadedMetadata,
+  onTimeUpdate,
 }: {
   src: string;
   title: string;
@@ -37,6 +38,7 @@ export function AudioPlayer({
   mediaRef: (el: HTMLAudioElement | null) => void;
   onError: () => void;
   onLoadedMetadata: () => void;
+  onTimeUpdate: () => void;
 }) {
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = React.useState(false);
@@ -65,8 +67,11 @@ export function AudioPlayer({
   // キーボード（入力欄にいないとき）。
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(t.tagName))) return;
+      // メニュー・ダイアログを操作中のキーは横取りしない（⋯ メニューを Space で選ぶなど）。
+      if (t?.closest('[role="menu"],[role="dialog"],[role="listbox"]')) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === " ") {
         e.preventDefault();
@@ -96,7 +101,7 @@ export function AudioPlayer({
     <div className="flex w-full max-w-md flex-col gap-6 rounded-3xl border border-border/60 bg-card p-5 shadow-[0_1px_2px_rgb(0_0_0/0.04),0_16px_40px_-12px_rgb(0_0_0/0.16)] sm:p-6">
       {/* ジャケット代わりの面。再生中は波形のバーが動く。 */}
       <div
-        className="relative flex aspect-[16/9] items-end justify-center gap-[5px] overflow-hidden rounded-2xl px-8 pb-8"
+        className="relative flex aspect-[16/9] items-end justify-between gap-[4px] overflow-hidden rounded-2xl px-6 pb-8 sm:px-8"
         style={{
           background: `radial-gradient(120% 120% at 0% 0%, color-mix(in oklab, ${accent} 38%, transparent), transparent 60%), radial-gradient(120% 120% at 100% 100%, color-mix(in oklab, ${accent} 22%, transparent), transparent 55%), var(--muted)`,
         }}
@@ -105,7 +110,7 @@ export function AudioPlayer({
         {Array.from({ length: 24 }, (_, i) => (
           <span
             key={i}
-            className={cn("audio-bar w-[5px] rounded-full", playing && "audio-bar-playing")}
+            className={cn("audio-bar w-[5px] min-w-[3px] shrink rounded-full", playing && "audio-bar-playing")}
             style={{
               background: `color-mix(in oklab, ${accent} 75%, var(--foreground))`,
               height: `${18 + Math.round(42 * Math.abs(Math.sin(i * 1.7) * Math.cos(i * 0.6)))}%`,
@@ -162,10 +167,10 @@ export function AudioPlayer({
           </div>
           <div
             className={cn(
-              "absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-background shadow ring-2 transition-transform",
+              "absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full shadow ring-2 ring-card transition-transform",
               scrub != null ? "scale-125" : "scale-0 group-hover:scale-100 group-focus-visible:scale-100 pointer-coarse:scale-100",
             )}
-            style={{ left: `${shown * 100}%`, ["--tw-ring-color" as string]: accent }}
+            style={{ left: `${shown * 100}%`, background: accent }}
           />
         </div>
         <div className="flex justify-between text-[11px] font-medium tabular-nums text-muted-foreground">
@@ -198,7 +203,8 @@ export function AudioPlayer({
             onClick={toggle}
             aria-label={playing ? "一時停止（Space）" : "再生（Space）"}
             title={playing ? "一時停止（Space）" : "再生（Space）"}
-            className="flex size-14 items-center justify-center rounded-full bg-foreground text-background shadow-md outline-none transition-transform hover:scale-[1.04] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card active:scale-[0.96] [&_svg]:size-6"
+            style={{ background: `color-mix(in oklab, ${accent} 88%, var(--foreground))` }}
+            className="flex size-14 items-center justify-center rounded-full text-white shadow-md outline-none transition-transform hover:scale-[1.04] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card active:scale-[0.96] [&_svg]:size-6"
             data-testid="audio-play"
           >
             {playing ? <Pause aria-hidden className="fill-current" /> : <Play aria-hidden className="ml-0.5 fill-current" />}
@@ -233,7 +239,10 @@ export function AudioPlayer({
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => setPlaying(false)}
-        onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)}
+        onTimeUpdate={(e) => {
+          setTime(e.currentTarget.currentTime);
+          onTimeUpdate();
+        }}
         onDurationChange={(e) => setDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0)}
         onProgress={(e) => {
           const a = e.currentTarget;

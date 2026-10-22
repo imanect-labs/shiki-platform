@@ -26,6 +26,11 @@ import { useFileChrome } from "./file-chrome";
 
 export type PreviewFailure = { title?: string; description?: string };
 
+const tooLarge: PreviewFailure = {
+  title: "大きすぎるためプレビューできません",
+  description: `${TEXT_MAX_BYTES / 1024 / 1024}MB を超えるテキストは、ダウンロードして開いてください。`,
+};
+
 type Loaded = { text: string; encoding: "utf-8" | "shift_jis"; lines: number; html: string; highlighted: boolean };
 
 /// 文字コードを決めて文字列にする。UTF-8 として壊れていれば Shift_JIS とみなす（日本の古い CSV・ログに多い）。
@@ -71,18 +76,17 @@ export function TextPreview({
 }) {
   const lang = textLanguage(node.name);
   const [loaded, setLoaded] = React.useState<Loaded | null>(null);
-  // 散文（言語なし）は折り返し、コードは横にスクロールさせる。
-  const [wrap, setWrap] = React.useState(lang === "text");
+  // 散文（言語なし）とスマホでは折り返し、PC のコードは横にスクロールさせる。
+  const [wrap, setWrap] = React.useState(
+    () => lang === "text" || (typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches),
+  );
   const [copied, setCopied] = React.useState(false);
   const failRef = React.useRef(onUnsupported);
   failRef.current = onUnsupported;
 
   React.useEffect(() => {
     if ((node.size_bytes ?? 0) > TEXT_MAX_BYTES) {
-      failRef.current({
-        title: "大きすぎるためプレビューできません",
-        description: "5MB を超えるテキストは、ダウンロードして開いてください。",
-      });
+      failRef.current(tooLarge);
       return;
     }
     let active = true;
@@ -91,6 +95,12 @@ export function TextPreview({
       const res = await fetch(url);
       if (!res.ok) throw new Error(`取得に失敗しました（${res.status}）`);
       const bytes = new Uint8Array(await res.arrayBuffer());
+      if (!active) return;
+      // メタ情報のサイズが無い・古い場合に備えて、実際に取れた大きさでも確かめる。
+      if (bytes.length > TEXT_MAX_BYTES) {
+        failRef.current(tooLarge);
+        return;
+      }
       if (looksBinary(bytes)) {
         failRef.current({ description: "テキストではないため表示できません。ダウンロードして、お使いのアプリで開いてください。" });
         return;
@@ -195,7 +205,7 @@ function HeaderButton({
       className={cn(
         "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium outline-none transition-colors",
         "text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
-        "pointer-coarse:h-9 pointer-coarse:px-2.5 [&_svg]:size-3.5",
+        "pointer-coarse:h-10 pointer-coarse:px-3 [&_svg]:size-3.5",
         pressed && "bg-accent text-foreground",
       )}
     >

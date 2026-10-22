@@ -32,6 +32,13 @@ export function MediaPreview({
   // 一度でも再生の準備ができたか（できていれば、エラーは URL の期限切れとみなして取り直す）。
   const playable = React.useRef(false);
   const resume = React.useRef<{ time: number; playing: boolean } | null>(null);
+  // URL を取り直したか。取り直した後に再生が先へ進んだら、また取り直してよい。
+  const retried = React.useRef(false);
+  const resumedAt = React.useRef(0);
+  const onTimeUpdate = () => {
+    const el = mediaRef.current;
+    if (retried.current && el && el.currentTime > resumedAt.current + 1) retried.current = false;
+  };
   const failRef = React.useRef(onUnsupported);
   failRef.current = onUnsupported;
 
@@ -60,7 +67,13 @@ export function MediaPreview({
       failRef.current(unsupported);
       return;
     }
-    // 期限切れの URL を取り直して、同じ位置から続ける（1 回だけ。続けて失敗したら諦める）。
+    // 期限切れの URL を取り直して、同じ位置から続ける。取り直した後に再生が進まないまま
+    // また失敗したら（ファイルの途中が壊れているなど）諦める（取り直しを繰り返さない）。
+    if (retried.current) {
+      failRef.current(unsupported);
+      return;
+    }
+    retried.current = true;
     playable.current = false;
     resume.current = { time: el.currentTime, playing: !el.paused };
     load().catch(() => failRef.current(unsupported));
@@ -71,6 +84,7 @@ export function MediaPreview({
     const r = resume.current;
     if (el && r) {
       resume.current = null;
+      resumedAt.current = r.time;
       el.currentTime = r.time;
       if (r.playing) void el.play().catch(() => undefined);
     }
@@ -90,6 +104,7 @@ export function MediaPreview({
           preload="metadata"
           onError={onError}
           onLoadedMetadata={onLoadedMetadata}
+          onTimeUpdate={onTimeUpdate}
           className="max-h-full max-w-full bg-black md:rounded-xl md:shadow-[0_1px_2px_rgb(0_0_0/0.06),0_16px_40px_-12px_rgb(0_0_0/0.3)] md:ring-1 md:ring-black/10"
           data-testid="video-preview-media"
         />
@@ -97,7 +112,7 @@ export function MediaPreview({
     );
   }
   return (
-    <div className="flex h-full min-h-0 items-center justify-center overflow-auto bg-muted/40 p-4 sm:p-6" data-testid="audio-preview">
+    <div className="flex h-full min-h-0 items-start justify-center overflow-auto bg-muted/40 p-4 pt-6 sm:items-center sm:p-6" data-testid="audio-preview">
       <AudioPlayer
         src={src}
         title={node.name}
@@ -107,6 +122,7 @@ export function MediaPreview({
         }}
         onError={onError}
         onLoadedMetadata={onLoadedMetadata}
+        onTimeUpdate={onTimeUpdate}
       />
     </div>
   );

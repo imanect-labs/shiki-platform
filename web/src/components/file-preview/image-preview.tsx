@@ -75,6 +75,12 @@ export function ImagePreview({
   const anchorRef = React.useRef<{ px: number; py: number; focal: Focal } | null>(null);
   const zoomTo = React.useCallback(
     (next: number | null, focal?: Focal) => {
+      const target = next == null ? fit : Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, next));
+      // 倍率が変わらないなら何もしない（目印だけ残すと、後で窓の大きさが変わったときに飛ぶ）。
+      if (Math.abs(target - scale) < 1e-6) {
+        setZoom(next == null ? null : target);
+        return;
+      }
       const root = rootRef.current;
       const content = contentRef.current;
       if (root && content) {
@@ -90,7 +96,7 @@ export function ImagePreview({
       }
       setZoom(next == null ? null : Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, next)));
     },
-    [scale],
+    [scale, fit],
   );
   React.useLayoutEffect(() => {
     const a = anchorRef.current;
@@ -188,14 +194,18 @@ export function ImagePreview({
               src={src}
               alt={node.name}
               draggable={false}
-              onLoad={(e) => setNatural({ w: e.currentTarget.naturalWidth || 1, h: e.currentTarget.naturalHeight || 1 })}
+              onLoad={(e) => {
+                // 寸法を持たない SVG（viewBox だけ）は 0 になる。仮の大きさで出し、縦横比は object-contain で保つ。
+                const { naturalWidth: nw, naturalHeight: nh } = e.currentTarget;
+                setNatural(nw > 0 && nh > 0 ? { w: nw, h: nh } : { w: 1024, h: 768 });
+              }}
               onError={() => failRef.current({ description: "この画像の形式はブラウザで表示できません。ダウンロードして、お使いのアプリで開いてください。" })}
               onDoubleClick={(e) => {
                 const r = rootRef.current?.getBoundingClientRect();
                 toggleFit(r ? { x: e.clientX - r.left, y: e.clientY - r.top } : undefined);
               }}
               className={cn(
-                "max-w-none select-none rounded-md shadow-[0_1px_2px_rgb(0_0_0/0.06),0_12px_32px_-8px_rgb(0_0_0/0.18)] ring-1 ring-black/[0.06] dark:ring-white/[0.06]",
+                "max-w-none select-none object-contain rounded-md shadow-[0_1px_2px_rgb(0_0_0/0.06),0_12px_32px_-8px_rgb(0_0_0/0.18)] ring-1 ring-black/[0.06] dark:ring-white/[0.06]",
                 "bg-[repeating-conic-gradient(var(--muted)_0_25%,transparent_0_50%)] bg-[length:16px_16px]",
                 "transition-opacity duration-[var(--duration-normal)]",
                 natural ? "opacity-100" : "opacity-0",
