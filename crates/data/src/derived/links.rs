@@ -20,20 +20,29 @@ use crate::model::{DataRecord, DataTable, FieldDef, FieldId, FieldType, TableKey
 use crate::store::DataStore;
 use crate::{map_db, DataError};
 
-/// リンクの走査（行が所属する側の `table_int` で引く・`$4` = 相手側の `table_int`）。
+/// 1 レコードあたりに読む相手の上限（対称列は参照元の数だけ伸びるので、読取の量を有界にする・PIT-72）。
+/// 全件が要るときはリンク元の列で絞り込む（`link eq <id>`）。
+pub const MAX_LINK_VALUES_PER_RECORD: i64 = 1_000;
+
+/// リンクの走査（行が所属する側の `table_int` で引く・`$4` = 相手側の `table_int`・`$6` = 1 レコードあたりの上限）。
 ///
 /// 順方向（参照元 → 参照先）も逆方向（対称列: 参照先 → 参照元）も同じ形で、`data_link` と相手側の
 /// `data_record` がそれぞれ計画時に 1 パーティションへ枝刈りされる（EXPLAIN の回帰テストで固定）。
 #[doc(hidden)]
-pub const LINK_TRAVERSAL_SQL: &str = "SELECT l.src_record, \
+pub const LINK_TRAVERSAL_SQL: &str = "SELECT t.src_record, \
        (SELECT d.id FROM data_record d \
-         WHERE d.tenant_int = $1 AND d.table_int = $4 AND d.record_int = l.dst_record) AS dst_id \
-     FROM data_link l \
-     WHERE l.tenant_int = $1 AND l.table_int = $2 AND l.field_id = $3 \
-       AND l.src_record = ANY($5::int8[]) \
-     ORDER BY l.src_record, l.ord";
+         WHERE d.tenant_int = $1 AND d.table_int = $4 AND d.record_int = t.dst_record) AS dst_id \
+     FROM (SELECT l.src_record, l.ord, l.dst_record, \
+                  row_number() OVER (PARTITION BY l.src_record ORDER BY l.ord) AS rn \
+           FROM data_link l \
+           WHERE l.tenant_int = $1 AND l.table_int = $2 AND l.field_id = $3 \
+             AND l.src_record = ANY($5::int8[])) t \
+     WHERE t.rn <= $6 \
+     ORDER BY t.src_record, t.ord";
 
 /// リンクを辿る（`src` の各レコード → 相手側の外部 ID の並び）。相手が削除済みの辺は落とす。
+///
+/// 1 レコードあたり上限 + 1 件まで返す（上限を超えたかを呼び出し側が判定できるように）。
 pub(crate) async fn traverse(
     conn: &mut PgConnection,
     keys: TableKeys,
@@ -50,6 +59,7 @@ pub(crate) async fn traverse(
         .bind(field_id_i16(field)?)
         .bind(dst_table_int)
         .bind(src)
+        .bind(MAX_LINK_VALUES_PER_RECORD + 1)
         .fetch_all(&mut *conn)
         .await
         .map_err(map_db)?;
@@ -57,6 +67,13 @@ pub(crate) async fn traverse(
         .into_iter()
         .filter_map(|(s, d)| d.map(|d| (s, d)))
         .collect())
+}
+
+/// 対称列の値（行ごとの見える参照元）と、上限を超えた行。
+#[derive(Debug, Default)]
+pub(crate) struct ReverseValues {
+    pub values: HashMap<Uuid, Vec<Uuid>>,
+    pub truncated: std::collections::HashSet<Uuid>,
 }
 
 impl DataStore {
@@ -68,13 +85,13 @@ impl DataStore {
         f: &FieldDef,
         rows: &[DataRecord],
         depth: usize,
-    ) -> Result<HashMap<Uuid, Vec<Uuid>>, DataError> {
+    ) -> Result<ReverseValues, DataError> {
         let Some(src_table_id) = f.ref_table else {
-            return Ok(HashMap::new());
+            return Ok(ReverseValues::default());
         };
         // 参照元テーブル（対称列から見た相手）。消えていれば辺は無い。
         let Some(src_keys) = self.table_keys_of(&ctx.tenant_id, src_table_id).await? else {
-            return Ok(HashMap::new());
+            return Ok(ReverseValues::default());
         };
         let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
         let mut conn = self
@@ -98,13 +115,22 @@ impl DataStore {
         let visible = self
             .visible_ref_rows(ctx, src_table_id, &dsts, &BTreeSet::new(), depth + 1)
             .await?;
-        let mut out: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+        let mut out = ReverseValues::default();
+        let mut seen: HashMap<i64, i64> = HashMap::new();
         for (s, d) in edges {
-            if !visible.rows.contains_key(&d) {
+            let n = seen.entry(s).or_default();
+            *n += 1;
+            let Some(src_id) = by_int.get(&s) else {
+                continue;
+            };
+            if *n > MAX_LINK_VALUES_PER_RECORD {
+                // 上限を超えた: 表示は先頭の上限件まで、集計はこの行を「不明」にする（部分集合で
+                // 計算した誤った合計を返さない）。
+                out.truncated.insert(*src_id);
                 continue;
             }
-            if let Some(src_id) = by_int.get(&s) {
-                out.entry(*src_id).or_default().push(d);
+            if visible.rows.contains_key(&d) {
+                out.values.entry(*src_id).or_default().push(d);
             }
         }
         Ok(out)

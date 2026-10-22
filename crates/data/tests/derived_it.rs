@@ -218,6 +218,7 @@ async fn many_to_many_link_reads_both_directions_with_partition_pruning() {
                 DebugParam::I16(i16::try_from(fid).unwrap()),
                 DebugParam::I64(dst_tb),
                 DebugParam::I64Array(vec![src]),
+                DebugParam::I64(data::MAX_LINK_VALUES_PER_RECORD),
             ],
         };
         let plan = explain_small(&pool, &st).await;
@@ -886,4 +887,54 @@ async fn recompute_case(symmetric: Option<&str>) {
         ),
         vec![o1, o2]
     );
+}
+
+/// 対称列は参照元の数だけ伸びるので、1 レコードあたり上限件まで読む（PIT-72）。上限を超えた行の
+/// 対称列越しの集計は、部分集合で計算した誤った値ではなく null（不明）にする。
+#[tokio::test]
+async fn reverse_link_reads_are_bounded_and_rollups_do_not_undercount() {
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool);
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let hub = create_table(&store, &c, "hub", schema(vec![field("n", FieldType::Text)])).await;
+    let spokes = create_table(
+        &store,
+        &c,
+        "spokes",
+        schema(vec![link(
+            "hub",
+            hub.id,
+            LinkCardinality::ManyToOne,
+            Some("spokes"),
+        )]),
+    )
+    .await;
+    let mut hs = store.get_table(&c, hub.id, None).await.unwrap().schema;
+    hs.fields
+        .push(rollup("spoke_count", "spokes", None, RollupOp::Count));
+    store
+        .update_table_schema(&c, hub.id, hs, None, None)
+        .await
+        .unwrap();
+    // 参照元（spokes）の K を 1 にして件数を出せるようにする。
+    let mut ss = spokes.schema.clone();
+    ss.aggregate_min_rows = Some(1);
+    store
+        .update_table_schema(&c, spokes.id, ss, None, None)
+        .await
+        .unwrap();
+    let h = rec(&store, &c, hub.id, json!({"n": "h"})).await;
+    let cap = usize::try_from(data::MAX_LINK_VALUES_PER_RECORD).unwrap();
+    for _ in 0..cap {
+        rec(&store, &c, spokes.id, json!({"hub": ids(&[h])})).await;
+    }
+    let d = get(&store, &c, hub.id, h).await;
+    assert_eq!(d["spokes"].as_array().unwrap().len(), cap);
+    assert_eq!(d["spoke_count"], json!(cap));
+    // 上限を 1 件超えると、表示は上限件まで・件数は null（数え落とした値を返さない）。
+    rec(&store, &c, spokes.id, json!({"hub": ids(&[h])})).await;
+    let d = get(&store, &c, hub.id, h).await;
+    assert_eq!(d["spokes"].as_array().unwrap().len(), cap);
+    assert_eq!(d["spoke_count"], Value::Null);
 }

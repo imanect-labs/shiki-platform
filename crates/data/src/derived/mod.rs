@@ -147,17 +147,24 @@ impl DataStore {
                 .collect();
             // ① 対称列（読取専用の逆リンク）: 見える参照元だけを並び順のまま入れる。
             for f in table.schema.fields.iter().filter(|f| f.is_reverse_link()) {
-                let values = if depth >= MAX_RESOLVE_DEPTH || masked.contains(&f.key) {
-                    HashMap::new()
+                let rv = if depth >= MAX_RESOLVE_DEPTH || masked.contains(&f.key) {
+                    links::ReverseValues::default()
                 } else {
                     self.reverse_link_values(ctx, table, f, rows, depth).await?
                 };
                 for (i, r) in rows.iter_mut().enumerate() {
-                    let ids: Vec<Value> = values
+                    let ids: Vec<Value> = rv
+                        .values
                         .get(&r.id)
                         .map(|v| v.iter().map(|u| Value::String(u.to_string())).collect())
                         .unwrap_or_default();
-                    work[i].insert(f.key.clone(), Value::Array(ids.clone()));
+                    // 上限を超えた行は、この列を辿る集計・lookup の材料にしない（部分集合で数えない）。
+                    let material = if rv.truncated.contains(&r.id) {
+                        Value::Null
+                    } else {
+                        Value::Array(ids.clone())
+                    };
+                    work[i].insert(f.key.clone(), material);
                     if let Some(obj) = r.data.as_object_mut() {
                         obj.insert(f.key.clone(), Value::Array(ids));
                     }
