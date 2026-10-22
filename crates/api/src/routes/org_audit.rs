@@ -58,8 +58,11 @@ const MAX_RANGE_DAYS: i64 = 366;
 const DEFAULT_PAGE: i64 = 100;
 /// 書き出しの上限件数（これを超える分は書き出さない・期間を分けて書き出してもらう）。
 pub const EXPORT_MAX: usize = 100_000;
-/// 書き出しで 1 回に DB から読む件数。
-const EXPORT_BATCH: i64 = 1_000;
+/// 書き出しで 1 回に DB から読む件数。検索の 1 ページの上限と同じにする（大きくすると検索側で
+/// 切り詰められ、「バッチより少ない＝最後」の判定で途中終了してしまう）。
+const EXPORT_BATCH: i64 = storage::audit_view::MAX_PAGE;
+// 検索側の上限を超えるバッチにしない（コンパイル時に確かめる）。
+const _: () = assert!(EXPORT_BATCH <= storage::audit_view::MAX_PAGE);
 /// 文字列の条件の長さの上限。
 const MAX_FIELD_LEN: usize = 256;
 

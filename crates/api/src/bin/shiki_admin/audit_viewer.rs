@@ -109,19 +109,20 @@ pub(crate) async fn run(args: &[String]) -> anyhow::Result<()> {
     );
     let subject = ctx.ns().user(&a.user);
     let org_obj = ctx.ns().organization(&a.org);
-    let action = match a.op {
-        Op::Grant => {
+    // `changed` は今回の操作でタプルが実際に変わったか（既に付与済み・未付与なら false）。
+    let (action, changed) = match a.op {
+        Op::Grant => (
+            "org_audit.viewer.grant",
             fga.write_tuple(&subject, Relation::AuditViewer, &org_obj)
                 .await
-                .context("audit_viewer の付与に失敗")?;
-            "org_audit.viewer.grant"
-        }
-        Op::Revoke => {
+                .context("audit_viewer の付与に失敗")?,
+        ),
+        Op::Revoke => (
+            "org_audit.viewer.revoke",
             fga.delete_tuple(&subject, Relation::AuditViewer, &org_obj)
                 .await
-                .context("audit_viewer の剥奪に失敗")?;
-            "org_audit.viewer.revoke"
-        }
+                .context("audit_viewer の剥奪に失敗")?,
+        ),
     };
     let (actor_claimed, actor_source) = a.actor.map_or_else(
         || {
@@ -147,6 +148,7 @@ pub(crate) async fn run(args: &[String]) -> anyhow::Result<()> {
                 trace_id: None,
                 metadata: serde_json::json!({
                     "user": a.user,
+                    "changed": changed,
                     "actor_claimed": actor_claimed, "actor_source": actor_source,
                 }),
             },
@@ -158,6 +160,10 @@ pub(crate) async fn run(args: &[String]) -> anyhow::Result<()> {
     }
     .await;
     if let Err(e) = recorded {
+        // 今回変えていなければ戻さない（元からあった付与を消したり、無かった付与を足したりしない）。
+        if !changed {
+            return Err(e.context("監査ログへの記録に失敗しました（権限は変わっていません）"));
+        }
         let undo = match a.op {
             Op::Grant => {
                 fga.delete_tuple(&subject, Relation::AuditViewer, &org_obj)
