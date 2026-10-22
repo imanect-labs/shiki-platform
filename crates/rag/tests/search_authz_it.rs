@@ -552,7 +552,9 @@ async fn citations_and_decisions_are_audited_with_trace_id() {
             .any(|v| v.as_str() == Some(file.to_string().as_str())),
         "file 粒度の認可判定（allow）が記録される"
     );
-    assert!(metadata["query_sha256"].as_str().unwrap().len() == 64);
+    // 検索語はサーバの鍵で HMAC した値だけを残す（#833・鍵なしの旧 query_sha256 は残さない）。
+    assert!(metadata["query_hmac"].as_str().unwrap().len() == 64);
+    assert!(metadata.get("query_sha256").is_none());
 }
 
 /// 検索結果が位置情報（アンカー・前後の文脈）を持ち、その版のブロック列を窓で読めること。

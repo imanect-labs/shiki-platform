@@ -92,6 +92,15 @@ pub struct RagConfig {
     /// ジョブの配信試行上限（超過で DLQ）。
     #[serde(default = "default_job_max_attempts")]
     pub job_max_attempts: i32,
+
+    /// 監査に残す検索語ハッシュの鍵（32 バイト以上・#833）。未設定なら起動時に乱数生成する
+    /// （再起動・別レプリカとは同じ語でも値が揃わない）。同じ語の記録を突き合わせたいなら設定する。
+    #[serde(
+        default,
+        deserialize_with = "crate::query_key::empty_key_as_none",
+        skip_serializing
+    )]
+    pub query_hash_key: Option<crate::query_key::QueryHashKey>,
 }
 
 /// compose の `ingestion-worker` はホスト側も 8000（コンテナと同じ）に publish する。
@@ -198,6 +207,7 @@ impl Default for RagConfig {
             relay_poll_ms: default_relay_poll_ms(),
             job_vt_secs: default_job_vt_secs(),
             job_max_attempts: default_job_max_attempts(),
+            query_hash_key: None,
         }
     }
 }

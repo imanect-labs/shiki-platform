@@ -22,6 +22,7 @@ pub mod fusion;
 pub mod parser;
 pub mod parser_http;
 pub mod pipeline;
+pub mod query_key;
 pub mod rerank;
 pub mod search;
 pub mod search_types;
@@ -40,6 +41,7 @@ pub use fulltext_tantivy::TantivyFulltext;
 pub use parser::{DocumentParser, ParseRequest, ParseSource};
 pub use parser_http::HttpDocumentParser;
 pub use pipeline::{spawn_pipeline, IngestMessage, PipelineDeps, RAG_INGEST_QUEUE};
+pub use query_key::QueryHashKey;
 pub use rerank::{HttpReranker, Reranker};
 pub use search::{
     Cursor, DocRead, DocReadPage, ReadFrom, ReadSource, SearchOutput, SearchService,
