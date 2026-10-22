@@ -57,7 +57,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 現在の representation を取り、tenant / roles を元の値へ戻し、未宣言属性を落として PUT する。
+# 現在の representation を取り、tenant / roles を元の値へ戻して PUT する（unmanaged 無効なので
+# 未宣言属性は GET に出ず PUT でも消せない。保存されてしまった場合はその時点で手順 2c/2d が FAIL する）。
 restore_user_attrs() {
   local t="$1"
   curl -fsS -H "Authorization: Bearer $t" "$ADMIN_API/users/$USER_ID" > "$TMP/cur.json"
@@ -213,15 +214,19 @@ echo "通常更新後も attributes 不変 OK"
 echo "--- 3. 管理者は tenant / roles を設定・検索・更新できる（keycloak_admin.rs と同じ経路） ---"
 PROBE_TENANT="smoke-up-$(python3 -c 'import secrets;print(secrets.token_hex(4))')"
 PROBE_USER="$PROBE_TENANT-admin"
-code="$(curl -sS -o "$TMP/create.txt" -w '%{http_code}' -X POST -H "Authorization: Bearer $AT_ADMIN" \
+code="$(curl -sS -o "$TMP/create.txt" -D "$TMP/create-headers.txt" -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $AT_ADMIN" \
   -H 'Content-Type: application/json' "$ADMIN_API/users" -d "{
     \"username\": \"$PROBE_USER\", \"email\": \"$PROBE_USER@example.com\", \"enabled\": true,
     \"emailVerified\": true, \"attributes\": {\"tenant\": [\"$PROBE_TENANT\"], \"roles\": [\"engineering\", \"sales\"]}
   }")"
 [ "$code" = "201" ] || fail "admin のユーザー作成が HTTP $code: $(cat "$TMP/create.txt")"
+# 以降のアサーションで落ちても cleanup が消せるよう、作成直後に Location から ID を控える。
+PROBE_ID="$(sed -n 's#^[Ll]ocation: .*/users/\([^[:space:]]*\).*#\1#p' "$TMP/create-headers.txt" | tr -d '\r')"
+[ -n "$PROBE_ID" ] || fail "作成したユーザーの ID を Location から取れません: $(cat "$TMP/create-headers.txt")"
 curl -fsS -H "Authorization: Bearer $AT_ADMIN" -G "$ADMIN_API/users" \
   --data-urlencode "q=tenant:$PROBE_TENANT" > "$TMP/search.json"
-PROBE_ID="$(python3 - "$TMP/search.json" "$PROBE_USER" "$PROBE_TENANT" <<'PY'
+found_id="$(python3 - "$TMP/search.json" "$PROBE_USER" "$PROBE_TENANT" <<'PY'
 import json, sys
 users = json.load(open(sys.argv[1]))
 assert [u["username"] for u in users] == [sys.argv[2]], f"q=tenant 検索結果が不正: {users}"
@@ -231,6 +236,7 @@ assert sorted(attrs.get("roles") or []) == ["engineering", "sales"], f"roles 属
 print(users[0]["id"])
 PY
 )"
+[ "$found_id" = "$PROBE_ID" ] || fail "検索で見つかった ID が作成したユーザーと違います: $found_id != $PROBE_ID"
 echo "admin 作成＋tenant 検索 OK: $PROBE_USER ($PROBE_ID)"
 
 curl -fsS -H "Authorization: Bearer $AT_ADMIN" "$ADMIN_API/users/$PROBE_ID" \

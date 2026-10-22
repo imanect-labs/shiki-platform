@@ -41,6 +41,10 @@ protocol mapper で claim にしたものから来る（`crates/api/src/middlewa
   の作成時 `attributes.tenant`／`update_user_tenant`）が黙って効かなくなる（tenant claim の無い
   ユーザーは SaaS では fail-closed でログイン不可）。
 - `groups` claim（org 解決）の元はグループ所属で、Account API からは変更できない（admin のみ）。
+- **顧客 IdP / LDAP のマッパーで `tenant` / `roles` を顧客が制御できる値から取り込まない**。
+  IdP の Attribute Importer（sync mode FORCE 等）や LDAP の user-attribute mapper はサーバ側で属性を
+  直接書くため、上の `edit: ["admin"]` をすり抜ける（顧客 IdP が `tenant=<他社>` を出せば越境する）。
+  テナントごとの IdP 連携で `tenant` を付けるなら、そのテナント固定値の hardcoded-attribute mapper にする。
 
 dev fixture の `shiki-realm.json` は上記を設定済み。`deploy/compose/smoke-keycloak-user-profile.sh`
 （CI の compose smoke でも実行）が、設定の確認・一般ユーザーが Account API で `tenant` / `roles` /
