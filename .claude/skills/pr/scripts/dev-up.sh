@@ -645,7 +645,8 @@ if [ ! -d web/node_modules ]; then
   say "   node_modules が無いので pnpm install します（数分）…"
   ( cd web && pnpm install --frozen-lockfile ) || { err "pnpm install に失敗しました。"; exit 1; }
 fi
-if [ ! -f web/src/generated/api.d.ts ]; then
+# 生成物を足したら、ここにも足す（既存の checkout は api.d.ts だけあって新しい生成物が無いことがある）。
+if [ ! -f web/src/generated/api.d.ts ] || [ ! -f web/src/generated/audit-actions.ts ]; then
   say "   生成型が無いので pnpm gen:api します（codegen が正・手書き型を作らない）…"
   ( cd web && pnpm gen:api ) || { err "pnpm gen:api に失敗しました。"; exit 1; }
 fi
