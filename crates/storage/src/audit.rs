@@ -97,7 +97,8 @@ pub async fn record_on(
     // （約 7.7 万組で衝突確率 50%）。`audit_chain:` 接頭辞は他の bigint advisory lock
     // （`share_link:` 等）とキーを分けるため。
     // ⚠️ 旧版（32bit キー）と混在して動く間は、同じ (tenant, org) を新旧が別キーでロックするため
-    // 直列化されず、chained 行が同じ prev_hash を指して**チェーンが分岐し得る**。
+    // 直列化されず、chained 行が同じ prev_hash を指して**チェーンが分岐し得る**。このリリースは
+    // **旧バイナリと並走させず非ローリングで切り替える**（docs/guides/tenant-ops.md「アップグレード時の注意」）。
     let prev_hash: Option<String> = if chained {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('audit_chain:' || $1, 0))")
             .bind(format!("{}|{}", ctx.tenant_id, ctx.org))

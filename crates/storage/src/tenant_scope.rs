@@ -218,9 +218,10 @@ pub fn format_row_report(counts: &[(String, i64)], label: &str) -> String {
 /// なので漏れはしないが、撤去の約束に反する）。一覧を手で持たず pg_catalog から導出するのは
 /// [`tenant_scoped_tables`] と同じ理由（新テーブルが自動で対象に入る）。
 ///
-/// **[`PURGE_RETAINED`] のテーブルは走査しない**: `audit_log` は全テナントで最大の表で、
-/// `tenant_id` 先頭の汎用索引が無い（部分索引のみ）ため走査が全表になる。org のタプルは
-/// その org の行（`directory_user` 等）と併存するので、保持対象を除いても取りこぼさない。
+/// **[`PURGE_RETAINED`] のテーブルは走査しない**: `audit_log` は追記のみで全テナント最大の表で、
+/// `(tenant_id, org, …)` の索引を使っても、そのテナントの**監査履歴を全件**なめないと org の一覧が
+/// 出ない（org ごとの先頭だけを拾うスキップ走査に頼れない）。撤去 1 回のために履歴全体を読む価値は無く、
+/// org のタプルはその org の行（`directory_user` 等）と併存するので、保持対象を除いても取りこぼさない。
 /// `tenant` 台帳の org は呼び出し側が引数で渡す（[`crate::StorageService::purge_tenant`]）。
 pub async fn tenant_orgs(pool: &PgPool, tenant_id: &str) -> Result<Vec<String>, StorageError> {
     let tables: Vec<String> = sqlx::query_scalar(
