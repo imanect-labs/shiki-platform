@@ -6,7 +6,7 @@ import { Check, ExternalLink, Filter, Link2, X } from "lucide-react";
 
 import type { AuditEvent, AuditQuery } from "@/lib/audit-api";
 import { Badge } from "@/components/ui/badge";
-import { citedChunks, formatTime, objectHref } from "./audit-query";
+import { citedChunks, citedFiles, formatTime, objectHref } from "./audit-query";
 
 export function Verdict({ decision }: { decision: string }) {
   const allow = decision === "allow";
@@ -57,6 +57,7 @@ export function AuditDetail({
   onNarrow: (p: Partial<AuditQuery>) => void;
 }) {
   const chunks = citedChunks(e.metadata);
+  const files = citedFiles(e.metadata);
   const href = objectHref(e.object_type, e.object_id);
   const metadata = JSON.stringify(e.metadata, null, 2);
   return (
@@ -104,9 +105,10 @@ export function AuditDetail({
             />
           </Row>
         ) : null}
-        <Row label="改ざん検知">
+        <Row label="チェーン">
+          {/* 連結しているだけで、検証の仕組みはまだ無い（PIT-12・#828）。改ざん検知とは書かない。 */}
           <span className="text-muted-foreground">
-            {e.chained ? "ハッシュチェーンに連結" : "対象外（読み取り・拒否の記録）"}
+            {e.chained ? "ハッシュチェーンに連結（実データを変える操作）" : "連結なし（読み取り・拒否の記録）"}
           </span>
         </Row>
       </dl>
@@ -132,6 +134,33 @@ export function AuditDetail({
                   {c}
                 </span>
                 <NarrowButton label="このチャンクを引用した記録で絞る" onClick={() => onNarrow({ chunk_id: c })} />
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {files.length > 0 ? (
+        <section aria-label="引用されたファイル" className="flex flex-col gap-1.5">
+          <h3 className="text-xs text-muted-foreground">
+            引用されたファイル（{files.length}・閲覧権限があるときだけ開けます）
+          </h3>
+          <ul className="flex flex-col gap-1">
+            {files.map((f) => (
+              <li key={f} className="flex items-center gap-1 text-[12px]">
+                <Link
+                  href={`/file/${encodeURIComponent(f)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex min-w-0 flex-1 items-center gap-1 rounded font-mono underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                  title={f}
+                >
+                  <ExternalLink className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="truncate">{f}</span>
+                </Link>
+                <NarrowButton
+                  label="このファイルの記録で絞る"
+                  onClick={() => onNarrow({ object_type: "file", object_id: f })}
+                />
               </li>
             ))}
           </ul>

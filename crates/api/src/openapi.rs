@@ -272,6 +272,8 @@ use utoipa::{
         crate::routes::org_admin_insights::TaskMinutes,
         crate::routes::org_audit::AuditEventsResponse,
         storage::audit_view::AuditEvent,
+        storage::audit_view::AuditDecision,
+        crate::routes::org_audit::AuditFormat,
         crate::routes::org_admin_insights::InsightSettingsDto,
         crate::routes::org_admin_insights::TaskMinutesUpdate,
         crate::routes::org_admin_insights::UpdateInsightSettingsRequest,

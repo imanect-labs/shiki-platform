@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use storage::{
     audit::{AuditEntry, Decision},
-    audit_view::{AuditCursor, AuditEvent, AuditFilter, AuditViewer},
+    audit_view::{AuditCursor, AuditDecision, AuditEvent, AuditFilter, AuditViewer},
 };
 use utoipa::{IntoParams, ToSchema};
 
@@ -74,8 +74,8 @@ pub struct AuditQuery {
     pub actor: Option<String>,
     /// 操作の種類。末尾が `.` なら前方一致（例: `file.`）、それ以外は完全一致。
     pub action: Option<String>,
-    /// `allow` か `deny`。
-    pub decision: Option<String>,
+    /// 許可・拒否で絞る。
+    pub decision: Option<AuditDecision>,
     /// 対象の種類（`file` など）。
     pub object_type: Option<String>,
     /// 対象の ID。
@@ -88,8 +88,19 @@ pub struct AuditQuery {
     pub cursor: Option<String>,
     /// 1 ページの件数（1〜500・既定 100）。
     pub limit: Option<i64>,
-    /// 書き出し形式（`csv` か `jsonl`・書き出しのみ）。
-    pub format: Option<String>,
+    /// 書き出し形式（書き出しのみ・既定 `csv`）。
+    pub format: Option<AuditFormat>,
+}
+
+/// 書き出し形式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AuditFormat {
+    /// CSV（BOM 付き UTF-8・Excel で開ける）。
+    #[default]
+    Csv,
+    /// JSON Lines（1 行 1 件）。
+    Jsonl,
 }
 
 /// 検索結果の 1 ページ。
@@ -112,33 +123,44 @@ fn text(v: Option<&String>, name: &str) -> Result<Option<String>, ApiError> {
     }
 }
 
-/// 日本時間の日付の 0 時を UTC にする。
-fn jst_midnight(d: NaiveDate) -> DateTime<Utc> {
-    (d.and_time(NaiveTime::MIN) - Duration::hours(9)).and_utc()
+/// 日本時間の日付の 0 時を UTC にする（端の日付で溢れたら `None`）。
+fn jst_midnight(d: NaiveDate) -> Option<DateTime<Utc>> {
+    d.and_time(NaiveTime::MIN)
+        .checked_sub_signed(Duration::hours(9))
+        .map(|t| t.and_utc())
 }
 
-/// 検索条件を組む（期間・判定・長さを検証する）。
+/// 受け付ける日付の範囲（端の日付での桁あふれを避ける・監査ログの期間として十分）。
+fn plausible(d: NaiveDate) -> bool {
+    (2000..=9999).contains(&chrono::Datelike::year(&d))
+}
+
+/// 検索条件を組む（期間・長さを検証する）。
 fn to_filter(q: &AuditQuery, today: NaiveDate) -> Result<AuditFilter, ApiError> {
+    let bad_date = || invalid("日付が範囲外です");
+    if q.from.is_some_and(|d| !plausible(d)) || q.to.is_some_and(|d| !plausible(d)) {
+        return Err(bad_date());
+    }
     let to = q.to.unwrap_or(today).min(today);
-    let from = q.from.unwrap_or(to - Duration::days(6));
+    let from = match q.from {
+        Some(d) => d,
+        None => to
+            .checked_sub_days(chrono::Days::new(6))
+            .ok_or_else(bad_date)?,
+    };
     if from > to {
         return Err(invalid("開始日が終了日より後になっています"));
     }
     if (to - from).num_days() >= MAX_RANGE_DAYS {
         return Err(invalid("期間は 1 年以内で指定してください"));
     }
-    let decision = text(q.decision.as_ref(), "判定")?;
-    if let Some(d) = &decision {
-        if d != "allow" && d != "deny" {
-            return Err(invalid("判定は allow か deny で指定してください"));
-        }
-    }
+    let next_day = to.succ_opt().ok_or_else(bad_date)?;
     Ok(AuditFilter {
-        from: jst_midnight(from),
-        to: jst_midnight(to + Duration::days(1)),
+        from: jst_midnight(from).ok_or_else(bad_date)?,
+        to: jst_midnight(next_day).ok_or_else(bad_date)?,
         actor: text(q.actor.as_ref(), "操作した人")?,
         action: text(q.action.as_ref(), "操作の種類")?,
-        decision,
+        decision: q.decision,
         object_type: text(q.object_type.as_ref(), "対象の種類")?,
         object_id: text(q.object_id.as_ref(), "対象の ID")?,
         chunk_id: text(q.chunk_id.as_ref(), "チャンク ID")?,
@@ -154,16 +176,20 @@ fn filter_metadata(q: &AuditQuery, f: &AuditFilter) -> serde_json::Value {
     for (k, v) in [
         ("actor", &f.actor),
         ("action", &f.action),
-        ("decision", &f.decision),
         ("object_type", &f.object_type),
         ("object_id", &f.object_id),
         ("chunk_id", &f.chunk_id),
         ("trace_id", &f.trace_id),
-        ("format", &q.format),
     ] {
         if let Some(v) = v {
             m.insert(k.into(), json!(v));
         }
+    }
+    if let Some(d) = f.decision {
+        m.insert("decision".into(), json!(d));
+    }
+    if let Some(fmt) = q.format {
+        m.insert("format".into(), json!(fmt));
     }
     serde_json::Value::Object(m)
 }
@@ -238,17 +264,14 @@ pub async fn list_events(
         .search(&ctx, &filter, after, limit)
         .await
         .map_err(|e| ApiError::Internal(format!("audit search: {e}")))?;
-    // 検索 1 回につき 1 行（続きのページは同じ検索なので残さない）。
-    if after.is_none() {
-        record_read(
-            &state,
-            &ctx,
-            "org_audit.search",
-            trace.as_deref(),
-            filter_metadata(&q, &filter),
-        )
-        .await?;
+    // ページごとに残す（続きのページは `page: "next"`）。cursor は利用者が作れる値なので、
+    // 1 ページ目だけ残すと cursor を自作して記録なしに検索できてしまう。
+    let mut metadata = filter_metadata(&q, &filter);
+    if let (Some(c), Some(m)) = (after, metadata.as_object_mut()) {
+        m.insert("page".into(), json!("next"));
+        m.insert("cursor".into(), json!(c.encode()));
     }
+    record_read(&state, &ctx, "org_audit.search", trace.as_deref(), metadata).await?;
     let next_cursor = (i64::try_from(events.len()).unwrap_or(i64::MAX) == limit)
         .then(|| events.last())
         .flatten()
@@ -265,22 +288,9 @@ pub async fn list_events(
     }))
 }
 
-/// 書き出し形式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Format {
-    Csv,
-    Jsonl,
-}
+use AuditFormat as Format;
 
-impl Format {
-    fn parse(s: Option<&str>) -> Result<Self, ApiError> {
-        match s.unwrap_or("csv") {
-            "csv" => Ok(Format::Csv),
-            "jsonl" => Ok(Format::Jsonl),
-            _ => Err(invalid("形式は csv か jsonl で指定してください")),
-        }
-    }
-
+impl AuditFormat {
     fn content_type(self) -> &'static str {
         match self {
             Format::Csv => "text/csv; charset=utf-8",
@@ -327,7 +337,7 @@ fn render(format: Format, e: &AuditEvent) -> String {
                 e.action.clone(),
                 e.object_type.clone(),
                 e.object_id.clone(),
-                e.decision.clone(),
+                e.decision.as_str().to_string(),
                 e.trace_id.clone().unwrap_or_default(),
                 e.chained.to_string(),
                 e.metadata.to_string(),
@@ -340,6 +350,16 @@ fn render(format: Format, e: &AuditEvent) -> String {
             line.push_str("\r\n");
             line
         }
+    }
+}
+
+/// 上限で打ち切ったことを示す末尾の行。
+fn truncated_marker(format: Format) -> String {
+    match format {
+        Format::Csv => format!(
+            "# 上限の {EXPORT_MAX} 件で打ち切りました。期間を分けて書き出してください。\r\n"
+        ),
+        Format::Jsonl => format!("{}\n", json!({ "truncated": true, "limit": EXPORT_MAX })),
     }
 }
 
@@ -374,7 +394,16 @@ async fn next_chunk(mut s: ExportState) -> Option<(Result<Bytes, std::io::Error>
         .unwrap_or(EXPORT_BATCH)
         .min(EXPORT_BATCH);
     if batch == 0 {
+        // 上限に達した。続きがあれば、打ち切ったことをファイルの末尾に書く（全件と誤解させない）。
         s.done = true;
+        match s.viewer.search(&s.ctx, &s.filter, s.after, 1).await {
+            Ok(more) if !more.is_empty() => out.push_str(&truncated_marker(s.format)),
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "監査ログの書き出しが途中で失敗");
+                return Some((Err(std::io::Error::other("audit export failed")), s));
+            }
+        }
         return (!out.is_empty()).then(|| (Ok(Bytes::from(out)), s));
     }
     match s.viewer.search(&s.ctx, &s.filter, s.after, batch).await {
@@ -420,7 +449,7 @@ pub async fn export_events(
     Query(q): Query<AuditQuery>,
 ) -> Result<Response, ApiError> {
     let filter = to_filter(&q, today_jst())?;
-    let format = Format::parse(q.format.as_deref())?;
+    let format = q.format.unwrap_or_default();
     // 書き出す前に残す（残せなければ書き出さない）。
     record_read(
         &state,
@@ -500,11 +529,6 @@ mod tests {
             ..AuditQuery::default()
         };
         assert!(to_filter(&too_long, today).is_err());
-        let bad_decision = AuditQuery {
-            decision: Some("maybe".into()),
-            ..AuditQuery::default()
-        };
-        assert!(to_filter(&bad_decision, today).is_err());
         let long_text = AuditQuery {
             actor: Some("a".repeat(MAX_FIELD_LEN + 1)),
             ..AuditQuery::default()
@@ -516,12 +540,12 @@ mod tests {
     fn blank_conditions_are_ignored() {
         let q = AuditQuery {
             actor: Some("  ".into()),
-            decision: Some(" deny ".into()),
+            object_id: Some(" f1 ".into()),
             ..AuditQuery::default()
         };
         let f = to_filter(&q, day("2026-10-22")).unwrap_or_default();
         assert_eq!(f.actor, None);
-        assert_eq!(f.decision.as_deref(), Some("deny"));
+        assert_eq!(f.object_id.as_deref(), Some("f1"));
     }
 
     #[test]
@@ -530,7 +554,7 @@ mod tests {
             from: Some(day("2026-10-20")),
             to: Some(day("2026-10-21")),
             action: Some("file.".into()),
-            format: Some("csv".into()),
+            format: Some(AuditFormat::Csv),
             ..AuditQuery::default()
         };
         let f = to_filter(&q, day("2026-10-22")).unwrap_or_default();
@@ -541,10 +565,14 @@ mod tests {
     }
 
     #[test]
-    fn format_parse() {
-        assert_eq!(Format::parse(None).ok(), Some(Format::Csv));
-        assert_eq!(Format::parse(Some("jsonl")).ok(), Some(Format::Jsonl));
-        assert!(Format::parse(Some("xlsx")).is_err());
+    fn format_and_decision_parse_from_query() {
+        let q: AuditQuery = serde_json::from_value(json!({"format": "jsonl", "decision": "deny"}))
+            .unwrap_or_default();
+        assert_eq!(q.format, Some(AuditFormat::Jsonl));
+        assert_eq!(q.decision, Some(AuditDecision::Deny));
+        assert!(serde_json::from_value::<AuditQuery>(json!({"format": "xlsx"})).is_err());
+        assert!(serde_json::from_value::<AuditQuery>(json!({"decision": "maybe"})).is_err());
+        assert_eq!(AuditFormat::default(), AuditFormat::Csv);
     }
 
     #[test]
@@ -566,7 +594,7 @@ mod tests {
             action: "rag.search".into(),
             object_type: "rag_query".into(),
             object_id: "h".into(),
-            decision: "allow".into(),
+            decision: AuditDecision::Allow,
             trace_id: None,
             metadata: json!({"cited_chunk_ids": ["c1"]}),
             chained: false,
@@ -580,6 +608,36 @@ mod tests {
         assert!(line.starts_with("\"9\",\"2026-10-22T09:00:00+09:00\",\"u1\",\"田中, 太郎\""));
         assert!(line.contains("\"{\"\"cited_chunk_ids\"\":[\"\"c1\"\"]}\""));
         assert_eq!(CSV_HEADER.matches(',').count(), 10);
+    }
+
+    #[test]
+    fn truncation_marker_is_explicit() {
+        assert!(truncated_marker(Format::Csv).starts_with("# 上限の 100000 件"));
+        let v: serde_json::Value =
+            serde_json::from_str(truncated_marker(Format::Jsonl).trim_end()).unwrap_or_default();
+        assert_eq!(v, json!({"truncated": true, "limit": 100000}));
+    }
+
+    #[test]
+    fn out_of_range_dates_are_rejected_without_panicking() {
+        let today = day("2026-10-22");
+        for q in [
+            AuditQuery {
+                to: NaiveDate::from_ymd_opt(-262_143, 1, 1),
+                ..AuditQuery::default()
+            },
+            AuditQuery {
+                from: NaiveDate::from_ymd_opt(-262_143, 1, 1),
+                to: NaiveDate::from_ymd_opt(-262_143, 1, 1),
+                ..AuditQuery::default()
+            },
+            AuditQuery {
+                from: NaiveDate::from_ymd_opt(1999, 12, 31),
+                ..AuditQuery::default()
+            },
+        ] {
+            assert!(to_filter(&q, today).is_err());
+        }
     }
 
     #[test]

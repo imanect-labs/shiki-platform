@@ -4,7 +4,7 @@ import * as React from "react";
 import { ChevronDown, Search, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import type { AuditQuery } from "@/lib/audit-api";
+import type { AuditDecision, AuditQuery } from "@/lib/audit-api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SegmentedControl } from "@/components/ui/segmented-control";
@@ -193,8 +193,8 @@ export function AuditFilters({ query, onApply }: { query: AuditQuery; onApply: (
         </Field>
         <Field label="判定" htmlFor="audit-decision">
           <Select
-            value={draft.decision || ANY}
-            onValueChange={(v) => set({ decision: v === ANY ? "" : (v as "allow" | "deny") })}
+            value={draft.decision ?? ANY}
+            onValueChange={(v) => set({ decision: v === ANY ? undefined : (v as AuditDecision) })}
           >
             <SelectTrigger id="audit-decision" className="h-8 w-full text-[13px]">
               <SelectValue />

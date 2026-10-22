@@ -10,6 +10,8 @@ test.describe("監査ログ", () => {
     await loginViaKeycloak(page);
     await page.goto("/admin/audit");
     await expect(page.getByRole("heading", { name: "監査ログ", exact: true })).toBeVisible();
+    // 初回の検索（とその記録）が終わってから絞り込む（新しい DB でも org_audit.search が 1 行ある）。
+    await expect(page.getByText(/・\d[\d,]* 件/)).toBeVisible();
 
     // 開いただけで検索が 1 回記録される。自分の閲覧の記録で絞り込める。
     await page.getByLabel("操作の種類").fill("org_audit.");

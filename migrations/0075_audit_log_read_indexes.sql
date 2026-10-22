@@ -25,3 +25,8 @@ create index if not exists audit_log_cited_chunks_idx
 
 drop index if exists audit_log_object_idx;
 drop index if exists audit_log_actor_idx;
+
+-- 同じ要求（trace_id）の行をまとめて見る（UI の「同じ要求の記録で絞る」）。
+create index if not exists audit_log_tenant_trace_idx
+    on audit_log (tenant_id, org, trace_id)
+    where trace_id is not null;

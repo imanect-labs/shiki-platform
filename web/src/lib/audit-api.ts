@@ -1,23 +1,21 @@
-import type { components } from "@/generated/api";
+import type { components, operations } from "@/generated/api";
 import { apiFetch } from "@/lib/api";
 import { ApiError } from "@/lib/admin-ai-api";
 
 /// 監査ログ（#634）の API。型は OpenAPI(utoipa) からの生成物。
 export type AuditEvent = components["schemas"]["AuditEvent"];
 export type AuditEventsResponse = components["schemas"]["AuditEventsResponse"];
+export type AuditDecision = components["schemas"]["AuditDecision"];
+export type AuditFormat = components["schemas"]["AuditFormat"];
 
-/// 検索条件（日付は日本時間・両端含む）。空文字の条件は送らない。
-export type AuditQuery = {
-  from: string;
-  to: string;
-  actor?: string;
-  action?: string;
-  decision?: "" | "allow" | "deny";
-  object_type?: string;
-  object_id?: string;
-  chunk_id?: string;
-  trace_id?: string;
-};
+type GeneratedQuery = NonNullable<operations["list_events"]["parameters"]["query"]>;
+
+/// 検索条件（日付は日本時間・両端含む）。生成された API のクエリから、画面が持つ条件だけを取る
+/// （期間は画面では常に決まっているので必須にする）。
+export type AuditQuery = Pick<
+  GeneratedQuery,
+  "actor" | "action" | "decision" | "object_type" | "object_id" | "chunk_id" | "trace_id"
+> & { from: string; to: string };
 
 /// 絞り込みに使うキー（URL の検索パラメータと同じ名前）。
 export const AUDIT_FILTER_KEYS = [
@@ -60,7 +58,7 @@ export async function fetchAuditEvents(q: AuditQuery, cursor?: string | null): P
 }
 
 /// 書き出しの URL（ブラウザに直接ダウンロードさせる。サーバ側で監査に残る）。
-export function auditExportUrl(q: AuditQuery, format: "csv" | "jsonl"): string {
+export function auditExportUrl(q: AuditQuery, format: AuditFormat): string {
   const p = auditParams(q);
   p.set("format", format);
   return `/api/org-audit/export?${p.toString()}`;

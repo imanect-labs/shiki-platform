@@ -36,7 +36,8 @@ export function useAuditQuery(): {
       const v = p.get(k);
       if (v) (q as Record<string, string>)[k] = v;
     }
-    if (q.decision !== "allow" && q.decision !== "deny") delete q.decision;
+    const d = p.get("decision");
+    q.decision = d === "allow" || d === "deny" ? d : undefined;
     return q;
   }, [key]);
   const setQuery = React.useCallback(
@@ -73,6 +74,13 @@ export function formatTime(iso: string): string {
 export function citedChunks(metadata: unknown): string[] {
   if (!metadata || typeof metadata !== "object") return [];
   const v = (metadata as Record<string, unknown>).cited_chunk_ids;
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
+/// 引用されたファイル ID（`rag.search` の metadata）。
+export function citedFiles(metadata: unknown): string[] {
+  if (!metadata || typeof metadata !== "object") return [];
+  const v = (metadata as Record<string, unknown>).cited_file_ids;
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 

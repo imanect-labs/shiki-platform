@@ -10,11 +10,17 @@
 //!
 //! 拒否は監査に Deny で残す（[`super::org_admin`] と同じく、昇格の試みを追えるように）。
 //!
+//! ブラウザからは同一オリジン（またはアドレスバーへの直接入力）の要求だけを通す。セッション
+//! Cookie は `SameSite=Lax` なので、外部サイトのリンクから書き出しへ遷移させると本人の操作として
+//! 「書き出した」記録が残ってしまう（読まれはしないが、監査の「誰が」が信用できなくなる）。
+//! `Sec-Fetch-Site` を送らないクライアント（CLI 等）は Cookie を持たない限り通らないので見ない。
+//!
 //! [`AccessPolicy::OrgAuditor`]: crate::server::AccessPolicy::OrgAuditor
 
 use authz::{AuthContext, Consistency, Relation};
 use axum::{
     extract::{Request, State},
+    http::HeaderMap,
     middleware::Next,
     response::Response,
 };
@@ -30,6 +36,9 @@ pub async fn require_org_auditor(
     req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
+    if !same_site_request(req.headers()) {
+        return Err(ApiError::Forbidden);
+    }
     let ctx = context_of(&req)?;
     if !is_org_auditor(&state, &ctx, Consistency::HigherConsistency).await? {
         let trace = req.extensions().get::<TraceId>().map(|t| t.0.clone());
@@ -60,6 +69,14 @@ pub async fn require_org_auditor(
     Ok(next.run(req).await)
 }
 
+/// 外部サイト発の要求でないか（`Sec-Fetch-Site` が無い・`same-origin`・`none` なら通す）。
+fn same_site_request(headers: &HeaderMap) -> bool {
+    match headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
+        None => true,
+        Some(v) => matches!(v, "same-origin" | "none"),
+    }
+}
+
 /// 自組織の監査閲覧者か。
 ///
 /// ゲートは剥奪直後に通らないよう `HigherConsistency` で引く。メニューの表示可否（`/me`）は
@@ -78,4 +95,27 @@ pub(crate) async fn is_org_auditor(
             consistency,
         )
         .await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn headers(v: Option<&'static str>) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        if let Some(v) = v {
+            h.insert("sec-fetch-site", HeaderValue::from_static(v));
+        }
+        h
+    }
+
+    #[test]
+    fn only_same_origin_browser_requests_pass() {
+        assert!(same_site_request(&headers(None)));
+        assert!(same_site_request(&headers(Some("same-origin"))));
+        assert!(same_site_request(&headers(Some("none"))));
+        assert!(!same_site_request(&headers(Some("cross-site"))));
+        assert!(!same_site_request(&headers(Some("same-site"))));
+    }
 }

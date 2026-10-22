@@ -153,7 +153,7 @@ flowchart TB
 
 | ObjectType | relation | 継承・含意 | 共有語彙（誰を付与できるか） |
 |---|---|---|---|
-| `organization` | `member` / `admin` | —（admin は member・各オブジェクトの relation を**含意しない**） | `[user]` |
+| `organization` | `member` / `admin` / `audit_viewer` | —（admin・audit_viewer は互いにも、member・各オブジェクトの relation も**含意しない**） | `[user]` |
 | `role` | `member` | `member ⊇ 配下 role#member`（上方向） | `[user, role#member]` |
 | `folder` | `parent` / `owner` / `editor` / `viewer` | `owner⊆editor⊆viewer`、`editor/viewer from parent` | owner=`[user, workflow]`、editor/viewer=`[user, role#member, workflow]` |
 | `file` | `parent` / `owner` / `editor` / `viewer` | folder と同じ（parent は folder のみ） | 同上 |
@@ -175,6 +175,10 @@ flowchart TB
 - **`organization#admin` は閲覧権に連鎖しない**（PIT-65）。管理コンソールの API（`/org-admin/*`・ルート表の
   `AccessPolicy::OrgAdmin`）を通すためだけの relation で、どのオブジェクトの `viewer` 等にも `from` で繋がない。
   管理者でも中身の読み取りは各チョークポイントの ReBAC が通常どおり判定する（#553）。
+- **`organization#audit_viewer` も閲覧権に連鎖しない**（PIT-65）。監査ログの API（`/org-audit/*`・ルート表の
+  `AccessPolicy::OrgAuditor`）を通すためだけの relation で、admin とも独立（管理者でない監査担当者を置ける・
+  管理者でも付与されなければ読めない）。監査ログは行の ID・判定・metadata を返すだけで、ファイルや会話の中身は
+  通常の ReBAC でしか開けない（#634）。
 
 ---
 
@@ -328,8 +332,8 @@ sequenceDiagram
   request extension に載せる（`session.rs:92-95`）。
 - extractor（`auth_context.rs` の `AuthContextExt`）は **state 非依存**で extension を読むだけ。
   「middleware が載せる → extractor が読む」の分業で、AuthContext を経由しないデータアクセスを構造的に書きにくくしている。
-- middleware はグループ単位で**一律適用**される。`route_table()`（`server.rs:55`）の `AccessPolicy`
-  （`Public` / `Session` / `Provisioner` …）ごとに `route_layer` で付ける。個別ハンドラに認証チェックを散らさない。
+- middleware はグループ単位で**一律適用**される。`route_table()`（`server.rs`）の `AccessPolicy`
+  （`Public` / `Session` / `OrgAdmin` / `OrgAuditor` / `Provisioner` …）ごとに `route_layer` で付ける。個別ハンドラに認証チェックを散らさない。
 
 ### tenant_id の解決 — `resolve_tenant_id`（`extract/auth_context.rs:76`）
 

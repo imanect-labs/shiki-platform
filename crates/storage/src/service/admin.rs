@@ -7,7 +7,7 @@
 use super::*;
 
 impl StorageService {
-    /// テナント初期 admin へ org の member と admin タプルを付与する（冪等・監査つき）。
+    /// テナント初期 admin へ org の member・admin・audit_viewer タプルを付与する（冪等・監査つき）。
     ///
     /// タプルの書き込みは「既にある」を成功として扱うので、`organization#admin` 導入前に
     /// プロビジョニングした既存テナントも、`POST /admin/tenants` を同じ内容で再実行すれば

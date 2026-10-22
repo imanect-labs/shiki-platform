@@ -22,7 +22,7 @@ use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
-use storage::audit_view::{AuditCursor, AuditFilter};
+use storage::audit_view::{AuditCursor, AuditDecision, AuditFilter};
 use uuid::Uuid;
 
 async fn setup() -> Option<PgPool> {
@@ -192,7 +192,7 @@ async fn search_is_scoped_filtered_and_pageable() {
     .await;
     assert!(exact.is_empty(), "末尾の . が無ければ完全一致");
     let denied = by(AuditFilter {
-        decision: Some("deny".into()),
+        decision: Some(AuditDecision::Deny),
         ..window()
     })
     .await;

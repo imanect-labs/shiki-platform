@@ -29,6 +29,8 @@ type State = {
   loading: boolean;
   more: boolean;
   error: string | null;
+  /// 「さらに読み込む」だけの失敗（読み込み済みの一覧は残す）。
+  moreError: string | null;
 };
 
 /// 条件が変わるたびに 1 ページ目を読み直し、「さらに読み込む」で続きを足す。
@@ -39,6 +41,7 @@ function useAuditEvents(query: AuditQuery) {
     loading: true,
     more: false,
     error: null,
+    moreError: null,
   });
   const key = JSON.stringify(query);
   const seq = React.useRef(0);
@@ -48,7 +51,14 @@ function useAuditEvents(query: AuditQuery) {
     fetchAuditEvents(query)
       .then((r) => {
         if (id !== seq.current) return;
-        setState({ events: r.events, next: r.next_cursor ?? null, loading: false, more: false, error: null });
+        setState({
+          events: r.events,
+          next: r.next_cursor ?? null,
+          loading: false,
+          more: false,
+          error: null,
+          moreError: null,
+        });
       })
       .catch((e: unknown) => {
         if (id !== seq.current) return;
@@ -58,6 +68,7 @@ function useAuditEvents(query: AuditQuery) {
           loading: false,
           more: false,
           error: e instanceof Error ? e.message : String(e),
+          moreError: null,
         });
       });
     // key が query の内容を表す（オブジェクトの同一性では読み直さない）。
@@ -67,7 +78,7 @@ function useAuditEvents(query: AuditQuery) {
   const loadMore = React.useCallback(() => {
     if (!state.next || state.more) return;
     const id = seq.current;
-    setState((s) => ({ ...s, more: true }));
+    setState((s) => ({ ...s, more: true, moreError: null }));
     fetchAuditEvents(query, state.next)
       .then((r) => {
         if (id !== seq.current) return;
@@ -80,7 +91,7 @@ function useAuditEvents(query: AuditQuery) {
       })
       .catch((e: unknown) => {
         if (id !== seq.current) return;
-        setState((s) => ({ ...s, more: false, error: e instanceof Error ? e.message : String(e) }));
+        setState((s) => ({ ...s, more: false, moreError: e instanceof Error ? e.message : String(e) }));
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, state.next, state.more]);
@@ -126,13 +137,28 @@ function ListSkeleton() {
   );
 }
 
-function MoreButton({ next, more, onClick }: { next: string | null; more: boolean; onClick: () => void }) {
+function MoreButton({
+  next,
+  more,
+  error,
+  onClick,
+}: {
+  next: string | null;
+  more: boolean;
+  error: string | null;
+  onClick: () => void;
+}) {
   if (!next) return null;
   return (
-    <div className="flex justify-center border-t p-2.5">
+    <div className="flex flex-col items-center gap-1 border-t p-2.5">
+      {error ? (
+        <p role="alert" className="text-xs text-destructive">
+          続きを読み込めませんでした: {error}
+        </p>
+      ) : null}
       <Button variant="ghost" size="sm" onClick={onClick} disabled={more}>
         {more ? <Loader2 className="animate-spin" aria-hidden /> : null}
-        さらに読み込む
+        {error ? "もう一度読み込む" : "さらに読み込む"}
       </Button>
     </div>
   );
@@ -142,7 +168,7 @@ function MoreButton({ next, more, onClick }: { next: string | null; more: boolea
 /// 監査閲覧者（`organization#audit_viewer`）だけが開ける。読んだこと自体も監査に残る。
 export function AuditView() {
   const { query, setQuery, patch } = useAuditQuery();
-  const { events, next, loading, more, error, reload, loadMore } = useAuditEvents(query);
+  const { events, next, loading, more, error, moreError, reload, loadMore } = useAuditEvents(query);
   const [selectedId, setSelectedId] = React.useState<number | null>(null);
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const selected = events.find((e) => e.id === selectedId) ?? events[0] ?? null;
@@ -215,7 +241,7 @@ export function AuditView() {
                   </li>
                 ))}
               </ul>
-              <MoreButton next={next} more={more} onClick={loadMore} />
+              <MoreButton next={next} more={more} error={moreError} onClick={loadMore} />
             </div>
           )}
         </div>
@@ -260,7 +286,6 @@ export function AuditView() {
                         return (
                           <tr
                             key={e.id}
-                            aria-selected={current}
                             onClick={() => setSelectedId(e.id)}
                             className={cn(
                               "cursor-pointer border-t",
@@ -272,6 +297,7 @@ export function AuditView() {
                                 type="button"
                                 onClick={() => setSelectedId(e.id)}
                                 aria-label={`${formatTime(e.created_at)} の記録を見る`}
+                                aria-current={current ? "true" : undefined}
                                 className="outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
                               >
                                 {formatTime(e.created_at)}
@@ -296,7 +322,7 @@ export function AuditView() {
                     </tbody>
                   </table>
                 </div>
-                <MoreButton next={next} more={more} onClick={loadMore} />
+                <MoreButton next={next} more={more} error={moreError} onClick={loadMore} />
               </>
             )}
           </Panel>

@@ -1,5 +1,7 @@
 import { Home, type LucideIcon, ScrollText, Sparkles, Users } from "lucide-react";
 
+import type { MeResponse } from "@/lib/api";
+
 /// 管理コンソールのナビの単一定義（レール・プロダクトメニュー・パンくず）。
 
 export type AdminMenuItem = {
@@ -37,7 +39,7 @@ export type AdminSection = {
 export type AdminAccess = "admin" | "audit";
 
 /// 管理コンソールの入口に必要な権限（`/me` の値）。
-export type AdminPermissions = { is_admin: boolean; can_view_audit: boolean };
+export type AdminPermissions = Pick<MeResponse, "is_admin" | "can_view_audit">;
 
 export function canOpen(access: AdminAccess, me: AdminPermissions | null | undefined): boolean {
   if (!me) return false;

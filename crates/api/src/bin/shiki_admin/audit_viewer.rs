@@ -132,8 +132,12 @@ pub(crate) async fn run(args: &[String]) -> anyhow::Result<()> {
         },
         |v| (v, "flag"),
     );
-    storage::audit::AuditRecorder::new(db)
-        .record(
+    // 権限の変更なのでハッシュチェーンに連結する（共有などほかの relation 変更と同じ）。
+    // 記録できなければ FGA の変更を戻す（記録のない付与を残さない）。
+    let recorded = async {
+        let mut tx = db.begin().await?;
+        storage::audit::record_on(
+            &mut tx,
             &ctx,
             storage::audit::AuditEntry {
                 action,
@@ -146,9 +150,31 @@ pub(crate) async fn run(args: &[String]) -> anyhow::Result<()> {
                     "actor_claimed": actor_claimed, "actor_source": actor_source,
                 }),
             },
+            storage::audit::Chain::Yes,
         )
-        .await
-        .context("監査ログへの記録に失敗")?;
+        .await?;
+        tx.commit().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    if let Err(e) = recorded {
+        let undo = match a.op {
+            Op::Grant => {
+                fga.delete_tuple(&subject, Relation::AuditViewer, &org_obj)
+                    .await
+            }
+            Op::Revoke => {
+                fga.write_tuple(&subject, Relation::AuditViewer, &org_obj)
+                    .await
+            }
+        };
+        if let Err(u) = undo {
+            eprintln!(
+                "⚠️ 監査に記録できず、FGA の変更も戻せませんでした（手で確認してください）: {u}"
+            );
+        }
+        return Err(e.context("監査ログへの記録に失敗したため、変更を取り消しました"));
+    }
     println!(
         "{action}: tenant={} org={} user={}",
         a.tenant, a.org, a.user
