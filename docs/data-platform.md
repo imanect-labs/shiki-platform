@@ -139,6 +139,22 @@ PostgreSQL は 1 行の INSERT で当該 relation の**全索引を open し、p
 | `tenant_id text` | `tenant_int` | `int4` | tenant レジストリ（`crates/storage/src/tenant.rs`）で採番・不変・再利用しない |
 | `table_id uuid` | `table_int` | `int8` | `data_table` 作成時にグローバル連番。**パーティションキー** |
 | `field.name text` | `field_id` | `int2` | テーブル内で採番・不変・再利用しない。`0..15` はシステム擬似列に予約 |
+| `record.id uuid` | `record_int` | `int8` | **プール共通のシーケンス**（`data_record_int_seq`）で採番・不変・再利用しない。**索引テーブルとリンクは全てこちらで持つ** |
+
+> **`record_int` を入れる理由（2026-10 決定）**: 索引テーブルは 1 レコードにつき複数行を持ち、`record_id` は
+> 各行の PK と値索引の両方に入る。uuid（16B）を int8（8B）にすると索引行が約 7% 縮む。加えて、
+> 「見える行の集合」「OR の和集合」「交差」を **Rust 側でビットマップ（Roaring の 64 ビット版）として計算できる**
+> ようになる（[query-optimizer.md](./data/query-optimizer.md) §5.1・§6.4）。kintone（`row_id`）も
+> SharePoint（リスト項目の ID）も内部は整数キーである。
+>
+> - **採番はプール共通のシーケンス**にする。テーブルごとの連番は採番行に挿入が集中して書込が詰まるため採らない。
+>   テーブル内では疎になるが、挿入順に単調増加し、Roaring は疎な集合も扱える
+> - **API・SSE・監査・OpenFGA のタプルは従来どおり `uuid`**。`record_int` は**外へ出さない**。プール共通の連番は
+>   他テナントの作成ペースを推測させるサイドチャネルになるため（PIT-75）。keyset カーソルは `record_int` を
+>   含むので、**サーバ鍵の AEAD で暗号化した不透明トークン**にする（base64 だけでは中身が読める）
+> - 個別共有（OpenFGA の `data_record` タプル）は uuid で返るので、**材料解決時に 1 本のクエリで `record_int` へ
+>   引き直す**（上限 `MAX_SHARED_IDS` 件・リクエストスコープ）
+> - 移行は JSONB キーの書換えと同じ Phase 15.1 で行う（索引行のキーを後から差し替えると二重の書換えになる）
 
 > **`field_id` の値域**: PostgreSQL に unsigned 整数は無く `int2` は `-32768..32767`。一方 `FieldDef.id` は
 > `u16`（`0..65535`）なので**そのままでは 32768 以上が保存できない**。索引エントリの幅を優先して
@@ -163,11 +179,15 @@ PostgreSQL は 1 行の INSERT で当該 relation の**全索引を open し、p
 ### 3.3 テーブル定義
 
 ```sql
+-- 内部キーの採番（§3.2）。プール共通・キャッシュ付きで採番の競合を避ける。
+create sequence data_record_int_seq cache 100;
+
 -- ① 本体。形は v1 から変えない（JSONB のまま）。キーだけ "f{field_id}" 化する。
 create table data_record (
     tenant_int int      not null,
     table_int  bigint   not null,
-    id         uuid     not null,
+    id         uuid     not null,   -- 外部向けの ID（API・SSE・監査・OpenFGA）
+    record_int bigint   not null default nextval('data_record_int_seq'),  -- 内部キー（§3.2）
     org        text     not null,
     data       jsonb    not null,   -- {"f1": "...", "f2": 12000}
     rev        bigint   not null default 1,
@@ -176,6 +196,8 @@ create table data_record (
     updated_at timestamptz not null default now(),
     primary key (tenant_int, table_int, id)
 ) partition by hash (table_int);    -- 64 分割（サイズ分割・autovacuum 局所化）
+-- 索引テーブルから本体を引く経路（ページの本体取得はこちら）
+create unique index on data_record (tenant_int, table_int, record_int);
 
 -- ② text 系索引（text / select / multi_select / date / datetime /
 --    user_ref / role_ref / file_ref / status ＋ システム擬似列 field_id 0..2）
@@ -185,22 +207,22 @@ create table data_index_text (
     tenant_int int      not null,
     table_int  bigint   not null,
     field_id   smallint not null,
-    record_id  uuid     not null,
+    record_int bigint   not null,           -- §3.2 の内部キー
     ord        smallint not null default 0,  -- multi_select の要素番号
     val        text     not null collate "C",-- 先頭 MAX_INDEX_KEY_BYTES バイトのプレフィクス
     truncated  boolean  not null default false, -- true なら等値比較は本体で再確認する
-    primary key (tenant_int, table_int, field_id, record_id, ord)
+    primary key (tenant_int, table_int, field_id, record_int, ord)
 ) partition by hash (table_int);
-create index on data_index_text (tenant_int, table_int, field_id, val, record_id);
+create index on data_index_text (tenant_int, table_int, field_id, val, record_int);
 
 -- ③ 数値索引（number）。numeric = 正確な小数。
 create table data_index_num (
     tenant_int int not null, table_int bigint not null, field_id smallint not null,
-    record_id uuid not null, ord smallint not null default 0,
+    record_int bigint not null, ord smallint not null default 0,
     val numeric not null,
-    primary key (tenant_int, table_int, field_id, record_id, ord)
+    primary key (tenant_int, table_int, field_id, record_int, ord)
 ) partition by hash (table_int);
-create index on data_index_num (tenant_int, table_int, field_id, val, record_id);
+create index on data_index_num (tenant_int, table_int, field_id, val, record_int);
 
 -- ④ リンク（record_ref）。1 エッジにつき「順方向」「逆方向」の 2 行を書く（下の注を参照）。
 --    どちらの行も table_int = 自分が所属する側のテーブルなので、両方向でパーティション枝刈りが効く。
@@ -208,10 +230,10 @@ create table data_link (
     tenant_int int not null,
     table_int  bigint not null,       -- この行が所属する側のテーブル（＝パーティションキー）
     field_id   smallint not null,     -- 順方向はリンク列、逆方向は対称列の field_id
-    src_record uuid not null,         -- この行が所属する側のレコード
+    src_record bigint not null,       -- この行が所属する側のレコード（record_int）
     ord        smallint not null default 0,
     dst_table_int bigint not null,    -- 相手側
-    dst_record uuid not null,
+    dst_record bigint not null,       -- 相手側のレコード（record_int）
     is_reverse bool not null default false, -- 監査・再構築用（クエリでは使わない）
     -- カーディナリティ強制用。この行の src 側が単一値しか持てないとき true。
     -- 書込側が自由に指定できてはならないため、下の FK でスキーマ宣言値に固定する。
@@ -242,7 +264,7 @@ create unique index on data_link (tenant_int, table_int, field_id, src_record)
 create table data_unique (
     tenant_int int not null, table_int bigint not null, field_id smallint not null,
     val_norm text not null collate "C",
-    record_id uuid not null,
+    record_int bigint not null,
     primary key (tenant_int, table_int, field_id, val_norm)
 ) partition by hash (table_int);
 
@@ -255,9 +277,9 @@ create extension if not exists pg_trgm;
 create extension if not exists btree_gin;
 create table data_index_search (
     tenant_int int not null, table_int bigint not null, field_id smallint not null,
-    record_id uuid not null, ord smallint not null default 0,
+    record_int bigint not null, ord smallint not null default 0,
     val text not null,
-    primary key (tenant_int, table_int, field_id, record_id, ord)
+    primary key (tenant_int, table_int, field_id, record_int, ord)
 ) partition by hash (table_int);
 -- スコープ列を GIN 自体に含める（btree_gin）。含めないと 1 テナントの検索でも
 -- プール全体の posting list を読み、ノイジーネイバーが p95 を壊す。
@@ -284,9 +306,9 @@ N:N の主要経路がテーブル数に比例して劣化する。そこで**1 
 **切り詰め値でのソートと keyset の契約**（曖昧にすると重複・欠落が出るので明文化する）:
 
 - ソートは**プレフィクス順で走査する**。同一プレフィクス群の中の順序は**完全値順を保証しない**
-- ただし **keyset は `(val_prefix, record_id)` のタプル比較で進む**ため、
+- ただし **keyset は `(val_prefix, record_int)` のタプル比較で進む**ため、
   **ページ間の重複・欠落は発生しない**（順序が「完全値順ではない」だけで、全順序としては決定的）。
-  `record_id` が常にタイブレーカに入ることがこの保証の根拠
+  `record_int` が常にタイブレーカに入ることがこの保証の根拠
 - カーソルに載せるのは**索引に格納されているプレフィクス値**であり、完全値ではない
   （完全値を載せると索引の走査位置と一致せず、そこで初めて欠落が起きる）
 - 切り詰めが発生し得る列をソートキーに指定した場合、**API は応答に
@@ -343,26 +365,26 @@ N:N の主要経路がテーブル数に比例して劣化する。そこで**1 
 
 ```sql
 WITH page AS (
-  SELECT i.record_id, i.val
+  SELECT i.record_int, i.val
   FROM data_index_num i                                    -- 駆動＝ソートキーの索引（既に金額順）
   WHERE i.tenant_int = $1 AND i.table_int = $2 AND i.field_id = $3   -- f2 = 金額
-    AND (i.val, i.record_id) < ($cursor_val, $cursor_id)             -- keyset（DESC）
+    AND (i.val, i.record_int) < ($cursor_val, $cursor_rec)           -- keyset（DESC）
     AND EXISTS (SELECT 1 FROM data_index_text f                      -- フィルタ＝半結合
                 WHERE f.tenant_int = $1 AND f.table_int = $2
                   AND f.field_id = $4 AND f.val = '承認待ち'
-                  AND f.record_id = i.record_id)
+                  AND f.record_int = i.record_int)
     AND ( <行述語も索引テーブル上で評価。§6.2> )
-  ORDER BY i.val DESC, i.record_id DESC
+  ORDER BY i.val DESC, i.record_int DESC
   LIMIT $n
 )
 SELECT r.* FROM data_record r
-  JOIN page p ON r.tenant_int = $1 AND r.table_int = $2 AND r.id = p.record_id
+  JOIN page p ON r.tenant_int = $1 AND r.table_int = $2 AND r.record_int = p.record_int
 ORDER BY ...;
 ```
 
 - フィルタは `EXISTS` 半結合。複数条件は AND で連鎖
 - 可視でない行は**本体に触れる前に落ちる**
-- 本体取得は PK 直接アクセス 20 回
+- 本体取得は `(tenant_int, table_int, record_int)` の一意索引で 20 回
 
 #### 駆動索引の選び方（null 落ちと初期表示の両方がここに掛かる）
 
@@ -375,7 +397,7 @@ pivot 索引は**値が無いレコードには行が無い**。ソートキー�
 | 状況 | 駆動 | 早期終了 |
 |---|---|---|
 | ソートキーが `required`（全行に値がある） | そのフィールドの索引 | ✅ 効く |
-| ソートキーが任意（null あり） | **2 区間に分けて歩く**: ①ソート列の値索引（値を持つ行が値順）→ ②使い切ったら擬似列 `created_at`（=1）を主キー＝`record_id` 順に歩き「値が無い」を点検索（[query-optimizer.md §5.1](./data/query-optimizer.md)） | ✅ 効く（`NULLS LAST` の先頭ページはほぼ区間①で埋まる） |
+| ソートキーが任意（null あり） | **2 区間に分けて歩く**: ①ソート列の値索引（値を持つ行が値順）→ ②使い切ったら擬似列 `created_at`（=1）を主キー＝`record_int` 順に歩き「値が無い」を点検索（[query-optimizer.md §5.1](./data/query-optimizer.md)） | ✅ 効く（`NULLS LAST` の先頭ページはほぼ区間①で埋まる） |
 | ソート指定なし（初期グリッド） | `updated_at`（擬似列 2）の索引 | ✅ 効く |
 | 選択的フィルタがある | そのフィルタの索引を駆動にしてソートは後段 | 統計で判断（§14） |
 
@@ -419,6 +441,8 @@ pivot 索引は**値が無いレコードには行が無い**。ソートキー�
 | PK 索引エントリ | ~60 |
 | 値索引エントリ | ~75 |
 | **計** | **~235** |
+
+（上はレコードキーを uuid とした見積もり。`record_int`（§3.2）で PK と値索引のキーが 8B ずつ縮み、**~219B** になる。）
 
 | 前提 | 索引行数 | 概算 |
 |---|---|---|
@@ -590,9 +614,9 @@ pub enum CmpOp {
 
 **演算子語彙は workflow IR の `Condition`（`crates/workflow-engine/src/ir/`）に合わせる。**
 そうすることで `data.query` ノードは IR 条件を**変換なしで**渡せる。
-**意味論も揃えて 2 値論理とする案を提案中（human の確認待ち）**（値なしに対する `Neq` は真・`Not` は補集合。
-workflow の評価器 `control/eval.rs` と単値では同じ。多値列と数値の等値では現行の `eval.rs` と食い違うので、
-どちらに寄せるかも併せて決める）。値なし・多値列での各演算子の定義、SQL 前段（3 値論理）からの翻訳規則、
+**意味論も揃えて 2 値論理とする（2026-10 決定）**（値なしに対する `Neq` は真・`Not` は補集合。Excel のフィルタと同じ）。
+多値列（`Eq` は「含む」）と数値の等値（`1 = 1.0`）は、**workflow の評価器 `control/eval.rs` をこちらに合わせる**
+（Task 15.7）。値なし・多値列での各演算子の定義、SQL 前段（3 値論理）からの翻訳規則、
 **行述語は v1 の意味論のまま（値なしの `Ne` は偽）であること**は [query-optimizer.md §3.1・§3.3](./data/query-optimizer.md) を正とする。
 `matches`（正規表現）は索引が効かず DoS 面にもなるため**採用しない**（IR 側にはあるが data では拒否）。
 
@@ -627,19 +651,19 @@ pub enum Page {
 }
 ```
 
-カーソルは **全ソートキーの値 ＋ record_id** を不透明トークンにしたもの。
+カーソルは **全ソートキーの値 ＋ `record_int`（＋任意列ソートの区間番号）** を、サーバ鍵の AEAD で暗号化した不透明トークンにしたもの（`record_int` を外へ出さないため・§3.2）。
 
-**単一ソートキーの場合**は `(val, record_id)` のタプル比較で継続位置へ直接飛べる。
+**単一ソートキーの場合**は `(val, record_int)` のタプル比較で継続位置へ直接飛べる。
 駆動索引の並びがそのまま解の並びなので、**何ページ目でも同じコスト**。
 
 **複数ソートキーの場合は事情が違う（正直に書く）。** pivot 索引はフィールドごとに別行なので、
-`(field_a, field_b, record_id)` の複合順序を直接持つ btree は存在しない。第 1 キーが同値の
+`(field_a, field_b, record_int)` の複合順序を直接持つ btree は存在しない。第 1 キーが同値の
 レコード群を、第 2 キー以降で並べ替える処理がどこかに要る。設計は次の 2 段構え。
 
 1. **既定（同値群が小さい場合）**: 第 1 キーの索引で走査し、**同値群をページサイズの K 倍（既定 8 倍）まで
    先読みして、残キーでページ内ソート**する。同値群がこの範囲に収まる限り keyset は決定的に進む。
 2. **同値群が上限を超える場合**: 第 1 キーの選択性が低すぎるので、**複合索引を材料化する**
-   （`data_index_composite(tenant_int, table_int, sort_set_id, val_concat, record_id)` を
+   （`data_index_composite(tenant_int, table_int, sort_set_id, val_concat, record_int)` を
    §10 の自動昇格と同じ機構でオンデマンド生成する）。生成までは「このソート組み合わせは
    深いページで劣化する」ことを API が明示して返す。
 
@@ -660,6 +684,11 @@ pub enum CountResult {
 ```
 
 `LIMIT 10001` のサブクエリで数え、10001 なら `AtLeast(10_000)`。
+
+**件数は既定で数えない**（`DataQuery` に `with_count: bool`・既定 `false`）。件数はページとは別の 2 本目のクエリになり、
+フィルタ駆動と同じく「候補を全部見る」形になるため、ページの取得を遅らせる。グリッドは件数を別リクエストで
+非同期に取り、ページの描画を待たせない。kintone も件数取得（`totalCount=true`）を遅くなる要因として挙げ、
+不要なら指定しないよう案内している（[cybozu.dev](https://cybozu.dev/ja/kintone/tips/best-practices/performance/complement-technical-consideration-points/)）。
 Airtable / Teable / SharePoint も同種の妥協をしている（SharePoint の 5,000 件ビュー閾値が典型）。
 **上限値はテナント設定で変更可能**にする（小さいテーブルしか持たない顧客には正確な件数を出せる）。
 
@@ -684,7 +713,7 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 | ① テーブル ReBAC | OpenFGA `data_table` viewer/editor/owner | **変更なし** |
 | ② 行述語 ABAC | `PolicyExpr` → `WHERE` 断片へコンパイル・値は必ずバインド | **同じ AST・同じ材料解決。出力先が索引テーブル条件になる** |
 | ③ フィールドマスク | `field_policy` で応答から除去＋filter/sort から 403 | **変更なし**（§5.2 に継承） |
-| ④ 行個別共有 | `data_record` スパースタプル（`= ANY($n::uuid[])`） | **変更なし**（`record_id` に直接効く） |
+| ④ 行個別共有 | `data_record` スパースタプル（`= ANY($n::uuid[])`） | **タプルは変更なし**（uuid のまま）。材料解決時に `record_int` へ引き直して `= ANY($n::bigint[])` で効かせる |
 
 ### 6.1 材料解決
 
@@ -707,10 +736,10 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 
 ```sql
 AND ( EXISTS (SELECT 1 FROM data_index_text p WHERE p.tenant_int=$1 AND p.table_int=$2
-                AND p.field_id = 16 AND p.val = $user_id AND p.record_id = i.record_id)
+                AND p.field_id = 16 AND p.val = $user_id AND p.record_int = i.record_int)
    OR EXISTS (SELECT 1 FROM data_index_text p WHERE p.tenant_int=$1 AND p.table_int=$2
-                AND p.field_id = 20 AND p.val = ANY($dept_array) AND p.record_id = i.record_id)
-   OR i.record_id = ANY($shared_ids::uuid[]) )                    -- ④ 個別共有
+                AND p.field_id = 20 AND p.val = ANY($dept_array) AND p.record_int = i.record_int)
+   OR i.record_int = ANY($shared_ints::bigint[]) )                -- ④ 個別共有（uuid → record_int は材料解決時に引き直す・§3.2）
 ```
 
 - `IsOwner` は `field_id = 0`（owner 擬似列）で同じ形になる
@@ -745,6 +774,27 @@ v1 の原則を維持する。
 | **PIT-19** マスク列でのソート/絞り込み漏れ | `ensure_queryable` で 403 | **継承・強化**（§5.2 に `search` も追加） |
 | **PIT-20** テーブル間の権限素通り | lookup 解決時に参照先の行述語を適用 | **全面解決**（§7.4）。リンク・ロールアップ・数式のすべてに参照先述語を透過適用 |
 | **PIT-21** WHERE 強制注入だけでは不十分 | 脅威モデルテスト 781 行（`policy_threat_it.rs`） | **継承**。v2 では**同テストを両実装（v1/v2）で走らせて parity を確認**してから切替（§13 M3） |
+
+### 6.6 判断記録: 行の閲覧可否を事前展開しない
+
+行述語は**読取時に索引テーブル上で評価する**（§6.2）。「レコード × 閲覧者」の可否を書込時に計算して保存しておく
+（事前展開・materialized ACL）方式は採らない。
+
+kintone はレコードのアクセス権をこの方式で実装しており、読取は速いが、事前評価の量が
+「レコード数 × アクセス権の設定数 × アクセス権をもつユーザー/組織/グループの数」で膨らむ。
+公式資料は、アクセス権の変更に 1 時間以上かかった例と、その間は同一ドメインの全アプリで設定変更ができず、
+対象アプリへのレコード追加・更新もロックエラーになることを挙げている
+（[cybozu.dev: パフォーマンスに影響を与えないアクセス権の管理](https://cybozu.dev/ja/kintone/tips/best-practices/performance/managing-permissions-not-to-impact-on-performance/)・
+[アクセス権の事前評価とアプリの更新](https://cybozu.dev/ja/kintone/tips/development/customize/columns/access-permissions-evaluation-app-update/)）。
+
+本設計で事前展開を採らない理由:
+
+- **フルプール**では、1 テナントの権限変更が書込の嵐になり、共有プールの全テナントの書込レイテンシに波及する（§16.8）
+- **剥奪の即時性**（PIT-18）と両立しにくい。展開の再計算中は古い可否が残る
+- 読取の遅さは、`row_policy` の参照列を `indexed` 必須にし（§6.3）、見える行が少ない利用者は
+  行述語の和集合から入る（認可駆動・query-optimizer.md §5.1）ことで抑えられる
+- 事前展開が必要になるのは、行述語が索引で評価できない形（任意の計算式など）を許した場合である。
+  `PolicyExpr` は閉じた語彙なので、その形はそもそも作れない
 
 ---
 
@@ -950,6 +1000,10 @@ pub struct ColumnConfig {
 ```
 
 - **サーバが検証する**: 存在しない `field_id`・マスク列の表示指定・`PerViewer` 列でのソート指定を拒否
+- **1 ビューあたりのルックアップ・ロールアップ列は既定 12 本まで**（テナント設定で変更可）。各列が 1 ページごとに
+  参照先の行述語つきの解決を要するため。超過はスキーマ検証で 422。SharePoint のリストビューも
+  ルックアップ等の結合を 12 本までに制限している（[Microsoft サポート](https://support.microsoft.com/en-us/sharepoint/lists/data-and-lists/list-view-threshold-for-large-lists-and-libraries)）。
+  解決は列ごとの N+1 ではなく、ページの `record_int` の集合で列ごとに 1 本の一括クエリにする（query-optimizer.md §6.4）
 - 保存は v1 どおり `artifact(kind=data_view)` の枠に乗せ、ReBAC 共有と不変バージョンを継承
 - **実行は必ず `run_query` を経由**し、**閲覧者本人の権限で毎回再評価**（作成者の権限を引き継がない・v1 の不変条件）
 
@@ -1109,7 +1163,7 @@ Lists / Teable の UX は「どの列でも絞り込める」だが、本方式�
 ```text
 ユーザーが「備考」列でフィルタしようとする
   → 未索引 → 403 ではなく「この列での絞り込みを有効にしますか？」を提示
-  → 小さいテーブル（閾値以下）は即座にバックフィルして透過的に有効化
+  → 小さいテーブル（2 万行未満）は即座にバックフィルして透過的に有効化
   → 大きいテーブルは jobq でバックフィル（進捗表示・中断再開可）→ 完了後に有効化
 ```
 
@@ -1133,7 +1187,13 @@ absent  ──promote──▶  building  ──収束──▶  active  ──d
 
 - バックフィルは `crates/jobq` のバッチジョブ。**チャンク単位・冪等・中断再開可**
 - 逆方向（一定期間使われない索引の降格）も同じ機構で行える
-- **テーブルあたりの索引列数に上限**を設け、超過時は明示承認を要求する（無自覚な肥大化を防ぐ・→ **PIT-72**）
+- **テーブルあたりの索引列数に上限**を設け、超過時は明示承認を要求する（無自覚な肥大化を防ぐ・→ **PIT-72**）。
+  **既定は 20 列**（テナント設定で変更可・承認つきで超過可）。システム擬似列は数えない
+- **ビューの保存と、グリッドでの並べ替え・絞り込みを昇格の契機にする。** 2 万行未満は即時、それ以上は裏で作り、
+  完了まではその列での操作を「準備中」と表示する
+- 数値は SharePoint Online の挙動を叩き台にした（索引は 1 リスト 20 本まで・保存済みビューと並べ替えで自動作成・
+  2 万件以上は裏で作成。[PnP: Large lists and large libraries](https://pnp.github.io/community-docs/articles/large-lists-large-libraries-in-SharePoint.html)）。
+  SharePoint（オンプレ）は閾値超過後に索引を作れなかったが、本方式はオンラインのバックフィルなのでその制約は無い
 - v1 の `CREATE INDEX` 方式ではこの挙動は危険で選べなかった
 
 ---
@@ -1305,6 +1365,10 @@ src / dst の 2 テーブルに跨る**（§7.1）ため、テナント内の分
 - **統計**: 行数カウンタ・値頻度表（種類数の少ない列は正確な件数）・フィールド統計（最頻値・ヒストグラム）・
   リンク統計を持ち、outbox 消費側と統計収集ジョブで更新する。クエリコンパイラの戦略選択に使う
   （Salesforce が自前オプティマイザを持つのと同じ理由）。詳細は [query-optimizer.md §4](./data/query-optimizer.md)
+- **走査効率を第一の指標にする**: リクエストごとの「走査した索引エントリ数 ÷ 返した行数」を記録し、
+  テーブル・ビュー単位で p95 を出す。応答時間はキャッシュの温まり方や同居テナントで揺れるが、走査数は計画の良し悪しを
+  直接表す（kintone も `Query_time` より `Rows_examined` を見るよう述べている・
+  [Cybozu Inside Out 2018](https://blog.cybozu.io/entry/2018/08/08/080000)）。query-optimizer.md §8 のフィードバックと同じ記録を使う
 - **バックフィルの可観測性**: 索引昇格ジョブの進捗・残件・ETA を管理画面に出す
 - **多値上限**: `multi_select` / `link` の 1 レコードあたり要素数に上限（既定値を設定可能に）
 - **プール分割の発火監視**: WAL 生成レート・`data_index_*` の死行率・**同一操作 p95 のテナント間比**を
@@ -1697,7 +1761,7 @@ covering read へ切り替える**。判定には平均行幅の統計が要る�
 |---|---|
 | 集計の事前計算 | ダッシュボードの集計が毎回全走査。`Invariant` なテーブルに限り事前集計してよい（§7.4 と同じ規則が流用できる） |
 | 件数クエリ | 上限付きでも 2 本目のクエリ。非同期化するか要求時のみに絞るか |
-| lookup の N+1 | フィールドごとに 1 クエリ。5 リンク列のグリッドで +5 本。1 本にまとめられる |
+| lookup の N+1 | **方針決定**: 列ごとに 1 本の一括クエリ（`record_int` の集合で引く）＋ 1 ビュー 12 列まで（§8.2）。往復を 1 本へ畳むかは計測で決める |
 
 ### 16.10 優先順位
 
