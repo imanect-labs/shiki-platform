@@ -245,12 +245,17 @@ impl DataStore {
                 }
             }
         }
-        for rt in &must_view {
-            if *rt != root && !self.can(ctx, *rt, Relation::Viewer).await? {
-                return Err(DataError::Invalid(
-                    "派生フィールドの参照先テーブルが見つかりません".into(),
-                ));
-            }
+        // 参照先テーブルの viewer はまとめて BatchCheck 1 往復で問う（Task 15.9）。
+        let az = self.authz_memo();
+        let asks: Vec<(Relation, authz::FgaObject)> = must_view
+            .iter()
+            .filter(|rt| **rt != root)
+            .map(|rt| (Relation::Viewer, ctx.ns().data_table(&rt.to_string())))
+            .collect();
+        if az.check_all(ctx, &asks).await?.iter().any(|ok| !ok) {
+            return Err(DataError::Invalid(
+                "派生フィールドの参照先テーブルが見つかりません".into(),
+            ));
         }
         let cat = self
             .load_catalog(ctx, root, app_id, has_record_shares, schema)
@@ -280,7 +285,6 @@ impl DataStore {
                 .filter(|rt| cat.tables.get(rt).is_some_and(|t| t.app_id == app_id))
                 .collect();
             let owner = ctx.subject();
-            let az = self.authz_memo();
             for rt in refs {
                 let ok =
                     viewers_contained(&az, ctx, table_id, table_id.is_none().then_some(&owner), rt)
