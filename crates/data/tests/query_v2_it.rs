@@ -18,7 +18,11 @@
     clippy::print_stderr,
     clippy::too_many_lines,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::many_single_char_names,
+    clippy::similar_names,
+    clippy::type_complexity
 )]
 
 mod common;
@@ -402,15 +406,13 @@ async fn all_pages(
 ) -> (Vec<Uuid>, data::QueryExecStats) {
     let mut out = Vec::new();
     let mut q = q.clone();
-    let mut last = data::QueryExecStats::default();
     for _ in 0..1_000 {
         let (r, dbg) = store.run_query_debug(c, table, &q, tuning).await.unwrap();
         assert_eq!(dbg.stats.verify_dropped, 0, "事後検査で行が落ちた: {q:?}");
         out.extend(r.items.unwrap().into_iter().map(|x| x.id));
-        last = dbg.stats;
         match r.next_cursor {
             Some(cur) => q.cursor = Some(cur),
-            None => return (out, last),
+            None => return (out, dbg.stats),
         }
     }
     panic!("ページングが終わらない: {q:?}");
