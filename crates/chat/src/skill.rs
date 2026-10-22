@@ -11,6 +11,7 @@
 //! 解決経路（[`AppliedSkill::resolve`]）を通る。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use agent_core::AgentOptions;
 use authz::AuthContext;
@@ -199,7 +200,7 @@ impl AppliedSkill {
     pub(crate) async fn audit_apply(&self, db: &PgPool, ctx: &AuthContext, run: &ClaimedRun) {
         let recorder = AuditRecorder::new(db.clone());
         let entry = AuditEntry {
-            action: "skill.apply",
+            action: AuditAction::SkillApply,
             object_type: "artifact",
             object_id: &self.id.to_string(),
             decision: Decision::Allow,

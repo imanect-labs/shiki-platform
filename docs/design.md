@@ -187,6 +187,10 @@ flowchart LR
 - 注: ここで codegen するのは**粗い語彙（スコープ/relation名/ツール名）**であり、
   **インスタンス単位の実認可は依然 OpenFGA（ReBAC）＋行レベル ABAC 述語**で行う（語彙の型安全 ≠ 認可判定）。
   RBAC のロール×権限表をコアにはしない（ロール階層・個別共有で RBAC ロールが爆発するため／ReBAC維持）。
+- **監査ログの操作の種類（action）も同じ扱い**: `storage::audit::AuditAction`（`crates/storage/src/audit_action.rs`）を
+  単一定義とし、記録する文字列・表示名・分類を 1 か所に持つ。監査の書き込みは型でこの語彙に閉じ、TS
+  （`web/src/generated/audit-actions.ts`）へ生成して監査ログ画面の絞り込み・表示名に使う（#830）。
+  記録済みの行は書き換えないので、**一度記録した文字列は変えない**。
 
 #### 4.1.1 SaaS コントロールプレーンと外部クライアント境界（skillex）
 

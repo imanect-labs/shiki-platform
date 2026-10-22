@@ -18,6 +18,7 @@ use axum::{
     response::Response,
 };
 use serde_json::json;
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Decision};
 
 use crate::{
@@ -42,7 +43,7 @@ pub async fn require_org_admin(
             .record(
                 &ctx,
                 AuditEntry {
-                    action: "org_admin.access",
+                    action: AuditAction::OrgAdminAccess,
                     object_type: "organization",
                     object_id: &object_id,
                     decision: Decision::Deny,

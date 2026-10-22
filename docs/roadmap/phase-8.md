@@ -49,7 +49,7 @@
 - **area**: frontend / **path**: `web/`, `crates/api`
 - **依存**: 8.1
 - **仕様**:
-  - 監査ビュー（管理コンソール › 監査ログ）: 期間/actor/action/対象/decision/引用chunk/trace_id でのフィルタ検索、引用chunk閲覧
+  - 監査ビュー（管理コンソール › 監査ログ）: 期間/actor/action（分類・表示名は単一定義の語彙から生成・#830）/対象/decision/引用chunk/trace_id でのフィルタ検索、引用chunk閲覧
     （元文書は通常の ReBAC で開くリンク・PIT-65）、1回答に紐づく権限判定と引用の一覧表示（#634 時点では trace_id で絞る・#829）。
     **CSV/JSONLエクスポート**（監査閲覧者のみ、検索・エクスポート自体も監査）。
   - 権限境界: **監査閲覧ロール（`organization#audit_viewer`）を持つ人のみ**アクセス。admin とは独立で互いに含意しない

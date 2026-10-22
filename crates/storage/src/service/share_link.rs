@@ -11,6 +11,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 use super::share_link_util::{hash_password, kind_of, new_share_token};
 use crate::model::{GeneralAccessLevel, ShareLink};
@@ -89,7 +90,7 @@ impl StorageService {
         trace_id: Option<&str>,
     ) -> Result<ShareLink, StorageError> {
         let obj = self
-            .authorize_share_admin(ctx, node_id, "node.share_link.create", trace_id)
+            .authorize_share_admin(ctx, node_id, AuditAction::NodeShareLinkCreate, trace_id)
             .await?;
         // B-5: 過去の期限は「作れたように見えて動かない」リンクになるため拒否する（400）。認可通過後に
         // 検証する（未認可に内部状態を晒さない）。
@@ -165,7 +166,7 @@ impl StorageService {
                 ctx,
                 node_id,
                 kind,
-                "node.share_link.create",
+                AuditAction::NodeShareLinkCreate,
                 json!({
                     "link_id": link_id,
                     "audience": audience,
@@ -207,7 +208,7 @@ impl StorageService {
         node_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Vec<ShareLink>, StorageError> {
-        self.authorize_share_admin(ctx, node_id, "node.share_link.list", trace_id)
+        self.authorize_share_admin(ctx, node_id, AuditAction::NodeShareLinkList, trace_id)
             .await?;
         let rows: Vec<ShareLinkRow> = sqlx::query_as(&format!(
             "SELECT l.link_id, l.token, l.audience, l.role, l.expires_at, \
@@ -234,7 +235,7 @@ impl StorageService {
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
         let Some((node_id, obj)) = self
-            .authorize_link_owner(ctx, link_id, "node.share_link.revoke", trace_id)
+            .authorize_link_owner(ctx, link_id, AuditAction::NodeShareLinkRevoke, trace_id)
             .await?
         else {
             return Err(StorageError::Forbidden);
@@ -291,7 +292,7 @@ impl StorageService {
                 ctx,
                 node_id,
                 kind_of(&obj),
-                "node.share_link.revoke",
+                AuditAction::NodeShareLinkRevoke,
                 json!({ "link_id": link_id }),
                 trace_id,
             )
@@ -313,7 +314,7 @@ impl StorageService {
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
         let Some((node_id, obj)) = self
-            .authorize_link_owner(ctx, link_id, "node.share_link.extend", trace_id)
+            .authorize_link_owner(ctx, link_id, AuditAction::NodeShareLinkExtend, trace_id)
             .await?
         else {
             return Err(StorageError::Forbidden);
@@ -356,7 +357,7 @@ impl StorageService {
                 ctx,
                 node_id,
                 kind_of(&obj),
-                "node.share_link.extend",
+                AuditAction::NodeShareLinkExtend,
                 json!({ "link_id": link_id, "expires_at": expires_at }),
                 trace_id,
             )
@@ -375,7 +376,7 @@ impl StorageService {
         &self,
         ctx: &AuthContext,
         link_id: Uuid,
-        action: &'static str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<Option<(Uuid, FgaObject)>, StorageError> {
         let node_id: Option<Uuid> = sqlx::query_scalar(
@@ -415,7 +416,7 @@ impl StorageService {
         ctx: &AuthContext,
         node_id: Uuid,
         kind: NodeKind,
-        action: &'static str,
+        action: AuditAction,
         metadata: serde_json::Value,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {

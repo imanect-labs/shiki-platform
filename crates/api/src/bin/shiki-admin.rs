@@ -30,6 +30,7 @@ use authz::{
 };
 use authz::{AuthContext, Principal};
 use sqlx::postgres::PgPoolOptions;
+use storage::audit::AuditAction;
 use storage::{ObjectStore, S3ObjectStore};
 use uuid::Uuid;
 
@@ -384,7 +385,7 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                 &mut tx,
                 &ctx,
                 storage::audit::AuditEntry {
-                    action: "tenant.retenant",
+                    action: AuditAction::TenantRetenant,
                     object_type: "organization",
                     object_id: &audit_org,
                     decision: storage::audit::Decision::Allow,

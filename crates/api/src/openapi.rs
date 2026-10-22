@@ -273,6 +273,7 @@ use utoipa::{
         crate::routes::org_audit::AuditEventsResponse,
         storage::audit_view::AuditEvent,
         storage::audit_view::AuditDecision,
+        storage::audit::AuditCategory,
         crate::routes::org_audit::AuditFormat,
         crate::routes::org_admin_insights::InsightSettingsDto,
         crate::routes::org_admin_insights::TaskMinutesUpdate,

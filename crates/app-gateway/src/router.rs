@@ -6,6 +6,7 @@
 //! 全ての許可/拒否を監査へ残す（拒否は security タグ付き・trace_id 貫通）。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, AuthzClient, Principal, PrincipalKind};
 use axum::{
@@ -319,7 +320,7 @@ async fn record(
         .record(
             auth,
             AuditEntry {
-                action: "gateway.call",
+                action: AuditAction::GatewayCall,
                 object_type: "miniapp",
                 object_id: &installation.app_id.to_string(),
                 decision,

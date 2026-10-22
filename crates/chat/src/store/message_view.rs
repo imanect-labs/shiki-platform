@@ -7,6 +7,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use storage::audit::AuditAction;
 
 use std::collections::{HashMap, HashSet};
 
@@ -146,8 +147,14 @@ impl ChatStore {
         from_seq: i64,
         trace_id: Option<&str>,
     ) -> Result<BoxStream<'static, StreamEvent>, ChatError> {
-        self.require_thread(ctx, thread_id, Relation::Viewer, "thread.stream", trace_id)
-            .await?;
+        self.require_thread(
+            ctx,
+            thread_id,
+            Relation::Viewer,
+            AuditAction::ThreadStream,
+            trace_id,
+        )
+        .await?;
         let actor: Option<String> = sqlx::query_scalar(
             "SELECT actor FROM generation_run \
              WHERE run_id = $1 AND thread_id = $2 AND tenant_id = $3",

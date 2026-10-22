@@ -5,6 +5,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 impl StorageService {
     /// declare: メタを申告し、staging への presigned PUT URL を得る。
@@ -55,7 +56,7 @@ impl StorageService {
                 ctx,
                 Relation::Editor,
                 &ctx.ns().file(&target.to_string()),
-                "file.upload_url.issue",
+                AuditAction::FileUploadUrlIssue,
                 "file",
                 &target.to_string(),
                 trace_id,
@@ -70,7 +71,7 @@ impl StorageService {
                         ctx,
                         Relation::Editor,
                         &ctx.ns().folder(&p.to_string()),
-                        "file.upload_url.issue",
+                        AuditAction::FileUploadUrlIssue,
                         "folder",
                         &p.to_string(),
                         trace_id,
@@ -83,7 +84,7 @@ impl StorageService {
                         ctx,
                         Relation::Member,
                         &ctx.ns().organization(&ctx.org),
-                        "file.upload_url.issue",
+                        AuditAction::FileUploadUrlIssue,
                         "organization",
                         &ctx.org,
                         trace_id,
@@ -125,7 +126,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "file.upload_url.issue",
+                    action: AuditAction::FileUploadUrlIssue,
                     object_type: "file",
                     object_id: &upload_id.to_string(),
                     decision: Decision::Allow,
@@ -154,7 +155,7 @@ impl StorageService {
         self.require_read(
             ctx,
             &ctx.ns().file(&file_id.to_string()),
-            "file.download_url.issue",
+            AuditAction::FileDownloadUrlIssue,
             "file",
             &file_id.to_string(),
             trace_id,
@@ -175,7 +176,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "file.download_url.issue",
+                    action: AuditAction::FileDownloadUrlIssue,
                     object_type: "file",
                     object_id: &file_id.to_string(),
                     decision: Decision::Allow,

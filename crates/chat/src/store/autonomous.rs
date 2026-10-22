@@ -7,6 +7,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, Relation};
 use serde_json::json;
@@ -69,7 +70,7 @@ impl ChatStore {
             ctx,
             thread_id,
             Relation::Editor,
-            "thread.set_autonomous_mode",
+            AuditAction::ThreadSetAutonomousMode,
             trace_id,
         )
         .await?;
@@ -98,7 +99,7 @@ impl ChatStore {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "thread.set_autonomous_mode",
+                    action: AuditAction::ThreadSetAutonomousMode,
                     object_type: "thread",
                     object_id: &thread_id.to_string(),
                     decision: Decision::Allow,

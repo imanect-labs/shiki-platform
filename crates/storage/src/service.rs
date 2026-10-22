@@ -232,10 +232,11 @@ fn node_fga_object(ns: &Namespace<'_>, kind: NodeKind, id: Uuid) -> FgaObject {
 }
 
 /// リネーム/移動の監査アクション名（種別ごと）。
-fn update_action(kind: NodeKind) -> &'static str {
+fn update_action(kind: NodeKind) -> crate::audit::AuditAction {
+    use crate::audit::AuditAction;
     match kind {
-        NodeKind::File => "file.update",
-        NodeKind::Folder => "folder.update",
+        NodeKind::File => AuditAction::FileUpdate,
+        NodeKind::Folder => AuditAction::FolderUpdate,
     }
 }
 

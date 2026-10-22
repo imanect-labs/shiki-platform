@@ -51,6 +51,8 @@ pub struct AuditFilter {
     pub actor: Option<String>,
     /// 操作の種類。末尾が `.` なら前方一致（`file.` で file 系すべて）、それ以外は完全一致。
     pub action: Option<String>,
+    /// 操作の分類（#830）。語彙でその分類に属する操作のどれかに一致する行。
+    pub category: Option<crate::audit::AuditCategory>,
     pub decision: Option<AuditDecision>,
     pub object_type: Option<String>,
     pub object_id: Option<String>,
@@ -255,6 +257,13 @@ fn build_query<'a>(
             q.push(" AND a.action = ").push_bind(action);
         }
     }
+    if let Some(category) = f.category {
+        let actions: Vec<&'static str> = category
+            .actions()
+            .map(crate::audit::AuditAction::as_str)
+            .collect();
+        q.push(" AND a.action = ANY(").push_bind(actions).push(")");
+    }
     if let Some(decision) = f.decision {
         q.push(" AND a.decision = ").push_bind(decision.as_str());
     }
@@ -328,6 +337,7 @@ mod tests {
         let f = AuditFilter {
             actor: Some("bob@example.com".into()),
             action: Some("file.".into()),
+            category: Some(crate::audit::AuditCategory::File),
             decision: Some(AuditDecision::Deny),
             object_type: Some("file".into()),
             object_id: Some("f1".into()),
@@ -349,8 +359,9 @@ mod tests {
         assert!(sql.contains("a.tenant_id = $6 AND a.org = $7"));
         assert!(sql.contains("a.actor = $10"));
         assert!(sql.contains("a.action LIKE"));
+        assert!(sql.contains("a.action = ANY($12)"));
         assert!(sql.contains("(a.created_at, a.id) <"));
-        assert!(sql.ends_with("ORDER BY a.created_at DESC, a.id DESC LIMIT $18"));
+        assert!(sql.ends_with("ORDER BY a.created_at DESC, a.id DESC LIMIT $19"));
         // 利用者の入力は SQL に埋め込まない。
         assert!(!sql.contains("bob@example.com"));
         assert!(!sql.contains("f1"));

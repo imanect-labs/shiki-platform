@@ -3,6 +3,7 @@
 
 use authz::{AuthContext, Relation};
 use serde_json::json;
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::SecretError;
@@ -22,7 +23,13 @@ impl super::SecretStore {
     ) -> Result<(), SecretError> {
         // owner だけが授権できる（require が owner を確認・不足は Deny 監査）。
         let obj = self
-            .require(ctx, id, Relation::Owner, "secret.grant_can_use", trace_id)
+            .require(
+                ctx,
+                id,
+                Relation::Owner,
+                AuditAction::SecretGrantCanUse,
+                trace_id,
+            )
             .await?;
         self.authz
             .write_tuple(subject, Relation::CanUse, &obj)
@@ -30,7 +37,7 @@ impl super::SecretStore {
             .map_err(|e| SecretError::Internal(format!("can_use tuple: {e}")))?;
         self.record_audit(
             ctx,
-            "secret.grant_can_use",
+            AuditAction::SecretGrantCanUse,
             &id.to_string(),
             trace_id,
             json!({ "subject": subject.to_string() }),
