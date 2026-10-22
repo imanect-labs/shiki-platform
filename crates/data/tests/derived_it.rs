@@ -18,7 +18,8 @@
     clippy::too_many_lines,
     clippy::many_single_char_names,
     clippy::unreadable_literal,
-    clippy::print_stderr
+    clippy::print_stderr,
+    clippy::cognitive_complexity
 )]
 
 mod common;
@@ -241,6 +242,35 @@ async fn many_to_many_link_reads_both_directions_with_partition_pruning() {
         let plan = explain_small(&pool, st).await;
         assert!(relations_in_plan(&plan, "data_link").len() <= 1, "{plan}");
     }
+
+    // 対称列越しのロールアップ・lookup（逆方向から見た集計）も引ける（閲覧者の権限で計算・per_viewer）。
+    let mut cs = customers.schema.clone();
+    let mut titles = field("project_titles", FieldType::Lookup);
+    titles.lookup = Some(data::LookupDef {
+        via_field: "projects".into(),
+        target_field: "title".into(),
+    });
+    cs.fields.push(titles);
+    cs.fields
+        .push(rollup("project_count", "projects", None, RollupOp::Count));
+    cs.aggregate_min_rows = Some(1);
+    let customers2 = store
+        .update_table_schema(&c, customers.id, cs, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        customers2
+            .schema
+            .field("project_count")
+            .unwrap()
+            .materialization,
+        Some(Materialization::PerViewer),
+        "対称列越しは参照元の行集合が閲覧者ごとに変わる"
+    );
+    let d = get(&store, &c, customers.id, c2).await;
+    assert_eq!(d["project_titles"], json!(["p1"]));
+    // 参照元（projects）の K は既定 5 なので、件数 1 は抑制される（参照先＝projects の宣言を継承）。
+    assert_eq!(d["project_count"], Value::Null);
 
     // 参照元の削除で逆方向行も消える。
     let r = store.get_record(&c, projects.id, p2, None).await.unwrap();
@@ -686,6 +716,16 @@ async fn materialized(
 /// 再計算が終わるまでは当該列がクエリ対象外（409）になる。
 #[tokio::test]
 async fn materialized_rollup_is_recomputed_and_excluded_until_done() {
+    recompute_case(None).await;
+}
+
+/// 同上（対称列つきのリンク: 影響する参照元を参照先の逆方向行から主キーで引く経路）。
+#[tokio::test]
+async fn materialized_rollup_over_symmetric_link_is_recomputed() {
+    recompute_case(Some("orders")).await;
+}
+
+async fn recompute_case(symmetric: Option<&str>) {
     let Some(pool) = setup().await else { return };
     let Some((store, _authz)) = fga_store(pool.clone()).await else {
         return;
@@ -713,7 +753,7 @@ async fn materialized_rollup_is_recomputed_and_excluded_until_done() {
             NewDataTable {
                 name: "orders".into(),
                 schema: schema(vec![
-                    link("items", lines.id, LinkCardinality::ManyToMany, None),
+                    link("items", lines.id, LinkCardinality::ManyToMany, symmetric),
                     total,
                 ]),
             },

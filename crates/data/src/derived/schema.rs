@@ -152,7 +152,7 @@ fn cross_refs(f: &FieldDef) -> Vec<(String, Option<String>)> {
 #[derive(Debug, Default)]
 pub(crate) struct DerivedSave {
     /// 材料化した列の依存登録（列, 参照先の内部キー, リンク列）。
-    pub deps: Vec<(FieldId, i64, FieldId)>,
+    pub deps: Vec<super::materialize::Dep>,
     /// 対称列を参照先へ作るか。
     pub needs_symmetric: bool,
 }
@@ -315,16 +315,20 @@ impl DataStore {
             f.result_type = ty;
             if f.is_materialized() {
                 for (rt, link) in cat.materialized_refs(root, &f.key) {
-                    let (Some(t), Some(l)) = (
-                        cat.tables.get(&rt),
-                        cat.tables
-                            .get(&root)
-                            .and_then(|r| r.schema.field(&link))
-                            .map(|l| l.id),
-                    ) else {
+                    let link_def = cat.tables.get(&root).and_then(|r| r.schema.field(&link));
+                    let (Some(t), Some(l)) = (cat.tables.get(&rt), link_def) else {
                         continue;
                     };
-                    deps.push((id, t.keys.table_int, l));
+                    deps.push(super::materialize::Dep {
+                        field: id,
+                        ref_table_int: t.keys.table_int,
+                        link: l.id,
+                        sym: l
+                            .link
+                            .as_ref()
+                            .filter(|d| !d.reverse)
+                            .and_then(|d| d.symmetric_field),
+                    });
                 }
             }
         }

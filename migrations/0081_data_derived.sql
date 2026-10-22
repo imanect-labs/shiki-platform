@@ -26,6 +26,9 @@ create table data_derived_dep (
     tenant_int    integer  not null,
     field_id      smallint not null check (field_id >= 0),
     link_field_id smallint not null check (link_field_id >= 0),
+    -- リンクの対称列（参照先側の field_id）。あれば影響する参照元を参照先の逆方向行から主キーで引く
+    -- （無ければ参照元パーティション内のリンク行を参照先で絞る）。
+    sym_field_id  smallint check (sym_field_id >= 0),
     primary key (tenant_int, ref_table_int, table_int, field_id, link_field_id)
 );
 create index data_derived_dep_src_idx on data_derived_dep (tenant_int, table_int);

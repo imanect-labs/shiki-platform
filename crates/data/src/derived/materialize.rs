@@ -293,11 +293,24 @@ pub(crate) async fn mark_all_pending(
     Ok(())
 }
 
-/// 依存登録を宣言へ合わせる（スキーマ保存の Tx）。`refs` は (列, 参照先の内部キー, リンク列の field_id)。
+/// 材料化した列の依存登録の 1 行。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Dep {
+    /// 材料化した列。
+    pub field: FieldId,
+    /// 参照先テーブルの内部キー。
+    pub ref_table_int: i64,
+    /// 辿るリンク列（参照元側）。
+    pub link: FieldId,
+    /// リンクの対称列（参照先側）。あれば影響する参照元を逆方向行から主キーで引ける。
+    pub sym: Option<FieldId>,
+}
+
+/// 依存登録を宣言へ合わせる（スキーマ保存の Tx）。
 pub(crate) async fn sync_deps(
     conn: &mut PgConnection,
     keys: TableKeys,
-    refs: &[(FieldId, i64, FieldId)],
+    deps: &[Dep],
 ) -> Result<(), DataError> {
     sqlx::query("DELETE FROM data_derived_dep WHERE tenant_int = $1 AND table_int = $2")
         .bind(keys.tenant_int)
@@ -305,17 +318,18 @@ pub(crate) async fn sync_deps(
         .execute(&mut *conn)
         .await
         .map_err(map_db)?;
-    for (field, ref_table_int, link) in refs {
+    for d in deps {
         sqlx::query(
             "INSERT INTO data_derived_dep \
-               (tenant_int, ref_table_int, table_int, field_id, link_field_id) \
-             VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+               (tenant_int, ref_table_int, table_int, field_id, link_field_id, sym_field_id) \
+             VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
         )
         .bind(keys.tenant_int)
-        .bind(ref_table_int)
+        .bind(d.ref_table_int)
         .bind(keys.table_int)
-        .bind(field_id_i16(*field)?)
-        .bind(field_id_i16(*link)?)
+        .bind(field_id_i16(d.field)?)
+        .bind(field_id_i16(d.link)?)
+        .bind(d.sym.map(field_id_i16).transpose()?)
         .execute(&mut *conn)
         .await
         .map_err(map_db)?;
@@ -374,8 +388,8 @@ async fn enqueue_dependents(
     ref_keys: TableKeys,
     record_ints: &[i64],
 ) -> Result<(), DataError> {
-    let deps: Vec<(i64, i16, i16)> = sqlx::query_as(
-        "SELECT table_int, field_id, link_field_id FROM data_derived_dep \
+    let deps: Vec<(i64, i16, i16, Option<i16>)> = sqlx::query_as(
+        "SELECT table_int, field_id, link_field_id, sym_field_id FROM data_derived_dep \
          WHERE tenant_int = $1 AND ref_table_int = $2",
     )
     .bind(ref_keys.tenant_int)
@@ -386,25 +400,43 @@ async fn enqueue_dependents(
     if deps.is_empty() {
         return Ok(());
     }
-    let mut by_link: BTreeMap<(i64, i16), Vec<i16>> = BTreeMap::new();
-    for (t, f, l) in deps {
-        by_link.entry((t, l)).or_default().push(f);
+    // (参照元 table_int, リンク列, 対称列) → 材料化した列。
+    type LinkKey = (i64, i16, Option<i16>);
+    let mut by_link: BTreeMap<LinkKey, Vec<i16>> = BTreeMap::new();
+    for (t, f, l, sym) in deps {
+        by_link.entry((t, l, sym)).or_default().push(f);
     }
-    for ((table_int, link), fields) in by_link {
-        // 参照元のパーティション（table_int）の中で、変わった参照先を指す辺だけを引く。
-        let affected: Vec<i64> = sqlx::query_scalar(
-            "SELECT DISTINCT src_record FROM data_link \
-             WHERE tenant_int = $1 AND table_int = $2 AND field_id = $3 \
-               AND dst_table_int = $4 AND dst_record = ANY($5::int8[])",
-        )
-        .bind(ref_keys.tenant_int)
-        .bind(table_int)
-        .bind(link)
-        .bind(ref_keys.table_int)
-        .bind(record_ints)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(map_db)?;
+    for ((table_int, link, sym), fields) in by_link {
+        let affected: Vec<i64> = match sym {
+            // 対称列あり: 参照先の逆方向行（参照先のパーティション・主キーの前方一致）から引く。
+            Some(sym) => sqlx::query_scalar(
+                "SELECT DISTINCT dst_record FROM data_link \
+                 WHERE tenant_int = $1 AND table_int = $2 AND field_id = $3 \
+                   AND src_record = ANY($4::int8[]) AND dst_table_int = $5",
+            )
+            .bind(ref_keys.tenant_int)
+            .bind(ref_keys.table_int)
+            .bind(sym)
+            .bind(record_ints)
+            .bind(table_int)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(map_db)?,
+            // 片方向: 参照元のパーティション（table_int）の中で、変わった参照先を指す辺だけを引く。
+            None => sqlx::query_scalar(
+                "SELECT DISTINCT src_record FROM data_link \
+                 WHERE tenant_int = $1 AND table_int = $2 AND field_id = $3 \
+                   AND dst_table_int = $4 AND dst_record = ANY($5::int8[])",
+            )
+            .bind(ref_keys.tenant_int)
+            .bind(table_int)
+            .bind(link)
+            .bind(ref_keys.table_int)
+            .bind(record_ints)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(map_db)?,
+        };
         if affected.is_empty() {
             continue;
         }
@@ -446,8 +478,10 @@ pub(crate) async fn after_record_write(
         Some(_) => {}
         None => {
             clear_pending(conn, table.keys, None, Some(record_int)).await?;
+            // 依存する参照元を（逆方向行が残っているうちに）再計算待ちへ積んでから、
             // 対称列の逆方向行（このレコードが参照先側）を消す。参照元の順方向行は参照元の本体と
             // 揃えて残す（宙に浮いた参照は読取で落ちる）。
+            enqueue_dependents(conn, tenant_id, table.keys, &[record_int]).await?;
             let rev: Vec<i16> = table
                 .schema
                 .fields
@@ -455,7 +489,8 @@ pub(crate) async fn after_record_write(
                 .filter(|f| f.is_reverse_link())
                 .map(|f| field_id_i16(f.id))
                 .collect::<Result<_, _>>()?;
-            crate::index::link::delete_reverse_rows(conn, table.keys, &rev, record_int).await?;
+            return crate::index::link::delete_reverse_rows(conn, table.keys, &rev, record_int)
+                .await;
         }
     }
     enqueue_dependents(conn, tenant_id, table.keys, &[record_int]).await
