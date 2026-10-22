@@ -155,6 +155,37 @@ impl DataStore {
     }
 }
 
+/// 指定フィールドの active な索引だけを検証する（リンク値の移行の完了時・[`crate::link_values`]）。
+pub(crate) async fn verify_fields(
+    conn: &mut PgConnection,
+    keys: TableKeys,
+    schema: &TableSchema,
+    tenant_id: &str,
+    fields: &std::collections::BTreeSet<FieldId>,
+) -> Result<IndexParityReport, DataError> {
+    let mut report = IndexParityReport::default();
+    for (field, table, state) in load_states(&mut *conn, keys).await? {
+        if state != IndexState::Active || !fields.contains(&field) {
+            continue;
+        }
+        let Some((label, counts)) =
+            check_one(&mut *conn, keys, schema, tenant_id, field, table).await?
+        else {
+            continue;
+        };
+        report.checked += 1;
+        if counts != (0, 0) {
+            report.mismatches.push(IndexParityMismatch {
+                field: label,
+                index_table: table.relation(),
+                missing: counts.0,
+                extra: counts.1,
+            });
+        }
+    }
+    Ok(report)
+}
+
 /// 1 組を検証して `(ラベル, (missing, extra))` を返す。検証対象外（定義が消えた等）は `None`。
 async fn check_one(
     conn: &mut PgConnection,
@@ -269,6 +300,7 @@ async fn search_counts(
     counts(conn, sql, keys, jk, fid).await
 }
 
+/// unique の期待集合は本体の単値（要素 1 件の配列＝リンクの保存形はその要素）から導く。
 async fn unique_counts(
     conn: &mut PgConnection,
     keys: TableKeys,
@@ -294,9 +326,13 @@ async fn unique_counts(
         )
     };
     let sql = format!(
-        "WITH e AS (SELECT r.record_int, r.data -> $3 AS raw FROM data_record r \
+        "WITH e AS (SELECT r.record_int, x.raw FROM data_record r \
+                    CROSS JOIN LATERAL (SELECT CASE \
+                        WHEN jsonb_typeof(r.data -> $3) = 'array' \
+                         AND jsonb_array_length(r.data -> $3) = 1 THEN r.data -> $3 -> 0 \
+                        ELSE r.data -> $3 END AS raw) x \
                     WHERE r.tenant_int = $1 AND r.table_int = $2 \
-                      AND jsonb_typeof(r.data -> $3) IN ('string', 'number')), \
+                      AND jsonb_typeof(x.raw) IN ('string', 'number')), \
               a AS (SELECT record_int, val_norm FROM data_unique \
                     WHERE tenant_int = $1 AND table_int = $2 AND field_id = $4) \
          SELECT (SELECT count(*) FROM e WHERE NOT EXISTS (SELECT 1 FROM a \
@@ -316,7 +352,7 @@ async fn link_counts(
 ) -> Result<(i64, i64), DataError> {
     // 参照先が存在するエッジだけを比べる（宙に浮いた参照は索引に載せない・参照先の削除後に残る
     // 順方向行は本体側の参照も宙に浮いているので数えない）。
-    // v1 の record_ref は単一 UUID 文字列（ord 0）、リンク定義つきは配列（ord = 配列内の位置）。
+    // 保存形は配列（ord = 配列内の位置）。移行前の v1 の単一 UUID 文字列は ord 0（同じ索引行）。
     let sql = "WITH e AS (SELECT r.record_int AS src, 0::int2 AS ord, \
                             (SELECT d.record_int FROM data_record d \
                               WHERE d.tenant_int = $1 AND d.table_int = $5 \

@@ -506,7 +506,7 @@ impl DataStore {
                 continue;
             }
             let Some(v) = data.get(&f.key) else { continue };
-            // v1 は単一 UUID 文字列、リンク定義つきは UUID の配列（書込検証で形は確認済み）。
+            // 書込検証で UUID の配列へ正規化済み（文字列は移行前の v1 の保存形・念のため受ける）。
             let ids: Vec<Uuid> = match v {
                 Value::String(s) => vec![Uuid::parse_str(s).map_err(|_| {
                     DataError::Invalid(format!("'{}' は UUID 文字列である必要があります", f.key))

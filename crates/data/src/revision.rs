@@ -135,6 +135,7 @@ impl DataStore {
             .map(|r| {
                 let mut patch = r.patch.0;
                 Self::apply_mask_patches(&masked, &mut patch);
+                upgrade_link_patches(&table.schema, &mut patch);
                 RecordRevision {
                     record_id: r.record_id,
                     rev: r.rev,
@@ -145,6 +146,20 @@ impl DataStore {
                 }
             })
             .collect())
+    }
+}
+
+/// 履歴の差分に残る v1 の `record_ref` の値（単一 UUID 文字列）を、レコードの読取と同じ配列の形へ寄せる
+/// （値の移行前に記録された差分も、現行の外部形で返す）。
+fn upgrade_link_patches(schema: &crate::model::TableSchema, patch: &mut [FieldPatch]) {
+    for p in patch {
+        if schema
+            .field(&p.field)
+            .is_some_and(|f| f.field_type == crate::model::FieldType::RecordRef)
+        {
+            p.old = crate::field_key::upgrade_link_value(&p.old);
+            p.new = crate::field_key::upgrade_link_value(&p.new);
+        }
     }
 }
 

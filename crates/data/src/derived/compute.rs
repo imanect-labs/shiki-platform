@@ -31,7 +31,7 @@ pub(crate) struct RefRows {
     pub min_rows: i64,
 }
 
-/// 行のリンク列の値（参照先 id の並び）。v1 の `record_ref` は単一 UUID 文字列、リンク定義つきは配列、
+/// 行のリンク列の値（参照先 id の並び）。保存形は配列（移行前の v1 の単一 UUID 文字列も要素 1 件として読む）、
 /// 対称列は読取時に配列で入れたもの。
 pub(crate) fn linked_ids(row: &Map<String, Value>, link_key: &str) -> Vec<Uuid> {
     match row.get(link_key) {

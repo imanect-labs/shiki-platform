@@ -83,6 +83,18 @@ pub(crate) async fn validate_record_data(
             Some(v) => {
                 let normalized =
                     validate_field_value(ctx, f, v, resolver, max_multi_values).await?;
+                // リンクの空配列は「値なし」（null と同じ・required を空配列で満たさせない）。
+                if f.field_type == FieldType::RecordRef
+                    && normalized.as_array().is_some_and(Vec::is_empty)
+                {
+                    if f.required {
+                        return Err(DataError::Invalid(format!(
+                            "必須フィールド '{}' がありません",
+                            f.key
+                        )));
+                    }
+                    continue;
+                }
                 out.insert(f.key.clone(), normalized);
             }
         }
@@ -227,9 +239,18 @@ fn validate_link_value(
 ) -> Result<Value, DataError> {
     let name = &f.key;
     let Some(link) = &f.link else {
-        // v1 の record_ref: 単一 UUID 文字列。
-        require_uuid_str(v, name)?;
-        return Ok(v.clone());
+        // v1 の record_ref（リンク定義なし＝many_to_one・片方向）: 保存形は常に要素 1 件までの配列
+        // （data-platform §7.1）。互換のため単一 UUID 文字列の入力も受け、配列へ正規化して書く。
+        let arr = match v {
+            Value::String(_) => vec![v.clone()],
+            Value::Array(a) => a.clone(),
+            _ => {
+                return Err(DataError::Invalid(format!(
+                    "フィールド '{name}' は UUID 文字列（または要素 1 件までの UUID 配列）である必要があります"
+                )))
+            }
+        };
+        return canonical_link_array(name, &arr, 1);
     };
     // リンク定義つき: 値は常に UUID の配列（重複なし・単一値の側は 1 件まで・PIT-72 の上限）。
     let arr = v.as_array().ok_or_else(|| {
@@ -242,6 +263,11 @@ fn validate_link_value(
     } else {
         max_multi_values
     };
+    canonical_link_array(name, arr, max)
+}
+
+/// リンク値の配列を正準形（小文字ハイフン区切りの UUID・重複なし・`max` 件まで）にする。
+fn canonical_link_array(name: &str, arr: &[Value], max: usize) -> Result<Value, DataError> {
     if arr.len() > max {
         return Err(DataError::Invalid(format!(
             "'{name}' のリンク先が多すぎます（最大 {max}）"

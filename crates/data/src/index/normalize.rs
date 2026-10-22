@@ -130,7 +130,7 @@ pub(crate) fn field_keys(
             FieldKeys::Num(vec![(0, n.to_string())])
         }
         IndexTable::Link => {
-            // v1 の record_ref は単一 UUID 文字列。配列（Task 15.4 の多値リンク）も同じ形で受ける。
+            // 保存形は配列（ord = 配列内の位置）。移行前の v1 の単一 UUID 文字列は ord 0 の 1 件（同じキー）。
             let ids: Vec<&Value> = match v {
                 Value::Array(a) => a.iter().collect(),
                 other => vec![other],
@@ -147,6 +147,20 @@ pub(crate) fn field_keys(
                 })
                 .collect::<Result<Vec<_>, DataError>>()
                 .map(FieldKeys::Link)?
+        }
+        // リンク（record_ref）の unique は単一値の側だけ（v1 の record_ref）。保存形は要素 1 件までの配列
+        // （v1 の単一 UUID 文字列も移行が終わるまで受ける）。空配列は値なし。
+        IndexTable::Unique if f.field_type == FieldType::RecordRef && v.is_array() => {
+            match v.as_array().map(Vec::as_slice) {
+                Some([]) => return Ok(None),
+                Some([one]) => FieldKeys::Unique(
+                    one.as_str()
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                        .ok_or_else(bad)?
+                        .to_string(),
+                ),
+                _ => return Err(bad()),
+            }
         }
         IndexTable::Unique => FieldKeys::Unique(match v {
             Value::Number(n) => crate::numeric::canonical_number(n).ok_or_else(bad)?,

@@ -10,7 +10,7 @@
 //!   `data_link_field`（スキーマ改訂でだけ書き換わる宣言）から `INSERT … SELECT` で写す。
 //!   さらに `data_link_field` への複合 FK があるので、生の SQL で `false` を渡しても宣言が `true` なら
 //!   FK 違反で落ちる（部分一意 `WHERE single_valued` を迂回できない・PIT-72）。
-//! - v1 の `record_ref` は単一 UUID なので src 側は単一値（`single_valued = true`）。リンク定義
+//! - v1 の `record_ref`（リンク定義なし）は src 側が単一値（`single_valued = true`）。リンク定義
 //!   （`LinkDef`）つきの列はカーディナリティから決まる（[`crate::derived::types::LinkCardinality`]）。
 
 use std::collections::{BTreeSet, HashMap};

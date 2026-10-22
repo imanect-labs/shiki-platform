@@ -42,6 +42,7 @@ fn value_expr(f: &BField) -> Result<String, DataError> {
             }
             match f.kind {
                 FieldKind::Num => format!("((r.data ->> '{jk}'))::numeric"),
+                // リンクは多値として atom_sql が要素ごとに評価する（ソート・グループ化には使えない）。
                 FieldKind::Link => format!("lower(r.data ->> '{jk}')"),
                 _ => format!("((r.data ->> '{jk}') COLLATE \"C\")"),
             }
@@ -52,18 +53,26 @@ fn value_expr(f: &BField) -> Result<String, DataError> {
 /// 原子式の 2 値評価（値なしは偽）。
 fn atom_sql(q: &BoundQuery, a: &Atom, sql: &mut SqlBuf) -> Result<String, DataError> {
     let f = q.field(a.field);
-    if f.kind == FieldKind::Multi {
+    if matches!(f.kind, FieldKind::Multi | FieldKind::Link) {
         let jk = json_key(f.id);
         if !is_json_key(&jk) {
             return Err(DataError::Internal(format!("JSONB キー '{jk}' が不正です")));
         }
+        // 多値は要素のどれかが条件を満たせば真（索引経路と同じ）。リンクの保存形は配列だが、値の移行
+        // （v1 の単一 UUID 文字列 → 配列・crate::link_values）が終わるまでは文字列も要素 1 件として読む。
         let arr = format!(
-            "(CASE WHEN jsonb_typeof(r.data -> '{jk}') = 'array' THEN r.data -> '{jk}' ELSE '[]'::jsonb END)"
+            "(CASE jsonb_typeof(r.data -> '{jk}') WHEN 'array' THEN r.data -> '{jk}' \
+             WHEN 'string' THEN jsonb_build_array(r.data -> '{jk}') ELSE '[]'::jsonb END)"
         );
         if a.leaf == Leaf::Exists {
             return Ok(format!("(jsonb_array_length({arr}) > 0)"));
         }
-        let cond = leaf_sql(&a.leaf, FieldKind::Text, "(e.v COLLATE \"C\")", sql);
+        let (kind, elem) = if f.kind == FieldKind::Link {
+            (FieldKind::Link, "lower(e.v)")
+        } else {
+            (FieldKind::Text, "(e.v COLLATE \"C\")")
+        };
+        let cond = leaf_sql(&a.leaf, kind, elem, sql);
         return Ok(format!(
             "EXISTS (SELECT 1 FROM jsonb_array_elements_text({arr}) e(v) WHERE {cond})"
         ));

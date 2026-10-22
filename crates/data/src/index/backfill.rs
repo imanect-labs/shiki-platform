@@ -26,6 +26,7 @@ use super::write::{IndexWriter, IndexedRecord};
 use super::{IndexState, IndexTable, MAX_MULTI_VALUES_CEILING};
 use crate::field_key::decode_record;
 use crate::key_migration::KEY_FORMAT_LEGACY;
+use crate::link_values::{LINK_VALUES_OP, LINK_VALUE_CHUNK};
 use crate::model::{FieldId, TableKeys, TableSchema};
 use crate::store::DataStore;
 use crate::{map_db, DataError};
@@ -553,6 +554,10 @@ impl DataStore {
     /// 初期化したテーブル数を返す。全プールを順に処理する（合算は Rust 側）。
     pub async fn enqueue_index_backfills_if_needed(&self) -> Result<u64, DataError> {
         let mut initialized = 0;
+        // リンク値の保存形の移行（v1 の単一 UUID 文字列 → 配列・crate::link_values）を積む。
+        if let Err(e) = self.enqueue_link_value_migrations(INIT_SWEEP_BATCH).await {
+            tracing::warn!(error = %e, "リンク値の移行ジョブの投入に失敗（次のスイープで再試行）");
+        }
         for (_, pool) in self.pools.all() {
             // shard-safety: allow(cross-tenant) 保守スイープ。プールごとに問い合わせる（合算は Rust 側）。
             let targets: Vec<(String, Uuid, i16)> = sqlx::query_as(
@@ -594,7 +599,18 @@ impl DataStore {
                 .fetch_all(&mut *tx)
                 .await
                 .map_err(map_db)?;
-                for table_int in running {
+                // shard-safety: allow(cross-tenant) 保守スイープ（未完了のリンク値の移行も同様に拾う）。
+                let links: Vec<i64> = sqlx::query_scalar(
+                    "SELECT table_int FROM data_link_value_migration WHERE status <> 'done' LIMIT 100",
+                )
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(map_db)?;
+                let ops = running
+                    .into_iter()
+                    .map(|t| (t, "backfill"))
+                    .chain(links.into_iter().map(|t| (t, LINK_VALUES_OP)));
+                for (table_int, op) in ops {
                     // shard-safety: allow(cross-tenant) table_int はグローバル一意。所属テナントを引く。
                     let owner: Option<(String, Uuid)> =
                         sqlx::query_as("SELECT tenant_id, id FROM data_table WHERE table_int = $1")
@@ -603,7 +619,7 @@ impl DataStore {
                             .await
                             .map_err(map_db)?;
                     if let Some((tenant_id, id)) = owner {
-                        enqueue(&mut tx, "backfill", &tenant_id, id).await?;
+                        enqueue(&mut tx, op, &tenant_id, id).await?;
                     }
                 }
             }
@@ -708,6 +724,21 @@ impl DataStore {
                     {
                         Ok(true) | Err(DataError::NotFound) => return Ok(false),
                         Ok(false) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(true)
+            }
+            Some(LINK_VALUES_OP) => {
+                // v1 の record_ref の保存値を配列へ（crate::link_values）。
+                for _ in 0..CHUNKS_PER_JOB {
+                    match self
+                        .link_value_migration_step(&job.tenant_id, table_id, LINK_VALUE_CHUNK)
+                        .await
+                    {
+                        Ok(step) if step.done => return Ok(false),
+                        Ok(_) => {}
+                        Err(DataError::NotFound) => return Ok(false), // テーブルが消えた
                         Err(e) => return Err(e),
                     }
                 }

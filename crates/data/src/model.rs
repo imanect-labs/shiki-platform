@@ -155,7 +155,7 @@ pub struct FieldDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub numeric_spec: Option<NumericSpec>,
     /// record_ref のリンク定義（カーディナリティ・対称列・data-platform §7.1）。省略時は v1 互換の
-    /// 単一 UUID 文字列（片方向）。
+    /// `many_to_one`・片方向（値は要素 1 件までの UUID 配列。入力は単一 UUID 文字列も受ける）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<crate::derived::types::LinkDef>,
     /// ロールアップ定義（field_type=rollup のとき必須）。

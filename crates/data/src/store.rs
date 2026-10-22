@@ -246,8 +246,9 @@ impl DataStore {
         let mut tx = db.begin().await.map_err(map_db)?;
         let row: TableRow = sqlx::query_as(&format!(
             "INSERT INTO data_table (tenant_id, org, name, schema, created_by, app_id, \
-               tenant_int, table_int, key_format, next_field_id, pivot_index_init) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 2, $9, true) \
+               tenant_int, table_int, key_format, next_field_id, pivot_index_init, \
+               link_value_format) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 2, $9, true, 2) \
              RETURNING {TABLE_COLS}"
         ))
         .bind(&ctx.tenant_id)

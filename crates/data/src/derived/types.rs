@@ -55,7 +55,7 @@ fn is_false(b: &bool) -> bool {
 /// リンク定義（`record_ref` 型のフィールドに付ける・data-platform §7.1）。
 ///
 /// 参照先テーブルは `FieldDef.ref_table`（v1 の `record_ref` と同じ場所）。`link` を持たない
-/// `record_ref` は v1 互換の単一 UUID 文字列（`many_to_one`・片方向）として扱う。
+/// `record_ref` は v1 互換の `many_to_one`・片方向として扱う（値は要素 1 件までの配列）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct LinkDef {
     pub cardinality: LinkCardinality,

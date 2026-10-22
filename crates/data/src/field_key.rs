@@ -238,10 +238,29 @@ pub(crate) fn decode_record(schema: &TableSchema, stored: &Value) -> Map<String,
             continue;
         }
         if let Some(v) = obj.get(&f.json_key()) {
-            out.insert(f.key.clone(), v.clone());
+            let v = if f.field_type == FieldType::RecordRef {
+                upgrade_link_value(v)
+            } else {
+                v.clone()
+            };
+            out.insert(f.key.clone(), v);
         }
     }
     out
+}
+
+/// リンク値の読取互換: v1 の `record_ref` の保存値（単一 UUID 文字列）を、現行の保存形（要素 1 件の
+/// 配列・正準形の UUID）へ寄せる。配列はそのまま。
+///
+/// 保存値の移行（[`crate::link_values`]）が終わる前の行も、終わった後の行も同じ形で外へ出す。
+/// 移行の途中でも読取・書込・索引の導出が同じ値を見る（書込は常に配列を書く）。
+pub(crate) fn upgrade_link_value(v: &Value) -> Value {
+    match v {
+        Value::String(s) => Value::Array(vec![Value::String(
+            uuid::Uuid::parse_str(s).map_or_else(|_| s.clone(), |u| u.to_string()),
+        )]),
+        other => other.clone(),
+    }
 }
 
 #[cfg(test)]

@@ -38,6 +38,7 @@ mod fsm;
 mod fsm_store;
 mod index;
 mod key_migration;
+mod link_values;
 mod mask;
 mod model;
 mod numeric;
@@ -73,6 +74,7 @@ pub use index::{
 pub use key_migration::{
     FieldKeyMigrationWorker, KeyMigrationProgress, FIELD_KEY_MIGRATION_QUEUE, MIGRATION_BATCH,
 };
+pub use link_values::{LinkValueMigrationStatus, LinkValueStep, LINK_VALUE_CHUNK};
 pub use model::{
     ComputedDef, ComputedOp, DataRecord, DataTable, ExcessScale, FieldDef, FieldId, FieldPatch,
     FieldPolicy, FieldType, LookupDef, NumericSpec, RecordRevision, RoundingMode, TableSchema,
