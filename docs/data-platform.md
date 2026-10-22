@@ -283,8 +283,11 @@ create table data_index_search (
 ) partition by hash (table_int);
 -- スコープ列を GIN 自体に含める（btree_gin）。含めないと 1 テナントの検索でも
 -- プール全体の posting list を読み、ノイジーネイバーが p95 を壊す。
+-- fastupdate = off: GIN の保留リスト（pending list）はパーティション内の全テナントの未整理の挿入を溜め、
+-- 検索のたびに全件読まれる。スコープ列を索引に含めても保留リストには効かないので無効にする。
 create index on data_index_search
-    using gin (tenant_int, table_int, field_id, val gin_trgm_ops);
+    using gin (tenant_int, table_int, field_id, val gin_trgm_ops)
+    with (fastupdate = off);
 ```
 
 **リンクを 2 行で持つ理由（設計判断）**: 逆引きを「`dst_table_int` 条件の専用索引」で賄うと、
@@ -469,7 +472,8 @@ pivot 索引は**値が無いレコードには行が無い**。ソートキー�
 持つため、**必ず 1 パーティションに枝刈りされる**。
 
 - サイズ分割と autovacuum の局所化が目的（索引本数の削減が目的ではない——それは §3.3 が既に解決している）
-- 分割数はプロビジョニング時の設定値。増やす場合は再ハッシュが要るため、初期値は余裕をもって決める
+- 分割数はプロビジョニング時の設定値（初回マイグレーション時の GUC `shiki.data_partitions`・既定 64。
+  全索引テーブルは `data_record` と同じ分割数で作る）。増やす場合は再ハッシュが要るため、初期値は余裕をもって決める
 - **テーブルごと LIST パーティションは採らない**: パーティション数がテーブル数（10⁴〜10⁶）になり、
   partition descriptor と relcache が破綻する
 
