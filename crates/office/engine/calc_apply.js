@@ -15,16 +15,7 @@ function rangeOf(op) {
 }
 
 function numberFormatKey(code) {
-  const fmts = DOC.getNumberFormats();
-  let key = fmts.queryKey(code, EN_US, false);
-  if (key === -1) {
-    try {
-      key = fmts.addNew(code, EN_US);
-    } catch (e) {
-      fail("invalid_number_format", `表示形式「${code}」を解釈できません`);
-    }
-  }
-  return key;
+  return formatKeyIn(DOC.getNumberFormats(), code);
 }
 
 /**
@@ -540,26 +531,29 @@ OPS.define_name = (op) => {
   return {};
 };
 
-const DIAGRAMS = {
-  column: "com.sun.star.chart.BarDiagram",
-  bar: "com.sun.star.chart.BarDiagram",
-  line: "com.sun.star.chart.LineDiagram",
-  area: "com.sun.star.chart.AreaDiagram",
-  pie: "com.sun.star.chart.PieDiagram",
-  doughnut: "com.sun.star.chart.DonutDiagram",
-  scatter: "com.sun.star.chart.XYDiagram",
-};
-
 OPS.add_chart = (op) => {
   const sheet = getSheet(op.sheet);
   const charts = sheet.getCharts();
+  // グラフの名前はブック全体で、グラフの名前とも図形の名前とも重ならないこと。xlsx から開き直すと
+  // グラフは「Object 1」になり、付けた名前（グラフ1）は図形の名前としてだけ残る。どちらかと同じ名前で
+  // addNewByName すると理由なしの RuntimeException で落ちる（実測）ので、全シートの両方を見る。
+  const sheets = DOC.getSheets();
+  const taken = (name) => {
+    for (let i = 0; i < sheets.getCount(); i++) {
+      const s = sheets.getByIndex(i);
+      if (s.getCharts().hasByName(name)) return true;
+      const dp = s.getDrawPage();
+      for (let j = 0; j < dp.getCount(); j++) if (dp.getByIndex(j).getName() === name) return true;
+    }
+    return false;
+  };
   if (op.name === null || op.name === undefined) {
     // 名前を省略したら、空いている「グラフN」を付ける。
     let n = charts.getCount() + 1;
-    while (charts.hasByName("グラフ" + n)) n++;
+    while (taken("グラフ" + n)) n++;
     op.name = "グラフ" + n;
   }
-  if (charts.hasByName(op.name)) fail("chart_exists", `グラフ「${op.name}」は既にあります`);
+  if (taken(op.name)) fail("chart_exists", `グラフ「${op.name}」は既にあります（グラフ・図形の名前はブック全体で一意）`);
   STAGE = "グラフの配置";
   const anchor = sheet.getCellByPosition(op.anchor[0], op.anchor[1]).getPropertyValue("Position");
   const rect = new I.awt.Rectangle();
@@ -590,134 +584,9 @@ OPS.add_chart = (op) => {
   }
   STAGE = "グラフの種類と体裁";
   const eo = charts.getByName(op.name).getEmbeddedObject();
-  const diagram = eo.createInstance(DIAGRAMS[op.kind]);
-  eo.setDiagram(diagram);
-  const d = eo.getDiagram();
-  if (op.kind === "bar") d.setPropertyValue("Vertical", true);
-  if (op.kind === "column") d.setPropertyValue("Vertical", false);
-  if (op.stacked) d.setPropertyValue("Stacked", true);
-  if (op.percent) d.setPropertyValue("Percent", true);
-  if (op.series_in_rows) d.setPropertyValue("DataRowSource", I.chart.ChartDataRowSource.ROWS);
-  eo.setPropertyValue("HasMainTitle", !!op.title);
-  if (op.title) {
-    const t = eo.getTitle();
-    t.setPropertyValue("String", op.title);
-    t.setPropertyValue("CharHeight", float(13));
-    t.setPropertyValue("CharWeight", float(150));
-  }
-  eo.setPropertyValue("HasLegend", op.legend_position !== "none");
-  STAGE = "グラフの見た目";
-  styleChart(eo, d, op);
-  if (op.x_title) {
-    d.setPropertyValue("HasXAxisTitle", true);
-    d.getXAxisTitle().setPropertyValue("String", op.x_title);
-  }
-  if (op.y_title) {
-    d.setPropertyValue("HasYAxisTitle", true);
-    d.getYAxisTitle().setPropertyValue("String", op.y_title);
-  }
+  shapeChart(eo, op, DOC.getNumberFormats());
   return {};
 };
-
-/** Office 現行版の既定に近い配色（系列の色を指定しないとき）。 */
-const CHART_COLORS = ["#4472C4", "#ED7D31", "#A5A5A5", "#FFC000", "#5B9BD5", "#70AD47", "#264478", "#9E480E"];
-
-/**
- * グラフの見た目を整える（LibreOffice の既定は灰色の背景・枠つき凡例で古く見える）。
- * 背景は透明、目盛線は薄い灰色、凡例は枠なし、系列は指定の色（無ければ既定の配色）。
- */
-function styleChart(eo, d, op) {
-  const NONE_LINE = I.drawing.LineStyle.NONE;
-  try {
-    eo.getArea().setPropertyValue("LineStyle", NONE_LINE);
-  } catch (e) {
-    // 外枠を持たない種類。
-  }
-  try {
-    const wall = d.getWall();
-    wall.setPropertyValue("FillStyle", I.drawing.FillStyle.NONE);
-    wall.setPropertyValue("LineStyle", NONE_LINE);
-  } catch (e) {
-    // 円・ドーナツは壁を持たない。
-  }
-  try {
-    const grid = d.getYMainGrid();
-    grid.setPropertyValue("LineColor", long(0xd9d9d9));
-  } catch (e) {
-    // 目盛線を持たない種類。
-  }
-  if (op.legend_position !== "none") {
-    const legend = eo.getLegend();
-    legend.setPropertyValue("LineStyle", NONE_LINE);
-    legend.setPropertyValue("FillStyle", I.drawing.FillStyle.NONE);
-    const pos = { bottom: "BOTTOM", right: "RIGHT", top: "TOP", left: "LEFT" }[op.legend_position || "bottom"];
-    legend.setPropertyValue("Alignment", I.chart.ChartLegendPosition[pos]);
-  }
-  if (op.y_number_format) {
-    try {
-      const axis = d.getYAxis();
-      axis.setPropertyValue("LinkNumberFormatToSource", false);
-      axis.setPropertyValue("NumberFormat", numberFormatKey(op.y_number_format));
-    } catch (e) {
-      // 縦軸を持たない種類（円など）。
-    }
-  }
-  // 系列の数（列方向なら列見出しの数）。
-  let series = 0;
-  try {
-    const data = eo.getData();
-    series = op.series_in_rows ? data.getRowDescriptions().length : data.getColumnDescriptions().length;
-  } catch (e) {
-    series = 0;
-  }
-  const colors = op.colors && op.colors.length ? op.colors : CHART_COLORS;
-  const pie = op.kind === "pie" || op.kind === "doughnut";
-  if (pie) {
-    // 円・ドーナツは 1 系列の各点（項目）に色を付ける。
-    let points = 0;
-    try {
-      const data = eo.getData();
-      points = op.series_in_rows ? data.getColumnDescriptions().length : data.getRowDescriptions().length;
-    } catch (e) {
-      points = 0;
-    }
-    for (let i = 0; i < points; i++) {
-      try {
-        d.getDataPointProperties(i, 0).setPropertyValue("FillColor", long(hexToColor(colors[i % colors.length])));
-      } catch (e) {
-        // 点の数が合わない場合は既定の色のまま。
-      }
-    }
-  }
-  for (let i = 0; i < series; i++) {
-    const props = d.getDataRowProperties(i);
-    const c = long(hexToColor(colors[i % colors.length]));
-    if (!pie) {
-      try {
-        props.setPropertyValue("Color", c);
-        props.setPropertyValue("FillColor", c);
-        props.setPropertyValue("LineColor", c);
-      } catch (e) {
-        // 種類により持たないプロパティがある。
-      }
-      if (op.kind === "line" || op.kind === "scatter") {
-        try {
-          props.setPropertyValue("LineWidth", long(60));
-        } catch (e) {
-          // 線の幅を持たない種類。
-        }
-      }
-    }
-    if (op.data_labels) {
-      try {
-        // com.sun.star.chart.ChartDataCaption: VALUE=1, PERCENT=2, TEXT=4。円は「項目名と割合」。
-        props.setPropertyValue("DataCaption", long(pie ? 2 | 4 : 1));
-      } catch (e) {
-        // データラベルを持たない種類。
-      }
-    }
-  }
-}
 
 OPS.delete_chart = (op) => {
   const charts = getSheet(op.sheet).getCharts();

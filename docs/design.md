@@ -708,6 +708,12 @@ flowchart TB
     読み取りを返し、読む→書く→確かめるが 1 本で閉じる。権限は毎呼び出し OpenFGA（読み取り=viewer・
     編集=editor）、編集系は承認ゲート対象。docx/odt・xlsx/ods を開いたドキュメントアシスタントは④を使い、
     pptx などは②③のまま。
+    **グラフ（#731）**: Word のグラフは内部データを持つ埋め込みの chart（`insert_chart`）として入れ、docx では
+    画像ではなく Word のグラフになる（種類・題・凡例・配色の決め方は Excel の `add_chart` と共有）。
+    チャットの図（Yui の棒・折れ線・円）は「Excel / Word に挿入」で同じエンジンへ渡す（`POST /office/charts`）。
+    Office の画面のチャット欄では開いている文書へ、通常のチャット・ノートではドライブから選んだ文書へ入れる。
+    Excel は新しいシートに表を書いてその右にグラフを置き、Word は末尾に入れる。
+    人の操作なので承認ゲートは通らないが、editor の確認・丸ごと取り消し・1 回の「元に戻す」は AI と同じ。
     **ネイティブ 3 種（ノート/スライド/CSV）と Collabora の別なく、AI は共同編集参加者**。
   - **新規作成も Collabora へ一本化（#381・2026-07 確定）**: Word/Excel の**新規作成**は
     「**空テンプレ（`crates/office/templates/blank.docx` / `blank.xlsx`）を StorageService へ実体化

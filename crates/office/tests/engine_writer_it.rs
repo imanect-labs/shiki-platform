@@ -675,3 +675,119 @@ async fn text_inside_tables_can_be_replaced_and_long_reads_say_where_they_stop()
     assert!(blocks.contains("手前までで打ち切りました"), "{blocks}");
     client.close().await;
 }
+
+/// グラフ（#731）: 内部データの Word のグラフとして入り、docx へ保存して開き直しても残る。
+#[tokio::test]
+async fn inserts_native_charts_that_survive_a_docx_round_trip() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let name = format!("engine-chart-{}.docx", uuid::Uuid::new_v4());
+    std::fs::write(
+        format!("{}/{name}", env.files),
+        office::blank_template(office::OfficeKind::Document),
+    )
+    .unwrap();
+    let mut client = open(&env, &name).await;
+    let ops = normalize_doc_ops(&[
+        json!({"op": "insert", "at": "end", "html": "<h1>売上の報告</h1><p>四半期ごとの売上です。</p>"}),
+        json!({"op": "insert_chart", "type": "column", "title": "四半期の売上", "categories": ["Q1", "Q2", "Q3"],
+               "series": [{"name": "東京", "values": [120, 150, null]}, {"name": "大阪", "values": [80, 95, 110]}],
+               "y_title": "百万円", "y_number_format": "#,##0", "data_labels": true}),
+        json!({"op": "insert_chart", "type": "pie", "title": "構成比", "categories": ["A", "B"],
+               "series": [{"name": "比率", "values": [60, 40]}], "colors": ["#1F3864", "#ED7D31"], "legend_position": "right",
+               // 円は軸を持たないので、単位（縦軸の題）は付けずに入る。
+               "y_title": "%"}),
+    ])
+    .unwrap();
+    let out = run::apply(&mut client, "グラフ", &ops).await.unwrap();
+    eprintln!("{}", out.text);
+    assert!(out.applied, "{}", out.text);
+    assert!(
+        out.text.contains("［グラフ: 四半期の売上］"),
+        "{}",
+        out.text
+    );
+    assert!(out.text.contains("［グラフ: 構成比］"), "{}", out.text);
+    // 位置を書かないグラフは末尾に、書いた順で並ぶ。
+    let first = out.text.find("四半期ごとの売上です").unwrap();
+    let bar = out.text.find("［グラフ: 四半期の売上］").unwrap();
+    let pie = out.text.find("［グラフ: 構成比］").unwrap();
+    assert!(first < bar && bar < pie, "{}", out.text);
+    client.save().await.unwrap();
+    client.close().await;
+
+    // 開き直しても埋め込みのグラフ（題つき）として残る（画像に落ちていない）。
+    let mut client = open(&env, &name).await;
+    let overview = run::read_overview(&mut client, &name, 0).await.unwrap();
+    eprintln!("{overview}");
+    assert!(overview.contains("［グラフ: 四半期の売上］"), "{overview}");
+    assert!(overview.contains("［グラフ: 構成比］"), "{overview}");
+    client.close().await;
+}
+
+/// 系列の値の数が項目と合わないと、文書に触れる前に止まる。
+#[test]
+fn insert_chart_checks_the_shape_of_the_data() {
+    let err = normalize_doc_ops(&[
+        json!({"op": "insert_chart", "type": "line", "categories": ["a", "b"],
+        "series": [{"name": "x", "values": [1]}]}),
+    ])
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("値の数（1）が項目の数（2）"),
+        "{err}"
+    );
+    let err = normalize_doc_ops(&[
+        json!({"op": "insert_chart", "type": "pie", "categories": ["a"],
+        "series": [{"name": "x", "values": [1]}, {"name": "y", "values": [2]}]}),
+    ])
+    .unwrap_err();
+    assert!(err.to_string().contains("系列を 1 つ"), "{err}");
+    let err = normalize_doc_ops(&[
+        json!({"op": "insert_chart", "type": "scatter", "categories": ["a"],
+        "series": [{"name": "x", "values": [1]}]}),
+    ])
+    .unwrap_err();
+    assert!(err.to_string().contains("散布図"), "{err}");
+    let ok = normalize_doc_ops(&[
+        json!({"categories": ["a"], "series": [{"name": "x", "values": [1]}], "type": "bar"}),
+    ])
+    .unwrap_err();
+    assert!(
+        ok.to_string().contains("insert_chart"),
+        "op の書き忘れは案内する: {ok}"
+    );
+}
+
+/// グラフの途中で失敗したら（解釈できない表示形式）、入れかけの段落とグラフも残らない。
+#[tokio::test]
+async fn a_failing_chart_leaves_the_document_untouched() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let name = format!("engine-chart-{}.docx", uuid::Uuid::new_v4());
+    std::fs::write(
+        format!("{}/{name}", env.files),
+        office::blank_template(office::OfficeKind::Document),
+    )
+    .unwrap();
+    let mut client = open(&env, &name).await;
+    let before = run::read_overview(&mut client, &name, 0).await.unwrap();
+    let ops = normalize_doc_ops(&[
+        json!({"op": "insert", "at": "end", "html": "<p>残ってはいけない</p>"}),
+        json!({"op": "insert_chart", "type": "line", "categories": ["a", "b"],
+               "series": [{"name": "x", "values": [1, 2]}], "y_number_format": "[[[壊れた"}),
+    ])
+    .unwrap();
+    let out = run::apply(&mut client, "失敗するグラフ", &ops)
+        .await
+        .unwrap();
+    assert!(!out.applied, "{}", out.text);
+    let after = run::read_overview(&mut client, &name, 0).await.unwrap();
+    assert_eq!(before, after, "取り消し後の文書: {after}");
+    assert!(!after.contains("グラフ"), "{after}");
+    client.close().await;
+}

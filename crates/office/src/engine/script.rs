@@ -6,21 +6,25 @@
 use std::sync::LazyLock;
 
 const CORE: &str = include_str!("../../engine/core.js");
+const CHART: &str = include_str!("../../engine/chart.js");
 const CALC_READ: &str = include_str!("../../engine/calc_read.js");
 const CALC_APPLY: &str = include_str!("../../engine/calc_apply.js");
 const WRITER_READ: &str = include_str!("../../engine/writer_read.js");
 const WRITER_APPLY: &str = include_str!("../../engine/writer_apply.js");
 const WRITER_TABLE: &str = include_str!("../../engine/writer_table.js");
+const WRITER_CHART: &str = include_str!("../../engine/writer_chart.js");
 
 /// 連結済みのエンジン（全 action を含む 1 つの関数式）。
 pub static ENGINE_SOURCE: LazyLock<String> = LazyLock::new(|| {
     let modules = [
         CORE,
+        CHART,
         CALC_READ,
         CALC_APPLY,
         WRITER_READ,
         WRITER_APPLY,
         WRITER_TABLE,
+        WRITER_CHART,
     ];
     let mut src = String::with_capacity(modules.iter().map(|m| m.len()).sum::<usize>() + 128);
     src.push_str("function (req) {\n\"use strict\";\n");
@@ -71,6 +75,7 @@ mod tests {
             "calc.overview",
             "calc.read_range",
             "calc.apply",
+            "calc.sheet_names",
         ] {
             assert!(
                 ENGINE_SOURCE.contains(&format!("HANDLERS[\"{action}\"]")),
