@@ -341,6 +341,21 @@ async fn land_on_budget(
         usage.completion_tokens,
         cost,
     );
+    // 着地も 1 リクエストなので表示を追従させる（ツール定義は送っていない）。
+    if !cancelled {
+        sink.emit(AgentEvent::ContextUsage(
+            crate::context_usage::ContextUsage::of_request(
+                gateway,
+                opts.model.as_deref(),
+                opts.max_tokens,
+                opts.system.as_deref(),
+                [],
+                &state.messages,
+                usage.prompt_tokens,
+            ),
+        ))
+        .await?;
+    }
     if !text_acc.is_empty() {
         state.messages.push(LlmMessage {
             role: LlmRole::Assistant,
