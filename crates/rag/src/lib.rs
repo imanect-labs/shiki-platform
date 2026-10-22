@@ -11,6 +11,7 @@
 
 pub mod admin;
 pub mod anchor;
+pub mod audit_trail;
 pub mod authz_filter;
 pub mod chunker;
 pub mod config;
@@ -32,6 +33,7 @@ pub mod vector_store;
 
 pub use admin::RagAdmin;
 pub use anchor::{Anchor, BoxOrigin, PageBox, TextQuote};
+pub use audit_trail::AuditTrail;
 pub use config::RagConfig;
 pub use embedding::{EmbedInput, EmbedResponse, EmbeddingProvider, HttpEmbeddingProvider};
 pub use error::RagError;

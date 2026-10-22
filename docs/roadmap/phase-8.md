@@ -38,7 +38,8 @@
     **統一スキーマの監査レコード**に正規化: `audit_log (id, created_at, tenant_id, org, actor, action, object_type, object_id, decision, trace_id, metadata JSONB, chained, prev_hash, entry_hash)`。
   - `trace_id` で Langfuse / OTel と突合可能（Task 3.8 の種を本実装化）。検索のため tenant_id＋org を先頭に actor/対象/期間・trace_id へインデックス
     （action は期間索引の上で前方一致）、引用chunkは `(file_id, chunk_id, thread_id, message_id)` で逆引き可能に
-    （#634 時点では `metadata.cited_chunk_ids` の GIN 索引で chunk_id から逆引き。thread_id / message_id は #829）。
+    （chunk_id は `metadata.cited_chunk_ids` の GIN 索引・#634。チャットの回答のための検索・本文の読み出しは
+    `metadata.thread_id` / `message_id`（回答＝assistant のメッセージ）を持ち、部分索引で引く・#829）。
     **append-only・改竄検知（ハッシュチェーン）**を最初から（実データを変える操作の行だけを連結済み。検証は #828）。
 - **受け入れ条件**:
   - [x] 操作・権限判定・引用chunkが単一スキーマで横断検索できる（#634）
@@ -50,13 +51,13 @@
 - **依存**: 8.1
 - **仕様**:
   - 監査ビュー（管理コンソール › 監査ログ）: 期間/actor/action（分類・表示名は単一定義の語彙から生成・#830）/対象/decision/引用chunk/trace_id でのフィルタ検索、引用chunk閲覧
-    （元文書は通常の ReBAC で開くリンク・PIT-65）、1回答に紐づく権限判定と引用の一覧表示（#634 時点では trace_id で絞る・#829）。
+    （元文書は通常の ReBAC で開くリンク・PIT-65）、1回答に紐づく権限判定と引用の一覧表示（回答・会話で絞る・#829）。
     **CSV/JSONLエクスポート**（監査閲覧者のみ、検索・エクスポート自体も監査）。
   - 権限境界: **監査閲覧ロール（`organization#audit_viewer`）を持つ人のみ**アクセス。admin とは独立で互いに含意しない
     （管理者でない監査担当者を置ける・管理者でも付与されなければ読めない・#634 で決定）。横断検索は自テナント・自組織
     （`AuthContext`）に閉じ、ファイル名や本文は解決しない（PIT-65）。
 - **受け入れ条件**:
-  - [ ] 「誰が・どの権限で・どのチャンクを引用したか」を検索して閲覧できる（#634 で検索・閲覧は可。1 回答への紐付けは #829）
+  - [x] 「誰が・どの権限で・どのチャンクを引用したか」を検索して閲覧できる（#634 で検索・閲覧、#829 で 1 回答への紐付け）
   - [x] 結果を CSV/JSONL でエクスポートできる（#634）
   - [x] 監査閲覧ロールのない利用者はアクセスできない（#634）
 

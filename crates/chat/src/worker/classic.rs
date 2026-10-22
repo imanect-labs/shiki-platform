@@ -74,7 +74,8 @@ impl ChatWorker {
                 &query,
                 None,
                 scope.as_ref(),
-                run.trace_id.as_deref(),
+                // この回答のための検索として監査に残す（#829）。
+                rag::AuditTrail::for_answer(run.trace_id.as_deref(), run.thread_id, run.message_id),
             )
             .await
             {

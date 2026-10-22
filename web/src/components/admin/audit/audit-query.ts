@@ -80,6 +80,16 @@ export function citedChunks(metadata: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
+/// チャットの回答のための検索・読み出しが持つ会話と回答（`metadata.thread_id` / `message_id`・#829）。
+export function answerOf(metadata: unknown): { threadId?: string; messageId?: string } {
+  if (!metadata || typeof metadata !== "object") return {};
+  const m = metadata as Record<string, unknown>;
+  return {
+    threadId: typeof m.thread_id === "string" ? m.thread_id : undefined,
+    messageId: typeof m.message_id === "string" ? m.message_id : undefined,
+  };
+}
+
 /// 引用されたファイル ID（`rag.search` の metadata）。
 export function citedFiles(metadata: unknown): string[] {
   if (!metadata || typeof metadata !== "object") return [];

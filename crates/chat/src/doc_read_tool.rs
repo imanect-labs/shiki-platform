@@ -32,6 +32,8 @@ pub struct DocReadTool {
     storage: Arc<StorageService>,
     /// 知識スコープ（skill・Task 6.8）。None は全可読範囲。
     scope: Option<SearchScope>,
+    /// 会話の回答のための読み出しなら、その会話と回答（監査に残す・#829）。
+    answer: Option<(Uuid, Uuid)>,
 }
 
 impl DocReadTool {
@@ -49,6 +51,23 @@ impl DocReadTool {
             search,
             storage,
             scope: scope.filter(|s| !s.is_empty()),
+            answer: None,
+        }
+    }
+
+    /// 会話（thread）の回答（assistant のメッセージ）のための読み出しとして構成する（#829）。
+    #[must_use]
+    pub fn for_answer(mut self, thread_id: Uuid, message_id: Uuid) -> Self {
+        self.answer = Some((thread_id, message_id));
+        self
+    }
+}
+
+impl DocReadTool {
+    fn trail<'a>(&self, trace_id: Option<&'a str>) -> rag::AuditTrail<'a> {
+        match self.answer {
+            Some((thread, message)) => rag::AuditTrail::for_answer(trace_id, thread, message),
+            None => rag::AuditTrail::from(trace_id),
         }
     }
 }
@@ -305,7 +324,13 @@ impl Tool for DocReadTool {
         }
         let read = self
             .search
-            .read_document(ctx, &node, &input.from, input.max_chars, trace_id)
+            .read_document(
+                ctx,
+                &node,
+                &input.from,
+                input.max_chars,
+                self.trail(trace_id),
+            )
             .await
             .map_err(|e| ToolError::Unavailable(format!("doc_read failed: {e}")))?;
         if read == DocRead::Denied {
