@@ -101,3 +101,16 @@ fn org_admin_routes_are_org_admin_scoped() {
         );
     }
 }
+
+#[test]
+fn org_audit_routes_are_org_auditor_scoped() {
+    // /org-audit/* は必ず OrgAuditor（監査閲覧者）で、OrgAuditor はそれ以外に使わない（#634）。
+    for decl in route_table() {
+        assert_eq!(
+            decl.path.starts_with("/org-audit/"),
+            decl.policy == AccessPolicy::OrgAuditor,
+            "{} のポリシーとパスが一致しない",
+            decl.path
+        );
+    }
+}

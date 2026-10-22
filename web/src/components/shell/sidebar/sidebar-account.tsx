@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { adminEntry } from "@/components/admin/admin-nav";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -157,11 +158,12 @@ export function SidebarAccount({
               設定
             </Link>
           </DropdownMenuItem>
-          {data.is_admin ? (
+          {adminEntry(data) ? (
             <DropdownMenuItem asChild>
-              <Link href="/admin" onClick={onNavigate}>
+              <Link href={adminEntry(data) ?? "/admin"} onClick={onNavigate}>
                 <ShieldCheck aria-hidden />
-                管理コンソール
+                {/* 管理者でない監査担当者は監査ログだけを開ける（#634）。 */}
+                {data.is_admin ? "管理コンソール" : "監査ログ"}
               </Link>
             </DropdownMenuItem>
           ) : null}
