@@ -42,10 +42,13 @@ psql_q() { psql -X -q -v ON_ERROR_STOP=1 "$PGURL" "$@"; }
 psql_t() { psql -X -q -At -v ON_ERROR_STOP=1 "$PGURL" "$@"; }
 
 # 安全柵: 共有 DB（shiki 等）を誤って TRUNCATE しない。
-case "$PGURL" in
-  */shiki_*) ;;
-  *) echo "PGURL は専用 DB（.../shiki_<n>）を指すこと: $PGURL" >&2; exit 2 ;;
-esac
+# URL の部分一致ではなく、接続先の実 DB 名を引いて照合する（ユーザー名やホスト名に shiki_ が
+# 含まれていても、共有 DB〔shiki〕や他用途の DB〔shiki_cov 等〕では止まるように）。
+DBNAME="$(psql_t -c 'SELECT current_database()')"
+if [[ ! "$DBNAME" =~ ^shiki_[0-9]+$ ]]; then
+  echo "PGURL は専用 DB（shiki_<数字>）を指すこと: current_database=$DBNAME" >&2
+  exit 2
+fi
 
 hdr() { printf '\n## %s\n' "$*"; }
 
@@ -159,6 +162,12 @@ scan_one() {
   measure "peek_app_events_after（SSE 1 poll・直近 1000 行窓）" "SELECT o.id, o.payload, coalesce(n.system, false)
     FROM storage_event_outbox o LEFT JOIN node n ON n.id = o.node_id
     WHERE o.tenant_id = '$active' AND o.id > $maxid - 1000 AND o.payload ? 'event_type'
+    ORDER BY o.id LIMIT 500"
+  # 休眠テナント: カーソルは event_type 付きの自テナントイベントでしか進まない
+  # （app-gateway/src/routes/events.rs）ので、接続時カーソル（イベントが無ければ 0）から窓全体を読む。
+  measure "peek_app_events_after（SSE 1 poll・休眠テナント・カーソル 0）" "SELECT o.id, o.payload, coalesce(n.system, false)
+    FROM storage_event_outbox o LEFT JOIN node n ON n.id = o.node_id
+    WHERE o.tenant_id = 'tenant-none' AND o.id > 0 AND o.payload ? 'event_type'
     ORDER BY o.id LIMIT 500"
   measure "テナント消去（outbox 1 テナント分 DELETE・台帳は CASCADE）" "DELETE FROM storage_event_outbox WHERE tenant_id = '$active'"
   psql_t -F ' | ' <<'SQL' | sed 's/^/| /; s/$/ |/'
@@ -292,7 +301,20 @@ cmd_mixed() {
   local p_mf=$!
   pgb -c 1 "${gc_r[@]}" -T "$secs" -f "$WORK/gc.pgbench.sql" >"$WORK/gc.log" 2>&1 &
   local p_gc=$!
-  wait "$p_emit" "$p_relay" "$p_wf" "$p_mf" "$p_gc"
+  # `wait p1 p2 ...` は最後の pid の終了コードしか返さないので、1 本ずつ待って失敗を拾う。
+  local p failed=0
+  for p in "$p_emit" "$p_relay" "$p_wf" "$p_mf" "$p_gc"; do
+    wait "$p" || failed=1
+  done
+  if ((failed)); then
+    echo "pgbench の一部が失敗した（ログ: emit/relay/wf/mf/gc）" >&2
+    local f
+    for f in emit relay wf mf gc; do
+      echo "--- $f" >&2
+      tail -5 "$WORK/$f.log" >&2
+    done
+    return 1
+  fi
   echo "loadavg(end): $(cut -d' ' -f1-3 /proc/loadavg)"
   local f
   for f in emit relay wf mf gc; do
