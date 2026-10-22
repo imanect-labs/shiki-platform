@@ -112,16 +112,47 @@ pub async fn tenant_scoped_tables(pool: &PgPool) -> Result<Vec<String>, StorageE
     // 動かすと導出集合が黙って縮み、purge/retenant がそのテーブルを無言でスキップする
     // ——本モジュールが潰したはずの「消し忘れ」が無音で再発する。pg_catalog は権限で絞られない。
     // 辺の取得も pg_catalog なので、取得元がこれで揃う。
+    let tables = tables_with_column(pool, "tenant_id").await?;
+    child_first(pool, tables).await
+}
+
+/// `tenant_id` を持たず、内部整数キー `tenant_int` だけでテナント境界を持つテーブル（子 → 親順）。
+///
+/// 構造化データの索引テーブル（`data_index_*` / `data_link*` / `data_unique` と台帳・Task 15.2）は
+/// 1 レコードにつき複数行を持つためキー幅を詰めており、`tenant_id`（text）を持たない
+/// （docs/data-platform.md §3.2）。テナント撤去は `tenant_placement` で `tenant_int` を引いて消す。
+/// テナント移行（rename）では `tenant_placement` の行ごと `tenant_int` が新 `tenant_id` へ移るので、
+/// これらの行は書き換え不要。
+pub async fn tenant_int_scoped_tables(pool: &PgPool) -> Result<Vec<String>, StorageError> {
+    let with_id = tables_with_column(pool, "tenant_id").await?;
+    let tables: Vec<String> = tables_with_column(pool, "tenant_int")
+        .await?
+        .into_iter()
+        .filter(|t| !with_id.contains(t))
+        .collect();
+    child_first(pool, tables).await
+}
+
+/// 指定の列を持つ実テーブル（パーティション表は親だけ・leaf は親経由で扱う）。
+async fn tables_with_column(pool: &PgPool, column: &str) -> Result<Vec<String>, StorageError> {
+    // パーティション表（relkind 'p'）は親に対する DELETE/UPDATE が全パーティションへ及ぶので親だけを
+    // 対象にし、leaf（relispartition）は除く（leaf を個別に並べると FK の辺が親とずれる）。
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT c.relname::text FROM pg_class c \
          JOIN pg_namespace n ON n.oid = c.relnamespace \
          JOIN pg_attribute a ON a.attrelid = c.oid \
-         WHERE n.nspname = 'public' AND c.relkind = 'r' \
-           AND a.attname = 'tenant_id' AND a.attnum > 0 AND NOT a.attisdropped \
+         WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition \
+           AND a.attname = $1 AND a.attnum > 0 AND NOT a.attisdropped \
          ORDER BY c.relname",
     )
+    .bind(column)
     .fetch_all(pool)
     .await?;
+    Ok(tables)
+}
+
+/// FK の子 → 親順へ並べる（導出したテーブル名の識別子検査込み）。
+async fn child_first(pool: &PgPool, tables: Vec<String>) -> Result<Vec<String>, StorageError> {
     for t in &tables {
         // 導出したテーブル名は SQL へ直接埋め込むため、識別子として安全な形だけを通す
         // （information_schema 由来なので通常は安全だが、埋め込み側で担保しない設計にしない）。
@@ -178,6 +209,47 @@ pub async fn rename_tenant_rows(
         moved.push((table.clone(), n));
     }
     Ok(moved)
+}
+
+/// `tenant_int` だけで境界を持つテーブル（[`tenant_int_scoped_tables`]・子 → 親順）から
+/// テナントの行を消す。消した行数の合計を返す（配置が無いテナントは 0）。
+pub async fn delete_tenant_int_rows(
+    tx: &mut Transaction<'_, Postgres>,
+    tables: &[String],
+    tenant_id: &str,
+) -> Result<u64, StorageError> {
+    let mut n = 0;
+    for table in tables {
+        n += sqlx::query(&format!(
+            "DELETE FROM public.{table} WHERE tenant_int = \
+               (SELECT tenant_int FROM tenant_placement WHERE tenant_id = $1)"
+        ))
+        .bind(tenant_id)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+    }
+    Ok(n)
+}
+
+/// `tenant_int` で境界を持つ各テーブルの当該テナント行数（撤去の検査・レポート用）。
+pub async fn count_tenant_int_rows(
+    pool: &PgPool,
+    tables: &[String],
+    tenant_id: &str,
+) -> Result<Vec<(String, i64)>, StorageError> {
+    let mut counts = Vec::with_capacity(tables.len());
+    for table in tables {
+        let n: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM public.{table} WHERE tenant_int = \
+               (SELECT tenant_int FROM tenant_placement WHERE tenant_id = $1)"
+        ))
+        .bind(tenant_id)
+        .fetch_one(pool)
+        .await?;
+        counts.push((table.clone(), n));
+    }
+    Ok(counts)
 }
 
 /// 各テーブルの当該テナント行数を数える（dry-run レポート用）。0 件のテーブルも返す

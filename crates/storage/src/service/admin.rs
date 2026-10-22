@@ -250,6 +250,12 @@ impl StorageService {
                     .await?
                     .rows_affected();
         }
+        // `tenant_id` を持たず内部整数キー `tenant_int` で境界を持つ表（構造化データの索引テーブル・
+        // Task 15.2）も同じ Tx で消す。`tenant_placement`（保持）から tenant_int を引く。
+        let int_tables = crate::tenant_scope::tenant_int_scoped_tables(&self.db).await?;
+        tables_purged += int_tables.len();
+        rows_deleted +=
+            crate::tenant_scope::delete_tenant_int_rows(&mut tx, &int_tables, tenant_id).await?;
         // 撤去の監査（ハッシュチェーン連結・削除証跡）。
         audit::record_on(
             &mut tx,

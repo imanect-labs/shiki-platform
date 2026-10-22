@@ -2293,10 +2293,47 @@ async fn purge_tenant_leaves_no_tenant_rows_anywhere() {
         .await
         .expect("bundle seed");
 
+    // 内部整数キー tenant_int だけで境界を持つ表（構造化データの索引台帳・Task 15.2）にも行を仕込む。
+    let mut conn = pool.acquire().await.expect("conn");
+    let placement = storage::tenant::ensure_placement(&mut conn, &ta)
+        .await
+        .expect("placement");
+    drop(conn);
+    sqlx::query(
+        "INSERT INTO data_index_state (tenant_int, table_int, field_id, index_table, state) \
+         VALUES ($1, 9223372036854775000, 0, 1, 'active')",
+    )
+    .bind(placement.tenant_int)
+    .execute(&pool)
+    .await
+    .expect("data_index_state seed");
+
     service
         .purge_tenant(&ta, &org, "provisioner:test")
         .await
         .expect("purge");
+
+    // tenant_int で境界を持つ表も全て空（新しい表が増えても導出で自動的に対象になる）。
+    let int_tables = storage::tenant_scope::tenant_int_scoped_tables(&pool)
+        .await
+        .expect("tenant_int 境界テーブルの導出");
+    assert!(
+        int_tables.iter().any(|t| t == "data_index_text")
+            && int_tables.iter().any(|t| t == "data_link"),
+        "索引テーブルが導出される: {int_tables:?}"
+    );
+    let int_leaked: Vec<String> =
+        storage::tenant_scope::count_tenant_int_rows(&pool, &int_tables, &ta)
+            .await
+            .expect("行数集計")
+            .into_iter()
+            .filter(|(_, n)| *n > 0)
+            .map(|(t, n)| format!("{t}={n}"))
+            .collect();
+    assert!(
+        int_leaked.is_empty(),
+        "tenant_int の行が残っている: {int_leaked:?}"
+    );
 
     // 総称検査: 保持対象（audit_log = 削除証跡 / tenant = tombstone）以外に 1 行も残らない。
     let tables = storage::tenant_scope::tenant_scoped_tables(&pool)
@@ -2360,11 +2397,16 @@ async fn tenant_scoped_tables_covers_every_table_with_tenant_id() {
     // 期待値は **実装と別のソース**（information_schema）から引く。実装は pg_catalog を使うので、
     // 導出クエリ自体を間違えたときにここで食い違う（実装のコピーでは検出できない・fable5 レビュー）。
     let expected: Vec<String> = sqlx::query_scalar(
+        // パーティション表（data_record・Task 15.2）は親だけが対象（leaf は親への DELETE/UPDATE で
+        // 消える）。information_schema は leaf も BASE TABLE として返すので、継承関係だけ除く。
         "SELECT c.table_name FROM information_schema.columns c \
          JOIN information_schema.tables t \
            ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
          WHERE c.column_name = 'tenant_id' AND c.table_schema = 'public' \
-           AND t.table_type = 'BASE TABLE' ORDER BY c.table_name",
+           AND t.table_type = 'BASE TABLE' \
+           AND NOT EXISTS (SELECT 1 FROM pg_inherits i \
+                           WHERE i.inhrelid = ('public.' || quote_ident(c.table_name))::regclass) \
+         ORDER BY c.table_name",
     )
     .fetch_all(&pool)
     .await
