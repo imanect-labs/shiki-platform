@@ -7,7 +7,7 @@
 use super::*;
 
 impl StorageService {
-    /// テナント初期 admin へ org の member と admin タプルを付与する（冪等・監査つき）。
+    /// テナント初期 admin へ org の member・admin・audit_viewer タプルを付与する（冪等・監査つき）。
     ///
     /// タプルの書き込みは「既にある」を成功として扱うので、`organization#admin` 導入前に
     /// プロビジョニングした既存テナントも、`POST /admin/tenants` を同じ内容で再実行すれば
@@ -33,6 +33,11 @@ impl StorageService {
         // 初期管理者は組織管理者（管理コンソール・#553）。admin は閲覧権に連鎖しない（PIT-65）。
         self.authz
             .write_tuple(&subject, Relation::Admin, &org_obj)
+            .await?;
+        // 監査閲覧者も初期管理者に付ける（#634）。audit_viewer は admin と独立なので、付けないと
+        // テナントに監査ログを読める人が誰もいなくなる。追加の監査担当者は shiki-admin で付与する。
+        self.authz
+            .write_tuple(&subject, Relation::AuditViewer, &org_obj)
             .await?;
         self.audit
             .record(

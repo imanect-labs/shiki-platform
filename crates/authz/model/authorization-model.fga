@@ -28,10 +28,13 @@ type miniapp
 # 組織。admin は管理コンソール（管理 API）を使える組織管理者（#553）。
 # **admin は閲覧権に連鎖させない**（PIT-65）: folder/file/thread 等の viewer/editor の
 # 計算式から organization#admin を参照しない。管理者でも中身は通常の共有でしか読めない。
+# audit_viewer は組織の監査ログを検索・書き出しできる監査担当者（#634）。admin とは独立で
+# 互いに含意しない（管理者でない監査担当者を置ける・管理者でも付与されなければ読めない）。
 type organization
   relations
     define member: [user]
     define admin: [user]
+    define audit_viewer: [user]
 
 # ロール: テナント内のメンバーシップ集合。階層は親ロールが子ロールを含む（上方向ロールアップ）。
 # 例: role:営業部#member@role:営業1課#member を書くと、営業1課 のメンバーが営業部のメンバーになる。

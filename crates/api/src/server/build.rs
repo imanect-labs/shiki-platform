@@ -11,7 +11,7 @@ use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 use super::http_util::{cors_layer, make_request_span};
 use super::{route_table, AccessPolicy};
 use crate::{
-    middleware::{require_org_admin, require_session},
+    middleware::{require_org_admin, require_org_auditor, require_session},
     routes,
     state::AppState,
     telemetry,
@@ -30,6 +30,7 @@ pub fn build_router(state: AppState) -> Router {
     let mut session_long = Router::new();
     let mut session_stream = Router::new();
     let mut org_admin = Router::new();
+    let mut org_audit = Router::new();
     let mut admin = Router::new();
     // admin ルート（SAAS.2）: **config（provisioner 資格情報＋admin base）が揃っている時のみ
     // 組み込む**（未設定なら 404 = fail-closed）。
@@ -52,6 +53,7 @@ pub fn build_router(state: AppState) -> Router {
                 session_stream = session_stream.route(decl.path, method_router);
             }
             AccessPolicy::OrgAdmin => org_admin = org_admin.route(decl.path, method_router),
+            AccessPolicy::OrgAuditor => org_audit = org_audit.route(decl.path, method_router),
             AccessPolicy::Provisioner => {
                 if admin_enabled {
                     admin = admin.route(decl.path, method_router);
@@ -73,6 +75,15 @@ pub fn build_router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_org_admin,
+        ))
+        .route_layer(session_layer.clone())
+        .layer(standard_timeout());
+    // 監査閲覧者: 組織管理者と同じ順（セッション → 監査閲覧者チェック）。書き出しは本文を
+    // 流しながら返すが、タイムアウトは応答ヘッダまでに掛かるので標準のままでよい。
+    let org_audit = org_audit
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_org_auditor,
         ))
         .route_layer(session_layer.clone())
         .layer(standard_timeout());
@@ -104,6 +115,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(session_long)
         .merge(session_stream)
         .merge(org_admin)
+        .merge(org_audit)
         .merge(admin)
         .with_state(state);
     // WOPI は状態適用済み（`Router<()>`）のため、`with_state` 後に merge する。

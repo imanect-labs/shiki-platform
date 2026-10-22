@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { ArrowLeft, ShieldAlert } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -15,10 +15,12 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CHROME_TRAY, MenuMarkButton } from "@/components/shell/header";
 import {
-  ADMIN_SECTIONS,
+  adminEntry,
+  canOpen,
   isMenuItemActive,
   menuItemFor,
   sectionFor,
+  visibleSections,
   type AdminSection,
 } from "./admin-nav";
 import { MockBadge } from "./mock-banner";
@@ -31,8 +33,8 @@ export function useAdminCrumb(): string | null {
   return React.useContext(AdminCrumbContext);
 }
 
-/// 左端のアイコンレール（セクション切替）。
-function Rail({ active }: { active: AdminSection }) {
+/// 左端のアイコンレール（セクション切替・開けるセクションだけ）。
+function Rail({ active, sections }: { active: AdminSection; sections: AdminSection[] }) {
   return (
     <nav
       aria-label="管理メニュー"
@@ -50,12 +52,14 @@ function Rail({ active }: { active: AdminSection }) {
         </TooltipTrigger>
         <TooltipContent side="right">shiki に戻る</TooltipContent>
       </Tooltip>
-      {ADMIN_SECTIONS.map((s, i) => {
+      {sections.map((s, i) => {
         const Icon = s.icon;
         const current = s.key === active.key;
         return (
           <React.Fragment key={s.key}>
-            {i === 1 ? <span className="my-1.5 w-6 border-t border-sidebar-border" /> : null}
+            {i === 1 && sections[0].key === "home" ? (
+              <span className="my-1.5 w-6 border-t border-sidebar-border" />
+            ) : null}
             <Tooltip>
               <TooltipTrigger asChild>
                 <Link
@@ -130,10 +134,12 @@ function MobileNav({
   open,
   onOpenChange,
   pathname,
+  sections,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   pathname: string;
+  sections: AdminSection[];
 }) {
   const close = () => onOpenChange(false);
   return (
@@ -146,7 +152,7 @@ function MobileNav({
           管理コンソール
         </SheetTitle>
         <nav aria-label="管理メニュー" className="flex-1 overflow-y-auto overscroll-y-contain py-2">
-          {ADMIN_SECTIONS.map((s) => {
+          {sections.map((s) => {
             const Icon = s.icon;
             const current = sectionFor(pathname).key === s.key && !s.menu;
             return (
@@ -188,10 +194,17 @@ function MobileNav({
   );
 }
 
-/// 管理者でない／読み込み中のときの本文。
-function Gate({ children }: { children: React.ReactNode }) {
+/// 開く権限が無い／読み込み中のときの本文。管理者でない監査閲覧者がホームに来たら監査ログへ送る。
+function Gate({ section, children }: { section: AdminSection; children: React.ReactNode }) {
   const { data, loading } = useMe();
-  if (loading) {
+  const router = useRouter();
+  const allowed = canOpen(section.access, data);
+  const entry = adminEntry(data);
+  const redirect = !loading && !allowed && section.key === "home" && entry !== null;
+  React.useEffect(() => {
+    if (redirect && entry) router.replace(entry);
+  }, [redirect, entry, router]);
+  if (loading || redirect) {
     return (
       <div className="mx-auto flex max-w-5xl flex-col gap-4 p-6" aria-busy="true">
         <Skeleton className="h-7 w-48" />
@@ -200,13 +213,18 @@ function Gate({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-  if (!data?.is_admin) {
+  if (!allowed) {
+    const audit = section.access === "audit";
     return (
       <div className="mx-auto max-w-xl p-6 pt-16">
         <EmptyState
           icon={ShieldAlert}
-          title="組織の管理者だけが使えます"
-          description="管理コンソールを使うには、組織の管理者に権限の付与を依頼してください。"
+          title={audit ? "監査ログは監査担当者だけが見られます" : "組織の管理者だけが使えます"}
+          description={
+            audit
+              ? "監査ログを見るには、監査閲覧の権限（管理者とは別）が必要です。運用担当者に付与を依頼してください。"
+              : "管理コンソールを使うには、組織の管理者に権限の付与を依頼してください。"
+          }
           action={
             <Button asChild variant="outline" size="sm">
               <Link href="/">shiki に戻る</Link>
@@ -225,14 +243,15 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const section = sectionFor(pathname);
   const item = menuItemFor(pathname);
   const { data } = useMe();
+  const sections = visibleSections(data);
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const org = data?.org ?? "組織";
   const crumb = section.key === "home" ? org : `${org}・${section.label}`;
 
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-background text-[13.5px]">
-      <Rail active={section} />
-      {section.menu ? (
+      <Rail active={section} sections={sections} />
+      {section.menu && canOpen(section.access, data) ? (
         <nav
           aria-label={section.label}
           className="hidden w-56 shrink-0 flex-col border-r border-sidebar-border bg-sidebar/60 md:flex"
@@ -280,11 +299,16 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         </div>
         <main className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain max-md:pt-[calc(4rem+env(safe-area-inset-top))]">
           <AdminCrumbContext.Provider value={crumb}>
-            <Gate>{children}</Gate>
+            <Gate section={section}>{children}</Gate>
           </AdminCrumbContext.Provider>
         </main>
       </div>
-      <MobileNav open={mobileOpen} onOpenChange={setMobileOpen} pathname={pathname} />
+      <MobileNav
+        open={mobileOpen}
+        onOpenChange={setMobileOpen}
+        pathname={pathname}
+        sections={sections}
+      />
     </div>
   );
 }

@@ -39,6 +39,9 @@ pub enum AccessPolicy {
     /// BFF セッション必須＋**組織管理者**（`organization#admin`・管理コンソールの API・標準 30s）。
     /// パスは `/org-admin/*` に限る（プロビジョナの `/admin/*` と混ぜない）。
     OrgAdmin,
+    /// BFF セッション必須＋**監査閲覧者**（`organization#audit_viewer`・監査ログの検索と書き出し・
+    /// #634・標準 30s）。admin とは独立（管理者でない監査担当者も通る）。パスは `/org-audit/*` に限る。
+    OrgAuditor,
     /// provisioner service account の Bearer JWT 必須（admin プレーン・300s）。
     /// config（provisioner 資格情報＋admin base）が無ければルートごと不在（fail-closed）。
     Provisioner,
@@ -525,6 +528,7 @@ pub fn route_table() -> Vec<RouteDecl> {
     table.extend(routes::org_admin_ai::org_admin_ai_route_decls());
     table.extend(routes::org_admin_data::org_admin_data_route_decls());
     table.extend(routes::org_admin_insights::org_admin_insights_route_decls());
+    table.extend(routes::org_audit::org_audit_route_decls());
     table
 }
 
