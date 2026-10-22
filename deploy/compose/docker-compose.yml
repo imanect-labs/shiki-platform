@@ -347,6 +347,8 @@ services:
     # command で環境依存値を注入する（イメージの CMD を丸ごと置き換えるため基本引数も再掲）:
     #   - storage.wopi.host: WOPI ホスト（shiki-server）以外からの文書取得を拒否（SSRF 抑止）。
     #   - server_name: discovery の urlsrc に載る「ブラウザから見た Collabora」のホスト。
+    # 文書の中から内部網へ取りに行かせない設定（net.lok_allow を閉じる・#729）は自前ビルドの
+    # coolwsd.xml に焼き込んである。ここで net.lok_allow を足さないこと（上流の CODE には入っていない）。
     command:
       - coolwsd
       - --o:sys_template_path=/opt/cool/systemplate
