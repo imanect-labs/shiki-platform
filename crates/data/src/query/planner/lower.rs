@@ -326,7 +326,7 @@ impl Lowerer<'_> {
     }
 
     /// ソート値を引くスカラー部分問い合わせ（型はそのまま・text は `COLLATE "C"`）。
-    fn sort_value_sql(&self, k: BSort, rec: &str, sql: &mut SqlBuf) -> String {
+    pub(crate) fn sort_value_sql(&self, k: BSort, rec: &str, sql: &mut SqlBuf) -> String {
         let f = self.field(k.field);
         let rel = f.value_table().relation();
         let fph = sql.typed(Bind::I16(field_i16(f.id)));
@@ -378,8 +378,8 @@ impl Lowerer<'_> {
         format!(
             "WITH cand AS MATERIALIZED ({source}{cap_sql}), \
              pass AS MATERIALIZED (SELECT c.record_int FROM cand c WHERE {check}) \
-             SELECT nc.n AS n_cand, z.record_int{outer} \
-             FROM (SELECT count(*) AS n FROM cand) nc \
+             SELECT nc.n AS n_cand, np.n AS n_pass, z.record_int{outer} \
+             FROM (SELECT count(*) AS n FROM cand) nc CROSS JOIN (SELECT count(*) AS n FROM pass) np \
              LEFT JOIN (SELECT p.record_int{cols} FROM pass p) z ON {keyset} \
              ORDER BY {} LIMIT {lim}",
             order.join(", ")

@@ -23,6 +23,7 @@ pub(crate) enum Bind {
     /// 10 進表記（SQL 側で `::numeric` にキャストする・二進誤差を持ち込まない）。
     Numeric(String),
     NumericArray(Vec<String>),
+    Bytes(Vec<u8>),
 }
 
 /// 1 文のバインド列（SQL テキストは組み立て関数が返す）。
@@ -58,6 +59,7 @@ impl SqlBuf {
             Bind::I64Array(_) => "int8[]",
             Bind::Numeric(_) => "numeric",
             Bind::NumericArray(_) => "numeric[]",
+            Bind::Bytes(_) => "bytea",
         };
         let ph = self.push(b);
         format!("{ph}::{ty}")
@@ -78,6 +80,7 @@ macro_rules! bind_into {
             Bind::I64Array(v) => $q.bind(v),
             Bind::Numeric(v) => $q.bind(v),
             Bind::NumericArray(v) => $q.bind(v),
+            Bind::Bytes(v) => $q.bind(v),
         }
     };
 }

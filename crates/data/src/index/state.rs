@@ -77,6 +77,8 @@ pub(crate) fn desired(schema: &TableSchema) -> BTreeSet<(FieldId, IndexTable)> {
 pub(crate) struct IndexPlan {
     pub(crate) keys: TableKeys,
     maintained: BTreeMap<FieldId, Vec<IndexTable>>,
+    /// 複数ソートの複合索引（building / active は write-through・[`super::composite`]）。
+    pub(crate) sorts: Vec<super::composite::SortSetDef>,
 }
 
 impl IndexPlan {
@@ -95,6 +97,7 @@ impl IndexPlan {
         IndexPlan {
             keys,
             maintained: BTreeMap::new(),
+            sorts: Vec::new(),
         }
     }
 
@@ -104,7 +107,11 @@ impl IndexPlan {
         for (f, t) in entries {
             maintained.entry(*f).or_default().push(*t);
         }
-        IndexPlan { keys, maintained }
+        IndexPlan {
+            keys,
+            maintained,
+            sorts: Vec::new(),
+        }
     }
 }
 
@@ -164,7 +171,12 @@ pub(crate) async fn lock_plan(
             f.key
         )));
     }
-    Ok(IndexPlan { keys, maintained })
+    let sorts = super::composite::load_sets(conn, keys).await?;
+    Ok(IndexPlan {
+        keys,
+        maintained,
+        sorts,
+    })
 }
 
 /// 台帳の全行（状態つき）。Task 15.3 のクエリコンパイラは `active` だけを駆動・フィルタに使う
@@ -228,6 +240,14 @@ pub(crate) async fn sync_ledger(
         delete_field_rows(conn, keys, *field, *table).await?;
     }
     super::link::declare_link_fields(conn, keys, schema).await?;
+    // 値索引が外れた列・作り直しになった列（型変更で text ⇄ numeric など）を含む複合索引は捨てる
+    // （複数ソートの材料化・§5.3。符号化は値索引の持ち方に依存するため、次の要求で作り直す）。
+    super::composite::prune(conn, keys, |f| {
+        [IndexTable::Text, IndexTable::Num]
+            .iter()
+            .any(|t| want.contains(&(f, *t)) && maintained.contains(&(f, *t)))
+    })
+    .await?;
     let building = load_states(conn, keys)
         .await?
         .iter()

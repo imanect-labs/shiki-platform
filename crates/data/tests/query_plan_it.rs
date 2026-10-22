@@ -53,6 +53,7 @@ fn assert_single_partition(plan: &Value) {
         "data_index_text",
         "data_index_num",
         "data_index_search",
+        "data_index_composite",
         "data_record",
     ] {
         let rels: BTreeSet<String> = relations_in_plan(plan, fam)
@@ -164,18 +165,26 @@ fn literal(p: &DebugParam) -> String {
         ),
         DebugParam::Numeric(s) => format!("{}::numeric", q(s)),
         DebugParam::NumericArray(v) => arr(v.iter().map(|s| q(s)).collect(), "numeric"),
+        DebugParam::Bytes(b) => {
+            let hex = b.iter().fold(String::new(), |mut acc, x| {
+                use std::fmt::Write as _;
+                let _ = write!(acc, "{x:02x}");
+                acc
+            });
+            format!("'\\x{hex}'::bytea")
+        }
     }
 }
 
 /// 汎用プランの形: `EXPLAIN (GENERIC_PLAN)` と、`force_generic_plan` 下の `EXPLAIN ANALYZE EXECUTE`
 /// （実行時に 1 パーティションへ枝刈りされること）。
-async fn assert_generic_plan(pool: &PgPool, st: &DebugStatement) {
+async fn assert_generic_plan(pool: &PgPool, st: &DebugStatement, min_subplans: usize) {
     let mut conn = pool.acquire().await.unwrap();
     // パラメータを束縛しない計画は単純問い合わせプロトコルで投げる（拡張プロトコルは $n に値を要求する）。
     let sql = format!("EXPLAIN (GENERIC_PLAN, FORMAT JSON) {}", st.sql);
     let row = sqlx::raw_sql(&sql).fetch_one(&mut *conn).await.unwrap();
     let plan: Value = sqlx::Row::try_get(&row, 0).unwrap();
-    assert_point_probes(&plan, 1);
+    assert_point_probes(&plan, min_subplans);
     sqlx::query("SET plan_cache_mode = force_generic_plan")
         .execute(&mut *conn)
         .await
@@ -196,7 +205,7 @@ async fn assert_generic_plan(pool: &PgPool, st: &DebugStatement) {
         runtime_pruned(&plan) > 0,
         "汎用プランでも実行時に枝刈りされる: {plan}"
     );
-    assert_point_probes(&plan, 1);
+    assert_point_probes(&plan, min_subplans);
     sqlx::query(&format!("DEALLOCATE {name}"))
         .execute(&mut *conn)
         .await
@@ -259,7 +268,7 @@ async fn plan_shapes_are_fixed_per_strategy() {
     assert_point_probes(&plan, 1);
     assert_single_partition(&plan);
     assert!(d.stats.scanned < 100, "候補件数だけを読む: {:?}", d.stats);
-    assert_generic_plan(&pool, st).await;
+    assert_generic_plan(&pool, st, 1).await;
     // 本体の取得は `(tenant_int, table_int, record_int)` の一意索引の点検索（seq scan にしない）。
     let fetch = explain(&pool, main_stmt(&d.statements, "fetch"), true).await;
     let scans = index_scans(&fetch, "data_record_p");
@@ -290,7 +299,7 @@ async fn plan_shapes_are_fixed_per_strategy() {
     assert!(drive.2 <= 60, "早期終了（読んだ行数）: {drive:?}");
     assert_point_probes(&plan, 1);
     assert_single_partition(&plan);
-    assert_generic_plan(&pool, st).await;
+    assert_generic_plan(&pool, st, 1).await;
 
     // ⑤ keyset 継続（深いページでも同じ形・同じ件数）。
     let mut q5 = q2.clone();
@@ -357,7 +366,7 @@ async fn plan_shapes_are_fixed_per_strategy() {
     );
     assert_point_probes(&plan, 1);
     assert_single_partition(&plan);
-    assert_generic_plan(&pool, st).await;
+    assert_generic_plan(&pool, st, 1).await;
 
     // ⑥ 任意列（値なし 10%）のソートで区間 2（擬似列 created_at の主キー順）まで進む。
     let q6 = DataQuery {
@@ -408,34 +417,99 @@ async fn plan_shapes_are_fixed_per_strategy() {
     assert_point_probes(&plan, 2);
     assert_single_partition(&plan);
 
-    // ⑦ 第 1 キーが偏った複数ソート（status は 90% が完了）: 窓は第 1 キーの値索引の範囲で、
-    //    深いページでも結果は全順序どおり。
+    // ⑦ 第 1 キーが偏った複数ソート（status は 90% が完了）。
+    //    (a) 複合索引が無い間: 同値群がページの K 倍（8 × 50 = 400）を超えるので、窓を丸ごと並べて正しく返し
+    //        （劣化を利用者へ明示）、その組み合わせの複合索引の材料化を要求する。
     let q7 = DataQuery {
         sort: vec![sort_key("status", false), sort_key("amount", true)],
         limit: Some(50),
         ..Default::default()
     };
-    let (r, d) = run(
-        q7.clone(),
-        QueryTuning {
-            force: Some(ForcedStrategy::Sort),
-            ..Default::default()
-        },
-    )
-    .await;
-    assert_eq!(r.items.unwrap().len(), 50);
+    let force_sort = QueryTuning {
+        force: Some(ForcedStrategy::Sort),
+        ..Default::default()
+    };
+    let (r, d) = run(q7.clone(), force_sort.clone()).await;
+    assert!(d.stats.composite_requested, "{:?}", d.stats);
+    assert!(r.sort_degraded, "先読みの上限を超えた劣化を明示する");
+    let before = r
+        .items
+        .unwrap()
+        .into_iter()
+        .map(|x| x.id)
+        .collect::<Vec<_>>();
+    assert_eq!(before.len(), 50);
     let st = main_stmt(&d.statements, "candidates");
-    let plan = explain(&pool, st, true).await;
-    // 第 1 キーの同値群（完了 ≈ 90%）は窓に丸ごと入る＝群の大きさに比例する最悪ケース（data-platform §5.3。
-    // 複合索引の材料化は Task 15.12）。窓の読取は自テーブルの 1 パーティションに閉じる。
     assert!(
         st.sql.contains("i.val <=") || st.sql.contains("i.val >="),
         "窓は第 1 キーの値の範囲: {}",
         st.sql
     );
+    assert_single_partition(&explain(&pool, st, true).await);
+    let (state,): (String,) = sqlx::query_as(
+        "SELECT s.state FROM data_sort_set s JOIN data_table t \
+           ON t.tenant_int = s.tenant_int AND t.table_int = s.table_int \
+         WHERE t.tenant_id = $1 AND t.id = $2",
+    )
+    .bind(&tenant)
+    .bind(table.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        state, "building",
+        "既存行があるのでバックフィル待ち（building の間は使わない）"
+    );
+    let (r, d) = run(q7.clone(), force_sort.clone()).await;
+    assert_ne!(d.stats.strategy, "composite");
+    assert_eq!(
+        r.items
+            .unwrap()
+            .into_iter()
+            .map(|x| x.id)
+            .collect::<Vec<_>>(),
+        before
+    );
+
+    //    (b) バックフィル（jobq と同じ手続き）で active になると、複合索引の値索引 1 本を歩く。
+    //        何ページ目でも読む行数は予算（8 × ページ）で頭打ちで、結果は複合索引前と同じ全順序。
+    store.backfill_sort_sets(&tenant, table.id).await.unwrap();
+    let mut q = q7.clone();
+    let mut pages = Vec::new();
+    for _ in 0..30 {
+        let (r, d) = run(q.clone(), force_sort.clone()).await;
+        assert!(!r.sort_degraded);
+        assert!(!d.stats.composite_requested);
+        assert_eq!(d.stats.strategy, "composite", "{:?}", d.stats);
+        pages.push((r.items.unwrap(), d));
+        q.cursor = r.next_cursor;
+    }
+    let first: Vec<_> = pages[0].0.iter().map(|x| x.id).collect();
+    assert_eq!(first, before, "複合索引の前後で同じ順序");
+    let (_, d) = pages.last().unwrap();
+    let st = main_stmt(&d.statements, "composite_drive");
+    assert!(st.sql.contains("i.val >"), "keyset 継続: {}", st.sql);
+    let plan = explain(&pool, st, true).await;
+    let scans = index_scans(&plan, "data_index_composite_p");
+    let drive = scans
+        .iter()
+        // 値索引（tenant_int, table_int, sort_set_id, val）。主キー（… record_int）ではない。
+        .find(|(_, idx, _)| idx.contains("sort_set_id") && !idx.contains("pkey"))
+        .unwrap_or_else(|| panic!("複合索引の値索引から入る: {scans:?}"));
+    assert!(drive.2 <= 8 * 50 + 1, "深いページでも走査は一定: {drive:?}");
+    assert_eq!(
+        count_nodes(&plan, "Sort"),
+        0,
+        "並べ替えをしない（索引順）: {plan}"
+    );
+    assert_point_probes(&plan, 0);
     assert_single_partition(&plan);
+    assert_generic_plan(&pool, st, 0).await;
+    // 自動選択（強制なし）でも複合索引を使う。
+    let (_, d) = run(q7.clone(), auto.clone()).await;
+    assert_eq!(d.stats.strategy, "composite", "{:?}", d.stats);
     eprintln!(
-        "skewed multi-sort: scanned={} statements={}",
+        "skewed multi-sort (composite): scanned={} statements={}",
         d.stats.scanned, d.stats.statements
     );
 }
@@ -464,7 +538,7 @@ async fn policy_drive_plan_for_users_who_see_few_rows() {
     // 認可駆動でも行述語の検査は残る（Guard を省かない・§7.1）。
     assert_point_probes(&plan, 1);
     assert_single_partition(&plan);
-    assert_generic_plan(&pool, st).await;
+    assert_generic_plan(&pool, st, 1).await;
 }
 
 #[tokio::test]

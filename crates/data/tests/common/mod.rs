@@ -311,6 +311,7 @@ pub fn bind_param<'q>(
         P::I64Array(v) => q.bind(v),
         P::Numeric(v) => q.bind(v),
         P::NumericArray(v) => q.bind(v),
+        P::Bytes(v) => q.bind(v),
     }
 }
 

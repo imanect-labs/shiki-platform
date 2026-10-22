@@ -120,6 +120,7 @@ pub enum DebugParam {
     I64Array(Vec<i64>),
     Numeric(String),
     NumericArray(Vec<String>),
+    Bytes(Vec<u8>),
 }
 
 impl From<Bind> for DebugParam {
@@ -135,6 +136,7 @@ impl From<Bind> for DebugParam {
             Bind::I64Array(v) => DebugParam::I64Array(v),
             Bind::Numeric(v) => DebugParam::Numeric(v),
             Bind::NumericArray(v) => DebugParam::NumericArray(v),
+            Bind::Bytes(v) => DebugParam::Bytes(v),
         }
     }
 }
@@ -275,6 +277,17 @@ impl DataStore {
             .await?;
         tx.commit().await.map_err(map_db)?;
         let (mut result, mut debug, rows) = out;
+        // 第 1 キーの同値群が先読みの上限を超えたソートの組み合わせは、複合索引をオンデマンドで材料化する
+        // （data-platform §5.3・§10 と同じ機構。失敗しても読取の結果には影響させない）。
+        if debug.stats.composite_requested {
+            let set: Vec<(FieldId, bool)> = bq.sort.iter().map(|k| (k.field, k.desc)).collect();
+            if let Err(e) = self
+                .request_sort_set(&ctx.tenant_id, table_id, table.keys, &set)
+                .await
+            {
+                tracing::warn!(error = %e, %table_id, "複合索引の材料化の要求に失敗");
+            }
+        }
         // 本体の後段（派生フィールド・マスク・投影）はトランザクションの外で行う。
         if let Some(mut items) = rows {
             self.resolve_derived_fields(ctx, &table, &mut items).await?;
@@ -369,6 +382,24 @@ impl DataStore {
             active: &active,
             shared_ints: &shared_ints,
         });
+        // このソートの組み合わせの複合索引（active のときだけ駆動に使う・building は書込だけ受ける）。
+        let composite = if bq.sort.len() > 1 && !body_path {
+            let want: Vec<(FieldId, bool)> = bq.sort.iter().map(|k| (k.field, k.desc)).collect();
+            crate::index::composite::load_sets(conn, keys)
+                .await?
+                .into_iter()
+                .find(|s| s.active && s.keys == want)
+                .map(|s| {
+                    let kinds = bq
+                        .sort
+                        .iter()
+                        .map(|k| (bq.field(k.field).kind, k.desc))
+                        .collect();
+                    (s.id, kinds)
+                })
+        } else {
+            None
+        };
         let mut ex = Exec {
             conn,
             low: &low,
@@ -382,6 +413,10 @@ impl DataStore {
             captured: Vec::new(),
             force: tuning.force,
             budget_override: tuning.sort_budget,
+            composite,
+            wants_composite: false,
+            sort_degraded: false,
+            last_pass: 0,
         };
         let mut result = QueryResult {
             items: None,
@@ -389,6 +424,7 @@ impl DataStore {
             next_cursor: None,
             count: None,
             sort_precision: bq.sort_precision,
+            sort_degraded: false,
             shares_truncated: false,
             suppressed: false,
         };
@@ -511,6 +547,8 @@ impl DataStore {
         if let Some(next) = &page.next {
             result.next_cursor = Some(self.cursor.seal(&scope, &to_payload(next))?);
         }
+        result.sort_degraded = ex.sort_degraded;
+        ex.stats.composite_requested = ex.wants_composite;
         let debug = debug_of(ex.stats, ex.captured, &ex.prober);
         Ok((result, debug, Some(items)))
     }

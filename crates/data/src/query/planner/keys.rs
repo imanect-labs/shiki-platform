@@ -148,6 +148,86 @@ pub(crate) fn from_payload(q: &BoundQuery, p: &CursorPayload) -> Result<Pos, Dat
     Ok(pos)
 }
 
+// ---------------------------------------------------------------------------
+// 複合索引のキー（順序を保つバイト列・data-platform §5.3）
+// ---------------------------------------------------------------------------
+
+/// 値ありの印（値なし `0x02` より前＝値なしは昇順・降順とも末尾）。
+const PRESENT: u8 = 0x01;
+const MISSING: u8 = 0x02;
+
+/// 全順序（[`cmp_pos`]）と同じ順に並ぶバイト列。各キーは `[印][値]`（降順のキーは値のバイトを反転）、
+/// 末尾に `record_int`（第 1 キーの向き）。prefix-free な符号化なので連結しても順序が保たれる。
+/// バイト列を反転する（降順のキー）。
+fn invert(b: &mut [u8]) {
+    for x in b {
+        *x = !*x;
+    }
+}
+
+pub(crate) fn encode_pos(kinds: &[(FieldKind, bool)], pos: &Pos) -> Vec<u8> {
+    let mut out = Vec::with_capacity(32);
+    for (i, (kind, desc)) in kinds.iter().enumerate() {
+        match pos.vals.get(i).unwrap_or(&SortVal::Missing) {
+            SortVal::Missing => out.push(MISSING),
+            v => {
+                out.push(PRESENT);
+                let mut b = encode_val(*kind, v);
+                if *desc {
+                    invert(&mut b);
+                }
+                out.extend_from_slice(&b);
+            }
+        }
+    }
+    let mut r = (pos.rint as u64 ^ (1 << 63)).to_be_bytes();
+    if kinds.first().is_some_and(|k| k.1) {
+        invert(&mut r);
+    }
+    out.extend_from_slice(&r);
+    out
+}
+
+fn encode_val(kind: FieldKind, v: &SortVal) -> Vec<u8> {
+    match (kind, v) {
+        (_, SortVal::Num(d)) => encode_num(d),
+        (_, SortVal::Text(s)) => {
+            // 0x00 を 0x00 0xFF にエスケープし 0x00 0x01 で終端（prefix-free・バイト順を保つ）。
+            let mut out = Vec::with_capacity(s.len() + 2);
+            for b in s.as_bytes() {
+                out.push(*b);
+                if *b == 0 {
+                    out.push(0xFF);
+                }
+            }
+            out.extend_from_slice(&[0x00, 0x01]);
+            out
+        }
+        (_, SortVal::Missing) => Vec::new(),
+    }
+}
+
+/// 数値: ゼロ `0x80`、正 `0x81 ‖ exp(u16) ‖ 有効数字 ‖ 0x00`、負は `0x7F ‖ 正の符号化の反転`。
+fn encode_num(d: &Dec) -> Vec<u8> {
+    let Some((neg, exp, digits)) = d.sci() else {
+        return vec![0x80];
+    };
+    let e = u16::try_from((exp + 32_768).clamp(0, 65_535)).unwrap_or(0);
+    let mut body = e.to_be_bytes().to_vec();
+    body.extend_from_slice(digits.as_bytes());
+    body.push(0x00);
+    if neg {
+        invert(&mut body);
+        let mut out = vec![0x7F];
+        out.extend(body);
+        out
+    } else {
+        let mut out = vec![0x81];
+        out.extend(body);
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -193,6 +273,67 @@ mod tests {
         }];
         assert_eq!(cmp_pos(&asc, &a, &b), Ordering::Less);
         assert_eq!(cmp_pos(&desc, &a, &b), Ordering::Greater);
+    }
+
+    #[test]
+    fn composite_encoding_preserves_the_total_order() {
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0
+            }
+        }
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        let nums = [
+            "-12.5", "-1", "-0.05", "0", "0.05", "0.5", "1", "1.25", "10", "100", "99.999",
+        ];
+        let texts = ["", "a", "a\0", "a\0b", "ab", "b", "承認", "\u{10FFFF}"];
+        let gen = |rng: &mut Rng, k: FieldKind| -> SortVal {
+            let n = rng.next();
+            if n.is_multiple_of(7) {
+                return SortVal::Missing;
+            }
+            match k {
+                FieldKind::Num => {
+                    SortVal::Num(Dec::parse(nums[(n % nums.len() as u64) as usize]).unwrap())
+                }
+                _ => SortVal::Text(texts[(n % texts.len() as u64) as usize].to_string()),
+            }
+        };
+        for desc in [(false, false), (true, false), (false, true), (true, true)] {
+            let kinds = [(FieldKind::Text, desc.0), (FieldKind::Num, desc.1)];
+            let sort = [
+                BSort {
+                    field: 16,
+                    desc: desc.0,
+                },
+                BSort {
+                    field: 17,
+                    desc: desc.1,
+                },
+            ];
+            let pos: Vec<Pos> = (0..300)
+                .map(|_| Pos {
+                    vals: vec![
+                        gen(&mut rng, FieldKind::Text),
+                        gen(&mut rng, FieldKind::Num),
+                    ],
+                    rint: (rng.next() % 50) as i64,
+                })
+                .collect();
+            for a in &pos {
+                for b in &pos {
+                    assert_eq!(
+                        encode_pos(&kinds, a).cmp(&encode_pos(&kinds, b)),
+                        cmp_pos(&sort, a, b),
+                        "{a:?} vs {b:?} desc={desc:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

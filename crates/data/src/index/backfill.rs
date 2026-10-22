@@ -666,6 +666,19 @@ impl DataStore {
                 }
                 Ok(true)
             }
+            Some("composite") => {
+                for _ in 0..CHUNKS_PER_JOB {
+                    match self
+                        .sort_set_backfill_step(&job.tenant_id, table_id, BACKFILL_CHUNK)
+                        .await
+                    {
+                        Ok(true) | Err(DataError::NotFound) => return Ok(false), // 完了・テーブルが消えた
+                        Ok(false) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(true)
+            }
             Some("parity") => {
                 let report = self.verify_index_parity(&job.tenant_id, table_id).await?;
                 if !report.is_consistent() {

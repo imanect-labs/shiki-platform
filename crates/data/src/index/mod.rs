@@ -13,6 +13,7 @@
 //! - `record_int` は索引の内部キーで、**外へ出さない**（PIT-75）。
 
 pub(crate) mod backfill;
+pub(crate) mod composite;
 mod link;
 pub(crate) mod normalize;
 pub(crate) mod parity;

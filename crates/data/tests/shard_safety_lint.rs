@@ -30,6 +30,9 @@ const DATA_TABLES: &[&str] = &[
     "data_index_search",
     "data_index_state",
     "data_index_backfill",
+    // 複数ソートの複合索引（Task 15.3）。
+    "data_index_composite",
+    "data_sort_set",
     // テナント設定（Task 15.3）。
     "data_tenant_settings",
 ];

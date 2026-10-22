@@ -161,6 +161,18 @@ impl Dec {
         }
     }
 
+    /// 科学表記 `0.d₁d₂… × 10^exp`（符号, exp, 有効数字。ゼロは `None`）。順序を保つ符号化に使う。
+    pub(crate) fn sci(&self) -> Option<(bool, i32, String)> {
+        let digits = format!("{}{}", self.int, self.frac);
+        let lead = digits.len() - digits.trim_start_matches('0').len();
+        let sig = digits.trim_start_matches('0').trim_end_matches('0');
+        if sig.is_empty() {
+            return None;
+        }
+        let exp = i32::try_from(self.int.len()).ok()? - i32::try_from(lead).ok()?;
+        Some((self.neg, exp, sig.to_string()))
+    }
+
     fn cmp_abs(&self, other: &Dec) -> Ordering {
         self.int
             .len()

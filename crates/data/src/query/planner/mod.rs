@@ -13,6 +13,7 @@
 //!
 //! `stats`（件数探索とキャッシュ）は**このモジュールの外から見えない**（PIT-75）。
 
+mod composite;
 pub(crate) mod exec;
 pub(crate) mod feedback;
 pub(crate) mod guard;

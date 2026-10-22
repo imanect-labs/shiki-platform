@@ -160,17 +160,18 @@ async fn uniqueness_survives_the_upgrade_from_a_mid_backfill_state() {
         .connect(&url)
         .await
         .unwrap();
-    // 0076 まで当てる。
+    // 0077 / 0078 の手前の状態を作る（0076 まで＋ 0079 以降の独立した追加テーブル。
+    // テストの書込は現行コードで行うため、0077 / 0078 と無関係な新しいテーブルは先に置く）。
     let full = sqlx::migrate!("../../migrations");
-    let mut upto76 = sqlx::migrate!("../../migrations");
-    upto76.migrations = full
+    let mut before = sqlx::migrate!("../../migrations");
+    before.migrations = full
         .migrations
         .iter()
-        .filter(|m| m.version <= 76)
+        .filter(|m| !(77..=78).contains(&m.version))
         .cloned()
         .collect::<Vec<_>>()
         .into();
-    upto76.run(&pool).await.unwrap();
+    before.run(&pool).await.unwrap();
 
     let store = store_with(pool.clone());
     let c = ctx(&unique_tenant(), "alice");
@@ -207,7 +208,7 @@ async fn uniqueness_survives_the_upgrade_from_a_mid_backfill_state() {
     .await
     .unwrap();
 
-    // 0077 / 0078（以降）を当てる。
+    // 0077 / 0078 を当てる。
     full.run(&pool).await.unwrap();
 
     // 重複は 409（初回アクセスで台帳を作り直し、unique を同期構築してから書込を通す）。

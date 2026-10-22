@@ -196,6 +196,9 @@ pub struct QueryResult {
     pub count: Option<CountResult>,
     /// ソートの精度（切り詰めが起こり得る列で並べたら `prefix`・data-platform §3.3）。
     pub sort_precision: SortPrecision,
+    /// このソートの組み合わせは複合索引の準備中で、深いページほど遅くなる（data-platform §5.3。
+    /// 可視行で見て第 1 キーの同値群がページの 8 倍を超えたとき）。
+    pub sort_degraded: bool,
     /// 個別共有集合の切り詰め（PIT-18）。
     pub shares_truncated: bool,
     /// K 未満で抑制されたグループ/全体集計があった（PIT-17）。

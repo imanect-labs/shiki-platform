@@ -85,7 +85,8 @@ impl IndexWriter<'_> {
                 });
             }
         }
-        self.apply(conn, rec.record_int, &ops, Mode::Fresh).await
+        self.apply(conn, rec.record_int, &ops, Mode::Fresh).await?;
+        self.refresh_sorts(conn, rec.record_int, None).await
     }
 
     /// update / FSM 遷移: 差分（`patches`・外部形 key）に載ったフィールドと `updated_at` だけを書き換える。
@@ -119,7 +120,29 @@ impl IndexWriter<'_> {
                 new: Some(&updated),
             });
         }
-        self.apply(conn, record_int, &ops, Mode::Replace).await
+        self.apply(conn, record_int, &ops, Mode::Replace).await?;
+        let mut changed: Vec<FieldId> = patches
+            .iter()
+            .filter_map(|p| self.schema.field(&p.field).map(|d| d.id))
+            .collect();
+        changed.push(SYSTEM_FIELD_UPDATED_AT);
+        self.refresh_sorts(conn, record_int, Some(&changed)).await
+    }
+
+    /// 複数ソートの複合索引を作り直す（変更のあった列を含む組み合わせだけ・`None` は全て）。
+    async fn refresh_sorts(
+        &self,
+        conn: &mut PgConnection,
+        record_int: i64,
+        changed: Option<&[FieldId]>,
+    ) -> Result<(), DataError> {
+        for set in &self.plan.sorts {
+            if changed.is_some_and(|c| !set.keys.iter().any(|(f, _)| c.contains(f))) {
+                continue;
+            }
+            super::composite::refresh(conn, self.plan.keys, self.schema, set, record_int).await?;
+        }
+        Ok(())
     }
 
     /// delete: そのレコードの索引行を全て消す（`old` は外部形の保存値・unique 行の特定に使う）。
@@ -145,7 +168,11 @@ impl IndexWriter<'_> {
                 });
             }
         }
-        self.apply(conn, record_int, &ops, Mode::Replace).await
+        self.apply(conn, record_int, &ops, Mode::Replace).await?;
+        if !self.plan.sorts.is_empty() {
+            super::composite::delete_record(conn, self.plan.keys, record_int).await?;
+        }
+        Ok(())
     }
 
     /// バックフィル: 指定の (フィールド, 索引テーブル) だけを本体から作り直す（冪等）。

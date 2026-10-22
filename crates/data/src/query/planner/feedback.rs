@@ -34,6 +34,8 @@ pub struct QueryExecStats {
     pub body_path: bool,
     /// 事後検査で落とした行数（0 であるべき）。
     pub verify_dropped: u64,
+    /// 複数ソートの同値群が先読みの上限を超え、複合索引の材料化を要求した。
+    pub composite_requested: bool,
 }
 
 /// テーブル単位の集計（運用指標）。

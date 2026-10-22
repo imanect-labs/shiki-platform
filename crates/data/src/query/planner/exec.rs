@@ -35,6 +35,9 @@ const C_PROBE: f64 = 5.0;
 const C_FETCH: f64 = 10.0;
 /// 複数ソートの同値群の先読み倍率・予算の初期倍率（K）。
 pub(crate) const K_PREFETCH: i64 = 8;
+
+/// active な複合索引（sort_set_id と、ソートキーごとの値の持ち方・向き）。
+pub(crate) type CompositeSet = (i16, Vec<(crate::query::bound::FieldKind, bool)>);
 /// 予算切れのたびに件数を測り直す回数の上限。
 const MAX_REPROBES: u32 = 8;
 
@@ -75,6 +78,14 @@ pub(crate) struct Exec<'a, 'c> {
     pub captured: Vec<Captured>,
     pub force: Option<ForcedStrategy>,
     pub budget_override: Option<i64>,
+    /// このソートの組み合わせの複合索引（active のときだけ・(sort_set_id, 各キーの持ち方と向き)）。
+    pub composite: Option<CompositeSet>,
+    /// 第 1 キーの同値群が K × ページを超えた（複合索引の材料化を要求する・利用者へは返さない）。
+    pub wants_composite: bool,
+    /// 可視行で見て同値群が K × ページを超えた（複合索引の準備中は深いページで遅くなる・API で明示）。
+    pub sort_degraded: bool,
+    /// 直前の候補 SQL で検査を通った行数。
+    pub last_pass: i64,
 }
 
 /// 1 ページの結果（全順序の位置つき）。
@@ -95,7 +106,7 @@ struct CandPlan<'q> {
 }
 
 /// ソート駆動の 1 回分の走査結果。
-enum Step {
+pub(super) enum Step {
     /// 予算内で `need` 件そろった、または索引の終端。
     Done,
     /// 予算切れ（観測: 走査件数・通過件数）。
@@ -130,11 +141,11 @@ fn atom_rank(a: &Atom) -> u8 {
 }
 
 impl<'a> Exec<'a, '_> {
-    fn sql(&self) -> SqlBuf {
+    pub(super) fn sql(&self) -> SqlBuf {
         SqlBuf::scoped(self.keys.tenant_int, self.keys.table_int)
     }
 
-    async fn fetch(
+    pub(super) async fn fetch(
         &mut self,
         label: &'static str,
         text: String,
@@ -366,7 +377,9 @@ impl<'a> Exec<'a, '_> {
         loop {
             match self.sort_step(conj, sort, &mut st, limit, *budget).await? {
                 Step::Done => {
-                    self.stats.strategy = "sort";
+                    if self.stats.strategy != "composite" {
+                        self.stats.strategy = "sort";
+                    }
                     return Ok(st.finish(sort, limit));
                 }
                 Step::Exhausted { scanned, passed } => {
@@ -429,6 +442,8 @@ impl<'a> Exec<'a, '_> {
             if let Step::Done = self.sort_step(conj, sort, &mut st, limit, budget).await? {
                 self.stats.strategy = if self.stats.safe_fallback {
                     "safe"
+                } else if self.stats.strategy == "composite" {
+                    "composite"
                 } else {
                     "sort"
                 };
@@ -587,6 +602,12 @@ impl<'a> Exec<'a, '_> {
             .map_err(map_db)?
             .unwrap_or(0);
         self.stats.scanned += n_cand.max(0) as u64;
+        self.last_pass = rows
+            .first()
+            .map(|r| r.try_get::<i64, _>("n_pass"))
+            .transpose()
+            .map_err(map_db)?
+            .unwrap_or(0);
         if cap.is_some_and(|c| n_cand > c) {
             return Ok(None);
         }
@@ -616,6 +637,11 @@ impl<'a> Exec<'a, '_> {
         budget: i64,
     ) -> Result<Step, DataError> {
         let checks = order_checks(conj.to_vec());
+        if sort.len() > 1 {
+            if let Some(c) = self.composite.clone() {
+                return self.composite_step(&checks, st, limit, budget, &c).await;
+            }
+        }
         let key = sort[0];
         let need = limit + 1 - st.collected.len() as i64;
         if need <= 0 || st.done {
@@ -652,12 +678,10 @@ impl<'a> Exec<'a, '_> {
                     hi: hi_b,
                 };
                 let after = st.after.clone();
-                if let Some(rows) = self
-                    .run_candidates(&src, &checks, after.as_ref(), None, need)
-                    .await?
-                {
-                    st.collected.extend(rows);
-                }
+                let rows = self
+                    .prefetch_group(&src, &checks, after.as_ref(), limit, need)
+                    .await?;
+                st.collected.extend(rows);
                 st.window_lo = Some((v_end.clone(), false));
                 st.scan_from = Some((v_end, Some(if key.desc { i64::MIN } else { i64::MAX })));
             }
@@ -673,6 +697,36 @@ impl<'a> Exec<'a, '_> {
             return self.missing_step(&checks, sort, st, limit, budget).await;
         }
         Ok(Step::Exhausted { scanned, passed })
+    }
+
+    /// 第 1 キーの同値群（窓）をページの K 倍まで先読みして全キーで並べる（data-platform §5.3 の既定）。
+    /// 超えたら複合索引の材料化を要求し、この要求は窓を丸ごと並べて正しく返す
+    /// （複合索引が active になるまでの劣化・`statement_timeout` が上限）。
+    async fn prefetch_group(
+        &mut self,
+        src: &Source<'_>,
+        checks: &[&Expr],
+        after: Option<&Pos>,
+        limit: i64,
+        need: i64,
+    ) -> Result<Vec<(i64, Pos)>, DataError> {
+        let cap = K_PREFETCH * limit;
+        if let Some(rows) = self
+            .run_candidates(src, checks, after, Some(cap), need)
+            .await?
+        {
+            return Ok(rows);
+        }
+        self.wants_composite = true;
+        let rows = self
+            .run_candidates(src, checks, after, None, need)
+            .await?
+            .unwrap_or_default();
+        // 利用者へ明示するのは可視行（検査を通った行）で見た超過だけ（見えない行の量を漏らさない・PIT-75）。
+        if self.last_pass > cap {
+            self.sort_degraded = true;
+        }
+        Ok(rows)
     }
 
     /// 走査結果を状態へ取り込む。返り値: (走査件数, 通過件数, 索引の終端か, 最後に読んだ第 1 キー)。
@@ -737,12 +791,10 @@ impl<'a> Exec<'a, '_> {
             let mut all: Vec<&Expr> = vec![&missing];
             all.extend_from_slice(checks);
             let after = st.after.clone();
-            if let Some(rows) = self
-                .run_candidates(&Source::All, &all, after.as_ref(), None, need)
-                .await?
-            {
-                st.collected.extend(rows);
-            }
+            let rows = self
+                .prefetch_group(&Source::All, &all, after.as_ref(), limit, need)
+                .await?;
+            st.collected.extend(rows);
             st.done = true;
             return Ok(Step::Done);
         }
@@ -773,8 +825,11 @@ impl<'a> Exec<'a, '_> {
 type Absorbed = (u64, u64, bool, Option<SortVal>);
 
 /// ソート駆動の継続状態（同じ戦略を続ける間だけ途中結果を保持する）。
-struct SortState {
-    after: Option<Pos>,
+pub(super) struct SortState {
+    pub(super) after: Option<Pos>,
+    /// 複合索引の走査位置（符号化済みのキー）。
+    pub(super) comp_after: Option<Vec<u8>>,
+    pub(super) comp_started: bool,
     segment: u8,
     /// 区間 1 の走査位置（値, record_int）。`record_int` が `None` なら値の同値群の先頭から。
     scan_from: Option<(SortVal, Option<i64>)>,
@@ -782,14 +837,16 @@ struct SortState {
     scan_rint: Option<i64>,
     /// 複数ソートの窓の開始（値, 含むか）。
     window_lo: Option<(SortVal, bool)>,
-    collected: Vec<(i64, Pos)>,
-    done: bool,
+    pub(super) collected: Vec<(i64, Pos)>,
+    pub(super) done: bool,
 }
 
 impl SortState {
     fn new(after: Option<&Pos>) -> Self {
         let mut st = SortState {
             after: after.cloned(),
+            comp_after: None,
+            comp_started: false,
             segment: 1,
             scan_from: None,
             scan_rint: None,

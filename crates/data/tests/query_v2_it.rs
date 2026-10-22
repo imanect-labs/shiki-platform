@@ -495,6 +495,227 @@ async fn random_queries_match_reference_under_every_strategy() {
     assert!(nonempty > 20, "空でない結果が十分ある: {nonempty}");
 }
 
+/// 全戦略・予算 1・本体経路で、keyset の全ページが参照実装と一致する（text ソートの本体経路は集合で比べる）。
+async fn assert_all_tunings_match(
+    store: &DataStore,
+    c: &AuthContext,
+    table: Uuid,
+    rows: &[Row],
+    q: &DataQuery,
+    tag: &str,
+) {
+    let want = reference(rows, q);
+    let text_sort = q.sort.iter().any(|k| k.field == "title");
+    for (name, t) in tunings() {
+        let (got, _) = all_pages(store, c, table, q, &t).await;
+        if name == "body" && text_sort {
+            let a: HashSet<_> = got.iter().collect();
+            let b: HashSet<_> = want.iter().collect();
+            assert_eq!(a, b, "{tag} {name}: {q:?}");
+            assert_eq!(got.len(), want.len(), "{tag} {name}: 重複");
+        } else {
+            assert_eq!(got, want, "{tag} {name}: {q:?}");
+        }
+    }
+}
+
+/// 第 1 キーの同値群がページの K 倍（K = 8）を超える複数ソート（data-platform §5.3）。
+///
+/// 複合索引が無い間（材料化の要求 → building）も、active になった後も、書込（write-through）の後も、
+/// 全戦略・予算 1・本体経路で参照実装と同じ全順序を返す。
+#[tokio::test]
+async fn skewed_multi_sort_over_k_matches_reference_before_and_after_composite() {
+    let Some(pool) = setup().await else { return };
+    let (store, c, tenant, table) = seeded(&pool, 360).await;
+    let k = |f: &str, d: bool| SortKey {
+        field: f.into(),
+        descending: d,
+    };
+    let sorts = [
+        vec![k("status", false), k("amount", true)],
+        vec![k("status", true), k("_created_at", false)],
+        vec![k("status", false), k("title", false), k("due", true)],
+    ];
+    let filters = [
+        None,
+        Some(Condition::cmp("amount", CondOp::Gte, Some(json!(5)))),
+        Some(Condition::Any(vec![
+            Condition::cmp("tags", CondOp::Eq, Some(json!("a"))),
+            Condition::cmp("due", CondOp::IsNull, None),
+        ])),
+    ];
+    let queries: Vec<DataQuery> = sorts
+        .iter()
+        .flat_map(|s| {
+            filters.iter().map(|f| DataQuery {
+                filter: f.clone(),
+                sort: s.clone(),
+                limit: Some(5),
+                ..Default::default()
+            })
+        })
+        .collect();
+    let rows = load_rows(&pool, &tenant, &table).await;
+
+    // (1) 複合索引なし: 同値群（done ≈ 80%）は 8 × 5 = 40 を超える。正しく返し、劣化を明示し、材料化を要求する。
+    for (qi, q) in queries.iter().enumerate() {
+        let (r, d) = store
+            .run_query_debug(&c, table.id, q, &QueryTuning::default())
+            .await
+            .unwrap();
+        if q.filter.is_none() && !q.sort[0].descending {
+            // 先頭ページが done（≈ 80%）の同値群。
+            assert!(r.sort_degraded, "q{qi}: 可視行で先読みの上限を超えた");
+            assert!(d.stats.composite_requested, "q{qi}: {:?}", d.stats);
+        }
+        assert_all_tunings_match(&store, &c, table.id, &rows, q, &format!("before q{qi}")).await;
+    }
+    let (ti, tb) = common::keys_of(&pool, &tenant, table.id).await;
+    let states: Vec<(String, String)> = sqlx::query_as(
+        "SELECT spec, state FROM data_sort_set WHERE tenant_int = $1 AND table_int = $2 ORDER BY spec",
+    )
+    .bind(ti)
+    .bind(tb)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        states.len(),
+        sorts.len(),
+        "組み合わせごとに 1 つ: {states:?}"
+    );
+    assert!(states.iter().all(|(_, s)| s == "building"), "{states:?}");
+
+    // (2) jobq のバックフィル（索引の自動昇格と同じキュー）→ active。複合索引を歩いても同じ結果（劣化の表示も消える）。
+    let jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM job_queue WHERE queue = $1 AND tenant_id = $2 AND payload ->> 'op' = 'composite'",
+    )
+    .bind(data::INDEX_BACKFILL_QUEUE)
+    .bind(&tenant)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        jobs as usize,
+        sorts.len(),
+        "組み合わせの登録ごとにジョブが積まれる"
+    );
+    for round in 0.. {
+        let building: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM data_sort_set WHERE tenant_int = $1 AND table_int = $2 AND state <> 'active'",
+        )
+        .bind(ti)
+        .bind(tb)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if building == 0 {
+            break;
+        }
+        assert!(round < 5_000, "収束する");
+        assert!(
+            store.consume_index_job_once().await.unwrap(),
+            "完了前にキューが空になった"
+        );
+    }
+    for (qi, q) in queries.iter().enumerate() {
+        let (r, d) = store
+            .run_query_debug(&c, table.id, q, &QueryTuning::default())
+            .await
+            .unwrap();
+        assert!(!r.sort_degraded && !d.stats.composite_requested, "q{qi}");
+        let (_, d) = store
+            .run_query_debug(
+                &c,
+                table.id,
+                q,
+                &QueryTuning {
+                    force: Some(ForcedStrategy::Sort),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(d.stats.strategy, "composite", "q{qi}: {:?}", d.stats);
+        assert_all_tunings_match(&store, &c, table.id, &rows, q, &format!("active q{qi}")).await;
+    }
+
+    // (3) write-through: 作成・ソート列の更新・無関係な列の更新・削除の後も一致する。
+    let mut r = Rng(0x00c0_ffee);
+    for i in 0..30 {
+        store
+            .create_record(&c, table.id, record(&mut r, 400 + i), None)
+            .await
+            .unwrap();
+    }
+    let ids: Vec<(Uuid, i64)> = sqlx::query_as(
+        "SELECT id, rev FROM data_record WHERE tenant_id = $1 AND table_id = $2 ORDER BY record_int LIMIT 40",
+    )
+    .bind(&tenant)
+    .bind(table.id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    for (i, (id, rev)) in ids.iter().enumerate() {
+        let patch = match i % 4 {
+            0 => json!({"status": STATUS[i % 3 + 1], "amount": i as i64 * 3 - 50}),
+            1 => json!({"amount": null, "title": format!("t{i:02}z")}),
+            2 => json!({"tags": ["b"]}), // ソート列ではない（updated_at だけ変わる）
+            _ => {
+                store
+                    .delete_record(&c, table.id, *id, *rev, None)
+                    .await
+                    .unwrap();
+                continue;
+            }
+        };
+        store
+            .update_record(&c, table.id, *id, patch, *rev, None)
+            .await
+            .unwrap();
+    }
+    let rows = load_rows(&pool, &tenant, &table).await;
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM data_index_composite WHERE tenant_int = $1 AND table_int = $2",
+    )
+    .bind(ti)
+    .bind(tb)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        n as usize,
+        rows.len() * sorts.len(),
+        "各組み合わせに全レコードが 1 行ずつ"
+    );
+    for (qi, q) in queries.iter().enumerate() {
+        assert_all_tunings_match(&store, &c, table.id, &rows, q, &format!("written q{qi}")).await;
+    }
+
+    // (4) 値索引を外した列を含む組み合わせは捨てる（行も消える・他の組み合わせは残る）。
+    let mut next = table.schema.clone();
+    for f in &mut next.fields {
+        if f.key == "due" {
+            f.indexed = false;
+        }
+    }
+    store
+        .update_table_schema(&c, table.id, next, None, None)
+        .await
+        .unwrap();
+    let (sets, n): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM data_sort_set WHERE tenant_int = $1 AND table_int = $2), \
+                (SELECT count(*) FROM data_index_composite WHERE tenant_int = $1 AND table_int = $2)",
+    )
+    .bind(ti)
+    .bind(tb)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((sets, n as usize), (2, rows.len() * 2));
+    assert_all_tunings_match(&store, &c, table.id, &rows, &queries[0], "pruned q0").await;
+}
+
 #[tokio::test]
 async fn tlp_partitions_hold_through_sql() {
     let Some(pool) = setup().await else { return };

@@ -42,6 +42,8 @@ const PURGE_TENANT_INT_TABLES: &[&str] = &[
     "data_link_field",
     "data_unique",
     "data_index_search",
+    "data_index_composite",
+    "data_sort_set",
     "data_index_state",
     "data_index_backfill",
 ];

@@ -50,6 +50,8 @@ pub struct ListRecordsPage {
     pub next_cursor: Option<String>,
     /// ソートの精度（切り詰めが起こり得る列なら `prefix`）。
     pub sort_precision: SortPrecision,
+    /// この複数ソートの組み合わせは複合索引の準備中で、深いページほど遅くなる（data-platform §5.3）。
+    pub sort_degraded: bool,
 }
 
 fn to_query(filter: Option<&RecordFilter>) -> DataQuery {
@@ -90,6 +92,7 @@ impl DataStore {
             shares_truncated: r.shares_truncated,
             next_cursor: r.next_cursor,
             sort_precision: r.sort_precision,
+            sort_degraded: r.sort_degraded,
         })
     }
 

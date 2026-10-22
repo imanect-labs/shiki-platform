@@ -65,6 +65,8 @@ pub struct RecordListResponse {
     pub next_cursor: Option<String>,
     /// ソートの精度（切り詰めが起こり得る列で並べたら `prefix`）。
     pub sort_precision: data::SortPrecision,
+    /// この複数ソートの組み合わせは複合索引の準備中で、深いページほど遅くなる（data-platform §5.3）。
+    pub sort_degraded: bool,
 }
 
 /// レコード個別共有リクエスト（共有語彙は viewer/editor のみ・Task 9.3）。
@@ -197,6 +199,7 @@ pub async fn list_records(
         shares_truncated: page.shares_truncated,
         next_cursor: page.next_cursor,
         sort_precision: page.sort_precision,
+        sort_degraded: page.sort_degraded,
     }))
 }
 
