@@ -125,6 +125,9 @@ pub enum AgentEvent {
         detail: String,
         action: RecoveryAction,
     },
+    /// 直前の LLM リクエストのコンテキスト使用量（チャット画面のコンテキスト表示）。
+    /// 生成のたびに出る（後のものが最新）。
+    ContextUsage(crate::context_usage::ContextUsage),
 }
 
 /// エージェントループのエラー。
