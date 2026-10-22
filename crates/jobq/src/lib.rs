@@ -29,7 +29,11 @@
 //! 同時投入で同じ値になったら `id` 順。
 //!
 //! **仮想時刻はキューごとに単調増加する値として `job_queue_vtime` に保持する**: [`claim`] が
-//! 確保した行の最大 fair_seq まで進める（下がらない）。キュー内の行から毎回求める方式（最小
+//! 確保した行の最大 fair_seq **＋ 1**（処理に入ったジョブの終了タグ）まで進める（下がらない）。
+//! ＋1 が要るのは、キューが空になったテナントの再投入のため: ack で行が消えるとテナント末尾は
+//! 参照できず、仮想時刻が「確保した fair_seq」止まりだと、1 件ずつ投入しては処理されるテナントが
+//! 毎回同じ値を振られて仮想時刻を進めず、他テナントの滞留を無期限に追い越せた。終了タグまで
+//! 進めておけば、空になったテナントも直前に処理された自分のジョブの次から始まる。キュー内の行から毎回求める方式（最小
 //! fair_seq・可視な先頭の最小 fair_seq）は、バックオフ明け・defer 明け・consumer のクラッシュで
 //! **古い fair_seq の行が可視に戻った瞬間に過去へ巻き戻り**、その直後に投入した後着テナントが
 //! 先行テナントの残りを丸ごと追い越せた（失敗ジョブを 1 件抱えるだけで繰り返せる）。保持した
@@ -152,7 +156,7 @@ pub async fn enqueue_on(conn: &mut PgConnection, job: NewJob<'_>) -> Result<i64,
 /// 取り出し順は `fair_seq, id`（テナント間の公平性・モジュール冒頭）。`job_queue_fair_idx` を
 /// キュー内で先頭から辿り、読み飛ばすのは処理中・バックオフ中の行だけ。
 ///
-/// 同じ文でキューの仮想時刻（`job_queue_vtime`）を確保した行の最大 fair_seq まで進める。
+/// 同じ文でキューの仮想時刻（`job_queue_vtime`）を確保した行の最大 fair_seq ＋ 1 まで進める。
 /// 更新するのは**上回るときだけ**（可視に戻った古い行を取っても下げない。上回らない claim は
 /// この行のロックも取らない）。
 /// 行が無ければ作る（初回の同時作成で負けた側の値は捨てる＝次の claim で追いつく近似）。
@@ -175,7 +179,7 @@ pub async fn claim(
              ) \
              returning id, queue, tenant_id, payload, attempts, max_attempts, trace_id, \
                        enqueued_at, fair_seq \
-         ), top as (select max(fair_seq) as mx from claimed), \
+         ), top as (select max(fair_seq) + 1 as mx from claimed), \
          bumped as ( \
              update job_queue_vtime v set vt = top.mx from top \
              where v.queue = $1 and v.vt < top.mx returning 1 \

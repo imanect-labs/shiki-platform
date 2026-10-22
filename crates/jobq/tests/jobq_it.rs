@@ -341,6 +341,43 @@ async fn claim_alternates_between_two_backlogged_tenants() {
     assert_eq!(tenants, expected, "2 テナントが 1:1 で交互に取り出される");
 }
 
+/// #816: 1 件ずつ投入しては処理されるテナント（キューが毎回空になる）が、滞留テナントを
+/// 飢えさせない。仮想時刻が「確保した fair_seq」止まりだと、空になったテナントの再投入が毎回
+/// 同じ値を振られて仮想時刻を進めず、滞留テナントは 1 件目の後ずっと追い越され続けた。
+#[tokio::test]
+async fn trickling_tenant_does_not_starve_the_backlog() {
+    let Some(pool) = setup().await else { return };
+    let queue = unique_queue("trickle");
+    for _ in 0..10 {
+        enqueue(&pool, &queue, "a", 5).await;
+    }
+    let mut conn = pool.acquire().await.unwrap();
+    let mut order = Vec::new();
+    for _ in 0..20 {
+        // b はキューに自分の行が無くなるたびに 1 件だけ投入する。
+        let b_queued: i64 = sqlx::query_scalar(
+            "select count(*) from job_queue where queue = $1 and tenant_id = 'b'",
+        )
+        .bind(&queue)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if b_queued == 0 {
+            enqueue(&pool, &queue, "b", 5).await;
+        }
+        let job = jobq::claim(&mut conn, &queue, Duration::from_secs(300), 1)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        jobq::ack(&mut conn, job.id).await.unwrap();
+        order.push((job.tenant_id, job.id));
+    }
+    let a_count = order.iter().filter(|(t, _)| t == "a").count();
+    assert_eq!(a_count, 10, "a の滞留は b と交互に全部出る: {order:?}");
+    assert!(max_run(&order, "b") <= 1, "b が連続しない: {order:?}");
+}
+
 /// 取り出し順の中で、`tenant` が連続して出る最長の長さ。
 fn max_run(order: &[(String, i64)], tenant: &str) -> usize {
     let (mut best, mut cur) = (0, 0);
