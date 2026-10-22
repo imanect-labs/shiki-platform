@@ -35,6 +35,25 @@ curl -s -X POST "$SHIKI/admin/tenants" \
 - 冪等: 同一リクエストの再実行は既存を返す（password は null）。
 - `tenant_id` は FGA/オブジェクトキーの名前空間になるため `| : # @` 空白は不可。
 - 削除済み（tombstone）の tenant_id は再利用**不可**（名前空間衝突防止）。別 id を使う。
+- 初期管理者には org の `member`・`admin`（管理コンソール）・`audit_viewer`（監査ログ・#634）が付く。
+  `audit_viewer` 導入前に作ったテナントは、同じリクエストを再実行するか、下の `shiki-admin audit-viewer grant`
+  で付与するまで、誰も監査ログを読めない。
+
+## 監査閲覧者の付与・剥奪（shiki-admin audit-viewer）
+
+監査ログ（管理コンソール › 監査ログ・`/org-audit/*`）を読める人（`organization#audit_viewer`）を付ける・外す。
+admin とは独立なので、管理者でない監査担当者もここで付与する（メンバー管理の画面ができるまでの運用経路）。
+即時実行（dry-run は無い）。
+
+```bash
+shiki-admin audit-viewer grant  --tenant acme --org acme --user <ユーザーの sub>
+shiki-admin audit-viewer revoke --tenant acme --org acme --user <ユーザーの sub>
+```
+
+- 付与・剥奪は監査に `org_audit.viewer.grant` / `org_audit.viewer.revoke` として残り、ハッシュチェーンに連結する。
+  記録できなければ FGA の変更を戻す。
+- 監査の `actor` 列は固定値 `cli`。`--actor <id>`（省略時は `$SUDO_USER` → `$USER`）は自己申告として
+  metadata の `actor_claimed` / `actor_source` に残る（retenant と同じ扱い）。
 
 ## ワークフロー実行履歴の保持期間
 

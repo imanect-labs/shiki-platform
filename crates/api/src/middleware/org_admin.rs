@@ -63,7 +63,7 @@ pub async fn require_org_admin(
 }
 
 /// リクエストの認証主体から `AuthContext` を組む（セッション middleware が載せた値を読む）。
-fn context_of(req: &Request) -> Result<AuthContext, ApiError> {
+pub(crate) fn context_of(req: &Request) -> Result<AuthContext, ApiError> {
     let principal = req
         .extensions()
         .get::<Principal>()

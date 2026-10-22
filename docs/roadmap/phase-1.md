@@ -161,7 +161,7 @@
 - **受け入れ条件**:
   - [ ] read/write/share/deny が全て記録される
   - [ ] trace_id でトレースと突合できる
-  - [ ] 監査ログの参照に管理権限が要る
+  - [ ] 監査ログの参照に管理権限が要る（#634 で「監査閲覧ロール `organization#audit_viewer`（admin とは独立）」が要る形で実装）
 
 ### Task 1.10: Drive風UI
 - **area**: frontend

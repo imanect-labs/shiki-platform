@@ -1,9 +1,15 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 
-import { MockAuditView } from "@/components/admin/mock-audit-view";
+import { AuditView } from "@/components/admin/audit/audit-view";
 
 export const metadata: Metadata = { title: "監査ログ" };
 
-export default function MockAuditPage() {
-  return <MockAuditView />;
+export default function AuditPage() {
+  // 検索条件を URL（useSearchParams）に持つので Suspense で包む。
+  return (
+    <Suspense>
+      <AuditView />
+    </Suspense>
+  );
 }
