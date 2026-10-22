@@ -18,15 +18,20 @@ import * as React from "react";
 let scope: string | null = null;
 const listeners = new Set<() => void>();
 
-/// ユーザーのデータを置く localStorage キーかどうか（スコープ付き・旧来の素のキーの両方）。
+/// ユーザーのデータを置く localStorage / sessionStorage キーかどうか（スコープ付き・旧来の素のキーの両方）。
 ///
-/// ログアウトで消す対象の単一定義。新しくユーザーのデータを localStorage に置くときはここへ足す。
+/// ログアウトで消す対象の単一定義。新しくユーザーのデータを Web Storage に置くときはここへ足す。
 export function isUserDataKey(key: string): boolean {
   return (
     /^shiki\.[a-z]+-drafts\.v1(?:$|@)/.test(key) ||
     key === "shiki.composer.recent-skills" ||
     key.startsWith("shiki.composer.recent-skills@") ||
     key.startsWith("docchat:active:") ||
+    // 引用箇所の手がかり（文書本文の断片・[`stashCiteLocator`](@/lib/citation-locate)）。
+    key.startsWith("shiki:cite:") ||
+    // ホームから会話画面へ渡す最初のメッセージ（本文・添付。sessionStorage・
+    // [`stashPending`](@/lib/pending-message)）。通常は直後に取り出すが、遷移が途切れると残る。
+    key.startsWith("shiki:pending-message:") ||
     // 旧クライアント内チャット（backend 実装前のダミー保存）。今は書かないが残骸を消す。
     key === "shiki:chats:v1"
   );
@@ -88,20 +93,24 @@ export function writeScoped(base: string, value: string): boolean {
   return true;
 }
 
-/// ユーザーのデータを置いた localStorage キーを全ユーザー分消し、スコープを解く（ログアウト時）。
+/// ユーザーのデータを置いた localStorage / sessionStorage キーを全ユーザー分消し、スコープを解く（ログアウト時）。
 ///
 /// 共用 PC で次の人に残さないため、今のユーザーの分だけでなく旧来の素のキー・他ユーザーの分も消す。
 export function clearUserStorage(): void {
   setStorageScope(null);
   if (typeof window === "undefined") return;
-  try {
-    const keys: string[] = [];
-    for (let i = 0; i < window.localStorage.length; i++) {
-      const k = window.localStorage.key(i);
-      if (k !== null && isUserDataKey(k)) keys.push(k);
+  // sessionStorage もログアウト〜次のログインで同じタブに残るので消す。
+  for (const storage of ["localStorage", "sessionStorage"] as const) {
+    try {
+      const store = window[storage];
+      const keys: string[] = [];
+      for (let i = 0; i < store.length; i++) {
+        const k = store.key(i);
+        if (k !== null && isUserDataKey(k)) keys.push(k);
+      }
+      for (const k of keys) store.removeItem(k);
+    } catch {
+      // Web Storage 不可（プライベートモード等）なら残っているものも無い。
     }
-    for (const k of keys) window.localStorage.removeItem(k);
-  } catch {
-    // localStorage 不可（プライベートモード等）なら残っているものも無い。
   }
 }

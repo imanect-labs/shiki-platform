@@ -11,6 +11,7 @@ import * as React from "react";
 import { Loader2 } from "lucide-react";
 
 import { DocChatPanel, useLocalActiveThreadStore } from "@/components/chat/doc-chat-panel";
+import { useMe } from "@/hooks/use-me";
 import { officeTargetKind } from "@/lib/office/chart-insert";
 import { useStorageScopeReady } from "@/lib/user-storage";
 
@@ -36,6 +37,23 @@ export function OfficeChatPanel({
   // アクティブ会話 id はユーザー単位の localStorage にある（#817）。ユーザーが確定する前に
   // 読むと「保存値なし」とみなして新しい会話を作ってしまうため、確定まで待つ。
   const scopeReady = useStorageScopeReady();
+  // /me が 401 以外（403・5xx・ネットワーク断）で失敗するとスコープは確定しない。待ち続けず、
+  // 失敗を伝えて取り直せるようにする（401 はログイン画面へ送られるので待ち表示のままでよい）。
+  const me = useMe();
+  if (!scopeReady && me.error) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center px-4 text-center text-sm" role="alert">
+        <p className="text-destructive">チャットを準備できませんでした。</p>
+        <button
+          type="button"
+          onClick={me.reload}
+          className="mt-2 text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        >
+          再試行
+        </button>
+      </div>
+    );
+  }
   if (!scopeReady) {
     return (
       <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">

@@ -49,6 +49,9 @@ test("未ログイン保護ページ→ログイン→戻り先復帰→ダミ�
     window.localStorage.setItem("docchat:active:legacy-file", "t-legacy");
     window.localStorage.setItem("shiki.slide-drafts.v1@other-corp|someone", "{}");
     window.localStorage.setItem("shiki:sidebar:width", "280");
+    // 引用の手がかり（文書本文の断片）とホームからの最初のメッセージも本文を含む。
+    window.localStorage.setItem("shiki:cite:e2e-chunk", JSON.stringify({ find: "本文の断片", at: Date.now() }));
+    window.sessionStorage.setItem("shiki:pending-message:e2e-thread", JSON.stringify({ text: "下書き", attachments: [] }));
   });
   // 6. ログアウト → セッション破棄。BFF は id_token_hint を出さないため Keycloak が
   //    ログアウト確認画面を挟むことがある。出たら確定する。
@@ -68,10 +71,14 @@ test("未ログイン保護ページ→ログイン→戻り先復帰→ダミ�
       (k) =>
         k.startsWith("shiki.composer.recent-skills") ||
         k.startsWith("docchat:active:") ||
+        k.startsWith("shiki:cite:") ||
         /^shiki\.[a-z]+-drafts\.v1/.test(k),
     ),
   ).toEqual([]);
   expect(remaining).toContain("shiki:sidebar:width");
+  // sessionStorage は同じタブに残るため、こちらも消えていること。
+  const remainingSession = await page.evaluate(() => Object.keys(window.sessionStorage));
+  expect(remainingSession.filter((k) => k.startsWith("shiki:pending-message:"))).toEqual([]);
 
   // セッションが破棄され、保護ページへ行くと Keycloak のログイン画面へ戻る（負例の確認）。
   // /login は未ログインなら即 Keycloak へ送るため、goto の load 待ちはリダイレクトで中断され得る。

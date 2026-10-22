@@ -154,6 +154,20 @@ const COLS: &str = "id, app_id, app_name, installed_version, granted_scopes, \
                     budget_models, budget_daily_usd_micros, budget_max_tokens, agent_tools, \
                     frontend_bundle, server_bundle, server_spec";
 
+/// active な app_id の大域一意索引（migration 0077・B1 配信のテナント跨ぎ解決の前提）。
+const ACTIVE_APP_ID_UIDX: &str = "app_installation_active_app_id_uidx";
+
+/// [`ACTIVE_APP_ID_UIDX`] の一意制約違反か（他の制約の違反は従来どおり Internal に落とす）。
+fn violates_active_app_id(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(db)
+        if db.is_unique_violation() && db.constraint() == Some(ACTIVE_APP_ID_UIDX))
+}
+
+/// 別テナントに同じ app_id の active 行がある＝B1 配信の解決先が曖昧になるため拒否する。
+fn active_app_id_conflict() -> GatewayError {
+    GatewayError::Conflict("同じ app_id の有効なインストールが別テナントに存在します".into())
+}
+
 /// インストール台帳ストア（Postgres・tenant スコープ）。
 #[derive(Clone)]
 pub struct AppInstallationStore {
@@ -168,11 +182,42 @@ impl AppInstallationStore {
     /// インストールを作成/更新する（tenant 内 1 アプリ 1 行・再インストールは upsert）。
     ///
     /// 本 PR ではデブ用の直接作成。PR9 の同意フローが単一 Tx＋補償で置き換える。
+    ///
+    /// ON CONFLICT の arbiter は `(tenant_id, app_id)` だけで、active な app_id の大域一意索引
+    /// （migration 0077 [`ACTIVE_APP_ID_UIDX`]）は arbiter ではない。そのため同一テナントの初回
+    /// インストールが並行すると、後着は arbiter の事前確認をすり抜けて大域一意索引で一意制約違反に
+    /// なる。自テナントの行（先着分）があるときだけ 1 回取り直し、DO UPDATE で冪等に成功させる。
+    /// 取り直しても違反する・自テナントの行が無いなら、別テナントの active 行によるもの＝409。
     pub async fn upsert(
         &self,
         ctx: &AuthContext,
         new: NewAppInstallation<'_>,
     ) -> Result<AppInstallation, GatewayError> {
+        let row = match self.try_upsert(ctx, &new).await {
+            Ok(row) => row,
+            Err(e) if violates_active_app_id(&e) => {
+                if !self.exists_in_tenant(ctx, new.app_id).await? {
+                    return Err(active_app_id_conflict());
+                }
+                self.try_upsert(ctx, &new).await.map_err(|e| {
+                    if violates_active_app_id(&e) {
+                        active_app_id_conflict()
+                    } else {
+                        map_db(e)
+                    }
+                })?
+            }
+            Err(e) => return Err(map_db(e)),
+        };
+        Ok(row.into())
+    }
+
+    /// upsert の 1 回分（エラーの解釈は呼び出し側）。
+    async fn try_upsert(
+        &self,
+        ctx: &AuthContext,
+        new: &NewAppInstallation<'_>,
+    ) -> Result<Row, sqlx::Error> {
         let sql = format!(
             "INSERT INTO app_installation \
                  (tenant_id, org, app_id, app_name, installed_version, granted_scopes, \
@@ -197,7 +242,7 @@ impl AppInstallationStore {
                  updated_at = now() \
              RETURNING {COLS}"
         );
-        let row: Row = sqlx::query_as(&sql)
+        sqlx::query_as(&sql)
             .bind(&ctx.tenant_id)
             .bind(&ctx.org)
             .bind(new.app_id)
@@ -216,16 +261,23 @@ impl AppInstallationStore {
             .bind(&new.server_spec)
             .fetch_one(&self.db)
             .await
-            .map_err(|e| match &e {
-                // ON CONFLICT は (tenant_id, app_id) のみを吸収する。残る一意制約は
-                // active な app_id の大域一意（migration 0077・B1 配信のテナント解決の前提）で、
-                // 別テナントに同じ app_id の active 行がある＝解決先が曖昧になるため拒否する。
-                sqlx::Error::Database(db) if db.is_unique_violation() => GatewayError::Conflict(
-                    "同じ app_id の有効なインストールが別テナントに存在します".into(),
-                ),
-                _ => map_db(e),
-            })?;
-        Ok(row.into())
+    }
+
+    /// 自テナントに app_id の行（status を問わない）があるか（upsert の取り直し判定）。
+    async fn exists_in_tenant(
+        &self,
+        ctx: &AuthContext,
+        app_id: Uuid,
+    ) -> Result<bool, GatewayError> {
+        let (exists,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM app_installation WHERE tenant_id = $1 AND app_id = $2)",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(app_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(exists)
     }
 
     /// azp（登録 client_id）から**有効な**インストールを引く（ゲートウェイの二重ゲート第2段）。

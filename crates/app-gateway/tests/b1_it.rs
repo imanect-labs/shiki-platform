@@ -222,3 +222,81 @@ async fn active_app_id_is_globally_unique_across_tenants() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(body, BUNDLE);
 }
+
+/// 同一テナントの同アプリ初回インストールを並行に二重送信しても、両方が冪等に成功すること（#817）。
+///
+/// 後着の INSERT は ON CONFLICT の arbiter（`(tenant_id, app_id)`）の事前確認をすり抜けると、
+/// arbiter ではない大域一意索引（`app_installation_active_app_id_uidx`）で一意制約違反になる。
+/// これを「別テナントに存在」の 409 にせず、自テナントの行が先着で入っていれば取り直して成功させる。
+/// 競合の窓は狭いので、新しい app_id で何度も並行に送って再現を狙う。
+#[tokio::test]
+async fn concurrent_first_install_in_same_tenant_is_idempotent() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let sha = sha256_hex(BUNDLE);
+    let scopes = ["data.read".to_string()];
+    let installations = AppInstallationStore::new(pool.clone());
+    let c = ctx(&tenant);
+
+    for _ in 0..50 {
+        let app_id = Uuid::new_v4();
+        let (a, b) = tokio::join!(
+            installations.upsert(&c, pinned(app_id, &sha, &scopes)),
+            installations.upsert(&c, pinned(app_id, &sha, &scopes)),
+        );
+        let a = a.expect("first concurrent install");
+        let b = b.expect("second concurrent install must be idempotent");
+        // 同じ 1 行に収束している（二重の active 行は作られない）。
+        assert_eq!(a.id, b.id);
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM app_installation WHERE tenant_id = $1 AND app_id = $2",
+        )
+        .bind(&tenant)
+        .bind(app_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(n, 1);
+    }
+}
+
+/// 自テナントに（revoke 済みの）行があっても、別テナントが active なら取り直し後も 409（#817）。
+///
+/// 一意制約違反の取り直しは「自テナントの行がある」ときだけ行い、それでも違反するなら
+/// 別テナントの active 行によるものなので Conflict を返す（無限に取り直さない）。
+#[tokio::test]
+async fn reinstall_after_revoke_conflicts_when_other_tenant_is_active() {
+    let Some(pool) = setup().await else { return };
+    let tenant_a = format!("t-{}", Uuid::new_v4());
+    let tenant_b = format!("t-{}", Uuid::new_v4());
+    let app_id = Uuid::new_v4();
+    let sha = sha256_hex(BUNDLE);
+    let scopes = ["data.read".to_string()];
+    let installations = AppInstallationStore::new(pool.clone());
+
+    installations
+        .upsert(&ctx(&tenant_a), pinned(app_id, &sha, &scopes))
+        .await
+        .expect("tenant a install");
+    installations
+        .revoke(&ctx(&tenant_a), app_id)
+        .await
+        .expect("revoke a");
+    installations
+        .upsert(&ctx(&tenant_b), pinned(app_id, &sha, &scopes))
+        .await
+        .expect("tenant b install");
+
+    // a は revoke 済みの自テナント行を持つが、b が active なので再インストールは 409。
+    let err = installations
+        .upsert(&ctx(&tenant_a), pinned(app_id, &sha, &scopes))
+        .await
+        .expect_err("cross-tenant active row must still conflict");
+    assert!(matches!(err, GatewayError::Conflict(_)), "{err:?}");
+    // a の行は revoke のまま（取り直しで active にされていない）。
+    let active = installations
+        .resolve_active_by_app(&tenant_a, app_id)
+        .await
+        .expect("resolve a");
+    assert!(active.is_none());
+}
