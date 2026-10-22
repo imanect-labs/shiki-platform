@@ -146,16 +146,26 @@ fn to_filter(q: &AuditQuery, today: NaiveDate) -> Result<AuditFilter, ApiError> 
     })
 }
 
-/// 監査に残す検索条件（日付は日本時間のまま）。
+/// 監査に残す検索条件（日付は日本時間のまま・指定しなかった条件は残さない）。
 fn filter_metadata(q: &AuditQuery, f: &AuditFilter) -> serde_json::Value {
-    json!({
-        "from": jst_date(f.from),
-        "to": jst_date(f.to - Duration::days(1)),
-        "actor": f.actor, "action": f.action, "decision": f.decision,
-        "object_type": f.object_type, "object_id": f.object_id,
-        "chunk_id": f.chunk_id, "trace_id": f.trace_id,
-        "format": q.format,
-    })
+    let mut m = serde_json::Map::new();
+    m.insert("from".into(), json!(jst_date(f.from)));
+    m.insert("to".into(), json!(jst_date(f.to - Duration::days(1))));
+    for (k, v) in [
+        ("actor", &f.actor),
+        ("action", &f.action),
+        ("decision", &f.decision),
+        ("object_type", &f.object_type),
+        ("object_id", &f.object_id),
+        ("chunk_id", &f.chunk_id),
+        ("trace_id", &f.trace_id),
+        ("format", &q.format),
+    ] {
+        if let Some(v) = v {
+            m.insert(k.into(), json!(v));
+        }
+    }
+    serde_json::Value::Object(m)
 }
 
 fn jst() -> FixedOffset {
@@ -512,6 +522,22 @@ mod tests {
         let f = to_filter(&q, day("2026-10-22")).unwrap_or_default();
         assert_eq!(f.actor, None);
         assert_eq!(f.decision.as_deref(), Some("deny"));
+    }
+
+    #[test]
+    fn audit_metadata_keeps_only_given_conditions() {
+        let q = AuditQuery {
+            from: Some(day("2026-10-20")),
+            to: Some(day("2026-10-21")),
+            action: Some("file.".into()),
+            format: Some("csv".into()),
+            ..AuditQuery::default()
+        };
+        let f = to_filter(&q, day("2026-10-22")).unwrap_or_default();
+        assert_eq!(
+            filter_metadata(&q, &f),
+            json!({"from": "2026-10-20", "to": "2026-10-21", "action": "file.", "format": "csv"})
+        );
     }
 
     #[test]

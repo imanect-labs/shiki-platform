@@ -16,7 +16,7 @@ const SHORTCUTS = [
   { href: "/admin/ai/insights", icon: BarChart3, title: "活用分析", body: "浸透・用途・効果（部署別）" },
   { href: "/admin/ai/models", icon: Sparkles, title: "モデル", body: "公開するモデル・既定・Auto・円換算" },
   { href: "/admin/members", icon: Users, title: "メンバー", body: "招待・無効化・アクセスの理由", mock: true },
-  { href: "/admin/audit", icon: ScrollText, title: "監査ログ", body: "操作・権限判定・引用の記録", mock: true },
+  { href: "/admin/audit", icon: ScrollText, title: "監査ログ", body: "操作・権限判定・引用の記録" },
 ];
 
 const METRIC_TITLE = { cost: "日別コスト", tokens: "日別トークン", calls: "日別の呼び出し" } as const;
