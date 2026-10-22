@@ -34,6 +34,7 @@ pub mod office;
 pub mod org_admin_ai;
 pub mod org_admin_insights;
 pub mod org_audit;
+pub mod org_audit_verify;
 pub mod search;
 pub mod secrets;
 pub mod share_links;

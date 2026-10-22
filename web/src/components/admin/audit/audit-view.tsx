@@ -21,6 +21,7 @@ import { AdminPage, Panel } from "../admin-page";
 import { formatInt } from "../format";
 import { ActionName, AuditDetail, Verdict, actorLabel } from "./audit-detail";
 import { AuditFilters } from "./audit-filters";
+import { VerifyChainButton } from "./audit-verify";
 import { formatTime, useAuditQuery } from "./audit-query";
 import { actionLabel } from "./audit-vocab";
 
@@ -368,7 +369,12 @@ export function AuditView() {
           操作・権限判定・引用チャンクの記録です。ここで検索・書き出ししたことも記録に残ります。
         </span>
       }
-      actions={<ExportMenu query={query} />}
+      actions={
+        <div className="flex flex-wrap items-center gap-2">
+          <VerifyChainButton />
+          <ExportMenu query={query} />
+        </div>
+      }
       wide
     >
       <AuditFilters query={query} onApply={setQuery} />
