@@ -57,3 +57,53 @@ test("下書き: リロードしてもスレッド履歴から復元される", 
   await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 25_000 });
   await expect(page.getByTestId("draft-badge")).toBeVisible();
 });
+
+type StoredDraft = { name: string; content: string; source: string; rev: number };
+
+/// ユーザー単位のキー（`shiki.csv-drafts.v1@<tenant>|<user>`）に保存された下書き本文を読む。
+async function storedDraftContent(page: Page, name: string): Promise<string | undefined> {
+  return page.evaluate((n) => {
+    const key = Object.keys(window.localStorage).find((k) => k.startsWith("shiki.csv-drafts.v1@"));
+    const store = JSON.parse((key && window.localStorage.getItem(key)) ?? "{}");
+    return (Object.values(store) as StoredDraft[]).find((e) => e.name === n)?.content;
+  }, name);
+}
+
+test("下書き: /me より先に履歴を復元しても保存済みの手編集を上書きしない", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const csvName = uniqueName("手編集");
+  await sendFromHome(page, `savecsv:${csvName}`);
+  await page.waitForURL(/\/csv\/draft/, { timeout: 25_000 });
+  await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 20_000 });
+
+  // 保存済みの下書きを手編集した状態にする（source=user）。
+  const edited = "手編集,済み\n1,2";
+  await page.evaluate(
+    ({ name, csv }) => {
+      const key = Object.keys(window.localStorage).find((k) =>
+        k.startsWith("shiki.csv-drafts.v1@"),
+      );
+      if (!key) throw new Error("scoped draft key not found");
+      const store = JSON.parse(window.localStorage.getItem(key) ?? "{}");
+      for (const entry of Object.values(store) as StoredDraft[]) {
+        if (entry.name !== name) continue;
+        entry.content = csv;
+        entry.source = "user";
+        entry.rev += 1;
+      }
+      window.localStorage.setItem(key, JSON.stringify(store));
+    },
+    { name: csvName, csv: edited },
+  );
+
+  // /me を遅らせ、ユーザー未確定のうちに会話履歴からの復元を走らせる。
+  await page.route("**/api/me", async (route) => {
+    await new Promise((r) => setTimeout(r, 3_000));
+    await route.continue();
+  });
+  const meResponded = page.waitForResponse("**/api/me");
+  await page.reload();
+  await meResponded;
+  await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 25_000 });
+  await expect.poll(() => storedDraftContent(page, csvName)).toBe(edited);
+});

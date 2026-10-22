@@ -74,6 +74,8 @@ export function createDraftStore(kind: DraftKind): DraftStore {
   // ユーザーが確定・変化したら（/me 応答・ログアウト）そのユーザーのキーを読み直す。
   // 未確定の間にメモリ上だけで作った下書き（履歴からの復元など）は、この画面を開いている
   // 本人のものなので、確定したユーザーの保存分へ合流させる。ログアウト（確定→未確定）では捨てる。
+  // ただし未確定中の source=ai は「未登録なら履歴から足す」復元が空のメモリに対して判定した
+  // ものなので、保存分に同じ下書きがあれば保存分（手編集を含む）を残す。
   if (typeof window !== "undefined") {
     subscribeStorageScope(() => {
       const pending = cache !== null && cacheKey === null ? cache : null;
@@ -82,6 +84,7 @@ export function createDraftStore(kind: DraftKind): DraftStore {
         const persisted = read();
         const merged: Store = { ...persisted };
         for (const [k, entry] of Object.entries(pending)) {
+          if (persisted[k] && entry.source === "ai") continue;
           const prevRev = persisted[k]?.rev ?? 0;
           merged[k] = { ...entry, rev: Math.max(entry.rev, prevRev + 1) };
         }
