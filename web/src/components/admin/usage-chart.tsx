@@ -12,6 +12,8 @@ type MetricDef = { name: string; unit: string; raw: (d: Day) => number; value: (
 
 /// 有効数字 3 桁（1 セント未満の日も 0 に丸めない）。
 const sig3 = (n: number) => String(Number(n.toPrecision(3)));
+/// ドル: 1 ドル以上は小数 2 桁、未満は有効数字 3 桁（少額の日を 0 に丸めない）。
+const dollars = (n: number) => (n >= 1 ? yuiNumber(n, 2) : sig3(n));
 
 /// 指標ごとの値（記法に書く素の数値）と単位。コストは日ごとの最大が 1 ドル未満ならセントで書く
 /// （小さなドルの値では目盛りの丸めで同じ数字が並ぶため）。
@@ -24,7 +26,7 @@ function metricDef(metric: UsageMetric, days: Day[]): MetricDef {
   const cents = Math.max(0, ...days.map(raw)) < 1_000_000;
   return cents
     ? { name: "コスト", unit: "セント", raw, value: (d) => sig3(d.cost_usd_micros / 10_000) }
-    : { name: "コスト", unit: "ドル", raw, value: (d) => yuiNumber(d.cost_usd_micros / 1_000_000, 2) };
+    : { name: "コスト", unit: "ドル", raw, value: (d) => dollars(d.cost_usd_micros / 1_000_000) };
 }
 
 const EMPTY_LABEL: Record<UsageMetric, string> = {
