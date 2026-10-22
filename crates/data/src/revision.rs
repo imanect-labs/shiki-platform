@@ -180,19 +180,39 @@ pub(crate) async fn insert_revision(
     ctx: &AuthContext,
     ins: RevisionInsert<'_>,
 ) -> Result<(), DataError> {
+    insert_revisions(conn, ctx, std::slice::from_ref(&ins)).await
+}
+
+/// リビジョン行をまとめて挿入する（1 文・一括書込パスと 1 件の書込で共通・同一 Tx）。
+pub(crate) async fn insert_revisions(
+    conn: &mut sqlx::PgConnection,
+    ctx: &AuthContext,
+    rows: &[RevisionInsert<'_>],
+) -> Result<(), DataError> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let record_ids: Vec<Uuid> = rows.iter().map(|r| r.record_id).collect();
+    let table_ids: Vec<Uuid> = rows.iter().map(|r| r.table_id).collect();
+    let revs: Vec<i64> = rows.iter().map(|r| r.rev).collect();
+    let kinds: Vec<&str> = rows.iter().map(|r| r.change_kind).collect();
+    let patches: Vec<Json<&[FieldPatch]>> = rows.iter().map(|r| Json(r.patch)).collect();
+    let traces: Vec<Option<&str>> = rows.iter().map(|r| r.trace_id).collect();
     sqlx::query(
         "INSERT INTO data_record_revision \
          (tenant_id, record_id, table_id, rev, changed_by, change_kind, patch, trace_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+         SELECT $1, u.record_id, u.table_id, u.rev, $2, u.kind, u.patch, u.trace_id \
+         FROM unnest($3::uuid[], $4::uuid[], $5::int8[], $6::text[], $7::jsonb[], $8::text[]) \
+           AS u(record_id, table_id, rev, kind, patch, trace_id)",
     )
     .bind(&ctx.tenant_id)
-    .bind(ins.record_id)
-    .bind(ins.table_id)
-    .bind(ins.rev)
     .bind(&ctx.principal.id)
-    .bind(ins.change_kind)
-    .bind(Json(ins.patch))
-    .bind(ins.trace_id)
+    .bind(&record_ids)
+    .bind(&table_ids)
+    .bind(&revs)
+    .bind(&kinds)
+    .bind(&patches)
+    .bind(&traces)
     .execute(conn)
     .await
     .map_err(map_db)?;

@@ -31,9 +31,13 @@
 //!   投げ直さず、読取の入口でテーブル・参照先・名指しロールの check を BatchCheck 1 往復に束ねる。
 //!   メモは `DataStore` の借用で作るのでリクエストの外へ持ち出せない（PIT-18）。`data_table.schema` は
 //!   `(tenant_id, table_id, schema_version)` のプロセス内キャッシュ（認可材料は載せない）。
+//! - **一括書込パス（Task 15.11）**: ステージング表へ COPY → 1 件の書込と同じ検証器 → チャンク Tx で
+//!   1 件の create と同じ入口（[`record_effects`]）から本体・索引・revision・材料化を書く。jobq のチャンク
+//!   ジョブで冪等・中断再開可。大きな取込は値索引を `building` に保持して遅延構築する（[`bulk`]）
 //! - **クエリコンパイラ v2（Task 15.3）**: 条件木・複数ソート・keyset・自前オプティマイザ O1
 //!   （上限付き件数探索・4 戦略・予算付き切替・`Guard(P)`・事後検査）。[`query`]
 
+mod bulk;
 mod cursor;
 mod derived;
 mod field_key;
@@ -51,6 +55,7 @@ pub mod policy;
 #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
 mod query;
 mod record;
+mod record_effects;
 mod record_list;
 mod record_share;
 mod revision;
@@ -64,6 +69,11 @@ mod transition;
 mod validate;
 mod view;
 
+pub use bulk::{
+    BulkImportOptions, BulkImportRow, BulkImportStatus, BulkImportStep, BulkImportWorker,
+    BulkIndexMode, BulkRowError, BULK_CHUNK, BULK_IMPORT_QUEUE, LAZY_INDEX_MIN_ROWS, MAX_BULK_ROWS,
+    MAX_BULK_ROW_BYTES, MAX_BULK_ROW_KEY_BYTES,
+};
 pub use cursor::{CursorKey, CURSOR_KEY_LEN};
 pub use derived::links::{LINK_TRAVERSAL_SQL, MAX_LINK_VALUES_PER_RECORD};
 pub use derived::types::{

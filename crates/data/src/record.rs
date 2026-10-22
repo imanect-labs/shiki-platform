@@ -15,8 +15,10 @@ use uuid::Uuid;
 
 use crate::field_key::{decode_record, encode_record};
 use crate::index::state::{lock_plan, IndexPlan};
-use crate::index::write::{IndexWriter, IndexedRecord};
+use crate::index::write::IndexWriter;
 use crate::model::{DataRecord, FieldType, TableSchema};
+use crate::policy::memo::AuthzMemo;
+use crate::record_effects::CreatedRecord;
 use crate::revision::{diff_fields, insert_revision, RevisionInsert};
 use crate::store::DataStore;
 use crate::validate::validate_record_data;
@@ -145,41 +147,24 @@ impl DataStore {
         .fetch_one(&mut *tx)
         .await
         .map_err(map_unique)?;
-        // 索引行（全フィールド＋擬似列）を同一 Tx で書く（二重書込期間・旧方式の式インデックスは DB が更新）。
-        self.index_writer(&plan, &table.schema, &ctx.tenant_id)
-            .on_create(
-                &mut tx,
-                &IndexedRecord {
-                    record_int: written.record_int,
-                    owner: &written.row.owner,
-                    created_at: written.row.created_at,
-                    updated_at: written.row.updated_at,
-                    data: &normalized,
-                },
-            )
-            .await?;
-        // 材料化した派生列の値と、このテーブルを参照先にする列の再計算待ち（同一 Tx・Task 15.4）。
-        crate::derived::materialize::after_record_write(
-            &mut tx,
-            &ctx.tenant_id,
-            &table,
-            written.record_int,
-            Some(&normalized),
-        )
-        .await?;
+        // 索引行（全フィールド＋擬似列）・材料化・リビジョンを同一 Tx で書く（一括書込パスと同じ入口・
+        // crate::record_effects）。
         let row = written.row;
-        let patch = diff_fields(&Map::new(), &normalized);
-        insert_revision(
+        self.after_records_created(
             &mut tx,
             ctx,
-            RevisionInsert {
-                table_id,
-                record_id: row.id,
-                rev: 1,
-                change_kind: "create",
-                patch: &patch,
-                trace_id,
-            },
+            &table,
+            &plan,
+            &[CreatedRecord {
+                record_int: written.record_int,
+                id: row.id,
+                owner: &row.owner,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                data: &normalized,
+            }],
+            |_, _| false,
+            trace_id,
         )
         .await?;
         // 実データ変更の監査は書込と同一 Tx（原子的・コミット後の監査失敗で成功を偽らない）。
@@ -499,57 +484,105 @@ impl DataStore {
 
     /// record_ref 値の存在検証（参照先テーブル・同一テナント内）。
     ///
-    /// 参照先レコードの**行レベル可視性**の検査は Task 9.3（述語伝播・PIT-20）で行う。
-    /// ここでは参照整合（存在すること）のみを担保する。
+    /// 参照整合は「書き手が参照先を**見える**こと」まで要求する（PIT-20）。検査は
+    /// [`Self::check_record_refs_many`]（一括書込パスと同じ関数）に 1 件で渡す。
     async fn check_record_refs(
         &self,
         ctx: &AuthContext,
         schema: &TableSchema,
         data: &Map<String, Value>,
     ) -> Result<(), DataError> {
+        let az = self.authz_memo();
+        match self
+            .check_record_refs_many(ctx, &az, schema, &[data])
+            .await?
+            .pop()
+            .flatten()
+        {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// record_ref 値の存在・可視性の検証（複数レコード・リンク列ごとに参照先を 1 回で引く）。
+    ///
+    /// 返り値はレコードごとの検証エラー（`None` は合格）。参照先の行は**書き手本人の権限で**引く
+    /// （PIT-20: テーブル viewer ＋参照先テーブルの行述語の二段。存在オラクル・不可視行への参照の
+    /// 持ち込みの双方を塞ぐ）。不可視・不在・テーブル削除済みは「見つからない」と同一の応答。
+    pub(crate) async fn check_record_refs_many(
+        &self,
+        ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
+        schema: &TableSchema,
+        records: &[&Map<String, Value>],
+    ) -> Result<Vec<Option<DataError>>, DataError> {
+        let mut errors: Vec<Option<DataError>> = records.iter().map(|_| None).collect();
         for f in &schema.fields {
             if f.field_type != FieldType::RecordRef {
-                continue;
-            }
-            let Some(v) = data.get(&f.key) else { continue };
-            // 書込検証で UUID の配列へ正規化済み（文字列は移行前の v1 の保存形・念のため受ける）。
-            let ids: Vec<Uuid> = match v {
-                Value::String(s) => vec![Uuid::parse_str(s).map_err(|_| {
-                    DataError::Invalid(format!("'{}' は UUID 文字列である必要があります", f.key))
-                })?],
-                Value::Array(a) => a
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .filter_map(|s| Uuid::parse_str(s).ok())
-                    .collect(),
-                _ => continue,
-            };
-            if ids.is_empty() {
                 continue;
             }
             let Some(ref_table) = f.ref_table else {
                 continue;
             };
-            // 参照整合は「書き手が参照先を**見える**こと」まで要求する（PIT-20: テーブル viewer ＋
-            // 参照先テーブルの行述語の二段。存在オラクル・不可視行への参照持ち込みの双方を塞ぐ）。
-            // 不可視・不在・テーブル削除済みは「見つからない」と同一応答。
-            let not_found =
-                || DataError::Invalid(format!("'{}' の参照先レコードが見つかりません", f.key));
+            let mut per_record: Vec<(usize, Vec<Uuid>)> = Vec::new();
+            for (i, data) in records.iter().enumerate() {
+                if errors[i].is_some() {
+                    continue;
+                }
+                let Some(v) = data.get(&f.key) else { continue };
+                // 書込検証で UUID の配列へ正規化済み（文字列は移行前の v1 の保存形・念のため受ける）。
+                let ids: Vec<Uuid> = match v {
+                    Value::String(s) => {
+                        if let Ok(id) = Uuid::parse_str(s) {
+                            vec![id]
+                        } else {
+                            errors[i] = Some(DataError::Invalid(format!(
+                                "'{}' は UUID 文字列である必要があります",
+                                f.key
+                            )));
+                            continue;
+                        }
+                    }
+                    Value::Array(a) => a
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .filter_map(|s| Uuid::parse_str(s).ok())
+                        .collect(),
+                    _ => continue,
+                };
+                if !ids.is_empty() {
+                    per_record.push((i, ids));
+                }
+            }
+            if per_record.is_empty() {
+                continue;
+            }
+            let all: Vec<Uuid> = per_record
+                .iter()
+                .flat_map(|(_, ids)| ids.iter().copied())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
             let visible = self
                 .visible_ref_rows(
                     ctx,
-                    &self.authz_memo(),
+                    az,
                     ref_table,
-                    &ids,
+                    &all,
                     &std::collections::BTreeSet::new(),
                     0,
                 )
                 .await?;
-            if ids.iter().any(|id| !visible.rows.contains_key(id)) {
-                return Err(not_found());
+            for (i, ids) in per_record {
+                if ids.iter().any(|id| !visible.rows.contains_key(id)) {
+                    errors[i] = Some(DataError::Invalid(format!(
+                        "'{}' の参照先レコードが見つかりません",
+                        f.key
+                    )));
+                }
             }
         }
-        Ok(())
+        Ok(errors)
     }
 }
 

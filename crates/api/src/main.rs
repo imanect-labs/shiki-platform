@@ -421,6 +421,8 @@ fn wire_data(
     data::FieldKeyMigrationWorker::new((*data_store).clone()).spawn();
     // pivot 索引の台帳初期化＋オンラインバックフィル＋parity 検証（jobq・チャンク・冪等・常駐）。
     data::IndexBackfillWorker::new((*data_store).clone()).spawn();
+    // 一括取込（ステージング → 検証 → チャンク適用 → 索引の仕上げ・jobq・冪等・中断再開）。
+    data::BulkImportWorker::new((*data_store).clone()).spawn();
     let data_views = Arc::new(data::DataViewStore::new(
         Arc::clone(artifacts),
         (*data_store).clone(),

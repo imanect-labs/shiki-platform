@@ -38,6 +38,10 @@ const DATA_TABLES: &[&str] = &[
     // 派生値の材料化（Task 15.4）。
     "data_derived_pending",
     "data_derived_dep",
+    // 一括取込（Task 15.11）。
+    "data_bulk_import",
+    "data_bulk_staging",
+    "data_bulk_key",
 ];
 
 /// 文字列リテラル（開始行・中身）。

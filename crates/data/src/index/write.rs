@@ -5,7 +5,9 @@
 //!
 //! - **差分更新**: update / FSM 遷移は `FieldPatch`（v1 の差分）に載ったフィールドの索引行だけを触る。
 //!   変わらないフィールドの索引行は 1 行も書き換えない（擬似列 `updated_at` だけは毎回動く）。
-//! - create は全フィールド＋擬似列 3 行、delete はそのレコードの全索引行を消す。
+//! - create は全フィールド＋擬似列 3 行、delete はそのレコードの全索引行を消す。複数レコードの create
+//!   （一括書込パス・data-platform §16.7）は**同じキー生成・同じ文**で、表ごとに 1 文にまとめて書く
+//!   （各行が `record_int` を持つ）。
 //! - バックフィル（[`super::backfill`]）は `building` の組だけを作り直す（冪等）。
 //!
 //! 値は全てバインド。SQL へ埋め込むのは固定の表名（[`IndexTable::relation`]）だけ（PIT-21）。
@@ -66,27 +68,56 @@ pub(crate) struct IndexWriter<'a> {
 }
 
 impl IndexWriter<'_> {
-    /// create: 保守対象の全フィールド＋擬似列 3 行を書く。
+    /// create: 保守対象の全フィールド＋擬似列 3 行を書く（書込経路は
+    /// [`crate::record_effects`] 経由で [`Self::on_create_many`] を呼ぶ）。
+    #[cfg(test)]
     pub(crate) async fn on_create(
         &self,
         conn: &mut PgConnection,
         rec: &IndexedRecord<'_>,
     ) -> Result<(), DataError> {
-        let sys = SystemValues::of(rec);
-        let mut ops = Vec::new();
-        for (field, tables) in self.plan.fields() {
-            let new = self.value_of(field, rec.data, &sys);
-            for t in tables {
-                ops.push(Op {
-                    field,
-                    table: *t,
-                    old: None,
-                    new,
-                });
+        self.on_create_many(conn, std::slice::from_ref(rec), |_, _| false)
+            .await
+    }
+
+    /// create（複数レコード）: 各レコードの保守対象の全フィールド＋擬似列を、**表ごとに 1 文**で書く。
+    ///
+    /// 1 件の create と同じ規則（同じキー生成・同じ INSERT 文）で、レコード数に依らず文の数が一定になる
+    /// （一括書込パス・data-platform §16.7）。`defer(field, table)` が真の組は書かない（索引の遅延構築:
+    /// 呼び出し側がその組を `building` にしてあり、適用後のバックフィルが本体から作る・§10）。
+    pub(crate) async fn on_create_many(
+        &self,
+        conn: &mut PgConnection,
+        recs: &[IndexedRecord<'_>],
+        defer: impl Fn(FieldId, IndexTable) -> bool,
+    ) -> Result<(), DataError> {
+        let mut batch = Batch::default();
+        let mut links: Vec<(i64, FieldId, LinkTargets)> = Vec::new();
+        for rec in recs {
+            let sys = SystemValues::of(rec);
+            let mut ops = Vec::new();
+            for (field, tables) in self.plan.fields() {
+                let new = self.value_of(field, rec.data, &sys);
+                for t in tables {
+                    if defer(field, *t) {
+                        continue;
+                    }
+                    ops.push(Op {
+                        field,
+                        table: *t,
+                        old: None,
+                        new,
+                    });
+                }
             }
+            self.collect(&mut batch, &mut links, rec.record_int, &ops, Mode::Fresh)?;
         }
-        self.apply(conn, rec.record_int, &ops, Mode::Fresh).await?;
-        self.refresh_sorts(conn, rec.record_int, None).await
+        self.flush(conn, &batch, Mode::Fresh).await?;
+        self.write_links(conn, links).await?;
+        for rec in recs {
+            self.refresh_sorts(conn, rec.record_int, None).await?;
+        }
+        Ok(())
     }
 
     /// update / FSM 遷移: 差分（`patches`・外部形 key）に載ったフィールドと `updated_at` だけを書き換える。
@@ -241,7 +272,21 @@ impl IndexWriter<'_> {
         mode: Mode,
     ) -> Result<(), DataError> {
         let mut batch = Batch::default();
-        let mut links: Vec<(FieldId, LinkTargets)> = Vec::new();
+        let mut links = Vec::new();
+        self.collect(&mut batch, &mut links, record_int, ops, mode)?;
+        self.flush(conn, &batch, mode).await?;
+        self.write_links(conn, links).await
+    }
+
+    /// 1 レコード分の書換えを `batch`（表ごとの行）と `links`（リンク列ごとの参照先）へ積む。
+    fn collect(
+        &self,
+        batch: &mut Batch,
+        links: &mut Vec<(i64, FieldId, LinkTargets)>,
+        record_int: i64,
+        ops: &[Op<'_>],
+        mode: Mode,
+    ) -> Result<(), DataError> {
         for op in ops {
             // 定義の無いユーザー列（台帳とスキーマの食い違い）は触らない（消しもしない）。
             if op.field >= FIRST_USER_FIELD_ID && self.schema.field_by_id(op.field).is_none() {
@@ -249,7 +294,7 @@ impl IndexWriter<'_> {
             }
             let fid = field_id_i16(op.field)?;
             if op.table != IndexTable::Link && op.table != IndexTable::Unique {
-                batch.delete(op.table, fid);
+                batch.delete(record_int, op.table, fid);
             }
             match (op.table, self.keys_of(op.field, op.table, op.new)?) {
                 (IndexTable::Link, keys) => {
@@ -257,58 +302,72 @@ impl IndexWriter<'_> {
                         Some(FieldKeys::Link(t)) => t,
                         _ => Vec::new(),
                     };
-                    links.push((op.field, targets));
+                    links.push((record_int, op.field, targets));
                 }
                 (IndexTable::Unique, keys) => {
                     if mode == Mode::Replace {
                         if let Some(FieldKeys::Unique(old)) =
                             self.keys_of(op.field, op.table, op.old)?
                         {
-                            batch.unique_delete.push((fid, old));
+                            batch.unique_delete.push((record_int, fid, old));
                         }
                     }
                     if let Some(FieldKeys::Unique(norm)) = keys {
-                        batch.unique_insert.push((fid, norm));
+                        batch.unique_insert.push((record_int, fid, norm));
                     }
                 }
                 (_, Some(FieldKeys::Text(rows))) => {
                     for r in rows {
-                        batch.text.push((fid, r.ord, r.val, r.truncated));
+                        batch
+                            .text
+                            .push((record_int, fid, r.ord, r.val, r.truncated));
                     }
                 }
                 (_, Some(FieldKeys::Num(rows))) => {
                     for (ord, n) in rows {
-                        batch.num.push((fid, ord, n));
+                        batch.num.push((record_int, fid, ord, n));
                     }
                 }
                 (_, Some(FieldKeys::Search(rows))) => {
                     for (ord, s) in rows {
-                        batch.search.push((fid, ord, s));
+                        batch.search.push((record_int, fid, ord, s));
                     }
                 }
                 (_, _) => {}
             }
         }
+        Ok(())
+    }
+
+    /// 積んだ行を表ごとに 1 文で書く（`Fresh` 以外は先にそのレコードの旧行を消す）。
+    async fn flush(
+        &self,
+        conn: &mut PgConnection,
+        batch: &Batch,
+        mode: Mode,
+    ) -> Result<(), DataError> {
         let keys = self.plan.keys;
         if mode != Mode::Fresh {
-            for (table, fields) in &batch.deletes {
-                delete_rows(conn, keys, *table, fields, record_int).await?;
+            for (record_int, table, fields) in &batch.deletes {
+                delete_rows(conn, keys, *table, fields, *record_int).await?;
             }
-            delete_unique(conn, keys, &batch.unique_delete, record_int).await?;
+            delete_unique(conn, keys, &batch.unique_delete).await?;
         }
-        insert_text(conn, keys, record_int, &batch.text).await?;
-        insert_num(conn, keys, record_int, &batch.num).await?;
-        insert_search(conn, keys, record_int, &batch.search).await?;
-        insert_unique(
-            conn,
-            keys,
-            record_int,
-            &batch.unique_insert,
-            mode == Mode::Rebuild,
-        )
-        .await?;
+        insert_text(conn, keys, &batch.text).await?;
+        insert_num(conn, keys, &batch.num).await?;
+        insert_search(conn, keys, &batch.search).await?;
+        insert_unique(conn, keys, &batch.unique_insert, mode == Mode::Rebuild).await
+    }
+
+    /// リンク列の行（順方向・対称列があれば逆方向も同じ Tx）を書く。
+    async fn write_links(
+        &self,
+        conn: &mut PgConnection,
+        links: Vec<(i64, FieldId, LinkTargets)>,
+    ) -> Result<(), DataError> {
+        let keys = self.plan.keys;
         let mut resolver = LinkResolver::default();
-        for (field, targets) in links {
+        for (record_int, field, targets) in links {
             let def = self
                 .schema
                 .field_by_id(field)
@@ -367,23 +426,28 @@ impl SystemValues {
     }
 }
 
-/// 1 レコード分の索引行（表ごとにまとめて 1 文で書く）。
+/// 索引行（表ごとにまとめて 1 文で書く）。各行は `record_int` を持つので、複数レコードを 1 文で書ける。
 #[derive(Default)]
 struct Batch {
-    deletes: Vec<(IndexTable, Vec<i16>)>,
-    text: Vec<(i16, i16, String, bool)>,
-    num: Vec<(i16, i16, String)>,
-    search: Vec<(i16, i16, String)>,
-    unique_delete: Vec<(i16, String)>,
-    unique_insert: Vec<(i16, String)>,
+    /// (record_int, 表, 消すフィールド)。`Fresh` では使わない。
+    deletes: Vec<(i64, IndexTable, Vec<i16>)>,
+    text: Vec<(i64, i16, i16, String, bool)>,
+    num: Vec<(i64, i16, i16, String)>,
+    search: Vec<(i64, i16, i16, String)>,
+    unique_delete: Vec<(i64, i16, String)>,
+    unique_insert: Vec<(i64, i16, String)>,
 }
 
 impl Batch {
-    fn delete(&mut self, table: IndexTable, field: i16) {
-        match self.deletes.iter_mut().find(|(t, _)| *t == table) {
-            Some((_, fields)) if !fields.contains(&field) => fields.push(field),
+    fn delete(&mut self, record_int: i64, table: IndexTable, field: i16) {
+        match self
+            .deletes
+            .iter_mut()
+            .find(|(r, t, _)| *r == record_int && *t == table)
+        {
+            Some((_, _, fields)) if !fields.contains(&field) => fields.push(field),
             Some(_) => {}
-            None => self.deletes.push((table, vec![field])),
+            None => self.deletes.push((record_int, table, vec![field])),
         }
     }
 }
@@ -416,25 +480,26 @@ async fn delete_rows(
 async fn insert_text(
     conn: &mut PgConnection,
     keys: crate::model::TableKeys,
-    record_int: i64,
-    rows: &[(i16, i16, String, bool)],
+    rows: &[(i64, i16, i16, String, bool)],
 ) -> Result<(), DataError> {
     if rows.is_empty() {
         return Ok(());
     }
-    let fields: Vec<i16> = rows.iter().map(|r| r.0).collect();
-    let ords: Vec<i16> = rows.iter().map(|r| r.1).collect();
-    let vals: Vec<&str> = rows.iter().map(|r| r.2.as_str()).collect();
-    let truncs: Vec<bool> = rows.iter().map(|r| r.3).collect();
+    let recs: Vec<i64> = rows.iter().map(|r| r.0).collect();
+    let fields: Vec<i16> = rows.iter().map(|r| r.1).collect();
+    let ords: Vec<i16> = rows.iter().map(|r| r.2).collect();
+    let vals: Vec<&str> = rows.iter().map(|r| r.3.as_str()).collect();
+    let truncs: Vec<bool> = rows.iter().map(|r| r.4).collect();
     sqlx::query(
         "INSERT INTO data_index_text \
            (tenant_int, table_int, field_id, record_int, ord, val, truncated) \
-         SELECT $1, $2, u.f, $3, u.o, u.v, u.t \
-         FROM unnest($4::int2[], $5::int2[], $6::text[], $7::bool[]) AS u(f, o, v, t)",
+         SELECT $1, $2, u.f, u.r, u.o, u.v, u.t \
+         FROM unnest($3::int8[], $4::int2[], $5::int2[], $6::text[], $7::bool[]) \
+           AS u(r, f, o, v, t)",
     )
     .bind(keys.tenant_int)
     .bind(keys.table_int)
-    .bind(record_int)
+    .bind(&recs)
     .bind(&fields)
     .bind(&ords)
     .bind(&vals)
@@ -448,23 +513,23 @@ async fn insert_text(
 async fn insert_num(
     conn: &mut PgConnection,
     keys: crate::model::TableKeys,
-    record_int: i64,
-    rows: &[(i16, i16, String)],
+    rows: &[(i64, i16, i16, String)],
 ) -> Result<(), DataError> {
     if rows.is_empty() {
         return Ok(());
     }
-    let fields: Vec<i16> = rows.iter().map(|r| r.0).collect();
-    let ords: Vec<i16> = rows.iter().map(|r| r.1).collect();
-    let vals: Vec<&str> = rows.iter().map(|r| r.2.as_str()).collect();
+    let recs: Vec<i64> = rows.iter().map(|r| r.0).collect();
+    let fields: Vec<i16> = rows.iter().map(|r| r.1).collect();
+    let ords: Vec<i16> = rows.iter().map(|r| r.2).collect();
+    let vals: Vec<&str> = rows.iter().map(|r| r.3.as_str()).collect();
     sqlx::query(
         "INSERT INTO data_index_num (tenant_int, table_int, field_id, record_int, ord, val) \
-         SELECT $1, $2, u.f, $3, u.o, u.v::numeric \
-         FROM unnest($4::int2[], $5::int2[], $6::text[]) AS u(f, o, v)",
+         SELECT $1, $2, u.f, u.r, u.o, u.v::numeric \
+         FROM unnest($3::int8[], $4::int2[], $5::int2[], $6::text[]) AS u(r, f, o, v)",
     )
     .bind(keys.tenant_int)
     .bind(keys.table_int)
-    .bind(record_int)
+    .bind(&recs)
     .bind(&fields)
     .bind(&ords)
     .bind(&vals)
@@ -477,23 +542,23 @@ async fn insert_num(
 async fn insert_search(
     conn: &mut PgConnection,
     keys: crate::model::TableKeys,
-    record_int: i64,
-    rows: &[(i16, i16, String)],
+    rows: &[(i64, i16, i16, String)],
 ) -> Result<(), DataError> {
     if rows.is_empty() {
         return Ok(());
     }
-    let fields: Vec<i16> = rows.iter().map(|r| r.0).collect();
-    let ords: Vec<i16> = rows.iter().map(|r| r.1).collect();
-    let vals: Vec<&str> = rows.iter().map(|r| r.2.as_str()).collect();
+    let recs: Vec<i64> = rows.iter().map(|r| r.0).collect();
+    let fields: Vec<i16> = rows.iter().map(|r| r.1).collect();
+    let ords: Vec<i16> = rows.iter().map(|r| r.2).collect();
+    let vals: Vec<&str> = rows.iter().map(|r| r.3.as_str()).collect();
     sqlx::query(
         "INSERT INTO data_index_search (tenant_int, table_int, field_id, record_int, ord, val) \
-         SELECT $1, $2, u.f, $3, u.o, u.v \
-         FROM unnest($4::int2[], $5::int2[], $6::text[]) AS u(f, o, v)",
+         SELECT $1, $2, u.f, u.r, u.o, u.v \
+         FROM unnest($3::int8[], $4::int2[], $5::int2[], $6::text[]) AS u(r, f, o, v)",
     )
     .bind(keys.tenant_int)
     .bind(keys.table_int)
-    .bind(record_int)
+    .bind(&recs)
     .bind(&fields)
     .bind(&ords)
     .bind(&vals)
@@ -506,25 +571,25 @@ async fn insert_search(
 async fn delete_unique(
     conn: &mut PgConnection,
     keys: crate::model::TableKeys,
-    rows: &[(i16, String)],
-    record_int: i64,
+    rows: &[(i64, i16, String)],
 ) -> Result<(), DataError> {
     if rows.is_empty() {
         return Ok(());
     }
-    let fields: Vec<i16> = rows.iter().map(|r| r.0).collect();
-    let norms: Vec<&str> = rows.iter().map(|r| r.1.as_str()).collect();
+    let recs: Vec<i64> = rows.iter().map(|r| r.0).collect();
+    let fields: Vec<i16> = rows.iter().map(|r| r.1).collect();
+    let norms: Vec<&str> = rows.iter().map(|r| r.2.as_str()).collect();
     // 他レコードの行は消さない（record_int も一致させる）。
     sqlx::query(
         "DELETE FROM data_unique WHERE tenant_int = $1 AND table_int = $2 \
-           AND (field_id, val_norm) IN (SELECT * FROM unnest($3::int2[], $4::text[])) \
-           AND record_int = $5",
+           AND (record_int, field_id, val_norm) IN \
+               (SELECT * FROM unnest($3::int8[], $4::int2[], $5::text[]))",
     )
     .bind(keys.tenant_int)
     .bind(keys.table_int)
+    .bind(&recs)
     .bind(&fields)
     .bind(&norms)
-    .bind(record_int)
     .execute(&mut *conn)
     .await
     .map_err(map_db)?;
@@ -534,15 +599,15 @@ async fn delete_unique(
 async fn insert_unique(
     conn: &mut PgConnection,
     keys: crate::model::TableKeys,
-    record_int: i64,
-    rows: &[(i16, String)],
+    rows: &[(i64, i16, String)],
     idempotent: bool,
 ) -> Result<(), DataError> {
     if rows.is_empty() {
         return Ok(());
     }
-    let fields: Vec<i16> = rows.iter().map(|r| r.0).collect();
-    let norms: Vec<&str> = rows.iter().map(|r| r.1.as_str()).collect();
+    let recs: Vec<i64> = rows.iter().map(|r| r.0).collect();
+    let fields: Vec<i16> = rows.iter().map(|r| r.1).collect();
+    let norms: Vec<&str> = rows.iter().map(|r| r.2.as_str()).collect();
     // バックフィルは同じレコードの行なら上書き（冪等）、他レコードの行と衝突したら 0 行＝重複。
     let conflict = if idempotent {
         " ON CONFLICT (tenant_int, table_int, field_id, val_norm) \
@@ -553,12 +618,13 @@ async fn insert_unique(
     };
     let sql = format!(
         "INSERT INTO data_unique AS du (tenant_int, table_int, field_id, val_norm, record_int) \
-         SELECT $1, $2, u.f, u.v, $3 FROM unnest($4::int2[], $5::text[]) AS u(f, v){conflict}"
+         SELECT $1, $2, u.f, u.v, u.r FROM unnest($3::int8[], $4::int2[], $5::text[]) AS u(r, f, v)\
+         {conflict}"
     );
     let n = sqlx::query(&sql)
         .bind(keys.tenant_int)
         .bind(keys.table_int)
-        .bind(record_int)
+        .bind(&recs)
         .bind(&fields)
         .bind(&norms)
         .execute(&mut *conn)

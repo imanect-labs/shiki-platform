@@ -51,6 +51,10 @@ const PURGE_TENANT_INT_TABLES: &[&str] = &[
     "data_sort_set",
     "data_index_state",
     "data_index_backfill",
+    // 一括取込（Task 15.11）。
+    "data_bulk_key",
+    "data_bulk_staging",
+    "data_bulk_import",
 ];
 
 /// 新規テーブルの入力。

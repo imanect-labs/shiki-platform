@@ -468,33 +468,67 @@ pub(crate) async fn after_record_write(
     record_int: i64,
     data: Option<&Map<String, Value>>,
 ) -> Result<(), DataError> {
-    match data {
-        Some(d) if has_materialized(&table.schema) => {
-            let values = compute_invariant(conn, tenant_id, table, std::slice::from_ref(d)).await?;
-            if let Some(v) = values.first() {
-                write_index_rows(conn, table, record_int, v).await?;
-            }
-            clear_pending(conn, table.keys, None, Some(record_int)).await?;
-        }
-        Some(_) => {}
-        None => {
-            clear_pending(conn, table.keys, None, Some(record_int)).await?;
-            // 依存する参照元を（逆方向行が残っているうちに）再計算待ちへ積んでから、
-            // 対称列の逆方向行（このレコードが参照先側）を消す。参照元の順方向行は参照元の本体と
-            // 揃えて残す（宙に浮いた参照は読取で落ちる）。
-            enqueue_dependents(conn, tenant_id, table.keys, &[record_int]).await?;
-            let rev: Vec<i16> = table
-                .schema
-                .fields
-                .iter()
-                .filter(|f| f.is_reverse_link())
-                .map(|f| field_id_i16(f.id))
-                .collect::<Result<_, _>>()?;
-            return crate::index::link::delete_reverse_rows(conn, table.keys, &rev, record_int)
-                .await;
-        }
+    if let Some(d) = data {
+        return after_records_written(conn, tenant_id, table, &[(record_int, d)]).await;
     }
-    enqueue_dependents(conn, tenant_id, table.keys, &[record_int]).await
+    clear_pending(conn, table.keys, None, Some(record_int)).await?;
+    // 依存する参照元を（逆方向行が残っているうちに）再計算待ちへ積んでから、
+    // 対称列の逆方向行（このレコードが参照先側）を消す。参照元の順方向行は参照元の本体と
+    // 揃えて残す（宙に浮いた参照は読取で落ちる）。
+    enqueue_dependents(conn, tenant_id, table.keys, &[record_int]).await?;
+    let rev: Vec<i16> = table
+        .schema
+        .fields
+        .iter()
+        .filter(|f| f.is_reverse_link())
+        .map(|f| field_id_i16(f.id))
+        .collect::<Result<_, _>>()?;
+    crate::index::link::delete_reverse_rows(conn, table.keys, &rev, record_int).await
+}
+
+/// 作成・更新されたレコード（`(record_int, 書込後の外部形の値)`）の材料化（同一 Tx）。
+///
+/// 1 件の書込（[`after_record_write`]）と一括書込パス（data-platform §16.7）の共通の規則: 材料化する
+/// 列があれば全レコードの値を**まとめて**計算して索引行を書き直し、再計算待ちを消し、このテーブルを
+/// 参照先にする列の再計算待ちを積む。
+pub(crate) async fn after_records_written(
+    conn: &mut PgConnection,
+    tenant_id: &str,
+    table: &DataTable,
+    recs: &[(i64, &Map<String, Value>)],
+) -> Result<(), DataError> {
+    if recs.is_empty() {
+        return Ok(());
+    }
+    let record_ints: Vec<i64> = recs.iter().map(|(r, _)| *r).collect();
+    if has_materialized(&table.schema) {
+        let rows: Vec<Map<String, Value>> = recs.iter().map(|(_, d)| (*d).clone()).collect();
+        let values = compute_invariant(conn, tenant_id, table, &rows).await?;
+        for ((record_int, _), v) in recs.iter().zip(values.iter()) {
+            write_index_rows(conn, table, *record_int, v).await?;
+        }
+        clear_pending_records(conn, table.keys, &record_ints).await?;
+    }
+    enqueue_dependents(conn, tenant_id, table.keys, &record_ints).await
+}
+
+/// レコード群の再計算待ちを全列ぶん消す（自分の値をこの Tx で計算し直したので）。
+async fn clear_pending_records(
+    conn: &mut PgConnection,
+    keys: TableKeys,
+    records: &[i64],
+) -> Result<(), DataError> {
+    sqlx::query(
+        "DELETE FROM data_derived_pending WHERE tenant_int = $1 AND table_int = $2 \
+           AND record_int = ANY($3::int8[])",
+    )
+    .bind(keys.tenant_int)
+    .bind(keys.table_int)
+    .bind(records)
+    .execute(&mut *conn)
+    .await
+    .map_err(map_db)?;
+    Ok(())
 }
 
 /// 材料化した列を `per_viewer` へ降格する（**索引行・再計算待ち・依存登録を同一 Tx で破棄**・PIT-71）。

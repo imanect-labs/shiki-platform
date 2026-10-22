@@ -80,29 +80,46 @@ pub(crate) async fn start_backfill(
     tenant_id: &str,
     table_id: Uuid,
 ) -> Result<(), DataError> {
+    start_backfill_from(conn, keys, tenant_id, table_id, 0).await
+}
+
+/// [`start_backfill`] の開始位置つき版（`record_int > from` だけを走査する）。
+///
+/// 一括取込の索引の遅延構築（[`crate::bulk`]）が、取込で入れた範囲だけを作り直すのに使う。
+/// `from` より前のレコードの `building` の組が既に揃っている（＝取込が `active` から `building` に
+/// 落とした組だけが残っている）ことは呼び出し側が保証する。
+pub(crate) async fn start_backfill_from(
+    conn: &mut PgConnection,
+    keys: TableKeys,
+    tenant_id: &str,
+    table_id: Uuid,
+    from: i64,
+) -> Result<(), DataError> {
     let (total, high): (i64, i64) = sqlx::query_as(
         "SELECT count(*), coalesce(max(record_int), 0) FROM data_record \
-         WHERE tenant_int = $1 AND table_int = $2",
+         WHERE tenant_int = $1 AND table_int = $2 AND record_int > $3",
     )
     .bind(keys.tenant_int)
     .bind(keys.table_int)
+    .bind(from)
     .fetch_one(&mut *conn)
     .await
     .map_err(map_db)?;
     sqlx::query(
         "INSERT INTO data_index_backfill \
            (tenant_int, table_int, cursor_record, high_water, rows_done, rows_total, status) \
-         VALUES ($1, $2, 0, $3, 0, $4, 'running') \
+         VALUES ($1, $2, $5, $3, 0, $4, 'running') \
          ON CONFLICT (tenant_int, table_int) DO UPDATE SET \
-           cursor_record = 0, high_water = excluded.high_water, rows_done = 0, \
+           cursor_record = excluded.cursor_record, high_water = excluded.high_water, rows_done = 0, \
            rows_total = excluded.rows_total, status = 'running', \
            generation = data_index_backfill.generation + 1, started_at = now(), \
            updated_at = now(), finished_at = NULL, last_error = NULL",
     )
     .bind(keys.tenant_int)
     .bind(keys.table_int)
-    .bind(high)
+    .bind(high.max(from))
     .bind(total)
+    .bind(from)
     .execute(&mut *conn)
     .await
     .map_err(map_db)?;
@@ -409,6 +426,14 @@ impl DataStore {
         let processed = rows.len() as u64;
         let limit = u64::try_from(max_records.max(1)).unwrap_or(u64::MAX);
         let done = targets.is_empty() || processed < limit;
+        // 一括取込が値索引を保持している間は active へ切り替えない（取込の行の索引行はまだ無い・
+        // crate::bulk）。走査位置だけ末尾へ進めて running のまま置き、取込の仕上げが開始位置を決めて
+        // 再開する。取込はこの進捗行を FOR UPDATE で押さえてから保持を始めるので、ここと直列化される。
+        if done && crate::bulk::index_held(&mut tx, keys).await? {
+            park_held(&mut tx, keys, processed).await?;
+            tx.commit().await.map_err(map_db)?;
+            return Ok(IndexBackfillStep { processed, done });
+        }
         if done {
             activate_building(&mut tx, keys).await?;
             sqlx::query(
@@ -759,6 +784,27 @@ impl DataStore {
             _ => Err(DataError::Internal("索引ジョブの op が不正です".into())),
         }
     }
+}
+
+/// 一括取込が値索引を保持している間の走査の終わり: active へ切り替えず、走査位置だけ末尾へ進めて
+/// running のまま置く（取込の仕上げが開始位置を決めて再開する・[`crate::bulk`]）。
+async fn park_held(
+    conn: &mut PgConnection,
+    keys: TableKeys,
+    processed: u64,
+) -> Result<(), DataError> {
+    sqlx::query(
+        "UPDATE data_index_backfill SET cursor_record = high_water, \
+           rows_done = rows_done + $3, updated_at = now() \
+         WHERE tenant_int = $1 AND table_int = $2",
+    )
+    .bind(keys.tenant_int)
+    .bind(keys.table_int)
+    .bind(i64::try_from(processed).unwrap_or(i64::MAX))
+    .execute(&mut *conn)
+    .await
+    .map_err(map_db)?;
+    Ok(())
 }
 
 fn job_table(payload: &Value) -> Option<Uuid> {
