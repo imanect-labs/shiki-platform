@@ -20,6 +20,8 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+pub mod bulk;
+
 pub struct AllowAll;
 
 #[async_trait]
