@@ -4,7 +4,9 @@
 
 use std::borrow::Cow;
 
-use utoipa::openapi::schema::{ArrayBuilder, ObjectBuilder, OneOfBuilder, Schema, Type};
+use utoipa::openapi::schema::{
+    ArrayBuilder, ObjectBuilder, OneOfBuilder, Schema, SchemaType, Type,
+};
 use utoipa::openapi::{Ref, RefOr};
 use utoipa::{PartialSchema, ToSchema};
 
@@ -88,7 +90,10 @@ impl PartialSchema for FormulaExpr {
                 "数式（閉じた AST・外部タグ形式。例: {\"mul\": [{\"field\": \"price\"}, {\"lit\": 3}]}）",
             ))
             .item(tagged("field", string()))
-            .item(tagged("lit", ObjectBuilder::new().build()))
+            .item(tagged(
+                "lit",
+                ObjectBuilder::new().schema_type(SchemaType::AnyValue).build(),
+            ))
             .item(tagged("add", pair()))
             .item(tagged("sub", pair()))
             .item(tagged("mul", pair()))

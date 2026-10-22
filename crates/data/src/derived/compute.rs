@@ -7,7 +7,7 @@
 //!
 //! どちらも同じ関数で値を出すので、材料化した値は「誰が読んでも同じ」読取時の値と一致する。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
@@ -120,6 +120,8 @@ pub(crate) struct RowEval<'a> {
     pub now: DateTime<Utc>,
     /// 材料化（`invariant` の列だけを計算し、他は null として扱う）。
     pub only_invariant: bool,
+    /// 閲覧者に読めない自テーブルの列（派生列を含む）。数式の材料にしない（PIT-19）。
+    pub masked: &'a HashSet<String>,
 }
 
 struct RowEnv<'a> {
@@ -127,10 +129,14 @@ struct RowEnv<'a> {
     row: &'a Map<String, Value>,
     results: &'a HashMap<String, FVal>,
     inline: &'a HashMap<usize, FVal>,
+    masked: &'a HashSet<String>,
 }
 
 impl Env for RowEnv<'_> {
     fn field(&self, key: &str) -> FVal {
+        if self.masked.contains(key) {
+            return FVal::Null;
+        }
         if let Some(v) = self.results.get(key) {
             return v.clone();
         }
@@ -222,6 +228,7 @@ impl RowEval<'_> {
                     row,
                     results,
                     inline: &HashMap::new(),
+                    masked: self.masked,
                 };
                 let vals: Vec<FVal> = d.fields.iter().map(|k| env.field(k)).collect();
                 single(match d.op {
@@ -266,6 +273,7 @@ impl RowEval<'_> {
                     row,
                     results,
                     inline: &inline,
+                    masked: self.masked,
                 };
                 single(eval(e, &env, self.now))
             }

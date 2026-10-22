@@ -389,7 +389,14 @@ impl Catalog {
                 Materialization::Invariant
             };
         }
-        let local = |k: &str| self.mat_at(table, k, contained, depth + 1);
+        // 自テーブルの依存（マスクされた派生列を材料にしても漏れるので、派生列も含めて見る）。
+        let local = |k: &str| {
+            if masked_local(k) {
+                Materialization::PerViewer
+            } else {
+                self.mat_at(table, k, contained, depth + 1)
+            }
+        };
         match f.field_type {
             FieldType::Lookup => f.lookup.as_ref().map_or(Materialization::PerViewer, |d| {
                 local(&d.via_field).join(self.cross(

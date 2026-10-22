@@ -180,6 +180,22 @@ fn local_mask_and_multi_hop_are_per_viewer() {
         cat.materialization(a, "annual", &contained),
         Materialization::PerViewer
     );
+    // マスクされた派生列を材料にする数式も per_viewer（派生列のマスクも見る）。
+    let mut s = cat.tables[&a].schema.clone();
+    s.field_policy = vec![FieldPolicy {
+        field: "total".into(),
+        readable_by: PolicyExpr::Public,
+    }];
+    cat.tables.get_mut(&a).unwrap().schema = s;
+    assert_eq!(
+        cat.materialization(a, "with_tax", &contained),
+        Materialization::PerViewer
+    );
+    assert_eq!(
+        cat.materialization(a, "total", &contained),
+        Materialization::Invariant,
+        "列自身のマスクは出力で効くので材料化可否には影響しない"
+    );
     // 参照先の派生列を対象にする（多段）は per_viewer。
     let mut bs = cat.tables[&b].schema.clone();
     bs.fields.push(formula(

@@ -186,6 +186,7 @@ impl DataStore {
                 refs: &refs,
                 now: chrono::Utc::now(),
                 only_invariant: false,
+                masked,
             };
             for (i, r) in rows.iter_mut().enumerate() {
                 let values = eval.evaluate(&work[i]);

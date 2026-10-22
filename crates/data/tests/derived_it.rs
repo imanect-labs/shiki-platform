@@ -655,19 +655,31 @@ async fn fga_store(pool: PgPool) -> Option<(DataStore, Arc<dyn AuthzClient>)> {
     ))
 }
 
-/// 材料化した値（索引行）を record_int 順に引く（テスト専用）。
-async fn materialized(pool: &PgPool, tenant: &str, table: Uuid, field_id: u16) -> Vec<String> {
+/// 材料化した値（索引行）をレコードごとに引く（`orders` の並び順で返す・テスト専用）。
+async fn materialized(
+    pool: &PgPool,
+    tenant: &str,
+    table: Uuid,
+    field_id: u16,
+    orders: &[Uuid],
+) -> Vec<Option<String>> {
     let (ti, tb) = keys_of(pool, tenant, table).await;
-    sqlx::query_scalar(
-        "SELECT val::text FROM data_index_num WHERE tenant_int = $1 AND table_int = $2 \
-         AND field_id = $3 ORDER BY record_int",
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT r.id, i.val::text FROM data_index_num i \
+         JOIN data_record r ON r.tenant_int = i.tenant_int AND r.table_int = i.table_int \
+          AND r.record_int = i.record_int \
+         WHERE i.tenant_int = $1 AND i.table_int = $2 AND i.field_id = $3",
     )
     .bind(ti)
     .bind(tb)
     .bind(i16::try_from(field_id).unwrap())
     .fetch_all(pool)
     .await
-    .unwrap()
+    .unwrap();
+    orders
+        .iter()
+        .map(|o| rows.iter().find(|(id, _)| id == o).map(|(_, v)| v.clone()))
+        .collect()
 }
 
 /// 受け入れ条件: 参照先レコードの金額を更新すると参照元の材料化ロールアップが再計算され、
@@ -723,8 +735,8 @@ async fn materialized_rollup_is_recomputed_and_excluded_until_done() {
     let o2 = rec(&store, &c, orders.id, json!({"items": ids(&[l3])})).await;
     // 参照元の書込は同じ Tx で材料化する（直後からソートに使える）。
     assert_eq!(
-        materialized(&pool, &tenant, orders.id, total.id).await,
-        vec!["350", "300"]
+        materialized(&pool, &tenant, orders.id, total.id, &[o1, o2]).await,
+        vec![Some("350".to_string()), Some("300".to_string())]
     );
     let by_total = DataQuery {
         sort: vec![SortKey {
@@ -777,8 +789,8 @@ async fn materialized_rollup_is_recomputed_and_excluded_until_done() {
     // 再計算が終われば新しい値で並ぶ。
     store.recompute_derived(&tenant, orders.id).await.unwrap();
     assert_eq!(
-        materialized(&pool, &tenant, orders.id, total.id).await,
-        vec!["350", "1000"]
+        materialized(&pool, &tenant, orders.id, total.id, &[o1, o2]).await,
+        vec![Some("350".to_string()), Some("1000".to_string())]
     );
     assert_eq!(
         order(
@@ -805,8 +817,8 @@ async fn materialized_rollup_is_recomputed_and_excluded_until_done() {
     ));
     store.recompute_derived(&tenant, orders.id).await.unwrap();
     assert_eq!(
-        materialized(&pool, &tenant, orders.id, total.id).await,
-        vec!["100", "1000"]
+        materialized(&pool, &tenant, orders.id, total.id, &[o1, o2]).await,
+        vec![Some("100".to_string()), Some("1000".to_string())]
     );
     // 参照元自身のリンク付け替えは同じ Tx で再計算される（待ちを作らない）。
     let r = store.get_record(&c, orders.id, o1, None).await.unwrap();
@@ -822,8 +834,8 @@ async fn materialized_rollup_is_recomputed_and_excluded_until_done() {
         .await
         .unwrap();
     assert_eq!(
-        materialized(&pool, &tenant, orders.id, total.id).await,
-        vec!["1100", "1000"]
+        materialized(&pool, &tenant, orders.id, total.id, &[o1, o2]).await,
+        vec![Some("1100".to_string()), Some("1000".to_string())]
     );
     assert_eq!(
         order(

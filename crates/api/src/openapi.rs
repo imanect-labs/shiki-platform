@@ -411,6 +411,15 @@ use utoipa::{
         data::LookupDef,
         data::ComputedDef,
         data::ComputedOp,
+        // リンク・ロールアップ・数式・材料化規則（Task 15.4）。
+        data::LinkDef,
+        data::LinkCardinality,
+        data::RollupDef,
+        data::RollupOp,
+        data::Materialization,
+        data::ResultType,
+        data::FormulaExpr,
+        data::FormulaCmpOp,
         data::RecordRevision,
         data::FieldPatch,
         // 行レベル認可（Task 9.3）: 宣言 AST と個別共有 DTO。

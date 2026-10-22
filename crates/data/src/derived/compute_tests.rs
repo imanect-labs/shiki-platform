@@ -2,6 +2,7 @@ use super::*;
 use crate::derived::types::{LinkCardinality, LinkDef, RollupDef};
 use crate::model::{ComputedDef, LookupDef};
 use serde_json::json;
+use std::collections::HashSet;
 
 fn schema(fields: Vec<FieldDef>) -> TableSchema {
     TableSchema {
@@ -152,6 +153,7 @@ fn evaluates_lookup_rollup_formula_and_computed_in_order() {
         refs: &all,
         now: chrono::Utc::now(),
         only_invariant: false,
+        masked: &HashSet::new(),
     };
     let mut row = Map::new();
     row.insert("main".into(), json!(Uuid::from_u128(1).to_string()));
@@ -189,6 +191,7 @@ fn only_invariant_skips_viewer_dependent_fields() {
         refs: &none,
         now: chrono::Utc::now(),
         only_invariant: true,
+        masked: &HashSet::new(),
     };
     let out = eval.evaluate(&Map::new());
     assert_eq!(out.get("x"), Some(&json!(1)));

@@ -153,6 +153,7 @@ async fn compute_invariant(
         refs: &refs,
         now: chrono::Utc::now(),
         only_invariant: true,
+        masked: &HashSet::new(),
     };
     Ok(rows.iter().map(|r| eval.evaluate(r)).collect())
 }
@@ -762,10 +763,12 @@ impl DataStore {
             table.schema_version,
         )
         .await?;
+        // 待ちの行はロックしない（参照先の更新 Tx は参照先の行ロックを持ったまま待ちを積むので、ここで
+        // 待ちの行を押さえてから参照先を FOR SHARE で待つとデッドロックする）。読んだ世代だけを最後に消す。
         let pending: Vec<(i16, i64, i64)> = sqlx::query_as(
             "SELECT field_id, record_int, gen FROM data_derived_pending \
              WHERE tenant_int = $1 AND table_int = $2 \
-             ORDER BY record_int, field_id LIMIT $3 FOR UPDATE SKIP LOCKED",
+             ORDER BY record_int, field_id LIMIT $3",
         )
         .bind(table.keys.tenant_int)
         .bind(table.keys.table_int)
