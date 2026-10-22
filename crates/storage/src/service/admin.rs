@@ -34,6 +34,11 @@ impl StorageService {
         self.authz
             .write_tuple(&subject, Relation::Admin, &org_obj)
             .await?;
+        // 監査閲覧者も初期管理者に付ける（#634）。audit_viewer は admin と独立なので、付けないと
+        // テナントに監査ログを読める人が誰もいなくなる。追加の監査担当者は shiki-admin で付与する。
+        self.authz
+            .write_tuple(&subject, Relation::AuditViewer, &org_obj)
+            .await?;
         self.audit
             .record(
                 &ctx,

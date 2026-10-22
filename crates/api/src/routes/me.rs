@@ -22,6 +22,9 @@ pub struct MeResponse {
     /// 組織管理者か（管理コンソールの入口を出すか・`organization#admin`）。
     /// 表示のための値で、管理 API 自体はルートのポリシーで毎回確かめる。
     pub is_admin: bool,
+    /// 監査ログを見られるか（管理コンソールの監査ログの入口を出すか・`organization#audit_viewer`・
+    /// #634）。admin とは独立。表示のための値で、監査 API 自体はルートのポリシーで毎回確かめる。
+    pub can_view_audit: bool,
 }
 
 /// 認証済みユーザー自身の情報を返す。
@@ -56,9 +59,10 @@ pub async fn get_me(
                 .await?,
         )
     };
-    let (allowed, is_admin) = tokio::try_join!(
+    let (allowed, is_admin, can_view_audit) = tokio::try_join!(
         member,
         crate::middleware::org_admin::is_org_admin(&state, &ctx, Consistency::MinimizeLatency),
+        crate::middleware::org_audit::is_org_auditor(&state, &ctx, Consistency::MinimizeLatency),
     )?;
     if !allowed {
         return Err(ApiError::Forbidden);
@@ -66,6 +70,7 @@ pub async fn get_me(
 
     Ok(Json(MeResponse {
         is_admin,
+        can_view_audit,
         id: ctx.principal.id,
         email: ctx.principal.email,
         roles: ctx.principal.roles,

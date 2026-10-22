@@ -103,9 +103,11 @@ impl AuthzClient for AllowAll {
     }
 }
 
-/// 組織管理者（`organization#admin`）だけを `admin` で切り替え、他は allow する認可モック（#553）。
+/// 組織管理者（`organization#admin`・#553）と監査閲覧者（`organization#audit_viewer`・#634）だけを
+/// 切り替え、他は allow する認可モック。
 struct AdminGate {
     admin: bool,
+    auditor: bool,
 }
 
 #[async_trait]
@@ -117,7 +119,11 @@ impl AuthzClient for AdminGate {
         _object: &FgaObject,
         _consistency: Consistency,
     ) -> Result<bool, AuthzError> {
-        Ok(relation != Relation::Admin || self.admin)
+        Ok(match relation {
+            Relation::Admin => self.admin,
+            Relation::AuditViewer => self.auditor,
+            _ => true,
+        })
     }
 
     async fn write_tuple(
@@ -608,7 +614,10 @@ async fn org_admin_routes_reject_non_admin_members() {
     let store = store_with_valid_session().await;
     let app = build_router(state_with_authz(
         store,
-        Arc::new(AdminGate { admin: false }),
+        Arc::new(AdminGate {
+            admin: false,
+            auditor: false,
+        }),
     ));
     for uri in [
         "/org-admin/ai/providers",
@@ -635,7 +644,13 @@ async fn org_admin_routes_reject_non_admin_members() {
 async fn org_admin_routes_pass_the_gate_for_admins() {
     // 管理者はゲートを通る（この構成は LLM 未構成なので 503＝ハンドラまで届いた）。
     let store = store_with_valid_session().await;
-    let app = build_router(state_with_authz(store, Arc::new(AdminGate { admin: true })));
+    let app = build_router(state_with_authz(
+        store,
+        Arc::new(AdminGate {
+            admin: true,
+            auditor: false,
+        }),
+    ));
     let (status, _) = get_with_session(app.clone(), "/org-admin/ai/models").await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     let (_, me) = get_with_session(app, "/me").await;
@@ -643,10 +658,55 @@ async fn org_admin_routes_pass_the_gate_for_admins() {
 }
 
 #[tokio::test]
+async fn org_audit_routes_reject_non_auditors_even_if_admin() {
+    // 監査閲覧者でなければ /org-audit/* は 403。admin は audit_viewer を含意しない（#634）。
+    let store = store_with_valid_session().await;
+    let app = build_router(state_with_authz(
+        store,
+        Arc::new(AdminGate {
+            admin: true,
+            auditor: false,
+        }),
+    ));
+    for uri in ["/org-audit/events", "/org-audit/export"] {
+        let (status, _) = get_with_session(app.clone(), uri).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+    }
+    let (_, me) = get_with_session(app, "/me").await;
+    assert_eq!(me["can_view_audit"], false);
+}
+
+#[tokio::test]
+async fn org_audit_routes_pass_the_gate_for_auditors_who_are_not_admins() {
+    // 管理者でない監査閲覧者はゲートを通る（不正な条件の 400＝ハンドラまで届いた）。
+    // 逆に管理 API（/org-admin/*）には入れない。
+    let store = store_with_valid_session().await;
+    let app = build_router(state_with_authz(
+        store,
+        Arc::new(AdminGate {
+            admin: false,
+            auditor: true,
+        }),
+    ));
+    let (status, _) = get_with_session(app.clone(), "/org-audit/events?decision=maybe").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = get_with_session(app.clone(), "/org-audit/export?format=xlsx").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = get_with_session(app.clone(), "/org-admin/ai/models").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (_, me) = get_with_session(app, "/me").await;
+    assert_eq!(me["can_view_audit"], true);
+    assert_eq!(me["is_admin"], false);
+}
+
+#[tokio::test]
 async fn org_admin_routes_require_a_session() {
     let app = build_router(state_with_authz(
         Arc::new(MemorySessionStore::new()),
-        Arc::new(AdminGate { admin: true }),
+        Arc::new(AdminGate {
+            admin: true,
+            auditor: false,
+        }),
     ));
     let resp = app
         .oneshot(
