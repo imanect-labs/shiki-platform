@@ -154,7 +154,6 @@ test.describe("```ui ブロックの図（スマホ）", () => {
   test("タップで値が出て、もう一度のタップと図の外のタップで閉じる", async ({ page }) => {
     // loginViaKeycloak はデスクトップ幅のメニューで完了を確かめるので、ここでは手順だけ踏む。
     await page.goto("/login");
-    await page.getByRole("button", { name: "Keycloak でログイン" }).click();
     await submitKeycloakLogin(page);
     await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 20_000 });
     // Playwright のマウスは最後にクリックした位置に残り、そこへ図が流れてくるとホバー扱いで値が出る

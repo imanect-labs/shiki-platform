@@ -23,6 +23,7 @@ pub mod error;
 pub mod extract;
 pub mod health;
 pub mod insights;
+pub mod keycloak_account;
 pub mod keycloak_admin;
 pub mod middleware;
 pub mod oidc;

@@ -4,6 +4,7 @@
 //! ブラウザには不透明セッション Cookie のみを渡す（トークンは置かない）。
 //! docs/auth/browser-token-strategy.md / roadmap phase-0 Task 0.11(#55)。
 
+pub mod action;
 pub mod backchannel_logout;
 pub mod callback;
 pub mod login;
@@ -14,6 +15,7 @@ use axum_extra::extract::cookie::{Cookie, SameSite};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
+pub use action::start_account_action;
 pub use backchannel_logout::backchannel_logout;
 pub use callback::callback;
 pub(crate) use callback::provision_roles;
@@ -36,6 +38,9 @@ struct FlowState {
     state: String,
     /// PKCE code_verifier（token 交換でのみ使用）。
     verifier: String,
+    /// 設定画面から始めたアカウント操作（パスキー登録等）。callback が戻り先を決めるのに使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    action: Option<action::AccountAction>,
 }
 
 /// セッション/CSRF Cookie をセットする際の共通属性で Cookie を組み立てる。

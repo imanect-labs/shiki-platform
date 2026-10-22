@@ -5,13 +5,14 @@ import { loginViaKeycloak, submitKeycloakLogin } from "./helpers";
 test("未ログイン保護ページ→ログイン→戻り先復帰→ダミー送信→ログアウト", async ({
   page,
 }) => {
-  // 1. 未ログインで保護ページへ → /login?next=/drive へ誘導される。
+  // 1. 未ログインで保護ページへ → /login?next=/drive を経て、そのまま Keycloak の
+  //    ログイン画面（Shiki テーマ）へ送られる。
   await page.goto("/drive");
-  await expect(page).toHaveURL(/\/login\?next=%2Fdrive/);
+  await page.waitForURL(/:8081\/realms\/shiki\/protocol\/openid-connect\/auth/);
   await expect(page.getByRole("heading", { name: "ログイン" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "パスキーでログイン" })).toBeVisible();
 
-  // 2. Keycloak でログイン。
-  await page.getByRole("button", { name: "Keycloak でログイン" }).click();
+  // 2. ユーザー名とパスワードでログイン。
   await submitKeycloakLogin(page);
 
   // 3. ログイン後は元の遷移先（/drive）へ復帰する（next 復帰）。
@@ -50,9 +51,11 @@ test("未ログイン保護ページ→ログイン→戻り先復帰→ダミ�
     await page.locator("#kc-logout, button[type=submit], input[type=submit]").first().click();
   }
 
-  // セッションが破棄され、保護ページへ行くとログインへ戻る（負例の確認）。
-  await page.goto("/drive");
-  await expect(page).toHaveURL(/\/login/, { timeout: 20_000 });
+  // セッションが破棄され、保護ページへ行くと Keycloak のログイン画面へ戻る（負例の確認）。
+  // /login は未ログインなら即 Keycloak へ送るため、goto の load 待ちはリダイレクトで中断され得る。
+  await page.goto("/drive", { waitUntil: "commit" });
+  await page.waitForURL(/:8081\/realms\/shiki\/protocol\/openid-connect\/auth/, { timeout: 20_000 });
+  await expect(page.getByRole("heading", { name: "ログイン" })).toBeVisible();
 });
 
 test("ログイン済みで /login に来たらアプリへリダイレクトする", async ({ page }) => {

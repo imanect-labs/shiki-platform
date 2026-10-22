@@ -15,7 +15,8 @@ WORKDIR /app
 RUN npm install -g pnpm@9
 
 # 依存だけ先に入れてレイヤキャッシュを効かせる。
-COPY package.json pnpm-lock.yaml ./
+# .npmrc（Takumi Guard registry）もコピーして悪性パッケージをブロックする。
+COPY package.json pnpm-lock.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile
 
 COPY . .

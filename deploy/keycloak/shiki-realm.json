@@ -1,9 +1,141 @@
 {
   "realm": "shiki",
   "enabled": true,
+  "displayName": "Shiki",
+  "loginTheme": "shiki",
+  "internationalizationEnabled": true,
+  "supportedLocales": [
+    "ja"
+  ],
+  "defaultLocale": "ja",
   "sslRequired": "none",
   "registrationAllowed": false,
   "accessTokenLifespan": 1800,
+  "browserFlow": "shiki browser",
+  "webAuthnPolicyPasswordlessRpEntityName": "Shiki",
+  "webAuthnPolicyPasswordlessRequireResidentKey": "Yes",
+  "webAuthnPolicyPasswordlessUserVerificationRequirement": "required",
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA1",
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "authenticationFlows": [
+    {
+      "alias": "shiki browser",
+      "description": "Shiki のブラウザログイン。パスワード（＋設定済みなら OTP）とパスキーを同じ段の選択肢に置く。",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false,
+          "authenticator": "auth-cookie"
+        },
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false,
+          "authenticator": "identity-provider-redirector"
+        },
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 30,
+          "userSetupAllowed": false,
+          "autheticatorFlow": true,
+          "flowAlias": "shiki browser forms"
+        }
+      ]
+    },
+    {
+      "alias": "shiki browser forms",
+      "description": "ログインフォーム（パスワード or パスキー）",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": true,
+          "flowAlias": "shiki browser password"
+        },
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "autheticatorFlow": true,
+          "flowAlias": "shiki browser passkey"
+        }
+      ]
+    },
+    {
+      "alias": "shiki browser password",
+      "description": "ユーザー名＋パスワード。OTP を設定済みなら 2 段目で求める。",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false,
+          "authenticator": "auth-username-password-form"
+        },
+        {
+          "requirement": "CONDITIONAL",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "autheticatorFlow": true,
+          "flowAlias": "shiki browser otp"
+        }
+      ]
+    },
+    {
+      "alias": "shiki browser otp",
+      "description": "OTP を設定済みのユーザーだけ確認コードを求める",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false,
+          "authenticator": "conditional-user-configured"
+        },
+        {
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false,
+          "authenticator": "auth-otp-form"
+        }
+      ]
+    },
+    {
+      "alias": "shiki browser passkey",
+      "description": "パスキー（discoverable credential）でパスワードなしにログイン",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false,
+          "authenticator": "webauthn-authenticator-passwordless"
+        }
+      ]
+    }
+  ],
   "groups": [
     {
       "name": "a-corp",
@@ -172,6 +304,9 @@
           "value": "password",
           "temporary": false
         }
+      ],
+      "realmRoles": [
+        "default-roles-shiki"
       ]
     },
     {
@@ -200,6 +335,9 @@
           "value": "password",
           "temporary": false
         }
+      ],
+      "realmRoles": [
+        "default-roles-shiki"
       ]
     },
     {
@@ -227,6 +365,9 @@
           "value": "password",
           "temporary": false
         }
+      ],
+      "realmRoles": [
+        "default-roles-shiki"
       ]
     },
     {
