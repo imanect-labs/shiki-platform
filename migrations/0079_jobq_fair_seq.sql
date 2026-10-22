@@ -9,10 +9,19 @@
 -- しか進められないので、洪水テナントのジョブは先へ伸び、後から来たテナントは仮想時刻から始まって
 -- **洪水と 1:1 で交互に**取り出される。テナント内の順序は保つ。式と理由は crates/jobq の冒頭。
 --
--- 既存行・旧版の投入は 0（＝最優先で従来どおり id 順）。新旧混在中は旧版の claim が id 順で
--- 取るだけで、取りこぼし・二重配信は起きない（公平性が効かず、仮想時刻が進まないだけ）。
+-- 既存行は (queue, tenant) ごとに id 順で 0, 1, 2, … を振る（下の backfill）。一律 0 にすると、
+-- 切替時点で 1 社の洪水が詰まっていた場合に後着テナントが滞留の後ろに並び、捌けるまで公平性が
+-- 効かない（直したい障害の最中にデプロイしても効かない）。仮想時刻は 0 から始まるので、後着
+-- テナントは滞留テナントと交互に取り出される。旧版の投入は列の既定値 0 になるが、切替は
+-- 非ローリング（docs/guides/tenant-ops.md）なので新旧は混在しない。
 
 alter table job_queue add column fair_seq bigint not null default 0;
+
+update job_queue j
+   set fair_seq = r.seq
+  from (select id, row_number() over (partition by queue, tenant_id order by id) - 1 as seq
+          from job_queue) r
+ where j.id = r.id and r.seq > 0;
 
 -- キューごとの仮想時刻（単調増加）。claim が確保した行の最大 fair_seq まで進める（下げない）。
 -- キュー内の行から毎回求めると、バックオフ明け・クラッシュで古い fair_seq の行が可視に戻った
