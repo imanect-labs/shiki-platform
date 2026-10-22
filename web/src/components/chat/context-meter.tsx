@@ -4,7 +4,13 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 import type { ContextCategory, ContextUsage } from "@/lib/chat-api";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 /// カテゴリの表示名と色（四季トークン＋プライマリ・ライト/ダークで自動反転）。
 const CATEGORY: Record<ContextCategory, { label: string; hint: string; color: string }> = {
@@ -36,6 +42,17 @@ export function formatPercent(p: number): string {
   return `${Math.round(p)}%`;
 }
 
+/// 窓に対する使用率（窓が分からなければ null）。
+export function contextPercent(usage: ContextUsage): number | null {
+  return usage.window_tokens ? (usage.used_tokens / usage.window_tokens) * 100 : null;
+}
+
+/// ⋯ メニューの項目名（「コンテキスト 12%」）。
+export function contextMenuLabel(usage: ContextUsage): string {
+  const p = contextPercent(usage);
+  return `コンテキスト ${p === null ? formatTokens(usage.used_tokens) : formatPercent(p)}`;
+}
+
 /// 使用率に応じた色（余裕あり→注意→逼迫）。
 function levelColor(percent: number | null): string {
   if (percent === null || percent < 70) return "var(--primary)";
@@ -43,177 +60,181 @@ function levelColor(percent: number | null): string {
   return "var(--destructive)";
 }
 
-/// 使用率のリング（窓が分からなければ枠だけ）。
-function Ring({ percent }: { percent: number | null }) {
-  const r = 7;
-  const c = 2 * Math.PI * r;
-  const filled = percent === null ? 0 : Math.min(Math.max(percent, 0), 100) / 100;
-  return (
-    <svg viewBox="0 0 18 18" className="size-[18px] shrink-0 -rotate-90" aria-hidden>
-      <circle
-        cx="9"
-        cy="9"
-        r={r}
-        fill="none"
-        strokeWidth="2.5"
-        style={{ stroke: "color-mix(in oklab, var(--muted-foreground) 25%, transparent)" }}
-      />
-      {filled > 0 ? (
-        <circle
-          cx="9"
-          cy="9"
-          r={r}
-          fill="none"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          // 1% 未満でも点として見えるよう最小の弧を残す。
-          strokeDasharray={`${Math.max(filled * c, 1.5)} ${c}`}
-          style={{
-            stroke: levelColor(percent),
-            transition: "stroke-dasharray var(--duration-normal) var(--ease-standard)",
-          }}
-        />
-      ) : null}
-    </svg>
-  );
+type Part = { key: string; label: string; hint?: string; tokens: number; background: string };
+
+/// 帯の区間（使用中の各カテゴリ・応答用の予約・空き）。窓が分からなければ使用中だけ。
+function parts(usage: ContextUsage): { parts: Part[]; total: number } {
+  const window = usage.window_tokens ?? null;
+  const out: Part[] = usage.categories.map((c) => ({
+    key: c.category,
+    label: CATEGORY[c.category].label,
+    hint: CATEGORY[c.category].hint,
+    tokens: c.tokens,
+    background: CATEGORY[c.category].color,
+  }));
+  if (!window) return { parts: out, total: Math.max(usage.used_tokens, 1) };
+  const reserved = Math.min(usage.reserved_output_tokens ?? 0, window);
+  out.push({
+    key: "reserved",
+    label: "応答用の予約",
+    hint: "回答の出力に空けておく分",
+    tokens: reserved,
+    background: RESERVED_BG,
+  });
+  out.push({
+    key: "free",
+    label: "空き",
+    tokens: Math.max(window - usage.used_tokens - reserved, 0),
+    background: "var(--muted)",
+  });
+  return { parts: out, total: window };
 }
 
-/// 横棒の 1 区間。
-function Segment({ share, background }: { share: number; background: string }) {
-  if (share <= 0) return null;
-  return (
-    <div
-      className="h-full border-r-2 border-popover last:border-r-0"
-      style={{ width: `${share * 100}%`, minWidth: 4, background }}
-    />
-  );
-}
-
-/// コンテキストの使用量（何がどれだけ占めているか）。入力欄の操作段に置くリング＋ポップオーバー。
+/// コンテキストの使用量（何がどれだけ占めているか）。会話の ⋯ メニューから開く。
 ///
 /// 値は**直前の LLM リクエスト**のもの（生成中はステップごとに更新される）。総量はモデルの実測、
 /// 内訳は文字数からの見積りの比で按分したもの（サーバ側 `agent_core::context_usage`）。
-export function ContextMeter({ usage, className }: { usage: ContextUsage; className?: string }) {
-  const used = usage.used_tokens;
+///
+/// 数字は帯・凡例にホバー（タッチではタップ、キーボードではフォーカス）すると帯の下に出る。
+export function ContextUsageDialog({
+  usage,
+  open,
+  onOpenChange,
+}: {
+  usage: ContextUsage | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [active, setActive] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!open) setActive(null);
+  }, [open]);
+  if (!usage) return null;
+
+  const percent = contextPercent(usage);
   const window = usage.window_tokens ?? null;
-  const reserved = window ? Math.min(usage.reserved_output_tokens ?? 0, window) : 0;
-  const free = window ? Math.max(window - used - reserved, 0) : 0;
-  const percent = window ? (used / window) * 100 : null;
-  const label =
-    percent === null
-      ? `コンテキスト: ${formatTokens(used)} トークン使用`
-      : `コンテキスト: ${formatPercent(percent)} 使用中`;
-  const cats = usage.categories.map((c) => ({ ...c, ...CATEGORY[c.category] }));
+  const { parts: segs, total } = parts(usage);
+  const focused = segs.find((s) => s.key === active) ?? null;
+  const share = (t: number) => (t / total) * 100;
 
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label={label}
-          title={label}
-          className={cn(
-            "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-2 text-[12px] font-medium tabular-nums text-muted-foreground transition-colors",
-            "hover:bg-secondary hover:text-foreground data-[state=open]:bg-secondary data-[state=open]:text-foreground",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
-            className,
-          )}
-        >
-          <Ring percent={percent} />
-          <span>{percent === null ? formatTokens(used) : formatPercent(percent)}</span>
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="end" side="top" className="w-80 p-0">
-        <div className="px-4 pt-3.5">
-          <div className="flex items-baseline justify-between gap-3">
-            <h3 className="text-sm font-semibold">コンテキスト</h3>
-            <p className="text-xs tabular-nums text-muted-foreground">
-              <span className="font-medium text-foreground">{formatTokens(used)}</span>
-              {window ? ` / ${formatTokens(window)}` : null} トークン
-              {percent !== null ? (
-                <span className="ml-1.5 font-semibold" style={{ color: levelColor(percent) }}>
-                  {formatPercent(percent)}
-                </span>
-              ) : null}
-            </p>
-          </div>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md gap-0">
+        <DialogHeader>
+          <DialogTitle>コンテキスト</DialogTitle>
+          <DialogDescription className="tabular-nums">
+            <span className="font-medium text-foreground">{formatTokens(usage.used_tokens)}</span>
+            {window ? ` / ${formatTokens(window)}` : null} トークン使用
+            {percent !== null ? (
+              <span className="ml-1.5 font-semibold" style={{ color: levelColor(percent) }}>
+                {formatPercent(percent)}
+              </span>
+            ) : null}
+          </DialogDescription>
+        </DialogHeader>
 
-          {/* 窓全体: 使用中（内訳の色）・応答用の予約（斜線）・空き。 */}
+        {/* 帯（窓全体）。区間にホバー/タップ/フォーカスすると下の行に数字が出る。 */}
+        <div
+          className="mt-5 flex h-4 overflow-hidden rounded-md bg-muted"
+          onMouseLeave={() => setActive(null)}
+        >
+          {segs
+            .filter((s) => s.tokens > 0 && s.key !== "free")
+            .map((s) => (
+              <button
+                key={s.key}
+                type="button"
+                aria-label={`${s.label} ${formatTokens(s.tokens)} トークン（${formatPercent(share(s.tokens))}）`}
+                onMouseEnter={() => setActive(s.key)}
+                onFocus={() => setActive(s.key)}
+                onClick={() => setActive(s.key)}
+                className={cn(
+                  "h-full border-r-2 border-card transition-opacity last:border-r-0 focus-visible:outline-none",
+                  active && active !== s.key && "opacity-40",
+                )}
+                style={{ width: `${share(s.tokens)}%`, minWidth: 6, background: s.background }}
+              />
+            ))}
+          {/* 空きは帯の残り全体（押せる範囲を広く取る）。 */}
           {window ? (
-            <>
-              <div
-                className="mt-2.5 flex h-2 overflow-hidden rounded-full bg-muted"
-                role="img"
-                aria-label={`使用中 ${formatPercent(percent ?? 0)}、応答用の予約 ${formatPercent((reserved / window) * 100)}、空き ${formatPercent((free / window) * 100)}`}
-              >
-                {cats.map((c) => (
-                  <Segment key={c.category} share={c.tokens / window} background={c.color} />
-                ))}
-                <Segment share={reserved / window} background={RESERVED_BG} />
-              </div>
-              <dl className="mt-2 flex gap-4 text-[11px] text-muted-foreground">
-                <div className="flex items-center gap-1.5">
-                  <span className="size-2 rounded-[2px]" style={{ background: RESERVED_BG }} aria-hidden />
-                  <dt>応答用の予約</dt>
-                  <dd className="tabular-nums text-foreground">{formatTokens(reserved)}</dd>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="size-2 rounded-[2px] border border-border bg-muted" aria-hidden />
-                  <dt>空き</dt>
-                  <dd className="tabular-nums text-foreground">
-                    {formatTokens(free)}（{formatPercent((free / window) * 100)}）
-                  </dd>
-                </div>
-              </dl>
-            </>
+            <button
+              type="button"
+              aria-label={`空き ${formatTokens(segs[segs.length - 1].tokens)} トークン`}
+              onMouseEnter={() => setActive("free")}
+              onFocus={() => setActive("free")}
+              onClick={() => setActive("free")}
+              className="h-full flex-1 focus-visible:outline-none"
+            />
           ) : null}
         </div>
 
-        {/* 使用中の内訳（使用中を 100% とした割合）。 */}
-        <div className="mt-3 border-t px-4 pt-3">
-          <p className="text-[11px] font-medium text-muted-foreground">使用中の内訳</p>
-          <div
-            className="mt-2 flex h-2.5 overflow-hidden rounded-full bg-muted"
-            role="img"
-            aria-label={cats
-              .map((c) => `${c.label} ${formatPercent((c.tokens / Math.max(used, 1)) * 100)}`)
-              .join("、")}
-          >
-            {cats.map((c) => (
-              <Segment key={c.category} share={c.tokens / Math.max(used, 1)} background={c.color} />
-            ))}
-          </div>
+        {/* 数字（何も指していないときは案内）。2 行分の高さを固定して凡例の位置がずれないようにする。 */}
+        <div className="mt-2.5 min-h-11 text-[13px] tabular-nums" aria-live="polite">
+          {focused ? (
+            <>
+              <p className="font-medium">{focused.label}</p>
+              <p className="flex flex-wrap gap-x-3 text-muted-foreground">
+                <span className="whitespace-nowrap">
+                  <span className="text-foreground">{focused.tokens.toLocaleString()}</span> トークン
+                </span>
+                {window ? (
+                  <span className="whitespace-nowrap">
+                    窓の <span className="text-foreground">{formatPercent(share(focused.tokens))}</span>
+                  </span>
+                ) : null}
+                {focused.key in CATEGORY && usage.used_tokens > 0 ? (
+                  <span className="whitespace-nowrap">
+                    使用中の{" "}
+                    <span className="font-semibold text-foreground">
+                      {formatPercent((focused.tokens / usage.used_tokens) * 100)}
+                    </span>
+                  </span>
+                ) : null}
+              </p>
+            </>
+          ) : (
+            <p className="pt-0.5 text-muted-foreground">
+              帯や項目にカーソルを合わせる（スマホはタップ）と数字が出ます
+            </p>
+          )}
         </div>
-        <ul className="px-2 pb-2 pt-1.5">
-          {cats.map((c) => (
-            <li
-              key={c.category}
-              className={cn(
-                "flex items-center gap-2.5 rounded-md px-2 py-1.5 text-[13px]",
-                c.tokens === 0 && "text-muted-foreground",
-              )}
-            >
-              <span className="size-2.5 shrink-0 rounded-[3px]" style={{ background: c.color }} aria-hidden />
-              <span className="min-w-0 flex-1">
-                {c.label}
-                <span className="block truncate text-[11px] leading-4 text-muted-foreground">{c.hint}</span>
-              </span>
-              <span className="tabular-nums text-muted-foreground">{formatTokens(c.tokens)}</span>
-              <span className="w-10 text-right font-medium tabular-nums">
-                {formatPercent((c.tokens / Math.max(used, 1)) * 100)}
-              </span>
+
+        {/* 凡例（数字は出さない・ホバー/タップで上の行に出す）。 */}
+        <ul className="-mx-2 mt-3 grid grid-cols-2 gap-0.5">
+          {segs.map((s) => (
+            <li key={s.key}>
+              <button
+                type="button"
+                onMouseEnter={() => setActive(s.key)}
+                onMouseLeave={() => setActive(null)}
+                onFocus={() => setActive(s.key)}
+                onClick={() => setActive(s.key)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors pointer-coarse:py-2.5",
+                  "hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  active === s.key && "bg-accent",
+                  s.tokens === 0 && "text-muted-foreground",
+                )}
+              >
+                <span
+                  className={cn("size-2.5 shrink-0 rounded-[3px]", s.key === "free" && "border border-border")}
+                  style={{ background: s.background }}
+                  aria-hidden
+                />
+                <span className="truncate">{s.label}</span>
+              </button>
             </li>
           ))}
         </ul>
 
-        <p className="border-t px-4 py-2.5 text-[11px] leading-relaxed text-muted-foreground">
+        <p className="mt-4 border-t pt-3 text-[11px] leading-relaxed text-muted-foreground">
           直前のリクエスト時点（{usage.model}）。
           {usage.measured
             ? "合計はモデルの実測値、内訳は文字数からの推定です。"
             : "モデルが使用量を返さなかったため、合計も推定です。"}
           {window ? null : "このモデルはコンテキスト長が未設定のため、割合は出せません。"}
         </p>
-      </PopoverContent>
-    </Popover>
+      </DialogContent>
+    </Dialog>
   );
 }

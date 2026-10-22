@@ -5,13 +5,12 @@ import { ArrowUp, Bot, HardDrive, Loader2, Paperclip, Square, TextSelect, X } fr
 
 import { cn } from "@/lib/utils";
 import { uploadFile, type NodeResponse } from "@/lib/storage";
-import type { Attachment, AutonomousMode, ContextUsage, WorkspaceChoice } from "@/lib/chat-api";
+import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
 import { HOME_SCOPE } from "@/lib/model-choice";
 import { selectableTool, useToolChoice } from "@/lib/tool-choice";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { ApprovalModeSelect, approvalModeDef } from "./approval-mode-select";
 import { ComposerModeButton } from "./composer-mode";
-import { ContextMeter } from "./context-meter";
 import { PlusMenu } from "./composer-plus-menu";
 import { ModelPill, useChosenModelLabel } from "./model-picker";
 import {
@@ -83,7 +82,6 @@ export const Composer = React.memo(function Composer({
   onApprovalModeChange,
   bypassAllowed = true,
   threadId,
-  contextUsage = null,
   className,
 }: {
   onSubmit: (
@@ -120,8 +118,6 @@ export const Composer = React.memo(function Composer({
   /// スレッド内のコンポーザなら thread id。カタログにスレッドのピンを統合するのに使う
   /// （モデルが見ている集合と補完候補を一致させる・#387）。ホームでは未指定。
   threadId?: string;
-  /// 直前の LLM リクエストのコンテキスト使用量（null ならメーターを出さない）。
-  contextUsage?: ContextUsage | null;
   className?: string;
 }) {
   const [value, setValue] = React.useState("");
@@ -478,7 +474,6 @@ export const Composer = React.memo(function Composer({
         {/* 右: スマホは実行モード → 送信。生成中は停止を出し、書きかけがあれば送信（＝順番待ちへ
             積む）も並べる。書きかけが無いのに無効な送信ボタンを置くと、押せないボタンが常駐して邪魔。 */}
         <div className="col-start-3 row-start-2 flex items-center justify-end gap-1 md:col-start-2 md:row-start-3 md:gap-1.5 md:pb-0.5 md:pr-0.5">
-          {contextUsage ? <ContextMeter usage={contextUsage} /> : null}
           {onAutonomousChange ? (
             <ComposerModeButton
               className="md:hidden"
