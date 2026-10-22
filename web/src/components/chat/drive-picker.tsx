@@ -14,16 +14,23 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 
-/// ドライブから添付するファイルを選ぶダイアログ。フォルダは辿れ、ファイルを選ぶと閉じる。
+/// ドライブからファイルを選ぶダイアログ（既定は添付）。フォルダは辿れ、ファイルを選ぶと閉じる。
 /// 一覧は next_cursor を消費する無限スクロール（100 件超のフォルダでも辿り着ける）。
+/// `accept` を渡すと、それに合うファイルだけを並べる（フォルダは常に並べる）。
 export function DrivePicker({
   open,
   onOpenChange,
   onSelect,
+  title = "ドライブから選択",
+  description = "添付するファイルを選んでください。",
+  accept,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelect: (node: NodeResponse) => void;
+  title?: string;
+  description?: string;
+  accept?: (node: NodeResponse) => boolean;
 }) {
   const [stack, setStack] = React.useState<(string | undefined)[]>([undefined]);
   const parentId = stack[stack.length - 1];
@@ -37,6 +44,7 @@ export function DrivePicker({
   );
   const list = useInfiniteList<NodeResponse>(fetchPage, [open, parentId]);
   const sentinelRef = useInfiniteSentinel(list.loadMore, open && list.hasMore && !list.loading);
+  const items = accept ? list.items.filter((n) => n.kind === "folder" || accept(n)) : list.items;
 
   // 開くたびにルートへ戻す。
   React.useEffect(() => {
@@ -47,8 +55,8 @@ export function DrivePicker({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>ドライブから選択</DialogTitle>
-          <DialogDescription>添付するファイルを選んでください。</DialogDescription>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
 
         {stack.length > 1 ? (
@@ -75,13 +83,13 @@ export function DrivePicker({
                 再試行
               </button>
             </div>
-          ) : list.items.length === 0 ? (
+          ) : items.length === 0 && !list.hasMore ? (
             <p className="px-3 py-10 text-center text-sm text-muted-foreground">
               ここにはファイルがありません。
             </p>
           ) : (
             <ul className="divide-y divide-border/60">
-              {list.items.map((n) => {
+              {items.map((n) => {
                 const isFolder = n.kind === "folder";
                 return (
                   <li key={n.id}>

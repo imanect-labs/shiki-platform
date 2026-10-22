@@ -15,9 +15,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import Link from "next/link";
+
+import { DrivePicker } from "@/components/chat/drive-picker";
 import { useOfficeTarget } from "@/components/office/office-target";
 import { toast } from "@/components/ui/use-toast";
-import { ChartInsertError, figureToChartInsert, insertChart } from "@/lib/office/chart-insert";
+import { ChartInsertError, figureToChartInsert, insertChart, officeTargetKind } from "@/lib/office/chart-insert";
 import { cn } from "@/lib/utils";
 import { CodeBlock } from "./code-block";
 import { useYuiActions, YuiRunList } from "./yui-actions";
@@ -67,13 +70,15 @@ export const UiFigure = React.memo(function UiFigure({
   const [copied, setCopied] = React.useState(false);
   // 操作を持つ図（app・ask・plan）のボタン。確定した回答の中でだけ押せる（#604）。
   const actions_ = useYuiActions(failed ? null : figure, source, complete, closed ?? complete);
-  // Office の画面のチャットでは、棒・折れ線・円の図を開いている文書へグラフとして入れられる（#731）。
+  // 棒・折れ線・円の図は、Excel・Word へグラフとして入れられる（#731）。Office の画面のチャットでは
+  // 開いている文書へ、それ以外（通常のチャット・ノート）ではドライブから選んだ文書へ入れる。
   const office = useOfficeTarget();
   const chart = React.useMemo(
-    () => (office && complete && figure && !failed ? figureToChartInsert(figure) : null),
-    [office, complete, figure, failed],
+    () => (complete && figure && !failed ? figureToChartInsert(figure) : null),
+    [complete, figure, failed],
   );
   const [inserting, setInserting] = React.useState(false);
+  const [picking, setPicking] = React.useState(false);
 
   if (failed) {
     return (
@@ -117,14 +122,27 @@ export const UiFigure = React.memo(function UiFigure({
       /* クリップボード不可は無視 */
     }
   };
-  const insert = async () => {
-    if (!office || !chart || inserting) return;
+  const insert = async (fileId: string, kind: "sheet" | "doc", name?: string) => {
+    if (!chart || inserting) return;
     setInserting(true);
     try {
-      const r = await insertChart(office.fileId, chart);
+      const r = await insertChart(fileId, chart);
+      const where = r.sheet
+        ? `シート「${r.sheet}」に表とグラフを置きました`
+        : "文書の末尾にグラフを入れました";
       toast({
-        title: "グラフを入れました",
-        description: r.sheet ? `シート「${r.sheet}」に表とグラフを置きました` : "文書の末尾にグラフを入れました",
+        title: name ? `「${name}」にグラフを入れました` : "グラフを入れました",
+        // 開いていない文書へ入れたときは、その文書を開けるようにする。
+        description: office ? (
+          where
+        ) : (
+          <>
+            {where}。{" "}
+            <Link href={`/office/${fileId}`} className="underline underline-offset-2">
+              {kind === "sheet" ? "Excel を開く" : "Word を開く"}
+            </Link>
+          </>
+        ),
       });
     } catch (e) {
       toast({
@@ -194,28 +212,47 @@ export const UiFigure = React.memo(function UiFigure({
                 <DropdownMenuItem onSelect={() => save("svg")}>SVG で保存</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            {office && chart ? (
+            {chart ? (
               <ToolbarButton
-                onClick={() => void insert()}
+                onClick={() => (office ? void insert(office.fileId, office.kind) : setPicking(true))}
                 disabled={inserting}
-                label={office.kind === "sheet" ? "開いている Excel に、表とグラフを入れる" : "開いている Word の末尾に、グラフを入れる"}
+                label={
+                  !office
+                    ? "ドライブの Excel・Word を選んで、グラフを入れる"
+                    : office.kind === "sheet"
+                      ? "開いている Excel に、表とグラフを入れる"
+                      : "開いている Word の末尾に、グラフを入れる"
+                }
                 data-testid="ui-figure-insert"
                 className="disabled:opacity-60"
               >
                 {inserting ? (
                   <Loader2 className="size-3.5 animate-spin" />
-                ) : office.kind === "sheet" ? (
-                  <FileSpreadsheet className="size-3.5" />
-                ) : (
+                ) : office?.kind === "doc" ? (
                   <FileText className="size-3.5" />
+                ) : (
+                  <FileSpreadsheet className="size-3.5" />
                 )}
-                {office.kind === "sheet" ? "Excel に挿入" : "Word に挿入"}
+                {!office ? "Excel / Word に挿入…" : office.kind === "sheet" ? "Excel に挿入" : "Word に挿入"}
               </ToolbarButton>
             ) : null}
           </>
         ) : null}
         {actions}
       </figcaption>
+      {chart && !office ? (
+        <DrivePicker
+          open={picking}
+          onOpenChange={setPicking}
+          title="グラフを入れる文書"
+          description="Excel は新しいシートに表とグラフを、Word は末尾にグラフを入れます。"
+          accept={(n) => officeTargetKind(n.name) !== null}
+          onSelect={(n) => {
+            const kind = officeTargetKind(n.name);
+            if (kind) void insert(n.id, kind, n.name);
+          }}
+        />
+      ) : null}
     </figure>
   );
 });

@@ -85,12 +85,27 @@ test("Excel: 回答の棒グラフを、新しいシートに表とグラフと�
   });
 });
 
-test("通常のチャットの図には挿入ボタンが出ない", async ({ page }) => {
+test("通常のチャット: ドライブから選んだ Word へグラフを入れる", async ({ page }) => {
   await loginViaKeycloak(page);
+  // 入れる先の Word を作っておく（ドライブの最上位に「無題のドキュメント (N)」ができる）。
+  const fileId = await openNew(page, "new-document");
+  const { name } = (await (await page.request.get(`/api/files/${fileId}`)).json()) as { name: string };
   await page.goto("/");
   const input = page.getByPlaceholder(/尋ねて|メッセージ|指示/).first();
   await input.fill("yui:bar");
   await input.press("Enter");
-  await expect(page.getByTestId("ui-figure").first()).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId("ui-figure-insert")).toHaveCount(0);
+  const figure = page.getByTestId("ui-figure").first();
+  await expect(figure).toBeVisible({ timeout: 30_000 });
+  const insert = figure.getByTestId("ui-figure-insert");
+  await expect(insert).toHaveText("Excel / Word に挿入…");
+  await insert.click();
+  const dialog = page.getByRole("dialog", { name: "グラフを入れる文書" });
+  await expect(dialog).toBeVisible();
+  // Excel・Word だけが並ぶ（ノートなどは出ない）。
+  await expect(dialog.getByRole("button", { name: /\.md$/ })).toHaveCount(0);
+  await dialog.getByRole("button", { name, exact: true }).click();
+  await expect(toast(page, `「${name}」にグラフを入れました`)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("link", { name: "Word を開く" })).toHaveAttribute("href", `/office/${fileId}`);
+  await page.screenshot({ path: "test-results/office-chart-insert-chat.png" });
+  await expect.poll(() => savedFileHas(page, fileId, "word/charts/chart"), { timeout: 30_000 }).toBe(true);
 });
