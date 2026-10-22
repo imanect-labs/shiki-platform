@@ -64,7 +64,8 @@ pub async fn get_me(
         crate::middleware::org_admin::is_org_admin(&state, &ctx, Consistency::MinimizeLatency),
         crate::middleware::org_audit::is_org_auditor(&state, &ctx, Consistency::MinimizeLatency),
     )?;
-    if !allowed {
+    // 組織のメンバーでない監査担当者（audit_viewer だけを持つ人）も、監査ログの入口を出すために通す。
+    if !allowed && !can_view_audit {
         return Err(ApiError::Forbidden);
     }
 

@@ -219,6 +219,10 @@ fn build_query<'a>(
         .push_bind(&ctx.tenant_id)
         .push(" AND org = ")
         .push_bind(&ctx.org)
+        .push(" AND created_at >= ")
+        .push_bind(f.from)
+        .push(" AND created_at < ")
+        .push_bind(f.to)
         .push(") ");
         "cited"
     } else {
@@ -230,8 +234,8 @@ fn build_query<'a>(
     )
     .push(source)
     .push(
-        " a LEFT JOIN directory_user du ON du.tenant_id = a.tenant_id AND du.user_id = a.actor \
-         WHERE a.tenant_id = ",
+        " a LEFT JOIN directory_user du ON du.tenant_id = a.tenant_id AND du.org = a.org \
+         AND du.user_id = a.actor WHERE a.tenant_id = ",
     )
     .push_bind(&ctx.tenant_id)
     .push(" AND a.org = ")
@@ -337,13 +341,16 @@ mod tests {
         });
         let sql = build_query(&c, &f, Some("u-bob"), after, 50).into_sql();
         assert!(sql.starts_with("WITH cited AS MATERIALIZED"));
-        assert!(sql.contains("cited_chunk_ids' ? $1 AND tenant_id = $2 AND org = $3"));
+        assert!(sql.contains(
+            "cited_chunk_ids' ? $1 AND tenant_id = $2 AND org = $3 AND created_at >= $4 AND created_at < $5"
+        ));
         assert!(sql.contains("FROM cited a"));
-        assert!(sql.contains("a.tenant_id = $4 AND a.org = $5"));
-        assert!(sql.contains("a.actor = $8"));
+        assert!(sql.contains("du.org = a.org"));
+        assert!(sql.contains("a.tenant_id = $6 AND a.org = $7"));
+        assert!(sql.contains("a.actor = $10"));
         assert!(sql.contains("a.action LIKE"));
         assert!(sql.contains("(a.created_at, a.id) <"));
-        assert!(sql.ends_with("ORDER BY a.created_at DESC, a.id DESC LIMIT $16"));
+        assert!(sql.ends_with("ORDER BY a.created_at DESC, a.id DESC LIMIT $18"));
         // 利用者の入力は SQL に埋め込まない。
         assert!(!sql.contains("bob@example.com"));
         assert!(!sql.contains("f1"));
