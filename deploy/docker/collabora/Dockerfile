@@ -284,6 +284,25 @@ RUN coolconfig set user_interface.brandProductName "Shiki Office" \
     && grep -q '>none</logoURL>' /etc/coolwsd/coolwsd.xml \
     && if grep -n 'help.collaboraoffice.com' /etc/coolwsd/coolwsd.xml; then \
          echo "help_url が Collabora のヘルプを指している（--without-help-url が効いていない）"; exit 1; fi
+# **文書の中から内部網へ取りに行かせない（#729）。** 編集者がセルに =WEBSERVICE("http://<内部>/") や
+# 外部参照を書くと、kit は net.lok_allow・post_allow（allow="true" のとき）・storage.wopi の許可先へ
+# HTTP を送り、結果をセルに入れる。既定の lok_allow はプライベート網と localhost を丸ごと含むので、
+# 内部のサービスの応答が文書に入る（SSRF・実測）。
+#   - lok_allow: 要素を消しても coolwsd に組み込みの既定（host〜host[5] の 6 件）が補われて効かない
+#     （実測）ので、全件を解決できない名前（.invalid）で上書きする。件数が組み込みの既定とずれたら止める。
+#   - post_allow の allow 属性を false にする（REST のクライアント IP の絞り込みはそのまま効く）。
+#   - storage.wopi（shiki-server）は設定では外せず、残る。shiki-server の口は外にも出ている API と同じ
+#     認証を通るので、内部網の他のサービスには届かない（ホスト名は完全一致・実測）。
+RUN sed -i \
+      -e '/<lok_allow /,/<\/lok_allow>/s|<host desc="[^"]*">[^<]*</host>|<host desc="Shiki: no external data sources (#729)">lok-allow-disabled\\.invalid</host>|' \
+      -e 's/\(<post_allow [^>]*allow="\)true"/\1false"/' /etc/coolwsd/coolwsd.xml \
+    && builtin="$(grep -aoE 'net\.lok_allow\.host(\[[0-9]+\])?' /usr/bin/coolwsd | sort -u | wc -l)" \
+    && block="$(sed -n '/<lok_allow /,/<\/lok_allow>/p' /etc/coolwsd/coolwsd.xml)" \
+    && hosts="$(printf '%s\n' "$block" | grep -c '<host ')" \
+    && disabled="$(printf '%s\n' "$block" | grep -c '>lok-allow-disabled\\.invalid</host>')" \
+    && test "$builtin" -gt 0 && test "$hosts" -eq "$builtin" && test "$disabled" -eq "$builtin" \
+    && grep -q '<post_allow [^>]*allow="false"' /etc/coolwsd/coolwsd.xml \
+    || { echo "lok_allow を閉じられていない（組み込みの既定 ${builtin:-?} 件・設定 ${hosts:-?} 件・閉じた ${disabled:-?} 件）"; exit 1; }
 # **日本語フォントの別名（#725）。** 日本語の docx が指定する 游ゴシック・MS 明朝 などを、同梱の
 # Noto CJK の日本語版へ寄せる（中身の説明はファイルの冒頭）。systemplate が /etc/fonts を写すので、
 # その前に置く。ゴシックと明朝が取り違わないことをここで確かめる。

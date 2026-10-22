@@ -63,7 +63,7 @@ pub(super) fn condition_operator(op: CompareOp) -> &'static str {
     }
 }
 
-pub(super) fn chart_kind(k: ChartKind) -> &'static str {
+pub(crate) fn chart_kind(k: ChartKind) -> &'static str {
     match k {
         ChartKind::Column => "column",
         ChartKind::Bar => "bar",
@@ -114,7 +114,7 @@ pub fn mm100_to_pt(mm100: u32) -> f64 {
     (f64::from(mm100) * 72.0 / 2540.0 * 10.0).round() / 10.0
 }
 
-pub(super) fn cm_to_mm100(cm: f64) -> u32 {
+pub(crate) fn cm_to_mm100(cm: f64) -> u32 {
     float_to_u32(cm * 1000.0)
 }
 

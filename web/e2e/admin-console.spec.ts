@@ -57,32 +57,62 @@ test.describe("管理コンソール", () => {
 });
 
 test.describe("チャットのモデル選択", () => {
-  test("既定は Auto でピルを出さず、＋メニューで選ぶと送信ボタンの左に出る", async ({ page }) => {
+  test("送信の左に常に出て、選ぶと「モデル名・思考の深さ」になり、Auto に戻せる", async ({ page }) => {
     await loginViaKeycloak(page);
     await page.goto("/");
-    await expect(page.getByTestId("model-pill")).toHaveCount(0);
+    const button = page.getByTestId("model-button");
+    await expect(button).toHaveText(/Auto/);
 
-    // ＋ → モデル → 一覧（#583）の先頭のモデルを選ぶ。
-    await page.getByRole("button", { name: "追加メニューを開く" }).click();
-    await page.getByTestId("composer-model-menu").click();
+    // 一覧（#583）の先頭のモデルを選ぶ。
+    await button.click();
     await expect(page.getByTestId("model-picker")).toBeVisible();
     const first = page.locator('[data-testid^="model-option-"]:not([data-testid="model-option-default"])').first();
     const label = (await first.locator("[data-label]").innerText()).trim();
     await first.click();
+    await page.keyboard.press("Escape");
     await expect(page.getByTestId("model-picker")).toHaveCount(0);
-    const pill = page.getByTestId("model-pill");
-    await expect(pill).toBeVisible();
-    await expect(pill).toContainText(label);
+    await expect(button).toContainText(label);
 
     // 送信すると新しいスレッドへ選択が引き継がれる。
     await page.getByLabel("メッセージを入力").fill("こんにちは");
     await page.getByRole("button", { name: "送信" }).click();
     await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
-    await expect(page.getByTestId("model-pill")).toContainText(label);
+    await expect(page.getByTestId("model-button")).toContainText(label);
 
-    // ピルから Auto に戻すとピルが消える。
-    await page.getByTestId("model-pill").click();
+    // 一覧から Auto に戻せる。
+    await page.getByTestId("model-button").click();
     await page.getByRole("option", { name: /Auto（おまかせ）/ }).click();
-    await expect(page.getByTestId("model-pill")).toHaveCount(0);
+    await expect(page.getByTestId("model-button")).toHaveText(/Auto/);
+  });
+});
+
+test.describe("チャットのツール", () => {
+  test("選んだツールは本文の先頭に入り、押すか先頭で Backspace を押すと外れる", async ({ page }) => {
+    await loginViaKeycloak(page);
+    await page.goto("/");
+    const input = page.getByLabel("メッセージを入力");
+
+    await page.getByRole("button", { name: "追加メニューを開く" }).click();
+    await page.getByTestId("composer-tool-web_search").click();
+    await page.getByTestId("composer-tool-code_interpreter").click();
+    await page.keyboard.press("Escape");
+    const tokens = page.getByTestId("composer-tool-chip");
+    await expect(tokens).toHaveCount(2);
+
+    // 続けて打った文字は語の右から始まる（1 行目だけ字下げ）。
+    await input.fill("集計して");
+    const indent = await input.evaluate((el) => parseFloat(getComputedStyle(el).textIndent));
+    expect(indent).toBeGreaterThan(40);
+
+    // 本文の先頭で Backspace → 最後の語（コード実行）が外れる。本文は消えない。
+    await input.press("Home");
+    await input.press("Backspace");
+    await expect(tokens).toHaveCount(1);
+    await expect(input).toHaveValue("集計して");
+
+    // 語を押しても外れる。
+    await page.getByRole("button", { name: "Web 検索を外す" }).click();
+    await expect(tokens).toHaveCount(0);
+    expect(await input.evaluate((el) => getComputedStyle(el).textIndent)).toBe("0px");
   });
 });

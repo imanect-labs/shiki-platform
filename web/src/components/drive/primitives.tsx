@@ -26,6 +26,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { previewKind, textLanguage } from "@/lib/file-preview";
 import { formatBytes } from "@/lib/format";
 import type { CrumbResponse, NodeResponse, SortField } from "@/lib/storage";
 import { cn } from "@/lib/utils";
@@ -108,11 +109,13 @@ export function nodeKindLabel(node: Pick<NodeResponse, "kind" | "name" | "conten
   if (["doc", "docx", "odt", "rtf"].includes(ext)) return "ドキュメント";
   if (["xls", "xlsx", "ods"].includes(ext)) return "スプレッドシート";
   if (["ppt", "pptx", "odp"].includes(ext)) return "プレゼンテーション";
-  if (ct.startsWith("image/")) return "画像";
-  if (ct.startsWith("video/")) return "動画";
-  if (ct.startsWith("audio/")) return "音声";
   if (["zip", "tar", "gz", "rar", "7z"].includes(ext)) return "圧縮ファイル";
-  if (ext === "txt" || ct.startsWith("text/")) return "テキスト";
+  // ブラウザで表示できる形式は、プレビュー画面の判定（拡張子優先）と同じ呼び名にする。
+  const kind = previewKind(node);
+  if (kind === "image" || ct.startsWith("image/")) return "画像";
+  if (kind === "video") return "動画";
+  if (kind === "audio") return "音声";
+  if (kind === "text") return textLanguage(node.name) === "text" ? "テキスト" : "コード";
   return "ファイル";
 }
 

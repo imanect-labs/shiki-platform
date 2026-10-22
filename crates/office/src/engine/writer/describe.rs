@@ -1,7 +1,7 @@
 //! Word ツールの説明文と入力スキーマ（#725）。操作の語彙は [`super::ops::DocOp`] が正。
 
 /// office.word_edit の説明。
-pub const WORD_EDIT_DESCRIPTION: &str = "Word 文書（.docx / .odt）を、本文から見出し・表・箇条書き・書式・スタイル・ページ設定・\
+pub const WORD_EDIT_DESCRIPTION: &str = "Word 文書（.docx / .odt）を、本文から見出し・表・箇条書き・グラフ・書式・スタイル・ページ設定・\
 ヘッダー/フッター・目次まで編集する。ops は上から順に適用され、全部成功するか全部取り消される（途中で失敗しても文書は\
 変わらない）。人が開いていれば画面へ即時反映され、人は 1 回の「元に戻す」で取り消せる。結果に最新のブロック一覧が返る\
 （ブロック ID は編集で変わるので、以降は返ってきた ID を使う）。同じ ops の中では、差し込みの後も ID はそのまま使え、\
@@ -41,6 +41,11 @@ valign?:top|center|bottom, border?:{all|outline|inner|top|bottom|left|right|insi
 repeat_header?:行数（ページをまたぐとき見出し行を繰り返す）, allow_row_split?, keep_with_next?} / style_table {table, theme?:blue|navy|green|gray|orange, \
 header_rows?（既定 1）, total_row?:true または total_rows?:行数（小計・消費税・合計など末尾の集計行）, banded?（既定 true）, first_column?（1 列目を項目名として太字・薄い塗り。header_rows:0 と組み合わせると「項目｜内容」の表になる）}（見出しは濃い色に白の太字、縞、合計行は太字と上に二重線、全体に細い罫線、\
 数値は右揃え）。既存の表は replace で作り直さずにこれらで直す（表の見た目が保たれる）。新しく作った表もまず style_table で整える\n\
+- insert_chart {after|before|at?（既定は末尾）, type:column|bar|line|area|pie|doughnut, categories:[\"項目\", ...], \
+series:[{name, values:[数値 または null（欠け）]}]（values は categories と同じ数）, title?, width_cm?（既定 15）, height_cm?（既定 9）, \
+legend?, legend_position?:bottom|right|top|left|none, colors?:[\"#RRGGBB\"], data_labels?, y_number_format?, stacked?, percent?, x_title?, y_title?}\
+（画像ではなく Word のグラフとして入り、値は文書の中に持つ。グラフは画像より insert_chart で入れる。bar は横棒・column は縦棒。\
+円・ドーナツは系列 1 つ。office.read では［グラフ: 題］と見える）\n\
 - page_break {before:ID} / title_page {enabled}（表紙: 1 ページ目にヘッダー・フッターを出さない）\n\
 - track_changes {enabled}（有効にした後の insert / replace / delete / replace_text / format_text は変更履歴として残り、office.read の \
 HTML で <ins> <del> として見える。replace_text で直す場合は find を変える最小の文字列にし within でブロックを絞ると差分が小さい） / \
@@ -65,7 +70,7 @@ pub fn word_edit_schema() -> serde_json::Value {
                         "op": { "type": "string", "enum": [
                             "insert", "replace", "delete", "replace_text", "format_text", "format_paragraph", "set_style",
                             "page_setup", "header", "footer", "insert_toc", "update_toc", "page_break", "title_page", "insert_rows", "delete_rows", "set_cells",
-                            "format_cells", "table_props", "style_table", "track_changes",
+                            "format_cells", "table_props", "style_table", "track_changes", "insert_chart",
                             "accept_all_changes", "reject_all_changes"
                         ] }
                     },

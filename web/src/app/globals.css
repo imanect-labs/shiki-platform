@@ -70,10 +70,21 @@
   --elevation-md: 0 4px 12px -2px oklch(0 0 0 / 0.1), 0 2px 6px -3px oklch(0 0 0 / 0.08);
   --elevation-lg: 0 12px 32px -8px oklch(0 0 0 / 0.16), 0 4px 12px -6px oklch(0 0 0 / 0.1);
 
-  /* 順序のある 3 段階（濃 → 淡: --primary / --ordinal-2 / --ordinal-3）。活用分析の区分に使う。
-     淡い端も面に対して 2:1 以上（dataviz の validate_palette --ordinal で確認）。 */
-  --ordinal-2: color-mix(in oklab, var(--primary) 62%, var(--card));
-  --ordinal-3: color-mix(in oklab, var(--primary) 33%, var(--card));
+  /* グラフの系列色（#783）。チャットの本文の図（@imanect/yui の render/theme.js の s1〜s8）と同じ値で、
+     四季の色相を彩度を抑えて並べ、色覚多様性のシミュレーションで隣どうしを区別できることを検証済み。
+     冬（雪空）・秋（紅葉）・夏（新緑）・紺・春（桜）・山吹・青磁・鳶。単系列の量は --chart-1 で塗る。
+     グラフそのものは Yui で描き（components/admin/yui-chart）、Yui で描けない表（ヒートマップ・
+     横棒の一覧）だけがこれを直接使う。 */
+  --chart-1: #398cb8;
+  --chart-2: #cc7d49;
+  --chart-3: #1e7751;
+  --chart-4: #395490;
+  --chart-5: #c1707e;
+  --chart-6: #cca754;
+  --chart-7: #2ca59f;
+  --chart-8: #944b39;
+  /* ヒートマップの最も濃いセルの濃さ（本文色の文字が 4.5:1 以上を保てる上限） */
+  --heat-max: 75%;
 
   /* モーション */
   --duration-fast: 120ms;
@@ -127,9 +138,16 @@
   --season-autumn: oklch(0.77 0.10 56);
   --season-winter: oklch(0.74 0.07 238);
 
-  /* 順序のある 3 段階（暗い面では淡い端が沈むので混ぜる割合を上げる） */
-  --ordinal-2: color-mix(in oklab, var(--primary) 68%, var(--card));
-  --ordinal-3: color-mix(in oklab, var(--primary) 42%, var(--card));
+  /* グラフの系列色（ダーク・Yui の DARK と同じ値）。暗い面では「強」が明るい側になる。 */
+  --chart-1: #4d9ac8;
+  --chart-2: #c5804c;
+  --chart-3: #1a7854;
+  --chart-4: #3e62a8;
+  --chart-5: #a75864;
+  --chart-6: #b48c2c;
+  --chart-7: #179a94;
+  --chart-8: #a15744;
+  --heat-max: 68%;
 
   /* ダークはシャドウを濃く・広く */
   --elevation-xs: 0 1px 2px 0 oklch(0 0 0 / 0.3);
@@ -665,6 +683,11 @@
   --yui-focus: var(--ring);
 }
 
+/* 管理画面のグラフ（#783）はパネル（card）の上に置くので、図の地もパネルの面に合わせる。 */
+[data-yui].admin-yui {
+  --yui-surface: var(--card);
+}
+
 /* Yui のフォーム（ask・plan・app）は入力欄を 14px で描く。iOS Safari は 16px 未満の欄に
    フォーカスすると画面をズームするので、タッチ端末では 16px にする。Yui が差し込む
    `.<id> input[type=text]` より詳細度を高くして上書きする（PC の見た目は変えない）。 */
@@ -722,4 +745,70 @@
 }
 ::highlight(pdf-find-active) {
   background-color: rgb(249 115 22 / 0.55);
+}
+
+/* ---- テキストのプレビュー（#784）。shiki の出力に行番号を付け、ダークでは 2 つ目のテーマの色にする。 */
+.file-code .shiki {
+  margin: 0;
+  background: transparent !important;
+}
+.file-code code {
+  counter-reset: line;
+  display: block;
+}
+.file-code .line {
+  display: block;
+  position: relative;
+  min-height: 1.65em;
+  padding-left: calc(var(--gutter, 3ch) + 2.5rem);
+  padding-right: 1.5rem;
+  white-space: pre;
+}
+.file-code .line:hover {
+  background: color-mix(in oklab, var(--foreground) 3.5%, transparent);
+}
+/* 行番号の列。折り返した行でも縦に伸びるよう、行の高さいっぱいに置く。 */
+.file-code .line::before {
+  counter-increment: line;
+  content: counter(line);
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: calc(var(--gutter, 3ch) + 1.5rem);
+  padding-right: 0.75rem;
+  text-align: right;
+  color: color-mix(in oklab, var(--muted-foreground) 70%, transparent);
+  border-right: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  user-select: none;
+}
+.file-code .line:hover::before {
+  color: var(--foreground);
+}
+.file-code-wrap .line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dark .file-code .shiki,
+.dark .file-code .shiki span {
+  color: var(--shiki-dark) !important;
+}
+.file-code:not([data-highlighted]) .line {
+  color: var(--foreground);
+}
+
+/* ---- 音声プレーヤーの波形のバー（#784）。再生中だけ揺らす。 */
+.audio-bar {
+  transform-origin: bottom;
+  transition: opacity var(--duration-normal, 200ms);
+}
+.audio-bar-playing {
+  animation: audio-bar 1.1s ease-in-out infinite alternate;
+}
+@keyframes audio-bar {
+  0% { transform: scaleY(0.55); }
+  50% { transform: scaleY(1.08); }
+  100% { transform: scaleY(0.75); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .audio-bar-playing { animation: none; }
 }

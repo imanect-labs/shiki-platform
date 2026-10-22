@@ -109,7 +109,7 @@ function Breakdown({
                 </div>
                 <div className="mt-1.5 h-1.5 rounded-full bg-muted">
                   <div
-                    className="h-full rounded-full bg-primary"
+                    className="h-full rounded-full bg-[var(--chart-1)]"
                     style={{ width: basis > 0 ? `${Math.max(2, (basis / max) * 100)}%` : "0%" }}
                   />
                 </div>
@@ -312,14 +312,8 @@ export function AiUsageView() {
               />
             }
           >
-            <div className="px-3 pb-3 pt-4">
-              <UsageChart
-                days={data.daily}
-                metric={metric}
-                label={`${data.from} から ${data.to} までの日別の${
-                  metric === "cost" ? "コスト" : metric === "tokens" ? "トークン数" : "呼び出し回数"
-                }`}
-              />
+            <div className="px-1 pb-1 pt-2">
+              <UsageChart days={data.daily} metric={metric} />
             </div>
           </Panel>
 

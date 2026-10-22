@@ -6,7 +6,7 @@
 
 use serde::Deserialize;
 
-pub use crate::engine::calc::ops::Patch;
+pub use crate::engine::calc::ops::{ChartKind, LegendPosition, Patch};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
@@ -178,6 +178,45 @@ pub enum DocOp {
     },
     /// 表紙: 1 ページ目にヘッダー・フッターを出さない。
     TitlePage { enabled: bool },
+    /// グラフを入れる（Word のグラフ・データは文書の中に持つ）。位置は insert と同じ。
+    InsertChart {
+        #[serde(default)]
+        after: Option<String>,
+        #[serde(default)]
+        before: Option<String>,
+        #[serde(default)]
+        at: Option<Edge>,
+        #[serde(rename = "type")]
+        kind: ChartKind,
+        /// 項目（横軸・円の各切れ）。
+        categories: Vec<String>,
+        /// 系列（各系列の values は categories と同じ数・欠けた値は null）。
+        series: Vec<ChartSeries>,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        width_cm: Option<f64>,
+        #[serde(default)]
+        height_cm: Option<f64>,
+        #[serde(default = "yes")]
+        legend: bool,
+        #[serde(default)]
+        legend_position: Option<LegendPosition>,
+        #[serde(default)]
+        colors: Option<Vec<String>>,
+        #[serde(default)]
+        data_labels: bool,
+        #[serde(default)]
+        y_number_format: Option<String>,
+        #[serde(default)]
+        stacked: bool,
+        #[serde(default)]
+        percent: bool,
+        #[serde(default)]
+        x_title: Option<String>,
+        #[serde(default)]
+        y_title: Option<String>,
+    },
     /// 文書のすべての変更履歴を承認する（変更を確定し、印を消す）。
     AcceptAllChanges {},
     /// 文書のすべての変更履歴を却下する（変更前に戻す）。
@@ -186,6 +225,10 @@ pub enum DocOp {
 
 fn one() -> u32 {
     1
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn toc_title() -> String {
@@ -223,6 +266,7 @@ impl DocOp {
             DocOp::PageBreak { .. } => "page_break",
             DocOp::TrackChanges { .. } => "track_changes",
             DocOp::TitlePage { .. } => "title_page",
+            DocOp::InsertChart { .. } => "insert_chart",
             DocOp::InsertRows { .. } => "insert_rows",
             DocOp::DeleteRows { .. } => "delete_rows",
             DocOp::SetCells { .. } => "set_cells",
@@ -321,6 +365,14 @@ pub struct MarginsMm {
     pub right: f64,
     pub bottom: f64,
     pub left: f64,
+}
+
+/// グラフの系列（insert_chart）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChartSeries {
+    pub name: String,
+    pub values: Vec<Option<f64>>,
 }
 
 /// ヘッダー・フッター（`&[Page]` `&[Pages]` `&[Date]` `&[Title]` `&[File]` を差し込める）。

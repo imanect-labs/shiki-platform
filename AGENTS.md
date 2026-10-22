@@ -79,6 +79,7 @@ git switch -c <branch-name> origin/main   # 作業中のブランチは git reba
 | 設計原則・全体構成・サブシステム・リポジトリ構成 | `docs/design.md` |
 | 機能要件（FR-1〜17）・非機能要件 | `docs/requirements.md` |
 | ミニアプリ／ワークフロー／shiki script／skill／シークレット | `docs/miniapp-platform.md` |
+| 構造化データ基盤（テーブル／行 authz／クエリ／ビュー／リンク・数式／リアルタイム） | `docs/data-platform.md` |
 | 実装順・フェーズ・依存関係 | `docs/roadmap.md` ＋ `docs/roadmap/phase-*.md` |
 | 実装前に潰すべき落とし穴（PIT-*） | `docs/design-caveats.md` |
 | 用語・セキュリティモデル入門 | `docs/guides/mini-app-onboarding.md` |

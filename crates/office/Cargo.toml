@@ -23,6 +23,8 @@ tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 chrono.workspace = true
 async-trait.workspace = true
+# 画面からのグラフの挿入（POST /office/charts）の型を OpenAPI に載せる（#731）。
+utoipa.workspace = true
 
 # Collabora discovery（/hosting/discovery XML）の取得。
 reqwest = { workspace = true, features = ["stream"] }

@@ -3,8 +3,10 @@
 /// AI 活用分析（#751）の画面で共通の部品: 期間・部署の絞り込み、読み込み、数値の表記、
 /// 横棒・ヒートマップのセル。
 ///
-/// 配色は単色（`--primary`）の濃淡だけにする。用途や部署は名前で区別し（凡例・行ラベル）、
-/// 色で区別しない。量はバーの長さ、割合はセルの濃さ。状態色（成功・警告）は使わない。
+/// 横棒とヒートマップは、グラフの系列の 1 番目の色（`--chart-1`＝冬・雪空。チャットの本文の図と
+/// 同じ・#783）の濃淡だけにする。用途や部署は名前で区別し（行ラベル）、色で区別しない。量はバーの
+/// 長さ、割合はセルの濃さ。利用区分（ヘビー・レギュラー・ライト）だけは系列色の 1〜3 番目で塗り分け、
+/// 凡例を添える。状態色（成功・警告）は使わない。
 
 import * as React from "react";
 import Link from "next/link";
@@ -305,7 +307,7 @@ export function BarRow({
       <div className="mt-1.5 h-1.5 rounded-full bg-muted">
         {ratio != null && ratio > 0 ? (
           <div
-            className="h-full rounded-full bg-primary"
+            className="h-full rounded-full bg-[var(--chart-1)]"
             style={{ width: `${Math.max(2, Math.min(1, ratio) * 100)}%` }}
           />
         ) : null}
@@ -314,7 +316,7 @@ export function BarRow({
   );
 }
 
-/// ヒートマップのセル（割合 0〜1 を `--primary` の濃さで）。`null` は伏せた値。
+/// ヒートマップのセル（割合 0〜1 を `--chart-1` の濃さで）。`null` は伏せた値。
 /// `scale` は濃さが最大になる値（行の内訳など値が小さく偏る表は最大値に合わせる）。
 export function HeatCell({
   value,
@@ -338,21 +340,15 @@ export function HeatCell({
     );
   }
   const v = Math.max(0, Math.min(1, value));
-  // 6〜85% の濃さ。文字は地の明るさで反転する: ライトは地が暗くなる側（55% 以上）で白、
-  // ダークは --primary が明るいので地が十分明るくなってから（75% 以上）暗い文字にする。
-  const strength = Math.round(6 + Math.min(1, v / Math.max(scale, 0.0001)) * 79);
+  // 6% 〜 --heat-max の濃さ。文字は本文の色のまま（上限はライト 6.9:1・ダーク 5.0:1 を保つ値・globals.css）。
+  const t = Math.min(1, v / Math.max(scale, 0.0001)).toFixed(3);
   return (
     <td className="px-1 py-1">
       <div
-        className={cn(
-          "flex h-8 items-center justify-center rounded-[4px] text-xs tabular-nums",
-          strength < 55
-            ? "text-foreground"
-            : strength < 75
-              ? "text-primary-foreground dark:text-foreground"
-              : "text-primary-foreground",
-        )}
-        style={{ backgroundColor: `color-mix(in oklab, var(--primary) ${strength}%, transparent)` }}
+        className="flex h-8 items-center justify-center rounded-[4px] text-xs tabular-nums text-foreground"
+        style={{
+          backgroundColor: `color-mix(in oklab, var(--chart-1) calc(6% + (var(--heat-max) - 6%) * ${t}), transparent)`,
+        }}
         title={title ? `${title}: ${pct(v)}` : pct(v)}
       >
         {pct(v)}
@@ -370,7 +366,7 @@ export function HeatLegend({ max = 1 }: { max?: number }) {
         className="h-2 w-24 rounded-full"
         style={{
           background:
-            "linear-gradient(to right, color-mix(in oklab, var(--primary) 6%, transparent), color-mix(in oklab, var(--primary) 85%, transparent))",
+            "linear-gradient(to right, color-mix(in oklab, var(--chart-1) 6%, transparent), color-mix(in oklab, var(--chart-1) var(--heat-max), transparent))",
         }}
       />
       {pct(max)}

@@ -109,9 +109,9 @@ function DeptHeatmap({ a, to }: { a: InsightsAdoption; to: string }) {
 /// 利用区分（期間の終わり基準・直近 28 日）。
 function SegmentsPanel({ s }: { s: InsightsAdoption["segments"] }) {
   const rows = [
-    { key: "heavy", label: "ヘビー", def: "28 日中 16 日以上", n: s.heavy, tone: "var(--primary)" },
-    { key: "regular", label: "レギュラー", def: "4〜15 日", n: s.regular, tone: "var(--ordinal-2)" },
-    { key: "light", label: "ライト", def: "1〜3 日", n: s.light, tone: "var(--ordinal-3)" },
+    { key: "heavy", label: "ヘビー", def: "28 日中 16 日以上", n: s.heavy, tone: "var(--chart-1)" },
+    { key: "regular", label: "レギュラー", def: "4〜15 日", n: s.regular, tone: "var(--chart-2)" },
+    { key: "light", label: "ライト", def: "1〜3 日", n: s.light, tone: "var(--chart-3)" },
     { key: "dormant", label: "休眠", def: "以前は使っていた", n: s.dormant, tone: "var(--muted)" },
     { key: "never", label: "未利用", def: "一度も使っていない", n: s.never, tone: "var(--muted)" },
   ];
