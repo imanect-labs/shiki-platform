@@ -706,4 +706,11 @@ async fn schema_cache_switches_generation_on_revision_delete_and_purge() {
         let res = r.run_query(&alice, u.id, &DataQuery::default(), None).await;
         assert!(res.is_err(), "purge 後に古い世代が読まれない: {res:?}");
     }
+    // 削除・purge したテーブルに残った索引ジョブ（バックフィル完了後の parity 等）は、
+    // エラーにならず捨てられる（共有 DB の他のテストのジョブ消費を止めない）。
+    for _ in 0..1_000 {
+        if !r1.consume_index_job_once().await.expect("索引ジョブ") {
+            break;
+        }
+    }
 }

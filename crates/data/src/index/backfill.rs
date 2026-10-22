@@ -745,7 +745,12 @@ impl DataStore {
                 Ok(true)
             }
             Some("parity") => {
-                let report = self.verify_index_parity(&job.tenant_id, table_id).await?;
+                let report = match self.verify_index_parity(&job.tenant_id, table_id).await {
+                    Ok(r) => r,
+                    // 完了直後にテーブルが削除・テナントが purge された（検証する対象が無い）。
+                    Err(DataError::NotFound) => return Ok(false),
+                    Err(e) => return Err(e),
+                };
                 if !report.is_consistent() {
                     tracing::error!(%table_id, mismatches = ?report.mismatches, "索引の parity 検証で不一致");
                 }
