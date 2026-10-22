@@ -12,6 +12,7 @@ fn payload() -> CursorPayload {
         sort_values: vec![json!("承認待ち"), json!(12_000)],
         record_int: RECORD_INT,
         segment: 1,
+        snapshot_seq: None,
     }
 }
 
@@ -115,4 +116,21 @@ fn other_key_and_garbage_are_rejected() {
 fn key_debug_is_redacted() {
     let k = CursorKey::from_bytes([9u8; CURSOR_KEY_LEN]);
     assert_eq!(format!("{k:?}"), "CursorKey(<redacted>)");
+}
+
+#[test]
+fn derived_key_is_deterministic_and_domain_separated() {
+    let master = [7u8; CURSOR_KEY_LEN];
+    let a = CursorCodec::new(&CursorKey::derive_from_master(&master));
+    let b = CursorCodec::new(&CursorKey::derive_from_master(&master));
+    let s = scope(1, 2);
+    let tok = a.seal(&s, &payload()).unwrap();
+    assert_eq!(
+        b.open(&s, &tok).unwrap(),
+        payload(),
+        "同じマスターキーなら別プロセスでも開ける"
+    );
+    // マスターキーそのものを鍵にした暗号文とは互換が無い（用途別に導出している）。
+    let raw = CursorCodec::new(&CursorKey::from_bytes(master));
+    assert!(raw.open(&s, &tok).is_err());
 }

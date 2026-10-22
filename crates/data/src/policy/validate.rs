@@ -57,7 +57,31 @@ pub(crate) fn validate_row_policy(
     if let Some(write) = &policy.write {
         validate_expr(schema, write, 0, "row_policy.write")?;
     }
+    // 行述語は索引テーブル上で評価する（data-platform §6.2）。参照列は indexed 必須（§6.3・422）。
+    for (expr, path) in std::iter::once((&policy.read, "row_policy.read"))
+        .chain(policy.write.as_ref().map(|w| (w, "row_policy.write")))
+    {
+        require_indexed(schema, expr, path)?;
+    }
     Ok(())
+}
+
+fn require_indexed(schema: &TableSchema, expr: &PolicyExpr, path: &str) -> Result<(), DataError> {
+    match expr {
+        PolicyExpr::Any(v) | PolicyExpr::All(v) => {
+            for c in v {
+                require_indexed(schema, c, path)?;
+            }
+            Ok(())
+        }
+        PolicyExpr::FieldCmp { field, .. } => match schema.field(field) {
+            Some(f) if !(f.indexed || f.unique) => Err(DataError::Invalid(format!(
+                "{path}: row_policy が参照するフィールド '{field}' は indexed の宣言が必要です"
+            ))),
+            _ => Ok(()),
+        },
+        _ => Ok(()),
+    }
 }
 
 /// FSM actor 述語などの単発式検証（行レベル述語と同じ文法・型整合）。
@@ -212,13 +236,17 @@ mod tests {
     fn schema() -> TableSchema {
         let mut status = field("status", FieldType::Select);
         status.options = vec!["draft".into(), "done".into()];
+        let mut fields = vec![
+            field("applicant", FieldType::UserRef),
+            field("dept", FieldType::RoleRef),
+            field("amount", FieldType::Number),
+            status,
+        ];
+        for f in &mut fields {
+            f.indexed = true;
+        }
         TableSchema {
-            fields: vec![
-                field("applicant", FieldType::UserRef),
-                field("dept", FieldType::RoleRef),
-                field("amount", FieldType::Number),
-                status,
-            ],
+            fields,
             status_field: None,
             row_policy: None,
             field_policy: vec![],
@@ -358,6 +386,24 @@ mod tests {
             value: PolicyOperand::Lit(json!([1])),
         });
         assert!(validate_row_policy(&schema(), &bad_elem).is_err());
+    }
+
+    #[test]
+    fn row_policy_requires_indexed_fields() {
+        let mut s = schema();
+        s.fields[0].indexed = false;
+        let p = policy(PolicyExpr::FieldCmp {
+            field: "applicant".into(),
+            op: CmpOp::Eq,
+            value: PolicyOperand::UserId,
+        });
+        let r = validate_row_policy(&s, &p);
+        assert!(
+            matches!(r, Err(DataError::Invalid(ref m)) if m.contains("indexed")),
+            "{r:?}"
+        );
+        // FSM の actor 述語は id 指定で本体を評価するので索引を要求しない。
+        assert!(validate_policy_expr(&s, &p.read, "fsm.actor").is_ok());
     }
 
     #[test]

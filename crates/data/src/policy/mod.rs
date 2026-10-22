@@ -15,6 +15,7 @@
 
 pub(crate) mod ast;
 pub(crate) mod compile;
+pub(crate) mod compile_index;
 pub(crate) mod material;
 pub(crate) mod validate;
 

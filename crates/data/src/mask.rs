@@ -88,14 +88,6 @@ impl DataStore {
         }
     }
 
-    /// 問い合わせ面の検査: `field` がマスク対象なら **403**（PIT-19: 検索に使わせない）。
-    pub(crate) fn ensure_queryable(masked: &HashSet<String>, field: &str) -> Result<(), DataError> {
-        if masked.contains(field) {
-            return Err(DataError::Forbidden);
-        }
-        Ok(())
-    }
-
     /// 書込面の検査: 読めないフィールドへの書込を拒否（盲目上書き防止）。
     pub(crate) fn ensure_writable_fields(
         masked: &HashSet<String>,

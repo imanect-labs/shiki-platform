@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::query::declarative::{DataQuery, QueryResult};
+use crate::query::ir::{DataQuery, QueryResult};
 use crate::store::DataStore;
 use crate::DataError;
 
@@ -131,7 +131,7 @@ impl DataViewStore {
             .await
     }
 
-    /// 保存前の整合検証: table 存在（viewer）＋クエリを dry-run（limit 0）で通す。
+    /// 保存前の整合検証: table 存在（viewer）＋クエリを dry-run（limit 1）で通す。
     async fn validate(
         &self,
         ctx: &AuthContext,
@@ -141,9 +141,9 @@ impl DataViewStore {
         // 作成者が table viewer であること＋クエリの静的整合（未宣言/マスク列参照など）を
         // limit=0 の実行で検査する。行の中身は返さない（0 件）。
         let mut probe = body.query.clone();
-        probe.aggregate = None;
         probe.limit = Some(1);
-        probe.offset = Some(0);
+        probe.cursor = None;
+        probe.with_count = false;
         // run_query が field/mask/index 検証を一手に担う。0 行取得の副作用はない。
         let _ = self
             .data

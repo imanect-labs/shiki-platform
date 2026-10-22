@@ -359,6 +359,39 @@ type DataStores = (
     std::sync::Arc<data::FsmStore>,
 );
 
+/// keyset カーソルの鍵を決める（設定ファイル → マスターキーからの導出 → 開発用の乱数 → 起動エラー）。
+fn cursor_key(config: &AppConfig) -> anyhow::Result<data::CursorKey> {
+    let read = |path: &str, what: &str| -> anyhow::Result<[u8; 32]> {
+        let raw = std::fs::read(path).with_context(|| format!("{what}を読めません: {path}"))?;
+        secrets::decode_key_material(&raw)
+            .map_err(|e| anyhow::anyhow!("{what}の形式が不正です: {e}"))
+    };
+    if let Some(path) = &config.data.cursor_key_file {
+        tracing::info!("data カーソル鍵を設定ファイルから読み込みました");
+        return Ok(data::CursorKey::from_bytes(read(
+            path,
+            "data カーソル鍵ファイル",
+        )?));
+    }
+    if let Some(path) = &config.secrets.master_key_file {
+        tracing::info!("data カーソル鍵をマスターキーから導出しました");
+        return Ok(data::CursorKey::derive_from_master(&read(
+            path,
+            "secrets マスターキーファイル",
+        )?));
+    }
+    if config.data.ephemeral_cursor_key {
+        tracing::warn!(
+            "data.ephemeral_cursor_key=true: カーソル鍵は起動時乱数（開発専用・再起動・レプリカ間でカーソルは無効）"
+        );
+        return Ok(data::CursorKey::ephemeral());
+    }
+    anyhow::bail!(
+        "data のカーソル鍵が未設定です。data.cursor_key_file か secrets.master_key_file を設定してください\
+         （開発環境だけは data.ephemeral_cursor_key=true で起動時乱数を許可できます）"
+    )
+}
+
 /// 構造化データ（Task 9.2〜9.10）の 3 ストアを配線する。
 ///
 /// data ストア（テーブル/レコード/行述語）・保存ビュー（9.4）・FSM 宣言的ガード（9.10）は
@@ -381,19 +414,8 @@ fn wire_data(
             storage: Arc::clone(storage),
         }),
     );
-    // keyset カーソルの鍵（secrets のマスターキーファイルと同じ形式）。
-    if let Some(path) = &config.data.cursor_key_file {
-        let raw = std::fs::read(path)
-            .with_context(|| format!("data カーソル鍵ファイルを読めません: {path}"))?;
-        let key = secrets::decode_key_material(&raw)
-            .map_err(|e| anyhow::anyhow!("data カーソル鍵の形式が不正です: {e}"))?;
-        store = store.with_cursor_key(&data::CursorKey::from_bytes(key));
-        tracing::info!("data カーソル鍵を設定ファイルから読み込みました");
-    } else {
-        tracing::warn!(
-            "data.cursor_key_file 未設定: カーソル鍵は起動時乱数（再起動・レプリカ間でカーソルは無効）"
-        );
-    }
+    // keyset カーソルの鍵（全レプリカで同じ鍵・Task 15.3）。決め方は DataConfig::cursor_key_file の doc。
+    store = store.with_cursor_key(&cursor_key(config)?);
     let data_store = Arc::new(store);
     // v1 形式テーブルのフィールド識別子移行（jobq・テーブル単位・冪等・完了で停止）。
     data::FieldKeyMigrationWorker::new((*data_store).clone()).spawn();

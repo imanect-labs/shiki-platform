@@ -22,12 +22,14 @@ use uuid::Uuid;
 
 use crate::cursor::{CursorCodec, CursorKey};
 use crate::field_key::{assign_field_ids, upgrade_legacy_schema};
-use crate::index::backfill::{start_backfill, table_has_rows};
-use crate::index::legacy::ensure_indexes;
+use crate::index::backfill::{build_unique_now, start_backfill, table_has_rows};
 use crate::index::state::sync_ledger;
 use crate::index::{DEFAULT_MAX_MULTI_VALUES, MAX_MULTI_VALUES_CEILING};
 use crate::key_migration::KEY_FORMAT_LEGACY;
 use crate::model::{DataTable, TableKeys, TableSchema};
+use crate::query::planner::feedback::Feedback;
+use crate::query::planner::ProbeCache;
+use crate::query::run::{QueryTuning, DEFAULT_COUNT_CAP, DEFAULT_READ_TIMEOUT_MS};
 use crate::schema::{validate_schema_update, validate_table_name, validate_table_schema};
 use crate::validate::RefResolver;
 use crate::{map_db, DataError};
@@ -108,11 +110,20 @@ pub struct DataStore {
     pub(crate) authz: Arc<dyn AuthzClient>,
     pub(crate) audit: AuditRecorder,
     pub(crate) resolver: Arc<dyn RefResolver>,
-    /// keyset カーソルの AEAD コーデック（Task 15.3 のクエリコンパイラ v2 が使う）。
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// keyset カーソルの AEAD コーデック（クエリコンパイラ v2 のページング）。
     pub(crate) cursor: Arc<CursorCodec>,
     /// 多値（multi_select / リンク）の 1 レコードあたり要素数の上限（PIT-72・超過は 422）。
     pub(crate) max_multi_values: usize,
+    /// 読取の調整（機能フラグ・強制戦略。既定は環境変数から・[`crate::QueryTuning`]）。
+    pub(crate) tuning: QueryTuning,
+    /// 件数の上限（`AtLeast(上限)`）。
+    pub(crate) count_cap: u64,
+    /// data の読取の `statement_timeout`（ミリ秒）。
+    pub(crate) read_timeout_ms: u64,
+    /// 計画時の件数探索の短期キャッシュ（Q の述語だけ・材料は入れない）。
+    pub(crate) probe_cache: Arc<ProbeCache>,
+    /// 走査効率などの運用指標。
+    pub(crate) feedback: Arc<Feedback>,
 }
 
 impl DataStore {
@@ -135,7 +146,33 @@ impl DataStore {
             resolver,
             cursor: Arc::new(CursorCodec::new(&CursorKey::ephemeral())),
             max_multi_values: DEFAULT_MAX_MULTI_VALUES,
+            tuning: QueryTuning::from_env(),
+            count_cap: DEFAULT_COUNT_CAP,
+            read_timeout_ms: DEFAULT_READ_TIMEOUT_MS,
+            probe_cache: Arc::new(ProbeCache::default()),
+            feedback: Arc::new(Feedback::default()),
         }
+    }
+
+    /// 読取の調整（機能フラグ `read_path`・強制戦略）を設定する。結果は変わらず速さだけが変わる。
+    #[must_use]
+    pub fn with_query_tuning(mut self, tuning: QueryTuning) -> Self {
+        self.tuning = tuning;
+        self
+    }
+
+    /// 件数の上限を設定する（既定 10,000・テナントの規模に合わせて変更可）。
+    #[must_use]
+    pub fn with_count_cap(mut self, cap: u64) -> Self {
+        self.count_cap = cap.max(1);
+        self
+    }
+
+    /// data の読取の `statement_timeout`（ミリ秒・既定 10,000）。
+    #[must_use]
+    pub fn with_read_timeout_ms(mut self, ms: u64) -> Self {
+        self.read_timeout_ms = ms.max(1);
+        self
     }
 
     /// 多値（multi_select / リンク）の 1 レコードあたり要素数の上限を設定する（既定
@@ -153,7 +190,7 @@ impl DataStore {
         self
     }
 
-    /// テーブルを作成する（スキーマ検証＋式インデックス適用＋作成者 owner タプル）。
+    /// テーブルを作成する（スキーマ検証＋索引台帳＋作成者 owner タプル）。
     pub async fn create_table(
         &self,
         ctx: &AuthContext,
@@ -217,8 +254,6 @@ impl DataStore {
             }
             _ => map_db(e),
         })?;
-        // 作成直後（空テーブル）に宣言インデックスを張る（同一 Tx・即時完了）。
-        ensure_indexes(&mut tx, &ctx.tenant_id, row.id, keys.table_int, &schema).await?;
         // 索引台帳（空テーブルなので全て active・バックフィル不要）とリンク列の宣言。
         sync_ledger(&mut tx, keys, &schema, false).await?;
         tx.commit().await.map_err(map_db)?;
@@ -231,11 +266,7 @@ impl DataStore {
             .write_tuple(&ctx.subject(), Relation::Owner, &obj)
             .await
         {
-            // 補償: 物理インデックス → 行の順で片付ける（インデックスは行に従属しないため
-            // 明示 DROP が要る。registry 行は data_table への CASCADE で消える）。
-            if let Err(cleanup) = self.drop_table_indexes(&ctx.tenant_id, id).await {
-                tracing::error!(error = %cleanup, table_id = %id, "補償時のインデックス削除に失敗（孤立インデックスが残存）");
-            }
+            // 補償: 行を消す（索引はランタイム DDL を持たないので物理的な後片付けは無い）。
             if let Err(cleanup) =
                 sqlx::query("DELETE FROM data_table WHERE tenant_id = $1 AND id = $2")
                     .bind(&ctx.tenant_id)
@@ -271,7 +302,7 @@ impl DataStore {
         self.fetch_live(ctx, id).await
     }
 
-    /// スキーマを改訂する（owner・additive のみ・式インデックス差分適用・楽観ロック）。
+    /// スキーマを改訂する（owner・additive のみ・索引台帳の差分適用・楽観ロック）。
     pub async fn update_table_schema(
         &self,
         ctx: &AuthContext,
@@ -337,7 +368,6 @@ impl DataStore {
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
-        ensure_indexes(&mut tx, &ctx.tenant_id, id, current.table_int, &next).await?;
         // 索引台帳を宣言へ合わせる（増えた索引は既存レコードがあれば building にしてバックフィルを積む・
         // テーブル行は FOR UPDATE 済みなので、並行する書込は遷移の前後どちらかに直列化される）。
         let keys = TableKeys {
@@ -346,6 +376,8 @@ impl DataStore {
         };
         let has_rows = table_has_rows(&mut tx, keys).await?;
         if sync_ledger(&mut tx, keys, &next, has_rows).await? {
+            // unique は同じ Tx で同期構築（重複は 409・一意性の強制に空白期間を作らない）。
+            build_unique_now(&mut tx, keys, &next, &ctx.tenant_id).await?;
             start_backfill(&mut tx, keys, &ctx.tenant_id, id).await?;
         }
         // 実データ変更のためスキーマ更新と同一 Tx で監査を残す（原子的・Chain=Yes）。
@@ -395,7 +427,7 @@ impl DataStore {
     }
 
     /// テナント消去（SAAS.2）: data_table（CASCADE で record/registry/revision も）と
-    /// 物理式インデックス・FGA タプル・**索引テーブルと台帳**（`tenant_int` で持つ表・Task 15.2）を撤去する。
+    /// FGA タプル・**索引テーブルと台帳**（`tenant_int` で持つ表・Task 15.2）を撤去する。
     /// 監査ログは保持（purge 方針は storage と同一）。
     pub async fn purge_tenant(&self, tenant_id: &str) -> Result<u32, DataError> {
         let db = self.pools.for_tenant(tenant_id);
@@ -413,8 +445,7 @@ impl DataStore {
         let ns = authz::Namespace::for_tenant(tenant_id);
         let mut purged = 0u32;
         for id in &ids {
-            // 物理インデックス（partial・テーブル行に従属しない）→ FGA タプルの順で撤去。
-            self.drop_table_indexes(tenant_id, *id).await?;
+            // FGA タプルを撤去（索引は行なので下の DELETE で消える）。
             self.authz
                 .delete_object_tuples(&ns.data_table(&id.to_string()))
                 .await
@@ -439,33 +470,6 @@ impl DataStore {
             .map_err(map_db)?;
         tx.commit().await.map_err(map_db)?;
         Ok(purged)
-    }
-
-    /// テーブルの物理式インデックスを台帳経由で DROP する（補償・purge 用）。
-    pub(crate) async fn drop_table_indexes(
-        &self,
-        tenant_id: &str,
-        table_id: Uuid,
-    ) -> Result<(), DataError> {
-        let names: Vec<String> = sqlx::query_scalar(
-            "SELECT index_name FROM data_index_registry WHERE tenant_id = $1 AND table_id = $2",
-        )
-        .bind(tenant_id)
-        .bind(table_id)
-        .fetch_all(self.pools.for_tenant(tenant_id))
-        .await
-        .map_err(map_db)?;
-        for name in names {
-            // 台帳由来（本 crate が決定的命名で作った名前）のみ。防御的に識別子検証する。
-            if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                continue;
-            }
-            sqlx::query(&format!("DROP INDEX IF EXISTS {name}"))
-                .execute(self.pools.for_tenant(tenant_id))
-                .await
-                .map_err(map_db)?;
-        }
-        Ok(())
     }
 
     /// 生存テーブル行を引く（認可済み前提の内部ヘルパ）。

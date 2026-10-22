@@ -192,16 +192,13 @@ async fn sweep_and_jobs_initialize_backfill_and_verify_parity() {
     .await
     .unwrap();
     assert_eq!(prices, 30);
-    // 旧方式の式インデックスも張り直されている（二重書込期間の読取経路）。
-    let legacy_indexes: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM data_index_registry WHERE tenant_id = $1 AND table_id = $2",
-    )
-    .bind(&tenant)
-    .bind(legacy)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(legacy_indexes, 2);
+    // 旧方式の式インデックスは張らない（Task 15.3 で撤去・ランタイム DDL ゼロ）。読取は v2 の索引で効く。
+    let legacy_registry: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('data_index_registry')::text")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(legacy_registry.is_none());
     // 片付いた後のスイープでは、このテナントのテーブルを再初期化しない（冪等）。
     store.enqueue_index_backfills_if_needed().await.unwrap();
     let status = store

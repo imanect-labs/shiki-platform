@@ -28,9 +28,9 @@ use authz::{
     ReadTupleKey, Relation, Subject,
 };
 use data::{
-    Aggregate, CmpOp, DataError, DataQuery, DataStore, FieldDef, FieldType, FsmBody, FsmTransition,
-    ListRecordsOptions, Metric, NewDataTable, PolicyExpr, PolicyOperand, QueryFilter, QuerySort,
-    RecordFilter, RecordSort, RefResolver, TableSchema, FIELD_KEY_MIGRATION_QUEUE,
+    CmpOp, DataError, DataQuery, DataStore, FieldDef, FieldType, FsmBody, FsmTransition,
+    ListRecordsOptions, Metric, NewDataTable, PolicyExpr, PolicyOperand, RecordFilter, RecordSort,
+    RefResolver, TableSchema, FIELD_KEY_MIGRATION_QUEUE,
 };
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
@@ -458,28 +458,9 @@ async fn seed_legacy_table(
         .await
         .unwrap();
     }
-    if let Some(field) = legacy_index_on {
-        // v1 の式インデックス（フィールド名を埋め込んだ部分インデックス）＋台帳。
-        let idx = format!("dr_{}_legacy01", id.simple());
-        sqlx::query(&format!(
-            "CREATE INDEX {idx} ON data_record ((data ->> '{field}')) \
-             WHERE tenant_id = '{tenant}' AND table_id = '{id}'"
-        ))
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO data_index_registry (tenant_id, table_id, field, index_name, kind) \
-             VALUES ($1, $2, $3, $4, 'btree_text')",
-        )
-        .bind(tenant)
-        .bind(id)
-        .bind(field)
-        .bind(&idx)
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-    }
+    // v1 の式インデックス（フィールド名を埋め込んだ部分インデックス）は Task 15.3 のマイグレーション
+    // （0077）で撤去済み。移行前の既存テーブルにも残っていない前提で再現する。
+    let _ = legacy_index_on;
     id
 }
 
@@ -646,25 +627,30 @@ async fn legacy_tables_migrate_idempotently_and_v1_operations_still_work() {
             "{data}"
         );
     }
-    // 旧式インデックスは消え、新キーの式インデックスが台帳に載る。
-    let legacy_left: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE indexname = $1)")
-            .bind(format!("dr_{}_legacy01", expense.simple()))
+    // 旧式インデックスの台帳は無く、宣言した索引は pivot 索引の台帳に載る（新キーの field_id）。
+    let registry: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('data_index_registry')::text")
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert!(!legacy_left, "v1 の式インデックスが残っている");
-    let defs: Vec<String> = sqlx::query_scalar(
-        "SELECT i.indexdef FROM data_index_registry r JOIN pg_indexes i ON i.indexname = r.index_name \
-         WHERE r.tenant_id = $1 AND r.table_id = $2 ORDER BY r.field",
+    assert!(registry.is_none(), "旧方式の台帳は撤去済み");
+    store.init_pivot_index(&tenant, expense).await.unwrap();
+    let indexed: Vec<i16> = sqlx::query_scalar(
+        "SELECT DISTINCT s.field_id FROM data_index_state s \
+         JOIN data_table t ON t.tenant_int = s.tenant_int AND t.table_int = s.table_int \
+         WHERE t.tenant_id = $1 AND t.id = $2 AND s.field_id >= 16 AND s.index_table IN (1, 2) \
+         ORDER BY 1",
     )
     .bind(&tenant)
     .bind(expense)
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(defs.len(), 3, "amount/applicant/status の 3 本: {defs:?}");
-    assert!(defs.iter().all(|d| d.contains("'f1")), "{defs:?}");
+    assert_eq!(
+        indexed.len(),
+        3,
+        "amount/applicant/status の 3 列: {indexed:?}"
+    );
 
     // --- ジョブ経由の再開: 投入 → 配信したまま落ちた（ack なし）→ 可視タイムアウト後に再配信 ---
     store
@@ -758,10 +744,11 @@ async fn legacy_tables_migrate_idempotently_and_v1_operations_still_work() {
             &alice,
             expense,
             &DataQuery {
-                filter: Some(QueryFilter {
-                    field: "amount".into(),
-                    value: json!(1200),
-                }),
+                filter: Some(data::Condition::cmp(
+                    "amount",
+                    data::CondOp::Eq,
+                    Some(json!(1200)),
+                )),
                 ..Default::default()
             },
             None,
@@ -793,14 +780,15 @@ async fn legacy_tables_migrate_idempotently_and_v1_operations_still_work() {
             &alice,
             expense,
             &DataQuery {
-                filter: Some(QueryFilter {
-                    field: "status".into(),
-                    value: json!("submitted"),
-                }),
-                sort: Some(QuerySort {
+                filter: Some(data::Condition::cmp(
+                    "status",
+                    data::CondOp::Eq,
+                    Some(json!("submitted")),
+                )),
+                sort: vec![data::SortKey {
                     field: "applicant".into(),
                     descending: true,
-                }),
+                }],
                 ..Default::default()
             },
             None,
@@ -813,11 +801,11 @@ async fn legacy_tables_migrate_idempotently_and_v1_operations_still_work() {
             &alice,
             expense,
             &DataQuery {
-                aggregate: Some(Aggregate {
-                    group_by: vec!["status".into()],
+                group_by: vec!["status".into()],
+                aggregate: vec![data::MetricSpec {
                     metric: Metric::Count,
                     field: None,
-                }),
+                }],
                 ..Default::default()
             },
             None,

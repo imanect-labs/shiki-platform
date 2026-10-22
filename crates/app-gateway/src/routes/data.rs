@@ -77,7 +77,8 @@ pub(crate) async fn get_schema(
 #[derive(Debug, Deserialize)]
 pub(crate) struct ListRecordsQuery {
     pub limit: Option<i64>,
-    pub offset: Option<i64>,
+    /// 前ページの `next_cursor`（OFFSET は廃止・keyset ページング）。
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,6 +86,9 @@ pub(crate) struct GwRecordList {
     pub items: Vec<DataRecord>,
     /// 個別共有集合が上限（PIT-18）で切り詰められた（可視減方向のフォールバック）。
     pub shares_truncated: bool,
+    /// 次ページのカーソル（無ければ終端）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// レコード一覧（行述語適用済み。フィルタ/集計は `POST .../query` を使う）。
@@ -105,7 +109,7 @@ pub(crate) async fn list_records(
                 filter: None,
                 sort: None,
                 limit: q.limit.unwrap_or(50),
-                offset: q.offset.unwrap_or(0),
+                cursor: q.cursor,
             },
             None,
         )
@@ -113,6 +117,7 @@ pub(crate) async fn list_records(
     Ok(Json(GwRecordList {
         items: page.items,
         shares_truncated: page.shares_truncated,
+        next_cursor: page.next_cursor,
     }))
 }
 

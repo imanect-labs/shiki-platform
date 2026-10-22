@@ -13,13 +13,18 @@ use crate::policy::ast::{CmpOp, PolicyExpr, PolicyOperand};
 use crate::policy::material::PolicyMaterial;
 use crate::DataError;
 
-/// SQL バインド値（クエリ実行チョークポイントが順番どおり bind する）。
-#[derive(Debug, Clone)]
-pub(crate) enum Bind {
-    Text(String),
-    TextArray(Vec<String>),
-    Number(f64),
-    UuidArray(Vec<uuid::Uuid>),
+pub(crate) use crate::query::sql::Bind;
+use crate::query::sql::SqlBuf;
+
+/// プレースホルダの採番先（v1 の [`BindSet`] と v2 の [`SqlBuf`] を同じコンパイラで使う）。
+pub(crate) trait PushBind {
+    fn push_bind(&mut self, b: Bind) -> String;
+}
+
+impl PushBind for SqlBuf {
+    fn push_bind(&mut self, b: Bind) -> String {
+        self.push(b)
+    }
 }
 
 /// バインド列とプレースホルダ番号の採番器。
@@ -45,6 +50,12 @@ impl BindSet {
     }
 }
 
+impl PushBind for BindSet {
+    fn push_bind(&mut self, b: Bind) -> String {
+        self.push(b)
+    }
+}
+
 /// レコード表の固定エイリアス（全読取クエリで共通・lookup 伝播では参照先が別名を使う）。
 pub(crate) const RECORD_ALIAS: &str = "r";
 
@@ -52,18 +63,18 @@ pub(crate) const RECORD_ALIAS: &str = "r";
 ///
 /// 返る SQL は常に括弧で自己完結し、呼び出し側が `AND (...)` で合成できる。
 /// JSONB の欠落フィールドは `->> = NULL` 経由で不成立（fail-closed）。
-pub(crate) fn compile_expr(
+pub(crate) fn compile_expr<B: PushBind>(
     expr: &PolicyExpr,
     schema: &TableSchema,
     material: &PolicyMaterial,
     ctx_user_id: &str,
     alias: &str,
-    binds: &mut BindSet,
+    binds: &mut B,
 ) -> Result<String, DataError> {
     match expr {
         PolicyExpr::Public => Ok("TRUE".to_string()),
         PolicyExpr::IsOwner => {
-            let ph = binds.push(Bind::Text(ctx_user_id.to_string()));
+            let ph = binds.push_bind(Bind::Text(ctx_user_id.to_string()));
             Ok(format!("({alias}.owner = {ph})"))
         }
         PolicyExpr::HasRole { role, subtree } => {
@@ -105,12 +116,12 @@ pub(crate) fn compile_expr(
 }
 
 #[allow(clippy::too_many_arguments)] // 内部関数・compile_expr からの一括委譲点。
-fn compile_field_cmp(
+pub(crate) fn compile_field_cmp<B: PushBind>(
     schema: &TableSchema,
     material: &PolicyMaterial,
     ctx_user_id: &str,
     alias: &str,
-    binds: &mut BindSet,
+    binds: &mut B,
     field: &str,
     op: CmpOp,
     value: &PolicyOperand,
@@ -128,7 +139,7 @@ fn compile_field_cmp(
     let accessor = format!("({alias}.data ->> '{jk}')");
     match value {
         PolicyOperand::UserId => {
-            let ph = binds.push(Bind::Text(ctx_user_id.to_string()));
+            let ph = binds.push_bind(Bind::Text(ctx_user_id.to_string()));
             let sql = match op {
                 CmpOp::Eq => format!("({accessor} = {ph})"),
                 // Ne: 欠落フィールド（NULL）は不成立＝fail-closed（<> の NULL 伝播）。
@@ -147,7 +158,7 @@ fn compile_field_cmp(
                 // 所属なし = この枝は不成立（SQL を発行せず定数化）。
                 return Ok("FALSE".to_string());
             }
-            let ph = binds.push(Bind::TextArray(roles));
+            let ph = binds.push_bind(Bind::TextArray(roles));
             Ok(format!("({accessor} = ANY({ph}::text[]))"))
         }
         PolicyOperand::Lit(v) => {
@@ -156,7 +167,7 @@ fn compile_field_cmp(
                     let n = v.as_f64().ok_or_else(|| {
                         DataError::Internal("row_policy: number リテラル不整合".into())
                     })?;
-                    let ph = binds.push(Bind::Number(n));
+                    let ph = binds.push_bind(Bind::Number(n));
                     let op_sql = if op == CmpOp::Eq { "=" } else { "<>" };
                     format!("(({accessor})::numeric {op_sql} {ph}::numeric)")
                 }
@@ -169,7 +180,7 @@ fn compile_field_cmp(
                     let s = v.as_str().ok_or_else(|| {
                         DataError::Internal("row_policy: text リテラル不整合".into())
                     })?;
-                    let ph = binds.push(Bind::Text(s.to_string()));
+                    let ph = binds.push_bind(Bind::Text(s.to_string()));
                     let op_sql = if op == CmpOp::Eq { "=" } else { "<>" };
                     format!("({accessor} {op_sql} {ph})")
                 }
@@ -183,7 +194,7 @@ fn compile_field_cmp(
                     if arr.is_empty() {
                         return Ok("FALSE".to_string());
                     }
-                    let ph = binds.push(Bind::TextArray(arr));
+                    let ph = binds.push_bind(Bind::TextArray(arr));
                     format!("({accessor} = ANY({ph}::text[]))")
                 }
             };
@@ -196,12 +207,12 @@ fn compile_field_cmp(
 ///
 /// row_policy 未定義のテーブルは「テーブル viewer 全員が全行可視」（従来どおり・
 /// 制限はオプトイン）。定義済みなら `(<policy>) OR r.id = ANY(<共有id>)`。
-pub(crate) fn compile_read_predicate(
+pub(crate) fn compile_read_predicate<B: PushBind>(
     schema: &TableSchema,
     material: &PolicyMaterial,
     ctx_user_id: &str,
     alias: &str,
-    binds: &mut BindSet,
+    binds: &mut B,
 ) -> Result<String, DataError> {
     let Some(policy) = &schema.row_policy else {
         return Ok("TRUE".to_string());
@@ -210,7 +221,7 @@ pub(crate) fn compile_read_predicate(
     if material.shared_record_ids.is_empty() {
         return Ok(format!("({policy_sql})"));
     }
-    let ph = binds.push(Bind::UuidArray(material.shared_record_ids.clone()));
+    let ph = binds.push_bind(Bind::UuidArray(material.shared_record_ids.clone()));
     Ok(format!("({policy_sql} OR {alias}.id = ANY({ph}::uuid[]))"))
 }
 

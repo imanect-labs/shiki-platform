@@ -1,6 +1,5 @@
 //! 索引（Task 15.2・data-platform §3・§10）。
 //!
-//! - [`legacy`] — v1 の partial 式インデックス（二重書込期間の旧方式・Task 15.3 で撤去）
 //! - pivot 索引テーブル（`data_index_text` / `data_index_num` / `data_link` / `data_unique` /
 //!   `data_index_search`）への書込（[`write`]）・値の正規化（[`normalize`]）・
 //!   索引状態の台帳（[`state`]）・バックフィル（[`backfill`]）・parity 検証（[`parity`]）
@@ -8,13 +7,12 @@
 //! # 不変条件
 //!
 //! - **索引の物理本数はテナント数・テーブル数・列数に依存しない**。索引の付け外しは行の追記/削除で、
-//!   DDL を打たない（旧方式の式インデックスだけが例外で、15.3 で撤去する）。
+//!   DDL を打たない（旧方式の式インデックスは Task 15.3 で撤去済み＝**ランタイム DDL はゼロ**）。
 //! - 書込経路（create / update / delete / FSM 遷移）は**同一 Tx で、変更のあったフィールドの索引行だけ**を
 //!   書き換える（[`write`]）。索引状態が `building` / `active` の (フィールド, 索引テーブル) が対象。
 //! - `record_int` は索引の内部キーで、**外へ出さない**（PIT-75）。
 
 pub(crate) mod backfill;
-pub(crate) mod legacy;
 mod link;
 pub(crate) mod normalize;
 pub(crate) mod parity;

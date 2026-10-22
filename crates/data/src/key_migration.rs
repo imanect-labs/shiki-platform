@@ -28,7 +28,6 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 use crate::field_key::upgrade_legacy_schema;
-use crate::index::legacy::{drop_registered_indexes, ensure_indexes};
 use crate::model::{FieldType, TableSchema};
 use crate::store::DataStore;
 use crate::{map_db, DataError};
@@ -84,8 +83,6 @@ impl DataStore {
         let (schema, next_field_id) = upgrade_legacy_schema(&legacy.0)?;
         crate::schema::validate_table_schema(&schema)?;
 
-        // ① v1 キー式の部分インデックスを落とす（新キーでは使えない・書換えの索引更新を省く）。
-        drop_registered_indexes(&mut tx, tenant_id, table_id).await?;
         // ② JSONB キーを書き換える（実フィールドのみ。派生フィールドは保存されていない）。
         let (old_keys, new_keys): (Vec<String>, Vec<String>) = schema
             .fields
@@ -111,8 +108,8 @@ impl DataStore {
         .await
         .map_err(map_db)?
         .rows_affected();
-        // ③ 新キー（"f{id}"）で宣言インデックスを張り直す。
-        ensure_indexes(&mut tx, tenant_id, table_id, table_int, &schema).await?;
+        // ③ 索引は pivot 索引テーブル（台帳の初期化とバックフィル・unique は同期構築）で張る
+        //    （旧方式の式インデックスは Task 15.3 で撤去済み）。
         // ④ スキーマと形式を確定する（schema_version は上げない＝意味は変わらない）。
         sqlx::query(
             "UPDATE data_table SET schema = $3, key_format = $4, next_field_id = $5 \

@@ -15,9 +15,9 @@ use async_trait::async_trait;
 use authz::client::{OpenFgaClient, OpenFgaConfig};
 use authz::{AuthContext, AuthzClient, Principal, Relation};
 use data::{
-    Aggregate, CmpOp, DataError, DataQuery, DataStore, DataViewBody, DataViewStore, FieldDef,
-    FieldPolicy, FieldType, Metric, NewDataTable, PolicyExpr, PolicyOperand, QueryFilter,
-    RefResolver, RowPolicy, TableSchema,
+    CmpOp, DataError, DataQuery, DataStore, DataViewBody, DataViewStore, FieldDef, FieldPolicy,
+    FieldType, Metric, NewDataTable, PolicyExpr, PolicyOperand, RefResolver, RowPolicy,
+    TableSchema,
 };
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
@@ -162,10 +162,11 @@ async fn field_mask_hides_and_blocks_search() {
             &alice,
             table.id,
             &DataQuery {
-                filter: Some(QueryFilter {
-                    field: "salary".into(),
-                    value: json!(500),
-                }),
+                filter: Some(data::Condition::cmp(
+                    "salary",
+                    data::CondOp::Eq,
+                    Some(json!(500)),
+                )),
                 ..Default::default()
             },
             None,
@@ -180,10 +181,10 @@ async fn field_mask_hides_and_blocks_search() {
             &alice,
             table.id,
             &DataQuery {
-                sort: Some(data::QuerySort {
+                sort: vec![data::SortKey {
                     field: "salary".into(),
                     descending: true,
-                }),
+                }],
                 ..Default::default()
             },
             None,
@@ -195,11 +196,11 @@ async fn field_mask_hides_and_blocks_search() {
             &alice,
             table.id,
             &DataQuery {
-                aggregate: Some(Aggregate {
-                    group_by: vec![],
+                group_by: vec![],
+                aggregate: vec![data::MetricSpec {
                     metric: Metric::Avg,
                     field: Some("salary".into()),
-                }),
+                }],
                 ..Default::default()
             },
             None,
@@ -338,11 +339,11 @@ async fn aggregate_suppresses_small_cells() {
             &alice,
             table.id,
             &DataQuery {
-                aggregate: Some(Aggregate {
-                    group_by: vec!["dept".into()],
+                group_by: vec!["dept".into()],
+                aggregate: vec![data::MetricSpec {
                     metric: Metric::Sum,
                     field: Some("amount".into()),
-                }),
+                }],
                 ..Default::default()
             },
             None,
@@ -380,7 +381,11 @@ async fn saved_view_reevaluates_per_viewer() {
     // 行ポリシー: 本人（owner）のみ可読。
     let schema = TableSchema {
         fields: vec![
-            field("owner_ref", FieldType::UserRef),
+            // row_policy が参照する列は indexed 必須（Task 15.3）。
+            FieldDef {
+                indexed: true,
+                ..field("owner_ref", FieldType::UserRef)
+            },
             field("note", FieldType::Text),
         ],
         status_field: None,

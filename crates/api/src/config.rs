@@ -190,10 +190,19 @@ pub struct SecretsConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DataConfig {
     /// keyset カーソル（`record_int` を含む不透明トークン）の AES-256-GCM 鍵ファイルのパス。
-    /// 形式は secrets のマスターキーと同じ（32 バイト生 or base64）。未設定なら起動時乱数鍵
-    /// （再起動でカーソル失効＝許容。**複数レプリカでは全レプリカに同じ鍵の設定が必須**）。
+    /// 形式は secrets のマスターキーと同じ（32 バイト生 or base64）。
+    ///
+    /// 鍵の決め方（Task 15.3・全レプリカで同じ鍵になること）:
+    /// 1. `cursor_key_file` があればそれ
+    /// 2. 無ければ `secrets.master_key_file` から用途別に導出（HMAC-SHA256・ドメイン分離ラベル付き）
+    /// 3. どちらも無く `ephemeral_cursor_key = true` なら起動時乱数（**開発専用**: 再起動・レプリカ間で
+    ///    カーソルが無効になる）
+    /// 4. それ以外は**起動エラー**（複数レプリカでカーソルが壊れる構成を黙って起動させない）
     #[serde(default)]
     pub cursor_key_file: Option<String>,
+    /// 開発専用: カーソル鍵が設定されていなくても起動時乱数鍵で起動する（既定 false）。
+    #[serde(default)]
+    pub ephemeral_cursor_key: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

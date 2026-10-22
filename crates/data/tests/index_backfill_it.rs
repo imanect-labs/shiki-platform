@@ -88,6 +88,7 @@ async fn seed_records(
 
 fn states(rows: &[(i16, i16, String)]) -> Vec<&str> {
     let mut s: Vec<&str> = rows.iter().map(|(_, _, st)| st.as_str()).collect();
+    s.sort_unstable();
     s.dedup();
     s
 }
@@ -155,9 +156,14 @@ async fn backfill_resumes_after_interruption_and_matches_old_index() {
     assert!(snapshot(pool.clone()).await.is_empty());
 
     // 初回アクセスで台帳が作られる（既存レコードがあるので building・バックフィルを積む）。
+    // unique（index_table = 4）だけは同じ Tx で同期構築して active（一意性の強制に空白期間を作らない・
+    // Task 15.3 で旧方式の一意な式インデックスを撤去したため）。
     store.get_table(&c, table.id, None).await.unwrap();
     let ledger_rows = ledger(&pool, ti, tb).await;
-    assert_eq!(states(&ledger_rows), vec!["building"], "{ledger_rows:?}");
+    let (unique, others): (Vec<_>, Vec<_>) =
+        ledger_rows.iter().cloned().partition(|(_, t, _)| *t == 4);
+    assert_eq!(states(&others), vec!["building"], "{ledger_rows:?}");
+    assert_eq!(states(&unique), vec!["active"], "{ledger_rows:?}");
     let status = store
         .index_backfill_status(&tenant, table.id)
         .await
@@ -183,7 +189,9 @@ async fn backfill_resumes_after_interruption_and_matches_old_index() {
         .unwrap()
         .unwrap();
     assert_eq!(status.rows_done, 100, "進捗が観測できる");
-    assert_eq!(states(&ledger(&pool, ti, tb).await), vec!["building"]);
+    let rows = ledger(&pool, ti, tb).await;
+    let others: Vec<_> = rows.iter().filter(|r| r.1 != 4).cloned().collect();
+    assert_eq!(states(&others), vec!["building"]);
 
     // building 中の書込: 走査済みの更新・未走査の更新・新規・削除（走査済み／未走査）。
     let scanned = &records[5];

@@ -98,7 +98,9 @@ fn field(name: &str, ty: FieldType) -> FieldDef {
 
 /// 申請者本人 or 経理ロール（subtree）だけが読める経費テーブル。
 fn expense_schema_with_policy() -> TableSchema {
-    let applicant = field("applicant", FieldType::UserRef);
+    // row_policy が参照する列は indexed 必須（Task 15.3・data-platform §6.3）。
+    let mut applicant = field("applicant", FieldType::UserRef);
+    applicant.indexed = true;
     let mut amount = field("amount", FieldType::Number);
     amount.indexed = true;
     let mut status = field("status", FieldType::Select);
@@ -427,7 +429,11 @@ async fn lookup_does_not_leak_invisible_reference() {
                 name: "salary".into(),
                 schema: TableSchema {
                     fields: vec![
-                        field("person", FieldType::UserRef),
+                        // row_policy が参照する列は indexed 必須（Task 15.3）。
+                        FieldDef {
+                            indexed: true,
+                            ..field("person", FieldType::UserRef)
+                        },
                         field("grade", FieldType::Text),
                     ],
                     status_field: None,

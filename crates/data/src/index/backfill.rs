@@ -2,7 +2,7 @@
 //!
 //! - **初期化**: Task 15.2 より前に作られたテーブルは台帳が無い（`data_table.pivot_index_init = false`）。
 //!   初回アクセス（[`DataStore::fetch_live`]）か常駐ワーカーのスイープが [`DataStore::init_pivot_index`] で
-//!   台帳を作り（既存レコードがあれば `building`）、旧方式の式インデックスを張り直し、ジョブを積む。
+//!   台帳を作り（既存レコードがあれば `building`）、unique を同期構築し、ジョブを積む。
 //! - **スキーマ改訂**で索引が増えたときも同じく `building` にしてジョブを積む（[`start_backfill`]）。
 //! - **チャンク**（[`DataStore::index_backfill_step`]）: 進捗行を `FOR UPDATE` で押さえ、`record_int` 順に
 //!   `FOR SHARE` で最大 N 件読み、`building` の組の索引行を本体から作り直して進捗を進める。1 チャンク =
@@ -21,7 +21,6 @@ use sqlx::types::Json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use super::legacy::ensure_indexes;
 use super::state::{activate_building, load_states, sync_ledger, IndexPlan};
 use super::write::{IndexWriter, IndexedRecord};
 use super::{IndexState, IndexTable, MAX_MULTI_VALUES_CEILING};
@@ -130,6 +129,78 @@ async fn enqueue(
     Ok(())
 }
 
+/// `building` の unique 索引を**この Tx で**全レコードから作り、`active` にする（`data_table` 行を
+/// `FOR UPDATE` 済みで、並行する書込は直列化されている前提）。重複があれば 409（旧方式で一意な式
+/// インデックスの作成が失敗したのと同じ）。
+pub(crate) async fn build_unique_now(
+    conn: &mut PgConnection,
+    keys: TableKeys,
+    schema: &TableSchema,
+    tenant_id: &str,
+) -> Result<(), DataError> {
+    let targets: Vec<(FieldId, IndexTable)> = load_states(conn, keys)
+        .await?
+        .into_iter()
+        .filter(|(_, t, s)| *t == IndexTable::Unique && *s == IndexState::Building)
+        .map(|(f, t, _)| (f, t))
+        .collect();
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let plan = IndexPlan::keys_only(keys);
+    let writer = IndexWriter {
+        plan: &plan,
+        schema,
+        tenant_id,
+        max_multi_values: MAX_MULTI_VALUES_CEILING,
+    };
+    let mut after = 0i64;
+    loop {
+        let rows: Vec<SourceRow> = sqlx::query_as(
+            "SELECT record_int, owner, created_at, updated_at, data FROM data_record \
+             WHERE tenant_int = $1 AND table_int = $2 AND record_int > $3 \
+             ORDER BY record_int LIMIT $4",
+        )
+        .bind(keys.tenant_int)
+        .bind(keys.table_int)
+        .bind(after)
+        .bind(BACKFILL_CHUNK)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(map_db)?;
+        let Some(last) = rows.last().map(|r| r.record_int) else {
+            break;
+        };
+        for r in &rows {
+            let data = decode_record(schema, &r.data.0);
+            writer
+                .rebuild(
+                    conn,
+                    &IndexedRecord {
+                        record_int: r.record_int,
+                        owner: &r.owner,
+                        created_at: r.created_at,
+                        updated_at: r.updated_at,
+                        data: &data,
+                    },
+                    &targets,
+                )
+                .await
+                .map_err(|e| match e {
+                    DataError::Conflict(_) => {
+                        DataError::Conflict("重複値があるため unique を適用できません".into())
+                    }
+                    other => other,
+                })?;
+        }
+        after = last;
+    }
+    for (field, table) in &targets {
+        super::state::set_state(conn, keys, *field, *table, IndexState::Active).await?;
+    }
+    Ok(())
+}
+
 /// 台帳初期化で読む data_table の列（schema, key_format, tenant_int, table_int, pivot_index_init）。
 type InitRow = (Json<TableSchema>, i16, i32, i64, bool);
 
@@ -153,8 +224,7 @@ struct ProgressRow {
 impl DataStore {
     /// 台帳が未初期化のテーブルを初期化する（冪等）。初期化した `true`／済み `false`。
     ///
-    /// `data_table` 行を `FOR UPDATE` で押さえ、旧方式の式インデックスを張り直し（Task 15.2 の
-    /// マイグレーションで `data_record` を作り直したため）、台帳を作り、既存レコードがあれば
+    /// `data_table` 行を `FOR UPDATE` で押さえ、台帳を作り、unique を同期構築し、既存レコードがあれば
     /// バックフィルを積む。v1 形式（識別子未移行）のテーブルは先に識別子を移行すること。
     pub async fn init_pivot_index(
         &self,
@@ -190,9 +260,11 @@ impl DataStore {
             tenant_int,
             table_int,
         };
-        ensure_indexes(&mut tx, tenant_id, table_id, table_int, &schema.0).await?;
         let has_rows = table_has_rows(&mut tx, keys).await?;
         if sync_ledger(&mut tx, keys, &schema.0, has_rows).await? {
+            // unique は同じ Tx で同期構築して active にする（一意性の強制に空白期間を作らない・
+            // 旧方式の一意な式インデックスの代わり）。残りはバックフィル。
+            build_unique_now(&mut tx, keys, &schema.0, tenant_id).await?;
             start_backfill(&mut tx, keys, tenant_id, table_id).await?;
         }
         sqlx::query(
@@ -483,11 +555,20 @@ impl DataStore {
             .await
             .map_err(map_db)?;
             for (tenant_id, id, key_format) in targets {
-                if key_format == KEY_FORMAT_LEGACY {
-                    self.migrate_table_field_keys(&tenant_id, id).await?;
+                // 1 テーブルの失敗（移行できない古いスキーマ等）でスイープ全体を止めない。
+                let r = async {
+                    if key_format == KEY_FORMAT_LEGACY {
+                        self.migrate_table_field_keys(&tenant_id, id).await?;
+                    }
+                    self.init_pivot_index(&tenant_id, id).await
                 }
-                if self.init_pivot_index(&tenant_id, id).await? {
-                    initialized += 1;
+                .await;
+                match r {
+                    Ok(true) => initialized += 1,
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, table_id = %id, "索引台帳の初期化に失敗（次のスイープで再試行）");
+                    }
                 }
             }
             // ジョブを失った running のバックフィル（投入 Tx の後にキューが失われた等）を積み直す。

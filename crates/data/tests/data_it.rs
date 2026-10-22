@@ -13,6 +13,8 @@
     clippy::print_stderr
 )]
 
+mod common;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -276,24 +278,36 @@ async fn expression_indexes_created_and_used() {
         .await
         .expect("create table");
 
-    // 台帳に載る（amount=btree_numeric, status=btree_text, code=unique_text_digest）。
-    // Task 15.2: text 型の unique は md5 の一意 btree（MAX_TEXT_LEN の値で btree キー上限を超えないため）。
-    let kinds: Vec<(String, String)> = sqlx::query_as(
-        "SELECT field, kind FROM data_index_registry WHERE tenant_id = $1 AND table_id = $2 ORDER BY field",
+    // 宣言した索引は pivot 索引テーブルの台帳に active で載る（Task 15.3 で旧方式の式インデックスは撤去・
+    // ランタイム DDL ゼロ）。amount=num, status=text, code=text+unique。
+    let states: Vec<(i16, i16, String)> = sqlx::query_as(
+        "SELECT s.field_id, s.index_table, s.state FROM data_index_state s \
+         JOIN data_table t ON t.tenant_int = s.tenant_int AND t.table_int = s.table_int \
+         WHERE t.tenant_id = $1 AND t.id = $2 AND s.field_id >= 16 ORDER BY 1, 2",
     )
     .bind(&tenant)
     .bind(table.id)
     .fetch_all(&pool)
     .await
-    .expect("registry rows");
-    assert_eq!(
-        kinds,
-        vec![
-            ("amount".to_string(), "btree_numeric".to_string()),
-            ("code".to_string(), "unique_text_digest".to_string()),
-            ("status".to_string(), "btree_text".to_string()),
-        ]
-    );
+    .expect("ledger rows");
+    let id = |k: &str| i16::try_from(table.schema.field(k).expect(k).id).unwrap();
+    let mut want = vec![
+        (id("amount"), 2, "active".to_string()),
+        (id("status"), 1, "active".to_string()),
+        (id("code"), 1, "active".to_string()),
+        (id("code"), 4, "active".to_string()),
+    ];
+    want.sort();
+    assert_eq!(states, want);
+    let legacy: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname LIKE $1) \
+             OR to_regclass('data_index_registry') IS NOT NULL",
+    )
+    .bind(format!("dr\\_{}\\_%", table.id.simple()))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!legacy, "旧方式の式インデックスと台帳は撤去済み");
 
     for i in 0..50 {
         store
@@ -322,7 +336,7 @@ async fn expression_indexes_created_and_used() {
                     descending: true,
                 }),
                 limit: 10,
-                offset: 0,
+                cursor: None,
             },
             None,
         )
@@ -352,27 +366,33 @@ async fn expression_indexes_created_and_used() {
         .await;
     assert!(matches!(bad, Err(DataError::Invalid(_))), "{bad:?}");
 
-    // EXPLAIN で式インデックスが使われる（受け入れ条件 9.2-2・プラン面）。
-    // 小テーブルでは seqscan が選ばれ得るため無効化してプランを確認する。
-    let mut conn = pool.acquire().await.expect("conn");
-    sqlx::query("SET enable_seqscan = off")
-        .execute(&mut *conn)
+    // EXPLAIN で pivot 索引が使われる（受け入れ条件 9.2-2・プラン面）。実行した文を同じバインドで計画し直す。
+    let (_, dbg) = store
+        .run_query_debug(
+            &c,
+            table.id,
+            &data::DataQuery {
+                filter: Some(data::Condition::cmp(
+                    "status",
+                    data::CondOp::Eq,
+                    Some(json!("draft")),
+                )),
+                ..Default::default()
+            },
+            &data::QueryTuning::default(),
+        )
         .await
-        .expect("disable seqscan");
-    // Task 15.1: 保存形の JSONB キーは不変の内部 ID 由来（"f{id}"）。式インデックスも同じ式で張られる。
-    let status_id = table.schema.field("status").expect("status").id;
-    let plan: Value = sqlx::query_scalar(&format!(
-        "EXPLAIN (FORMAT JSON) SELECT id FROM data_record \
-         WHERE tenant_id = '{tenant}' AND table_id = '{}' AND (data ->> 'f{status_id}') = 'draft'",
-        table.id
-    ))
-    .fetch_one(&mut *conn)
-    .await
-    .expect("explain");
-    let plan_text = plan.to_string();
+        .expect("debug query");
+    let drive = dbg
+        .statements
+        .iter()
+        .find(|s| s.label != "probe" && s.label != "fetch")
+        .expect("drive statement");
+    let plan = common::explain(&pool, drive, false).await;
+    let names = common::index_names(&plan);
     assert!(
-        plan_text.contains("Index Scan") || plan_text.contains("Bitmap Index Scan"),
-        "式インデックスが使われること: {plan_text}"
+        names.iter().any(|n| n.starts_with("data_index_text")),
+        "pivot 索引が使われること: {plan}"
     );
 }
 
@@ -611,14 +631,19 @@ async fn schema_update_additive_and_index_reapply() {
         .expect("schema update");
     assert_eq!(updated.schema_version, 2);
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM data_index_registry WHERE tenant_id = $1 AND table_id = $2",
+        "SELECT count(*) FROM data_index_state s \
+         JOIN data_table t ON t.tenant_int = s.tenant_int AND t.table_int = s.table_int \
+         WHERE t.tenant_id = $1 AND t.id = $2 AND s.field_id >= 16 AND s.state = 'active'",
     )
     .bind(&tenant)
     .bind(table.id)
     .fetch_one(&pool)
     .await
-    .expect("registry count");
-    assert_eq!(count, 2, "改訂で式インデックスが差分適用される");
+    .expect("ledger count");
+    assert_eq!(
+        count, 2,
+        "改訂で索引台帳が差分適用される（空テーブルは即 active）"
+    );
 
     // 型変更・削除は拒否。schema_version 不一致は 409。
     let breaking = store

@@ -49,7 +49,8 @@ pub struct ListRecordsQuery {
     /// 降順ソート（既定 false）。
     pub sort_desc: Option<bool>,
     pub limit: Option<i64>,
-    pub offset: Option<i64>,
+    /// 前ページの `next_cursor`（OFFSET は廃止・keyset ページング）。
+    pub cursor: Option<String>,
 }
 
 /// レコード一覧レスポンス。
@@ -59,6 +60,11 @@ pub struct RecordListResponse {
     /// 個別共有集合が上限（PIT-18）で切り詰められ、共有経由の一部行が
     /// 表示されていない可能性がある（fail-closed・可視減方向）。
     pub shares_truncated: bool,
+    /// 次ページのカーソル（無ければ終端）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// ソートの精度（切り詰めが起こり得る列で並べたら `prefix`）。
+    pub sort_precision: data::SortPrecision,
 }
 
 /// レコード個別共有リクエスト（共有語彙は viewer/editor のみ・Task 9.3）。
@@ -71,7 +77,10 @@ pub struct ShareRecordRequest {
 /// 件数レスポンス（行述語適用済み・Task 9.3）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RecordCountResponse {
+    /// 件数（`at_least` なら上限値＝少なくともこの件数）。
     pub count: i64,
+    /// 上限に達した（`count` 件以上ある）。
+    pub at_least: bool,
 }
 
 /// 削除クエリ（楽観ロック必須）。
@@ -178,7 +187,7 @@ pub async fn list_records(
                 filter,
                 sort,
                 limit: q.limit.unwrap_or(50),
-                offset: q.offset.unwrap_or(0),
+                cursor: q.cursor.clone(),
             },
             trace.as_deref(),
         )
@@ -186,6 +195,8 @@ pub async fn list_records(
     Ok(Json(RecordListResponse {
         items: page.items,
         shares_truncated: page.shares_truncated,
+        next_cursor: page.next_cursor,
+        sort_precision: page.sort_precision,
     }))
 }
 
@@ -373,9 +384,12 @@ pub async fn count_records(
     };
     let count = state
         .data
-        .count_records(&ctx, id, filter.as_ref(), trace.as_deref())
+        .count_records_capped(&ctx, id, filter.as_ref(), trace.as_deref())
         .await?;
-    Ok(Json(RecordCountResponse { count }))
+    Ok(Json(RecordCountResponse {
+        count: count.value() as i64,
+        at_least: matches!(count, data::CountResult::AtLeast(_)),
+    }))
 }
 
 /// レコードを個別共有する（テーブル owner またはレコード作成者・冪等）。

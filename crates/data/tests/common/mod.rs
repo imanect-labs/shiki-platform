@@ -247,3 +247,78 @@ pub fn rich_schema() -> TableSchema {
     let memo = field("memo", FieldType::Text); // 未索引
     schema(vec![title, amount, tags, status, due, memo])
 }
+
+/// 実行した文を同じバインドで `EXPLAIN (ANALYZE, FORMAT JSON)` し直す（計画の形の回帰）。
+///
+/// `plan_cache_mode` は読取経路と同じ `force_custom_plan`（`generic = true` なら `force_generic_plan`）。
+pub async fn explain(pool: &PgPool, st: &data::DebugStatement, analyze: bool) -> Value {
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL plan_cache_mode = force_custom_plan")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let opts = if analyze {
+        "ANALYZE, BUFFERS OFF, TIMING OFF, FORMAT JSON"
+    } else {
+        "FORMAT JSON"
+    };
+    let sql = format!("EXPLAIN ({opts}) {}", st.sql);
+    let mut q = sqlx::query_scalar::<_, Value>(&sql);
+    for p in &st.params {
+        q = bind_param(q, p);
+    }
+    let v = q.fetch_one(&mut *tx).await.unwrap();
+    tx.rollback().await.unwrap();
+    v
+}
+
+#[allow(clippy::match_same_arms)] // 型ごとの bind（numeric も text として渡す）。
+pub fn bind_param<'q>(
+    q: sqlx::query::QueryScalar<'q, sqlx::Postgres, Value, sqlx::postgres::PgArguments>,
+    p: &data::DebugParam,
+) -> sqlx::query::QueryScalar<'q, sqlx::Postgres, Value, sqlx::postgres::PgArguments> {
+    use data::DebugParam as P;
+    match p.clone() {
+        P::Text(v) => q.bind(v),
+        P::TextArray(v) => q.bind(v),
+        P::F64(v) => q.bind(v),
+        P::UuidArray(v) => q.bind(v),
+        P::I16(v) => q.bind(v),
+        P::I32(v) => q.bind(v),
+        P::I64(v) => q.bind(v),
+        P::I64Array(v) => q.bind(v),
+        P::Numeric(v) => q.bind(v),
+        P::NumericArray(v) => q.bind(v),
+    }
+}
+
+/// 計画木のノード種別を数える（`Node Type` の出現数）。
+pub fn count_nodes(plan: &Value, node_type: &str) -> usize {
+    match plan {
+        Value::Object(m) => {
+            let here = usize::from(m.get("Node Type").and_then(Value::as_str) == Some(node_type));
+            here + m.values().map(|v| count_nodes(v, node_type)).sum::<usize>()
+        }
+        Value::Array(a) => a.iter().map(|v| count_nodes(v, node_type)).sum(),
+        _ => 0,
+    }
+}
+
+/// 計画木に現れる索引名（`Index Name`）。
+pub fn index_names(plan: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    fn walk(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => {
+                if let Some(Value::String(r)) = m.get("Index Name") {
+                    out.push(r.clone());
+                }
+                m.values().for_each(|x| walk(x, out));
+            }
+            Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    walk(plan, &mut out);
+    out
+}

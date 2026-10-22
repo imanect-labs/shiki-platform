@@ -21,7 +21,6 @@ const DATA_TABLES: &[&str] = &[
     "data_table",
     "data_record",
     "data_record_revision",
-    "data_index_registry",
     // pivot 索引テーブルと台帳（Task 15.2・tenant_int で持つ）。
     "data_index_text",
     "data_index_num",

@@ -7,8 +7,6 @@
 //! 値は全てバインド。SQL テキストへ埋め込むのは内部 ID 由来の JSONB キー（`"f{id}"`・
 //! [`crate::field_key::is_json_key`] で再検証）と固定エイリアスのみ。
 
-use std::fmt::Write as _;
-
 use authz::{AuthContext, Consistency, Relation};
 use sqlx::postgres::PgArguments;
 use sqlx::query::QueryAs;
@@ -23,27 +21,6 @@ use crate::record::RecordRow;
 use crate::store::DataStore;
 use crate::{map_db, DataError};
 
-/// 一覧の追加フィルタ（record_list が型検証済みで渡す・閉じた形）。
-///
-/// `field` は保存形の JSONB キー（`"f{id}"`）。参照名（key）からの変換は呼び出し側が行う。
-#[derive(Debug, Clone)]
-pub(crate) enum ListFilter {
-    /// text 系（text/select/date/datetime/user_ref/role_ref/file_ref/record_ref）の等値。
-    TextEq { field: String, value: String },
-    /// number の等値。
-    NumberEq { field: String, value: f64 },
-    /// multi_select の包含（GIN `?`）。
-    MultiContains { field: String, value: String },
-}
-
-/// 一覧のソート（record_list が検証済みで渡す）。
-#[derive(Debug, Clone)]
-pub(crate) struct ListSort {
-    pub field: String,
-    pub numeric: bool,
-    pub descending: bool,
-}
-
 /// 全読取 SQL の先頭条件（`r.tenant_id = $1 AND r.table_id = $2 AND r.tenant_int = $3 AND
 /// r.table_int = $4`・tenant スコープ＋パーティション枝刈り）が占有するプレースホルダ数
 /// （行述語は `$5` から）。
@@ -54,36 +31,6 @@ pub(crate) struct ReadPredicate {
     /// `(...)` 自己完結の SQL 断片（エイリアス `r`）。
     sql: String,
     binds: Vec<Bind>,
-    pub shares_truncated: bool,
-}
-
-impl ReadPredicate {
-    /// 述語 SQL 断片（集計クエリ組み立てが参照する）。
-    pub(crate) fn sql(&self) -> &str {
-        &self.sql
-    }
-    /// 述語のバインド列（$3 起点で順に bind する）。
-    pub(crate) fn binds(&self) -> &[Bind] {
-        &self.binds
-    }
-
-    /// テスト専用: SQL 断片とバインドから直接組む（集計 SQL 組み立ての純関数検証用）。
-    #[cfg(test)]
-    pub(crate) fn for_test(sql: impl Into<String>, binds: Vec<Bind>) -> Self {
-        ReadPredicate {
-            sql: sql.into(),
-            binds,
-            shares_truncated: false,
-        }
-    }
-}
-
-/// レコード行を DTO へ変換する（宣言的クエリ層から使う）。
-pub(crate) fn row_into_record(
-    row: RecordRow,
-    schema: &crate::model::TableSchema,
-) -> crate::model::DataRecord {
-    row.into_record(schema)
 }
 
 use crate::record::RECORD_COLS as SELECT_COLS;
@@ -113,7 +60,6 @@ impl DataStore {
         Ok(ReadPredicate {
             sql,
             binds: binds.binds,
-            shares_truncated: m.shares_truncated,
         })
     }
 
@@ -172,85 +118,6 @@ impl DataStore {
         q.fetch_optional(&mut *conn).await.map_err(map_db)
     }
 
-    /// 可視行の一覧（フィルタ/ソートは検証済み・述語と AND 合成）。
-    pub(crate) async fn select_visible_rows(
-        &self,
-        ctx: &AuthContext,
-        table: &DataTable,
-        filter: Option<&ListFilter>,
-        sort: Option<&ListSort>,
-        limit: i64,
-        offset: i64,
-    ) -> Result<(Vec<RecordRow>, bool), DataError> {
-        let pred = self.read_predicate(ctx, table).await?;
-        let mut sql = format!(
-            "SELECT {SELECT_COLS} FROM data_record {RECORD_ALIAS} \
-             WHERE r.tenant_id = $1 AND r.table_id = $2 \
-               AND r.tenant_int = $3 AND r.table_int = $4 AND ({})",
-            pred.sql
-        );
-        let mut next_ph = SCOPE_BINDS + 1 + pred.binds.len();
-        let filter_bind = push_filter_sql(&mut sql, filter, &mut next_ph)?;
-        match sort {
-            Some(s) => {
-                let dir = if s.descending { "DESC" } else { "ASC" };
-                let expr = sort_expr(s)?;
-                let _ = write!(sql, " ORDER BY {expr} {dir} NULLS LAST, r.id {dir}");
-            }
-            None => sql.push_str(" ORDER BY r.updated_at DESC, r.id DESC"),
-        }
-        let _ = write!(sql, " LIMIT ${next_ph} OFFSET ${}", next_ph + 1);
-
-        let mut q = bind_all(
-            sqlx::query_as::<Postgres, RecordRow>(&sql),
-            ctx,
-            table,
-            &pred.binds,
-        );
-        if let Some(b) = filter_bind {
-            q = push_bind(q, b);
-        }
-        let rows = q
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
-            .await
-            .map_err(map_db)?;
-        Ok((rows, pred.shares_truncated))
-    }
-
-    /// 可視行の件数（集計にも述語を適用する・Task 9.3 受け入れ条件）。
-    pub(crate) async fn count_visible_rows(
-        &self,
-        ctx: &AuthContext,
-        table: &DataTable,
-        filter: Option<&ListFilter>,
-    ) -> Result<i64, DataError> {
-        let pred = self.read_predicate(ctx, table).await?;
-        let mut sql = format!(
-            "SELECT count(*) FROM data_record {RECORD_ALIAS} \
-             WHERE r.tenant_id = $1 AND r.table_id = $2 \
-               AND r.tenant_int = $3 AND r.table_int = $4 AND ({})",
-            pred.sql
-        );
-        let mut next_ph = SCOPE_BINDS + 1 + pred.binds.len();
-        let filter_bind = push_filter_sql(&mut sql, filter, &mut next_ph)?;
-        let mut q = sqlx::query_scalar::<Postgres, i64>(&sql)
-            .bind(&ctx.tenant_id)
-            .bind(table.id)
-            .bind(table.keys.tenant_int)
-            .bind(table.keys.table_int);
-        for b in &pred.binds {
-            q = push_bind_scalar(q, b.clone());
-        }
-        if let Some(b) = filter_bind {
-            q = push_bind_scalar(q, b);
-        }
-        q.fetch_one(self.pools.for_tenant(&ctx.tenant_id))
-            .await
-            .map_err(map_db)
-    }
-
     /// actor 述語（FSM 遷移認可・Task 9.10）を**当該行に対し**評価する。
     ///
     /// 読取述語ではなく遷移固有の actor を使う。行は可視前提（ロック済み）で、述語を満たす
@@ -284,7 +151,7 @@ impl DataStore {
             .bind(table.keys.tenant_int)
             .bind(table.keys.table_int);
         for b in &binds.binds {
-            q = push_bind_scalar(q, b.clone());
+            q = push_bind_scalar(q, b);
         }
         q.bind(record_id)
             .fetch_one(self.pools.for_tenant(&ctx.tenant_id))
@@ -328,7 +195,7 @@ impl DataStore {
             .bind(table.keys.tenant_int)
             .bind(table.keys.table_int);
         for b in &binds.binds {
-            q = push_bind_scalar(q, b.clone());
+            q = push_bind_scalar(q, b);
         }
         let by_policy = q
             .bind(record_id)
@@ -382,14 +249,7 @@ impl DataStore {
             .bind(ref_table.id)
             .bind(ref_table.keys.tenant_int)
             .bind(ref_table.keys.table_int);
-        for b in &pred.binds {
-            q = match b.clone() {
-                Bind::Text(v) => q.bind(v),
-                Bind::TextArray(v) => q.bind(v),
-                Bind::Number(v) => q.bind(v),
-                Bind::UuidArray(v) => q.bind(v),
-            };
-        }
+        q = crate::query::sql::bind_query_as(q, &pred.binds);
         let rows = q
             .bind(ids.to_vec())
             .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
@@ -403,84 +263,31 @@ impl DataStore {
 
     /// 外部 ID（uuid）を内部キー `record_int` へ**1 本のクエリで**引き直す（data-platform §3.2）。
     ///
-    /// 個別共有（OpenFGA の `data_record` タプルは uuid）を pivot 索引側の述語へ渡すための入口。
-    /// 呼び出し側は材料の上限（`MAX_SHARED_IDS`）で切り詰め済みの集合を渡すこと。結果は
-    /// リクエストスコープでのみ使い、**外へ出さない**（PIT-75）。Task 15.3 の材料解決が使う。
-    #[allow(dead_code)] // Task 15.3 の材料解決が使う（継ぎ目として先に置く）。
+    /// 個別共有（OpenFGA の `data_record` タプルは uuid）と record_ref の比較値を pivot 索引側の述語へ
+    /// 渡すための入口。呼び出し側は材料の上限（`MAX_SHARED_IDS`）で切り詰め済みの集合を渡すこと。
+    /// 結果はリクエストスコープでのみ使い、**外へ出さない**（PIT-75）。存在しない uuid は結果に含まれない。
     pub(crate) async fn record_ints_for(
-        &self,
-        ctx: &AuthContext,
-        table: &DataTable,
+        conn: &mut PgConnection,
+        tenant_id: &str,
+        keys: crate::model::TableKeys,
         ids: &[Uuid],
-    ) -> Result<Vec<i64>, DataError> {
+    ) -> Result<std::collections::HashMap<Uuid, i64>, DataError> {
         if ids.is_empty() {
-            return Ok(Vec::new());
+            return Ok(std::collections::HashMap::new());
         }
-        let ints: Vec<i64> = sqlx::query_scalar(
-            "SELECT record_int FROM data_record \
-             WHERE tenant_int = $1 AND table_int = $2 AND tenant_id = $3 AND id = ANY($4::uuid[]) \
-             ORDER BY record_int",
+        let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+            "SELECT id, record_int FROM data_record \
+             WHERE tenant_int = $1 AND table_int = $2 AND tenant_id = $3 AND id = ANY($4::uuid[])",
         )
-        .bind(table.keys.tenant_int)
-        .bind(table.keys.table_int)
-        .bind(&ctx.tenant_id)
+        .bind(keys.tenant_int)
+        .bind(keys.table_int)
+        .bind(tenant_id)
         .bind(ids.to_vec())
-        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_all(&mut *conn)
         .await
         .map_err(map_db)?;
-        Ok(ints)
+        Ok(rows.into_iter().collect())
     }
-}
-
-/// フィルタ断片を SQL へ追記し、必要なバインドを返す（プレースホルダは呼び出し側採番）。
-fn push_filter_sql(
-    sql: &mut String,
-    filter: Option<&ListFilter>,
-    next_ph: &mut usize,
-) -> Result<Option<Bind>, DataError> {
-    let Some(f) = filter else { return Ok(None) };
-    let (fragment, bind) = match f {
-        ListFilter::TextEq { field, value } => (
-            format!(" AND ({RECORD_ALIAS}.data ->> '{field}') = ${next_ph}"),
-            Bind::Text(value.clone()),
-        ),
-        ListFilter::NumberEq { field, value } => (
-            format!(" AND (({RECORD_ALIAS}.data ->> '{field}'))::numeric = ${next_ph}::numeric"),
-            Bind::Number(*value),
-        ),
-        ListFilter::MultiContains { field, value } => (
-            format!(" AND ({RECORD_ALIAS}.data -> '{field}') ? ${next_ph}"),
-            Bind::Text(value.clone()),
-        ),
-    };
-    // JSONB キーは呼び出し側が宣言フィールドから生成済み。埋め込み直前に形式を再検証する。
-    let field = match f {
-        ListFilter::TextEq { field, .. }
-        | ListFilter::NumberEq { field, .. }
-        | ListFilter::MultiContains { field, .. } => field,
-    };
-    if !is_json_key(field) {
-        return Err(DataError::Internal(format!(
-            "フィルタの JSONB キー '{field}' が内部 ID 形式ではありません"
-        )));
-    }
-    sql.push_str(&fragment);
-    *next_ph += 1;
-    Ok(Some(bind))
-}
-
-fn sort_expr(s: &ListSort) -> Result<String, DataError> {
-    if !is_json_key(&s.field) {
-        return Err(DataError::Internal(format!(
-            "ソートの JSONB キー '{}' が内部 ID 形式ではありません",
-            s.field
-        )));
-    }
-    Ok(if s.numeric {
-        format!("(({RECORD_ALIAS}.data ->> '{}'))::numeric", s.field)
-    } else {
-        format!("({RECORD_ALIAS}.data ->> '{}')", s.field)
-    })
 }
 
 /// 共通バインド（tenant, table, 述語バインド）を適用する。
@@ -496,31 +303,21 @@ fn bind_all<'q>(
         .bind(table.keys.tenant_int)
         .bind(table.keys.table_int);
     for b in binds {
-        q = push_bind(q, b.clone());
+        q = push_bind(q, b);
     }
     q
 }
 
-fn push_bind(
-    q: QueryAs<'_, Postgres, RecordRow, PgArguments>,
-    b: Bind,
-) -> QueryAs<'_, Postgres, RecordRow, PgArguments> {
-    match b {
-        Bind::Text(v) => q.bind(v),
-        Bind::TextArray(v) => q.bind(v),
-        Bind::Number(v) => q.bind(v),
-        Bind::UuidArray(v) => q.bind(v),
-    }
+fn push_bind<'q>(
+    q: QueryAs<'q, Postgres, RecordRow, PgArguments>,
+    b: &Bind,
+) -> QueryAs<'q, Postgres, RecordRow, PgArguments> {
+    crate::query::sql::bind_query_as(q, std::slice::from_ref(b))
 }
 
-fn push_bind_scalar<T>(
-    q: sqlx::query::QueryScalar<'_, Postgres, T, PgArguments>,
-    b: Bind,
-) -> sqlx::query::QueryScalar<'_, Postgres, T, PgArguments> {
-    match b {
-        Bind::Text(v) => q.bind(v),
-        Bind::TextArray(v) => q.bind(v),
-        Bind::Number(v) => q.bind(v),
-        Bind::UuidArray(v) => q.bind(v),
-    }
+fn push_bind_scalar<'q, T>(
+    q: sqlx::query::QueryScalar<'q, Postgres, T, PgArguments>,
+    b: &Bind,
+) -> sqlx::query::QueryScalar<'q, Postgres, T, PgArguments> {
+    crate::query::sql::bind_scalar(q, std::slice::from_ref(b))
 }

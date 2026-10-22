@@ -218,7 +218,7 @@ pub(crate) async fn sync_ledger(
     Ok(building)
 }
 
-async fn set_state(
+pub(crate) async fn set_state(
     conn: &mut PgConnection,
     keys: TableKeys,
     field: FieldId,

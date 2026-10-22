@@ -15,7 +15,7 @@
 //! `base64url(nopad)( version(1) || nonce(12) || ciphertext+tag )`。平文は JSON
 //! （[`CursorPayload`]）。nonce は毎回乱数（96bit・GCM の要件）。
 //!
-//! 本モジュールは Task 15.3（クエリコンパイラ v2 の keyset ページング）が使う。
+//! クエリコンパイラ v2（[`crate::query`]）の keyset ページングが使う。
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
@@ -46,7 +46,20 @@ impl CursorKey {
         CursorKey(bytes)
     }
 
-    /// 起動ごとの乱数鍵（設定が無い場合の既定。再起動・レプリカ間でカーソルは無効になる）。
+    /// マスターキーから用途別の鍵を導出する（HMAC-SHA256・ドメイン分離ラベル付き）。
+    /// 同じマスターキーを持つ全レプリカで同じ鍵になる。マスターキー自体を AEAD の鍵に流用しない。
+    pub fn derive_from_master(master: &[u8; CURSOR_KEY_LEN]) -> Self {
+        use hmac::{Hmac, Mac};
+        // HMAC は任意長の鍵を受けるので new_from_slice は失敗しない（失敗時は乱数鍵へ倒さず空鍵で導出しない）。
+        let mut k = [0u8; CURSOR_KEY_LEN];
+        if let Ok(mut mac) = <Hmac<sha2::Sha256> as Mac>::new_from_slice(master) {
+            mac.update(b"shiki/data/cursor-key/v1");
+            k.copy_from_slice(&mac.finalize().into_bytes());
+        }
+        CursorKey(k)
+    }
+
+    /// 起動ごとの乱数鍵（ライブラリの既定・開発/テスト用。再起動・レプリカ間でカーソルは無効になる）。
     pub fn ephemeral() -> Self {
         let mut k = [0u8; CURSOR_KEY_LEN];
         rand::thread_rng().fill_bytes(&mut k);
@@ -67,8 +80,12 @@ pub(crate) struct CursorPayload {
     pub sort_values: Vec<serde_json::Value>,
     /// 継続位置の内部キー。
     pub record_int: i64,
-    /// 任意列ソートの区間番号（data-platform §3.5・不要なら 0）。
+    /// 任意列ソートの区間番号（1 = 値を持つ行・2 = 値なしの行・data-platform §3.5）。
     pub segment: u8,
+    /// スナップショット読取の基準位置（data-platform §3.3）。配信位置（`delivery_seq`）は
+    /// Task 15.6 の outbox で入るため、現状は常に `None`（ライブページング）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_seq: Option<i64>,
 }
 
 /// カーソルの束縛先（AAD に入る・トークンには含まれない）。
@@ -105,7 +122,6 @@ impl CursorCodec {
     }
 
     /// 暗号化して不透明トークンにする。
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn seal(
         &self,
         scope: &CursorScope<'_>,
@@ -134,7 +150,6 @@ impl CursorCodec {
     }
 
     /// トークンを検証・復号する。改竄・別スコープへの流用・形式不正はすべて同一の 422。
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn open(
         &self,
         scope: &CursorScope<'_>,
