@@ -13,8 +13,8 @@ use std::sync::Arc;
 use authz::AuthContext;
 
 use super::LlmGateway;
-use crate::chatgpt::ChatGptAccount;
-use crate::config::{ModelEntry, ProviderKind};
+use crate::chatgpt::{ChatGptAccount, ChatGptPlanProvider};
+use crate::config::{GatewayConfig, ModelEntry, ProviderKind};
 use crate::provider::LlmError;
 use crate::tenant::{TenantLlmSettings, AUTO_MODEL};
 
@@ -67,6 +67,40 @@ impl LlmGateway {
         }
         Ok(without_models(catalog, settings, &hidden))
     }
+}
+
+/// ChatGPT プランのアダプタを組む（`chatgpt_plan` のプロバイダがあるときだけ）。接続
+/// （[`GatewayConfig::chatgpt`]）が無ければ構築を失敗させる。
+pub(super) fn plan_provider(
+    http: &reqwest::Client,
+    config: &GatewayConfig,
+) -> Result<Option<Arc<ChatGptPlanProvider>>, LlmError> {
+    let Some(pc) = std::iter::once(&config.provider)
+        .chain(config.extra_providers.iter())
+        .find(|p| p.kind == ProviderKind::ChatgptPlan)
+    else {
+        return Ok(None);
+    };
+    let account = config
+        .chatgpt
+        .clone()
+        .ok_or_else(|| LlmError::Config("chatgpt_plan requires llm.chatgpt".into()))?;
+    // アダプタの既定モデルは保険（gateway は常に実 ID を詰めて渡す）。このプロバイダの先頭のモデル。
+    let catalog = &config.catalog;
+    let default_real = catalog
+        .models
+        .iter()
+        .find(|m| m.provider_id() == pc.effective_id())
+        .map_or_else(
+            || catalog.default_model.clone(),
+            |m| m.resolved_id().to_string(),
+        );
+    Ok(Some(Arc::new(ChatGptPlanProvider::new(
+        http.clone(),
+        account,
+        default_real,
+        config.timeouts,
+    ))))
 }
 
 /// `hidden` のモデルを使えないものとして見せる（既定がそれなら Auto）。

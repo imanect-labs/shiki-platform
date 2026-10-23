@@ -36,6 +36,8 @@ async fn token(
     State(m): State<Shared>,
     Form(f): Form<HashMap<String, String>>,
 ) -> impl IntoResponse {
+    let delay = m.lock().unwrap().token_delay;
+    tokio::time::sleep(delay).await;
     let mut m = m.lock().unwrap();
     m.token_forms.push(f);
     let (status, body) = m
@@ -206,12 +208,15 @@ async fn login_exchanges_the_pasted_code_and_persists_the_connection() {
     assert!(!form["code_verifier"].is_empty());
 
     // 再起動しても接続は残る。
-    let reopened = ChatGptAccount::open(reqwest::Client::new(), f.account.settings.clone());
+    let reopened = Arc::new(ChatGptAccount::open(
+        reqwest::Client::new(),
+        f.account.settings.clone(),
+    ));
     assert_eq!(
         reopened.status(&me).connection,
         ChatGptConnection::Connected
     );
-    assert_eq!(reopened.access_token().await.unwrap(), "at-1");
+    assert_eq!(reopened.access_token(&me).await.unwrap(), "at-1");
 
     // 他の利用者には連携者のアカウントを見せず、ログインも切断もさせない。
     let other = ctx("other");
@@ -281,7 +286,7 @@ async fn refresh_rotates_tokens_and_a_dead_refresh_token_asks_for_reauth() {
         .unwrap()
         .token_replies
         .push_back((StatusCode::OK, token_reply("at-2", "rt-2", 60, None)));
-    assert_eq!(f.account.access_token().await.unwrap(), "at-2");
+    assert_eq!(f.account.access_token(&ctx("me")).await.unwrap(), "at-2");
     {
         let m = f.mock.lock().unwrap();
         let form = m.token_forms.last().unwrap();
@@ -296,7 +301,7 @@ async fn refresh_rotates_tokens_and_a_dead_refresh_token_asks_for_reauth() {
         json!({"error": "refresh_token_reused"}),
     ));
     assert!(matches!(
-        f.account.access_token().await,
+        f.account.access_token(&ctx("me")).await,
         Err(LlmError::Config(_))
     ));
     assert_eq!(
@@ -321,7 +326,7 @@ async fn a_temporary_refresh_failure_keeps_the_connection() {
     let me = ctx("me");
     connect(&f, &me, 60).await;
     // 応答を積まない＝500。まだ失効していないトークンで続け、資格情報は消さない。
-    assert_eq!(f.account.access_token().await.unwrap(), "at-1");
+    assert_eq!(f.account.access_token(&ctx("me")).await.unwrap(), "at-1");
     assert_eq!(
         f.account.status(&me).connection,
         ChatGptConnection::Connected
@@ -355,7 +360,7 @@ async fn disconnect_revokes_and_forgets_all_but_the_host_id() {
         f.account.status(&me).connection,
         ChatGptConnection::NotConnected
     );
-    assert!(f.account.access_token().await.is_err());
+    assert!(f.account.access_token(&ctx("me")).await.is_err());
     // 次のログインは新規登録からだが、ホスト ID は変えない。他の利用者も連携できる。
     let q = query(&f.account.start_login(&ctx("other")).await.unwrap());
     assert_eq!(q["client_id"], DYNAMIC_CLIENT_ID);
@@ -375,7 +380,24 @@ async fn provider_calls_responses_with_the_owner_token_in_plan_shape() {
     assert_eq!(provider.name(), "chatgpt_plan");
     let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
     req.max_tokens = Some(100);
-    let deltas: Vec<_> = provider.stream(&req).await.unwrap().collect().await;
+    // 呼び出し主体なしでは生成しない。本人に結び付けたときだけ送る。
+    assert!(matches!(
+        provider.stream(&req).await,
+        Err(LlmError::Config(_))
+    ));
+    let me = ctx("me");
+    let other = ctx("other");
+    assert!(matches!(
+        provider.for_caller(&other).stream(&req).await,
+        Err(LlmError::Config(_))
+    ));
+    let deltas: Vec<_> = provider
+        .for_caller(&me)
+        .stream(&req)
+        .await
+        .unwrap()
+        .collect()
+        .await;
     assert!(matches!(&deltas[0], Ok(StreamDelta::TextDelta { text }) if text == "ok"));
     let (headers, body) = f.mock.lock().unwrap().responses[0].clone();
     assert_eq!(headers["authorization"], "Bearer at-1");
@@ -462,7 +484,7 @@ async fn ownership_checks_do_not_wait_for_a_slow_refresh() {
             .push_back((StatusCode::OK, token_reply("at-2", "rt-2", 3600, None)));
     }
     let account = f.account.clone();
-    let refresh = tokio::spawn(async move { account.access_token().await });
+    let refresh = tokio::spawn(async move { account.access_token(&ctx("me")).await });
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     // リフレッシュがロックを持って認証サーバを待っている間も、照合と表示はすぐ返る。
     let started = std::time::Instant::now();
@@ -483,7 +505,59 @@ async fn a_failed_refresh_backs_off_while_the_token_is_still_valid() {
     let forms = || f.mock.lock().unwrap().token_forms.len();
     let before = forms();
     // 1 回目は試して失敗（500）、まだ有効なので古いトークンで続ける。続く呼び出しは間を置く。
-    assert_eq!(f.account.access_token().await.unwrap(), "at-1");
-    assert_eq!(f.account.access_token().await.unwrap(), "at-1");
+    assert_eq!(f.account.access_token(&ctx("me")).await.unwrap(), "at-1");
+    assert_eq!(f.account.access_token(&ctx("me")).await.unwrap(), "at-1");
     assert_eq!(forms(), before + 1);
+}
+
+#[tokio::test]
+async fn a_switched_owner_never_gets_the_previous_owners_token() {
+    let f = fixture().await;
+    let (a, b) = (ctx("a"), ctx("b"));
+    connect(&f, &a, 3600).await;
+    assert_eq!(f.account.access_token(&a).await.unwrap(), "at-1");
+    // a が解除して b が連携した後の、a の生成（照合済みの古い呼び出しを含む）は b の枠を使わない。
+    f.account.disconnect(&a).await.unwrap();
+    connect(&f, &b, 3600).await;
+    assert!(matches!(
+        f.account.access_token(&a).await,
+        Err(LlmError::Config(_))
+    ));
+    assert_eq!(f.account.access_token(&b).await.unwrap(), "at-1");
+}
+
+#[tokio::test]
+async fn a_cancelled_generation_still_saves_the_rotated_refresh_token() {
+    let f = fixture().await;
+    let me = ctx("me");
+    connect(&f, &me, 60).await;
+    {
+        let mut m = f.mock.lock().unwrap();
+        m.token_delay = std::time::Duration::from_millis(500);
+        m.token_replies
+            .push_back((StatusCode::OK, token_reply("at-2", "rt-2", 3600, None)));
+    }
+    // 生成を止めた（future を捨てた）ことにする。
+    let cut = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        f.account.access_token(&me),
+    )
+    .await;
+    assert!(cut.is_err(), "{cut:?}");
+    // リフレッシュは裏で最後まで進み、置き換わったリフレッシュトークンがファイルに残る。
+    let path = f.account.settings.credential_path.clone();
+    let mut saved = None;
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        saved = store::load(&path)
+            .unwrap()
+            .and_then(|c| c.tokens)
+            .map(|t| t.refresh_token)
+            .filter(|t| t == "rt-2");
+        if saved.is_some() {
+            break;
+        }
+    }
+    assert_eq!(saved.as_deref(), Some("rt-2"));
+    assert_eq!(f.account.access_token(&me).await.unwrap(), "at-2");
 }

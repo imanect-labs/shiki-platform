@@ -1,10 +1,15 @@
 //! ChatGPT プランで生成するアダプタ（Responses API を連携者のアクセストークンで呼ぶ）。
 //!
 //! 送る形は [`OpenAiResponsesProvider`] のプラン向けの形（`max_output_tokens` を送らない・
-//! system を developer で送る）。呼び出し主体の照合は gateway が先に済ませる
-//! （[`ChatGptAccount::ensure_owner`]）ので、ここはトークンを付けて送るだけ。
+//! system を developer で送る）。
+//!
+//! 生成は必ず呼び出し主体に結び付けて行う（[`ChatGptPlanProvider::for_caller`]）。トークンの取得時に
+//! 連携者と照合し直すので、gateway の照合のあとで連携者が入れ替わっても別人の枠で生成しない。
+//! 主体なしの [`LlmProvider::stream`] は使わせない（fail-closed）。
 
 use std::sync::Arc;
+
+use authz::AuthContext;
 
 use super::ChatGptAccount;
 use crate::config::LlmTimeouts;
@@ -58,17 +63,57 @@ impl ChatGptPlanProvider {
     }
 }
 
-#[async_trait::async_trait]
-impl LlmProvider for ChatGptPlanProvider {
-    fn name(&self) -> &'static str {
-        "chatgpt_plan"
+const NAME: &str = "chatgpt_plan";
+
+impl ChatGptPlanProvider {
+    /// 呼び出し主体に結び付けたアダプタ（gateway が生成のたびに作る）。
+    pub(crate) fn for_caller<'a>(&'a self, ctx: &'a AuthContext) -> ForCaller<'a> {
+        ForCaller {
+            provider: self,
+            ctx,
+        }
     }
 
-    async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
-        let token = self.account.access_token().await?;
+    async fn stream_for(
+        &self,
+        ctx: &AuthContext,
+        req: &GenerateRequest,
+    ) -> Result<DeltaStream, LlmError> {
+        let token = self.account.access_token(ctx).await?;
         match self.inner.stream_with_bearer(req, Some(&token)).await {
             Ok(s) => Ok(s),
             Err(e) => Err(self.explain(e).await),
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for ChatGptPlanProvider {
+    fn name(&self) -> &'static str {
+        NAME
+    }
+
+    /// 呼び出し主体が分からないので生成しない（[`Self::for_caller`] を通す）。
+    async fn stream(&self, _req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
+        Err(LlmError::Config(
+            "chatgpt_plan は呼び出し主体なしでは使えません".into(),
+        ))
+    }
+}
+
+/// 呼び出し主体に結び付けた ChatGPT プランのアダプタ。
+pub(crate) struct ForCaller<'a> {
+    provider: &'a ChatGptPlanProvider,
+    ctx: &'a AuthContext,
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for ForCaller<'_> {
+    fn name(&self) -> &'static str {
+        NAME
+    }
+
+    async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
+        self.provider.stream_for(self.ctx, req).await
     }
 }

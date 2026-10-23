@@ -11,7 +11,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 
 use crate::accounting::{UsageRecord, UsageRecorder};
-use crate::chatgpt::{ChatGptAccount, ChatGptPlanProvider};
+use crate::chatgpt::ChatGptPlanProvider;
 use crate::config::{
     AutoConfig, GatewayConfig, LlmTimeouts, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind,
     DEFAULT_PROVIDER_ID,
@@ -118,6 +118,8 @@ struct Inner {
     usage: UsageReporter,
     limits: UsageLimiter,
     langfuse: Option<LangfuseClient>,
+    /// ChatGPT プランのアダプタ（生成は呼び出し主体に結び付けて行う・#854）。
+    chatgpt_plan: Option<Arc<ChatGptPlanProvider>>,
 }
 
 impl LlmGateway {
@@ -138,6 +140,7 @@ impl LlmGateway {
             .as_ref()
             .map(|c| LangfuseClient::new(http.clone(), c));
         let mut providers: HashMap<String, ProviderSlot> = HashMap::new();
+        let chatgpt_plan = chatgpt_gate::plan_provider(&http, &config)?;
         for pc in std::iter::once(&config.provider).chain(config.extra_providers.iter()) {
             let id = pc.effective_id().to_string();
             if providers.contains_key(&id) {
@@ -148,7 +151,7 @@ impl LlmGateway {
                 pc,
                 &config.catalog,
                 config.timeouts,
-                config.chatgpt.as_ref(),
+                chatgpt_plan.as_ref(),
             )?;
             providers.insert(
                 id,
@@ -178,6 +181,7 @@ impl LlmGateway {
                 usage: UsageReporter::new(db.clone()),
                 limits: UsageLimiter::new(db),
                 langfuse,
+                chatgpt_plan,
                 config,
             }),
         })
@@ -376,7 +380,13 @@ impl LlmGateway {
         }
         req.model = Some(entry.resolved_id().to_string());
 
-        stream_with_retry(slot.provider.as_ref(), &req, &UNAVAILABLE_BACKOFF).await
+        match (&self.inner.chatgpt_plan, slot.config.kind) {
+            // 連携者のプラン枠は、トークンの取得時にも呼び出し主体と照合し直す（再試行のたびにも）。
+            (Some(p), ProviderKind::ChatgptPlan) => {
+                stream_with_retry(&p.for_caller(ctx), &req, &UNAVAILABLE_BACKOFF).await
+            }
+            _ => stream_with_retry(slot.provider.as_ref(), &req, &UNAVAILABLE_BACKOFF).await,
+        }
     }
 
     /// 利用制限（月次コスト上限・プレビュー環境向け）を生成前に確かめる。
@@ -541,7 +551,7 @@ fn build_provider(
     pc: &ProviderConfig,
     catalog: &ModelCatalog,
     timeouts: LlmTimeouts,
-    chatgpt: Option<&Arc<ChatGptAccount>>,
+    chatgpt_plan: Option<&Arc<ChatGptPlanProvider>>,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
     // 共有 HTTP クライアント（接続プール共有・タイムアウトなし）をそのまま各アダプタへ渡し、
     // タイムアウト（最初の応答・無通信・全体）は各アダプタが共通のヘルパで測る（#554）。
@@ -589,17 +599,10 @@ fn build_provider(
                     .with_timeouts(timeouts),
             ))
         }
-        ProviderKind::ChatgptPlan => {
-            let account = chatgpt
-                .cloned()
-                .ok_or_else(|| LlmError::Config("chatgpt_plan requires llm.chatgpt".into()))?;
-            Ok(Arc::new(ChatGptPlanProvider::new(
-                http,
-                account,
-                default_real,
-                timeouts,
-            )))
-        }
+        // 実体は build で先に組む（呼び出し主体に結び付けて使うので型付きでも持つ）。
+        ProviderKind::ChatgptPlan => chatgpt_plan
+            .map(|p| Arc::clone(p) as Arc<dyn LlmProvider>)
+            .ok_or_else(|| LlmError::Config("chatgpt_plan requires llm.chatgpt".into())),
         ProviderKind::Anthropic => {
             let base = pc
                 .base_url

@@ -458,9 +458,29 @@ impl ChatGptAccount {
         Ok(())
     }
 
-    /// 使えるアクセストークンを返す（失効が近ければ直列にリフレッシュする）。
-    pub(crate) async fn access_token(&self) -> Result<String, LlmError> {
+    /// 呼び出し主体のアクセストークンを返す（失効が近ければ直列にリフレッシュする）。
+    ///
+    /// 連携者の照合とトークンの取り出しは、資格情報のロックの中で一度に行う（照合と取得の間に
+    /// 連携者が入れ替わっても、別人のトークンで生成しない）。処理は独立したタスクで行い、呼び出し側が
+    /// 生成を止めて future を捨てても、始めたリフレッシュは応答の受信と保存まで終える（ローテーション
+    /// 済みのリフレッシュトークンを失って再ログインが要る状態にしない）。
+    pub(crate) async fn access_token(
+        self: &std::sync::Arc<Self>,
+        ctx: &AuthContext,
+    ) -> Result<String, LlmError> {
+        let (account, ctx) = (std::sync::Arc::clone(self), ctx.clone());
+        tokio::spawn(async move { account.access_token_now(&ctx).await })
+            .await
+            .map_err(|e| LlmError::Internal(format!("chatgpt token task: {e}")))?
+    }
+
+    async fn access_token_now(&self, ctx: &AuthContext) -> Result<String, LlmError> {
         let mut creds = self.creds.lock().await;
+        if !creds.owner.as_ref().is_some_and(|o| o.matches(ctx)) {
+            return Err(LlmError::Config(
+                "このモデルは ChatGPT プランを連携した本人だけが使えます。".into(),
+            ));
+        }
         let not_connected = || {
             LlmError::Config(
                 "ChatGPT の再ログインが必要です。設定 → 接続済みアプリから接続してください。"

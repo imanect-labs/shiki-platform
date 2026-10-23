@@ -11,6 +11,7 @@ import {
   type ChatGptStatus,
 } from "@/lib/chatgpt-api";
 import { formatDateTime } from "@/lib/format";
+import { invalidateLlmModels } from "@/lib/model-choice";
 import { OpenAiLogo } from "@/components/icons/openai-logo";
 import { Button } from "@/components/ui/button";
 import {
@@ -235,6 +236,8 @@ export function ChatGptConnectionSection() {
     setDisconnecting(true);
     try {
       await disconnectChatGpt();
+      // チャットのモデル選択が、解除した ChatGPT のモデルを出し続けないようにする。
+      invalidateLlmModels();
       setConfirmOpen(false);
       toast({ title: "ChatGPT との連携を解除しました" });
       setReloadKey((k) => k + 1);
@@ -354,6 +357,8 @@ export function ChatGptConnectionSection() {
         open={connectOpen}
         onOpenChange={setConnectOpen}
         onConnected={(s) => {
+          // 使えるようになったモデルをチャットのモデル選択に出す。
+          invalidateLlmModels();
           setStatus(s);
           setConnectOpen(false);
           toast({
