@@ -8,6 +8,9 @@ SaaS のテナント作成・削除・名前空間移行の運用手順。実装
   （未設定なら `/admin/*` はルート自体が存在しない＝fail-closed）。
 - provisioner は Keycloak の confidential client（service account 有効・realm-management ロール
   `manage-users` / `manage-realm` / `query-*` 付与・audience `shiki-api`）。dev は realm import 済み。
+- realm の User Profile で `tenant` / `roles` を**宣言済み・管理者のみ閲覧/編集**であること
+  （`deploy/keycloak/README.md`「User Profile」・#809）。宣言が無いと Keycloak 26 は admin REST 経由の
+  `tenant` も保存せず、作成したテナントの初期 admin がログインできない（プロビジョニングが黙って効かない）。
 
 ## テナント作成（1 操作）
 
