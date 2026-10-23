@@ -93,8 +93,13 @@ export function scopedStorageKey(base: string): string | null {
 export function readScoped(base: string): string | null {
   const key = scopedStorageKey(base);
   if (!key || typeof window === "undefined") return null;
-  window.localStorage.removeItem(base);
-  return window.localStorage.getItem(key);
+  try {
+    window.localStorage.removeItem(base);
+    return window.localStorage.getItem(key);
+  } catch {
+    // Web Storage 不可（プライベートモード等）なら保存値は無いものとして扱う。
+    return null;
+  }
 }
 
 /// スコープ付きキーへ書く。スコープ未確定なら書かない（false）。

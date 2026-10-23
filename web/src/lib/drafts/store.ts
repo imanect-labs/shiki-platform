@@ -83,6 +83,8 @@ export function createDraftStore(kind: DraftKind): DraftStore {
     subscribeStorageScope(() => {
       const pending = cache !== null && cacheKey === null ? cache : null;
       cache = null;
+      // 名前と rev が同じでも、ユーザーが変われば中身（保存分の手編集など）は別物なので作り直す。
+      snapCache.clear();
       if (
         pending &&
         Object.keys(pending).length > 0 &&
