@@ -138,6 +138,10 @@ pub struct DataStore {
     pub(crate) feedback: Arc<Feedback>,
     /// スキーマ本文のキャッシュ（`(tenant_id, table_id, schema_version)`・認可材料は載せない・Task 15.9）。
     pub(crate) schema_cache: Arc<SchemaCache>,
+    /// SSE の購読の登録簿（プロセス内・Task 15.6）。
+    pub(crate) stream: Arc<crate::stream::hub::StreamRegistry>,
+    /// SSE 配信の設定（TTL・保持期間・バッチ窓）。
+    pub(crate) stream_config: crate::stream::StreamConfig,
 }
 
 impl DataStore {
@@ -166,6 +170,8 @@ impl DataStore {
             probe_cache: Arc::new(ProbeCache::default()),
             feedback: Arc::new(Feedback::default()),
             schema_cache: Arc::new(SchemaCache::default()),
+            stream: Arc::default(),
+            stream_config: crate::stream::StreamConfig::default(),
         }
     }
 
@@ -461,6 +467,8 @@ impl DataStore {
             json!({ "schema_version": row.schema_version }),
         )
         .await?;
+        // 購読者へスキーマの改訂を知らせる（SSE は schema.changed を送って閉じる・Task 15.6）。
+        crate::stream::outbox::emit_schema_changed(&mut tx, ctx, &row, trace_id).await?;
         tx.commit().await.map_err(map_db)?;
         // 版は DB 照合で必ず変わって見えるが、古い本文はここで落としておく（世代切替）。
         self.schema_cache.invalidate_table(&ctx.tenant_id, id);

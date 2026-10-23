@@ -21,6 +21,13 @@
 //! - 主体に依存しない問い（object の直接タプル `read_tuples`）は tenant 名前空間化済みの object 識別子と
 //!   relation がキー。
 //! - check はすべて `HigherConsistency`（data の既存の check と同じ・剥奪の即時反映）。
+//!
+//! # 唯一の例外: SSE 購読の TTL（Task 15.6・PIT-70）
+//!
+//! リアルタイム配信は更新ごとに OpenFGA を引けないので、**購読中に限って**答えを TTL（既定 5 秒）
+//! だけ持ち越す（[`MemoCarry`]・[`AuthzMemo::resume`]）。持ち越しを作れるのは購読の実装だけで、
+//! 剥奪の配信への反映は最大 TTL 遅れる（製品の約束・data-platform §9.4）。ロール変更・共有解除などの
+//! 世代が進んだ購読は TTL を待たずに捨てる。REST の読取は従来どおり毎回引く。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -98,6 +105,12 @@ struct State {
     tuples: HashMap<TupleKey, Arc<Vec<ReadTupleKey>>>,
     materials: HashMap<MaterialKey, Arc<PolicyMaterial>>,
 }
+
+/// SSE 購読が TTL の間だけ持ち越す答え（Task 15.6・data-platform §9.4・PIT-70）。
+///
+/// 中身は不透明（主体キーつきの答えの表）。REST の読取経路はこれを受け取る口を持たない
+/// （剥奪の反映遅延は SSE 配信にだけ閉じる）。
+pub(crate) struct MemoCarry(State);
 
 /// リクエストスコープの認可メモ（[モジュール文書](self)）。
 pub(crate) struct AuthzMemo<'r> {
@@ -251,6 +264,26 @@ impl<'r> AuthzMemo<'r> {
         );
         self.lock().tuples.insert(key, Arc::clone(&v));
         Ok(v)
+    }
+
+    /// SSE 購読の TTL 付き持ち越し（Task 15.6・PIT-70 の**明示の例外**）: 前回の答えを引き継いで作る。
+    ///
+    /// 持ち越せるのは [`MemoCarry`] だけで、作れるのは [`Self::into_carry`] だけ（REST の入口は常に
+    /// [`Self::new`]）。期限（TTL）の判定と破棄は購読側（[`crate::stream`]）が持つ。
+    pub(crate) fn resume(authz: &'r dyn AuthzClient, carry: MemoCarry) -> Self {
+        AuthzMemo {
+            authz,
+            state: Mutex::new(carry.0),
+        }
+    }
+
+    /// 答えを持ち越し用に取り出す（SSE 購読専用）。
+    pub(crate) fn into_carry(self) -> MemoCarry {
+        MemoCarry(
+            self.state
+                .into_inner()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
     }
 
     pub(crate) fn material(&self, key: &MaterialKey) -> Option<Arc<PolicyMaterial>> {

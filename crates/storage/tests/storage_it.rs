@@ -4918,7 +4918,11 @@ async fn system_area_hides_from_user_surfaces_and_append_accumulates() {
 
     // ---- outbox は忠実に残り、system フラグが乗る（relay がこれで索引をスキップする）。 ----
     let mut tx = c.pool.begin().await.unwrap();
-    let claimed = storage::event::claim(&mut tx, 200).await.expect("claim");
+    // 共有 DB には他のテスト（構造化データのレコード変更の outbox 等）の未処理行が溜まるので、
+    // 先頭の数百件に収まる前提を置かない（全件を claim して自分の行を探す・最後にロールバック）。
+    let claimed = storage::event::claim(&mut tx, 1_000_000)
+        .await
+        .expect("claim");
     let ours: Vec<_> = claimed
         .iter()
         .filter(|e| e.node_id == second.node_id)

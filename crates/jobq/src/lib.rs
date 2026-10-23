@@ -90,6 +90,34 @@ pub async fn enqueue_on(conn: &mut PgConnection, job: NewJob<'_>) -> Result<i64,
     Ok(id)
 }
 
+/// 同じキュー・同じ payload の**未着手**ジョブが無いときだけ投入する（間引き）。投入したら id を返す。
+///
+/// 「処理側が実行時に台帳を読み直す」型のジョブ（再計算待ちを全部さらう等）は、未着手の 1 件があれば
+/// 後から積まれた分もそれが処理するので、同じ payload を何件も積む必要が無い。
+///
+/// 未着手（`attempts = 0`）のジョブ行を `FOR UPDATE SKIP LOCKED` で押さえるので、**この Tx の
+/// コミットまで [`claim`] はそのジョブを取れない**＝ジョブが走るときには呼び出し側の書込（台帳）が
+/// 必ず見える。着手済み（配信中）のジョブは数えない（走査を終えた後の書込を取りこぼすため、新しく積む）。
+pub async fn enqueue_unless_pending_on(
+    conn: &mut PgConnection,
+    job: NewJob<'_>,
+) -> Result<Option<i64>, JobqError> {
+    let pending: Option<i64> = sqlx::query_scalar(
+        "select id from job_queue \
+         where queue = $1 and tenant_id = $2 and payload = $3 and attempts = 0 \
+         limit 1 for update skip locked",
+    )
+    .bind(job.queue)
+    .bind(job.tenant_id)
+    .bind(job.payload)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if pending.is_some() {
+        return Ok(None);
+    }
+    enqueue_on(conn, job).await.map(Some)
+}
+
 /// 可視なジョブを最大 `limit` 件確保し、`visible_at` を `now() + vt` へ進める。
 ///
 /// 単一 UPDATE 文（サブクエリに `FOR UPDATE SKIP LOCKED`）なので複数 consumer が

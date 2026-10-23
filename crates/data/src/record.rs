@@ -21,11 +21,12 @@ use crate::policy::memo::AuthzMemo;
 use crate::record_effects::CreatedRecord;
 use crate::revision::{diff_fields, insert_revision, RevisionInsert};
 use crate::store::DataStore;
+use crate::stream::outbox::{emit_record_changes, Before, ChangeKind, RecordChange};
 use crate::validate::validate_record_data;
 use crate::{map_db, DataError};
 
 /// data_record 行。
-#[derive(sqlx::FromRow)]
+#[derive(Clone, sqlx::FromRow)]
 pub(crate) struct RecordRow {
     pub(crate) id: Uuid,
     pub(crate) table_id: Uuid,
@@ -334,6 +335,7 @@ impl DataStore {
             Some(&normalized),
         )
         .await?;
+        let record_int = written.record_int;
         let row = written.row;
         insert_revision(
             &mut tx,
@@ -346,6 +348,25 @@ impl DataStore {
                 patch: &patches,
                 trace_id,
             },
+        )
+        .await?;
+        // outbox（同一 Tx・SSE の源）。before の可視性判定に旧 owner と行述語の参照列の旧値を添える。
+        let old_stored = Value::Object(encode_record(&table.schema, &old_map));
+        emit_record_changes(
+            &mut tx,
+            ctx,
+            &table,
+            &[RecordChange {
+                record_id: id,
+                record_int,
+                rev: new_rev,
+                kind: ChangeKind::Update,
+                before: Some(Before {
+                    owner: &current.owner,
+                    stored: &old_stored,
+                }),
+            }],
+            trace_id,
         )
         .await?;
         self.record_audit_on(
@@ -449,6 +470,24 @@ impl DataStore {
                 patch: &patches,
                 trace_id,
             },
+        )
+        .await?;
+        // outbox（同一 Tx）。削除は after が無いので、before で見えていた購読者へ record.removed が出る。
+        emit_record_changes(
+            &mut tx,
+            ctx,
+            &table,
+            &[RecordChange {
+                record_id: id,
+                record_int,
+                rev: current.rev + 1,
+                kind: ChangeKind::Delete,
+                before: Some(Before {
+                    owner: &current.owner,
+                    stored: &current.data.0,
+                }),
+            }],
+            trace_id,
         )
         .await?;
         self.record_audit_on(

@@ -7,10 +7,11 @@
 //! - 索引行: [`crate::index::write::IndexWriter::on_create_many`]（表ごとに 1 文・1 件でも同じ文）
 //! - 材料化: [`crate::derived::materialize::after_records_written`]（`Invariant` 列をまとめて計算）
 //! - リビジョン: `rev = 1`・`change_kind = create`・差分は `{}` → 書込後の値（[`crate::revision`]）
+//! - outbox: `data.record.changed`（`change = create`・[`crate::stream::outbox`]・Task 15.6）
 //!
-//! **レコード変更の outbox / SSE（Task 15.6）はここで発行すること。** 1 件の create と一括取込の
-//! 両方が自動的に覆われる（一括経路に別の発行口を作らない）。監査は経路ごと（1 件は 1 行・一括は
-//! チャンクごとに 1 行）で、ここでは書かない。
+//! **レコード変更の outbox / SSE はここで発行する。** 1 件の create と一括取込の両方が自動的に覆われる
+//! （一括経路に別の発行口を作らない）。監査は経路ごと（1 件は 1 行・一括はチャンクごとに 1 行）で、
+//! ここでは書かない。
 
 use authz::AuthContext;
 use chrono::{DateTime, Utc};
@@ -24,6 +25,7 @@ use crate::index::IndexTable;
 use crate::model::{DataTable, FieldId};
 use crate::revision::{diff_fields, insert_revisions, RevisionInsert};
 use crate::store::DataStore;
+use crate::stream::outbox::{emit_record_changes, ChangeKind, RecordChange};
 use crate::DataError;
 
 /// 本体を INSERT 済みの新規レコード（書込 Tx 上）。
@@ -90,6 +92,18 @@ impl DataStore {
                 trace_id,
             })
             .collect();
-        insert_revisions(conn, ctx, &revisions).await
+        insert_revisions(conn, ctx, &revisions).await?;
+        // レコード変更の outbox（SSE 差分配信の源・Task 15.6）。1 件の create と一括取込の両方がここを通る。
+        let changes: Vec<RecordChange<'_>> = recs
+            .iter()
+            .map(|r| RecordChange {
+                record_id: r.id,
+                record_int: r.record_int,
+                rev: 1,
+                kind: ChangeKind::Create,
+                before: None,
+            })
+            .collect();
+        emit_record_changes(conn, ctx, table, &changes, trace_id).await
     }
 }

@@ -62,6 +62,7 @@ mod revision;
 mod schema;
 mod schema_cache;
 mod store;
+mod stream;
 mod table_list;
 mod table_load;
 mod tenant_settings;
@@ -112,6 +113,11 @@ pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordS
 pub use record_share::RecordShareRole;
 pub use schema::validate_table_schema_public;
 pub use store::{DataStore, NewDataTable};
+pub use stream::{
+    AwarenessEvent, RecordRemovedEvent, RecordStream, RecordStreamRelayWorker, RecordUpsertedEvent,
+    SchemaChangedEvent, StreamConfig, StreamEvent, StreamMessage, StreamReadyEvent,
+    StreamResetEvent, StreamResetReason, LEDGER_CONSUMER, RECORD_CHANGED_EVENT,
+};
 pub use tenant_settings::{DataTenantSettings, MAX_COUNT_CAP};
 pub use transition::TRANSITION_EVENT_TYPE;
 pub use validate::RefResolver;

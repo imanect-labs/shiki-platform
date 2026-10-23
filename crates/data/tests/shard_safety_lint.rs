@@ -42,6 +42,10 @@ const DATA_TABLES: &[&str] = &[
     "data_bulk_import",
     "data_bulk_staging",
     "data_bulk_key",
+    // SSE 差分配信・索引の降格（Task 15.6）。
+    "data_stream_authz_epoch",
+    "data_stream_awareness",
+    "data_index_purge",
 ];
 
 /// 文字列リテラル（開始行・中身）。

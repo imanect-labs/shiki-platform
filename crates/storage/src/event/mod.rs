@@ -15,11 +15,13 @@
 //!   読み取り専用のライブテール（[`latest_event_id`]/[`peek_app_events_after`]）。
 //! - [`delivery`]: per-consumer 配送台帳（P10-A0）。
 //! - [`gc`]: GC と滞留観測（#413）。バックグラウンド実行は [`crate::outbox_gc`]。
+//! - [`stream`]: 購読ストリームの配信位置（`delivery_seq`・Phase 15 Task 15.6）。
 //!
 //! [`StorageService`]: crate::service::StorageService
 
 mod delivery;
 mod gc;
+mod stream;
 
 pub use delivery::{
     claim_undelivered, mark_delivered, register_consumer, register_consumer_on_pool,
@@ -28,6 +30,10 @@ pub use delivery::{
 pub use gc::{
     gc_delivered, gc_delivered_registered, outbox_backlog, ConsumerLag, OutboxBacklog,
     DEFAULT_GC_BATCH,
+};
+pub use stream::{
+    drop_stream, lock_consumer_seq, mark_delivered_seq, private_payloads, stream_bounds,
+    stream_entries_after, StreamBounds, StreamEntry,
 };
 
 use authz::AuthContext;
@@ -95,6 +101,54 @@ pub async fn emit_on(
     .bind(&ctx.principal.id)
     .bind(trace_id)
     .bind(&payload_str)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// 既存トランザクション上で複数件を 1 文で発行する（一括書込・各件に consumer 非公開の材料を添える）。
+///
+/// `private_payload` は `storage_event_outbox.private_payload` へ入り、**汎用の consumer
+/// （[`claim`] / [`claim_undelivered`] / [`peek_app_events_after`]）は読まない**。購読ストリームの
+/// before 判定の旧値など、外へ出してはならない材料だけを置く（Phase 15 Task 15.6）。
+pub async fn emit_many_on(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    events: &[(WriteEvent, Option<Value>)],
+    trace_id: Option<&str>,
+) -> Result<(), StorageError> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let mut node_ids = Vec::with_capacity(events.len());
+    let mut versions = Vec::with_capacity(events.len());
+    let mut ops = Vec::with_capacity(events.len());
+    let mut payloads = Vec::with_capacity(events.len());
+    let mut privates: Vec<Option<String>> = Vec::with_capacity(events.len());
+    for (e, p) in events {
+        node_ids.push(e.node_id);
+        versions.push(e.version);
+        ops.push(e.op.as_str().to_string());
+        payloads.push(e.payload.to_string());
+        privates.push(p.as_ref().map(Value::to_string));
+    }
+    sqlx::query(
+        "INSERT INTO storage_event_outbox \
+         (org, tenant_id, node_id, version, op, actor, trace_id, payload, private_payload) \
+         SELECT $1, $2, e.node_id, e.version, e.op, $3, $4, e.payload::jsonb, e.private::jsonb \
+         FROM unnest($5::uuid[], $6::int8[], $7::text[], $8::text[], $9::text[]) \
+              WITH ORDINALITY AS e(node_id, version, op, payload, private, ord) \
+         ORDER BY e.ord",
+    )
+    .bind(&ctx.org)
+    .bind(&ctx.tenant_id)
+    .bind(&ctx.principal.id)
+    .bind(trace_id)
+    .bind(&node_ids)
+    .bind(&versions)
+    .bind(&ops)
+    .bind(&payloads)
+    .bind(&privates)
     .execute(conn)
     .await?;
     Ok(())

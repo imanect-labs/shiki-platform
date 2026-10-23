@@ -62,7 +62,9 @@ pub(super) async fn lock_outbox_gc(conn: &mut PgConnection) -> Result<(), Storag
 /// （配送台帳は `ON DELETE CASCADE` で同時に消える）。
 ///
 /// **未 ack の行は決して削除しない**（retention による time-based バイパスは持たない・遅い/停止中の
-/// コンシューマがイベントを失わない）。`ledger_consumers` は「配送を待つべきコンシューマ集合」。
+/// コンシューマがイベントを失わない）。逆に、購読ストリームへ採番した台帳行（`retain_until` 付き・
+/// [`super::mark_delivered_seq`]）が保持期間内の行も消さない（`Last-Event-ID` からのリプレイと
+/// スナップショット読取の基準位置を保つ・data-platform §9.2）。`ledger_consumers` は「配送を待つべきコンシューマ集合」。
 /// 空配列なら `processed_at` のみで判定する（台帳コンシューマが 1 つも登録されていない配備）。
 ///
 /// 削除対象は `FOR UPDATE SKIP LOCKED` で確保するので、**全レプリカで同時に呼んでも安全**
@@ -98,6 +100,10 @@ pub async fn gc_delivered(
                    SELECT count(*) FROM outbox_delivery d \
                    WHERE d.event_id = o.id AND d.consumer = ANY($1) \
                ) >= $2 \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM outbox_delivery r \
+                   WHERE r.event_id = o.id AND r.retain_until > now() \
+               ) \
              ORDER BY o.id \
              LIMIT $3 \
              FOR UPDATE SKIP LOCKED \

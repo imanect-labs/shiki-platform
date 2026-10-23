@@ -28,12 +28,20 @@ use crate::{
 };
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// 構造化データのレコード変更イベント（行単位の可視性を持つので、このテールには流さない）。
+const RECORD_CHANGED_EVENT: &str = "data.record.changed";
 const PEEK_BATCH: i64 = 100;
 
 /// イベントが購読アプリへ可視か（`payload.table_id` が許可テーブル集合に含まれるか）。
 ///
 /// table_id を持たない・パースできないイベントは**流さない**（fail-closed）。
 fn event_visible(event: &OutboxEvent, allowed_tables: &HashSet<Uuid>) -> bool {
+    // レコード変更（`data.record.changed`・Task 15.6）は行述語とフィールドマスクを購読者ごとに評価する
+    // 専用の配信（`GET /data/tables/{id}/stream`）だけが流す。このライブテールはテーブル単位の束縛しか
+    // 持たないので、見えない行の id・変更の事実を流さないよう載せない。
+    if event.payload.get("event_type").and_then(|v| v.as_str()) == Some(RECORD_CHANGED_EVENT) {
+        return false;
+    }
     event
         .payload
         .get("table_id")
@@ -157,6 +165,11 @@ mod tests {
         ));
         assert!(!event_visible(
             &ev(json!({ "event_type": "x", "table_id": "not-a-uuid" })),
+            &allowed
+        ));
+        // レコード変更は許可テーブルでも流さない（行述語・マスクを評価する専用の配信だけが流す）。
+        assert!(!event_visible(
+            &ev(json!({ "event_type": "data.record.changed", "table_id": t1 })),
             &allowed
         ));
     }

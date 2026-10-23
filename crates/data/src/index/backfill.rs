@@ -135,26 +135,31 @@ async fn enqueue(
     enqueue_op(conn, op, tenant_id, table_id).await
 }
 
-/// 索引系ジョブ（`backfill` / `composite` / `parity` / `derived`）を同じ Tx で積む。
+/// 索引系ジョブ（`backfill` / `composite` / `parity` / `derived` / `purge`）を同じ Tx で積む。
+///
+/// `derived`（再計算待ちをさらう）と `purge`（降格した索引行を消す）は実行時に台帳を読み直すので、
+/// 同じテーブルの未着手のジョブがあれば積まない（参照先の更新ごとに同じジョブが溜まるのを防ぐ・
+/// Task 15.6。着手済みのジョブは数えない＝走査後の書込を取りこぼさない・[`jobq::enqueue_unless_pending_on`]）。
 pub(crate) async fn enqueue_op(
     conn: &mut PgConnection,
     op: &str,
     tenant_id: &str,
     table_id: Uuid,
 ) -> Result<(), DataError> {
-    jobq::enqueue_on(
-        conn,
-        jobq::NewJob {
-            queue: INDEX_BACKFILL_QUEUE,
-            tenant_id,
-            payload: &json!({ "op": op, "table_id": table_id, "v": 1 }),
-            trace_id: None,
-            max_attempts: 10,
-        },
-    )
-    .await
-    .map_err(|e| DataError::Internal(format!("jobq: {e}")))?;
-    Ok(())
+    let payload = json!({ "op": op, "table_id": table_id, "v": 1 });
+    let job = jobq::NewJob {
+        queue: INDEX_BACKFILL_QUEUE,
+        tenant_id,
+        payload: &payload,
+        trace_id: None,
+        max_attempts: 10,
+    };
+    let r = if matches!(op, "derived" | "purge") {
+        jobq::enqueue_unless_pending_on(conn, job).await.map(|_| ())
+    } else {
+        jobq::enqueue_on(conn, job).await.map(|_| ())
+    };
+    r.map_err(|e| DataError::Internal(format!("jobq: {e}")))
 }
 
 /// `building` の unique 索引を**この Tx で**全レコードから作り、`active` にする（`data_table` 行を

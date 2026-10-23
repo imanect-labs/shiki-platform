@@ -4,7 +4,8 @@
 //! [`crate::record`] が禁止）。1 トランザクションで:
 //! ①行ロック（行述語込み・不可視 404） ②現 status ∈ from 検証（定義外 422→Invalid）
 //! ③actor 述語を**当該行に**評価（不許可 403） ④status 更新＋rev+1＋revision(transition)
-//! ⑤outbox `data.record.transitioned`（同一 Tx） ⑥監査 Chain::Yes。
+//! ⑤outbox `data.record.transitioned`（同一 Tx・トリガ用）と `data.record.changed`（SSE 用・Task 15.6）
+//! ⑥監査 Chain::Yes。
 //!
 //! **副作用はここに含めない**（通知/転記/AI は Phase 10 workflow-engine のトリガ）。
 //! ワークフローが status を進める場合も必ずこの API を叩く（ガード・認可を再評価）。
@@ -152,6 +153,7 @@ impl DataStore {
             Some(&data),
         )
         .await?;
+        let record_int = written.record_int;
         let row = written.row;
         insert_revision(
             &mut tx,
@@ -186,6 +188,25 @@ impl DataStore {
         )
         .await
         .map_err(|e| DataError::Internal(format!("outbox: {e}")))?;
+        // レコード変更の outbox（SSE 差分配信の源・Task 15.6）。遷移のトリガ用イベントとは別に、行の
+        // 変更として発行する（購読者ごとに before / after の可視性を判定する材料を添える）。
+        crate::stream::outbox::emit_record_changes(
+            &mut tx,
+            ctx,
+            &table,
+            &[crate::stream::outbox::RecordChange {
+                record_id,
+                record_int,
+                rev: new_rev,
+                kind: crate::stream::outbox::ChangeKind::Update,
+                before: Some(crate::stream::outbox::Before {
+                    owner: &current.owner,
+                    stored: &current.data.0,
+                }),
+            }],
+            trace_id,
+        )
+        .await?;
         // ⑥監査（実データ変更・書込と同一 Tx・Chain=Yes）。
         storage::audit::record_on(
             &mut tx,

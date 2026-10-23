@@ -80,7 +80,15 @@ impl DataStore {
             }
             return Err(e);
         }
+        self.after_share_change(ctx, table_id).await;
         Ok(())
+    }
+
+    /// 共有・解除の後: SSE の購読へ TTL を待たずに知らせる（世代を進める・PIT-70 ③）。
+    async fn after_share_change(&self, ctx: &AuthContext, table_id: Uuid) {
+        if let Err(e) = self.notify_authz_changed(ctx, Some(table_id)).await {
+            tracing::warn!(error = %e, %table_id, "SSE への共有変更の通知に失敗（購読は TTL で引き直す）");
+        }
     }
 
     /// 個別共有を解除する（冪等・即時反映）。
@@ -124,6 +132,7 @@ impl DataStore {
             }
             return Err(e);
         }
+        self.after_share_change(ctx, table_id).await;
         Ok(())
     }
 

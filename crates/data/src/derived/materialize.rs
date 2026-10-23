@@ -573,6 +573,9 @@ pub(crate) async fn demote(
     .map_err(map_db)?;
     // 宣言から外れた (列, 索引表) は台帳が absent にし、索引行を同じ Tx で消す。
     sync_ledger(conn, keys, &schema, false).await?;
+    // 購読者へ知らせる（フィルタ/ソートに使えなくなった列がある・Task 15.6）。表示値は読取時計算で
+    // 変わらないが、古い前提のビューを持ち続けさせない。
+    crate::stream::outbox::emit_schema_changed_by_system(conn, tenant_id, table_id).await?;
     let fids: Vec<i16> = changed
         .iter()
         .map(|f| field_id_i16(*f))
@@ -855,8 +858,8 @@ impl DataStore {
             .into_iter()
             .collect();
         if has_materialized(&table.schema) {
-            let recs: Vec<(i64, Json<Value>)> = sqlx::query_as(
-                "SELECT record_int, data FROM data_record \
+            let recs: Vec<(i64, Json<Value>, Uuid, i64)> = sqlx::query_as(
+                "SELECT record_int, data, id, rev FROM data_record \
                  WHERE tenant_int = $1 AND table_int = $2 AND record_int = ANY($3::int8[]) \
                  ORDER BY record_int FOR SHARE",
             )
@@ -868,11 +871,30 @@ impl DataStore {
             .map_err(map_db)?;
             let data: Vec<Map<String, Value>> = recs
                 .iter()
-                .map(|(_, d)| decode_record(&table.schema, &d.0))
+                .map(|(_, d, _, _)| decode_record(&table.schema, &d.0))
                 .collect();
             let values = compute_invariant(&mut tx, tenant_id, &table, &data).await?;
-            for ((rint, _), v) in recs.iter().zip(values.iter()) {
+            for ((rint, _, _, _), v) in recs.iter().zip(values.iter()) {
                 write_index_rows(&mut tx, &table, *rint, v).await?;
+            }
+            // 再計算が終わった行を購読者へ配り直す（並べ替え・絞り込みの位置が変わり得る・Task 15.6）。
+            // 表示値は読取時計算なので、ここで送るのは「材料化値が確定した」合図（`derived`）。
+            if let Some((_, org)) =
+                crate::stream::relay::table_row_with_org(&mut tx, tenant_id, table_id).await?
+            {
+                let ctx = crate::stream::relay::system_ctx(tenant_id, &org);
+                let changes: Vec<crate::stream::outbox::RecordChange<'_>> = recs
+                    .iter()
+                    .map(|(rint, _, id, rev)| crate::stream::outbox::RecordChange {
+                        record_id: *id,
+                        record_int: *rint,
+                        rev: *rev,
+                        kind: crate::stream::outbox::ChangeKind::Derived,
+                        before: None,
+                    })
+                    .collect();
+                crate::stream::outbox::emit_record_changes(&mut tx, &ctx, &table, &changes, None)
+                    .await?;
             }
         }
         // 読んだ世代の待ちだけを消す（処理中に積まれた再要求は残る）。

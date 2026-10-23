@@ -60,12 +60,20 @@ struct LinkUse {
 }
 
 /// スキーマが読取時の解決を要するか（派生フィールドか対称列がある）。
-fn needs_resolution(table: &DataTable) -> bool {
+pub(crate) fn needs_resolution(table: &DataTable) -> bool {
     table
         .schema
         .fields
         .iter()
         .any(|f| f.field_type.is_derived() || f.is_reverse_link())
+}
+
+/// 派生フィールドが辿るリンク列の参照名と、その参照先テーブル（SSE の派生値の再配信・Task 15.6）。
+pub(crate) fn derived_links(table: &DataTable) -> Vec<(String, Uuid)> {
+    link_uses(table)
+        .into_iter()
+        .filter_map(|(k, u)| u.ref_table.map(|t| (k, t)))
+        .collect()
 }
 
 /// 派生フィールドが辿るリンク列と、参照先で必要な列。
