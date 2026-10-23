@@ -509,7 +509,8 @@ fn report_group_rename(
         Ok(RenameOutcome::TargetExists) => {
             eprintln!(
                 "⚠️ group /tenants/{to} が既にあるためリネームしていません。\
-                 /tenants/{from} 配下のメンバーを手で移してください"
+                 /tenants/{from} 配下の org・部署 group のツリーを /tenants/{to} 配下へ統合してください\
+                 （メンバーに加え、group のロール割り当て・属性も移す。移し終えたら /tenants/{from} を削除）"
             );
             false
         }
