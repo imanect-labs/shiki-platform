@@ -111,17 +111,17 @@ fn json_shape_is_tagged_by_kind_and_defaults_to_grid() {
 fn unknown_fields_are_rejected_everywhere() {
     assert!(matches!(
         check(&grid(vec![col("nope")])),
-        Err(DataError::Invalid(_))
+        Err(DataError::Rejected(_))
     ));
     let mut c = col("name");
     c.sort_by = Some("nope".into());
-    assert!(matches!(check(&grid(vec![c])), Err(DataError::Invalid(_))));
+    assert!(matches!(check(&grid(vec![c])), Err(DataError::Rejected(_))));
     let spec = ViewSpec::Kanban(KanbanView {
         group_field: "status".into(),
         card_fields: vec!["nope".into()],
         hide_empty: false,
     });
-    assert!(matches!(check(&spec), Err(DataError::Invalid(_))));
+    assert!(matches!(check(&spec), Err(DataError::Rejected(_))));
     // 擬似列は指せる。
     assert!(check(&grid(vec![col("_created_at"), col("_owner")])).is_ok());
 }
@@ -184,21 +184,21 @@ fn viewer_dependent_and_volatile_columns_cannot_order_or_group() {
     // クエリの並べ替え。
     assert!(matches!(
         vc.check_sort_keys(["total"]),
-        Err(DataError::Invalid(_))
+        Err(DataError::Rejected(_))
     ));
     assert!(matches!(
         vc.check_sort_keys(["age"]),
-        Err(DataError::Invalid(_))
+        Err(DataError::Rejected(_))
     ));
     assert!(matches!(
         vc.check_sort_keys(["tags"]),
-        Err(DataError::Invalid(_))
+        Err(DataError::Rejected(_))
     ));
     assert!(vc.check_sort_keys(["name", "_updated_at"]).is_ok());
     // 並べ替えの代替列・グループ化。
     let mut c = col("name");
     c.sort_by = Some("total".into());
-    assert!(matches!(check(&grid(vec![c])), Err(DataError::Invalid(_))));
+    assert!(matches!(check(&grid(vec![c])), Err(DataError::Rejected(_))));
     let spec = ViewSpec::Grid(GridView {
         group_by: vec![GroupConfig {
             field: "age".into(),
@@ -207,7 +207,7 @@ fn viewer_dependent_and_volatile_columns_cannot_order_or_group() {
         }],
         ..GridView::default()
     });
-    assert!(matches!(check(&spec), Err(DataError::Invalid(_))));
+    assert!(matches!(check(&spec), Err(DataError::Rejected(_))));
     // 表示するだけなら閲覧者ごとの列も出せる（値は閲覧者本人の権限で読取時に計算される）。
     assert!(check(&grid(vec![col("total"), col("age")])).is_ok());
     // 読み仮名列での並べ替えの代替は通る。
@@ -352,7 +352,7 @@ fn lookup_budget_counts_only_lookup_and_rollup_columns() {
     let all: Vec<String> = s.fields.iter().map(|f| f.key.clone()).collect();
     assert!(matches!(
         vc(12).check_lookup_budget(&all),
-        Err(DataError::Invalid(_))
+        Err(DataError::Rejected(_))
     ));
     assert!(vc(13).check_lookup_budget(&all).is_ok());
     assert!(vc(12).check_lookup_budget(&all[..13]).is_ok());

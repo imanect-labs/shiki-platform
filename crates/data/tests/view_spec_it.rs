@@ -319,7 +319,7 @@ async fn invalid_view_specs_are_rejected_on_save() {
         .create(&keiri, "p1", &body(table, grid(vec![alt])), None)
         .await;
     assert!(
-        matches!(r, Err(DataError::Invalid(ref m)) if m.contains("閲覧者ごと")),
+        matches!(r, Err(DataError::Rejected(ref r)) if r.message.contains("閲覧者ごと")),
         "{r:?}"
     );
     let spec = ViewSpec::Grid(GridView {
@@ -334,7 +334,7 @@ async fn invalid_view_specs_are_rejected_on_save() {
         .views
         .create(&keiri, "p2", &body(table, spec), None)
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(r, Err(DataError::Rejected(_))), "{r:?}");
     let mut b = body(table, ViewSpec::default());
     b.query.sort = vec![SortKey {
         field: "team_count".into(),
@@ -342,7 +342,7 @@ async fn invalid_view_specs_are_rejected_on_save() {
     }];
     let r = env.views.create(&keiri, "p3", &b, None).await;
     assert!(
-        matches!(r, Err(DataError::Invalid(ref m)) if m.contains("閲覧者ごと")),
+        matches!(r, Err(DataError::Rejected(ref r)) if r.message.contains("閲覧者ごと")),
         "{r:?}"
     );
     // 表示するだけなら per_viewer 列も出せる。
@@ -361,7 +361,7 @@ async fn invalid_view_specs_are_rejected_on_save() {
         .views
         .create(&keiri, "x1", &body(table, grid(vec![col("nope")])), None)
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(r, Err(DataError::Rejected(_))), "{r:?}");
     let id = env
         .views
         .create(&keiri, "x2", &body(table, ViewSpec::default()), None)
@@ -377,7 +377,7 @@ async fn invalid_view_specs_are_rejected_on_save() {
             None,
         )
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(r, Err(DataError::Rejected(_))), "{r:?}");
 }
 
 /// 受け入れ条件: ルックアップ・ロールアップ列が 13 本以上のビューは保存時に拒否される（既定 12）。
@@ -441,10 +441,18 @@ async fn lookup_and_rollup_columns_are_capped_per_view() {
         .views
         .create(&alice, "all", &body(orders.id, ViewSpec::default()), None)
         .await;
-    assert!(
-        matches!(r, Err(DataError::Invalid(ref m)) if m.contains("12 本まで")),
-        "{r:?}"
-    );
+    match &r {
+        Err(DataError::Rejected(rej)) => {
+            assert_eq!(rej.code, data::RejectCode::LimitExceeded);
+            assert!(rej.message.contains("12 本まで"), "{rej:?}");
+            let limit = rej.limit.as_ref().unwrap();
+            assert_eq!(
+                (limit.name.as_str(), limit.max),
+                ("max_view_lookup_columns", 12)
+            );
+        }
+        other => panic!("13 本は 422: {other:?}"),
+    }
     // 1 本を非表示にすれば 12 本で保存できる。
     let mut hidden = col("ru5");
     hidden.hidden = true;
@@ -471,7 +479,7 @@ async fn lookup_and_rollup_columns_are_capped_per_view() {
             .collect(),
     );
     let r = env.views.create(&alice, "sel", &b, None).await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(r, Err(DataError::Rejected(_))), "{r:?}");
     // テナント設定で上限を 13 にすれば保存できる（範囲外は拒否）。
     assert!(env
         .store

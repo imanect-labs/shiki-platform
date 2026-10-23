@@ -147,16 +147,17 @@ pub async fn list_table_views(
 /// 保存ビューを作成する（table viewer＋表示設定とクエリ整合を検証・201）。
 ///
 /// 表示設定（`display`・型付き `ViewSpec`）はサーバが検証する: 存在しない列・閲覧者ごと／時刻依存の
-/// 派生列での並べ替え・グループ化・1 ビューのルックアップ・ロールアップ列の上限（既定 12・テナント設定）
-/// 超過は 400（設計文書の「422」はこのコードベースでは `DataError::Invalid` = 400）、保存者に読めない
-/// （マスク）列の表示・並べ替え・条件は 403。
+/// 派生列での並べ替え・グループ化は 422（`code = invalid_query`）、1 ビューのルックアップ・ロールアップ列の
+/// 上限（既定 12・テナント設定）超過は 422（`code = limit_exceeded`・`limit.name = max_view_lookup_columns`）。
+/// 理由の文言（`message`）をそのまま画面に出せる。保存者に読めない（マスク）列の表示・並べ替え・条件は 403。
 #[utoipa::path(
     post,
     path = "/data/views",
     request_body = CreateViewRequest,
     responses(
         (status = 201, description = "作成した", body = ViewResponse),
-        (status = 400, description = "クエリ/スキーマ/表示設定が不正（ルックアップ列の上限超過を含む）"),
+        (status = 400, description = "クエリ/スキーマが不正"),
+        (status = 422, description = "表示設定が不正・ルックアップ列の上限超過（構造化した理由）", body = data::QueryRejection),
         (status = 401, description = "未認証"),
         (status = 403, description = "対象テーブルの権限がない・マスク列を指定した"),
         (status = 409, description = "同名ビューが既に存在する・索引の承認が要る"),
@@ -191,7 +192,8 @@ pub async fn create_view(
     request_body = UpdateViewRequest,
     responses(
         (status = 200, description = "追記後のビュー", body = ViewResponse),
-        (status = 400, description = "クエリ/スキーマ/表示設定が不正（ルックアップ列の上限超過を含む）"),
+        (status = 400, description = "クエリ/スキーマが不正"),
+        (status = 422, description = "表示設定が不正・ルックアップ列の上限超過（構造化した理由）", body = data::QueryRejection),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない・マスク列を指定した"),
         (status = 404, description = "存在しない"),

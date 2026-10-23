@@ -10,6 +10,9 @@
 //! - **サーバが保存時に検証する**: 存在しない列・マスク列の表示/並べ替え/グループ化/書式条件・
 //!   閲覧者ごと（`per_viewer`）/時刻依存（`volatile`）の派生列での並べ替え・グループ化を拒否する。
 //!   1 ビューで解決するルックアップ・ロールアップ列は既定 12 本まで（テナント設定で変更可）。
+//!   不正は 422（[`DataError::Rejected`]・`invalid_query` / 上限超過は `limit_exceeded` と
+//!   `limit.name = max_view_lookup_columns`）で、理由の文言を画面へ返す。マスク列の参照だけは
+//!   クエリと同じ 403。
 //! - 実行（行の取得）は表示設定と無関係に必ず `run_query` を通り、**閲覧者本人の権限**で毎回評価する。
 //!   表示設定は「どの列をどう見せるか」だけで、権限を広げる経路を持たない。
 
@@ -21,6 +24,7 @@ use utoipa::ToSchema;
 use crate::derived::types::Materialization;
 use crate::model::{FieldDef, FieldType, TableSchema};
 use crate::query::ir::{CondOp, Condition, MAX_CONDITION_DEPTH, MAX_CONDITION_LEAVES};
+use crate::query::reject::{QueryRejection, RejectCode, RejectLimit};
 use crate::DataError;
 
 /// 1 ビューで解決するルックアップ・ロールアップ列の既定の上限（SharePoint のルックアップ 12 結合に倣う・§8.2）。
@@ -210,8 +214,9 @@ enum Col<'a> {
     Field(&'a FieldDef),
 }
 
+/// 表示設定の不正（422・構造化した理由。画面がそのまま理由を出せる）。
 fn invalid(msg: impl Into<String>) -> DataError {
-    DataError::Invalid(msg.into())
+    DataError::Rejected(Box::new(QueryRejection::new(RejectCode::InvalidQuery, msg)))
 }
 
 impl ViewCheck<'_> {
@@ -462,10 +467,18 @@ impl ViewCheck<'_> {
             .count();
         let cap = usize::try_from(self.max_lookup_columns).unwrap_or(usize::MAX);
         if n > cap {
-            return Err(invalid(format!(
-                "1 つのビューに表示できるルックアップ・ロールアップ列は {cap} 本までです（{n} 本）。\
-                 列を非表示にしてください"
-            )));
+            let mut r = QueryRejection::new(
+                RejectCode::LimitExceeded,
+                format!(
+                    "1 つのビューに表示できるルックアップ・ロールアップ列は {cap} 本までです（{n} 本）"
+                ),
+            )
+            .hint("ルックアップ・ロールアップ列をいくつか非表示にしてください");
+            r.limit = Some(Box::new(RejectLimit {
+                name: "max_view_lookup_columns".into(),
+                max: u64::from(self.max_lookup_columns),
+            }));
+            return Err(DataError::Rejected(Box::new(r)));
         }
         Ok(())
     }
