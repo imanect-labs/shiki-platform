@@ -667,6 +667,24 @@ impl DataStore {
         self.schema_cache.cached_versions(tenant_id)
     }
 
+    /// テーブルへの relation を確かめる（生存テーブルのみ・不足は監査 deny＋Forbidden）。
+    ///
+    /// 委譲で動く主体（ワークフローの実行主体など）が「このテーブルを委譲されているか」を、
+    /// 実際の読み書きを別の主体で行う前に確かめる入口（Task 15.7）。実際の読み書きは各 API が
+    /// 自分の主体で改めて認可する（これは追加の門で、代わりにはならない）。
+    pub async fn authorize_table(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        relation: Relation,
+        action: &str,
+        trace_id: Option<&str>,
+    ) -> Result<(), DataError> {
+        self.require(ctx, table_id, relation, action, trace_id)
+            .await?;
+        self.fetch_live(ctx, table_id).await.map(|_| ())
+    }
+
     /// テーブルへの relation を要求する（不足は監査 deny＋Forbidden・剥奪即時反映）。
     pub(crate) async fn require(
         &self,

@@ -24,7 +24,8 @@ use uuid::Uuid;
 
 use super::resolver::ChunkResolver;
 use super::{
-    load_import, BulkIndexMode, ImportRow, LAZY_INDEX_MIN_ROWS, ST_INVALID, ST_STAGED, ST_VALID,
+    load_import, BulkIndexMode, ImportRow, LAZY_INDEX_MIN_ROWS, OP_UPDATE, ST_INVALID, ST_STAGED,
+    ST_VALID,
 };
 use crate::index::normalize::{field_keys, FieldKeys};
 use crate::index::state::field_id_i16;
@@ -133,6 +134,7 @@ pub(super) fn row_message(e: DataError) -> Result<String, DataError> {
 
 impl DataStore {
     /// 検証を 1 チャンク進める（最後のチャンクで `applying` へ）。検証した行数を返す。
+    #[allow(clippy::too_many_lines)] // 検証器 → 参照先 → 予約 → 書戻しを 1 チャンクで順に行う。
     pub(super) async fn validate_chunk(
         &self,
         tenant_id: &str,
@@ -156,8 +158,8 @@ impl DataStore {
                 .await?;
             return Ok(0);
         }
-        let rows: Vec<(i64, Json<Value>)> = sqlx::query_as(
-            "SELECT row_no, payload FROM data_bulk_staging \
+        let staged: Vec<(i64, Json<Value>, i16)> = sqlx::query_as(
+            "SELECT row_no, payload, op FROM data_bulk_staging \
              WHERE tenant_int = $1 AND import_id = $2 AND row_no > $3 \
              ORDER BY row_no LIMIT $4",
         )
@@ -168,11 +170,23 @@ impl DataStore {
         .fetch_all(self.pools.for_tenant(tenant_id))
         .await
         .map_err(map_db)?;
+        // 更新行（upsert・Task 15.7）は merge patch を持つだけで、検証は適用段で 1 件の更新と同じ入口を
+        // 行ロックの下で通す（現在値とのマージ後でないと required・参照先・unique を判定できない）。
+        let is_update: Vec<bool> = staged.iter().map(|r| r.2 == OP_UPDATE).collect();
+        let rows: Vec<(i64, Json<Value>)> = staged.into_iter().map(|(n, p, _)| (n, p)).collect();
 
         // 型・required・多値要素数上限（create と同じ検証器。DB の Tx の外で行う）。
         let resolver = ChunkResolver::new(self.resolver.as_ref());
         let mut outcomes: Vec<Result<Map<String, Value>, String>> = Vec::with_capacity(rows.len());
-        for (_, payload) in &rows {
+        for (i, (_, payload)) in rows.iter().enumerate() {
+            if is_update[i] {
+                outcomes.push(
+                    payload.0.as_object().cloned().ok_or_else(|| {
+                        "patch は JSON オブジェクトである必要があります".to_string()
+                    }),
+                );
+                continue;
+            }
             let r = validate_record_data(
                 &ctx,
                 &table.schema,
@@ -188,7 +202,7 @@ impl DataStore {
         }
         // 参照先の存在と書き手からの可視性（create と同じ関数・リンク列ごとに 1 回で引く）。
         let ok_idx: Vec<usize> = (0..outcomes.len())
-            .filter(|i| outcomes[*i].is_ok())
+            .filter(|i| outcomes[*i].is_ok() && !is_update[*i])
             .collect();
         let maps: Vec<&Map<String, Value>> = ok_idx
             .iter()
@@ -204,9 +218,10 @@ impl DataStore {
         }
         let claims: Vec<Vec<Claim>> = outcomes
             .iter()
-            .map(|o| match o {
-                Ok(m) => claims_of(&table.schema, m, self.max_multi_values),
-                Err(_) => Ok(Vec::new()),
+            .zip(&is_update)
+            .map(|(o, upd)| match o {
+                Ok(m) if !*upd => claims_of(&table.schema, m, self.max_multi_values),
+                _ => Ok(Vec::new()),
             })
             .collect::<Result<_, _>>()?;
 

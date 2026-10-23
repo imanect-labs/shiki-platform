@@ -33,6 +33,8 @@ pub(crate) mod prepare;
 pub(crate) mod reject;
 pub(crate) mod run;
 pub(crate) mod scopes;
+#[cfg(test)]
+mod semantics_tests;
 pub(crate) mod snapshot;
 pub(crate) mod sql;
 pub(crate) mod v1;

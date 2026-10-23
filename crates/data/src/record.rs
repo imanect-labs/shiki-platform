@@ -211,179 +211,6 @@ impl DataStore {
         Ok(records.remove(0))
     }
 
-    /// レコードを更新する（editor・merge patch・楽観ロック・リビジョン同時記録）。
-    ///
-    /// `patch` は変更フィールドのみの部分オブジェクト。`null` はフィールド除去
-    /// （required は除去不可＝マージ後検証で拒否）。`expected_rev` 不一致は 409。
-    #[allow(clippy::too_many_lines)] // 検証・ロック・マスク・リビジョン・索引を 1 Tx で順に行う。
-    pub async fn update_record(
-        &self,
-        ctx: &AuthContext,
-        table_id: Uuid,
-        id: Uuid,
-        patch: Value,
-        expected_rev: i64,
-        trace_id: Option<&str>,
-    ) -> Result<DataRecord, DataError> {
-        let az = self.authz_memo();
-        self.require_in(
-            &az,
-            ctx,
-            table_id,
-            Relation::Editor,
-            "data.record.update",
-            trace_id,
-        )
-        .await?;
-        let table = self.fetch_live(ctx, table_id).await?;
-        let patch_obj = patch.as_object().ok_or_else(|| {
-            DataError::Invalid("patch は JSON オブジェクトである必要があります".into())
-        })?;
-        let mut tx = self
-            .pools
-            .for_tenant(&ctx.tenant_id)
-            .begin()
-            .await
-            .map_err(map_db)?;
-        let plan = lock_plan(
-            &mut tx,
-            &ctx.tenant_id,
-            table_id,
-            table.keys,
-            table.schema_version,
-        )
-        .await?;
-        // 行述語つきロック: 不可視行は NotFound（rev オラクル封じ・PIT-21）。
-        let current = self
-            .lock_visible_by_id(ctx, &az, &mut tx, &table, id)
-            .await?
-            .ok_or(DataError::NotFound)?;
-        if !self.write_allowed(ctx, &az, &table, id).await? {
-            return Err(DataError::Forbidden);
-        }
-        if current.rev != expected_rev {
-            return Err(DataError::Conflict(format!(
-                "rev が一致しません（現在 {}・指定 {expected_rev}）",
-                current.rev
-            )));
-        }
-        let current = current.into_record(&table.schema);
-        // マスク対象フィールドへの書込（変更）は拒否（盲目上書き防止・PIT-19）。
-        let masked = self.masked_fields(ctx, &az, &table).await?;
-        Self::ensure_writable_fields(&masked, patch_obj)?;
-        // merge: null は除去・それ以外は上書き。
-        let old_map = current.data.as_object().cloned().unwrap_or_default();
-        let mut merged = old_map.clone();
-        for (k, v) in patch_obj {
-            if v.is_null() {
-                merged.remove(k);
-            } else {
-                merged.insert(k.clone(), v.clone());
-            }
-        }
-        let normalized = validate_record_data(
-            ctx,
-            &table.schema,
-            &Value::Object(merged),
-            self.resolver.as_ref(),
-            self.max_multi_values,
-        )
-        .await?;
-        // FSM 管理テーブルの status は直接 update できない（遷移 API 経由でのみ・Task 9.10）。
-        Self::reject_fsm_status_write(&table, patch_obj.keys())?;
-        self.check_record_refs(ctx, &table.schema, &normalized)
-            .await?;
-        let patches = diff_fields(&old_map, &normalized);
-        if patches.is_empty() {
-            tx.rollback().await.map_err(map_db)?;
-            return Ok(current);
-        }
-        let new_rev = current.rev + 1;
-        let new_stored = Value::Object(encode_record(&table.schema, &normalized));
-        let written: WrittenRow = sqlx::query_as(&format!(
-            "UPDATE data_record SET data = $4, rev = $5, updated_at = now() \
-             WHERE tenant_int = $6 AND table_int = $7 AND tenant_id = $1 AND table_id = $2 \
-               AND id = $3 \
-             RETURNING {WRITTEN_RETURNING}"
-        ))
-        .bind(&ctx.tenant_id)
-        .bind(table_id)
-        .bind(id)
-        .bind(Json(&new_stored))
-        .bind(new_rev)
-        .bind(table.keys.tenant_int)
-        .bind(table.keys.table_int)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_unique)?;
-        // 変更のあったフィールド（patches）の索引行と updated_at だけを書き換える（差分更新）。
-        self.index_writer(&plan, &table.schema, &ctx.tenant_id)
-            .on_update(
-                &mut tx,
-                written.record_int,
-                &patches,
-                written.row.updated_at,
-            )
-            .await?;
-        crate::derived::materialize::after_record_write(
-            &mut tx,
-            &ctx.tenant_id,
-            &table,
-            written.record_int,
-            Some(&normalized),
-        )
-        .await?;
-        let record_int = written.record_int;
-        let row = written.row;
-        insert_revision(
-            &mut tx,
-            ctx,
-            RevisionInsert {
-                table_id,
-                record_id: id,
-                rev: new_rev,
-                change_kind: "update",
-                patch: &patches,
-                trace_id,
-            },
-        )
-        .await?;
-        // outbox（同一 Tx・SSE の源）。before の可視性判定に旧 owner と行述語の参照列の旧値を添える。
-        let old_stored = Value::Object(encode_record(&table.schema, &old_map));
-        emit_record_changes(
-            &mut tx,
-            ctx,
-            &table,
-            &[RecordChange {
-                record_id: id,
-                record_int,
-                rev: new_rev,
-                kind: ChangeKind::Update,
-                before: Some(Before {
-                    owner: &current.owner,
-                    stored: &old_stored,
-                }),
-                after: Some(Before {
-                    owner: &current.owner,
-                    stored: &new_stored,
-                }),
-            }],
-            trace_id,
-        )
-        .await?;
-        self.record_audit_on(
-            &mut tx,
-            ctx,
-            "data.record.update",
-            &id.to_string(),
-            trace_id,
-            serde_json::json!({ "table_id": table_id, "rev": new_rev }),
-        )
-        .await?;
-        tx.commit().await.map_err(map_db)?;
-        Ok(row.into_record(&table.schema))
-    }
-
     /// レコードを削除する（editor・楽観ロック・削除リビジョン記録）。
     pub async fn delete_record(
         &self,
@@ -507,7 +334,7 @@ impl DataStore {
     }
 
     /// FSM 管理テーブルの status フィールドへの**直接 update** を拒否する（遷移 API を迂回させない）。
-    fn reject_fsm_status_write<'a>(
+    pub(crate) fn reject_fsm_status_write<'a>(
         table: &crate::model::DataTable,
         fields: impl Iterator<Item = &'a String>,
     ) -> Result<(), DataError> {
@@ -528,7 +355,7 @@ impl DataStore {
     ///
     /// 参照整合は「書き手が参照先を**見える**こと」まで要求する（PIT-20）。検査は
     /// [`Self::check_record_refs_many`]（一括書込パスと同じ関数）に 1 件で渡す。
-    async fn check_record_refs(
+    pub(crate) async fn check_record_refs(
         &self,
         ctx: &AuthContext,
         schema: &TableSchema,
@@ -630,7 +457,7 @@ impl DataStore {
 
 /// unique 制約違反を 409 へ写す。
 #[allow(clippy::needless_pass_by_value)]
-fn map_unique(e: sqlx::Error) -> DataError {
+pub(crate) fn map_unique(e: sqlx::Error) -> DataError {
     match &e {
         sqlx::Error::Database(db) if db.is_unique_violation() => {
             DataError::Conflict("unique 制約に違反しています".into())

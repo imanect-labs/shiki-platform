@@ -632,7 +632,7 @@ pub(crate) use super::bound_query::bind_query;
 pub(crate) use super::bound_query::{bind_query_scoped, BindOpts};
 
 /// 比較 1 つを束縛する（§3.1 の表: `neq` = `not eq`・`is_null` = `not exists`・比較の否定は呼び出し側）。
-fn compare(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, DataError> {
+pub(crate) fn compare(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, DataError> {
     let e = compare_inner(f, op, value)?;
     if f.derived && f.kind == FieldKind::Text {
         check_derived_text_operands(f, &e)?;

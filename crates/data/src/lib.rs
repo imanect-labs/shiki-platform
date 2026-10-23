@@ -62,6 +62,7 @@ mod record;
 mod record_effects;
 mod record_list;
 mod record_share;
+mod record_update;
 mod revision;
 mod schema;
 mod schema_cache;
@@ -76,10 +77,17 @@ mod transition;
 mod validate;
 mod view;
 
+/// クエリ条件の 2 値論理の共通テスト表（JSON・query-optimizer.md §3.1）。
+///
+/// data の評価器と workflow の評価器（`control/eval.rs`）の両方のテストがこの 1 つの表を読み、
+/// 同じ結果を返すことを固定する（Task 15.7）。実行時には使わない。
+#[doc(hidden)]
+pub const CONDITION_SEMANTICS_TABLE: &str = include_str!("query/semantics_table.json");
+
 pub use bulk::{
     BulkImportOptions, BulkImportRow, BulkImportStatus, BulkImportStep, BulkImportWorker,
-    BulkIndexMode, BulkRowError, BULK_CHUNK, BULK_IMPORT_QUEUE, LAZY_INDEX_MIN_ROWS, MAX_BULK_ROWS,
-    MAX_BULK_ROW_BYTES, MAX_BULK_ROW_KEY_BYTES,
+    BulkIndexMode, BulkRowError, BulkUpsertRow, BULK_CHUNK, BULK_IMPORT_QUEUE, LAZY_INDEX_MIN_ROWS,
+    MAX_BULK_ROWS, MAX_BULK_ROW_BYTES, MAX_BULK_ROW_KEY_BYTES,
 };
 pub use cursor::{CursorKey, CURSOR_KEY_LEN};
 pub use derived::links::{LINK_TRAVERSAL_SQL, MAX_LINK_VALUES_PER_RECORD};

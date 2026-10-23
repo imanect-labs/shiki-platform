@@ -15,6 +15,10 @@
 //!      最後に本体と索引の parity 検証
 //! ```
 //!
+//! **更新行（upsert・Task 15.7）**: [`DataStore::start_bulk_upsert`] は `record_id` を持つ行を既存
+//! レコードの更新として扱う。② では形だけを見て、③ で 1 件の更新と同じ入口
+//! （`crate::record_update` の `update_locked`）を行ごとのセーブポイントで通す（upsert.rs）。
+//!
 //! # 冪等・中断再開
 //!
 //! - 各段は jobq のチャンクジョブ（[`BULK_IMPORT_QUEUE`]）。1 チャンク = 1 Tx で、取込行（`data_bulk_import`）を
@@ -41,6 +45,7 @@
 mod apply;
 mod job;
 mod resolver;
+mod upsert;
 mod validate;
 
 use std::fmt::Write as _;
@@ -115,6 +120,37 @@ pub struct BulkImportRow {
     /// レコードの値（外部形 `key → 値`・create と同じ形）。
     pub data: Value,
 }
+
+/// 一括 upsert の 1 行（`record_id` があれば既存レコードの更新・無ければ新規作成）。
+///
+/// 更新行は 1 件の更新と同じ入口（行述語つきロック・書込述語・`rev`・マスク列・検証器・outbox）を
+/// 適用時に行ロックの下で通る（[`crate::DataStore::update_record`] と同じ意味論・Task 15.7）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct BulkUpsertRow {
+    /// 呼び出し側の行キー（任意・取込内で一意）。
+    pub key: Option<String>,
+    /// 更新対象の外部 ID（`None` は新規作成）。
+    pub record_id: Option<Uuid>,
+    /// 更新の楽観ロック（`None` は照合しない＝行ロックの下の後勝ち）。作成行には指定できない。
+    pub expected_rev: Option<i64>,
+    /// 作成行はレコードの値（外部形）、更新行は merge patch（`null` はフィールド除去）。
+    pub data: Value,
+}
+
+impl From<BulkImportRow> for BulkUpsertRow {
+    fn from(r: BulkImportRow) -> Self {
+        BulkUpsertRow {
+            key: r.key,
+            record_id: None,
+            expected_rev: None,
+            data: r.data,
+        }
+    }
+}
+
+/// ステージング行の操作（`data_bulk_staging.op`）。
+pub(crate) const OP_CREATE: i16 = 0;
+pub(crate) const OP_UPDATE: i16 = 1;
 
 /// 取込のオプション。
 #[derive(Debug, Clone, Copy, Default)]
@@ -299,6 +335,84 @@ fn copy_escape(out: &mut String, s: &str) {
     }
 }
 
+/// ステージングへ送る COPY のデータ行を組む（行の形の検査・行キーと更新対象の重複検査を兼ねる）。
+#[derive(Default)]
+struct CopyRows {
+    buf: String,
+    seen_keys: std::collections::HashSet<String>,
+    seen_targets: std::collections::HashSet<Uuid>,
+    /// 更新行の数（監査用）。
+    updates: i64,
+}
+
+impl CopyRows {
+    /// 1 行を COPY の text 形式で積む（列順は `start_bulk_upsert` の COPY 文と同じ）。
+    fn push_row(
+        &mut self,
+        tenant_int: i32,
+        import_id: Uuid,
+        row_no: usize,
+        row: &BulkUpsertRow,
+    ) -> Result<(), DataError> {
+        if !row.data.is_object() {
+            return Err(DataError::Invalid(format!(
+                "{row_no} 行目: data は JSON オブジェクトである必要があります"
+            )));
+        }
+        let payload = row.data.to_string();
+        if payload.len() > MAX_BULK_ROW_BYTES {
+            return Err(DataError::Invalid(format!(
+                "{row_no} 行目が大きすぎます（最大 {MAX_BULK_ROW_BYTES} バイト）"
+            )));
+        }
+        let buf = &mut self.buf;
+        let _ = write!(buf, "{tenant_int}\t{import_id}\t{row_no}\t");
+        match &row.key {
+            Some(k) => {
+                if k.len() > MAX_BULK_ROW_KEY_BYTES || k.chars().any(char::is_control) {
+                    return Err(DataError::Invalid(format!(
+                        "{row_no} 行目の行キーが不正です（最大 {MAX_BULK_ROW_KEY_BYTES} バイト・制御文字不可）"
+                    )));
+                }
+                if !self.seen_keys.insert(k.clone()) {
+                    return Err(DataError::Invalid(format!(
+                        "{row_no} 行目の行キー '{k}' が重複しています"
+                    )));
+                }
+                copy_escape(buf, k);
+            }
+            None => buf.push_str("\\N"),
+        }
+        let (record_id, op) = if let Some(id) = row.record_id {
+            if !self.seen_targets.insert(id) {
+                return Err(DataError::Invalid(format!(
+                    "{row_no} 行目: 同じレコードを 1 回の取込で 2 回更新できません"
+                )));
+            }
+            self.updates += 1;
+            (id, OP_UPDATE)
+        } else {
+            if row.expected_rev.is_some() {
+                return Err(DataError::Invalid(format!(
+                    "{row_no} 行目: expected_rev は更新行（record_id あり）にだけ指定できます"
+                )));
+            }
+            (Uuid::new_v4(), OP_CREATE)
+        };
+        let _ = write!(buf, "\t{record_id}\t");
+        copy_escape(buf, &payload);
+        let _ = write!(buf, "\t{op}\t");
+        match row.expected_rev {
+            Some(rev) => {
+                let _ = write!(buf, "{rev}");
+            }
+            None => buf.push_str("\\N"),
+        }
+        buf.push('\n');
+        Ok(())
+    }
+}
+
 /// 1 回の COPY 送信のバッファ上限（バイト）。
 const COPY_FLUSH_BYTES: usize = 1 << 20;
 
@@ -313,6 +427,24 @@ impl DataStore {
         ctx: &AuthContext,
         table_id: Uuid,
         rows: Vec<BulkImportRow>,
+        opts: BulkImportOptions,
+        trace_id: Option<&str>,
+    ) -> Result<Uuid, DataError> {
+        let rows = rows.into_iter().map(BulkUpsertRow::from).collect();
+        self.start_bulk_upsert(ctx, table_id, rows, opts, trace_id)
+            .await
+    }
+
+    /// 一括 upsert を始める（更新行と作成行を混ぜた取込・editor）。取込 ID を返す。
+    ///
+    /// 作成行は [`Self::start_bulk_import`] と同じ経路（検証 → チャンク適用）。更新行は検証段では形だけを
+    /// 見て、適用段で 1 件の更新と同じ入口を行ロックの下で通す（検証から適用までの間の並行書込も
+    /// `rev`・行述語の評価に反映される）。同じレコードを 2 回更新する取込は拒否する。
+    pub async fn start_bulk_upsert(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        rows: Vec<BulkUpsertRow>,
         opts: BulkImportOptions,
         trace_id: Option<&str>,
     ) -> Result<Uuid, DataError> {
@@ -335,8 +467,7 @@ impl DataStore {
         }
         let import_id = Uuid::new_v4();
         let keys = table.keys;
-        let mut seen_keys = std::collections::HashSet::new();
-        let mut buf = String::new();
+        let mut staged = CopyRows::default();
         let mut tx = self
             .pools
             .for_tenant(&ctx.tenant_id)
@@ -373,51 +504,21 @@ impl DataStore {
             let mut copy = tx
                 .copy_in_raw(
                     "COPY data_bulk_staging \
-                       (tenant_int, import_id, row_no, row_key, record_id, payload) FROM STDIN",
+                       (tenant_int, import_id, row_no, row_key, record_id, payload, op, expected_rev) \
+                     FROM STDIN",
                 )
                 .await
                 .map_err(map_db)?;
-            for (i, row) in rows.into_iter().enumerate() {
-                let row_no = i + 1;
-                if !row.data.is_object() {
-                    return Err(DataError::Invalid(format!(
-                        "{row_no} 行目: data は JSON オブジェクトである必要があります"
-                    )));
-                }
-                let payload = row.data.to_string();
-                if payload.len() > MAX_BULK_ROW_BYTES {
-                    return Err(DataError::Invalid(format!(
-                        "{row_no} 行目が大きすぎます（最大 {MAX_BULK_ROW_BYTES} バイト）"
-                    )));
-                }
-                let _ = write!(buf, "{}\t{import_id}\t{row_no}\t", keys.tenant_int);
-                match &row.key {
-                    Some(k) => {
-                        if k.len() > MAX_BULK_ROW_KEY_BYTES || k.chars().any(char::is_control) {
-                            return Err(DataError::Invalid(format!(
-                                "{row_no} 行目の行キーが不正です（最大 {MAX_BULK_ROW_KEY_BYTES} バイト・制御文字不可）"
-                            )));
-                        }
-                        if !seen_keys.insert(k.clone()) {
-                            return Err(DataError::Invalid(format!(
-                                "{row_no} 行目の行キー '{k}' が重複しています"
-                            )));
-                        }
-                        copy_escape(&mut buf, k);
-                    }
-                    None => buf.push_str("\\N"),
-                }
-                let _ = write!(buf, "\t{}\t", Uuid::new_v4());
-                copy_escape(&mut buf, &payload);
-                buf.push('\n');
-                if buf.len() >= COPY_FLUSH_BYTES {
-                    copy.send(std::mem::take(&mut buf).into_bytes())
+            for (i, row) in rows.iter().enumerate() {
+                staged.push_row(keys.tenant_int, import_id, i + 1, row)?;
+                if staged.buf.len() >= COPY_FLUSH_BYTES {
+                    copy.send(std::mem::take(&mut staged.buf).into_bytes())
                         .await
                         .map_err(map_db)?;
                 }
             }
-            if !buf.is_empty() {
-                copy.send(std::mem::take(&mut buf).into_bytes())
+            if !staged.buf.is_empty() {
+                copy.send(std::mem::take(&mut staged.buf).into_bytes())
                     .await
                     .map_err(map_db)?;
             }
@@ -430,7 +531,12 @@ impl DataStore {
             "data.record.bulk_import",
             &table_id.to_string(),
             trace_id,
-            json!({ "import_id": import_id, "rows": total, "index_mode": opts.index_mode.as_str() }),
+            json!({
+                "import_id": import_id,
+                "rows": total,
+                "updates": staged.updates,
+                "index_mode": opts.index_mode.as_str(),
+            }),
         )
         .await?;
         tx.commit().await.map_err(map_db)?;

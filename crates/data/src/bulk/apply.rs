@@ -18,8 +18,12 @@ use sqlx::types::Json;
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
+use super::upsert::PendingUpdate;
 use super::validate::row_message;
-use super::{index_held, load_import, ImportRow, ST_APPLIED, ST_REJECTED, ST_STAGED, ST_VALID};
+use super::{
+    index_held, load_import, ImportRow, OP_CREATE, OP_UPDATE, ST_APPLIED, ST_REJECTED, ST_STAGED,
+    ST_VALID,
+};
 use crate::field_key::encode_record;
 use crate::index::backfill::{start_backfill_from, BACKFILL_CHUNK};
 use crate::index::state::{load_states, lock_plan, set_state, IndexPlan};
@@ -29,8 +33,15 @@ use crate::record_effects::CreatedRecord;
 use crate::store::DataStore;
 use crate::{map_db, DataError};
 
-/// ステージング行（row_no, 外部 ID, 状態, 正規化値）。
-type StagedRow = (i64, Uuid, i16, Option<Json<Map<String, Value>>>);
+/// ステージング行（row_no, 外部 ID, 状態, 正規化値, 操作, 更新の楽観ロック）。
+type StagedRow = (
+    i64,
+    Uuid,
+    i16,
+    Option<Json<Map<String, Value>>>,
+    i16,
+    Option<i64>,
+);
 /// 本体の INSERT の RETURNING（record_int, 外部 ID, owner, created_at, updated_at）。
 type WrittenBody = (i64, Uuid, String, DateTime<Utc>, DateTime<Utc>);
 /// 適用した行（row_no, record_int, 外部 ID）。
@@ -134,6 +145,7 @@ pub(super) async fn cleanup_staging(
 
 impl DataStore {
     /// 適用を 1 チャンク進める（最後のチャンクで `indexing` へ）。処理した行数を返す。
+    #[allow(clippy::too_many_lines)] // 1 Tx の手順列（ロック・計画・作成・更新・進捗・監査）。分けると Tx 境界が追いにくい。
     pub(super) async fn apply_chunk(
         &self,
         tenant_id: &str,
@@ -178,7 +190,7 @@ impl DataStore {
         // 1 件の create と同じ計画（テーブル行の FOR KEY SHARE・保守する索引・unique の準備確認）。
         let plan = lock_plan(&mut tx, tenant_id, table.id, table.keys, imp.schema_version).await?;
         let rows: Vec<StagedRow> = sqlx::query_as(
-            "SELECT row_no, record_id, state, normalized FROM data_bulk_staging \
+            "SELECT row_no, record_id, state, normalized, op, expected_rev FROM data_bulk_staging \
              WHERE tenant_int = $1 AND import_id = $2 AND row_no > $3 AND row_no <= $4 \
              ORDER BY row_no LIMIT $5",
         )
@@ -192,12 +204,25 @@ impl DataStore {
         .map_err(map_db)?;
         let pending: Vec<Pending> = rows
             .iter()
-            .filter(|r| r.2 == ST_VALID)
-            .filter_map(|(row_no, id, _, data)| {
+            .filter(|r| r.2 == ST_VALID && r.4 == OP_CREATE)
+            .filter_map(|(row_no, id, _, data, _, _)| {
                 data.as_ref().map(|d| Pending {
                     row_no: *row_no,
                     id: *id,
                     data: d.0.clone(),
+                })
+            })
+            .collect();
+        // 更新行（upsert）: 1 件の更新と同じ入口を行ごとのセーブポイントで通す（super::upsert）。
+        let pending_updates: Vec<PendingUpdate> = rows
+            .iter()
+            .filter(|r| r.2 == ST_VALID && r.4 == OP_UPDATE)
+            .filter_map(|(row_no, id, _, data, _, rev)| {
+                data.as_ref().map(|d| PendingUpdate {
+                    row_no: *row_no,
+                    id: *id,
+                    patch: d.0.clone(),
+                    expected_rev: *rev,
                 })
             })
             .collect();
@@ -213,10 +238,27 @@ impl DataStore {
             HashSet::new()
         };
         let defer = |f: FieldId, t: IndexTable| deferred.contains(&(f, t));
-        let (applied, rejected) = self
+        let (applied, mut rejected) = self
             .apply_pending(&mut tx, &ctx, &table, &plan, &pending, &defer, trace_id)
             .await?;
-        write_applied(&mut tx, &cur, &applied, &rejected).await?;
+        let (updated, update_rejected) = self
+            .apply_updates(
+                &mut tx,
+                &ctx,
+                &az,
+                &table,
+                &plan,
+                &pending_updates,
+                trace_id,
+            )
+            .await?;
+        rejected.extend(update_rejected);
+        let applied_rows: Vec<i64> = applied
+            .iter()
+            .map(|a| a.0)
+            .chain(updated.iter().map(|u| u.0))
+            .collect();
+        write_applied(&mut tx, &cur, &applied_rows, &rejected).await?;
         let last = rows.last().map_or(cur.apply_cursor, |r| r.0);
         let finished = i64::try_from(rows.len()).unwrap_or(i64::MAX) < max;
         sqlx::query(
@@ -230,16 +272,19 @@ impl DataStore {
         .bind(cur.tenant_int)
         .bind(cur.id)
         .bind(last)
-        .bind(i64::try_from(applied.len()).unwrap_or(i64::MAX))
+        .bind(i64::try_from(applied_rows.len()).unwrap_or(i64::MAX))
         .bind(i64::try_from(rejected.len()).unwrap_or(i64::MAX))
+        // 遅延構築のバックフィルの開始位置は作成した行だけで決める（更新は索引を write-through する）。
         .bind(applied.iter().map(|a| a.1).min())
         .bind(finished)
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;
-        if !applied.is_empty() || !rejected.is_empty() {
-            // 実データ変更の監査（書込と同一 Tx・チャンクごとに 1 行。作成したレコードの外部 ID を載せる）。
+        if !applied_rows.is_empty() || !rejected.is_empty() {
+            // 実データ変更の監査（書込と同一 Tx・チャンクごとに 1 行。作成・更新したレコードの外部 ID を
+            // 載せる。更新は 1 件ごとの監査も update_locked が同じ Tx で書く）。
             let ids: Vec<String> = applied.iter().map(|a| a.2.to_string()).collect();
+            let updated_ids: Vec<String> = updated.iter().map(|u| u.1.to_string()).collect();
             self.record_audit_on(
                 &mut tx,
                 &ctx,
@@ -249,8 +294,10 @@ impl DataStore {
                 json!({
                     "import_id": imp.id,
                     "created": applied.len(),
+                    "updated": updated.len(),
                     "rejected": rejected.len(),
                     "record_ids": ids,
+                    "updated_record_ids": updated_ids,
                 }),
             )
             .await?;
@@ -511,10 +558,10 @@ impl DataStore {
 async fn write_applied(
     conn: &mut PgConnection,
     imp: &ImportRow,
-    applied: &[Applied],
+    applied: &[i64],
     rejected: &[(i64, String)],
 ) -> Result<(), DataError> {
-    let mut row_nos: Vec<i64> = applied.iter().map(|a| a.0).collect();
+    let mut row_nos: Vec<i64> = applied.to_vec();
     let mut states: Vec<i16> = applied.iter().map(|_| ST_APPLIED).collect();
     let mut errors: Vec<Option<&str>> = applied.iter().map(|_| None).collect();
     for (row_no, msg) in rejected {
