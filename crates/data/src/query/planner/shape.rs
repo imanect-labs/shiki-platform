@@ -64,6 +64,8 @@ pub struct LinkShape {
 pub struct TableShape {
     pub n_rows: u64,
     pub columns: Vec<ColumnShape>,
+    /// 作成者（owner 擬似列）の形（行述語 `IsOwner` の選択率の分布）。
+    pub owner: Option<ColumnShape>,
     pub links: Vec<LinkShape>,
 }
 
@@ -111,6 +113,25 @@ pub(crate) async fn extract(
         .fields
         .iter()
         .filter(|f| f.id >= FIRST_USER_FIELD_ID && !f.field_type.is_derived());
+    let column = |ordinal: usize, ty: ShapeType, fs: &super::catalog::FieldStats| {
+        let top_freqs: Vec<f64> = fs.mcv.iter().map(|(_, fr)| *fr).collect();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        ColumnShape {
+            ordinal,
+            ty,
+            null_rate: (1.0 - fs.n_values / n).clamp(0.0, 1.0),
+            distinct: fs.n_distinct.max(0.0) as u64,
+            zipf_s: fit_zipf(&top_freqs),
+            top_freqs,
+            avg_elems: if fs.n_values > 0.0 {
+                fs.n_entries / fs.n_values
+            } else {
+                1.0
+            },
+            truncated_rate: fs.truncated_frac,
+            creation_correlation: fs.correlation,
+        }
+    };
     for (ordinal, f) in user_fields.enumerate() {
         let (ty, table) = match f.field_type {
             FieldType::Select | FieldType::UserRef | FieldType::RoleRef => {
@@ -126,24 +147,11 @@ pub(crate) async fn extract(
         let Some(fs) = stats.field(f.id, table) else {
             continue;
         };
-        let top_freqs: Vec<f64> = fs.mcv.iter().map(|(_, fr)| *fr).collect();
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        columns.push(ColumnShape {
-            ordinal,
-            ty,
-            null_rate: (1.0 - fs.n_values / n).clamp(0.0, 1.0),
-            distinct: fs.n_distinct.max(0.0) as u64,
-            zipf_s: fit_zipf(&top_freqs),
-            top_freqs,
-            avg_elems: if fs.n_values > 0.0 {
-                fs.n_entries / fs.n_values
-            } else {
-                1.0
-            },
-            truncated_rate: fs.truncated_frac,
-            creation_correlation: fs.correlation,
-        });
+        columns.push(column(ordinal, ty, fs));
     }
+    let owner = stats
+        .field(crate::model::SYSTEM_FIELD_OWNER, IndexTable::Text)
+        .map(|fs| column(usize::MAX, ShapeType::Category, fs));
     let mut links: Vec<LinkShape> = stats
         .links
         .iter()
@@ -167,6 +175,7 @@ pub(crate) async fn extract(
     Ok(Some(TableShape {
         n_rows: stats.n_rows as u64,
         columns,
+        owner,
         links,
     }))
 }

@@ -21,6 +21,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 pub mod bulk;
+pub mod synth;
 
 pub struct AllowAll;
 
