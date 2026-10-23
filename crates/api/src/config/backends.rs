@@ -400,6 +400,8 @@ impl LlmConfig {
     }
 
     /// ChatGPT プランのモデル（無効なら空）。単価 0（利用者のプラン枠で払う）・国外処理。
+    /// 組織の管理者が公開するまで使わせない（`requires_opt_in`。組織のデータを個人のアカウントへ
+    /// 送るので、AI 設定を保存していない組織でも既定で有効にしない）。
     fn chatgpt_models(&self) -> Vec<llm_gateway::ModelEntry> {
         if !self.chatgpt.enabled {
             return Vec::new();
@@ -414,6 +416,7 @@ impl LlmConfig {
                 display_name: Some(format!("{slug}（ChatGPT）")),
                 description: Some("あなたの ChatGPT プランで実行します".to_string()),
                 processed_abroad: true,
+                requires_opt_in: true,
                 ..Default::default()
             })
             .collect()

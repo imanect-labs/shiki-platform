@@ -929,6 +929,8 @@ fn chatgpt_is_off_by_default_and_adds_owner_only_models_when_enabled() {
     // 利用者のプラン枠で払うので単価 0・外部 API なので国外処理。
     assert_eq!(m.prompt_price_micros_per_mtok, 0);
     assert!(m.processed_abroad);
+    // 管理者が公開するまで使わせない。
+    assert!(m.requires_opt_in);
     // TOML の配列でも書ける。
     let llm: LlmConfig = serde_json::from_value(serde_json::json!({
         "backend": "stub",

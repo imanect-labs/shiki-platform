@@ -5,11 +5,15 @@
 //! - **連携した本人だけが使える**: 資格情報は連携者（tenant_id ＋ org ＋ principal）に紐づけ、
 //!   gateway が呼び出し主体と照合する（[`ChatGptAccount::ensure_owner`]）。他の利用者や
 //!   ワークフロー等の実行主体からは使えない（プラン枠を他人に消費させない）。
-//! - **トークンはサーバ側だけに置く**: 設定したパスのファイル（[`store`]・0600）に置き、
-//!   ブラウザ・API 応答・ログへ出さない。
+//! - **アクセス・リフレッシュトークンはサーバ側だけに置く**: 設定したパスのファイル（[`store`]・
+//!   0600）に置き、ブラウザ・API 応答・ログへ出さない。再ログインでは OpenAI の手順どおり、前回の
+//!   ID トークンを `id_token_hint` として認可 URL に載せる（本人のブラウザ経由で認可サーバへ渡る。
+//!   アカウントの識別用で、API の認可には使えない）。
 //! - **リフレッシュは直列化**: リフレッシュトークンは更新のたびに置き換わり、古い値を使うと
 //!   失効する。1 プロセスで 1 つの [`ChatGptAccount`] を共有し、内部の Mutex で直列にする
-//!   （複数レプリカで同じファイルを共有する構成は想定しない）。
+//!   （複数レプリカで同じファイルを共有する構成は想定しない）。リフレッシュの HTTP を待つ間も
+//!   このロックを持つので、全利用者が通る照合・表示（[`ChatGptAccount::is_owner`]・
+//!   [`ChatGptAccount::status`]）は秘密を含まない写し（`View`）だけを読み、このロックを取らない。
 //! - **ログインは URL の貼り付け**: OpenAI の戻り先は `127.0.0.1` 固定で、リモートのサーバには
 //!   届かない。ブラウザが戻された URL を利用者に貼ってもらい、サーバ側に持つ PKCE verifier で
 //!   交換する（[`oauth`]）。
@@ -18,6 +22,7 @@ mod oauth;
 mod provider;
 mod store;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -38,6 +43,9 @@ pub const CHATGPT_PROVIDER_ID: &str = "chatgpt";
 const PENDING_TTL: Duration = Duration::from_mins(15);
 /// アクセストークンの失効までこれを切ったらリフレッシュする。
 const REFRESH_MARGIN: chrono::Duration = chrono::Duration::minutes(5);
+/// リフレッシュが一時障害で失敗したら、トークンが有効な間はこの間隔を置いて試し直す
+/// （本人の生成のたびに認証サーバを待たせない）。
+const REFRESH_RETRY_AFTER: Duration = Duration::from_mins(1);
 
 /// 接続の設定。
 #[derive(Debug, Clone)]
@@ -110,7 +118,7 @@ pub enum ChatGptError {
 }
 
 /// 連携した本人（このプラン枠を使える唯一の主体）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct Owner {
     tenant_id: String,
     org: String,
@@ -134,7 +142,6 @@ impl Owner {
 
 /// ログインの途中状態（戻り先 URL を貼るまでサーバ側に持つ）。
 struct PendingLogin {
-    owner: Owner,
     state: String,
     nonce: String,
     verifier: String,
@@ -143,12 +150,41 @@ struct PendingLogin {
     started: Instant,
 }
 
+/// 照合・表示に使う写し（秘密を含まない）。資格情報を書き換えるたびに作り直す。
+#[derive(Clone, Default)]
+struct View {
+    owner: Option<Owner>,
+    /// 使えるトークンがあるか（無ければ未接続か再ログイン待ち）。
+    connected: bool,
+    email: Option<String>,
+    connected_at: Option<DateTime<Utc>>,
+    models: Vec<ChatGptModel>,
+}
+
+impl View {
+    fn of(creds: &Credentials) -> View {
+        View {
+            owner: creds.owner.clone(),
+            connected: creds.tokens.is_some(),
+            email: creds.account.as_ref().and_then(|a| a.email.clone()),
+            connected_at: creds.connected_at,
+            models: creds.models.clone(),
+        }
+    }
+}
+
 /// ChatGPT プランの接続（プロセスで 1 つを共有する）。
 pub struct ChatGptAccount {
     http: reqwest::Client,
     settings: ChatGptSettings,
+    /// 資格情報。書き換えとリフレッシュを直列にする（リフレッシュの HTTP を待つ間も持つ）。
     creds: tokio::sync::Mutex<Credentials>,
-    pending: std::sync::Mutex<Option<PendingLogin>>,
+    /// 照合・表示用の写し（全利用者のモデル解決が読むので、上のロックと分ける）。
+    view: std::sync::RwLock<View>,
+    /// ログインの途中状態（利用者ごと。他人の途中状態を上書きしない）。
+    pending: std::sync::Mutex<HashMap<Owner, PendingLogin>>,
+    /// 直近のリフレッシュが一時障害で失敗した時刻。
+    refresh_failed_at: std::sync::Mutex<Option<Instant>>,
 }
 
 impl std::fmt::Debug for ChatGptAccount {
@@ -158,6 +194,11 @@ impl std::fmt::Debug for ChatGptAccount {
             .field("credential_path", &self.settings.credential_path)
             .finish_non_exhaustive()
     }
+}
+
+/// 毒化しても中身はそのまま使える（値を差し替えるだけの状態）。
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl ChatGptAccount {
@@ -177,8 +218,10 @@ impl ChatGptAccount {
         ChatGptAccount {
             http,
             settings,
+            view: std::sync::RwLock::new(View::of(&creds)),
             creds: tokio::sync::Mutex::new(creds),
-            pending: std::sync::Mutex::new(None),
+            pending: std::sync::Mutex::new(HashMap::new()),
+            refresh_failed_at: std::sync::Mutex::new(None),
         }
     }
 
@@ -187,46 +230,60 @@ impl ChatGptAccount {
         &self.settings.api_base
     }
 
-    /// 呼び出した本人から見た接続状態。
-    pub async fn status(&self, ctx: &AuthContext) -> ChatGptStatus {
-        let creds = self.creds.lock().await;
-        let connection = match &creds.owner {
+    fn view(&self) -> View {
+        self.view
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// 資格情報を保存してから、メモリと写しを差し替える（保存に失敗したら何も変えない）。
+    fn commit(&self, creds: &mut Credentials, next: Credentials) -> Result<(), ChatGptError> {
+        self.save(&next)?;
+        *self
+            .view
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = View::of(&next);
+        *creds = next;
+        Ok(())
+    }
+
+    /// 呼び出した本人から見た接続状態（資格情報のロックを取らない）。
+    pub fn status(&self, ctx: &AuthContext) -> ChatGptStatus {
+        let view = self.view();
+        let connection = match &view.owner {
             None => ChatGptConnection::NotConnected,
             Some(o) if !o.matches(ctx) => ChatGptConnection::OtherUser,
-            Some(_) if creds.tokens.is_some() => ChatGptConnection::Connected,
+            Some(_) if view.connected => ChatGptConnection::Connected,
             Some(_) => ChatGptConnection::NeedsReauth,
         };
-        let mine = matches!(
+        if !matches!(
             connection,
             ChatGptConnection::Connected | ChatGptConnection::NeedsReauth
-        );
+        ) {
+            return ChatGptStatus {
+                connection,
+                email: None,
+                connected_at: None,
+                models: Vec::new(),
+            };
+        }
         ChatGptStatus {
             connection,
-            email: mine
-                .then(|| creds.account.as_ref().and_then(|a| a.email.clone()))
-                .flatten(),
-            connected_at: mine.then_some(creds.connected_at).flatten(),
-            models: if mine {
-                creds.models.clone()
-            } else {
-                Vec::new()
-            },
+            email: view.email,
+            connected_at: view.connected_at,
+            models: view.models,
         }
     }
 
-    /// 呼び出した本人が連携者か。
-    pub async fn is_owner(&self, ctx: &AuthContext) -> bool {
-        self.creds
-            .lock()
-            .await
-            .owner
-            .as_ref()
-            .is_some_and(|o| o.matches(ctx))
+    /// 呼び出した本人が連携者か（資格情報のロックを取らない）。
+    pub fn is_owner(&self, ctx: &AuthContext) -> bool {
+        self.view().owner.as_ref().is_some_and(|o| o.matches(ctx))
     }
 
     /// プラン枠を使ってよい主体か（gateway が生成の前に呼ぶ）。
-    pub(crate) async fn ensure_owner(&self, ctx: &AuthContext) -> Result<(), LlmError> {
-        if self.is_owner(ctx).await {
+    pub(crate) fn ensure_owner(&self, ctx: &AuthContext) -> Result<(), LlmError> {
+        if self.is_owner(ctx) {
             Ok(())
         } else {
             Err(LlmError::Config(
@@ -235,7 +292,7 @@ impl ChatGptAccount {
         }
     }
 
-    /// ログインを始め、ブラウザで開く認可 URL を返す（前の途中状態は捨てる）。
+    /// ログインを始め、ブラウザで開く認可 URL を返す（本人の前の途中状態は捨てる）。
     pub async fn start_login(&self, ctx: &AuthContext) -> Result<String, ChatGptError> {
         let owner = Owner::of(ctx).ok_or_else(|| {
             ChatGptError::Invalid("ユーザーとしてログインしているときだけ接続できます。".into())
@@ -249,8 +306,9 @@ impl ChatGptAccount {
             h.clone()
         } else {
             let h = format!("urn:uuid:{}", uuid::Uuid::new_v4());
-            creds.ext_agent_host_id = Some(h.clone());
-            self.save(&creds)?;
+            let mut next = creds.clone();
+            next.ext_agent_host_id = Some(h.clone());
+            self.commit(&mut creds, next)?;
             h
         };
         // 本人の再ログイン（リフレッシュの失効など）は発行済みのクライアントで。
@@ -260,13 +318,12 @@ impl ChatGptAccount {
         } else {
             (None, None)
         };
-        let client_id = client_id.unwrap_or_else(|| DYNAMIC_CLIENT_ID.to_string());
+        drop(creds);
         let pending = PendingLogin {
-            owner,
             state: oauth::random_token(),
             nonce: oauth::random_token(),
             verifier: oauth::random_token(),
-            client_id,
+            client_id: client_id.unwrap_or_else(|| DYNAMIC_CLIENT_ID.to_string()),
             started: Instant::now(),
         };
         let url = oauth::authorize_url(
@@ -280,7 +337,9 @@ impl ChatGptAccount {
                 verifier: &pending.verifier,
             },
         )?;
-        *self.pending_slot() = Some(pending);
+        let mut slots = lock(&self.pending);
+        slots.retain(|_, p| p.started.elapsed() <= PENDING_TTL);
+        slots.insert(owner, pending);
         Ok(url)
     }
 
@@ -291,28 +350,9 @@ impl ChatGptAccount {
         pasted_url: &str,
     ) -> Result<ChatGptStatus, ChatGptError> {
         let cb = oauth::parse_callback(pasted_url)?;
-        let pending = self.take_pending(ctx, &cb.state)?;
-        let client_id = if pending.client_id == DYNAMIC_CLIENT_ID {
-            cb.client_id.clone().ok_or_else(|| {
-                ChatGptError::Invalid(
-                    "URL に client_id がありません。アドレスバーの URL を省略せずに貼ってください。"
-                        .into(),
-                )
-            })?
-        } else {
-            if cb
-                .client_id
-                .as_ref()
-                .is_some_and(|c| c != &pending.client_id)
-            {
-                return Err(ChatGptError::Invalid(
-                    "以前の登録と異なる応答です。切断してから接続し直してください。".into(),
-                ));
-            }
-            pending.client_id.clone()
-        };
+        let (owner, pending, client_id) = self.take_pending(ctx, &cb)?;
 
-        let tokens = oauth::exchange_code(
+        let tokens = match oauth::exchange_code(
             &self.http,
             &self.settings.auth_base,
             &client_id,
@@ -320,12 +360,19 @@ impl ChatGptAccount {
             &pending.verifier,
         )
         .await
-        .map_err(|e| match e {
-            TokenError::Rejected { .. } => ChatGptError::Invalid(
-                "認可コードが無効か期限切れです。もう一度ログインしてください。".into(),
-            ),
-            TokenError::Transport(e) => ChatGptError::Upstream(e),
-        })?;
+        {
+            Ok(t) => t,
+            Err(TokenError::Rejected { .. }) => {
+                return Err(ChatGptError::Invalid(
+                    "認可コードが無効か期限切れです。もう一度ログインしてください。".into(),
+                ));
+            }
+            Err(TokenError::Transport(e)) => {
+                // 認証サーバに届いていない一時障害。コードはまだ使えるので、同じ URL で試し直せるよう戻す。
+                lock(&self.pending).entry(owner).or_insert(pending);
+                return Err(ChatGptError::Upstream(e));
+            }
+        };
         if !tokens.grants_plan_usage() {
             return Err(ChatGptError::Invalid(
                 "ChatGPT プランの利用が許可されませんでした。Plus / Pro のアカウントで、プランの利用を許可してください。"
@@ -351,55 +398,63 @@ impl ChatGptAccount {
 
         let mut creds = self.creds.lock().await;
         // 途中で別の利用者が連携した・別の ChatGPT アカウントで再ログインした場合は上書きしない。
-        if creds.owner.as_ref().is_some_and(|o| o != &pending.owner) {
+        if creds.owner.as_ref().is_some_and(|o| o != &owner) {
             return Err(ChatGptError::OtherUser);
         }
         if creds.owner.is_some() && creds.account.as_ref().is_some_and(|a| a.sub != claims.sub) {
             return Err(ChatGptError::Invalid(
-                "以前と別の ChatGPT アカウントです。切断してから接続し直してください。".into(),
+                "以前と別の ChatGPT アカウントです。連携を解除してから接続し直してください。"
+                    .into(),
             ));
         }
-        creds.client_id = Some(client_id);
-        creds.owner = Some(pending.owner);
-        creds.account = Some(AccountInfo {
+        let mut next = creds.clone();
+        next.client_id = Some(client_id);
+        next.owner = Some(owner);
+        next.account = Some(AccountInfo {
             sub: claims.sub,
             email: claims.email,
         });
-        creds.id_token = Some(id_token);
-        creds.tokens = Some(Tokens {
+        next.id_token = Some(id_token);
+        next.tokens = Some(Tokens {
             access_token: tokens.access_token.clone(),
             refresh_token,
             expires_at: tokens.expires_at(now),
             earliest_refresh_at: tokens.earliest_refresh(),
         });
-        creds.connected_at = Some(now);
-        creds.models = models;
-        self.save(&creds)?;
+        next.connected_at = Some(now);
+        next.models = models;
+        self.commit(&mut creds, next)?;
         drop(creds);
-        Ok(self.status(ctx).await)
+        *lock(&self.refresh_failed_at) = None;
+        Ok(self.status(ctx))
     }
 
-    /// 接続を外す（リフレッシュトークンの失効は best-effort）。本人以外は外せない。
+    /// 接続を外す。本人以外は外せない。先に外して保存し、リフレッシュトークンの失効は
+    /// 裏で best-effort に送る（認証サーバが遅くても切断そのものは待たせない・打ち切られない）。
     pub async fn disconnect(&self, ctx: &AuthContext) -> Result<(), ChatGptError> {
         let mut creds = self.creds.lock().await;
         if creds.owner.as_ref().is_some_and(|o| !o.matches(ctx)) {
             return Err(ChatGptError::OtherUser);
         }
-        if let (Some(client_id), Some(tokens)) = (&creds.client_id, &creds.tokens) {
-            if let Err(e) = oauth::revoke(
-                &self.http,
-                &self.settings.auth_base,
-                client_id,
-                &tokens.refresh_token,
-            )
-            .await
-            {
-                tracing::warn!(error = %e, "ChatGPT のリフレッシュトークンを失効できません（接続は外します）");
-            }
+        let revoke = creds
+            .client_id
+            .clone()
+            .zip(creds.tokens.as_ref().map(|t| t.refresh_token.clone()));
+        let mut next = creds.clone();
+        next.clear_connection();
+        self.commit(&mut creds, next)?;
+        drop(creds);
+        if let Some(owner) = Owner::of(ctx) {
+            lock(&self.pending).remove(&owner);
         }
-        creds.clear_connection();
-        self.save(&creds)?;
-        *self.pending_slot() = None;
+        if let Some((client_id, refresh_token)) = revoke {
+            let (http, auth_base) = (self.http.clone(), self.settings.auth_base.clone());
+            tokio::spawn(async move {
+                if let Err(e) = oauth::revoke(&http, &auth_base, &client_id, &refresh_token).await {
+                    tracing::warn!(error = %e, "ChatGPT のリフレッシュトークンを失効できません（接続は外しました）");
+                }
+            });
+        }
         Ok(())
     }
 
@@ -417,9 +472,12 @@ impl ChatGptAccount {
             return Err(not_connected());
         };
         let now = Utc::now();
+        let valid = now < tokens.expires_at;
         let fresh = now + REFRESH_MARGIN < tokens.expires_at;
         let too_early = tokens.earliest_refresh_at.is_some_and(|t| now < t);
-        if fresh || (too_early && now < tokens.expires_at) {
+        let backing_off =
+            lock(&self.refresh_failed_at).is_some_and(|t| t.elapsed() < REFRESH_RETRY_AFTER);
+        if fresh || (valid && (too_early || backing_off)) {
             return Ok(tokens.access_token);
         }
         match oauth::refresh(
@@ -431,6 +489,7 @@ impl ChatGptAccount {
         .await
         {
             Ok(t) => {
+                *lock(&self.refresh_failed_at) = None;
                 let access = t.access_token.clone();
                 creds.tokens = Some(Tokens {
                     access_token: t.access_token.clone(),
@@ -446,15 +505,17 @@ impl ChatGptAccount {
             }
             Err(e) if e.is_terminal() => {
                 tracing::warn!(error = %e, "ChatGPT のリフレッシュトークンが失効しました");
-                creds.tokens = None;
-                if let Err(e) = self.save(&creds) {
+                let mut next = creds.clone();
+                next.tokens = None;
+                if let Err(e) = self.commit(&mut creds, next) {
                     tracing::error!(error = %e, "ChatGPT の資格情報を保存できません");
                 }
                 Err(not_connected())
             }
             Err(e) => {
                 tracing::warn!(error = %e, "ChatGPT のトークンをリフレッシュできません");
-                if now < tokens.expires_at {
+                *lock(&self.refresh_failed_at) = Some(Instant::now());
+                if valid {
                     Ok(tokens.access_token)
                 } else {
                     Err(LlmError::Unavailable(format!("chatgpt token refresh: {e}")))
@@ -469,6 +530,7 @@ impl ChatGptAccount {
             t.expires_at = Utc::now();
             t.earliest_refresh_at = None;
         }
+        *lock(&self.refresh_failed_at) = None;
     }
 
     fn save(&self, creds: &Credentials) -> Result<(), ChatGptError> {
@@ -476,31 +538,47 @@ impl ChatGptAccount {
             .map_err(|e| ChatGptError::Storage(e.to_string()))
     }
 
-    fn pending_slot(&self) -> std::sync::MutexGuard<'_, Option<PendingLogin>> {
-        // 途中状態は値を差し替えるだけなので、毒化しても中身はそのまま使える。
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// 本人の・state が一致する・期限内の途中状態を取り出す（一致しなければ残す）。
-    fn take_pending(&self, ctx: &AuthContext, state: &str) -> Result<PendingLogin, ChatGptError> {
-        let mut slot = self.pending_slot();
+    /// 本人の・state が一致する・期限内の途中状態を、戻り先の検証を済ませてから取り出す
+    /// （貼り間違いで捨てない。一致しなければ残す）。交換に使うクライアント ID も返す。
+    fn take_pending(
+        &self,
+        ctx: &AuthContext,
+        cb: &oauth::Callback,
+    ) -> Result<(Owner, PendingLogin, String), ChatGptError> {
         let restart = |m: &str| {
             ChatGptError::Invalid(format!("{m}「ChatGPT でログイン」からやり直してください。"))
         };
-        let Some(p) = slot.as_ref() else {
+        let owner = Owner::of(ctx).ok_or_else(|| restart("ログインの途中状態がありません。"))?;
+        let mut slots = lock(&self.pending);
+        let Some(p) = slots.get(&owner) else {
             return Err(restart("ログインの途中状態がありません。"));
         };
-        if !p.owner.matches(ctx) || p.state != state {
+        if p.state != cb.state {
             return Err(restart("この URL は最新のログインのものではありません。"));
         }
         if p.started.elapsed() > PENDING_TTL {
-            *slot = None;
+            slots.remove(&owner);
             return Err(restart("ログインの有効期限が切れました。"));
         }
-        slot.take()
-            .ok_or_else(|| restart("ログインの途中状態がありません。"))
+        let client_id = if p.client_id == DYNAMIC_CLIENT_ID {
+            cb.client_id.clone().ok_or_else(|| {
+                ChatGptError::Invalid(
+                    "URL に client_id がありません。アドレスバーの URL を省略せずに貼ってください。"
+                        .into(),
+                )
+            })?
+        } else {
+            if cb.client_id.as_ref().is_some_and(|c| c != &p.client_id) {
+                return Err(ChatGptError::Invalid(
+                    "以前の登録と異なる応答です。連携を解除してから接続し直してください。".into(),
+                ));
+            }
+            p.client_id.clone()
+        };
+        let pending = slots
+            .remove(&owner)
+            .ok_or_else(|| restart("ログインの途中状態がありません。"))?;
+        Ok((owner, pending, client_id))
     }
 }
 

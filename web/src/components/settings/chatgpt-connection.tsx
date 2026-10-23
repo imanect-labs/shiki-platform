@@ -294,11 +294,6 @@ export function ChatGptConnectionSection() {
                     <Unlink aria-hidden />
                     <span className="max-sm:sr-only">連携を解除</span>
                   </Button>
-                ) : status.state === "needs_reauth" ? (
-                  <Button size="sm" onClick={() => setConnectOpen(true)}>
-                    <OpenAiLogo />
-                    再ログイン
-                  </Button>
                 ) : status.state === "not_connected" ? (
                   <Button size="sm" onClick={() => setConnectOpen(true)}>
                     <OpenAiLogo />
@@ -308,10 +303,33 @@ export function ChatGptConnectionSection() {
               }
             />
           </ul>
+          {status.state === "needs_reauth" ? (
+            // 操作が 2 つあるので行を分ける（狭い幅でアカウントの表示を潰さない）。
+            <div className="shiki-dash-top flex flex-wrap items-center justify-between gap-3 px-5 py-3.5">
+              <p className="min-w-0 text-xs leading-relaxed text-muted-foreground">
+                ChatGPT の認証の期限が切れました。再ログインするか、連携を解除してください。
+              </p>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => setConfirmOpen(true)}>
+                  <Unlink aria-hidden />
+                  連携を解除
+                </Button>
+                <Button size="sm" onClick={() => setConnectOpen(true)}>
+                  <OpenAiLogo />
+                  再ログイン
+                </Button>
+              </div>
+            </div>
+          ) : null}
           {status.state === "connected" ? (
             listed.length > 0 ? (
               <div className="shiki-dash-top px-5 py-3.5">
                 <div className="text-xs text-muted-foreground">このアカウントで使えるモデル</div>
+                {listed.some((m) => m.enabled) ? null : (
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                    組織の管理者が 管理コンソール → AI → モデル で公開すると、モデル選択に出ます。
+                  </p>
+                )}
                 <ul className="mt-2 flex flex-wrap gap-1.5">
                   {listed.map((m) => (
                     <li
@@ -338,7 +356,12 @@ export function ChatGptConnectionSection() {
         onConnected={(s) => {
           setStatus(s);
           setConnectOpen(false);
-          toast({ title: "ChatGPT と連携しました", description: "モデル選択に ChatGPT のモデルが出ます。" });
+          toast({
+            title: "ChatGPT と連携しました",
+            description: s.models.some((m) => m.enabled)
+              ? "モデル選択に ChatGPT のモデルが出ます。"
+              : "組織の管理者がモデルを公開すると、モデル選択に出ます。",
+          });
         }}
       />
 

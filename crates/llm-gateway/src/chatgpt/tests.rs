@@ -26,6 +26,8 @@ struct Mock {
     token_forms: Vec<HashMap<String, String>>,
     revoked: Vec<HashMap<String, String>>,
     responses: Vec<(HeaderMap, Value)>,
+    /// トークンエンドポイントの応答を遅らせる（認証サーバが遅い状況）。
+    token_delay: std::time::Duration,
 }
 
 type Shared = Arc<Mutex<Mock>>;
@@ -206,14 +208,14 @@ async fn login_exchanges_the_pasted_code_and_persists_the_connection() {
     // 再起動しても接続は残る。
     let reopened = ChatGptAccount::open(reqwest::Client::new(), f.account.settings.clone());
     assert_eq!(
-        reopened.status(&me).await.connection,
+        reopened.status(&me).connection,
         ChatGptConnection::Connected
     );
     assert_eq!(reopened.access_token().await.unwrap(), "at-1");
 
     // 他の利用者には連携者のアカウントを見せず、ログインも切断もさせない。
     let other = ctx("other");
-    let seen = f.account.status(&other).await;
+    let seen = f.account.status(&other);
     assert_eq!(seen.connection, ChatGptConnection::OtherUser);
     assert!(seen.email.is_none() && seen.models.is_empty());
     assert!(matches!(
@@ -224,8 +226,8 @@ async fn login_exchanges_the_pasted_code_and_persists_the_connection() {
         f.account.disconnect(&other).await,
         Err(ChatGptError::OtherUser)
     ));
-    assert!(f.account.ensure_owner(&other).await.is_err());
-    assert!(f.account.ensure_owner(&me).await.is_ok());
+    assert!(f.account.ensure_owner(&other).is_err());
+    assert!(f.account.ensure_owner(&me).is_ok());
 }
 
 #[tokio::test]
@@ -262,7 +264,7 @@ async fn pasted_url_must_match_the_pending_login() {
     let res = f.account.complete_login(&me, &pasted).await;
     assert!(matches!(res, Err(ChatGptError::Invalid(m)) if m.contains("許可")));
     assert_eq!(
-        f.account.status(&me).await.connection,
+        f.account.status(&me).connection,
         ChatGptConnection::NotConnected
     );
     assert!(f.mock.lock().unwrap().token_forms.len() == 1);
@@ -302,7 +304,7 @@ async fn refresh_rotates_tokens_and_a_dead_refresh_token_asks_for_reauth() {
         "rt-2"
     );
     assert_eq!(
-        f.account.status(&me).await.connection,
+        f.account.status(&me).connection,
         ChatGptConnection::NeedsReauth
     );
 
@@ -321,7 +323,7 @@ async fn a_temporary_refresh_failure_keeps_the_connection() {
     // 応答を積まない＝500。まだ失効していないトークンで続け、資格情報は消さない。
     assert_eq!(f.account.access_token().await.unwrap(), "at-1");
     assert_eq!(
-        f.account.status(&me).await.connection,
+        f.account.status(&me).connection,
         ChatGptConnection::Connected
     );
 }
@@ -333,12 +335,24 @@ async fn disconnect_revokes_and_forgets_all_but_the_host_id() {
     let host = query(&f.account.start_login(&me).await.unwrap())["ext_agent_host_id"].clone();
     connect(&f, &me, 3600).await;
     f.account.disconnect(&me).await.unwrap();
-    let revoked = f.mock.lock().unwrap().revoked.clone();
+    // 切断は先に終わり、失効は裏で届く。
+    assert_eq!(
+        f.account.status(&me).connection,
+        ChatGptConnection::NotConnected
+    );
+    let mut revoked = Vec::new();
+    for _ in 0..100 {
+        revoked = f.mock.lock().unwrap().revoked.clone();
+        if !revoked.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     assert_eq!(revoked[0]["token"], "rt-1");
     assert_eq!(revoked[0]["token_type_hint"], "refresh_token");
     assert_eq!(revoked[0]["client_id"], "oaiapp_1");
     assert_eq!(
-        f.account.status(&me).await.connection,
+        f.account.status(&me).connection,
         ChatGptConnection::NotConnected
     );
     assert!(f.account.access_token().await.is_err());
@@ -371,4 +385,105 @@ async fn provider_calls_responses_with_the_owner_token_in_plan_shape() {
         (json!(false), json!(true))
     );
     assert!(body.get("max_output_tokens").is_none());
+}
+
+#[tokio::test]
+async fn a_mistyped_or_failed_paste_can_be_retried_with_the_same_login() {
+    let f = fixture().await;
+    let me = ctx("me");
+    let q = query(&f.account.start_login(&me).await.unwrap());
+    let base = format!(
+        "http://127.0.0.1:1455/auth/callback?code=code-1&state={}",
+        q["state"]
+    );
+    // client_id が欠けた（途中で切れた）URL は弾くが、途中状態は残す。
+    assert!(matches!(
+        f.account.complete_login(&me, &base).await,
+        Err(ChatGptError::Invalid(_))
+    ));
+    // 認証サーバの一時障害（応答を積まない＝500）でも、同じ URL で試し直せる。
+    let full = format!("{base}&client_id=oaiapp_1");
+    assert!(matches!(
+        f.account.complete_login(&me, &full).await,
+        Err(ChatGptError::Upstream(_))
+    ));
+    f.mock.lock().unwrap().token_replies.push_back((
+        StatusCode::OK,
+        token_reply(
+            "at-1",
+            "rt-1",
+            3600,
+            Some(id_token("oaiapp_1", &q["nonce"], "acct-1")),
+        ),
+    ));
+    let status = f.account.complete_login(&me, &full).await.unwrap();
+    assert_eq!(status.connection, ChatGptConnection::Connected);
+}
+
+#[tokio::test]
+async fn others_logins_do_not_replace_each_other() {
+    let f = fixture().await;
+    let (a, b) = (ctx("a"), ctx("b"));
+    let qa = query(&f.account.start_login(&a).await.unwrap());
+    // 別の利用者がログインを始めても、a の途中状態は消えない。
+    f.account.start_login(&b).await.unwrap();
+    f.mock.lock().unwrap().token_replies.push_back((
+        StatusCode::OK,
+        token_reply(
+            "at",
+            "rt",
+            3600,
+            Some(id_token("oaiapp_1", &qa["nonce"], "acct-a")),
+        ),
+    ));
+    let pasted = format!(
+        "http://127.0.0.1:1455/auth/callback?code=c&state={}&client_id=oaiapp_1",
+        qa["state"]
+    );
+    assert_eq!(
+        f.account
+            .complete_login(&a, &pasted)
+            .await
+            .unwrap()
+            .connection,
+        ChatGptConnection::Connected
+    );
+}
+
+#[tokio::test]
+async fn ownership_checks_do_not_wait_for_a_slow_refresh() {
+    let f = fixture().await;
+    let me = ctx("me");
+    connect(&f, &me, 60).await;
+    {
+        let mut m = f.mock.lock().unwrap();
+        m.token_delay = std::time::Duration::from_millis(1500);
+        m.token_replies
+            .push_back((StatusCode::OK, token_reply("at-2", "rt-2", 3600, None)));
+    }
+    let account = f.account.clone();
+    let refresh = tokio::spawn(async move { account.access_token().await });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // リフレッシュがロックを持って認証サーバを待っている間も、照合と表示はすぐ返る。
+    let started = std::time::Instant::now();
+    assert!(f.account.is_owner(&me));
+    assert!(!f.account.is_owner(&ctx("other")));
+    assert_eq!(
+        f.account.status(&me).connection,
+        ChatGptConnection::Connected
+    );
+    assert!(started.elapsed() < std::time::Duration::from_millis(100));
+    assert_eq!(refresh.await.unwrap().unwrap(), "at-2");
+}
+
+#[tokio::test]
+async fn a_failed_refresh_backs_off_while_the_token_is_still_valid() {
+    let f = fixture().await;
+    connect(&f, &ctx("me"), 60).await;
+    let forms = || f.mock.lock().unwrap().token_forms.len();
+    let before = forms();
+    // 1 回目は試して失敗（500）、まだ有効なので古いトークンで続ける。続く呼び出しは間を置く。
+    assert_eq!(f.account.access_token().await.unwrap(), "at-1");
+    assert_eq!(f.account.access_token().await.unwrap(), "at-1");
+    assert_eq!(forms(), before + 1);
 }

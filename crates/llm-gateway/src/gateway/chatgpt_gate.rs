@@ -25,9 +25,9 @@ impl LlmGateway {
     }
 
     /// 呼び出し主体が ChatGPT プランの連携者か（違えば生成させない）。
-    pub(super) async fn ensure_chatgpt_owner(&self, ctx: &AuthContext) -> Result<(), LlmError> {
+    pub(super) fn ensure_chatgpt_owner(&self, ctx: &AuthContext) -> Result<(), LlmError> {
         match self.chatgpt() {
-            Some(account) => account.ensure_owner(ctx).await,
+            Some(account) => account.ensure_owner(ctx),
             None => Err(LlmError::Config("chatgpt_plan requires llm.chatgpt".into())),
         }
     }
@@ -42,12 +42,12 @@ impl LlmGateway {
 
     /// モデル選択に出してよいか。ChatGPT プランのモデルは連携者にだけ見せる
     /// （他の利用者には選んでも使えないモデルになるため）。
-    pub async fn model_visible_to(&self, ctx: &AuthContext, entry: &ModelEntry) -> bool {
+    pub fn model_visible_to(&self, ctx: &AuthContext, entry: &ModelEntry) -> bool {
         if !self.is_personal_model(entry) {
             return true;
         }
         match self.chatgpt() {
-            Some(account) => account.is_owner(ctx).await,
+            Some(account) => account.is_owner(ctx),
             None => false,
         }
     }
@@ -61,7 +61,7 @@ impl LlmGateway {
         let catalog = &self.inner.config.catalog;
         let mut hidden = Vec::new();
         for m in &catalog.models {
-            if !self.model_visible_to(ctx, m).await {
+            if !self.model_visible_to(ctx, m) {
                 hidden.push(m.id.as_str());
             }
         }
@@ -181,10 +181,10 @@ mod tests {
         // 同じ id でもワークフロー等の実行主体は本人ではない。
         let workflow = ctx(authz::PrincipalKind::Workflow, "owner");
 
-        assert!(gw.model_visible_to(&owner, &chatgpt).await);
-        assert!(!gw.model_visible_to(&other, &chatgpt).await);
-        assert!(!gw.model_visible_to(&workflow, &chatgpt).await);
-        assert!(gw.model_visible_to(&other, &stub).await);
+        assert!(gw.model_visible_to(&owner, &chatgpt));
+        assert!(!gw.model_visible_to(&other, &chatgpt));
+        assert!(!gw.model_visible_to(&workflow, &chatgpt));
+        assert!(gw.model_visible_to(&other, &stub));
 
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
         req.model = Some("chatgpt:gpt".into());

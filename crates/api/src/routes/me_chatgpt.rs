@@ -8,7 +8,8 @@
 //! 2. ブラウザが戻された `http://127.0.0.1:…/auth/callback?…` の URL を
 //!    `POST /me/chatgpt/callback` に貼る。サーバが自分の PKCE verifier で交換する。
 //!
-//! トークンはサーバ側のファイルにだけ置き、応答には含めない。
+//! アクセス・リフレッシュトークンはサーバ側のファイルにだけ置き、応答には含めない（再ログインの認可 URL
+//! には、OpenAI の手順どおり前回の ID トークンが `id_token_hint` として載る）。連携・解除は監査に残す。
 
 use axum::{extract::State, http::StatusCode, Json};
 use chrono::{DateTime, Utc};
@@ -16,8 +17,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::ToSchema;
 
-use crate::{error::ApiError, extract::AuthContextExt, state::AppState};
+use crate::{
+    config::chatgpt_model_id,
+    error::ApiError,
+    extract::{AuthContextExt, TraceIdExt},
+    state::AppState,
+};
 use llm_gateway::{ChatGptAccount, ChatGptConnection, ChatGptError, ChatGptStatus};
+use storage::audit::{AuditEntry, Decision};
 
 /// 接続の状態（本人から見た）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
@@ -39,7 +46,7 @@ pub struct ChatGptModelInfo {
     /// ChatGPT 側のモデル ID（`llm.chatgpt.models` に書く値）。
     pub slug: String,
     pub display_name: String,
-    /// この環境のモデル選択に出ているか（`llm.chatgpt.models` に含まれるか）。
+    /// 本人のモデル選択に出ているか（`llm.chatgpt.models` に含まれ、組織で公開されている）。
     pub enabled: bool,
 }
 
@@ -95,8 +102,8 @@ fn api_error(e: ChatGptError) -> ApiError {
     }
 }
 
-/// `configured` は `llm.chatgpt.models`（モデル選択に出しているもの）。
-fn response(configured: &[String], status: ChatGptStatus) -> ChatGptStatusResponse {
+/// `selectable` は本人のモデル選択に出ている slug（[`selectable_slugs`]）。
+fn response(selectable: &[String], status: ChatGptStatus) -> ChatGptStatusResponse {
     ChatGptStatusResponse {
         state: match status.connection {
             ChatGptConnection::NotConnected => ChatGptConnectionState::NotConnected,
@@ -110,11 +117,68 @@ fn response(configured: &[String], status: ChatGptStatus) -> ChatGptStatusRespon
             .models
             .into_iter()
             .map(|m| ChatGptModelInfo {
-                enabled: configured.iter().any(|c| c == &m.slug),
+                enabled: selectable.iter().any(|c| c == &m.slug),
                 slug: m.slug,
                 display_name: m.display_name,
             })
             .collect(),
+    }
+}
+
+/// 本人のモデル選択に出ている slug（`llm.chatgpt.models` のうち、組織で公開されているもの）。
+/// 接続していなければ組織の設定は読まない。
+async fn selectable_slugs(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    status: &ChatGptStatus,
+) -> Result<Vec<String>, ApiError> {
+    let Some(gw) = state.llm.as_ref() else {
+        return Ok(Vec::new());
+    };
+    if status.connection != ChatGptConnection::Connected || status.models.is_empty() {
+        return Ok(Vec::new());
+    }
+    let settings = gw
+        .settings_for(ctx)
+        .await
+        .map_err(|e| ApiError::Internal(format!("tenant llm settings: {e}")))?;
+    Ok(state
+        .config
+        .llm
+        .chatgpt
+        .models
+        .iter()
+        .filter(|slug| settings.is_enabled(gw.catalog(), &chatgpt_model_id(slug)))
+        .cloned()
+        .collect())
+}
+
+/// 連携・解除を監査に残す（組織のデータを個人のアカウントへ送る委任の記録）。
+/// 監査は済んだ操作の記録なので、失敗しても結果は変えず、欠落をログで顕在化する。
+async fn audit(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    trace: Option<&str>,
+    action: &str,
+    metadata: serde_json::Value,
+) {
+    let object_id = format!("{}|{}|{}", ctx.tenant_id, ctx.org, ctx.principal.id);
+    if let Err(e) = state
+        .audit
+        .record(
+            ctx,
+            AuditEntry {
+                action,
+                object_type: "chatgpt_connection",
+                object_id: &object_id,
+                decision: Decision::Allow,
+                trace_id: trace,
+                metadata,
+            },
+        )
+        .await
+    {
+        tracing::error!(error = %e, action, "ChatGPT 連携の監査記録に失敗");
     }
 }
 
@@ -131,17 +195,18 @@ fn response(configured: &[String], status: ChatGptStatus) -> ChatGptStatusRespon
 pub async fn get_chatgpt(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
-) -> Json<ChatGptStatusResponse> {
+) -> Result<Json<ChatGptStatusResponse>, ApiError> {
     let Some(account) = account(&state) else {
-        return Json(ChatGptStatusResponse {
+        return Ok(Json(ChatGptStatusResponse {
             state: ChatGptConnectionState::Unavailable,
             email: None,
             connected_at: None,
             models: Vec::new(),
-        });
+        }));
     };
-    let status = account.status(&ctx).await;
-    Json(response(&state.config.llm.chatgpt.models, status))
+    let status = account.status(&ctx);
+    let selectable = selectable_slugs(&state, &ctx, &status).await?;
+    Ok(Json(response(&selectable, status)))
 }
 
 /// ChatGPT でのログインを始める（認可 URL を返す）。
@@ -185,14 +250,23 @@ pub async fn start_chatgpt_login(
 pub async fn complete_chatgpt_login(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
     Json(body): Json<ChatGptCallbackRequest>,
 ) -> Result<Json<ChatGptStatusResponse>, ApiError> {
     let status = require_account(&state)?
         .complete_login(&ctx, &body.callback_url)
         .await
         .map_err(api_error)?;
-    tracing::info!(user = %ctx.principal.id, "ChatGPT プランを連携しました");
-    Ok(Json(response(&state.config.llm.chatgpt.models, status)))
+    audit(
+        &state,
+        &ctx,
+        trace.as_deref(),
+        "me.chatgpt.connect",
+        json!({ "account_email": status.email }),
+    )
+    .await;
+    let selectable = selectable_slugs(&state, &ctx, &status).await?;
+    Ok(Json(response(&selectable, status)))
 }
 
 /// ChatGPT プランの接続を外す（本人だけ）。
@@ -210,12 +284,22 @@ pub async fn complete_chatgpt_login(
 pub async fn disconnect_chatgpt(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
 ) -> Result<StatusCode, ApiError> {
-    require_account(&state)?
-        .disconnect(&ctx)
-        .await
-        .map_err(api_error)?;
-    tracing::info!(user = %ctx.principal.id, "ChatGPT プランの連携を外しました");
+    let account = require_account(&state)?;
+    // 連携していない呼び出しは何もしない（監査にも残さない）。
+    let linked = account.is_owner(&ctx);
+    account.disconnect(&ctx).await.map_err(api_error)?;
+    if linked {
+        audit(
+            &state,
+            &ctx,
+            trace.as_deref(),
+            "me.chatgpt.disconnect",
+            json!({}),
+        )
+        .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

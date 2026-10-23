@@ -357,7 +357,7 @@ impl LlmGateway {
             .ok_or_else(|| LlmError::Config(format!("unknown provider for model: {logical}")))?;
         if slot.config.kind == ProviderKind::ChatgptPlan {
             // 連携者のプラン枠。本人以外（他の利用者・ワークフロー等）には使わせない。
-            self.ensure_chatgpt_owner(ctx).await?;
+            self.ensure_chatgpt_owner(ctx)?;
         }
         let permitted = self
             .inner

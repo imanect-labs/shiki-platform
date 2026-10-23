@@ -32,8 +32,13 @@ pub(super) const RESOURCE: &str = "https://api.openai.com/v1";
 const AGENT_NAME: &str = "Shiki";
 /// ID トークンの発行者。
 const ISSUER: &str = "https://auth.openai.com";
-/// 認証サーバ・モデル一覧への 1 回の呼び出しの上限。
-pub(super) const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+/// トークンエンドポイントへの 1 回の呼び出しの上限。ログインの完了（交換＋モデル一覧）が
+/// API の標準タイムアウト（30 秒）に収まるよう、各呼び出しの上限を足して 30 秒未満にする。
+const TOKEN_TIMEOUT: Duration = Duration::from_secs(15);
+/// モデル一覧の取得の上限（取れなくても接続は続ける）。
+const MODELS_TIMEOUT: Duration = Duration::from_secs(8);
+/// 失効の送信（discovery と revoke それぞれ）の上限。裏で送るので待たせない。
+const REVOKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// リフレッシュトークンが使えなくなったことを示すエラーコード（再ログインが要る）。
 const TERMINAL_REFRESH_CODES: &[&str] = &[
@@ -234,7 +239,7 @@ async fn post_token(
 ) -> Result<TokenResponse, TokenError> {
     let resp = http
         .post(format!("{auth_base}/api/accounts/oauth/token"))
-        .timeout(HTTP_TIMEOUT)
+        .timeout(TOKEN_TIMEOUT)
         .form(form)
         .send()
         .await
@@ -310,7 +315,7 @@ pub(super) async fn revoke(
 ) -> Result<(), String> {
     let discovery: Value = http
         .get(format!("{auth_base}/.well-known/openid-configuration"))
-        .timeout(HTTP_TIMEOUT)
+        .timeout(REVOKE_TIMEOUT)
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
@@ -324,7 +329,7 @@ pub(super) async fn revoke(
         .filter(|u| same_origin(u, auth_base))
         .ok_or("revocation_endpoint がありません")?;
     http.post(endpoint)
-        .timeout(HTTP_TIMEOUT)
+        .timeout(REVOKE_TIMEOUT)
         .form(&[
             ("token", refresh_token),
             ("token_type_hint", "refresh_token"),
@@ -406,7 +411,7 @@ pub(super) async fn list_models(
 ) -> Result<Vec<ChatGptModel>, String> {
     let v: Value = http
         .get(format!("{api_base}/models"))
-        .timeout(HTTP_TIMEOUT)
+        .timeout(MODELS_TIMEOUT)
         .bearer_auth(access_token)
         .send()
         .await

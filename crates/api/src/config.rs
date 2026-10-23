@@ -206,6 +206,7 @@ mod backends;
 mod tests;
 
 pub use auth::{AuthConfig, SessionConfig, Tenancy};
+pub(crate) use backends::chatgpt_model_id;
 pub use backends::{
     AuthzConfig, ChatConfig, LangfuseConfig, LlmAutoConfig, LlmBackend, LlmChatGptConfig,
     LlmConfig, LlmLimitsConfig, LlmModelEntry, LlmProviderEntry, LlmProviderLimit, LogFormat,
