@@ -334,22 +334,6 @@ jobs:
         # モデル）のまま。nextest はプロセス毎実行で in-process 共有状態に依存する IT を壊す
         # 実績があり不採用。速度は debuginfo 削減の計装ビルド短縮＋cache-on-failure で稼ぐ。
         run: cargo llvm-cov --all --no-report
-      # 構造化データの行述語の脅威モデルを、読取の全戦略（強制・O3 の交差駆動とバッチ駆動を含む）と
-      # O2（統計を作ってからコストで選ぶ）と本体経路（v1・機能フラグ）で回し直す
-      # （Task 15.3 / 15.12・PIT-76: コストモデルは速さにだけ効き、結果と認可には効かない）。
-      - name: policy_threat_it under every read strategy (data)
-        env:
-          OPENFGA_TEST_URL: http://localhost:8082
-          STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/shiki
-        run: |
-          for v in SHIKI_DATA_READ_PATH=body SHIKI_DATA_FORCE_STRATEGY=sort \
-                   SHIKI_DATA_FORCE_STRATEGY=filter SHIKI_DATA_FORCE_STRATEGY=policy \
-                   SHIKI_DATA_FORCE_STRATEGY=union SHIKI_DATA_FORCE_STRATEGY=safe \
-                   SHIKI_DATA_FORCE_STRATEGY=intersect SHIKI_DATA_FORCE_STRATEGY=batch \
-                   SHIKI_DATA_ANALYZE_ON_READ=1 SHIKI_DATA_SORT_BUDGET=1; do
-            echo "== $v"
-            env "$v" cargo test -p shiki-data --all-features --test policy_threat_it
-          done
       - name: coverage report (lcov + summary + job summary)
         run: |
           cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'src/(bin/|main\.rs)|/examples/|vendor/(secure-exec|openjtd)/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
@@ -413,6 +397,68 @@ jobs:
           path: lcov.info
           if-no-files-found: error
           retention-days: 7
+      - name: dump compose logs on failure
+        if: failure()
+        working-directory: deploy/compose
+        run: docker compose logs --no-color | tail -200
+
+  # 構造化データの行述語の脅威モデルを、読取の全戦略（強制・O3 の交差駆動とバッチ駆動を含む）と
+  # O2（統計を作ってからコストで選ぶ）と本体経路（v1・機能フラグ）で回し直す
+  # （Task 15.3 / 15.12・PIT-76: コストモデルは速さにだけ効き、結果と認可には効かない）。
+  # 以前は coverage ジョブの中で計装なしの cargo test を 10 回回しており、計装ビルドと別の
+  # ビルドが要る分も含めて timeout-minutes: 40 を超える恐れがあった（監査 B1-14）。
+  # 別ジョブにしてテストバイナリを 1 回だけビルドし、同じバイナリを変種ごとに実行する。
+  data-strategies:
+    name: Data (policy_threat_it × read strategies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: free disk space (不要プリインストール削除)
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: "true"
+      # ビルドと compose の起動（pull ＋ healthcheck 待ち）は独立なので background で並列化する。
+      - name: compose up (postgres + openfga → healthy 待ち)
+        id: compose-up
+        background: true
+        working-directory: deploy/compose
+        run: |
+          cp .env.example .env
+          docker compose up -d postgres openfga
+          for svc in postgres openfga; do
+            ok=""
+            for i in $(seq 1 60); do
+              s=$(docker compose ps "$svc" --format '{{.Health}}' || true)
+              echo "[$svc] attempt $i: health=$s"
+              [ "$s" = "healthy" ] && { ok=1; break; }
+              sleep 5
+            done
+            [ -n "$ok" ] || { echo "$svc が healthy になりませんでした"; exit 1; }
+          done
+      - name: build policy_threat_it (1 回だけ)
+        run: cargo test -p shiki-data --all-features --test policy_threat_it --no-run
+      - name: wait for services healthy
+        wait: compose-up
+      - name: policy_threat_it under every read strategy (data)
+        env:
+          OPENFGA_TEST_URL: http://localhost:8082
+          STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/shiki
+        run: |
+          for v in SHIKI_DATA_READ_PATH=body SHIKI_DATA_FORCE_STRATEGY=sort \
+                   SHIKI_DATA_FORCE_STRATEGY=filter SHIKI_DATA_FORCE_STRATEGY=policy \
+                   SHIKI_DATA_FORCE_STRATEGY=union SHIKI_DATA_FORCE_STRATEGY=safe \
+                   SHIKI_DATA_FORCE_STRATEGY=intersect SHIKI_DATA_FORCE_STRATEGY=batch \
+                   SHIKI_DATA_ANALYZE_ON_READ=1 SHIKI_DATA_SORT_BUDGET=1; do
+            echo "== $v"
+            env "$v" cargo test -p shiki-data --all-features --test policy_threat_it
+          done
       - name: dump compose logs on failure
         if: failure()
         working-directory: deploy/compose
