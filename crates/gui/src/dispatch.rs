@@ -60,6 +60,13 @@ pub enum ActionError {
     Invalid(String),
     #[error("利用できません: {0}")]
     Unavailable(String),
+    /// 表（保存ビュー）の並べ替え・絞り込みに使う列の索引を準備中（失敗ではない待ち・Task 15.5）。
+    /// API 層は data の API と同じ構造化した 409（`code = index_preparing`）にし、画面は進捗を出して読み直す。
+    #[error("列「{field}」の索引を準備中です")]
+    IndexPreparing {
+        field: String,
+        progress: Option<f64>,
+    },
     #[error("内部エラー: {0}")]
     Internal(String),
 }
@@ -470,9 +477,7 @@ fn map_data_err(e: data::DataError) -> ActionError {
         DE::Invalid(m) => ActionError::Invalid(m),
         DE::Rejected(r) => ActionError::Invalid(r.to_string()),
         DE::Gone(m) => ActionError::Invalid(format!("ページの位置が古くなりました: {m}")),
-        DE::IndexPreparing { field, .. } => {
-            ActionError::Unavailable(format!("列「{field}」の索引を準備中です"))
-        }
+        DE::IndexPreparing { field, progress } => ActionError::IndexPreparing { field, progress },
         DE::ReadOverloaded | DE::QueryTooExpensive { .. } => {
             ActionError::Unavailable(e.to_string())
         }

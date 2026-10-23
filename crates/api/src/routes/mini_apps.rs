@@ -205,7 +205,7 @@ pub async fn resolve_mini_app(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "ボタンが見つからない"),
-        (status = 409, description = "同じ送信が起動の途中"),
+        (status = 409, description = "同じ送信が起動の途中・表の列の索引を準備中（code=index_preparing・field・progress）"),
         (status = 503, description = "実行先が無効"),
     ),
     security(("session" = [])),

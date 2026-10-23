@@ -76,6 +76,16 @@ pub(crate) fn map_action_err(e: ActionError) -> ApiError {
         ActionError::Forbidden => ApiError::Forbidden,
         ActionError::Invalid(m) => ApiError::BadRequest(m),
         ActionError::Unavailable(m) => ApiError::ServiceUnavailable(m),
+        // 表の索引の準備中は失敗ではない待ち。data の API と同じ構造化した 409（画面が進捗を出して読み直す）。
+        ActionError::IndexPreparing { field, progress } => {
+            ApiError::ConflictJson(serde_json::json!({
+                "status": 409,
+                "title": "Conflict",
+                "code": "index_preparing",
+                "field": field,
+                "progress": progress,
+            }))
+        }
         ActionError::Internal(m) => ApiError::Internal(m),
     }
 }
@@ -175,6 +185,15 @@ mod tests {
             map_yui_action_err(ActionError::AlreadyInvoked),
             ApiError::Conflict
         ));
+        // 表の索引の準備中は data の API と同じ構造化した 409（失敗ではない待ち）。
+        let ApiError::ConflictJson(body) = map_yui_action_err(ActionError::IndexPreparing {
+            field: "dept".into(),
+            progress: Some(0.25),
+        }) else {
+            unreachable!("索引の準備中は構造化した 409")
+        };
+        assert_eq!(body["code"], "index_preparing");
+        assert_eq!(body["field"], "dept");
     }
 
     #[test]

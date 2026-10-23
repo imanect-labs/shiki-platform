@@ -101,6 +101,8 @@ type Props = {
   fetchPage?: (cursor: string | null, limit: number) => Promise<QueryResult>;
   /// 枠線・角丸を付けない（埋め込み先が枠を持つとき）。
   bare?: boolean;
+  /// 索引の準備中・承認待ちの案内（失敗ではない待ちの状態・整ったら呼び出し側が `reload` する）。
+  waiting?: { message: string; progress: number | null } | null;
 };
 
 function groupLabel(v: unknown, col: ColumnModel | undefined): string {
@@ -124,6 +126,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     onStatus,
     fetchPage,
     bare,
+    waiting,
   },
   ref,
 ) {
@@ -138,6 +141,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   const loading = React.useRef(false);
   const generation = React.useRef(0);
   const pending = React.useRef<Set<string>>(new Set());
+  /// 読み直しの間（並べ替え・絞り込みの変更・索引の準備中）に薄く見せておく直前の行。
+  /// 新しい先頭ページが届いたら捨てる。見せている間は編集させない（新しい条件の行ではないため）。
+  const stale = React.useRef<DataRecord[]>([]);
   const [version, setVersion] = React.useState(0);
   const bump = React.useCallback(() => setVersion((v) => v + 1), []);
   const [initial, setInitial] = React.useState<"loading" | "ready" | "error" | "preparing">("loading");
@@ -189,6 +195,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       cursor.current = res.next_cursor ?? null;
       done.current = !res.next_cursor;
       if (first) {
+        stale.current = [];
         setInitial("ready");
         // 初回描画の所要（クエリ発行から先頭ページを描くまで）を計測に残す。
         requestAnimationFrame(() => {
@@ -263,6 +270,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     generation.current += 1;
     closeStream.current?.();
     closeStream.current = null;
+    if (rows.current.length) stale.current = rows.current;
     rows.current = [];
     indexById.current = new Map();
     cursor.current = null;
@@ -270,6 +278,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     loading.current = false;
     pending.current.clear();
     setNewRows(0);
+    // 読み直しの前の選択は新しい行と対応しないので外す（薄く残す直前の行に枠を残さない）。
+    setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
     setInitial("loading");
     startedAt.current = performance.now();
     report({ loaded: 0, done: false, count: null, firstRenderMs: null });
@@ -289,13 +299,15 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
 
   // ---- 表示行（グループ見出しを挟む） ----
   const colByKey = React.useMemo(() => new Map(columns.map((c) => [c.key, c])), [columns]);
+  const showingStale = initial !== "ready" && rows.current.length === 0 && stale.current.length > 0;
+  const source = showingStale ? stale.current : rows.current;
   const display: DisplayRow[] = React.useMemo(() => {
-    if (groupKeys.length === 0) return rows.current.map((_, index) => ({ kind: "row", index }));
+    if (groupKeys.length === 0) return source.map((_, index) => ({ kind: "row", index }));
     const out: DisplayRow[] = [];
     const counts = new Map<string, number>();
     const pathOf = (r: DataRecord) =>
       groupKeys.map((k) => JSON.stringify(cellValue(r, k) ?? null));
-    for (const r of rows.current) {
+    for (const r of source) {
       const p = pathOf(r);
       for (let l = 0; l < p.length; l++) {
         const key = p.slice(0, l + 1).join("\u0001");
@@ -303,7 +315,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       }
     }
     let prev: string[] = [];
-    rows.current.forEach((r, index) => {
+    source.forEach((r, index) => {
       const p = pathOf(r);
       let hiddenBy = false;
       for (let l = 0; l < p.length; l++) {
@@ -329,7 +341,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version, groupKeys, collapsed, colByKey]);
+  }, [version, groupKeys, collapsed, colByKey, showingStale]);
 
   const loadingRows = done.current ? 0 : LOADING_ROWS;
   const totalRows = display.length + (initial === "ready" ? loadingRows : 0);
@@ -389,12 +401,12 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           themeOverride: { bgCell: glideTheme.bgHeader, baseFontStyle: "600 13px" },
         };
       }
-      const r = rows.current[d.index];
+      const r = source[d.index];
       const c = columns[col];
       if (!r || !c) return { kind: GridCellKind.Loading, allowOverlay: false };
       const v = cellValue(r, c.key);
       const text = formatValue(v, c.field, c.key);
-      const editable = canEdit && isEditable(c.field);
+      const editable = canEdit && !showingStale && isEditable(c.field);
       const fmt = formatFor(grid, r, c.key);
       const numeric = c.field?.type === "number" || c.field?.result_type === "number";
       const override: Partial<Theme> | undefined = pending.current.has(r.id)
@@ -413,7 +425,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [display, columns, canEdit, grid, collapsed, editedBg, formatTheme, glideTheme, version],
+    [display, columns, canEdit, grid, collapsed, editedBg, formatTheme, glideTheme, version, source, showingStale],
   );
 
   const onCellEdited = React.useCallback(
@@ -504,7 +516,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       data-loaded={status.current.loaded}
       data-first-render-ms={status.current.firstRenderMs ?? undefined}
     >
-      {initial === "loading" ? (
+      {initial === "loading" && !showingStale ? (
         <div
           className="absolute inset-0 z-10 flex items-center justify-center gap-2 bg-card/70 text-sm text-muted-foreground"
           role="status"
@@ -513,10 +525,38 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           読み込み中…
         </div>
       ) : null}
+      {/* 読み直し・準備中の間は直前の行を薄く残し、上に状態だけを出す（失敗の文言・再試行は出さない）。 */}
+      {showingStale ? <div className="pointer-events-none absolute inset-0 z-10 bg-card/55" aria-hidden /> : null}
+      {initial === "loading" && showingStale ? (
+        <div className="absolute left-1/2 top-12 z-20 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border bg-card px-3 py-1.5 text-xs text-muted-foreground shadow-md" role="status">
+          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          読み込み中…
+        </div>
+      ) : null}
       {initial === "preparing" ? (
-        <div className="absolute inset-0 z-10 flex items-center justify-center gap-2 bg-card text-sm text-muted-foreground" role="status">
-          <Loader2 className="size-4 animate-spin" aria-hidden />
-          並べ替え・絞り込みの準備ができたら表示します
+        <div
+          className={cn(
+            "z-20 flex flex-col items-center justify-center gap-2 text-sm text-muted-foreground",
+            showingStale
+              ? "absolute left-1/2 top-12 w-[min(32rem,calc(100%-2rem))] -translate-x-1/2 rounded-xl border bg-card px-4 py-3 text-center shadow-md"
+              : "absolute inset-0 bg-card",
+          )}
+          role="status"
+          data-testid="data-grid-waiting"
+        >
+          <span className="inline-flex items-center gap-2 text-balance text-foreground">
+            <Loader2 className="size-4 shrink-0 animate-spin text-primary" aria-hidden />
+            {waiting?.message ?? "並べ替え・絞り込みの準備をしています"}
+          </span>
+          {waiting?.progress != null ? (
+            <span className="h-1.5 w-48 overflow-hidden rounded-full bg-muted" aria-label={`進捗 ${Math.round(waiting.progress * 100)}%`}>
+              <span
+                className="block h-full rounded-full bg-primary transition-[width] duration-500"
+                style={{ width: `${Math.max(4, Math.round(waiting.progress * 100))}%` }}
+              />
+            </span>
+          ) : null}
+          <span className="text-xs">準備ができたら自動で表示します</span>
         </div>
       ) : null}
       {initial === "error" ? (

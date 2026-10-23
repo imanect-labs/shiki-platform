@@ -284,6 +284,10 @@ export function TableWorkspace({
     setProblem({ kind: "error", message: e.message });
   }, []);
 
+  // 条件・並べ替えを変えたら前の案内は捨てる（新しいクエリの結果で改めて決まる）。
+  const queryKey = JSON.stringify(query);
+  React.useEffect(() => setProblem(null), [queryKey]);
+
   // 索引の準備中は進捗を読み直し、整ったら読み直す。
   React.useEffect(() => {
     if (problem?.kind !== "preparing") return;
@@ -346,6 +350,14 @@ export function TableWorkspace({
   );
 
   const err = (e: Error) => onQueryError(e);
+  const labelOf = (key: string) => columns.find((c) => c.key === key)?.label ?? key;
+  // 索引の準備中・承認待ちは失敗ではなく「待ち」。グリッドは直前の行を薄く残して進捗を出す。
+  const waiting =
+    problem?.kind === "preparing"
+      ? { message: `「${labelOf(problem.field)}」で並べ替え・絞り込みできるよう準備中です`, progress: problem.progress }
+      : problem?.kind === "approval"
+        ? { message: `「${labelOf(problem.field)}」の索引の承認を待っています`, progress: null }
+        : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 px-3 pb-3 pt-2 md:px-5 md:pt-4">
@@ -444,7 +456,7 @@ export function TableWorkspace({
         </div>
       </div>
 
-      {problem ? (
+      {problem && !(problem.kind === "preparing" && spec.kind === "grid") ? (
         <div
           role="status"
           className="flex items-center gap-2 rounded-lg border px-3 py-2 text-xs"
@@ -508,6 +520,7 @@ export function TableWorkspace({
               onColumnMove={onColumnMove}
               onQueryError={onQueryError}
               onStatus={setStatus}
+              waiting={waiting}
             />
           )
         ) : spec.kind === "kanban" ? (
