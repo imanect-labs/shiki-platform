@@ -1,5 +1,7 @@
 //! Word ツールの説明文と入力スキーマ（#725）。操作の語彙は [`super::ops::DocOp`] が正。
 
+use crate::engine::op_schema::{ops_items_schema, OpFields};
+
 /// office.word_edit の説明。
 pub const WORD_EDIT_DESCRIPTION: &str = "Word 文書（.docx / .odt）を、本文から見出し・表・箇条書き・グラフ・書式・スタイル・ページ設定・\
 ヘッダー/フッター・目次まで編集する。ops は上から順に適用され、全部成功するか全部取り消される（途中で失敗しても文書は\
@@ -53,7 +55,137 @@ accept_all_changes {} / reject_all_changes {}（未承認の変更をすべて�
 作法: 見出しは h1〜h3（data-style で文書の見出しスタイルに合わせる）、本文は p、強調は必要な所だけ。表は見出し行を <th> にし、\
 罫線と見出しの塗りを付ける。長い文書は節ごとに insert を分けず 1 回の ops にまとめてよい。";
 
-/// office.word_edit の入力スキーマ（op の中身は説明文に書き、スキーマは op 名の列挙だけにする）。
+/// office.word_edit の操作と、それぞれが受け付ける項目（`op` 以外・ops.rs の [`DocOp`] と一致させる）。
+///
+/// [`DocOp`]: super::ops::DocOp
+pub const DOC_OP_FIELDS: OpFields = &[
+    ("insert", &["after", "before", "at", "html"]),
+    ("replace", &["target", "html"]),
+    ("delete", &["target"]),
+    (
+        "replace_text",
+        &[
+            "find",
+            "replace",
+            "within",
+            "all",
+            "match_case",
+            "whole_word",
+        ],
+    ),
+    (
+        "format_text",
+        &["find", "within", "all", "match_case", "font"],
+    ),
+    // format_paragraph / set_style は段落書式（ParaSpec）を flatten で取り込む。
+    (
+        "format_paragraph",
+        &[
+            "target",
+            "include_tables",
+            "clear_formatting",
+            "style",
+            "align",
+            "indent_left_mm",
+            "first_line_indent_mm",
+            "space_before_pt",
+            "space_after_pt",
+            "line_spacing",
+            "line_height_pt",
+            "keep_with_next",
+            "page_break_before",
+            "font",
+        ],
+    ),
+    (
+        "set_style",
+        &[
+            "name",
+            "family",
+            "based_on",
+            "style",
+            "align",
+            "indent_left_mm",
+            "first_line_indent_mm",
+            "space_before_pt",
+            "space_after_pt",
+            "line_spacing",
+            "line_height_pt",
+            "keep_with_next",
+            "page_break_before",
+            "font",
+        ],
+    ),
+    ("page_setup", &["paper", "orientation", "margins_mm"]),
+    ("header", &["content"]),
+    ("footer", &["content"]),
+    ("insert_toc", &["after", "before", "at", "title", "levels"]),
+    ("update_toc", &[]),
+    ("page_break", &["before"]),
+    ("track_changes", &["enabled"]),
+    ("insert_rows", &["table", "after_row", "count", "values"]),
+    ("delete_rows", &["table", "rows"]),
+    ("set_cells", &["table", "cell", "values"]),
+    (
+        "format_cells",
+        &[
+            "table", "range", "fill", "font", "align", "valign", "border",
+        ],
+    ),
+    (
+        "table_props",
+        &[
+            "table",
+            "width_mm",
+            "columns_mm",
+            "align",
+            "repeat_header",
+            "allow_row_split",
+            "keep_with_next",
+        ],
+    ),
+    (
+        "style_table",
+        &[
+            "table",
+            "theme",
+            "header_rows",
+            "total_row",
+            "total_rows",
+            "banded",
+            "first_column",
+        ],
+    ),
+    ("title_page", &["enabled"]),
+    (
+        "insert_chart",
+        &[
+            "after",
+            "before",
+            "at",
+            "type",
+            "categories",
+            "series",
+            "title",
+            "width_cm",
+            "height_cm",
+            "legend",
+            "legend_position",
+            "colors",
+            "data_labels",
+            "y_number_format",
+            "stacked",
+            "percent",
+            "x_title",
+            "y_title",
+        ],
+    ),
+    ("accept_all_changes", &[]),
+    ("reject_all_changes", &[]),
+];
+
+/// office.word_edit の入力スキーマ。各操作の項目の形は説明文に書き、スキーマには項目名だけを
+/// 型なしで並べる（理由は [`crate::engine::op_schema`]）。
 pub fn word_edit_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -63,21 +195,52 @@ pub fn word_edit_schema() -> serde_json::Value {
             "ops": {
                 "type": "array",
                 "minItems": 1,
-                "description": "操作の並び（上から順に・全部成功か全部取り消し）。各操作の項目は説明文を参照",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "op": { "type": "string", "enum": [
-                            "insert", "replace", "delete", "replace_text", "format_text", "format_paragraph", "set_style",
-                            "page_setup", "header", "footer", "insert_toc", "update_toc", "page_break", "title_page", "insert_rows", "delete_rows", "set_cells",
-                            "format_cells", "table_props", "style_table", "track_changes", "insert_chart",
-                            "accept_all_changes", "reject_all_changes"
-                        ] }
-                    },
-                    "required": ["op"]
-                }
+                "description": "操作の並び（上から順に・全部成功か全部取り消し）。各操作の項目の形は説明文を参照",
+                "items": ops_items_schema(DOC_OP_FIELDS, &[])
             }
         },
         "required": ["node_id", "summary", "ops"]
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::op_schema::probe;
+    use crate::engine::writer::ops::DocOp;
+
+    #[test]
+    fn field_table_matches_the_doc_op_enum() {
+        let table: Vec<&str> = DOC_OP_FIELDS.iter().map(|(op, _)| *op).collect();
+        assert_eq!(
+            probe::variants::<DocOp>(),
+            table,
+            "操作名が ops.rs と食い違う"
+        );
+        for (op, fields) in DOC_OP_FIELDS {
+            match probe::fields::<DocOp>(op) {
+                Some(actual) => assert_eq!(&actual, fields, "{op} の項目が ops.rs と食い違う"),
+                // flatten を含む操作は列挙できないので、表の項目がどれも受け付けられることを確かめる。
+                None => {
+                    for f in *fields {
+                        assert!(probe::accepts::<DocOp>(op, f), "{op} は {f} を受け付けない");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn schema_declares_every_field_without_a_type() {
+        let s = word_edit_schema();
+        let props = &s["properties"]["ops"]["items"]["properties"];
+        assert_eq!(
+            props["op"]["enum"].as_array().unwrap().len(),
+            DOC_OP_FIELDS.len()
+        );
+        for f in ["html", "target", "series", "categories", "line_spacing"] {
+            assert!(props.get(f).is_some(), "{f} がスキーマに無い");
+            assert!(props[f].get("type").is_none(), "{f} は型なしにする");
+        }
+    }
 }
