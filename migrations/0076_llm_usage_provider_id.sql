@@ -10,12 +10,12 @@
 alter table llm_usage add column provider_id text;
 
 -- ユーザー別の月次集計（制限の第 1 段）。tenant_id に閉じ、user_sub で絞る。
-create index idx_llm_usage_user_month
+create index if not exists idx_llm_usage_user_month
     on llm_usage (tenant_id, user_sub, created_at desc)
     where user_sub is not null;
 
 -- プロバイダ別の月次集計（制限の第 2 段＝環境総枠）。**テナント横断で数える**
 -- （API キーの請求はテナントで分かれないため・llm-gateway の limits.rs 参照）。
-create index idx_llm_usage_provider_month
+create index if not exists idx_llm_usage_provider_month
     on llm_usage (provider_id, created_at desc)
     where provider_id is not null;
