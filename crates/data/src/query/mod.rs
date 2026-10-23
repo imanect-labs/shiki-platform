@@ -7,17 +7,21 @@
 //!
 //! - [`ir`] — 外部契約（条件木・複数ソート・keyset・集計・件数）
 //! - [`bound`] — 束縛・検証（索引到達可能性・マスク 403）
-//! - [`planner`] — 自前オプティマイザ O1（正規化・Guard・件数探索・戦略・降下・予算付き実行・事後検査）
+//! - [`planner`] — 自前オプティマイザ O1〜O3（正規化・Guard・統計と件数探索・コスト・戦略・降下・
+//!   予算付き実行・事後検査・フィードバック）
+//! - [`admission`] — 予測コストによる受付制御とテナントの公平性（トークン）
 //! - [`v1`] — 本体経路（機能フラグの切戻し先・索引未完成時・parity の基準）
 //! - [`run`] — 実行入口（読取 Tx・本体取得・カーソル）
 //! - [`executor`] — id 指定の読取・書込対象のロック・lookup 解決（v1 の述語）
 
+pub(crate) mod admission;
 pub(crate) mod aggregate;
 pub(crate) mod bound;
 #[cfg(test)]
 pub(crate) mod eval;
 pub(crate) mod executor;
 pub(crate) mod ir;
+pub(crate) mod optimizer_ops;
 pub(crate) mod planner;
 pub(crate) mod run;
 pub(crate) mod snapshot;

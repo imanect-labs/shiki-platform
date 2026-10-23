@@ -33,11 +33,11 @@ rand.workspace = true
 base64.workspace = true
 # 識別子移行ジョブの常駐ワーカー。
 tokio.workspace = true
+# record_int の集合演算（和・積・差）の 64 ビット Roaring ビットマップ（Task 15.12・query-optimizer.md §6.4）。
+roaring = "0.10"
 
 [dev-dependencies]
 reqwest.workspace = true
-# 内部整数キーの計測（uuid 集合 vs Roaring ビットマップ・tests/internal_key_bench_it.rs）。
-roaring = "0.10"
 
 # lib 名 authz/storage で参照するため machete が誤検出する。
 [package.metadata.cargo-machete]

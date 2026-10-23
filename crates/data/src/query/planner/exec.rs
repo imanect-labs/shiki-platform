@@ -16,23 +16,26 @@
 //! どの戦略も同じ全順序（[`super::keys`]）の上で「位置より後ろの先頭 L 件」を返すので、
 //! 結果の集合と順序は戦略に依存しない（コストモデルは速さにだけ効く・PIT-76）。
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use sqlx::{PgConnection, Row};
 
+use super::catalog::TableStats;
+use super::cost::UnitCosts;
 use super::feedback::QueryExecStats;
 use super::guard::{Guard, GuardSql};
 use super::keys::{cmp_pos, Pos, SortVal};
 use super::lower::{order_checks, Lowerer, Source};
+use super::plans::{cand_plans, checks_for, conjuncts, CandPlan};
 use super::stats::{Prober, PROBE_CAP};
-use crate::query::bound::{Atom, BSort, Expr, Leaf};
+use super::strategy::Pick;
+use crate::model::FieldId;
+use crate::query::admission::ReadPermit;
+use crate::query::bound::{BSort, Expr, Leaf};
 use crate::query::sql::{bind_query, Bind, SqlBuf};
 use crate::{map_db, DataError};
 
-/// 索引タプル 1 件の走査（µs・§5.2 の初期値）。
-const C_TUPLE: f64 = 1.0;
-/// 点検索 1 回。
-const C_PROBE: f64 = 5.0;
-/// 本体 1 行の取得。
-const C_FETCH: f64 = 10.0;
 /// 複数ソートの同値群の先読み倍率・予算の初期倍率（K）。
 pub(crate) const K_PREFETCH: i64 = 8;
 
@@ -54,6 +57,26 @@ pub enum ForcedStrategy {
     Union,
     /// 安全計画（予算なしのソート駆動。`Sort` と同じ形）。
     Safe,
+    /// 交差駆動（O3: 別の列の等値 2 つの範囲の交わり）。
+    Intersect,
+    /// バッチ駆動（O3: 駆動から段ごとに `record_int = ANY($ids)` で一括検査し、Roaring で合わせる）。
+    Batch,
+}
+
+impl ForcedStrategy {
+    /// 環境変数・設定の名前から（`SHIKI_DATA_FORCE_STRATEGY`）。
+    pub fn parse(s: &str) -> Option<ForcedStrategy> {
+        Some(match s {
+            "sort" => ForcedStrategy::Sort,
+            "filter" => ForcedStrategy::Filter,
+            "policy" => ForcedStrategy::Policy,
+            "union" => ForcedStrategy::Union,
+            "safe" => ForcedStrategy::Safe,
+            "intersect" => ForcedStrategy::Intersect,
+            "batch" => ForcedStrategy::Batch,
+            _ => return None,
+        })
+    }
 }
 
 /// 件数探索器（実行入口が組んで渡す）。
@@ -86,6 +109,25 @@ pub(crate) struct Exec<'a, 'c> {
     pub sort_degraded: bool,
     /// 直前の候補 SQL で検査を通った行数。
     pub last_pass: i64,
+    /// テーブルの統計（O2。無ければ O1 の件数探索だけで選ぶ・固定戦略のテーブルは読まない）。
+    pub catalog: Option<Arc<TableStats>>,
+    /// 値頻度表から引いた件数（この計画の分だけ）。
+    pub counts: HashMap<(FieldId, String), u64>,
+    /// 単価（較正済み）。
+    pub units: UnitCosts,
+    /// ソート駆動の走査件数の補正係数（フィードバック・§8）。
+    pub correction: f64,
+    /// 読取予算（予測コスト µs の上限・受付制御）。
+    pub read_budget_us: f64,
+    /// テナントの同時実行の枠のトークン（計画後に予測コストまで積み増す）。
+    pub permit: Option<ReadPermit>,
+    /// 選んだ戦略の予測コスト（µs）。
+    pub predicted_us: Option<f64>,
+    /// ソート駆動の予想走査件数（補正前）と観測した走査件数（補正係数の更新）。
+    pub sort_walk_pred: Option<f64>,
+    pub sort_walk_obs: Option<f64>,
+    /// 選んだ候補駆動の推定候補件数（推定外れの検出）。
+    pub est_cand: Option<f64>,
 }
 
 /// 1 ページの結果（全順序の位置つき）。
@@ -95,49 +137,12 @@ pub(crate) struct PageOut {
     pub next: Option<Pos>,
 }
 
-/// 候補集合の戦略の 1 案。
-#[derive(Debug, Clone)]
-struct CandPlan<'q> {
-    src: Source<'q>,
-    /// 条件の最上位の項のうち、入口で満たされるもの（検査から外す）。
-    covered: Option<usize>,
-    count: Option<u64>,
-    name: &'static str,
-}
-
 /// ソート駆動の 1 回分の走査結果。
 pub(super) enum Step {
     /// 予算内で `need` 件そろった、または索引の終端。
     Done,
     /// 予算切れ（観測: 走査件数・通過件数）。
     Exhausted { scanned: u64, passed: u64 },
-}
-
-/// 条件の最上位の積の項。
-pub(crate) fn conjuncts(e: &Expr) -> Vec<&Expr> {
-    match e {
-        Expr::True => Vec::new(),
-        Expr::And(v) => v.iter().collect(),
-        other => vec![other],
-    }
-}
-
-/// 駆動にできる原子式（索引の範囲になる正の葉）。
-fn drivable(e: &Expr) -> Option<&Atom> {
-    match e {
-        Expr::Atom(a) => Some(a),
-        _ => None,
-    }
-}
-
-fn atom_rank(a: &Atom) -> u8 {
-    match a.leaf {
-        Leaf::Eq(_) => 0,
-        Leaf::In(_) => 1,
-        Leaf::Range { .. } | Leaf::StartsWith(_) => 2,
-        Leaf::Contains(_) | Leaf::EndsWith(_) => 3,
-        Leaf::Exists => 4,
-    }
 }
 
 impl<'a> Exec<'a, '_> {
@@ -164,124 +169,6 @@ impl<'a> Exec<'a, '_> {
         Ok(rows)
     }
 
-    /// 候補集合の戦略の案（入口と、検査から外せる項）。
-    fn cand_plans<'q>(conj: &[&'q Expr]) -> Vec<CandPlan<'q>> {
-        let mut out = Vec::new();
-        // フィルタ駆動: 最も絞れていそうな正の葉（O1 は葉の種類で順位づける）。
-        if let Some((i, a)) = conj
-            .iter()
-            .enumerate()
-            .filter_map(|(i, e)| drivable(e).map(|a| (i, a)))
-            .min_by_key(|(_, a)| atom_rank(a))
-        {
-            out.push(CandPlan {
-                src: Source::Atom(a),
-                covered: Some(i),
-                count: None,
-                name: "filter",
-            });
-        }
-        // OR 駆動: 別の列どうしの OR（各項が正の葉）。
-        for (i, e) in conj.iter().enumerate() {
-            if let Expr::Or(terms) = e {
-                let atoms: Option<Vec<&Atom>> = terms.iter().map(drivable).collect();
-                if let Some(atoms) = atoms.filter(|v| v.len() >= 2) {
-                    out.push(CandPlan {
-                        src: Source::Union(atoms),
-                        covered: Some(i),
-                        count: None,
-                        name: "union",
-                    });
-                    break;
-                }
-            }
-        }
-        out
-    }
-
-    /// 件数探索で候補戦略の件数を埋める（上限内のものだけが候補になる）。
-    async fn probe_plans(&mut self, plans: &mut [CandPlan<'_>]) -> Result<(), DataError> {
-        for p in plans.iter_mut() {
-            p.count = match &p.src {
-                Source::Atom(a) => {
-                    let low = self.low;
-                    let r = self
-                        .prober
-                        .atom(self.conn, low, a, PROBE_CAP, false)
-                        .await?;
-                    r.and_then(super::stats::Probe::exact)
-                }
-                Source::Union(atoms) => {
-                    if atoms.len() as u32 > self.prober.remaining() + 3 {
-                        None
-                    } else {
-                        let mut sum = Some(0u64);
-                        for a in atoms {
-                            let low = self.low;
-                            let r = self
-                                .prober
-                                .atom(self.conn, low, a, PROBE_CAP, false)
-                                .await?
-                                .and_then(super::stats::Probe::exact);
-                            sum = match (sum, r) {
-                                (Some(s), Some(n)) => Some(s + n),
-                                _ => None,
-                            };
-                            if sum.is_none() {
-                                break;
-                            }
-                        }
-                        sum
-                    }
-                }
-                _ => None,
-            };
-        }
-        Ok(())
-    }
-
-    /// 認可駆動の案（見える行がごく少ない利用者）。
-    async fn policy_plan(&mut self, probe: bool) -> Result<Option<CandPlan<'static>>, DataError> {
-        if self.guard.is_unrestricted() {
-            return Ok(None);
-        }
-        let Some(drivers) = self.guard.drivers() else {
-            return Ok(None);
-        };
-        let mut count = Some(0u64);
-        if probe {
-            for d in &drivers {
-                let r = self.prober.driver(self.conn, d, PROBE_CAP).await?;
-                count = match (count, r.and_then(super::stats::Probe::exact)) {
-                    (Some(s), Some(n)) => Some(s + n),
-                    _ => None,
-                };
-                if count.is_none() {
-                    break;
-                }
-            }
-        } else {
-            count = None;
-        }
-        // 入口の SQL は文ごとに組み直す（バインドの番号が文ごとに違うため・[`Self::materialize`]）。
-        Ok(Some(CandPlan {
-            src: Source::Policy(Vec::new()),
-            covered: None,
-            count,
-            name: "policy",
-        }))
-    }
-
-    fn checks_for<'q>(conj: &[&'q Expr], covered: Option<usize>) -> Vec<&'q Expr> {
-        order_checks(
-            conj.iter()
-                .enumerate()
-                .filter(|(i, _)| Some(*i) != covered)
-                .map(|(_, e)| *e)
-                .collect(),
-        )
-    }
-
     /// ページを取る（戦略選択 → 予算付き実行 → 切替）。
     pub(crate) async fn page(
         &mut self,
@@ -295,50 +182,91 @@ impl<'a> Exec<'a, '_> {
             return Ok(PageOut::default());
         }
         let conj = conjuncts(filter);
-        let mut plans = Self::cand_plans(&conj);
         match self.force {
             Some(ForcedStrategy::Sort | ForcedStrategy::Safe) => {
                 return self.sort_drive(&conj, sort, after, limit, i64::MAX).await;
             }
-            Some(f @ (ForcedStrategy::Filter | ForcedStrategy::Union | ForcedStrategy::Policy)) => {
-                let want = match f {
-                    ForcedStrategy::Filter => "filter",
-                    ForcedStrategy::Union => "union",
-                    _ => "policy",
-                };
-                let plan = if want == "policy" {
-                    self.policy_plan(false).await?
-                } else {
-                    plans.into_iter().find(|p| p.name == want)
-                };
-                if let Some(p) = plan {
+            Some(ForcedStrategy::Batch) if sort.len() == 1 => {
+                return self.batch_drive(&conj, sort[0], after, limit).await;
+            }
+            Some(f) => {
+                if let Some(p) = self.forced_plan(f, &conj).await? {
                     return self
                         .candidates(&p, &conj, after, limit, None)
                         .await
                         .map(Option::unwrap_or_default);
                 }
                 // 適用できない戦略の強制は自然な選択に戻す。
-                plans = Self::cand_plans(&conj);
             }
             None => {}
         }
+        let unit_a = self.units.per_entry(conj.len() + 1);
+        let u = self.units;
+        let (l, k) = (limit as f64, sort.len() as f64);
+        let cost_of = move |c: u64| -> f64 {
+            let c = c as f64;
+            c * unit_a + c * k * u.c_probe + u.sort(c, l) + l * u.c_fetch
+        };
+        if let Some(stats) = self.catalog.clone() {
+            // O2: 統計とコストで選ぶ（頑健な選択・受付制御）。
+            let planned = self.plan_o2(&stats, &conj, sort, limit).await?;
+            self.admit(planned.predicted_us, planned.confident, sort)
+                .await?;
+            return match planned.pick {
+                Pick::Cand { plan, cap } => {
+                    if let Some(out) = self
+                        .candidates(&plan, &conj, after, limit, Some(cap))
+                        .await?
+                    {
+                        return Ok(out);
+                    }
+                    // 推定を外れて候補が上限を超えた: 予算付きのソート駆動へ（切替はこれで 1 回）。
+                    self.stats.switched = true;
+                    let mut budget = self.budget_override.unwrap_or(limit * K_PREFETCH).max(1);
+                    self.adaptive(
+                        &conj,
+                        sort,
+                        after,
+                        limit,
+                        &mut budget,
+                        None,
+                        unit_a,
+                        &cost_of,
+                    )
+                    .await
+                }
+                Pick::Sort { alt } => {
+                    let mut budget = match (&self.budget_override, &alt) {
+                        (Some(b), _) => *b,
+                        (None, Some((_, c))) => (c / unit_a).ceil() as i64,
+                        (None, None) => limit * K_PREFETCH,
+                    }
+                    .max(1);
+                    let best = alt.map(|(p, _)| p);
+                    self.adaptive(
+                        &conj,
+                        sort,
+                        after,
+                        limit,
+                        &mut budget,
+                        best,
+                        unit_a,
+                        &cost_of,
+                    )
+                    .await
+                }
+            };
+        }
+        // O1: 上限付き件数探索だけで選ぶ（統計表なし・§4.3）。
+        let mut plans = cand_plans(&conj);
         self.probe_plans(&mut plans).await?;
         if let Some(p) = self.policy_plan(true).await? {
             plans.push(p);
         }
-        let n_checks = conj.len() as f64 + 1.0;
         let best = plans
             .into_iter()
             .filter(|p| p.count.is_some())
             .min_by_key(|p| p.count.unwrap_or(u64::MAX));
-        let unit_a = C_TUPLE + n_checks * C_PROBE;
-        let cost_of = |c: u64| -> f64 {
-            let c = c as f64;
-            c * (C_TUPLE + n_checks * C_PROBE)
-                + c * sort.len() as f64 * C_PROBE
-                + c * (limit as f64).max(2.0).log2() * 0.05
-                + limit as f64 * C_FETCH
-        };
         let mut budget = match (&self.budget_override, &best) {
             (Some(b), _) => *b,
             (None, Some(p)) => (cost_of(p.count.unwrap_or(0)) / unit_a).ceil() as i64,
@@ -374,12 +302,14 @@ impl<'a> Exec<'a, '_> {
         let mut scanned_total = 0u64;
         let mut passed_total = 0u64;
         let mut reprobes = 0;
+        let scanned0 = self.stats.scanned;
         loop {
             match self.sort_step(conj, sort, &mut st, limit, *budget).await? {
                 Step::Done => {
                     if self.stats.strategy != "composite" {
                         self.stats.strategy = "sort";
                     }
+                    self.sort_walk_obs = Some((self.stats.scanned - scanned0) as f64);
                     return Ok(st.finish(sort, limit));
                 }
                 Step::Exhausted { scanned, passed } => {
@@ -389,7 +319,7 @@ impl<'a> Exec<'a, '_> {
                     if best.is_none() && reprobes < MAX_REPROBES {
                         reprobes += 1;
                         let cap = (scanned_total as i64 * 10).max(PROBE_CAP);
-                        if let Some(mut p) = Self::cand_plans(conj).into_iter().next() {
+                        if let Some(mut p) = cand_plans(conj).into_iter().next() {
                             if let Source::Atom(a) = &p.src {
                                 let low = self.low;
                                 let r = self.prober.atom(self.conn, low, a, cap, true).await?;
@@ -404,6 +334,8 @@ impl<'a> Exec<'a, '_> {
                     let sel = (passed_total as f64 / scanned_total.max(1) as f64)
                         .max(1.0 / scanned_total.max(1) as f64);
                     let est_a = need / sel * unit_a;
+                    // 観測した選択率から見た「L 件そろうまでの走査件数」（補正係数の更新に使う）。
+                    self.sort_walk_obs = Some(scanned_total as f64 + need / sel);
                     if let Some(p) = best.as_ref().filter(|p| {
                         !self.stats.switched && cost_of(p.count.unwrap_or(u64::MAX)) < est_a
                     }) {
@@ -461,7 +393,7 @@ impl<'a> Exec<'a, '_> {
         limit: i64,
         cap: Option<i64>,
     ) -> Result<Option<PageOut>, DataError> {
-        let checks = Self::checks_for(conj, p.covered);
+        let checks = checks_for(conj, &p.covered);
         let rows = self
             .run_candidates(&p.src, &checks, after, cap, limit + 1)
             .await?;
@@ -472,49 +404,6 @@ impl<'a> Exec<'a, '_> {
         let mut st = SortState::new(after);
         st.collected = rows;
         Ok(Some(st.finish(&self.low.q.sort, limit)))
-    }
-
-    /// 件数・集計の入口（候補戦略のうち件数が上限内で最小のもの。無ければ全レコード）。
-    async fn scan_source(
-        &mut self,
-        conj: &[&'a Expr],
-    ) -> Result<(Source<'a>, Option<usize>), DataError> {
-        let mut plans = Self::cand_plans(conj);
-        if let Some(f) = self.force {
-            let want = match f {
-                ForcedStrategy::Filter => "filter",
-                ForcedStrategy::Union => "union",
-                ForcedStrategy::Policy => "policy",
-                ForcedStrategy::Sort | ForcedStrategy::Safe => return Ok((Source::All, None)),
-            };
-            let p = if want == "policy" {
-                self.policy_plan(false).await?
-            } else {
-                plans.iter().find(|p| p.name == want).cloned()
-            };
-            if let Some(p) = p {
-                self.stats.strategy = p.name;
-                return Ok((p.src, p.covered));
-            }
-        }
-        self.probe_plans(&mut plans).await?;
-        if let Some(p) = self.policy_plan(true).await? {
-            plans.push(p);
-        }
-        let best = plans
-            .into_iter()
-            .filter(|p| p.count.is_some())
-            .min_by_key(|p| p.count.unwrap_or(u64::MAX));
-        Ok(match best {
-            None => {
-                self.stats.strategy = "scan";
-                (Source::All, None)
-            }
-            Some(p) => {
-                self.stats.strategy = p.name;
-                (p.src, p.covered)
-            }
-        })
     }
 
     /// 上限付き件数（`cap` に達したら `AtLeast(cap)`）。
@@ -529,7 +418,7 @@ impl<'a> Exec<'a, '_> {
         }
         let conj = conjuncts(filter);
         let (src, covered) = self.scan_source(&conj).await?;
-        let checks = Self::checks_for(&conj, covered);
+        let checks = checks_for(&conj, &covered);
         let mut sql = self.sql();
         let guard = self.guard.lower("c.record_int", &mut sql)?;
         let src = self.materialize(&src, &mut sql);
@@ -560,7 +449,7 @@ impl<'a> Exec<'a, '_> {
         // 空でも全体集計は 1 行（count = 0）を返す形にそろえるため、SQL は常に発行する。
         let conj = conjuncts(filter);
         let (src, covered) = self.scan_source(&conj).await?;
-        let checks = Self::checks_for(&conj, covered);
+        let checks = checks_for(&conj, &covered);
         let mut sql = self.sql();
         let guard = self.guard.lower("c.record_int", &mut sql)?;
         let src = self.materialize(&src, &mut sql);
@@ -588,6 +477,20 @@ impl<'a> Exec<'a, '_> {
         cap: Option<i64>,
         limit: i64,
     ) -> Result<Option<Vec<(i64, Pos)>>, DataError> {
+        // 項の多い OR 駆動は各項の範囲を Roaring の和で合わせてから候補にする（§5.1）。
+        let merged;
+        let src = match src {
+            Source::Union(atoms) if atoms.len() > super::batch::UNION_BITMAP_TERMS => {
+                match self.union_ids(atoms, cap).await? {
+                    Some(ids) => {
+                        merged = Source::Ids(ids);
+                        &merged
+                    }
+                    None => return Ok(None),
+                }
+            }
+            other => other,
+        };
         let mut sql = self.sql();
         let guard = self.guard.lower("c.record_int", &mut sql)?;
         let src = self.materialize(src, &mut sql);
@@ -602,6 +505,13 @@ impl<'a> Exec<'a, '_> {
             .map_err(map_db)?
             .unwrap_or(0);
         self.stats.scanned += n_cand.max(0) as u64;
+        // 候補件数の推定と実測が 10 倍以上ずれた（続いたら統計収集を前倒しする・§8）。
+        if let Some(e) = self.est_cand.take() {
+            let a = n_cand.max(0) as f64;
+            if a > 10.0 * e.max(1.0) || (e >= 10.0 && a * 10.0 < e) {
+                self.stats.estimate_miss = true;
+            }
+        }
         self.last_pass = rows
             .first()
             .map(|r| r.try_get::<i64, _>("n_pass"))

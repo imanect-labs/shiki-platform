@@ -66,9 +66,11 @@ impl From<data::DataError> for AppPlatformError {
             DataError::Forbidden => AppPlatformError::Forbidden,
             DataError::Invalid(m) => AppPlatformError::Invalid(m),
             DataError::Conflict(m) | DataError::Gone(m) => AppPlatformError::Conflict(m),
-            e @ (DataError::IndexPreparing { .. } | DataError::IndexApprovalRequired { .. }) => {
-                AppPlatformError::Conflict(e.to_string())
-            }
+            e @ (DataError::IndexPreparing { .. }
+            | DataError::IndexApprovalRequired { .. }
+            | DataError::ReadOverloaded) => AppPlatformError::Conflict(e.to_string()),
+            // 受付制御（重すぎるクエリ）: 文言は固定（推定値を含まない・PIT-75）。
+            e @ DataError::QueryTooExpensive { .. } => AppPlatformError::Invalid(e.to_string()),
             DataError::Internal(m) => AppPlatformError::Internal(m),
         }
     }

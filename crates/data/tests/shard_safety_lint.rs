@@ -46,6 +46,11 @@ const DATA_TABLES: &[&str] = &[
     "data_stream_authz_epoch",
     "data_stream_awareness",
     "data_index_purge",
+    // 自前オプティマイザの統計 4 表（Task 15.12・PIT-75）。
+    "data_table_stats",
+    "data_field_stats",
+    "data_value_count",
+    "data_link_stats",
 ];
 
 /// 文字列リテラル（開始行・中身）。

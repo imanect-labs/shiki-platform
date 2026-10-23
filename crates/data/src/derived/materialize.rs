@@ -891,6 +891,7 @@ impl DataStore {
                         rev: *rev,
                         kind: crate::stream::outbox::ChangeKind::Derived,
                         before: None,
+                        after: None,
                     })
                     .collect();
                 crate::stream::outbox::emit_record_changes(&mut tx, &ctx, &table, &changes, None)

@@ -88,6 +88,9 @@ impl From<data::DataError> for GatewayError {
             e @ (DataError::IndexPreparing { .. } | DataError::IndexApprovalRequired { .. }) => {
                 GatewayError::Conflict(e.to_string())
             }
+            // 受付制御（重すぎるクエリ）: 文言は固定（推定値を含まない・PIT-75）。
+            e @ DataError::QueryTooExpensive { .. } => GatewayError::Invalid(e.to_string()),
+            e @ DataError::ReadOverloaded => GatewayError::RateLimited(e.to_string()),
             DataError::Internal(m) => {
                 tracing::error!(error = %m, "gateway data 内部エラー");
                 GatewayError::Internal(INTERNAL_MSG.into())

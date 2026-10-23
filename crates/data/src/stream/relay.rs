@@ -339,6 +339,7 @@ async fn emit_derived(
             rev,
             kind: ChangeKind::Derived,
             before: None,
+            after: None,
         })
         .collect();
     emit_record_changes(tx, &ctx, table, &changes, None).await

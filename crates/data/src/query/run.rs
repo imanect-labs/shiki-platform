@@ -9,16 +9,19 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use authz::AuthContext;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
+use super::admission::ReadPermit;
 use super::bound::{bind_query, BoundQuery, FieldKind};
 use super::ir::{CountResult, DataQuery, QueryResult};
+use super::optimizer_ops::shape_key;
 use super::planner::exec::{Exec, ForcedStrategy, PageOut};
-use super::planner::feedback::{QueryExecStats, TableScanMetrics};
+use super::planner::feedback::{CandidateKind, QueryExecStats, TableScanMetrics};
 use super::planner::guard::Guard;
 use super::planner::keys::{from_payload, to_payload, Pos, SortVal};
 use super::planner::lower::{fetch_sql, Lowerer};
@@ -57,7 +60,7 @@ pub enum ReadPath {
 /// 実行の調整（運用・検証用。既定は自然な選択）。
 ///
 /// 環境変数 `SHIKI_DATA_READ_PATH`（`index` / `body`）・`SHIKI_DATA_FORCE_STRATEGY`
-/// （`sort` / `filter` / `policy` / `union` / `safe`）・`SHIKI_DATA_SORT_BUDGET`（整数）でも与えられる
+/// （`sort` / `filter` / `policy` / `union` / `safe` / `intersect` / `batch`）・`SHIKI_DATA_SORT_BUDGET`（整数）でも与えられる
 /// （CI で `policy_threat_it` を全戦略・両経路で回すため）。どの値でも結果は変わらず、速さだけが変わる。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryTuning {
@@ -74,14 +77,9 @@ impl QueryTuning {
             Ok("body") => ReadPath::Body,
             _ => ReadPath::Index,
         };
-        let force = match std::env::var("SHIKI_DATA_FORCE_STRATEGY").as_deref() {
-            Ok("sort") => Some(ForcedStrategy::Sort),
-            Ok("filter") => Some(ForcedStrategy::Filter),
-            Ok("policy") => Some(ForcedStrategy::Policy),
-            Ok("union") => Some(ForcedStrategy::Union),
-            Ok("safe") => Some(ForcedStrategy::Safe),
-            _ => None,
-        };
+        let force = std::env::var("SHIKI_DATA_FORCE_STRATEGY")
+            .ok()
+            .and_then(|s| ForcedStrategy::parse(&s));
         let sort_budget = std::env::var("SHIKI_DATA_SORT_BUDGET")
             .ok()
             .and_then(|s| s.parse().ok());
@@ -248,14 +246,16 @@ impl DataStore {
             .open_for_read(ctx, &az, table_id, action, trace_id)
             .await?;
         let masked = self.masked_fields(ctx, &az, &table).await?;
-        if auto_promote
-            && self
+        if auto_promote {
+            let promoted = self
                 .auto_promote_for(ctx, &table, &masked, query, trace_id)
-                .await?
-        {
-            table = self.fetch_live(ctx, table_id).await?;
+                .await;
+            if self.note_candidates(table_id, &table, &masked, query, promoted)? {
+                table = self.fetch_live(ctx, table_id).await?;
+            }
         }
-        let mut bq = bind_query(&table.schema, &masked, query)?;
+        let bound = bind_query(&table.schema, &masked, query);
+        let mut bq = self.note_candidates(table_id, &table, &masked, query, bound)?;
         // 材料化した派生列で絞る・並べるなら、その前提（4 階層）を今の認可状態で検査し直す。崩れていれば
         // 降格（索引行を同一 Tx で破棄）してから束縛し直す＝その列はフィルタ/ソートに使えなくなる（PIT-71）。
         if bq.fields.values().any(|f| f.derived)
@@ -282,6 +282,11 @@ impl DataStore {
             None => Arc::new(PolicyMaterial::default()),
         };
 
+        // テナントの同時実行の枠（最小量を先に取り、計画後に予測コストまで積み増す・§16.8）。
+        let permit = self
+            .read_gate
+            .admit(&ctx.tenant_id, crate::query::admission::BASE_TOKENS)
+            .await?;
         let db = self.pools.for_tenant(&ctx.tenant_id);
         let mut tx = db.begin().await.map_err(map_db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
@@ -323,7 +328,7 @@ impl DataStore {
             )
         } else {
             let mut out = self
-                .execute(&mut tx, ctx, &table, &bq, &m, query, tuning)
+                .execute(&mut tx, ctx, &table, &bq, &m, query, tuning, permit)
                 .await?;
             if out.2.is_some() {
                 out.0.snapshot_seq = Some(head);
@@ -359,7 +364,20 @@ impl DataStore {
             result.items = Some(items);
         }
         result.shares_truncated = m.shares_truncated;
-        self.feedback.record(table_id, &debug.stats);
+        if debug.stats.composite_requested {
+            self.feedback.candidate(
+                table_id,
+                CandidateKind::CompositeIndex,
+                bq.sort
+                    .iter()
+                    .map(|k| bq.field(k.field).key.clone())
+                    .collect(),
+            );
+        }
+        if self.feedback.record(table_id, &debug.stats) {
+            // 推定外れが続いた: 統計収集を前倒しする（失敗しても読取の結果には影響させない）。
+            self.request_analyze(&ctx.tenant_id, table_id).await;
+        }
         Ok((result, debug))
     }
 
@@ -373,7 +391,9 @@ impl DataStore {
         m: &PolicyMaterial,
         query: &DataQuery,
         tuning: &QueryTuning,
+        permit: ReadPermit,
     ) -> Result<(QueryResult, QueryDebug, Option<Vec<DataRecord>>), DataError> {
+        let started = Instant::now();
         let keys = table.keys;
         let states = load_states(conn, keys).await?;
         let active: HashSet<(FieldId, IndexTable)> = states
@@ -483,6 +503,11 @@ impl DataStore {
         } else {
             None
         };
+        // 機微なテーブルの固定戦略（統計・件数探索・コストに依らない安全計画・§7.3・PIT-75）。
+        let force = tuning
+            .force
+            .or_else(|| table.planner_fixed.then_some(ForcedStrategy::Safe));
+        let shape = shape_key(table.id, bq);
         let mut ex = Exec {
             conn,
             low: &low,
@@ -494,13 +519,26 @@ impl DataStore {
                 ..Default::default()
             },
             captured: Vec::new(),
-            force: tuning.force,
+            force,
             budget_override: tuning.sort_budget,
             composite,
             wants_composite: false,
             sort_degraded: false,
             last_pass: 0,
+            catalog: None,
+            counts: HashMap::new(),
+            units: self.costs.units(),
+            correction: self.feedback.factor(&shape),
+            read_budget_us: self.read_budget_ms as f64 * 1_000.0,
+            permit: Some(permit),
+            predicted_us: None,
+            sort_walk_pred: None,
+            sort_walk_obs: None,
+            est_cand: None,
         };
+        if force.is_none() && !body_path {
+            ex.load_stats(&self.stats_cache).await?;
+        }
         let mut result = QueryResult {
             items: None,
             groups: None,
@@ -524,7 +562,8 @@ impl DataStore {
                 let text = super::v1::aggregate_sql(bq, &w)?;
                 ex.run_raw("aggregate", text, sql.binds).await?
             } else {
-                ex.aggregate(&bq.filter).await?
+                let r = ex.aggregate(&bq.filter).await;
+                self.reject_record(table.id, &ex.stats, r)?
             };
             let k = table
                 .schema
@@ -533,6 +572,7 @@ impl DataStore {
             let (groups, suppressed) = super::aggregate::assemble(bq, &rows, k)?;
             result.groups = Some(groups);
             result.suppressed = suppressed;
+            self.observe(&mut ex, shape, started);
             let debug = debug_of(ex.stats, ex.captured, &ex.prober);
             return Ok((result, debug, None));
         }
@@ -551,7 +591,8 @@ impl DataStore {
             let rows = ex.run_raw("body_page", text, sql.binds).await?;
             body_page(bq, &rows, limit)?
         } else {
-            ex.page(&bq.filter, &bq.sort, after.as_ref(), limit).await?
+            let r = ex.page(&bq.filter, &bq.sort, after.as_ref(), limit).await;
+            self.reject_record(table.id, &ex.stats, r)?
         };
 
         if bq.with_count {
@@ -579,7 +620,8 @@ impl DataStore {
                 }
             } else {
                 let strategy = ex.stats.strategy;
-                let c = ex.count(&bq.filter, count_cap).await?;
+                let r = ex.count(&bq.filter, count_cap).await;
+                let c = self.reject_record(table.id, &ex.stats, r)?;
                 ex.stats.strategy = strategy;
                 c
             });
@@ -633,6 +675,7 @@ impl DataStore {
         }
         result.sort_degraded = ex.sort_degraded;
         ex.stats.composite_requested = ex.wants_composite;
+        self.observe(&mut ex, shape, started);
         let debug = debug_of(ex.stats, ex.captured, &ex.prober);
         Ok((result, debug, Some(items)))
     }

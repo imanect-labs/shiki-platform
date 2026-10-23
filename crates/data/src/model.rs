@@ -335,6 +335,9 @@ pub struct DataTable {
     /// レコード個別共有タプルが 1 件でも作られたか（材料化可否の第 4 階層・§7.4）。外へ出さない。
     #[serde(skip)]
     pub(crate) has_record_shares: bool,
+    /// 機微なテーブル向けの固定戦略（コストベース選択・件数探索・統計の参照を止める・PIT-75）。外へ出さない。
+    #[serde(skip)]
+    pub(crate) planner_fixed: bool,
 }
 
 /// テーブルの内部整数キー（data-platform §3.2）。crate 外から読めない・直列化しない。
@@ -459,6 +462,7 @@ mod tests {
                 table_int: 7_777_777,
             },
             has_record_shares: false,
+            planner_fixed: true,
         };
         let s = serde_json::to_string(&t).unwrap();
         assert!(!s.contains("tenant_int") && !s.contains("table_int"), "{s}");

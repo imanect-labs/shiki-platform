@@ -392,6 +392,9 @@ impl DataStore {
         let building = super::state::sync_ledger(&mut tx, table.keys, &schema, rows > 0).await?;
         if building {
             super::backfill::start_backfill(&mut tx, table.keys, &ctx.tenant_id, table.id).await?;
+        } else {
+            // 同期で有効化した: 統計を作り直す（バックフィルは完了時に積む・§4.2）。
+            crate::stats::counters::enqueue_analyze(&mut tx, &ctx.tenant_id, table.id).await?;
         }
         self.record_audit_on(
             &mut tx,

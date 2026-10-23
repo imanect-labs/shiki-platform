@@ -383,17 +383,23 @@ impl DataStore {
                AND r.tenant_int = $3 AND r.table_int = $4 AND ({pred}) \
                AND r.id = ANY(${ids_ph}::uuid[])"
         );
-        let q = sqlx::query_as::<_, (Uuid, String, sqlx::types::Json<Value>)>(&sql)
-            .bind(&ctx.tenant_id)
-            .bind(table.id)
-            .bind(table.keys.tenant_int)
-            .bind(table.keys.table_int);
-        let q = crate::query::sql::bind_query_as(q, &binds.binds);
-        let rows = q
-            .bind(ids.to_vec())
-            .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
-            .await
-            .map_err(map_db)?;
-        Ok(rows.into_iter().map(|(i, o, d)| (i, o, d.0)).collect())
+        // バッチ駆動の段（query-optimizer.md §6.4）: リンク列ごとに 1 本の一括取得で、配列長は
+        // 上限（1,000）ごとに段を分ける（N+1 にしない・1 文の配列を有界にする・data-platform §16.9）。
+        let mut out = Vec::with_capacity(ids.len());
+        for stage in crate::query::planner::batch::stages(ids) {
+            let q = sqlx::query_as::<_, (Uuid, String, sqlx::types::Json<Value>)>(&sql)
+                .bind(&ctx.tenant_id)
+                .bind(table.id)
+                .bind(table.keys.tenant_int)
+                .bind(table.keys.table_int);
+            let q = crate::query::sql::bind_query_as(q, &binds.binds);
+            let rows = q
+                .bind(stage.to_vec())
+                .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+                .await
+                .map_err(map_db)?;
+            out.extend(rows.into_iter().map(|(i, o, d)| (i, o, d.0)));
+        }
+        Ok(out)
     }
 }

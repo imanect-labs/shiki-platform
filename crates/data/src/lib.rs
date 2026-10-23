@@ -61,6 +61,7 @@ mod record_share;
 mod revision;
 mod schema;
 mod schema_cache;
+mod stats;
 mod store;
 mod stream;
 mod table_list;
@@ -100,12 +101,18 @@ pub use model::{
     SYSTEM_FIELD_UPDATED_AT,
 };
 pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
+pub use query::admission::{QuerySuggestion, DEFAULT_READ_BUDGET_MS, DEFAULT_TENANT_READ_TOKENS};
 pub use query::ir::{
     AggregateGroup, CondCmp, CondOp, Condition, CountResult, DataQuery, Metric, MetricSpec,
     QueryResult, SortKey,
 };
+pub use query::optimizer_ops::{
+    OptimizerCandidateKind, OptimizerIndexCandidate, TableOptimizerReport,
+};
+pub use query::planner::cost::{CalibrationReport, UnitCosts};
 pub use query::planner::exec::ForcedStrategy;
 pub use query::planner::feedback::{QueryExecStats, TableScanMetrics};
+pub use query::planner::shape::{ColumnShape, LinkShape, ShapeType, TableShape};
 pub use query::run::{
     DebugParam, DebugStatement, QueryDebug, QueryTuning, ReadPath, DEFAULT_COUNT_CAP,
     DEFAULT_READ_TIMEOUT_MS,
@@ -113,6 +120,8 @@ pub use query::run::{
 pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordSort};
 pub use record_share::RecordShareRole;
 pub use schema::validate_table_schema_public;
+pub use stats::analyze::AnalyzeOutcome;
+pub use stats::{StatsWorker, STATS_ANALYZE_QUEUE, STATS_CONSUMER, VALUE_COUNT_MAX_DISTINCT};
 pub use store::{DataStore, NewDataTable};
 pub use stream::{
     AwarenessEvent, RecordRemovedEvent, RecordStream, RecordStreamRelayWorker, RecordUpsertedEvent,
@@ -163,6 +172,13 @@ pub enum DataError {
         indexed: usize,
         cap: usize,
     },
+    /// 予測コストが読取予算を超えるので実行しなかった（受付制御・query-optimizer.md §5.4）。
+    /// 提案は語彙だけで、**推定値・予測コスト・戦略名を含めない**（PIT-75）。
+    #[error("クエリが重すぎるため実行しませんでした（絞り込みを足してください）")]
+    QueryTooExpensive { suggestions: Vec<QuerySuggestion> },
+    /// テナントの読取の同時実行の枠が空かなかった（data-platform §16.8・再試行可）。
+    #[error("読取が混み合っています。しばらくしてから再試行してください")]
+    ReadOverloaded,
 }
 
 #[allow(clippy::needless_pass_by_value)]

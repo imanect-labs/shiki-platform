@@ -116,6 +116,7 @@ impl DataStore {
         // ④status 更新＋rev+1＋revision。
         let new_rev = current.rev + 1;
         data.insert(status_field.to_string(), Value::String(to.to_string()));
+        let new_stored = Value::Object(encode_record(&table.schema, &data));
         let written: crate::record::WrittenRow = sqlx::query_as(&format!(
             "UPDATE data_record SET data = $4, rev = $5, updated_at = now() \
              WHERE tenant_int = $6 AND table_int = $7 AND tenant_id = $1 AND table_id = $2 \
@@ -126,10 +127,7 @@ impl DataStore {
         .bind(&ctx.tenant_id)
         .bind(table_id)
         .bind(record_id)
-        .bind(sqlx::types::Json(Value::Object(encode_record(
-            &table.schema,
-            &data,
-        ))))
+        .bind(sqlx::types::Json(&new_stored))
         .bind(new_rev)
         .bind(table.keys.tenant_int)
         .bind(table.keys.table_int)
@@ -202,6 +200,10 @@ impl DataStore {
                 before: Some(crate::stream::outbox::Before {
                     owner: &current.owner,
                     stored: &current.data.0,
+                }),
+                after: Some(crate::stream::outbox::Before {
+                    owner: &current.owner,
+                    stored: &new_stored,
                 }),
             }],
             trace_id,

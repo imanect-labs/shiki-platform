@@ -66,7 +66,7 @@ fn sort_drive_is_budgeted_window_with_point_probes() {
         q: &q,
         links: &links,
     };
-    let conj = super::super::exec::conjuncts(&q.filter);
+    let conj = super::super::plans::conjuncts(&q.filter);
     let mut sql = SqlBuf::scoped(1, 2);
     let g = guard_sql("d.record_int", &mut sql);
     let text = low.sort_drive_sql(q.sort[0], None, &conj, &g, 2_000, 21, &mut sql);
@@ -94,7 +94,7 @@ fn candidates_are_materialized_and_keyset_is_total_order() {
         q: &q,
         links: &links,
     };
-    let conj = super::super::exec::conjuncts(&q.filter);
+    let conj = super::super::plans::conjuncts(&q.filter);
     let Expr::Atom(a) = conj[0] else {
         panic!("{:?}", conj[0])
     };

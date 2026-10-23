@@ -34,6 +34,9 @@ pub enum ApiError {
     /// 保持期間を過ぎた位置の再開（スナップショット読取の基準位置など）。最初から取り直す。
     #[error("保持期間を過ぎました")]
     Gone,
+    /// 混み合っている（テナントの同時実行の枠・再試行可）。
+    #[error("混み合っています")]
+    TooManyRequests,
 }
 
 impl ApiError {
@@ -47,6 +50,7 @@ impl ApiError {
             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::Gone => StatusCode::GONE,
+            ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
         }
     }
 }
@@ -177,6 +181,18 @@ impl From<data::DataError> for ApiError {
                 "indexed_fields": indexed,
                 "max_indexed_fields": cap,
             })),
+            // 受付制御（予測コストが読取予算を超える）。提案の語彙だけで、推定値・予測コスト・
+            // 計画名を含めない（PIT-75）。
+            DE::QueryTooExpensive { suggestions } => {
+                ApiError::UnprocessableJson(serde_json::json!({
+                    "status": 400,
+                    "title": "Bad Request",
+                    "code": "query_too_expensive",
+                    "suggestions": suggestions.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                }))
+            }
+            // テナントの読取の同時実行の枠が空かない（再試行可）。
+            DE::ReadOverloaded => ApiError::TooManyRequests,
         }
     }
 }

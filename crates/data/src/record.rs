@@ -299,6 +299,7 @@ impl DataStore {
             return Ok(current);
         }
         let new_rev = current.rev + 1;
+        let new_stored = Value::Object(encode_record(&table.schema, &normalized));
         let written: WrittenRow = sqlx::query_as(&format!(
             "UPDATE data_record SET data = $4, rev = $5, updated_at = now() \
              WHERE tenant_int = $6 AND table_int = $7 AND tenant_id = $1 AND table_id = $2 \
@@ -308,10 +309,7 @@ impl DataStore {
         .bind(&ctx.tenant_id)
         .bind(table_id)
         .bind(id)
-        .bind(Json(Value::Object(encode_record(
-            &table.schema,
-            &normalized,
-        ))))
+        .bind(Json(&new_stored))
         .bind(new_rev)
         .bind(table.keys.tenant_int)
         .bind(table.keys.table_int)
@@ -364,6 +362,10 @@ impl DataStore {
                 before: Some(Before {
                     owner: &current.owner,
                     stored: &old_stored,
+                }),
+                after: Some(Before {
+                    owner: &current.owner,
+                    stored: &new_stored,
                 }),
             }],
             trace_id,
@@ -486,6 +488,7 @@ impl DataStore {
                     owner: &current.owner,
                     stored: &current.data.0,
                 }),
+                after: None,
             }],
             trace_id,
         )

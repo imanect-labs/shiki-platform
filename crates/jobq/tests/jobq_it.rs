@@ -267,3 +267,74 @@ async fn defer_reschedules_without_consuming_attempts() {
         .unwrap();
     assert!(jobs.is_empty(), "ack 済みは再配信されない");
 }
+
+/// `claim_fair` はテナントごとの先頭だけを候補にする（大量に積んだテナントが他テナントを待たせない）。
+#[tokio::test]
+async fn claim_fair_takes_one_head_per_tenant() {
+    let Some(pool) = setup().await else { return };
+    let queue = unique_queue("fair");
+    // 重いテナントが先に 5 件積み、軽いテナント 2 つが後から 1 件ずつ積む。
+    let mut heavy = Vec::new();
+    for _ in 0..5 {
+        heavy.push(enqueue(&pool, &queue, "heavy-corp", 5).await);
+    }
+    let light_a = enqueue(&pool, &queue, "light-a", 5).await;
+    let light_b = enqueue(&pool, &queue, "light-b", 5).await;
+
+    let mut conn = pool.acquire().await.unwrap();
+    let first = jobq::claim_fair(&mut conn, &queue, Duration::from_secs(300), 10)
+        .await
+        .unwrap();
+    let mut ids: Vec<i64> = first.iter().map(|j| j.id).collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec![heavy[0], light_a, light_b],
+        "テナントごとに先頭 1 件だけ"
+    );
+    // 処理を終えたら、重いテナントの次の 1 件だけが先頭として取れる。
+    for j in &first {
+        jobq::ack(&mut conn, j.id).await.unwrap();
+    }
+    let second = jobq::claim_fair(&mut conn, &queue, Duration::from_secs(300), 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        second.iter().map(|j| j.id).collect::<Vec<_>>(),
+        vec![heavy[1]]
+    );
+    assert_eq!(second[0].attempts, 1);
+    // limit は全体の上限。
+    let none = jobq::claim_fair(&mut conn, &queue, Duration::from_secs(300), 0)
+        .await
+        .unwrap();
+    assert!(none.is_empty());
+}
+
+/// 1 件ずつ取っても、確保したテナントの残りは列の後ろへ回る（ラウンドロビン）。
+#[tokio::test]
+async fn claim_fair_round_robins_one_at_a_time() {
+    let Some(pool) = setup().await else { return };
+    let queue = unique_queue("rr");
+    let h: Vec<i64> = {
+        let mut v = Vec::new();
+        for _ in 0..3 {
+            v.push(enqueue(&pool, &queue, "heavy-corp", 5).await);
+        }
+        v
+    };
+    let l = enqueue(&pool, &queue, "light-corp", 5).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let mut order = Vec::new();
+    for _ in 0..4 {
+        let j = jobq::claim_fair(&mut conn, &queue, Duration::from_secs(300), 1)
+            .await
+            .unwrap();
+        assert_eq!(j.len(), 1);
+        jobq::ack(&mut conn, j[0].id).await.unwrap();
+        order.push(j[0].id);
+    }
+    assert_eq!(order[0], h[0]);
+    assert_eq!(order[1], l, "重いテナントの 2 件目より先に軽いテナント: {order:?}");
+    assert_eq!(&order[2..], &h[1..]);
+}

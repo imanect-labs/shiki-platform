@@ -454,8 +454,8 @@ impl DataStore {
             .execute(&mut *tx)
             .await
             .map_err(map_db)?;
-            // 完了と同じ Tx で parity 検証を積む（取りこぼさない）。
-            enqueue(&mut tx, "parity", tenant_id, table_id).await?;
+            // 完了と同じ Tx で parity 検証と統計収集（索引の昇格の完了）を積む（取りこぼさない）。
+            enqueue_after_backfill(&mut tx, tenant_id, table_id).await?;
         } else {
             let last = rows.last().map_or(progress.cursor_record, |r| r.record_int);
             sqlx::query(
@@ -820,6 +820,16 @@ async fn park_held(
     .await
     .map_err(map_db)?;
     Ok(())
+}
+
+/// バックフィルの完了と同じ Tx で、parity 検証と統計収集（query-optimizer.md §4.2）を積む。
+async fn enqueue_after_backfill(
+    conn: &mut PgConnection,
+    tenant_id: &str,
+    table_id: Uuid,
+) -> Result<(), DataError> {
+    enqueue(conn, "parity", tenant_id, table_id).await?;
+    crate::stats::counters::enqueue_analyze(conn, tenant_id, table_id).await
 }
 
 fn job_table(payload: &Value) -> Option<Uuid> {

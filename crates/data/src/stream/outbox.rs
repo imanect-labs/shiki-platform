@@ -12,6 +12,11 @@
 //!   **before の可視性判定に要る旧値**（旧 owner・行述語が参照する列の旧値・保存形 `"f{id}"`）。
 //!   更新後の値だけで判定すると可視 → 不可視の購読者に何も届かず、ブラウザが機密値を表示し続ける
 //!   （PIT-73）。
+//! - 同じ非公開部に、**値頻度表の対象列（分類列・owner）の旧値と新値**（`counts.b` / `counts.a`）も載せる
+//!   （Task 15.12・query-optimizer.md §4.1）。値頻度表は書込 Tx では更新せず、outbox の消費側
+//!   （[`crate::stats`]）が差分をバッチ反映するため、各変更の前後の値が要る。リビジョンは差分しか持たず
+//!   派生・保守経路では書かれないので材料にしない。分類列の値は短い（選択肢・principal id）ので
+//!   payload は小さいまま。
 
 use authz::AuthContext;
 use serde_json::{json, Map, Value};
@@ -76,10 +81,10 @@ impl ChangeKind {
     }
 }
 
-/// 変更前の可視性判定の材料（保存形の値）。
+/// 変更の前（または後）の行の材料（保存形の値）。
 pub(crate) struct Before<'a> {
     pub owner: &'a str,
-    /// 変更前の本体（保存形 `"f{id}"` キー）。ここから行述語が参照する列だけを抜く。
+    /// 本体（保存形 `"f{id}"` キー）。ここから行述語・値頻度表の対象列だけを抜く。
     pub stored: &'a Value,
 }
 
@@ -90,6 +95,8 @@ pub(crate) struct RecordChange<'a> {
     pub rev: i64,
     pub kind: ChangeKind,
     pub before: Option<Before<'a>>,
+    /// 変更後の行（create / update / 遷移）。値頻度表の差分の材料（delete・派生は `None`）。
+    pub after: Option<Before<'a>>,
 }
 
 /// 行述語（read）が参照する列の保存形キー（`"f{id}"`）。before 判定にはこれと owner だけが要る。
@@ -158,6 +165,7 @@ pub(crate) async fn emit_record_changes(
         return Ok(());
     }
     let keys = before_keys(&table.schema);
+    let counts = crate::stats::counts_keys(&table.schema);
     let events: Vec<(WriteEvent, Option<Value>)> = changes
         .iter()
         .map(|c| {
@@ -172,6 +180,13 @@ pub(crate) async fn emit_record_changes(
                 "table_int": table.keys.table_int,
                 "record_int": c.record_int,
                 "before": c.before.as_ref().map(|b| before_material(&keys, b)),
+                // 値頻度表の材料（統計の消費側だけが読む・crate::stats）。持たない古い形式の変更は
+                // 消費側が数え直しへ倒す。
+                "counts": {
+                    "tenant_int": table.keys.tenant_int,
+                    "b": c.before.as_ref().map(|b| before_material(&counts, b)),
+                    "a": c.after.as_ref().map(|a| before_material(&counts, a)),
+                },
             });
             (
                 WriteEvent {

@@ -25,7 +25,7 @@ use crate::index::IndexTable;
 use crate::model::{DataTable, FieldId};
 use crate::revision::{diff_fields, insert_revisions, RevisionInsert};
 use crate::store::DataStore;
-use crate::stream::outbox::{emit_record_changes, ChangeKind, RecordChange};
+use crate::stream::outbox::{emit_record_changes, Before, ChangeKind, RecordChange};
 use crate::DataError;
 
 /// 本体を INSERT 済みの新規レコード（書込 Tx 上）。
@@ -94,14 +94,28 @@ impl DataStore {
             .collect();
         insert_revisions(conn, ctx, &revisions).await?;
         // レコード変更の outbox（SSE 差分配信の源・Task 15.6）。1 件の create と一括取込の両方がここを通る。
+        // 値頻度表の材料（対象列の新値・保存形）。対象列が無ければ owner だけ（本体は空で足りる）。
+        let empty = Value::Object(Map::new());
+        let stored: Vec<Value> = if crate::stats::counts_keys(&table.schema).is_empty() {
+            Vec::new()
+        } else {
+            recs.iter()
+                .map(|r| Value::Object(crate::field_key::encode_record(&table.schema, r.data)))
+                .collect()
+        };
         let changes: Vec<RecordChange<'_>> = recs
             .iter()
-            .map(|r| RecordChange {
+            .enumerate()
+            .map(|(i, r)| RecordChange {
                 record_id: r.id,
                 record_int: r.record_int,
                 rev: 1,
                 kind: ChangeKind::Create,
                 before: None,
+                after: Some(Before {
+                    owner: r.owner,
+                    stored: stored.get(i).unwrap_or(&empty),
+                }),
             })
             .collect();
         emit_record_changes(conn, ctx, table, &changes, trace_id).await

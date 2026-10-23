@@ -148,6 +148,52 @@ pub async fn claim(
     Ok(jobs)
 }
 
+/// テナント間で公平に確保する（ラウンドロビン）。
+///
+/// [`claim`] は id 順（FIFO）なので、1 テナントが大量に積むと他テナントのジョブがその後ろで待つ。
+/// こちらは可視なジョブのうち**テナントごとの先頭 1 件**だけを候補にし、`(visible_at, id)` の古い順に
+/// 最大 `limit` 件確保する（1 回の確保で同じテナントから 2 件は取らない）。確保したテナントの残りの
+/// 可視なジョブは `visible_at` を現在時刻へ進めて**列の後ろへ回す**（待たせはしない＝すぐ可視のまま）
+/// ので、積んだ量に依らずテナントの順番が回る（統計収集など、重さがテナントの規模に比例する
+/// バックグラウンドジョブ向け・data-platform §16.8）。`attempts` は +1 される。
+pub async fn claim_fair(
+    conn: &mut PgConnection,
+    queue: &str,
+    vt: Duration,
+    limit: i64,
+) -> Result<Vec<ClaimedJob>, JobqError> {
+    let jobs = sqlx::query_as::<_, ClaimedJob>(
+        "with picked as ( \
+             select j.id, j.tenant_id from job_queue j \
+             where j.queue = $1 and j.visible_at <= now() \
+               and j.id = ( \
+                   select k.id from job_queue k \
+                   where k.queue = $1 and k.tenant_id = j.tenant_id and k.visible_at <= now() \
+                   order by k.visible_at, k.id limit 1 \
+               ) \
+             order by j.visible_at, j.id \
+             limit $2 \
+             for update skip locked \
+         ), bumped as ( \
+             update job_queue o set visible_at = now() \
+             from picked p \
+             where o.queue = $1 and o.tenant_id = p.tenant_id and o.id <> p.id \
+               and o.visible_at < now() \
+             returning o.id \
+         ) \
+         update job_queue set visible_at = now() + $3 * interval '1 second', \
+                              attempts = attempts + 1 \
+         where id in (select id from picked) \
+         returning id, queue, tenant_id, payload, attempts, max_attempts, trace_id, enqueued_at",
+    )
+    .bind(queue)
+    .bind(limit)
+    .bind(vt.as_secs_f64())
+    .fetch_all(conn)
+    .await?;
+    Ok(jobs)
+}
+
 /// 処理成功。ジョブを削除する（存在しなくても成功＝冪等）。
 pub async fn ack(conn: &mut PgConnection, id: i64) -> Result<(), JobqError> {
     sqlx::query("delete from job_queue where id = $1")

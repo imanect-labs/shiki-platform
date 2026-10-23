@@ -426,6 +426,22 @@ fn wire_data(
     // レコード変更の outbox → テーブルのストリームへの採番（SSE 差分配信・スナップショット読取の
     // 基準位置・Task 15.6）。購読が無くても回し、outbox の GC を止めない。
     data::RecordStreamRelayWorker::new((*data_store).clone()).spawn();
+    // 自前オプティマイザの統計（outbox 消費側の行数・値頻度表＋統計収集ジョブ・Task 15.12）。
+    data::StatsWorker::new((*data_store).clone()).spawn();
+    // 起動時の較正ベンチ（一時表で単価を測り直す・顧客データに触れない）。失敗しても初期値で動く。
+    {
+        let store = (*data_store).clone();
+        tokio::spawn(async move {
+            match store.calibrate_costs().await {
+                Ok(r) => {
+                    tracing::info!(before = ?r.before, after = ?r.after, "data のコスト単価を較正");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "data のコスト単価の較正に失敗（初期値のまま）");
+                }
+            }
+        });
+    }
     let data_views = Arc::new(data::DataViewStore::new(
         Arc::clone(artifacts),
         (*data_store).clone(),

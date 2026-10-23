@@ -29,8 +29,10 @@ use crate::index::{DEFAULT_MAX_MULTI_VALUES, MAX_MULTI_VALUES_CEILING};
 use crate::key_migration::KEY_FORMAT_LEGACY;
 use crate::model::{DataTable, TableKeys, TableSchema};
 use crate::policy::memo::AuthzMemo;
+use crate::query::admission::{ReadGate, DEFAULT_READ_BUDGET_MS, DEFAULT_TENANT_READ_TOKENS};
+use crate::query::planner::cost::CostModel;
 use crate::query::planner::feedback::Feedback;
-use crate::query::planner::ProbeCache;
+use crate::query::planner::{ProbeCache, StatsCache};
 use crate::query::run::{QueryTuning, DEFAULT_COUNT_CAP, DEFAULT_READ_TIMEOUT_MS};
 use crate::schema::{validate_schema_update, validate_table_name, validate_table_schema};
 use crate::schema_cache::SchemaCache;
@@ -57,6 +59,11 @@ const PURGE_TENANT_INT_TABLES: &[&str] = &[
     "data_bulk_key",
     "data_bulk_staging",
     "data_bulk_import",
+    // 自前オプティマイザの統計 4 表（Task 15.12）。
+    "data_value_count",
+    "data_field_stats",
+    "data_link_stats",
+    "data_table_stats",
 ];
 
 /// 新規テーブルの入力。
@@ -68,7 +75,8 @@ pub struct NewDataTable {
 
 /// data_table 行の SELECT 列（[`TableRow`] と同じ並び）。
 pub(crate) const TABLE_COLS: &str = "id, name, app_id, schema, schema_version, created_by, \
-     created_at, updated_at, tenant_int, table_int, key_format, next_field_id, has_record_shares";
+     created_at, updated_at, tenant_int, table_int, key_format, next_field_id, has_record_shares, \
+     planner_fixed";
 
 /// data_table 行。
 #[derive(sqlx::FromRow)]
@@ -87,6 +95,8 @@ pub(crate) struct TableRow {
     pub(crate) next_field_id: i32,
     /// レコード個別共有タプルが作られたか（§7.4 第 4 階層）。
     pub(crate) has_record_shares: bool,
+    /// 固定戦略（Task 15.12・PIT-75）。
+    pub(crate) planner_fixed: bool,
 }
 
 impl TableRow {
@@ -112,6 +122,7 @@ impl TableRow {
                 table_int: self.table_int,
             },
             has_record_shares: self.has_record_shares,
+            planner_fixed: self.planner_fixed,
         }
     }
 }
@@ -136,8 +147,16 @@ pub struct DataStore {
     pub(crate) read_timeout_ms: u64,
     /// 計画時の件数探索の短期キャッシュ（Q の述語だけ・材料は入れない）。
     pub(crate) probe_cache: Arc<ProbeCache>,
-    /// 走査効率などの運用指標。
+    /// 走査効率などの運用指標・補正係数・予測と実測の相関（Task 15.12）。
     pub(crate) feedback: Arc<Feedback>,
+    /// 統計表のプロセス内キャッシュ（全員共通・材料は入れない・PIT-75 で planner の外へ出さない）。
+    pub(crate) stats_cache: Arc<StatsCache>,
+    /// コストモデルの単価（起動時の較正で置き換わる）。
+    pub(crate) costs: Arc<CostModel>,
+    /// テナントの読取の同時実行の枠（予測コストのトークン・data-platform §16.8）。
+    pub(crate) read_gate: Arc<ReadGate>,
+    /// 読取予算（受付制御の上限・ミリ秒）。
+    pub(crate) read_budget_ms: u64,
     /// スキーマ本文のキャッシュ（`(tenant_id, table_id, schema_version)`・認可材料は載せない・Task 15.9）。
     pub(crate) schema_cache: Arc<SchemaCache>,
     /// SSE の購読の登録簿（プロセス内・Task 15.6）。
@@ -171,6 +190,10 @@ impl DataStore {
             read_timeout_ms: DEFAULT_READ_TIMEOUT_MS,
             probe_cache: Arc::new(ProbeCache::default()),
             feedback: Arc::new(Feedback::default()),
+            stats_cache: Arc::new(StatsCache::default()),
+            costs: Arc::new(CostModel::default()),
+            read_gate: Arc::new(ReadGate::new(DEFAULT_TENANT_READ_TOKENS)),
+            read_budget_ms: DEFAULT_READ_BUDGET_MS,
             schema_cache: Arc::new(SchemaCache::default()),
             stream: Arc::default(),
             stream_config: crate::stream::StreamConfig::default(),
@@ -188,6 +211,20 @@ impl DataStore {
     #[must_use]
     pub fn with_count_cap(mut self, cap: u64) -> Self {
         self.count_cap = cap.max(1);
+        self
+    }
+
+    /// 読取予算（受付制御: 予測コストがこれを超えるクエリは実行しない・ミリ秒・既定 2,000）。
+    #[must_use]
+    pub fn with_read_budget_ms(mut self, ms: u64) -> Self {
+        self.read_budget_ms = ms.max(1);
+        self
+    }
+
+    /// テナントあたりの読取の同時実行の枠（予測コストのミリ秒・既定 8,000・data-platform §16.8）。
+    #[must_use]
+    pub fn with_tenant_read_tokens(mut self, tokens: u32) -> Self {
+        self.read_gate = Arc::new(ReadGate::new(tokens));
         self
     }
 

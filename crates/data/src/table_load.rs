@@ -36,6 +36,7 @@ struct LiveRow {
     key_format: i16,
     pivot_index_init: bool,
     has_record_shares: bool,
+    planner_fixed: bool,
     schema: Option<Json<TableSchema>>,
 }
 
@@ -56,7 +57,7 @@ impl DataStore {
         let (cached_version, cached_format) = probe.version();
         let row: Option<LiveRow> = sqlx::query_as(
             "SELECT id, name, app_id, schema_version, created_by, created_at, updated_at, \
-                    tenant_int, table_int, key_format, pivot_index_init, has_record_shares, \
+                    tenant_int, table_int, key_format, pivot_index_init, has_record_shares, planner_fixed, \
                     CASE WHEN schema_version = $4 AND key_format = $5 THEN NULL ELSE schema END \
                       AS schema \
              FROM data_table \
@@ -113,6 +114,7 @@ impl DataStore {
                 table_int: row.table_int,
             },
             has_record_shares: row.has_record_shares,
+            planner_fixed: row.planner_fixed,
         })))
     }
 

@@ -53,20 +53,28 @@ pub(crate) async fn traverse(
     if src.is_empty() {
         return Ok(Vec::new());
     }
-    let rows: Vec<(i64, Option<Uuid>)> = sqlx::query_as(LINK_TRAVERSAL_SQL)
-        .bind(keys.tenant_int)
-        .bind(keys.table_int)
-        .bind(field_id_i16(field)?)
-        .bind(dst_table_int)
-        .bind(src)
-        .bind(MAX_LINK_VALUES_PER_RECORD + 1)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(map_db)?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|(s, d)| d.map(|d| (s, d)))
-        .collect())
+    // 参照元の record_int の集合は Roaring で重複を除き、段（配列長の上限ごと）に分けて辿る
+    // （バッチ駆動・query-optimizer.md §6.4）。
+    let src: Vec<i64> = crate::query::planner::batch::bitmap(src.iter().copied())
+        .iter()
+        .filter_map(|x| i64::try_from(x).ok())
+        .collect();
+    let fid = field_id_i16(field)?;
+    let mut out = Vec::new();
+    for stage in crate::query::planner::batch::stages(&src) {
+        let rows: Vec<(i64, Option<Uuid>)> = sqlx::query_as(LINK_TRAVERSAL_SQL)
+            .bind(keys.tenant_int)
+            .bind(keys.table_int)
+            .bind(fid)
+            .bind(dst_table_int)
+            .bind(stage)
+            .bind(MAX_LINK_VALUES_PER_RECORD + 1)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(map_db)?;
+        out.extend(rows.into_iter().filter_map(|(s, d)| d.map(|d| (s, d))));
+    }
+    Ok(out)
 }
 
 /// 対称列の値（行ごとの見える参照元）と、上限を超えた行。

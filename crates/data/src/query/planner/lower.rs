@@ -53,6 +53,10 @@ pub(crate) enum Source<'q> {
     },
     /// 全レコード（擬似列 created_at）。
     All,
+    /// 等値範囲 2 つの交わり（交差駆動・O3）。両方の範囲を読み、`record_int` で突き合わせる。
+    Intersect(&'q Atom, &'q Atom),
+    /// Rust 側（Roaring ビットマップ）で合わせた `record_int` の集合（項の多い OR 駆動・バッチ駆動）。
+    Ids(Vec<i64>),
 }
 
 /// 検査の並び（安くてよく落ちる述語から・§5.2。統計の無い O1 は葉の種類で順位づける）。
@@ -278,6 +282,15 @@ impl Lowerer<'_> {
                 parts.join(" UNION ")
             }
             Source::Policy(parts) => parts.join(" UNION "),
+            Source::Intersect(a, b) => {
+                let x = self.atom_source(a, sql);
+                let y = self.atom_source(b, sql);
+                format!("({x}) INTERSECT ({y})")
+            }
+            Source::Ids(ids) => {
+                let ph = sql.push(Bind::I64Array(ids.clone()));
+                format!("SELECT unnest({ph}::int8[]) AS record_int")
+            }
             Source::All => {
                 let ph = sql.typed(Bind::I16(field_i16(SYSTEM_FIELD_CREATED_AT)));
                 format!(
@@ -310,7 +323,7 @@ impl Lowerer<'_> {
         }
     }
 
-    fn atom_source(&self, a: &Atom, sql: &mut SqlBuf) -> String {
+    pub(crate) fn atom_source(&self, a: &Atom, sql: &mut SqlBuf) -> String {
         let table = self.atom_table(a);
         let rel = table.relation();
         let col = table.record_column();
