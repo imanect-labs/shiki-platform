@@ -255,7 +255,7 @@ async fn intersect_and_batch_strategies_apply_and_respect_row_policy() {
             bob_drafts.push((amount, r.id));
         }
     }
-    bob_drafts.sort_by(|a, b| b.0.cmp(&a.0));
+    bob_drafts.sort_by_key(|x| std::cmp::Reverse(x.0));
     let bob_expected: Vec<Uuid> = bob_drafts.iter().map(|x| x.1).collect();
     // 別の列（status・applicant）の等値 2 つの AND ＋ 単一キーのソート（交差駆動・バッチ駆動の形）。
     // alice が bob の申請で絞っても、行述語で bob の行は見えない（入口の戦略で迂回できない）。

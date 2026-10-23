@@ -102,7 +102,7 @@ async fn doubling_keeps_partial_results_and_never_rescans() {
     // 途中結果を捨てて先頭から読み直していれば 2+4+8+16+32 = 62 件を超えて走査する。保持して先へ
     // 進むので、1 ページ分（L+1 件）＋最後の予算の余りまでしか走査しない。
     assert!(
-        d.stats.scanned <= (limit as u64 + 1) + 2,
+        d.stats.scanned <= (u64::from(limit) + 1) + 2,
         "読み直している: {:?}",
         d.stats
     );
