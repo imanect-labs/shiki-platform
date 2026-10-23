@@ -83,11 +83,25 @@ pub async fn active_delegator(
 pub struct DelegationStore {
     db: PgPool,
     authz: Arc<dyn AuthzClient>,
+    /// テーブルの委譲タプルを撤去したときに data へ知らせる先（Task 15.7・任意）。
+    data: Option<data::DataStore>,
 }
 
 impl DelegationStore {
     pub fn new(db: PgPool, authz: Arc<dyn AuthzClient>) -> Self {
-        DelegationStore { db, authz }
+        DelegationStore {
+            db,
+            authz,
+            data: None,
+        }
+    }
+
+    /// 棚卸しで `data_table` の委譲タプルを撤去したとき、data に ReBAC の変更を知らせる
+    /// （配信の認可の世代・材料化の前提を引き直させる・[`data::DataStore::after_table_rebac_changed`]）。
+    #[must_use]
+    pub fn with_data(mut self, data: data::DataStore) -> Self {
+        self.data = Some(data);
+        self
     }
 
     /// ワークフローを有効化し委譲を付与する（engine.md §10.1・全体 fail-closed）。
@@ -404,9 +418,52 @@ impl DelegationStore {
                 if !revoked_workflows.contains(&d.workflow_id) {
                     revoked_workflows.push(d.workflow_id);
                 }
+                self.notify_table_rebac_changed(tenant_id, d.workflow_id, &d.object_ref)
+                    .await;
             }
         }
         Ok(revoked_workflows)
+    }
+
+    /// 撤去したタプルが `data_table` なら data に知らせる（best-effort・失敗は data 側がログに残す）。
+    ///
+    /// 知らせないと、ワークフロー主体の SSE 購読が最大 TTL まで旧権限で配信を受け続け、材料化の
+    /// 前提（テーブル viewer の範囲）も次の読取まで検査し直されない（PIT-70）。
+    async fn notify_table_rebac_changed(
+        &self,
+        tenant_id: &str,
+        workflow_id: Uuid,
+        object_ref: &str,
+    ) {
+        let Some(data) = &self.data else {
+            return;
+        };
+        let Some(table_id) = object_ref
+            .split_once(':')
+            .filter(|(ty, _)| *ty == "data_table")
+            .and_then(|(_, rest)| Namespace::for_tenant(tenant_id).strip_object_id(rest))
+            .and_then(|local| Uuid::parse_str(local).ok())
+        else {
+            return;
+        };
+        // 主体は撤去されたワークフロー（org は registration のもの・無ければ空で tenant だけ効く）。
+        let org: Option<(String,)> = sqlx::query_as(
+            "SELECT org FROM workflow_registration WHERE tenant_id = $1 AND workflow_id = $2",
+        )
+        .bind(tenant_id)
+        .bind(workflow_id)
+        .fetch_optional(&self.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, %workflow_id, "棚卸しの通知で registration の org を読めない");
+            None
+        });
+        let ctx = AuthContext::for_workflow(
+            tenant_id.to_string(),
+            org.map(|(o,)| o).unwrap_or_default(),
+            &workflow_id.to_string(),
+        );
+        data.after_table_rebac_changed(&ctx, table_id).await;
     }
 
     /// registration を `suspended_reconsent` にする（失権検知時）。
