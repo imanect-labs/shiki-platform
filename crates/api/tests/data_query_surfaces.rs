@@ -75,7 +75,7 @@ fn every_surface_parses_the_same_json_into_the_same_data_query() {
     assert_eq!(workflow_node_query(wf), Some(expected.clone()));
 
     let view: data::DataViewBody = serde_json::from_value(json!({
-        "table_id": Uuid::nil(), "query": q, "display": {}
+        "table_id": Uuid::nil(), "query": q, "display": { "kind": "grid" }
     }))
     .unwrap();
     assert_eq!(gui_view_query(view), expected);

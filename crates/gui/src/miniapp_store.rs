@@ -198,7 +198,7 @@ impl MiniAppStore {
                 .await
             {
                 Ok(raw) => {
-                    if serde_json::from_value::<data::DataViewBody>(raw).is_err() {
+                    if data::DataViewBody::from_stored(raw).is_err() {
                         errors.push(
                             GuiValidationError::new(
                                 "miniapp.data_view_broken",

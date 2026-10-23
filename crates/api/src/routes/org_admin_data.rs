@@ -105,6 +105,11 @@ pub struct UpdateDataSettingsRequest {
     #[schema(value_type = Option<u32>)]
     #[allow(clippy::option_option)] // 省略（変えない）と null（既定へ戻す）を区別する。
     pub max_indexed_fields: Option<Option<u32>>,
+    /// 1 ビューのルックアップ・ロールアップ列の上限（省略は変えない・`null` は既定 12 へ戻す・Task 15.5）。
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<u32>)]
+    #[allow(clippy::option_option)]
+    pub max_view_lookup_columns: Option<Option<u32>>,
 }
 
 /// 「省略」と「null」を区別する（省略 = `None`・null = `Some(None)`）。
@@ -159,6 +164,12 @@ pub async fn update_data_settings(
         settings = state
             .data
             .update_tenant_index_cap(&ctx, cap, trace.as_deref())
+            .await?;
+    }
+    if let Some(cap) = req.max_view_lookup_columns {
+        settings = state
+            .data
+            .update_tenant_view_lookup_cap(&ctx, cap, trace.as_deref())
             .await?;
     }
     Ok(Json(settings))

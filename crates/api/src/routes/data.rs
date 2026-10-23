@@ -118,6 +118,35 @@ pub async fn get_table(
 }
 
 /// スキーマを改訂する（owner・additive のみ・式インデックス差分適用）。
+/// テーブルに対する自分の文脈（読めない列・編集/スキーマ変更の可否・ビューのルックアップ列の上限）。
+///
+/// 画面の出し分け専用（実際の読み書きは各 API が改めて認可する）。
+#[utoipa::path(
+    get,
+    path = "/data/tables/{id}/viewer-context",
+    params(("id" = Uuid, Path, description = "テーブル ID")),
+    responses(
+        (status = 200, description = "閲覧者の文脈", body = data::TableViewerContext),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限がない"),
+        (status = 404, description = "存在しない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn get_viewer_context(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+) -> Result<Json<data::TableViewerContext>, ApiError> {
+    Ok(Json(
+        state
+            .data
+            .table_viewer_context(&ctx, id, trace.as_deref())
+            .await?,
+    ))
+}
+
 #[utoipa::path(
     put,
     path = "/data/tables/{id}/schema",
@@ -190,6 +219,12 @@ pub(crate) fn data_route_decls() -> Vec<RouteDecl> {
         r("/data/tables/{id}/schema", &["PUT"], Session, || {
             put(self::update_table_schema)
         }),
+        r(
+            "/data/tables/{id}/viewer-context",
+            &["GET"],
+            Session,
+            || get(self::get_viewer_context),
+        ),
         r(
             "/data/tables/{id}/records",
             &["GET", "POST"],

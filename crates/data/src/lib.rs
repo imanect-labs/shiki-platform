@@ -81,6 +81,8 @@ mod tenant_settings;
 mod transition;
 mod validate;
 mod view;
+mod view_spec;
+mod viewer_context;
 
 /// クエリ条件の 2 値論理の共通テスト表（JSON・query-optimizer.md §3.1）。
 ///
@@ -162,7 +164,15 @@ pub use stream::{
 pub use tenant_settings::{DataTenantSettings, MAX_COUNT_CAP, MAX_INDEXED_FIELDS_CEILING};
 pub use transition::TRANSITION_EVENT_TYPE;
 pub use validate::RefResolver;
-pub use view::{DataViewBody, DataViewPage, DataViewRun, DataViewStore};
+pub use view::{
+    effective_sort, DataViewBody, DataViewPage, DataViewRun, DataViewStore, DataViewSummary,
+};
+pub use view_spec::{
+    CalendarView, ColumnConfig, ConditionalFormat, FormatColor, GalleryView, GridView, GroupConfig,
+    KanbanView, RowHeight, ViewSpec, DEFAULT_MAX_VIEW_LOOKUP_COLUMNS,
+    MAX_VIEW_LOOKUP_COLUMNS_CEILING,
+};
+pub use viewer_context::TableViewerContext;
 
 /// 集計スモールセル抑制の既定 K（PIT-17・design-caveats）。
 ///

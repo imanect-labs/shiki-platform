@@ -46,7 +46,7 @@ pub struct SkillSummary {
 
 /// artifact 行。
 #[derive(sqlx::FromRow)]
-struct ArtifactRow {
+pub(crate) struct ArtifactRow {
     id: Uuid,
     kind: String,
     name: String,
@@ -57,7 +57,7 @@ struct ArtifactRow {
 }
 
 impl ArtifactRow {
-    fn into_artifact(self) -> Result<Artifact, ArtifactError> {
+    pub(crate) fn into_artifact(self) -> Result<Artifact, ArtifactError> {
         Ok(Artifact {
             id: self.id,
             kind: ArtifactKind::parse(&self.kind)

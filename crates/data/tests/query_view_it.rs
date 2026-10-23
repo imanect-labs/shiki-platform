@@ -452,7 +452,7 @@ async fn saved_view_reevaluates_per_viewer() {
             &DataViewBody {
                 table_id: table.id,
                 query: DataQuery::default(),
-                display: json!({"kind": "list"}),
+                display: data::ViewSpec::default(),
             },
             None,
         )

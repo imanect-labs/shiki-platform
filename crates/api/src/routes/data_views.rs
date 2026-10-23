@@ -9,7 +9,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use data::{DataQuery, DataViewBody, QueryResult, SqlQueryResult, SqlRequest};
+use data::{DataQuery, DataViewBody, DataViewSummary, QueryResult, SqlQueryResult, SqlRequest};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
@@ -112,17 +112,54 @@ pub struct ViewVersionQuery {
     pub version: Option<i64>,
 }
 
-/// 保存ビューを作成する（table viewer＋クエリ整合を検証・201）。
+/// テーブルの保存ビュー一覧（ビュー切替用）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ViewListResponse {
+    pub items: Vec<DataViewSummary>,
+}
+
+/// テーブルの保存ビューのうち、自分が使えるもの（本人の ＋ 共有されたもの・更新の新しい順・最大 100 件）。
+#[utoipa::path(
+    get,
+    path = "/data/tables/{id}/views",
+    params(("id" = Uuid, Path, description = "テーブル ID")),
+    responses(
+        (status = 200, description = "保存ビューの一覧（本文は含まない）", body = ViewListResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "テーブルの viewer でない"),
+        (status = 404, description = "存在しない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn list_table_views(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ViewListResponse>, ApiError> {
+    let items = state
+        .data_views
+        .list_for_table(&ctx, id, trace.as_deref())
+        .await?;
+    Ok(Json(ViewListResponse { items }))
+}
+
+/// 保存ビューを作成する（table viewer＋表示設定とクエリ整合を検証・201）。
+///
+/// 表示設定（`display`・型付き `ViewSpec`）はサーバが検証する: 存在しない列・閲覧者ごと／時刻依存の
+/// 派生列での並べ替え・グループ化・1 ビューのルックアップ・ロールアップ列の上限（既定 12・テナント設定）
+/// 超過は 400（設計文書の「422」はこのコードベースでは `DataError::Invalid` = 400）、保存者に読めない
+/// （マスク）列の表示・並べ替え・条件は 403。
 #[utoipa::path(
     post,
     path = "/data/views",
     request_body = CreateViewRequest,
     responses(
         (status = 201, description = "作成した", body = ViewResponse),
-        (status = 400, description = "クエリ/スキーマが不正"),
+        (status = 400, description = "クエリ/スキーマ/表示設定が不正（ルックアップ列の上限超過を含む）"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "対象テーブルの権限がない"),
-        (status = 409, description = "同名ビューが既に存在する"),
+        (status = 403, description = "対象テーブルの権限がない・マスク列を指定した"),
+        (status = 409, description = "同名ビューが既に存在する・索引の承認が要る"),
     ),
     security(("session" = [])),
 )]
@@ -154,9 +191,9 @@ pub async fn create_view(
     request_body = UpdateViewRequest,
     responses(
         (status = 200, description = "追記後のビュー", body = ViewResponse),
-        (status = 400, description = "クエリ/スキーマが不正"),
+        (status = 400, description = "クエリ/スキーマ/表示設定が不正（ルックアップ列の上限超過を含む）"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限がない"),
+        (status = 403, description = "権限がない・マスク列を指定した"),
         (status = 404, description = "存在しない"),
         (status = 409, description = "expected_version 不一致"),
     ),
@@ -252,6 +289,9 @@ pub(crate) fn data_view_route_decls() -> Vec<crate::server::RouteDecl> {
         }),
         r("/data/sql", &["POST"], Session, || post(run_sql)),
         r("/data/views", &["POST"], Session, || post(create_view)),
+        r("/data/tables/{id}/views", &["GET"], Session, || {
+            get(list_table_views)
+        }),
         r("/data/views/{id}", &["GET", "PUT"], Session, || {
             get(get_view).put(update_view)
         }),

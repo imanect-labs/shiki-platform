@@ -256,7 +256,7 @@ async fn data_grid_is_evaluated_with_each_viewers_own_permissions() {
             &DataViewBody {
                 table_id: table.id,
                 query: pending,
-                display: json!({}),
+                display: data::ViewSpec::default(),
             },
             None,
         )
@@ -334,7 +334,7 @@ async fn data_grid_is_evaluated_with_each_viewers_own_permissions() {
                     )),
                     ..Default::default()
                 },
-                display: json!({}),
+                display: data::ViewSpec::default(),
             },
             Some(1),
             None,
