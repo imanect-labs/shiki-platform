@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/use-toast";
 import { FolderPicker } from "@/components/artifacts/folder-picker";
+import { DataTableSelect, useDataTables } from "@/components/workflow/editor/config-panel/forms-data";
 import {
   disableWorkflow,
   enableWorkflow,
@@ -31,6 +32,8 @@ import {
 
 /// スコープの日本語説明（権限の天井として同意させる内容）。
 const SCOPE_LABELS: Record<string, string> = {
+  "data.read": "業務データを読む",
+  "data.write": "業務データを書く",
   "storage.read": "ファイルを読む",
   "storage.write": "ファイルを保存する",
   "rag.query": "社内ドキュメントを検索する",
@@ -67,6 +70,16 @@ export function EnableDialog({
   } | null>(null);
   const [pickerFor, setPickerFor] = React.useState<number | null>(null);
   const [busy, setBusy] = React.useState(false);
+  // 業務データのテーブル（data_table の委譲先を選ぶ・名前の表示にも使う）。
+  const needsTables = (plan?.grants ?? []).some((g) => g.objectKind === "data_table");
+  const { tables } = useDataTables(open && needsTables);
+  const tableName = (id: string | null) => (id ? tables?.find((t) => t.id === id)?.name : undefined);
+  const pickTable = (i: number, id: string) => {
+    if (!plan) return;
+    const grants = [...plan.grants];
+    grants[i] = { ...grants[i], picked: { id, name: tableName(id) ?? id } };
+    setPlan({ ...plan, grants });
+  };
 
   React.useEffect(() => {
     if (!open) return;
@@ -203,7 +216,9 @@ export function EnableDialog({
                           </span>
                         </span>
                         <span className="block truncate text-muted-foreground">
-                          {g.picked
+                          {g.objectKind === "data_table" && (g.picked || g.objectId)
+                            ? `テーブル「${g.picked?.name ?? tableName(g.objectId) ?? g.objectId}」`
+                            : g.picked
                             ? `フォルダ「${g.picked.name}」`
                             : g.objectName
                               ? `「${g.objectName}」`
@@ -212,6 +227,16 @@ export function EnableDialog({
                                 : "対象を選んでください"}
                         </span>
                       </span>
+                      {g.needsUserPick && g.objectKind === "data_table" ? (
+                        <div className="w-40 shrink-0">
+                          <DataTableSelect
+                            label="渡すテーブル"
+                            value={g.picked?.id ?? null}
+                            tables={tables}
+                            onChange={(id) => pickTable(i, id)}
+                          />
+                        </div>
+                      ) : null}
                       {g.needsUserPick && g.objectKind === "folder" ? (
                         <Button
                           variant="outline"

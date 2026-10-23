@@ -33,6 +33,14 @@ import {
   type FormProps,
 } from "./forms-basic";
 import { BranchForm, JoinForm, MapForm, SwitchForm, WaitForm } from "./forms-control";
+import {
+  DataBulkUpsertForm,
+  DataQueryForm,
+  DataRecordCreateForm,
+  DataRecordDeleteForm,
+  DataRecordUpdateForm,
+  DataTransitionForm,
+} from "./forms-data";
 import { HttpRequestForm, ScriptRunForm } from "./forms-external";
 import { TriggerPanel } from "./trigger-panel";
 import type { RefCandidate } from "./value-expr-input";
@@ -53,6 +61,12 @@ const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "http.request": HttpRequestForm,
   "script.run": ScriptRunForm,
   "skill.invoke": SkillInvokeForm,
+  "data.query": DataQueryForm,
+  "data.record.create": DataRecordCreateForm,
+  "data.record.update": DataRecordUpdateForm,
+  "data.record.delete": DataRecordDeleteForm,
+  "data.transition": DataTransitionForm,
+  "data.bulk_upsert": DataBulkUpsertForm,
 };
 
 /// 祖先ノード（`$from nodes.<id>.output` の参照候補）を逆辺 BFS で求める。

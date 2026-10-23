@@ -58,9 +58,8 @@ pub enum CondOp {
 pub struct CondCmp {
     pub field: String,
     pub op: CondOp,
-    /// `exists` / `is_null` では省略。`in` は配列。
+    /// `exists` / `is_null` では省略。`in` は配列。値は文字列・数値・真偽・配列（任意の JSON）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Object>)]
     pub value: Option<serde_json::Value>,
 }
 

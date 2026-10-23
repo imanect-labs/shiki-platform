@@ -13,6 +13,7 @@ import { toast } from "@/components/ui/use-toast";
 import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { MiniAppEditorDialog } from "@/components/artifacts/miniapp-editor";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
+import { DataGridHostContext, miniAppDataGridHost } from "@/components/data/miniapp-data-grid";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { hasOpenRuns, YuiActionContext, type YuiActionHost } from "@/components/prompt-kit/yui-actions";
 import { useMe } from "@/hooks/use-me";
@@ -130,6 +131,12 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
     [app, runs, refreshRuns],
   );
 
+  // 画面の表（```data_grid）は束ねた保存ビューを閲覧者本人の権限でページごとに実行する（Task 15.5）。
+  const gridHost = React.useMemo(
+    () => (app ? miniAppDataGridHost(app.id, app.version) : null),
+    [app],
+  );
+
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pb-6 pt-1 md:py-6">
       {error ? (
@@ -155,7 +162,9 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
           </div>
 
           <YuiActionContext.Provider value={host}>
-            <Markdown key={`${app.id}-v${app.version}`}>{app.body.screen}</Markdown>
+            <DataGridHostContext.Provider value={gridHost}>
+              <Markdown key={`${app.id}-v${app.version}`}>{app.body.screen}</Markdown>
+            </DataGridHostContext.Provider>
           </YuiActionContext.Provider>
 
           <ArtifactShareDialog

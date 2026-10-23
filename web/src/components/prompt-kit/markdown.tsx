@@ -18,6 +18,7 @@ import { isYuiLanguage } from "@imanect/yui/react";
 import { CodeBlock } from "./code-block";
 // 引用・箇条書きの中の図はボタンを出さない（重い図の描画部とは別に、軽いコンテキストだけ読む）。
 import { YuiNestedContext } from "./yui-actions";
+import { DataGridHostContext, MiniAppDataGrid } from "@/components/data/miniapp-data-grid";
 
 /// ```ui の図は描画部（@imanect/yui の SVG レンダラー・書き出し）が重いので、図が現れたときだけ
 /// 読み込む。読み込み中は図と同じくらいの高さの枠を置いてレイアウトが跳ねないようにする。
@@ -77,6 +78,8 @@ function extractCode(child: React.ReactNode): {
   ui: boolean;
   /// ```ui:bar のように情報文字列で指定された図の種類。
   uiKind?: string;
+  /// ```data_grid（ミニアプリの画面の表・Task 15.5）。
+  dataGrid?: boolean;
 } {
   if (!React.isValidElement(child)) return { code: "", raw: "", ui: false };
   const props = child.props as { className?: string; children?: React.ReactNode };
@@ -89,6 +92,7 @@ function extractCode(child: React.ReactNode): {
     lang: match?.[1],
     ui: isYuiLanguage(className),
     uiKind: /language-(?:ui|yui):(\S+)/.exec(className)?.[1],
+    dataGrid: /(?:^|\s)language-data[_-]grid(?:\s|$)/.test(className),
   };
 }
 
@@ -136,8 +140,15 @@ export function renderFigureTable(markdown: string) {
 /// ブロックコード。```ui（Yui）の図は図にし、描けなければ通常のコードブロックに戻す（#530）。
 function FencedCode({ node, children }: { node: ExtraProps["node"]; children: React.ReactNode }) {
   const { text, streaming } = React.useContext(SourceContext);
-  const { code, raw, lang, ui, uiKind } = extractCode(children);
+  const { code, raw, lang, ui, uiKind, dataGrid } = extractCode(children);
   const closed = fenceEnded(text, node);
+  const nested = React.useContext(YuiNestedContext);
+  const gridHost = React.useContext(DataGridHostContext);
+  // ```data_grid はミニアプリの画面の表（トップレベルだけ・サーバーと同じ規則）。中身の 1 行目が別名。
+  if (dataGrid && gridHost && !nested && closed) {
+    const alias = code.split(/\r?\n/)[0]?.trim() ?? "";
+    if (alias) return <MiniAppDataGrid alias={alias} />;
+  }
   // 生成中でフェンスがまだ閉じていないコードはハイライトしない（トークンごとに shiki を回さない）。
   if (!ui) return <CodeBlock code={code} lang={lang} pending={streaming && !closed} />;
   // 終わっていないブロックは、確定した行だけを渡す（本文が改行で終わっていれば最終行も確定）。
