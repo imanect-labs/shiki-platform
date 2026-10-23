@@ -29,6 +29,37 @@ pub struct DataViewBody {
     pub display: serde_json::Value,
 }
 
+/// 保存ビューの 1 ページの指定（生成 UI の `data_grid` の束縛の params・Task 15.7）。
+///
+/// 画面（クライアント）が送れるのは**ページ位置と件数だけ**で、条件・並べ替え・投影は
+/// ピンした版のビューの [`DataQuery`] がそのまま使われる（面ごとの独自フィルタ表現を作らない）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DataViewPage {
+    /// 前ページの `next_cursor`（不透明トークン）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// 1 ページの件数（省略時はビューの `limit`・上限はクエリと同じ 200）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// 保存ビューを 1 ページ実行した結果（`data_grid` の描画材料・Task 15.7）。
+///
+/// 行・列は**閲覧者本人**の行述語・フィールドマスク・集計抑制で毎回評価したもの。列の型・表示名は
+/// `table_id` のスキーマ（`GET /data/tables/{id}`・閲覧者本人の viewer）から引く。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct DataViewRun {
+    pub view_id: Uuid,
+    /// ピンした版。
+    pub version: i64,
+    pub table_id: Uuid,
+    /// 表示設定（Task 15.5 で型付き `ViewSpec` に置き換える・今はサーバ非解釈）。
+    #[schema(value_type = Object)]
+    pub display: serde_json::Value,
+    pub result: QueryResult,
+}
+
 /// 保存ビューの保存/実行（`crates/data` の一部＝クエリ実行と同じチョークポイント側）。
 #[derive(Clone)]
 pub struct DataViewStore {
@@ -129,6 +160,75 @@ impl DataViewStore {
         self.data
             .run_query(ctx, body.table_id, &body.query, trace_id)
             .await
+    }
+
+    /// ピンした版のビューを 1 ページ実行する（ビューの読取は**閲覧者本人の viewer**・Task 15.7）。
+    ///
+    /// 行・列は閲覧者本人の権限で毎回評価する（作成者・保存者の権限を引き継がない）。
+    pub async fn run_pinned(
+        &self,
+        ctx: &AuthContext,
+        id: Uuid,
+        version: i64,
+        page: &DataViewPage,
+        trace_id: Option<&str>,
+    ) -> Result<DataViewRun, DataError> {
+        let (version, body) = self.get(ctx, id, Some(version), trace_id).await?;
+        self.run_page(ctx, id, version, body, page, trace_id).await
+    }
+
+    /// **バンドル（ミニアプリ）経由**でピンした版のビューを 1 ページ実行する（Task 15.7）。
+    ///
+    /// ビューの定義（クエリ）はバンドル本体の viewer で読む（部品の個別共有は不要・
+    /// [`ArtifactStore::get_version_via_bundle`]）。**データは閲覧者本人の権限**（テーブル viewer・
+    /// 行述語・フィールドマスク・集計抑制）で評価するので、バンドルの共有はデータの権限を広げない。
+    ///
+    /// ⚠️ `id@version` がバンドルにピンされていることの照合は呼び出し側（`gui::MiniAppStore`）の責務。
+    pub async fn run_via_bundle(
+        &self,
+        ctx: &AuthContext,
+        bundle_id: Uuid,
+        id: Uuid,
+        version: i64,
+        page: &DataViewPage,
+        trace_id: Option<&str>,
+    ) -> Result<DataViewRun, DataError> {
+        let v = self
+            .artifacts
+            .get_version_via_bundle(ctx, bundle_id, id, version, trace_id)
+            .await
+            .map_err(map_artifact)?;
+        let body: DataViewBody = serde_json::from_value(v.body).map_err(|_| DataError::NotFound)?;
+        self.run_page(ctx, id, version, body, page, trace_id).await
+    }
+
+    async fn run_page(
+        &self,
+        ctx: &AuthContext,
+        id: Uuid,
+        version: i64,
+        body: DataViewBody,
+        page: &DataViewPage,
+        trace_id: Option<&str>,
+    ) -> Result<DataViewRun, DataError> {
+        let mut query = body.query;
+        if let Some(cursor) = &page.cursor {
+            query.cursor = Some(cursor.clone());
+        }
+        if let Some(limit) = page.limit {
+            query.limit = Some(limit);
+        }
+        let result = self
+            .data
+            .run_query(ctx, body.table_id, &query, trace_id)
+            .await?;
+        Ok(DataViewRun {
+            view_id: id,
+            version,
+            table_id: body.table_id,
+            display: body.display,
+            result,
+        })
     }
 
     /// 保存前の整合検証: table 存在（viewer）＋クエリを dry-run（limit 1）で通す。

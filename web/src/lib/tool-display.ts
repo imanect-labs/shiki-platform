@@ -441,6 +441,31 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     suru: true,
     target: named(),
   },
+  // 構造化データ（テーブル）。table はテーブル名か id（Task 15.7）。
+  data_query: {
+    icon: Table2,
+    category: "read",
+    lead: (t) => (t ? `テーブル「${t}」を` : "テーブルを"),
+    verb: "検索",
+    suru: true,
+    target: named("table"),
+  },
+  data_schema: {
+    icon: Table2,
+    category: "read",
+    lead: (t) => (t ? `テーブル「${t}」の列を` : "テーブルの列を"),
+    verb: "確認",
+    suru: true,
+    target: named("table"),
+  },
+  data_record_write: {
+    icon: Table2,
+    category: "write",
+    lead: (t) => (t ? `テーブル「${t}」のレコードを` : "テーブルのレコードを"),
+    verb: (input) => (input.op === "update" ? "更新" : "追加"),
+    suru: true,
+    target: named("table"),
+  },
 };
 
 /// ループが横取りするメタツール（`MetaToolName` = `crates/agent-core/src/vocab.rs` → ts-rs）。

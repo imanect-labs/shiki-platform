@@ -55,6 +55,22 @@ pub(super) fn tool_search_call(
     ))
 }
 
+/// 汎用の決定的呼び出し `calltool:<ツール名> <入力 JSON>`（Task 15.7）。
+///
+/// LLM が出す入力をそのまま与えて、ツールの提示・実行・観測の経路を実 LLM 無しで通す e2e 用。
+/// 提示に無いツールなら呼ばない（`None`＝本文の応答へ落ちる・「提示しない」ことの検証に使える）。
+pub(super) fn generic_tool_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let rest = user_text.strip_prefix("calltool:")?.trim();
+    let (name, raw) = rest.split_once(char::is_whitespace).unwrap_or((rest, "{}"));
+    let input = serde_json::from_str(raw.trim()).unwrap_or_else(|_| serde_json::json!({}));
+    let t = req.tools.iter().find(|t| t.name == name)?;
+    Some(tool_call_stream(t.name.clone(), input, prompt_tokens))
+}
+
 /// ドキュメント下書き/編集ツールの決定的駆動（issue #282 / Task 11.3 の e2e）。
 /// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（```ui の bar）、
 /// `saveslide:<name>` → save_slide（下書きスライド・固定 3 枚）、

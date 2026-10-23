@@ -147,6 +147,8 @@ pub trait ActionLedger: Send + Sync {
 pub struct ActionDispatcher {
     handlers: HashMap<HandlerKind, Arc<dyn ActionHandler>>,
     workflows: Option<Arc<dyn WorkflowStarter>>,
+    /// 保存ビューの実行（`data_grid` のデータ束縛・Task 15.7）。未配線なら 503。
+    data_views: Option<data::DataViewStore>,
     ledger: Option<Arc<dyn ActionLedger>>,
     audit: AuditRecorder,
 }
@@ -156,6 +158,7 @@ impl ActionDispatcher {
         ActionDispatcher {
             handlers: HashMap::new(),
             workflows: None,
+            data_views: None,
             ledger: None,
             audit,
         }
@@ -168,6 +171,11 @@ impl ActionDispatcher {
 
     pub fn set_workflow_starter(&mut self, starter: Arc<dyn WorkflowStarter>) {
         self.workflows = Some(starter);
+    }
+
+    /// 保存ビューの実行系を配線する（`data_grid` のデータ束縛・Task 15.7）。
+    pub fn set_data_views(&mut self, views: data::DataViewStore) {
+        self.data_views = Some(views);
     }
 
     /// 単発アクションの実行台帳を配線する（#410）。
@@ -390,6 +398,44 @@ impl ActionDispatcher {
                 };
                 Ok(json!({ "kind": "workflow", "run_id": run_id }))
             }
+            ActionBinding::DataView(b) => {
+                let views = self
+                    .data_views
+                    .as_ref()
+                    .ok_or_else(|| ActionError::Unavailable("表の描画が無効です".into()))?;
+                // 画面から送れるのはページ位置と件数だけ（条件・並べ替えはピンしたビューの定義）。
+                let page: data::DataViewPage = if params.is_null() {
+                    data::DataViewPage::default()
+                } else {
+                    serde_json::from_value(params)
+                        .map_err(|e| ActionError::Invalid(format!("表の params が不正です: {e}")))?
+                };
+                // 定義の読み方は発生源で変わる（ミニアプリはバンドル権限・会話は本人の viewer）が、
+                // **データは常に閲覧者本人の権限**で毎回評価する（作成者・保存者の権限を引き継がない）。
+                let run = match source {
+                    ActionSource::MiniApp { artifact_id, .. } => {
+                        views
+                            .run_via_bundle(
+                                ctx,
+                                *artifact_id,
+                                b.view_id,
+                                b.pinned_version,
+                                &page,
+                                trace_id,
+                            )
+                            .await
+                    }
+                    ActionSource::ChatMessage { .. } => {
+                        views
+                            .run_pinned(ctx, b.view_id, b.pinned_version, &page, trace_id)
+                            .await
+                    }
+                }
+                .map_err(map_data_err)?;
+                let result = serde_json::to_value(&run)
+                    .map_err(|e| ActionError::Internal(format!("表の結果: {e}")))?;
+                Ok(json!({ "kind": "data_view", "result": result }))
+            }
         }
     }
 
@@ -412,5 +458,24 @@ impl ActionDispatcher {
         if let Err(e) = self.audit.record(ctx, entry).await {
             tracing::warn!(error = %e, "ui_action.invoke の監査記録に失敗");
         }
+    }
+}
+
+/// data のエラーを操作のエラーへ（存在秘匿: 見えないテーブル・ビューは区別しない）。
+fn map_data_err(e: data::DataError) -> ActionError {
+    use data::DataError as DE;
+    match e {
+        DE::NotFound => ActionError::NotFound,
+        DE::Forbidden => ActionError::Forbidden,
+        DE::Invalid(m) => ActionError::Invalid(m),
+        DE::Rejected(r) => ActionError::Invalid(r.to_string()),
+        DE::Gone(m) => ActionError::Invalid(format!("ページの位置が古くなりました: {m}")),
+        DE::IndexPreparing { field, .. } => {
+            ActionError::Unavailable(format!("列「{field}」の索引を準備中です"))
+        }
+        DE::ReadOverloaded | DE::QueryTooExpensive { .. } => {
+            ActionError::Unavailable(e.to_string())
+        }
+        other => ActionError::Internal(other.to_string()),
     }
 }

@@ -176,6 +176,8 @@ impl ChatWorker {
         // Office 編集/CSV ツール（worker/toolset.rs に集約）。
         self.push_collab_tools(&mut tools);
         self.push_office_and_csv_tools(&mut tools);
+        // 構造化データ（発話ユーザーに見えるテーブルがあるときだけ・Task 15.7）。
+        self.push_data_tools(&mut tools, ctx).await;
 
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {

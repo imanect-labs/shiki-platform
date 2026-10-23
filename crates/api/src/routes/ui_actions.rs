@@ -47,7 +47,8 @@ fn is_yui_action(action_id: &str) -> bool {
 /// アクション実行レスポンス。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UiActionResponse {
-    /// 束縛種別ごとの結果（handler: 実行結果 / workflow: run_id）。
+    /// 束縛種別ごとの結果（handler: 実行結果 / workflow: run_id /
+    /// data_view: `{"kind":"data_view","result": DataViewRun}`・ミニアプリの画面の表）。
     #[schema(value_type = Object)]
     pub result: serde_json::Value,
 }

@@ -152,7 +152,7 @@ pub use stream::{
 pub use tenant_settings::{DataTenantSettings, MAX_COUNT_CAP, MAX_INDEXED_FIELDS_CEILING};
 pub use transition::TRANSITION_EVENT_TYPE;
 pub use validate::RefResolver;
-pub use view::{DataViewBody, DataViewStore};
+pub use view::{DataViewBody, DataViewPage, DataViewRun, DataViewStore};
 
 /// 集計スモールセル抑制の既定 K（PIT-17・design-caveats）。
 ///

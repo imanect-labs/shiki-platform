@@ -491,6 +491,10 @@ use utoipa::{
         data::RejectLimit,
         data::SqlLocation,
         data::DataViewBody,
+        // ミニアプリの画面の表（data_grid）: 画面が送る params と、`ui-actions` の
+        // `result.result`（kind=data_view）の形（Task 15.7）。
+        data::DataViewPage,
+        data::DataViewRun,
         // FSM 宣言的ガード（Task 9.10）。
         crate::routes::data_fsm::CreateFsmRequest,
         crate::routes::data_fsm::UpdateFsmRequest,

@@ -227,6 +227,7 @@ async fn main() -> anyhow::Result<()> {
         &tabular,
         office.as_ref(),
         &skill_installs,
+        &data_store,
     )
     .await?;
 
@@ -251,14 +252,21 @@ async fn main() -> anyhow::Result<()> {
     // 受け付ける（トリガは runtime 有効時に発火）。
     let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
         db.clone(),
-        workflow_engine::DelegationStore::new(db.clone(), authz.clone()),
+        // 棚卸しで data_table の委譲タプルを撤去したら data へ知らせる（Task 15.7）。
+        workflow_engine::DelegationStore::new(db.clone(), authz.clone())
+            .with_data((*data_store).clone()),
     ));
     let audit = Arc::new(storage::audit::AuditRecorder::new(db.clone()));
     let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(db.clone()));
     let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(db.clone()));
 
     // 宣言的 UI アクションの実行系（Task 6.5）: chat.submit・安全ツール・workflow 起動を束ねる。
-    let ui_actions = wiring_gui::wire_ui_actions(&db, chat.as_ref(), workflow_launcher.as_ref());
+    let ui_actions = wiring_gui::wire_ui_actions(
+        &db,
+        chat.as_ref(),
+        workflow_launcher.as_ref(),
+        Some(&data_views),
+    );
 
     // md→docx 合成（POST /documents・#332）: worker のみ必要なので office フラグに載せず常時配線。
     // 共有クライアントは無期限のため、worker 遅延がハンドラを永久ブロックしないよう専用に切る。

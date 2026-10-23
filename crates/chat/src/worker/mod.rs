@@ -87,6 +87,8 @@ pub struct ChatWorker {
     office_creator: Option<Arc<office::OfficeCreator>>,
     /// Excel・Word のレイアウト編集エンジン（office.read / office.excel_edit / office.word_edit・#725）。
     office_engine: Option<Arc<office::engine::OfficeEngine>>,
+    /// 構造化データ（data_query / data_schema / data_record_write・Task 15.7）。未配線なら提示しない。
+    data: Option<data::DataStore>,
     config: Arc<WorkerConfig>,
 }
 
@@ -133,8 +135,18 @@ impl ChatWorker {
             office_live,
             office_creator,
             office_engine,
+            data: None,
             config: Arc::new(config),
         }
+    }
+
+    /// 構造化データのツール（data_query / data_schema / data_record_write）を配線する（Task 15.7）。
+    ///
+    /// `WorkerDeps` に足すと全呼び出し箇所が壊れるため、追加の依存は builder で受ける。
+    #[must_use]
+    pub fn with_data(mut self, data: data::DataStore) -> Self {
+        self.data = Some(data);
+        self
     }
 
     /// `concurrency` 本のワーカータスクと sweeper を起動する。

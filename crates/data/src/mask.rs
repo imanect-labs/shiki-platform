@@ -36,6 +36,19 @@ fn eval_role_level(expr: &PolicyExpr, material: &PolicyMaterial) -> bool {
 }
 
 impl DataStore {
+    /// 実行主体に対して**読めない**フィールドの参照名集合（グラウンディング用・Task 15.7）。
+    ///
+    /// チャットの `data_schema` のように「閲覧者に見える列だけを示す」面が使う。判定はクエリの
+    /// 投影・検索拒否と同じ（[`Self::masked_fields`]）で、認可材料はこの呼び出しの中だけで使い捨てる
+    /// （リクエストを跨いで保持しない・PIT-18）。
+    pub async fn masked_field_keys(
+        &self,
+        ctx: &AuthContext,
+        table: &DataTable,
+    ) -> Result<HashSet<String>, DataError> {
+        self.masked_fields(ctx, &self.authz_memo(), table).await
+    }
+
     /// 実行主体に対して**読めない**フィールド名集合を返す（field_policy 未定義なら空）。
     pub(crate) async fn masked_fields(
         &self,
