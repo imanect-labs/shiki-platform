@@ -236,6 +236,7 @@ pub(crate) fn build_gateway(
             secret_key: l.secret_key.clone(),
         }),
         timeouts: llm.timeouts(),
+        limits: llm.usage_limits(),
     };
     LlmGateway::build(db.clone(), http.clone(), gateway_config)
         .map_err(|e| anyhow::anyhow!("llm-gateway 構築に失敗: {e}"))

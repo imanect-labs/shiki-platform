@@ -6,7 +6,6 @@
 //! `Arc<dyn LlmProvider>` を保持する。
 
 use futures::stream::BoxStream;
-use serde_json::Value;
 
 use crate::model::{GenerateRequest, StreamDelta};
 
@@ -49,28 +48,12 @@ pub trait LlmProvider: Send + Sync {
 
 /// 429 の本文から**ユーザーに出せる 1 行**を作る。
 ///
-/// プロバイダの本文は `{"error":{"message":"5-hour usage limit reached. Resets in 37min. …"}}`
-/// のような JSON で、そのまま会話に出すと URL やワークスペース ID まで晒したうえで読めない
-/// （実測でその状態になっていた）。message だけを取り出し、無ければ定型文にする。
-///
-/// 形が違っても壊れない（定型文に落ちるだけ）ことを優先する — プロバイダごとに
-/// パーサを書き分けると、増やすたびにここが腐る。
+/// プロバイダの本文（`{"error":{"message":"…"}}` など）は**利用者へ一切出さない**。
+/// `message` にも URL・組織/ワークスペース ID・請求情報が入り得るため、中身を選り分けて
+/// 通すより定型文に固定するほうが漏れない。原因の追跡用に本文はログへだけ残す。
 pub(crate) fn rate_limit_message(body: &str) -> String {
-    const FALLBACK: &str = "利用上限に達しました。しばらく待ってからもう一度お試しください。";
-    let Ok(v) = serde_json::from_str::<Value>(body) else {
-        return FALLBACK.to_string();
-    };
-    // `error.message`（OpenAI 互換）→ `message`（素朴な実装）の順に見る。
-    let msg = v
-        .pointer("/error/message")
-        .or_else(|| v.get("message"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    match msg {
-        Some(m) => format!("利用上限に達しました（{m}）"),
-        None => FALLBACK.to_string(),
-    }
+    tracing::warn!(body = %body, "プロバイダが 429 を返した");
+    "利用上限に達しました。しばらく待ってからもう一度お試しください。".to_string()
 }
 
 #[cfg(test)]
@@ -78,12 +61,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rate_limit_message_extracts_provider_reason() {
-        let body = r#"{"type":"error","error":{"type":"GoUsageLimitError","message":"5-hour usage limit reached. Resets in 37min."},"metadata":{"workspace":"wrk_01"}}"#;
+    fn rate_limit_message_does_not_expose_provider_message() {
+        let body = r#"{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit reached for org-abc123. See https://example.com/billing"},"metadata":{"workspace":"wrk_01"}}"#;
         let msg = rate_limit_message(body);
-        assert!(msg.contains("5-hour usage limit reached"), "{msg}");
-        // ワークスペース ID や URL を会話へ漏らさない。
-        assert!(!msg.contains("wrk_01"), "{msg}");
+        // message の中身（組織 ID・URL）もワークスペース ID も利用者へ出さない。
+        for leaked in ["org-abc123", "https://", "wrk_01", "Rate limit reached"] {
+            assert!(!msg.contains(leaked), "{msg}");
+        }
+        assert!(msg.starts_with("利用上限に達しました"), "{msg}");
     }
 
     #[test]
