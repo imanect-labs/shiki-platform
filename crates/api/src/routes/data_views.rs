@@ -20,12 +20,27 @@ use crate::{
     state::AppState,
 };
 
+/// クエリ要求（クエリ IR ＋ 索引の自動昇格の明示の要求）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DataQueryRequest {
+    #[serde(flatten)]
+    pub query: DataQuery,
+    /// 未索引の列での並べ替え・絞り込みを**索引の自動昇格の契機にする**（data-platform §10）。
+    /// /data のグリッドの UI が利用者の並べ替え・絞り込みの操作でだけ送る。既定 `false` で、未索引の列は
+    /// 従来どおり 400。チャット・ワークフロー・ミニアプリの経路はこの要求を持たない（昇格しない）。
+    #[serde(default)]
+    pub promote_indexes: bool,
+}
+
 /// 宣言的クエリを実行する（行述語＋フィールドマスク＋集計抑制と合成・Task 9.4）。
+///
+/// `promote_indexes: true` のときだけ、未索引の列を自動で昇格する（上限内・小さなテーブルは同期で
+/// 有効化・大きなテーブルは準備中 409・上限超過は承認待ち 409）。
 #[utoipa::path(
     post,
     path = "/data/tables/{id}/query",
     params(("id" = Uuid, Path, description = "テーブル ID")),
-    request_body = DataQuery,
+    request_body = DataQueryRequest,
     responses(
         (status = 200, description = "クエリ結果（rows または groups）", body = QueryResult),
         (status = 400, description = "クエリ指定が不正"),
@@ -41,14 +56,20 @@ pub async fn run_query(
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
-    Json(query): Json<DataQuery>,
+    Json(req): Json<DataQueryRequest>,
 ) -> Result<Json<QueryResult>, ApiError> {
-    Ok(Json(
+    let r = if req.promote_indexes {
         state
             .data
-            .run_query(&ctx, id, &query, trace.as_deref())
-            .await?,
-    ))
+            .run_query_promoting(&ctx, id, &req.query, trace.as_deref())
+            .await?
+    } else {
+        state
+            .data
+            .run_query(&ctx, id, &req.query, trace.as_deref())
+            .await?
+    };
+    Ok(Json(r))
 }
 
 /// SQL（閉じた部分集合）で読む（Task 15.10・data-platform §16.1）。

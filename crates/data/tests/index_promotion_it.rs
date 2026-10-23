@@ -129,10 +129,19 @@ async fn small_table_sort_enables_the_index_synchronously() {
         )
         .await;
     assert!(matches!(v1, Err(DataError::Invalid(_))), "{v1:?}");
-    // グリッドの並べ替え（viewer）: 403 / 422 にせず、その場で有効化して結果を返す。
+    // チャット・ワークフロー・ミニアプリの経路（昇格の要求なし）は従来どおり拒否し、昇格もしない
+    // （昇格の契機はビューの保存とグリッドの明示の要求だけ・data-platform §10・監査 B1-10）。
+    let plain = store.run_query(&bob, table.id, &by("memo"), None).await;
+    assert!(matches!(plain, Err(DataError::Invalid(_))), "{plain:?}");
+    let t = store.get_table(&alice, table.id, None).await.unwrap();
+    assert!(
+        !t.schema.field("memo").unwrap().indexed,
+        "要求なしでは昇格しない"
+    );
+    // グリッドの並べ替え（viewer・昇格の明示の要求）: 403 / 422 にせず、その場で有効化して結果を返す。
     let t0 = Instant::now();
     let r = store
-        .run_query(&bob, table.id, &by("memo"), None)
+        .run_query_promoting(&bob, table.id, &by("memo"), None)
         .await
         .unwrap();
     eprintln!(
@@ -208,7 +217,9 @@ async fn twenty_first_index_requires_explicit_owner_approval() {
         .await
         .unwrap();
     // 21 列目: 自動昇格は止まり、承認を求める（件数・値は出さない）。
-    let r = store.run_query(&bob, table.id, &by("c21"), None).await;
+    let r = store
+        .run_query_promoting(&bob, table.id, &by("c21"), None)
+        .await;
     match r {
         Err(DataError::IndexApprovalRequired {
             field,
@@ -230,7 +241,7 @@ async fn twenty_first_index_requires_explicit_owner_approval() {
         .unwrap();
     assert_eq!(p.status, IndexStatus::Active);
     assert!(store
-        .run_query(&bob, table.id, &by("c21"), None)
+        .run_query_promoting(&bob, table.id, &by("c21"), None)
         .await
         .is_ok());
     // テナント設定で上限を上げれば承認なしで作れる。
@@ -239,7 +250,7 @@ async fn twenty_first_index_requires_explicit_owner_approval() {
         .await
         .unwrap();
     assert!(store
-        .run_query(&bob, table.id, &by("c22"), None)
+        .run_query_promoting(&bob, table.id, &by("c22"), None)
         .await
         .is_ok());
     let o = store.table_indexes(&bob, table.id, None).await.unwrap();
@@ -270,7 +281,9 @@ async fn large_table_promotes_in_background_with_write_through_and_demotes_by_jo
         .await
         .unwrap();
     // 並べ替えを要求すると準備中（バックフィルが積まれる）。
-    let r = store.run_query(&c, table.id, &by("memo"), None).await;
+    let r = store
+        .run_query_promoting(&c, table.id, &by("memo"), None)
+        .await;
     let Err(DataError::IndexPreparing { field, progress }) = r else {
         panic!("準備中になるはず: {r:?}");
     };

@@ -6,8 +6,9 @@
 //!   バックフィル）。テーブルあたりの索引列数の上限（既定 20）を超えるときは `approve: true` で
 //!   owner が明示に承認する（承認なしは 409 `index_approval_required`）。
 //!
-//! グリッドの並べ替え・絞り込み（`POST /data/tables/{id}/query`）とビューの保存は、未索引の列を
-//! 自動で昇格する（上限内）。権限・監査は `DataStore` が担う。
+//! グリッドの並べ替え・絞り込み（`POST /data/tables/{id}/query` に `promote_indexes: true`）とビューの
+//! 保存は、未索引の列を自動で昇格する（上限内）。それ以外の経路（チャット・ワークフロー・ミニアプリ）は
+//! 昇格しない。権限・監査は `DataStore` が担う。
 
 use axum::{
     extract::{Path, State},

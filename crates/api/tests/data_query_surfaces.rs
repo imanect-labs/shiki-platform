@@ -96,3 +96,32 @@ fn every_surface_parses_the_same_json_into_the_same_data_query() {
     let page: data::DataViewPage = serde_json::from_value(json!({ "limit": 10 })).unwrap();
     assert_eq!(gui_page_has_no_filter(page), (None, Some(10)));
 }
+
+/// 索引の自動昇格の要求（`promote_indexes`）は /data のグリッドの HTTP 要求（`DataQueryRequest`）だけが
+/// 持つ。チャット・ワークフロー・ビューの受け口は `DataQuery` そのもので、同じフラグを書いても落ちる
+/// （昇格の契機はビューの保存とグリッドの明示の要求だけ・data-platform §10・監査 B1-10）。
+#[test]
+fn only_the_grid_request_can_ask_for_index_promotion() {
+    let q = json!({ "sort": [{ "field": "memo", "descending": false }], "limit": 5 });
+    let mut with_flag = q.clone();
+    with_flag["promote_indexes"] = json!(true);
+    let expected: DataQuery = serde_json::from_value(q.clone()).unwrap();
+
+    let grid: api::routes::data_views::DataQueryRequest =
+        serde_json::from_value(with_flag.clone()).unwrap();
+    assert!(grid.promote_indexes);
+    assert_eq!(grid.query, expected);
+    let grid: api::routes::data_views::DataQueryRequest =
+        serde_json::from_value(q.clone()).unwrap();
+    assert!(!grid.promote_indexes, "既定は昇格しない");
+
+    // 他の面の受け口は DataQuery そのもの（フラグを持つ場所が無い）。
+    let tool: chat::data_tool::DataQueryToolInput =
+        serde_json::from_value(json!({ "table": "経費", "query": with_flag })).unwrap();
+    assert_eq!(chat_tool_query(tool), Some(expected.clone()));
+    let wf: workflow_engine::ir::params::DataQueryParams = serde_json::from_value(
+        json!({ "table": "00000000-0000-0000-0000-000000000001", "query": with_flag }),
+    )
+    .unwrap();
+    assert_eq!(workflow_node_query(wf), Some(expected));
+}

@@ -466,6 +466,7 @@ use utoipa::{
         data::CmpOp,
         data::RecordShareRole,
         // 宣言的クエリ／保存ビュー（Task 9.4・クエリ IR v2 は Task 15.3）。
+        crate::routes::data_views::DataQueryRequest,
         crate::routes::data_views::CreateViewRequest,
         crate::routes::data_views::UpdateViewRequest,
         crate::routes::data_views::ViewResponse,

@@ -423,7 +423,7 @@ impl DataViewStore {
             probe.with_count = false;
             match self
                 .data
-                .run_query(ctx, body.table_id, &probe, trace_id)
+                .run_query_promoting(ctx, body.table_id, &probe, trace_id)
                 .await
             {
                 Ok(_) | Err(DataError::IndexPreparing { .. }) => {}

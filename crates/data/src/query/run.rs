@@ -227,7 +227,27 @@ fn fingerprint(q: &DataQuery) -> Vec<u8> {
 
 impl DataStore {
     /// 宣言的クエリを実行する（viewer・行述語＋フィールドマスク合成・Task 15.3）。
+    ///
+    /// 未索引の列での絞り込み・並べ替えは従来どおり拒否する（**索引の自動昇格はしない**）。チャットの
+    /// LLM・ワークフロー・ゲートウェイ（ミニアプリ）・保存ビューの実行はこの入口を使う。昇格の契機は
+    /// ビューの保存とグリッドの明示の要求（[`Self::run_query_promoting`]）だけ（data-platform §10）。
     pub async fn run_query(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        query: &DataQuery,
+        trace_id: Option<&str>,
+    ) -> Result<QueryResult, DataError> {
+        let tuning = self.tuning.clone();
+        self.run_query_as(ctx, table_id, query, trace_id, "data.query", &tuning, false)
+            .await
+            .map(|(r, _)| r)
+    }
+
+    /// グリッド（/data の UI）の並べ替え・絞り込みとビューの保存から: 未索引の列を**索引の自動昇格の
+    /// 契機にして**実行する（上限内は昇格・大きなテーブルは準備中 409・上限超過は承認待ち 409・
+    /// data-platform §10・PIT-72）。HTTP では `promote_indexes: true` の要求だけがここへ来る。
+    pub async fn run_query_promoting(
         &self,
         ctx: &AuthContext,
         table_id: Uuid,
@@ -274,8 +294,8 @@ impl DataStore {
         super::planner::verify::verify_drops_total()
     }
 
-    /// `auto_promote`: 未索引の列での絞り込み・並べ替えを索引の自動昇格の契機にする（グリッド・ビューの
-    /// 経路＝[`Self::run_query`]。data-platform §10）。v1 の一覧 API と検証用の入口は従来どおり 422。
+    /// `auto_promote`: 未索引の列での絞り込み・並べ替えを索引の自動昇格の契機にする（グリッドの明示の
+    /// 要求とビューの保存＝[`Self::run_query_promoting`]。data-platform §10）。それ以外の入口は従来どおり拒否。
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_query_as(
         &self,
