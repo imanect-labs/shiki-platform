@@ -435,6 +435,9 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .context("Keycloak 用 HTTP クライアントの初期化に失敗")?;
+            // group のリネームが済まなかったら、セッション失効まで終えた後に非 0 で終える。
+            // 旧 tenant 配下の group しか持たないユーザーは、multi では新 tenant の org を解決できない。
+            let mut group_renamed = true;
             match KeycloakAdmin::from_config(&kc_http, &config.auth) {
                 Ok(kc) => {
                     match kc.find_users_by_tenant(f).await {
@@ -457,7 +460,8 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                     }
                     // org/部署 group は `/tenants/<tenant>/...` に居るので、テナントルートを
                     // リネームすれば配下ごと新しいパスで claim に載る（#811）。
-                    report_group_rename(f, &to, kc.rename_tenant_group(f, &to).await);
+                    group_renamed =
+                        report_group_rename(f, &to, kc.rename_tenant_group(f, &to).await);
                 }
                 Err(_) => eprintln!(
                     "⚠️ provisioner 未設定のため IdP の tenant 属性と group は更新していません。\
@@ -475,6 +479,9 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                 },
                 Err(e) => eprintln!("Redis 接続に失敗（sessions は手動で対応要）: {e}"),
             }
+            if !group_renamed {
+                bail!("IdP の group /tenants/{f} を /tenants/{to} へ移せていません（上の手順で手動対応要）");
+            }
         }
     } else {
         println!("DRY-RUN のため書き換えなし。--execute で実行します。");
@@ -482,21 +489,57 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// retenant の group リネーム結果を報告する（失敗は手動対応を促す・best-effort）。
+/// retenant の group リネーム結果を報告する。移せなかった（手動対応が要る）なら `false`。
 fn report_group_rename(
     from: &str,
     to: &str,
     outcome: Result<RenameOutcome, api::keycloak_admin::KeycloakAdminError>,
-) {
+) -> bool {
     match outcome {
-        Ok(RenameOutcome::Renamed) => println!("IdP: group /tenants/{from} → /tenants/{to}"),
-        Ok(RenameOutcome::Missing) => println!(
-            "IdP: group /tenants/{from} が無い（旧 group のままなら先に migrate-org-groups を実行）"
-        ),
-        Ok(RenameOutcome::TargetExists) => eprintln!(
-            "⚠️ group /tenants/{to} が既にあるためリネームしていません。\
-             /tenants/{from} 配下のメンバーを手で移してください"
-        ),
-        Err(e) => eprintln!("IdP group のリネームに失敗（手動で対応要）: {e}"),
+        Ok(RenameOutcome::Renamed) => {
+            println!("IdP: group /tenants/{from} → /tenants/{to}");
+            true
+        }
+        Ok(RenameOutcome::Missing) => {
+            println!(
+                "IdP: group /tenants/{from} が無い（旧 group のままなら先に migrate-org-groups を実行）"
+            );
+            true
+        }
+        Ok(RenameOutcome::TargetExists) => {
+            eprintln!(
+                "⚠️ group /tenants/{to} が既にあるためリネームしていません。\
+                 /tenants/{from} 配下のメンバーを手で移してください"
+            );
+            false
+        }
+        Err(e) => {
+            eprintln!("IdP group のリネームに失敗（手動で対応要）: {e}");
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_rename_failure_is_reported_as_not_moved() {
+        // 移せた・移す対象が無い（移行前）は成功扱い、既存衝突・API 失敗は手動対応が要る。
+        assert!(report_group_rename("a", "b", Ok(RenameOutcome::Renamed)));
+        assert!(report_group_rename("a", "b", Ok(RenameOutcome::Missing)));
+        assert!(!report_group_rename(
+            "a",
+            "b",
+            Ok(RenameOutcome::TargetExists)
+        ));
+        assert!(!report_group_rename(
+            "a",
+            "b",
+            Err(api::keycloak_admin::KeycloakAdminError::Transport(
+                "down".into()
+            ))
+        ));
     }
 }
