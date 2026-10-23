@@ -46,7 +46,11 @@ fn col(ty: ShapeType, distinct: u64, zipf_s: f64, null_rate: f64, corr: f64) -> 
         distinct,
         top_freqs: Vec::new(),
         zipf_s,
-        avg_elems: if ty == ShapeType::MultiCategory { 1.7 } else { 1.0 },
+        avg_elems: if ty == ShapeType::MultiCategory {
+            1.7
+        } else {
+            1.0
+        },
         truncated_rate: 0.0,
         creation_correlation: corr,
     }
@@ -136,7 +140,18 @@ async fn bench_regret_calibration_and_fairness() {
         owner: Some(col(ShapeType::Category, 300, 1.2, 0.0, 0.0)),
         links: vec![],
     };
-    let real = generate(&pool, &store, &rc, "経費", &hand, 30_000, true, 0xC0FFEE, &customer_like).await;
+    let real = generate(
+        &pool,
+        &store,
+        &rc,
+        "経費",
+        &hand,
+        30_000,
+        true,
+        0xC0FFEE,
+        &customer_like,
+    )
+    .await;
     store.analyze_table(&real_tenant, real.id).await.unwrap();
     let shape = store
         .extract_table_shape(&real_tenant, real.id)
@@ -147,9 +162,15 @@ async fn bench_regret_calibration_and_fairness() {
     for v in STATUS_JA {
         assert!(!text.contains(v), "形に値が含まれる: {v}");
     }
-    assert!(!text.contains("customer.example") && !text.contains("経費"), "{text}");
+    assert!(
+        !text.contains("customer.example") && !text.contains("経費"),
+        "{text}"
+    );
     for k in ["c0", "c1", "c2", "status"] {
-        assert!(!text.contains(&format!("\"{k}\"")), "列の参照名を含めない: {text}");
+        assert!(
+            !text.contains(&format!("\"{k}\"")),
+            "列の参照名を含めない: {text}"
+        );
     }
     eprintln!(
         "形（値なし）: 行数 {} / 列 {:?}",
@@ -167,8 +188,14 @@ async fn bench_regret_calibration_and_fairness() {
     // ② 形から合成: 対象テナント（行述語なし 200k・作成者のみ 100k）と雑音テナント（人気の値を反転）。
     let tenant = unique_tenant();
     let c = ctx(&tenant, "alice");
-    let t = generate(&pool, &store, &c, "bench", &shape, 200_000, false, 7, &symbolic).await;
-    let p = generate(&pool, &store, &c, "bench_p", &shape, 100_000, true, 11, &symbolic).await;
+    let t = generate(
+        &pool, &store, &c, "bench", &shape, 200_000, false, 7, &symbolic,
+    )
+    .await;
+    let p = generate(
+        &pool, &store, &c, "bench_p", &shape, 100_000, true, 11, &symbolic,
+    )
+    .await;
     let d0 = shape.columns[0].distinct.max(1) as usize;
     let noise_namer = move |col: usize, r: usize| {
         if col == 0 {
@@ -178,7 +205,18 @@ async fn bench_regret_calibration_and_fairness() {
         }
     };
     let noise = ctx(&unique_tenant(), "alice");
-    generate(&pool, &store, &noise, "noise", &shape, 200_000, false, 13, &noise_namer).await;
+    generate(
+        &pool,
+        &store,
+        &noise,
+        "noise",
+        &shape,
+        200_000,
+        false,
+        13,
+        &noise_namer,
+    )
+    .await;
     store.analyze_table(&tenant, t.id).await.unwrap();
     store.analyze_table(&tenant, p.id).await.unwrap();
     eprintln!("合成と統計収集: {:.1}s", t0.elapsed().as_secs_f64());
@@ -186,103 +224,179 @@ async fn bench_regret_calibration_and_fairness() {
     let rare = format!("c0v{}", d0 - 1);
     let mid = format!("c0v{}", (d0 / 2).max(1));
     let top = "c0v0".to_string();
-    let rare_owner = format!("o{}", shape.owner.as_ref().map_or(1, |o| o.distinct.saturating_sub(5)));
+    let rare_owner = format!(
+        "o{}",
+        shape
+            .owner
+            .as_ref()
+            .map_or(1, |o| o.distinct.saturating_sub(5))
+    );
     let qs: Vec<(&str, Uuid, AuthContext, DataQuery)> = vec![
-        ("①選択的フィルタ×非選択的ソート", t.id, c.clone(), DataQuery {
-            filter: Some(eq("c0", &rare)),
-            sort: vec![key("c3", true)],
-            limit: Some(50),
-            ..Default::default()
-        }),
-        ("②非選択的フィルタ×ソート", t.id, c.clone(), DataQuery {
-            filter: Some(eq("c0", &top)),
-            sort: vec![key("c3", true)],
-            limit: Some(50),
-            ..Default::default()
-        }),
-        ("③相関で外れる（新しい行に偏る値を古い順）", t.id, c.clone(), DataQuery {
-            filter: Some(eq("c0", &mid)),
-            sort: vec![key("_created_at", false)],
-            limit: Some(50),
-            ..Default::default()
-        }),
-        ("④多条件 AND", t.id, c.clone(), DataQuery {
-            filter: Some(Condition::All(vec![
-                eq("c0", &top),
-                eq("c1", "c1v3"),
-                Condition::cmp("c3", CondOp::Gte, Some(json!(1_000))),
-            ])),
-            sort: vec![key("_updated_at", true)],
-            limit: Some(50),
-            ..Default::default()
-        }),
-        ("⑤別の列どうしの OR", t.id, c.clone(), DataQuery {
-            filter: Some(Condition::Any(vec![eq("c0", &rare), eq("c1", "c1v35")])),
-            sort: vec![key("_created_at", true)],
-            limit: Some(50),
-            ..Default::default()
-        }),
-        ("⑥中程度の等値 2 つの交わり", t.id, c.clone(), DataQuery {
-            filter: Some(Condition::All(vec![eq("c1", "c1v6"), eq("c2", "c2v40")])),
-            sort: vec![key("c3", false)],
-            limit: Some(50),
-            ..Default::default()
-        }),
-        ("⑦範囲", t.id, c.clone(), DataQuery {
-            filter: Some(Condition::All(vec![
-                Condition::cmp("c3", CondOp::Gte, Some(json!(2_000))),
-                Condition::cmp("c3", CondOp::Lt, Some(json!(3_000))),
-            ])),
-            sort: vec![key("_created_at", true)],
-            limit: Some(50),
-            ..Default::default()
-        }),
-        ("⑧値なしの区間（任意列ソートの末尾）", t.id, c.clone(), DataQuery {
-            filter: Some(Condition::All(vec![
-                Condition::cmp("c3", CondOp::IsNull, None),
-                eq("c1", "c1v2"),
-            ])),
-            sort: vec![key("c3", false)],
-            limit: Some(50),
-            ..Default::default()
-        }),
-        ("⑨フィルタなしの初期グリッド", t.id, c.clone(), DataQuery {
-            sort: vec![key("_updated_at", true)],
-            limit: Some(100),
-            ..Default::default()
-        }),
-        ("⑩多値の等値", t.id, c.clone(), DataQuery {
-            filter: Some(eq("c4", "c4v6")),
-            sort: vec![key("_created_at", true)],
-            limit: Some(50),
-            ..Default::default()
-        }),
-        ("⑪否定 ∧ 等値", t.id, c.clone(), DataQuery {
-            filter: Some(Condition::All(vec![
-                Condition::Not(Box::new(eq("c0", &top))),
-                eq("c1", "c1v0"),
-            ])),
-            sort: vec![key("c3", true)],
-            limit: Some(50),
-            ..Default::default()
-        }),
-        ("⑫見える行が少ない利用者（認可駆動）", p.id, ctx(&tenant, &rare_owner), DataQuery {
-            sort: vec![key("_created_at", true)],
-            limit: Some(50),
-            ..Default::default()
-        }),
-        ("⑬多くが見える利用者×希少な値", p.id, ctx(&tenant, "o0"), DataQuery {
-            filter: Some(eq("c0", &rare)),
-            sort: vec![key("c3", true)],
-            limit: Some(50),
-            ..Default::default()
-        }),
-        ("⑭見える行が少ない利用者×人気の値", p.id, ctx(&tenant, &rare_owner), DataQuery {
-            filter: Some(eq("c0", &top)),
-            sort: vec![key("c3", true)],
-            limit: Some(50),
-            ..Default::default()
-        }),
+        (
+            "①選択的フィルタ×非選択的ソート",
+            t.id,
+            c.clone(),
+            DataQuery {
+                filter: Some(eq("c0", &rare)),
+                sort: vec![key("c3", true)],
+                limit: Some(50),
+                ..Default::default()
+            },
+        ),
+        (
+            "②非選択的フィルタ×ソート",
+            t.id,
+            c.clone(),
+            DataQuery {
+                filter: Some(eq("c0", &top)),
+                sort: vec![key("c3", true)],
+                limit: Some(50),
+                ..Default::default()
+            },
+        ),
+        (
+            "③相関で外れる（新しい行に偏る値を古い順）",
+            t.id,
+            c.clone(),
+            DataQuery {
+                filter: Some(eq("c0", &mid)),
+                sort: vec![key("_created_at", false)],
+                limit: Some(50),
+                ..Default::default()
+            },
+        ),
+        (
+            "④多条件 AND",
+            t.id,
+            c.clone(),
+            DataQuery {
+                filter: Some(Condition::All(vec![
+                    eq("c0", &top),
+                    eq("c1", "c1v3"),
+                    Condition::cmp("c3", CondOp::Gte, Some(json!(1_000))),
+                ])),
+                sort: vec![key("_updated_at", true)],
+                limit: Some(50),
+                ..Default::default()
+            },
+        ),
+        (
+            "⑤別の列どうしの OR",
+            t.id,
+            c.clone(),
+            DataQuery {
+                filter: Some(Condition::Any(vec![eq("c0", &rare), eq("c1", "c1v35")])),
+                sort: vec![key("_created_at", true)],
+                limit: Some(50),
+                ..Default::default()
+            },
+        ),
+        (
+            "⑥中程度の等値 2 つの交わり",
+            t.id,
+            c.clone(),
+            DataQuery {
+                filter: Some(Condition::All(vec![eq("c1", "c1v6"), eq("c2", "c2v40")])),
+                sort: vec![key("c3", false)],
+                limit: Some(50),
+                ..Default::default()
+            },
+        ),
+        (
+            "⑦範囲",
+            t.id,
+            c.clone(),
+            DataQuery {
+                filter: Some(Condition::All(vec![
+                    Condition::cmp("c3", CondOp::Gte, Some(json!(2_000))),
+                    Condition::cmp("c3", CondOp::Lt, Some(json!(3_000))),
+                ])),
+                sort: vec![key("_created_at", true)],
+                limit: Some(50),
+                ..Default::default()
+            },
+        ),
+        (
+            "⑧値なしの区間（任意列ソートの末尾）",
+            t.id,
+            c.clone(),
+            DataQuery {
+                filter: Some(Condition::All(vec![
+                    Condition::cmp("c3", CondOp::IsNull, None),
+                    eq("c1", "c1v2"),
+                ])),
+                sort: vec![key("c3", false)],
+                limit: Some(50),
+                ..Default::default()
+            },
+        ),
+        (
+            "⑨フィルタなしの初期グリッド",
+            t.id,
+            c.clone(),
+            DataQuery {
+                sort: vec![key("_updated_at", true)],
+                limit: Some(100),
+                ..Default::default()
+            },
+        ),
+        (
+            "⑩多値の等値",
+            t.id,
+            c.clone(),
+            DataQuery {
+                filter: Some(eq("c4", "c4v6")),
+                sort: vec![key("_created_at", true)],
+                limit: Some(50),
+                ..Default::default()
+            },
+        ),
+        (
+            "⑪否定 ∧ 等値",
+            t.id,
+            c.clone(),
+            DataQuery {
+                filter: Some(Condition::All(vec![
+                    Condition::Not(Box::new(eq("c0", &top))),
+                    eq("c1", "c1v0"),
+                ])),
+                sort: vec![key("c3", true)],
+                limit: Some(50),
+                ..Default::default()
+            },
+        ),
+        (
+            "⑫見える行が少ない利用者（認可駆動）",
+            p.id,
+            ctx(&tenant, &rare_owner),
+            DataQuery {
+                sort: vec![key("_created_at", true)],
+                limit: Some(50),
+                ..Default::default()
+            },
+        ),
+        (
+            "⑬多くが見える利用者×希少な値",
+            p.id,
+            ctx(&tenant, "o0"),
+            DataQuery {
+                filter: Some(eq("c0", &rare)),
+                sort: vec![key("c3", true)],
+                limit: Some(50),
+                ..Default::default()
+            },
+        ),
+        (
+            "⑭見える行が少ない利用者×人気の値",
+            p.id,
+            ctx(&tenant, &rare_owner),
+            DataQuery {
+                filter: Some(eq("c0", &top)),
+                sort: vec![key("c3", true)],
+                limit: Some(50),
+                ..Default::default()
+            },
+        ),
     ];
     let auto = QueryTuning::default();
 
@@ -339,7 +453,10 @@ async fn bench_regret_calibration_and_fairness() {
     }
     let p50 = pct(regrets.clone(), 0.5);
     let p95 = pct(regrets.clone(), 0.95);
-    eprintln!("後悔比: p50 {p50:.2} / p95 {p95:.2} / 最大 {:.2}", pct(regrets, 1.0));
+    eprintln!(
+        "後悔比: p50 {p50:.2} / p95 {p95:.2} / 最大 {:.2}",
+        pct(regrets, 1.0)
+    );
     assert!(p95 <= 2.0, "後悔比の p95 が 2 倍を超えた: {p95:.2}");
 
     // ⑤ 統計収集ジョブを回しながら、別テナントの読取 p95 が悪化しない。

@@ -93,7 +93,8 @@ fn categorical_schema() -> data::TableSchema {
     who.indexed = true;
     let mut title = field("title", FieldType::Text);
     title.indexed = true;
-    schema(vec![status, tags, who, title])
+    let memo = field("memo", FieldType::Text); // 未索引
+    schema(vec![status, tags, who, title, memo])
 }
 
 /// outbox 消費側の値頻度表は、更新・削除・多値・数え直しの後も索引から数えた値と一致する。
@@ -192,6 +193,26 @@ async fn value_counts_follow_the_outbox_and_survive_recount() {
     .await
     .unwrap();
     assert!(skip.is_empty(), "消費したスキップは外れる: {skip:?}");
+    // 未索引列での絞り込みの要求（自動昇格しない経路）は索引の昇格の候補として管理画面に出す。
+    let by_memo = DataQuery {
+        filter: Some(Condition::cmp("memo", CondOp::Eq, Some(json!("x")))),
+        ..Default::default()
+    };
+    assert!(matches!(
+        store
+            .run_query_debug(&c, table.id, &by_memo, &QueryTuning::default())
+            .await,
+        Err(DataError::Invalid(_))
+    ));
+    let report = store.table_optimizer_report(&c, table.id).await.unwrap();
+    assert!(
+        report
+            .candidates
+            .iter()
+            .any(|x| x.kind == data::OptimizerCandidateKind::IndexPromotion
+                && x.fields == vec!["memo".to_string()]),
+        "{report:?}"
+    );
     // 自由文（title）は値頻度表を持たない。
     assert!(counts_of(&pool, ti, tb)
         .await
@@ -490,6 +511,31 @@ async fn fixed_plan_tables_ignore_statistics() {
         .await
         .unwrap();
     assert!(d.stats.planned_with_stats);
+    // 複数ソートの同値群が先読みの上限を超えると、複合索引の材料化の候補になる。
+    let skew = DataQuery {
+        sort: vec![
+            SortKey {
+                field: "status".into(),
+                descending: false,
+            },
+            SortKey {
+                field: "amount".into(),
+                descending: true,
+            },
+        ],
+        limit: Some(5),
+        ..Default::default()
+    };
+    store.run_query(&c, table.id, &skew, None).await.unwrap();
+    let report = store.table_optimizer_report(&c, table.id).await.unwrap();
+    assert!(
+        report
+            .candidates
+            .iter()
+            .any(|x| x.kind == data::OptimizerCandidateKind::CompositeIndex
+                && x.fields == vec!["status".to_string(), "amount".to_string()]),
+        "{report:?}"
+    );
     // 他テナントからは見えない（404）。
     let other = ctx(&unique_tenant(), "alice");
     assert!(matches!(

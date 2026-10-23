@@ -304,6 +304,31 @@ mod tests {
         (status, value)
     }
 
+    /// 受付制御（重すぎるクエリ）は提案の語彙だけの構造化 400、枠の不足は 429。推定値・予測コスト・
+    /// 計画名は本文に出ない（PIT-75）。
+    #[tokio::test]
+    async fn query_admission_errors_carry_no_estimates() {
+        let (status, body) = body_json(ApiError::from(data::DataError::QueryTooExpensive {
+            suggestions: vec![
+                data::QuerySuggestion::NarrowFilter,
+                data::QuerySuggestion::CompositeIndex,
+            ],
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "query_too_expensive");
+        assert_eq!(
+            body["suggestions"],
+            serde_json::json!(["narrow_filter", "composite_index"])
+        );
+        let text = body.to_string();
+        for banned in ["cost", "estimate", "strategy", "rows", "ms"] {
+            assert!(!text.contains(banned), "{banned}: {text}");
+        }
+        let (status, _) = body_json(ApiError::from(data::DataError::ReadOverloaded)).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
     #[tokio::test]
     async fn unauthorized_into_response() {
         let (status, body) = body_json(ApiError::Unauthorized).await;

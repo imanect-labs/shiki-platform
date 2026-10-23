@@ -86,7 +86,9 @@ impl Dist {
     pub fn rank(&self, u: f64) -> usize {
         let total = self.cdf.last().copied().unwrap_or(1.0);
         let x = u * total;
-        self.cdf.partition_point(|c| *c <= x).min(self.cdf.len() - 1)
+        self.cdf
+            .partition_point(|c| *c <= x)
+            .min(self.cdf.len() - 1)
     }
 }
 
@@ -115,7 +117,9 @@ pub fn schema_of(shape: &TableShape, policy: bool, namer: Namer<'_>) -> data::Ta
         let mut f = field(&format!("c{i}"), shape_type(c));
         f.indexed = true;
         if c.ty == ShapeType::MultiCategory {
-            f.options = (0..c.distinct.clamp(1, 200) as usize).map(|r| namer(i, r)).collect();
+            f.options = (0..c.distinct.clamp(1, 200) as usize)
+                .map(|r| namer(i, r))
+                .collect();
         }
         fields.push(f);
     }

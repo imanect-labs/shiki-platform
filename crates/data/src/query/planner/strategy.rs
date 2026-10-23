@@ -442,3 +442,29 @@ impl Exec<'_, '_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn c(lo: f64, mid: f64, hi: f64) -> Costed<'static> {
+        Costed {
+            plan: None,
+            cost: CostRange { lo, mid, hi },
+            conf: Conf::Stats,
+            cand_hi: 0.0,
+            cand_mid: 0.0,
+        }
+    }
+
+    #[test]
+    fn robust_choice_avoids_plans_with_a_bad_worst_case() {
+        // A は中央値で最安だが最悪が B の最悪の 4 倍を超える → B。
+        let v = [c(1.0, 10.0, 1_000.0), c(50.0, 60.0, 200.0)];
+        assert_eq!(robust_pick(&v), 1);
+        // 4 倍以内なら中央値で最安の A。
+        let v = [c(1.0, 10.0, 700.0), c(50.0, 60.0, 200.0)];
+        assert_eq!(robust_pick(&v), 0);
+        assert!((CostRange::of(3.0, 2.0, 1.0).worst() - 3.0).abs() < 1e-9);
+    }
+}
