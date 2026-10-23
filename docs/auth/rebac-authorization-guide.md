@@ -333,9 +333,10 @@ sequenceDiagram
 - **org の解決（`resolve_org`・規則の本体は `authz::org_group`・#811）**: Keycloak group は
   `/tenants/<tenant>/<org>[/<dept>]` に置き、**解決済み tenant_id の配下だけ**を見る（tenant はセグメント単位で比較し、
   `/tenants/acme2/...` は `acme` に一致しない）。テナントルート（`/tenants/<tenant>`）だけでは org にならず、
-  候補が複数ならソートして最小を採る（claim の並び順に依存しない）。該当無しは `default`。
+  自テナント配下の候補が複数ならソートして最小を採る（claim の並び順に依存しない）。該当無しは `default`。
   multi（SaaS）ではテナント無修飾の旧 group（`/acme`）を org にも部署にもしない。single（オンプレ）は
-  自テナント配下が無ければ従来の直下 group（`/acme`・`/acme/eng`）を使う。公開 API ゲートウェイも同じ関数を使う。
+  自テナント配下が無ければ従来の直下 group（`/acme`・`/acme/eng`）を使い、その結果は #811 以前と同じ
+  （claim の先頭要素の先頭セグメント・ソートしない。`/tenants` 配下だけは除く）。公開 API ゲートウェイも同じ関数を使う。
 - extractor（`auth_context.rs` の `AuthContextExt`）は **state 非依存**で extension を読むだけ。
   「middleware が載せる → extractor が読む」の分業で、AuthContext を経由しないデータアクセスを構造的に書きにくくしている。
 - middleware はグループ単位で**一律適用**される。`route_table()`（`server.rs`）の `AccessPolicy`

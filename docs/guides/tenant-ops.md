@@ -113,7 +113,11 @@ member タプルを足しても次回ログインで剥がれる**。本番の S
 - multi（SaaS）では、テナント無修飾の group（`/acme`・`/acme/eng`）や他テナント配下の group は
   **org にも部署 role にもならない**（org は `default` に落ちる）。
 - single（オンプレ）は `/tenants/<auth.tenant_id>/...` を優先し、無ければ従来どおり直下の group（`/acme`）を使う。
+  従来解釈の結果は #811 以前と同じ（org は groups claim の**先頭要素**の先頭セグメント・ソートしない）。
+  自テナント配下の group が 1 つでもあれば、そのユーザーの旧形式 group は org にも部署にも使わない。
 - `tenants` はトップレベル group 名として予約。テナントルート（`/tenants/<tenant>`）自体は org にならない。
+  **オンプレの注意**: 既存 realm に `tenants` という名前のトップレベル group があると、その配下は従来解釈でも
+  org/部署として読まれなくなる（他テナントのものとみなす）。該当する場合はアップグレード前に名前を変える。
 
 ## テナント名前空間の移行（shiki-admin retenant）
 
@@ -165,8 +169,13 @@ shiki-admin retenant --from default --to acme --execute
 2. dry-run で計画を確認する:
    ```bash
    shiki-admin migrate-org-groups            # dry-run（旧 group ごとの複製先・移動件数・警告）
+   shiki-admin migrate-org-groups --only acme --exclude ops-admins   # 対象を明示・除外
    ```
-   - 旧トップレベル group（`/tenants` 以外）を部署ごと読み、移行先テナントごとに
+   - 対象は **org と分かっている旧トップレベル group だけ**: tenant 登録簿の org、既に `/tenants/<t>/<slug>` へ
+     移した slug、`--only` で明示した slug（`--exclude` で除外）。LDAP 同期・運用用のトップレベル group を
+     `/tenants/<t>/` へ複製すると org 候補に紛れて org が入れ替わり得るため、それ以外は「対象外」と出して触らない。
+     single（オンプレ）は登録簿が空のことが多いので `--only` で指定する。
+   - 対象の旧 group を部署ごと読み、移行先テナントごとに
      `/tenants/<tenant>/<org>/...` へ複製する計画を出す。移行先は multi ならユーザーの `tenant` 属性、
      single なら `auth.tenant_id`。メンバーの居ない旧 group は、tenant 登録簿で同じ org を使うテナントへ複製する。
    - `tenant` 属性が無い・不正なメンバーは**動かさない**（旧 group も残る）。⚠️ として名前と旧パスが出るので、
@@ -177,8 +186,11 @@ shiki-admin retenant --from default --to acme --execute
    ```bash
    shiki-admin migrate-org-groups --execute
    ```
-   新 group を用意 → 各メンバーを新 group へ追加してから旧 group から外す → 全員を移せた旧 group を subtree
-   ごと削除 → 移行先テナントのセッションを失効（再ログインで新しい groups claim を取らせる）。全段冪等で、
-   途中で失敗しても再実行で収束する。再実行して「旧 group はありません」になれば完了。
+   旧 group ごとに、新 group を用意 → 各メンバーを新 group へ追加してから旧 group から外す → 全員を移せた
+   旧 group を subtree ごと削除 → メンバーを移したテナントのセッションを失効（再ログインで新しい groups claim を
+   取らせる。途中で失敗しても、それまでに移したテナントの失効は済ませてから止まる）。全段冪等で、
+   途中で失敗しても再実行で収束する（移動だけ済んで削除に失敗した旧 group も、移行済み slug として削除まで進む）。
+   旧 group から外せないメンバー（LDAP_ONLY の同期 group 等）は ⚠️ で報告し、その旧 group は残す
+   （LDAP 側のマッパー設定を直してから再実行）。再実行して「移行する旧 org group はありません」になれば完了。
 4. 新しい shiki-server を起動する。dev の compose は realm を初回だけ import するため、既存の Keycloak
    ボリュームを使い続けるなら同じ CLI で移行するか、Keycloak の DB を作り直す。

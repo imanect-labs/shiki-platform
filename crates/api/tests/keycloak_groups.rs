@@ -19,7 +19,9 @@ use std::sync::{Arc, Mutex};
 use api::{
     config::{AuthConfig, Tenancy},
     keycloak_admin::{
-        org_group_migration::{apply_tree, plan_tree, snapshot, TenantRule},
+        org_group_migration::{
+            apply_tree, list_realm_groups, plan_tree, select_orgs, snapshot_tree, TenantRule,
+        },
         KeycloakAdmin, RenameOutcome,
     },
 };
@@ -159,7 +161,8 @@ impl Kc {
     }
 }
 
-fn page<T: Clone>(items: Vec<T>, q: &Value) -> Vec<T> {
+/// `first`/`max` でページングする。`max` 省略時は `default_max`（Keycloak 26 は子 group 一覧が 10）。
+fn page<T: Clone>(items: Vec<T>, q: &Value, default_max: usize) -> Vec<T> {
     let num = |k: &str, d: usize| {
         q.get(k)
             .and_then(Value::as_str)
@@ -169,8 +172,17 @@ fn page<T: Clone>(items: Vec<T>, q: &Value) -> Vec<T> {
     items
         .into_iter()
         .skip(num("first", 0))
-        .take(num("max", 100))
+        .take(num("max", default_max))
         .collect()
+}
+
+/// Keycloak の `search`: `exact=true` なら名前の完全一致、それ以外は大小無視の部分一致。
+fn name_matches(name: &str, search: &str, q: &Value) -> bool {
+    if q.get("exact").and_then(Value::as_str) == Some("true") {
+        name == search
+    } else {
+        name.to_lowercase().contains(&search.to_lowercase())
+    }
 }
 
 async fn list_groups(
@@ -185,21 +197,26 @@ async fn list_groups(
         .filter(|g| g.parent == parent)
         .cloned()
         .collect();
-    let reps: Vec<Value> = match q.get("search").and_then(Value::as_str) {
+    // 子 group 一覧は max 省略時 10 件（Keycloak 26 の既定）。トップレベルは十分大きく取る。
+    let default_max = if parent.is_some() { 10 } else { 100 };
+    let hits: Vec<MockGroup> = match q.get("search").and_then(Value::as_str) {
         // 実 Keycloak と同じく、トップレベル検索は子孫に一致を含む親も返す。
         Some(name) if parent.is_none() => level
-            .iter()
-            .filter(|g| g.name == name || kc.has_descendant_named(&g.id, name))
-            .map(|g| kc.rep(g))
+            .into_iter()
+            .filter(|g| name_matches(&g.name, name, &q) || kc.has_descendant_named(&g.id, name))
             .collect(),
         Some(name) => level
+            .into_iter()
+            .filter(|g| name_matches(&g.name, name, &q))
+            .collect(),
+        None => level,
+    };
+    Json(Value::Array(
+        page(hits, &q, default_max)
             .iter()
-            .filter(|g| g.name == name)
             .map(|g| kc.rep(g))
             .collect(),
-        None => page(level, &q).iter().map(|g| kc.rep(g)).collect(),
-    };
-    Json(Value::Array(reps))
+    ))
 }
 
 async fn spawn_mock(st: St) -> String {
@@ -309,7 +326,7 @@ async fn spawn_mock(st: St) -> String {
                         json!({ "id": u.id, "username": u.username, "attributes": attrs })
                     })
                     .collect();
-                Json(Value::Array(page(users, &q)))
+                Json(Value::Array(page(users, &q, 100)))
             }
         }
     });
@@ -331,6 +348,10 @@ async fn spawn_mock(st: St) -> String {
         move |Path((u, g)): Path<(String, String)>| {
             let st = st.clone();
             async move {
+                // LDAP_ONLY の同期 group を模す: `ldap-` で始まるユーザーは外せない。
+                if u.starts_with("ldap-") {
+                    return StatusCode::BAD_REQUEST;
+                }
                 st.lock()
                     .unwrap()
                     .members
@@ -507,6 +528,24 @@ async fn rename_tenant_group_moves_subtree() {
     );
 }
 
+/// 一覧 → 選定 → 読み取り → 計画 → 適用（CLI と同じ順）で 1 回分を流す。
+async fn migrate_once(kc: &KeycloakAdmin<'_>, registry: &[&str]) -> Vec<String> {
+    let realm = list_realm_groups(kc).await.unwrap();
+    let names: Vec<String> = realm.legacy.iter().map(|g| g.name.clone()).collect();
+    let registry: std::collections::BTreeSet<String> =
+        registry.iter().map(|s| s.to_string()).collect();
+    let sel = select_orgs(&names, &registry, &realm.migrated, &[], &[]);
+    let mut failed = Vec::new();
+    for slug in &sel.selected {
+        let top = realm.legacy.iter().find(|g| &g.name == slug).unwrap();
+        let tree = snapshot_tree(kc, top).await.unwrap();
+        let already = realm.migrated.get(slug).cloned().unwrap_or_default();
+        let plan = plan_tree(&tree, &TenantRule::Attribute, &[], &already);
+        failed.extend(apply_tree(kc, &plan).await.unwrap().failed_removals);
+    }
+    failed
+}
+
 #[tokio::test]
 async fn migrate_legacy_groups_end_to_end() {
     let st: St = Arc::default();
@@ -523,23 +562,49 @@ async fn migrate_legacy_groups_end_to_end() {
         // `/orphan` には tenant 属性の無いメンバーが居る → 保持。
         let orphan = kc.add_group(None, "orphan");
         kc.add_user("u3", None, &[orphan.as_str()]);
-        // 既存の新形式 group は対象外。
+        // 運用 group（登録簿に無い）→ 対象外。`/tenants/t1/aaa-ops` に複製されると org が入れ替わる。
+        let ops = kc.add_group(None, "aaa-ops");
+        kc.add_user("u5", Some("t1"), &[ops.as_str()]);
+        // LDAP 同期 group（メンバーを外せない）→ 新 group へは入れ、旧 group は保持して報告。
+        let ldap = kc.add_group(None, "ldapco");
+        kc.add_user("ldap-u", Some("t4"), &[ldap.as_str()]);
+        // 既存の新形式 group は対象外。前回実行で移動だけ済んだ空の `/done` は削除まで進む。
         let t = kc.add_group(None, "tenants");
         let t3 = kc.add_group(Some(&t), "t3");
         let keep = kc.add_group(Some(&t3), "keep");
         kc.add_user("u4", Some("t3"), &[keep.as_str()]);
+        kc.add_group(Some(&t3), "done");
+        kc.add_group(None, "done");
     }
     let base = spawn_mock(st.clone()).await;
     let http = reqwest::Client::new();
     let auth = auth_config(&base);
     let kc = KeycloakAdmin::from_config(&http, &auth).unwrap();
 
-    let trees = snapshot(&kc).await.unwrap();
-    let orgs: Vec<&str> = trees.iter().map(|t| t.org.as_str()).collect();
-    assert_eq!(orgs, vec!["acme", "orphan"]);
-    let acme = &trees[0];
+    let realm = list_realm_groups(&kc).await.unwrap();
+    let names: Vec<String> = realm.legacy.iter().map(|g| g.name.clone()).collect();
+    assert_eq!(names, vec!["acme", "orphan", "aaa-ops", "ldapco", "done"]);
+    assert_eq!(realm.migrated.get("done"), Some(&vec!["t3".to_string()]));
+    let registry = ["acme", "orphan", "ldapco"];
+    let sel = select_orgs(
+        &names,
+        &registry.iter().map(|s| s.to_string()).collect(),
+        &realm.migrated,
+        &[],
+        &[],
+    );
+    assert_eq!(sel.selected, vec!["acme", "done", "ldapco", "orphan"]);
+    assert_eq!(sel.skipped.len(), 1);
+    assert_eq!(sel.skipped[0].0, "aaa-ops");
+
+    let acme_top = realm.legacy.iter().find(|g| g.name == "acme").unwrap();
+    let acme = snapshot_tree(&kc, acme_top).await.unwrap();
     let node_paths: Vec<String> = acme.nodes.iter().map(|n| n.segments.join("/")).collect();
     assert_eq!(node_paths, vec!["acme", "acme/eng"]);
+    assert_eq!(
+        plan_tree(&acme, &TenantRule::Attribute, &[], &[]).role_mappings,
+        1
+    );
 
     // 参照検査は種別ごとに独立: IdP（403）が見られなくても LDAP マッパーの参照は報告する。
     let refs = kc.group_path_references(&["/acme".into()]).await;
@@ -547,15 +612,12 @@ async fn migrate_legacy_groups_end_to_end() {
     assert_eq!(refs.unchecked.len(), 1);
     assert!(refs.unchecked[0].starts_with("IdP マッパー"));
 
-    let acme_plan = plan_tree(acme, &TenantRule::Attribute, &[]);
-    assert_eq!(acme_plan.role_mappings, 1);
-    let orphan_plan = plan_tree(&trees[1], &TenantRule::Attribute, &[]);
-    for plan in [&acme_plan, &orphan_plan] {
-        apply_tree(&kc, plan).await.unwrap();
-    }
+    let failed = migrate_once(&kc, &registry).await;
+    assert_eq!(failed.len(), 1);
+    assert!(failed[0].starts_with("ldap-u-name (/ldapco)"));
     // 再実行しても収束する（冪等）。
-    let stats = apply_tree(&kc, &orphan_plan).await.unwrap();
-    assert!(!stats.old_deleted);
+    let failed = migrate_once(&kc, &registry).await;
+    assert_eq!(failed.len(), 1);
 
     {
         let kc_state = st.lock().unwrap();
@@ -567,11 +629,19 @@ async fn migrate_legacy_groups_end_to_end() {
         // tenant を決められない u3 は動かさず、旧 `/orphan` も残す。
         assert_eq!(kc_state.user_paths("u3"), vec!["/orphan"]);
         assert_eq!(kc_state.user_paths("u4"), vec!["/tenants/t3/keep"]);
+        // 対象外の運用 group は触らない。
+        assert_eq!(kc_state.user_paths("u5"), vec!["/aaa-ops"]);
+        assert_eq!(
+            kc_state.user_paths("ldap-u"),
+            vec!["/ldapco", "/tenants/t4/ldapco"]
+        );
     }
-    // 旧 `/acme` は subtree ごと消え、テナントごとに複製された。
+    // 旧 `/acme` は subtree ごと消え、テナントごとに複製された。空の `/done` も消えた。
     assert_eq!(
         paths(&st),
         vec![
+            "/aaa-ops",
+            "/ldapco",
             "/orphan",
             "/tenants",
             "/tenants/t1",
@@ -581,13 +651,44 @@ async fn migrate_legacy_groups_end_to_end() {
             "/tenants/t2/acme",
             "/tenants/t2/acme/eng",
             "/tenants/t3",
+            "/tenants/t3/done",
             "/tenants/t3/keep",
+            "/tenants/t4",
+            "/tenants/t4/ldapco",
         ]
     );
-    // 2 回目の読み取りでは移行済みの `/acme` は出てこない。
-    let again = snapshot(&kc).await.unwrap();
-    assert_eq!(again.len(), 1);
-    assert_eq!(again[0].org, "orphan");
+}
+
+#[tokio::test]
+async fn group_listing_reads_past_keycloak_default_page() {
+    // Keycloak 26 の子 group 一覧は max 省略時 10 件。12 テナント・12 兄弟でも取りこぼさない。
+    let st: St = Arc::default();
+    {
+        let mut kc = st.lock().unwrap();
+        let t = kc.add_group(None, "tenants");
+        for i in 0..12 {
+            let tenant = kc.add_group(Some(&t), &format!("t{i:02}"));
+            kc.add_group(Some(&tenant), "org");
+        }
+        // 部分一致では `t1` が `t10`・`t11` にも当たる。exact で `t11` だけを引く。
+    }
+    let base = spawn_mock(st.clone()).await;
+    let http = reqwest::Client::new();
+    let auth = auth_config(&base);
+    let kc = KeycloakAdmin::from_config(&http, &auth).unwrap();
+    let realm = list_realm_groups(&kc).await.unwrap();
+    assert_eq!(realm.migrated.get("org").map(Vec::len), Some(12));
+    let found = kc
+        .find_group_path(&["tenants", "t11", "org"])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.path, "/tenants/t11/org");
+    assert!(kc
+        .find_group_path(&["tenants", "t1", "org"])
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// 実 Keycloak での確認（`KEYCLOAK_TEST_URL`＝realm `shiki` を import 済みの Keycloak の base URL。

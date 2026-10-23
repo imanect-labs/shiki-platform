@@ -3,7 +3,7 @@
 //! ```text
 //! shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]
 //! shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]
-//! shiki-admin migrate-org-groups [--execute]
+//! shiki-admin migrate-org-groups [--only <slug>]... [--exclude <slug>]... [--execute]
 //! ```
 //!
 //! `audit-viewer`: 監査閲覧者（`organization#audit_viewer`・#634）を付ける・外す（即時実行）。
@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
         Some("migrate-org-groups") => org_groups::run(&args[1..]).await,
         _ => {
             eprintln!(
-                "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]\n       shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]\n       shiki-admin migrate-org-groups [--execute]"
+                "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]\n       shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]\n       shiki-admin migrate-org-groups [--only <slug>]... [--exclude <slug>]... [--execute]"
             );
             bail!("不明なサブコマンド");
         }

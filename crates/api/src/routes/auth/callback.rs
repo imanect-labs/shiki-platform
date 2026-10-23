@@ -16,6 +16,7 @@ use super::{
     build_cookie, parse_flow, removal_cookie, FLOW_COOKIE,
 };
 use crate::{
+    config::AuthConfig,
     error::ApiError,
     extract::{group_layout, resolve_org, resolve_tenant_id},
     middleware::{auth::verify_access_token, claims},
@@ -225,20 +226,11 @@ fn action_error_redirect(jar: &CookieJar, returned_state: Option<&str>) -> Optio
 // 収束ロジックを一望できる利点を優先してグランドファーザ許容する。
 #[allow(clippy::cognitive_complexity)]
 pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenant_id: String) {
-    let org = resolve_org(&principal, &tenant_id, &state.config.auth);
-    // 部署は自テナント配下の group だけ（`/tenants/<tenant>/<org>/<dept>` → `<org>/<dept>`・#811）。
-    // 他テナント配下・（multi では）テナント無修飾の group は role にしない。
-    let departments = authz::org_group::tenant_relative_groups(
-        &principal.groups,
-        &tenant_id,
-        group_layout(&state.config.auth),
-    );
+    // あるべき集合（claims 由来・正規化済み）。
+    let (org, sourced) = desired_from_claims(&principal, &tenant_id, &state.config.auth);
     let ctx = AuthContext::new(principal, org.clone(), tenant_id.clone());
     let subject = ctx.subject();
     let ns = ctx.ns();
-
-    // あるべき集合（claims 由来・正規化済み）。
-    let sourced = desired_role_sources(&ctx.principal.roles, &departments, &org);
     let desired: Vec<String> = sourced.iter().map(|(id, _)| id.clone()).collect();
 
     // ディレクトリへの登録（共有の相手検索・AI 活用分析の在籍者）。人だけ（workflow 主体は除く）。
@@ -341,6 +333,22 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
     }
 }
 
+/// claims から org と「あるべき role（部署由来か）」を求める（[`provision_roles`] の純粋部分）。
+///
+/// 部署は自テナント配下の group だけ（`/tenants/<tenant>/<org>/<dept>` → `<org>/<dept>`・#811）。
+/// 他テナント配下・（multi では）テナント無修飾の group は role にしない。
+fn desired_from_claims(
+    principal: &Principal,
+    tenant_id: &str,
+    auth: &AuthConfig,
+) -> (String, Vec<(String, bool)>) {
+    let org = resolve_org(principal, tenant_id, auth);
+    let departments =
+        authz::org_group::tenant_relative_groups(&principal.groups, tenant_id, group_layout(auth));
+    let sourced = desired_role_sources(&principal.roles, &departments, &org);
+    (org, sourced)
+}
+
 /// claims（roles ＋ groups）から「あるべき role id 集合」を作る（純粋関数・テスト対象）。
 ///
 /// - `departments` はテナントルートからの相対パス（`acme/eng`）。**org そのもの（`acme`）だけを除外**する
@@ -382,7 +390,8 @@ fn desired_role_sources(
 
 #[cfg(test)]
 mod tests {
-    use super::desired_role_ids;
+    use super::{desired_from_claims, desired_role_ids};
+    use crate::config::{AuthConfig, Tenancy};
 
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
@@ -433,6 +442,67 @@ mod tests {
         let org = authz::org_group::resolve_org(&groups, "a", authz::GroupLayout::TenantScoped);
         assert_eq!(org.as_deref(), Some("a"));
         assert_eq!(desired_role_ids(&[], &departments, "a"), v(&["a/eng"]));
+    }
+
+    fn auth(tenancy: Tenancy) -> AuthConfig {
+        AuthConfig {
+            issuer: "http://localhost/realms/shiki".into(),
+            internal_base_url: None,
+            jwks_uri: None,
+            audience: "shiki-api".into(),
+            jwks_ttl_secs: 300,
+            client_id: "shiki-web".into(),
+            client_secret: None,
+            redirect_uri: "http://localhost:3000/auth/callback".into(),
+            post_logout_redirect_uri: "http://localhost:3000/".into(),
+            scopes: "openid profile".into(),
+            tenancy,
+            tenant_id: Some("default".into()),
+            provisioner_client_id: None,
+            provisioner_client_secret: None,
+            admin_base_url: None,
+        }
+    }
+
+    fn principal(groups: &[&str], roles: &[&str]) -> authz::Principal {
+        authz::Principal {
+            kind: authz::PrincipalKind::User,
+            id: "u1".into(),
+            email: None,
+            groups: v(groups),
+            roles: v(roles),
+            tenant_id: Some("t1".into()),
+        }
+    }
+
+    #[test]
+    fn provision_roles_departments_in_multi_mode() {
+        // multi: `/tenants/t1/...` の部署だけが（部署由来の）role になる。他テナント配下・
+        // 無修飾の旧 group は org にも role にもならない。
+        let p = principal(
+            &[
+                "/tenants/evil/aaa/x",
+                "/tenants/t1/acme",
+                "/tenants/t1/acme/eng",
+                "/acme/legacy",
+            ],
+            &["sales"],
+        );
+        let (org, sourced) = desired_from_claims(&p, "t1", &auth(Tenancy::Multi));
+        assert_eq!(org, "acme");
+        assert_eq!(
+            sourced,
+            vec![("sales".to_string(), false), ("acme/eng".to_string(), true)]
+        );
+        // 自テナント配下が無ければ部署 role は無く、org は既定。
+        let p = principal(&["/acme/eng", "/tenants/evil/acme/eng"], &[]);
+        let (org, sourced) = desired_from_claims(&p, "t1", &auth(Tenancy::Multi));
+        assert_eq!(org, "default");
+        assert!(sourced.is_empty());
+        // single は従来の直下 group を部署にする（オンプレは従来どおり）。
+        let (org, sourced) = desired_from_claims(&p, "default", &auth(Tenancy::Single));
+        assert_eq!(org, "acme");
+        assert_eq!(sourced, vec![("acme/eng".to_string(), true)]);
     }
 
     #[test]
