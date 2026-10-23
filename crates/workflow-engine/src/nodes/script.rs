@@ -111,7 +111,13 @@ impl CapabilityNodeExecutor {
             http_timeout_ms: self.http_timeout_ms,
         };
         let handle = tokio::runtime::Handle::current();
-        let compiled_js = compiled.compiled_js;
+        // `Shiki.data.*` の糖衣をユーザーコードの前に置く（ゲスト wasm を再ビルドせずに足す・
+        // ミニアプリ関数と同じ前置きの定義・api 名は ALLOWED_APIS ∩ scope 天井で縛られる）。
+        let compiled_js = format!(
+            "{}\n{}",
+            script_runtime::prelude::workflow_prelude(),
+            compiled.compiled_js
+        );
         let outcome = tokio::task::spawn_blocking(move || {
             let host_fn: HostFn =
                 Box::new(move |call: &HostCall| handle.block_on(bridge.dispatch(call)));
@@ -299,6 +305,19 @@ impl HostBridge {
             }
             // http.request（実行時は args が concrete のため宛先束縛を照合できる・#344/10.15）。
             "http.request" => self.http_request(a, &call_key).await,
+            // 構造化データ（Task 15.7）。node 経路と同じポート・同じ journal（書込はホスト呼び出しごとの冪等キー）。
+            api if api.starts_with("data.") => {
+                super::capability_data::script_data_call(
+                    self.ports.as_ref(),
+                    &self.journal,
+                    self.audit.as_ref(),
+                    &self.ec,
+                    api,
+                    a,
+                    &call_key,
+                )
+                .await
+            }
             other => Err(PortError::invalid(format!("未知の Shiki API: {other}"))),
         }
     }

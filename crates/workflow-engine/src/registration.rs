@@ -61,7 +61,7 @@ pub struct RegistrationView {
 pub struct SuggestedGrant {
     /// 対応する declared_scope。
     pub scope: String,
-    /// 対象の種類（folder / file / secret / workflow）。
+    /// 対象の種類（folder / file / secret / workflow / data_table）。
     pub object_kind: String,
     /// IR から確定できた対象 id（リテラル参照時のみ）。
     pub object_id: Option<String>,
@@ -357,6 +357,39 @@ mod tests {
         assert!(plan.iter().any(|g| g.object_kind == "secret"
             && g.object_name.as_deref() == Some("slack-token")
             && g.relation == "can_use"));
+    }
+
+    #[test]
+    fn consent_plan_suggests_table_grants_for_data_nodes() {
+        let ir = ir(&json!({
+            "ir_version": 1, "name": "wf",
+            "declared_scopes": ["data.read", "data.write"],
+            "nodes": [
+                { "id": "q", "type": "data.query",
+                  "params": { "table": "11111111-2222-3333-4444-555555555555" } },
+                { "id": "u", "type": "data.record.update",
+                  "params": { "table": "11111111-2222-3333-4444-555555555555",
+                              "record": { "$from": "nodes.q.output", "path": "/items/0/id" },
+                              "patch": { "note": "x" } } },
+                { "id": "c", "type": "data.record.create",
+                  "params": { "table": { "$from": "input", "path": "/t" }, "data": {} } }
+            ],
+            "edges": [{ "from": "q", "to": "u" }, { "from": "u", "to": "c" }]
+        }));
+        let plan = RegistrationService::consent_plan(&ir);
+        assert!(plan.iter().any(|g| g.source == "node:q"
+            && g.object_kind == "data_table"
+            && g.scope == "data.read"
+            && g.relation == "viewer"
+            && !g.needs_user_pick));
+        assert!(plan.iter().any(|g| g.source == "node:u"
+            && g.scope == "data.write"
+            && g.relation == "editor"
+            && g.object_id.as_deref() == Some("11111111-2222-3333-4444-555555555555")));
+        // テーブルが非リテラルなら利用者が選ぶ。
+        assert!(plan
+            .iter()
+            .any(|g| g.source == "node:c" && g.needs_user_pick));
     }
 
     #[test]

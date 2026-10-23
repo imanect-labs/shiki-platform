@@ -343,6 +343,14 @@ impl NodeExecutor for CapabilityNodeExecutor {
             NodeType::CsvQuery => self.node_csv_query(params, ctx, &ec, &r).await,
             NodeType::CsvPatch => self.node_csv_patch(params, ctx, &ec, &r).await,
             NodeType::CsvWrite => self.node_csv_write(params, ctx, &ec, &r).await,
+            NodeType::DataQuery => self.node_data_query(params, &ec, &r).await,
+            NodeType::DataRecordCreate
+            | NodeType::DataRecordUpdate
+            | NodeType::DataRecordDelete
+            | NodeType::DataTransition
+            | NodeType::DataBulkUpsert => {
+                self.node_data_write(node_type, params, ctx, &ec, &r).await
+            }
             // 制御ノードは上で return 済み・予約語彙は available_stage_a ゲートで返却済み。
             _ => unreachable!("制御ノード/予約語彙は上で処理済み"),
         };

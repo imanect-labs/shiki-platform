@@ -14,6 +14,7 @@
 
 mod ai;
 mod control;
+mod data;
 mod external;
 mod storage;
 mod tabular;
@@ -22,6 +23,10 @@ pub use ai::{AgentInvokeParams, LlmInvokeParams, SkillInvokeParams};
 pub use control::{
     BranchParams, JoinMode, JoinParams, MapItemError, MapParams, SwitchCase, SwitchParams,
     WaitKind, WaitParams, WaitTimeout,
+};
+pub use data::{
+    DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
+    DataRecordUpdateParams, DataTransitionParams, MAX_WORKFLOW_BULK_ROWS,
 };
 pub use external::{
     HttpMethod, HttpRequestParams, HttpSecretRef, RedirectPolicy, ScriptRunParams,
@@ -135,6 +140,12 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
         NodeType::CsvQuery => check_as::<CsvQueryParams>(raw),
         NodeType::CsvPatch => check_as::<CsvPatchParams>(raw),
         NodeType::CsvWrite => check_as::<CsvWriteParams>(raw),
+        NodeType::DataQuery => check_as::<DataQueryParams>(raw),
+        NodeType::DataRecordCreate => check_as::<DataRecordCreateParams>(raw),
+        NodeType::DataRecordUpdate => check_as::<DataRecordUpdateParams>(raw),
+        NodeType::DataRecordDelete => check_as::<DataRecordDeleteParams>(raw),
+        NodeType::DataTransition => check_as::<DataTransitionParams>(raw),
+        NodeType::DataBulkUpsert => check_as::<DataBulkUpsertParams>(raw),
         // 予約語彙は V3 が「Stage A では未対応」で拒否する（params 契約は実装フェーズで追加）。
         _ => Ok(()),
     }
@@ -176,7 +187,28 @@ mod tests {
     #[test]
     fn reserved_vocab_is_not_checked() {
         // 予約語彙は V3 が拒否するため params 契約対象外。
-        assert!(check_params(NodeType::DataQuery, &json!({ "whatever": 1 })).is_ok());
+        assert!(check_params(NodeType::NotifySend, &json!({ "whatever": 1 })).is_ok());
+    }
+
+    #[test]
+    fn data_query_uses_the_data_query_type_itself() {
+        // 条件木は data の DataQuery（= workflow IR と同じ語彙の {"cmp":{field,op,value}}）。
+        let ok = check_params(
+            NodeType::DataQuery,
+            &json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+                     "query": { "filter": { "all": [
+                         { "cmp": { "field": "status", "op": "eq", "value": "pending" } },
+                         { "cmp": { "field": "amount", "op": "gte", "value": { "$from": "input", "path": "/min" } } }
+                     ] }, "sort": [ { "field": "amount", "descending": true } ], "limit": 20 } }),
+        );
+        assert!(ok.is_ok(), "{ok:?}");
+        // DataQuery の未知キー（OFFSET 以外の独自表現）は data の型が拒否する。
+        let err = check_params(
+            NodeType::DataQuery,
+            &json!({ "table": "t", "query": { "filter": { "eq": { "status": "x" } } } }),
+        )
+        .unwrap_err();
+        assert!(err.path.starts_with("/params/query"), "{err:?}");
     }
 
     #[test]
@@ -257,6 +289,37 @@ mod tests {
             (
                 NodeType::SkillInvoke,
                 json!({ "skill": "skill:expense@1", "input": { "$from": "input" } }),
+            ),
+            (
+                NodeType::DataQuery,
+                json!({ "table": { "$from": "input", "path": "/table" },
+                        "query": { "filter": { "cmp": { "field": "status", "op": "eq", "value": "pending" } } } }),
+            ),
+            (
+                NodeType::DataRecordCreate,
+                json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+                        "data": { "title": { "$from": "input", "path": "/title" } } }),
+            ),
+            (
+                NodeType::DataRecordUpdate,
+                json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+                        "record": { "$from": "nodes.q.output", "path": "/items/0/id" },
+                        "patch": { "note": "checked" },
+                        "expected_rev": { "$from": "nodes.q.output", "path": "/items/0/rev" } }),
+            ),
+            (
+                NodeType::DataRecordDelete,
+                json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", "record": { "$from": "input", "path": "/id" } }),
+            ),
+            (
+                NodeType::DataTransition,
+                json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+                        "record": { "$from": "trigger", "path": "/record_id" }, "to": "approved" }),
+            ),
+            (
+                NodeType::DataBulkUpsert,
+                json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+                        "rows": { "$from": "nodes.gen.output", "path": "/rows" } }),
             ),
         ];
         for (nt, raw) in cases {

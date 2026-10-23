@@ -53,6 +53,31 @@ fn map_db(e: sqlx::Error) -> DelegationError {
     DelegationError::Internal(format!("db: {e}"))
 }
 
+/// 対象をワークフローへ委譲している**現在有効な**委譲元（最後に付与したユーザーの subject local id）。
+///
+/// 構造化データの schedule / event run は、ワークフロー主体に委譲されたテーブルを**委譲元ユーザーの
+/// 権限で**読み書きする（行述語・フィールドマスクを委譲元で評価する・Task 15.7）。委譲台帳に有効な行が
+/// 無ければ `None`（呼び出し側は拒否する・fail-closed）。委譲元が今も権限を持つかは呼び出し側の
+/// 読み書き自体（委譲元の AuthContext で OpenFGA に問う）が確かめる。
+pub async fn active_delegator(
+    db: &PgPool,
+    tenant_id: &str,
+    workflow_id: Uuid,
+    object: &FgaObject,
+) -> Result<Option<String>, DelegationError> {
+    sqlx::query_scalar(
+        "SELECT delegator FROM workflow_delegation \
+         WHERE tenant_id = $1 AND workflow_id = $2 AND object_ref = $3 AND revoked_at IS NULL \
+         ORDER BY granted_at DESC, delegator LIMIT 1",
+    )
+    .bind(tenant_id)
+    .bind(workflow_id)
+    .bind(object.as_str())
+    .fetch_optional(db)
+    .await
+    .map_err(map_db)
+}
+
 /// 委譲・登録の管理（authz クライアント＋DB）。
 #[derive(Clone)]
 pub struct DelegationStore {

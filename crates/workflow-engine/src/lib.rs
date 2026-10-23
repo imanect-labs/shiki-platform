@@ -28,14 +28,16 @@ pub use capability::{
 };
 pub use concurrency::{ConcurrencyStore, ScopeKind, Slot};
 pub use control::{branch_port, switch_port};
-pub use delegation::{DelegationError, DelegationStore, GrantRequest, RunAdmission};
-pub use ir::validate::{validate, Catalog, ValidationError};
+pub use delegation::{
+    active_delegator, DelegationError, DelegationStore, GrantRequest, RunAdmission,
+};
+pub use ir::validate::{semantics_warnings, validate, Catalog, ValidationError, SEMANTICS_CHANGED};
 pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};
 pub use nodes::{
-    AgentInvokeReq, CapabilityNodeExecutor, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq,
-    HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView,
-    StorageWriteReq,
+    AgentInvokeReq, CapabilityNodeExecutor, CsvPatchReq, CsvWriteReq, DataWriteOp, DataWriteReq,
+    ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView,
+    ResolvedSkillView, StorageWriteReq,
 };
 pub use ratelimit::{BucketConfig, TokenBucket};
 pub use registration::{

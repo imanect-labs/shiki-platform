@@ -4,5 +4,9 @@ import type { TemplateExpr } from "./TemplateExpr.js";
 
 /**
  * パラメータ値（リテラル / `$from` / `$template`）。
+ *
+ * 直列化は untagged。**読み込みは手書き**（[`Deserialize`] の実装を参照）: serde の構造体は配列からも
+ * 位置引数で読めるため、untagged の導出だと `["x", "y"]` が `$from: "x", path: "y"` の参照に化け、
+ * `in` の候補リストをリテラルで書けなかった（Task 15.7 で修正）。
  */
 export type ValueExpr = FromRef | TemplateExpr | unknown;

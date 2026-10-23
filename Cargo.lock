@@ -5807,6 +5807,7 @@ dependencies = [
  "sha2 0.10.9",
  "shiki-artifact",
  "shiki-authz",
+ "shiki-data",
  "shiki-durable",
  "shiki-jobq",
  "shiki-script-runtime",
