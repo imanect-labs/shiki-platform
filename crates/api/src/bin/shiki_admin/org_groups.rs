@@ -206,6 +206,7 @@ async fn execute(
     };
     let mut revoked: BTreeSet<String> = BTreeSet::new();
     let mut moved = 0usize;
+    let mut failed_removals = 0usize;
     for plan in plans {
         let result = apply_tree(kc, plan).await;
         // 移動を試みたテナント（成功・失敗を問わない）。
@@ -225,6 +226,7 @@ async fn execute(
         let stats =
             result.with_context(|| format!("/{} の移行に失敗（再実行で収束）", plan.org))?;
         moved += stats.members_moved;
+        failed_removals += stats.failed_removals.len();
         for f in &stats.failed_removals {
             eprintln!("⚠️ 旧 group から外せなかったメンバー（旧 group は保持）: {f}");
         }
@@ -238,6 +240,13 @@ async fn execute(
             } else {
                 "保持"
             }
+        );
+    }
+    // 旧 group（と付いた role）が残ったままなので、成功扱いにしない（自動化が再実行を省かないように）。
+    if failed_removals != 0 {
+        bail!(
+            "旧 group から外せないメンバーが {failed_removals} 件あります（メンバー移動 {moved} 件）。\
+             LDAP 側のマッパー設定を直して再実行してください"
         );
     }
     println!("完了: メンバー移動 {moved} 件");

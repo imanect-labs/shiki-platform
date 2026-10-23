@@ -192,7 +192,9 @@ shiki-admin retenant --from default --to acme --execute
 `/tenants/<tenant>/<org>` しか org/部署として読まない（multi）。稼働中の SaaS テナントが無い前提で、
 **停止して一括移行**する（二重読みの移行期間は設けない）。
 
-1. shiki-server を停止する（旧サーバは新パスを読めず、新サーバは旧パスを読まないため、混在させない）。
+1. shiki-server を停止する。multi（SaaS）では旧サーバは新パスを読めず、新サーバは旧パスを読まないため、混在させない。
+   single（オンプレ）の新サーバは自テナント配下が無ければ旧形式（`/acme`）も読むが、移行中の group 変更を
+   利用者から隔離するため同じく停止して行う。
 2. dry-run で計画を確認する:
    ```bash
    shiki-admin migrate-org-groups            # dry-run（旧 group ごとの複製先・移動件数・警告）
@@ -209,16 +211,20 @@ shiki-admin retenant --from default --to acme --execute
      属性を直して再実行する。
    - 旧 group の **client role / realm role の割り当て・属性はコピーしない**（件数だけ出る）。旧 group パスを参照する
      IdP マッパー・LDAP group マッパー（`groups.path`）・既定 group も一覧に出る。必要なものは新パスへ手で付け直す。
+     これらを取得できなかった場合は、実際の参照ではなく「⚠️ 調べられなかった realm 設定（手で確認要）」として
+     種別だけが出る。その場合は dry-run の一覧を信用せず、Keycloak 側で手動確認を終えるまで `--execute` しない。
 3. 実行する:
    ```bash
    shiki-admin migrate-org-groups --execute
    ```
    旧 group ごとに、新 group を用意 → 各メンバーを新 group へ追加してから旧 group から外す → 全員を移せた
-   旧 group を subtree ごと削除 → メンバーを移したテナントのセッションを失効（再ログインで新しい groups claim を
-   取らせる。途中で失敗しても、それまでに移したテナントの失効は済ませてから止まる）。全段冪等で、
+   旧 group を subtree ごと削除 → その旧 group の計画に含まれる全移行先テナントのセッションを失効（再ログインで
+   新しい groups claim を取らせる。移動の成否を問わず、計画に載ったテナントは失効させてから次へ進む・途中で
+   失敗した場合も、その旧 group の移行先までは失効させてから止まる）。全段冪等で、
    途中で失敗しても再実行で収束する（移動だけ済んで削除に失敗した旧 group も、移行済み slug として削除まで進む）。
-   旧 group から外せないメンバー（LDAP_ONLY の同期 group 等）は ⚠️ で報告し、その旧 group は残す
-   （LDAP 側のマッパー設定を直してから再実行）。再実行して「移行する旧 org group はありません」になれば完了。
+   旧 group から外せないメンバー（LDAP_ONLY の同期 group 等）は ⚠️ で報告し、その旧 group は残す。
+   このときは全計画を処理した後に**非 0 で終了**する（旧 group と付いた role が残るため成功扱いにしない）。
+   LDAP 側のマッパー設定を直してから再実行する。再実行して「移行する旧 org group はありません」になれば完了。
 4. 新しい shiki-server を起動する。dev の compose は realm を初回だけ import するため、既存の Keycloak
    ボリュームを使い続けるなら同じ CLI で移行するか、Keycloak の DB を作り直す。
 
