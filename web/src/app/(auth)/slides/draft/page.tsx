@@ -33,6 +33,7 @@ import { getThreadMessages } from "@/lib/chat-api";
 import { createSlide } from "@/lib/slides-api";
 import { parseSlideDraft, slideDraftStore } from "@/lib/slides/draft";
 import { parseSlideDocJson, readSlidesJson, seedSlides } from "@/lib/slides-doc";
+import { useStorageScopeReady } from "@/lib/user-storage";
 
 /// useSearchParams を使うため Suspense 境界でラップする（静的生成の CSR bailout 要件・Next.js）。
 export default function DraftSlidePage() {
@@ -104,6 +105,7 @@ function DraftSlidePageInner() {
     return () => arr.unobserveDeep(onChange);
   }, [doc, threadId, activeName]);
 
+  const scopeReady = useStorageScopeReady();
   // 会話履歴の slide_draft ブロックから復元する（リロード/別端末）。ローカルに一部だけ
   // 残っている場合も履歴を常に取得し、**未登録の (threadId, name) のみ**追加する
   // （ローカルのユーザー編集は上書きしない・レビュー指摘対応）。
@@ -112,6 +114,9 @@ function DraftSlidePageInner() {
       setRecovered(true);
       return;
     }
+    // ユーザー確定（/me）前の get() は空のメモリを見て保存済みの下書きを「未登録」と誤判定し、
+    // AI 出力で開いてしまう（手編集が画面から消え、次の編集で上書きされる）ので待つ（#817）。
+    if (!scopeReady) return;
     let cancelled = false;
     getThreadMessages(threadId)
       .then(({ messages }) => {
@@ -135,7 +140,7 @@ function DraftSlidePageInner() {
     return () => {
       cancelled = true;
     };
-  }, [threadId]);
+  }, [threadId, scopeReady]);
 
   // 対象下書きをアクティブへ（?name 優先・無ければ最新）。復元完了後、**nameParam ごとに一度**開く。
   const openedForRef = React.useRef<string | null>(null);

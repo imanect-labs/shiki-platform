@@ -38,6 +38,7 @@ import {
   useDrafts,
 } from "@/lib/notes/draft-store";
 import { serializeFragment } from "@/lib/notes/markdown-serialize";
+import { useStorageScopeReady } from "@/lib/user-storage";
 
 /// useSearchParams を使うため Suspense 境界でラップする（静的生成の CSR bailout 要件・Next.js）。
 export default function DraftNotePage() {
@@ -77,6 +78,7 @@ function DraftNotePageInner() {
     [threadId],
   );
 
+  const scopeReady = useStorageScopeReady();
   // 会話履歴の note_draft ブロックから復元する（リロード/別端末・#282）。ローカルに一部だけ
   // 残っている場合も履歴を常に取得し、**未登録の (threadId, name) のみ**追加する
   // （ローカルのユーザー編集は上書きしない・スライド下書きと同型）。
@@ -85,6 +87,9 @@ function DraftNotePageInner() {
       setRecovered(true);
       return;
     }
+    // ユーザー確定（/me）前の get() は空のメモリを見て保存済みの下書きを「未登録」と誤判定し、
+    // AI 出力で開いてしまう（手編集が画面から消え、次の編集で上書きされる）ので待つ（#817）。
+    if (!scopeReady) return;
     let cancelled = false;
     getThreadMessages(threadId)
       .then(({ messages }) => {
@@ -108,7 +113,7 @@ function DraftNotePageInner() {
     return () => {
       cancelled = true;
     };
-  }, [threadId]);
+  }, [threadId, scopeReady]);
 
   // 対象下書きをアクティブへ（?name 優先・無ければ最新）。復元完了後、**nameParam ごとに一度**開く
   // （同じ ?name の再処理は抑止しつつ、?name が変わる deep link 切替では再オープンする）。

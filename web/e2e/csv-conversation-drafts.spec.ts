@@ -104,6 +104,18 @@ test("下書き: /me より先に履歴を復元しても保存済みの手編�
   const meResponded = page.waitForResponse("**/api/me");
   await page.reload();
   await meResponded;
-  await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 25_000 });
+  const grid = page.getByTestId("csv-draft-grid");
+  await expect(grid).toBeVisible({ timeout: 25_000 });
   await expect.poll(() => storedDraftContent(page, csvName)).toBe(edited);
+  // 画面（エディタ）も保存済みの手編集で開く。AI 出力のまま開くと、次の編集や「ドライブに保存」で
+  // 手編集が上書きされる。グリッドは canvas 描画なので、保存要求に載る CSV で確かめる。
+  let savedCsv: string | undefined;
+  await page.route("**/api/tabular/save", async (route) => {
+    savedCsv = (route.request().postDataJSON() as { csv: string }).csv;
+    await route.abort();
+  });
+  await page.getByTestId("draft-save-button").click();
+  await page.getByTestId("save-draft-confirm").click();
+  await expect.poll(() => savedCsv).toBeDefined();
+  expect(savedCsv?.trim()).toBe(edited);
 });
