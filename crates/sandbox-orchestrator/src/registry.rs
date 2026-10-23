@@ -16,6 +16,26 @@ struct Entry {
     tenant_id: String,
 }
 
+/// テナント束縛つきの引き当て結果（#810）。
+pub enum Lookup<T> {
+    /// 登録済みかつテナント一致。
+    Found(T),
+    /// 未登録（破棄済み・TTL 掃除済みを含む）。
+    Missing,
+    /// 登録済みだが別テナントの所有（越境の試行。監査ログに残す）。
+    Foreign,
+}
+
+impl<T> Lookup<T> {
+    /// 一致したときだけ値を返す（Missing / Foreign は区別せず None）。
+    pub fn found(self) -> Option<T> {
+        match self {
+            Lookup::Found(v) => Some(v),
+            Lookup::Missing | Lookup::Foreign => None,
+        }
+    }
+}
+
 /// SandboxId → インスタンスの対応表。`Mutex<HashMap>` で保護。
 #[derive(Default)]
 pub struct Registry {
@@ -46,21 +66,34 @@ impl Registry {
         );
     }
 
-    /// ID からインスタンスを引く（見つからなければ None）。
-    pub async fn get(&self, id: &str) -> Option<Arc<dyn Instance>> {
-        self.inner
-            .lock()
-            .await
-            .get(id)
-            .map(|e| Arc::clone(&e.instance))
+    /// ID とテナントの組でインスタンスを引く（#810）。
+    ///
+    /// 未登録は [`Lookup::Missing`]、テナント不一致は [`Lookup::Foreign`] として返すが、
+    /// 呼び出し側（gRPC 層）はクライアントへ**区別せず** not_found を返すこと（存在を漏らさない）。
+    /// 区別は監査ログのためだけにある。ID だけで引く経路は意図的に公開しない。
+    pub async fn get(&self, id: &str, tenant_id: &str) -> Lookup<Arc<dyn Instance>> {
+        match self.inner.lock().await.get(id) {
+            None => Lookup::Missing,
+            Some(e) if e.tenant_id != tenant_id => Lookup::Foreign,
+            Some(e) => Lookup::Found(Arc::clone(&e.instance)),
+        }
     }
 
-    /// テナントを取得（監査用）。
-    pub async fn tenant_of(&self, id: &str) -> Option<String> {
-        self.inner.lock().await.get(id).map(|e| e.tenant_id.clone())
+    /// ID とテナントの組が一致したときだけ登録解除しインスタンスを返す（destroy RPC 用・#810）。
+    /// 不一致なら何も消さない（他テナントのサンドボックスを破棄させない）。
+    pub async fn remove_owned(&self, id: &str, tenant_id: &str) -> Lookup<Arc<dyn Instance>> {
+        let mut guard = self.inner.lock().await;
+        match guard.get(id) {
+            None => Lookup::Missing,
+            Some(e) if e.tenant_id != tenant_id => Lookup::Foreign,
+            Some(_) => guard
+                .remove(id)
+                .map_or(Lookup::Missing, |e| Lookup::Found(e.instance)),
+        }
     }
 
-    /// ID を登録解除しインスタンスを返す（destroy 呼び出し用）。
+    /// ID を登録解除しインスタンスを返す（orchestrator 内部の破棄用。テナント照合済みの exec
+    /// ストリームの上限超過破棄など、外部入力の ID をそのまま渡さない経路に限る）。
     pub async fn remove(&self, id: &str) -> Option<Arc<dyn Instance>> {
         self.inner.lock().await.remove(id).map(|e| e.instance)
     }
@@ -141,10 +174,52 @@ mod tests {
         )
         .await;
         assert_eq!(reg.len().await, 1);
-        assert!(reg.get("s1").await.is_some());
-        assert_eq!(reg.tenant_of("s1").await.as_deref(), Some("t"));
+        assert!(reg.get("s1", "t").await.found().is_some());
         assert!(reg.remove("s1").await.is_some());
         assert_eq!(reg.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn get_is_bound_to_tenant() {
+        let reg = Registry::new();
+        reg.insert(
+            "s1".into(),
+            instance().await,
+            Duration::from_mins(1),
+            "tenant-a".into(),
+        )
+        .await;
+        assert!(matches!(reg.get("s1", "tenant-a").await, Lookup::Found(_)));
+        // 別テナント・空テナント・未登録 ID は引けない。
+        assert!(matches!(reg.get("s1", "tenant-b").await, Lookup::Foreign));
+        assert!(matches!(reg.get("s1", "").await, Lookup::Foreign));
+        assert!(matches!(reg.get("nope", "tenant-a").await, Lookup::Missing));
+        assert!(reg.get("s1", "tenant-b").await.found().is_none());
+    }
+
+    #[tokio::test]
+    async fn remove_owned_keeps_foreign_entry() {
+        let reg = Registry::new();
+        reg.insert(
+            "s1".into(),
+            instance().await,
+            Duration::from_mins(1),
+            "tenant-a".into(),
+        )
+        .await;
+        // 別テナントからの破棄は何も消さない。
+        assert!(matches!(
+            reg.remove_owned("s1", "tenant-b").await,
+            Lookup::Foreign
+        ));
+        assert_eq!(reg.len().await, 1);
+        assert!(matches!(
+            reg.remove_owned("nope", "tenant-a").await,
+            Lookup::Missing
+        ));
+        // 所有テナントなら消える。
+        assert!(reg.remove_owned("s1", "tenant-a").await.found().is_some());
+        assert!(reg.is_empty().await);
     }
 
     #[tokio::test]
@@ -164,6 +239,6 @@ mod tests {
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].0, "dead");
         assert_eq!(reg.len().await, 1);
-        assert!(reg.get("live").await.is_some());
+        assert!(reg.get("live", "t").await.found().is_some());
     }
 }

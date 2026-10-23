@@ -133,7 +133,9 @@ services:
     # BFF セッションストア（オパーク Cookie の実体。tenant_id スコープのキーで論理分離）。
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
-      - "6379:6379"
+      # 認証の無い内部サービスなのでホスト公開はローカルに限る（共有ホストで BFF セッションを
+      # 読まれない・#812）。コンテナ間は compose 網内で到達でき、結合テストは localhost で繋ぐ。
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -220,10 +222,17 @@ services:
       nofile:
         soft: 65536
         hard: 65536
+    environment:
+      # 全テナントのベクタが単一 collection にあるため、到達性だけを信頼の根拠にしない（#812）。
+      # shiki-server の SHIKI__RAG__QDRANT_API_KEY と同じ値を渡す。**空にしないこと**:
+      # 空文字を渡すと Qdrant は「空のキー」を要求する状態になり、無認証には戻らない。
+      # 既定値は dev 用の固定文字列。本番は .env で必ず差し替える。
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-shiki-qdrant-dev-key}
     volumes:
       - qdrant-data:/qdrant/storage
     ports:
-      - "6333:6333" # REST
+      # ホスト公開はローカルに限る（#812）。結合テスト（RAG_TEST_QDRANT_URL）は localhost で繋ぐ。
+      - "127.0.0.1:6333:6333" # REST
     healthcheck:
       # イメージに curl が無いため TCP で確認する。
       test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
@@ -243,6 +252,13 @@ services:
       EMBED_MODEL: ${SHIKI__RAG__EMBEDDING_MODEL_VERSION:-cl-nagoya/ruri-v3-30m}
       # 替えたら server 側の SHIKI__RAG__RELEVANCE_*（関連度の閾値と、それを測ったモデル）も揃える。
       RERANK_MODEL: ${RERANK_MODEL:-hotchpotch/japanese-reranker-cross-encoder-xsmall-v1}
+      # shiki-server との共有トークン（/healthz 以外で `Authorization: Bearer` を要求・#812）。
+      # server 側 SHIKI__RAG__WORKER_AUTH_TOKEN と同じ値を渡す。既定値は dev 用。
+      WORKER_AUTH_TOKEN: ${INGESTION_WORKER_AUTH_TOKEN:-shiki-worker-dev-token}
+      # /parse が source_url で取りに行ってよいホスト（presigned URL の発行元＝server の
+      # SHIKI__STORAGE__S3__INTERNAL_ENDPOINT のホスト）。それ以外（qdrant:6333 等の内部ホスト・
+      # IP リテラル・リダイレクト先）は取りに行かない。空は URL 経路を全て拒否する（#812）。
+      SOURCE_URL_ALLOWED_HOSTS: ${INGESTION_SOURCE_URL_ALLOWED_HOSTS-rustfs:9000}
     volumes:
       - hf-cache:/models
     ports:
@@ -516,10 +532,10 @@ services:
       SHIKI__AUTH__AUDIENCE: ${SHIKI__AUTH__AUDIENCE:-shiki-api}
       # テナンシー: multi（claim `tenant` 由来で Postgres 分離）を dev 既定にし、dev_seed の
       # a-corp/b-corp テナントと一致させる（bare `docker compose up` でも共有検索が成立）。
-      # multi は本番 fail-closed で、dev/test の明示 opt-in（SHIKI_DEV_ALLOW_MULTI_TENANT）が要る。
+      # multi は SaaS 本番でもそのまま使える（旧 dev 専用ゲート SHIKI_DEV_ALLOW_MULTI_TENANT は
+      # SAAS.1 完了で撤去済み・crates/api/src/config.rs）。
       SHIKI__AUTH__TENANCY: ${SHIKI__AUTH__TENANCY:-multi}
       SHIKI__AUTH__TENANT_ID: ${SHIKI__AUTH__TENANT_ID:-default}
-      SHIKI_DEV_ALLOW_MULTI_TENANT: ${SHIKI_DEV_ALLOW_MULTI_TENANT:-true}
       SHIKI__AUTH__CLIENT_ID: ${SHIKI__AUTH__CLIENT_ID:-shiki-web}
       SHIKI__AUTH__CLIENT_SECRET: ${SHIKI__AUTH__CLIENT_SECRET:-shiki-web-dev-secret}
       # テナント・プロビジョニング（SAAS.2）。dev 既定で有効（realm の shiki-provisioner と一致）。
@@ -636,7 +652,10 @@ services:
       SHIKI__WEBSEARCH__BRAVE_API_KEY: ${SHIKI__WEBSEARCH__BRAVE_API_KEY:-}
       SHIKI__WEBSEARCH__SEARXNG_BASE_URL: ${SHIKI__WEBSEARCH__SEARXNG_BASE_URL:-http://searxng:8080}
       SHIKI__RAG__WORKER_BASE_URL: http://ingestion-worker:8000
+      # ingestion-worker / Qdrant 側と同じ値（#812）。既定値は dev 用の固定文字列。
+      SHIKI__RAG__WORKER_AUTH_TOKEN: ${INGESTION_WORKER_AUTH_TOKEN:-shiki-worker-dev-token}
       SHIKI__RAG__QDRANT_URL: http://qdrant:6333
+      SHIKI__RAG__QDRANT_API_KEY: ${QDRANT_API_KEY:-shiki-qdrant-dev-key}
       SHIKI__RAG__EMBEDDING_MODEL_VERSION: ${SHIKI__RAG__EMBEDDING_MODEL_VERSION:-cl-nagoya/ruri-v3-30m}
       SHIKI__RAG__INDEX_DATA_DIR: /var/lib/shiki/index
       # reranker へ渡す候補数（遅さは候補数に比例・#561）。

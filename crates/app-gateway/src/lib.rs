@@ -111,6 +111,9 @@ impl From<storage::StorageError> for GatewayError {
             }
             StorageError::Invalid(m) => GatewayError::Invalid(m),
             StorageError::Conflict => GatewayError::Conflict("名前が競合しています".into()),
+            StorageError::VersionConflict { .. } => {
+                GatewayError::Conflict("ファイルが他の保存で更新されています".into())
+            }
             // 整合性・オブジェクトストア・DB・authz 障害の詳細はクライアントへ出さない。
             other => {
                 tracing::error!(error = %other, "gateway storage 内部エラー");

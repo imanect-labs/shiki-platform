@@ -155,7 +155,11 @@ async fn http_errors_map_to_bad_request_and_rate_limited() {
     )
     .await;
     let err = provider(&base).stream(&req).await.err().unwrap();
-    assert!(matches!(err, LlmError::RateLimited(m) if m.contains("usage limit")));
+    // プロバイダの message は利用者へ出さず、定型文に固定する。
+    assert!(matches!(
+        err,
+        LlmError::RateLimited(m) if m.starts_with("利用上限に達しました") && !m.contains("usage limit")
+    ));
 }
 
 /// 実エンドポイント向けのプロバイダ（`OPENAI_RESPONSES_TEST_*` から組む）。

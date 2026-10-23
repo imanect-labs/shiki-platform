@@ -90,6 +90,12 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
   const pillFromMenu = page.getByTestId("slash-command-pill");
   await expect(pillFromMenu).toBeVisible();
   await expect(pillFromMenu).toContainText(token);
+  // 「最近使ったスキル」はユーザー＋テナント単位のキーに記録される（素のキーには書かない・#817）。
+  const recentKeys = await page.evaluate(() =>
+    Object.keys(window.localStorage).filter((k) => k.startsWith("shiki.composer.recent-skills")),
+  );
+  expect(recentKeys).toHaveLength(1);
+  expect(recentKeys[0]).toMatch(/^shiki\.composer\.recent-skills@[^|]+\|.+$/);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/slash-command-pill-auto.png` });
 
   // 補完で確定しなくても、直接打ち切ったコマンドは**送信時に解決される**（#387・Codex P2）。

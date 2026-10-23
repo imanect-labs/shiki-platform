@@ -87,6 +87,24 @@ pub(crate) async fn wire_storage(
     Ok((object_store, service))
 }
 
+/// ingestion-worker 向けクライアントの既定ヘッダ（共有トークン・#812）。
+///
+/// worker を呼ぶ経路（RAG の parse/embed/rerank、Office の edit/compose）は全てここを通す。
+/// 未設定なら後方互換で無認証のまま送り、起動時に一度だけ警告する。
+pub(crate) fn worker_headers(config: &AppConfig) -> anyhow::Result<reqwest::header::HeaderMap> {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    let token = config.rag.worker_auth_token.as_deref();
+    if token.is_none() {
+        WARNED.call_once(|| {
+            tracing::warn!(
+                "SHIKI__RAG__WORKER_AUTH_TOKEN が未設定: ingestion-worker へ無認証で送ります \
+                 （worker 側の WORKER_AUTH_TOKEN と揃えて設定すること・#812）"
+            );
+        });
+    }
+    rag::worker_auth_headers(token).context("SHIKI__RAG__WORKER_AUTH_TOKEN")
+}
+
 /// RAG（Phase 2）の依存配線。`rag.enabled=false` なら何も起動せず `None` を返す。
 ///
 /// 依存は全てトレイト裏（DocumentParser/EmbeddingProvider/Reranker/VectorStore/
@@ -114,14 +132,25 @@ pub(crate) fn wire_rag(
     let _ = http; // RAG 依存は専用のタイムアウト付きクライアントを使う（下記）。
                   // 共有クライアントは無期限のため、worker/Qdrant の遅延が /search・インジェストを
                   // 永久ブロックし得る。parse は Docling+OCR で長い（大きな PDF）ため別枠で長めに取る。
+
+    // worker 向けは共有トークンを既定ヘッダで載せる。Qdrant 向けは別クライアントにする
+    // （Qdrant は `Authorization: Bearer` も API キーとして読むため、混ぜると worker の
+    // トークンが Qdrant へ漏れる・#812）。
+    let worker_headers = worker_headers(config)?;
     let rag_http = reqwest::Client::builder()
         .timeout(Duration::from_mins(1))
+        .default_headers(worker_headers.clone())
         .build()
         .context("RAG 用 HTTP クライアントの構築に失敗")?;
     let parse_http = reqwest::Client::builder()
         .timeout(Duration::from_mins(5))
+        .default_headers(worker_headers)
         .build()
         .context("parse 用 HTTP クライアントの構築に失敗")?;
+    let qdrant_http = reqwest::Client::builder()
+        .timeout(Duration::from_mins(1))
+        .build()
+        .context("Qdrant 用 HTTP クライアントの構築に失敗")?;
     let parser: Arc<dyn rag::DocumentParser> = Arc::new(rag::HttpDocumentParser::new(
         parse_http,
         &rag_cfg.worker_base_url,
@@ -135,13 +164,28 @@ pub(crate) fn wire_rag(
         rag::HttpReranker::new(rag_http.clone(), &rag_cfg.worker_base_url)
             .expect_model(&rag_cfg.relevance_model),
     );
-    let vector: Arc<dyn rag::VectorStore> = Arc::new(rag::QdrantVectorStore::new(
-        rag_http,
+    let qdrant = rag::QdrantVectorStore::new(
+        qdrant_http,
         &rag_cfg.qdrant_url,
         &rag_cfg.embedding_model_version,
+    )
+    .with_api_key(rag_cfg.qdrant_api_key.as_deref())
+    .context("SHIKI__RAG__QDRANT_API_KEY")?;
+    if !qdrant.has_api_key() {
+        // 後方互換で無認証のまま動かすが、全テナントのベクタが 1 collection にあるので黙らない。
+        tracing::warn!(
+            "SHIKI__RAG__QDRANT_API_KEY が未設定: Qdrant へ無認証で接続します（Qdrant に届く \
+             内部コンポーネントが 1 つ侵害されると全テナントのベクタに届く・#812）"
+        );
+    }
+    let vector: Arc<dyn rag::VectorStore> = Arc::new(qdrant);
+    // 全テナント分の writer・索引を常駐させない（#816）。アイドル解放は周期タスクで回す。
+    let tantivy = Arc::new(rag::TantivyFulltext::with_limits(
+        &rag_cfg.index_data_dir,
+        rag_cfg.tantivy_limits(),
     ));
-    let fulltext: Arc<dyn rag::FulltextIndex> =
-        Arc::new(rag::TantivyFulltext::new(&rag_cfg.index_data_dir));
+    tantivy.spawn_idle_reaper();
+    let fulltext: Arc<dyn rag::FulltextIndex> = tantivy;
     let indexer_storage = Arc::new(IndexerStorage::new(db.clone(), Arc::clone(object_store)));
     // relay+consumer（advisory lock でリーダー選出。多重起動しても安全）。
     rag::spawn_pipeline(rag::PipelineDeps {
@@ -231,6 +275,7 @@ pub(crate) fn build_gateway(
             secret_key: l.secret_key.clone(),
         }),
         timeouts: llm.timeouts(),
+        limits: llm.usage_limits(),
     };
     LlmGateway::build(db.clone(), http.clone(), gateway_config)
         .map_err(|e| anyhow::anyhow!("llm-gateway 構築に失敗: {e}"))
@@ -394,15 +439,21 @@ pub(crate) async fn wire_chat(
             tabular: Some(Arc::clone(tabular)),
             // AI Office 編集（office.edit・Task 11.8）: office 有効時のみ配線する。
             // 編集 worker は RAG と同じ ingestion-worker（/edit）を再利用する。
-            office: config.office.enabled.then(|| {
-                Arc::new(office::OfficeEditor::new(
-                    http.clone(),
+            // 共有トークンを載せた worker 専用クライアント（タイムアウトは従来どおり無し）。
+            office: if config.office.enabled {
+                Some(Arc::new(office::OfficeEditor::new(
+                    reqwest::Client::builder()
+                        .default_headers(worker_headers(config)?)
+                        .build()
+                        .context("office 編集用 HTTP クライアントの構築に失敗")?,
                     &config.rag.worker_base_url,
                     Arc::clone(storage),
                     Arc::clone(authz),
                     db.clone(),
-                ))
-            }),
+                )))
+            } else {
+                None
+            },
             // AI ライブ編集（office.live_edit・CoolWSD headless 参加・issue #352）。
             // wire_office が構築した LiveEditor（WOPI と同一トークン鍵）を共有する。
             office_live: office_runtime.map(|o| Arc::clone(&o.live)),

@@ -902,7 +902,7 @@ async fn substring_search_is_scoped_inside_the_gin() {
 async fn missing_extensions_fail_the_migration_explicitly() {
     let Some(pool) = setup().await else { return };
     // マイグレーションは拡張を作る前に事前確認関数を呼ぶ（順序を固定）。
-    let sql = include_str!("../../../migrations/0077_data_pivot_index.sql");
+    let sql = include_str!("../../../migrations/0083_data_pivot_index.sql");
     let check = sql
         .find("select data_require_extensions(array['pg_trgm', 'btree_gin']);")
         .expect("事前確認がある");

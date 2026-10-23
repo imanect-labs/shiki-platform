@@ -12,9 +12,19 @@ pub struct RagConfig {
     #[serde(default = "default_worker_base_url")]
     pub worker_base_url: String,
 
+    /// ingestion-worker に送る共有トークン（`Authorization: Bearer`・#812）。worker 側の
+    /// `WORKER_AUTH_TOKEN` と同じ値にする。未設定（空）は無認証で送り、起動時に警告する。
+    #[serde(default, deserialize_with = "empty_str_as_none", skip_serializing)]
+    pub worker_auth_token: Option<String>,
+
     /// Qdrant REST のベース URL。
     #[serde(default = "default_qdrant_url")]
     pub qdrant_url: String,
+
+    /// Qdrant の API キー（`api-key` ヘッダ・#812）。Qdrant 側の `QDRANT__SERVICE__API_KEY` と
+    /// 同じ値にする。未設定（空）は無認証で送り、起動時に警告する。
+    #[serde(default, deserialize_with = "empty_str_as_none", skip_serializing)]
+    pub qdrant_api_key: Option<String>,
 
     /// 埋め込みモデル版。worker の応答と突合し、不一致はインジェスト拒否（PIT-8）。
     /// Qdrant collection 名にも織り込まれ、変更＝shadow index 再構築＋alias 切替。
@@ -24,6 +34,16 @@ pub struct RagConfig {
     /// Tantivy インデックス（index-per-tenant）の永続化ディレクトリ。
     #[serde(default = "default_index_data_dir")]
     pub index_data_dir: String,
+
+    /// Tantivy: 同時に開いておくテナント索引（reader）の上限（#816）。LRU で閉じ、次の利用で開き直す。
+    #[serde(default = "default_fulltext_max_open_indexes")]
+    pub fulltext_max_open_indexes: usize,
+    /// Tantivy: 同時に開いておく IndexWriter の上限（#816）。1 本 = 3 スレッド＋最大 20MB のヒープ。
+    #[serde(default = "default_fulltext_max_open_writers")]
+    pub fulltext_max_open_writers: usize,
+    /// Tantivy: この秒数使われなかった writer・索引を閉じる（#816）。
+    #[serde(default = "default_fulltext_idle_secs")]
+    pub fulltext_idle_secs: u64,
 
     /// パース対象 blob の上限バイト数（worker 側 max_download_bytes と対）。
     #[serde(default = "default_max_parse_bytes")]
@@ -109,6 +129,15 @@ fn default_embedding_model_version() -> String {
 fn default_index_data_dir() -> String {
     "./data/index".into()
 }
+fn default_fulltext_max_open_indexes() -> usize {
+    crate::TantivyLimits::default().max_open_indexes
+}
+fn default_fulltext_max_open_writers() -> usize {
+    crate::TantivyLimits::default().max_open_writers
+}
+fn default_fulltext_idle_secs() -> u64 {
+    crate::TantivyLimits::default().idle_timeout.as_secs()
+}
 fn default_max_parse_bytes() -> i64 {
     50 * 1024 * 1024
 }
@@ -159,6 +188,14 @@ where
     }
 }
 
+/// 空文字（compose が未設定の env を渡す形）を None にする。秘密値の「未設定」判定用。
+fn empty_str_as_none<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(d)?.filter(|s| !s.trim().is_empty()))
+}
+
 fn default_relevance_model() -> String {
     "hotchpotch/japanese-reranker-cross-encoder-xsmall-v1".to_string()
 }
@@ -175,14 +212,30 @@ fn default_job_max_attempts() -> i32 {
     5
 }
 
+impl RagConfig {
+    /// Tantivy の常駐資源の上限（#816）。
+    pub fn tantivy_limits(&self) -> crate::TantivyLimits {
+        crate::TantivyLimits {
+            max_open_indexes: self.fulltext_max_open_indexes,
+            max_open_writers: self.fulltext_max_open_writers,
+            idle_timeout: std::time::Duration::from_secs(self.fulltext_idle_secs),
+        }
+    }
+}
+
 impl Default for RagConfig {
     fn default() -> Self {
         RagConfig {
             enabled: false,
             worker_base_url: default_worker_base_url(),
+            worker_auth_token: None,
             qdrant_url: default_qdrant_url(),
+            qdrant_api_key: None,
             embedding_model_version: default_embedding_model_version(),
             index_data_dir: default_index_data_dir(),
+            fulltext_max_open_indexes: default_fulltext_max_open_indexes(),
+            fulltext_max_open_writers: default_fulltext_max_open_writers(),
+            fulltext_idle_secs: default_fulltext_idle_secs(),
             max_parse_bytes: default_max_parse_bytes(),
             readable_tags_max: default_readable_tags_max(),
             over_fetch_tags: default_over_fetch_tags(),

@@ -160,12 +160,19 @@ struct RefRendering<'a> {
 }
 
 /// 中立メッセージ 1 件を Anthropic message へ写す（tool 結果は user ロールの tool_result ブロック）。
+///
+/// `tool_reference` を返した tool_result の本文は、tool_result の中ではなく**同じメッセージの
+/// 末尾**に text ブロックで置く（[`tool_result_content`] 参照）。
 fn to_anthropic_message(m: &Message, refs: &RefRendering<'_>) -> Value {
-    let blocks: Vec<Value> = m
-        .content
-        .iter()
-        .filter_map(|b| to_anthropic_block(b, refs))
-        .collect();
+    let mut blocks: Vec<Value> = Vec::new();
+    let mut trailing: Vec<Value> = Vec::new();
+    for b in &m.content {
+        if let Some((block, after)) = to_anthropic_block(b, refs) {
+            blocks.push(block);
+            trailing.extend(after);
+        }
+    }
+    blocks.extend(trailing);
     let role = match m.role {
         // system はトップレベル（build_body 側）へ回すため空にする。
         Role::System => return json!({ "role": "user", "content": [] }),
@@ -176,13 +183,21 @@ fn to_anthropic_message(m: &Message, refs: &RefRendering<'_>) -> Value {
     json!({ "role": role, "content": blocks })
 }
 
-/// tool_result の content。読み込み参照があれば `tool_reference` ブロック列にする
-/// （API がそれを遅延ツールの完全な定義へ展開する）。本文はその後ろに text ブロックで添える
-/// （ループが観測に書き足す残り予算・催促を落とさない）。
+/// tool_result の content と、メッセージ末尾へ回す本文。
+///
+/// 読み込み参照があれば content を `tool_reference` ブロック**だけ**にする（API がそれを遅延
+/// ツールの完全な定義へ展開する）。**API は `tool_reference` を含む tool_result に他の種類の
+/// ブロックを混ぜると 400**（"Tool definitions/code execution functions cannot be mixed with
+/// other content"）を返すため、本文（ループが観測に書き足す残り予算・催促）は tool_result の
+/// 外へ出し、呼び出し側が同じメッセージの tool_result 群の後ろに text ブロックで置く（#857）。
 ///
 /// `tools` に無い参照（ツールを外した着地ターン・配線が変わった再開）を送ると API は 400 を
 /// 返すため、**提示中のものだけ**を参照として残す。1 つも残らなければ本文だけを送る。
-fn tool_result_content(content: &str, references: &[String], refs: &RefRendering<'_>) -> Value {
+fn tool_result_content(
+    content: &str,
+    references: &[String],
+    refs: &RefRendering<'_>,
+) -> (Value, Option<Value>) {
     // 参照の判定は中立名で行い、送り出す名前（`tool_reference` も本文の案内も）は wire 名にする
     // （`tools` に載せた名前と一致しないと API が参照を解決できない）。
     let loaded: Vec<String> = references
@@ -191,41 +206,50 @@ fn tool_result_content(content: &str, references: &[String], refs: &RefRendering
         .map(|r| refs.names.wire(r))
         .collect();
     if loaded.is_empty() {
-        return json!(content);
+        return (json!(content), None);
     }
     if !refs.native {
-        return json!(with_loaded_note(content, &loaded));
+        return (json!(with_loaded_note(content, &loaded)), None);
     }
-    let mut blocks: Vec<Value> = loaded
+    let blocks: Vec<Value> = loaded
         .iter()
         .map(|r| json!({ "type": "tool_reference", "tool_name": r }))
         .collect();
-    if !content.is_empty() {
-        blocks.push(json!({ "type": "text", "text": content }));
-    }
-    json!(blocks)
+    let after = (!content.is_empty()).then(|| json!({ "type": "text", "text": content }));
+    (json!(blocks), after)
 }
 
-fn to_anthropic_block(b: &Block, refs: &RefRendering<'_>) -> Option<Value> {
+/// 中立ブロック 1 つを Anthropic のブロックへ写す。2 つ目はメッセージ末尾へ回す本文
+/// （`tool_reference` を返した tool_result の本文だけ。[`tool_result_content`] 参照）。
+fn to_anthropic_block(b: &Block, refs: &RefRendering<'_>) -> Option<(Value, Option<Value>)> {
     match b {
-        Block::Text { text } => Some(json!({ "type": "text", "text": text })),
+        Block::Text { text } => Some((json!({ "type": "text", "text": text }), None)),
         // 再送する thinking はここでは扱わない（Phase 3 では省略）。
         // 他プロバイダの不透明な推論アイテムも送らない。
         Block::Thinking { .. } | Block::Reasoning { .. } => None,
-        Block::ToolUse { id, name, input } => Some(json!({
-            "type": "tool_use", "id": id, "name": refs.names.wire(name), "input": input,
-        })),
+        Block::ToolUse { id, name, input } => Some((
+            json!({
+                "type": "tool_use", "id": id, "name": refs.names.wire(name), "input": input,
+            }),
+            None,
+        )),
         Block::ToolResult {
             tool_use_id,
             content,
             is_error,
             tool_references,
-        } => Some(json!({
-            "type": "tool_result",
-            "tool_use_id": tool_use_id,
-            "content": tool_result_content(content, tool_references, refs),
-            "is_error": is_error,
-        })),
+        } => {
+            let (content, after) = tool_result_content(content, tool_references, refs);
+            Some((
+                json!({
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": content,
+                    "is_error": is_error,
+                }),
+                after,
+            ))
+        }
     }
 }
 
@@ -478,14 +502,68 @@ mod tests {
         let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
         assert!(body["tools"][0].get("defer_loading").is_none());
         assert_eq!(body["tools"][1]["defer_loading"], true);
-        let content = &body["messages"][1]["content"][0]["content"];
+        // tool_result の content は tool_reference だけ（他の種類を混ぜると API が 400・#857）。
+        // 本文は同じメッセージの tool_result の後ろへ text で置く。
+        let msg = &body["messages"][1]["content"];
         assert_eq!(
-            content,
+            msg,
             &json!([
-                { "type": "tool_reference", "tool_name": "csv_query" },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": [{ "type": "tool_reference", "tool_name": "csv_query" }],
+                    "is_error": false,
+                },
                 { "type": "text", "text": "読み込みました" },
             ])
         );
+    }
+
+    #[test]
+    fn trailing_texts_follow_every_tool_result_in_the_message() {
+        // 並列で 2 つ読み込んだとき、tool_result が先に並び、本文はその後ろにまとまる
+        // （API は user メッセージで tool_result を text より前に置くことを求める）。
+        let mut req = GenerateRequest::new(vec![
+            Message::text(Role::User, "hi"),
+            Message {
+                role: Role::Tool,
+                content: vec![
+                    Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "一つ目".into(),
+                        is_error: false,
+                        tool_references: vec!["csv.query".into()],
+                    },
+                    Block::tool_result("t2", "普通の結果", false),
+                    Block::ToolResult {
+                        tool_use_id: "t3".into(),
+                        content: String::new(),
+                        is_error: false,
+                        tool_references: vec!["office.edit".into()],
+                    },
+                ],
+            },
+        ]);
+        req.tools = vec![
+            ToolDef::new("tool_search", "s", json!({"type": "object"})),
+            deferred("csv.query"),
+            deferred("office.edit"),
+        ];
+        let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
+        let msg = body["messages"][1]["content"].as_array().unwrap();
+        let kinds: Vec<&str> = msg.iter().map(|b| b["type"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["tool_result", "tool_result", "tool_result", "text"]);
+        assert_eq!(
+            msg[0]["content"],
+            json!([{ "type": "tool_reference", "tool_name": "csv_query" }])
+        );
+        assert_eq!(msg[1]["content"], "普通の結果");
+        // 本文が空なら text を足さない。
+        assert_eq!(
+            msg[2]["content"],
+            json!([{ "type": "tool_reference", "tool_name": "office_edit" }])
+        );
+        assert_eq!(msg[3]["text"], "一つ目");
     }
 
     #[test]
@@ -524,8 +602,8 @@ mod tests {
         let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
         let content = &body["messages"][1]["content"][0]["content"];
         assert_eq!(content[0]["tool_name"], "csv_query");
-        assert_eq!(content[1]["type"], "text");
-        assert_eq!(content.as_array().unwrap().len(), 2);
+        assert_eq!(content.as_array().unwrap().len(), 1);
+        assert_eq!(body["messages"][1]["content"][1]["type"], "text");
     }
 
     #[test]

@@ -129,6 +129,81 @@ async fn replace_chunks_writes_every_row_across_batch_boundaries() {
         .unwrap();
 }
 
+/// 決定的 chunk_id が別テナント／別ノードの既存行と衝突したら、黙って欠落させずエラーにする（#817）。
+///
+/// node.id は大域 PK なので正常系では起きないが、`on conflict (id) do nothing` だけだと
+/// 衝突時に「取り込み成功・行は 0 件」になり検索から静かに消える。ここで恒久エラーにする。
+#[tokio::test]
+async fn replace_chunks_rejects_chunk_id_owned_by_another_tenant_or_node() {
+    let Some(pool) = setup().await else { return };
+    let tenant_a = format!("t-{}", Uuid::new_v4().simple());
+    let tenant_b = format!("t-{}", Uuid::new_v4().simple());
+    let node = Uuid::new_v4();
+    let chunks: Vec<Chunk> = (0..3).map(|i| chunk(node, i)).collect();
+    let tags_a = vec![format!("file:{tenant_a}|{node}")];
+    store::replace_chunks(&pool, &ctx(&tenant_a), node, 1, &chunks, &[], &tags_a, "m")
+        .await
+        .unwrap();
+
+    let count = |tenant: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("select count(*) from rag_chunk where tenant_id = $1")
+                .bind(tenant)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+
+    // 別テナントが同じ chunk_id を書こうとすると衝突エラー（行は 1 件も入らない・Tx ロールバック）。
+    let tags_b = vec![format!("file:{tenant_b}|{node}")];
+    let err = store::replace_chunks(&pool, &ctx(&tenant_b), node, 1, &chunks, &[], &tags_b, "m")
+        .await
+        .expect_err("cross-tenant chunk_id collision must fail");
+    assert!(
+        matches!(err, rag::RagError::ChunkIdConflict { count: 3, .. }),
+        "{err:?}"
+    );
+    assert!(!err.is_transient(), "衝突は再試行で直らない恒久エラー");
+    assert_eq!(count(tenant_b.clone()).await, 0);
+    // 先に書いたテナントの行は無傷。
+    assert_eq!(count(tenant_a.clone()).await, 3);
+
+    // 同一テナントでも別ノードの ID と衝突したら同様に拒否する。
+    let other_node = Uuid::new_v4();
+    let err = store::replace_chunks(
+        &pool,
+        &ctx(&tenant_a),
+        other_node,
+        1,
+        &chunks,
+        &[],
+        &tags_a,
+        "m",
+    )
+    .await
+    .expect_err("cross-node chunk_id collision must fail");
+    assert!(
+        matches!(err, rag::RagError::ChunkIdConflict { .. }),
+        "{err:?}"
+    );
+    assert_eq!(count(tenant_a.clone()).await, 3);
+
+    // 自ノードの同一 ID（並行ジョブ相当・同じ文で重複）は従来どおり冪等に通る。
+    let dup = vec![chunk(node, 0), chunk(node, 0), chunk(node, 1)];
+    store::replace_chunks(&pool, &ctx(&tenant_a), node, 1, &dup, &[], &tags_a, "m")
+        .await
+        .expect("own duplicate ids are idempotent");
+    assert_eq!(count(tenant_a.clone()).await, 2);
+
+    sqlx::query("delete from rag_chunk where tenant_id = $1")
+        .bind(&tenant_a)
+        .execute(&pool)
+        .await
+        .unwrap();
+}
+
 fn block(block_type: BlockType, text: &str) -> ParsedBlock {
     ParsedBlock {
         block_type,

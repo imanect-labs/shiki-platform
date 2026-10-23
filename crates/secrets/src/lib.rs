@@ -6,6 +6,8 @@
 //!   実行時解決（[`SecretStore::resolve`]）のみで、解決イベントは毎回監査に残る。
 //! - **envelope encryption**: 平文は DEK（データ暗号鍵）で AES-256-GCM 暗号化し、DEK は
 //!   マスターキー（[`KeyProvider`]）で包んで保存する。平文も DEK 平文も DB に残らない。
+//!   平文の暗号文は AAD で行（tenant_id・org・id）へ束縛し、別行へ複製しても復号できない
+//!   （`row_aad`・#814）。旧版（AAD なし）行は後方互換で復号し現行版へ再暗号化する。
 //! - **宛先束縛**: 登録時に添付可能ホストを宣言し、http.request 実行時に fail-closed 強制
 //!   （[`binding`]・PIT-36）。
 //! - **ReBAC**: `secret:<tenant>|<id>` に owner / can_use。`can_use` を持つ実行主体のみ解決可。
@@ -16,6 +18,7 @@ mod binding;
 mod crypto;
 mod key_provider;
 mod redact;
+mod row_aad;
 mod store;
 mod store_helpers;
 
@@ -23,6 +26,7 @@ pub use binding::{host_allowed, DestinationBinding};
 pub use crypto::{CryptoError, KeyGuard};
 pub use key_provider::{decode_key_material, KeyProvider, LocalKeyFileProvider, WrappedKey};
 pub use redact::Redactor;
+pub use store::reencrypt::{count_legacy_secrets, reencrypt_legacy_secrets, ReencryptReport};
 pub use store::{NewSecret, ResolvedSecret, SecretMeta, SecretStore};
 
 /// シークレット操作のエラー。

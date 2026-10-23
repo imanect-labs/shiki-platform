@@ -21,21 +21,25 @@ impl ChatStore {
     /// run のイベントを `from_seq` より後から購読するストリームを返す（端末イベントで終了）。
     ///
     /// `Last-Event-ID`(=seq) を `from_seq` に渡せば再接続時に途中から再開できる（重複しない）。
+    /// 読み取りはすべて `tenant_id` でも絞る（他テナントの run_id は即終了・#815）。
     pub fn event_stream(
         &self,
+        tenant_id: &str,
         run_id: Uuid,
         from_seq: i64,
     ) -> mpsc::UnboundedReceiver<StreamEvent> {
         let (tx, rx) = mpsc::unbounded();
         let store = self.clone();
+        let tenant_id = tenant_id.to_string();
         tokio::spawn(async move {
-            store.run_event_loop(run_id, from_seq, tx).await;
+            store.run_event_loop(tenant_id, run_id, from_seq, tx).await;
         });
         rx
     }
 
     async fn run_event_loop(
         self,
+        tenant_id: String,
         run_id: Uuid,
         mut cursor: i64,
         tx: mpsc::UnboundedSender<StreamEvent>,
@@ -48,7 +52,7 @@ impl ChatStore {
 
         loop {
             // 1) DB replay（真実のソース）。cursor より後を seq 順に配信。
-            match self.replay_events(run_id, cursor).await {
+            match self.replay_events(&tenant_id, run_id, cursor).await {
                 Ok(events) => {
                     for e in events {
                         cursor = e.seq;
@@ -68,9 +72,9 @@ impl ChatStore {
             }
 
             // 2) crash safety: run が端末状態で残イベントも無ければ終了（最終 flush 済み）。
-            match self.run_status(run_id).await {
+            match self.run_status(&tenant_id, run_id).await {
                 Ok(Some(s)) if s.is_terminal() => {
-                    if let Ok(tail) = self.replay_events(run_id, cursor).await {
+                    if let Ok(tail) = self.replay_events(&tenant_id, run_id, cursor).await {
                         for e in tail {
                             let _ = tx.unbounded_send(e);
                         }

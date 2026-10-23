@@ -98,11 +98,18 @@ impl FgaObject {
     /// 委譲台帳（`workflow_delegation.object_ref`）のように、一度 [`Namespace`] を通して
     /// 生成・保存した信頼できる識別子を読み戻す用途に限る（新規の生 id 組み立てではない）。
     ///
-    /// 形式（`<type>:<tenant>|<local>`）を最低限検証し、崩れていれば `None` を返す。テナント境界を
-    /// 跨いだ不正な object を無検証で構築させないため（台帳破損・改竄の混入を弾く）。
-    pub fn from_qualified(qualified: &str) -> Option<Self> {
-        let (ty, rest) = qualified.split_once(':')?;
-        if ty.is_empty() || !rest.contains(TENANT_SEP) {
+    /// 形式（`<type>:<tenant>|<local>`）に加え、tenant 部が `expected_tenant`（保存行の
+    /// `tenant_id`）と**一致する**ことを検証し、崩れ・不一致はいずれも `None`（fail-closed）。
+    /// 台帳の破損・改竄で他テナントの object へ check / delete が走るのを構造的に防ぐ。
+    /// tenant 部の照合は [`Namespace::strip_object_id`] に寄せる（区切り [`TENANT_SEP`] 込みの
+    /// 前方一致なので、tenant 名の前方一致だけ〔`acme` 対 `acme2|…`〕では通らない）。
+    pub fn from_qualified(qualified: &str, expected_tenant: &str) -> Option<Self> {
+        let (ty, id_part) = qualified.split_once(':')?;
+        if ty.is_empty() || expected_tenant.is_empty() {
+            return None;
+        }
+        let local = Namespace::new(expected_tenant).strip_object_id(id_part)?;
+        if local.is_empty() {
             return None;
         }
         Some(FgaObject(qualified.to_string()))
@@ -411,6 +418,48 @@ mod tests {
         );
         assert_eq!(ns.parse_role_member_subject("user:acme|alice"), None);
         assert_eq!(ns.parse_role_member_subject("role:acme|dept-1#owner"), None);
+    }
+
+    #[test]
+    fn from_qualified_roundtrips_own_tenant() {
+        // Namespace で組んで保存した識別子は、同じ tenant を期待すればそのまま読み戻せること。
+        let ns = Namespace::new("acme");
+        let folder = ns.folder("f1");
+        assert_eq!(
+            FgaObject::from_qualified(folder.as_str(), "acme"),
+            Some(folder)
+        );
+        // local が `|` を含んでも先頭の `<tenant>|` 一致で受理すること。
+        assert_eq!(
+            FgaObject::from_qualified("file:acme|a|b", "acme").map(|o| o.to_string()),
+            Some("file:acme|a|b".to_string())
+        );
+    }
+
+    #[test]
+    fn from_qualified_rejects_other_tenant() {
+        // tenant 部が期待と違えば None（台帳改竄による越境 check/delete を弾く）。
+        assert_eq!(FgaObject::from_qualified("folder:other|f1", "acme"), None);
+        // tenant 名の前方一致だけでは通さない（区切りまで一致が必要）。
+        assert_eq!(FgaObject::from_qualified("folder:acme2|f1", "acme"), None);
+        assert_eq!(FgaObject::from_qualified("folder:acme|f1", "acme2"), None);
+        // local 側に期待 tenant が現れても、先頭の tenant が違えば None。
+        assert_eq!(
+            FgaObject::from_qualified("folder:other|acme|f1", "acme"),
+            None
+        );
+    }
+
+    #[test]
+    fn from_qualified_rejects_malformed() {
+        // 形式崩れはすべて None（fail-closed）。
+        assert_eq!(FgaObject::from_qualified("acme|f1", "acme"), None); // type 無し
+        assert_eq!(FgaObject::from_qualified(":acme|f1", "acme"), None); // type 空
+        assert_eq!(FgaObject::from_qualified("folder:f1", "acme"), None); // tenant 無し（旧形式）
+        assert_eq!(FgaObject::from_qualified("folder:acme|", "acme"), None); // local 空
+        assert_eq!(FgaObject::from_qualified("", "acme"), None);
+        // 期待 tenant が空なら `|<local>` を素通しさせない。
+        assert_eq!(FgaObject::from_qualified("folder:|f1", ""), None);
     }
 
     #[test]

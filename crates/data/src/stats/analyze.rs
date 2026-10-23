@@ -11,7 +11,7 @@
 //!    [`ANALYZE_FULL_SCAN_MAX`] を超えたら `record_int` で間引く（行数に比例）。材料化した派生列・擬似列も含む。
 //! 3. **リンク統計**（リンク列・対称列の方向ごと）と**行幅**（本体の平均バイト数・TOAST 率）。
 //!
-//! **公平性**: ジョブはテナントごとの先頭だけを取り出し（[`jobq::claim_fair`]）、各文の間に処理時間と
+//! **公平性**: ジョブは jobq のテナント間公平な取り出し（[`jobq::claim`] の fair_seq 順）で取り出し、各文の間に処理時間と
 //! 同じだけ休む。文の実行中はそのテナントの読取の同時実行枠（data-platform §16.8・
 //! [`crate::query::admission`]）を消費するので、重いテナントの統計収集はそのテナントの枠の中で待つ。
 
@@ -59,7 +59,7 @@ impl DataStore {
     pub async fn run_stats_job_once(&self) -> Result<bool, DataError> {
         for (_, pool) in self.pools.all() {
             let mut conn = pool.acquire().await.map_err(map_db)?;
-            let mut jobs = jobq::claim_fair(&mut conn, STATS_ANALYZE_QUEUE, ANALYZE_VT, 1)
+            let mut jobs = jobq::claim(&mut conn, STATS_ANALYZE_QUEUE, ANALYZE_VT, 1)
                 .await
                 .map_err(|e| DataError::Internal(format!("jobq: {e}")))?;
             drop(conn);

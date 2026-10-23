@@ -173,9 +173,14 @@ impl SandboxSpec {
 }
 
 /// 生成済みサンドボックスのハンドル。
+///
+/// `tenant_id` は create 時の `SandboxSpec::tenant_id`（＝呼び出し元 AuthContext のテナント）を
+/// 実装が埋める。以降の RPC はこれを orchestrator へ送り、登録テナントと照合させる（#810）。
+/// 呼び出し側はハンドルを自前で組み立てず、`Sandbox::create` の戻り値だけを使うこと。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxHandle {
     pub id: String,
+    pub tenant_id: String,
 }
 
 /// 実行要求。Python はコードを guest に書いて実行、Shell は `sh -c`（ls/curl 等）。

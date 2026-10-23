@@ -282,6 +282,10 @@ flowchart LR
   **配送機構**（vt/リトライ/DLQ・消費後 DELETE）。relay が outbox→queue を同一 Postgres 内・
   単一 Tx でコピーする（exactly-once）。チャット run（Phase 3）・資料生成ジョブ（Phase 7）も
   同じ `jobq` のキューとして実装する。
+  **テナント間公平**: 取り出しは到着順ではなく `fair_seq` 順（start-time fair queuing・#816）。
+  投入時に「そのテナントの末尾＋1」と「キューの仮想時刻」の大きい方を振り、1 テナントの大量投入が
+  他テナントを待たせない（保証はジョブ件数の公平・テナント内は投入順）。仮想時刻はキューごとに保持し
+  claim で単調に進める（`job_queue_vtime`。可視に戻った古い行で巻き戻さない）。
 - **二段authz（Phase 2 で確定・実装済み）**: pre-filter（両系統に必須）＋ post-filter 検証。
   片方が壊れても権限を守る（この製品の心臓部）。
   - **pre-filter = PIT-1 (b) 権限定義オブジェクト方式**: chunk には**構造タグのみ**を焼く
@@ -351,6 +355,8 @@ flowchart LR
     cell/pool 方針と揃える。`embedding_model_version` × `tenant_id` は直交（version 単位の shadow index）。
   - **Tantivy**: index-per-tenant を既定とする（PIT-8 の shadow 切替と相性良）。単一 index にする場合は
     `tenant_id` を term filter で必須 AND。いずれでも「tenant フィルタは authz_tags と独立に必ず適用」。
+    index-per-tenant のまま、プロセス内の常駐は上限付き: IndexWriter は書込時だけ開いて同時数に上限と
+    アイドル解放、索引（reader）も LRU で上限まで（`rag.fulltext_*`・#816）。辞書はプロセスで 1 部を共有。
   - **authz_tags は名前空間化形式のまま格納**する。`ListObjects` が返す `folder:<tenant>|<local>` を
     `strip_object_id` で local に**剥がして格納しない**（剥がすとタグから tenant 境界が消え、pre-filter
     バグ 1 個で越境する）。剥がす実装を採るなら「照合時に tenant フィルタが別途必ずかかる」ことをテストで担保。
@@ -497,6 +503,18 @@ flowchart LR
   計測レコード（prompt/completion tokens・model・cost・trace_id）に `tenant_id` + `org` を**必須カラム**とし、
   監査ハッシュチェーンが `tenant_id|org` で直列化・スコープする前例に倣う。金額クリティカル
   （[PIT-28](./design-caveats.md)）なので冪等キーを持たせ、テナント単位の集計をバイパス不能にする。
+- **利用制限（月次コスト上限・運営の安全弁・#757）**: デプロイ設定 `llm.limits`（**既定は無効**）で、
+  ①**ユーザー 1 人あたりの月額**（`tenant_id` ＋ `user_sub`・全プロバイダ合算）と
+  ②**プロバイダ別の環境総枠**（`provider_id`・**テナント横断**）を掛ける。判定は gateway の `stream`
+  ＝経路によらず効く位置で**生成を始める前**に行い、超過は 429（文言はそのままユーザーへ出す）。
+  集計元は会計そのもの（別に数え直さない）で、月の区切りは利用量ダッシュボードと同じ日本時間。
+  集計に失敗したら生成しない（fail-closed）。これは**誰でも触れるプレビュー環境で API キーの請求を
+  守るための運営側の設定**であり、顧客管理者が管理画面で決める**組織の予算上限（Phase 12.1）とは別物**。
+  会計の `provider` 列はアダプタ種別（同じ種別の追加プロバイダを区別できない）なので、②が数える軸は
+  デプロイ設定のプロバイダ ID を刻む `provider_id` 列。
+  上限は「超えたら次から止める」線で**厳密な天井ではない**: ①1 回の生成の中で枠を跨ぐ分は止まらない
+  ②判定は読み取りだけで加算は生成後なので、同時に始めた生成は全部通る（超過は同時実行数×1 回分まで）。
+  厳密に守るには予約行＋advisory lock が要るが、プレビューの安全弁には要らないと判断した。
 
 ### 4.6 サンドボックス（3ティア・gVisor 既定）
 

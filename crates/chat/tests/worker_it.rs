@@ -211,7 +211,7 @@ async fn worker_generates_streams_and_persists_projection() {
         .unwrap();
 
     // SSE 相当の event_stream を drain し、トークン→done を受け取る。
-    let mut rx = store.event_stream(res.run_id, 0);
+    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
     let mut text = String::new();
     let mut done = false;
     for _ in 0..500 {
@@ -319,7 +319,7 @@ async fn system_prompt_carries_todays_date_from_run_creation() {
         .await
         .unwrap();
 
-    let mut rx = store.event_stream(res.run_id, 0);
+    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
     let mut text = String::new();
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(15), rx.next())
