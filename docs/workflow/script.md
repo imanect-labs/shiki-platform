@@ -272,17 +272,15 @@ runtime→server の**全フレーム**に対し、server 側は次を検証す�
 ### 6.1 `Shiki.data.query` / `Shiki.data.get`（`data.read`）
 
 ```typescript
-// data の宣言的クエリ（roadmap Task 9.4 の filter/sort/page 模型に対応）。ページングはホスト側で解決。
-Shiki.data.query(table: string, q: {
-  where?: Condition;          // 構造化条件（自由 SQL は渡せない）
-  order?: { field: string; dir: "asc" | "desc" }[];
-  limit?: number;             // 上限あり（初期値・設定可）
-}): { rows: Record<string, unknown>[]; total: number };
+// data の宣言的クエリ。q は data の DataQuery そのもの（REST の POST /data/tables/{id}/query・
+// ワークフローの data.query ノードと同一型・面ごとの独自フィルタ表現は無い）。
+Shiki.data.query(tableId: string, q: DataQuery): QueryResult;   // { items, next_cursor, ... }
 
 // 単一レコード取得
-Shiki.data.get(table: string, id: string): {
-  id: string; rev: number; fields: Record<string, unknown>;
-};
+Shiki.data.get(tableId: string, recordId: string): DataRecord;   // { id, rev, data, ... }
+
+// 実行主体が viewer のテーブル一覧
+Shiki.data.listTables(): { items: { id: string; name: string }[] };
 ```
 
 - 認可: 行レベル述語・フィールドマスクは能力ゲートウェイ側で適用（ゲストは post-mask 済みの行しか受け取らない）。
@@ -291,8 +289,8 @@ Shiki.data.get(table: string, id: string): {
 ### 6.2 `Shiki.data.create` / `Shiki.data.update`（`data.write`）
 
 ```typescript
-Shiki.data.create(table: string, fields: Record<string, unknown>): { id: string; rev: number };
-Shiki.data.update(table: string, id: string, patch: Record<string, unknown>, opts?: { rev?: number }): { rev: number };
+Shiki.data.create(tableId: string, data: Record<string, unknown>): DataRecord;
+Shiki.data.update(tableId: string, recordId: string, patch: Record<string, unknown>, expectedRev?: number): DataRecord;
 ```
 
 - **rev 楽観ロック**。`rev` 不一致は `ShikiError { code: "conflict", retryable: true }`。
@@ -302,10 +300,15 @@ Shiki.data.update(table: string, id: string, patch: Record<string, unknown>, opt
 
 ```typescript
 // FSM 遷移 API を叩く。status への直接書込は構造的に不可能（miniapp-platform §1）。
-Shiki.data.transition(table: string, id: string, action: string, args?: Record<string, unknown>): { rev: number; status: string };
+// to は遷移先の status（FSM は from → to で遷移を定義する）。expectedRev 省略時は実行時点の rev。
+Shiki.data.transition(tableId: string, recordId: string, to: string, expectedRev?: number): DataRecord;
 ```
 
-- ガード・遷移認可は FSM 側で再評価される。ガード不成立は `ShikiError { code: "transition_denied" }`。**status を直接書く API は提供しない**（FSM の不変条件を破らせない）。
+- ガード・遷移認可は FSM 側で再評価される。ガード不成立は `ShikiError { code: "forbidden" }`（actor 述語）・
+  定義外の遷移は `invalid`。**status を直接書く API は提供しない**（FSM の不変条件を破らせない）。
+- `Shiki.data.*` はゲスト wasm を再ビルドせず、コンパイル済みユーザーコードの前に置く前置き JS
+  （`script_runtime::prelude`）で定義する。ワークフロー／skill とミニアプリ関数で同じ定義・同じ引数の形
+  （Task 15.7）。
 
 ### 6.4 `Shiki.storage.read` / `list` / `write`（`storage.read` / `storage.write`）
 

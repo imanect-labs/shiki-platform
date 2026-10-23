@@ -577,6 +577,22 @@ PK `(tenant_id, workflow_id, delegator, scope, object_ref)`）。実装の詳細
 
 run 作成時に `run_id・trigger_kind・principal・delegator` を audit_log へ記録する（Task 10.4）。委譲の付与・失効も `workflow_delegation` の更新と同時に監査へ残す。
 
+### 6.8 構造化データ（data）の実行主体（Task 15.7）
+
+data の行述語（`row_policy`）・フィールドマスクは**ユーザーの属性**（本人 id・ロール・個別共有）で評価する。
+workflow プリンシパルで評価すると本人系の述語が成り立たず、行がほぼ見えない（fail-closed だが使えない）。
+そこで schedule / event run の data ノード・`Shiki.data.*` は次の 2 段で実行する（`crates/api/src/workflow_runtime/data_port.rs`）。
+
+1. **委譲の確認**: ワークフロー主体が対象テーブルの `data_table` に viewer（読取）/ editor（書込）のタプルを
+   持つこと（有効化時の委譲・既存の relation に workflow subject を足す方式のまま）。棚卸しでタプルを撤去すれば
+   ここで受動的に落ちる（§6.4 の三段目）。
+2. **委譲元ユーザーで実行**: `workflow_delegation` の有効な委譲元（最後に付与したユーザー）の `AuthContext` で
+   data を呼ぶ。行は委譲元の行述語で絞られ、マスク列も委譲元のもの。委譲元が今もテーブルの権限を持つかは
+   data の入口が委譲元で問い直す（失権は即時に効く）。
+
+実効権限 = scope 天井（§6.5）∩ 委譲したテーブル ∩ 委譲元の ReBAC・行述語。委譲していないテーブルは、
+委譲元が読めても読めない（委譲元の権限を丸ごと貸さない）。書込の監査・リビジョンの主体は委譲元になる。
+
 ---
 
 ## 7. リトライ・冪等・at-least-once

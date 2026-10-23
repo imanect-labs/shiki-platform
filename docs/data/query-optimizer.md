@@ -144,9 +144,10 @@ crates/data/src/stats/
   TLP テスト（§9.2）で SQL 経路と IR 経路の一致を確かめる
 - `row_policy`（`PolicyExpr`）は従来どおり `Not` を持たない。この非対称は data-platform §5.1 の注のとおり意図的
 
-**workflow の評価器と一致するのは単値の比較だけである。** 現行の `eval.rs` とは次の点で食い違う。
+**（Task 15.7 以前は）workflow の評価器と一致するのは単値の比較だけだった。** 当時の `eval.rs` とは次の点で食い違っていた
+（Task 15.7 で `eval.rs` を上の表に揃えた。両方の評価器が `crates/data/src/query/semantics_table.json` の共通の表を読むテストで固定している）。
 
-| 項目 | 上の表（data） | 現行 `eval.rs` |
+| 項目 | 上の表（data） | 15.7 以前の `eval.rs` |
 |---|---|---|
 | 多値列の `Eq c` | c を含む | 配列全体との一致 |
 | 多値列の `In [..]` | いずれかを含む | 左辺が配列だと常に偽 |
@@ -160,6 +161,9 @@ crates/data/src/stats/
 - `eval.rs` の `Eq` / `Neq` / `In` / `Contains` / `Exists` を上表の多値・数値の規則に合わせる
 - 保存済みのワークフロー定義のうち、**配列値に対して `eq` / `neq` / `in` / `contains` を使っている条件を検出**し、
   切替前に一覧化する（振る舞いが変わる候補）。ワークフローの検証器にも同じ検出を入れ、保存時に警告する
+  （実装: `workflow_engine::semantics_warnings`。一覧は `shiki-admin workflow-conditions`、保存・検証 API と
+  チャットの `emit_workflow` は `ir.condition_semantics_changed` の警告を返す。値の型は実行時まで決まらないので、
+  配列のリテラル・`input_schema` が `array` と宣言した `$from input`・`1.0` のような整数値の小数との等値を検出する）
 - data の評価規則と `eval.rs` が同じ結果を返すことを、共通のテスト表（演算子 × 型 × 値なし/空/多値）で固定する
 
 > 3 値論理（SQL と同じ）を採る案は退けた。`data.query` ノードに IR → data の翻訳層が必要になり、ワークフローの分岐と

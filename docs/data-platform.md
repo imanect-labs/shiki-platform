@@ -1233,10 +1233,10 @@ absent  ──promote──▶  building  ──収束──▶  active  ──d
 
 | 面 | 現状 | v2 |
 |---|---|---|
-| **app-gateway**（B1/B2 ミニアプリ） | ✅ 9 ルート実装済み | クエリ IR 刷新に追従。`transition` を script からも使えるようにする |
-| **shiki script（B2 関数）** | ✅ `Shiki.data.*`（gateway 経由） | 同上 |
-| **shiki script（ワークフロー/skill）** | ❌ `HostBridge` が `data.*` を受けない | **`nodes/script.rs` の dispatch に data アームを追加**。api 名は `ALLOWED_APIS` に既存 |
-| **ワークフローノード** | ❌ 語彙予約のみ・`available_stage_a` false | **`data.query` / `data.record.create` / `.update` / `.delete` / `.transition` / `.bulk_upsert` を解禁**。IR `Condition` と `DataQuery.filter` が同語彙なので変換層が不要。書込は `effect_journal`（EngineDedup）経由 |
+| **app-gateway**（B1/B2 ミニアプリ） | ✅ 9 ルート実装済み | クエリ IR 刷新に追従。`transition` を script からも使えるようにする。レコード変更の SSE は `GET /gw/data/tables/{table_id}/stream`（§9.3 の配信をアプリ所有束縛で公開・`events.subscribe` には流さない） |
+| **shiki script（B2 関数）** | ✅ `Shiki.data.*`（gateway 経由） | 同上（`Shiki.data.transition` を追加・前置きは `script_runtime::prelude` で共通） |
+| **shiki script（ワークフロー/skill）** | ❌ `HostBridge` が `data.*` を受けない | **`nodes/script.rs` の dispatch に data アームを追加**。api 名は `ALLOWED_APIS` に既存（`data.transition` は追加） |
+| **ワークフローノード** | ❌ 語彙予約のみ・`available_stage_a` false | **`data.query` / `data.record.create` / `data.record.update` / `data.record.delete` / `data.transition` / `data.bulk_upsert` を解禁**。IR `Condition` と `DataQuery.filter` が同語彙なので変換層が不要。書込は `effect_journal`（EngineDedup）経由。schedule / event run は委譲元ユーザーの権限（workflow engine.md §6.8） |
 | **generative UI** | ❌ `TableProps` は静的データ埋め込み | **`ActionBinding` に第 4 種 `DataView { view_id, pinned_version }` を追加**し、`data_grid` コンポーネントを束縛で描画。クライアントが送れるのは `action_id + params` のみ（`ActionDispatcher` の不変条件を維持） |
 | **chat / agent-core** | ❌ data 系ツールがゼロ | **`data_query`（読取）・`data_record_write`（`requires_confirmation`）・`data_schema`（グラウンディング）**。`csv_tool.rs` の 3 ツールが最も近い先例。description には**発話ユーザーが viewer のテーブル一覧**を動的に載せる（`SkillTool` と同じ流儀・テーブル数は有界） |
 | **RAG** | ❌ 構造化データのフックがゼロ | **§11.1** |
