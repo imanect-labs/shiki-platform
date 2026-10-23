@@ -316,10 +316,30 @@ async fn relay_events(
     runs: &RunStore,
     launcher: &dyn workflow_engine::RunLauncher,
 ) -> Result<(), anyhow::Error> {
+    // 溜まっていれば 1 tick の中で続けて捌く（構造化データのレコード変更も outbox に乗るので、一括取込の
+    // 直後は件数が多い。1 tick 1 バッチだと他の consumer と GC を長く止める・Task 15.6）。
+    for _ in 0..RELAY_BATCHES_PER_TICK {
+        if relay_events_batch(db, sched, runs, launcher).await? < RELAY_BATCH {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// 1 tick で捌く outbox の最大バッチ数と、1 バッチの件数。
+const RELAY_BATCHES_PER_TICK: usize = 32;
+const RELAY_BATCH: usize = 64;
+
+async fn relay_events_batch(
+    db: &sqlx::PgPool,
+    sched: &SchedulerStore,
+    runs: &RunStore,
+    launcher: &dyn workflow_engine::RunLauncher,
+) -> Result<usize, anyhow::Error> {
     let mut tx = db.begin().await?;
-    let events = storage::event::claim_undelivered(&mut tx, "workflow", 64).await?;
+    let events = storage::event::claim_undelivered(&mut tx, "workflow", RELAY_BATCH as i64).await?;
     if events.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     let mut ids = Vec::with_capacity(events.len());
     for ev in &events {
@@ -362,7 +382,7 @@ async fn relay_events(
         count = ids.len(),
         "outbox → workflow event matcher / wait へ relay"
     );
-    Ok(())
+    Ok(events.len())
 }
 
 async fn build_bucket(redis_url: &str) -> Result<TokenBucket, anyhow::Error> {

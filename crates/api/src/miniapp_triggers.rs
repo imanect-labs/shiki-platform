@@ -41,8 +41,12 @@ pub(crate) fn spawn_miniapp_triggers(deps: TriggerDeps) {
             tracing::error!(error = %e, "miniapp-functions consumer 登録に失敗");
         }
         loop {
-            if let Err(e) = event_tick(&event_deps).await {
-                tracing::warn!(error = %e, "miniapp event トリガの処理に失敗");
+            match event_tick(&event_deps).await {
+                // 溜まっていれば間を空けずに続ける（構造化データのレコード変更も outbox に乗る・
+                // 一括取込の直後に 5 秒 50 件では GC と他 consumer を長く止める・Task 15.6）。
+                Ok(n) if n >= EVENT_BATCH => continue,
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "miniapp event トリガの処理に失敗"),
             }
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
@@ -66,12 +70,17 @@ struct Subscription {
     function: String,
 }
 
-async fn event_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
+/// 1 回に claim する outbox の件数。
+const EVENT_BATCH: usize = 50;
+
+async fn event_tick(deps: &TriggerDeps) -> anyhow::Result<usize> {
     let mut tx = deps.db.begin().await?;
-    let events = storage::event::claim_undelivered(&mut tx, "miniapp-functions", 50).await?;
+    let events =
+        storage::event::claim_undelivered(&mut tx, "miniapp-functions", EVENT_BATCH as i64).await?;
     if events.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
+    let claimed = events.len();
     let ids: Vec<i64> = events.iter().map(|e| e.id).collect();
     // 突合対象（event_type 付きのみ）を集めてから ack（at-least-once の台帳→起動は at-most-once）。
     let mut dispatches: Vec<(Subscription, serde_json::Value, String)> = Vec::new();
@@ -105,7 +114,7 @@ async fn event_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
                 event_type, "event 起動の関数実行に失敗");
         }
     }
-    Ok(())
+    Ok(claimed)
 }
 
 /// イベント payload が購読アプリ自身のリソースを指すか（越境配送の防止）。
