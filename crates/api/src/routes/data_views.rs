@@ -9,7 +9,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use data::{DataQuery, DataViewBody, QueryResult};
+use data::{DataQuery, DataViewBody, QueryResult, SqlQueryResult, SqlRequest};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
@@ -47,6 +47,37 @@ pub async fn run_query(
             .data
             .run_query(&ctx, id, &query, trace.as_deref())
             .await?,
+    ))
+}
+
+/// SQL（閉じた部分集合）で読む（Task 15.10・data-platform §16.1）。
+///
+/// SQL は前段言語で、**データベースへは渡らない**（パース → allowlist 検証 → 名前の束縛 → クエリ IR へ変換し、
+/// 以降は `/data/tables/{id}/query` と同じ経路で行述語・フィールドマスク・集計抑制と合成する）。
+/// 受け付けるのは `SELECT 列|集計 FROM 表 [JOIN 表 ON リンク列 = 別名._id] [WHERE] [GROUP BY] [HAVING]
+/// [ORDER BY] [LIMIT]`。拒否は 422 と構造化した理由（`code` / `message` / `hint` / `location` / `limit` /
+/// `expected`）で、存在しない列と見えない列・存在しないテーブルと見えないテーブルは同一の本文になる。
+#[utoipa::path(
+    post,
+    path = "/data/sql",
+    request_body = SqlRequest,
+    responses(
+        (status = 200, description = "表形式の結果（columns / rows）", body = SqlQueryResult),
+        (status = 400, description = "入力が不正（索引の無い列での絞り込みなど）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限がない"),
+        (status = 422, description = "部分集合外・名前が見つからない・資源上限（構造化した理由）", body = data::QueryRejection),
+    ),
+    security(("session" = [])),
+)]
+pub async fn run_sql(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Json(req): Json<SqlRequest>,
+) -> Result<Json<SqlQueryResult>, ApiError> {
+    Ok(Json(
+        state.data.run_sql(&ctx, &req, trace.as_deref()).await?,
     ))
 }
 
@@ -219,6 +250,7 @@ pub(crate) fn data_view_route_decls() -> Vec<crate::server::RouteDecl> {
         r("/data/tables/{id}/query", &["POST"], Session, || {
             post(run_query)
         }),
+        r("/data/sql", &["POST"], Session, || post(run_sql)),
         r("/data/views", &["POST"], Session, || post(create_view)),
         r("/data/views/{id}", &["GET", "PUT"], Session, || {
             get(get_view).put(update_view)
