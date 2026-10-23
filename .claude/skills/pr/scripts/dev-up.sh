@@ -20,7 +20,9 @@
 #                   SHIKI_DEV_S3_ACCESS_KEY / SHIKI_DEV_S3_SECRET_KEY
 #                   SHIKI_DEV_RAG_WORKER_TOKEN   worker の共有トークン（worker が WORKER_AUTH_TOKEN を
 #                                 設定しているなら必須・#812）。worker 側の SOURCE_URL_ALLOWED_HOSTS には
-#                                 SHIKI_DEV_S3_ENDPOINT のホストが入っていること（無いと索引だけ入らない）
+#                                 SHIKI_DEV_S3_ENDPOINT のホストが入っていること（無いと索引だけ入らない）。
+#                                 トークンを渡すなら worker の URL は https かループバックに限る
+#                                 （それ以外の平文 HTTP は起動前に拒否する）
 #                 バケットを他の開発環境と共有しない。オブジェクトキーは
 #                 {tenant_id}/{org}/{sha256} で環境を区別せず、参照カウントも各自の DB にしか
 #                 無いため、別環境のテナント削除（{tenant_id}/ 以下の一括削除）が自分の blob を消す。
@@ -48,6 +50,18 @@ set -euo pipefail
 
 err() { printf '%s\n' "$*" >&2; }
 say() { printf '%s\n' "$*"; }
+# URL のホスト部（userinfo・ポート・パスを除く。IPv6 は [..] のまま）。
+url_host() {
+  local a=${1#*://}
+  a=${a%%[/?#]*}
+  a=${a##*@}
+  if [[ "$a" == \[* ]]; then printf '%s' "${a%%]*}]"; else printf '%s' "${a%%:*}"; fi
+}
+# ループバックのホストか（localhost・127.0.0.0/8・[::1] だけ）。
+is_loopback_host() {
+  local h=${1,,}
+  [[ "$h" == localhost || "$h" == "[::1]" || "$h" =~ ^127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]
+}
 
 MODE=native
 RESET_DB=0
@@ -213,6 +227,16 @@ if [ "$RAG_REMOTE" = 1 ]; then
   fi
   # server はベース URL の末尾の / を除いて連結するので、確認側も合わせる。
   SHIKI_DEV_RAG_WORKER_URL=${SHIKI_DEV_RAG_WORKER_URL%/}
+  # 共有トークンは Bearer で毎リクエスト送られる。ループバック以外へ平文 HTTP で送ると経路上で
+  # 盗聴され得るので拒否する。TLS の無い worker は SSH トンネル等で localhost へ引き込んで使う。
+  # 判定は URL のホスト部で行う（`http://localhost.example.com` のような接頭辞一致を通さない）。
+  if [ -n "${SHIKI_DEV_RAG_WORKER_TOKEN:-}" ] && [[ "${SHIKI_DEV_RAG_WORKER_URL,,}" == http://* ]] \
+    && ! is_loopback_host "$(url_host "$SHIKI_DEV_RAG_WORKER_URL")"; then
+    err "   worker のトークンを平文 HTTP（$SHIKI_DEV_RAG_WORKER_URL）では送りません。"
+    err "   https の URL にするか、SSH トンネル等で localhost へ引き込んでください"
+    err "   （例: ssh -N -L 8000:localhost:8000 <worker のホスト> → SHIKI_DEV_RAG_WORKER_URL=http://localhost:8000）"
+    exit 2
+  fi
   if ! worker_health=$(curl -fsS -m 5 "$SHIKI_DEV_RAG_WORKER_URL/healthz" 2>/dev/null); then
     err "   ingestion-worker に届きません: $SHIKI_DEV_RAG_WORKER_URL"
     exit 1
@@ -447,18 +471,6 @@ else
   say "   依存ポート: pg=$PG_PORT kc=$KC_PORT fga=$FGA_PORT redis=$REDIS_PORT rustfs=$RUSTFS_PORT qdrant=$QDRANT_PORT"
 
   # S3 と worker の実効値。heredoc は unquoted で中の分岐が生成時に評価されるため、外で決める。
-  # URL のホスト部（userinfo・ポート・パスを除く。IPv6 は [..] のまま）。
-  url_host() {
-    local a=${1#*://}
-    a=${a%%[/?#]*}
-    a=${a##*@}
-    if [[ "$a" == \[* ]]; then printf '%s' "${a%%]*}]"; else printf '%s' "${a%%:*}"; fi
-  }
-  # ループバックのホストか（localhost・127.0.0.0/8・[::1] だけ）。
-  is_loopback_host() {
-    local h=${1,,}
-    [[ "$h" == localhost || "$h" == "[::1]" || "$h" =~ ^127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]
-  }
   if [ "$RAG_REMOTE" = 1 ]; then
     EFF_S3_INTERNAL=$SHIKI_DEV_S3_ENDPOINT
     # ブラウザが presigned URL を直接叩くので、ブラウザから届く先でなければならない。
@@ -468,13 +480,6 @@ else
     EFF_S3_SK=$REMOTE_S3_SK
     EFF_WORKER_URL=$SHIKI_DEV_RAG_WORKER_URL
     EFF_WORKER_TOKEN=$REMOTE_WORKER_TOKEN
-    # 共有トークンは Bearer で毎リクエスト送られる。ループバック以外へ平文 HTTP で送ると経路上で
-    # 盗聴され得るので警告する（LAN のプレビュー worker は TLS 無しのため拒否まではしない）。
-    # 判定は URL のホスト部で行う（`http://localhost.example.com` のような接頭辞一致を通さない）。
-    if [ -n "$EFF_WORKER_TOKEN" ] && [[ "${EFF_WORKER_URL,,}" == http://* ]] \
-      && ! is_loopback_host "$(url_host "$EFF_WORKER_URL")"; then
-      err "   ⚠️  worker のトークンを平文 HTTP（$EFF_WORKER_URL）で送ります。信頼できる LAN 以外では https を使ってください"
-    fi
     EMBED_LINE="export SHIKI__RAG__EMBEDDING_MODEL_VERSION=$(printf '%q' "$REMOTE_EMBED_MODEL")"
     # 外部のバケットの CORS は、指定された時だけ設定する（既存の設定を勝手に書き換えない）。
     EFF_CORS=${SHIKI_DEV_S3_CORS_ALLOWED_ORIGINS:-}
