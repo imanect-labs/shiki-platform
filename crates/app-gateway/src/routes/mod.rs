@@ -49,6 +49,11 @@ pub(crate) fn capability_router() -> Router<GatewayState> {
             "/gw/data/tables/{table_id}/records/{record_id}/transition",
             post(data::transition_record),
         )
+        // レコード変更の SSE（購読者ごとに行述語・マスクを評価する data の配信・Task 15.7）
+        .route(
+            "/gw/data/tables/{table_id}/stream",
+            get(data::stream_records),
+        )
         // storage.*（StorageService 経由・個人 ReBAC）
         .route("/gw/storage/nodes/{node_id}", get(storage::get_metadata))
         .route(

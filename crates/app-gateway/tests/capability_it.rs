@@ -500,3 +500,71 @@ async fn events_subscribe_streams_owned_table_events() {
     assert!(frame.contains(&owned.to_string()), "{frame}");
     assert!(!frame.contains(&foreign.to_string()), "{frame}");
 }
+
+/// レコード変更の SSE（Task 15.7）: data.read ＋アプリ所有テーブルの束縛を通り、data の配信
+/// （購読者ごとの行述語・マスク評価）へ繋がる。`events.subscribe` のライブテールには流さない。
+#[tokio::test]
+async fn data_stream_is_bound_to_owned_tables() {
+    use tower::ServiceExt;
+
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (_app_id, client, owned, foreign) = fixture(&pool, &tenant).await;
+    let app = build_gateway_router(state(pool.clone(), &tenant));
+    let open = |path: String, tok: String| {
+        let app = app.clone();
+        async move {
+            let req = axum::http::Request::builder()
+                .uri(path)
+                .header("authorization", format!("Bearer {tok}"))
+                .body(axum::body::Body::empty())
+                .unwrap();
+            app.oneshot(req).await.unwrap()
+        }
+    };
+    // data.read が無い（events.subscribe だけ）→ 403。
+    let resp = open(
+        format!("/gw/data/tables/{owned}/stream"),
+        token(&client, "events.subscribe", &tenant),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    // 非所有テーブル → 403（スコープがあってもアプリ所有束縛で拒否）。
+    let resp = open(
+        format!("/gw/data/tables/{foreign}/stream"),
+        token(&client, "data.read", &tenant),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    // 所有テーブル → SSE。最初のフレームは data の配信の再開位置（stream.ready）。
+    let resp = open(
+        format!("/gw/data/tables/{owned}/stream"),
+        token(&client, "data.read", &tenant),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let mut body = resp.into_body().into_data_stream();
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        use futures::StreamExt;
+        loop {
+            match body.next().await {
+                Some(Ok(bytes)) => {
+                    let text = String::from_utf8_lossy(&bytes).to_string();
+                    if text.contains("event:") {
+                        return text;
+                    }
+                }
+                _ => panic!("SSE ストリームが終了した"),
+            }
+        }
+    })
+    .await
+    .expect("SSE の最初のイベントが届く");
+    assert!(frame.contains("stream.ready"), "{frame}");
+}

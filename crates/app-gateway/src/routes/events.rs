@@ -37,7 +37,8 @@ const PEEK_BATCH: i64 = 100;
 /// table_id を持たない・パースできないイベントは**流さない**（fail-closed）。
 fn event_visible(event: &OutboxEvent, allowed_tables: &HashSet<Uuid>) -> bool {
     // レコード変更（`data.record.changed`・Task 15.6）は行述語とフィールドマスクを購読者ごとに評価する
-    // 専用の配信（`GET /data/tables/{id}/stream`）だけが流す。このライブテールはテーブル単位の束縛しか
+    // 専用の配信（api の `GET /data/tables/{id}/stream`・ゲートウェイの
+    // `GET /gw/data/tables/{table_id}/stream`）だけが流す。このライブテールはテーブル単位の束縛しか
     // 持たないので、見えない行の id・変更の事実を流さないよう載せない。
     if event.payload.get("event_type").and_then(|v| v.as_str()) == Some(RECORD_CHANGED_EVENT) {
         return false;

@@ -264,3 +264,63 @@ pub(crate) async fn transition_record(
         .await?;
     Ok(Json(rec))
 }
+
+/// レコード変更の購読の開始位置（`Last-Event-ID` ヘッダが優先）。
+#[derive(Debug, Deserialize)]
+pub(crate) struct StreamQuery {
+    pub since: Option<i64>,
+}
+
+/// レコード変更の SSE（data.read・Task 15.7 で app-gateway へ公開）。
+///
+/// ミニアプリ（B1 のグリッド等）が自分の所有テーブルの変更をリアルタイムに受ける入口。中身は
+/// data の配信（`DataStore::subscribe_records`）そのもので、**呼出ユーザーの行述語とフィールドマスクを
+/// 購読者ごとに評価**し、可視→不可視・削除は `record.removed`（id のみ）を送る（data-platform §9.3）。
+/// テーブル単位の束縛しか持たない `events.subscribe`（ドメインイベントのライブテール）には
+/// レコード変更を流さず、こちらへ分ける（見えない行の id・変更の事実を漏らさない）。
+pub(crate) async fn stream_records(
+    State(state): State<GatewayState>,
+    Extension(ctx): Extension<GatewayCtx>,
+    Path(table_id): Path<Uuid>,
+    Query(q): Query<StreamQuery>,
+    headers: axum::http::HeaderMap,
+) -> Result<axum::response::Response, GatewayError> {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use axum::response::IntoResponse;
+
+    require_app_table(&state, &ctx, table_id).await?;
+    let since = match headers.get("last-event-id") {
+        None => q.since,
+        Some(v) => Some(
+            v.to_str()
+                .ok()
+                .and_then(|s| s.trim().parse::<i64>().ok())
+                .ok_or_else(|| GatewayError::Invalid("Last-Event-ID が不正です".into()))?,
+        ),
+    };
+    let rx = state
+        .caps
+        .data
+        .subscribe_records(&ctx.auth, table_id, since, None)
+        .await?;
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        let m = rx.next().await?;
+        let ev = Event::default()
+            .event(m.event.name())
+            .data(m.event.data_json().to_string());
+        let ev = match m.id {
+            Some(id) => ev.id(id.to_string()),
+            None => ev,
+        };
+        Some((Ok::<Event, std::convert::Infallible>(ev), rx))
+    });
+    let mut resp = Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response();
+    // プロキシに溜めさせない（api の SSE と同じ）。
+    resp.headers_mut().insert(
+        "x-accel-buffering",
+        axum::http::HeaderValue::from_static("no"),
+    );
+    Ok(resp)
+}
