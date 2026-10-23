@@ -156,6 +156,17 @@ pub(crate) async fn journaled_data_write(
                         false,
                         &json!({ "table_id": table_id, "code": e.code, "via": via }),
                     );
+                    // data の書込は 1 Tx（拒否・検証エラーなら何も書かれていない）。予約を外して同じ
+                    // ステップの再実行を待たせない。副作用の有無が不明な一時障害（unavailable）は外さない
+                    // （一括 upsert は取込 ID が冪等なので外しても二重にならない）。
+                    if e.code != "unavailable" {
+                        journal
+                            .release(&ec.tenant_id, &key, &digest)
+                            .await
+                            .map_err(|je| {
+                                PortError::unavailable(format!("journal release: {je}"))
+                            })?;
+                    }
                     return Err(e);
                 }
             };

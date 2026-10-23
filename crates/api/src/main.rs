@@ -243,6 +243,7 @@ async fn main() -> anyhow::Result<()> {
         secrets.as_ref(),
         &tabular,
         &artifacts,
+        (&data_store, &fsms),
     )
     .await?;
 

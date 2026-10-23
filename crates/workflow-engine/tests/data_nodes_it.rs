@@ -38,6 +38,8 @@ struct DataPorts {
     unconfigured: bool,
     queries: Mutex<Vec<(Uuid, DataQuery)>>,
     writes: Mutex<Vec<DataWriteReq>>,
+    /// 次の書込を data が拒否した（検証エラー）ことにする。
+    reject_next_write: Mutex<bool>,
 }
 
 #[async_trait]
@@ -114,6 +116,9 @@ impl NodePorts for DataPorts {
     }
 
     async fn data_write(&self, _c: &ExecCtx, req: DataWriteReq) -> Result<Value, PortError> {
+        if std::mem::take(&mut *self.reject_next_write.lock().unwrap()) {
+            return Err(PortError::invalid("'title' は必須です"));
+        }
         let n = {
             let mut w = self.writes.lock().unwrap();
             w.push(req);
@@ -406,6 +411,20 @@ async fn data_writes_are_applied_at_most_once() {
         )
         .await;
     assert_eq!(other.error.unwrap().code, "effect_conflict");
+
+    // data が拒否した書込（何も書かれていない）は予約を外し、同じステップの再実行がすぐ進める。
+    let rkey = format!("wf:datatest:{}", Uuid::new_v4());
+    let rc = ctx(json!({}), &["data.write"], &rkey);
+    let create = json!({ "table": TABLE, "data": { "title": "t" } });
+    *ports.reject_next_write.lock().unwrap() = true;
+    let first = exec.execute("data.record.create", &create, &rc).await;
+    assert_eq!(first.error.unwrap().code, "invalid");
+    let again = exec.execute("data.record.create", &create, &rc).await;
+    assert!(
+        again.ok,
+        "拒否の後の再実行は InProgress で待たされない: {:?}",
+        again.error
+    );
 
     // script: 1 ステップ内の 2 つの書込は別キー（#c<seq>）で両方適用、ステップの再実行では増えない。
     const SCRIPT: &str = r#"function main(input) {

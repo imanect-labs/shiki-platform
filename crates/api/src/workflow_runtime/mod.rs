@@ -6,6 +6,7 @@
 //! RAG の `spawn_pipeline` と同型（プロセス生存中 loop・エラーは小休止して再試行）。
 
 mod auth;
+mod data_port;
 mod ports;
 mod skill_port;
 
@@ -136,6 +137,10 @@ pub struct RuntimeDeps {
     pub http: reqwest::Client,
     pub redis_url: Option<String>,
     pub config: WorkflowConfig,
+    /// 構造化データ（data ノード・`Shiki.data.*`・Task 15.7）。
+    pub data: Arc<data::DataStore>,
+    /// data.transition の FSM 定義の解決。
+    pub fsms: Arc<data::FsmStore>,
 }
 
 /// 本番 executor を組む（能力ゲートウェイ → ポート・レート制御・script エンジン）。
@@ -155,6 +160,8 @@ async fn build_prod_executor(
         launcher: launcher.clone(),
         http: deps.http.clone(),
         db: deps.db.clone(),
+        data: Some(Arc::clone(&deps.data)),
+        fsms: Some(Arc::clone(&deps.fsms)),
     });
     let journal = EffectJournal::new(deps.db.clone());
     let mut executor = CapabilityNodeExecutor::new(ports, journal, Arc::new(TracingAudit))

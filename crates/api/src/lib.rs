@@ -36,6 +36,7 @@ pub mod state;
 pub mod telemetry;
 pub mod workflow_catalog;
 pub mod workflow_runtime;
+pub mod workflow_semantics_audit;
 
 pub use server::build_router;
 pub use state::AppState;

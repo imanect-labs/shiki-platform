@@ -448,6 +448,24 @@ impl DataStore {
         opts: BulkImportOptions,
         trace_id: Option<&str>,
     ) -> Result<Uuid, DataError> {
+        self.start_bulk_upsert_with_id(ctx, table_id, Uuid::new_v4(), rows, opts, trace_id)
+            .await
+    }
+
+    /// 取込 ID を呼び出し側が決める [`Self::start_bulk_upsert`]（**同じ ID の 2 回目は何もせず同じ ID を返す**）。
+    ///
+    /// ワークフローの `data.bulk_upsert` はステップの冪等キーから取込 ID を決め、effect_journal の
+    /// 回収窓（予約したワーカーが落ちた後の再実行）でも二重に取り込まない（続きはジョブが進める）。
+    /// 別のテーブルの取込 ID と衝突したら 409。
+    pub async fn start_bulk_upsert_with_id(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        import_id: Uuid,
+        rows: Vec<BulkUpsertRow>,
+        opts: BulkImportOptions,
+        trace_id: Option<&str>,
+    ) -> Result<Uuid, DataError> {
         self.require(
             ctx,
             table_id,
@@ -465,8 +483,19 @@ impl DataStore {
                 "1 回に取り込める行は {MAX_BULK_ROWS} 行までです"
             )));
         }
-        let import_id = Uuid::new_v4();
         let keys = table.keys;
+        if let Some(existing) = self
+            .existing_import(&ctx.tenant_id, keys.tenant_int, import_id)
+            .await?
+        {
+            return if existing == keys.table_int {
+                Ok(import_id)
+            } else {
+                Err(DataError::Conflict(
+                    "取込 ID が別のテーブルで使われています".into(),
+                ))
+            };
+        }
         let mut staged = CopyRows::default();
         let mut tx = self
             .pools
@@ -479,7 +508,7 @@ impl DataStore {
             .and_then(|v| v.as_str().map(str::to_string))
             .ok_or_else(|| DataError::Internal("主体の種別を直列化できません".into()))?;
         let total = i64::try_from(rows.len()).unwrap_or(i64::MAX);
-        sqlx::query(
+        let inserted = sqlx::query(
             "INSERT INTO data_bulk_import (tenant_int, id, table_int, table_id, principal_kind, \
                principal_id, org, trace_id, schema_version, abort_on_invalid, index_mode, rows_total) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
@@ -497,8 +526,24 @@ impl DataStore {
         .bind(opts.index_mode.as_str())
         .bind(total)
         .execute(&mut *tx)
-        .await
-        .map_err(map_db)?;
+        .await;
+        match inserted {
+            Ok(_) => {}
+            // 同じ取込 ID を並行に始めた（先に入った方が取り込む・こちらは同じ ID を返す）。
+            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+                drop(tx);
+                return match self
+                    .existing_import(&ctx.tenant_id, keys.tenant_int, import_id)
+                    .await?
+                {
+                    Some(t) if t == keys.table_int => Ok(import_id),
+                    _ => Err(DataError::Conflict(
+                        "取込 ID が別のテーブルで使われています".into(),
+                    )),
+                };
+            }
+            Err(e) => return Err(map_db(e)),
+        }
         {
             // ① COPY（authoritative な表には触れない）。値は COPY のデータ行で送り、SQL 文は固定。
             let mut copy = tx
@@ -541,6 +586,23 @@ impl DataStore {
         .await?;
         tx.commit().await.map_err(map_db)?;
         Ok(import_id)
+    }
+
+    /// 取込 ID の取込が既にあればそのテーブルの内部キー（取込 ID の冪等な再開用）。
+    async fn existing_import(
+        &self,
+        tenant_id: &str,
+        tenant_int: i32,
+        import_id: Uuid,
+    ) -> Result<Option<i64>, DataError> {
+        sqlx::query_scalar(
+            "SELECT table_int FROM data_bulk_import WHERE tenant_int = $1 AND id = $2",
+        )
+        .bind(tenant_int)
+        .bind(import_id)
+        .fetch_optional(self.pools.for_tenant(tenant_id))
+        .await
+        .map_err(map_db)
     }
 
     /// 取込の進捗（editor）。別のテーブルの取込 ID は「見つからない」。

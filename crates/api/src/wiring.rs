@@ -499,6 +499,7 @@ pub(crate) async fn wire_workflow(
     secrets: Option<&Arc<secrets::SecretStore>>,
     tabular: &Arc<tabular::TabularService>,
     artifacts: &Arc<artifact::ArtifactStore>,
+    data: (&Arc<data::DataStore>, &Arc<data::FsmStore>),
 ) -> anyhow::Result<(
     Option<Arc<workflow_engine::WorkflowRunLauncher>>,
     Option<Arc<workflow_engine::RunStore>>,
@@ -539,6 +540,9 @@ pub(crate) async fn wire_workflow(
         http: http.clone(),
         redis_url: Some(config.session.redis_url.clone()),
         config: config.workflow.clone(),
+        // data ノード・`Shiki.data.*`（Task 15.7）は API と同じ DataStore / FsmStore を共有する。
+        data: Arc::clone(data.0),
+        fsms: Arc::clone(data.1),
     })
     .await;
     Ok((Some(Arc::new(launcher)), Some(Arc::new(runs))))

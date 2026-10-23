@@ -390,3 +390,88 @@ async fn bulk_upsert_rejects_malformed_input_up_front() {
         .unwrap_err();
     assert!(matches!(err, data::DataError::Invalid(_)), "{err:?}");
 }
+
+/// 取込 ID を決めて始める入口は冪等（ワークフローの再実行で二重に取り込まない）。
+#[tokio::test]
+async fn bulk_upsert_with_id_is_idempotent() {
+    let Some(pool) = setup().await else { return };
+    let Some((store, _)) = fga(pool.clone()).await else {
+        return;
+    };
+    let tenant = unique_tenant();
+    let alice = ctx(&tenant, "alice");
+    let mut title = field("title", FieldType::Text);
+    title.indexed = true;
+    let table = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "t".into(),
+                schema: schema(vec![title]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let other = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "u".into(),
+                schema: schema(vec![field("x", FieldType::Text)]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let id = Uuid::new_v4();
+    let rows = || {
+        vec![BulkUpsertRow {
+            key: None,
+            record_id: None,
+            expected_rev: None,
+            data: json!({"title": "once"}),
+        }]
+    };
+    for _ in 0..2 {
+        let got = store
+            .start_bulk_upsert_with_id(
+                &alice,
+                table.id,
+                id,
+                rows(),
+                BulkImportOptions::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(got, id);
+    }
+    // 別のテーブルで同じ ID は 409。
+    let err = store
+        .start_bulk_upsert_with_id(
+            &alice,
+            other.id,
+            id,
+            rows(),
+            BulkImportOptions::default(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, data::DataError::Conflict(_)), "{err:?}");
+    detach_job(&pool, id).await;
+    store.run_bulk_import(&tenant, table.id, id).await.unwrap();
+    let q = DataQuery {
+        filter: Some(Condition::cmp("title", CondOp::Eq, Some(json!("once")))),
+        ..DataQuery::default()
+    };
+    let n = store
+        .run_query(&alice, table.id, &q, None)
+        .await
+        .unwrap()
+        .items
+        .unwrap()
+        .len();
+    assert_eq!(n, 1, "2 回始めても 1 行だけ");
+}
