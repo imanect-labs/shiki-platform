@@ -266,3 +266,76 @@ async fn uniqueness_survives_the_upgrade_from_a_mid_backfill_state() {
         .await
         .unwrap();
 }
+
+/// 集計クエリは監査に残る（PIT-17: 反復差分の検知可能性・監査 B1-3）。IR 直投入と SQL 前段面の両方。
+/// 集計しない読取は監査しない（読取ごとに監査を積まない）。
+#[tokio::test]
+async fn aggregate_queries_are_audited() {
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool.clone());
+    let a = ctx(&unique_tenant(), "alice");
+    let mut st = field("status", FieldType::Select);
+    st.indexed = true;
+    st.options = vec!["x".into(), "y".into()];
+    let t = create_table(&store, &a, "agg_audit", schema(vec![st])).await;
+    for s in ["x", "x", "y"] {
+        store
+            .create_record(&a, t.id, json!({ "status": s }), None)
+            .await
+            .unwrap();
+    }
+    let audits = |pool: sqlx::PgPool, tenant: String| async move {
+        sqlx::query_as::<_, (String, String, String, serde_json::Value, Option<String>)>(
+            "SELECT actor, object_type, object_id, metadata, trace_id FROM audit_log \
+             WHERE tenant_id = $1 AND action = 'data.query.aggregate' ORDER BY id",
+        )
+        .bind(tenant)
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    };
+    // 集計しない読取は監査に残さない。
+    store
+        .run_query(&a, t.id, &DataQuery::default(), None)
+        .await
+        .unwrap();
+    assert!(audits(pool.clone(), a.tenant_id.clone()).await.is_empty());
+
+    let q = DataQuery {
+        group_by: vec!["status".into()],
+        aggregate: vec![data::MetricSpec {
+            metric: data::Metric::Count,
+            field: None,
+        }],
+        ..Default::default()
+    };
+    store
+        .run_query(&a, t.id, &q, Some("trace-agg"))
+        .await
+        .unwrap();
+    let rows = audits(pool.clone(), a.tenant_id.clone()).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let (actor, otype, oid, meta, trace) = &rows[0];
+    assert_eq!(actor, "alice");
+    assert_eq!(otype, "data_table");
+    assert_eq!(oid, &t.id.to_string());
+    assert_eq!(meta["group_by"], json!(["status"]));
+    assert_eq!(trace.as_deref(), Some("trace-agg"));
+
+    // SQL 前段面の集計も同じ経路で監査に残る。
+    store
+        .run_sql(
+            &a,
+            &data::SqlRequest {
+                sql: "SELECT status, count(*) FROM agg_audit GROUP BY status".into(),
+                cursor: None,
+                with_count: false,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let rows = audits(pool.clone(), a.tenant_id.clone()).await;
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[1].2, t.id.to_string());
+}
