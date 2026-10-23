@@ -471,7 +471,7 @@ else
     # 共有トークンは Bearer で毎リクエスト送られる。ループバック以外へ平文 HTTP で送ると経路上で
     # 盗聴され得るので警告する（LAN のプレビュー worker は TLS 無しのため拒否まではしない）。
     # 判定は URL のホスト部で行う（`http://localhost.example.com` のような接頭辞一致を通さない）。
-    if [ -n "$EFF_WORKER_TOKEN" ] && [[ "$EFF_WORKER_URL" == http://* ]] \
+    if [ -n "$EFF_WORKER_TOKEN" ] && [[ "${EFF_WORKER_URL,,}" == http://* ]] \
       && ! is_loopback_host "$(url_host "$EFF_WORKER_URL")"; then
       err "   ⚠️  worker のトークンを平文 HTTP（$EFF_WORKER_URL）で送ります。信頼できる LAN 以外では https を使ってください"
     fi
