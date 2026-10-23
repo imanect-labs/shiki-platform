@@ -272,3 +272,26 @@ impl Tool for ReadWorkflowTool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ノードカタログに登録した data ノードは emit_workflow の説明へ自動で載る（Task 15.7・手書きしない）。
+    #[test]
+    fn emit_description_lists_data_nodes_from_the_catalog() {
+        let d = emit_description();
+        for t in [
+            "data.query",
+            "data.record.create",
+            "data.record.update",
+            "data.record.delete",
+            "data.transition",
+            "data.bulk_upsert",
+        ] {
+            assert!(d.contains(&format!("- {t}（")), "{t} が説明に無い");
+        }
+        assert!(d.contains("要 declared_scopes: data.read"));
+        assert!(d.contains("要 declared_scopes: data.write"));
+    }
+}
