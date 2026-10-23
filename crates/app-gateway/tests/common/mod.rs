@@ -431,8 +431,7 @@ pub fn state_with(pool: PgPool, tenant: &str, authz: Arc<dyn AuthzClient>) -> Ga
         },
         authz: authz.clone(),
         audit: AuditRecorder::new(pool.clone()),
-        require_tenant_claim: false,
-        default_tenant: tenant.into(),
+        tenant_source: authz::TenantSource::Fixed(tenant.into()),
         default_org: "acme".into(),
         caps: CapabilityDeps {
             db: pool.clone(),

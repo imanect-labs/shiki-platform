@@ -39,6 +39,7 @@ async fn collect_exec(svc: &SandboxSvc, id: &str) -> (String, Option<i32>, bool)
     let resp = svc
         .exec(Request::new(pb::ExecRequest {
             sandbox_id: id.to_string(),
+            tenant_id: "t".into(),
             kind: pb::ExecKind::Python as i32,
             payload: "print('hi')".to_string(),
             timeout_ms: 0,
@@ -82,6 +83,7 @@ async fn create_exec_destroy_roundtrip() {
 
     svc.destroy(Request::new(pb::DestroyRequest {
         sandbox_id: id.clone(),
+        tenant_id: "t".into(),
     }))
     .await
     .expect("destroy ok");
@@ -89,6 +91,7 @@ async fn create_exec_destroy_roundtrip() {
     let result = svc
         .exec(Request::new(pb::ExecRequest {
             sandbox_id: id,
+            tenant_id: "t".into(),
             kind: pb::ExecKind::Python as i32,
             payload: "x".into(),
             timeout_ms: 0,
@@ -106,6 +109,7 @@ async fn put_get_file_roundtrip() {
     let id = create(&svc).await;
     svc.put_file(Request::new(pb::PutFileRequest {
         sandbox_id: id.clone(),
+        tenant_id: "t".into(),
         path: "out/data.txt".into(),
         content: b"payload".to_vec(),
     }))
@@ -114,6 +118,7 @@ async fn put_get_file_roundtrip() {
     let got = svc
         .get_file(Request::new(pb::GetFileRequest {
             sandbox_id: id,
+            tenant_id: "t".into(),
             path: "out/data.txt".into(),
         }))
         .await
@@ -129,6 +134,7 @@ async fn path_traversal_rejected() {
     let err = svc
         .put_file(Request::new(pb::PutFileRequest {
             sandbox_id: id,
+            tenant_id: "t".into(),
             path: "../../etc/passwd".into(),
             content: b"x".to_vec(),
         }))

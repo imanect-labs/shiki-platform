@@ -6,8 +6,40 @@ use super::*;
 fn both_tenancies_supported() {
     // SAAS.1（#84）で全隔離層が tenant_id スコープになり、multi は設定だけで運用可能
     // （旧 dev opt-in ゲートは撤去）。single も従来どおり可。
-    assert!(AppConfig::check_tenancy_supported(Tenancy::Multi).is_ok());
-    assert!(AppConfig::check_tenancy_supported(Tenancy::Single).is_ok());
+    let mut auth = auth_config("http://localhost/realms/shiki", None, None);
+    assert!(AppConfig::check_tenancy_supported(&auth).is_ok());
+    auth.tenancy = Tenancy::Multi;
+    assert!(AppConfig::check_tenancy_supported(&auth).is_ok());
+}
+
+#[test]
+fn single_with_provisioner_still_starts() {
+    // provisioner はミニアプリ同意インストールの client 登録（オンプレでも使う）を兼ねるため、
+    // single＋provisioner でも起動は止めない（テナント作成だけをハンドラで拒否する・#808）。
+    let mut auth = auth_config("http://localhost/realms/shiki", None, None);
+    auth.provisioner_client_id = Some("shiki-provisioner".into());
+    auth.provisioner_client_secret = Some("secret".into());
+    assert!(AppConfig::check_tenancy_supported(&auth).is_ok());
+}
+
+#[test]
+fn tenant_source_follows_tenancy() {
+    // 内部 API と公開 API ゲートウェイが共有する解決規則への写し（#808）。
+    let mut auth = auth_config("http://localhost/realms/shiki", None, None);
+    auth.tenant_id = Some("cell-onprem".into());
+    assert_eq!(
+        auth.tenant_source(),
+        authz::TenantSource::Fixed("cell-onprem".into())
+    );
+    // single の固定値が未設定なら空として渡し、解決時に設定ミスで拒否させる（"default" を補わない）。
+    auth.tenant_id = None;
+    assert_eq!(
+        auth.tenant_source(),
+        authz::TenantSource::Fixed(String::new())
+    );
+    assert!(auth.tenant_source().resolve(Some("acme")).is_err());
+    auth.tenancy = Tenancy::Multi;
+    assert_eq!(auth.tenant_source(), authz::TenantSource::Claim);
 }
 
 fn session(ttl_secs: u64, refresh_leeway_secs: i64) -> SessionConfig {
@@ -596,4 +628,246 @@ fn empty_min_rerank_score_env_means_disabled() {
     .extract()
     .unwrap();
     assert_eq!(parsed.min_rerank_score, Some(0.45));
+}
+
+#[test]
+fn usage_limits_default_off_and_map_to_gateway() {
+    // 既定（節を書かない）は無効＝問い合わせもしない。
+    let llm: LlmConfig = serde_json::from_value(serde_json::json!({ "backend": "stub" })).unwrap();
+    assert!(llm.usage_limits().is_noop());
+
+    // TOML（K8s の llm.toml）の形がそのまま gateway へ届く。
+    use figment::providers::{Format, Toml};
+    let toml = r#"
+        backend = "anthropic"
+
+        [limits]
+        enabled = true
+        per_user_usd_micros = 1500000
+
+        [[limits.providers]]
+        providers = ["anthropic", "anthropic-batch"]
+        usd_micros = 50000000
+    "#;
+    let llm: LlmConfig = figment::Figment::new()
+        .merge(Toml::string(toml))
+        .extract()
+        .unwrap();
+    let limits = llm.usage_limits();
+    assert!(!limits.is_noop());
+    assert_eq!(limits.per_user(), Some(1_500_000));
+    // 1 つのキーを共有する ID はどちらから引いても同じ枠（合算対象も同じ）。
+    for id in ["anthropic", "anthropic-batch"] {
+        let hit = limits.provider_limit(id).unwrap();
+        assert_eq!(hit.usd_micros, 50_000_000);
+        assert_eq!(hit.providers, vec!["anthropic", "anthropic-batch"]);
+    }
+    // 列挙していないプロバイダは無制限。
+    assert!(limits.provider_limit("opencode").is_none());
+}
+
+#[test]
+fn zero_usage_limit_means_unlimited() {
+    // env に空文字を置けないため、0 で「無制限」にできる（効かない上限を 0 で表さない）。
+    let mut cfg = valid_config();
+    cfg.llm.limits = LlmLimitsConfig {
+        enabled: true,
+        per_user_usd_micros: Some(0),
+        providers: vec![LlmProviderLimit {
+            providers: vec!["default".into()],
+            usd_micros: 0,
+        }],
+    };
+    cfg.validate().unwrap();
+    let limits = cfg.llm.usage_limits();
+    assert_eq!(limits.per_user(), None);
+    assert!(limits.provider_limit("default").is_none());
+    assert!(limits.is_noop());
+}
+
+#[test]
+fn negative_usage_limits_are_rejected() {
+    let mut cfg = valid_config();
+    cfg.llm.limits = LlmLimitsConfig {
+        enabled: true,
+        per_user_usd_micros: Some(-1),
+        providers: vec![],
+    };
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("per_user_usd_micros"), "{err}");
+
+    let mut cfg = valid_config();
+    cfg.llm.limits = LlmLimitsConfig {
+        enabled: true,
+        per_user_usd_micros: None,
+        providers: vec![LlmProviderLimit {
+            providers: vec!["default".into()],
+            usd_micros: -1,
+        }],
+    };
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("usd_micros"), "{err}");
+}
+
+#[test]
+fn usage_limit_for_unknown_provider_is_rejected() {
+    // 綴り違いは「黙って上限が掛からない」状態を作るので起動を止める（fail-closed）。
+    let mut cfg = valid_config();
+    cfg.llm.providers = vec![LlmProviderEntry {
+        id: "anthropic".into(),
+        display_name: None,
+        backend: LlmBackend::Anthropic,
+        base_url: None,
+        api_key: Some("k".into()),
+        user_agent: None,
+        session_header: None,
+    }];
+    cfg.llm.limits = LlmLimitsConfig {
+        enabled: true,
+        per_user_usd_micros: None,
+        providers: vec![LlmProviderLimit {
+            providers: vec!["anthropik".into()],
+            usd_micros: 1,
+        }],
+    };
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("anthropik"), "{err}");
+
+    // 既定プロバイダ（default）と宣言済みの ID は通る。
+    cfg.llm.limits.providers = vec![
+        LlmProviderLimit {
+            providers: vec!["default".into()],
+            usd_micros: 1,
+        },
+        LlmProviderLimit {
+            providers: vec!["anthropic".into()],
+            usd_micros: 1,
+        },
+    ];
+    cfg.validate().unwrap();
+
+    // 同じ ID が 2 つの枠に属するのは曖昧なので弾く。
+    cfg.llm.limits.providers = vec![
+        LlmProviderLimit {
+            providers: vec!["anthropic".into()],
+            usd_micros: 1,
+        },
+        LlmProviderLimit {
+            providers: vec!["anthropic".into()],
+            usd_micros: 2,
+        },
+    ];
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("重複"), "{err}");
+
+    // 空の枠（どの ID も指さない）も弾く。
+    cfg.llm.limits.providers = vec![LlmProviderLimit {
+        providers: vec![],
+        usd_micros: 1,
+    }];
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("1 つ以上"), "{err}");
+}
+
+#[test]
+fn preview_shaped_llm_toml_loads_and_validates() {
+    // プレビュー環境（giken-ops の gitops/apps/shiki-preview/templates/llm-config.yaml）が
+    // 吐く TOML と同じ形。配列（providers / models / limits.providers）は env で渡せないため
+    // TOML 側に置き、スカラー（backend / base_url / api_key / default_model）は env で重ねる。
+    // **キー名の取り違え（realId / real_id など）をここで止める。**
+    use figment::providers::{Format, Toml};
+    let toml = r#"
+        display_name = "OpenRouter"
+
+        [limits]
+        enabled = true
+        per_user_usd_micros = 5000000
+
+        [[limits.providers]]
+        providers = ["default"]
+        usd_micros = 20000000
+
+        [[limits.providers]]
+        providers = ["opencode-responses", "opencode", "opencode-anthropic"]
+        usd_micros = 20000000
+
+        [[limits.providers]]
+        providers = ["anthropic"]
+        usd_micros = 20000000
+
+        [[providers]]
+        id = "opencode-responses"
+        display_name = "OpenCode Go"
+        backend = "openai_responses"
+        base_url = "https://opencode.ai/zen/go/v1"
+        api_key = "k"
+        user_agent = "shiki-platform-preview/1.0"
+        session_header = "x-opencode-session"
+
+        [[providers]]
+        id = "opencode"
+        display_name = "OpenCode Go"
+        backend = "openai"
+        base_url = "https://opencode.ai/zen/go/v1"
+        api_key = "k"
+
+        [[providers]]
+        id = "opencode-anthropic"
+        display_name = "OpenCode Go"
+        backend = "anthropic"
+        base_url = "https://opencode.ai/zen/go"
+        api_key = "k"
+
+        [[providers]]
+        id = "anthropic"
+        display_name = "Anthropic"
+        backend = "anthropic"
+        base_url = "https://api.anthropic.com"
+        api_key = "k"
+
+        [[models]]
+        id = "anthropic/claude-opus-5-5"
+        real_id = "claude-opus-5-5"
+        provider = "anthropic"
+        display_name = "Claude Opus 5.5"
+        prompt_price_micros_per_mtok = 4000000
+        completion_price_micros_per_mtok = 20000000
+        cache_read_price_micros_per_mtok = 200000
+        cache_write_price_micros_per_mtok = 5000000
+        context_window_tokens = 200000
+        processed_abroad = true
+    "#;
+    let llm: LlmConfig = figment::Figment::new()
+        .merge(figment::providers::Serialized::defaults(
+            serde_json::json!({ "backend": "openai" }),
+        ))
+        .merge(Toml::string(toml))
+        .extract()
+        .unwrap();
+
+    // 設定検証（未知のプロバイダ ID・重複・負値を弾く経路）を通る。
+    let mut cfg = valid_config();
+    cfg.llm = llm;
+    cfg.validate().unwrap();
+
+    // Anthropic プロバイダ（別請求先）とモデルがカタログへ届く。
+    assert_eq!(cfg.llm.providers.len(), 4);
+    let m = &cfg.llm.model_catalog().models[0];
+    assert_eq!(m.id, "anthropic/claude-opus-5-5");
+    // 論理 ID は OpenCode 経由の Claude と衝突しないよう接頭辞付きで、実 ID は素の名前。
+    assert_eq!(m.resolved_id(), "claude-opus-5-5");
+    assert_eq!(m.provider_id(), "anthropic");
+    assert_eq!(m.cache_read_price(), 200_000);
+    assert_eq!(m.cache_write_price(), 5_000_000);
+    assert_eq!(m.context_window_tokens, Some(200_000));
+
+    // 利用制限: OpenCode の 3 プロバイダは 1 つの枠を共有する。
+    let limits = cfg.llm.usage_limits();
+    assert_eq!(limits.per_user(), Some(5_000_000));
+    let shared = limits.provider_limit("opencode-anthropic").unwrap();
+    assert_eq!(shared.usd_micros, 20_000_000);
+    assert_eq!(shared.providers.len(), 3);
+    // Anthropic 直結は別枠（OpenCode 経由の Claude と請求先が違う）。
+    let own = limits.provider_limit("anthropic").unwrap();
+    assert_eq!(own.providers, vec!["anthropic"]);
 }
