@@ -1237,8 +1237,8 @@ absent  ──promote──▶  building  ──収束──▶  active  ──d
 | **shiki script（B2 関数）** | ✅ `Shiki.data.*`（gateway 経由） | 同上（`Shiki.data.transition` を追加・前置きは `script_runtime::prelude` で共通） |
 | **shiki script（ワークフロー/skill）** | ❌ `HostBridge` が `data.*` を受けない | **`nodes/script.rs` の dispatch に data アームを追加**。api 名は `ALLOWED_APIS` に既存（`data.transition` は追加） |
 | **ワークフローノード** | ❌ 語彙予約のみ・`available_stage_a` false | **`data.query` / `data.record.create` / `data.record.update` / `data.record.delete` / `data.transition` / `data.bulk_upsert` を解禁**。IR `Condition` と `DataQuery.filter` が同語彙なので変換層が不要。書込は `effect_journal`（EngineDedup）経由。schedule / event run は委譲元ユーザーの権限（workflow engine.md §6.8） |
-| **generative UI** | ❌ `TableProps` は静的データ埋め込み | **`ActionBinding` に第 4 種 `DataView { view_id, pinned_version }` を追加**し、`data_grid` コンポーネントを束縛で描画。クライアントが送れるのは `action_id + params` のみ（`ActionDispatcher` の不変条件を維持） |
-| **chat / agent-core** | ❌ data 系ツールがゼロ | **`data_query`（読取）・`data_record_write`（`requires_confirmation`）・`data_schema`（グラウンディング）**。`csv_tool.rs` の 3 ツールが最も近い先例。description には**発話ユーザーが viewer のテーブル一覧**を動的に載せる（`SkillTool` と同じ流儀・テーブル数は有界） |
+| **generative UI** | ❌ `TableProps` は静的データ埋め込み | **`ActionBinding` に `DataView { view_id, pinned_version }` を追加**し、`data_grid` コンポーネントを束縛で描画。クライアントが送れるのは `action_id + params` のみ（`ActionDispatcher` の不変条件を維持）。実装（Task 15.7）: ミニアプリの画面の `` ```data_grid ``（中身は束ねた保存ビューの別名）。ピンは `MiniAppBody.data_views` で、保存時に保存者の権限で解決する（`MiniAppStore`・ワークフローのピンと同じ流儀）。描画は `POST /mini-apps/{id}/ui-actions`（`action_id = data_grid:{別名}`・params は `DataViewPage` の `cursor` / `limit` だけ）で、定義はバンドル権限で読み、**行・列は閲覧者本人の権限で毎回評価**する（`DataViewStore::run_via_bundle`）。#604 で tool 束縛を撤去したので束縛は 3 種 |
+| **chat / agent-core** | ❌ data 系ツールがゼロ | **`data_query`（読取）・`data_record_write`（`requires_confirmation`）・`data_schema`（グラウンディング）**。`csv_tool.rs` の 3 ツールが最も近い先例。description には**発話ユーザーが viewer のテーブル一覧**を動的に載せる（`SkillTool` と同じ流儀・テーブル数は有界）。実装（Task 15.7）: `crates/chat/src/data_tool.rs`。一覧は 30 件まで、見えるテーブルが無ければ提示しない。`data_schema` は読めない列を載せない。`data_record_write` は作成・更新（status は FSM の遷移でだけ動く） |
 | **RAG** | ❌ 構造化データのフックがゼロ | **§11.1** |
 
 ### 11.1 RAG 統合（方向性）
