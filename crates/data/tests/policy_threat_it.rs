@@ -1559,6 +1559,42 @@ async fn materialized_rollup_is_discarded_when_table_rebac_changes() {
     }
 }
 
+/// ⑨-3b **参照先**のテーブル ReBAC を変えて包含が崩れたとき（参照先 lines から bob を外す）、
+/// `after_table_rebac_changed(参照先)` が参照元 orders の材料化列も検査し直し、次の読取を待たずに
+/// 材料化データを破棄する（PIT-71・監査 B1-5）。
+#[tokio::test]
+async fn materialized_rollup_is_discarded_when_reference_table_rebac_changes() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let m = materialized_fixture(pool, authz).await;
+    // bob を両方の viewer にしても包含は保たれる（材料化のまま）。
+    grant(&m.authz, &m.bob, Relation::Viewer, m.lines).await;
+    m.store.after_table_rebac_changed(&m.alice, m.lines).await;
+    grant(&m.authz, &m.bob, Relation::Viewer, m.orders).await;
+    m.store.after_table_rebac_changed(&m.alice, m.orders).await;
+    assert_eq!(m.materialized_rows().await, 2, "前提: 包含は保たれている");
+    // 参照先から bob を外す → orders の viewer（alice, bob）⊄ lines の viewer（alice）。
+    m.authz
+        .delete_tuple(
+            &m.bob.subject(),
+            Relation::Viewer,
+            &m.bob.ns().data_table(&m.lines.to_string()),
+        )
+        .await
+        .expect("revoke");
+    m.store.after_table_rebac_changed(&m.alice, m.lines).await;
+    // 読取の入口を通る前に、参照元の材料化データ（索引行・依存登録）がもう無い。
+    assert_eq!(
+        m.materialized_rows().await,
+        0,
+        "参照先の ReBAC 変更で参照元の材料化データが残っている"
+    );
+    m.assert_discarded("参照先の ReBAC の変更").await;
+    assert_eq!(m.total_seen_by(&m.bob).await, serde_json::Value::Null);
+    assert_eq!(m.total_seen_by(&m.alice).await, json!(350));
+}
+
 /// ⑨-4 ReBAC の変更をクエリ（ソート）の入口で検出した場合も、その場で破棄して拒否する。
 /// 参照先へ field_policy（マスク）を後付けした場合も同様に破棄される。
 #[tokio::test]

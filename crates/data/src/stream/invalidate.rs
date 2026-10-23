@@ -37,19 +37,69 @@ impl DataStore {
     ///
     /// ① 配信の世代を進めて購読の認可材料を次のバッチで引き直させ（[`Self::notify_authz_changed`]）、
     /// ② 材料化の前提（テーブル viewer の範囲で派生値が変わらないこと）を検査し直す
-    /// （[`Self::reverify_materialization`]・data-platform §7.4）。どちらも呼ばなくても TTL・次の読取で
+    /// （[`Self::reverify_materialization`]・data-platform §7.4）。前提はこのテーブル自身の材料化列だけでなく、
+    /// **このテーブルを参照先にする材料化列**（参照元・`data_derived_dep`）にも掛かる（参照元の viewer 集合が
+    /// 参照先の viewer 集合に含まれること）ので、参照元も検査し直し、崩れた列はその場で降格する
+    /// （索引行は降格と同じ Tx で破棄・PIT-71）。どちらも呼ばなくても TTL・次の読取で
     /// 追いつくので、失敗は呼び出し側の操作を止めずログに留める。ミニアプリのインストール・
     /// ワークフローの委譲（ワークフロー主体への data_table タプル）から呼ぶ（Task 15.7）。
     pub async fn after_table_rebac_changed(&self, ctx: &AuthContext, table_id: Uuid) {
         if let Err(e) = self.notify_authz_changed(ctx, Some(table_id)).await {
             tracing::warn!(error = %e, %table_id, "テーブル ReBAC 変更後の配信の世代更新に失敗");
         }
-        match self.reverify_materialization(ctx, table_id).await {
-            Ok(_) | Err(DataError::NotFound) => {}
+        let dependents = match self
+            .materialization_dependents(&ctx.tenant_id, table_id)
+            .await
+        {
+            Ok(v) => v,
             Err(e) => {
-                tracing::warn!(error = %e, %table_id, "テーブル ReBAC 変更後の材料化の再検査に失敗");
+                tracing::warn!(error = %e, %table_id, "テーブル ReBAC 変更後の参照元の取得に失敗");
+                Vec::new()
+            }
+        };
+        for id in std::iter::once(table_id).chain(dependents.into_iter().filter(|d| *d != table_id))
+        {
+            match self.reverify_materialization(ctx, id).await {
+                Ok(_) | Err(DataError::NotFound) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, table_id = %id, "テーブル ReBAC 変更後の材料化の再検査に失敗");
+                }
             }
         }
+    }
+
+    /// `ref_table_id` を参照先にする材料化列を持つテーブル（参照元・生存のみ）。
+    async fn materialization_dependents(
+        &self,
+        tenant_id: &str,
+        ref_table_id: Uuid,
+    ) -> Result<Vec<Uuid>, DataError> {
+        let Some(keys) = self.table_keys_of(tenant_id, ref_table_id).await? else {
+            return Ok(Vec::new());
+        };
+        let db = self.pools.for_tenant(tenant_id);
+        let table_ints: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT table_int FROM data_derived_dep \
+             WHERE tenant_int = $1 AND ref_table_int = $2",
+        )
+        .bind(keys.tenant_int)
+        .bind(keys.table_int)
+        .fetch_all(db)
+        .await
+        .map_err(map_db)?;
+        if table_ints.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_scalar(
+            "SELECT id FROM data_table \
+             WHERE tenant_id = $1 AND table_int = ANY($2::int8[]) AND deleted_at IS NULL \
+             ORDER BY id",
+        )
+        .bind(tenant_id)
+        .bind(&table_ints)
+        .fetch_all(db)
+        .await
+        .map_err(map_db)
     }
 
     pub(crate) async fn bump_authz_epoch(
