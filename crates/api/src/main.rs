@@ -426,6 +426,8 @@ fn wire_data(
     );
     // keyset カーソルの鍵（全レプリカで同じ鍵・Task 15.3）。決め方は DataConfig::cursor_key_file の doc。
     store = store.with_cursor_key(&cursor_key(config)?);
+    // SSE 差分配信の認可材料の TTL・保持期間（`data.stream.*`・範囲は validate で検査済み）。
+    store = store.with_stream_config(config.data.stream.to_stream_config()?);
     let data_store = Arc::new(store);
     // v1 形式テーブルのフィールド識別子移行（jobq・テーブル単位・冪等・完了で停止）。
     data::FieldKeyMigrationWorker::new((*data_store).clone()).spawn();
@@ -438,7 +440,8 @@ fn wire_data(
     data::RecordStreamRelayWorker::new((*data_store).clone()).spawn();
     // 自前オプティマイザの統計（outbox 消費側の行数・値頻度表＋統計収集ジョブ・Task 15.12）。
     data::StatsWorker::new((*data_store).clone()).spawn();
-    // 起動時の較正ベンチ（一時表で単価を測り直す・顧客データに触れない）。失敗しても初期値で動く。
+    // 起動時の較正ベンチ（較正用の固定表で単価を測り直す・顧客データに触れない・DDL を打たない）。
+    // 失敗しても初期値で動く。
     {
         let store = (*data_store).clone();
         tokio::spawn(async move {

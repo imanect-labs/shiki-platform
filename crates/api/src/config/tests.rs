@@ -907,3 +907,58 @@ fn preview_shaped_llm_toml_loads_and_validates() {
     let own = limits.provider_limit("anthropic").unwrap();
     assert_eq!(own.providers, vec!["anthropic"]);
 }
+
+/// `data.stream.*`（SSE の認可材料の TTL・保持期間）が `data::StreamConfig` へ配線される（監査 B1-11）。
+/// 未指定は既定（5 秒・10 分）、範囲外は起動エラー（TTL は剥奪の反映の遅れの上限なので 60 秒まで）。
+#[test]
+fn data_stream_config_maps_ttl_and_retention() {
+    use figment::providers::{Format, Toml};
+    let default = DataStreamConfig::default().to_stream_config().unwrap();
+    assert_eq!(default.authz_ttl, std::time::Duration::from_secs(5));
+    assert_eq!(default.retention, std::time::Duration::from_mins(10));
+
+    let toml = r#"
+        [stream]
+        authz_ttl_ms = 2000
+        retention_secs = 1800
+    "#;
+    let data: DataConfig = figment::Figment::new()
+        .merge(Toml::string(toml))
+        .extract()
+        .unwrap();
+    let c = data.stream.to_stream_config().unwrap();
+    assert_eq!(c.authz_ttl, std::time::Duration::from_secs(2));
+    assert_eq!(c.retention, std::time::Duration::from_mins(30));
+    // それ以外の項目は既定のまま。
+    assert_eq!(c.batch_window, default.batch_window);
+
+    // 環境変数（SHIKI__DATA__STREAM__AUTHZ_TTL_MS）と同じく、入れ子のキーで上書きできる。
+    let data: DataConfig = figment::Figment::new()
+        .merge(Toml::string(toml))
+        .merge(figment::providers::Serialized::default(
+            "stream.authz_ttl_ms",
+            750,
+        ))
+        .extract()
+        .unwrap();
+    let c = data.stream.to_stream_config().unwrap();
+    assert_eq!(c.authz_ttl, std::time::Duration::from_millis(750));
+    assert_eq!(c.retention, std::time::Duration::from_mins(30));
+
+    for bad in [
+        DataStreamConfig {
+            authz_ttl_ms: Some(0),
+            retention_secs: None,
+        },
+        DataStreamConfig {
+            authz_ttl_ms: Some(120_000),
+            retention_secs: None,
+        },
+        DataStreamConfig {
+            authz_ttl_ms: None,
+            retention_secs: Some(10),
+        },
+    ] {
+        assert!(bad.to_stream_config().is_err(), "{bad:?}");
+    }
+}
