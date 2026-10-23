@@ -128,7 +128,10 @@ export function clearUserStorage(): void {
 
 function purgeUserStorage(): void {
   generation += 1;
-  setStorageScope(null);
+  // スコープが既に未確定（/me 待ち）でも購読者へ知らせる。未確定のままメモリ上に作られた下書きを
+  // 捨てさせないと、このタブで次の人の /me が成功したときにその人の保存分へ合流してしまう。
+  scope = null;
+  for (const l of listeners) l();
   if (typeof window === "undefined") return;
   // sessionStorage もログアウト〜次のログインで同じタブに残るので消す。
   for (const storage of ["localStorage", "sessionStorage"] as const) {
