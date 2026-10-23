@@ -514,5 +514,22 @@ async fn same_shape_is_byte_identical_across_principals_and_prepared_statements_
             "{force:?}: 全てプランキャッシュに当たる"
         );
         assert!(after.hits > before.hits);
+        // 命中した文は降下でテキストを組まない（コンパイル済みの文を引き、バインドだけを集める・監査 B2-1）。
+        // 別の principal（材料が違う・charlie は `HasRole` で全行可視）・別の値でも組み直さない。
+        eprintln!(
+            "{force:?}: コンパイル {} → {}・命中で降下を省いた {} → {}",
+            before.compiled, after.compiled, before.reused, after.reused
+        );
+        assert_eq!(
+            after.compiled, before.compiled,
+            "{force:?}: 同一形状の 2 回目以降は降下でテキストを組まない"
+        );
+        assert!(after.reused > before.reused, "{force:?}");
+        assert_eq!(after.mismatches, 0, "命中時のバインドの形の食い違い");
+        assert_eq!(after.verify_failures, 0, "命中と組み直しの食い違い");
+        assert!(
+            after.verified >= after.reused,
+            "検証ビルドでは命中を組み直して確かめる"
+        );
     }
 }

@@ -181,7 +181,7 @@ pub(crate) fn csv_rows(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use serde_json::json;
 

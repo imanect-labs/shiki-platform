@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use super::admission::ReadPermit;
 use super::bound::BoundQuery;
+use super::fetch::FetchedRow;
 use super::ir::{CountResult, DataQuery, QueryResult};
 use super::join_run::{join_position, JoinedOut};
 use super::limits::CompileBudget;
@@ -26,7 +27,7 @@ use super::planner::exec::{Exec, ForcedStrategy, PageOut};
 use super::planner::feedback::{CandidateKind, QueryExecStats, TableScanMetrics};
 use super::planner::guard::Guard;
 use super::planner::keys::{from_payload, to_payload, Pos, SortVal};
-use super::planner::lower::{fetch_sql, Lowerer};
+use super::planner::lower::Lowerer;
 use super::planner::plan_cache::{query_shape, PlanCacheStats, PlanHandle};
 use super::planner::verify::{post_filter, PolicyEnv, RowView};
 use super::scopes::{scope_lows, ScopeTables};
@@ -41,7 +42,6 @@ use crate::model::{
 use crate::policy::compile::compile_read_predicate;
 use crate::policy::compile_index::IndexGuardCtx;
 use crate::policy::material::{self, PolicyMaterial};
-use crate::record::RecordRow;
 use crate::store::DataStore;
 use crate::{map_db, DataError, DEFAULT_AGGREGATE_MIN_ROWS};
 
@@ -158,14 +158,6 @@ impl From<Bind> for DebugParam {
             Bind::OptNumeric(v) => DebugParam::OptNumeric(v),
         }
     }
-}
-
-/// 本体取得の行（`record_int` は crate 内に閉じる）。
-#[derive(sqlx::FromRow)]
-struct FetchedRow {
-    record_int: i64,
-    #[sqlx(flatten)]
-    row: RecordRow,
 }
 
 /// 実行の結果（応答・記録・本体の行・結合の組）。
@@ -631,6 +623,7 @@ impl DataStore {
             cache: &self.plan_cache,
             shape: query_shape(table.id, table.schema_version, bq, after.is_some()),
         };
+        let ctx_key = super::planner::plan_cache::context_key(&guard, &lows, composite.as_ref());
         let shape_hash = {
             let mut b = [0u8; 8];
             b.copy_from_slice(&plan.shape[..8]);
@@ -666,6 +659,7 @@ impl DataStore {
             est_cand: None,
             plan: Some(plan),
             promotable,
+            ctx_key,
         };
         if force.is_none() && !body_path {
             ex.load_stats(&self.stats_cache).await?;
@@ -781,20 +775,8 @@ impl DataStore {
         let mut fetched: Vec<FetchedRow> = if ints.is_empty() {
             Vec::new()
         } else {
-            let mut sql = SqlBuf::scoped(keys.tenant_int, keys.table_int);
-            let text = ex.intern("fetch", fetch_sql(&ctx.tenant_id, ints.clone(), &mut sql));
-            ex.stats.statements += 1;
-            let rows =
-                super::sql::bind_query_as(sqlx::query_as::<_, FetchedRow>(&text), &sql.binds)
-                    .fetch_all(&mut *ex.conn)
-                    .await
-                    .map_err(map_db)?;
-            ex.captured.push(super::planner::exec::Captured {
-                label: "fetch",
-                sql: text.to_string(),
-                binds: sql.binds,
-            });
-            rows
+            let prune = super::fetch::prune_keys(bq, &table.schema);
+            super::fetch::fetch_page(&mut ex, &ctx.tenant_id, &ints, prune).await?
         };
         let order: HashMap<i64, usize> = ints.iter().enumerate().map(|(i, r)| (*r, i)).collect();
         fetched.sort_by_key(|r| order.get(&r.record_int).copied().unwrap_or(usize::MAX));

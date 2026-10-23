@@ -42,7 +42,24 @@ pub(crate) struct SqlBuf {
     pub table: Option<String>,
     /// 文の中で採番した別名の数（入れ子の半結合の別名 `lk{n}` を一意にする・決定的）。
     pub aliases: u32,
+    /// バインドだけを積み、SQL テキストを組まない（プランキャッシュの命中時・data-platform §16.3）。
+    /// 同一形状の降下は同じ順で同じ種類のバインドを積むので、テキストはキャッシュから引き、
+    /// 値だけをこの走査で集める。組み立て関数は [`sqlf!`] でテキストを作る（この間は空文字列を返す）。
+    pub skip_text: bool,
 }
+
+/// SQL 断片を組む（[`SqlBuf::skip_text`] の間は組まずに空文字列）。**引数に副作用（バインドを積む呼び出し）を
+/// 書かない**こと（テキストを組まないときは評価されない）。バインドは先に変数へ積んでから渡す。
+macro_rules! sqlf {
+    ($sql:expr, $($arg:tt)*) => {
+        if $sql.skip_text {
+            String::new()
+        } else {
+            format!($($arg)*)
+        }
+    };
+}
+pub(crate) use sqlf;
 
 impl SqlBuf {
     /// `$1 = tenant_int`, `$2 = table_int` を先に積んだ索引読取用の文（パーティション枝刈りの鍵）。
@@ -51,6 +68,15 @@ impl SqlBuf {
             binds: vec![Bind::I32(tenant_int), Bind::I64(table_int)],
             table: None,
             aliases: 0,
+            skip_text: false,
+        }
+    }
+
+    /// バインドだけを集める走査（テキストはプランキャッシュから引く）。
+    pub(crate) fn scoped_binds_only(tenant_int: i32, table_int: i64) -> Self {
+        SqlBuf {
+            skip_text: true,
+            ..Self::scoped(tenant_int, table_int)
         }
     }
 
@@ -81,6 +107,9 @@ impl SqlBuf {
     /// 値を積み、対応するプレースホルダ（`$n`）を返す。
     pub(crate) fn push(&mut self, b: Bind) -> String {
         self.binds.push(b);
+        if self.skip_text {
+            return String::new();
+        }
         format!("${}", self.binds.len())
     }
 
@@ -101,7 +130,29 @@ impl SqlBuf {
             Bind::Bool(_) => "bool",
         };
         let ph = self.push(b);
-        format!("{ph}::{ty}")
+        sqlf!(self, "{ph}::{ty}")
+    }
+}
+
+impl Bind {
+    /// バインドの種類（値を含まない・プランキャッシュの命中時に「同じ形の降下」かを照合する）。
+    pub(crate) fn kind_tag(&self) -> u8 {
+        match self {
+            Bind::Text(_) => 1,
+            Bind::TextArray(_) => 2,
+            Bind::Number(_) => 3,
+            Bind::UuidArray(_) => 4,
+            Bind::I16(_) => 5,
+            Bind::I32(_) => 6,
+            Bind::I64(_) => 7,
+            Bind::I64Array(_) => 8,
+            Bind::Numeric(_) => 9,
+            Bind::NumericArray(_) => 10,
+            Bind::Bytes(_) => 11,
+            Bind::Bool(_) => 12,
+            Bind::OptText(_) => 13,
+            Bind::OptNumeric(_) => 14,
+        }
     }
 }
 

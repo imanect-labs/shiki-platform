@@ -183,7 +183,10 @@ impl Exec<'_, '_> {
             }
             let keys: TableKeys = st.table.keys;
             let mut sql = SqlBuf::scoped(keys.tenant_int, keys.table_int);
-            let text = self.intern("join_fetch", fetch_sql(&ctx.tenant_id, ints, &mut sql));
+            let text = self.intern(
+                "join_fetch",
+                fetch_sql(&ctx.tenant_id, ints, None, &mut sql),
+            );
             self.stats.statements += 1;
             let mut rows: Vec<JoinFetched> =
                 super::sql::bind_query_as(sqlx::query_as::<_, JoinFetched>(&text), &sql.binds)

@@ -10,7 +10,7 @@
 //! 入口で満たされる項（`covered`）は検査から外す。行述語の検査（Guard）は外さない（§7.1）。
 
 use super::exec::{Exec, ForcedStrategy};
-use super::lower::{order_checks, Source};
+use super::lower::Source;
 use super::stats::PROBE_CAP;
 use crate::query::bound::{Atom, Expr, Leaf};
 use crate::DataError;
@@ -141,17 +141,6 @@ pub(crate) fn intersect_plans<'q>(conj: &[&'q Expr]) -> Vec<CandPlan<'q>> {
         }
     }
     out
-}
-
-/// 検査に残す項（入口で満たされる項を除き、安くてよく落ちる順）。
-pub(crate) fn checks_for<'q>(conj: &[&'q Expr], covered: &[usize]) -> Vec<&'q Expr> {
-    order_checks(
-        conj.iter()
-            .enumerate()
-            .filter(|(i, _)| !covered.contains(i))
-            .map(|(_, e)| *e)
-            .collect(),
-    )
 }
 
 impl Exec<'_, '_> {

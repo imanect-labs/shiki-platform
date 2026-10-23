@@ -15,7 +15,7 @@ use sqlx::Row;
 
 use super::exec::Exec;
 use super::lower::Lowerer;
-use super::plans::{checks_for, conjuncts};
+use super::plans::conjuncts;
 use crate::policy::compile_index::field_i16;
 use crate::query::bound::{ColRef, Expr};
 use crate::query::ir::CountResult;
@@ -192,7 +192,7 @@ impl<'a> Exec<'a, '_> {
     ) -> Result<Vec<sqlx::postgres::PgRow>, DataError> {
         let conj = conjuncts(filter);
         let (src, covered) = self.scan_source(&conj).await?;
-        let checks = checks_for(&conj, &covered);
+        let checks = self.checks(&conj, &covered);
         let mut sql = self.sql();
         let guard = self.guard.lower("c.record_int", &mut sql)?;
         let src = self.materialize(&src, &mut sql);
@@ -213,7 +213,7 @@ impl<'a> Exec<'a, '_> {
         }
         let conj = conjuncts(filter);
         let (src, covered) = self.scan_source(&conj).await?;
-        let checks = checks_for(&conj, &covered);
+        let checks = self.checks(&conj, &covered);
         let mut sql = self.sql();
         let guard = self.guard.lower("c.record_int", &mut sql)?;
         let src = self.materialize(&src, &mut sql);

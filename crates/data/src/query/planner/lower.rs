@@ -26,7 +26,7 @@ use crate::policy::compile_index::{
 use crate::query::bound::{
     Atom, BField, BSort, BoundQuery, ColRef, Expr, FieldKind, Leaf, LinkExpr, Val,
 };
-use crate::query::sql::{like_escape, Bind, SqlBuf};
+use crate::query::sql::{like_escape, sqlf, Bind, SqlBuf};
 
 /// 長い境界値は切り詰め行の本体で比べる（プレフィクスの長さは最小で上限−3 バイト）。
 pub(crate) const SAFE_BOUND_BYTES: usize = MAX_INDEX_KEY_BYTES - 4;
@@ -70,25 +70,28 @@ pub(crate) enum Source<'q> {
     Ids(Vec<i64>),
 }
 
-/// 検査の並び（安くてよく落ちる述語から・§5.2。統計の無い O1 は葉の種類で順位づける）。
-pub(crate) fn order_checks(mut v: Vec<&Expr>) -> Vec<&Expr> {
-    fn rank(e: &Expr) -> u8 {
-        match e {
-            Expr::Atom(a) => match a.leaf {
-                Leaf::Eq(_) => 0,
-                Leaf::In(_) => 1,
-                Leaf::Range { .. } | Leaf::StartsWith(_) => 2,
-                Leaf::Contains(_) | Leaf::EndsWith(_) => 4,
-                Leaf::Exists => 5,
-            },
-            Expr::Or(_) | Expr::And(_) => 3,
-            Expr::Not(_) => 6,
-            // 参照先の点検索と行述語を伴う（最も高い）。
-            Expr::Link(_) => 7,
-            Expr::True | Expr::False => 0,
-        }
+/// 検査の静的順位（統計が無いときの並び・統計があるときの同点の決め手）。
+pub(crate) fn check_rank(e: &Expr) -> u8 {
+    match e {
+        Expr::Atom(a) => match a.leaf {
+            Leaf::Eq(_) => 0,
+            Leaf::In(_) => 1,
+            Leaf::Range { .. } | Leaf::StartsWith(_) => 2,
+            Leaf::Contains(_) | Leaf::EndsWith(_) => 4,
+            Leaf::Exists => 5,
+        },
+        Expr::Or(_) | Expr::And(_) => 3,
+        Expr::Not(_) => 6,
+        // 参照先の点検索と行述語を伴う（最も高い）。
+        Expr::Link(_) => 7,
+        Expr::True | Expr::False => 0,
     }
-    v.sort_by_key(|e| rank(e));
+}
+
+/// 検査の並び（安くてよく落ちる述語から・§5.2）。統計の無い O1 と、入れ子の積（`Or` / `Not` の中）は
+/// 葉の種類の静的順位で並べる。最上位の積は統計があれば選択率で並べる（[`super::exec::Exec::order`]）。
+pub(crate) fn order_checks(mut v: Vec<&Expr>) -> Vec<&Expr> {
+    v.sort_by_key(|e| check_rank(e));
     v
 }
 
@@ -115,11 +118,11 @@ impl Lowerer<'_> {
             (Leaf::Exists, _) => "TRUE".into(),
             (Leaf::Contains(s), _) => {
                 let ph = sql.push(Bind::Text(format!("%{}%", like_escape(s))));
-                format!("{x}.val LIKE {ph}::text")
+                sqlf!(sql, "{x}.val LIKE {ph}::text")
             }
             (Leaf::EndsWith(s), _) => {
                 let ph = sql.push(Bind::Text(format!("%{}", like_escape(s))));
-                format!("{x}.val LIKE {ph}::text")
+                sqlf!(sql, "{x}.val LIKE {ph}::text")
             }
             (Leaf::Eq(_) | Leaf::In(_), FieldKind::Link) => {
                 let vals: Vec<&Val> = match &a.leaf {
@@ -137,11 +140,11 @@ impl Lowerer<'_> {
                     })
                     .collect();
                 let ph = sql.push(Bind::I64Array(ints));
-                format!("{x}.dst_record = ANY({ph}::int8[])")
+                sqlf!(sql, "{x}.dst_record = ANY({ph}::int8[])")
             }
             (Leaf::Eq(Val::Num(d)), FieldKind::Num) => {
                 let ph = sql.typed(Bind::Numeric(d.canonical()));
-                format!("{x}.val = {ph}")
+                sqlf!(sql, "{x}.val = {ph}")
             }
             (Leaf::In(vs), FieldKind::Num) => {
                 let arr: Vec<String> = vs
@@ -152,7 +155,7 @@ impl Lowerer<'_> {
                     })
                     .collect();
                 let ph = sql.push(Bind::NumericArray(arr));
-                format!("{x}.val = ANY({ph}::numeric[])")
+                sqlf!(sql, "{x}.val = ANY({ph}::numeric[])")
             }
             (Leaf::Eq(Val::Text(s)), _) => text_eq_cond(x, s, body_field, sql),
             (Leaf::In(vs), _) => {
@@ -198,7 +201,7 @@ impl Lowerer<'_> {
                 let field = body_field.unwrap_or(0);
                 let kph = sql.push(Bind::Text(crate::field_key::json_key(field)));
                 let tbl = sql.t();
-                format!(
+                sqlf!(sql,
                     "((starts_with({x}.val, {ph}::text) AND (NOT {lf} OR NOT {x}.truncated)) OR ({lf} AND {x}.truncated AND \
                      EXISTS (SELECT 1 FROM data_record b WHERE b.tenant_int = $1 AND b.table_int = {tbl} \
                      AND b.record_int = {x}.record_int AND starts_with(b.data ->> {kph}, {ph}::text))))"
@@ -220,7 +223,7 @@ impl Lowerer<'_> {
         match (kind, v) {
             (FieldKind::Num, Val::Num(d)) => {
                 let ph = sql.typed(Bind::Numeric(d.canonical()));
-                format!("{x}.val {op} {ph}")
+                sqlf!(sql, "{x}.val {op} {ph}")
             }
             (_, Val::Text(s)) => {
                 // 長い境界: 切り詰め行はプレフィクスでは判定できないので本体で比べる。短い境界は
@@ -231,7 +234,7 @@ impl Lowerer<'_> {
                     Some(f) => body_text_cmp(x, f, op, s, sql),
                     None => "FALSE".into(),
                 };
-                format!(
+                sqlf!(sql,
                     "(({x}.val {op} {ph}::text COLLATE \"C\" AND (NOT {lf} OR NOT {x}.truncated)) OR ({lf} AND {x}.truncated AND {body}))"
                 )
             }
@@ -251,10 +254,13 @@ impl Lowerer<'_> {
             Expr::True => "TRUE".into(),
             Expr::False => "FALSE".into(),
             Expr::Atom(a) => self.atom_exists(a, rec, sql),
-            Expr::Not(inner) => format!("NOT ({})", self.expr_sql(inner, rec, sql)),
+            Expr::Not(inner) => {
+                let inner = self.expr_sql(inner, rec, sql);
+                sqlf!(sql, "NOT ({inner})")
+            }
             Expr::Or(v) => {
                 let parts: Vec<String> = v.iter().map(|c| self.expr_sql(c, rec, sql)).collect();
-                format!("({})", parts.join(" OR "))
+                sqlf!(sql, "({})", parts.join(" OR "))
             }
             Expr::And(v) => {
                 let kids = order_checks(v.iter().collect());
@@ -278,7 +284,7 @@ impl Lowerer<'_> {
         let fph = sql.typed(Bind::I16(field_i16(l.field)));
         let cph = sql.typed(Bind::I64(sc.table_int));
         let n = sql.alias();
-        let dst = format!("lk{n}.dst_record");
+        let dst = sqlf!(sql, "lk{n}.dst_record");
         let child = Lowerer {
             q: sc.q,
             links: self.links,
@@ -293,7 +299,7 @@ impl Lowerer<'_> {
                 .map_or_else(|_| "FALSE".to_string(), |g| g.as_str().to_string());
             (cond, guard)
         });
-        format!(
+        sqlf!(sql,
             "EXISTS (SELECT 1 FROM data_link lk{n} WHERE lk{n}.tenant_int = $1 AND lk{n}.table_int = {parent} \
              AND lk{n}.field_id = {fph} AND lk{n}.src_record = {rec} AND lk{n}.dst_table_int = {cph} \
              AND EXISTS (SELECT 1 FROM data_record ld{n} WHERE ld{n}.tenant_int = $1 \
@@ -310,11 +316,11 @@ impl Lowerer<'_> {
         rec: &str,
         sql: &mut SqlBuf,
     ) -> String {
-        let tail = guard.map_or_else(|| "TRUE".to_string(), |g| format!("({})", g.as_str()));
+        let tail = guard.map_or_else(|| "TRUE".to_string(), |g| sqlf!(sql, "({})", g.as_str()));
         let mut parts: Vec<String> = checks.iter().map(|c| self.expr_sql(c, rec, sql)).collect();
         let mut out = tail;
         while let Some(p) = parts.pop() {
-            out = format!("CASE WHEN {p} THEN {out} ELSE false END");
+            out = sqlf!(sql, "CASE WHEN {p} THEN {out} ELSE false END");
         }
         out
     }
@@ -331,15 +337,16 @@ impl Lowerer<'_> {
             Source::Intersect(a, b) => {
                 let x = self.atom_source(a, sql);
                 let y = self.atom_source(b, sql);
-                format!("({x}) INTERSECT ({y})")
+                sqlf!(sql, "({x}) INTERSECT ({y})")
             }
             Source::Ids(ids) => {
                 let ph = sql.push(Bind::I64Array(ids.clone()));
-                format!("SELECT unnest({ph}::int8[]) AS record_int")
+                sqlf!(sql, "SELECT unnest({ph}::int8[]) AS record_int")
             }
             Source::All => {
                 let ph = sql.typed(Bind::I16(field_i16(SYSTEM_FIELD_CREATED_AT)));
-                format!(
+                sqlf!(
+                    sql,
                     "SELECT i.record_int FROM data_index_text i \
                      WHERE i.tenant_int = $1 AND i.table_int = $2 AND i.field_id = {ph}"
                 )
@@ -348,7 +355,8 @@ impl Lowerer<'_> {
                 let f = self.field(key.field);
                 let rel = f.value_table().relation();
                 let fph = sql.typed(Bind::I16(field_i16(f.id)));
-                let mut s = format!(
+                let mut s = sqlf!(
+                    sql,
                     "SELECT i.record_int FROM {rel} i \
                      WHERE i.tenant_int = $1 AND i.table_int = $2 AND i.field_id = {fph}"
                 );
@@ -361,7 +369,9 @@ impl Lowerer<'_> {
                             (false, false) => "<",
                         };
                         let ph = sort_val_ph(f.kind, v, sql);
-                        let _ = write!(s, " AND i.val {op} {ph}");
+                        if !sql.skip_text {
+                            let _ = write!(s, " AND i.val {op} {ph}");
+                        }
                     }
                 }
                 s
@@ -380,7 +390,8 @@ impl Lowerer<'_> {
         } else {
             ""
         };
-        format!(
+        sqlf!(
+            sql,
             "SELECT {distinct}x.{col} AS record_int FROM {rel} x \
              WHERE x.tenant_int = $1 AND x.table_int = $2 AND x.field_id = {fph} AND {cond}"
         )
@@ -391,7 +402,8 @@ impl Lowerer<'_> {
         let f = self.field(k.field);
         let rel = f.value_table().relation();
         let fph = sql.typed(Bind::I16(field_i16(f.id)));
-        format!(
+        sqlf!(
+            sql,
             "(SELECT s.val FROM {rel} s WHERE s.tenant_int = $1 AND s.table_int = $2 \
              AND s.field_id = {fph} AND s.record_int = {rec} AND s.ord = 0 OFFSET 0)"
         )
@@ -414,7 +426,7 @@ impl Lowerer<'_> {
         let source = self.source_sql(src, sql);
         let cap_sql = cap.map_or_else(String::new, |c| {
             let ph = sql.typed(Bind::I64(c + 1));
-            format!(" LIMIT {ph}")
+            sqlf!(sql, " LIMIT {ph}")
         });
         let check = self.case_chain(checks, Some(guard), "c.record_int", sql);
         let sort = &self.q.sort;
@@ -423,20 +435,22 @@ impl Lowerer<'_> {
         let mut order = Vec::new();
         for (i, k) in sort.iter().enumerate() {
             let v = self.sort_value_sql(*k, "p.record_int", sql);
-            let _ = write!(cols, ", {v} AS k{i}");
-            let _ = write!(outer, ", z.k{i}::text AS k{i}");
+            if !sql.skip_text {
+                let _ = write!(cols, ", {v} AS k{i}");
+                let _ = write!(outer, ", z.k{i}::text AS k{i}");
+            }
             let dir = if k.desc { "DESC" } else { "ASC" };
-            order.push(format!("(z.k{i} IS NULL), z.k{i} {dir}"));
+            order.push(sqlf!(sql, "(z.k{i} IS NULL), z.k{i} {dir}"));
         }
         let rdir = if sort.first().is_some_and(|k| k.desc) {
             "DESC"
         } else {
             "ASC"
         };
-        order.push(format!("z.record_int {rdir}"));
+        order.push(sqlf!(sql, "z.record_int {rdir}"));
         let keyset = after.map_or_else(|| "TRUE".to_string(), |p| self.keyset_sql(p, sql));
         let lim = sql.typed(Bind::I64(limit));
-        format!(
+        sqlf!(sql,
             "WITH cand AS MATERIALIZED ({source}{cap_sql}), \
              pass AS MATERIALIZED (SELECT c.record_int FROM cand c WHERE {check}) \
              SELECT nc.n AS n_cand, np.n AS n_pass, z.record_int{outer} \
@@ -457,15 +471,18 @@ impl Lowerer<'_> {
         let mut eqs: Vec<String> = Vec::new();
         for (i, k) in sort.iter().enumerate() {
             let f = self.field(k.field);
-            let col = format!("z.k{i}");
+            let col = sqlf!(sql, "z.k{i}");
             let v = p.vals.get(i).unwrap_or(&SortVal::Missing);
             let ph = sort_val_ph(f.kind, v, sql);
             let op = if k.desc { "<" } else { ">" };
-            let gt = format!("({ph} IS NOT NULL AND ({col} IS NULL OR {col} {op} {ph}))");
+            let gt = sqlf!(
+                sql,
+                "({ph} IS NOT NULL AND ({col} IS NULL OR {col} {op} {ph}))"
+            );
             let mut conj = eqs.clone();
             conj.push(gt);
-            ors.push(format!("({})", conj.join(" AND ")));
-            eqs.push(format!("{col} IS NOT DISTINCT FROM {ph}"));
+            ors.push(sqlf!(sql, "({})", conj.join(" AND ")));
+            eqs.push(sqlf!(sql, "{col} IS NOT DISTINCT FROM {ph}"));
         }
         let rop = if sort.first().is_some_and(|k| k.desc) {
             "<"
@@ -474,9 +491,9 @@ impl Lowerer<'_> {
         };
         let rph = sql.typed(Bind::I64(p.rint));
         let mut conj = eqs;
-        conj.push(format!("z.record_int {rop} {rph}"));
-        ors.push(format!("({})", conj.join(" AND ")));
-        format!("({})", ors.join(" OR "))
+        conj.push(sqlf!(sql, "z.record_int {rop} {rph}"));
+        ors.push(sqlf!(sql, "({})", conj.join(" AND ")));
+        sqlf!(sql, "({})", ors.join(" OR "))
     }
 
     /// 予算付きソート駆動（区間 1・単一キーまたは複数ソートの窓探し）。§6.1 の形。
@@ -504,18 +521,19 @@ impl Lowerer<'_> {
                 let op = if key.desc { "<" } else { ">" };
                 let vph = sort_val_ph(f.kind, v, sql);
                 let rph = sql.typed(Bind::I64(r));
-                format!(" AND (i.val, i.record_int) {op} ({vph}, {rph})")
+                sqlf!(sql, " AND (i.val, i.record_int) {op} ({vph}, {rph})")
             }
             Some((v, None)) => {
                 let op = if key.desc { "<=" } else { ">=" };
                 let vph = sort_val_ph(f.kind, v, sql);
-                format!(" AND i.val {op} {vph}")
+                sqlf!(sql, " AND i.val {op} {vph}")
             }
         };
         let bph = sql.typed(Bind::I64(budget.max(1)));
         let check = self.case_chain(checks, Some(guard), "d.record_int", sql);
         let lph = sql.typed(Bind::I64(limit));
-        format!(
+        sqlf!(
+            sql,
             "SELECT s.record_int, s.val::text AS v, s.pos, s.pass, s.is_last FROM ( \
                SELECT d.record_int, d.val, row_number() OVER w AS pos, \
                       lead(d.record_int) OVER w IS NULL AS is_last, {check} AS pass \
@@ -546,7 +564,7 @@ impl Lowerer<'_> {
         let keyset = after_rint.map_or_else(String::new, |r| {
             let op = if key.desc { "<" } else { ">" };
             let ph = sql.typed(Bind::I64(r));
-            format!(" AND i.record_int {op} {ph}")
+            sqlf!(sql, " AND i.record_int {op} {ph}")
         });
         let bph = sql.typed(Bind::I64(budget.max(1)));
         let missing = Expr::Not(Box::new(Expr::atom(f.id, Leaf::Exists)));
@@ -554,7 +572,8 @@ impl Lowerer<'_> {
         all.extend_from_slice(checks);
         let check = self.case_chain(&all, Some(guard), "d.record_int", sql);
         let lph = sql.typed(Bind::I64(limit));
-        format!(
+        sqlf!(
+            sql,
             "SELECT s.record_int, NULL::text AS v, s.pos, s.pass, s.is_last FROM ( \
                SELECT d.record_int, row_number() OVER w AS pos, \
                       lead(d.record_int) OVER w IS NULL AS is_last, {check} AS pass \
@@ -578,7 +597,8 @@ impl Lowerer<'_> {
         let source = self.source_sql(src, sql);
         let check = self.case_chain(checks, Some(guard), "c.record_int", sql);
         let ph = sql.typed(Bind::I64(cap + 1));
-        format!(
+        sqlf!(
+            sql,
             "WITH cand AS MATERIALIZED ({source}) \
              SELECT count(*) FROM (SELECT 1 FROM cand c WHERE {check} LIMIT {ph}) s"
         )
@@ -637,7 +657,8 @@ impl Lowerer<'_> {
         let t = sql.t();
         let (inner, select, group) =
             self.agg_columns(&|_| (t.clone(), "p.record_int".to_string()), sql);
-        format!(
+        sqlf!(
+            sql,
             "WITH cand AS MATERIALIZED ({source}), \
              pass AS MATERIALIZED (SELECT c.record_int FROM cand c WHERE {check}) \
              SELECT {} FROM (SELECT {} FROM pass p) z{group}",
@@ -669,7 +690,8 @@ impl Lowerer<'_> {
             // （gt{i}）を返し、組み立てで 422 にする（可視・条件を満たした行だけで判定する）。
             let val = if text && !f.is_pseudo() && !f.derived {
                 let kph = sql.push(Bind::Text(crate::field_key::json_key(f.id)));
-                format!(
+                sqlf!(
+                    sql,
                     "CASE WHEN g.truncated THEN (SELECT b.data ->> {kph} FROM data_record b \
                      WHERE b.tenant_int = $1 AND b.table_int = {t} AND b.record_int = {rec}) \
                      ELSE g.val::text END"
@@ -678,28 +700,29 @@ impl Lowerer<'_> {
                 "g.val::text".to_string()
             };
             let probe = |col: &str| {
-                format!(
+                sqlf!(
+                    sql,
                     "(SELECT {col} FROM {rel} g WHERE g.tenant_int = $1 AND g.table_int = {t} \
                      AND g.field_id = {fph} AND g.record_int = {rec} AND g.ord = 0 OFFSET 0)"
                 )
             };
-            inner.push(format!("{} AS g{i}", probe(&val)));
-            select.push(format!("z.g{i}"));
-            group.push(format!("z.g{i}"));
+            inner.push(sqlf!(sql, "{} AS g{i}", probe(&val)));
+            select.push(sqlf!(sql, "z.g{i}"));
+            group.push(sqlf!(sql, "z.g{i}"));
             if text && f.derived {
-                inner.push(format!("{} AS gt{i}", probe("g.truncated")));
-                select.push(format!("bool_or(z.gt{i}) AS gt{i}"));
+                inner.push(sqlf!(sql, "{} AS gt{i}", probe("g.truncated")));
+                select.push(sqlf!(sql, "bool_or(z.gt{i}) AS gt{i}"));
             }
         }
         for (i, (m, field)) in self.q.metrics.iter().enumerate() {
             use crate::query::ir::Metric;
             let Some(c) = field else {
-                select.push(format!("count(*)::float8 AS m{i}"));
+                select.push(sqlf!(sql, "count(*)::float8 AS m{i}"));
                 continue;
             };
             let (t, rec) = at(*c);
             let fph = sql.typed(Bind::I16(field_i16(c.field)));
-            inner.push(format!(
+            inner.push(sqlf!(sql,
                 "(SELECT n.val FROM data_index_num n WHERE n.tenant_int = $1 AND n.table_int = {t} \
                  AND n.field_id = {fph} AND n.record_int = {rec} AND n.ord = 0 OFFSET 0) AS m{i}"
             ));
@@ -710,7 +733,7 @@ impl Lowerer<'_> {
                 Metric::Max => "max",
                 Metric::Count => "count",
             };
-            select.push(format!("({func}(z.m{i}))::float8 AS m{i}"));
+            select.push(sqlf!(sql, "({func}(z.m{i}))::float8 AS m{i}"));
         }
         if inner.is_empty() {
             inner.push("1 AS one".to_string());
@@ -718,7 +741,7 @@ impl Lowerer<'_> {
         let group_sql = if group.is_empty() {
             String::new()
         } else {
-            format!(" GROUP BY {}", group.join(", "))
+            sqlf!(sql, " GROUP BY {}", group.join(", "))
         };
         (inner, select, group_sql)
     }
@@ -746,7 +769,7 @@ pub(crate) fn probe_each(
     let ph = sql.typed(Bind::I64(cap));
     let t = sql.t();
     let order = index_order(table);
-    format!(
+    sqlf!(sql,
         "SELECT count(*) FROM (SELECT 1 FROM unnest({vph}::{ty}) v(val) CROSS JOIN LATERAL \
          (SELECT 1 FROM {rel} x WHERE x.tenant_int = $1 AND x.table_int = {t} AND x.field_id = {fph} \
          AND x.val = v.val ORDER BY {order} LIMIT {ph}) y LIMIT {ph}) s"
@@ -779,13 +802,15 @@ pub(crate) fn probe_union(
     let parts: Vec<String> = conds
         .iter()
         .map(|c| {
-            format!(
+            sqlf!(
+                sql,
                 "(SELECT 1 FROM {rel} x WHERE x.tenant_int = $1 AND x.table_int = $2 \
                  AND x.field_id = {fph} AND {c} ORDER BY {order} LIMIT {ph})"
             )
         })
         .collect();
-    format!(
+    sqlf!(
+        sql,
         "SELECT count(*) FROM (SELECT 1 FROM ({}) u LIMIT {ph}) s",
         parts.join(" UNION ALL ")
     )
@@ -808,22 +833,43 @@ pub(crate) fn sort_val_ph(kind: FieldKind, v: &SortVal, sql: &mut SqlBuf) -> Str
         (_, SortVal::Num(d)) => sql.typed(Bind::OptNumeric(Some(d.canonical()))),
         (_, SortVal::Text(s)) => {
             let ph = sql.push(Bind::OptText(Some(s.clone())));
-            format!("{ph}::text COLLATE \"C\"")
+            sqlf!(sql, "{ph}::text COLLATE \"C\"")
         }
         (FieldKind::Num, SortVal::Missing) => sql.typed(Bind::OptNumeric(None)),
         (_, SortVal::Missing) => {
             let ph = sql.push(Bind::OptText(None));
-            format!("{ph}::text COLLATE \"C\"")
+            sqlf!(sql, "{ph}::text COLLATE \"C\"")
         }
     }
 }
 
 /// 本体の取得（ページの行だけ・`(tenant_int, table_int, record_int)` の一意索引で点検索）。
-pub(crate) fn fetch_sql(tenant_id: &str, ints: Vec<i64>, sql: &mut SqlBuf) -> String {
+///
+/// **射影刈り込み**（data-platform §16.2）: `keys` があれば本体の JSONB から**そのキーだけ**を DB 側で取り出す
+/// （`jsonb_each` を `= ANY($keys)` で絞って組み直す）。キーの集合はバインドで渡すので、テキストは刈り込みの
+/// 有無（＝射影の有無・形状に入っている）だけで決まる。値の無いキーは結果にも無い（本体と同じ意味）。
+/// JSONB は TOAST の展開を避けられない（§16.5）ので、効くのは転送量と Rust 側の直列化の量。
+pub(crate) fn fetch_sql(
+    tenant_id: &str,
+    ints: Vec<i64>,
+    keys: Option<Vec<String>>,
+    sql: &mut SqlBuf,
+) -> String {
     let tph = sql.push(Bind::Text(tenant_id.to_string()));
     let iph = sql.push(Bind::I64Array(ints));
-    format!(
-        "SELECT r.record_int, r.id, r.table_id, r.data, r.rev, r.owner, r.created_at, r.updated_at \
+    let data = match keys {
+        None => "r.data".to_string(),
+        Some(k) => {
+            let kph = sql.push(Bind::TextArray(k));
+            sqlf!(
+                sql,
+                "(SELECT COALESCE(jsonb_object_agg(e.key, e.value), '{{}}'::jsonb) \
+                 FROM jsonb_each(r.data) e WHERE e.key = ANY({kph}::text[])) AS data"
+            )
+        }
+    };
+    sqlf!(sql,
+        "SELECT r.record_int, r.id, r.table_id, {data}, r.rev, r.owner, r.created_at, r.updated_at \
          FROM data_record r WHERE r.tenant_int = $1 AND r.table_int = $2 AND r.tenant_id = {tph} \
          AND r.record_int = ANY({iph}::int8[])"
     )

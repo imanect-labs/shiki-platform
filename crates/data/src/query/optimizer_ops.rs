@@ -192,6 +192,13 @@ impl DataStore {
         self.feedback.correlation()
     }
 
+    /// 計測用: プランキャッシュの命中を組み直して確かめるか（既定は検証ビルドだけ）。命中時に降下を省く
+    /// 効果を測るときに切る。
+    #[doc(hidden)]
+    pub fn set_plan_cache_verify(&self, on: bool) {
+        self.plan_cache.set_verify(on);
+    }
+
     /// 管理画面: オプティマイザの環境の状態（単価と較正の前後・テナントのデータを含まない）。
     pub fn optimizer_status(&self) -> OptimizerStatus {
         OptimizerStatus {

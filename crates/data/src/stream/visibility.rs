@@ -169,6 +169,7 @@ pub(crate) fn group_plan(
         binds: vec![Bind::Text(String::new())],
         table: None,
         aliases: 0,
+        skip_text: false,
     };
     let mut sql = Vec::new();
     for i in d.common_indices() {

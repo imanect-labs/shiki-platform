@@ -24,6 +24,7 @@ pub(crate) mod bound_query;
 #[cfg(test)]
 pub(crate) mod eval;
 pub(crate) mod executor;
+pub(crate) mod fetch;
 pub(crate) mod ir;
 pub(crate) mod join_run;
 pub(crate) mod limits;

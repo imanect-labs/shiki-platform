@@ -26,8 +26,8 @@ use super::cost::UnitCosts;
 use super::feedback::QueryExecStats;
 use super::guard::{Guard, GuardSql};
 use super::keys::{cmp_pos, Pos, SortVal};
-use super::lower::{order_checks, Lowerer, Source};
-use super::plans::{cand_plans, checks_for, conjuncts, CandPlan};
+use super::lower::{Lowerer, Source};
+use super::plans::{cand_plans, conjuncts, CandPlan};
 use super::stats::{Prober, PROBE_CAP};
 use super::strategy::Pick;
 use crate::model::FieldId;
@@ -43,6 +43,14 @@ pub(crate) const K_PREFETCH: i64 = 8;
 pub(crate) type CompositeSet = (i16, Vec<(crate::query::bound::FieldKind, bool)>);
 /// 予算切れのたびに件数を測り直す回数の上限。
 const MAX_REPROBES: u32 = 8;
+
+/// 計画の変種の文の種類（プランキャッシュ・[`Variant`] の先頭）。
+pub(crate) const V_CANDIDATES: u8 = 1;
+pub(crate) const V_SORT_DRIVE: u8 = 2;
+pub(crate) const V_MISSING_DRIVE: u8 = 3;
+pub(crate) const V_COUNT: u8 = 4;
+pub(crate) const V_AGGREGATE: u8 = 5;
+pub(crate) const V_FETCH: u8 = 6;
 
 /// 強制する戦略（検証用・計画の形の回帰と全戦略一致テスト）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +140,9 @@ pub(crate) struct Exec<'a, 'c> {
     pub plan: Option<super::plan_cache::PlanHandle<'a>>,
     /// 閲覧者が読める・昇格できる未索引の列がある（受付制御の提案「索引の昇格」を出す・§5.4）。
     pub promotable: bool,
+    /// プランキャッシュの文脈キー（降下のテキストを変え得る索引の状態・認可駆動の入口の形・複合索引の有無。
+    /// 値・認可材料は含まない・[`Variant::new`]）。
+    pub ctx_key: [u8; 32],
 }
 
 /// 1 ページの結果（全順序の位置つき）。
@@ -406,7 +417,7 @@ impl<'a> Exec<'a, '_> {
         limit: i64,
         cap: Option<i64>,
     ) -> Result<Option<PageOut>, DataError> {
-        let checks = checks_for(conj, &p.covered);
+        let checks = self.checks(conj, &p.covered);
         let rows = self
             .run_candidates(&p.src, &checks, after, cap, limit + 1)
             .await?;
@@ -431,15 +442,21 @@ impl<'a> Exec<'a, '_> {
         }
         let conj = conjuncts(filter);
         let (src, covered) = self.scan_source(&conj).await?;
-        let checks = checks_for(&conj, &covered);
-        let mut sql = self.sql();
-        let guard = self.guard.lower("c.record_int", &mut sql)?;
-        let src = self.materialize(&src, &mut sql);
-        let text = self
-            .low
-            .count_sql(&src, &checks, &guard, cap as i64, &mut sql);
+        let checks = self.checks(&conj, &covered);
+        let q = self.low.q;
+        let v = self
+            .variant(V_COUNT)
+            .source_with(&src, self.guard)
+            .checks(&checks, q)
+            .finish();
+        let cap_i = cap as i64;
+        let (text, binds) = self.compile("count", &v, |sql| {
+            let guard = self.guard.lower("c.record_int", sql)?;
+            let src = self.materialize(&src, sql);
+            Ok(self.low.count_sql(&src, &checks, &guard, cap_i, sql))
+        })?;
         self.stats.count_issued = true;
-        let rows = self.fetch("count", text, sql.binds).await?;
+        let rows = self.fetch_compiled("count", text, binds).await?;
         let n: i64 = rows
             .first()
             .map(|r| r.try_get::<i64, _>(0))
@@ -462,12 +479,19 @@ impl<'a> Exec<'a, '_> {
         // 空でも全体集計は 1 行（count = 0）を返す形にそろえるため、SQL は常に発行する。
         let conj = conjuncts(filter);
         let (src, covered) = self.scan_source(&conj).await?;
-        let checks = checks_for(&conj, &covered);
-        let mut sql = self.sql();
-        let guard = self.guard.lower("c.record_int", &mut sql)?;
-        let src = self.materialize(&src, &mut sql);
-        let text = self.low.aggregate_sql(&src, &checks, &guard, &mut sql);
-        self.fetch("aggregate", text, sql.binds).await
+        let checks = self.checks(&conj, &covered);
+        let q = self.low.q;
+        let v = self
+            .variant(V_AGGREGATE)
+            .source_with(&src, self.guard)
+            .checks(&checks, q)
+            .finish();
+        let (text, binds) = self.compile("aggregate", &v, |sql| {
+            let guard = self.guard.lower("c.record_int", sql)?;
+            let src = self.materialize(&src, sql);
+            Ok(self.low.aggregate_sql(&src, &checks, &guard, sql))
+        })?;
+        self.fetch_compiled("aggregate", text, binds).await
     }
 
     /// 認可駆動の入口をこの文のバインド列の上で組む（それ以外はそのまま）。
@@ -504,13 +528,22 @@ impl<'a> Exec<'a, '_> {
             }
             other => other,
         };
-        let mut sql = self.sql();
-        let guard = self.guard.lower("c.record_int", &mut sql)?;
-        let src = self.materialize(src, &mut sql);
-        let text = self
-            .low
-            .candidates_sql(&src, checks, &guard, after, cap, limit, &mut sql);
-        let rows = self.fetch("candidates", text, sql.binds).await?;
+        let q = self.low.q;
+        let v = self
+            .variant(V_CANDIDATES)
+            .source_with(src, self.guard)
+            .checks(checks, q)
+            .flag(after.is_some())
+            .flag(cap.is_some())
+            .finish();
+        let (text, binds) = self.compile("candidates", &v, |sql| {
+            let guard = self.guard.lower("c.record_int", sql)?;
+            let src = self.materialize(src, sql);
+            Ok(self
+                .low
+                .candidates_sql(&src, checks, &guard, after, cap, limit, sql))
+        })?;
+        let rows = self.fetch_compiled("candidates", text, binds).await?;
         let n_cand: i64 = rows
             .first()
             .map(|r| r.try_get::<i64, _>("n_cand"))
@@ -564,7 +597,7 @@ impl<'a> Exec<'a, '_> {
         limit: i64,
         budget: i64,
     ) -> Result<Step, DataError> {
-        let checks = order_checks(conj.to_vec());
+        let checks = self.order(conj.to_vec());
         if sort.len() > 1 {
             if let Some(c) = self.composite.clone() {
                 return self.composite_step(&checks, st, limit, budget, &c).await;
@@ -580,15 +613,29 @@ impl<'a> Exec<'a, '_> {
             return self.missing_step(&checks, sort, st, limit, budget).await;
         }
         let kind = self.low.q.field(key.field).kind;
-        let mut sql = self.sql();
-        let guard: GuardSql = self.guard.lower("d.record_int", &mut sql)?;
         let multi = sort.len() > 1;
         // 単一キー: (値, record_int) の厳密に後ろから。複数ソート: 同値群の先頭から（窓は候補 SQL が並べる）。
         let start = st.scan_from.as_ref().map(|(v, r)| (v, *r));
-        let text = self
-            .low
-            .sort_drive_sql(key, start, &checks, &guard, budget, need + 1, &mut sql);
-        let rows = self.fetch("sort_drive", text, sql.binds).await?;
+        let start_tag = match start {
+            None => 0,
+            Some((_, Some(_))) => 1,
+            Some((_, None)) => 2,
+        };
+        let q = self.low.q;
+        let v = self
+            .variant(V_SORT_DRIVE)
+            .num(u64::from(key.field))
+            .flag(key.desc)
+            .tag(start_tag)
+            .checks(&checks, q)
+            .finish();
+        let (text, binds) = self.compile("sort_drive", &v, |sql| {
+            let guard: GuardSql = self.guard.lower("d.record_int", sql)?;
+            Ok(self
+                .low
+                .sort_drive_sql(key, start, &checks, &guard, budget, need + 1, sql))
+        })?;
+        let rows = self.fetch_compiled("sort_drive", text, binds).await?;
         let (scanned, passed, end, last) = Self::absorb(&rows, kind, multi, st, budget)?;
         self.stats.scanned += scanned;
         if multi {
@@ -726,18 +773,22 @@ impl<'a> Exec<'a, '_> {
             st.done = true;
             return Ok(Step::Done);
         }
-        let mut sql = self.sql();
-        let guard = self.guard.lower("d.record_int", &mut sql)?;
-        let text = self.low.missing_drive_sql(
-            key,
-            st.scan_rint,
-            checks,
-            &guard,
-            budget,
-            need + 1,
-            &mut sql,
-        );
-        let rows = self.fetch("missing_drive", text, sql.binds).await?;
+        let q = self.low.q;
+        let v = self
+            .variant(V_MISSING_DRIVE)
+            .num(u64::from(key.field))
+            .flag(key.desc)
+            .flag(st.scan_rint.is_some())
+            .checks(checks, q)
+            .finish();
+        let after_rint = st.scan_rint;
+        let (text, binds) = self.compile("missing_drive", &v, |sql| {
+            let guard = self.guard.lower("d.record_int", sql)?;
+            Ok(self
+                .low
+                .missing_drive_sql(key, after_rint, checks, &guard, budget, need + 1, sql))
+        })?;
+        let rows = self.fetch_compiled("missing_drive", text, binds).await?;
         let kind = self.low.q.field(key.field).kind;
         let (scanned, passed, end, _) = Self::absorb(&rows, kind, false, st, budget)?;
         self.stats.scanned += scanned;

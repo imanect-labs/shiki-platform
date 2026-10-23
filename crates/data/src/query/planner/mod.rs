@@ -17,6 +17,7 @@
 
 pub(crate) mod batch;
 mod catalog;
+mod compiled;
 mod composite;
 pub(crate) mod cost;
 mod estimate;

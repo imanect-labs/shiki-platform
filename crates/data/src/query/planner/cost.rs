@@ -224,6 +224,22 @@ impl UnitCosts {
             + self.c_rtt
     }
 
+    /// 検査 1 つの単価（µs・§5.2 の検査の並びの分母）。索引の点検索は `c_probe`、部分一致は trigram GIN と
+    /// 再確認で重い、リンクの半結合は参照先の点検索と行述語を伴う。
+    pub(crate) fn check(&self, e: &crate::query::bound::Expr) -> f64 {
+        use crate::query::bound::{Expr, Leaf};
+        match e {
+            Expr::True | Expr::False => 0.0,
+            Expr::Atom(a) => match a.leaf {
+                Leaf::Contains(_) | Leaf::EndsWith(_) => 4.0 * self.c_probe,
+                _ => self.c_probe,
+            },
+            Expr::Not(x) => self.check(x),
+            Expr::And(v) | Expr::Or(v) => v.iter().map(|x| self.check(x)).sum(),
+            Expr::Link(l) => 3.0 * self.c_probe + self.check(&l.filter),
+        }
+    }
+
     /// ソート駆動の 1 エントリあたりの単価（予算の換算・§6.2）。
     pub(crate) fn per_entry(&self, n_checks: usize) -> f64 {
         #[allow(clippy::cast_precision_loss)]

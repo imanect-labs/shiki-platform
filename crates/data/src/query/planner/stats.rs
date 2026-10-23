@@ -14,10 +14,11 @@ use std::time::{Duration, Instant};
 use sqlx::PgConnection;
 
 use super::guard::Driver;
-use super::lower::Lowerer;
+use super::lower::{Lowerer, Source};
+use super::plan_cache::{compile, Variant};
 use crate::model::TableKeys;
 use crate::query::bound::Atom;
-use crate::query::sql::{bind_scalar, Bind, SqlBuf};
+use crate::query::sql::{bind_scalar, Bind};
 use crate::{map_db, DataError};
 
 /// 件数探索の既定上限。
@@ -103,9 +104,20 @@ impl Prober<'_> {
         if !force && self.remaining() == 0 {
             return Ok(None);
         }
-        let mut sql = SqlBuf::scoped(self.keys.tenant_int, self.keys.table_int);
-        let text = low.probe_sql(a, cap.max(1), &mut sql);
-        let n = self.run(conn, text, sql.binds).await?;
+        // 探索の文は原子式の構造（列・葉の種類）だけで決まる（値・上限はバインド）。
+        let variant = Variant::new(&[0; 32])
+            .tag(1)
+            .source(&Source::Atom(a))
+            .finish();
+        let limit = cap.max(1);
+        let (text, binds) = compile(
+            self.plan.as_ref(),
+            "probe",
+            Some(&variant),
+            self.keys,
+            |sql| Ok(low.probe_sql(a, limit, sql)),
+        )?;
+        let n = self.run(conn, text, binds).await?;
         let p = Probe {
             count: n,
             cap: ucap,
@@ -131,9 +143,17 @@ impl Prober<'_> {
         if self.remaining() == 0 {
             return Ok(None);
         }
-        let mut sql = SqlBuf::scoped(self.keys.tenant_int, self.keys.table_int);
-        let text = d.probe_sql(cap.max(1), &mut sql);
-        let n = self.run(conn, text, sql.binds).await?;
+        // 選言の入口の形（種類・列）だけで文が決まる（材料・値はバインド・結果はキャッシュしない）。
+        let variant = Variant::new(&[0; 32]).tag(2).driver(d).finish();
+        let limit = cap.max(1);
+        let (text, binds) = compile(
+            self.plan.as_ref(),
+            "probe",
+            Some(&variant),
+            self.keys,
+            |sql| Ok(d.probe_sql(limit, sql)),
+        )?;
+        let n = self.run(conn, text, binds).await?;
         Ok(Some(Probe {
             count: n,
             cap: ucap,
@@ -143,14 +163,10 @@ impl Prober<'_> {
     async fn run(
         &mut self,
         conn: &mut PgConnection,
-        text: String,
+        text: std::sync::Arc<str>,
         binds: Vec<Bind>,
     ) -> Result<u64, DataError> {
         self.used += 1;
-        let text: std::sync::Arc<str> = match &self.plan {
-            Some(p) => p.intern("probe", text),
-            None => text.into(),
-        };
         let n: i64 = bind_scalar(sqlx::query_scalar(&text), &binds)
             .fetch_one(&mut *conn)
             .await

@@ -416,6 +416,7 @@ impl DataStore {
             binds: vec![Bind::Text(Value::Array(set).to_string())],
             table: None,
             aliases: 0,
+            skip_text: false,
         };
         let policy = compile_read_predicate(&table.schema, m, &ctx.principal.id, "r", &mut sql)?;
         let w = super::v1::where_sql(&body_lowerer(bq), &ctx.tenant_id, &policy, &mut sql)?;

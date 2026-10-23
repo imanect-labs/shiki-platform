@@ -14,7 +14,7 @@ use crate::policy::ast::{CmpOp, PolicyExpr, PolicyOperand};
 use crate::policy::compile_index::{
     compile_index_read, field_i16, text_eq_cond, text_in_cond, IndexGuardCtx,
 };
-use crate::query::sql::{Bind, SqlBuf};
+use crate::query::sql::{sqlf, Bind, SqlBuf};
 use crate::DataError;
 
 /// 行述語の検査 SQL（[`Guard::lower`] だけが作る）。
@@ -65,7 +65,7 @@ impl Driver {
         let (table, field, cond) = match self {
             Driver::Shared(ints) => {
                 let ph = sql.push(Bind::I64Array(ints.clone()));
-                return format!("SELECT unnest({ph}::int8[]) AS record_int");
+                return sqlf!(sql, "SELECT unnest({ph}::int8[]) AS record_int");
             }
             Driver::Owner(user) => (
                 IndexTable::Text,
@@ -79,12 +79,13 @@ impl Driver {
             ),
             Driver::Num { field, val } => {
                 let ph = sql.typed(Bind::Numeric(val.clone()));
-                (IndexTable::Num, *field, format!("x.val = {ph}"))
+                (IndexTable::Num, *field, sqlf!(sql, "x.val = {ph}"))
             }
         };
         let fph = sql.typed(Bind::I16(field_i16(field)));
         let t = sql.t();
-        format!(
+        sqlf!(
+            sql,
             "SELECT x.record_int FROM {} x WHERE x.tenant_int = $1 AND x.table_int = {t} \
              AND x.field_id = {fph} AND {cond}",
             table.relation()
@@ -101,7 +102,10 @@ impl Driver {
             Driver::Shared(ints) => {
                 let ph = sql.push(Bind::I64Array(ints.clone()));
                 let cph = sql.typed(Bind::I64(cap));
-                format!("SELECT count(*) FROM (SELECT unnest({ph}::int8[]) LIMIT {cph}) s")
+                sqlf!(
+                    sql,
+                    "SELECT count(*) FROM (SELECT unnest({ph}::int8[]) LIMIT {cph}) s"
+                )
             }
             Driver::Owner(user) => {
                 let c = text_eq_cond("x", user, None, sql);
@@ -119,11 +123,27 @@ impl Driver {
                 probe_union(
                     IndexTable::Num,
                     *field,
-                    &[format!("x.val = {ph}")],
+                    &[sqlf!(sql, "x.val = {ph}")],
                     cap,
                     sql,
                 )
             }
+        }
+    }
+
+    /// 入口の形（値・材料を含まない・プランキャッシュの計画の変種）。
+    pub(crate) fn shape_into(&self, out: &mut Vec<u8>) {
+        match self {
+            Driver::Owner(_) => out.push(1),
+            Driver::Text { field, .. } => {
+                out.push(2);
+                out.extend_from_slice(&field.to_le_bytes());
+            }
+            Driver::Num { field, .. } => {
+                out.push(3);
+                out.extend_from_slice(&field.to_le_bytes());
+            }
+            Driver::Shared(_) => out.push(4),
         }
     }
 
@@ -139,6 +159,39 @@ impl Driver {
 impl<'a> Guard<'a> {
     pub(crate) fn new(ctx: IndexGuardCtx<'a>) -> Self {
         Guard { ctx }
+    }
+
+    /// 降下のテキストを変え得る文脈（値・材料を含まない）をプランキャッシュの文脈キーへ積む:
+    /// 索引の状態（未完成の列は本体の点検索に落ちる）。P の検査のテキストは材料に依らない
+    /// （`HasRole` の成否は真偽スイッチ）。認可駆動の入口の形は入口を使う文だけが [`Self::drivers_into`] で積む。
+    pub(crate) fn shape_into(&self, out: &mut Vec<u8>) {
+        let mut act: Vec<(crate::model::FieldId, i16)> = self
+            .ctx
+            .active
+            .iter()
+            .map(|(f, t)| (*f, t.code()))
+            .collect();
+        act.sort_unstable();
+        out.extend_from_slice(&(act.len() as u64).to_le_bytes());
+        for (f, t) in act {
+            out.extend_from_slice(&f.to_le_bytes());
+            out.extend_from_slice(&t.to_le_bytes());
+        }
+        out.push(u8::from(self.ctx.schema.row_policy.is_some()));
+    }
+
+    /// 認可駆動の入口の形（選言の種類と列・`HasRole` の畳み込みの結果。材料は積まない）。
+    pub(crate) fn drivers_into(&self, out: &mut Vec<u8>) {
+        match self.drivers() {
+            None => out.push(0),
+            Some(ds) => {
+                out.push(1);
+                out.extend_from_slice(&(ds.len() as u64).to_le_bytes());
+                for d in &ds {
+                    d.shape_into(out);
+                }
+            }
+        }
     }
 
     /// 駆動行 `rec` についての P の検査 SQL。

@@ -107,7 +107,7 @@ impl Exec<'_, '_> {
         Ok(())
     }
 
-    fn estimator<'s>(&'s self, stats: &'s TableStats) -> Estimator<'s> {
+    pub(super) fn estimator<'s>(&'s self, stats: &'s TableStats) -> Estimator<'s> {
         Estimator {
             stats,
             counts: &self.counts,

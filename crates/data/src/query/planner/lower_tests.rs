@@ -173,3 +173,167 @@ fn contains_reads_the_search_table_with_escaped_pattern() {
         sql.binds
     );
 }
+
+/// プランキャッシュの命中時の走査（[`SqlBuf::skip_text`]）: テキストを組まず、組んだときと**同じバインド**を
+/// 同じ順で積む（命中時はテキストをキャッシュから引き、値だけをこの走査で集める・監査 B2-1）。
+/// 降下の全ての入口（候補・ソート駆動・値なしの区間・件数・集計・件数探索・本体取得）で確かめ、
+/// 組む場合と省く場合の所要時間も測る（省くほうが速い）。
+/// 文を組む関数（同じ文を組む降下・テスト用）。
+type Build<'a> = Box<dyn Fn(&mut SqlBuf) -> String + 'a>;
+
+#[test]
+#[allow(clippy::too_many_lines)] // 降下の全ての入口を 1 つの表で確かめる。
+fn binds_only_lowering_matches_full_lowering_and_is_cheaper() {
+    use crate::policy::ast::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
+    let q = bound(json!({
+        "filter": {"all": [
+            {"cmp": {"field": "status", "op": "in", "value": ["承認待ち"]}},
+            {"cmp": {"field": "amount", "op": "gte", "value": 10}},
+            {"cmp": {"field": "title", "op": "starts_with", "value": "あ".repeat(900)}},
+            {"not": {"cmp": {"field": "title", "op": "contains", "value": "a_%"}}},
+            {"any": [
+                {"cmp": {"field": "status", "op": "eq", "value": "承認待ち"}},
+                {"cmp": {"field": "amount", "op": "lt", "value": 3}}
+            ]}
+        ]},
+        "sort": [{"field": "amount", "descending": true}, {"field": "title"}]
+    }));
+    let mut schema = TableSchema {
+        fields: vec![FieldDef::new("status", FieldType::Select)],
+        status_field: None,
+        row_policy: None,
+        field_policy: vec![],
+        aggregate_min_rows: None,
+        fsm_ref: None,
+        rag: None,
+    };
+    schema.fields[0].indexed = true;
+    crate::field_key::assign_field_ids(None, &mut schema).unwrap();
+    schema.row_policy = Some(RowPolicy {
+        read: PolicyExpr::Any(vec![
+            PolicyExpr::IsOwner,
+            PolicyExpr::FieldCmp {
+                field: "status".into(),
+                op: CmpOp::Ne,
+                value: PolicyOperand::Lit(json!("却下")),
+            },
+            PolicyExpr::HasRole {
+                role: "keiri".into(),
+                subtree: true,
+            },
+        ]),
+        write: None,
+    });
+    let m = PolicyMaterial::default();
+    let active = HashSet::from([(crate::model::SYSTEM_FIELD_OWNER, IndexTable::Text)]);
+    let guard = Guard::new(IndexGuardCtx {
+        schema: &schema,
+        material: &m,
+        user: "alice",
+        active: &active,
+        shared_ints: &[3, 5],
+    });
+    let links = HashMap::new();
+    let low = Lowerer {
+        q: &q,
+        links: &links,
+        scopes: &[],
+    };
+    let conj = super::super::plans::conjuncts(&q.filter);
+    let Expr::Atom(a) = conj[0] else {
+        panic!("{:?}", conj[0])
+    };
+    let after = Pos {
+        vals: vec![
+            SortVal::Num(crate::numeric::Dec::parse("3").unwrap()),
+            SortVal::Missing,
+        ],
+        rint: 9,
+    };
+    let start = SortVal::Num(crate::numeric::Dec::parse("5").unwrap());
+    let stmts: Vec<Build<'_>> = vec![
+        Box::new(|sql| {
+            let g = guard.lower("c.record_int", sql).unwrap();
+            low.candidates_sql(
+                &Source::Atom(a),
+                &conj[1..],
+                &g,
+                Some(&after),
+                Some(1_000),
+                21,
+                sql,
+            )
+        }),
+        Box::new(|sql| {
+            let g = guard.lower("d.record_int", sql).unwrap();
+            low.sort_drive_sql(q.sort[0], Some((&start, Some(4))), &conj, &g, 160, 21, sql)
+        }),
+        Box::new(|sql| {
+            let g = guard.lower("d.record_int", sql).unwrap();
+            low.missing_drive_sql(q.sort[0], Some(4), &conj, &g, 160, 21, sql)
+        }),
+        Box::new(|sql| {
+            let g = guard.lower("c.record_int", sql).unwrap();
+            low.count_sql(&Source::All, &conj, &g, 10_000, sql)
+        }),
+        Box::new(|sql| {
+            let g = guard.lower("c.record_int", sql).unwrap();
+            let src = Source::Policy(
+                guard
+                    .drivers()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|d| d.source_sql(sql))
+                    .collect(),
+            );
+            low.aggregate_sql(&src, &conj, &g, sql)
+        }),
+        Box::new(|sql| low.probe_sql(a, 1_000, sql)),
+        Box::new(|sql| fetch_sql("t", vec![1, 2], Some(vec!["f16".into()]), sql)),
+    ];
+    for (i, build) in stmts.iter().enumerate() {
+        let mut full = SqlBuf::scoped(1, 2);
+        let text = build(&mut full);
+        assert!(!text.is_empty(), "#{i}");
+        let mut skip = SqlBuf::scoped_binds_only(1, 2);
+        let none = build(&mut skip);
+        assert!(none.is_empty(), "#{i}: 命中時はテキストを組まない: {none}");
+        assert_eq!(
+            skip.binds, full.binds,
+            "#{i}: 命中時も同じバインドを同じ順で積む"
+        );
+    }
+    // 組む場合と省く場合の所要時間（同じ入口を繰り返す・テストの実行環境の値）。
+    let rounds = 300;
+    let time = |skip: bool| {
+        let t = std::time::Instant::now();
+        for _ in 0..rounds {
+            for build in &stmts {
+                let mut sql = if skip {
+                    SqlBuf::scoped_binds_only(1, 2)
+                } else {
+                    SqlBuf::scoped(1, 2)
+                };
+                std::hint::black_box(build(&mut sql));
+            }
+        }
+        t.elapsed()
+    };
+    time(false);
+    let full = time(false);
+    let skip = time(true);
+    #[allow(clippy::print_stderr, clippy::cast_precision_loss)]
+    {
+        let per = |d: std::time::Duration| d.as_secs_f64() * 1e6 / (rounds * stmts.len()) as f64;
+        eprintln!(
+            "降下 1 文あたり: テキストを組む {:.1}µs → 命中（バインドだけ） {:.1}µs（{:.1} 倍）",
+            per(full),
+            per(skip),
+            full.as_secs_f64() / skip.as_secs_f64()
+        );
+    }
+    assert!(
+        skip < full,
+        "命中時の走査は降下より安い: {skip:?} vs {full:?}"
+    );
+}

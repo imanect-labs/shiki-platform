@@ -24,7 +24,7 @@ use crate::model::{FieldId, FieldType, TableSchema, SYSTEM_FIELD_OWNER};
 use crate::policy::ast::{CmpOp, PolicyExpr, PolicyOperand};
 use crate::policy::compile::compile_field_cmp;
 use crate::policy::material::PolicyMaterial;
-use crate::query::sql::{Bind, SqlBuf};
+use crate::query::sql::{sqlf, Bind, SqlBuf};
 use crate::DataError;
 
 /// 索引上の行述語の材料（1 リクエスト分）。
@@ -54,7 +54,7 @@ pub(crate) fn compile_index_read(
     let p = compile_index_expr(&policy.read, g, rec, sql)?;
     let has = sql.flag(!g.shared_ints.is_empty());
     let ph = sql.push(Bind::I64Array(g.shared_ints.to_vec()));
-    Ok(format!("({p} OR ({has} AND {rec} = ANY({ph}::int8[])))"))
+    Ok(sqlf!(sql, "({p} OR ({has} AND {rec} = ANY({ph}::int8[])))"))
 }
 
 /// 述語式 1 つ（v1 と同じ意味論）。
@@ -80,7 +80,7 @@ pub(crate) fn compile_index_expr(
                 ))
             } else {
                 let ph = sql.push(Bind::Text(g.user.to_string()));
-                Ok(exists_body(rec, &format!("b.owner = {ph}"), sql))
+                Ok(exists_body(rec, &sqlf!(sql, "b.owner = {ph}"), sql))
             }
         }
         PolicyExpr::Any(children) | PolicyExpr::All(children) => {
@@ -96,7 +96,7 @@ pub(crate) fn compile_index_expr(
                 .iter()
                 .map(|c| compile_index_expr(c, g, rec, sql))
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(format!("({})", parts.join(joiner)))
+            Ok(sqlf!(sql, "({})", parts.join(joiner)))
         }
         PolicyExpr::FieldCmp { field, op, value } => field_cmp(g, rec, sql, field, *op, value),
     }
@@ -129,7 +129,10 @@ fn field_cmp(
     let cond = match value {
         PolicyOperand::UserId => match op {
             CmpOp::Eq => text_eq_cond("x", g.user, jk, sql),
-            CmpOp::Ne => format!("NOT {}", text_eq_cond("x", g.user, jk, sql)),
+            CmpOp::Ne => {
+                let eq = text_eq_cond("x", g.user, jk, sql);
+                sqlf!(sql, "NOT {eq}")
+            }
             CmpOp::In => {
                 return Err(DataError::Internal(
                     "row_policy: $user.id に in は使えません（検証済みのはず）".into(),
@@ -147,8 +150,8 @@ fn field_cmp(
                 .ok_or_else(|| DataError::Internal("row_policy: number リテラル不整合".into()))?;
             let ph = sql.typed(Bind::Numeric(n));
             match op {
-                CmpOp::Eq => format!("x.val = {ph}"),
-                CmpOp::Ne => format!("x.val <> {ph}"),
+                CmpOp::Eq => sqlf!(sql, "x.val = {ph}"),
+                CmpOp::Ne => sqlf!(sql, "x.val <> {ph}"),
                 CmpOp::In => {
                     return Err(DataError::Internal(
                         "row_policy: number の in は未対応（検証済みのはず）".into(),
@@ -165,7 +168,7 @@ fn field_cmp(
                 if op == CmpOp::Eq {
                     eq
                 } else {
-                    format!("NOT {eq}")
+                    sqlf!(sql, "NOT {eq}")
                 }
             }
             CmpOp::In => {
@@ -198,7 +201,8 @@ pub(crate) fn exists_index(
     let t = sql.t();
     let rel = table.relation();
     let col = table.record_column();
-    format!(
+    sqlf!(
+        sql,
         "EXISTS (SELECT 1 FROM {rel} x WHERE x.tenant_int = $1 AND x.table_int = {t} \
          AND x.field_id = {fph} AND x.{col} = {rec} AND {cond} OFFSET 0)"
     )
@@ -207,7 +211,8 @@ pub(crate) fn exists_index(
 /// 本体（`data_record`）の点検索。`cond` は別名 `b` を参照する。
 pub(crate) fn exists_body(rec: &str, cond: &str, sql: &SqlBuf) -> String {
     let t = sql.t();
-    format!(
+    sqlf!(
+        sql,
         "EXISTS (SELECT 1 FROM data_record b WHERE b.tenant_int = $1 AND b.table_int = {t} \
          AND b.record_int = {rec} AND ({cond}) OFFSET 0)"
     )
@@ -224,10 +229,14 @@ pub(crate) fn text_eq_cond(x: &str, s: &str, field: Option<FieldId>, sql: &mut S
     let pp = sql.push(Bind::Text(prefix.to_string()));
     let lf = sql.flag(long);
     let Some(field) = field else {
-        return format!("({x}.val = {pp}::text COLLATE \"C\" AND NOT {x}.truncated AND NOT {lf})");
+        return sqlf!(
+            sql,
+            "({x}.val = {pp}::text COLLATE \"C\" AND NOT {x}.truncated AND NOT {lf})"
+        );
     };
     let body = body_text_cmp(x, field, "=", s, sql);
-    format!(
+    sqlf!(
+        sql,
         "({x}.val = {pp}::text COLLATE \"C\" AND {x}.truncated = {lf} AND (NOT {lf} OR {body}))"
     )
 }
@@ -244,10 +253,10 @@ pub(crate) fn text_in_cond(
     let (short, long): (Vec<&String>, Vec<&String>) =
         vals.iter().partition(|v| v.len() <= MAX_INDEX_KEY_BYTES);
     let sph = sql.push(Bind::TextArray(short.into_iter().cloned().collect()));
-    let short_sql = format!("({x}.val = ANY({sph}::text[]) AND NOT {x}.truncated)");
+    let short_sql = sqlf!(sql, "({x}.val = ANY({sph}::text[]) AND NOT {x}.truncated)");
     let Some(field) = field else {
         // 擬似列は長い値を持たない（長い値は一致しない）。
-        return format!("({short_sql})");
+        return sqlf!(sql, "({short_sql})");
     };
     let lf = sql.flag(!long.is_empty());
     let prefixes: Vec<String> = long
@@ -262,7 +271,7 @@ pub(crate) fn text_in_cond(
     let kph = sql.push(Bind::Text(crate::field_key::json_key(field)));
     let lph = sql.push(Bind::TextArray(long.into_iter().cloned().collect()));
     let t = sql.t();
-    format!(
+    sqlf!(sql,
         "({short_sql} OR ({lf} AND {x}.truncated AND {x}.val = ANY({pph}::text[]) AND \
          EXISTS (SELECT 1 FROM data_record b WHERE b.tenant_int = $1 AND b.table_int = {t} \
          AND b.record_int = {x}.record_int AND (b.data ->> {kph}) COLLATE \"C\" = ANY({lph}::text[]))))"
@@ -280,7 +289,8 @@ pub(crate) fn body_text_cmp(
     let kph = sql.push(Bind::Text(crate::field_key::json_key(field)));
     let vph = sql.push(Bind::Text(s.to_string()));
     let t = sql.t();
-    format!(
+    sqlf!(
+        sql,
         "EXISTS (SELECT 1 FROM data_record b WHERE b.tenant_int = $1 AND b.table_int = {t} \
          AND b.record_int = {x}.record_int AND (b.data ->> {kph}) COLLATE \"C\" {op} {vph}::text)"
     )
