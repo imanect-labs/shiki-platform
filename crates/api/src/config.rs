@@ -207,9 +207,10 @@ mod tests;
 
 pub use auth::{AuthConfig, SessionConfig, Tenancy};
 pub use backends::{
-    AuthzConfig, ChatConfig, LangfuseConfig, LlmAutoConfig, LlmBackend, LlmConfig, LlmModelEntry,
-    LlmProviderEntry, LogFormat, ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig,
-    UploadGcConfig, VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
+    AuthzConfig, ChatConfig, LangfuseConfig, LlmAutoConfig, LlmBackend, LlmConfig, LlmLimitsConfig,
+    LlmModelEntry, LlmProviderEntry, LlmProviderLimit, LogFormat, ObjectStoreBackend,
+    StorageConfig, TabularConfig, TelemetryConfig, UploadGcConfig, VectorConfig,
+    VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -290,6 +291,7 @@ impl AppConfig {
         Self::check_session_bounds(&self.session)?;
         Self::check_upload_gc_bounds(&self.storage)?;
         Self::check_llm_timeouts(&self.llm)?;
+        Self::check_llm_limits(&self.llm)?;
         // 必須 URL。
         let mut urls: Vec<(&str, &str)> = vec![
             ("auth.issuer", self.auth.issuer.as_str()),
@@ -353,6 +355,52 @@ impl AppConfig {
         ] {
             if secs == 0 {
                 return Err(ConfigError::Invalid(format!("{name} は 1 以上が必要です")));
+            }
+        }
+        Ok(())
+    }
+
+    /// 利用制限の値を検証する（金額クリティカル・効かない設定で起動させない）。
+    ///
+    /// 負の上限は即座に全員を止めるので弾く。プロバイダ ID の綴り違いは**黙って上限が
+    /// 掛からない**状態を作るため、`llm.providers[].id`（と既定プロバイダ）に無い ID を
+    /// 指していたら起動を止める（fail-closed）。
+    fn check_llm_limits(llm: &LlmConfig) -> Result<(), ConfigError> {
+        if llm.limits.per_user_usd_micros.is_some_and(|v| v < 0) {
+            return Err(ConfigError::Invalid(
+                "llm.limits.per_user_usd_micros は 0 以上が必要です".into(),
+            ));
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        for entry in &llm.limits.providers {
+            if entry.usd_micros < 0 {
+                return Err(ConfigError::Invalid(
+                    "llm.limits.providers[].usd_micros は 0 以上が必要です".into(),
+                ));
+            }
+            if entry.providers.is_empty() {
+                return Err(ConfigError::Invalid(
+                    "llm.limits.providers[].providers は 1 つ以上の ID が必要です".into(),
+                ));
+            }
+            for id in &entry.providers {
+                let known = id == llm_gateway::DEFAULT_PROVIDER_ID
+                    || llm.providers.iter().any(|q| &q.id == id);
+                if !known {
+                    return Err(ConfigError::Invalid(format!(
+                        "llm.limits.providers に未知のプロバイダ ID があります: {id}\
+                         （llm.providers[].id か {} を指定）",
+                        llm_gateway::DEFAULT_PROVIDER_ID
+                    )));
+                }
+                // 同じ ID が 2 つの枠に属すとどちらで数えるか決まらない（先勝ちで黙って
+                // 緩い方へ倒れ得る）ので弾く。
+                if seen.contains(&id.as_str()) {
+                    return Err(ConfigError::Invalid(format!(
+                        "llm.limits.providers でプロバイダ ID が重複しています: {id}"
+                    )));
+                }
+                seen.push(id);
             }
         }
         Ok(())

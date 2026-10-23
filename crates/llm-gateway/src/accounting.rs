@@ -17,7 +17,13 @@ use crate::model::Usage;
 pub struct UsageRecord {
     /// 冪等キー（例 `<run_id>:<attempt>:<call_ordinal>`）。テナント内一意。
     pub idempotency_key: String,
+    /// アダプタ種別（`openai` / `anthropic` / …）。
     pub provider: String,
+    /// デプロイ設定のプロバイダ ID（`llm.providers[].id`・既定は `default`）。
+    ///
+    /// `provider` は種別なので、同じ種別の追加プロバイダ（OpenRouter と OpenCode Go は
+    /// どちらも `openai`）を区別できない。利用制限の「プロバイダ別の環境総枠」はこちらで数える。
+    pub provider_id: String,
     pub model: String,
     pub usage: Usage,
     /// 実コスト（マイクロ USD・整数）。
@@ -56,8 +62,8 @@ impl UsageRecorder {
             "INSERT INTO llm_usage \
              (tenant_id, org, idempotency_key, provider, model, prompt_tokens, completion_tokens, \
               cache_read_tokens, cache_write_tokens, cost_usd_micros, trace_id, app_id, user_sub, \
-              source) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+              source, provider_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
              ON CONFLICT (tenant_id, idempotency_key) DO NOTHING",
         )
         .bind(&ctx.tenant_id)
@@ -74,6 +80,7 @@ impl UsageRecorder {
         .bind(rec.app_id)
         .bind(&ctx.principal.id)
         .bind(rec.source.as_str())
+        .bind(&rec.provider_id)
         .execute(&self.db)
         .await?;
         Ok(())
