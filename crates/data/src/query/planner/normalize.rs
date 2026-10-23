@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 
 use crate::model::FieldId;
 use crate::query::bound::{Atom, BField, Expr, Leaf, Val};
+use crate::query::limits::charge;
 
 /// 適用する規則の集合（差分テストで 1 規則ずつ切り替える）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +63,7 @@ pub(crate) fn normalize(e: Expr, fields: &BTreeMap<FieldId, BField>, rules: Rule
 
 /// 規則 1: 否定の押し下げ。
 pub(crate) fn nnf(e: Expr, neg: bool) -> Expr {
+    charge(1);
     match e {
         Expr::True => {
             if neg {
@@ -114,6 +116,7 @@ pub(crate) fn nnf(e: Expr, neg: bool) -> Expr {
 
 /// 規則 2: 平坦化と重複除去。
 pub(crate) fn flatten(e: Expr) -> Expr {
+    charge(1);
     match e {
         Expr::And(v) => Expr::And(splice(v, true)),
         Expr::Or(v) => Expr::Or(splice(v, false)),
@@ -132,7 +135,8 @@ fn splice(v: Vec<Expr>, and: bool) -> Vec<Expr> {
             other => vec![other],
         };
         for k in kids {
-            if !out.contains(&k) {
+            // 重複除去は省ける仕事（意味は変わらない）。予算を使い切ったら省き、段の終わりで 422。
+            if !charge(out.len()) || !out.contains(&k) {
                 out.push(k);
             }
         }
@@ -142,6 +146,7 @@ fn splice(v: Vec<Expr>, and: bool) -> Vec<Expr> {
 
 /// 規則 3: 定数畳み込み。
 pub(crate) fn fold(e: Expr) -> Expr {
+    charge(1);
     match e {
         Expr::Atom(Atom {
             leaf: Leaf::In(ref v),
@@ -200,6 +205,7 @@ pub(crate) fn cmp_val(a: &Val, b: &Val) -> Option<Ordering> {
 
 /// 規則 4: 同一フィールドの併合。
 pub(crate) fn merge(e: Expr, fields: &BTreeMap<FieldId, BField>) -> Expr {
+    charge(1);
     match e {
         Expr::Not(inner) => Expr::Not(Box::new(merge(*inner, fields))),
         Expr::Or(v) => {
@@ -228,7 +234,7 @@ pub(crate) fn merge(e: Expr, fields: &BTreeMap<FieldId, BField>) -> Expr {
 fn dedup_vals(vals: &mut Vec<Val>) {
     let mut out: Vec<Val> = Vec::with_capacity(vals.len());
     for v in vals.drain(..) {
-        if !out.contains(&v) {
+        if !charge(out.len()) || !out.contains(&v) {
             out.push(v);
         }
     }
@@ -358,6 +364,7 @@ fn merge_and(v: Vec<Expr>, fields: &BTreeMap<FieldId, BField>) -> Expr {
 fn intersect(a: Constraint, b: Constraint) -> Option<Constraint> {
     match (a, b) {
         (Constraint::Set(x), Constraint::Set(y)) => {
+            charge(x.len().saturating_mul(y.len()));
             let v: Vec<Val> = x.into_iter().filter(|v| y.contains(v)).collect();
             (!v.is_empty()).then_some(Constraint::Set(v))
         }
@@ -430,6 +437,7 @@ fn tighter(
 
 /// 規則 5: 前方一致を範囲へ。
 pub(crate) fn prefix(e: Expr) -> Expr {
+    charge(1);
     match e {
         Expr::Atom(Atom {
             field,

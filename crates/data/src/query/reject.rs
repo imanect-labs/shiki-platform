@@ -34,7 +34,7 @@ pub enum RejectCode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RejectLimit {
     /// 上限の名前（`max_sql_bytes` / `max_ast_depth` / `max_ast_nodes` / `max_literals` /
-    /// `max_compile_ms` / `max_join_depth`）。
+    /// `max_compile_work` / `max_compile_ms` / `max_join_depth`）。
     pub name: String,
     /// 上限値。
     pub max: u64,

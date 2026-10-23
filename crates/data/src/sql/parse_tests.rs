@@ -156,7 +156,17 @@ fn each_resource_limit_rejects_with_its_name() {
         many.join(", ")
     );
     assert_eq!(limit(&lits, &l), "max_literals");
-    // MAX_COMPILE_MS（予算 0 では必ず超える）
+    // MAX_COMPILE_WORK（予算 1 単位ではどの文も超える・決定的）
+    let no_work = QueryLimits {
+        max_compile_work: 1,
+        ..QueryLimits::default()
+    };
+    let mut b = CompileBudget::new(&no_work);
+    let e = b
+        .stage(&no_work, || parse("SELECT title FROM orders", &no_work))
+        .unwrap_err();
+    assert_eq!(e.limit.unwrap().name, "max_compile_work");
+    // MAX_COMPILE_MS（外側の安全網。予算 0 では必ず超える）
     let tight = QueryLimits {
         max_compile: std::time::Duration::ZERO,
         ..QueryLimits::default()
@@ -172,6 +182,7 @@ use crate::query::limits::CompileBudget;
 
 #[test]
 fn nesting_that_makes_the_parser_super_linear_is_rejected_before_parsing() {
+    // 指数時間に戻れば秒単位になる。壁時計の閾値は負荷で止められたスレッドを誤検知しない幅にする。
     use std::time::Instant;
     let l = QueryLimits::default();
     // 関数の入れ子は部分集合の外（パーサの投機的解析が指数時間になる形でもある）。
@@ -184,7 +195,7 @@ fn nesting_that_makes_the_parser_super_linear_is_rejected_before_parsing() {
         let t = Instant::now();
         let e = parse(&sql, &l).unwrap_err();
         assert_eq!(e.code, RejectCode::Unsupported, "{d}");
-        assert!(t.elapsed().as_millis() < 50, "{d}: {:?}", t.elapsed());
+        assert!(t.elapsed().as_millis() < 500, "{d}: {:?}", t.elapsed());
     }
     // 上限付近の入れ子（NOT ( の連鎖）も線形時間で受理・拒否する。
     for d in [20usize, 30, 31, 40, 200] {
@@ -195,7 +206,7 @@ fn nesting_that_makes_the_parser_super_linear_is_rejected_before_parsing() {
         );
         let t = Instant::now();
         let r = parse(&sql, &l);
-        assert!(t.elapsed().as_millis() < 50, "{d}: {:?}", t.elapsed());
+        assert!(t.elapsed().as_millis() < 500, "{d}: {:?}", t.elapsed());
         if d > 32 {
             assert_eq!(r.unwrap_err().limit.unwrap().name, "max_ast_depth");
         }

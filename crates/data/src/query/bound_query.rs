@@ -21,7 +21,7 @@ use super::ir::{
     CondOp, DataQuery, HavingCond, Metric, MetricSpec, DEFAULT_LIMIT, MAX_GROUP_LIMIT, MAX_LIMIT,
     MAX_SORT_KEYS,
 };
-use super::limits::MAX_JOIN_DEPTH;
+use super::limits::{charge, MAX_JOIN_DEPTH};
 use super::planner::normalize::{normalize, Rules};
 use super::scopes::ScopeTables;
 use crate::field_key::is_valid_field_key;
@@ -306,6 +306,7 @@ pub(crate) fn bind_query_scoped(
                         if j.binder.masked().contains(key) {
                             return Err(DataError::Forbidden);
                         }
+                        charge(j.binder.schema().fields.len());
                         if j.binder.schema().field(key).is_none() {
                             return Err(DataError::Invalid(format!(
                                 "フィールド '{k}' はスキーマに存在しません"
@@ -314,6 +315,7 @@ pub(crate) fn bind_query_scoped(
                     }
                     j.select.push(key.to_string());
                 } else {
+                    charge(schema.fields.len());
                     if schema.field(k).is_none() {
                         return Err(DataError::Invalid(format!(
                             "フィールド '{k}' はスキーマに存在しません"

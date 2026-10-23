@@ -1,6 +1,7 @@
 //! クエリの入口（Task 15.10）: 資源上限 → テーブルを開く → 参照先を開く → 束縛 → 正規化。
 //!
-//! コンパイル（束縛・正規化）の経過時間は [`CompileBudget`] に積み、`MAX_COMPILE_MS` を超えたら 422。
+//! コンパイル（束縛・正規化）の仕事量と経過時間は [`CompileBudget`] に積み、`MAX_COMPILE_WORK`（主）か
+//! `MAX_COMPILE_MS`（外側の安全網）を超えたら 422。
 //! テーブル・参照先を開く OpenFGA / DB の待ち時間は数えない。
 
 use std::collections::HashSet;

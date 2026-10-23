@@ -20,6 +20,7 @@ use super::ir::{
     CondOp, Condition, LinkCond, Metric, DEFAULT_LIMIT, MAX_CONDITION_DEPTH, MAX_CONDITION_LEAVES,
     MAX_IN_VALUES,
 };
+use super::limits::charge;
 use super::scopes::ScopeTables;
 use crate::derived::types::ResultType;
 use crate::index::{IndexTable, SortPrecision};
@@ -407,6 +408,7 @@ impl<'a> Binder<'a> {
         if self.masked.contains(key) {
             return Err(DataError::Forbidden);
         }
+        charge(self.schema.fields.len());
         let f = self.schema.field(key).ok_or_else(|| {
             DataError::Invalid(format!("フィールド '{key}' はスキーマに存在しません"))
         })?;
@@ -472,6 +474,7 @@ impl<'a> Binder<'a> {
             self.fields.insert(p.id, p.clone());
             return Ok(p);
         }
+        charge(self.schema.fields.len());
         let f = self.schema.field(key).ok_or_else(|| {
             DataError::Invalid(format!("フィールド '{key}' はスキーマに存在しません"))
         })?;
@@ -532,6 +535,7 @@ impl<'a> Binder<'a> {
 
     /// 条件木を束縛する（2 値論理の式へ）。
     pub(crate) fn condition(&mut self, c: &Condition, depth: usize) -> Result<Expr, DataError> {
+        charge(1);
         if depth > MAX_CONDITION_DEPTH {
             return Err(DataError::Invalid(format!(
                 "条件のネストが深すぎます（最大 {MAX_CONDITION_DEPTH}）"
@@ -739,6 +743,7 @@ fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, 
 
 /// 値 1 つを列の型へ正規化する（書込検証と同じ正準形・不一致は 422）。
 fn scalar(f: &BField, v: &Value) -> Result<Val, DataError> {
+    charge(1);
     let key = &f.key;
     match f.kind {
         FieldKind::Num => {

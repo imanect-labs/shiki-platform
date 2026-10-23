@@ -507,7 +507,8 @@
     参照先の行述語を必ず適用する。多段結合には `MAX_JOIN_DEPTH` を置く。
   - **入口の資源上限を置く**（`statement_timeout` は DB 実行時間の上限でしかない）:
     `MAX_SQL_BYTES` 64KB / `MAX_AST_DEPTH` 32 / `MAX_AST_NODES` 4096 / `MAX_LITERALS` 1024 /
-    `MAX_COMPILE_MS` 50ms。**IR 直投入の経路にも同じ上限を課す**。
+    `MAX_COMPILE_WORK` 200 万単位（コンパイルの仕事量・決定的）/ `MAX_COMPILE_MS` 500ms（壁時計の外側の安全網）。
+    **IR 直投入の経路にも同じ上限を課す**。
   - **検証は allowlist（閉じた部分集合）で行う。** `crates/tabular/src/sql_guard.rs` は
     「非 Query 文の拒否＋危険関数の denylist」であり **方針が逆**なので踏襲しない
     （あちらはランナーの `enable_external_access=false` という第 2 の壁が前提）。
@@ -531,7 +532,7 @@
   - [ ] 行述語・フィールドマスク・集計抑制が SQL 経路でも同一に効く
         （`policy_threat_it.rs` を SQL 面でも実行し、IR 直投入と結果が一致すること）
   - [ ] **各資源上限を超える入力が上限ごとに 422 で弾かれる**
-        （`MAX_SQL_BYTES` / `MAX_AST_DEPTH` / `MAX_AST_NODES` / `MAX_LITERALS` / `MAX_COMPILE_MS`）
+        （`MAX_SQL_BYTES` / `MAX_AST_DEPTH` / `MAX_AST_NODES` / `MAX_LITERALS` / `MAX_COMPILE_WORK` / `MAX_COMPILE_MS`）
   - [ ] **存在しない列・見えない列・存在しないテーブル・見えないテーブルの応答がバイト単位で同一**
         （列/テーブルの存在オラクルを作らない・negative test）
   - [ ] **任意 `ON` 式・追加条件・別名経由の未宣言結合が拒否される**／JOIN に参照先の行述語が必ず掛かる

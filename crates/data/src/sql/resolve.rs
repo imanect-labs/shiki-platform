@@ -21,6 +21,7 @@ use crate::query::ir::{
     CondOp, Condition, DataQuery, GroupSortKey, HavingCmp, HavingCond, JoinSpec, Metric,
     MetricSpec, SortKey, MAX_GROUP_LIMIT, MAX_LIMIT,
 };
+use crate::query::limits::charge;
 use crate::query::reject::{NameKind, QueryRejection, RejectCode};
 
 type R<T> = Result<T, QueryRejection>;
@@ -81,6 +82,7 @@ impl Resolver<'_> {
     /// 表 `i` の見える列（擬似列を含む）。
     fn visible(&self, i: usize) -> Vec<String> {
         let t = &self.tables[i];
+        charge(PSEUDO.len() + t.schema.fields.len());
         let mut v: Vec<String> = PSEUDO.iter().map(ToString::to_string).collect();
         v.extend(
             t.schema
@@ -120,6 +122,7 @@ impl Resolver<'_> {
     }
 
     fn qual(&self, q: &str, loc: Loc) -> R<usize> {
+        charge(self.quals.len());
         self.quals
             .iter()
             .position(|x| x == q || x.to_lowercase() == q.to_lowercase())

@@ -31,6 +31,7 @@ use serde_json::Value;
 
 use super::ast::{BExpr, Cmp, Col, Lit, Operand};
 use crate::query::ir::{CondOp, Condition};
+use crate::query::limits::charge;
 use crate::query::reject::{QueryRejection, RejectCode};
 
 type R<T> = Result<T, QueryRejection>;
@@ -70,6 +71,7 @@ fn invalid(msg: impl Into<String>, loc: super::ast::Loc) -> QueryRejection {
 
 /// リテラル → 列の型に合わせた IR の値（数値列の `'100'` は数値・文字列列の `100` は文字列）。
 pub(crate) fn value_for(c: &RCol, l: &Lit, loc: super::ast::Loc) -> R<Value> {
+    charge(1);
     match (l, c.numeric) {
         (Lit::Null, _) => Err(invalid(
             format!("'{}' と NULL の比較は常に不明（UNKNOWN）です", c.key),
@@ -169,6 +171,7 @@ impl Translator<'_> {
     /// `T(p)`（`want = true`）または `F(p)`（`want = false`）。
     #[allow(clippy::too_many_lines)] // 翻訳表をそのまま 1 か所に並べる。
     pub(crate) fn tr(&mut self, e: &BExpr, want: bool) -> R<Condition> {
+        charge(1);
         Ok(match e {
             BExpr::Const(b) => {
                 if *b == want {

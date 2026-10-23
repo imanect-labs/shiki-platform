@@ -21,7 +21,7 @@ use sqlparser::tokenizer::{Location, Token, Tokenizer};
 use super::ast::{Agg, BExpr, Cmp, Item, JoinAst, Lit, Loc, Operand, OrdTarget, Select, TableRef};
 use super::names::{col_of, ident_text, is_predicate, join_on, object_name, snippet, strip};
 use crate::query::ir::Metric;
-use crate::query::limits::QueryLimits;
+use crate::query::limits::{charge, QueryLimits};
 use crate::query::reject::{QueryRejection, RejectCode, SqlLocation};
 
 type R<T> = Result<T, QueryRejection>;
@@ -83,6 +83,8 @@ pub(crate) fn parse(sql: &str, l: &QueryLimits) -> R<Select> {
     let tokens = Tokenizer::new(&dialect, sql)
         .tokenize_with_location()
         .map_err(|e| syntax(&e.to_string()))?;
+    // 仕事量: 字句化と、入れ子を検査した後のパーサ（どちらも字句数に線形）。
+    charge(tokens.len().saturating_mul(2));
     let mut n_tokens = 0usize;
     let mut n_literals = 0usize;
     for t in &tokens {
@@ -175,6 +177,7 @@ struct Conv<'l> {
 
 impl Conv<'_> {
     fn node(&mut self) -> R<()> {
+        charge(1);
         self.nodes += 1;
         if self.nodes > self.l.max_ast_nodes {
             return Err(self.l.nodes());

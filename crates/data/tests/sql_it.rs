@@ -459,6 +459,20 @@ async fn each_resource_limit_is_422_on_sql_and_ir_paths() {
         name(fx.store.run_sql(&fx.alice, &req(&many), None).await),
         "max_literals"
     );
+    // 仕事量（決定的: 予算 1 単位ではどのクエリも超える）
+    let no_work = fx.store.clone().with_query_limits(QueryLimits {
+        max_compile_work: 1,
+        ..QueryLimits::default()
+    });
+    assert_eq!(
+        name(
+            no_work
+                .run_sql(&fx.alice, &req("SELECT title FROM orders"), None)
+                .await
+        ),
+        "max_compile_work"
+    );
+    // 経過時間の外側の安全網（予算 0 では必ず超える）
     let tight = fx.store.clone().with_query_limits(QueryLimits {
         max_compile: std::time::Duration::ZERO,
         ..QueryLimits::default()
@@ -522,12 +536,73 @@ async fn each_resource_limit_is_422_on_sql_and_ir_paths() {
     );
     assert_eq!(
         ir_name(
+            no_work
+                .run_query(&fx.alice, fx.orders, &DataQuery::default(), None)
+                .await
+        ),
+        "max_compile_work"
+    );
+    assert_eq!(
+        ir_name(
             tight
                 .run_query(&fx.alice, fx.orders, &DataQuery::default(), None)
                 .await
         ),
         "max_compile_ms"
     );
+}
+
+/// コンパイルの仕事量の予算（`MAX_COMPILE_WORK`）は決定的で、静的な上限内の最悪形（同じ列の `IN` を
+/// `OR` で束ねて約 1,000 値を重複除去する＝約 55 万単位）は通し、静的な上限を緩めた運用でも
+/// 正規化の二乗の費用を予算で打ち切る（早期に重複除去を省いて 422）。
+#[tokio::test]
+async fn compile_work_budget_passes_the_static_worst_case_and_cuts_superlinear_cost() {
+    let Some(fx) = fixture(4).await else { return };
+    let ins = |a: usize, b: usize| (a..b).map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    let or_of_ins = |lists: usize, per: usize| {
+        (0..lists)
+            .map(|k| format!("amount IN ({})", ins(k * per, (k + 1) * per)))
+            .collect::<Vec<_>>()
+            .join(" OR ")
+    };
+    // 静的な上限内の最悪形（16 × 63 = 1,008 リテラル）と、二つの大きな集合の交差。
+    for sql in [
+        format!("SELECT title FROM orders WHERE {}", or_of_ins(16, 63)),
+        format!(
+            "SELECT title FROM orders WHERE amount IN ({}) AND amount IN ({})",
+            ins(0, 510),
+            ins(0, 510)
+        ),
+    ] {
+        fx.store
+            .run_sql(&fx.alice, &req(&sql), None)
+            .await
+            .expect("静的な上限内の入力は仕事量の予算で弾かない");
+    }
+    // 静的な上限を緩めた運用（リテラル・ノード・長さ）でも、仕事量の予算は既定のまま効く:
+    // 8 × 1,000 = 8,000 値の重複除去は二乗で約 3,200 万単位になり、予算（200 万）で打ち切る。
+    let loose = fx.store.clone().with_query_limits(QueryLimits {
+        max_sql_bytes: 1 << 20,
+        max_ast_nodes: 1 << 16,
+        max_literals: 1 << 16,
+        ..QueryLimits::default()
+    });
+    let sql = format!("SELECT title FROM orders WHERE {}", or_of_ins(8, 1_000));
+    let e = rejection(loose.run_sql(&fx.alice, &req(&sql), None).await);
+    assert_eq!(e.limit.unwrap().name, "max_compile_work");
+    let q: DataQuery = serde_json::from_value(json!({
+        "filter": {"any": (0..8)
+            .map(|k| json!({"cmp": {"field": "amount", "op": "in",
+                "value": (k * 1_000..(k + 1) * 1_000).collect::<Vec<_>>()}}))
+            .collect::<Vec<_>>()}
+    }))
+    .unwrap();
+    match loose.run_query(&fx.alice, fx.orders, &q, None).await {
+        Err(DataError::Rejected(x)) => {
+            assert_eq!(x.limit.unwrap().name, "max_compile_work");
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[tokio::test]

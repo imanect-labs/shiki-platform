@@ -112,8 +112,8 @@ pub use query::ir::{
     HavingCond, JoinSpec, LinkCond, Metric, MetricSpec, QueryResult, SortKey,
 };
 pub use query::limits::{
-    QueryLimits, MAX_AST_DEPTH, MAX_AST_NODES, MAX_COMPILE_MS, MAX_JOIN_DEPTH, MAX_LITERALS,
-    MAX_SQL_BYTES,
+    QueryLimits, MAX_AST_DEPTH, MAX_AST_NODES, MAX_COMPILE_MS, MAX_COMPILE_WORK, MAX_JOIN_DEPTH,
+    MAX_LITERALS, MAX_SQL_BYTES,
 };
 pub use query::optimizer_ops::{
     OptimizerCandidateKind, OptimizerIndexCandidate, TableOptimizerReport,
