@@ -9,8 +9,8 @@
 #   mixed  … 書込 RATE ev/s を流しながら relay・台帳コンシューマ 2 本・GC を同時に回し、
 #            追従できるか（残滞留）と書込→消費のレイテンシ分布を測る。
 #            CONSUMERS=db   … コンシューマを待ち無しで回す（Postgres 側の上限を見る）
-#            CONSUMERS=code … 本番コードの定数どおりの周期で回す（relay 500ms×64・workflow 5s×64・
-#                             miniapp-functions 5s×50・GC 20×1000/60s）
+#            CONSUMERS=code … 本番コードと同じく「処理してから固定 sleep」で回す（relay 500ms×64・workflow 5s×64・
+#                             miniapp-functions 5s×50・GC 20×1000/60s。-R は書込側だけ）
 #
 # 前提: 専用 DB に migrations/ を全適用済み（本スクリプトは表を TRUNCATE するので共有 DB に向けないこと）。
 #   docker exec shiki-postgres-1 psql -U postgres -c 'create database shiki_818'
@@ -289,24 +289,34 @@ cmd_mixed() {
   reset_stream_tables
   hdr "mixed RATE=${rate} ev/s SECS=${secs} CONSUMERS=${mode}（T=1000）"
   echo "loadavg(start): $(cut -d' ' -f1-3 /proc/loadavg)"
-  local relay_r wf_r mf_r gc_r
+  local relay_f="$WORK/relay.pgbench.sql" wf_f="$WORK/ledger-workflow.sql" mf_f="$WORK/ledger-miniapp.sql"
+  local gc_f="$WORK/gc.pgbench.sql" gc_r=(-R 5)
   if [[ "$mode" == code ]]; then
-    # 本番コードの定数（rag/src/config.rs relay_poll_ms=500・workflow_runtime tick_secs=5・
-    # miniapp_triggers 5s・outbox_gc 20 バッチ/60s）。pgbench -R はポアソン到着なので平均周期が一致する。
-    relay_r=(-R 2) wf_r=(-R 0.2) mf_r=(-R 0.2) gc_r=(-R 0.3333)
-  else
-    relay_r=() wf_r=() mf_r=() gc_r=(-R 5)
+    # 本番コードの周期を「処理してから固定 sleep」で再現する（pgbench -R のポアソン到着は、本番に無い
+    # 長い空白とバーストを作り、待ち行列とレイテンシの分布が変わる）。各コンシューマは -R 無し・-c 1 で、
+    # スクリプト末尾の \sleep が本番の sleep にあたる。書込側だけは -R（ランダム到着）のまま。
+    #   RAG relay: 処理後 relay_poll_ms=500 sleep（rag/src/pipeline/mod.rs）
+    #   workflow: 処理後 tick_secs=5 sleep（api/src/workflow_runtime/mod.rs）
+    #   miniapp-functions: 処理後 5 秒 sleep（api/src/miniapp_triggers.rs）
+    #   GC: 起動後 60 秒 sleep → 最大 20 バッチ → 60 秒 sleep …（storage/src/outbox_gc.rs）。
+    #       本番は満杯でないバッチで打ち切るが、空バッチは安いので 20 バッチ固定で近似する。
+    { cat "$relay_f"; echo '\sleep 500 ms'; } >"$WORK/relay-code.sql"
+    { cat "$wf_f"; echo '\sleep 5 s'; } >"$WORK/wf-code.sql"
+    { cat "$mf_f"; echo '\sleep 5 s'; } >"$WORK/mf-code.sql"
+    { echo '\sleep 60 s'; for _ in $(seq 20); do cat "$gc_f"; done; } >"$WORK/gc-code.sql"
+    relay_f="$WORK/relay-code.sql" wf_f="$WORK/wf-code.sql" mf_f="$WORK/mf-code.sql" gc_f="$WORK/gc-code.sql"
+    gc_r=()
   fi
   local emit_c=$(((rate + 499) / 500))
   pgb -c "$emit_c" -j "$emit_c" -R "$rate" -T "$secs" -D nodes="$NODES" -f "$WORK/emit.pgbench.sql" >"$WORK/emit.log" 2>&1 &
   local p_emit=$!
-  pgb -c 1 "${relay_r[@]}" -T "$secs" -f "$WORK/relay.pgbench.sql" >"$WORK/relay.log" 2>&1 &
+  pgb -c 1 -T "$secs" -f "$relay_f" >"$WORK/relay.log" 2>&1 &
   local p_relay=$!
-  pgb -c 1 "${wf_r[@]}" -T "$secs" -f "$WORK/ledger-workflow.sql" >"$WORK/wf.log" 2>&1 &
+  pgb -c 1 -T "$secs" -f "$wf_f" >"$WORK/wf.log" 2>&1 &
   local p_wf=$!
-  pgb -c 1 "${mf_r[@]}" -T "$secs" -f "$WORK/ledger-miniapp.sql" >"$WORK/mf.log" 2>&1 &
+  pgb -c 1 -T "$secs" -f "$mf_f" >"$WORK/mf.log" 2>&1 &
   local p_mf=$!
-  pgb -c 1 "${gc_r[@]}" -T "$secs" -f "$WORK/gc.pgbench.sql" >"$WORK/gc.log" 2>&1 &
+  pgb -c 1 "${gc_r[@]}" -T "$secs" -f "$gc_f" >"$WORK/gc.log" 2>&1 &
   local p_gc=$!
   # `wait p1 p2 ...` は最後の pid の終了コードしか返さないので、1 本ずつ待って失敗を拾う。
   local p failed=0

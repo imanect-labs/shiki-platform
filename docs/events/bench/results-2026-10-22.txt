@@ -6,7 +6,10 @@ emit の WAL/イベントは pg_current_wal_lsn（クラスタ全体）の差分
 
 実行時刻と、スクリプトの版:
 - emit 10:24Z・jobs 10:41Z: 初版。emit と jobs の計測ロジックは最終版と同じ。
-- mixed 3 本（11:44〜11:49Z）・scan（11:49〜11:55Z）: 最終版で再実行した。最終版で直したのは次の点。
+- mixed の待ち無し 2 本（11:44〜11:47Z）・scan（11:49〜11:55Z）: 下記の修正後に再実行した。
+- mixed の本番周期（CONSUMERS=code）: 2026-10-23 に、コンシューマを「処理してから固定 sleep」で駆動する版で 2 回再実行した
+  （以前は pgbench -R のポアソン到着で駆動しており、本番に無い空白とバーストが入っていた）。
+- 再実行の前に直したのは次の点。
   - relay レイテンシを payload.relayed_at（INSERT 時の clock_timestamp()）− created_at で測る。
     初版は enqueued_at（relay txn 開始の now()）を使っており、過小・負値になり得た。
   - event_type を各テナントに 1 割ずつ配る（初版は g % 10 で、番号が 0 で終わるテナントにしか付かなかった）。
@@ -68,26 +71,53 @@ gc     latency average = 35.030 ms tps = 4.537211 (without initial connection ti
 | ledger workflow 配送済み | 65137 | p50 18.1 ms / p99 64.6 ms / max 566.7 ms |
 | ledger miniapp-functions 未配送残 | 22 |  |
 | ledger workflow 未配送残 | 22 |  |
-# outbox pool bench 2026-10-22T11:47Z
+（注）本番周期（CONSUMERS=code）は 2026-10-23 に固定 sleep 駆動で 2 回再計測した。1 回目は書込側がスケジュールに遅れ（平均 2.2 s）バーストになった回。§8.3(d) の表は 2 回目
+## 本番周期 1 回目（書込側が遅れてバースト）
+
+# outbox pool bench 2026-10-23T05:29Z
 server: PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
 shared_buffers=128MB work_mem=4MB nproc=4
 
 ## mixed RATE=100 ev/s SECS=120 CONSUMERS=code（T=1000）
-loadavg(start): 8.98 5.57 3.89
-loadavg(end): 10.56 6.59 4.42
-emit   latency average = 14.123 ms tps = 99.341090 (without initial connection time)
-relay  latency average = 12.372 ms tps = 2.014683 (without initial connection time)
-wf     latency average = 16.171 ms tps = 0.133626 (without initial connection time)
-mf     latency average = 15.965 ms tps = 0.198837 (without initial connection time)
-gc     latency average = 16.742 ms tps = 0.375664 (without initial connection time)
-| 投入イベント総数（outbox id 採番数） | 11919 |  |
-| outbox 残存行（GC 後） | 10959 | max id 11919 |
-| relay 未処理残 | 292 |  |
-| relay 済み（job_queue 投入） | 11627 | p50 1088.6 ms / p99 4829.6 ms / max 5467.5 ms |
-| ledger miniapp-functions 配送済み | 1150 | p50 17037.7 ms / p99 104605.7 ms / max 104690.9 ms |
-| ledger workflow 配送済み | 1024 | p50 74592.7 ms / p99 110142.5 ms / max 110215.3 ms |
-| ledger miniapp-functions 未配送残 | 10769 |  |
-| ledger workflow 未配送残 | 10895 |  |
+loadavg(start): 3.32 4.06 2.86
+loadavg(end): 3.21 3.61 2.83
+emit   latency average = 2159.543 ms tps = 101.456405 (without initial connection time)
+relay  latency average = 540.215 ms tps = 1.851115 (without initial connection time)
+wf     latency average = 5053.555 ms tps = 0.197881 (without initial connection time)
+mf     latency average = 5052.277 ms tps = 0.197931 (without initial connection time)
+gc     latency average = 60334.065 ms tps = 0.016574 (without initial connection time)
+| 投入イベント総数（outbox id 採番数） | 12172 |  |
+| outbox 残存行（GC 後） | 11022 | max id 12172 |
+| relay 未処理残 | 543 |  |
+| relay 済み（job_queue 投入） | 11629 | p50 7412.7 ms / p99 16350.1 ms / max 16836.3 ms |
+| ledger miniapp-functions 配送済み | 1150 | p50 54973.0 ms / p99 105572.4 ms / max 105691.8 ms |
+| ledger workflow 配送済み | 1472 | p50 53581.0 ms / p99 102629.8 ms / max 102743.2 ms |
+| ledger miniapp-functions 未配送残 | 11022 |  |
+| ledger workflow 未配送残 | 10700 |  |
+
+## 本番周期 2 回目（§8.3(d) の表の値）
+
+# outbox pool bench 2026-10-23T05:31Z
+server: PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+shared_buffers=128MB work_mem=4MB nproc=4
+
+## mixed RATE=100 ev/s SECS=120 CONSUMERS=code（T=1000）
+loadavg(start): 4.04 3.78 2.92
+loadavg(end): 4.10 4.07 3.14
+emit   latency average = 14.081 ms tps = 99.537122 (without initial connection time)
+relay  latency average = 511.762 ms tps = 1.954032 (without initial connection time)
+wf     latency average = 5015.931 ms tps = 0.199365 (without initial connection time)
+mf     latency average = 5014.173 ms tps = 0.199435 (without initial connection time)
+gc     latency average = 60499.804 ms tps = 0.016529 (without initial connection time)
+| 投入イベント総数（outbox id 採番数） | 11941 |  |
+| outbox 残存行（GC 後） | 10791 | max id 11941 |
+| relay 未処理残 | 34 |  |
+| relay 済み（job_queue 投入） | 11907 | p50 270.9 ms / p99 662.8 ms / max 1119.7 ms |
+| ledger miniapp-functions 配送済み | 1150 | p50 54111.8 ms / p99 104130.8 ms / max 104276.6 ms |
+| ledger workflow 配送済み | 1472 | p50 52864.2 ms / p99 101042.7 ms / max 101175.0 ms |
+| ledger miniapp-functions 未配送残 | 10791 |  |
+| ledger workflow 未配送残 | 10469 |  |
+
 # outbox pool bench 2026-10-22T11:49Z
 server: PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
 shared_buffers=128MB work_mem=4MB nproc=4

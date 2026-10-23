@@ -543,7 +543,12 @@ WAL/イベントは 2 回の計測で **489 B（T=1,000）と 10,964 B（T=1）*
 
 **(d) 混合負荷: Postgres は追従する。追従できないのはコードの周期である**（T=1,000・書込と全コンシューマを同時に回す）
 
-3 行とも 2026-10-22 11:44Z の再計測値である。relay のレイテンシは、relay txn 内で INSERT した時点の `clock_timestamp()`
+待ち無しの 2 行は 2026-10-22 11:44Z、本番周期の行は 2026-10-23 の再計測値である。
+本番周期の行では、コンシューマを本番と同じく「処理してから固定 sleep」で回した（relay 500 ms・workflow と miniapp-functions 5 秒・
+GC は 60 秒ごとに最大 20 バッチ）。ランダム到着（`pgbench -R`）にしたのは書込側だけである。
+以前はコンシューマも `pgbench -R` のポアソン到着で回していたが、本番に無い長い空白とバーストができ、
+待ち行列とレイテンシの分布が本番と違っていた。
+relay のレイテンシは、relay txn 内で INSERT した時点の `clock_timestamp()`
 （`payload.relayed_at`）から outbox の `created_at` を引いて求めた。初回の計測は `job_queue.enqueued_at`
 （`DEFAULT now()`＝relay txn の開始時刻）を使っていたが、これは claim と INSERT の時間を含まない。
 また、BEGIN の後・claim の前にコミットされたイベントでは負の値になり、relay のパーセンタイルを過小に見せていた。
@@ -553,7 +558,7 @@ WAL/イベントは 2 回の計測で **489 B（T=1,000）と 10,964 B（T=1）*
 |---|---:|---|---|---|---:|---:|
 | 待ち無し（DB の上限）・目標 1,000 ev/s・60 秒 | 498 ev/s | p50 11 ms / p99 37 ms | p50 10 ms / p99 35 ms | p50 10 ms / p99 37 ms | 0 / 31 | 420 |
 | 待ち無し（DB の上限）・目標 3,000 ev/s・60 秒 | **1,086 ev/s** | p50 13 ms / p99 62 ms | p50 18 ms / p99 65 ms | p50 18 ms / p99 72 ms | 22 / 22 | 264 |
-| **本番コードの周期**・100 ev/s・120 秒 | 99 ev/s | **p50 1.1 s / p99 4.8 s**（relay 未処理残 292） | **p50 75 s / max 110 s** | **p50 17 s / max 105 s** | **10,895 / 10,769** | **10,959** |
+| **本番コードの周期**・100 ev/s・120 秒 | 100 ev/s | p50 0.27 s / p99 0.66 s（relay 未処理残 34） | **p50 53 s / max 101 s** | **p50 54 s / max 104 s** | **10,469 / 10,791** | **10,791** |
 
 - 待ち無しで回すと、書込 ~1,100 ev/s でも 3 本のコンシューマと GC は追従し、未配送は 1 バッチ分以下に収まった（relay 未処理残は 59 件）。
   この機材では**先に頭打ちになったのは書込側（同居負荷下の INSERT）**で、Postgres のイベント経路の上限には届いていない。
@@ -566,20 +571,27 @@ WAL/イベントは 2 回の計測で **489 B（T=1,000）と 10,964 B（T=1）*
   （`api/src/workflow_runtime/mod.rs:345-356`）。miniapp-functions も 1 イベントごとに購読照会と越境判定を行い、
   commit 後に関数起動を直列に回す。このため F8 後の実効上限はこれより低い。
   §6 条件 2 の基準には、この値ではなく、本番のコンシューマ処理を含めて測った値を使う。
-- **本番コードの周期では、100 ev/s で workflow と miniapp-functions が追従できない**。workflow は 0.13 tps × 64 ≈ 9 ev/s、
-  miniapp-functions は 0.20 tps × 50 ≈ 10 ev/s しか捌けず、未配送は ~90 ev/s の速さで線形に伸びた。
-  `pgbench -R` はポアソン到着で、120 秒では 16〜24 回しか回らないので、tps には揺れがある。理論上限は 12.8 / 10 ev/s。
-- **RAG relay も、本番の周期では余裕が無い**。上限 ~128 ev/s に対して 100 ev/s は利用率 ~78% にあたる。
-  到着の揺れで待ち行列ができ、書込→job_queue は p50 1.1 s / p99 4.8 s、終了時に 292 件が未処理で残った。
-  初回計測の p50 0.6 s / p99 2.7 s は、上に書いた測り方の誤りで過小だった。この結果は F8① の根拠を強める。
-  GC は両方に配送されるまで消せないので outbox も同じ速さで伸び、最大遅延は計測時間とともに伸び続けた（上限が無い）。
+- **本番コードの周期では、100 ev/s で workflow と miniapp-functions が追従できない**。
+  1 周は処理と 5 秒の sleep で ~5.02 秒かかり、0.199 周/秒になる。workflow は 0.199 × 64 ≈ 12.7 ev/s、
+  miniapp-functions は 0.199 × 50 ≈ 10 ev/s で、理論上限（12.8 / 10 ev/s）どおりにしか捌けなかった。
+  未配送は ~88 ev/s の速さで線形に伸びた。GC は両方に配送されるまで消せないので outbox も同じ速さで伸び、
+  最大遅延は計測時間とともに伸び続けた（上限が無い）。
   **プールの一次目標（10²〜10³ ev/s）では、これが定常状態になる。**
+- **RAG relay は固定周期なら追従するが、余裕は小さい**。1 周は sleep 500 ms と処理 ~12 ms で ~512 ms なので、
+  上限は ~125 ev/s で、100 ev/s は利用率 ~80% にあたる。書込→job_queue は p50 0.27 s / p99 0.66 s で、
+  周期の半分に処理の揺れを足した分布になった。
+  同じ条件の 1 回目の計測では、書込側がスケジュールに遅れて（平均 2.2 s）まとめて書き込んだ。
+  溜まった分は上限との差（~25 ev/s）でしか解消されないので、p50 7.4 s / p99 16 s に悪化し、終了時に 543 件が残った
+  （`results-2026-10-22.txt` に両方を残した）。利用率 80% では、書込のバーストがそのまま秒〜十秒単位の遅延になる。
+  本番の relay は enqueue が 64 往復なので 1 周の処理が長く、上限はさらに下がる。
+  以前のポアソン駆動で出た p50 1.1 s / p99 4.8 s は、駆動方法による値だった。
+  結論は変わらない。relay も一次目標のレートでは上限を超えるので、F8① が要る。
 
 ### 8.4 コードの定数が決める上限
 
 | コンシューマ | 定数（所在） | 実行単位 | 上限 |
 |---|---|---|---:|
-| RAG relay | `RELAY_BATCH=64`（`rag/src/pipeline/relay.rs:15`）・満杯でも毎回 `relay_poll_ms=500` 待つ（`rag/src/pipeline/mod.rs:100`） | プールに 1 本（advisory lock のリーダー） | ~128 ev/s |
+| RAG relay | `RELAY_BATCH=64`（`rag/src/pipeline/relay.rs:15`）・満杯でも毎回 `relay_poll_ms=500` 待つ（`rag/src/pipeline/mod.rs:100`） | プールに 1 本（advisory lock のリーダー） | ~128 ev/s（sleep だけから出る上限。実際は 1 周の処理時間の分だけ下がる。§8.3(d) の実測は 1 周 ~512 ms で ~125 ev/s） |
 | workflow | `claim_undelivered(.., 64)`（`api/src/workflow_runtime/mod.rs:320`）・`tick_secs=5`（同 :81）で、タイマー起床などと直列 | プールに 1 本（リース取得者） | **12.8 ev/s** |
 | miniapp-functions | `claim_undelivered(.., 50)`・5 秒 sleep（`api/src/miniapp_triggers.rs:47,71`） | レプリカごと | 10 ev/s × レプリカ数 |
 | outbox GC | 1,000 行 × 20 バッチ / 60 秒（`storage/src/outbox_gc.rs:30,36`・`event/gc.rs:18`） | レプリカごと | 333 ev/s × レプリカ数 |
@@ -676,6 +688,7 @@ CONSUMERS=code bash docs/events/bench/outbox-pool-bench.sh mixed 100 120   # §8
   そのうえで本番と同一形状のクエリを `BEGIN; EXPLAIN (ANALYZE, BUFFERS) ...; ROLLBACK` で測る。
 - `mixed` は pgbench で書込（`emit.pgbench.sql`）・relay（`relay.pgbench.sql`）・台帳 2 本（`ledger.pgbench.sql`）・
   GC（`gc.pgbench.sql`）を同時に回し、書込→消費のレイテンシと終了時の滞留を出す。
-  `CONSUMERS=code` は本番の周期を `pgbench -R`（ポアソン到着・平均周期が一致）で再現する。
+  `CONSUMERS=code` は本番の周期を、各コンシューマのスクリプト末尾の `\sleep`（処理してから固定 sleep）で再現する。
+  `pgbench -R`（ランダム到着）は書込側だけに使う。
 - 本番機材で測り直すときは、少なくとも `mixed` を `CONSUMERS=db` でレートを上げながら回し、
   未配送が伸び始めるレートを §6 の条件 2 の基準にする。
