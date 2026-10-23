@@ -357,10 +357,12 @@ pub(crate) fn compile(
         for g in &sel.group_by {
             let (i, k) = rs.col(g)?;
             if PSEUDO.contains(&k.as_str()) {
+                // SQL としては妥当（部分集合の制限）なので unsupported。
                 return Err(QueryRejection::new(
-                    RejectCode::InvalidQuery,
+                    RejectCode::Unsupported,
                     format!("'{k}' ではグループ化できません"),
                 )
+                .hint("グループ化には利用者の列（名前など）を使ってください")
                 .at(g.loc));
             }
             let key = ir_key(i, &k);

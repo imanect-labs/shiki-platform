@@ -1033,3 +1033,33 @@ async fn openapi_json_is_served() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+/// SQL 前段面（`POST /data/sql`）の部分集合外は 422 と構造化した理由を本文の最上位で返す
+/// （拒否はパースの段で決まり、データベースへは届かない・Task 15.10）。
+#[tokio::test]
+async fn data_sql_out_of_subset_is_structured_422() {
+    let app = build_router(state_with(store_with_valid_session().await, None));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/data/sql")
+                .header(COOKIE, "shiki_session=sid-valid.default; shiki_csrf=csrf")
+                .header("x-csrf-token", "csrf")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"sql": "SELECT name FROM t\nUNION SELECT name FROM u"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], 422);
+    assert_eq!(json["code"], "unsupported");
+    assert!(json["message"].as_str().unwrap().contains("UNION"));
+    assert_eq!(json["location"]["line"], 1);
+}
