@@ -53,6 +53,17 @@ test("未ログイン保護ページ→ログイン→戻り先復帰→ダミ�
     window.localStorage.setItem("shiki:cite:e2e-chunk", JSON.stringify({ find: "本文の断片", at: Date.now() }));
     window.sessionStorage.setItem("shiki:pending-message:e2e-thread", JSON.stringify({ text: "下書き", attachments: [] }));
   });
+  // 別タブ（同じブラウザ）にもユーザーのデータが残っている。ログアウトはこのタブにも知らされ、
+  // タブごとの sessionStorage まで消える。
+  const otherTab = await page.context().newPage();
+  await otherTab.goto("/");
+  await expect(otherTab.getByLabel("メッセージを入力")).toBeVisible({ timeout: 20_000 });
+  await otherTab.evaluate(() =>
+    window.sessionStorage.setItem(
+      "shiki:pending-message:e2e-other-tab",
+      JSON.stringify({ text: "別タブの下書き", attachments: [] }),
+    ),
+  );
   // 6. ログアウト → セッション破棄。BFF は id_token_hint を出さないため Keycloak が
   //    ログアウト確認画面を挟むことがある。出たら確定する。
   await page.getByRole("button", { name: "アカウントメニューを開く" }).click();
@@ -79,6 +90,10 @@ test("未ログイン保護ページ→ログイン→戻り先復帰→ダミ�
   // sessionStorage は同じタブに残るため、こちらも消えていること。
   const remainingSession = await page.evaluate(() => Object.keys(window.sessionStorage));
   expect(remainingSession.filter((k) => k.startsWith("shiki:pending-message:"))).toEqual([]);
+  await expect
+    .poll(() => otherTab.evaluate(() => Object.keys(window.sessionStorage)))
+    .not.toContain("shiki:pending-message:e2e-other-tab");
+  await otherTab.close();
 
   // セッションが破棄され、保護ページへ行くと Keycloak のログイン画面へ戻る（負例の確認）。
   // /login は未ログインなら即 Keycloak へ送るため、goto の load 待ちはリダイレクトで中断され得る。

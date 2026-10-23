@@ -93,10 +93,26 @@ export function writeScoped(base: string, value: string): boolean {
   return true;
 }
 
+/// ログアウトを同じオリジンの他タブへ知らせる localStorage キー（値は時刻・内容は使わない）。
+const LOGOUT_SIGNAL_KEY = "shiki:logout-signal";
+
 /// ユーザーのデータを置いた localStorage / sessionStorage キーを全ユーザー分消し、スコープを解く（ログアウト時）。
 ///
 /// 共用 PC で次の人に残さないため、今のユーザーの分だけでなく旧来の素のキー・他ユーザーの分も消す。
+/// 他タブにも知らせる: sessionStorage はタブごとで、メモリ上のスコープも残るため、知らせないと
+/// 他タブに最初のメッセージ（本文・添付）が残り、そのタブの書込みが消したキーを作り直す。
 export function clearUserStorage(): void {
+  purgeUserStorage();
+  if (typeof window === "undefined") return;
+  try {
+    // `storage` イベントは書いたタブ以外に届く。
+    window.localStorage.setItem(LOGOUT_SIGNAL_KEY, String(Date.now()));
+  } catch {
+    // Web Storage 不可なら他タブにも残っているものは無い。
+  }
+}
+
+function purgeUserStorage(): void {
   setStorageScope(null);
   if (typeof window === "undefined") return;
   // sessionStorage もログアウト〜次のログインで同じタブに残るので消す。
@@ -113,4 +129,11 @@ export function clearUserStorage(): void {
       // Web Storage 不可（プライベートモード等）なら残っているものも無い。
     }
   }
+}
+
+// 他タブのログアウトを受けて、このタブのスコープと sessionStorage も消す（知らせ直しはしない）。
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === LOGOUT_SIGNAL_KEY && e.newValue !== null) purgeUserStorage();
+  });
 }
