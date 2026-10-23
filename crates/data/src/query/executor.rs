@@ -92,6 +92,50 @@ impl DataStore {
             .map_err(map_db)
     }
 
+    /// 候補 id のうち**可視な行の投影列だけ**を 1 本のクエリで引く（RAG の post-filter・Task 15.8）。
+    ///
+    /// 行述語は [`Self::select_visible_by_id`] と同じ合成（v1 の意味論・個別共有込み）。`keys` は
+    /// 検証済みの保存形キー（`"f{id}"`）で、**値としてバインド**する（SQL テキストへ埋め込まない）。
+    /// 不可視・不存在の id は結果に含まれない（両者を区別しない）。
+    pub(crate) async fn select_visible_projection(
+        &self,
+        ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
+        table: &DataTable,
+        ids: &[Uuid],
+        keys: &[String],
+    ) -> Result<Vec<(Uuid, i64, sqlx::types::Json<serde_json::Value>)>, DataError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pred = self.read_predicate(ctx, az, table).await?;
+        let keys_ph = SCOPE_BINDS + 1 + pred.binds.len();
+        let ids_ph = keys_ph + 1;
+        let sql = format!(
+            "SELECT r.id, r.rev, \
+                    coalesce((SELECT jsonb_object_agg(k.k, r.data -> k.k) \
+                              FROM unnest(${keys_ph}::text[]) AS k(k) WHERE r.data ? k.k), \
+                             '{{}}'::jsonb) \
+             FROM data_record {RECORD_ALIAS} \
+             WHERE r.tenant_id = $1 AND r.table_id = $2 \
+               AND r.tenant_int = $3 AND r.table_int = $4 AND ({}) \
+               AND r.id = ANY(${ids_ph}::uuid[])",
+            pred.sql
+        );
+        let mut q =
+            sqlx::query_as::<Postgres, (Uuid, i64, sqlx::types::Json<serde_json::Value>)>(&sql)
+                .bind(&ctx.tenant_id)
+                .bind(table.id)
+                .bind(table.keys.tenant_int)
+                .bind(table.keys.table_int);
+        q = crate::query::sql::bind_query_as(q, &pred.binds);
+        q.bind(keys.to_vec())
+            .bind(ids.to_vec())
+            .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+            .await
+            .map_err(map_db)
+    }
+
     /// id 指定の可視行を `FOR UPDATE` でロックして引く（update/delete/遷移の入口）。
     ///
     /// 呼び出し側のトランザクション上で実行する。不可視は None（rev オラクル封じ）。

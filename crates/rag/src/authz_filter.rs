@@ -88,6 +88,31 @@ pub async fn post_filter_by_file(
             .collect()
     };
 
+    let file_decisions = file_decisions(ctx, authz, distinct_files).await?;
+
+    let denied_files = file_decisions.values().filter(|allowed| !**allowed).count();
+    let before = candidates.len();
+    let allowed: Vec<ScoredChunk> = candidates
+        .into_iter()
+        .filter(|c| file_decisions.get(&c.node_id).copied().unwrap_or(false))
+        .collect();
+    Ok(PostFilterOutcome {
+        denied_chunks: before - allowed.len(),
+        denied_files,
+        allowed,
+        file_decisions,
+    })
+}
+
+/// file 粒度の最終 check（BatchCheck 1 往復・50 問ごと・HigherConsistency）の判定表。
+///
+/// [`post_filter_by_file`] と、レコードを含む多型の post-filter
+/// （[`crate::record_source::post_filter_sources`]）が共有する（file の判定規則を 2 つに分けない）。
+pub(crate) async fn file_decisions(
+    ctx: &AuthContext,
+    authz: &dyn AuthzClient,
+    distinct_files: Vec<Uuid>,
+) -> Result<HashMap<Uuid, bool>, RagError> {
     // file ごとの check を BatchCheck 1 往復（50 問ごと）にまとめる（Task 15.9）。
     let subject = ctx.subject();
     let items: Vec<CheckTuple> = distinct_files
@@ -108,18 +133,5 @@ pub async fn post_filter_by_file(
             body: "batch_check の応答数が問い数と一致しません".into(),
         }));
     }
-    let file_decisions: HashMap<Uuid, bool> = distinct_files.into_iter().zip(allowed).collect();
-
-    let denied_files = file_decisions.values().filter(|allowed| !**allowed).count();
-    let before = candidates.len();
-    let allowed: Vec<ScoredChunk> = candidates
-        .into_iter()
-        .filter(|c| file_decisions.get(&c.node_id).copied().unwrap_or(false))
-        .collect();
-    Ok(PostFilterOutcome {
-        denied_chunks: before - allowed.len(),
-        denied_files,
-        allowed,
-        file_decisions,
-    })
+    Ok(distinct_files.into_iter().zip(allowed).collect())
 }

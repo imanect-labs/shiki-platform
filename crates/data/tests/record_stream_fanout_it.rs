@@ -206,6 +206,7 @@ async fn thousand_subscribers_three_roles_evaluate_the_predicate_three_times() {
                     field_policy: vec![],
                     aggregate_min_rows: None,
                     fsm_ref: None,
+                    rag: None,
                 },
             },
             None,

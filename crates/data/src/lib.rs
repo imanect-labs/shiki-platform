@@ -55,6 +55,7 @@ mod mask;
 mod model;
 mod numeric;
 pub mod policy;
+mod rag;
 // クエリ層の件数・コストモデル（µs の概算）は非負・有界の数値を f64 / u64 へ写す（DB の件数は 0 以上）。
 #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
 mod query;
@@ -135,6 +136,11 @@ pub use query::reject::{QueryRejection, RejectCode, RejectLimit, SqlLocation};
 pub use query::run::{
     DebugParam, DebugStatement, QueryDebug, QueryTuning, ReadPath, DEFAULT_COUNT_CAP,
     DEFAULT_READ_TIMEOUT_MS,
+};
+pub use rag::{
+    RagIndexWorker, RagProjection, RagRecordHit, RagVisibleRecords, RecordChunk, RecordChunkSink,
+    MAX_RAG_BODY_FIELDS, MAX_RAG_CHUNK_CHARS, MAX_RAG_POST_FILTER_IDS, RAG_INDEX_BATCH,
+    RAG_INDEX_CONSUMER,
 };
 pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordSort};
 pub use record_share::RecordShareRole;

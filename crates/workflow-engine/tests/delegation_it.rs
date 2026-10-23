@@ -515,6 +515,7 @@ async fn inventory_tells_data_when_it_revokes_a_table_tuple() {
                     field_policy: vec![],
                     aggregate_min_rows: None,
                     fsm_ref: None,
+                    rag: None,
                 },
             },
             None,

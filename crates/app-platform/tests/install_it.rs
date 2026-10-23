@@ -152,6 +152,7 @@ fn table_schema() -> TableSchema {
         field_policy: vec![],
         aggregate_min_rows: None,
         fsm_ref: None,
+        rag: None,
     }
 }
 

@@ -303,6 +303,11 @@ pub struct TableSchema {
     /// 禁止され、遷移 API（`transition`）経由でのみ status を変えられる。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fsm_ref: Option<crate::fsm::FsmRef>,
+    /// 検索（RAG）へのオプトインと投影テンプレート（Task 15.8・docs/data/rag-integration.md）。
+    /// 未指定のテーブルは検索の対象にならない。投影にはフィールドマスク対象列・派生列を含められない
+    /// （スキーマ検証で拒否・fail-closed）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rag: Option<crate::rag::RagProjection>,
 }
 
 impl TableSchema {
@@ -452,6 +457,7 @@ mod tests {
                 field_policy: vec![],
                 aggregate_min_rows: None,
                 fsm_ref: None,
+                rag: None,
             },
             schema_version: 1,
             created_by: "u".into(),

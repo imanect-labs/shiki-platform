@@ -653,6 +653,7 @@ mod tests {
             field_policy: vec![],
             aggregate_min_rows: None,
             fsm_ref: None,
+            rag: None,
         };
         let a = Uuid::new_v4().to_string();
         let b = Uuid::new_v4().to_string();

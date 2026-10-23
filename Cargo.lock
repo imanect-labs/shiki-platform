@@ -5597,6 +5597,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "shiki-authz",
+ "shiki-data",
  "shiki-jobq",
  "shiki-storage",
  "sqlx",

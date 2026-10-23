@@ -311,6 +311,7 @@ mod tests {
             field_policy: vec![],
             aggregate_min_rows: None,
             fsm_ref: None,
+            rag: None,
         };
         crate::field_key::assign_field_ids(None, &mut s).unwrap();
         s

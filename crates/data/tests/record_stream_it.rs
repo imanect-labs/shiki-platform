@@ -140,6 +140,7 @@ fn expense_schema() -> TableSchema {
         }],
         aggregate_min_rows: None,
         fsm_ref: None,
+        rag: None,
     }
 }
 
@@ -1280,6 +1281,7 @@ async fn referenced_record_change_refreshes_referrer_derived_values() {
                     field_policy: vec![],
                     aggregate_min_rows: None,
                     fsm_ref: None,
+                    rag: None,
                 },
             },
             None,
@@ -1312,6 +1314,7 @@ async fn referenced_record_change_refreshes_referrer_derived_values() {
                     field_policy: vec![],
                     aggregate_min_rows: None,
                     fsm_ref: None,
+                    rag: None,
                 },
             },
             None,

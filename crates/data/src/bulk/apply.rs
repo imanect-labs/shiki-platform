@@ -606,6 +606,7 @@ mod tests {
             field_policy: vec![],
             aggregate_min_rows: None,
             fsm_ref: None,
+            rag: None,
         };
         assert!(deferrable(&schema, 16, IndexTable::Text));
         assert!(deferrable(&schema, 16, IndexTable::Search));

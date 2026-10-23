@@ -138,6 +138,7 @@ fn expense_schema_with_policy() -> TableSchema {
         field_policy: vec![],
         aggregate_min_rows: None,
         fsm_ref: None,
+        rag: None,
     }
 }
 
@@ -500,6 +501,7 @@ async fn lookup_does_not_leak_invisible_reference() {
                     field_policy: vec![],
                     aggregate_min_rows: None,
                     fsm_ref: None,
+                    rag: None,
                 },
             },
             None,
@@ -536,6 +538,7 @@ async fn lookup_does_not_leak_invisible_reference() {
                     field_policy: vec![],
                     aggregate_min_rows: None,
                     fsm_ref: None,
+                    rag: None,
                 },
             },
             None,
@@ -878,6 +881,7 @@ fn plain(fields: Vec<FieldDef>) -> TableSchema {
         field_policy: vec![],
         aggregate_min_rows: Some(1),
         fsm_ref: None,
+        rag: None,
     }
 }
 

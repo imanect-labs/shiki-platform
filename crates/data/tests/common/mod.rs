@@ -142,6 +142,7 @@ pub fn schema(fields: Vec<FieldDef>) -> TableSchema {
         field_policy: vec![],
         aggregate_min_rows: None,
         fsm_ref: None,
+        rag: None,
     }
 }
 

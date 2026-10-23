@@ -250,6 +250,7 @@ mod tests {
             field_policy: vec![],
             aggregate_min_rows: None,
             fsm_ref: None,
+            rag: None,
         };
         crate::field_key::assign_field_ids(None, &mut s).unwrap();
         s
@@ -364,6 +365,7 @@ mod tests {
             field_policy: vec![],
             aggregate_min_rows: None,
             fsm_ref: None,
+            rag: None,
         };
         let mut binds = BindSet::new(0);
         let sql = compile_read_predicate(&schema, &PolicyMaterial::default(), "u", "r", &mut binds)

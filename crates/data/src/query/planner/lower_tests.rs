@@ -28,6 +28,7 @@ fn bound(v: serde_json::Value) -> BoundQuery {
         field_policy: vec![],
         aggregate_min_rows: None,
         fsm_ref: None,
+        rag: None,
     };
     crate::field_key::assign_field_ids(None, &mut s).unwrap();
     let q = serde_json::from_value(v).unwrap();
@@ -42,6 +43,7 @@ fn guard_sql(rec: &str, sql: &mut SqlBuf) -> GuardSql {
         field_policy: vec![],
         aggregate_min_rows: None,
         fsm_ref: None,
+        rag: None,
     };
     let m = PolicyMaterial::default();
     let active = HashSet::new();

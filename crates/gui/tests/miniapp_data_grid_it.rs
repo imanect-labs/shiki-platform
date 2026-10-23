@@ -136,6 +136,7 @@ fn expense_schema() -> TableSchema {
         }],
         aggregate_min_rows: None,
         fsm_ref: None,
+        rag: None,
     }
 }
 

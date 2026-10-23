@@ -43,11 +43,14 @@ axum.workspace = true
 tokio.workspace = true
 # Tantivy index-per-tenant のテスト用一時ディレクトリ。
 tempfile = "3"
+# 構造化データの permission-aware 検索の PoC（Task 15.8・tests/record_search_poc_it.rs）。
+# rag は本体で data に依存しない（可視性は RecordVisibility トレイト越し）。
+shiki-data.workspace = true
 
 # shiki-authz/storage/jobq は lib 名 `authz`/`storage`/`jobq` で参照するため
 # cargo-machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-storage", "shiki-jobq"]
+ignored = ["shiki-authz", "shiki-storage", "shiki-jobq", "shiki-data"]
 
 [lints]
 workspace = true

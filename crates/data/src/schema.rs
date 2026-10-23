@@ -86,6 +86,8 @@ pub(crate) fn validate_table_schema(schema: &TableSchema) -> Result<(), DataErro
         }
         crate::policy::validate::validate_role_level_expr(&fp.readable_by, "field_policy")?;
     }
+    // 検索の投影テンプレート（Task 15.8）: マスク対象列・派生列を含めない（fail-closed）。
+    crate::rag::projection::validate_projection(schema)?;
     if let Some(k) = schema.aggregate_min_rows {
         if k < 1 {
             return Err(DataError::Invalid(
