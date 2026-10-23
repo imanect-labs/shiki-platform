@@ -119,3 +119,22 @@ test("下書き: /me より先に履歴を復元しても保存済みの手編�
   await expect.poll(() => savedCsv).toBeDefined();
   expect(savedCsv?.trim()).toBe(edited);
 });
+
+test("下書き: /me が失敗しても読み込み中のまま止まらず、再試行で開ける", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const csvName = uniqueName("再試行");
+  await sendFromHome(page, `savecsv:${csvName}`);
+  await page.waitForURL(/\/csv\/draft/, { timeout: 25_000 });
+  await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 20_000 });
+
+  // /me が 5xx を返す間はユーザーが確定せず、履歴からの復元を始められない。
+  await page.route("**/api/me", (route) => route.fulfill({ status: 503, body: "unavailable" }));
+  await page.reload();
+  const alert = page.getByRole("alert").filter({ hasText: "下書きを読み込めませんでした" });
+  await expect(alert).toBeVisible({ timeout: 20_000 });
+
+  // 復旧後に再試行すると、下書きが開く。
+  await page.unroute("**/api/me");
+  await alert.getByRole("button", { name: "再試行" }).click();
+  await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 25_000 });
+});

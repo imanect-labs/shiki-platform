@@ -1,5 +1,5 @@
 import type { components } from "@/generated/api";
-import { setStorageScope } from "@/lib/user-storage";
+import { setStorageScope, storageScopeGeneration } from "@/lib/user-storage";
 
 /// OpenAPI(utoipa) から生成した型。手書きの API 型は持たない。
 export type MeResponse = components["schemas"]["MeResponse"];
@@ -34,12 +34,13 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
 ///
 /// 応答でユーザー単位の localStorage 名前空間を確定する（未ログインなら解く・#817）。
 export async function fetchMe(): Promise<MeResponse> {
+  const startedAt = storageScopeGeneration();
   const res = await apiFetch("/me");
   if (!res.ok) {
     if (res.status === 401) setStorageScope(null);
     throw new Error(`/me が ${res.status} を返しました`);
   }
   const me = (await res.json()) as MeResponse;
-  setStorageScope(me);
+  setStorageScope(me, startedAt);
   return me;
 }

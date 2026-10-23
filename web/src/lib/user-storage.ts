@@ -16,6 +16,8 @@ import * as React from "react";
 
 /// 現在のスコープ（`tenant|user`）。未確定・未ログインは null。
 let scope: string | null = null;
+/// ログアウトのたびに進める世代。ログアウト前に出した /me の応答でスコープを戻さないために使う。
+let generation = 0;
 const listeners = new Set<() => void>();
 
 /// ユーザーのデータを置く localStorage / sessionStorage キーかどうか（スコープ付き・旧来の素のキーの両方）。
@@ -37,8 +39,20 @@ export function isUserDataKey(key: string): boolean {
   );
 }
 
+/// 今の世代（[`setStorageScope`] の `startedAt` に渡す。/me を出す前に読む）。
+export function storageScopeGeneration(): number {
+  return generation;
+}
+
 /// `/me` の応答からスコープを確定する（未ログインは null）。変化したときだけ通知する。
-export function setStorageScope(me: { tenant_id: string; id: string } | null): void {
+///
+/// `startedAt` は /me を出したときの世代。その後にログアウト（他タブを含む）があれば、
+/// 遅れて届いた旧ユーザーの応答でスコープを戻さない（消したキーを作り直させない）。
+export function setStorageScope(
+  me: { tenant_id: string; id: string } | null,
+  startedAt?: number,
+): void {
+  if (me && startedAt !== undefined && startedAt !== generation) return;
   // tenant_id は `|` を含まない（サーバの識別子ポリシー）ので `tenant|user` は一意に分解できる。
   const next = me ? `${me.tenant_id}|${me.id}` : null;
   if (next === scope) return;
@@ -113,6 +127,7 @@ export function clearUserStorage(): void {
 }
 
 function purgeUserStorage(): void {
+  generation += 1;
   setStorageScope(null);
   if (typeof window === "undefined") return;
   // sessionStorage もログアウト〜次のログインで同じタブに残るので消す。

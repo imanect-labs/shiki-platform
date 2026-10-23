@@ -8,7 +8,6 @@
 /// - 右上「保存」（PC は「ドライブに保存」）で POST /notes → 実体化し、その会話をノートへ紐付けて /notes/{id} へ。
 /// - アシスタント（同じ会話）を同席させ、保存前に AI と詰められる（流し込みで再シード）。
 
-import { FileWarning } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
 import type { Editor } from "@tiptap/react";
@@ -17,6 +16,7 @@ import { Conversation } from "@/components/chat/conversation";
 import { DraftNoteEditor } from "@/components/notes/draft-note-editor";
 import {
   DraftBadge,
+  DraftLoading,
   DraftNotFound,
   DraftTabs,
   SaveDraftDialog,
@@ -221,10 +221,7 @@ function DraftNotePageInner() {
                 onReady={handleEditorReady}
               />
             ) : (
-              <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
-                <FileWarning className="size-6 text-muted-foreground/60" aria-hidden />
-                下書きを読み込んでいます…
-              </div>
+              <DraftLoading />
             )}
           </div>
         </div>

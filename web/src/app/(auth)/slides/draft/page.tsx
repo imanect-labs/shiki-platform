@@ -9,7 +9,6 @@
 /// - 同じ会話の複数下書きは**上部タブ**で切替（別名 = 別下書き・N 本並存）。
 /// - 右上「保存」（PC は「ドライブに保存」）で POST /slides → 実体化して /slides/{id} へ（ノート下書きと同型）。
 
-import { FileWarning } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
 import * as Y from "yjs";
@@ -17,6 +16,7 @@ import * as Y from "yjs";
 import { Conversation } from "@/components/chat/conversation";
 import {
   DraftBadge,
+  DraftLoading,
   DraftNotFound,
   DraftTabs,
   SaveDraftDialog,
@@ -248,10 +248,7 @@ function DraftSlidePageInner() {
               onExportingChange={overlays.setExporting}
             />
           ) : (
-            <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
-              <FileWarning className="size-6 text-muted-foreground/60" aria-hidden />
-              下書きを読み込んでいます…
-            </div>
+            <DraftLoading />
           )}
         </div>
       </AssistantLayout>
