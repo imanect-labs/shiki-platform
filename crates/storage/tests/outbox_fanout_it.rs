@@ -702,7 +702,6 @@ async fn unregister(pool: &PgPool, consumer: &str) {
 }
 
 /// Task 15.6: 購読ストリームの配信位置は consumer ごとに穴のない連番で、並行の採番でも重複・欠落しない。
-/// 採番した台帳行は保持期間（`retain_until`）内は GC されない。
 #[tokio::test]
 async fn stream_delivery_seq_is_gapless_per_consumer_and_retained() {
     let Some(pool) = setup().await else { return };
@@ -770,19 +769,7 @@ async fn stream_delivery_seq_is_gapless_per_consumer_and_retained() {
             .unwrap();
         assert!(entries.windows(2).all(|w| w[1].seq == w[0].seq + 1));
     }
-    // 保持期間内は他の consumer が配送済みでも GC されない。
-    sqlx::query("UPDATE storage_event_outbox SET processed_at = now() WHERE tenant_id = $1")
-        .bind(&tenant)
-        .execute(&pool)
-        .await
-        .unwrap();
-    let mut conn = pool.acquire().await.unwrap();
-    gc_delivered(&mut conn, &[], 1_000_000).await.unwrap();
-    let left: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM storage_event_outbox WHERE tenant_id = $1")
-            .bind(&tenant)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(left, 40, "保持期間内の行は残る");
+    // 保持期間内の行が GC されないことは、表全体を GC するため専用 DB の
+    // `outbox_gc_isolated_it::stream_rows_within_retention_survive_gc` で確かめる（共有 DB で GC を
+    // 回すと、並行する他テストの「残るはずの行」まで消してしまう）。
 }

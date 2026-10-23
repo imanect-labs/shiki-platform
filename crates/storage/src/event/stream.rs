@@ -21,6 +21,7 @@
 //! 保持期間を過ぎた位置からの再開は [`StreamBounds::resumable`] が偽になる（呼び出し側が
 //! `stream.reset` / 410 を返す）。
 
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -58,7 +59,8 @@ pub async fn lock_consumer_seq(
 /// `event_ids`（この順で）を `consumer` のストリームへ永続化し、連番を払い出す。
 ///
 /// 返り値は `(event_id, delivery_seq)`（入力順・番号は連続）。既に同じ consumer の台帳にある
-/// event はスキップする（冪等・再配信で二重採番しない）。`retain` は台帳行を GC しない期間。
+/// event はスキップする（冪等・再配信で二重採番しない）。outbox から消えた（並行 GC が消している
+/// 最中の）event も、エラーにせず番号を払わずに外す。`retain` は台帳行を GC しない期間。
 ///
 /// 採番行の `UPDATE … RETURNING` が行ロックを取り、Tx のコミットまで保持する（並行リレーの排他）。
 pub async fn mark_delivered_seq(
@@ -73,18 +75,49 @@ pub async fn mark_delivered_seq(
     }
     lock_consumer_seq(conn, consumer, Some(tenant_id)).await?;
     // 既に採番済みの event を除く（入力順を保つ）。
-    let done: Vec<i64> = sqlx::query_scalar(
+    let done: HashSet<i64> = sqlx::query_scalar(
         "SELECT event_id FROM outbox_delivery WHERE consumer = $1 AND event_id = ANY($2)",
     )
     .bind(consumer)
     .bind(event_ids)
     .fetch_all(&mut *conn)
-    .await?;
-    let todo: Vec<i64> = event_ids
+    .await?
+    .into_iter()
+    .collect();
+    let pending: Vec<i64> = event_ids
         .iter()
         .copied()
         .filter(|id| !done.contains(id))
         .collect();
+    if pending.is_empty() {
+        return Ok(Vec::new());
+    }
+    // 採番の前に、まだ outbox にある event だけに絞り `FOR KEY SHARE` で押さえる（下の INSERT の
+    // FK 検査までに並行 GC が消さない）。消えた（消されている最中の）event は削除の完了を待って外れる。
+    // 番号は残った分だけに払い出すので、ストリームに穴は空かない。消えた event は本文も無く配信
+    // しようがない。GC は登録済みコンシューマの未配送を消さない（[`super::gc_delivered_registered`]）
+    // ので、これが起きるのは未登録・廃止済みの consumer か明示集合での GC のときだけ。その場合も
+    // FK 違反でバッチ全体（他の event の採番）を巻き戻さない。
+    let live: HashSet<i64> = sqlx::query_scalar(
+        "SELECT o.id FROM storage_event_outbox o WHERE o.id = ANY($1) FOR KEY SHARE OF o",
+    )
+    .bind(&pending)
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .collect();
+    let todo: Vec<i64> = pending
+        .iter()
+        .copied()
+        .filter(|id| live.contains(id))
+        .collect();
+    if todo.len() < pending.len() {
+        tracing::warn!(
+            consumer,
+            vanished = pending.len() - todo.len(),
+            "採番前に outbox から消えたイベントを除外"
+        );
+    }
     if todo.is_empty() {
         return Ok(Vec::new());
     }
@@ -121,9 +154,9 @@ pub async fn mark_delivered_seq(
 pub async fn private_payloads(
     conn: &mut PgConnection,
     ids: &[i64],
-) -> Result<std::collections::HashMap<i64, Value>, StorageError> {
+) -> Result<HashMap<i64, Value>, StorageError> {
     if ids.is_empty() {
-        return Ok(std::collections::HashMap::new());
+        return Ok(HashMap::new());
     }
     let rows: Vec<(i64, Value)> = sqlx::query_as(
         "SELECT id, private_payload FROM storage_event_outbox \

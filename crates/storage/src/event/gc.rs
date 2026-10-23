@@ -72,7 +72,10 @@ pub(super) async fn lock_outbox_gc(conn: &mut PgConnection) -> Result<(), Storag
 ///
 /// `register_consumer` の fast-forward と [`GC_LOCK_KEY`] で相互排除する（並行させると相手を
 /// FK 違反で落とすため。同キーの doc 参照）。実行中なら**待つ**ので、戻り値 0 は常に
-/// 「この回で消せる行が無かった」を意味する。
+/// 「この回で消せる行が無かった」を意味する。ロックと `DELETE` は**この関数が張る Tx（呼び出し側が
+/// Tx 中ならセーブポイント）の中で**行う。advisory lock は Tx 単位なので、autocommit の接続で
+/// ロックと `DELETE` を別の文にすると、ロックが最初の文の終わりで外れて相互排除が黙って効かなくなる
+/// （実際に結合テストが autocommit の接続で呼び、並行する fast-forward を FK 違反で落とした）。
 ///
 /// ⚠️ `SKIP LOCKED` の帰結として、**消費者が claim 中（`FOR UPDATE` 保持中）の行はその回スキップ
 /// される**。GC は「消せるものを取りこぼさない」より「hot path をブロックしない」を優先する
@@ -80,14 +83,49 @@ pub(super) async fn lock_outbox_gc(conn: &mut PgConnection) -> Result<(), Storag
 /// 断定できない。滞留判定には [`outbox_backlog`] を使うこと。
 ///
 /// 本番からは [`gc_delivered_registered`] を使うこと（コンシューマ集合を呼び出し側に渡させない）。
-/// この関数が明示集合を取るのはテストと管理コマンドのため。
+/// この関数が明示集合を取るのはテストと管理コマンドのため（集合から漏れた登録済みコンシューマの
+/// 未配送イベントも消せてしまう）。
 pub async fn gc_delivered(
     conn: &mut PgConnection,
     ledger_consumers: &[&str],
     batch: i64,
 ) -> Result<u64, StorageError> {
+    let mut tx = sqlx::Connection::begin(&mut *conn).await?;
     // fast-forward と相互排除する（並行させると相手を FK 違反で落とす・[`GC_LOCK_KEY`] 参照）。
-    lock_outbox_gc(&mut *conn).await?;
+    lock_outbox_gc(&mut tx).await?;
+    let deleted = delete_delivered(&mut tx, ledger_consumers, batch).await?;
+    tx.commit().await?;
+    Ok(deleted)
+}
+
+/// **本番の GC 入口**: 配送を待つべきコンシューマ集合を `outbox_consumer` から読んで GC する。
+///
+/// コンシューマ集合を呼び出し側に渡させないのは安全性の要請（[`registered_consumers`] の
+/// doc コメント参照。フラグ off のレプリカが他コンシューマ宛の未配送イベントを消す事故を防ぐ）。
+///
+/// 集合は [`GC_LOCK_KEY`] を**取った後に**読む。先に読むと、ロック待ちの間にコミットした新規登録
+/// （fast-forward 済み）を集合から落とし、その登録より後に到着して他コンシューマだけが配送済みの
+/// イベントを消してしまう（**登録済みコンシューマの未配送イベントの喪失**）。READ COMMITTED では
+/// ロック取得後の文は新しいスナップショットで読むので、待っていた登録が必ず見える。
+pub async fn gc_delivered_registered(
+    conn: &mut PgConnection,
+    batch: i64,
+) -> Result<u64, StorageError> {
+    let mut tx = sqlx::Connection::begin(&mut *conn).await?;
+    lock_outbox_gc(&mut tx).await?;
+    let consumers = registered_consumers(&mut tx).await?;
+    let refs: Vec<&str> = consumers.iter().map(String::as_str).collect();
+    let deleted = delete_delivered(&mut tx, &refs, batch).await?;
+    tx.commit().await?;
+    Ok(deleted)
+}
+
+/// GC の `DELETE` 本体（[`GC_LOCK_KEY`] を同じ Tx で保持していること）。
+async fn delete_delivered(
+    conn: &mut PgConnection,
+    ledger_consumers: &[&str],
+    batch: i64,
+) -> Result<u64, StorageError> {
     let consumers: Vec<String> = ledger_consumers.iter().map(|s| (*s).to_string()).collect();
     let expected = i64::try_from(consumers.len())
         .map_err(|_| StorageError::Invalid("consumer 数が多すぎます".into()))?;
@@ -115,19 +153,6 @@ pub async fn gc_delivered(
     .execute(conn)
     .await?;
     Ok(deleted.rows_affected())
-}
-
-/// **本番の GC 入口**: 配送を待つべきコンシューマ集合を `outbox_consumer` から読んで GC する。
-///
-/// コンシューマ集合を呼び出し側に渡させないのは安全性の要請（[`registered_consumers`] の
-/// doc コメント参照。フラグ off のレプリカが他コンシューマ宛の未配送イベントを消す事故を防ぐ）。
-pub async fn gc_delivered_registered(
-    conn: &mut PgConnection,
-    batch: i64,
-) -> Result<u64, StorageError> {
-    let consumers = registered_consumers(&mut *conn).await?;
-    let refs: Vec<&str> = consumers.iter().map(String::as_str).collect();
-    gc_delivered(conn, &refs, batch).await
 }
 
 /// 台帳コンシューマ 1 つの配送進捗。

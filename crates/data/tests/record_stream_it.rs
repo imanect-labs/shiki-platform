@@ -296,6 +296,73 @@ async fn relay_all(fx: &Fx) {
     panic!("outbox の採番が収束しない");
 }
 
+/// このテナントの outbox の保持期間切れ（時間の経過）を模擬し、**本番の GC 入口**で消す。消えた
+/// このテナントの行数を返す（模擬の時点の行が全て消えるまで回す）。
+///
+/// 共有 DB では他テストの台帳 consumer（テストごとに登録・全テナントを採番する）や他の機能の
+/// consumer が登録されている。明示の consumer 集合で GC すると、それらが未配送の行や並行の登録と
+/// 競合する（autocommit の接続で呼ぶと GC の相互排除のロックが外れ、他テストの登録の fast-forward
+/// を FK 違反で落とした）。ここでは RAG の ack と**登録済みの全台帳 consumer の配送**を済ませ、保持期間
+/// だけが GC を止める状態にしてから、登録台帳を読む本番の入口で GC する。
+async fn expire_retention_and_gc(fx: &Fx) -> usize {
+    let tenant = &fx.alice.tenant_id;
+    // 先に、登録済みの全台帳 consumer が配送済み（追いついた）状態にする。並行 GC と FK で競合しないよう
+    // 行を `FOR KEY SHARE` で押さえる（claim 中の他テストのリレーはそのコミットを待つ）。
+    sqlx::query(
+        "INSERT INTO outbox_delivery (consumer, event_id, tenant_id) \
+         SELECT c.name, o.id, o.tenant_id FROM outbox_consumer c CROSS JOIN storage_event_outbox o \
+         WHERE o.tenant_id = $1 FOR KEY SHARE OF o ON CONFLICT (consumer, event_id) DO NOTHING",
+    )
+    .bind(tenant)
+    .execute(&fx.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE storage_event_outbox SET processed_at = now() WHERE tenant_id = $1")
+        .bind(tenant)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    let ids: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM storage_event_outbox WHERE tenant_id = $1")
+            .bind(tenant)
+            .fetch_all(&fx.pool)
+            .await
+            .unwrap();
+    // この配送の記録は台帳 consumer ごとのリレーの直列化（採番行のロック）の外から書くので、上の INSERT
+    // のコミット前に claim の文を始めていた他テストのリレーは、同じ行を claim してそれぞれの保持期間で
+    // 採番し得る（READ COMMITTED の anti-join はロック待ちの後も文のスナップショットで判定する）。
+    // 本番では同じ consumer の配送はそのリレーしか書かないので起きない。そうした遅れて届く台帳行も
+    // 時間の経過で保持期間を過ぎたものとして、毎回期限切れにしてから GC する。GC は claim 中
+    // （他テストのリレーが行ロック中）の行をその回スキップする（SKIP LOCKED）ので、消えるまで回す。
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        sqlx::query(
+            "UPDATE outbox_delivery SET retain_until = now() - interval '1 second' \
+             WHERE tenant_id = $1 AND retain_until > now() - interval '1 second'",
+        )
+        .bind(tenant)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+        let mut tx = fx.pool.begin().await.unwrap();
+        storage::event::gc_delivered_registered(&mut tx, 10_000)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let left: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM storage_event_outbox WHERE id = ANY($1)")
+                .bind(&ids)
+                .fetch_one(&fx.pool)
+                .await
+                .unwrap();
+        if left == 0 {
+            return ids.len();
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("保持期間を過ぎた行が GC されない");
+}
+
 async fn tick(fx: &Fx) {
     relay_all(fx).await;
     fx.store.stream_tick().await.expect("tick");
@@ -638,32 +705,8 @@ async fn beyond_retention_gets_stream_reset() {
     }
     relay_all(&fx).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
-    // 共有 DB では並行する他テストのリレー（別の保持期間の設定）がこのテナントの行を採番し得るので、
-    // このテナントの台帳行の保持期間を明示に過ぎた状態にしてから GC する（時間の経過の模擬）。
-    sqlx::query(
-        "UPDATE outbox_delivery SET retain_until = now() - interval '1 second' \
-         WHERE tenant_id = $1 AND retain_until IS NOT NULL",
-    )
-    .bind(&fx.alice.tenant_id)
-    .execute(&fx.pool)
-    .await
-    .unwrap();
-    // 他の consumer（RAG の ack・workflow 等の台帳）は配送済みにして、保持期間だけが GC を止める状態にする。
-    sqlx::query("UPDATE storage_event_outbox SET processed_at = now() WHERE tenant_id = $1")
-        .bind(&fx.alice.tenant_id)
-        .execute(&fx.pool)
-        .await
-        .unwrap();
-    let mut conn = fx.pool.acquire().await.unwrap();
-    let deleted = storage::event::gc_delivered(
-        &mut conn,
-        &[fx.store.stream_config().consumer.as_str()],
-        10_000,
-    )
-    .await
-    .unwrap();
+    let deleted = expire_retention_and_gc(&fx).await;
     assert!(deleted >= 3, "保持期間を過ぎた行は GC される: {deleted}");
-    drop(conn);
     // 保持期間外の位置からの再開は stream.reset（黙って欠落させない）。
     let mut s = fx
         .store
@@ -720,7 +763,10 @@ async fn crash_windows_lose_nothing_and_duplicates_are_idempotent() {
         )
         .await
         .unwrap();
-    {
+    // claim は `SKIP LOCKED` なので、他テストの台帳 consumer のリレーが同じ outbox 行を claim 中だと
+    // その回は掴めない。r1 を掴んだ Tx が落ちるまで繰り返す（掴めずに巻き戻した回は何も変えない）。
+    let mut crashed_with_r1 = false;
+    for _ in 0..200 {
         let mut tx = fx.pool.begin().await.unwrap();
         storage::event::lock_consumer_seq(&mut tx, &fx.store.stream_config().consumer, None)
             .await
@@ -732,9 +778,15 @@ async fn crash_windows_lose_nothing_and_duplicates_are_idempotent() {
         )
         .await
         .unwrap();
-        assert!(claimed.iter().any(|e| e.node_id == r1.id));
+        let got = claimed.iter().any(|e| e.node_id == r1.id);
         tx.rollback().await.unwrap(); // ← クラッシュ
+        if got {
+            crashed_with_r1 = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    assert!(crashed_with_r1, "r1 を claim した Tx が落ちる");
     tick(&fx).await;
     let (ms, _) = drain(&mut s, &mut c).await;
     assert_eq!(upserts(&ms).len(), 1, "再 claim されて届く: {:?}", c.raw);
@@ -1579,30 +1631,7 @@ async fn snapshot_cursor_beyond_retention_is_gone() {
         .unwrap();
     relay_all(&fx).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
-    // 共有 DB では並行する他テストのリレー（別の保持期間の設定）がこのテナントの行を採番し得るので、
-    // このテナントの台帳行の保持期間を明示に過ぎた状態にしてから GC する（時間の経過の模擬）。
-    sqlx::query(
-        "UPDATE outbox_delivery SET retain_until = now() - interval '1 second' \
-         WHERE tenant_id = $1 AND retain_until IS NOT NULL",
-    )
-    .bind(&fx.alice.tenant_id)
-    .execute(&fx.pool)
-    .await
-    .unwrap();
-    sqlx::query("UPDATE storage_event_outbox SET processed_at = now() WHERE tenant_id = $1")
-        .bind(&fx.alice.tenant_id)
-        .execute(&fx.pool)
-        .await
-        .unwrap();
-    let mut conn = fx.pool.acquire().await.unwrap();
-    storage::event::gc_delivered(
-        &mut conn,
-        &[fx.store.stream_config().consumer.as_str()],
-        10_000,
-    )
-    .await
-    .unwrap();
-    drop(conn);
+    expire_retention_and_gc(&fx).await;
     let next = data::DataQuery {
         cursor: first.next_cursor,
         ..q

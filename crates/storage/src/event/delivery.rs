@@ -66,11 +66,17 @@ pub async fn mark_delivered(
         return Ok(());
     }
     // tenant_id は outbox 行から写す（台帳の絞り込み・監査用）。
+    // `FOR KEY SHARE` で読んだ行を FK 検査まで押さえる。READ COMMITTED の INSERT...SELECT は
+    // 文のスナップショットで見えた行を、FK 検査の時点で並行 GC が消し終えていると FK 違反で落ちる
+    // （バッチ全体が巻き戻る）。ロックを取れば、削除中の行はその完了を待って「消えた行」として
+    // 外れる（消えたイベントは配送しようがないので台帳にも載せない）。claim 済みの行は既に
+    // `FOR UPDATE` を持っているので追加の待ちは無い。
     sqlx::query(
         "INSERT INTO outbox_delivery (consumer, event_id, tenant_id) \
          SELECT $1, o.id, o.tenant_id \
          FROM storage_event_outbox o \
          WHERE o.id = ANY($2) \
+         FOR KEY SHARE OF o \
          ON CONFLICT (consumer, event_id) DO NOTHING",
     )
     .bind(consumer)
@@ -94,17 +100,27 @@ pub async fn mark_delivered(
 /// `outbox_consumer` 台帳に consumer 名を一度だけ記録し、初回だけ現バックログを配送済みに刻む。
 /// 2 回目以降（再起動）は no-op ＝ **停止中に到着した未配送イベントを取りこぼさない**。返り値は刻んだ件数。
 ///
-/// ⚠️ **必ずトランザクション上で呼ぶこと**（`pool.begin()`）。理由が 2 つある:
-/// 1. 「登録の記録」と「バックログの fast-forward」が**原子的でないと壊れる**。autocommit で呼ぶと
-///    登録だけ先にコミットされ、fast-forward が失敗した場合に**登録済みなのにバックログが
-///    配送済みになっていない**状態が残る → relay がバックログ全件を拾い一斉発火する。
+/// 登録の記録・バックログの fast-forward・GC との相互排除のロックは**この関数が張る Tx**（呼び出し側が
+/// Tx 中ならセーブポイント）の中で行う。理由が 2 つある:
+/// 1. 「登録の記録」と「バックログの fast-forward」が**原子的でないと壊れる**。別々にコミットされると
+///    fast-forward が失敗した場合に**登録済みなのにバックログが配送済みになっていない**状態が残る
+///    → relay がバックログ全件を拾い一斉発火する。
 /// 2. GC との相互排除に使う advisory lock が **txn 単位**（autocommit では文の終わりで解放される）。
 ///
-/// pool しか手元に無い呼び出し側は [`register_consumer_on_pool`] を使うこと（自前で txn を張る）。
+/// pool しか手元に無い呼び出し側は [`register_consumer_on_pool`] を使える（自前で txn を張る）。
 pub async fn register_consumer(
     conn: &mut PgConnection,
     consumer: &str,
 ) -> Result<u64, StorageError> {
+    // 登録と fast-forward（と GC との相互排除のロック）を 1 つの Tx に閉じる。呼び出し側が Tx 中なら
+    // セーブポイントになり、autocommit の接続を渡されても原子性と相互排除が崩れない。
+    let mut tx = sqlx::Connection::begin(&mut *conn).await?;
+    let marked = register_in_tx(&mut tx, consumer).await?;
+    tx.commit().await?;
+    Ok(marked)
+}
+
+async fn register_in_tx(conn: &mut PgConnection, consumer: &str) -> Result<u64, StorageError> {
     // 初回登録か判定（RETURNING で挿入できたら初回）。
     let first: Option<String> = sqlx::query_scalar(
         "INSERT INTO outbox_consumer (name) VALUES ($1) \
