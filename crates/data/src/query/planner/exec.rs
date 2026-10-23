@@ -130,6 +130,8 @@ pub(crate) struct Exec<'a, 'c> {
     pub est_cand: Option<f64>,
     /// プランキャッシュ（同一形状の文は同じテキストを引く・data-platform §16.3）。
     pub plan: Option<super::plan_cache::PlanHandle<'a>>,
+    /// 閲覧者が読める・昇格できる未索引の列がある（受付制御の提案「索引の昇格」を出す・§5.4）。
+    pub promotable: bool,
 }
 
 /// 1 ページの結果（全順序の位置つき）。

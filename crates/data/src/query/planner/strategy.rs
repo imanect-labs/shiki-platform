@@ -430,6 +430,9 @@ impl Exec<'_, '_> {
         if confident && predicted_us > self.read_budget_us {
             self.stats.admission_rejected = true;
             let mut suggestions = vec![QuerySuggestion::NarrowFilter];
+            if self.promotable {
+                suggestions.push(QuerySuggestion::PromoteIndex);
+            }
             if sort.len() > 1 && self.composite.is_none() {
                 suggestions.push(QuerySuggestion::CompositeIndex);
             }

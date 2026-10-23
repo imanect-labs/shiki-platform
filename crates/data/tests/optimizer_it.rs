@@ -442,6 +442,22 @@ async fn over_budget_queries_are_rejected_without_estimates() {
         !msg.chars().any(|ch| ch.is_ascii_digit()),
         "推定値・予測コストを含めない: {msg}"
     );
+    // 読める未索引の列があれば「索引の昇格」も提案する（列名・推定は含めない・§5.4）。
+    let mut next = table.schema.clone();
+    next.fields
+        .push(data::FieldDef::new("memo", data::FieldType::Text));
+    store
+        .update_table_schema(&c, table.id, next, None, None)
+        .await
+        .unwrap();
+    let err = tight.run_query(&c, table.id, &agg, None).await.unwrap_err();
+    let DataError::QueryTooExpensive { suggestions } = &err else {
+        panic!("受付制御で断る: {err:?}");
+    };
+    assert_eq!(
+        suggestions,
+        &vec![QuerySuggestion::NarrowFilter, QuerySuggestion::PromoteIndex]
+    );
     // 絞り込めば通る（同じ予算で候補が少ない）。
     let mut narrow = agg.clone();
     narrow.filter = Some(Condition::cmp(

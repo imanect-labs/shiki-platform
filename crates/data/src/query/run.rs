@@ -405,9 +405,11 @@ impl DataStore {
                 None,
             )
         } else {
+            // 受付制御の提案「索引の昇格」は、閲覧者が読める・昇格できる未索引の列があるときだけ。
+            let promotable = crate::index::promote::has_promotable(&table.schema, &masked);
             let mut out = self
                 .execute(
-                    &mut tx, ctx, &table, &bq, &m, query, tuning, permit, &scopes,
+                    &mut tx, ctx, &table, &bq, &m, query, tuning, permit, &scopes, promotable,
                 )
                 .await?;
             if out.2.is_some() {
@@ -490,6 +492,7 @@ impl DataStore {
         tuning: &QueryTuning,
         permit: ReadPermit,
         scopes: &ScopeTables,
+        promotable: bool,
     ) -> Result<ExecOut, DataError> {
         let started = Instant::now();
         let keys = table.keys;
@@ -656,6 +659,7 @@ impl DataStore {
             sort_walk_obs: None,
             est_cand: None,
             plan: Some(plan),
+            promotable,
         };
         if force.is_none() && !body_path {
             ex.load_stats(&self.stats_cache).await?;

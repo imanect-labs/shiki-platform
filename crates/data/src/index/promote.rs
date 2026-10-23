@@ -110,6 +110,17 @@ pub(crate) fn promotable(f: &FieldDef) -> bool {
         && !f.unique
 }
 
+/// 閲覧者が読める（マスクされていない）・昇格できる未索引のユーザー列があるか（受付制御の提案
+/// 「索引の昇格」を出すか・query-optimizer §5.4。列名は返さない）。
+pub(crate) fn has_promotable(
+    schema: &crate::model::TableSchema,
+    masked: &std::collections::HashSet<String>,
+) -> bool {
+    schema.fields.iter().any(|f| {
+        f.id >= crate::model::FIRST_USER_FIELD_ID && !masked.contains(&f.key) && promotable(f)
+    })
+}
+
 /// クエリが絞り込み・並べ替え・集計に使う列の参照名（自動昇格の契機・重複なし）。
 pub(crate) fn query_fields(q: &crate::query::ir::DataQuery) -> Vec<String> {
     fn walk(c: &crate::query::ir::Condition, out: &mut Vec<String>) {
@@ -620,4 +631,35 @@ pub(crate) async fn backfill_progress(
             (done as f64 / total as f64).clamp(0.0, 1.0)
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::model::{FieldDef, TableSchema};
+
+    #[test]
+    fn promotable_columns_exclude_masked_indexed_and_derived() {
+        let mut a = FieldDef::new("a", FieldType::Text);
+        a.indexed = true;
+        let memo = FieldDef::new("memo", FieldType::Text);
+        let mut s = TableSchema {
+            fields: vec![a, memo],
+            status_field: None,
+            row_policy: None,
+            field_policy: vec![],
+            aggregate_min_rows: None,
+            fsm_ref: None,
+            rag: None,
+        };
+        crate::field_key::assign_field_ids(None, &mut s).unwrap();
+        let none = std::collections::HashSet::new();
+        assert!(has_promotable(&s, &none));
+        // マスクされた列は閲覧者には提案しない。
+        let masked: std::collections::HashSet<String> = ["memo".to_string()].into();
+        assert!(!has_promotable(&s, &masked));
+        s.fields[1].indexed = true;
+        assert!(!has_promotable(&s, &none), "全列が索引済み");
+    }
 }

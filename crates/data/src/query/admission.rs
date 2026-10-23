@@ -33,6 +33,9 @@ pub enum QuerySuggestion {
     NarrowFilter,
     /// 並べ替えの組み合わせの複合索引（data-platform §5.3）。
     CompositeIndex,
+    /// 未索引の列の索引を昇格して、その列で絞り込めるようにする（data-platform §10・query-optimizer §5.4）。
+    /// 閲覧者が読める・昇格できる未索引の列があるときだけ出す（列名・件数・推定は含めない）。
+    PromoteIndex,
 }
 
 impl QuerySuggestion {
@@ -40,6 +43,7 @@ impl QuerySuggestion {
         match self {
             QuerySuggestion::NarrowFilter => "narrow_filter",
             QuerySuggestion::CompositeIndex => "composite_index",
+            QuerySuggestion::PromoteIndex => "promote_index",
         }
     }
 }

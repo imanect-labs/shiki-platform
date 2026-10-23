@@ -439,6 +439,7 @@ mod tests {
         let (status, body) = body_json(ApiError::from(data::DataError::QueryTooExpensive {
             suggestions: vec![
                 data::QuerySuggestion::NarrowFilter,
+                data::QuerySuggestion::PromoteIndex,
                 data::QuerySuggestion::CompositeIndex,
             ],
         }))
@@ -447,7 +448,7 @@ mod tests {
         assert_eq!(body["code"], "query_too_expensive");
         assert_eq!(
             body["suggestions"],
-            serde_json::json!(["narrow_filter", "composite_index"])
+            serde_json::json!(["narrow_filter", "promote_index", "composite_index"])
         );
         let text = body.to_string();
         for banned in ["cost", "estimate", "strategy", "rows", "ms"] {
