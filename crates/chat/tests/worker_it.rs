@@ -255,6 +255,25 @@ async fn worker_generates_streams_and_persists_projection() {
             .await
             .unwrap();
     assert!(usage_count >= 1, "llm_usage に会計行が刻まれること");
+
+    // コンテキスト使用量が記録され、再訪時に引ける（チャット画面のコンテキスト表示）。
+    let usage = store
+        .latest_context_usage(thread.id, &tenant)
+        .await
+        .unwrap()
+        .expect("context_usage が記録されること");
+    assert!(usage.used_tokens > 0);
+    assert_eq!(
+        usage.used_tokens,
+        usage.categories.iter().map(|c| c.tokens).sum::<u64>(),
+        "内訳の合計が総量と一致すること"
+    );
+    // 別テナントからは引けない（tenant スコープ）。
+    assert!(store
+        .latest_context_usage(thread.id, "other-tenant")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// system プロンプトの末尾に、run の作成時刻から決めた「今日の日付」が入り、実際にモデルへ

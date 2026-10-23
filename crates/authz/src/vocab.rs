@@ -37,6 +37,9 @@ pub enum Relation {
     CanUse,
     /// 組織管理者（管理コンソール・管理 API を使える）。**閲覧権を含意しない**（PIT-65）。
     Admin,
+    /// 監査閲覧者（組織の監査ログを検索・書き出しできる・#634）。admin とは独立で、互いに
+    /// 含意しない（管理者でない監査担当者を置ける）。閲覧権にも連鎖しない（PIT-65）。
+    AuditViewer,
 }
 
 impl Relation {
@@ -53,6 +56,7 @@ impl Relation {
             Relation::EditorViaLink => "editor_via_link",
             Relation::CanUse => "can_use",
             Relation::Admin => "admin",
+            Relation::AuditViewer => "audit_viewer",
         }
     }
 
@@ -72,6 +76,7 @@ impl Relation {
             "editor_via_link" => Some(Relation::EditorViaLink),
             "can_use" => Some(Relation::CanUse),
             "admin" => Some(Relation::Admin),
+            "audit_viewer" => Some(Relation::AuditViewer),
             _ => None,
         }
     }
@@ -156,6 +161,8 @@ mod tests {
         assert_eq!(Relation::Viewer.as_str(), "viewer");
         assert_eq!(Relation::Admin.as_str(), "admin");
         assert_eq!(Relation::parse("admin"), Some(Relation::Admin));
+        assert_eq!(Relation::AuditViewer.as_str(), "audit_viewer");
+        assert_eq!(Relation::parse("audit_viewer"), Some(Relation::AuditViewer));
     }
 
     #[test]

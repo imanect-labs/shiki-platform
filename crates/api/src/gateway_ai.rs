@@ -151,6 +151,10 @@ struct ChannelSink {
 #[async_trait::async_trait]
 impl EventSink for ChannelSink {
     async fn emit(&mut self, event: AgentEvent) -> Result<(), agent_core::AgentError> {
+        // コンテキストの内訳はチャット画面の表示用。ミニアプリの契約には載せない。
+        if matches!(event, AgentEvent::ContextUsage(_)) {
+            return Ok(());
+        }
         // 受信側 drop（クライアント切断）は is_cancelled が拾う。ここでは無視してよい。
         let _ = self.tx.send(to_ai_event(&event)).await;
         Ok(())

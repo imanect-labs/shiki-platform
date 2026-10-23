@@ -24,9 +24,14 @@ use crate::state::AppState;
 pub(crate) fn office_route_decls() -> Vec<RouteDecl> {
     use crate::server::AccessPolicy::Session;
     let r = RouteDecl::new;
-    vec![r("/office/sessions", &["POST"], Session, || {
-        post(create_office_session)
-    })]
+    vec![
+        r("/office/sessions", &["POST"], Session, || {
+            post(create_office_session)
+        }),
+        r("/office/charts", &["POST"], Session, || {
+            post(insert_office_chart)
+        }),
+    ]
 }
 
 /// Office 編集セッションの発行リクエスト。
@@ -111,4 +116,132 @@ pub async fn create_office_session(
         access_token,
         access_token_ttl_ms: office::TOKEN_TTL.as_millis() as u64,
     }))
+}
+
+/// チャットの図をグラフとして文書へ入れるリクエスト（#731）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct InsertOfficeChartRequest {
+    /// 入れる先の Excel（xlsx/ods）か Word（docx/odt）。
+    pub file_id: Uuid,
+    pub chart: office::engine::chart_insert::ChartInsert,
+}
+
+/// グラフを入れた結果。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InsertOfficeChartResponse {
+    /// Excel のとき、表とグラフを置いた新しいシートの名前（Word は null）。
+    pub sheet: Option<String>,
+    /// 保存の結果。
+    pub save: ChartSaveState,
+}
+
+/// グラフを入れた後の保存の結果。
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChartSaveState {
+    /// 新しい版として保存した。
+    Saved,
+    /// 文書には入ったが、保存の確認が期限内に取れなかった（開いている人の保存か自動保存で確定する）。
+    Unverified,
+    /// 保存に失敗した。誰も開いていない文書では、入れたグラフは残らない。
+    Failed,
+}
+
+/// チャットの図を、開いている Excel・Word へ編集できるグラフとして入れる（#731）。
+///
+/// Excel は新しいシートに表を書いてその右にグラフを置き、Word は文書の末尾にグラフを入れる。
+/// AI の文書操作と同じエンジンを通るので、editor 権限の確認・全部成功か全部取り消し・人の
+/// 1 回の「元に戻す」も同じ。
+#[utoipa::path(
+    post, path = "/office/charts", request_body = InsertOfficeChartRequest,
+    responses(
+        (status = 200, description = "入れた", body = InsertOfficeChartResponse),
+        (status = 400, description = "グラフのデータが不正・この形式には入れられない（理由は本文の message）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "編集の権限がない"),
+        (status = 404, description = "Office が無効"),
+        (status = 409, description = "この文書で別の AI 編集が進行中"),
+        (status = 503, description = "Office に接続できない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn insert_office_chart(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    Json(req): Json<InsertOfficeChartRequest>,
+) -> Result<Json<InsertOfficeChartResponse>, ApiError> {
+    use office::engine::OfficeEngineError as E;
+    use office::live::LiveEditError as L;
+    let Some(office) = &state.office else {
+        return Err(ApiError::NotFound);
+    };
+    let label = format!(
+        "グラフを挿入「{}」",
+        req.chart.title.as_deref().unwrap_or("グラフ")
+    );
+    match office
+        .engine
+        .insert_chart(&ctx, req.file_id, &label, &req.chart)
+        .await
+    {
+        Ok(r) if r.applied => {
+            use office::live::LiveSaveResult as S;
+            let save = match r.save {
+                S::Saved { .. } => ChartSaveState::Saved,
+                S::Unverified | S::NotAttempted => ChartSaveState::Unverified,
+                S::Failed(reason) => {
+                    tracing::warn!(%reason, "グラフを入れた文書を保存できなかった");
+                    ChartSaveState::Failed
+                }
+            };
+            Ok(Json(InsertOfficeChartResponse {
+                sheet: r.sheet,
+                save,
+            }))
+        }
+        // エンジンが丸ごと取り消した（文書は変わっていない）。理由の行だけを返す。
+        Ok(r) => Err(rejected(&cause_of(&r.text))),
+        Err(E::Invalid(e)) => Err(rejected(&e.message)),
+        Err(E::Unsupported | E::Session(L::Unsupported)) => Err(rejected(
+            "この文書にはグラフを入れられません（Excel・Word のみ）",
+        )),
+        Err(E::Session(L::Denied)) => Err(ApiError::Forbidden),
+        Err(E::Session(L::Busy)) => Err(ApiError::Conflict),
+        Err(e @ (E::Session(_) | E::Engine(_))) => {
+            Err(ApiError::ServiceUnavailable(format!("office: {e}")))
+        }
+        Err(E::Range(e)) => Err(ApiError::Internal(format!("office: {e}"))),
+    }
+}
+
+/// 入れられなかった理由を本文に載せた 400（画面がそのまま見せる）。
+fn rejected(message: &str) -> ApiError {
+    tracing::info!(reason = %message, "グラフを入れられなかった（文書は変わっていない）");
+    ApiError::UnprocessableJson(serde_json::json!({
+        "status": 400, "title": "Bad Request", "message": message,
+    }))
+}
+
+/// エンジンの失敗の報告から「原因: …」の行を取り出す（無ければ全体の 1 行目）。
+fn cause_of(text: &str) -> String {
+    text.lines()
+        .find_map(|l| l.trim().strip_prefix("原因:").map(str::trim))
+        .or_else(|| text.lines().next())
+        .unwrap_or("グラフを入れられませんでした")
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cause_is_the_reason_line() {
+        let text = "適用できませんでした。途中までの変更もすべて取り消したので、文書は変わっていません。\n原因: 2 件目の操作（add_chart）・シート「x」がありません";
+        assert_eq!(
+            cause_of(text),
+            "2 件目の操作（add_chart）・シート「x」がありません"
+        );
+        assert_eq!(cause_of("だめでした"), "だめでした");
+    }
 }

@@ -173,3 +173,16 @@ COLLABORA_IMAGE=collabora/code:26.04.5.1.1 docker compose --profile office up -d
   中国語版の字形で描かれたりする。ビルド時（fc-match）と smoke（PDF に埋め込まれた書体）で確かめる。
 - **26.04 の `executescript`**（kit 内で完全な UNO API の JS が走る）は閲覧専用セッションからも通る（PIT-68）。
   ブラウザからの経路は shiki の中継（`office::relay`）で落とすので、Collabora のポートを直接公開しない。
+- **文書の中から内部網へ取りに行かせない（#729）。** 既定の `net.lok_allow` はプライベート網と localhost を
+  丸ごと含み、編集者がセルに `=WEBSERVICE("http://<内部>/")` や外部参照を書くと、kit が内部のサービスへ HTTP を
+  送って応答をセルに入れる。イメージの `coolwsd.xml` で lok_allow の全件を解決できない名前で上書きし、
+  `post_allow` の `allow` 属性を false にしてある（Dockerfile の説明・ビルド時に件数を照合）。
+  - 要素を消すだけでは coolwsd に組み込みの既定 6 件が補われて効かない。起動引数で lok_allow を足さないこと。
+  - `storage.wopi.host`（shiki-server）は設定では外せず、許可先に残る。名前は完全一致で、shiki-server の口は
+    外に出ている API と同じ認証を通る。
+  - 開発用の代替（上流の CODE イメージ）にはこの対策が入らない。
+  - **ネットワーク側の二重目の守りは K8s（プレビュー）にだけある**（Collabora の外向き通信を shiki-server と DNS に
+    絞る NetworkPolicy・giken-ops）。compose・オンプレの Collabora は postgres や openfga と同じ網にいるので、
+    設定を変えるときは lok_allow を開けないこと。オンプレでもネットワークで絞れるなら絞る。
+  - ビルド時の照合は件数を見るだけで、効き目そのものは確かめない。上流を上げたら、セルに
+    `=WEBSERVICE("http://<内部>/")` を入れて `#VALUE!` になることを実機で確かめる。

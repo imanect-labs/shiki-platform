@@ -91,8 +91,8 @@ test.describe("スマホのシートを払って閉じる", () => {
   test("モデル選択（Sheet side=bottom）: 下へ払うと閉じる", async ({ browser, page }) => {
     const phone = await phonePage(browser, page);
     await phone.goto("/");
-    await phone.getByRole("button", { name: "追加メニューを開く" }).click();
-    await phone.getByTestId("composer-plus-sheet").getByRole("button", { name: /モデル/ }).click();
+    // モデルは送信の左のボタンから開く（#768）。
+    await phone.getByTestId("model-button").click();
     const picker = phone.getByTestId("model-picker");
     await expect(picker).toBeVisible();
 

@@ -13,6 +13,7 @@ use super::a1;
 use super::calc::normalize::{normalize_with_sheets, OpError};
 use super::calc::parse::parse_ops;
 use super::calc::run;
+use super::chart_insert::{self, ChartInsert};
 use super::writer;
 use super::EngineError;
 use crate::live::{LiveEditError, LiveEditor, LiveSaveResult, SessionAccess};
@@ -292,6 +293,86 @@ impl OfficeEngine {
             views: outcome.info.views,
         })
     }
+
+    /// 画面のボタンからチャットの図をグラフとして入れる（editor@file・#731）。
+    ///
+    /// Excel は新しいシート（題から作った空いている名前）に表を書いてその右にグラフを置き、Word は
+    /// 文書の末尾にグラフを入れる。どちらも AI と同じ操作の経路（検証・全部成功か全部取り消し・
+    /// 人の 1 回の「元に戻す」）を通る。
+    pub async fn insert_chart(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        label: &str,
+        chart: &ChartInsert,
+    ) -> Result<ChartInsertReport, OfficeEngineError> {
+        let invalid = |message: String| {
+            OfficeEngineError::Invalid(OpError {
+                index: 1,
+                op: "insert_chart",
+                message,
+            })
+        };
+        if !self.is_supported().await {
+            return Err(OfficeEngineError::Unsupported);
+        }
+        let outcome = Box::pin(self.live.with_session(
+            ctx,
+            file_id,
+            SessionAccess::Edit,
+            READ_CONTENT_TYPES,
+            async |client, info| {
+                let r: Result<(Option<String>, bool, String), OfficeEngineError> = async {
+                    if DOC_CONTENT_TYPES.contains(&info.content_type.as_str()) {
+                        // Word の検証（散布図・円の系列の数など）は Word のときだけかける。
+                        let doc =
+                            writer::normalize::normalize_doc_ops(&chart_insert::doc_ops(chart))?;
+                        let o = writer::run::apply(client, label, &doc).await?;
+                        return Ok((None, o.applied, o.text));
+                    }
+                    chart.check_for_sheet().map_err(invalid)?;
+                    // 空いているシート名を選ぶため、名前だけを読む（概要は全シートを読むので重い）。
+                    let names =
+                        super::call(client, serde_json::json!({"action": "calc.sheet_names"}))
+                            .await?;
+                    let existing: Vec<String> = names["sheets"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|s| s.as_str().map(str::to_string))
+                        .collect();
+                    let sheet = chart_insert::sheet_name_for(chart.title.as_deref(), &existing);
+                    let parsed = parse_ops(&chart_insert::sheet_ops(chart, &sheet))?;
+                    let items: Vec<_> = parsed.iter().map(|(op, s)| (op, s.as_deref())).collect();
+                    let normalized = normalize_with_sheets(&items, None)?;
+                    let o = run::apply(client, label, &normalized).await?;
+                    Ok((Some(sheet), o.applied, o.text))
+                }
+                .await;
+                let modified = matches!(&r, Ok((_, true, _)));
+                (r, modified)
+            },
+        ))
+        .await?;
+        let (sheet, applied, text) = outcome.value?;
+        Ok(ChartInsertReport {
+            sheet,
+            applied,
+            text,
+            save: outcome.save,
+        })
+    }
+}
+
+/// グラフの挿入の報告。
+#[derive(Debug, Clone)]
+pub struct ChartInsertReport {
+    /// Excel のとき、表とグラフを置いたシート（Word は None）。
+    pub sheet: Option<String>,
+    /// 文書を変えたか（false なら丸ごと取り消し済みで、text に理由）。
+    pub applied: bool,
+    pub text: String,
+    pub save: LiveSaveResult,
 }
 
 #[cfg(test)]

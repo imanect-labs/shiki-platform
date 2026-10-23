@@ -94,7 +94,8 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
 
   // 補完で確定しなくても、直接打ち切ったコマンドは**送信時に解決される**（#387・Codex P2）。
   // 候補が閉じることだけでなく、POST に対象 skill が載ることまで見る（skills を落とす回帰を防ぐ）。
-  await pillFromMenu.getByRole("button", { name: "コマンドを外す" }).click();
+  // 語そのものを押すと外れる（#768。本文の先頭に入る語になった）。
+  await pillFromMenu.click();
   const posted = page.waitForRequest(
     (r) => r.method() === "POST" && /\/api\/threads\/[^/]+\/messages$/.test(r.url()),
   );

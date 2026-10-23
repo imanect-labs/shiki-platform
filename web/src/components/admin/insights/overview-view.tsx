@@ -22,28 +22,25 @@ import {
   yen,
 } from "./common";
 import { WeeklyChart } from "./weekly-chart";
+import { YuiChart, yuiNumber } from "../yui-chart";
 
+/// 浸透のファネル。チャットの本文の図と同じ Yui の funnel で描く（#783）。
 function Funnel({ f }: { f: InsightsOverview["funnel"] }) {
-  const steps = [
-    { label: "利用対象者", n: f.population },
-    { label: "一度でも使った", n: f.ever },
-    { label: "直近 30 日に使った", n: f.last_30_days },
-    { label: "毎週使う（4 週中 3 週以上）", n: f.weekly },
-    { label: "ほぼ毎日（28 日中 16 日以上）", n: f.heavy },
-  ];
-  const base = Math.max(1, f.population);
+  const source = [
+    "funnel",
+    "unit: 人",
+    "段階 | 人数",
+    `利用対象者 | ${yuiNumber(f.population)}`,
+    `利用経験あり | ${yuiNumber(f.ever)}`,
+    `直近 30 日 | ${yuiNumber(f.last_30_days)}`,
+    `毎週使う | ${yuiNumber(f.weekly)}`,
+    `ほぼ毎日 | ${yuiNumber(f.heavy)}`,
+    "note: 直近 30 日＝直近 30 日に使った、毎週使う＝直近 4 週のうち 3 週以上、ほぼ毎日＝直近 28 日のうち 16 日以上",
+  ].join("\n");
   return (
-    <ul className="flex flex-col gap-3 px-4 py-3.5">
-      {steps.map((s, i) => (
-        <BarRow
-          key={s.label}
-          label={s.label}
-          value={`${formatInt(s.n)} 人`}
-          sub={i === 0 ? undefined : pct(s.n / base)}
-          ratio={s.n / base}
-        />
-      ))}
-    </ul>
+    <div className="px-1 pb-1 pt-2">
+      <YuiChart source={source} label="浸透のファネル（段階ごとの人数）" minHeight={280} />
+    </div>
   );
 }
 
@@ -86,13 +83,16 @@ function Body({ o, from, to }: { o: InsightsOverview; from: string; to: string }
         title="週ごとのアクティブ利用者"
         description="その週に AI を使った人を、使った日数で分けています。"
       >
-        <div className="px-4 pb-3 pt-3.5">
+        <div className="px-1 pb-1 pt-2">
           <WeeklyChart weeks={o.weekly} from={from} to={to} />
         </div>
       </Panel>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <Panel title="浸透のファネル" description="分母はディレクトリの在籍者（利用対象者）。">
+        <Panel
+          title="浸透のファネル"
+          description="利用対象者はディレクトリの在籍者。右の % は一つ前の段階からの割合です。"
+        >
           <Funnel f={o.funnel} />
           <Note>「一度使って離れた人」が多いときは、研修や使い方の周知が効きやすいサインです。</Note>
         </Panel>

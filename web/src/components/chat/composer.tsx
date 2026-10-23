@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowUp, Bot, HardDrive, Loader2, Paperclip, Square, TextSelect, X } from "lucide-react";
+import { ArrowUp, Bot, HardDrive, Loader2, Paperclip, Sparkles, Square, TextSelect, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { uploadFile, type NodeResponse } from "@/lib/storage";
@@ -12,7 +12,8 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { ApprovalModeSelect, approvalModeDef } from "./approval-mode-select";
 import { ComposerModeButton } from "./composer-mode";
 import { PlusMenu } from "./composer-plus-menu";
-import { ModelPill, useChosenModelLabel } from "./model-picker";
+import { ComposerTokens, TOKEN_GAP, type ComposerToken } from "./composer-tokens";
+import { ModelButton } from "./model-picker";
 import {
   clearPendingSelection,
   selectionKindLabel,
@@ -24,7 +25,6 @@ import { FolderPicker } from "@/components/artifacts/folder-picker";
 import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt-input";
 import {
   SlashCommandMenu,
-  SlashCommandPill,
   slashOptionId,
   SLASH_LISTBOX_ID,
 } from "./slash-command-menu";
@@ -62,9 +62,10 @@ function toActiveCommand(s: SlashSuggestion): ActiveCommand {
 /// 添付ファイルはアップロード後に自動でベクトル化され、doc_search の対象になる。
 ///
 /// レイアウトは 1 つの DOM をグリッドで組み替える（PC とスマホでメニューや状態を二重に持たない）:
-/// - スマホ（md 未満）: 1 行の丸いバー「+ ／ 入力欄 ／ 実行モード ／ 送信」。入力すると 5 行まで伸びる。
-/// - PC: 入力欄の下に操作の段（+・エージェントモード・ワークスペース・承認モード ／ 送信）。
-/// 選んだスキル（スラッシュコマンド）とモデルは、どちらも入力欄の上にチップで出す。
+/// - PC・スマホとも 2 段: 入力欄の下に操作の段（左に +〔PC はエージェントモード・ワークスペース・
+///   承認モードも〕、右にモデル ／〔スマホは実行モード〕／ 送信）。ChatGPT の入力欄と同じ並び（#768）。
+/// - 選んだツールとスキル（スラッシュコマンド）は、本文の先頭に入る語として見せる（composer-tokens）。
+/// - モデルは送信の左に常に出す（既定は「Auto」）。
 ///
 /// 会話のトークンごとに親が再描画されても描き直さないよう memo する（入力中の状態は自前で持つ）。
 export const Composer = React.memo(function Composer({
@@ -126,7 +127,6 @@ export const Composer = React.memo(function Composer({
   const [menuOpen, setMenuOpen] = React.useState(false);
   const desktop = useMediaQuery("(min-width: 768px)");
   const modelScope = threadId ?? HOME_SCOPE;
-  const modelLabel = useChosenModelLabel(modelScope);
   // この発話に使うツール（#734）。送信時に会話側が読み出して空に戻す。
   const toolChoice = useToolChoice(modelScope);
   const [pickerOpen, setPickerOpen] = React.useState(false);
@@ -187,10 +187,19 @@ export const Composer = React.memo(function Composer({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // キャレット先頭での Backspace はピルを外す（ChatGPT と同じ操作感）。
-    if (e.key === "Backspace" && command && value.length === 0) {
+    // 本文の先頭での Backspace は、見えている最後の語を外す（ChatGPT と同じ操作感）。
+    const el = e.currentTarget;
+    const last = tokens[tokens.length - 1];
+    if (
+      last &&
+      e.key === "Backspace" &&
+      !e.nativeEvent.isComposing &&
+      e.keyCode !== 229 &&
+      el.selectionStart === 0 &&
+      el.selectionEnd === 0
+    ) {
       e.preventDefault();
-      setCommand(null);
+      last.onRemove();
       return;
     }
     if (!slashOpen) {
@@ -253,41 +262,34 @@ export const Composer = React.memo(function Composer({
       ? desktop
         ? `エージェントに依頼${approvalLabel ? `（${approvalLabel}）` : ""}`
         : `エージェント${approvalLabel ? `・${approvalLabel}` : "に依頼"}`
-      : modelLabel
-        ? `${modelLabel} に依頼`
-        : (placeholder ?? (desktop ? "何でも尋ねて、社内文書も検索" : "Shiki に質問・依頼"));
+      : (placeholder ?? (desktop ? "何でも尋ねて、社内文書も検索" : "Shiki に質問・依頼"));
 
-  // 入力欄の上のチップ（選んだスキル・モデル）。何も無ければスマホは 1 行のまま。
-  // ツールの選択などを足すときもここに並べる。
-  const chips = (
-    <>
-      {command ? <SlashCommandPill label={command.token} onClear={() => setCommand(null)} /> : null}
-      <ModelPill scope={modelScope} />
-      {toolChoice.tools.map((name) => {
-        const tool = selectableTool(name);
-        if (!tool) return null;
-        return (
-          <span
-            key={name}
-            data-testid="composer-tool-chip"
-            className="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full bg-accent pl-2.5 pr-1 text-[13px] font-medium text-foreground"
-          >
-            <tool.icon className="size-3.5 shrink-0 text-primary" aria-hidden />
-            <span className="min-w-0 truncate">{tool.label}</span>
-            <button
-              type="button"
-              onClick={() => toolChoice.clear(name)}
-              aria-label={`${tool.label}を外す`}
-              className="relative flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors after:absolute after:-inset-2 hover:bg-foreground/10 hover:text-foreground"
-            >
-              <X className="size-3.5" aria-hidden />
-            </button>
-          </span>
-        );
-      })}
-    </>
-  );
-  const hasChips = command !== null || modelLabel !== null || toolChoice.tools.length > 0;
+  // 本文の先頭に入る語（選んだスキル・ツール）。押すか、本文の先頭で Backspace を押すと外れる。
+  const tokens: ComposerToken[] = [];
+  if (command) {
+    tokens.push({
+      key: "command",
+      label: `/${command.token}`,
+      icon: Sparkles,
+      removeLabel: "コマンドを外す",
+      onRemove: () => setCommand(null),
+      testId: "slash-command-pill",
+    });
+  }
+  for (const name of toolChoice.tools) {
+    const tool = selectableTool(name);
+    if (!tool) continue;
+    tokens.push({
+      key: name,
+      label: tool.label,
+      icon: tool.icon,
+      removeLabel: `${tool.label}を外す`,
+      onRemove: () => toolChoice.clear(name),
+      testId: "composer-tool-chip",
+    });
+  }
+  const [tokensWidth, setTokensWidth] = React.useState(0);
+  const [textScroll, setTextScroll] = React.useState(0);
 
   return (
     <div className={cn("flex flex-col gap-2", className)}>
@@ -361,10 +363,8 @@ export const Composer = React.memo(function Composer({
           // 本文の上に重ねるので面を少し透かし、背後はぼかす。
           "relative rounded-[26px] border-border bg-card/85 shadow-sm backdrop-blur-xl transition-shadow",
           "focus-within:border-ring/25 focus-within:shadow-md focus-within:ring-4 focus-within:ring-ring/10",
-          // スマホ: 1 行の丸いバー（6px ＋ 40px ＋ 6px ＋ 枠 = 54px）。伸びてもボタンは下端に揃える。
-          "grid grid-cols-[auto_minmax(0,1fr)_auto] items-end gap-x-1 p-1.5",
-          // PC: 入力欄 → 操作の段の 2 段。
-          "md:grid-cols-[minmax(0,1fr)_auto] md:gap-x-2 md:p-2",
+          // PC・スマホとも 入力欄 → 操作の段 の 2 段（左に +、右にモデルと送信）。
+          "grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-1 p-2",
         )}
       >
         {slashOpen ? (
@@ -376,14 +376,45 @@ export const Composer = React.memo(function Composer({
           />
         ) : null}
 
-        {hasChips ? (
-          <div className="col-span-full row-start-1 flex min-w-0 flex-wrap items-center gap-1.5 px-1 pb-1.5 pt-0.5 md:px-1.5 md:pb-1 md:pt-0.5">
-            {chips}
-          </div>
-        ) : null}
+        {/* 入力欄（DOM では先に置き、Tab の順を見た目の上→下に揃える）。 */}
+        <div className="relative col-span-2 col-start-1 row-start-1 min-w-0 overflow-hidden px-1.5 pt-1 md:px-2">
+          {tokens.length > 0 ? (
+            // 1 行目の先頭に重ねる（textarea の上の余白・行高と揃える）。
+            <ComposerTokens
+              tokens={tokens}
+              onWidthChange={setTokensWidth}
+              scrollTop={textScroll}
+              className="left-1.5 top-[calc(0.25rem+0.5rem)] h-6 text-base md:left-2 md:top-1 md:h-[1.625em] md:text-[15px]"
+            />
+          ) : null}
+          {/* 補完中は combobox として関連付ける（Codex P2）。フォーカスは textarea に
+              残るため、aria-activedescendant が無いとスクリーンリーダーへ選択が伝わらない。 */}
+          <PromptInputTextarea
+            placeholder={effectivePlaceholder}
+            autoFocus={autoFocus}
+            aria-label="メッセージを入力"
+            role={slashOpen ? "combobox" : undefined}
+            aria-expanded={slashOpen || undefined}
+            aria-controls={slashOpen ? SLASH_LISTBOX_ID : undefined}
+            aria-autocomplete={slashOpen ? "list" : undefined}
+            aria-activedescendant={
+              slashOpen ? slashOptionId(Math.min(slashIndex, slashHits!.length - 1)) : undefined
+            }
+            onKeyDown={onKeyDown}
+            onScroll={(e) => setTextScroll(e.currentTarget.scrollTop)}
+            // 先頭の語の幅だけ 1 行目を下げる（続けて打った文字は語の右から、2 行目以降は左端から）。
+            style={tokens.length > 0 ? { textIndent: tokensWidth + TOKEN_GAP } : undefined}
+            className={cn(
+              "min-h-10 min-w-0 px-0 py-2 text-base leading-6 placeholder:text-muted-foreground/70",
+              // 長いプレースホルダは折り返さずに切る（入力欄を 2 行に押し広げない）。
+              "placeholder-shown:overflow-hidden placeholder-shown:text-ellipsis placeholder-shown:whitespace-nowrap",
+              "md:min-h-[44px] md:pb-1 md:pt-0 md:text-[15px] md:leading-relaxed",
+            )}
+          />
+        </div>
 
         {/* 左: 「+」（PC はエージェントモード等も同じ段に並べる）。 */}
-        <div className="col-start-1 row-start-2 flex min-w-0 items-center gap-1.5 md:row-start-3 md:pb-0.5 md:pl-0.5">
+        <div className="col-start-1 row-start-2 flex min-w-0 items-center gap-1.5 pb-0.5 pl-0.5">
           <PlusMenu
             open={menuOpen}
             onOpenChange={setMenuOpen}
@@ -447,33 +478,10 @@ export const Composer = React.memo(function Composer({
           ) : null}
         </div>
 
-        <div className="col-start-2 row-start-2 min-w-0 md:col-span-2 md:col-start-1 md:px-2 md:pt-1">
-          {/* 補完中は combobox として関連付ける（Codex P2）。フォーカスは textarea に
-              残るため、aria-activedescendant が無いとスクリーンリーダーへ選択が伝わらない。 */}
-          <PromptInputTextarea
-            placeholder={effectivePlaceholder}
-            autoFocus={autoFocus}
-            aria-label="メッセージを入力"
-            role={slashOpen ? "combobox" : undefined}
-            aria-expanded={slashOpen || undefined}
-            aria-controls={slashOpen ? SLASH_LISTBOX_ID : undefined}
-            aria-autocomplete={slashOpen ? "list" : undefined}
-            aria-activedescendant={
-              slashOpen ? slashOptionId(Math.min(slashIndex, slashHits!.length - 1)) : undefined
-            }
-            onKeyDown={onKeyDown}
-            className={cn(
-              "min-h-10 min-w-0 px-1.5 py-2 text-base leading-6 placeholder:text-muted-foreground/70",
-              // 長いプレースホルダは折り返さずに切る（1 行のバーを 2 行に押し広げない）。
-              "placeholder-shown:overflow-hidden placeholder-shown:text-ellipsis placeholder-shown:whitespace-nowrap",
-              "md:min-h-[44px] md:px-0 md:pb-1 md:pt-0 md:text-[15px] md:leading-relaxed",
-            )}
-          />
-        </div>
-
         {/* 右: スマホは実行モード → 送信。生成中は停止を出し、書きかけがあれば送信（＝順番待ちへ
             積む）も並べる。書きかけが無いのに無効な送信ボタンを置くと、押せないボタンが常駐して邪魔。 */}
-        <div className="col-start-3 row-start-2 flex items-center justify-end gap-1 md:col-start-2 md:row-start-3 md:gap-1.5 md:pb-0.5 md:pr-0.5">
+        <div className="col-start-2 row-start-2 flex min-w-0 items-center justify-end gap-1 pb-0.5 pr-0.5 md:gap-1.5">
+          <ModelButton scope={modelScope} className="max-w-[11rem] md:max-w-[16rem]" />
           {onAutonomousChange ? (
             <ComposerModeButton
               className="md:hidden"
