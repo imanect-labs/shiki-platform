@@ -407,7 +407,12 @@ impl AppConfig {
         if let Some(dup) = ids
             .iter()
             .enumerate()
-            .find(|(i, id)| ids[..*i].contains(id) || llm.models.iter().any(|m| &m.id == *id))
+            .find(|(i, id)| {
+                // `models` が空なら、既定モデルと同じ ID の合成エントリが先頭に入る（先勝ちで引かれる）。
+                let synthesized =
+                    llm.models.is_empty() && llm.default_model.as_deref() == Some(id.as_str());
+                ids[..*i].contains(id) || llm.models.iter().any(|m| &m.id == *id) || synthesized
+            })
             .map(|(_, id)| id)
         {
             return Err(ConfigError::Invalid(format!(

@@ -954,6 +954,12 @@ fn chatgpt_settings_are_validated_when_enabled() {
     cfg.llm.chatgpt.models = vec!["gpt".into()];
     cfg.validate().unwrap();
 
+    // `models` を書かない構成で既定モデルが同じ ID だと、合成エントリと衝突する。
+    cfg.llm.default_model = Some("chatgpt:gpt".into());
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("重複"), "{err}");
+    cfg.llm.default_model = None;
+
     cfg.llm.providers.push(LlmProviderEntry {
         id: llm_gateway::CHATGPT_PROVIDER_ID.into(),
         display_name: None,

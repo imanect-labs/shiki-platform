@@ -126,23 +126,27 @@ fn response(selectable: &[String], status: ChatGptStatus) -> ChatGptStatusRespon
 }
 
 /// 本人のモデル選択に出ている slug（`llm.chatgpt.models` のうち、組織で公開されているもの）。
-/// 接続していなければ組織の設定は読まない。
+/// 接続していなければ組織の設定は読まない。表示の補助なので、組織の設定を読めなければ空を返す
+/// （接続の結果や状態の表示そのものを失敗させない）。
 async fn selectable_slugs(
     state: &AppState,
     ctx: &authz::AuthContext,
     status: &ChatGptStatus,
-) -> Result<Vec<String>, ApiError> {
+) -> Vec<String> {
     let Some(gw) = state.llm.as_ref() else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
     if status.connection != ChatGptConnection::Connected || status.models.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
-    let settings = gw
-        .settings_for(ctx)
-        .await
-        .map_err(|e| ApiError::Internal(format!("tenant llm settings: {e}")))?;
-    Ok(state
+    let settings = match gw.settings_for(ctx).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "ChatGPT のモデルの公開状態を読めません（未公開として返す）");
+            return Vec::new();
+        }
+    };
+    state
         .config
         .llm
         .chatgpt
@@ -150,7 +154,7 @@ async fn selectable_slugs(
         .iter()
         .filter(|slug| settings.is_enabled(gw.catalog(), &chatgpt_model_id(slug)))
         .cloned()
-        .collect())
+        .collect()
 }
 
 /// 連携・解除を監査に残す（組織のデータを個人のアカウントへ送る委任の記録）。
@@ -205,7 +209,7 @@ pub async fn get_chatgpt(
         }));
     };
     let status = account.status(&ctx);
-    let selectable = selectable_slugs(&state, &ctx, &status).await?;
+    let selectable = selectable_slugs(&state, &ctx, &status).await;
     Ok(Json(response(&selectable, status)))
 }
 
@@ -265,7 +269,7 @@ pub async fn complete_chatgpt_login(
         json!({ "account_email": status.email }),
     )
     .await;
-    let selectable = selectable_slugs(&state, &ctx, &status).await?;
+    let selectable = selectable_slugs(&state, &ctx, &status).await;
     Ok(Json(response(&selectable, status)))
 }
 
