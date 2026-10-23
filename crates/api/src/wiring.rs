@@ -179,8 +179,13 @@ pub(crate) fn wire_rag(
         );
     }
     let vector: Arc<dyn rag::VectorStore> = Arc::new(qdrant);
-    let fulltext: Arc<dyn rag::FulltextIndex> =
-        Arc::new(rag::TantivyFulltext::new(&rag_cfg.index_data_dir));
+    // 全テナント分の writer・索引を常駐させない（#816）。アイドル解放は周期タスクで回す。
+    let tantivy = Arc::new(rag::TantivyFulltext::with_limits(
+        &rag_cfg.index_data_dir,
+        rag_cfg.tantivy_limits(),
+    ));
+    tantivy.spawn_idle_reaper();
+    let fulltext: Arc<dyn rag::FulltextIndex> = tantivy;
     let indexer_storage = Arc::new(IndexerStorage::new(db.clone(), Arc::clone(object_store)));
     // relay+consumer（advisory lock でリーダー選出。多重起動しても安全）。
     rag::spawn_pipeline(rag::PipelineDeps {

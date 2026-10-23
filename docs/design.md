@@ -282,6 +282,10 @@ flowchart LR
   **配送機構**（vt/リトライ/DLQ・消費後 DELETE）。relay が outbox→queue を同一 Postgres 内・
   単一 Tx でコピーする（exactly-once）。チャット run（Phase 3）・資料生成ジョブ（Phase 7）も
   同じ `jobq` のキューとして実装する。
+  **テナント間公平**: 取り出しは到着順ではなく `fair_seq` 順（start-time fair queuing・#816）。
+  投入時に「そのテナントの末尾＋1」と「キューの仮想時刻」の大きい方を振り、1 テナントの大量投入が
+  他テナントを待たせない（保証はジョブ件数の公平・テナント内は投入順）。仮想時刻はキューごとに保持し
+  claim で単調に進める（`job_queue_vtime`。可視に戻った古い行で巻き戻さない）。
 - **二段authz（Phase 2 で確定・実装済み）**: pre-filter（両系統に必須）＋ post-filter 検証。
   片方が壊れても権限を守る（この製品の心臓部）。
   - **pre-filter = PIT-1 (b) 権限定義オブジェクト方式**: chunk には**構造タグのみ**を焼く
@@ -351,6 +355,8 @@ flowchart LR
     cell/pool 方針と揃える。`embedding_model_version` × `tenant_id` は直交（version 単位の shadow index）。
   - **Tantivy**: index-per-tenant を既定とする（PIT-8 の shadow 切替と相性良）。単一 index にする場合は
     `tenant_id` を term filter で必須 AND。いずれでも「tenant フィルタは authz_tags と独立に必ず適用」。
+    index-per-tenant のまま、プロセス内の常駐は上限付き: IndexWriter は書込時だけ開いて同時数に上限と
+    アイドル解放、索引（reader）も LRU で上限まで（`rag.fulltext_*`・#816）。辞書はプロセスで 1 部を共有。
   - **authz_tags は名前空間化形式のまま格納**する。`ListObjects` が返す `folder:<tenant>|<local>` を
     `strip_object_id` で local に**剥がして格納しない**（剥がすとタグから tenant 境界が消え、pre-filter
     バグ 1 個で越境する）。剥がす実装を採るなら「照合時に tenant フィルタが別途必ずかかる」ことをテストで担保。

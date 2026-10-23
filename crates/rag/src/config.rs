@@ -35,6 +35,16 @@ pub struct RagConfig {
     #[serde(default = "default_index_data_dir")]
     pub index_data_dir: String,
 
+    /// Tantivy: 同時に開いておくテナント索引（reader）の上限（#816）。LRU で閉じ、次の利用で開き直す。
+    #[serde(default = "default_fulltext_max_open_indexes")]
+    pub fulltext_max_open_indexes: usize,
+    /// Tantivy: 同時に開いておく IndexWriter の上限（#816）。1 本 = 3 スレッド＋最大 20MB のヒープ。
+    #[serde(default = "default_fulltext_max_open_writers")]
+    pub fulltext_max_open_writers: usize,
+    /// Tantivy: この秒数使われなかった writer・索引を閉じる（#816）。
+    #[serde(default = "default_fulltext_idle_secs")]
+    pub fulltext_idle_secs: u64,
+
     /// パース対象 blob の上限バイト数（worker 側 max_download_bytes と対）。
     #[serde(default = "default_max_parse_bytes")]
     pub max_parse_bytes: i64,
@@ -119,6 +129,15 @@ fn default_embedding_model_version() -> String {
 fn default_index_data_dir() -> String {
     "./data/index".into()
 }
+fn default_fulltext_max_open_indexes() -> usize {
+    crate::TantivyLimits::default().max_open_indexes
+}
+fn default_fulltext_max_open_writers() -> usize {
+    crate::TantivyLimits::default().max_open_writers
+}
+fn default_fulltext_idle_secs() -> u64 {
+    crate::TantivyLimits::default().idle_timeout.as_secs()
+}
 fn default_max_parse_bytes() -> i64 {
     50 * 1024 * 1024
 }
@@ -193,6 +212,17 @@ fn default_job_max_attempts() -> i32 {
     5
 }
 
+impl RagConfig {
+    /// Tantivy の常駐資源の上限（#816）。
+    pub fn tantivy_limits(&self) -> crate::TantivyLimits {
+        crate::TantivyLimits {
+            max_open_indexes: self.fulltext_max_open_indexes,
+            max_open_writers: self.fulltext_max_open_writers,
+            idle_timeout: std::time::Duration::from_secs(self.fulltext_idle_secs),
+        }
+    }
+}
+
 impl Default for RagConfig {
     fn default() -> Self {
         RagConfig {
@@ -203,6 +233,9 @@ impl Default for RagConfig {
             qdrant_api_key: None,
             embedding_model_version: default_embedding_model_version(),
             index_data_dir: default_index_data_dir(),
+            fulltext_max_open_indexes: default_fulltext_max_open_indexes(),
+            fulltext_max_open_writers: default_fulltext_max_open_writers(),
+            fulltext_idle_secs: default_fulltext_idle_secs(),
             max_parse_bytes: default_max_parse_bytes(),
             readable_tags_max: default_readable_tags_max(),
             over_fetch_tags: default_over_fetch_tags(),

@@ -237,7 +237,7 @@ async fn run_autonomous_fswrite(store: &ChatStore, c: &AuthContext, thread_id: u
         )
         .await
         .unwrap();
-    let mut rx = store.event_stream(res.run_id, 0);
+    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(20), rx.next())
             .await
@@ -287,7 +287,7 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         )
         .await
         .unwrap();
-    let mut rx = store.event_stream(res.run_id, 0);
+    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
     let mut done = false;
     let mut saw_fs_write = false;
     for _ in 0..500 {
@@ -439,7 +439,7 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         )
         .await
         .unwrap();
-    let mut rx3 = store.event_stream(res3.run_id, 0);
+    let mut rx3 = store.event_stream(&c.tenant_id, res3.run_id, 0);
     let mut t3_done = false;
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(20), rx3.next())

@@ -812,3 +812,36 @@
 @media (prefers-reduced-motion: reduce) {
   .audio-bar-playing { animation: none; }
 }
+
+/* ---- テキストの編集（CodeMirror・#827）。トークンの色は閲覧（shiki の github-light/dark）に揃える。 */
+/* フォーカスはカーソルと今の行で示す（アプリ共通の枠は本文全体を囲ってしまう）。 */
+.text-editor .cm-content:focus,
+.text-editor .cm-content:focus-visible { outline: none; box-shadow: none; }
+.text-editor .cm-t-keyword { color: #cf222e; }
+.text-editor .cm-t-string { color: #0a3069; }
+.text-editor .cm-t-comment { color: #6e7781; }
+.text-editor .cm-t-constant { color: #0550ae; }
+.text-editor .cm-t-function { color: #8250df; }
+.text-editor .cm-t-type { color: #8250df; }
+.text-editor .cm-t-property { color: #0550ae; }
+.text-editor .cm-t-tag { color: #116329; }
+.text-editor .cm-t-heading { color: #0550ae; font-weight: 600; }
+.text-editor .cm-t-link { color: #0a3069; text-decoration: underline; }
+.text-editor .cm-t-em { font-style: italic; }
+.text-editor .cm-t-strong { font-weight: 600; }
+.text-editor .cm-t-inserted { color: #116329; background: #dafbe1; }
+.text-editor .cm-t-deleted { color: #82071e; background: #ffebe9; }
+.text-editor .cm-t-invalid { color: #cf222e; text-decoration: wavy underline; }
+.dark .text-editor .cm-t-keyword { color: #ff7b72; }
+.dark .text-editor .cm-t-string { color: #a5d6ff; }
+.dark .text-editor .cm-t-comment { color: #8b949e; }
+.dark .text-editor .cm-t-constant,
+.dark .text-editor .cm-t-property,
+.dark .text-editor .cm-t-heading { color: #79c0ff; }
+.dark .text-editor .cm-t-function { color: #d2a8ff; }
+.dark .text-editor .cm-t-type { color: #d2a8ff; }
+.dark .text-editor .cm-t-tag { color: #7ee787; }
+.dark .text-editor .cm-t-link { color: #a5d6ff; }
+.dark .text-editor .cm-t-inserted { color: #aff5b4; background: #033a16; }
+.dark .text-editor .cm-t-deleted { color: #ffdcd7; background: #67060c; }
+.dark .text-editor .cm-t-invalid { color: #ff7b72; }
