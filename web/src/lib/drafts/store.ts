@@ -60,7 +60,7 @@ type PersistedEntry = DraftEntry & {
 const EMPTY: DraftEntry[] = [];
 
 /// kind 別の下書きストアを作る。localStorage キーは `shiki.<kind>-drafts.v1@<tenant>|<user>`
-/// （素の `shiki.<kind>-drafts.v1` は #817 以前の形で、初回読み取りで今のユーザーへ移す）。
+/// （素の `shiki.<kind>-drafts.v1` は #817 以前の形で、持ち主が分からないので移さず、初回読み取りで消す）。
 export function createDraftStore(kind: DraftKind): DraftStore {
   const storageKey = `shiki.${kind}-drafts.v1`;
   const keyOf = (threadId: string, name: string) => `${threadId} ${name}`;

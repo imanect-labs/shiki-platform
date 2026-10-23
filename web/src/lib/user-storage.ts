@@ -71,11 +71,14 @@ export function subscribeStorageScope(cb: () => void): () => void {
 /// スコープ（ログイン中のユーザー）が確定しているか。保存値の有無で振る舞いが変わる画面
 /// （無ければ新しい会話を作る等）は、これが true になってから読む。
 export function useStorageScopeReady(): boolean {
-  return React.useSyncExternalStore(
-    subscribeStorageScope,
-    () => scope !== null,
-    () => false,
-  );
+  return React.useSyncExternalStore(subscribeStorageScope, storageScopeReady, () => false);
+}
+
+/// スコープが確定しているか（React 外から）。スコープを持たない素のキーへ書く側
+/// （引用の手がかり等）は、これが false なら書かない。他タブのログアウトで消した後に、
+/// 開いたままの画面の操作で前の人のデータを書き戻させないため。
+export function storageScopeReady(): boolean {
+  return scope !== null;
 }
 
 /// `base` をユーザー単位にしたキー。スコープ未確定なら null（読み書きしない）。
@@ -83,20 +86,15 @@ export function scopedStorageKey(base: string): string | null {
   return scope ? `${base}@${scope}` : null;
 }
 
-/// スコープ付きキーで読む。旧来の素のキー（#817 以前）に値があれば、今のユーザーへ移して消す。
+/// スコープ付きキーで読む。旧来の素のキー（#817 以前）は今のユーザーへ移さずに消す。
 ///
-/// 移行は 1 回きり（読んだ時点で素のキーを消す）。ログアウトでも消えるので、共用 PC で前の人の
-/// 値を拾うのはアップデート直後の 1 回に限られ、従来（素のキーを全員が共有）より悪くならない。
+/// 素のキーには持ち主の情報が無く、共用 PC では前の人（別テナントを含む）の値かもしれない。
+/// 下書きは会話履歴から復元でき、最近使ったスキル・アクティブ会話は失っても困らないので移行しない。
 export function readScoped(base: string): string | null {
   const key = scopedStorageKey(base);
   if (!key || typeof window === "undefined") return null;
-  const own = window.localStorage.getItem(key);
-  if (own !== null) return own;
-  const legacy = window.localStorage.getItem(base);
-  if (legacy === null) return null;
-  window.localStorage.setItem(key, legacy);
   window.localStorage.removeItem(base);
-  return legacy;
+  return window.localStorage.getItem(key);
 }
 
 /// スコープ付きキーへ書く。スコープ未確定なら書かない（false）。

@@ -120,6 +120,27 @@ test("下書き: /me より先に履歴を復元しても保存済みの手編�
   expect(savedCsv?.trim()).toBe(edited);
 });
 
+test("下書き: 持ち主の分からない旧来の素のキーは今のユーザーへ移さずに消す", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const csvName = uniqueName("旧キー");
+  await sendFromHome(page, `savecsv:${csvName}`);
+  await page.waitForURL(/\/csv\/draft/, { timeout: 25_000 });
+  await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 20_000 });
+
+  // #817 以前の素のキーに、前の人の下書きが残っている状態にする。
+  await page.evaluate(() => {
+    const entry = { threadId: "t-legacy", name: "前の人", content: "秘密,1", source: "user", rev: 1 };
+    window.localStorage.setItem("shiki.csv-drafts.v1", JSON.stringify({ "t-legacy 前の人": entry }));
+  });
+  await page.reload();
+  await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 25_000 });
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem("shiki.csv-drafts.v1")))
+    .toBeNull();
+  expect(await storedDraftContent(page, "前の人")).toBeUndefined();
+  expect(await storedDraftContent(page, csvName)).toBeDefined();
+});
+
 test("下書き: /me が失敗しても読み込み中のまま止まらず、再試行で開ける", async ({ page }) => {
   await loginViaKeycloak(page);
   const csvName = uniqueName("再試行");
