@@ -222,6 +222,244 @@ impl Fixture {
     }
 }
 
+/// 強制戦略の回（CI の行列 `SHIKI_DATA_FORCE_STRATEGY=intersect|batch`）で、その戦略が実際に適用される
+/// 形（別の列の等値 2 つの AND・単一キーのソート）でも行述語が効くこと（監査 B1-13）。
+///
+/// 強制戦略は適用できない形だと黙って自然な選択に戻るので、行列の回で空回りしていないことを
+/// `stats.strategy`（検証用のデバッグ経路）で確かめる。環境変数が無い回も、交差駆動・バッチ駆動を
+/// 明示に強制して同じ結果になることを確かめる。
+#[tokio::test]
+async fn intersect_and_batch_strategies_apply_and_respect_row_policy() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let f = fixture(pool, authz).await;
+    let mut bob_drafts = vec![(200, f.bob_rec)];
+    for (who, amount, status) in [
+        (&f.bob, 300, "draft"),
+        (&f.bob, 50, "draft"),
+        (&f.bob, 999, "submitted"),
+        (&f.alice, 500, "draft"),
+    ] {
+        let r = f
+            .store
+            .create_record(
+                who,
+                f.table_id,
+                json!({"applicant": who.principal.id, "amount": amount, "status": status}),
+                None,
+            )
+            .await
+            .unwrap();
+        if who.principal.id == "bob" && status == "draft" {
+            bob_drafts.push((amount, r.id));
+        }
+    }
+    bob_drafts.sort_by(|a, b| b.0.cmp(&a.0));
+    let bob_expected: Vec<Uuid> = bob_drafts.iter().map(|x| x.1).collect();
+    // 別の列（status・applicant）の等値 2 つの AND ＋ 単一キーのソート（交差駆動・バッチ駆動の形）。
+    // alice が bob の申請で絞っても、行述語で bob の行は見えない（入口の戦略で迂回できない）。
+    let q = DataQuery {
+        filter: Some(data::Condition::All(vec![
+            data::Condition::cmp("status", data::CondOp::Eq, Some(json!("draft"))),
+            data::Condition::cmp("applicant", data::CondOp::Eq, Some(json!("bob"))),
+        ])),
+        sort: vec![SortKey {
+            field: "amount".into(),
+            descending: true,
+        }],
+        with_count: true,
+        ..Default::default()
+    };
+    let ids = |r: &data::QueryResult| -> Vec<Uuid> {
+        r.items.as_ref().unwrap().iter().map(|x| x.id).collect()
+    };
+    let env = data::QueryTuning::from_env();
+    for (who, expected) in [(&f.alice, Vec::<Uuid>::new()), (&f.bob, bob_expected)] {
+        // 既定の入口（CI の行列の回は環境変数の強制戦略で走る）。
+        let r = f.store.run_query(who, f.table_id, &q, None).await.unwrap();
+        assert_eq!(ids(&r), expected, "{}", who.principal.id);
+        assert_eq!(
+            r.count,
+            Some(data::CountResult::Exact(expected.len() as u64)),
+            "{}",
+            who.principal.id
+        );
+        // 行列の強制戦略が交差駆動・バッチ駆動なら、実際にそれが使われたこと（自然な選択に戻っていない）。
+        let want = match env.force {
+            Some(data::ForcedStrategy::Intersect) => Some("intersect"),
+            Some(data::ForcedStrategy::Batch) => Some("batch"),
+            _ => None,
+        };
+        if let Some(want) = want {
+            let (_, d) = f
+                .store
+                .run_query_debug(
+                    who,
+                    f.table_id,
+                    &DataQuery {
+                        with_count: false,
+                        ..q.clone()
+                    },
+                    &env,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                d.stats.strategy, want,
+                "強制戦略が適用されていない: {:?}",
+                d.stats
+            );
+        }
+        // 環境変数に依らず、交差駆動・バッチ駆動を明示に強制しても同じ行（行述語は省かれない）。
+        for (force, label) in [
+            (data::ForcedStrategy::Intersect, "intersect"),
+            (data::ForcedStrategy::Batch, "batch"),
+        ] {
+            let tuning = data::QueryTuning {
+                force: Some(force),
+                ..Default::default()
+            };
+            let (r, d) = f
+                .store
+                .run_query_debug(
+                    who,
+                    f.table_id,
+                    &DataQuery {
+                        with_count: false,
+                        ..q.clone()
+                    },
+                    &tuning,
+                )
+                .await
+                .unwrap();
+            assert_eq!(d.stats.strategy, label, "{:?}", d.stats);
+            assert_eq!(ids(&r), expected, "{label}: {}", who.principal.id);
+        }
+    }
+}
+
+/// リンクの半結合（参照先の行述語つき）をバッチ駆動で評価しても、見えない参照先の行で参照元を
+/// 釣り出せない（段 2 の一括検査でも参照先の行述語を閲覧者本人の権限で掛ける・監査 B1-13）。
+#[tokio::test]
+async fn batch_strategy_link_semijoin_respects_reference_row_policy() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let store = DataStore::new(pool, Arc::clone(&authz), Arc::new(AllowRefs));
+    let mut person = field("person", FieldType::UserRef);
+    person.indexed = true;
+    let mut name = field("name", FieldType::Text);
+    name.indexed = true;
+    let mut lines_schema = plain(vec![person, name]);
+    lines_schema.row_policy = Some(RowPolicy {
+        read: PolicyExpr::FieldCmp {
+            field: "person".into(),
+            op: CmpOp::Eq,
+            value: PolicyOperand::UserId,
+        },
+        write: None,
+    });
+    let lines = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "lines".into(),
+                schema: lines_schema,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let mut no = field("no", FieldType::Number);
+    no.indexed = true;
+    let orders = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "orders".into(),
+                schema: plain(vec![items_link(lines.id), no]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    grant(&authz, &bob, Relation::Viewer, lines.id).await;
+    grant(&authz, &bob, Relation::Editor, orders.id).await;
+    let secret = store
+        .create_record(
+            &alice,
+            lines.id,
+            json!({"person": "alice", "name": "機密"}),
+            None,
+        )
+        .await
+        .unwrap();
+    let mine = store
+        .create_record(
+            &alice,
+            lines.id,
+            json!({"person": "bob", "name": "機密"}),
+            None,
+        )
+        .await
+        .unwrap();
+    let o1 = store
+        .create_record(
+            &alice,
+            orders.id,
+            json!({"items": ids(&[secret.id]), "no": 1}),
+            None,
+        )
+        .await
+        .unwrap();
+    // 参照先の行は書き手に見えている必要がある（bob の行は bob がリンクする）。
+    let o2 = store
+        .create_record(
+            &bob,
+            orders.id,
+            json!({"items": ids(&[mine.id]), "no": 2}),
+            None,
+        )
+        .await
+        .unwrap();
+    let q = DataQuery {
+        filter: Some(data::Condition::Link(data::LinkCond {
+            field: "items".into(),
+            filter: Some(Box::new(data::Condition::cmp(
+                "name",
+                data::CondOp::Eq,
+                Some(json!("機密")),
+            ))),
+        })),
+        sort: vec![SortKey {
+            field: "no".into(),
+            descending: false,
+        }],
+        ..Default::default()
+    };
+    let batch = data::QueryTuning {
+        force: Some(data::ForcedStrategy::Batch),
+        ..Default::default()
+    };
+    for (who, expected) in [(&alice, vec![o1.id]), (&bob, vec![o2.id])] {
+        let (r, d) = store
+            .run_query_debug(who, orders.id, &q, &batch)
+            .await
+            .unwrap();
+        assert_eq!(d.stats.strategy, "batch", "{:?}", d.stats);
+        let got: Vec<Uuid> = r.items.unwrap().iter().map(|x| x.id).collect();
+        assert_eq!(got, expected, "{}", who.principal.id);
+        // 既定の入口（行列の回は環境変数の強制戦略）でも同じ行。
+        let r = store.run_query(who, orders.id, &q, None).await.unwrap();
+        let got: Vec<Uuid> = r.items.unwrap().iter().map(|x| x.id).collect();
+        assert_eq!(got, expected, "{}", who.principal.id);
+    }
+}
+
 /// ① 不可視行の get は「存在しない」と完全同形（404 オラクルなし）。
 /// ⑥ 不可視行への update/delete も rev の値に依らず 404（rev オラクル封じ）。
 #[tokio::test]
