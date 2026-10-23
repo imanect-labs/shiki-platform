@@ -363,6 +363,62 @@ pub async fn set_tenant_workflow_retention(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// テナントの監査ログ保持期間の設定リクエスト（#831）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TenantAuditRetentionRequest {
+    /// 保持日数（90〜3650・既定 365）。この日数を過ぎた監査ログを日次で消す。
+    ///
+    /// i64 で受けて範囲はハンドラで見る（workflow-retention と同じ理由: 桁溢れも 400 にする）。
+    #[schema(minimum = 90, maximum = 3650)]
+    pub retention_days: i64,
+}
+
+/// テナントの監査ログの保持期間を設定する（#831）。
+///
+/// 期限を過ぎた行は日次で消す。実データを変える操作の行（ハッシュチェーン）は先頭から消し、
+/// 消した最後の行を境目として残す（チェーンの検証はそこから始まる）。テナント撤去の記録は消さない。
+/// **短くする方向は次回の日次処理で効く**（消した行は戻らない）。変更は監査に残す。
+#[utoipa::path(
+    put,
+    path = "/admin/tenants/{tenant_id}/audit-retention",
+    params(("tenant_id" = String, Path, description = "テナント識別子")),
+    request_body = TenantAuditRetentionRequest,
+    responses(
+        (status = 204, description = "保持期間を更新した"),
+        (status = 400, description = "tenant_id または retention_days が不正（範囲外・桁溢れを含む）"),
+        (status = 422, description = "リクエスト本文が JSON として不正"),
+        (status = 401, description = "provisioner トークンが無効"),
+        (status = 404, description = "active なテナントが存在しない"),
+    ),
+    security(("provisioner_token" = [])),
+)]
+pub async fn set_tenant_audit_retention(
+    State(state): State<AppState>,
+    Extension(actor): Extension<ProvisionerIdentity>,
+    Path(tenant_id): Path<String>,
+    Json(req): Json<TenantAuditRetentionRequest>,
+) -> Result<StatusCode, ApiError> {
+    use storage::audit_retention::{MAX_RETENTION_DAYS, MIN_RETENTION_DAYS};
+    validate_tenant_id(&tenant_id)
+        .map_err(|_| ApiError::BadRequest("tenant_id に使用できない文字が含まれています".into()))?;
+    let days = i32::try_from(req.retention_days).map_err(|_| {
+        ApiError::BadRequest(format!(
+            "監査ログの保持日数は {MIN_RETENTION_DAYS}〜{MAX_RETENTION_DAYS} 日で指定してください（指定値: {}）",
+            req.retention_days
+        ))
+    })?;
+    storage::audit_retention::validate_retention_days(days)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let previous = state
+        .audit
+        .retention()
+        .set_retention_days(&tenant_id, days, &actor.0, serde_json::json!({}))
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    tracing::info!(%tenant_id, retention_days = days, previous, "監査ログの保持期間を更新しました");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// データ面の purge（FGA タプル → オブジェクト → DB 行）。
 ///
 /// 構造化データ（式インデックス・FGA タプル・Task 9.2）→ storage（FGA タプル・オブジェクト・

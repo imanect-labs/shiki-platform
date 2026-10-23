@@ -862,6 +862,11 @@ FR-8。スライドは Collabora に委任せず**自前の第一級ドキュメ
 
 - OTel計装（axum/tonic/agent-core）→ Tempo/Loki/Prometheus（クラウドはエクスポータ差し替え）。
 - Langfuse で LLM 可視化。**監査ログ（権限・引用chunk）と Langfuse を trace_id で突合**（早期に種を蒔く）。
+- **監査ログの保持期間**（#831・human 判断 2026-10-22）: 既定 365 日、運用者がテナントごとに 90〜3650 日で設定
+  （`tenant.audit_retention_days`・`PUT /admin/tenants/{id}/audit-retention`／`shiki-admin audit-retention`）。
+  期限を過ぎた行は日次で削除し、外部へは退避しない。ハッシュチェーン（#828）は**先頭から連続して**消し、消した
+  最後の行の id と entry_hash を `audit_chain_anchor` に残す（検証はこの境目から）。テナント撤去の記録
+  （`tenant.purge`）とそれより後ろの連結行は消さず、撤去後は tombstone に残った保持期間で消し続ける。
 - DB は `pg_stat_statements` ＋ `auto_explain` ＋ `postgres_exporter` → 既存 Prometheus/Grafana。商用 SaaS（pganalyze 等）を正に据えない理由（オンプレ/エアギャップでクエリ形状を外へ出せない・部品点数最小）と実際の見方は [guides/db-observability.md](./guides/db-observability.md)。
 
 ### 4.10 ミニアプリ／業務アプリ基盤

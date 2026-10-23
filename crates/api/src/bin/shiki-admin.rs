@@ -3,9 +3,11 @@
 //! ```text
 //! shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]
 //! shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]
+//! shiki-admin audit-retention --tenant <t> --days <n> [--actor <id>]
 //! ```
 //!
 //! `audit-viewer`: 監査閲覧者（`organization#audit_viewer`・#634）を付ける・外す（即時実行）。
+//! `audit-retention`: 監査ログの保持期間（90〜3650 日・既定 365・#831）を設定する（即時実行）。
 //!
 //! - `--legacy`: SAAS.1（#84）以前の**旧無印 FGA 識別子/オブジェクトキー**を tenant 名前空間形式へ
 //!   移す（DB 行は day-1 で tenant_id を持つため不変・blob.object_key のみ書き換え）。
@@ -34,6 +36,8 @@ use storage::audit::AuditAction;
 use storage::{ObjectStore, S3ObjectStore};
 use uuid::Uuid;
 
+#[path = "shiki_admin/audit_retention.rs"]
+mod audit_retention;
 #[path = "shiki_admin/audit_viewer.rs"]
 mod audit_viewer;
 #[path = "shiki_admin/keys.rs"]
@@ -51,9 +55,10 @@ async fn main() -> anyhow::Result<()> {
     match args.first().map(String::as_str) {
         Some("retenant") => retenant(&args[1..]).await,
         Some("audit-viewer") => audit_viewer::run(&args[1..]).await,
+        Some("audit-retention") => audit_retention::run(&args[1..]).await,
         _ => {
             eprintln!(
-                "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]\n       shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]"
+                "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]\n       shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]\n       shiki-admin audit-retention --tenant <t> --days <n> [--actor <id>]"
             );
             bail!("不明なサブコマンド");
         }

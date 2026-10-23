@@ -40,6 +40,33 @@ pub struct StorageConfig {
     /// 中断アップロード（finalize されなかった declare）の回収設定（#468）。
     #[serde(default)]
     pub upload_gc: UploadGcConfig,
+    /// 監査ログの保持期間の適用（#831）。保持日数はテナントごと（`tenant.audit_retention_days`）。
+    #[serde(default)]
+    pub audit_retention: AuditRetentionConfig,
+}
+
+/// 監査ログの保持期間の適用（#831）。既定で有効・1 日ごと。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct AuditRetentionConfig {
+    /// 期限を過ぎた行を消すか。既定 true（無効にすると監査ログは増え続ける）。
+    #[serde(default = "default_upload_gc_enabled")]
+    pub enabled: bool,
+    /// 実行間隔（秒）。既定 1 日。
+    #[serde(default = "default_audit_retention_interval_secs")]
+    pub interval_secs: u64,
+}
+
+fn default_audit_retention_interval_secs() -> u64 {
+    24 * 60 * 60
+}
+
+impl Default for AuditRetentionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_secs: default_audit_retention_interval_secs(),
+        }
+    }
 }
 
 fn default_max_upload_size_bytes() -> i64 {

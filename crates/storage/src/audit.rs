@@ -57,6 +57,11 @@ impl AuditRecorder {
         crate::audit_view::AuditViewer::new(self.db.clone())
     }
 
+    /// 同じ接続プールで保持期間を扱う窓口（#831）。
+    pub fn retention(&self) -> crate::audit_retention::AuditRetention {
+        crate::audit_retention::AuditRetention::new(self.db.clone())
+    }
+
     /// 同じ接続プールでハッシュチェーンを検証する窓口（#828）。
     pub fn chain_verifier(&self) -> crate::audit_chain::AuditChainVerifier {
         crate::audit_chain::AuditChainVerifier::new(self.db.clone())
@@ -100,23 +105,35 @@ pub async fn record_on(
     // チェーン対象のみ **tenant_id + org 単位**で直列化し、直前の **chained 行** に連結する
     // （未チェーンの読取/deny 行は跨いで無視する）。SaaS の共用プール Postgres でも
     // ハッシュチェーンをテナント内に閉じる（同一 org を複数テナントが共有しても越境連結しない・SAAS.1）。
-    let prev_hash: Option<String> = if chained {
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
-            .bind(format!("{}|{}", ctx.tenant_id, ctx.org))
-            .execute(&mut *conn)
-            .await?;
-        sqlx::query_scalar(
-            "SELECT entry_hash FROM audit_log \
+    let prev_hash: Option<String> =
+        if chained {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+                .bind(format!("{}|{}", ctx.tenant_id, ctx.org))
+                .execute(&mut *conn)
+                .await?;
+            let last: Option<Option<String>> = sqlx::query_scalar(
+                "SELECT entry_hash FROM audit_log \
              WHERE tenant_id = $1 AND org = $2 AND chained ORDER BY id DESC LIMIT 1",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .fetch_optional(&mut *conn)
-        .await?
-        .flatten()
-    } else {
-        None
-    };
+            )
+            .bind(&ctx.tenant_id)
+            .bind(&ctx.org)
+            .fetch_optional(&mut *conn)
+            .await?;
+            match last {
+                Some(hash) => hash,
+                // 連結行が 1 件も無い: 保持期間で全部消したチェーンなら、消した最後の行（境目）に
+                // つなぐ（#831）。境目も無ければチェーンの先頭（prev なし）。
+                None => sqlx::query_scalar(
+                    "SELECT anchor_hash FROM audit_chain_anchor WHERE tenant_id = $1 AND org = $2",
+                )
+                .bind(&ctx.tenant_id)
+                .bind(&ctx.org)
+                .fetch_optional(&mut *conn)
+                .await?,
+            }
+        } else {
+            None
+        };
 
     // metadata は serde_json の既定（キーを並べ替えた Map・空白なし）で文字列にする。jsonb から
     // 読み戻して同じ形に直せるので、検証時に同じ文字列を作り直せる。

@@ -57,6 +57,10 @@ pub struct ChainReport {
     pub broken: Option<BrokenEntry>,
     /// チェーンの末尾まで確かめたか（`false` なら `last_id` から続きがある）。
     pub complete: bool,
+    /// 保持期間で先頭を消したチェーンなら、その境目（消した最後の行の id・#831）。検証はこの次から。
+    pub anchor_id: Option<i64>,
+    /// これまでに保持期間で消した行数。
+    pub purged_rows: i64,
 }
 
 /// テナント ID の変更の境目（この id より前の行は `from` でハッシュされている）。
@@ -89,14 +93,25 @@ impl AuditChainVerifier {
     ///
     /// `after_id` を渡すと、その行（同じチェーンの連結行に限る）の `entry_hash` を直前の値として
     /// 続きから確かめる。無ければ先頭から確かめ、先頭の行の `prev_hash` は空でなければならない。
+    /// 保持期間で先頭を消したチェーンは、境目（`audit_chain_anchor`）の entry_hash を直前の値にする。
     pub async fn verify(
         &self,
         ctx: &AuthContext,
         after_id: Option<i64>,
         max_rows: u64,
     ) -> Result<ChainReport, StorageError> {
+        // 保持期間で先頭を消したチェーンは、消した最後の行（境目）の続きから確かめる（#831）。
+        let anchor: Option<(i64, String, i64)> = sqlx::query_as(
+            "SELECT anchor_id, anchor_hash, purged_rows FROM audit_chain_anchor \
+             WHERE tenant_id = $1 AND org = $2",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .fetch_optional(&self.db)
+        .await?;
+        let start = after_id.or(anchor.as_ref().map(|a| a.0));
         let mut prev: Option<String> = match after_id {
-            None => None,
+            None => anchor.as_ref().map(|a| a.1.clone()),
             Some(id) => Some(
                 sqlx::query_scalar::<_, Option<String>>(
                     "SELECT entry_hash FROM audit_log \
@@ -115,11 +130,13 @@ impl AuditChainVerifier {
         let mut report = ChainReport {
             checked: 0,
             legacy: 0,
-            last_id: after_id,
+            last_id: start,
             broken: None,
             complete: false,
+            anchor_id: anchor.as_ref().map(|a| a.0),
+            purged_rows: anchor.as_ref().map_or(0, |a| a.2),
         };
-        let mut cursor = after_id.unwrap_or(0);
+        let mut cursor = start.unwrap_or(0);
         loop {
             let rows = sqlx::query(
                 "SELECT id, created_at, actor, action, object_type, object_id, decision, trace_id, \

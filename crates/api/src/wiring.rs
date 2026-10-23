@@ -84,6 +84,19 @@ pub(crate) async fn wire_storage(
             "upload_gc.enabled=false: 中断アップロードの staging/incoming が回収されません（#468）"
         );
     }
+    // 監査ログの保持期間（#831）。期限（テナントごと・既定 365 日）を過ぎた行を日次で消し、
+    // ハッシュチェーンの境目を残す。全レプリカで回っても、チェーンのロックで直列に消す。
+    let retention = config.storage.audit_retention;
+    if retention.enabled {
+        storage::audit_retention::spawn_audit_retention_timer(
+            Arc::new(storage::audit_retention::AuditRetention::new(db.clone())),
+            std::time::Duration::from_secs(retention.interval_secs),
+        );
+    } else {
+        tracing::warn!(
+            "audit_retention.enabled=false: 監査ログは保持期間を過ぎても消えません（#831）"
+        );
+    }
     Ok((object_store, service))
 }
 
