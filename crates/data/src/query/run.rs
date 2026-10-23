@@ -60,7 +60,8 @@ pub enum ReadPath {
 /// 実行の調整（運用・検証用。既定は自然な選択）。
 ///
 /// 環境変数 `SHIKI_DATA_READ_PATH`（`index` / `body`）・`SHIKI_DATA_FORCE_STRATEGY`
-/// （`sort` / `filter` / `policy` / `union` / `safe` / `intersect` / `batch`）・`SHIKI_DATA_SORT_BUDGET`（整数）でも与えられる
+/// （`sort` / `filter` / `policy` / `union` / `safe` / `intersect` / `batch`）・`SHIKI_DATA_SORT_BUDGET`（整数）・
+/// `SHIKI_DATA_ANALYZE_ON_READ`（`1`）でも与えられる
 /// （CI で `policy_threat_it` を全戦略・両経路で回すため）。どの値でも結果は変わらず、速さだけが変わる。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryTuning {
@@ -68,6 +69,9 @@ pub struct QueryTuning {
     pub force: Option<ForcedStrategy>,
     /// ソート駆動の走査予算（極端に絞って切替を必ず起こす検証用）。
     pub sort_budget: Option<i64>,
+    /// 検証用: 統計が無いテーブルは読取の前に統計収集を同期で走らせる（O2 の計画で読む・
+    /// `SHIKI_DATA_ANALYZE_ON_READ=1`。CI で `policy_threat_it` を O2 でも回すため）。
+    pub analyze_on_read: bool,
 }
 
 impl QueryTuning {
@@ -83,10 +87,12 @@ impl QueryTuning {
         let sort_budget = std::env::var("SHIKI_DATA_SORT_BUDGET")
             .ok()
             .and_then(|s| s.parse().ok());
+        let analyze_on_read = std::env::var("SHIKI_DATA_ANALYZE_ON_READ").as_deref() == Ok("1");
         QueryTuning {
             read_path,
             force,
             sort_budget,
+            analyze_on_read,
         }
     }
 }
@@ -246,6 +252,7 @@ impl DataStore {
             .open_for_read(ctx, &az, table_id, action, trace_id)
             .await?;
         let masked = self.masked_fields(ctx, &az, &table).await?;
+        self.analyze_on_read(tuning, &ctx.tenant_id, &table).await?;
         if auto_promote {
             let promoted = self
                 .auto_promote_for(ctx, &table, &masked, query, trace_id)

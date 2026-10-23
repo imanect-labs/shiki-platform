@@ -332,8 +332,9 @@ jobs:
         # モデル）のまま。nextest はプロセス毎実行で in-process 共有状態に依存する IT を壊す
         # 実績があり不採用。速度は debuginfo 削減の計装ビルド短縮＋cache-on-failure で稼ぐ。
         run: cargo llvm-cov --all --no-report
-      # 構造化データの行述語の脅威モデルを、読取の全戦略（強制）と本体経路（v1・機能フラグ）で
-      # 回し直す（Task 15.3・PIT-76: コストモデルは速さにだけ効き、結果と認可には効かない）。
+      # 構造化データの行述語の脅威モデルを、読取の全戦略（強制・O3 の交差駆動とバッチ駆動を含む）と
+      # O2（統計を作ってからコストで選ぶ）と本体経路（v1・機能フラグ）で回し直す
+      # （Task 15.3 / 15.12・PIT-76: コストモデルは速さにだけ効き、結果と認可には効かない）。
       - name: policy_threat_it under every read strategy (data)
         env:
           OPENFGA_TEST_URL: http://localhost:8082
@@ -342,7 +343,8 @@ jobs:
           for v in SHIKI_DATA_READ_PATH=body SHIKI_DATA_FORCE_STRATEGY=sort \
                    SHIKI_DATA_FORCE_STRATEGY=filter SHIKI_DATA_FORCE_STRATEGY=policy \
                    SHIKI_DATA_FORCE_STRATEGY=union SHIKI_DATA_FORCE_STRATEGY=safe \
-                   SHIKI_DATA_SORT_BUDGET=1; do
+                   SHIKI_DATA_FORCE_STRATEGY=intersect SHIKI_DATA_FORCE_STRATEGY=batch \
+                   SHIKI_DATA_ANALYZE_ON_READ=1 SHIKI_DATA_SORT_BUDGET=1; do
             echo "== $v"
             env "$v" cargo test -p shiki-data --all-features --test policy_threat_it
           done

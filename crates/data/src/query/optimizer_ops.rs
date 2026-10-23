@@ -96,6 +96,24 @@ impl DataStore {
         }
     }
 
+    /// 検証用（[`super::run::QueryTuning::analyze_on_read`]）: 統計が無ければ同期で作る。
+    pub(crate) async fn analyze_on_read(
+        &self,
+        tuning: &super::run::QueryTuning,
+        tenant_id: &str,
+        table: &crate::model::DataTable,
+    ) -> Result<(), DataError> {
+        if !tuning.analyze_on_read {
+            return Ok(());
+        }
+        let has =
+            crate::stats::analyze::analyzed(self.pools.for_tenant(tenant_id), table.keys).await?;
+        if !has {
+            self.analyze_table(tenant_id, table.id).await?;
+        }
+        Ok(())
+    }
+
     /// 統計収集を前倒しで積む（ベストエフォート）。
     pub(crate) async fn request_analyze(&self, tenant_id: &str, table_id: Uuid) {
         let r = async {

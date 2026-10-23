@@ -319,6 +319,46 @@ fn data_crate_follows_shard_safety_rules() {
     );
 }
 
+/// 統計 4 表を読み書きする SQL は統計の書き手（`stats/`）と計画器（`query/planner/`）にしか無い
+/// （PIT-75: 統計の読取経路を planner に閉じる・Task 15.12）。
+#[test]
+fn optimizer_statistics_are_only_touched_by_planner_and_stats_writers() {
+    const STATS: &[&str] = &[
+        "data_table_stats",
+        "data_field_stats",
+        "data_value_count",
+        "data_link_stats",
+    ];
+    let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rust_files(&src_dir, &mut files);
+    let mut seen = 0;
+    let mut outside = Vec::new();
+    for f in &files {
+        let src = std::fs::read_to_string(f).unwrap();
+        let rel = f.strip_prefix(&src_dir).unwrap().display().to_string();
+        for lit in string_literals(production_part(&src)) {
+            let lower = lit.text.to_ascii_lowercase();
+            let dml = ["select ", "insert ", "update ", "delete "]
+                .iter()
+                .any(|k| lower.contains(k));
+            if !dml || !STATS.iter().any(|t| lower.contains(t)) {
+                continue;
+            }
+            seen += 1;
+            let allowed = rel.starts_with("stats/") || rel.starts_with("query/planner/");
+            if !allowed {
+                outside.push(format!("{rel}:{}", lit.line));
+            }
+        }
+    }
+    assert!(seen >= 5, "統計 4 表の SQL を拾えていない: {seen}");
+    assert!(
+        outside.is_empty(),
+        "統計表の SQL が stats/ と query/planner/ の外にある（PIT-75）: {outside:?}"
+    );
+}
+
 /// 検査器自体が違反を検出できること（陰性対照・規則が空振りしていないか）。
 #[test]
 fn lint_detects_each_rule() {

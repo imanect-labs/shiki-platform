@@ -430,6 +430,17 @@ fn tunings() -> Vec<(&'static str, QueryTuning)> {
         ("union", f(ForcedStrategy::Union)),
         ("policy", f(ForcedStrategy::Policy)),
         ("safe", f(ForcedStrategy::Safe)),
+        // O3（Task 15.12）: 交差駆動・バッチ駆動（Roaring で段ごとの一括検査）。
+        ("intersect", f(ForcedStrategy::Intersect)),
+        ("batch", f(ForcedStrategy::Batch)),
+        // O2: 統計（数え直し・フィールド統計）を作ってから、コストと頑健な選択で選ぶ。
+        (
+            "o2",
+            QueryTuning {
+                analyze_on_read: true,
+                ..Default::default()
+            },
+        ),
         (
             "budget1",
             QueryTuning {
@@ -716,6 +727,81 @@ async fn skewed_multi_sort_over_k_matches_reference_before_and_after_composite()
     assert_all_tunings_match(&store, &c, table.id, &rows, &queries[0], "pruned q0").await;
 }
 
+/// O3 の交差駆動・バッチ駆動と、項の多い OR 駆動（Roaring で合わせる）が実際に選ばれて実行され、
+/// 全ページが参照実装と一致する（強制戦略テストの戦略名の確認つき）。
+#[tokio::test]
+async fn o3_strategies_run_and_match_reference() {
+    let Some(pool) = setup().await else { return };
+    let (store, c, tenant, table) = seeded(&pool, 360).await;
+    let rows = load_rows(&pool, &tenant, &table).await;
+    let k = |f: &str, d: bool| SortKey {
+        field: f.into(),
+        descending: d,
+    };
+    let eq = |f: &str, v: Value| Condition::cmp(f.to_string(), CondOp::Eq, Some(v));
+    let cases = vec![
+        // 交差駆動: 別の列の等値 2 つ（多値の tags を含む）。
+        (
+            "intersect",
+            ForcedStrategy::Intersect,
+            DataQuery {
+                filter: Some(Condition::All(vec![
+                    eq("status", json!("done")),
+                    eq("tags", json!("a")),
+                    Condition::cmp("amount", CondOp::Gte, Some(json!(10))),
+                ])),
+                sort: vec![k("amount", true)],
+                limit: Some(7),
+                ..Default::default()
+            },
+        ),
+        // バッチ駆動: Not / Or / 多値 / 値なしの区間（任意列ソートの末尾）を含む。
+        (
+            "batch",
+            ForcedStrategy::Batch,
+            DataQuery {
+                filter: Some(Condition::Any(vec![
+                    Condition::Not(Box::new(eq("status", json!("done")))),
+                    Condition::cmp("tags", CondOp::Exists, None),
+                ])),
+                sort: vec![k("due", false)],
+                limit: Some(13),
+                ..Default::default()
+            },
+        ),
+        // 項が 3 つを超える OR 駆動（Rust 側の Roaring で和集合を作る）。
+        (
+            "union",
+            ForcedStrategy::Union,
+            DataQuery {
+                filter: Some(Condition::Any(vec![
+                    eq("status", json!("hold")),
+                    eq("tags", json!("d")),
+                    eq("amount", json!(3)),
+                    Condition::cmp("title", CondOp::StartsWith, Some(json!("t1"))),
+                ])),
+                sort: vec![k("_created_at", false)],
+                limit: Some(9),
+                ..Default::default()
+            },
+        ),
+    ];
+    for (want, f, q) in cases {
+        let expect = reference(&rows, &q);
+        assert!(!expect.is_empty(), "{want}: 空でない");
+        let t = QueryTuning {
+            force: Some(f),
+            ..Default::default()
+        };
+        let (got, stats) = all_pages(&store, &c, table.id, &q, &t).await;
+        assert_eq!(got, expect, "{want}: {q:?}");
+        assert_eq!(stats.strategy, want, "{want} が実行される: {stats:?}");
+        // 同じクエリを他の全戦略でも。
+        assert_all_tunings_match(&store, &c, table.id, &rows, &q, want).await;
+    }
+}
+
+/// TLP（`Q = (Q ∧ p) ∪ (Q ∧ ¬p)`・交わらない）を全戦略（O3 の交差駆動・バッチ駆動と O2 を含む）で。
 #[tokio::test]
 async fn tlp_partitions_hold_through_sql() {
     let Some(pool) = setup().await else { return };
@@ -724,31 +810,39 @@ async fn tlp_partitions_hold_through_sql() {
     for _ in 0..15 {
         let q = cond(&mut r, 2);
         let p = cond(&mut r, 1);
-        let run = |f: Condition| {
-            let store = store.clone();
-            let c = c.clone();
-            async move {
-                let q = DataQuery {
-                    filter: Some(f),
-                    limit: Some(200),
-                    ..Default::default()
-                };
-                all_pages(&store, &c, table.id, &q, &QueryTuning::default())
-                    .await
-                    .0
-            }
-        };
-        let all: HashSet<Uuid> = run(q.clone()).await.into_iter().collect();
-        let yes: HashSet<Uuid> = run(Condition::All(vec![q.clone(), p.clone()]))
+        for (name, t) in tunings() {
+            let run = |f: Condition| {
+                let store = store.clone();
+                let c = c.clone();
+                let t = t.clone();
+                async move {
+                    let q = DataQuery {
+                        filter: Some(f),
+                        limit: Some(200),
+                        ..Default::default()
+                    };
+                    all_pages(&store, &c, table.id, &q, &t).await.0
+                }
+            };
+            let all: HashSet<Uuid> = run(q.clone()).await.into_iter().collect();
+            let yes: HashSet<Uuid> = run(Condition::All(vec![q.clone(), p.clone()]))
+                .await
+                .into_iter()
+                .collect();
+            let no: HashSet<Uuid> = run(Condition::All(vec![
+                q.clone(),
+                Condition::Not(Box::new(p.clone())),
+            ]))
             .await
             .into_iter()
             .collect();
-        let no: HashSet<Uuid> = run(Condition::All(vec![q.clone(), Condition::Not(Box::new(p))]))
-            .await
-            .into_iter()
-            .collect();
-        assert!(yes.is_disjoint(&no));
-        assert_eq!(all, yes.union(&no).copied().collect());
+            assert!(yes.is_disjoint(&no), "{name}: {q:?} / {p:?}");
+            assert_eq!(
+                all,
+                yes.union(&no).copied().collect(),
+                "{name}: {q:?} / {p:?}"
+            );
+        }
     }
 }
 

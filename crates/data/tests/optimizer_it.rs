@@ -14,7 +14,9 @@
     clippy::panic,
     clippy::print_stderr,
     clippy::too_many_lines,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
 )]
 
 mod common;
@@ -157,7 +159,10 @@ async fn value_counts_follow_the_outbox_and_survive_recount() {
             .unwrap_or_else(|e| panic!("update {i}: {e}"));
     }
     for rid in &ids[25..] {
-        store.delete_record(&c, table.id, *rid, 1, None).await.unwrap();
+        store
+            .delete_record(&c, table.id, *rid, 1, None)
+            .await
+            .unwrap();
     }
     // 消費前に数え直しを挟む（数え直し時点で未消費の変更は skip_events に入り、二重に足さない）。
     store
@@ -218,9 +223,8 @@ async fn analyze_covers_derived_and_symmetric_columns_and_purge_removes_stats() 
     });
     let mut doubled = field("doubled", FieldType::Formula);
     doubled.indexed = true;
-    doubled.formula = Some(
-        serde_json::from_value(json!({"mul": [{"field": "amount"}, {"lit": 2}]})).unwrap(),
-    );
+    doubled.formula =
+        Some(serde_json::from_value(json!({"mul": [{"field": "amount"}, {"lit": 2}]})).unwrap());
     let child = create_table(&store, &c, "children", schema(vec![amount, link, doubled])).await;
     let mut parents = Vec::new();
     for i in 0..4 {
@@ -253,7 +257,11 @@ async fn analyze_covers_derived_and_symmetric_columns_and_purge_removes_stats() 
     .await
     .expect("材料化した派生列にもフィールド統計がある");
     assert_eq!((nv, nd), (40, 40));
-    assert_eq!(hist.as_array().unwrap().len(), 101, "等深ヒストグラム 100 区間");
+    assert_eq!(
+        hist.as_array().unwrap().len(),
+        101,
+        "等深ヒストグラム 100 区間"
+    );
     let (n_src, frac): (i64, f32) = sqlx::query_as(
         "SELECT n_src, link_frac FROM data_link_stats \
          WHERE tenant_int = $1 AND table_int = $2 AND NOT is_reverse",
@@ -297,13 +305,11 @@ async fn analyze_covers_derived_and_symmetric_columns_and_purge_removes_stats() 
         "data_value_count",
         "data_link_stats",
     ] {
-        let n: i64 = sqlx::query_scalar(&format!(
-            "SELECT count(*) FROM {t} WHERE tenant_int = $1"
-        ))
-        .bind(ti)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {t} WHERE tenant_int = $1"))
+            .bind(ti)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(n, 0, "{t} が purge で消えていない");
     }
 }
@@ -332,12 +338,34 @@ async fn correction_factor_picks_the_right_strategy_on_the_second_run() {
     store.analyze_table(&tenant, table.id).await.unwrap();
     let q = todo_by_created();
     let auto = QueryTuning::default();
-    let (r1, d1) = store.run_query_debug(&c, table.id, &q, &auto).await.unwrap();
-    assert!(d1.stats.planned_with_stats, "統計で計画する: {:?}", d1.stats);
-    assert_eq!(d1.stats.first_strategy, "sort", "独立性の仮定ではソート駆動: {:?}", d1.stats);
-    assert!(d1.stats.switched && d1.stats.strategy == "filter", "{:?}", d1.stats);
-    let (r2, d2) = store.run_query_debug(&c, table.id, &q, &auto).await.unwrap();
-    assert_eq!(d2.stats.first_strategy, "filter", "補正係数で初手から: {:?}", d2.stats);
+    let (r1, d1) = store
+        .run_query_debug(&c, table.id, &q, &auto)
+        .await
+        .unwrap();
+    assert!(
+        d1.stats.planned_with_stats,
+        "統計で計画する: {:?}",
+        d1.stats
+    );
+    assert_eq!(
+        d1.stats.first_strategy, "sort",
+        "独立性の仮定ではソート駆動: {:?}",
+        d1.stats
+    );
+    assert!(
+        d1.stats.switched && d1.stats.strategy == "filter",
+        "{:?}",
+        d1.stats
+    );
+    let (r2, d2) = store
+        .run_query_debug(&c, table.id, &q, &auto)
+        .await
+        .unwrap();
+    assert_eq!(
+        d2.stats.first_strategy, "filter",
+        "補正係数で初手から: {:?}",
+        d2.stats
+    );
     assert!(!d2.stats.switched, "{:?}", d2.stats);
     assert!(
         d2.stats.scanned < d1.stats.scanned && d2.stats.statements < d1.stats.statements,
@@ -354,7 +382,10 @@ async fn correction_factor_picks_the_right_strategy_on_the_second_run() {
     let mut done = q.clone();
     done.filter = Some(Condition::cmp("status", CondOp::Eq, Some(json!(DONE))));
     done.sort[0].field = "amount".into();
-    let (_, d3) = store.run_query_debug(&c, table.id, &done, &auto).await.unwrap();
+    let (_, d3) = store
+        .run_query_debug(&c, table.id, &done, &auto)
+        .await
+        .unwrap();
     assert_eq!(d3.stats.first_strategy, "sort", "{:?}", d3.stats);
     // 予測コストと所要時間が記録され、運用指標に推定値は出ない。
     assert!(d2.stats.predicted_us.is_some() && d2.stats.elapsed_us > 0);
@@ -416,17 +447,33 @@ async fn fixed_plan_tables_ignore_statistics() {
     store.analyze_table(&tenant, table.id).await.unwrap();
     let q = todo_by_created();
     let auto = QueryTuning::default();
-    let (r_auto, d_auto) = store.run_query_debug(&c, table.id, &q, &auto).await.unwrap();
+    let (r_auto, d_auto) = store
+        .run_query_debug(&c, table.id, &q, &auto)
+        .await
+        .unwrap();
     assert!(d_auto.stats.planned_with_stats);
-    let report = store.set_table_fixed_plan(&c, table.id, true, None).await.unwrap();
+    let report = store
+        .set_table_fixed_plan(&c, table.id, true, None)
+        .await
+        .unwrap();
     assert!(report.fixed_plan);
-    let (r_fixed, d_fixed) = store.run_query_debug(&c, table.id, &q, &auto).await.unwrap();
+    let (r_fixed, d_fixed) = store
+        .run_query_debug(&c, table.id, &q, &auto)
+        .await
+        .unwrap();
     assert!(!d_fixed.stats.planned_with_stats, "{:?}", d_fixed.stats);
     assert_eq!(d_fixed.stats.probes, 0, "件数探索もしない");
     assert!(
-        d_fixed.statements.iter().all(|s| s.label != "probe" && s.label != "candidates"),
+        d_fixed
+            .statements
+            .iter()
+            .all(|s| s.label != "probe" && s.label != "candidates"),
         "{:?}",
-        d_fixed.statements.iter().map(|s| s.label).collect::<Vec<_>>()
+        d_fixed
+            .statements
+            .iter()
+            .map(|s| s.label)
+            .collect::<Vec<_>>()
     );
     let ids = |r: &data::QueryResult| -> Vec<Uuid> {
         r.items.as_ref().unwrap().iter().map(|x| x.id).collect()
@@ -434,8 +481,14 @@ async fn fixed_plan_tables_ignore_statistics() {
     assert_eq!(ids(&r_auto), ids(&r_fixed));
     let report = store.table_optimizer_report(&c, table.id).await.unwrap();
     assert!(report.fixed_plan && report.requests >= 2);
-    store.set_table_fixed_plan(&c, table.id, false, None).await.unwrap();
-    let (_, d) = store.run_query_debug(&c, table.id, &q, &auto).await.unwrap();
+    store
+        .set_table_fixed_plan(&c, table.id, false, None)
+        .await
+        .unwrap();
+    let (_, d) = store
+        .run_query_debug(&c, table.id, &q, &auto)
+        .await
+        .unwrap();
     assert!(d.stats.planned_with_stats);
     // 他テナントからは見えない（404）。
     let other = ctx(&unique_tenant(), "alice");

@@ -628,3 +628,202 @@ async fn substring_search_is_driven_by_the_scoped_trigram_gin() {
     );
     assert_single_partition(&plan);
 }
+
+/// 計画中の走査ノード（種別, 関係名）。
+fn scan_nodes(plan: &Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    fn walk(v: &Value, out: &mut Vec<(String, String)>) {
+        match v {
+            Value::Object(m) => {
+                if let (Some(nt), Some(rel)) = (
+                    m.get("Node Type").and_then(Value::as_str),
+                    m.get("Relation Name").and_then(Value::as_str),
+                ) {
+                    out.push((nt.to_string(), rel.to_string()));
+                }
+                m.values().for_each(|x| walk(x, out));
+            }
+            Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    walk(plan, &mut out);
+    out
+}
+
+/// 計画中の `prefix` で始まる表の Seq Scan の数。
+fn seq_scans_on(plan: &Value, prefix: &str) -> usize {
+    fn walk(v: &Value, p: &str) -> usize {
+        match v {
+            Value::Object(m) => {
+                let here = usize::from(
+                    m.get("Node Type").and_then(Value::as_str) == Some("Seq Scan")
+                        && m.get("Relation Name")
+                            .and_then(Value::as_str)
+                            .is_some_and(|r| r.starts_with(p)),
+                );
+                here + m.values().map(|x| walk(x, p)).sum::<usize>()
+            }
+            Value::Array(a) => a.iter().map(|x| walk(x, p)).sum(),
+            _ => 0,
+        }
+    }
+    walk(plan, prefix)
+}
+
+/// O3（Task 15.12・query-optimizer.md §6.4・§9.1）の計画の形:
+/// - 交差駆動は等値 2 つの値索引を読んで `record_int` で突き合わせる（SetOp・ハッシュ結合なし）
+/// - バッチ駆動の一括検査（`record_int = ANY($ids)`）は、配列長 1 / 100 / 上限（1,000）×
+///   個別プラン・汎用プランのいずれでも索引の点検索（Seq Scan なし）で、1 パーティションに枝刈りされる
+#[tokio::test]
+async fn o3_plan_shapes_are_point_lookups() {
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool.clone());
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let table = seed(&pool, &store, &c, "o3plan", N, false, false).await;
+    let run = |q: DataQuery, f: ForcedStrategy| {
+        let store = store.clone();
+        let c = c.clone();
+        async move {
+            store
+                .run_query_debug(
+                    &c,
+                    table.id,
+                    &q,
+                    &QueryTuning {
+                        force: Some(f),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap()
+        }
+    };
+    // 交差駆動: 未着手（5%）∧ 担当 u2（0.01%）を金額順。
+    let q = DataQuery {
+        filter: Some(Condition::All(vec![
+            eq("status", json!(TODO)),
+            eq("assignee", json!("u2")),
+        ])),
+        sort: vec![sort_key("amount", true)],
+        limit: Some(20),
+        ..Default::default()
+    };
+    let (_, d) = run(q, ForcedStrategy::Intersect).await;
+    assert_eq!(d.stats.strategy, "intersect", "{:?}", d.stats);
+    let plan = explain(&pool, main_stmt(&d.statements, "candidates"), true).await;
+    assert!(
+        count_nodes(&plan, "SetOp") + count_nodes(&plan, "HashSetOp") >= 1,
+        "INTERSECT で突き合わせる: {plan}"
+    );
+    let scans = index_scans(&plan, "data_index_text_p");
+    assert!(
+        scans
+            .iter()
+            .filter(|(_, idx, _)| idx.contains("val"))
+            .count()
+            >= 2,
+        "両方の等値範囲を値索引から読む: {scans:?}"
+    );
+    assert_eq!(count_nodes(&plan, "Hash Join"), 0);
+    assert_eq!(seq_scans_on(&plan, "data_index"), 0);
+    assert_single_partition(&plan);
+
+    // バッチ駆動: 完了（90%）を金額順。一括検査の文を配列長を変えて EXPLAIN する。
+    let q = DataQuery {
+        filter: Some(Condition::All(vec![
+            eq("status", json!(DONE)),
+            Condition::Not(Box::new(eq("assignee", json!("u7")))),
+        ])),
+        sort: vec![sort_key("amount", true)],
+        limit: Some(20),
+        ..Default::default()
+    };
+    let (_, d) = run(q, ForcedStrategy::Batch).await;
+    assert_eq!(d.stats.strategy, "batch", "{:?}", d.stats);
+    let check = main_stmt(&d.statements, "batch_check").clone();
+    assert!(check.sql.contains("= ANY("), "{}", check.sql);
+    let (ti, tb) = common::keys_of(&pool, &tenant, table.id).await;
+    let ints: Vec<i64> = sqlx::query_scalar(
+        "SELECT record_int FROM data_record WHERE tenant_int = $1 AND table_int = $2 \
+         ORDER BY record_int LIMIT 1000",
+    )
+    .bind(ti)
+    .bind(tb)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    for len in [1usize, 100, 1_000] {
+        let mut st = check.clone();
+        for p in &mut st.params {
+            if let DebugParam::I64Array(v) = p {
+                *v = ints[..len].to_vec();
+            }
+        }
+        let plan = explain(&pool, &st, true).await;
+        assert_eq!(
+            seq_scans_on(&plan, "data_index"),
+            0,
+            "配列長 {len}: 一括検査は索引の点検索: {plan}"
+        );
+        assert!(
+            !index_scans(&plan, "data_index_text_p").is_empty(),
+            "配列長 {len}: {plan}"
+        );
+        assert_eq!(count_nodes(&plan, "Hash Join"), 0, "配列長 {len}");
+        assert_single_partition(&plan);
+        // 汎用プランの形（計画時）と、force_generic_plan 下の実行（実行時の枝刈り）。
+        let mut conn = pool.acquire().await.unwrap();
+        let row = sqlx::raw_sql(&format!("EXPLAIN (GENERIC_PLAN, FORMAT JSON) {}", st.sql))
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        let generic: Value = sqlx::Row::try_get(&row, 0).unwrap();
+        // 汎用プランは全パーティションを載せる（実行時に枝刈りされる）。このテーブルの
+        // パーティションは索引の点検索で読む。
+        let parts: BTreeSet<String> = relations_in_plan(&plan, "data_index_text_p")
+            .into_iter()
+            .collect();
+        for (node, rel) in scan_nodes(&generic) {
+            if parts.contains(&rel) {
+                assert!(node.contains("Index"), "汎用プラン: {rel} を {node} で読む");
+            }
+        }
+        sqlx::query("SET plan_cache_mode = force_generic_plan")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        let name = format!("p{}", uuid::Uuid::new_v4().simple());
+        sqlx::raw_sql(&format!("PREPARE {name} AS {}", st.sql))
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        let args: Vec<String> = st.params.iter().map(literal).collect();
+        let row = sqlx::raw_sql(&format!(
+            "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) EXECUTE {name}({})",
+            args.join(", ")
+        ))
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        let exec: Value = sqlx::Row::try_get(&row, 0).unwrap();
+        assert!(
+            runtime_pruned(&exec) > 0,
+            "汎用プランでも実行時に枝刈り: {exec}"
+        );
+        assert_eq!(
+            seq_scans_on(&exec, "data_index"),
+            0,
+            "汎用プランの実行: {exec}"
+        );
+        sqlx::query(&format!("DEALLOCATE {name}"))
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        sqlx::query("RESET plan_cache_mode")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+    }
+}

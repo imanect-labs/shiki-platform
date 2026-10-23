@@ -335,6 +335,9 @@ async fn claim_fair_round_robins_one_at_a_time() {
         order.push(j[0].id);
     }
     assert_eq!(order[0], h[0]);
-    assert_eq!(order[1], l, "重いテナントの 2 件目より先に軽いテナント: {order:?}");
+    assert_eq!(
+        order[1], l,
+        "重いテナントの 2 件目より先に軽いテナント: {order:?}"
+    );
     assert_eq!(&order[2..], &h[1..]);
 }

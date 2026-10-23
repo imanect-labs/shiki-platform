@@ -527,6 +527,22 @@ impl DataStore {
     }
 }
 
+/// 統計収集を一度でも終えたか（制御列だけを読む・統計値は返さない）。
+pub(crate) async fn analyzed(
+    pool: &sqlx::Pool<sqlx::Postgres>,
+    keys: TableKeys,
+) -> Result<bool, DataError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM data_table_stats \
+           WHERE tenant_int = $1 AND table_int = $2 AND analyzed_at IS NOT NULL)",
+    )
+    .bind(keys.tenant_int)
+    .bind(keys.table_int)
+    .fetch_one(pool)
+    .await
+    .map_err(map_db)
+}
+
 async fn set_timeout(conn: &mut PgConnection) -> Result<(), DataError> {
     sqlx::query("SELECT set_config('statement_timeout', $1, true)")
         .bind(ANALYZE_STATEMENT_TIMEOUT_MS.to_string())
