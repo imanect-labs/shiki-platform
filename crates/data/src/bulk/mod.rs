@@ -43,6 +43,7 @@
 //! - `record_int` / `table_int` は外へ出さない。観測 API は件数・行番号・行キー・エラー文言だけを返す。
 
 mod apply;
+pub(crate) mod csv;
 mod job;
 mod resolver;
 mod upsert;
@@ -60,6 +61,7 @@ use crate::model::TableKeys;
 use crate::store::DataStore;
 use crate::{map_db, DataError};
 
+pub use csv::{MAX_BULK_CSV_BYTES, ROW_KEY_COLUMN};
 pub use job::BulkImportWorker;
 
 /// 一括取込ジョブのキュー名。
@@ -83,7 +85,18 @@ pub(crate) const ST_APPLIED: i16 = 3;
 pub(crate) const ST_REJECTED: i16 = 4;
 
 /// 索引の作り方。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum BulkIndexMode {
     /// 行数で決める（[`LAZY_INDEX_MIN_ROWS`] 以上かつ既存行数以上なら遅延構築）。
     #[default]
@@ -161,7 +174,7 @@ pub struct BulkImportOptions {
 }
 
 /// 取込の進捗（運用・UI の観測用・内部キーを含まない）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct BulkImportStatus {
     pub id: Uuid,
     pub table_id: Uuid,
@@ -184,8 +197,8 @@ pub struct BulkImportStatus {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
-/// 不合格・拒否された行（行番号は 1 始まり）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 不合格・拒否された行（行番号は 1 始まり・CSV なら見出し行を除いたデータの何行目か）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct BulkRowError {
     pub row_no: i64,
     pub key: Option<String>,
@@ -586,6 +599,32 @@ impl DataStore {
         .await?;
         tx.commit().await.map_err(map_db)?;
         Ok(import_id)
+    }
+
+    /// CSV の一括取込を始める（editor・見出しの照合と形の変換だけをここで行い、検証と適用はジョブ）。
+    ///
+    /// editor を先に確かめる（権限の無い主体に列の照合の結果＝スキーマの形を返さない）。変換の規則は
+    /// [`csv`] を参照。取込 ID を返す。
+    pub async fn start_bulk_import_csv(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        bytes: &[u8],
+        opts: BulkImportOptions,
+        trace_id: Option<&str>,
+    ) -> Result<Uuid, DataError> {
+        self.require(
+            ctx,
+            table_id,
+            Relation::Editor,
+            "data.record.bulk_import",
+            trace_id,
+        )
+        .await?;
+        let table = self.fetch_live(ctx, table_id).await?;
+        let rows = csv::csv_rows(&table.schema, bytes)?;
+        self.start_bulk_import(ctx, table_id, rows, opts, trace_id)
+            .await
     }
 
     /// 取込 ID の取込が既にあればそのテーブルの内部キー（取込 ID の冪等な再開用）。

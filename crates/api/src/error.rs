@@ -41,6 +41,9 @@ pub enum ApiError {
     /// 保持期間を過ぎた位置の再開（スナップショット読取の基準位置など）。最初から取り直す。
     #[error("保持期間を過ぎました")]
     Gone,
+    /// 本文が上限を超えた（構造化 413・一括取込の `import_too_large` 等）。
+    #[error("本文が大きすぎます")]
+    PayloadTooLargeJson(serde_json::Value),
 }
 
 impl ApiError {
@@ -56,6 +59,7 @@ impl ApiError {
             ApiError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::Gone => StatusCode::GONE,
+            ApiError::PayloadTooLargeJson(_) => StatusCode::PAYLOAD_TOO_LARGE,
         }
     }
 }
@@ -74,7 +78,8 @@ impl IntoResponse for ApiError {
         // 構造化ボディはそのまま返す（検証エラーの per-node/per-edge 詳細を保つ）。
         if let ApiError::UnprocessableJson(payload)
         | ApiError::ConflictJson(payload)
-        | ApiError::Unprocessable422(payload) = self
+        | ApiError::Unprocessable422(payload)
+        | ApiError::PayloadTooLargeJson(payload) = self
         {
             return (status, Json(payload)).into_response();
         }

@@ -94,7 +94,7 @@ pub const CONDITION_SEMANTICS_TABLE: &str = include_str!("query/semantics_table.
 pub use bulk::{
     BulkImportOptions, BulkImportRow, BulkImportStatus, BulkImportStep, BulkImportWorker,
     BulkIndexMode, BulkRowError, BulkUpsertRow, BULK_CHUNK, BULK_IMPORT_QUEUE, LAZY_INDEX_MIN_ROWS,
-    MAX_BULK_ROWS, MAX_BULK_ROW_BYTES, MAX_BULK_ROW_KEY_BYTES,
+    MAX_BULK_CSV_BYTES, MAX_BULK_ROWS, MAX_BULK_ROW_BYTES, MAX_BULK_ROW_KEY_BYTES, ROW_KEY_COLUMN,
 };
 pub use cursor::{CursorKey, CURSOR_KEY_LEN};
 pub use derived::links::{LINK_TRAVERSAL_SQL, MAX_LINK_VALUES_PER_RECORD};

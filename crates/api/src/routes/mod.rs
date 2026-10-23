@@ -17,6 +17,7 @@ pub mod chat_skills;
 pub mod collab;
 pub mod data;
 pub mod data_fsm;
+pub mod data_imports;
 pub mod data_indexes;
 pub mod data_records;
 pub mod data_stream;
