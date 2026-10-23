@@ -60,7 +60,21 @@ impl DataStore {
     pub async fn register_stream_consumer(&self) -> Result<(), crate::DataError> {
         for (_, pool) in self.pools.all() {
             let mut tx = pool.begin().await.map_err(crate::map_db)?;
-            storage::event::register_consumer(&mut tx, LEDGER_CONSUMER)
+            storage::event::register_consumer(&mut tx, &self.stream_config.consumer)
+                .await
+                .map_err(|e| crate::DataError::Internal(format!("outbox: {e}")))?;
+            tx.commit().await.map_err(crate::map_db)?;
+        }
+        Ok(())
+    }
+
+    /// 台帳 consumer を廃止する（登録と台帳行を消す）。**恒久的に畳むときだけ**呼ぶ
+    /// （一時停止で呼ぶと再登録の fast-forward で停止中の変更を飛ばす・storage の注意書きと同じ）。
+    #[doc(hidden)]
+    pub async fn unregister_stream_consumer(&self) -> Result<(), crate::DataError> {
+        for (_, pool) in self.pools.all() {
+            let mut tx = pool.begin().await.map_err(crate::map_db)?;
+            storage::event::unregister_consumer(&mut tx, &self.stream_config.consumer)
                 .await
                 .map_err(|e| crate::DataError::Internal(format!("outbox: {e}")))?;
             tx.commit().await.map_err(crate::map_db)?;

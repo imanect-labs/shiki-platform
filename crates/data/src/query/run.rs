@@ -310,11 +310,10 @@ impl DataStore {
         .map_err(map_db)?;
 
         // 配信位置（SSE と同じ時間軸）。読取と同じスナップショットで読む（data-platform §3.3）。
-        let head =
-            storage::event::stream_bounds(&mut tx, &crate::stream::relay::stream_key(table_id))
-                .await
-                .map_err(|e| DataError::Internal(format!("stream: {e}")))?
-                .head;
+        let head = storage::event::stream_bounds(&mut tx, &self.stream_key(table_id))
+            .await
+            .map_err(|e| DataError::Internal(format!("stream: {e}")))?
+            .head;
         let out = if query.snapshot {
             let binding = fingerprint(query);
             let scope = CursorScope {

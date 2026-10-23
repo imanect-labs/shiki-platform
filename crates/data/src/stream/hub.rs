@@ -37,7 +37,6 @@ use super::events::{
     StreamMessage, StreamReadyEvent, StreamResetEvent, StreamResetReason,
 };
 use super::outbox::ChangeKind;
-use super::relay::stream_key;
 use super::visibility::{eval_group, group_plan, verify, visible, Decomposed, Viewer};
 use crate::model::DataTable;
 use crate::record::RecordRow;
@@ -66,6 +65,10 @@ pub struct StreamConfig {
     pub gap_timeout: Duration,
     /// 検証用: 配信タスクを起動せず、[`DataStore::stream_tick`] を呼んだときだけ配信する。
     pub manual: bool,
+    /// outbox の台帳 consumer の名前（既定 [`super::LEDGER_CONSUMER`]）。テーブルのストリームはこの
+    /// 名前空間の下に作る。本番は全レプリカで同じ名前にする（同じ consumer のリレーは採番行のロックで
+    /// 直列化される）。名前を分けると、outbox を互いに奪わない独立の配信系になる（検証の隔離用）。
+    pub consumer: String,
 }
 
 impl Default for StreamConfig {
@@ -80,6 +83,7 @@ impl Default for StreamConfig {
             awareness_ttl: Duration::from_secs(30),
             gap_timeout: Duration::from_secs(10),
             manual: false,
+            consumer: super::LEDGER_CONSUMER.to_string(),
         }
     }
 }
@@ -187,7 +191,7 @@ impl DataStore {
                 .acquire()
                 .await
                 .map_err(map_db)?;
-            storage::event::stream_bounds(&mut conn, &stream_key(table_id))
+            storage::event::stream_bounds(&mut conn, &self.stream_key(table_id))
                 .await
                 .map_err(|e| DataError::Internal(format!("stream: {e}")))?
         };

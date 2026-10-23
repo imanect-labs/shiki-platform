@@ -8,7 +8,6 @@ use uuid::Uuid;
 
 use super::hub::Sub;
 use super::outbox::ChangeKind;
-use super::relay::stream_key;
 use super::visibility::RowState;
 use crate::model::DataTable;
 use crate::record::{RecordRow, RECORD_COLS};
@@ -136,7 +135,7 @@ impl DataStore {
             .map_err(map_db)?;
         let mut entries = storage::event::stream_entries_after(
             &mut conn,
-            &stream_key(table.id),
+            &self.stream_key(table.id),
             min_cursor,
             self.stream_config.max_batch,
         )

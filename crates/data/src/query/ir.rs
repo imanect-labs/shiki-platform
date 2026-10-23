@@ -150,7 +150,7 @@ pub struct DataQuery {
     #[schema(deprecated)]
     pub offset: Option<i64>,
     /// スナップショット読取（data-platform §3.3）。最初のページの `snapshot_seq` にカーソルを束縛し、
-    /// その時点の集合を作成順に重複・欠落なく返す（エクスポート・一括処理用。`sort`・集計・件数は
+    /// その時点の集合を不変の位置の順（おおむね作成順）に重複・欠落なく返す（エクスポート・一括処理用。`sort`・集計・件数は
     /// 指定できない・保持期間を過ぎたカーソルは 410）。既定はライブページング。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub snapshot: bool,

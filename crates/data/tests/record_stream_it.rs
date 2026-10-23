@@ -160,9 +160,15 @@ async fn fixture(pool: PgPool, authz: Arc<dyn AuthzClient>, config: StreamConfig
     let bob = ctx(&tenant, "bob");
     let carol = ctx(&tenant, "carol");
     let store = DataStore::new(pool.clone(), Arc::clone(&authz), Arc::new(AllowRefs))
-        .with_stream_config(config);
+        // テストごとに独立した台帳 consumer（＝ストリームの名前空間）を使う。同じバイナリの他テストの
+        // リレー（手動・常駐の両方）がこのテストの outbox を先に採番して、故障注入の窓や位置の検証を
+        // 崩さないようにする（本番は全レプリカで同じ名前・同じ consumer のリレーは採番行のロックで直列化）。
+        .with_stream_config(StreamConfig {
+            consumer: format!("data-stream-it-{}", Uuid::new_v4().simple()),
+            ..config
+        });
+    // 新しい台帳 consumer の登録は既存の outbox を配送済みにする（他テストの滞留を背負わない）。
     store.register_stream_consumer().await.expect("consumer");
-    relay_all(&store).await;
     let table = store
         .create_table(
             &alice,
@@ -262,14 +268,37 @@ async fn drain(s: &mut RecordStream, c: &mut Client) -> (Vec<StreamMessage>, boo
     }
 }
 
-/// outbox の未採番を全て採番する（共有 DB には他テストの未採番が溜まっているので 1 バッチで足りない）。
-async fn relay_all(store: &DataStore) {
-    while store.relay_record_changes_once().await.expect("relay") > 0 {}
+/// このテストのテナントの outbox を、このテストの台帳 consumer で全て採番し終えるまでリレーを回す。
+///
+/// 「1 回のリレーが 0 件を返した」は「残りが無い」を意味しない: `claim_undelivered` は
+/// `FOR UPDATE SKIP LOCKED` なので、同じバイナリの**他テストのリレー（別の台帳 consumer）**が
+/// 掴んでいる行はその Tx のコミットまで飛ばされる（その Tx が積む派生値の再配信も、コミットまで
+/// 見えない）。テナントの未採番が 0 になるまで回すことで、他のリレーの Tx の完了も待つ。
+async fn relay_all(fx: &Fx) {
+    let ledger = fx.store.stream_config().consumer.clone();
+    for _ in 0..2_000 {
+        fx.store.relay_record_changes_once().await.expect("relay");
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM storage_event_outbox o WHERE o.tenant_id = $1 \
+               AND NOT EXISTS (SELECT 1 FROM outbox_delivery d \
+                               WHERE d.event_id = o.id AND d.consumer = $2)",
+        )
+        .bind(&fx.alice.tenant_id)
+        .bind(&ledger)
+        .fetch_one(&fx.pool)
+        .await
+        .expect("pending");
+        if pending == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("outbox の採番が収束しない");
 }
 
-async fn tick(store: &DataStore) {
-    relay_all(store).await;
-    store.stream_tick().await.expect("tick");
+async fn tick(fx: &Fx) {
+    relay_all(fx).await;
+    fx.store.stream_tick().await.expect("tick");
 }
 
 fn upserts(ms: &[StreamMessage]) -> Vec<(Uuid, Value)> {
@@ -378,7 +407,7 @@ async fn invisible_rows_and_masked_columns_never_reach_the_stream() {
         )
         .await
         .unwrap();
-    tick(&fx.store).await;
+    tick(&fx).await;
     let (mb, _) = drain(&mut sb, &mut cb).await;
     let (mc, _) = drain(&mut sc, &mut cc).await;
     // bob: 自分の行だけ・salary は無い。
@@ -465,7 +494,7 @@ async fn visible_to_invisible_sends_removed_without_values() {
         .delete_record(&fx.alice, fx.table, r2.id, 1, None)
         .await
         .unwrap();
-    tick(&fx.store).await;
+    tick(&fx).await;
     let (ms, _) = drain(&mut s, &mut c).await;
     let removed: Vec<&StreamMessage> = ms
         .iter()
@@ -492,7 +521,7 @@ async fn visible_to_invisible_sends_removed_without_values() {
         )
         .await
         .unwrap();
-    tick(&fx.store).await;
+    tick(&fx).await;
     let (ms, _) = drain(&mut s, &mut c).await;
     assert_eq!(upserts(&ms).len(), 1);
     assert_eq!(c.rows.get(&r1.id).map(|r| r.0), Some(3));
@@ -540,7 +569,7 @@ async fn resume_from_last_event_id_without_gaps_under_concurrent_commits() {
     // 書込の途中で受けて、途中で切断する。
     for _ in 0..3 {
         tokio::time::sleep(Duration::from_millis(30)).await;
-        tick(&fx.store).await;
+        tick(&fx).await;
         let (ms, _) = drain(&mut s, &mut c).await;
         seen.extend(ms.iter().filter_map(|m| m.id).filter(|i| *i > start));
     }
@@ -556,7 +585,7 @@ async fn resume_from_last_event_id_without_gaps_under_concurrent_commits() {
         .await
         .unwrap();
     for _ in 0..10 {
-        tick(&fx.store).await;
+        tick(&fx).await;
         let (ms, _) = drain(&mut s, &mut c).await;
         seen.extend(
             ms.iter()
@@ -607,7 +636,7 @@ async fn beyond_retention_gets_stream_reset() {
             .await
             .unwrap();
     }
-    relay_all(&fx.store).await;
+    relay_all(&fx).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
     // 共有 DB では並行する他テストのリレー（別の保持期間の設定）がこのテナントの行を採番し得るので、
     // このテナントの台帳行の保持期間を明示に過ぎた状態にしてから GC する（時間の経過の模擬）。
@@ -626,9 +655,13 @@ async fn beyond_retention_gets_stream_reset() {
         .await
         .unwrap();
     let mut conn = fx.pool.acquire().await.unwrap();
-    let deleted = storage::event::gc_delivered(&mut conn, &[data::LEDGER_CONSUMER], 10_000)
-        .await
-        .unwrap();
+    let deleted = storage::event::gc_delivered(
+        &mut conn,
+        &[fx.store.stream_config().consumer.as_str()],
+        10_000,
+    )
+    .await
+    .unwrap();
     assert!(deleted >= 3, "保持期間を過ぎた行は GC される: {deleted}");
     drop(conn);
     // 保持期間外の位置からの再開は stream.reset（黙って欠落させない）。
@@ -689,16 +722,20 @@ async fn crash_windows_lose_nothing_and_duplicates_are_idempotent() {
         .unwrap();
     {
         let mut tx = fx.pool.begin().await.unwrap();
-        storage::event::lock_consumer_seq(&mut tx, data::LEDGER_CONSUMER, None)
+        storage::event::lock_consumer_seq(&mut tx, &fx.store.stream_config().consumer, None)
             .await
             .unwrap();
-        let claimed = storage::event::claim_undelivered(&mut tx, data::LEDGER_CONSUMER, 1_000_000)
-            .await
-            .unwrap();
+        let claimed = storage::event::claim_undelivered(
+            &mut tx,
+            &fx.store.stream_config().consumer,
+            1_000_000,
+        )
+        .await
+        .unwrap();
         assert!(claimed.iter().any(|e| e.node_id == r1.id));
         tx.rollback().await.unwrap(); // ← クラッシュ
     }
-    tick(&fx.store).await;
+    tick(&fx).await;
     let (ms, _) = drain(&mut s, &mut c).await;
     assert_eq!(upserts(&ms).len(), 1, "再 claim されて届く: {:?}", c.raw);
     assert!(c.rows.contains_key(&r1.id));
@@ -714,10 +751,10 @@ async fn crash_windows_lose_nothing_and_duplicates_are_idempotent() {
         )
         .await
         .unwrap();
-    relay_all(&fx.store).await; // 永続化
+    relay_all(&fx).await; // 永続化
     let resume = c.last_id.unwrap();
     s.close(); // ← 送信前に接続が落ちる
-    tick(&fx.store).await; // 送信は失敗し、購読は片付く
+    tick(&fx).await; // 送信は失敗し、購読は片付く
     assert_eq!(fx.store.stream_subscriber_count(), 0);
     assert!(!c.rows.contains_key(&r2.id));
     let mut s = fx
@@ -725,7 +762,7 @@ async fn crash_windows_lose_nothing_and_duplicates_are_idempotent() {
         .subscribe_records(&fx.carol, fx.table, Some(resume), None)
         .await
         .unwrap();
-    tick(&fx.store).await;
+    tick(&fx).await;
     drain(&mut s, &mut c).await;
     assert!(
         c.rows.contains_key(&r2.id),
@@ -744,7 +781,7 @@ async fn crash_windows_lose_nothing_and_duplicates_are_idempotent() {
         )
         .await
         .unwrap();
-    tick(&fx.store).await;
+    tick(&fx).await;
     let (ms, _) = drain(&mut s, &mut c).await;
     assert_eq!(upserts(&ms).len(), 1);
     let applied = c.applied;
@@ -754,7 +791,7 @@ async fn crash_windows_lose_nothing_and_duplicates_are_idempotent() {
         .subscribe_records(&fx.carol, fx.table, Some(before_save), None)
         .await
         .unwrap();
-    tick(&fx.store).await;
+    tick(&fx).await;
     let dropped = c.dropped;
     let (ms, _) = drain(&mut s, &mut c).await;
     assert_eq!(upserts(&ms).len(), 1, "再送される（at-least-once）");
@@ -812,7 +849,8 @@ async fn low_water_mark_never_skips_an_uncommitted_gap() {
         }
     };
     let (ea, eb) = (ev(ra.id).await, ev(rb.id).await);
-    let stream = format!("{}:{}", data::LEDGER_CONSUMER, fx.table);
+    let ledger = fx.store.stream_config().consumer.clone();
+    let stream = format!("{ledger}:{}", fx.table);
     // 順序非依存のリレーを模す: head+1 を採番した Tx A がコミットする前に、head+2 の Tx B がコミットする。
     let mut a = fx.pool.begin().await.unwrap();
     let insert =
@@ -836,7 +874,7 @@ async fn low_water_mark_never_skips_an_uncommitted_gap() {
         .await
         .unwrap();
     for (e, tx) in [(ea, &mut a), (eb, &mut b)] {
-        storage::event::mark_delivered(tx, data::LEDGER_CONSUMER, &[e])
+        storage::event::mark_delivered(tx, &ledger, &[e])
             .await
             .unwrap();
     }
@@ -847,8 +885,10 @@ async fn low_water_mark_never_skips_an_uncommitted_gap() {
         .await
         .unwrap();
     b.commit().await.unwrap();
-    // head+2 だけが見える状態: 飛び番では進めない（何も送らない）。
-    tick(&fx.store).await;
+    // head+2 だけが見える状態: 飛び番では進めない（何も送らない）。A が未コミットの間は
+    // テナントの未採番が 0 にならないので（A の台帳行が見えない）、採番し切る `tick` ではなく
+    // 配信の 1 バッチだけを回す（内部のリレーは A が参照ロックを持つ行を飛ばす）。
+    fx.store.stream_tick().await.unwrap();
     let (ms, _) = drain(&mut s, &mut c).await;
     assert!(upserts(&ms).is_empty(), "飛び番の先を送らない: {:?}", c.raw);
     // 飛びを見た直後に切断し、受けた位置（head）から再開する。
@@ -859,7 +899,7 @@ async fn low_water_mark_never_skips_an_uncommitted_gap() {
         .await
         .unwrap();
     a.commit().await.unwrap();
-    tick(&fx.store).await;
+    tick(&fx).await;
     let (ms, _) = drain(&mut s, &mut c).await;
     let ids: Vec<i64> = ms
         .iter()
@@ -936,7 +976,7 @@ async fn revocation_stops_delivery_within_ttl_and_rest_is_immediate() {
             .await
             .unwrap();
         seq += 1;
-        relay_all(&fx.store).await;
+        relay_all(&fx).await;
         let tick_started = revoked_at.elapsed();
         fx.store.stream_tick().await.unwrap();
         let (ms, closed) = drain(&mut s, &mut c).await;
@@ -1014,7 +1054,7 @@ async fn revocation_stops_delivery_within_ttl_and_rest_is_immediate() {
         )
         .await
         .unwrap();
-    tick(&fx2.store).await;
+    tick(&fx2).await;
     let (ms, closed) = drain(&mut s, &mut c).await;
     assert!(closed, "共有解除で購読ごと落ちる: {:?}", c.raw);
     assert!(matches!(ms.last().unwrap().event, StreamEvent::Reset(_)));
@@ -1030,7 +1070,7 @@ async fn revocation_stops_delivery_within_ttl_and_rest_is_immediate() {
         .unwrap();
     let mut c = Client::default();
     drain(&mut s, &mut c).await;
-    tick(&fx2.store).await; // 世代の基準を取る
+    tick(&fx2).await; // 世代の基準を取る
     fx2.authz
         .delete_tuple(
             &fx2.carol.subject(),
@@ -1043,7 +1083,7 @@ async fn revocation_stops_delivery_within_ttl_and_rest_is_immediate() {
         .notify_authz_changed(&fx2.carol, None)
         .await
         .unwrap();
-    tick(&fx2.store).await;
+    tick(&fx2).await;
     let (_, closed) = drain(&mut s, &mut c).await;
     assert!(closed, "ロールの剥奪で購読ごと落ちる: {:?}", c.raw);
 }
@@ -1083,7 +1123,7 @@ async fn bulk_import_transition_derived_schema_and_awareness_reach_subscribers()
         .run_bulk_import(&fx.alice.tenant_id, fx.table, import)
         .await
         .unwrap();
-    tick(&fx.store).await;
+    tick(&fx).await;
     let (ms, _) = drain(&mut s, &mut c).await;
     assert_eq!(upserts(&ms).len(), 10, "bob の行だけ: {:?}", c.raw.len());
 
@@ -1099,7 +1139,7 @@ async fn bulk_import_transition_derived_schema_and_awareness_reach_subscribers()
         .await
         .unwrap();
     let visible_id = *c.rows.keys().next().unwrap();
-    tick(&fx.store).await;
+    tick(&fx).await;
     drain(&mut s, &mut c).await;
     fx.store
         .post_awareness(
@@ -1111,7 +1151,7 @@ async fn bulk_import_transition_derived_schema_and_awareness_reach_subscribers()
         )
         .await
         .unwrap();
-    tick(&fx.store).await;
+    tick(&fx).await;
     let (ms, _) = drain(&mut s, &mut c).await;
     assert!(
         !ms.iter()
@@ -1128,7 +1168,7 @@ async fn bulk_import_transition_derived_schema_and_awareness_reach_subscribers()
         )
         .await
         .unwrap();
-    tick(&fx.store).await;
+    tick(&fx).await;
     let (ms, _) = drain(&mut s, &mut c).await;
     let aw: Vec<Value> = ms
         .iter()
@@ -1160,7 +1200,7 @@ async fn bulk_import_transition_derived_schema_and_awareness_reach_subscribers()
         .update_table_schema(&fx.alice, fx.table, next, None, None)
         .await
         .unwrap();
-    tick(&fx.store).await;
+    tick(&fx).await;
     let (ms, closed) = drain(&mut s, &mut c).await;
     assert!(matches!(
         ms.last().unwrap().event,
@@ -1242,8 +1282,8 @@ async fn referenced_record_change_refreshes_referrer_derived_values() {
         .await
         .unwrap();
     // 作成分の採番と、その派生イベントの採番を済ませてから繋ぐ（以降の変更だけを見る）。
-    relay_all(&fx.store).await;
-    relay_all(&fx.store).await;
+    relay_all(&fx).await;
+    relay_all(&fx).await;
     let mut s = fx
         .store
         .subscribe_records(&fx.alice, orders.id, None, None)
@@ -1264,8 +1304,8 @@ async fn referenced_record_change_refreshes_referrer_derived_values() {
         .await
         .unwrap();
     // 1 回目でストリームへ採番し、参照元への派生イベントを積む。2 回目でそれが配られる。
-    tick(&fx.store).await;
-    tick(&fx.store).await;
+    tick(&fx).await;
+    tick(&fx).await;
     let (ms, _) = drain(&mut s, &mut c).await;
     let got: Vec<&data::RecordUpsertedEvent> = ms
         .iter()
@@ -1314,7 +1354,7 @@ async fn snapshot_read_is_stable_across_concurrent_changes() {
             .unwrap();
         ids.push(r.id);
     }
-    relay_all(&fx.store).await;
+    relay_all(&fx).await;
     let page = |cursor: Option<String>| data::DataQuery {
         limit: Some(4),
         cursor,
@@ -1382,7 +1422,7 @@ async fn snapshot_read_is_stable_across_concurrent_changes() {
         )
         .await
         .unwrap();
-    relay_all(&fx.store).await; // 一部は採番済み
+    relay_all(&fx).await; // 一部は採番済み
     fx.store
         .create_record(
             &fx.alice,
@@ -1423,7 +1463,37 @@ async fn snapshot_read_is_stable_across_concurrent_changes() {
         .filter(|i| i % 2 == 0)
         .map(|i| (ids[i], format!("orig-{i:02}"), 1))
         .collect();
-    assert_eq!(seen, want, "基準位置の集合・値・作成順（重複・欠落なし）");
+    // 集合と値: 基準位置の行がちょうど 1 回ずつ、基準位置の値で返る（重複・欠落なし）。
+    let mut got_sorted = seen.clone();
+    got_sorted.sort();
+    let mut want_sorted = want.clone();
+    want_sorted.sort();
+    assert_eq!(
+        got_sorted, want_sorted,
+        "基準位置の集合・値（重複・欠落なし）"
+    );
+    assert_eq!(seen.len(), want.len());
+    // 順序: 不変の内部位置（record_int）の昇順。record_int の採番はセッションごとにキャッシュされる
+    // （cache 100）ので作成順とは限らないが、位置が動かないことが重複・欠落なしの根拠になる。
+    // 削除済みの行は本体に位置が残らないので、残っている行だけで並びを確かめる。
+    let ints: HashMap<Uuid, i64> = sqlx::query_as::<_, (Uuid, i64)>(
+        "SELECT id, record_int FROM data_record WHERE tenant_id = $1 AND table_id = $2",
+    )
+    .bind(&fx.alice.tenant_id)
+    .bind(fx.table)
+    .fetch_all(&fx.pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .collect();
+    let order: Vec<i64> = seen
+        .iter()
+        .filter_map(|(id, _, _)| ints.get(id).copied())
+        .collect();
+    assert!(
+        order.windows(2).all(|w| w[0] < w[1]),
+        "内部位置の昇順: {order:?}"
+    );
 
     // ライブページングにも配信位置が付く。スナップショットのカーソルはライブへ持ち込めない。
     let live = fx
@@ -1486,7 +1556,7 @@ async fn snapshot_cursor_beyond_retention_is_gone() {
             .await
             .unwrap();
     }
-    relay_all(&fx.store).await;
+    relay_all(&fx).await;
     let q = data::DataQuery {
         limit: Some(2),
         snapshot: true,
@@ -1507,7 +1577,7 @@ async fn snapshot_cursor_beyond_retention_is_gone() {
         )
         .await
         .unwrap();
-    relay_all(&fx.store).await;
+    relay_all(&fx).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
     // 共有 DB では並行する他テストのリレー（別の保持期間の設定）がこのテナントの行を採番し得るので、
     // このテナントの台帳行の保持期間を明示に過ぎた状態にしてから GC する（時間の経過の模擬）。
@@ -1525,9 +1595,13 @@ async fn snapshot_cursor_beyond_retention_is_gone() {
         .await
         .unwrap();
     let mut conn = fx.pool.acquire().await.unwrap();
-    storage::event::gc_delivered(&mut conn, &[data::LEDGER_CONSUMER], 10_000)
-        .await
-        .unwrap();
+    storage::event::gc_delivered(
+        &mut conn,
+        &[fx.store.stream_config().consumer.as_str()],
+        10_000,
+    )
+    .await
+    .unwrap();
     drop(conn);
     let next = data::DataQuery {
         cursor: first.next_cursor,
@@ -1556,7 +1630,7 @@ async fn fsm_transition_reaches_subscribers() {
         )
         .await
         .unwrap();
-    relay_all(&fx.store).await;
+    relay_all(&fx).await;
     let mut s = fx
         .store
         .subscribe_records(&fx.bob, fx.table, None, None)
@@ -1576,7 +1650,7 @@ async fn fsm_transition_reaches_subscribers() {
         .transition_record(&fx.alice, fx.table, r.id, "done", 1, &fsm, "status", None)
         .await
         .unwrap();
-    tick(&fx.store).await;
+    tick(&fx).await;
     let (ms, _) = drain(&mut s, &mut c).await;
     let ups = upserts(&ms);
     assert_eq!(ups.len(), 1, "{:?}", c.raw);

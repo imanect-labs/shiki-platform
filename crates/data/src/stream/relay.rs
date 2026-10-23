@@ -36,9 +36,16 @@ const RELAY_BATCH: i64 = RELAY_BATCH_LEN as i64;
 /// 1 つの参照元テーブルへ個別に積む派生イベントの上限（超えたらテーブル単位の refresh に畳む）。
 const DERIVED_FANOUT_CAP: usize = 1_000;
 
-/// テーブルのストリーム名（購読ストリームの consumer）。
-pub(crate) fn stream_key(table_id: Uuid) -> String {
-    format!("{LEDGER_CONSUMER}:{table_id}")
+/// テーブルのストリーム名（購読ストリームの consumer・台帳 consumer の名前空間の下）。
+pub(crate) fn stream_key(ledger: &str, table_id: Uuid) -> String {
+    format!("{ledger}:{table_id}")
+}
+
+impl DataStore {
+    /// このストアの台帳 consumer の下での、テーブルのストリーム名。
+    pub(crate) fn stream_key(&self, table_id: Uuid) -> String {
+        stream_key(&self.stream_config.consumer, table_id)
+    }
 }
 
 /// 保守経路の主体（派生イベントの outbox の actor）。認可には使わない。
@@ -59,6 +66,8 @@ pub(crate) fn system_ctx(tenant_id: &str, org: &str) -> AuthContext {
 
 /// claim したレコード変更 1 件（派生の再配信の材料）。
 struct Source {
+    /// 元の変更イベント（outbox の id・再配信を 1 回に限る鍵）。
+    event_id: i64,
     record_id: Uuid,
     record_int: i64,
     /// 対称列を持つリンク列の旧値（保存形）。
@@ -82,10 +91,11 @@ impl DataStore {
     async fn relay_batch(&self, tx: &mut PgConnection) -> Result<usize, DataError> {
         let st = |e: storage::StorageError| DataError::Internal(format!("outbox: {e}"));
         // 台帳 consumer の採番行をロック（並行リレーの排他・コミットまで保持）。
-        storage::event::lock_consumer_seq(&mut *tx, LEDGER_CONSUMER, None)
+        let ledger = self.stream_config.consumer.as_str();
+        storage::event::lock_consumer_seq(&mut *tx, ledger, None)
             .await
             .map_err(st)?;
-        let events = storage::event::claim_undelivered(&mut *tx, LEDGER_CONSUMER, RELAY_BATCH)
+        let events = storage::event::claim_undelivered(&mut *tx, ledger, RELAY_BATCH)
             .await
             .map_err(st)?;
         if events.is_empty() {
@@ -135,6 +145,7 @@ impl DataStore {
                         .entry((e.tenant_id.clone(), table_id))
                         .or_default()
                         .push(Source {
+                            event_id: e.id,
                             record_id,
                             record_int,
                             before: private
@@ -149,7 +160,7 @@ impl DataStore {
         for ((tenant_id, table_id), ids) in &streams {
             storage::event::mark_delivered_seq(
                 &mut *tx,
-                &stream_key(*table_id),
+                &stream_key(ledger, *table_id),
                 tenant_id,
                 ids,
                 self.stream_config.retention,
@@ -158,16 +169,27 @@ impl DataStore {
             .map_err(st)?;
         }
         let all: Vec<i64> = events.iter().map(|e| e.id).collect();
-        storage::event::mark_delivered(&mut *tx, LEDGER_CONSUMER, &all)
+        storage::event::mark_delivered(&mut *tx, ledger, &all)
             .await
             .map_err(st)?;
         for ((tenant_id, table_id), srcs) in sources {
-            if let Err(e) = self
-                .fanout_derived(&mut *tx, &tenant_id, table_id, &srcs)
+            // 元の変更 1 件につき再配信は 1 回だけ（別の台帳 consumer のリレーも同じ変更を見る）。
+            let srcs = claim_fanout(&mut *tx, &tenant_id, srcs).await?;
+            if srcs.is_empty() {
+                continue;
+            }
+            // 失敗しても採番は止めない（派生の再配信は表示の鮮度の問題で、権限ではない）。Tx を
+            // 壊さないよう savepoint の中で行い、失敗したら巻き戻して再配信の台帳も戻す。
+            let mut sp = sqlx::Connection::begin(&mut *tx).await.map_err(map_db)?;
+            match self
+                .fanout_derived(&mut sp, &tenant_id, table_id, &srcs)
                 .await
             {
-                // 派生の再配信は表示の鮮度の問題（権限ではない）。採番は止めない。
-                tracing::warn!(error = %e, %table_id, "派生値の再配信イベントの発行に失敗");
+                Ok(()) => sp.commit().await.map_err(map_db)?,
+                Err(e) => {
+                    sp.rollback().await.map_err(map_db)?;
+                    tracing::warn!(error = %e, %table_id, "派生値の再配信イベントの発行に失敗");
+                }
             }
         }
         Ok(events.len())
@@ -291,6 +313,32 @@ impl DataStore {
         }
         Ok(())
     }
+}
+
+/// 再配信の台帳に元の変更を書けたもの（＝この呼び出しが再配信を担うもの）だけを返す。
+///
+/// 一意制約で直列化される: 並行の別リレーが同じ変更を先に書いていれば、そのコミットを待って
+/// 衝突として外れる（先のリレーがロールバックしたらこちらが担う）。
+async fn claim_fanout(
+    tx: &mut PgConnection,
+    tenant_id: &str,
+    srcs: Vec<Source>,
+) -> Result<Vec<Source>, DataError> {
+    let ids: Vec<i64> = srcs.iter().map(|s| s.event_id).collect();
+    let mine: Vec<i64> = sqlx::query_scalar(
+        "INSERT INTO data_stream_fanout (event_id, tenant_id) \
+         SELECT u.id, $2 FROM unnest($1::int8[]) AS u(id) \
+         ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
+    )
+    .bind(&ids)
+    .bind(tenant_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(map_db)?;
+    Ok(srcs
+        .into_iter()
+        .filter(|s| mine.contains(&s.event_id))
+        .collect())
 }
 
 enum RecordKeys<'a> {

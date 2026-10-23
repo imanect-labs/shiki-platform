@@ -7,7 +7,8 @@
 //!
 //! # 仕組み
 //!
-//! - 位置は**作成順（`record_int`・不変）**。並べ替えキーが更新で動くと位置が動き重複・欠落の源に
+//! - 位置は**内部の不変な位置（`record_int`）の順**（おおむね作成順だが、採番のキャッシュで厳密な
+//!   作成順ではない）。並べ替えキーが更新で動くと位置が動き重複・欠落の源に
 //!   なるので、スナップショット読取は `sort` を受け付けない（422）。
 //! - ページごとに「`snapshot_seq` より後に変わった行」（ストリームの `seq > S` と、まだ採番されて
 //!   いない outbox）を引き、**現在の本体からは除き**、その行の `S` 時点の値をリビジョンから復元して
@@ -39,7 +40,6 @@ use crate::policy::material::PolicyMaterial;
 use crate::record::RecordRow;
 use crate::store::DataStore;
 use crate::stream::outbox::{ChangeKind, RECORD_CHANGED_EVENT};
-use crate::stream::relay::{stream_key, LEDGER_CONSUMER};
 use crate::{map_db, DataError};
 
 /// 基準位置より後の変更として数える上限（超えたら 410＝取り直し）。
@@ -88,11 +88,11 @@ impl DataStore {
     ) -> Result<(QueryResult, Vec<DataRecord>), DataError> {
         if !query.sort.is_empty() || bq.is_aggregate() || query.with_count {
             return Err(DataError::Invalid(
-                "スナップショット読取は作成順で返します（sort・集計・件数は指定できません）".into(),
+                "スナップショット読取は内部の不変な位置の順で返します（sort・集計・件数は指定できません）".into(),
             ));
         }
         let st = |e: storage::StorageError| DataError::Internal(format!("stream: {e}"));
-        let stream = stream_key(table.id);
+        let stream = self.stream_key(table.id);
         let bounds = storage::event::stream_bounds(&mut *conn, &stream)
             .await
             .map_err(st)?;
@@ -134,7 +134,7 @@ impl DataStore {
             .fetch_all(&mut *conn)
             .await
             .map_err(map_db)?;
-        // このページが覆う作成順の範囲（満杯なら limit+1 件目の手前まで）。
+        // このページが覆う位置（record_int）の範囲（満杯なら limit+1 件目の手前まで）。
         let upper = if live.len() as i64 > limit {
             live.last().map_or(i64::MAX, |r| r.record_int)
         } else {
@@ -153,7 +153,7 @@ impl DataStore {
             .match_restored(conn, ctx, table, bq, m, &restored)
             .await?;
 
-        // ③ 作成順に混ぜて 1 ページ分。
+        // ③ 位置の順に混ぜて 1 ページ分。
         let mut page: Vec<(i64, RowOut)> = live
             .drain(..)
             .map(|f| (f.record_int, RowOut::Live(f.row)))
@@ -226,7 +226,7 @@ impl DataStore {
         }
         let pending = storage::event::undelivered_table_events(
             &mut *conn,
-            LEDGER_CONSUMER,
+            &self.stream_config.consumer,
             tenant_id,
             RECORD_CHANGED_EVENT,
             &table_id.to_string(),
