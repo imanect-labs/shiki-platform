@@ -247,12 +247,13 @@ impl LlmGateway {
     }
 
     /// チャットのモデル指定を組織の設定で解決する（許可外は `Err`・API は 400 に写す）。
+    /// 設定は呼び出し主体から見たもの（[`Self::settings_for`]・本人専用のモデルを除く）。
     pub async fn resolve_choice(
         &self,
         ctx: &AuthContext,
         choice: &ModelChoice,
     ) -> Result<Result<ResolvedChoice, ChoiceError>, sqlx::Error> {
-        let settings = self.inner.tenants.load(ctx).await?;
+        let settings = self.settings_for(ctx).await?;
         Ok(resolve_choice(
             &self.inner.config.catalog,
             &self.inner.config.auto,
@@ -270,7 +271,7 @@ impl LlmGateway {
         snapshot: &ResolvedChoice,
         skill_model: Option<&str>,
     ) -> Result<Result<ResolvedChoice, ChoiceError>, sqlx::Error> {
-        let settings = self.inner.tenants.load(ctx).await?;
+        let settings = self.settings_for(ctx).await?;
         Ok(tenant::resolve_at_run(
             &self.inner.config.catalog,
             &self.inner.config.auto,

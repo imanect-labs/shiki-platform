@@ -123,26 +123,24 @@ pub async fn list_models(
     AuthContextExt(ctx): AuthContextExt,
 ) -> Result<Json<LlmModelsResponse>, ApiError> {
     let gw = gateway(&state)?;
+    // 呼び出した本人から見た設定（使えない本人専用のモデルを除き、既定・Auto もそれに従う・#854）。
     let settings = gw
-        .tenant_settings(&ctx)
+        .settings_for(&ctx)
         .await
         .map_err(|e| ApiError::Internal(format!("tenant llm settings: {e}")))?;
     let catalog = gw.catalog();
-    let mut models = Vec::new();
-    for m in settings.enabled_models(catalog) {
-        // ChatGPT プランのモデルは連携した本人にだけ出す（#854）。
-        if !gw.model_visible_to(&ctx, m).await {
-            continue;
-        }
-        models.push(LlmModelOption {
+    let models = settings
+        .enabled_models(catalog)
+        .into_iter()
+        .map(|m| LlmModelOption {
             id: m.id.clone(),
             label: m.label().to_string(),
             description: m.description.clone(),
             provider_label: provider_label(gw, m.provider_id()),
             processed_abroad: m.processed_abroad,
             supports_effort: gw.supports_effort(m),
-        });
-    }
+        })
+        .collect();
     let auto = gw.auto_target(&settings).map(|(model, effort)| AutoTarget {
         label: catalog
             .get(&model)

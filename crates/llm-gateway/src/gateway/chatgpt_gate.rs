@@ -3,6 +3,10 @@
 //! プラン枠は連携した本人のものなので、生成（[`LlmGateway::stream`]）の前に必ず照合する。
 //! どの経路（チャット・エージェント・ワークフロー・ミニアプリ）も gateway を通るので、ここで
 //! 拒否すれば本人以外がプラン枠を使う道は無い。
+//!
+//! 組織の既定や Auto の振り先に本人専用のモデルが選ばれていても、他の利用者が壊れないよう、
+//! モデルの解決は呼び出し主体から見た設定（[`LlmGateway::settings_for`]）で行う。本人以外には
+//! 本人専用のモデルが無効に見えるので、既定は Auto へ、Auto は次の候補へ落ちる。
 
 use std::sync::Arc;
 
@@ -12,6 +16,7 @@ use super::LlmGateway;
 use crate::chatgpt::ChatGptAccount;
 use crate::config::{ModelEntry, ProviderKind};
 use crate::provider::LlmError;
+use crate::tenant::{TenantLlmSettings, AUTO_MODEL};
 
 impl LlmGateway {
     /// ChatGPT プランの接続（`llm.chatgpt` を有効にしたときだけ）。
@@ -27,15 +32,18 @@ impl LlmGateway {
         }
     }
 
+    /// 連携した本人だけが使えるモデル（ChatGPT プラン）か。
+    pub fn is_personal_model(&self, entry: &ModelEntry) -> bool {
+        self.inner
+            .providers
+            .get(entry.provider_id())
+            .is_some_and(|s| s.config.kind == ProviderKind::ChatgptPlan)
+    }
+
     /// モデル選択に出してよいか。ChatGPT プランのモデルは連携者にだけ見せる
     /// （他の利用者には選んでも使えないモデルになるため）。
     pub async fn model_visible_to(&self, ctx: &AuthContext, entry: &ModelEntry) -> bool {
-        let chatgpt = self
-            .inner
-            .providers
-            .get(entry.provider_id())
-            .is_some_and(|s| s.config.kind == ProviderKind::ChatgptPlan);
-        if !chatgpt {
+        if !self.is_personal_model(entry) {
             return true;
         }
         match self.chatgpt() {
@@ -43,6 +51,44 @@ impl LlmGateway {
             None => false,
         }
     }
+
+    /// 呼び出し主体から見た組織の AI 設定（モデルの解決・利用者向けの一覧に使う）。
+    ///
+    /// 使えない本人専用のモデルを許可リストから外し、既定がそれなら Auto にする。保存はしない
+    /// （管理画面は [`Self::tenant_settings`] で組織の設定そのものを読む）。
+    pub async fn settings_for(&self, ctx: &AuthContext) -> Result<TenantLlmSettings, sqlx::Error> {
+        let settings = self.inner.tenants.load(ctx).await?;
+        let catalog = &self.inner.config.catalog;
+        let mut hidden = Vec::new();
+        for m in &catalog.models {
+            if !self.model_visible_to(ctx, m).await {
+                hidden.push(m.id.as_str());
+            }
+        }
+        Ok(without_models(catalog, settings, &hidden))
+    }
+}
+
+/// `hidden` のモデルを使えないものとして見せる（既定がそれなら Auto）。
+fn without_models(
+    catalog: &crate::config::ModelCatalog,
+    mut settings: TenantLlmSettings,
+    hidden: &[&str],
+) -> TenantLlmSettings {
+    if hidden.is_empty() {
+        return settings;
+    }
+    let allowed = settings
+        .enabled_models(catalog)
+        .into_iter()
+        .filter(|m| !hidden.contains(&m.id.as_str()))
+        .map(|m| m.id.clone())
+        .collect();
+    settings.allowed_models = Some(allowed);
+    if hidden.contains(&settings.default_model.as_str()) {
+        settings.default_model = AUTO_MODEL.to_string();
+    }
+    settings
 }
 
 #[cfg(test)]
@@ -156,6 +202,62 @@ mod tests {
             Err(LlmError::Unavailable(_))
         ));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn others_fall_back_when_the_org_picks_a_personal_model() {
+        use crate::config::AutoConfig;
+        use crate::tenant::{resolve_choice, ChoiceError, ModelChoice};
+        let catalog = ModelCatalog {
+            default_model: "m".into(),
+            models: ["m", "n", "chatgpt:gpt"]
+                .into_iter()
+                .map(|id| ModelEntry {
+                    id: id.into(),
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        // 管理者が既定にも Auto の振り先にも ChatGPT のモデルを選び、選択も禁止した組織。
+        let org = TenantLlmSettings {
+            default_model: "chatgpt:gpt".into(),
+            auto_model: Some("chatgpt:gpt".into()),
+            allow_user_choice: false,
+            ..Default::default()
+        };
+        let auto = AutoConfig {
+            model: "n".into(),
+            ..Default::default()
+        };
+        let resolve = |s: &TenantLlmSettings, model: Option<&str>| {
+            resolve_choice(
+                &catalog,
+                &auto,
+                s,
+                |_| true,
+                &ModelChoice {
+                    model: model.map(str::to_string),
+                    effort: None,
+                },
+            )
+        };
+        // 本人（何も隠さない）は ChatGPT のモデルで動く。
+        let mine = without_models(&catalog, org.clone(), &[]);
+        assert_eq!(resolve(&mine, None).unwrap().model, "chatgpt:gpt");
+
+        // 他の利用者には無効に見え、既定は Auto へ、Auto は次の候補（デプロイ設定）へ落ちる。
+        let others = without_models(&catalog, org.clone(), &["chatgpt:gpt"]);
+        assert_eq!(others.default_model, AUTO_MODEL);
+        let got = resolve(&others, None).unwrap();
+        assert_eq!((got.model.as_str(), got.auto), ("n", true));
+        // 明示しても使えない（400）。組織の設定そのものは変えない。
+        let mut chooser = others.clone();
+        chooser.allow_user_choice = true;
+        assert_eq!(
+            resolve(&chooser, Some("chatgpt:gpt")),
+            Err(ChoiceError::ModelNotAllowed("chatgpt:gpt".into()))
+        );
+        assert_eq!(org.default_model, "chatgpt:gpt");
     }
 
     #[tokio::test]
