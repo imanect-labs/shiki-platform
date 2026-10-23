@@ -6,7 +6,6 @@ import { Database, Loader2, Plus, Table2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import * as React from "react";
 
-import { keyFromLabel } from "@/components/data/schema-editor";
 import { PageContainer } from "@/components/shell/page-container";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/use-toast";
 import { useMe } from "@/hooks/use-me";
 import { createTable, listTables, type DataTable } from "@/lib/data-api";
+import { keyFromLabel } from "@/lib/data-view";
 import { cn } from "@/lib/utils";
 
 const dateFmt = new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });

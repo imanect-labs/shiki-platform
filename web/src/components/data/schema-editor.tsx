@@ -36,27 +36,11 @@ import {
   type FieldType,
   type TableIndexOverview,
 } from "@/lib/data-api";
-import { FIELD_TYPE_LABELS } from "@/lib/data-view";
+import { FIELD_TYPE_LABELS, keyFromLabel } from "@/lib/data-view";
 import { cn } from "@/lib/utils";
 
 /// 画面から追加できる型（派生列・リンクは別の画面で定義する）。
 const ADDABLE_TYPES: FieldType[] = ["text", "number", "date", "date_time", "select", "multi_select"];
-
-/// 表示名から参照名を作る（英数字だけなら小文字のスネークケース、そうでなければ連番）。
-export function keyFromLabel(label: string, taken: ReadonlySet<string>): string {
-  const ascii = label
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  let base = /^[a-z][a-z0-9_]*$/.test(ascii) ? ascii.slice(0, 48) : "col";
-  if (base === "col" || taken.has(base)) {
-    let i = 1;
-    while (taken.has(`${base}_${i}`)) i += 1;
-    base = `${base}_${i}`;
-  }
-  return base;
-}
 
 type Draft = FieldDef & { isNew?: boolean };
 

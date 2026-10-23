@@ -140,7 +140,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   const pending = React.useRef<Set<string>>(new Set());
   const [version, setVersion] = React.useState(0);
   const bump = React.useCallback(() => setVersion((v) => v + 1), []);
-  const [initial, setInitial] = React.useState<"loading" | "ready" | "error">("loading");
+  const [initial, setInitial] = React.useState<"loading" | "ready" | "error" | "preparing">("loading");
   const [newRows, setNewRows] = React.useState(0);
   const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set());
   const [selection, setSelection] = React.useState<GridSelection>({
@@ -205,7 +205,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       bump();
     } catch (e) {
       if (gen !== generation.current) return;
-      if (first) setInitial("error");
+      // 索引の準備中・承認待ちは画面側の案内（進捗・承認）に任せ、ここは失敗として見せない。
+      const waiting = e instanceof DataApiError && (e.indexPreparing || e.approvalRequired);
+      if (first) setInitial(waiting ? "preparing" : "error");
       onErrorRef.current?.(e instanceof Error ? e : new Error(String(e)));
     } finally {
       if (gen === generation.current) loading.current = false;
@@ -500,6 +502,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       )}
       data-testid="data-grid"
       data-loaded={status.current.loaded}
+      data-first-render-ms={status.current.firstRenderMs ?? undefined}
     >
       {initial === "loading" ? (
         <div
@@ -508,6 +511,12 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         >
           <Loader2 className="size-4 animate-spin" aria-hidden />
           読み込み中…
+        </div>
+      ) : null}
+      {initial === "preparing" ? (
+        <div className="absolute inset-0 z-10 flex items-center justify-center gap-2 bg-card text-sm text-muted-foreground" role="status">
+          <Loader2 className="size-4 animate-spin" aria-hidden />
+          並べ替え・絞り込みの準備ができたら表示します
         </div>
       ) : null}
       {initial === "error" ? (
@@ -533,7 +542,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           type="button"
           onClick={reset}
           data-testid="data-grid-new-rows"
-          className="absolute left-1/2 top-11 z-20 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-primary/30 bg-card px-3 py-1.5 text-xs font-medium text-primary shadow-md transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="absolute bottom-4 left-1/2 z-20 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-primary/30 bg-card px-3 py-1.5 text-xs font-medium text-primary shadow-md transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <RefreshCw className="size-3.5" aria-hidden />
           新しいレコード {newRows} 件 · 表示する

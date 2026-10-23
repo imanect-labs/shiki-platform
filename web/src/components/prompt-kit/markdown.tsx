@@ -18,7 +18,13 @@ import { isYuiLanguage } from "@imanect/yui/react";
 import { CodeBlock } from "./code-block";
 // 引用・箇条書きの中の図はボタンを出さない（重い図の描画部とは別に、軽いコンテキストだけ読む）。
 import { YuiNestedContext } from "./yui-actions";
-import { DataGridHostContext, MiniAppDataGrid } from "@/components/data/miniapp-data-grid";
+import { DataGridHostContext } from "@/components/data/data-grid-host";
+
+/// 画面の表（```data_grid）はミニアプリの画面でだけ使うので、グリッド本体は遅延読み込みする
+/// （会話・ノートの Markdown の初回読み込みに glide-data-grid を載せない）。
+const MiniAppDataGrid = React.lazy(() =>
+  import("@/components/data/miniapp-data-grid").then((m) => ({ default: m.MiniAppDataGrid })),
+);
 
 /// ```ui の図は描画部（@imanect/yui の SVG レンダラー・書き出し）が重いので、図が現れたときだけ
 /// 読み込む。読み込み中は図と同じくらいの高さの枠を置いてレイアウトが跳ねないようにする。
@@ -147,7 +153,15 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
   // ```data_grid はミニアプリの画面の表（トップレベルだけ・サーバーと同じ規則）。中身の 1 行目が別名。
   if (dataGrid && gridHost && !nested && closed) {
     const alias = code.split(/\r?\n/)[0]?.trim() ?? "";
-    if (alias) return <MiniAppDataGrid alias={alias} />;
+    if (alias) {
+      return (
+        <React.Suspense
+          fallback={<div className="my-4 h-24 animate-pulse rounded-xl border bg-muted/40" aria-label="表を読み込み中" />}
+        >
+          <MiniAppDataGrid alias={alias} />
+        </React.Suspense>
+      );
+    }
   }
   // 生成中でフェンスがまだ閉じていないコードはハイライトしない（トークンごとに shiki を回さない）。
   if (!ui) return <CodeBlock code={code} lang={lang} pending={streaming && !closed} />;

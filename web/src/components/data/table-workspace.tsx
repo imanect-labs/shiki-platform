@@ -37,8 +37,10 @@ import { ViewSwitcher } from "@/components/data/view-switcher";
 import { usePageChrome } from "@/components/shell/page-header-context";
 import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented-control";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
 import { useMe } from "@/hooks/use-me";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import {
   DataApiError,
   getView,
@@ -325,6 +327,14 @@ export function TableWorkspace({
     if (kind === "calendar") setSpec({ kind: "calendar", date_field: dateCol?.key ?? "_created_at", title_field: firstText });
   };
   const canKanban = columns.some((c) => c.field?.type === "select");
+  const narrow = useMediaQuery("(max-width: 639.98px)");
+  const kindOptions = [
+    { value: "grid", label: "表", icon: Table2, testId: "view-kind-grid" },
+    // カンバンは単一選択の列が要る（無いテーブルでは出さない）。
+    ...(canKanban ? [{ value: "kanban", label: "カンバン", icon: KanbanSquare }] : []),
+    { value: "gallery", label: "カード", icon: LayoutGrid },
+    { value: "calendar", label: "カレンダー", icon: CalendarDays },
+  ];
 
   usePageChrome(
     () => ({
@@ -395,23 +405,36 @@ export function TableWorkspace({
             </Button>
           ) : null}
         </div>
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-xs tabular-nums text-muted-foreground" data-testid="data-count" aria-live="polite">
+        <div className="ml-auto flex items-center gap-2 max-sm:w-full max-sm:justify-end">
+          <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground" data-testid="data-count" aria-live="polite">
             {countLabel(status)}
           </span>
-          <SegmentedControl
-            aria-label="表示形式"
-            size="sm"
-            value={spec.kind}
-            onValueChange={(v) => switchKind(v as ViewSpec["kind"])}
-            options={[
-              { value: "grid", label: "表", icon: Table2, testId: "view-kind-grid" },
-              // カンバンは単一選択の列が要る（無いテーブルでは出さない）。
-              ...(canKanban ? [{ value: "kanban", label: "カンバン", icon: KanbanSquare }] : []),
-              { value: "gallery", label: "カード", icon: LayoutGrid },
-              { value: "calendar", label: "カレンダー", icon: CalendarDays },
-            ]}
-          />
+          {narrow ? (
+            // 狭い画面はセグメントの文字が折り返すので、選択式にする。
+            <Select value={spec.kind} onValueChange={(v) => switchKind(v as ViewSpec["kind"])}>
+              <SelectTrigger aria-label="表示形式" className="h-8 w-32 text-[13px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {kindOptions.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    <span className="inline-flex items-center gap-1.5">
+                      <o.icon className="size-3.5" aria-hidden />
+                      {o.label}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <SegmentedControl
+              aria-label="表示形式"
+              size="sm"
+              value={spec.kind}
+              onValueChange={(v) => switchKind(v as ViewSpec["kind"])}
+              options={kindOptions}
+            />
+          )}
           {viewer.can_edit ? (
             <Button size="sm" className="h-8" onClick={() => setRecordOpen(true)} data-testid="add-record">
               <Plus className="size-4" aria-hidden />

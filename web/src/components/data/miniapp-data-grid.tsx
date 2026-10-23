@@ -11,29 +11,17 @@ import { AlertTriangle, Table2 } from "lucide-react";
 import * as React from "react";
 
 import { DataGrid, type DataGridStatus } from "@/components/data/data-grid";
+import { DataGridHostContext } from "@/components/data/data-grid-host";
 import {
   getTable,
   getViewerContext,
-  runMiniAppDataGrid,
   type DataTable,
   type DataViewRun,
   type QueryResult,
 } from "@/lib/data-api";
 import { resolveColumns } from "@/lib/data-view";
 
-/// 画面の表を描くための実行先（ミニアプリの画面だけが提供する）。
-export type DataGridHost = {
-  run: (alias: string, page: { cursor?: string; limit?: number }) => Promise<DataViewRun>;
-};
-
-export const DataGridHostContext = React.createContext<DataGridHost | null>(null);
-
 const EMPTY_SORT = new Map<string, "asc" | "desc">();
-
-/// ミニアプリ（id・版）向けの実行先。
-export function miniAppDataGridHost(appId: string, version: number): DataGridHost {
-  return { run: (alias, page) => runMiniAppDataGrid(appId, version, alias, page) };
-}
 
 export function MiniAppDataGrid({ alias }: { alias: string }) {
   const host = React.useContext(DataGridHostContext);
@@ -98,7 +86,13 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
           {status ? `${status.loaded.toLocaleString("ja-JP")}${status.done ? "" : "+"} 件` : ""}
         </span>
       </figcaption>
-      <div className="h-[22rem]">
+      {/* 行が少ない表は行の分だけの高さにする（空行で縦に間延びさせない・最大 22rem）。 */}
+      <div
+        style={{
+          height:
+            status?.done && status.loaded < 9 ? `${36 + Math.max(status.loaded, 1) * 34 + 2}px` : "22rem",
+        }}
+      >
         {table && first ? (
           <DataGrid
             tableId={first.table_id}

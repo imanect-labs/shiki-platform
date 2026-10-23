@@ -33,6 +33,7 @@ import { toast } from "@/components/ui/use-toast";
 import { useMe } from "@/hooks/use-me";
 import {
   createView,
+  DataApiError,
   updateView,
   type DataTable,
   type DataViewBody,
@@ -81,7 +82,15 @@ export function ViewSwitcher({
       toast({ title: `「${current.name}」を保存しました`, description: `版 ${v.version}` });
       onSaved(v.id, v.version, current.name);
     } catch (e) {
-      fail(e);
+      if (e instanceof DataApiError && e.status === 409) {
+        toast({
+          variant: "destructive",
+          title: "他の画面でこのビューが更新されました",
+          description: "開き直してからもう一度保存するか、「名前を付けて保存」してください。",
+        });
+      } else {
+        fail(e);
+      }
     } finally {
       setBusy(false);
     }
@@ -98,7 +107,15 @@ export function ViewSwitcher({
       setSaveAs(false);
       onSaved(v.id, v.version, n);
     } catch (err) {
-      fail(err);
+      if (err instanceof DataApiError && err.status === 409) {
+        toast({
+          variant: "destructive",
+          title: "同じ名前のビューが既にあります",
+          description: "別の名前にしてください（名前はあなたのビュー・アプリなどで重ならないようにします）。",
+        });
+      } else {
+        fail(err);
+      }
     } finally {
       setBusy(false);
     }

@@ -993,25 +993,27 @@ pub enum ViewSpec {
 }
 
 pub struct GridView {
-    pub columns: Vec<ColumnConfig>,   // 表示順・幅・固定・非表示
+    pub columns: Vec<ColumnConfig>,   // 並び順＝表示順・見出し・幅・固定・非表示
     pub row_height: RowHeight,
-    pub group_by: Vec<GroupConfig>,   // 行グループ化（折りたたみ）
-    pub conditional_format: Vec<ConditionalFormat>, // 条件付き書式（閉じた条件木）
-    pub sort_override: Option<Vec<SortKey>>,
+    pub group_by: Vec<GroupConfig>,   // 行グループ化（折りたたみ・並べ替えの先頭キーになる）
+    pub conditional_format: Vec<ConditionalFormat>, // 条件付き書式（閉じた条件木＝クエリ IR の Condition）
+    // 並べ替えはビューのクエリ（DataViewBody.query.sort）を正とし、表示設定には重複して持たない
 }
 
 pub struct ColumnConfig {
-    pub field: FieldId,
+    pub field: String,          // 参照名 key（外部契約は key・擬似列 _owner / _created_at / _updated_at も可）
+    pub label: Option<String>,  // このビューだけの見出し（テーブルの表示名は変えない）
     pub width: Option<u16>,
     pub hidden: bool,
     pub frozen: bool,
     /// 並べ替えに使う代替列（日本語の読み仮名列など・§3.4）
-    pub sort_by: Option<FieldId>,
+    pub sort_by: Option<String>,
 }
 ```
 
 - **サーバが検証する**: 存在しない `field_id`・マスク列の表示指定・`PerViewer` 列でのソート指定を拒否
-- **1 ビューあたりのルックアップ・ロールアップ列は既定 12 本まで**（テナント設定で変更可）。各列が 1 ページごとに
+- 検証の失敗は 422（構造化した理由・`invalid_query`。ルックアップ列の上限超過は `limit_exceeded`）。マスク列の参照だけはクエリと同じ 403
+- **1 ビューあたりのルックアップ・ロールアップ列は既定 12 本まで**（テナント設定 `max_view_lookup_columns` で変更可）。各列が 1 ページごとに
   参照先の行述語つきの解決を要するため。超過はスキーマ検証で 422。SharePoint のリストビューも
   ルックアップ等の結合を 12 本までに制限している（[Microsoft サポート](https://support.microsoft.com/en-us/sharepoint/lists/data-and-lists/list-view-threshold-for-large-lists-and-libraries)）。
   解決は列ごとの N+1 ではなく、ページの `record_int` の集合で列ごとに 1 本の一括クエリにする（query-optimizer.md §6.4）

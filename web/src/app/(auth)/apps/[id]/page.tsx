@@ -13,7 +13,7 @@ import { toast } from "@/components/ui/use-toast";
 import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { MiniAppEditorDialog } from "@/components/artifacts/miniapp-editor";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
-import { DataGridHostContext, miniAppDataGridHost } from "@/components/data/miniapp-data-grid";
+import { DataGridHostContext, miniAppDataGridHost } from "@/components/data/data-grid-host";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { hasOpenRuns, YuiActionContext, type YuiActionHost } from "@/components/prompt-kit/yui-actions";
 import { useMe } from "@/hooks/use-me";
