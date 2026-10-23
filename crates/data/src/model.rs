@@ -47,6 +47,12 @@ impl FieldType {
             FieldType::Lookup | FieldType::Computed | FieldType::Rollup | FieldType::Formula
         )
     }
+
+    /// 部分一致検索（`searchable`・`data_index_search`）を宣言できる型か。text は全文 1 行、
+    /// multi_select は**要素ごとに 1 行**（`Contains` は「要素のいずれかの部分文字列」・query-optimizer §3.1）。
+    pub fn supports_search(self) -> bool {
+        matches!(self, FieldType::Text | FieldType::MultiSelect)
+    }
 }
 
 /// lookup 定義: `via_field`（自テーブルの record_ref フィールド）を辿り、
@@ -135,7 +141,7 @@ pub struct FieldDef {
     /// フィルタ/ソート対象（pivot 索引テーブルに値の索引行を持つ・既存レコードはバックフィル）。
     #[serde(default)]
     pub indexed: bool,
-    /// 部分一致検索の対象（Task 15.2 の `data_index_search` へ載せる・text 型のみ）。
+    /// 部分一致検索の対象（`data_index_search` へ載せる・text と multi_select（要素ごと）のみ）。
     #[serde(default)]
     pub searchable: bool,
     /// select / multi_select の選択肢（閉じた集合）。

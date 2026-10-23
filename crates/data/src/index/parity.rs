@@ -296,15 +296,23 @@ async fn search_counts(
     jk: &str,
     fid: i16,
 ) -> Result<(i64, i64), DataError> {
-    let sql = "WITH e AS (SELECT r.record_int, r.data ->> $3 AS v FROM data_record r \
+    // 期待集合: text は全文 1 行（ord 0）、multi_select は要素ごとに 1 行（ord = 配列内の位置）。
+    let sql =
+        "WITH e AS (SELECT r.record_int, 0::int2 AS ord, r.data ->> $3 AS v FROM data_record r \
                          WHERE r.tenant_int = $1 AND r.table_int = $2 \
-                           AND jsonb_typeof(r.data -> $3) = 'string'), \
+                           AND jsonb_typeof(r.data -> $3) = 'string' \
+                         UNION ALL \
+                         SELECT r.record_int, (x.n - 1)::int2, x.v FROM data_record r \
+                         CROSS JOIN LATERAL jsonb_array_elements_text( \
+                             CASE WHEN jsonb_typeof(r.data -> $3) = 'array' THEN r.data -> $3 \
+                                  ELSE '[]'::jsonb END) WITH ORDINALITY AS x(v, n) \
+                         WHERE r.tenant_int = $1 AND r.table_int = $2), \
                     a AS (SELECT record_int, ord, val FROM data_index_search \
                          WHERE tenant_int = $1 AND table_int = $2 AND field_id = $4) \
                SELECT (SELECT count(*) FROM e WHERE NOT EXISTS (SELECT 1 FROM a \
-                         WHERE a.record_int = e.record_int AND a.ord = 0 AND a.val = e.v)), \
+                         WHERE a.record_int = e.record_int AND a.ord = e.ord AND a.val = e.v)), \
                       (SELECT count(*) FROM a WHERE NOT EXISTS (SELECT 1 FROM e \
-                         WHERE a.record_int = e.record_int AND a.ord = 0 AND a.val = e.v))";
+                         WHERE a.record_int = e.record_int AND a.ord = e.ord AND a.val = e.v))";
     counts(conn, sql, keys, jk, fid).await
 }
 

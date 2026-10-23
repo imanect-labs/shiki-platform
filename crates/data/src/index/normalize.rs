@@ -10,7 +10,7 @@
 //! | number | `data_index_num` | 保存形の数値（NumericSpec で正規化済み）を `numeric` へ |
 //! | record_ref | `data_link` | 参照先 `(dst_table_int, dst_record)`（record_int への解決は書込側） |
 //! | unique 宣言 | `data_unique` | 文字列はそのまま・数値は 10 進正準形・長い値は `<先頭 2,000B>:<sha256>` |
-//! | searchable 宣言 | `data_index_search` | 全文（trigram GIN はキー長の制約を受けない） |
+//! | searchable 宣言 | `data_index_search` | 全文（trigram GIN はキー長の制約を受けない）。multi_select は要素ごとに 1 行 |
 //! | 擬似列 owner / created_at / updated_at | `data_index_text` | principal id / UTC 固定幅 ISO-8601 |
 
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -173,7 +173,18 @@ pub(crate) fn field_keys(
             },
             _ => return Err(bad()),
         }),
-        IndexTable::Search => FieldKeys::Search(vec![(0, v.as_str().ok_or_else(bad)?.to_string())]),
+        // multi_select は要素ごとに 1 行（`ord` = 配列内の位置・`Contains` は要素のいずれかの部分文字列）。
+        IndexTable::Search => FieldKeys::Search(match f.field_type {
+            FieldType::MultiSelect => {
+                let arr = v.as_array().ok_or_else(bad)?;
+                check_multi(f, arr.len(), max_multi_values)?;
+                arr.iter()
+                    .enumerate()
+                    .map(|(i, e)| Ok((ord(i)?, e.as_str().ok_or_else(bad)?.to_string())))
+                    .collect::<Result<Vec<_>, DataError>>()?
+            }
+            _ => vec![(0, v.as_str().ok_or_else(bad)?.to_string())],
+        }),
     };
     Ok(Some(keys))
 }

@@ -96,9 +96,9 @@ pub(crate) fn validate_identity(schema: &TableSchema) -> Result<(), DataError> {
                 )));
             }
         }
-        if f.searchable && f.field_type != FieldType::Text {
+        if f.searchable && !f.field_type.supports_search() {
             return Err(DataError::Invalid(format!(
-                "フィールド '{}': searchable は text 型にのみ指定できます",
+                "フィールド '{}': searchable は text・multi_select 型にのみ指定できます",
                 f.key
             )));
         }

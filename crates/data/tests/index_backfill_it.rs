@@ -512,6 +512,202 @@ async fn schema_change_promotes_and_demotes_indexes() {
     assert_eq!(states(&ledger(&pool, eti, etb).await), vec!["active"]);
 }
 
+/// multi_select の `searchable`（監査 B2-9）: 要素ごとに `data_index_search` へ載り、書込・バックフィル・
+/// building 中の write-through・更新・削除・一括取込・parity・降格を通常の索引と同じ規則で通る。
+/// `contains` / `ends_with` は「要素のいずれかの部分文字列」（query-optimizer §3.1）。
+#[tokio::test]
+async fn multi_select_searchable_follows_the_index_lifecycle() {
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool.clone());
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let mut tags = field("tags", FieldType::MultiSelect);
+    tags.indexed = true;
+    tags.options = vec!["東京本社".into(), "大阪支社".into(), "札幌".into()];
+    let table = create_table(&store, &c, "ms_search", schema(vec![tags])).await;
+    let mut ids = Vec::new();
+    for i in 0..30 {
+        let v = match i % 3 {
+            0 => json!(["東京本社", "大阪支社"]),
+            1 => json!(["札幌"]),
+            _ => json!([]),
+        };
+        ids.push(
+            store
+                .create_record(&c, table.id, json!({ "tags": v }), None)
+                .await
+                .unwrap()
+                .id,
+        );
+    }
+    let (ti, tb) = keys_of(&pool, &tenant, table.id).await;
+    let fid = i16::try_from(table.schema.field("tags").unwrap().id).unwrap();
+    let search_rows = |pool: PgPool| async move {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM data_index_search WHERE tenant_int = $1 AND table_int = $2 \
+             AND field_id = $3",
+        )
+        .bind(ti)
+        .bind(tb)
+        .bind(fid)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    let search_state = |pool: PgPool| async move {
+        ledger(&pool, ti, tb)
+            .await
+            .into_iter()
+            .filter(|(f, t, _)| *f == fid && *t == 5)
+            .map(|(_, _, s)| s)
+            .collect::<Vec<_>>()
+    };
+    // 部分一致は searchable の宣言が要る（宣言前は 400）。
+    let contains = |op: data::CondOp, s: &str| data::DataQuery {
+        filter: Some(data::Condition::cmp("tags", op, Some(json!(s)))),
+        limit: Some(100),
+        ..Default::default()
+    };
+    assert!(store
+        .run_query(
+            &c,
+            table.id,
+            &contains(data::CondOp::Contains, "大阪"),
+            None
+        )
+        .await
+        .is_err());
+
+    // 昇格: 既存レコードがあるので building。building 中の書込は write-through。
+    let mut next = table.schema.clone();
+    next.fields[0].searchable = true;
+    let up = store
+        .update_table_schema(&c, table.id, next, None, None)
+        .await
+        .unwrap();
+    assert_eq!(search_state(pool.clone()).await, vec!["building"]);
+    let during = store
+        .create_record(&c, table.id, json!({ "tags": ["大阪支社"] }), None)
+        .await
+        .unwrap();
+    store.backfill_table_index(&tenant, table.id).await.unwrap();
+    assert_eq!(search_state(pool.clone()).await, vec!["active"]);
+    // 要素ごとに 1 行: 10 件 × 2 要素 ＋ 10 件 × 1 要素 ＋ building 中の 1 件。
+    assert_eq!(search_rows(pool.clone()).await, 31);
+    let report = store.verify_index_parity(&tenant, table.id).await.unwrap();
+    assert!(report.is_consistent(), "{report:?}");
+
+    let hits = |r: data::QueryResult| r.items.unwrap_or_default().len();
+    let r = store
+        .run_query(
+            &c,
+            table.id,
+            &contains(data::CondOp::Contains, "大阪"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(hits(r), 11, "要素のいずれかの部分文字列");
+    let r = store
+        .run_query(
+            &c,
+            table.id,
+            &contains(data::CondOp::EndsWith, "本社"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(hits(r), 10);
+    let not = data::DataQuery {
+        filter: Some(data::Condition::Not(Box::new(data::Condition::cmp(
+            "tags",
+            data::CondOp::Contains,
+            Some(json!("大阪")),
+        )))),
+        limit: Some(100),
+        ..Default::default()
+    };
+    assert_eq!(
+        hits(store.run_query(&c, table.id, &not, None).await.unwrap()),
+        20,
+        "否定は補集合（値なしの行を含む）"
+    );
+
+    // 更新・削除で要素の行が入れ替わる。
+    let first = store.get_record(&c, table.id, ids[0], None).await.unwrap();
+    store
+        .update_record(
+            &c,
+            table.id,
+            ids[0],
+            json!({ "tags": ["札幌"] }),
+            first.rev,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .delete_record(&c, table.id, during.id, during.rev, None)
+        .await
+        .unwrap();
+    assert_eq!(search_rows(pool.clone()).await, 29);
+    let r = store
+        .run_query(
+            &c,
+            table.id,
+            &contains(data::CondOp::Contains, "大阪"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(hits(r), 9);
+
+    // 一括取込（索引を同じ Tx で書く）も同じ規則で載る。
+    let rows: Vec<data::BulkImportRow> = (0..5)
+        .map(|i| data::BulkImportRow {
+            key: Some(format!("k{i}")),
+            data: json!({ "tags": ["東京本社", "札幌"] }),
+        })
+        .collect();
+    let imp = store
+        .start_bulk_import(
+            &c,
+            table.id,
+            rows,
+            data::BulkImportOptions {
+                index_mode: data::BulkIndexMode::Immediate,
+                abort_on_invalid: true,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let step = store.run_bulk_import(&tenant, table.id, imp).await.unwrap();
+    assert_eq!(step.status, "done");
+    assert_eq!(search_rows(pool.clone()).await, 39);
+    let report = store.verify_index_parity(&tenant, table.id).await.unwrap();
+    assert!(report.is_consistent(), "{report:?}");
+
+    // 降格: searchable を外すと absent・行は同じ Tx で消え、部分一致は再び 400。
+    let mut down = up.schema.clone();
+    down.fields[0].searchable = false;
+    store
+        .update_table_schema(&c, table.id, down, None, None)
+        .await
+        .unwrap();
+    assert_eq!(search_state(pool.clone()).await, vec!["absent"]);
+    assert_eq!(search_rows(pool.clone()).await, 0);
+    assert!(store
+        .run_query(
+            &c,
+            table.id,
+            &contains(data::CondOp::Contains, "大阪"),
+            None
+        )
+        .await
+        .is_err());
+}
+
 /// purge_tenant が索引テーブル・リンク宣言・台帳・進捗を全て消す。
 #[tokio::test]
 async fn purge_tenant_removes_index_tables() {

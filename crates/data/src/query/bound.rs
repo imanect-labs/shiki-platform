@@ -525,7 +525,7 @@ impl<'a> Binder<'a> {
             key: f.key.clone(),
             ty: Some(f.field_type),
             kind,
-            searchable: f.searchable && f.field_type == FieldType::Text,
+            searchable: f.searchable && f.field_type.supports_search(),
             ref_table: f.ref_table,
             derived: false,
         };
@@ -581,7 +581,7 @@ impl<'a> Binder<'a> {
                 self.schema
                     .fields
                     .iter()
-                    .filter(|f| f.searchable && f.field_type == FieldType::Text)
+                    .filter(|f| f.searchable && f.field_type.supports_search())
                     .filter(|f| !self.masked.contains(&f.key))
                     .map(|f| f.key.clone())
                     .collect()

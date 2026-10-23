@@ -144,12 +144,28 @@ fn display_name_allows_japanese_and_rejects_control_chars() {
 }
 
 #[test]
-fn searchable_only_on_text() {
+fn searchable_only_on_text_and_multi_select() {
     let mut f = FieldDef::new("n", FieldType::Number);
     f.searchable = true;
     let mut s = schema(vec![f]);
     assign_field_ids(None, &mut s).unwrap();
     assert!(validate_identity(&s).is_err());
+    // multi_select は要素ごとに部分一致の索引行を持てる（query-optimizer §3.1 の `Contains`）。
+    for ty in [FieldType::Text, FieldType::MultiSelect] {
+        let mut f = FieldDef::new("t", ty);
+        f.searchable = true;
+        f.options = vec!["a".into()];
+        let mut s = schema(vec![f]);
+        assign_field_ids(None, &mut s).unwrap();
+        assert!(validate_identity(&s).is_ok(), "{ty:?}");
+    }
+    for ty in [FieldType::Select, FieldType::UserRef, FieldType::Date] {
+        let mut f = FieldDef::new("x", ty);
+        f.searchable = true;
+        let mut s = schema(vec![f]);
+        assign_field_ids(None, &mut s).unwrap();
+        assert!(validate_identity(&s).is_err(), "{ty:?}");
+    }
 }
 
 #[test]

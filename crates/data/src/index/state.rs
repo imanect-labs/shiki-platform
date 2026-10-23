@@ -37,7 +37,7 @@ use crate::{map_db, DataError};
 /// - `record_ref` は常に `data_link`（リンクはオプトインではない・カーディナリティを DB で強制する）
 /// - `indexed || unique` は型に応じた値索引（number = num、それ以外 = text。filter/sort の到達可能性は
 ///   `indexed || unique` で判定するため unique 列にも値索引を持たせる・§5.2）
-/// - `unique` は `data_unique`、`searchable`（text のみ）は `data_index_search`
+/// - `unique` は `data_unique`、`searchable`（text・multi_select の要素）は `data_index_search`
 /// - 派生フィールドは**材料化する列**（`invariant` かつ `indexed`・Task 15.4）だけ、値の型に応じて
 ///   num / text。行は材料化（[`crate::derived::materialize`]）が書く（本体からのバックフィルは対象外）
 /// - 対称列（逆リンク・読取専用）は持たない（逆方向行は参照元の書込が同じ Tx で書く）
@@ -73,7 +73,7 @@ pub(crate) fn desired(schema: &TableSchema) -> BTreeSet<(FieldId, IndexTable)> {
         if f.unique {
             out.insert((f.id, IndexTable::Unique));
         }
-        if f.searchable && f.field_type == FieldType::Text {
+        if f.searchable && f.field_type.supports_search() {
             out.insert((f.id, IndexTable::Search));
         }
     }

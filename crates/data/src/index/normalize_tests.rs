@@ -67,6 +67,27 @@ fn multi_select_one_row_per_element_and_limit() {
 }
 
 #[test]
+fn multi_select_search_one_row_per_element() {
+    let f = field(FieldType::MultiSelect);
+    let keys = field_keys(&f, IndexTable::Search, &json!(["東京本社", "大阪"]), 50)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        keys,
+        FieldKeys::Search(vec![(0, "東京本社".into()), (1, "大阪".into())]),
+        "要素ごとに 1 行（ord は配列内の位置）"
+    );
+    assert!(field_keys(&f, IndexTable::Search, &json!([]), 50)
+        .unwrap()
+        .is_some_and(|k| k == FieldKeys::Search(vec![])));
+    assert!(field_keys(&f, IndexTable::Search, &json!(["a", "b", "c"]), 2).is_err());
+    assert!(field_keys(&f, IndexTable::Search, &json!("a"), 50).is_err());
+    // text は全文 1 行のまま。
+    let t = field_keys(&field(FieldType::Text), IndexTable::Search, &json!("x"), 50).unwrap();
+    assert_eq!(t, Some(FieldKeys::Search(vec![(0, "x".into())])));
+}
+
+#[test]
 fn null_has_no_rows_and_wrong_shape_is_an_error() {
     assert!(
         field_keys(&field(FieldType::Text), IndexTable::Text, &json!(null), 50)

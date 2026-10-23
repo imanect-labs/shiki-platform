@@ -5,11 +5,9 @@
 //! 本体経路（`ReadPath::Body`・切戻し用の v1 方式）の両方で「その行が条件に合うか」を問い、表の `expect` と
 //! 一致することを固定する（ワークフローの分岐・参照評価器・SQL の 3 者が同じ行を選ぶ）。
 //!
-//! 例外（既知の乖離・結果を誤るのではなく入口で 400 にする）: multi_select の部分一致（`contains` /
-//! `ends_with`）。部分一致は `searchable` 宣言の列だけに許し、`searchable` は text 型にしか付けられない
-//! （`field_key::validate_identity`）ので、実テーブルの multi_select では必ず拒否になる。参照評価器の
-//! 単体テストは束縛の検査を通る形（searchable）で列を作るので表の `expect` を返す。拒否であることと、
-//! 例外がこの組に限られることを固定する（表の意味論の側を変えるかは設計判断）。
+//! multi_select の部分一致（`contains` / `ends_with`）も `searchable` を宣言した列で実行する（要素ごとに
+//! `data_index_search` へ載る・query-optimizer.md §3.1「要素のいずれかの部分文字列」・監査 B2-9）。
+//! 例外は無い（表の全行が両経路で `expect` と一致する）。
 
 #![allow(
     clippy::unwrap_used,
@@ -41,6 +39,8 @@ fn schema_for(ty: &str, cases: &[&Value]) -> data::TableSchema {
         "number" => field("v", FieldType::Number),
         "multi_select" => {
             let mut f = field("v", FieldType::MultiSelect);
+            // 要素ごとの部分一致（data_index_search に要素ごとに載る）。
+            f.searchable = true;
             // 値と比較値に現れる文字列を選択肢にする（選択肢外の値は書けない）。
             let mut opts = BTreeSet::new();
             for c in cases {
@@ -76,7 +76,7 @@ async fn sql_paths_match_the_shared_semantics_table() {
 
     let mut failures = Vec::new();
     let mut checked = 0;
-    let mut rejected = 0;
+    let mut partial = 0;
     for ty in ["text", "number", "multi_select"] {
         let rows: Vec<(usize, &Value)> = cases
             .iter()
@@ -106,31 +106,8 @@ async fn sql_paths_match_the_shared_semantics_table() {
                 ..Default::default()
             };
             let expect = case["expect"].as_bool().unwrap();
-            if ty == "multi_select" && matches!(op, CondOp::Contains | CondOp::EndsWith) {
-                // 既知の例外: searchable を宣言できない型の部分一致は入口で拒否（誤った結果は返さない）。
-                for r in [
-                    store.run_query(&c, t.id, &q, None).await.map(|_| ()),
-                    store
-                        .run_query_debug(
-                            &c,
-                            t.id,
-                            &q,
-                            &QueryTuning {
-                                read_path: ReadPath::Body,
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                        .map(|_| ()),
-                ] {
-                    match r {
-                        Err(data::DataError::Invalid(m)) if m.contains("searchable") => {}
-                        other => failures.push(format!("[例外] {case} → 拒否されない: {other:?}")),
-                    }
-                }
-                rejected += 1;
-                checked += 1;
-                continue;
+            if matches!(op, CondOp::Contains | CondOp::EndsWith) {
+                partial += 1;
             }
             let hit = |r: data::QueryResult| !r.items.unwrap_or_default().is_empty();
             match store.run_query(&c, t.id, &q, None).await {
@@ -159,13 +136,10 @@ async fn sql_paths_match_the_shared_semantics_table() {
         }
     }
     eprintln!(
-        "意味論表 {checked} 行を索引経路・本体経路で確認（うち既知の例外 {rejected} 行は拒否）"
+        "意味論表 {checked} 行を索引経路・本体経路で確認（うち部分一致 {partial} 行・例外なし）"
     );
     assert_eq!(checked, cases.len());
-    assert_eq!(
-        rejected, 6,
-        "例外は multi_select の contains / ends_with の 6 行だけ"
-    );
+    assert!(partial > 0, "部分一致の行が表から消えた");
     assert!(
         failures.is_empty(),
         "実 SQL の経路が共通の意味論表と食い違う:\n{}",
