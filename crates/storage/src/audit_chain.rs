@@ -140,7 +140,7 @@ impl AuditChainVerifier {
         loop {
             let rows = sqlx::query(
                 "SELECT id, created_at, actor, action, object_type, object_id, decision, trace_id, \
-                        metadata, prev_hash, entry_hash, hash_version \
+                        metadata, metadata::text AS metadata_text, prev_hash, entry_hash, hash_version \
                  FROM audit_log \
                  WHERE tenant_id = $1 AND org = $2 AND chained AND id > $3 \
                  ORDER BY id LIMIT $4",
@@ -165,7 +165,12 @@ impl AuditChainVerifier {
                 let object_id: String = r.try_get("object_id")?;
                 let decision: String = r.try_get("decision")?;
                 let trace_id: Option<String> = r.try_get("trace_id")?;
-                let metadata_str = metadata.to_string();
+                // 版 2 は記録時と同じ Postgres の表記、版 1 は serde_json の表記でハッシュしてある。
+                let metadata_str = if version >= 2 {
+                    r.try_get::<String, _>("metadata_text")?
+                } else {
+                    metadata.to_string()
+                };
                 let computed = entry_hash(&HashInput {
                     version,
                     prev_hash: stored_prev.as_deref(),

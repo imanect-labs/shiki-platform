@@ -34,10 +34,13 @@ export function VerifyChainButton() {
   const [progress, setProgress] = React.useState<Progress | null>(null);
   // 保持期間で先頭を消したチェーンなら、消した行数（検証は削除の境目から始まる・#831）。
   const [purged, setPurged] = React.useState(0);
-  const cancelled = React.useRef(false);
+  // 実行ごとの番号。閉じる・もう一度確かめると番号が進み、古い実行は結果を書かず続きも取りに行かない。
+  const runId = React.useRef(0);
+  React.useEffect(() => () => void (runId.current += 1), []);
 
   const run = React.useCallback(async () => {
-    cancelled.current = false;
+    const id = ++runId.current;
+    const stale = () => id !== runId.current;
     let checked = 0;
     let legacy = 0;
     let after: number | null = null;
@@ -46,7 +49,7 @@ export function VerifyChainButton() {
       // 1 回で確かめる行数に上限があるので、末尾か崩れた行まで続ける。
       for (;;) {
         const r: ChainReport = await verifyAuditChain(after);
-        if (cancelled.current) return;
+        if (stale()) return;
         setPurged(r.anchor_id != null ? r.purged_rows : 0);
         checked += r.checked;
         legacy += r.legacy;
@@ -62,7 +65,7 @@ export function VerifyChainButton() {
         setProgress({ state: "running", checked, legacy });
       }
     } catch (e) {
-      if (!cancelled.current) {
+      if (!stale()) {
         setProgress({ state: "error", checked, message: e instanceof Error ? e.message : String(e) });
       }
     }
@@ -71,7 +74,7 @@ export function VerifyChainButton() {
   const onOpenChange = (o: boolean) => {
     setOpen(o);
     if (o) void run();
-    else cancelled.current = true;
+    else runId.current += 1;
   };
 
   return (
