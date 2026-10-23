@@ -11,6 +11,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 
 use crate::accounting::{UsageRecord, UsageRecorder};
+use crate::chatgpt::{ChatGptAccount, ChatGptPlanProvider};
 use crate::config::{
     AutoConfig, GatewayConfig, LlmTimeouts, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind,
     DEFAULT_PROVIDER_ID,
@@ -29,6 +30,9 @@ use crate::tenant::{
 };
 use crate::usage_report::{UsageFilter, UsageReport, UsageReporter};
 use std::sync::Arc;
+
+/// ChatGPT プランの照合・モデルの見え方（gateway.rs の行数上限のため分割）。
+mod chatgpt_gate;
 
 /// 会計の「利用元」（管理画面の利用元別集計・`llm_usage.source`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -139,7 +143,13 @@ impl LlmGateway {
             if providers.contains_key(&id) {
                 return Err(LlmError::Config(format!("duplicate llm provider id: {id}")));
             }
-            let provider = build_provider(http.clone(), pc, &config.catalog, config.timeouts)?;
+            let provider = build_provider(
+                http.clone(),
+                pc,
+                &config.catalog,
+                config.timeouts,
+                config.chatgpt.as_ref(),
+            )?;
             providers.insert(
                 id,
                 ProviderSlot {
@@ -344,6 +354,10 @@ impl LlmGateway {
             .providers
             .get(entry.provider_id())
             .ok_or_else(|| LlmError::Config(format!("unknown provider for model: {logical}")))?;
+        if slot.config.kind == ProviderKind::ChatgptPlan {
+            // 連携者のプラン枠。本人以外（他の利用者・ワークフロー等）には使わせない。
+            self.ensure_chatgpt_owner(ctx).await?;
+        }
         let permitted = self
             .inner
             .tenants
@@ -526,6 +540,7 @@ fn build_provider(
     pc: &ProviderConfig,
     catalog: &ModelCatalog,
     timeouts: LlmTimeouts,
+    chatgpt: Option<&Arc<ChatGptAccount>>,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
     // 共有 HTTP クライアント（接続プール共有・タイムアウトなし）をそのまま各アダプタへ渡し、
     // タイムアウト（最初の応答・無通信・全体）は各アダプタが共通のヘルパで測る（#554）。
@@ -572,6 +587,17 @@ fn build_provider(
                     .with_session_header(pc.session_header.as_deref())?
                     .with_timeouts(timeouts),
             ))
+        }
+        ProviderKind::ChatgptPlan => {
+            let account = chatgpt
+                .cloned()
+                .ok_or_else(|| LlmError::Config("chatgpt_plan requires llm.chatgpt".into()))?;
+            Ok(Arc::new(ChatGptPlanProvider::new(
+                http,
+                account,
+                default_real,
+                timeouts,
+            )))
         }
         ProviderKind::Anthropic => {
             let base = pc
@@ -722,6 +748,7 @@ mod tests {
             &cfg.provider,
             &cfg.catalog,
             LlmTimeouts::default(),
+            None,
         )
         .unwrap();
         assert_eq!(p.name(), "stub");
@@ -739,7 +766,8 @@ mod tests {
                 reqwest::Client::new(),
                 &ok.provider,
                 &ok.catalog,
-                LlmTimeouts::default()
+                LlmTimeouts::default(),
+                None,
             )
             .unwrap()
             .name(),
@@ -751,6 +779,7 @@ mod tests {
             &missing.provider,
             &missing.catalog,
             LlmTimeouts::default(),
+            None,
         );
         assert!(matches!(res, Err(LlmError::Config(_))));
     }
@@ -763,7 +792,8 @@ mod tests {
                 reqwest::Client::new(),
                 &ok.provider,
                 &ok.catalog,
-                LlmTimeouts::default()
+                LlmTimeouts::default(),
+                None,
             )
             .unwrap()
             .name(),
@@ -776,6 +806,7 @@ mod tests {
             &missing.provider,
             &missing.catalog,
             LlmTimeouts::default(),
+            None,
         );
         assert!(matches!(res, Err(LlmError::Config(_))));
     }
@@ -789,7 +820,8 @@ mod tests {
                 reqwest::Client::new(),
                 &ok.provider,
                 &ok.catalog,
-                LlmTimeouts::default()
+                LlmTimeouts::default(),
+                None,
             )
             .unwrap()
             .name(),
@@ -802,6 +834,7 @@ mod tests {
             &missing.provider,
             &missing.catalog,
             LlmTimeouts::default(),
+            None,
         );
         assert!(matches!(res, Err(LlmError::Config(_))));
     }

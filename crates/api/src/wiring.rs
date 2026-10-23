@@ -237,7 +237,7 @@ pub(crate) fn build_gateway(
     };
     let llm = &config.llm;
     let primary = primary_provider(llm)?;
-    let extra_providers = llm
+    let mut extra_providers = llm
         .providers
         .iter()
         .map(|p| {
@@ -252,6 +252,15 @@ pub(crate) fn build_gateway(
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
+    let chatgpt = chatgpt_account(llm, http);
+    if chatgpt.is_some() {
+        extra_providers.push(ProviderConfig {
+            id: llm_gateway::CHATGPT_PROVIDER_ID.to_string(),
+            display_name: Some("ChatGPT プラン".to_string()),
+            kind: llm_gateway::ProviderKind::ChatgptPlan,
+            ..Default::default()
+        });
+    }
     let auto = match &llm.auto {
         None => AutoConfig::default(),
         Some(a) => AutoConfig {
@@ -276,9 +285,36 @@ pub(crate) fn build_gateway(
         }),
         timeouts: llm.timeouts(),
         limits: llm.usage_limits(),
+        chatgpt,
     };
     LlmGateway::build(db.clone(), http.clone(), gateway_config)
         .map_err(|e| anyhow::anyhow!("llm-gateway 構築に失敗: {e}"))
+}
+
+/// ChatGPT プランの接続（`llm.chatgpt.enabled` のときだけ・#854）。
+///
+/// gateway はチャット・ワークフロー・ミニアプリ・管理 API ごとに組まれるが、接続は**プロセスで
+/// 1 つ**を共有する。リフレッシュトークンは更新のたびに置き換わるので、別々に持つと古い値で
+/// リフレッシュして失効させてしまう。
+fn chatgpt_account(
+    llm: &api::config::LlmConfig,
+    http: &reqwest::Client,
+) -> Option<Arc<llm_gateway::ChatGptAccount>> {
+    static ACCOUNT: std::sync::OnceLock<Arc<llm_gateway::ChatGptAccount>> =
+        std::sync::OnceLock::new();
+    if !llm.chatgpt.enabled {
+        return None;
+    }
+    Some(Arc::clone(ACCOUNT.get_or_init(|| {
+        tracing::info!(
+            path = %llm.chatgpt.credential_path,
+            "ChatGPT プランの接続を有効にしました（連携した本人だけが使えます）"
+        );
+        Arc::new(llm_gateway::ChatGptAccount::open(
+            http.clone(),
+            llm_gateway::ChatGptSettings::new(&llm.chatgpt.credential_path),
+        ))
+    })))
 }
 
 /// 設定の backend をプロバイダ種別へ写す（未実装の枠は起動を止める）。
