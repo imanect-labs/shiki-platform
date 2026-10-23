@@ -45,13 +45,25 @@ const DATA_TABLES: &[&str] = &[
     // SSE 差分配信・索引の降格（Task 15.6）。
     "data_stream_authz_epoch",
     "data_stream_awareness",
+    "data_stream_fanout",
     "data_index_purge",
+    // リンク値の保存形の移行の進捗（Task 15.4）。
+    "data_link_value_migration",
     // 自前オプティマイザの統計 4 表（Task 15.12・PIT-75）。
     "data_table_stats",
     "data_field_stats",
     "data_value_count",
     "data_link_stats",
 ];
+
+/// `data_` で始まるが**テナントに属さない**システム表（理由つき）。S3/S4 の対象外。
+///
+/// migrations に現れる `data_*` 表は [`DATA_TABLES`] かここのどちらかに必ず載せる
+/// （[`every_data_table_in_migrations_is_classified`] が照合する）。
+const SYSTEM_TABLES: &[(&str, &str)] = &[(
+    "data_planner_calib",
+    "オプティマイザの単価較正用の固定表（migration 0096 の合成データ・顧客データを含まない・purge 対象外）",
+)];
 
 /// 文字列リテラル（開始行・中身）。
 #[derive(Debug)]
@@ -356,6 +368,117 @@ fn optimizer_statistics_are_only_touched_by_planner_and_stats_writers() {
     assert!(
         outside.is_empty(),
         "統計表の SQL が stats/ と query/planner/ の外にある（PIT-75）: {outside:?}"
+    );
+}
+
+/// migrations の `create table data_*`（後で `drop table` されたものを除く）が、テナント境界の表
+/// （[`DATA_TABLES`]）かシステム表（[`SYSTEM_TABLES`]）のどちらかに分類されていること（監査 B1-8）。
+///
+/// 新しい `data_*` 表を足したのに lint の対象へ載せ忘れると、tenant 条件の無い SQL を見逃す。
+#[test]
+fn every_data_table_in_migrations_is_classified() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "sql"))
+        .collect();
+    files.sort();
+    assert!(
+        files.len() > 50,
+        "migrations を読めていない: {}",
+        files.len()
+    );
+    let mut live = std::collections::BTreeSet::new();
+    for f in &files {
+        let sql = std::fs::read_to_string(f).unwrap().to_ascii_lowercase();
+        let words: Vec<&str> = sql
+            .split(|c: char| c.is_whitespace() || c == '(' || c == ';')
+            .filter(|w| !w.is_empty())
+            .collect();
+        for (i, w) in words.iter().enumerate() {
+            let is_create = *w == "create" && words.get(i + 1) == Some(&"table");
+            let is_drop = *w == "drop" && words.get(i + 1) == Some(&"table");
+            if !(is_create || is_drop) {
+                continue;
+            }
+            let mut j = i + 2;
+            while matches!(words.get(j), Some(&("if" | "not" | "exists"))) {
+                j += 1;
+            }
+            let Some(name) = words.get(j) else { continue };
+            let name = name.trim_start_matches("public.").trim_matches('"');
+            if !name.starts_with("data_") {
+                continue;
+            }
+            if is_create {
+                live.insert(name.to_string());
+            } else {
+                live.remove(name);
+            }
+        }
+    }
+    assert!(live.len() > 20, "data_* 表を拾えていない: {live:?}");
+    let unclassified: Vec<&String> = live
+        .iter()
+        .filter(|t| {
+            !DATA_TABLES.contains(&t.as_str()) && !SYSTEM_TABLES.iter().any(|(s, _)| s == t)
+        })
+        .collect();
+    assert!(
+        unclassified.is_empty(),
+        "shard_safety_lint の DATA_TABLES / SYSTEM_TABLES に載っていない data_* 表: {unclassified:?}"
+    );
+    // 逆向き: lint の一覧に、migrations に存在しない表（撤去済み・綴り違い）が残っていない。
+    let stale: Vec<&str> = DATA_TABLES
+        .iter()
+        .copied()
+        .chain(SYSTEM_TABLES.iter().map(|(t, _)| *t))
+        .filter(|t| !live.contains(*t))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "migrations に無い表が一覧に残っている: {stale:?}"
+    );
+}
+
+/// テナント境界の `data_*` 表はすべてテナント消去（`DataStore::purge_tenant`）の対象に載っている（監査 B1-8）。
+///
+/// `store.rs` の固定集合 `PURGE_TENANT_INT_TABLES` / `PURGE_TENANT_ID_TABLES` と、個別に消す表
+/// （`data_table` とその CASCADE 先・`data_tenant_settings`）の和で照合する。
+#[test]
+fn every_tenant_data_table_is_purged() {
+    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/store.rs"))
+        .unwrap();
+    let list = |name: &str| -> Vec<String> {
+        let start = src
+            .find(&format!("const {name}: &[&str] = &["))
+            .unwrap_or_else(|| panic!("{name} が store.rs に無い"));
+        let end = start + src[start..].find("];").unwrap();
+        string_literals(&src[start..end])
+            .into_iter()
+            .map(|l| l.text)
+            .collect()
+    };
+    let mut purged: Vec<String> = list("PURGE_TENANT_INT_TABLES");
+    purged.extend(list("PURGE_TENANT_ID_TABLES"));
+    // data_table を消すと CASCADE で消える表と、個別の DELETE で消す表。
+    for t in [
+        "data_table",
+        "data_record",
+        "data_record_revision",
+        "data_tenant_settings",
+    ] {
+        purged.push(t.to_string());
+    }
+    let missing: Vec<&str> = DATA_TABLES
+        .iter()
+        .copied()
+        .filter(|t| !purged.iter().any(|p| p == t))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "テナント消去の対象に載っていない data_* 表: {missing:?}"
     );
 }
 

@@ -64,6 +64,16 @@ const PURGE_TENANT_INT_TABLES: &[&str] = &[
     "data_field_stats",
     "data_link_stats",
     "data_table_stats",
+    // リンク値の保存形の移行の進捗（Task 15.4）。
+    "data_link_value_migration",
+];
+
+/// テナント消去で `tenant_id` を条件に消す表（`data_table` / `data_tenant_settings` は個別に消す）。
+/// SSE 配信の短命な状態（Task 15.6）。表名は固定集合のみ。
+const PURGE_TENANT_ID_TABLES: &[&str] = &[
+    "data_stream_authz_epoch",
+    "data_stream_awareness",
+    "data_stream_fanout",
 ];
 
 /// 新規テーブルの入力。
@@ -621,6 +631,13 @@ impl DataStore {
                     .await
                     .map_err(map_db)?;
             }
+        }
+        for table in PURGE_TENANT_ID_TABLES {
+            sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_db)?;
         }
         sqlx::query("DELETE FROM data_table WHERE tenant_id = $1")
             .bind(tenant_id)

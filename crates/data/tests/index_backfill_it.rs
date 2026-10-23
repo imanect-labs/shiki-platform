@@ -572,9 +572,43 @@ async fn purge_tenant_removes_index_tables() {
     for t in tables {
         assert!(count(pool.clone(), t).await > 0, "{t} に行がある（前提）");
     }
+    // リンク値の移行の進捗・SSE 配信の短命な状態も消える（監査 B1-8）。
+    let (_, tb) = keys_of(&pool, &tenant, table.id).await;
+    sqlx::query(
+        "INSERT INTO data_link_value_migration (tenant_int, table_int) VALUES ($1, $2) \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(ti)
+    .bind(tb)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO data_stream_authz_epoch (tenant_id, scope) VALUES ($1, $2)")
+        .bind(&tenant)
+        .bind(table.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO data_stream_awareness (tenant_id, table_id, principal) VALUES ($1, $2, 'alice')",
+    )
+    .bind(&tenant)
+    .bind(table.id)
+    .execute(&pool)
+    .await
+    .unwrap();
     store.purge_tenant(&tenant).await.unwrap();
     for t in tables {
         assert_eq!(count(pool.clone(), t).await, 0, "{t} が消える");
+    }
+    assert_eq!(count(pool.clone(), "data_link_value_migration").await, 0);
+    for t in ["data_stream_authz_epoch", "data_stream_awareness"] {
+        let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {t} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "{t} が消える");
     }
     let records: i64 = sqlx::query_scalar("SELECT count(*) FROM data_record WHERE tenant_id = $1")
         .bind(&tenant)
