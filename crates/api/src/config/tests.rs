@@ -960,6 +960,18 @@ fn chatgpt_settings_are_validated_when_enabled() {
     assert!(err.contains("重複"), "{err}");
     cfg.llm.default_model = None;
 
+    // 自動登録されるプロバイダ ID にも利用制限を掛けられる。
+    cfg.llm.limits = LlmLimitsConfig {
+        enabled: true,
+        per_user_usd_micros: None,
+        providers: vec![LlmProviderLimit {
+            providers: vec![llm_gateway::CHATGPT_PROVIDER_ID.into()],
+            usd_micros: 1,
+        }],
+    };
+    cfg.validate().unwrap();
+    cfg.llm.limits = LlmLimitsConfig::default();
+
     cfg.llm.providers.push(LlmProviderEntry {
         id: llm_gateway::CHATGPT_PROVIDER_ID.into(),
         display_name: None,

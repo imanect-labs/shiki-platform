@@ -447,7 +447,9 @@ impl AppConfig {
             }
             for id in &entry.providers {
                 let known = id == llm_gateway::DEFAULT_PROVIDER_ID
-                    || llm.providers.iter().any(|q| &q.id == id);
+                    || llm.providers.iter().any(|q| &q.id == id)
+                    // ChatGPT プラン（#854）は有効なとき予約 ID で自動登録される。
+                    || (llm.chatgpt.enabled && id == llm_gateway::CHATGPT_PROVIDER_ID);
                 if !known {
                     return Err(ConfigError::Invalid(format!(
                         "llm.limits.providers に未知のプロバイダ ID があります: {id}\
