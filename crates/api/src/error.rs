@@ -26,6 +26,9 @@ pub enum ApiError {
     /// `BadRequest` は body が `{status,title}` に潰れるため、詳細ペイロードにはこちらを使う。
     #[error("検証エラー")]
     UnprocessableJson(serde_json::Value),
+    /// 422（構造化した拒否理由をそのまま返す・SQL 前段面の入口の拒否）。
+    #[error("処理できません")]
+    Unprocessable422(serde_json::Value),
     /// 機能が無効/未準備（RAG 無効設定など）。理由はログのみ（クライアントへ漏らさない）。
     #[error("利用できません: {0}")]
     ServiceUnavailable(String),
@@ -47,6 +50,7 @@ impl ApiError {
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::Conflict | ApiError::ConflictJson(_) => StatusCode::CONFLICT,
             ApiError::BadRequest(_) | ApiError::UnprocessableJson(_) => StatusCode::BAD_REQUEST,
+            ApiError::Unprocessable422(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::Gone => StatusCode::GONE,
@@ -67,7 +71,10 @@ impl IntoResponse for ApiError {
             tracing::warn!(error = %detail, "サービス利用不可（503）");
         }
         // 構造化ボディはそのまま返す（検証エラーの per-node/per-edge 詳細を保つ）。
-        if let ApiError::UnprocessableJson(payload) | ApiError::ConflictJson(payload) = self {
+        if let ApiError::UnprocessableJson(payload)
+        | ApiError::ConflictJson(payload)
+        | ApiError::Unprocessable422(payload) = self
+        {
             return (status, Json(payload)).into_response();
         }
         let body = Json(json!({
@@ -193,6 +200,16 @@ impl From<data::DataError> for ApiError {
             }
             // テナントの読取の同時実行の枠が空かない（再試行可）。
             DE::ReadOverloaded => ApiError::TooManyRequests,
+            // 入口での拒否（SQL 前段面の部分集合外・名前解決不能・資源上限）。422 と構造化した理由
+            // （LLM が自己修正できる・存在しない列と見えない列は同一の本文・data-platform §16.1）。
+            DE::Rejected(r) => {
+                let mut body = serde_json::to_value(*r).unwrap_or_else(|_| serde_json::json!({}));
+                if let Some(o) = body.as_object_mut() {
+                    o.insert("status".into(), serde_json::json!(422));
+                    o.insert("title".into(), serde_json::json!("Unprocessable Entity"));
+                }
+                ApiError::Unprocessable422(body)
+            }
         }
     }
 }
@@ -302,6 +319,37 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         (status, value)
+    }
+
+    /// SQL 前段面の入口の拒否は 422 と構造化した理由（code / message / location / limit / expected）を
+    /// 本文の最上位にそのまま返す（LLM の自己修正に使う・Task 15.10）。
+    #[tokio::test]
+    async fn query_rejection_is_422_with_structured_reason() {
+        let r: data::QueryRejection = serde_json::from_value(serde_json::json!({
+            "code": "limit_exceeded",
+            "message": "クエリが入口の上限 max_ast_depth（32）を超えています",
+            "location": {"line": 1, "column": 30},
+            "limit": {"name": "max_ast_depth", "max": 32},
+        }))
+        .unwrap();
+        let (status, body) =
+            body_json(ApiError::from(data::DataError::Rejected(Box::new(r)))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["status"], 422);
+        assert_eq!(body["code"], "limit_exceeded");
+        assert_eq!(body["limit"]["name"], "max_ast_depth");
+        assert_eq!(body["location"]["line"], 1);
+        let r: data::QueryRejection = serde_json::from_value(serde_json::json!({
+            "code": "unknown_name",
+            "message": "列 'salary' は見つからないか、参照できません",
+            "expected": ["_id", "name"],
+        }))
+        .unwrap();
+        let (status, body) =
+            body_json(ApiError::from(data::DataError::Rejected(Box::new(r)))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["code"], "unknown_name");
+        assert_eq!(body["expected"], serde_json::json!(["_id", "name"]));
     }
 
     /// 受付制御（重すぎるクエリ）は提案の語彙だけの構造化 400、枠の不足は 429。推定値・予測コスト・

@@ -23,9 +23,11 @@ mod estimate;
 pub(crate) mod exec;
 pub(crate) mod feedback;
 pub(crate) mod guard;
+pub(crate) mod join;
 pub(crate) mod keys;
 pub(crate) mod lower;
 pub(crate) mod normalize;
+pub(crate) mod plan_cache;
 mod plans;
 pub(crate) mod shape;
 mod stats;
@@ -36,12 +38,17 @@ pub(crate) use catalog::StatsCache;
 pub(crate) use stats::ProbeCache;
 
 /// 計画器の外（実行入口）が件数探索器を組むための入口（統計値そのものは返さない）。
-pub(crate) fn prober(cache: &ProbeCache, keys: crate::model::TableKeys) -> stats::Prober<'_> {
+pub(crate) fn prober<'a>(
+    cache: &'a ProbeCache,
+    keys: crate::model::TableKeys,
+    plan: Option<plan_cache::PlanHandle<'a>>,
+) -> stats::Prober<'a> {
     stats::Prober {
         cache,
         keys,
         used: 0,
         statements: Vec::new(),
+        plan,
     }
 }
 

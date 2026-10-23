@@ -71,6 +71,8 @@ impl From<data::DataError> for AppPlatformError {
             | DataError::ReadOverloaded) => AppPlatformError::Conflict(e.to_string()),
             // 受付制御（重すぎるクエリ）: 文言は固定（推定値を含まない・PIT-75）。
             e @ DataError::QueryTooExpensive { .. } => AppPlatformError::Invalid(e.to_string()),
+            // 入口での拒否（資源上限・部分集合外）。
+            DataError::Rejected(r) => AppPlatformError::Invalid(r.message),
             DataError::Internal(m) => AppPlatformError::Internal(m),
         }
     }

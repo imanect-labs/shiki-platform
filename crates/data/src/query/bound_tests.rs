@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::model::{FieldDef, FieldType};
+use crate::query::ir::{DataQuery, MAX_LIMIT};
 use serde_json::json;
 
 fn schema() -> TableSchema {

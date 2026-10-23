@@ -313,6 +313,9 @@ pub fn bind_param<'q>(
         P::Numeric(v) => q.bind(v),
         P::NumericArray(v) => q.bind(v),
         P::Bytes(v) => q.bind(v),
+        P::Bool(v) => q.bind(v),
+        P::OptText(v) => q.bind(v),
+        P::OptNumeric(v) => q.bind(v),
     }
 }
 

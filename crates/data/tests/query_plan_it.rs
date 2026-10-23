@@ -173,6 +173,13 @@ fn literal(p: &DebugParam) -> String {
             });
             format!("'\\x{hex}'::bytea")
         }
+        DebugParam::Bool(b) => format!("{b}::bool"),
+        DebugParam::OptText(v) => v
+            .as_deref()
+            .map_or("NULL::text".into(), |s| format!("{}::text", q(s))),
+        DebugParam::OptNumeric(v) => v
+            .as_deref()
+            .map_or("NULL::numeric".into(), |s| format!("{}::numeric", q(s))),
     }
 }
 

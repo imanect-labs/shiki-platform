@@ -77,6 +77,8 @@ pub(crate) struct Prober<'a> {
     pub used: u32,
     /// 探索のたびに積む（デバッグ取得用）。
     pub statements: Vec<(String, Vec<Bind>)>,
+    /// プランキャッシュ（同一形状の文は同じテキストを引く・data-platform §16.3）。
+    pub plan: Option<super::plan_cache::PlanHandle<'a>>,
 }
 
 impl Prober<'_> {
@@ -145,11 +147,15 @@ impl Prober<'_> {
         binds: Vec<Bind>,
     ) -> Result<u64, DataError> {
         self.used += 1;
+        let text: std::sync::Arc<str> = match &self.plan {
+            Some(p) => p.intern("probe", text),
+            None => text.into(),
+        };
         let n: i64 = bind_scalar(sqlx::query_scalar(&text), &binds)
             .fetch_one(&mut *conn)
             .await
             .map_err(map_db)?;
-        self.statements.push((text, binds));
+        self.statements.push((text.to_string(), binds));
         Ok(n.max(0) as u64)
     }
 }

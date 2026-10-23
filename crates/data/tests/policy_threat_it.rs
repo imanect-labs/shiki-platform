@@ -273,6 +273,10 @@ async fn invisible_row_indistinguishable_from_missing() {
 
     // 可視だが write 述語外（bob は applicant=bob の行だけ書ける）: alice が bob の行を
     // 読めるロール（経理）でも書けない、の対称は roles テストで検証する。
+    // ⑪ SQL 前段面でも同じ（不可視行は SQL でも出ない）。
+    for who in [&f.alice, &f.bob] {
+        sql_mirror(&f.store, who, f.table_id, "expense").await;
+    }
 }
 
 /// ② クライアント指定フィルタで述語をバイパスできない（何を渡しても AND 合成のまま）。
@@ -361,6 +365,22 @@ async fn client_filters_cannot_bypass_predicate() {
         .expect("filtered");
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].id, f.bob_rec);
+    // ⑪ SQL 前段面: SQL 風の値はリテラル（バインド）で、述語は AND 合成のまま。
+    let rows = sql_rows(
+        &f.store,
+        &f.bob,
+        "SELECT _id FROM expense WHERE status = 'draft'' OR ''1''=''1'",
+    )
+    .await;
+    assert!(rows.is_empty(), "{rows:?}");
+    let rows = sql_rows(
+        &f.store,
+        &f.bob,
+        "SELECT _id FROM expense WHERE status = 'draft' OR TRUE",
+    )
+    .await;
+    assert_eq!(rows, vec![vec![json!(f.bob_rec.to_string())]]);
+    sql_mirror(&f.store, &f.bob, f.table_id, "expense").await;
 }
 
 /// ③ 集計（count）にも述語が適用され、不可視行が件数から漏れない（PIT-17 の基礎保証）。
@@ -385,6 +405,10 @@ async fn aggregates_exclude_invisible_rows() {
         alice_count, 1,
         "alice にも自分の 1 件だけ（作成者でも述語は素通りしない）"
     );
+    // ⑪ SQL 前段面の集計も同じ（不可視行を数えない・K 未満は抑制）。
+    for who in [&f.alice, &f.bob] {
+        sql_mirror(&f.store, who, f.table_id, "expense").await;
+    }
 }
 
 /// ロール述語（HasRole/UserRoles・FGA 実効集合）が効く。書込述語も独立に効く。
@@ -432,6 +456,10 @@ async fn role_predicates_and_write_policy() {
         )
         .await;
     assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    // ⑪ SQL 前段面でもロール述語（HasRole / UserRoles）が同じに効く。
+    for who in [&charlie, &f.bob, &f.alice] {
+        sql_mirror(&f.store, who, f.table_id, "expense").await;
+    }
 }
 
 /// ④ lookup 越しに不可視テーブルの値を釣れない（PIT-20）。
@@ -579,6 +607,29 @@ async fn lookup_does_not_leak_invisible_reference() {
         "参照先の実在有無で応答が変わらないこと"
     );
     assert!(matches!(probe_existing, Err(DataError::Invalid(_))));
+    // ⑪ SQL 前段面: lookup の値も、参照先テーブルの行も、閲覧者本人の権限で同じに見える。
+    for who in [&alice, &bob] {
+        sql_mirror(&store, who, members.id, "members").await;
+        sql_mirror(&store, who, salary.id, "salary").await;
+    }
+    // JOIN でも参照先の行述語が掛かる（bob には alice の salary 行が見えない）。
+    let rows = sql_rows(
+        &store,
+        &bob,
+        "SELECT m.name, s.grade FROM members m JOIN salary s ON m.salary_ref = s._id",
+    )
+    .await;
+    assert!(
+        rows.is_empty(),
+        "JOIN 越しに不可視の参照先を釣れない: {rows:?}"
+    );
+    let rows = sql_rows(
+        &store,
+        &alice,
+        "SELECT m.name, s.grade FROM members m JOIN salary s ON m.salary_ref = s._id",
+    )
+    .await;
+    assert_eq!(rows, vec![vec![json!("Alice"), json!("S1")]]);
 }
 
 /// ⑦ 個別共有で不可視行が追加で見え、解除で**即時**（TTL 内でも）不可視へ戻る。
@@ -648,6 +699,8 @@ async fn record_share_grants_and_revokes_immediately() {
         )
         .await
         .expect("bob edits shared record");
+    // ⑪ SQL 前段面でも個別共有した行が追加で見える。
+    sql_mirror(&f.store, &f.bob, f.table_id, "expense").await;
 
     // 解除 → キャッシュ TTL 内でも世代失効で直ちに不可視（⑦）。
     for role in [RecordShareRole::Viewer, RecordShareRole::Editor] {
@@ -685,6 +738,8 @@ async fn record_share_grants_and_revokes_immediately() {
         )
         .await;
     assert!(matches!(r, Err(DataError::NotFound)), "{r:?}");
+    // ⑪ 解除後は SQL 前段面でも直ちに見えない。
+    sql_mirror(&f.store, &f.bob, f.table_id, "expense").await;
 }
 
 /// ⑤ 共有集合の上限超過は「見えなくなる」方向（fail-closed）＋ shares_truncated 通知（PIT-18）。
@@ -798,6 +853,17 @@ async fn share_overflow_fails_closed_with_truncation_flag() {
         page.items.iter().all(|r| r.id != f.alice_rec),
         "超過分の共有は**見えない方向**に倒れること（見えすぎない）"
     );
+    // ⑪ SQL 前段面でも超過分は見えない方向・切り詰めを通知する。
+    let r = overflow_store
+        .run_sql(&f.bob, &sql_req("SELECT _id FROM expense"), None)
+        .await
+        .unwrap();
+    assert!(r.shares_truncated);
+    assert!(r
+        .rows
+        .iter()
+        .all(|row| row[0] != json!(f.alice_rec.to_string())));
+    sql_mirror(&overflow_store, &f.bob, f.table_id, "expense").await;
 }
 
 // ---------------------------------------------------------------------------
@@ -969,6 +1035,31 @@ async fn rollup_does_not_bypass_reference_table_rebac() {
     };
     let r = store.run_query(&bob, orders.id, &q, None).await;
     assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    // ⑪ SQL 前段面: 参照先テーブルの viewer でない bob には、JOIN 先も「存在しないテーブル」と同じ応答。
+    sql_mirror(&store, &bob, orders.id, "orders").await;
+    let joined = store
+        .run_sql(
+            &bob,
+            &sql_req("SELECT COUNT(*) FROM orders o JOIN lines l ON o.items = l._id"),
+            None,
+        )
+        .await;
+    let missing = store
+        .run_sql(
+            &bob,
+            &sql_req("SELECT COUNT(*) FROM orders o JOIN nopes l ON o.items = l._id"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        format!("{joined:?}").replace("lines", "X"),
+        format!("{missing:?}").replace("nopes", "X")
+    );
+    // IR のリンクの半結合でも参照先は開けない（403）。
+    let q: DataQuery =
+        serde_json::from_value(json!({"filter": {"link": {"field": "items"}}})).unwrap();
+    let r = store.run_query(&bob, orders.id, &q, None).await;
+    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
 }
 
 /// ⑧-2 参照先の行述語・個別共有・フィールドマスクを閲覧者本人の権限で透過適用する（PIT-20）。
@@ -1127,6 +1218,48 @@ async fn rollup_and_lookup_apply_reference_row_policy_per_viewer() {
         matches!(&r, Err(DataError::Invalid(m)) if m.contains("見つかりません")),
         "{r:?}"
     );
+    // ⑪ SQL 前段面: lookup / rollup / 数式の値も、JOIN も、閲覧者本人の行述語・マスクで同じに見える。
+    for who in [&alice, &bob] {
+        sql_mirror(&store, who, orders.id, "orders").await;
+        sql_mirror(&store, who, lines.id, "lines").await;
+    }
+    let join = "SELECT COUNT(*) FROM orders o JOIN lines l ON o.items = l._id";
+    assert_eq!(sql_rows(&store, &bob, join).await, vec![vec![json!(1)]]);
+    assert_eq!(sql_rows(&store, &alice, join).await, vec![vec![json!(2)]]);
+    // 結合先の列の射影も、見える参照先の行だけ（bob には非公開の明細の名前が出ない）。
+    let names = "SELECT l.name FROM orders o JOIN lines l ON o.items = l._id";
+    assert_eq!(
+        sql_rows(&store, &bob, names).await,
+        vec![vec![json!("公開")]]
+    );
+    // 結合先のマスク列は「存在しない列」と同じ応答（JOIN 越しに原価を持ち出せない・PIT-19）。
+    let masked = store
+        .run_sql(
+            &bob,
+            &sql_req("SELECT SUM(l.cost) FROM orders o JOIN lines l ON o.items = l._id"),
+            None,
+        )
+        .await;
+    let missing = store
+        .run_sql(
+            &bob,
+            &sql_req("SELECT SUM(l.nope) FROM orders o JOIN lines l ON o.items = l._id"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        format!("{masked:?}").replace("cost", "X"),
+        format!("{missing:?}").replace("nope", "X")
+    );
+    // 半結合（行述語つき EXISTS）でも非公開の参照先は条件に使えない。
+    let semi =
+        "SELECT COUNT(*) FROM orders o JOIN lines l ON o.items = l._id WHERE l.scope = 'private'";
+    // bob には 0 件（K=1 未満なので値は抑制＝null・IR と同じ）。
+    assert_eq!(
+        sql_rows(&store, &bob, semi).await,
+        vec![vec![serde_json::Value::Null]]
+    );
+    assert_eq!(sql_rows(&store, &alice, semi).await, vec![vec![json!(1)]]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1344,6 +1477,11 @@ async fn materialized_rollup_is_discarded_when_reference_gets_row_policy() {
     // 値は閲覧者本人の可視行だけ（全件の 350 は誰にも見えない）。
     assert_eq!(m.total_seen_by(&m.alice).await, json!(100));
     assert_eq!(m.total_seen_by(&m.bob).await, json!(250));
+    // ⑪ SQL 前段面でも同じ（材料化を破棄した列は閲覧者本人の権限で計算し直した値）。
+    for who in [&m.alice, &m.bob] {
+        sql_mirror(&m.store, who, m.orders, "orders").await;
+        sql_mirror(&m.store, who, m.lines, "lines").await;
+    }
 }
 
 /// ⑨-2 参照先にレコード個別共有を 1 件作ると、材料化データが破棄される。
@@ -1379,6 +1517,11 @@ async fn materialized_rollup_is_discarded_when_reference_record_is_shared() {
         .update_table_schema(&m.alice, m.orders, s, None, None)
         .await;
     assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    // ⑪ SQL 前段面でも同じ（材料化を破棄した列は閲覧者本人の権限で計算し直した値）。
+    for who in [&m.alice, &m.bob] {
+        sql_mirror(&m.store, who, m.orders, "orders").await;
+        sql_mirror(&m.store, who, m.lines, "lines").await;
+    }
 }
 
 /// ⑨-3 テーブル ReBAC を変えて viewer 集合の包含が崩れると（参照元だけを bob に見せる）、次の読取の
@@ -1405,6 +1548,11 @@ async fn materialized_rollup_is_discarded_when_table_rebac_changes() {
         .reverify_materialization(&m.alice, m.orders)
         .await
         .unwrap());
+    // ⑪ SQL 前段面でも同じ（材料化を破棄した列は閲覧者本人の権限で計算し直した値）。
+    for who in [&m.alice, &m.bob] {
+        sql_mirror(&m.store, who, m.orders, "orders").await;
+        sql_mirror(&m.store, who, m.lines, "lines").await;
+    }
 }
 
 /// ⑨-4 ReBAC の変更をクエリ（ソート）の入口で検出した場合も、その場で破棄して拒否する。
@@ -1444,6 +1592,11 @@ async fn materialized_rollup_is_discarded_on_query_and_on_field_policy() {
     m.assert_discarded("field_policy 後付け").await;
     // マスクされた列は集計の材料にもならない（alice も keiri ではない）。
     assert_eq!(m.total_seen_by(&m.alice).await, json!(0));
+    // ⑪ SQL 前段面でも同じ（材料化を破棄した列は閲覧者本人の権限で計算し直した値）。
+    for who in [&m.alice, &m.bob] {
+        sql_mirror(&m.store, who, m.orders, "orders").await;
+        sql_mirror(&m.store, who, m.lines, "lines").await;
+    }
 }
 
 /// ⑩ 材料化した派生列（text）の切り詰めキー（§3.3）は、行述語を迂回する判定材料にならない。
@@ -1564,6 +1717,10 @@ async fn long_derived_text_checks_do_not_leak_invisible_rows() {
             .collect();
         assert_eq!(got, want, "{op:?}");
     }
+    // ⑪ SQL 前段面でも同じ。
+    for who in [&alice, &bob] {
+        sql_mirror(&store, who, table.id, "notes").await;
+    }
 }
 
 /// ⑩ SSE 差分配信: 見えない行・マスク列の値はストリームに乗らない。可視→不可視の行は id だけの
@@ -1680,4 +1837,250 @@ async fn sse_never_streams_invisible_rows_or_masked_fields() {
         "見える行（マスク外の列）は届く: {all}"
     );
     assert_eq!(f.store.stream_verify_drops(), 0);
+    // ⑪ SQL 前段面: マスク列（amount）は「存在しない列」と同じ応答で、行述語も同じに効く。
+    for who in [&f.alice, &f.bob] {
+        sql_mirror(&f.store, who, table.id, "masked-expense").await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ⑪ SQL 前段面（Task 15.10）: 同じ読取を SQL でも流し、IR 直投入と結果が一致すること
+// ---------------------------------------------------------------------------
+
+fn sql_req(sql: &str) -> data::SqlRequest {
+    data::SqlRequest {
+        sql: sql.into(),
+        ..data::SqlRequest::default()
+    }
+}
+
+/// SQL で全ページを読む。
+async fn sql_rows(store: &DataStore, who: &AuthContext, sql: &str) -> Vec<Vec<serde_json::Value>> {
+    let mut out = Vec::new();
+    let mut cursor = None;
+    loop {
+        let r = store
+            .run_sql(
+                who,
+                &data::SqlRequest {
+                    sql: sql.into(),
+                    cursor: cursor.clone(),
+                    with_count: false,
+                },
+                None,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{sql}: {e:?}"));
+        out.extend(r.rows);
+        match r.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => return out,
+        }
+    }
+}
+
+/// IR で全ページを読む（id → 指定した列の値・値なしは除く）。
+async fn ir_rows(
+    store: &DataStore,
+    who: &AuthContext,
+    table: Uuid,
+    keys: &[String],
+) -> Vec<(String, serde_json::Map<String, serde_json::Value>)> {
+    let mut out = Vec::new();
+    let mut cursor = None;
+    loop {
+        let q = DataQuery {
+            select: Some(keys.to_vec()),
+            limit: Some(200),
+            cursor: cursor.clone(),
+            ..DataQuery::default()
+        };
+        let r = store.run_query(who, table, &q, None).await.unwrap();
+        for it in r.items.unwrap() {
+            let mut m = serde_json::Map::new();
+            for k in keys {
+                if let Some(v) = it.data.get(k).filter(|v| !v.is_null()) {
+                    m.insert(k.clone(), v.clone());
+                }
+            }
+            out.push((it.id.to_string(), m));
+        }
+        match r.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => return out,
+        }
+    }
+}
+
+/// 同じ読取（全行の射影・件数・グループ化）を SQL 前段面と IR 直投入の両方で流し、結果が一致すること。
+///
+/// 行述語・フィールドマスク・集計抑制・参照先の行述語（lookup / rollup）が SQL 経路でも同一に効く
+/// （SQL は IR へ変換されて同じ経路を通る・data-platform §16.1）。マスク列は SQL では「存在しない列」と
+/// 同じ 422 になり、IR ではその列の値が返らない。
+async fn sql_mirror(store: &DataStore, who: &AuthContext, table_id: Uuid, name: &str) {
+    let quoted = format!("\"{}\"", name.replace('"', "\"\""));
+    let Ok(table) = store.get_table(who, table_id, None).await else {
+        // テーブルが見えない利用者には SQL でも「見つからない」（存在しないテーブルと同じ）。
+        let r = store
+            .run_sql(who, &sql_req(&format!("SELECT _id FROM {quoted}")), None)
+            .await;
+        assert!(
+            matches!(&r, Err(DataError::Rejected(x)) if x.code == data::RejectCode::UnknownName),
+            "{r:?}"
+        );
+        assert!(store
+            .run_query(who, table_id, &DataQuery::default(), None)
+            .await
+            .is_err());
+        return;
+    };
+    let mut keys: Vec<String> = table.schema.fields.iter().map(|f| f.key.clone()).collect();
+    // 行: 見える列だけを SQL で射影できる（マスク列は「存在しない列」と同じ 422）。
+    loop {
+        let mut cols: Vec<&str> = vec!["_id"];
+        cols.extend(keys.iter().map(String::as_str));
+        let sql = data::render_sql(
+            name,
+            &DataQuery {
+                limit: Some(200),
+                ..DataQuery::default()
+            },
+            &cols,
+        )
+        .unwrap();
+        let r = store.run_sql(who, &sql_req(&sql), None).await;
+        match r {
+            Err(DataError::Rejected(x)) if x.code == data::RejectCode::UnknownName => {
+                let i = keys
+                    .iter()
+                    .position(|k| x.message.contains(&format!("'{k}'")))
+                    .unwrap_or_else(|| panic!("{name}: {x:?}"));
+                let masked = keys.remove(i);
+                // IR でもその列の値は返らない（マスク）。
+                for (_, m) in ir_rows(store, who, table_id, std::slice::from_ref(&masked)).await {
+                    assert!(
+                        !m.contains_key(&masked),
+                        "{name}: マスク列 {masked} が IR で返った"
+                    );
+                }
+            }
+            Ok(_) => {
+                let rows = sql_rows(store, who, &sql).await;
+                let mut via_sql: Vec<(String, serde_json::Map<String, serde_json::Value>)> = rows
+                    .into_iter()
+                    .map(|row| {
+                        let mut m = serde_json::Map::new();
+                        for (k, v) in keys.iter().zip(row.iter().skip(1)) {
+                            if !v.is_null() {
+                                m.insert(k.clone(), v.clone());
+                            }
+                        }
+                        (row[0].as_str().unwrap().to_string(), m)
+                    })
+                    .collect();
+                let mut via_ir = ir_rows(store, who, table_id, &keys).await;
+                via_sql.sort_by(|a, b| a.0.cmp(&b.0));
+                via_ir.sort_by(|a, b| a.0.cmp(&b.0));
+                assert_eq!(
+                    via_sql, via_ir,
+                    "{name}: SQL と IR で行・値が違う（{}）",
+                    who.principal.id
+                );
+                break;
+            }
+            Err(e) => panic!("{name}: {sql}: {e:?}"),
+        }
+    }
+    // 件数（集計抑制も同じ）。
+    let ir = store
+        .run_query(
+            who,
+            table_id,
+            &DataQuery {
+                aggregate: vec![data::MetricSpec {
+                    metric: data::Metric::Count,
+                    field: None,
+                }],
+                ..DataQuery::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let sql = store
+        .run_sql(
+            who,
+            &sql_req(&format!("SELECT COUNT(*) FROM {quoted}")),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(sql.suppressed, ir.suppressed, "{name}: 抑制の通知が違う");
+    assert_eq!(
+        sql.rows,
+        vec![vec![ir.groups.unwrap()[0].value.clone()]],
+        "{name}: 件数が違う"
+    );
+    // グループ化（select / text の索引済み列が 1 つあれば）。
+    let Some(g) = table
+        .schema
+        .fields
+        .iter()
+        .find(|f| {
+            f.indexed
+                && keys.contains(&f.key)
+                && matches!(
+                    f.field_type,
+                    FieldType::Select | FieldType::Text | FieldType::UserRef
+                )
+        })
+        .map(|f| f.key.clone())
+    else {
+        return;
+    };
+    let ir = store
+        .run_query(
+            who,
+            table_id,
+            &DataQuery {
+                group_by: vec![g.clone()],
+                aggregate: vec![data::MetricSpec {
+                    metric: data::Metric::Count,
+                    field: None,
+                }],
+                ..DataQuery::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let sql = store
+        .run_sql(
+            who,
+            &sql_req(&format!(
+                "SELECT \"{g}\", COUNT(*) FROM {quoted} GROUP BY \"{g}\""
+            )),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut a: Vec<String> = sql.rows.iter().map(|r| format!("{r:?}")).collect();
+    let mut b: Vec<String> = ir
+        .groups
+        .unwrap()
+        .iter()
+        .map(|grp| {
+            format!(
+                "{:?}",
+                vec![
+                    grp.key.get(&g).cloned().unwrap_or(serde_json::Value::Null),
+                    grp.value.clone()
+                ]
+            )
+        })
+        .collect();
+    a.sort();
+    b.sort();
+    assert_eq!(a, b, "{name}: グループ化の結果が違う");
+    assert_eq!(sql.suppressed, ir.suppressed);
 }

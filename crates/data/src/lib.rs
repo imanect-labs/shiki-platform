@@ -34,6 +34,10 @@
 //! - **一括書込パス（Task 15.11）**: ステージング表へ COPY → 1 件の書込と同じ検証器 → チャンク Tx で
 //!   1 件の create と同じ入口（[`record_effects`]）から本体・索引・revision・材料化を書く。jobq のチャンク
 //!   ジョブで冪等・中断再開可。大きな取込は値索引を `building` に保持して遅延構築する（[`bulk`]）
+//! - **SQL 互換インターフェース（Task 15.10）**: SQL を前段言語として受け、閉じた部分集合（allowlist）だけを
+//!   `DataQuery` IR へ変換する。**呼び出し側の SQL テキストは 1 文字もデータベースへ届かない**（[`sql`]）。
+//!   JOIN は宣言済みリンク列の等値だけ・参照先の行述語を必ず適用し、証明できる結合は半結合へ書き換える。
+//!   同一形状のクエリはバイト同一の SQL テキストになり、プランキャッシュに認可材料を載せない。
 //! - **クエリコンパイラ v2（Task 15.3）**: 条件木・複数ソート・keyset・自前オプティマイザ O1
 //!   （上限付き件数探索・4 戦略・予算付き切替・`Guard(P)`・事後検査）。[`query`]
 
@@ -61,6 +65,7 @@ mod record_share;
 mod revision;
 mod schema;
 mod schema_cache;
+mod sql;
 mod stats;
 mod store;
 mod stream;
@@ -103,8 +108,12 @@ pub use model::{
 pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
 pub use query::admission::{QuerySuggestion, DEFAULT_READ_BUDGET_MS, DEFAULT_TENANT_READ_TOKENS};
 pub use query::ir::{
-    AggregateGroup, CondCmp, CondOp, Condition, CountResult, DataQuery, Metric, MetricSpec,
-    QueryResult, SortKey,
+    AggregateGroup, CondCmp, CondOp, Condition, CountResult, DataQuery, GroupSortKey, HavingCmp,
+    HavingCond, JoinSpec, LinkCond, Metric, MetricSpec, QueryResult, SortKey,
+};
+pub use query::limits::{
+    QueryLimits, MAX_AST_DEPTH, MAX_AST_NODES, MAX_COMPILE_MS, MAX_JOIN_DEPTH, MAX_LITERALS,
+    MAX_SQL_BYTES,
 };
 pub use query::optimizer_ops::{
     OptimizerCandidateKind, OptimizerIndexCandidate, TableOptimizerReport,
@@ -112,7 +121,9 @@ pub use query::optimizer_ops::{
 pub use query::planner::cost::{CalibrationReport, UnitCosts};
 pub use query::planner::exec::ForcedStrategy;
 pub use query::planner::feedback::{QueryExecStats, TableScanMetrics};
+pub use query::planner::plan_cache::PlanCacheStats;
 pub use query::planner::shape::{ColumnShape, LinkShape, ShapeType, TableShape};
+pub use query::reject::{QueryRejection, RejectCode, RejectLimit, SqlLocation};
 pub use query::run::{
     DebugParam, DebugStatement, QueryDebug, QueryTuning, ReadPath, DEFAULT_COUNT_CAP,
     DEFAULT_READ_TIMEOUT_MS,
@@ -120,6 +131,8 @@ pub use query::run::{
 pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordSort};
 pub use record_share::RecordShareRole;
 pub use schema::validate_table_schema_public;
+pub use sql::render::{render_sql, RENDER_PSEUDO};
+pub use sql::{CompiledSql, SqlQueryResult, SqlRequest};
 pub use stats::analyze::AnalyzeOutcome;
 pub use stats::{StatsWorker, STATS_ANALYZE_QUEUE, STATS_CONSUMER, VALUE_COUNT_MAX_DISTINCT};
 pub use store::{DataStore, NewDataTable};
@@ -179,6 +192,10 @@ pub enum DataError {
     /// テナントの読取の同時実行の枠が空かなかった（data-platform §16.8・再試行可）。
     #[error("読取が混み合っています。しばらくしてから再試行してください")]
     ReadOverloaded,
+    /// クエリの入口で拒否した（422・構造化）。SQL 前段面の部分集合外・名前解決不能・資源上限
+    /// （data-platform §16.1）。存在しない列/テーブルと見えない列/テーブルは同一の内容になる。
+    #[error("クエリを受け付けられません: {0}")]
+    Rejected(Box<QueryRejection>),
 }
 
 #[allow(clippy::needless_pass_by_value)]

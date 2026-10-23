@@ -167,6 +167,8 @@ pub(crate) fn group_plan(
     // $1 は判定対象の行の集合（jsonb）。
     let mut buf = SqlBuf {
         binds: vec![Bind::Text(String::new())],
+        table: None,
+        aliases: 0,
     };
     let mut sql = Vec::new();
     for i in d.common_indices() {

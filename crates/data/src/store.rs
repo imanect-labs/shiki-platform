@@ -100,6 +100,11 @@ pub(crate) struct TableRow {
 }
 
 impl TableRow {
+    /// テーブル名。
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
     /// DTO へ変換する。v1 形式（未移行）のスキーマは**表示用に**決定的に 3 層へ引き上げる
     /// （移行ジョブが同じ規則で採番するため、移行の前後で `id` は変わらない）。
     pub(crate) fn into_table(self) -> DataTable {
@@ -163,6 +168,10 @@ pub struct DataStore {
     pub(crate) stream: Arc<crate::stream::hub::StreamRegistry>,
     /// SSE 配信の設定（TTL・保持期間・バッチ窓）。
     pub(crate) stream_config: crate::stream::StreamConfig,
+    /// プランキャッシュ（クエリ形状 → SQL テキスト・認可材料は載せない・data-platform §16.3）。
+    pub(crate) plan_cache: Arc<crate::query::planner::plan_cache::PlanCache>,
+    /// 入口の資源上限（SQL 前段面と IR 直投入の共通・data-platform §16.1.1）。
+    pub(crate) limits: crate::query::limits::QueryLimits,
 }
 
 impl DataStore {
@@ -197,6 +206,8 @@ impl DataStore {
             schema_cache: Arc::new(SchemaCache::default()),
             stream: Arc::default(),
             stream_config: crate::stream::StreamConfig::default(),
+            plan_cache: Arc::default(),
+            limits: crate::query::limits::QueryLimits::default(),
         }
     }
 
@@ -204,6 +215,13 @@ impl DataStore {
     #[must_use]
     pub fn with_query_tuning(mut self, tuning: QueryTuning) -> Self {
         self.tuning = tuning;
+        self
+    }
+
+    /// 入口の資源上限を設定する（SQL 前段面と IR 直投入の共通・既定は data-platform §16.1.1 の表）。
+    #[must_use]
+    pub fn with_query_limits(mut self, limits: crate::query::limits::QueryLimits) -> Self {
+        self.limits = limits;
         self
     }
 

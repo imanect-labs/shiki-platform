@@ -117,6 +117,7 @@ pub(crate) fn to_payload(pos: &Pos) -> CursorPayload {
         record_int: pos.rint,
         segment: pos.segment(),
         snapshot_seq: None,
+        join: None,
     }
 }
 

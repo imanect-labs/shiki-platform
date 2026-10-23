@@ -24,7 +24,7 @@ use super::keys::{Pos, SortVal};
 use super::lower::{sort_val_ph, Lowerer};
 use crate::model::SYSTEM_FIELD_CREATED_AT;
 use crate::policy::compile_index::field_i16;
-use crate::query::bound::{Atom, BSort, Expr, Leaf};
+use crate::query::bound::{Atom, BSort, Expr, Leaf, LinkExpr};
 use crate::query::sql::{Bind, SqlBuf};
 use crate::{map_db, DataError};
 
@@ -95,6 +95,7 @@ impl Lowerer<'_> {
     pub(crate) fn batch_check_sql(
         &self,
         atoms: &[&Atom],
+        links: &[&LinkExpr],
         ids_ph: &str,
         guard: &GuardSql,
         sql: &mut SqlBuf,
@@ -110,6 +111,14 @@ impl Lowerer<'_> {
                 "SELECT {i}::int4 AS k, x.{col} AS r FROM {rel} x \
                  WHERE x.tenant_int = $1 AND x.table_int = $2 AND x.field_id = {fph} \
                    AND x.{col} = ANY({ids_ph}::int8[]) AND {cond}"
+            ));
+        }
+        // リンクの半結合（参照先の条件と行述語つき）は配列の各要素から辿る（`k` は原子式の後ろに続ける）。
+        for (j, l) in links.iter().enumerate() {
+            let k = atoms.len() + j;
+            let cond = self.link_sql(l, "u.r", sql);
+            parts.push(format!(
+                "SELECT {k}::int4 AS k, u.r FROM unnest({ids_ph}::int8[]) AS u(r) WHERE {cond}"
             ));
         }
         parts.push(format!(
@@ -134,26 +143,36 @@ impl Lowerer<'_> {
     }
 }
 
+/// 原子式・半結合ごとの通過集合（`sets` は原子式の順に続けて半結合の順）。
+struct Passed<'q, 'r> {
+    atoms: &'r [&'q Atom],
+    links: &'r [&'q LinkExpr],
+    sets: &'r [RoaringTreemap],
+}
+
 /// 条件木を原子式の通過集合から評価する（2 値論理: Not は全体からの差）。
-fn eval(
-    e: &Expr,
-    atoms: &[&Atom],
-    sets: &[RoaringTreemap],
-    all: &RoaringTreemap,
-) -> RoaringTreemap {
+fn eval(e: &Expr, p: &Passed<'_, '_>, all: &RoaringTreemap) -> RoaringTreemap {
     match e {
         Expr::True => all.clone(),
         Expr::False => RoaringTreemap::new(),
-        Expr::Atom(a) => atoms
+        Expr::Atom(a) => p
+            .atoms
             .iter()
             .position(|x| std::ptr::eq(*x, a))
-            .map(|i| &sets[i] & all)
+            .map(|i| &p.sets[i] & all)
             .unwrap_or_default(),
-        Expr::Not(x) => all - eval(x, atoms, sets, all),
+        Expr::Link(l) => p
+            .links
+            .iter()
+            .position(|x| std::ptr::eq(*x, l.as_ref()))
+            .and_then(|j| p.sets.get(p.atoms.len() + j))
+            .map(|s| s & all)
+            .unwrap_or_default(),
+        Expr::Not(x) => all - eval(x, p, all),
         Expr::And(v) => {
             let mut acc = all.clone();
             for x in v {
-                acc &= eval(x, atoms, sets, &acc);
+                acc &= eval(x, p, &acc);
                 if acc.is_empty() {
                     break;
                 }
@@ -163,7 +182,7 @@ fn eval(
         Expr::Or(v) => {
             let mut acc = RoaringTreemap::new();
             for x in v {
-                acc |= eval(x, atoms, sets, all);
+                acc |= eval(x, p, all);
             }
             acc
         }
@@ -178,15 +197,19 @@ impl<'a> Exec<'a, '_> {
         ids: &[i64],
     ) -> Result<RoaringTreemap, DataError> {
         let mut atoms: Vec<&Atom> = Vec::new();
+        let mut links: Vec<&LinkExpr> = Vec::new();
         for c in checks {
             c.atoms(&mut atoms);
+            c.links(&mut links);
         }
         let mut sql = self.sql();
         let ids_ph = sql.push(Bind::I64Array(ids.to_vec()));
         let guard = self.guard.lower("u.r", &mut sql)?;
-        let text = self.low.batch_check_sql(&atoms, &ids_ph, &guard, &mut sql);
+        let text = self
+            .low
+            .batch_check_sql(&atoms, &links, &ids_ph, &guard, &mut sql);
         let rows = self.fetch("batch_check", text, sql.binds).await?;
-        let mut sets = vec![RoaringTreemap::new(); atoms.len()];
+        let mut sets = vec![RoaringTreemap::new(); atoms.len() + links.len()];
         let mut guard_set = RoaringTreemap::new();
         for r in rows {
             let k: i32 = r.try_get("k").map_err(map_db)?;
@@ -203,8 +226,13 @@ impl<'a> Exec<'a, '_> {
         }
         let all = bitmap(ids.iter().copied());
         let mut pass = all.clone();
+        let passed = Passed {
+            atoms: &atoms,
+            links: &links,
+            sets: &sets,
+        };
         for c in checks {
-            pass &= eval(c, &atoms, &sets, &all);
+            pass &= eval(c, &passed, &all);
         }
         Ok(pass & guard_set)
     }
@@ -338,13 +366,23 @@ mod tests {
         e.atoms(&mut atoms);
         let all = bitmap([1, 2, 3, 4]);
         let sets = vec![bitmap([1]), bitmap([1, 2, 3])];
-        let got: Vec<u64> = eval(&e, &atoms, &sets, &all).iter().collect();
+        let p = Passed {
+            atoms: &atoms,
+            links: &[],
+            sets: &sets,
+        };
+        let got: Vec<u64> = eval(&e, &p, &all).iter().collect();
         // a = {1}・¬b = {4} → {1, 4}
         assert_eq!(got, vec![1, 4]);
         let and = Expr::And(vec![Expr::Atom(a), Expr::Atom(b)]);
         let mut atoms2 = Vec::new();
         and.atoms(&mut atoms2);
-        let got: Vec<u64> = eval(&and, &atoms2, &sets, &all).iter().collect();
+        let p2 = Passed {
+            atoms: &atoms2,
+            links: &[],
+            sets: &sets,
+        };
+        let got: Vec<u64> = eval(&and, &p2, &all).iter().collect();
         assert_eq!(got, vec![1]);
         assert_eq!(stages(&[0u8; 2_500]).count(), 3);
     }

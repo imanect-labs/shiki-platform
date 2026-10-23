@@ -91,6 +91,8 @@ impl From<data::DataError> for GatewayError {
             // 受付制御（重すぎるクエリ）: 文言は固定（推定値を含まない・PIT-75）。
             e @ DataError::QueryTooExpensive { .. } => GatewayError::Invalid(e.to_string()),
             e @ DataError::ReadOverloaded => GatewayError::RateLimited(e.to_string()),
+            // 入口での拒否（資源上限・部分集合外）。文言は構造化理由の説明（存在オラクルを含まない）。
+            DataError::Rejected(r) => GatewayError::Invalid(r.message),
             DataError::Internal(m) => {
                 tracing::error!(error = %m, "gateway data 内部エラー");
                 GatewayError::Internal(INTERNAL_MSG.into())

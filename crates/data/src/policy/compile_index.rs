@@ -39,6 +39,10 @@ pub(crate) struct IndexGuardCtx<'a> {
 }
 
 /// 読取用の合成述語 `(row_policy OR 個別共有)`。`rec` は駆動行の `record_int` を指す SQL 式。
+///
+/// **SQL テキストは閲覧者の材料に依らない**（data-platform §16.3: プランキャッシュに材料を混ぜない）。
+/// 個別共有の有無・`HasRole` の成否・所属ロールの有無はすべてバインド値（真偽スイッチと配列）で渡し、
+/// テキストを分岐させない。`force_custom_plan` の下では計画時に定数として畳み込まれる。
 pub(crate) fn compile_index_read(
     g: &IndexGuardCtx<'_>,
     rec: &str,
@@ -48,11 +52,9 @@ pub(crate) fn compile_index_read(
         return Ok("TRUE".to_string());
     };
     let p = compile_index_expr(&policy.read, g, rec, sql)?;
-    if g.shared_ints.is_empty() {
-        return Ok(format!("({p})"));
-    }
+    let has = sql.flag(!g.shared_ints.is_empty());
     let ph = sql.push(Bind::I64Array(g.shared_ints.to_vec()));
-    Ok(format!("({p} OR {rec} = ANY({ph}::int8[]))"))
+    Ok(format!("({p} OR ({has} AND {rec} = ANY({ph}::int8[])))"))
 }
 
 /// 述語式 1 つ（v1 と同じ意味論）。
@@ -64,10 +66,8 @@ pub(crate) fn compile_index_expr(
 ) -> Result<String, DataError> {
     match expr {
         PolicyExpr::Public => Ok("TRUE".into()),
-        PolicyExpr::HasRole { role, subtree } => {
-            let holds = g.material.has_role(role, *subtree);
-            Ok(if holds { "TRUE" } else { "FALSE" }.into())
-        }
+        // 成否は真偽スイッチで渡す（テキストを材料で分岐させない・計画時に畳み込まれる）。
+        PolicyExpr::HasRole { role, subtree } => Ok(sql.flag(g.material.has_role(role, *subtree))),
         PolicyExpr::IsOwner => {
             if g.active.contains(&(SYSTEM_FIELD_OWNER, IndexTable::Text)) {
                 let cond = text_eq_cond("x", g.user, None, sql);
@@ -80,7 +80,7 @@ pub(crate) fn compile_index_expr(
                 ))
             } else {
                 let ph = sql.push(Bind::Text(g.user.to_string()));
-                Ok(exists_body(rec, &format!("b.owner = {ph}")))
+                Ok(exists_body(rec, &format!("b.owner = {ph}"), sql))
             }
         }
         PolicyExpr::Any(children) | PolicyExpr::All(children) => {
@@ -122,7 +122,7 @@ fn field_cmp(
     if !g.active.contains(&(f.id, table)) {
         // 索引が未完成: v1 の本体式で同じ葉を評価する（意味論は同一）。
         let body = compile_field_cmp(g.schema, g.material, g.user, "b", sql, field, op, value)?;
-        return Ok(exists_body(rec, &body));
+        return Ok(exists_body(rec, &body, sql));
     }
     let jk = Some(f.id);
     // 値の行の条件（`x` = 索引行）。ne は「行が存在し、かつ eq 条件を満たさない」。
@@ -136,12 +136,9 @@ fn field_cmp(
                 ))
             }
         },
+        // 所属なしは空の配列（テキストを分岐させない・`= ANY('{}')` は偽）。
         PolicyOperand::UserRoles { subtree } => {
-            let roles = g.material.roles(*subtree);
-            if roles.is_empty() {
-                return Ok("FALSE".into());
-            }
-            text_in_cond("x", roles, jk, sql)
+            text_in_cond("x", g.material.roles(*subtree), jk, sql)
         }
         PolicyOperand::Lit(v) if numeric => {
             let n = v
@@ -198,18 +195,20 @@ pub(crate) fn exists_index(
     sql: &mut SqlBuf,
 ) -> String {
     let fph = sql.typed(Bind::I16(field_i16(field)));
+    let t = sql.t();
     let rel = table.relation();
     let col = table.record_column();
     format!(
-        "EXISTS (SELECT 1 FROM {rel} x WHERE x.tenant_int = $1 AND x.table_int = $2 \
+        "EXISTS (SELECT 1 FROM {rel} x WHERE x.tenant_int = $1 AND x.table_int = {t} \
          AND x.field_id = {fph} AND x.{col} = {rec} AND {cond} OFFSET 0)"
     )
 }
 
 /// 本体（`data_record`）の点検索。`cond` は別名 `b` を参照する。
-pub(crate) fn exists_body(rec: &str, cond: &str) -> String {
+pub(crate) fn exists_body(rec: &str, cond: &str, sql: &SqlBuf) -> String {
+    let t = sql.t();
     format!(
-        "EXISTS (SELECT 1 FROM data_record b WHERE b.tenant_int = $1 AND b.table_int = $2 \
+        "EXISTS (SELECT 1 FROM data_record b WHERE b.tenant_int = $1 AND b.table_int = {t} \
          AND b.record_int = {rec} AND ({cond}) OFFSET 0)"
     )
 }
@@ -218,21 +217,24 @@ pub(crate) fn exists_body(rec: &str, cond: &str) -> String {
 ///
 /// - 短い値（≤ `MAX_INDEX_KEY_BYTES`）: `val = s AND NOT truncated`（切り詰め行の本体は長いので一致しない）
 /// - 長い値: `val = prefix(s) AND truncated AND 本体 = s`（`field` が `None` の擬似列は長い値を持たない）
+///
+/// 長短はバインドの真偽スイッチで選ぶ（**値の長さで SQL テキストを変えない**・data-platform §16.3）。
 pub(crate) fn text_eq_cond(x: &str, s: &str, field: Option<FieldId>, sql: &mut SqlBuf) -> String {
     let (prefix, long) = crate::index::normalize::prefix_at_char_boundary(s, MAX_INDEX_KEY_BYTES);
-    if !long {
-        let ph = sql.push(Bind::Text(s.to_string()));
-        return format!("({x}.val = {ph}::text COLLATE \"C\" AND NOT {x}.truncated)");
-    }
-    let Some(field) = field else {
-        return "FALSE".into();
-    };
     let pp = sql.push(Bind::Text(prefix.to_string()));
+    let lf = sql.flag(long);
+    let Some(field) = field else {
+        return format!("({x}.val = {pp}::text COLLATE \"C\" AND NOT {x}.truncated AND NOT {lf})");
+    };
     let body = body_text_cmp(x, field, "=", s, sql);
-    format!("({x}.val = {pp}::text COLLATE \"C\" AND {x}.truncated AND {body})")
+    format!(
+        "({x}.val = {pp}::text COLLATE \"C\" AND {x}.truncated = {lf} AND (NOT {lf} OR {body}))"
+    )
 }
 
-/// 値のいずれかと等しいか（短い値は配列 1 本・長い値は個別に本体で再確認）。
+/// 値のいずれかと等しいか（短い値は配列 1 本・長い値はプレフィクスの配列で引いて本体で再確認）。
+///
+/// 短い値・長い値の有無に依らず同じテキストになる（空の配列は `= ANY('{}')` で偽）。
 pub(crate) fn text_in_cond(
     x: &str,
     vals: &[String],
@@ -241,17 +243,30 @@ pub(crate) fn text_in_cond(
 ) -> String {
     let (short, long): (Vec<&String>, Vec<&String>) =
         vals.iter().partition(|v| v.len() <= MAX_INDEX_KEY_BYTES);
-    let mut parts = Vec::new();
-    if !short.is_empty() {
-        let ph = sql.push(Bind::TextArray(short.into_iter().cloned().collect()));
-        parts.push(format!(
-            "({x}.val = ANY({ph}::text[]) AND NOT {x}.truncated)"
-        ));
-    }
-    for v in long {
-        parts.push(text_eq_cond(x, v, field, sql));
-    }
-    format!("({})", parts.join(" OR "))
+    let sph = sql.push(Bind::TextArray(short.into_iter().cloned().collect()));
+    let short_sql = format!("({x}.val = ANY({sph}::text[]) AND NOT {x}.truncated)");
+    let Some(field) = field else {
+        // 擬似列は長い値を持たない（長い値は一致しない）。
+        return format!("({short_sql})");
+    };
+    let lf = sql.flag(!long.is_empty());
+    let prefixes: Vec<String> = long
+        .iter()
+        .map(|v| {
+            crate::index::normalize::prefix_at_char_boundary(v, MAX_INDEX_KEY_BYTES)
+                .0
+                .to_string()
+        })
+        .collect();
+    let pph = sql.push(Bind::TextArray(prefixes));
+    let kph = sql.push(Bind::Text(crate::field_key::json_key(field)));
+    let lph = sql.push(Bind::TextArray(long.into_iter().cloned().collect()));
+    let t = sql.t();
+    format!(
+        "({short_sql} OR ({lf} AND {x}.truncated AND {x}.val = ANY({pph}::text[]) AND \
+         EXISTS (SELECT 1 FROM data_record b WHERE b.tenant_int = $1 AND b.table_int = {t} \
+         AND b.record_int = {x}.record_int AND (b.data ->> {kph}) COLLATE \"C\" = ANY({lph}::text[]))))"
+    )
 }
 
 /// 切り詰め行の本体比較（`(b.data ->> 'f{id}') <op> s`）。JSONB キーもバインドで渡す。
@@ -264,8 +279,9 @@ pub(crate) fn body_text_cmp(
 ) -> String {
     let kph = sql.push(Bind::Text(crate::field_key::json_key(field)));
     let vph = sql.push(Bind::Text(s.to_string()));
+    let t = sql.t();
     format!(
-        "EXISTS (SELECT 1 FROM data_record b WHERE b.tenant_int = $1 AND b.table_int = $2 \
+        "EXISTS (SELECT 1 FROM data_record b WHERE b.tenant_int = $1 AND b.table_int = {t} \
          AND b.record_int = {x}.record_int AND (b.data ->> {kph}) COLLATE \"C\" {op} {vph}::text)"
     )
 }
@@ -336,8 +352,21 @@ mod tests {
         );
         assert!(out.contains("AND NOT (x.val = $3::text"), "{out}");
         assert!(out.contains("OFFSET 0"));
-        assert!(out.contains("d.record_int = ANY($5::int8[])"), "{out}");
+        assert!(
+            out.contains("($8::bool AND d.record_int = ANY($9::int8[]))"),
+            "{out}"
+        );
         assert!(!out.contains("alice"));
+        // 共有の有無で SQL テキストは変わらない（材料はバインドだけ・data-platform §16.3）。
+        let g2 = IndexGuardCtx {
+            shared_ints: &[],
+            user: "bob",
+            ..g
+        };
+        let mut sql2 = SqlBuf::scoped(1, 2);
+        let out2 = compile_index_read(&g2, "d.record_int", &mut sql2).unwrap();
+        assert_eq!(out, out2);
+        assert_ne!(sql.binds, sql2.binds);
     }
 
     #[test]
@@ -371,7 +400,21 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("b.owner = $4"), "{out}");
-        assert!(out.contains("TRUE"), "HasRole は定数: {out}");
+        // HasRole の成否は真偽スイッチ（テキストに TRUE/FALSE を焼き込まない）。
+        assert!(out.contains("$5::bool"), "HasRole はバインド: {out}");
+        assert_eq!(sql.binds[4], Bind::Bool(true));
+        let none = PolicyMaterial {
+            roles_effective: Some(Arc::new(vec![])),
+            ..material()
+        };
+        let g2 = IndexGuardCtx {
+            material: &none,
+            ..g
+        };
+        let mut sql2 = SqlBuf::scoped(1, 2);
+        let out2 = compile_index_read(&g2, "d.record_int", &mut sql2).unwrap();
+        assert_eq!(out, out2, "ロールの有無で SQL テキストは変わらない");
+        assert_eq!(sql2.binds[4], Bind::Bool(false));
     }
 
     #[test]
@@ -379,9 +422,20 @@ mod tests {
         let mut sql = SqlBuf::scoped(1, 2);
         let long = "あ".repeat(1_000);
         let c = text_eq_cond("x", &long, Some(16), &mut sql);
-        assert!(c.contains("x.truncated AND EXISTS"), "{c}");
-        assert!(c.contains("(b.data ->> $4)"), "{c}");
+        assert!(
+            c.contains("x.truncated = $4::bool AND (NOT $4::bool OR EXISTS"),
+            "{c}"
+        );
+        assert!(c.contains("(b.data ->> $5)"), "{c}");
+        assert_eq!(sql.binds[3], Bind::Bool(true));
+        // 短い値でも同じテキスト（長短は真偽スイッチ）。
+        let mut short = SqlBuf::scoped(1, 2);
+        assert_eq!(text_eq_cond("x", "a", Some(16), &mut short), c);
+        assert_eq!(short.binds[3], Bind::Bool(false));
+        // 擬似列（本体で再確認できない）の長い値は不成立（スイッチで偽）。
         let mut sql = SqlBuf::scoped(1, 2);
-        assert_eq!(text_eq_cond("x", &long, None, &mut sql), "FALSE");
+        let p = text_eq_cond("x", &long, None, &mut sql);
+        assert!(p.ends_with("AND NOT $4::bool)"), "{p}");
+        assert_eq!(sql.binds[3], Bind::Bool(true));
     }
 }

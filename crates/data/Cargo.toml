@@ -35,6 +35,8 @@ base64.workspace = true
 tokio.workspace = true
 # record_int の集合演算（和・積・差）の 64 ビット Roaring ビットマップ（Task 15.12・query-optimizer.md §6.4）。
 roaring = "0.10"
+# SQL 互換インターフェースのパーサ（Task 15.10・閉じた部分集合だけを IR へ写す）。
+sqlparser.workspace = true
 
 [dev-dependencies]
 reqwest.workspace = true

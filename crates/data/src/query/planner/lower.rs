@@ -16,14 +16,16 @@ use std::fmt::Write as _;
 
 use uuid::Uuid;
 
-use super::guard::GuardSql;
+use super::guard::{Guard, GuardSql};
 use super::keys::{Pos, SortVal};
 use crate::index::{IndexTable, MAX_INDEX_KEY_BYTES};
 use crate::model::{FieldId, SYSTEM_FIELD_CREATED_AT};
 use crate::policy::compile_index::{
     body_text_cmp, exists_index, field_i16, text_eq_cond, text_in_cond,
 };
-use crate::query::bound::{Atom, BField, BSort, BoundQuery, Expr, FieldKind, Leaf, Val};
+use crate::query::bound::{
+    Atom, BField, BSort, BoundQuery, ColRef, Expr, FieldKind, Leaf, LinkExpr, Val,
+};
 use crate::query::sql::{like_escape, Bind, SqlBuf};
 
 /// 長い境界値は切り詰め行の本体で比べる（プレフィクスの長さは最小で上限−3 バイト）。
@@ -34,6 +36,15 @@ pub(crate) struct Lowerer<'a> {
     pub q: &'a BoundQuery,
     /// record_ref の参照先 uuid → `record_int`（実行時に引き直した分だけ・外へ出さない）。
     pub links: &'a HashMap<Uuid, i64>,
+    /// リンクの半結合の参照先（[`BoundQuery::scopes`] と同じ添字・入れ子も平坦）。
+    pub scopes: &'a [ScopeLow<'a>],
+}
+
+/// 参照先テーブル 1 つの降下の材料（参照先のフィールド・`table_int`・閲覧者本人の行述語）。
+pub(crate) struct ScopeLow<'a> {
+    pub q: &'a BoundQuery,
+    pub table_int: i64,
+    pub guard: Guard<'a>,
 }
 
 /// 候補集合の入口（フィルタ駆動・OR 駆動・認可駆動・全件）。
@@ -72,6 +83,8 @@ pub(crate) fn order_checks(mut v: Vec<&Expr>) -> Vec<&Expr> {
             },
             Expr::Or(_) | Expr::And(_) => 3,
             Expr::Not(_) => 6,
+            // 参照先の点検索と行述語を伴う（最も高い）。
+            Expr::Link(_) => 7,
             Expr::True | Expr::False => 0,
         }
     }
@@ -114,6 +127,8 @@ impl Lowerer<'_> {
                     Leaf::In(vs) => vs.iter().collect(),
                     _ => Vec::new(),
                 };
+                // 引き直せなかった参照先（存在しない・別テナント）は配列に入らないだけ（空の配列は偽）。
+                // 引き直しの成否で SQL テキストを変えない（data-platform §16.3）。
                 let ints: Vec<i64> = vals
                     .into_iter()
                     .filter_map(|v| match v {
@@ -121,9 +136,6 @@ impl Lowerer<'_> {
                         _ => None,
                     })
                     .collect();
-                if ints.is_empty() {
-                    return "FALSE".into();
-                }
                 let ph = sql.push(Bind::I64Array(ints));
                 format!("{x}.dst_record = ANY({ph}::int8[])")
             }
@@ -148,9 +160,6 @@ impl Lowerer<'_> {
                     .iter()
                     .filter_map(|v| v.as_text().map(str::to_string))
                     .collect();
-                if arr.is_empty() {
-                    return "FALSE".into();
-                }
                 text_in_cond(x, &arr, body_field, sql)
             }
             (Leaf::Range { lo, hi }, kind) => {
@@ -182,18 +191,18 @@ impl Lowerer<'_> {
                 }
             }
             (Leaf::StartsWith(p), _) => {
+                // 長い接頭辞（切り詰め行はプレフィクスでは判定できない）は本体で再確認する。長短は真偽
+                // スイッチで選び、値の長さで SQL テキストを変えない（data-platform §16.3）。
                 let ph = sql.push(Bind::Text(p.clone()));
-                if p.len() <= SAFE_BOUND_BYTES {
-                    format!("starts_with({x}.val, {ph}::text)")
-                } else {
-                    let field = body_field.unwrap_or(0);
-                    let kph = sql.push(Bind::Text(crate::field_key::json_key(field)));
-                    format!(
-                        "((NOT {x}.truncated AND starts_with({x}.val, {ph}::text)) OR ({x}.truncated AND \
-                         EXISTS (SELECT 1 FROM data_record b WHERE b.tenant_int = $1 AND b.table_int = $2 \
-                         AND b.record_int = {x}.record_int AND starts_with(b.data ->> {kph}, {ph}::text))))"
-                    )
-                }
+                let lf = sql.flag(p.len() > SAFE_BOUND_BYTES);
+                let field = body_field.unwrap_or(0);
+                let kph = sql.push(Bind::Text(crate::field_key::json_key(field)));
+                let tbl = sql.t();
+                format!(
+                    "((starts_with({x}.val, {ph}::text) AND (NOT {lf} OR NOT {x}.truncated)) OR ({lf} AND {x}.truncated AND \
+                     EXISTS (SELECT 1 FROM data_record b WHERE b.tenant_int = $1 AND b.table_int = {tbl} \
+                     AND b.record_int = {x}.record_int AND starts_with(b.data ->> {kph}, {ph}::text))))"
+                )
             }
             // 型の合わない組（束縛で弾くので通常来ない）は不成立へ倒す。
             _ => "FALSE".into(),
@@ -213,19 +222,17 @@ impl Lowerer<'_> {
                 let ph = sql.typed(Bind::Numeric(d.canonical()));
                 format!("{x}.val {op} {ph}")
             }
-            (_, Val::Text(s)) if s.len() <= SAFE_BOUND_BYTES => {
-                let ph = sql.push(Bind::Text(s.clone()));
-                format!("{x}.val {op} {ph}::text COLLATE \"C\"")
-            }
             (_, Val::Text(s)) => {
-                // 長い境界: 切り詰め行はプレフィクスでは判定できないので本体で比べる。
+                // 長い境界: 切り詰め行はプレフィクスでは判定できないので本体で比べる。短い境界は
+                // プレフィクスだけで決まる。長短は真偽スイッチ（値の長さで SQL テキストを変えない）。
                 let ph = sql.push(Bind::Text(s.clone()));
+                let lf = sql.flag(s.len() > SAFE_BOUND_BYTES);
                 let body = match body_field {
                     Some(f) => body_text_cmp(x, f, op, s, sql),
                     None => "FALSE".into(),
                 };
                 format!(
-                    "((NOT {x}.truncated AND {x}.val {op} {ph}::text COLLATE \"C\") OR ({x}.truncated AND {body}))"
+                    "(({x}.val {op} {ph}::text COLLATE \"C\" AND (NOT {lf} OR NOT {x}.truncated)) OR ({lf} AND {x}.truncated AND {body}))"
                 )
             }
             _ => "FALSE".into(),
@@ -253,7 +260,46 @@ impl Lowerer<'_> {
                 let kids = order_checks(v.iter().collect());
                 self.case_chain(&kids, None, rec, sql)
             }
+            Expr::Link(l) => self.link_sql(l, rec, sql),
         }
+    }
+
+    /// リンクの半結合（駆動行 `rec` からリンクを辿り、参照先に「閲覧者に見えて条件を満たす行」があるか）。
+    ///
+    /// 参照先の条件と行述語（`Guard(P)`・閲覧者本人の材料）は、参照先の `table_int` のバインドへ切り替えて
+    /// 降ろす（PIT-20: 参照先の行述語を省いた結合は存在しない）。辺の相手が削除済みなら成立しない。
+    /// `OFFSET 0` で行ごとの点検索に固定する（query-optimizer.md §6.1）。
+    pub(crate) fn link_sql(&self, l: &LinkExpr, rec: &str, sql: &mut SqlBuf) -> String {
+        let Some(sc) = self.scopes.get(l.scope) else {
+            // 参照先の材料が無い半結合は成立させない（fail-closed）。
+            return "FALSE".into();
+        };
+        let parent = sql.t();
+        let fph = sql.typed(Bind::I16(field_i16(l.field)));
+        let cph = sql.typed(Bind::I64(sc.table_int));
+        let n = sql.alias();
+        let dst = format!("lk{n}.dst_record");
+        let child = Lowerer {
+            q: sc.q,
+            links: self.links,
+            scopes: self.scopes,
+        };
+        let (cond, guard) = sql.within(&cph, |sql| {
+            let cond = child.expr_sql(&l.filter, &dst, sql);
+            // 行述語の降下の誤り（入口で検査済み）は不成立へ倒す。
+            let guard = sc
+                .guard
+                .lower(&dst, sql)
+                .map_or_else(|_| "FALSE".to_string(), |g| g.as_str().to_string());
+            (cond, guard)
+        });
+        format!(
+            "EXISTS (SELECT 1 FROM data_link lk{n} WHERE lk{n}.tenant_int = $1 AND lk{n}.table_int = {parent} \
+             AND lk{n}.field_id = {fph} AND lk{n}.src_record = {rec} AND lk{n}.dst_table_int = {cph} \
+             AND EXISTS (SELECT 1 FROM data_record ld{n} WHERE ld{n}.tenant_int = $1 \
+             AND ld{n}.table_int = {cph} AND ld{n}.record_int = {dst}) \
+             AND {cond} AND ({guard}) OFFSET 0)"
+        )
     }
 
     /// `CASE WHEN c₁ THEN (CASE WHEN c₂ THEN … <guard> …) ELSE false END`（最後に行述語）。
@@ -402,6 +448,9 @@ impl Lowerer<'_> {
     }
 
     /// 全順序で `p` より後ろ（別名 `z`・列 `k0..`・`record_int`）。値なしは各キーの末尾。
+    ///
+    /// 値なしの位置も `NULL` のバインドで表し、位置の値の有無で SQL テキストを変えない
+    /// （`IS NOT DISTINCT FROM`・`$v IS NOT NULL` は計画時に畳み込まれる・data-platform §16.3）。
     pub(crate) fn keyset_sql(&self, p: &Pos, sql: &mut SqlBuf) -> String {
         let sort = &self.q.sort;
         let mut ors = Vec::new();
@@ -410,23 +459,13 @@ impl Lowerer<'_> {
             let f = self.field(k.field);
             let col = format!("z.k{i}");
             let v = p.vals.get(i).unwrap_or(&SortVal::Missing);
-            let (eq, gt) = match v {
-                SortVal::Missing => (format!("{col} IS NULL"), None),
-                v => {
-                    let ph = sort_val_ph(f.kind, v, sql);
-                    let op = if k.desc { "<" } else { ">" };
-                    (
-                        format!("{col} = {ph}"),
-                        Some(format!("({col} IS NULL OR {col} {op} {ph})")),
-                    )
-                }
-            };
-            if let Some(gt) = gt {
-                let mut conj = eqs.clone();
-                conj.push(gt);
-                ors.push(format!("({})", conj.join(" AND ")));
-            }
-            eqs.push(eq);
+            let ph = sort_val_ph(f.kind, v, sql);
+            let op = if k.desc { "<" } else { ">" };
+            let gt = format!("({ph} IS NOT NULL AND ({col} IS NULL OR {col} {op} {ph}))");
+            let mut conj = eqs.clone();
+            conj.push(gt);
+            ors.push(format!("({})", conj.join(" AND ")));
+            eqs.push(format!("{col} IS NOT DISTINCT FROM {ph}"));
         }
         let rop = if sort.first().is_some_and(|k| k.desc) {
             "<"
@@ -553,24 +592,36 @@ impl Lowerer<'_> {
     pub(crate) fn probe_sql(&self, a: &Atom, cap: i64, sql: &mut SqlBuf) -> String {
         let table = self.atom_table(a);
         // `= ANY(配列)` は値索引の並びと両立しない（索引条件にならず全件を読む）ので、値ごとの
-        // 等値に分けて並べる。
-        let conds: Vec<String> = match (&a.leaf, table) {
-            (Leaf::In(vals), IndexTable::Text | IndexTable::Num)
-                if vals.len() <= MAX_PROBE_TERMS =>
-            {
-                vals.iter()
-                    .map(|v| {
-                        let one = Atom {
-                            field: a.field,
-                            leaf: Leaf::Eq(v.clone()),
-                        };
-                        self.leaf_cond(&one, "x", sql)
-                    })
-                    .collect()
+        // 等値探索を `unnest` の `LATERAL` で並べる（要素数で SQL テキストを変えない・§16.3）。
+        match (&a.leaf, table) {
+            (Leaf::In(vals), IndexTable::Text) => {
+                let texts: Vec<String> = vals
+                    .iter()
+                    .filter_map(|v| v.as_text().map(str::to_string))
+                    .collect();
+                probe_each(
+                    table,
+                    a.field,
+                    Bind::TextArray(index_prefixes(&texts)),
+                    cap,
+                    sql,
+                )
             }
-            _ => vec![self.leaf_cond(a, "x", sql)],
-        };
-        probe_union(table, a.field, &conds, cap, sql)
+            (Leaf::In(vals), IndexTable::Num) => {
+                let nums: Vec<String> = vals
+                    .iter()
+                    .filter_map(|v| match v {
+                        Val::Num(d) => Some(d.canonical()),
+                        _ => None,
+                    })
+                    .collect();
+                probe_each(table, a.field, Bind::NumericArray(nums), cap, sql)
+            }
+            _ => {
+                let c = self.leaf_cond(a, "x", sql);
+                probe_union(table, a.field, &[c], cap, sql)
+            }
+        }
     }
 
     /// 集計（候補 → 検査 → 索引値でグループ化・数値は numeric で正確に）。
@@ -583,12 +634,33 @@ impl Lowerer<'_> {
     ) -> String {
         let source = self.source_sql(src, sql);
         let check = self.case_chain(checks, Some(guard), "c.record_int", sql);
-        // 値は行ごとの点検索（スカラー部分問い合わせ）で引く。索引表どうしの JOIN は書かない（S4）。
-        let mut inner = vec!["p.record_int".to_string()];
+        let t = sql.t();
+        let (inner, select, group) =
+            self.agg_columns(&|_| (t.clone(), "p.record_int".to_string()), sql);
+        format!(
+            "WITH cand AS MATERIALIZED ({source}), \
+             pass AS MATERIALIZED (SELECT c.record_int FROM cand c WHERE {check}) \
+             SELECT {} FROM (SELECT {} FROM pass p) z{group}",
+            select.join(", "),
+            inner.join(", ")
+        )
+    }
+
+    /// 集計の列（内側の値の点検索・外側の集計式・GROUP BY）。`at(列)` はその列の値を引く表の
+    /// `table_int` のプレースホルダと行の `record_int` の式（結合では結合先の表・行）。
+    ///
+    /// 値は行ごとの点検索（スカラー部分問い合わせ）で引く。索引表どうしの JOIN は書かない（S4）。
+    pub(crate) fn agg_columns(
+        &self,
+        at: &dyn Fn(ColRef) -> (String, String),
+        sql: &mut SqlBuf,
+    ) -> (Vec<String>, Vec<String>, String) {
+        let mut inner = Vec::new();
         let mut select = vec!["count(*)::int8 AS grp_count".to_string()];
         let mut group = Vec::new();
         for (i, g) in self.q.group_by.iter().enumerate() {
-            let f = self.field(*g);
+            let f = self.q.col_field(*g);
+            let (t, rec) = at(*g);
             let rel = f.value_table().relation();
             let fph = sql.typed(Bind::I16(field_i16(f.id)));
             let text = f.value_table() == IndexTable::Text;
@@ -599,7 +671,7 @@ impl Lowerer<'_> {
                 let kph = sql.push(Bind::Text(crate::field_key::json_key(f.id)));
                 format!(
                     "CASE WHEN g.truncated THEN (SELECT b.data ->> {kph} FROM data_record b \
-                     WHERE b.tenant_int = $1 AND b.table_int = $2 AND b.record_int = p.record_int) \
+                     WHERE b.tenant_int = $1 AND b.table_int = {t} AND b.record_int = {rec}) \
                      ELSE g.val::text END"
                 )
             } else {
@@ -607,8 +679,8 @@ impl Lowerer<'_> {
             };
             let probe = |col: &str| {
                 format!(
-                    "(SELECT {col} FROM {rel} g WHERE g.tenant_int = $1 AND g.table_int = $2 \
-                     AND g.field_id = {fph} AND g.record_int = p.record_int AND g.ord = 0 OFFSET 0)"
+                    "(SELECT {col} FROM {rel} g WHERE g.tenant_int = $1 AND g.table_int = {t} \
+                     AND g.field_id = {fph} AND g.record_int = {rec} AND g.ord = 0 OFFSET 0)"
                 )
             };
             inner.push(format!("{} AS g{i}", probe(&val)));
@@ -621,14 +693,15 @@ impl Lowerer<'_> {
         }
         for (i, (m, field)) in self.q.metrics.iter().enumerate() {
             use crate::query::ir::Metric;
-            let Some(fid) = field else {
+            let Some(c) = field else {
                 select.push(format!("count(*)::float8 AS m{i}"));
                 continue;
             };
-            let fph = sql.typed(Bind::I16(field_i16(*fid)));
+            let (t, rec) = at(*c);
+            let fph = sql.typed(Bind::I16(field_i16(c.field)));
             inner.push(format!(
-                "(SELECT n.val FROM data_index_num n WHERE n.tenant_int = $1 AND n.table_int = $2 \
-                 AND n.field_id = {fph} AND n.record_int = p.record_int AND n.ord = 0 OFFSET 0) AS m{i}"
+                "(SELECT n.val FROM data_index_num n WHERE n.tenant_int = $1 AND n.table_int = {t} \
+                 AND n.field_id = {fph} AND n.record_int = {rec} AND n.ord = 0 OFFSET 0) AS m{i}"
             ));
             let func = match m {
                 Metric::Sum => "sum",
@@ -639,23 +712,57 @@ impl Lowerer<'_> {
             };
             select.push(format!("({func}(z.m{i}))::float8 AS m{i}"));
         }
+        if inner.is_empty() {
+            inner.push("1 AS one".to_string());
+        }
         let group_sql = if group.is_empty() {
             String::new()
         } else {
             format!(" GROUP BY {}", group.join(", "))
         };
-        format!(
-            "WITH cand AS MATERIALIZED ({source}), \
-             pass AS MATERIALIZED (SELECT c.record_int FROM cand c WHERE {check}) \
-             SELECT {} FROM (SELECT {} FROM pass p) z{group_sql}",
-            select.join(", "),
-            inner.join(", ")
-        )
+        (inner, select, group_sql)
     }
 }
 
-/// 件数探索で値ごとに分ける上限（超えたら 1 本の `ANY` で数える）。
-pub(crate) const MAX_PROBE_TERMS: usize = 32;
+/// 値の集合ごとの上限付き件数探索（`unnest` の各値について値索引の並びで `LIMIT` し、和をさらに上限で切る）。
+///
+/// `vals` は `TextArray`（索引上のプレフィクス）か `NumericArray`。件数探索は計画の目安なので、切り詰め行は
+/// プレフィクスで数える（多めに数えるだけで結果には影響しない）。
+pub(crate) fn probe_each(
+    table: IndexTable,
+    field: FieldId,
+    vals: Bind,
+    cap: i64,
+    sql: &mut SqlBuf,
+) -> String {
+    let rel = table.relation();
+    let ty = if matches!(vals, Bind::NumericArray(_)) {
+        "numeric[]"
+    } else {
+        "text[]"
+    };
+    let vph = sql.push(vals);
+    let fph = sql.typed(Bind::I16(field_i16(field)));
+    let ph = sql.typed(Bind::I64(cap));
+    let t = sql.t();
+    let order = index_order(table);
+    format!(
+        "SELECT count(*) FROM (SELECT 1 FROM unnest({vph}::{ty}) v(val) CROSS JOIN LATERAL \
+         (SELECT 1 FROM {rel} x WHERE x.tenant_int = $1 AND x.table_int = {t} AND x.field_id = {fph} \
+         AND x.val = v.val ORDER BY {order} LIMIT {ph}) y LIMIT {ph}) s"
+    )
+}
+
+/// 索引上の値（`MAX_INDEX_KEY_BYTES` で文字境界に切り詰めたプレフィクス）。
+pub(crate) fn index_prefixes(vals: &[String]) -> Vec<String> {
+    vals.iter()
+        .map(|v| {
+            crate::index::normalize::prefix_at_char_boundary(v, MAX_INDEX_KEY_BYTES)
+                .0
+                .to_string()
+        })
+        .collect()
+}
 
 /// 上限付き件数探索の文（条件ごとに値索引の並びで `LIMIT` した和を、さらに上限で切る）。
 pub(crate) fn probe_union(
@@ -694,15 +801,20 @@ pub(crate) fn index_order(table: IndexTable) -> &'static str {
     }
 }
 
-/// ソート値のプレースホルダ（num は numeric・text は `COLLATE "C"`）。
+/// ソート値のプレースホルダ（num は numeric・text は `COLLATE "C"`）。値なしは型つきの `NULL` の
+/// バインド（値の有無で SQL テキストを変えない・data-platform §16.3）。
 pub(crate) fn sort_val_ph(kind: FieldKind, v: &SortVal, sql: &mut SqlBuf) -> String {
     match (kind, v) {
-        (_, SortVal::Num(d)) => sql.typed(Bind::Numeric(d.canonical())),
+        (_, SortVal::Num(d)) => sql.typed(Bind::OptNumeric(Some(d.canonical()))),
         (_, SortVal::Text(s)) => {
-            let ph = sql.push(Bind::Text(s.clone()));
+            let ph = sql.push(Bind::OptText(Some(s.clone())));
             format!("{ph}::text COLLATE \"C\"")
         }
-        (_, SortVal::Missing) => "NULL".into(),
+        (FieldKind::Num, SortVal::Missing) => sql.typed(Bind::OptNumeric(None)),
+        (_, SortVal::Missing) => {
+            let ph = sql.push(Bind::OptText(None));
+            format!("{ph}::text COLLATE \"C\"")
+        }
     }
 }
 

@@ -128,6 +128,8 @@ pub(crate) struct Exec<'a, 'c> {
     pub sort_walk_obs: Option<f64>,
     /// 選んだ候補駆動の推定候補件数（推定外れの検出）。
     pub est_cand: Option<f64>,
+    /// プランキャッシュ（同一形状の文は同じテキストを引く・data-platform §16.3）。
+    pub plan: Option<super::plan_cache::PlanHandle<'a>>,
 }
 
 /// 1 ページの結果（全順序の位置つき）。
@@ -157,16 +159,25 @@ impl<'a> Exec<'a, '_> {
         binds: Vec<Bind>,
     ) -> Result<Vec<sqlx::postgres::PgRow>, DataError> {
         self.stats.statements += 1;
+        let text = self.intern(label, text);
         let rows = bind_query(sqlx::query(&text), &binds)
             .fetch_all(&mut *self.conn)
             .await
             .map_err(map_db)?;
         self.captured.push(Captured {
             label,
-            sql: text,
+            sql: text.to_string(),
             binds,
         });
         Ok(rows)
+    }
+
+    /// プランキャッシュからテキストを引く（同一形状なら同じ `Arc<str>`）。
+    pub(crate) fn intern(&self, label: &'static str, text: String) -> Arc<str> {
+        match &self.plan {
+            Some(p) => p.intern(label, text),
+            None => text.into(),
+        }
     }
 
     /// ページを取る（戦略選択 → 予算付き実行 → 切替）。

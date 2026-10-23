@@ -9,6 +9,7 @@
 //! - `matches`（正規表現）は採用しない（422）
 //! - システム擬似列 `_owner` / `_created_at` / `_updated_at` は常に索引済みで、駆動になれる
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
@@ -16,9 +17,10 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::ir::{
-    CondOp, Condition, DataQuery, Metric, DEFAULT_LIMIT, MAX_CONDITION_DEPTH, MAX_CONDITION_LEAVES,
-    MAX_IN_VALUES, MAX_LIMIT, MAX_SORT_KEYS,
+    CondOp, Condition, LinkCond, Metric, DEFAULT_LIMIT, MAX_CONDITION_DEPTH, MAX_CONDITION_LEAVES,
+    MAX_IN_VALUES,
 };
+use super::scopes::ScopeTables;
 use crate::derived::types::ResultType;
 use crate::index::{IndexTable, SortPrecision};
 use crate::model::{
@@ -130,6 +132,29 @@ pub(crate) enum Expr {
     Not(Box<Expr>),
     And(Vec<Expr>),
     Or(Vec<Expr>),
+    /// リンクの半結合（参照先に「閲覧者に見えて条件を満たす行」が 1 件以上ある・data-platform §16.2）。
+    Link(Box<LinkExpr>),
+}
+
+/// リンクの半結合（`EXISTS`）。参照先の条件は**参照先のフィールド空間**で束縛し、参照先の行述語
+/// （`Guard(P)`）は降下で必ず合成する（PIT-20: lookup と同じく閲覧者本人の権限で辿る）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LinkExpr {
+    /// この式が属する表のリンク列（順方向のリンク列か対称列）。
+    pub field: FieldId,
+    /// 参照先のスコープ（[`BoundQuery::scopes`] の添字）。
+    pub scope: usize,
+    /// 参照先の条件（参照先のフィールド空間・正規化済み）。
+    pub filter: Expr,
+}
+
+/// 参照先テーブルのスコープ（束縛済み・JOIN / 半結合の参照先 1 つ）。
+#[derive(Debug, Clone)]
+pub(crate) struct BoundScope {
+    pub table: Uuid,
+    pub schema_version: i64,
+    /// 参照先のフィールド（束縛器が登録したもの。`filter` 等は使わない）。
+    pub q: BoundQuery,
 }
 
 impl Expr {
@@ -137,13 +162,23 @@ impl Expr {
         Expr::Atom(Atom { field, leaf })
     }
 
-    /// 原子式を順に訪れる。
+    /// 原子式を順に訪れる（リンクの半結合の中＝参照先の原子式には降りない）。
     pub(crate) fn atoms<'a>(&'a self, out: &mut Vec<&'a Atom>) {
         match self {
-            Expr::True | Expr::False => {}
+            Expr::True | Expr::False | Expr::Link(_) => {}
             Expr::Atom(a) => out.push(a),
             Expr::Not(e) => e.atoms(out),
             Expr::And(v) | Expr::Or(v) => v.iter().for_each(|e| e.atoms(out)),
+        }
+    }
+
+    /// リンクの半結合を順に訪れる（入れ子の参照先の中には降りない）。
+    pub(crate) fn links<'a>(&'a self, out: &mut Vec<&'a LinkExpr>) {
+        match self {
+            Expr::True | Expr::False | Expr::Atom(_) => {}
+            Expr::Link(l) => out.push(l),
+            Expr::Not(e) => e.links(out),
+            Expr::And(v) | Expr::Or(v) => v.iter().for_each(|e| e.links(out)),
         }
     }
 }
@@ -155,24 +190,127 @@ pub(crate) struct BSort {
     pub desc: bool,
 }
 
+/// 集計・グループ化・射影の列（`src` = 0 は FROM の表・`i + 1` は `joins[i]`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ColRef {
+    pub src: usize,
+    pub field: FieldId,
+}
+
+impl ColRef {
+    pub(crate) fn base(field: FieldId) -> Self {
+        ColRef { src: 0, field }
+    }
+}
+
+/// 束縛済みの結合（宣言済みリンク列経由の INNER JOIN・カーディナリティは `LinkDef` から）。
+#[derive(Debug, Clone)]
+pub(crate) struct BoundJoin {
+    pub alias: String,
+    /// 結合元（0 は FROM の表・`i + 1` は `joins[i]`）。
+    pub from: usize,
+    /// 結合元のリンク列（順方向のリンク列か対称列）。
+    pub field: FieldId,
+    /// 結合先のスコープ（[`BoundQuery::scopes`] の添字）。
+    pub scope: usize,
+    /// 結合先の条件（結合先のフィールド空間・正規化済み）。
+    pub filter: Expr,
+    /// 結合元 1 行から辿れる結合先が高々 1 件（`LinkDef` の src 側が単値）。
+    pub at_most_one: bool,
+    /// 射影する結合先の列の参照名（擬似列 `_id` 等を含む）。
+    pub select: Vec<String>,
+}
+
+/// 集計後の条件（指標の添字・比較・値）。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum BHaving {
+    All(Vec<BHaving>),
+    Any(Vec<BHaving>),
+    Not(Box<BHaving>),
+    Cmp {
+        metric: usize,
+        op: CondOp,
+        value: f64,
+    },
+}
+
+/// 集計結果の並べ替えのキー。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GroupKey {
+    /// `group_by` の添字。
+    Group(usize),
+    /// `metrics` の添字。
+    Metric(usize),
+}
+
 /// 束縛済みクエリ。
 #[derive(Debug, Clone)]
 pub(crate) struct BoundQuery {
     pub fields: BTreeMap<FieldId, BField>,
     pub filter: Expr,
     pub sort: Vec<BSort>,
-    pub group_by: Vec<FieldId>,
-    pub metrics: Vec<(Metric, Option<FieldId>)>,
+    pub group_by: Vec<ColRef>,
+    pub metrics: Vec<(Metric, Option<ColRef>)>,
+    /// 出力に出さない末尾の指標の数（HAVING・並べ替えのためだけに足したもの）。
+    pub hidden_metrics: usize,
+    pub having: Option<BHaving>,
+    pub group_sort: Vec<(GroupKey, bool)>,
+    pub group_limit: Option<u32>,
+    /// 残した結合（半結合へ書き換えられなかったもの）。
+    pub joins: Vec<BoundJoin>,
     pub select: Option<HashSet<String>>,
     pub limit: u32,
     pub with_count: bool,
     pub sort_precision: SortPrecision,
+    /// 参照先テーブルのスコープ（リンクの半結合・JOIN。入れ子も平坦に並べる）。
+    pub scopes: Vec<BoundScope>,
 }
 
 impl BoundQuery {
     pub(crate) fn field(&self, id: FieldId) -> &BField {
         // 束縛時に登録した ID だけが式・ソートに現れる（不在は束縛の不具合）。
         self.fields.get(&id).unwrap_or(&FALLBACK_FIELD)
+    }
+
+    /// フィールドだけを持つ束縛（参照先スコープ用）。
+    pub(crate) fn fields_only(fields: BTreeMap<FieldId, BField>) -> Self {
+        BoundQuery {
+            fields,
+            filter: Expr::True,
+            sort: Vec::new(),
+            group_by: Vec::new(),
+            metrics: Vec::new(),
+            hidden_metrics: 0,
+            having: None,
+            group_sort: Vec::new(),
+            group_limit: None,
+            joins: Vec::new(),
+            select: None,
+            limit: DEFAULT_LIMIT,
+            with_count: false,
+            sort_precision: SortPrecision::Exact,
+            scopes: Vec::new(),
+        }
+    }
+
+    /// 列（FROM の表か結合先）の束縛済みフィールド。
+    pub(crate) fn col_field(&self, c: ColRef) -> &BField {
+        if c.src == 0 {
+            return self.field(c.field);
+        }
+        self.joins
+            .get(c.src - 1)
+            .and_then(|j| self.scopes.get(j.scope))
+            .map_or(&FALLBACK_FIELD, |s| s.q.field(c.field))
+    }
+
+    /// 列の出力名（FROM の表は参照名・結合先は `別名.参照名`）。
+    pub(crate) fn col_key(&self, c: ColRef) -> String {
+        let key = &self.col_field(c).key;
+        match self.joins.get(c.src.wrapping_sub(1)) {
+            Some(j) if c.src > 0 => format!("{}.{key}", j.alias),
+            _ => key.clone(),
+        }
     }
 
     pub(crate) fn is_aggregate(&self) -> bool {
@@ -191,7 +329,7 @@ static FALLBACK_FIELD: BField = BField {
 };
 
 /// 擬似列の束縛。
-fn pseudo(key: &str) -> Option<BField> {
+pub(crate) fn pseudo(key: &str) -> Option<BField> {
     let id = match key {
         PSEUDO_OWNER => SYSTEM_FIELD_OWNER,
         PSEUDO_CREATED_AT => SYSTEM_FIELD_CREATED_AT,
@@ -214,12 +352,24 @@ pub(crate) fn pseudo_updated_at() -> BField {
     pseudo(PSEUDO_UPDATED_AT).unwrap_or_else(|| FALLBACK_FIELD.clone())
 }
 
+/// リンクの半結合・結合の束縛の文脈（参照先テーブルと、作ったスコープ）。
+pub(crate) struct LinkCtx<'a> {
+    pub tables: &'a ScopeTables,
+    pub scopes: Vec<BoundScope>,
+    /// 半結合の入れ子・結合の段数の上限（`MAX_JOIN_DEPTH`）。
+    pub max_depth: usize,
+}
+
 /// 束縛器（1 クエリ分）。
 pub(crate) struct Binder<'a> {
     schema: &'a TableSchema,
     masked: &'a HashSet<String>,
     fields: BTreeMap<FieldId, BField>,
     leaves: usize,
+    /// リンクの半結合を束縛する文脈（無ければリンクの条件は 422）。
+    ctx: Option<&'a RefCell<LinkCtx<'a>>>,
+    /// この束縛器の表がリンクを何段辿った先か。
+    depth: usize,
 }
 
 impl<'a> Binder<'a> {
@@ -229,7 +379,88 @@ impl<'a> Binder<'a> {
             masked,
             fields: BTreeMap::new(),
             leaves: 0,
+            ctx: None,
+            depth: 0,
         }
+    }
+
+    /// リンクの半結合を束縛できる束縛器（`depth` は辿った段数）。
+    pub(crate) fn scoped(
+        schema: &'a TableSchema,
+        masked: &'a HashSet<String>,
+        ctx: &'a RefCell<LinkCtx<'a>>,
+        depth: usize,
+    ) -> Self {
+        Binder {
+            ctx: Some(ctx),
+            depth,
+            ..Binder::new(schema, masked)
+        }
+    }
+
+    /// 束縛器の表のリンク列とその参照先（マスク 403 → 未宣言 422 → リンク列でない 422 → 参照先が
+    /// 読めない 403 の順）。
+    pub(crate) fn link_target(
+        &self,
+        key: &str,
+    ) -> Result<(&'a crate::model::FieldDef, &'a super::scopes::ScopeTable), DataError> {
+        if self.masked.contains(key) {
+            return Err(DataError::Forbidden);
+        }
+        let f = self.schema.field(key).ok_or_else(|| {
+            DataError::Invalid(format!("フィールド '{key}' はスキーマに存在しません"))
+        })?;
+        let (FieldType::RecordRef, Some(rt)) = (f.field_type, f.ref_table) else {
+            return Err(DataError::Invalid(format!(
+                "フィールド '{key}' はリンク列（record_ref）ではありません"
+            )));
+        };
+        let ctx = self.ctx.ok_or_else(|| {
+            DataError::Invalid("この読み方ではリンクの条件・結合を使えません".into())
+        })?;
+        let tables = ctx.borrow().tables;
+        let st = tables.get(rt).ok_or(DataError::Forbidden)?;
+        Ok((f, st))
+    }
+
+    /// リンクの半結合を束縛する（参照先の条件は参照先のフィールド空間で束縛・正規化する）。
+    fn link_cond(&mut self, lc: &LinkCond) -> Result<Expr, DataError> {
+        let (f, st) = self.link_target(&lc.field)?;
+        let Some(ctx) = self.ctx else {
+            return Err(DataError::Invalid(
+                "この読み方ではリンクの条件を使えません".into(),
+            ));
+        };
+        let max = ctx.borrow().max_depth;
+        if self.depth + 1 > max {
+            return Err(DataError::Rejected(Box::new(
+                crate::query::reject::QueryRejection::limit("max_join_depth", max as u64),
+            )));
+        }
+        let mut child = Binder::scoped(&st.table.schema, &st.masked, ctx, self.depth + 1);
+        let filter = match &lc.filter {
+            Some(c) => child.condition(c, 0)?,
+            None => Expr::True,
+        };
+        let filter = crate::query::planner::normalize::normalize(
+            filter,
+            &child.fields,
+            crate::query::planner::normalize::Rules::ALL,
+        );
+        let scope = {
+            let mut c = ctx.borrow_mut();
+            c.scopes.push(BoundScope {
+                table: st.table.id,
+                schema_version: st.table.schema_version,
+                q: BoundQuery::fields_only(child.fields),
+            });
+            c.scopes.len() - 1
+        };
+        Ok(Expr::Link(Box::new(LinkExpr {
+            field: f.id,
+            scope,
+            filter,
+        })))
     }
 
     /// フィルタ・ソート・集計で使う列を解決する（マスク 403 → 未宣言 422 → 未索引 422 の順）。
@@ -318,6 +549,7 @@ impl<'a> Binder<'a> {
                     .collect::<Result<_, _>>()?,
             ),
             Condition::Not(inner) => Expr::Not(Box::new(self.condition(inner, depth + 1)?)),
+            Condition::Link(lc) => self.link_cond(lc)?,
             Condition::Cmp(cmp) => {
                 self.leaves += 1;
                 if self.leaves > MAX_CONDITION_LEAVES {
@@ -372,149 +604,28 @@ impl<'a> Binder<'a> {
     pub(crate) fn into_fields(self) -> BTreeMap<FieldId, BField> {
         self.fields
     }
+
+    pub(crate) fn fields(&self) -> &BTreeMap<FieldId, BField> {
+        &self.fields
+    }
+
+    /// 登録済みのフィールドを足す（既定ソートの擬似列など）。
+    pub(crate) fn register(&mut self, f: BField) {
+        self.fields.insert(f.id, f);
+    }
+
+    pub(crate) fn schema(&self) -> &'a TableSchema {
+        self.schema
+    }
+
+    pub(crate) fn masked(&self) -> &'a HashSet<String> {
+        self.masked
+    }
 }
 
-/// クエリ全体を束縛する。
-pub(crate) fn bind_query(
-    schema: &TableSchema,
-    masked: &HashSet<String>,
-    q: &DataQuery,
-) -> Result<BoundQuery, DataError> {
-    if q.offset.is_some_and(|o| o != 0) {
-        return Err(DataError::Invalid(
-            "offset は廃止されました。next_cursor を cursor に渡してください".into(),
-        ));
-    }
-    let mut b = Binder::new(schema, masked);
-    let mut parts = Vec::new();
-    if let Some(c) = &q.filter {
-        parts.push(b.condition(c, 0)?);
-    }
-    if let Some(text) = q.search.as_deref().filter(|s| !s.is_empty()) {
-        if text.chars().count() > 256 {
-            return Err(DataError::Invalid(
-                "search が長すぎます（最大 256 文字）".into(),
-            ));
-        }
-        parts.push(b.search(text, q.search_fields.as_deref())?);
-    }
-    let filter = match parts.len() {
-        0 => Expr::True,
-        1 => parts.pop().unwrap_or(Expr::True),
-        _ => Expr::And(parts),
-    };
-
-    if q.sort.len() > MAX_SORT_KEYS {
-        return Err(DataError::Invalid(format!(
-            "ソートキーが多すぎます（最大 {MAX_SORT_KEYS}）"
-        )));
-    }
-    let mut sort = Vec::with_capacity(q.sort.len());
-    let mut precision = SortPrecision::Exact;
-    let mut seen = HashSet::new();
-    for k in &q.sort {
-        let f = b.queryable(&k.field)?;
-        if f.multi() {
-            return Err(DataError::Invalid(format!(
-                "フィールド '{}' はソートに使えません（多値・リンク）",
-                k.field
-            )));
-        }
-        if !seen.insert(f.id) {
-            return Err(DataError::Invalid(format!(
-                "ソートキー '{}' が重複しています",
-                k.field
-            )));
-        }
-        if f.ty == Some(FieldType::Text) {
-            precision = SortPrecision::Prefix;
-        }
-        // 材料化した派生列は複数ソートの複合索引を持たない（第 1 キーか単独のソートだけ）。
-        if f.derived && q.sort.len() > 1 {
-            return Err(DataError::Invalid(format!(
-                "派生フィールド '{}' は複数キーのソートに使えません",
-                k.field
-            )));
-        }
-        sort.push(BSort {
-            field: f.id,
-            desc: k.descending,
-        });
-    }
-    if sort.is_empty() && q.aggregate.is_empty() {
-        let p = pseudo_updated_at();
-        sort.push(BSort {
-            field: p.id,
-            desc: true,
-        });
-        b.fields.insert(p.id, p);
-    }
-
-    let mut group_by = Vec::new();
-    for g in &q.group_by {
-        let f = b.queryable(g)?;
-        if f.multi() || f.is_pseudo() {
-            return Err(DataError::Invalid(format!(
-                "フィールド '{g}' は集計/グループ化に使えません"
-            )));
-        }
-        group_by.push(f.id);
-    }
-    if !group_by.is_empty() && q.aggregate.is_empty() {
-        return Err(DataError::Invalid(
-            "group_by には aggregate の指定が必要です".into(),
-        ));
-    }
-    let mut metrics = Vec::new();
-    for m in &q.aggregate {
-        let fid = if m.metric == Metric::Count {
-            None
-        } else {
-            {
-                let name = m.field.as_ref().ok_or_else(|| {
-                    DataError::Invalid("この集計には field（number）が必要です".into())
-                })?;
-                let f = b.queryable(name)?;
-                if f.kind != FieldKind::Num {
-                    return Err(DataError::Invalid(format!(
-                        "集計対象 '{name}' は number である必要があります"
-                    )));
-                }
-                Some(f.id)
-            }
-        };
-        metrics.push((m.metric, fid));
-    }
-    if metrics.len() > 8 {
-        return Err(DataError::Invalid("集計指標が多すぎます（最大 8）".into()));
-    }
-
-    let select = match &q.select {
-        None => None,
-        Some(keys) => {
-            for k in keys {
-                if schema.field(k).is_none() {
-                    return Err(DataError::Invalid(format!(
-                        "フィールド '{k}' はスキーマに存在しません"
-                    )));
-                }
-            }
-            Some(keys.iter().cloned().collect())
-        }
-    };
-    let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    Ok(BoundQuery {
-        fields: b.into_fields(),
-        filter,
-        sort,
-        group_by,
-        metrics,
-        select,
-        limit,
-        with_count: q.with_count,
-        sort_precision: precision,
-    })
-}
+#[cfg(test)]
+pub(crate) use super::bound_query::bind_query;
+pub(crate) use super::bound_query::{bind_query_scoped, BindOpts};
 
 /// 比較 1 つを束縛する（§3.1 の表: `neq` = `not eq`・`is_null` = `not exists`・比較の否定は呼び出し側）。
 fn compare(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, DataError> {

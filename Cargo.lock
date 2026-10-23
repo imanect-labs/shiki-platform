@@ -5453,6 +5453,7 @@ dependencies = [
  "shiki-authz",
  "shiki-jobq",
  "shiki-storage",
+ "sqlparser",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",

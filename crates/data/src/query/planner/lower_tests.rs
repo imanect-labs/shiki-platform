@@ -65,6 +65,7 @@ fn sort_drive_is_budgeted_window_with_point_probes() {
     let low = Lowerer {
         q: &q,
         links: &links,
+        scopes: &[],
     };
     let conj = super::super::plans::conjuncts(&q.filter);
     let mut sql = SqlBuf::scoped(1, 2);
@@ -93,6 +94,7 @@ fn candidates_are_materialized_and_keyset_is_total_order() {
     let low = Lowerer {
         q: &q,
         links: &links,
+        scopes: &[],
     };
     let conj = super::super::plans::conjuncts(&q.filter);
     let Expr::Atom(a) = conj[0] else {
@@ -121,12 +123,33 @@ fn candidates_are_materialized_and_keyset_is_total_order() {
         ),
         "{text}"
     );
-    // 第 1 キーが値なしの位置より後ろ = 第 1 キーも値なしで、第 2 キー以降が後ろ。
+    // 第 1 キーが値なしの位置より後ろ = 第 1 キーも値なし（`NULL` のバインドと IS NOT DISTINCT FROM）で、
+    // 第 2 キー以降が後ろ。値なしは型つきの NULL のバインドで、テキストは位置の値の有無に依らない。
     assert!(
-        text.contains("z.k0 IS NULL AND (z.k1 IS NULL OR z.k1 < "),
+        text.contains("z.k0 IS NOT DISTINCT FROM $11::numeric AND ($12::text COLLATE \"C\" IS NOT NULL AND (z.k1 IS NULL OR z.k1 < "),
         "{text}"
     );
+    assert_eq!(sql.binds[10], Bind::OptNumeric(None));
     assert!(!text.contains("'x'"));
+    let present = Pos {
+        vals: vec![
+            SortVal::Num(crate::numeric::Dec::parse("3").unwrap()),
+            SortVal::Text("y".into()),
+        ],
+        rint: 9,
+    };
+    let mut sql2 = SqlBuf::scoped(1, 2);
+    let g2 = guard_sql("c.record_int", &mut sql2);
+    let text2 = low.candidates_sql(
+        &Source::Atom(a),
+        &[],
+        &g2,
+        Some(&present),
+        Some(1_000),
+        21,
+        &mut sql2,
+    );
+    assert_eq!(text, text2, "位置の値の有無で SQL テキストは変わらない");
 }
 
 #[test]
@@ -136,6 +159,7 @@ fn contains_reads_the_search_table_with_escaped_pattern() {
     let low = Lowerer {
         q: &q,
         links: &links,
+        scopes: &[],
     };
     let Expr::Atom(a) = &q.filter else { panic!() };
     let mut sql = SqlBuf::scoped(1, 2);

@@ -118,6 +118,8 @@ pub(crate) fn query_fields(q: &crate::query::ir::DataQuery) -> Vec<String> {
             Condition::All(v) | Condition::Any(v) => v.iter().for_each(|x| walk(x, out)),
             Condition::Not(x) => walk(x, out),
             Condition::Cmp(cmp) => out.push(cmp.field.clone()),
+            // 参照先の条件は参照先の表の列（この表の自動昇格の対象ではない）。
+            Condition::Link(_) => {}
         }
     }
     let mut out = Vec::new();
@@ -128,7 +130,8 @@ pub(crate) fn query_fields(q: &crate::query::ir::DataQuery) -> Vec<String> {
     out.extend(q.group_by.iter().cloned());
     out.extend(q.aggregate.iter().filter_map(|m| m.field.clone()));
     let mut seen = std::collections::HashSet::new();
-    out.retain(|k| seen.insert(k.clone()));
+    // `別名.参照名`（結合先の列）は参照先の表の列なので除く。
+    out.retain(|k| !k.contains('.') && seen.insert(k.clone()));
     out
 }
 

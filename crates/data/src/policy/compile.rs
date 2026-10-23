@@ -78,9 +78,11 @@ pub(crate) fn compile_expr<B: PushBind>(
             Ok(format!("({alias}.owner = {ph})"))
         }
         PolicyExpr::HasRole { role, subtree } => {
-            // ロール所属はホスト側で確定できる（材料に解決済み）。SQL には定数として畳み込む。
+            // ロール所属はホスト側で確定できる（材料に解決済み）。成否は真偽のバインドで渡し、SQL テキストを
+            // 材料で分岐させない（data-platform §16.3。`force_custom_plan` の下では計画時に定数へ畳み込まれる）。
             let holds = material.has_role(role, *subtree);
-            Ok(if holds { "TRUE" } else { "FALSE" }.to_string())
+            let ph = binds.push_bind(Bind::Bool(holds));
+            Ok(format!("{ph}::bool"))
         }
         PolicyExpr::Any(children) => {
             let parts = children
@@ -153,11 +155,8 @@ pub(crate) fn compile_field_cmp<B: PushBind>(
             Ok(sql)
         }
         PolicyOperand::UserRoles { subtree } => {
+            // 所属なしは空の配列（`= ANY('{}')` は偽）。テキストを材料で分岐させない。
             let roles = material.roles(*subtree).to_vec();
-            if roles.is_empty() {
-                // 所属なし = この枝は不成立（SQL を発行せず定数化）。
-                return Ok("FALSE".to_string());
-            }
             let ph = binds.push_bind(Bind::TextArray(roles));
             Ok(format!("({accessor} = ANY({ph}::text[]))"))
         }
@@ -218,11 +217,12 @@ pub(crate) fn compile_read_predicate<B: PushBind>(
         return Ok("TRUE".to_string());
     };
     let policy_sql = compile_expr(&policy.read, schema, material, ctx_user_id, alias, binds)?;
-    if material.shared_record_ids.is_empty() {
-        return Ok(format!("({policy_sql})"));
-    }
+    // 共有の有無もバインド（真偽スイッチと配列）で渡す。テキストは材料に依らない。
+    let has = binds.push_bind(Bind::Bool(!material.shared_record_ids.is_empty()));
     let ph = binds.push_bind(Bind::UuidArray(material.shared_record_ids.clone()));
-    Ok(format!("({policy_sql} OR {alias}.id = ANY({ph}::uuid[]))"))
+    Ok(format!(
+        "({policy_sql} OR ({has}::bool AND {alias}.id = ANY({ph}::uuid[])))"
+    ))
 }
 
 #[cfg(test)]
@@ -284,9 +284,10 @@ mod tests {
         let sql = compile_read_predicate(&schema, &m, "alice", "r", &mut binds).unwrap();
         assert_eq!(
             sql,
-            "((((r.data ->> 'f16') = $3) OR ((r.data ->> 'f17') = ANY($4::text[]))))"
+            "((((r.data ->> 'f16') = $3) OR ((r.data ->> 'f17') = ANY($4::text[]))) \
+             OR ($5::bool AND r.id = ANY($6::uuid[])))"
         );
-        assert_eq!(binds.binds.len(), 2);
+        assert_eq!(binds.binds.len(), 4);
         // 値は SQL テキストに現れない（全てバインド）。
         assert!(!sql.contains("alice"));
         assert!(!sql.contains("sales"));
@@ -305,35 +306,53 @@ mod tests {
         let m = material(&[], &[id]);
         let mut binds = BindSet::new(0);
         let sql = compile_read_predicate(&schema, &m, "alice", "r", &mut binds).unwrap();
-        assert!(sql.ends_with("OR r.id = ANY($2::uuid[]))"), "{sql}");
+        assert!(
+            sql.ends_with("OR ($2::bool AND r.id = ANY($3::uuid[])))"),
+            "{sql}"
+        );
         // 共有 ID は SQL テキストでなく配列バインドに乗る（PIT-18）。
         assert!(!sql.contains(&id.to_string()));
     }
 
     #[test]
-    fn has_role_folds_to_constant_and_empty_roles_fail_closed() {
+    fn has_role_and_roles_are_binds_and_empty_roles_fail_closed() {
         let schema = schema_with_policy(PolicyExpr::HasRole {
             role: "keiri".into(),
             subtree: true,
         });
-        let mut binds = BindSet::new(0);
-        let allowed =
-            compile_read_predicate(&schema, &material(&["keiri"], &[]), "u", "r", &mut binds)
-                .unwrap();
-        assert_eq!(allowed, "(TRUE)");
+        let mut allowed_binds = BindSet::new(0);
+        let allowed = compile_read_predicate(
+            &schema,
+            &material(&["keiri"], &[]),
+            "u",
+            "r",
+            &mut allowed_binds,
+        )
+        .unwrap();
+        let mut denied_binds = BindSet::new(0);
         let denied =
-            compile_read_predicate(&schema, &material(&[], &[]), "u", "r", &mut binds).unwrap();
-        assert_eq!(denied, "(FALSE)");
+            compile_read_predicate(&schema, &material(&[], &[]), "u", "r", &mut denied_binds)
+                .unwrap();
+        // HasRole の成否はバインドの真偽で渡す（テキストは材料に依らない・data-platform §16.3）。
+        assert_eq!(allowed, denied);
+        assert!(allowed.starts_with("($1::bool OR"), "{allowed}");
+        assert_eq!(allowed_binds.binds[0], Bind::Bool(true));
+        assert_eq!(denied_binds.binds[0], Bind::Bool(false));
 
-        // 所属ロールが空のとき UserRoles 比較は定数 FALSE（空 ANY を発行しない）。
+        // 所属ロールが空のとき UserRoles 比較は空配列の ANY（常に偽・fail-closed）。
         let schema = schema_with_policy(PolicyExpr::FieldCmp {
             field: "dept".into(),
             op: CmpOp::In,
             value: PolicyOperand::UserRoles { subtree: false },
         });
+        let mut binds = BindSet::new(0);
         let sql =
             compile_read_predicate(&schema, &material(&[], &[]), "u", "r", &mut binds).unwrap();
-        assert_eq!(sql, "(FALSE)");
+        assert!(
+            sql.starts_with("(((r.data ->> 'f17') = ANY($1::text[]))"),
+            "{sql}"
+        );
+        assert_eq!(binds.binds[0], Bind::TextArray(vec![]));
     }
 
     #[test]

@@ -120,7 +120,7 @@ impl DataStore {
         // ① 基準位置の後に変わっていない行（現在の本体＝S 時点の値）。
         let mut sql = SqlBuf::scoped(table.keys.tenant_int, table.keys.table_int);
         let policy = compile_read_predicate(&table.schema, m, &ctx.principal.id, "r", &mut sql)?;
-        let w = super::v1::where_sql(bq, &ctx.tenant_id, &policy, &mut sql)?;
+        let w = super::v1::where_sql(&body_lowerer(bq), &ctx.tenant_id, &policy, &mut sql)?;
         let aph = sql.typed(Bind::I64(after));
         let cph = sql.typed(Bind::UuidArray(changed_ids.clone()));
         let lph = sql.typed(Bind::I64(limit + 1));
@@ -173,6 +173,7 @@ impl DataStore {
                 record_int: *r,
                 segment: 1,
                 snapshot_seq: Some(snapshot_seq),
+                join: None,
             })
         } else {
             None
@@ -413,9 +414,11 @@ impl DataStore {
             .collect();
         let mut sql = SqlBuf {
             binds: vec![Bind::Text(Value::Array(set).to_string())],
+            table: None,
+            aliases: 0,
         };
         let policy = compile_read_predicate(&table.schema, m, &ctx.principal.id, "r", &mut sql)?;
-        let w = super::v1::where_sql(bq, &ctx.tenant_id, &policy, &mut sql)?;
+        let w = super::v1::where_sql(&body_lowerer(bq), &ctx.tenant_id, &policy, &mut sql)?;
         let text = format!(
             "SELECT r.record_int FROM jsonb_to_recordset($1::jsonb) AS r(record_int int8, \
                tenant_id text, id uuid, owner text, data jsonb, created_at timestamptz, \
@@ -477,5 +480,16 @@ impl RowOut {
                 updated_at: r.updated_at,
             },
         }
+    }
+}
+
+/// スナップショット読取の本体経路の降下（リンクの半結合は受け付けないので参照先は持たない）。
+fn body_lowerer(bq: &BoundQuery) -> super::planner::lower::Lowerer<'_> {
+    static NO_LINKS: std::sync::LazyLock<std::collections::HashMap<Uuid, i64>> =
+        std::sync::LazyLock::new(std::collections::HashMap::new);
+    super::planner::lower::Lowerer {
+        q: bq,
+        links: &NO_LINKS,
+        scopes: &[],
     }
 }

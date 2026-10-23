@@ -84,6 +84,14 @@ pub(crate) fn nnf(e: Expr, neg: bool) -> Expr {
                 Expr::Atom(a)
             }
         }
+        // リンクの半結合は葉として扱う（参照先の条件は束縛時に参照先のフィールド空間で正規化済み）。
+        Expr::Link(l) => {
+            if neg {
+                Expr::Not(Box::new(Expr::Link(l)))
+            } else {
+                Expr::Link(l)
+            }
+        }
         Expr::Not(inner) => nnf(*inner, !neg),
         Expr::And(v) => {
             let kids = v.into_iter().map(|c| nnf(c, neg)).collect();
@@ -139,6 +147,8 @@ pub(crate) fn fold(e: Expr) -> Expr {
             leaf: Leaf::In(ref v),
             ..
         }) if v.is_empty() => Expr::False,
+        // 参照先の条件が恒偽なら、満たす参照先の行は無い（恒偽）。
+        Expr::Link(l) if l.filter == Expr::False => Expr::False,
         Expr::Not(inner) => match fold(*inner) {
             Expr::True => Expr::False,
             Expr::False => Expr::True,

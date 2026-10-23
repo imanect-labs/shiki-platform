@@ -102,15 +102,30 @@ fn leaf_sql(leaf: &Leaf, kind: FieldKind, v: &str, sql: &mut SqlBuf) -> String {
     match leaf {
         Leaf::Exists => format!("{v} IS NOT NULL"),
         Leaf::Eq(x) => format!("{v} = {}", val_ph(kind, x, sql)),
+        // 要素数で SQL テキストを変えない（配列 1 本のバインド・空の配列は偽・data-platform §16.3）。
         Leaf::In(xs) => {
-            if xs.is_empty() {
-                return "FALSE".into();
+            if kind == FieldKind::Num {
+                let arr = xs
+                    .iter()
+                    .filter_map(|x| match x {
+                        Val::Num(d) => Some(d.canonical()),
+                        _ => None,
+                    })
+                    .collect();
+                let ph = sql.push(Bind::NumericArray(arr));
+                format!("{v} = ANY({ph}::numeric[])")
+            } else {
+                let arr = xs
+                    .iter()
+                    .filter_map(|x| match x {
+                        Val::Text(s) => Some(s.clone()),
+                        Val::Ref(u) => Some(u.to_string()),
+                        Val::Num(_) => None,
+                    })
+                    .collect();
+                let ph = sql.push(Bind::TextArray(arr));
+                format!("{v} = ANY({ph}::text[])")
             }
-            let parts: Vec<String> = xs
-                .iter()
-                .map(|x| format!("{v} = {}", val_ph(kind, x, sql)))
-                .collect();
-            format!("({})", parts.join(" OR "))
         }
         Leaf::Range { lo, hi } => {
             let mut parts = Vec::new();
@@ -144,12 +159,16 @@ fn leaf_sql(leaf: &Leaf, kind: FieldKind, v: &str, sql: &mut SqlBuf) -> String {
 }
 
 /// 条件式（2 値論理）。
-pub(crate) fn expr_sql(q: &BoundQuery, e: &Expr, sql: &mut SqlBuf) -> Result<String, DataError> {
+///
+/// リンクの半結合は索引経路と同じ降下（参照先の条件・行述語は参照先の索引で評価する）。
+pub(crate) fn expr_sql(low: &Lowerer<'_>, e: &Expr, sql: &mut SqlBuf) -> Result<String, DataError> {
+    let q = low.q;
     Ok(match e {
         Expr::True => "TRUE".into(),
         Expr::False => "FALSE".into(),
         Expr::Atom(a) => atom_sql(q, a, sql)?,
-        Expr::Not(inner) => format!("NOT ({})", expr_sql(q, inner, sql)?),
+        Expr::Link(l) => low.link_sql(l, "r.record_int", sql),
+        Expr::Not(inner) => format!("NOT ({})", expr_sql(low, inner, sql)?),
         Expr::And(v) | Expr::Or(v) => {
             let j = if matches!(e, Expr::And(_)) {
                 " AND "
@@ -158,7 +177,7 @@ pub(crate) fn expr_sql(q: &BoundQuery, e: &Expr, sql: &mut SqlBuf) -> Result<Str
             };
             let parts = v
                 .iter()
-                .map(|c| expr_sql(q, c, sql))
+                .map(|c| expr_sql(low, c, sql))
                 .collect::<Result<Vec<_>, _>>()?;
             format!("({})", parts.join(j))
         }
@@ -167,13 +186,13 @@ pub(crate) fn expr_sql(q: &BoundQuery, e: &Expr, sql: &mut SqlBuf) -> Result<Str
 
 /// 本体経路の WHERE の後半（tenant_id・行述語・条件）。`tenant_int` / `table_int` の条件は各文が持つ。`policy` は v1 の述語（別名 `r`）。
 pub(crate) fn where_sql(
-    q: &BoundQuery,
+    low: &Lowerer<'_>,
     tenant_id: &str,
     policy: &str,
     sql: &mut SqlBuf,
 ) -> Result<String, DataError> {
     let t = sql.push(Bind::Text(tenant_id.to_string()));
-    let cond = expr_sql(q, &q.filter, sql)?;
+    let cond = expr_sql(low, &low.q.filter, sql)?;
     Ok(format!("r.tenant_id = {t} AND ({policy}) AND ({cond})"))
 }
 
@@ -227,7 +246,7 @@ pub(crate) fn aggregate_sql(q: &BoundQuery, where_clause: &str) -> Result<String
     let mut select = vec!["count(*)::int8 AS grp_count".to_string()];
     let mut group = Vec::new();
     for (i, g) in q.group_by.iter().enumerate() {
-        let f = q.field(*g);
+        let f = q.field(g.field);
         let jk = json_key(f.id);
         if !is_json_key(&jk) {
             return Err(DataError::Internal(format!("JSONB キー '{jk}' が不正です")));
@@ -242,11 +261,11 @@ pub(crate) fn aggregate_sql(q: &BoundQuery, where_clause: &str) -> Result<String
         group.push(v);
     }
     for (i, (m, field)) in q.metrics.iter().enumerate() {
-        let Some(fid) = field else {
+        let Some(c) = field else {
             select.push(format!("count(*)::float8 AS m{i}"));
             continue;
         };
-        let jk = json_key(*fid);
+        let jk = json_key(c.field);
         if !is_json_key(&jk) {
             return Err(DataError::Internal(format!("JSONB キー '{jk}' が不正です")));
         }
@@ -300,12 +319,23 @@ mod tests {
         crate::query::bound::bind_query(&s, &HashSet::new(), &q).unwrap()
     }
 
+    static NO_LINKS: std::sync::LazyLock<std::collections::HashMap<uuid::Uuid, i64>> =
+        std::sync::LazyLock::new(std::collections::HashMap::new);
+
+    fn low(q: &BoundQuery) -> Lowerer<'_> {
+        Lowerer {
+            q,
+            links: &NO_LINKS,
+            scopes: &[],
+        }
+    }
+
     #[test]
     fn two_valued_logic_is_fixed_with_coalesce() {
         let q =
             bound(serde_json::json!({"not": {"cmp": {"field": "amount", "op": "lt", "value": 5}}}));
         let mut sql = SqlBuf::scoped(1, 2);
-        let s = expr_sql(&q, &q.filter, &mut sql).unwrap();
+        let s = expr_sql(&low(&q), &q.filter, &mut sql).unwrap();
         assert_eq!(
             s,
             "NOT (coalesce((((r.data ->> 'f17'))::numeric < $3::numeric), false))"
@@ -316,7 +346,7 @@ mod tests {
     fn multi_select_eq_means_contains() {
         let q = bound(serde_json::json!({"cmp": {"field": "tags", "op": "eq", "value": "a"}}));
         let mut sql = SqlBuf::scoped(1, 2);
-        let s = expr_sql(&q, &q.filter, &mut sql).unwrap();
+        let s = expr_sql(&low(&q), &q.filter, &mut sql).unwrap();
         assert!(s.contains("jsonb_array_elements_text"), "{s}");
         assert!(!s.contains("'a'"), "値はバインド: {s}");
     }

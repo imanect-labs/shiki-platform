@@ -86,6 +86,20 @@ pub(crate) struct CursorPayload {
     /// Task 15.6 の outbox で入るため、現状は常に `None`（ライブページング）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_seq: Option<i64>,
+    /// 結合を残した行のページング（FROM の行の途中で切れた組の続き・Task 15.10）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<JoinCursor>,
+}
+
+/// 結合を残した行の継続位置（FROM の行 1 つが複数の組に広がるため、行の途中から続ける）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct JoinCursor {
+    /// `sort_values` / `record_int` が「続きの行の直前の位置」を持つか（先頭の行の途中なら false）。
+    pub has_base: bool,
+    /// 途中まで返した FROM の行。
+    pub rint: i64,
+    /// その行について既に返した組の数。
+    pub skip: u32,
 }
 
 /// カーソルの束縛先（AAD に入る・トークンには含まれない）。

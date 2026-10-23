@@ -83,16 +83,20 @@ impl Driver {
             }
         };
         let fph = sql.typed(Bind::I16(field_i16(field)));
+        let t = sql.t();
         format!(
-            "SELECT x.record_int FROM {} x WHERE x.tenant_int = $1 AND x.table_int = $2 \
+            "SELECT x.record_int FROM {} x WHERE x.tenant_int = $1 AND x.table_int = {t} \
              AND x.field_id = {fph} AND {cond}",
             table.relation()
         )
     }
 
-    /// 件数探索の文（値索引の並びで `LIMIT` に固定する・値ごとに分ける・[`super::lower::probe_union`]）。
+    /// 件数探索の文（値索引の並びで `LIMIT` に固定する・[`super::lower::probe_union`]）。
+    ///
+    /// 値の集合（所属ロールなど・材料）は配列のバインドで渡し、値ごとの `LIMIT` 付き探索を
+    /// `unnest` の `LATERAL` で並べる（**要素数で SQL テキストを変えない**・data-platform §16.3）。
     pub(crate) fn probe_sql(&self, cap: i64, sql: &mut SqlBuf) -> String {
-        use super::lower::{probe_union, MAX_PROBE_TERMS};
+        use super::lower::{probe_each, probe_union};
         match self {
             Driver::Shared(ints) => {
                 let ph = sql.push(Bind::I64Array(ints.clone()));
@@ -103,17 +107,13 @@ impl Driver {
                 let c = text_eq_cond("x", user, None, sql);
                 probe_union(IndexTable::Text, SYSTEM_FIELD_OWNER, &[c], cap, sql)
             }
-            Driver::Text { field, vals } if vals.len() <= MAX_PROBE_TERMS => {
-                let conds: Vec<String> = vals
-                    .iter()
-                    .map(|v| text_eq_cond("x", v, Some(*field), sql))
-                    .collect();
-                probe_union(IndexTable::Text, *field, &conds, cap, sql)
-            }
-            Driver::Text { field, vals } => {
-                let c = text_in_cond("x", vals, Some(*field), sql);
-                probe_union(IndexTable::Text, *field, &[c], cap, sql)
-            }
+            Driver::Text { field, vals } => probe_each(
+                IndexTable::Text,
+                *field,
+                Bind::TextArray(super::lower::index_prefixes(vals)),
+                cap,
+                sql,
+            ),
             Driver::Num { field, val } => {
                 let ph = sql.typed(Bind::Numeric(val.clone()));
                 probe_union(
@@ -149,7 +149,7 @@ impl<'a> Guard<'a> {
     fn folded(&self) -> Folded {
         match &self.ctx.schema.row_policy {
             None => Folded::True,
-            Some(p) => fold(&p.read, self.ctx.material),
+            Some(p) => fold(&p.read, self.ctx.material, true),
         }
     }
 
@@ -165,7 +165,13 @@ impl<'a> Guard<'a> {
 
     /// 認可駆動の入口（P の各選言が索引で引けるときだけ）。共有があれば選言に足す。
     pub(crate) fn drivers(&self) -> Option<Vec<Driver>> {
-        let mut out = match self.folded() {
+        // 入口の形は `HasRole` の畳み込みだけで決める（所属ロールの有無で選言を消さない＝空の配列の入口を
+        // 残す）。所属ロールの集合（材料）の有無で SQL テキストの形を変えない（data-platform §16.3）。
+        let shape = match &self.ctx.schema.row_policy {
+            None => Folded::True,
+            Some(p) => fold(&p.read, self.ctx.material, false),
+        };
+        let mut out = match shape {
             Folded::True => return None,
             Folded::False => Vec::new(),
             Folded::Expr(e) => {
@@ -180,10 +186,13 @@ impl<'a> Guard<'a> {
                 out
             }
         };
-        if !self.ctx.shared_ints.is_empty() {
-            out.push(Driver::Shared(self.ctx.shared_ints.to_vec()));
+        // 個別共有は空でも入口に入れる（空の配列は 0 件。共有の有無で SQL テキストを変えない・§16.3）。
+        // P が FALSE で共有も無いときは `is_empty` が実行前に空を返す。
+        if out.is_empty() && self.ctx.shared_ints.is_empty() {
+            return None;
         }
-        (!out.is_empty()).then_some(out)
+        out.push(Driver::Shared(self.ctx.shared_ints.to_vec()));
+        Some(out)
     }
 
     fn driver_of(&self, e: &PolicyExpr) -> Option<Driver> {
@@ -242,7 +251,8 @@ impl<'a> Guard<'a> {
 }
 
 /// `HasRole` / `Public` を定数に畳み込み、`Any` / `All` を簡約する（それ以外の書き換えはしない）。
-fn fold(e: &PolicyExpr, m: &crate::policy::material::PolicyMaterial) -> Folded {
+/// `roles` が真なら、所属ロールが空の `UserRoles` 比較も不成立に畳む（空判定・全行可視の判定用）。
+fn fold(e: &PolicyExpr, m: &crate::policy::material::PolicyMaterial, roles: bool) -> Folded {
     match e {
         PolicyExpr::Public => Folded::True,
         PolicyExpr::HasRole { role, subtree } => {
@@ -255,11 +265,11 @@ fn fold(e: &PolicyExpr, m: &crate::policy::material::PolicyMaterial) -> Folded {
         PolicyExpr::FieldCmp {
             value: PolicyOperand::UserRoles { subtree },
             ..
-        } if m.roles(*subtree).is_empty() => Folded::False,
+        } if roles && m.roles(*subtree).is_empty() => Folded::False,
         PolicyExpr::Any(v) => {
             let mut kids = Vec::new();
             for c in v {
-                match fold(c, m) {
+                match fold(c, m, roles) {
                     Folded::True => return Folded::True,
                     Folded::False => {}
                     Folded::Expr(x) => kids.push(x),
@@ -274,7 +284,7 @@ fn fold(e: &PolicyExpr, m: &crate::policy::material::PolicyMaterial) -> Folded {
         PolicyExpr::All(v) => {
             let mut kids = Vec::new();
             for c in v {
-                match fold(c, m) {
+                match fold(c, m, roles) {
                     Folded::False => return Folded::False,
                     Folded::True => {}
                     Folded::Expr(x) => kids.push(x),
@@ -354,6 +364,15 @@ mod tests {
         });
         let d = g.drivers().unwrap();
         assert_eq!(d.len(), 2, "applicant=bob と共有");
+        // 共有が無くても入口の形は同じ（空の共有の入口を持つ）。
+        let g0 = Guard::new(IndexGuardCtx {
+            schema: &s,
+            material: &mat,
+            user: "bob",
+            active: &active,
+            shared_ints: &[],
+        });
+        assert_eq!(g0.drivers().unwrap().len(), 2);
         assert!(!g.is_unrestricted() && !g.is_empty());
         // 経理ロールなら P は TRUE（全行可視）で認可駆動は候補にならない。
         let keiri = m(&["keiri"]);

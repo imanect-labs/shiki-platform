@@ -24,12 +24,24 @@ pub(crate) enum Bind {
     Numeric(String),
     NumericArray(Vec<String>),
     Bytes(Vec<u8>),
+    /// 形状を変えないための真偽スイッチ（`HasRole` の畳み込み結果・値の長さによる分岐など。
+    /// `plan_cache_mode = force_custom_plan` の下では計画時に定数として畳み込まれる・data-platform §16.3）。
+    Bool(bool),
+    /// 値なしを `NULL` として渡す text（カーソル位置の値なしなど・テキストを分岐させない）。
+    OptText(Option<String>),
+    /// 値なしを `NULL` として渡す numeric（10 進表記）。
+    OptNumeric(Option<String>),
 }
 
 /// 1 文のバインド列（SQL テキストは組み立て関数が返す）。
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SqlBuf {
     pub binds: Vec<Bind>,
+    /// いま降ろしている表の `table_int` のプレースホルダ（`None` は `$2`＝文の主表）。リンクを辿る
+    /// 半結合（参照先テーブルの条件と行述語）を降ろす間だけ、参照先の `table_int` のバインドへ切り替える。
+    pub table: Option<String>,
+    /// 文の中で採番した別名の数（入れ子の半結合の別名 `lk{n}` を一意にする・決定的）。
+    pub aliases: u32,
 }
 
 impl SqlBuf {
@@ -37,7 +49,33 @@ impl SqlBuf {
     pub(crate) fn scoped(tenant_int: i32, table_int: i64) -> Self {
         SqlBuf {
             binds: vec![Bind::I32(tenant_int), Bind::I64(table_int)],
+            table: None,
+            aliases: 0,
         }
+    }
+
+    /// いま降ろしている表の `table_int` のプレースホルダ（既定は `$2`）。
+    pub(crate) fn t(&self) -> String {
+        self.table.clone().unwrap_or_else(|| "$2".to_string())
+    }
+
+    /// `table_int` を `ph` に切り替えて `f` を降ろす（終わったら元に戻す）。
+    pub(crate) fn within<R>(&mut self, ph: &str, f: impl FnOnce(&mut SqlBuf) -> R) -> R {
+        let prev = self.table.replace(ph.to_string());
+        let out = f(self);
+        self.table = prev;
+        out
+    }
+
+    /// 別名の番号を採る（文の中で一意・降下の順に決まるので同一形状なら同じ番号）。
+    pub(crate) fn alias(&mut self) -> u32 {
+        self.aliases += 1;
+        self.aliases
+    }
+
+    /// 真偽スイッチ（`$n::bool`）。
+    pub(crate) fn flag(&mut self, b: bool) -> String {
+        self.typed(Bind::Bool(b))
     }
 
     /// 値を積み、対応するプレースホルダ（`$n`）を返す。
@@ -49,7 +87,7 @@ impl SqlBuf {
     /// 型注釈付きのプレースホルダ（`$n::type`）。
     pub(crate) fn typed(&mut self, b: Bind) -> String {
         let ty = match &b {
-            Bind::Text(_) => "text",
+            Bind::Text(_) | Bind::OptText(_) => "text",
             Bind::TextArray(_) => "text[]",
             Bind::Number(_) => "float8",
             Bind::UuidArray(_) => "uuid[]",
@@ -57,9 +95,10 @@ impl SqlBuf {
             Bind::I32(_) => "int4",
             Bind::I64(_) => "int8",
             Bind::I64Array(_) => "int8[]",
-            Bind::Numeric(_) => "numeric",
+            Bind::Numeric(_) | Bind::OptNumeric(_) => "numeric",
             Bind::NumericArray(_) => "numeric[]",
             Bind::Bytes(_) => "bytea",
+            Bind::Bool(_) => "bool",
         };
         let ph = self.push(b);
         format!("{ph}::{ty}")
@@ -81,6 +120,9 @@ macro_rules! bind_into {
             Bind::Numeric(v) => $q.bind(v),
             Bind::NumericArray(v) => $q.bind(v),
             Bind::Bytes(v) => $q.bind(v),
+            Bind::Bool(v) => $q.bind(v),
+            Bind::OptText(v) => $q.bind(v),
+            Bind::OptNumeric(v) => $q.bind(v),
         }
     };
 }

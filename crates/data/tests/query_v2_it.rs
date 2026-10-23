@@ -214,6 +214,8 @@ fn eval(c: &Condition, row: &Row) -> bool {
         Condition::All(v) => v.iter().all(|c| eval(c, row)),
         Condition::Any(v) => v.iter().any(|c| eval(c, row)),
         Condition::Not(x) => !eval(x, row),
+        // 乱数クエリはリンクの半結合を作らない（半結合は sql_join_it.rs で参照実装と比べる）。
+        Condition::Link(_) => panic!("参照実装はリンクの半結合を扱わない"),
         Condition::Cmp(cmp) => {
             let vals = values_of(row, &cmp.field);
             let arg = cmp.value.clone().unwrap_or(Value::Null);

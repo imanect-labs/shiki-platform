@@ -15,7 +15,8 @@ pub(crate) type Rec = HashMap<FieldId, Vec<Val>>;
 pub(crate) fn eval(e: &Expr, r: &Rec) -> bool {
     match e {
         Expr::True => true,
-        Expr::False => false,
+        // 参照先の行を持たない評価器（正規化の規則は半結合を葉として扱う）。
+        Expr::False | Expr::Link(_) => false,
         Expr::Not(x) => !eval(x, r),
         Expr::And(v) => v.iter().all(|c| eval(c, r)),
         Expr::Or(v) => v.iter().any(|c| eval(c, r)),

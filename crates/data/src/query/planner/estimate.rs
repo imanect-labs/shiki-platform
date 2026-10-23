@@ -256,6 +256,8 @@ impl Estimator<'_> {
             Expr::Not(x) => self.expr(x).not(),
             Expr::And(v) => Est::and(&v.iter().map(|x| self.expr(x)).collect::<Vec<_>>()),
             Expr::Or(v) => Est::or(&v.iter().map(|x| self.expr(x)).collect::<Vec<_>>()),
+            // リンクの半結合は参照先の統計を引かない（推測・幅は広い）。
+            Expr::Link(_) => Est::guess(0.5),
         }
     }
 

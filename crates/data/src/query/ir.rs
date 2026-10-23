@@ -29,6 +29,8 @@ pub(crate) const MAX_SORT_KEYS: usize = 4;
 /// 1 ページの既定件数と上限。
 pub(crate) const DEFAULT_LIMIT: u32 = 50;
 pub(crate) const MAX_LIMIT: u32 = 200;
+/// 集計結果の件数の上限（`group_limit`）。
+pub(crate) const MAX_GROUP_LIMIT: u32 = 1_000;
 
 /// 比較演算子（workflow IR の `CmpOp` と同じ語彙・snake_case）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
@@ -62,7 +64,7 @@ pub struct CondCmp {
     pub value: Option<serde_json::Value>,
 }
 
-/// 条件木（AND / OR / NOT / 比較）。
+/// 条件木（AND / OR / NOT / 比較 / リンクの半結合）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 #[schema(no_recursion)]
@@ -71,6 +73,79 @@ pub enum Condition {
     Any(Vec<Condition>),
     Not(Box<Condition>),
     Cmp(CondCmp),
+    /// リンク列で辿った参照先に「閲覧者に見えて `filter` を満たす行」が 1 件以上ある（半結合・
+    /// data-platform §16.2）。参照先の行述語・テーブル viewer は閲覧者本人の権限で必ず適用する（PIT-20）。
+    Link(LinkCond),
+}
+
+/// リンクの半結合の条件。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+#[schema(no_recursion)]
+pub struct LinkCond {
+    /// この表のリンク列（`record_ref`・対称列も可）の参照名。
+    pub field: String,
+    /// 参照先の条件（参照先の列の参照名で書く）。省略時は「見える参照先が 1 件以上ある」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Box<Condition>>,
+}
+
+/// 結合（宣言済みリンク列経由の INNER JOIN・data-platform §16.1 の JOIN の束縛規則）。
+///
+/// 結果の行は「FROM の行 × 結合先の行（閲覧者に見えて `filter` を満たし、リンク列で結ばれたもの）」の
+/// 組み合わせ。結合先が 1 件も無い行は結果から除かれ、多対一以外では行が重複する（SQL の `INNER JOIN` と同じ）。
+/// カーディナリティは `LinkDef` から取る（ここでは指定させない）。結合先の列は `別名.参照名` で
+/// `select` / `group_by` / `aggregate` に書く。結合先の列を使わず、件数・集計が変わらないと証明できる
+/// 結合は、実行前に参照先の行述語つきの半結合へ書き換える（§16.2）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JoinSpec {
+    /// 結合先の別名（`[a-z][a-z0-9_]*`）。
+    pub alias: String,
+    /// 結合元の別名（省略時は FROM のテーブル）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// 結合元のリンク列（`record_ref`・対称列も可）の参照名。
+    pub field: String,
+    /// 結合先に掛ける条件（結合先の列の参照名で書く）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Condition>,
+}
+
+/// 集計後の条件（SQL の `HAVING`）。抑制された（K 未満の）グループの値は `NULL` として扱い、
+/// どの比較も成立しない（伏せた値で絞り込ませない・PIT-17）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[schema(no_recursion)]
+pub enum HavingCond {
+    All(Vec<HavingCond>),
+    Any(Vec<HavingCond>),
+    Not(Box<HavingCond>),
+    Cmp(HavingCmp),
+}
+
+/// 集計値の比較（`eq` / `neq` / `lt` / `lte` / `gt` / `gte`・値は数値）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HavingCmp {
+    pub metric: MetricSpec,
+    pub op: CondOp,
+    #[schema(value_type = f64)]
+    pub value: serde_json::Number,
+}
+
+/// 集計結果の並べ替えのキー（`field` か `metric` のどちらか一方）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupSortKey {
+    /// グループ化フィールド（`group_by` にあるもの）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// 集計指標。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric: Option<MetricSpec>,
+    #[serde(default)]
+    pub descending: bool,
 }
 
 impl Condition {
@@ -136,6 +211,18 @@ pub struct DataQuery {
     /// 集計指標（空でなければ集計クエリ）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aggregate: Vec<MetricSpec>,
+    /// 宣言済みリンク列経由の結合（INNER JOIN・最大 3 段）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joins: Vec<JoinSpec>,
+    /// 集計後の条件（SQL の `HAVING`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub having: Option<HavingCond>,
+    /// 集計結果の並べ替え（空なら順序は未定義）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_sort: Vec<GroupSortKey>,
+    /// 集計結果の件数の上限（並べ替えの後に適用・最大 1,000）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_limit: Option<u32>,
     /// 横断部分一致（`searchable` 宣言済みの列だけを対象にする）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search: Option<String>,
@@ -275,6 +362,14 @@ struct DataQueryWire {
     #[serde(default)]
     aggregate: Option<AggregateWire>,
     #[serde(default)]
+    joins: Vec<JoinSpec>,
+    #[serde(default)]
+    having: Option<HavingCond>,
+    #[serde(default)]
+    group_sort: Vec<GroupSortKey>,
+    #[serde(default)]
+    group_limit: Option<u32>,
+    #[serde(default)]
     search: Option<String>,
     #[serde(default)]
     search_fields: Option<Vec<String>>,
@@ -323,6 +418,10 @@ impl From<DataQueryWire> for DataQuery {
             select: w.select,
             group_by,
             aggregate,
+            joins: w.joins,
+            having: w.having,
+            group_sort: w.group_sort,
+            group_limit: w.group_limit,
             search: w.search,
             search_fields: w.search_fields,
             with_count: w.with_count,

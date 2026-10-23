@@ -13,6 +13,7 @@ fn payload() -> CursorPayload {
         record_int: RECORD_INT,
         segment: 1,
         snapshot_seq: None,
+        join: None,
     }
 }
 

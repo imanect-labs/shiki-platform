@@ -17,16 +17,19 @@ use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
 use super::admission::ReadPermit;
-use super::bound::{bind_query, BoundQuery, FieldKind};
+use super::bound::BoundQuery;
 use super::ir::{CountResult, DataQuery, QueryResult};
+use super::join_run::{join_position, JoinedOut};
+use super::limits::CompileBudget;
 use super::optimizer_ops::shape_key;
 use super::planner::exec::{Exec, ForcedStrategy, PageOut};
 use super::planner::feedback::{CandidateKind, QueryExecStats, TableScanMetrics};
 use super::planner::guard::Guard;
 use super::planner::keys::{from_payload, to_payload, Pos, SortVal};
 use super::planner::lower::{fetch_sql, Lowerer};
-use super::planner::normalize::{normalize, Rules};
+use super::planner::plan_cache::{query_shape, PlanCacheStats, PlanHandle};
 use super::planner::verify::{post_filter, PolicyEnv, RowView};
+use super::scopes::{scope_lows, ScopeTables};
 use super::sql::{bind_query as bind_q, Bind, SqlBuf};
 use crate::cursor::CursorScope;
 use crate::index::state::load_states;
@@ -72,6 +75,9 @@ pub struct QueryTuning {
     /// 検証用: 統計が無いテーブルは読取の前に統計収集を同期で走らせる（O2 の計画で読む・
     /// `SHIKI_DATA_ANALYZE_ON_READ=1`。CI で `policy_threat_it` を O2 でも回すため）。
     pub analyze_on_read: bool,
+    /// 検証用: 結合を半結合へ書き換えずに残す（半結合化の前後で件数と集計値が変わらないことの検証・
+    /// `SHIKI_DATA_KEEP_JOINS=1`）。
+    pub keep_joins: bool,
 }
 
 impl QueryTuning {
@@ -88,11 +94,13 @@ impl QueryTuning {
             .ok()
             .and_then(|s| s.parse().ok());
         let analyze_on_read = std::env::var("SHIKI_DATA_ANALYZE_ON_READ").as_deref() == Ok("1");
+        let keep_joins = std::env::var("SHIKI_DATA_KEEP_JOINS").as_deref() == Ok("1");
         QueryTuning {
             read_path,
             force,
             sort_budget,
             analyze_on_read,
+            keep_joins,
         }
     }
 }
@@ -126,6 +134,9 @@ pub enum DebugParam {
     Numeric(String),
     NumericArray(Vec<String>),
     Bytes(Vec<u8>),
+    Bool(bool),
+    OptText(Option<String>),
+    OptNumeric(Option<String>),
 }
 
 impl From<Bind> for DebugParam {
@@ -142,6 +153,9 @@ impl From<Bind> for DebugParam {
             Bind::Numeric(v) => DebugParam::Numeric(v),
             Bind::NumericArray(v) => DebugParam::NumericArray(v),
             Bind::Bytes(v) => DebugParam::Bytes(v),
+            Bind::Bool(v) => DebugParam::Bool(v),
+            Bind::OptText(v) => DebugParam::OptText(v),
+            Bind::OptNumeric(v) => DebugParam::OptNumeric(v),
         }
     }
 }
@@ -153,6 +167,14 @@ struct FetchedRow {
     #[sqlx(flatten)]
     row: RecordRow,
 }
+
+/// 実行の結果（応答・記録・本体の行・結合の組）。
+type ExecOut = (
+    QueryResult,
+    QueryDebug,
+    Option<Vec<DataRecord>>,
+    Option<JoinedOut>,
+);
 
 /// 1 リクエストで必要な索引（`active` でなければ本体経路）。
 fn needed_indexes(q: &BoundQuery) -> HashSet<(FieldId, IndexTable)> {
@@ -175,13 +197,17 @@ fn needed_indexes(q: &BoundQuery) -> HashSet<(FieldId, IndexTable)> {
     for k in &q.sort {
         need.insert((k.field, q.field(k.field).value_table()));
     }
-    for g in &q.group_by {
-        need.insert((*g, q.field(*g).value_table()));
+    // 結合先の列（src > 0）の索引は参照先の状態で検査する（[`super::scopes::scope_lows`]）。
+    for g in q.group_by.iter().filter(|g| g.src == 0) {
+        need.insert((g.field, q.field(g.field).value_table()));
     }
-    for (_, f) in &q.metrics {
-        if let Some(f) = f {
-            need.insert((*f, IndexTable::Num));
-        }
+    for c in q
+        .metrics
+        .iter()
+        .filter_map(|(_, c)| *c)
+        .filter(|c| c.src == 0)
+    {
+        need.insert((c.field, IndexTable::Num));
     }
     need
 }
@@ -189,7 +215,13 @@ fn needed_indexes(q: &BoundQuery) -> HashSet<(FieldId, IndexTable)> {
 /// カーソルの束縛（条件・ソート・検索の指紋。別のクエリへ持ち込めない）。
 fn fingerprint(q: &DataQuery) -> Vec<u8> {
     // スナップショット読取のカーソルはライブページングへ持ち込めない（逆も同じ）。
-    let v = serde_json::json!([q.filter, q.sort, q.search, q.search_fields, q.snapshot]);
+    let mut v = serde_json::json!([q.filter, q.sort, q.search, q.search_fields, q.snapshot]);
+    // 結合を残した行のカーソルは結合の形にも束縛する（結合が無いクエリの指紋は従来どおり）。
+    if !q.joins.is_empty() {
+        if let Some(a) = v.as_array_mut() {
+            a.push(serde_json::json!(q.joins));
+        }
+    }
     Sha256::digest(v.to_string().as_bytes()).to_vec()
 }
 
@@ -226,6 +258,17 @@ impl DataStore {
         self.feedback.snapshot(table_id)
     }
 
+    /// プランキャッシュの運用指標（命中・初見・保持数。値・材料・テキストは含まない・data-platform §16.3）。
+    pub fn plan_cache_stats(&self) -> PlanCacheStats {
+        self.plan_cache.stats()
+    }
+
+    /// 検証専用: プランキャッシュが保持する（文の種類, SQL テキスト）。材料が混ざっていないことを確かめる。
+    #[doc(hidden)]
+    pub fn plan_cache_texts(&self) -> Vec<(&'static str, String)> {
+        self.plan_cache.texts()
+    }
+
     /// 事後検査がプロセス全体で落とした行数（警報の指標・0 であるべき）。
     pub fn post_filter_drops_total() -> u64 {
         super::planner::verify::verify_drops_total()
@@ -248,44 +291,52 @@ impl DataStore {
         // 投げ直さない・リクエストの外へは持ち出せない・Task 15.9・PIT-18）。テーブル viewer・参照先
         // テーブル viewer・名指しロールの check は入口で BatchCheck 1 往復に束ねる。
         let az = self.authz_memo();
-        let mut table = self
-            .open_for_read(ctx, &az, table_id, action, trace_id)
-            .await?;
-        let masked = self.masked_fields(ctx, &az, &table).await?;
-        self.analyze_on_read(tuning, &ctx.tenant_id, &table).await?;
-        if auto_promote {
-            let promoted = self
-                .auto_promote_for(ctx, &table, &masked, query, trace_id)
-                .await;
-            if self.note_candidates(table_id, &table, &masked, query, promoted)? {
-                table = self.fetch_live(ctx, table_id).await?;
-            }
-        }
-        let bound = bind_query(&table.schema, &masked, query);
-        let mut bq = self.note_candidates(table_id, &table, &masked, query, bound)?;
-        // 材料化した派生列で絞る・並べるなら、その前提（4 階層）を今の認可状態で検査し直す。崩れていれば
-        // 降格（索引行を同一 Tx で破棄）してから束縛し直す＝その列はフィルタ/ソートに使えなくなる（PIT-71）。
-        if bq.fields.values().any(|f| f.derived)
-            && self.verify_materialized(ctx, &az, &table).await?
-        {
-            table = self.fetch_live(ctx, table_id).await?;
-            bq = bind_query(&table.schema, &masked, query)?;
-        }
-        if bq.is_aggregate() {
-            // 集計クエリは監査に残す（PIT-17: 反復差分の検知可能性）。
-            self.record_audit_best_effort(
+        let mut budget = CompileBudget::new(&self.limits);
+        self.run_query_in(
+            &az,
+            &mut budget,
+            ctx,
+            table_id,
+            query,
+            trace_id,
+            action,
+            tuning,
+            auto_promote,
+        )
+        .await
+    }
+
+    /// [`Self::run_query_as`] の本体（認可メモとコンパイルの時間予算を呼び出し側から受ける・SQL 前段面が
+    /// テーブル名の解決で引いた答えを同じリクエストで使い回すため）。
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub(crate) async fn run_query_in(
+        &self,
+        az: &crate::policy::memo::AuthzMemo<'_>,
+        budget: &mut CompileBudget,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        query: &DataQuery,
+        trace_id: Option<&str>,
+        action: &str,
+        tuning: &QueryTuning,
+        auto_promote: bool,
+    ) -> Result<(QueryResult, QueryDebug), DataError> {
+        let (table, masked, scopes, bq) = self
+            .prepare_query(
+                az,
+                budget,
                 ctx,
-                "data.query.aggregate",
-                &table_id.to_string(),
+                table_id,
+                query,
                 trace_id,
-                serde_json::json!({ "group_by": query.group_by }),
+                action,
+                tuning,
+                auto_promote,
             )
-            .await;
-        }
-        bq.filter = normalize(bq.filter, &bq.fields, Rules::ALL);
+            .await?;
         // 行述語の材料（リクエストごとに FGA・跨いでキャッシュしない・PIT-18）。row_policy なしは共有も効かない。
         let m = match &table.schema.row_policy {
-            Some(p) => material::resolve(ctx, &az, &[&p.read]).await?,
+            Some(p) => material::resolve(ctx, az, &[&p.read]).await?,
             None => Arc::new(PolicyMaterial::default()),
         };
 
@@ -331,10 +382,13 @@ impl DataStore {
                     statements: Vec::new(),
                 },
                 Some(items),
+                None,
             )
         } else {
             let mut out = self
-                .execute(&mut tx, ctx, &table, &bq, &m, query, tuning, permit)
+                .execute(
+                    &mut tx, ctx, &table, &bq, &m, query, tuning, permit, &scopes,
+                )
                 .await?;
             if out.2.is_some() {
                 out.0.snapshot_seq = Some(head);
@@ -342,7 +396,7 @@ impl DataStore {
             out
         };
         tx.commit().await.map_err(map_db)?;
-        let (mut result, mut debug, rows) = out;
+        let (mut result, mut debug, rows, joined) = out;
         // 第 1 キーの同値群が先読みの上限を超えたソートの組み合わせは、複合索引をオンデマンドで材料化する
         // （data-platform §5.3・§10 と同じ機構。失敗しても読取の結果には影響させない）。
         if debug.stats.composite_requested {
@@ -356,7 +410,7 @@ impl DataStore {
         }
         // 本体の後段（派生フィールド・マスク・投影）はトランザクションの外で行う。
         if let Some(mut items) = rows {
-            self.resolve_derived_fields(ctx, &az, &table, &masked, &mut items)
+            self.resolve_derived_fields(ctx, az, &table, &masked, &mut items)
                 .await?;
             Self::apply_mask_records(&masked, &mut items);
             if let Some(sel) = &bq.select {
@@ -365,6 +419,23 @@ impl DataStore {
                         obj.retain(|k, _| sel.contains(k));
                     }
                 }
+            }
+            if let Some(mut joined) = joined {
+                // 結合先の後段（派生フィールド・マスク）は結合先の表の閲覧者本人の判定で掛ける。
+                for (i, j) in bq.joins.iter().enumerate() {
+                    let Some(st) = bq.scopes.get(j.scope).and_then(|s| scopes.get(s.table)) else {
+                        continue;
+                    };
+                    let Some(map) = joined.children.get_mut(i) else {
+                        continue;
+                    };
+                    let (ints, mut recs): (Vec<i64>, Vec<DataRecord>) = map.drain().unzip();
+                    self.resolve_derived_fields(ctx, az, &st.table, &st.masked, &mut recs)
+                        .await?;
+                    Self::apply_mask_records(&st.masked, &mut recs);
+                    map.extend(ints.into_iter().zip(recs));
+                }
+                items = Self::compose_joined(&bq, &joined, items);
             }
             debug.stats.returned = items.len() as u64;
             result.items = Some(items);
@@ -398,7 +469,8 @@ impl DataStore {
         query: &DataQuery,
         tuning: &QueryTuning,
         permit: ReadPermit,
-    ) -> Result<(QueryResult, QueryDebug, Option<Vec<DataRecord>>), DataError> {
+        scopes: &ScopeTables,
+    ) -> Result<ExecOut, DataError> {
         let started = Instant::now();
         let keys = table.keys;
         let states = load_states(conn, keys).await?;
@@ -428,7 +500,16 @@ impl DataStore {
         let derived: Vec<&super::bound::BField> =
             bq.fields.values().filter(|f| f.derived).collect();
         let all_active = needed.iter().all(|n| active.contains(n));
-        let body_path = !all_active || (tuning.read_path == ReadPath::Body && derived.is_empty());
+        // 残した結合（組の展開・結合の集計）は索引経路だけで降ろす（本体経路の機能フラグでも索引経路）。
+        let joined = !bq.joins.is_empty();
+        if joined && !all_active {
+            return Err(DataError::IndexPreparing {
+                field: bq.field(crate::model::SYSTEM_FIELD_CREATED_AT).key.clone(),
+                progress: None,
+            });
+        }
+        let body_path =
+            !all_active || (tuning.read_path == ReadPath::Body && derived.is_empty() && !joined);
         if let Some(f) = derived.first().filter(|_| body_path) {
             return Err(DataError::IndexPreparing {
                 field: f.key.clone(),
@@ -468,9 +549,13 @@ impl DataStore {
         } else {
             self.resolve_links(conn, ctx, bq).await?
         };
+        // 半結合・結合の参照先（閲覧者本人の行述語・索引の状態・個別共有）。
+        let rts = Self::scope_runtime(conn, ctx, scopes, bq).await?;
+        let lows = scope_lows(ctx, scopes, &rts, bq)?;
         let low = Lowerer {
             q: bq,
             links: &links,
+            scopes: &lows,
         };
         let scope_binding = fingerprint(query);
         let scope = CursorScope {
@@ -478,11 +563,17 @@ impl DataStore {
             table_int: keys.table_int,
             binding: &scope_binding,
         };
-        let after = match &query.cursor {
-            Some(tok) if !bq.is_aggregate() => {
-                Some(from_payload(bq, &self.cursor.open(&scope, tok)?)?)
-            }
+        let payload = match &query.cursor {
+            Some(tok) if !bq.is_aggregate() => Some(self.cursor.open(&scope, tok)?),
             _ => None,
+        };
+        let (after, resume) = if joined {
+            join_position(bq, payload.as_ref())?
+        } else {
+            (
+                payload.as_ref().map(|p| from_payload(bq, p)).transpose()?,
+                None,
+            )
         };
         let guard = Guard::new(IndexGuardCtx {
             schema: &table.schema,
@@ -514,12 +605,16 @@ impl DataStore {
             .force
             .or_else(|| table.planner_fixed.then_some(ForcedStrategy::Safe));
         let shape = shape_key(table.id, bq);
+        let plan = PlanHandle {
+            cache: &self.plan_cache,
+            shape: query_shape(table.id, table.schema_version, bq, after.is_some()),
+        };
         let mut ex = Exec {
             conn,
             low: &low,
             guard: &guard,
             keys,
-            prober: super::planner::prober(&self.probe_cache, keys),
+            prober: super::planner::prober(&self.probe_cache, keys, Some(plan)),
             stats: QueryExecStats {
                 body_path,
                 ..Default::default()
@@ -541,6 +636,7 @@ impl DataStore {
             sort_walk_pred: None,
             sort_walk_obs: None,
             est_cand: None,
+            plan: Some(plan),
         };
         if force.is_none() && !body_path {
             ex.load_stats(&self.stats_cache).await?;
@@ -564,9 +660,12 @@ impl DataStore {
                 let mut sql = SqlBuf::scoped(keys.tenant_int, keys.table_int);
                 let policy =
                     compile_read_predicate(&table.schema, m, &ctx.principal.id, "r", &mut sql)?;
-                let w = super::v1::where_sql(bq, &ctx.tenant_id, &policy, &mut sql)?;
+                let w = super::v1::where_sql(&low, &ctx.tenant_id, &policy, &mut sql)?;
                 let text = super::v1::aggregate_sql(bq, &w)?;
                 ex.run_raw("aggregate", text, sql.binds).await?
+            } else if joined {
+                let r = ex.joined_aggregate(&bq.filter).await;
+                self.reject_record(table.id, &ex.stats, r)?
             } else {
                 let r = ex.aggregate(&bq.filter).await;
                 self.reject_record(table.id, &ex.stats, r)?
@@ -580,7 +679,7 @@ impl DataStore {
             result.suppressed = suppressed;
             self.observe(&mut ex, shape, started);
             let debug = debug_of(ex.stats, ex.captured, &ex.prober);
-            return Ok((result, debug, None));
+            return Ok((result, debug, None, None));
         }
 
         // `limit: 0` かつ `with_count` は件数だけ（ページを取らない）。
@@ -592,7 +691,7 @@ impl DataStore {
             let mut sql = SqlBuf::scoped(keys.tenant_int, keys.table_int);
             let policy =
                 compile_read_predicate(&table.schema, m, &ctx.principal.id, "r", &mut sql)?;
-            let w = super::v1::where_sql(bq, &ctx.tenant_id, &policy, &mut sql)?;
+            let w = super::v1::where_sql(&low, &ctx.tenant_id, &policy, &mut sql)?;
             let text = super::v1::page_sql(&low, &w, after.as_ref(), limit + 1, &mut sql)?;
             let rows = ex.run_raw("body_page", text, sql.binds).await?;
             body_page(bq, &rows, limit)?
@@ -608,7 +707,7 @@ impl DataStore {
                 let mut sql = SqlBuf::scoped(keys.tenant_int, keys.table_int);
                 let policy =
                     compile_read_predicate(&table.schema, m, &ctx.principal.id, "r", &mut sql)?;
-                let w = super::v1::where_sql(bq, &ctx.tenant_id, &policy, &mut sql)?;
+                let w = super::v1::where_sql(&low, &ctx.tenant_id, &policy, &mut sql)?;
                 let text = super::v1::count_sql(&w, count_cap as i64, &mut sql);
                 ex.stats.count_issued = true;
                 let rows = ex.run_raw("count", text, sql.binds).await?;
@@ -626,20 +725,35 @@ impl DataStore {
                 }
             } else {
                 let strategy = ex.stats.strategy;
-                let r = ex.count(&bq.filter, count_cap).await;
+                let r = if joined {
+                    ex.joined_count(&bq.filter, count_cap).await
+                } else {
+                    ex.count(&bq.filter, count_cap).await
+                };
                 let c = self.reject_record(table.id, &ex.stats, r)?;
                 ex.stats.strategy = strategy;
                 c
             });
         }
 
+        // 結合を残した行: FROM の行のページから組を作って `limit` 件で切る（行の途中なら続きのカーソル）。
+        let (page, jpage) = if joined && !count_only {
+            let jp = ex.joined_page(page, after.as_ref(), resume, limit).await?;
+            (PageOut::default(), Some(jp))
+        } else {
+            (page, None)
+        };
+
         // 本体を取る（ページの行だけ）→ Rust で行述語を独立に再評価（§7.2）。
-        let ints: Vec<i64> = page.rows.iter().map(|r| r.0).collect();
+        let ints: Vec<i64> = match &jpage {
+            Some(jp) => jp.base.clone(),
+            None => page.rows.iter().map(|r| r.0).collect(),
+        };
         let mut fetched: Vec<FetchedRow> = if ints.is_empty() {
             Vec::new()
         } else {
             let mut sql = SqlBuf::scoped(keys.tenant_int, keys.table_int);
-            let text = fetch_sql(&ctx.tenant_id, ints.clone(), &mut sql);
+            let text = ex.intern("fetch", fetch_sql(&ctx.tenant_id, ints.clone(), &mut sql));
             ex.stats.statements += 1;
             let rows =
                 super::sql::bind_query_as(sqlx::query_as::<_, FetchedRow>(&text), &sql.binds)
@@ -648,7 +762,7 @@ impl DataStore {
                     .map_err(map_db)?;
             ex.captured.push(super::planner::exec::Captured {
                 label: "fetch",
-                sql: text,
+                sql: text.to_string(),
                 binds: sql.binds,
             });
             rows
@@ -672,46 +786,43 @@ impl DataStore {
             },
             table.id,
         );
+        let base_ints: Vec<i64> = fetched.iter().map(|r| r.record_int).collect();
         let items: Vec<DataRecord> = fetched
             .into_iter()
             .map(|r| r.row.into_record(&table.schema))
             .collect();
-        if let Some(next) = &page.next {
-            result.next_cursor = Some(self.cursor.seal(&scope, &to_payload(next))?);
-        }
+        let joined_out = if let Some(jp) = jpage {
+            if let Some(next) = &jp.next {
+                result.next_cursor = Some(self.cursor.seal(&scope, next)?);
+            }
+            let children = ex.joined_children(ctx, bq, scopes, &jp.tuples).await?;
+            Some(JoinedOut {
+                tuples: jp.tuples,
+                children,
+                base_ints,
+            })
+        } else {
+            if let Some(next) = &page.next {
+                result.next_cursor = Some(self.cursor.seal(&scope, &to_payload(next))?);
+            }
+            None
+        };
         result.sort_degraded = ex.sort_degraded;
         ex.stats.composite_requested = ex.wants_composite;
         self.observe(&mut ex, shape, started);
         let debug = debug_of(ex.stats, ex.captured, &ex.prober);
-        Ok((result, debug, Some(items)))
+        Ok((result, debug, Some(items), joined_out))
     }
 
-    /// record_ref の比較値（uuid）を参照先テーブルの `record_int` へ引き直す（同一テナント内）。
+    /// record_ref の比較値（uuid）を参照先テーブルの `record_int` へ引き直す（同一テナント内・
+    /// 半結合の参照先・結合先の条件の比較値も含む）。
     async fn resolve_links(
         &self,
         conn: &mut PgConnection,
         ctx: &AuthContext,
         q: &BoundQuery,
     ) -> Result<HashMap<Uuid, i64>, DataError> {
-        let mut by_table: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
-        let mut atoms = Vec::new();
-        q.filter.atoms(&mut atoms);
-        for a in atoms {
-            let f = q.field(a.field);
-            let (FieldKind::Link, Some(rt)) = (f.kind, f.ref_table) else {
-                continue;
-            };
-            let vals: Vec<&super::bound::Val> = match &a.leaf {
-                super::bound::Leaf::Eq(v) => vec![v],
-                super::bound::Leaf::In(v) => v.iter().collect(),
-                _ => Vec::new(),
-            };
-            for v in vals {
-                if let super::bound::Val::Ref(u) = v {
-                    by_table.entry(rt).or_default().push(*u);
-                }
-            }
-        }
+        let by_table = super::scopes::ref_values(q);
         let mut out = HashMap::new();
         for (rt, ids) in by_table {
             let keys: Option<(i32, i64)> = sqlx::query_as(
@@ -743,13 +854,14 @@ impl Exec<'_, '_> {
         binds: Vec<Bind>,
     ) -> Result<Vec<sqlx::postgres::PgRow>, DataError> {
         self.stats.statements += 1;
+        let text = self.intern(label, text);
         let rows = bind_q(sqlx::query(&text), &binds)
             .fetch_all(&mut *self.conn)
             .await
             .map_err(map_db)?;
         self.captured.push(super::planner::exec::Captured {
             label,
-            sql: text,
+            sql: text.to_string(),
             binds,
         });
         Ok(rows)
