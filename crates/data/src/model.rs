@@ -17,7 +17,7 @@ pub enum FieldType {
     /// `YYYY-MM-DD`（保存形式そのまま・辞書順＝日付順）。
     Date,
     /// RFC3339 を受理し **UTC の固定幅 ISO-8601 文字列に正規化して保存**する
-    /// （辞書順＝時刻順になり、text 式インデックスで範囲検索できる）。
+    /// （辞書順＝時刻順になり、text の pivot 索引で範囲検索できる）。
     DateTime,
     Select,
     MultiSelect,
@@ -129,10 +129,10 @@ pub struct FieldDef {
     /// 必須（create 時に存在・null 不可。update でも除去不可）。
     #[serde(default)]
     pub required: bool,
-    /// テーブル内一意（unique 式インデックスで競合レースなく強制・null は重複可）。
+    /// テーブル内一意（一意索引テーブル `data_unique` で競合レースなく強制・null は重複可）。
     #[serde(default)]
     pub unique: bool,
-    /// フィルタ/ソート対象（式インデックスを生成する）。
+    /// フィルタ/ソート対象（pivot 索引テーブルに値の索引行を持つ・既存レコードはバックフィル）。
     #[serde(default)]
     pub indexed: bool,
     /// 部分一致検索の対象（Task 15.2 の `data_index_search` へ載せる・text 型のみ）。

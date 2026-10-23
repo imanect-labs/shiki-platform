@@ -42,7 +42,7 @@ pub struct TableListResponse {
     pub items: Vec<DataTable>,
 }
 
-/// テーブルを作成する（スキーマ検証＋式インデックス生成・201）。
+/// テーブルを作成する（スキーマ検証＋索引台帳の初期化・201）。
 #[utoipa::path(
     post,
     path = "/data/tables",
@@ -117,7 +117,7 @@ pub async fn get_table(
     ))
 }
 
-/// スキーマを改訂する（owner・additive のみ・式インデックス差分適用）。
+/// スキーマを改訂する（owner・additive のみ・増えた索引は既存レコードをバックフィル）。
 /// テーブルに対する自分の文脈（読めない列・編集/スキーマ変更の可否・ビューのルックアップ列の上限）。
 ///
 /// 画面の出し分け専用（実際の読み書きは各 API が改めて認可する）。

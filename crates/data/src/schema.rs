@@ -1,7 +1,7 @@
 //! テーブルスキーマの検証（登録時・改訂時）。
 //!
-//! フィールドの参照名（`key`）は `^[a-z][a-z0-9_]{0,63}$` に厳格制限する。SQL（式インデックス
-//! DDL・JSONB アクセサ）へ埋め込むのは `key` ではなく内部 ID 由来の `"f{id}"` だけ
+//! フィールドの参照名（`key`）は `^[a-z][a-z0-9_]{0,63}$` に厳格制限する。SQL（JSONB アクセサ）へ
+//! 埋め込む・バインドするのは `key` ではなく内部 ID 由来の `"f{id}"` だけ
 //! （[`crate::field_key`]・Task 15.1）。検証は `id` 採番後のスキーマに対して行う。
 
 use std::collections::HashSet;
@@ -12,7 +12,7 @@ use crate::DataError;
 
 /// テーブル名の上限長（マニフェスト束縛・URL パスでの扱いやすさを優先）。
 const MAX_TABLE_NAME_LEN: usize = 128;
-/// 1 テーブルのフィールド数上限（式インデックス数・検証コストの防御的上限）。
+/// 1 テーブルのフィールド数上限（索引行の書込量・検証コストの防御的上限）。
 const MAX_FIELDS: usize = 200;
 /// select / multi_select の選択肢数上限。
 const MAX_OPTIONS: usize = 200;
@@ -209,7 +209,7 @@ fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
             "'{name}': 派生フィールド（lookup/computed/rollup/formula）に required/unique は指定できません"
         )));
     }
-    // unique は式インデックスで強制できるスカラー型のみ。
+    // unique は一意索引テーブル（`data_unique`）で強制できるスカラー型のみ。
     if f.unique
         && !matches!(
             f.field_type,
@@ -234,7 +234,7 @@ fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
 ///
 /// `next` は [`crate::field_key::assign_field_ids`] で `current` と照合・採番済みであること
 /// （同じ `id` は同じ `key`＝key 不変はそこで強制済み）。既存フィールドの**型変更・削除は拒否**
-/// する（保存済み JSONB と式インデックスの整合を崩さない）。追加・required/unique/indexed/
+/// する（保存済み JSONB と索引行の整合を崩さない）。追加・required/unique/indexed/
 /// options・**display_name / order / description の変更は許す**（表示名の変更はスキーマ 1 箇所の
 /// 書き換えで完結し、レコードは 1 行も動かない・data-platform §4.2）。
 pub(crate) fn validate_schema_update(

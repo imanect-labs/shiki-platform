@@ -379,7 +379,7 @@ pub async fn set_tenant_workflow_retention(
 
 /// データ面の purge（FGA タプル → オブジェクト → DB 行）。
 ///
-/// 構造化データ（式インデックス・FGA タプル・Task 9.2）→ storage（FGA タプル・オブジェクト・
+/// 構造化データ（pivot 索引・FGA タプル・Task 9.2）→ storage（FGA タプル・オブジェクト・
 /// **tenant_id を持つ全 DB 行**）→ RAG（Qdrant/Tantivy）の順に撤去する（#420）。
 /// 前後の理由は本体のコメント参照（列挙が必要なものは前、索引の再生成入力を断つものは後）。
 async fn purge_tenant_data(
