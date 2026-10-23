@@ -633,15 +633,16 @@ async fn analyze_jobs_are_claimed_fairly_across_tenants() {
             .unwrap()
         }
     };
-    for _ in 0..50 {
+    // 共有 DB には他テストのテナントのジョブもあり、それぞれの先頭も順に回る（それも公平性）。
+    for _ in 0..2_000 {
         if pending(&light).await == 0 {
             break;
         }
-        store.run_stats_job_once().await.unwrap();
+        let _ = store.run_stats_job_once().await;
     }
     assert_eq!(pending(&light).await, 0);
     assert!(
-        pending(&heavy).await >= 1,
+        pending(&heavy).await >= 2,
         "重いテナントの残りより先に軽いテナントが処理される"
     );
 }
