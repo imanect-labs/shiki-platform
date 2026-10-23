@@ -745,7 +745,7 @@ async fn deferred_index_build_keeps_concurrent_writes() {
                     .await;
                 match r {
                     Ok(rec) => created.push(rec),
-                    Err(DataError::Conflict(_)) => {}
+                    Err(DataError::UniqueViolation) => {}
                     Err(e) => panic!("{e:?}"),
                 }
                 if let Some(e) = existing.get(i % existing.len()) {

@@ -32,6 +32,7 @@ use crate::{
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない（マスク列の参照を含む）"),
         (status = 404, description = "テーブルが存在しない"),
+        (status = 409, description = "列の索引を準備中（code=index_preparing・field・progress）・索引の承認が要る（code=index_approval_required）・材料化した派生列が参照先の変更を受けて再計算中（code=derived_recomputing・field）"),
     ),
     security(("session" = [])),
 )]

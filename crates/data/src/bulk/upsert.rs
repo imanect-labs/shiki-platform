@@ -38,7 +38,8 @@ pub(super) struct PendingUpdate {
 /// 不可視と不在は同じ文言（存在オラクルを作らない・PIT-21）。
 fn update_row_message(e: DataError) -> Result<String, DataError> {
     match e {
-        DataError::Invalid(m) | DataError::Conflict(m) => Ok(m),
+        DataError::Invalid(m) => Ok(m),
+        e if e.is_conflict() => Ok(e.conflict_detail().unwrap_or_default()),
         DataError::NotFound => Ok("更新対象のレコードが見つかりません".into()),
         DataError::Forbidden => {
             Ok("このレコード（またはフィールド）を更新する権限がありません".into())
@@ -104,6 +105,10 @@ mod tests {
         assert_eq!(
             update_row_message(DataError::Conflict("rev".into())).unwrap(),
             "rev"
+        );
+        assert_eq!(
+            update_row_message(DataError::RevConflict { current: 3 }).unwrap(),
+            "rev が一致しません（現在 3）"
         );
         assert!(update_row_message(DataError::Internal("db".into())).is_err());
     }

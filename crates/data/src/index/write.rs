@@ -678,14 +678,12 @@ async fn insert_unique(
         .execute(&mut *conn)
         .await
         .map_err(|e| match &e {
-            sqlx::Error::Database(db) if db.is_unique_violation() => {
-                DataError::Conflict("unique 制約に違反しています".into())
-            }
+            sqlx::Error::Database(db) if db.is_unique_violation() => DataError::UniqueViolation,
             _ => map_db(e),
         })?
         .rows_affected();
     if n != rows.len() as u64 {
-        return Err(DataError::Conflict("unique 制約に違反しています".into()));
+        return Err(DataError::UniqueViolation);
     }
     Ok(())
 }

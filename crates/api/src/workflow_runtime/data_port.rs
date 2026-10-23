@@ -32,7 +32,12 @@ pub(super) fn map_data(e: DataError) -> PortError {
         DataError::Forbidden => PortError::forbidden("data の権限がありません"),
         DataError::Invalid(m) => PortError::invalid(m),
         // rev の不一致・unique（rev を指定しない書込は再試行で読み直して通り得る）。
-        DataError::Conflict(m) => PortError::new("conflict", m, true),
+        e @ (DataError::Conflict(_)
+        | DataError::RevConflict { .. }
+        | DataError::UniqueViolation
+        | DataError::DerivedRecomputing { .. }) => {
+            PortError::new("conflict", e.conflict_detail().unwrap_or_default(), true)
+        }
         DataError::Gone(m) => PortError::new("gone", m, false),
         DataError::ReadOverloaded => {
             PortError::new("rate_limited", "data の読取が混み合っています", true)

@@ -217,7 +217,7 @@ async fn uniqueness_survives_the_upgrade_from_a_mid_backfill_state() {
     let dup = store
         .create_record(&c, t.id, json!({"code": "C-3"}), None)
         .await;
-    assert!(matches!(dup, Err(DataError::Conflict(_))), "{dup:?}");
+    assert!(matches!(dup, Err(DataError::UniqueViolation)), "{dup:?}");
     // 重複でなければ書ける。一意索引は active。
     store
         .create_record(&c, t.id, json!({"code": "C-9"}), None)

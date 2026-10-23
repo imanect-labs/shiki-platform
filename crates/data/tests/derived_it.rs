@@ -806,14 +806,17 @@ async fn recompute_case(symmetric: Option<&str>) {
         .await
         .unwrap();
     let r = store.run_query(&c, orders.id, &by_total, None).await;
-    assert!(matches!(r, Err(DataError::Conflict(_))), "{r:?}");
+    assert!(
+        matches!(&r, Err(DataError::DerivedRecomputing { field }) if field == "total"),
+        "{r:?}"
+    );
     let filter = DataQuery {
         filter: Some(Condition::cmp("total", CondOp::Gt, Some(json!(500)))),
         ..DataQuery::default()
     };
     assert!(matches!(
         store.run_query(&c, orders.id, &filter, None).await,
-        Err(DataError::Conflict(_))
+        Err(DataError::DerivedRecomputing { .. })
     ));
     assert_eq!(get(&store, &c, orders.id, o2).await["total"], json!(1000));
     // 世代付きジョブが積まれている。
@@ -854,7 +857,7 @@ async fn recompute_case(symmetric: Option<&str>) {
         .unwrap();
     assert!(matches!(
         store.run_query(&c, orders.id, &by_total, None).await,
-        Err(DataError::Conflict(_))
+        Err(DataError::DerivedRecomputing { .. })
     ));
     store.recompute_derived(&tenant, orders.id).await.unwrap();
     assert_eq!(

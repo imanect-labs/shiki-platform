@@ -120,7 +120,13 @@ fn denied(err: &DataError) -> ToolOutcome {
         // 入力の誤りは理由を返して自己修正させる（テーブルの閲覧権限は確認済みの段階のもの）。
         DataError::Invalid(m) => format!("入力が不正です: {m}"),
         DataError::Rejected(r) => format!("クエリを受け付けられません: {r}"),
-        DataError::Conflict(m) => format!("他の更新と競合しました。読み直してから再試行してください: {m}"),
+        DataError::Conflict(_)
+        | DataError::RevConflict { .. }
+        | DataError::UniqueViolation
+        | DataError::DerivedRecomputing { .. } => format!(
+            "他の更新と競合しました。読み直してから再試行してください: {}",
+            err.conflict_detail().unwrap_or_default()
+        ),
         DataError::Gone(_) => "ページの位置が古くなりました。cursor を外して最初から読み直してください。".into(),
         DataError::IndexPreparing { .. }
         | DataError::IndexApprovalRequired { .. }

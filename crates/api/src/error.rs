@@ -174,12 +174,34 @@ impl From<data::DataError> for ApiError {
             DE::NotFound => ApiError::NotFound,
             DE::Forbidden => ApiError::Forbidden,
             DE::Invalid(msg) => ApiError::BadRequest(msg),
+            // 409 はクライアントが「他の人が先に更新した（rev）」「同じ値が既にある（unique）」
+            // 「参照先の変更を受けて再計算中」「その他」を出し分けられるよう `code` で構造化する
+            // （値・相手の行・内部キーは含めない。理由の文言はログにだけ残す）。
             DE::Conflict(reason) => {
-                // 409 の切り分け（rev 不一致 / 同名 / unique 違反）を追跡できるようログに残す
-                // （ボディは他リソースと同じ最小形を維持する）。
                 tracing::info!(%reason, "data conflict (409)");
-                ApiError::Conflict
+                ApiError::ConflictJson(serde_json::json!({
+                    "status": 409,
+                    "title": "Conflict",
+                    "code": "conflict",
+                }))
             }
+            DE::RevConflict { current } => ApiError::ConflictJson(serde_json::json!({
+                "status": 409,
+                "title": "Conflict",
+                "code": "rev_conflict",
+                "current_rev": current,
+            })),
+            DE::UniqueViolation => ApiError::ConflictJson(serde_json::json!({
+                "status": 409,
+                "title": "Conflict",
+                "code": "unique_violation",
+            })),
+            DE::DerivedRecomputing { field } => ApiError::ConflictJson(serde_json::json!({
+                "status": 409,
+                "title": "Conflict",
+                "code": "derived_recomputing",
+                "field": field,
+            })),
             DE::Internal(msg) => ApiError::Internal(format!("data: {msg}")),
             DE::Gone(reason) => {
                 tracing::info!(%reason, "data gone (410)");
@@ -347,6 +369,36 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         (status, value)
+    }
+
+    /// data の 409 は `code` で種類を出し分ける（rev 競合・unique 違反・再計算中・その他・監査 B1-6）。
+    #[tokio::test]
+    async fn data_conflicts_are_structured_by_code() {
+        use data::DataError as DE;
+        let (status, body) = body_json(ApiError::from(DE::RevConflict { current: 4 })).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "rev_conflict");
+        assert_eq!(body["current_rev"], 4);
+        let (_, body) = body_json(ApiError::from(DE::UniqueViolation)).await;
+        assert_eq!(body["code"], "unique_violation");
+        assert_eq!(
+            body.as_object().unwrap().len(),
+            3,
+            "値や相手の行を含めない: {body}"
+        );
+        let (_, body) = body_json(ApiError::from(DE::DerivedRecomputing {
+            field: "total".into(),
+        }))
+        .await;
+        assert_eq!(body["code"], "derived_recomputing");
+        assert_eq!(body["field"], "total");
+        let (status, body) = body_json(ApiError::from(DE::Conflict(
+            "テーブル名 'x' は既に存在します".into(),
+        )))
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "conflict");
+        assert!(body.get("detail").is_none(), "理由の文言は返さない: {body}");
     }
 
     /// SQL 前段面の入口の拒否は 422 と構造化した理由（code / message / location / limit / expected）を

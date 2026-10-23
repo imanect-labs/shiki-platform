@@ -189,9 +189,23 @@ pub enum DataError {
     Forbidden,
     #[error("不正な入力: {0}")]
     Invalid(String),
-    /// 名前重複・unique 制約違反・楽観ロック（rev）不一致。
+    /// 名前重複・取込 ID の再利用・並行のスキーマ切替など（409・`code: conflict`）。
+    /// rev 不一致・unique 違反・再計算中はクライアントが出し分けられるよう個別の変種にする。
     #[error("競合しています: {0}")]
     Conflict(String),
+    /// 楽観ロック（rev）の不一致（409・`code: rev_conflict`）。`current` は今の rev
+    /// （行述語を通った＝閲覧できる行だけで起きる。不可視行は 404）。
+    #[error("競合しています: rev が一致しません（現在 {current}）")]
+    RevConflict { current: i64 },
+    /// unique 宣言の違反（409・`code: unique_violation`）。重複した値・相手の行は返さない。
+    #[error("競合しています: unique 制約に違反しています")]
+    UniqueViolation,
+    /// 材料化した派生列が参照先の変更を受けて再計算中（409・`code: derived_recomputing`・再試行可）。
+    /// 完了までその列で絞り込み・並べ替えできない（data-platform §7.4）。
+    #[error(
+        "フィールド '{field}' は参照先の変更を受けて再計算中です（完了までフィルタ/ソートに使えません）"
+    )]
+    DerivedRecomputing { field: String },
     #[error("内部エラー: {0}")]
     Internal(String),
     /// スナップショット読取の基準位置が保持期間を過ぎた（410・最初から取り直す・data-platform §3.3）。
@@ -224,6 +238,44 @@ pub enum DataError {
     /// （data-platform §16.1）。存在しない列/テーブルと見えない列/テーブルは同一の内容になる。
     #[error("クエリを受け付けられません: {0}")]
     Rejected(Box<QueryRejection>),
+}
+
+impl DataError {
+    /// 409 の競合（汎用・rev 不一致・unique 違反・再計算中）か。
+    pub fn is_conflict(&self) -> bool {
+        matches!(
+            self,
+            DataError::Conflict(_)
+                | DataError::RevConflict { .. }
+                | DataError::UniqueViolation
+                | DataError::DerivedRecomputing { .. }
+        )
+    }
+
+    /// 競合の理由の文言（「競合しています」の前置きなし・行のエラー文言やログ用）。競合でなければ `None`。
+    pub fn conflict_detail(&self) -> Option<String> {
+        match self {
+            DataError::Conflict(m) => Some(m.clone()),
+            DataError::RevConflict { current } => {
+                Some(format!("rev が一致しません（現在 {current}）"))
+            }
+            DataError::UniqueViolation => Some("unique 制約に違反しています".into()),
+            DataError::DerivedRecomputing { .. } => Some(self.to_string()),
+            _ => None,
+        }
+    }
+
+    /// 409 の構造化コード（`conflict` / `rev_conflict` / `unique_violation` / `derived_recomputing`）。
+    /// 競合でなければ `None`。HTTP・ゲートウェイ・ワークフローのエラー形が同じ語彙を使う。
+    pub fn conflict_code(&self) -> Option<&'static str> {
+        Some(match self {
+            DataError::Conflict(_) => "conflict",
+            DataError::RevConflict { .. } => "rev_conflict",
+            DataError::UniqueViolation => "unique_violation",
+            DataError::DerivedRecomputing { .. } => "derived_recomputing",
+            _ => return None,
+        })
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]

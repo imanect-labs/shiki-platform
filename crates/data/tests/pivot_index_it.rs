@@ -274,7 +274,7 @@ async fn write_path_updates_only_changed_fields() {
     let dup = store
         .create_record(&c, table.id, json!({"title": "y", "amount": 250}), None)
         .await;
-    assert!(matches!(dup, Err(DataError::Conflict(_))), "{dup:?}");
+    assert!(matches!(dup, Err(DataError::UniqueViolation)), "{dup:?}");
     let cur = store.get_record(&c, table.id, rec.id, None).await.unwrap();
     store
         .delete_record(&c, table.id, rec.id, cur.rev, None)
@@ -391,7 +391,7 @@ async fn max_text_len_values_are_writable_in_indexed_columns() {
     let dup = store
         .create_record(&c, table.id, json!({"code": long}), None)
         .await;
-    assert!(matches!(dup, Err(DataError::Conflict(_))), "{dup:?}");
+    assert!(matches!(dup, Err(DataError::UniqueViolation)), "{dup:?}");
 
     let (ti, tb) = keys_of(&pool, &tenant, table.id).await;
     let ri = record_int_of(&pool, ti, tb, rec.id).await;
@@ -1039,7 +1039,7 @@ async fn numeric_spec_normalizes_body_and_index_identically() {
     let dup = store
         .create_record(&c, table.id, json!({"price": 1.0149}), None)
         .await;
-    assert!(matches!(dup, Err(DataError::Conflict(_))), "{dup:?}");
+    assert!(matches!(dup, Err(DataError::UniqueViolation)), "{dup:?}");
     // 正規化後の範囲外・reject の超過桁は 422。
     for bad in [
         json!({"price": 1000.005}),

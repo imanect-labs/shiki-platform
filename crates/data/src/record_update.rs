@@ -123,10 +123,9 @@ impl DataStore {
         }
         if let Some(expected) = expected_rev {
             if current.rev != expected {
-                return Err(DataError::Conflict(format!(
-                    "rev が一致しません（現在 {}・指定 {expected}）",
-                    current.rev
-                )));
+                return Err(DataError::RevConflict {
+                    current: current.rev,
+                });
             }
         }
         let current = current.into_record(&table.schema);

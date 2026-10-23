@@ -220,8 +220,8 @@ pub(crate) async fn build_unique_now(
                 )
                 .await
                 .map_err(|e| match e {
-                    DataError::Conflict(_) => {
-                        DataError::Conflict("重複値があるため unique を適用できません".into())
+                    DataError::Conflict(_) | DataError::UniqueViolation => {
+                        DataError::UniqueViolation
                     }
                     other => other,
                 })?;

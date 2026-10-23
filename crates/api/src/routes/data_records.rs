@@ -116,7 +116,7 @@ pub struct RevisionListResponse {
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "テーブルが存在しない"),
-        (status = 409, description = "unique 制約違反"),
+        (status = 409, description = "unique 制約違反（code=unique_violation）"),
     ),
     security(("session" = [])),
 )]
@@ -248,7 +248,7 @@ pub async fn get_record(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
-        (status = 409, description = "rev 不一致（同時更新）または unique 制約違反"),
+        (status = 409, description = "rev 不一致（同時更新・code=rev_conflict・current_rev）または unique 制約違反（code=unique_violation）"),
     ),
     security(("session" = [])),
 )]
@@ -287,7 +287,7 @@ pub async fn update_record(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
-        (status = 409, description = "rev 不一致（同時更新）"),
+        (status = 409, description = "rev 不一致（同時更新・code=rev_conflict・current_rev）"),
     ),
     security(("session" = [])),
 )]

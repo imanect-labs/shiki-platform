@@ -314,7 +314,10 @@ async fn approval_flow_transitions_and_guards() {
             None,
         )
         .await;
-    assert!(matches!(stale, Err(DataError::Conflict(_))), "{stale:?}");
+    assert!(
+        matches!(stale, Err(DataError::RevConflict { current }) if current == approved.rev),
+        "{stale:?}"
+    );
 
     // リビジョンに transition が残る（フィールド単位差分・受け入れ条件）。
     let revs = store

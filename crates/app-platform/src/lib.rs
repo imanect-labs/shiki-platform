@@ -65,7 +65,13 @@ impl From<data::DataError> for AppPlatformError {
             DataError::NotFound => AppPlatformError::NotFound,
             DataError::Forbidden => AppPlatformError::Forbidden,
             DataError::Invalid(m) => AppPlatformError::Invalid(m),
-            DataError::Conflict(m) | DataError::Gone(m) => AppPlatformError::Conflict(m),
+            DataError::Gone(m) => AppPlatformError::Conflict(m),
+            e @ (DataError::Conflict(_)
+            | DataError::RevConflict { .. }
+            | DataError::UniqueViolation
+            | DataError::DerivedRecomputing { .. }) => {
+                AppPlatformError::Conflict(e.conflict_detail().unwrap_or_default())
+            }
             e @ (DataError::IndexPreparing { .. }
             | DataError::IndexApprovalRequired { .. }
             | DataError::ReadOverloaded) => AppPlatformError::Conflict(e.to_string()),

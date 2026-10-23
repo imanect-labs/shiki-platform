@@ -526,10 +526,9 @@ impl DataStore {
                 .iter()
                 .find(|f| i16::try_from(f.id).is_ok_and(|i| stale.contains(&i)))
             {
-                return Err(DataError::Conflict(format!(
-                    "フィールド '{}' は参照先の変更を受けて再計算中です（完了までフィルタ/ソートに使えません）",
-                    f.key
-                )));
+                return Err(DataError::DerivedRecomputing {
+                    field: f.key.clone(),
+                });
             }
         }
         // 個別共有（uuid）→ record_int（このテーブルに属するものだけ・外へ出さない）。

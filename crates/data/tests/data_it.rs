@@ -233,7 +233,7 @@ async fn table_crud_and_typed_record_crud() {
         .create_record(&c, table.id, json!({"title": "重複", "code": "E-1"}), None)
         .await;
     assert!(
-        matches!(dup_code, Err(DataError::Conflict(_))),
+        matches!(dup_code, Err(DataError::UniqueViolation)),
         "{dup_code:?}"
     );
 
@@ -516,7 +516,10 @@ async fn revisions_track_field_diffs_and_optimistic_lock() {
     let stale = store
         .update_record(&c, table.id, rec.id, json!({"amount": 300}), 1, None)
         .await;
-    assert!(matches!(stale, Err(DataError::Conflict(_))), "{stale:?}");
+    assert!(
+        matches!(stale, Err(DataError::RevConflict { current: 2 })),
+        "{stale:?}"
+    );
 
     // フィールド除去（null）と追加。
     store

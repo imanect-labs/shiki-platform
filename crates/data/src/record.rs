@@ -255,10 +255,9 @@ impl DataStore {
             return Err(DataError::Forbidden);
         }
         if current.rev != expected_rev {
-            return Err(DataError::Conflict(format!(
-                "rev が一致しません（現在 {}・指定 {expected_rev}）",
-                current.rev
-            )));
+            return Err(DataError::RevConflict {
+                current: current.rev,
+            });
         }
         let record_int: i64 = sqlx::query_scalar(
             "DELETE FROM data_record \
@@ -459,9 +458,7 @@ impl DataStore {
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn map_unique(e: sqlx::Error) -> DataError {
     match &e {
-        sqlx::Error::Database(db) if db.is_unique_violation() => {
-            DataError::Conflict("unique 制約に違反しています".into())
-        }
+        sqlx::Error::Database(db) if db.is_unique_violation() => DataError::UniqueViolation,
         _ => map_db(e),
     }
 }

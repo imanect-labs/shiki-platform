@@ -73,10 +73,9 @@ impl DataStore {
             .await?
             .ok_or(DataError::NotFound)?;
         if current.rev != expected_rev {
-            return Err(DataError::Conflict(format!(
-                "rev が一致しません（現在 {}・指定 {expected_rev}）",
-                current.rev
-            )));
+            return Err(DataError::RevConflict {
+                current: current.rev,
+            });
         }
         // 保存形（"f{id}"）を外部形（key）へ戻してから status を読む。
         let mut data = decode_record(&table.schema, &current.data.0);

@@ -179,7 +179,7 @@ pub async fn get_fsm(
         (status = 401, description = "未認証"),
         (status = 403, description = "actor 述語を満たさない"),
         (status = 404, description = "テーブル/レコードが存在しない（不可視を含む）"),
-        (status = 409, description = "rev 不一致（同時更新）"),
+        (status = 409, description = "rev 不一致（同時更新・code=rev_conflict・current_rev）"),
     ),
     security(("session" = [])),
 )]

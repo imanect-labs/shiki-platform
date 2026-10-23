@@ -127,7 +127,8 @@ pub(super) fn claims_of(
 /// 検証エラーを行のエラー文言へ（入力の誤りだけを行に付け、内部エラーは呼び出し側が伝播する）。
 pub(super) fn row_message(e: DataError) -> Result<String, DataError> {
     match e {
-        DataError::Invalid(m) | DataError::Conflict(m) => Ok(m),
+        DataError::Invalid(m) => Ok(m),
+        e if e.is_conflict() => Ok(e.conflict_detail().unwrap_or_default()),
         other => Err(other),
     }
 }
@@ -677,6 +678,10 @@ mod tests {
             "x".to_string()
         );
         assert!(row_message(DataError::Conflict("c".into())).is_ok());
+        assert_eq!(
+            row_message(DataError::UniqueViolation).unwrap(),
+            "unique 制約に違反しています"
+        );
         assert!(row_message(DataError::Internal("db".into())).is_err());
         assert!(row_message(DataError::Forbidden).is_err());
     }

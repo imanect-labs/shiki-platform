@@ -84,7 +84,14 @@ impl From<data::DataError> for GatewayError {
             DataError::NotFound => GatewayError::NotFound,
             DataError::Forbidden => GatewayError::Forbidden("この操作は許可されていません".into()),
             DataError::Invalid(m) => GatewayError::Invalid(m),
-            DataError::Conflict(m) | DataError::Gone(m) => GatewayError::Conflict(m),
+            DataError::Gone(m) => GatewayError::Conflict(m),
+            // rev 不一致・unique 違反・再計算中を含む競合（文言は値・相手の行を含まない）。
+            e @ (DataError::Conflict(_)
+            | DataError::RevConflict { .. }
+            | DataError::UniqueViolation
+            | DataError::DerivedRecomputing { .. }) => {
+                GatewayError::Conflict(e.conflict_detail().unwrap_or_default())
+            }
             e @ (DataError::IndexPreparing { .. } | DataError::IndexApprovalRequired { .. }) => {
                 GatewayError::Conflict(e.to_string())
             }
