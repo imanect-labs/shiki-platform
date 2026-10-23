@@ -32,6 +32,7 @@ sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E
 | Python | `cd ingestion-worker && uv sync --frozen`<br>`uv run ruff check .`<br>`uv run pytest -m "not slow" -q` | `ingestion-worker/` 差分 |
 | Tabular runner | `cargo fmt --manifest-path crates/tabular/runner/Cargo.toml --check`<br>`cargo clippy --manifest-path crates/tabular/runner/Cargo.toml --release -- -D warnings`<br>`cargo build --manifest-path crates/tabular/runner/Cargo.toml --release`<br>→ `SHIKI_TABULAR_RUNNER=crates/tabular/runner/target/release/shiki-tabular-runner cargo test -p shiki-tabular --test runner_adversarial_it` | `crates/tabular/` 差分 |
 | compose smoke | `bash deploy/compose/smoke-bff.sh` | 認証・起動経路・compose 定義の変更時 |
+| Keycloak User Profile smoke | `bash deploy/compose/smoke-keycloak-user-profile.sh`（compose の Keycloak 相手。`KC=` で URL 指定可） | `deploy/keycloak/` 差分・Keycloak admin REST 経路（`crates/api/src/keycloak_admin.rs`）の変更時 |
 | Web E2E | `references/verify.md` 参照 | `web/` 差分 |
 | Sandbox gVisor IT | `bash scripts/fetch-native-assets.sh && bash scripts/build-sandbox-rootfs.sh`<br>→ `SANDBOX_GVISOR_IT=1 RUNSC_BIN=deploy/sandbox-assets/bin/runsc GVISOR_ROOTFS=deploy/sandbox-assets/rootfs cargo test -p shiki-sandbox-orchestrator --test gvisor_it -- --test-threads=1` | `crates/sandbox-*` 差分（CI では**非ブロッキング**） |
 

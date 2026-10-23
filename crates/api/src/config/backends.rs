@@ -168,6 +168,38 @@ pub struct LlmConfig {
     /// 1 回の生成全体の上限秒（既定 900 = 15 分・暴走の安全弁）。
     #[serde(default = "default_llm_total_timeout_secs")]
     pub total_timeout_secs: u64,
+    /// 利用制限（月次コスト上限・プレビュー環境向け）。既定は無効。
+    #[serde(default)]
+    pub limits: LlmLimitsConfig,
+}
+
+/// 利用制限（設定表現・`[llm.limits]`）。既定は無効で、プレビュー環境だけで有効にする。
+///
+/// ユーザー 1 人あたりの月額と、プロバイダ別の環境総枠の二段
+/// （[`llm_gateway::UsageLimitsConfig`]）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LlmLimitsConfig {
+    /// 制限を掛けるか（既定 false）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// ユーザー 1 人あたりの月額上限（マイクロ USD）。未設定・0 は無制限。
+    #[serde(default)]
+    pub per_user_usd_micros: Option<i64>,
+    /// プロバイダ別の環境総枠。
+    #[serde(default)]
+    pub providers: Vec<LlmProviderLimit>,
+}
+
+/// 1 つの請求先（API キー）の環境総枠（設定表現）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmProviderLimit {
+    /// この枠を共有する `llm.providers[].id`（既定プロバイダは `default`）。
+    ///
+    /// **枠は API キー単位**。1 つのキーを複数のプロバイダ設定で使っているなら全部列挙する
+    /// （OpenCode Go は API 形式ごとにプロバイダを分けるが、キーと請求は 1 つ）。
+    pub providers: Vec<String>,
+    /// 月額上限（マイクロ USD）。
+    pub usd_micros: i64,
 }
 
 const fn default_llm_first_response_timeout_secs() -> u64 {
@@ -200,6 +232,7 @@ impl Default for LlmConfig {
             first_response_timeout_secs: default_llm_first_response_timeout_secs(),
             idle_timeout_secs: default_llm_idle_timeout_secs(),
             total_timeout_secs: default_llm_total_timeout_secs(),
+            limits: LlmLimitsConfig::default(),
         }
     }
 }
@@ -239,6 +272,27 @@ impl LlmConfig {
             self.idle_timeout_secs,
             self.total_timeout_secs,
         )
+    }
+
+    /// llm-gateway の利用制限へ写す（`validate` で非負を保証済み）。
+    ///
+    /// 0 は「無制限」として扱う（env で空文字を置けないため、0 で無効化できるようにする）。
+    #[must_use]
+    pub fn usage_limits(&self) -> llm_gateway::UsageLimitsConfig {
+        llm_gateway::UsageLimitsConfig {
+            enabled: self.limits.enabled,
+            per_user_usd_micros: self.limits.per_user_usd_micros.filter(|&v| v > 0),
+            providers: self
+                .limits
+                .providers
+                .iter()
+                .filter(|p| p.usd_micros > 0 && !p.providers.is_empty())
+                .map(|p| llm_gateway::ProviderLimit {
+                    providers: p.providers.clone(),
+                    usd_micros: p.usd_micros,
+                })
+                .collect(),
+        }
     }
 
     /// llm-gateway のモデルカタログへ写す。既定モデルは `default_model` → カタログ先頭 →

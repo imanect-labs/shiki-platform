@@ -16,6 +16,7 @@ use crate::config::{
     DEFAULT_PROVIDER_ID,
 };
 use crate::langfuse::{GenerationTrace, LangfuseClient};
+use crate::limits::{LimitError, UsageLimiter};
 use crate::model::{Effort, GenerateRequest, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 use crate::providers::{
@@ -111,6 +112,7 @@ struct Inner {
     accounting: UsageRecorder,
     tenants: TenantLlmStore,
     usage: UsageReporter,
+    limits: UsageLimiter,
     langfuse: Option<LangfuseClient>,
 }
 
@@ -163,7 +165,8 @@ impl LlmGateway {
                 providers,
                 accounting: UsageRecorder::new(db.clone()),
                 tenants: TenantLlmStore::new(db.clone()),
-                usage: UsageReporter::new(db),
+                usage: UsageReporter::new(db.clone()),
+                limits: UsageLimiter::new(db),
                 langfuse,
                 config,
             }),
@@ -352,6 +355,7 @@ impl LlmGateway {
                 "model is not enabled for this organization: {logical}"
             )));
         }
+        self.check_limits(ctx, &slot.config).await?;
         if !self.supports_effort(entry) {
             req.effort = None;
         }
@@ -360,19 +364,65 @@ impl LlmGateway {
         stream_with_retry(slot.provider.as_ref(), &req, &UNAVAILABLE_BACKOFF).await
     }
 
-    /// モデル（論理名）の振り先プロバイダの会計名。未知モデルは既定プロバイダ。
-    fn provider_name_for(&self, model: &str) -> String {
+    /// 利用制限（月次コスト上限・プレビュー環境向け）を生成前に確かめる。
+    ///
+    /// 上限超過は [`LlmError::RateLimited`]（文言はそのままユーザーへ出す）。集計に失敗したら
+    /// **生成しない**（fail-closed）。既定の無効設定では問い合わせ自体を行わない。
+    async fn check_limits(
+        &self,
+        ctx: &AuthContext,
+        provider: &ProviderConfig,
+    ) -> Result<(), LlmError> {
+        let res = self
+            .inner
+            .limits
+            .check(
+                ctx,
+                &self.inner.config.limits,
+                provider.effective_id(),
+                provider.label(),
+            )
+            .await;
+        match res {
+            Ok(()) => Ok(()),
+            Err(LimitError::Exceeded(msg)) => {
+                tracing::info!(
+                    provider = provider.effective_id(),
+                    user = %ctx.principal.id,
+                    "llm usage limit reached; generation rejected"
+                );
+                Err(LlmError::RateLimited(msg))
+            }
+            Err(LimitError::Query(e)) => {
+                // DB 詳細はユーザーへ出さない（tracing にのみ残す）。
+                tracing::error!(error = %e, "llm usage limit lookup failed");
+                Err(LlmError::Unavailable(
+                    "利用量の確認に失敗しました。しばらく待ってからもう一度お試しください。".into(),
+                ))
+            }
+        }
+    }
+
+    /// モデル（論理名）の振り先プロバイダの会計ラベル（アダプタ種別名, プロバイダ ID）。
+    ///
+    /// 未知モデルは既定プロバイダへ落とす（会計の行を落とさない）。ID は利用制限の
+    /// 「プロバイダ別の環境総枠」が数える軸なので、種別名とは別に刻む。
+    fn provider_labels_for(&self, model: &str) -> (String, String) {
         let id = self
             .inner
             .config
             .catalog
             .get(model)
             .map_or(DEFAULT_PROVIDER_ID, ModelEntry::provider_id);
-        self.inner
-            .providers
-            .get(id)
-            .or_else(|| self.inner.providers.get(DEFAULT_PROVIDER_ID))
-            .map_or_else(|| "unknown".to_string(), |s| s.provider.name().to_string())
+        let (id, slot) = match self.inner.providers.get(id) {
+            Some(slot) => (id, Some(slot)),
+            None => (
+                DEFAULT_PROVIDER_ID,
+                self.inner.providers.get(DEFAULT_PROVIDER_ID),
+            ),
+        };
+        let kind = slot.map_or_else(|| "unknown".to_string(), |s| s.provider.name().to_string());
+        (kind, id.to_string())
     }
 
     /// 生成 1 回分の会計＋Langfuse 計装を記録する（ストリーム消費後に呼ぶ）。
@@ -400,11 +450,12 @@ impl LlmGateway {
             );
         }
         let cost = entry.map_or(0, |e| e.cost_usd_micros(&usage));
-        let provider = self.provider_name_for(&rec.model);
+        let (provider, provider_id) = self.provider_labels_for(&rec.model);
 
         let usage_rec = UsageRecord {
             idempotency_key: rec.idempotency_key.clone(),
             provider: provider.clone(),
+            provider_id,
             model: rec.model.clone(),
             usage,
             cost_usd_micros: cost,
@@ -792,9 +843,20 @@ mod tests {
         // userinfo・パス・クエリは表示に出さない。
         assert_eq!(ps[1].endpoint.as_deref(), Some("http://vllm.internal:8000"));
         assert!(!ps[1].has_api_key);
-        // 振り先プロバイダで会計名が決まる。
-        assert_eq!(gw.provider_name_for("local"), "openai");
-        assert_eq!(gw.provider_name_for("m"), "stub");
+        // 振り先プロバイダで会計のラベル（種別名・プロバイダ ID）が決まる。
+        assert_eq!(
+            gw.provider_labels_for("local"),
+            ("openai".to_string(), "vllm".to_string())
+        );
+        assert_eq!(
+            gw.provider_labels_for("m"),
+            ("stub".to_string(), DEFAULT_PROVIDER_ID.to_string())
+        );
+        // 未知モデルは既定プロバイダへ落ちる（会計の行を落とさない）。
+        assert_eq!(
+            gw.provider_labels_for("unknown-model"),
+            ("stub".to_string(), DEFAULT_PROVIDER_ID.to_string())
+        );
     }
 
     // connect_lazy は tokio ランタイムを要する。

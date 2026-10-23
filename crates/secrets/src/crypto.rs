@@ -3,8 +3,10 @@
 //! - 平文は毎回新しい DEK（32 バイト）で暗号化する。
 //! - DEK は [`KeyProvider`](crate::KeyProvider) がマスターキーで包む（本モジュールは対称暗号のみ担う）。
 //! - nonce は 96bit をランダム生成し暗号文と共に保存する（GCM の要件）。
+//! - `aad`（追加認証データ）は暗号文を文脈へ束縛する。空の `aad` は「AAD なし」と同一の暗号文になる
+//!   （GCM の定義上・既存データとの後方互換の根拠）。行への束縛は [`crate::row_aad`] が組む。
 
-use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use rand::RngCore;
 use zeroize::Zeroize;
@@ -39,8 +41,8 @@ pub(crate) fn generate_key() -> [u8; KEY_LEN] {
     key
 }
 
-/// `key`（32 バイト）で `plaintext` を AES-256-GCM 暗号化する。
-pub(crate) fn seal(key: &[u8], plaintext: &[u8]) -> Result<Sealed, CryptoError> {
+/// `key`（32 バイト）で `plaintext` を AES-256-GCM 暗号化する（`aad` を認証タグに束縛する）。
+pub(crate) fn seal(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Sealed, CryptoError> {
     if key.len() != KEY_LEN {
         return Err(CryptoError::BadKeyLength);
     }
@@ -49,7 +51,13 @@ pub(crate) fn seal(key: &[u8], plaintext: &[u8]) -> Result<Sealed, CryptoError> 
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|_| CryptoError::Encrypt)?;
     Ok(Sealed {
         ciphertext,
@@ -57,8 +65,13 @@ pub(crate) fn seal(key: &[u8], plaintext: &[u8]) -> Result<Sealed, CryptoError> 
     })
 }
 
-/// `key`（32 バイト）と `nonce` で `ciphertext` を復号する。
-pub(crate) fn open(key: &[u8], nonce: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+/// `key`（32 バイト）と `nonce` で `ciphertext` を復号する（暗号化時と同じ `aad` が必要）。
+pub(crate) fn open(
+    key: &[u8],
+    nonce: &[u8],
+    ciphertext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
     if key.len() != KEY_LEN {
         return Err(CryptoError::BadKeyLength);
     }
@@ -67,7 +80,13 @@ pub(crate) fn open(key: &[u8], nonce: &[u8], ciphertext: &[u8]) -> Result<Vec<u8
     }
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     cipher
-        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .decrypt(
+            Nonce::from_slice(nonce),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
         .map_err(|_| CryptoError::Decrypt)
 }
 
@@ -87,8 +106,8 @@ mod tests {
     #[test]
     fn seal_open_roundtrip() {
         let key = generate_key();
-        let sealed = seal(&key, b"super secret token").expect("seal");
-        let opened = open(&key, &sealed.nonce, &sealed.ciphertext).expect("open");
+        let sealed = seal(&key, b"super secret token", b"").expect("seal");
+        let opened = open(&key, &sealed.nonce, &sealed.ciphertext, b"").expect("open");
         assert_eq!(opened, b"super secret token");
     }
 
@@ -96,9 +115,9 @@ mod tests {
     fn wrong_key_fails_decrypt() {
         let key = generate_key();
         let other = generate_key();
-        let sealed = seal(&key, b"x").expect("seal");
+        let sealed = seal(&key, b"x", b"").expect("seal");
         assert_eq!(
-            open(&other, &sealed.nonce, &sealed.ciphertext),
+            open(&other, &sealed.nonce, &sealed.ciphertext, b""),
             Err(CryptoError::Decrypt)
         );
     }
@@ -106,19 +125,19 @@ mod tests {
     #[test]
     fn tampered_ciphertext_fails() {
         let key = generate_key();
-        let mut sealed = seal(&key, b"tamper me").expect("seal");
+        let mut sealed = seal(&key, b"tamper me", b"").expect("seal");
         sealed.ciphertext[0] ^= 0xff;
         assert_eq!(
-            open(&key, &sealed.nonce, &sealed.ciphertext),
+            open(&key, &sealed.nonce, &sealed.ciphertext, b""),
             Err(CryptoError::Decrypt)
         );
     }
 
     #[test]
     fn bad_key_length() {
-        assert_eq!(seal(b"short", b"x"), Err(CryptoError::BadKeyLength));
+        assert_eq!(seal(b"short", b"x", b""), Err(CryptoError::BadKeyLength));
         assert_eq!(
-            open(b"short", &[0; 12], b"x"),
+            open(b"short", &[0; 12], b"x", b""),
             Err(CryptoError::BadKeyLength)
         );
     }
@@ -126,10 +145,41 @@ mod tests {
     #[test]
     fn distinct_nonces_per_seal() {
         let key = generate_key();
-        let a = seal(&key, b"same").expect("a");
-        let b = seal(&key, b"same").expect("b");
+        let a = seal(&key, b"same", b"").expect("a");
+        let b = seal(&key, b"same", b"").expect("b");
         // nonce がランダムなので同一平文でも暗号文が変わる。
         assert_ne!(a.nonce, b.nonce);
         assert_ne!(a.ciphertext, b.ciphertext);
+    }
+
+    #[test]
+    fn aad_mismatch_fails_decrypt() {
+        let key = generate_key();
+        let sealed = seal(&key, b"bound value", b"ctx-a").expect("seal");
+        assert_eq!(
+            open(&key, &sealed.nonce, &sealed.ciphertext, b"ctx-a").expect("open"),
+            b"bound value"
+        );
+        // 別の文脈（AAD）や AAD なしでは復号できない。
+        assert_eq!(
+            open(&key, &sealed.nonce, &sealed.ciphertext, b"ctx-b"),
+            Err(CryptoError::Decrypt)
+        );
+        assert_eq!(
+            open(&key, &sealed.nonce, &sealed.ciphertext, b""),
+            Err(CryptoError::Decrypt)
+        );
+    }
+
+    #[test]
+    fn empty_aad_is_compatible_with_aad_less_ciphertext() {
+        // 既存行（AAD なしで暗号化）を空 AAD で復号できること＝後方互換の根拠。
+        let key = generate_key();
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+        let nonce = [3u8; NONCE_LEN];
+        let legacy = cipher
+            .encrypt(Nonce::from_slice(&nonce), b"legacy".as_slice())
+            .expect("legacy encrypt");
+        assert_eq!(open(&key, &nonce, &legacy, b"").expect("open"), b"legacy");
     }
 }

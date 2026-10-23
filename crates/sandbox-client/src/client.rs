@@ -50,6 +50,8 @@ fn status_to_err(s: &tonic::Status) -> SandboxError {
 #[async_trait]
 impl Sandbox for GrpcSandboxClient {
     async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle, SandboxError> {
+        // 呼び出し元（AuthContext 由来）のテナントをハンドルへ束縛し、以降の RPC で必ず送る（#810）。
+        let tenant_id = spec.tenant_id.clone();
         let req = pb::CreateRequest {
             spec: Some(spec.into()),
         };
@@ -62,6 +64,7 @@ impl Sandbox for GrpcSandboxClient {
             .into_inner();
         Ok(SandboxHandle {
             id: resp.sandbox_id,
+            tenant_id,
         })
     }
 
@@ -72,6 +75,7 @@ impl Sandbox for GrpcSandboxClient {
     ) -> Result<BoxStream<'static, Result<ExecEvent, SandboxError>>, SandboxError> {
         let mut pb_req: pb::ExecRequest = req.into();
         pb_req.sandbox_id = handle.id.clone();
+        pb_req.tenant_id = handle.tenant_id.clone();
         let stream = self
             .inner
             .clone()
@@ -96,6 +100,7 @@ impl Sandbox for GrpcSandboxClient {
             sandbox_id: handle.id.clone(),
             path: path.to_string(),
             content: bytes,
+            tenant_id: handle.tenant_id.clone(),
         };
         self.inner
             .clone()
@@ -109,6 +114,7 @@ impl Sandbox for GrpcSandboxClient {
         let req = pb::GetFileRequest {
             sandbox_id: handle.id.clone(),
             path: path.to_string(),
+            tenant_id: handle.tenant_id.clone(),
         };
         let resp = self
             .inner
@@ -128,6 +134,7 @@ impl Sandbox for GrpcSandboxClient {
         let req = pb::ListDirRequest {
             sandbox_id: handle.id.clone(),
             path: path.to_string(),
+            tenant_id: handle.tenant_id.clone(),
         };
         let resp = self
             .inner
@@ -142,6 +149,7 @@ impl Sandbox for GrpcSandboxClient {
     async fn destroy(&self, handle: &SandboxHandle) -> Result<(), SandboxError> {
         let req = pb::DestroyRequest {
             sandbox_id: handle.id.clone(),
+            tenant_id: handle.tenant_id.clone(),
         };
         self.inner
             .clone()
