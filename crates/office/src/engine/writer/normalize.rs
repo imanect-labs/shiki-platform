@@ -33,6 +33,8 @@ pub fn normalize_doc_ops(values: &[Value]) -> Result<DocNormalized, OpError> {
         let mut v = v.clone();
         crate::engine::coerce_bools(&mut v);
         crate::engine::relax_op(&mut v);
+        // 使わない項目を空で埋めてくるモデルの埋め草を落とす（#859）。
+        crate::engine::op_schema::drop_blank_foreign(&mut v, super::describe::DOC_OP_FIELDS, &[]);
         if v.get("op").is_none() {
             return Err(OpError {
                 index: i + 1,
