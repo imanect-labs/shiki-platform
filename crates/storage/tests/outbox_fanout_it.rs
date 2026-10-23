@@ -700,3 +700,89 @@ async fn unregister(pool: &PgPool, consumer: &str) {
         .unwrap();
     tx.commit().await.unwrap();
 }
+
+/// Task 15.6: 購読ストリームの配信位置は consumer ごとに穴のない連番で、並行の採番でも重複・欠落しない。
+/// 採番した台帳行は保持期間（`retain_until`）内は GC されない。
+#[tokio::test]
+async fn stream_delivery_seq_is_gapless_per_consumer_and_retained() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let stream_a = format!("test-stream:{}", Uuid::new_v4());
+    let stream_b = format!("test-stream:{}", Uuid::new_v4());
+    let mut ids = Vec::new();
+    for _ in 0..40 {
+        ids.push(insert_event(&pool, &tenant, Uuid::new_v4()).await);
+    }
+    // 8 本の並行リレーが同じ consumer に採番する（別 consumer へも混ぜる）。
+    let mut tasks = Vec::new();
+    for (i, chunk) in ids.chunks(5).enumerate() {
+        let pool = pool.clone();
+        let chunk = chunk.to_vec();
+        let consumer = if i % 4 == 3 {
+            stream_b.clone()
+        } else {
+            stream_a.clone()
+        };
+        let tenant = tenant.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut tx = pool.begin().await.unwrap();
+            let got = storage::event::mark_delivered_seq(
+                &mut tx,
+                &consumer,
+                &tenant,
+                &chunk,
+                std::time::Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tx.commit().await.unwrap();
+            (consumer, got)
+        }));
+    }
+    let mut per: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
+    for t in tasks {
+        let (c, got) = t.await.unwrap();
+        per.entry(c)
+            .or_default()
+            .extend(got.iter().map(|(_, s)| *s));
+    }
+    for (c, mut seqs) in per {
+        seqs.sort_unstable();
+        let n = seqs.len() as i64;
+        assert_eq!(seqs, (1..=n).collect::<Vec<_>>(), "{c}: 穴なし・重複なし");
+        let mut conn = pool.acquire().await.unwrap();
+        let b = storage::event::stream_bounds(&mut conn, &c).await.unwrap();
+        assert_eq!((b.head, b.floor), (n, Some(1)));
+        // 再採番は冪等（同じ event は二度番号を取らない）。
+        let again = storage::event::mark_delivered_seq(
+            &mut conn,
+            &c,
+            &tenant,
+            &ids,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(again.len() as i64, 40 - n, "未採番の分だけ新しく番号を取る");
+        let entries = storage::event::stream_entries_after(&mut conn, &c, 0, 1_000)
+            .await
+            .unwrap();
+        assert!(entries.windows(2).all(|w| w[1].seq == w[0].seq + 1));
+    }
+    // 保持期間内は他の consumer が配送済みでも GC されない。
+    sqlx::query("UPDATE storage_event_outbox SET processed_at = now() WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    gc_delivered(&mut conn, &[], 1_000_000).await.unwrap();
+    let left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM storage_event_outbox WHERE tenant_id = $1")
+            .bind(&tenant)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(left, 40, "保持期間内の行は残る");
+}

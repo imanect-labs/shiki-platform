@@ -32,6 +32,10 @@ pub struct DataTenantSettings {
     /// 実際に使われる索引列数の上限。
     #[serde(default)]
     pub effective_max_indexed_fields: u32,
+    /// **製品の約束**（PIT-70）: SSE 購読中の権限の剥奪は、配信への反映が最大この時間（ミリ秒）
+    /// 遅れる（購読中だけ認可材料を持ち越す TTL）。REST の読取は遅れない。管理画面に表示する。
+    #[serde(default)]
+    pub stream_revocation_delay_ms: u64,
 }
 
 impl DataStore {
@@ -82,6 +86,8 @@ impl DataStore {
             max_indexed_fields,
             effective_max_indexed_fields: max_indexed_fields
                 .unwrap_or(u32::try_from(crate::index::DEFAULT_MAX_INDEXED_FIELDS).unwrap_or(20)),
+            stream_revocation_delay_ms: u64::try_from(self.stream_config.authz_ttl.as_millis())
+                .unwrap_or(u64::MAX),
         }
     }
 

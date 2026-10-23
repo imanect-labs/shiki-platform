@@ -1507,3 +1507,48 @@ async fn snapshot_cursor_beyond_retention_is_gone() {
         Err(DataError::Gone(_))
     ));
 }
+
+/// FSM 遷移も同じ outbox を通る（status の変化が購読者へ届く）。
+#[tokio::test]
+async fn fsm_transition_reaches_subscribers() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let fx = fixture(pool, authz, manual()).await;
+    let r = fx
+        .store
+        .create_record(
+            &fx.alice,
+            fx.table,
+            json!({"applicant": "bob", "title": "fsm", "status": "draft"}),
+            None,
+        )
+        .await
+        .unwrap();
+    fx.store.relay_record_changes_once().await.unwrap();
+    let mut s = fx
+        .store
+        .subscribe_records(&fx.bob, fx.table, None, None)
+        .await
+        .unwrap();
+    let mut c = Client::default();
+    drain(&mut s, &mut c).await;
+    let fsm = data::FsmBody {
+        states: vec!["draft".into(), "done".into()],
+        transitions: vec![data::FsmTransition {
+            from: "draft".into(),
+            to: "done".into(),
+            actor: PolicyExpr::Public,
+        }],
+    };
+    fx.store
+        .transition_record(&fx.alice, fx.table, r.id, "done", 1, &fsm, "status", None)
+        .await
+        .unwrap();
+    tick(&fx.store).await;
+    let (ms, _) = drain(&mut s, &mut c).await;
+    let ups = upserts(&ms);
+    assert_eq!(ups.len(), 1, "{:?}", c.raw);
+    assert_eq!(ups[0].1["status"], json!("done"));
+    assert_eq!(c.rows[&r.id].0, 2);
+}

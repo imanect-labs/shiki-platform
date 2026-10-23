@@ -70,6 +70,11 @@ fn to_sse(m: &data::StreamMessage) -> Event {
 }
 
 /// レコード変更を購読する（viewer・SSE）。
+///
+/// 見えない行・マスク列は流れない。可視→不可視・削除は `record.removed`（id のみ）。
+/// **SSE 購読中の権限の剥奪は、配信への反映が最大 TTL（既定 5 秒・`/org-admin/data/settings` の
+/// `stream_revocation_delay_ms`）遅れる**（REST の読取は遅れない）。到達は at-least-once で、
+/// クライアントは `(record_id, rev)` で冪等に適用する。保持期間外の `since` には `stream.reset`。
 #[utoipa::path(
     get,
     path = "/data/tables/{id}/stream",

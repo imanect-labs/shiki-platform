@@ -51,6 +51,8 @@ const PURGE_TENANT_INT_TABLES: &[&str] = &[
     "data_sort_set",
     "data_index_state",
     "data_index_backfill",
+    // 索引の降格の後片付け（Task 15.6）。
+    "data_index_purge",
     // 一括取込（Task 15.11）。
     "data_bulk_key",
     "data_bulk_staging",

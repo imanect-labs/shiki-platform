@@ -266,19 +266,6 @@ pub async fn stream_bounds(
     })
 }
 
-/// ストリームを撤去する（採番行と台帳行。購読対象が削除されたとき）。
-pub async fn drop_stream(conn: &mut PgConnection, consumer: &str) -> Result<(), StorageError> {
-    sqlx::query("DELETE FROM outbox_delivery WHERE consumer = $1")
-        .bind(consumer)
-        .execute(&mut *conn)
-        .await?;
-    sqlx::query("DELETE FROM outbox_delivery_seq WHERE consumer = $1")
-        .bind(consumer)
-        .execute(&mut *conn)
-        .await?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::StreamBounds;
