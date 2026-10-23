@@ -21,6 +21,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 
 from .schemas import BlockType, ParsedBlock, ParseRequest, ParseResponse, Prov
+from .security import source_url_rejection
 from .settings import get_settings
 
 router = APIRouter()
@@ -128,11 +129,23 @@ def _parse_error(error: str, detail: str) -> HTTPException:
     return HTTPException(status_code=422, detail={"error": error, "detail": detail})
 
 
-async def _download(url: str) -> bytes:
+async def _download(url: str, *, transport: httpx.AsyncBaseTransport | None = None) -> bytes:
+    """許可ホスト検証済みの URL を取りに行く（`transport` はテスト用の差し替え口）。
+
+    リダイレクトは追従しない。許可ホストが 3xx で許可外（内部ホスト等）へ向けても、
+    そこへは行かない（行き先を検証せずに追従すると許可リストの意味が消える・#812）。
+    """
     limit = get_settings().max_download_bytes
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(
+            timeout=60.0, follow_redirects=False, transport=transport
+        ) as client:
             async with client.stream("GET", url) as resp:
+                if resp.is_redirect:
+                    raise _parse_error(
+                        "source_redirect_not_allowed",
+                        f"source_url がリダイレクトを返しました（HTTP {resp.status_code}）",
+                    )
                 resp.raise_for_status()
                 chunks: list[bytes] = []
                 total = 0
@@ -172,6 +185,11 @@ async def _load(req: ParseRequest) -> bytes:
         return _decode_inline(req.content_base64)
     # スキーマの検証で片方は必ず入っている。
     assert req.source_url is not None
+    # 取りに行く前に宛先を限る（内部ホスト・IP リテラル・許可外を拒否・#812）。
+    rejection = source_url_rejection(req.source_url, get_settings().source_url_allowed_hosts)
+    if rejection is not None:
+        logger.warning("parse tenant=%s source_url を拒否: %s", req.tenant_id, rejection)
+        raise _parse_error("source_url_not_allowed", rejection)
     return await _download(req.source_url)
 
 

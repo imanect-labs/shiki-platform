@@ -10,7 +10,8 @@ Python で書き直さず、Rust の順位 CLI（`crates/agent-core/examples/too
 - `uv`（Python 3.12）と Rust ツールチェイン（順位 CLI を `--release` でビルドする）
 - 埋め込み・reranker: ingestion-worker（`/embed`・`/rerank`・製品と同じ Ruri v3 / cross-encoder）。
   既定はプレビュー環境（`TSEVAL_WORKER_URL`・LAN 内・認証なし）。手元の compose なら
-  `TSEVAL_WORKER_URL=http://localhost:8000`。
+  `TSEVAL_WORKER_URL=http://localhost:8000`。compose の worker は共有トークンを要求するので
+  `TSEVAL_WORKER_TOKEN`（compose の `WORKER_AUTH_TOKEN`、dev 既定 `shiki-worker-dev-token`）も渡す。
 - LLM（データ生成と E2E）: OpenAI 互換。既定は opencode Go の `qwen3.6-plus`
   （`TSEVAL_LLM_BASE_URL` / `TSEVAL_LLM_MODEL` / `TSEVAL_LLM_KEY_FILE`）。opencode Go は
   `x-opencode-session` ヘッダが必須（クライアントが付ける）。

@@ -16,6 +16,9 @@ import httpx
 import numpy as np
 
 BASE_URL = os.environ.get("TSEVAL_WORKER_URL", "http://192.168.1.201:8000")
+# worker の共有トークン（compose 既定は WORKER_AUTH_TOKEN が有効・#812）。未設定なら付けない。
+_TOKEN = os.environ.get("TSEVAL_WORKER_TOKEN", "")
+_HEADERS = {"Authorization": f"Bearer {_TOKEN}"} if _TOKEN else {}
 CACHE = Path(__file__).resolve().parent.parent / "data" / "cache" / "embed"
 _BATCH = 64
 
@@ -40,6 +43,7 @@ def _post_embed(texts: list[str], kind: str) -> dict:
     r = httpx.post(
         f"{BASE_URL}/embed",
         json={"tenant_id": "tseval", "input_type": kind, "texts": texts},
+        headers=_HEADERS,
         timeout=600,
     )
     r.raise_for_status()
@@ -96,6 +100,7 @@ def rerank(query: str, passages: list[tuple[str, str]], use_cache: bool = True) 
         return json.loads(path.read_text())
     r = httpx.post(
         f"{BASE_URL}/rerank",
+        headers=_HEADERS,
         json={
             "tenant_id": "tseval",
             "query": query,
