@@ -168,33 +168,7 @@ impl DataStore {
         tenant_id: &str,
         table_id: Uuid,
     ) -> Result<Option<crate::query::planner::shape::TableShape>, DataError> {
-        let mut conn = self
-            .pools
-            .for_tenant(tenant_id)
-            .acquire()
-            .await
-            .map_err(map_db)?;
-        let row: Option<(i32, i64, sqlx::types::Json<crate::model::TableSchema>)> = sqlx::query_as(
-            "SELECT tenant_int, table_int, schema FROM data_table \
-                 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
-        )
-        .bind(tenant_id)
-        .bind(table_id)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(map_db)?;
-        let Some((tenant_int, table_int, schema)) = row else {
-            return Ok(None);
-        };
-        crate::query::planner::shape::extract(
-            &mut conn,
-            crate::model::TableKeys {
-                tenant_int,
-                table_int,
-            },
-            &schema.0,
-        )
-        .await
+        extract_table_shape(&self.pools, tenant_id, table_id).await
     }
 
     /// 現在の単価（較正済みならその値）。
@@ -360,6 +334,44 @@ impl DataStore {
         }
         r
     }
+}
+
+/// テーブルの形（値を含まない数値）を取り出す（運用 CLI `shiki-admin data-table-shape` の入口・
+/// query-optimizer.md §9.3）。認可を経ない運用経路なので API には出さない。統計（統計収集ジョブの結果）が
+/// 無ければ `None`。
+#[doc(hidden)]
+pub async fn extract_table_shape(
+    pools: &storage::PoolRouter,
+    tenant_id: &str,
+    table_id: Uuid,
+) -> Result<Option<crate::query::planner::shape::TableShape>, DataError> {
+    let mut conn = pools
+        .for_tenant(tenant_id)
+        .acquire()
+        .await
+        .map_err(map_db)?;
+
+    let row: Option<(i32, i64, sqlx::types::Json<crate::model::TableSchema>)> = sqlx::query_as(
+        "SELECT tenant_int, table_int, schema FROM data_table \
+                 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
+    )
+    .bind(tenant_id)
+    .bind(table_id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(map_db)?;
+    let Some((tenant_int, table_int, schema)) = row else {
+        return Ok(None);
+    };
+    crate::query::planner::shape::extract(
+        &mut conn,
+        crate::model::TableKeys {
+            tenant_int,
+            table_int,
+        },
+        &schema.0,
+    )
+    .await
 }
 
 #[cfg(test)]

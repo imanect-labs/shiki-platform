@@ -716,3 +716,69 @@ async fn analyze_jobs_are_claimed_fairly_across_tenants() {
         "重いテナントの残りより先に軽いテナントが処理される"
     );
 }
+
+/// 運用 CLI（`shiki-admin data-table-shape`）の入口: プールだけでテーブルの形を取り出す。値・列の参照名を
+/// 含まず、統計の無いテーブル・別テナントからは取れない（監査 B2-5・query-optimizer §9.3）。
+#[tokio::test]
+async fn table_shape_is_extracted_without_values_through_the_cli_entry() {
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool.clone());
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let table = seed(&pool, &store, &c, "shape", 3_000, false, false).await;
+    let pools: storage::PoolRouter = pool.clone().into();
+    assert!(
+        data::extract_table_shape(&pools, &tenant, table.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "統計がまだ無い"
+    );
+    store.analyze_table(&tenant, table.id).await.unwrap();
+    let shape = data::extract_table_shape(&pools, &tenant, table.id)
+        .await
+        .unwrap()
+        .expect("統計から形を取り出せる");
+    assert_eq!(shape.n_rows, 3_000);
+    assert_eq!(shape.columns.len(), 3, "status・amount・assignee");
+    let text = serde_json::to_string(&shape).unwrap();
+    for banned in [
+        common::bulk::PENDING,
+        TODO,
+        DONE,
+        "\"status\"",
+        "\"amount\"",
+        "shape",
+    ] {
+        assert!(!text.contains(banned), "{banned} が形に含まれる: {text}");
+    }
+    // JSON を往復できる（合成ベンチの入力・浮動小数点の末尾桁は問わない）。
+    let back: data::TableShape = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.n_rows, shape.n_rows);
+    assert_eq!(
+        back.columns
+            .iter()
+            .map(|c| (c.ty, c.distinct))
+            .collect::<Vec<_>>(),
+        shape
+            .columns
+            .iter()
+            .map(|c| (c.ty, c.distinct))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        store.extract_table_shape(&tenant, table.id).await.unwrap(),
+        Some(shape)
+    );
+    // 別テナント・存在しないテーブルからは取れない。
+    assert!(
+        data::extract_table_shape(&pools, &unique_tenant(), table.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(data::extract_table_shape(&pools, &tenant, Uuid::new_v4())
+        .await
+        .unwrap()
+        .is_none());
+}

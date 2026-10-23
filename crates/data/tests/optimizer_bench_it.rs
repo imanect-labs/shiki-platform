@@ -10,6 +10,10 @@
 //! 4. 統計収集ジョブを回しながら、別テナントの読取の p95 が悪化しないことを確かめる。
 //!
 //! 重いので `DATA_BENCH=1` のときだけ走る（CI の既定では走らない）。数値はローカルの計測で環境で変わる。
+//!
+//! `DATA_BENCH_SHAPE=<path>` を与えると、①の代わりに実テナントから運用 CLI
+//! （`shiki-admin data-table-shape --tenant <t> --table <uuid> --out <path>`）で取り出した形の JSON を読み、
+//! その形から合成する（顧客データをベンチに持ち込まない・監査 B2-5）。
 
 #![allow(
     clippy::unwrap_used,
@@ -155,12 +159,34 @@ async fn bench_regret_calibration_and_fairness() {
     )
     .await;
     store.analyze_table(&real_tenant, real.id).await.unwrap();
-    let shape = store
+    let extracted = store
         .extract_table_shape(&real_tenant, real.id)
         .await
         .unwrap()
         .expect("統計から形を取り出せる");
-    let text = serde_json::to_string(&shape).unwrap();
+    // 運用 CLI と同じ入口（プールだけで取り出す）で同じ形になる。
+    let via_cli = data::extract_table_shape(&pool.clone().into(), &real_tenant, real.id)
+        .await
+        .unwrap();
+    assert_eq!(via_cli.as_ref(), Some(&extracted));
+    let shape = match std::env::var("DATA_BENCH_SHAPE") {
+        Ok(path) => {
+            let text = std::fs::read_to_string(&path).expect("DATA_BENCH_SHAPE を読めない");
+            let s: TableShape = serde_json::from_str(&text).expect("形の JSON が不正");
+            eprintln!(
+                "形を {path} から読んだ（行数 {}・列 {}）",
+                s.n_rows,
+                s.columns.len()
+            );
+            assert!(
+                s.columns.len() >= 5,
+                "ベンチのクエリは 5 列（c0〜c4）を使う"
+            );
+            s
+        }
+        Err(_) => extracted.clone(),
+    };
+    let text = serde_json::to_string(&extracted).unwrap();
     for v in STATUS_JA {
         assert!(!text.contains(v), "形に値が含まれる: {v}");
     }

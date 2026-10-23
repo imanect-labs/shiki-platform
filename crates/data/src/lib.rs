@@ -130,6 +130,8 @@ pub use query::limits::{
     QueryLimits, MAX_AST_DEPTH, MAX_AST_NODES, MAX_COMPILE_MS, MAX_COMPILE_WORK, MAX_JOIN_DEPTH,
     MAX_LITERALS, MAX_SQL_BYTES,
 };
+#[doc(hidden)]
+pub use query::optimizer_ops::extract_table_shape;
 pub use query::optimizer_ops::{
     OptimizerCandidateKind, OptimizerIndexCandidate, OptimizerStatus, TableOptimizerReport,
 };

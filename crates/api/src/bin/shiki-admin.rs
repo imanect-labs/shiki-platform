@@ -5,7 +5,12 @@
 //! shiki-admin secrets-reencrypt [--execute] [--batch <n>]
 //! shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]
 //! shiki-admin workflow-conditions [--tenant <t>] [--all-versions] [--batch <n>]
+//! shiki-admin data-table-shape --tenant <t> --table <uuid> [--out <path>]
 //! ```
+//!
+//! `data-table-shape`: 構造化データのテーブルの形（行数・型・種類数・頻度の形・値なし率・作成順との相関・
+//! リンクのファンアウト）を**値を含まない数値**の JSON で出す（Task 15.12・query-optimizer.md §9.3・
+//! `shiki_admin/data_shape.rs`・読取専用）。合成ベンチの入力にする（`DATA_BENCH_SHAPE=<path>`）。
 //!
 //! `workflow-conditions`: 条件の意味論の切替（2026-10）で分岐の結果が変わり得る保存済みワークフローを
 //! 一覧にする（Task 15.7・`shiki_admin/workflow_conditions.rs`・読取専用）。
@@ -43,6 +48,8 @@ use uuid::Uuid;
 
 #[path = "shiki_admin/audit_viewer.rs"]
 mod audit_viewer;
+#[path = "shiki_admin/data_shape.rs"]
+mod data_shape;
 #[path = "shiki_admin/keys.rs"]
 mod keys;
 #[path = "shiki_admin/secrets_reencrypt.rs"]
@@ -64,12 +71,14 @@ async fn main() -> anyhow::Result<()> {
         Some("secrets-reencrypt") => secrets_reencrypt::run(&args[1..]).await,
         Some("audit-viewer") => audit_viewer::run(&args[1..]).await,
         Some("workflow-conditions") => workflow_conditions::run(&args[1..]).await,
+        Some("data-table-shape") => data_shape::run(&args[1..]).await,
         _ => {
             eprintln!(
                 "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]\n       \
                  shiki-admin secrets-reencrypt [--execute] [--batch <n>]\n       \
                  shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]\n       \
-                 shiki-admin workflow-conditions [--tenant <t>] [--all-versions] [--batch <n>]"
+                 shiki-admin workflow-conditions [--tenant <t>] [--all-versions] [--batch <n>]\n       \
+                 shiki-admin data-table-shape --tenant <t> --table <uuid> [--out <path>]"
             );
             bail!("不明なサブコマンド");
         }
