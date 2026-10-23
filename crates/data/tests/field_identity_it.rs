@@ -908,6 +908,190 @@ async fn legacy_tables_migrate_idempotently_and_v1_operations_still_work() {
     assert_eq!(up.schema.field("note").unwrap().id, 21);
 }
 
+/// `data_index_state` のうち、key の列の値索引（text/num）の状態。
+async fn value_index_state(pool: &PgPool, tenant: &str, table: Uuid, field_id: u16) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT s.state FROM data_index_state s \
+         JOIN data_table t ON t.tenant_int = s.tenant_int AND t.table_int = s.table_int \
+         WHERE t.tenant_id = $1 AND t.id = $2 AND s.field_id = $3 AND s.index_table IN (1, 2)",
+    )
+    .bind(tenant)
+    .bind(table)
+    .bind(i16::try_from(field_id).unwrap())
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// アップグレード経路（監査 B1-1）: v1 の row_policy が**索引の無い列**を参照していても、移行で
+/// その列が indexed に引き上げられてバックフィルが積まれ、索引経路で読め、表示名の変更を含む
+/// スキーマ改訂が 422 にならない。
+#[tokio::test]
+async fn legacy_row_policy_on_unindexed_field_is_promoted_on_upgrade() {
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool.clone());
+    let tenant = unique_tenant();
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let legacy = json!({
+        "fields": [
+            { "name": "title", "type": "text" },
+            { "name": "applicant", "type": "user_ref" }
+        ],
+        "row_policy": { "read": { "field_cmp": {
+            "field": "applicant", "op": "eq", "value": "user_id" } } }
+    });
+    let t = seed_legacy_table(
+        &pool,
+        &tenant,
+        "legacy_policy",
+        &legacy,
+        &[
+            ("alice", json!({"title": "a1", "applicant": "alice"})),
+            ("alice", json!({"title": "a2", "applicant": "alice"})),
+            ("bob", json!({"title": "b1", "applicant": "bob"})),
+        ],
+        None,
+    )
+    .await;
+
+    // 初回アクセスで遅延移行＋台帳初期化（以前はここで 422 になり、テーブルが使えなかった）。
+    let got = store.get_table(&alice, t, None).await.unwrap();
+    let applicant = got.schema.field("applicant").unwrap();
+    assert!(
+        applicant.indexed,
+        "row_policy の参照列は indexed に引き上がる"
+    );
+    assert!(
+        !got.schema.field("title").unwrap().indexed,
+        "参照されない列は触らない"
+    );
+    assert_eq!(
+        value_index_state(&pool, &tenant, t, applicant.id).await,
+        vec!["building".to_string()],
+        "既存レコードがあるのでバックフィル待ち"
+    );
+    store.backfill_table_index(&tenant, t).await.unwrap();
+    assert_eq!(
+        value_index_state(&pool, &tenant, t, applicant.id).await,
+        vec!["active".to_string()],
+        "バックフィル後は索引経路（compile_index の active 集合）で評価される"
+    );
+
+    // 索引経路で読める: 行述語どおり alice は 2 件・bob は 1 件。
+    let list = |c: AuthContext| {
+        let store = store.clone();
+        async move {
+            store
+                .list_records(
+                    &c,
+                    t,
+                    &ListRecordsOptions {
+                        limit: 50,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await
+                .unwrap()
+                .items
+                .len()
+        }
+    };
+    assert_eq!(list(alice.clone()).await, 2);
+    assert_eq!(list(bob.clone()).await, 1);
+
+    // 表示名の変更（スキーマ改訂）が通る。
+    let mut next = got.schema.clone();
+    next.fields[0].display_name = "件名".into();
+    let up = store
+        .update_table_schema(&alice, t, next, None, None)
+        .await
+        .unwrap();
+    assert_eq!(up.schema.field("title").unwrap().display_name, "件名");
+    assert_eq!(list(alice).await, 2);
+}
+
+/// 3 層形式で台帳が未初期化のテーブル（0085 が台帳を作り直させた等）でも、台帳の初期化で同じく
+/// row_policy の参照列を indexed に引き上げ、スキーマの版を進める（監査 B1-1）。
+#[tokio::test]
+async fn ledger_init_promotes_row_policy_fields() {
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool.clone());
+    let tenant = unique_tenant();
+    let alice = ctx(&tenant, "alice");
+    let mut owner = FieldDef::new("applicant", FieldType::UserRef);
+    owner.indexed = true;
+    let mut s = schema(vec![FieldDef::new("title", FieldType::Text), owner]);
+    s.row_policy = Some(
+        serde_json::from_value(json!({ "read": { "field_cmp": {
+            "field": "applicant", "op": "eq", "value": "user_id" } } }))
+        .unwrap(),
+    );
+    let created = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "ledger_policy".into(),
+                schema: s,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .create_record(
+            &alice,
+            created.id,
+            json!({"title": "x", "applicant": "alice"}),
+            None,
+        )
+        .await
+        .unwrap();
+    // 旧規則で保存されたスキーマ（参照列が indexed でない）と、台帳未初期化を再現する。
+    let mut stale = created.schema.clone();
+    stale.fields[1].indexed = false;
+    sqlx::query(
+        "UPDATE data_table SET schema = $3, pivot_index_init = false \
+         WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(&tenant)
+    .bind(created.id)
+    .bind(sqlx::types::Json(&stale))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "DELETE FROM data_index_state s USING data_table t \
+         WHERE t.tenant_int = s.tenant_int AND t.table_int = s.table_int \
+           AND t.tenant_id = $1 AND t.id = $2",
+    )
+    .bind(&tenant)
+    .bind(created.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let got = store.get_table(&alice, created.id, None).await.unwrap();
+    assert!(got.schema.field("applicant").unwrap().indexed);
+    assert!(got.schema_version > created.schema_version, "版が進む");
+    store
+        .backfill_table_index(&tenant, created.id)
+        .await
+        .unwrap();
+    let applicant_id = got.schema.field("applicant").unwrap().id;
+    assert_eq!(
+        value_index_state(&pool, &tenant, created.id, applicant_id).await,
+        vec!["active".to_string()]
+    );
+    let mut next = got.schema.clone();
+    next.fields[0].display_name = "件名".into();
+    store
+        .update_table_schema(&alice, created.id, next, Some(got.schema_version), None)
+        .await
+        .unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // 受け入れ条件 6: record_int は外へ出さない（negative test）
 // ---------------------------------------------------------------------------

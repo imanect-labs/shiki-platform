@@ -66,6 +66,38 @@ pub(crate) fn validate_row_policy(
     Ok(())
 }
 
+/// row_policy が参照する**索引の無い**列を `indexed = true` に引き上げる。引き上げた列の key を返す。
+///
+/// v1 から移行したテーブル（Task 15.3 より前の規則で保存された row_policy）向けの移行処理。
+/// 引き上げないと §6.3 の「参照列は indexed 必須」により以後のどのスキーマ改訂も 422 になり、
+/// 読取は本体の点検索に落ち続ける。派生フィールドは row_policy に使えない（検証で拒否される）ので触らない。
+pub(crate) fn promote_policy_fields(schema: &mut TableSchema) -> Vec<String> {
+    fn collect<'a>(expr: &'a PolicyExpr, out: &mut Vec<&'a str>) {
+        match expr {
+            PolicyExpr::Any(v) | PolicyExpr::All(v) => v.iter().for_each(|c| collect(c, out)),
+            PolicyExpr::FieldCmp { field, .. } => out.push(field),
+            _ => {}
+        }
+    }
+    let Some(policy) = schema.row_policy.clone() else {
+        return Vec::new();
+    };
+    let mut refs = Vec::new();
+    collect(&policy.read, &mut refs);
+    if let Some(w) = &policy.write {
+        collect(w, &mut refs);
+    }
+    let mut promoted = Vec::new();
+    for f in &mut schema.fields {
+        if refs.contains(&f.key.as_str()) && !(f.indexed || f.unique) && !f.field_type.is_derived()
+        {
+            f.indexed = true;
+            promoted.push(f.key.clone());
+        }
+    }
+    promoted
+}
+
 fn require_indexed(schema: &TableSchema, expr: &PolicyExpr, path: &str) -> Result<(), DataError> {
     match expr {
         PolicyExpr::Any(v) | PolicyExpr::All(v) => {

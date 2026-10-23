@@ -205,12 +205,16 @@ pub(crate) fn assign_field_ids(
 ///
 /// `id` は宣言順に [`FIRST_USER_FIELD_ID`] から、`display_name = key`、`order` は宣言順。
 /// **決定的**（同じ入力から常に同じ ID）なので、移行前の一覧表示と移行後の実データが一致する。
+///
+/// row_policy が参照する索引の無い列は `indexed = true` に引き上げる（§6.3 の「参照列は indexed 必須」を
+/// v1 のテーブルにも満たさせる。台帳の初期化でバックフィルが積まれ、索引経路で読めるようになる）。
 pub(crate) fn upgrade_legacy_schema(legacy: &TableSchema) -> Result<(TableSchema, i32), DataError> {
     let mut s = legacy.clone();
     for f in &mut s.fields {
         f.id = 0;
     }
     let next = assign_field_ids(None, &mut s)?;
+    crate::policy::validate::promote_policy_fields(&mut s);
     Ok((s, next))
 }
 

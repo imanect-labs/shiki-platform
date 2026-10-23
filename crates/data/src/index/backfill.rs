@@ -293,11 +293,28 @@ impl DataStore {
             tenant_int,
             table_int,
         };
+        // 旧規則で保存された row_policy の参照列に索引が無ければ、ここで indexed に引き上げる
+        // （§6.3。台帳に載ってバックフィルされ、以後のスキーマ改訂も 422 にならない）。
+        let mut schema = schema.0;
+        let promoted = crate::policy::validate::promote_policy_fields(&mut schema);
+        if !promoted.is_empty() {
+            sqlx::query(
+                "UPDATE data_table SET schema = $3, schema_version = schema_version + 1 \
+                 WHERE tenant_id = $1 AND id = $2",
+            )
+            .bind(tenant_id)
+            .bind(table_id)
+            .bind(Json(&schema))
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db)?;
+            tracing::info!(%table_id, fields = ?promoted, "row_policy の参照列を indexed に引き上げました");
+        }
         let has_rows = table_has_rows(&mut tx, keys).await?;
-        if sync_ledger(&mut tx, keys, &schema.0, has_rows).await? {
+        if sync_ledger(&mut tx, keys, &schema, has_rows).await? {
             // unique は同じ Tx で同期構築して active にする（一意性の強制に空白期間を作らない・
             // 旧方式の一意な式インデックスの代わり）。残りはバックフィル。
-            build_unique_now(&mut tx, keys, &schema.0, tenant_id).await?;
+            build_unique_now(&mut tx, keys, &schema, tenant_id).await?;
             start_backfill(&mut tx, keys, tenant_id, table_id).await?;
         }
         sqlx::query(
@@ -309,6 +326,9 @@ impl DataStore {
         .await
         .map_err(map_db)?;
         tx.commit().await.map_err(map_db)?;
+        if !promoted.is_empty() {
+            self.schema_cache.invalidate_table(tenant_id, table_id);
+        }
         tracing::info!(%table_id, has_rows, "索引台帳を初期化しました");
         Ok(true)
     }

@@ -170,6 +170,44 @@ fn legacy_upgrade_is_deterministic() {
     assert_eq!(na, 18);
 }
 
+/// v1 の row_policy が索引の無い列を参照していても、引き上げ後は §6.3（参照列は indexed 必須）を満たす。
+#[test]
+fn legacy_upgrade_promotes_row_policy_fields_to_indexed() {
+    let legacy: TableSchema = serde_json::from_value(json!({
+        "fields": [
+            { "name": "title", "type": "text" },
+            { "name": "dept", "type": "select", "options": ["a", "b"] },
+            { "name": "applicant", "type": "user_ref" },
+            { "name": "code", "type": "text", "unique": true }
+        ],
+        "row_policy": {
+            "read": { "any": [
+                { "field_cmp": { "field": "applicant", "op": "eq", "value": "user_id" } },
+                { "field_cmp": { "field": "code", "op": "eq", "value": { "lit": "x" } } }
+            ] },
+            "write": { "field_cmp": { "field": "dept", "op": "eq", "value": { "lit": "a" } } }
+        }
+    }))
+    .unwrap();
+    // 旧規則のままでは検証を通らない（＝移行・改訂がすべて 422 になる状態の再現）。
+    let mut raw = legacy.clone();
+    assign_field_ids(None, &mut raw).unwrap();
+    assert!(crate::schema::validate_table_schema(&raw).is_err());
+
+    let (s, _) = upgrade_legacy_schema(&legacy).unwrap();
+    assert!(s.field("applicant").unwrap().indexed, "read の参照列");
+    assert!(s.field("dept").unwrap().indexed, "write の参照列");
+    assert!(
+        !s.field("title").unwrap().indexed,
+        "参照されない列は触らない"
+    );
+    assert!(
+        !s.field("code").unwrap().indexed,
+        "unique 列は既に索引を持つので触らない"
+    );
+    crate::schema::validate_table_schema(&s).unwrap();
+}
+
 #[test]
 fn encode_decode_roundtrip_and_drop_unknown() {
     let mut s = schema(vec![
