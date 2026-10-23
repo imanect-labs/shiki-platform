@@ -631,6 +631,11 @@ impl DataStore {
             cache: &self.plan_cache,
             shape: query_shape(table.id, table.schema_version, bq, after.is_some()),
         };
+        let shape_hash = {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(&plan.shape[..8]);
+            u64::from_le_bytes(b)
+        };
         let mut ex = Exec {
             conn,
             low: &low,
@@ -639,6 +644,7 @@ impl DataStore {
             prober: super::planner::prober(&self.probe_cache, keys, Some(plan)),
             stats: QueryExecStats {
                 body_path,
+                shape_hash,
                 ..Default::default()
             },
             captured: Vec::new(),

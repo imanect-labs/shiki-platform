@@ -521,6 +521,11 @@ impl<'a> Exec<'a, '_> {
         // 候補件数の推定と実測が 10 倍以上ずれた（続いたら統計収集を前倒しする・§8）。
         if let Some(e) = self.est_cand.take() {
             let a = n_cand.max(0) as f64;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            {
+                self.stats.est_rows = Some(e.max(0.0).round() as u64);
+            }
+            self.stats.actual_rows = Some(n_cand.max(0) as u64);
             if a > 10.0 * e.max(1.0) || (e >= 10.0 && a * 10.0 < e) {
                 self.stats.estimate_miss = true;
             }

@@ -1,7 +1,11 @@
 //! フィードバック（query-optimizer.md §8・data-platform §14）: 実行ごとの記録とテーブル単位の集計。
 //!
 //! - 第一の指標は**走査効率**（走査した索引エントリ数 ÷ 返した行数）。値・内部キー・推定値は利用者へ
-//!   返さない（運用向けの数値指標だけ・PIT-75）。メモリ上の集計で、OTel への抽出は後続タスク。
+//!   返さない（運用向けの数値指標だけ・PIT-75）。
+//! - **実行ごとの記録**（§8）: `(形状ハッシュ, 戦略, 推定行数, 実測行数, 走査エントリ数, 返した行数, 所要時間)` を
+//!   メモリ上のリングバッファ（直近 [`RING`] 件）に積み、同じ内容を OTel へ抽出する（[`otel`]: 計量は
+//!   `data.query.*` のヒストグラムとカウンタ・属性は戦略名だけ。実行ごとの記録は `tracing` の debug イベント
+//!   `data.query.exec`）。値・テーブル名・列名・利用者は含めない。
 //! - **補正係数**: ソート駆動の「予想した走査件数」と「観測した走査件数」の比を、
 //!   `(テーブル, フィルタ列, ソート列)` ごとに指数移動平均（対数で・初回はそのまま）で持つ。相関
 //!   （§1.2 ④）は次回から吸収される。学習はテーブルと列の組の単位に限り、利用者ごとには持たない。
@@ -58,6 +62,27 @@ pub struct QueryExecStats {
     pub admission_rejected: bool,
     /// 候補件数の推定が実測と 10 倍以上ずれた。
     pub estimate_miss: bool,
+    /// クエリ形状のハッシュ（プランキャッシュの形状キーの先頭 8 バイト・値を含まない）。
+    pub shape_hash: u64,
+    /// 推定行数（候補駆動は候補件数・ソート駆動は予想走査件数。統計で計画したときだけ）。
+    pub est_rows: Option<u64>,
+    /// 推定に対応する実測行数（候補件数・観測した走査件数）。
+    pub actual_rows: Option<u64>,
+}
+
+/// 実行ごとの記録（§8 のリングバッファの 1 件・運用向け・利用者へは返さない）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecSample {
+    pub table_id: Uuid,
+    pub shape_hash: u64,
+    pub strategy: &'static str,
+    pub first_strategy: &'static str,
+    pub est_rows: Option<u64>,
+    pub actual_rows: Option<u64>,
+    pub scanned: u64,
+    pub returned: u64,
+    pub elapsed_us: u64,
+    pub predicted_us: Option<u64>,
 }
 
 /// テーブル単位の集計（運用指標・値と推定値は含まない）。
@@ -93,6 +118,10 @@ pub(crate) enum CandidateKind {
 pub(crate) type ShapeKey = (Uuid, Vec<FieldId>, Option<FieldId>);
 
 const RECENT: usize = 256;
+/// 実行ごとの記録の保持数（§8 のリングバッファ）。
+pub(crate) const RING: usize = 1_024;
+/// テーブルごとの (予測, 実測) の組の保持数。
+const TABLE_SAMPLES: usize = 256;
 /// 予測と実測の組の保持数。
 pub(crate) const SAMPLES: usize = 2_048;
 /// 統計収集を前倒しする推定外れの連続回数。
@@ -113,6 +142,8 @@ struct Agg {
     miss_streak: u32,
     ratios: VecDeque<f64>,
     strategies: HashMap<&'static str, u64>,
+    /// このテーブルの (予測 µs, 実測 µs)。
+    samples: VecDeque<(f64, f64)>,
 }
 
 /// フィードバックの記録器（プロセス内）。
@@ -124,6 +155,8 @@ pub(crate) struct Feedback {
     /// (予測 µs, 実測 µs)。
     samples: Mutex<VecDeque<(f64, f64)>>,
     candidates: Mutex<HashMap<Uuid, CandidateCounts>>,
+    /// 実行ごとの記録（§8）。
+    ring: Mutex<VecDeque<ExecSample>>,
 }
 
 /// テーブルごとの候補の回数（(種類, 列) → 回数）。
@@ -132,19 +165,46 @@ type CandidateCounts = HashMap<(CandidateKind, Vec<String>), u64>;
 impl Feedback {
     /// 記録する。統計収集を前倒しすべきなら `true`（推定外れが続いた）。
     pub(crate) fn record(&self, table_id: Uuid, s: &QueryExecStats) -> bool {
-        if let (Some(p), true) = (s.predicted_us, s.elapsed_us > 0) {
-            if let Ok(mut v) = self.samples.lock() {
-                if v.len() == SAMPLES {
-                    v.pop_front();
-                }
-                #[allow(clippy::cast_precision_loss)]
-                v.push_back((p as f64, s.elapsed_us as f64));
+        let sample = ExecSample {
+            table_id,
+            shape_hash: s.shape_hash,
+            strategy: s.strategy,
+            first_strategy: s.first_strategy,
+            est_rows: s.est_rows,
+            actual_rows: s.actual_rows,
+            scanned: s.scanned,
+            returned: s.returned,
+            elapsed_us: s.elapsed_us,
+            predicted_us: s.predicted_us,
+        };
+        otel::export(&sample, s);
+        if let Ok(mut r) = self.ring.lock() {
+            if r.len() == RING {
+                r.pop_front();
             }
+            r.push_back(sample);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let pair = match (s.predicted_us, s.elapsed_us > 0) {
+            (Some(p), true) => Some((p as f64, s.elapsed_us as f64)),
+            _ => None,
+        };
+        if let (Some(pair), Ok(mut v)) = (pair, self.samples.lock()) {
+            if v.len() == SAMPLES {
+                v.pop_front();
+            }
+            v.push_back(pair);
         }
         let Ok(mut t) = self.tables.lock() else {
             return false;
         };
         let a = t.entry(table_id).or_default();
+        if let Some(pair) = pair {
+            if a.samples.len() == TABLE_SAMPLES {
+                a.samples.pop_front();
+            }
+            a.samples.push_back(pair);
+        }
         a.requests += 1;
         a.scanned += s.scanned;
         a.returned += s.returned;
@@ -239,12 +299,24 @@ impl Feedback {
         let Ok(v) = self.samples.lock() else {
             return (None, 0);
         };
-        let pts: Vec<(f64, f64)> = v
-            .iter()
-            .filter(|(p, a)| *p > 0.0 && *a > 0.0)
-            .map(|(p, a)| (p.ln(), a.ln()))
-            .collect();
-        (pearson(&pts), pts.len())
+        log_pearson(v.iter())
+    }
+
+    /// テーブルごとの予測と実測の相関（対数のピアソン）と組の数（管理画面・値を含まない）。
+    pub(crate) fn table_correlation(&self, table_id: Uuid) -> (Option<f64>, usize) {
+        let Ok(t) = self.tables.lock() else {
+            return (None, 0);
+        };
+        t.get(&table_id)
+            .map_or((None, 0), |a| log_pearson(a.samples.iter()))
+    }
+
+    /// 実行ごとの記録（新しい順・運用・検証用）。
+    pub(crate) fn recent(&self, limit: usize) -> Vec<ExecSample> {
+        self.ring.lock().map_or_else(
+            |_| Vec::new(),
+            |r| r.iter().rev().take(limit).cloned().collect(),
+        )
     }
 
     /// 予測と実測の組を捨てる（較正の前後を分けて測るため）。
@@ -282,8 +354,99 @@ impl Feedback {
     }
 }
 
+fn log_pearson<'a>(v: impl Iterator<Item = &'a (f64, f64)>) -> (Option<f64>, usize) {
+    let pts: Vec<(f64, f64)> = v
+        .filter(|(p, a)| *p > 0.0 && *a > 0.0)
+        .map(|(p, a)| (p.ln(), a.ln()))
+        .collect();
+    (pearson(&pts), pts.len())
+}
+
+/// OTel への抽出（既存の流儀: `opentelemetry::global` の meter と `tracing` のイベント）。
+mod otel {
+    use std::sync::OnceLock;
+
+    use opentelemetry::metrics::{Counter, Histogram};
+    use opentelemetry::KeyValue;
+
+    use super::{ExecSample, QueryExecStats};
+
+    struct Instruments {
+        duration: Histogram<u64>,
+        scan_ratio: Histogram<f64>,
+        estimate_ratio: Histogram<f64>,
+        switches: Counter<u64>,
+        rejections: Counter<u64>,
+    }
+
+    fn instruments() -> &'static Instruments {
+        static I: OnceLock<Instruments> = OnceLock::new();
+        I.get_or_init(|| {
+            let m = opentelemetry::global::meter("shiki-data");
+            Instruments {
+                duration: m
+                    .u64_histogram("data.query.duration")
+                    .with_unit("us")
+                    .with_description("data の読取の所要時間（読取 Tx の中）")
+                    .build(),
+                scan_ratio: m
+                    .f64_histogram("data.query.scan_ratio")
+                    .with_description("走査した索引エントリ ÷ 返した行（走査効率）")
+                    .build(),
+                estimate_ratio: m
+                    .f64_histogram("data.query.estimate_ratio")
+                    .with_description("実測行数 ÷ 推定行数（統計で計画した読取だけ）")
+                    .build(),
+                switches: m
+                    .u64_counter("data.query.switches")
+                    .with_description("予算切れで別の計画へ切り替えた読取")
+                    .build(),
+                rejections: m
+                    .u64_counter("data.query.rejections")
+                    .with_description("重すぎるため実行しなかった読取")
+                    .build(),
+            }
+        })
+    }
+
+    /// 1 件を計量と debug イベントへ出す（属性は戦略名だけ・値・テーブル名・利用者を含めない）。
+    pub(super) fn export(x: &ExecSample, s: &QueryExecStats) {
+        let i = instruments();
+        let attrs = [KeyValue::new("strategy", x.strategy)];
+        i.duration.record(x.elapsed_us, &attrs);
+        #[allow(clippy::cast_precision_loss)]
+        i.scan_ratio
+            .record(x.scanned as f64 / x.returned.max(1) as f64, &attrs);
+        if let (Some(e), Some(a)) = (x.est_rows, x.actual_rows) {
+            #[allow(clippy::cast_precision_loss)]
+            i.estimate_ratio
+                .record(a.max(1) as f64 / e.max(1) as f64, &attrs);
+        }
+        if s.switched {
+            i.switches.add(1, &attrs);
+        }
+        if s.admission_rejected {
+            i.rejections.add(1, &attrs);
+        }
+        tracing::debug!(
+            target: "data.query.exec",
+            table_id = %x.table_id,
+            shape = format_args!("{:016x}", x.shape_hash),
+            strategy = x.strategy,
+            first_strategy = x.first_strategy,
+            est_rows = x.est_rows,
+            actual_rows = x.actual_rows,
+            scanned = x.scanned,
+            returned = x.returned,
+            elapsed_us = x.elapsed_us,
+            predicted_us = x.predicted_us,
+            "data の読取"
+        );
+    }
+}
+
 #[allow(clippy::cast_precision_loss)]
-fn pearson(p: &[(f64, f64)]) -> Option<f64> {
+pub(crate) fn pearson(p: &[(f64, f64)]) -> Option<f64> {
     if p.len() < 3 {
         return None;
     }
@@ -377,5 +540,40 @@ mod tests {
             vec!["a".into(), "b".into()],
         );
         assert_eq!(f.candidates(t)[0].2, 2);
+        let (tc, tn) = f.table_correlation(t);
+        assert_eq!(tn, 10);
+        assert!(tc.unwrap() > 0.99);
+        assert_eq!(f.table_correlation(Uuid::new_v4()), (None, 0));
+    }
+
+    /// 実行ごとの記録（§8）はリングバッファで直近 RING 件を保ち、形状・戦略・推定・実測・所要時間を持つ。
+    #[test]
+    fn ring_buffer_keeps_recent_executions() {
+        let f = Feedback::default();
+        let t = Uuid::new_v4();
+        for i in 0..(RING as u64 + 10) {
+            f.record(
+                t,
+                &QueryExecStats {
+                    shape_hash: i,
+                    strategy: "filter",
+                    first_strategy: "sort",
+                    est_rows: Some(10),
+                    actual_rows: Some(i),
+                    scanned: i,
+                    returned: 1,
+                    elapsed_us: 5,
+                    ..Default::default()
+                },
+            );
+        }
+        let r = f.recent(usize::MAX);
+        assert_eq!(r.len(), RING);
+        assert_eq!(r[0].shape_hash, RING as u64 + 9, "新しい順");
+        assert_eq!(r[RING - 1].shape_hash, 10, "古いものから捨てる");
+        assert_eq!(
+            (r[0].strategy, r[0].first_strategy, r[0].est_rows),
+            ("filter", "sort", Some(10))
+        );
     }
 }

@@ -410,6 +410,28 @@ async fn correction_factor_picks_the_right_strategy_on_the_second_run() {
     assert_eq!(d3.stats.first_strategy, "sort", "{:?}", d3.stats);
     // 予測コストと所要時間が記録され、運用指標に推定値は出ない。
     assert!(d2.stats.predicted_us.is_some() && d2.stats.elapsed_us > 0);
+    // 実行ごとの記録（§8・監査 B2-3）: 形状・戦略・推定行数・実測行数・走査・返却・所要時間が
+    // リングバッファに残る（新しい順）。同じ形状は同じハッシュ。
+    assert!(
+        d2.stats.est_rows.is_some() && d2.stats.actual_rows.is_some(),
+        "{:?}",
+        d2.stats
+    );
+    let recent = store.recent_executions(3);
+    assert_eq!(recent.len(), 3);
+    let last = &recent[0];
+    assert_eq!(
+        (last.table_id, last.strategy, last.shape_hash),
+        (table.id, d3.stats.strategy, d3.stats.shape_hash)
+    );
+    assert!(last.elapsed_us > 0 && last.returned > 0);
+    assert_eq!(recent[1].shape_hash, d2.stats.shape_hash);
+    assert_eq!(
+        (recent[1].est_rows, recent[1].actual_rows),
+        (d2.stats.est_rows, d2.stats.actual_rows)
+    );
+    assert_eq!(d1.stats.shape_hash, d2.stats.shape_hash, "同じ形状");
+    assert_ne!(d2.stats.shape_hash, d3.stats.shape_hash);
     let (_, n) = store.optimizer_correlation();
     assert!(n >= 3);
 }
@@ -543,7 +565,13 @@ async fn fixed_plan_tables_ignore_statistics() {
         ..Default::default()
     };
     store.run_query(&c, table.id, &skew, None).await.unwrap();
+    for _ in 0..3 {
+        store.run_query(&c, table.id, &q, None).await.unwrap();
+    }
     let report = store.table_optimizer_report(&c, table.id).await.unwrap();
+    // 所要時間の見込みと実測の一致（テーブル単位・値を含まない・監査 B2-4）。
+    assert!(report.timing_samples >= 3, "{report:?}");
+    assert!(report.timing_correlation.is_some(), "{report:?}");
     assert!(
         report
             .candidates
@@ -581,7 +609,27 @@ async fn calibration_replaces_unit_costs() {
     }
     assert!(r.after.c_probe >= r.after.c_tuple);
     assert_eq!(store.unit_costs(), r.after);
-    assert_eq!(store.calibration_report(), Some(r));
+    // 較正の前後で、検証用の操作の予測と実測の一致（相関・平均対数誤差）が記録される（監査 B2-4）。
+    eprintln!(
+        "検証 {} 本: 相関 {:?} → {:?}・平均対数誤差 {:.3} → {:.3}",
+        r.validation_samples,
+        r.correlation_before,
+        r.correlation_after,
+        r.log_error_before,
+        r.log_error_after
+    );
+    assert_eq!(r.validation_samples, 9);
+    assert!(r.correlation_before.is_some() && r.correlation_after.is_some());
+    assert!(
+        r.log_error_after < r.log_error_before,
+        "較正で予測が実測に近づく: {} → {}",
+        r.log_error_before,
+        r.log_error_after
+    );
+    assert_eq!(store.calibration_report(), Some(r.clone()));
+    let status = store.optimizer_status();
+    assert_eq!(status.unit_costs, r.after);
+    assert_eq!(status.calibration, Some(r));
     // 較正は migration の固定表を読むだけで、表も索引も作らない（ランタイム DDL ゼロ・監査 B1-2）。
     let n: i64 =
         sqlx::query_scalar("SELECT count(*) FROM pg_class WHERE relname LIKE 'shiki_calib%'")

@@ -5,6 +5,9 @@
 //! 走査効率などの値を含まない運用の数値と、複合索引・索引の昇格の候補（列の参照名）を出し、機微な
 //! テーブルを統計に依らない固定計画へ切り替える（query-optimizer.md §7.3・§8）。推定値・統計値・
 //! 予測コスト・計画名は返さない（PIT-75）。
+//! オプティマイザの環境の状態（`/org-admin/data/optimizer`）: 起動時の較正の前後の単価と、検証用の操作で
+//! 見た予測と実測の一致の度合い（相関・平均対数誤差）の前後。環境（DB サーバ）の数値だけで、テナントの
+//! データ・統計は含まない（運用者向け・query-optimizer.md §5.2・§7.3）。
 //! 管理者チェックはルート表のポリシー（`AccessPolicy::OrgAdmin`）が一律に掛ける。変更は監査に残す。
 
 use axum::{
@@ -32,6 +35,12 @@ pub(crate) fn org_admin_data_route_decls() -> Vec<RouteDecl> {
             || get(get_data_settings).put(update_data_settings),
         ),
         RouteDecl::new(
+            "/org-admin/data/optimizer",
+            &["GET"],
+            AccessPolicy::OrgAdmin,
+            || get(get_optimizer_status),
+        ),
+        RouteDecl::new(
             "/org-admin/data/tables/{id}/optimizer",
             &["GET", "PUT"],
             AccessPolicy::OrgAdmin,
@@ -45,6 +54,22 @@ pub(crate) fn org_admin_data_route_decls() -> Vec<RouteDecl> {
 pub struct UpdateTableOptimizerRequest {
     /// 統計に依らない固定計画で読む（機微なテーブル向け・応答時間から見えない行の分布を推せないようにする）。
     pub fixed_plan: bool,
+}
+
+/// オプティマイザの環境の状態（単価と起動時の較正の前後・テナントのデータを含まない）。
+#[utoipa::path(
+    get,
+    path = "/org-admin/data/optimizer",
+    responses(
+        (status = 200, description = "単価と較正の前後", body = data::OptimizerStatus),
+        (status = 403, description = "組織管理者ではない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn get_optimizer_status(
+    State(state): State<AppState>,
+) -> Result<Json<data::OptimizerStatus>, ApiError> {
+    Ok(Json(state.data.optimizer_status()))
 }
 
 /// テーブルのクエリ最適化の報告（値・推定値を含まない運用の数値と索引の候補）。

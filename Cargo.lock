@@ -5444,6 +5444,7 @@ dependencies = [
  "base64",
  "chrono",
  "hmac 0.12.1",
+ "opentelemetry",
  "rand 0.8.6",
  "reqwest 0.12.28",
  "roaring",

@@ -62,8 +62,22 @@ pub struct TableOptimizerReport {
     pub switch_rate: f64,
     /// 重すぎるため断った読取の数。
     pub rejected_requests: u64,
+    /// 読取の所要時間の見込みと実測の一致（対数のピアソン相関・-1〜1・組が 3 つ未満なら null）。
+    pub timing_correlation: Option<f64>,
+    /// 相関を計算した組の数（このプロセス・直近）。
+    pub timing_samples: u64,
     /// 索引の候補。
     pub candidates: Vec<OptimizerIndexCandidate>,
+}
+
+/// オプティマイザの環境の状態（管理画面・組織管理者）: 起動時の較正の前後の単価と、検証用の操作で見た
+/// 予測と実測の一致の度合いの前後。**環境（DB サーバ）の数値だけ**で、テナントのデータ・統計は含まない。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct OptimizerStatus {
+    /// いま計画に使っている単価（µs）。
+    pub unit_costs: UnitCosts,
+    /// 最後の較正の結果（未実施・失敗なら null＝初期値のまま）。
+    pub calibration: Option<CalibrationReport>,
 }
 
 impl DataStore {
@@ -89,6 +103,13 @@ impl DataStore {
         }
         if let (Some(pred), Some(obs)) = (ex.sort_walk_pred, ex.sort_walk_obs) {
             let corrected = pred * ex.correction;
+            if ex.stats.est_rows.is_none() {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    ex.stats.est_rows = Some(corrected.max(0.0).round() as u64);
+                    ex.stats.actual_rows = Some(obs.max(0.0).round() as u64);
+                }
+            }
             if obs > 10.0 * corrected.max(1.0) || (corrected >= 10.0 && obs * 10.0 < corrected) {
                 ex.stats.estimate_miss = true;
             }
@@ -197,6 +218,20 @@ impl DataStore {
         self.feedback.correlation()
     }
 
+    /// 管理画面: オプティマイザの環境の状態（単価と較正の前後・テナントのデータを含まない）。
+    pub fn optimizer_status(&self) -> OptimizerStatus {
+        OptimizerStatus {
+            unit_costs: self.costs.units(),
+            calibration: self.costs.report(),
+        }
+    }
+
+    /// 運用・検証用: 実行ごとの記録（§8 のリングバッファ・新しい順）。利用者へは返さない。
+    #[doc(hidden)]
+    pub fn recent_executions(&self, limit: usize) -> Vec<super::planner::feedback::ExecSample> {
+        self.feedback.recent(limit)
+    }
+
     /// 検証用: 予測と実測の組を捨てる。
     #[doc(hidden)]
     pub fn clear_optimizer_samples(&self) {
@@ -240,12 +275,15 @@ impl DataStore {
                 occurrences: n,
             })
             .collect();
+        let (timing_correlation, timing_samples) = self.feedback.table_correlation(table_id);
         Ok(TableOptimizerReport {
             fixed_plan: fixed,
             requests: m.requests,
             scan_ratio_p95: m.scan_ratio_p95,
             switch_rate,
             rejected_requests: m.rejections,
+            timing_correlation,
+            timing_samples: timing_samples as u64,
             candidates,
         })
     }

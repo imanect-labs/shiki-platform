@@ -447,7 +447,18 @@ fn wire_data(
         tokio::spawn(async move {
             match store.calibrate_costs().await {
                 Ok(r) => {
-                    tracing::info!(before = ?r.before, after = ?r.after, "data のコスト単価を較正");
+                    // 較正の前後の単価と、検証用の操作で見た予測と実測の一致（相関・平均対数誤差）の前後を
+                    // 記録に残す（管理 API `/org-admin/data/optimizer` でも引ける・query-optimizer §5.2）。
+                    tracing::info!(
+                        before = ?r.before,
+                        after = ?r.after,
+                        correlation_before = ?r.correlation_before,
+                        correlation_after = ?r.correlation_after,
+                        log_error_before = r.log_error_before,
+                        log_error_after = r.log_error_after,
+                        samples = r.validation_samples,
+                        "data のコスト単価を較正"
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "data のコスト単価の較正に失敗（初期値のまま）");

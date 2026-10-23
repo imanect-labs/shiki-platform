@@ -131,11 +131,11 @@ pub use query::limits::{
     MAX_LITERALS, MAX_SQL_BYTES,
 };
 pub use query::optimizer_ops::{
-    OptimizerCandidateKind, OptimizerIndexCandidate, TableOptimizerReport,
+    OptimizerCandidateKind, OptimizerIndexCandidate, OptimizerStatus, TableOptimizerReport,
 };
 pub use query::planner::cost::{CalibrationReport, UnitCosts};
 pub use query::planner::exec::ForcedStrategy;
-pub use query::planner::feedback::{QueryExecStats, TableScanMetrics};
+pub use query::planner::feedback::{ExecSample, QueryExecStats, TableScanMetrics};
 pub use query::planner::plan_cache::PlanCacheStats;
 pub use query::planner::shape::{ColumnShape, LinkShape, ShapeType, TableShape};
 pub use query::reject::{QueryRejection, RejectCode, RejectLimit, SqlLocation};

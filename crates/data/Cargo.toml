@@ -11,6 +11,7 @@ name = "data"
 
 [dependencies]
 tracing.workspace = true
+opentelemetry.workspace = true
 shiki-authz.workspace = true
 shiki-storage.workspace = true
 shiki-artifact.workspace = true

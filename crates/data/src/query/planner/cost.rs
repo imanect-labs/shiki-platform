@@ -21,7 +21,7 @@ use sqlx::PgConnection;
 use crate::{map_db, DataError};
 
 /// 単価（µs）。
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct UnitCosts {
     /// 索引の範囲走査 1 エントリ。
     pub c_tuple: f64,
@@ -48,13 +48,98 @@ impl Default for UnitCosts {
     }
 }
 
-/// 較正の結果（単価の前後）。
-#[derive(Debug, Clone, PartialEq)]
+/// 較正の結果（単価の前後と、検証用の操作で見た予測と実測の一致の度合いの前後）。
+///
+/// 検証用の操作（[`VALIDATION`]: 範囲走査・点検索・本体取得を大きさを変えて計 9 本）を同じ固定表で計測し、
+/// 較正の前の単価と後の単価それぞれで予測した所要時間との**対数のピアソン相関**と**平均対数誤差**
+/// （|ln(予測 ÷ 実測)| の平均）を残す（query-optimizer §5.2・Task 15.12「較正前後の相関が記録される」）。
+/// 顧客データ・テナントの統計は含まない（環境の数値だけ）。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct CalibrationReport {
     pub before: UnitCosts,
     pub after: UnitCosts,
     /// 各操作の計測の反復回数。
     pub runs: usize,
+    /// 検証用の操作の数。
+    pub validation_samples: usize,
+    /// 較正前の単価での予測と実測の相関（対数のピアソン・-1〜1）。
+    pub correlation_before: Option<f64>,
+    /// 較正後の単価での予測と実測の相関。
+    pub correlation_after: Option<f64>,
+    /// 較正前の平均対数誤差（0 で一致・ln 2 ≈ 0.69 は平均 2 倍ずれ）。
+    pub log_error_before: f64,
+    /// 較正後の平均対数誤差。
+    pub log_error_after: f64,
+    /// 較正した時刻。
+    pub calibrated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// 検証用の操作（種類, 件数）。範囲走査・点検索・本体取得を較正の計測とは別の大きさで測る。
+const VALIDATION: [(Op, i64); 9] = [
+    (Op::Scan, 1_000),
+    (Op::Scan, 5_000),
+    (Op::Scan, 12_000),
+    (Op::Probe, 100),
+    (Op::Probe, 500),
+    (Op::Probe, 1_500),
+    (Op::Fetch, 100),
+    (Op::Fetch, 500),
+    (Op::Fetch, 1_500),
+];
+
+/// 計測する操作の種類（文は固定・件数はバインド）。
+#[derive(Debug, Clone, Copy)]
+enum Op {
+    Scan,
+    Probe,
+    Fetch,
+}
+
+impl Op {
+    fn sql(self) -> &'static str {
+        match self {
+            Op::Scan => {
+                "SELECT count(*) FROM (SELECT c.r FROM data_planner_calib c WHERE c.k = 1 \
+                   ORDER BY c.v, c.r LIMIT $1) s"
+            }
+            Op::Probe => {
+                "SELECT count(*) FROM generate_series(1, $1::int8) g WHERE EXISTS ( \
+                   SELECT 1 FROM data_planner_calib c WHERE c.k = 1 AND c.v = 'v' || (g % 97) \
+                     AND c.r = (g * 7919) % 20000 + 1 OFFSET 0)"
+            }
+            Op::Fetch => {
+                "SELECT sum(length(c.d::text)) FROM data_planner_calib c \
+                 WHERE c.r = ANY(ARRAY(SELECT (g * 7919) % 20000 + 1 FROM generate_series(1, $1::int8) g))"
+            }
+        }
+    }
+
+    /// この単価での予測（µs・往復を含む）。
+    #[allow(clippy::cast_precision_loss)]
+    fn predict(self, u: &UnitCosts, n: i64) -> f64 {
+        let n = n as f64;
+        u.c_rtt
+            + match self {
+                Op::Scan => n * u.c_tuple,
+                Op::Probe => n * (u.c_tuple + u.c_probe),
+                Op::Fetch => n * u.c_fetch,
+            }
+    }
+}
+
+/// 予測と実測の一致の度合い（対数のピアソン相関, 平均対数誤差）。
+pub(crate) fn agreement(pairs: &[(f64, f64)]) -> (Option<f64>, f64) {
+    let pts: Vec<(f64, f64)> = pairs
+        .iter()
+        .filter(|(p, a)| *p > 0.0 && *a > 0.0)
+        .map(|(p, a)| (p.ln(), a.ln()))
+        .collect();
+    if pts.is_empty() {
+        return (None, 0.0);
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let err = pts.iter().map(|(p, a)| (p - a).abs()).sum::<f64>() / pts.len() as f64;
+    (super::feedback::pearson(&pts), err)
 }
 
 /// プロセスの単価（較正で置き換わる）。
@@ -164,15 +249,38 @@ pub(crate) async fn calibrate(
     use sqlx::Connection as _;
     let before = model.units();
     let mut tx = conn.begin().await.map_err(map_db)?;
-    let out = calibrate_in_tx(&mut tx, before).await;
+    let out = async {
+        let after = calibrate_in_tx(&mut tx, before).await?;
+        // 検証用の操作を測り、前後の単価それぞれの予測と比べる。
+        let mut measured = Vec::with_capacity(VALIDATION.len());
+        for (op, n) in VALIDATION {
+            measured.push((op, n, median(&mut tx, op.sql(), Some(n)).await?));
+        }
+        Ok::<_, DataError>((after, measured))
+    }
+    .await;
     // SET LOCAL を捨てる（読取だけなので書き戻すものは無い）。
     let _ = tx.rollback().await;
-    let after = out?;
+    let (after, measured) = out?;
     model.set(after);
+    let pairs = |u: &UnitCosts| -> Vec<(f64, f64)> {
+        measured
+            .iter()
+            .map(|(op, n, t)| (op.predict(u, *n), *t))
+            .collect()
+    };
+    let (correlation_before, log_error_before) = agreement(&pairs(&before));
+    let (correlation_after, log_error_after) = agreement(&pairs(&after));
     let r = CalibrationReport {
         before,
         after,
         runs: CALIB_RUNS,
+        validation_samples: measured.len(),
+        correlation_before,
+        correlation_after,
+        log_error_before,
+        log_error_after,
+        calibrated_at: chrono::Utc::now(),
     };
     model.set_report(r.clone());
     Ok(r)
@@ -202,28 +310,9 @@ async fn calibrate_in_tx(
         )));
     }
     let rtt = median(conn, "SELECT 1", None).await?;
-    let scan = median(
-        conn,
-        "SELECT count(*) FROM (SELECT c.r FROM data_planner_calib c WHERE c.k = 1 \
-           ORDER BY c.v, c.r LIMIT $1) s",
-        Some(CALIB_ROWS),
-    )
-    .await?;
-    let probe = median(
-        conn,
-        "SELECT count(*) FROM generate_series(1, $1::int8) g WHERE EXISTS ( \
-           SELECT 1 FROM data_planner_calib c WHERE c.k = 1 AND c.v = 'v' || (g % 97) \
-             AND c.r = (g * 7919) % 20000 + 1 OFFSET 0)",
-        Some(CALIB_PROBES),
-    )
-    .await?;
-    let fetch = median(
-        conn,
-        "SELECT sum(length(c.d::text)) FROM data_planner_calib c \
-         WHERE c.r = ANY(ARRAY(SELECT (g * 7919) % 20000 + 1 FROM generate_series(1, $1::int8) g))",
-        Some(CALIB_PROBES),
-    )
-    .await?;
+    let scan = median(conn, Op::Scan.sql(), Some(CALIB_ROWS)).await?;
+    let probe = median(conn, Op::Probe.sql(), Some(CALIB_PROBES)).await?;
+    let fetch = median(conn, Op::Fetch.sql(), Some(CALIB_PROBES)).await?;
     let sort = median(
         conn,
         "SELECT r FROM (SELECT c.r, c.d ->> 'c' AS s FROM data_planner_calib c WHERE c.k = 1 \
@@ -281,6 +370,42 @@ mod tests {
         // 0.1 → 0.9 の順: 5 + 0.1·5 = 5.5（並び替えで逆順にならない）。
         assert!((u.probe(&[0.9, 0.1]) - 5.5).abs() < 1e-9);
         assert!((u.probe(&[]) - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn agreement_reports_correlation_and_log_error() {
+        // 予測が実測の 2 倍で比例: 相関 1・平均対数誤差 ln 2。
+        let pairs: Vec<(f64, f64)> = [10.0, 100.0, 1000.0, 5000.0]
+            .iter()
+            .map(|a| (2.0 * a, *a))
+            .collect();
+        let (c, e) = agreement(&pairs);
+        assert!((c.unwrap() - 1.0).abs() < 1e-9);
+        assert!((e - 2f64.ln()).abs() < 1e-9);
+        assert_eq!(agreement(&[]), (None, 0.0));
+        // 予測の単価が実測に合えば誤差は小さくなる。
+        let u = UnitCosts::default();
+        let truth = UnitCosts {
+            c_tuple: 0.2,
+            c_probe: 3.0,
+            c_fetch: 2.0,
+            c_rtt: 60.0,
+            c_sort: 0.05,
+        };
+        let measured: Vec<(Op, i64, f64)> = VALIDATION
+            .iter()
+            .map(|(op, n)| (*op, *n, op.predict(&truth, *n)))
+            .collect();
+        let pairs = |u: &UnitCosts| -> Vec<(f64, f64)> {
+            measured
+                .iter()
+                .map(|(op, n, t)| (op.predict(u, *n), *t))
+                .collect()
+        };
+        let (_, before) = agreement(&pairs(&u));
+        let (after_c, after) = agreement(&pairs(&truth));
+        assert!(after < 1e-9 && before > 0.5, "{before} → {after}");
+        assert!((after_c.unwrap() - 1.0).abs() < 1e-9);
     }
 
     #[test]
