@@ -78,6 +78,8 @@ impl Lowerer<'_> {
             } else {
                 (String::new(), String::new())
             };
+            // shard-safety: allow(join) 結合元は前段の CTE（同一テナントの行 id）で、data_link は
+            // tenant_int = $1 で引く。テナントを跨がない（分割後も同じテナントは同じノード）。
             out.push(format!(
                 "t{k} AS MATERIALIZED (SELECT t.*, jl.dst_record AS r{k}{ocol} FROM t{i} t \
                  JOIN data_link jl ON jl.tenant_int = $1 AND jl.table_int = {parent_t} \
