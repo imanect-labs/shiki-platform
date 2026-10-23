@@ -18,6 +18,7 @@ import * as React from "react";
 import {
   readScoped,
   scopedStorageKey,
+  storageScopeGeneration,
   subscribeStorageScope,
   writeScoped,
 } from "@/lib/user-storage";
@@ -76,11 +77,18 @@ export function createDraftStore(kind: DraftKind): DraftStore {
   // 本人のものなので、確定したユーザーの保存分へ合流させる。ログアウト（確定→未確定）では捨てる。
   // ただし未確定中の source=ai は「未登録なら履歴から足す」復元が空のメモリに対して判定した
   // ものなので、保存分に同じ下書きがあれば保存分（手編集を含む）を残す。
+  // 合流させるのは、このタブがまだログアウトを経ていない（初回の確定待ち）ときだけ。ログアウト
+  // （他タブを含む）の後に開いたままの画面で作られた分は前の人のものかもしれないので、次の人へ渡さない。
   if (typeof window !== "undefined") {
     subscribeStorageScope(() => {
       const pending = cache !== null && cacheKey === null ? cache : null;
       cache = null;
-      if (pending && Object.keys(pending).length > 0 && scopedStorageKey(storageKey)) {
+      if (
+        pending &&
+        Object.keys(pending).length > 0 &&
+        storageScopeGeneration() === 0 &&
+        scopedStorageKey(storageKey)
+      ) {
         const persisted = read();
         const merged: Store = { ...persisted };
         for (const [k, entry] of Object.entries(pending)) {
