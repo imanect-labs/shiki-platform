@@ -146,6 +146,27 @@ async fn bulk_upsert_updates_through_the_single_update_entry() {
                 .id,
         );
     }
+    // 給与（alice には読めない列）を書いた行を作っておく（作成はマスク列を書ける・読めないだけ）。
+    sqlx::query(
+        "UPDATE data_record SET data = data || jsonb_build_object('f' || $3::text, 500) \
+         WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(&tenant)
+    .bind(ids[0])
+    .bind(
+        store
+            .get_table(&alice, table.id, None)
+            .await
+            .unwrap()
+            .schema
+            .field("salary")
+            .unwrap()
+            .id
+            .to_string(),
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let missing = Uuid::new_v4();
 
     let rows = vec![
@@ -249,6 +270,35 @@ async fn bulk_upsert_updates_through_the_single_update_entry() {
     assert_eq!(created.len(), 1);
     assert_eq!(created[0].data["title"], "new");
 
+    // 1 件の更新の応答も読めない列を返さない（PIT-19・Task 15.7 で塞いだ）。
+    let r1b = store
+        .update_record(
+            &alice,
+            table.id,
+            ids[0],
+            json!({"title": "r1-again"}),
+            2,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(r1b.data.get("salary").is_none(), "{:?}", r1b.data);
+    let r1_raw: Value =
+        sqlx::query_scalar("SELECT data FROM data_record WHERE tenant_id = $1 AND id = $2")
+            .bind(&tenant)
+            .bind(ids[0])
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        r1_raw
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|v| v == &json!(500)),
+        "保存値には給与が残っている（応答だけが伏せる）"
+    );
+
     // リビジョン・outbox・監査も 1 件の更新と同じ入口で書かれている。
     let (rev_kind,): (String,) = sqlx::query_as(
         "SELECT change_kind FROM data_record_revision \
@@ -269,7 +319,10 @@ async fn bulk_upsert_updates_through_the_single_update_entry() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(audits, 1, "更新 1 件ごとの監査");
+    assert_eq!(
+        audits, 2,
+        "更新 1 件ごとの監査（一括の 1 件＋直後の 1 件の更新）"
+    );
     let changes: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM storage_event_outbox WHERE tenant_id = $1 \
            AND payload->>'event_type' = 'data.record.changed' AND payload->>'record_id' = $2",
@@ -279,7 +332,7 @@ async fn bulk_upsert_updates_through_the_single_update_entry() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(changes, 2, "作成と更新の 2 件の変更イベント（SSE の源）");
+    assert_eq!(changes, 3, "作成と更新 2 回の変更イベント（SSE の源）");
 }
 
 #[tokio::test]

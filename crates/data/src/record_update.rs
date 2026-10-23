@@ -157,8 +157,11 @@ impl DataStore {
             .await?;
         let patches = diff_fields(&old_map, &normalized);
         if patches.is_empty() {
+            let mut out = [current];
+            Self::apply_mask_records(&masked, &mut out);
+            let [record] = out;
             return Ok(Updated {
-                record: current,
+                record,
                 record_int: None,
             });
         }
@@ -239,8 +242,12 @@ impl DataStore {
             serde_json::json!({ "table_id": table_id, "rev": new_rev }),
         )
         .await?;
+        // 応答はマスクを掛けて返す（書き手が読めない列の既存値を応答で漏らさない・PIT-19）。
+        let mut out = [row.into_record(&table.schema)];
+        Self::apply_mask_records(&masked, &mut out);
+        let [record] = out;
         Ok(Updated {
-            record: row.into_record(&table.schema),
+            record,
             record_int: Some(record_int),
         })
     }
