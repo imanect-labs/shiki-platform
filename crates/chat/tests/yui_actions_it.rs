@@ -292,7 +292,7 @@ async fn answer(store: &ChatStore, c: &AuthContext, thread_id: Uuid, text: &str)
         .post_message(c, thread_id, text, &[], None, Some(false), false, &[], None)
         .await
         .unwrap();
-    let mut rx = store.event_stream(res.run_id, 0);
+    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
     for _ in 0..2000 {
         let next = tokio::time::timeout(Duration::from_secs(180), rx.next())
             .await

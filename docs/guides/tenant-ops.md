@@ -87,16 +87,18 @@ curl -s -X DELETE "$SHIKI/admin/tenants/acme" -H "Authorization: Bearer $TOKEN"
 1. tenant 行を `deleting` へ
 2. セッション全失効（Redis）
 3. Keycloak: `tenant` 属性一致ユーザーと `/tenants/<tenant>` subtree（org・部署 group）を削除
-4. データ purge: FGA タプル（node/role/org）→ オブジェクト `{tenant}/` prefix → DB 行（1 txn・FK 順）
+4. データ purge: FGA タプル（node/role/org。org は登録簿の 1 つに限らずテナント配下の全 org・#816）→ オブジェクト `{tenant}/` prefix → DB 行（1 txn・FK 順）
 5. tenant 行を `deleted`（tombstone）へ
 
 DB 行の対象は `information_schema` から `tenant_id` 列を持つ実テーブルを**実行時に導出**し、FK 依存の
 子→親順で削除する（`storage::tenant_scope`・#420）。保持するのは `audit_log`（削除証跡）と `tenant`
 （tombstone）だけで、それ以外は自動的に対象になる —— 新しいテーブルが増えても消し忘れない。
 撤去したテーブル数と行数は `tenant.purge` 監査の `tables_purged` / `rows_deleted_direct` に残る。
-`rows_deleted_direct` は各 `DELETE` が**直接**消した行数で、`tenant_id` を持たず親から
-`ON DELETE CASCADE` される従属行（`generation_event` / `collab_update` 等）は含まない
-——消滅証明に使う際はこの定義に注意する。
+`rows_deleted_direct` は各 `DELETE` が**直接**消した行数。#815（migration 0080）以降は
+`generation_event` / `collab_update` / `app_function_run` も `tenant_id` を持ち、子→親順で直接消されて
+この数に含まれる（`tenant_id` を持たない表は全体共有の `maintenance_schedule` / `outbox_consumer` /
+`scheduler_lease` だけ）。0080 適用前の環境では、これらは親から `ON DELETE CASCADE` で消え、
+数に含まれない——消滅証明に使う際はこの定義に注意する。
 
 > ⚠️ 2026-08 以前はテーブル名を手で列挙しており、**51 テーブル中 13 しか消していなかった**。
 > チャット履歴・RAG の本文・構造化データ・ワークフロー履歴・利用量が撤去後も残っていた（#420）。
@@ -180,7 +182,8 @@ shiki-admin retenant --from default --to acme --execute
 - **IdP の tenant 属性と group**: リネーム後、Keycloak ユーザーの `attributes.tenant` と group
   `/tenants/<from>` → `/tenants/<to>` を CLI が自動追従する（provisioner 設定時）。未設定の場合は**手動で更新するまで新ログインが
   旧テナント名前空間に落ちる**（org/部署も解決されない）ため、必ず更新すること。`/tenants/<to>` が既にあると
-  group はリネームせず警告だけ出すので、配下のメンバーを手で移す。
+  group はリネームせず、警告を出して非 0 で終わる。`/tenants/<from>` 配下の org・部署 group のツリーを
+  `/tenants/<to>` 配下へ統合し（メンバー・group のロール割り当て・属性も移す）、移し終えたら `/tenants/<from>` を削除する。
 
 ## org group のテナント修飾への移行（shiki-admin migrate-org-groups）
 
@@ -218,3 +221,9 @@ shiki-admin retenant --from default --to acme --execute
    （LDAP 側のマッパー設定を直してから再実行）。再実行して「移行する旧 org group はありません」になれば完了。
 4. 新しい shiki-server を起動する。dev の compose は realm を初回だけ import するため、既存の Keycloak
    ボリュームを使い続けるなら同じ CLI で移行するか、Keycloak の DB を作り直す。
+
+## アップグレード時の注意
+
+- **#816 のリリースは旧バイナリと並走させない（非ローリングで切り替える）**: 監査チェーンの直列化ロックが
+  32bit → 64bit キーに変わり、新旧が同じ (tenant, org) を別キーでロックするため、並走中の chained 書込で
+  ハッシュチェーンが分岐し得る。compose は単一コンテナなので停止 → 起動の順で入れ替える。

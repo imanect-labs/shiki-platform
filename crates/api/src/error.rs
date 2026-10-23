@@ -98,6 +98,13 @@ impl From<storage::StorageError> for ApiError {
             SE::Forbidden => ApiError::Forbidden,
             SE::NotFound => ApiError::NotFound,
             SE::Conflict => ApiError::Conflict,
+            // 版の衝突は今の版を返す（クライアントが「最新を開く／上書き」を選べるように）。
+            SE::VersionConflict { current } => ApiError::ConflictJson(json!({
+                "status": 409,
+                "title": "Conflict",
+                "code": "version_conflict",
+                "current_version": current,
+            })),
             // Invalid と整合性エラー（宣言ハッシュ不一致・staging 未完了等）はどちらも
             // クライアント起因の 400。
             SE::Invalid(msg) | SE::Integrity(msg) => ApiError::BadRequest(msg),
@@ -255,6 +262,13 @@ mod tests {
         assert!(matches!(ApiError::from(SE::Forbidden), ApiError::Forbidden));
         assert!(matches!(ApiError::from(SE::NotFound), ApiError::NotFound));
         assert!(matches!(ApiError::from(SE::Conflict), ApiError::Conflict));
+        match ApiError::from(SE::VersionConflict { current: 7 }) {
+            ApiError::ConflictJson(body) => {
+                assert_eq!(body["code"], "version_conflict");
+                assert_eq!(body["current_version"], 7);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
         assert!(matches!(
             ApiError::from(SE::Invalid("bad".into())),
             ApiError::BadRequest(_)
