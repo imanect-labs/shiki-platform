@@ -118,9 +118,19 @@ pub async fn record_on(
         None
     };
 
-    // metadata は serde_json の既定（キーを並べ替えた Map・空白なし）で文字列にする。jsonb から
-    // 読み戻して同じ形に直せるので、検証時に同じ文字列を作り直せる。
     let metadata_str = entry.metadata.to_string();
+    // ハッシュに入れる metadata は、連結行では **Postgres が jsonb として表記した文字列**にする（#828）。
+    // serde_json の表記は jsonb を往復すると変わることがある（`1e16` が整数の桁に展開される・
+    // キーの並び・空白）ので、記録時も検証時も同じ `::jsonb::text` を使う。連結しない行は検証しない
+    // ので、往復を省いて serde_json の表記のまま計算する。
+    let hashed_metadata = if chained {
+        sqlx::query_scalar::<_, String>("SELECT $1::jsonb::text")
+            .bind(&metadata_str)
+            .fetch_one(&mut *conn)
+            .await?
+    } else {
+        metadata_str.clone()
+    };
     // 作成時刻もハッシュに入れる（#828）。DB の既定値ではなくここで決め、マイクロ秒に丸めて
     // そのまま保存する（timestamptz の精度と揃え、検証で同じ値を作り直せるようにする）。
     let created_at = Utc::now().trunc_subsecs(6);
@@ -135,7 +145,7 @@ pub async fn record_on(
         object_id: entry.object_id,
         decision: entry.decision.as_str(),
         trace_id: entry.trace_id,
-        metadata: &metadata_str,
+        metadata: &hashed_metadata,
         created_at,
     });
 
@@ -167,7 +177,8 @@ pub async fn record_on(
 ///
 /// - 1: `sha256(prev_hash | tenant_id | org | actor | action | object_type | object_id | decision | trace_id | metadata)`
 ///   （#828 より前の行。作成時刻を含まない）
-/// - 2: 1 の末尾に `| v2 | created_at（UNIX マイクロ秒）` を足したもの
+/// - 2: 1 の末尾に `| v2 | created_at（UNIX マイクロ秒）` を足したもの。metadata は Postgres の
+///   `jsonb::text` の表記（版 1 は serde_json の表記）
 pub const HASH_VERSION: i16 = 2;
 
 /// ハッシュの入力（記録と検証で同じものを使う）。
@@ -183,7 +194,7 @@ pub struct HashInput<'a> {
     pub object_id: &'a str,
     pub decision: &'a str,
     pub trace_id: Option<&'a str>,
-    /// metadata の文字列（serde_json の既定の表記）。
+    /// metadata の文字列（版 2 は Postgres の `jsonb::text`、版 1 は serde_json の既定の表記）。
     pub metadata: &'a str,
     pub created_at: DateTime<Utc>,
 }

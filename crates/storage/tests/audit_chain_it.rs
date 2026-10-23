@@ -73,7 +73,18 @@ async fn chained(pool: &PgPool, c: &AuthContext, n: i64) -> i64 {
             object_id: &format!("f{n}"),
             decision: Decision::Allow,
             trace_id: Some("tr"),
-            metadata: json!({"n": n, "nested": {"b": 1, "a": [1.5, "x"]}}),
+            // jsonb を往復すると serde_json と表記が変わる値を混ぜる（指数表記・負のゼロ・
+            // キーの並び・エスケープ・大きな整数）。記録したままなら崩れていないこと（Codex P2）。
+            metadata: json!({
+                "n": n,
+                "nested": {"b": 1, "a": [1.5, "x"]},
+                "exp": 1e16,
+                "neg_zero": -0.0,
+                "tiny": 1.0e-7,
+                "big": u64::MAX,
+                "text": "改行\n\"引用\" \u{1F600}",
+                "zz": null,
+            }),
         },
         Chain::Yes,
     )

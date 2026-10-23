@@ -32,10 +32,13 @@ const REASON: Record<string, string> = {
 export function VerifyChainButton() {
   const [open, setOpen] = React.useState(false);
   const [progress, setProgress] = React.useState<Progress | null>(null);
-  const cancelled = React.useRef(false);
+  // 実行ごとの番号。閉じる・もう一度確かめると番号が進み、古い実行は結果を書かず続きも取りに行かない。
+  const runId = React.useRef(0);
+  React.useEffect(() => () => void (runId.current += 1), []);
 
   const run = React.useCallback(async () => {
-    cancelled.current = false;
+    const id = ++runId.current;
+    const stale = () => id !== runId.current;
     let checked = 0;
     let legacy = 0;
     let after: number | null = null;
@@ -44,7 +47,7 @@ export function VerifyChainButton() {
       // 1 回で確かめる行数に上限があるので、末尾か崩れた行まで続ける。
       for (;;) {
         const r: ChainReport = await verifyAuditChain(after);
-        if (cancelled.current) return;
+        if (stale()) return;
         checked += r.checked;
         legacy += r.legacy;
         if (r.broken) {
@@ -59,7 +62,7 @@ export function VerifyChainButton() {
         setProgress({ state: "running", checked, legacy });
       }
     } catch (e) {
-      if (!cancelled.current) {
+      if (!stale()) {
         setProgress({ state: "error", checked, message: e instanceof Error ? e.message : String(e) });
       }
     }
@@ -68,7 +71,7 @@ export function VerifyChainButton() {
   const onOpenChange = (o: boolean) => {
     setOpen(o);
     if (o) void run();
-    else cancelled.current = true;
+    else runId.current += 1;
   };
 
   return (
