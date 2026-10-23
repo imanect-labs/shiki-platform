@@ -32,7 +32,8 @@ pub(crate) const MAX_LIMIT: u32 = 200;
 /// 集計結果の件数の上限（`group_limit`）。
 pub(crate) const MAX_GROUP_LIMIT: u32 = 1_000;
 
-/// 比較演算子（workflow IR の `CmpOp` と同じ語彙・snake_case）。
+/// 比較演算子（workflow IR の `CmpOp` と同じ語彙・snake_case。語彙の一致は
+/// `crates/workflow-engine/tests/cmp_op_vocab.rs` が生成型の列挙値で検査する）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CondOp {
