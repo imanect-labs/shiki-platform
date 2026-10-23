@@ -40,6 +40,10 @@
 //!   同一形状のクエリはバイト同一の SQL テキストになり、プランキャッシュに認可材料を載せない。
 //! - **クエリコンパイラ v2（Task 15.3）**: 条件木・複数ソート・keyset・自前オプティマイザ O1
 //!   （上限付き件数探索・4 戦略・予算付き切替・`Guard(P)`・事後検査）。[`query`]
+//! - **RAG 統合スパイク（Task 15.8）**: テーブル単位のオプトイン（`TableSchema.rag`）でレコード 1 件 =
+//!   1 チャンク。post-filter は候補 id を可視集合に絞るクエリ 1 本（[`DataStore::rag_visible_records`]・
+//!   OpenFGA のタプルを増やさない）。投影にマスク対象列は入れられず、`field_policy` の変更は索引の世代を変えて
+//!   破棄・再構築させる。増分索引は outbox の別 consumer（[`RagIndexWorker`]・docs/data/rag-integration.md）
 
 mod bulk;
 mod cursor;

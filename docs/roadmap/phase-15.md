@@ -450,6 +450,9 @@
 - **受け入れ条件**:
   - [ ] `SearchResult` 多型化と post-filter 一般化の設計が docs に落ちている
   - [ ] 行レベル権限が検索結果に効くことを検証する PoC がある
+- **成果物**: 設計 [data/rag-integration.md](../data/rag-integration.md)。PoC は `crates/data/src/rag/`・
+  `crates/rag/src/record_source.rs`・`crates/rag/tests/record_search_poc_it.rs`（実 PG ＋実 OpenFGA・
+  取得段は in-memory の偽物）。本番の配線（sink 実装・`SearchService` の切替・API 公開）は同文書 §8 の残作業
 
 ---
 
