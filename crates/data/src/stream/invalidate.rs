@@ -33,6 +33,25 @@ impl DataStore {
         self.bump_authz_epoch(&ctx.tenant_id, table_id).await
     }
 
+    /// テーブルの ReBAC（タプル）を本 crate の外で付け外しした後に呼ぶ入口（best-effort）。
+    ///
+    /// ① 配信の世代を進めて購読の認可材料を次のバッチで引き直させ（[`Self::notify_authz_changed`]）、
+    /// ② 材料化の前提（テーブル viewer の範囲で派生値が変わらないこと）を検査し直す
+    /// （[`Self::reverify_materialization`]・data-platform §7.4）。どちらも呼ばなくても TTL・次の読取で
+    /// 追いつくので、失敗は呼び出し側の操作を止めずログに留める。ミニアプリのインストール・
+    /// ワークフローの委譲（ワークフロー主体への data_table タプル）から呼ぶ（Task 15.7）。
+    pub async fn after_table_rebac_changed(&self, ctx: &AuthContext, table_id: Uuid) {
+        if let Err(e) = self.notify_authz_changed(ctx, Some(table_id)).await {
+            tracing::warn!(error = %e, %table_id, "テーブル ReBAC 変更後の配信の世代更新に失敗");
+        }
+        match self.reverify_materialization(ctx, table_id).await {
+            Ok(_) | Err(DataError::NotFound) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, %table_id, "テーブル ReBAC 変更後の材料化の再検査に失敗");
+            }
+        }
+    }
+
     pub(crate) async fn bump_authz_epoch(
         &self,
         tenant_id: &str,

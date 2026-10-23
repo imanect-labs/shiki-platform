@@ -317,6 +317,10 @@ impl InstallService {
                         .map_err(|e| AppPlatformError::Internal(format!("authz: {e}")))?;
                 }
             }
+            // テーブルの ReBAC を data の外で変えた: 配信（SSE）の認可材料を次のバッチで引き直させ、
+            // 材料化の前提（viewer の範囲で値が変わらないか）を検査し直す（data-platform §7.4・§9.4）。
+            // どちらも呼ばなくても次の読取・TTL で追いつくため、失敗はインストールを止めない。
+            self.data.after_table_rebac_changed(ctx, table.id).await;
         }
 
         // ⑤ Keycloak client 登録（B1 は常時・B2 は server 宣言時のみ）。決定的 client_id
