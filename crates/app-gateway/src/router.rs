@@ -59,14 +59,13 @@ pub struct GatewayState {
     /// per-call OpenFGA（ハンドラの第4ゲート）に使う認可クライアント。
     pub authz: Arc<dyn AuthzClient>,
     pub audit: AuditRecorder,
-    /// tenant クレームを必須にするか（SaaS `multi` は true・fail-closed）。
+    /// `tenant_id` の解決規則（内部 API の `resolve_tenant_id` と単一定義・#808）。
     ///
-    /// `multi` テナンシーで true にすると、tenant クレームの無いトークンは `default_tenant` へ
-    /// フォールバックせず拒否する（他テナントの既定テナントへ紛れ込むのを防ぐ）。`single`
-    /// （オンプレ/cell）は false でフォールバックを許す。
-    pub require_tenant_claim: bool,
-    /// single テナントのフォールバック（`require_tenant_claim=false` のときのみ使う）。
-    pub default_tenant: String,
+    /// `single`（オンプレ/cell）は [`authz::TenantSource::Fixed`] で設定の固定値を使い、
+    /// トークンの tenant クレームは**無視**する（クレームでテナントを選ばせない）。
+    /// `multi`（SaaS）は [`authz::TenantSource::Claim`] で tenant クレームを必須にし、
+    /// 欠落は既定テナントへフォールバックせず拒否する（fail-closed）。
+    pub tenant_source: authz::TenantSource,
     pub default_org: String,
     /// 能力アダプタの委譲先（Task 9.8）。
     pub caps: CapabilityDeps,
@@ -233,17 +232,12 @@ async fn authorize(
     let token = bearer(req)?;
     let identity = verify_gateway_token(&token, &*state.keys, &state.token_cfg).await?;
 
-    // テナント解決。multi では tenant クレーム必須（欠落は fail-closed で拒否＝既定テナントへ
-    // 紛れ込ませない）。single はフォールバックを許す。
-    let tenant = match identity.tenant.clone() {
-        Some(t) if !t.is_empty() => t,
-        _ if state.require_tenant_claim => {
-            return Err(GatewayError::Unauthenticated(
-                "tenant クレームがありません".into(),
-            ));
-        }
-        _ => state.default_tenant.clone(),
-    };
+    // テナント解決（内部 API と同じ規則）。multi では tenant クレーム必須（欠落は fail-closed で
+    // 拒否＝既定テナントへ紛れ込ませない）。single は設定の固定値を使いクレームを無視する。
+    let tenant = state
+        .tenant_source
+        .resolve(identity.tenant.as_deref())
+        .map_err(|e| GatewayError::Unauthenticated(e.to_string()))?;
     // org は解決済み tenant 配下の group（`/tenants/<tenant>/<org>`）から解決する
     // （内部 API の resolve_org と同一規則・authz::org_group が単一定義・#811）。
     // 該当 group の無いトークンは設定の default_org へフォールバックする。
@@ -295,10 +289,9 @@ async fn authorize(
 /// テナンシーモードから group パスの解釈方式を決める（内部 API の `group_layout` と同じ写し）。
 /// multi（tenant クレーム必須）は自テナント配下のみ、single は旧形式（直下 group）も許す。
 fn group_layout(state: &GatewayState) -> GroupLayout {
-    if state.require_tenant_claim {
-        GroupLayout::TenantScoped
-    } else {
-        GroupLayout::TenantScopedOrLegacy
+    match state.tenant_source {
+        authz::TenantSource::Claim => GroupLayout::TenantScoped,
+        authz::TenantSource::Fixed(_) => GroupLayout::TenantScopedOrLegacy,
     }
 }
 

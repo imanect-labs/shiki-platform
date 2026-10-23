@@ -4,7 +4,7 @@
 //! ハンドラはこの extractor 経由でしか `AuthContext` を得られないため、
 //! 「AuthContext を経由しないデータアクセス」を構造的に書きにくくする継ぎ目になる。
 
-use authz::{AuthContext, GroupLayout, Principal};
+use authz::{AuthContext, GroupLayout, Principal, TenantResolveError};
 use axum::{extract::FromRequestParts, http::request::Parts};
 
 use crate::{
@@ -93,22 +93,28 @@ pub(crate) fn group_layout(auth: &AuthConfig) -> GroupLayout {
 ///   黙って融合させない）。
 ///
 /// いずれのモードでも解決不能なら `tenant_id` 無しの `AuthContext` を構築させず拒否する。
+/// 規則の本体は [`authz::TenantSource::resolve`]（公開 API ゲートウェイと単一定義・#808）で、
+/// ここは設定からの写し（[`AuthConfig::tenant_source`]）と api 層のエラー（401）への写像のみ。
 pub(crate) fn resolve_tenant_id(
     principal: &Principal,
     auth: &AuthConfig,
 ) -> Result<String, ApiError> {
-    let tenant_id = match auth.tenancy {
-        Tenancy::Multi => non_empty(principal.tenant_id.as_deref()).ok_or_else(|| {
-            tracing::warn!("multi-tenant モードで claim `tenant` が欠落（fail-closed で拒否）");
+    auth.tenant_source()
+        .resolve(principal.tenant_id.as_deref())
+        .map_err(|e| {
+            match &e {
+                TenantResolveError::MissingClaim => {
+                    tracing::warn!("multi-tenant モードで claim `tenant` が欠落（fail-closed で拒否）");
+                }
+                TenantResolveError::EmptyFixed => {
+                    tracing::error!("single-tenant モードで auth.tenant_id が空（設定ミス）");
+                }
+                TenantResolveError::Invalid(violation) => {
+                    tracing::warn!(%violation, "tenant_id が識別子ポリシー違反（fail-closed で拒否）");
+                }
+            }
             ApiError::Unauthorized
-        })?,
-        Tenancy::Single => non_empty(auth.tenant_id.as_deref()).ok_or_else(|| {
-            tracing::error!("single-tenant モードで auth.tenant_id が空（設定ミス）");
-            ApiError::Unauthorized
-        })?,
-    };
-    validate_tenant_id(&tenant_id)?;
-    Ok(tenant_id)
+        })
 }
 
 /// `tenant_id` に FGA 識別子の名前空間区切り・構造文字が混入していないことを検証する（SAAS.1）。
@@ -124,17 +130,10 @@ pub(crate) fn validate_tenant_id(tenant_id: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// trim して空でなければ所有 `String` を返す。
-fn non_empty(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Tenancy;
 
     fn principal_with_groups(groups: &[&str]) -> Principal {
         Principal {

@@ -21,8 +21,12 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{
-    error::ApiError, extract::validate_tenant_id, keycloak_admin::KeycloakAdmin,
-    middleware::auth::verify_access_token, state::AppState,
+    config::{AuthConfig, Tenancy},
+    error::ApiError,
+    extract::validate_tenant_id,
+    keycloak_admin::KeycloakAdmin,
+    middleware::auth::verify_access_token,
+    state::AppState,
 };
 
 /// 認証済み provisioner の識別子（監査 actor 用・#91 M-7）。`azp`（トークン発行 client）を
@@ -103,6 +107,7 @@ pub struct CreateTenantResponse {
         (status = 201, description = "テナントを作成した（既存なら現状を返す）", body = CreateTenantResponse),
         (status = 400, description = "不正な tenant_id / 入力"),
         (status = 401, description = "provisioner トークンが無効"),
+        (status = 409, description = "auth.tenancy=single のためテナントを作成できない"),
     ),
     security(("provisioner_token" = [])),
 )]
@@ -111,6 +116,10 @@ pub async fn create_tenant(
     Extension(actor): Extension<ProvisionerIdentity>,
     Json(req): Json<CreateTenantRequest>,
 ) -> Result<(StatusCode, Json<CreateTenantResponse>), ApiError> {
+    // single テナンシーでは全ログインが固定の `auth.tenant_id` へ解決されるため、ここで
+    // テナントを作っても誰もそのテナントに入らず、利用者は固定テナントへ融合する（#808）。
+    // 副作用（tenant 行・Keycloak・FGA）の前に fail-closed で拒否する。
+    reject_unless_multi_tenant(&state.config.auth)?;
     // tenant_id は FGA 識別子/オブジェクトキーの名前空間になるため、空と禁止文字を拒否
     // （resolve_tenant_id と同一ルール。空はパスで DELETE できない幽霊テナントを生む）。
     if req.tenant_id.trim().is_empty() {
@@ -197,6 +206,7 @@ pub async fn create_tenant(
     responses(
         (status = 204, description = "テナントを撤去した（不在/撤去済みでも成功）"),
         (status = 401, description = "provisioner トークンが無効"),
+        (status = 409, description = "auth.tenancy=single のためテナントを削除できない"),
     ),
     security(("provisioner_token" = [])),
 )]
@@ -205,6 +215,10 @@ pub async fn delete_tenant(
     Extension(actor): Extension<ProvisionerIdentity>,
     Path(tenant_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    // single では全利用者が固定の `auth.tenant_id` に載っている。`mark_deleting` は登録簿に行が
+    // 無くても冪等成功で先へ進むため、ここを通すと固定テナント（全データ）を purge し得る。
+    // 作成と対称に fail-closed で拒否する（#808）。
+    reject_unless_multi_tenant(&state.config.auth)?;
     validate_tenant_id(&tenant_id)
         .map_err(|_| ApiError::BadRequest("tenant_id に使用できない文字が含まれています".into()))?;
     // 1. deleting へ（不在なら冪等成功）。org は登録簿から得る（無ければ tenant_id と同値とみなす）。
@@ -402,6 +416,25 @@ async fn purge_tenant_data(
     Ok(())
 }
 
+/// テナント作成は `auth.tenancy=multi` でのみ許す（#808）。
+///
+/// single（オンプレ/cell）は `resolve_tenant_id` が全ログインを固定の `auth.tenant_id` へ
+/// 解決するため、作ったテナントへは誰も入れない。SaaS で `tenancy=multi` を設定し忘れた
+/// まま運用を始めると「テナント A・B を作ったのに全員が `default` に融合する」状態になるので、
+/// 作成の入口で明示エラー（409）にして誤設定を表に出す。
+fn reject_unless_multi_tenant(auth: &AuthConfig) -> Result<(), ApiError> {
+    if auth.tenancy == Tenancy::Multi {
+        return Ok(());
+    }
+    tracing::warn!(
+        "admin API: auth.tenancy=single のためテナントの作成・削除を拒否（SaaS なら auth.tenancy=multi を設定）"
+    );
+    Err(ApiError::ConflictJson(serde_json::json!({
+        "code": "tenancy_single",
+        "message": "auth.tenancy=single ではテナントを作成・削除できません（SaaS は auth.tenancy=multi を設定してください）",
+    })))
+}
+
 /// 一時パスワードを生成する（24 文字英数）。初回ログインで変更必須（UPDATE_PASSWORD）。
 fn generate_temp_password() -> String {
     rand::thread_rng()
@@ -409,4 +442,36 @@ fn generate_temp_password() -> String {
         .take(24)
         .map(char::from)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn auth(tenancy: Tenancy) -> AuthConfig {
+        serde_json::from_value(serde_json::json!({
+            "issuer": "http://localhost/realms/shiki",
+            "audience": "shiki-api",
+            "jwks_ttl_secs": 300,
+            "client_id": "shiki-web",
+            "redirect_uri": "http://localhost:3000/auth/callback",
+            "post_logout_redirect_uri": "http://localhost:3000/",
+            "scopes": "openid profile",
+            "tenancy": tenancy,
+            "tenant_id": "default",
+            "provisioner_client_id": "shiki-provisioner",
+            "provisioner_client_secret": "secret",
+        }))
+        .expect("auth config")
+    }
+
+    #[test]
+    fn tenant_creation_requires_multi_tenancy() {
+        assert!(reject_unless_multi_tenant(&auth(Tenancy::Multi)).is_ok());
+        // single は provisioner が揃っていても作成を拒否する（固定テナントへの融合を防ぐ）。
+        assert!(matches!(
+            reject_unless_multi_tenant(&auth(Tenancy::Single)),
+            Err(ApiError::ConflictJson(_))
+        ));
+    }
 }

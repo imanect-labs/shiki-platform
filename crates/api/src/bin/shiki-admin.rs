@@ -2,11 +2,15 @@
 //!
 //! ```text
 //! shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]
+//! shiki-admin secrets-reencrypt [--execute] [--batch <n>]
 //! shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]
 //! shiki-admin migrate-org-groups [--only <slug>]... [--exclude <slug>]... [--execute]
 //! ```
 //!
+//! `secrets-reencrypt` は旧版（AAD なし）シークレットを行束縛の現行版へ移す（#814・
+//! `shiki_admin/secrets_reencrypt.rs`）。
 //! `audit-viewer`: 監査閲覧者（`organization#audit_viewer`・#634）を付ける・外す（即時実行）。
+//! 以下は `retenant` の説明。
 //!
 //! `migrate-org-groups` はテナント無修飾の旧 org group（`/acme`）を `/tenants/<tenant>/...` へ
 //! 移す（#811・`shiki_admin/org_groups.rs`）。以下は `retenant` の説明。
@@ -46,6 +50,8 @@ mod audit_viewer;
 mod keys;
 #[path = "shiki_admin/org_groups.rs"]
 mod org_groups;
+#[path = "shiki_admin/secrets_reencrypt.rs"]
+mod secrets_reencrypt;
 use keys::{pre_migration_object_key, renamespace_object_key};
 
 // 移行対象テーブルは `storage::tenant_scope` が information_schema から導出する（#420）。
@@ -58,11 +64,15 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("retenant") => retenant(&args[1..]).await,
+        Some("secrets-reencrypt") => secrets_reencrypt::run(&args[1..]).await,
         Some("audit-viewer") => audit_viewer::run(&args[1..]).await,
         Some("migrate-org-groups") => org_groups::run(&args[1..]).await,
         _ => {
             eprintln!(
-                "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]\n       shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]\n       shiki-admin migrate-org-groups [--only <slug>]... [--exclude <slug>]... [--execute]"
+                "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]\n       \
+                 shiki-admin secrets-reencrypt [--execute] [--batch <n>]\n       \
+                 shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]\n       \
+                 shiki-admin migrate-org-groups [--only <slug>]... [--exclude <slug>]... [--execute]"
             );
             bail!("不明なサブコマンド");
         }

@@ -890,6 +890,8 @@ async fn admin_routes_absent_without_provisioner_config() {
 async fn admin_requires_provisioner_azp() {
     let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
     let mut config = config_with(&idp, vec![]);
+    // テナント作成は multi でのみ許すため（#808）、ハンドラ到達の検証は multi で行う。
+    config.auth.tenancy = Tenancy::Multi;
     config.auth.provisioner_client_id = Some("shiki-provisioner".into());
     config.auth.provisioner_client_secret = Some("dev-secret".into());
     let app = build_router(state_with(config));
@@ -956,6 +958,68 @@ async fn admin_requires_provisioner_azp() {
         StatusCode::BAD_REQUEST,
         "azp 一致で middleware を通過し、tenant_id 検証の 400 に到達する"
     );
+}
+
+/// single テナンシーではテナント作成を 409 で拒否する（#808）。provisioner が揃っていても
+/// 全ログインは固定 `auth.tenant_id` へ解決されるため、作ったテナントへは誰も入れない。
+/// 拒否は副作用より前（DB/Keycloak に到達しない: DB URL は到達不能なダミー）。
+#[tokio::test]
+async fn admin_create_tenant_rejected_in_single_tenancy() {
+    let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
+    let mut config = config_with(&idp, vec![]);
+    assert_eq!(config.auth.tenancy, Tenancy::Single);
+    config.auth.provisioner_client_id = Some("shiki-provisioner".into());
+    config.auth.provisioner_client_secret = Some("dev-secret".into());
+    let app = build_router(state_with(config));
+
+    let create = |token: Option<String>| {
+        let mut req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/tenants")
+            .header("content-type", "application/json");
+        if let Some(t) = token {
+            req = req.header("authorization", format!("Bearer {t}"));
+        }
+        req.body(Body::from(
+            r#"{"tenant_id":"acme","display_name":"Acme","admin_email":"a@acme.example"}"#,
+        ))
+        .unwrap()
+    };
+
+    // 認証は先に効く（無トークンは 401 のまま・admin プレーンの存在は変えない）。
+    let resp = app.clone().oneshot(create(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // 正しい provisioner でも single なら 409（固定テナントへの融合を防ぐ）。
+    let resp = app
+        .clone()
+        .oneshot(create(Some(provisioner_token("shiki-provisioner"))))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["code"], "tenancy_single");
+
+    // 削除も対称に 409（固定テナント `default` を丸ごと purge させない）。
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri("/admin/tenants/default")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", provisioner_token("shiki-provisioner")),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["code"], "tenancy_single");
 }
 
 /// token/JWKS ＋ Keycloak admin REST（groups/users）を兼ねるモック IdP。
@@ -1082,6 +1146,7 @@ async fn admin_tenant_lifecycle_end_to_end() {
     let idp = spawn_idp_with_admin().await;
     let mut config = config_with(&idp, vec![]);
     config.database.url = db_url;
+    config.auth.tenancy = Tenancy::Multi;
     config.auth.provisioner_client_id = Some("shiki-provisioner".into());
     config.auth.provisioner_client_secret = Some("dev-secret".into());
     let app = build_router(state_with(config));

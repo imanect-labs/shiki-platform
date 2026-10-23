@@ -7,8 +7,14 @@ SaaS のテナント作成・削除・名前空間移行の運用手順。実装
 
 - `auth.provisioner_client_id` / `auth.provisioner_client_secret` が設定されていること
   （未設定なら `/admin/*` はルート自体が存在しない＝fail-closed）。
+- `auth.tenancy=multi` であること（`SHIKI__AUTH__TENANCY=multi`）。single のままテナント作成を呼ぶと
+  409 `tenancy_single` で拒否される（single は全ユーザーを固定テナントに解決するため、作ったテナントに誰も入れない・#808）。
+  single＋provisioner 設定時は起動ログに warn が出る。
 - provisioner は Keycloak の confidential client（service account 有効・realm-management ロール
   `manage-users` / `manage-realm` / `query-*` 付与・audience `shiki-api`）。dev は realm import 済み。
+- realm の User Profile で `tenant` / `roles` を**宣言済み・管理者のみ閲覧/編集**であること
+  （`deploy/keycloak/README.md`「User Profile」・#809）。宣言が無いと Keycloak 26 は admin REST 経由の
+  `tenant` も保存せず、作成したテナントの初期 admin がログインできない（プロビジョニングが黙って効かない）。
 
 ## テナント作成（1 操作）
 
@@ -118,6 +124,24 @@ member タプルを足しても次回ログインで剥がれる**。本番の S
 - `tenants` はトップレベル group 名として予約。テナントルート（`/tenants/<tenant>`）自体は org にならない。
   **オンプレの注意**: 既存 realm に `tenants` という名前のトップレベル group があると、その配下は従来解釈でも
   org/部署として読まれなくなる（他テナントのものとみなす）。該当する場合はアップグレード前に名前を変える。
+
+## シークレット暗号文の行束縛への移行（shiki-admin secrets-reencrypt）
+
+#814 以降、シークレットの暗号文は AAD で行（`tenant_id`・`org`・`secret_id`）に束縛される（`enc_version=1`）。
+それ以前に作られた行（`enc_version=0`）は読み出し時に遅延で移行されるが、**使われない行は旧版のまま残り、
+暗号素材を別の行へ複製すると復号できてしまう**。デプロイ後に一度、明示的に移行する。
+
+```bash
+shiki-admin secrets-reencrypt                     # dry-run（旧版の件数だけ表示）
+shiki-admin secrets-reencrypt --execute           # 行単位に再暗号化（DEK 再利用・冪等・稼働中に実行可）
+shiki-admin secrets-reencrypt --execute --batch 500
+```
+
+- 復号できない行は書き換えずに残し、件数を表示して**非 0 で終了**する（改竄・鍵不一致の疑い。調査対象）。
+- 新版で書かれた行は旧バイナリでは復号できない。**移行後のバイナリのロールバックは不可**と考えること。
+- **旧バイナリと新バイナリを並走させない**（ローリング更新しない・停止して入れ替える）。旧バイナリの rotate は
+  `enc_version` を書かないため、新バイナリが移行した行を旧バイナリが書き直すと復号不能な行ができる。
+- バックアップ内の旧版暗号文は引き続き旧形式で有効（保持期限の経過で消える）。
 
 ## テナント名前空間の移行（shiki-admin retenant）
 
