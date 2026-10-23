@@ -775,6 +775,15 @@ impl DataStore {
                 }
                 Ok(true)
             }
+            Some("purge") => {
+                // 大きなテーブルの索引の降格の後片付け（crate::index::promote）。
+                for _ in 0..CHUNKS_PER_JOB {
+                    if self.index_purge_step(&job.tenant_id, table_id).await? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
             Some("parity") => {
                 let report = match self.verify_index_parity(&job.tenant_id, table_id).await {
                     Ok(r) => r,

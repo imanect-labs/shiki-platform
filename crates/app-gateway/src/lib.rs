@@ -84,7 +84,10 @@ impl From<data::DataError> for GatewayError {
             DataError::NotFound => GatewayError::NotFound,
             DataError::Forbidden => GatewayError::Forbidden("この操作は許可されていません".into()),
             DataError::Invalid(m) => GatewayError::Invalid(m),
-            DataError::Conflict(m) => GatewayError::Conflict(m),
+            DataError::Conflict(m) | DataError::Gone(m) => GatewayError::Conflict(m),
+            e @ (DataError::IndexPreparing { .. } | DataError::IndexApprovalRequired { .. }) => {
+                GatewayError::Conflict(e.to_string())
+            }
             DataError::Internal(m) => {
                 tracing::error!(error = %m, "gateway data 内部エラー");
                 GatewayError::Internal(INTERNAL_MSG.into())

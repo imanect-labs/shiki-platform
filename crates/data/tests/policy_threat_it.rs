@@ -7,6 +7,8 @@
 //! ⑧ リンク越しの lookup / rollup / 数式が参照先の 4 階層を閲覧者本人の権限で適用する（PIT-20）
 //! ⑨ 材料化した計算列が、参照先の権限の後付け（row_policy / field_policy / 個別共有 / ReBAC）で
 //!    同一 Tx に破棄され、値が読めず・ソートに使えなくなる（PIT-71）
+//! ⑩ SSE 差分配信（Task 15.6）でも、見えない行・マスク列・可視→不可視の行の値が流れない
+//!    （PIT-73。購読者ごとに行述語とマスクを評価し、可視→不可視は id だけの removed）
 //!
 //! 実 Postgres（`STORAGE_TEST_DATABASE_URL`）＋実 OpenFGA（`OPENFGA_TEST_URL`）で実行する。
 
@@ -143,6 +145,7 @@ fn expense_schema_with_policy() -> TableSchema {
 /// alice の行と bob の行を 1 件ずつ入れる。
 struct Fixture {
     store: DataStore,
+    authz: Arc<dyn AuthzClient>,
     alice: AuthContext,
     bob: AuthContext,
     table_id: Uuid,
@@ -195,11 +198,26 @@ async fn fixture(pool: PgPool, authz: Arc<dyn AuthzClient>) -> Fixture {
         .expect("bob rec");
     Fixture {
         store,
+        authz,
         alice,
         bob,
         table_id: table.id,
         alice_rec: alice_rec.id,
         bob_rec: bob_rec.id,
+    }
+}
+
+impl Fixture {
+    /// テーブルの editor を付与する（このテストファイルの他の検証と同じ ReBAC の形）。
+    async fn authz_grant_editor(&self, who: &AuthContext, table: Uuid) {
+        self.authz
+            .write_tuple(
+                &who.subject(),
+                Relation::Editor,
+                &self.alice.ns().data_table(&table.to_string()),
+            )
+            .await
+            .unwrap();
     }
 }
 
@@ -1546,4 +1564,120 @@ async fn long_derived_text_checks_do_not_leak_invisible_rows() {
             .collect();
         assert_eq!(got, want, "{op:?}");
     }
+}
+
+/// ⑩ SSE 差分配信: 見えない行・マスク列の値はストリームに乗らない。可視→不可視の行は id だけの
+/// `record.removed` が届き、値は再送されない（PIT-73）。
+#[tokio::test]
+async fn sse_never_streams_invisible_rows_or_masked_fields() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let f = fixture(pool, authz).await;
+    // マスク列つきの表（amount は経理だけが読める）。
+    let mut schema = expense_schema_with_policy();
+    schema.field_policy = vec![FieldPolicy {
+        field: "amount".into(),
+        readable_by: PolicyExpr::HasRole {
+            role: "keiri".into(),
+            subtree: true,
+        },
+    }];
+    let table = f
+        .store
+        .create_table(
+            &f.alice,
+            NewDataTable {
+                name: "masked-expense".into(),
+                schema,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    f.authz_grant_editor(&f.bob, table.id).await;
+    let mut stream = f
+        .store
+        .subscribe_records(&f.bob, table.id, None, None)
+        .await
+        .unwrap();
+    let hidden = f
+        .store
+        .create_record(
+            &f.alice,
+            table.id,
+            json!({"applicant": "alice", "amount": 7_777_777, "status": "draft", "memo": "機密メモ"}),
+            None,
+        )
+        .await
+        .unwrap();
+    let mine = f
+        .store
+        .create_record(
+            &f.alice,
+            table.id,
+            json!({"applicant": "bob", "amount": 5_555_555, "status": "draft", "memo": "見える"}),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut seen: Vec<String> = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut got_mine = false;
+    while std::time::Instant::now() < deadline && !got_mine {
+        if let Ok(Some(m)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await
+        {
+            if let data::StreamEvent::Upserted(u) = &m.event {
+                assert_eq!(u.record.id, mine.id, "見えない行は届かない");
+                assert!(u.record.data.get("amount").is_none(), "マスク列は届かない");
+                got_mine = true;
+            }
+            seen.push(format!("{} {}", m.event.name(), m.event.data_json()));
+        }
+    }
+    assert!(got_mine, "見える行は届く: {seen:?}");
+    // bob が自分の行を alice の行へ付け替える（可視 → 不可視）。値（memo）も書き換える。
+    f.store
+        .update_record(
+            &f.bob,
+            table.id,
+            mine.id,
+            json!({"applicant": "alice", "memo": "付け替え後の機密"}),
+            1,
+            None,
+        )
+        .await
+        .unwrap();
+    let mut removed = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline && !removed {
+        if let Ok(Some(m)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await
+        {
+            let line = format!("{} {}", m.event.name(), m.event.data_json());
+            if let data::StreamEvent::Removed(r) = &m.event {
+                assert_eq!(r.record_id, mine.id);
+                assert_eq!(m.event.data_json().as_object().unwrap().len(), 1, "id だけ");
+                removed = true;
+            }
+            seen.push(line);
+        }
+    }
+    assert!(removed, "可視→不可視は removed が届く: {seen:?}");
+    let all = seen.join("\n");
+    for leak in [
+        hidden.id.to_string(),
+        "機密メモ".into(),
+        "付け替え後の機密".into(),
+        "7777777".into(),
+        "5555555".into(),
+    ] {
+        assert!(!all.contains(&leak), "{leak} が SSE に出た: {all}");
+    }
+    assert!(
+        all.contains("見える"),
+        "見える行（マスク外の列）は届く: {all}"
+    );
+    assert_eq!(f.store.stream_verify_drops(), 0);
 }

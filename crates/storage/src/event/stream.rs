@@ -214,6 +214,35 @@ impl StreamBounds {
     }
 }
 
+/// 台帳 consumer がまだ配送（採番）していない、テナント・テーブルのドメインイベントの本文
+/// （`payload`・`private_payload`）。スナップショット読取が「基準位置より後の変更」を引くのに使う。
+///
+/// `payload ->> 'table_id'` は索引（`storage_event_outbox_data_change_idx`）の式と同じ形で書く。
+pub async fn undelivered_table_events(
+    conn: &mut PgConnection,
+    consumer: &str,
+    tenant_id: &str,
+    event_type: &str,
+    table_id: &str,
+) -> Result<Vec<(Value, Option<Value>)>, StorageError> {
+    let rows: Vec<(Value, Option<Value>)> = sqlx::query_as(
+        "SELECT o.payload, o.private_payload FROM storage_event_outbox o \
+         WHERE o.tenant_id = $1 AND o.payload ->> 'event_type' = $2 \
+           AND o.payload ->> 'table_id' = $3 \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM outbox_delivery d WHERE d.event_id = o.id AND d.consumer = $4 \
+           ) \
+         ORDER BY o.id",
+    )
+    .bind(tenant_id)
+    .bind(event_type)
+    .bind(table_id)
+    .bind(consumer)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows)
+}
+
 /// ストリームの範囲（head は採番行・floor は台帳の索引の先頭）。
 pub async fn stream_bounds(
     conn: &mut PgConnection,

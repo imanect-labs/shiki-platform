@@ -130,10 +130,12 @@ async fn building_index_on_a_requested_field_is_not_ready() {
         },
     ] {
         let r = store.run_query(&c, t.id, &q, None).await;
+        // 準備中は 409 の構造化された理由（列と進捗・Task 15.6）。
         assert!(
-            matches!(r, Err(DataError::Conflict(ref m)) if m.contains("準備中")),
+            matches!(r, Err(DataError::IndexPreparing { ref field, .. }) if field == "status"),
             "{r:?}"
         );
+        assert!(r.unwrap_err().to_string().contains("準備中"));
     }
     // 準備中の列を使わないクエリは通る（他の列・初期グリッド）。
     let r = store

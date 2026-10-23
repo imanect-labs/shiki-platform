@@ -291,6 +291,7 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
     // 一過性の IdP 不調そのものは、**現在集合の READ が失敗した時のみ**剥奪をスキップする
     // 上のガード（unknown state に対して破壊的操作をしない）で扱い、READ 成功時の空 claims は
     // 正当な「ロール無し」として扱う。
+    let mut changed = false;
     for stale in current.iter().filter(|c| !desired.contains(*c)) {
         match state
             .authz
@@ -298,6 +299,7 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
             .await
         {
             Ok(true) => {
+                changed = true;
                 tracing::info!(role = %stale, "role メンバーシップを剥奪（claims から消失）");
             }
             Ok(false) => {}
@@ -322,12 +324,21 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
             tracing::warn!(role = %role_id, error = %e, "directory_role の upsert に失敗（タプル付与を保留・次回同期で再試行）");
             continue;
         }
-        if let Err(e) = state
+        match state
             .authz
             .write_tuple(&subject, Relation::Member, &ns.role(role_id))
             .await
         {
-            tracing::warn!(role = %role_id, error = %e, "role 付与に失敗（best-effort・login は継続）");
+            Ok(_) => changed = true,
+            Err(e) => {
+                tracing::warn!(role = %role_id, error = %e, "role 付与に失敗（best-effort・login は継続）");
+            }
+        }
+    }
+    // ロールが変わったら構造化データの SSE 購読へ知らせる（TTL を待たずに材料を引き直す・PIT-70 ③）。
+    if changed {
+        if let Err(e) = state.data.notify_authz_changed(&ctx, None).await {
+            tracing::warn!(error = %e, "SSE へのロール変更の通知に失敗（購読は TTL で引き直す）");
         }
     }
 }

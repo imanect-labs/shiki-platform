@@ -1260,3 +1260,250 @@ async fn referenced_record_change_refreshes_referrer_derived_values() {
     assert_eq!(got[0].record.data["customer_name"], json!("ACME 株式会社"));
     assert_eq!(c.rows[&order.id].1["customer_name"], json!("ACME 株式会社"));
 }
+
+/// スナップショット読取（data-platform §3.3）: 途中の更新・削除・作成があっても、基準位置の集合を
+/// 作成順に重複・欠落なく、基準位置の値で返す。保持期間を過ぎたカーソルは 410。
+#[tokio::test]
+async fn snapshot_read_is_stable_across_concurrent_changes() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let fx = fixture(
+        pool,
+        authz,
+        StreamConfig {
+            retention: Duration::from_mins(10),
+            ..manual()
+        },
+    )
+    .await;
+    let mut ids = Vec::new();
+    for i in 0..30 {
+        // bob に見えるのは偶数番だけ（行述語は S 時点の値で評価される）。
+        let applicant = if i % 2 == 0 { "bob" } else { "alice" };
+        let r = fx
+            .store
+            .create_record(
+                &fx.alice,
+                fx.table,
+                json!({"applicant": applicant, "title": format!("orig-{i:02}")}),
+                None,
+            )
+            .await
+            .unwrap();
+        ids.push(r.id);
+    }
+    fx.store.relay_record_changes_once().await.unwrap();
+    let page = |cursor: Option<String>| data::DataQuery {
+        limit: Some(4),
+        cursor,
+        snapshot: true,
+        ..data::DataQuery::default()
+    };
+    let first = fx
+        .store
+        .run_query(&fx.bob, fx.table, &page(None), None)
+        .await
+        .unwrap();
+    let s = first.snapshot_seq.expect("snapshot_seq");
+    let mut seen: Vec<(Uuid, String, i64)> = first
+        .items
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.id, r.data["title"].as_str().unwrap().to_string(), r.rev))
+        .collect();
+    // 返した行の更新（再び出てはならない）・先の行の更新・可視→不可視・削除・新規作成。
+    fx.store
+        .update_record(
+            &fx.alice,
+            fx.table,
+            ids[0],
+            json!({"title": "changed-0"}),
+            1,
+            None,
+        )
+        .await
+        .unwrap();
+    fx.store
+        .update_record(
+            &fx.alice,
+            fx.table,
+            ids[20],
+            json!({"title": "changed-20"}),
+            1,
+            None,
+        )
+        .await
+        .unwrap();
+    fx.store
+        .update_record(
+            &fx.alice,
+            fx.table,
+            ids[22],
+            json!({"applicant": "alice"}),
+            1,
+            None,
+        )
+        .await
+        .unwrap();
+    fx.store
+        .delete_record(&fx.alice, fx.table, ids[24], 1, None)
+        .await
+        .unwrap();
+    fx.store
+        .update_record(
+            &fx.alice,
+            fx.table,
+            ids[3],
+            json!({"applicant": "bob"}),
+            1,
+            None,
+        )
+        .await
+        .unwrap();
+    fx.store.relay_record_changes_once().await.unwrap(); // 一部は採番済み
+    fx.store
+        .create_record(
+            &fx.alice,
+            fx.table,
+            json!({"applicant": "bob", "title": "new"}),
+            None,
+        )
+        .await
+        .unwrap();
+    fx.store
+        .update_record(
+            &fx.alice,
+            fx.table,
+            ids[26],
+            json!({"title": "changed-26"}),
+            1,
+            None,
+        )
+        .await
+        .unwrap(); // 未採番のまま
+    let mut cursor = first.next_cursor;
+    while let Some(c) = cursor {
+        let r = fx
+            .store
+            .run_query(&fx.bob, fx.table, &page(Some(c)), None)
+            .await
+            .unwrap();
+        assert_eq!(r.snapshot_seq, Some(s), "各ページに基準位置");
+        seen.extend(
+            r.items
+                .unwrap()
+                .into_iter()
+                .map(|r| (r.id, r.data["title"].as_str().unwrap().to_string(), r.rev)),
+        );
+        cursor = r.next_cursor;
+    }
+    let want: Vec<(Uuid, String, i64)> = (0..30)
+        .filter(|i| i % 2 == 0)
+        .map(|i| (ids[i], format!("orig-{i:02}"), 1))
+        .collect();
+    assert_eq!(seen, want, "基準位置の集合・値・作成順（重複・欠落なし）");
+
+    // ライブページングにも配信位置が付く。スナップショットのカーソルはライブへ持ち込めない。
+    let live = fx
+        .store
+        .run_query(&fx.bob, fx.table, &data::DataQuery::default(), None)
+        .await
+        .unwrap();
+    assert!(live.snapshot_seq.unwrap() >= s);
+    let snap1 = fx
+        .store
+        .run_query(&fx.bob, fx.table, &page(None), None)
+        .await
+        .unwrap();
+    let misuse = data::DataQuery {
+        cursor: snap1.next_cursor.clone(),
+        limit: Some(4),
+        ..data::DataQuery::default()
+    };
+    assert!(matches!(
+        fx.store.run_query(&fx.bob, fx.table, &misuse, None).await,
+        Err(DataError::Invalid(_))
+    ));
+    // sort は受けない。
+    let sorted = data::DataQuery {
+        sort: vec![data::SortKey {
+            field: "applicant".into(),
+            descending: false,
+        }],
+        snapshot: true,
+        ..data::DataQuery::default()
+    };
+    assert!(matches!(
+        fx.store.run_query(&fx.bob, fx.table, &sorted, None).await,
+        Err(DataError::Invalid(_))
+    ));
+}
+
+#[tokio::test]
+async fn snapshot_cursor_beyond_retention_is_gone() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let fx = fixture(
+        pool,
+        authz,
+        StreamConfig {
+            retention: Duration::from_millis(200),
+            ..manual()
+        },
+    )
+    .await;
+    for i in 0..5 {
+        fx.store
+            .create_record(
+                &fx.alice,
+                fx.table,
+                json!({"applicant": "alice", "title": format!("{i}")}),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    fx.store.relay_record_changes_once().await.unwrap();
+    let q = data::DataQuery {
+        limit: Some(2),
+        snapshot: true,
+        ..data::DataQuery::default()
+    };
+    let first = fx
+        .store
+        .run_query(&fx.carol, fx.table, &q, None)
+        .await
+        .unwrap();
+    // 基準位置の後に変更が入り、その台帳行が保持期間を過ぎて GC される。
+    fx.store
+        .create_record(
+            &fx.alice,
+            fx.table,
+            json!({"applicant": "alice", "title": "late"}),
+            None,
+        )
+        .await
+        .unwrap();
+    fx.store.relay_record_changes_once().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    sqlx::query("UPDATE storage_event_outbox SET processed_at = now() WHERE tenant_id = $1")
+        .bind(&fx.alice.tenant_id)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    let mut conn = fx.pool.acquire().await.unwrap();
+    storage::event::gc_delivered(&mut conn, &[data::LEDGER_CONSUMER], 10_000)
+        .await
+        .unwrap();
+    drop(conn);
+    let next = data::DataQuery {
+        cursor: first.next_cursor,
+        ..q
+    };
+    assert!(matches!(
+        fx.store.run_query(&fx.carol, fx.table, &next, None).await,
+        Err(DataError::Gone(_))
+    ));
+}

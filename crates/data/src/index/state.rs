@@ -250,6 +250,16 @@ pub(crate) async fn sync_ledger(
         IndexState::Active
     };
     for (field, table) in want.difference(&maintained) {
+        // 降格の後片付け（大きなテーブルはジョブで消す）が残っている組は、終わるまで作り直さない
+        // （古い行と新しい行が混ざる・Task 15.6）。
+        if super::promote::purge_pending(conn, keys, *field, *table).await? {
+            return Err(DataError::IndexPreparing {
+                field: schema
+                    .field_by_id(*field)
+                    .map_or_else(|| field.to_string(), |f| f.key.clone()),
+                progress: None,
+            });
+        }
         // 材料化する派生列は本体からのバックフィルを使わない（行は再計算ジョブが書き、書き終わるまでは
         // 再計算待ちの行がクエリを止める・derived::materialize）。台帳は最初から active。
         let derived = schema
@@ -259,8 +269,10 @@ pub(crate) async fn sync_ledger(
         set_state(conn, keys, *field, *table, state).await?;
     }
     for (field, table) in maintained.difference(&want) {
+        // 台帳を absent にした時点でクエリと書込から外れる。行の削除は、大きなテーブルではこの Tx で
+        // 行わずジョブに回す（テーブル行のロックを長く持たない・Task 15.6）。
         set_state(conn, keys, *field, *table, IndexState::Absent).await?;
-        delete_field_rows(conn, keys, *field, *table).await?;
+        super::promote::demote_rows(conn, keys, *field, *table).await?;
     }
     super::link::declare_link_fields(conn, keys, schema).await?;
     // 値索引が外れた列・作り直しになった列（型変更で text ⇄ numeric など）を含む複合索引は捨てる
@@ -317,28 +329,6 @@ pub(crate) async fn activate_building(
     .await
     .map_err(map_db)?
     .rows_affected())
-}
-
-/// 1 フィールド × 1 索引テーブルの索引行を全て消す（降格）。
-async fn delete_field_rows(
-    conn: &mut PgConnection,
-    keys: TableKeys,
-    field: FieldId,
-    table: IndexTable,
-) -> Result<(), DataError> {
-    // 表名は固定集合（IndexTable::relation）からのみ埋め込む。値はバインド（PIT-21）。
-    let sql = format!(
-        "DELETE FROM {} WHERE tenant_int = $1 AND table_int = $2 AND field_id = $3",
-        table.relation()
-    );
-    sqlx::query(&sql)
-        .bind(keys.tenant_int)
-        .bind(keys.table_int)
-        .bind(field_id_i16(field)?)
-        .execute(&mut *conn)
-        .await
-        .map_err(map_db)?;
-    Ok(())
 }
 
 pub(crate) fn field_id_i16(field: FieldId) -> Result<i16, DataError> {

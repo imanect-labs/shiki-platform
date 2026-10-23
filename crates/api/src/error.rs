@@ -31,6 +31,9 @@ pub enum ApiError {
     ServiceUnavailable(String),
     #[error("内部エラー: {0}")]
     Internal(String),
+    /// 保持期間を過ぎた位置の再開（スナップショット読取の基準位置など）。最初から取り直す。
+    #[error("保持期間を過ぎました")]
+    Gone,
 }
 
 impl ApiError {
@@ -43,6 +46,7 @@ impl ApiError {
             ApiError::BadRequest(_) | ApiError::UnprocessableJson(_) => StatusCode::BAD_REQUEST,
             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::Gone => StatusCode::GONE,
         }
     }
 }
@@ -148,6 +152,31 @@ impl From<data::DataError> for ApiError {
                 ApiError::Conflict
             }
             DE::Internal(msg) => ApiError::Internal(format!("data: {msg}")),
+            DE::Gone(reason) => {
+                tracing::info!(%reason, "data gone (410)");
+                ApiError::Gone
+            }
+            // 索引の準備中・承認待ちは UI が「準備中」「承認が要る」を出し分けられるよう構造化する
+            // （値・内部キー・件数を含めない）。
+            DE::IndexPreparing { field, progress } => ApiError::ConflictJson(serde_json::json!({
+                "status": 409,
+                "title": "Conflict",
+                "code": "index_preparing",
+                "field": field,
+                "progress": progress,
+            })),
+            DE::IndexApprovalRequired {
+                field,
+                indexed,
+                cap,
+            } => ApiError::ConflictJson(serde_json::json!({
+                "status": 409,
+                "title": "Conflict",
+                "code": "index_approval_required",
+                "field": field,
+                "indexed_fields": indexed,
+                "max_indexed_fields": cap,
+            })),
         }
     }
 }

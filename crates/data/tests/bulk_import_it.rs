@@ -717,14 +717,15 @@ async fn deferred_index_build_keeps_concurrent_writes() {
         Some("active"),
         "擬似列は遅延させない"
     );
-    // building の列ではクエリできない（準備中）。擬似列の駆動（フィルタなし）はできる。
+    // building の列ではクエリできない（準備中・409 の構造化された理由と進捗・Task 15.6）。
+    // 擬似列の駆動（フィルタなし）はできる。
     let q = DataQuery {
         filter: Some(eq("status", json!("approved"))),
         ..DataQuery::default()
     };
     assert!(matches!(
         store.run_query(&c, t.id, &q, None).await,
-        Err(DataError::Conflict(_))
+        Err(DataError::IndexPreparing { .. })
     ));
     assert_eq!(count(&store, &c, t.id, None).await, 40);
 

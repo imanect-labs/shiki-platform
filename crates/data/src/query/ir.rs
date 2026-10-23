@@ -149,6 +149,11 @@ pub struct DataQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(deprecated)]
     pub offset: Option<i64>,
+    /// スナップショット読取（data-platform §3.3）。最初のページの `snapshot_seq` にカーソルを束縛し、
+    /// その時点の集合を作成順に重複・欠落なく返す（エクスポート・一括処理用。`sort`・集計・件数は
+    /// 指定できない・保持期間を過ぎたカーソルは 410）。既定はライブページング。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub snapshot: bool,
 }
 
 /// 上限付き件数（data-platform §5.4）。
@@ -203,6 +208,11 @@ pub struct QueryResult {
     pub shares_truncated: bool,
     /// K 未満で抑制されたグループ/全体集計があった（PIT-17）。
     pub suppressed: bool,
+    /// 配信位置（SSE の `delivery_seq` と同じ時間軸・data-platform §3.3）。ライブページングでは
+    /// 読取時点の位置（SSE を `since` にこれを渡して繋ぐと読取後の変更を取りこぼさない）、
+    /// スナップショット読取ではカーソルが束縛された基準位置。集計では返さない。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_seq: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +282,8 @@ struct DataQueryWire {
     with_count: bool,
     #[serde(default)]
     offset: Option<i64>,
+    #[serde(default)]
+    snapshot: bool,
 }
 
 impl From<DataQueryWire> for DataQuery {
@@ -315,6 +327,7 @@ impl From<DataQueryWire> for DataQuery {
             search_fields: w.search_fields,
             with_count: w.with_count,
             offset: w.offset,
+            snapshot: w.snapshot,
         }
     }
 }

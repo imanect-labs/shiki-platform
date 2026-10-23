@@ -28,6 +28,20 @@ pub(crate) fn org_admin_data_route_decls() -> Vec<RouteDecl> {
 pub struct UpdateDataSettingsRequest {
     /// 件数の上限（1〜10,000,000。`null` で既定 10,000 へ戻す）。
     pub count_cap: Option<u64>,
+    /// テーブルあたりの索引列数の上限（1〜1,000。`null` で既定 20 へ戻す。**省略すると変えない**）。
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<u32>)]
+    #[allow(clippy::option_option)] // 省略（変えない）と null（既定へ戻す）を区別する。
+    pub max_indexed_fields: Option<Option<u32>>,
+}
+
+/// 「省略」と「null」を区別する（省略 = `None`・null = `Some(None)`）。
+#[allow(clippy::option_option)]
+fn present<'de, D>(d: D) -> Result<Option<Option<u32>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<u32>::deserialize(d).map(Some)
 }
 
 /// テナントの構造化データ設定。
@@ -65,10 +79,15 @@ pub async fn update_data_settings(
     trace: TraceIdExt,
     Json(req): Json<UpdateDataSettingsRequest>,
 ) -> Result<Json<data::DataTenantSettings>, ApiError> {
-    Ok(Json(
-        state
+    let mut settings = state
+        .data
+        .update_tenant_count_cap(&ctx, req.count_cap, trace.as_deref())
+        .await?;
+    if let Some(cap) = req.max_indexed_fields {
+        settings = state
             .data
-            .update_tenant_count_cap(&ctx, req.count_cap, trace.as_deref())
-            .await?,
-    ))
+            .update_tenant_index_cap(&ctx, cap, trace.as_deref())
+            .await?;
+    }
+    Ok(Json(settings))
 }

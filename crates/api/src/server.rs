@@ -519,6 +519,7 @@ pub fn route_table() -> Vec<RouteDecl> {
     table.extend(routes::tabular::tabular_route_decls());
     table.extend(routes::data::data_route_decls());
     table.extend(routes::data_views::data_view_route_decls());
+    table.extend(routes::data_indexes::data_index_route_decls());
     table.extend(routes::data_fsm::data_fsm_route_decls());
     table.extend(routes::app_platform::app_platform_route_decls());
     table.extend(routes::app_install::app_install_route_decls());

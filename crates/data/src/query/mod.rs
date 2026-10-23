@@ -20,5 +20,6 @@ pub(crate) mod executor;
 pub(crate) mod ir;
 pub(crate) mod planner;
 pub(crate) mod run;
+pub(crate) mod snapshot;
 pub(crate) mod sql;
 pub(crate) mod v1;

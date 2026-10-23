@@ -145,11 +145,16 @@ impl DataViewStore {
         probe.cursor = None;
         probe.with_count = false;
         // run_query が field/mask/index 検証を一手に担う。0 行取得の副作用はない。
-        let _ = self
+        // 未索引の列は保存を契機に自動昇格する（data-platform §10）。大きなテーブルで索引が準備中でも
+        // ビューは保存する（実行時に「準備中」になる）。上限超過の承認待ちは保存を止める。
+        match self
             .data
             .run_query(ctx, body.table_id, &probe, trace_id)
-            .await?;
-        Ok(())
+            .await
+        {
+            Ok(_) | Err(DataError::IndexPreparing { .. }) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     async fn ensure_kind(

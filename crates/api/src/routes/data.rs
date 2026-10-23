@@ -215,6 +215,12 @@ pub(crate) fn data_route_decls() -> Vec<RouteDecl> {
         r("/data/tables/{id}/records/count", &["GET"], Session, || {
             get(super::data_records::count_records)
         }),
+        r("/data/tables/{id}/stream", &["GET"], Session, || {
+            get(super::data_stream::stream_records)
+        }),
+        r("/data/tables/{id}/awareness", &["POST"], Session, || {
+            axum::routing::post(super::data_stream::post_awareness)
+        }),
         r(
             "/data/tables/{id}/records/{record_id}/shares",
             &["PUT", "DELETE"],

@@ -184,7 +184,8 @@ fn needed_indexes(q: &BoundQuery) -> HashSet<(FieldId, IndexTable)> {
 
 /// カーソルの束縛（条件・ソート・検索の指紋。別のクエリへ持ち込めない）。
 fn fingerprint(q: &DataQuery) -> Vec<u8> {
-    let v = serde_json::json!([q.filter, q.sort, q.search, q.search_fields]);
+    // スナップショット読取のカーソルはライブページングへ持ち込めない（逆も同じ）。
+    let v = serde_json::json!([q.filter, q.sort, q.search, q.search_fields, q.snapshot]);
     Sha256::digest(v.to_string().as_bytes()).to_vec()
 }
 
@@ -198,7 +199,7 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<QueryResult, DataError> {
         let tuning = self.tuning.clone();
-        self.run_query_as(ctx, table_id, query, trace_id, "data.query", &tuning)
+        self.run_query_as(ctx, table_id, query, trace_id, "data.query", &tuning, true)
             .await
             .map(|(r, _)| r)
     }
@@ -212,7 +213,7 @@ impl DataStore {
         query: &DataQuery,
         tuning: &QueryTuning,
     ) -> Result<(QueryResult, QueryDebug), DataError> {
-        self.run_query_as(ctx, table_id, query, None, "data.query", tuning)
+        self.run_query_as(ctx, table_id, query, None, "data.query", tuning, false)
             .await
     }
 
@@ -226,6 +227,9 @@ impl DataStore {
         super::planner::verify::verify_drops_total()
     }
 
+    /// `auto_promote`: 未索引の列での絞り込み・並べ替えを索引の自動昇格の契機にする（グリッド・ビューの
+    /// 経路＝[`Self::run_query`]。data-platform §10）。v1 の一覧 API と検証用の入口は従来どおり 422。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_query_as(
         &self,
         ctx: &AuthContext,
@@ -234,6 +238,7 @@ impl DataStore {
         trace_id: Option<&str>,
         action: &str,
         tuning: &QueryTuning,
+        auto_promote: bool,
     ) -> Result<(QueryResult, QueryDebug), DataError> {
         // このリクエストの認可メモ（ページ・件数・lookup / rollup の解決で同じ問いを OpenFGA へ
         // 投げ直さない・リクエストの外へは持ち出せない・Task 15.9・PIT-18）。テーブル viewer・参照先
@@ -243,6 +248,13 @@ impl DataStore {
             .open_for_read(ctx, &az, table_id, action, trace_id)
             .await?;
         let masked = self.masked_fields(ctx, &az, &table).await?;
+        if auto_promote
+            && self
+                .auto_promote_for(ctx, &table, &masked, query, trace_id)
+                .await?
+        {
+            table = self.fetch_live(ctx, table_id).await?;
+        }
         let mut bq = bind_query(&table.schema, &masked, query)?;
         // 材料化した派生列で絞る・並べるなら、その前提（4 階層）を今の認可状態で検査し直す。崩れていれば
         // 降格（索引行を同一 Tx で破棄）してから束縛し直す＝その列はフィルタ/ソートに使えなくなる（PIT-71）。
@@ -285,9 +297,39 @@ impl DataStore {
         .await
         .map_err(map_db)?;
 
-        let out = self
-            .execute(&mut tx, ctx, &table, &bq, &m, query, tuning)
-            .await?;
+        // 配信位置（SSE と同じ時間軸）。読取と同じスナップショットで読む（data-platform §3.3）。
+        let head =
+            storage::event::stream_bounds(&mut tx, &crate::stream::relay::stream_key(table_id))
+                .await
+                .map_err(|e| DataError::Internal(format!("stream: {e}")))?
+                .head;
+        let out = if query.snapshot {
+            let binding = fingerprint(query);
+            let scope = CursorScope {
+                tenant_int: table.keys.tenant_int,
+                table_int: table.keys.table_int,
+                binding: &binding,
+            };
+            let (r, items) = self
+                .run_snapshot(&mut tx, ctx, &table, &bq, &m, query, &scope)
+                .await?;
+            (
+                r,
+                QueryDebug {
+                    stats: QueryExecStats::default(),
+                    statements: Vec::new(),
+                },
+                Some(items),
+            )
+        } else {
+            let mut out = self
+                .execute(&mut tx, ctx, &table, &bq, &m, query, tuning)
+                .await?;
+            if out.2.is_some() {
+                out.0.snapshot_seq = Some(head);
+            }
+            out
+        };
         tx.commit().await.map_err(map_db)?;
         let (mut result, mut debug, rows) = out;
         // 第 1 キーの同値群が先読みの上限を超えたソートの組み合わせは、複合索引をオンデマンドで材料化する
@@ -347,10 +389,10 @@ impl DataStore {
                 && *f >= crate::model::FIRST_USER_FIELD_ID
                 && needed.contains(&(*f, *t))
         }) {
-            let key = bq.field(*f).key.clone();
-            return Err(DataError::Conflict(format!(
-                "フィールド '{key}' の索引は準備中です（構築が終わるまでお待ちください）"
-            )));
+            return Err(DataError::IndexPreparing {
+                field: bq.field(*f).key.clone(),
+                progress: crate::index::promote::backfill_progress(conn, keys).await?,
+            });
         }
         // システム擬似列の初回バックフィル中（Task 15.2 より前のテーブル）などは本体経路
         // （正しいが遅い・statement_timeout で上限を切る）。
@@ -362,10 +404,10 @@ impl DataStore {
         let all_active = needed.iter().all(|n| active.contains(n));
         let body_path = !all_active || (tuning.read_path == ReadPath::Body && derived.is_empty());
         if let Some(f) = derived.first().filter(|_| body_path) {
-            return Err(DataError::Conflict(format!(
-                "フィールド '{}' の索引は準備中です（構築が終わるまでお待ちください）",
-                f.key
-            )));
+            return Err(DataError::IndexPreparing {
+                field: f.key.clone(),
+                progress: None,
+            });
         }
         if !derived.is_empty() {
             let ids: Vec<i16> = derived
@@ -468,6 +510,7 @@ impl DataStore {
             sort_degraded: false,
             shares_truncated: false,
             suppressed: false,
+            snapshot_seq: None,
         };
         let limit = i64::from(bq.limit);
 

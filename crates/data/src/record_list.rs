@@ -85,7 +85,15 @@ impl DataStore {
         q.cursor.clone_from(&opts.cursor);
         let tuning = self.tuning.clone();
         let (r, _) = self
-            .run_query_as(ctx, table_id, &q, trace_id, "data.record.list", &tuning)
+            .run_query_as(
+                ctx,
+                table_id,
+                &q,
+                trace_id,
+                "data.record.list",
+                &tuning,
+                false,
+            )
             .await?;
         Ok(ListRecordsPage {
             items: r.items.unwrap_or_default(),
@@ -124,7 +132,15 @@ impl DataStore {
         q.limit = Some(0);
         let tuning = self.tuning.clone();
         let (r, _) = self
-            .run_query_as(ctx, table_id, &q, trace_id, "data.record.count", &tuning)
+            .run_query_as(
+                ctx,
+                table_id,
+                &q,
+                trace_id,
+                "data.record.count",
+                &tuning,
+                false,
+            )
             .await?;
         Ok(r.count.unwrap_or(CountResult::Exact(0)))
     }

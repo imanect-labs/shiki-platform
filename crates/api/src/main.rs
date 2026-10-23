@@ -423,6 +423,9 @@ fn wire_data(
     data::IndexBackfillWorker::new((*data_store).clone()).spawn();
     // 一括取込（ステージング → 検証 → チャンク適用 → 索引の仕上げ・jobq・冪等・中断再開）。
     data::BulkImportWorker::new((*data_store).clone()).spawn();
+    // レコード変更の outbox → テーブルのストリームへの採番（SSE 差分配信・スナップショット読取の
+    // 基準位置・Task 15.6）。購読が無くても回し、outbox の GC を止めない。
+    data::RecordStreamRelayWorker::new((*data_store).clone()).spawn();
     let data_views = Arc::new(data::DataViewStore::new(
         Arc::clone(artifacts),
         (*data_store).clone(),

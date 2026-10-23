@@ -84,9 +84,10 @@ pub use formula::{FormulaCmpOp, FormulaExpr, SwitchCase, MAX_FORMULA_DEPTH};
 pub use fsm::{FsmBody, FsmRef, FsmTransition};
 pub use fsm_store::FsmStore;
 pub use index::{
-    sort_precision, IndexBackfillStatus, IndexBackfillStep, IndexBackfillWorker,
-    IndexParityMismatch, IndexParityReport, IndexState, SortPrecision, BACKFILL_CHUNK,
-    DEFAULT_MAX_MULTI_VALUES, INDEX_BACKFILL_QUEUE, MAX_INDEX_KEY_BYTES,
+    sort_precision, FieldIndexStatus, IndexBackfillStatus, IndexBackfillStep, IndexBackfillWorker,
+    IndexParityMismatch, IndexParityReport, IndexPromotion, IndexState, IndexStatus, SortPrecision,
+    TableIndexOverview, BACKFILL_CHUNK, DEFAULT_MAX_INDEXED_FIELDS, DEFAULT_MAX_MULTI_VALUES,
+    INDEX_BACKFILL_QUEUE, MAX_INDEX_KEY_BYTES, SYNC_INDEX_MAX_ROWS,
 };
 pub use key_migration::{
     FieldKeyMigrationWorker, KeyMigrationProgress, FIELD_KEY_MIGRATION_QUEUE, MIGRATION_BATCH,
@@ -118,7 +119,7 @@ pub use stream::{
     SchemaChangedEvent, StreamConfig, StreamEvent, StreamMessage, StreamReadyEvent,
     StreamResetEvent, StreamResetReason, LEDGER_CONSUMER, RECORD_CHANGED_EVENT,
 };
-pub use tenant_settings::{DataTenantSettings, MAX_COUNT_CAP};
+pub use tenant_settings::{DataTenantSettings, MAX_COUNT_CAP, MAX_INDEXED_FIELDS_CEILING};
 pub use transition::TRANSITION_EVENT_TYPE;
 pub use validate::RefResolver;
 pub use view::{DataViewBody, DataViewStore};
@@ -143,6 +144,25 @@ pub enum DataError {
     Conflict(String),
     #[error("内部エラー: {0}")]
     Internal(String),
+    /// スナップショット読取の基準位置が保持期間を過ぎた（410・最初から取り直す・data-platform §3.3）。
+    #[error("保持期間を過ぎました: {0}")]
+    Gone(String),
+    /// 列の索引を準備中（バックフィル中）。完了までその列で絞り込み・並べ替えできない（409・§10）。
+    /// `progress` は 0〜1（不明なら `None`）。
+    #[error("フィールド '{field}' の索引は準備中です")]
+    IndexPreparing {
+        field: String,
+        progress: Option<f64>,
+    },
+    /// 列の索引を自動で作るとテーブルの索引列数の上限を超える（409・明示の承認が要る・PIT-72）。
+    #[error(
+        "フィールド '{field}' の索引を作るには承認が要ります（索引列 {indexed} / 上限 {cap}）"
+    )]
+    IndexApprovalRequired {
+        field: String,
+        indexed: usize,
+        cap: usize,
+    },
 }
 
 #[allow(clippy::needless_pass_by_value)]

@@ -33,7 +33,7 @@ pub use gc::{
 };
 pub use stream::{
     drop_stream, lock_consumer_seq, mark_delivered_seq, private_payloads, stream_bounds,
-    stream_entries_after, StreamBounds, StreamEntry,
+    stream_entries_after, undelivered_table_events, StreamBounds, StreamEntry,
 };
 
 use authz::AuthContext;

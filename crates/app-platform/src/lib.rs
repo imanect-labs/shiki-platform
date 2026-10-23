@@ -65,7 +65,10 @@ impl From<data::DataError> for AppPlatformError {
             DataError::NotFound => AppPlatformError::NotFound,
             DataError::Forbidden => AppPlatformError::Forbidden,
             DataError::Invalid(m) => AppPlatformError::Invalid(m),
-            DataError::Conflict(m) => AppPlatformError::Conflict(m),
+            DataError::Conflict(m) | DataError::Gone(m) => AppPlatformError::Conflict(m),
+            e @ (DataError::IndexPreparing { .. } | DataError::IndexApprovalRequired { .. }) => {
+                AppPlatformError::Conflict(e.to_string())
+            }
             DataError::Internal(m) => AppPlatformError::Internal(m),
         }
     }
