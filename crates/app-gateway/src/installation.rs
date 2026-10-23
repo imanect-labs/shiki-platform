@@ -154,7 +154,7 @@ const COLS: &str = "id, app_id, app_name, installed_version, granted_scopes, \
                     budget_models, budget_daily_usd_micros, budget_max_tokens, agent_tools, \
                     frontend_bundle, server_bundle, server_spec";
 
-/// active な app_id の大域一意索引（migration 0077・B1 配信のテナント跨ぎ解決の前提）。
+/// active な app_id の大域一意索引（migration 0081・B1 配信のテナント跨ぎ解決の前提）。
 const ACTIVE_APP_ID_UIDX: &str = "app_installation_active_app_id_uidx";
 
 /// [`ACTIVE_APP_ID_UIDX`] の一意制約違反か（他の制約の違反は従来どおり Internal に落とす）。
@@ -184,7 +184,7 @@ impl AppInstallationStore {
     /// 本 PR ではデブ用の直接作成。PR9 の同意フローが単一 Tx＋補償で置き換える。
     ///
     /// ON CONFLICT の arbiter は `(tenant_id, app_id)` だけで、active な app_id の大域一意索引
-    /// （migration 0077 [`ACTIVE_APP_ID_UIDX`]）は arbiter ではない。そのため同一テナントの初回
+    /// （migration 0081 [`ACTIVE_APP_ID_UIDX`]）は arbiter ではない。そのため同一テナントの初回
     /// インストールが並行すると、後着は arbiter の事前確認をすり抜けて大域一意索引で一意制約違反に
     /// なる。自テナントの行（先着分）があるときだけ 1 回取り直し、DO UPDATE で冪等に成功させる。
     /// 取り直しても違反する・自テナントの行が無いなら、別テナントの active 行によるもの＝409。
@@ -331,7 +331,7 @@ impl AppInstallationStore {
     /// content address）を組む。仮に URL にテナントを載せても未認証の入力でしかなく、認可の
     /// 根拠にはならない。
     ///
-    /// **一意性**: active な `app_id` の大域一意は DB の部分一意索引で保証する（migration 0077
+    /// **一意性**: active な `app_id` の大域一意は DB の部分一意索引で保証する（migration 0081
     /// `app_installation_active_app_id_uidx`）。それでも 2 行返れば不変条件違反として
     /// fail-closed（Internal）にし、任意の 1 行を選ぶ `LIMIT 1` には戻さない。
     /// バンドルはアプリ自身のフロント資産（content-addressed・ピン一致必須）でユーザーデータを
