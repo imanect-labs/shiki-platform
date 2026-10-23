@@ -156,7 +156,10 @@ impl AuditRetention {
         Ok(total)
     }
 
-    /// 1 つの tenant＋org に保持期間を適用する。消した行があれば削除の記録をチェーンに残す。
+    /// 1 つの tenant＋org に保持期間を適用する。
+    ///
+    /// バッチごとに 1 つのトランザクションで、行の削除・境目の更新・削除の記録（チェーンに連結）を
+    /// まとめて確定する。途中で落ちても「消したのに記録が無い」状態は残らない（残りは次回消す）。
     pub async fn sweep_org(
         &self,
         tenant_id: &str,
@@ -164,35 +167,118 @@ impl AuditRetention {
         cutoff: DateTime<Utc>,
         days: i32,
     ) -> Result<SweepReport, StorageError> {
+        let mut total = SweepReport::default();
+        loop {
+            let batch = self.sweep_batch(tenant_id, org, cutoff, days).await?;
+            total.add(batch);
+            if batch.chained < BATCH as u64 && batch.unchained < BATCH as u64 {
+                return Ok(total);
+            }
+        }
+    }
+
+    /// 1 バッチ分を消し、境目と削除の記録を同じトランザクションで残す。
+    async fn sweep_batch(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        cutoff: DateTime<Utc>,
+        days: i32,
+    ) -> Result<SweepReport, StorageError> {
+        let mut tx = self.db.begin().await?;
+        // 記録側（record_on）と同じロック: チェーンの末尾の読み書き・境目の更新・削除の記録を直列にする。
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(format!("{tenant_id}|{org}"))
+            .execute(&mut *tx)
+            .await?;
+
+        // 連結行は **id 順で先頭から連続した期限切れの部分だけ**を消す。作成時刻はレプリカの時計
+        // （版 1 はトランザクション開始時刻）で決まり id 順と逆転しうるので、「期限より古い最後の行」
+        // までを消すと、間にある期限内の行まで消えてしまう。id 順で最初の「期限内の行」か撤去の記録
+        // （tenant.purge は消さない）より手前で止める。
+        let stop: Option<i64> = sqlx::query_scalar(
+            "SELECT min(id) FROM audit_log \
+             WHERE tenant_id = $1 AND org = $2 AND chained AND (created_at >= $3 OR action = $4)",
+        )
+        .bind(tenant_id)
+        .bind(org)
+        .bind(cutoff)
+        .bind(AuditAction::TenantPurge.as_str())
+        .fetch_one(&mut *tx)
+        .await?;
+        let chained: Vec<(i64, Option<String>)> = sqlx::query_as(
+            "DELETE FROM audit_log WHERE id IN ( \
+                 SELECT id FROM audit_log \
+                 WHERE tenant_id = $1 AND org = $2 AND chained AND id < $3 \
+                 ORDER BY id LIMIT $4) \
+             RETURNING id, entry_hash",
+        )
+        .bind(tenant_id)
+        .bind(org)
+        .bind(stop.unwrap_or(i64::MAX))
+        .bind(BATCH)
+        .fetch_all(&mut *tx)
+        .await?;
+        // 連結しない行（読み取り・拒否など）は順序に依らないので、期限より古いものを消す。
+        let unchained = sqlx::query(
+            "DELETE FROM audit_log WHERE id IN ( \
+                 SELECT id FROM audit_log \
+                 WHERE tenant_id = $1 AND org = $2 AND created_at < $3 AND NOT chained \
+                   AND action <> $4 \
+                 ORDER BY created_at, id LIMIT $5)",
+        )
+        .bind(tenant_id)
+        .bind(org)
+        .bind(cutoff)
+        .bind(AuditAction::TenantPurge.as_str())
+        .bind(BATCH)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
         let report = SweepReport {
-            chained: self.purge_chain(tenant_id, org, cutoff).await?,
-            unchained: self.purge_unchained(tenant_id, org, cutoff).await?,
+            chained: chained.len() as u64,
+            unchained,
         };
         if report.is_empty() {
+            tx.rollback().await?;
             return Ok(report);
         }
+
+        // 境目を進め（消した最後の連結行）、消した行数を足す。
         let purged = i64::try_from(report.chained + report.unchained).unwrap_or(i64::MAX);
-        let ctx = system_ctx(tenant_id, org);
-        let mut tx = self.db.begin().await?;
-        sqlx::query(
-            "UPDATE audit_chain_anchor SET purged_rows = purged_rows + $3, updated_at = now() \
-             WHERE tenant_id = $1 AND org = $2",
-        )
-        .bind(tenant_id)
-        .bind(org)
-        .bind(purged)
-        .execute(&mut *tx)
-        .await?;
-        let anchor_id: Option<i64> = sqlx::query_scalar(
-            "SELECT anchor_id FROM audit_chain_anchor WHERE tenant_id = $1 AND org = $2",
-        )
-        .bind(tenant_id)
-        .bind(org)
-        .fetch_optional(&mut *tx)
-        .await?;
+        let last = chained.iter().max_by_key(|(id, _)| *id).cloned();
+        let anchor_id: Option<i64> = match last {
+            Some((id, hash)) => sqlx::query_scalar(
+                "INSERT INTO audit_chain_anchor (tenant_id, org, anchor_id, anchor_hash, purged_rows) \
+                 VALUES ($1, $2, $3, $4, $5) \
+                 ON CONFLICT (tenant_id, org) DO UPDATE \
+                 SET anchor_id = greatest(audit_chain_anchor.anchor_id, excluded.anchor_id), \
+                     anchor_hash = CASE WHEN excluded.anchor_id > audit_chain_anchor.anchor_id \
+                                        THEN excluded.anchor_hash ELSE audit_chain_anchor.anchor_hash END, \
+                     purged_rows = audit_chain_anchor.purged_rows + excluded.purged_rows, \
+                     updated_at = now() \
+                 RETURNING anchor_id",
+            )
+            .bind(tenant_id)
+            .bind(org)
+            .bind(id)
+            .bind(hash.unwrap_or_default())
+            .bind(purged)
+            .fetch_optional(&mut *tx)
+            .await?,
+            None => sqlx::query_scalar(
+                "UPDATE audit_chain_anchor SET purged_rows = purged_rows + $3, updated_at = now() \
+                 WHERE tenant_id = $1 AND org = $2 RETURNING anchor_id",
+            )
+            .bind(tenant_id)
+            .bind(org)
+            .bind(purged)
+            .fetch_optional(&mut *tx)
+            .await?,
+        };
         record_on(
             &mut tx,
-            &ctx,
+            &system_ctx(tenant_id, org),
             AuditEntry {
                 action: AuditAction::AuditRetentionPurge,
                 object_type: "organization",
@@ -212,121 +298,6 @@ impl AuditRetention {
         .await?;
         tx.commit().await?;
         Ok(report)
-    }
-
-    /// 連結行を先頭から消す。期限より古い最後の連結行までを、境目を進めながらバッチで消す。
-    async fn purge_chain(
-        &self,
-        tenant_id: &str,
-        org: &str,
-        cutoff: DateTime<Utc>,
-    ) -> Result<u64, StorageError> {
-        // 期限より古い最後の連結行（ここまでを消す）。時刻の索引で期限の直前から引く。
-        let Some(mut last): Option<i64> = sqlx::query_scalar(
-            "SELECT id FROM audit_log \
-             WHERE tenant_id = $1 AND org = $2 AND created_at < $3 AND chained \
-             ORDER BY created_at DESC, id DESC LIMIT 1",
-        )
-        .bind(tenant_id)
-        .bind(org)
-        .bind(cutoff)
-        .fetch_optional(&self.db)
-        .await?
-        else {
-            return Ok(0);
-        };
-        // 撤去の記録は消さないので、それより後ろの連結行も消さない（消すと、残した撤去の記録を
-        // 挟んでチェーンが途切れ、境目から検証できなくなる）。撤去の後に増えるのは削除の記録だけ。
-        let purge: Option<i64> = sqlx::query_scalar(
-            "SELECT min(id) FROM audit_log \
-             WHERE tenant_id = $1 AND org = $2 AND chained AND action = $3",
-        )
-        .bind(tenant_id)
-        .bind(org)
-        .bind(AuditAction::TenantPurge.as_str())
-        .fetch_one(&self.db)
-        .await?;
-        if let Some(p) = purge {
-            last = last.min(p - 1);
-        }
-        let mut deleted = 0u64;
-        loop {
-            let mut tx = self.db.begin().await?;
-            // 記録側（record_on）と同じロック: チェーンの末尾の読み書きと、境目の更新を直列にする。
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
-                .bind(format!("{tenant_id}|{org}"))
-                .execute(&mut *tx)
-                .await?;
-            // 先頭から BATCH 件。最後の行の entry_hash が新しい境目になる。
-            let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
-                "DELETE FROM audit_log WHERE id IN ( \
-                     SELECT id FROM audit_log \
-                     WHERE tenant_id = $1 AND org = $2 AND chained AND id <= $3 \
-                     ORDER BY id LIMIT $4) \
-                 RETURNING id, entry_hash",
-            )
-            .bind(tenant_id)
-            .bind(org)
-            .bind(last)
-            .bind(BATCH)
-            .fetch_all(&mut *tx)
-            .await?;
-            let Some((anchor_id, anchor_hash)) = rows.iter().max_by_key(|(id, _)| *id).cloned()
-            else {
-                tx.rollback().await?;
-                return Ok(deleted);
-            };
-            sqlx::query(
-                "INSERT INTO audit_chain_anchor (tenant_id, org, anchor_id, anchor_hash) \
-                 VALUES ($1, $2, $3, $4) \
-                 ON CONFLICT (tenant_id, org) DO UPDATE \
-                 SET anchor_id = excluded.anchor_id, anchor_hash = excluded.anchor_hash, \
-                     updated_at = now() \
-                 WHERE audit_chain_anchor.anchor_id < excluded.anchor_id",
-            )
-            .bind(tenant_id)
-            .bind(org)
-            .bind(anchor_id)
-            .bind(anchor_hash.unwrap_or_default())
-            .execute(&mut *tx)
-            .await?;
-            tx.commit().await?;
-            deleted += rows.len() as u64;
-            if (rows.len() as i64) < BATCH {
-                return Ok(deleted);
-            }
-        }
-    }
-
-    /// 連結しない行（読み取り・拒否など）のうち期限より古いものを消す。
-    async fn purge_unchained(
-        &self,
-        tenant_id: &str,
-        org: &str,
-        cutoff: DateTime<Utc>,
-    ) -> Result<u64, StorageError> {
-        let mut deleted = 0u64;
-        loop {
-            let n = sqlx::query(
-                "DELETE FROM audit_log WHERE id IN ( \
-                     SELECT id FROM audit_log \
-                     WHERE tenant_id = $1 AND org = $2 AND created_at < $3 AND NOT chained \
-                       AND action <> $4 \
-                     ORDER BY created_at, id LIMIT $5)",
-            )
-            .bind(tenant_id)
-            .bind(org)
-            .bind(cutoff)
-            .bind(AuditAction::TenantPurge.as_str())
-            .bind(BATCH)
-            .execute(&self.db)
-            .await?
-            .rows_affected();
-            deleted += n;
-            if (n as i64) < BATCH {
-                return Ok(deleted);
-            }
-        }
     }
 
     /// 監査ログに行のあるテナント（索引の先頭列を飛び飛びに引く・全件走査しない）。

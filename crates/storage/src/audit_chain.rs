@@ -100,6 +100,13 @@ impl AuditChainVerifier {
         after_id: Option<i64>,
         max_rows: u64,
     ) -> Result<ChainReport, StorageError> {
+        // 境目・リネーム・検証する行を**同じスナップショット**から読む（REPEATABLE READ）。日次の
+        // 保持期間の削除が途中で境目を進めても、古い境目と新しい先頭の行を突き合わせて
+        // 「つながっていない」と誤判定しない。
+        let mut tx = self.db.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await?;
         // 保持期間で先頭を消したチェーンは、消した最後の行（境目）の続きから確かめる（#831）。
         let anchor: Option<(i64, String, i64)> = sqlx::query_as(
             "SELECT anchor_id, anchor_hash, purged_rows FROM audit_chain_anchor \
@@ -107,8 +114,13 @@ impl AuditChainVerifier {
         )
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
-        .fetch_optional(&self.db)
+        .fetch_optional(&mut *tx)
         .await?;
+        // 続きの位置の行が、前回の呼び出しの後に保持期間で消えていたら境目から続ける。
+        let after_id = match (after_id, &anchor) {
+            (Some(id), Some(a)) if id <= a.0 => None,
+            (a, _) => a,
+        };
         let start = after_id.or(anchor.as_ref().map(|a| a.0));
         let mut prev: Option<String> = match after_id {
             None => anchor.as_ref().map(|a| a.1.clone()),
@@ -120,13 +132,13 @@ impl AuditChainVerifier {
                 .bind(&ctx.tenant_id)
                 .bind(&ctx.org)
                 .bind(id)
-                .fetch_optional(&self.db)
+                .fetch_optional(&mut *tx)
                 .await?
                 .flatten()
                 .ok_or(StorageError::NotFound)?,
             ),
         };
-        let renames = self.renames(ctx).await?;
+        let renames = renames(&mut tx, ctx).await?;
         let mut report = ChainReport {
             checked: 0,
             legacy: 0,
@@ -149,7 +161,7 @@ impl AuditChainVerifier {
             .bind(&ctx.org)
             .bind(cursor)
             .bind(BATCH)
-            .fetch_all(&self.db)
+            .fetch_all(&mut *tx)
             .await?;
             let n = rows.len();
             for r in rows {
@@ -219,23 +231,26 @@ impl AuditChainVerifier {
             }
         }
     }
+}
 
-    /// このチェーンでのテナント ID の変更（id 順）。
-    async fn renames(&self, ctx: &AuthContext) -> Result<Vec<Rename>, StorageError> {
-        let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
-            "SELECT id, metadata ->> 'from' FROM audit_log \
-             WHERE tenant_id = $1 AND org = $2 AND chained AND action = $3 ORDER BY id",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(AuditAction::TenantRetenant.as_str())
-        .fetch_all(&self.db)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|(id, from)| from.map(|from| Rename { id, from }))
-            .collect())
-    }
+/// このチェーンでのテナント ID の変更（id 順）。
+async fn renames(
+    conn: &mut sqlx::PgConnection,
+    ctx: &AuthContext,
+) -> Result<Vec<Rename>, StorageError> {
+    let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT id, metadata ->> 'from' FROM audit_log \
+         WHERE tenant_id = $1 AND org = $2 AND chained AND action = $3 ORDER BY id",
+    )
+    .bind(&ctx.tenant_id)
+    .bind(&ctx.org)
+    .bind(AuditAction::TenantRetenant.as_str())
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, from)| from.map(|from| Rename { id, from }))
+        .collect())
 }
 
 #[cfg(test)]

@@ -187,6 +187,77 @@ async fn when_every_row_expires_new_rows_link_to_the_anchor() {
 }
 
 #[tokio::test]
+async fn chained_rows_stop_at_the_first_unexpired_row_in_id_order() {
+    // 作成時刻はレプリカの時計で決まり id 順と逆転しうる。id 順で最初の期限内の行より後ろは、
+    // 期限切れでも消さない（間の期限内の行を消してチェーンに穴を開けない・Codex P2）。
+    let Some(pool) = setup().await else { return };
+    let c = ctx(&format!("ret-{}", Uuid::new_v4().simple()), "org");
+    let rec = AuditRecorder::new(pool.clone());
+    let a = chained(&pool, &c, AuditAction::FileDelete).await;
+    let b = chained(&pool, &c, AuditAction::FileDelete).await;
+    let d = chained(&pool, &c, AuditAction::FileDelete).await;
+    let cutoff = Utc::now();
+    // b だけ期限内（時計が進んでいたレプリカで書かれた行）。
+    sqlx::query("UPDATE audit_log SET created_at = $2 WHERE id = $1")
+        .bind(b)
+        .bind(cutoff + chrono::Duration::days(1))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let r = rec
+        .retention()
+        .sweep_org(&c.tenant_id, &c.org, cutoff, 365)
+        .await
+        .unwrap();
+    assert_eq!(
+        r.chained, 1,
+        "a だけ消す（d は期限切れでも b より後ろなので残す）"
+    );
+    let left: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM audit_log WHERE tenant_id = $1 AND org = $2 AND id <= $3 ORDER BY id",
+    )
+    .bind(&c.tenant_id)
+    .bind(&c.org)
+    .bind(d)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(left, [b, d]);
+    let anchor: i64 = sqlx::query_scalar(
+        "SELECT anchor_id FROM audit_chain_anchor WHERE tenant_id = $1 AND org = $2",
+    )
+    .bind(&c.tenant_id)
+    .bind(&c.org)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(anchor, a);
+}
+
+#[tokio::test]
+async fn verification_resumes_from_the_anchor_when_its_position_was_purged() {
+    let Some(pool) = setup().await else { return };
+    let c = ctx(&format!("ret-{}", Uuid::new_v4().simple()), "org");
+    let rec = AuditRecorder::new(pool.clone());
+    let first = chained(&pool, &c, AuditAction::FileDelete).await;
+    chained(&pool, &c, AuditAction::FileDelete).await;
+    let cutoff = Utc::now();
+    chained(&pool, &c, AuditAction::FolderCreate).await;
+    // 検証の続きの位置（first）が、呼び出しの間に保持期間で消えた。
+    rec.retention()
+        .sweep_org(&c.tenant_id, &c.org, cutoff, 365)
+        .await
+        .unwrap();
+    let v = rec
+        .chain_verifier()
+        .verify(&c, Some(first), 1000)
+        .await
+        .unwrap();
+    assert_eq!(v.broken, None, "境目の続きから確かめる");
+    assert_eq!((v.checked, v.complete), (2, true));
+}
+
+#[tokio::test]
 async fn the_tenant_purge_record_and_rows_after_it_are_kept() {
     let Some(pool) = setup().await else { return };
     let c = ctx(&format!("ret-{}", Uuid::new_v4().simple()), "org");
