@@ -19,7 +19,9 @@
     clippy::too_many_lines,
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::many_single_char_names,
+    clippy::unreadable_literal
 )]
 
 mod common;
@@ -503,7 +505,7 @@ async fn bench_regret_calibration_and_fairness() {
         tokio::spawn(async move {
             let mut n = 0;
             let start = Instant::now();
-            while start.elapsed() < Duration::from_secs(600) {
+            while start.elapsed() < Duration::from_mins(10) {
                 store.analyze_table(&tenant, tid).await.unwrap();
                 n += 1;
                 if n >= 3 {
