@@ -219,7 +219,8 @@ async fn caller_sql_text_never_reaches_the_database() {
         .flat_map(|l| sent_sql(&l.lock().unwrap()))
         .collect();
     assert!(
-        sent.iter().any(|s| s.contains("data_index_num")),
+        sent.iter()
+            .any(|s| s.contains("data_index_num") || s.contains("FROM data_record r")),
         "中継が問い合わせを記録できていること: {sent:?}"
     );
     for s in &sent {
@@ -239,13 +240,14 @@ async fn caller_sql_text_never_reaches_the_database() {
         assert!(!s.contains(sql), "{s}");
     }
     // IR 直投入で同じ問い合わせを流した文は、SQL 経由で送った文に含まれる（IR が合流点）。
+    // 調整は SQL 経路（ストアの既定＝環境変数の戦略固定を含む）と揃える。
     let compiled = store.compile_sql(&c, sql).await.unwrap();
     let (_, debug) = store
         .run_query_debug(
             &c,
             compiled.table_id,
             &compiled.query,
-            &QueryTuning::default(),
+            &QueryTuning::from_env(),
         )
         .await
         .unwrap();
