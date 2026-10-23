@@ -76,13 +76,15 @@ SQL
 # outbox に N 行。テール TAIL 行だけ未処理・未配送、残りは processed_at 済み＋2 台帳配送済み
 # （＝GC が止まって溜まった状態。N を GC 窓の大きさと読めば GC が回っている定常状態）。
 # 1 割は data サービス由来（payload.event_type 付き＝SSE ライブテールの対象）。
+# テナントは g の剰余で巡回する（NODES は T の倍数）ので、event_type の判定に g % 10 を使うと
+# 「番号が 0 で終わるテナント」にしか付かない。テナント内の通番 g / T で判定して、各社に 1 割ずつ配る。
 load_outbox() {
-  local n="$1" tail="$2"
+  local n="$1" tail="$2" t="$3"
   psql_q <<SQL
 TRUNCATE storage_event_outbox, outbox_delivery, job_queue, job_queue_dead RESTART IDENTITY CASCADE;
 INSERT INTO storage_event_outbox (org, tenant_id, node_id, version, op, actor, trace_id, payload, processed_at)
 SELECT b.org, b.tenant_id, b.id, 1, 'update', 'user-' || (g % 97), md5(g::text),
-       CASE WHEN g % 10 = 0
+       CASE WHEN (g / $t) % 10 = 0
             THEN jsonb_build_object('event_type', 'data.record.transitioned', 'table_id', md5(g::text))
             ELSE jsonb_build_object('kind', 'file', 'blob_sha256', md5(g::text) || md5((g + 1)::text), 'size', 12345)
        END,
@@ -141,11 +143,16 @@ GC_BATCH="DELETE FROM storage_event_outbox WHERE id IN (
 
 scan_one() {
   local n="$1" t="$2"
-  load_outbox "$n" 64
-  local maxid active
+  load_outbox "$n" 64 "$t"
+  local maxid active cursor
   maxid="$(psql_t -c 'SELECT max(id) FROM storage_event_outbox')"
   # 「活動中」の代表テナント（T=1 なら tenant-0 しかいない）。
   active="tenant-$((t > 1 ? 1 : 0))"
+  # 活動中テナントの SSE カーソル: 自社の event_type 付きイベントの「1 つ前」に置く（＝前回の poll で
+  # そこまで受け取った状態）。カーソルは自社イベントでしか進まないので、1 poll の走査窓は
+  # 自社イベントの間隔（全テナントの書込が混ざる分・プールでは ~10 × T 行）になる。
+  cursor="$(psql_t -c "SELECT coalesce((SELECT id FROM storage_event_outbox
+    WHERE tenant_id = '$active' AND payload ? 'event_type' ORDER BY id DESC OFFSET 1 LIMIT 1), 0)")"
   BCASE="scan N=$n T=$t"
   hdr "$BCASE"
   echo "| query | median | buffers (last run) |"
@@ -159,9 +166,9 @@ scan_one() {
   measure "GC 1 バッチ（1000 行 DELETE）" "$GC_BATCH"
   measure "latest_event_id（活動中テナント）" "SELECT COALESCE(MAX(id), 0) FROM storage_event_outbox WHERE tenant_id = '$active'"
   measure "latest_event_id（イベントの無いテナント）" "SELECT COALESCE(MAX(id), 0) FROM storage_event_outbox WHERE tenant_id = 'tenant-none'"
-  measure "peek_app_events_after（SSE 1 poll・直近 1000 行窓）" "SELECT o.id, o.payload, coalesce(n.system, false)
+  measure "peek_app_events_after（SSE 1 poll・活動中テナント・走査窓 $((maxid - cursor)) 行）" "SELECT o.id, o.payload, coalesce(n.system, false)
     FROM storage_event_outbox o LEFT JOIN node n ON n.id = o.node_id
-    WHERE o.tenant_id = '$active' AND o.id > $maxid - 1000 AND o.payload ? 'event_type'
+    WHERE o.tenant_id = '$active' AND o.id > $cursor AND o.payload ? 'event_type'
     ORDER BY o.id LIMIT 500"
   # 休眠テナント: カーソルは event_type 付きの自テナントイベントでしか進まない
   # （app-gateway/src/routes/events.rs）ので、接続時カーソル（イベントが無ければ 0）から窓全体を読む。
@@ -330,7 +337,8 @@ UNION ALL
 SELECT 'relay 済み（job_queue 投入）', count(*)::text,
        'p50 ' || round(percentile_cont(0.5) WITHIN GROUP (ORDER BY lat)::numeric, 1) || ' ms / p99 ' ||
        round(percentile_cont(0.99) WITHIN GROUP (ORDER BY lat)::numeric, 1) || ' ms / max ' || round(max(lat)::numeric, 1) || ' ms'
-FROM (SELECT extract(epoch FROM enqueued_at - (payload->>'emitted_at')::timestamptz) * 1000 AS lat FROM job_queue) j
+FROM (SELECT extract(epoch FROM (payload->>'relayed_at')::timestamptz - (payload->>'emitted_at')::timestamptz) * 1000 AS lat
+      FROM job_queue) j
 UNION ALL
 SELECT 'ledger ' || consumer || ' 配送済み', count(*)::text,
        'p50 ' || round(percentile_cont(0.5) WITHIN GROUP (ORDER BY lat_ms)::numeric, 1) || ' ms / p99 ' ||
