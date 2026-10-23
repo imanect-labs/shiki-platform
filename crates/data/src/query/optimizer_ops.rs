@@ -131,7 +131,8 @@ impl DataStore {
         }
     }
 
-    /// 起動時の較正ベンチ（一時表で範囲走査・点検索・本体取得・往復を計測し、単価を置き換える）。
+    /// 起動時の較正ベンチ（較正用の固定表 `data_planner_calib` で範囲走査・点検索・本体取得・往復を計測し、
+    /// 単価を置き換える。読取だけで DDL は打たない）。
     /// 顧客データには触れない。前後の単価を返す。
     pub async fn calibrate_costs(&self) -> Result<CalibrationReport, DataError> {
         let mut conn = self.pools.registry().acquire().await.map_err(map_db)?;

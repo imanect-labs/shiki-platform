@@ -566,12 +566,18 @@ async fn calibration_replaces_unit_costs() {
     assert!(r.after.c_probe >= r.after.c_tuple);
     assert_eq!(store.unit_costs(), r.after);
     assert_eq!(store.calibration_report(), Some(r));
-    // 較正は一時表だけを使い、何も残さない。
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_class WHERE relname = 'shiki_calib'")
+    // 較正は migration の固定表を読むだけで、表も索引も作らない（ランタイム DDL ゼロ・監査 B1-2）。
+    let n: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pg_class WHERE relname LIKE 'shiki_calib%'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 0);
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM data_planner_calib")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(n, 0);
+    assert_eq!(rows, 20_000, "固定表は読むだけ");
 }
 
 /// テナント間で統計収集ジョブが公平に取り出される（重いテナントが積んでも軽いテナントが待たない）。

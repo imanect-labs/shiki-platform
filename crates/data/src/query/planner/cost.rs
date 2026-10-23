@@ -1,8 +1,8 @@
 //! コストモデルと単価の較正（query-optimizer.md §5.2）。
 //!
 //! コストは**予測レイテンシ（µs）**で表す（受付制御 §5.4 と `statement_timeout` の判断にそのまま使う）。
-//! 単価の初期値は §5.2 の仮置きで、**起動時の較正ベンチ**（[`calibrate`]: 一時表に既知のデータを置いて
-//! 各操作を計測）で環境ごとに置き換える。較正の前後の単価は [`CalibrationReport`] に残し、予測と実測の
+//! 単価の初期値は §5.2 の仮置きで、**起動時の較正ベンチ**（[`calibrate`]: 較正用の固定表
+//! `data_planner_calib` の既知のデータで各操作を計測）で環境ごとに置き換える。較正の前後の単価は [`CalibrationReport`] に残し、予測と実測の
 //! 相関はフィードバック（[`super::feedback`]）が記録する。
 //!
 //! 戦略の式（`n` = 行数・`s(X)` = X の推定選択率・`L` = 1 ページの件数）:
@@ -147,15 +147,16 @@ impl UnitCosts {
     }
 }
 
-/// 較正ベンチの表の行数。
+/// 較正ベンチの表の行数（migration 0096 の `generate_series(1, 20000)` と一致させる）。
 const CALIB_ROWS: i64 = 20_000;
 /// 点検索・本体取得の回数。
 const CALIB_PROBES: i64 = 2_000;
 /// 各操作の反復回数（中央値を採る）。
 const CALIB_RUNS: usize = 5;
 
-/// 起動時の較正ベンチ: 一時表（コミットで消える）に既知のデータを置き、範囲走査・点検索・本体取得・
-/// 往復を計測して単価を置き換える。顧客データには触れない。
+/// 起動時の較正ベンチ: 較正用の固定表（`data_planner_calib`・migration 0096 の既知の合成データ）で
+/// 範囲走査・点検索・本体取得・往復を計測して単価を置き換える。読取だけで DDL は打たない。
+/// 顧客データには触れない。
 pub(crate) async fn calibrate(
     conn: &mut PgConnection,
     model: &CostModel,
@@ -164,7 +165,7 @@ pub(crate) async fn calibrate(
     let before = model.units();
     let mut tx = conn.begin().await.map_err(map_db)?;
     let out = calibrate_in_tx(&mut tx, before).await;
-    // 一時表ごと捨てる（失敗しても後始末する）。
+    // SET LOCAL を捨てる（読取だけなので書き戻すものは無い）。
     let _ = tx.rollback().await;
     let after = out?;
     model.set(after);
@@ -189,33 +190,21 @@ async fn calibrate_in_tx(
     ] {
         sqlx::query(s).execute(&mut *conn).await.map_err(map_db)?;
     }
-    sqlx::query(
-        "CREATE TEMP TABLE shiki_calib (k int4 NOT NULL, v text COLLATE \"C\" NOT NULL, \
-           r int8 NOT NULL, d jsonb NOT NULL) ON COMMIT DROP",
-    )
-    .execute(&mut *conn)
-    .await
-    .map_err(map_db)?;
-    sqlx::query(
-        "INSERT INTO shiki_calib SELECT 1, 'v' || (g % 97), g, \
-           jsonb_build_object('a', g, 'b', repeat('x', 160), 'c', g % 13) \
-         FROM generate_series(1, $1::int8) g",
-    )
-    .bind(CALIB_ROWS)
-    .execute(&mut *conn)
-    .await
-    .map_err(map_db)?;
-    for s in [
-        "CREATE INDEX shiki_calib_val ON shiki_calib (k, v, r)",
-        "CREATE UNIQUE INDEX shiki_calib_pk ON shiki_calib (r)",
-        "ANALYZE shiki_calib",
-    ] {
-        sqlx::query(s).execute(&mut *conn).await.map_err(map_db)?;
+    // 較正用の固定表（migration 0096 が作る・テナントに属さない合成データ）。ランタイム DDL は打たない
+    // （15.3: ランタイム DDL ゼロ）。行数が想定と違えば計測が意味を持たないので較正しない。
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM data_planner_calib")
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(map_db)?;
+    if rows != CALIB_ROWS {
+        return Err(DataError::Internal(format!(
+            "較正用の表の行数が想定と違います（{rows} 行・想定 {CALIB_ROWS} 行）"
+        )));
     }
     let rtt = median(conn, "SELECT 1", None).await?;
     let scan = median(
         conn,
-        "SELECT count(*) FROM (SELECT c.r FROM shiki_calib c WHERE c.k = 1 \
+        "SELECT count(*) FROM (SELECT c.r FROM data_planner_calib c WHERE c.k = 1 \
            ORDER BY c.v, c.r LIMIT $1) s",
         Some(CALIB_ROWS),
     )
@@ -223,21 +212,21 @@ async fn calibrate_in_tx(
     let probe = median(
         conn,
         "SELECT count(*) FROM generate_series(1, $1::int8) g WHERE EXISTS ( \
-           SELECT 1 FROM shiki_calib c WHERE c.k = 1 AND c.v = 'v' || (g % 97) \
+           SELECT 1 FROM data_planner_calib c WHERE c.k = 1 AND c.v = 'v' || (g % 97) \
              AND c.r = (g * 7919) % 20000 + 1 OFFSET 0)",
         Some(CALIB_PROBES),
     )
     .await?;
     let fetch = median(
         conn,
-        "SELECT sum(length(c.d::text)) FROM shiki_calib c \
+        "SELECT sum(length(c.d::text)) FROM data_planner_calib c \
          WHERE c.r = ANY(ARRAY(SELECT (g * 7919) % 20000 + 1 FROM generate_series(1, $1::int8) g))",
         Some(CALIB_PROBES),
     )
     .await?;
     let sort = median(
         conn,
-        "SELECT r FROM (SELECT c.r, c.d ->> 'c' AS s FROM shiki_calib c WHERE c.k = 1 \
+        "SELECT r FROM (SELECT c.r, c.d ->> 'c' AS s FROM data_planner_calib c WHERE c.k = 1 \
            ORDER BY c.v, c.r LIMIT $1) z ORDER BY z.s DESC, z.r LIMIT 20",
         Some(CALIB_ROWS),
     )
