@@ -37,6 +37,8 @@ pub struct PersistedDoc {
 ///
 /// authz はここでは行わない（呼び出し側の [`crate::hub::CollabHub`] が接続時＋定期の
 /// relation チェックを済ませてから到達する）。tenant_id/org は行に焼き込み隔離境界を保つ。
+/// 全メソッドが node_id に加えて tenant_id でも絞る（別経路から呼ばれても他テナントの
+/// ドキュメントを読み書きしない・#815）。
 #[derive(Clone)]
 pub struct DocStore {
     pool: sqlx::PgPool,
@@ -90,9 +92,11 @@ impl DocStore {
             return Err(CollabError::NotFound(format!("collab_doc {node_id}")));
         };
         let updates: Vec<(Vec<u8>,)> = sqlx::query_as(
-            "SELECT payload FROM collab_update WHERE node_id = $1 AND seq > $2 ORDER BY seq",
+            "SELECT payload FROM collab_update
+             WHERE node_id = $1 AND tenant_id = $2 AND seq > $3 ORDER BY seq",
         )
         .bind(node_id)
+        .bind(tenant_id)
         .bind(snapshot_seq)
         .fetch_all(&mut *tx)
         .await?;
@@ -108,24 +112,33 @@ impl DocStore {
     }
 
     /// update を 1 件追記し、発番した seq を返す（seq 発番と追記を単一 txn で直列化）。
+    ///
+    /// 他テナントの node_id には追記しない（行が無いので NotFound・#815）。
     pub async fn append_update(
         &self,
         node_id: Uuid,
+        tenant_id: &str,
         payload: &[u8],
         author: &str,
     ) -> Result<i64, CollabError> {
         let mut tx = self.pool.begin().await?;
-        let (seq,): (i64,) = sqlx::query_as(
+        let seq: Option<i64> = sqlx::query_scalar(
             "UPDATE collab_doc SET next_seq = next_seq + 1, updated_at = now()
-             WHERE node_id = $1 RETURNING next_seq - 1",
+             WHERE node_id = $1 AND tenant_id = $2 RETURNING next_seq - 1",
         )
         .bind(node_id)
-        .fetch_one(&mut *tx)
+        .bind(tenant_id)
+        .fetch_optional(&mut *tx)
         .await?;
+        let Some(seq) = seq else {
+            return Err(CollabError::NotFound(format!("collab_doc {node_id}")));
+        };
         sqlx::query(
-            "INSERT INTO collab_update (node_id, seq, payload, author) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO collab_update (node_id, tenant_id, seq, payload, author)
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(node_id)
+        .bind(tenant_id)
         .bind(seq)
         .bind(payload)
         .bind(author)
@@ -139,24 +152,29 @@ impl DocStore {
     pub async fn compact(
         &self,
         node_id: Uuid,
+        tenant_id: &str,
         snapshot: &[u8],
         upto_seq: i64,
     ) -> Result<(), CollabError> {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "UPDATE collab_doc SET snapshot = $2, snapshot_seq = $3, updated_at = now()
-             WHERE node_id = $1 AND snapshot_seq < $3",
+             WHERE node_id = $1 AND tenant_id = $4 AND snapshot_seq < $3",
         )
         .bind(node_id)
         .bind(snapshot)
         .bind(upto_seq)
+        .bind(tenant_id)
         .execute(&mut *tx)
         .await?;
-        sqlx::query("DELETE FROM collab_update WHERE node_id = $1 AND seq <= $2")
-            .bind(node_id)
-            .bind(upto_seq)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "DELETE FROM collab_update WHERE node_id = $1 AND tenant_id = $2 AND seq <= $3",
+        )
+        .bind(node_id)
+        .bind(tenant_id)
+        .bind(upto_seq)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -170,24 +188,29 @@ impl DocStore {
     pub async fn overwrite_snapshot(
         &self,
         node_id: Uuid,
+        tenant_id: &str,
         snapshot: &[u8],
         upto_seq: i64,
     ) -> Result<(), CollabError> {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "UPDATE collab_doc SET snapshot = $2, snapshot_seq = $3, updated_at = now()
-             WHERE node_id = $1",
+             WHERE node_id = $1 AND tenant_id = $4",
         )
         .bind(node_id)
         .bind(snapshot)
         .bind(upto_seq)
+        .bind(tenant_id)
         .execute(&mut *tx)
         .await?;
-        sqlx::query("DELETE FROM collab_update WHERE node_id = $1 AND seq <= $2")
-            .bind(node_id)
-            .bind(upto_seq)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "DELETE FROM collab_update WHERE node_id = $1 AND tenant_id = $2 AND seq <= $3",
+        )
+        .bind(node_id)
+        .bind(tenant_id)
+        .bind(upto_seq)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -197,36 +220,51 @@ impl DocStore {
     pub async fn set_saved_node_version(
         &self,
         node_id: Uuid,
+        tenant_id: &str,
         version: i64,
     ) -> Result<(), CollabError> {
         sqlx::query(
             "UPDATE collab_doc SET saved_node_version = $2, pending_save = false, \
-             updated_at = now() WHERE node_id = $1",
+             updated_at = now() WHERE node_id = $1 AND tenant_id = $3",
         )
         .bind(node_id)
         .bind(version)
+        .bind(tenant_id)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     /// ファイル保存の失敗を durable に記録する（ロード時の外部インポート抑止・migration 0050）。
-    pub async fn set_pending_save(&self, node_id: Uuid) -> Result<(), CollabError> {
+    pub async fn set_pending_save(
+        &self,
+        node_id: Uuid,
+        tenant_id: &str,
+    ) -> Result<(), CollabError> {
         sqlx::query(
-            "UPDATE collab_doc SET pending_save = true, updated_at = now() WHERE node_id = $1",
+            "UPDATE collab_doc SET pending_save = true, updated_at = now() \
+             WHERE node_id = $1 AND tenant_id = $2",
         )
         .bind(node_id)
+        .bind(tenant_id)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     /// 未圧縮 update の件数（圧縮判断・テスト検証用）。
-    pub async fn pending_update_count(&self, node_id: Uuid) -> Result<i64, CollabError> {
-        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM collab_update WHERE node_id = $1")
-            .bind(node_id)
-            .fetch_one(&self.pool)
-            .await?;
+    pub async fn pending_update_count(
+        &self,
+        node_id: Uuid,
+        tenant_id: &str,
+    ) -> Result<i64, CollabError> {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM collab_update WHERE node_id = $1 AND tenant_id = $2",
+        )
+        .bind(node_id)
+        .bind(tenant_id)
+        .fetch_one(&self.pool)
+        .await?;
         Ok(n)
     }
 }

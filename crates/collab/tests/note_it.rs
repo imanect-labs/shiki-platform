@@ -268,8 +268,13 @@ async fn edits_are_saved_as_markdown_with_write_event() {
     // 内容は実行ごとに一意化する（content-addressing の dedup により、過去実行が
     // 同一ハッシュの blob 行を残していると put_object がスキップされるため）。
     let live = Arc::new(
-        LiveDoc::restore(node.id, Some(collab::DocKind::Note), &empty_persisted())
-            .expect("restore"),
+        LiveDoc::restore(
+            node.id,
+            "default",
+            Some(collab::DocKind::Note),
+            &empty_persisted(),
+        )
+        .expect("restore"),
     );
     let canonical = format!("# 会議メモ {}\n\n- 決定事項\n", Uuid::new_v4());
     let canonical = canonical.as_str();
@@ -357,7 +362,8 @@ async fn external_write_is_imported_on_load() {
     // ロード時インポート（saved_node_version 不一致 → md を Yjs へ全置換）。
     let persisted = env.store.load(node.id, "default").await.expect("load");
     let live = Arc::new(
-        LiveDoc::restore(node.id, Some(collab::DocKind::Note), &persisted).expect("restore"),
+        LiveDoc::restore(node.id, "default", Some(collab::DocKind::Note), &persisted)
+            .expect("restore"),
     );
     saver::import_if_stale(
         &live,
@@ -383,7 +389,8 @@ async fn external_write_is_imported_on_load() {
     assert_eq!(persisted.saved_node_version, Some(external.version));
     assert!(persisted.snapshot.is_some(), "snapshot が書かれること");
     let restored = Arc::new(
-        LiveDoc::restore(node.id, Some(collab::DocKind::Note), &persisted).expect("restore2"),
+        LiveDoc::restore(node.id, "default", Some(collab::DocKind::Note), &persisted)
+            .expect("restore2"),
     );
     assert_eq!(restored.to_markdown().expect("md 化"), external_md);
 
@@ -422,13 +429,17 @@ async fn pending_save_suppresses_external_import_on_load() {
     // pending_save マーカーだけを立てる（Storage 停止で save_doc が失敗した状態と同じ）。
     let persisted = env.store.load(node.id, "default").await.expect("load");
     let live = Arc::new(
-        LiveDoc::restore(node.id, Some(collab::DocKind::Note), &persisted).expect("restore"),
+        LiveDoc::restore(node.id, "default", Some(collab::DocKind::Note), &persisted)
+            .expect("restore"),
     );
     let unsaved_md = format!("# 未保存の編集 {}\n", Uuid::new_v4());
     live.apply_and_persist(&env.store, &update_for_markdown(&unsaved_md), &alice)
         .await
         .expect("編集適用");
-    env.store.set_pending_save(node.id).await.expect("マーカー");
+    env.store
+        .set_pending_save(node.id, "default")
+        .await
+        .expect("マーカー");
 
     // アンロード後の外部書込（新バージョン）。
     let external = env
@@ -441,7 +452,8 @@ async fn pending_save_suppresses_external_import_on_load() {
     let persisted = env.store.load(node.id, "default").await.expect("reload");
     assert!(persisted.pending_save, "マーカーがロードに載ること");
     let reloaded = Arc::new(
-        LiveDoc::restore(node.id, Some(collab::DocKind::Note), &persisted).expect("restore2"),
+        LiveDoc::restore(node.id, "default", Some(collab::DocKind::Note), &persisted)
+            .expect("restore2"),
     );
     saver::import_if_stale(
         &reloaded,
@@ -496,13 +508,18 @@ async fn import_is_skipped_when_version_matches() {
         .await
         .expect("init");
     env.store
-        .set_saved_node_version(node.id, node.version)
+        .set_saved_node_version(node.id, "default", node.version)
         .await
         .expect("saved 記録");
 
     let live = Arc::new(
-        LiveDoc::restore(node.id, Some(collab::DocKind::Note), &empty_persisted())
-            .expect("restore"),
+        LiveDoc::restore(
+            node.id,
+            "default",
+            Some(collab::DocKind::Note),
+            &empty_persisted(),
+        )
+        .expect("restore"),
     );
     // Yjs 側にのみ存在する内容（ファイルとは異なる）。
     live.apply_update_bytes(&update_for_markdown("# Yjs 側の真実\n"))

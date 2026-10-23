@@ -33,6 +33,8 @@ const BROADCAST_CAPACITY: usize = 256;
 /// プロセス内で共有するライブドキュメント。
 pub struct LiveDoc {
     pub node_id: Uuid,
+    /// ドキュメントのテナント（永続化はすべて tenant_id でも絞る・#815）。
+    pub tenant_id: String,
     /// ドキュメント種（ファイル保存のシリアライズ形式を決める。None は保存を持たない）。
     kind: Option<DocKind>,
     /// Doc を内包する Awareness。ロックは同期区間のみ（await を跨いで保持しない）。
@@ -67,6 +69,7 @@ impl LiveDoc {
     /// 永続状態から復元する（snapshot → 残 update の順に適用）。
     pub fn restore(
         node_id: Uuid,
+        tenant_id: &str,
         kind: Option<DocKind>,
         persisted: &PersistedDoc,
     ) -> Result<Self, CollabError> {
@@ -83,6 +86,7 @@ impl LiveDoc {
         let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         Ok(LiveDoc {
             node_id,
+            tenant_id: tenant_id.to_string(),
             kind,
             awareness: RwLock::new(Awareness::new(doc)),
             tx,
@@ -208,14 +212,18 @@ impl LiveDoc {
     ) -> Result<(), CollabError> {
         self.apply_update_bytes(payload)?;
         let author = ctx.principal.id.as_str();
-        let seq = store.append_update(self.node_id, payload, author).await?;
+        let seq = store
+            .append_update(self.node_id, &self.tenant_id, payload, author)
+            .await?;
         self.last_persisted_seq.store(seq, Ordering::SeqCst);
         self.mark_dirty(ctx);
         let appended = self.appended_since_compact.fetch_add(1, Ordering::SeqCst) + 1;
         if appended as i64 >= COMPACT_EVERY {
             self.appended_since_compact.store(0, Ordering::SeqCst);
             let snapshot = self.full_state()?;
-            store.compact(self.node_id, &snapshot, seq).await?;
+            store
+                .compact(self.node_id, &self.tenant_id, &snapshot, seq)
+                .await?;
         }
         Ok(())
     }
@@ -233,7 +241,9 @@ impl LiveDoc {
         // append しても、その新 update を snapshot 外で消して失う事故を防ぐ。
         let upto_seq = self.last_persisted_seq.load(Ordering::SeqCst);
         let snapshot = self.full_state()?;
-        store.compact(self.node_id, &snapshot, upto_seq).await
+        store
+            .compact(self.node_id, &self.tenant_id, &snapshot, upto_seq)
+            .await
     }
 
     // --- ファイル保存トラッキング（Task 11P.2/11.1）---
@@ -371,7 +381,10 @@ impl LiveDoc {
         // （追記失敗時もデバウンス保存がファイルへ回収し、編集が黙って消えない）。
         self.mark_dirty(ctx);
         let author = format!("ai:{}", ctx.principal.id);
-        let seq = match store.append_update(self.node_id, update, &author).await {
+        let seq = match store
+            .append_update(self.node_id, &self.tenant_id, update, &author)
+            .await
+        {
             Ok(seq) => seq,
             Err(e) => {
                 // update log に残せなかった編集は再ロードで消える（snapshot+log 再生に
@@ -379,7 +392,7 @@ impl LiveDoc {
                 let upto = self.last_persisted_seq.load(Ordering::SeqCst);
                 let snapshot = self.full_state()?;
                 store
-                    .compact(self.node_id, &snapshot, upto)
+                    .compact(self.node_id, &self.tenant_id, &snapshot, upto)
                     .await
                     .map_err(|_| e)?;
                 self.appended_since_compact.store(0, Ordering::SeqCst);
@@ -391,7 +404,9 @@ impl LiveDoc {
         if appended as i64 >= COMPACT_EVERY {
             self.appended_since_compact.store(0, Ordering::SeqCst);
             let snapshot = self.full_state()?;
-            store.compact(self.node_id, &snapshot, seq).await?;
+            store
+                .compact(self.node_id, &self.tenant_id, &snapshot, seq)
+                .await?;
         }
         Ok(())
     }

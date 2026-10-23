@@ -292,7 +292,8 @@ async fn edits_are_saved_as_sanitized_json_with_write_event() {
     // 悪意あるクライアントの WS update 相当（サニタイズを通らない書込経路）。
     let unique = Uuid::new_v4();
     let live = Arc::new(
-        LiveDoc::restore(node.id, Some(DocKind::Slide), &empty_persisted()).expect("restore"),
+        LiveDoc::restore(node.id, "default", Some(DocKind::Slide), &empty_persisted())
+            .expect("restore"),
     );
     let dirty = vec![Slide {
         id: "s1".into(),
@@ -380,8 +381,9 @@ async fn external_write_is_imported_on_load() {
         .expect("外部書込");
 
     let persisted = env.store.load(node.id, "default").await.expect("load");
-    let live =
-        Arc::new(LiveDoc::restore(node.id, Some(DocKind::Slide), &persisted).expect("restore"));
+    let live = Arc::new(
+        LiveDoc::restore(node.id, "default", Some(DocKind::Slide), &persisted).expect("restore"),
+    );
     saver::import_if_stale(
         &live,
         &env.store,
@@ -433,8 +435,9 @@ async fn corrupt_external_json_fails_closed() {
 
     // まず正常内容をインポートして Yjs 側の真実を作る。
     let persisted = env.store.load(node.id, "default").await.expect("load");
-    let live =
-        Arc::new(LiveDoc::restore(node.id, Some(DocKind::Slide), &persisted).expect("restore"));
+    let live = Arc::new(
+        LiveDoc::restore(node.id, "default", Some(DocKind::Slide), &persisted).expect("restore"),
+    );
     saver::import_if_stale(
         &live,
         &env.store,
