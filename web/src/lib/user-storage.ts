@@ -47,12 +47,13 @@ export function storageScopeGeneration(): number {
 /// `/me` の応答からスコープを確定する（未ログインは null）。変化したときだけ通知する。
 ///
 /// `startedAt` は /me を出したときの世代。その後にログアウト（他タブを含む）があれば、
-/// 遅れて届いた旧ユーザーの応答でスコープを戻さない（消したキーを作り直させない）。
+/// 遅れて届いた応答は捨てる。旧ユーザーの成功応答でスコープを戻さない（消したキーを作り直させない）。
+/// 旧い 401 で次の人のスコープを解かない（ログアウト時のスコープ解除は purge 側で済んでいる）。
 export function setStorageScope(
   me: { tenant_id: string; id: string } | null,
   startedAt?: number,
 ): void {
-  if (me && startedAt !== undefined && startedAt !== generation) return;
+  if (startedAt !== undefined && startedAt !== generation) return;
   // tenant_id は `|` を含まない（サーバの識別子ポリシー）ので `tenant|user` は一意に分解できる。
   const next = me ? `${me.tenant_id}|${me.id}` : null;
   if (next === scope) return;

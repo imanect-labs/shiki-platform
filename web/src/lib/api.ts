@@ -37,7 +37,7 @@ export async function fetchMe(): Promise<MeResponse> {
   const startedAt = storageScopeGeneration();
   const res = await apiFetch("/me");
   if (!res.ok) {
-    if (res.status === 401) setStorageScope(null);
+    if (res.status === 401) setStorageScope(null, startedAt);
     throw new Error(`/me が ${res.status} を返しました`);
   }
   const me = (await res.json()) as MeResponse;

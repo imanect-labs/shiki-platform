@@ -75,7 +75,11 @@ test("未ログイン保護ページ→ログイン→戻り先復帰→ダミ�
 
   // ユーザーのデータのキーは（他ユーザー分・旧来の素のキーも含め）消え、画面の好みは残る。
   // /reference は middleware の保護外なので、未ログインでも同一オリジンで localStorage を覗ける。
-  await page.goto("/reference");
+  // ログアウト後のリダイレクト（Keycloak → アプリ → /login）が続いている間の goto は中断され得る
+  // （上の waitForURL は遷移前の URL にも一致する）ので、遷移が落ち着くまでやり直す。
+  await expect(async () => {
+    await page.goto("/reference");
+  }).toPass({ timeout: 20_000 });
   const remaining = await page.evaluate(() => Object.keys(window.localStorage));
   expect(
     remaining.filter(
