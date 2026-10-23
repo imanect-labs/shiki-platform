@@ -162,6 +162,7 @@ async fn fixture(pool: PgPool, authz: Arc<dyn AuthzClient>, config: StreamConfig
     let store = DataStore::new(pool.clone(), Arc::clone(&authz), Arc::new(AllowRefs))
         .with_stream_config(config);
     store.register_stream_consumer().await.expect("consumer");
+    relay_all(&store).await;
     let table = store
         .create_table(
             &alice,
@@ -261,7 +262,13 @@ async fn drain(s: &mut RecordStream, c: &mut Client) -> (Vec<StreamMessage>, boo
     }
 }
 
+/// outbox の未採番を全て採番する（共有 DB には他テストの未採番が溜まっているので 1 バッチで足りない）。
+async fn relay_all(store: &DataStore) {
+    while store.relay_record_changes_once().await.expect("relay") > 0 {}
+}
+
 async fn tick(store: &DataStore) {
+    relay_all(store).await;
     store.stream_tick().await.expect("tick");
 }
 
@@ -600,8 +607,18 @@ async fn beyond_retention_gets_stream_reset() {
             .await
             .unwrap();
     }
-    fx.store.relay_record_changes_once().await.unwrap();
+    relay_all(&fx.store).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
+    // 共有 DB では並行する他テストのリレー（別の保持期間の設定）がこのテナントの行を採番し得るので、
+    // このテナントの台帳行の保持期間を明示に過ぎた状態にしてから GC する（時間の経過の模擬）。
+    sqlx::query(
+        "UPDATE outbox_delivery SET retain_until = now() - interval '1 second' \
+         WHERE tenant_id = $1 AND retain_until IS NOT NULL",
+    )
+    .bind(&fx.alice.tenant_id)
+    .execute(&fx.pool)
+    .await
+    .unwrap();
     // 他の consumer（RAG の ack・workflow 等の台帳）は配送済みにして、保持期間だけが GC を止める状態にする。
     sqlx::query("UPDATE storage_event_outbox SET processed_at = now() WHERE tenant_id = $1")
         .bind(&fx.alice.tenant_id)
@@ -697,7 +714,7 @@ async fn crash_windows_lose_nothing_and_duplicates_are_idempotent() {
         )
         .await
         .unwrap();
-    fx.store.relay_record_changes_once().await.unwrap(); // 永続化
+    relay_all(&fx.store).await; // 永続化
     let resume = c.last_id.unwrap();
     s.close(); // ← 送信前に接続が落ちる
     tick(&fx.store).await; // 送信は失敗し、購読は片付く
@@ -901,7 +918,9 @@ async fn revocation_stops_delivery_within_ttl_and_rest_is_immediate() {
         fx.store.get_record(&fx.bob, fx.table, r.id, None).await,
         Err(DataError::Forbidden)
     ));
-    // TTL が切れるまで配信を回し続け、止まった時刻を計る。
+    // TTL が切れるまで配信を回し続け、止まった時刻を計る。購読の材料は剥奪より前（購読の開始時）に
+    // 解決したので、TTL は剥奪の時刻より前に切れる。判定はバッチの開始時刻で行う（配信の判定は
+    // バッチの先頭で材料を確かめてから行う）。
     let mut stopped = None;
     let mut seq = 1;
     while revoked_at.elapsed() < ttl * 3 {
@@ -917,17 +936,18 @@ async fn revocation_stops_delivery_within_ttl_and_rest_is_immediate() {
             .await
             .unwrap();
         seq += 1;
-        tick(&fx.store).await;
+        relay_all(&fx.store).await;
+        let tick_started = revoked_at.elapsed();
+        fx.store.stream_tick().await.unwrap();
         let (ms, closed) = drain(&mut s, &mut c).await;
-        let after = revoked_at.elapsed();
-        if after > ttl + Duration::from_millis(300) {
+        if tick_started >= ttl {
             assert!(
                 upserts(&ms).is_empty(),
-                "TTL を超えて配信が続かない（{after:?}）"
+                "TTL を超えて配信が続かない（{tick_started:?}）"
             );
         }
         if closed {
-            stopped = Some(after);
+            stopped = Some(tick_started);
             assert!(ms.iter().any(|m| matches!(
                 m.event,
                 StreamEvent::Reset(data::StreamResetEvent {
@@ -939,8 +959,9 @@ async fn revocation_stops_delivery_within_ttl_and_rest_is_immediate() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let stopped = stopped.expect("TTL で止まる");
-    eprintln!("剥奪から配信停止まで {stopped:?}（TTL {ttl:?}）");
-    assert!(stopped <= ttl + Duration::from_millis(400), "{stopped:?}");
+    eprintln!("剥奪から配信停止（を判定したバッチの開始）まで {stopped:?}（TTL {ttl:?}）");
+    // TTL 以内に止まる（バッチの窓 1 つ分の誤差を許す）。
+    assert!(stopped <= ttl + Duration::from_millis(350), "{stopped:?}");
 
     // 共有解除・ロール変更は世代で即時（TTL を長くしても待たない）。
     let fx2 = fixture(
@@ -1221,8 +1242,8 @@ async fn referenced_record_change_refreshes_referrer_derived_values() {
         .await
         .unwrap();
     // 作成分の採番と、その派生イベントの採番を済ませてから繋ぐ（以降の変更だけを見る）。
-    fx.store.relay_record_changes_once().await.unwrap();
-    fx.store.relay_record_changes_once().await.unwrap();
+    relay_all(&fx.store).await;
+    relay_all(&fx.store).await;
     let mut s = fx
         .store
         .subscribe_records(&fx.alice, orders.id, None, None)
@@ -1293,7 +1314,7 @@ async fn snapshot_read_is_stable_across_concurrent_changes() {
             .unwrap();
         ids.push(r.id);
     }
-    fx.store.relay_record_changes_once().await.unwrap();
+    relay_all(&fx.store).await;
     let page = |cursor: Option<String>| data::DataQuery {
         limit: Some(4),
         cursor,
@@ -1361,7 +1382,7 @@ async fn snapshot_read_is_stable_across_concurrent_changes() {
         )
         .await
         .unwrap();
-    fx.store.relay_record_changes_once().await.unwrap(); // 一部は採番済み
+    relay_all(&fx.store).await; // 一部は採番済み
     fx.store
         .create_record(
             &fx.alice,
@@ -1465,7 +1486,7 @@ async fn snapshot_cursor_beyond_retention_is_gone() {
             .await
             .unwrap();
     }
-    fx.store.relay_record_changes_once().await.unwrap();
+    relay_all(&fx.store).await;
     let q = data::DataQuery {
         limit: Some(2),
         snapshot: true,
@@ -1486,8 +1507,18 @@ async fn snapshot_cursor_beyond_retention_is_gone() {
         )
         .await
         .unwrap();
-    fx.store.relay_record_changes_once().await.unwrap();
+    relay_all(&fx.store).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
+    // 共有 DB では並行する他テストのリレー（別の保持期間の設定）がこのテナントの行を採番し得るので、
+    // このテナントの台帳行の保持期間を明示に過ぎた状態にしてから GC する（時間の経過の模擬）。
+    sqlx::query(
+        "UPDATE outbox_delivery SET retain_until = now() - interval '1 second' \
+         WHERE tenant_id = $1 AND retain_until IS NOT NULL",
+    )
+    .bind(&fx.alice.tenant_id)
+    .execute(&fx.pool)
+    .await
+    .unwrap();
     sqlx::query("UPDATE storage_event_outbox SET processed_at = now() WHERE tenant_id = $1")
         .bind(&fx.alice.tenant_id)
         .execute(&fx.pool)
@@ -1525,7 +1556,7 @@ async fn fsm_transition_reaches_subscribers() {
         )
         .await
         .unwrap();
-    fx.store.relay_record_changes_once().await.unwrap();
+    relay_all(&fx.store).await;
     let mut s = fx
         .store
         .subscribe_records(&fx.bob, fx.table, None, None)

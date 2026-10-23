@@ -31,7 +31,7 @@ use crate::{map_db, DataError};
 /// 台帳 consumer（outbox の全イベントを 1 度ずつ見る・GC の判定対象）。
 pub const LEDGER_CONSUMER: &str = "data-stream";
 /// 1 バッチで claim するイベント数。
-pub(crate) const RELAY_BATCH_LEN: usize = 500;
+pub(crate) const RELAY_BATCH_LEN: usize = 2_000;
 const RELAY_BATCH: i64 = RELAY_BATCH_LEN as i64;
 /// 1 つの参照元テーブルへ個別に積む派生イベントの上限（超えたらテーブル単位の refresh に畳む）。
 const DERIVED_FANOUT_CAP: usize = 1_000;
