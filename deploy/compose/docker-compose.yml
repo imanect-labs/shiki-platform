@@ -516,10 +516,10 @@ services:
       SHIKI__AUTH__AUDIENCE: ${SHIKI__AUTH__AUDIENCE:-shiki-api}
       # テナンシー: multi（claim `tenant` 由来で Postgres 分離）を dev 既定にし、dev_seed の
       # a-corp/b-corp テナントと一致させる（bare `docker compose up` でも共有検索が成立）。
-      # multi は本番 fail-closed で、dev/test の明示 opt-in（SHIKI_DEV_ALLOW_MULTI_TENANT）が要る。
+      # multi は SaaS 本番でもそのまま使える（旧 dev 専用ゲート SHIKI_DEV_ALLOW_MULTI_TENANT は
+      # SAAS.1 完了で撤去済み・crates/api/src/config.rs）。
       SHIKI__AUTH__TENANCY: ${SHIKI__AUTH__TENANCY:-multi}
       SHIKI__AUTH__TENANT_ID: ${SHIKI__AUTH__TENANT_ID:-default}
-      SHIKI_DEV_ALLOW_MULTI_TENANT: ${SHIKI_DEV_ALLOW_MULTI_TENANT:-true}
       SHIKI__AUTH__CLIENT_ID: ${SHIKI__AUTH__CLIENT_ID:-shiki-web}
       SHIKI__AUTH__CLIENT_SECRET: ${SHIKI__AUTH__CLIENT_SECRET:-shiki-web-dev-secret}
       # テナント・プロビジョニング（SAAS.2）。dev 既定で有効（realm の shiki-provisioner と一致）。

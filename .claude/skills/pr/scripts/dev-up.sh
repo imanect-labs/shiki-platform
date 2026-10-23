@@ -483,7 +483,6 @@ export SHIKI__AUTH__INTERNAL_BASE_URL=http://localhost:${KC_PORT}/realms/shiki
 export SHIKI__AUTH__AUDIENCE=shiki-api
 export SHIKI__AUTH__TENANCY=multi
 export SHIKI__AUTH__TENANT_ID=default
-export SHIKI_DEV_ALLOW_MULTI_TENANT=true
 export SHIKI__AUTH__CLIENT_ID=shiki-web
 export SHIKI__AUTH__CLIENT_SECRET=shiki-web-dev-secret
 export SHIKI__AUTH__PROVISIONER_CLIENT_ID=shiki-provisioner
