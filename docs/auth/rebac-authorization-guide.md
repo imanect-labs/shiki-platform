@@ -336,21 +336,28 @@ sequenceDiagram
 - middleware はグループ単位で**一律適用**される。`route_table()`（`server.rs`）の `AccessPolicy`
   （`Public` / `Session` / `OrgAdmin` / `OrgAuditor` / `Provisioner` …）ごとに `route_layer` で付ける。個別ハンドラに認証チェックを散らさない。
 
-### tenant_id の解決 — `resolve_tenant_id`（`extract/auth_context.rs:76`）
+### tenant_id の解決 — `authz::TenantSource`（`authz/src/tenancy.rs`）
+
+規則は `authz::TenantSource` に**単一定義**し、内部 API の `resolve_tenant_id`（`extract/auth_context.rs:75`）と
+app-gateway の二重ゲートが共有する（入口によって別テナントへ解決される食い違いを作らない・#808）。
+設定からの変換は `AuthConfig::tenant_source()` の 1 か所。
 
 ```rust
-match auth.tenancy {
-    // SaaS: claim `tenant` 必須。欠落・空白は fail-closed で 401
-    Tenancy::Multi  => non_empty(principal.tenant_id.as_deref()).ok_or(Unauthorized)?,
-    // オンプレ/cell: 設定 auth.tenant_id の固定値（既定 "default"）
-    Tenancy::Single => non_empty(auth.tenant_id.as_deref()).ok_or(Unauthorized)?,
-}
-// 由来を問わず必ず文字ポリシー検証（authz::validate_tenant_id へ委譲）
-validate_tenant_id(&tenant_id)?;
+// AuthConfig::tenant_source(): single → Fixed(auth.tenant_id) / multi → Claim
+match self {
+    // オンプレ/cell: 設定 auth.tenant_id の固定値（既定 "default"）。claim `tenant` は無視
+    TenantSource::Fixed(fixed) => non_empty(Some(fixed)).ok_or(EmptyFixed)?,
+    // SaaS: claim `tenant` 必須。欠落・空白は fail-closed（呼び出し側で 401）
+    TenantSource::Claim => non_empty(claim).ok_or(MissingClaim)?,
+};
+// 由来を問わず必ず文字ポリシー検証（authz::validate_tenant_id）
+validate_tenant_id(tenant_id).map_err(Invalid)?;
 ```
 
 - **Multi（SaaS）**: JWT の `tenant` claim を使う。無ければ認証を通さない（越境の余地を残さない）。
-- **Single（オンプレ/cell）**: 設定の固定値。claim が無くても `tenant_id="default"` 名前空間で一様に動く。
+- **Single（オンプレ/cell）**: 設定の固定値。claim があっても無視し、`tenant_id="default"` 名前空間で一様に動く。
+  single では SaaS のテナント作成（`POST /admin/tenants`）を 409 `tenancy_single` で拒否する
+  （multi の設定漏れで全テナントが `default` に融合するのを防ぐ・#808）。
 
 ### Principal の 2 種別（PrincipalKind）
 

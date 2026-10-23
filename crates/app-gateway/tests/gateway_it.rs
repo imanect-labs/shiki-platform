@@ -118,7 +118,7 @@ async fn broad_token_without_grant_is_denied() {
 
 #[tokio::test]
 async fn multi_tenant_rejects_missing_tenant_claim() {
-    // require_tenant_claim=true（SaaS multi）では tenant クレーム欠落を fail-closed で 401。
+    // TenantSource::Claim（SaaS multi）では tenant クレーム欠落を fail-closed で 401。
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
     let client = format!("app-{}", Uuid::new_v4());
@@ -141,7 +141,7 @@ async fn multi_tenant_rejects_missing_tenant_claim() {
         .await
         .expect("install");
     let mut st = state(pool.clone(), &tenant);
-    st.require_tenant_claim = true;
+    st.tenant_source = authz::TenantSource::Claim;
     let app = build_gateway_router(st);
 
     // tenant クレーム無し → 401（既定テナントへフォールバックしない）。
@@ -149,10 +149,76 @@ async fn multi_tenant_rejects_missing_tenant_claim() {
     let (s, _) = get(&app, "/gw/whoami", Some(&no_tenant)).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 
+    // FGA 名前空間区切りを含む tenant クレームは識別子ポリシーで 401（内部 API と同じ規則）。
+    let bad = token(&client, "data.read", &format!("{tenant}|x"));
+    let (s, _) = get(&app, "/gw/whoami", Some(&bad)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+
     // tenant クレームありなら通る。
     let ok = token(&client, "data.read", &tenant);
     let (s, _) = get(&app, "/gw/whoami", Some(&ok)).await;
     assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn single_tenant_ignores_tenant_claim() {
+    // TenantSource::Fixed（オンプレ/cell single）は設定の固定値を使い、トークンの tenant
+    // クレームでテナントを選ばせない（内部 API の resolve_tenant_id と同じ規則・#808）。
+    let Some(pool) = setup().await else { return };
+    let fixed = format!("t-{}", Uuid::new_v4());
+    let other = format!("t-{}", Uuid::new_v4());
+    let client_fixed = format!("app-{}", Uuid::new_v4());
+    let client_other = format!("app-{}", Uuid::new_v4());
+    let store = AppInstallationStore::new(pool.clone());
+    for (tenant, client) in [(&fixed, &client_fixed), (&other, &client_other)] {
+        store
+            .upsert(
+                &ctx(tenant),
+                NewAppInstallation {
+                    app_id: Uuid::new_v4(),
+                    app_name: "single",
+                    installed_version: "1.0.0",
+                    granted_scopes: &["data.read".to_string()],
+                    client_id_b1: Some(client),
+                    client_id_b2: None,
+                    ai: AiPin::default(),
+                    frontend_bundle: None,
+                    server_bundle: None,
+                    server_spec: None,
+                },
+            )
+            .await
+            .expect("install");
+    }
+    let app = build_gateway_router(state(pool.clone(), &fixed));
+
+    // 別テナントを名乗るクレームでも固定テナントへ解決する（固定テナントのインストールで通る）。
+    let claims_other = token(&client_fixed, "data.read", &other);
+    let (s, body) = get(&app, "/gw/whoami", Some(&claims_other)).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    // クレーム無しでも固定テナントへ解決する（single の既存動作）。
+    let no_tenant = token_without_tenant(&client_fixed, "data.read");
+    let (s, body) = get(&app, "/gw/whoami", Some(&no_tenant)).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+
+    // 越境の負のテスト: 別テナントのインストールはクレームで名乗っても解決されない（403）。
+    let cross = token(&client_other, "data.read", &other);
+    let (s, _) = get(&app, "/gw/whoami", Some(&cross)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn single_tenant_empty_fixed_value_fails_closed() {
+    // 固定値が空（設定ミス）ならクレームへフォールバックせず 401。
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let client = format!("app-{}", Uuid::new_v4());
+    let mut st = state(pool.clone(), &tenant);
+    st.tenant_source = authz::TenantSource::Fixed("  ".into());
+    let app = build_gateway_router(st);
+    let tok = token(&client, "data.read", &tenant);
+    let (s, _) = get(&app, "/gw/whoami", Some(&tok)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
 
 /// CORS: B1 の opaque origin（Origin: null）からのプリフライトと能力応答にヘッダが付く。

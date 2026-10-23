@@ -272,7 +272,7 @@ impl AppConfig {
 
     /// 値の整合性を検証する（必須 URL のパース可否など）。
     pub fn validate(&self) -> Result<(), ConfigError> {
-        Self::check_tenancy_supported(self.auth.tenancy)?;
+        Self::check_tenancy_supported(&self.auth)?;
         if self.auth.issuer.trim().is_empty() {
             return Err(ConfigError::Invalid("auth.issuer が空です".into()));
         }
@@ -330,15 +330,26 @@ impl AppConfig {
     /// - 解決時に `tenant_id` の禁止文字（`| : # @`・空白）を fail-closed 検証
     ///
     /// なおオンボーディング自動化・課金・クォータ（SAAS.2〜4）は**隔離の安全性とは独立の運用トラック**。
-    // 現状は info ログのみで Err を返さないが、他の `check_*` バリデータと同じ
+    ///
+    /// `single` で provisioner 資格情報が揃っている場合は警告だけ出す（#808）。provisioner は
+    /// ミニアプリ同意インストールの Keycloak client 登録（オンプレでも使う）を兼ねるため起動は
+    /// 止めず、テナント作成（`POST /admin/tenants`）だけをハンドラ側で fail-closed に拒否する。
+    // 現状はログのみで Err を返さないが、他の `check_*` バリデータと同じ
     // `-> Result<(), ConfigError>` 形を保ち `validate()` で一様に `?` 連結できるようにする。
     #[allow(clippy::unnecessary_wraps)]
-    fn check_tenancy_supported(tenancy: Tenancy) -> Result<(), ConfigError> {
-        if tenancy == Tenancy::Multi {
-            tracing::info!(
+    fn check_tenancy_supported(auth: &AuthConfig) -> Result<(), ConfigError> {
+        match auth.tenancy {
+            Tenancy::Multi => tracing::info!(
                 "auth.tenancy=multi: 全隔離層（authz 識別子名前空間化・storage キー・audit チェーン・\
                  session/DB 行）を tenant_id スコープで強制します（SAAS.1・#84 完了）"
-            );
+            ),
+            Tenancy::Single if auth.provisioner_credentials().is_some() => tracing::warn!(
+                tenant_id = ?auth.tenant_id,
+                "auth.tenancy=single で provisioner が設定されています: 全ログインは固定の \
+                 auth.tenant_id へ解決され、POST /admin/tenants は拒否されます（SaaS なら \
+                 auth.tenancy=multi を設定してください）"
+            ),
+            Tenancy::Single => {}
         }
         Ok(())
     }
