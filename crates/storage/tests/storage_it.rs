@@ -1449,6 +1449,104 @@ async fn updated_by_tracks_editor() {
     assert_eq!(history[1].author, alice, "初版の author は作成者");
 }
 
+/// 内容更新の楽観ロック（#827）。開いた版（base_version）が古ければ declare でも finalize でも
+/// 409 にし、間に入った保存を上書きしない。合っていれば通常どおり新版になる。
+#[tokio::test]
+async fn content_update_base_version_conflict() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let alice = format!("ituser{}", Uuid::new_v4().simple());
+    seed_org_member(&authz, &org, &alice).await;
+    let actx = make_ctx(&org, &alice);
+
+    let file = upload(&service, &http, &actx, None, "edit.txt", b"v1")
+        .await
+        .expect("upload v1");
+    assert_eq!(file.version, 1);
+
+    // 版が合っていれば新版になる。
+    let declare = |content: &'static [u8], base: i64| {
+        let service = &service;
+        let actx = &actx;
+        async move {
+            service
+                .begin_upload_with_base(
+                    actx,
+                    None,
+                    "",
+                    "text/plain",
+                    &sha256_hex(content),
+                    content.len() as i64,
+                    Some(file.id),
+                    Some(base),
+                    None,
+                )
+                .await
+        }
+    };
+    let put = |url: String, content: &'static [u8]| {
+        let http = &http;
+        async move {
+            let resp = http
+                .put(&url)
+                .body(content.to_vec())
+                .send()
+                .await
+                .expect("PUT");
+            assert!(resp.status().is_success(), "PUT status: {}", resp.status());
+        }
+    };
+    let ok = declare(b"v2 from editor", 1).await.expect("declare base=1");
+    put(ok.upload_url, b"v2 from editor").await;
+    let v2 = service
+        .finalize_upload(&actx, ok.upload_id, None)
+        .await
+        .expect("finalize base=1");
+    assert_eq!(v2.version, 2);
+
+    // 古い版を申告した declare は、バイトを送る前に 409（今の版を返す）。
+    let stale = declare(b"stale", 1).await;
+    assert!(
+        matches!(stale, Err(StorageError::VersionConflict { current: 2 })),
+        "{stale:?}"
+    );
+
+    // declare の後・finalize の前に別の保存が入ったら、finalize が 409 で上書きしない。
+    let racing = declare(b"racing edit", 2).await.expect("declare base=2");
+    put(racing.upload_url, b"racing edit").await;
+    let other = upload_new_version(&service, &http, &actx, file.id, b"someone else")
+        .await
+        .expect("other save");
+    assert_eq!(other.version, 3);
+    let lost = service.finalize_upload(&actx, racing.upload_id, None).await;
+    assert!(
+        matches!(lost, Err(StorageError::VersionConflict { current: 3 })),
+        "{lost:?}"
+    );
+    let now = service
+        .get_metadata(&actx, file.id, None)
+        .await
+        .expect("get");
+    assert_eq!(now.version, 3, "他の保存が残る");
+    assert_eq!(
+        now.blob_sha256.as_deref(),
+        Some(sha256_hex(b"someone else").as_str())
+    );
+    assert_eq!(
+        node_version_count(&pool, file.id).await,
+        3,
+        "衝突した保存は版を増やさない"
+    );
+}
+
 #[tokio::test]
 async fn versioning_end_to_end() {
     let Some(ctx) = setup().await else { return };
@@ -2279,6 +2377,9 @@ async fn purge_tenant_leaves_no_tenant_rows_anywhere() {
     .execute(&pool)
     .await
     .expect("llm_usage seed");
+    // #815: tenant_id を足した子（generation_event / collab_update / app_function_run）と、
+    // 複合 FK にした chat 系の親子も、手当て無しで撤去対象に入ること。
+    seed_tenant_children(&pool, &org, &ta, &ua, file.id).await;
     // thread の FGA タプル（chat が張るもの）。これを剥奪する経路が purge に無く、
     // thread 行だけ消えると列挙元を失って恒久的な孤児タプルになる。
     let thread_obj = ctx_a.ns().thread(&thread_id.to_string());
@@ -2407,6 +2508,256 @@ async fn tenant_scoped_tables_covers_every_table_with_tenant_id() {
             );
         }
     }
+
+    // #815 で tenant_id を足した子テーブルが、手当て無しで導出集合に入り、親より先に並ぶこと。
+    for (child, parent) in [
+        ("generation_event", "generation_run"),
+        ("collab_update", "collab_doc"),
+        ("app_function_run", "app_function_schedule"),
+    ] {
+        let (Some(c), Some(p)) = (pos(child), pos(parent)) else {
+            panic!("{child} / {parent} がテナント境界テーブルに含まれること: {derived:?}");
+        };
+        assert!(
+            c < p,
+            "{child} は親 {parent} より先に削除される順であること"
+        );
+    }
+}
+
+/// #815: 旧来テーブルにも tenant_id を参照に含む複合 FK を張ったので、親子の tenant が
+/// 食い違う行は DB が拒否する（アプリの前段確認が壊れても越境行を作れない）。
+#[tokio::test]
+async fn composite_fk_rejects_cross_tenant_children() {
+    let Some(cx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = cx;
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let ta = format!("ta{}", Uuid::new_v4().simple());
+    let tb = format!("tb{}", Uuid::new_v4().simple());
+    let ua = format!("ituser{}", Uuid::new_v4().simple());
+    let ctx_a = make_ctx_tenant(&org, &ta, &ua);
+    authz
+        .write_tuple(
+            &ctx_a.subject(),
+            Relation::Member,
+            &ctx_a.ns().organization(&org),
+        )
+        .await
+        .expect("org member seed");
+    let file = upload(&service, &http, &ctx_a, None, "fk.txt", b"x")
+        .await
+        .expect("upload");
+
+    // 拒否したのが**狙った複合 FK**であること（別の制約で落ちて素通りの検査にならない）。
+    let fk_violation = |r: Result<sqlx::postgres::PgQueryResult, sqlx::Error>, constraint: &str| {
+        let err = r.expect_err(constraint);
+        let db = err.as_database_error().expect("DB エラー");
+        assert_eq!(
+            db.code().as_deref(),
+            Some("23503"),
+            "{constraint}: FK 違反: {err}"
+        );
+        assert_eq!(db.constraint(), Some(constraint), "{err}");
+    };
+
+    // node.parent_id: 他テナントのノードを親にできない。
+    fk_violation(
+        sqlx::query(
+            "INSERT INTO node (org, tenant_id, kind, name, parent_id, created_by, updated_by) \
+             VALUES ($1, $2, 'folder', 'x', $3, 'u', 'u')",
+        )
+        .bind(&org)
+        .bind(&tb)
+        .bind(file.id)
+        .execute(&pool)
+        .await,
+        "node_tenant_id_parent_id_fkey",
+    );
+    // node_closure: 他テナントのノードを祖先にできない（子孫は tb 自身の正当なノード）。
+    let tb_folder: Uuid = sqlx::query_scalar(
+        "INSERT INTO node (org, tenant_id, kind, name, created_by, updated_by) \
+         VALUES ($1, $2, 'folder', 'tb-root', 'u', 'u') RETURNING id",
+    )
+    .bind(&org)
+    .bind(&tb)
+    .fetch_one(&pool)
+    .await
+    .expect("tb のフォルダ");
+    fk_violation(
+        sqlx::query(
+            "INSERT INTO node_closure (tenant_id, org, ancestor, descendant, depth) \
+             VALUES ($1, $2, $3, $4, 1)",
+        )
+        .bind(&tb)
+        .bind(&org)
+        .bind(file.id)
+        .bind(tb_folder)
+        .execute(&pool)
+        .await,
+        "node_closure_tenant_id_ancestor_fkey",
+    );
+    // node_version: 他テナントのノードに版を足せない。blob 側の FK で先に落ちないよう、
+    // 同じ内容の blob を tb にも置いてから試す（node への複合 FK だけが拒否理由になる）。
+    sqlx::query(
+        "INSERT INTO blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
+         SELECT $2, org, sha256, size_bytes, content_type, object_key, 0 FROM blob \
+         WHERE tenant_id = $3 AND org = $4 \
+           AND sha256 = (SELECT blob_sha256 FROM node WHERE id = $1)",
+    )
+    .bind(file.id)
+    .bind(&tb)
+    .bind(&ta)
+    .bind(&org)
+    .execute(&pool)
+    .await
+    .expect("tb 側の blob");
+    fk_violation(
+        sqlx::query(
+            "INSERT INTO node_version \
+               (node_id, version, org, tenant_id, blob_sha256, size_bytes, content_type, author) \
+             SELECT id, 99, org, $2, blob_sha256, size_bytes, content_type, 'u' FROM node WHERE id = $1",
+        )
+        .bind(file.id)
+        .bind(&tb)
+        .execute(&pool)
+        .await,
+        "node_version_tenant_id_node_id_fkey",
+    );
+
+    // chat: 他テナントの thread にメッセージを足せない。
+    let thread_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO thread (id, org, tenant_id, owner, title) VALUES ($1, $2, $3, $4, 'T')",
+    )
+    .bind(thread_id)
+    .bind(&org)
+    .bind(&ta)
+    .bind(&ua)
+    .execute(&pool)
+    .await
+    .expect("thread seed");
+    fk_violation(
+        sqlx::query(
+            "INSERT INTO message (id, thread_id, org, tenant_id, role, content) \
+             VALUES ($1, $2, $3, $4, 'user', '{}'::jsonb)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(thread_id)
+        .bind(&org)
+        .bind(&tb)
+        .execute(&pool)
+        .await,
+        "message_tenant_id_thread_id_fkey",
+    );
+    // 同テナントなら通る（制約が過剰でないこと）。
+    sqlx::query(
+        "INSERT INTO message (id, thread_id, org, tenant_id, role, content) \
+         VALUES ($1, $2, $3, $4, 'user', '{}'::jsonb)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(thread_id)
+    .bind(&org)
+    .bind(&ta)
+    .execute(&pool)
+    .await
+    .expect("同テナントのメッセージは入る");
+}
+
+/// #815: tenant_id を足した子テーブル（generation_event / collab_update / app_function_run）と
+/// 複合 FK を張った chat 系の子を、親ごとテナントに仕込む（purge / retenant の検査用）。
+async fn seed_tenant_children(pool: &PgPool, org: &str, tenant: &str, user: &str, file_id: Uuid) {
+    let thread_id = Uuid::new_v4();
+    let user_msg = Uuid::new_v4();
+    let asst_msg = Uuid::new_v4();
+    let run_id = Uuid::new_v4();
+    let schedule_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO thread (id, org, tenant_id, owner, title) VALUES ($1, $2, $3, $4, 'T')",
+    )
+    .bind(thread_id)
+    .bind(org)
+    .bind(tenant)
+    .bind(user)
+    .execute(pool)
+    .await
+    .expect("thread seed");
+    // assistant は user を親に持つ（message.parent_id の複合 FK・ON DELETE SET NULL (parent_id)）。
+    sqlx::query(
+        "INSERT INTO message (id, thread_id, org, tenant_id, role, content, parent_id) \
+         VALUES ($1, $3, $4, $5, 'user', '{}'::jsonb, NULL), \
+                ($2, $3, $4, $5, 'assistant', '{}'::jsonb, $1)",
+    )
+    .bind(user_msg)
+    .bind(asst_msg)
+    .bind(thread_id)
+    .bind(org)
+    .bind(tenant)
+    .execute(pool)
+    .await
+    .expect("message seed");
+    sqlx::query(
+        "INSERT INTO generation_run (run_id, thread_id, message_id, org, tenant_id, actor) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(run_id)
+    .bind(thread_id)
+    .bind(asst_msg)
+    .bind(org)
+    .bind(tenant)
+    .bind(user)
+    .execute(pool)
+    .await
+    .expect("generation_run seed");
+    sqlx::query(
+        "INSERT INTO generation_event (run_id, tenant_id, seq, type, payload) \
+         VALUES ($1, $2, 1, 'token', '{}'::jsonb)",
+    )
+    .bind(run_id)
+    .bind(tenant)
+    .execute(pool)
+    .await
+    .expect("generation_event seed");
+    sqlx::query("INSERT INTO collab_doc (node_id, org, tenant_id) VALUES ($1, $2, $3)")
+        .bind(file_id)
+        .bind(org)
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .expect("collab_doc seed");
+    sqlx::query(
+        "INSERT INTO collab_update (node_id, tenant_id, seq, payload, author) \
+         VALUES ($1, $2, 1, 'x', $3)",
+    )
+    .bind(file_id)
+    .bind(tenant)
+    .bind(user)
+    .execute(pool)
+    .await
+    .expect("collab_update seed");
+    sqlx::query(
+        "INSERT INTO app_function_schedule (id, tenant_id, org, app_id, function, expr, next_run_at) \
+         VALUES ($1, $2, $3, gen_random_uuid(), 'f', '* * * * *', now())",
+    )
+    .bind(schedule_id)
+    .bind(tenant)
+    .bind(org)
+    .execute(pool)
+    .await
+    .expect("app_function_schedule seed");
+    sqlx::query(
+        "INSERT INTO app_function_run (tenant_id, schedule_id, scheduled_at) VALUES ($1, $2, now())",
+    )
+    .bind(tenant)
+    .bind(schedule_id)
+    .execute(pool)
+    .await
+    .expect("app_function_run seed");
 }
 
 /// 内部バイト直書き/読み戻し（Task 4.12 Stage A・サンドボックス成果物経路）。
@@ -4946,6 +5297,8 @@ async fn rename_tenant_rows_moves_every_table() {
     .execute(&pool)
     .await
     .expect("step_execution seed");
+    // #815: 旧来テーブルも複合 FK（DEFERRABLE）になったので、遅延が効いていないと移行が落ちる。
+    seed_tenant_children(&pool, &org, &from, &user, file.id).await;
 
     let tables = storage::tenant_scope::tenant_scoped_tables(&pool)
         .await

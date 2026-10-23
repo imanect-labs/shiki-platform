@@ -91,9 +91,11 @@ DB 行の対象は `information_schema` から `tenant_id` 列を持つ実テー
 子→親順で削除する（`storage::tenant_scope`・#420）。保持するのは `audit_log`（削除証跡）と `tenant`
 （tombstone）だけで、それ以外は自動的に対象になる —— 新しいテーブルが増えても消し忘れない。
 撤去したテーブル数と行数は `tenant.purge` 監査の `tables_purged` / `rows_deleted_direct` に残る。
-`rows_deleted_direct` は各 `DELETE` が**直接**消した行数で、`tenant_id` を持たず親から
-`ON DELETE CASCADE` される従属行（`generation_event` / `collab_update` 等）は含まない
-——消滅証明に使う際はこの定義に注意する。
+`rows_deleted_direct` は各 `DELETE` が**直接**消した行数。#815（migration 0080）以降は
+`generation_event` / `collab_update` / `app_function_run` も `tenant_id` を持ち、子→親順で直接消されて
+この数に含まれる（`tenant_id` を持たない表は全体共有の `maintenance_schedule` / `outbox_consumer` /
+`scheduler_lease` だけ）。0080 適用前の環境では、これらは親から `ON DELETE CASCADE` で消え、
+数に含まれない——消滅証明に使う際はこの定義に注意する。
 
 > ⚠️ 2026-08 以前はテーブル名を手で列挙しており、**51 テーブル中 13 しか消していなかった**。
 > チャット履歴・RAG の本文・構造化データ・ワークフロー履歴・利用量が撤去後も残っていた（#420）。
