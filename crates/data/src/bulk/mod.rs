@@ -643,18 +643,23 @@ impl DataStore {
             .begin()
             .await
             .map_err(map_db)?;
-        sqlx::query(
+        let closed: Option<String> = sqlx::query_scalar(
             "UPDATE data_bulk_import SET last_error = $3, updated_at = now(), \
                status = CASE WHEN index_hold THEN 'indexing' ELSE 'failed' END, \
                finished_at = CASE WHEN index_hold THEN NULL ELSE now() END \
-             WHERE tenant_int = $1 AND id = $2 AND status NOT IN ('done', 'failed')",
+             WHERE tenant_int = $1 AND id = $2 AND status NOT IN ('done', 'failed') \
+             RETURNING status",
         )
         .bind(imp.tenant_int)
         .bind(imp.id)
         .bind(e.to_string())
-        .execute(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(map_db)?;
+        if closed.as_deref() == Some("failed") {
+            // 作業領域を片付ける（保持していれば索引の仕上げの最後に片付く）。
+            apply::cleanup_staging(&mut tx, imp).await?;
+        }
         tx.commit().await.map_err(map_db)?;
         tracing::warn!(import_id = %imp.id, error = %e, "一括取込を中止しました");
         Ok(())

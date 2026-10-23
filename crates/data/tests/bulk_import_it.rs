@@ -906,6 +906,78 @@ async fn schema_change_mid_import_revalidates_unapplied_rows() {
     );
 }
 
+/// テーブルが取込中に削除されたら取込を `failed` で閉じ、作業領域を片付ける（適用済みの行は残る）。
+#[tokio::test]
+async fn table_deletion_mid_import_fails_and_cleans_up() {
+    let _g = serial().await;
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool.clone());
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let t = create_table(&store, &c, "t", rich_schema()).await;
+    let id = store
+        .start_bulk_import(
+            &c,
+            t.id,
+            rows((0..600).map(|i| rich_row(i, None)).collect()),
+            BulkImportOptions {
+                index_mode: BulkIndexMode::Immediate,
+                ..BulkImportOptions::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    detach_job(&pool, id).await;
+    loop {
+        let s = store
+            .bulk_import_step(&tenant, t.id, id, 300)
+            .await
+            .unwrap();
+        if s.status == "applying" {
+            break;
+        }
+    }
+    store
+        .bulk_import_step(&tenant, t.id, id, 300)
+        .await
+        .unwrap();
+    store.delete_table(&c, t.id, None).await.unwrap();
+    let s = store.run_bulk_import(&tenant, t.id, id).await.unwrap();
+    assert_eq!(s.status, "failed");
+    let (ti, tb) = keys_of(&pool, &tenant, t.id).await;
+    let (status, applied, err): (String, i64, Option<String>) = sqlx::query_as(
+        "SELECT status, rows_applied, last_error FROM data_bulk_import \
+         WHERE tenant_int = $1 AND table_int = $2 AND id = $3",
+    )
+    .bind(ti)
+    .bind(tb)
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((status.as_str(), applied), ("failed", 300));
+    assert!(err.unwrap().contains("見つかりません"));
+    let left: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM data_bulk_staging WHERE tenant_int = $1 AND import_id = $2",
+    )
+    .bind(ti)
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(left, 0, "作業領域が片付く");
+    // テナントの撤去で取込の表も消える。
+    store.purge_tenant(&tenant).await.unwrap();
+    let imports: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM data_bulk_import WHERE tenant_int = $1")
+            .bind(ti)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(imports, 0);
+}
+
 /// 認可を切り替えられるテストダブル（bob は editor でない・`secret` テーブルは誰も見えない・
 /// `revoked` が立つと alice の editor も外れる）。
 struct Switch {
@@ -1402,8 +1474,9 @@ async fn reader_loop(
 }
 
 /// 計測: 10 万行の取込の所要時間（索引の同期／遅延構築）と、取込中の他テナントの読取 p95。
-/// 重いので `DATA_BENCH=1` のときだけ走る。
-#[tokio::test]
+/// 重いので `DATA_BENCH=1` のときだけ走る。読取と取込が同じスレッドを奪い合わないよう（本番の
+/// ワーカーも多スレッドのランタイムで別タスク）、マルチスレッドのランタイムで測る。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bench_100k_import() {
     if std::env::var("DATA_BENCH").as_deref() != Ok("1") {
         eprintln!("DATA_BENCH=1 でないためスキップ");

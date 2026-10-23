@@ -407,22 +407,23 @@ impl DataStore {
             // 過去の値は当時の上限で書かれている。上限を下げてもバックフィルは止めない。
             max_multi_values: MAX_MULTI_VALUES_CEILING,
         };
-        for r in &rows {
-            let data = decode_record(&schema.0, &r.data.0);
-            writer
-                .rebuild(
-                    &mut tx,
-                    &IndexedRecord {
-                        record_int: r.record_int,
-                        owner: &r.owner,
-                        created_at: r.created_at,
-                        updated_at: r.updated_at,
-                        data: &data,
-                    },
-                    &targets,
-                )
-                .await?;
-        }
+        // チャンクの全レコードを表ごとに 1 文で作り直す（1 件ずつの文にしない・§16.7）。
+        let decoded: Vec<_> = rows
+            .iter()
+            .map(|r| decode_record(&schema.0, &r.data.0))
+            .collect();
+        let recs: Vec<IndexedRecord<'_>> = rows
+            .iter()
+            .zip(&decoded)
+            .map(|(r, data)| IndexedRecord {
+                record_int: r.record_int,
+                owner: &r.owner,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+                data,
+            })
+            .collect();
+        writer.rebuild_many(&mut tx, &recs, &targets).await?;
         let processed = rows.len() as u64;
         let limit = u64::try_from(max_records.max(1)).unwrap_or(u64::MAX);
         let done = targets.is_empty() || processed < limit;

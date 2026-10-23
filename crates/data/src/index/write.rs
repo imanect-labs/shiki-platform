@@ -226,6 +226,41 @@ impl IndexWriter<'_> {
         self.apply(conn, rec.record_int, &ops, Mode::Rebuild).await
     }
 
+    /// バックフィル（複数レコード）: [`Self::rebuild`] と同じ規則で、表ごとに 1 文にまとめて作り直す。
+    ///
+    /// unique を含む組は 1 件ずつ（同じ文の中で 2 行が同じ値に当たると `ON CONFLICT DO UPDATE` が
+    /// 409 ではなく文のエラーになるため・重複の検出を 1 件の書込と同じ形に保つ）。
+    pub(crate) async fn rebuild_many(
+        &self,
+        conn: &mut PgConnection,
+        recs: &[IndexedRecord<'_>],
+        targets: &[(FieldId, IndexTable)],
+    ) -> Result<(), DataError> {
+        if targets.iter().any(|(_, t)| *t == IndexTable::Unique) {
+            for rec in recs {
+                self.rebuild(conn, rec, targets).await?;
+            }
+            return Ok(());
+        }
+        let mut batch = Batch::default();
+        let mut links = Vec::new();
+        for rec in recs {
+            let sys = SystemValues::of(rec);
+            let ops: Vec<Op<'_>> = targets
+                .iter()
+                .map(|(field, table)| Op {
+                    field: *field,
+                    table: *table,
+                    old: None,
+                    new: self.value_of(*field, rec.data, &sys),
+                })
+                .collect();
+            self.collect(&mut batch, &mut links, rec.record_int, &ops, Mode::Rebuild)?;
+        }
+        self.flush(conn, &batch, Mode::Rebuild).await?;
+        self.write_links(conn, links).await
+    }
+
     fn value_of<'v>(
         &self,
         field: FieldId,
@@ -348,8 +383,21 @@ impl IndexWriter<'_> {
     ) -> Result<(), DataError> {
         let keys = self.plan.keys;
         if mode != Mode::Fresh {
+            // 同じ (表, フィールド集合) を消すレコードをまとめて 1 文にする（バックフィルのチャンク）。
+            let mut groups: Vec<(IndexTable, Vec<i16>, Vec<i64>)> = Vec::new();
             for (record_int, table, fields) in &batch.deletes {
-                delete_rows(conn, keys, *table, fields, *record_int).await?;
+                let mut fields = fields.clone();
+                fields.sort_unstable();
+                match groups
+                    .iter_mut()
+                    .find(|(t, f, _)| t == table && *f == fields)
+                {
+                    Some((_, _, recs)) => recs.push(*record_int),
+                    None => groups.push((*table, fields, vec![*record_int])),
+                }
+            }
+            for (table, fields, records) in &groups {
+                delete_rows(conn, keys, *table, fields, records).await?;
             }
             delete_unique(conn, keys, &batch.unique_delete).await?;
         }
@@ -457,12 +505,12 @@ async fn delete_rows(
     keys: crate::model::TableKeys,
     table: IndexTable,
     fields: &[i16],
-    record_int: i64,
+    records: &[i64],
 ) -> Result<(), DataError> {
     // PK (tenant_int, table_int, field_id, record_int, ord) の前方一致で引ける形。
     let sql = format!(
         "DELETE FROM {} WHERE tenant_int = $1 AND table_int = $2 \
-           AND field_id = ANY($3::int2[]) AND {} = $4",
+           AND field_id = ANY($3::int2[]) AND {} = ANY($4::int8[])",
         table.relation(),
         table.record_column()
     );
@@ -470,7 +518,7 @@ async fn delete_rows(
         .bind(keys.tenant_int)
         .bind(keys.table_int)
         .bind(fields)
-        .bind(record_int)
+        .bind(records)
         .execute(&mut *conn)
         .await
         .map_err(map_db)?;

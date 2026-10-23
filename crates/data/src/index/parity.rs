@@ -103,7 +103,14 @@ impl DataStore {
         let mut conn = self
             .pools
             .for_tenant(tenant_id)
-            .acquire()
+            .begin()
+            .await
+            .map_err(map_db)?;
+        // 突合は本体と索引の全行どうしの反結合。統計が取れる前（大量の取込・バックフィルの直後）は
+        // 件数を過小に見積もって CTE どうしの入れ子ループ（行数の 2 乗）を選び得るので、この Tx に限って
+        // 入れ子ループを止めてハッシュ反結合に固定する（10 万行で数百秒 → 1 秒未満・Task 15.11 の計測）。
+        sqlx::query("SET LOCAL enable_nestloop = off")
+            .execute(&mut *conn)
             .await
             .map_err(map_db)?;
         let meta: Option<(sqlx::types::Json<TableSchema>, i32, i64)> = sqlx::query_as(
@@ -151,6 +158,7 @@ impl DataStore {
         .execute(&mut *conn)
         .await
         .map_err(map_db)?;
+        conn.commit().await.map_err(map_db)?;
         Ok(report)
     }
 }
