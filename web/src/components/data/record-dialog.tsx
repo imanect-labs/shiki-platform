@@ -88,24 +88,18 @@ export function RecordDialog({
       onCreated(r);
       onOpenChange(false);
     } catch (err) {
-      // 列に結び付いた理由（構造化 400 の field）はその列の下に出す。
+      // 列に結び付いた理由（構造化 400 の field・409 unique_violation の field）はその列の下に出す。サーバは
+      // 読める列だけを名指しし、文言に列の表示名を入れる（値は入れない）。
       const field = err instanceof DataApiError ? err.field : null;
       const message = err instanceof Error ? withFieldLabels(err.message, readable) : String(err);
       if (field && fields.some((f) => f.key === field)) {
         setErrors({ [field]: message });
         return;
       }
-      // 一意の重複でどの列か分からないとき（本文に field が無い）は、入れた値のうち一意の列を挙げる。
-      const uniqueCols =
-        err instanceof DataApiError && err.uniqueViolation
-          ? fields.filter((f) => f.unique && data[f.key] != null).map((f) => `「${fieldLabel(readable, f.key)}」`)
-          : [];
       toast({
         variant: "destructive",
         title: field && readable.some((f) => f.key === field) ? `「${fieldLabel(readable, field)}」のため追加できませんでした` : "追加できませんでした",
-        description: uniqueCols.length
-          ? `同じ値のレコードが既にあります（重複できない列: ${uniqueCols.join("・")}）`
-          : message,
+        description: message,
       });
     } finally {
       setBusy(false);

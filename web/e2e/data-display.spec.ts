@@ -77,3 +77,44 @@ test("見えていた行が消えたら件数を取り直す（削除の SSE）"
   await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "1");
   await otherCtx.close();
 });
+
+test("逆向きの列は参照元の行のタイトルで出す（件数ではなく・作成時に付けた表示名の見出し）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const child = await post(page, "/data/tables", {
+    name: uniqueName("e2e-取引先"),
+    schema: { fields: [{ key: "title", display_name: "社名", type: "text", indexed: true }] },
+  });
+  const a = await post(page, `/data/tables/${child.id}/records`, { data: { title: "A社" } });
+  const parent = await post(page, "/data/tables", {
+    name: uniqueName("e2e-請求"),
+    schema: {
+      fields: [
+        { key: "name", display_name: "件名", type: "text", indexed: true },
+        {
+          key: "client",
+          display_name: "取引先",
+          type: "record_ref",
+          ref_table: child.id,
+          link: { cardinality: "many_to_one", symmetric_key: "invoices", symmetric_display_name: "請求（取引先）" },
+        },
+      ],
+    },
+  });
+  await post(page, `/data/tables/${parent.id}/records`, { data: { name: "請求1", client: [a.id] } });
+  await post(page, `/data/tables/${parent.id}/records`, { data: { name: "請求2", client: [a.id] } });
+  // 逆向きの列は作成時に渡した表示名で作られる（保存の後に参照先を書き換えない）。
+  const schema = (await (await page.request.get(`/api/data/tables/${child.id}`)).json()) as {
+    schema: { fields: { key: string; display_name: string }[] };
+  };
+  expect(schema.schema.fields.find((f) => f.key === "invoices")?.display_name).toBe("請求（取引先）");
+
+  await page.goto(`/data/${child.id}`);
+  await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "1");
+  await page.getByRole("tab", { name: "カード" }).click();
+  const gallery = page.getByTestId("gallery-grid");
+  await expect(gallery.getByText("A社")).toBeVisible();
+  // 参照元の行のタイトル（件名）を並べる。「2 件のレコード」とは出さない。
+  await expect(gallery.getByText(/請求1/)).toBeVisible();
+  await expect(gallery.getByText(/請求2/)).toBeVisible();
+  await expect(gallery.getByText(/件のレコード/)).toHaveCount(0);
+});

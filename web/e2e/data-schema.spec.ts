@@ -174,15 +174,58 @@ test("日本語名のリンクを 2 本足しても逆向きの列の参照名�
     }
     await form.getByTestId("schema-add-confirm").click();
   }
+  // 逆向きの列の表示名は作成時に渡す（`symmetric_display_name`）。保存の後に参照先のスキーマを書き換えない。
+  const refSchemaWrites: string[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "PUT" && r.url().includes(`/data/tables/${ref}/schema`)) refSchemaWrites.push(r.url());
+  });
+  const saved = page.waitForResponse((r) => r.url().includes(`/data/tables/${id}/schema`) && r.request().method() === "PUT");
   await page.getByTestId("schema-save").click();
+  const body = (await (await saved).request().postDataJSON()) as {
+    schema: { fields: { link?: { symmetric_display_name?: string } }[] };
+  };
+  expect(body.schema.fields.flatMap((f) => (f.link?.symmetric_display_name ? [f.link.symmetric_display_name] : [])).sort()).toEqual(
+    [`${srcName}（取引先）`, `${srcName}（請求先）`].sort(),
+  );
   await expect(editor).toBeHidden();
   const reverse = (await schemaOf(page, ref)).filter((f) => f.type === "record_ref");
   expect(reverse).toHaveLength(2);
   expect(new Set(reverse.map((f) => f.key)).size).toBe(2);
   expect(reverse.map((f) => f.key)).not.toContain("rev");
-  await expect
-    .poll(async () => (await schemaOf(page, ref)).filter((f) => f.type === "record_ref").map((f) => f.display_name).sort())
-    .toEqual([`${srcName}（取引先）`, `${srcName}（請求先）`].sort());
+  expect(reverse.map((f) => f.display_name).sort()).toEqual([`${srcName}（取引先）`, `${srcName}（請求先）`].sort());
+  expect(refSchemaWrites).toEqual([]);
+});
+
+test("今のデータと合わない設定（値の無い行がある列の必須化）は、保存できない理由をその列の下に出す", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const id = await createTable(
+    page,
+    uniqueName("e2e-必須化"),
+    [
+      { key: "name", display_name: "件名", type: "text", indexed: true },
+      { key: "memo", display_name: "備考", type: "text" },
+    ],
+    [{ name: "a" }, { name: "b", memo: "あり" }],
+  );
+  await page.goto(`/data/${id}`);
+  await page.getByTestId("schema-editor-open").click();
+  const editor = page.getByTestId("schema-editor");
+  await editor.getByRole("button", { name: "「備考」の設定" }).click();
+  await editor.getByTestId("schema-settings-memo").getByRole("switch", { name: "必須" }).click();
+  const saved = page.waitForResponse((r) => r.url().includes(`/data/tables/${id}/schema`) && r.request().method() === "PUT");
+  await page.getByTestId("schema-save").click();
+  const res = await saved;
+  expect(res.status()).toBe(400);
+  expect(((await res.json()) as { code?: string }).code).toBe("schema_conflicts_with_data");
+  // サーバの文言（列の表示名と件数）を、その列の下に出す。シートは閉じない。
+  const note = editor.getByTestId("schema-field-memo").getByTestId("schema-data-conflict");
+  await expect(note).toBeVisible();
+  await expect(note).toContainText("備考");
+  await expect(note).toContainText("1 件");
+  await expect(editor).toBeVisible();
+  // 設定を戻すと理由は消え、保存できる。
+  await editor.getByTestId("schema-settings-memo").getByRole("switch", { name: "必須" }).click();
+  await expect(note).toBeHidden();
 });
 
 test("行ポリシーのあるテーブルの一意・マスク列の必須には注意を出し、表示名は空にできない（2-B-P2-3・2-B-P3-5）", async ({ page }) => {

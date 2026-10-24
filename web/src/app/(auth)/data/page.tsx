@@ -61,8 +61,8 @@ function CreateTableDialog({
       });
       onCreated(t);
     } catch (err) {
-      // 同じ名前（409 name_taken・旧サーバは 409 conflict）は名前の欄の下に出す（A-2）。
-      if (err instanceof DataApiError && (err.nameTaken || (err.status === 409 && err.code === "conflict"))) {
+      // 同じ名前（409 name_taken）は名前の欄の下に出す（A-2）。
+      if (err instanceof DataApiError && err.nameTaken) {
         setNameError("同じ名前のテーブルがあります。別の名前にしてください。");
         return;
       }

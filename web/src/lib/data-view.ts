@@ -214,8 +214,8 @@ export const SUPPRESSED_LABEL = "件数が少ないため非表示";
 /// 1 セルの表示（参照系の列は名前に置き換える・抑制したセルは理由を出す）。
 ///
 /// - `user_ref` 列・作成者列: ディレクトリの表示名（引けなければ id のまま）
-/// - リンク列: 参照先のタイトル列（サーバが閲覧者に見える参照先の分だけ `link_labels` に載せる）。タイトルの
-///   無い参照先は id の先頭 8 文字
+/// - リンク列（逆向きの列を含む）: 参照先のタイトル列（サーバが閲覧者に見える参照先の分だけ `link_labels` に
+///   載せる）。タイトルの無い参照先は {@link UNTITLED}
 /// - スモールセル抑制に掛かった派生列（`suppressed_fields`）: {@link SUPPRESSED_LABEL}
 export function displayCell(
   r: DataRecord,
@@ -237,15 +237,10 @@ export function displayCell(
     return { text: ids(v).map((id) => roleName(id) || id).join(", "), muted: false };
   }
   if (type === "record_ref") {
-    // タイトルの無い参照先（タイトル列が空・逆向きの列の参照元にタイトル列が無い）は id ではなく
-    // 「（タイトルなし）」と出す（UUID の先頭が並んで読めなかった・A P3）。
+    // 見出しはサーバが順方向の列にも逆向きの列（参照元）にも `link_labels` で返す。タイトルの無い参照先
+    // （タイトル列が空・タイトル列が無い）は id ではなく「（タイトルなし）」と出す（UUID の先頭が並んで読めなかった・A P3）。
     const labels = (r.link_labels ?? {}) as Record<string, string>;
-    const list = ids(v);
-    // 逆向きの列はサーバが参照元の見出しを返さないことがある: 1 件も見出しが無ければ件数で出す。
-    if (c.field?.link?.reverse && list.length && list.every((id) => !labels[id])) {
-      return { text: `${list.length.toLocaleString("ja-JP")} 件のレコード`, muted: true };
-    }
-    return { text: list.map((id) => labels[id] || UNTITLED).join(", "), muted: false };
+    return { text: ids(v).map((id) => labels[id] || UNTITLED).join(", "), muted: false };
   }
   return { text: formatValue(v, c.field, c.key), muted: false };
 }

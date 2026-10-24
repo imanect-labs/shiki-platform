@@ -54,6 +54,15 @@ export type ImportErrorsResponse = S["ImportErrorsResponse"];
 export type FsmBody = S["FsmBody"];
 export type AllowedTransitions = S["AllowedTransitions"];
 export type FsmResponse = S["FsmResponse"];
+/// 構造化した誤りの本文（400 入力の誤り・403 列が使えない・409 競合・要求の形の誤り）。
+export type BadRequestBody = S["BadRequestBody"];
+export type ForbiddenBody = S["ForbiddenBody"];
+export type ConflictBody = S["ConflictBody"];
+export type RequestErrorBody = S["RequestErrorBody"];
+
+/// テーブルが見つからない（存在しない・削除済み・見る権限が無い）。サーバは見えないテーブルを存在しない
+/// テーブルと同じ 404 にするので、画面もどれかを言い分けない（言い分けると存在が分かる）。
+export const TABLE_NOT_FOUND = "テーブルが見つかりません。削除されたか、見る権限がありません。";
 
 /// API の誤り（状態コード＋構造化した本文）。
 export class DataApiError extends Error {
@@ -74,8 +83,7 @@ export class DataApiError extends Error {
     return typeof f === "string" && f ? f : null;
   }
 
-  /// テーブル名の重複（`name_taken`）。旧サーバは 409 `conflict` で返すので、テーブルの作成・改名の文脈で
-  /// 呼び出し側が `conflict` も同じに扱う。
+  /// テーブル名の重複（`name_taken`）。
   get nameTaken(): boolean {
     return this.status === 409 && this.code === "name_taken";
   }
@@ -117,9 +125,15 @@ export class DataApiError extends Error {
     return this.status === 409 && this.code === "rev_conflict";
   }
 
-  /// unique 制約の違反（同じ値のレコードが既にある・`code=unique_violation`）。
+  /// unique 制約・一対一 / 一対多のリンクの参照先の一意の違反（`code=unique_violation`）。サーバは呼び出し側が
+  /// 読める列なら `field`（参照名）と表示名つきの `message` を返す（読めない列・値は返さない）。
   get uniqueViolation(): boolean {
     return this.status === 409 && this.code === "unique_violation";
+  }
+
+  /// 存在しない列・読めない列の指定（403 `field_unavailable`・両者を区別しない・列名なし）。
+  get fieldUnavailable(): boolean {
+    return this.status === 403 && this.code === "field_unavailable";
   }
 
   /// 材料化した派生列が参照先の変更を受けて再計算中（`code=derived_recomputing`）。
@@ -183,6 +197,17 @@ function codeMessage(body: Record<string, unknown> | null): string | null {
       return "この並べ替えでは固定の読み取りができません";
     case "fsm_invalid":
       return "状態の遷移の定義が正しくありません";
+    // 要求の形の誤り（RequestErrorBody・サーバは日本語の message を付けるので、無いときの予備）。
+    case "payload_too_large":
+      return "送る内容が大きすぎます";
+    case "unsupported_media_type":
+      return "送る内容の形式が正しくありません";
+    case "not_found":
+      return "見つかりませんでした";
+    case "method_not_allowed":
+      return "この操作はできません";
+    case "bad_request":
+      return "要求が正しくありません";
     case "import_too_large": {
       const max = Number(body?.max_bytes ?? 0);
       return max > 0

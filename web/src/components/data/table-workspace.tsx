@@ -333,8 +333,9 @@ export function TableWorkspace({
       if (p) return setProblem({ kind: "preparing", ...p });
       const a = e.approvalRequired;
       if (a) return setProblem({ kind: "approval", ...a });
-      // 見る権限が無い（共有が外れた等）はグリッドが本文で案内する（上の帯と二重に出さない）。
-      if (e.status === 403 || e.status === 404) return setProblem(null);
+      // テーブルが見つからない（共有が外れた・削除された＝404）・使えない列（403 field_unavailable）は
+      // グリッドが本文で案内する（上の帯と二重に出さない）。
+      if (e.status === 404 || e.fieldUnavailable) return setProblem(null);
     }
     setProblem({ kind: "error", message: e.message });
   }, []);

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
 
 /// /data の画面の細部（検証で見つかった不具合の回帰・A-2/A-4/A-7/A-8/A-9/D-13）。
 
@@ -265,4 +265,129 @@ test("FSM のテーブルの状態のセルは進める先のメニューで開�
   await page.keyboard.press("Delete");
   await expect(page.getByText("「状態」は直接書き換えられません", { exact: true })).toBeVisible();
   expect(patched).toBe(false);
+});
+
+/// FSM のテーブル（状態: 下書き → 承認待ち → 承認 / 却下）と 1 行（下書き）を作る。
+async function fsmTable(page: Page): Promise<{ tableId: string; recordId: string }> {
+  const headers = { "X-CSRF-Token": await csrf(page) };
+  const res = await page.request.post("/api/data/tables", {
+    headers,
+    data: {
+      name: uniqueName("e2e-状態の版"),
+      schema: {
+        fields: [
+          { key: "name", display_name: "件名", type: "text", indexed: true },
+          { key: "status", display_name: "状態", type: "select", options: ["下書き", "承認待ち", "承認", "却下"], indexed: true },
+        ],
+        status_field: "status",
+      },
+    },
+  });
+  expect(res.status(), await res.text()).toBe(201);
+  const table = (await res.json()) as { id: string; schema: Record<string, unknown>; schema_version: number };
+  const fsm = await page.request.post("/api/data/fsms", {
+    headers,
+    data: {
+      name: uniqueName("e2e-flow"),
+      table_id: table.id,
+      body: {
+        states: ["下書き", "承認待ち", "承認", "却下"],
+        transitions: [
+          { from: "下書き", to: "承認待ち", actor: "public" },
+          { from: "承認待ち", to: "承認", actor: "public" },
+          { from: "承認待ち", to: "却下", actor: "public" },
+        ],
+      },
+    },
+  });
+  expect(fsm.status(), await fsm.text()).toBe(201);
+  const f = (await fsm.json()) as { id: string; version?: number };
+  const put = await page.request.put(`/api/data/tables/${table.id}/schema`, {
+    headers,
+    data: { schema: { ...table.schema, fsm_ref: { artifact_id: f.id, version: f.version ?? 1 } }, expected_schema_version: table.schema_version },
+  });
+  expect(put.status(), await put.text()).toBe(200);
+  const rec = await page.request.post(`/api/data/tables/${table.id}/records`, { headers, data: { data: { name: "申請" } } });
+  expect(rec.status(), await rec.text()).toBe(201);
+  return { tableId: table.id, recordId: ((await rec.json()) as { id: string }).id };
+}
+
+test("状態のメニューはサーバの今の状態と版で進め、進め先を読めなければ理由を出す（AllowedTransitions）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const { tableId, recordId } = await fsmTable(page);
+  // 変更の購読を止めて、グリッドの行を古いままにする（他の人の更新が届いていない状態）。
+  await page.route(new RegExp(`/api/data/tables/${tableId}/stream`), (route) => route.abort());
+  await page.goto(`/data/${tableId}`);
+  const grid = page.getByTestId("data-grid");
+  await expect(grid).toHaveAttribute("data-loaded", "1");
+  // 他の人が別の列を更新した（rev 1 → 2）。グリッドはまだ rev 1 の行を持っている。
+  const patched = await page.request.patch(`/api/data/tables/${tableId}/records/${recordId}`, {
+    headers: { "X-CSRF-Token": await csrf(page) },
+    data: { patch: { name: "申請（改）" }, expected_rev: 1 },
+  });
+  expect(patched.status(), await patched.text()).toBe(200);
+
+  const box = (await grid.boundingBox())!;
+  const statusCell = { x: box.x + ROW_MARKER + COL_WIDTH + COL_WIDTH / 2, y: box.y + HEADER + ROW / 2 };
+  await page.mouse.click(statusCell.x, statusCell.y);
+  await page.keyboard.press("Enter");
+  const menu = page.getByTestId("transition-editor");
+  await expect(menu).toBeVisible();
+  await expect(menu).toContainText("今: 下書き");
+  await expect(menu.getByRole("option")).toHaveText(["承認待ち"]);
+  // 遷移はメニューを開いたときにサーバが返した版（rev 2）で送る（手元の古い rev 1 で 409 にしない）。
+  const sent = page.waitForRequest((r) => r.url().includes(`/records/${recordId}/transition`) && r.method() === "POST");
+  const done = page.waitForResponse((r) => r.url().includes(`/records/${recordId}/transition`) && r.request().method() === "POST");
+  await menu.getByRole("option", { name: "承認待ち" }).click();
+  expect(((await sent).postDataJSON() as { expected_rev: number }).expected_rev).toBe(2);
+  expect((await done).status()).toBe(200);
+  await expect(page.getByText(/に進められませんでした/)).toHaveCount(0);
+
+  // 進め先を読めない（状態の列が読めない 403 field_unavailable）: 候補を推測で出さず、理由を出す。
+  await page.route(new RegExp(`/api/data/tables/${tableId}/records/${recordId}/transitions$`), (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({ status: 403, title: "Forbidden", code: "field_unavailable", message: "指定した列は存在しないか、参照できません" }),
+    }),
+  );
+  await expect(menu).toBeHidden();
+  await page.mouse.click(statusCell.x, statusCell.y + 1);
+  await page.keyboard.press("Enter");
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("alert")).toContainText("状態の列を見る権限がないため");
+  await expect(menu.getByRole("option")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+});
+
+test("見えないテーブル・削除したテーブル・存在しないテーブルは同じ「見つかりません」になる（404）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const headers = { "X-CSRF-Token": await csrf(page) };
+  const res = await page.request.post("/api/data/tables", {
+    headers,
+    data: { name: uniqueName("e2e-消す"), schema: { fields: [{ key: "name", display_name: "件名", type: "text", indexed: true }] } },
+  });
+  expect(res.status(), await res.text()).toBe(201);
+  const gone = ((await res.json()) as { id: string }).id;
+  expect((await page.request.delete(`/api/data/tables/${gone}`, { headers })).status()).toBeLessThan(300);
+  const NOT_FOUND = "テーブルが見つかりません。削除されたか、見る権限がありません。";
+  for (const id of [gone, "8f2b3c1e-0000-4000-8000-000000000000"]) {
+    const r = await page.request.get(`/api/data/tables/${id}`);
+    expect(r.status()).toBe(404);
+    await page.goto(`/data/${id}`);
+    await expect(page.getByText(NOT_FOUND)).toBeVisible();
+  }
+  // 他の人のテーブル（共有されていない）も同じ。
+  const page2 = await page.context().browser()!.newPage();
+  await loginAs(page2, "bob");
+  const mine = await page.request.post("/api/data/tables", {
+    headers,
+    data: { name: uniqueName("e2e-見せない"), schema: { fields: [{ key: "name", display_name: "件名", type: "text", indexed: true }] } },
+  });
+  const hidden = ((await mine.json()) as { id: string }).id;
+  expect((await page2.request.get(`/api/data/tables/${hidden}`)).status()).toBe(404);
+  await page2.goto(`/data/${hidden}`);
+  await expect(page2.getByText(NOT_FOUND)).toBeVisible();
+  await page2.close();
 });

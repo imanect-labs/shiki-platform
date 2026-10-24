@@ -42,7 +42,6 @@ import { isRefField, refCellEditor, type RefCellPayload } from "@/components/dat
 import {
   transitionCellEditor,
   transitionErrorMessage,
-  transitionTargets,
   type FsmInfo,
 } from "@/components/data/transition-editor";
 import { ConfirmDialog } from "@/components/drive/dialogs";
@@ -64,6 +63,7 @@ import {
   postAwareness,
   runQuery,
   subscribeRecords,
+  TABLE_NOT_FOUND,
   transitionRecord,
   updateRecord,
   type RecordSubscription,
@@ -387,12 +387,11 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     } catch (e) {
       if (gen !== generation.current) return;
       // 続きのページの位置（カーソル）が使えなくなった（サーバの再起動で鍵が変わった・スナップショットの保持
-      // 切れ）: 空行のまま止めず、先頭から読み直す（D-9）。古いサーバは code の無い 400 を返すので、先頭ページは
-      // 同じ条件で読めていた続きのページの 400 もカーソルの失効とみなす。
+      // 切れ）: 空行のまま止めず、先頭から読み直す（D-9）。
       if (
         !first &&
         e instanceof DataApiError &&
-        (e.code === "cursor_invalid" || e.code === "snapshot_expired" || e.status === 410 || (e.status === 400 && !e.code)) &&
+        (e.code === "cursor_invalid" || e.status === 410) &&
         // 読み直しても続きが同じ理由で読めない（位置の失効ではない）なら繰り返さない。
         Date.now() - lastCursorReset.current > 15_000
       ) {
@@ -409,11 +408,12 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       const waiting = e instanceof DataApiError && (e.indexPreparing || e.approvalRequired);
       if (first) {
         setFailure(
-          e instanceof DataApiError && e.code === "field_unavailable"
+          e instanceof DataApiError && e.fieldUnavailable
             ? // 絞り込み・並べ替えに、存在しないか読めない列が入っている（ビューの古い条件など）。
               "絞り込み・並べ替えに、存在しないか見られない列が含まれています。条件を見直してください"
-            : e instanceof DataApiError && (e.status === 403 || e.status === 404)
-            ? "このテーブルを見る権限がありません（共有が外されたか、削除されました）"
+            : e instanceof DataApiError && e.status === 404
+            ? // 見えないテーブルは存在しない・削除済みと同じ 404（ページの「見つかりません」と同じ文言）。
+              TABLE_NOT_FOUND
             : e instanceof DataApiError && (e.readTimeout || e.status === 400 || e.code === "upstream_unavailable")
               ? // 負荷で時間切れ（少し待てば読める）・条件の誤り（構造化した理由）・サーバに届かないはその文言を出す
                 // （列は表示名に直す）。
@@ -573,15 +573,15 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       else setLive({ kind: "disconnected" });
     } catch (e) {
       if (gen !== generation.current) return;
-      if (e instanceof DataApiError && (e.status === 403 || e.status === 404)) {
-        // 見る権限を失った: 手元の行を即時に捨てて案内だけにする。
+      if (e instanceof DataApiError && e.status === 404) {
+        // 見る権限を失った・削除された（どちらも 404）: 手元の行を即時に捨てて案内だけにする。
         generation.current += 1;
         rows.current = [];
         stale.current = [];
         indexById.current = new Map();
         peers.current.clear();
         publishPeers();
-        setFailure("このテーブルを見る権限がなくなりました（削除されたか、共有が外されました）");
+        setFailure(TABLE_NOT_FOUND);
         setInitial("error");
         report({ loaded: 0, done: false, count: null });
         bump();
@@ -899,11 +899,12 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     });
   };
 
-  /// 状態を進める（FSM の遷移 API・編集を始めた時点の rev で送る）。
-  const transition = (rowRef: { id: string; rev: number }, to: string, label: string) => {
+  /// 状態を進める（FSM の遷移 API）。`seen` はメニューを開いたときにサーバが返した rev（メニューに出した
+  /// 状態の版）。手元の行が古ければそちらで、その後に自分の保存で進んでいればその版で送る。
+  const transition = (rowRef: { id: string; rev: number }, to: string, label: string, seen: number) => {
     const gen = generation.current;
     queueSave(rowRef.id, async () => {
-      const rev = followOwn(rowRef.id, rowRef.rev);
+      const rev = Math.max(followOwn(rowRef.id, rowRef.rev), followOwn(rowRef.id, seen));
       try {
         const saved = await transitionRecord(tableId, rowRef.id, to, rev);
         if (gen !== generation.current) return;
@@ -1036,18 +1037,22 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
             if (j !== undefined) rows.current[j] = before;
             const recomputing = e instanceof DataApiError ? e.derivedRecomputing : null;
             const labelOf = (key: string) => columns.find((x) => x.key === key)?.label ?? key;
+            // 重複した列はサーバが名指しする（読める列だけ・無ければ今書いた列）。
+            const dup = e instanceof DataApiError && e.uniqueViolation ? columns.find((x) => x.key === (e.field ?? c.key)) ?? c : null;
             toast({
               variant: "destructive",
-              title:
-                e instanceof DataApiError && e.uniqueViolation
-                  ? `「${c.label}」に同じ値のレコードが既にあります`
-                  : recomputing
-                    ? `「${labelOf(recomputing.field)}」を再計算しています`
-                    : "保存できませんでした",
-              description:
-                e instanceof DataApiError && e.uniqueViolation
-                  ? "この列は重複できません。別の値を入れてください（入力は元に戻しました）。"
-                  : recomputing
+              title: dup
+                ? dup.field?.type === "record_ref"
+                  ? `「${dup.label}」のリンク先は既に他のレコードから参照されています`
+                  : `「${dup.label}」に同じ値のレコードが既にあります`
+                : recomputing
+                  ? `「${labelOf(recomputing.field)}」を再計算しています`
+                  : "保存できませんでした",
+              description: dup
+                ? dup.field?.type === "record_ref"
+                  ? "一対一・一対多のリンクは、参照先を 1 つの行からしか指せません。別の参照先を選んでください（入力は元に戻しました）。"
+                  : "この列は重複できません。別の値を入れてください（入力は元に戻しました）。"
+                : recomputing
                     ? "参照先の変更を受けた再計算が終わるまで、この行は保存できません。しばらくしてから再試行してください。"
                     : e instanceof Error
                       ? withFieldLabels(e.message, fieldsRef.current ?? columns.flatMap((x) => (x.field ? [x.field] : [])))
@@ -1078,18 +1083,15 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     // 参照の列は候補から選ぶ編集欄（A-6）。
     const f = fsmRef.current;
     if (f && rc.fsmState !== undefined && rc.rowRef) {
-      // 状態の列は「進める先」のメニュー（今の状態から出る遷移だけ・2-C-P2-4）。
+      // 状態の列は「進める先」のメニュー（サーバがいま実行できると答えた遷移だけ・2-C-P2-4）。
       const col = columnsRef.current.find((c) => c.key === f.field);
-      const { targets, known } = transitionTargets(f, rc.fsmState, col?.field?.options ?? []);
       const rowRef = rc.rowRef;
       const label = col?.label ?? f.field;
       return transitionCellEditor({
         label,
         current: rc.fsmState,
-        targets,
-        known,
         load: () => getAllowedTransitions(tableIdRef.current, rowRef.id),
-        onPick: (to) => transitionRef.current(rowRef, to, label),
+        onPick: (to, rev) => transitionRef.current(rowRef, to, label, rev),
       }) as ProvideEditorCallbackResult<GridCell>;
     }
     const field = rc.refField ? columnsRef.current.find((c) => c.key === rc.refField)?.field : null;

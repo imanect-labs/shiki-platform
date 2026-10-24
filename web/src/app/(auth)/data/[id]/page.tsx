@@ -16,10 +16,9 @@ import {
   listViews,
   type DataTable,
   type DataViewSummary,
+  TABLE_NOT_FOUND,
   type TableViewerContext,
 } from "@/lib/data-api";
-
-const NOT_FOUND = "テーブルが見つかりません。削除されたか、見る権限がありません。";
 
 function Pending({ error }: { error: string | null }) {
   usePageChrome(() => ({ back: { href: "/data", label: "テーブル一覧へ" } }), []);
@@ -63,9 +62,9 @@ export default function DataTablePage({ params }: { params: Promise<{ id: string
       })
       .catch((e) => {
         if (!active) return;
-        // 存在しない・削除済み・見る権限が無い・id の形が違うは同じ文言にする（どれかを言い分けると存在が分かる・
-        // 存在しない id は「権限がありません」、削除済みは「見つかりません」と出し分けていた・A P3）。
-        if (e instanceof DataApiError && [400, 403, 404, 410].includes(e.status)) setError(NOT_FOUND);
+        // 存在しない・削除済み・見る権限が無い（サーバはどれも 404）・id の形が違う（400）は同じ文言にする
+        // （どれかを言い分けると存在が分かる・A P3）。
+        if (e instanceof DataApiError && [400, 404, 410].includes(e.status)) setError(TABLE_NOT_FOUND);
         else setError(e instanceof Error ? e.message : "読み込みに失敗しました");
       });
     return () => {

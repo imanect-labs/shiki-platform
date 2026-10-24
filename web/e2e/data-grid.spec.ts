@@ -180,7 +180,12 @@ test("unique の列に重複する値を入れると、競合ではなく重複�
   await page.keyboard.press("Enter");
   const res = await patched;
   expect(res.status()).toBe(409);
-  expect(((await res.json()) as { code?: string }).code).toBe("unique_violation");
+  const body = (await res.json()) as { code?: string; field?: string; message?: string };
+  expect(body.code).toBe("unique_violation");
+  // サーバは違反した列を名指しする（参照名と、表示名つきの文言・値は含めない）。
+  expect(body.field).toBe("code");
+  expect(body.message).toContain("コード");
+  expect(body.message).not.toContain(other);
   await expect(page.getByText("「コード」に同じ値のレコードが既にあります").first()).toBeVisible();
   // 他の人の更新（rev 競合）の文言は出さない。
   await expect(page.getByText("他の人が先に更新しました")).toHaveCount(0);

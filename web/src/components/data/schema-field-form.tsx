@@ -451,9 +451,6 @@ export function FieldSettings({
 
 export type NewField = { label: string; def: FieldDef };
 
-/// 新しいリンクの列が参照先に作る逆向きの列（参照名と表示名）。保存後に表示名を参照先へ付ける。
-export type SymmetricName = { key: string; refTable: string; displayName: string };
-
 /// 一対一のリンクは参照先の側の一意をサーバが逆向きの列で強制するので、逆向きの列が要る。
 const needsSymmetric = (c: LinkCardinality | undefined) => c === "one_to_one" || c === "one_to_many";
 
@@ -471,7 +468,7 @@ export function AddFieldForm({
   /// このテーブルの名前（逆向きの列の表示名「<テーブル名>（<列名>）」に使う）。
   tableName: string;
   traits?: TableTraits;
-  onAdd: (f: FieldDef, symmetric?: SymmetricName) => void;
+  onAdd: (f: FieldDef) => void;
   onCancel: () => void;
 }) {
   const [label, setLabel] = React.useState("");
@@ -536,20 +533,20 @@ export function AddFieldForm({
     if (missing) return;
     const key = keyFromLabel(label, taken);
     const out: FieldDef = { ...def, key, display_name: label.trim(), type };
-    let sym: SymmetricName | undefined;
     if (type === "record_ref") {
       // 逆向きの列の参照名は、この列の参照名から作り、参照先の既存の参照名と重ねない（日本語名の列で
-      // 常に `rev` になり 2 本目が作れなかった・2-A-P2-1）。
+      // 常に `rev` になり 2 本目が作れなかった・2-A-P2-1）。表示名「<テーブル名>（<列名>）」は作成時に
+      // サーバへ渡す（`symmetric_display_name`・保存の後に参照先のスキーマを書き換えない）。
       const symKey = symmetricOn
         ? uniqueKey(`${key}_rev`, new Set((refTable?.schema.fields ?? []).map((f) => f.key)))
         : null;
-      out.link = { cardinality, ...(symKey ? { symmetric_key: symKey } : {}) };
-      if (symKey && def.ref_table) {
-        sym = { key: symKey, refTable: def.ref_table, displayName: `${tableName}（${label.trim()}）` };
-      }
+      out.link = {
+        cardinality,
+        ...(symKey ? { symmetric_key: symKey, symmetric_display_name: `${tableName}（${label.trim()}）` } : {}),
+      };
     }
     if (type === "formula" && formulaResult?.ok) out.formula = formulaResult.expr;
-    onAdd(out, sym);
+    onAdd(out);
   };
 
   const targetFields = (target?.schema.fields ?? []).filter((f) => !f.link?.reverse);

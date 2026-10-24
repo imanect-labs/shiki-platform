@@ -11,7 +11,7 @@
 ///   テーブルあたりの上限（既定 20）を超えるときは承認を求める（owner のみ・PIT-72）。外すのはスキーマの改訂。
 /// - テーブル自体の削除もここから（owner のみ・確かめてから）。
 
-import { ArrowDown, ArrowUp, ChevronDown, Loader2, Plus, Sparkles, Trash2, X } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUp, ChevronDown, Loader2, Plus, Sparkles, Trash2, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import * as React from "react";
 
@@ -20,7 +20,6 @@ import {
   AddFieldForm,
   FieldSettings,
   isDerived,
-  type SymmetricName,
   type TableTraits,
 } from "@/components/data/schema-field-form";
 import { Badge } from "@/components/ui/badge";
@@ -111,8 +110,9 @@ export function SchemaEditor({
   const [confirmClose, setConfirmClose] = React.useState(false);
   const [confirmDeleteTable, setConfirmDeleteTable] = React.useState(false);
   const [tables, setTables] = React.useState<DataTable[] | null>(null);
-  /// 保存前に足したリンクの列が参照先に作る逆向きの列（保存後に表示名を付ける）。
-  const symmetricNames = React.useRef<Map<string, SymmetricName>>(new Map());
+  /// 今のデータと合わない設定で保存できなかった理由（400 `schema_conflicts_with_data`・列の表示名と件数つきの
+  /// サーバの文言）。その列の下に出し、列の設定を変えたら消す。
+  const [dataConflict, setDataConflict] = React.useState<{ field: string | null; message: string } | null>(null);
   const router = useRouter();
   // 属性の警告の材料（行ポリシー・マスク。owner には定義が返る）。
   const traits: TableTraits = React.useMemo(
@@ -132,7 +132,7 @@ export function SchemaEditor({
     setFields([...t.schema.fields].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map((f) => ({ ...f })));
     setAdding(false);
     setExpanded(null);
-    symmetricNames.current = new Map();
+    setDataConflict(null);
     listIndexes(t.id).then(setOverview).catch(() => setOverview(null));
     // リンクの参照先の名前（定義の要約）に使う。
     listTables()
@@ -181,22 +181,6 @@ export function SchemaEditor({
     );
   }, [kept, table]);
 
-  /// 新しいリンクの列が参照先に作った逆向きの列へ、読める表示名（「<テーブル名>（<列名>）」）を付ける。
-  /// サーバは逆向きの列を参照名だけで作るので、付けないと見出しが参照名になる。失敗しても列は使える。
-  const nameSymmetricColumns = async (added: SymmetricName[]) => {
-    for (const s of added) {
-      try {
-        const ref = await getTable(s.refTable);
-        const f = ref.schema.fields.find((x) => x.key === s.key);
-        if (!f || (f.display_name && f.display_name !== f.key)) continue;
-        const fields = ref.schema.fields.map((x) => (x.key === s.key ? { ...x, display_name: s.displayName } : x));
-        await updateSchema(ref.id, { ...ref.schema, fields }, ref.schema_version);
-      } catch {
-        // 参照先の表示名は後から列の編集で付けられる（逆向きの列そのものはできている）。
-      }
-    }
-  };
-
   const save = async () => {
     if (emptyNames.size) return;
     setSaving(true);
@@ -222,24 +206,27 @@ export function SchemaEditor({
           : { ...f, order: i };
       });
       const saved = await updateSchema(table.id, { ...table.schema, fields: next }, table.schema_version);
-      const added = kept.filter((f) => f.isNew).flatMap((f) => symmetricNames.current.get(f.key) ?? []);
-      if (added.length) await nameSymmetricColumns(added);
+      setDataConflict(null);
       toast({ title: "列の設定を保存しました" });
       onSaved(saved);
       onOpenChange(false);
     } catch (e) {
+      // 誤りの列はサーバが参照名で名指しする（400 の field・409 unique_violation の field）。
       const field = e instanceof DataApiError ? e.field : null;
       const fieldLabel = field ? fields.find((f) => f.key === field)?.display_name || field : null;
-      // 一意にした列に重複があって保存できない（本文に列が無ければ、今回一意にした列を挙げる）。
-      const madeUnique = fields
-        .filter((f) => f.unique && !table.schema.fields.find((x) => x.key === f.key)?.unique && !f.isNew)
-        .map((f) => `「${f.display_name || f.key}」`);
+      if (e instanceof DataApiError && e.code === "schema_conflicts_with_data") {
+        // 今のデータと合わない（値の無い行がある列の必須化・使われている選択肢の削除）: サーバの文言（列の
+        // 表示名と件数つき）をその列の下に出し、列の設定を開く。
+        setDataConflict({ field, message: withFieldLabels(e.message, fields) });
+        if (field) setExpanded(field);
+        return;
+      }
       toast({
         variant: "destructive",
         title: fieldLabel ? `「${fieldLabel}」を保存できませんでした` : "保存できませんでした",
         description:
           e instanceof DataApiError && e.uniqueViolation
-            ? `既存のレコードに同じ値があるため、${fieldLabel ? `「${fieldLabel}」` : madeUnique.join("・") || "この列"}を一意にできません。重複を直してからもう一度保存してください。`
+            ? `既存のレコードに同じ値があるため、${fieldLabel ? `「${fieldLabel}」` : "この列"}を一意にできません。重複を直してからもう一度保存してください。`
             : e instanceof DataApiError && e.status === 409 && (e.code === "conflict" || e.code === "rev_conflict" || e.code === null)
               ? "他の人がスキーマを変更しました。開き直してからもう一度お試しください。"
               : e instanceof Error
@@ -285,7 +272,10 @@ export function SchemaEditor({
     }
   };
 
-  const patchField = (key: string, f: FieldDef) => setFields((fs) => fs.map((x) => (x.key === key ? { ...x, ...f } : x)));
+  const patchField = (key: string, f: FieldDef) => {
+    setFields((fs) => fs.map((x) => (x.key === key ? { ...x, ...f } : x)));
+    setDataConflict((c) => (c && (c.field === key || c.field === null) ? null : c));
+  };
   /// 保存前に足した列を取り消す（保存済みの列は消せない）。足した列を使う派生列も一緒に取り消す。
   const removeNew = (f: Draft) => {
     const uses = (x: Draft) =>
@@ -308,6 +298,9 @@ export function SchemaEditor({
             <p className="text-[11px] text-muted-foreground">
               索引 {overview.indexed_fields} / {overview.max_indexed_fields} 列
             </p>
+          ) : null}
+          {dataConflict && (dataConflict.field === null || !fields.some((f) => f.key === dataConflict.field)) ? (
+            <DataConflictNote message={dataConflict.message} />
           ) : null}
           <ul className="divide-y rounded-lg border">
             {fields.map((f, i) => {
@@ -404,6 +397,9 @@ export function SchemaEditor({
                       ) : null}
                     </div>
                   </div>
+                  {dataConflict && dataConflict.field === f.key ? (
+                    <DataConflictNote message={dataConflict.message} />
+                  ) : null}
                   {expanded === f.key ? (
                     <FieldSettings
                       field={f}
@@ -428,9 +424,8 @@ export function SchemaEditor({
               tableName={table.name}
               traits={traits}
               onCancel={() => setAdding(false)}
-              onAdd={(f, sym) => {
+              onAdd={(f) => {
                 setFields((fs) => [...fs, { ...f, isNew: true }]);
-                if (sym) symmetricNames.current.set(f.key, sym);
                 setAdding(false);
               }}
             />
@@ -521,5 +516,22 @@ export function SchemaEditor({
       </SheetContent>
 
     </Sheet>
+  );
+}
+
+/// 今のデータと合わないため保存できなかった理由（サーバの文言・列の表示名と件数つき）。
+function DataConflictNote({ message }: { message: string }) {
+  return (
+    <p
+      role="alert"
+      data-testid="schema-data-conflict"
+      className="mx-2.5 mb-2 flex items-start gap-1.5 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-[12px] leading-relaxed text-destructive"
+    >
+      <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+      <span>
+        {message}
+        <span className="block text-[11px] text-muted-foreground">データを直すか、設定を戻してからもう一度保存してください。</span>
+      </span>
+    </p>
   );
 }
