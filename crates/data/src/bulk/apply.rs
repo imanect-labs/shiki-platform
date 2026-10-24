@@ -245,6 +245,12 @@ impl DataStore {
                 })
             })
             .collect();
+        // 作成行の列の書込権限を今の認可で問い直す（検証の後にロールを外されて読めなくなった列へは
+        // 書かない・1 件の作成・更新行の update_locked と同じ単一点・PIT-19）。ロールの剥奪は
+        // schema_version を変えないので、検証段の判定だけでは止まらない。
+        let (pending, masked_rejects) = self
+            .drop_masked_creates(&mut tx, &ctx, &az, &table, &cur, pending, trace_id)
+            .await?;
         // 更新行（upsert）: 1 件の更新と同じ入口を行ごとのセーブポイントで通す（super::upsert）。
         let pending_updates: Vec<PendingUpdate> = rows
             .iter()
@@ -285,6 +291,8 @@ impl DataStore {
             )
             .await?;
         rejected.extend(update_rejected);
+        rejected.extend(masked_rejects);
+        rejected.sort_unstable_by_key(|r| r.0);
         let applied_rows: Vec<i64> = applied
             .iter()
             .map(|a| a.0)
@@ -336,6 +344,65 @@ impl DataStore {
         }
         tx.commit().await.map_err(map_db)?;
         Ok(rows.len() as u64)
+    }
+
+    /// 作成行のうち、今の認可で読めない（マスクされた）列へ書く行を外し、行エラーとして返す。
+    ///
+    /// 判定は検証段と同じく**取込の入力（payload）が名指しした列**で行う（FSM の初期状態など、入力に
+    /// 無く検証が補った列では拒否しない）。文言は列名・値を含めない（検証段と同じ）。
+    #[allow(clippy::too_many_arguments)]
+    async fn drop_masked_creates(
+        &self,
+        tx: &mut PgConnection,
+        ctx: &AuthContext,
+        az: &crate::policy::memo::AuthzMemo<'_>,
+        table: &DataTable,
+        imp: &ImportRow,
+        pending: Vec<Pending>,
+        trace_id: Option<&str>,
+    ) -> Result<(Vec<Pending>, Vec<(i64, String)>), DataError> {
+        if pending.is_empty() {
+            return Ok((pending, Vec::new()));
+        }
+        let masked = self.masked_fields(ctx, az, table).await?;
+        if masked.is_empty() {
+            return Ok((pending, Vec::new()));
+        }
+        let row_nos: Vec<i64> = pending.iter().map(|p| p.row_no).collect();
+        let named: Vec<(i64, Vec<String>)> = sqlx::query_as(
+            "SELECT row_no, ARRAY(SELECT jsonb_object_keys(payload)) FROM data_bulk_staging \
+             WHERE tenant_int = $1 AND import_id = $2 AND row_no = ANY($3) \
+               AND jsonb_typeof(payload) = 'object'",
+        )
+        .bind(imp.tenant_int)
+        .bind(imp.id)
+        .bind(&row_nos)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(map_db)?;
+        let denied: HashSet<i64> = named
+            .into_iter()
+            .filter(|(_, keys)| keys.iter().any(|k| masked.contains(k)))
+            .map(|(n, _)| n)
+            .collect();
+        if denied.is_empty() {
+            return Ok((pending, Vec::new()));
+        }
+        // 読めない列への書込はチャンクごとに 1 件の deny で残す（検証段と同じ）。
+        self.audit_field_deny(
+            ctx,
+            table.id,
+            crate::mask::WriteAudit::new(AuditAction::DataRecordBulkApply, trace_id),
+        )
+        .await;
+        let (rejected, kept): (Vec<Pending>, Vec<Pending>) = pending
+            .into_iter()
+            .partition(|p| denied.contains(&p.row_no));
+        let rejected = rejected
+            .into_iter()
+            .map(|p| (p.row_no, super::validate::MASKED_WRITE_MESSAGE.to_string()))
+            .collect();
+        Ok((kept, rejected))
     }
 
     /// 合格した行を適用する（セーブポイントでチャンクごと → 競合したら行ごと）。

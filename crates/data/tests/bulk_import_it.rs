@@ -1422,6 +1422,110 @@ async fn bulk_import_enforces_authorization_per_chunk() {
     );
 }
 
+/// C4: 検証の後にロールを外されて読めなくなった列へは、作成行でも書かない（更新行の update_locked と
+/// 同じく適用チャンクごとに今の認可で問い直す）。ロールの剥奪は schema_version を変えないので、検証段の
+/// 判定だけでは止まらない。その行は検証で拒否したのと同じ文言の行エラーになり、他の行は適用される。
+#[tokio::test]
+async fn bulk_import_rechecks_field_write_permission_when_applying_creates() {
+    let _g = serial().await;
+    let Some(pool) = setup().await else { return };
+    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+        eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
+        return;
+    };
+    let model: Value =
+        serde_json::from_str(include_str!("../../authz/model/authorization-model.json")).unwrap();
+    let fga = Arc::new(
+        OpenFgaClient::connect(
+            reqwest::Client::new(),
+            &OpenFgaConfig {
+                base_url,
+                store_name: format!("shiki-data-bulk-mask-{}", Uuid::new_v4()),
+            },
+            &model,
+        )
+        .await
+        .expect("OpenFGA 接続"),
+    );
+    let store = DataStore::new(
+        pool.clone(),
+        Arc::clone(&fga) as Arc<dyn AuthzClient>,
+        Arc::new(FixedResolver),
+    );
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let role = c.ns().role("sales");
+    fga.write_tuple(&c.subject(), Relation::Member, &role)
+        .await
+        .unwrap();
+    let mut sch = schema(vec![
+        field("title", FieldType::Text),
+        field("salary", FieldType::Number),
+    ]);
+    sch.field_policy = vec![data::FieldPolicy {
+        field: "salary".into(),
+        readable_by: data::PolicyExpr::HasRole {
+            role: "sales".into(),
+            subtree: false,
+        },
+    }];
+    let t = create_table(&store, &c, "masked", sch).await;
+    let id = store
+        .start_bulk_import(
+            &c,
+            t.id,
+            rows(vec![
+                json!({"title": "a", "salary": 100}),
+                json!({"title": "b"}),
+            ]),
+            BulkImportOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    detach_job(&pool, id).await;
+    // 検証は salary を書ける（sales のメンバー）うちに終える。
+    loop {
+        let s = store
+            .bulk_import_step(&tenant, t.id, id, 300)
+            .await
+            .unwrap();
+        if s.status == "applying" {
+            break;
+        }
+        assert!(!s.done, "{s:?}");
+    }
+    assert_eq!(
+        store
+            .bulk_import_status(&c, t.id, id)
+            .await
+            .unwrap()
+            .rows_invalid,
+        0
+    );
+    // 適用の前にロールを外す（schema_version は変わらない）。
+    fga.delete_tuple(&c.subject(), Relation::Member, &role)
+        .await
+        .unwrap();
+    let done = store.run_bulk_import(&tenant, t.id, id).await.unwrap();
+    assert_eq!(done.status, "done", "{done:?}");
+    let st = store.bulk_import_status(&c, t.id, id).await.unwrap();
+    assert_eq!((st.rows_applied, st.rows_rejected), (1, 1), "{st:?}");
+    let errs = store.bulk_import_errors(&c, t.id, id, 0, 10).await.unwrap();
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(errs[0].row_no, 1);
+    assert_eq!(errs[0].message, data::FIELD_UNAVAILABLE_MESSAGE);
+    // salary を書く行は作られない（本体に値が入らない）。
+    let bodies: Vec<Value> =
+        sqlx::query_scalar("SELECT data FROM data_record WHERE tenant_id = $1 AND table_id = $2")
+            .bind(&tenant)
+            .bind(t.id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(bodies.len(), 1, "{bodies:?}");
+}
+
 fn link(key: &str, to: Uuid, card: LinkCardinality, sym: Option<&str>) -> FieldDef {
     let mut f = field(key, FieldType::RecordRef);
     f.ref_table = Some(to);
