@@ -125,7 +125,31 @@ pub struct ScriptEngine {
     _ticker: EpochTicker,
 }
 
+/// プロセスで共有するエンジン（[`ScriptEngine::shared`]）。
+static SHARED: std::sync::OnceLock<Result<std::sync::Arc<ScriptEngine>, String>> =
+    std::sync::OnceLock::new();
+
 impl ScriptEngine {
+    /// プロセスで 1 つのエンジンを共有して返す（初回だけゲスト wasm をコンパイルする）。
+    ///
+    /// ゲストのコンパイル（Cranelift）は数秒〜十数秒かかる（最適化なしのビルドでは特に）。ワークフローの実行と
+    /// ミニアプリの関数がそれぞれ作ると起動が 2 回分遅れていた（検証 2-D の起動 20〜42 秒の無音区間）。
+    /// `Engine` / `Module` はスレッド安全で、実行ごとに別の `Store` を作るので共有してよい。
+    pub fn shared() -> Result<std::sync::Arc<ScriptEngine>, String> {
+        SHARED
+            .get_or_init(|| {
+                let started = std::time::Instant::now();
+                let r = ScriptEngine::new().map(std::sync::Arc::new);
+                tracing::info!(
+                    elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    ok = r.is_ok(),
+                    "script エンジンを準備しました（ゲストの wasm のコンパイル・プロセスで 1 回）"
+                );
+                r
+            })
+            .clone()
+    }
+
     /// 埋め込みゲスト wasm をコンパイルしてエンジンを作る（プロセス起動時 1 回）。
     pub fn new() -> Result<Self, String> {
         let mut config = Config::new();

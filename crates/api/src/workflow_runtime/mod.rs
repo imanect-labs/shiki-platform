@@ -249,10 +249,11 @@ async fn build_prod_executor(
     }
 
     // script エンジン（プリウォーム 1 回・失敗なら script ノードは permanent 失敗）。
-    match script_runtime::engine::ScriptEngine::new() {
+    // ミニアプリの関数と同じエンジンを共有する（ゲストのコンパイルはプロセスで 1 回・起動の短縮）。
+    match script_runtime::engine::ScriptEngine::shared() {
         Ok(engine) => {
-            executor = executor
-                .with_script_engine(Arc::new(engine), script_runtime::engine::Limits::default());
+            executor =
+                executor.with_script_engine(engine, script_runtime::engine::Limits::default());
         }
         Err(e) => {
             tracing::warn!(error = %e, "script エンジン初期化に失敗（script ノードは失敗する）");

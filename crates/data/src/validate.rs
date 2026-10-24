@@ -123,19 +123,20 @@ async fn validate_inner(
         match value {
             None | Some(Value::Null) => {
                 if f.required {
-                    return Err(required_missing(&f.key));
+                    return Err(labelled(required_missing(&f.key), f));
                 }
                 // 省略・null は「値なし」（保存形にキーを残さない）。
             }
             Some(v) => {
-                let normalized =
-                    validate_field_value(ctx, f, v, resolver, max_multi_values).await?;
+                let normalized = validate_field_value(ctx, f, v, resolver, max_multi_values)
+                    .await
+                    .map_err(|e| labelled(e, f))?;
                 // リンクの空配列は「値なし」（null と同じ・required を空配列で満たさせない）。
                 if f.field_type == FieldType::RecordRef
                     && normalized.as_array().is_some_and(Vec::is_empty)
                 {
                     if f.required {
-                        return Err(required_missing(&f.key));
+                        return Err(labelled(required_missing(&f.key), f));
                     }
                     continue;
                 }
@@ -144,6 +145,16 @@ async fn validate_inner(
         }
     }
     Ok(out)
+}
+
+/// 列の誤りの文言の参照名を表示名にする（利用者向け・検証 2-A P3。`field` は参照名のまま）。
+fn labelled(e: DataError, f: &FieldDef) -> DataError {
+    match e {
+        DataError::InvalidInput(ie) => {
+            DataError::InvalidInput(Box::new(ie.relabel(&f.key, &f.display_name)))
+        }
+        other => other,
+    }
 }
 
 /// 列の参照名つきの入力の誤り（文言は書き手が名指しした列名と宣言済みの上限だけから作る）。

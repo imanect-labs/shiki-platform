@@ -341,6 +341,24 @@ impl InputError {
         &self.message
     }
 
+    /// 文言の中の列の参照名（`'key'`）を表示名（`「表示名」`）に置き換える（利用者向けの文言・検証 2-A P3）。
+    /// 対象の列（`field`）が `key` のときだけ。表示名は列の参照名と同じく、書き手が名指しした・読める列の
+    /// もの（読めない列の名前は [`InputError::scrub_field`] が文言ごと既定に戻す）。
+    pub(crate) fn relabel(mut self, key: &str, display: &str) -> Self {
+        if self.field.as_deref() == Some(key) {
+            let label = if display.trim().is_empty() {
+                key
+            } else {
+                display
+            };
+            let m = self
+                .message
+                .replace(&format!("'{key}'"), &format!("「{label}」"));
+            self.message = std::borrow::Cow::Owned(m);
+        }
+        self
+    }
+
     /// 列名を外して既定文言に戻す（書き手が名指ししていない・読めない列の名前を返さない）。
     pub(crate) fn scrub_field(self, allowed: impl Fn(&str) -> bool) -> Self {
         match &self.field {

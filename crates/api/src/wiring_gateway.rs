@@ -253,8 +253,9 @@ pub(crate) fn wire_functions(
     if !config.gateway.enabled {
         return None;
     }
-    let engine = match script_runtime::ScriptEngine::new() {
-        Ok(e) => Arc::new(e),
+    // ワークフローの実行と同じエンジンを共有する（ゲストのコンパイルはプロセスで 1 回）。
+    let engine = match script_runtime::ScriptEngine::shared() {
+        Ok(e) => e,
         Err(e) => {
             tracing::warn!(error = %e, "script エンジン初期化に失敗（B2 関数は無効）");
             return None;

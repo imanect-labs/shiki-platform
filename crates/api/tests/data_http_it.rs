@@ -862,7 +862,11 @@ async fn data_index_routes_authorize_and_validate() {
         "{text}"
     );
     let (s, _) = send(&env, get("carol", &path)).await;
-    assert_eq!(s, StatusCode::NOT_FOUND, "見えないテーブルは存在しないのと同じ");
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "見えないテーブルは存在しないのと同じ"
+    );
     let (s, b) = send(&env, post_json("bob", &path, &json!({ "field": "memo" }))).await;
     assert_eq!(s, StatusCode::OK, "{b}");
     assert_eq!(b["status"], "active", "空のテーブルは即時に有効化: {b}");
@@ -903,7 +907,11 @@ async fn data_stream_routes_authorize_and_validate() {
         .is_some_and(|v| v.starts_with("text/event-stream")));
     drop(resp);
     let (s, _) = send(&env, get("carol", &stream)).await;
-    assert_eq!(s, StatusCode::NOT_FOUND, "見えないテーブルは存在しないのと同じ");
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "見えないテーブルは存在しないのと同じ"
+    );
     let mut bad = get("bob", &stream);
     bad.headers_mut()
         .insert("last-event-id", "x".parse().unwrap());

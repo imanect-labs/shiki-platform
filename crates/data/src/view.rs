@@ -170,9 +170,16 @@ impl DataViewStore {
         body: &DataViewBody,
         trace_id: Option<&str>,
     ) -> Result<Uuid, DataError> {
+        // NUL 文字は保存できない（Postgres の text / jsonb・500 にせず 400・検証 2-D-P3-1）。
+        if name.contains('\0') {
+            return Err(crate::validate::nul_error(None));
+        }
         self.validate(ctx, body, trace_id).await?;
         let raw = serde_json::to_value(body)
             .map_err(|e| DataError::Invalid(format!("view body: {e}")))?;
+        if crate::validate::contains_nul(&raw) {
+            return Err(crate::validate::nul_error(None));
+        }
         let artifact = self
             .artifacts
             .create(
@@ -202,6 +209,9 @@ impl DataViewStore {
         self.validate(ctx, body, trace_id).await?;
         let raw = serde_json::to_value(body)
             .map_err(|e| DataError::Invalid(format!("view body: {e}")))?;
+        if crate::validate::contains_nul(&raw) {
+            return Err(crate::validate::nul_error(None));
+        }
         let v = self
             .artifacts
             .append_version(ctx, id, raw, expected_version, trace_id)
