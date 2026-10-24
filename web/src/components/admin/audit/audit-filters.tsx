@@ -11,21 +11,7 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { addDays, todayJst } from "../format";
 import { defaultRange } from "./audit-query";
-
-/// よく使う操作の種類（前方一致）。サーバは自由入力も受け付ける。
-const ACTION_HINTS = [
-  ["file.", "ファイル"],
-  ["folder.", "フォルダ"],
-  ["node.share", "共有"],
-  ["rag.", "社内文書の検索・引用"],
-  ["thread.", "会話"],
-  ["data.", "構造化データ"],
-  ["app.", "ミニアプリ"],
-  ["workflow.", "ワークフロー"],
-  ["secret.", "シークレット"],
-  ["org_admin.", "管理コンソール"],
-  ["org_audit.", "監査ログの閲覧"],
-] as const;
+import { AUDIT_CATEGORIES, actionOptions, type AuditCategory } from "./audit-vocab";
 
 const PRESETS = [
   { value: "1", label: "今日" },
@@ -77,6 +63,7 @@ export function AuditFilters({ query, onApply }: { query: AuditQuery; onApply: (
   const dirty = JSON.stringify(draft) !== JSON.stringify(query);
   const conditionCount = [
     query.actor,
+    query.category,
     query.action,
     query.decision,
     query.object_type,
@@ -159,11 +146,12 @@ export function AuditFilters({ query, onApply }: { query: AuditQuery; onApply: (
       </div>
       <div
         className={cn(
-          "grid grid-cols-2 gap-x-3 gap-y-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem]",
+          "grid grid-cols-2 gap-x-3 gap-y-2 md:grid-cols-[minmax(0,1fr)_9.5rem_minmax(0,1fr)_8rem]",
           mobileHidden,
         )}
       >
-        <Field label="操作した人" htmlFor="audit-actor" className="col-span-2 md:col-span-1">
+        {/* スマホは 人 / 分類・判定 / 操作 の順、PC は 人・分類・操作・判定 の順に並べる。 */}
+        <Field label="操作した人" htmlFor="audit-actor" className="col-span-2 md:order-1 md:col-span-1">
           <Input
             id="audit-actor"
             value={draft.actor ?? ""}
@@ -173,25 +161,25 @@ export function AuditFilters({ query, onApply }: { query: AuditQuery; onApply: (
             className="h-8"
           />
         </Field>
-        <Field label="操作の種類" htmlFor="audit-action">
-          <Input
-            id="audit-action"
-            list="audit-action-hints"
-            value={draft.action ?? ""}
-            onChange={(e) => set({ action: e.target.value })}
-            placeholder="例: file."
-            autoComplete="off"
-            className="h-8 font-mono"
-          />
-          <datalist id="audit-action-hints">
-            {ACTION_HINTS.map(([v, label]) => (
-              <option key={v} value={v}>
-                {label}
-              </option>
-            ))}
-          </datalist>
+        <Field label="分類" htmlFor="audit-category" className="md:order-2">
+          <Select
+            value={draft.category ?? ANY}
+            onValueChange={(v) => set({ category: v === ANY ? undefined : (v as AuditCategory) })}
+          >
+            <SelectTrigger id="audit-category" className="h-8 w-full text-[13px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ANY}>すべて</SelectItem>
+              {AUDIT_CATEGORIES.map((c) => (
+                <SelectItem key={c.id} value={c.id}>
+                  {c.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </Field>
-        <Field label="判定" htmlFor="audit-decision">
+        <Field label="判定" htmlFor="audit-decision" className="md:order-4">
           <Select
             value={draft.decision ?? ANY}
             onValueChange={(v) => set({ decision: v === ANY ? undefined : (v as AuditDecision) })}
@@ -205,6 +193,24 @@ export function AuditFilters({ query, onApply }: { query: AuditQuery; onApply: (
               <SelectItem value="deny">拒否</SelectItem>
             </SelectContent>
           </Select>
+        </Field>
+        <Field label="操作の種類" htmlFor="audit-action" className="col-span-2 md:order-3 md:col-span-1">
+          <Input
+            id="audit-action"
+            list="audit-action-hints"
+            value={draft.action ?? ""}
+            onChange={(e) => set({ action: e.target.value })}
+            placeholder="例: file.delete・file.（前方一致）"
+            autoComplete="off"
+            className="h-8 font-mono"
+          />
+          <datalist id="audit-action-hints">
+            {actionOptions(draft.category).map((a) => (
+              <option key={a.action} value={a.action}>
+                {a.label}
+              </option>
+            ))}
+          </datalist>
         </Field>
       </div>
       {advanced ? (

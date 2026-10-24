@@ -17,6 +17,7 @@ use llm_gateway::{
 };
 use serde_json::json;
 use sqlx::PgPool;
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
 
@@ -240,7 +241,7 @@ pub async fn classify_org(
             .record(
                 &ctx,
                 AuditEntry {
-                    action: "insights.classify",
+                    action: AuditAction::InsightsClassify,
                     object_type: "organization",
                     object_id: &format!("{tenant_id}|{org}"),
                     decision: Decision::Allow,

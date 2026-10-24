@@ -5,6 +5,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, Relation};
 use serde_json::json;
@@ -82,7 +83,8 @@ impl ChatStore {
         requested_tools: &[agent_core::ToolName],
         trace_id: Option<&str>,
     ) -> Result<PostResult, ChatError> {
-        self.require_thread(ctx, thread_id, Relation::Editor, "thread.post", trace_id)
+        let post = AuditAction::ThreadPost;
+        self.require_thread(ctx, thread_id, Relation::Editor, post, trace_id)
             .await?;
         let text = text.trim();
         if text.is_empty() && attachments.is_empty() {

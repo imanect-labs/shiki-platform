@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { AlertCircle, Globe2, Sparkles } from "lucide-react";
+import { AlertCircle, Globe2, Sparkles, UserRound } from "lucide-react";
 
 import {
   fetchAdminModels,
@@ -98,6 +98,29 @@ function validate(models: AdminModel[], d: Draft): string | null {
   return null;
 }
 
+/// 本人専用（ChatGPT プラン・#854）の説明。バッジの title と、既定・Auto に選んだときの注記で使う。
+const PERSONAL_HINT =
+  "ChatGPT プランを連携した本人だけが使えます。ほかの利用者には表示されず、既定や Auto の振り先にしても Auto・次の候補で動きます。";
+
+function PersonalBadge() {
+  return (
+    <Badge variant="muted" className="gap-1 px-1.5 py-0 text-[10.5px]" title={PERSONAL_HINT}>
+      <UserRound className="size-3" aria-hidden />
+      本人専用
+    </Badge>
+  );
+}
+
+/// 既定・Auto の振り先に本人専用のモデルを選んでいるときの注記。
+function PersonalNote({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="flex items-start gap-1.5 border-t px-4 py-2.5 text-xs text-muted-foreground" role="note">
+      <UserRound className="mt-px size-3.5 shrink-0" aria-hidden />
+      <span>{children}</span>
+    </p>
+  );
+}
+
 /// スマホのモデルカードの「既定にする」（行全体がラベル＝どこをタップしても選べる）。
 function DefaultRadio({
   name,
@@ -186,6 +209,7 @@ export function AiModelsView() {
   const label = (id: string | null | undefined) =>
     models.find((m) => m.id === id)?.label ?? id ?? "—";
   const enabledModels = models.filter((m) => draft.enabled[m.id]);
+  const isPersonal = (id: string | null | undefined) => models.some((m) => m.id === id && m.personal);
 
   const save = async () => {
     if (problem) return;
@@ -249,6 +273,7 @@ export function AiModelsView() {
                           国外処理
                         </Badge>
                       ) : null}
+                      {m.personal ? <PersonalBadge /> : null}
                     </div>
                     {m.description ? (
                       <p className="mt-0.5 text-xs text-muted-foreground">{m.description}</p>
@@ -343,6 +368,7 @@ export function AiModelsView() {
                             国外処理
                           </Badge>
                         ) : null}
+                        {m.personal ? <PersonalBadge /> : null}
                       </div>
                       {m.description ? (
                         <div className="mt-0.5 text-xs text-muted-foreground">{m.description}</div>
@@ -372,6 +398,12 @@ export function AiModelsView() {
             </tbody>
           </table>
         </div>
+        {isPersonal(draft.default_model) ? (
+          <PersonalNote>
+            既定の {label(draft.default_model)} は本人専用です。ChatGPT プランを連携した本人以外は、既定として Auto
+            で使います。
+          </PersonalNote>
+        ) : null}
       </Panel>
 
       <Panel title="ユーザーの選択肢">
@@ -419,7 +451,7 @@ export function AiModelsView() {
               <SelectItem value={INHERIT}>デプロイ設定に従う</SelectItem>
               {enabledModels.map((m) => (
                 <SelectItem key={m.id} value={m.id}>
-                  {m.label}
+                  {m.personal ? `${m.label}（本人専用）` : m.label}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -443,6 +475,12 @@ export function AiModelsView() {
             </SelectContent>
           </Select>
         </SettingRow>
+        {isPersonal(draft.auto_model) ? (
+          <PersonalNote>
+            {label(draft.auto_model)} は本人専用です。ChatGPT プランを連携した本人以外の Auto
+            は、デプロイ設定・既定のモデルの順で次の候補を使います。
+          </PersonalNote>
+        ) : null}
       </Panel>
 
       <Panel title="円での表示">

@@ -14,6 +14,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, AuthzClient};
 use sha2::{Digest, Sha256};
@@ -445,7 +446,7 @@ impl SearchService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "rag.search",
+                    action: AuditAction::RagSearch,
                     object_type: "rag_query",
                     object_id: &query_sha256,
                     decision: Decision::Allow,

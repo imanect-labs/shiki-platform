@@ -15,6 +15,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, Relation};
 use durable::{EventTableSpec, Key, KeyValue, RunTableSpec};
@@ -358,7 +359,7 @@ impl ChatStore {
             ctx,
             thread_id,
             Relation::Editor,
-            "thread.run.cancel",
+            AuditAction::ThreadRunCancel,
             trace_id,
         )
         .await?;
@@ -524,8 +525,14 @@ impl ChatStore {
         message_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Option<RunContext>, ChatError> {
-        self.require_thread(ctx, thread_id, Relation::Editor, "thread.run.get", trace_id)
-            .await?;
+        self.require_thread(
+            ctx,
+            thread_id,
+            Relation::Editor,
+            AuditAction::ThreadRunGet,
+            trace_id,
+        )
+        .await?;
         type Row = (
             Uuid,
             bool,

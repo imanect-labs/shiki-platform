@@ -18,11 +18,12 @@ use axum::{
     response::Response,
 };
 use serde_json::json;
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Decision};
 
 use crate::{
     error::ApiError,
-    extract::{resolve_org, TenantId, TraceId},
+    extract::{OrgId, TenantId, TraceId},
     state::AppState,
 };
 
@@ -42,7 +43,7 @@ pub async fn require_org_admin(
             .record(
                 &ctx,
                 AuditEntry {
-                    action: "org_admin.access",
+                    action: AuditAction::OrgAdminAccess,
                     object_type: "organization",
                     object_id: &object_id,
                     decision: Decision::Deny,
@@ -74,7 +75,11 @@ pub(crate) fn context_of(req: &Request) -> Result<AuthContext, ApiError> {
         .get::<TenantId>()
         .map(|t| t.0.clone())
         .ok_or(ApiError::Unauthorized)?;
-    let org = resolve_org(&principal);
+    let org = req
+        .extensions()
+        .get::<OrgId>()
+        .map(|o| o.0.clone())
+        .ok_or(ApiError::Unauthorized)?;
     Ok(AuthContext::new(principal, org, tenant_id))
 }
 

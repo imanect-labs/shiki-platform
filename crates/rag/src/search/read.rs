@@ -16,6 +16,7 @@
 //! 本文を読み出したことは監査に残す（検索を経由しない本文の経路になるため）。
 
 use std::fmt::Write as _;
+use storage::audit::AuditAction;
 
 use authz::AuthContext;
 use storage::audit::{AuditEntry, Decision};
@@ -230,7 +231,7 @@ impl SearchService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "rag.doc_read",
+                    action: AuditAction::RagDocRead,
                     object_type: "file",
                     object_id: &node.id.to_string(),
                     decision: Decision::Allow,

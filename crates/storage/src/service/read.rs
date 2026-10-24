@@ -5,6 +5,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 impl StorageService {
     /// ファイルメタを取得する（viewer 権限が要る）。
@@ -22,7 +23,7 @@ impl StorageService {
         self.require_read(
             ctx,
             &ctx.ns().file(&file_id.to_string()),
-            "file.metadata.read",
+            AuditAction::FileMetadataRead,
             "file",
             &file_id.to_string(),
             trace_id,
@@ -32,7 +33,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "file.metadata.read",
+                    action: AuditAction::FileMetadataRead,
                     object_type: "file",
                     object_id: &file_id.to_string(),
                     decision: Decision::Allow,
@@ -81,7 +82,7 @@ impl StorageService {
                 self.require_read(
                     ctx,
                     &ctx.ns().folder(&p.to_string()),
-                    "folder.children.list",
+                    AuditAction::FolderChildrenList,
                     "folder",
                     &p.to_string(),
                     trace_id,
@@ -93,7 +94,7 @@ impl StorageService {
                     ctx,
                     Relation::Member,
                     &ctx.ns().organization(&ctx.org),
-                    "folder.children.list",
+                    AuditAction::FolderChildrenList,
                     "organization",
                     &ctx.org,
                     trace_id,
@@ -193,7 +194,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "folder.children.list",
+                    action: AuditAction::FolderChildrenList,
                     object_type: "folder",
                     object_id: &parent_id.map_or_else(|| "root".into(), |p| p.to_string()),
                     decision: Decision::Allow,
@@ -226,7 +227,7 @@ impl StorageService {
             ctx,
             Relation::Member,
             &ctx.ns().organization(&ctx.org),
-            "node.search",
+            AuditAction::NodeSearch,
             "organization",
             &ctx.org,
             trace_id,
@@ -326,7 +327,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "node.search",
+                    action: AuditAction::NodeSearch,
                     object_type: "organization",
                     object_id: &ctx.org,
                     decision: Decision::Allow,
@@ -354,7 +355,7 @@ impl StorageService {
         self.require_read(
             ctx,
             &node_fga_object(&ctx.ns(), node.kind, node_id),
-            "node.breadcrumb.read",
+            AuditAction::NodeBreadcrumbRead,
             node.kind.as_str(),
             &node_id.to_string(),
             trace_id,
@@ -401,7 +402,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "node.breadcrumb.read",
+                    action: AuditAction::NodeBreadcrumbRead,
                     object_type: node.kind.as_str(),
                     object_id: &node_id.to_string(),
                     decision: Decision::Allow,

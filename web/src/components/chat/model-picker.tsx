@@ -2,8 +2,9 @@
 
 /// チャットのモデル選択（#553・#583）。
 ///
-/// - 送信ボタンの左に常に「モデル名 ＋ 思考の深さ ⌄」を出す（既定は「Auto」・#768）。押すと一覧を開き、
+/// - 送信ボタンの左に「モデル名 ＋ 思考の深さ ⌄」を出す（既定は「Auto」・#768）。押すと一覧を開き、
 ///   モデルの切替と思考の深さ（3 段のスライダー）を変えられる。Auto に戻すのも一覧から。
+///   スマホで既定のまま（モデルを選んでいない）ときは入力欄に出さず、「＋」のシートから開く。
 /// - 一覧はプロバイダごとの見出しで分け、1 モデル 1 行（名前・国外処理・選択中の印を列で揃える）。
 ///   モデルが多いときは検索欄を出し、高さは画面に残っている分で抑えてスクロールさせる。
 /// - 狭い画面では横に開くポップオーバーが画面からはみ出すので、下からのシートで出す。
@@ -15,7 +16,7 @@ import { Check, ChevronDown, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import type { EffortLevel, LlmModelOption, LlmModelsResponse } from "@/lib/admin-ai-api";
-import { useLlmModels, useModelChoice } from "@/lib/model-choice";
+import { useLlmModels, useModelChoice, type ModelChoice } from "@/lib/model-choice";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 
@@ -366,11 +367,13 @@ function ModelList({
 
 /// 一覧の入れ物。広い画面はポップオーバー、狭い画面は下からのシート。
 ///
-/// `trigger` は押すと開く要素（モデルのボタン）。
+/// `trigger` は押すと開く要素（モデルのボタン）。`sheetOnly` のとき（ボタンを隠して「＋」のシート
+/// から開く）は、隠れたボタンに寄せないよう常に下からのシートにする。
 function PickerSurface({
   open,
   onOpenChange,
   trigger,
+  sheetOnly = false,
   align,
   tall,
   children,
@@ -378,6 +381,7 @@ function PickerSurface({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   trigger: React.ReactElement;
+  sheetOnly?: boolean;
   align: "start" | "end";
   /// 検索欄を出すほど多いか。狭い画面のシートは、絞り込みで高さが跳ねないよう高さを固定する。
   tall: boolean;
@@ -393,7 +397,7 @@ function PickerSurface({
   // 見なされて閉じる。一覧の中のクリックはここで止める。
   const stop = (e: React.MouseEvent) => e.stopPropagation();
 
-  if (desktop) {
+  if (desktop && !sheetOnly) {
     return (
       <Popover open={open} onOpenChange={onOpenChange}>
         <PopoverTrigger asChild>{trigger}</PopoverTrigger>
@@ -478,24 +482,67 @@ function EffortSlider({
 
 /// 送信ボタンの左に常に出すモデルの選択（ChatGPT の入力欄と同じ置き場所）。
 ///
-/// 「モデル名 ＋ 思考の深さ（薄い字）⌄」。何も選んでいなければ組織の既定（ふつうは「Auto」）。
-/// 押すとモデルの一覧と思考の深さのスライダーを開く。Auto に戻すのも一覧から。
-/// ユーザーに選ばせない組織・モデルが無いときは出さない。
-export function ModelButton({ scope, className }: { scope: string; className?: string }) {
-  const data = useLlmModels();
-  const { choice, setChoice, model } = useValidChoice(scope, data);
-  const [open, setOpen] = React.useState(false);
-  if (!data || !data.allow_user_choice || data.models.length === 0) return null;
-
-  // 選んでいないときの表示: 既定が Auto なら「Auto」、特定のモデルならその名前。
+/// 今のモデルの表示名（と思考の深さ）。選んでいないときは、既定が Auto なら「Auto」、
+/// 特定のモデルならその名前。
+///
+/// 思考の深さは実際に動くモデルで決める。既定が特定のモデルなら、選ばなくても思考の深さを
+/// 出す・変えられる（Auto は振り先が思考の深さも決めるので出さない）。
+function summarize(data: LlmModelsResponse, model: LlmModelOption | undefined, choice: ModelChoice) {
   const fallback = defaultModelOf(data);
   const name = model?.label ?? fallback?.label ?? "Auto";
-  // 実際に動くモデル。既定が特定のモデルなら、選ばなくても思考の深さを変えられる
-  // （Auto は振り先が思考の深さも決めるので出さない）。
   const effective = model ?? fallback;
   const currentEffort = choice?.effort ?? data.default_effort;
   const effort = effective?.supports_effort ? effortLabel(currentEffort) : null;
-  const summary = effort ? `${name}・${effort}` : name;
+  return {
+    name,
+    effort,
+    summary: effort ? `${name}・${effort}` : name,
+    fallback,
+    effective,
+    currentEffort,
+  };
+}
+
+/// 今のモデルの表示（「＋」のシートの「モデル」の行）。利用者が選べない組織では null。
+export function useModelSummary(scope: string): string | null {
+  const data = useLlmModels();
+  const { choice, model } = useValidChoice(scope, data);
+  if (!data || !data.allow_user_choice || data.models.length === 0) return null;
+  return summarize(data, model, choice).summary;
+}
+
+/// 入力欄の送信の左に置くモデルのボタン。
+/// 「モデル名 ＋ 思考の深さ（薄い字）⌄」。何も選んでいなければ組織の既定（ふつうは「Auto」）。
+/// 押すとモデルの一覧と思考の深さのスライダーを開く。Auto に戻すのも一覧から。
+/// ユーザーに選ばせない組織・モデルが無いときは出さない。
+///
+/// スマホで既定のままのときは、入力欄を 1 行に保つため呼び出し側がボタンを CSS で隠し、
+/// 「＋」のシートの「モデル」から開く（`open` を渡す）。そのときは `sheetOnly` で常にシートにする。
+export function ModelButton({
+  scope,
+  className,
+  sheetOnly = false,
+  open: openProp,
+  onOpenChange,
+}: {
+  scope: string;
+  className?: string;
+  sheetOnly?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const data = useLlmModels();
+  const { choice, setChoice, model } = useValidChoice(scope, data);
+  const [openState, setOpenState] = React.useState(false);
+  const open = openProp ?? openState;
+  const setOpen = onOpenChange ?? setOpenState;
+  if (!data || !data.allow_user_choice || data.models.length === 0) return null;
+
+  const { name, effort, summary, fallback, effective, currentEffort } = summarize(
+    data,
+    model,
+    choice,
+  );
   // 既定のモデルのまま思考の深さだけ変える。既定の深さに戻したら選択ごと外す（Auto と同じ扱い）。
   const setDefaultEffort = (e: EffortLevel) =>
     setChoice(e === data.default_effort ? null : { model: null, effort: e });
@@ -506,6 +553,7 @@ export function ModelButton({ scope, className }: { scope: string; className?: s
       onOpenChange={setOpen}
       align="end"
       tall={data.models.length >= SEARCH_MIN_MODELS}
+      sheetOnly={sheetOnly}
       trigger={
         <button
           type="button"

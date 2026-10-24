@@ -2,6 +2,7 @@
 # Rust 定義から型契約を再生成する（手書き型を作らない・生成物は commit しない）。
 #   1. OpenAPI(utoipa) → web/src/generated/openapi.json
 #   2. 認可語彙(ts-rs)  → web/src/generated/authz-vocab.ts
+#      監査の操作の語彙  → web/src/generated/audit-actions.ts
 #   3. OpenAPI → TS 型  → web/src/generated/api.d.ts (openapi-typescript)
 #
 # 使い方: リポジトリルートまたは web/ から `pnpm gen:api`（= 本スクリプト）。
@@ -17,6 +18,9 @@ cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p shiki-api --bin export-o
 
 echo "[gen:api] 認可語彙(TS)を出力"
 cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p shiki-authz --bin export-ts -- "$OUT"
+
+echo "[gen:api] 監査ログの操作の語彙(TS)を出力"
+cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p shiki-storage --bin export-audit-ts -- "$OUT"
 
 echo "[gen:api] ワークフロー語彙・IR 型(TS)を出力"
 cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p shiki-workflow-engine --bin export-workflow-ts -- "$OUT"

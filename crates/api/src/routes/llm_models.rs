@@ -123,8 +123,9 @@ pub async fn list_models(
     AuthContextExt(ctx): AuthContextExt,
 ) -> Result<Json<LlmModelsResponse>, ApiError> {
     let gw = gateway(&state)?;
+    // 呼び出した本人から見た設定（使えない本人専用のモデルを除き、既定・Auto もそれに従う・#854）。
     let settings = gw
-        .tenant_settings(&ctx)
+        .settings_for(&ctx)
         .await
         .map_err(|e| ApiError::Internal(format!("tenant llm settings: {e}")))?;
     let catalog = gw.catalog();

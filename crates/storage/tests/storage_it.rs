@@ -5728,7 +5728,7 @@ async fn audit_chain_lock_uses_64bit_key() {
     let ctx = make_ctx_tenant("org1", &tenant, "u-lock");
     let lock_input = format!("{tenant}|org1");
     let entry = || storage::audit::AuditEntry {
-        action: "file.delete",
+        action: storage::audit::AuditAction::FileDelete,
         object_type: "file",
         object_id: "f-lock",
         decision: storage::audit::Decision::Allow,

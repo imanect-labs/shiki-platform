@@ -5,6 +5,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 impl StorageService {
     /// テナント初期 admin へ org の member・admin・audit_viewer タプルを付与する（冪等・監査つき）。
@@ -43,7 +44,7 @@ impl StorageService {
             .record(
                 &ctx,
                 AuditEntry {
-                    action: "tenant.provision",
+                    action: AuditAction::TenantProvision,
                     object_type: "organization",
                     object_id: org,
                     decision: Decision::Allow,
@@ -267,7 +268,7 @@ impl StorageService {
             &mut tx,
             &ctx,
             AuditEntry {
-                action: "tenant.purge",
+                action: AuditAction::TenantPurge,
                 object_type: "organization",
                 object_id: org,
                 decision: Decision::Allow,
@@ -302,7 +303,7 @@ impl StorageService {
         ctx: &AuthContext,
         relation: Relation,
         object: &FgaObject,
-        action: &str,
+        action: AuditAction,
         object_type: &str,
         object_id: &str,
         trace_id: Option<&str>,
@@ -342,7 +343,7 @@ impl StorageService {
         &self,
         ctx: &AuthContext,
         object: &FgaObject,
-        action: &str,
+        action: AuditAction,
         object_type: &str,
         object_id: &str,
         trace_id: Option<&str>,

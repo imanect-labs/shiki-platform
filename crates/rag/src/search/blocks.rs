@@ -6,6 +6,7 @@
 //! 加えて tenant_id と org で必ず絞る（node の所属と同じ境界）。
 
 use authz::AuthContext;
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Decision};
 
 use crate::error::RagError;
@@ -55,7 +56,7 @@ impl SearchService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "file.blocks.read",
+                    action: AuditAction::FileBlocksRead,
                     object_type: "file",
                     object_id: &node.id.to_string(),
                     decision: Decision::Allow,

@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { AUDIT_FILTER_KEYS, auditParams, type AuditQuery } from "@/lib/audit-api";
 import { addDays, todayJst } from "../format";
+import { isAuditCategory } from "./audit-vocab";
 
 /// 既定の期間（直近 7 日・日本時間・両端含む）。
 export function defaultRange(): { from: string; to: string } {
@@ -38,6 +39,8 @@ export function useAuditQuery(): {
     }
     const d = p.get("decision");
     q.decision = d === "allow" || d === "deny" ? d : undefined;
+    const c = p.get("category");
+    q.category = isAuditCategory(c) ? c : undefined;
     return q;
   }, [key]);
   const setQuery = React.useCallback(

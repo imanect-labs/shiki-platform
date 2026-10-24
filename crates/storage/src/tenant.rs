@@ -233,26 +233,6 @@ impl TenantStore {
         Ok(updated.rows_affected() == 1)
     }
 
-    /// 同じ org slug を使う**他の未削除テナント**が存在するか（Keycloak group の共有判定）。
-    ///
-    /// テナント削除時、org group を消すと同 org slug を使う他テナントの `groups` claim が
-    /// 壊れるため、共有されている場合は group 削除をスキップする判断に使う。
-    pub async fn org_shared_by_others(
-        &self,
-        org: &str,
-        tenant_id: &str,
-    ) -> Result<bool, StorageError> {
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM tenant \
-             WHERE org = $1 AND tenant_id <> $2 AND status <> 'deleted')",
-        )
-        .bind(org)
-        .bind(tenant_id)
-        .fetch_one(&self.db)
-        .await?;
-        Ok(exists)
-    }
-
     /// テナントを取得する（tombstone 含む。無ければ `None`）。
     pub async fn get(&self, tenant_id: &str) -> Result<Option<Tenant>, StorageError> {
         let row: Option<TenantRow> = sqlx::query_as(

@@ -19,9 +19,10 @@ import { Sheet, SheetBody, SheetContent, SheetDescription, SheetHeader, SheetTit
 import { Skeleton } from "@/components/ui/skeleton";
 import { AdminPage, Panel } from "../admin-page";
 import { formatInt } from "../format";
-import { AuditDetail, Verdict, actorLabel } from "./audit-detail";
+import { ActionName, AuditDetail, Verdict, actorLabel } from "./audit-detail";
 import { AuditFilters } from "./audit-filters";
 import { formatTime, useAuditQuery } from "./audit-query";
+import { actionLabel } from "./audit-vocab";
 
 type State = {
   events: AuditEvent[];
@@ -230,7 +231,9 @@ export function AuditView() {
                           <span className="truncate text-[15px] font-medium">{actorLabel(e)}</span>
                         </span>
                         <span className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                          <span className="min-w-0 truncate font-mono">{e.action}</span>
+                          <span className={cn("min-w-0 truncate", !actionLabel(e.action) && "font-mono")}>
+                            {actionLabel(e.action) ?? e.action}
+                          </span>
                           <span className="ml-auto shrink-0 font-mono tabular-nums">
                             {formatTime(e.created_at).slice(5, 16)}
                           </span>
@@ -250,7 +253,9 @@ export function AuditView() {
             {selected ? (
               <>
                 <SheetHeader className="pr-14">
-                  <SheetTitle className="break-all font-mono">{selected.action}</SheetTitle>
+                  <SheetTitle className={cn("break-all", !actionLabel(selected.action) && "font-mono")}>
+                    {actionLabel(selected.action) ?? selected.action}
+                  </SheetTitle>
                   <SheetDescription>
                     {selected.decision === "allow" ? "許可された操作" : "拒否された操作"}
                   </SheetDescription>
@@ -309,7 +314,9 @@ export function AuditView() {
                             <td className="max-w-[12rem] truncate px-2 py-2" title={e.actor}>
                               {actorLabel(e)}
                             </td>
-                            <td className="px-2 py-2 font-mono">{e.action}</td>
+                            <td className="px-2 py-2">
+                              <ActionName action={e.action} stacked />
+                            </td>
                             <td
                               className="max-w-[16rem] truncate px-4 py-2 font-mono text-muted-foreground"
                               title={`${e.object_type}:${e.object_id}`}
@@ -327,7 +334,17 @@ export function AuditView() {
             )}
           </Panel>
           <div className="min-w-0 lg:sticky lg:top-4 lg:self-start">
-            <Panel title={selected ? <span className="break-all font-mono">{selected.action}</span> : "詳細"}>
+            <Panel
+              title={
+                selected ? (
+                  <span className={cn("break-all", !actionLabel(selected.action) && "font-mono")}>
+                    {actionLabel(selected.action) ?? selected.action}
+                  </span>
+                ) : (
+                  "詳細"
+                )
+              }
+            >
               <div className="px-4 py-3">
                 {selected ? (
                   <AuditDetail event={selected} onNarrow={narrow} />

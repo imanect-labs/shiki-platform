@@ -7,6 +7,7 @@
 
 use authz::{AuthContext, Relation};
 use serde_json::Value;
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::model::{DataRecord, FieldType, TableSchema};
@@ -64,7 +65,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Viewer,
-            "data.record.list",
+            AuditAction::DataRecordList,
             trace_id,
         )
         .await?;
@@ -171,7 +172,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Viewer,
-            "data.record.count",
+            AuditAction::DataRecordCount,
             trace_id,
         )
         .await?;

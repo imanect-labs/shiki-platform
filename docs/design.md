@@ -187,6 +187,10 @@ flowchart LR
 - 注: ここで codegen するのは**粗い語彙（スコープ/relation名/ツール名）**であり、
   **インスタンス単位の実認可は依然 OpenFGA（ReBAC）＋行レベル ABAC 述語**で行う（語彙の型安全 ≠ 認可判定）。
   RBAC のロール×権限表をコアにはしない（ロール階層・個別共有で RBAC ロールが爆発するため／ReBAC維持）。
+- **監査ログの操作の種類（action）も同じ扱い**: `storage::audit::AuditAction`（`crates/storage/src/audit_action.rs`）を
+  単一定義とし、記録する文字列・表示名・分類を 1 か所に持つ。監査の書き込みは型でこの語彙に閉じ、TS
+  （`web/src/generated/audit-actions.ts`）へ生成して監査ログ画面の絞り込み・表示名に使う（#830）。
+  記録済みの行は書き換えないので、**一度記録した文字列は変えない**。
 
 #### 4.1.1 SaaS コントロールプレーンと外部クライアント境界（skillex）
 
@@ -195,7 +199,9 @@ flowchart LR
 > 理由は運用負荷と、shiki・skillex の顧客が重ならないこと。経緯と旧リスクは [PIT-26〜29](./design-caveats.md)（各項に更新注記）。
 
 - **shiki 自身の SaaS コントロールプレーン**（skillex とは共有しない）: Keycloak realm `shiki`（**shiki ユーザー専用**・
-  単一 realm・テナントはユーザー属性 `tenant`／org は group＝SAAS.2）、テナント・プロビジョニング（SAAS.2 の admin プレーン）、
+  単一 realm・テナントはユーザー属性 `tenant`／org は group＝SAAS.2。org group はテナントで修飾した `/tenants/<tenant>/<org>`、
+  部署はその配下に置き、org/部署は解決済み tenant の配下だけから解く＝同じ org slug のテナント同士で group を共有しない・#811・
+  運用は [tenant-ops](./guides/tenant-ops.md)）、テナント・プロビジョニング（SAAS.2 の admin プレーン）、
   ベンダーコンソール（§4.12）、Stripe 課金（SAAS.3）。オンプレはこれを積まず、AuthN をローカル Keycloak へ向ける（設定差し替え）。
   データプレーンは**全テナント共有のフルプール**で、テナント分離は §4.1「authz のテナント分離」（SAAS.1）を参照
   （顧客ごと専用ストア＝cell は専用環境契約向けの将来オプション・スケール戦略は [data-platform.md §12](./data-platform.md)）。
@@ -490,6 +496,21 @@ flowchart LR
   （Gemini API の `thought_signature`。Gemini API は送り返すことを求める）は不透明な推論ブロックとして履歴に持ち、
   次のターンで同じ呼び出しへ付けて返す。ツールを呼んだのに `finish_reason: "stop"` を返すプロバイダ（同）は、
   呼び出しがあればツールのターンとして扱う（#743）。
+- **ChatGPT プランの個人利用（プレビュー環境限定・#854）**: モデルの実体はデプロイ設定が正、の**例外**として、
+  連携した本人の ChatGPT Plus / Pro のプラン枠で GPT モデルを使うプロバイダ（`chatgpt_plan`）を置ける
+  （`llm.chatgpt.enabled`・既定は無効。SaaS・オンプレの提供対象ではない）。資格情報は API キーではなく、
+  本人が設定 → 接続済みアプリから OpenAI の Sign in with ChatGPT（オープンソース向け dynamic client・PKCE）で
+  得たトークンで、アクセス・リフレッシュトークンはサーバ側のファイル（0600）にだけ置く（再ログインでは OpenAI の
+  手順どおり前回の ID トークンを `id_token_hint` として本人のブラウザ経由で認可サーバへ渡す）。戻り先が
+  `127.0.0.1` 固定でリモートのサーバに届かないため、ブラウザが戻された URL を本人に貼ってもらい、サーバ側の
+  PKCE verifier で交換する（公式手順外・自己責任の扱い）。接続はプロセスに 1 件で、リフレッシュトークンが更新の
+  たびに置き換わるので単一レプリカ・プロセス内で直列にする（全利用者が通る照合はこの直列化を待たない）。
+  連携・解除は監査に残す（`me.chatgpt.connect` / `me.chatgpt.disconnect`）。
+  **使えるのは連携した本人だけ**（tenant_id ＋ org ＋ principal が一致するユーザー）で、gateway の `stream` が
+  経路によらず照合する（他の利用者・ワークフロー等の実行主体には使わせない＝プラン枠を他人に消費させない）。
+  組織の既定や Auto の振り先に選ばれていても、モデルの解決は呼び出し主体から見た設定で行い、本人以外には
+  無効に見せる（既定は Auto へ、Auto は次の候補へ落ちる）。単価は 0（本人のプラン枠で払う）・国外処理扱いで、
+  組織のデータを個人のアカウントへ送るため `requires_opt_in`（管理者が公開するまで使えない）。
 - **思考強度の正規化**: `effort: low/medium/high` を内部正規形に持ち、各アダプタが reasoning budget /
   thinking tokens に翻訳。UI は3段階セレクタのみ（プロバイダ固有ノブは晒さない）。
 - `LlmProvider` トレイト実装そのもの。別プロセス化しない（ホップ0、部品削減）。外部クライアント向け API も同一プロセスで公開し、別サービス化は §4.1.1 の条件（3 つ目の消費者）で再検討する。

@@ -23,6 +23,7 @@
 )]
 
 pub mod accounting;
+pub mod chatgpt;
 pub mod config;
 pub mod gateway;
 pub mod langfuse;
@@ -34,6 +35,10 @@ pub mod tenant;
 pub mod tool_loading;
 pub mod usage_report;
 
+pub use chatgpt::{
+    ChatGptAccount, ChatGptConnection, ChatGptError, ChatGptModel, ChatGptSettings, ChatGptStatus,
+    CHATGPT_PROVIDER_ID,
+};
 pub use config::{
     AutoConfig, GatewayConfig, LangfuseConfig, LlmTimeouts, ModelCatalog, ModelEntry,
     ProviderConfig, ProviderKind, ProviderLimit, UsageLimitsConfig, DEFAULT_PROVIDER_ID,

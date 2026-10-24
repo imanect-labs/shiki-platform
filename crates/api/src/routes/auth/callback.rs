@@ -16,8 +16,9 @@ use super::{
     build_cookie, parse_flow, removal_cookie, FLOW_COOKIE,
 };
 use crate::{
+    config::AuthConfig,
     error::ApiError,
-    extract::{resolve_org, resolve_tenant_id},
+    extract::{group_layout, resolve_org, resolve_tenant_id},
     middleware::{auth::verify_access_token, claims},
     oidc,
     session::{
@@ -210,8 +211,10 @@ fn action_error_redirect(jar: &CookieJar, returned_state: Option<&str>) -> Optio
 ///   さらにセッション **refresh 周期でも同期**する（`middleware/session.rs`・#91 H-1）:
 ///   ログイン時のみだと、refresh で延命される長寿命セッションが剥奪済み role を再ログイン
 ///   まで保持し続けるため、失効窓を access token 寿命（≒refresh 周期）まで縮める。
-/// - **groups = 部署**: AD/Entra フェデレートで OU/部署が `groups` claim に載る（例 `/acme/eng`）。
-///   先頭 `/` を除いたパスを role id にする。**org そのもののグループ（`/{org}`）は除外**
+/// - **groups = 部署**: AD/Entra フェデレートで OU/部署が `groups` claim に載る
+///   （例 `/tenants/acme/acme/eng`）。テナントルートからの相対パス（`acme/eng`）を role id にする
+///   （[`authz::org_group::tenant_relative_groups`]・他テナント配下は捨てる・#811）。
+///   **org そのもののグループ（`/tenants/<tenant>/{org}`）は除外**
 ///   （org は organization タプルの責務で、role 化するとノイズになる）。
 /// - **テナント内に閉じる**: 現在集合は自テナント名前空間の直接タプルのみ抽出。他テナントの
 ///   タプルには読み書きとも触れない。
@@ -223,13 +226,11 @@ fn action_error_redirect(jar: &CookieJar, returned_state: Option<&str>) -> Optio
 // 収束ロジックを一望できる利点を優先してグランドファーザ許容する。
 #[allow(clippy::cognitive_complexity)]
 pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenant_id: String) {
-    let org = resolve_org(&principal);
+    // あるべき集合（claims 由来・正規化済み）。
+    let (org, sourced) = desired_from_claims(&principal, &tenant_id, &state.config.auth);
     let ctx = AuthContext::new(principal, org.clone(), tenant_id.clone());
     let subject = ctx.subject();
     let ns = ctx.ns();
-
-    // あるべき集合（claims 由来・正規化済み）。
-    let sourced = desired_role_sources(&ctx.principal.roles, &ctx.principal.groups, &org);
     let desired: Vec<String> = sourced.iter().map(|(id, _)| id.clone()).collect();
 
     // ディレクトリへの登録（共有の相手検索・AI 活用分析の在籍者）。人だけ（workflow 主体は除く）。
@@ -332,16 +333,32 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
     }
 }
 
+/// claims から org と「あるべき role（部署由来か）」を求める（[`provision_roles`] の純粋部分）。
+///
+/// 部署は自テナント配下の group だけ（`/tenants/<tenant>/<org>/<dept>` → `<org>/<dept>`・#811）。
+/// 他テナント配下・（multi では）テナント無修飾の group は role にしない。
+fn desired_from_claims(
+    principal: &Principal,
+    tenant_id: &str,
+    auth: &AuthConfig,
+) -> (String, Vec<(String, bool)>) {
+    let org = resolve_org(principal, tenant_id, auth);
+    let departments =
+        authz::org_group::tenant_relative_groups(&principal.groups, tenant_id, group_layout(auth));
+    let sourced = desired_role_sources(&principal.roles, &departments, &org);
+    (org, sourced)
+}
+
 /// claims（roles ＋ groups）から「あるべき role id 集合」を作る（純粋関数・テスト対象）。
 ///
-/// - groups は先頭 `/` を除いた部署パス。**org そのもののグループ（`/{org}`）だけを除外**する
+/// - `departments` はテナントルートからの相対パス（`acme/eng`）。**org そのもの（`acme`）だけを除外**する
 ///   （org は organization タプルの責務）。roles claim に org と同名のロールがあっても
 ///   それは正当なロールなので除外しない（除外すると diff 同期が誤剥奪する）。
 /// - 識別子を壊す値（空・FGA 構造文字・制御文字）は [`authz::validate_local_id`]
 ///   （文字ポリシーの単一定義・#91 M-3）で除外する。
 #[cfg(test)]
-fn desired_role_ids(roles: &[String], groups: &[String], org: &str) -> Vec<String> {
-    desired_role_sources(roles, groups, org)
+fn desired_role_ids(roles: &[String], departments: &[String], org: &str) -> Vec<String> {
+    desired_role_sources(roles, departments, org)
         .into_iter()
         .map(|(id, _)| id)
         .collect()
@@ -349,13 +366,16 @@ fn desired_role_ids(roles: &[String], groups: &[String], org: &str) -> Vec<Strin
 
 /// [`desired_role_ids`] と同じ集合を、groups claim 由来か（部署か）と一緒に返す（#751）。
 /// 同じ id が roles と groups の両方にあれば先に出た方（roles）を採る。
-fn desired_role_sources(roles: &[String], groups: &[String], org: &str) -> Vec<(String, bool)> {
+fn desired_role_sources(
+    roles: &[String],
+    departments: &[String],
+    org: &str,
+) -> Vec<(String, bool)> {
     let mut out: Vec<(String, bool)> = Vec::new();
-    let candidates = roles.iter().map(|r| (r.trim().to_string(), false)).chain(
-        groups
-            .iter()
-            .map(|g| (g.trim_start_matches('/').to_string(), true)),
-    );
+    let candidates = roles
+        .iter()
+        .map(|r| (r.trim().to_string(), false))
+        .chain(departments.iter().map(|d| (d.clone(), true)));
     for (id, from_group) in candidates {
         let id = id.trim();
         if (from_group && id == org) || authz::validate_local_id(id).is_err() {
@@ -370,7 +390,8 @@ fn desired_role_sources(roles: &[String], groups: &[String], org: &str) -> Vec<(
 
 #[cfg(test)]
 mod tests {
-    use super::desired_role_ids;
+    use super::{desired_from_claims, desired_role_ids};
+    use crate::config::{AuthConfig, Tenancy};
 
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
@@ -381,7 +402,7 @@ mod tests {
         // roles と groups（先頭 / 除去）を統合し、重複を除く。
         let got = desired_role_ids(
             &v(&["engineering", "sales"]),
-            &v(&["/acme/eng", "/acme"]),
+            &v(&["acme/eng", "acme"]),
             "acme",
         );
         assert_eq!(got, v(&["engineering", "sales", "acme/eng"]));
@@ -390,7 +411,7 @@ mod tests {
     #[test]
     fn desired_roles_exclude_org_group() {
         // org そのもののグループは role 化しない。
-        let got = desired_role_ids(&[], &v(&["/acme"]), "acme");
+        let got = desired_role_ids(&[], &v(&["acme"]), "acme");
         assert!(got.is_empty());
     }
 
@@ -398,8 +419,90 @@ mod tests {
     fn desired_roles_keep_role_named_like_org() {
         // roles claim に org と同名のロールがあっても正当なロールとして残す
         // （groups 由来の org のみ除外。誤剥奪防止・Codex #90 指摘）。
-        let got = desired_role_ids(&v(&["acme"]), &v(&["/acme"]), "acme");
+        let got = desired_role_ids(&v(&["acme"]), &v(&["acme"]), "acme");
         assert_eq!(got, v(&["acme"]));
+    }
+
+    #[test]
+    fn department_roles_stay_in_own_tenant() {
+        // `/tenants/<自テナント>/...` だけが部署 role になり、id は従来どおりテナント相対（#811）。
+        // 他テナント配下（`/tenants/b/b/eng`）と、multi ではテナント無修飾の旧 group は role にしない。
+        let groups = v(&[
+            "/tenants/a/a",
+            "/tenants/a/a/eng",
+            "/tenants/b/b/eng",
+            "/tenants/a2/a/sales",
+            "/a/legacy",
+        ]);
+        let departments = authz::org_group::tenant_relative_groups(
+            &groups,
+            "a",
+            authz::GroupLayout::TenantScoped,
+        );
+        let org = authz::org_group::resolve_org(&groups, "a", authz::GroupLayout::TenantScoped);
+        assert_eq!(org.as_deref(), Some("a"));
+        assert_eq!(desired_role_ids(&[], &departments, "a"), v(&["a/eng"]));
+    }
+
+    fn auth(tenancy: Tenancy) -> AuthConfig {
+        AuthConfig {
+            issuer: "http://localhost/realms/shiki".into(),
+            internal_base_url: None,
+            jwks_uri: None,
+            audience: "shiki-api".into(),
+            jwks_ttl_secs: 300,
+            client_id: "shiki-web".into(),
+            client_secret: None,
+            redirect_uri: "http://localhost:3000/auth/callback".into(),
+            post_logout_redirect_uri: "http://localhost:3000/".into(),
+            scopes: "openid profile".into(),
+            tenancy,
+            tenant_id: Some("default".into()),
+            provisioner_client_id: None,
+            provisioner_client_secret: None,
+            admin_base_url: None,
+        }
+    }
+
+    fn principal(groups: &[&str], roles: &[&str]) -> authz::Principal {
+        authz::Principal {
+            kind: authz::PrincipalKind::User,
+            id: "u1".into(),
+            email: None,
+            groups: v(groups),
+            roles: v(roles),
+            tenant_id: Some("t1".into()),
+        }
+    }
+
+    #[test]
+    fn provision_roles_departments_in_multi_mode() {
+        // multi: `/tenants/t1/...` の部署だけが（部署由来の）role になる。他テナント配下・
+        // 無修飾の旧 group は org にも role にもならない。
+        let p = principal(
+            &[
+                "/tenants/evil/aaa/x",
+                "/tenants/t1/acme",
+                "/tenants/t1/acme/eng",
+                "/acme/legacy",
+            ],
+            &["sales"],
+        );
+        let (org, sourced) = desired_from_claims(&p, "t1", &auth(Tenancy::Multi));
+        assert_eq!(org, "acme");
+        assert_eq!(
+            sourced,
+            vec![("sales".to_string(), false), ("acme/eng".to_string(), true)]
+        );
+        // 自テナント配下が無ければ部署 role は無く、org は既定。
+        let p = principal(&["/acme/eng", "/tenants/evil/acme/eng"], &[]);
+        let (org, sourced) = desired_from_claims(&p, "t1", &auth(Tenancy::Multi));
+        assert_eq!(org, "default");
+        assert!(sourced.is_empty());
+        // single は従来の直下 group を部署にする（オンプレは従来どおり）。
+        let (org, sourced) = desired_from_claims(&p, "default", &auth(Tenancy::Single));
+        assert_eq!(org, "acme");
+        assert_eq!(sourced, vec![("acme/eng".to_string(), true)]);
     }
 
     #[test]

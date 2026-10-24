@@ -5,6 +5,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 /// 共有先 subject の検証。subject 識別子（`user:<tenant>|<id>` / `role:<tenant>|<id>#member`）を
 /// 壊す/曖昧化する id を弾く。文字ポリシーの正本は [`authz::validate_local_id`]
@@ -48,7 +49,7 @@ impl StorageService {
     ) -> Result<(), StorageError> {
         validate_share_target(target)?;
         let obj = self
-            .authorize_share_admin(ctx, node_id, "node.share", trace_id)
+            .authorize_share_admin(ctx, node_id, AuditAction::NodeShare, trace_id)
             .await?;
         // 付与は冪等。granted=true なら実際に新規付与した。
         let granted = self
@@ -56,7 +57,15 @@ impl StorageService {
             .write_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
             .await?;
         if let Err(e) = self
-            .record_share_audit(ctx, node_id, &obj, "node.share", target, role, trace_id)
+            .record_share_audit(
+                ctx,
+                node_id,
+                &obj,
+                AuditAction::NodeShare,
+                target,
+                role,
+                trace_id,
+            )
             .await
         {
             // 実際に付与した時だけ巻き戻す（no-op を剥奪して既存共有を壊さない）。
@@ -86,7 +95,7 @@ impl StorageService {
     ) -> Result<(), StorageError> {
         validate_share_target(target)?;
         let obj = self
-            .authorize_share_admin(ctx, node_id, "node.unshare", trace_id)
+            .authorize_share_admin(ctx, node_id, AuditAction::NodeUnshare, trace_id)
             .await?;
         // 剥奪は冪等。revoked=true なら実際に剥奪した。
         let revoked = self
@@ -94,7 +103,15 @@ impl StorageService {
             .delete_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
             .await?;
         if let Err(e) = self
-            .record_share_audit(ctx, node_id, &obj, "node.unshare", target, role, trace_id)
+            .record_share_audit(
+                ctx,
+                node_id,
+                &obj,
+                AuditAction::NodeUnshare,
+                target,
+                role,
+                trace_id,
+            )
             .await
         {
             // 実際に剥奪した時だけ巻き戻す（no-op を付与して権限昇格を起こさない）。
@@ -122,7 +139,7 @@ impl StorageService {
         trace_id: Option<&str>,
     ) -> Result<Vec<ShareEntry>, StorageError> {
         let obj = self
-            .authorize_share_admin(ctx, node_id, "node.shares.list", trace_id)
+            .authorize_share_admin(ctx, node_id, AuditAction::NodeSharesList, trace_id)
             .await?;
         let tuples = self.authz.read_tuples(&obj, None).await?;
         let mut shares = Vec::new();
@@ -235,7 +252,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "node.shared_with_me.list",
+                    action: AuditAction::NodeSharedWithMeList,
                     object_type: "organization",
                     object_id: &ctx.org,
                     decision: Decision::Allow,
@@ -257,7 +274,7 @@ impl StorageService {
         &self,
         ctx: &AuthContext,
         node_id: Uuid,
-        action: &str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<FgaObject, StorageError> {
         let node = self.load_node(ctx, node_id, false).await?;
@@ -282,7 +299,7 @@ impl StorageService {
         ctx: &AuthContext,
         node_id: Uuid,
         obj: &FgaObject,
-        action: &str,
+        action: AuditAction,
         target: &ShareTarget,
         role: ShareRole,
         trace_id: Option<&str>,

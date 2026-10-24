@@ -44,7 +44,7 @@ test("主要画面のスクリーンショットを撮る", async ({ page }) => 
   await page.goto("/workflows");
   await page.waitForLoadState("networkidle");
   await page.screenshot({ path: `${SHOTS}/06-workflows-list.png`, fullPage: true });
-  await page.getByRole("button", { name: "新しいワークフロー" }).click();
+  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
   await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
   await page.getByRole("button", { name: "最初のブロック" }).click();
   await page.getByRole("button", { name: /^スクリプト/ }).click();
