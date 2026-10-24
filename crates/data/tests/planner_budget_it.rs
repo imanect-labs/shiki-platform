@@ -39,7 +39,8 @@ fn ids(r: &data::QueryResult) -> Vec<Uuid> {
 fn shape(sql: &str, drop_cap: bool) -> String {
     let mut s = sql.to_string();
     if drop_cap {
-        let start = s.find(") LIMIT $").expect("候補の上限がある") + 1;
+        // 候補集合の上限は CTE の中の最初の `LIMIT $n`（値索引の並び `ORDER BY …` の後に付くこともある）。
+        let start = s.find(" LIMIT $").expect("候補の上限がある");
         let end = start + s[start..].find("::int8)").unwrap() + "::int8".len();
         s.replace_range(start..end, "");
     }

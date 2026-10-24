@@ -543,6 +543,8 @@ impl<'a> Exec<'a, '_> {
                 .low
                 .candidates_sql(&src, checks, &guard, after, cap, limit, sql))
         })?;
+        // 候補集めは並びを値索引に合わせた文（`Lowerer::atom_source_ordered`）だけで、`enable_sort` は
+        // 切り替えない（最終の並びを持つ文全体の計画を崩して遅くなる・計測で 2 倍超）。
         let rows = self.fetch_compiled("candidates", text, binds).await?;
         let n_cand: i64 = rows
             .first()
@@ -651,7 +653,9 @@ impl<'a> Exec<'a, '_> {
                 .low
                 .sort_drive_sql(key, start, stop, &checks, &guard, budget, need + 1, sql))
         })?;
-        let rows = self.fetch_compiled("sort_drive", text, binds).await?;
+        let rows = self
+            .fetch_index_ordered("sort_drive", text, binds, true)
+            .await?;
         let (scanned, passed, end, last) = Self::absorb(&rows, kind, multi, st, budget)?;
         self.stats.scanned += scanned;
         if multi {

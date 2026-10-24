@@ -528,7 +528,7 @@ impl DataStore {
         }) {
             return Err(DataError::IndexPreparing {
                 field: bq.field(*f).key.clone(),
-                progress: crate::index::promote::backfill_progress(conn, keys).await?,
+                progress: crate::index::promote::preparing_progress(conn, keys).await?,
             });
         }
         // システム擬似列の初回バックフィル中（Task 15.2 より前のテーブル）などは本体経路

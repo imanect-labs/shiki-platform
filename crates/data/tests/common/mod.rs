@@ -84,7 +84,11 @@ pub struct FixedResolver;
 #[async_trait]
 impl RefResolver for FixedResolver {
     async fn user_exists(&self, _: &AuthContext, id: &str) -> Result<bool, String> {
-        Ok(matches!(id, "alice" | "bob"))
+        // alice / bob と、大量データの合成ユーザー `u{n}`（common::bulk・common::synth）がディレクトリに居る。
+        let synthetic = id
+            .strip_prefix('u')
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        Ok(matches!(id, "alice" | "bob") || synthetic)
     }
     async fn role_exists(&self, _: &AuthContext, id: &str) -> Result<bool, String> {
         Ok(id == "sales")
@@ -277,10 +281,18 @@ async fn explain_with(
             .await
             .unwrap();
     }
+    // 読取と同じ設定で計画を見る（`plan_cache_mode`・索引の並びで読む文だけ `enable_sort = off`・
+    // `Exec::fetch_index_ordered`）。
     sqlx::query("SET LOCAL plan_cache_mode = force_custom_plan")
         .execute(&mut *tx)
         .await
         .unwrap();
+    if st.label == "sort_drive" {
+        sqlx::query("SET LOCAL enable_sort = off")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
     let opts = if analyze {
         "ANALYZE, BUFFERS OFF, TIMING OFF, FORMAT JSON"
     } else {

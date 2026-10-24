@@ -337,3 +337,51 @@ async fn user_and_role_filters_take_ids_only() {
         );
     }
 }
+
+/// 2-D-P2-1: 取込の完了時に、行が入ったパーティションの Postgres の統計を取り直す（取込の前の「空に近い」
+/// 統計のまま候補集めが値索引を使わない計画にならない）。
+#[tokio::test]
+async fn bulk_import_refreshes_partition_statistics() {
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool.clone());
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let mut amount = field("amount", FieldType::Number);
+    amount.indexed = true;
+    let t = create_table(&store, &c, "取込と統計", schema(vec![amount])).await;
+    let (ti, tb) = common::keys_of(&pool, &tenant, t.id).await;
+    let started: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT now()")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let rows: Vec<data::BulkImportRow> = (0..1_200)
+        .map(|i| data::BulkImportRow {
+            key: None,
+            data: json!({ "amount": i }),
+        })
+        .collect();
+    let id = store
+        .start_bulk_import(&c, t.id, rows, data::BulkImportOptions::default(), None)
+        .await
+        .unwrap();
+    let st = store.run_bulk_import(&tenant, t.id, id).await.unwrap();
+    assert_eq!(st.status, "done");
+    let rel: String = sqlx::query_scalar(
+        "SELECT tableoid::regclass::text FROM data_index_num WHERE tenant_int = $1 AND table_int = $2 LIMIT 1",
+    )
+    .bind(ti)
+    .bind(tb)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let analyzed: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT last_analyze FROM pg_stat_user_tables WHERE relname = $1")
+            .bind(&rel)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        analyzed.is_some_and(|a| a >= started),
+        "{rel}: {analyzed:?} < {started}"
+    );
+}

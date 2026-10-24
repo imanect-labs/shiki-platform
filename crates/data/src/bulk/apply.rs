@@ -522,6 +522,14 @@ impl DataStore {
         .map_err(map_db)?;
         cleanup_staging(&mut tx, &cur).await?;
         tx.commit().await.map_err(map_db)?;
+        if cur.rows_valid >= ANALYZE_AFTER_ROWS {
+            analyze_table_partitions(
+                self.pools.for_tenant(tenant_id),
+                cur.tenant_int,
+                cur.table_int,
+            )
+            .await;
+        }
         Ok(0)
     }
 
@@ -618,6 +626,73 @@ async fn write_applied(
     .await
     .map_err(map_db)?;
     Ok(())
+}
+
+/// 取込の後に Postgres の統計を取り直す行数の下限。
+const ANALYZE_AFTER_ROWS: i64 = 1_000;
+
+/// 取込で行が入ったパーティションの Postgres の統計を取り直す（best-effort・検証 2-D-P2-1）。
+///
+/// 取込の前に空に近い状態で ANALYZE されたパーティションは、取込の後も「行数 0」の統計のままで、Postgres が
+/// 候補集めに値索引を使わない計画を選ぶ（10 万行で 1 秒超）。自動 ANALYZE を待たずに取り直す。ANALYZE は
+/// 読み書きを止めない（`SHARE UPDATE EXCLUSIVE`）。SQL へ埋め込むのはカタログから引いた表名で、形を検証した
+/// ものだけ（PIT-21）。
+async fn analyze_table_partitions(pool: &sqlx::PgPool, tenant_int: i32, table_int: i64) {
+    const PARENTS: [&str; 6] = [
+        "data_record",
+        "data_index_text",
+        "data_index_num",
+        "data_index_search",
+        "data_link",
+        "data_unique",
+    ];
+    for parent in PARENTS {
+        let rel: Result<Option<String>, sqlx::Error> = sqlx::query_scalar(&format!(
+            "SELECT tableoid::regclass::text FROM {parent} \
+             WHERE tenant_int = $1 AND table_int = $2 LIMIT 1"
+        ))
+        .bind(tenant_int)
+        .bind(table_int)
+        .fetch_optional(pool)
+        .await;
+        let rel = match rel {
+            Ok(Some(r)) if is_partition_of(&r, parent) => r,
+            Ok(_) => continue,
+            Err(e) => {
+                tracing::warn!(error = %e, parent, "取込の後の統計の取り直しの対象を引けません");
+                continue;
+            }
+        };
+        if let Err(e) = sqlx::query(&format!("ANALYZE {rel}")).execute(pool).await {
+            tracing::warn!(error = %e, rel, "取込の後の統計の取り直しに失敗（自動 ANALYZE に任せる）");
+        }
+    }
+}
+
+/// `rel` が `parent` かそのハッシュパーティション（`{parent}_p{n}`）の名前か。
+fn is_partition_of(rel: &str, parent: &str) -> bool {
+    rel == parent
+        || rel
+            .strip_prefix(parent)
+            .and_then(|r| r.strip_prefix("_p"))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod analyze_tests {
+    use super::is_partition_of;
+
+    #[test]
+    fn only_partitions_of_the_parent_are_analyzed() {
+        assert!(is_partition_of("data_index_num_p12", "data_index_num"));
+        assert!(is_partition_of("data_record", "data_record"));
+        assert!(!is_partition_of(
+            "data_index_num_p1; DROP",
+            "data_index_num"
+        ));
+        assert!(!is_partition_of("data_index_num_p", "data_index_num"));
+        assert!(!is_partition_of("data_index_text_p1", "data_index_num"));
+    }
 }
 
 #[cfg(test)]

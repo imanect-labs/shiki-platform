@@ -52,6 +52,35 @@ impl Exec<'_, '_> {
         Ok(rows)
     }
 
+    /// 索引の並びで読むように書いた文（ソート駆動）を、並べ替えを選ばせずに実行する
+    /// （`ordered` のとき・文の前後で `enable_sort` を切り替える）。
+    ///
+    /// 取込直後の古い統計（空に近いときのまま）だと、Postgres は「主キーで列の全行を拾って並べ替える」計画を
+    /// 選び、10 万行で 1 秒を超えていた（検証 2-D-P2-1）。この文だけ並べ替えを罰則にして、並びを作れる値索引の
+    /// 走査を選ばせる（プランナ耐性 SQL・query-optimizer.md §6.1）。他の文（最終の並び・集計・本体経路）の
+    /// 計画には影響させない。
+    pub(crate) async fn fetch_index_ordered(
+        &mut self,
+        label: &'static str,
+        text: Arc<str>,
+        binds: Vec<Bind>,
+        ordered: bool,
+    ) -> Result<Vec<sqlx::postgres::PgRow>, DataError> {
+        if !ordered {
+            return self.fetch_compiled(label, text, binds).await;
+        }
+        sqlx::query("SELECT set_config('enable_sort', 'off', true)")
+            .execute(&mut *self.conn)
+            .await
+            .map_err(map_db)?;
+        let rows = self.fetch_compiled(label, text, binds).await;
+        sqlx::query("SELECT set_config('enable_sort', 'on', true)")
+            .execute(&mut *self.conn)
+            .await
+            .map_err(map_db)?;
+        rows
+    }
+
     /// 検査の並び（query-optimizer §5.2）。統計があれば「(1 − 選択率) / 単価」の大きい順（よく落ちて安い
     /// 述語を先に・同点は静的順位）、無ければ葉の種類の静的順位。行述語（Guard）は常に最後（並べ替えない）。
     pub(crate) fn order<'e>(&self, v: Vec<&'e Expr>) -> Vec<&'e Expr> {

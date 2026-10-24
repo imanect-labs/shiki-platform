@@ -397,6 +397,31 @@ impl Lowerer<'_> {
         )
     }
 
+    /// 値索引（`(tenant_int, table_int, field_id, val, record_int)`）の並びで読める 1 項か（単値の
+    /// text / num の範囲・等値・前方一致。多値・検索索引・リンクは対象外）。
+    pub(crate) fn value_ordered(&self, a: &Atom) -> bool {
+        let f = self.field(a.field);
+        matches!(f.kind, FieldKind::Num | FieldKind::Text)
+            && self.atom_table(a) == f.value_table()
+            && matches!(
+                a.leaf,
+                Leaf::Range { .. } | Leaf::Eq(_) | Leaf::StartsWith(_)
+            )
+    }
+
+    /// [`Self::atom_source`] を値索引の並び（`val, record_int`）で読む形（検証 2-D-P2-1）。
+    ///
+    /// 取込直後でパーティションの統計が古い（空に近いときのまま）と、Postgres は範囲の候補集めに値索引を
+    /// 使わず（主キーの索引で列の全行を拾って値で落とす）、10 万行で 1 秒を超えていた。並びを値索引と同じに
+    /// し、読取の Tx では並べ替えを選ばせない（`enable_sort = off`・[`crate::query::run`]）ので、並びを作れる
+    /// 値索引の走査だけが選ばれ、統計の有無に関わらず値索引から範囲の端へシークする（プランナ耐性 SQL・
+    /// query-optimizer.md §6）。候補の集合は上限を超えなければ並びに依らず同じ（超えたら上限超過として扱う）
+    /// なので、結果は変わらない。
+    fn atom_source_ordered(&self, a: &Atom, sql: &mut SqlBuf) -> String {
+        let s = self.atom_source(a, sql);
+        sqlf!(sql, "{s} ORDER BY x.val, x.record_int")
+    }
+
     /// ソート値を引くスカラー部分問い合わせ（型はそのまま・text は `COLLATE "C"`）。
     pub(crate) fn sort_value_sql(&self, k: BSort, rec: &str, sql: &mut SqlBuf) -> String {
         let f = self.field(k.field);
@@ -423,7 +448,11 @@ impl Lowerer<'_> {
         limit: i64,
         sql: &mut SqlBuf,
     ) -> String {
-        let source = self.source_sql(src, sql);
+        let source = match src {
+            // 値索引の 1 項（範囲・等値・前方一致）は値索引の並びで読む（統計に依存しない）。
+            Source::Atom(a) if self.value_ordered(a) => self.atom_source_ordered(a, sql),
+            _ => self.source_sql(src, sql),
+        };
         let cap_sql = cap.map_or_else(String::new, |c| {
             let ph = sql.typed(Bind::I64(c + 1));
             sqlf!(sql, " LIMIT {ph}")
