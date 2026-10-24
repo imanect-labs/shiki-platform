@@ -178,7 +178,7 @@ shiki-admin retenant --from default --to acme --execute
 - 他テナントの識別子には触れない（移行元名前空間に属さないタプルは skipped として報告）。
 - **監査チェーンの注意**: audit_log の `entry_hash` は tenant_id を含んで計算されるため、
   リネーム**以前**の chained エントリは**旧 tenant_id で検証**する必要がある。CLI は
-  `tenant.retenant` エントリ（from/to 込み）を新テナントの chain へアンカーとして記録する。
+  `tenant.retenant` エントリ（from/to 込み）を、新テナントで連結行を持つ**各 org** の chain へアンカーとして記録する。
   チェーンの検証（`GET /org-audit/verify`・#828）はこの記録の `from` を読み、境目より前の行を
   旧 tenant_id で自動的に検証する。
 - **IdP の tenant 属性と group**: リネーム後、Keycloak ユーザーの `attributes.tenant` と group
