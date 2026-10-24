@@ -2,6 +2,9 @@
 
 use super::*;
 
+// RAG の設定（`SHIKI__RAG__*`）の読み込み。
+mod rag_config;
+
 #[test]
 fn both_tenancies_supported() {
     // SAAS.1（#84）で全隔離層が tenant_id スコープになり、multi は設定だけで運用可能
@@ -609,61 +612,6 @@ fn zero_llm_timeouts_are_rejected() {
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains(name), "{err}");
     }
-}
-
-#[test]
-fn empty_min_rerank_score_env_means_disabled() {
-    // compose は未設定を空文字で渡す（`${SHIKI__RAG__MIN_RERANK_SCORE:-}`）。空なら足切りしない。
-    let parsed: rag::RagConfig = figment::Figment::from(figment::providers::Serialized::defaults(
-        rag::RagConfig::default(),
-    ))
-    .merge(("min_rerank_score", ""))
-    .extract()
-    .unwrap();
-    assert_eq!(parsed.min_rerank_score, None);
-    let parsed: rag::RagConfig = figment::Figment::from(figment::providers::Serialized::defaults(
-        rag::RagConfig::default(),
-    ))
-    .merge(("min_rerank_score", "0.45"))
-    .extract()
-    .unwrap();
-    assert_eq!(parsed.min_rerank_score, Some(0.45));
-}
-
-#[test]
-fn rag_service_secrets_treat_empty_as_unset_and_never_serialize() {
-    // compose は未設定を空文字で渡す。空なら「未設定」（無認証で送り、起動時に警告する）。
-    let extract = |key: &str, value: &str| -> rag::RagConfig {
-        figment::Figment::from(figment::providers::Serialized::defaults(
-            rag::RagConfig::default(),
-        ))
-        .merge((key, value))
-        .extract()
-        .unwrap()
-    };
-    assert_eq!(extract("qdrant_api_key", "").qdrant_api_key, None);
-    assert_eq!(extract("worker_auth_token", "  ").worker_auth_token, None);
-    assert_eq!(
-        extract("qdrant_api_key", "k-1").qdrant_api_key.as_deref(),
-        Some("k-1")
-    );
-    assert_eq!(
-        extract("worker_auth_token", "t-1")
-            .worker_auth_token
-            .as_deref(),
-        Some("t-1")
-    );
-    // 秘密値は直列化に出さない（設定の直列化ダンプ経由の漏えいを防ぐ。`Debug` は対象外で、config を Debug 出力する箇所は無い）。
-    let cfg = rag::RagConfig {
-        qdrant_api_key: Some("k-secret".into()),
-        worker_auth_token: Some("t-secret".into()),
-        ..rag::RagConfig::default()
-    };
-    let json = serde_json::to_string(&cfg).unwrap();
-    assert!(
-        !json.contains("k-secret") && !json.contains("t-secret"),
-        "{json}"
-    );
 }
 
 #[test]
