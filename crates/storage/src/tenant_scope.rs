@@ -68,6 +68,8 @@ pub const RETENANT_SIDECAR_COMPLETE: &[&str] = &[
     // directory は role タプルを retenant が移送する。
     "directory_user",
     "directory_role",
+    // カスタム指示（#900）は本人の行だけで、FGA オブジェクトも索引も持たない。
+    "user_custom_instruction",
     // 監査チェーンとテナント台帳は retenant 本体が扱う（監査は旧 tenant_id で検証・docs 参照）。
     "audit_log",
     "tenant",

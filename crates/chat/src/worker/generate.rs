@@ -273,6 +273,10 @@ impl ChatWorker {
         opts.session_id = Some(run.thread_id.to_string());
         // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
         opts.tool_search.always_load.extend(tools_in_use);
+        // 本人のカスタム指示（#900）はプロファイルの基本指示の後、skill の指示文より**前**に置く
+        // （手順書の記述・発話ごとのツール指定・門の注記が後ろから優先される）。誘導のみで、
+        // ツール・承認・認可には触れない。
+        super::opts::append_system_section(&mut opts, self.custom_instructions_section(ctx).await);
         self.apply_skills(ctx, run, &skills, &mut opts, &mut history)
             .await?;
         // 発話ごとのツール指定（#734）は skill の指示文より**後ろ**に置く（手順書の記述に

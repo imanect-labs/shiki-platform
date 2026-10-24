@@ -128,6 +128,11 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/me/sessions/{id}", &["DELETE"], Session, || {
             delete(routes::me_security::sign_out_session)
         }),
+        // カスタム指示（設定 → パーソナライズ・本人の分だけ・#900。chat 無効では 503）。
+        r("/me/custom-instructions", &["GET", "PUT"], Session, || {
+            get(routes::me_custom_instructions::get_custom_instructions)
+                .put(routes::me_custom_instructions::put_custom_instructions)
+        }),
         // ChatGPT プランの接続（プレビュー環境の個人利用・#854。無効な環境では 404）。
         r("/me/chatgpt", &["GET", "DELETE"], Session, || {
             get(routes::me_chatgpt::get_chatgpt).delete(routes::me_chatgpt::disconnect_chatgpt)
