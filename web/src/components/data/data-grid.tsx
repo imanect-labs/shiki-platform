@@ -177,7 +177,30 @@ type Props = {
   fields?: readonly FieldDef[];
   /// FSM の状態の列（セルは「進める先」のメニューで開き、遷移 API を呼ぶ・2-C-P2-4）。
   fsm?: FsmInfo | null;
+  /// 購読で `schema.changed` を受けた（呼び出し側がテーブルのスキーマ・閲覧者の文脈を取り直す・§9.3）。
+  onSchemaChanged?: () => void;
 };
+
+/// 行の削除の同時実行数（多数の行を選んで消しても、ブラウザ・サーバへ一度に投げない）。
+const DELETE_CONCURRENCY = 6;
+
+/// `Promise.allSettled` と同じ結果を、同時実行を `limit` 件までに抑えて返す。
+async function settleLimited<T, R>(items: readonly T[], limit: number, f: (x: T) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
+  const out: PromiseSettledResult<R>[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      try {
+        out[i] = { status: "fulfilled", value: await f(items[i]) };
+      } catch (reason) {
+        out[i] = { status: "rejected", reason };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
 
 /// 自分の取込が終わった後も、取込の行の通知（要約・1 件ずつ）が遅れて届く間は「新しいレコード」と数えない。
 const OWN_IMPORT_GRACE_MS = 20_000;
@@ -235,11 +258,14 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     onAddRecord,
     fields,
     fsm,
+    onSchemaChanged,
   },
   ref,
 ) {
   const importingRef = React.useRef(importing);
   importingRef.current = importing;
+  const onSchemaChangedRef = React.useRef(onSchemaChanged);
+  onSchemaChangedRef.current = onSchemaChanged;
   /// 自分の取込が終わった時刻（終わった直後に遅れて届く取込の通知を「新しいレコード」と数えない）。
   const importEndedAt = React.useRef(0);
   const wasImporting = React.useRef(importing);
@@ -291,6 +317,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   const [newRows, setNewRows] = React.useState(0);
   /// 件数の分からない新着（件数を含まない一括取込の知らせ）がある。
   const [newRowsUncounted, setNewRowsUncounted] = React.useState(false);
+  /// 手元に無い新しい行の id（同じ行の再配信・更新を重ねて数えない）。
+  const newIds = React.useRef<Set<string>>(new Set());
   const hasNewRows = newRows > 0 || newRowsUncounted;
   const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set());
   const editorRef = React.useRef<DataEditorRef>(null);
@@ -491,9 +519,14 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         if (gen !== generation.current) return;
         const i = indexById.current.get(record.id);
         if (i === undefined) {
-          // 自分の取込で現れた行は数えない（取込が終われば読み直す）。
-          if (!ownImport()) setNewRows((n) => n + 1);
-          if (!derived) refreshCountSoon(gen);
+          if (derived) return;
+          // 作られたばかりの行（rev 1）だけを新しいレコードと数える。手元に無い既存の行（未読込の先の行）の
+          // 更新は数えない。自分の取込で現れた行も数えない（取込が終われば読み直す）。
+          if (record.rev === 1 && !ownImport() && !newIds.current.has(record.id)) {
+            newIds.current.add(record.id);
+            setNewRows(newIds.current.size);
+          }
+          refreshCountSoon(gen);
           return;
         }
         const cur = rows.current[i];
@@ -518,6 +551,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         if (gen !== generation.current) return;
         // 見えていた行が消えた（削除・権限の変更で不可視）: 手元に無い行でも件数には入っていた。
         refreshCountSoon(gen);
+        if (newIds.current.delete(record_id)) setNewRows(newIds.current.size);
         if (!indexById.current.has(record_id)) return;
         rows.current = rows.current.filter((r) => r.id !== record_id);
         rebuildIndex();
@@ -526,17 +560,16 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       },
       onReset: (reason) => {
         if (gen !== generation.current) return;
+        // スキーマが変わった: 列（追加・削除・読めない列）も取り直してもらう（行だけ読み直すと古い列のまま）。
+        if (reason === "schema_changed") onSchemaChangedRef.current?.();
         // 権限が変わった・テーブルが消えた: 見えなくなったかもしれない行を一瞬でも残さない。
         reset({ dropStale: reason === "authz_changed" || reason === "table_deleted" });
       },
-      onBulk: (count) => {
+      onBulk: () => {
         if (gen !== generation.current) return;
-        // 取込などでまとめて作られた行: 並び順の途中に差し込まず、件数だけ数えて「表示する」を出す。件数の無い
-        // 知らせ（見える件数は読み直さないと分からない）は「新しいレコードがあります」とだけ出す。
-        if (!ownImport()) {
-          if (count === null) setNewRowsUncounted(true);
-          else setNewRows((n) => n + count);
-        }
+        // 取込などでまとめて作られた行: 並び順の途中に差し込まず「新しいレコードがあります · 表示する」を出す
+        // （見える件数は読み直さないと分からない）。
+        if (!ownImport()) setNewRowsUncounted(true);
         refreshCountSoon(gen);
       },
       onAwareness: (a) => {
@@ -627,6 +660,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     setFailure(null);
     setNewRows(0);
     setNewRowsUncounted(false);
+    newIds.current.clear();
     // 読み直しの前の選択は新しい行と対応しないので外す（薄く残す直前の行に枠を残さない）。
     setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
     setInitial("loading");
@@ -1025,7 +1059,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
               latest = await getRecord(tableId, before.id);
               if (j !== undefined) rows.current[j] = latest;
             } catch {
-              if (j !== undefined) rows.current[j] = before;
+              if (j !== undefined && rows.current[j].rev <= before.rev) rows.current[j] = before;
             }
             // 相手が変えたのが別の列（この列は編集を始めた時の値のまま）なら、自分の値だけを最新の版に
             // もう一度書ける（相手の値は壊さない）。同じ列なら上書きになるので案内だけにする。
@@ -1064,7 +1098,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
               });
             }
           } else {
-            if (j !== undefined) rows.current[j] = before;
+            // 入力を元に戻す。ただし保存待ちの間に SSE で新しい版（他の人の更新）が届いていれば、それがサーバの
+            // 今の内容なので古い版で上書きしない。
+            if (j !== undefined && rows.current[j].rev <= before.rev) rows.current[j] = before;
             const recomputing = e instanceof DataApiError ? e.derivedRecomputing : null;
             const labelOf = (key: string) => columns.find((x) => x.key === key)?.label ?? key;
             // 重複した列はサーバが名指しする（読める列だけ・無ければ今書いた列）。
@@ -1168,7 +1204,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   const [confirmDelete, setConfirmDelete] = React.useState<DataRecord[] | null>(null);
   const deleteRecords = async (targets: DataRecord[]) => {
     const gen = generation.current;
-    const results = await Promise.allSettled(targets.map((r) => deleteRecord(tableId, r.id, r.rev)));
+    const results = await settleLimited(targets, DELETE_CONCURRENCY, (r) => deleteRecord(tableId, r.id, r.rev));
     if (gen !== generation.current) return;
     const gone = new Set<string>();
     let conflicts = 0;

@@ -90,11 +90,14 @@ export function useImportJob(tableId: string): ImportJob {
   const [status, setStatus] = React.useState<BulkImportStatus | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [starting, setStarting] = React.useState(false);
+  /// 進捗の取得に失敗した回数（状態が変わらなくてもポーリングを続けるための再登録の契機・間隔を延ばす）。
+  const [failures, setFailures] = React.useState(0);
 
   React.useEffect(() => {
     setImportId(readStored(tableId));
     setStatus(null);
     setError(null);
+    setFailures(0);
   }, [tableId]);
 
   React.useEffect(() => {
@@ -106,6 +109,7 @@ export function useImportJob(tableId: string): ImportJob {
         if (active) {
           setStatus(s);
           setError(null);
+          setFailures(0);
         }
       } catch (e) {
         if (!active) return;
@@ -115,16 +119,19 @@ export function useImportJob(tableId: string): ImportJob {
           setImportId(null);
           setStatus(null);
         } else {
+          // 一時的な失敗（サーバの再起動中の 503 など）: 止めずに間隔を延ばして取り直す。
           setError(e instanceof Error ? e.message : String(e));
+          setFailures((n) => n + 1);
         }
       }
     };
-    const t = window.setTimeout(tick, status ? POLL_MS : 0);
+    const delay = failures ? Math.min(POLL_MS * 2 ** failures, 30_000) : status ? POLL_MS : 0;
+    const t = window.setTimeout(tick, delay);
     return () => {
       active = false;
       window.clearTimeout(t);
     };
-  }, [importId, status, tableId]);
+  }, [importId, status, tableId, failures]);
 
   const start = React.useCallback(
     async (file: File, opts: { indexMode: BulkIndexMode; abortOnInvalid: boolean }) => {

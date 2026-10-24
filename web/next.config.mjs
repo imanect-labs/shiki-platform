@@ -28,6 +28,9 @@ const nextConfig = {
     // 配列で返す既定（afterFiles）は動的ルートより先に効くため、/api/data/tables/[id]/stream などの
     // 中継（上流の切断を伝える・大きな取込を 413 で断る）が素通しに奪われていた。
     return {
+      // WebSocket（共同編集の /api/collab/docs/{id}/ws）は route handler では受けられない。catch-all の
+      // /api/[...path] が先に一致すると upgrade が切られるので、ファイルより先に素通しする。
+      beforeFiles: [{ source: "/api/collab/:path*", destination: `${backendOrigin}/collab/:path*` }],
       fallback: [
         // フロントの API 呼び出し（/api/me 等）→ shiki-server のルート（/me 等）。
         { source: "/api/:path*", destination: `${backendOrigin}/:path*` },

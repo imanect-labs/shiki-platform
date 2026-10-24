@@ -50,6 +50,16 @@ export default function DataTablePage({ params }: { params: Promise<{ id: string
       .catch(() => undefined);
   }, [id]);
 
+  /// スキーマの改訂を受けたとき: 列（追加・削除・読めない列）と閲覧者の文脈を取り直す（失敗しても今の表示は保つ）。
+  const reloadSchema = React.useCallback(() => {
+    Promise.all([getTable(id), getViewerContext(id)])
+      .then(([t, v]) => {
+        setTable(t);
+        setViewer(v);
+      })
+      .catch(() => undefined);
+  }, [id]);
+
   React.useEffect(() => {
     let active = true;
     setError(null);
@@ -81,6 +91,7 @@ export default function DataTablePage({ params }: { params: Promise<{ id: string
         views={views}
         onTableChanged={setTable}
         onViewsChanged={reloadViews}
+        onSchemaStale={reloadSchema}
       />
     </React.Suspense>
   );

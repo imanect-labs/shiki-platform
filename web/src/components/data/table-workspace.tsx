@@ -127,12 +127,15 @@ export function TableWorkspace({
   views,
   onTableChanged,
   onViewsChanged,
+  onSchemaStale,
 }: {
   table: DataTable;
   viewer: TableViewerContext;
   views: DataViewSummary[];
   onTableChanged: (t: DataTable) => void;
   onViewsChanged: () => void;
+  /// 他の人がスキーマを改訂した（購読の `schema.changed`）: テーブルと閲覧者の文脈を取り直す。
+  onSchemaStale?: () => void;
 }) {
   const me = useMe();
   const router = useRouter();
@@ -686,6 +689,7 @@ export function TableWorkspace({
               onAddRecord={() => setRecordOpen(true)}
               fields={readableFields}
               fsm={fsm}
+              onSchemaChanged={onSchemaStale}
             />
           )
         ) : spec.kind === "kanban" ? (
