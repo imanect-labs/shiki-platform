@@ -571,6 +571,15 @@ export function withTense(d: ToolDescription, running: boolean, failed = false):
   return d.suru ? `${d.lead}${d.verb}しました` : `${d.lead}${d.verb}ました`;
 }
 
+/// 利用者が承認を却下して実行しなかった操作の文言（失敗とは言わない・3-A-8）。
+/// 「テーブル「経費」のレコードの追加を却下しました」のように、対象と動詞を名詞句にして述べる。
+export function rejectedLabel(d: ToolDescription): string {
+  // 前置きの末尾の「を」を「の」に換えて「〈対象〉の〈動詞〉を却下しました」にする（サ変名詞のときだけ。
+  // 和語の連用形は名詞句にならないので「〈前置き〉〈動詞〉操作を却下しました」と言う）。
+  if (d.suru && d.lead.endsWith("を")) return `${d.lead.slice(0, -1)}の${d.verb}を却下しました`;
+  return `${d.lead}${d.verb}${d.suru ? "する" : ""}操作を却下しました`;
+}
+
 const CATEGORY_PHASE: Record<ToolCategory, string> = {
   search: "検索しています",
   browse: "ページを読んでいます",
