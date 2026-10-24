@@ -141,7 +141,7 @@ test("続きの読み込み位置が使えなくなったら、空行のまま�
   expect(queries).toBeGreaterThanOrEqual(3);
 });
 
-test("取込の知らせは件数の有無どちらでも受け、空のテーブルを開いていれば読み直して行を出す（3-A-7）", async ({ page }) => {
+test("取込の知らせ（件数を含まない）で、空のテーブルなら読み直して行を出し、行があれば知らせを出す（3-A-7）", async ({ page }) => {
   await loginViaKeycloak(page);
   // 1. 空のテーブル: 件数を添えない取込の知らせで、「まだレコードがありません」のまま止まらず読み直す。
   const empty = await seedTable(page, 0);
@@ -168,13 +168,13 @@ test("取込の知らせは件数の有無どちらでも受け、空のテー�
   await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "1", { timeout: 15_000 });
   await expect(page.getByTestId("data-grid-empty")).toBeHidden();
 
-  // 2. 行のあるテーブル: 件数の付いた知らせは件数を、件数の無い知らせは「以上」を添えて出す。
+  // 2. 行のあるテーブル: 知らせは件数を含まない（見える件数は読み直さないと分からない・data-platform §9.3）ので、
+  //    件数を出さずに「新しいレコードがあります」と知らせる。繋ぎ直しで重ねて受けても同じ。
   const full = await seedTable(page, 1);
   let n = 0;
   await page.route(new RegExp(`/api/data/tables/${full.tableId}/stream`), async (route) => {
     n += 1;
-    // 1 回目は件数を添える古いサーバの形、2 回目は件数を含めない今の形（`{table_id}`）。
-    const event = n === 1 ? `{"count":2}` : JSON.stringify({ table_id: full.tableId });
+    const event = JSON.stringify({ table_id: full.tableId });
     await route.fulfill({
       status: 200,
       headers: { "content-type": "text/event-stream" },
@@ -184,8 +184,8 @@ test("取込の知らせは件数の有無どちらでも受け、空のテー�
   await page.goto(`/data/${full.tableId}`);
   await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "1");
   const banner = page.getByTestId("data-grid-new-rows");
-  await expect(banner).toHaveText(/新しいレコード 2 件 · 表示する/);
-  // 繋ぎ直し（非表示 → 表示）で件数の無い知らせを受ける。
+  await expect(banner).toHaveText(/新しいレコードがあります · 表示する/);
+  // 繋ぎ直し（非表示 → 表示）でもう一度知らせを受ける。
   const setVisibility = (state: "hidden" | "visible") =>
     page.evaluate((s) => {
       Object.defineProperty(document, "visibilityState", { configurable: true, get: () => s });
@@ -193,7 +193,7 @@ test("取込の知らせは件数の有無どちらでも受け、空のテー�
     }, state);
   await setVisibility("hidden");
   await setVisibility("visible");
-  await expect(banner).toHaveText(/新しいレコード 2 件以上 · 表示する/);
+  await expect(banner).toHaveText(/新しいレコードがあります · 表示する/);
   await banner.click();
   await expect(banner).toBeHidden();
 });
