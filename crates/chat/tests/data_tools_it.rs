@@ -163,7 +163,7 @@ struct Fixture {
     carol_row: Uuid,
 }
 
-/// alice が経費テーブルを作り、bob（一般）・carol（経理）を viewer にする。dave は何も持たない。
+/// alice（経理）が経費テーブルを作り、bob（一般）・carol（経理）を viewer にする。dave は何も持たない。
 async fn fixture(pool: PgPool, fga: Arc<dyn AuthzClient>) -> Fixture {
     let tenant = format!("t-{}", Uuid::new_v4());
     let alice = ctx(&tenant, "alice");
@@ -200,13 +200,16 @@ async fn fixture(pool: PgPool, fga: Arc<dyn AuthzClient>) -> Fixture {
         .await
         .expect("viewer");
     }
-    fga.write_tuple(
-        &ctx(&tenant, "carol").subject(),
-        Relation::Member,
-        &ns.role("keiri"),
-    )
-    .await
-    .expect("keiri");
+    // 読めない列へは書けない（PIT-19）ので、社外秘メモを入れる alice も keiri にする。
+    for who in ["carol", "alice"] {
+        fga.write_tuple(
+            &ctx(&tenant, who).subject(),
+            Relation::Member,
+            &ns.role("keiri"),
+        )
+        .await
+        .expect("keiri");
+    }
     let mut carol_row = Uuid::nil();
     for (applicant, amount, status) in [
         ("alice", 100, "承認待ち"),

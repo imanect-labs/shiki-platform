@@ -748,6 +748,24 @@ async fn org_admin_data_routes_require_org_admin() {
     assert_eq!(s, StatusCode::OK, "{b}");
     assert!(b["unit_costs"]["c_probe"].as_f64().unwrap() > 0.0, "{b}");
     assert!(b.get("calibration").is_some());
+    // 組織管理者でもテーブルの viewer でなければ、テーブルの報告・固定計画は「見つからない」
+    // （管理者権限は閲覧権を含意しない・アンビエント権限の禁止・B-P3-6）。
+    for r in [
+        get("admin", &opt),
+        put_json("admin", &opt, &json!({ "fixed_plan": true })),
+    ] {
+        let (s, _) = send(&env, r).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+    let admin = ctx("admin");
+    env.fga
+        .write_tuple(
+            &admin.subject(),
+            Relation::Viewer,
+            &admin.ns().data_table(&t.id.to_string()),
+        )
+        .await
+        .unwrap();
     // テーブルの報告と固定計画（監査に残る）。
     let (s, b) = send(&env, get("admin", &opt)).await;
     assert_eq!(s, StatusCode::OK, "{b}");
