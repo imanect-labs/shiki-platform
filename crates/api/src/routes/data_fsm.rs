@@ -177,7 +177,7 @@ pub async fn get_fsm(
         (status = 200, description = "遷移後のレコード", body = DataRecord),
         (status = 400, description = "定義外の遷移・FSM 未設定・status 欠落", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
-        (status = 403, description = "actor 述語を満たさない"),
+        (status = 403, description = "actor 述語を満たさない（本文なし）・状態の列が読めない（code=field_unavailable）", body = crate::error_body::ForbiddenBody),
         (status = 404, description = "テーブル/レコードが存在しない（不可視を含む）"),
         (status = 409, description = "rev 不一致（同時更新・code=rev_conflict・current_rev）", body = crate::error_body::ConflictBody),
     ),

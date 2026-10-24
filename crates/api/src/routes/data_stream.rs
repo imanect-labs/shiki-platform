@@ -48,7 +48,8 @@ pub struct StreamQuery {
 pub struct AwarenessRequest {
     /// 指しているレコード（`null` は離脱）。本人に見えない行は 404。
     pub record_id: Option<Uuid>,
-    /// 指している列の参照名（マスク列は 403）。
+    /// 指している列の参照名。存在しない列と読めない（マスク）列は同じ 403（`code=field_unavailable`・
+    /// 列の存在オラクルを作らない）。
     pub field: Option<String>,
 }
 
@@ -146,9 +147,9 @@ pub async fn stream_records(
     request_body = AwarenessRequest,
     responses(
         (status = 204, description = "受け付けた"),
-        (status = 400, description = "存在しない列"),
+        (status = 400, description = "本文（JSON）を読めない", body = crate::error_body::RequestErrorBody),
         (status = 401, description = "未認証"),
-        (status = 403, description = "viewer でない・マスク列"),
+        (status = 403, description = "viewer でない（本文なし）・存在しない列か読めない列を指した（code=field_unavailable）", body = crate::error_body::ForbiddenBody),
         (status = 404, description = "テーブル・レコードが（本人に）存在しない"),
     ),
     security(("session" = [])),
