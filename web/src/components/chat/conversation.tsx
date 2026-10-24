@@ -450,8 +450,9 @@ export function Conversation({
             : { ...s, tools };
         }),
       // 承認モードのクランプ（org 禁止・他人による緩和）は明示的に知らせる（黙って降格しない・#350）。
+      // 承認待ちが多すぎて操作を実行しなかったことも同じ枠で知らせる（ツールの表示は「却下」になるため）。
       onFailureRecovery: (r) => {
-        if (r.action === "mode_clamped") setNotice(r.detail);
+        if (r.action === "mode_clamped" || r.action === "approval_overloaded") setNotice(r.detail);
       },
       onStatus: (status: RunStatus) => {
         if (status === "cancelled") setError("生成をキャンセルしました。");
