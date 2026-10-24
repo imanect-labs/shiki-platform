@@ -5,11 +5,18 @@
 /// 画面は Yui の ```ui ブロックを含む Markdown。ボタンの実行先（`-> workflow 名前`）は、ここで
 /// 束ねたワークフローの名前からだけ選べる（保存時にサーバーが確かめる）。ワークフローとスキルは
 /// 選んだ時点の版で固定する。
+///
+/// 画面は「組み立てる」（ドラッグ＆ドロップ・screen-builder.tsx）・「書く」（記法）・「プレビュー」の
+/// どれでも直せる。正本はどれも同じ Markdown で、組み立てるのチェッカーにエラーがある間は保存しない。
 
 import * as React from "react";
+import dynamic from "next/dynamic";
 import { Loader2, Plus, X } from "lucide-react";
 
+import type { WorkflowChoice } from "@imanect/yui/editor";
+
 import type { MiniAppBody } from "@/generated/gui-spec";
+import type { ScreenValidity } from "@/components/artifacts/screen-builder";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,7 +36,9 @@ import {
   type ArtifactMeta,
   type MiniAppVersion,
 } from "@/lib/artifact-api";
+import { inputHints } from "@/lib/miniapp/workflow-inputs";
 import { cn } from "@/lib/utils";
+import { getWorkflowVersion } from "@/lib/workflow-api";
 
 type Pin = MiniAppBody["workflows"][number];
 
@@ -50,6 +59,24 @@ function templateScreen(workflow: string): string {
 }
 
 const FIELD = "block text-xs font-medium text-foreground/70";
+// 組み立てる（Yui のエディタ）はダイアログを開いたときだけ読む（一覧・実行画面の最初の読み込みを重くしない）
+const ScreenBuilder = dynamic(() => import("@/components/artifacts/screen-builder").then((m) => m.ScreenBuilder), {
+  ssr: false,
+  loading: () => (
+    <div className="flex min-h-64 items-center justify-center rounded-lg border border-border/60 text-sm text-muted-foreground">
+      <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
+      読み込み中…
+    </div>
+  ),
+});
+
+type Tab = "build" | "write" | "preview";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "build", label: "組み立てる" },
+  { id: "write", label: "書く" },
+  { id: "preview", label: "プレビュー" },
+];
+
 const SELECT =
   "h-9 w-full rounded-lg border border-input bg-background px-3 text-base md:text-sm pointer-coarse:h-11 pointer-coarse:text-base";
 
@@ -71,7 +98,11 @@ export function MiniAppEditorDialog({
   const [name, setName] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [screen, setScreen] = React.useState("");
-  const [preview, setPreview] = React.useState(false);
+  const [tab, setTab] = React.useState<Tab>("build");
+  // 画面が外から変わったとき（雛形を入れた）に組み立てるを作り直すための印
+  const [builderKey, setBuilderKey] = React.useState(0);
+  const [validity, setValidity] = React.useState<ScreenValidity>({ errors: 0 });
+  const [inputs, setInputs] = React.useState<Record<string, WorkflowChoice["inputs"]>>({});
   const [skills, setSkills] = React.useState<ArtifactMeta[]>([]);
   const [workflows, setWorkflows] = React.useState<ArtifactMeta[]>([]);
   const [skillId, setSkillId] = React.useState("");
@@ -88,7 +119,8 @@ export function MiniAppEditorDialog({
     setSkillId(app?.body.skill?.artifact_id ?? "");
     setPins(app?.body.workflows ?? []);
     setWorkflowToAdd("");
-    setPreview(false);
+    setTab("build");
+    setValidity({ errors: 0 });
     setError(null);
     void listArtifacts("skill").then(setSkills).catch(() => setSkills([]));
     void listArtifacts("workflow").then(setWorkflows).catch(() => setWorkflows([]));
@@ -99,13 +131,35 @@ export function MiniAppEditorDialog({
     if (!w) return;
     setPins((prev) => [...prev, { alias: w.name, artifact_id: w.id, version: w.currentVersion }]);
     // 画面が空なら、選んだワークフローを起動する雛形を入れる（書き方の手がかり）。
-    setScreen((s) => (s.trim() ? s : templateScreen(w.name)));
+    setScreen((s) => {
+      if (s.trim()) return s;
+      setBuilderKey((k) => k + 1);
+      return templateScreen(w.name);
+    });
     setWorkflowToAdd("");
   };
 
+  // 束ねたワークフローの入力の定義（組み立てるで部品の候補と、足りない必須の入力を出すため）。
+  // 読めなくても組み立ては使える（候補が出ないだけ）。
+  React.useEffect(() => {
+    let alive = true;
+    for (const p of pins) {
+      if (inputs[p.alias] !== undefined) continue;
+      void getWorkflowVersion(p.artifact_id, p.version)
+        .then((w) => alive && setInputs((m) => ({ ...m, [p.alias]: inputHints(w.ir.input_schema) })))
+        .catch(() => alive && setInputs((m) => ({ ...m, [p.alias]: [] })));
+    }
+    return () => {
+      alive = false;
+    };
+  }, [pins, inputs]);
+  const choices = React.useMemo<WorkflowChoice[]>(() => pins.map((p) => ({ name: p.alias, inputs: inputs[p.alias] })), [pins, inputs]);
+  const onValidity = React.useCallback((v: ScreenValidity) => setValidity(v), []);
+  const blocked = tab === "build" && validity.errors > 0;
+
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (busy) return;
+    if (busy || blocked) return;
     const current = app?.body.skill;
     const skill = skills.find((s) => s.id === skillId);
     const body: MiniAppBody = {
@@ -139,11 +193,11 @@ export function MiniAppEditorDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92dvh] max-w-3xl overflow-y-auto">
+      <DialogContent className={cn("max-h-[92dvh] overflow-y-auto", tab === "build" ? "max-w-6xl" : "max-w-3xl")}>
         <DialogHeader>
           <DialogTitle>{editing ? "アプリを編集" : "アプリを作成"}</DialogTitle>
           <DialogDescription>
-            画面は Markdown と ```ui の図で書きます。ボタンの実行先は、下で束ねたワークフローの名前から選べます。
+            画面は「組み立てる」でドラッグして作るか、「書く」で Markdown と ```ui の図で書きます。ボタンの実行先は、下で束ねたワークフローから選べます。
           </DialogDescription>
         </DialogHeader>
 
@@ -231,24 +285,33 @@ export function MiniAppEditorDialog({
                 画面<span className="ml-0.5 text-destructive">*</span>
               </label>
               <div role="tablist" aria-label="画面の表示" className="flex gap-1 text-xs">
-                {(["書く", "プレビュー"] as const).map((label, i) => (
+                {TABS.map((x) => (
                   <button
-                    key={label}
+                    key={x.id}
                     type="button"
                     role="tab"
-                    aria-selected={preview === (i === 1)}
-                    onClick={() => setPreview(i === 1)}
+                    aria-selected={tab === x.id}
+                    onClick={() => setTab(x.id)}
                     className={cn(
-                      "rounded-md px-2 py-1 transition-colors",
-                      preview === (i === 1) ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground",
+                      "rounded-md px-2 py-1 transition-colors pointer-coarse:px-3 pointer-coarse:py-2",
+                      tab === x.id ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground",
                     )}
                   >
-                    {label}
+                    {x.label}
                   </button>
                 ))}
               </div>
             </div>
-            {preview ? (
+            {tab === "build" ? (
+              <ScreenBuilder
+                key={builderKey}
+                screen={screen}
+                onScreenChange={setScreen}
+                workflows={choices}
+                onValidity={onValidity}
+                onOpenSource={() => setTab("write")}
+              />
+            ) : tab === "preview" ? (
               <div className="min-h-64 rounded-lg border border-border px-6 py-4" data-testid="miniapp-preview">
                 {screen.trim() ? (
                   <Markdown>{screen}</Markdown>
@@ -297,7 +360,12 @@ export function MiniAppEditorDialog({
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
               キャンセル
             </Button>
-            <Button type="submit" disabled={busy}>
+            {blocked ? (
+              <span className="mr-auto self-center text-xs text-destructive" role="status">
+                組み立てるに直す必要のある箇所が {validity.errors} 件あります
+              </span>
+            ) : null}
+            <Button type="submit" disabled={busy || blocked}>
               {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
               {editing ? "保存" : "作成"}
             </Button>
