@@ -46,6 +46,10 @@ impl ChatWorker {
         // 直近ユーザー発話で事前検索し、文脈注入＋引用イベント。
         let query = history.last().map(message_preview).unwrap_or_default();
         let mut system = self.config.system_prompt.clone();
+        // 本人のカスタム指示（#900）は skill の指示文より前（エージェント経路と同じ順）。
+        if let Some(section) = self.custom_instructions_section(ctx).await {
+            system.push_str(&section);
+        }
         for skill in &skills {
             skill.apply_system(&mut system);
             skill.audit_apply(&self.db, ctx, run).await;

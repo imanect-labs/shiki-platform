@@ -9,6 +9,7 @@
 
 mod approval;
 mod autonomous;
+mod custom_instructions;
 mod feedback;
 mod message_view;
 mod post;

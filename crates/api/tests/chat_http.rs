@@ -1149,3 +1149,127 @@ async fn chat_thread_rename_pin_delete_over_http() {
         .iter()
         .any(|t| t["id"] == tid.as_str()));
 }
+
+/// カスタム指示（#900）: 本人の分の読み書き・上限超過の 400（画面へ出す `detail` 付き）・
+/// 未認証 401・CSRF 無しの書き込み拒否・chat 無効の 503。
+#[tokio::test]
+async fn custom_instructions_round_trip_over_http() {
+    let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let (cookie, csrf) = login(&sessions, "sid-custom-instr").await;
+    let app = build_router(state);
+    let put = |body: serde_json::Value, with_csrf: bool| {
+        let mut req = Request::builder()
+            .method("PUT")
+            .uri("/me/custom-instructions")
+            .header(COOKIE, &cookie)
+            .header("content-type", "application/json");
+        if with_csrf {
+            req = req.header("x-csrf-token", csrf);
+        }
+        req.body(Body::from(body.to_string())).unwrap()
+    };
+    let get = || {
+        Request::builder()
+            .uri("/me/custom-instructions")
+            .header(COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // 未認証は 401。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/me/custom-instructions")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // 保存（前後の空白を整えた値が返り、読み直しても同じ）。
+    let resp = app
+        .clone()
+        .oneshot(put(
+            serde_json::json!({ "about": "  法人営業  ", "style": "結論を先に", "tone": "formal" }),
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let saved = body_json(resp).await;
+    assert_eq!(
+        saved,
+        serde_json::json!({ "about": "法人営業", "style": "結論を先に", "tone": "formal" })
+    );
+    let resp = app.clone().oneshot(get()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await, saved);
+
+    // CSRF 無しの書き込みは通らない（値も変わらない）。
+    let resp = app
+        .clone()
+        .oneshot(put(serde_json::json!({ "about": "上書き" }), false))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // 上限超過は 400 で、画面へ出す文言を `detail` に載せる（値は変わらない）。
+    let resp = app
+        .clone()
+        .oneshot(put(
+            serde_json::json!({ "about": "あ".repeat(1501), "tone": "default" }),
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let detail = body_json(resp).await["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(detail.contains("1500 文字以内"), "{detail}");
+    // 未知の口調は受け付けない。
+    let resp = app
+        .clone()
+        .oneshot(put(serde_json::json!({ "tone": "loud" }), true))
+        .await
+        .unwrap();
+    assert!(resp.status().is_client_error(), "{}", resp.status());
+    let resp = app.clone().oneshot(get()).await.unwrap();
+    assert_eq!(body_json(resp).await, saved);
+
+    // 全部空にすると未設定に戻る（欠けたフィールドは空の既定値）。
+    let resp = app
+        .clone()
+        .oneshot(put(serde_json::json!({}), true))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let empty = serde_json::json!({ "about": "", "style": "", "tone": "default" });
+    assert_eq!(body_json(resp).await, empty);
+    let resp = app.oneshot(get()).await.unwrap();
+    assert_eq!(body_json(resp).await, empty);
+
+    // chat 無効なら 503。
+    let Some((state, sessions)) = build_state(false).await else {
+        return;
+    };
+    let (cookie, _) = login(&sessions, "sid-custom-instr-off").await;
+    let resp = build_router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/me/custom-instructions")
+                .header(COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
