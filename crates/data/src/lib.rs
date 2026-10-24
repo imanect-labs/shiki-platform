@@ -72,6 +72,7 @@ mod record_effects;
 mod record_list;
 mod record_share;
 mod record_update;
+mod ref_id;
 mod revision;
 mod schema;
 mod schema_cache;

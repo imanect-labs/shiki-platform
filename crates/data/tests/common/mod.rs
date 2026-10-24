@@ -84,11 +84,9 @@ pub struct FixedResolver;
 #[async_trait]
 impl RefResolver for FixedResolver {
     async fn user_exists(&self, _: &AuthContext, id: &str) -> Result<bool, String> {
-        // alice / bob と、大量データの合成ユーザー `u{n}`（common::bulk・common::synth）がディレクトリに居る。
-        let synthetic = id
-            .strip_prefix('u')
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-        Ok(matches!(id, "alice" | "bob") || synthetic)
+        // ディレクトリに居るのは alice / bob だけ。大量データの合成ユーザー `u{n}`（common::bulk・
+        // common::synth）は居ない（退職者と同じ扱い）が、絞り込みは ID の形式だけを見るので比較値に使える。
+        Ok(matches!(id, "alice" | "bob"))
     }
     async fn role_exists(&self, _: &AuthContext, id: &str) -> Result<bool, String> {
         Ok(id == "sales")

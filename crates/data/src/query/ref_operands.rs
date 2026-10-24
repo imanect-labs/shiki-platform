@@ -1,96 +1,114 @@
-//! ユーザー・部署（`user_ref` / `role_ref`）の列の比較値の型検査（検証 2-A-P2-3）。
+//! ユーザー・部署（`user_ref` / `role_ref`）の列の比較値の形式の検査（検証 2-A-P2-3）。
 //!
-//! 比較値は**ユーザー・ロールの ID**。表示名（「山田 太郎」）や存在しない ID で絞ると、黙って 0 件になって
-//! 利用者は誤りに気付けない。束縛（型・マスク・存在しない列の拒否）の後で、等値・`in` の比較値が
-//! テナントのディレクトリに居るかを確かめ、居なければ 400 `value_type_mismatch` にする（書込の検証と同じ
-//! 解決器・ディレクトリは利用者の選択肢として誰でも引けるので、存在の有無はオラクルにならない）。
+//! 比較値は**ユーザー・ロールの ID**。表示名（「山田 太郎」）で絞ると黙って 0 件になり、利用者は誤りに
+//! 気付けない。束縛（型・マスク・存在しない列の拒否）の後で、等値・`in` の比較値が書込と同じ ID の形式
+//! （[`crate::ref_id`]）かを確かめ、合わなければ 400 `value_type_mismatch` にする。
+//!
+//! **存在は確かめない**: 退職者などディレクトリから消えた人の ID で過去の行を絞り込むのは正当な使い方。
+//! ディレクトリを引かないので、他テナントはもちろん自テナントの在籍の有無も応答から分からない。
+//! 部署の ID は空白や非 ASCII を含み得るため、部署の表示名は形式だけでは弾けないことがある（`ref_id` 参照）。
 //! リンク先の条件（`link`）の中は参照先のスキーマで束縛されるので対象外。
 
-use std::collections::BTreeSet;
-
-use authz::AuthContext;
 use serde_json::Value;
 
 use crate::model::{FieldType, TableSchema};
 use crate::query::ir::{CondOp, Condition};
-use crate::store::DataStore;
+use crate::ref_id::{is_role_id, is_user_id};
 use crate::{DataError, InvalidCode};
 
-/// 1 クエリで確かめる値の上限（条件の葉の上限 × `in` の上限より十分小さい・超えた分は確かめない）。
-const MAX_CHECKED: usize = 64;
-
-fn collect<'a>(
-    c: &'a Condition,
+/// 条件のユーザー・部署の比較値が ID の形式かを確かめる（合わなければ 400 `value_type_mismatch`）。
+pub(crate) fn check_ref_operands(
     schema: &TableSchema,
-    out: &mut BTreeSet<(&'a str, bool, &'a str)>,
-) {
+    filter: Option<&Condition>,
+) -> Result<(), DataError> {
+    match filter {
+        None => Ok(()),
+        Some(c) => check(c, schema),
+    }
+}
+
+fn check(c: &Condition, schema: &TableSchema) -> Result<(), DataError> {
     match c {
-        Condition::All(v) | Condition::Any(v) => v.iter().for_each(|x| collect(x, schema, out)),
-        Condition::Not(x) => collect(x, schema, out),
-        Condition::Link(_) => {}
+        Condition::All(v) | Condition::Any(v) => v.iter().try_for_each(|x| check(x, schema)),
+        Condition::Not(x) => check(x, schema),
+        Condition::Link(_) => Ok(()),
         Condition::Cmp(cmp) => {
             let Some(f) = schema.field(&cmp.field) else {
-                return;
+                return Ok(());
             };
-            if !matches!(f.field_type, FieldType::UserRef | FieldType::RoleRef) {
-                return;
-            }
+            let (is_id, what): (fn(&str) -> bool, &str) = match f.field_type {
+                FieldType::UserRef => (is_user_id, "ユーザー"),
+                FieldType::RoleRef => (is_role_id, "部署（ロール）"),
+                _ => return Ok(()),
+            };
             let vals: Vec<&Value> = match (cmp.op, &cmp.value) {
                 (CondOp::Eq | CondOp::Neq, Some(v)) => vec![v],
                 (CondOp::In, Some(Value::Array(a))) => a.iter().collect(),
                 _ => Vec::new(),
             };
-            for v in vals {
-                if let Some(s) = v.as_str() {
-                    out.insert((cmp.field.as_str(), f.field_type == FieldType::UserRef, s));
-                }
+            // 文字列でない値は束縛が型で拒否する。ここは文字列の形だけを見る。
+            if vals.iter().filter_map(|v| v.as_str()).all(is_id) {
+                return Ok(());
             }
+            let key = cmp.field.as_str();
+            Err(DataError::input_detail(
+                InvalidCode::ValueTypeMismatch,
+                Some(key),
+                format!("'{key}' の絞り込みは{what}の ID で指定してください（表示名では絞り込めません）"),
+            ))
         }
     }
 }
 
-impl DataStore {
-    /// 条件のユーザー・部署の比較値がディレクトリに居るかを確かめる（居なければ 400）。
-    pub(crate) async fn check_ref_operands(
-        &self,
-        ctx: &AuthContext,
-        schema: &TableSchema,
-        filter: Option<&Condition>,
-    ) -> Result<(), DataError> {
-        let Some(filter) = filter else {
-            return Ok(());
-        };
-        let mut vals = BTreeSet::new();
-        collect(filter, schema, &mut vals);
-        for (key, is_user, v) in vals.into_iter().take(MAX_CHECKED) {
-            let found = if is_user {
-                self.resolver.user_exists(ctx, v).await
-            } else {
-                self.resolver.role_exists(ctx, v).await
-            };
-            match found {
-                Ok(true) => {}
-                Ok(false) => {
-                    let what = if is_user {
-                        "ユーザー"
-                    } else {
-                        "部署（ロール）"
-                    };
-                    return Err(DataError::input_detail(
-                        InvalidCode::ValueTypeMismatch,
-                        Some(key),
-                        format!(
-                            "'{key}' の絞り込みは{what}の ID で指定してください（表示名・存在しない ID では絞り込めません）"
-                        ),
-                    ));
-                }
-                // ディレクトリに届かないときは絞り込みを止めない（結果は 0 件になり得るだけ・ログに残す）。
-                Err(e) => {
-                    tracing::warn!(error = %e, "絞り込みのユーザー・部署の確認に失敗（確かめずに続ける）");
-                    return Ok(());
-                }
-            }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::FieldDef;
+    use serde_json::json;
+
+    fn schema() -> TableSchema {
+        TableSchema {
+            fields: vec![
+                FieldDef::new("who", FieldType::UserRef),
+                FieldDef::new("dept", FieldType::RoleRef),
+                FieldDef::new("title", FieldType::Text),
+            ],
+            status_field: None,
+            row_policy: None,
+            field_policy: vec![],
+            aggregate_min_rows: None,
+            fsm_ref: None,
+            rag: None,
         }
-        Ok(())
+    }
+
+    fn code(f: &str, op: CondOp, v: Value) -> Option<InvalidCode> {
+        let c = Condition::cmp(f, op, Some(v));
+        check_ref_operands(&schema(), Some(&c))
+            .err()
+            .and_then(|e| e.invalid_code())
+    }
+
+    #[test]
+    fn well_formed_ids_pass_without_a_directory() {
+        // ディレクトリに居ない（退職した）人の ID も形式が正しければ通る。
+        assert_eq!(code("who", CondOp::Eq, json!("departed-42")), None);
+        assert_eq!(code("who", CondOp::In, json!(["alice", "u9"])), None);
+        assert_eq!(code("dept", CondOp::Neq, json!("acme/営業 第1部")), None);
+        assert_eq!(code("title", CondOp::Eq, json!("山田 太郎")), None);
+    }
+
+    #[test]
+    fn display_names_and_malformed_ids_are_rejected() {
+        let m = Some(InvalidCode::ValueTypeMismatch);
+        assert_eq!(code("who", CondOp::Eq, json!("山田 太郎")), m);
+        assert_eq!(code("who", CondOp::In, json!(["alice", "Taro Yamada"])), m);
+        assert_eq!(code("dept", CondOp::Eq, json!("role:sales")), m);
+        let nested = Condition::Not(Box::new(Condition::All(vec![Condition::cmp(
+            "who",
+            CondOp::Neq,
+            Some(json!("山田")),
+        )])));
+        assert!(check_ref_operands(&schema(), Some(&nested)).is_err());
     }
 }

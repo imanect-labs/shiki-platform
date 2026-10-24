@@ -334,10 +334,12 @@ async fn validate_field_value(
         }
         FieldType::UserRef => {
             let s = require_nonempty_str(v, name)?;
-            let ok = resolver
-                .user_exists(ctx, s)
-                .await
-                .map_err(DataError::Internal)?;
+            // ID の形式（絞り込みの比較値と同じ・crate::ref_id）に合わない値はディレクトリを引かずに弾く。
+            let ok = crate::ref_id::is_user_id(s)
+                && resolver
+                    .user_exists(ctx, s)
+                    .await
+                    .map_err(DataError::Internal)?;
             if !ok {
                 return Err(field_err(
                     InvalidCode::InvalidOption,
@@ -349,10 +351,11 @@ async fn validate_field_value(
         }
         FieldType::RoleRef => {
             let s = require_nonempty_str(v, name)?;
-            let ok = resolver
-                .role_exists(ctx, s)
-                .await
-                .map_err(DataError::Internal)?;
+            let ok = crate::ref_id::is_role_id(s)
+                && resolver
+                    .role_exists(ctx, s)
+                    .await
+                    .map_err(DataError::Internal)?;
             if !ok {
                 return Err(field_err(
                     InvalidCode::InvalidOption,
@@ -460,7 +463,7 @@ fn require_nonempty_str<'v>(v: &'v Value, name: &str) -> Result<&'v str, DataErr
             format!("'{name}' は文字列である必要があります"),
         )
     })?;
-    if s.is_empty() || s.len() > 256 {
+    if s.is_empty() || s.len() > crate::ref_id::MAX_REF_ID_BYTES {
         return Err(field_err(
             InvalidCode::InvalidInput,
             name,

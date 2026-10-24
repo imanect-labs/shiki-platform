@@ -3,7 +3,8 @@
 //! - 2-B-P1-1: `searchable` だけ（`indexed` でない）の列でも横断検索・`contains`・`ends_with` が使える
 //! - 2-A-P1-1 ①: 値の無い行がある列の必須化・使われている選択肢の削除は `schema_conflicts_with_data`
 //! - 2-A-P1-1 ②: 既存の不整合（ある列の必須の欠落）が別の列の更新を妨げない
-//! - 2-A-P2-3: ユーザー・部署の列の比較値は ID だけ（表示名・存在しない ID は `value_type_mismatch`）
+//! - 2-A-P2-3: ユーザー・部署の列の比較値は ID の形式だけ（表示名は `value_type_mismatch`・ディレクトリに
+//!   居ない退職者の ID では絞り込める）
 
 #![allow(
     clippy::unwrap_used,
@@ -324,11 +325,28 @@ async fn user_and_role_filters_take_ids_only() {
     };
     assert_eq!(run("who", CondOp::Eq, json!("alice")).await.unwrap(), 1);
     assert_eq!(run("dept", CondOp::Eq, json!("sales")).await.unwrap(), 1);
+    // ディレクトリに居ない ID も形式が正しければ絞り込める（存在は問わない・在籍の有無を応答に出さない）。
+    assert_eq!(
+        run("who", CondOp::In, json!(["alice", "nobody"]))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(run("who", CondOp::Neq, json!("nobody")).await.unwrap(), 1);
+    assert_eq!(
+        run("dept", CondOp::Eq, json!("acme/営業 第1部"))
+            .await
+            .unwrap(),
+        0
+    );
+    // 表示名・ID の形式に合わない値は 400（黙って 0 件にしない）。
     for (f, op, v) in [
         ("who", CondOp::Eq, json!("山田 太郎")),
-        ("who", CondOp::In, json!(["alice", "nobody"])),
-        ("who", CondOp::Neq, json!("nobody")),
-        ("dept", CondOp::Eq, json!("営業部")),
+        ("who", CondOp::Eq, json!("山田太郎")),
+        ("who", CondOp::In, json!(["alice", "Taro Yamada"])),
+        ("who", CondOp::Neq, json!(" alice")),
+        ("dept", CondOp::Eq, json!("role:sales")),
+        ("dept", CondOp::In, json!(["sales", "営業部 "])),
     ] {
         let r = run(f, op, v.clone()).await;
         assert_eq!(
@@ -337,6 +355,69 @@ async fn user_and_role_filters_take_ids_only() {
             "{f} {v}: {r:?}"
         );
     }
+}
+
+/// ディレクトリに carol も居る（在籍していたころ）の解決器。
+struct WithCarol;
+
+#[async_trait::async_trait]
+impl data::RefResolver for WithCarol {
+    async fn user_exists(&self, _: &authz::AuthContext, id: &str) -> Result<bool, String> {
+        Ok(matches!(id, "alice" | "bob" | "carol"))
+    }
+    async fn role_exists(&self, _: &authz::AuthContext, id: &str) -> Result<bool, String> {
+        Ok(id == "sales")
+    }
+    async fn file_readable(&self, _: &authz::AuthContext, _: uuid::Uuid) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+
+/// 2-A-P2-3 の追補: 退職してディレクトリから消えた人（carol）の ID で、在籍中に書かれた行を絞り込める
+/// （書込はディレクトリに居ることを確かめるが、絞り込みは形式だけ）。
+#[tokio::test]
+async fn departed_user_ids_still_filter_their_records() {
+    let Some(pool) = setup().await else { return };
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let then = data::DataStore::new(
+        pool.clone(),
+        std::sync::Arc::new(common::AllowAll),
+        std::sync::Arc::new(WithCarol),
+    );
+    let mut who = field("who", FieldType::UserRef);
+    who.indexed = true;
+    let t = create_table(
+        &then,
+        &c,
+        "退職者の行",
+        schema(vec![field("title", FieldType::Text), who]),
+    )
+    .await;
+    for (title, who) in [("a", "carol"), ("b", "alice"), ("c", "carol")] {
+        then.create_record(&c, t.id, json!({"title": title, "who": who}), None)
+            .await
+            .unwrap();
+    }
+    // いまのディレクトリ（carol は居ない）。新しく carol を書くことはできない。
+    let now = store_with(pool);
+    let w = now
+        .create_record(&c, t.id, json!({"title": "d", "who": "carol"}), None)
+        .await;
+    assert_eq!(code_of(&w), Some(InvalidCode::InvalidOption), "{w:?}");
+    let q = DataQuery {
+        filter: Some(Condition::cmp("who", CondOp::Eq, Some(json!("carol")))),
+        ..DataQuery::default()
+    };
+    let r = now.run_query(&c, t.id, &q, None).await.unwrap();
+    let mut titles: Vec<String> = r
+        .items
+        .unwrap_or_default()
+        .iter()
+        .map(|x| x.data["title"].as_str().unwrap().to_string())
+        .collect();
+    titles.sort();
+    assert_eq!(titles, ["a", "c"]);
 }
 
 /// 2-D-P2-1: 取込の完了時に、行が入ったパーティションの Postgres の統計を取り直す（取込の前の「空に近い」
