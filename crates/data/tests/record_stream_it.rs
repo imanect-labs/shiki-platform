@@ -1141,6 +1141,84 @@ async fn revocation_stops_delivery_within_ttl_and_rest_is_immediate() {
     assert!(closed, "ロールの剥奪で購読ごと落ちる: {:?}", c.raw);
 }
 
+/// 一括取込の行は行ごとの可視性を判定せず、1 バッチの上限（`max_batch`）を超えても続けて読み、件数なしの
+/// 要約 1 件にまとめる（3 回目の検証 3-D-2: 500 件ずつ窓ごとに判定して 10 万行で 2 分かかっていた）。
+/// 要約は見える行が 1 件も無い購読者にも同じ形で届き、見えない行について件数を含めて何も漏らさない。
+#[tokio::test]
+async fn bulk_import_summary_skips_per_row_checks_and_reveals_no_count() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let fx = fixture(
+        pool,
+        authz,
+        StreamConfig {
+            max_batch: 4,
+            ..manual()
+        },
+    )
+    .await;
+    let mut sb = fx
+        .store
+        .subscribe_records(&fx.bob, fx.table, None, None)
+        .await
+        .unwrap();
+    let mut sc = fx
+        .store
+        .subscribe_records(&fx.carol, fx.table, None, None)
+        .await
+        .unwrap();
+    let (mut cb, mut cc) = (Client::default(), Client::default());
+    drain(&mut sb, &mut cb).await;
+    drain(&mut sc, &mut cc).await;
+    // bob には 1 件も見えない行（applicant = alice）。
+    let rows = (0..30)
+        .map(|i| BulkImportRow {
+            key: Some(format!("k{i}")),
+            data: json!({"applicant": "alice", "title": format!("hidden{i}")}),
+        })
+        .collect();
+    let import = fx
+        .store
+        .start_bulk_import(
+            &fx.alice,
+            fx.table,
+            rows,
+            BulkImportOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    fx.store
+        .run_bulk_import(&fx.alice.tenant_id, fx.table, import)
+        .await
+        .unwrap();
+    let evals = fx.store.stream_predicate_evaluations();
+    tick(&fx).await;
+    let (mb, _) = drain(&mut sb, &mut cb).await;
+    let (mc, _) = drain(&mut sc, &mut cc).await;
+    for (who, ms) in [("bob", &mb), ("carol", &mc)] {
+        let bulks: Vec<&StreamMessage> = ms
+            .iter()
+            .filter(|m| matches!(m.event, StreamEvent::BulkApplied(_)))
+            .collect();
+        assert_eq!(bulks.len(), 1, "{who}: 上限を超えても要約 1 件: {ms:?}");
+        assert_eq!(
+            bulks[0].event.data_json(),
+            json!({ "table_id": fx.table }),
+            "{who}: 件数・行・値を含まない"
+        );
+        assert!(upserts(ms).is_empty(), "{who}");
+    }
+    // 見える行が無い bob と、全部見える carol で同じ位置・同じ本文（区別がつかない）。
+    let last = |ms: &[StreamMessage]| ms.iter().filter_map(|m| m.id).max();
+    assert_eq!(last(&mb), last(&mc));
+    assert!(
+        fx.store.stream_predicate_evaluations() - evals <= 2,
+        "取込の行は行ごとに判定しない（ロール共通部のグループごとに 1 回まで）"
+    );
+}
+
 #[tokio::test]
 async fn bulk_import_transition_derived_schema_and_awareness_reach_subscribers() {
     let Some((pool, authz)) = setup().await else {
@@ -1178,25 +1256,26 @@ async fn bulk_import_transition_derived_schema_and_awareness_reach_subscribers()
         .unwrap();
     tick(&fx).await;
     let (ms, _) = drain(&mut s, &mut c).await;
-    // 取込の行は 1 件ずつ配らず、bob に見える行の数だけを records.bulk_applied にまとめる（検証 D-11）。
-    // 値は含まない・見えない行は数えない。
+    // 取込の行は 1 件ずつ配らず、records.bulk_applied にまとめる（検証 D-11）。行ごとの可視性は判定しない
+    // ので、件数・行 id・値を含めない（見えない行が何件取り込まれたかも漏らさない・3 回目の検証 3-D-2）。
     assert!(
         upserts(&ms).is_empty(),
         "取込の行は 1 件ずつ配らない: {:?}",
         c.raw.len()
     );
-    let bulk: u64 = ms
-        .iter()
-        .filter_map(|m| match &m.event {
-            StreamEvent::BulkApplied(e) => Some(e.count),
-            _ => None,
-        })
-        .sum();
-    assert_eq!(bulk, 10, "bob の行だけ数える");
-    assert!(ms
+    let bulks: Vec<&StreamMessage> = ms
         .iter()
         .filter(|m| matches!(m.event, StreamEvent::BulkApplied(_)))
-        .all(|m| m.id.is_some() && !m.event.data_json().to_string().contains("bulk0")));
+        .collect();
+    assert_eq!(bulks.len(), 1, "続く取込の行は要約 1 件: {:?}", c.raw);
+    for m in &bulks {
+        assert!(m.id.is_some());
+        assert_eq!(
+            m.event.data_json(),
+            json!({ "table_id": fx.table }),
+            "件数・行・値を含まない"
+        );
+    }
     // まとめた最後の位置まで進んでいる（Last-Event-ID で取込の行を取りこぼさない）。
     let last = ms.iter().filter_map(|m| m.id).max().unwrap();
     // 手元へは REST で取り直す（以降の awareness の確認に見える行を 1 件使う）。

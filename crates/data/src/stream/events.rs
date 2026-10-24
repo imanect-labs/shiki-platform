@@ -8,13 +8,14 @@
 //! event: schema.changed    id=<delivery_seq>   data={table_id, schema_version} 受けたら取り直す（接続は閉じる）
 //! event: stream.reset      id=<delivery_seq>   data={reason}                手元を捨てて再取得（接続は閉じる）
 //! event: awareness                              data={principal, record_id, field, at}  データを含まない
-//! event: records.bulk_applied id=<delivery_seq> data={count}               一括取込で見えるようになった行の数
+//! event: records.bulk_applied id=<delivery_seq> data={table_id}            一括取込で行が作られた（取り直す）
 //! event: keepalive                              data={at}                  15 秒ごと（途絶したら再接続する）
 //! ```
 //!
-//! **一括取込**（検証 D-11）: 取込が作った行は 1 件ずつの `record.upserted` ではなく、配信のまとまりごとに
-//! `records.bulk_applied`（購読者本人に見える行の数だけ・値を含まない）にまとめる。クライアントは件数を
-//! 案内して、利用者の操作で取り直す。`id` はまとめた最後の位置（`Last-Event-ID` で欠落なく再開できる）。
+//! **一括取込**（検証 D-11・3-D-2）: 取込が作った行は 1 件ずつの `record.upserted` ではなく、続く範囲ごとに
+//! `records.bulk_applied` 1 件にまとめる。行ごとの可視性は判定せず、**件数も値も含めない**（見えない行まで
+//! 数えた件数は、見えない行が何件取り込まれたかを漏らす）。クライアントは「取り込まれた」と案内して取り直す
+//! （見える行だけが返る）。`id` はまとめた最後の位置（`Last-Event-ID` で欠落なく再開できる）。
 //!
 //! # クライアントの冪等規則（at-least-once・§9.2）
 //!
@@ -89,10 +90,13 @@ pub struct AwarenessEvent {
     pub at: DateTime<Utc>,
 }
 
-/// 一括取込で購読者本人に見えるようになった行の数（値を含まない・取込の行を 1 件ずつ配らない）。
+/// 一括取込で行が作られた（**件数・行・値を含まない**・取込の行を 1 件ずつ配らない）。
+///
+/// 購読者ごとの可視性は判定していないので、受けたら取り直して見える行を確かめる。件数を載せないのは、
+/// 見えない行まで数えた件数が「見えない行が何件取り込まれたか」を漏らすため。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RecordsBulkAppliedEvent {
-    pub count: u64,
+    pub table_id: Uuid,
 }
 
 /// 接続が生きていることの通知（15 秒ごと・`at` はサーバの時刻）。途絶したらクライアントは繋ぎ直す。

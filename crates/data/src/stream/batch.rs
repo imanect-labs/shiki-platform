@@ -14,6 +14,21 @@ use crate::record::{RecordRow, RECORD_COLS};
 use crate::store::DataStore;
 use crate::{map_db, DataError};
 
+/// 1 回に読む一括取込の作成行の上限（判定しないので `max_batch` とは別に数える）。
+const MAX_BULK_ENTRIES: usize = 50_000;
+/// 一括取込の作成行が続く間、続けて読むときの 1 回の件数。
+const BULK_READ_CHUNK: i64 = 5_000;
+
+/// 一括取込が作った行（購読者ごとの判定をせず、件数なしの要約にまとめる）。
+fn is_bulk_create(e: &storage::event::StreamEntry) -> bool {
+    e.payload.get("change").and_then(Value::as_str) == Some(ChangeKind::Create.as_str())
+        && e.private_payload
+            .as_ref()
+            .and_then(|p| p.get("bulk"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
 /// ストリームの 1 件を解釈したもの。
 pub(super) struct Parsed {
     pub(super) seq: i64,
@@ -22,7 +37,7 @@ pub(super) struct Parsed {
     pub(super) rev: i64,
     pub(super) before: Option<usize>,
     pub(super) after: Option<usize>,
-    /// 一括取込が作った行（配信は `records.bulk_applied` にまとめる）。
+    /// 一括取込が作った行（配信は件数なしの `records.bulk_applied` にまとめる・判定しない）。
     pub(super) bulk: bool,
 }
 
@@ -145,14 +160,40 @@ impl DataStore {
             .acquire()
             .await
             .map_err(map_db)?;
-        let mut entries = storage::event::stream_entries_after(
-            &mut conn,
-            &self.stream_key(table.id),
-            min_cursor,
-            self.stream_config.max_batch,
-        )
-        .await
-        .map_err(st)?;
+        // 1 バッチで判定する件数は `max_batch` まで。一括取込の作成行は判定しない（購読者ごとの可視性を
+        // 見ずに件数なしの要約 1 件にまとめる・3 回目の検証 3-D-2）ので数えず、続けて読む（上限
+        // [`MAX_BULK_ENTRIES`]）。10 万行の取込を 500 件ずつ窓ごとに配ると 2 分かかっていた。
+        let stream = self.stream_key(table.id);
+        let max_batch = self.stream_config.max_batch.max(1);
+        let mut entries =
+            storage::event::stream_entries_after(&mut conn, &stream, min_cursor, max_batch)
+                .await
+                .map_err(st)?;
+        let mut judged = entries.iter().filter(|e| !is_bulk_create(e)).count();
+        let mut last_full = i64::try_from(entries.len()).unwrap_or(i64::MAX) >= max_batch;
+        while last_full
+            && i64::try_from(judged).unwrap_or(i64::MAX) < max_batch
+            && entries.len() < MAX_BULK_ENTRIES
+        {
+            let Some(after) = entries.last().map(|e| e.seq) else {
+                break;
+            };
+            let limit = max_batch.max(BULK_READ_CHUNK);
+            let more = storage::event::stream_entries_after(&mut conn, &stream, after, limit)
+                .await
+                .map_err(st)?;
+            last_full = i64::try_from(more.len()).unwrap_or(i64::MAX) >= limit;
+            for e in more {
+                if !is_bulk_create(&e) {
+                    if i64::try_from(judged).unwrap_or(i64::MAX) >= max_batch {
+                        last_full = false;
+                        break;
+                    }
+                    judged += 1;
+                }
+                entries.push(e);
+            }
+        }
         // 穴の手前まで（番号は連続のはず。穴はコミット待ちか保持期間の GC で、どちらも飛ばさない）。
         let first_seq = entries.first().map_or(0, |e| e.seq);
         if let Some(cut) = entries.windows(2).position(|w| w[1].seq != w[0].seq + 1) {
@@ -180,9 +221,11 @@ impl DataStore {
         .map_err(map_db)?;
         // 配った位置は新しい側へしか動かさない（スナップショットの古い行で巻き戻さない）。
         let awareness_at = Some(aw_rows.iter().map(|r| r.updated_at).fold(since, Ord::max));
+        // 一括取込の作成行は本体を引かない（判定しない・件数なしの要約にまとめる）。
         let mut ids: Vec<Uuid> = changes
             .iter()
             .filter(|r| !matches!(r.kind, ChangeKind::Schema | ChangeKind::Refresh))
+            .filter(|r| !(r.bulk && r.kind == ChangeKind::Create))
             .map(|r| r.record_id)
             .chain(aw_rows.iter().filter_map(|r| r.record_id))
             .collect();
@@ -199,6 +242,7 @@ impl DataStore {
             .map(|r| {
                 let after = match r.kind {
                     ChangeKind::Delete | ChangeKind::Schema | ChangeKind::Refresh => None,
+                    ChangeKind::Create if r.bulk => None,
                     _ => st.after(r.record_id),
                 };
                 let before = r.before.as_ref().and_then(|b| st.before(r.record_id, b));

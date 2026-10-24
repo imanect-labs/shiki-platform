@@ -1360,13 +1360,14 @@ GET /data/tables/{table_id}/stream?since=<delivery_seq>     (SSE)
 > event: schema.changed    id=<delivery_seq>   data={table_id, schema_version}  受けたら取り直す（接続は閉じる）
 > event: stream.reset      id=<delivery_seq>   data={reason}                    手元を捨てて再取得（reason = retention / authz_changed / refresh / overflow / table_deleted。接続は閉じる）
 > event: awareness                              data={principal, record_id, field, at}  データを含まない（§9.5）
-> event: records.bulk_applied id=<delivery_seq> data={count}                   一括取込で見えるようになった行の数（検証 D-11）
+> event: records.bulk_applied id=<delivery_seq> data={table_id}                一括取込で行が作られた（件数を含まない・取り直す・検証 D-11）
 > event: keepalive                              data={at}                        15 秒ごと（途絶したらクライアントが繋ぎ直す・検証 D-2）
 > ```
 >
-> - **一括取込の行は 1 件ずつ配らない**: 取込が作った行は、配信のまとまりごとに `records.bulk_applied`（購読者本人に
->   見える行の数だけ・値を含まない）にまとめる。`id` はまとめた最後の位置で、`Last-Event-ID` で欠落なく再開できる。
->   クライアントは件数を案内し、利用者の操作で取り直す。汎用の outbox consumer が読む payload は変えない
+> - **一括取込の行は 1 件ずつ配らない**: 取込が作った行は、ストリームの続く範囲ごとに `records.bulk_applied` 1 件に
+>   まとめる。行ごとの可視性は判定せず（10 万行で 2 分かかっていた）、**件数・行・値を含めない**（見えない行まで数えた
+>   件数は「見えない行が何件取り込まれたか」を漏らす）。`id` はまとめた最後の位置で、`Last-Event-ID` で欠落なく再開できる。
+>   クライアントは「取り込まれた」と案内し、利用者の操作で取り直す（見える行だけが返る）。汎用の outbox consumer が読む payload は変えない
 >   （ワークフロー・ミニアプリのトリガ・RAG は従来どおり 1 件ずつ受ける）。consumer は 1 回の claim を 500 件にして
 >   取込の直後の滞留を短くした（検証 D-14）
 > - `keepalive` はコメント行の keep-alive に加えて送る名前つきのイベント（ブラウザの EventSource はコメント行を読めない）

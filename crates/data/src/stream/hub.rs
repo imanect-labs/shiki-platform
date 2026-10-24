@@ -593,23 +593,25 @@ impl DataStore {
             let mut out: Vec<Out> = Vec::new();
             let mut terminal = false;
             let mut cursor = s.cursor;
-            // 一括取込の作成行は 1 件ずつ配らず、見える行の数だけを `records.bulk_applied` にまとめる
-            // （位置はまとめた最後の行・順序を保つため他のイベントの前で吐き出す・検証 D-11）。
-            let mut bulk: Option<(i64, u64)> = None;
-            let flush = |bulk: &mut Option<(i64, u64)>, out: &mut Vec<Out>| {
-                if let Some((seq, count)) = bulk.take() {
+            // 一括取込の作成行は 1 件ずつ配らず、続く範囲ごとに `records.bulk_applied` 1 件にまとめる
+            // （位置はまとめた最後の行・順序を保つため他のイベントの前で吐き出す・検証 D-11）。行ごとの
+            // 可視性は判定しない（3 回目の検証 3-D-2: 10 万行で 2 分かかっていた）。その代わり**件数も
+            // 行も含めない**: 購読者に見えない行まで数えた件数を送ると、見えない行が何件取り込まれたかが
+            // 分かる。購読者は取り直して（見える行だけが返る）確かめる。
+            let mut bulk: Option<i64> = None;
+            let flush = |bulk: &mut Option<i64>, out: &mut Vec<Out>| {
+                if let Some(seq) = bulk.take() {
                     out.push(Out::Msg(StreamMessage {
                         id: Some(seq),
-                        event: StreamEvent::BulkApplied(RecordsBulkAppliedEvent { count }),
+                        event: StreamEvent::BulkApplied(RecordsBulkAppliedEvent {
+                            table_id: table.id,
+                        }),
                     }));
                 }
             };
             for p in parsed.iter().filter(|p| p.seq > s.cursor) {
                 if p.bulk && p.kind == ChangeKind::Create {
-                    if vis(p.after) {
-                        let e = bulk.get_or_insert((p.seq, 0));
-                        *e = (p.seq, e.1 + 1);
-                    }
+                    bulk = Some(p.seq);
                     cursor = p.seq;
                     continue;
                 }
