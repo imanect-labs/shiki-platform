@@ -18,7 +18,7 @@ use crate::{
     GatewayError,
 };
 
-use super::require_app_table;
+use super::{app_table_stores, require_app_table};
 
 /// アプリへ見せるテーブルの最小メタデータ。
 #[derive(Debug, Serialize)]
@@ -104,9 +104,8 @@ pub(crate) async fn list_records(
     Path(table_id): Path<Uuid>,
     Query(q): Query<ListRecordsQuery>,
 ) -> Result<Json<GwRecordList>, GatewayError> {
-    require_app_table(&state, &ctx, table_id).await?;
-    let page = state
-        .caps
+    let app = app_table_stores(&state, &ctx, table_id).await?;
+    let page = app
         .data
         .list_records(
             &ctx.auth,
@@ -138,9 +137,8 @@ pub(crate) async fn create_record(
     Path(table_id): Path<Uuid>,
     Json(req): Json<CreateRecordRequest>,
 ) -> Result<Json<DataRecord>, GatewayError> {
-    require_app_table(&state, &ctx, table_id).await?;
-    let rec = state
-        .caps
+    let app = app_table_stores(&state, &ctx, table_id).await?;
+    let rec = app
         .data
         .create_record(&ctx.auth, table_id, req.data, None)
         .await?;
@@ -152,9 +150,8 @@ pub(crate) async fn get_record(
     Extension(ctx): Extension<GatewayCtx>,
     Path((table_id, record_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<DataRecord>, GatewayError> {
-    require_app_table(&state, &ctx, table_id).await?;
-    let rec = state
-        .caps
+    let app = app_table_stores(&state, &ctx, table_id).await?;
+    let rec = app
         .data
         .get_record(&ctx.auth, table_id, record_id, None)
         .await?;
@@ -175,9 +172,8 @@ pub(crate) async fn update_record(
     Path((table_id, record_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<UpdateRecordRequest>,
 ) -> Result<Json<DataRecord>, GatewayError> {
-    require_app_table(&state, &ctx, table_id).await?;
-    let rec = state
-        .caps
+    let app = app_table_stores(&state, &ctx, table_id).await?;
+    let rec = app
         .data
         .update_record(
             &ctx.auth,
@@ -202,10 +198,8 @@ pub(crate) async fn delete_record(
     Path((table_id, record_id)): Path<(Uuid, Uuid)>,
     Query(q): Query<DeleteRecordQuery>,
 ) -> Result<Json<Value>, GatewayError> {
-    require_app_table(&state, &ctx, table_id).await?;
-    state
-        .caps
-        .data
+    let app = app_table_stores(&state, &ctx, table_id).await?;
+    app.data
         .delete_record(&ctx.auth, table_id, record_id, q.expected_rev, None)
         .await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
@@ -218,14 +212,10 @@ pub(crate) async fn query(
     Path(table_id): Path<Uuid>,
     Json(raw): Json<Value>,
 ) -> Result<Json<QueryResult>, GatewayError> {
-    require_app_table(&state, &ctx, table_id).await?;
+    let app = app_table_stores(&state, &ctx, table_id).await?;
     // 最上位の未知のキー（綴り誤り）は黙って無視せず 400。
     let q = DataQuery::from_request(raw)?;
-    let result = state
-        .caps
-        .data
-        .run_query(&ctx.auth, table_id, &q, None)
-        .await?;
+    let result = app.data.run_query(&ctx.auth, table_id, &q, None).await?;
     Ok(Json(result))
 }
 
@@ -245,14 +235,12 @@ pub(crate) async fn transition_record(
     Path((table_id, record_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<TransitionRequest>,
 ) -> Result<Json<DataRecord>, GatewayError> {
-    require_app_table(&state, &ctx, table_id).await?;
+    let app = app_table_stores(&state, &ctx, table_id).await?;
     // rev の省略は現在の rev（呼出ユーザーの権限で読む・見えない行は読めず遷移もできない）。
     let expected_rev = match req.expected_rev {
         Some(rev) => rev,
         None => {
-            state
-                .caps
-                .data
+            app.data
                 .get_record(&ctx.auth, table_id, record_id, None)
                 .await?
                 .rev
@@ -260,8 +248,7 @@ pub(crate) async fn transition_record(
     };
     // テーブルにピンされた FSM をテーブルの editor として読み、当該行で遷移する（HTTP・ワークフローと
     // 同じ単一の入口・FsmStore::transition）。
-    let rec = state
-        .caps
+    let rec = app
         .fsms
         .transition(&ctx.auth, table_id, record_id, &req.to, expected_rev, None)
         .await?;
@@ -291,7 +278,7 @@ pub(crate) async fn stream_records(
     use axum::response::sse::{Event, KeepAlive, Sse};
     use axum::response::IntoResponse;
 
-    require_app_table(&state, &ctx, table_id).await?;
+    let app = app_table_stores(&state, &ctx, table_id).await?;
     let since = match headers.get("last-event-id") {
         None => q.since,
         Some(v) => Some(
@@ -301,8 +288,7 @@ pub(crate) async fn stream_records(
                 .ok_or_else(|| GatewayError::Invalid("Last-Event-ID が不正です".into()))?,
         ),
     };
-    let rx = state
-        .caps
+    let rx = app
         .data
         .subscribe_records(&ctx.auth, table_id, since, None)
         .await?;

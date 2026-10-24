@@ -185,6 +185,8 @@ pub struct DataStore {
     pub(crate) limits: crate::query::limits::QueryLimits,
     /// FSM の本文の読み口（[`crate::FsmStore::new`] が登録・複製間で共有・作成時の初期状態の検査に使う）。
     pub(crate) fsm_artifacts: Arc<std::sync::OnceLock<Arc<artifact::ArtifactStore>>>,
+    /// 到達してよいテーブルの天井（[`Self::within_reach`]・既定は無し＝本人の ReBAC だけ）。
+    pub(crate) reach: Option<Arc<crate::policy::reach::TableReach>>,
 }
 
 impl DataStore {
@@ -222,7 +224,20 @@ impl DataStore {
             plan_cache: Arc::default(),
             limits: crate::query::limits::QueryLimits::default(),
             fsm_artifacts: Arc::default(),
+            reach: None,
         }
+    }
+
+    /// 到達してよいテーブルの天井を付けた複製（ワークフローの委譲・ミニアプリの所有テーブル束縛）。
+    ///
+    /// 複製の公開メソッドは、参照先テーブル（結合・半結合・lookup / rollup・リンク値・対称列）を
+    /// 本人の ReBAC と天井の積で開く（[`crate::TableReach`]）。天井の外は本人が読めないテーブルと
+    /// 同じ応答になる。1 回の操作の間だけ使い、使い回さない（天井は呼出側が毎回組む）。
+    #[must_use]
+    pub fn within_reach(&self, reach: crate::policy::reach::TableReach) -> Self {
+        let mut s = self.clone();
+        s.reach = Some(Arc::new(reach));
+        s
     }
 
     /// 読取の調整（機能フラグ `read_path`・強制戦略）を設定する。結果は変わらず速さだけが変わる。
@@ -708,7 +723,7 @@ impl DataStore {
     /// メモは `self` の authz を借用するので `'static` ではなく、リクエスト（公開メソッドの 1 回）の
     /// 外へ持ち出せない（PIT-18: リクエストを跨いだ再利用を型で禁止する）。
     pub(crate) fn authz_memo(&self) -> AuthzMemo<'_> {
-        AuthzMemo::new(self.authz.as_ref())
+        AuthzMemo::with_reach(self.authz.as_ref(), self.reach.as_deref())
     }
 
     /// 検証用: テナントについてスキーマキャッシュが保持する `(table_id, schema_version)`。

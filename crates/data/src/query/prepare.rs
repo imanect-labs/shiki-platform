@@ -97,6 +97,9 @@ impl DataStore {
             table = self.fetch_live(ctx, table_id).await?;
             bq = bind_query_scoped(&table.schema, &masked, query, &scopes, opts)?;
         }
+        self.check_derived_reach(ctx, az, &table, &scopes, &bq)
+            .await
+            .map_err(|e| crate::relabel_for_schema(e, &table.schema, |k| !masked.contains(k)))?;
         if bq.is_aggregate() {
             // 集計クエリは監査に残す（PIT-17: 反復差分の検知可能性）。
             self.record_audit_best_effort(
@@ -118,5 +121,40 @@ impl DataStore {
             })
             .map_err(rej)?;
         Ok((table, masked, scopes, bq))
+    }
+
+    /// 天井つきの読取（[`crate::TableReach`]）で、絞り込み・並べ替え・集計に使う材料化した派生列が
+    /// 天井の外の参照先を辿るなら、材料化していない派生列と同じ 400 にする。
+    ///
+    /// 材料化（invariant）は「参照元の viewer は参照先も読める」ことを証明した列だけに許す（PIT-71）。
+    /// 天井はこの包含を崩す（委譲元は読めても委譲していない参照先）ので、索引の値で絞ると天井の外の
+    /// 値が行の有無・順序から漏れる。表示の値は読取時の計算が天井で null にする。索引は降格しない
+    /// （天井は呼出ごとの制約で、他の閲覧者の前提は崩れていない）。
+    async fn check_derived_reach(
+        &self,
+        ctx: &AuthContext,
+        az: &crate::policy::memo::AuthzMemo<'_>,
+        table: &DataTable,
+        scopes: &ScopeTables,
+        bq: &BoundQuery,
+    ) -> Result<(), DataError> {
+        if !az.has_reach() {
+            return Ok(());
+        }
+        let referenced = bq
+            .scopes
+            .iter()
+            .filter_map(|sc| scopes.get(sc.table).map(|st| (&st.table.schema, &sc.q)));
+        for (schema, q) in std::iter::once((&table.schema, bq)).chain(referenced) {
+            for f in q.fields.values().filter(|f| f.derived) {
+                for rt in crate::derived::field_link_tables(schema, &f.key) {
+                    let obj = ctx.ns().data_table(&rt.to_string());
+                    if !az.check(ctx, authz::Relation::Viewer, &obj).await? {
+                        return Err(super::bound::derived_not_usable(&f.key));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }

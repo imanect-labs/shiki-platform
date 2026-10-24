@@ -7,6 +7,8 @@
 //!
 //! **data.\* のリソース束縛**: アプリ所有テーブル（`data_table.app_id = installation.app_id`）
 //! のみ操作可。スコープが付与されていても非所有テーブルは 403（[`require_app_table`]）。
+//! 入口のテーブルから結合・リンク・lookup / rollup で辿る参照先もアプリ所有テーブルに限る
+//! （[`app_table_stores`]・非所有の参照先は呼出ユーザーが読めないテーブルと同じ扱い）。
 
 pub(crate) mod ai;
 pub(crate) mod data;
@@ -99,6 +101,36 @@ pub(crate) async fn require_app_table(
         ));
     }
     Ok(table)
+}
+
+/// 到達をアプリ所有テーブルに限った data / FSM のストア（[`app_table_stores`]）。
+pub(crate) struct AppStores {
+    pub data: data_crate::DataStore,
+    pub fsms: data_crate::FsmStore,
+}
+
+/// アプリ所有テーブル束縛（[`require_app_table`]）を通し、**参照先もアプリ所有テーブルに限った**
+/// ストアを返す。
+///
+/// 束縛は入口のテーブルにしか掛からないので、そのまま呼出ユーザーの権限で読むと、所有テーブルの
+/// リンク列から非所有テーブルへ結合・半結合・lookup で辿れてしまう（実効権限 = 所有テーブル ∩
+/// ユーザー ReBAC が崩れる）。天井（`data::TableReach`）の外は、ユーザーが読めないテーブルと同じ応答。
+pub(crate) async fn app_table_stores(
+    state: &GatewayState,
+    ctx: &GatewayCtx,
+    table_id: Uuid,
+) -> Result<AppStores, GatewayError> {
+    require_app_table(state, ctx, table_id).await?;
+    let owned = state
+        .caps
+        .data
+        .table_ids_owned_by_app(&ctx.auth, ctx.installation.app_id)
+        .await?;
+    let reach = data_crate::TableReach::only(owned);
+    Ok(AppStores {
+        data: state.caps.data.within_reach(reach.clone()),
+        fsms: state.caps.fsms.within_reach(reach),
+    })
 }
 
 // lib 名の衝突回避（モジュール `data` とクレート `data` を区別する）。

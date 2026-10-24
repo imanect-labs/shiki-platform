@@ -30,6 +30,16 @@ impl FsmStore {
         FsmStore { artifacts, data }
     }
 
+    /// 到達してよいテーブルの天井を付けた複製（[`DataStore::within_reach`] と同じ・遷移の応答の
+    /// lookup / リンク値も天井の内だけで解決する）。
+    #[must_use]
+    pub fn within_reach(&self, reach: crate::TableReach) -> Self {
+        FsmStore {
+            artifacts: Arc::clone(&self.artifacts),
+            data: self.data.within_reach(reach),
+        }
+    }
+
     /// レコードのいまの状態と、閲覧者がいま実行できる遷移先（editor・不可視行は 404・検証 2-C-P2-4）。
     ///
     /// グリッドの状態セルのメニュー用（表示の出し分けだけ。実行は [`Self::transition`] が改めて認可する）。

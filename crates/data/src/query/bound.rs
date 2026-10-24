@@ -278,6 +278,13 @@ pub(crate) struct BoundQuery {
     pub scopes: Vec<BoundScope>,
 }
 
+/// 派生列をフィルタ/ソート/集計に使えない（材料化していない・天井の外を辿る）ときの 400。
+pub(crate) fn derived_not_usable(key: &str) -> DataError {
+    DataError::input_detail(crate::InvalidCode::FieldNotSortable, Some(key), format!(
+        "派生フィールド '{key}' はフィルタ/ソート/集計に使えません（閲覧者ごと・時刻依存の値、または indexed でない列）"
+    ))
+}
+
 impl BoundQuery {
     pub(crate) fn field(&self, id: FieldId) -> &BField {
         // 束縛時に登録した ID だけが式・ソートに現れる（不在は束縛の不具合）。
@@ -548,9 +555,7 @@ impl<'a> Binder<'a> {
             // 材料化した（invariant かつ indexed の）列だけ。閲覧者ごと・時刻依存の値で並べたり絞ったり
             // すると見えない行の値が順序から漏れる（PIT-71・PIT-19 と同型）。
             if !f.is_materialized() {
-                return Err(DataError::input_detail(crate::InvalidCode::FieldNotSortable, Some(key), format!(
-                    "派生フィールド '{key}' はフィルタ/ソート/集計に使えません（閲覧者ごと・時刻依存の値、または indexed でない列）"
-                )));
+                return Err(derived_not_usable(key));
             }
             let (ty, kind) = match f.result_type {
                 Some(ResultType::Number) => (FieldType::Number, FieldKind::Num),

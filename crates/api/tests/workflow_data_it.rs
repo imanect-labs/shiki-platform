@@ -598,6 +598,275 @@ async fn writes_run_only_as_a_delegator_who_delegated_write() {
     assert_eq!(after.rev, before.rev, "拒否された run は何も書かない");
 }
 
+fn plain_schema(fields: Vec<data::FieldDef>) -> TableSchema {
+    TableSchema {
+        fields,
+        status_field: None,
+        row_policy: None,
+        field_policy: vec![],
+        aggregate_min_rows: None,
+        fsm_ref: None,
+        rag: None,
+    }
+}
+
+/// C3（engine.md §6.8）: 委譲したテーブルから、委譲元だけが読める**未委譲の**テーブルへリンクで辿れない。
+///
+/// alice が注文（A）だけを委譲し、顧客（B）は委譲しない。A のリンク列で B を結合・半結合しても 403、
+/// B を引く lookup は null、リンク値（B の id）は落ちる（委譲元が B を読めないのと同じ応答）。書込を
+/// 委譲した bob の権限で走る更新は、alice が委譲した B を辿らない（委譲元本人が委譲したテーブルだけ）。
+/// alice が B も委譲すると辿れる。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn workflow_cannot_follow_links_into_undelegated_tables() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let alice = user(&tenant, "alice");
+    let bob = user(&tenant, "bob");
+
+    let mut name = data::FieldDef::new("name", FieldType::Text);
+    name.indexed = true;
+    let customers = env
+        .data
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "customers".into(),
+                schema: plain_schema(vec![name]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let mut title = data::FieldDef::new("title", FieldType::Text);
+    title.indexed = true;
+    let mut customer = data::FieldDef::new("customer", FieldType::RecordRef);
+    customer.ref_table = Some(customers.id);
+    customer.link = Some(data::LinkDef {
+        cardinality: data::LinkCardinality::ManyToOne,
+        symmetric_field: None,
+        symmetric_key: None,
+        symmetric_display_name: None,
+        reverse: false,
+    });
+    let mut customer_name = data::FieldDef::new("customer_name", FieldType::Lookup);
+    customer_name.lookup = Some(data::LookupDef {
+        via_field: "customer".into(),
+        target_field: "name".into(),
+    });
+    let orders = env
+        .data
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "orders".into(),
+                schema: plain_schema(vec![title, customer, customer_name]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let acme = env
+        .data
+        .create_record(&alice, customers.id, json!({ "name": "Acme" }), None)
+        .await
+        .unwrap();
+    let order = env
+        .data
+        .create_record(
+            &alice,
+            orders.id,
+            json!({ "title": "o1", "customer": [acme.id.to_string()] }),
+            None,
+        )
+        .await
+        .unwrap();
+    // 委譲元の alice 本人は lookup で B の値を読める（天井の無い読取は従来どおり）。
+    let own = env
+        .data
+        .get_record(&alice, orders.id, order.id, None)
+        .await
+        .unwrap();
+    assert_eq!(own.data["customer_name"], json!("Acme"), "{:?}", own.data);
+    let orders_obj = alice.ns().data_table(&orders.id.to_string());
+    let customers_obj = alice.ns().data_table(&customers.id.to_string());
+    env.fga
+        .write_tuple(&bob.subject(), Relation::Viewer, &customers_obj)
+        .await
+        .unwrap();
+
+    let o = orders.id.to_string();
+    let mk = |name: &str, query: Value| {
+        json!({
+            "ir_version": 1, "name": name,
+            "declared_scopes": ["data.read"],
+            "triggers": [ { "kind": "schedule", "cron": "* * * * *", "tz": "UTC" } ],
+            "nodes": [ { "id": "q", "type": "data.query", "params": { "table": o, "query": query } } ],
+            "edges": []
+        })
+    };
+    let irs = [
+        ("plain", mk("plain", json!({}))),
+        (
+            "semi",
+            mk(
+                "semi",
+                json!({ "filter": { "link": { "field": "customer",
+                    "filter": { "cmp": { "field": "name", "op": "eq", "value": "Acme" } } } } }),
+            ),
+        ),
+        (
+            "join",
+            mk(
+                "join",
+                json!({ "joins": [ { "alias": "c", "field": "customer" } ],
+                        "select": ["title", "c.name"] }),
+            ),
+        ),
+    ];
+    let read = |obj: &authz::FgaObject| GrantRequest {
+        scope: "data.read".into(),
+        object: obj.clone(),
+        relation: Relation::Viewer,
+    };
+    let mut wfs = Vec::new();
+    for (label, ir) in &irs {
+        let (wf, _) = env
+            .workflows
+            .create(&alice, ir, &Catalog::default(), None)
+            .await
+            .unwrap();
+        let parsed = WorkflowIr::from_json(ir).unwrap();
+        // alice は注文（A）だけを委譲する。
+        env.registration
+            .enable(&alice, wf, 1, &parsed, &[read(&orders_obj)])
+            .await
+            .expect("enable");
+        wfs.push((*label, wf, parsed));
+    }
+    let latest_q = |wf: Uuid| {
+        let env = &env;
+        let tenant = tenant.clone();
+        async move {
+            let run: Uuid = sqlx::query_scalar(
+                "SELECT run_id FROM workflow_run WHERE tenant_id = $1 AND workflow_id = $2 \
+                 ORDER BY created_at DESC LIMIT 1",
+            )
+            .bind(&tenant)
+            .bind(wf)
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+            env.step(&tenant, run, "q").await
+        }
+    };
+    env.fire_schedule_and_run(&tenant, wfs[0].1, 61).await;
+
+    // 未委譲の B を引く lookup は null・リンク値（B の id）は落ちる。A の行そのものは読める。
+    let (status, out, err) = latest_q(wfs[0].1).await;
+    assert_eq!(status, "succeeded", "{err:?}");
+    let items = out.unwrap()["items"].as_array().unwrap().clone();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["data"]["title"], "o1");
+    assert!(
+        items[0]["data"]["customer_name"].is_null(),
+        "lookup は B の値を返さない: {:?}",
+        items[0]
+    );
+    let linked = items[0]["data"]["customer"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(linked.is_empty(), "B の id は落ちる: {:?}", items[0]);
+    // 半結合・結合は、委譲元が B を読めないときと同じ 403。
+    for i in [1, 2] {
+        let (status, _, err) = latest_q(wfs[i].1).await;
+        assert_eq!(status, "failed", "{}: {err:?}", wfs[i].0);
+        assert_eq!(err.unwrap()["code"], "forbidden", "{}", wfs[i].0);
+    }
+
+    // 委譲元本人が委譲したテーブルだけを辿る（confused-deputy）: 書込を委譲した bob の権限で走る更新は、
+    // alice が委譲した B を bob の権限では辿らない（bob は B を読めるが委譲していない）。
+    env.fga
+        .write_tuple(&bob.subject(), Relation::Editor, &orders_obj)
+        .await
+        .unwrap();
+    let w_ir = json!({
+        "ir_version": 1, "name": "rename",
+        "declared_scopes": ["data.read", "data.write"],
+        "triggers": [ { "kind": "schedule", "cron": "* * * * *", "tz": "UTC" } ],
+        "nodes": [ { "id": "q", "type": "data.record.update", "params": {
+            "table": o, "record": order.id.to_string(), "patch": { "title": "o1x" } } } ],
+        "edges": []
+    });
+    let (w_wf, _) = env
+        .workflows
+        .create(&alice, &w_ir, &Catalog::default(), None)
+        .await
+        .unwrap();
+    let w_parsed = WorkflowIr::from_json(&w_ir).unwrap();
+    env.registration
+        .enable(
+            &bob,
+            w_wf,
+            1,
+            &w_parsed,
+            &[GrantRequest {
+                scope: "data.write".into(),
+                object: orders_obj.clone(),
+                relation: Relation::Editor,
+            }],
+        )
+        .await
+        .expect("bob の有効化（A の書込）");
+    env.registration
+        .enable(
+            &alice,
+            w_wf,
+            1,
+            &w_parsed,
+            &[read(&orders_obj), read(&customers_obj)],
+        )
+        .await
+        .expect("alice の有効化（A・B の読取）");
+    env.fire_schedule_and_run(&tenant, w_wf, 181).await;
+    let (status, out, err) = latest_q(w_wf).await;
+    assert_eq!(status, "succeeded", "{err:?}");
+    let out = out.unwrap();
+    assert_eq!(out["data"]["title"], "o1x", "{out}");
+    assert!(
+        out["data"]["customer_name"].is_null(),
+        "bob の権限の書込は alice が委譲した B を辿らない: {out}"
+    );
+    let actor: String = sqlx::query_scalar(
+        "SELECT actor FROM audit_log WHERE tenant_id = $1 AND action = 'data.record.update' \
+           AND object_id = $2",
+    )
+    .bind(&tenant)
+    .bind(order.id.to_string())
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(actor, "bob");
+
+    // alice が B も委譲すると、結合で B の列を読める（天井は委譲したテーブルを通す）。
+    let (_, join_wf, join_ir) = &wfs[2];
+    env.registration
+        .enable(
+            &alice,
+            *join_wf,
+            1,
+            join_ir,
+            &[read(&orders_obj), read(&customers_obj)],
+        )
+        .await
+        .expect("alice の再有効化");
+    env.fire_schedule_and_run(&tenant, *join_wf, 301).await;
+    let (status, out, err) = latest_q(*join_wf).await;
+    assert_eq!(status, "succeeded", "{err:?}");
+    let out = out.unwrap();
+    assert!(out.to_string().contains("Acme"), "{out}");
+}
+
 /// 受け入れ条件: 配列値に eq / neq / in / contains（と starts_with / ends_with）を使う保存済みワークフローが切替前に一覧化され、
 /// 保存時に警告が出る（`shiki-admin workflow-conditions` の本体と保存 API が同じ検出を使う）。
 #[tokio::test]

@@ -132,6 +132,35 @@ fn link_uses(table: &DataTable) -> HashMap<String, LinkUse> {
     uses
 }
 
+/// 派生列 `key` が 1 段目に辿る参照先テーブル（lookup の経由リンク・rollup / 数式の rollup のリンク）。
+///
+/// 天井つきの読取（[`crate::TableReach`]）で、材料化した派生列を絞り込み・並べ替えに使ってよいかの
+/// 判定に使う（材料化は 1 段の参照に限る・多段は材料化しない）。
+pub(crate) fn field_link_tables(schema: &crate::model::TableSchema, key: &str) -> Vec<Uuid> {
+    let Some(f) = schema.field(key) else {
+        return Vec::new();
+    };
+    let mut links: Vec<&str> = Vec::new();
+    if let Some(d) = &f.lookup {
+        links.push(&d.via_field);
+    }
+    if let Some(d) = &f.rollup {
+        links.push(&d.link);
+    }
+    if let Some(e) = &f.formula {
+        for n in e.rollups() {
+            if let FormulaExpr::Rollup { link, .. } = n {
+                links.push(link);
+            }
+        }
+    }
+    let out: BTreeSet<Uuid> = links
+        .into_iter()
+        .filter_map(|l| schema.field(l).and_then(|lf| lf.ref_table))
+        .collect();
+    out.into_iter().collect()
+}
+
 /// 読取時の解決が 1 段目に辿る参照先テーブル（派生フィールドのリンク先・対称列の参照元）。
 ///
 /// 読取の入口が参照先テーブル viewer の check を BatchCheck へ束ねるために使う（Task 15.9）。

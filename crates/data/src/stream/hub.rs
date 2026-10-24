@@ -41,6 +41,7 @@ use super::events::{
 use super::outbox::ChangeKind;
 use super::visibility::{eval_group, group_plan, verify, visible, Decomposed, Viewer};
 use crate::model::DataTable;
+use crate::policy::memo::AuthzMemo;
 use crate::record::RecordRow;
 use crate::store::DataStore;
 use crate::{map_db, DataError};
@@ -110,6 +111,9 @@ pub(super) struct Sub {
     /// 接続後まだ awareness の現在の状態を渡していない（次のバッチで、有効期間内の他ユーザーの
     /// カーソルを可視性の判定を通してから送る）。
     pub(super) awareness_snapshot: bool,
+    /// 購読を始めたストアの天井（所有テーブル束縛など）。配信の判定も同じ天井で行う
+    /// （配信タスクは天井の無いストアで動くので、購読ごとに持つ）。
+    reach: Option<Arc<crate::policy::reach::TableReach>>,
 }
 
 #[derive(Default)]
@@ -249,6 +253,7 @@ impl DataStore {
                 gap_since: None,
                 epochs,
                 awareness_snapshot: true,
+                reach: self.reach.clone(),
             });
         self.ensure_stream_task();
         Ok(RecordStream { rx })
@@ -276,7 +281,10 @@ impl DataStore {
         if self.stream_config.manual || self.stream.running.swap(true, Ordering::AcqRel) {
             return;
         }
-        let store = self.clone();
+        // 配信タスクは全購読者で共有する。天井つきの複製から起動しても天井を持ち込まない
+        // （天井は購読ごとに `Sub::reach` で掛ける）。
+        let mut store = self.clone();
+        store.reach = None;
         tokio::spawn(async move { store.stream_loop().await });
     }
 
@@ -420,7 +428,7 @@ impl DataStore {
                 live.push(s);
                 continue;
             }
-            let az = self.authz_memo();
+            let az = AuthzMemo::with_reach(self.authz.as_ref(), s.reach.as_deref());
             match self.resolve_stream_auth(&s.ctx, &az, table).await {
                 Ok(Resolved::Ok(mut a)) => {
                     if a.fingerprint != s.auth.fingerprint {
@@ -743,8 +751,8 @@ impl DataStore {
                 .collect();
             let carry = s.auth.carry.take();
             let az = match carry {
-                Some(c) => crate::policy::memo::AuthzMemo::resume(self.authz.as_ref(), c),
-                None => self.authz_memo(),
+                Some(c) => AuthzMemo::resume(self.authz.as_ref(), c, s.reach.as_deref()),
+                None => AuthzMemo::with_reach(self.authz.as_ref(), s.reach.as_deref()),
             };
             // 1 件の読取と同じ出口（派生値・リンク値の存在秘匿 → マスク）。
             let r = self

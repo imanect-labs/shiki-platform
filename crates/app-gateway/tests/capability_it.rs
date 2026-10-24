@@ -18,7 +18,9 @@ use app_gateway::{
     build_gateway_router, fetch_usage, AiPin, AppInstallationStore, NewAppInstallation,
 };
 use axum::http::StatusCode;
-use common::{ctx, get, request_json, setup, state, state_with, token, token_as, StubAuthz};
+use common::{
+    ctx, ctx_as, get, request_json, setup, state, state_with, token, token_as, StubAuthz,
+};
 use data::{FieldDef, FieldType, NewDataTable, TableSchema};
 use serde_json::json;
 use sqlx::PgPool;
@@ -266,6 +268,102 @@ async fn data_capability_matrix() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
+}
+
+/// C3: 所有テーブルのリンク列から**非所有テーブル**へ結合・半結合・lookup で辿れない（実効権限 =
+/// 所有テーブル ∩ ユーザー ReBAC）。ユーザーは非所有テーブルを読めるが、アプリ経由では読めないのと同じ応答。
+#[tokio::test]
+async fn data_links_do_not_reach_unowned_tables() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (app_id, client, _owned, foreign) = fixture(&pool, &tenant).await;
+    let store = data::DataStore::new(
+        pool.clone(),
+        Arc::new(StubAuthz::allow_all()),
+        Arc::new(common::FixedResolver),
+    );
+    let mut customer = field("customer", FieldType::RecordRef);
+    customer.ref_table = Some(foreign);
+    customer.link = Some(data::LinkDef {
+        cardinality: data::LinkCardinality::ManyToOne,
+        symmetric_field: None,
+        symmetric_key: None,
+        symmetric_display_name: None,
+        reverse: false,
+    });
+    let mut customer_title = field("customer_title", FieldType::Lookup);
+    customer_title.lookup = Some(data::LookupDef {
+        via_field: "customer".into(),
+        target_field: "title".into(),
+    });
+    let mut schema = simple_schema();
+    schema.fields.extend([customer, customer_title]);
+    let linked = store
+        .create_table(
+            &ctx(&tenant),
+            NewDataTable {
+                name: "linked".into(),
+                schema,
+            },
+            None,
+        )
+        .await
+        .expect("linked table");
+    sqlx::query("UPDATE data_table SET app_id = $1 WHERE id = $2")
+        .bind(app_id)
+        .bind(linked.id)
+        .execute(&pool)
+        .await
+        .expect("bind app");
+    let acme = store
+        .create_record(&ctx(&tenant), foreign, json!({ "title": "Acme" }), None)
+        .await
+        .unwrap();
+    let rec = store
+        .create_record(
+            &ctx(&tenant),
+            linked.id,
+            json!({ "title": "o1", "customer": [acme.id.to_string()] }),
+            None,
+        )
+        .await
+        .unwrap();
+    // ユーザー本人（アプリを介さない読取）は lookup で非所有テーブルの値を読める。
+    let own = store
+        .get_record(&ctx_as(&tenant, "alice"), linked.id, rec.id, None)
+        .await
+        .unwrap();
+    assert_eq!(own.data["customer_title"], "Acme");
+
+    let app = build_gateway_router(state(pool.clone(), &tenant));
+    let tok = token(&client, ALL_SCOPES, &tenant);
+    // lookup は null・リンク値（非所有テーブルの id）は落ちる。
+    let (s, got) = get(
+        &app,
+        &format!("/gw/data/tables/{}/records/{}", linked.id, rec.id),
+        Some(&tok),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{got}");
+    assert!(got["data"]["customer_title"].is_null(), "{got}");
+    assert!(!got.to_string().contains("Acme"), "{got}");
+    // 結合・半結合は 403（ユーザーが参照先を読めないときと同じ）。
+    for q in [
+        json!({ "joins": [ { "alias": "c", "field": "customer" } ], "select": ["title", "c.title"] }),
+        json!({ "filter": { "link": { "field": "customer",
+            "filter": { "cmp": { "field": "title", "op": "eq", "value": "Acme" } } } } }),
+    ] {
+        let (s, body) = request_json(
+            &app,
+            "POST",
+            &format!("/gw/data/tables/{}/query", linked.id),
+            Some(&tok),
+            &q,
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{q} → {body}");
+        assert!(!body.to_string().contains("Acme"), "{body}");
+    }
 }
 
 #[tokio::test]

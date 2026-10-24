@@ -366,3 +366,56 @@ async fn unaskable_role_ids_are_false_without_round_trip() {
     assert!(!m.has_role("a b", true) && !m.has_role("a#b", true));
     assert_eq!(fake.calls(), 0);
 }
+
+/// 天井（委譲・所有テーブル束縛・C3）: `data_table` への check は天井と本人の ReBAC の積。
+/// 天井の外は本人が読めても偽、天井の内でも併せて要る主体（委譲タプル）が無ければ偽。
+/// `data_table` 以外の問い（ロール等）は天井に掛けない。
+#[tokio::test]
+async fn reach_intersects_table_checks_with_the_ceiling_and_co_principal() {
+    let fake = Fake::default();
+    let user = base();
+    let wf = ctx_of(PrincipalKind::Workflow, "t1", "o1", "wf1");
+    let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+    let obj_a = user.ns().data_table(&a.to_string());
+    let obj_b = user.ns().data_table(&b.to_string());
+    let role = user.ns().role("mgr");
+    // 本人は A・B・ロールのどれも持つ。ワークフロー主体は A だけ。
+    for o in [&obj_a, &obj_b, &role] {
+        fake.grant(&user.subject(), o);
+    }
+    fake.grant(&wf.subject(), &obj_a);
+
+    let reach = crate::TableReach::only([a]).also_held_by(wf.clone());
+    let az = AuthzMemo::with_reach(&fake, Some(&reach));
+    assert!(az.has_reach());
+    let got = az
+        .check_all(
+            &user,
+            &[
+                (Relation::Viewer, obj_a.clone()),
+                (Relation::Viewer, obj_b.clone()),
+                (Relation::Member, role.clone()),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        got,
+        vec![true, false, true],
+        "B は天井の外・ロールは天井に掛けない"
+    );
+
+    // 天井の内でも、ワークフロー主体のタプルが撤去されれば偽（新しいリクエスト）。
+    fake.revoke(&wf.subject(), &obj_a);
+    let az = AuthzMemo::with_reach(&fake, Some(&reach));
+    assert!(!az.check(&user, Relation::Viewer, &obj_a).await.unwrap());
+
+    // 併せて要る主体が無い天井は、テーブル集合だけで絞る。天井の無いメモは本人の ReBAC のまま。
+    let only = crate::TableReach::only([a]);
+    let az = AuthzMemo::with_reach(&fake, Some(&only));
+    assert!(az.check(&user, Relation::Viewer, &obj_a).await.unwrap());
+    assert!(!az.check(&user, Relation::Viewer, &obj_b).await.unwrap());
+    let az = AuthzMemo::new(&fake);
+    assert!(!az.has_reach());
+    assert!(az.check(&user, Relation::Viewer, &obj_b).await.unwrap());
+}

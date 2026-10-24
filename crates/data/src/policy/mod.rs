@@ -19,6 +19,8 @@ pub(crate) mod compile;
 pub(crate) mod compile_index;
 pub(crate) mod material;
 pub(crate) mod memo;
+pub(crate) mod reach;
 pub(crate) mod validate;
 
 pub use ast::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
+pub use reach::TableReach;

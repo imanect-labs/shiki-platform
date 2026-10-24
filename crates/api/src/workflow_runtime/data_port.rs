@@ -10,9 +10,12 @@
 //!   ② 委譲台帳の委譲元ユーザーの `AuthContext` で読み書きする。行は**委譲元の行述語**で絞られ、
 //!   マスク列も委譲元のもの。委譲元が今もテーブルの権限を持つかは data の入口が委譲元で問い直す。
 //!   実効権限 = scope 天井（engine 側）∩ 委譲したテーブル ∩ 委譲元の ReBAC・行述語。
+//!   ③ 入口から結合・半結合・lookup / rollup・リンク値で辿る参照先も「委譲したテーブル」に限る。
+//!   委譲元が自ら委譲し、ワークフロー主体のタプルも残るテーブルだけを天井（`data::TableReach`）にして
+//!   data へ渡す。天井の外は委譲元が読めないテーブルと同じ応答になる（engine.md §6.8）。
 
 use authz::{AuthContext, Principal, PrincipalKind, Relation};
-use data::{BulkImportOptions, DataError, DataQuery, DataStore, FsmStore};
+use data::{BulkImportOptions, DataError, DataQuery, DataStore, FsmStore, TableReach};
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -24,6 +27,15 @@ use super::auth::auth_ctx;
 const MAX_REPORTED_ROW_ERRORS: i64 = 100;
 /// `data.list_tables` の件数上限。
 const MAX_LISTED_TABLES: i64 = 200;
+/// 委譲の天井に載せるテーブル数の上限（超過分は辿れない＝fail-closed）。
+const MAX_REACHABLE_TABLES: i64 = 500;
+
+/// 読み書きする主体と、その主体で使うストア（ワークフロー主体なら委譲の天井つき）。
+struct Actor {
+    ctx: AuthContext,
+    data: DataStore,
+    fsms: FsmStore,
+}
 
 /// data のエラー → ポートのエラー（不可視と不在は同じ「見つからない」・再試行で直るものだけ retryable）。
 pub(super) fn map_data(e: DataError) -> PortError {
@@ -89,16 +101,20 @@ pub(super) struct DataPort<'a> {
 }
 
 impl DataPort<'_> {
-    /// 読み書きする主体（上の ①②）。`relation` は委譲で要るテーブルの関係（読取 viewer・書込 editor）。
+    /// 読み書きする主体（上の ①②③）。`relation` は委譲で要るテーブルの関係（読取 viewer・書込 editor）。
     async fn actor(
         &self,
         ec: &ExecCtx,
         table_id: Uuid,
         relation: Relation,
-    ) -> Result<AuthContext, PortError> {
+    ) -> Result<Actor, PortError> {
         let ctx = auth_ctx(ec);
         if ec.principal_kind != "workflow" {
-            return Ok(ctx);
+            return Ok(Actor {
+                ctx,
+                data: self.data.clone(),
+                fsms: self.fsms.clone(),
+            });
         }
         // ① 委譲されたテーブルか（タプル・剥奪は即時に効く）。
         self.data
@@ -128,7 +144,13 @@ impl DataPort<'_> {
         .await
         .map_err(|e| PortError::unavailable(format!("delegation: {e}")))?
         .ok_or_else(|| PortError::forbidden("このテーブルは委譲されていません"))?;
-        Ok(AuthContext::new(
+        // ③ 辿ってよいテーブルの天井: この委譲元が自ら（viewer 以上で）委譲したテーブル。併せて
+        //    ワークフロー主体のタプルも要求する（棚卸しの撤去を即時に効かせる）。
+        let reach = self
+            .delegated_tables(&ctx, workflow_id, &delegator, table_id)
+            .await?
+            .also_held_by(ctx.clone());
+        let actor = AuthContext::new(
             Principal {
                 kind: PrincipalKind::User,
                 id: delegator,
@@ -139,7 +161,41 @@ impl DataPort<'_> {
             },
             ec.org.clone(),
             ec.tenant_id.clone(),
-        ))
+        );
+        Ok(Actor {
+            ctx: actor,
+            data: self.data.within_reach(reach.clone()),
+            fsms: self.fsms.within_reach(reach),
+        })
+    }
+
+    /// 委譲元 `delegator` がワークフローへ委譲したテーブル（入口の `table_id` を含む）の天井。
+    async fn delegated_tables(
+        &self,
+        ctx: &AuthContext,
+        workflow_id: Uuid,
+        delegator: &str,
+        table_id: Uuid,
+    ) -> Result<TableReach, PortError> {
+        const PREFIX: &str = "data_table:";
+        let objects = workflow_engine::delegated_objects(
+            self.db,
+            &ctx.tenant_id,
+            workflow_id,
+            delegator,
+            PREFIX,
+            Relation::Viewer,
+            MAX_REACHABLE_TABLES,
+        )
+        .await
+        .map_err(|e| PortError::unavailable(format!("delegation: {e}")))?;
+        let ns = ctx.ns();
+        let tables = objects
+            .iter()
+            .filter_map(|o| o.strip_prefix(PREFIX))
+            .filter_map(|rest| ns.strip_object_id(rest))
+            .filter_map(|local| Uuid::parse_str(local).ok());
+        Ok(TableReach::only(tables.chain([table_id])))
     }
 
     /// 実行主体（ワークフロー主体なら委譲されたテーブル）の一覧。中身ではなく名前と id だけ。
@@ -163,10 +219,10 @@ impl DataPort<'_> {
         table_id: Uuid,
         query: &DataQuery,
     ) -> Result<Value, PortError> {
-        let actor = self.actor(ec, table_id, Relation::Viewer).await?;
-        let out = self
+        let a = self.actor(ec, table_id, Relation::Viewer).await?;
+        let out = a
             .data
-            .run_query(&actor, table_id, query, ec.trace_id.as_deref())
+            .run_query(&a.ctx, table_id, query, ec.trace_id.as_deref())
             .await
             .map_err(map_data)?;
         serde_json::to_value(out).map_err(|e| PortError::unavailable(format!("serialize: {e}")))
@@ -178,10 +234,10 @@ impl DataPort<'_> {
         table_id: Uuid,
         record_id: Uuid,
     ) -> Result<Value, PortError> {
-        let actor = self.actor(ec, table_id, Relation::Viewer).await?;
-        let rec = self
+        let a = self.actor(ec, table_id, Relation::Viewer).await?;
+        let rec = a
             .data
-            .get_record(&actor, table_id, record_id, ec.trace_id.as_deref())
+            .get_record(&a.ctx, table_id, record_id, ec.trace_id.as_deref())
             .await
             .map_err(map_data)?;
         serde_json::to_value(rec).map_err(|e| PortError::unavailable(format!("serialize: {e}")))
@@ -189,14 +245,13 @@ impl DataPort<'_> {
 
     /// 現在の rev（rev を指定しない書込が、読んだ rev で楽観ロックを掛けるため）。
     async fn current_rev(
-        &self,
-        actor: &AuthContext,
+        a: &Actor,
         table_id: Uuid,
         record_id: Uuid,
         trace: Option<&str>,
     ) -> Result<i64, PortError> {
-        self.data
-            .get_record(actor, table_id, record_id, trace)
+        a.data
+            .get_record(&a.ctx, table_id, record_id, trace)
             .await
             .map(|r| r.rev)
             .map_err(map_data)
@@ -205,14 +260,14 @@ impl DataPort<'_> {
     pub(super) async fn write(&self, ec: &ExecCtx, req: DataWriteReq) -> Result<Value, PortError> {
         let table_id = req.table_id;
         let trace = ec.trace_id.as_deref();
-        let actor = self.actor(ec, table_id, Relation::Editor).await?;
+        let a = self.actor(ec, table_id, Relation::Editor).await?;
         let to_value = |r: data::DataRecord| {
             serde_json::to_value(r).map_err(|e| PortError::unavailable(format!("serialize: {e}")))
         };
         match req.op {
             DataWriteOp::Create { data } => to_value(
-                self.data
-                    .create_record(&actor, table_id, data, trace)
+                a.data
+                    .create_record(&a.ctx, table_id, data, trace)
                     .await
                     .map_err(map_data)?,
             ),
@@ -223,11 +278,11 @@ impl DataPort<'_> {
             } => {
                 let rev = match expected_rev {
                     Some(r) => r,
-                    None => self.current_rev(&actor, table_id, record_id, trace).await?,
+                    None => Self::current_rev(&a, table_id, record_id, trace).await?,
                 };
                 to_value(
-                    self.data
-                        .update_record(&actor, table_id, record_id, patch, rev, trace)
+                    a.data
+                        .update_record(&a.ctx, table_id, record_id, patch, rev, trace)
                         .await
                         .map_err(map_data)?,
                 )
@@ -238,10 +293,10 @@ impl DataPort<'_> {
             } => {
                 let rev = match expected_rev {
                     Some(r) => r,
-                    None => self.current_rev(&actor, table_id, record_id, trace).await?,
+                    None => Self::current_rev(&a, table_id, record_id, trace).await?,
                 };
-                self.data
-                    .delete_record(&actor, table_id, record_id, rev, trace)
+                a.data
+                    .delete_record(&a.ctx, table_id, record_id, rev, trace)
                     .await
                     .map_err(map_data)?;
                 Ok(json!({ "id": record_id, "deleted": true }))
@@ -255,11 +310,11 @@ impl DataPort<'_> {
                 // ルート・ゲートウェイと同じ単一の入口 FsmStore::transition・検証 C-P1-1）。
                 let rev = match expected_rev {
                     Some(r) => r,
-                    None => self.current_rev(&actor, table_id, record_id, trace).await?,
+                    None => Self::current_rev(&a, table_id, record_id, trace).await?,
                 };
                 to_value(
-                    self.fsms
-                        .transition(&actor, table_id, record_id, &to, rev, trace)
+                    a.fsms
+                        .transition(&a.ctx, table_id, record_id, &to, rev, trace)
                         .await
                         .map_err(map_data)?,
                 )
@@ -268,9 +323,9 @@ impl DataPort<'_> {
                 rows,
                 abort_on_invalid,
             } => {
-                self.bulk_upsert(
+                Self::bulk_upsert(
                     ec,
-                    &actor,
+                    &a,
                     table_id,
                     rows,
                     abort_on_invalid,
@@ -283,9 +338,8 @@ impl DataPort<'_> {
 
     /// 一括 upsert を始めて最後まで進め、件数と拒否行を返す（取込 ID は冪等キーから決める）。
     async fn bulk_upsert(
-        &self,
         ec: &ExecCtx,
-        actor: &AuthContext,
+        a: &Actor,
         table_id: Uuid,
         rows: Vec<data::BulkUpsertRow>,
         abort_on_invalid: bool,
@@ -296,9 +350,9 @@ impl DataPort<'_> {
             abort_on_invalid,
             ..BulkImportOptions::default()
         };
-        self.data
+        a.data
             .start_bulk_upsert_with_id(
-                actor,
+                &a.ctx,
                 table_id,
                 import_id,
                 rows,
@@ -309,18 +363,18 @@ impl DataPort<'_> {
             .map_err(map_data)?;
         // ノードの timeout の内側で同期に最後まで進める（同じ取込をジョブのワーカーが並行に進めても
         // チャンクのカーソルで直列化される）。
-        self.data
+        a.data
             .run_bulk_import(&ec.tenant_id, table_id, import_id)
             .await
             .map_err(map_data)?;
-        let st = self
+        let st = a
             .data
-            .bulk_import_status(actor, table_id, import_id)
+            .bulk_import_status(&a.ctx, table_id, import_id)
             .await
             .map_err(map_data)?;
-        let errors = self
+        let errors = a
             .data
-            .bulk_import_errors(actor, table_id, import_id, 0, MAX_REPORTED_ROW_ERRORS)
+            .bulk_import_errors(&a.ctx, table_id, import_id, 0, MAX_REPORTED_ROW_ERRORS)
             .await
             .map_err(map_data)?;
         let errors: Vec<Value> = errors

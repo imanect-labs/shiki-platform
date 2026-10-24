@@ -39,6 +39,7 @@ use authz::{
 
 use crate::policy::ast::PolicyExpr;
 use crate::policy::material::PolicyMaterial;
+use crate::policy::reach::{data_table_id, TableReach};
 use crate::DataError;
 
 /// 認可の問いの主体側のキー（`AuthContext` の関連部分を漏れなく）。
@@ -116,6 +117,9 @@ pub(crate) struct MemoCarry(State);
 pub(crate) struct AuthzMemo<'r> {
     authz: &'r dyn AuthzClient,
     state: Mutex<State>,
+    /// 到達してよいテーブルの天井（委譲・所有テーブル束縛）。`data_table` への check の答えを
+    /// 天井と本人の ReBAC の積にする（[`crate::policy::reach`]）。覚える答えは天井を掛ける前の ReBAC。
+    reach: Option<&'r TableReach>,
 }
 
 #[allow(clippy::needless_pass_by_value)] // map_err へそのまま渡すため。
@@ -124,10 +128,17 @@ fn authz_err(e: authz::AuthzError) -> DataError {
 }
 
 impl<'r> AuthzMemo<'r> {
+    #[cfg(test)]
     pub(crate) fn new(authz: &'r dyn AuthzClient) -> Self {
+        Self::with_reach(authz, None)
+    }
+
+    /// 天井つきのメモ（[`crate::policy::reach`]）。`None` は [`Self::new`] と同じ。
+    pub(crate) fn with_reach(authz: &'r dyn AuthzClient, reach: Option<&'r TableReach>) -> Self {
         AuthzMemo {
             authz,
             state: Mutex::new(State::default()),
+            reach,
         }
     }
 
@@ -150,7 +161,47 @@ impl<'r> AuthzMemo<'r> {
     }
 
     /// 複数の check。覚えていない問いだけを **BatchCheck 1 往復**（50 問ごと）で引く。結果は入力順。
+    ///
+    /// 天井（[`Self::with_reach`]）があれば、`data_table` への問いは天井の外なら偽、天井の内でも
+    /// 併せて要る主体（委譲タプル）が同じ relation を持たなければ偽にする。
     pub(crate) async fn check_all(
+        &self,
+        ctx: &AuthContext,
+        items: &[(Relation, FgaObject)],
+    ) -> Result<Vec<bool>, DataError> {
+        let mut got = self.check_rebac(ctx, items).await?;
+        let Some(reach) = self.reach else {
+            return Ok(got);
+        };
+        let mut co_items = Vec::new();
+        let mut co_at = Vec::new();
+        for (i, (relation, object)) in items.iter().enumerate() {
+            if !got[i] || !object.as_str().starts_with("data_table:") {
+                continue;
+            }
+            // 天井の外（他テナントの形も含む）は偽（fail-closed）。
+            if !data_table_id(ctx, object).is_some_and(|id| reach.admits(id)) {
+                got[i] = false;
+                continue;
+            }
+            co_items.push((*relation, object.clone()));
+            co_at.push(i);
+        }
+        if let (Some(co), false) = (reach.co_principal(), co_items.is_empty()) {
+            let held = if co.tenant_id == ctx.tenant_id {
+                self.check_rebac(co, &co_items).await?
+            } else {
+                vec![false; co_items.len()]
+            };
+            for (i, ok) in co_at.into_iter().zip(held) {
+                got[i] = got[i] && ok;
+            }
+        }
+        Ok(got)
+    }
+
+    /// 天井を掛けない ReBAC の答え（覚えていない問いだけを引く）。
+    async fn check_rebac(
         &self,
         ctx: &AuthContext,
         items: &[(Relation, FgaObject)],
@@ -270,11 +321,21 @@ impl<'r> AuthzMemo<'r> {
     ///
     /// 持ち越せるのは [`MemoCarry`] だけで、作れるのは [`Self::into_carry`] だけ（REST の入口は常に
     /// [`Self::new`]）。期限（TTL）の判定と破棄は購読側（[`crate::stream`]）が持つ。
-    pub(crate) fn resume(authz: &'r dyn AuthzClient, carry: MemoCarry) -> Self {
+    pub(crate) fn resume(
+        authz: &'r dyn AuthzClient,
+        carry: MemoCarry,
+        reach: Option<&'r TableReach>,
+    ) -> Self {
         AuthzMemo {
             authz,
             state: Mutex::new(carry.0),
+            reach,
         }
+    }
+
+    /// 天井つきのメモか（天井があるときだけ要る追加の検査の判定に使う）。
+    pub(crate) fn has_reach(&self) -> bool {
+        self.reach.is_some()
     }
 
     /// 答えを持ち越し用に取り出す（SSE 購読専用）。

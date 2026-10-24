@@ -88,6 +88,40 @@ pub async fn active_delegator(
     .map_err(map_db)
 }
 
+/// 委譲元 `delegator` が `required` を満たす relation でワークフローへ委譲している、**現在有効な**
+/// 対象（`object_ref` が `prefix` で始まるもの・例 `data_table:`）。上限 `limit` 件（超過分は返さない
+/// ＝到達できる対象が減る方向・fail-closed）。
+///
+/// 構造化データの schedule / event run が、入口のテーブルから結合・リンクで辿ってよいテーブルの天井を
+/// 組むのに使う（engine.md §6.8「委譲していないテーブルは、委譲元が読めても読めない」）。委譲元本人が
+/// 委譲したものだけを数える（他の委譲元が委譲したテーブルを、この委譲元の権限で読まない）。
+pub async fn delegated_objects(
+    db: &PgPool,
+    tenant_id: &str,
+    workflow_id: Uuid,
+    delegator: &str,
+    prefix: &str,
+    required: Relation,
+    limit: i64,
+) -> Result<Vec<String>, DelegationError> {
+    let satisfying = relations_satisfying(required);
+    sqlx::query_scalar(
+        "SELECT DISTINCT object_ref FROM workflow_delegation \
+         WHERE tenant_id = $1 AND workflow_id = $2 AND delegator = $3 AND revoked_at IS NULL \
+           AND relation = ANY($4) AND starts_with(object_ref, $5) \
+         ORDER BY object_ref LIMIT $6",
+    )
+    .bind(tenant_id)
+    .bind(workflow_id)
+    .bind(delegator)
+    .bind(satisfying)
+    .bind(prefix)
+    .bind(limit)
+    .fetch_all(db)
+    .await
+    .map_err(map_db)
+}
+
 /// `required` を含意する委譲の relation（`data_table` の `owner ⊇ editor ⊇ viewer`・
 /// `crates/authz/model/authorization-model.fga` の定義に従う）。それ以外の relation は自身だけ。
 fn relations_satisfying(required: Relation) -> Vec<&'static str> {
