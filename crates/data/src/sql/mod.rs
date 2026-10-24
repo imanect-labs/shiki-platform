@@ -256,31 +256,28 @@ impl DataStore {
                     .flatten()
             })
             .map(|r| r.id);
-        let found = match pick {
-            Some(id) => {
+        let found = if let Some(id) = pick {
+            match self
+                .open_for_read(ctx, az, id, AuditAction::DataQuerySql, trace_id)
+                .await
+            {
+                Ok(table) => Some(table),
+                Err(DataError::NotFound | DataError::Forbidden) => None,
+                Err(e) => return Err(e),
+            }
+        } else {
+            // 見えない候補しか無い: 見えない表を名指しした試行を、以前と同じく読取の拒否として監査に
+            // 残す（応答は存在しないときと同じ・`check_all` は監査しない・design §4.9）。
+            if let Some(first) = rows.first() {
                 match self
-                    .open_for_read(ctx, az, id, AuditAction::DataQuerySql, trace_id)
+                    .open_for_read(ctx, az, first.id, AuditAction::DataQuerySql, trace_id)
                     .await
                 {
-                    Ok(table) => Some(table),
-                    Err(DataError::NotFound | DataError::Forbidden) => None,
+                    Ok(_) | Err(DataError::NotFound | DataError::Forbidden) => {}
                     Err(e) => return Err(e),
                 }
             }
-            None => {
-                // 見えない候補しか無い: 見えない表を名指しした試行を、以前と同じく読取の拒否として監査に
-                // 残す（応答は存在しないときと同じ・`check_all` は監査しない・design §4.9）。
-                if let Some(first) = rows.first() {
-                    match self
-                        .open_for_read(ctx, az, first.id, AuditAction::DataQuerySql, trace_id)
-                        .await
-                    {
-                        Ok(_) | Err(DataError::NotFound | DataError::Forbidden) => {}
-                        Err(e) => return Err(e),
-                    }
-                }
-                None
-            }
+            None
         };
         let Some(table) = found else {
             // 存在しない・見えないを区別しない。候補は閲覧者に見えるテーブルの名前だけ。
