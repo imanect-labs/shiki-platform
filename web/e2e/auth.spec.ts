@@ -66,11 +66,16 @@ test("未ログイン保護ページ→ログイン→戻り先復帰→ダミ�
   );
   // 6. ログアウト → セッション破棄。BFF は id_token_hint を出さないため Keycloak が
   //    ログアウト確認画面を挟むことがある。出たら確定する。
+  //    ログアウトの遷移（Keycloak の end-session）が始まる前に次の goto を打つと遷移が中断され、
+  //    Keycloak のセッションが残って /login から黙って再ログインされる。今の画面を離れるまで待つ。
+  const beforeLogout = page.url();
   await page.getByRole("button", { name: "アカウントメニューを開く" }).click();
   await page.getByRole("menuitem", { name: "ログアウト" }).click();
-  await page.waitForURL(/(:8081\/.*logout|localhost:3000)/, { timeout: 20_000 });
-  if (page.url().includes(":8081")) {
+  await page.waitForURL((url) => url.href !== beforeLogout, { timeout: 20_000, waitUntil: "commit" });
+  const onLogoutConfirm = (url: URL) => url.host.endsWith(":8081") && url.pathname.includes("/logout");
+  if (onLogoutConfirm(new URL(page.url()))) {
     await page.locator("#kc-logout, button[type=submit], input[type=submit]").first().click();
+    await page.waitForURL((url) => !onLogoutConfirm(url), { timeout: 20_000, waitUntil: "commit" });
   }
 
   // ユーザーのデータのキーは（他ユーザー分・旧来の素のキーも含め）消え、画面の好みは残る。
