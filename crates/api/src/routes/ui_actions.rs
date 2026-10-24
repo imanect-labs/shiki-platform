@@ -47,10 +47,29 @@ fn is_yui_action(action_id: &str) -> bool {
 /// アクション実行レスポンス。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UiActionResponse {
-    /// 束縛種別ごとの結果（handler: 実行結果 / workflow: run_id /
-    /// data_view: `{"kind":"data_view","result": DataViewRun}`・ミニアプリの画面の表）。
-    #[schema(value_type = Object)]
+    /// 束縛種別ごとの結果（`kind` で判別する。値は `gui::ActionDispatcher` が組む JSON で、形は
+    /// [`UiActionResult`] が正）。
+    #[schema(value_type = UiActionResult)]
     pub result: serde_json::Value,
+}
+
+/// アクションの結果（束縛種別ごと・`kind` で判別）。
+///
+/// 実行時の値は `gui::ActionDispatcher` が `serde_json::json!` で組む（gui は api に依存しない）。
+/// この型は OpenAPI → TS の**単一定義**で、画面が手書きのキャストをせずに `kind` で絞り込めるようにする。
+/// 形の一致は下のテストが dispatcher と同じ JSON と突き合わせて固定する。
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UiActionResult {
+    /// ハンドラの実行結果（ハンドラごとに形が違う）。
+    Handler {
+        #[schema(value_type = Object)]
+        result: serde_json::Value,
+    },
+    /// 起動したワークフローの run。
+    Workflow { run_id: Uuid },
+    /// 保存ビューの 1 ページ（ミニアプリの画面の表・```data_grid・Task 15.7）。
+    DataView { result: data::DataViewRun },
 }
 
 /// 図のボタンの誤り。値の検証（部品の定義・ワークフローの `input_schema`）の誤りは、画面が
@@ -194,6 +213,47 @@ mod tests {
         };
         assert_eq!(body["code"], "index_preparing");
         assert_eq!(body["field"], "dept");
+    }
+
+    /// OpenAPI の [`UiActionResult`] が `gui::ActionDispatcher` の組む JSON と同じ形であること
+    /// （画面は生成型の `kind` で絞り込むので、形がずれると型検査を素通りして壊れる）。
+    #[test]
+    fn ui_action_result_schema_matches_dispatcher_json() {
+        let run_id = Uuid::from_u128(7);
+        assert_eq!(
+            serde_json::to_value(UiActionResult::Workflow { run_id }).unwrap(),
+            serde_json::json!({ "kind": "workflow", "run_id": run_id })
+        );
+        let out = serde_json::json!({ "ok": true });
+        assert_eq!(
+            serde_json::to_value(UiActionResult::Handler {
+                result: out.clone()
+            })
+            .unwrap(),
+            serde_json::json!({ "kind": "handler", "result": out })
+        );
+        let run = data::DataViewRun {
+            view_id: Uuid::from_u128(1),
+            version: 3,
+            table_id: Uuid::from_u128(2),
+            display: data::ViewSpec::default(),
+            result: data::QueryResult {
+                items: Some(vec![]),
+                groups: None,
+                next_cursor: Some("c".into()),
+                count: None,
+                sort_precision: data::SortPrecision::Exact,
+                sort_degraded: false,
+                shares_truncated: false,
+                suppressed: false,
+                snapshot_seq: None,
+            },
+        };
+        let dispatcher = serde_json::json!({ "kind": "data_view", "result": serde_json::to_value(&run).unwrap() });
+        assert_eq!(
+            serde_json::to_value(UiActionResult::DataView { result: run }).unwrap(),
+            dispatcher
+        );
     }
 
     #[test]

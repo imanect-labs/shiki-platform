@@ -406,6 +406,7 @@ use utoipa::{
         crate::routes::gui_errors::GuiValidationErrorResponse,
         crate::routes::ui_actions::UiActionRequest,
         crate::routes::ui_actions::UiActionResponse,
+        crate::routes::ui_actions::UiActionResult,
         crate::routes::skills::CreateSkillRequest,
         crate::routes::skills::UpdateSkillRequest,
         crate::routes::skills::SkillResponse,
