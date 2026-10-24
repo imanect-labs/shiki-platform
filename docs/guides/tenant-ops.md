@@ -1,6 +1,7 @@
 # テナント運用 Runbook（SAAS.2 / SAAS.5）
 
-SaaS のテナント作成・削除・名前空間移行の運用手順。実装: #87（プロビジョニング/削除）・#89（reconciliation・移行 CLI）。
+SaaS のテナント作成・削除・名前空間移行の運用手順。実装: #87（プロビジョニング/削除）・#89（reconciliation・移行 CLI）・
+#811（org group のテナント修飾）。
 
 ## 前提
 
@@ -41,6 +42,8 @@ curl -s -X POST "$SHIKI/admin/tenants" \
 - 初期管理者には org の `member`・`admin`（管理コンソール）・`audit_viewer`（監査ログ・#634）が付く。
   `audit_viewer` 導入前に作ったテナントは、同じリクエストを再実行するか、下の `shiki-admin audit-viewer grant`
   で付与するまで、誰も監査ログを読めない。
+- Keycloak の org group は **`/tenants/<tenant_id>/<org>`** に作られ、初期 admin はそこへ入る（#811）。
+  realm は全テナント共用なので、group をテナントで修飾して同じ org slug の別テナントと共有させない。
 
 ## 監査閲覧者の付与・剥奪（shiki-admin audit-viewer）
 
@@ -105,7 +108,7 @@ curl -s -X DELETE "$SHIKI/admin/tenants/acme" -H "Authorization: Bearer $TOKEN"
 撤去順（全段冪等・途中失敗は同一リクエスト再実行で収束）:
 1. tenant 行を `deleting` へ
 2. セッション全失効（Redis）
-3. Keycloak: `tenant` 属性一致ユーザーと org グループを削除
+3. Keycloak: `tenant` 属性一致ユーザーと `/tenants/<tenant>` subtree（org・部署 group）を削除
 4. データ purge: FGA タプル（node/role/org。org は登録簿の 1 つに限らずテナント配下の全 org・#816）→ オブジェクト `{tenant}/` prefix → DB 行（1 txn・FK 順）
 5. tenant 行を `deleted`（tombstone）へ
 
@@ -131,6 +134,20 @@ DB 行の対象は `information_schema` から `tenant_id` 列を持つ実テー
 部署異動・ロール剥奪は**次回ログインで自動反映**（それまではセッション TTL 内は旧権限が残る点に注意。
 即時失効が必要ならセッション削除を併用）。role タプルの正は IdP claims — **FGA へ手動で role
 member タプルを足しても次回ログインで剥がれる**。本番の SCIM/グループ完全同期は SAAS.6。
+
+**group の置き場所（AD 連携顧客の運用要件・#811）**: org と部署の group は必ず
+**`/tenants/<tenant_id>/<org>[/<部署>...]`** の配下に置く（LDAP group マッパーの `groups.path`・IdP マッパーの
+`group` もこの配下を指す）。サーバは解決済み tenant_id の配下だけを org/部署とみなし、role id はテナントルート
+からの相対パス（`<org>/<部署>`）になる。
+
+- multi（SaaS）では、テナント無修飾の group（`/acme`・`/acme/eng`）や他テナント配下の group は
+  **org にも部署 role にもならない**（org は `default` に落ちる）。
+- single（オンプレ）は `/tenants/<auth.tenant_id>/...` を優先し、無ければ従来どおり直下の group（`/acme`）を使う。
+  従来解釈の結果は #811 以前と同じ（org は groups claim の**先頭要素**の先頭セグメント・ソートしない）。
+  自テナント配下の group が 1 つでもあれば、そのユーザーの旧形式 group は org にも部署にも使わない。
+- `tenants` はトップレベル group 名として予約。テナントルート（`/tenants/<tenant>`）自体は org にならない。
+  **オンプレの注意**: 既存 realm に `tenants` という名前のトップレベル group があると、その配下は従来解釈でも
+  org/部署として読まれなくなる（他テナントのものとみなす）。該当する場合はアップグレード前に名前を変える。
 
 ## シークレット暗号文の行束縛への移行（shiki-admin secrets-reencrypt）
 
@@ -186,9 +203,54 @@ shiki-admin retenant --from default --to acme --execute
   `tenant.retenant` エントリ（from/to 込み）を新テナントの chain へアンカーとして記録する。
   チェーンの検証（`GET /org-audit/verify`・#828）はこの記録の `from` を読み、境目より前の行を
   旧 tenant_id で自動的に検証する。
-- **IdP の tenant 属性**: リネーム後、Keycloak ユーザーの `attributes.tenant` を CLI が
-  自動追従する（provisioner 設定時）。未設定の場合は**手動で更新するまで新ログインが
-  旧テナント名前空間に落ちる**ため、必ず更新すること。
+- **IdP の tenant 属性と group**: リネーム後、Keycloak ユーザーの `attributes.tenant` と group
+  `/tenants/<from>` → `/tenants/<to>` を CLI が自動追従する（provisioner 設定時）。未設定の場合は**手動で更新するまで新ログインが
+  旧テナント名前空間に落ちる**（org/部署も解決されない）ため、必ず更新すること。`/tenants/<to>` が既にあると
+  group はリネームせず、警告を出して非 0 で終わる。`/tenants/<from>` 配下の org・部署 group のツリーを
+  `/tenants/<to>` 配下へ統合し（メンバー・group のロール割り当て・属性も移す）、移し終えたら `/tenants/<from>` を削除する。
+
+## org group のテナント修飾への移行（shiki-admin migrate-org-groups）
+
+#811 以前は org group を素の slug（`/acme`）で作っていたため、同じ slug を使うテナント同士で group
+（とそこに付いた client role・マッパー・属性）を共有し得た。新しいサーバはテナント修飾の
+`/tenants/<tenant>/<org>` しか org/部署として読まない（multi）。稼働中の SaaS テナントが無い前提で、
+**停止して一括移行**する（二重読みの移行期間は設けない）。
+
+1. shiki-server を停止する。multi（SaaS）では旧サーバは新パスを読めず、新サーバは旧パスを読まないため、混在させない。
+   single（オンプレ）の新サーバは自テナント配下が無ければ旧形式（`/acme`）も読むが、移行中の group 変更を
+   利用者から隔離するため同じく停止して行う。
+2. dry-run で計画を確認する:
+   ```bash
+   shiki-admin migrate-org-groups            # dry-run（旧 group ごとの複製先・移動件数・警告）
+   shiki-admin migrate-org-groups --only acme --exclude ops-admins   # 対象を明示・除外
+   ```
+   - 対象は **org と分かっている旧トップレベル group だけ**: tenant 登録簿の org、既に `/tenants/<t>/<slug>` へ
+     移した slug、`--only` で明示した slug（`--exclude` で除外）。LDAP 同期・運用用のトップレベル group を
+     `/tenants/<t>/` へ複製すると org 候補に紛れて org が入れ替わり得るため、それ以外は「対象外」と出して触らない。
+     single（オンプレ）は登録簿が空のことが多いので `--only` で指定する。
+   - 対象の旧 group を部署ごと読み、移行先テナントごとに
+     `/tenants/<tenant>/<org>/...` へ複製する計画を出す。移行先は multi ならユーザーの `tenant` 属性、
+     single なら `auth.tenant_id`。メンバーの居ない旧 group は、tenant 登録簿で同じ org を使うテナントへ複製する。
+   - `tenant` 属性が無い・不正なメンバーは**動かさない**（旧 group も残る）。⚠️ として名前と旧パスが出るので、
+     属性を直して再実行する。
+   - 旧 group の **client role / realm role の割り当て・属性はコピーしない**（件数だけ出る）。旧 group パスを参照する
+     IdP マッパー・LDAP group マッパー（`groups.path`）・既定 group も一覧に出る。必要なものは新パスへ手で付け直す。
+     これらを取得できなかった場合は、実際の参照ではなく「⚠️ 調べられなかった realm 設定（手で確認要）」として
+     種別だけが出る。その場合は dry-run の一覧を信用せず、Keycloak 側で手動確認を終えるまで `--execute` しない。
+3. 実行する:
+   ```bash
+   shiki-admin migrate-org-groups --execute
+   ```
+   旧 group ごとに、新 group を用意 → 各メンバーを新 group へ追加してから旧 group から外す → 全員を移せた
+   旧 group を subtree ごと削除 → その旧 group の計画に含まれる全移行先テナントのセッションを失効（再ログインで
+   新しい groups claim を取らせる。移動の成否を問わず、計画に載ったテナントは失効させてから次へ進む・途中で
+   失敗した場合も、その旧 group の移行先までは失効させてから止まる）。全段冪等で、
+   途中で失敗しても再実行で収束する（移動だけ済んで削除に失敗した旧 group も、移行済み slug として削除まで進む）。
+   旧 group から外せないメンバー（LDAP_ONLY の同期 group 等）は ⚠️ で報告し、その旧 group は残す。
+   このときは全計画を処理した後に**非 0 で終了**する（旧 group と付いた role が残るため成功扱いにしない）。
+   LDAP 側のマッパー設定を直してから再実行する。再実行して「移行する旧 org group はありません」になれば完了。
+4. 新しい shiki-server を起動する。dev の compose は realm を初回だけ import するため、既存の Keycloak
+   ボリュームを使い続けるなら同じ CLI で移行するか、Keycloak の DB を作り直す。
 
 ## アップグレード時の注意
 

@@ -174,6 +174,76 @@ impl AuthzClient for AdminGate {
     }
 }
 
+/// `/me` のメンバー判定で問われた organization オブジェクトを記録する認可モック（#811）。
+/// AuthContext の org がどう解決されたかを HTTP 越しに観測する（member だけ allow）。
+#[derive(Default)]
+struct OrgProbe {
+    asked: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl AuthzClient for OrgProbe {
+    async fn check(
+        &self,
+        _subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+        _consistency: Consistency,
+    ) -> Result<bool, AuthzError> {
+        if relation == Relation::Member {
+            self.asked.lock().unwrap().push(object.to_string());
+        }
+        Ok(relation == Relation::Member)
+    }
+
+    async fn write_tuple(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
+    }
+
+    async fn delete_tuple(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
+    }
+
+    async fn read_tuples(
+        &self,
+        _object: &FgaObject,
+        _relation: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        Ok(vec![])
+    }
+
+    async fn list_objects(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
+
+    async fn delete_object_tuples(&self, _object: &FgaObject) -> Result<u32, AuthzError> {
+        Ok(0)
+    }
+
+    async fn read_subject_objects(
+        &self,
+        _subject: &Subject,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
+}
+
 /// ストレージのバイト層スタブ（/me・認証フローのテストでは呼ばれない）。
 struct FakeStore;
 
@@ -1032,6 +1102,62 @@ async fn openapi_json_is_served() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// multi テナンシーで、セッション middleware → OrgId → AuthContext の org が自テナント配下の
+/// group だけから解決されることを HTTP 越しに確かめる（#811）。
+#[tokio::test]
+async fn multi_tenant_org_comes_only_from_own_tenant_groups() {
+    let cases: &[(&[&str], &str)] = &[
+        // 他テナント配下の group（名前が先でも）は拾わず、自テナントの org を採る。
+        (
+            &["/tenants/evil/aaa", "/tenants/t1/acme/eng"],
+            "organization:t1|acme",
+        ),
+        // 他テナント配下だけ・テナント無修飾の旧 group だけなら既定 org。
+        (&["/tenants/evil/aaa"], "organization:t1|default"),
+        (&["/acme"], "organization:t1|default"),
+        // tenant の比較はセグメント単位（`t10` は `t1` ではない）。
+        (&["/tenants/t10/acme"], "organization:t1|default"),
+    ];
+    for (groups, expected) in cases {
+        let store = Arc::new(MemorySessionStore::new());
+        let mut record = session_record(now() + 3600, None, "csrf");
+        record.tenant_id = "t1".into();
+        record.principal.tenant_id = Some("t1".into());
+        record.principal.groups = groups.iter().map(|g| g.to_string()).collect();
+        store
+            .put("t1", "sid-multi", &record, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let probe = Arc::new(OrgProbe::default());
+        let mut state = state_with_authz(store, probe.clone());
+        let mut config = (*state.config).clone();
+        config.auth.tenancy = Tenancy::Multi;
+        state.config = Arc::new(config);
+        let resp = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/me")
+                    .header(COOKIE, "shiki_session=sid-multi.t1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{groups:?}");
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let me: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(me["tenant_id"], "t1");
+        assert_eq!(
+            Some(me["org"].as_str().unwrap()),
+            expected.strip_prefix("organization:t1|"),
+            "{groups:?}"
+        );
+        let asked = probe.asked.lock().unwrap().clone();
+        assert!(!asked.is_empty(), "{groups:?}");
+        assert!(asked.iter().all(|o| o == expected), "{groups:?}: {asked:?}");
+    }
 }
 
 // --- ChatGPT プランの接続（/me/chatgpt・#854） ---------------------------------
