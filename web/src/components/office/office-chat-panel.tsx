@@ -35,7 +35,7 @@ export function OfficeChatPanel({
     return kind ? { fileId, kind } : null;
   }, [fileId, fileName]);
   // アクティブ会話 id はユーザー単位の localStorage にある（#817）。ユーザーが確定する前に
-  // 読むと「保存値なし」とみなして新しい会話を作ってしまうため、確定まで待つ。
+  // 読むと「保存値なし」とみなして、続きの会話ではなく新しい会話の入力欄を出してしまうため、確定まで待つ。
   const scopeReady = useStorageScopeReady();
   // /me が 401 以外（403・5xx・ネットワーク断）で失敗するとスコープは確定しない。待ち続けず、
   // 失敗を伝えて取り直せるようにする（401 はログイン画面へ送られるので待ち表示のままでよい）。

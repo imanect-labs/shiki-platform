@@ -104,6 +104,8 @@ export default function HomePage() {
           <ComposerArrow className="absolute -top-16 right-4 z-10 hidden md:block" />
           <Composer
             onSubmit={startChat}
+            // 書きかけは残す（別の画面へ行って戻っても続きから書ける）。
+            draftKey="shiki.composer.draft:home"
             autoFocus
             disabled={starting}
             className="w-full"
