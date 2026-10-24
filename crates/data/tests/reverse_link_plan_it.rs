@@ -3,7 +3,7 @@
 //! - 片方向リンク（対称列なし）の参照元の逆引き（材料化した派生列の再計算待ち・派生値の再配信）は、
 //!   `data_link_dst_idx`（migrations/0101）で引く。主キーでは `dst_record` で絞れず、そのリンク列の全行を
 //!   書込 Tx の中で読んでいた。
-//! - 再計算待ちの 1 回分は主キーの順に `LIMIT` 件だけ読む（全待ち行を読んで並べ替えない）。
+//! - 再計算待ちの 1 回分は行の順の索引で `LIMIT` 件だけ読む（全待ち行を読んで並べ替えない）。
 //!
 //! 統計（ANALYZE）を書き換えるので、他のテストと計画が干渉しないよう独立したテストバイナリにする。
 
@@ -149,7 +149,7 @@ async fn reverse_link_lookup_uses_the_destination_index() {
 }
 
 #[tokio::test]
-async fn derived_pending_step_reads_in_primary_key_order_without_sorting() {
+async fn derived_pending_step_reads_in_row_order_without_sorting() {
     let Some(pool) = common::setup().await else {
         return;
     };
@@ -185,8 +185,8 @@ async fn derived_pending_step_reads_in_primary_key_order_without_sorting() {
         walk(&plan, &mut idx, &mut nodes);
         assert_eq!(
             idx,
-            vec!["data_derived_pending_pkey".to_string()],
-            "主キーを前から読む（generic={generic}）: {plan}"
+            vec!["data_derived_pending_row_idx".to_string()],
+            "行の順の索引を前から読む（generic={generic}）: {plan}"
         );
         assert!(
             !nodes.iter().any(|n| n.contains("Sort")),

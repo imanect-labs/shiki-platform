@@ -267,7 +267,20 @@ impl DataStore {
                     Err(e) => return Err(e),
                 }
             }
-            None => None,
+            None => {
+                // 見えない候補しか無い: 見えない表を名指しした試行を、以前と同じく読取の拒否として監査に
+                // 残す（応答は存在しないときと同じ・`check_all` は監査しない・design §4.9）。
+                if let Some(first) = rows.first() {
+                    match self
+                        .open_for_read(ctx, az, first.id, AuditAction::DataQuerySql, trace_id)
+                        .await
+                    {
+                        Ok(_) | Err(DataError::NotFound | DataError::Forbidden) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                None
+            }
         };
         let Some(table) = found else {
             // 存在しない・見えないを区別しない。候補は閲覧者に見えるテーブルの名前だけ。

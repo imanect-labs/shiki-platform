@@ -3961,7 +3961,7 @@ async fn sql_table_names_ignore_invisible_case_variants() {
     let tenant = format!("t-{}", Uuid::new_v4());
     let alice = ctx(&tenant, "alice");
     let bob = ctx(&tenant, "bob");
-    let store = DataStore::new(pool, Arc::clone(&authz), Arc::new(AllowRefs));
+    let store = DataStore::new(pool.clone(), Arc::clone(&authz), Arc::new(AllowRefs));
     let shown = store
         .create_table(
             &alice,
@@ -4008,6 +4008,22 @@ async fn sql_table_names_ignore_invisible_case_variants() {
         sql_rows(&store, &alice, "SELECT name FROM Sales").await,
         vec![vec![json!("visible")]]
     );
+    // どちらも見えない carol: 応答は存在しない表と同じだが、見えない表を名指しした試行は監査に拒否で残る。
+    let carol = ctx(&tenant, "carol");
+    assert!(store
+        .run_sql(&carol, &sql_req("SELECT name FROM sales"), None)
+        .await
+        .is_err());
+    let denied: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND decision = 'deny' \
+         AND action = 'data.query.sql' AND object_id = $2",
+    )
+    .bind(&tenant)
+    .bind(invisible.id.to_string())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(denied >= 1, "見えない表の名指しが監査に残らない");
 }
 
 /// ⑮-4（R1-E）材料化した計算列は本体に値が無いので、スナップショット読取（本体の SQL で評価）で絞り込むと

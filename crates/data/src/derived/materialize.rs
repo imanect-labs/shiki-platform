@@ -726,11 +726,13 @@ pub const REFERRERS_BY_TARGET_SQL: &str = "SELECT DISTINCT src_record FROM data_
      WHERE tenant_int = $1 AND table_int = $2 AND field_id = $3 \
        AND dst_table_int = $4 AND dst_record = ANY($5::int8[])";
 
-/// 再計算待ちの 1 回分（主キーの順に `$3` 件・全待ち行を並べ替えない）。
+/// 再計算待ちの 1 回分（行の順に `$3` 件）。1 行の再計算は材料化した全列をまとめて計算し直すので、同じ行の
+/// 列の待ちを同じ回で消せるよう行ごとに読む（列の順だと k 列のテーブルは各行を k 回計算し直す）。
+/// `data_derived_pending_row_idx`（migrations/0101）を前から読む（全待ち行を並べ替えない）。
 pub const DERIVED_PENDING_STEP_SQL: &str =
     "SELECT field_id, record_int, gen FROM data_derived_pending \
      WHERE tenant_int = $1 AND table_int = $2 \
-     ORDER BY field_id, record_int LIMIT $3";
+     ORDER BY record_int, field_id LIMIT $3";
 
 impl DataStore {
     /// 材料化した列の前提（4 階層）を今の状態で検査し直し、崩れた列を降格する。降格したら `true`。

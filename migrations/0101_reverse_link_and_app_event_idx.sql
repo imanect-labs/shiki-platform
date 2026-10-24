@@ -1,5 +1,5 @@
--- 独立レビュー（データ書込・配信）の確定指摘 R2-A・R2-E: 書込 Tx・リレー・ライブテールが全件を走査していた
--- 2 つの読み方に索引を足す。
+-- 独立レビュー（データ書込・配信）の確定指摘 R2-A・R2-C・R2-E: 書込 Tx・リレー・ライブテール・再計算待ちが
+-- 全件を走査（並べ替え）していた 3 つの読み方に索引を足す。
 --
 -- ① 片方向リンク（対称列なし）の参照元の逆引き。参照先のレコードが変わったとき、材料化した派生列の
 --    再計算待ち（crates/data/src/derived/materialize.rs）と派生値の再配信（crates/data/src/stream/relay.rs）は
@@ -20,3 +20,9 @@ create index data_link_dst_idx
 create index storage_event_outbox_app_event_idx
     on storage_event_outbox (tenant_id, id)
     where payload ? 'event_type' and payload ->> 'event_type' <> 'data.record.changed';
+
+-- ③ 材料化した派生列の再計算待ち（crates/data/src/derived/materialize.rs の DERIVED_PENDING_STEP_SQL）。
+--    1 行の再計算は材料化した全列をまとめて計算し直すので、待ちは行の順（record_int, field_id）に読む。
+--    主キー（…, field_id, record_int）とは並びが逆なので、行の順の索引を足す（毎回の全待ち行の並べ替えをしない）。
+create index data_derived_pending_row_idx
+    on data_derived_pending (tenant_int, table_int, record_int, field_id);
