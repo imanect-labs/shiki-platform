@@ -309,7 +309,8 @@ impl DataStore {
                     crate::InvalidCode::FieldNotSortable,
                     Some(field),
                     format!(
-                        "派生フィールド '{field}' は索引にできません（閲覧者ごと・時刻依存の値）"
+                        "「{}」は索引にできません（閲覧者ごと・時刻によって値が変わる列）",
+                        f.label()
                     ),
                 ));
             }
@@ -318,7 +319,8 @@ impl DataStore {
                     crate::InvalidCode::FieldNotSortable,
                     Some(field),
                     format!(
-                        "対称列 '{field}' は索引にできません（リンク元の列で絞り込んでください）"
+                        "対称列「{}」は索引にできません（リンク元の列で絞り込んでください）",
+                        f.label()
                     ),
                 ));
             }
