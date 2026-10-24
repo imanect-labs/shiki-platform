@@ -5,6 +5,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 impl StorageService {
     /// ファイルの版履歴を新しい順に返す（viewer 権限）。
@@ -26,7 +27,7 @@ impl StorageService {
         self.require_read(
             ctx,
             &ctx.ns().file(&file_id.to_string()),
-            "file.versions.list",
+            AuditAction::FileVersionsList,
             "file",
             &file_id.to_string(),
             trace_id,
@@ -65,7 +66,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "file.versions.list",
+                    action: AuditAction::FileVersionsList,
                     object_type: "file",
                     object_id: &file_id.to_string(),
                     decision: Decision::Allow,
@@ -93,7 +94,7 @@ impl StorageService {
         self.require_read(
             ctx,
             &ctx.ns().file(&file_id.to_string()),
-            "file.version.download_url.issue",
+            AuditAction::FileVersionDownloadUrlIssue,
             "file",
             &file_id.to_string(),
             trace_id,
@@ -125,7 +126,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "file.version.download_url.issue",
+                    action: AuditAction::FileVersionDownloadUrlIssue,
                     object_type: "file",
                     object_id: &file_id.to_string(),
                     decision: Decision::Allow,

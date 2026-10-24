@@ -12,6 +12,7 @@ use axum::{
 use chrono::{Duration, NaiveDate};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Decision};
 use utoipa::{IntoParams, ToSchema};
 
@@ -207,7 +208,7 @@ pub async fn get_people(
         .record(
             &ctx,
             AuditEntry {
-                action: "org_admin.insights.people.view",
+                action: AuditAction::OrgAdminInsightsPeopleView,
                 object_type: "organization",
                 object_id: &object_id,
                 decision: Decision::Allow,
@@ -433,7 +434,7 @@ pub async fn update_settings(
         .record(
             &ctx,
             AuditEntry {
-                action: "org_admin.insights_settings.update",
+                action: AuditAction::OrgAdminInsightsSettingsUpdate,
                 object_type: "ai_insight_settings",
                 object_id: &object_id,
                 decision: Decision::Allow,

@@ -8,6 +8,7 @@
 //! 評価も、その人自身の行として残る（1 人 1 回答 1 行）。
 
 use authz::{AuthContext, Relation};
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::error::ChatError;
@@ -63,7 +64,7 @@ impl ChatStore {
             ctx,
             thread_id,
             Relation::Viewer,
-            "thread.feedback",
+            AuditAction::ThreadFeedback,
             trace_id,
         )
         .await?;
@@ -118,7 +119,7 @@ impl ChatStore {
             ctx,
             thread_id,
             Relation::Viewer,
-            "thread.feedback",
+            AuditAction::ThreadFeedback,
             trace_id,
         )
         .await?;
@@ -147,7 +148,7 @@ impl ChatStore {
             ctx,
             thread_id,
             Relation::Viewer,
-            "thread.feedback",
+            AuditAction::ThreadFeedback,
             trace_id,
         )
         .await?;

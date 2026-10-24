@@ -12,6 +12,7 @@
 //! client_id は決定的なので再インストールで再利用される）。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use app_gateway::{AiPin, AppInstallation, AppInstallationStore, NewAppInstallation, OAuthClient};
 use authz::{AuthContext, AuthzClient, CapabilityScope, Relation};
@@ -165,7 +166,8 @@ impl InstallService {
             Ok(clients) => clients,
             Err(e) => {
                 self.compensate_tables(ctx, &created, trace_id).await;
-                self.audit_deny(ctx, app_id, "app.install", trace_id).await;
+                self.audit_deny(ctx, app_id, AuditAction::AppInstall, trace_id)
+                    .await;
                 return Err(e);
             }
         };
@@ -258,7 +260,7 @@ impl InstallService {
                     .iter()
                     .any(|k| verify_manifest_signature(manifest, &sig, k).is_ok());
                 if !ok {
-                    self.audit_deny(ctx, app_id, "app.install.signature", None)
+                    self.audit_deny(ctx, app_id, AuditAction::AppInstallSignature, None)
                         .await;
                     return Err(AppPlatformError::Forbidden);
                 }

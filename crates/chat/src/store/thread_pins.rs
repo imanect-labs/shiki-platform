@@ -6,6 +6,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, Relation};
 use serde_json::json;
@@ -28,8 +29,14 @@ impl ChatStore {
         mini_app: Option<(Uuid, i64)>,
         trace_id: Option<&str>,
     ) -> Result<(), ChatError> {
-        self.require_thread(ctx, thread_id, Relation::Owner, "thread.set_pins", trace_id)
-            .await?;
+        self.require_thread(
+            ctx,
+            thread_id,
+            Relation::Owner,
+            AuditAction::ThreadSetPins,
+            trace_id,
+        )
+        .await?;
         let mut tx = self.db.begin().await.map_err(map_db)?;
         let updated = sqlx::query(
             "UPDATE thread SET mini_app_id = $3, mini_app_version = $4, updated_at = now() \
@@ -52,7 +59,7 @@ impl ChatStore {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "thread.set_pins",
+                    action: AuditAction::ThreadSetPins,
                     object_type: "thread",
                     object_id: &thread_id.to_string(),
                     decision: Decision::Allow,
@@ -84,7 +91,7 @@ impl ChatStore {
             ctx,
             thread_id,
             Relation::Owner,
-            "thread.set_skills",
+            AuditAction::ThreadSetSkills,
             trace_id,
         )
         .await?;
@@ -124,7 +131,7 @@ impl ChatStore {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "thread.set_skills",
+                    action: AuditAction::ThreadSetSkills,
                     object_type: "thread",
                     object_id: &thread_id.to_string(),
                     decision: Decision::Allow,

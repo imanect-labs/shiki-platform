@@ -19,8 +19,9 @@ use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveTime, Offset, Utc}
 use futures::stream;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use storage::audit::AuditAction;
 use storage::{
-    audit::{AuditEntry, Decision},
+    audit::{AuditCategory, AuditEntry, Decision},
     audit_view::{AuditCursor, AuditDecision, AuditEvent, AuditFilter, AuditViewer},
 };
 use utoipa::{IntoParams, ToSchema};
@@ -77,6 +78,8 @@ pub struct AuditQuery {
     pub actor: Option<String>,
     /// 操作の種類。末尾が `.` なら前方一致（例: `file.`）、それ以外は完全一致。
     pub action: Option<String>,
+    /// 操作の分類（`file` など・語彙で決まる操作の集合）。
+    pub category: Option<AuditCategory>,
     /// 許可・拒否で絞る。
     pub decision: Option<AuditDecision>,
     /// 対象の種類（`file` など）。
@@ -163,6 +166,7 @@ fn to_filter(q: &AuditQuery, today: NaiveDate) -> Result<AuditFilter, ApiError> 
         to: jst_midnight(next_day).ok_or_else(bad_date)?,
         actor: text(q.actor.as_ref(), "操作した人")?,
         action: text(q.action.as_ref(), "操作の種類")?,
+        category: q.category,
         decision: q.decision,
         object_type: text(q.object_type.as_ref(), "対象の種類")?,
         object_id: text(q.object_id.as_ref(), "対象の ID")?,
@@ -187,6 +191,9 @@ fn filter_metadata(q: &AuditQuery, f: &AuditFilter) -> serde_json::Value {
         if let Some(v) = v {
             m.insert(k.into(), json!(v));
         }
+    }
+    if let Some(c) = f.category {
+        m.insert("category".into(), json!(c));
     }
     if let Some(d) = f.decision {
         m.insert("decision".into(), json!(d));
@@ -213,7 +220,7 @@ fn viewer(state: &AppState) -> AuditViewer {
 async fn record_read(
     state: &AppState,
     ctx: &authz::AuthContext,
-    action: &'static str,
+    action: AuditAction,
     trace: Option<&str>,
     metadata: serde_json::Value,
 ) -> Result<(), ApiError> {
@@ -233,7 +240,7 @@ async fn record_read(
         )
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, action, "監査ログの閲覧の記録に失敗（結果は返さない）");
+            tracing::error!(error = %e, action = %action, "監査ログの閲覧の記録に失敗（結果は返さない）");
             ApiError::Internal("監査ログに記録できなかったため表示を中止しました".into())
         })
 }
@@ -274,7 +281,14 @@ pub async fn list_events(
         m.insert("page".into(), json!("next"));
         m.insert("cursor".into(), json!(c.encode()));
     }
-    record_read(&state, &ctx, "org_audit.search", trace.as_deref(), metadata).await?;
+    record_read(
+        &state,
+        &ctx,
+        AuditAction::OrgAuditSearch,
+        trace.as_deref(),
+        metadata,
+    )
+    .await?;
     let next_cursor = (i64::try_from(events.len()).unwrap_or(i64::MAX) == limit)
         .then(|| events.last())
         .flatten()
@@ -457,7 +471,7 @@ pub async fn export_events(
     record_read(
         &state,
         &ctx,
-        "org_audit.export",
+        AuditAction::OrgAuditExport,
         trace.as_deref(),
         filter_metadata(&q, &filter),
     )
@@ -557,13 +571,14 @@ mod tests {
             from: Some(day("2026-10-20")),
             to: Some(day("2026-10-21")),
             action: Some("file.".into()),
+            category: Some(AuditCategory::Share),
             format: Some(AuditFormat::Csv),
             ..AuditQuery::default()
         };
         let f = to_filter(&q, day("2026-10-22")).unwrap_or_default();
         assert_eq!(
             filter_metadata(&q, &f),
-            json!({"from": "2026-10-20", "to": "2026-10-21", "action": "file.", "format": "csv"})
+            json!({"from": "2026-10-20", "to": "2026-10-21", "action": "file.", "category": "share", "format": "csv"})
         );
     }
 
@@ -573,6 +588,9 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(q.format, Some(AuditFormat::Jsonl));
         assert_eq!(q.decision, Some(AuditDecision::Deny));
+        let q: AuditQuery = serde_json::from_value(json!({"category": "file"})).unwrap_or_default();
+        assert_eq!(q.category, Some(AuditCategory::File));
+        assert!(serde_json::from_value::<AuditQuery>(json!({"category": "nope"})).is_err());
         assert!(serde_json::from_value::<AuditQuery>(json!({"format": "xlsx"})).is_err());
         assert!(serde_json::from_value::<AuditQuery>(json!({"decision": "maybe"})).is_err());
         assert_eq!(AuditFormat::default(), AuditFormat::Csv);

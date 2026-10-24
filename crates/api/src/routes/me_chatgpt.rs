@@ -24,7 +24,7 @@ use crate::{
     state::AppState,
 };
 use llm_gateway::{ChatGptAccount, ChatGptConnection, ChatGptError, ChatGptStatus};
-use storage::audit::{AuditEntry, Decision};
+use storage::audit::{AuditAction, AuditEntry, Decision};
 
 /// 接続の状態（本人から見た）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
@@ -163,7 +163,7 @@ async fn audit(
     state: &AppState,
     ctx: &authz::AuthContext,
     trace: Option<&str>,
-    action: &str,
+    action: AuditAction,
     metadata: serde_json::Value,
 ) {
     let object_id = format!("{}|{}|{}", ctx.tenant_id, ctx.org, ctx.principal.id);
@@ -182,7 +182,7 @@ async fn audit(
         )
         .await
     {
-        tracing::error!(error = %e, action, "ChatGPT 連携の監査記録に失敗");
+        tracing::error!(error = %e, %action, "ChatGPT 連携の監査記録に失敗");
     }
 }
 
@@ -265,7 +265,7 @@ pub async fn complete_chatgpt_login(
         &state,
         &ctx,
         trace.as_deref(),
-        "me.chatgpt.connect",
+        AuditAction::MeChatgptConnect,
         json!({ "account_email": status.email }),
     )
     .await;
@@ -299,7 +299,7 @@ pub async fn disconnect_chatgpt(
             &state,
             &ctx,
             trace.as_deref(),
-            "me.chatgpt.disconnect",
+            AuditAction::MeChatgptDisconnect,
             json!({}),
         )
         .await;

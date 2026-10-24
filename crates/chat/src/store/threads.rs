@@ -2,6 +2,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, Consistency, Relation};
 use chrono::{DateTime, Utc};
@@ -151,7 +152,7 @@ impl ChatStore {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "thread.create",
+                    action: AuditAction::ThreadCreate,
                     object_type: "thread",
                     object_id: &id.to_string(),
                     decision: Decision::Allow,
@@ -181,7 +182,7 @@ impl ChatStore {
             ctx,
             thread_id,
             Relation::Owner,
-            "thread.set_origin",
+            AuditAction::ThreadSetOrigin,
             trace_id,
         )
         .await?;
@@ -203,7 +204,7 @@ impl ChatStore {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "thread.set_origin",
+                    action: AuditAction::ThreadSetOrigin,
                     object_type: "thread",
                     object_id: &thread_id.to_string(),
                     decision: Decision::Allow,
@@ -264,8 +265,14 @@ impl ChatStore {
         thread_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Thread, ChatError> {
-        self.require_thread(ctx, thread_id, Relation::Viewer, "thread.get", trace_id)
-            .await?;
+        self.require_thread(
+            ctx,
+            thread_id,
+            Relation::Viewer,
+            AuditAction::ThreadGet,
+            trace_id,
+        )
+        .await?;
         let row: Option<ThreadRow> = sqlx::query_as(&format!(
             "SELECT {THREAD_COLUMNS} FROM thread \
              WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
@@ -289,7 +296,7 @@ impl ChatStore {
             ctx,
             thread_id,
             Relation::Viewer,
-            "thread.messages",
+            AuditAction::ThreadMessages,
             trace_id,
         )
         .await?;
@@ -353,8 +360,14 @@ impl ChatStore {
         message_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Message, ChatError> {
-        self.require_thread(ctx, thread_id, Relation::Viewer, "thread.message", trace_id)
-            .await?;
+        self.require_thread(
+            ctx,
+            thread_id,
+            Relation::Viewer,
+            AuditAction::ThreadMessage,
+            trace_id,
+        )
+        .await?;
         let row: Option<MessageRow> = sqlx::query_as(
             "SELECT id, role, content, agent_mode, parent_id, created_at FROM message \
              WHERE id = $1 AND thread_id = $2 AND tenant_id = $3",
@@ -376,7 +389,7 @@ impl ChatStore {
         ctx: &AuthContext,
         thread_id: Uuid,
         relation: Relation,
-        action: &str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<authz::FgaObject, ChatError> {
         let obj = ctx.ns().thread(&thread_id.to_string());

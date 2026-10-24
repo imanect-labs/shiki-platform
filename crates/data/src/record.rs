@@ -11,6 +11,7 @@ use authz::{AuthContext, Relation};
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use sqlx::types::Json;
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::model::{DataRecord, FieldType, TableSchema};
@@ -58,7 +59,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Editor,
-            "data.record.create",
+            AuditAction::DataRecordCreate,
             trace_id,
         )
         .await?;
@@ -102,7 +103,7 @@ impl DataStore {
         self.record_audit_on(
             &mut tx,
             ctx,
-            "data.record.create",
+            AuditAction::DataRecordCreate,
             &row.id.to_string(),
             trace_id,
             serde_json::json!({ "table_id": table_id }),
@@ -122,8 +123,14 @@ impl DataStore {
         id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<DataRecord, DataError> {
-        self.require(ctx, table_id, Relation::Viewer, "data.record.get", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            table_id,
+            Relation::Viewer,
+            AuditAction::DataRecordGet,
+            trace_id,
+        )
+        .await?;
         // テーブルの生存チェック込み（削除済みテーブルの残存 FGA タプルで読ませない）。
         let table = self.fetch_live(ctx, table_id).await?;
         let row = self
@@ -153,7 +160,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Editor,
-            "data.record.update",
+            AuditAction::DataRecordUpdate,
             trace_id,
         )
         .await?;
@@ -236,7 +243,7 @@ impl DataStore {
         self.record_audit_on(
             &mut tx,
             ctx,
-            "data.record.update",
+            AuditAction::DataRecordUpdate,
             &id.to_string(),
             trace_id,
             serde_json::json!({ "table_id": table_id, "rev": new_rev }),
@@ -259,7 +266,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Editor,
-            "data.record.delete",
+            AuditAction::DataRecordDelete,
             trace_id,
         )
         .await?;
@@ -305,7 +312,7 @@ impl DataStore {
         self.record_audit_on(
             &mut tx,
             ctx,
-            "data.record.delete",
+            AuditAction::DataRecordDelete,
             &id.to_string(),
             trace_id,
             serde_json::json!({ "table_id": table_id }),

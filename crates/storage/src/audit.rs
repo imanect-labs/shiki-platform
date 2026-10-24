@@ -9,6 +9,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, PgPool};
 
+pub use crate::audit_action::{AuditAction, AuditCategory};
 use crate::error::StorageError;
 
 /// 認可判定の結果（記録用）。
@@ -29,7 +30,7 @@ impl Decision {
 
 /// 1 件の監査エントリ（記録対象の正規化フィールド）。
 pub struct AuditEntry<'a> {
-    pub action: &'a str,
+    pub action: AuditAction,
     pub object_type: &'a str,
     pub object_id: &'a str,
     pub decision: Decision,
@@ -128,7 +129,7 @@ pub async fn record_on(
     .bind(&ctx.tenant_id)
     .bind(&ctx.org)
     .bind(&ctx.principal.id)
-    .bind(entry.action)
+    .bind(entry.action.as_str())
     .bind(entry.object_type)
     .bind(entry.object_id)
     .bind(entry.decision.as_str())
@@ -155,7 +156,7 @@ fn compute_entry_hash(
         ctx.tenant_id.as_str(),
         ctx.org.as_str(),
         ctx.principal.id.as_str(),
-        entry.action,
+        entry.action.as_str(),
         entry.object_type,
         entry.object_id,
         entry.decision.as_str(),
@@ -189,7 +190,7 @@ mod tests {
         )
     }
 
-    fn entry<'a>(action: &'a str) -> AuditEntry<'a> {
+    fn entry(action: AuditAction) -> AuditEntry<'static> {
         AuditEntry {
             action,
             object_type: "file",
@@ -203,8 +204,18 @@ mod tests {
     #[test]
     fn entry_hash_is_deterministic() {
         let c = ctx();
-        let h1 = compute_entry_hash(Some("prev"), &c, &entry("file.upload.finalize"), "{}");
-        let h2 = compute_entry_hash(Some("prev"), &c, &entry("file.upload.finalize"), "{}");
+        let h1 = compute_entry_hash(
+            Some("prev"),
+            &c,
+            &entry(AuditAction::FileUploadFinalize),
+            "{}",
+        );
+        let h2 = compute_entry_hash(
+            Some("prev"),
+            &c,
+            &entry(AuditAction::FileUploadFinalize),
+            "{}",
+        );
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 64);
     }
@@ -212,8 +223,8 @@ mod tests {
     #[test]
     fn entry_hash_chains_on_prev() {
         let c = ctx();
-        let a = compute_entry_hash(None, &c, &entry("file.delete"), "{}");
-        let b = compute_entry_hash(Some(&a), &c, &entry("file.delete"), "{}");
+        let a = compute_entry_hash(None, &c, &entry(AuditAction::FileDelete), "{}");
+        let b = compute_entry_hash(Some(&a), &c, &entry(AuditAction::FileDelete), "{}");
         // prev が変われば hash も変わる（チェーンが効く）。
         assert_ne!(a, b);
     }
@@ -221,8 +232,8 @@ mod tests {
     #[test]
     fn entry_hash_changes_with_decision() {
         let c = ctx();
-        let allow = entry("file.download_url.issue");
-        let mut deny = entry("file.download_url.issue");
+        let allow = entry(AuditAction::FileDownloadUrlIssue);
+        let mut deny = entry(AuditAction::FileDownloadUrlIssue);
         deny.decision = Decision::Deny;
         assert_ne!(
             compute_entry_hash(None, &c, &allow, "{}"),

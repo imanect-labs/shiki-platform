@@ -4,6 +4,7 @@
 
 use authz::AuthContext;
 use serde_json::json;
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::sign::verify_digest_signature;
@@ -44,8 +45,13 @@ impl SkillInstallService {
             .iter()
             .any(|k| verify_digest_signature(&signing, signature, k).is_ok());
         if !ok {
-            self.audit_deny(ctx, Uuid::nil(), "skill.import.signature", trace_id)
-                .await;
+            self.audit_deny(
+                ctx,
+                Uuid::nil(),
+                AuditAction::SkillImportSignature,
+                trace_id,
+            )
+            .await;
             return Err(AppPlatformError::Forbidden);
         }
 
@@ -114,7 +120,7 @@ impl SkillInstallService {
             .await?;
         self.record(
             ctx,
-            "skill.import",
+            AuditAction::SkillImport,
             &skill_id.to_string(),
             trace_id,
             json!({ "name": name, "version": version }),

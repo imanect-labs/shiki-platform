@@ -4,6 +4,7 @@
 //! 平文を返し（能力ゲートウェイ内から呼ぶ）、その解決イベントを毎回監査する。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, AuthzClient, Consistency, Relation};
 use chrono::{DateTime, Utc};
@@ -185,7 +186,7 @@ impl SecretStore {
         }
         self.record_audit(
             ctx,
-            "secret.create",
+            AuditAction::SecretCreate,
             &id.to_string(),
             trace_id,
             json!({ "name": name }),
@@ -210,8 +211,14 @@ impl SecretStore {
                 "plaintext が短すぎます（自動レダクト不能）".into(),
             ));
         }
-        self.require(ctx, id, Relation::Owner, "secret.rotate", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::Owner,
+            AuditAction::SecretRotate,
+            trace_id,
+        )
+        .await?;
         // 束縛先の org は**行の値**を使う（owner 判定の FGA は org を見ないため ctx.org と一致する保証がない）。
         let org: Option<String> =
             sqlx::query_scalar("SELECT org FROM secret WHERE tenant_id = $1 AND id = $2")
@@ -252,7 +259,7 @@ impl SecretStore {
         let row = row.ok_or(SecretError::NotFound)?;
         self.record_audit(
             ctx,
-            "secret.rotate",
+            AuditAction::SecretRotate,
             &id.to_string(),
             trace_id,
             json!({ "version": row.version }),
@@ -269,8 +276,14 @@ impl SecretStore {
         allowed_hosts: Vec<String>,
         trace_id: Option<&str>,
     ) -> Result<SecretMeta, SecretError> {
-        self.require(ctx, id, Relation::Owner, "secret.binding.update", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::Owner,
+            AuditAction::SecretBindingUpdate,
+            trace_id,
+        )
+        .await?;
         let hosts = normalize_hosts(&allowed_hosts)?;
         let row: Option<SecretRow> = sqlx::query_as(
             "UPDATE secret SET allowed_hosts = $3, updated_at = now() \
@@ -286,7 +299,7 @@ impl SecretStore {
         let row = row.ok_or(SecretError::NotFound)?;
         self.record_audit(
             ctx,
-            "secret.binding.update",
+            AuditAction::SecretBindingUpdate,
             &id.to_string(),
             trace_id,
             json!({}),
@@ -303,7 +316,13 @@ impl SecretStore {
         trace_id: Option<&str>,
     ) -> Result<(), SecretError> {
         let obj = self
-            .require(ctx, id, Relation::Owner, "secret.delete", trace_id)
+            .require(
+                ctx,
+                id,
+                Relation::Owner,
+                AuditAction::SecretDelete,
+                trace_id,
+            )
             .await?;
         let deleted = sqlx::query("DELETE FROM secret WHERE tenant_id = $1 AND id = $2")
             .bind(&ctx.tenant_id)
@@ -315,8 +334,14 @@ impl SecretStore {
             return Err(SecretError::NotFound);
         }
         let _ = self.authz.delete_object_tuples(&obj).await;
-        self.record_audit(ctx, "secret.delete", &id.to_string(), trace_id, json!({}))
-            .await
+        self.record_audit(
+            ctx,
+            AuditAction::SecretDelete,
+            &id.to_string(),
+            trace_id,
+            json!({}),
+        )
+        .await
     }
 
     /// 自分が owner のシークレット一覧（**参照名のみ**・平文は返さない）。
@@ -341,8 +366,14 @@ impl SecretStore {
         id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<SecretMeta, SecretError> {
-        self.require(ctx, id, Relation::CanUse, "secret.get_meta", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::CanUse,
+            AuditAction::SecretGetMeta,
+            trace_id,
+        )
+        .await?;
         let row: Option<SecretRow> = sqlx::query_as(
             "SELECT id, name, owner, allowed_hosts, version, created_at, updated_at \
              FROM secret WHERE tenant_id = $1 AND id = $2",
@@ -387,8 +418,14 @@ impl SecretStore {
         let id = row.id;
 
         // can_use 権限を確認（無ければ解決拒否＋監査 deny）。
-        self.require(ctx, id, Relation::CanUse, "secret.resolve", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::CanUse,
+            AuditAction::SecretResolve,
+            trace_id,
+        )
+        .await?;
 
         // 宛先束縛を**復号前に**検証する（許可外ホストへ平文を一切出さない・監査 deny）。
         if let Some(host) = destination_host {
@@ -400,7 +437,7 @@ impl SecretStore {
                     .record(
                         ctx,
                         AuditEntry {
-                            action: "secret.destination_denied",
+                            action: AuditAction::SecretDestinationDenied,
                             object_type: "secret",
                             object_id: &id.to_string(),
                             decision: Decision::Deny,
@@ -441,7 +478,7 @@ impl SecretStore {
         // 解決イベントを毎回監査（run 相関は trace_id）。
         self.record_audit(
             ctx,
-            "secret.resolve",
+            AuditAction::SecretResolve,
             &id.to_string(),
             trace_id,
             json!({ "name": name }),
@@ -462,7 +499,7 @@ impl SecretStore {
         ctx: &AuthContext,
         id: Uuid,
         relation: Relation,
-        action: &str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<authz::FgaObject, SecretError> {
         let obj = ctx.ns().secret(&id.to_string());
@@ -499,7 +536,7 @@ impl SecretStore {
     async fn record_audit(
         &self,
         ctx: &AuthContext,
-        action: &str,
+        action: AuditAction,
         object_id: &str,
         trace_id: Option<&str>,
         metadata: serde_json::Value,
