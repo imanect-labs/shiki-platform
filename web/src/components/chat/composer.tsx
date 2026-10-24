@@ -241,6 +241,8 @@ export const Composer = React.memo(function Composer({
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+    // スマホの「+」のシートはファイルを選ぶまで開いておき、選んだら閉じる。
+    setMenuOpen(false);
     setUploading({ name: file.name, fraction: 0 });
     try {
       const node = await uploadFile({

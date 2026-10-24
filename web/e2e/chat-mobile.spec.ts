@@ -97,6 +97,32 @@ test.describe("スマホのチャット", () => {
     await phone.context().close();
   });
 
+  test("「+」のシートの「ファイル・写真」は、ファイルを選ぶまでシートを閉じない", async ({
+    browser,
+    page,
+  }) => {
+    const phone = await phonePage(browser, page);
+    await phone.goto("/");
+
+    await phone.getByRole("button", { name: "追加メニューを開く" }).click();
+    const sheet = phone.getByTestId("composer-plus-sheet");
+    await expect(sheet).toBeVisible();
+    const [chooser] = await Promise.all([
+      phone.waitForEvent("filechooser"),
+      sheet.getByRole("button", { name: /ファイル・写真/ }).click(),
+    ]);
+    // ファイルを選んでいる間はシートが残る（閉じるアニメーション中も見えるので data-state で見る）。
+    await phone.waitForTimeout(500);
+    await expect(sheet).toHaveAttribute("data-state", "open");
+
+    const name = `mobile-attach-${Date.now().toString(36)}.txt`;
+    await chooser.setFiles({ name, mimeType: "text/plain", buffer: Buffer.from("添付のテスト") });
+    // 選んだらシートを閉じ、入力欄の上に添付が付く（完全一致でトーストの文と分ける）。
+    await expect(sheet).toBeHidden();
+    await expect(phone.getByText(name, { exact: true })).toBeVisible({ timeout: 30_000 });
+    await phone.context().close();
+  });
+
   test("「+」のシートからモデルを選ぶと、入力欄にモデルが出て 2 段になる", async ({ browser, page }) => {
     const phone = await phonePage(browser, page);
     await phone.goto("/");

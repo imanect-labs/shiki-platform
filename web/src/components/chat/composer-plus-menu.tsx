@@ -396,10 +396,8 @@ function PlusSheet({
               label="ファイル・写真"
               hint="この端末から"
               // ファイル選択はタップの操作の中で開く必要がある（閉じてからでは開かない端末がある）。
-              onClick={() => {
-                onUploadLocal();
-                onOpenChange(false);
-              }}
+              // シートは開いたままにし、ファイルを選んだら入力欄側で閉じる（取り消したら残る）。
+              onClick={onUploadLocal}
             />
             <AttachTile icon={HardDrive} label="ドライブから" hint="社内のファイル" onClick={() => thenOpen(onOpenDrive)} />
           </div>
