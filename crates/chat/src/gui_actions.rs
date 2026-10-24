@@ -210,7 +210,10 @@ pub(crate) fn map_chat_err(e: ChatError) -> ActionError {
         ChatError::Forbidden => ActionError::Forbidden,
         ChatError::Invalid(m) => ActionError::Invalid(m),
         // 利用枠超過も「待てば通る」＝一時障害として扱う（文言はそのまま出す）。
-        ChatError::Unavailable(m) | ChatError::RateLimited(m) => ActionError::Unavailable(m),
+        // プロバイダの拒否（Rejected）も従来どおり「利用できません」として返す。
+        ChatError::Unavailable(m) | ChatError::RateLimited(m) | ChatError::Rejected(m) => {
+            ActionError::Unavailable(m)
+        }
         ChatError::Internal(m) => ActionError::Internal(m),
     }
 }

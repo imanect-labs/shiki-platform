@@ -15,6 +15,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Decision};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -286,7 +287,7 @@ pub async fn enable_workflow(
         .record(
             &ctx,
             AuditEntry {
-                action: "workflow.enable",
+                action: AuditAction::WorkflowEnable,
                 object_type: "workflow",
                 object_id: &id.to_string(),
                 decision: Decision::Allow,
@@ -336,7 +337,7 @@ pub async fn disable_workflow(
         .record(
             &ctx,
             AuditEntry {
-                action: "workflow.disable",
+                action: AuditAction::WorkflowDisable,
                 object_type: "workflow",
                 object_id: &id.to_string(),
                 decision: Decision::Allow,

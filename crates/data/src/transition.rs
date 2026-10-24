@@ -11,6 +11,7 @@
 
 use authz::{AuthContext, Relation};
 use serde_json::{json, Value};
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Chain, Decision};
 use storage::event::{emit_on, WriteEvent, WriteOp};
 use uuid::Uuid;
@@ -46,7 +47,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Editor,
-            "data.record.transition",
+            AuditAction::DataRecordTransition,
             trace_id,
         )
         .await?;
@@ -87,7 +88,7 @@ impl DataStore {
                 .record(
                     ctx,
                     AuditEntry {
-                        action: "data.record.transition",
+                        action: AuditAction::DataRecordTransition,
                         object_type: "data_record",
                         object_id: &record_id.to_string(),
                         decision: Decision::Deny,
@@ -159,7 +160,7 @@ impl DataStore {
             &mut tx,
             ctx,
             AuditEntry {
-                action: "data.record.transition",
+                action: AuditAction::DataRecordTransition,
                 object_type: "data_record",
                 object_id: &record_id.to_string(),
                 decision: Decision::Allow,

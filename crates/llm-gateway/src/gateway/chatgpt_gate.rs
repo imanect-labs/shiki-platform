@@ -57,8 +57,8 @@ impl LlmGateway {
     /// 使えない本人専用のモデルを許可リストから外し、既定がそれなら Auto にする。保存はしない
     /// （管理画面は [`Self::tenant_settings`] で組織の設定そのものを読む）。
     pub async fn settings_for(&self, ctx: &AuthContext) -> Result<TenantLlmSettings, sqlx::Error> {
-        let settings = self.inner.tenants.load(ctx).await?;
         let catalog = &self.inner.config.catalog;
+        let settings = self.inner.tenants.load(ctx).await?.reconciled(catalog);
         let mut hidden = Vec::new();
         for m in &catalog.models {
             if !self.model_visible_to(ctx, m) {

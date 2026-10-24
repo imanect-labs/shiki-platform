@@ -7,6 +7,7 @@
 //! 部品を個別共有されなくても実行できる（miniapp-platform §7）。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use artifact::{ArtifactError, ArtifactKind, ArtifactStore, NewArtifact};
 use authz::AuthContext;
@@ -132,7 +133,7 @@ impl MiniAppStore {
 
         // 解決を監査に残す（誰が・どの版を・どのピン集合で実行面へ持ち出したか・Task 6.12）。
         let entry = AuditEntry {
-            action: "miniapp.resolve",
+            action: AuditAction::MiniappResolve,
             object_type: "artifact",
             object_id: &id.to_string(),
             decision: Decision::Allow,

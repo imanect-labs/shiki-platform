@@ -5,6 +5,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 impl StorageService {
     /// ゴミ箱からの復元（editor 権限・同名衝突は Conflict）。
@@ -22,7 +23,7 @@ impl StorageService {
             ctx,
             Relation::Editor,
             &ctx.ns().file(&file_id.to_string()),
-            "file.restore",
+            AuditAction::FileRestore,
             "file",
             &file_id.to_string(),
             trace_id,
@@ -67,7 +68,7 @@ impl StorageService {
             &mut tx,
             ctx,
             AuditEntry {
-                action: "file.restore",
+                action: AuditAction::FileRestore,
                 object_type: "file",
                 object_id: &file_id.to_string(),
                 decision: Decision::Allow,
@@ -113,7 +114,7 @@ impl StorageService {
             ctx,
             Relation::Editor,
             &ctx.ns().folder(&folder_id.to_string()),
-            "folder.restore",
+            AuditAction::FolderRestore,
             "folder",
             &folder_id.to_string(),
             trace_id,
@@ -175,7 +176,7 @@ impl StorageService {
             &mut tx,
             ctx,
             AuditEntry {
-                action: "folder.restore",
+                action: AuditAction::FolderRestore,
                 object_type: "folder",
                 object_id: &folder_id.to_string(),
                 decision: Decision::Allow,
@@ -222,7 +223,7 @@ impl StorageService {
             ctx,
             Relation::Editor,
             &ctx.ns().file(&file_id.to_string()),
-            "file.version.restore",
+            AuditAction::FileVersionRestore,
             "file",
             &file_id.to_string(),
             trace_id,
@@ -301,7 +302,7 @@ impl StorageService {
             &mut tx,
             ctx,
             AuditEntry {
-                action: "file.version.restore",
+                action: AuditAction::FileVersionRestore,
                 object_type: "file",
                 object_id: &file_id.to_string(),
                 decision: Decision::Allow,

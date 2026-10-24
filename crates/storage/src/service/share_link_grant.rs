@@ -25,6 +25,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 use super::share_link_util::kind_of;
 use crate::model::ShareLinkGrant;
@@ -59,7 +60,12 @@ impl StorageService {
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
         let Some((node_id, obj)) = self
-            .authorize_link_owner(ctx, link_id, "node.share_link.grant.revoke", trace_id)
+            .authorize_link_owner(
+                ctx,
+                link_id,
+                AuditAction::NodeShareLinkGrantRevoke,
+                trace_id,
+            )
             .await?
         else {
             return Err(StorageError::Forbidden);
@@ -124,7 +130,7 @@ impl StorageService {
             ctx,
             node_id,
             kind_of(&obj),
-            "node.share_link.grant.revoke",
+            AuditAction::NodeShareLinkGrantRevoke,
             json!({ "link_id": link_id, "user_id": user_id, "role": role,
                     "tuple_revoked": remaining == 0 }),
             trace_id,
@@ -239,7 +245,7 @@ impl StorageService {
         trace_id: Option<&str>,
     ) -> Result<Vec<ShareLinkGrant>, StorageError> {
         if self
-            .authorize_link_owner(ctx, link_id, "node.share_link.grants.list", trace_id)
+            .authorize_link_owner(ctx, link_id, AuditAction::NodeShareLinkGrantsList, trace_id)
             .await?
             .is_none()
         {

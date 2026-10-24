@@ -228,11 +228,23 @@ impl LlmGateway {
     }
 
     /// テナントの AI 設定を読む（行が無ければ既定＝全モデル有効・Auto）。
+    ///
+    /// カタログから消えたモデルを指す既定・Auto の振り先は外して返す（[`TenantLlmSettings::reconciled`]）。
     pub async fn tenant_settings(
         &self,
         ctx: &AuthContext,
     ) -> Result<TenantLlmSettings, sqlx::Error> {
-        self.inner.tenants.load(ctx).await
+        let saved = self.inner.tenants.load(ctx).await?;
+        let settings = saved.clone().reconciled(&self.inner.config.catalog);
+        if settings != saved {
+            tracing::warn!(
+                org = %ctx.org,
+                default_model = %saved.default_model,
+                auto_model = ?saved.auto_model,
+                "組織の AI 設定がカタログに無いモデルを指しているので、既定・Auto の振り先を戻して扱います"
+            );
+        }
+        Ok(settings)
     }
 
     /// 組織の AI 設定を更新する（読み・検証・保存を 1 トランザクションで直列化し、保存後の設定を返す）。

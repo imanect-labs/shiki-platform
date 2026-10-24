@@ -24,21 +24,27 @@ impl ChatWorker {
         tools: &mut Vec<Arc<dyn Tool>>,
         skills: &[crate::skill::AppliedSkill],
         attachments: Vec<AttachmentRef>,
+        run: &ClaimedRun,
     ) {
         if let Some(search) = &self.search {
             // skill の知識スコープを doc_search に反映する（Task 6.8・絞り込みのみ・
             // 複数ピンは全ピンが scope を持つ時のみ union・#344）。
             let scope = crate::skill::combined_scope(skills);
-            let doc_search = DocSearchTool::with_scope(search.clone(), scope.clone());
+            // この回答のための検索・読み出しとして監査に残す（1 回答の判定と引用を引ける・#829）。
+            let doc_search = DocSearchTool::with_scope(search.clone(), scope.clone())
+                .for_answer(run.thread_id, run.message_id);
             // 当たった文書を引用の外まで読む（#425）。認可は StorageService の viewer 判定で、
             // 知識スコープは検索と同じものを課す（スコープ ∩ ReBAC）。
             if let Some(storage) = &self.storage {
                 tools.push(Arc::new(doc_search.with_doc_read()));
-                tools.push(Arc::new(crate::doc_read_tool::DocReadTool::with_scope(
-                    search.clone(),
-                    storage.clone(),
-                    scope,
-                )));
+                tools.push(Arc::new(
+                    crate::doc_read_tool::DocReadTool::with_scope(
+                        search.clone(),
+                        storage.clone(),
+                        scope,
+                    )
+                    .for_answer(run.thread_id, run.message_id),
+                ));
             } else {
                 tools.push(Arc::new(doc_search));
             }

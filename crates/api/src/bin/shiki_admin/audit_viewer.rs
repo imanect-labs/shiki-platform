@@ -112,13 +112,13 @@ pub(crate) async fn run(args: &[String]) -> anyhow::Result<()> {
     // `changed` は今回の操作でタプルが実際に変わったか（既に付与済み・未付与なら false）。
     let (action, changed) = match a.op {
         Op::Grant => (
-            "org_audit.viewer.grant",
+            storage::audit::AuditAction::OrgAuditViewerGrant,
             fga.write_tuple(&subject, Relation::AuditViewer, &org_obj)
                 .await
                 .context("audit_viewer の付与に失敗")?,
         ),
         Op::Revoke => (
-            "org_audit.viewer.revoke",
+            storage::audit::AuditAction::OrgAuditViewerRevoke,
             fga.delete_tuple(&subject, Relation::AuditViewer, &org_obj)
                 .await
                 .context("audit_viewer の剥奪に失敗")?,

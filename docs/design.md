@@ -187,6 +187,10 @@ flowchart LR
 - 注: ここで codegen するのは**粗い語彙（スコープ/relation名/ツール名）**であり、
   **インスタンス単位の実認可は依然 OpenFGA（ReBAC）＋行レベル ABAC 述語**で行う（語彙の型安全 ≠ 認可判定）。
   RBAC のロール×権限表をコアにはしない（ロール階層・個別共有で RBAC ロールが爆発するため／ReBAC維持）。
+- **監査ログの操作の種類（action）も同じ扱い**: `storage::audit::AuditAction`（`crates/storage/src/audit_action.rs`）を
+  単一定義とし、記録する文字列・表示名・分類を 1 か所に持つ。監査の書き込みは型でこの語彙に閉じ、TS
+  （`web/src/generated/audit-actions.ts`）へ生成して監査ログ画面の絞り込み・表示名に使う（#830）。
+  記録済みの行は書き換えないので、**一度記録した文字列は変えない**。
 
 #### 4.1.1 SaaS コントロールプレーンと外部クライアント境界（skillex）
 
@@ -195,7 +199,9 @@ flowchart LR
 > 理由は運用負荷と、shiki・skillex の顧客が重ならないこと。経緯と旧リスクは [PIT-26〜29](./design-caveats.md)（各項に更新注記）。
 
 - **shiki 自身の SaaS コントロールプレーン**（skillex とは共有しない）: Keycloak realm `shiki`（**shiki ユーザー専用**・
-  単一 realm・テナントはユーザー属性 `tenant`／org は group＝SAAS.2）、テナント・プロビジョニング（SAAS.2 の admin プレーン）、
+  単一 realm・テナントはユーザー属性 `tenant`／org は group＝SAAS.2。org group はテナントで修飾した `/tenants/<tenant>/<org>`、
+  部署はその配下に置き、org/部署は解決済み tenant の配下だけから解く＝同じ org slug のテナント同士で group を共有しない・#811・
+  運用は [tenant-ops](./guides/tenant-ops.md)）、テナント・プロビジョニング（SAAS.2 の admin プレーン）、
   ベンダーコンソール（§4.12）、Stripe 課金（SAAS.3）。オンプレはこれを積まず、AuthN をローカル Keycloak へ向ける（設定差し替え）。
   データプレーンは**全テナント共有のフルプール**で、テナント分離は §4.1「authz のテナント分離」（SAAS.1）を参照
   （顧客ごと専用ストア＝cell は専用環境契約向けの将来オプション・スケール戦略は [data-platform.md §12](./data-platform.md)）。
@@ -320,7 +326,9 @@ flowchart LR
   平均に薄まって意味検索から消え、BM25 でも長文ペナルティで沈むため、
   「上限以下」はサイズの目標ではなく検索品質の不変条件として扱う。
 - 引用監査は既存 `audit_log`（storage の監査チョークポイント）に `action="rag.search"` で記録
-  （引用 chunk_id 群・file 粒度の認可判定・クエリ sha256・trace_id）。
+  （引用 chunk_id 群・file 粒度の認可判定・検索語の鍵付きハッシュ・trace_id）。検索語そのものは残さず、
+  サーバだけが持つ鍵での `HMAC-SHA256(鍵, tenant_id ∥ 0x00 ∥ 検索語)`（`query_hmac`）を残す。監査閲覧者でも
+  検索語からハッシュを計算して照合できない（#833）。
 - **引用の番号と位置（#508）**:
   - 本文の `[n]` は**応答内の通し番号**（`Citation.cite_id`）。doc_search は結果に仮の印を書くだけで、
     agent-core のループが呼び出し順に振る（同じチャンクの再ヒットは同じ番号・台帳はチェックポイント

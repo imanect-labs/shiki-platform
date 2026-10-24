@@ -13,6 +13,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 use crate::content_address::sha256_hex;
 use serde_json::Value;
@@ -153,7 +154,7 @@ impl StorageService {
                     ctx,
                     Relation::Editor,
                     &ctx.ns().folder(&p.to_string()),
-                    "file.write.internal",
+                    AuditAction::FileWriteInternal,
                     "folder",
                     &p.to_string(),
                     trace_id,
@@ -166,7 +167,7 @@ impl StorageService {
                     ctx,
                     Relation::Member,
                     &ctx.ns().organization(&ctx.org),
-                    "file.write.internal",
+                    AuditAction::FileWriteInternal,
                     "organization",
                     &ctx.org,
                     trace_id,
@@ -292,7 +293,7 @@ impl StorageService {
             &mut tx,
             ctx,
             AuditEntry {
-                action: "file.write.internal",
+                action: AuditAction::FileWriteInternal,
                 object_type: "file",
                 object_id: &node.id.to_string(),
                 decision: Decision::Allow,
@@ -397,7 +398,7 @@ impl StorageService {
         self.require_read(
             ctx,
             &ctx.ns().file(&file_id.to_string()),
-            "file.read.internal",
+            AuditAction::FileReadInternal,
             "file",
             &file_id.to_string(),
             trace_id,
@@ -416,7 +417,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "file.read.internal",
+                    action: AuditAction::FileReadInternal,
                     object_type: "file",
                     object_id: &file_id.to_string(),
                     decision: Decision::Allow,

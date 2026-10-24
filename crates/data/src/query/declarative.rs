@@ -7,6 +7,7 @@
 
 use authz::{AuthContext, Relation};
 use serde::{Deserialize, Serialize};
+use storage::audit::AuditAction;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -102,8 +103,14 @@ impl DataStore {
         query: &DataQuery,
         trace_id: Option<&str>,
     ) -> Result<QueryResult, DataError> {
-        self.require(ctx, table_id, Relation::Viewer, "data.query", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            table_id,
+            Relation::Viewer,
+            AuditAction::DataQuery,
+            trace_id,
+        )
+        .await?;
         let table = self.fetch_live(ctx, table_id).await?;
         let masked = self.masked_fields(ctx, &table).await?;
 
@@ -111,7 +118,7 @@ impl DataStore {
         if query.aggregate.is_some() {
             self.record_audit_best_effort(
                 ctx,
-                "data.query.aggregate",
+                AuditAction::DataQueryAggregate,
                 &table_id.to_string(),
                 trace_id,
                 serde_json::json!({ "group_by": query.aggregate.as_ref().map(|a| &a.group_by) }),

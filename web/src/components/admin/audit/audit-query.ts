@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { AUDIT_FILTER_KEYS, auditParams, type AuditQuery } from "@/lib/audit-api";
 import { addDays, todayJst } from "../format";
+import { isAuditCategory } from "./audit-vocab";
 
 /// 既定の期間（直近 7 日・日本時間・両端含む）。
 export function defaultRange(): { from: string; to: string } {
@@ -38,6 +39,8 @@ export function useAuditQuery(): {
     }
     const d = p.get("decision");
     q.decision = d === "allow" || d === "deny" ? d : undefined;
+    const c = p.get("category");
+    q.category = isAuditCategory(c) ? c : undefined;
     return q;
   }, [key]);
   const setQuery = React.useCallback(
@@ -75,6 +78,16 @@ export function citedChunks(metadata: unknown): string[] {
   if (!metadata || typeof metadata !== "object") return [];
   const v = (metadata as Record<string, unknown>).cited_chunk_ids;
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
+/// チャットの回答のための検索・読み出しが持つ会話と回答（`metadata.thread_id` / `message_id`・#829）。
+export function answerOf(metadata: unknown): { threadId?: string; messageId?: string } {
+  if (!metadata || typeof metadata !== "object") return {};
+  const m = metadata as Record<string, unknown>;
+  return {
+    threadId: typeof m.thread_id === "string" ? m.thread_id : undefined,
+    messageId: typeof m.message_id === "string" ? m.message_id : undefined,
+  };
 }
 
 /// 引用されたファイル ID（`rag.search` の metadata）。
