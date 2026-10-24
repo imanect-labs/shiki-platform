@@ -33,10 +33,31 @@ fn rag_query_hash_key_is_read_from_env_and_empty_means_unset() {
             .extract()
             .map_err(Box::new)
     };
-    std::env::set_var("SHIKITEST833A__RAG__QUERY_HASH_KEY", "k".repeat(32));
-    std::env::set_var("SHIKITEST833B__RAG__QUERY_HASH_KEY", "");
-    std::env::set_var("SHIKITEST833C__RAG__QUERY_HASH_KEY", "short");
-    std::env::set_var("SHIKITEST833D__RAG__QUERY_HASH_KEY", "1".repeat(40));
+    // 環境変数はプロセス全体で共有されるので、このプロセスでは書き換えない（並列のテストが読むと
+    // 競合する）。env を付けた子プロセスでこのテストだけを流し直し、子が下の検証を行う。
+    if std::env::var_os("SHIKITEST833_CHILD").is_none() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::tests::rag_config::rag_query_hash_key_is_read_from_env_and_empty_means_unset",
+                "--test-threads=1",
+            ])
+            .env("SHIKITEST833_CHILD", "1")
+            .env("SHIKITEST833A__RAG__QUERY_HASH_KEY", "k".repeat(32))
+            .env("SHIKITEST833B__RAG__QUERY_HASH_KEY", "")
+            .env("SHIKITEST833C__RAG__QUERY_HASH_KEY", "short")
+            .env("SHIKITEST833D__RAG__QUERY_HASH_KEY", "1".repeat(40))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        // 名前の絞り込みが外れて 0 件で成功する取り違えを防ぐため、1 件流れたことも確かめる。
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "子プロセスでの検証が失敗した: {stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        return;
+    }
     assert!(load("SHIKITEST833A__")
         .unwrap()
         .rag
