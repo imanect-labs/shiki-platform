@@ -31,14 +31,19 @@ test.describe("管理コンソール: データ", () => {
     await page.getByRole("button", { name: "取り消す" }).click();
 
     // 空欄で既定に戻す（件数の上限は省略すると既定へ戻る API なので、他の項目だけ変えても保たれること）。
-    await page.getByLabel("ルックアップ・ロールアップ列の上限（ビューあたり）").fill("15");
+    // 前の実行の値が残っていても変更になるよう、今の値と違う値を入れる。
+    const lookups = page.getByLabel("ルックアップ・ロールアップ列の上限（ビューあたり）");
+    await lookups.fill((await lookups.inputValue()) === "15" ? "16" : "15");
     await page.getByTestId("data-settings-save").click();
     await expect(page.getByText("データの設定を保存しました", { exact: true }).first()).toBeVisible();
     await page.reload();
     await expect(page.getByLabel("件数の上限")).toHaveValue(next);
     await page.getByLabel("ルックアップ・ロールアップ列の上限（ビューあたり）").fill("");
     await page.getByLabel("件数の上限").fill("");
+    const saved = page.waitForResponse((r) => r.url().includes("/org-admin/data/") && r.request().method() !== "GET");
     await page.getByTestId("data-settings-save").click();
+    // 保存の完了を待ってから読み直す（待たないと読み直しが保存より先に走り、古い値を読む）。
+    expect((await saved).ok()).toBeTruthy();
     await page.reload();
     await expect(page.getByLabel("件数の上限")).toHaveValue("");
   });
