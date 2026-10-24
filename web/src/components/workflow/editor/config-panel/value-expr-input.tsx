@@ -265,7 +265,8 @@ export function ValueExprInput({
         />
       ) : null}
 
-      {error ? <p className="text-[11px] text-destructive">{error}</p> : null}
+      {/* 手元で JSON として読めない理由を出しているときは、サーバの同じ欄の誤りを重ねて出さない。 */}
+      {error && !jsonError ? <p className="text-[11px] text-destructive">{error}</p> : null}
     </div>
   );
 }

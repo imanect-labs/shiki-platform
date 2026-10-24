@@ -499,8 +499,7 @@ export function SchemaEditor({
                 索引の上限を超えます
               </DialogTitle>
               <DialogDescription>
-                このテーブルの索引は {approval?.indexed ?? 0} 列で、上限は {approval?.cap ?? 0} 列です。
-                索引を増やすと書き込みが少し重くなります。承認して「{approval?.field}」の索引を作りますか？
+                このテーブルの索引は {approval?.indexed ?? 0} 列で、上限は {approval?.cap ?? 0} 列です。索引を増やすと書き込みが少し重くなります。承認して「{fields.find((x) => x.key === approval?.field)?.display_name || approval?.field}」の索引を作りますか？
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>

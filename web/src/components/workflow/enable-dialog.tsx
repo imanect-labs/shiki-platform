@@ -173,8 +173,7 @@ export function EnableDialog({
             自動実行の設定
           </DialogTitle>
           <DialogDescription>
-            スケジュールやできごとで動かすには、あなたの権限の範囲でこのワークフローに
-            権限を渡します（v{version} を有効化）。
+            {`スケジュールやできごとで動かすには、あなたの権限の範囲でこのワークフローに権限を渡します（v${version} を有効化）。`}
           </DialogDescription>
         </DialogHeader>
 

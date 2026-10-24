@@ -179,6 +179,16 @@ export function WorkflowEditor({
             }
           : { title: `保存しました（v${saved.version}）` },
       );
+      // スケジュールで動く定義に、テーブルを実行の入力から決めるブロックがある: 入力の無い自動実行では
+      // 対象が決まらず失敗する。有効化より前（保存の時点）に知らせる（C2 P3）。
+      const inputTables = scheduleInputTableBlocks(irToSave);
+      if (inputTables.length) {
+        toast({
+          title: "スケジュールの実行では動かないブロックがあります",
+          description: `「${inputTables.join("」「")}」は対象のテーブルを実行の入力から決めますが、スケジュールの実行には入力がありません。テーブルを固定するか、手動の実行だけで使ってください。`,
+          duration: 12_000,
+        });
+      }
       return true;
     } catch (e) {
       if (e instanceof WorkflowValidationError) {
@@ -298,7 +308,8 @@ export function WorkflowEditor({
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
-          <div className="px-4 pt-3">
+          {/* 次のカードに接しないよう下にも空ける（C2 P3）。 */}
+          <div className="px-4 pb-3 pt-3">
             <ScopesPill scopes={scopes} />
           </div>
           {state.serverWarnings.length > 0 ? (
@@ -340,6 +351,19 @@ export function WorkflowEditor({
       />
     </div>
   );
+}
+
+/// スケジュールのきっかけがあり、テーブルを実行の入力（`$from: "input…"`）から決めるブロックの名前。
+function scheduleInputTableBlocks(ir: EditorContext["state"]["ir"]): string[] {
+  if (!ir.triggers.some((t) => t.kind === "schedule")) return [];
+  return ir.nodes
+    .filter((n) => {
+      const table = (n.params as { table?: unknown } | undefined)?.table;
+      if (!table || typeof table !== "object" || !("$from" in table)) return false;
+      const from = String((table as { $from: unknown }).$from);
+      return from === "input" || from.startsWith("input.") || from.startsWith("input/");
+    })
+    .map((n) => n.label || n.id);
 }
 
 /// このワークフローが使う権限（ブロックから決まる宣言スコープ）。自動実行の同意で渡す権限の天井になる。

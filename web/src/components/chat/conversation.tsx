@@ -1336,6 +1336,7 @@ function StreamingRow({
             citations={stream.citations}
             streaming
             phase={runningSubtask(stream.plan)}
+            paused={Boolean(stream.approval)}
           />
           {stream.budget ? <BudgetBanner {...stream.budget} /> : null}
           {stream.approval ? (

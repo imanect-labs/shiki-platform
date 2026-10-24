@@ -18,12 +18,15 @@ export function ChainOfThought({
   streaming = false,
   /// 計画の進行中サブタスク（自律 run）。あればフェーズ行に優先して出す。
   phase = null,
+  /// 承認待ち（ツールのロールの窓を今の行数に縮める）。
+  paused = false,
 }: {
   thinking: string;
   tools: ToolActivityItem[];
   citations: Citation[];
   streaming?: boolean;
   phase?: string | null;
+  paused?: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
   const [userToggled, setUserToggled] = React.useState(false);
@@ -45,7 +48,7 @@ export function ChainOfThought({
     <div className="mb-2.5">
       {/* ツール実行（フェーズ行＋ローリング＋展開）。生成中でなくても履歴として残す。
           citations はフェーズ行のチップとして表示するため渡す（展開セクションは廃止）。 */}
-      <ToolActivity items={tools} streaming={streaming} phaseOverride={phase} citations={citations} />
+      <ToolActivity items={tools} streaming={streaming} phaseOverride={phase} citations={citations} fitRows={paused} />
 
       {hasSide || (streaming && tools.length === 0 && citations.length === 0) ? (
         <>

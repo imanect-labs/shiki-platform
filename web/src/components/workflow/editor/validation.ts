@@ -32,6 +32,16 @@ export function mapErrors(errors: ValidationError[]): ErrorMap {
 }
 
 /// `/params/<field>/...` の先頭フィールド名（右パネルのフィールドハイライト用）。
+/// サーバの params の読み取りの誤り（serde の原文 `params が不正です: missing field \`data\`` など）から、
+/// 欄の名前と利用者向けの文言を取り出す（欄の赤字と上の帯に同じ内容が英語で二重に出ていた・C2 N11）。
+export function serdeParamError(message: string): { field: string; message: string } | null {
+  const missing = /missing field `([a-z_][a-z0-9_]*)`/.exec(message);
+  if (missing) return { field: missing[1], message: "入力してください" };
+  const invalid = /invalid (?:type|value)[^`]*?(?:at|for) `?([a-z_][a-z0-9_]*)`?/.exec(message);
+  if (invalid) return { field: invalid[1], message: "値の形が正しくありません" };
+  return null;
+}
+
 export function paramField(path: string | undefined | null): string | null {
   if (!path?.startsWith("/params/")) return null;
   const rest = path.slice("/params/".length);

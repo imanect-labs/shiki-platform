@@ -19,7 +19,7 @@ import type { Node as IrNode, Trigger } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { EditorContext } from "../workflow-editor";
 import { nodeIcon } from "../icons";
-import { mapErrors, paramField } from "../validation";
+import { mapErrors, paramField, serdeParamError } from "../validation";
 import { CommonSection } from "./common";
 import {
   AgentInvokeForm,
@@ -109,13 +109,15 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
     const errors = mapErrors(ctx.state.serverErrors).byNode.get(node.id) ?? [];
     const map = new Map<string, string>();
     for (const e of errors) {
-      const field = paramField(e.path);
-      if (field && !map.has(field)) map.set(field, e.message);
+      const serde = paramField(e.path) ? null : serdeParamError(e.message);
+      const field = paramField(e.path) ?? serde?.field;
+      if (field && !map.has(field)) map.set(field, serde?.message ?? e.message);
     }
     return map;
   }, [ctx.state.serverErrors, node.id]);
   const nodeErrors = mapErrors(ctx.state.serverErrors).byNode.get(node.id) ?? [];
-  const unmappedErrors = nodeErrors.filter((e) => !paramField(e.path));
+  // 欄に写せた誤り（path か serde の原文の項目名）は欄の下に出し、上の帯には欄の無いものだけを出す。
+  const unmappedErrors = nodeErrors.filter((e) => !paramField(e.path) && !serdeParamError(e.message));
   const nodeWarnings = mapErrors(ctx.state.serverWarnings).byNode.get(node.id) ?? [];
 
   return (

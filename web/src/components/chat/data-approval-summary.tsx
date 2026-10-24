@@ -11,7 +11,8 @@ import * as React from "react";
 
 import { getRecord, getTable, listTables, type DataRecord, type DataTable } from "@/lib/data-api";
 import { displayCell, formatValue } from "@/lib/data-view";
-import { cachedUserName } from "@/lib/user-names";
+import { cachedRoleName, resolveRoleNames } from "@/lib/role-names";
+import { cachedUserName, resolveUserNames } from "@/lib/user-names";
 
 type WriteInput = {
   table?: unknown;
@@ -52,11 +53,23 @@ export function DataWriteSummary({ input }: { input: unknown }) {
     void (async () => {
       const table = tableRef ? await resolveTable(tableRef) : null;
       const record = table && op === "update" && recordId ? await getRecord(table.id, recordId).catch(() => null) : null;
+      // ユーザー・部署の列は id ではなく表示名で見せる（引けなければ id のまま・C2 N12 と同じ）。
+      if (table) {
+        const values = (type: string) =>
+          table.schema.fields
+            .filter((f) => f.type === type)
+            .flatMap((f) => [data[f.key], (record?.data as Record<string, unknown> | null)?.[f.key]])
+            .flatMap((v) => (Array.isArray(v) ? v : [v]))
+            .filter((v): v is string => typeof v === "string" && v !== "");
+        await Promise.all([resolveUserNames(values("user_ref")), resolveRoleNames(values("role_ref"))]);
+      }
       if (active) setState({ loading: false, table, record });
     })();
     return () => {
       active = false;
     };
+    // data は承認の要求ごとに固定（名前を引く材料にだけ使う・毎回作り直す object なので依存に入れない）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableRef, op, recordId]);
 
   if (state.loading) {
@@ -74,7 +87,7 @@ export function DataWriteSummary({ input }: { input: unknown }) {
     const f = fieldOf(k);
     if (v === null || v === undefined || v === "") return "（空）";
     const r = { id: "", rev: 0, data: { [k]: v }, link_labels: record?.link_labels ?? {} } as unknown as DataRecord;
-    return f ? displayCell(r, { key: k, field: f }, cachedUserName).text || "（空）" : formatValue(v, null, k);
+    return f ? displayCell(r, { key: k, field: f }, cachedUserName, cachedRoleName).text || "（空）" : formatValue(v, null, k);
   };
   return (
     <div className="mb-2 space-y-1.5 text-[13px]" data-testid="data-write-summary">

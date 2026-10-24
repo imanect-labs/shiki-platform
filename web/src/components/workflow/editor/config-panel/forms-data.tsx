@@ -15,6 +15,7 @@ import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { ValueExpr } from "@/generated/workflow-ir";
 import { listTables, type DataQuery, type DataTable } from "@/lib/data-api";
 import { buildFilter, resolveColumns, splitFilter } from "@/lib/data-view";
+import { cn } from "@/lib/utils";
 import { Field, NumberInput } from "./common";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
@@ -245,11 +246,40 @@ export function DataRecordUpdateForm(props: FormProps) {
         inMapRegion={inMapRegion}
         multiline
         json="object"
-        placeholder='例: {"status": "承認"}（null で値を消す）'
+        placeholder={patchExample(table)}
         error={fieldErrors.get("patch")}
       />
+      <StatusFieldHint table={table} patch={p.patch} />
       <FieldKeysHint table={table} />
     </div>
+  );
+}
+
+/// 「変更する値」の例（そのテーブルの直接書ける列で作る。FSM の状態の列は遷移でしか変わらないので例に
+/// 使わない・C2 N7）。
+function patchExample(table: DataTable | null): string {
+  const f = table?.schema.fields.find(
+    (x) => x.key !== table.schema.status_field && (x.type === "text" || x.type === "number" || x.type === "select"),
+  );
+  if (!f) return '例: {"memo": "確認済み"}（null で値を消す）';
+  const v = f.type === "number" ? "1200" : f.type === "select" ? JSON.stringify(f.options?.[0] ?? "値") : '"確認済み"';
+  return `例: {"${f.key}": ${v}}（null で値を消す）`;
+}
+
+/// FSM の状態の列は「データを更新」では変えられない（遷移の定義と実行できる人の条件を通すため）。
+function StatusFieldHint({ table, patch }: { table: DataTable | null; patch: unknown }) {
+  const key = table?.schema.fsm_ref ? table.schema.status_field : null;
+  if (!table || !key) return null;
+  const f = table.schema.fields.find((x) => x.key === key);
+  const touches = Boolean(patch && typeof patch === "object" && !Array.isArray(patch) && key in (patch as Record<string, unknown>));
+  return (
+    <p
+      className={cn("text-[11px] leading-relaxed", touches ? "text-destructive" : "text-muted-foreground")}
+      role={touches ? "alert" : undefined}
+      data-testid="workflow-status-field-hint"
+    >
+      「{f?.display_name || key}」（<code className="font-mono">{key}</code>）は状態の列なので、ここでは変えられません。状態を変えるときは「状態を進める」のブロックを使ってください。
+    </p>
   );
 }
 

@@ -207,11 +207,15 @@ export function ToolActivity({
   phaseOverride = null,
   /// 参照ドキュメント。running 時のフェーズ行に最大 MAX_CITATION_CHIPS 件のチップとして表示。
   citations = [],
+  /// 承認待ちなどで止まっている間は、ロールの窓を今の行数に縮める（固定の 3 行ぶんの空白が承認カードとの
+  /// 間に残っていた・C2 P3）。
+  fitRows = false,
 }: {
   items: ToolActivityItem[];
   streaming?: boolean;
   phaseOverride?: string | null;
   citations?: Citation[];
+  fitRows?: boolean;
 }) {
   // 開閉は**自動で閉じない**。既定は畳んだまま（直近 3 件がロールするだけ）で、ヘッダを押すと
   // 全件のタイムラインになる。**実行状態から開閉を導かない**のが要点で、`running` はステップ
@@ -311,7 +315,7 @@ export function ToolActivity({
       {open ? (
         <ExpandedTimeline items={items} nodeNames={nodeNames} />
       ) : running ? (
-        <RollingBelt items={items} nodeNames={nodeNames} />
+        <RollingBelt items={items} nodeNames={nodeNames} fitRows={fitRows} />
       ) : null}
     </div>
   );
@@ -325,14 +329,17 @@ export function ToolActivity({
 function RollingBelt({
   items,
   nodeNames,
+  fitRows = false,
 }: {
   items: ToolActivityItem[];
   nodeNames: Record<string, string>;
+  fitRows?: boolean;
 }) {
   const { slots, ghosts, hidden } = rollingWindow(items);
+  const rows = fitRows ? Math.max(1, Math.min(LIVE_MAX, items.length)) : LIVE_MAX;
   return (
     <div className="pl-[1.375rem]" data-testid="tool-activity-rolling">
-      <div className="relative" style={{ height: `${LIVE_MAX * ROW_REM}rem` }}>
+      <div className="relative" style={{ height: `${rows * ROW_REM}rem` }}>
         {slots.map((it, i) => {
           const row = i - ghosts; // 0 = 窓の最上段、-1 = 押し出された行
           return (
