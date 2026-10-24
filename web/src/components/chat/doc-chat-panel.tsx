@@ -86,6 +86,12 @@ export function DocChatPanel({
   const onDraftDirtyChange = React.useCallback((dirty: boolean) => {
     draftDirtyRef.current = dirty;
   }, []);
+  // 今開いている文書。/office/[id] は同じパネルのまま文書だけ替わるので、最初の発話を送り
+  // 終えたときに別の文書へ移っていたら、前の文書の会話をこのパネルに出さない。
+  const currentNodeIdRef = React.useRef(nodeId);
+  React.useEffect(() => {
+    currentNodeIdRef.current = nodeId;
+  }, [nodeId]);
 
   // 非同期処理（会話の作成・確認）の完了で選ぶときは、開始時の世代（`startedAt`）を渡す。
   // 待つ間にログアウト（他タブを含む）があれば、前の人の会話 id を次の人のキーへ書かない（#817）。
@@ -211,6 +217,8 @@ export function DocChatPanel({
       settleToolChoice(draftScope, tools);
       if (startedAt !== storageScopeGeneration()) return;
       moveModelChoice(draftScope, threadId);
+      // 送った会話は元の文書の一覧に残る（戻れば開ける）。
+      if (currentNodeIdRef.current !== nodeId) return;
       if (selection !== selectionVersionRef.current) {
         void refreshConversations();
         return;
