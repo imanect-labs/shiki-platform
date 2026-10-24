@@ -118,19 +118,22 @@ pub(crate) fn wire_gateway(
 
 /// 公開 API ゲートウェイの第2リスナを spawn する（router/bind が揃ったときのみ）。
 ///
-/// 別ポート＝別オリジンでミニアプリ向けの面を提供する。graceful shutdown はプロセス終了で
-/// 代替する（alpha・メインリスナの停止で全体が落ちる）。
+/// 別ポート＝別オリジンでミニアプリ向けの面を提供する。停止の合図でメインリスナと同時に受付を止め、
+/// 処理中の要求は猶予まで待つ（残ってもランタイムの停止で破棄・shutdown.rs）。
 pub(crate) async fn spawn_gateway_listener(
     router: Option<axum::Router>,
     bind: Option<String>,
+    shutdown: &crate::shutdown::Shutdown,
 ) -> anyhow::Result<()> {
     if let (Some(router), Some(bind)) = (router, bind) {
         let listener = tokio::net::TcpListener::bind(&bind)
             .await
             .context("gateway bind に失敗")?;
         tracing::info!(%bind, "gateway listening（第2リスナ）");
+        let shutdown = shutdown.clone();
         tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, router).await {
+            let server = axum::serve(listener, router).with_graceful_shutdown(shutdown.wait());
+            if let Err(e) = server.await {
                 tracing::error!(error = %e, "ゲートウェイ・リスナが停止しました");
             }
         });
@@ -290,6 +293,8 @@ pub(crate) struct MiniappListenerDeps<'a> {
     pub search: Option<&'a Arc<rag::SearchService>>,
     pub object_store: &'a Arc<dyn storage::ObjectStore>,
     pub secrets: Option<&'a Arc<secrets::SecretStore>>,
+    /// 停止の合図（ゲートウェイ・B1 配信のリスナが受付を止める）。
+    pub shutdown: &'a crate::shutdown::Shutdown,
 }
 
 /// ゲートウェイ（第2リスナ）・B1 配信（第3リスナ）・B2 event/cron トリガをまとめて起動する。
@@ -327,8 +332,8 @@ pub(crate) async fn spawn_miniapp_listeners(deps: MiniappListenerDeps<'_>) -> an
         .gateway
         .enabled
         .then(|| format!("{host}:{}", deps.config.gateway.b1_port));
-    spawn_gateway_listener(gateway_router, gateway_bind).await?;
-    spawn_gateway_listener(b1_router, b1_bind).await?;
+    spawn_gateway_listener(gateway_router, gateway_bind, deps.shutdown).await?;
+    spawn_gateway_listener(b1_router, b1_bind, deps.shutdown).await?;
     if let Some((port, runner)) = functions {
         crate::miniapp_triggers::spawn_miniapp_triggers(crate::miniapp_triggers::TriggerDeps {
             db: deps.db.clone(),

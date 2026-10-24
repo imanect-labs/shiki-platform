@@ -18,17 +18,32 @@ mod dev_seed;
 mod gateway_ai;
 mod gateway_functions;
 mod miniapp_triggers;
+mod shutdown;
 mod wiring;
 mod wiring_gateway;
 mod wiring_gui;
 mod wiring_office;
 mod wiring_websearch;
+/// ランタイムを組んで `run` を走らせ、停止は有限時間で打ち切る（shutdown.rs・B-OPS-1）。
+fn main() -> anyhow::Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("tokio ランタイムの構築に失敗")?;
+    let r = rt.block_on(run());
+    // 常駐ワーカー・猶予を過ぎて残った接続のタスクを待ち続けない（プロセスを有限時間で終える・
+    // shutdown.rs）。
+    rt.shutdown_timeout(shutdown::RUNTIME_SHUTDOWN_TIMEOUT);
+    r
+}
+
 // main はアプリ全体（ストレージ/RAG/チャット/ワークフロー/data/ゲートウェイ等）の配線点で
 // あり、各フェーズの依存を順に組み上げる性質上どうしても長くなる（各配線は wire_* ヘルパへ
 // 分離済み）。分割で可読性を落とすより配線列挙として素直に保つ。
-#[allow(clippy::too_many_lines)]
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+// 配線の列挙なので分岐の数（cognitive complexity）も行数と同じ理由で許す（`#[tokio::main]` の展開の
+// 内側にあった間は検査に掛からなかった）。
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+async fn run() -> anyhow::Result<()> {
     let config = AppConfig::load().context("設定のロードに失敗")?;
     let _telemetry = telemetry::init(&config.telemetry).context("計装の初期化に失敗")?;
 
@@ -200,7 +215,10 @@ async fn main() -> anyhow::Result<()> {
     // office.live_edit（issue #352）がトークン鍵を共有するため wire_chat より先に組む。
     let office = wiring_office::wire_office(&config, &http, &db, &authz, &storage)?;
     // ブラウザ ↔ Collabora の中継（PIT-68）。ブラウザはここを通してだけ Collabora に触れる。
-    wiring_office::spawn_office_relay(&config).await?;
+    // 停止の合図は最初のリスナを開く直前から受け付ける（それより前の SIGTERM は既定どおり即時に終わる・
+    // 起動の途中で止まった依存先を待ち続けない）。以降は全リスナが同じ合図で受付を止める。
+    let shutdown = shutdown::Shutdown::on_signal();
+    wiring_office::spawn_office_relay(&config, &shutdown).await?;
     // skill の publish / 同意インストール（Phase 9 レジストリ流用・ユーザー単位・#344）。
     // chat の skill カタログ（インストール済み ∪ 本人）と V4 skill 照合の材料になる。
     let skill_installs = Arc::new(app_platform::SkillInstallService::new(
@@ -295,6 +313,7 @@ async fn main() -> anyhow::Result<()> {
         search: search.as_ref(),
         object_store: &object_store,
         secrets: secrets.as_ref(),
+        shutdown: &shutdown,
     })
     .await?;
     // 管理コンソール・モデル一覧・チャットのモデル解決が使うゲートウェイ（同一設定から構築）。
@@ -355,10 +374,17 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("bind に失敗")?;
     tracing::info!(%bind, "listening");
-    axum::serve(listener, build_router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("サーバ実行中のエラー")?;
+    // 合図で全リスナが同時に受付を止め、処理中の要求は猶予まで待つ（SSE が残っても戻る・B-OPS-1）。
+    let server =
+        axum::serve(listener, build_router(state)).with_graceful_shutdown(shutdown.clone().wait());
+    shutdown::serve_until_shutdown(
+        std::future::IntoFuture::into_future(server),
+        shutdown,
+        shutdown::SHUTDOWN_GRACE,
+    )
+    .await
+    .context("サーバ実行中のエラー")?;
+    tracing::info!("shiki-server を停止しました");
     Ok(())
 }
 
@@ -475,31 +501,4 @@ fn wire_data(
         (*data_store).clone(),
     ));
     Ok((data_store, data_views, fsms))
-}
-
-// シグナルハンドラの登録失敗はプロセス起動直後の致命的な環境不整合であり、
-// 継続不能なため `expect` で即時 abort する（本番運用でも復帰手段が無い）。
-#[allow(clippy::expect_used)]
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("ctrl_c ハンドラ設定に失敗");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("SIGTERM ハンドラ設定に失敗")
-            .recv()
-            .await;
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
-    }
-    tracing::info!("シャットダウンシグナル受信");
 }
