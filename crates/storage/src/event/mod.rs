@@ -14,22 +14,26 @@
 //! - 本モジュール: 発行（[`emit_on`]）・`processed_at` 経路の消費（[`claim`]/[`mark_processed`]）・
 //!   読み取り専用のライブテール（[`latest_event_id`]/[`peek_app_events_after`]）。
 //! - [`delivery`]: per-consumer 配送台帳（P10-A0）。
+//! - [`ack`]: `processed_at` で ack するコンシューマ（RAG の relay）の登録（GC が `processed_at` を待つかの正本）。
 //! - [`gc`]: GC と滞留観測（#413）。バックグラウンド実行は [`crate::outbox_gc`]。
 //! - [`stream`]: 購読ストリームの配信位置（`delivery_seq`・Phase 15 Task 15.6）。
 //!
 //! [`StorageService`]: crate::service::StorageService
 
+mod ack;
 mod delivery;
 mod gc;
 mod stream;
 
+pub use ack::{ack_consumers, register_ack_consumer, unregister_ack_consumer, RAG_ACK_CONSUMER};
 pub use delivery::{
-    claim_undelivered, claim_undelivered_after, mark_delivered, register_consumer,
-    register_consumer_on_pool, registered_consumers, unregister_consumer, ClaimHints,
+    claim_probe, claim_undelivered, claim_undelivered_after, claim_undelivered_hinted,
+    mark_delivered, register_consumer, register_consumer_on_pool, registered_consumers,
+    unregister_consumer, ClaimHints, ClaimPlan, ClaimProbe, CLAIM_FULL_SWEEP_INTERVAL,
     CLAIM_SWEEP_INTERVAL,
 };
 pub use gc::{
-    gc_delivered, gc_delivered_registered, outbox_backlog, ConsumerLag, OutboxBacklog,
+    gc_delivered, gc_delivered_registered, outbox_backlog, ConsumerLag, HeadBlocker, OutboxBacklog,
     DEFAULT_GC_BATCH,
 };
 pub use stream::{

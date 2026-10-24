@@ -2,7 +2,8 @@
 //!
 //! 一括取込で 10 万件のイベントが溜まると、`claim_undelivered` の anti-join は配送済みの先頭から読み直し
 //! 1 回 1 秒を超えていた（配信の要約が 600 行/秒・取込の遅れ）。直近に取った最大の id を下限にして
-//! テールから読み、定期的な全走査で取りこぼしを拾う（[`storage::event::ClaimHints`]）。
+//! テールから読み、定期的な全走査で取りこぼしを拾う（[`storage::event::ClaimHints`]）。アイドルの間は
+//! outbox の採番が動くまで走査しない（3 回目の検証 3-D-1・毎秒の全走査で PG が CPU を食っていた）。
 
 use sqlx::PgConnection;
 
@@ -17,10 +18,7 @@ pub(crate) async fn claim_batch(
     limit: i64,
 ) -> Result<Vec<storage::OutboxEvent>, DataError> {
     let key = format!("{pool_id}\0{consumer}");
-    let after = hints.lower_bound(&key);
-    let events = storage::event::claim_undelivered_after(&mut *tx, consumer, after, limit)
+    storage::event::claim_undelivered_hinted(&mut *tx, hints, &key, consumer, limit)
         .await
-        .map_err(|e| DataError::Internal(format!("outbox: {e}")))?;
-    hints.observe(&key, &events, limit);
-    Ok(events)
+        .map_err(|e| DataError::Internal(format!("outbox: {e}")))
 }

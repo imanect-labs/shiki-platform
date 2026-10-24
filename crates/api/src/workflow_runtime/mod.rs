@@ -311,6 +311,8 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
     let relay_db = deps.db.clone();
     let tick_runs = deps.runs.clone();
     let tick_concurrency = concurrency_store;
+    // claim の走査の下限（アイドルの間は outbox を走査しない・3 回目の検証 3-D-1）。
+    let claim_hints = storage::event::ClaimHints::default();
 
     // event consumer を登録し、現バックログ（有効化前の storage.write）を飛ばす。
     // 登録と「バックログの fast-forward」は原子的でなければならない（autocommit で呼ぶと登録だけ
@@ -328,8 +330,14 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                     if let Err(e) = sched.tick_schedules(now, None, launcher_dyn.as_ref()).await {
                         tracing::warn!(error = %e, "スケジューラ tick でエラー");
                     }
-                    if let Err(e) =
-                        relay_events(&relay_db, &sched, &tick_runs, launcher_dyn.as_ref()).await
+                    if let Err(e) = relay_events(
+                        &relay_db,
+                        &claim_hints,
+                        &sched,
+                        &tick_runs,
+                        launcher_dyn.as_ref(),
+                    )
+                    .await
                     {
                         tracing::warn!(error = %e, "イベント relay でエラー");
                     }
@@ -378,6 +386,7 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
 /// いずれも祖先束縛 scope（イベント発生フォルダ id）＋filter で照合する。
 async fn relay_events(
     db: &sqlx::PgPool,
+    hints: &storage::event::ClaimHints,
     sched: &SchedulerStore,
     runs: &RunStore,
     launcher: &dyn workflow_engine::RunLauncher,
@@ -385,7 +394,7 @@ async fn relay_events(
     // 溜まっていれば 1 tick の中で続けて捌く（構造化データのレコード変更も outbox に乗るので、一括取込の
     // 直後は件数が多い。1 tick 1 バッチだと他の consumer と GC を長く止める・Task 15.6）。
     for _ in 0..RELAY_BATCHES_PER_TICK {
-        if relay_events_batch(db, sched, runs, launcher).await? < RELAY_BATCH {
+        if relay_events_batch(db, hints, sched, runs, launcher).await? < RELAY_BATCH {
             break;
         }
     }
@@ -399,12 +408,20 @@ const RELAY_BATCH: usize = 500;
 
 async fn relay_events_batch(
     db: &sqlx::PgPool,
+    hints: &storage::event::ClaimHints,
     sched: &SchedulerStore,
     runs: &RunStore,
     launcher: &dyn workflow_engine::RunLauncher,
 ) -> Result<usize, anyhow::Error> {
     let mut tx = db.begin().await?;
-    let events = storage::event::claim_undelivered(&mut tx, "workflow", RELAY_BATCH as i64).await?;
+    let events = storage::event::claim_undelivered_hinted(
+        &mut tx,
+        hints,
+        "workflow",
+        "workflow",
+        RELAY_BATCH as i64,
+    )
+    .await?;
     if events.is_empty() {
         return Ok(0);
     }

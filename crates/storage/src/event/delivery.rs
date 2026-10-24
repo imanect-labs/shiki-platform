@@ -88,55 +88,183 @@ pub async fn claim_undelivered_after(
     Ok(rows.into_iter().map(OutboxRow::into_event).collect())
 }
 
-/// 溜まっている間の全走査（下限 0）の間隔。後からコミットした小さい id の行はこの間隔以内に配送される。
+/// 溜まっている間の下限からの走査の間隔。後からコミットした小さい id の行はこの間隔以内に配送される。
 pub const CLAIM_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// コンシューマごとの走査の下限（プロセス内・[`claim_undelivered_after`] 用）。
+/// 下限 0 の全走査を必ず挟む間隔（[`ClaimHints`] の推論が外れる稀な場合の安全網）。
+pub const CLAIM_FULL_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// claim の直前に取る outbox の採番と Tx の状況（[`ClaimHints`] の判断材料）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClaimProbe {
+    /// outbox の id の採番の最後の値（未採番なら 0）。ロールバックした採番も含む。
+    pub seq: i64,
+    /// 実行中の Tx の最小 xid（`pg_snapshot_xmin`）。
+    pub xmin: i64,
+    /// 次に払い出す xid（`pg_snapshot_xmax`）。
+    pub xmax: i64,
+}
+
+/// [`ClaimProbe`] を取る（O(1)・表は読まない）。
+pub async fn claim_probe(conn: &mut PgConnection) -> Result<ClaimProbe, StorageError> {
+    let (seq, xmin, xmax): (i64, i64, i64) = sqlx::query_as(
+        "SELECT coalesce(pg_sequence_last_value('storage_event_outbox_id_seq'::regclass), 0), \
+                pg_snapshot_xmin(pg_current_snapshot())::text::int8, \
+                pg_snapshot_xmax(pg_current_snapshot())::text::int8",
+    )
+    .fetch_one(conn)
+    .await?;
+    Ok(ClaimProbe { seq, xmin, xmax })
+}
+
+/// [`ClaimHints::plan`] の結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimPlan {
+    /// 走査しない（前回の確認から outbox に新しい id が払い出されていない・全て配送済み）。
+    Skip,
+    /// `after` より大きい id を走査する（0 なら全走査）。
+    Scan { after: i64 },
+}
+
+/// コンシューマごとの走査の下限（プロセス内・[`claim_undelivered_hinted`] 用）。
 ///
-/// [`claim_undelivered`] の anti-join は配送済みの全行を走査してからテールに届く（上の ⚠️）。一括取込で
-/// 10 万件のイベントが溜まると、コンシューマが 1 バッチ取るたびに配送済みの先頭から読み直し、1 回 1 秒を超えて
-/// 配信と取込を遅らせていた（2 回目の検証 2-D-P3-2・取込の遅れ）。**溜まっている間だけ**（直前のバッチが
-/// 上限まで埋まった）直近に取った最大の id を下限にしてテールから読み、[`CLAIM_SWEEP_INTERVAL`] ごとに
-/// 下限 0 の全走査で取りこぼし（後からコミットした行・巻き戻った取得）を拾う。溜まっていなければ毎回
-/// 全走査（GC で outbox が小さいので安い・後からコミットした行も遅らせない）。キーはプールとコンシューマ
-/// （id の空間はプールごと）。
+/// [`claim_undelivered`] の anti-join は配送済みの全行を走査してからテールに届く（上の ⚠️）。2 つの場面で
+/// これを避ける:
+///
+/// 1. **溜まっている間**（一括取込で 10 万件のイベント・2 回目の検証 2-D-P3-2）: 直前のバッチが上限まで
+///    埋まったら、直近に取った最大の id を下限にしてテールから読む（`tail`）。[`CLAIM_SWEEP_INTERVAL`] ごとに
+///    確定済みの下限（`floor`）からの走査で、後からコミットした行・巻き戻った取得を拾う。
+/// 2. **アイドルの間**（3 回目の検証 3-D-1: 各コンシューマが毎秒 outbox 全体を読み、PG が CPU を食っていた）:
+///    「`floor` 以下の id は全て配送済み」が確かめられ、その後 outbox の採番（`seq`）が動いていなければ、
+///    **走査そのものをしない**（[`ClaimPlan::Skip`]）。新しい書込は採番を動かすので、次の claim で走査する。
+///
+/// `floor` の確定（[`Self::observe`]）: 採番が今の値（`seq`）になってから最初に取った [`ClaimProbe`] の時点で
+/// 実行中だった Tx が全て終わっている（今回の `xmin` ≥ その `xmax`）なら、`seq` 以下の id を払い出した
+/// Tx は全てコミットかロールバックを終えている（採番はその材料より前なので、払い出した Tx はその時点で
+/// 終わっているか実行中だった）。その上で `floor` 以下から走査して 1 件も無ければ、`seq`
+/// 以下は全て配送済み（＝新しい `floor`）。行を取ったバッチでは確定しない（そのバッチが巻き戻っても
+/// 取りこぼさない）。
+///
+/// 推論の外れる稀な場合（採番から行の挿入までの一瞬に xid を得た Tx、別プロセスが claim 中で
+/// `SKIP LOCKED` で飛ばした行がその後巻き戻った場合）は、[`CLAIM_FULL_SWEEP_INTERVAL`] ごとの下限 0 の
+/// 全走査で拾う（取りこぼさない・遅れて届くだけ）。キーはプールとコンシューマ（id の空間はプールごと）。
 #[derive(Debug, Default)]
 pub struct ClaimHints {
-    inner: std::sync::Mutex<std::collections::HashMap<String, (i64, std::time::Instant)>>,
+    inner: std::sync::Mutex<std::collections::HashMap<String, HintState>>,
+}
+
+#[derive(Debug)]
+struct HintState {
+    /// 溜まっている間のテールの下限（0 = 溜まっていない）。
+    tail: i64,
+    /// 次に `floor` から走査する時刻（溜まっている間）。
+    next_sweep: std::time::Instant,
+    /// 次に下限 0 で全走査する時刻。
+    next_full: std::time::Instant,
+    /// この id 以下は全て配送済み（確かめられていなければ `None`）。
+    floor: Option<i64>,
+    /// 今の採番の値（`seq`）で最初に取った [`ClaimProbe`]。
+    first_at_seq: Option<ClaimProbe>,
+}
+
+impl HintState {
+    fn new(now: std::time::Instant) -> Self {
+        Self {
+            tail: 0,
+            next_sweep: now + CLAIM_SWEEP_INTERVAL,
+            next_full: now + CLAIM_FULL_SWEEP_INTERVAL,
+            floor: None,
+            first_at_seq: None,
+        }
+    }
 }
 
 impl ClaimHints {
-    /// 次の claim の下限（全走査の時期なら 0）。
-    pub fn lower_bound(&self, key: &str) -> i64 {
-        let now = std::time::Instant::now();
+    /// 次の claim の走査の仕方。
+    pub fn plan(&self, key: &str, probe: ClaimProbe) -> ClaimPlan {
+        self.plan_at(key, probe, std::time::Instant::now())
+    }
+
+    fn plan_at(&self, key: &str, probe: ClaimProbe, now: std::time::Instant) -> ClaimPlan {
         let Ok(mut m) = self.inner.lock() else {
-            return 0;
+            return ClaimPlan::Scan { after: 0 };
         };
         let e = m
             .entry(key.to_string())
-            .or_insert((0, now + CLAIM_SWEEP_INTERVAL));
-        if now >= e.1 {
-            e.1 = now + CLAIM_SWEEP_INTERVAL;
-            return 0;
+            .or_insert_with(|| HintState::new(now));
+        if now >= e.next_full {
+            e.next_full = now + CLAIM_FULL_SWEEP_INTERVAL;
+            e.next_sweep = now + CLAIM_SWEEP_INTERVAL;
+            return ClaimPlan::Scan { after: 0 };
         }
-        e.0
+        if e.floor == Some(probe.seq) {
+            return ClaimPlan::Skip;
+        }
+        let floor = e.floor.unwrap_or(0);
+        if now >= e.next_sweep {
+            e.next_sweep = now + CLAIM_SWEEP_INTERVAL;
+            return ClaimPlan::Scan { after: floor };
+        }
+        ClaimPlan::Scan {
+            after: e.tail.max(floor),
+        }
     }
 
-    /// 取った行を下限に反映する。バッチが上限（`limit`）まで埋まった＝溜まっているときだけ最大の id を
-    /// 下限にし（下げない）、埋まらなければ下限を外す（次は全走査）。
-    pub fn observe(&self, key: &str, events: &[OutboxEvent], limit: i64) {
+    /// 走査の結果を反映する。バッチが上限（`limit`）まで埋まった＝溜まっているときだけ最大の id を
+    /// テールの下限にし（下げない）、埋まらなければテールを外す。`floor` の確定は型の doc を参照。
+    pub fn observe(
+        &self,
+        key: &str,
+        probe: ClaimProbe,
+        after: i64,
+        events: &[OutboxEvent],
+        limit: i64,
+    ) {
         let full = i64::try_from(events.len()).unwrap_or(i64::MAX) >= limit;
-        if let Ok(mut m) = self.inner.lock() {
-            let now = std::time::Instant::now();
-            let e = m
-                .entry(key.to_string())
-                .or_insert((0, now + CLAIM_SWEEP_INTERVAL));
-            match events.iter().map(|e| e.id).max() {
-                Some(max) if full => e.0 = e.0.max(max),
-                _ => e.0 = 0,
-            }
+        let Ok(mut m) = self.inner.lock() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        let e = m
+            .entry(key.to_string())
+            .or_insert_with(|| HintState::new(now));
+        match events.iter().map(|e| e.id).max() {
+            Some(max) if full => e.tail = e.tail.max(max),
+            _ => e.tail = 0,
+        }
+        // 同じ採番の値で最初に取った材料と比べる（後の材料ほど xmax が大きく、確定が遅れる）。
+        if e.first_at_seq.is_none_or(|c| c.seq != probe.seq) {
+            e.first_at_seq = Some(probe);
+        }
+        let settled = e
+            .first_at_seq
+            .is_some_and(|c| c.seq == probe.seq && probe.xmin >= c.xmax && c != probe);
+        if events.is_empty() && after <= e.floor.unwrap_or(0) && settled {
+            e.floor = Some(probe.seq);
         }
     }
+}
+
+/// [`ClaimHints`] を使って claim する（アイドル時は走査しない・溜まっている間はテールから読む）。
+///
+/// [`claim_undelivered`] と同じく呼び出し側の Tx 上で行をロックする。返るイベントの集合の意味も同じ
+/// （未配送のものを id 順に最大 `limit` 件）だが、後からコミットした小さい id の行やアイドル判定の
+/// 外れる稀な行は、[`CLAIM_SWEEP_INTERVAL`]〜[`CLAIM_FULL_SWEEP_INTERVAL`] 遅れて届くことがある。
+pub async fn claim_undelivered_hinted(
+    conn: &mut PgConnection,
+    hints: &ClaimHints,
+    key: &str,
+    consumer: &str,
+    limit: i64,
+) -> Result<Vec<OutboxEvent>, StorageError> {
+    let probe = claim_probe(&mut *conn).await?;
+    let after = match hints.plan(key, probe) {
+        ClaimPlan::Skip => return Ok(Vec::new()),
+        ClaimPlan::Scan { after } => after,
+    };
+    let events = claim_undelivered_after(conn, consumer, after, limit).await?;
+    hints.observe(key, probe, after, &events, limit);
+    Ok(events)
 }
 
 /// 指定コンシューマへの配送を台帳に記録する（[`claim_undelivered`] と同一 txn 内で呼ぶ）。
@@ -312,20 +440,87 @@ mod tests {
         }
     }
 
+    fn probe(seq: i64, xmin: i64, xmax: i64) -> ClaimProbe {
+        ClaimProbe { seq, xmin, xmax }
+    }
+
+    fn after(plan: ClaimPlan) -> i64 {
+        match plan {
+            ClaimPlan::Scan { after } => after,
+            ClaimPlan::Skip => panic!("走査するはず"),
+        }
+    }
+
     #[test]
     fn hints_raise_the_lower_bound_and_never_lower_it() {
         let h = ClaimHints::default();
-        assert_eq!(h.lower_bound("k"), 0, "最初は全走査");
-        h.observe("k", &[ev(5), ev(9), ev(7)], 3);
-        assert_eq!(h.lower_bound("k"), 9, "溜まっている間はテールから");
-        h.observe("k", &[ev(3), ev(4), ev(2)], 3);
-        assert_eq!(h.lower_bound("k"), 9, "下限は下げない");
+        // 採番が動き続けている（アイドルではない）。
+        let p = |s| probe(s, 1, 2);
+        assert_eq!(after(h.plan("k", p(10))), 0, "最初は全走査");
+        h.observe("k", p(10), 0, &[ev(5), ev(9), ev(7)], 3);
+        assert_eq!(after(h.plan("k", p(20))), 9, "溜まっている間はテールから");
+        h.observe("k", p(20), 9, &[ev(3), ev(4), ev(2)], 3);
+        assert_eq!(after(h.plan("k", p(30))), 9, "下限は下げない");
         assert_eq!(
-            h.lower_bound("other"),
+            after(h.plan("other", p(30))),
             0,
             "キーごと（プール・コンシューマ）"
         );
-        h.observe("k", &[ev(12)], 3);
-        assert_eq!(h.lower_bound("k"), 0, "溜まっていなければ全走査");
+        h.observe("k", p(30), 9, &[ev(12)], 3);
+        assert_eq!(after(h.plan("k", p(40))), 0, "溜まっていなければ全走査");
+    }
+
+    #[test]
+    fn idle_consumer_stops_scanning_until_a_new_id_is_allocated() {
+        let h = ClaimHints::default();
+        // 1 回目: 何も無い。前回の材料が無いので確定しない。
+        assert_eq!(after(h.plan("k", probe(50, 100, 100))), 0);
+        h.observe("k", probe(50, 100, 100), 0, &[], 10);
+        // 2 回目: 採番は動かず、前回実行中だった Tx（xid < 100）は終わった → 50 以下は配送済み。
+        assert_eq!(after(h.plan("k", probe(50, 100, 101))), 0);
+        h.observe("k", probe(50, 100, 101), 0, &[], 10);
+        assert_eq!(
+            h.plan("k", probe(50, 101, 101)),
+            ClaimPlan::Skip,
+            "走査しない"
+        );
+        assert_eq!(h.plan("k", probe(50, 105, 107)), ClaimPlan::Skip);
+        // 新しい書込（採番が動いた）→ 確定済みの下限から走査する。
+        assert_eq!(after(h.plan("k", probe(52, 107, 108))), 50);
+        h.observe("k", probe(52, 107, 108), 50, &[ev(51), ev(52)], 10);
+        // 行を取ったバッチでは確定しない（巻き戻っても取りこぼさない）。
+        assert_eq!(after(h.plan("k", probe(52, 108, 108))), 50);
+        h.observe("k", probe(52, 108, 108), 50, &[], 10);
+        assert_eq!(h.plan("k", probe(52, 108, 109)), ClaimPlan::Skip);
+    }
+
+    #[test]
+    fn idle_is_not_settled_while_an_older_transaction_may_still_commit() {
+        let h = ClaimHints::default();
+        h.observe("k", probe(50, 90, 100), 0, &[], 10);
+        // 前回実行中だった xid 95 の Tx がまだ終わっていない（xmin=95 < 前回の xmax=100）。その Tx が
+        // 50 以下の id を持っていて後からコミットするかもしれないので、確定しない。
+        h.observe("k", probe(50, 95, 101), 0, &[], 10);
+        assert_eq!(after(h.plan("k", probe(50, 95, 101))), 0, "走査を続ける");
+        // 下限からではなくテールから走査した空振りでも確定しない。
+        let h = ClaimHints::default();
+        h.observe("k", probe(10, 1, 2), 0, &[ev(1), ev(2)], 2);
+        h.observe("k", probe(10, 2, 2), 2, &[], 2);
+        assert_ne!(h.plan("k", probe(10, 2, 2)), ClaimPlan::Skip);
+    }
+
+    #[test]
+    fn full_sweep_runs_periodically_even_when_idle() {
+        let h = ClaimHints::default();
+        let t0 = std::time::Instant::now();
+        h.observe("k", probe(5, 1, 1), 0, &[], 10);
+        h.observe("k", probe(5, 1, 2), 0, &[], 10);
+        assert_eq!(h.plan_at("k", probe(5, 1, 1), t0), ClaimPlan::Skip);
+        let later = t0 + CLAIM_FULL_SWEEP_INTERVAL + std::time::Duration::from_secs(1);
+        assert_eq!(
+            h.plan_at("k", probe(5, 1, 1), later),
+            ClaimPlan::Scan { after: 0 },
+            "安全網の全走査"
+        );
     }
 }

@@ -1320,6 +1320,10 @@ create unique index on outbox_delivery (consumer, delivery_seq);
 > - **GC と台帳 consumer の登録の排他**: 登録・バックログの写し・GC は同じ Tx 内のロックで相互に排除し、GC は
 >   ロックの後に登録済みの consumer を読む。GC で消えたイベントの配送記録はスキップする（未登録のまま全バックログを拾って
 >   一斉発火させない）
+> - **GC の条件**: 登録済みの全台帳 consumer へ配送済みで、保持期間（`retain_until`）を過ぎた行を消す。RAG の relay
+>   （`processed_at` で ack する consumer・`outbox_ack_consumer` に起動時に登録）が登録されている配備でだけ `processed_at`
+>   も待つ（RAG 無効の配備で outbox が無制限に増えない）。台帳 consumer の claim は、全て配送済みと確かめた後は outbox の
+>   採番が動くまで表を走査しない（アイドル時に outbox を毎秒読み直さない・`storage::event::ClaimHints`）
 
 **配信の確定点と再送（at-least-once ＋ クライアント冪等）。**
 `mark_delivered` による `delivery_seq` の払い出しは**購読者ストリームへの永続化**であり、ネットワーク送信の成功を

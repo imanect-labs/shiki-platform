@@ -11,7 +11,9 @@
 
 use sqlx::PgConnection;
 
-use super::registered_consumers;
+use chrono::{DateTime, Utc};
+
+use super::{ack_consumers, registered_consumers};
 use crate::error::StorageError;
 
 /// 1 回の GC で削除する最大行数（既定）。大きな `DELETE` を 1 文で撃たず刻む。
@@ -67,6 +69,10 @@ pub(super) async fn lock_outbox_gc(conn: &mut PgConnection) -> Result<(), Storag
 /// スナップショット読取の基準位置を保つ・data-platform §9.2）。`ledger_consumers` は「配送を待つべきコンシューマ集合」。
 /// 空配列なら `processed_at` のみで判定する（台帳コンシューマが 1 つも登録されていない配備）。
 ///
+/// この関数は常に `processed_at` を待つ（明示集合で呼ぶテスト・管理コマンド向けの保守的な既定）。
+/// `processed_at` を待つかを ack コンシューマの登録（[`super::ack_consumers`]）で決めるのは本番入口の
+/// [`gc_delivered_registered`]。
+///
 /// 削除対象は `FOR UPDATE SKIP LOCKED` で確保するので、**全レプリカで同時に呼んでも安全**
 /// （互いをブロックせず、同じ行を二重に掴まない）。返り値は削除件数。
 ///
@@ -93,15 +99,21 @@ pub async fn gc_delivered(
     let mut tx = sqlx::Connection::begin(&mut *conn).await?;
     // fast-forward と相互排除する（並行させると相手を FK 違反で落とす・[`GC_LOCK_KEY`] 参照）。
     lock_outbox_gc(&mut tx).await?;
-    let deleted = delete_delivered(&mut tx, ledger_consumers, batch).await?;
+    let deleted = delete_delivered(&mut tx, ledger_consumers, true, batch).await?;
     tx.commit().await?;
     Ok(deleted)
 }
 
-/// **本番の GC 入口**: 配送を待つべきコンシューマ集合を `outbox_consumer` から読んで GC する。
+/// **本番の GC 入口**: 配送を待つべきコンシューマ集合を `outbox_consumer` から、`processed_at` を
+/// 待つべきかを `outbox_ack_consumer` から読んで GC する。
 ///
 /// コンシューマ集合を呼び出し側に渡させないのは安全性の要請（[`registered_consumers`] の
 /// doc コメント参照。フラグ off のレプリカが他コンシューマ宛の未配送イベントを消す事故を防ぐ）。
+///
+/// `processed_at` は ack コンシューマ（RAG の relay）が 1 つでも登録されているときだけ待つ。RAG を
+/// 無効にした配備では `processed_at` を立てる者がいないので、待つと 1 行も消えず outbox が無制限に
+/// 増える（3 回目の検証 3-D-1・54 万行が全て未 ack のまま残った）。その配備では「登録済みの全台帳
+/// コンシューマへ配送済み・保持期間外」だけで消す。
 ///
 /// 集合は [`GC_LOCK_KEY`] を**取った後に**読む。先に読むと、ロック待ちの間にコミットした新規登録
 /// （fast-forward 済み）を集合から落とし、その登録より後に到着して他コンシューマだけが配送済みの
@@ -114,18 +126,26 @@ pub async fn gc_delivered_registered(
     let mut tx = sqlx::Connection::begin(&mut *conn).await?;
     lock_outbox_gc(&mut tx).await?;
     let consumers = registered_consumers(&mut tx).await?;
+    let require_ack = !ack_consumers(&mut tx).await?.is_empty();
     let refs: Vec<&str> = consumers.iter().map(String::as_str).collect();
-    let deleted = delete_delivered(&mut tx, &refs, batch).await?;
+    let deleted = delete_delivered(&mut tx, &refs, require_ack, batch).await?;
     tx.commit().await?;
     Ok(deleted)
 }
 
 /// GC の `DELETE` 本体（[`GC_LOCK_KEY`] を同じ Tx で保持していること）。
+///
+/// `require_ack` が偽で台帳コンシューマも空なら何も消さない（配送を確かめる相手が誰もいない配備で、
+/// 書いたばかりのイベントを即座に消さない・保守側に倒す）。
 async fn delete_delivered(
     conn: &mut PgConnection,
     ledger_consumers: &[&str],
+    require_ack: bool,
     batch: i64,
 ) -> Result<u64, StorageError> {
+    if !require_ack && ledger_consumers.is_empty() {
+        return Ok(0);
+    }
     let consumers: Vec<String> = ledger_consumers.iter().map(|s| (*s).to_string()).collect();
     let expected = i64::try_from(consumers.len())
         .map_err(|_| StorageError::Invalid("consumer 数が多すぎます".into()))?;
@@ -133,7 +153,7 @@ async fn delete_delivered(
         "DELETE FROM storage_event_outbox \
          WHERE id IN ( \
              SELECT o.id FROM storage_event_outbox o \
-             WHERE o.processed_at IS NOT NULL \
+             WHERE (NOT $4 OR o.processed_at IS NOT NULL) \
                AND ( \
                    SELECT count(*) FROM outbox_delivery d \
                    WHERE d.event_id = o.id AND d.consumer = ANY($1) \
@@ -150,6 +170,7 @@ async fn delete_delivered(
     .bind(&consumers)
     .bind(expected)
     .bind(batch.max(1))
+    .bind(require_ack)
     .execute(conn)
     .await?;
     Ok(deleted.rows_affected())
@@ -165,6 +186,30 @@ pub struct ConsumerLag {
     pub lag: i64,
 }
 
+/// outbox の先頭（最小 id）の行が GC できない理由（滞留の原因の表示用）。
+///
+/// GC は id 順に消すので、先頭の行が消せない理由がそのまま「GC が進めない原因」になる。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadBlocker {
+    /// 先頭の行の event id。
+    pub event_id: i64,
+    /// 先頭の行の作成時刻。
+    pub created_at: DateTime<Utc>,
+    /// まだ配送していない登録済みの台帳コンシューマ。
+    pub undelivered: Vec<String>,
+    /// `processed_at` が立っていないときの ack コンシューマ（ack 済み・登録なしなら空）。
+    pub awaiting_ack: Vec<String>,
+    /// 購読ストリームの保持期間の終わり（保持期間内なら `Some`）。
+    pub retained_until: Option<DateTime<Utc>>,
+}
+
+impl HeadBlocker {
+    /// どの理由でも止められていない（＝GC は消せる・まだ消していないだけ）。
+    pub fn is_collectable(&self) -> bool {
+        self.undelivered.is_empty() && self.awaiting_ack.is_empty() && self.retained_until.is_none()
+    }
+}
+
 /// outbox の滞留状況（GC が進めない原因の切り分け用）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboxBacklog {
@@ -175,6 +220,8 @@ pub struct OutboxBacklog {
     pub latest_event_id: i64,
     /// 登録コンシューマごとの遅れ。
     pub consumers: Vec<ConsumerLag>,
+    /// 先頭の行が GC できない理由（outbox が空なら `None`）。
+    pub head: Option<HeadBlocker>,
 }
 
 impl OutboxBacklog {
@@ -186,9 +233,10 @@ impl OutboxBacklog {
 
 /// outbox の滞留状況を O(log n) で取る（定期ログ/メトリクス用）。
 ///
-/// 「未配送の正確な件数」は全表走査になるので取らない。代わりに **id の進捗差（lag）** を見る。
-/// `max(event_id)` は `outbox_delivery` の索引後方スキャン、`max(id)` は主キーの index-only scan、
-/// 行数は `reltuples` 概算なので、100 万行でも合計 1ms 未満で済む
+/// 「未配送の正確な件数」は全表走査になるので取らない。代わりに **id の進捗差（lag）** と
+/// **先頭の行が消せない理由**（[`HeadBlocker`]）を見る。
+/// `max(event_id)` は `outbox_delivery` の索引後方スキャン、`max(id)`/`min(id)` は主キーの index-only scan、
+/// 行数は `reltuples` 概算、先頭の行の台帳は `(event_id)` 索引で引くので、100 万行でも合計 1ms 未満で済む
 /// （素直に `LEFT JOIN ... GROUP BY` で書くと `outbox_delivery` の全走査になり 586ms かかる）。
 pub async fn outbox_backlog(conn: &mut PgConnection) -> Result<OutboxBacklog, StorageError> {
     let latest_event_id: i64 =
@@ -209,7 +257,7 @@ pub async fn outbox_backlog(conn: &mut PgConnection) -> Result<OutboxBacklog, St
                           WHERE d.consumer = c.name), 0) \
          FROM outbox_consumer c ORDER BY c.name",
     )
-    .fetch_all(conn)
+    .fetch_all(&mut *conn)
     .await?;
     let consumers = rows
         .into_iter()
@@ -219,9 +267,52 @@ pub async fn outbox_backlog(conn: &mut PgConnection) -> Result<OutboxBacklog, St
             lag: (latest_event_id - delivered_upto).max(0),
         })
         .collect();
+    let head = head_blocker(conn).await?;
     Ok(OutboxBacklog {
         estimated_rows,
         latest_event_id,
         consumers,
+        head,
     })
+}
+
+/// 先頭（最小 id）の行が GC できない理由を引く（[`gc_delivered_registered`] と同じ判定）。
+async fn head_blocker(conn: &mut PgConnection) -> Result<Option<HeadBlocker>, StorageError> {
+    let head: Option<(i64, DateTime<Utc>, bool)> = sqlx::query_as(
+        "SELECT id, created_at, processed_at IS NOT NULL FROM storage_event_outbox \
+         ORDER BY id LIMIT 1",
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((event_id, created_at, processed)) = head else {
+        return Ok(None);
+    };
+    let undelivered: Vec<String> = sqlx::query_scalar(
+        "SELECT c.name FROM outbox_consumer c \
+         WHERE NOT EXISTS (SELECT 1 FROM outbox_delivery d \
+                           WHERE d.event_id = $1 AND d.consumer = c.name) \
+         ORDER BY c.name",
+    )
+    .bind(event_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let awaiting_ack = if processed {
+        Vec::new()
+    } else {
+        ack_consumers(&mut *conn).await?
+    };
+    let retained_until: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT max(retain_until) FROM outbox_delivery \
+         WHERE event_id = $1 AND retain_until > now()",
+    )
+    .bind(event_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(Some(HeadBlocker {
+        event_id,
+        created_at,
+        undelivered,
+        awaiting_ack,
+        retained_until,
+    }))
 }

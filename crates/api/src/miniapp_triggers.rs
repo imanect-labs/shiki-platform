@@ -26,6 +26,8 @@ pub(crate) struct TriggerDeps {
     pub db: PgPool,
     pub runner: Arc<FunctionRunner>,
     pub port: Arc<GatewayFunctionPort>,
+    /// outbox の claim の走査の下限（アイドルの間は走査しない・3 回目の検証 3-D-1）。
+    pub claim_hints: storage::event::ClaimHints,
 }
 
 /// event/cron トリガのループを spawn する（gateway 有効時のみ呼ばれる）。
@@ -76,8 +78,14 @@ const EVENT_BATCH: usize = 500;
 
 async fn event_tick(deps: &TriggerDeps) -> anyhow::Result<usize> {
     let mut tx = deps.db.begin().await?;
-    let events =
-        storage::event::claim_undelivered(&mut tx, "miniapp-functions", EVENT_BATCH as i64).await?;
+    let events = storage::event::claim_undelivered_hinted(
+        &mut tx,
+        &deps.claim_hints,
+        "miniapp-functions",
+        "miniapp-functions",
+        EVENT_BATCH as i64,
+    )
+    .await?;
     if events.is_empty() {
         return Ok(0);
     }

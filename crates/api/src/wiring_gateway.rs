@@ -340,6 +340,7 @@ pub(crate) async fn spawn_miniapp_listeners(deps: MiniappListenerDeps<'_>) -> an
             db: deps.db.clone(),
             runner,
             port,
+            claim_hints: storage::event::ClaimHints::default(),
         });
     }
     Ok(())

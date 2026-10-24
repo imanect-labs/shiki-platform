@@ -92,6 +92,7 @@ fn deps(pool: PgPool) -> TriggerDeps {
         db: pool,
         runner,
         port,
+        claim_hints: storage::event::ClaimHints::default(),
     }
 }
 
