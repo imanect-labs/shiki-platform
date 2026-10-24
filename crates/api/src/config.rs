@@ -295,6 +295,8 @@ pub struct DatabaseConfig {
 mod auth;
 mod backends;
 #[cfg(test)]
+mod data_tests;
+#[cfg(test)]
 mod tests;
 
 pub use auth::{AuthConfig, SessionConfig, Tenancy};
