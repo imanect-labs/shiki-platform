@@ -45,8 +45,18 @@ async fn dual_gate_enforces_token_installation_and_scope() {
     let app = build_gateway_router(state(pool.clone(), &tenant));
 
     // ① トークン無し → 401。
-    let (s, _) = get(&app, "/gw/whoami", None).await;
+    let (s, body) = get(&app, "/gw/whoami", None).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "unauthenticated", "{body}");
+    // 壊れたトークンの 401 も同じ構造化した本文で、解析の内部文言を含まない（3 回目の検証 3-B-5）。
+    let (s, broken) = get(&app, "/gw/whoami", Some("not-a-jwt")).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(broken, body, "理由で本文を変えない");
+    let text = broken.to_string();
+    assert!(
+        !text.contains("JWT") && !text.contains("JSON") && !text.contains("error:"),
+        "{text}"
+    );
 
     // ② 有効トークン＋インストール済み → whoami 200（granted_scopes を返す）。
     let tok = token(&client_b1, "openid data.read", &tenant);
