@@ -458,6 +458,13 @@ export function TableWorkspace({
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 px-3 pb-3 pt-2 md:px-5 md:pt-4">
+      {/* スマホのシェルのヘッダは題名を出さないので、テーブル名をここに出す（A P3）。 */}
+      <div className="min-w-0 md:hidden">
+        <h1 className="truncate text-lg font-semibold leading-tight" data-testid="data-table-title">
+          {table.name}
+        </h1>
+        {loaded.viewId ? <p className="truncate text-xs text-muted-foreground">{loaded.name}</p> : null}
+      </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <ViewSwitcher
           table={table}
