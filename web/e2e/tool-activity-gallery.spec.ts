@@ -35,23 +35,19 @@ test.describe("ツール実行表示ギャラリー", () => {
     if (SHOTS) await between.screenshot({ path: `${SHOTS}/tool-activity-between.png` });
   });
 
-  test("回答の本文が流れ始めたら、生成中でも 1 行要約に畳む", async ({ page }) => {
-    const answering = page.getByTestId("tool-activity-answering");
-    await expect(answering.getByText("2 件の操作")).toBeVisible();
-    await expect(answering.getByTestId("tool-activity-rolling")).toHaveCount(0);
-  });
-
   test("計画のサブタスクがあればフェーズ行に優先して出る", async ({ page }) => {
     const withPlan = page.getByTestId("tool-activity-running-with-plan");
     await expect(withPlan.getByText("市場規模と成長率を調べています")).toBeVisible();
   });
 
-  test("完了後は 1 行要約に畳み、押すと全件・並行・成否・結果要約を出す", async ({ page }) => {
+  test("完了後は見出しを 1 行要約にし、直近 3 件の窓は畳まない。押すと全件・並行・成否・結果要約を出す", async ({ page }) => {
     const done = page.getByTestId("tool-activity-done");
-    // 完了後は**畳んだ 1 行要約**（件数と内訳）。走行中のロールは終わっているので、
-    // ここで全件を出しっぱなしにすると会話が縦に伸びる（#386 の作り直しで畳む側へ寄せた）。
+    // 完了後の見出しは件数と内訳。窓は畳まない（使った瞬間に開き、終わると閉じるとパカパカする）が、
+    // 全件は出さない（会話が縦に伸びる・#386）。直近 3 件だけを残す。
     await expect(done.getByText("5 件の操作")).toBeVisible();
     await expect(done.getByText(/web 3/)).toBeVisible();
+    await expect(done.getByTestId("tool-activity-rolling")).toBeVisible();
+    await expect(done.getByText("notes.md に書き込みました")).toBeVisible();
     await expect(done.getByText("並行して 2 件")).toHaveCount(0);
     if (SHOTS) await done.screenshot({ path: `${SHOTS}/tool-activity-open.png` });
 

@@ -11,9 +11,10 @@
 ///   3. **展開**       … ヘッダを押すと全件のタイムライン。ステップ境界で区切り、同一ステップ
 ///                          2 件以上は「並行して N 件」。成否・結果要約つき。
 ///
-/// ステップの合間（結果が返って次の呼び出しを待つ間）も実行中のまま開いておき、ツールの後に
-/// 回答の本文が流れ始めたら、または生成が終わったら 1 行要約（「12 件の操作 ・ web 8 ・ 社内 3」）
-/// に畳む。
+/// 回答の中では「操作のまとまり」（連続するツール呼び出し）ごとに本文と交互に並ぶ
+/// （`message-timeline.tsx`）。ステップの合間（結果が返って次の呼び出しを待つ間）も実行中の
+/// まま見せ、終わったら見出しを 1 行要約（「12 件の操作 ・ web 8 ・ 社内 3」）にする。窓は
+/// **畳まない**（自動で開閉すると、使った瞬間に開いて終わると閉じるのでパカパカする）。
 ///
 /// **ローリングはベルトコンベア方式**（human 指定の参照 UI と同じ動き）。行を出し入れして
 /// 高さを変えるのではなく、**固定高の窓の中で列全体を 1 行ぶん上へ送る**。押し出された行は
@@ -209,8 +210,6 @@ export function ToolActivity({
   phaseOverride = null,
   /// 参照ドキュメント。running 時のフェーズ行に最大 MAX_CITATION_CHIPS 件のチップとして表示。
   citations = [],
-  /// 最後のツールの後に回答の本文が流れ始めた（＝ツールを使う段階が終わった）。
-  answering = false,
   /// ステップの合間（次のイベント待ち）のフェーズ行の文言。待った時間に応じて親が進める。
   waitingLabel = null,
 }: {
@@ -218,12 +217,11 @@ export function ToolActivity({
   streaming?: boolean;
   phaseOverride?: string | null;
   citations?: Citation[];
-  answering?: boolean;
   waitingLabel?: string | null;
 }) {
-  // 開閉は**自動で閉じない**。既定は畳んだまま（直近 3 件がロールするだけ）で、ヘッダを押すと
-  // 全件のタイムラインになる。ユーザーの開閉は実行状態（ステップの合間や回答の開始で変わる）
-  // から導かない。
+  // 開閉は**自動で変えない**。既定は直近 3 件の窓（実行中はロールし、終わっても残す）で、
+  // ヘッダを押すと全件のタイムラインになる。実行状態から開閉を導くと、ツールを使った瞬間に
+  // 開き、終わる（または本文が流れ始める）と閉じるので、ステップごとにパカパカする。
   const [manualOpen, setManualOpen] = React.useState<boolean | null>(null);
 
   // node_id しか持たないツール（office/document/slide/csv）と citation のファイル名を解決する。
@@ -236,9 +234,9 @@ export function ToolActivity({
   const hasTools = items.length > 0;
   const toolsRunning = hasTools && items.some((it) => it.running);
   // ステップの合間（結果が返り、次の呼び出しを待つ間）も実行中として扱う。ツールの running
-  // だけで導くと、ステップ境界のたびにローリングが消えて現れ、見出しも ✓ と回転を行き来する
-  // （パカパカする）。回答の本文が流れ始めたら、ツールを使う段階は終わったとみなして畳む。
-  const between = streaming && hasTools && !toolsRunning && !answering;
+  // だけで導くと、ステップ境界のたびに見出しが ✓ と回転を行き来する。`streaming` は呼び出し側が
+  // 「この操作のまとまりが回答の末尾にある（後に本文が来ていない）」ときだけ立てる。
+  const between = streaming && hasTools && !toolsRunning;
   // 描画対象が無い間は計時しない（生成開始直後の空振りを避ける）。
   const running =
     streaming && (toolsRunning || between || (!hasTools && citations.length > 0));
@@ -337,9 +335,10 @@ export function ToolActivity({
 
       {open ? (
         <ExpandedTimeline items={items} nodeNames={nodeNames} />
-      ) : running ? (
-        <RollingBelt items={items} nodeNames={nodeNames} />
-      ) : null}
+      ) : (
+        // 終わった後も窓を残す（畳まない）。履歴として描くときは行を送り込む動きを付けない。
+        <RollingBelt items={items} nodeNames={nodeNames} animate={streaming} />
+      )}
     </div>
   );
 }
@@ -352,9 +351,12 @@ export function ToolActivity({
 function RollingBelt({
   items,
   nodeNames,
+  animate,
 }: {
   items: ToolActivityItem[];
   nodeNames: Record<string, string>;
+  /// 新着を窓の下から送り込むか（生成中だけ）。履歴を開いたときに全行が流れ込まないように。
+  animate: boolean;
 }) {
   const { slots, ghosts, hidden } = rollingWindow(items);
   // 窓の高さは件数ぶん（最大 LIVE_MAX 行）。固定 3 行だと 1〜2 件の間は本文との間に大きな
@@ -371,7 +373,7 @@ function RollingBelt({
               key={it.key}
               className="absolute inset-x-0 top-0"
               // 新着は窓の下から入ってくる（初回は下端の外に置いてから定位置へ送る）。
-              initial={{ y: `${rows * ROW_REM}rem`, opacity: 0 }}
+              initial={animate ? { y: `${rows * ROW_REM}rem`, opacity: 0 } : false}
               animate={{ y: `${row * ROW_REM}rem`, opacity: row < 0 ? 0 : 1 }}
               transition={{ duration: ROLL_SEC, ease: EASE_STANDARD }}
             >

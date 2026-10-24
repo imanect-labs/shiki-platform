@@ -18,55 +18,41 @@ export function ChainOfThought({
   streaming = false,
   /// 計画の進行中サブタスク（自律 run）。あればフェーズ行に優先して出す。
   phase = null,
-  /// 最後のツールの後に回答の本文が流れ始めたか（ツールのローリングを畳む合図）。
-  answering = false,
   /// 次のイベントを待っている間の文言（待った時間で進む）。待っていなければ null。
   waitingLabel = null,
-  /// 回答の本文が出始めているか（思考もツールも無い応答では、見出しを本文の前だけ出す）。
-  hasText = false,
 }: {
   thinking: string;
   tools: ToolActivityItem[];
   citations: Citation[];
   streaming?: boolean;
   phase?: string | null;
-  answering?: boolean;
   waitingLabel?: string | null;
-  hasText?: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
   const [userToggled, setUserToggled] = React.useState(false);
   const [showDetail, setShowDetail] = React.useState(false);
 
   const hasThinking = thinking.trim().length > 0;
+  const hasTools = tools.length > 0;
   // citations は ToolActivity のチップに移した。hasContent から漏れるとチップ行ごと消える。
-  const hasSide = hasThinking;
-  const hasContent = hasSide || tools.length > 0 || citations.length > 0;
+  const hasContent = hasThinking || hasTools || citations.length > 0;
   if (!hasContent && !streaming) return null;
 
   // 思考テキスト/引用のパネル。生成中は自動で開き、ユーザーが触ったらその意思を優先する。
   const expanded = userToggled ? open : streaming || open;
-  const status = statusText(streaming, thinking, tools.length > 0, waitingLabel);
+  // ツールがあるまとまりでは、生きている表示（回転・待ちの文言）はツールの見出しが受け持つ。
+  // 思考の見出しにも同じ文言を出すと 2 行が同じことを言う。
+  const live = streaming && !hasTools;
+  const status = statusText(live, thinking, waitingLabel);
   // 完了後は冬で固定し、生成中だけ春（準備・思考）で控えめに彩る。
-  const stageSeason = seasonVar(streaming ? 0 : 3);
+  const stageSeason = seasonVar(live ? 0 : 3);
 
   return (
     <div className="mb-2.5">
-      {/* ツール実行（フェーズ行＋ローリング＋展開）。生成中でなくても履歴として残す。
-          citations はフェーズ行のチップとして表示するため渡す（展開セクションは廃止）。 */}
-      <ToolActivity
-        items={tools}
-        streaming={streaming}
-        phaseOverride={phase}
-        citations={citations}
-        answering={answering}
-        waitingLabel={waitingLabel}
-      />
-
-      {/* 思考もツールも無い応答では、本文が出る前の「準備しています」だけを出す。本文が出た後も
-          残すと、本文の末尾の待ち表示（「続きを考えています」）と食い違う見出しが並ぶ。 */}
-      {hasSide || (streaming && tools.length === 0 && citations.length === 0 && !hasText) ? (
-        <>
+      {/* 思考 → ツールの順（起きた順）。ツールが増えても思考の見出しは動かない。
+          本文も操作もまだ無い生成の開始直後は「準備しています」を出す。 */}
+      {hasThinking || (streaming && !hasTools && citations.length === 0) ? (
+        <div className={cn(hasTools && "mb-1")}>
           <button
             type="button"
             onClick={() => {
@@ -77,7 +63,7 @@ export function ChainOfThought({
             aria-expanded={expanded}
           >
             <Brain
-              className={cn("size-3.5 transition-colors", streaming && "animate-pulse")}
+              className={cn("size-3.5 transition-colors", live && "animate-pulse")}
               style={{ color: stageSeason }}
               aria-hidden
             />
@@ -85,9 +71,9 @@ export function ChainOfThought({
               // 待ち時間の文言は数秒ごとに進むので、変わったら薄く入れ替える。入れ替えは外側、
               // 脈打ちは内側（同じ要素だと animation が上書きされ、片方しか効かない）。
               key={status}
-              className={cn(streaming && "animate-in fade-in-0 duration-300")}
+              className={cn(live && "animate-in fade-in-0 duration-300")}
             >
-              <span className={cn("font-medium", streaming && "animate-pulse")}>{status}</span>
+              <span className={cn("font-medium", live && "animate-pulse")}>{status}</span>
             </span>
             <ChevronRight
               className={cn("size-3.5 transition-transform", expanded && "rotate-90")}
@@ -121,8 +107,18 @@ export function ChainOfThought({
               ) : null}
             </div>
           ) : null}
-        </>
+        </div>
       ) : null}
+
+      {/* ツール実行（フェーズ行＋ローリング＋展開）。生成中でなくても履歴として残す。
+          citations はフェーズ行のチップとして表示するため渡す（展開セクションは廃止）。 */}
+      <ToolActivity
+        items={tools}
+        streaming={streaming}
+        phaseOverride={phase}
+        citations={citations}
+        waitingLabel={waitingLabel}
+      />
     </div>
   );
 }
@@ -130,17 +126,10 @@ export function ChainOfThought({
 /// 思考パネルの見出し。ツールの進行状況は ToolActivity のフェーズ行が受け持つので、
 /// ここは「考えている / 思考プロセス」だけを担う（旧実装のようにツール文言へ依存しない）。
 /// 思考が流れていない間に待たされているなら、待った時間に応じた文言（`waitingLabel`）を出す。
-function statusText(
-  streaming: boolean,
-  thinking: string,
-  hasTools: boolean,
-  waitingLabel: string | null,
-): string {
-  if (!streaming) return "思考プロセス";
+function statusText(live: boolean, thinking: string, waitingLabel: string | null): string {
+  if (!live) return "思考プロセス";
   // 待ちの文言（思考が流れている間は「考えています」）を優先する。思考の後に長く止まる間も
   // 「考えています」のままにしない。
   if (waitingLabel) return `${waitingLabel}…`;
-  if (thinking.trim()) return "考えています…";
-  return hasTools ? "回答をまとめています…" : "準備しています…";
+  return thinking.trim() ? "考えています…" : "準備しています…";
 }
-

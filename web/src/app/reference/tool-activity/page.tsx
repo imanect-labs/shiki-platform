@@ -291,8 +291,8 @@ export default function ToolActivityGalleryPage() {
         <h1 className="text-lg font-semibold tracking-tight">ツール実行表示</h1>
         <p className="mt-1 text-[13px] text-muted-foreground">
           チャットのツール実行可視化（issue #386）。実行中はフェーズ行＋直近 3
-          件のローリング。ステップの合間も開いたまま待ちの文言を出し、回答の本文が流れ始めるか
-          完了したら 1 行要約に畳み、クリックで全件のタイムラインを開く。
+          件のローリング。ステップの合間も待ちの文言を出し、終わったら見出しを 1 行要約にする
+          （直近 3 件の窓は畳まない）。クリックで全件のタイムラインを開く。
         </p>
       </header>
 
@@ -312,11 +312,7 @@ export default function ToolActivityGalleryPage() {
         <ToolActivity items={BETWEEN} streaming waitingLabel="次の手順を考えています" />
       </Cell>
 
-      <Cell id="answering" title="回答の本文が流れ始めた（生成中でも 1 行要約に畳む）">
-        <ToolActivity items={BETWEEN} streaming answering />
-      </Cell>
-
-      <Cell id="done" title="完了（折りたたみ 1 行要約。クリックで展開）">
+      <Cell id="done" title="完了（見出しは 1 行要約・直近 3 件の窓は残す。クリックで全件）">
         <ToolActivity items={DONE} />
       </Cell>
 

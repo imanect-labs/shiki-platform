@@ -12,9 +12,6 @@ import { Loader2 } from "lucide-react";
 import type { ToolActivityItem } from "./tool-activity";
 import { WAITING_STEPS, waitingPhrase, type WaitingContext } from "@/lib/waiting-phrases";
 
-/// 本文がこれだけ流れたら回答に入ったとみなし、ツールのローリングを畳む。ツールの前置き
-/// （「〜を調べます。」）程度で畳むと、次のツールでまた開いてパカパカする。
-const ANSWER_MIN_CHARS = 80;
 /// 本文の途中で止まってから、末尾に待ち表示を出すまでの秒数（トークンの小休止では出さない）。
 const SHOW_AFTER_SECS = 2;
 /// 経過秒を添え始める秒数。
@@ -45,32 +42,34 @@ const IDLE_STEPS = [...new Set([...WAITING_STEPS, SHOW_AFTER_SECS])].sort((a, b)
 const THINKING_STEPS = [SHOW_AFTER_SECS];
 
 export type StreamWaiting = {
-  /// 最後のツールの後に回答の本文が流れ始めた（ツールのローリングを畳む）。
-  answering: boolean;
-  /// ステップの合間・思考見出しに出す文言（待っていなければ null）。
+  /// 末尾の操作のまとまりの見出し・本文前の見出しに出す文言（待っていなければ null）。
   label: string | null;
-  /// 本文の末尾に待ち表示を出すか（ツールの見出しや思考の見出しが受け持たない局面）。
+  /// 本文の末尾に待ち表示を出すか（本文の途中で止まったとき）。
   atBottom: boolean;
-  /// 最後のイベントからの秒数（文言の切り替わりの刻みに丸めた値）。
-  idleSecs: number;
 };
 
+/// 回答の末尾が何か（生成中の表示をどこに出すかを決める）。
+export type StreamTail = { kind: "text" } | { kind: "work"; hasTools: boolean } | null;
+
 /// 生成中のストリームから、待ち表示の出し分けを決める。
+///
+/// - 末尾が操作のまとまり（ステップの合間・思考の後）: その見出しに文言を出す。
+/// - 末尾が本文: 止まってから [`SHOW_AFTER_SECS`] 秒で本文の末尾に待ち表示を出す。
+/// - まだ何も無い: 本文前の見出し（「準備しています」）に出す。
 ///
 /// 思考（reasoning）が流れている間は「考えています」とし、止まってから待ちの文言を進める
 /// （思考の後にツールの入力を長く書き出す間も、見出しが「考えています」で止まらない）。
 export function useStreamWaiting({
   text,
   thinking,
-  textAtLastTool,
   tools,
+  tail,
   awaitingUser,
 }: {
   text: string;
   thinking: string;
-  /// 最後のツール呼び出し時点の本文の長さ（それ以降が「ツールの後の本文」）。
-  textAtLastTool: number;
   tools: ToolActivityItem[];
+  tail: StreamTail;
   /// 承認待ちなど、ユーザーの操作を待っている（こちらが待たせているのではない）。
   awaitingUser: boolean;
 }): StreamWaiting {
@@ -83,34 +82,13 @@ export function useStreamWaiting({
   const thinkingIdle = useIdleStep(String(thinking.length), true, THINKING_STEPS);
   const thinkingFlowing = thinking.trim().length > 0 && thinkingIdle < SHOW_AFTER_SECS;
 
-  const sinceTool = text.slice(textAtLastTool).trim();
-  const hasTools = tools.length > 0;
-  const answering = !toolsRunning && sinceTool.length >= ANSWER_MIN_CHARS;
+  if (!waiting) return { label: null, atBottom: false };
+  if (tail?.kind === "text") return { label: null, atBottom: idleSecs >= SHOW_AFTER_SECS };
   const context: WaitingContext =
-    hasTools && sinceTool.length === 0
-      ? "after_tool"
-      : text.trim()
-        ? "after_text"
-        : thinking.trim()
-          ? "after_thinking"
-          : "start";
-  // 本文・思考が流れている最中は「待ち」ではない（止まってから待ちの文言を進める）。
-  const flowing = context === "after_text" && idleSecs < SHOW_AFTER_SECS;
-  const label = !waiting
-    ? null
-    : thinkingFlowing
-      ? "考えています"
-      : flowing
-        ? "回答を書いています"
-        : waitingPhrase(context, idleSecs);
-  // ステップの合間はツールの見出しが、本文が出る前は思考の見出しが文言を受け持つ。
-  const between = hasTools && !answering;
-  const atBottom = waiting && !between && text.trim().length > 0;
+    tail === null ? "start" : tail.hasTools ? "after_tool" : "after_thinking";
   return {
-    answering,
-    label: atBottom ? null : label,
-    atBottom: atBottom && idleSecs >= SHOW_AFTER_SECS,
-    idleSecs,
+    label: thinkingFlowing ? "考えています" : waitingPhrase(context, idleSecs),
+    atBottom: false,
   };
 }
 
