@@ -22,6 +22,7 @@
 //! バージョン履歴に残り失われない）。逆方向（Yjs→md）は保存経路のみ。
 
 pub mod ai_edit;
+mod ai_text;
 pub mod ast;
 pub mod frontmatter;
 pub mod md_html;

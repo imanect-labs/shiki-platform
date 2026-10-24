@@ -411,6 +411,33 @@ impl LiveDoc {
         Ok(())
     }
 
+    /// ノートに以前の書き込みが残した BigInt の数値属性を Number に直し、その update を
+    /// 記録する（#886・ロード時に 1 度）。md は変わらないので保存の契機にはしない。
+    /// 記録に失敗しても次のロードでまた直すだけなので、呼び出し側は警告に留めてよい。
+    pub async fn repair_note_attrs(&self, store: &DocStore) -> Result<usize, CollabError> {
+        let (update, fixed) = {
+            let awareness = self.read_awareness()?;
+            let doc = awareness.doc();
+            let fragment = doc.get_or_insert_xml_fragment(crate::note::yjs_map::FRAGMENT_NAME);
+            let before = doc.transact().state_vector();
+            let fixed = {
+                let mut txn = doc.transact_mut();
+                crate::note::yjs_write::repair_number_attrs(&mut txn, &fragment)
+            };
+            if fixed == 0 {
+                return Ok(0);
+            }
+            let update = doc.transact().encode_state_as_update_v1(&before);
+            (update, fixed)
+        };
+        let seq = store
+            .append_update(self.node_id, &self.tenant_id, &update, "system:repair")
+            .await?;
+        self.last_persisted_seq.store(seq, Ordering::SeqCst);
+        self.appended_since_compact.fetch_add(1, Ordering::SeqCst);
+        Ok(fixed)
+    }
+
     /// md 全文を全置換で取り込む（外部書込のインポート・Task 11P.2 単方向規約）。
     pub fn import_markdown(&self, markdown: &str) -> Result<(), CollabError> {
         let awareness = self.read_awareness()?;

@@ -212,12 +212,20 @@ impl Tool for DocumentEditTool {
         ToolName::DocumentEdit.as_str()
     }
     fn description(&self) -> &'static str {
-        "ノート（.md ファイル）を共同編集参加者として編集する。操作は Markdown で内容を\
-         指定する: append（末尾追記）/ replace_section（見出し名で節本文を置換）/ \
-         insert_after_heading（見出し直後に挿入）/ replace_all（全置換）/ set_meta（\
-         タイトル・タグ等のプロパティ設定）。既定は直接適用（あなたの名義で反映）。\
-         mode=\"suggest\" で提案として挿入し、人間が承認/棄却できる。グラフ等の図は\
-         markdown に ```ui ブロックとして書く（末尾に図だけ足すなら document.embed）。"
+        "ノート（.md ファイル）を共同編集参加者として編集する。人が同時に書いている箇所を\
+         壊さないよう、**変える所だけを変える一番小さい操作**を選ぶ。\
+         語句の訂正・言い換え・見出しの改名・文や項目の削除は replace_text（find の語句を replace に。\
+         空にすると段落・項目ごと消える）。段落・リスト・表を書式付きで書き直すなら replace_block\
+         （find を含む最上位のブロックを置換。リストの項目の中で同じ種類のリストを渡すとその項目だけ\
+         を置換＝チェックの付け外しもこれ）。段落・項目の後ろに足すなら insert_after（リストの項目の\
+         後ろに同じ種類のリストを渡すと同じリストに続く）。find は本文の文字どおりで、文書全体で一意\
+         にする（重なるなら heading で節を絞る）。1 つの段落・項目・表のセルの中の語句に限る（表は\
+         行ではなくセルの文字を渡す）。節単位は replace_section（見出しを残して本文を置換）・\
+         insert_after_heading・delete_section（見出しごと消す）・move_section（before_heading の前へ。\
+         省略で末尾）。append は末尾に追記、replace_all は全文の作り直し（最終手段）、set_meta は\
+         タイトル・タグ等。既定は直接適用（あなたの名義で反映）。mode=\"suggest\" で提案として入れ、\
+         人間が承認/棄却できる。適用できなかった操作は理由が返るので、直してからその操作だけ呼び直す。\
+         グラフ等の図は markdown に ```ui ブロックとして書く（末尾に図だけ足すなら document.embed）。"
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -236,10 +244,17 @@ impl Tool for DocumentEditTool {
                         "properties": {
                             "op": {
                                 "type": "string",
-                                "enum": ["append", "replace_section", "insert_after_heading", "replace_all", "set_meta"]
+                                "enum": [
+                                    "replace_text", "replace_block", "insert_after",
+                                    "replace_section", "insert_after_heading", "delete_section",
+                                    "move_section", "append", "replace_all", "set_meta"
+                                ]
                             },
-                            "markdown": { "type": "string", "description": "挿入/置換する Markdown（set_meta 以外）" },
-                            "heading": { "type": "string", "description": "対象見出しテキスト（replace_section / insert_after_heading）" },
+                            "find": { "type": "string", "description": "場所を決める本文の語句（replace_text / replace_block / insert_after）。文書全体で一意に" },
+                            "replace": { "type": "string", "description": "差し替える文字（replace_text・書式記号は使えない・空で削除）" },
+                            "markdown": { "type": "string", "description": "入れる/置換する Markdown（replace_block / insert_after / replace_section / insert_after_heading / append / replace_all）" },
+                            "heading": { "type": "string", "description": "対象の見出しの文字（節単位の操作）。find を使う操作では、探す範囲をその節に絞る" },
+                            "before_heading": { "type": "string", "description": "move_section の移動先（この見出しの前へ。省略で末尾）" },
                             "key": { "type": "string", "description": "プロパティ名（set_meta・title/icon/tags/任意）" },
                             "value": { "type": "string", "description": "プロパティ値（set_meta・tags は , 区切り）" }
                         },
@@ -293,11 +308,14 @@ impl Tool for DocumentEditTool {
             "ノート「{}」を編集しました（{mode_label}・{} 件適用）。",
             node.name, report.applied
         );
-        if !report.skipped.is_empty() {
+        // 1 件でも適用できなければ失敗として返す（成功と言い切らせない・#886）。適用済みの操作を
+        // 呼び直すと二重になるので、呼び直すのは失敗した操作だけだと伝える。
+        let failed = !report.skipped.is_empty();
+        if failed {
             let _ = write!(
                 content,
-                "\n次の操作は対象が見つからずスキップしました: {}",
-                report.skipped.join(", ")
+                "\n次の操作は適用していません（直してからこの操作だけを呼び直す）:\n- {}",
+                report.skipped.join("\n- ")
             );
         }
         if report.applied == 0 {
@@ -305,7 +323,11 @@ impl Tool for DocumentEditTool {
         }
         // 編集結果をチャットに残す（#381）。Yjs へ適用した時点で共有ドキュメントは変わって
         // いるが、版はセッションの保存契機で進むためここでは載せない（嘘の版を出さない）。
-        let mut outcome = ToolOutcome::ok(content);
+        let mut outcome = if failed {
+            ToolOutcome::error(content)
+        } else {
+            ToolOutcome::ok(content)
+        };
         outcome
             .document_refs
             .push(crate::document_ref::payload(node.id, &node.name, None));

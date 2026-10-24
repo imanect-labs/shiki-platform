@@ -789,6 +789,13 @@ flowchart TB
 - **AI 編集は共同編集参加者**: エージェントの `document.edit` ツールは Yjs トランザクションを発行する専用クライアント
   として同一セッションに参加（awareness に「AI」表示・**既定=直接適用**（AI 名義・undo 可）/サジェストは切替）。
   ファイル直接上書きで人間の編集と衝突する経路を作らない。権限は人間と同じ editor relation チェック。
+  - **編集は変わる所だけ（#886）**: 節や文書を丸ごと書き直すと、人がその節で並行して書いた内容・カーソル位置・
+    提案の印を巻き込む。`document.edit` は本文の語句で場所を決める操作（`replace_text`＝1 ブロック内の差分だけを
+    差し替え・`replace_block`・`insert_after`）と、節単位の操作（`replace_section`・`insert_after_heading`・
+    `delete_section`・`move_section`）を持ち、全文置換（`replace_all`）は最終手段。語句は文書（または指定した節）で
+    一意でなければ適用せず、適用できなかった操作は理由付きで失敗として返す（AI に成功と言わせない）。
+  - **提案は消す側も印に留める**: サジェストでは入れるテキストに `aiSuggestion`、消すテキストに `aiDeletion` の印を
+    付け、元の本文を消さない（承認で消える・棄却で印が外れて元に戻る）。印は md に落とさない。
   図の本文への追記は **`document.embed`**（本文の末尾へ `` ```ui `` の Markdown を非破壊 append・確認不要）で行う（通常チャットは
   確認要ツールを承認者無しで拒否するため `document.edit`（要確認）とは別ツールにする・#282）。
 - **メタデータは frontmatter 型軽量属性**（タイトル・アイコン・タグ・任意 key-value・アクティブ会話 active_thread_id）。

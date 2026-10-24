@@ -171,6 +171,11 @@ impl CollabHub {
                     persisted.next_seq - 1,
                 )
                 .await?;
+                if kind == Some(DocKind::Note) {
+                    if let Err(e) = live.repair_note_attrs(&self.store).await {
+                        tracing::warn!(%node_id, error = %e, "ノートの数値属性の修復を記録できず");
+                    }
+                }
                 Some(saver::spawn(
                     Arc::clone(&live),
                     self.store.clone(),

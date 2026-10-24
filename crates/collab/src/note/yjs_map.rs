@@ -35,6 +35,17 @@ pub fn read_blocks<T: ReadTxn>(txn: &T, fragment: &XmlFragmentRef) -> Vec<Block>
     children_to_blocks(txn, fragment.children(txn).collect())
 }
 
+/// フラグメント直下の `start..end` のブロックを読む（節の移動・#886）。
+pub fn read_block_range<T: ReadTxn>(
+    txn: &T,
+    fragment: &XmlFragmentRef,
+    start: u32,
+    end: u32,
+) -> Vec<Block> {
+    let children = (start..end).filter_map(|i| fragment.get(txn, i)).collect();
+    children_to_blocks(txn, children)
+}
+
 fn children_to_blocks<T: ReadTxn>(txn: &T, children: Vec<XmlOut>) -> Vec<Block> {
     let mut blocks = Vec::new();
     for child in children {

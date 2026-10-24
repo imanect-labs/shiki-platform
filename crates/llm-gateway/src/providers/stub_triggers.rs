@@ -146,6 +146,21 @@ pub(super) fn note_tool_call(
             );
         }
     }
+    // ノートの提案モード（#886）: `notesuggest:<node_id>` で、語句の差し替えと節の削除を提案として
+    // 入れる（消す側は削除の提案の印・入れる側は提案の印。承認/棄却を E2E で確かめる）。
+    if let Some(node_id) = user_text.strip_prefix("notesuggest:").map(str::trim) {
+        return call(
+            "document.edit",
+            serde_json::json!({
+                "node_id": node_id,
+                "mode": "suggest",
+                "ops": [
+                    { "op": "replace_text", "find": "売上は12%増", "replace": "売上は14%増" },
+                    { "op": "delete_section", "heading": "参考" }
+                ],
+            }),
+        );
+    }
     // スライドの選択（node_id ＋ locator の slide_id 付き）＋編集キーワード → slide.edit。
     // 表示中スライドを ReplaceSlide で丸ごと差し替え、GrapesJS キャンバスへのライブ反映
     // （observeDeep → slide:load → setComponents）を実パイプラインで検証する（#328・Task 11.10）。

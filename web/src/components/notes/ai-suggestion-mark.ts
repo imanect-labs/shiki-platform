@@ -1,20 +1,71 @@
-/// AI 提案マーク（Task 11P.4）。document.edit の suggest モードが挿入したテキストに付く
-/// `aiSuggestion` フォーマット属性を TipTap のマークとして扱い、視覚的に区別する。
+/// AI 提案マーク（Task 11P.4・#886）。document.edit の suggest モードが付ける 2 種の印を
+/// TipTap のマークとして扱い、視覚的に区別する。
 ///
-/// このマークは **md に落とさない**（Task 11P.2 の往復対象外・Yjs snapshot 側の正本に保つ）。
-/// 承認 = マークを外して本文化、棄却 = マークの付いた範囲を削除。
+/// - `aiSuggestion`: AI が入れようとしているテキスト。
+/// - `aiDeletion`: AI が消そうとしているテキスト（消さずに印だけ付けてある）。
+///
+/// どちらも **md に落とさない**（Task 11P.2 の往復対象外・Yjs snapshot 側の正本に保つ）。
+/// 承認 = 入れる側の印を外して本文化し、消す側を削除。棄却 = 入れる側を削除し、消す側の印を外して元に戻す。
 
 import { Mark, mergeAttributes } from "@tiptap/core";
+import type { MarkType, Node as PmNode } from "@tiptap/pm/model";
+import type { Transaction } from "@tiptap/pm/state";
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
     aiSuggestion: {
-      /// 文書全体の提案マークを承認する（マークだけ外して本文として残す）。
+      /// 文書全体の提案を承認する（入れる側は本文として残し、消す側は消す）。
       acceptAllSuggestions: () => ReturnType;
-      /// 文書全体の提案（マークの付いたテキスト）を棄却する（範囲を削除）。
+      /// 文書全体の提案を棄却する（入れる側は消し、消す側は元に戻す）。
       rejectAllSuggestions: () => ReturnType;
     };
   }
+}
+
+/// 表のセルは丸ごと消すと表の形が崩れるので、中身の文字だけを消す。
+const KEEP_WHOLE = new Set(["tableCell", "tableHeader"]);
+
+/// 文字を持ち、その文字がすべて `markType` の印付きのブロックか。
+function fullyMarked(node: PmNode, markType: MarkType): boolean {
+  if (node.isText || node.textContent.length === 0) return false;
+  let all = true;
+  node.descendants((child) => {
+    if (child.isText && !child.marks.some((m) => m.type === markType)) all = false;
+    return all;
+  });
+  return all;
+}
+
+/// `markType` の印が付いた範囲を消す。中身がすべて印付きのブロック（段落・項目・表など）は
+/// 空の入れ物を残さないようブロックごと消す。何か消したら true。
+function deleteMarked(tr: Transaction, doc: PmNode, markType: MarkType): boolean {
+  const ranges: Array<{ from: number; to: number }> = [];
+  doc.descendants((node, pos) => {
+    if (node.isText) {
+      if (node.marks.some((m) => m.type === markType)) ranges.push({ from: pos, to: pos + node.nodeSize });
+      return false;
+    }
+    if (!KEEP_WHOLE.has(node.type.name) && fullyMarked(node, markType)) {
+      ranges.push({ from: pos, to: pos + node.nodeSize });
+      return false;
+    }
+    return true;
+  });
+  // 後ろから削除して位置ずれを避ける。
+  for (const r of ranges.reverse()) tr.delete(r.from, r.to);
+  return ranges.length > 0;
+}
+
+/// `markType` の印だけを外す（文字は残す）。何か外したら true。
+function unmark(tr: Transaction, doc: PmNode, markType: MarkType): boolean {
+  let changed = false;
+  doc.descendants((node, pos) => {
+    if (node.isText && node.marks.some((m) => m.type === markType)) {
+      tr.removeMark(pos, pos + node.nodeSize, markType);
+      changed = true;
+    }
+  });
+  return changed;
 }
 
 export const AiSuggestionMark = Mark.create({
@@ -43,35 +94,49 @@ export const AiSuggestionMark = Mark.create({
       acceptAllSuggestions:
         () =>
         ({ tr, state, dispatch }) => {
-          const markType = state.schema.marks.aiSuggestion;
-          if (!markType) return false;
-          let changed = false;
-          state.doc.descendants((node, pos) => {
-            if (node.isText && node.marks.some((m) => m.type === markType)) {
-              tr.removeMark(pos, pos + node.nodeSize, markType);
-              changed = true;
-            }
-          });
+          const add = state.schema.marks.aiSuggestion;
+          const del = state.schema.marks.aiDeletion;
+          if (!add) return false;
+          // 先に印を外してから消す（外すのは位置を変えない）。
+          const unmarked = unmark(tr, state.doc, add);
+          const deleted = del ? deleteMarked(tr, tr.doc, del) : false;
+          const changed = unmarked || deleted;
           if (changed && dispatch) dispatch(tr);
           return changed;
         },
       rejectAllSuggestions:
         () =>
         ({ tr, state, dispatch }) => {
-          const markType = state.schema.marks.aiSuggestion;
-          if (!markType) return false;
-          // 後ろから削除して位置ずれを避ける。
-          const ranges: Array<{ from: number; to: number }> = [];
-          state.doc.descendants((node, pos) => {
-            if (node.isText && node.marks.some((m) => m.type === markType)) {
-              ranges.push({ from: pos, to: pos + node.nodeSize });
-            }
-          });
-          if (ranges.length === 0) return false;
-          for (const r of ranges.reverse()) tr.delete(r.from, r.to);
-          if (dispatch) dispatch(tr);
-          return true;
+          const add = state.schema.marks.aiSuggestion;
+          const del = state.schema.marks.aiDeletion;
+          if (!add) return false;
+          const unmarked = del ? unmark(tr, state.doc, del) : false;
+          const deleted = deleteMarked(tr, tr.doc, add);
+          const changed = unmarked || deleted;
+          if (changed && dispatch) dispatch(tr);
+          return changed;
         },
     };
+  },
+});
+
+/// AI が消そうとしているテキストの印（承認で消え、棄却で元に戻る）。
+export const AiDeletionMark = Mark.create({
+  name: "aiDeletion",
+  inclusive: false,
+
+  parseHTML() {
+    return [{ tag: "span[data-ai-deletion]" }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return [
+      "span",
+      mergeAttributes(HTMLAttributes, {
+        "data-ai-deletion": "true",
+        class: "note-ai-deletion",
+      }),
+      0,
+    ];
   },
 });

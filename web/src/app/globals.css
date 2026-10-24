@@ -633,6 +633,10 @@
   .note-prose .note-ai-suggestion {
     @apply rounded-sm bg-primary/15 decoration-primary/50 underline decoration-dotted underline-offset-2;
   }
+  /* 消す提案（#886）: 承認すると消える文字。取り消し線で、入れる提案と見分ける。 */
+  .note-prose .note-ai-deletion {
+    @apply mr-0.5 rounded-sm bg-destructive/10 text-muted-foreground line-through decoration-destructive/60;
+  }
 }
 
 /* 印刷（PDF エクスポート・#334）: アプリシェルを隠し本文だけを紙面に載せる。
