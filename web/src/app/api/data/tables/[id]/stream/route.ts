@@ -9,6 +9,11 @@
 ///   半開きとみなして閉じる
 /// - ブラウザが離れたら上流も閉じる
 /// 中継するのはバイト列そのまま（イベントの中身は読まない・書き換えない）。認可はすべて shiki-server 側。
+/// 200 以外（400 `cursor_invalid`・404 など）は状態・本文をそのまま返し、上流に届かないときは他の中継と同じ
+/// 503 ＋ `Retry-After` ＋構造化した本文を返す（3-B-1）。EventSource は 200 以外で諦めるので、画面は REST で
+/// 原因を確かめて繋ぎ直す（data-grid の diagnoseStream）。
+
+import { isGatewayFailure, upstreamUnavailable } from "@/lib/bff-upstream";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -39,9 +44,10 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     });
   } catch {
     req.signal.removeEventListener("abort", onClientGone);
-    // 上流に繋がらない（サーバの停止・再起動中）。EventSource は 200 以外で諦めるので、呼び出し側が
-    // REST で原因を確かめて繋ぎ直す（data-grid の diagnoseStream）。
-    return new Response(null, { status: 502 });
+    // ブラウザが離れた（中止）なら返す先は無い。
+    if (req.signal.aborted) return new Response(null, { status: 499 });
+    // 上流に繋がらない（サーバの停止・再起動中）。
+    return upstreamUnavailable();
   }
 
   const outHeaders = new Headers();
@@ -55,8 +61,21 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
 
   if (!upstream.ok || !upstream.body) {
     req.signal.removeEventListener("abort", onClientGone);
+    if (isGatewayFailure(upstream)) {
+      abort.abort();
+      return upstreamUnavailable();
+    }
+    // 拒否の理由（構造化した本文）をそのまま返す。本文は短いので読み切ってから上流を閉じる。
+    let text: string | null = null;
+    try {
+      text = upstream.body ? await upstream.text() : null;
+    } catch {
+      text = null;
+    }
     abort.abort();
-    return new Response(null, { status: upstream.status, headers: outHeaders });
+    outHeaders.set("cache-control", "no-store");
+    outHeaders.delete("x-accel-buffering");
+    return new Response(text, { status: upstream.status, headers: outHeaders });
   }
 
   const reader = upstream.body.getReader();

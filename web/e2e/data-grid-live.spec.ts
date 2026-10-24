@@ -196,3 +196,16 @@ test("取込の知らせは件数の有無どちらでも受け、空のテー�
   await banner.click();
   await expect(banner).toBeHidden();
 });
+
+test("購読の中継（BFF）は、サーバが拒否した理由の本文を捨てずに返す（3-B-1）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const { tableId } = await seedTable(page, 0);
+  // 読めない再開位置は 400 の構造化した本文、見えないテーブルは 404（どちらも本文なしにしない）。
+  const bad = await page.request.get(`/api/data/tables/${tableId}/stream?since=abc`);
+  expect(bad.status()).toBe(400);
+  expect(bad.headers()["content-type"]).toContain("json");
+  expect(((await bad.json()) as { code?: string }).code).toBeTruthy();
+  const missing = await page.request.get("/api/data/tables/00000000-0000-0000-0000-000000000000/stream");
+  expect(missing.status()).toBe(404);
+  expect(((await missing.json()) as { status?: number }).status).toBe(404);
+});

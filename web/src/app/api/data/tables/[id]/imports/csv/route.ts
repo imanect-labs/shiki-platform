@@ -5,6 +5,7 @@
 /// 送らずに、サーバと同じ形の 413 `{code:"import_too_large", max_bytes}` を返す。上限以内はそのまま中継する
 /// （上限・検証の正はサーバ。ここの上限は送る前に断るためだけの写し・`MAX_IMPORT_BYTES`）。
 
+import { isGatewayFailure, upstreamUnavailable } from "@/lib/bff-upstream";
 import { MAX_IMPORT_BYTES } from "@/lib/data-api";
 
 export const dynamic = "force-dynamic";
@@ -37,6 +38,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       redirect: "manual",
       cache: "no-store",
     } as RequestInit & { duplex: "half" });
+    if (isGatewayFailure(upstream)) return upstreamUnavailable();
     const out = new Headers();
     for (const h of ["content-type", "location", "retry-after"]) {
       const v = upstream.headers.get(h);
@@ -44,7 +46,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     }
     return new Response(upstream.body, { status: upstream.status, headers: out });
   } catch {
-    // 長さの分からない本文（chunked）で上限を超え、サーバが先に閉じたときもここに来る。
-    return length === 0 ? tooLarge() : new Response(null, { status: 502 });
+    // 長さの分からない本文（chunked）で上限を超え、サーバが先に閉じたときもここに来る。長さが分かっていて上限
+    // 以内なら、上流に届かなかった（停止・再起動中・3-B-1）。
+    if (req.signal.aborted) return new Response(null, { status: 499 });
+    return length === 0 ? tooLarge() : upstreamUnavailable();
   }
 }

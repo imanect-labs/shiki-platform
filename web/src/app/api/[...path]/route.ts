@@ -7,6 +7,8 @@
 ///
 /// 個別の中継（購読の SSE・CSV 取込）は、より具体的なルートとして先に解決される。
 
+import { isGatewayFailure, upstreamUnavailable } from "@/lib/bff-upstream";
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
@@ -15,20 +17,6 @@ const BACKEND = process.env.BACKEND_ORIGIN ?? "http://localhost:8080";
 const HOP_REQ = ["host", "connection", "keep-alive", "transfer-encoding", "upgrade", "accept-encoding", "content-length"];
 /// 返さないヘッダ（fetch が本文を展開済みなので長さ・符号化は付け直させる）。
 const HOP_RES = ["connection", "keep-alive", "transfer-encoding", "upgrade", "content-encoding", "content-length", "set-cookie"];
-/// 上流に繋がらないときの再試行の目安（秒）。サーバの再起動は 10 秒前後で終わる。
-const RETRY_AFTER_SEC = 5;
-
-function unavailable(): Response {
-  return Response.json(
-    {
-      status: 503,
-      title: "Service Unavailable",
-      code: "upstream_unavailable",
-      message: "サーバーに接続できません。少し待ってから再試行してください",
-    },
-    { status: 503, headers: { "retry-after": String(RETRY_AFTER_SEC), "cache-control": "no-store" } },
-  );
-}
 
 async function proxy(req: Request): Promise<Response> {
   const url = new URL(req.url);
@@ -53,7 +41,7 @@ async function proxy(req: Request): Promise<Response> {
     // ブラウザが離れた（中止）なら返す先は無い。
     if (req.signal.aborted) return new Response(null, { status: 499 });
     void e;
-    return unavailable();
+    return upstreamUnavailable();
   }
   const out = new Headers();
   upstream.headers.forEach((v, k) => {
@@ -61,9 +49,7 @@ async function proxy(req: Request): Promise<Response> {
   });
   for (const c of upstream.headers.getSetCookie()) out.append("set-cookie", c);
   // 上流の手前の経路（ロードバランサ等）の 502/504 も、届かなかったものとして同じ案内にする。
-  if ((upstream.status === 502 || upstream.status === 504) && !upstream.headers.get("content-type")?.includes("json")) {
-    return unavailable();
-  }
+  if (isGatewayFailure(upstream)) return upstreamUnavailable();
   return new Response(req.method === "HEAD" ? null : upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,
