@@ -201,7 +201,7 @@ fn text_to_inlines<T: ReadTxn>(txn: &T, text: &yrs::XmlTextRef) -> Vec<Inline> {
             !diff
                 .attributes
                 .as_ref()
-                .is_some_and(|a| is_true(a.get(DELETION)))
+                .is_some_and(|a| is_on(a.get(DELETION)))
         })
         .filter_map(|diff| {
             let Out::Any(Any::String(s)) = diff.insert else {
@@ -267,8 +267,10 @@ fn plain_text_of<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> String {
 /// AI の削除の提案の印（書式・要素の属性。`ai_text` と同じ名前）。
 const DELETION: &str = "aiDeletion";
 
-fn is_true(v: Option<&Any>) -> bool {
-    matches!(v, Some(Any::Bool(true)))
+/// 提案の印が付いているか。サーバは `true` で書くが、人がその段落を編集すると y-prosemirror が
+/// マークの属性（`{}`）で書き直すので、`null`・`false` 以外はすべて「付いている」とみなす。
+pub(super) fn is_on(v: Option<&Any>) -> bool {
+    !matches!(v, None | Some(Any::Null | Any::Bool(false)))
 }
 
 /// 削除の提案が付いた要素か（要素の属性に付いている、または文字がすべて印付き）。
@@ -277,7 +279,7 @@ fn is_true(v: Option<&Any>) -> bool {
 /// 人が棄却すれば次の保存で元に戻る。
 fn is_deleted<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> bool {
     fn walk<T: ReadTxn>(txn: &T, el: &XmlElementRef, any: &mut bool) -> bool {
-        if is_true(attr_any(txn, el, DELETION).as_ref()) {
+        if is_on(attr_any(txn, el, DELETION).as_ref()) {
             *any = true;
             return true;
         }
@@ -288,7 +290,7 @@ fn is_deleted<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> bool {
                 empty
                     || d.attributes
                         .as_ref()
-                        .is_some_and(|a| is_true(a.get(DELETION)))
+                        .is_some_and(|a| is_on(a.get(DELETION)))
             }),
             XmlOut::Element(e) => walk(txn, &e, any),
             XmlOut::Fragment(_) => true,

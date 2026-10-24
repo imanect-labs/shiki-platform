@@ -10,6 +10,7 @@ use yrs::types::text::YChange;
 use yrs::{Any, Out, ReadTxn, Text, Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut};
 
 use super::ai_text::DELETION;
+use super::yjs_map::is_on;
 
 /// 最上位の見出し 1 つ。
 struct Heading {
@@ -112,7 +113,7 @@ pub(super) fn visible_text<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> String {
                     let deleted = d
                         .attributes
                         .as_ref()
-                        .is_some_and(|a| matches!(a.get(DELETION), Some(Any::Bool(true))));
+                        .is_some_and(|a| is_on(a.get(DELETION)));
                     if let (Out::Any(Any::String(s)), false) = (d.insert, deleted) {
                         out.push_str(&s);
                     }

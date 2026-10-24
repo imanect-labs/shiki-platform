@@ -29,6 +29,7 @@ use super::ai_edit::EditMode;
 use super::ast::Block;
 use super::md_parse::parse_markdown;
 use super::sections::{section, visible_text};
+use super::yjs_map::is_on;
 use super::yjs_write::{insert_blocks_at, insert_list_items_at, mark_deleted};
 
 /// 提案の印（書式として持つ・md には落とさない）。
@@ -88,7 +89,7 @@ impl Segment {
                 return None;
             };
             let attrs = diff.attributes.map(|a| *a).unwrap_or_default();
-            let deleted = matches!(attrs.get(DELETION), Some(Any::Bool(true)));
+            let deleted = is_on(attrs.get(DELETION));
             if !deleted {
                 plain.push_str(&s);
                 offs.extend(actual..actual + s.len());

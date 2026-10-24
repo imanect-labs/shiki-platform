@@ -20,7 +20,7 @@
 use serde::Deserialize;
 use yrs::types::text::YChange;
 use yrs::{
-    Any, MapRef, Out, Text, TransactionMut, Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut,
+    MapRef, Out, Text, TransactionMut, Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut,
 };
 
 use super::ai_text;
@@ -301,14 +301,18 @@ fn has_pending_suggestion(
     end: u32,
 ) -> bool {
     fn marked(txn: &TransactionMut<'_>, el: &XmlElementRef) -> bool {
-        let flagged = |k: &str| matches!(el.get_attribute(txn, k), Some(Out::Any(Any::Bool(true))));
+        let flagged = |k: &str| match el.get_attribute(txn, k) {
+            Some(Out::Any(v)) => yjs_map::is_on(Some(&v)),
+            _ => false,
+        };
         if flagged(ai_text::SUGGESTION) || flagged(ai_text::DELETION) {
             return true;
         }
         el.children(txn).any(|c| match c {
             XmlOut::Text(t) => t.diff(txn, YChange::identity).iter().any(|d| {
                 d.attributes.as_ref().is_some_and(|a| {
-                    a.contains_key(ai_text::SUGGESTION) || a.contains_key(ai_text::DELETION)
+                    yjs_map::is_on(a.get(ai_text::SUGGESTION))
+                        || yjs_map::is_on(a.get(ai_text::DELETION))
                 })
             }),
             XmlOut::Element(e) => marked(txn, &e),

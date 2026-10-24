@@ -600,3 +600,54 @@ fn textless_blocks_get_the_flag_and_pending_sections_do_not_move() {
         report.skipped
     );
 }
+
+/// 人がその段落を編集すると、y-prosemirror は提案の印をマークの属性（`{}`）で書き直す。
+/// その形でも削除の提案として扱う（md に旧文を戻さない・検索に旧文を出さない）。
+#[test]
+fn deletion_marks_rewritten_by_the_editor_still_count() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    let live = live(BASE);
+    edit(&live, vec![text("12%", "14%")], EditMode::Suggest);
+    let human = client_of(&live);
+    let before = human.transact().state_vector();
+    {
+        let fragment = human.get_or_insert_xml_fragment("default");
+        let mut txn = human.transact_mut();
+        let Some(XmlOut::Element(para)) = fragment.get(&txn, 3) else {
+            panic!("売上の段落");
+        };
+        let Some(XmlOut::Text(t)) = para.get(&txn, 0) else {
+            panic!("テキスト");
+        };
+        // 「12」（削除の提案）の印を `{}` に書き直す。
+        let plain: String = t
+            .diff(&txn, YChange::identity)
+            .into_iter()
+            .filter_map(|d| match d.insert {
+                Out::Any(Any::String(s)) => Some(s.to_string()),
+                _ => None,
+            })
+            .collect();
+        let start = plain.find("1214").unwrap() as u32;
+        let mut attrs: yrs::types::Attrs = HashMap::new();
+        attrs.insert(
+            Arc::from("aiDeletion"),
+            Any::from(HashMap::<String, Any>::new()),
+        );
+        t.format(&mut txn, start, 2, attrs);
+    }
+    let update = human.transact().encode_state_as_update_v1(&before);
+    live.apply_update_bytes(&update).expect("merge");
+    let out = md(&live);
+    assert!(
+        out.contains("前年同期比で14%増加") && !out.contains("1214"),
+        "{out}"
+    );
+    let report = edit(&live, vec![text("1214", "x")], EditMode::Direct);
+    assert!(
+        report.skipped[0].contains("見つからない"),
+        "{:?}",
+        report.skipped
+    );
+}

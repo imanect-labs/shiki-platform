@@ -42,6 +42,9 @@ const NODE_MARKABLE = [
   "listItem",
   "taskItem",
   "table",
+  "tableRow",
+  "tableCell",
+  "tableHeader",
 ];
 
 /// ブロックが丸ごと `markType` の印付きか（ノードの属性、または中身がすべて印付き）。

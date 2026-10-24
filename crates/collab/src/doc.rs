@@ -344,37 +344,38 @@ impl LiveDoc {
     ) -> Result<(Vec<u8>, crate::note::EditReport), CollabError> {
         let awareness = self.read_awareness()?;
         let doc = awareness.doc();
+        // 写し（別の client id）で試し、全部通ったら写しで作った update をそのまま共有
+        // ドキュメントへ取り込む。試しと本番を別々に適用すると、その間に入った人の編集で
+        // 本番だけが一部失敗しうる。取り込みは CRDT のマージなので、人の編集とも収束する。
         let trial = Doc::new();
-        {
+        let base = {
             let full = doc
                 .transact()
                 .encode_state_as_update_v1(&StateVector::default());
             let mut txn = trial.transact_mut();
             apply_bytes(&mut txn, &full)?;
-        }
-        let dry = {
+            txn.state_vector()
+        };
+        let report = {
             let fragment = trial.get_or_insert_xml_fragment(crate::note::yjs_map::FRAGMENT_NAME);
             let meta = trial.get_or_insert_map(crate::note::yjs_map::META_MAP_NAME);
             let mut txn = trial.transact_mut();
             crate::note::ai_edit::apply_ops(&mut txn, &fragment, &meta, ops, mode)
         };
-        if !dry.skipped.is_empty() {
+        if !report.skipped.is_empty() {
             return Ok((
                 Vec::new(),
                 crate::note::EditReport {
                     applied: 0,
-                    skipped: dry.skipped,
+                    skipped: report.skipped,
                 },
             ));
         }
-        let fragment = doc.get_or_insert_xml_fragment(crate::note::yjs_map::FRAGMENT_NAME);
-        let meta = doc.get_or_insert_map(crate::note::yjs_map::META_MAP_NAME);
-        let before = doc.transact().state_vector();
-        let report = {
+        let update = trial.transact().encode_state_as_update_v1(&base);
+        {
             let mut txn = doc.transact_mut_with(crate::note::AI_ORIGIN);
-            crate::note::ai_edit::apply_ops(&mut txn, &fragment, &meta, ops, mode)
-        };
-        let update = doc.transact().encode_state_as_update_v1(&before);
+            apply_bytes(&mut txn, &update)?;
+        }
         Ok((update, report))
     }
 
