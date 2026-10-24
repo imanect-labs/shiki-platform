@@ -7,7 +7,7 @@ import { Check, ExternalLink, Filter, Link2, X } from "lucide-react";
 import type { AuditEvent, AuditQuery } from "@/lib/audit-api";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { citedChunks, citedFiles, formatTime, objectHref } from "./audit-query";
+import { answerOf, citedChunks, citedFiles, formatTime, objectHref } from "./audit-query";
 import { actionCategoryLabel, actionLabel } from "./audit-vocab";
 
 export function Verdict({ decision }: { decision: string }) {
@@ -80,6 +80,7 @@ export function AuditDetail({
   const chunks = citedChunks(e.metadata);
   const files = citedFiles(e.metadata);
   const href = objectHref(e.object_type, e.object_id);
+  const answer = answerOf(e.metadata);
   const metadata = JSON.stringify(e.metadata, null, 2);
   return (
     <div className="flex flex-col gap-3">
@@ -131,6 +132,21 @@ export function AuditDetail({
             />
           </Row>
         ) : null}
+        {answer.messageId ? (
+          <Row label="回答">
+            <span className="min-w-0 flex-1 break-all font-mono">{answer.messageId}</span>
+            <NarrowButton
+              label="この回答の記録で絞る（判定と引用）"
+              onClick={() => onNarrow({ message_id: answer.messageId })}
+            />
+          </Row>
+        ) : null}
+        {answer.threadId ? (
+          <Row label="会話">
+            <span className="min-w-0 flex-1 break-all font-mono">{answer.threadId}</span>
+            <NarrowButton label="この会話の記録で絞る" onClick={() => onNarrow({ thread_id: answer.threadId })} />
+          </Row>
+        ) : null}
         <Row label="チェーン">
           {/* 連結しているだけで、検証の仕組みはまだ無い（PIT-12・#828）。改ざん検知とは書かない。 */}
           <span className="text-muted-foreground">
@@ -147,6 +163,17 @@ export function AuditDetail({
         >
           <ExternalLink className="size-3.5" aria-hidden />
           対象を開く（閲覧権限があるときだけ開けます）
+        </Link>
+      ) : null}
+      {answer.threadId ? (
+        <Link
+          href={`/c/${encodeURIComponent(answer.threadId)}`}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex w-fit items-center gap-1.5 rounded-md text-[12.5px] font-medium underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ExternalLink className="size-3.5" aria-hidden />
+          会話を開く（閲覧権限があるときだけ開けます）
         </Link>
       ) : null}
       {chunks.length > 0 ? (
