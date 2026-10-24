@@ -15,6 +15,7 @@
 import * as React from "react";
 
 import { toast } from "@/components/ui/use-toast";
+import { numberedName } from "@/lib/file-name";
 import {
   findSiblingByName,
   isConflict,
@@ -31,12 +32,7 @@ export type ConflictResolution = "version" | "both" | "skip";
 
 type Failure = { name: string; message: string };
 
-/// 「議事録.md」→「議事録 (1).md」。拡張子の前に連番を入れる（先頭ドットだけの名前は拡張子扱いしない）。
-export function numberedName(name: string, n: number): string {
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0) return `${name} (${n})`;
-  return `${name.slice(0, dot)} (${n})${name.slice(dot)}`;
-}
+export { numberedName };
 
 const MAX_RENAME_TRIES = 50;
 
