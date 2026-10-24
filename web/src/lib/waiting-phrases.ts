@@ -45,3 +45,8 @@ export function waitingPhrase(context: WaitingContext, idleSecs: number): string
   }
   return phrase;
 }
+
+/// 文言が切り替わる秒数（全局面の和集合・昇順）。待ち時間はこの刻みでだけ再描画すればよい。
+export const WAITING_STEPS: readonly number[] = [
+  ...new Set(Object.values(PHRASES).flatMap((list) => list.map(([at]) => at))),
+].sort((a, b) => a - b);

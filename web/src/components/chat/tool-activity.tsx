@@ -15,7 +15,7 @@
 ///
 /// **ローリングはベルトコンベア方式**（human 指定の参照 UI と同じ動き）。行を出し入れして
 /// 高さを変えるのではなく、**固定高の窓の中で列全体を 1 行ぶん上へ送る**。押し出された行は
-/// 送られながら消える。高さが動かないので、隣の本文が上下に揺れない。
+/// 送られながら消える。窓が 3 行に埋まった後は高さが動かないので、隣の本文が上下に揺れない。
 ///
 /// モーション方針（`ui/motion-primitives.tsx` 参照）: 動かすのは transform / opacity のみ。
 
@@ -338,8 +338,8 @@ export function ToolActivity({
 /// 走行中のロール（ベルトコンベア）。
 ///
 /// 各行は**絶対配置**で `y = 行番号 × ROW_REM` に置き、新着のたびに全行の y を 1 行ぶん
-/// 詰める。motion が前回の y から補間するので、列全体が上へ送られて見える。窓の高さは
-/// 固定なので、新着が来ても隣の本文は 1px も動かない。
+/// 詰める。motion が前回の y から補間するので、列全体が上へ送られて見える。窓が埋まった
+/// 後は高さが動かないので、新着が来ても隣の本文は 1px も動かない。
 function RollingBelt({
   items,
   nodeNames,
@@ -348,9 +348,13 @@ function RollingBelt({
   nodeNames: Record<string, string>;
 }) {
   const { slots, ghosts, hidden } = rollingWindow(items);
+  // 窓の高さは件数ぶん（最大 LIVE_MAX 行）。固定 3 行だと 1〜2 件の間は本文との間に大きな
+  // 空白が残る（ステップの合間も開いたままにしたので、その空白が長く見える）。伸びるのは
+  // 最初の LIVE_MAX 件までで、以降は高さが動かない。
+  const rows = Math.min(items.length, LIVE_MAX);
   return (
     <div className="pl-[1.375rem]" data-testid="tool-activity-rolling">
-      <div className="relative" style={{ height: `${LIVE_MAX * ROW_REM}rem` }}>
+      <div className="relative" style={{ height: `${rows * ROW_REM}rem` }}>
         {slots.map((it, i) => {
           const row = i - ghosts; // 0 = 窓の最上段、-1 = 押し出された行
           return (
@@ -358,7 +362,7 @@ function RollingBelt({
               key={it.key}
               className="absolute inset-x-0 top-0"
               // 新着は窓の下から入ってくる（初回は下端の外に置いてから定位置へ送る）。
-              initial={{ y: `${LIVE_MAX * ROW_REM}rem`, opacity: 0 }}
+              initial={{ y: `${rows * ROW_REM}rem`, opacity: 0 }}
               animate={{ y: `${row * ROW_REM}rem`, opacity: row < 0 ? 0 : 1 }}
               transition={{ duration: ROLL_SEC, ease: EASE_STANDARD }}
             >

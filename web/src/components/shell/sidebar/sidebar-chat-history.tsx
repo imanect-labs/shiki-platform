@@ -293,7 +293,9 @@ function useRevealActiveThread({
       state.revealed = true;
       return;
     }
-    if (!hasMore || state.pages >= MAX_REVEAL_PAGES) {
+    if (!hasMore || state.pages >= MAX_REVEAL_PAGES || UNREACHABLE.has(activeId)) {
+      // 探しきれなかった会話は覚えておき、開き直すたびに同じページを取り直さない。
+      if (hasMore) UNREACHABLE.add(activeId);
       state.revealed = true;
       return;
     }
@@ -305,6 +307,8 @@ function useRevealActiveThread({
 
 /// 今いる会話を探して読み足す上限（1 ページ 30 件）。これより古い会話は先頭のままにする。
 const MAX_REVEAL_PAGES = 5;
+/// 上限まで読み足しても見つからなかった会話（ページ内で共有・ドロワを開き直しても探さない）。
+const UNREACHABLE = new Set<string>();
 
 /// 今の画面の会話 ID（通常は `/c/{id}`、文書の横の会話は `?thread=`）。
 function activeThreadIdOf(pathname: string, threadParam: string | null): string | null {

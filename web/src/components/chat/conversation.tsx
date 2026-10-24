@@ -1367,7 +1367,7 @@ function StreamingRow({
               <Markdown streaming>{linkifyCitations(stream.text, stream.citations)}</Markdown>
             </div>
           ) : null}
-          {waiting.atBottom ? <StreamWaitingLine idleSecs={waiting.idleSecs} /> : null}
+          {waiting.atBottom ? <StreamWaitingLine /> : null}
           {stream.workflowRefs.map((workflow, i) => (
             <WorkflowRefCard key={i} raw={workflow} />
           ))}

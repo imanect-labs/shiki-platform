@@ -10,7 +10,7 @@ import * as React from "react";
 import { Loader2 } from "lucide-react";
 
 import type { ToolActivityItem } from "./tool-activity";
-import { waitingPhrase, type WaitingContext } from "@/lib/waiting-phrases";
+import { WAITING_STEPS, waitingPhrase, type WaitingContext } from "@/lib/waiting-phrases";
 
 /// 本文がこれだけ流れたら回答に入ったとみなし、ツールのローリングを畳む。ツールの前置き
 /// （「〜を調べます。」）程度で畳むと、次のツールでまた開いてパカパカする。
@@ -20,18 +20,27 @@ const SHOW_AFTER_SECS = 2;
 /// 経過秒を添え始める秒数。
 const ELAPSED_AFTER_SECS = 10;
 
-/// `signal` が最後に変わってからの秒数（`active` の間だけ進める）。
-function useIdleSeconds(signal: string, active: boolean): number {
-  const [idle, setIdle] = React.useState(0);
+/// `signal` が最後に変わってからの秒数を、`steps` の刻みに丸めて返す（`active` の間だけ進める）。
+///
+/// 毎秒の再描画はしない。この値を持つのは本文の Markdown ごと描き直す行なので、刻みを
+/// 跨いだとき（文言が変わる・末尾の待ち表示を出す）だけ描き直す。経過秒の表示は
+/// [`StreamWaitingLine`] が自分の中で数える。
+function useIdleStep(signal: string, active: boolean, steps: readonly number[]): number {
+  const [secs, setSecs] = React.useState(0);
   React.useEffect(() => {
-    setIdle(0);
+    // 0 のままなら再描画しない（トークンごとに行を余計に描き直さない）。
+    setSecs(0);
     if (!active) return;
-    const since = Date.now();
-    const timer = window.setInterval(() => setIdle((Date.now() - since) / 1000), 500);
-    return () => window.clearInterval(timer);
-  }, [signal, active]);
-  return idle;
+    const timers = steps
+      .filter((s) => s > 0)
+      .map((s) => window.setTimeout(() => setSecs(s), s * 1000));
+    return () => timers.forEach((t) => window.clearTimeout(t));
+  }, [signal, active, steps]);
+  return secs;
 }
+
+/// 末尾の待ち表示を出すまでの秒数も刻みに含める。
+const IDLE_STEPS = [...new Set([...WAITING_STEPS, SHOW_AFTER_SECS])].sort((a, b) => a - b);
 
 export type StreamWaiting = {
   /// 最後のツールの後に回答の本文が流れ始めた（ツールのローリングを畳む）。
@@ -40,7 +49,7 @@ export type StreamWaiting = {
   label: string | null;
   /// 本文の末尾に待ち表示を出すか（ツールの見出しや思考の見出しが受け持たない局面）。
   atBottom: boolean;
-  /// 最後のイベントからの秒数。
+  /// 最後のイベントからの秒数（文言の切り替わりの刻みに丸めた値）。
   idleSecs: number;
 };
 
@@ -65,7 +74,7 @@ export function useStreamWaiting({
   const done = tools.filter((t) => !t.running).length;
   const signal = `${text.length}:${tools.length}:${done}`;
   const waiting = !toolsRunning && !awaitingUser;
-  const idleSecs = useIdleSeconds(signal, waiting);
+  const idleSecs = useIdleStep(signal, waiting, IDLE_STEPS);
 
   const sinceTool = text.slice(textAtLastTool).trim();
   const hasTools = tools.length > 0;
@@ -86,10 +95,19 @@ export function useStreamWaiting({
   };
 }
 
-/// 本文の末尾に出す待ち表示（本文が途中で止まったとき）。
-export function StreamWaitingLine({ idleSecs }: { idleSecs: number }) {
-  const secs = Math.floor(idleSecs);
-  const label = waitingPhrase("after_text", idleSecs);
+/// 本文の末尾に出す待ち表示（本文が途中で止まったとき）。止まってから
+/// [`SHOW_AFTER_SECS`] 秒で出るので、そこから自分で数える（親の行を毎秒描き直さない）。
+export function StreamWaitingLine() {
+  const [secs, setSecs] = React.useState(SHOW_AFTER_SECS);
+  React.useEffect(() => {
+    const mounted = Date.now();
+    const timer = window.setInterval(
+      () => setSecs(SHOW_AFTER_SECS + Math.floor((Date.now() - mounted) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, []);
+  const label = waitingPhrase("after_text", secs);
   return (
     <div
       role="status"
