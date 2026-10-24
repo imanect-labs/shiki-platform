@@ -531,6 +531,28 @@ async fn storage_end_to_end() {
             .unwrap();
         let hidden = service.get_metadata(&dctx, file.id, None).await;
         assert!(matches!(hidden, Err(StorageError::NotFound)), "{hidden:?}");
+        // #829: 回答のための読み出しなら、許可・拒否どちらの監査にも回答の ID を残す。
+        let answer = format!("m-{}", Uuid::new_v4().simple());
+        let mut annotations = serde_json::Map::new();
+        annotations.insert("message_id".into(), serde_json::json!(answer));
+        let denied = service
+            .get_metadata_annotated(&dctx, file.id, None, &annotations)
+            .await;
+        assert!(matches!(denied, Err(StorageError::NotFound)), "{denied:?}");
+        service
+            .get_metadata_annotated(&actx, file.id, None, &annotations)
+            .await
+            .expect("owner reads metadata");
+        let decisions: Vec<String> = sqlx::query_scalar(
+            "SELECT decision FROM audit_log WHERE object_id = $1 \
+             AND metadata ->> 'message_id' = $2 ORDER BY decision",
+        )
+        .bind(file.id.to_string())
+        .bind(&answer)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(decisions, ["allow", "deny"]);
         let hidden_dl = service.issue_download_url(&dctx, file.id, None).await;
         assert!(
             matches!(hidden_dl, Err(StorageError::NotFound)),

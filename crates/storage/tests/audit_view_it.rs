@@ -133,7 +133,7 @@ async fn search_is_scoped_filtered_and_pageable() {
         AuditAction::RagSearch,
         Decision::Allow,
         Some("tr-2"),
-        json!({"cited_chunk_ids": ["chunk-a", "chunk-b"]}),
+        json!({"cited_chunk_ids": ["chunk-a", "chunk-b"], "thread_id": "th-1", "message_id": "m-1"}),
     )
     .await;
     record(
@@ -151,7 +151,8 @@ async fn search_is_scoped_filtered_and_pageable() {
         AuditAction::FileDelete,
         Decision::Allow,
         None,
-        json!({}),
+        // 別テナントで同じ回答 ID を持つ行（越境して出ないこと）。
+        json!({"thread_id": "th-1", "message_id": "m-1"}),
     )
     .await;
 
@@ -216,6 +217,26 @@ async fn search_is_scoped_filtered_and_pageable() {
     .await;
     assert_eq!(cited.len(), 1);
     assert_eq!(cited[0].action, "rag.search");
+    // 1 回答・1 会話の判定と引用（#829）。
+    let answer = by(AuditFilter {
+        message_id: Some("m-1".into()),
+        ..window()
+    })
+    .await;
+    assert_eq!(answer.len(), 1, "自テナントの回答の行だけ");
+    assert_eq!(answer[0].action, "rag.search");
+    let conversation = by(AuditFilter {
+        thread_id: Some("th-1".into()),
+        ..window()
+    })
+    .await;
+    assert_eq!(conversation.len(), 1);
+    assert!(by(AuditFilter {
+        message_id: Some("m-2".into()),
+        ..window()
+    })
+    .await
+    .is_empty());
     let traced = by(AuditFilter {
         trace_id: Some("tr-1".into()),
         ..window()

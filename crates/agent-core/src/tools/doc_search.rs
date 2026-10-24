@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use authz::AuthContext;
-use rag::{Relevance, SearchMode, SearchResult, SearchScope, SearchService};
+use rag::{AuditTrail, Relevance, SearchMode, SearchResult, SearchScope, SearchService};
 
 use crate::tool::{Citation, Tool, ToolError, ToolOutcome};
 
@@ -63,7 +63,7 @@ pub async fn run_doc_search(
     query: &str,
     top_k: Option<u32>,
     scope: Option<&SearchScope>,
-    trace_id: Option<&str>,
+    trail: AuditTrail<'_>,
 ) -> Result<DocSearchResult, ToolError> {
     // 古典注入にはツールループが無く、モデルが ID を使い道が無いので載せない（トークンの無駄・
     // 回答へ UUID が写る）。
@@ -78,7 +78,7 @@ pub async fn run_doc_search(
             narrow: &SearchScope::default(),
             for_tool: false,
         },
-        trace_id,
+        trail,
     )
     .await
 }
@@ -104,7 +104,7 @@ async fn search_docs(
     search: &SearchService,
     ctx: &AuthContext,
     p: &SearchParams<'_>,
-    trace_id: Option<&str>,
+    trail: AuditTrail<'_>,
 ) -> Result<DocSearchResult, ToolError> {
     let query = p.query.trim();
     if query.is_empty() {
@@ -113,7 +113,7 @@ async fn search_docs(
     // 絞り込みは知識スコープとの交差（union だと skill の範囲を広げられる）。交差が空なら
     // 検索せずに 0 件・交差で検索するときは元の知識スコープで候補を再検証する（SearchService 側）。
     let out = search
-        .search_narrowed(ctx, query, p.top_k, p.mode, p.base, p.narrow, trace_id)
+        .search_narrowed(ctx, query, p.top_k, p.mode, p.base, p.narrow, trail)
         .await
         .map_err(|e| ToolError::Unavailable(format!("doc_search failed: {e}")))?;
 
@@ -211,6 +211,8 @@ pub struct DocSearchTool {
     scope: Option<SearchScope>,
     /// ツール説明（同じ束に `doc_read` があれば本文の読み方の案内を足す・#425）。
     description: String,
+    /// 会話の回答のための検索なら、その会話と回答（監査に残す・#829）。
+    answer: Option<(uuid::Uuid, uuid::Uuid)>,
 }
 
 impl DocSearchTool {
@@ -225,7 +227,16 @@ impl DocSearchTool {
             search,
             scope: scope.filter(|s| !s.is_empty()),
             description: DESCRIPTION.to_string(),
+            answer: None,
         }
+    }
+
+    /// 会話（thread）の回答（assistant のメッセージ）を生成するための検索として構成する。
+    /// 監査の `rag.search` に会話と回答を残し、1 回答の判定と引用を引けるようにする（#829）。
+    #[must_use]
+    pub fn for_answer(mut self, thread_id: uuid::Uuid, message_id: uuid::Uuid) -> Self {
+        self.answer = Some((thread_id, message_id));
+        self
     }
 
     /// `doc_read` を同じ束で提示するときに呼ぶ（無いツールを勧めない）。
@@ -421,7 +432,10 @@ impl Tool for DocSearchTool {
                 narrow: &input.narrow,
                 for_tool: true,
             },
-            trace_id,
+            match self.answer {
+                Some((thread, message)) => AuditTrail::for_answer(trace_id, thread, message),
+                None => AuditTrail::from(trace_id),
+            },
         )
         .await?;
         let mut outcome = ToolOutcome::ok(result.context_text);

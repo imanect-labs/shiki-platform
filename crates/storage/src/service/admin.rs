@@ -348,6 +348,30 @@ impl StorageService {
         object_id: &str,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
+        self.require_read_annotated(
+            ctx,
+            object,
+            action,
+            object_type,
+            object_id,
+            trace_id,
+            &serde_json::Map::new(),
+        )
+        .await
+    }
+
+    /// [`Self::require_read`] に、deny の監査 metadata へ書き足す値（会話・回答の ID など・#829）を添える。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn require_read_annotated(
+        &self,
+        ctx: &AuthContext,
+        object: &FgaObject,
+        action: AuditAction,
+        object_type: &str,
+        object_id: &str,
+        trace_id: Option<&str>,
+        annotations: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), StorageError> {
         // 読取認可。共有解除の即時反映（PIT-11）が要るため強整合で問い合わせる。
         let allowed = self
             .authz
@@ -368,7 +392,10 @@ impl StorageService {
                         object_id,
                         decision: Decision::Deny,
                         trace_id,
-                        metadata: json!({ "relation": Relation::Viewer.as_str() }),
+                        metadata: annotated(
+                            json!({ "relation": Relation::Viewer.as_str() }),
+                            annotations,
+                        ),
                     },
                 )
                 .await?;
@@ -376,4 +403,15 @@ impl StorageService {
         }
         Ok(())
     }
+}
+
+/// 監査の metadata（オブジェクト）に `annotations` を書き足す。
+fn annotated(
+    mut metadata: serde_json::Value,
+    annotations: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
+    if let Some(obj) = metadata.as_object_mut() {
+        obj.extend(annotations.clone());
+    }
+    metadata
 }

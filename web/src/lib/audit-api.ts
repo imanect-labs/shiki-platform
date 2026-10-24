@@ -14,7 +14,16 @@ type GeneratedQuery = NonNullable<operations["list_events"]["parameters"]["query
 /// （期間は画面では常に決まっているので必須にする）。
 export type AuditQuery = Pick<
   GeneratedQuery,
-  "actor" | "action" | "category" | "decision" | "object_type" | "object_id" | "chunk_id" | "trace_id"
+  | "actor"
+  | "action"
+  | "category"
+  | "decision"
+  | "object_type"
+  | "object_id"
+  | "chunk_id"
+  | "trace_id"
+  | "thread_id"
+  | "message_id"
 > & { from: string; to: string };
 
 /// 絞り込みに使うキー（URL の検索パラメータと同じ名前）。
@@ -29,6 +38,8 @@ export const AUDIT_FILTER_KEYS = [
   "object_id",
   "chunk_id",
   "trace_id",
+  "thread_id",
+  "message_id",
 ] as const satisfies readonly (keyof AuditQuery)[];
 
 export function auditParams(q: AuditQuery): URLSearchParams {

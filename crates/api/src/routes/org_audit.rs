@@ -90,6 +90,10 @@ pub struct AuditQuery {
     pub chunk_id: Option<String>,
     /// trace_id（1 回の要求に紐づく行をまとめて見る）。
     pub trace_id: Option<String>,
+    /// 会話の ID（チャットの回答のための検索・本文の読み出しの行）。
+    pub thread_id: Option<String>,
+    /// 回答（assistant のメッセージ）の ID。1 回答に紐づく権限判定と引用をまとめて見る。
+    pub message_id: Option<String>,
     /// 前のページの `next_cursor`。
     pub cursor: Option<String>,
     /// 1 ページの件数（1〜500・既定 100）。
@@ -172,6 +176,8 @@ fn to_filter(q: &AuditQuery, today: NaiveDate) -> Result<AuditFilter, ApiError> 
         object_id: text(q.object_id.as_ref(), "対象の ID")?,
         chunk_id: text(q.chunk_id.as_ref(), "チャンク ID")?,
         trace_id: text(q.trace_id.as_ref(), "trace_id")?,
+        thread_id: text(q.thread_id.as_ref(), "会話の ID")?,
+        message_id: text(q.message_id.as_ref(), "回答の ID")?,
     })
 }
 
@@ -187,6 +193,8 @@ fn filter_metadata(q: &AuditQuery, f: &AuditFilter) -> serde_json::Value {
         ("object_id", &f.object_id),
         ("chunk_id", &f.chunk_id),
         ("trace_id", &f.trace_id),
+        ("thread_id", &f.thread_id),
+        ("message_id", &f.message_id),
     ] {
         if let Some(v) = v {
             m.insert(k.into(), json!(v));
