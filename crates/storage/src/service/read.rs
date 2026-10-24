@@ -15,18 +15,32 @@ impl StorageService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
+        self.get_metadata_annotated(ctx, file_id, trace_id, &serde_json::Map::new())
+            .await
+    }
+
+    /// [`Self::get_metadata`] に、許可・拒否の監査 metadata へ書き足す値を添える
+    /// （チャットの回答のための読み出しなら会話・回答の ID・#829）。
+    pub async fn get_metadata_annotated(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        trace_id: Option<&str>,
+        annotations: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Node, StorageError> {
         let node = self.load_node(ctx, file_id, false).await?;
         // 共有リンクの遅延失効（#342・defense-in-depth）: 期限切れなら FGA タプルを先行剥奪して
         // から viewer 判定する（新規 open が期限後のタプルで通らないようにする）。
         self.enforce_share_link_expiry(ctx, file_id, node.kind)
             .await?;
-        self.require_read(
+        self.require_read_annotated(
             ctx,
             &ctx.ns().file(&file_id.to_string()),
             AuditAction::FileMetadataRead,
             "file",
             &file_id.to_string(),
             trace_id,
+            annotations,
         )
         .await?;
         self.audit
@@ -38,7 +52,7 @@ impl StorageService {
                     object_id: &file_id.to_string(),
                     decision: Decision::Allow,
                     trace_id,
-                    metadata: json!({}),
+                    metadata: serde_json::Value::Object(annotations.clone()),
                 },
             )
             .await?;
