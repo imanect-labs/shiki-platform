@@ -212,7 +212,9 @@ async fn data_grid_is_evaluated_with_each_viewers_own_permissions() {
         .await
         .expect("table viewer");
     }
-    for who in [&carol, &dave] {
+    // 内部メモ（経理だけが読める列）へ書けるのは読める人だけ（マスク列への書込は 403）。種を入れる
+    // 作成者の alice も経理にする（行の見え方の検査は bob / carol / dave で行う）。
+    for who in [&alice, &carol, &dave] {
         fga.write_tuple(&who.subject(), Relation::Member, &ns.role("keiri"))
             .await
             .expect("keiri");
