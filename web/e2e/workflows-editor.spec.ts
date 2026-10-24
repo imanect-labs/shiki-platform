@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { loginViaKeycloak } from "./helpers";
+import { loginViaKeycloak, uniqueName } from "./helpers";
 
 /// dnd ワークフローエディタの e2e（Task 10.12 DoD）:
 /// 新規作成 → ブロック追加（ヘッダ導線＋尻尾プラス）→ 検証エラーが該当ノードにバッジ表示
@@ -49,4 +49,56 @@ test("エディタ: 作成→追加→エラーバッジ→修正→保存→実
   const sheet = page.locator('[role="dialog"]');
   await expect(sheet.getByText("実行の詳細")).toBeVisible();
   await expect(sheet.locator("h2").getByText("成功")).toBeVisible({ timeout: 60_000 });
+});
+
+/// 条件の意味論の切替（2026-10）で分岐の結果が変わり得る条件は、保存を止めずに警告で知らせる
+/// （保存 API・検証 API の `warnings`・Task 15.7 / 監査 B3-2）。
+test("エディタ: 意味論の切替で結果が変わり得る条件を、開いた時と保存の時に知らせる", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const res = await page.request.post("/api/workflows", {
+    headers: { "x-csrf-token": csrf, "content-type": "application/json" },
+    data: {
+      ir: {
+        ir_version: 1,
+        name: uniqueName("semantics-e2e"),
+        display_name: "配列の判定",
+        triggers: [{ kind: "interactive" }],
+        nodes: [
+          {
+            id: "br",
+            type: "control.branch",
+            label: "タグの判定",
+            // 配列のリテラルに contains（2026-10 から「いずれかの要素の部分文字列」）。
+            params: { condition: { cmp: { left: ["経費", "交通"], op: "contains", right: "経" } } },
+          },
+        ],
+        edges: [],
+      },
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const created = (await res.json()) as { id: string; warnings: { code: string }[] };
+  expect(created.warnings.map((w) => w.code)).toEqual(["ir.condition_semantics_changed"]);
+
+  // 開いた時点で、ノードに注意の印・上部に件数が出る（保存済みの定義の確認）。
+  await page.goto(`/workflows/${created.id}`);
+  const canvas = page.locator(".react-flow");
+  await expect(canvas.locator('[aria-label="注意 1 件"]')).toBeVisible({ timeout: 15_000 });
+  const summary = page.getByTestId("workflow-warnings");
+  await expect(summary).toContainText("確認が必要な条件 1 件");
+
+  // 一覧から該当のブロックを開くと、設定パネルにも理由が出る。
+  await summary.click();
+  await page.getByRole("button", { name: /タグの判定/ }).click();
+  await expect(page.getByTestId("node-warnings")).toContainText("配列値に contains");
+
+  // 名前を変えて保存しても止まらず、保存の通知に警告の件数が出る。
+  await page.getByPlaceholder("条件分岐").fill("タグの判定（確認済み）");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました（v2）・確認が必要な条件が 1 件あります/).first()).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(canvas.locator('[aria-label="注意 1 件"]')).toBeVisible();
 });

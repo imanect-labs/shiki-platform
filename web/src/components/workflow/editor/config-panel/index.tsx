@@ -116,6 +116,7 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
   }, [ctx.state.serverErrors, node.id]);
   const nodeErrors = mapErrors(ctx.state.serverErrors).byNode.get(node.id) ?? [];
   const unmappedErrors = nodeErrors.filter((e) => !paramField(e.path));
+  const nodeWarnings = mapErrors(ctx.state.serverWarnings).byNode.get(node.id) ?? [];
 
   return (
     <>
@@ -147,6 +148,24 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
               <li key={i}>{e.message}</li>
             ))}
           </ul>
+        ) : null}
+        {nodeWarnings.length > 0 ? (
+          <div
+            role="note"
+            className="space-y-1 rounded-md border p-2 text-[11px] leading-relaxed"
+            style={{
+              borderColor: "color-mix(in oklab, var(--season-autumn) 45%, transparent)",
+              backgroundColor: "color-mix(in oklab, var(--season-autumn) 8%, transparent)",
+            }}
+            data-testid="node-warnings"
+          >
+            <p className="font-medium">保存はできますが、確認してください</p>
+            <ul className="list-disc space-y-1 pl-4">
+              {nodeWarnings.map((w, i) => (
+                <li key={i}>{w.message}</li>
+              ))}
+            </ul>
+          </div>
         ) : null}
         {Form ? (
           <Form

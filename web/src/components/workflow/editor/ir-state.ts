@@ -27,6 +27,8 @@ export type EditorState = {
   undoStack: WorkflowIr[];
   redoStack: WorkflowIr[];
   serverErrors: ValidationError[];
+  /// 保存を止めない警告（`ir.condition_semantics_changed` など・保存/検証の応答の `warnings`）。
+  serverWarnings: ValidationError[];
 };
 
 export type EditorAction =
@@ -47,6 +49,7 @@ export type EditorAction =
   | { type: "set_triggers"; triggers: Trigger[] }
   | { type: "select"; selection: Selection }
   | { type: "set_errors"; errors: ValidationError[] }
+  | { type: "set_warnings"; warnings: ValidationError[] }
   | { type: "saved"; version: number; savedIr: WorkflowIr; ir?: WorkflowIr }
   | { type: "layout_saved"; layout: EditorLayout }
   | { type: "undo" }
@@ -373,6 +376,8 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       return { ...state, selection: action.selection };
     case "set_errors":
       return { ...state, serverErrors: action.errors };
+    case "set_warnings":
+      return { ...state, serverWarnings: action.warnings };
     case "saved":
       return {
         ...state,
@@ -429,5 +434,6 @@ export function useEditorState(initial: {
     undoStack: [],
     redoStack: [],
     serverErrors: [],
+    serverWarnings: [],
   } satisfies EditorState);
 }
