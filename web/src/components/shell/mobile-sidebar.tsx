@@ -74,17 +74,62 @@ function useSwipeToClose(onClose: () => void) {
   return { ref, handlers: { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd } };
 }
 
+/// ドロワの上のモーダルな層（アカウントメニュー等）を閉じるための押下は、それ以上何もさせない。
+///
+/// 層が開いている間、ドロワ本体は Radix が pointer-events: none にする。メニューは pointerdown で
+/// 閉じて本体の pointer-events が戻るため、続く click が (1) 指の下の要素（ロゴ・履歴のリンク）に
+/// 届いて遷移したり、(2) click まで外側判定を遅らせる Dialog に「ドロワの外を押した」と
+/// 判定されたりして、メニューと一緒にドロワまで閉じてしまう。
+///
+/// 本体が押せない間は、層の外（ドロワ内でも外でも）を押すと当たり先は背面のオーバーレイになる。
+/// 押した瞬間（capture）に「本体が押せない状態でオーバーレイに当たった」なら層を閉じるための
+/// 押下とみなし、その click を握りつぶし、Dialog の外側判定も取り消す（オーバーレイへの click は
+/// Radix が握りつぶされても閉じる扱いにするため、両方が要る）。層の中（メニュー項目）は対象外。
+/// `pressed` は Dialog.Content の onPointerDownOutside で見る。次の押下で改めて判定する。
+function useNestedLayerDismissPress(
+  open: boolean,
+  contentRef: React.RefObject<HTMLDivElement | null>,
+) {
+  const overlayRef = React.useRef<HTMLDivElement | null>(null);
+  const pressed = React.useRef(false);
+  React.useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const el = contentRef.current;
+      pressed.current =
+        !!el &&
+        e.target === overlayRef.current &&
+        getComputedStyle(el).pointerEvents === "none";
+    };
+    const onClick = (e: MouseEvent) => {
+      if (!pressed.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("click", onClick, true);
+    return () => {
+      pressed.current = false;
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("click", onClick, true);
+    };
+  }, [open, contentRef]);
+  return { overlayRef, pressed };
+}
+
 /// モバイル（< md）でのサイドバー。左からスライドする浮いたドロワ（角丸・PC の aside と同じ素材）。
 /// Radix Dialog でフォーカストラップ・Esc・スクロールロック・aria-modal を担保する。
 export function MobileSidebar() {
   const { mobileOpen, setMobileOpen } = useSidebar();
   const close = React.useCallback(() => setMobileOpen(false), [setMobileOpen]);
   const swipe = useSwipeToClose(close);
+  const nestedLayerDismissPress = useNestedLayerDismissPress(mobileOpen, swipe.ref);
 
   return (
     <DialogPrimitive.Root open={mobileOpen} onOpenChange={setMobileOpen}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay
+          ref={nestedLayerDismissPress.overlayRef}
           className={cn(
             "fixed inset-0 z-50 bg-black/40 backdrop-blur-[1px] md:hidden",
             "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0",
@@ -93,6 +138,9 @@ export function MobileSidebar() {
         <DialogPrimitive.Content
           ref={swipe.ref}
           {...swipe.handlers}
+          onPointerDownOutside={(e) => {
+            if (nestedLayerDismissPress.pressed.current) e.preventDefault();
+          }}
           className={cn(
             // PC と同じ「浮いたパネル」: 画面端から 8px 離し（ノッチ・ホームバーの内側）、角丸で切る。
             "fixed left-2 top-[max(0.5rem,env(safe-area-inset-top))] bottom-[max(0.5rem,env(safe-area-inset-bottom))] z-50 w-[min(330px,calc(88vw-0.5rem))]",
