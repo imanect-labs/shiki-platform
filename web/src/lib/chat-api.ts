@@ -764,7 +764,7 @@ export async function postMessage(
         artifact_id: p.artifactId,
         version: p.version ?? undefined,
       })),
-      model: opts.model?.model,
+      model: opts.model?.model ?? undefined,
       effort: opts.model?.effort,
       tools: opts.tools && opts.tools.length > 0 ? opts.tools : undefined,
     }),

@@ -128,7 +128,8 @@ pub struct PostMessageRequest {
     /// 組織で使えないモデルは 400。
     #[serde(default)]
     pub model: Option<String>,
-    /// 思考の深さ（モデルを選んだときだけ効く・Auto では組織の設定に従う）。
+    /// 思考の深さ。特定のモデルで動くとき（モデルを選んだとき、または `model` を省いて
+    /// 組織の既定が特定のモデルのとき）に効く。Auto では組織の設定に従う。
     #[serde(default)]
     pub effort: Option<super::llm_models::EffortLevel>,
     /// **この発話にだけ**使ってほしいツール（利用者が指定できるツールの名前・#734）。
