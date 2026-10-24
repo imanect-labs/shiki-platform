@@ -1113,3 +1113,117 @@ async fn long_derived_text_comparisons_are_exact_or_refused() {
         assert_eq!(keys, want, "{:?}", tuning.read_path);
     }
 }
+
+/// C3: 天井（委譲・所有テーブル束縛）つきの読取では、天井の外の参照先を辿る材料化列（invariant）で
+/// 絞り込み・並べ替え・集計できない（材料化していない派生列と同じ 400）。材料化は「参照元の viewer は
+/// 参照先も読める」ことを前提に許しているが、天井はこの包含を崩すので、索引の値から天井の外の値が
+/// 行の有無・順序で漏れる。索引は降格しない（天井は呼出ごとの制約）。天井に参照先が入れば使える。
+#[tokio::test]
+async fn materialized_columns_over_tables_outside_the_reach_cannot_be_queried() {
+    let Some(pool) = setup().await else { return };
+    let Some((store, _authz)) = fga_store(pool.clone()).await else {
+        return;
+    };
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let app = Uuid::new_v4();
+    let lines = store
+        .create_table_for_app(
+            &c,
+            NewDataTable {
+                name: "lines".into(),
+                schema: lines_schema(Some(1)),
+            },
+            app,
+            None,
+        )
+        .await
+        .unwrap();
+    let mut total = rollup("total", "items", Some("amount"), RollupOp::Sum);
+    total.indexed = true;
+    let orders = store
+        .create_table_for_app(
+            &c,
+            NewDataTable {
+                name: "orders".into(),
+                schema: schema(vec![
+                    link("items", lines.id, LinkCardinality::ManyToMany, None),
+                    total,
+                ]),
+            },
+            app,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        orders.schema.field("total").unwrap().materialization,
+        Some(Materialization::Invariant)
+    );
+    let l1 = rec(&store, &c, lines.id, json!({"amount": 100})).await;
+    let l2 = rec(&store, &c, lines.id, json!({"amount": 300})).await;
+    let o1 = rec(&store, &c, orders.id, json!({"items": ids(&[l1])})).await;
+    let o2 = rec(&store, &c, orders.id, json!({"items": ids(&[l2])})).await;
+    let by_total = DataQuery {
+        sort: vec![SortKey {
+            field: "total".into(),
+            descending: true,
+        }],
+        ..DataQuery::default()
+    };
+    let order = |r: data::QueryResult| -> Vec<Uuid> {
+        r.items.unwrap().into_iter().map(|x| x.id).collect()
+    };
+    // 天井の無い読取: 材料化列で並べられる。
+    let r = store
+        .run_query(&c, orders.id, &by_total, None)
+        .await
+        .unwrap();
+    assert_eq!(order(r), vec![o2, o1]);
+
+    // 参照先（lines）が天井の外: 並べ替え・絞り込み・集計のどれも、材料化していない派生列と同じ 400。
+    let outside = store.within_reach(data::TableReach::only([orders.id]));
+    let by_filter: DataQuery = serde_json::from_value(
+        json!({"filter": {"cmp": {"field": "total", "op": "gt", "value": 150}}}),
+    )
+    .unwrap();
+    let by_group: DataQuery =
+        serde_json::from_value(json!({"group_by": ["total"], "aggregate": [{"metric": "count"}]}))
+            .unwrap();
+    for q in [&by_total, &by_filter, &by_group] {
+        let err = outside
+            .run_query(&c, orders.id, q, None)
+            .await
+            .expect_err("天井の外を辿る材料化列は使えない");
+        let DataError::InvalidInput(e) = &err else {
+            panic!("{err:?}");
+        };
+        assert_eq!(e.code(), data::InvalidCode::FieldNotSortable, "{err:?}");
+        assert!(
+            err.to_string()
+                .contains("派生フィールド「total」はフィルタ/ソート/集計に使えません"),
+            "未材料化と同じ文言: {err}"
+        );
+    }
+    // 天井の内の行そのものは読める（表示の値は天井の外なので null）。
+    let r = outside
+        .run_query(&c, orders.id, &DataQuery::default(), None)
+        .await
+        .unwrap();
+    let items = r.items.unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(items.iter().all(|x| x.data["total"].is_null()), "{items:?}");
+    // 索引は降格しない（他の閲覧者の前提は崩れていない）。
+    let now = store.get_table(&c, orders.id, None).await.unwrap();
+    assert_eq!(
+        now.schema.field("total").unwrap().materialization,
+        Some(Materialization::Invariant)
+    );
+    // 参照先が天井に入れば使える。
+    let inside = store.within_reach(data::TableReach::only([orders.id, lines.id]));
+    let r = inside
+        .run_query(&c, orders.id, &by_total, None)
+        .await
+        .unwrap();
+    assert_eq!(order(r), vec![o2, o1]);
+}
