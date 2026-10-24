@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -68,6 +69,7 @@ import { CitationSources } from "./citations/citation-sources";
 import { EvidenceTable, EvidenceToggle } from "./citations/evidence-table";
 import { SourcePanelAside, SourcePanelSheet } from "./citations/source-panel";
 import { type ToolActivityItem } from "./tool-activity";
+import { AttachmentThumb, isImageAttachment } from "./attachment-thumb";
 import { ChainOfThought } from "./chain-of-thought";
 import { Composer } from "./composer";
 import { WorkflowRefCard } from "./workflow-ref-card";
@@ -1037,15 +1039,27 @@ const UserRow = React.memo(function UserRow({
           </span>
         ))}
         {files.length > 0 ? (
-          <div className="flex flex-wrap justify-end gap-1.5">
-            {files.map((f) => (
-              <span
-                key={f.node_id}
-                className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[12px] text-foreground/80 [overflow-wrap:anywhere]"
-              >
-                📎 {f.name}
-              </span>
-            ))}
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
+            {files.map((f) =>
+              // 画像は小さい四角で中身を見せ、押すとファイルのビューアで開く。
+              isImageAttachment(f.name) ? (
+                <Link
+                  key={f.node_id}
+                  href={`/file/${f.node_id}`}
+                  aria-label={`${f.name} を開く`}
+                  className="rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <AttachmentThumb nodeId={f.node_id} name={f.name} className="size-16" />
+                </Link>
+              ) : (
+                <span
+                  key={f.node_id}
+                  className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[12px] text-foreground/80 [overflow-wrap:anywhere]"
+                >
+                  📎 {f.name}
+                </span>
+              ),
+            )}
           </div>
         ) : null}
         {text ? (

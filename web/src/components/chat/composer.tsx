@@ -10,6 +10,7 @@ import { HOME_SCOPE, useModelChoice } from "@/lib/model-choice";
 import { selectableTool, useToolChoice } from "@/lib/tool-choice";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { ApprovalModeSelect, approvalModeDef } from "./approval-mode-select";
+import { AttachmentThumb, isImageAttachment } from "./attachment-thumb";
 import { ComposerModeButton } from "./composer-mode";
 import { PlusMenu } from "./composer-plus-menu";
 import { ComposerTokens, TOKEN_GAP, type ComposerToken } from "./composer-tokens";
@@ -43,7 +44,14 @@ import { DrivePicker } from "./drive-picker";
 /// 小さな × の押せる範囲を、見た目を変えずに周囲へ広げる（指で外せるように）。
 const HIT_AREA = "relative after:absolute after:-inset-2";
 
-type Uploading = { name: string; fraction: number };
+/// アップロード中のファイル。画像なら端末のファイルから作った object URL を持つ。
+type Uploading = { name: string; fraction: number; preview?: string };
+/// 入力欄の添付。端末から選んだ画像は、アップロード後も object URL でサムネイルを出す（送信時に外す）。
+type ComposerAttachment = Attachment & { preview?: string };
+
+function revokePreview(a: { preview?: string }) {
+  if (a.preview) URL.revokeObjectURL(a.preview);
+}
 
 /// 補完候補を確定済みコマンドへ写す。
 function toActiveCommand(s: SlashSuggestion): ActiveCommand {
@@ -122,8 +130,12 @@ export const Composer = React.memo(function Composer({
   className?: string;
 }) {
   const [value, setValue] = React.useState("");
-  const [attachments, setAttachments] = React.useState<Attachment[]>([]);
+  const [attachments, setAttachments] = React.useState<ComposerAttachment[]>([]);
   const [uploading, setUploading] = React.useState<Uploading | null>(null);
+  // 画面を離れたら、残っている object URL を手放す。
+  const attachmentsRef = React.useRef(attachments);
+  attachmentsRef.current = attachments;
+  React.useEffect(() => () => attachmentsRef.current.forEach(revokePreview), []);
   const [menuOpen, setMenuOpen] = React.useState(false);
   const desktop = useMediaQuery("(min-width: 768px)");
   const modelScope = threadId ?? HOME_SCOPE;
@@ -184,8 +196,14 @@ export const Composer = React.memo(function Composer({
     const body = typed ? typed.rest : value;
     const text = composeText(active, body);
     if (!text) return;
-    onSubmit(text, attachments, takePendingSelection() ?? undefined, active ?? undefined);
+    onSubmit(
+      text,
+      attachments.map(({ node_id, name }) => ({ node_id, name })),
+      takePendingSelection() ?? undefined,
+      active ?? undefined,
+    );
     setValue("");
+    attachments.forEach(revokePreview);
     setAttachments([]);
     setCommand(null);
     setSlashDismissed(false);
@@ -231,10 +249,17 @@ export const Composer = React.memo(function Composer({
     }
   };
 
-  const addAttachment = (node: NodeResponse) => {
-    setAttachments((prev) =>
-      prev.some((a) => a.node_id === node.id) ? prev : [...prev, { node_id: node.id, name: node.name }],
-    );
+  const addAttachment = (node: NodeResponse, preview?: string) => {
+    if (attachmentsRef.current.some((a) => a.node_id === node.id)) {
+      if (preview) URL.revokeObjectURL(preview);
+      return;
+    }
+    setAttachments((prev) => [...prev, { node_id: node.id, name: node.name, preview }]);
+  };
+
+  const removeAttachment = (a: ComposerAttachment) => {
+    revokePreview(a);
+    setAttachments((prev) => prev.filter((x) => x.node_id !== a.node_id));
   };
 
   const onPickLocal = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -243,15 +268,18 @@ export const Composer = React.memo(function Composer({
     if (!file) return;
     // スマホの「+」のシートはファイルを選ぶまで開いておき、選んだら閉じる。
     setMenuOpen(false);
-    setUploading({ name: file.name, fraction: 0 });
+    // 画像はアップロードを待たずに、端末のファイルからサムネイルを出す。
+    const preview = isImageAttachment(file.name) ? URL.createObjectURL(file) : undefined;
+    setUploading({ name: file.name, fraction: 0, preview });
     try {
       const node = await uploadFile({
         file,
-        onProgress: (fraction) => setUploading({ name: file.name, fraction }),
+        onProgress: (fraction) => setUploading({ name: file.name, fraction, preview }),
       });
-      addAttachment(node);
+      addAttachment(node, preview);
       toast({ description: `${file.name} をアップロードしました（自動でベクトル化されます）` });
     } catch {
+      if (preview) URL.revokeObjectURL(preview);
       toast({ description: `${file.name} のアップロードに失敗しました` });
     } finally {
       setUploading(null);
@@ -326,28 +354,57 @@ export const Composer = React.memo(function Composer({
       ) : null}
       {/* 添付チップ */}
       {(attachments.length > 0 || uploading) && (
-        <div className="flex flex-wrap gap-1.5 px-1">
-          {attachments.map((a) => (
-            <span
-              key={a.node_id}
-              className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-border bg-card py-1 pl-2.5 pr-1.5 text-[13px] text-foreground/85"
-            >
-              <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 max-w-[160px] truncate">{a.name}</span>
-              <button
-                type="button"
-                onClick={() => setAttachments((prev) => prev.filter((x) => x.node_id !== a.node_id))}
-                aria-label="添付を外す"
-                className={cn(
-                  "flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground",
-                  HIT_AREA,
-                )}
+        <div className="flex flex-wrap items-center gap-2 px-1 pt-1">
+          {attachments.map((a) =>
+            isImageAttachment(a.name) ? (
+              <AttachmentThumb
+                key={a.node_id}
+                nodeId={a.node_id}
+                name={a.name}
+                src={a.preview}
               >
-                <X className="size-3.5" />
-              </button>
-            </span>
-          ))}
-          {uploading ? (
+                <button
+                  type="button"
+                  onClick={() => removeAttachment(a)}
+                  aria-label="添付を外す"
+                  className="absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full border-2 border-background bg-foreground text-background shadow-sm transition-colors after:absolute after:-inset-2 hover:bg-foreground/80"
+                >
+                  <X className="size-3" strokeWidth={2.5} />
+                </button>
+              </AttachmentThumb>
+            ) : (
+              <span
+                key={a.node_id}
+                className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-border bg-card py-1 pl-2.5 pr-1.5 text-[13px] text-foreground/85"
+              >
+                <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 max-w-[160px] truncate">{a.name}</span>
+                <button
+                  type="button"
+                  onClick={() => removeAttachment(a)}
+                  aria-label="添付を外す"
+                  className={cn(
+                    "flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground",
+                    HIT_AREA,
+                  )}
+                >
+                  <X className="size-3.5" />
+                </button>
+              </span>
+            ),
+          )}
+          {uploading?.preview ? (
+            <AttachmentThumb name={uploading.name} src={uploading.preview}>
+              <span
+                role="status"
+                aria-label={`${uploading.name} をアップロード中`}
+                className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 rounded-[inherit] bg-background/45 text-[10px] font-medium tabular-nums text-foreground"
+              >
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+                {Math.round(uploading.fraction * 100)}%
+              </span>
+            </AttachmentThumb>
+          ) : uploading ? (
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[13px] text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" />
               <span className="max-w-[160px] truncate">{uploading.name}</span>
@@ -570,7 +627,7 @@ export const Composer = React.memo(function Composer({
         onChange={onPickLocal}
         aria-hidden
       />
-      <DrivePicker open={pickerOpen} onOpenChange={setPickerOpen} onSelect={addAttachment} />
+      <DrivePicker open={pickerOpen} onOpenChange={setPickerOpen} onSelect={(node) => addAttachment(node)} />
       {onWorkspaceChange ? (
         <FolderPicker
           open={wsPickerOpen}
