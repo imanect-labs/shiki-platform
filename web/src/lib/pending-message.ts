@@ -2,6 +2,7 @@
 /// sessionStorage に置き、会話画面マウント時に 1 度だけ取り出して送信する。
 
 import type { Attachment } from "@/lib/chat-api";
+import { storageScopeGeneration } from "@/lib/user-storage";
 
 const KEY = "shiki:pending-message:";
 
@@ -14,8 +15,11 @@ export type PendingMessage = {
   skills?: { artifactId: string; version?: number | null }[];
 };
 
-export function stashPending(threadId: string, msg: PendingMessage): void {
+/// `startedAt` は送信を始めたときの [`storageScopeGeneration`]。スレッド作成を待つ間に
+/// ログアウト（他タブを含む）があれば、消した後に本文・添付を書き戻さない（#817）。
+export function stashPending(threadId: string, msg: PendingMessage, startedAt: number): void {
   if (typeof sessionStorage === "undefined") return;
+  if (startedAt !== storageScopeGeneration()) return;
   try {
     sessionStorage.setItem(KEY + threadId, JSON.stringify(msg));
   } catch {

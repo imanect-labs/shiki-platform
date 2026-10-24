@@ -631,6 +631,42 @@ fn empty_min_rerank_score_env_means_disabled() {
 }
 
 #[test]
+fn rag_service_secrets_treat_empty_as_unset_and_never_serialize() {
+    // compose は未設定を空文字で渡す。空なら「未設定」（無認証で送り、起動時に警告する）。
+    let extract = |key: &str, value: &str| -> rag::RagConfig {
+        figment::Figment::from(figment::providers::Serialized::defaults(
+            rag::RagConfig::default(),
+        ))
+        .merge((key, value))
+        .extract()
+        .unwrap()
+    };
+    assert_eq!(extract("qdrant_api_key", "").qdrant_api_key, None);
+    assert_eq!(extract("worker_auth_token", "  ").worker_auth_token, None);
+    assert_eq!(
+        extract("qdrant_api_key", "k-1").qdrant_api_key.as_deref(),
+        Some("k-1")
+    );
+    assert_eq!(
+        extract("worker_auth_token", "t-1")
+            .worker_auth_token
+            .as_deref(),
+        Some("t-1")
+    );
+    // 秘密値は直列化に出さない（設定の直列化ダンプ経由の漏えいを防ぐ。`Debug` は対象外で、config を Debug 出力する箇所は無い）。
+    let cfg = rag::RagConfig {
+        qdrant_api_key: Some("k-secret".into()),
+        worker_auth_token: Some("t-secret".into()),
+        ..rag::RagConfig::default()
+    };
+    let json = serde_json::to_string(&cfg).unwrap();
+    assert!(
+        !json.contains("k-secret") && !json.contains("t-secret"),
+        "{json}"
+    );
+}
+
+#[test]
 fn usage_limits_default_off_and_map_to_gateway() {
     // 既定（節を書かない）は無効＝問い合わせもしない。
     let llm: LlmConfig = serde_json::from_value(serde_json::json!({ "backend": "stub" })).unwrap();
@@ -870,4 +906,81 @@ fn preview_shaped_llm_toml_loads_and_validates() {
     // Anthropic 直結は別枠（OpenCode 経由の Claude と請求先が違う）。
     let own = limits.provider_limit("anthropic").unwrap();
     assert_eq!(own.providers, vec!["anthropic"]);
+}
+
+#[test]
+fn chatgpt_is_off_by_default_and_adds_owner_only_models_when_enabled() {
+    let llm: LlmConfig = serde_json::from_value(serde_json::json!({ "backend": "stub" })).unwrap();
+    assert!(!llm.chatgpt.enabled);
+    assert_eq!(llm.model_catalog().models.len(), 1);
+
+    // 環境変数（`SHIKI__LLM__CHATGPT__MODELS=a, b`）は文字列で届くので、カンマ区切りで読む。
+    let llm: LlmConfig = serde_json::from_value(serde_json::json!({
+        "backend": "stub",
+        "chatgpt": { "enabled": true, "models": "gpt-6.1-sol, gpt-6.1-luna," },
+    }))
+    .unwrap();
+    assert_eq!(llm.chatgpt.models, ["gpt-6.1-sol", "gpt-6.1-luna"]);
+    assert_eq!(llm.chatgpt.credential_path, "/var/lib/shiki/chatgpt.json");
+    let catalog = llm.model_catalog();
+    let m = catalog.get("chatgpt:gpt-6.1-sol").unwrap();
+    assert_eq!(m.resolved_id(), "gpt-6.1-sol");
+    assert_eq!(m.provider_id(), llm_gateway::CHATGPT_PROVIDER_ID);
+    // 利用者のプラン枠で払うので単価 0・外部 API なので国外処理。
+    assert_eq!(m.prompt_price_micros_per_mtok, 0);
+    assert!(m.processed_abroad);
+    // 管理者が公開するまで使わせない。
+    assert!(m.requires_opt_in);
+    // TOML の配列でも書ける。
+    let llm: LlmConfig = serde_json::from_value(serde_json::json!({
+        "backend": "stub",
+        "chatgpt": { "enabled": true, "models": ["a"] },
+    }))
+    .unwrap();
+    assert_eq!(llm.chatgpt.models, ["a"]);
+}
+
+#[test]
+fn chatgpt_settings_are_validated_when_enabled() {
+    let mut cfg = valid_config();
+    cfg.llm.chatgpt.enabled = true;
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("llm.chatgpt.models"), "{err}");
+
+    cfg.llm.chatgpt.models = vec!["gpt".into(), "gpt".into()];
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("重複"), "{err}");
+
+    cfg.llm.chatgpt.models = vec!["gpt".into()];
+    cfg.validate().unwrap();
+
+    // `models` を書かない構成で既定モデルが同じ ID だと、合成エントリと衝突する。
+    cfg.llm.default_model = Some("chatgpt:gpt".into());
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("重複"), "{err}");
+    cfg.llm.default_model = None;
+
+    // 自動登録されるプロバイダ ID にも利用制限を掛けられる。
+    cfg.llm.limits = LlmLimitsConfig {
+        enabled: true,
+        per_user_usd_micros: None,
+        providers: vec![LlmProviderLimit {
+            providers: vec![llm_gateway::CHATGPT_PROVIDER_ID.into()],
+            usd_micros: 1,
+        }],
+    };
+    cfg.validate().unwrap();
+    cfg.llm.limits = LlmLimitsConfig::default();
+
+    cfg.llm.providers.push(LlmProviderEntry {
+        id: llm_gateway::CHATGPT_PROVIDER_ID.into(),
+        display_name: None,
+        backend: LlmBackend::Stub,
+        base_url: None,
+        api_key: None,
+        user_agent: None,
+        session_header: None,
+    });
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("llm.providers"), "{err}");
 }

@@ -21,6 +21,8 @@ pub enum ProviderKind {
     /// OpenAI Responses API（`/v1/responses`）。Chat Completions を話さないモデル用
     /// （OpenCode Go の GPT 系など）。
     OpenaiResponses,
+    /// 連携者の ChatGPT プラン（Sign in with ChatGPT・#854）。接続は [`GatewayConfig::chatgpt`]。
+    ChatgptPlan,
     /// テスト/CI 用の決定的スタブ（外部依存なし）。
     #[default]
     Stub,
@@ -33,6 +35,7 @@ impl ProviderKind {
             ProviderKind::Openai => "openai",
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenaiResponses => "openai_responses",
+            ProviderKind::ChatgptPlan => "chatgpt_plan",
             ProviderKind::Stub => "stub",
         }
     }
@@ -44,7 +47,7 @@ impl ProviderKind {
     pub const fn effort_by_default(self) -> bool {
         matches!(
             self,
-            ProviderKind::Anthropic | ProviderKind::OpenaiResponses
+            ProviderKind::Anthropic | ProviderKind::OpenaiResponses | ProviderKind::ChatgptPlan
         )
     }
 }
@@ -397,6 +400,10 @@ pub struct GatewayConfig {
     /// 利用制限（月次コスト上限・プレビュー環境向け）。既定は無効。
     #[serde(default)]
     pub limits: UsageLimitsConfig,
+    /// ChatGPT プランの接続（`chatgpt_plan` のプロバイダが使う・#854）。プロセスで 1 つを
+    /// 共有する（リフレッシュの直列化のため。gateway を何度組んでも同じものを渡す）。
+    #[serde(skip)]
+    pub chatgpt: Option<std::sync::Arc<crate::chatgpt::ChatGptAccount>>,
 }
 
 #[cfg(test)]

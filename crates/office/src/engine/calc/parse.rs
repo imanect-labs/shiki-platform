@@ -2,6 +2,7 @@
 
 use serde_json::{json, Value};
 
+use super::describe::SHEET_OP_FIELDS;
 use super::normalize::{Cx, OpError};
 use super::ops::{HeaderFooter, SheetOp, TableTheme};
 
@@ -33,6 +34,18 @@ pub fn parse_ops(values: &[Value]) -> Result<Vec<ParsedOp>, OpError> {
         let mut v = v.clone();
         crate::engine::coerce_bools(&mut v);
         crate::engine::relax_op(&mut v);
+        // 使わない項目を空で埋めてくるモデルの埋め草を落とす（#859）。
+        crate::engine::op_schema::drop_blank_foreign(&mut v, SHEET_OP_FIELDS, &["sheet"]);
+        // シート名の空文字はどの操作でも意味を持たないので省略として扱う（#859）。
+        if let Some(obj) = v.as_object_mut() {
+            if obj
+                .get("sheet")
+                .and_then(Value::as_str)
+                .is_some_and(|s| s.trim().is_empty())
+            {
+                obj.remove("sheet");
+            }
+        }
         let op_name = v
             .get("op")
             .and_then(Value::as_str)

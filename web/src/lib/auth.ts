@@ -5,6 +5,7 @@
 // ログアウト要求をするだけ（docs/auth/browser-token-strategy.md）。
 
 import { csrfToken } from "@/lib/api";
+import { clearUserStorage } from "@/lib/user-storage";
 
 /// ログイン後に戻る先を OIDC ラウンドトリップ跨ぎで保持するための sessionStorage キー。
 /// BFF の /auth/callback は常に "/" へ戻すため、戻り先はフロントで覚えておく。
@@ -72,7 +73,11 @@ export async function checkSession(): Promise<boolean> {
 }
 
 /// ログアウト。CSRF 付きで BFF に通知し、返却された Keycloak end-session URL へ遷移する。
+///
+/// 下書き・最近使ったスキル・アクティブ会話など localStorage に残したユーザーのデータは、
+/// 要求の成否にかかわらず先に消す（共用 PC で次の人に残さない・#817）。
 export async function logout(): Promise<void> {
+  clearUserStorage();
   const token = csrfToken();
   try {
     const res = await fetch("/auth/logout", {

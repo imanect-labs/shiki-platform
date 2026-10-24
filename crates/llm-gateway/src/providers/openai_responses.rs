@@ -35,6 +35,8 @@ pub struct OpenAiResponsesProvider {
     default_model: String,
     identity: IdentityHeaders,
     timeouts: LlmTimeouts,
+    /// ChatGPT プラン（#854）向けの形で送るか（受け付けない項目を落とす）。
+    chatgpt_plan: bool,
 }
 
 /// Responses API の `max_output_tokens` の下限（これ未満は 400）。
@@ -62,7 +64,17 @@ impl OpenAiResponsesProvider {
             default_model: default_model.into(),
             identity: IdentityHeaders::default(),
             timeouts: LlmTimeouts::default(),
+            chatgpt_plan: false,
         }
+    }
+
+    /// ChatGPT プラン（Sign in with ChatGPT）向けの形で送る。プランでは `max_output_tokens` を
+    /// 受け付けず、`role: system` の入力アイテムを拒否するので、上限は送らず system は
+    /// developer にする（トップレベルの system は従来どおり `instructions`）。
+    #[must_use]
+    pub(crate) fn for_chatgpt_plan(mut self) -> Self {
+        self.chatgpt_plan = true;
+        self
     }
 
     /// 送出する User-Agent を指定する。ヘッダ値にできない文字列は設定エラーにする
@@ -91,11 +103,16 @@ impl OpenAiResponsesProvider {
             .clone()
             .unwrap_or_else(|| self.default_model.clone());
         let known: HashSet<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
-        let input: Vec<Value> = req
+        let mut input: Vec<Value> = req
             .messages
             .iter()
             .flat_map(|m| to_input_items(m, names, &known))
             .collect();
+        if self.chatgpt_plan {
+            for item in input.iter_mut().filter(|i| i["role"] == "system") {
+                item["role"] = json!("developer");
+            }
+        }
         let mut body = json!({
             "model": model,
             "input": input,
@@ -108,7 +125,7 @@ impl OpenAiResponsesProvider {
         if let Some(sys) = &req.system {
             body["instructions"] = json!(sys);
         }
-        if let Some(mt) = req.max_tokens {
+        if let Some(mt) = req.max_tokens.filter(|_| !self.chatgpt_plan) {
             // Chat Completions では通る小さな上限も、Responses では下限未満だと 400 になる。
             body["max_output_tokens"] = json!(mt.max(MIN_OUTPUT_TOKENS));
         }
@@ -425,12 +442,23 @@ impl LlmProvider for OpenAiResponsesProvider {
     }
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
+        self.stream_with_bearer(req, self.api_key.as_deref()).await
+    }
+}
+
+impl OpenAiResponsesProvider {
+    /// `bearer` を認証に付けて送る（ChatGPT プランは呼び出しごとにトークンが変わる）。
+    pub(crate) async fn stream_with_bearer(
+        &self,
+        req: &GenerateRequest,
+        bearer: Option<&str>,
+    ) -> Result<DeltaStream, LlmError> {
         let url = format!("{}/responses", self.base_url);
         // 履歴中のツール名も同じ写像に通す（ToolNameMap::for_request）。
         let names = ToolNameMap::for_request(req);
         let body = self.build_body(req, &names);
         let mut builder = self.http.post(&url).json(&body);
-        if let Some(key) = &self.api_key {
+        if let Some(key) = bearer {
             builder = builder.bearer_auth(key);
         }
         let builder = self.identity.apply(builder, req.session_id.as_deref());
@@ -548,6 +576,30 @@ mod tests {
         let body = provider().build_body(&req, &ToolNameMap::new(std::iter::empty::<&str>()));
         assert_eq!(body["max_output_tokens"], 16);
         assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn chatgpt_plan_body_drops_output_cap_and_sends_system_as_developer() {
+        let mut req = GenerateRequest::new(vec![
+            Message::text(Role::System, "rule"),
+            Message::text(Role::User, "hi"),
+        ]);
+        req.system = Some("sys".into());
+        req.max_tokens = Some(100);
+        let body = provider()
+            .for_chatgpt_plan()
+            .build_body(&req, &ToolNameMap::new(std::iter::empty::<&str>()));
+        assert!(body.get("max_output_tokens").is_none());
+        assert_eq!(body["instructions"], "sys");
+        assert_eq!(
+            (body["stream"].clone(), body["store"].clone()),
+            (json!(true), json!(false))
+        );
+        assert_eq!(
+            body["input"][0],
+            json!({"role": "developer", "content": "rule"})
+        );
+        assert_eq!(body["input"][1]["role"], "user");
     }
 
     #[test]
