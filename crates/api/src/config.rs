@@ -208,10 +208,10 @@ mod tests;
 pub use auth::{AuthConfig, SessionConfig, Tenancy};
 pub(crate) use backends::chatgpt_model_id;
 pub use backends::{
-    AuthzConfig, ChatConfig, LangfuseConfig, LlmAutoConfig, LlmBackend, LlmChatGptConfig,
-    LlmConfig, LlmLimitsConfig, LlmModelEntry, LlmProviderEntry, LlmProviderLimit, LogFormat,
-    ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig, UploadGcConfig,
-    VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
+    AuditRetentionConfig, AuthzConfig, ChatConfig, LangfuseConfig, LlmAutoConfig, LlmBackend,
+    LlmChatGptConfig, LlmConfig, LlmLimitsConfig, LlmModelEntry, LlmProviderEntry,
+    LlmProviderLimit, LogFormat, ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig,
+    UploadGcConfig, VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
 
 #[derive(Debug, thiserror::Error)]

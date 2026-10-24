@@ -523,6 +523,13 @@ pub fn route_table() -> Vec<RouteDecl> {
             Provisioner,
             || put(routes::admin::set_tenant_workflow_retention),
         ),
+        // 監査ログの保持期間（日次で期限を過ぎた行を消す・#831）。
+        r(
+            "/admin/tenants/{tenant_id}/audit-retention",
+            &["PUT"],
+            Provisioner,
+            || put(routes::admin::set_tenant_audit_retention),
+        ),
     ];
     table.extend(routes::collab::collab_route_decls());
     table.extend(routes::documents::documents_route_decls());

@@ -65,6 +65,19 @@ pub(crate) fn parse(args: &[String]) -> anyhow::Result<Args> {
     })
 }
 
+/// 実行者の申告値と出所（`--actor` → `$SUDO_USER` → `$USER` → `unknown`）。
+pub(crate) fn claimed_actor(flag: Option<String>) -> (String, &'static str) {
+    flag.map_or_else(
+        || {
+            std::env::var("SUDO_USER")
+                .map(|v| (v, "sudo_user"))
+                .or_else(|_| std::env::var("USER").map(|v| (v, "user")))
+                .unwrap_or_else(|_| ("unknown".to_string(), "none"))
+        },
+        |v| (v, "flag"),
+    )
+}
+
 /// 付与・剥奪を実行する。
 pub(crate) async fn run(args: &[String]) -> anyhow::Result<()> {
     let a = parse(args)?;
@@ -124,15 +137,7 @@ pub(crate) async fn run(args: &[String]) -> anyhow::Result<()> {
                 .context("audit_viewer の剥奪に失敗")?,
         ),
     };
-    let (actor_claimed, actor_source) = a.actor.map_or_else(
-        || {
-            std::env::var("SUDO_USER")
-                .map(|v| (v, "sudo_user"))
-                .or_else(|_| std::env::var("USER").map(|v| (v, "user")))
-                .unwrap_or_else(|_| ("unknown".to_string(), "none"))
-        },
-        |v| (v, "flag"),
-    );
+    let (actor_claimed, actor_source) = claimed_actor(a.actor);
     // 権限の変更なのでハッシュチェーンに連結する（共有などほかの relation 変更と同じ）。
     // 記録できなければ FGA の変更を戻す（記録のない付与を残さない）。
     let recorded = async {
