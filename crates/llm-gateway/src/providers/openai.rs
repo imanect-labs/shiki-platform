@@ -564,7 +564,8 @@ fn retry_delay(body: &str) -> Option<std::time::Duration> {
     let start = rest.find('"')? + 1;
     let end = start + rest[start..].find('"')?;
     let secs: f64 = rest[start..end].strip_suffix('s')?.parse().ok()?;
-    (secs.is_finite() && secs >= 0.0).then(|| std::time::Duration::from_secs_f64(secs))
+    // 巨大・負・NaN は読めないものとして扱う（from_secs_f64 は panic する）。
+    std::time::Duration::try_from_secs_f64(secs).ok()
 }
 
 /// SSE でない行を理由の表示用に残す（Gemini API は流し始めた後に素の `[{"error": …}]` で切る）。
@@ -588,7 +589,10 @@ fn cut_short(completed: bool, stray: &str) -> Option<LlmError> {
     } else {
         format!("stream ended with: {stray}")
     };
-    Some(LlmError::Unavailable(format!("openai {why}")))
+    Some(LlmError::Unavailable(format!(
+        "{}openai {why}",
+        crate::provider::CUT_BY_PROVIDER
+    )))
 }
 
 #[cfg(test)]
@@ -605,6 +609,8 @@ mod tests {
         );
         assert_eq!(retry_delay(r#"{"error":"quota"}"#), None);
         assert_eq!(retry_delay(r#"{"retryDelay":"soon"}"#), None);
+        assert_eq!(retry_delay(r#"{"retryDelay":"1e20s"}"#), None);
+        assert_eq!(retry_delay(r#"{"retryDelay":"-1s"}"#), None);
     }
 
     #[test]

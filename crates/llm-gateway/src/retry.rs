@@ -7,6 +7,11 @@
 //!   流れたのは思考だけなので、エージェントの履歴には何も残っていない。Gemini API の Gemma は
 //!   200 で流し始めた後に思考の途中で 500 を返して切ることがあり、送り直さないと 1 回の失敗で
 //!   会話全体がやり直しになる（やり直しは適用済みのツールを二重に実行しうる・#889）。
+//!
+//!   送り直すのは、プロバイダが切ったと分かる失敗（[`CUT_BY_PROVIDER`]）だけ。こちらの全体・
+//!   無通信のタイムアウトは暴走止めなので送り直さない（送り直すと上限が試行ごとにやり直しになる）。
+//!   切られた試行は `Done` を出さないので使用量は記録されない。プロバイダ側の 500 で切られた
+//!   生成は通常は課金されない前提で、記録するのは最後まで流れた試行の使用量だけにしている。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +19,7 @@ use std::time::Duration;
 use futures::stream::{self, StreamExt};
 
 use crate::model::{GenerateRequest, StreamDelta};
-use crate::provider::{DeltaStream, LlmError, LlmProvider};
+use crate::provider::{DeltaStream, LlmError, LlmProvider, CUT_BY_PROVIDER};
 
 /// 接続前の `Unavailable` を送り直すまでの待ち時間（試行の間ごと）。Gemini API の
 /// gemma-4-31b-it は 500 を数回続けて返すことがあり、2 回では足りなかった（実測で 3〜4 回続く）。
@@ -92,7 +97,9 @@ pub(crate) fn resume_unsettled(
             let item = st.current.as_mut()?.next().await;
             match item {
                 None => return None,
-                Some(Err(LlmError::Unavailable(e))) if !st.settled && st.left > 0 => {
+                Some(Err(LlmError::Unavailable(e)))
+                    if !st.settled && st.left > 0 && e.starts_with(CUT_BY_PROVIDER) =>
+                {
                     st.left -= 1;
                     st.current = None;
                     tracing::warn!(error = %e, "LLM の応答が途中で切れた（まだ何も確定していないので送り直す）");
@@ -221,7 +228,9 @@ mod tests {
         Ok(StreamDelta::TextDelta { text: t.into() })
     }
     fn cut() -> Result<StreamDelta, LlmError> {
-        Err(LlmError::Unavailable("stream ended with: 500".into()))
+        Err(LlmError::Unavailable(format!(
+            "{CUT_BY_PROVIDER}stream ended with: 500"
+        )))
     }
     fn done() -> Result<StreamDelta, LlmError> {
         Ok(StreamDelta::Done {
@@ -285,6 +294,18 @@ mod tests {
         assert_eq!(calls, 0, "本文を出した後は送り直さない（二重になる）");
         assert_eq!(out[0], "text:答えの途中");
         assert!(out[1].starts_with("err:"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn our_own_timeouts_are_not_sent_again() {
+        let timeout = || {
+            Err(LlmError::Unavailable(
+                "openai generation exceeded 900s (total timeout)".into(),
+            ))
+        };
+        let (out, calls) = run(vec![vec![think("考え中"), timeout()], vec![done()]], 2).await;
+        assert_eq!(calls, 0, "暴走止めのタイムアウトは送り直さない");
+        assert!(out.last().unwrap().starts_with("err:"), "{out:?}");
     }
 
     #[tokio::test]
