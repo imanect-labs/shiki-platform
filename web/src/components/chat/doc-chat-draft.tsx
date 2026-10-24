@@ -43,17 +43,14 @@ export function DocChatDraft({
   scope: string;
   /// 会話を作って最初の発話を渡す。失敗したら reject する（入力欄に案内を出す）。
   onStart: (msg: PendingMessage) => Promise<void>;
-  /// 入力欄に本文があるか（書きかけ）が変わったときに呼ぶ。外れる（アンマウント）ときは false。
+  /// 入力欄に送れる入力（本文・コマンド・添付）があるか（書きかけ）が変わったときに呼ぶ。
+  /// 外れる（アンマウント）ときは false。
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   // エージェントモード（会話内の入力欄と同じく、この発話から切り替えられる）。
   const [autonomous, setAutonomous] = React.useState(false);
   const [starting, setStarting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const onValueChange = React.useCallback(
-    (value: string) => onDirtyChange?.(value.trim().length > 0),
-    [onDirtyChange],
-  );
   React.useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   const submit = React.useCallback(
@@ -95,7 +92,7 @@ export function DocChatDraft({
           autonomous={autonomous}
           onAutonomousChange={setAutonomous}
           scope={scope}
-          onValueChange={onValueChange}
+          onHasInputChange={onDirtyChange}
           autoFocus
         />
       </div>

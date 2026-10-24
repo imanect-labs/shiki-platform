@@ -110,7 +110,7 @@ export const Composer = React.memo(function Composer({
   threadId,
   scope,
   draftKey,
-  onValueChange,
+  onHasInputChange,
   className,
 }: {
   onSubmit: (
@@ -153,8 +153,9 @@ export const Composer = React.memo(function Composer({
   /// 指定すると、書きかけの本文をユーザー単位で保存し、次にこの入力欄を開いたときに戻す
   /// （ホームの新規チャット: 入力 → 別画面 → 戻ると続きから書ける）。送信で消える。
   draftKey?: string;
-  /// 本文が変わるたびに呼ぶ（入力途中かどうかを親が知る必要があるとき）。
-  onValueChange?: (value: string) => void;
+  /// 送れる入力（本文・確定済みのコマンド・添付）があるかが変わったときに呼ぶ
+  /// （入力途中かどうかを親が知る必要があるとき）。
+  onHasInputChange?: (hasInput: boolean) => void;
   className?: string;
 }) {
   const [value, setValue] = React.useState("");
@@ -168,10 +169,6 @@ export const Composer = React.memo(function Composer({
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
-
-  React.useEffect(() => {
-    onValueChange?.(value);
-  }, [onValueChange, value]);
 
   // 書きかけの保存と復元（draftKey 指定時）。保存先はユーザー単位（ログアウトで消える・#817）
   // なので、ユーザーが確定してから読む。保存は復元の後から（復元前の空で保存値を消さない）。
@@ -197,7 +194,7 @@ export const Composer = React.memo(function Composer({
     setDraftRestored(true);
   }, [draftKey, scopeReady, draftRestored]);
   // 保存は打鍵ごとではなく、手が止まってからまとめて書く（長文の貼り付け後も入力を重くしない）。
-  // 画面を離れる（アンマウント）ときは待たずに書く（直後に別画面へ移っても取りこぼさない）。
+  // 画面を離れる（アンマウント・リロードやタブを閉じる）ときは待たずに書く（直後に離れても取りこぼさない）。
   const latestValue = React.useRef(value);
   latestValue.current = value;
   React.useEffect(() => {
@@ -209,7 +206,12 @@ export const Composer = React.memo(function Composer({
   React.useEffect(() => {
     if (!draftKey || !draftRestored) return;
     const generation = draftGeneration.current;
-    return () => saveDraft(draftKey, latestValue.current, generation);
+    const flush = () => saveDraft(draftKey, latestValue.current, generation);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
   }, [draftKey, draftRestored]);
 
   // スラッシュコマンド（#387）。候補はカタログ（モデルが見ているものと同一）由来。
@@ -217,6 +219,12 @@ export const Composer = React.memo(function Composer({
   const [command, setCommand] = React.useState<ActiveCommand | null>(null);
   const [slashIndex, setSlashIndex] = React.useState(0);
   const [slashDismissed, setSlashDismissed] = React.useState(false);
+
+  // コマンドを確定すると本文は空になるので、本文だけでなくコマンド・添付も入力として数える。
+  const hasInput = value.trim().length > 0 || command !== null || attachments.length > 0;
+  React.useEffect(() => {
+    onHasInputChange?.(hasInput);
+  }, [onHasInputChange, hasInput]);
 
   React.useEffect(() => {
     let active = true;
