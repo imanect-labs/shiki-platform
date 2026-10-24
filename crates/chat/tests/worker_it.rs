@@ -722,12 +722,30 @@ async fn rejected_generation_fails_once_without_retrying() {
         "次に何をすればよいかが分かる文言: {message}"
     );
 
-    let (status, attempt, last_error): (String, i32, Option<String>) =
-        sqlx::query_as("SELECT status, attempt, last_error FROM generation_run WHERE run_id = $1")
-            .bind(res.run_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    // Error の追記・run の failed 化・DLQ への移送は別々に進むので、Error の受信を同期点に
+    // せず、期限付きで両方がそろうまで待つ（再試行していれば backoff の間そろわない）。
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let (status, attempt, last_error, dead) = loop {
+        let (status, attempt, last_error): (String, i32, Option<String>) = sqlx::query_as(
+            "SELECT status, attempt, last_error FROM generation_run WHERE run_id = $1",
+        )
+        .bind(res.run_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let dead: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM job_queue_dead WHERE tenant_id = $1 AND payload->>'run_id' = $2",
+        )
+        .bind(&tenant)
+        .bind(res.run_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if (status == "failed" && dead == 1) || tokio::time::Instant::now() >= deadline {
+            break (status, attempt, last_error, dead);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
     assert_eq!(status, "failed");
     assert_eq!(attempt, 1, "再試行していないこと");
     assert!(
@@ -737,13 +755,5 @@ async fn rejected_generation_fails_once_without_retrying() {
         "詳細はサーバ側にだけ残る: {last_error:?}"
     );
     // ジョブは再試行の待ち行列に戻らず DLQ へ移る。
-    let dead: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM job_queue_dead WHERE tenant_id = $1 AND payload->>'run_id' = $2",
-    )
-    .bind(&tenant)
-    .bind(res.run_id.to_string())
-    .fetch_one(&pool)
-    .await
-    .unwrap();
     assert_eq!(dead, 1, "DLQ へ移ること");
 }
