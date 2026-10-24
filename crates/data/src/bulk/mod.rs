@@ -238,12 +238,14 @@ pub(crate) struct ImportRow {
     pub(crate) rows_valid: i64,
     pub(crate) rows_invalid: i64,
     pub(crate) first_record_int: Option<i64>,
+    /// 取込を始めたストアの天井（[`crate::TableReach`]・`None` は天井なし）。ワーカーが復元して進める。
+    pub(crate) reach: Option<sqlx::types::Json<Value>>,
 }
 
 /// [`ImportRow`] の SELECT 列。
 pub(crate) const IMPORT_COLS: &str = "id, tenant_int, table_int, table_id, principal_kind, \
      principal_id, org, trace_id, status, schema_version, abort_on_invalid, index_mode, index_hold, \
-     validate_cursor, apply_cursor, rows_valid, rows_invalid, first_record_int";
+     validate_cursor, apply_cursor, rows_valid, rows_invalid, first_record_int, reach";
 
 impl ImportRow {
     pub(crate) fn keys(&self) -> TableKeys {
@@ -553,8 +555,9 @@ impl DataStore {
         let total = i64::try_from(rows.len()).unwrap_or(i64::MAX);
         let inserted = sqlx::query(
             "INSERT INTO data_bulk_import (tenant_int, id, table_int, table_id, principal_kind, \
-               principal_id, org, trace_id, schema_version, abort_on_invalid, index_mode, rows_total) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+               principal_id, org, trace_id, schema_version, abort_on_invalid, index_mode, rows_total, \
+               reach) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
         )
         .bind(keys.tenant_int)
         .bind(import_id)
@@ -568,6 +571,12 @@ impl DataStore {
         .bind(opts.abort_on_invalid)
         .bind(opts.index_mode.as_str())
         .bind(total)
+        // 天井つきのストア（ワークフローの委譲）で始めた取込は天井を保存し、ワーカーも同じ天井で進める。
+        .bind(
+            self.reach
+                .as_deref()
+                .map(|r| sqlx::types::Json(r.to_stored())),
+        )
         .execute(&mut *tx)
         .await;
         match inserted {
@@ -857,10 +866,20 @@ impl DataStore {
             .ok_or(DataError::NotFound)?;
         drop(conn);
         let max = max_rows.max(1);
+        // 取込を始めたときの天井を復元して進める（ジョブのワーカーは天井の無いストアで呼ぶ）。
+        let reached;
+        let store = match &imp.reach {
+            Some(v) => {
+                reached =
+                    self.within_reach(crate::TableReach::from_stored(&v.0, tenant_id, &imp.org));
+                &reached
+            }
+            None => self,
+        };
         let result = match imp.status.as_str() {
-            "validating" => self.validate_chunk(tenant_id, &imp, max).await,
-            "applying" => self.apply_chunk(tenant_id, &imp, max).await,
-            "indexing" => self.index_chunk(tenant_id, &imp).await,
+            "validating" => store.validate_chunk(tenant_id, &imp, max).await,
+            "applying" => store.apply_chunk(tenant_id, &imp, max).await,
+            "indexing" => store.index_chunk(tenant_id, &imp).await,
             _ => Ok(0),
         };
         let processed = match result {
