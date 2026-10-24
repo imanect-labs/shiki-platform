@@ -38,12 +38,12 @@ function useRecords(tableId: string, query: DataQuery, onError: (e: Error) => vo
         const q = JSON.parse(key) as DataQuery;
         const res = await runQuery(tableId, { ...q, limit: 200, cursor: cursor ?? undefined });
         if (g !== gen.current) return;
-        setState((s) => ({
-          items: cursor ? [...s.items, ...(res.items ?? [])] : (res.items ?? []),
-          cursor: res.next_cursor ?? null,
-          loading: false,
-          error: null,
-        }));
+        setState((s) => {
+          // 続きの読み込みは、手元にある行を重ねない（同じページが二度届いても予定・カードを重複させない）。
+          const seen = new Set(cursor ? s.items.map((r) => r.id) : []);
+          const add = (res.items ?? []).filter((r) => !seen.has(r.id));
+          return { items: cursor ? [...s.items, ...add] : add, cursor: res.next_cursor ?? null, loading: false, error: null };
+        });
       } catch (e) {
         if (g !== gen.current) return;
         const err = e instanceof Error ? e : new Error(String(e));
@@ -59,7 +59,8 @@ function useRecords(tableId: string, query: DataQuery, onError: (e: Error) => vo
     setState({ items: [], cursor: null, loading: true, error: null });
     void load(null);
   }, [load]);
-  return { ...state, more: () => state.cursor && void load(state.cursor) };
+  // 読み込み中は続きを重ねて要求しない（同じカーソルの並行読込で行が重複する）。
+  return { ...state, more: () => state.cursor && !state.loading && void load(state.cursor) };
 }
 
 type CountResultLike = { exact: number } | { at_least: number };
@@ -435,7 +436,8 @@ export function CalendarMonth({
           );
         })}
       </div>
-      <MoreButton cursor={cursor} loading={false} onMore={more} />
+      {/* 最初の読み込みは見出しのスピナーで示す（ボタンは続きの読み込み中だけ無効にして重ね押しを防ぐ）。 */}
+      <MoreButton cursor={cursor} loading={loading && items.length > 0} onMore={more} />
     </div>
   );
 }
