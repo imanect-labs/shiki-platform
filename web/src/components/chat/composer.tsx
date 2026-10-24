@@ -6,7 +6,7 @@ import { ArrowUp, Bot, HardDrive, Loader2, Paperclip, Sparkles, Square, TextSele
 import { cn } from "@/lib/utils";
 import { uploadFile, type NodeResponse } from "@/lib/storage";
 import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
-import { HOME_SCOPE } from "@/lib/model-choice";
+import { HOME_SCOPE, useModelChoice } from "@/lib/model-choice";
 import { selectableTool, useToolChoice } from "@/lib/tool-choice";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { ApprovalModeSelect, approvalModeDef } from "./approval-mode-select";
@@ -127,6 +127,11 @@ export const Composer = React.memo(function Composer({
   const [menuOpen, setMenuOpen] = React.useState(false);
   const desktop = useMediaQuery("(min-width: 768px)");
   const modelScope = threadId ?? HOME_SCOPE;
+  // スマホでモデルを選んでいない（Auto・組織の既定の）ときは、入力欄にモデルを出さずに 1 行の
+  // バーにする（「＋」のシートから選ぶ）。PC は常に 2 段。初回描画とずれないよう切替は max-md: で行う。
+  const [modelChoice] = useModelChoice(modelScope);
+  const oneLine = modelChoice === null;
+  const [modelOpen, setModelOpen] = React.useState(false);
   // この発話に使うツール（#734）。送信時に会話側が読み出して空に戻す。
   const toolChoice = useToolChoice(modelScope);
   const [pickerOpen, setPickerOpen] = React.useState(false);
@@ -363,8 +368,10 @@ export const Composer = React.memo(function Composer({
           // 本文の上に重ねるので面を少し透かし、背後はぼかす。
           "relative rounded-[26px] border-border bg-card/85 shadow-sm backdrop-blur-xl transition-shadow",
           "focus-within:border-ring/25 focus-within:shadow-md focus-within:ring-4 focus-within:ring-ring/10",
-          // PC・スマホとも 入力欄 → 操作の段 の 2 段（左に +、右にモデルと送信）。
+          // 入力欄 → 操作の段 の 2 段（左に +、右にモデルと送信）。
           "grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-1 p-2",
+          // スマホで既定のモデルのときは 1 行の丸いバー（+・入力欄・送信）。伸びてもボタンは下端に揃える。
+          oneLine && "max-md:grid-cols-[auto_minmax(0,1fr)_auto] max-md:gap-x-1 max-md:p-1.5",
         )}
       >
         {slashOpen ? (
@@ -377,14 +384,22 @@ export const Composer = React.memo(function Composer({
         ) : null}
 
         {/* 入力欄（DOM では先に置き、Tab の順を見た目の上→下に揃える）。 */}
-        <div className="relative col-span-2 col-start-1 row-start-1 min-w-0 overflow-hidden px-1.5 pt-1 md:px-2">
+        <div
+          className={cn(
+            "relative col-span-2 col-start-1 row-start-1 min-w-0 overflow-hidden px-1.5 pt-1 md:px-2",
+            oneLine && "max-md:col-span-1 max-md:col-start-2 max-md:px-1 max-md:pt-0",
+          )}
+        >
           {tokens.length > 0 ? (
             // 1 行目の先頭に重ねる（textarea の上の余白・行高と揃える）。
             <ComposerTokens
               tokens={tokens}
               onWidthChange={setTokensWidth}
               scrollTop={textScroll}
-              className="left-1.5 top-[calc(0.25rem+0.5rem)] h-6 text-base md:left-2 md:top-1 md:h-[1.625em] md:text-[15px]"
+              className={cn(
+                "left-1.5 top-[calc(0.25rem+0.5rem)] h-6 text-base md:left-2 md:top-1 md:h-[1.625em] md:text-[15px]",
+                oneLine && "max-md:left-1 max-md:top-2",
+              )}
             />
           ) : null}
           {/* 補完中は combobox として関連付ける（Codex P2）。フォーカスは textarea に
@@ -414,7 +429,12 @@ export const Composer = React.memo(function Composer({
         </div>
 
         {/* 左: 「+」（PC はエージェントモード等も同じ段に並べる）。 */}
-        <div className="col-start-1 row-start-2 flex min-w-0 items-center gap-1.5 pb-0.5 pl-0.5">
+        <div
+          className={cn(
+            "col-start-1 row-start-2 flex min-w-0 items-center gap-1.5 pb-0.5 pl-0.5",
+            oneLine && "max-md:row-start-1 max-md:p-0",
+          )}
+        >
           <PlusMenu
             open={menuOpen}
             onOpenChange={setMenuOpen}
@@ -426,6 +446,7 @@ export const Composer = React.memo(function Composer({
             // OFF のときは残存する workspace 選択を無視し、既定（マイドライブ直下）へ作成する。
             createParentId={autonomous ? (workspace?.folderId ?? null) : null}
             modelScope={modelScope}
+            onOpenModel={oneLine ? () => setModelOpen(true) : undefined}
           />
           {onAutonomousChange ? (
             <div className="hidden min-w-0 items-center gap-1.5 md:flex">
@@ -480,8 +501,19 @@ export const Composer = React.memo(function Composer({
 
         {/* 右: スマホは実行モード → 送信。生成中は停止を出し、書きかけがあれば送信（＝順番待ちへ
             積む）も並べる。書きかけが無いのに無効な送信ボタンを置くと、押せないボタンが常駐して邪魔。 */}
-        <div className="col-start-2 row-start-2 flex min-w-0 items-center justify-end gap-1 pb-0.5 pr-0.5 md:gap-1.5">
-          <ModelButton scope={modelScope} className="max-w-[11rem] md:max-w-[16rem]" />
+        <div
+          className={cn(
+            "col-start-2 row-start-2 flex min-w-0 items-center justify-end gap-1 pb-0.5 pr-0.5 md:gap-1.5",
+            oneLine && "max-md:col-start-3 max-md:row-start-1 max-md:p-0",
+          )}
+        >
+          <ModelButton
+            scope={modelScope}
+            className={cn("max-w-[11rem] md:max-w-[16rem]", oneLine && "max-md:hidden")}
+            open={modelOpen}
+            onOpenChange={setModelOpen}
+            sheetOnly={oneLine && !desktop}
+          />
           {onAutonomousChange ? (
             <ComposerModeButton
               className="md:hidden"

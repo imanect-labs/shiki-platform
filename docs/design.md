@@ -199,7 +199,9 @@ flowchart LR
 > 理由は運用負荷と、shiki・skillex の顧客が重ならないこと。経緯と旧リスクは [PIT-26〜29](./design-caveats.md)（各項に更新注記）。
 
 - **shiki 自身の SaaS コントロールプレーン**（skillex とは共有しない）: Keycloak realm `shiki`（**shiki ユーザー専用**・
-  単一 realm・テナントはユーザー属性 `tenant`／org は group＝SAAS.2）、テナント・プロビジョニング（SAAS.2 の admin プレーン）、
+  単一 realm・テナントはユーザー属性 `tenant`／org は group＝SAAS.2。org group はテナントで修飾した `/tenants/<tenant>/<org>`、
+  部署はその配下に置き、org/部署は解決済み tenant の配下だけから解く＝同じ org slug のテナント同士で group を共有しない・#811・
+  運用は [tenant-ops](./guides/tenant-ops.md)）、テナント・プロビジョニング（SAAS.2 の admin プレーン）、
   ベンダーコンソール（§4.12）、Stripe 課金（SAAS.3）。オンプレはこれを積まず、AuthN をローカル Keycloak へ向ける（設定差し替え）。
   データプレーンは**全テナント共有のフルプール**で、テナント分離は §4.1「authz のテナント分離」（SAAS.1）を参照
   （顧客ごと専用ストア＝cell は専用環境契約向けの将来オプション・スケール戦略は [data-platform.md §12](./data-platform.md)）。

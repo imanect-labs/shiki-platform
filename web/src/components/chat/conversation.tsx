@@ -836,8 +836,9 @@ export function Conversation({
                 ) : null}
               </div>
             </div>
-            {/* 読み返し中は、コンポーザの上中央に「最新へ」を浮かせ、その左右に「一つ前／一つ後の
-                自分の発話へ」を添える（長い回答を挟んだ往復を発話単位で辿る）。 */}
+            {/* 読み返し中は、コンポーザの上中央に「最新へ」を浮かせ、PC ではその左右に「一つ前／一つ後の
+                自分の発話へ」を添える（長い回答を挟んだ往復を発話単位で辿る）。スマホは本文を隠すので
+                「最新へ」だけにする。 */}
             {showJump ? (
               <div
                 style={{ bottom: composerHeight + 12 }}
@@ -849,7 +850,7 @@ export function Conversation({
                   disabled={!turnJump.canPrev}
                   aria-label="一つ前の自分の発言へ移動"
                   data-testid="jump-to-prev-turn"
-                  className={cn(JUMP_PILL, "pl-2.5 pr-3.5")}
+                  className={cn(JUMP_PILL, "pl-2.5 pr-3.5 max-md:hidden")}
                 >
                   <ChevronUp className="size-4" aria-hidden />
                   一つ前
@@ -869,7 +870,7 @@ export function Conversation({
                   disabled={!turnJump.canNext}
                   aria-label="一つ後の自分の発言へ移動"
                   data-testid="jump-to-next-turn"
-                  className={cn(JUMP_PILL, "pl-3.5 pr-2.5")}
+                  className={cn(JUMP_PILL, "pl-3.5 pr-2.5 max-md:hidden")}
                 >
                   一つ後
                   <ChevronDown className="size-4" aria-hidden />

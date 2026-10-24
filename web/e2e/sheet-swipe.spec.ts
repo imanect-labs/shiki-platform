@@ -91,8 +91,9 @@ test.describe("スマホのシートを払って閉じる", () => {
   test("モデル選択（Sheet side=bottom）: 下へ払うと閉じる", async ({ browser, page }) => {
     const phone = await phonePage(browser, page);
     await phone.goto("/");
-    // モデルは送信の左のボタンから開く（#768）。
-    await phone.getByTestId("model-button").click();
+    // 既定のモデルのときは「+」のシートの「モデル」から開く。
+    await phone.getByRole("button", { name: "追加メニューを開く" }).click();
+    await phone.getByTestId("composer-open-model").click();
     const picker = phone.getByTestId("model-picker");
     await expect(picker).toBeVisible();
 

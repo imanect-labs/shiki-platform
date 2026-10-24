@@ -1,7 +1,8 @@
 //! Keycloak admin REST クライアントの結合テスト（in-process モックサーバ・外部依存なし）。
 //!
 //! auth_flow.rs と同じ手法で axum のモック Keycloak を立て、`KeycloakAdmin` の
-//! 全経路（group/user の冪等作成・検索・削除・409/404 の冪等化）を検証する。
+//! user 系の経路（冪等作成・検索・削除・409/404 の冪等化）を検証する。group ツリー操作は
+//! `keycloak_groups.rs`。
 
 // テストコード: pedantic/安全系 lint は本番コードのみ厳格化する方針のため許容する。
 #![allow(
@@ -31,40 +32,20 @@ use axum::{
 };
 use serde_json::{json, Value};
 
-/// モック Keycloak の共有状態（作成済み group/user を記憶して冪等系を再現する）。
+/// モック Keycloak の共有状態（作成済み user を記憶して冪等系を再現する）。
 /// user は POST された payload（attributes 込み）を保持し、検索で返す。
 #[derive(Default)]
 struct KcState {
-    group_exists: AtomicBool,
     created_user: Mutex<Option<Value>>,
     /// 初回ログインで UPDATE_PASSWORD を消化済みか（true なら username 検索で
     /// requiredActions を空にして返す＝ログイン済みユーザーを模す）。
     logged_in: AtomicBool,
 }
 
-/// token（client_credentials）＋ admin REST（groups/users）のモック Keycloak を立てる。
+/// token（client_credentials）＋ admin REST（users）のモック Keycloak を立てる。
 async fn spawn_mock_kc(state: Arc<KcState>) -> String {
     let token_route =
         post(|| async { Json(json!({ "access_token": "mock-admin-token", "expires_in": 60 })) });
-
-    let groups_post = {
-        let st = state.clone();
-        post(move || {
-            let st = st.clone();
-            async move {
-                // 2 回目以降は 409（既存）→ クライアントは検索へフォールバックする。
-                if st.group_exists.swap(true, Ordering::SeqCst) {
-                    StatusCode::CONFLICT
-                } else {
-                    StatusCode::CREATED
-                }
-            }
-        })
-    };
-    let groups_get = get(|Query(q): Query<Value>| async move {
-        let name = q.get("search").and_then(Value::as_str).unwrap_or("");
-        Json(json!([{ "id": "group-1", "name": name }]))
-    });
 
     let users_post = {
         let st = state.clone();
@@ -128,14 +109,11 @@ async fn spawn_mock_kc(state: Arc<KcState>) -> String {
             StatusCode::NOT_FOUND
         }
     });
-    let group_delete = delete(|Path(_id): Path<String>| async move { StatusCode::NO_CONTENT });
     // 一時パスワードの再設定（#91 M-6）。204 を返すだけの冪等スタブ。
     let reset_password = put(|| async { StatusCode::NO_CONTENT });
 
     let app = Router::new()
         .route("/realms/shiki/protocol/openid-connect/token", token_route)
-        .route("/admin/realms/shiki/groups", groups_post.merge(groups_get))
-        .route("/admin/realms/shiki/groups/{id}", group_delete)
         .route("/admin/realms/shiki/users", users_post.merge(users_get))
         .route("/admin/realms/shiki/users/{id}", user_delete)
         .route(
@@ -183,17 +161,6 @@ async fn from_config_requires_provisioner_credentials() {
 }
 
 #[tokio::test]
-async fn ensure_group_is_idempotent() {
-    let base = spawn_mock_kc(Arc::default()).await;
-    let http = reqwest::Client::new();
-    let auth = auth_config(&base);
-    let kc = KeycloakAdmin::from_config(&http, &auth).unwrap();
-    // 1 回目: 201 → 検索で id 解決。2 回目: 409 → 冪等に同じ id。
-    assert_eq!(kc.ensure_group("acme").await.unwrap(), "group-1");
-    assert_eq!(kc.ensure_group("acme").await.unwrap(), "group-1");
-}
-
-#[tokio::test]
 async fn ensure_tenant_admin_reissues_before_first_login() {
     // #91 M-6: 初回ログイン前（UPDATE_PASSWORD 未消化）の既存 admin は再実行で一時
     // パスワードを再発行する（プロビジョニング後段の失敗で初回応答が破棄されても回収可）。
@@ -217,6 +184,9 @@ async fn ensure_tenant_admin_reissues_before_first_login() {
         .unwrap();
     assert_eq!(id, "user-1");
     assert_eq!(password.as_deref(), Some("tmp-pass"));
+    // org group はテナントで修飾されたパス（`/tenants/<tenant>/<org>`）に入る（#811）。
+    let created = state.created_user.lock().unwrap().clone().unwrap();
+    assert_eq!(created["groups"], json!(["/tenants/acme/acme"]));
 
     // 既存かつログイン前: 一時パスワードを再発行して返す（M-6）。
     let (id2, password2) = kc
@@ -295,9 +265,6 @@ async fn deletes_are_idempotent() {
     // 存在するユーザー削除は成功、不在（404）も成功に倒れる。
     kc.delete_user("user-1").await.unwrap();
     kc.delete_user("missing-user").await.unwrap();
-    // group 削除（検索ヒット→削除）と、不在 group の削除（検索ヒットでも mock は常に返すため
-    // ここでは成功経路のみ）。
-    kc.delete_group_by_name("acme").await.unwrap();
 }
 
 #[tokio::test]

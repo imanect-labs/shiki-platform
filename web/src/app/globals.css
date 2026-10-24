@@ -697,6 +697,26 @@
   }
 }
 
+/* Yui の図のツールチップ（[data-yui-tip]）は指した点の上に重ねて出る。スマホ幅では系列が多いと
+   縦に長くなって図の大半を覆うので、図に重ねず図のすぐ下へ流し、値を 2 列に並べて短くする。
+   位置は Yui が style 属性で与えるので !important で上書きする。題と注記は 2 列をまたがせる
+   （値の行は丸い印のある flex の行で、題・注記はそうでない）。 */
+@media (max-width: 639.98px) {
+  [data-yui] [data-yui-tip] {
+    position: static !important;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 16px;
+    row-gap: 2px;
+    max-width: none !important;
+    margin-top: 8px;
+    box-shadow: none !important;
+  }
+  [data-yui] [data-yui-tip] > :not([style*="display: flex"]) {
+    grid-column: 1 / -1;
+  }
+}
+
 /* PDF ビューアのテキスト層（pdf.js TextLayer・文字の選択とコピー）。pdf.js の pdf_viewer.css から
    テキスト層に要る分だけを写す（全体を読み込むとビューア UI 用の大量の規則が入るため）。
    文字は透明で canvas の上に重なり、選択したときだけ色が付く。 */
