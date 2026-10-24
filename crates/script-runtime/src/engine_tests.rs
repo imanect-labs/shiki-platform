@@ -175,6 +175,5 @@ fn shared_engine_is_compiled_once() {
     let b = ScriptEngine::shared().expect("engine");
     let second = started.elapsed();
     assert!(std::sync::Arc::ptr_eq(&a, &b));
-    eprintln!("script engine: 初回 {first:?}・2 回目 {second:?}");
-    assert!(second < first);
+    assert!(second < first, "初回 {first:?}・2 回目 {second:?}");
 }

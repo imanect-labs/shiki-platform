@@ -523,12 +523,7 @@ impl DataStore {
         cleanup_staging(&mut tx, &cur).await?;
         tx.commit().await.map_err(map_db)?;
         if cur.rows_valid >= ANALYZE_AFTER_ROWS {
-            analyze_table_partitions(
-                self.pools.for_tenant(tenant_id),
-                cur.tenant_int,
-                cur.table_int,
-            )
-            .await;
+            analyze_table_partitions(&self.pools, tenant_id, cur.tenant_int, cur.table_int).await;
         }
         Ok(0)
     }
@@ -637,7 +632,13 @@ const ANALYZE_AFTER_ROWS: i64 = 1_000;
 /// 候補集めに値索引を使わない計画を選ぶ（10 万行で 1 秒超）。自動 ANALYZE を待たずに取り直す。ANALYZE は
 /// 読み書きを止めない（`SHARE UPDATE EXCLUSIVE`）。SQL へ埋め込むのはカタログから引いた表名で、形を検証した
 /// ものだけ（PIT-21）。
-async fn analyze_table_partitions(pool: &sqlx::PgPool, tenant_int: i32, table_int: i64) {
+async fn analyze_table_partitions(
+    pools: &storage::PoolRouter,
+    tenant_id: &str,
+    tenant_int: i32,
+    table_int: i64,
+) {
+    let pool = pools.for_tenant(tenant_id);
     const PARENTS: [&str; 6] = [
         "data_record",
         "data_index_text",

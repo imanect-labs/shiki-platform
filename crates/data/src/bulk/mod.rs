@@ -481,6 +481,7 @@ impl DataStore {
     /// ワークフローの `data.bulk_upsert` はステップの冪等キーから取込 ID を決め、effect_journal の
     /// 回収窓（予約したワーカーが落ちた後の再実行）でも二重に取り込まない（続きはジョブが進める）。
     /// 別のテーブルの取込 ID と衝突したら 409。
+    #[allow(clippy::too_many_lines)] // 冪等な再開 → 列の検査 → ステージング → 監査を 1 Tx で順に行う。
     pub async fn start_bulk_upsert_with_id(
         &self,
         ctx: &AuthContext,

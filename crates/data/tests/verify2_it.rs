@@ -9,7 +9,8 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    clippy::many_single_char_names
 )]
 
 mod common;
@@ -151,7 +152,7 @@ async fn schema_changes_that_conflict_with_data_are_rejected() {
                     .iter_mut()
                     .find(|f| f.key == "memo")
                     .unwrap()
-                    .required = true
+                    .required = true;
             }),
             None,
             None,

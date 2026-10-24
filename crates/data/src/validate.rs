@@ -47,6 +47,9 @@ pub(crate) async fn validate_record_data(
     validate_inner(ctx, schema, data, resolver, max_multi_values, None).await
 }
 
+/// 今回書いた列か（更新の検証の対象）。
+pub(crate) type WrittenFn<'a> = &'a (dyn Fn(&str) -> bool + Sync);
+
 /// 更新のマージ後の完全形を検証する。**今回書いた列（`written`）だけ**を型・必須・選択肢で検査し、
 /// 書いていない列の保存値はそのまま残す（検証 2-A-P1-1）。
 ///
@@ -59,7 +62,7 @@ pub(crate) async fn validate_record_patch(
     merged: &Value,
     resolver: &dyn RefResolver,
     max_multi_values: usize,
-    written: &(dyn Fn(&str) -> bool + Sync),
+    written: WrittenFn<'_>,
 ) -> Result<Map<String, Value>, DataError> {
     validate_inner(
         ctx,
@@ -78,7 +81,7 @@ async fn validate_inner(
     data: &Value,
     resolver: &dyn RefResolver,
     max_multi_values: usize,
-    written: Option<&(dyn Fn(&str) -> bool + Sync)>,
+    written: Option<WrittenFn<'_>>,
 ) -> Result<Map<String, Value>, DataError> {
     let obj = data.as_object().ok_or_else(|| {
         DataError::input_detail(

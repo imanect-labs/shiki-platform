@@ -82,7 +82,7 @@ const USES_OPTION: &str =
 async fn count(
     conn: &mut PgConnection,
     keys: TableKeys,
-    cond: &str,
+    predicate: &str,
     key: &str,
     options: &[String],
 ) -> Result<i64, DataError> {
@@ -90,7 +90,7 @@ async fn count(
     // 型を決めるため `cardinality` で参照する）、`$5` は件数の上限。
     sqlx::query_scalar(&format!(
         "SELECT count(*) FROM (SELECT 1 FROM data_record \
-         WHERE tenant_int = $1 AND table_int = $2 AND cardinality($4::text[]) >= 0 AND {cond} \
+         WHERE tenant_int = $1 AND table_int = $2 AND cardinality($4::text[]) >= 0 AND {predicate} \
          LIMIT $5) s"
     ))
     .bind(keys.tenant_int)
@@ -123,7 +123,7 @@ fn group_digits(n: i64) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
