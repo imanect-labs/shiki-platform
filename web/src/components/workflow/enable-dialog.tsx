@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
+import { SCOPE_LABELS } from "@/lib/workflow-scopes";
 import { FolderPicker } from "@/components/artifacts/folder-picker";
 import { DataTableSelect, useDataTables } from "@/components/workflow/editor/config-panel/forms-data";
 import {
@@ -32,16 +33,6 @@ import {
   type SuggestedGrant,
 } from "@/lib/workflow-api";
 
-/// スコープの日本語説明（権限の天井として同意させる内容）。
-const SCOPE_LABELS: Record<string, string> = {
-  "data.read": "業務データを読む",
-  "data.write": "業務データを書く",
-  "storage.read": "ファイルを読む",
-  "storage.write": "ファイルを保存する",
-  "rag.query": "社内ドキュメントを検索する",
-  "http.egress": "外部サービスへ送信する",
-  "workflow.start": "別のワークフローを起動する",
-};
 
 const RELATION_LABELS: Record<string, string> = {
   viewer: "閲覧",

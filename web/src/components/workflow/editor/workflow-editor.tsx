@@ -14,13 +14,15 @@
 
 import * as React from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { ListTree, TriangleAlert, Workflow } from "lucide-react";
+import { ListTree, ShieldCheck, TriangleAlert, Workflow } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "@/components/ui/use-toast";
 import { FadeSlide } from "@/components/ui/motion-primitives";
 import { useMediaQuery } from "@/hooks/use-media-query";
+import { scopeLabel } from "@/lib/workflow-scopes";
+import { cn } from "@/lib/utils";
 import type { ValidationError, WorkflowIr } from "@/generated/workflow-ir";
 import {
   putLayout,
@@ -88,15 +90,19 @@ export function WorkflowEditor({
   const [mobileView, setMobileView] = React.useState<"list" | "canvas">("list");
   // ブロック選択シートの追加先（null で閉じる）。
   const [adding, setAdding] = React.useState<{ target: AddTarget; label: string } | null>(null);
+  // このワークフローが使う権限（ブロックが要するスコープをサーバが補完した宣言・検証と保存の応答で更新する・
+  // C-P1-2）。宣言はエディタで書かせず、ブロックから決まるものとして見せるだけ。
+  const [scopes, setScopes] = React.useState<string[]>(initialIr.declared_scopes ?? []);
 
   // ── ライブ検証（600ms debounce・保存しない）─────────────────────────────
   React.useEffect(() => {
     if (!state.dirty) return;
     const timer = setTimeout(() => {
       validateWorkflow(state.ir)
-        .then(({ errors, warnings }) => {
+        .then(({ errors, warnings, declaredScopes }) => {
           dispatch({ type: "set_errors", errors });
           dispatch({ type: "set_warnings", warnings });
+          if (declaredScopes) setScopes(declaredScopes);
         })
         .catch(() => {
           // ライブ検証は best-effort（ネットワーク断で編集を妨げない）。保存時に必ず再検証される。
@@ -109,8 +115,10 @@ export function WorkflowEditor({
   React.useEffect(() => {
     let active = true;
     validateWorkflow(initialIr)
-      .then(({ warnings }) => {
-        if (active) dispatch({ type: "set_warnings", warnings });
+      .then(({ warnings, declaredScopes }) => {
+        if (!active) return;
+        dispatch({ type: "set_warnings", warnings });
+        if (declaredScopes) setScopes(declaredScopes);
       })
       .catch(() => {
         // 付加情報（開けないわけではない）。編集・保存のたびに改めて受ける。
@@ -157,7 +165,10 @@ export function WorkflowEditor({
     const irToSave = state.ir;
     try {
       const saved = await updateWorkflow(workflowId, irToSave, state.savedVersion);
-      dispatch({ type: "saved", version: saved.version, savedIr: irToSave });
+      // サーバが補完した宣言（保存した版の declared_scopes）を手元の IR にも入れる（保存中に続けた編集が
+      // 無いときだけ・reducer が判断する。あれば次の保存でまた補完される）。
+      dispatch({ type: "saved", version: saved.version, savedIr: irToSave, declaredScopes: saved.declared_scopes });
+      if (saved.declared_scopes) setScopes(saved.declared_scopes);
       dispatch({ type: "set_errors", errors: [] });
       dispatch({ type: "set_warnings", warnings: saved.warnings });
       toast(
@@ -263,6 +274,7 @@ export function WorkflowEditor({
                 />
               </div>
             ) : null}
+            {desktop ? <ScopesPill scopes={scopes} className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2" /> : null}
             {paletteOpen && desktop ? (
               <FadeSlide from="left" className="absolute inset-y-3 left-3 z-10 w-64">
                 <Palette onPick={(nodeType) => pick(endTarget(state.ir), nodeType)} />
@@ -286,6 +298,9 @@ export function WorkflowEditor({
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
+          <div className="px-4 pt-3">
+            <ScopesPill scopes={scopes} />
+          </div>
           {state.serverWarnings.length > 0 ? (
             <div className="px-4 pt-3">
               <WarningsSummary
@@ -323,6 +338,31 @@ export function WorkflowEditor({
           if (adding) pick(adding.target, nodeType);
         }}
       />
+    </div>
+  );
+}
+
+/// このワークフローが使う権限（ブロックから決まる宣言スコープ）。自動実行の同意で渡す権限の天井になる。
+function ScopesPill({ scopes, className }: { scopes: string[]; className?: string }) {
+  return (
+    <div
+      className={cn(
+        "inline-flex max-w-[min(36rem,calc(100%-1.5rem))] flex-wrap items-center gap-1.5 rounded-xl border bg-background/95 px-2.5 py-1.5 text-[11px] text-muted-foreground shadow-sm",
+        className,
+      )}
+      data-testid="workflow-scopes"
+    >
+      <ShieldCheck className="size-3.5 shrink-0" aria-hidden />
+      <span>使う権限:</span>
+      {scopes.length === 0 ? (
+        <span>なし</span>
+      ) : (
+        scopes.map((s) => (
+          <span key={s} className="rounded-full bg-secondary px-2 py-0.5 text-secondary-foreground">
+            {scopeLabel(s)}
+          </span>
+        ))
+      )}
     </div>
   );
 }

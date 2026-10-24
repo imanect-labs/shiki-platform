@@ -3,11 +3,11 @@ import { expect, test } from "@playwright/test";
 import { loginViaKeycloak, uniqueName } from "./helpers";
 
 /// dnd ワークフローエディタの e2e（Task 10.12 DoD）:
-/// 新規作成 → ブロック追加（ヘッダ導線＋尻尾プラス）→ 検証エラーが該当ノードにバッジ表示
-/// → 修正（削除）→ 保存 → 実行 → 実行履歴で succeeded まで。
+/// 新規作成 → ブロック追加（ヘッダ導線＋尻尾プラス）→ ブロックが要する権限が「使う権限」に出る
+/// → 削除 → 保存 → 実行 → 実行履歴で succeeded まで。
 /// 前提: compose の shiki-server が SHIKI__WORKFLOW__ENABLED=true・LLM は stub。
 
-test("エディタ: 作成→追加→エラーバッジ→修正→保存→実行→履歴成功", async ({ page }) => {
+test("エディタ: 作成→追加→使う権限→削除→保存→実行→履歴成功", async ({ page }) => {
   test.setTimeout(180_000);
   await loginViaKeycloak(page);
 
@@ -27,17 +27,16 @@ test("エディタ: 作成→追加→エラーバッジ→修正→保存→実
   await page.getByRole("button", { name: /^ファイルを保存/ }).click();
   await expect(canvas.getByText("ファイルを保存").first()).toBeVisible();
 
-  // ライブ検証（600ms debounce）が declared_scopes 不足を検出し、該当ノードにバッジが出る。
-  await expect(canvas.locator('[aria-label^="検証エラー"]').first()).toBeVisible({
-    timeout: 10_000,
-  });
+  // ライブ検証（600ms debounce）が、ブロックが要する権限（declared_scopes）を補完して返し、「使う権限」に出る
+  // （宣言を手で書かせない・不足のエラーにしない・C-P1-2）。
+  const scopes = page.getByTestId("workflow-scopes");
+  await expect(scopes).toContainText("ファイルを保存する", { timeout: 10_000 });
+  await expect(canvas.locator('[aria-label^="検証エラー"]')).toHaveCount(0);
 
-  // 修正: 問題のブロックを設定パネルから削除 → バッジが消える。
+  // ブロックを設定パネルから削除 → 使う権限からも外れる。
   await canvas.getByText("ファイルを保存").first().click();
   await page.getByRole("button", { name: "このブロックを削除" }).click();
-  await expect(canvas.locator('[aria-label^="検証エラー"]')).toHaveCount(0, {
-    timeout: 10_000,
-  });
+  await expect(scopes).not.toContainText("ファイルを保存する", { timeout: 10_000 });
 
   // 保存 → 実行 → 実行履歴の deep-link へ遷移し、ライブ更新で成功する。
   await page.getByRole("button", { name: "保存", exact: true }).click();
