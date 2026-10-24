@@ -1042,12 +1042,12 @@ const UserRow = React.memo(function UserRow({
           <div className="flex flex-wrap items-center justify-end gap-1.5">
             {files.map((f) =>
               // 画像は小さい四角で中身を見せ、押すとファイルのビューアで開く。
-              isImageAttachment(f.name) ? (
+              isImageAttachment(f) ? (
                 <Link
                   key={f.node_id}
                   href={`/file/${f.node_id}`}
                   aria-label={`${f.name} を開く`}
-                  className="rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <AttachmentThumb nodeId={f.node_id} name={f.name} className="size-16" />
                 </Link>

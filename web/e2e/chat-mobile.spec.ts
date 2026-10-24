@@ -144,16 +144,18 @@ test.describe("スマホのチャット", () => {
     ]);
     await chooser.setFiles({ name, mimeType: "image/png", buffer: png });
 
-    // 入力欄の上: 画像のサムネイル（読み込めている）と「添付を外す」。
+    // 入力欄の上: 画像のサムネイル（読み込めている）と、アップロード完了後にだけ出る「外す」。
+    const remove = phone.getByRole("button", { name: `${name} の添付を外す` });
+    await expect(remove).toBeVisible({ timeout: 30_000 });
     const thumb = phone.getByRole("img", { name });
-    await expect(thumb).toBeVisible({ timeout: 30_000 });
     await expect.poll(() => thumb.evaluate((el: HTMLImageElement) => el.naturalWidth)).toBeGreaterThan(0);
-    await expect(phone.getByRole("button", { name: "添付を外す" })).toBeVisible();
 
     // 送った発話にも出て、押すとファイルのビューアへ行けるリンクになっている。
     await phone.getByLabel("メッセージを入力").fill("この画像は？");
     await phone.getByRole("button", { name: "送信" }).click();
     await phone.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
+    // 入力欄の添付は送ったら空になる。
+    await expect(remove).toHaveCount(0);
     const link = phone.getByRole("link", { name: `${name} を開く` });
     await expect(link).toHaveAttribute("href", /^\/file\/[0-9a-f-]+$/i);
     await expect.poll(

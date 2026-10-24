@@ -12,9 +12,13 @@ import { previewKind } from "@/lib/file-preview";
 import { downloadUrl } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
+const NODE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /// 画像として見せる添付か（拡張子で判定・HEIC などブラウザが出せないものは外す）。
-export function isImageAttachment(name: string): boolean {
-  return previewKind({ name }) === "image";
+/// 発話の file_ref は他人が書いた値でもあるので、node id が UUID の形のときだけ URL に入れる
+/// （任意の文字列を `/files/{id}/download-url` に混ぜて、閲覧者の権限で別のパスを叩かせない）。
+export function isImageAttachment(a: { node_id: string; name: string }): boolean {
+  return NODE_ID.test(a.node_id) && previewKind({ name: a.name }) === "image";
 }
 
 export function AttachmentThumb({
@@ -64,11 +68,12 @@ export function AttachmentThumb({
           src={url}
           alt={name}
           draggable={false}
+          decoding="async"
           onError={() => setFailed(true)}
           className={cn("size-full rounded-[inherit] object-cover", imgClassName)}
         />
       ) : (
-        <ImageIcon className="size-5 text-muted-foreground" aria-label={name} />
+        <ImageIcon role="img" className="size-5 text-muted-foreground" aria-label={name} />
       )}
       {children}
     </span>
