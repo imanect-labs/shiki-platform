@@ -88,3 +88,16 @@ test("見出しに無い列は取込を始めずに理由を出す", async ({ pa
   await expect(page.getByTestId("import-error")).toBeVisible();
   await expect(page.getByTestId("import-progress")).toHaveCount(0);
 });
+
+test("上限を超える CSV は BFF 経由でも 500 ではなく 413（import_too_large）で断る", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const tableId = await createTable(page);
+  const body = `name\n${"x".repeat(33 * 1024 * 1024)}\n`;
+  const res = await page.request.post(`/api/data/tables/${tableId}/imports/csv`, {
+    headers: { "X-CSRF-Token": await csrf(page), "Content-Type": "text/csv; charset=utf-8" },
+    data: body,
+    timeout: 120_000,
+  });
+  expect(res.status()).toBe(413);
+  expect(await res.json()).toMatchObject({ code: "import_too_large", max_bytes: 32 * 1024 * 1024 });
+});

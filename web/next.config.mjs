@@ -24,12 +24,17 @@ const nextConfig = {
   // **サーバは `node server.js` で起動する**（`next start` ではない）。
   output: "standalone",
   async rewrites() {
-    return [
-      // フロントの API 呼び出し（/api/me 等）→ shiki-server のルート（/me 等）。
-      { source: "/api/:path*", destination: `${backendOrigin}/:path*` },
-      // BFF 認証エンドポイント（/auth/login・/auth/callback・/auth/logout・/auth/session）。
-      { source: "/auth/:path*", destination: `${backendOrigin}/auth/:path*` },
-    ];
+    // fallback: app の route handler（動的な `[id]` を含む）を先に解決し、無いものだけを素通しする。
+    // 配列で返す既定（afterFiles）は動的ルートより先に効くため、/api/data/tables/[id]/stream などの
+    // 中継（上流の切断を伝える・大きな取込を 413 で断る）が素通しに奪われていた。
+    return {
+      fallback: [
+        // フロントの API 呼び出し（/api/me 等）→ shiki-server のルート（/me 等）。
+        { source: "/api/:path*", destination: `${backendOrigin}/:path*` },
+        // BFF 認証エンドポイント（/auth/login・/auth/callback・/auth/logout・/auth/session）。
+        { source: "/auth/:path*", destination: `${backendOrigin}/auth/:path*` },
+      ],
+    };
   },
 };
 
