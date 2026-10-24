@@ -7,7 +7,7 @@
 /// （条件・並べ替えはピンした版のビュー）。行・列は**閲覧者本人の権限**で評価される。列の型・表示名は
 /// テーブルのスキーマ（閲覧者本人の viewer）から、列の順・見出し・幅・非表示はビューの表示設定から決める。
 
-import { AlertTriangle, Inbox, Loader2, Table2 } from "lucide-react";
+import { AlertTriangle, Inbox, Loader2, MoveHorizontal, Table2 } from "lucide-react";
 import * as React from "react";
 
 import { DataGrid, type DataGridStatus } from "@/components/data/data-grid";
@@ -21,6 +21,7 @@ import {
   type QueryResult,
 } from "@/lib/data-api";
 import { resolveColumns } from "@/lib/data-view";
+import { cn } from "@/lib/utils";
 
 const EMPTY_SORT = new Map<string, "asc" | "desc">();
 
@@ -53,6 +54,17 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
   const [waiting, setWaiting] = React.useState<Waiting | null>(null);
   const [attempt, setAttempt] = React.useState(0);
   const [status, setStatus] = React.useState<DataGridStatus | null>(null);
+  // 枠の幅（列が収まるか・横に続くかの判定）。
+  const frameRef = React.useRef<HTMLElement>(null);
+  const [frameWidth, setFrameWidth] = React.useState(0);
+  React.useEffect(() => {
+    const el = frameRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([e]) => setFrameWidth(e.contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+    // 枠（figure）が描かれるのは誤り・ホスト無しの早期 return でないとき。
+  }, [error, host]);
 
   const onFailure = React.useCallback((e: unknown) => {
     const w = waitingOf(e);
@@ -116,12 +128,21 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
   const empty = first !== null && (first.result.items ?? []).length === 0 && !first.result.next_cursor;
   // 先頭ページの前に待ちになったときはスキーマが無いので、列名（参照名）は出さずに一般の文言にする。
   const label = waiting ? columns.find((c) => c.key === waiting.field)?.label : undefined;
+  // 列の合計幅が枠より広い（スマホ幅で 2 列ほどしか見えない）ときは、横に続くことを示す（C P3）。
+  const totalWidth = columns.reduce((n, c) => n + c.width, 0);
+  const overflows = frameWidth > 0 && totalWidth > frameWidth + 1;
   return (
-    <figure className="my-4 overflow-hidden rounded-xl border bg-card" data-testid={`miniapp-data-grid-${alias}`}>
+    <figure ref={frameRef} className="my-4 overflow-hidden rounded-xl border bg-card" data-testid={`miniapp-data-grid-${alias}`}>
       <figcaption className="flex items-center gap-2 border-b px-3 py-2 text-xs text-muted-foreground">
         <Table2 className="size-3.5" aria-hidden />
         <span className="font-medium text-foreground">{table?.name ?? alias}</span>
-        <span className="ml-auto tabular-nums">
+        {overflows ? (
+          <span className="ml-auto inline-flex items-center gap-1 text-[11px]" data-testid="miniapp-data-grid-scroll-hint">
+            <MoveHorizontal className="size-3.5" aria-hidden />
+            横にスクロールできます
+          </span>
+        ) : null}
+        <span className={cn("tabular-nums", !overflows && "ml-auto")}>
           {empty ? "0 件" : status ? `${status.loaded.toLocaleString("ja-JP")}${status.done ? "" : "+"} 件` : ""}
         </span>
       </figcaption>
@@ -140,7 +161,13 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
           表示するレコードはありません
         </div>
       ) : table && first ? (
-        <div style={{ height: heightFor(status?.loaded ?? 0, status?.done ?? false) }}>
+        <div className="relative" style={{ height: heightFor(status?.loaded ?? 0, status?.done ?? false) }}>
+          {overflows ? (
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-y-0 right-0 z-10 w-8 bg-gradient-to-l from-card to-transparent"
+            />
+          ) : null}
           <DataGrid
             key={attempt}
             tableId={first.table_id}

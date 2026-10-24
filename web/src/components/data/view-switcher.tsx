@@ -71,7 +71,13 @@ export function ViewSwitcher({
     toast({
       variant: "destructive",
       title: "ビューを保存できませんでした",
-      description: e instanceof Error ? e.message : String(e),
+      description:
+        // 理由の無い 403 は、伏せられた列（あなたが読めない列）を条件・並べ替え・列に使っているとき（C P3）。
+        e instanceof DataApiError && e.status === 403 && !e.code && !(e.body && typeof e.body.message === "string")
+          ? "あなたが読めない列（伏せられた列）を、条件・並べ替え・表示する列に使っているため保存できません。その列を外してください。"
+          : e instanceof Error
+            ? e.message
+            : String(e),
     });
 
   const save = async () => {
