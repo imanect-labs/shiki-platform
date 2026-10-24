@@ -40,6 +40,10 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// 届くはずのイベントを待つ上限（届けばすぐ抜ける）。カバレッジ計測のビルドは遅く、共有 DB に先行テストの
+/// outbox が溜まっていると配信が数秒遅れるので、短すぎると誤って落ちる。
+const SSE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 struct AllowRefs;
 
 #[async_trait]
@@ -2089,7 +2093,7 @@ async fn sse_never_streams_invisible_rows_or_masked_fields() {
         .await
         .unwrap();
     let mut seen: Vec<String> = Vec::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + SSE_WAIT;
     let mut got_mine = false;
     while std::time::Instant::now() < deadline && !got_mine {
         if let Ok(Some(m)) =
@@ -2117,7 +2121,7 @@ async fn sse_never_streams_invisible_rows_or_masked_fields() {
         .await
         .unwrap();
     let mut removed = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + SSE_WAIT;
     while std::time::Instant::now() < deadline && !removed {
         if let Ok(Some(m)) =
             tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await
@@ -2729,7 +2733,7 @@ async fn link_values_never_expose_invisible_targets() {
         .await
         .unwrap();
     let mut seen = Vec::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + SSE_WAIT;
     let mut got_up = false;
     while std::time::Instant::now() < deadline && !got_up {
         if let Ok(Some(m)) =
