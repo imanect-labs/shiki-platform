@@ -158,14 +158,19 @@ impl ChatWorker {
     /// 同時に生成する run が `concurrency` 本のワーカーと sweeper を起動する。
     ///
     /// 枠（`concurrency`）はセマフォで持ち、承認待ちの run は枠を返して保留する（[`slot`]）。タスクは
-    /// 枠＋保留の上限ぶん起動し、各タスクは枠を取ってからジョブを取る。
+    /// 枠＋保留の上限＋1 ぶん起動し（[`slot::worker_tasks`]）、各タスクは枠を取ってからジョブを取る。
+    /// 保留の上限（プロセス全体・ユーザーごと）を超える承認要求は待たずに却下する。
     pub fn spawn(self, concurrency: usize) -> Vec<tokio::task::JoinHandle<()>> {
         let mut handles = Vec::new();
         let slots = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
-        for i in 0..concurrency.max(1) + slot::MAX_PARKED_APPROVALS {
+        let limits = slot::ParkLimits::standard();
+        for i in 0..slot::worker_tasks(concurrency) {
             let w = self.clone();
             let slots = Arc::clone(&slots);
-            handles.push(tokio::spawn(async move { w.run_loop(i, slots).await }));
+            let limits = Arc::clone(&limits);
+            handles.push(tokio::spawn(
+                async move { w.run_loop(i, slots, limits).await },
+            ));
         }
         // 孤児回収 sweeper（backstop）。
         let sweeper = self.clone();
@@ -174,13 +179,18 @@ impl ChatWorker {
     }
 
     /// jobq 消費ループ（枠を取ってからジョブを取る）。
-    async fn run_loop(self, worker_index: usize, slots: Arc<tokio::sync::Semaphore>) {
+    async fn run_loop(
+        self,
+        worker_index: usize,
+        slots: Arc<tokio::sync::Semaphore>,
+        limits: Arc<slot::ParkLimits>,
+    ) {
         let worker_id = format!("chat-worker-{worker_index}");
         loop {
             let Ok(permit) = Arc::clone(&slots).acquire_owned().await else {
                 return; // セマフォが閉じた（終了）
             };
-            let slot = slot::RunSlot::new(Arc::clone(&slots), permit);
+            let slot = slot::RunSlot::new(Arc::clone(&slots), Arc::clone(&limits), permit);
             let r = self.claim_and_process(&worker_id, &slot).await;
             drop(slot); // 処理を終えたら枠を返す（保留中に返していれば何もしない）
             match r {

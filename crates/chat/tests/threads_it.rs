@@ -1426,7 +1426,7 @@ async fn pending_approval_is_persisted_and_the_wait_releases_the_slot() {
     use std::time::Duration as StdDuration;
 
     use agent_core::Approver;
-    use chat::worker::slot::RunSlot;
+    use chat::worker::slot::{ParkLimits, RunSlot};
 
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
@@ -1456,11 +1456,11 @@ async fn pending_approval_is_persisted_and_the_wait_releases_the_slot() {
     // 枠 1 本のワーカーを模す。この run が枠を持って承認待ちに入る。
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
-    let slot = RunSlot::new(Arc::clone(&sem), permit);
+    let slot = RunSlot::new(Arc::clone(&sem), ParkLimits::standard(), permit);
     let cancel = Arc::new(AtomicBool::new(false));
     let approver = DbApprover::new(store.clone(), run_id, claimed.fencing_token, cancel)
         .with_timing(StdDuration::from_millis(50), StdDuration::from_secs(20))
-        .with_slot(Arc::clone(&slot));
+        .with_slot(Arc::clone(&slot), &c.tenant_id, &c.principal.id);
     let handle = tokio::spawn(async move {
         approver
             .decide("tc-9", "data_record_write", &serde_json::json!({}))
@@ -1535,4 +1535,109 @@ async fn pending_approval_is_persisted_and_the_wait_releases_the_slot() {
         store.run_status(&c.tenant_id, run_id).await.unwrap(),
         Some(RunStatus::Running)
     );
+}
+
+/// R3-5: 承認待ちの保留の上限（ここではユーザーあたり 1 件）を超える承認要求は待たずに却下する。
+/// 枠は返さず・承認待ちへ遷移せず・承認待ちの記録も残さず、理由を `failure_recovery`
+/// （action = `approval_overloaded`）でストリームに出す。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn approval_over_the_parking_cap_is_rejected_without_waiting() {
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration as StdDuration;
+
+    use agent_core::Approver;
+    use chat::worker::slot::{ParkLimits, RunSlot};
+
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool, Arc::new(AllowAll::new())).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "承認の上限", true, None, None)
+        .await
+        .unwrap();
+    let res = store
+        .post_message(
+            &c,
+            thread.id,
+            "do danger",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    let run_id = res.run_id;
+    let claimed = store.claim_run(run_id, "w1", 30).await.unwrap().unwrap();
+    // WorkerSink が承認要求の SSE を出す前に記録する承認待ち（上限で却下したら消す）。
+    store
+        .set_pending_approval(run_id, claimed.fencing_token, "tc-1", "data_record_write")
+        .await
+        .unwrap();
+
+    // 同じユーザーの別の run が既に 1 件保留している（ユーザーあたりの上限 1）。
+    let sem = Arc::new(tokio::sync::Semaphore::new(2));
+    let limits = ParkLimits::new(10, 1);
+    let other = RunSlot::new(
+        Arc::clone(&sem),
+        Arc::clone(&limits),
+        Arc::clone(&sem).acquire_owned().await.unwrap(),
+    );
+    other.park(&c.tenant_id, &c.principal.id).await.unwrap();
+    let slot = RunSlot::new(
+        Arc::clone(&sem),
+        Arc::clone(&limits),
+        Arc::clone(&sem).acquire_owned().await.unwrap(),
+    );
+    let before = sem.available_permits();
+    let approver = DbApprover::new(
+        store.clone(),
+        run_id,
+        claimed.fencing_token,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .with_timing(StdDuration::from_millis(50), StdDuration::from_secs(20))
+    .with_slot(Arc::clone(&slot), &c.tenant_id, &c.principal.id);
+    let decision = tokio::time::timeout(
+        StdDuration::from_secs(5),
+        approver.decide("tc-1", "data_record_write", &serde_json::json!({})),
+    )
+    .await
+    .expect("待たずに返る");
+    assert_eq!(decision, agent_core::ApprovalDecision::Rejected);
+    assert_eq!(
+        sem.available_permits(),
+        before,
+        "却下した run は枠を返さない"
+    );
+    assert_ne!(
+        store.run_status(&c.tenant_id, run_id).await.unwrap(),
+        Some(RunStatus::WaitingApproval),
+        "承認待ちへ遷移しない"
+    );
+    assert_eq!(store.pending_approval(run_id).await.unwrap(), None);
+    let detail: Option<String> = sqlx::query_scalar(
+        "SELECT payload->>'detail' FROM generation_event \
+         WHERE run_id = $1 AND payload->>'action' = 'approval_overloaded'",
+    )
+    .bind(run_id)
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    assert!(
+        detail
+            .as_deref()
+            .is_some_and(|d| d.contains("承認待ちが多すぎる")),
+        "{detail:?}"
+    );
+    // 別のユーザーは同じプロセスでも保留できる（ユーザーごとに数える）。
+    let third = RunSlot::new(
+        Arc::clone(&sem),
+        Arc::clone(&limits),
+        Arc::clone(&sem).acquire_owned().await.unwrap(),
+    );
+    third.park(&c.tenant_id, "someone-else").await.unwrap();
 }

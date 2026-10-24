@@ -205,7 +205,7 @@ impl ChatWorker {
             run.fencing_token,
             cancel.clone(),
         )
-        .with_slot(Arc::clone(slot));
+        .with_slot(Arc::clone(slot), &ctx.tenant_id, &ctx.principal.id);
         // 実行前フェーズ（#400）。非自律は常に Execute（門は自律の調査フローだけの概念）。
         let mut gate_stage = super::gate::GateStage::Execute;
         // 門が承認まで取り上げたツール（発話ごとのツール指定の注記で「承認後に使える」と言う・#734）。
