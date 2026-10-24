@@ -130,6 +130,8 @@ pub(crate) async fn spawn_gateway_listener(
             .await
             .context("gateway bind に失敗")?;
         tracing::info!(%bind, "gateway listening（第2リスナ）");
+        // SSE（イベント購読・AI のストリーム）は合図で本文を終える（猶予を待たない）。
+        let router = crate::shutdown::end_streams_on_shutdown(router, shutdown);
         let shutdown = shutdown.clone();
         tokio::spawn(async move {
             let server = axum::serve(listener, router).with_graceful_shutdown(shutdown.wait());
@@ -253,14 +255,9 @@ pub(crate) fn wire_functions(
     if !config.gateway.enabled {
         return None;
     }
-    // ワークフローの実行と同じエンジンを共有する（ゲストのコンパイルはプロセスで 1 回）。
-    let engine = match script_runtime::ScriptEngine::shared() {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::warn!(error = %e, "script エンジン初期化に失敗（B2 関数は無効）");
-            return None;
-        }
-    };
+    // ワークフローの実行と同じエンジンを共有する（ゲストのコンパイルはプロセスで 1 回）。コンパイルの完了は
+    // 関数を実行するときに待つ（起動の経路・リスナを開くのを待たせない）。初期化に失敗したら関数の実行が失敗する。
+    let engine = script_runtime::EngineHandle::shared();
     let loopback = format!("http://127.0.0.1:{}", config.gateway.port);
     let runner = match app_platform::FunctionRunner::new(engine, Arc::clone(object_store), loopback)
     {

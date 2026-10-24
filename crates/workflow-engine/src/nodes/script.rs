@@ -46,8 +46,11 @@ impl CapabilityNodeExecutor {
     ) -> Result<Value, PortError> {
         let engine = self
             .script_engine
-            .clone()
-            .ok_or_else(|| PortError::unavailable("script engine が未設定です"))?;
+            .as_ref()
+            .ok_or_else(|| PortError::unavailable("script engine が未設定です"))?
+            .get()
+            .await
+            .map_err(|e| PortError::unavailable(format!("script engine を準備できません: {e}")))?;
 
         // Stage A は inline のみ（`{ "artifact": "script:<name>@<ver>" }` は Stage B）。
         let p: ScriptRunParams = parse_params(params)?;

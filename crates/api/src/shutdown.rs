@@ -10,6 +10,9 @@
 //!    接続を捨てて戻る。
 //! 3. ランタイムの停止は [`RUNTIME_SHUTDOWN_TIMEOUT`] で打ち切る（常駐ワーカー・残った接続のタスクを
 //!    捨てる）。プロセスは「猶予 + 打ち切り」の有限時間で必ず終了する。
+//! 4. SSE（`text/event-stream`）の応答は合図で本文を終える（[`end_streams_on_shutdown`]）。SSE は
+//!    自分からは終わらないので、猶予を待つと停止が毎回 10 秒かかっていた（3 回目の検証）。クライアントは
+//!    `Last-Event-ID` から再接続する（at-least-once・新しいプロセスへ繋がる）。
 
 use std::future::Future;
 use std::time::Duration;
@@ -52,6 +55,38 @@ impl Shutdown {
     pub(crate) async fn wait(mut self) {
         let _ = self.rx.wait_for(|v| *v).await;
     }
+}
+
+/// ルータの SSE（`text/event-stream`）の応答を、停止の合図で終わらせる（猶予を待たずに閉じる）。
+///
+/// 本文のストリームを合図までで切るだけなので、送りかけのイベントは途中で切れない（チャンク単位で終わる）。
+/// SSE 以外の応答（処理中の通常の要求）はそのまま猶予まで待つ。
+pub(crate) fn end_streams_on_shutdown(router: axum::Router, shutdown: &Shutdown) -> axum::Router {
+    let shutdown = shutdown.clone();
+    router.layer(axum::middleware::map_response(
+        move |resp: axum::response::Response| {
+            let shutdown = shutdown.clone();
+            async move { end_event_stream(resp, shutdown) }
+        },
+    ))
+}
+
+fn end_event_stream(
+    resp: axum::response::Response,
+    shutdown: Shutdown,
+) -> axum::response::Response {
+    use futures::StreamExt;
+    let is_sse = resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/event-stream"));
+    if !is_sse {
+        return resp;
+    }
+    let (parts, body) = resp.into_parts();
+    let stream = body.into_data_stream().take_until(shutdown.wait());
+    axum::response::Response::from_parts(parts, axum::body::Body::from_stream(stream))
 }
 
 /// リスナを走らせ、停止の合図の後は猶予 `grace` までだけ処理中の要求を待つ。
@@ -280,5 +315,73 @@ mod tests {
             assert!(StdStream::connect(addr).is_err(), "{addr} がまだ受け付ける");
             StdListener::bind(addr).unwrap();
         }
+    }
+
+    /// SSE は停止の合図で本文が終わり、猶予を待たずにサーバが戻る（3 回目の検証: 毎回 10 秒かかっていた）。
+    /// SSE 以外の応答には触れない。
+    #[tokio::test]
+    async fn event_streams_end_on_the_signal_without_waiting_for_the_grace() {
+        use std::convert::Infallible;
+        use std::time::Instant;
+
+        use axum::response::sse::{Event, Sse};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (tx, shutdown) = Shutdown::channel();
+        let router = axum::Router::new()
+            .route(
+                "/sse",
+                axum::routing::get(|| async {
+                    Sse::new(futures::stream::pending::<Result<Event, Infallible>>())
+                }),
+            )
+            .route("/plain", axum::routing::get(|| async { "ok" }));
+        let router = end_streams_on_shutdown(router, &shutdown);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = axum::serve(listener, router).with_graceful_shutdown(shutdown.clone().wait());
+        let grace = Duration::from_secs(30);
+        let main = tokio::spawn(serve_until_shutdown(
+            std::future::IntoFuture::into_future(server),
+            shutdown,
+            grace,
+        ));
+        let plain = reqwest::get(format!("http://{addr}/plain")).await.unwrap();
+        assert_eq!(plain.text().await.unwrap(), "ok", "SSE 以外はそのまま");
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        s.write_all(b"GET /sse HTTP/1.1\r\nhost: t\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 1024];
+        let mut got = Vec::new();
+        while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = s.read(&mut buf).await.unwrap();
+            assert!(n > 0);
+            got.extend_from_slice(&buf[..n]);
+        }
+        assert!(got.starts_with(b"HTTP/1.1 200"));
+        let sent = Instant::now();
+        tx.send(true).unwrap();
+        // 本文が終わる（チャンクの終端 `0\r\n\r\n`）か接続が閉じる。
+        let ended = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                if n == 0 {
+                    return;
+                }
+                got.extend_from_slice(&buf[..n]);
+                if got.windows(5).any(|w| w == b"0\r\n\r\n") {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(ended.is_ok(), "SSE の本文が合図で終わらない");
+        tokio::time::timeout(Duration::from_secs(5), main)
+            .await
+            .expect("猶予を待たずに戻る")
+            .unwrap()
+            .unwrap();
+        assert!(sent.elapsed() < Duration::from_secs(5));
     }
 }

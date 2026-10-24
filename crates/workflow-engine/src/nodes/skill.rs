@@ -49,8 +49,13 @@ impl CapabilityNodeExecutor {
             // `.shiki` script: script.run と同じ engine/HostBridge（Shiki.* も同じゲートウェイ）。
             let engine = self
                 .script_engine
-                .clone()
-                .ok_or_else(|| PortError::unavailable("script engine が未設定です"))?;
+                .as_ref()
+                .ok_or_else(|| PortError::unavailable("script engine が未設定です"))?
+                .get()
+                .await
+                .map_err(|e| {
+                    PortError::unavailable(format!("script engine を準備できません: {e}"))
+                })?;
             // 実効 scope = workflow ceiling ∩ skill 宣言スコープ（宣言があるときのみ絞る・
             // 広い workflow scope 下でも skill script が宣言外 API を呼べないように・レビュー指摘）。
             let ceiling = skill.allowed_scopes.as_ref().map(|declared| {

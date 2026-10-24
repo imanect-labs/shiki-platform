@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use script_runtime::{compile, HostCall, HostResponse, Limits, ScriptEngine};
+use script_runtime::{compile, EngineHandle, HostCall, HostResponse, Limits};
 use storage::content_address::{miniapp_bundle_key, sha256_hex};
 use storage::ObjectStore;
 use uuid::Uuid;
@@ -90,7 +90,8 @@ pub struct FunctionOutcome {
 
 /// B2 関数ランナ（engine＋コード取得＋ホスト委譲の束）。
 pub struct FunctionRunner {
-    engine: Arc<ScriptEngine>,
+    /// 共有エンジンなら、コンパイルの完了は関数を実行するときに待つ（起動の経路で待たない）。
+    engine: EngineHandle,
     store: Arc<dyn ObjectStore>,
     http: reqwest::Client,
     /// サーバ内から到達するゲートウェイの origin（例 `http://127.0.0.1:8090`）。
@@ -99,7 +100,7 @@ pub struct FunctionRunner {
 
 impl FunctionRunner {
     pub fn new(
-        engine: Arc<ScriptEngine>,
+        engine: impl Into<EngineHandle>,
         store: Arc<dyn ObjectStore>,
         gateway_origin: String,
     ) -> Result<Self, AppPlatformError> {
@@ -110,7 +111,7 @@ impl FunctionRunner {
             .build()
             .map_err(|e| AppPlatformError::Internal(format!("http client: {e}")))?;
         Ok(FunctionRunner {
-            engine,
+            engine: engine.into(),
             store,
             http,
             gateway_origin,
@@ -157,7 +158,9 @@ impl FunctionRunner {
             function: inv.function.clone(),
             actor: inv.actor,
         });
-        let engine = Arc::clone(&self.engine);
+        let engine = self.engine.get().await.map_err(|e| {
+            AppPlatformError::Internal(format!("script エンジンを準備できません: {e}"))
+        })?;
         let limits = function_limits();
         let handle = tokio::runtime::Handle::current();
         // prelude はコンパイル後に前置する（compile の禁止構文 lint はユーザーコードにのみ適用）。

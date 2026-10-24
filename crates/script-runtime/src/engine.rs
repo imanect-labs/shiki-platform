@@ -129,6 +129,56 @@ pub struct ScriptEngine {
 static SHARED: std::sync::OnceLock<Result<std::sync::Arc<ScriptEngine>, String>> =
     std::sync::OnceLock::new();
 
+/// エンジンへのハンドル（コンパイル済みのエンジンか、プロセスで共有するエンジンへの遅延参照）。
+///
+/// 起動の経路でゲストのコンパイル（数秒〜十数秒）を待たないためのもの（3 回目の検証: HTTP リスナがコンパイルを
+/// 待って 7.6〜15.7 秒開かなかった）。配線では [`EngineHandle::shared`] を渡し、script を実行する経路だけが
+/// 初回の [`EngineHandle::get`] でコンパイルの完了を待つ（コンパイルは別スレッドで、非同期ランタイムを塞がない）。
+#[derive(Clone)]
+pub struct EngineHandle(HandleInner);
+
+#[derive(Clone)]
+enum HandleInner {
+    Ready(std::sync::Arc<ScriptEngine>),
+    Shared,
+}
+
+impl EngineHandle {
+    /// プロセスで共有するエンジン（[`ScriptEngine::shared`]）への遅延参照。作るだけではコンパイルを待たない。
+    pub fn shared() -> Self {
+        EngineHandle(HandleInner::Shared)
+    }
+
+    /// エンジンを返す（共有エンジンのコンパイルが終わっていなければ、別スレッドで終わるまで待つ）。
+    pub async fn get(&self) -> Result<std::sync::Arc<ScriptEngine>, String> {
+        match &self.0 {
+            HandleInner::Ready(e) => Ok(std::sync::Arc::clone(e)),
+            HandleInner::Shared => {
+                if let Some(r) = SHARED.get() {
+                    return r.clone();
+                }
+                tokio::task::spawn_blocking(ScriptEngine::shared)
+                    .await
+                    .map_err(|e| format!("script エンジンの準備が中断されました: {e}"))?
+            }
+        }
+    }
+
+    /// エンジンが使える状態か（共有エンジンのコンパイルが終わっているか）。待たない。
+    pub fn is_ready(&self) -> bool {
+        match &self.0 {
+            HandleInner::Ready(_) => true,
+            HandleInner::Shared => SHARED.get().is_some(),
+        }
+    }
+}
+
+impl From<std::sync::Arc<ScriptEngine>> for EngineHandle {
+    fn from(e: std::sync::Arc<ScriptEngine>) -> Self {
+        EngineHandle(HandleInner::Ready(e))
+    }
+}
+
 impl ScriptEngine {
     /// プロセスで 1 つのエンジンを共有して返す（初回だけゲスト wasm をコンパイルする）。
     ///

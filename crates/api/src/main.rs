@@ -382,8 +382,9 @@ async fn run() -> anyhow::Result<()> {
         .context("bind に失敗")?;
     tracing::info!(%bind, "listening");
     // 合図で全リスナが同時に受付を止め、処理中の要求は猶予まで待つ（SSE が残っても戻る・B-OPS-1）。
-    let server =
-        axum::serve(listener, build_router(state)).with_graceful_shutdown(shutdown.clone().wait());
+    // SSE は合図で本文を終える（猶予を待たない・クライアントは Last-Event-ID から再接続する）。
+    let router = shutdown::end_streams_on_shutdown(build_router(state), &shutdown);
+    let server = axum::serve(listener, router).with_graceful_shutdown(shutdown.clone().wait());
     shutdown::serve_until_shutdown(
         std::future::IntoFuture::into_future(server),
         shutdown,

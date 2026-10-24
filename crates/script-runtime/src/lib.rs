@@ -26,6 +26,6 @@ pub mod proto {
 }
 
 pub use compile::{compile, CompileError, CompiledScript};
-pub use engine::{ExecOutcome, Limits, ScriptEngine, Termination};
+pub use engine::{EngineHandle, ExecOutcome, Limits, ScriptEngine, Termination};
 pub use frames::{validate_host_call, FrameError};
 pub use host::{HostCall, HostCallHandler, HostResponse};
