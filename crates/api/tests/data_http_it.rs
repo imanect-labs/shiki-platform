@@ -621,15 +621,24 @@ async fn bulk_import_routes_start_observe_and_authorize() {
         (StatusCode::BAD_REQUEST, json!("import_invalid"))
     );
 
-    // CSV の形の誤り（未知の列）も構造化 400。値・内部キーは返さない。
+    // CSV の未知の列は読めない列と同じ構造化 403 `field_unavailable`（列名を返さない・列の存在オラクルを
+    // 作らない）。
     let (s, b) = send(
         &env,
         post_csv("alice", &format!("{base}/csv"), "title,nope\nx,y\n"),
     )
     .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{b}");
+    assert_eq!(b["code"], "field_unavailable");
+    assert!(!b.to_string().contains("nope"), "{b}");
+    // 列の数の違いは利用者向けの文言（CSV ライブラリの英語を出さない）。
+    let (s, b) = send(
+        &env,
+        post_csv("alice", &format!("{base}/csv"), "title,memo\nx\n"),
+    )
+    .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
-    assert_eq!(b["code"], "import_invalid");
-    assert!(b["message"].as_str().unwrap().contains("nope"));
+    assert!(!b["message"].as_str().unwrap().contains("CSV error"), "{b}");
 
     // 本文の上限を超えると構造化 413（ステージングに何も入らない）。
     let big = vec![b'x'; api::routes::data_imports::MAX_IMPORT_BODY_BYTES + 1];
@@ -637,16 +646,20 @@ async fn bulk_import_routes_start_observe_and_authorize() {
     assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE, "{b}");
     assert_eq!(b["code"], "import_too_large");
 
-    // 認可: viewer（bob）・権限なし（carol）は始められず、進捗も引けない。
-    for who in ["bob", "carol"] {
+    // 認可: viewer（bob・403）・権限なし（carol・テーブルが見えないので存在しないのと同じ 404）は
+    // 始められず、進捗も引けない。
+    for (who, want) in [
+        ("bob", StatusCode::FORBIDDEN),
+        ("carol", StatusCode::NOT_FOUND),
+    ] {
         let (s, _) = send(&env, post_csv(who, &format!("{base}/csv"), csv)).await;
-        assert_eq!(s, StatusCode::FORBIDDEN, "{who}");
+        assert_eq!(s, want, "{who}");
         let (s, _) = send(&env, post_json(who, &base, &json!({ "rows": rows }))).await;
-        assert_eq!(s, StatusCode::FORBIDDEN, "{who}");
+        assert_eq!(s, want, "{who}");
         let (s, _) = send(&env, get(who, &format!("{base}/{import_id}"))).await;
-        assert_eq!(s, StatusCode::FORBIDDEN, "{who}");
+        assert_eq!(s, want, "{who}");
         let (s, _) = send(&env, get(who, &format!("{base}/{import_id}/errors"))).await;
-        assert_eq!(s, StatusCode::FORBIDDEN, "{who}");
+        assert_eq!(s, want, "{who}");
     }
     // 別のテーブルの取込 ID・存在しない取込は 404。
     let other = table(&env, "imports-other").await;
@@ -849,14 +862,15 @@ async fn data_index_routes_authorize_and_validate() {
         "{text}"
     );
     let (s, _) = send(&env, get("carol", &path)).await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(s, StatusCode::NOT_FOUND, "見えないテーブルは存在しないのと同じ");
     let (s, b) = send(&env, post_json("bob", &path, &json!({ "field": "memo" }))).await;
     assert_eq!(s, StatusCode::OK, "{b}");
     assert_eq!(b["status"], "active", "空のテーブルは即時に有効化: {b}");
-    let (s, _) = send(&env, post_json("bob", &path, &json!({ "field": "nope" }))).await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, b) = send(&env, post_json("bob", &path, &json!({ "field": "nope" }))).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{b}");
+    assert_eq!(b["code"], "field_unavailable");
     let (s, _) = send(&env, post_json("carol", &path, &json!({ "field": "memo" }))).await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(s, StatusCode::NOT_FOUND);
     let (s, _) = send(
         &env,
         get("alice", &format!("/data/tables/{}/indexes", Uuid::new_v4())),
@@ -889,12 +903,13 @@ async fn data_stream_routes_authorize_and_validate() {
         .is_some_and(|v| v.starts_with("text/event-stream")));
     drop(resp);
     let (s, _) = send(&env, get("carol", &stream)).await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(s, StatusCode::NOT_FOUND, "見えないテーブルは存在しないのと同じ");
     let mut bad = get("bob", &stream);
     bad.headers_mut()
         .insert("last-event-id", "x".parse().unwrap());
-    let (s, _) = send(&env, bad).await;
+    let (s, b) = send(&env, bad).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(b["code"], "cursor_invalid", "{b}");
     // awareness: viewer は 204・権限なしは 403・未知の列は 400・存在しないレコードは 404。
     let aw = format!("/data/tables/{}/awareness", t.id);
     let (s, b) = send(
@@ -916,13 +931,14 @@ async fn data_stream_routes_authorize_and_validate() {
         ),
     )
     .await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
-    let (s, _) = send(
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, b) = send(
         &env,
         post_json("bob", &aw, &json!({ "record_id": rec.id, "field": "nope" })),
     )
     .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(s, StatusCode::FORBIDDEN, "{b}");
+    assert_eq!(b["code"], "field_unavailable");
     let (s, _) = send(
         &env,
         post_json(

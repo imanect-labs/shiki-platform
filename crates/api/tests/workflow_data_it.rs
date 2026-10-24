@@ -455,7 +455,8 @@ async fn scheduled_workflow_queries_and_updates_with_the_delegators_permissions(
     assert_ne!(run2, run);
     let (status, _, err) = env.step(&tenant, run2, "q").await;
     assert_eq!(status, "failed", "{err:?}");
-    assert_eq!(err.unwrap()["code"], "forbidden");
+    // テーブルが見えなくなった主体には、存在しないのと同じ not_found（data-platform §16.1）。
+    assert_eq!(err.unwrap()["code"], "not_found");
     let still = env
         .data
         .get_record(&alice, table.id, a_small.id, None)
