@@ -648,14 +648,12 @@ pub(crate) async fn backfill_progress(
 ///
 /// バックフィルが走っていればその進み具合。バックフィルの行が終わっている（前回の構築の名残り）か無いのに
 /// 索引が準備中なのは、一括取込が値索引を保持している（遅延構築）間なので、取込の適用の進み具合を返す。
-/// 準備中のあいだは 1.0 を返さない（「完了」と誤って見せない・検証 2-D-P3-4）。
-#[allow(clippy::cast_precision_loss)] // 進捗の比（表示用・件数は 2^52 未満）。
+/// 準備中のあいだは 1.0 を返さない（「完了」と誤って見せない・検証 2-D-P3-4）。判定は [`progress_of`]。
 pub(crate) async fn preparing_progress(
     conn: &mut PgConnection,
     keys: TableKeys,
 ) -> Result<Option<f64>, DataError> {
     const BEFORE_DONE: f64 = 0.99;
-    let ratio = |done: i64, total: i64| (done as f64 / total as f64).clamp(0.0, BEFORE_DONE);
     let row: Option<(String, i64, i64)> = sqlx::query_as(
         "SELECT status, rows_done, rows_total FROM data_index_backfill \
          WHERE tenant_int = $1 AND table_int = $2",
@@ -665,14 +663,9 @@ pub(crate) async fn preparing_progress(
     .fetch_optional(&mut *conn)
     .await
     .map_err(map_db)?;
-    if let Some((status, done, total)) = &row {
-        if status != "done" && *total > 0 {
-            return Ok(Some(ratio(*done, *total)));
-        }
-    }
     // 取込が値索引を保持している（適用中・索引の仕上げ前）。
-    let held: Option<(i64, i64)> = sqlx::query_as(
-        "SELECT rows_applied, rows_total FROM data_bulk_import \
+    let held: Option<(String, i64, i64)> = sqlx::query_as(
+        "SELECT status, rows_applied, rows_total FROM data_bulk_import \
          WHERE tenant_int = $1 AND table_int = $2 AND index_hold \
            AND status IN ('validating', 'applying', 'indexing') \
          ORDER BY created_at LIMIT 1",
@@ -682,12 +675,37 @@ pub(crate) async fn preparing_progress(
     .fetch_optional(&mut *conn)
     .await
     .map_err(map_db)?;
-    Ok(match (held, row) {
-        (Some((applied, total)), _) if total > 0 => Some(ratio(applied, total)),
+    Ok(progress_of(held.as_ref(), row.as_ref()).map(|p| p.clamp(0.0, BEFORE_DONE)))
+}
+
+/// [`preparing_progress`] の判定（`held` = 保持中の取込の `(status, applied, total)`・`backfill` = バックフィルの
+/// `(status, done, total)`）。
+///
+/// 取込の適用中（検証・適用）は、バックフィルが走っていても取込の進み具合を返す。保持中のバックフィルは
+/// 走査を末尾まで進めて止まり（取込の行の索引は取込の仕上げで作る）、その「走査済み/総数」は 1 に近いので、
+/// 適用の間ずっと「ほぼ完了」と見せてしまう（3 回目の検証 3-D-3）。
+#[allow(clippy::cast_precision_loss)] // 進捗の比（表示用・件数は 2^52 未満）。
+fn progress_of(
+    held: Option<&(String, i64, i64)>,
+    backfill: Option<&(String, i64, i64)>,
+) -> Option<f64> {
+    let ratio = |done: i64, total: i64| done as f64 / total as f64;
+    if let Some((status, applied, total)) = held {
+        if *total > 0 && matches!(status.as_str(), "validating" | "applying") {
+            return Some(ratio(*applied, *total));
+        }
+    }
+    if let Some((status, done, total)) = backfill {
+        if status != "done" && *total > 0 {
+            return Some(ratio(*done, *total));
+        }
+    }
+    match (held, backfill) {
+        (Some((_, applied, total)), _) if *total > 0 => Some(ratio(*applied, *total)),
         // 終わった直後の切替の隙間（状態の更新待ち）は「ほぼ完了」。
-        (_, Some(_)) => Some(BEFORE_DONE),
+        (_, Some(_)) => Some(1.0),
         _ => None,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -695,6 +713,25 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::model::{FieldDef, TableSchema};
+
+    #[test]
+    fn preparing_progress_prefers_the_applying_import_over_a_parked_backfill() {
+        let applying = ("applying".to_string(), 300, 1_500);
+        let parked = ("running".to_string(), 340, 340);
+        assert_eq!(progress_of(Some(&applying), Some(&parked)), Some(0.2));
+        let indexing = ("indexing".to_string(), 1_500, 1_500);
+        let running = ("running".to_string(), 100, 400);
+        assert_eq!(
+            progress_of(Some(&indexing), Some(&running)),
+            Some(0.25),
+            "仕上げ中は再開したバックフィルの進み具合"
+        );
+        let done = ("done".to_string(), 10, 10);
+        assert_eq!(progress_of(None, Some(&running)), Some(0.25));
+        assert_eq!(progress_of(None, Some(&done)), Some(1.0), "切替の隙間");
+        assert_eq!(progress_of(Some(&applying), Some(&done)), Some(0.2));
+        assert_eq!(progress_of(None, None), None);
+    }
 
     #[test]
     fn promotable_columns_exclude_masked_indexed_and_derived() {

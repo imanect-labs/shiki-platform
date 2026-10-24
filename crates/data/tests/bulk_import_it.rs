@@ -858,6 +858,109 @@ async fn deferred_index_build_keeps_concurrent_writes() {
     assert!(p.is_consistent(), "{p:?}");
 }
 
+/// 取込の適用中に昇格した列の準備の進捗は、取込の適用の進み具合（3 回目の検証 3-D-3）。
+///
+/// 昇格のバックフィルは取込の保持中は走査を末尾まで進めて止まる（取込の行の索引は取込の仕上げで作る）。
+/// その止まったバックフィルの「走査済み/総数」は 1 に近く、適用の間ずっと 0.99 と表示していた。
+#[tokio::test]
+async fn promotion_during_held_import_reports_the_import_progress() {
+    let _g = serial().await;
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool.clone());
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let t = create_table(&store, &c, "t", rich_schema()).await;
+    for i in 0..40 {
+        store
+            .create_record(&c, t.id, rich_row(100_000 + i, None), None)
+            .await
+            .unwrap();
+    }
+    let id = store
+        .start_bulk_import(
+            &c,
+            t.id,
+            rows((0..1_500).map(|i| rich_row(i, None)).collect()),
+            BulkImportOptions {
+                index_mode: BulkIndexMode::Deferred,
+                ..BulkImportOptions::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    detach_job(&pool, id).await;
+    loop {
+        let s = store
+            .bulk_import_step(&tenant, t.id, id, 500)
+            .await
+            .unwrap();
+        if s.status != "validating" {
+            break;
+        }
+    }
+    // 1 チャンクだけ適用して止める。
+    store
+        .bulk_import_step(&tenant, t.id, id, 300)
+        .await
+        .unwrap();
+    let st = store.bulk_import_status(&c, t.id, id).await.unwrap();
+    assert_eq!(st.status, "applying", "{st:?}");
+    assert!(
+        st.rows_applied > 0 && st.rows_applied < st.rows_total,
+        "{st:?}"
+    );
+    let promoted = store
+        .promote_index(&c, t.id, "memo", false, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        promoted.status,
+        data::IndexStatus::Preparing,
+        "{promoted:?}"
+    );
+    let st = store.bulk_import_status(&c, t.id, id).await.unwrap();
+    #[allow(clippy::cast_precision_loss)]
+    let want = st.rows_applied as f64 / st.rows_total as f64;
+    let got = promoted.progress.expect("準備中の進捗");
+    assert!(
+        (got - want).abs() < 1e-9,
+        "取込の適用の進み具合（{want}）を返す: {got}"
+    );
+    // 準備中の列でのクエリの 409 も同じ進捗。
+    let q = DataQuery {
+        filter: Some(eq("memo", json!("x"))),
+        ..DataQuery::default()
+    };
+    match store.run_query(&c, t.id, &q, None).await {
+        Err(DataError::IndexPreparing { progress, .. }) => {
+            assert!(
+                progress.is_some_and(|p| (p - want).abs() < 1e-9),
+                "{progress:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    loop {
+        let s = store
+            .bulk_import_step(&tenant, t.id, id, 500)
+            .await
+            .unwrap();
+        if s.done {
+            break;
+        }
+    }
+    assert!(
+        {
+            let (ti, tb) = keys_of(&pool, &tenant, t.id).await;
+            ledger(&pool, ti, tb).await
+        }
+        .iter()
+        .all(|(_, _, s)| s == "active"),
+        "取込の仕上げで昇格した列も active になる"
+    );
+}
+
 /// 遅延構築で保持するのは取込が値を書く列の索引だけ（検証 D-5）。取込が触れない列の既存の索引は
 /// 取込の間も使える（以前はテーブルの全ての値索引が building になり、取込の間ずっと 409 だった）。
 #[tokio::test]
