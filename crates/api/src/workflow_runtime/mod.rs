@@ -106,15 +106,40 @@ fn default_rate_refill() -> f64 {
     1.0
 }
 
-/// 能力ゲートウェイの監査を tracing/OTel へ流す（チョークポイント側 audit_log は別途 DB に残る）。
-struct TracingAudit;
-impl CapabilityAudit for TracingAudit {
+/// 能力ゲートウェイの監査。呼び出しは tracing/OTel へ流し（チョークポイント側 audit_log は別途 DB に残る）、
+/// **実効スコープの外の呼び出し（`out_of_scope`）は実行主体つきで audit_log にも残す**（受け入れ条件
+/// 「スコープ ceiling 外の呼び出しが out_of_scope で監査される」・検証 C-P2-3）。
+struct RunAudit {
+    recorder: storage::audit::AuditRecorder,
+}
+impl CapabilityAudit for RunAudit {
     fn record(&self, tenant_id: &str, api: &str, allowed: bool, meta: &Value) {
         if allowed {
             tracing::info!(target: "workflow.capability", tenant = %tenant_id, %api, meta = %meta, "capability 呼び出し");
         } else {
             tracing::warn!(target: "workflow.capability", tenant = %tenant_id, %api, meta = %meta, "capability 拒否");
         }
+    }
+
+    fn record_out_of_scope(&self, ec: &workflow_engine::ExecCtx, api: &str, meta: &Value) {
+        self.record(&ec.tenant_id, api, false, meta);
+        let ctx = auth::auth_ctx(ec);
+        let recorder = self.recorder.clone();
+        let (api, meta, trace) = (api.to_string(), meta.clone(), ec.trace_id.clone());
+        // 監査は同期の呼び出し口から非同期に書く（ノードの失敗を待たせない・書込失敗は warn）。
+        tokio::spawn(async move {
+            let entry = storage::audit::AuditEntry {
+                action: "workflow.capability.out_of_scope",
+                object_type: "workflow_capability",
+                object_id: &api,
+                decision: storage::audit::Decision::Deny,
+                trace_id: trace.as_deref(),
+                metadata: meta,
+            };
+            if let Err(e) = recorder.record(&ctx, entry).await {
+                tracing::warn!(error = %e, %api, "out_of_scope の監査記録に失敗");
+            }
+        });
     }
 }
 
@@ -164,11 +189,13 @@ async fn build_prod_executor(
         fsms: Some(Arc::clone(&deps.fsms)),
     });
     let journal = EffectJournal::new(deps.db.clone());
-    let mut executor = CapabilityNodeExecutor::new(ports, journal, Arc::new(TracingAudit))
-        .with_http_allowlist(
-            deps.config.http_allowlist.clone(),
-            deps.config.http_timeout_ms,
-        );
+    let audit = Arc::new(RunAudit {
+        recorder: storage::audit::AuditRecorder::new(deps.db.clone()),
+    });
+    let mut executor = CapabilityNodeExecutor::new(ports, journal, audit).with_http_allowlist(
+        deps.config.http_allowlist.clone(),
+        deps.config.http_timeout_ms,
+    );
 
     // レート制御（Redis があれば・無ければ制限なしで続行）。
     if deps.config.rate_capacity > 0 {
@@ -333,9 +360,10 @@ async fn relay_events(
     Ok(())
 }
 
-/// 1 tick で捌く outbox の最大バッチ数と、1 バッチの件数。
+/// 1 tick で捌く outbox の最大バッチ数と、1 バッチの件数（claim は配送済みの行を走査するので、1 回の件数を
+/// 大きくして回数を減らす・一括取込の 10 万件で 64 件ずつだと追いつくまで 15〜20 分かかった・検証 D-14）。
 const RELAY_BATCHES_PER_TICK: usize = 32;
-const RELAY_BATCH: usize = 64;
+const RELAY_BATCH: usize = 500;
 
 async fn relay_events_batch(
     db: &sqlx::PgPool,
@@ -396,4 +424,62 @@ async fn build_bucket(redis_url: &str) -> Result<TokenBucket, anyhow::Error> {
     let client = redis::Client::open(redis_url)?;
     let conn = client.get_connection_manager().await?;
     Ok(TokenBucket::new(conn))
+}
+
+#[cfg(test)]
+mod audit_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    /// 実効スコープの外の呼び出しは実行主体つきで audit_log に残る（検証 C-P2-3。以前は tracing だけ）。
+    #[tokio::test]
+    async fn out_of_scope_is_written_to_the_audit_log() {
+        let Ok(url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+            eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+        let tenant = format!("t-{}", uuid::Uuid::new_v4());
+        let audit = RunAudit {
+            recorder: storage::audit::AuditRecorder::new(pool.clone()),
+        };
+        let ec = workflow_engine::ExecCtx {
+            tenant_id: tenant.clone(),
+            org: "acme".into(),
+            principal: "wf-1".into(),
+            principal_kind: "workflow".into(),
+            trace_id: Some("trace-oos".into()),
+        };
+        audit.record_out_of_scope(
+            &ec,
+            "data.write",
+            &serde_json::json!({ "reason": "out_of_scope", "step": "n1" }),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let row = loop {
+            let row: Option<(String, String, String, String, serde_json::Value)> = sqlx::query_as(
+                "SELECT action, object_id, decision, coalesce(trace_id, ''), metadata FROM audit_log \
+                 WHERE tenant_id = $1",
+            )
+            .bind(&tenant)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+            if let Some(r) = row {
+                break r;
+            }
+            assert!(std::time::Instant::now() < deadline, "audit_log に残らない");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        assert_eq!(row.0, "workflow.capability.out_of_scope");
+        assert_eq!(row.1, "data.write");
+        assert_eq!(row.2, "deny");
+        assert_eq!(row.3, "trace-oos");
+        assert_eq!(row.4["reason"], "out_of_scope");
+    }
 }

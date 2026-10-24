@@ -728,3 +728,51 @@ async fn workflow_http_end_to_end() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body["outcome"], json!("already_terminal"));
 }
+
+/// data ノード・ストレージノードを置いたワークフローは、`declared_scopes` を書かなくても保存できる
+/// （ノードが要するスコープを保存の入口で補完する・検証 C-P1-2）。保存・検証の応答に補完後のスコープが載り、
+/// 保存した IR にも残る。実効スコープは「宣言 ∩ 委譲」のまま（有効化の委譲の検査は変わらない）。
+#[tokio::test]
+async fn saving_completes_declared_scopes_from_nodes() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let name = format!("http-scopes-{}", &suffix[..12]);
+    let ir = json!({
+        "ir_version": 1,
+        "name": name,
+        "triggers": [{ "kind": "interactive" }],
+        "nodes": [
+            { "id": "a", "type": "storage.read",
+              "params": { "file": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1" } },
+            { "id": "q", "type": "data.query",
+              "params": { "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a2" } }
+        ],
+        "edges": [{ "from": "a", "to": "q" }]
+    });
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows/validate",
+        Some(json!({ "ir": ir })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["errors"], json!([]), "{body}");
+    assert_eq!(
+        body["declared_scopes"],
+        json!(["data.read", "storage.read"])
+    );
+    let (st, body) = req(&env, "POST", "/workflows", Some(json!({ "ir": ir }))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    assert_eq!(
+        body["declared_scopes"],
+        json!(["data.read", "storage.read"])
+    );
+    let id = body["id"].as_str().unwrap().to_string();
+    let (st, body) = req(&env, "GET", &format!("/workflows/{id}"), None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["ir"]["declared_scopes"],
+        json!(["data.read", "storage.read"])
+    );
+}

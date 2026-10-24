@@ -313,10 +313,9 @@ impl NodeExecutor for CapabilityNodeExecutor {
 
         // scope ceiling ゲート（二重ゲートの一段目）。
         if let ScopeCeiling::Denied(_) = Self::check_ceiling(node_type, ctx) {
-            self.audit.record(
-                &ctx.tenant_id,
+            self.audit.record_out_of_scope(
+                &Self::exec_ctx(ctx),
                 node_type,
-                false,
                 &json!({ "reason": "out_of_scope", "step": ctx.step_path }),
             );
             return NodeResult::fail(

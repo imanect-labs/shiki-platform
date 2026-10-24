@@ -31,6 +31,7 @@ pub use control::{branch_port, switch_port};
 pub use delegation::{
     active_delegator, DelegationError, DelegationStore, GrantRequest, RunAdmission,
 };
+pub use ir::scopes::complete_declared_scopes;
 pub use ir::validate::{semantics_warnings, validate, Catalog, ValidationError, SEMANTICS_CHANGED};
 pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};

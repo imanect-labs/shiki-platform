@@ -178,10 +178,9 @@ impl HostBridge {
         // scope ceiling ゲート（script 経路のホスト呼び出しも declared_scopes 内に縛る）。
         let effective: BTreeSet<String> = self.ceiling.iter().cloned().collect();
         if let ScopeCeiling::Denied(_) = check_scope_ceiling(&call.api, &effective) {
-            self.audit.record(
-                &self.ec.tenant_id,
+            self.audit.record_out_of_scope(
+                &self.ec,
                 &call.api,
-                false,
                 &json!({ "reason": "out_of_scope", "via": "script" }),
             );
             return HostResponse::Err {
