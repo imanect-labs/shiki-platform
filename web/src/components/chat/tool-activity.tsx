@@ -2,29 +2,25 @@
 
 /// ツール実行の可視化（issue #386）。
 ///
-/// 旧実装は「〜しています」1 行＋展開時のフラットな一覧で、ツール名の辞書は 4 語彙しか無く
-/// URL やファイル名は一切出ていなかった。ここでは 3 段階に丸めて見せる:
-///
-///   1. **フェーズ行**  … いま何をしているか＋経過時間（実況の「見出し」）
-///   2. **ローリング**  … 直近 3 件が下から上へ流れる。委譲込みの調査は 200 件を超えるので、
-///                          全件を出すとツールの実況が画面を占領する。
-///   3. **展開**       … ヘッダを押すと全件のタイムライン。ステップ境界で区切り、同一ステップ
-///                          2 件以上は「並行して N 件」。成否・結果要約つき。
-///
 /// 回答の中では「操作のまとまり」（連続するツール呼び出し）ごとに本文と交互に並ぶ
-/// （`message-timeline.tsx`）。ステップの合間（結果が返って次の呼び出しを待つ間）も実行中の
-/// まま見せ、終わったら見出しを 1 行要約（「12 件の操作 ・ web 8 ・ 社内 3」）にする。窓は
-/// **畳まない**（自動で開閉すると、使った瞬間に開いて終わると閉じるのでパカパカする）。
+/// （`message-timeline.tsx`）。1 つのまとまりは**常に 1 行**で、高さが変わらない:
 ///
-/// **ローリングはベルトコンベア方式**（human 指定の参照 UI と同じ動き）。行を出し入れして
-/// 高さを変えるのではなく、**固定高の窓の中で列全体を 1 行ぶん上へ送る**。押し出された行は
-/// 送られながら消える。窓が 3 行に埋まった後は高さが動かないので、隣の本文が上下に揺れない。
+///   - **実行中**   … いま何をしているか（「〜を web で検索中」）＋経過時間。ツールが変わると
+///                    1 行の窓の中で文言が下から上へ送られる（ベルトコンベアを 1 行に縮めたもの）。
+///   - **合間**     … 結果が返って次の呼び出しを待つ間は、待った時間に応じた文言（親が進める）。
+///   - **完了後**   … 1 件ならその操作（「〜を検索しました」）、複数なら「N 件の操作 ・ web 3 ・ 社内 1」。
+///   - **展開**     … 行を押すと全件のタイムライン。ステップ境界で区切り、同一ステップ 2 件以上は
+///                    「並行して N 件」。成否・結果要約つき。自動では開閉しない。
+///
+/// 旧実装は直近 3 件の窓（3 行）を実行中だけ出していたため、使った瞬間に開いて終わると閉じ
+/// （パカパカする）、出しっぱなしにすると往復する回答では縦に長くなった。1 行に収めれば、
+/// 開閉も伸び縮みも起きない。
 ///
 /// モーション方針（`ui/motion-primitives.tsx` 参照）: 動かすのは transform / opacity のみ。
 
 import * as React from "react";
 
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle, Check, ChevronDown, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -36,7 +32,6 @@ import type { Citation } from "@/lib/chat-api";
 import {
   describeTool,
   nodeIdOf,
-  phaseLabel,
   seasonIndexFor,
   summarizeTools,
   withTense,
@@ -70,43 +65,14 @@ export type ToolActivityItem = {
   subagent?: { boundary: string; steps: number; toolCalls: number };
 };
 
-/// 走行中にロールさせる件数（human 指定: 縦に 3 つ）。全件を出すとツールの実況が
-/// 画面を占領して、肝心の応答が読めなくなる。全部見たい時はヘッダを押して展開する。
-const LIVE_MAX = 3;
-/// 1 件の**固定高さ**（rem・2 行ぶん）。ベルトコンベアの送り量でもあるので、行の中身が
-/// 何であってもこの高さから外れてはいけない（外れると送り先がずれて列が崩れる）。
-///
-/// 中身（見出し＋事実行）は約 2.4rem。**余りは行と行のあいだに置く**。見出し→事実行の間隔と
-/// 行間が同じだと、事実行が下の行の見出しにくっついて見え、どれがどれの結果か読めなくなる。
+/// 展開時の 1 件の**固定高さ**（rem・2 行ぶん）。中身（見出し＋事実行）は約 2.4rem。
+/// **余りは行と行のあいだに置く**。見出し→事実行の間隔と行間が同じだと、事実行が下の行の
+/// 見出しにくっついて見え、どれがどれの結果か読めなくなる。
 const ROW_REM = 3;
-/// 送りの尺。参照 UI の実測（1 行ぶん送るのに約 0.27 秒）に合わせる。
+/// 1 行の窓で文言を送る尺。参照 UI の実測（1 行ぶん送るのに約 0.27 秒）に合わせる。
 const ROLL_SEC = 0.28;
 /// 展開時に出す結果要約の最大文字数。1 行に収まる範囲へ切る。
 const RESULT_CLIP = 160;
-
-/// ローリングの窓。**末尾 N 件＋押し出される 1 件**を返す。
-///
-/// 押し出される 1 件を残すのは、消える行が「上へ送られながら薄くなる」ためで、
-/// 即座に unmount すると行がパッと消えて流れが途切れる。
-///
-/// 窓は step ではなく**到着順**で切る。子（サブエージェント）の呼び出しは自分のループ番号を
-/// 持つため step で束ねると親のステップと混ざる（#391 の実測バグ）。並行実行の件数は
-/// `hiddenInStep` として別に数え、隠れている数を明示する。
-function rollingWindow(items: ToolActivityItem[]): {
-  slots: ToolActivityItem[];
-  ghosts: number;
-  hidden: number;
-} {
-  const slots = items.slice(-(LIVE_MAX + 1));
-  const ghosts = Math.max(0, slots.length - LIVE_MAX);
-  const last = items[items.length - 1];
-  // いま走っている並行バッチのうち、窓に入り切らなかった数（親のステップのみで数える）。
-  const batch =
-    last && !last.viaSubagent && last.step !== undefined
-      ? items.filter((it) => !it.viaSubagent && it.step === last.step).length
-      : 0;
-  return { slots, ghosts, hidden: Math.max(0, batch - LIVE_MAX) };
-}
 
 /// 同一ステップでまとめる（step が無い／子の中継は必ず単独グループに落とす）。
 function groupBySteps(items: ToolActivityItem[]): ToolActivityItem[][] {
@@ -272,9 +238,24 @@ export function ToolActivity({
   const lastCategory = describeTool(items[items.length - 1]).category;
   const season = seasonVar(seasonIndexFor(lastCategory, running));
   const summary = summarizeTools(items);
-  const phase = toolsRunning
-    ? (phaseOverride ?? phaseLabel(items, true))
-    : (phaseOverride ?? waitingLabel ?? "次の手順を考えています");
+  const runningItems = items.filter((it) => it.running);
+  const failed = items.filter((it) => it.ok === false).length;
+  const nameOf = (it: ToolActivityItem) => {
+    const id = nodeIdOf(it);
+    return id ? nodeNames[id] : null;
+  };
+  // 1 行に出す文言。実行中は「いま何をしているか」、合間は待ちの文言、終わったら要約。
+  const current = runningItems[runningItems.length - 1];
+  const only = items.length === 1 ? items[0] : null;
+  const label = toolsRunning
+    ? (phaseOverride ?? withTense(describeTool(current, nameOf(current)), true, false))
+    : running
+      ? (phaseOverride ?? waitingLabel ?? "次の手順を考えています")
+      : only
+        ? withTense(describeTool(only, nameOf(only)), false, only.ok === false)
+        : `${items.length} 件の操作`;
+  // 文言の送り方: 実行中のツールが変わるたびに 1 行ぶん送る（同じ文言のまま待つ間は動かさない）。
+  const tickerKey = toolsRunning ? (phaseOverride ?? current.key) : label;
 
   return (
     <div className="mb-2.5" data-testid="tool-activity">
@@ -286,41 +267,42 @@ export function ToolActivity({
       >
         {running ? (
           <Loader2 className="size-3.5 shrink-0 animate-spin" style={{ color: season }} aria-hidden />
+        ) : only && failed > 0 ? (
+          <AlertTriangle className="size-3.5 shrink-0 text-destructive" aria-hidden />
         ) : (
           <Check className="size-3.5 shrink-0" style={{ color: season }} aria-hidden />
         )}
-        <span
-          // 文言が変わったら薄く入れ替える（待ち時間の文言は数秒ごとに進む）。入れ替えの
-          // アニメーションは外側に置く。光の流れ（shimmer）と同じ要素に付けると animation が
-          // 上書きされ、光が止まる。
-          key={running ? phase : "done"}
+        <Ticker
+          tickerKey={tickerKey}
+          animate={streaming}
           className={cn(
-            "flex",
-            // 終わった後の「N 件の操作」は短いので縮めない（狭い幅では文書チップの方を畳む）。
-            running ? "min-w-0 animate-in fade-in-0 duration-300" : "shrink-0",
+            "font-medium",
+            // 実行中は文字を光が舐める（止まって見える時間帯に「生きている」ことを伝える）。
+            running ? "shiki-text-shimmer" : only && failed > 0 ? "text-destructive" : "text-foreground/85",
           )}
         >
-          <span
-            className={cn(
-              "min-w-0 truncate font-medium",
-              // 実行中は文字を光が舐める（止まって見える時間帯に「生きている」ことを伝える）。
-              running ? "shiki-text-shimmer" : "text-foreground/85",
-            )}
-          >
-            {running ? phase : `${items.length} 件の操作`}
+          {label}
+        </Ticker>
+        {toolsRunning && runningItems.length > 1 ? (
+          // 並行実行は 1 行に収まらない。黙って 1 件だけ出すと「1 件しか走っていない」と読まれる。
+          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+            ほか {runningItems.length - 1} 件
           </span>
-        </span>
+        ) : null}
         {running ? (
           <span className="shrink-0 tabular-nums text-muted-foreground">
             ・ {formatElapsed(elapsed)}
           </span>
         ) : null}
         <CitationChips citations={citations} nodeNames={nodeNames} />
-        <span className="min-w-0 flex-1" />
-        {summary.length > 0 ? (
+        {!running && !only && summary.length > 0 ? (
           // 種類別の内訳は、狭い幅では見出しより先に省略する。
           <span className="min-w-0 truncate text-[11px] tabular-nums text-muted-foreground">
-            {running ? `${items.length} 件の操作` : summary.join(" ・ ")}
+            {summary.join(" ・ ")}
+          </span>
+        ) : running && items.length > 1 ? (
+          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+            {items.length} 件目
           </span>
         ) : null}
         <ChevronDown
@@ -333,66 +315,40 @@ export function ToolActivity({
         />
       </button>
 
-      {open ? (
-        <ExpandedTimeline items={items} nodeNames={nodeNames} />
-      ) : (
-        // 終わった後も窓を残す（畳まない）。履歴として描くときは行を送り込む動きを付けない。
-        <RollingBelt items={items} nodeNames={nodeNames} animate={streaming} />
-      )}
+      {open ? <ExpandedTimeline items={items} nodeNames={nodeNames} /> : null}
     </div>
   );
 }
 
-/// 走行中のロール（ベルトコンベア）。
-///
-/// 各行は**絶対配置**で `y = 行番号 × ROW_REM` に置き、新着のたびに全行の y を 1 行ぶん
-/// 詰める。motion が前回の y から補間するので、列全体が上へ送られて見える。窓が埋まった
-/// 後は高さが動かないので、新着が来ても隣の本文は 1px も動かない。
-function RollingBelt({
-  items,
-  nodeNames,
+/// 1 行の窓。`tickerKey` が変わると、前の文言が上へ送られながら消え、新しい文言が下から入る
+/// （ベルトコンベアを 1 行に縮めたもの）。窓の高さは 1 行で固定なので、隣は 1px も動かない。
+/// 生成中でないとき（履歴）は送らない。
+function Ticker({
+  tickerKey,
   animate,
+  className,
+  children,
 }: {
-  items: ToolActivityItem[];
-  nodeNames: Record<string, string>;
-  /// 新着を窓の下から送り込むか（生成中だけ）。履歴を開いたときに全行が流れ込まないように。
+  tickerKey: string;
   animate: boolean;
+  className?: string;
+  children: React.ReactNode;
 }) {
-  const { slots, ghosts, hidden } = rollingWindow(items);
-  // 窓の高さは件数ぶん（最大 LIVE_MAX 行）。固定 3 行だと 1〜2 件の間は本文との間に大きな
-  // 空白が残る（ステップの合間も開いたままにしたので、その空白が長く見える）。伸びるのは
-  // 最初の LIVE_MAX 件までで、以降は高さが動かない。
-  const rows = Math.min(items.length, LIVE_MAX);
   return (
-    <div className="pl-[1.375rem]" data-testid="tool-activity-rolling">
-      <div className="relative" style={{ height: `${rows * ROW_REM}rem` }}>
-        {slots.map((it, i) => {
-          const row = i - ghosts; // 0 = 窓の最上段、-1 = 押し出された行
-          // 押し出された行は送られながら消えるためだけに残す。動かさない（履歴の）窓では要らない。
-          if (row < 0 && !animate) return null;
-          return (
-            <motion.div
-              key={it.key}
-              // 押し出された行は見えないが窓の上（見出しの位置）に重なるので、押下を奪わない。
-              className={cn("absolute inset-x-0 top-0", row < 0 && "pointer-events-none")}
-              // 新着は窓の下から入ってくる（初回は下端の外に置いてから定位置へ送る）。
-              initial={animate ? { y: `${rows * ROW_REM}rem`, opacity: 0 } : false}
-              animate={{ y: `${row * ROW_REM}rem`, opacity: row < 0 ? 0 : 1 }}
-              transition={{ duration: ROLL_SEC, ease: EASE_STANDARD }}
-            >
-              <ActivityLine item={it} nodeNames={nodeNames} />
-            </motion.div>
-          );
-        })}
-      </div>
-      {hidden > 0 ? (
-        // 並行バッチが窓に入り切らない時だけ出す。黙って切ると「3 件しか走っていない」と
-        // 読まれる（実測では 6 件並行のうち 3 件しか見えていなかった）。
-        <p className="-mt-1 text-[11px] tabular-nums text-muted-foreground/80">
-          ほか {hidden} 件を並行実行中
-        </p>
-      ) : null}
-    </div>
+    <span className="relative block h-5 min-w-0 flex-1 overflow-hidden" data-testid="tool-activity-ticker">
+      <AnimatePresence initial={false}>
+        <motion.span
+          key={tickerKey}
+          className="absolute inset-0 flex items-center"
+          initial={animate ? { y: "100%", opacity: 0 } : false}
+          animate={{ y: 0, opacity: 1 }}
+          exit={animate ? { y: "-100%", opacity: 0 } : { opacity: 0 }}
+          transition={{ duration: animate ? ROLL_SEC : 0, ease: EASE_STANDARD }}
+        >
+          <span className={cn("min-w-0 truncate", className)}>{children}</span>
+        </motion.span>
+      </AnimatePresence>
+    </span>
   );
 }
 
