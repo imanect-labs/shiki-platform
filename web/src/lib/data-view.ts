@@ -172,6 +172,50 @@ export function formatValue(v: unknown, field: FieldDef | null, key?: string): s
   return String(v);
 }
 
+/// スモールセル抑制（PIT-17）で値を伏せたセルの表示（空欄にしない）。
+export const SUPPRESSED_LABEL = "件数が少ないため非表示";
+
+/// 1 セルの表示（参照系の列は名前に置き換える・抑制したセルは理由を出す）。
+///
+/// - `user_ref` 列・作成者列: ディレクトリの表示名（引けなければ id のまま）
+/// - リンク列: 参照先のタイトル列（サーバが閲覧者に見える参照先の分だけ `link_labels` に載せる）。タイトルの
+///   無い参照先は id の先頭 8 文字
+/// - スモールセル抑制に掛かった派生列（`suppressed_fields`）: {@link SUPPRESSED_LABEL}
+export function displayCell(
+  r: DataRecord,
+  c: Pick<ColumnModel, "key" | "field">,
+  userName: (id: string) => string | null | undefined,
+): { text: string; muted: boolean } {
+  const v = cellValue(r, c.key);
+  if ((v === null || v === undefined) && (r.suppressed_fields ?? []).includes(c.key)) {
+    return { text: SUPPRESSED_LABEL, muted: true };
+  }
+  const type = c.field?.type;
+  const ids = (x: unknown): string[] =>
+    (Array.isArray(x) ? x : x == null ? [] : [x]).filter((e): e is string => typeof e === "string");
+  if (type === "user_ref" || c.key === "_owner") {
+    return { text: ids(v).map((id) => userName(id) || id).join(", "), muted: false };
+  }
+  if (type === "record_ref") {
+    const labels = (r.link_labels ?? {}) as Record<string, string>;
+    return { text: ids(v).map((id) => labels[id] || `${id.slice(0, 8)}…`).join(", "), muted: false };
+  }
+  return { text: formatValue(v, c.field, c.key), muted: false };
+}
+
+/// 表示名を引く対象の id（`user_ref` 列・作成者列の値）。
+export function userRefIds(rows: readonly DataRecord[], cols: readonly ColumnModel[]): string[] {
+  const keys = cols.filter((c) => c.field?.type === "user_ref" || c.key === "_owner").map((c) => c.key);
+  const out = new Set<string>();
+  for (const r of rows) {
+    for (const k of keys) {
+      const v = cellValue(r, k);
+      for (const id of Array.isArray(v) ? v : [v]) if (typeof id === "string" && id) out.add(id);
+    }
+  }
+  return [...out];
+}
+
 /// 入力の文字列 → 保存する値（型の検査は画面でも行い、正はサーバの検証器）。
 export function parseInput(
   text: string,

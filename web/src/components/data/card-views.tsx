@@ -16,7 +16,8 @@ import {
   type DataRecord,
   type ViewSpec,
 } from "@/lib/data-api";
-import { cellValue, formatValue, type ColumnModel } from "@/lib/data-view";
+import { cellValue, displayCell, formatValue, type ColumnModel } from "@/lib/data-view";
+import { cachedUserName } from "@/lib/user-names";
 import { cn } from "@/lib/utils";
 
 type Loaded = { items: DataRecord[]; cursor: string | null; loading: boolean; error: string | null };
@@ -77,11 +78,13 @@ function Card({ r, title, fields }: { r: DataRecord; title: ColumnModel | undefi
       {fields.length ? (
         <dl className="mt-2 space-y-1">
           {fields.map((c) => {
-            const v = formatValue(cellValue(r, c.key), c.field, c.key);
+            const { text: v, muted } = displayCell(r, c, cachedUserName);
             return (
               <div key={c.key} className="flex gap-2 text-xs">
                 <dt className="w-20 shrink-0 truncate text-muted-foreground">{c.label}</dt>
-                <dd className="min-w-0 flex-1 truncate">{v || <span className="text-muted-foreground/60">—</span>}</dd>
+                <dd className={cn("min-w-0 flex-1 truncate", muted && "italic text-muted-foreground")}>
+                  {v || <span className="text-muted-foreground/60">—</span>}
+                </dd>
               </div>
             );
           })}

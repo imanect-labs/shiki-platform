@@ -195,6 +195,9 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/directory/roles", &["GET"], Session, || {
             get(routes::directory::search_roles)
         }),
+        r("/directory/users/names", &["POST"], Session, || {
+            post(routes::directory::resolve_user_names)
+        }),
         // permission-aware 検索（Phase 2・二段 authz は rag::SearchService 内で一律強制）。
         r("/search", &["POST"], Session, || {
             post(routes::search::search)

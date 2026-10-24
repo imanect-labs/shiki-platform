@@ -59,13 +59,16 @@ import {
 } from "@/lib/data-api";
 import {
   cellValue,
+  displayCell,
   FORMAT_COLORS,
   formatFor,
   formatValue,
   isEditable,
   parseInput,
+  userRefIds,
   type ColumnModel,
 } from "@/lib/data-view";
+import { cachedUserName, resolveUserNames } from "@/lib/user-names";
 
 /// 先頭ページは小さく（初回描画を速く）、以降は上限いっぱいで取る。
 const FIRST_PAGE = 100;
@@ -127,8 +130,10 @@ type Props = {
 /// 購読が止まった理由（グリッドの下に案内を出す）。
 type LiveProblem = { kind: "disconnected" } | { kind: "signed_out" };
 
-function groupLabel(v: unknown, col: ColumnModel | undefined): string {
-  const s = formatValue(v, col?.field ?? null, col?.key);
+function groupLabel(r: DataRecord, key: string, col: ColumnModel | undefined): string {
+  const s = col
+    ? displayCell(r, col, cachedUserName).text
+    : formatValue(cellValue(r, key), null, key);
   return s === "" ? "（空）" : s;
 }
 
@@ -284,6 +289,16 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     }
   };
 
+  /// 行の出現・消滅（権限の変更で見えなくなった行を含む）の後に件数を取り直す（まとめて 1 回・B-P3-5）。
+  const countTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshCountSoon = (gen: number) => {
+    if (countTimer.current) clearTimeout(countTimer.current);
+    countTimer.current = setTimeout(() => {
+      countTimer.current = null;
+      if (gen === generation.current) void fetchCount(gen);
+    }, 400);
+  };
+
   const closeStream = React.useRef<(() => void) | null>(null);
   const subscribe = (since: number | null, gen: number) => {
     closeStream.current?.();
@@ -293,6 +308,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         const i = indexById.current.get(record.id);
         if (i === undefined) {
           setNewRows((n) => n + 1);
+          if (!derived) refreshCountSoon(gen);
           return;
         }
         const cur = rows.current[i];
@@ -304,6 +320,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       },
       onRemoved: ({ record_id }) => {
         if (gen !== generation.current) return;
+        // 見えていた行が消えた（削除・権限の変更で不可視）: 手元に無い行でも件数には入っていた。
+        refreshCountSoon(gen);
         if (!indexById.current.has(record_id)) return;
         rows.current = rows.current.filter((r) => r.id !== record_id);
         rebuildIndex();
@@ -392,6 +410,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     return () => {
       generation.current += 1;
       closeStream.current?.();
+      if (countTimer.current) clearTimeout(countTimer.current);
     };
   }, [reset]);
 
@@ -401,6 +420,21 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   const colByKey = React.useMemo(() => new Map(columns.map((c) => [c.key, c])), [columns]);
   const showingStale = initial !== "ready" && rows.current.length === 0 && stale.current.length > 0;
   const source = showingStale ? stale.current : rows.current;
+  // user_ref 列・作成者列の表示名を引く（手元の行に出てきた未解決の id だけ・引けたら描き直す）。
+  const [namesVersion, setNamesVersion] = React.useState(0);
+  React.useEffect(() => {
+    const ids = userRefIds(source, columns).filter((id) => cachedUserName(id) === undefined);
+    if (ids.length === 0) return;
+    let active = true;
+    void resolveUserNames(ids).then((learned) => {
+      if (active && learned) setNamesVersion((v) => v + 1);
+    });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version, columns, showingStale]);
+
   const display: DisplayRow[] = React.useMemo(() => {
     if (groupKeys.length === 0) return source.map((_, index) => ({ kind: "row", index }));
     const out: DisplayRow[] = [];
@@ -429,7 +463,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
               kind: "group",
               level: l,
               key,
-              label: `${col?.label ?? groupKeys[l]}: ${groupLabel(cellValue(r, groupKeys[l]), col)}`,
+              label: `${col?.label ?? groupKeys[l]}: ${groupLabel(r, groupKeys[l], col)}`,
               count: counts.get(key) ?? 0,
             });
           }
@@ -441,7 +475,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version, groupKeys, collapsed, colByKey, showingStale]);
+  }, [version, groupKeys, collapsed, colByKey, showingStale, namesVersion]);
 
   const loadingRows = done.current ? 0 : LOADING_ROWS;
   const totalRows = display.length + (initial === "ready" ? loadingRows : 0);
@@ -505,7 +539,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       const c = columns[col];
       if (!r || !c) return { kind: GridCellKind.Loading, allowOverlay: false };
       const v = cellValue(r, c.key);
-      const text = formatValue(v, c.field, c.key);
+      const shown = displayCell(r, c, cachedUserName);
+      const text = shown.text;
       const editable = canEdit && !showingStale && isEditable(c.field);
       const fmt = formatFor(grid, r, c.key);
       const numeric = c.field?.type === "number" || c.field?.result_type === "number";
@@ -513,7 +548,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         ? { bgCell: editedBg }
         : fmt
           ? { ...formatTheme.get(fmt.color), ...(fmt.bold ? { baseFontStyle: "600 13px" } : {}) }
-          : undefined;
+          : shown.muted
+            ? { textDark: glideTheme.textLight, baseFontStyle: "italic 12px" }
+            : undefined;
       return {
         kind: GridCellKind.Text,
         data: Array.isArray(v) ? v.join(", ") : v == null ? "" : String(v),
@@ -525,7 +562,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [display, columns, canEdit, grid, collapsed, editedBg, formatTheme, glideTheme, version, source, showingStale],
+    [display, columns, canEdit, grid, collapsed, editedBg, formatTheme, glideTheme, version, source, showingStale, namesVersion],
   );
 
   const onCellEdited = React.useCallback(
