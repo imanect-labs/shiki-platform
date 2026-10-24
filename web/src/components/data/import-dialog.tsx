@@ -31,7 +31,7 @@ import {
   type BulkRowError,
   type DataTable,
 } from "@/lib/data-api";
-import { isEditable } from "@/lib/data-view";
+import { isEditable, withFieldLabels } from "@/lib/data-view";
 import { cn } from "@/lib/utils";
 
 const POLL_MS = 1_000;
@@ -238,13 +238,28 @@ function ProgressBar({ value }: { value: number | null }) {
 }
 
 /// サーバの行エラーの文言は列を参照名（`'amount'`）で書くので、画面では表示名（「金額」）に直す。
+/// 取込の誤りに CSV 読取ライブラリ・内部の型の英語が混じる古いサーバの文言は、利用者向けの言い方に置き換える。
 function withLabels(message: string, table: DataTable): string {
-  let out = message;
-  for (const f of table.schema.fields) {
-    if (!f.display_name || f.display_name === f.key) continue;
-    out = out.split(` '${f.key}' `).join(`「${f.display_name}」`).split(`'${f.key}'`).join(`「${f.display_name}」`);
+  return withFieldLabels(friendlyImportMessage(message), table.schema.fields).replace(/」\s+(?=[のはがをに])/g, "」");
+}
+
+/// 取込の失敗の文言のうち、内部の英語（CSV ライブラリ・serde の型名）を利用者向けの日本語にする（N10・A P3）。
+export function friendlyImportMessage(message: string): string {
+  const m = /CSV error: record (\d+) \(line:? ?(\d+)[^)]*\)[^:]*: found record with (\d+) fields?, but the previous record has (\d+) fields?/i.exec(
+    message,
+  );
+  if (m) {
+    return `${m[2]} 行目の列の数（${m[3]}）が見出し行（${m[4]}）と合いません。区切りの「,」や引用符「"」を確かめてください`;
   }
-  return out;
+  if (/CSV error|invalid utf-?8|stream did not contain valid UTF-8/i.test(message)) {
+    return /utf-?8/i.test(message)
+      ? "文字コードを読めませんでした。UTF-8 の CSV で保存し直してください"
+      : "CSV を読み取れませんでした。区切りの「,」や引用符「\"」、改行を確かめてください";
+  }
+  if (/expected struct|missing field|unknown field|invalid type/i.test(message)) {
+    return "取込の指定の形が正しくありません。画面を読み込み直してからもう一度お試しください";
+  }
+  return message;
 }
 
 function RowErrors({ table, status }: { table: DataTable; status: BulkImportStatus }) {
@@ -432,7 +447,7 @@ export function ImportDialog({
                   role="alert"
                 >
                   <AlertTriangle className="mt-px size-4 shrink-0" aria-hidden />
-                  取込に失敗しました{status.last_error ? `: ${status.last_error}` : "。"}
+                  取込に失敗しました{status.last_error ? `: ${withLabels(status.last_error, table)}` : "。"}
                 </p>
               ) : (
                 <p className="text-xs text-muted-foreground" role="status">
@@ -534,7 +549,7 @@ export function ImportDialog({
               data-testid="import-error"
             >
               <AlertTriangle className="mt-px size-4 shrink-0" aria-hidden />
-              <span className="min-w-0 break-words">{job.error}</span>
+              <span className="min-w-0 break-words">{withLabels(job.error, table)}</span>
             </p>
           ) : null}
 

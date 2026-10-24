@@ -9,6 +9,9 @@ import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
+import { useMediaQuery } from "@/hooks/use-media-query";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   runQuery,
   type Condition,
@@ -16,7 +19,8 @@ import {
   type DataRecord,
   type ViewSpec,
 } from "@/lib/data-api";
-import { cellValue, displayCell, formatValue, userRefIds, type ColumnModel } from "@/lib/data-view";
+import { cellValue, displayCell, formatValue, roleRefIds, userRefIds, type ColumnModel } from "@/lib/data-view";
+import { cachedRoleName, resolveRoleNames } from "@/lib/role-names";
 import { cachedUserName, resolveUserNames } from "@/lib/user-names";
 import { cn } from "@/lib/utils";
 
@@ -111,10 +115,11 @@ function useUserNames(items: DataRecord[], columns: ColumnModel[]): number {
   const [version, setVersion] = React.useState(0);
   React.useEffect(() => {
     const ids = userRefIds(items, columns).filter((id) => cachedUserName(id) === undefined);
-    if (ids.length === 0) return;
+    const roles = roleRefIds(items, columns).filter((id) => cachedRoleName(id) === undefined);
+    if (ids.length === 0 && roles.length === 0) return;
     let active = true;
-    void resolveUserNames(ids).then((learned) => {
-      if (active && learned) setVersion((v) => v + 1);
+    void Promise.all([resolveUserNames(ids), resolveRoleNames(roles)]).then(([u, r]) => {
+      if (active && (u || r)) setVersion((v) => v + 1);
     });
     return () => {
       active = false;
@@ -143,7 +148,7 @@ function Card({ r, title, fields }: { r: DataRecord; title: ColumnModel | undefi
       {fields.length ? (
         <dl className="mt-2 space-y-1">
           {fields.map((c) => {
-            const { text: v, muted } = displayCell(r, c, cachedUserName);
+            const { text: v, muted } = displayCell(r, c, cachedUserName, cachedRoleName);
             return (
               <div key={c.key} className="flex gap-2 text-xs">
                 <dt className="w-20 shrink-0 truncate text-muted-foreground">{c.label}</dt>
@@ -254,18 +259,83 @@ function ymd(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+/// カレンダーに並べられる列（日付・日時と、作成日時・更新日時）。
+export function calendarDateColumns(columns: ColumnModel[]): ColumnModel[] {
+  return columns.filter(
+    (c) =>
+      c.field?.type === "date" ||
+      c.field?.type === "date_time" ||
+      (!c.field && (c.key === "_created_at" || c.key === "_updated_at")),
+  );
+}
+
+/// 1 日の予定（3 件まで並べ、残りは「ほか n 件」から全部を開く）。
+function DayEvents({
+  day,
+  events,
+  label,
+  max,
+}: {
+  day: Date;
+  events: DataRecord[];
+  label: (r: DataRecord) => string;
+  max: number;
+}) {
+  // 入りきらない日は max - 1 件と「ほか n 件」（ちょうど max 件なら全部並べる）。
+  const shown = events.length > max ? max - 1 : max;
+  return (
+    <ul className="space-y-0.5">
+      {events.slice(0, shown).map((r) => (
+        <li key={r.id} className="truncate rounded bg-primary/10 px-1 text-[11px] text-primary">
+          {label(r)}
+        </li>
+      ))}
+      {events.length > shown ? (
+        <li>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="w-full truncate rounded px-1 text-left text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                data-testid="calendar-more"
+              >
+                ほか {events.length - shown} 件
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-64 p-2">
+              <p className="px-1 pb-1.5 text-xs font-semibold">
+                {day.getMonth() + 1} 月 {day.getDate()} 日（{events.length} 件）
+              </p>
+              <ul className="max-h-64 space-y-0.5 overflow-y-auto scrollbar-subtle" data-testid="calendar-day-list">
+                {events.map((r) => (
+                  <li key={r.id} className="truncate rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">
+                    {label(r)}
+                  </li>
+                ))}
+              </ul>
+            </PopoverContent>
+          </Popover>
+        </li>
+      ) : null}
+    </ul>
+  );
+}
+
 export function CalendarMonth({
   tableId,
   spec,
   columns,
   query,
   onError,
+  onSpecChange,
 }: {
   tableId: string;
   spec: Extract<ViewSpec, { kind: "calendar" }>;
   columns: ColumnModel[];
   query: DataQuery;
   onError: (e: Error) => void;
+  /// 並べる日付の列を変える（ビューの表示設定・保存はビューの保存で）。
+  onSpecChange?: (spec: Extract<ViewSpec, { kind: "calendar" }>) => void;
 }) {
   const [month, setMonth] = React.useState(() => {
     const d = new Date();
@@ -305,9 +375,13 @@ export function CalendarMonth({
     return d;
   });
   const today = ymd(new Date());
+  const narrow = useMediaQuery("(max-width: 639.98px)");
+  const dateColumns = calendarDateColumns(columns);
+  const eventLabel = (r: DataRecord) =>
+    title ? formatValue(cellValue(r, title.key), title.field, title.key) || "（無題）" : "（無題）";
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="calendar-month">
-      <div className="mb-2 flex items-center gap-2">
+      <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <Button variant="ghost" size="icon" className="size-8" aria-label="前の月" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}>
           <ChevronLeft className="size-4" aria-hidden />
         </Button>
@@ -318,6 +392,26 @@ export function CalendarMonth({
           <ChevronRight className="size-4" aria-hidden />
         </Button>
         {loading ? <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="読み込み中" /> : null}
+        <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground" data-testid="calendar-count" aria-live="polite">
+          {loading && items.length === 0 ? "" : `この月 ${items.length.toLocaleString("ja-JP")}${cursor ? "+" : ""} 件`}
+        </span>
+        {onSpecChange && dateColumns.length > 0 ? (
+          <div className="ml-auto flex items-center gap-1.5">
+            <span className="text-xs text-muted-foreground max-sm:sr-only">日付の列</span>
+            <Select value={spec.date_field} onValueChange={(date_field) => onSpecChange({ ...spec, date_field })}>
+              <SelectTrigger aria-label="カレンダーに並べる日付の列" className="h-8 w-auto min-w-28 gap-1.5 text-[13px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {dateColumns.map((c) => (
+                  <SelectItem key={c.key} value={c.key}>
+                    {c.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        ) : null}
       </div>
       <div className="grid grid-cols-7 border-b text-center text-[11px] text-muted-foreground">
         {WEEKDAYS.map((w) => (
@@ -336,14 +430,7 @@ export function CalendarMonth({
               <div className={cn("mb-0.5 text-[11px] tabular-nums", key === today ? "font-semibold text-primary" : "text-muted-foreground")}>
                 {d.getDate()}
               </div>
-              <ul className="space-y-0.5">
-                {evs.slice(0, 3).map((r) => (
-                  <li key={r.id} className="truncate rounded bg-primary/10 px-1 text-[11px] text-primary">
-                    {title ? formatValue(cellValue(r, title.key), title.field, title.key) || "（無題）" : "（無題）"}
-                  </li>
-                ))}
-                {evs.length > 3 ? <li className="px-1 text-[10px] text-muted-foreground">ほか {evs.length - 3} 件</li> : null}
-              </ul>
+              <DayEvents day={d} events={evs} label={eventLabel} max={narrow ? 2 : 4} />
             </div>
           );
         })}

@@ -22,8 +22,12 @@ export function cachedUserName(id: string): string | null | undefined {
 
 /// まだ引いていない id の表示名を引く（同じ id の同時要求は 1 回にまとめる）。新しく名前が分かったら true。
 export async function resolveUserNames(ids: Iterable<string>): Promise<boolean> {
-  const todo = [...new Set(ids)].filter((id) => id && !known.has(id) && !inflight.has(id));
-  const waits: Promise<void>[] = [];
+  const all = [...new Set(ids)];
+  const todo = all.filter((id) => id && !known.has(id) && !inflight.has(id));
+  // 別の呼び出しが引いている最中の id も待つ（待たずに false を返すと、先に引き始めた側が画面から外れた
+  // とき〔StrictMode の再マウント・別の表〕に誰も描き直さず id のまま残っていた・C2 N12）。
+  const joined = all.filter((id) => inflight.has(id));
+  const waits: Promise<void>[] = joined.map((id) => inflight.get(id)!);
   let learned = false;
   for (let i = 0; i < todo.length; i += BATCH) {
     const chunk = todo.slice(i, i + BATCH);
@@ -51,5 +55,5 @@ export async function resolveUserNames(ids: Iterable<string>): Promise<boolean> 
     waits.push(p);
   }
   await Promise.all(waits);
-  return learned;
+  return learned || joined.some((id) => Boolean(known.get(id)));
 }

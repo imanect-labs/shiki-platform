@@ -146,6 +146,8 @@ function codeMessage(body: Record<string, unknown> | null): string | null {
       return "索引列の上限を超えるため、テーブルの管理者の承認が要ります";
     case "name_taken":
       return "同じ名前のテーブルがあります。別の名前にしてください";
+    case "upstream_unavailable":
+      return "サーバーに接続できません。少し待ってから再試行してください";
     case "read_timeout":
       return "混み合っていて読み込みが時間内に終わりませんでした。少し待ってから再試行してください";
     case "cursor_invalid":

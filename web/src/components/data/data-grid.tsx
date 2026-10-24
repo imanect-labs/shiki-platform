@@ -39,6 +39,12 @@ import { flushSync } from "react-dom";
 import { resolveColor, useGlideTheme } from "@/components/csv/glide-theme";
 import { GridTextEditor } from "@/components/data/grid-text-editor";
 import { isRefField, refCellEditor, type RefCellPayload } from "@/components/data/ref-picker";
+import {
+  transitionCellEditor,
+  transitionErrorMessage,
+  transitionTargets,
+  type FsmInfo,
+} from "@/components/data/transition-editor";
 import { ConfirmDialog } from "@/components/drive/dialogs";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/use-toast";
@@ -57,11 +63,13 @@ import {
   postAwareness,
   runQuery,
   subscribeRecords,
+  transitionRecord,
   updateRecord,
   type RecordSubscription,
   type CountResult,
   type DataQuery,
   type DataRecord,
+  type FieldDef,
   type GridView,
   type QueryResult,
 } from "@/lib/data-api";
@@ -73,9 +81,12 @@ import {
   formatValue,
   isEditable,
   parseInput,
+  roleRefIds,
   userRefIds,
+  withFieldLabels,
   type ColumnModel,
 } from "@/lib/data-view";
+import { cachedRoleName, resolveRoleNames } from "@/lib/role-names";
 import { cachedUserName, resolveUserNames } from "@/lib/user-names";
 
 /// 先頭ページは小さく（初回描画を速く）、以降は上限いっぱいで取る。
@@ -87,6 +98,24 @@ const PREFETCH_ROWS = 120;
 const LOADING_ROWS = 20;
 
 const ROW_HEIGHTS = { short: 34, medium: 56, tall: 88 } as const;
+
+const GRID_KEYBINDINGS = { activateCell: " |Enter|shift+Enter|F2", delete: "Backspace|Delete" } as const;
+
+/// glide は window の click を MouseEvent か TouchEvent だと決めつけて座標を読む。Radix の Switch・Checkbox が
+/// フォームへの反映に送る合成の click（素の Event）で `changedTouches[0]` が無く TypeError になっていた
+/// （取込のダイアログの「不合格の行があれば何も取り込まない」・A P3）。座標の無い合成の click は、対象の
+/// 要素（React は document で受ける）に届いた後、window の glide へは流さない。
+function useGuardSyntheticClicks() {
+  React.useEffect(() => {
+    const guard = (ev: Event) => {
+      if (ev instanceof MouseEvent) return;
+      if (typeof TouchEvent !== "undefined" && ev instanceof TouchEvent) return;
+      ev.stopPropagation();
+    };
+    document.addEventListener("click", guard);
+    return () => document.removeEventListener("click", guard);
+  }, []);
+}
 
 type DisplayRow =
   | { kind: "group"; level: number; key: string; label: string; count: number }
@@ -141,7 +170,14 @@ type Props = {
   importing?: boolean;
   /// 行が 1 件も無いときの「レコードを追加」（編集できる人だけ）。
   onAddRecord?: () => void;
+  /// 閲覧者が読めるスキーマの列（サーバの文言の参照名を表示名に直す・非表示の列を含む）。
+  fields?: readonly FieldDef[];
+  /// FSM の状態の列（セルは「進める先」のメニューで開き、遷移 API を呼ぶ・2-C-P2-4）。
+  fsm?: FsmInfo | null;
 };
+
+/// 自分の取込が終わった後も、取込の行の通知（要約・1 件ずつ）が遅れて届く間は「新しいレコード」と数えない。
+const OWN_IMPORT_GRACE_MS = 20_000;
 
 /// 行のセル（編集を始めた時点の行 id と rev を持たせる）。
 ///
@@ -150,7 +186,10 @@ type Props = {
 /// **編集を始めた時点の rev** で `expected_rev` を送れる（他の人の更新を黙って上書きしない・D-1）。
 /// 表示行の位置も編集中に行の出現・消滅でずれうるので、確定先は位置ではなく行 id で引く。
 type RowCell = TextCell & {
-  rowRef?: { id: string; rev: number };
+  /// `value` は編集を始めた時点のこの列の値（JSON）。409 のとき、相手が変えたのが別の列かを見分ける。
+  rowRef?: { id: string; rev: number; value?: string };
+  /// FSM の状態の列（編集欄は遷移のメニュー）。
+  fsmState?: string | null;
   /// 参照の列（ユーザー・部署・リンク）: 列の参照名と今の値（編集欄が候補から選ぶ）。
   refField?: string;
   refValue?: RefCellPayload;
@@ -165,7 +204,7 @@ const RECONNECT_MS = (attempt: number) => Math.min(10_000, 2_000 * 2 ** attempt)
 
 function groupLabel(r: DataRecord, key: string, col: ColumnModel | undefined): string {
   const s = col
-    ? displayCell(r, col, cachedUserName).text
+    ? displayCell(r, col, cachedUserName, cachedRoleName).text
     : formatValue(cellValue(r, key), null, key);
   return s === "" ? "（空）" : s;
 }
@@ -191,15 +230,28 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     onPeers,
     importing,
     onAddRecord,
+    fields,
+    fsm,
   },
   ref,
 ) {
   const importingRef = React.useRef(importing);
   importingRef.current = importing;
+  /// 自分の取込が終わった時刻（終わった直後に遅れて届く取込の通知を「新しいレコード」と数えない）。
+  const importEndedAt = React.useRef(0);
+  const wasImporting = React.useRef(importing);
+  if (wasImporting.current && !importing) importEndedAt.current = Date.now();
+  wasImporting.current = importing;
+  const ownImport = () => importingRef.current || Date.now() - importEndedAt.current < OWN_IMPORT_GRACE_MS;
+  const fieldsRef = React.useRef(fields);
+  fieldsRef.current = fields;
+  const fsmRef = React.useRef(fsm);
+  fsmRef.current = fsm;
   const fetchPageRef = React.useRef(fetchPage);
   fetchPageRef.current = fetchPage;
   const embedded = Boolean(fetchPage);
   const { theme: glideTheme, editedBg } = useGlideTheme();
+  useGuardSyntheticClicks();
   const rows = React.useRef<DataRecord[]>([]);
   const indexById = React.useRef<Map<string, number>>(new Map());
   const cursor = React.useRef<string | null>(null);
@@ -428,7 +480,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         const i = indexById.current.get(record.id);
         if (i === undefined) {
           // 自分の取込で現れた行は数えない（取込が終われば読み直す）。
-          if (!importingRef.current) setNewRows((n) => n + 1);
+          if (!ownImport()) setNewRows((n) => n + 1);
           if (!derived) refreshCountSoon(gen);
           return;
         }
@@ -468,7 +520,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       onBulk: (count) => {
         if (gen !== generation.current) return;
         // 取込などでまとめて作られた行: 並び順の途中に差し込まず、件数だけ数えて「表示する」を出す。
-        if (!importingRef.current) setNewRows((n) => n + count);
+        if (!ownImport()) setNewRows((n) => n + count);
         refreshCountSoon(gen);
       },
       onAwareness: (a) => {
@@ -612,10 +664,11 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   const [namesVersion, setNamesVersion] = React.useState(0);
   React.useEffect(() => {
     const ids = userRefIds(source, columns).filter((id) => cachedUserName(id) === undefined);
-    if (ids.length === 0) return;
+    const roles = roleRefIds(source, columns).filter((id) => cachedRoleName(id) === undefined);
+    if (ids.length === 0 && roles.length === 0) return;
     let active = true;
-    void resolveUserNames(ids).then((learned) => {
-      if (active && learned) setNamesVersion((v) => v + 1);
+    void Promise.all([resolveUserNames(ids), resolveRoleNames(roles)]).then(([u, r]) => {
+      if (active && (u || r)) setNamesVersion((v) => v + 1);
     });
     return () => {
       active = false;
@@ -665,13 +718,16 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version, groupKeys, collapsed, colByKey, showingStale, namesVersion]);
 
-  // グループを畳んで表示行が減ったら、見えている範囲が末尾に届いていれば続きを読む（畳んだまま空白に
-  // ならない）。
+  // 見えている範囲が表示行の末尾に届いていれば続きを読む。グループを畳むと読み込んだ行が表示行に現れない
+  // ので、行数ではなく表示行で見る（7,500 行の群を畳むと 1 ページで止まっていた・A P3）。ページを読むたび
+  // （version）にも見直し、畳んだ群の行だけが続く間は表示行が埋まるまで読み進める。
   React.useEffect(() => {
     const v = visibleRegion.current;
-    if (!done.current && initial === "ready" && v && v.y + v.height + PREFETCH_ROWS >= display.length) void fetchNext();
+    if (!done.current && !loading.current && initial === "ready" && v && v.y + v.height + PREFETCH_ROWS >= display.length) {
+      void fetchNext();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [collapsed]);
+  }, [collapsed, version, display.length]);
 
   const loadingRows = done.current ? 0 : LOADING_ROWS;
   const totalRows = display.length + (initial === "ready" ? loadingRows : 0);
@@ -735,9 +791,10 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       const c = columns[col];
       if (!r || !c) return { kind: GridCellKind.Loading, allowOverlay: false };
       const v = cellValue(r, c.key);
-      const shown = displayCell(r, c, cachedUserName);
+      const shown = displayCell(r, c, cachedUserName, cachedRoleName);
       const text = shown.text;
-      const editable = canEdit && !showingStale && isEditable(c.field);
+      const isFsm = Boolean(fsm && c.key === fsm.field && c.field);
+      const editable = canEdit && !showingStale && (isEditable(c.field) || isFsm);
       const fmt = formatFor(grid, r, c.key);
       const numeric = c.field?.type === "number" || c.field?.result_type === "number";
       const override: Partial<Theme> | undefined = pending.current.has(r.id)
@@ -757,13 +814,14 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         readonly: !editable,
         contentAlign: numeric ? "right" : undefined,
         themeOverride: override,
-        rowRef: { id: r.id, rev: r.rev },
-        ...(ref
+        rowRef: { id: r.id, rev: r.rev, value: JSON.stringify(v ?? null) },
+        ...(isFsm ? { fsmState: typeof v === "string" ? v : null } : {}),
+        ...(ref && !isFsm
           ? {
               refField: c.key,
               refValue: {
                 ids,
-                labels: Object.fromEntries(ids.map((id) => [id, displayCell({ ...r, data: { [c.key]: id } } as DataRecord, c, cachedUserName).text])),
+                labels: Object.fromEntries(ids.map((id) => [id, displayCell({ ...r, data: { [c.key]: id } } as DataRecord, c, cachedUserName, cachedRoleName).text])),
               },
             }
           : {}),
@@ -771,14 +829,100 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       return cell;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [display, columns, canEdit, grid, collapsed, editedBg, formatTheme, glideTheme, version, source, showingStale, namesVersion],
+    [display, columns, canEdit, grid, collapsed, editedBg, formatTheme, glideTheme, version, source, showingStale, namesVersion, fsm],
   );
+
+  /// 行の保存を順に送る（同じ行の保存の完了を待ってから・保存中は薄く色を付ける）。
+  const queueSave = (id: string, task: () => Promise<void>) => {
+    pending.current.set(id, (pending.current.get(id) ?? 0) + 1);
+    bump();
+    const run = (saveChain.current.get(id) ?? Promise.resolve()).then(task).finally(() => {
+      const n = (pending.current.get(id) ?? 1) - 1;
+      if (n > 0) pending.current.set(id, n);
+      else pending.current.delete(id);
+      if (saveChain.current.get(id) === run) saveChain.current.delete(id);
+      bump();
+    });
+    saveChain.current.set(id, run);
+  };
+
+  /// 保存の応答で手元の行を進める（自分の保存で進んだ rev を覚える）。
+  const applySaved = (sentRev: number, saved: DataRecord) => {
+    const adv = ownAdvance.current.get(saved.id) ?? new Map<number, number>();
+    adv.set(sentRev, saved.rev);
+    ownAdvance.current.set(saved.id, adv);
+    const j = indexById.current.get(saved.id);
+    if (j !== undefined && saved.rev >= rows.current[j].rev) rows.current[j] = saved;
+  };
+
+  /// 最新の行を読み直して見せる（409 の後）。
+  const refetchRow = async (id: string) => {
+    try {
+      const latest = await getRecord(tableId, id);
+      const j = indexById.current.get(id);
+      if (j !== undefined && latest.rev >= rows.current[j].rev) rows.current[j] = latest;
+    } catch {
+      // 見えなくなった行は次の読み直しで消える。
+    }
+  };
+
+  /// 別の列の同時更新の後、自分の値だけを最新の版にもう一度書く（利用者が選んだときだけ）。
+  const reapply = (base: DataRecord, c: ColumnModel, value: unknown) => {
+    const gen = generation.current;
+    queueSave(base.id, async () => {
+      try {
+        const saved = await updateRecord(tableId, base.id, { [c.key]: value }, base.rev);
+        if (gen !== generation.current) return;
+        applySaved(base.rev, saved);
+        toast({ title: `「${c.label}」を書き込みました` });
+      } catch (e) {
+        if (gen !== generation.current) return;
+        if (e instanceof DataApiError && e.revConflict) await refetchRow(base.id);
+        toast({
+          variant: "destructive",
+          title: "書き込めませんでした",
+          description:
+            e instanceof DataApiError && e.revConflict
+              ? "その後も他の人の更新が続いています。最新の内容を確かめてから、もう一度入力してください。"
+              : e instanceof Error
+                ? e.message
+                : String(e),
+        });
+      }
+    });
+  };
+
+  /// 状態を進める（FSM の遷移 API・編集を始めた時点の rev で送る）。
+  const transition = (rowRef: { id: string; rev: number }, to: string, label: string) => {
+    const gen = generation.current;
+    queueSave(rowRef.id, async () => {
+      const rev = followOwn(rowRef.id, rowRef.rev);
+      try {
+        const saved = await transitionRecord(tableId, rowRef.id, to, rev);
+        if (gen !== generation.current) return;
+        applySaved(rev, saved);
+      } catch (e) {
+        if (gen !== generation.current) return;
+        if (e instanceof DataApiError && e.revConflict) await refetchRow(rowRef.id);
+        toast({ variant: "destructive", title: `「${label}」を「${to}」に進められませんでした`, description: transitionErrorMessage(e) });
+      }
+    });
+  };
+  const reapplyRef = React.useRef(reapply);
+  reapplyRef.current = reapply;
+  const transitionRef = React.useRef(transition);
+  transitionRef.current = transition;
 
   const onCellEdited = React.useCallback(
     ([col, row]: Item, cell: EditableGridCell) => {
       if (cell.kind !== GridCellKind.Text) return;
       const c = columns[col];
       if (!c?.field) return;
+      // 状態の列は遷移でしか変わらない（貼り付け・Delete での消去も送らない）。
+      if (fsmRef.current && c.key === fsmRef.current.field) {
+        toast({ title: `「${c.label}」は直接書き換えられません`, description: "セルを開いて、進める先の状態を選んでください。" });
+        return;
+      }
       // 確定先は編集を始めた時点の行（id）と rev。位置からは引かない（編集中に行がずれうる）。
       const ref = (cell as RowCell).rowRef;
       const d = display[row];
@@ -838,16 +982,49 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           const j = indexById.current.get(before.id);
           if (e instanceof DataApiError && e.revConflict) {
             // 他の人が先に更新した: 最新を読み直して見せる（自分の入力は反映しない）。
+            let latest: DataRecord | null = null;
             try {
-              const latest = await getRecord(tableId, before.id);
+              latest = await getRecord(tableId, before.id);
               if (j !== undefined) rows.current[j] = latest;
             } catch {
               if (j !== undefined) rows.current[j] = before;
             }
-            toast({
-              title: "他の人が先に更新しました",
-              description: "最新の内容を読み込み直しました。必要ならもう一度入力してください。",
-            });
+            // 相手が変えたのが別の列（この列は編集を始めた時の値のまま）なら、自分の値だけを最新の版に
+            // もう一度書ける（相手の値は壊さない）。同じ列なら上書きになるので案内だけにする。
+            const startValue = (cell as RowCell).rowRef?.value;
+            const otherColumn =
+              latest !== null && startValue !== undefined && JSON.stringify(cellValue(latest, c.key) ?? null) === startValue;
+            if (otherColumn && latest) {
+              const base = latest;
+              let handle: { dismiss: () => void } | null = null;
+              handle = toast({
+                title: "他の人が同じ行の別の列を先に更新しました",
+                description: (
+                  <span className="flex flex-col items-start gap-2">
+                    <span>
+                      「{c.label}」は変わっていないので、入力した値をもう一度書き込めます（相手の変更はそのまま残ります）。
+                    </span>
+                    <button
+                      type="button"
+                      data-testid="data-grid-reapply"
+                      className="rounded-md border bg-card px-2.5 py-1 text-xs font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onClick={() => {
+                        handle?.dismiss();
+                        reapplyRef.current(base, c, parsed.value);
+                      }}
+                    >
+                      入力をもう一度書き込む
+                    </button>
+                  </span>
+                ),
+                duration: 15_000,
+              });
+            } else {
+              toast({
+                title: "他の人が先に更新しました",
+                description: "同じ列が更新されていたため、最新の内容を読み込み直しました。必要ならもう一度入力してください。",
+              });
+            }
           } else {
             if (j !== undefined) rows.current[j] = before;
             const recomputing = e instanceof DataApiError ? e.derivedRecomputing : null;
@@ -866,7 +1043,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
                   : recomputing
                     ? "参照先の変更を受けた再計算が終わるまで、この行は保存できません。しばらくしてから再試行してください。"
                     : e instanceof Error
-                      ? e.message
+                      ? withFieldLabels(e.message, fieldsRef.current ?? columns.flatMap((x) => (x.field ? [x.field] : [])))
                       : String(e),
             });
           }
@@ -892,6 +1069,21 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     const rc = cell as RowCell;
     editing.current = rc.rowRef ?? null;
     // 参照の列は候補から選ぶ編集欄（A-6）。
+    const f = fsmRef.current;
+    if (f && rc.fsmState !== undefined && rc.rowRef) {
+      // 状態の列は「進める先」のメニュー（今の状態から出る遷移だけ・2-C-P2-4）。
+      const col = columnsRef.current.find((c) => c.key === f.field);
+      const { targets, known } = transitionTargets(f, rc.fsmState, col?.field?.options ?? []);
+      const rowRef = rc.rowRef;
+      const label = col?.label ?? f.field;
+      return transitionCellEditor({
+        label,
+        current: rc.fsmState,
+        targets,
+        known,
+        onPick: (to) => transitionRef.current(rowRef, to, label),
+      }) as ProvideEditorCallbackResult<GridCell>;
+    }
     const field = rc.refField ? columnsRef.current.find((c) => c.key === rc.refField)?.field : null;
     if (field && rc.refValue) return refCellEditor(field, rc.refValue) as ProvideEditorCallbackResult<GridCell>;
     return GridTextEditor as ProvideEditorCallbackResult<GridCell>;
@@ -973,8 +1165,17 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     [display.length, fetchNext],
   );
 
+  /// 直前のクリック（mouseup）のセルと時刻。glide は「前のクリックから 500ms 以内」をセルに関係なくダブルクリック
+  /// とみなすので、Enter で選択が移ったセルを直後にクリックすると編集が開いていた（2-D-P3-3）。
+  const lastClick = React.useRef<{ col: number; row: number; at: number } | null>(null);
   const onCellClicked = React.useCallback(
-    ([, row]: Item) => {
+    ([col, row]: Item, ev: { isDoubleClick?: boolean; preventDefault: () => void }) => {
+      const prev = lastClick.current;
+      lastClick.current = { col, row, at: Date.now() };
+      if (ev.isDoubleClick && (!prev || prev.col !== col || prev.row !== row || Date.now() - prev.at > 600)) {
+        // 同じセルの 2 回目のクリックではない: 編集を開かない（選ぶだけ）。
+        ev.preventDefault();
+      }
       // glide はクリックしたセルを選んだあと、グリッドへのフォーカスを次の描画フレームまで遅らせる
       // （mousedown は既定の動作を止めているので、ブラウザもフォーカスを移さない）。その間のキー入力は
       // body に落ち、クリック直後の Enter・文字入力で編集が始まらない。クリックの確定（mouseup）で
@@ -1081,13 +1282,35 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
 
   const rowHeight = ROW_HEIGHTS[grid?.row_height ?? "short"];
 
+  // 右にまだ列があるときは右端に影を出す（スクロールバーが隠れる環境で、右端の列の右寄せの値が切れて
+  // 空欄に見えていた・2-B-P3-7）。
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [moreRight, setMoreRight] = React.useState(false);
+  React.useEffect(() => {
+    const scroller = containerRef.current?.querySelector<HTMLElement>(".dvn-scroller");
+    if (!scroller) return;
+    const update = () => setMoreRight(scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 2);
+    update();
+    scroller.addEventListener("scroll", update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(scroller);
+    const inner = scroller.firstElementChild;
+    if (inner) ro.observe(inner);
+    return () => {
+      scroller.removeEventListener("scroll", update);
+      ro.disconnect();
+    };
+  }, [gridColumns, initial]);
+
   return (
     <div
       className={cn(
         "data-grid relative h-full w-full overflow-hidden bg-card",
         !bare && "rounded-lg border border-border shadow-xs",
       )}
+      ref={containerRef}
       data-testid="data-grid"
+      data-more-right={moreRight || undefined}
       data-loaded={status.current.loaded}
       data-first-render-ms={status.current.firstRenderMs ?? undefined}
     >
@@ -1283,6 +1506,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         // 1 つ下へ移動」になり、続けて打った文字が下の行に保存されていた・D-10）。編集は Enter・ダブルクリック・
         // 文字の入力で始める（表計算と同じ）。
         cellActivationBehavior="double-click"
+        // F2 でも編集を始め、Backspace でも空にする（表計算と同じ・A P3）。
+        keybindings={GRID_KEYBINDINGS}
         onCellClicked={onCellClicked}
         onVisibleRegionChanged={onVisibleRegionChanged}
         gridSelection={selection}
@@ -1318,6 +1543,13 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         height="100%"
         getCellsForSelection
       />
+      {moreRight ? (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 right-0 z-[5] w-6 bg-gradient-to-l from-foreground/10 to-transparent"
+          data-testid="data-grid-more-right"
+        />
+      ) : null}
       <div id="portal" style={{ position: "fixed", left: 0, top: 0, zIndex: 9999 }} />
     </div>
   );

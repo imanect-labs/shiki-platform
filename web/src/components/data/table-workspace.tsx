@@ -27,6 +27,7 @@ import { CalendarMonth, GalleryGrid, KanbanBoard } from "@/components/data/card-
 import { DataGrid, type DataGridHandle, type DataGridStatus } from "@/components/data/data-grid";
 import { ImportDialog, importProgress, useImportJob } from "@/components/data/import-dialog";
 import { RecordDialog } from "@/components/data/record-dialog";
+import { useFsm } from "@/components/data/transition-editor";
 import { SchemaEditor } from "@/components/data/schema-editor";
 import {
   ColumnsControl,
@@ -139,6 +140,9 @@ export function TableWorkspace({
   const viewParam = params.get("view");
   const masked = React.useMemo(() => new Set(viewer.masked_fields), [viewer]);
   const gridRef = React.useRef<DataGridHandle>(null);
+  const fsm = useFsm(table);
+  // 閲覧者が読める列（サーバの文言の参照名を表示名に直す）。
+  const readableFields = React.useMemo(() => table.schema.fields.filter((f) => !masked.has(f.key)), [table, masked]);
 
   const [loaded, setLoaded] = React.useState<Loaded>({
     viewId: null,
@@ -542,13 +546,16 @@ export function TableWorkspace({
               </TooltipContent>
             </Tooltip>
           ) : null}
-          <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground" data-testid="data-count" aria-live="polite">
-            {countLabel(status)}
-          </span>
+          {spec.kind === "grid" ? (
+            // 件数は表の読み込みの状態から出す（カード系の表示は自分の件数を出す。表の件数を残さない・A P3）。
+            <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground" data-testid="data-count" aria-live="polite">
+              {countLabel(status)}
+            </span>
+          ) : null}
           {narrow ? (
             // 狭い画面はセグメントの文字が折り返すので、選択式にする。
             <Select value={spec.kind} onValueChange={(v) => switchKind(v as ViewSpec["kind"])}>
-              <SelectTrigger aria-label="表示形式" className="h-8 w-32 text-[13px]">
+              <SelectTrigger aria-label="表示形式" className="h-8 w-auto min-w-24 gap-1.5 whitespace-nowrap text-[13px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -674,6 +681,8 @@ export function TableWorkspace({
               onPeers={setPeers}
               importing={importJob.running}
               onAddRecord={() => setRecordOpen(true)}
+              fields={readableFields}
+              fsm={fsm}
             />
           )
         ) : spec.kind === "kanban" ? (
@@ -681,7 +690,7 @@ export function TableWorkspace({
         ) : spec.kind === "gallery" ? (
           <GalleryGrid tableId={table.id} spec={spec} columns={columns} query={query} onError={err} />
         ) : (
-          <CalendarMonth tableId={table.id} spec={spec} columns={columns} query={query} onError={err} />
+          <CalendarMonth tableId={table.id} spec={spec} columns={columns} query={query} onError={err} onSpecChange={setSpec} />
         )}
       </div>
 
@@ -701,6 +710,7 @@ export function TableWorkspace({
         onOpenChange={setRecordOpen}
         table={table}
         masked={masked}
+        fsm={fsm}
         onCreated={() => gridRef.current?.reload()}
       />
     </div>

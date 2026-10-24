@@ -20,10 +20,14 @@ export function rememberRoleName(id: string, name: string) {
 
 /// まだ引いていない id の表示名を引く。新しく名前が分かったら true。
 export async function resolveRoleNames(ids: Iterable<string>): Promise<boolean> {
-  const todo = [...new Set(ids)].filter((id) => id && !known.has(id) && !inflight.has(id)).slice(0, 50);
+  const all = [...new Set(ids)];
+  const todo = all.filter((id) => id && !known.has(id) && !inflight.has(id)).slice(0, 50);
+  // 別の呼び出しが引いている最中の id も待つ（user-names と同じ）。
+  const joined = all.filter((id) => inflight.has(id));
   let learned = false;
-  await Promise.all(
-    todo.map((id) => {
+  await Promise.all([
+    ...joined.map((id) => inflight.get(id)!),
+    ...todo.map((id) => {
       const p = (async () => {
         try {
           const r = await searchRoles({ q: id, limit: 20 });
@@ -39,6 +43,6 @@ export async function resolveRoleNames(ids: Iterable<string>): Promise<boolean> 
       inflight.set(id, p);
       return p;
     }),
-  );
-  return learned;
+  ]);
+  return learned || joined.some((id) => Boolean(known.get(id)));
 }
