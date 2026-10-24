@@ -111,15 +111,23 @@ impl DataPort<'_> {
             )
             .await
             .map_err(map_data)?;
-        // ② 委譲元ユーザー（台帳に有効な委譲が無ければ拒否・fail-closed）。
+        // ② 委譲元ユーザー。**この操作に足る relation を自ら委譲した**者からだけ選ぶ（書込なら
+        //    editor / owner）。①は別の委譲元のタプルで通り得るので、ここで relation を見ないと、
+        //    書込を委譲していないユーザーの権限で書込が走る（confused-deputy・R3-2）。該当が無ければ
+        //    拒否（fail-closed）。
         let workflow_id = Uuid::parse_str(&ec.principal)
             .map_err(|_| PortError::forbidden("ワークフロー主体の id が不正です"))?;
         let object = ctx.ns().data_table(&table_id.to_string());
-        let delegator =
-            workflow_engine::active_delegator(self.db, &ec.tenant_id, workflow_id, &object)
-                .await
-                .map_err(|e| PortError::unavailable(format!("delegation: {e}")))?
-                .ok_or_else(|| PortError::forbidden("このテーブルは委譲されていません"))?;
+        let delegator = workflow_engine::active_delegator(
+            self.db,
+            &ec.tenant_id,
+            workflow_id,
+            &object,
+            relation,
+        )
+        .await
+        .map_err(|e| PortError::unavailable(format!("delegation: {e}")))?
+        .ok_or_else(|| PortError::forbidden("このテーブルは委譲されていません"))?;
         Ok(AuthContext::new(
             Principal {
                 kind: PrincipalKind::User,

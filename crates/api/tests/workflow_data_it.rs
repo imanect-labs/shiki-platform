@@ -465,6 +465,139 @@ async fn scheduled_workflow_queries_and_updates_with_the_delegators_permissions(
     assert_eq!(still.rev, 1, "拒否された run は何も書かない");
 }
 
+/// R3-2（confused-deputy）: 書込は**書込を委譲した**委譲元の権限でだけ走る。
+///
+/// bob が editor（data.write）でテーブルを委譲した後、alice（editor を持つ）が viewer（data.read）だけで
+/// 再有効化する。台帳には両方が残り、ワークフロー主体には bob の editor タプルが残る。書込は最新の
+/// alice ではなく bob の権限で走る（alice は書込を委譲していない）。bob の委譲が台帳から外れると、
+/// タプルが残っていても書込は拒否される（fail-closed）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn writes_run_only_as_a_delegator_who_delegated_write() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let alice = user(&tenant, "alice");
+    let bob = user(&tenant, "bob");
+    let mut schema = expenses_schema();
+    schema.row_policy = None;
+    let table = env
+        .data
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "expenses".into(),
+                schema,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let table_obj = alice.ns().data_table(&table.id.to_string());
+    env.fga
+        .write_tuple(&bob.subject(), Relation::Editor, &table_obj)
+        .await
+        .unwrap();
+    let rec = env
+        .data
+        .create_record(
+            &alice,
+            table.id,
+            json!({ "title": "taxi", "amount": 1200, "assignee": "alice", "status": "pending" }),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let t = table.id.to_string();
+    let ir = json!({
+        "ir_version": 1, "name": "approve-one",
+        "declared_scopes": ["data.read", "data.write"],
+        "triggers": [ { "kind": "schedule", "cron": "* * * * *", "tz": "UTC" } ],
+        "nodes": [
+            { "id": "u", "type": "data.record.update", "params": {
+                "table": t, "record": rec.id.to_string(), "patch": { "status": "approved" } } }
+        ],
+        "edges": []
+    });
+    let (wf, _) = env
+        .workflows
+        .create(&alice, &ir, &Catalog::default(), None)
+        .await
+        .unwrap();
+    let parsed = WorkflowIr::from_json(&ir).unwrap();
+    // bob が書込（editor）を委譲する。
+    env.registration
+        .enable(
+            &bob,
+            wf,
+            1,
+            &parsed,
+            &[GrantRequest {
+                scope: "data.write".into(),
+                object: table_obj.clone(),
+                relation: Relation::Editor,
+            }],
+        )
+        .await
+        .expect("bob の有効化");
+    // alice が読取（viewer）だけで再有効化する（alice は editor を持つが書込は委譲しない）。
+    env.registration
+        .enable(
+            &alice,
+            wf,
+            1,
+            &parsed,
+            &[GrantRequest {
+                scope: "data.read".into(),
+                object: table_obj.clone(),
+                relation: Relation::Viewer,
+            }],
+        )
+        .await
+        .expect("alice の再有効化");
+
+    let run = env.fire_schedule_and_run(&tenant, wf, 61).await;
+    let (status, _, err) = env.step(&tenant, run, "u").await;
+    assert_eq!(status, "succeeded", "{err:?}");
+    // 書込の主体は書込を委譲した bob（最新の委譲元 alice ではない）。
+    let actors: Vec<String> = sqlx::query_scalar(
+        "SELECT actor FROM audit_log WHERE tenant_id = $1 AND action = 'data.record.update' \
+           AND object_id = $2",
+    )
+    .bind(&tenant)
+    .bind(rec.id.to_string())
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(actors, vec!["bob".to_string()]);
+
+    // bob の委譲が台帳から外れる（タプルは残ったまま）→ 書込を委譲した者がいないので拒否。
+    sqlx::query(
+        "UPDATE workflow_delegation SET revoked_at = now() \
+         WHERE tenant_id = $1 AND workflow_id = $2 AND delegator = 'bob'",
+    )
+    .bind(&tenant)
+    .bind(wf)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    let before = env
+        .data
+        .get_record(&alice, table.id, rec.id, None)
+        .await
+        .unwrap();
+    let run2 = env.fire_schedule_and_run(&tenant, wf, 181).await;
+    assert_ne!(run2, run);
+    let (status, _, err) = env.step(&tenant, run2, "u").await;
+    assert_eq!(status, "failed", "{err:?}");
+    assert_eq!(err.unwrap()["code"], "forbidden");
+    let after = env
+        .data
+        .get_record(&alice, table.id, rec.id, None)
+        .await
+        .unwrap();
+    assert_eq!(after.rev, before.rev, "拒否された run は何も書かない");
+}
+
 /// 受け入れ条件: 配列値に eq / neq / in / contains（と starts_with / ends_with）を使う保存済みワークフローが切替前に一覧化され、
 /// 保存時に警告が出る（`shiki-admin workflow-conditions` の本体と保存 API が同じ検出を使う）。
 #[tokio::test]

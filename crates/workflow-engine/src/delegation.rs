@@ -53,29 +53,49 @@ fn map_db(e: sqlx::Error) -> DelegationError {
     DelegationError::Internal(format!("db: {e}"))
 }
 
-/// 対象をワークフローへ委譲している**現在有効な**委譲元（最後に付与したユーザーの subject local id）。
+/// 対象をワークフローへ委譲している**現在有効な**委譲元のうち、`required` を満たす relation で委譲した
+/// 者（最後に付与したユーザーの subject local id）。
 ///
 /// 構造化データの schedule / event run は、ワークフロー主体に委譲されたテーブルを**委譲元ユーザーの
-/// 権限で**読み書きする（行述語・フィールドマスクを委譲元で評価する・Task 15.7）。委譲台帳に有効な行が
-/// 無ければ `None`（呼び出し側は拒否する・fail-closed）。委譲元が今も権限を持つかは呼び出し側の
+/// 権限で**読み書きする（行述語・フィールドマスクを委譲元で評価する・Task 15.7）。
+///
+/// 委譲元は**その操作に足る relation を自ら委譲した者**からだけ選ぶ（書込なら editor / owner・読取なら
+/// viewer 以上）。台帳の一意キーは (delegator, scope, object_ref) なので、B が editor で委譲した対象を
+/// A が viewer だけで再有効化すると両方の行が残る。relation を見ずに最新の委譲元を選ぶと、B のタプルで
+/// 入口の検査を通った書込が、書込を委譲していない A の権限で走る（confused-deputy・R3-2）。
+/// 該当が無ければ `None`（呼び出し側は拒否する・fail-closed）。委譲元が今も権限を持つかは呼び出し側の
 /// 読み書き自体（委譲元の AuthContext で OpenFGA に問う）が確かめる。
 pub async fn active_delegator(
     db: &PgPool,
     tenant_id: &str,
     workflow_id: Uuid,
     object: &FgaObject,
+    required: Relation,
 ) -> Result<Option<String>, DelegationError> {
+    let satisfying = relations_satisfying(required);
     sqlx::query_scalar(
         "SELECT delegator FROM workflow_delegation \
          WHERE tenant_id = $1 AND workflow_id = $2 AND object_ref = $3 AND revoked_at IS NULL \
+           AND relation = ANY($4) \
          ORDER BY granted_at DESC, delegator LIMIT 1",
     )
     .bind(tenant_id)
     .bind(workflow_id)
     .bind(object.as_str())
+    .bind(satisfying)
     .fetch_optional(db)
     .await
     .map_err(map_db)
+}
+
+/// `required` を含意する委譲の relation（`data_table` の `owner ⊇ editor ⊇ viewer`・
+/// `crates/authz/model/authorization-model.fga` の定義に従う）。それ以外の relation は自身だけ。
+fn relations_satisfying(required: Relation) -> Vec<&'static str> {
+    match required {
+        Relation::Viewer => vec!["viewer", "editor", "owner"],
+        Relation::Editor => vec!["editor", "owner"],
+        other => vec![other.as_str()],
+    }
 }
 
 /// 委譲・登録の管理（authz クライアント＋DB）。
@@ -518,4 +538,27 @@ struct DelegationRow {
     scope: String,
     object_ref: String,
     relation: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relations_satisfying;
+    use authz::Relation;
+
+    /// 書込（editor）は viewer の委譲では満たされない（R3-2）。
+    #[test]
+    fn editor_is_not_satisfied_by_viewer_delegation() {
+        let w = relations_satisfying(Relation::Editor);
+        assert!(w.contains(&"editor") && w.contains(&"owner"));
+        assert!(!w.contains(&"viewer"));
+        let r = relations_satisfying(Relation::Viewer);
+        assert!(r.contains(&"viewer") && r.contains(&"editor") && r.contains(&"owner"));
+        assert_eq!(relations_satisfying(Relation::Owner), vec!["owner"]);
+    }
+
+    /// 階層の外の relation は自身だけで満たされる。
+    #[test]
+    fn other_relations_are_satisfied_only_by_themselves() {
+        assert_eq!(relations_satisfying(Relation::CanUse), vec!["can_use"]);
+    }
 }
