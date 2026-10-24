@@ -13,7 +13,10 @@ test("エディタ: 作成→追加→エラーバッジ→修正→保存→実
 
   // 一覧から新規作成 → エディタへ。
   await page.goto("/workflows");
-  await page.getByRole("button", { name: "新しいワークフロー" }).click();
+  // 一覧の読み込みを待ってから押す（先行テストが作った同名の行・削除ボタンと区別するため
+  // exact 一致にする。待たないと一覧が出る前に押せてしまい、行の有無で結果が揺れる）。
+  await expect(page.getByText("読み込み中…")).toHaveCount(0);
+  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
   await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
 
   // 最初のブロック（スクリプト）をヘッダ導線から追加。

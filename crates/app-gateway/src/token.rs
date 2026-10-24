@@ -61,7 +61,7 @@ pub struct GatewayIdentity {
     pub tenant: Option<String>,
     /// トークンが付与された能力スコープ（未知スコープは fail-closed で拒否済み）。
     pub token_scopes: Vec<CapabilityScope>,
-    /// グループ（org 解決用・内部 API の resolve_org と同じ規則で先頭セグメントを使う）。
+    /// グループ（org 解決用・内部 API の resolve_org と同じ規則で自テナント配下の org を使う）。
     pub groups: Vec<String>,
 }
 
