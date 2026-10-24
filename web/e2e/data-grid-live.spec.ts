@@ -160,7 +160,7 @@ test("取込の知らせは件数の有無どちらでも受け、空のテー�
       headers: { "content-type": "text/event-stream" },
       body:
         served === 1
-          ? `retry: 600000\n\nevent: stream.ready\ndata: {"position":4}\n\nid: 5\nevent: records.bulk_applied\ndata: {}\n\n`
+          ? `retry: 600000\n\nevent: stream.ready\ndata: {"position":4}\n\nid: 5\nevent: records.bulk_applied\ndata: ${JSON.stringify({ table_id: empty.tableId })}\n\n`
           : `retry: 600000\n\nevent: stream.ready\ndata: {"position":5}\n\n`,
     });
   });
@@ -173,7 +173,8 @@ test("取込の知らせは件数の有無どちらでも受け、空のテー�
   let n = 0;
   await page.route(new RegExp(`/api/data/tables/${full.tableId}/stream`), async (route) => {
     n += 1;
-    const event = n === 1 ? `{"count":2}` : `{}`;
+    // 1 回目は件数を添える古いサーバの形、2 回目は件数を含めない今の形（`{table_id}`）。
+    const event = n === 1 ? `{"count":2}` : JSON.stringify({ table_id: full.tableId });
     await route.fulfill({
       status: 200,
       headers: { "content-type": "text/event-stream" },
