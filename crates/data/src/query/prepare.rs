@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 
 use authz::AuthContext;
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use super::bound::{bind_query_scoped, BindOpts, BoundQuery, Expr};
@@ -30,7 +31,7 @@ impl DataStore {
         table_id: Uuid,
         query: &DataQuery,
         trace_id: Option<&str>,
-        action: &str,
+        action: AuditAction,
         tuning: &QueryTuning,
         auto_promote: bool,
     ) -> Result<(DataTable, HashSet<String>, ScopeTables, BoundQuery), DataError> {
@@ -91,7 +92,7 @@ impl DataStore {
             // 集計クエリは監査に残す（PIT-17: 反復差分の検知可能性）。
             self.record_audit_best_effort(
                 ctx,
-                "data.query.aggregate",
+                AuditAction::DataQueryAggregate,
                 &table_id.to_string(),
                 trace_id,
                 serde_json::json!({ "group_by": query.group_by }),

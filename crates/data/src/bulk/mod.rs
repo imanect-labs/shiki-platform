@@ -50,6 +50,7 @@ mod upsert;
 mod validate;
 
 use std::fmt::Write as _;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, PrincipalKind, Relation};
 use chrono::{DateTime, Utc};
@@ -493,7 +494,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Editor,
-            "data.record.bulk_import",
+            AuditAction::DataRecordBulkImport,
             trace_id,
         )
         .await?;
@@ -606,7 +607,7 @@ impl DataStore {
         self.record_audit_on(
             &mut tx,
             ctx,
-            "data.record.bulk_import",
+            AuditAction::DataRecordBulkImport,
             &table_id.to_string(),
             trace_id,
             json!({
@@ -637,7 +638,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Editor,
-            "data.record.bulk_import",
+            AuditAction::DataRecordBulkImport,
             trace_id,
         )
         .await?;
@@ -776,7 +777,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Editor,
-            "data.record.bulk_import.status",
+            AuditAction::DataRecordBulkImportStatus,
             None,
         )
         .await?;

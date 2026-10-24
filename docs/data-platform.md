@@ -201,7 +201,7 @@ create table data_record (
         on update cascade on delete cascade deferrable initially immediate
 ) partition by hash (table_int);    -- 64 分割（サイズ分割・autovacuum 局所化）
 -- Phase 15 実装で変更: v1 の tenant_id / table_id と data_table への FK を残した（テーブル削除の
--- cascade と、外部 ID での照合をそのまま使うため・migrations/0083）。物理列順は固定幅の列を幅の降順に並べる
+-- cascade と、外部 ID での照合をそのまま使うため・migrations/0084）。物理列順は固定幅の列を幅の降順に並べる
 -- （アラインメントのパディングで record_int の節約が消えないように・data/internal-keys-benchmark.md）。
 -- 索引テーブルから本体を引く経路（ページの本体取得はこちら）
 create unique index on data_record (tenant_int, table_int, record_int);
@@ -745,7 +745,7 @@ v1 の `indexed_queryable` を継承・強化する。
    §10 の自動昇格と同じ機構でオンデマンド生成する）。生成までは「このソート組み合わせは
    深いページで劣化する」ことを API が明示して返す。
 
-> **Phase 15 実装の形**（`migrations/0087_data_index_composite.sql`・`crates/data/src/index/composite.rs`）:
+> **Phase 15 実装の形**（`migrations/0088_data_index_composite.sql`・`crates/data/src/index/composite.rs`）:
 >
 > - ソートの組み合わせは `data_sort_set`（`spec` = `"16:a,17:d"`・`building` / `active`・バックフィルの進捗）に登録し、
 >   `data_index_composite` は PK `(tenant_int, table_int, sort_set_id, record_int)` と値索引
@@ -994,7 +994,7 @@ pub enum LinkCardinality {
 
 - 値の表現は**常に配列**（`OneToOne` / `ManyToOne` の src 側は要素数 1 に制限）。空配列は「値なし」。
   v1 の単一 UUID 文字列からの移行は M1 で行う。
-  **実装（Task 15.4 追補・`migrations/0089`）**: 書込は v1 の単一 UUID 文字列も受け付けて配列で保存し、応答は
+  **実装（Task 15.4 追補・`migrations/0090`）**: 書込は v1 の単一 UUID 文字列も受け付けて配列で保存し、応答は
   移行の前後どちらの保存形でも**常に配列**を返す（外部契約の変化。v1 のクライアントは文字列を受けていた）。既存レコードの
   書き換えはオンラインのチャンク処理（`crates/data/src/link_values.rs`・索引ジョブキューの `link_values`）で、テーブル単位に
   `record_int` 順に進み、冪等・中断再開でき、末尾まで進んだら全行を検査して文字列が残っていればもう一周する。
@@ -1143,7 +1143,7 @@ pub enum Materialization {
   値を null のままレコードの `suppressed_fields` に参照名を載せ、画面は空欄ではなく「件数が少ないため非表示」と出す）
 - 詳細な脅威モデルは **PIT-71**
 
-> **Phase 15 実装で確定した規則**（`crates/data/src/derived/`・`migrations/0088_data_derived.sql`）:
+> **Phase 15 実装で確定した規則**（`crates/data/src/derived/`・`migrations/0089_data_derived.sql`）:
 >
 > - **材料化するのは `Invariant` かつ `indexed` の列だけ**。値は**索引テーブル（`data_index_num` / `data_index_text`）の行としてだけ**
 >   持ち、本体 JSONB には書かない。材料化した値はフィルタ・ソートにだけ使い、**表示は常に閲覧者本人の権限で読取時に計算**する
@@ -1275,7 +1275,7 @@ create unique index on outbox_delivery (consumer, delivery_seq);
 - クライアントに返す `Last-Event-ID` はこの low-water mark であり、
   **受信済みの最大値ではない**（最大値を返すと上記の欠落が再現する）
 
-> **Phase 15 実装で変更（Task 15.6・`migrations/0091`・`0093`・`crates/data/src/stream/`）**:
+> **Phase 15 実装で変更（Task 15.6・`migrations/0092`・`0094`・`crates/data/src/stream/`）**:
 >
 > - **採番の単位は「購読者（consumer）ごと」ではなく「テーブルごとのストリーム」**。リレーは台帳 consumer
 >   `data-stream` として outbox を claim し、`data.record.changed` を consumer `data-stream:<table_id>` のストリームへ
@@ -1668,7 +1668,7 @@ src / dst の 2 テーブルに跨る**（§7.1）ため、テナント内の分
 
 **データが小さい今が移行の最安時機**であり、顧客が増えてからでは M1/M2 のバックフィルコストが跳ね上がる。
 
-> **Phase 15 実装の結果**: M1〜M4 を Task 15.1〜15.3 で実施した（`migrations/0082`〜`0085`）。M4 で partial index と
+> **Phase 15 実装の結果**: M1〜M4 を Task 15.1〜15.3 で実施した（`migrations/0083`〜`0086`）。M4 で partial index と
 > `data_index_registry` を撤去し、ランタイム DDL はゼロになった（`no_runtime_ddl_lint.rs`）。ただし**本体経路
 > （`crates/data/src/query/v1.rs`・本体の JSONB を直接評価する単発 SQL）は撤去せず残した**。役割は ①機能フラグ
 > `SHIKI_DATA_READ_PATH=body` の切戻し先 ②必要な索引が `active` でない間（台帳が未初期化の Task 15.2 より前のテーブル・
@@ -1693,7 +1693,7 @@ src / dst の 2 テーブルに跨る**（§7.1）ため、テナント内の分
 - **統計**: 行数カウンタ・値頻度表（種類数の少ない列は正確な件数）・フィールド統計（最頻値・ヒストグラム）・
   リンク統計を持ち、outbox 消費側と統計収集ジョブで更新する。クエリコンパイラの戦略選択に使う
   （Salesforce が自前オプティマイザを持つのと同じ理由）。詳細は [query-optimizer.md §4](./data/query-optimizer.md)。
-  実装（Task 15.12・`migrations/0092`）: 統計 4 表（`data_table_stats` / `data_field_stats` / `data_value_count` /
+  実装（Task 15.12・`migrations/0093`）: 統計 4 表（`data_table_stats` / `data_field_stats` / `data_value_count` /
   `data_link_stats`）。行数と値頻度は台帳 consumer `data-stats` が outbox の非公開部の前後の値からバッチで反映し、
   **冪等性はその consumer の配送記録（同じ Tx の `mark_delivered`）で担保**する。フィールド統計・リンク統計・行幅は
   jobq の統計収集ジョブ（変更行数 > 50 + 0.1 × 行数・索引昇格の完了時・推定外れの継続時に起動・テナント間で公平に claim）。
@@ -2102,7 +2102,7 @@ covering read へ切り替える**。判定には平均行幅の統計が要る�
 
 > **Phase 15.2 のバックフィル自体がこの経路を要求する**ため、移行計画の前提として先に要る。
 
-> **実装（Task 15.11・15.7・`migrations/0090`・`0094`・`crates/data/src/bulk/`）**:
+> **実装（Task 15.11・15.7・`migrations/0091`・`0095`・`crates/data/src/bulk/`）**:
 >
 > - ステージング `data_bulk_staging`（行番号・行キー・COPY 時に採番した外部 ID・`payload`・状態・正規化値）と進捗
 >   `data_bulk_import`（`validating → applying → indexing → done`／`failed`）、取込内の一意性の予約 `data_bulk_key`。

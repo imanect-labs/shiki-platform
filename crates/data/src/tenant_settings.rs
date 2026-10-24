@@ -6,6 +6,7 @@
 use authz::AuthContext;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Decision};
 use utoipa::ToSchema;
 
@@ -151,7 +152,7 @@ impl DataStore {
             &mut tx,
             ctx,
             AuditEntry {
-                action: "data.tenant_settings.update",
+                action: AuditAction::DataTenantSettingsUpdate,
                 object_type: "data_tenant_settings",
                 object_id: &ctx.tenant_id,
                 decision: Decision::Allow,
@@ -204,7 +205,7 @@ impl DataStore {
             &mut tx,
             ctx,
             AuditEntry {
-                action: "data.tenant_settings.update",
+                action: AuditAction::DataTenantSettingsUpdate,
                 object_type: "data_tenant_settings",
                 object_id: &ctx.tenant_id,
                 decision: Decision::Allow,
@@ -255,7 +256,7 @@ impl DataStore {
             &mut tx,
             ctx,
             AuditEntry {
-                action: "data.tenant_settings.update",
+                action: AuditAction::DataTenantSettingsUpdate,
                 object_type: "data_tenant_settings",
                 object_id: &ctx.tenant_id,
                 decision: Decision::Allow,

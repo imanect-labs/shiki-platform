@@ -22,6 +22,7 @@
 use authz::AuthContext;
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
+use storage::audit::AuditAction;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -292,7 +293,7 @@ impl DataStore {
     ) -> Result<IndexPromotion, DataError> {
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, table_id, "data.index.promote", trace_id)
+            .open_for_read(ctx, &az, table_id, AuditAction::DataIndexPromote, trace_id)
             .await?;
         let f = table.schema.field(field).ok_or_else(|| {
             DataError::input_detail(
@@ -341,7 +342,7 @@ impl DataStore {
                 ctx,
                 table_id,
                 authz::Relation::Owner,
-                "data.index.approve",
+                AuditAction::DataIndexApprove,
                 trace_id,
             )
             .await?;
@@ -425,7 +426,7 @@ impl DataStore {
         self.record_audit_on(
             &mut tx,
             ctx,
-            "data.index.promote",
+            AuditAction::DataIndexPromote,
             &table.id.to_string(),
             trace_id,
             serde_json::json!({ "field": key, "approved_over_cap": approved, "sync": rows < SYNC_INDEX_MAX_ROWS }),
@@ -483,7 +484,7 @@ impl DataStore {
     ) -> Result<TableIndexOverview, DataError> {
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, table_id, "data.index.list", trace_id)
+            .open_for_read(ctx, &az, table_id, AuditAction::DataIndexList, trace_id)
             .await?;
         let masked = self.masked_fields(ctx, &az, &table).await?;
         let mut fields = Vec::new();

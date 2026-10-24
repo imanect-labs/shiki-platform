@@ -237,17 +237,24 @@ impl ChatWorker {
                     .map_err(|e| ChatError::Internal(format!("jobq ack: {e}")))?;
             }
             Err(e) => {
-                tracing::warn!(error = %e, run_id = %run_id, last_attempt, "generation failed");
-                // 最終試行なら run を failed 化し UI に反映（DLQ 行き）。会話には定型文だけを
+                // 再試行しても同じ結果になる失敗（プロバイダが要求を拒否した等）は、残りの試行を
+                // 待たずに確定する。再試行の間は「生成中」に見え続けるため（#877）。
+                let give_up = last_attempt || !e.is_retryable();
+                tracing::warn!(error = %e, run_id = %run_id, last_attempt, give_up, "generation failed");
+                // 確定するなら run を failed 化し UI に反映（DLQ 行き）。会話には定型文だけを
                 // 出し、上流の生エラー（プロバイダ JSON・URL 等）は last_error と tracing に留める。
-                if last_attempt {
+                if give_up {
                     let _ = self
                         .store
                         .force_fail_run(run_id, &e.user_message(), &e.to_string())
                         .await;
                 }
-                let backoff = jobq::backoff_for(job.attempts);
-                let _ = jobq::fail(&mut conn, job.id, &e.to_string(), backoff).await;
+                if e.is_retryable() {
+                    let backoff = jobq::backoff_for(job.attempts);
+                    let _ = jobq::fail(&mut conn, job.id, &e.to_string(), backoff).await;
+                } else {
+                    let _ = jobq::kill(&mut conn, job.id, &e.to_string()).await;
+                }
             }
         }
         Ok(true)

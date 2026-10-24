@@ -170,7 +170,7 @@ impl ChatWorker {
 
         // 提示ツール一式（共通＋ドキュメント/Office/CSV）は worker/toolset.rs に集約する。
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-        self.push_core_tools(&mut tools, &skills, attachments);
+        self.push_core_tools(&mut tools, &skills, attachments, run);
         // skill ツール（カタログ引き・#344 Task 10.11）。
         self.push_skill_tool(&mut tools, ctx, run, &skills).await;
         // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋
@@ -330,6 +330,8 @@ impl ChatWorker {
             // 利用枠超過は**そのまま会話に出す文言**（llm-gateway で整形済み）。`agent:` を
             // 前置すると、ユーザーには読めない内部語が残る。
             agent_core::AgentError::RateLimited(msg) => ChatError::RateLimited(msg),
+            // 要求の拒否（400 等）は再試行しても同じなので、種別を分けて 1 回で止める（#877）。
+            agent_core::AgentError::Llm(msg) => ChatError::from_agent_llm(&msg),
             other => ChatError::Unavailable(format!("agent: {other}")),
         })?;
         let _ = outcome; // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理

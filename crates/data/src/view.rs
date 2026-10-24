@@ -6,6 +6,7 @@
 //! （作成者の権限を引き継がない・PIT-19/21）。表示設定は保存時にサーバが検証する（[`crate::view_spec`]）。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use artifact::{ArtifactError, ArtifactKind, ArtifactStore, NewArtifact};
 use authz::AuthContext;
@@ -355,7 +356,7 @@ impl DataViewStore {
                 ctx,
                 table_id,
                 authz::Relation::Viewer,
-                "data.view.list",
+                AuditAction::DataViewList,
                 trace_id,
             )
             .await?;

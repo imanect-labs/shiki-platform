@@ -5,6 +5,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 impl StorageService {
     /// ファイルメタを取得する（viewer 権限が要る）。
@@ -14,30 +15,44 @@ impl StorageService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
+        self.get_metadata_annotated(ctx, file_id, trace_id, &serde_json::Map::new())
+            .await
+    }
+
+    /// [`Self::get_metadata`] に、許可・拒否の監査 metadata へ書き足す値を添える
+    /// （チャットの回答のための読み出しなら会話・回答の ID・#829）。
+    pub async fn get_metadata_annotated(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        trace_id: Option<&str>,
+        annotations: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Node, StorageError> {
         let node = self.load_node(ctx, file_id, false).await?;
         // 共有リンクの遅延失効（#342・defense-in-depth）: 期限切れなら FGA タプルを先行剥奪して
         // から viewer 判定する（新規 open が期限後のタプルで通らないようにする）。
         self.enforce_share_link_expiry(ctx, file_id, node.kind)
             .await?;
-        self.require_read(
+        self.require_read_annotated(
             ctx,
             &ctx.ns().file(&file_id.to_string()),
-            "file.metadata.read",
+            AuditAction::FileMetadataRead,
             "file",
             &file_id.to_string(),
             trace_id,
+            annotations,
         )
         .await?;
         self.audit
             .record(
                 ctx,
                 AuditEntry {
-                    action: "file.metadata.read",
+                    action: AuditAction::FileMetadataRead,
                     object_type: "file",
                     object_id: &file_id.to_string(),
                     decision: Decision::Allow,
                     trace_id,
-                    metadata: json!({}),
+                    metadata: serde_json::Value::Object(annotations.clone()),
                 },
             )
             .await?;
@@ -81,7 +96,7 @@ impl StorageService {
                 self.require_read(
                     ctx,
                     &ctx.ns().folder(&p.to_string()),
-                    "folder.children.list",
+                    AuditAction::FolderChildrenList,
                     "folder",
                     &p.to_string(),
                     trace_id,
@@ -93,7 +108,7 @@ impl StorageService {
                     ctx,
                     Relation::Member,
                     &ctx.ns().organization(&ctx.org),
-                    "folder.children.list",
+                    AuditAction::FolderChildrenList,
                     "organization",
                     &ctx.org,
                     trace_id,
@@ -193,7 +208,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "folder.children.list",
+                    action: AuditAction::FolderChildrenList,
                     object_type: "folder",
                     object_id: &parent_id.map_or_else(|| "root".into(), |p| p.to_string()),
                     decision: Decision::Allow,
@@ -226,7 +241,7 @@ impl StorageService {
             ctx,
             Relation::Member,
             &ctx.ns().organization(&ctx.org),
-            "node.search",
+            AuditAction::NodeSearch,
             "organization",
             &ctx.org,
             trace_id,
@@ -326,7 +341,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "node.search",
+                    action: AuditAction::NodeSearch,
                     object_type: "organization",
                     object_id: &ctx.org,
                     decision: Decision::Allow,
@@ -354,7 +369,7 @@ impl StorageService {
         self.require_read(
             ctx,
             &node_fga_object(&ctx.ns(), node.kind, node_id),
-            "node.breadcrumb.read",
+            AuditAction::NodeBreadcrumbRead,
             node.kind.as_str(),
             &node_id.to_string(),
             trace_id,
@@ -401,7 +416,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "node.breadcrumb.read",
+                    action: AuditAction::NodeBreadcrumbRead,
                     object_type: node.kind.as_str(),
                     object_id: &node_id.to_string(),
                     decision: Decision::Allow,

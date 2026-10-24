@@ -14,6 +14,7 @@
 
 pub mod admin;
 pub mod anchor;
+pub mod audit_trail;
 pub mod authz_filter;
 pub mod chunker;
 pub mod config;
@@ -25,6 +26,7 @@ pub mod fusion;
 pub mod parser;
 pub mod parser_http;
 pub mod pipeline;
+pub mod query_key;
 pub mod record_source;
 pub mod rerank;
 pub mod search;
@@ -36,6 +38,7 @@ pub mod vector_store;
 
 pub use admin::RagAdmin;
 pub use anchor::{Anchor, BoxOrigin, PageBox, TextQuote};
+pub use audit_trail::AuditTrail;
 pub use config::RagConfig;
 pub use embedding::{EmbedInput, EmbedResponse, EmbeddingProvider, HttpEmbeddingProvider};
 pub use error::RagError;
@@ -44,6 +47,7 @@ pub use fulltext_tantivy::{TantivyFulltext, TantivyLimits};
 pub use parser::{DocumentParser, ParseRequest, ParseSource};
 pub use parser_http::{worker_auth_headers, HttpDocumentParser};
 pub use pipeline::{spawn_pipeline, IngestMessage, PipelineDeps, RAG_INGEST_QUEUE};
+pub use query_key::QueryHashKey;
 pub use record_source::{
     post_filter_sources, readable_tables, record_authz_tag, record_results, AllowedCandidate,
     RecordProjection, RecordVisibility, SourceCandidate, SourcePostFilterOutcome, SourceRef,

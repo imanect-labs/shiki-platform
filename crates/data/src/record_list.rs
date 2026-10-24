@@ -6,6 +6,7 @@
 
 use authz::AuthContext;
 use serde_json::Value;
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::index::SortPrecision;
@@ -90,7 +91,7 @@ impl DataStore {
                 table_id,
                 &q,
                 trace_id,
-                "data.record.list",
+                AuditAction::DataRecordList,
                 &tuning,
                 false,
             )
@@ -137,7 +138,7 @@ impl DataStore {
                 table_id,
                 &q,
                 trace_id,
-                "data.record.count",
+                AuditAction::DataRecordCount,
                 &tuning,
                 false,
             )

@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use authz::AuthContext;
 use sqlx::PgConnection;
@@ -149,7 +150,7 @@ impl DataStore {
         }
         // 参照先のテーブル viewer（ReBAC）を閲覧者本人で確かめる。開けない参照先を辿るクエリは 403。
         let table = self
-            .open_for_read(ctx, az, id, "data.query.link", trace_id)
+            .open_for_read(ctx, az, id, AuditAction::DataQueryLink, trace_id)
             .await
             .map_err(|e| match e {
                 DataError::NotFound | DataError::Forbidden => DataError::Forbidden,

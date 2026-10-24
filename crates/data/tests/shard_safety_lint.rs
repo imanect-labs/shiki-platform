@@ -62,7 +62,7 @@ const DATA_TABLES: &[&str] = &[
 /// （[`every_data_table_in_migrations_is_classified`] が照合する）。
 const SYSTEM_TABLES: &[(&str, &str)] = &[(
     "data_planner_calib",
-    "オプティマイザの単価較正用の固定表（migration 0096 の合成データ・顧客データを含まない・purge 対象外）",
+    "オプティマイザの単価較正用の固定表（migration 0097 の合成データ・顧客データを含まない・purge 対象外）",
 )];
 
 /// 文字列リテラル（開始行・中身）。

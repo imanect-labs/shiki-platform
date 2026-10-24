@@ -5,6 +5,7 @@
 //! 遷移実行は [`DataStore::transition_record`] へ委譲する（本ストアは定義の解決のみ）。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use artifact::{ArtifactError, ArtifactKind, ArtifactStore, NewArtifact};
 use authz::AuthContext;
@@ -137,7 +138,7 @@ impl FsmStore {
                 ctx,
                 table_id,
                 authz::Relation::Editor,
-                "data.record.transition",
+                AuditAction::DataRecordTransition,
                 trace_id,
             )
             .await?;

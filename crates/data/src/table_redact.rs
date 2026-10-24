@@ -7,6 +7,7 @@
 //! 認可材料はこの呼び出しの中だけで使い捨てる（PIT-18）。
 
 use authz::{AuthContext, Relation};
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::model::DataTable;
@@ -23,8 +24,15 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<DataTable, DataError> {
         let az = self.authz_memo();
-        self.require_in(&az, ctx, id, Relation::Viewer, "data.table.get", trace_id)
-            .await?;
+        self.require_in(
+            &az,
+            ctx,
+            id,
+            Relation::Viewer,
+            AuditAction::DataTableGet,
+            trace_id,
+        )
+        .await?;
         let table = self.fetch_live(ctx, id).await?;
         self.redact_table(ctx, &az, table).await
     }

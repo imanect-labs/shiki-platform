@@ -6,6 +6,7 @@
 //! 第 3 層（フィールドマスク）は投影に含められない（スキーマ検証）ので、ここでは再確認だけする。
 
 use std::collections::HashSet;
+use storage::audit::AuditAction;
 
 use authz::AuthContext;
 use uuid::Uuid;
@@ -66,7 +67,7 @@ impl DataStore {
         }
         let az = self.authz_memo();
         let table = match self
-            .open_for_read(ctx, &az, table_id, "data.rag.post_filter", trace_id)
+            .open_for_read(ctx, &az, table_id, AuditAction::DataRagPostFilter, trace_id)
             .await
         {
             Ok(t) => t,

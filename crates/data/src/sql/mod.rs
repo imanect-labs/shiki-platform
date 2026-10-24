@@ -25,6 +25,7 @@ pub(crate) mod resolve;
 pub(crate) mod translate;
 
 use std::collections::HashSet;
+use storage::audit::AuditAction;
 
 use authz::AuthContext;
 use chrono::SecondsFormat;
@@ -144,7 +145,7 @@ impl DataStore {
                 compiled.table_id,
                 &q,
                 trace_id,
-                "data.query.sql",
+                AuditAction::DataQuerySql,
                 &tuning,
                 false,
             )
@@ -229,7 +230,7 @@ impl DataStore {
             Some(i) => {
                 let id = rows[i].id;
                 match self
-                    .open_for_read(ctx, az, id, "data.query.sql", trace_id)
+                    .open_for_read(ctx, az, id, AuditAction::DataQuerySql, trace_id)
                     .await
                 {
                     Ok(table) => Some(table),

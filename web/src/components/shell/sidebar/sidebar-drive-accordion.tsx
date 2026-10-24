@@ -18,7 +18,7 @@ import { NavItem } from "./nav-item";
 /// - 親「ドライブ」クリック → /drive へ遷移し、アコーディオンを開く。
 /// - 末尾シェブロン → 遷移せず開閉だけをトグル（aria-expanded/controls 付き）。
 /// - レール（collapsed）時はアイコンのみの単一リンク（tooltip でラベル補完）。
-/// - スマホのドロワでは使わない（ナビはタイル 1 行・子ページへはドライブ画面の ⋯ から）。
+/// - スマホのドロワでは使わない（ナビはタイル 1 行・子ページへはドライブ画面上端のタブから）。
 export function SidebarDriveAccordion({
   collapsed,
   onNavigate,

@@ -15,6 +15,7 @@
 //! 走り、新しいリンクを見て再計算待ちを積む（取りこぼさない）。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, Relation, Subject};
 use serde_json::{json, Map, Value};
@@ -784,7 +785,7 @@ impl DataStore {
         if demoted {
             self.record_audit_best_effort(
                 ctx,
-                "data.derived.demote",
+                AuditAction::DataDerivedDemote,
                 &table.id.to_string(),
                 None,
                 json!({ "fields": broken }),

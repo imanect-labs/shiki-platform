@@ -2,6 +2,7 @@
 //! 管理画面向けの報告（値・推定・戦略名を含まない）・機微なテーブルの固定戦略の設定。
 
 use std::time::Instant;
+use storage::audit::AuditAction;
 
 use authz::AuthContext;
 use serde::{Deserialize, Serialize};
@@ -329,7 +330,7 @@ impl DataStore {
         self.record_audit_on(
             &mut tx,
             ctx,
-            "data.table.fixed_plan",
+            AuditAction::DataTableFixedPlan,
             &table_id.to_string(),
             trace_id,
             serde_json::json!({ "fixed_plan": fixed }),

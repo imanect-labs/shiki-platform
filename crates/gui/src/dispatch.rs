@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use authz::AuthContext;
 use serde_json::json;
@@ -455,7 +456,7 @@ impl ActionDispatcher {
         metadata: serde_json::Value,
     ) {
         let entry = AuditEntry {
-            action: "ui_action.invoke",
+            action: AuditAction::UiActionInvoke,
             object_type: "ui_action",
             object_id: action_id,
             decision,

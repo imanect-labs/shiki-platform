@@ -11,6 +11,7 @@ use authz::{AuthContext, Relation};
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use sqlx::types::Json;
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::field_key::{decode_record, encode_record};
@@ -103,7 +104,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Editor,
-            "data.record.create",
+            AuditAction::DataRecordCreate,
             trace_id,
         )
         .await?;
@@ -184,7 +185,7 @@ impl DataStore {
         self.record_audit_record_on(
             &mut tx,
             ctx,
-            "data.record.create",
+            AuditAction::DataRecordCreate,
             row.id,
             trace_id,
             serde_json::json!({ "table_id": table_id }),
@@ -208,7 +209,7 @@ impl DataStore {
         // 認可の問いはリクエストのメモに束ねる（Task 15.9）。
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, table_id, "data.record.get", trace_id)
+            .open_for_read(ctx, &az, table_id, AuditAction::DataRecordGet, trace_id)
             .await?;
         let row = self
             .select_visible_by_id(ctx, &az, &table, id)
@@ -237,7 +238,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Editor,
-            "data.record.delete",
+            AuditAction::DataRecordDelete,
             trace_id,
         )
         .await?;
@@ -333,7 +334,7 @@ impl DataStore {
         self.record_audit_record_on(
             &mut tx,
             ctx,
-            "data.record.delete",
+            AuditAction::DataRecordDelete,
             id,
             trace_id,
             serde_json::json!({ "table_id": table_id }),

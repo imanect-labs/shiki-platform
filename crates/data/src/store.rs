@@ -11,6 +11,7 @@
 //! 差し替えだけで済む。禁止事項は docs/data/shard-safety.md（CI: `tests/shard_safety_lint.rs`）。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, AuthzClient, Relation};
 use chrono::{DateTime, Utc};
@@ -393,7 +394,7 @@ impl DataStore {
         // テーブルは確定済み。以降の監査失敗は結果に影響させない（重複再試行を防ぐ）。
         self.record_audit_best_effort(
             ctx,
-            "data.table.create",
+            AuditAction::DataTableCreate,
             &id.to_string(),
             trace_id,
             json!({ "name": name }),
@@ -409,8 +410,14 @@ impl DataStore {
         id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<DataTable, DataError> {
-        self.require(ctx, id, Relation::Viewer, "data.table.get", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::Viewer,
+            AuditAction::DataTableGet,
+            trace_id,
+        )
+        .await?;
         self.fetch_live(ctx, id).await
     }
 
@@ -427,7 +434,7 @@ impl DataStore {
             ctx,
             id,
             Relation::Owner,
-            "data.table.update_schema",
+            AuditAction::DataTableUpdateSchema,
             trace_id,
         )
         .await?;
@@ -529,7 +536,7 @@ impl DataStore {
         self.record_audit_on(
             &mut tx,
             ctx,
-            "data.table.update_schema",
+            AuditAction::DataTableUpdateSchema,
             &id.to_string(),
             trace_id,
             json!({ "schema_version": row.schema_version }),
@@ -553,8 +560,14 @@ impl DataStore {
         id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
-        self.require(ctx, id, Relation::Owner, "data.table.delete", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::Owner,
+            AuditAction::DataTableDelete,
+            trace_id,
+        )
+        .await?;
         let mut tx = self
             .pools
             .for_tenant(&ctx.tenant_id)
@@ -591,7 +604,7 @@ impl DataStore {
         self.schema_cache.invalidate_table(&ctx.tenant_id, id);
         self.record_audit_best_effort(
             ctx,
-            "data.table.delete",
+            AuditAction::DataTableDelete,
             &id.to_string(),
             trace_id,
             json!({}),
@@ -699,7 +712,7 @@ impl DataStore {
         ctx: &AuthContext,
         table_id: Uuid,
         relation: Relation,
-        action: &str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
         self.require(ctx, table_id, relation, action, trace_id)
@@ -713,7 +726,7 @@ impl DataStore {
         ctx: &AuthContext,
         id: Uuid,
         relation: Relation,
-        action: &str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
         self.require_in(&self.authz_memo(), ctx, id, relation, action, trace_id)
@@ -727,7 +740,7 @@ impl DataStore {
         ctx: &AuthContext,
         id: Uuid,
         relation: Relation,
-        action: &str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
         let obj = ctx.ns().data_table(&id.to_string());
@@ -757,7 +770,7 @@ impl DataStore {
         &self,
         conn: &mut sqlx::PgConnection,
         ctx: &AuthContext,
-        action: &str,
+        action: AuditAction,
         object_id: &str,
         trace_id: Option<&str>,
         metadata: serde_json::Value,
@@ -782,7 +795,7 @@ impl DataStore {
         &self,
         conn: &mut sqlx::PgConnection,
         ctx: &AuthContext,
-        action: &str,
+        action: AuditAction,
         record_id: Uuid,
         trace_id: Option<&str>,
         metadata: serde_json::Value,
@@ -802,7 +815,7 @@ impl DataStore {
     async fn audit_on(
         conn: &mut sqlx::PgConnection,
         ctx: &AuthContext,
-        action: &str,
+        action: AuditAction,
         object_type: &str,
         object_id: &str,
         trace_id: Option<&str>,
@@ -829,7 +842,7 @@ impl DataStore {
     pub(crate) async fn record_audit_best_effort(
         &self,
         ctx: &AuthContext,
-        action: &str,
+        action: AuditAction,
         object_id: &str,
         trace_id: Option<&str>,
         metadata: serde_json::Value,
@@ -838,14 +851,14 @@ impl DataStore {
             .record_audit(ctx, action, object_id, trace_id, metadata)
             .await
         {
-            tracing::error!(error = %e, action, object_id, "監査ログの書込に失敗（操作自体は成功済み）");
+            tracing::error!(error = %e, action = %action, object_id, "監査ログの書込に失敗（操作自体は成功済み）");
         }
     }
 
     pub(crate) async fn record_audit(
         &self,
         ctx: &AuthContext,
-        action: &str,
+        action: AuditAction,
         object_id: &str,
         trace_id: Option<&str>,
         metadata: serde_json::Value,

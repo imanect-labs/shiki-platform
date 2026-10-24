@@ -10,6 +10,7 @@ use authz::{AuthContext, Relation};
 use serde_json::{Map, Value};
 use sqlx::types::Json;
 use sqlx::PgConnection;
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::field_key::encode_record;
@@ -51,7 +52,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Editor,
-            "data.record.update",
+            AuditAction::DataRecordUpdate,
             trace_id,
         )
         .await?;
@@ -249,7 +250,7 @@ impl DataStore {
         self.record_audit_record_on(
             tx,
             ctx,
-            "data.record.update",
+            AuditAction::DataRecordUpdate,
             id,
             trace_id,
             serde_json::json!({ "table_id": table_id, "rev": new_rev }),

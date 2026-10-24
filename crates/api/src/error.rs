@@ -175,6 +175,8 @@ impl From<chat::ChatError> for ApiError {
             CE::Forbidden => ApiError::Forbidden,
             CE::Invalid(msg) => ApiError::BadRequest(msg),
             CE::Unavailable(msg) => ApiError::ServiceUnavailable(format!("chat: {msg}")),
+            // プロバイダが要求を拒否した（400 等）。本文に詳細は載せない（ログにのみ残る）。
+            CE::Rejected(msg) => ApiError::BadRequest(format!("chat: {msg}")),
             // 整形済みの文言をそのまま返す（`chat:` を前置しない・会話に表示されるため）。
             CE::RateLimited(msg) => ApiError::RateLimited(msg),
             CE::Internal(msg) => ApiError::Internal(format!("chat: {msg}")),

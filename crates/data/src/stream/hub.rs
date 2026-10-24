@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
+use storage::audit::AuditAction;
 
 use authz::AuthContext;
 use chrono::{DateTime, Utc};
@@ -184,7 +185,13 @@ impl DataStore {
         let epochs = self.authz_epochs(&ctx.tenant_id).await?;
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, table_id, "data.stream.subscribe", trace_id)
+            .open_for_read(
+                ctx,
+                &az,
+                table_id,
+                AuditAction::DataStreamSubscribe,
+                trace_id,
+            )
             .await?;
         let mut auth = match self.resolve_stream_auth(ctx, &az, &table).await? {
             Resolved::Ok(a) => a,
@@ -205,7 +212,7 @@ impl DataStore {
         let (tx, rx) = mpsc::channel(self.stream_config.channel_capacity.max(2));
         self.record_audit_best_effort(
             ctx,
-            "data.stream.subscribe",
+            AuditAction::DataStreamSubscribe,
             &table_id.to_string(),
             trace_id,
             json!({ "since": since, "ttl_ms": self.stream_config.authz_ttl.as_millis() as u64 }),
@@ -467,7 +474,7 @@ impl DataStore {
         }
         self.record_audit_best_effort(
             &s.ctx,
-            "data.stream.end",
+            AuditAction::DataStreamEnd,
             &table_id.to_string(),
             s.trace_id.as_deref(),
             json!({ "reason": reason, "position": s.cursor }),

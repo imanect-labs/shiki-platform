@@ -14,6 +14,7 @@ use std::time::Instant;
 use authz::AuthContext;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use super::admission::ReadPermit;
@@ -231,9 +232,17 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<QueryResult, DataError> {
         let tuning = self.tuning.clone();
-        self.run_query_as(ctx, table_id, query, trace_id, "data.query", &tuning, false)
-            .await
-            .map(|(r, _)| r)
+        self.run_query_as(
+            ctx,
+            table_id,
+            query,
+            trace_id,
+            AuditAction::DataQuery,
+            &tuning,
+            false,
+        )
+        .await
+        .map(|(r, _)| r)
     }
 
     /// グリッド（/data の UI）の並べ替え・絞り込みとビューの保存から: 未索引の列を**索引の自動昇格の
@@ -247,9 +256,17 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<QueryResult, DataError> {
         let tuning = self.tuning.clone();
-        self.run_query_as(ctx, table_id, query, trace_id, "data.query", &tuning, true)
-            .await
-            .map(|(r, _)| r)
+        self.run_query_as(
+            ctx,
+            table_id,
+            query,
+            trace_id,
+            AuditAction::DataQuery,
+            &tuning,
+            true,
+        )
+        .await
+        .map(|(r, _)| r)
     }
 
     /// 検証専用: 調整つきで実行し、実行した文と実行記録も返す（計画の形の回帰・全戦略一致テスト）。
@@ -261,8 +278,16 @@ impl DataStore {
         query: &DataQuery,
         tuning: &QueryTuning,
     ) -> Result<(QueryResult, QueryDebug), DataError> {
-        self.run_query_as(ctx, table_id, query, None, "data.query", tuning, false)
-            .await
+        self.run_query_as(
+            ctx,
+            table_id,
+            query,
+            None,
+            AuditAction::DataQuery,
+            tuning,
+            false,
+        )
+        .await
     }
 
     /// テーブル単位の走査効率などの運用指標（推定値・値は含まない）。
@@ -295,7 +320,7 @@ impl DataStore {
         table_id: Uuid,
         query: &DataQuery,
         trace_id: Option<&str>,
-        action: &str,
+        action: AuditAction,
         tuning: &QueryTuning,
         auto_promote: bool,
     ) -> Result<(QueryResult, QueryDebug), DataError> {
@@ -329,7 +354,7 @@ impl DataStore {
         table_id: Uuid,
         query: &DataQuery,
         trace_id: Option<&str>,
-        action: &str,
+        action: AuditAction,
         tuning: &QueryTuning,
         auto_promote: bool,
     ) -> Result<(QueryResult, QueryDebug), DataError> {

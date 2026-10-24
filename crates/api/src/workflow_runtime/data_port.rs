@@ -96,7 +96,7 @@ impl DataPort<'_> {
                 &ctx,
                 table_id,
                 relation,
-                "workflow.data.delegated",
+                storage::audit::AuditAction::WorkflowDataDelegated,
                 ec.trace_id.as_deref(),
             )
             .await

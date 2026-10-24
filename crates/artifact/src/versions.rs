@@ -4,6 +4,7 @@ use authz::{AuthContext, Relation};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::types::Json;
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::model::{Artifact, ArtifactVersion, VersionMeta};
@@ -28,7 +29,7 @@ impl ArtifactStore {
             ctx,
             id,
             Relation::Editor,
-            "artifact.version.append",
+            AuditAction::ArtifactVersionAppend,
             trace_id,
         )
         .await?;
@@ -83,7 +84,7 @@ impl ArtifactStore {
             &mut tx,
             ctx,
             storage::audit::AuditEntry {
-                action: "artifact.version.append",
+                action: AuditAction::ArtifactVersionAppend,
                 object_type: "artifact",
                 object_id: &id.to_string(),
                 decision: storage::audit::Decision::Allow,
@@ -112,8 +113,14 @@ impl ArtifactStore {
         id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Artifact, ArtifactError> {
-        self.require(ctx, id, Relation::Viewer, "artifact.get", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::Viewer,
+            AuditAction::ArtifactGet,
+            trace_id,
+        )
+        .await?;
         self.fetch_live(ctx, id).await
     }
 
@@ -125,8 +132,14 @@ impl ArtifactStore {
         version: i64,
         trace_id: Option<&str>,
     ) -> Result<ArtifactVersion, ArtifactError> {
-        self.require(ctx, id, Relation::Viewer, "artifact.version.get", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::Viewer,
+            AuditAction::ArtifactVersionGet,
+            trace_id,
+        )
+        .await?;
         // 論理削除済みアーティファクトのバージョン本文は読めない（tuple 残存でも body を返さない）。
         let row: Option<(Json<serde_json::Value>, String, DateTime<Utc>)> = sqlx::query_as(
             "SELECT v.body, v.created_by, v.created_at FROM artifact_version v \
@@ -172,7 +185,7 @@ impl ArtifactStore {
             ctx,
             bundle_id,
             Relation::Viewer,
-            "artifact.read_via_bundle",
+            AuditAction::ArtifactReadViaBundle,
             trace_id,
         )
         .await?;
@@ -192,7 +205,7 @@ impl ArtifactStore {
         // バンドル越しの部品読み出しを監査に残す（誰が・どのバンドル経由で・どの部品版を）。
         self.record_audit(
             ctx,
-            "artifact.read_via_bundle",
+            AuditAction::ArtifactReadViaBundle,
             &component_id.to_string(),
             trace_id,
             json!({ "bundle_id": bundle_id, "version": version }),
@@ -239,7 +252,7 @@ impl ArtifactStore {
         let (body, created_by, created_at) = row.ok_or(ArtifactError::NotFound)?;
         self.record_audit(
             ctx,
-            "artifact.read_via_reference",
+            AuditAction::ArtifactReadViaReference,
             &id.to_string(),
             trace_id,
             json!({ "holder": holder, "version": version }),
@@ -265,7 +278,7 @@ impl ArtifactStore {
             ctx,
             id,
             Relation::Viewer,
-            "artifact.versions.list",
+            AuditAction::ArtifactVersionsList,
             trace_id,
         )
         .await?;

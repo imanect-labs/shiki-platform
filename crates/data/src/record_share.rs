@@ -8,6 +8,7 @@
 use authz::{AuthContext, Consistency, Relation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Decision};
 use storage::ShareTarget;
 use utoipa::ToSchema;
@@ -44,8 +45,14 @@ impl DataStore {
         role: RecordShareRole,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
-        self.require_record_share_right(ctx, table_id, record_id, "data.record.share", trace_id)
-            .await?;
+        self.require_record_share_right(
+            ctx,
+            table_id,
+            record_id,
+            AuditAction::DataRecordShare,
+            trace_id,
+        )
+        .await?;
         self.validate_share_target(ctx, target).await?;
         // タプルを書く**前に**「個別共有あり」を立て、このテーブルを参照先にする材料化列を降格する
         // （共有の有無で行集合が変わる＝材料化の前提の第 4 階層が崩れる・PIT-71）。タプルの書込に
@@ -63,7 +70,7 @@ impl DataStore {
         if let Err(e) = self
             .record_share_audit(
                 ctx,
-                "data.record.share",
+                AuditAction::DataRecordShare,
                 record_id,
                 trace_id,
                 json!({ "table_id": table_id, "target": target, "role": role }),
@@ -140,8 +147,14 @@ impl DataStore {
         role: RecordShareRole,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
-        self.require_record_share_right(ctx, table_id, record_id, "data.record.unshare", trace_id)
-            .await?;
+        self.require_record_share_right(
+            ctx,
+            table_id,
+            record_id,
+            AuditAction::DataRecordUnshare,
+            trace_id,
+        )
+        .await?;
         let obj = ctx.ns().data_record(&record_id.to_string());
         let subject = target.subject(&ctx.ns());
         let removed = self
@@ -153,7 +166,7 @@ impl DataStore {
         if let Err(e) = self
             .record_share_audit(
                 ctx,
-                "data.record.unshare",
+                AuditAction::DataRecordUnshare,
                 record_id,
                 trace_id,
                 json!({ "table_id": table_id, "target": target, "role": role }),
@@ -214,7 +227,7 @@ impl DataStore {
         ctx: &AuthContext,
         table_id: Uuid,
         record_id: Uuid,
-        action: &str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
         // 前段: テーブル viewer（第1層）＋行可視性（第2層）。不可視は 404（オラクルなし）。
@@ -262,7 +275,7 @@ impl DataStore {
     async fn record_share_audit(
         &self,
         ctx: &AuthContext,
-        action: &str,
+        action: AuditAction,
         record_id: Uuid,
         trace_id: Option<&str>,
         metadata: serde_json::Value,

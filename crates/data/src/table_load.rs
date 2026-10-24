@@ -11,6 +11,7 @@ use std::sync::Arc;
 use authz::{AuthContext, FgaObject, Relation};
 use chrono::{DateTime, Utc};
 use sqlx::types::Json;
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::key_migration::KEY_FORMAT_LEGACY;
@@ -166,7 +167,7 @@ impl DataStore {
         ctx: &AuthContext,
         az: &AuthzMemo<'_>,
         table_id: Uuid,
-        action: &str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<DataTable, DataError> {
         let peeked = self.peek_live(ctx, table_id).await?;

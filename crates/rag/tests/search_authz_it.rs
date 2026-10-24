@@ -38,13 +38,19 @@ use common::{
 use rag::pipeline::{consumer, relay, PipelineDeps};
 use rag::types::{BlockType, ParsedBlock, ParsedDocument};
 use rag::{
-    DocumentParser, ParseRequest, RagConfig, RagError, SearchMode, SearchService, TantivyFulltext,
+    DocumentParser, ParseRequest, QueryHashKey, RagConfig, RagError, SearchMode, SearchService,
+    TantivyFulltext,
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use storage::audit::AuditRecorder;
 use storage::event::{emit_on, WriteEvent};
 use storage::{IndexerStorage, WriteOp};
 use uuid::Uuid;
+
+/// 監査の検索語ハッシュの鍵（固定）。期待値を同じ鍵で計算して突き合わせる。
+fn test_query_hash_key() -> QueryHashKey {
+    QueryHashKey::try_from("0123456789abcdef0123456789abcdef".to_owned()).unwrap()
+}
 
 /// ファイル名から決定的な本文を返すパーサ（検索語「売上」を必ず含む）。
 struct ContentParser;
@@ -130,6 +136,7 @@ async fn setup() -> Option<Env> {
     let config = RagConfig {
         enabled: true,
         consumer_concurrency: 2,
+        query_hash_key: Some(test_query_hash_key()),
         ..RagConfig::default()
     };
     let vector = Arc::new(FakeVectorStore::default());
@@ -552,7 +559,45 @@ async fn citations_and_decisions_are_audited_with_trace_id() {
             .any(|v| v.as_str() == Some(file.to_string().as_str())),
         "file 粒度の認可判定（allow）が記録される"
     );
-    assert!(metadata["query_sha256"].as_str().unwrap().len() == 64);
+    // 検索語はサーバの鍵で HMAC した値だけを残す（#833・鍵なしの旧 query_sha256 は残さない）。
+    assert_eq!(
+        metadata["query_hmac"].as_str(),
+        Some(
+            test_query_hash_key()
+                .digest(&env.alice.tenant_id, "売上")
+                .as_str()
+        )
+    );
+    assert!(metadata.get("query_sha256").is_none());
+    assert!(
+        metadata.get("message_id").is_none(),
+        "回答の外の検索には付けない"
+    );
+
+    // チャットの回答のための検索は、会話と回答を残す（1 回答の判定と引用を引ける・#829）。
+    let (thread, message) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    env.search
+        .search(
+            &env.alice,
+            "売上",
+            Some(5),
+            SearchMode::Hybrid,
+            None,
+            rag::AuditTrail::for_answer(Some("trace-answer"), thread, message),
+        )
+        .await
+        .unwrap();
+    let (metadata, trace_id): (serde_json::Value, Option<String>) = sqlx::query_as(
+        "select metadata, trace_id from audit_log \
+         where tenant_id = $1 and action = 'rag.search' order by id desc limit 1",
+    )
+    .bind(&env.alice.tenant_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(trace_id.as_deref(), Some("trace-answer"));
+    assert_eq!(metadata["thread_id"], serde_json::json!(thread));
+    assert_eq!(metadata["message_id"], serde_json::json!(message));
 }
 
 /// 検索結果が位置情報（アンカー・前後の文脈）を持ち、その版のブロック列を窓で読めること。

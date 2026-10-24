@@ -4,6 +4,7 @@ use authz::{AuthContext, Relation};
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use sqlx::types::Json;
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::model::{FieldPatch, RecordRevision};
@@ -75,7 +76,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Viewer,
-            "data.record.revisions",
+            AuditAction::DataRecordRevisions,
             trace_id,
         )
         .await?;
@@ -108,7 +109,7 @@ impl DataStore {
                 ctx,
                 table_id,
                 Relation::Owner,
-                "data.record.revisions",
+                AuditAction::DataRecordRevisions,
                 trace_id,
             )
             .await

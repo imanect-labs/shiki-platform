@@ -15,6 +15,7 @@
 //! 適用時に行単位で拒否する（[`super::apply`]）。
 
 use std::collections::{BTreeSet, HashSet};
+use storage::audit::AuditAction;
 
 use authz::Relation;
 use serde_json::{Map, Value};
@@ -154,7 +155,7 @@ impl DataStore {
             &ctx,
             imp.table_id,
             Relation::Editor,
-            "data.record.bulk_import",
+            AuditAction::DataRecordBulkImport,
             imp.trace_id.as_deref(),
         )
         .await?;

@@ -10,6 +10,7 @@
 //!   有効期間内の現在の状態（接続前に置かれたカーソル）も同じ判定を通して最初のバッチで送る。
 
 use authz::AuthContext;
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::store::DataStore;
@@ -30,7 +31,13 @@ impl DataStore {
     ) -> Result<(), DataError> {
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, table_id, "data.stream.awareness", trace_id)
+            .open_for_read(
+                ctx,
+                &az,
+                table_id,
+                AuditAction::DataStreamAwareness,
+                trace_id,
+            )
             .await?;
         if let Some(f) = &field {
             if f.len() > MAX_FIELD_KEY_LEN || table.schema.field(f).is_none() {

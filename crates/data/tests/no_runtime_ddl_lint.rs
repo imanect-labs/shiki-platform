@@ -1,7 +1,7 @@
 //! ランタイム DDL ゼロの機械検査（Phase 15 Task 15.3 受け入れ条件・監査 B1-2）。
 //!
 //! 索引の付け外しは pivot 索引テーブルの行の追記/削除で行い、DDL を打たない（data-platform §3）。
-//! 較正ベンチも migration 0096 の固定表を読むだけ。DB 不要（常に走る）。
+//! 較正ベンチも migration 0097 の固定表を読むだけ。DB 不要（常に走る）。
 //!
 //! - `grep -r "CREATE INDEX" crates/data/src` が 0 件（受け入れ条件そのもの・テストファイルも含む）
 //! - 本体（`*_tests.rs` と `#[cfg(test)]` 以降を除く）に表・索引の DDL が無い

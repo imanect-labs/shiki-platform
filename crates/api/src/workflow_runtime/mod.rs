@@ -129,7 +129,7 @@ impl CapabilityAudit for RunAudit {
         // 監査は同期の呼び出し口から非同期に書く（ノードの失敗を待たせない・書込失敗は warn）。
         tokio::spawn(async move {
             let entry = storage::audit::AuditEntry {
-                action: "workflow.capability.out_of_scope",
+                action: storage::audit::AuditAction::WorkflowCapabilityOutOfScope,
                 object_type: "workflow_capability",
                 object_id: &api,
                 decision: storage::audit::Decision::Deny,

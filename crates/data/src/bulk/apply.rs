@@ -10,6 +10,7 @@
 //!   適用が終わったら保持を外してバックフィルを開始位置つきで始め、最後まで進めてから parity を検証する。
 
 use std::collections::{HashMap, HashSet};
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, Relation};
 use chrono::{DateTime, Utc};
@@ -192,7 +193,7 @@ impl DataStore {
             &ctx,
             imp.table_id,
             Relation::Editor,
-            "data.record.bulk_apply",
+            AuditAction::DataRecordBulkApply,
             trace_id,
         )
         .await?;
@@ -319,7 +320,7 @@ impl DataStore {
             self.record_audit_on(
                 &mut tx,
                 &ctx,
-                "data.record.bulk_apply",
+                AuditAction::DataRecordBulkApply,
                 &table.id.to_string(),
                 trace_id,
                 json!({

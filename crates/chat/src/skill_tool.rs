@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use agent_core::{Tool, ToolError, ToolName, ToolOutcome};
 use authz::AuthContext;
@@ -92,7 +93,7 @@ impl SkillTool {
     async fn audit_invoke(&self, ctx: &AuthContext, skill: &AppliedSkill, trace_id: Option<&str>) {
         let recorder = AuditRecorder::new(self.db.clone());
         let entry = AuditEntry {
-            action: "skill.invoke",
+            action: AuditAction::SkillInvoke,
             object_type: "artifact",
             object_id: &skill.id.to_string(),
             decision: Decision::Allow,

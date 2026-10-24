@@ -6,6 +6,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, Relation};
 use serde_json::json;
@@ -40,7 +41,7 @@ impl ChatStore {
             ctx,
             thread_id,
             Relation::Editor,
-            "agent.approval.decide",
+            AuditAction::AgentApprovalDecide,
             trace_id,
         )
         .await?;
@@ -118,7 +119,7 @@ impl ChatStore {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "agent.approval.decision",
+                    action: AuditAction::AgentApprovalDecision,
                     object_type: "generation_run",
                     object_id: &run_id.to_string(),
                     decision: Decision::Allow,

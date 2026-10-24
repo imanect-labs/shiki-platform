@@ -7,6 +7,7 @@
 
 use authz::{AuthContext, Relation};
 use serde::Serialize;
+use storage::audit::AuditAction;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -40,7 +41,7 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Viewer,
-            "data.table.get",
+            AuditAction::DataTableGet,
             trace_id,
         )
         .await?;
