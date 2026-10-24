@@ -16,8 +16,8 @@ import {
   type DataRecord,
   type ViewSpec,
 } from "@/lib/data-api";
-import { cellValue, displayCell, formatValue, type ColumnModel } from "@/lib/data-view";
-import { cachedUserName } from "@/lib/user-names";
+import { cellValue, displayCell, formatValue, userRefIds, type ColumnModel } from "@/lib/data-view";
+import { cachedUserName, resolveUserNames } from "@/lib/user-names";
 import { cn } from "@/lib/utils";
 
 type Loaded = { items: DataRecord[]; cursor: string | null; loading: boolean; error: string | null };
@@ -106,6 +106,23 @@ function useLaneCounts(tableId: string, query: DataQuery, field: string, lanes: 
   return counts;
 }
 
+/// カードに出すユーザーの列・作成者の表示名を引き、引けたら描き直す（グリッドと同じ・未解決の id だけ）。
+function useUserNames(items: DataRecord[], columns: ColumnModel[]): number {
+  const [version, setVersion] = React.useState(0);
+  React.useEffect(() => {
+    const ids = userRefIds(items, columns).filter((id) => cachedUserName(id) === undefined);
+    if (ids.length === 0) return;
+    let active = true;
+    void resolveUserNames(ids).then((learned) => {
+      if (active && learned) setVersion((v) => v + 1);
+    });
+    return () => {
+      active = false;
+    };
+  }, [items, columns]);
+  return version;
+}
+
 function MoreButton({ cursor, loading, onMore }: { cursor: string | null; loading: boolean; onMore: () => void }) {
   if (!cursor && !loading) return null;
   return (
@@ -156,6 +173,7 @@ export function KanbanBoard({
   onError: (e: Error) => void;
 }) {
   const { items, cursor, loading, more } = useRecords(tableId, query, onError);
+  useUserNames(items, columns);
   const byKey = new Map(columns.map((c) => [c.key, c]));
   const group = byKey.get(spec.group_field);
   const cards = (spec.card_fields ?? []).map((k) => byKey.get(k)).filter((c): c is ColumnModel => Boolean(c));
@@ -209,6 +227,7 @@ export function GalleryGrid({
   onError: (e: Error) => void;
 }) {
   const { items, cursor, loading, more } = useRecords(tableId, query, onError);
+  useUserNames(items, columns);
   const byKey = new Map(columns.map((c) => [c.key, c]));
   const title = spec.title_field ? byKey.get(spec.title_field) : columns.find((c) => !c.system);
   const fields = (spec.card_fields ?? []).map((k) => byKey.get(k)).filter((c): c is ColumnModel => Boolean(c));

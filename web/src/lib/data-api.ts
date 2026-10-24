@@ -410,6 +410,9 @@ export type RecordStreamHandlers = {
 
 /// 再接続の失敗がこの回数続いたら諦める（サーバが落ち続けている間に繋ぎ直しを繰り返さない）。
 const MAX_STREAM_RETRIES = 6;
+/// サーバの keepalive（15 秒ごと）がこの間届かなければ、接続が黙って死んだとみなして閉じる（D-2）。
+/// keepalive を一度でも受け取った接続だけで見る（送らない古いサーバでは見ない）。
+const STREAM_IDLE_MS = 45_000;
 
 /// レコード変更を購読する。`since` は REST の応答の `snapshot_seq`（読取と購読の間の変更を取りこぼさない）。
 ///
@@ -430,11 +433,27 @@ export function subscribeRecords(
   // 最後に受け取ったイベントの番号（自前で繋ぎ直すときの `since`）。
   let lastId: number | null = since ?? null;
   const seen = (ev: Event) => {
+    touch();
     const n = Number((ev as MessageEvent).lastEventId);
     if ((ev as MessageEvent).lastEventId !== "" && Number.isFinite(n)) lastId = n;
   };
+  // 最後に何か（イベント・keepalive・接続）が届いた時刻と、keepalive を送るサーバか。
+  let lastActivity = Date.now();
+  let keepalives = false;
+  const touch = () => {
+    lastActivity = Date.now();
+  };
+  const watchdog = window.setInterval(() => {
+    if (closed || !keepalives || es.readyState !== EventSource.OPEN) return;
+    if (Date.now() - lastActivity > STREAM_IDLE_MS) {
+      // 黙って止まった接続（BFF・経路の半開き）: 閉じて呼び出し側に繋ぎ直させる（最後の番号から）。
+      close();
+      h.onTerminal?.(lastId);
+    }
+  }, 5_000);
   const close = () => {
     closed = true;
+    window.clearInterval(watchdog);
     es.close();
   };
   const parse = <T,>(ev: MessageEvent): T | null => {
@@ -446,8 +465,13 @@ export function subscribeRecords(
   };
   es.onopen = () => {
     failures = 0;
+    touch();
     h.onOpen?.();
   };
+  es.addEventListener("keepalive", () => {
+    keepalives = true;
+    touch();
+  });
   es.addEventListener("stream.ready", (ev) => {
     seen(ev);
     const d = parse<StreamReadyEvent>(ev as MessageEvent);
@@ -470,6 +494,7 @@ export function subscribeRecords(
     if (d && typeof d.count === "number" && d.count > 0) h.onBulk?.(d.count);
   });
   es.addEventListener("awareness", (ev) => {
+    touch();
     const d = parse<AwarenessEvent>(ev as MessageEvent);
     if (d) h.onAwareness?.(d);
   });
