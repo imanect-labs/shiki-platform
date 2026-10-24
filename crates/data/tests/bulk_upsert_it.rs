@@ -481,3 +481,106 @@ async fn bulk_upsert_with_id_is_idempotent() {
         .len();
     assert_eq!(n, 1, "2 回始めても 1 行だけ");
 }
+
+/// C3 の続き: 天井（委譲）つきのストアで始めた取込は天井を保存し、ジョブのワーカー（天井の無いストア）が
+/// 進めても同じ天井で検証する。天井の外のテーブルへの参照は、存在しない参照先と同じ行エラーになる
+/// （未委譲テーブルのレコードの有無が行エラーから分からない）。天井の無い取込は従来どおり通る。
+#[tokio::test]
+async fn bulk_upsert_keeps_the_reach_when_a_worker_resumes_it() {
+    let Some(pool) = setup().await else { return };
+    let store = common::store_with(pool.clone());
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let customers = store
+        .create_table(
+            &c,
+            NewDataTable {
+                name: "customers".into(),
+                schema: schema(vec![field("name", FieldType::Text)]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let mut customer = field("customer", FieldType::RecordRef);
+    customer.ref_table = Some(customers.id);
+    customer.link = Some(data::LinkDef {
+        cardinality: data::LinkCardinality::ManyToOne,
+        symmetric_field: None,
+        symmetric_key: None,
+        symmetric_display_name: None,
+        reverse: false,
+    });
+    let orders = store
+        .create_table(
+            &c,
+            NewDataTable {
+                name: "orders".into(),
+                schema: schema(vec![field("title", FieldType::Text), customer]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let acme = store
+        .create_record(&c, customers.id, json!({"name": "Acme"}), None)
+        .await
+        .unwrap()
+        .id;
+    let new_row = |title: &str, to: Uuid| BulkUpsertRow {
+        key: None,
+        record_id: None,
+        expected_rev: None,
+        data: json!({"title": title, "customer": [to.to_string()]}),
+    };
+    // 天井の無い取込（ユーザー本人）: 参照できる。
+    let plain = store
+        .start_bulk_upsert(
+            &c,
+            orders.id,
+            vec![new_row("ok", acme)],
+            BulkImportOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    detach_job(&pool, plain).await;
+    store
+        .run_bulk_import(&tenant, orders.id, plain)
+        .await
+        .unwrap();
+    let st = store
+        .bulk_import_status(&c, orders.id, plain)
+        .await
+        .unwrap();
+    assert_eq!((st.rows_applied, st.rows_invalid), (1, 0), "{st:?}");
+
+    // 天井（orders だけ）つきで始め、ワーカーと同じく天井の無いストアで最後まで進める。
+    let reached = store.within_reach(data::TableReach::only([orders.id]));
+    let id = reached
+        .start_bulk_upsert_with_id(
+            &c,
+            orders.id,
+            Uuid::new_v4(),
+            vec![new_row("hidden", acme), new_row("missing", Uuid::new_v4())],
+            BulkImportOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    detach_job(&pool, id).await;
+    let done = store.run_bulk_import(&tenant, orders.id, id).await.unwrap();
+    assert_eq!(done.status, "done", "{done:?}");
+    let st = store.bulk_import_status(&c, orders.id, id).await.unwrap();
+    assert_eq!((st.rows_applied, st.rows_invalid), (0, 2), "{st:?}");
+    let errs = store
+        .bulk_import_errors(&c, orders.id, id, 0, 10)
+        .await
+        .unwrap();
+    assert_eq!(errs.len(), 2, "{errs:?}");
+    assert_eq!(
+        errs[0].message, errs[1].message,
+        "天井の外の参照先は存在しない参照先と同じ文言"
+    );
+    assert!(errs[0].message.contains("見つかりません"), "{errs:?}");
+}

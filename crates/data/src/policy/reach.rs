@@ -17,7 +17,8 @@
 
 use std::collections::HashSet;
 
-use authz::{AuthContext, FgaObject};
+use authz::{AuthContext, FgaObject, PrincipalKind};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// 到達してよいテーブルの天井（[モジュール文書](self)）。
@@ -56,6 +57,56 @@ impl TableReach {
     }
 }
 
+/// 保存形（一括取込の `data_bulk_import.reach`・ジョブのワーカーが復元する）。
+#[derive(Debug, Serialize, Deserialize)]
+struct Stored {
+    tables: Vec<Uuid>,
+    co: Option<StoredPrincipal>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredPrincipal {
+    kind: PrincipalKind,
+    id: String,
+}
+
+impl TableReach {
+    /// 保存形へ（テーブルは並びを固定する）。
+    pub(crate) fn to_stored(&self) -> serde_json::Value {
+        let mut tables: Vec<Uuid> = self.tables.iter().copied().collect();
+        tables.sort_unstable();
+        let co = self.co_principal.as_ref().map(|c| StoredPrincipal {
+            kind: c.principal.kind,
+            id: c.principal.id.clone(),
+        });
+        serde_json::to_value(Stored { tables, co }).unwrap_or(serde_json::Value::Null)
+    }
+
+    /// 保存形から復元する（併せて要る主体は取込のテナント・org で組み直す）。壊れた保存形は
+    /// 何も通さない天井にする（fail-closed）。
+    pub(crate) fn from_stored(v: &serde_json::Value, tenant_id: &str, org: &str) -> Self {
+        let Ok(st) = serde_json::from_value::<Stored>(v.clone()) else {
+            return TableReach::only([]);
+        };
+        let reach = TableReach::only(st.tables);
+        match st.co {
+            Some(p) => reach.also_held_by(AuthContext::new(
+                authz::Principal {
+                    kind: p.kind,
+                    id: p.id,
+                    email: None,
+                    groups: Vec::new(),
+                    roles: Vec::new(),
+                    tenant_id: Some(tenant_id.to_string()),
+                },
+                org.to_string(),
+                tenant_id.to_string(),
+            )),
+            None => reach,
+        }
+    }
+}
+
 /// `data_table` の object なら、そのテーブル ID（`ctx` のテナントのものだけ）。
 pub(crate) fn data_table_id(ctx: &AuthContext, object: &FgaObject) -> Option<Uuid> {
     let rest = object.as_str().strip_prefix("data_table:")?;
@@ -81,6 +132,25 @@ mod tests {
             tenant.into(),
             tenant.into(),
         )
+    }
+
+    #[test]
+    fn stored_form_round_trips_and_broken_form_admits_nothing() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut wf = ctx("t1");
+        wf.principal.kind = PrincipalKind::Workflow;
+        wf.principal.id = "wf1".into();
+        let reach = TableReach::only([a, b]).also_held_by(wf);
+        let back = TableReach::from_stored(&reach.to_stored(), "t1", "t1");
+        assert!(back.admits(a) && back.admits(b));
+        let co = back.co_principal().unwrap();
+        assert_eq!(co.principal.kind, PrincipalKind::Workflow);
+        assert_eq!(co.principal.id, "wf1");
+        assert_eq!(co.tenant_id, "t1");
+        let only = TableReach::from_stored(&TableReach::only([a]).to_stored(), "t1", "t1");
+        assert!(only.admits(a) && !only.admits(b) && only.co_principal().is_none());
+        let broken = TableReach::from_stored(&serde_json::json!({"x": 1}), "t1", "t1");
+        assert!(!broken.admits(a));
     }
 
     #[test]
