@@ -1057,3 +1057,94 @@ async fn chat_post_records_requested_tools() {
             .unwrap();
     assert_eq!(stored, serde_json::json!(["web_search", "doc_search"]));
 }
+
+/// サイドバー履歴の行操作: 改名・ピン留め（`?pinned=true` の一覧）・削除（以後 404）。
+#[tokio::test]
+async fn chat_thread_rename_pin_delete_over_http() {
+    let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let (cookie, csrf) = login(&sessions, "sid-chat-manage").await;
+    let app = build_router(state);
+    let send = |method: &str, uri: String, body: Option<&str>| {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(COOKIE, &cookie);
+        if method != "GET" {
+            req = req.header("x-csrf-token", csrf);
+        }
+        let req = match body {
+            Some(b) => req
+                .header("content-type", "application/json")
+                .body(Body::from(b.to_string())),
+            None => req.body(Body::empty()),
+        };
+        app.clone().oneshot(req.unwrap())
+    };
+
+    let resp = send("POST", "/threads".into(), Some(r#"{"title":"仮"}"#))
+        .await
+        .unwrap();
+    let tid = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    // 改名・ピン留め（204）→ 取得に反映。
+    let resp = send(
+        "PATCH",
+        format!("/threads/{tid}"),
+        Some(r#"{"title":"  新しい名前 ","pinned":true}"#),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let got = body_json(send("GET", format!("/threads/{tid}"), None).await.unwrap()).await;
+    assert_eq!(got["title"], "新しい名前");
+    assert!(got["pinned_at"].is_string(), "ピン留め時刻が付く: {got}");
+
+    let pinned = body_json(
+        send("GET", "/threads?pinned=true".into(), None)
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(pinned["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["id"] == tid.as_str()));
+    assert!(pinned["next_cursor"].is_null());
+
+    // 項目なし・空タイトルは 400。
+    for body in [r"{}", r#"{"title":"   "}"#] {
+        let resp = send("PATCH", format!("/threads/{tid}"), Some(body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    // 削除（204）→ 取得・メッセージ・再削除は 404。
+    let resp = send("DELETE", format!("/threads/{tid}"), None)
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    for (method, uri) in [
+        ("GET", format!("/threads/{tid}")),
+        ("GET", format!("/threads/{tid}/messages")),
+        ("DELETE", format!("/threads/{tid}")),
+    ] {
+        let resp = send(method, uri.clone(), None).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+    }
+    let pinned = body_json(
+        send("GET", "/threads?pinned=true".into(), None)
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(!pinned["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["id"] == tid.as_str()));
+}

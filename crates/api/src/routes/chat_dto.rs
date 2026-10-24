@@ -239,10 +239,18 @@ pub struct SetThreadSkillsRequest {
     pub skills: Vec<ArtifactPinRequest>,
 }
 
-/// スレッドの由来ノート設定リクエスト（下書き確定→ノート実体化の紐付け・issue #282）。
+/// スレッドの更新リクエスト（指定した項目だけ変える・少なくとも 1 つ必須）。
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct SetOriginNoteRequest {
-    pub note_id: Uuid,
+pub struct UpdateThreadRequest {
+    /// 新しい名前（前後の空白・改行は詰める・200 文字まで）。以後は自動タイトルで上書きしない。
+    #[serde(default)]
+    pub title: Option<String>,
+    /// ピン留めするか（サイドバー履歴の先頭に出す）。
+    #[serde(default)]
+    pub pinned: Option<bool>,
+    /// 由来ノート（下書き確定→ノート実体化の紐付け・issue #282）。
+    #[serde(default)]
+    pub note_id: Option<Uuid>,
 }
 
 /// 一覧クエリ。
@@ -258,6 +266,9 @@ pub struct ListThreadsQuery {
     /// タイトルの部分一致で絞り込む（検索パレット・issue #591）。
     #[serde(default)]
     pub q: Option<String>,
+    /// true ならピン留めしたスレッドだけ（ピン留めの新しい順・ページングなし）。
+    #[serde(default)]
+    pub pinned: Option<bool>,
 }
 
 /// SSE クエリ（Last-Event-ID の代替）。

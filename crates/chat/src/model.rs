@@ -266,6 +266,9 @@ pub struct Thread {
     /// 由来ノートの表示名（作成時点の非正規化・リネーム非追随・履歴表示用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_note_name: Option<String>,
+    /// ピン留めした時刻（None＝ピン留めなし）。サイドバー履歴の先頭に出す。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

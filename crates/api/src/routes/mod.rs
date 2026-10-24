@@ -10,7 +10,7 @@ pub mod chat_approval;
 pub mod chat_autonomous;
 pub mod chat_dto;
 pub mod chat_feedback;
-pub mod chat_notes;
+pub mod chat_manage;
 pub(crate) mod chat_selection;
 pub mod chat_sharing;
 pub mod chat_skills;

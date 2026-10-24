@@ -239,7 +239,7 @@ impl ChatStore {
         Ok(out)
     }
 
-    async fn record_share_audit(
+    pub(super) async fn record_share_audit(
         &self,
         ctx: &AuthContext,
         thread_id: Uuid,

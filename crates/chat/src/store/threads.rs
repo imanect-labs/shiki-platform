@@ -15,16 +15,16 @@ use crate::model::{AutonomousMode, ContentBlock, Message, Role, SkillPin, Thread
 
 /// thread の SELECT 列（skill ピンは正規化テーブルから jsonb で集約・#344。
 /// 承認モードは thread 列・#350）。
-const THREAD_COLUMNS: &str = "id, title, agent_mode, autonomous_mode, \
+pub(super) const THREAD_COLUMNS: &str = "id, title, agent_mode, autonomous_mode, \
     (SELECT coalesce(jsonb_agg(jsonb_build_object( \
         'skill_id', p.skill_id, 'skill_version', p.skill_version) \
         ORDER BY p.position, p.skill_id), '[]'::jsonb) \
      FROM thread_skill_pin p WHERE p.thread_id = thread.id) AS skill_pins, \
-    mini_app_id, mini_app_version, origin_note_id, origin_note_name, created_at, updated_at";
+    mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, created_at, updated_at";
 
 /// thread 行。
 #[derive(sqlx::FromRow)]
-struct ThreadRow {
+pub(super) struct ThreadRow {
     id: Uuid,
     title: String,
     agent_mode: bool,
@@ -34,12 +34,13 @@ struct ThreadRow {
     mini_app_version: Option<i64>,
     origin_note_id: Option<Uuid>,
     origin_note_name: Option<String>,
+    pinned_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
 
 impl ThreadRow {
-    fn into_thread(self) -> Thread {
+    pub(super) fn into_thread(self) -> Thread {
         Thread {
             id: self.id,
             title: self.title,
@@ -51,6 +52,7 @@ impl ThreadRow {
             mini_app_version: self.mini_app_version,
             origin_note_id: self.origin_note_id,
             origin_note_name: self.origin_note_name,
+            pinned_at: self.pinned_at,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -95,6 +97,9 @@ impl MessageRow {
 
 impl ChatStore {
     /// スレッドを新規作成する（作成者を owner タプルで付与）。
+    ///
+    /// `title` は仮のタイトル（発話の切り詰め・文書名など）として扱い、最初の生成で要約タイトルに
+    /// 置き換える（`title_pending`・[`Self::set_generated_title`]）。
     pub async fn create_thread(
         &self,
         ctx: &AuthContext,
@@ -118,9 +123,9 @@ impl ChatStore {
         };
         let row: ThreadRow = sqlx::query_as(
             // 作成直後のピンは常に空（set_thread_pins が後から入れる）。
-            "INSERT INTO thread (id, org, tenant_id, owner, title, agent_mode, origin_note_id, origin_note_name) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-             RETURNING id, title, agent_mode, autonomous_mode, '[]'::jsonb AS skill_pins, mini_app_id, mini_app_version, origin_note_id, origin_note_name, created_at, updated_at",
+            "INSERT INTO thread (id, org, tenant_id, owner, title, agent_mode, origin_note_id, origin_note_name, title_pending) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true) \
+             RETURNING id, title, agent_mode, autonomous_mode, '[]'::jsonb AS skill_pins, mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, created_at, updated_at",
         )
         .bind(id)
         .bind(&ctx.org)
@@ -222,6 +227,7 @@ impl ChatStore {
     /// `origin_note_id` を渡すと当該ノート由来のスレッドのみに絞る（ノート側の会話一覧・issue #282）。
     /// 未指定（None）はサイドバー履歴の全件（現行挙動）。
     /// `title_query` はタイトルの部分一致（大小無視・ワイルドカードは無害化・#591）。空白のみは無指定扱い。
+    /// ピン留めは [`Self::list_pinned_threads`] で別に引く（こちらはピン留めも含めた更新日順）。
     pub async fn list_threads(
         &self,
         ctx: &AuthContext,
@@ -384,6 +390,9 @@ impl ChatStore {
     }
 
     /// スレッドへの relation を要求し、FGA object を返す（不足は監査 deny＋Forbidden）。
+    ///
+    /// 削除済みのスレッドは relation があっても NotFound（共有タプルは残るため、ここで閉じる。
+    /// メッセージ・ストリーム・投稿・共有などスレッド配下の全操作がこの関数を通る）。
     pub(super) async fn require_thread(
         &self,
         ctx: &AuthContext,
@@ -393,16 +402,30 @@ impl ChatStore {
         trace_id: Option<&str>,
     ) -> Result<authz::FgaObject, ChatError> {
         let obj = ctx.ns().thread(&thread_id.to_string());
-        let ok = self
-            .authz
-            .check(
-                &ctx.subject(),
-                relation,
-                &obj,
-                Consistency::HigherConsistency,
+        // 認可と生存の確認は互いに依存しないので並行に引く（往復を直列に重ねない）。
+        let check = async {
+            self.authz
+                .check(
+                    &ctx.subject(),
+                    relation,
+                    &obj,
+                    Consistency::HigherConsistency,
+                )
+                .await
+                .map_err(|e| ChatError::Internal(e.to_string()))
+        };
+        let alive = async {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM thread \
+                 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL)",
             )
+            .bind(thread_id)
+            .bind(&ctx.tenant_id)
+            .fetch_one(&self.db)
             .await
-            .map_err(|e| ChatError::Internal(e.to_string()))?;
+            .map_err(map_db)
+        };
+        let (ok, alive) = tokio::try_join!(check, alive)?;
         if !ok {
             let _ = self
                 .audit
@@ -419,6 +442,9 @@ impl ChatStore {
                 )
                 .await;
             return Err(ChatError::Forbidden);
+        }
+        if !alive {
+            return Err(ChatError::NotFound);
         }
         Ok(obj)
     }

@@ -210,6 +210,7 @@ impl WorkerSink {
             | StreamEventKind::ApprovalResolved { .. }
             | StreamEventKind::FailureRecovery { .. }
             | StreamEventKind::ContextUsage { .. }
+            | StreamEventKind::ThreadTitle { .. }
             | StreamEventKind::Status { .. }
             | StreamEventKind::Error { .. }
             | StreamEventKind::Done { .. } => {}
