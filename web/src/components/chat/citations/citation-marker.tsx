@@ -12,7 +12,7 @@ import * as PopoverPrimitive from "@radix-ui/react-popover";
 import { PanelRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { citationAt, isWithheldCitation } from "@/lib/citation";
+import { citationAt, isWebCitation, isWithheldCitation, sourceKeyOf, webHost } from "@/lib/citation";
 import {
   passageOf,
   useMessageCitations,
@@ -21,10 +21,10 @@ import {
   type MessageCitations,
 } from "./citation-context";
 import {
-  DocIcon,
   KindBadge,
-  OpenOriginalLink,
+  OpenSourceLink,
   SnippetText,
+  SourceIcon,
   docColorStyle,
   formatDate,
 } from "./citation-parts";
@@ -60,7 +60,7 @@ export function CitationMarker({ n, children }: { n: number; children: React.Rea
 function InteractiveMarker({ n, message }: { n: number; message: MessageCitations }) {
   const panel = useSourcePanel();
   const citation = citationAt(message.citations, n)!;
-  const color = message.groups.colorOf[citation.node_id];
+  const color = message.groups.colorOf[sourceKeyOf(citation)];
   // 同じ箇所を指す別番号（同じチャンクが 2 回返った場合）も、開いている間は強調する。
   const active =
     panel?.state?.key === message.key && !!passageOf(message, panel.state.n)?.ns.includes(n);
@@ -95,7 +95,7 @@ function InteractiveMarker({ n, message }: { n: number; message: MessageCitation
           ref={anchorRef}
           type="button"
           style={docColorStyle(color)}
-          aria-label={`出典 ${n}: ${message.nameOf(citation.node_id)}`}
+          aria-label={`出典 ${n}: ${message.nameOf(citation)}`}
           onPointerDown={(e) => {
             pointerType.current = e.pointerType;
           }}
@@ -167,18 +167,20 @@ export function CitationCardBody({
   onOpenPanel?: () => void;
 }) {
   const citation = citationAt(message.citations, n)!;
-  const meta = message.metas[citation.node_id];
+  const web = isWebCitation(citation) ? citation.web : null;
+  const meta = web ? undefined : message.metas[citation.node_id];
   const folder = useNodeMeta(meta?.parentId)?.name;
   const updated = formatDate(meta?.updatedAt);
-  const where = [folder, updated ? `${updated} 更新` : null].filter(Boolean).join(" ・ ");
+  // Web の出典はホスト名（どのサイトか）、文書はフォルダと更新日。
+  const where = web ? webHost(web.url) : [folder, updated ? `${updated} 更新` : null].filter(Boolean).join(" ・ ");
   const heading = citation.heading_path ?? [];
 
   return (
     <div>
       <div className="flex min-w-0 items-center gap-2">
-        <DocIcon meta={meta} />
-        <span className="truncate text-[13.5px] font-medium">{message.nameOf(citation.node_id)}</span>
-        <KindBadge name={meta?.name} />
+        <SourceIcon citation={citation} meta={meta} />
+        <span className="truncate text-[13.5px] font-medium">{message.nameOf(citation)}</span>
+        {web ? null : <KindBadge name={meta?.name} />}
       </div>
       {where ? <div className="mt-0.5 truncate pl-6 text-[11.5px] text-muted-foreground">{where}</div> : null}
       <div className="mt-2.5 rounded-lg bg-muted/50 px-3 py-2.5">
@@ -204,7 +206,7 @@ export function CitationCardBody({
             出典を開く
           </button>
         ) : null}
-        <OpenOriginalLink nodeId={citation.node_id} meta={meta} citation={citation} />
+        <OpenSourceLink citation={citation} meta={meta} />
       </div>
     </div>
   );

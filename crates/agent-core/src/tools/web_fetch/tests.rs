@@ -180,6 +180,19 @@ async fn pins_connection_to_validated_address() {
     assert!(!out.is_error, "{}", out.content);
     assert!(out.content.contains("HTTP 200"));
     assert!(out.content.contains("pinned ok"));
+    // 取得したページは出典になり、先頭に台帳が番号へ置き換える仮の印が付く（#891）。
+    assert!(
+        out.content.starts_with(&crate::cite::placeholder(0)),
+        "{}",
+        out.content
+    );
+    assert_eq!(out.citations.len(), 1);
+    let web = out.citations[0].web.as_ref().unwrap();
+    assert_eq!(
+        web.url,
+        format!("http://pinned.example.invalid:{}/", addr.port())
+    );
+    assert!(out.citations[0].snippet.contains("pinned ok"));
     assert_eq!(calls.load(Ordering::SeqCst), 1, "解決は 1 回だけ");
     // Host ヘッダは URL のホストのまま（宛先だけを固定し、リクエストは偽装しない）。
     assert!(
@@ -232,6 +245,29 @@ async fn location_on_non_redirect_is_not_treated_as_redirect() {
     assert!(!out.is_error, "{}", out.content);
     assert!(out.content.contains("本文はここ"), "{}", out.content);
     assert!(!out.content.contains("追従しません"));
+}
+
+/// エラーページ（404 等）は本文を返すが、出典にはしない（#891）。
+#[tokio::test]
+async fn error_pages_are_not_cited() {
+    let (addr, _) = stub_server(http_response(
+        "HTTP/1.1 404 Not Found\r\nContent-Type: text/html",
+        "<html>見つかりません</html>",
+    ))
+    .await;
+    let (mut tool, _) = tool_with(vec![addr]);
+    tool.skip_addr_guard = true;
+    let out = tool
+        .call(
+            &ctx(),
+            serde_json::json!({"url": format!("http://gone.example.invalid:{}/", addr.port())}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(out.content.contains("HTTP 404"), "{}", out.content);
+    assert!(out.citations.is_empty());
+    assert!(!out.content.contains(&crate::cite::placeholder(0)));
 }
 
 /// 巨大な本文は 256KiB で打ち切る（読み切らない）。
@@ -292,4 +328,29 @@ async fn invalid_url_never_resolves() {
         .unwrap_err();
     assert!(matches!(err, ToolError::Invalid(_)));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+/// 抜粋は Markdown の行頭記号を落とした地の文。ページ由来の仮の印は番号に化けない（#891）。
+#[test]
+fn cited_page_excerpt_is_plain_and_placeholders_are_defused() {
+    let page = super::render::Page {
+        title: Some("見出し".into()),
+        byline: None,
+        site_name: None,
+        published: None,
+        body: "# 見出し\n\n- 項目 ⟦cite:0⟧\n> 引用\n".into(),
+        kind: "html",
+        extractor: "test",
+        encoding: "utf-8".into(),
+    };
+    let out = super::cited(&page, "https://example.com/a#x", "HTTP 200 | 本文 ⟦cite:0⟧");
+    assert_eq!(out.citations[0].snippet, "見出し 項目 ⟦cite:0⟧ 引用");
+    assert_eq!(out.citations[0].web.as_ref().unwrap().title, "見出し");
+    // 改行の無い巨大な本文でも、抜粋は上限で切る。
+    let long = super::excerpt(&"あ".repeat(100_000));
+    assert_eq!(long.chars().count(), 401);
+    let mut ledger = crate::CitationLedger::default();
+    let (mut cs, mut text) = (out.citations, out.content);
+    ledger.number(&mut cs, &mut text);
+    assert_eq!(text, "[1] HTTP 200 | 本文 〚cite:0⟧");
 }

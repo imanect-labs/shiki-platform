@@ -30,6 +30,7 @@ import { EASE_STANDARD } from "@/components/ui/motion-primitives";
 import { useNodeNames } from "@/lib/node-name-cache";
 import { toolFacts } from "@/lib/tool-facts";
 import type { Citation } from "@/lib/chat-api";
+import { isWebCitation } from "@/lib/citation";
 import {
   describeTool,
   nodeIdOf,
@@ -174,8 +175,9 @@ function CitationChips({
   const docs = React.useMemo(() => {
     const seen = new Set<string>();
     return citations.filter((c) =>
-      // 閲覧できない出典（番号だけ）はファイルのチップにしない。
-      c.withheld || seen.has(c.node_id) ? false : (seen.add(c.node_id), true),
+      // 閲覧できない出典（番号だけ）はファイルのチップにしない。Web の出典はツールの行が
+      // 取得先のホストを既に出しているので重ねない。
+      c.withheld || isWebCitation(c) || seen.has(c.node_id) ? false : (seen.add(c.node_id), true),
     );
   }, [citations]);
   if (docs.length === 0) return null;
@@ -221,7 +223,7 @@ export function ToolActivity({
   // node_id しか持たないツール（office/document/slide/csv）と citation のファイル名を解決する。
   const nodeIds = React.useMemo(() => {
     const ids = items.map((it) => nodeIdOf(it)).filter((v): v is string => v !== null);
-    for (const c of citations) ids.push(c.node_id);
+    for (const c of citations) if (!isWebCitation(c)) ids.push(c.node_id);
     return [...new Set(ids)];
   }, [items, citations]);
   const nodeNames = useNodeNames(nodeIds);
