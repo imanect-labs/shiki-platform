@@ -64,7 +64,9 @@ import {
   columnsToConfig,
   defaultSpec,
   effectiveSort,
+  isSortable,
   resolveColumns,
+  unsortableReason,
   splitFilter,
   type ColumnModel,
   type FilterRow,
@@ -285,6 +287,13 @@ export function TableWorkspace({
     (key: string) => {
       const c = columns.find((x) => x.key === key);
       if (!c) return;
+      // 並べ替えできない列（複数選択・リンク・索引のない派生列）はサーバへ送らず理由を出す（送ると 400 で
+      // 表が消えていた・A-7）。代替列（sort_by）で並べる列は代替列で判断する。
+      const target = c.sortBy ? columns.find((x) => x.key === c.sortBy) ?? c : c;
+      if (!isSortable(target)) {
+        toast({ title: `「${c.label}」では並べ替えできません`, description: unsortableReason(target) });
+        return;
+      }
       const field = c.sortBy ?? c.key;
       setSort((s) => {
         const cur = s.find((k) => k.field === field);
@@ -324,6 +333,15 @@ export function TableWorkspace({
     }
     setProblem({ kind: "error", message: e.message });
   }, []);
+
+  // グリッドは条件の誤り（400 の構造化した理由）・時間切れ（503）を表の中で出すので、上の帯と二重に出さない。
+  const onGridError = React.useCallback(
+    (e: Error) => {
+      if (e instanceof DataApiError && (e.status === 400 || e.readTimeout)) return setProblem(null);
+      onQueryError(e);
+    },
+    [onQueryError],
+  );
 
   // 条件・並べ替えを変えたら前の案内は捨てる（新しいクエリの結果で改めて決まる）。
   const queryKey = JSON.stringify(query);
@@ -498,6 +516,25 @@ export function TableWorkspace({
         </div>
         <div className="ml-auto flex items-center gap-2 max-sm:w-full max-sm:justify-end">
           {spec.kind === "grid" ? <PeerStrip peers={peers} label={peerLabel} /> : null}
+          {spec.kind === "grid" && (status?.sortPrecision === "prefix" || status?.sortDegraded) ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  tabIndex={0}
+                  className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid="data-sort-warning"
+                >
+                  <AlertTriangle className="size-3" aria-hidden />
+                  {status?.sortPrecision === "prefix" ? "並び順は概算" : "並べ替えに時間がかかります"}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-72">
+                {status?.sortPrecision === "prefix"
+                  ? "長い値の列で並べているため、並び順は先頭の一部の文字で決まります（同じ書き出しの値どうしは完全な順になりません）。完全な順が要るときは短いコードや読み仮名の列で並べてください。"
+                  : "この並べ替えの組み合わせ用の索引を準備しています。深いページほど読み込みが遅くなります。"}
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
           <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground" data-testid="data-count" aria-live="polite">
             {countLabel(status)}
           </span>
@@ -622,12 +659,14 @@ export function TableWorkspace({
               onHeaderClick={onHeaderClick}
               onColumnResize={onColumnResize}
               onColumnMove={onColumnMove}
-              onQueryError={onQueryError}
+              onQueryError={onGridError}
               onStatus={setStatus}
               waiting={waiting}
               // 利用者の並べ替え・絞り込みを索引の自動昇格の契機にする（/data のグリッドからだけ）。
               promoteIndexes
               onPeers={setPeers}
+              importing={importJob.running}
+              onAddRecord={() => setRecordOpen(true)}
             />
           )
         ) : spec.kind === "kanban" ? (

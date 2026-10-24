@@ -363,11 +363,16 @@ export function ImportDialog({
   const downloadTemplate = () => {
     const blob = new Blob(["﻿", templateCsv(table)], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
+    // 文書に付けてからクリックし、URL の破棄はダウンロードが始まった後にする（同期で破棄するとブラウザが
+    // ファイル名を失い `download` になっていた・A-26）。ファイル名に使えない文字は置き換える。
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${table.name}.csv`;
+    a.download = `${table.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_") || "table"}-雛形.csv`;
+    a.style.display = "none";
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const submit = async (e: React.FormEvent) => {

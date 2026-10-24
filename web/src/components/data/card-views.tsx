@@ -58,6 +58,54 @@ function useRecords(tableId: string, query: DataQuery, onError: (e: Error) => vo
   return { ...state, more: () => state.cursor && void load(state.cursor) };
 }
 
+type CountResultLike = { exact: number } | { at_least: number };
+
+/// レーンの件数の表示: レーンごとの件数（サーバの集計）があればそれ、無ければ読み込み済みの数（続きがあれば
+/// 「+」を付けて、読み込み済みの数がレーンの総数に見えないようにする・A P3）。
+function laneLabel(c: CountResultLike | undefined, loaded: number, more: boolean): string {
+  if (c && "exact" in c) return c.exact.toLocaleString("ja-JP");
+  if (c && "at_least" in c) return `${c.at_least.toLocaleString("ja-JP")}+`;
+  return more ? `${loaded.toLocaleString("ja-JP")}+` : loaded.toLocaleString("ja-JP");
+}
+
+/// レーンごとの件数を別リクエストで数える（行の描画を待たせない・閲覧者本人の権限で数える）。
+function useLaneCounts(tableId: string, query: DataQuery, field: string, lanes: string[]) {
+  const [counts, setCounts] = React.useState<Map<string, CountResultLike>>(new Map());
+  const key = JSON.stringify([query.filter ?? null, field, lanes]);
+  React.useEffect(() => {
+    let active = true;
+    setCounts(new Map());
+    const base = query.filter ?? null;
+    if (lanes.length === 0) return;
+    void Promise.all(
+      lanes.map(async (l) => {
+        const lane: Condition = l ? { cmp: { field, op: "eq", value: l } } : { cmp: { field, op: "is_null" } };
+        try {
+          const res = await runQuery(tableId, {
+            filter: base ? { all: [base, lane] } : lane,
+            limit: 1,
+            with_count: true,
+            select: [],
+          });
+          return [l, res.count ?? null] as const;
+        } catch {
+          return [l, null] as const;
+        }
+      }),
+    ).then((pairs) => {
+      if (!active) return;
+      const m = new Map<string, CountResultLike>();
+      for (const [l, c] of pairs) if (c) m.set(l, c as CountResultLike);
+      setCounts(m);
+    });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tableId, key]);
+  return counts;
+}
+
 function MoreButton({ cursor, loading, onMore }: { cursor: string | null; loading: boolean; onMore: () => void }) {
   if (!cursor && !loading) return null;
   return (
@@ -113,6 +161,8 @@ export function KanbanBoard({
   const cards = (spec.card_fields ?? []).map((k) => byKey.get(k)).filter((c): c is ColumnModel => Boolean(c));
   const [title, ...rest] = cards;
   const lanes = [...(group?.field?.options ?? []), ""];
+  // 件数は索引のある列だけ数える（未索引の列の絞り込みは 400 になる。数えられなければ読み込み済みの数＋「+」）。
+  const laneCounts = useLaneCounts(tableId, query, spec.group_field, group?.field?.indexed ? lanes : []);
   const grouped = new Map<string, DataRecord[]>(lanes.map((l) => [l, []]));
   for (const r of items) {
     const v = cellValue(r, spec.group_field);
@@ -128,7 +178,9 @@ export function KanbanBoard({
             <section key={l || "__none"} className="flex w-72 shrink-0 flex-col rounded-xl bg-muted/50 p-2">
               <header className="flex items-center justify-between px-1.5 pb-2 pt-1">
                 <h3 className="truncate text-xs font-semibold">{l || "（未設定）"}</h3>
-                <span className="text-[11px] tabular-nums text-muted-foreground">{grouped.get(l)?.length ?? 0}</span>
+                <span className="text-[11px] tabular-nums text-muted-foreground" data-testid="kanban-lane-count">
+                  {laneLabel(laneCounts.get(l), grouped.get(l)?.length ?? 0, cursor !== null)}
+                </span>
               </header>
               <div className="min-h-0 flex-1 space-y-2 overflow-y-auto scrollbar-subtle">
                 {(grouped.get(l) ?? []).map((r) => (
@@ -168,7 +220,9 @@ export function GalleryGrid({
         ))}
       </div>
       {!loading && items.length === 0 ? (
-        <p className="py-16 text-center text-sm text-muted-foreground">条件に合うレコードはありません</p>
+        <p className="py-16 text-center text-sm text-muted-foreground">
+          {query.filter ? "条件に合うレコードはありません" : "まだレコードがありません"}
+        </p>
       ) : null}
       <MoreButton cursor={cursor} loading={loading} onMore={more} />
     </div>

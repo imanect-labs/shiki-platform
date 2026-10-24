@@ -58,9 +58,28 @@ export class DataApiError extends Error {
     public status: number,
     public body: Record<string, unknown> | null,
     message: string,
+    /// `Retry-After`（秒・503 read_timeout / 429 で再試行までの目安）。
+    public retryAfterSec: number | null = null,
   ) {
     super(message);
     this.name = "DataApiError";
+  }
+
+  /// 誤りに関係する列の参照名（構造化した 400 の `field`・409 の索引の準備中など）。呼び出し側が表示名に直す。
+  get field(): string | null {
+    const f = this.body?.field;
+    return typeof f === "string" && f ? f : null;
+  }
+
+  /// テーブル名の重複（`name_taken`）。旧サーバは 409 `conflict` で返すので、テーブルの作成・改名の文脈で
+  /// 呼び出し側が `conflict` も同じに扱う。
+  get nameTaken(): boolean {
+    return this.status === 409 && this.code === "name_taken";
+  }
+
+  /// 読み取りが時間内に終わらなかった（負荷・`read_timeout`）。少し待てば読める。
+  get readTimeout(): boolean {
+    return this.status === 503 && (this.code === "read_timeout" || this.code === null);
   }
 
   /// 構造化した誤りの種類（409: `rev_conflict` / `unique_violation` / `derived_recomputing` /
@@ -123,6 +142,38 @@ function codeMessage(body: Record<string, unknown> | null): string | null {
       return "この列の索引を準備しています。完了するまでお待ちください";
     case "index_approval_required":
       return "索引列の上限を超えるため、テーブルの管理者の承認が要ります";
+    case "name_taken":
+      return "同じ名前のテーブルがあります。別の名前にしてください";
+    case "read_timeout":
+      return "混み合っていて読み込みが時間内に終わりませんでした。少し待ってから再試行してください";
+    case "cursor_invalid":
+      return "読み込み位置が古くなりました。最初から読み込み直してください";
+    case "offset_not_supported":
+      return "この読み方はできません（続きは読み込み位置で取ってください）";
+    case "field_not_indexed":
+      return "この列は索引が無いため、並べ替え・絞り込みに使えません";
+    case "field_not_sortable":
+      return "この列では並べ替えできません";
+    case "value_type_mismatch":
+      return "値の種類が列と合いません（数値の列に文字を入れた・日付の形が違うなど）";
+    case "value_out_of_range":
+      return "値が範囲の外です";
+    case "value_too_long":
+      return "文字数が多すぎます";
+    case "required_missing":
+      return "必須の列が空です";
+    case "invalid_option":
+      return "選択肢に無い値です";
+    case "too_many_values":
+      return "選べる数を超えています";
+    case "schema_invalid":
+      return "列の設定が正しくありません";
+    case "invalid_input":
+      return "使えない文字が含まれています";
+    case "snapshot_unsupported":
+      return "この並べ替えでは固定の読み取りができません";
+    case "fsm_invalid":
+      return "状態の遷移の定義が正しくありません";
     case "import_too_large": {
       const max = Number(body?.max_bytes ?? 0);
       return max > 0
@@ -151,6 +202,13 @@ function fallbackMessage(status: number): string {
       return "読み取りの基準が古くなりました。最初から読み込み直してください";
     case 429:
       return "混み合っています。しばらくしてから再試行してください";
+    case 413:
+      return "送る内容が大きすぎます";
+    case 502:
+    case 504:
+      return "サーバーに接続できませんでした。しばらくしてから再試行してください";
+    case 503:
+      return "混み合っていて処理が時間内に終わりませんでした。少し待ってから再試行してください";
     default:
       return `サーバーエラー（${status}）`;
   }
@@ -167,12 +225,15 @@ async function ok<T>(res: Response): Promise<T> {
   } catch {
     body = null;
   }
+  // 構造化した誤り（{code, message, field?}）の message は利用者に見せてよい文言（サーバが閲覧者の読めない
+  // 列名・値・内部 ID を入れない）。無ければ code・状態コードの既定の文言にする。
   const message =
     (typeof body?.message === "string" && body.message) ||
     (typeof body?.detail === "string" && body.detail) ||
     codeMessage(body) ||
     fallbackMessage(res.status);
-  throw new DataApiError(res.status, body, message);
+  const ra = Number(res.headers.get("retry-after"));
+  throw new DataApiError(res.status, body, message, Number.isFinite(ra) && ra > 0 ? ra : null);
 }
 
 function send(method: string, body: unknown): RequestInit {

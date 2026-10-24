@@ -2,10 +2,11 @@
 
 /// 業務データ（構造化データ）のテーブル一覧（Task 15.5）: 自分が使えるテーブル（owner・共有された）と作成。
 
-import { Database, Loader2, Plus, Table2 } from "lucide-react";
+import { Database, Loader2, Plus, Table2, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import * as React from "react";
 
+import { ConfirmDialog } from "@/components/drive/dialogs";
 import { PageContainer } from "@/components/shell/page-container";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,7 +22,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/use-toast";
 import { useMe } from "@/hooks/use-me";
-import { createTable, listTables, type DataTable } from "@/lib/data-api";
+import { createTable, DataApiError, deleteTable, listTables, type DataTable } from "@/lib/data-api";
 import { keyFromLabel } from "@/lib/data-view";
 import { cn } from "@/lib/utils";
 
@@ -39,10 +40,12 @@ function CreateTableDialog({
   const [name, setName] = React.useState("");
   const [first, setFirst] = React.useState("名前");
   const [busy, setBusy] = React.useState(false);
+  const [nameError, setNameError] = React.useState<string | null>(null);
   React.useEffect(() => {
     if (open) {
       setName("");
       setFirst("名前");
+      setNameError(null);
     }
   }, [open]);
   const submit = async (e: React.FormEvent) => {
@@ -58,6 +61,15 @@ function CreateTableDialog({
       });
       onCreated(t);
     } catch (err) {
+      // 同じ名前（409 name_taken・旧サーバは 409 conflict）は名前の欄の下に出す（A-2）。
+      if (err instanceof DataApiError && (err.nameTaken || (err.status === 409 && err.code === "conflict"))) {
+        setNameError("同じ名前のテーブルがあります。別の名前にしてください。");
+        return;
+      }
+      if (err instanceof DataApiError && err.status === 400 && err.field === "name") {
+        setNameError(err.message);
+        return;
+      }
       toast({
         variant: "destructive",
         title: "テーブルを作れませんでした",
@@ -85,9 +97,19 @@ function CreateTableDialog({
                 autoFocus
                 maxLength={128}
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setNameError(null);
+                }}
                 placeholder="例: 経費精算"
+                aria-invalid={nameError ? true : undefined}
+                aria-describedby={nameError ? "new-table-name-error" : undefined}
               />
+              {nameError ? (
+                <p id="new-table-name-error" role="alert" className="text-xs text-destructive">
+                  {nameError}
+                </p>
+              ) : null}
             </div>
             <div className="space-y-1.5">
               <label htmlFor="new-table-first" className="text-xs font-medium">
@@ -116,6 +138,7 @@ export default function DataTablesPage() {
   const me = useMe();
   const [items, setItems] = React.useState<DataTable[] | null>(null);
   const [creating, setCreating] = React.useState(false);
+  const [deleting, setDeleting] = React.useState<DataTable | null>(null);
 
   React.useEffect(() => {
     listTables()
@@ -166,11 +189,11 @@ export default function DataTablesPage() {
       ) : (
         <ul className="rule-soft overflow-hidden rounded-xl border bg-card" data-testid="data-table-list">
           {items.map((t, i) => (
-            <li key={t.id} className={cn(i > 0 && "shiki-dash-top")}>
+            <li key={t.id} className={cn("group/row relative flex items-center", i > 0 && "shiki-dash-top")}>
               <button
                 type="button"
                 onClick={() => router.push(`/data/${t.id}`)}
-                className="flex w-full min-w-0 items-center gap-4 px-4 py-3.5 text-left transition-colors duration-fast hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                className="flex w-full min-w-0 flex-1 items-center gap-4 px-4 py-3.5 text-left transition-colors duration-fast hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
               >
                 <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                   <Table2 className="size-4.5" aria-hidden />
@@ -186,10 +209,41 @@ export default function DataTablesPage() {
                   </span>
                 </span>
               </button>
+              {/* 削除はテーブルの owner（作成者）だけ（サーバも owner 以外を 403 にする）。アプリのテーブルはアプリ側で消す。 */}
+              {t.created_by === me.data?.id && !t.app_id ? (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`「${t.name}」を削除`}
+                  // マウスではホバーで出す。タッチ端末には hover が無いので常に出す。
+                  className="mr-2 shrink-0 text-muted-foreground transition-opacity duration-fast hover:text-destructive focus-visible:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/row:opacity-100"
+                  onClick={() => setDeleting(t)}
+                >
+                  <Trash2 className="size-4" aria-hidden />
+                </Button>
+              ) : null}
             </li>
           ))}
         </ul>
       )}
+      <ConfirmDialog
+        open={deleting !== null}
+        onOpenChange={(o) => !o && setDeleting(null)}
+        title="テーブルを削除しますか？"
+        description={
+          deleting
+            ? `「${deleting.name}」とそのレコード・ビューを削除します。元に戻せません。このテーブルを使うワークフローやアプリは読めなくなります。`
+            : undefined
+        }
+        confirmLabel="削除する"
+        destructive
+        onConfirm={async () => {
+          if (!deleting) return;
+          await deleteTable(deleting.id);
+          setItems((xs) => (xs ?? []).filter((x) => x.id !== deleting.id));
+          toast({ title: `「${deleting.name}」を削除しました` });
+        }}
+      />
       <CreateTableDialog
         open={creating}
         onOpenChange={setCreating}

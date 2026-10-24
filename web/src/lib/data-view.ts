@@ -128,6 +128,24 @@ export function isSortable(c: ColumnModel): boolean {
   return true;
 }
 
+/// 絞り込みに使える列か（並べ替えできる列に加え、複数選択は要素ごとの索引で「含む」を引ける）。
+export function isFilterable(c: ColumnModel): boolean {
+  if (isSortable(c)) return true;
+  const f = c.field;
+  return Boolean(f && f.type === "multi_select" && f.materialization !== "per_viewer" && f.materialization !== "volatile");
+}
+
+/// 並べ替えできない理由（見出しのクリック・並べ替えの選択肢で案内する）。
+export function unsortableReason(c: ColumnModel): string {
+  const t = c.field?.type;
+  if (t === "multi_select") return "複数選択の列は並べ替えできません（絞り込みはできます）";
+  if (t === "record_ref") return "リンクの列は並べ替えできません";
+  if (t === "lookup" || t === "rollup" || t === "formula" || t === "computed") {
+    return "この派生列は並べ替えできません（索引を付けられる派生列だけが並べ替えに使えます）";
+  }
+  return "この列は並べ替えできません";
+}
+
 /// 直接編集できる列か（派生列・参照系は読み取り専用）。
 export function isEditable(f: FieldDef | null): boolean {
   if (!f) return false;
@@ -151,6 +169,15 @@ const dateTimeFmt = new Intl.DateTimeFormat("ja-JP", {
   minute: "2-digit",
 });
 const numberFmt = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 10 });
+const expFmt = new Intl.NumberFormat("en-US", { notation: "scientific", maximumSignificantDigits: 6 });
+
+/// 数値の表示（桁区切り）。桁が多すぎてセルに収まらない値（±1e15 以上・極小値）は指数表記にして、
+/// 符号と桁数が見えるようにする（右寄せのセルで左端が切れて符号・桁が消えていた・D-12）。
+export function formatNumber(n: number): string {
+  const a = Math.abs(n);
+  if (a !== 0 && (a >= 1e15 || a < 1e-6)) return expFmt.format(n);
+  return numberFmt.format(n);
+}
 
 /// 表示用の文字列。
 export function formatValue(v: unknown, field: FieldDef | null, key?: string): string {
@@ -161,11 +188,11 @@ export function formatValue(v: unknown, field: FieldDef | null, key?: string): s
     const d = new Date(v);
     return Number.isNaN(d.getTime()) ? v : dateTimeFmt.format(d);
   }
-  if (typeof v === "number") return numberFmt.format(v);
+  if (typeof v === "number") return formatNumber(v);
   if (typeof v === "string" && (type === "number" || field?.result_type === "number") && v !== "") {
     // numeric は文字列で届くことがある（精度を保つ）。表示だけ桁区切りにする。
     const n = Number(v);
-    return Number.isFinite(n) && Math.abs(n) < 1e15 ? numberFmt.format(n) : v;
+    return Number.isFinite(n) && Math.abs(n) < 1e15 ? formatNumber(n) : v.length > 18 && Number.isFinite(n) ? expFmt.format(n) : v;
   }
   if (typeof v === "boolean") return v ? "はい" : "いいえ";
   if (typeof v === "object") return JSON.stringify(v);
@@ -216,6 +243,45 @@ export function userRefIds(rows: readonly DataRecord[], cols: readonly ColumnMod
   return [...out];
 }
 
+/// 日付の入力（`2026-10-01`・`2026/10/1`）→ `YYYY-MM-DD`。暦にない日付・0001〜9999 年の外は null。
+export function normalizeDate(t: string): string | null {
+  const m = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(t.trim());
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (y < 1 || mo < 1 || mo > 12 || d < 1) return null;
+  const dt = new Date(Date.UTC(2000, mo - 1, d));
+  dt.setUTCFullYear(y);
+  if (dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  return `${m[1]}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+/// 絞り込み・書式の比較値の検査（列の型に合わない値はサーバへ送らない・A-9）。合えば送る値を返す。
+export function parseFilterValue(
+  text: string,
+  col: Pick<ColumnModel, "key" | "field"> | undefined,
+  op: CondOp,
+): { ok: true; value: unknown } | { ok: false; error: string } {
+  if (op === "exists" || op === "is_null") return { ok: true, value: undefined };
+  const t = text.trim();
+  if (t === "") return { ok: false, error: "値を入れてください" };
+  const type = col?.field?.type ?? (col?.key === "_created_at" || col?.key === "_updated_at" ? "date_time" : undefined);
+  const resultType = col?.field?.result_type;
+  if (type === "number" || resultType === "number") {
+    const n = Number(t.replace(/[,，\s]/g, ""));
+    return Number.isFinite(n) ? { ok: true, value: n } : { ok: false, error: "数値を入れてください" };
+  }
+  if (type === "date" || resultType === "date") {
+    const d = normalizeDate(t);
+    return d ? { ok: true, value: d } : { ok: false, error: "日付を選んでください（例: 2026-10-01）" };
+  }
+  if (type === "date_time" || resultType === "date_time") {
+    // datetime-local の値（タイムゾーンなし）は手元の時刻として UTC に直す。
+    const dt = new Date(t);
+    return Number.isNaN(dt.getTime()) ? { ok: false, error: "日時を選んでください" } : { ok: true, value: dt.toISOString() };
+  }
+  return { ok: true, value: t };
+}
+
 /// 入力の文字列 → 保存する値（型の検査は画面でも行い、正はサーバの検証器）。
 export function parseInput(
   text: string,
@@ -225,13 +291,22 @@ export function parseInput(
   if (t === "") return { ok: true, value: null };
   switch (field.type) {
     case "number": {
-      const n = Number(t.replace(/,/g, ""));
-      return Number.isFinite(n) ? { ok: true, value: n } : { ok: false, error: "数値を入力してください" };
+      const plain = t.replace(/[,，\s]/g, "");
+      const n = Number(plain);
+      if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(plain) || !Number.isFinite(n)) {
+        return { ok: false, error: "数値を入力してください" };
+      }
+      // 有効桁が 15 桁を超える値は数値として正確に保てない（黙って丸めずに知らせる・A-15）。
+      const digits = plain.replace(/[eE].*$/, "").replace(/^[+-]/, "").replace(".", "").replace(/^0+/, "");
+      if (digits.replace(/0+$/, "").length > 15) {
+        return { ok: false, error: "有効桁が 15 桁を超える数値は正確に保存できません（桁を減らすか、テキストの列を使ってください）" };
+      }
+      return { ok: true, value: n };
     }
-    case "date":
-      return /^\d{4}-\d{2}-\d{2}$/.test(t)
-        ? { ok: true, value: t }
-        : { ok: false, error: "日付は YYYY-MM-DD で入力してください" };
+    case "date": {
+      const d = normalizeDate(t);
+      return d ? { ok: true, value: d } : { ok: false, error: "日付は 2026-10-01 の形で入力してください（0001〜9999 年）" };
+    }
     case "date_time": {
       const d = new Date(t);
       return Number.isNaN(d.getTime())
@@ -359,6 +434,7 @@ export const OP_LABELS: Partial<Record<string, string>> = {
   gte: "が次以上",
   contains: "が次を含む",
   starts_with: "が次で始まる",
+  ends_with: "が次で終わる",
   exists: "が空でない",
   is_null: "が空",
 };
@@ -376,20 +452,38 @@ export function splitFilter(c: Condition | null | undefined): { rows: FilterRow[
   for (const l of leaves) {
     if (!("cmp" in l) || (l.cmp.op === "in") || Array.isArray(l.cmp.value)) return { rows: [], advanced: c };
     rows.push({ field: l.cmp.field, op: l.cmp.op, value: l.cmp.value == null ? "" : String(l.cmp.value) });
+    // 日時の値（UTC の ISO）は datetime-local の入力欄に合わせて手元の時刻へ直して見せる。
+    const last = rows[rows.length - 1];
+    if (typeof l.cmp.value === "string" && /T\d{2}:\d{2}/.test(l.cmp.value) && /Z|[+-]\d{2}:?\d{2}$/.test(l.cmp.value)) {
+      last.value = toLocalInput(l.cmp.value);
+    }
   }
   return { rows, advanced: null };
 }
 
 export function buildFilter(rows: FilterRow[], advanced: Condition | null, columns: ColumnModel[]): Condition | null {
-  const leaves: Condition[] = rows.map((r) => {
+  const leaves: Condition[] = [];
+  for (const r of rows) {
     const col = columns.find((c) => c.key === r.field);
-    const numeric = col?.field?.type === "number";
-    const value = NO_VALUE.includes(r.op) ? undefined : numeric ? Number(r.value) : r.value;
-    return { cmp: { field: r.field, op: r.op, value } };
-  });
+    if (NO_VALUE.includes(r.op)) {
+      leaves.push({ cmp: { field: r.field, op: r.op } });
+      continue;
+    }
+    // 型に合わない値の条件は送らない（画面で弾いているが、保存ビューの古い条件も含めて守る）。
+    const v = parseFilterValue(r.value, col, r.op);
+    if (v.ok) leaves.push({ cmp: { field: r.field, op: r.op, value: v.value } });
+  }
   if (advanced) leaves.push(advanced);
   if (leaves.length === 0) return null;
   return leaves.length === 1 ? leaves[0] : { all: leaves };
+}
+
+/// ISO の日時 → datetime-local の入力値（手元の時刻・分まで）。
+export function toLocalInput(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${String(d.getFullYear()).padStart(4, "0")}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /// 表示名から参照名を作る（英数字だけなら小文字のスネークケース、そうでなければ連番）。

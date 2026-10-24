@@ -32,12 +32,13 @@ import {
   type TextCell,
   type Theme,
 } from "@glideapps/glide-data-grid";
-import { AlertTriangle, Loader2, RefreshCw, WifiOff } from "lucide-react";
+import { AlertTriangle, Loader2, Plus, RefreshCw, Trash2, WifiOff } from "lucide-react";
 import * as React from "react";
 import { flushSync } from "react-dom";
 
 import { resolveColor, useGlideTheme } from "@/components/csv/glide-theme";
 import { GridTextEditor } from "@/components/data/grid-text-editor";
+import { ConfirmDialog } from "@/components/drive/dialogs";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/use-toast";
 import {
@@ -49,6 +50,7 @@ import {
 } from "@/lib/data-awareness";
 import {
   DataApiError,
+  deleteRecord,
   getRecord,
   getViewerContext,
   postAwareness,
@@ -99,6 +101,10 @@ export type DataGridStatus = {
   done: boolean;
   count: CountResult | null;
   firstRenderMs: number | null;
+  /// 並べ替えが索引の先頭の一部の文字で決まる（長い値は完全な順にならない・data-platform §3.3）。
+  sortPrecision?: "exact" | "prefix" | null;
+  /// この並べ替えの組み合わせは複合索引の準備中で、深いページほど遅い（§5.3）。
+  sortDegraded?: boolean;
 };
 
 type Props = {
@@ -130,6 +136,10 @@ type Props = {
   promoteIndexes?: boolean;
   /// 他ユーザーの位置が変わった（ツールバーに顔ぶれを出すため）。
   onPeers?: (peers: Peer[]) => void;
+  /// 自分の取込の最中（取り込んだ行の出現を「新しいレコード」と数えない・終わったら呼び出し側が読み直す）。
+  importing?: boolean;
+  /// 行が 1 件も無いときの「レコードを追加」（編集できる人だけ）。
+  onAddRecord?: () => void;
 };
 
 /// 行のセル（編集を始めた時点の行 id と rev を持たせる）。
@@ -173,9 +183,13 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     waiting,
     promoteIndexes,
     onPeers,
+    importing,
+    onAddRecord,
   },
   ref,
 ) {
+  const importingRef = React.useRef(importing);
+  importingRef.current = importing;
   const fetchPageRef = React.useRef(fetchPage);
   fetchPageRef.current = fetchPage;
   const embedded = Boolean(fetchPage);
@@ -284,6 +298,10 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       if (first) {
         stale.current = [];
         setInitial("ready");
+        report({
+          sortPrecision: (res.sort_precision as DataGridStatus["sortPrecision"]) ?? null,
+          sortDegraded: Boolean(res.sort_degraded),
+        });
         // 初回描画の所要（クエリ発行から先頭ページを描くまで）を計測に残す。
         requestAnimationFrame(() => {
           const ms = Math.round(performance.now() - startedAt.current);
@@ -332,7 +350,12 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         setFailure(
           e instanceof DataApiError && (e.status === 403 || e.status === 404)
             ? "このテーブルを見る権限がありません（共有が外されたか、削除されました）"
-            : null,
+            : e instanceof DataApiError && (e.readTimeout || e.status === 400)
+              ? // 負荷で時間切れ（少し待てば読める）・条件の誤り（構造化した理由）はその文言を出す。
+                e.retryAfterSec
+                ? `${e.message}（${e.retryAfterSec} 秒ほど）`
+                : e.message
+              : null,
         );
         setInitial(waiting ? "preparing" : "error");
       }
@@ -398,7 +421,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         if (gen !== generation.current) return;
         const i = indexById.current.get(record.id);
         if (i === undefined) {
-          setNewRows((n) => n + 1);
+          // 自分の取込で現れた行は数えない（取込が終われば読み直す）。
+          if (!importingRef.current) setNewRows((n) => n + 1);
           if (!derived) refreshCountSoon(gen);
           return;
         }
@@ -438,7 +462,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       onBulk: (count) => {
         if (gen !== generation.current) return;
         // 取込などでまとめて作られた行: 並び順の途中に差し込まず、件数だけ数えて「表示する」を出す。
-        setNewRows((n) => n + count);
+        if (!importingRef.current) setNewRows((n) => n + count);
         refreshCountSoon(gen);
       },
       onAwareness: (a) => {
@@ -634,6 +658,14 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version, groupKeys, collapsed, colByKey, showingStale, namesVersion]);
+
+  // グループを畳んで表示行が減ったら、見えている範囲が末尾に届いていれば続きを読む（畳んだまま空白に
+  // ならない）。
+  React.useEffect(() => {
+    const v = visibleRegion.current;
+    if (!done.current && initial === "ready" && v && v.y + v.height + PREFETCH_ROWS >= display.length) void fetchNext();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collapsed]);
 
   const loadingRows = done.current ? 0 : LOADING_ROWS;
   const totalRows = display.length + (initial === "ready" ? loadingRows : 0);
@@ -836,6 +868,65 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     flushSync(() => setSelection(s));
   }, []);
 
+  // ---- 行の削除（行番号で行を選んで「削除」・A-4） ----
+  const selectedRecords = React.useMemo(() => {
+    if (embedded || !canEdit || showingStale) return [];
+    const out: DataRecord[] = [];
+    for (const y of selection.rows) {
+      const d = display[y];
+      if (d?.kind !== "row") continue;
+      const r = rows.current[d.index];
+      if (r) out.push(r);
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection.rows, display, embedded, canEdit, showingStale, version]);
+  const [confirmDelete, setConfirmDelete] = React.useState<DataRecord[] | null>(null);
+  const deleteRecords = async (targets: DataRecord[]) => {
+    const gen = generation.current;
+    const results = await Promise.allSettled(targets.map((r) => deleteRecord(tableId, r.id, r.rev)));
+    if (gen !== generation.current) return;
+    const gone = new Set<string>();
+    let conflicts = 0;
+    let firstError: string | null = null;
+    results.forEach((res, i) => {
+      if (res.status === "fulfilled") gone.add(targets[i].id);
+      else if (res.reason instanceof DataApiError && res.reason.revConflict) conflicts += 1;
+      else firstError ??= res.reason instanceof Error ? res.reason.message : String(res.reason);
+    });
+    if (gone.size) {
+      rows.current = rows.current.filter((r) => !gone.has(r.id));
+      rebuildIndex();
+      report({ loaded: rows.current.length });
+      setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
+      refreshCountSoon(gen);
+      bump();
+    }
+    if (conflicts || firstError) {
+      toast({
+        variant: "destructive",
+        title: gone.size ? `${gone.size} 件を削除し、${targets.length - gone.size} 件は削除できませんでした` : "削除できませんでした",
+        description: conflicts
+          ? "他の人が先に更新した行があります。内容を確かめてからもう一度削除してください。"
+          : (firstError ?? undefined),
+      });
+      if (conflicts) resetRef.current?.();
+    } else {
+      toast({ title: `${gone.size.toLocaleString("ja-JP")} 件のレコードを削除しました` });
+    }
+  };
+  /// Delete キー: 行を選んでいるときはセルを空にせず、行の削除を確かめる（行ごと空にしない）。
+  const onDelete = React.useCallback(
+    (sel: GridSelection): boolean | GridSelection => {
+      if (sel.rows.length > 0) {
+        if (selectedRecords.length) setConfirmDelete(selectedRecords);
+        return false;
+      }
+      return true;
+    },
+    [selectedRecords],
+  );
+
   fetchNextRef.current = fetchNext;
   const onVisibleRegionChanged = React.useCallback(
     (r: Rectangle) => {
@@ -1020,10 +1111,70 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         </div>
       ) : null}
       {initial === "ready" && display.length === 0 && done.current ? (
-        <div className="pointer-events-none absolute inset-x-0 top-24 z-10 text-center text-sm text-muted-foreground">
-          条件に合うレコードはありません
+        // 0 行: 絞り込みが掛かっていれば「条件に合う行が無い」、無ければテーブルが空（D-13）。
+        query.filter ? (
+          <div className="pointer-events-none absolute inset-x-0 top-24 z-10 text-center text-sm text-muted-foreground" data-testid="data-grid-empty">
+            条件に合うレコードはありません
+          </div>
+        ) : (
+          <div
+            className="absolute left-1/2 top-20 z-10 flex -translate-x-1/2 flex-col items-center gap-2.5 rounded-xl border bg-card px-6 py-5 text-center text-sm text-muted-foreground shadow-xs"
+            data-testid="data-grid-empty"
+          >
+            <p>まだレコードがありません</p>
+            {onAddRecord && canEdit ? (
+              <button
+                type="button"
+                onClick={onAddRecord}
+                className="inline-flex items-center gap-1.5 rounded-md border bg-card px-3 py-1.5 text-xs font-medium text-foreground shadow-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Plus className="size-3.5" aria-hidden />
+                最初のレコードを追加
+              </button>
+            ) : null}
+          </div>
+        )
+      ) : null}
+      {selectedRecords.length > 0 && !confirmDelete ? (
+        <div
+          role="toolbar"
+          aria-label="選択した行の操作"
+          data-testid="data-grid-selection"
+          className={cn(
+            "absolute left-4 z-20 flex items-center gap-2 rounded-xl border bg-card px-3 py-1.5 text-xs shadow-md",
+            newRows > 0 || live ? "bottom-16" : "bottom-4",
+          )}
+        >
+          <span className="tabular-nums">{selectedRecords.length.toLocaleString("ja-JP")} 件を選択中</span>
+          <button
+            type="button"
+            onClick={() => setConfirmDelete(selectedRecords)}
+            data-testid="data-grid-delete-rows"
+            className="inline-flex items-center gap-1 rounded-md border border-destructive/40 px-2 py-1 font-medium text-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Trash2 className="size-3.5" aria-hidden />
+            削除
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() })}
+            className="rounded-md px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            選択を外す
+          </button>
         </div>
       ) : null}
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        onOpenChange={(o) => !o && setConfirmDelete(null)}
+        title={`${(confirmDelete?.length ?? 0).toLocaleString("ja-JP")} 件のレコードを削除しますか？`}
+        description="削除したレコードは元に戻せません。リンクしている他のレコードからも外れます。"
+        confirmLabel="削除する"
+        destructive
+        onConfirm={async () => {
+          if (confirmDelete) await deleteRecords(confirmDelete);
+        }}
+      />
       {editStale ? (
         <div
           role="alert"
@@ -1048,7 +1199,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           className="absolute bottom-4 left-1/2 z-20 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-primary/30 bg-card px-3 py-1.5 text-xs font-medium text-primary shadow-md transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <RefreshCw className="size-3.5" aria-hidden />
-          新しいレコード {newRows} 件 · 表示する
+          新しいレコード {newRows.toLocaleString("ja-JP")} 件 · 表示する
         </button>
       ) : null}
       {live && initial === "ready" ? (
@@ -1100,6 +1251,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         gridSelection={selection}
         // 選択は同期で確定する（クリック直後の Enter・打鍵が、選択の反映前の描画に届いて取りこぼされない）。
         onGridSelectionChange={onSelectionChange}
+        onDelete={canEdit && !embedded ? onDelete : undefined}
         highlightRegions={highlightRegions}
         onHeaderClicked={onHeaderClick ? (col) => columns[col] && onHeaderClick(columns[col].key) : undefined}
         onHeaderMenuClick={onHeaderMenu ? (col, b) => columns[col] && onHeaderMenu(columns[col].key, b) : undefined}
@@ -1121,7 +1273,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         freezeColumns={freezeColumns}
         // 見出しのクリックは並べ替え（列の選択にしない・選択色で見出しが読めなくなるのを避ける）。
         columnSelect="none"
-        rowMarkers={embedded ? "none" : "number"}
+        // 行番号のクリックで行を選ぶ（選んだ行を削除できる・A-4）。
+        rowMarkers={embedded ? "none" : canEdit ? "clickable-number" : "number"}
         smoothScrollX
         smoothScrollY
         width="100%"

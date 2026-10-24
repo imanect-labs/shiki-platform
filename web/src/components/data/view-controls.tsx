@@ -27,7 +27,15 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { CondOp, ConditionalFormat, FormatColor, GroupConfig, SortKey } from "@/lib/data-api";
-import { FORMAT_COLORS, isSortable, OP_LABELS, type ColumnModel, type FilterRow } from "@/lib/data-view";
+import {
+  FORMAT_COLORS,
+  isFilterable,
+  isSortable,
+  OP_LABELS,
+  parseFilterValue,
+  type ColumnModel,
+  type FilterRow,
+} from "@/lib/data-view";
 import { cn } from "@/lib/utils";
 
 export type { FilterRow };
@@ -88,18 +96,88 @@ function FieldSelect({
   );
 }
 
-/// 演算子の候補（列の型と検索可否で絞る）。
+/// 演算子の候補（列の型と検索可否で絞る）。複数選択の「等しい」は「含む」の意味（要素のどれかが等しい）。
 function opsFor(c: ColumnModel | undefined): CondOp[] {
   if (!c) return ["eq"];
   const t = c.field?.type;
+  const rt = c.field?.result_type;
   const base: CondOp[] = ["eq", "neq"];
-  if (t === "number" || t === "date" || t === "date_time" || c.key === "_created_at" || c.key === "_updated_at") {
-    base.push("lt", "lte", "gt", "gte");
-  }
+  const ordered =
+    t === "number" || t === "date" || t === "date_time" || rt === "number" || rt === "date" || rt === "date_time" ||
+    c.key === "_created_at" || c.key === "_updated_at";
+  if (ordered) base.push("lt", "lte", "gt", "gte");
   if (t === "text") base.push("starts_with");
-  if (c.field?.searchable) base.push("contains");
+  // 部分一致・末尾一致は検索用の索引（searchable）を引く。
+  if (c.field?.searchable) base.push("contains", "ends_with");
   base.push("exists", "is_null");
   return base;
+}
+
+/// 比べ方の表示（複数選択の「等しい」は「含む」と読める文言にする）。
+function opLabel(c: ColumnModel | undefined, op: CondOp): string {
+  if (c?.field?.type === "multi_select") {
+    if (op === "eq") return "が次を含む";
+    if (op === "neq") return "が次を含まない";
+  }
+  return OP_LABELS[op] ?? op;
+}
+
+/// 比較値の入力欄（列の型ごとの部品）。
+function ValueInput({
+  col,
+  value,
+  onChange,
+  onEnter,
+  label,
+  invalid,
+  className,
+}: {
+  col: ColumnModel | undefined;
+  value: string;
+  onChange: (v: string) => void;
+  onEnter?: () => void;
+  label: string;
+  invalid?: boolean;
+  className?: string;
+}) {
+  const t = col?.field?.type;
+  const rt = col?.field?.result_type;
+  if ((t === "select" || t === "multi_select") && col?.field) {
+    return (
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger aria-label={label} className={cn("h-8 text-[13px]", className)}>
+          <SelectValue placeholder="値を選ぶ" />
+        </SelectTrigger>
+        <SelectContent>
+          {(col.field.options ?? []).map((o) => (
+            <SelectItem key={o} value={o}>
+              {o}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
+  }
+  const kind =
+    t === "date" || rt === "date"
+      ? "date"
+      : t === "date_time" || rt === "date_time" || col?.key === "_created_at" || col?.key === "_updated_at"
+        ? "datetime-local"
+        : "text";
+  const numeric = t === "number" || rt === "number";
+  return (
+    <Input
+      aria-label={label}
+      aria-invalid={invalid || undefined}
+      type={kind}
+      inputMode={numeric ? "decimal" : undefined}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => e.key === "Enter" && onEnter?.()}
+      placeholder={numeric ? "数値" : "値"}
+      className={cn("h-8 text-[13px]", invalid && "border-destructive focus-visible:ring-destructive/40", className)}
+    />
+  );
 }
 
 export function FilterControl({
@@ -116,7 +194,7 @@ export function FilterControl({
   advanced: boolean;
   onClearAdvanced: () => void;
 }) {
-  const filterable = columns.filter(isSortable);
+  const filterable = columns.filter(isFilterable);
   const [draft, setDraft] = React.useState<FilterRow[]>(rows);
   const [open, setOpen] = React.useState(false);
   React.useEffect(() => {
@@ -124,7 +202,15 @@ export function FilterControl({
   }, [open, rows]);
   const set = (i: number, patch: Partial<FilterRow>) =>
     setDraft((d) => d.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  // 型に合わない値（数値の列に文字・日付でない文字列）は送らない（A-9）。空の値の条件は適用時に捨てる。
+  const errorOf = (r: FilterRow): string | null => {
+    if (!r.field || NO_VALUE_OPS.includes(r.op) || r.value.trim() === "") return null;
+    const v = parseFilterValue(r.value, columns.find((c) => c.key === r.field), r.op);
+    return v.ok ? null : v.error;
+  };
+  const hasError = draft.some((r) => errorOf(r) !== null);
   const apply = () => {
+    if (hasError) return;
     onChange(draft.filter((r) => r.field && (NO_VALUE_OPS.includes(r.op) || r.value.trim() !== "")));
     setOpen(false);
   };
@@ -159,13 +245,15 @@ export function FilterControl({
             {draft.map((r, i) => {
               const col = columns.find((c) => c.key === r.field);
               const ops = opsFor(col);
+              const err = errorOf(r);
               return (
                 <li key={i} className="grid grid-cols-[1fr_1fr_auto] items-center gap-1.5 sm:grid-cols-[9rem_9rem_1fr_auto]">
                   <FieldSelect
                     label={`条件 ${i + 1} の列`}
                     value={r.field}
                     columns={filterable}
-                    onChange={(field) => set(i, { field, op: opsFor(columns.find((c) => c.key === field))[0] })}
+                    // 列を変えたら比べ方と値は列の型に合わせて作り直す（前の列の値を持ち越さない）。
+                    onChange={(field) => set(i, { field, op: opsFor(columns.find((c) => c.key === field))[0], value: "" })}
                   />
                   <Select value={r.op} onValueChange={(op) => set(i, { op: op as CondOp })}>
                     <SelectTrigger aria-label={`条件 ${i + 1} の比べ方`} className="h-8 text-[13px]">
@@ -174,36 +262,27 @@ export function FilterControl({
                     <SelectContent>
                       {ops.map((o) => (
                         <SelectItem key={o} value={o}>
-                          {OP_LABELS[o] ?? o}
+                          {opLabel(col, o)}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                   <div className="col-span-2 row-start-2 sm:col-span-1 sm:row-start-auto">
-                    {NO_VALUE_OPS.includes(r.op) ? null : col?.field?.type === "select" ||
-                      col?.field?.type === "multi_select" ? (
-                      <Select value={r.value} onValueChange={(value) => set(i, { value })}>
-                        <SelectTrigger aria-label={`条件 ${i + 1} の値`} className="h-8 text-[13px]">
-                          <SelectValue placeholder="値を選ぶ" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {(col.field.options ?? []).map((o) => (
-                            <SelectItem key={o} value={o}>
-                              {o}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Input
-                        aria-label={`条件 ${i + 1} の値`}
+                    {NO_VALUE_OPS.includes(r.op) ? null : (
+                      <ValueInput
+                        col={col}
+                        label={`条件 ${i + 1} の値`}
                         value={r.value}
-                        onChange={(e) => set(i, { value: e.target.value })}
-                        onKeyDown={(e) => e.key === "Enter" && apply()}
-                        placeholder={col?.field?.type === "date" ? "2026-10-01" : "値"}
-                        className="h-8 text-[13px]"
+                        invalid={err !== null}
+                        onChange={(value) => set(i, { value })}
+                        onEnter={apply}
                       />
                     )}
+                    {err ? (
+                      <p className="mt-1 text-[11px] text-destructive" role="alert">
+                        {err}
+                      </p>
+                    ) : null}
                   </div>
                   <Button
                     variant="ghost"
@@ -246,7 +325,7 @@ export function FilterControl({
                 すべて外す
               </Button>
             ) : null}
-            <Button size="sm" className="h-8 text-xs" onClick={apply} data-testid="data-filter-apply">
+            <Button size="sm" className="h-8 text-xs" onClick={apply} disabled={hasError} data-testid="data-filter-apply">
               適用
             </Button>
           </div>
@@ -276,7 +355,9 @@ export function SortControl({
       <PopoverContent align="start" className="w-80 space-y-3">
         <h3 className="text-sm font-semibold">並べ替え</h3>
         {sort.length === 0 ? (
-          <p className="text-xs text-muted-foreground">既定は更新の新しい順です。</p>
+          <p className="text-xs text-muted-foreground">
+            既定は更新の新しい順です。複数選択・リンク・索引のない派生列は並べ替えに使えません。
+          </p>
         ) : (
           <ol className="space-y-2">
             {sort.map((k, i) => (
@@ -348,6 +429,18 @@ export function ColumnsControl({
     onChange(next);
   };
   const patch = (i: number, p: Partial<ColumnModel>) => onChange(columns.map((c, j) => (j === i ? { ...c, ...p } : c)));
+  // 固定は左端からの連続だけ（グリッドは先頭から連続した固定列しか描けず、飛び石の固定はビューの保存で拒否
+  // される）。固定するとその列までの表示中の列をまとめて固定し、外すとその列から右の固定をまとめて外す。
+  const toggleFreeze = (i: number) => {
+    const on = !columns[i].frozen;
+    onChange(
+      columns.map((c, j) => {
+        if (c.hidden) return { ...c, frozen: false };
+        if (on) return j <= i ? { ...c, frozen: true } : c;
+        return j >= i ? { ...c, frozen: false } : c;
+      }),
+    );
+  };
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -407,10 +500,11 @@ export function ColumnsControl({
                 variant="ghost"
                 size="icon"
                 className={cn("size-7", c.frozen ? "text-primary" : "text-muted-foreground")}
-                aria-label={c.frozen ? `「${c.label}」の固定を外す` : `「${c.label}」を左に固定`}
+                aria-label={c.frozen ? `「${c.label}」の固定を外す` : `「${c.label}」まで左に固定`}
+                title={c.frozen ? "この列から右の固定を外す" : "左端からこの列までを固定"}
                 aria-pressed={c.frozen}
                 disabled={c.hidden}
-                onClick={() => patch(i, { frozen: !c.frozen })}
+                onClick={() => toggleFreeze(i)}
               >
                 <Pin className={cn("size-3.5", c.frozen && "fill-current")} aria-hidden />
               </Button>
