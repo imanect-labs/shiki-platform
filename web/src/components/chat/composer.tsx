@@ -4,7 +4,7 @@ import * as React from "react";
 import { ArrowUp, Bot, HardDrive, Loader2, Paperclip, Sparkles, Square, TextSelect, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { uploadFile, type NodeResponse } from "@/lib/storage";
+import { uploadNewFile, type NodeResponse } from "@/lib/storage";
 import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
 import { HOME_SCOPE, useModelChoice } from "@/lib/model-choice";
 import { selectableTool, useToolChoice } from "@/lib/tool-choice";
@@ -243,12 +243,13 @@ export const Composer = React.memo(function Composer({
     if (!file) return;
     setUploading({ name: file.name, fraction: 0 });
     try {
-      const node = await uploadFile({
+      // 同じ名前があれば連番名で置く（同じ写真をもう一度添付すると 409 で失敗していた・#880）。
+      const node = await uploadNewFile({
         file,
         onProgress: (fraction) => setUploading({ name: file.name, fraction }),
       });
       addAttachment(node);
-      toast({ description: `${file.name} をアップロードしました（自動でベクトル化されます）` });
+      toast({ description: `${node.name} をアップロードしました（自動でベクトル化されます）` });
     } catch {
       toast({ description: `${file.name} のアップロードに失敗しました` });
     } finally {
