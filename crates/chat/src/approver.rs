@@ -19,8 +19,9 @@ use crate::store::ChatStore;
 
 /// 決定ポーリング間隔（既定）。
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
-/// 承認待ちの最大時間（既定・超過は deny）。
-const MAX_WAIT: Duration = Duration::from_mins(30);
+/// 承認待ちの最大時間（既定・超過は deny）。ジョブを失った承認待ちの回収（sweeper）も、最後に
+/// 生きていた時刻からこれを過ぎた run を期限切れとして確定する。
+pub const APPROVAL_MAX_WAIT: Duration = Duration::from_mins(30);
 
 /// `run_approval` を待つ承認者。1 run に紐づく（run_id＋fencing でゾンビ書込を防ぐ）。
 pub struct DbApprover {
@@ -68,7 +69,7 @@ impl DbApprover {
             fencing_token,
             cancel,
             poll_interval: POLL_INTERVAL,
-            max_wait: MAX_WAIT,
+            max_wait: APPROVAL_MAX_WAIT,
             mode: None,
             last_clamp: Mutex::new(None),
             extra_pre_authorized: HashSet::new(),

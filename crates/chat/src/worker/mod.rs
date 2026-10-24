@@ -15,6 +15,8 @@ mod config;
 mod gate;
 mod generate;
 mod history;
+/// 生成ジョブの可視期限のハートビート（接続を待ちの間に持たない）。
+mod job_lease;
 /// 実行オプション/system プロンプト（generate.rs から分割）。
 mod opts;
 mod run_model;
@@ -190,21 +192,33 @@ impl ChatWorker {
         }
     }
 
+    /// jobq の 1 文ぶんだけ接続を借りる。
+    ///
+    /// **プール接続を長い待ち（承認待ち・LLM のストリーミング・ツールの実行）を跨いで持たない。**
+    /// 以前は claim に使った接続を ack まで握っていたため、承認待ちの run が `max_connections` 件
+    /// 溜まるとプールが尽き、他のユーザーのチャット・データの配信・承認の送信までが止まった。
+    async fn jobq_conn(&self) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, ChatError> {
+        self.db
+            .acquire()
+            .await
+            .map_err(|e| ChatError::Internal(format!("acquire: {e}")))
+    }
+
     /// jobq から 1 件 claim して処理する。処理したら true。
     async fn claim_and_process(
         &self,
         worker_id: &str,
         slot: &Arc<slot::RunSlot>,
     ) -> Result<bool, ChatError> {
-        let mut conn = self
-            .db
-            .acquire()
-            .await
-            .map_err(|e| ChatError::Internal(format!("acquire: {e}")))?;
-        // 可視性タイムアウトは生成時間より長めに（クラッシュ時の再配信 backstop）。
-        let jobs = jobq::claim(&mut conn, CHAT_GENERATION_QUEUE, Duration::from_mins(3), 1)
-            .await
-            .map_err(|e| ChatError::Internal(format!("jobq claim: {e}")))?;
+        // 可視期限は短く取り、処理中は [`job_lease::JobLease`] が延ばし続ける（クラッシュ時は
+        // 期限のうちに再配信される）。
+        let vt = job_lease::job_visibility(self.config.lease_secs);
+        let jobs = {
+            let mut conn = self.jobq_conn().await?;
+            jobq::claim(&mut conn, CHAT_GENERATION_QUEUE, vt, 1)
+                .await
+                .map_err(|e| ChatError::Internal(format!("jobq claim: {e}")))?
+        };
         let Some(job) = jobs.into_iter().next() else {
             return Ok(false);
         };
@@ -215,6 +229,7 @@ impl ChatWorker {
             .and_then(|s| Uuid::parse_str(s).ok());
         let Some(run_id) = run_id else {
             // 壊れた payload は恒久エラー→DLQ。
+            let mut conn = self.jobq_conn().await?;
             let _ = jobq::kill(&mut conn, job.id, "invalid payload: missing run_id").await;
             return Ok(true);
         };
@@ -223,6 +238,7 @@ impl ChatWorker {
         // 順番待ち**として戻す（`defer` は attempts を消費しないので DLQ へ落ちない）。
         // 生成中でも発話を受け付けられるのはこの直列化が前提（キューはサーバが持つ）。
         if self.store.blocked_by_earlier_run(run_id).await? {
+            let mut conn = self.jobq_conn().await?;
             jobq::defer(&mut conn, job.id, QUEUE_WAIT_POLL)
                 .await
                 .map_err(|e| ChatError::Internal(format!("jobq defer: {e}")))?;
@@ -230,8 +246,13 @@ impl ChatWorker {
         }
 
         let last_attempt = job.attempts >= job.max_attempts;
-        match self.process_run(run_id, worker_id, slot).await {
+        // 生成の間（承認待ちを含む）ジョブを再配信させない。接続は拍ごとに借りるだけ。
+        let lease = job_lease::JobLease::start(self.db.clone(), job.id, vt);
+        let result = self.process_run(run_id, worker_id, slot).await;
+        drop(lease);
+        match result {
             Ok(()) => {
+                let mut conn = self.jobq_conn().await?;
                 jobq::ack(&mut conn, job.id)
                     .await
                     .map_err(|e| ChatError::Internal(format!("jobq ack: {e}")))?;
@@ -249,6 +270,7 @@ impl ChatWorker {
                         .force_fail_run(run_id, &e.user_message(), &e.to_string())
                         .await;
                 }
+                let mut conn = self.jobq_conn().await?;
                 if e.is_retryable() {
                     let backoff = jobq::backoff_for(job.attempts);
                     let _ = jobq::fail(&mut conn, job.id, &e.to_string(), backoff).await;
