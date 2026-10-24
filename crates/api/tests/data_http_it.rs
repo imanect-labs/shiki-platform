@@ -989,3 +989,73 @@ async fn oversized_import_is_drained_before_413_over_a_real_socket() {
     assert!(text.contains("\"import_too_large\""), "{text}");
     server.abort();
 }
+
+/// `POST /directory/users/names`（グリッドの `user_ref` 列の表示名）: 同テナント・同 org の
+/// ユーザーだけを返し、別テナント・別 org・未登録・表示名が空の id は含めない。件数上限と認証も見る。
+#[tokio::test]
+async fn resolve_user_names_is_tenant_and_org_scoped() {
+    let Some(env) = setup().await else { return };
+    let dir = storage::DirectoryStore::new(env.pool.clone());
+    let tag = Uuid::new_v4().simple().to_string();
+    let id = |s: &str| format!("names-{tag}-{s}");
+    dir.upsert_user(&id("ann"), TENANT, "acme", "ann@acme.example", "Ann")
+        .await
+        .unwrap();
+    dir.upsert_user(&id("ben"), TENANT, "acme", "ben@acme.example", "Ben")
+        .await
+        .unwrap();
+    // 同じ id でも別テナントの行は使わない／同テナントでも別 org の人は出さない。
+    dir.upsert_user(
+        &id("ann"),
+        "other-tenant",
+        "acme",
+        "x@other.example",
+        "Mallory",
+    )
+    .await
+    .unwrap();
+    dir.upsert_user(&id("eve"), TENANT, "globex", "eve@globex.example", "Eve")
+        .await
+        .unwrap();
+    dir.upsert_user(&id("nobody"), TENANT, "acme", "n@acme.example", "")
+        .await
+        .unwrap();
+
+    let ids =
+        json!({ "ids": [id("ann"), id("ben"), id("ann"), id("eve"), id("nobody"), id("ghost")] });
+    let (st, body) = send(&env, post_json("bob", "/directory/users/names", &ids)).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        json!({ "names": { id("ann"): "Ann", id("ben"): "Ben" } }),
+        "同テナント・同 org・表示名ありの id だけを返す"
+    );
+
+    let (st, body) = send(
+        &env,
+        post_json("bob", "/directory/users/names", &json!({ "ids": [] })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, json!({ "names": {} }));
+
+    let too_many: Vec<String> = (0..=api::routes::directory::MAX_RESOLVE_USER_NAMES)
+        .map(|i| format!("u{i}"))
+        .collect();
+    let (st, _) = send(
+        &env,
+        post_json("bob", "/directory/users/names", &json!({ "ids": too_many })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "上限を超える id は 400");
+
+    let anon = Request::builder()
+        .method("POST")
+        .uri("/directory/users/names")
+        .header("content-type", "application/json")
+        .body(Body::from(ids.to_string()))
+        .unwrap();
+    let (st, body) = send(&env, anon).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "未認証は 401");
+    assert!(!body.to_string().contains("Ann"));
+}

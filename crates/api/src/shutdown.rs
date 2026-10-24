@@ -35,10 +35,14 @@ impl Shutdown {
     }
 
     /// SIGTERM / Ctrl-C で立つ合図を作る（受信タスクを spawn する）。
+    ///
+    /// SIGTERM のハンドラはこの呼び出しの中で登録する（spawn したタスクが走る前に届いた SIGTERM で
+    /// 既定動作の即時終了にならない）。
     pub(crate) fn on_signal() -> Shutdown {
         let (tx, s) = Self::channel();
+        let signal = shutdown_signal();
         tokio::spawn(async move {
-            shutdown_signal().await;
+            signal.await;
             let _ = tx.send(true);
         });
         s
@@ -81,28 +85,29 @@ where
 // シグナルハンドラの登録失敗はプロセス起動直後の致命的な環境不整合であり、
 // 継続不能なため `expect` で即時 abort する（本番運用でも復帰手段が無い）。
 #[allow(clippy::expect_used)]
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("ctrl_c ハンドラ設定に失敗");
-    };
-
+fn shutdown_signal() -> impl Future<Output = ()> + Send + 'static {
     #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("SIGTERM ハンドラ設定に失敗")
-            .recv()
-            .await;
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("SIGTERM ハンドラ設定に失敗");
+    async move {
+        let ctrl_c = async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("ctrl_c ハンドラ設定に失敗");
+        };
+        #[cfg(unix)]
+        let terminate = async move {
+            term.recv().await;
+        };
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
 
-    tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
+        tokio::select! {
+            () = ctrl_c => {},
+            () = terminate => {},
+        }
+        tracing::info!("シャットダウンシグナル受信");
     }
-    tracing::info!("シャットダウンシグナル受信");
 }
 
 #[cfg(test)]
@@ -155,6 +160,125 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
+        }
+    }
+
+    /// 起動から停止までを main と同じ形で通す（B-OPS-1）: SIGTERM で両リスナ（メイン・
+    /// ゲートウェイ）が同時に受付を止め、終わらない SSE 接続が両方に残っていても、メインは猶予で戻り、
+    /// ランタイムの停止も打ち切りで終わる。ポートは解放される（再起動した新プロセスが bind できる）。
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_stops_every_listener_and_the_runtime_finishes_within_the_grace() {
+        use std::convert::Infallible;
+        use std::net::{SocketAddr, TcpListener as StdListener, TcpStream as StdStream};
+        use std::time::Instant;
+
+        use axum::response::sse::{Event, Sse};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        fn sse_router() -> axum::Router {
+            axum::Router::new().route(
+                "/sse",
+                axum::routing::get(|| async {
+                    Sse::new(futures::stream::pending::<Result<Event, Infallible>>())
+                }),
+            )
+        }
+        /// SSE を開いて応答ヘッダまで読み、接続を開いたまま返す。
+        async fn open_sse(addr: SocketAddr) -> tokio::net::TcpStream {
+            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            s.write_all(b"GET /sse HTTP/1.1\r\nhost: t\r\n\r\n")
+                .await
+                .unwrap();
+            let mut buf = vec![0u8; 1024];
+            let mut got = Vec::new();
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = s.read(&mut buf).await.unwrap();
+                assert!(n > 0, "SSE の応答ヘッダの前に切れた");
+                got.extend_from_slice(&buf[..n]);
+            }
+            assert!(
+                got.starts_with(b"HTTP/1.1 200"),
+                "{}",
+                String::from_utf8_lossy(&got)
+            );
+            s
+        }
+
+        let grace = Duration::from_millis(1500);
+        let gateway_addr = {
+            let l = StdListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap()
+        };
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (main_addr, signalled_at) = rt.block_on(async {
+            let shutdown = Shutdown::on_signal();
+            crate::wiring_gateway::spawn_gateway_listener(
+                Some(sse_router()),
+                Some(gateway_addr.to_string()),
+                &shutdown,
+            )
+            .await
+            .unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let main_addr = listener.local_addr().unwrap();
+            let server =
+                axum::serve(listener, sse_router()).with_graceful_shutdown(shutdown.clone().wait());
+            let main = tokio::spawn(serve_until_shutdown(
+                std::future::IntoFuture::into_future(server),
+                shutdown,
+                grace,
+            ));
+            // 両方のリスナに終わらない SSE を残す（常駐ワーカー相当の終わらないタスクも置く）。
+            let _main_sse = open_sse(main_addr).await;
+            let _gateway_sse = open_sse(gateway_addr).await;
+            tokio::spawn(async {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            });
+
+            let status = std::process::Command::new("kill")
+                .args(["-TERM", &std::process::id().to_string()])
+                .status()
+                .unwrap();
+            assert!(status.success());
+            let signalled_at = Instant::now();
+
+            // 合図の直後に両リスナとも受付を止める（SSE が残っていても）。
+            let deadline = Instant::now() + Duration::from_secs(1);
+            for addr in [main_addr, gateway_addr] {
+                loop {
+                    if tokio::net::TcpStream::connect(addr).await.is_err() {
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "{addr} が受付を止めない");
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+            assert!(!main.is_finished(), "猶予の間は処理中の要求を待つ");
+            tokio::time::timeout(grace + Duration::from_secs(3), main)
+                .await
+                .expect("猶予を過ぎてもメインが戻らない")
+                .unwrap()
+                .unwrap();
+            (main_addr, signalled_at)
+        });
+        let returned = signalled_at.elapsed();
+        assert!(returned >= grace, "猶予の前に戻った: {returned:?}");
+        rt.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+        let finished = signalled_at.elapsed();
+        assert!(
+            finished < grace + RUNTIME_SHUTDOWN_TIMEOUT,
+            "猶予 + 打ち切りの時間内に終わらない: {finished:?}"
+        );
+        // ポートが解放され、新しいプロセスが同じポートで bind できる。
+        for addr in [main_addr, gateway_addr] {
+            assert!(StdStream::connect(addr).is_err(), "{addr} がまだ受け付ける");
+            StdListener::bind(addr).unwrap();
         }
     }
 }
