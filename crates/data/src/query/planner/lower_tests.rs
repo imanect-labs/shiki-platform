@@ -72,7 +72,7 @@ fn sort_drive_is_budgeted_window_with_point_probes() {
     let conj = super::super::plans::conjuncts(&q.filter);
     let mut sql = SqlBuf::scoped(1, 2);
     let g = guard_sql("d.record_int", &mut sql);
-    let text = low.sort_drive_sql(q.sort[0], None, &conj, &g, 2_000, 21, &mut sql);
+    let text = low.sort_drive_sql(q.sort[0], None, None, &conj, &g, 2_000, 21, &mut sql);
     assert!(text.contains("FROM data_index_num i"), "{text}");
     assert!(
         text.contains("ORDER BY i.val DESC, i.record_int DESC LIMIT"),
@@ -266,7 +266,16 @@ fn binds_only_lowering_matches_full_lowering_and_is_cheaper() {
         }),
         Box::new(|sql| {
             let g = guard.lower("d.record_int", sql).unwrap();
-            low.sort_drive_sql(q.sort[0], Some((&start, Some(4))), &conj, &g, 160, 21, sql)
+            low.sort_drive_sql(
+                q.sort[0],
+                Some((&start, Some(4))),
+                None,
+                &conj,
+                &g,
+                160,
+                21,
+                sql,
+            )
         }),
         Box::new(|sql| {
             let g = guard.lower("d.record_int", sql).unwrap();

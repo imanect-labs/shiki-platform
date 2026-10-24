@@ -834,3 +834,93 @@ async fn o3_plan_shapes_are_point_lookups() {
             .unwrap();
     }
 }
+
+/// 第 1 ソートキーと同じ列の範囲条件で、ソート駆動が範囲の端からシークし、反対の端で止まる（検証 D-3）。
+///
+/// 「日付の範囲＋同じ列の昇順」で、統計が無いとソート駆動が索引を先頭から歩き、範囲より前の行を全部
+/// 読み飛ばしていた（30 万行で statement timeout）。ソート駆動を強制して（統計なし O1 が選ぶのと同じ文）、
+/// 駆動索引で読む行数が範囲の中だけであることを EXPLAIN ANALYZE で固定する。
+#[tokio::test]
+async fn range_on_the_sort_key_seeks_into_the_range() {
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool.clone());
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let table = seed(&pool, &store, &c, "seek", N, false, false).await;
+    let forced = QueryTuning {
+        force: Some(ForcedStrategy::Sort),
+        ..QueryTuning::default()
+    };
+    let range = |lo: i64, hi: i64| {
+        Some(Condition::All(vec![
+            Condition::cmp("amount", CondOp::Gte, Some(json!(lo))),
+            Condition::cmp("amount", CondOp::Lt, Some(json!(hi))),
+        ]))
+    };
+    for desc in [false, true] {
+        // 範囲の前（昇順）・後（降順）に約 9,000 行ある。
+        let q = DataQuery {
+            filter: range(500_000, 520_000),
+            sort: vec![sort_key("amount", desc)],
+            limit: Some(50),
+            ..Default::default()
+        };
+        let (r, d) = store
+            .run_query_debug(&c, table.id, &q, &forced)
+            .await
+            .unwrap();
+        let st = main_stmt(&d.statements, "sort_drive");
+        let plan = explain(&pool, st, true).await;
+        let scans = index_scans(&plan, "data_index_num_p");
+        let drive = scans
+            .iter()
+            .find(|(_, idx, _)| idx.contains("val"))
+            .unwrap_or_else(|| panic!("金額の値索引から入る: {scans:?}"));
+        assert!(
+            drive.2 <= 60,
+            "範囲の端からシークする（desc={desc}・読んだ行数）: {drive:?}"
+        );
+        assert!(d.stats.scanned <= 60, "{:?}", d.stats);
+        // 結果は同じ（自然な選択の結果と一致・範囲の中で正しい順）。
+        let (want, _) = store
+            .run_query_debug(&c, table.id, &q, &QueryTuning::default())
+            .await
+            .unwrap();
+        let ids = |r: &data::QueryResult| -> Vec<uuid::Uuid> {
+            r.items.as_ref().unwrap().iter().map(|x| x.id).collect()
+        };
+        assert_eq!(ids(&r), ids(&want), "desc={desc}");
+        let amounts: Vec<i64> = r
+            .items
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|x| x.data["amount"].as_i64().unwrap())
+            .collect();
+        assert_eq!(amounts.len(), 50);
+        assert!(amounts.iter().all(|a| (500_000..520_000).contains(a)));
+        assert!(amounts
+            .windows(2)
+            .all(|w| if desc { w[0] >= w[1] } else { w[0] <= w[1] }));
+    }
+    // 範囲の行数がページより少ない: 反対の端で止まり、値の無い行（区間 2）は歩かない。
+    let q = DataQuery {
+        filter: range(500_000, 502_000),
+        sort: vec![sort_key("amount", false)],
+        limit: Some(50),
+        ..Default::default()
+    };
+    let (r, d) = store
+        .run_query_debug(&c, table.id, &q, &forced)
+        .await
+        .unwrap();
+    let n = r.items.as_ref().unwrap().len();
+    assert!(n > 0 && n < 50, "{n}");
+    assert!(
+        d.statements.iter().all(|s| s.label != "missing_drive"),
+        "範囲条件があれば値の無い行は歩かない: {:?}",
+        d.statements.iter().map(|s| s.label).collect::<Vec<_>>()
+    );
+    assert!(d.stats.scanned <= 60, "範囲の外を読まない: {:?}", d.stats);
+    assert_single_partition(&explain(&pool, main_stmt(&d.statements, "sort_drive"), true).await);
+}

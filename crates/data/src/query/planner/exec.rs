@@ -614,6 +614,16 @@ impl<'a> Exec<'a, '_> {
         }
         let kind = self.low.q.field(key.field).kind;
         let multi = sort.len() > 1;
+        // 第 1 キーの列の範囲条件で走査の始点・終点を縛る（範囲の外は検査を通らない・検証 D-3）。
+        let seek = super::seek::sort_seek(&checks, key, kind);
+        if st.scan_from.is_none() {
+            if let Some(v) = seek.start.clone() {
+                if multi && st.window_lo.is_none() {
+                    st.window_lo = Some((v.clone(), true));
+                }
+                st.scan_from = Some((v, None));
+            }
+        }
         // 単一キー: (値, record_int) の厳密に後ろから。複数ソート: 同値群の先頭から（窓は候補 SQL が並べる）。
         let start = st.scan_from.as_ref().map(|(v, r)| (v, *r));
         let start_tag = match start {
@@ -627,13 +637,19 @@ impl<'a> Exec<'a, '_> {
             .num(u64::from(key.field))
             .flag(key.desc)
             .tag(start_tag)
+            .tag(
+                seek.stop
+                    .as_ref()
+                    .map_or(0, |(_, inc)| if *inc { 1 } else { 2 }),
+            )
             .checks(&checks, q)
             .finish();
+        let stop = seek.stop.as_ref();
         let (text, binds) = self.compile("sort_drive", &v, |sql| {
             let guard: GuardSql = self.guard.lower("d.record_int", sql)?;
             Ok(self
                 .low
-                .sort_drive_sql(key, start, &checks, &guard, budget, need + 1, sql))
+                .sort_drive_sql(key, start, stop, &checks, &guard, budget, need + 1, sql))
         })?;
         let rows = self.fetch_compiled("sort_drive", text, binds).await?;
         let (scanned, passed, end, last) = Self::absorb(&rows, kind, multi, st, budget)?;
@@ -666,6 +682,11 @@ impl<'a> Exec<'a, '_> {
             return Ok(Step::Done);
         }
         if end {
+            if seek.needs_value {
+                // 第 1 キーに値を要する条件がある: 値の無い行（区間 2）は検査を通らない。
+                st.done = true;
+                return Ok(Step::Done);
+            }
             // 区間 1 の終端: 値なしの行（区間 2）へ。
             st.segment = 2;
             st.scan_rint = None;

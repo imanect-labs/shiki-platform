@@ -500,11 +500,13 @@ impl Lowerer<'_> {
     ///
     /// 列: `record_int`, `v`（第 1 キーの text 表現）, `pos`（何件目を読んだか）, `pass`, `is_last`。
     /// `start` は `(値, record_int)` の厳密に後ろから、`group_start` は値の同値群の先頭から歩く。
+    /// `stop` は走査の終点（値, 含むか・第 1 キーの列の範囲条件の反対の端・[`super::seek`]）。
     #[allow(clippy::too_many_arguments)] // 1 文の部品（入口・検査・Guard・位置・予算・件数）を明示で渡す。
     pub(crate) fn sort_drive_sql(
         &self,
         key: BSort,
         start: Option<(&SortVal, Option<i64>)>,
+        stop: Option<&(SortVal, bool)>,
         checks: &[&Expr],
         guard: &GuardSql,
         budget: i64,
@@ -529,6 +531,19 @@ impl Lowerer<'_> {
                 sqlf!(sql, " AND i.val {op} {vph}")
             }
         };
+        let stop = match stop {
+            None => String::new(),
+            Some((v, inc)) => {
+                let op = match (key.desc, *inc) {
+                    (false, true) => "<=",
+                    (false, false) => "<",
+                    (true, true) => ">=",
+                    (true, false) => ">",
+                };
+                let vph = sort_val_ph(f.kind, v, sql);
+                sqlf!(sql, " AND i.val {op} {vph}")
+            }
+        };
         let bph = sql.typed(Bind::I64(budget.max(1)));
         let check = self.case_chain(checks, Some(guard), "d.record_int", sql);
         let lph = sql.typed(Bind::I64(limit));
@@ -538,7 +553,7 @@ impl Lowerer<'_> {
                SELECT d.record_int, d.val, row_number() OVER w AS pos, \
                       lead(d.record_int) OVER w IS NULL AS is_last, {check} AS pass \
                FROM (SELECT i.record_int, i.val FROM {rel} i \
-                     WHERE i.tenant_int = $1 AND i.table_int = $2 AND i.field_id = {fph}{keyset} \
+                     WHERE i.tenant_int = $1 AND i.table_int = $2 AND i.field_id = {fph}{keyset}{stop} \
                      ORDER BY i.val {dir}, i.record_int {dir} LIMIT {bph}) d \
                WINDOW w AS (ORDER BY d.val {dir}, d.record_int {dir}) \
              ) s WHERE s.pass OR s.is_last LIMIT {lph}"

@@ -30,6 +30,7 @@ pub(crate) mod lower;
 pub(crate) mod normalize;
 pub(crate) mod plan_cache;
 mod plans;
+mod seek;
 pub(crate) mod shape;
 mod stats;
 mod strategy;
