@@ -160,8 +160,8 @@ type RowCell = TextCell & {
 /// 間隔を空けて自動で繋ぎ直す。
 type LiveProblem = { kind: "disconnected" } | { kind: "signed_out" } | { kind: "reconnecting" };
 
-/// サーバに届かないときの繋ぎ直しの間隔（2, 4, 8, 16, 30, 30… 秒）。
-const RECONNECT_MS = (attempt: number) => Math.min(30_000, 2_000 * 2 ** attempt);
+/// サーバに届かないときの繋ぎ直しの間隔（2, 4, 8, 10, 10… 秒）。
+const RECONNECT_MS = (attempt: number) => Math.min(10_000, 2_000 * 2 ** attempt);
 
 function groupLabel(r: DataRecord, key: string, col: ColumnModel | undefined): string {
   const s = col
