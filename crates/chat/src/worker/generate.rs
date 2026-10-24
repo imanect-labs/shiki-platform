@@ -325,6 +325,8 @@ impl ChatWorker {
             // 利用枠超過は**そのまま会話に出す文言**（llm-gateway で整形済み）。`agent:` を
             // 前置すると、ユーザーには読めない内部語が残る。
             agent_core::AgentError::RateLimited(msg) => ChatError::RateLimited(msg),
+            // 要求の拒否（400 等）は再試行しても同じなので、種別を分けて 1 回で止める（#877）。
+            agent_core::AgentError::Llm(msg) => ChatError::from_agent_llm(&msg),
             other => ChatError::Unavailable(format!("agent: {other}")),
         })?;
         let _ = outcome; // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理

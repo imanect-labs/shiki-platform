@@ -141,6 +141,27 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
 
+/// 既定プロバイダが OpenAI 互換の `base_url`（[`rejecting_provider`]）を指す gateway。
+fn rejecting_gateway(pool: PgPool, base_url: String) -> LlmGateway {
+    let config = GatewayConfig {
+        provider: ProviderConfig {
+            kind: ProviderKind::Openai,
+            base_url: Some(base_url),
+            api_key: Some("k".into()),
+            ..Default::default()
+        },
+        catalog: ModelCatalog {
+            default_model: "m".into(),
+            models: vec![ModelEntry {
+                id: "m".into(),
+                ..Default::default()
+            }],
+        },
+        ..Default::default()
+    };
+    LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
+}
+
 /// ワーカーの依存束（全 None＝ツール無しの素の生成）。テスト間で共有する。
 fn test_deps(gateway: LlmGateway) -> chat::WorkerDeps {
     chat::WorkerDeps {
@@ -579,4 +600,150 @@ async fn earlier_unfinished_run_blocks_later_ones_until_it_ends() {
         !store.blocked_by_earlier_run(other_run).await.unwrap(),
         "スレッドを跨いで待たせない"
     );
+}
+
+/// このテスト専用のデータベースを作って migration を当てる。
+///
+/// 生成ジョブの待ち行列は全テストで共有なので、同じ DB では他のテスト（並列に走る別プロセス）の
+/// ワーカーがジョブを拾い、自分の gateway（stub）で生成を成功させてしまう。
+async fn isolated_setup(prefix: &str) -> Option<PgPool> {
+    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return None;
+    };
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&db_url)
+        .await
+        .expect("Postgres へ接続できること");
+    let name = format!("{prefix}_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE DATABASE {name}"))
+        .execute(&admin)
+        .await
+        .expect("テスト用 DB を作れること");
+    let mut url = reqwest::Url::parse(&db_url).expect("DB URL");
+    url.set_path(&name);
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(url.as_str())
+        .await
+        .expect("テスト用 DB へ接続できること");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("マイグレーション適用");
+    Some(pool)
+}
+
+/// どの要求にも 400 を返す OpenAI 互換のエンドポイント（プロバイダの拒否を再現する）。
+async fn rejecting_provider() -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 16384];
+                let _ = sock.read(&mut buf).await;
+                let body = r#"{"error":{"message":"The model is not supported when using Codex with a ChatGPT account.","type":"invalid_request_error"}}"#;
+                let resp = format!(
+                    "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+    format!("http://{addr}/v1")
+}
+
+/// プロバイダが要求を受け付けない誤り（400・設定の誤り）は再試行せず、1 回目で失敗を確定する
+/// （#877）。再試行の間は「生成中」に見え続けるため。カタログに無いモデルを指定すると gateway が
+/// `LlmError::Config("unknown model")` を返すので、それで拒否を起こす。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejected_generation_fails_once_without_retrying() {
+    let Some(pool) = isolated_setup("chat_rejected").await else {
+        return;
+    };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
+        .await
+        .unwrap();
+    let worker = ChatWorker::new(
+        pool.clone(),
+        store.clone(),
+        test_deps(rejecting_gateway(pool.clone(), rejecting_provider().await)),
+        WorkerConfig {
+            system_prompt: "あなたはアシスタントです。".into(),
+            model: Some("m".into()),
+            lease_secs: 120,
+            max_steps: 4,
+            ..Default::default()
+        },
+    );
+    worker.spawn(1);
+
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "t", false, None, None)
+        .await
+        .unwrap();
+    let res = store
+        .post_message(
+            &c,
+            thread.id,
+            "hi",
+            &[],
+            None,
+            Some(false),
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+
+    // 再試行していれば backoff（数十秒）を挟むので、ここで待つ間に Error は届かない。
+    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut error = None;
+    for _ in 0..200 {
+        let next = tokio::time::timeout(Duration::from_secs(20), rx.next())
+            .await
+            .expect("Error イベント待ちがタイムアウト（再試行して確定が遅れている）");
+        let Some(ev) = next else { break };
+        if let StreamEventKind::Error { message } = ev.event {
+            error = Some(message);
+            break;
+        }
+    }
+    let message = error.expect("Error イベントを受け取ること");
+    assert!(
+        message.contains("別のモデル"),
+        "次に何をすればよいかが分かる文言: {message}"
+    );
+
+    let (status, attempt, last_error): (String, i32, Option<String>) =
+        sqlx::query_as("SELECT status, attempt, last_error FROM generation_run WHERE run_id = $1")
+            .bind(res.run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "failed");
+    assert_eq!(attempt, 1, "再試行していないこと");
+    assert!(
+        last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("llm rejected") && e.contains("not supported")),
+        "詳細はサーバ側にだけ残る: {last_error:?}"
+    );
+    // ジョブは再試行の待ち行列に戻らず DLQ へ移る。
+    let dead: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM job_queue_dead WHERE tenant_id = $1 AND payload->>'run_id' = $2",
+    )
+    .bind(&tenant)
+    .bind(res.run_id.to_string())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(dead, 1, "DLQ へ移ること");
 }
