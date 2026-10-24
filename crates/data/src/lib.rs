@@ -106,6 +106,8 @@ pub use derived::types::{
 pub use formula::{FormulaCmpOp, FormulaExpr, SwitchCase, MAX_FORMULA_DEPTH};
 pub use fsm::{FsmBody, FsmRef, FsmTransition};
 pub use fsm_store::FsmStore;
+#[doc(hidden)]
+pub use index::text_index_delete_sql;
 pub use index::{
     sort_precision, FieldIndexStatus, IndexBackfillStatus, IndexBackfillStep, IndexBackfillWorker,
     IndexParityMismatch, IndexParityReport, IndexPromotion, IndexState, IndexStatus, SortPrecision,

@@ -500,6 +500,26 @@ impl Batch {
     }
 }
 
+/// (フィールド, レコード) の組の索引行を消す文（表名・列名は固定集合からだけ埋め込む・PIT-21）。
+///
+/// **組ごとに主キー (tenant_int, table_int, field_id, record_int, ord) の前方一致で引く形にする**（検証 D-6）。
+/// `field_id = ANY($3) AND record_int = ANY($4)` の形は、新しい列で統計が古いと Postgres が値索引
+/// (tenant_int, table_int, field_id, val, record_int) を選び、`record_int` の配列の要素ごとにその列の索引行を
+/// 全部読み直した（バックフィルの 1 チャンクの削除が 3.5 秒・行数の 2 乗で遅くなる）。配列を `unnest` との結合に
+/// 開くと、内側の探索は 4 列とも等値になり、値索引では等値の前方一致が 3 列で止まるので主キーが選ばれる。
+pub(crate) fn delete_sql(relation: &str, record_column: &str) -> String {
+    format!(
+        "DELETE FROM {relation} t USING unnest($3::int2[]) AS f(id), unnest($4::int8[]) AS r(id) \
+         WHERE t.tenant_int = $1 AND t.table_int = $2 AND t.field_id = f.id AND t.{record_column} = r.id"
+    )
+}
+
+/// 値索引（text）の [`delete_sql`]（計画の形の回帰テスト用・実行時には使わない）。
+#[doc(hidden)]
+pub fn text_index_delete_sql() -> String {
+    delete_sql("data_index_text", "record_int")
+}
+
 async fn delete_rows(
     conn: &mut PgConnection,
     keys: crate::model::TableKeys,
@@ -507,13 +527,7 @@ async fn delete_rows(
     fields: &[i16],
     records: &[i64],
 ) -> Result<(), DataError> {
-    // PK (tenant_int, table_int, field_id, record_int, ord) の前方一致で引ける形。
-    let sql = format!(
-        "DELETE FROM {} WHERE tenant_int = $1 AND table_int = $2 \
-           AND field_id = ANY($3::int2[]) AND {} = ANY($4::int8[])",
-        table.relation(),
-        table.record_column()
-    );
+    let sql = delete_sql(table.relation(), table.record_column());
     sqlx::query(&sql)
         .bind(keys.tenant_int)
         .bind(keys.table_int)

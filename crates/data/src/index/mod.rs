@@ -138,3 +138,5 @@ pub use promote::{
     SYNC_INDEX_MAX_ROWS,
 };
 pub use scan::{sort_precision, SortPrecision};
+#[doc(hidden)]
+pub use write::text_index_delete_sql;
