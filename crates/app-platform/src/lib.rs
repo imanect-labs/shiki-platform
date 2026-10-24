@@ -63,7 +63,7 @@ impl From<data::DataError> for AppPlatformError {
         use data::DataError;
         match e {
             DataError::NotFound => AppPlatformError::NotFound,
-            DataError::Forbidden => AppPlatformError::Forbidden,
+            DataError::Forbidden | DataError::FieldUnavailable => AppPlatformError::Forbidden,
             DataError::Invalid(m) => AppPlatformError::Invalid(m),
             DataError::InvalidInput(e) => AppPlatformError::Invalid(e.message().to_string()),
             DataError::Gone(m) => AppPlatformError::Conflict(m),

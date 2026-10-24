@@ -198,6 +198,7 @@ use utoipa::{
         crate::routes::data_fsm::update_fsm,
         crate::routes::data_fsm::get_fsm,
         crate::routes::data_fsm::transition_record,
+        crate::routes::data_fsm::allowed_transitions,
         crate::routes::app_platform::create_manifest,
         crate::routes::app_platform::update_manifest,
         crate::routes::app_platform::get_manifest,
@@ -220,6 +221,10 @@ use utoipa::{
         crate::error_body::PayloadTooLargeBody,
         crate::error_body::RetryLaterBody,
         crate::error_body::ImportInvalidBody,
+        crate::error_body::ForbiddenBody,
+        crate::error_body::ForbiddenCode,
+        crate::error_body::RequestErrorBody,
+        crate::error_body::QueryRejectionBody,
         data::InvalidCode,
         crate::routes::me::MeResponse,
         crate::routes::me_chatgpt::ChatGptConnectionState,
@@ -547,6 +552,7 @@ use utoipa::{
         data::GalleryView,
         data::DataViewSummary,
         data::TableViewerContext,
+        data::AllowedTransitions,
         crate::routes::data_views::ViewListResponse,
         // ミニアプリの画面の表（data_grid）: 画面が送る params と、`ui-actions` の
         // `result.result`（kind=data_view）の形（Task 15.7）。

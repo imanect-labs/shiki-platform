@@ -460,4 +460,101 @@ async fn table_editor_transitions_without_fsm_artifact_access() {
         .await
         .unwrap();
     assert_eq!(done.data["status"], json!("approved"));
+
+    // 作成時の状態は FSM の初期状態（states の先頭）に固定する（検証 2-C-P2-3）。
+    let r = store
+        .create_record(
+            &bob,
+            table.id,
+            json!({"applicant": "bob", "approver": "alice", "status": "approved", "amount": 1}),
+            None,
+        )
+        .await;
+    assert_eq!(
+        r.as_ref().err().and_then(DataError::invalid_code),
+        Some(data::InvalidCode::FsmInvalid),
+        "{r:?}"
+    );
+    let fresh = store
+        .create_record(
+            &bob,
+            table.id,
+            json!({"applicant": "bob", "approver": "alice", "amount": 2}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(fresh.data["status"], json!("draft"), "省略は初期状態");
+    // 一括取込の作成行も同じ（違う状態は行の不合格・省略は初期状態）。
+    let imp = store
+        .start_bulk_import(
+            &bob,
+            table.id,
+            vec![
+                data::BulkImportRow {
+                    key: Some("bad".into()),
+                    data: json!({"applicant": "bob", "approver": "alice", "status": "approved", "amount": 3}),
+                },
+                data::BulkImportRow {
+                    key: Some("ok".into()),
+                    data: json!({"applicant": "bob", "approver": "alice", "amount": 4}),
+                },
+            ],
+            data::BulkImportOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    store.run_bulk_import(&tenant, table.id, imp).await.unwrap();
+    let errs = store
+        .bulk_import_errors(&bob, table.id, imp, 0, 10)
+        .await
+        .unwrap();
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(errs[0].key.as_deref(), Some("bad"), "{errs:?}");
+
+    // いま実行できる遷移先（グリッドの状態セルのメニュー・検証 2-C-P2-4）。
+    let a = fsms
+        .allowed_transitions(&bob, table.id, fresh.id, None)
+        .await
+        .unwrap();
+    assert_eq!(a.current.as_deref(), Some("draft"));
+    assert_eq!(
+        a.transitions,
+        vec!["submitted".to_string()],
+        "申請者は提出だけ"
+    );
+    assert_eq!(a.rev, fresh.rev);
+    let a = fsms
+        .allowed_transitions(&alice, table.id, fresh.id, None)
+        .await
+        .unwrap();
+    assert!(
+        a.transitions.is_empty(),
+        "承認者は下書きを動かせない: {a:?}"
+    );
+    let sub = fsms
+        .transition(&bob, table.id, fresh.id, "submitted", fresh.rev, None)
+        .await
+        .unwrap();
+    let a = fsms
+        .allowed_transitions(&alice, table.id, sub.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        a.transitions,
+        vec!["approved".to_string(), "rejected".to_string()]
+    );
+    // viewer は候補も引けない（遷移と同じ 403）・見えない主体には存在も分からない。
+    let r = fsms
+        .allowed_transitions(&carol, table.id, sub.id, None)
+        .await;
+    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    let r = fsms
+        .allowed_transitions(&dave, table.id, sub.id, None)
+        .await;
+    assert!(
+        matches!(r, Err(DataError::NotFound | DataError::Forbidden)),
+        "{r:?}"
+    );
 }

@@ -229,37 +229,79 @@ impl DataStore {
         patches.retain(|p| !masked.contains(&p.field));
     }
 
-    /// 書込面の単一点: 書き手が読めない（マスクされた）列への書込を 403 にする。
+    /// 書込面の単一点: 書き手が読めない（マスクされた）列・存在しない列への書込を 403
+    /// `field_unavailable` にする（両者を区別しない・列の存在オラクルを作らない・data-platform §16.1）。
     ///
     /// 作成（1 件・一括取込の開始と検証・CSV・ワークフロー・チャット・スクリプト・ゲートウェイ）と
     /// 更新（1 件・一括 upsert）の**全経路がこの関数を通る**。作成を素通しにすると、読めない列の
     /// unique 違反（409）から既存行の値を当てられる（存在オラクル・PIT-19）。返り値は判定に使った
-    /// マスク集合（応答の投影に使い回す）。
+    /// マスク集合（応答の投影に使い回す）。拒否は監査に deny で残す（検証 2-B-P3-4・列名は残さない）。
     pub(crate) async fn ensure_fields_writable(
         &self,
         ctx: &AuthContext,
         az: &AuthzMemo<'_>,
         table: &DataTable,
         payload: Option<&serde_json::Map<String, Value>>,
+        audit: WriteAudit<'_>,
     ) -> Result<HashSet<String>, DataError> {
         let masked = self.masked_fields(ctx, az, table).await?;
         if let Some(p) = payload {
-            Self::ensure_writable_fields(&masked, p)?;
+            if let Err(e) = Self::ensure_writable_fields(&masked, &table.schema, p) {
+                self.audit_field_deny(ctx, table.id, audit).await;
+                return Err(e);
+            }
         }
         Ok(masked)
     }
 
-    /// 書込面の検査: 読めないフィールドへの書込を拒否（盲目上書き防止）。
+    /// 読めない列・存在しない列への書込の拒否を監査に残す（best-effort・列名と値は残さない）。
+    pub(crate) async fn audit_field_deny(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        audit: WriteAudit<'_>,
+    ) {
+        let _ = self
+            .audit
+            .record(
+                ctx,
+                storage::audit::AuditEntry {
+                    action: audit.action,
+                    object_type: "data_table",
+                    object_id: &table_id.to_string(),
+                    decision: storage::audit::Decision::Deny,
+                    trace_id: audit.trace_id,
+                    metadata: serde_json::json!({ "reason": "field_unavailable" }),
+                },
+            )
+            .await;
+    }
+
+    /// 書込面の検査: 読めない列・存在しない列への書込を拒否（盲目上書き防止・同じ 403）。
     pub(crate) fn ensure_writable_fields(
         masked: &HashSet<String>,
+        schema: &TableSchema,
         payload: &serde_json::Map<String, Value>,
     ) -> Result<(), DataError> {
         for key in payload.keys() {
-            if masked.contains(key) {
-                return Err(DataError::Forbidden);
+            if masked.contains(key) || schema.field(key).is_none() {
+                return Err(DataError::FieldUnavailable);
             }
         }
         Ok(())
+    }
+}
+
+/// 書込の拒否を監査に残すときの操作と追跡 ID。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WriteAudit<'a> {
+    pub action: storage::audit::AuditAction,
+    pub trace_id: Option<&'a str>,
+}
+
+impl<'a> WriteAudit<'a> {
+    pub(crate) fn new(action: storage::audit::AuditAction, trace_id: Option<&'a str>) -> Self {
+        WriteAudit { action, trace_id }
     }
 }
 

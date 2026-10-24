@@ -83,6 +83,10 @@ impl From<data::DataError> for GatewayError {
             // 不可視（行述語）と不存在は data 側で既に同一形状（PIT-21）。そのまま透過する。
             DataError::NotFound => GatewayError::NotFound,
             DataError::Forbidden => GatewayError::Forbidden("この操作は許可されていません".into()),
+            // 存在しない列と読めない列は同じ応答（列の存在オラクルを作らない・data-platform §16.1）。
+            DataError::FieldUnavailable => {
+                GatewayError::Forbidden(data::FIELD_UNAVAILABLE_MESSAGE.into())
+            }
             DataError::Invalid(m) => GatewayError::Invalid(m),
             // 構造化した入力の誤り（文言は利用者に見せてよいもの・値や読めない列名を含まない）。
             DataError::InvalidInput(e) => GatewayError::Invalid(e.message().to_string()),

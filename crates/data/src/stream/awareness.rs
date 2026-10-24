@@ -40,13 +40,12 @@ impl DataStore {
             )
             .await?;
         if let Some(f) = &field {
-            if f.len() > MAX_FIELD_KEY_LEN || table.schema.field(f).is_none() {
-                return Err(DataError::Invalid(format!(
-                    "フィールド '{f}' はスキーマに存在しません"
-                )));
-            }
-            if self.masked_fields(ctx, &az, &table).await?.contains(f) {
-                return Err(DataError::Forbidden);
+            // 存在しない列と読めない列は同じ 403（列の存在オラクルを作らない・data-platform §16.1）。
+            if f.len() > MAX_FIELD_KEY_LEN
+                || table.schema.field(f).is_none()
+                || self.masked_fields(ctx, &az, &table).await?.contains(f)
+            {
+                return Err(DataError::FieldUnavailable);
             }
         }
         if let Some(id) = record_id {

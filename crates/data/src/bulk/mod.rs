@@ -502,21 +502,8 @@ impl DataStore {
         if rows.is_empty() {
             return Err(DataError::Invalid("取り込む行がありません".into()));
         }
-        // 読めない（マスクされた）列へ書く作成行を含む取込は全体を 403（1 件の作成と同じ単一点・PIT-19）。
-        // 検証段でも行ごとに確かめ直す（開始から検証までの間のポリシー変更に追従する）。更新行は適用段で
-        // 1 件の更新と同じ入口（行ロックの下）が行ごとに拒否する。
-        let az = self.authz_memo();
-        let masked = self.ensure_fields_writable(ctx, &az, &table, None).await?;
-        for r in rows.iter().filter(|r| r.record_id.is_none()) {
-            if let Some(obj) = r.data.as_object() {
-                Self::ensure_writable_fields(&masked, obj)?;
-            }
-        }
-        if rows.len() > MAX_BULK_ROWS {
-            return Err(DataError::Invalid(format!(
-                "1 回に取り込める行は {MAX_BULK_ROWS} 行までです"
-            )));
-        }
+        // 取込 ID の冪等な再開（同じテーブルなら続きはジョブが進める・別のテーブルなら 409）は列の検査より
+        // 先に判定する（開始済みの取込は開始時に検査を通っている）。
         let keys = table.keys;
         if let Some(existing) = self
             .existing_import(&ctx.tenant_id, keys.tenant_int, import_id)
@@ -529,6 +516,27 @@ impl DataStore {
                     "取込 ID が別のテーブルで使われています".into(),
                 ))
             };
+        }
+        // 読めない（マスクされた）列・存在しない列へ書く作成行を含む取込は全体を 403（1 件の作成と同じ単一点・
+        // PIT-19・両者を区別しない）。検証段でも行ごとに確かめ直す（開始から検証までの間のポリシー変更に
+        // 追従する）。更新行は適用段で 1 件の更新と同じ入口（行ロックの下）が行ごとに拒否する。
+        let az = self.authz_memo();
+        let audit = crate::mask::WriteAudit::new(AuditAction::DataRecordBulkImport, trace_id);
+        let masked = self
+            .ensure_fields_writable(ctx, &az, &table, None, audit)
+            .await?;
+        for r in rows.iter().filter(|r| r.record_id.is_none()) {
+            if let Some(obj) = r.data.as_object() {
+                if let Err(e) = Self::ensure_writable_fields(&masked, &table.schema, obj) {
+                    self.audit_field_deny(ctx, table.id, audit).await;
+                    return Err(e);
+                }
+            }
+        }
+        if rows.len() > MAX_BULK_ROWS {
+            return Err(DataError::Invalid(format!(
+                "1 回に取り込める行は {MAX_BULK_ROWS} 行までです"
+            )));
         }
         let mut staged = CopyRows::default();
         let mut tx = self
@@ -643,7 +651,18 @@ impl DataStore {
         )
         .await?;
         let table = self.fetch_live(ctx, table_id).await?;
-        let rows = csv::csv_rows(&table.schema, bytes)?;
+        let az = self.authz_memo();
+        let masked = self.masked_fields(ctx, &az, &table).await?;
+        let rows = match csv::csv_rows(&table.schema, &masked, bytes) {
+            Ok(rows) => rows,
+            Err(e @ DataError::FieldUnavailable) => {
+                let audit =
+                    crate::mask::WriteAudit::new(AuditAction::DataRecordBulkImport, trace_id);
+                self.audit_field_deny(ctx, table.id, audit).await;
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        };
         self.start_bulk_import(ctx, table_id, rows, opts, trace_id)
             .await
     }

@@ -224,7 +224,12 @@ async fn bulk_upsert_updates_through_the_single_update_entry() {
         errors.into_iter().map(|e| (e.row_no, e.message)).collect();
     assert!(by_row[&2].contains("権限"), "{by_row:?}");
     assert!(by_row[&3].contains("rev"), "{by_row:?}");
-    assert!(by_row[&4].contains("権限"), "マスク列: {by_row:?}");
+    // マスク列は存在しない列と同じ文言（列の存在オラクルを作らない・検証 2-B-P2-1）。
+    assert_eq!(
+        by_row[&4],
+        data::FIELD_UNAVAILABLE_MESSAGE,
+        "マスク列: {by_row:?}"
+    );
     assert!(by_row[&5].contains("見つかりません"), "{by_row:?}");
     assert!(by_row[&7].contains("unique"), "{by_row:?}");
     assert!(by_row.contains_key(&8), "required: {by_row:?}");

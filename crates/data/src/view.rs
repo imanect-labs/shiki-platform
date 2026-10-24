@@ -313,11 +313,20 @@ impl DataViewStore {
             .data
             .run_query(ctx, body.table_id, &query, trace_id)
             .await?;
+        // 表示設定から閲覧者に読めない列の名前を外す（保存者の列設定を素通しにしない・検証 2-B-P2-1）。
+        let display = if body.display == ViewSpec::default() {
+            body.display
+        } else {
+            let table = self.data.fetch_live(ctx, body.table_id).await?;
+            let az = self.data.authz_memo();
+            let masked = self.data.masked_fields(ctx, &az, &table).await?;
+            body.display.redact_for(&masked)
+        };
         Ok(DataViewRun {
             view_id: id,
             version,
             table_id: body.table_id,
-            display: body.display,
+            display,
             result,
         })
     }

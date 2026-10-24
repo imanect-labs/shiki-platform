@@ -13,6 +13,9 @@ pub enum ApiError {
     Unauthorized,
     #[error("権限がありません")]
     Forbidden,
+    /// 構造化 403 本文（`code` と利用者に見せてよい文言・`field_unavailable` 等）。
+    #[error("権限がありません")]
+    ForbiddenJson(serde_json::Value),
     #[error("対象が見つかりません")]
     NotFound,
     #[error("競合しています")]
@@ -52,6 +55,15 @@ pub enum ApiError {
     },
 }
 
+impl ApiError {
+    /// 構造化 400 `invalid_input`（文言は利用者に見せてよい日本語だけを渡す）。
+    pub fn invalid_input(message: &str) -> Self {
+        ApiError::UnprocessableJson(crate::error_body::to_body(
+            &crate::error_body::BadRequestBody::new(data::InvalidCode::InvalidInput, message, None),
+        ))
+    }
+}
+
 /// 再試行できる 503 の `Retry-After`（秒）。
 pub const RETRY_AFTER_SECS: u64 = 2;
 
@@ -59,7 +71,7 @@ impl ApiError {
     fn status(&self) -> StatusCode {
         match self {
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
-            ApiError::Forbidden => StatusCode::FORBIDDEN,
+            ApiError::Forbidden | ApiError::ForbiddenJson(_) => StatusCode::FORBIDDEN,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::Conflict | ApiError::ConflictJson(_) => StatusCode::CONFLICT,
             ApiError::BadRequest(_) | ApiError::UnprocessableJson(_) => StatusCode::BAD_REQUEST,
@@ -101,6 +113,7 @@ impl IntoResponse for ApiError {
         // 構造化ボディはそのまま返す（検証エラーの per-node/per-edge 詳細を保つ）。
         if let ApiError::UnprocessableJson(payload)
         | ApiError::ConflictJson(payload)
+        | ApiError::ForbiddenJson(payload)
         | ApiError::Unprocessable422(payload)
         | ApiError::PayloadTooLargeJson(payload) = self
         {
@@ -173,7 +186,8 @@ impl From<chat::ChatError> for ApiError {
         match err {
             CE::NotFound => ApiError::NotFound,
             CE::Forbidden => ApiError::Forbidden,
-            CE::Invalid(msg) => ApiError::BadRequest(msg),
+            // 入力の誤りは構造化 400（文言は利用者向けの日本語・検証 N8）。
+            CE::Invalid(msg) => ApiError::invalid_input(&msg),
             CE::Unavailable(msg) => ApiError::ServiceUnavailable(format!("chat: {msg}")),
             // プロバイダが要求を拒否した（400 等）。本文に詳細は載せない（ログにのみ残る）。
             CE::Rejected(msg) => ApiError::BadRequest(format!("chat: {msg}")),
@@ -200,13 +214,17 @@ impl From<artifact::ArtifactError> for ApiError {
 impl From<data::DataError> for ApiError {
     fn from(err: data::DataError) -> Self {
         use crate::error_body::{
-            to_body, BadRequestBody, ConflictBody, ConflictCode, RetryLaterBody,
+            to_body, BadRequestBody, ConflictBody, ConflictCode, ForbiddenBody, RetryLaterBody,
         };
         use data::DataError as DE;
         let conflict = |b: ConflictBody| ApiError::ConflictJson(to_body(&b));
         match err {
             DE::NotFound => ApiError::NotFound,
             DE::Forbidden => ApiError::Forbidden,
+            // 存在しない列と読めない列は同じ 403（同じ code・同じ文言・列名なし・data-platform §16.1）。
+            DE::FieldUnavailable => {
+                ApiError::ForbiddenJson(to_body(&ForbiddenBody::field_unavailable()))
+            }
             // 理由を構造化していない入力の誤りは汎用の文言（理由はログだけ・値や読めない列名を返さない）。
             DE::Invalid(msg) => {
                 tracing::info!(reason = %msg, "data invalid (400)");
@@ -289,12 +307,11 @@ impl From<data::DataError> for ApiError {
             // 入口での拒否（SQL 前段面の部分集合外・名前解決不能・資源上限）。422 と構造化した理由
             // （LLM が自己修正できる・存在しない列と見えない列は同一の本文・data-platform §16.1）。
             DE::Rejected(r) => {
-                let mut body = serde_json::to_value(*r).unwrap_or_else(|_| serde_json::json!({}));
-                if let Some(o) = body.as_object_mut() {
-                    o.insert("status".into(), serde_json::json!(422));
-                    o.insert("title".into(), serde_json::json!("Unprocessable Entity"));
-                }
-                ApiError::Unprocessable422(body)
+                ApiError::Unprocessable422(to_body(&crate::error_body::QueryRejectionBody {
+                    status: 422,
+                    title: "Unprocessable Entity".into(),
+                    rejection: *r,
+                }))
             }
         }
     }

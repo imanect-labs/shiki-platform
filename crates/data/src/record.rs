@@ -111,8 +111,21 @@ impl DataStore {
         let table = self.fetch_live(ctx, table_id).await?;
         // 読めない（マスクされた）列への書込は作成でも 403（更新・取込と同じ単一点・PIT-19）。
         let masked = self
-            .ensure_fields_writable(ctx, &az, &table, data.as_object())
+            .ensure_fields_writable(
+                ctx,
+                &az,
+                &table,
+                data.as_object(),
+                crate::mask::WriteAudit::new(AuditAction::DataRecordCreate, trace_id),
+            )
             .await?;
+        // FSM 管理テーブルの作成時の状態は初期状態に固定する（省略は初期状態・違えば 400・検証 2-C-P2-3）。
+        let mut data = data;
+        if let Some(fi) = self.fsm_initial(ctx, &table, trace_id).await? {
+            if let Value::Object(m) = &mut data {
+                fi.apply(m)?;
+            }
+        }
         let named = |k: &str| data.as_object().is_some_and(|o| o.contains_key(k));
         let normalized = validate_record_data(
             ctx,
@@ -124,8 +137,7 @@ impl DataStore {
         .await
         // 列名を返すのは書き手が名指しした列か読める列だけ（必須の欠落が読めない列の名前を漏らさない）。
         .map_err(|e| crate::scrub_input_field(e, |k| named(k) || !masked.contains(k)))?;
-        // FSM 管理テーブルでも create は初期 status を置ける（以降の status 変更は遷移 API 経由・
-        // Task 9.10）。「初期状態のみ許可」の厳密化は FSM 定義の参照が要るため後続で行う。
+        // 以降の status 変更は遷移 API 経由（Task 9.10・更新は reject_fsm_status_write が拒否）。
         self.check_record_refs(ctx, &table.schema, &normalized)
             .await?;
 
@@ -354,10 +366,17 @@ impl DataStore {
         };
         for f in fields {
             if f == status {
+                // 利用者向けの文言（列は書き手が名指ししたもの・表示名で示す・検証 2-C-P2-4）。
+                let label = table
+                    .schema
+                    .field(status)
+                    .map(|d| d.display_name.as_str())
+                    .filter(|n| !n.trim().is_empty())
+                    .unwrap_or(status);
                 return Err(DataError::input_detail(
                     crate::InvalidCode::FsmInvalid,
                     Some(status),
-                    format!("status '{status}' は遷移 API（transition）経由でのみ変更できます"),
+                    format!("「{label}」は状態の遷移でだけ変えられます（遷移できる先から選んでください）"),
                 ));
             }
         }

@@ -44,6 +44,42 @@ pub(crate) async fn validate_record_data(
     resolver: &dyn RefResolver,
     max_multi_values: usize,
 ) -> Result<Map<String, Value>, DataError> {
+    validate_inner(ctx, schema, data, resolver, max_multi_values, None).await
+}
+
+/// 更新のマージ後の完全形を検証する。**今回書いた列（`written`）だけ**を型・必須・選択肢で検査し、
+/// 書いていない列の保存値はそのまま残す（検証 2-A-P1-1）。
+///
+/// スキーマの改訂（必須の付与・選択肢の削除）は既存データと矛盾する変更を拒否するが、それ以前から
+/// 残る不整合や並行の改訂の隙間で、ある列の不整合が**別の列**の編集を妨げないようにする（既存の
+/// 不整合は、その列を書いたときに初めて直させる）。
+pub(crate) async fn validate_record_patch(
+    ctx: &AuthContext,
+    schema: &TableSchema,
+    merged: &Value,
+    resolver: &dyn RefResolver,
+    max_multi_values: usize,
+    written: &(dyn Fn(&str) -> bool + Sync),
+) -> Result<Map<String, Value>, DataError> {
+    validate_inner(
+        ctx,
+        schema,
+        merged,
+        resolver,
+        max_multi_values,
+        Some(written),
+    )
+    .await
+}
+
+async fn validate_inner(
+    ctx: &AuthContext,
+    schema: &TableSchema,
+    data: &Value,
+    resolver: &dyn RefResolver,
+    max_multi_values: usize,
+    written: Option<&(dyn Fn(&str) -> bool + Sync)>,
+) -> Result<Map<String, Value>, DataError> {
     let obj = data.as_object().ok_or_else(|| {
         DataError::input_detail(
             InvalidCode::InvalidInput,
@@ -53,14 +89,11 @@ pub(crate) async fn validate_record_data(
     })?;
     reject_nul_in_object(obj)?;
 
-    // 未宣言・派生フィールドの拒否（閉じたスキーマ）。列名は書き手が名指ししたもの。
+    // 未宣言・派生フィールドの拒否（閉じたスキーマ）。列名は書き手が名指ししたもの。未宣言の列は
+    // 読めない列と同じ 403（列の存在オラクルを作らない・呼び出し側のマスク検査と同じ応答）。
     for key in obj.keys() {
         let Some(f) = schema.field(key) else {
-            return Err(field_err(
-                InvalidCode::InvalidInput,
-                key,
-                format!("フィールド '{key}' はスキーマに存在しません"),
-            ));
+            return Err(DataError::FieldUnavailable);
         };
         if f.field_type.is_derived() {
             return Err(field_err(
@@ -80,6 +113,13 @@ pub(crate) async fn validate_record_data(
     let mut out = Map::with_capacity(obj.len());
     for f in &schema.fields {
         let value = obj.get(&f.key);
+        if written.is_some_and(|w| !w(&f.key)) {
+            // 今回書いていない列: 保存値をそのまま残す（検証済みの正規形・別の列の編集を妨げない）。
+            if let Some(v) = value.filter(|v| !v.is_null()) {
+                out.insert(f.key.clone(), v.clone());
+            }
+            continue;
+        }
         match value {
             None | Some(Value::Null) => {
                 if f.required {

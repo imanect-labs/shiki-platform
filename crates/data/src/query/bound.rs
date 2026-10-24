@@ -4,8 +4,10 @@
 //! ここを通らない条件はコンパイラに届かない（未宣言・未索引・型不整合・マスク列は実行前に拒否）。
 //!
 //! - filter / sort / group_by / aggregate の対象は `indexed || unique` 宣言済みのみ（400）
-//! - マスク列は filter / sort / group_by / aggregate / search のいずれにも出せない（**403**・PIT-19）
-//! - `contains` / `ends_with` は `searchable` 宣言済みの text 列のみ（trigram GIN を要する）
+//! - マスク列は filter / sort / group_by / aggregate / search のいずれにも出せない（**403**・PIT-19）。
+//!   存在しない列も**同じ** 403 `field_unavailable`（列の存在オラクルを作らない・data-platform §16.1）
+//! - `contains` / `ends_with` / 横断検索は `searchable` 宣言済みの text 列のみ（trigram GIN を要する）。
+//!   `searchable` の列は `indexed` でなくてよい（検索索引で引ける）
 //! - `matches`（正規表現）は採用しない（400）
 //! - システム擬似列 `_owner` / `_created_at` / `_updated_at` は常に索引済みで、駆動になれる
 
@@ -31,6 +33,15 @@ use crate::model::{
 use crate::numeric::Dec;
 use crate::query::planner::lower::SAFE_BOUND_BYTES;
 use crate::DataError;
+
+/// 列の解決で要求する索引。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Need {
+    /// 値索引（`indexed || unique`）。フィルタ・ソート・集計。
+    Indexed,
+    /// 検索索引（`searchable`）。部分一致。`searchable` でなければ値索引の規則で解決する。
+    Searchable,
+}
 
 /// 擬似列の参照名（ユーザー定義の key は `[a-z]` 始まりなので衝突しない）。
 pub(crate) const PSEUDO_OWNER: &str = "_owner";
@@ -399,23 +410,13 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// 束縛器の表のリンク列とその参照先（マスク 403 → 未宣言 400 → リンク列でない 400 → 参照先が
-    /// 読めない 403 の順）。
+    /// 束縛器の表のリンク列とその参照先（マスク・未宣言は同じ 403 `field_unavailable` → リンク列でない
+    /// 400 → 参照先が読めない 403 の順）。
     pub(crate) fn link_target(
         &self,
         key: &str,
     ) -> Result<(&'a crate::model::FieldDef, &'a super::scopes::ScopeTable), DataError> {
-        if self.masked.contains(key) {
-            return Err(DataError::Forbidden);
-        }
-        charge(self.schema.fields.len());
-        let f = self.schema.field(key).ok_or_else(|| {
-            DataError::input_detail(
-                crate::InvalidCode::InvalidInput,
-                Some(key),
-                format!("フィールド '{key}' はスキーマに存在しません"),
-            )
-        })?;
+        let f = self.user_field(key)?;
         let (FieldType::RecordRef, Some(rt)) = (f.field_type, f.ref_table) else {
             return Err(DataError::input_detail(
                 crate::InvalidCode::InvalidInput,
@@ -477,23 +478,58 @@ impl<'a> Binder<'a> {
         })))
     }
 
-    /// フィルタ・ソート・集計で使う列を解決する（マスク 403 → 未宣言 400 → 未索引 400 の順）。
-    pub(crate) fn queryable(&mut self, key: &str) -> Result<BField, DataError> {
+    /// 利用者定義の列を引く。マスク列と存在しない列は**同じ** 403 `field_unavailable`
+    /// （列の存在オラクルを作らない・data-platform §5.2・§16.1）。
+    pub(crate) fn user_field(&self, key: &str) -> Result<&'a crate::model::FieldDef, DataError> {
         if self.masked.contains(key) {
-            return Err(DataError::Forbidden);
+            return Err(DataError::FieldUnavailable);
+        }
+        charge(self.schema.fields.len());
+        self.schema.field(key).ok_or(DataError::FieldUnavailable)
+    }
+
+    /// フィルタ・ソート・集計で使う列を解決する（マスク・未宣言は同じ 403 → 未索引 400 の順）。
+    pub(crate) fn queryable(&mut self, key: &str) -> Result<BField, DataError> {
+        self.resolve(key, Need::Indexed)
+    }
+
+    /// 部分一致（`contains` / `ends_with` / 横断検索）で使う列を解決する。`searchable` の列は検索索引
+    /// （`data_index_search`）で引けるので、`indexed` を要求しない（検証 2-B-P1-1）。
+    pub(crate) fn searchable(&mut self, key: &str) -> Result<BField, DataError> {
+        self.resolve(key, Need::Searchable)
+    }
+
+    fn resolve(&mut self, key: &str, need: Need) -> Result<BField, DataError> {
+        if self.masked.contains(key) {
+            return Err(DataError::FieldUnavailable);
         }
         if let Some(p) = pseudo(key) {
             self.fields.insert(p.id, p.clone());
             return Ok(p);
         }
-        charge(self.schema.fields.len());
-        let f = self.schema.field(key).ok_or_else(|| {
-            DataError::input_detail(
-                crate::InvalidCode::InvalidInput,
-                Some(key),
-                format!("フィールド '{key}' はスキーマに存在しません"),
-            )
-        })?;
+        let f = self.user_field(key)?;
+        if need == Need::Searchable
+            && f.searchable
+            && f.field_type.supports_search()
+            && !f.field_type.is_derived()
+            && !f.is_reverse_link()
+        {
+            let b = BField {
+                id: f.id,
+                key: f.key.clone(),
+                ty: Some(f.field_type),
+                kind: if f.field_type == FieldType::MultiSelect {
+                    FieldKind::Multi
+                } else {
+                    FieldKind::Text
+                },
+                searchable: true,
+                ref_table: f.ref_table,
+                derived: false,
+            };
+            self.fields.insert(b.id, b.clone());
+            return Ok(b);
+        }
         if f.field_type.is_derived() {
             // 材料化した（invariant かつ indexed の）列だけ。閲覧者ごと・時刻依存の値で並べたり絞ったり
             // すると見えない行の値が順序から漏れる（PIT-71・PIT-19 と同型）。
@@ -589,7 +625,11 @@ impl<'a> Binder<'a> {
                         format!("条件が多すぎます（最大 {MAX_CONDITION_LEAVES}）"),
                     ));
                 }
-                let f = self.queryable(&cmp.field)?;
+                let f = if matches!(cmp.op, CondOp::Contains | CondOp::EndsWith) {
+                    self.searchable(&cmp.field)?
+                } else {
+                    self.queryable(&cmp.field)?
+                };
                 compare(&f, cmp.op, cmp.value.as_ref())?
             }
         })
@@ -617,7 +657,7 @@ impl<'a> Binder<'a> {
             <[String]>::to_vec,
         );
         for k in keys {
-            let f = self.queryable(&k)?;
+            let f = self.searchable(&k)?;
             if explicit && !f.searchable {
                 return Err(DataError::input_detail(
                     crate::InvalidCode::FieldNotIndexed,
@@ -650,14 +690,6 @@ impl<'a> Binder<'a> {
     /// 登録済みのフィールドを足す（既定ソートの擬似列など）。
     pub(crate) fn register(&mut self, f: BField) {
         self.fields.insert(f.id, f);
-    }
-
-    pub(crate) fn schema(&self) -> &'a TableSchema {
-        self.schema
-    }
-
-    pub(crate) fn masked(&self) -> &'a HashSet<String> {
-        self.masked
     }
 }
 

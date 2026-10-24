@@ -111,7 +111,7 @@ impl DataQueryRequest {
         (status = 400, description = "入力が不正（索引の無い列での絞り込みなど）", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
-        (status = 422, description = "部分集合外・名前が見つからない・資源上限（構造化した理由）", body = data::QueryRejection),
+        (status = 422, description = "部分集合外・名前が見つからない・資源上限（構造化した理由）", body = crate::error_body::QueryRejectionBody),
         (status = 503, description = "読取が statement timeout で打ち切られた（code=read_timeout・Retry-After・再試行可）", body = crate::error_body::RetryLaterBody),
     ),
     security(("session" = [])),
@@ -203,7 +203,7 @@ pub async fn list_table_views(
     responses(
         (status = 201, description = "作成した", body = ViewResponse),
         (status = 400, description = "クエリ/スキーマが不正", body = crate::error_body::BadRequestBody),
-        (status = 422, description = "表示設定が不正・ルックアップ列の上限超過（構造化した理由）", body = data::QueryRejection),
+        (status = 422, description = "表示設定が不正・ルックアップ列の上限超過（構造化した理由）", body = crate::error_body::QueryRejectionBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "対象テーブルの権限がない・マスク列を指定した"),
         (status = 409, description = "同名ビューが既に存在する・索引の承認が要る", body = crate::error_body::ConflictBody),
@@ -239,7 +239,7 @@ pub async fn create_view(
     responses(
         (status = 200, description = "追記後のビュー", body = ViewResponse),
         (status = 400, description = "クエリ/スキーマが不正", body = crate::error_body::BadRequestBody),
-        (status = 422, description = "表示設定が不正・ルックアップ列の上限超過（構造化した理由）", body = data::QueryRejection),
+        (status = 422, description = "表示設定が不正・ルックアップ列の上限超過（構造化した理由）", body = crate::error_body::QueryRejectionBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない・マスク列を指定した"),
         (status = 404, description = "存在しない"),

@@ -114,12 +114,18 @@ impl DataTableCatalog {
 fn denied(err: &DataError) -> ToolOutcome {
     let msg = match err {
         DataError::NotFound | DataError::Forbidden => {
-            "テーブル・レコードが見つからないか、権限がありません（読めない列で絞り込み・並べ替えた場合も含む）。"
-                .to_string()
+            "テーブル・レコードが見つからないか、権限がありません。".to_string()
         }
+        // 存在しない列と読めない列は同じ文言（列の存在オラクルを作らない・data-platform §16.1）。
+        DataError::FieldUnavailable => format!(
+            "{}。data_schema で使える列の参照名を確かめてください。",
+            data::FIELD_UNAVAILABLE_MESSAGE
+        ),
         // 入力の誤りは理由を返して自己修正させる（テーブルの閲覧権限は確認済みの段階のもの）。
         DataError::Invalid(m) => format!("入力が不正です: {m}"),
-        DataError::InvalidInput(e) => format!("入力が不正です（{}）: {}", e.code().as_str(), e.message()),
+        DataError::InvalidInput(e) => {
+            format!("入力が不正です（{}）: {}", e.code().as_str(), e.message())
+        }
         DataError::Rejected(r) => format!("クエリを受け付けられません: {r}"),
         DataError::Conflict(_)
         | DataError::RevConflict { .. }
@@ -129,7 +135,9 @@ fn denied(err: &DataError) -> ToolOutcome {
             "他の更新と競合しました。読み直してから再試行してください: {}",
             err.conflict_detail().unwrap_or_default()
         ),
-        DataError::Gone(_) => "ページの位置が古くなりました。cursor を外して最初から読み直してください。".into(),
+        DataError::Gone(_) => {
+            "ページの位置が古くなりました。cursor を外して最初から読み直してください。".into()
+        }
         DataError::IndexPreparing { .. }
         | DataError::IndexApprovalRequired { .. }
         | DataError::QueryTooExpensive { .. }
@@ -345,7 +353,12 @@ impl DataSchemaTool {
 fn format_schema(table: &data::DataTable, masked: &std::collections::HashSet<String>) -> String {
     use std::fmt::Write as _;
     let mut out = format!("テーブル「{}」（id: {}）\n", table.name, table.id);
-    if let Some(status) = &table.schema.status_field {
+    if let Some(status) = table
+        .schema
+        .status_field
+        .as_ref()
+        .filter(|k| !masked.contains(*k))
+    {
         let _ = writeln!(
             out,
             "状態の列: {status}（状態は承認フローの遷移でだけ変わり、data_record_write では書き換えられない）"
@@ -378,13 +391,7 @@ fn format_schema(table: &data::DataTable, masked: &std::collections::HashSet<Str
         out.push('\n');
     }
     out.push_str("システム列: _created_at / _updated_at / _owner（絞り込み・並べ替えに使える）\n");
-    if !masked.is_empty() {
-        let _ = writeln!(
-            out,
-            "（閲覧権限の無い列 {} 件は表示していません。その列は検索にも使えない）",
-            masked.len()
-        );
-    }
+    // 読めない列の有無・件数は書かない（列の存在オラクルを作らない・検証 2-B-P2-1）。
     out
 }
 

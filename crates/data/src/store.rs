@@ -183,6 +183,8 @@ pub struct DataStore {
     pub(crate) plan_cache: Arc<crate::query::planner::plan_cache::PlanCache>,
     /// 入口の資源上限（SQL 前段面と IR 直投入の共通・data-platform §16.1.1）。
     pub(crate) limits: crate::query::limits::QueryLimits,
+    /// FSM の本文の読み口（[`crate::FsmStore::new`] が登録・複製間で共有・作成時の初期状態の検査に使う）。
+    pub(crate) fsm_artifacts: Arc<std::sync::OnceLock<Arc<artifact::ArtifactStore>>>,
 }
 
 impl DataStore {
@@ -219,6 +221,7 @@ impl DataStore {
             stream_config: crate::stream::StreamConfig::default(),
             plan_cache: Arc::default(),
             limits: crate::query::limits::QueryLimits::default(),
+            fsm_artifacts: Arc::default(),
         }
     }
 
@@ -492,6 +495,18 @@ impl DataStore {
             .await?;
         }
         validate_schema_update(&current.schema.0, &next)?;
+        // 既存データと矛盾する改訂（値の無い行がある列の必須化・使われている選択肢の削除）は理由付きで拒否
+        // （検証 2-A-P1-1。テーブル行は FOR UPDATE 済みなので並行する書込はこの前後に直列化される）。
+        crate::schema_data_check::check_schema_against_data(
+            &mut tx,
+            TableKeys {
+                tenant_int: current.tenant_int,
+                table_int: current.table_int,
+            },
+            &current.schema.0,
+            &next,
+        )
+        .await?;
         // display_name / order / description の変更はここ（data_table の 1 行）だけで完結し、
         // data_record は 1 行も更新しない（JSONB キーは不変の id 由来・data-platform §4.2）。
         let row: TableRow = sqlx::query_as(&format!(
@@ -720,7 +735,8 @@ impl DataStore {
         self.fetch_live(ctx, table_id).await.map(|_| ())
     }
 
-    /// テーブルへの relation を要求する（不足は監査 deny＋Forbidden・剥奪即時反映）。
+    /// テーブルへの relation を要求する（不足は監査 deny・剥奪即時反映）。テーブルが見えない主体には
+    /// 404（存在しない・削除済みと区別しない）、見えるが relation が足りない主体には 403。
     pub(crate) async fn require(
         &self,
         ctx: &AuthContext,
@@ -760,7 +776,15 @@ impl DataStore {
                     },
                 )
                 .await;
-            return Err(DataError::Forbidden);
+            // テーブルが見えない主体（viewer でない）には存在も分からせない: 存在しない・削除済みと同じ 404
+            // （data-platform §16.1・検証 2-A P3）。見えるが操作の relation が無いときだけ 403。
+            let visible =
+                relation != Relation::Viewer && az.check(ctx, Relation::Viewer, &obj).await?;
+            return Err(if visible {
+                DataError::Forbidden
+            } else {
+                DataError::NotFound
+            });
         }
         Ok(())
     }

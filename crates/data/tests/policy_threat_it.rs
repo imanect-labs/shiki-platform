@@ -544,7 +544,16 @@ async fn client_filters_cannot_bypass_predicate() {
                 None,
             )
             .await;
-        assert!(matches!(&r, Err(e) if e.is_invalid()), "{bad_field}: {r:?}");
+        // 未宣言の列は読めない列と同じ 403 `field_unavailable`（列の存在オラクルを作らない）・
+        // 未索引の列は 400。どちらも実行前に拒否する。
+        if bad_field == "nope" {
+            assert!(
+                matches!(&r, Err(DataError::FieldUnavailable)),
+                "{bad_field}: {r:?}"
+            );
+        } else {
+            assert!(matches!(&r, Err(e) if e.is_invalid()), "{bad_field}: {r:?}");
+        }
     }
     // 型不一致（number フィールドに文字列）も実行前 400。
     let r = f
@@ -1890,7 +1899,7 @@ async fn materialized_rollup_is_discarded_on_query_and_on_field_policy() {
         .store
         .run_query(&m.bob, m.orders, &m.by_total(), None)
         .await;
-    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    assert!(matches!(r, Err(DataError::FieldUnavailable)), "{r:?}");
     // ⑪ SQL 前段面でも同じ（材料化を破棄した列は閲覧者本人の権限で計算し直した値）。
     for who in [&m.alice, &m.bob] {
         sql_mirror(&m.store, who, m.orders, "orders").await;
@@ -2269,7 +2278,7 @@ async fn sql_mirror(store: &DataStore, who: &AuthContext, table_id: Uuid, name: 
                     )
                     .await;
                 assert!(
-                    matches!(r, Err(DataError::Forbidden)),
+                    matches!(r, Err(DataError::FieldUnavailable)),
                     "{name}: マスク列 {masked} を IR で投影できた: {r:?}"
                 );
             }
@@ -2472,7 +2481,7 @@ async fn masked_column_cannot_be_written_on_create_or_import() {
         let r = store
             .create_record(&bob, t.id, json!({"name": "b", "emp_no": v}), None)
             .await;
-        assert!(matches!(r, Err(DataError::Forbidden)), "{v}: {r:?}");
+        assert!(matches!(r, Err(DataError::FieldUnavailable)), "{v}: {r:?}");
         let r = store
             .start_bulk_import(
                 &bob,
@@ -2485,7 +2494,7 @@ async fn masked_column_cannot_be_written_on_create_or_import() {
                 None,
             )
             .await;
-        assert!(matches!(r, Err(DataError::Forbidden)), "{v}: {r:?}");
+        assert!(matches!(r, Err(DataError::FieldUnavailable)), "{v}: {r:?}");
         let csv = format!("name,emp_no\nb,{v}\n");
         let r = store
             .start_bulk_import_csv(
@@ -2496,7 +2505,7 @@ async fn masked_column_cannot_be_written_on_create_or_import() {
                 None,
             )
             .await;
-        assert!(matches!(r, Err(DataError::Forbidden)), "{v}: {r:?}");
+        assert!(matches!(r, Err(DataError::FieldUnavailable)), "{v}: {r:?}");
     }
     // マスク列を含まない作成は通る（読める列だけの書込は妨げない）。
     store
@@ -3009,11 +3018,18 @@ async fn derived_columns_over_masked_fields_are_masked_and_revisions_hide_masked
             .is_none(),
         "抑制が無ければ応答に出ない"
     );
+    // 読めない列に依存する派生列（bonus）は bob のテーブル定義に出ない。閲覧者文脈はスキーマ管理者以外に
+    // マスク列名を返さない（検証 2-B-P2-1）。
     let vc = store
         .table_viewer_context(&bob, emp.id, None)
         .await
         .unwrap();
-    assert!(vc.masked_fields.contains(&"bonus".to_string()), "{vc:?}");
+    assert!(vc.masked_fields.is_empty(), "{vc:?}");
+    let seen = store
+        .get_table_for_viewer(&bob, emp.id, None)
+        .await
+        .unwrap();
+    assert!(seen.schema.field("bonus").is_none(), "{:?}", seen.schema);
     let by_bonus = DataQuery {
         sort: vec![SortKey {
             field: "bonus".into(),
@@ -3022,7 +3038,7 @@ async fn derived_columns_over_masked_fields_are_masked_and_revisions_hide_masked
         ..DataQuery::default()
     };
     let r = store.run_query(&bob, emp.id, &by_bonus, None).await;
-    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    assert!(matches!(r, Err(DataError::FieldUnavailable)), "{r:?}");
     // 履歴: 読めない列だけの更新（rev 2）は bob に返らない。混ざった更新（rev 3）は読める列だけ。
     store
         .update_record(&alice, emp.id, emp_rec.id, json!({"salary": 300}), 1, None)
@@ -3351,7 +3367,7 @@ async fn structured_errors_and_table_definitions_never_reveal_masked_columns() {
     let r = store
         .run_query(&bob, t.id, &q(&["name", "emp_no"]), None)
         .await;
-    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    assert!(matches!(r, Err(DataError::FieldUnavailable)), "{r:?}");
     store
         .run_query(&bob, t.id, &q(&["name"]), None)
         .await
@@ -3360,4 +3376,223 @@ async fn structured_errors_and_table_definitions_never_reveal_masked_columns() {
         .run_query(&carol, t.id, &q(&["name", "emp_no"]), None)
         .await
         .unwrap();
+}
+
+/// ⑭（検証 2-B-P2-1 / 2-C-P2-2）列の存在オラクル: 存在しない列と読めない（マスクされた）列は、
+/// 絞り込み・並べ替え・投影・検索・集計・作成・更新・取込（JSON・CSV の参照名と表示名）・索引の昇格・
+/// カーソル位置の通知の**すべてで同一の応答**（同じ 403 `field_unavailable`・列名なし）。閲覧者文脈は
+/// マスク列名を返さず、テーブル定義の表示順は詰めて返す。マスク列への書込の拒否は監査に deny で残る。
+#[tokio::test]
+async fn unknown_and_masked_columns_are_indistinguishable_everywhere() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let store = DataStore::new(pool.clone(), Arc::clone(&authz), Arc::new(AllowRefs));
+    join_role(&authz, &alice, "bmgr").await;
+    let mut schema = staff_schema();
+    let mut dept = field("dept", FieldType::Text);
+    dept.indexed = true;
+    schema.fields.push(dept);
+    for f in &mut schema.fields {
+        if f.key == "emp_no" {
+            f.display_name = "社員番号".into();
+            f.searchable = true;
+        }
+    }
+    let t = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "staff-oracle".into(),
+                schema,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    grant(&authz, &bob, Relation::Editor, t.id).await;
+    let rec = store
+        .create_record(&alice, t.id, json!({"name": "a", "emp_no": "E1"}), None)
+        .await
+        .unwrap();
+
+    // 各経路で「マスク列」と「存在しない列」を指定し、応答の形が同じであることを確かめる。
+    let same = |what: &str, masked: String, unknown: String| {
+        assert!(masked.contains("FieldUnavailable"), "{what}: {masked}");
+        assert_eq!(
+            masked, unknown,
+            "{what}: マスク列と存在しない列で応答が違う"
+        );
+    };
+    for (what, q) in [
+        (
+            "filter",
+            json!({"filter": {"cmp": {"field": "$K", "op": "eq", "value": "E1"}}}),
+        ),
+        ("sort", json!({"sort": [{"field": "$K"}]})),
+        ("select", json!({"select": ["name", "$K"]})),
+        ("search", json!({"search": "E", "search_fields": ["$K"]})),
+        (
+            "contains",
+            json!({"filter": {"cmp": {"field": "$K", "op": "contains", "value": "E"}}}),
+        ),
+        (
+            "group_by",
+            json!({"group_by": ["$K"], "aggregate": [{"metric": "count"}]}),
+        ),
+    ] {
+        let run = |k: &str| {
+            let q: DataQuery = serde_json::from_value(
+                serde_json::from_str(&q.to_string().replace("$K", k)).unwrap(),
+            )
+            .unwrap();
+            let store = &store;
+            let bob = &bob;
+            async move { format!("{:?}", store.run_query(bob, t.id, &q, None).await.err()) }
+        };
+        same(what, run("emp_no").await, run("zzz_nope").await);
+    }
+    let create = |k: &str| {
+        let store = &store;
+        let bob = &bob;
+        let k = k.to_string();
+        async move {
+            format!(
+                "{:?}",
+                store
+                    .create_record(bob, t.id, json!({"name": "b", k: "E9"}), None)
+                    .await
+                    .err()
+            )
+        }
+    };
+    same("create", create("emp_no").await, create("zzz_nope").await);
+    let update = |k: &str| {
+        let store = &store;
+        let bob = &bob;
+        let k = k.to_string();
+        async move {
+            format!(
+                "{:?}",
+                store
+                    .update_record(bob, t.id, rec.id, json!({ k: "E9" }), 1, None)
+                    .await
+                    .err()
+            )
+        }
+    };
+    same("update", update("emp_no").await, update("zzz_nope").await);
+    let import = |k: &str| {
+        let store = &store;
+        let bob = &bob;
+        let k = k.to_string();
+        async move {
+            format!(
+                "{:?}",
+                store
+                    .start_bulk_import(
+                        bob,
+                        t.id,
+                        vec![data::BulkImportRow {
+                            key: None,
+                            data: json!({"name": "b", k: "E9"}),
+                        }],
+                        data::BulkImportOptions::default(),
+                        None,
+                    )
+                    .await
+                    .err()
+            )
+        }
+    };
+    same("import", import("emp_no").await, import("zzz_nope").await);
+    let csv = |h: &str| {
+        let store = &store;
+        let bob = &bob;
+        let body = format!("name,{h}\nb,E9\n");
+        async move {
+            format!(
+                "{:?}",
+                store
+                    .start_bulk_import_csv(
+                        bob,
+                        t.id,
+                        body.as_bytes(),
+                        data::BulkImportOptions::default(),
+                        None,
+                    )
+                    .await
+                    .err()
+            )
+        }
+    };
+    same("csv key", csv("emp_no").await, csv("zzz_nope").await);
+    same(
+        "csv display",
+        csv("社員番号").await,
+        csv("存在しない列").await,
+    );
+    let promote = |k: &str| {
+        let store = &store;
+        let bob = &bob;
+        let k = k.to_string();
+        async move {
+            format!(
+                "{:?}",
+                store.promote_index(bob, t.id, &k, false, None).await.err()
+            )
+        }
+    };
+    same(
+        "promote",
+        promote("emp_no").await,
+        promote("zzz_nope").await,
+    );
+    let aware = |k: &str| {
+        let store = &store;
+        let bob = &bob;
+        let k = k.to_string();
+        async move {
+            format!(
+                "{:?}",
+                store
+                    .post_awareness(bob, t.id, Some(rec.id), Some(k), None)
+                    .await
+                    .err()
+            )
+        }
+    };
+    same("awareness", aware("emp_no").await, aware("zzz_nope").await);
+
+    // 閲覧者文脈はマスク列名を返さない（スキーマ管理者には返す）。
+    let vc = store.table_viewer_context(&bob, t.id, None).await.unwrap();
+    assert!(vc.masked_fields.is_empty(), "{vc:?}");
+    // テーブル定義の表示順は詰める（読めない列の位置に欠番を作らない）。
+    let seen = store.get_table_for_viewer(&bob, t.id, None).await.unwrap();
+    let orders: Vec<(&str, i32)> = seen
+        .schema
+        .fields
+        .iter()
+        .map(|f| (f.key.as_str(), f.order))
+        .collect();
+    assert_eq!(orders, vec![("name", 0), ("dept", 1)], "{orders:?}");
+
+    // マスク列への書込の拒否は監査に deny で残る（列名は残さない・検証 2-B-P3-4）。
+    let denies: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE tenant_id = $1 AND decision = 'deny' \
+         AND metadata ->> 'reason' = 'field_unavailable'",
+    )
+    .bind(&tenant)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(denies.len() >= 4, "{denies:?}");
+    let text = serde_json::to_string(&denies).unwrap();
+    assert!(
+        !text.contains("emp_no") && !text.contains("zzz_nope"),
+        "{text}"
+    );
 }

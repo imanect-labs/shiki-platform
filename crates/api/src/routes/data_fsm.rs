@@ -206,6 +206,37 @@ pub async fn transition_record(
     Ok(Json(updated))
 }
 
+/// レコードのいまの状態と、閲覧者がいま実行できる遷移先（editor・グリッドの状態セルのメニュー用・
+/// 検証 2-C-P2-4）。判定は遷移 API と同じ（行の可視性・遷移の定義・actor 述語を当該行で評価）。
+#[utoipa::path(
+    get,
+    path = "/data/tables/{id}/records/{record_id}/transitions",
+    params(
+        ("id" = Uuid, Path, description = "テーブル ID"),
+        ("record_id" = Uuid, Path, description = "レコード ID"),
+    ),
+    responses(
+        (status = 200, description = "いまの状態と実行できる遷移先", body = data::AllowedTransitions),
+        (status = 400, description = "FSM で管理されていないテーブル（code=fsm_invalid）", body = crate::error_body::BadRequestBody),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "editor でない・状態の列が読めない（code=field_unavailable）", body = crate::error_body::ForbiddenBody),
+        (status = 404, description = "テーブル/レコードが存在しない（不可視を含む）"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn allowed_transitions(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path((id, record_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<data::AllowedTransitions>, ApiError> {
+    let out = state
+        .fsms
+        .allowed_transitions(&ctx, id, record_id, trace.as_deref())
+        .await?;
+    Ok(Json(out))
+}
+
 /// FSM/遷移（Task 9.10）のルート宣言。
 pub(crate) fn data_fsm_route_decls() -> Vec<crate::server::RouteDecl> {
     use crate::server::AccessPolicy::Session;
@@ -221,6 +252,12 @@ pub(crate) fn data_fsm_route_decls() -> Vec<crate::server::RouteDecl> {
             &["POST"],
             Session,
             || post(transition_record),
+        ),
+        r(
+            "/data/tables/{id}/records/{record_id}/transitions",
+            &["GET"],
+            Session,
+            || get(allowed_transitions),
         ),
     ]
 }

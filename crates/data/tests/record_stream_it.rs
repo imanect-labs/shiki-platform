@@ -1009,7 +1009,7 @@ async fn revocation_stops_delivery_within_ttl_and_rest_is_immediate() {
     // REST は TTL の影響を受けない（即時に拒否）。
     assert!(matches!(
         fx.store.get_record(&fx.bob, fx.table, r.id, None).await,
-        Err(DataError::Forbidden)
+        Err(DataError::NotFound)
     ));
     // TTL が切れるまで配信を回し続け、止まった時刻を計る。購読の材料は剥奪より前（購読の開始時）に
     // 解決したので、TTL は剥奪の時刻より前に切れる。判定はバッチの開始時刻で行う（配信の判定は
@@ -1272,7 +1272,7 @@ async fn bulk_import_transition_derived_schema_and_awareness_reach_subscribers()
                 None
             )
             .await,
-        Err(DataError::Forbidden)
+        Err(DataError::FieldUnavailable)
     ));
 
     // スキーマの改訂は schema.changed を送って閉じる。

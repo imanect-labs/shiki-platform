@@ -42,6 +42,7 @@ fn update_row_message(e: DataError) -> Result<String, DataError> {
         DataError::InvalidInput(e) => Ok(e.message().to_string()),
         e if e.is_conflict() => Ok(e.conflict_detail().unwrap_or_default()),
         DataError::NotFound => Ok("更新対象のレコードが見つかりません".into()),
+        DataError::FieldUnavailable => Ok(crate::FIELD_UNAVAILABLE_MESSAGE.into()),
         DataError::Forbidden => {
             Ok("このレコード（またはフィールド）を更新する権限がありません".into())
         }

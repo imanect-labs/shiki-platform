@@ -164,7 +164,10 @@ async fn field_mask_hides_and_blocks_search() {
             None,
         )
         .await;
-    assert!(matches!(denied, Err(DataError::Forbidden)), "{denied:?}");
+    assert!(
+        matches!(denied, Err(DataError::FieldUnavailable)),
+        "{denied:?}"
+    );
     seed(
         &store,
         &kei,
@@ -198,7 +201,7 @@ async fn field_mask_hides_and_blocks_search() {
         )
         .await;
     assert!(
-        matches!(by_filter, Err(DataError::Forbidden)),
+        matches!(by_filter, Err(DataError::FieldUnavailable)),
         "{by_filter:?}"
     );
     let by_sort = store
@@ -215,7 +218,10 @@ async fn field_mask_hides_and_blocks_search() {
             None,
         )
         .await;
-    assert!(matches!(by_sort, Err(DataError::Forbidden)), "{by_sort:?}");
+    assert!(
+        matches!(by_sort, Err(DataError::FieldUnavailable)),
+        "{by_sort:?}"
+    );
     let by_agg = store
         .run_query(
             &alice,
@@ -231,7 +237,10 @@ async fn field_mask_hides_and_blocks_search() {
             None,
         )
         .await;
-    assert!(matches!(by_agg, Err(DataError::Forbidden)), "{by_agg:?}");
+    assert!(
+        matches!(by_agg, Err(DataError::FieldUnavailable)),
+        "{by_agg:?}"
+    );
 }
 
 #[tokio::test]
@@ -313,7 +322,10 @@ async fn field_mask_blocks_writes_for_unauthorized() {
             None,
         )
         .await;
-    assert!(matches!(denied, Err(DataError::Forbidden)), "{denied:?}");
+    assert!(
+        matches!(denied, Err(DataError::FieldUnavailable)),
+        "{denied:?}"
+    );
 }
 
 #[tokio::test]

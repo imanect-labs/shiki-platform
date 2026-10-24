@@ -295,14 +295,14 @@ async fn invalid_view_specs_are_rejected_on_save() {
         .views
         .create(&bob, "b1", &body(table, grid(vec![col("salary")])), None)
         .await;
-    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    assert!(matches!(r, Err(DataError::FieldUnavailable)), "{r:?}");
     let mut alt = col("name");
     alt.sort_by = Some("salary".into());
     let r = env
         .views
         .create(&bob, "b2", &body(table, grid(vec![alt])), None)
         .await;
-    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    assert!(matches!(r, Err(DataError::FieldUnavailable)), "{r:?}");
     // 非表示にしたマスク列の設定は何も見せないので保存できる（他人の設定を写しても止めない）。
     let mut hidden = col("salary");
     hidden.hidden = true;
@@ -356,12 +356,13 @@ async fn invalid_view_specs_are_rejected_on_save() {
         .await
         .expect("per_viewer column can be displayed");
 
-    // 存在しない列は拒否。更新（新しい版）でも同じ検証が掛かる。
+    // 存在しない列は拒否（読めない列と同じ 403 `field_unavailable`・列の存在オラクルを作らない）。
+    // 更新（新しい版）でも同じ検証が掛かる。
     let r = env
         .views
         .create(&keiri, "x1", &body(table, grid(vec![col("nope")])), None)
         .await;
-    assert!(matches!(r, Err(DataError::Rejected(_))), "{r:?}");
+    assert!(matches!(r, Err(DataError::FieldUnavailable)), "{r:?}");
     let id = env
         .views
         .create(&keiri, "x2", &body(table, ViewSpec::default()), None)
@@ -377,7 +378,7 @@ async fn invalid_view_specs_are_rejected_on_save() {
             None,
         )
         .await;
-    assert!(matches!(r, Err(DataError::Rejected(_))), "{r:?}");
+    assert!(matches!(r, Err(DataError::FieldUnavailable)), "{r:?}");
 }
 
 /// 受け入れ条件: ルックアップ・ロールアップ列が 13 本以上のビューは保存時に拒否される（既定 12）。
@@ -619,6 +620,9 @@ async fn views_are_per_user_and_reevaluated_for_each_viewer() {
         .run_pinned(&bob, alice_view, 2, &DataViewPage::default(), None)
         .await
         .unwrap();
+    // 表示設定にも bob に読めない列の名前を残さない（検証 2-B-P2-1）。
+    let shown = serde_json::to_string(&b.display).unwrap();
+    assert!(!shown.contains("salary"), "{shown}");
     let b_items = b.result.items.unwrap();
     assert_eq!(b_items.len(), 2);
     assert!(b_items.iter().all(|r| r.data["owner_ref"] == "bob"));
@@ -628,7 +632,7 @@ async fn views_are_per_user_and_reevaluated_for_each_viewer() {
     let carol = ctx(&tenant, "carol", &[]);
     assert!(matches!(
         env.views.list_for_table(&carol, table, None).await,
-        Err(DataError::Forbidden)
+        Err(DataError::NotFound)
     ));
 }
 
@@ -650,7 +654,7 @@ async fn viewer_context_reflects_the_viewer() {
     assert_eq!(a.max_view_lookup_columns, 12);
     assert!(matches!(
         env.store.table_viewer_context(&bob, table, None).await,
-        Err(DataError::Forbidden)
+        Err(DataError::NotFound)
     ));
     share_table(&env, &alice, &bob, table, Relation::Editor).await;
     let b = env
@@ -658,7 +662,8 @@ async fn viewer_context_reflects_the_viewer() {
         .table_viewer_context(&bob, table, None)
         .await
         .unwrap();
-    assert_eq!(b.masked_fields, vec!["salary".to_string()]);
+    // スキーマ管理者以外にはマスク列名を返さない（列の存在オラクルを作らない・検証 2-B-P2-1）。
+    assert!(b.masked_fields.is_empty(), "{b:?}");
     assert!(b.can_edit);
     assert!(!b.can_manage);
 }

@@ -712,7 +712,7 @@ v1 の `indexed_queryable` を継承・強化する。
 |---|---|
 | `filter` / `sort` / `group_by` / `aggregate` の対象は `indexed \|\| unique` 宣言済みのみ | 索引テーブルに載っていない列は引けない |
 | マスク対象フィールドは上記いずれにも出せない（403） | PIT-19（表示を隠しても並べ替えで漏れる） |
-| `Contains` / `EndsWith` は `searchable` 宣言済みのみ | trigram GIN（`data_index_search`）を要する |
+| `Contains` / `EndsWith` / 横断検索（`search`）は `searchable` 宣言済みのみ（`indexed` は要らない） | trigram GIN（`data_index_search`）を要する。値索引は使わない（検証 2-B-P1-1） |
 | **駆動索引が 1 つ以上決まること**（索引済みフィルタ条件／`required` なソートキー／システム擬似列のいずれか） | 全走査クエリを API から作れなくする。**システム擬似列は常に駆動になれるので「フィルタなしの初期グリッド」は成立する** |
 | `statement_timeout` を data 経路に設定 | 想定外プランの保険 |
 
@@ -722,8 +722,16 @@ v1 の `indexed_queryable` を継承・強化する。
 
 **索引未宣言の列を指定されたら 403 を返しつつ、自動昇格（§10）を提案する**のが UX 上の解。
 
-> **Phase 15 実装で変更**: 未宣言の列の指定は 403 ではなく **400**（入力の誤り。403 はマスク列＝見えない列に限る）。
+> **Phase 15 実装で変更**: **索引の無い**（`indexed` でない）列の指定は 403 ではなく **400** `field_not_indexed`。
 > グリッドが `promote_indexes: true` を付けたときだけ、400 で終わらせず自動昇格する（§10）。
+>
+> **存在しない列と読めない（マスクされた）列は同じ 403**（2 回目の検証 2-B-P2-1 / 2-C-P2-2 で決定）:
+> 15.3 の受け入れ条件「マスク列を filter / sort / group_by / aggregate / search に指定すると 403（PIT-19 継承）」を
+> 守ったまま列の存在オラクルを消すため、REST・一括取込（JSON の行・CSV の見出しの参照名と表示名）・チャット・
+> ワークフロー・スクリプト・ゲートウェイ・保存ビューの検証・索引の昇格・カーソル位置の通知のすべてで、
+> 存在しない列とマスク列を**同一の 403**（`DataError::FieldUnavailable`・HTTP 本文
+> `{status: 403, title, code: "field_unavailable", message: "指定した列は存在しないか、参照できません"}`・列名を
+> 含めない）で拒否する。SQL 面（§16.1）は 422 `unknown_name` で、SQL 面の中で同一なので従来どおり。
 
 ### 5.3 ページング
 
@@ -808,12 +816,13 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 
 | `DataError` | HTTP | 本文 | 使う場面 |
 |---|---|---|---|
-| `InvalidInput(InputError)` | **400** | `{status, title, code, message, field?}`（検証 C-P2-4 で構造化） | 入力値・スキーマ・クエリ指定の誤り全般。`code` は `cursor_invalid`（改竄・鍵の入替え・形式不正）/ `offset_not_supported` / `field_not_indexed` / `field_not_sortable` / `value_type_mismatch`（日付の列に日付でない比較値を含む）/ `value_out_of_range`（`numeric_spec`・日付は 0001〜9999 年・閏秒不可）/ `value_too_long`（**文字数**＝Unicode スカラー値で数える。テキスト 10,000 字・テーブル名 128 字）/ `required_missing` / `invalid_option` / `too_many_values` / `schema_invalid`（定義を書いた本人へ理由を返す）/ `snapshot_unsupported` / `fsm_invalid` / `invalid_input`（NUL 文字・`limit` が 0 で件数だけでない・最上位の未知のキー・形の誤り）。`message` には**値・閲覧者が読めない列名・内部 ID・`record_int`・SQL 断片を入れない**（文言を作る入口は `InputError` の構築子だけ。書込の検証は書き手が名指ししていない列の名前を外す） |
+| `InvalidInput(InputError)` | **400** | `{status, title, code, message, field?}`（検証 C-P2-4 で構造化） | 入力値・スキーマ・クエリ指定の誤り全般。`code` は `cursor_invalid`（改竄・鍵の入替え・形式不正）/ `offset_not_supported` / `field_not_indexed` / `field_not_sortable` / `value_type_mismatch`（日付の列に日付でない比較値を含む）/ `value_out_of_range`（`numeric_spec`・日付は 0001〜9999 年・閏秒不可）/ `value_too_long`（**文字数**＝Unicode スカラー値で数える。テキスト 10,000 字・テーブル名 128 字）/ `required_missing` / `invalid_option` / `too_many_values` / `schema_invalid`（定義を書いた本人へ理由を返す）/ `snapshot_unsupported` / `fsm_invalid`（作成時に初期状態以外を指定・状態を直接更新・定義外の遷移）/ `schema_conflicts_with_data`（値の無い行がある列の必須化・使われている選択肢の削除。列の表示名と件数つき）/ `invalid_input`（NUL 文字・`limit` が 0 で件数だけでない・最上位の未知のキー・形の誤り）。`message` には**値・閲覧者が読めない列名・内部 ID・`record_int`・SQL 断片を入れない**（文言を作る入口は `InputError` の構築子だけ。書込の検証は書き手が名指ししていない列の名前を外す） |
 | `Invalid` | **400** | `{status, title, code: "invalid_input", message}`（汎用の文言・理由はサーバのログだけ） | 理由をまだ構造化していない入力の誤り（理由の文言を利用者へ返さない） |
-| `Rejected(QueryRejection)` | **422** | `{status, title, code, message, hint?, location?, limit?, expected?}` | **入口の拒否**: SQL 前段面の部分集合外・名前解決不能（`syntax_error` / `unsupported` / `unknown_name` / `invalid_join` / `invalid_query`）・入口の資源上限（`limit_exceeded`・`limit.name` に `max_sql_bytes` 等・IR 直投入にも同じ上限）・`max_join_depth`・**ViewSpec の保存時検証**（`invalid_query`、ルックアップ列の上限は `limit_exceeded` / `max_view_lookup_columns`） |
+| `Rejected(QueryRejection)` | **422** | `{status, title, code, message, hint?, location?, limit?, expected?}`（OpenAPI は `QueryRejectionBody`） | **入口の拒否**: SQL 前段面の部分集合外・名前解決不能（`syntax_error` / `unsupported` / `unknown_name` / `invalid_join` / `invalid_query`）・入口の資源上限（`limit_exceeded`・`limit.name` に `max_sql_bytes` 等・IR 直投入にも同じ上限）・`max_join_depth`・**ViewSpec の保存時検証**（`invalid_query`、ルックアップ列の上限は `limit_exceeded` / `max_view_lookup_columns`） |
 | `QueryTooExpensive` | 400 | `{code: "query_too_expensive", suggestions}`（`narrow_filter` / `promote_index` / `composite_index`） | 受付制御（[query-optimizer.md §5.4](./data/query-optimizer.md)）。推定値は含めない |
-| `Forbidden` | 403 | — | テーブル権限なし・マスク列の参照（PIT-19） |
-| `NotFound` | 404 | — | 不可視行・存在しない行（区別しない） |
+| `Forbidden` | 403 | `{status, title}` | テーブルは見える（viewer）が操作の relation（editor / owner）が無い・行の書込条件・actor 述語を満たさない |
+| `FieldUnavailable` | 403 | `{status, title, code: "field_unavailable", message}`（`ForbiddenBody`） | 存在しない列・読めない（マスクされた）列の指定（**両者で同一の本文**・列名なし・§5.2・§16.1） |
+| `NotFound` | 404 | — | 不可視行・存在しない行（区別しない）。**テーブルが見えない（viewer でない）・存在しない・削除済み**も区別しない（§16.1・検証 2-A P3） |
 | `RevConflict` | 409 | `code: rev_conflict`・`current_rev` | 楽観ロック |
 | `UniqueViolation` | 409 | `code: unique_violation` | unique 宣言の違反（値・相手の行は返さない） |
 | `DerivedRecomputing` | 409 | `code: derived_recomputing`・`field` | 材料化した派生列が再計算中（§7.4） |
@@ -835,6 +844,13 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 > どちらも同じ上限付き件数（§5.4）。`limit: 0` ＋ `with_count: true` は件数だけを取る（ページは空）。
 > カーソルは**テーブル・クエリの形には束縛するが利用者には束縛しない**（他人のカーソルを使っても、結果は
 > 使った人の権限で絞られるので漏洩はない）。
+
+**要求の形の誤り**（本文の JSON・パス・クエリ文字列の読取失敗・ルートやメソッドが無い）は、axum の抽出器の
+英語の平文ではなく、サーバ全体で `RequestErrorBody`（`{status, title, code, message}`・400 は `code: "invalid_input"`、
+ほかは `unsupported_media_type` / `payload_too_large` / `not_found` / `method_not_allowed`）に寄せる
+（`crates/api/src/server/rejection.rs`・検証 N14）。文言は日本語で、serde の英語・内部の型名を含めない
+（項目名と位置だけを拾う）。SSE の不正な `Last-Event-ID` は 400 `cursor_invalid`。`limit` の上限超過は
+上限で切り詰める（応答の件数が上限になる・下限の 0 未満は 400）。
 
 400 と 422 を分けた理由: `Invalid` → 400 は Phase 9（v1）以来の API 全体の慣例で、15.1 以降もそれを変えなかった。
 422 は**構造化した理由を返して LLM・画面に自己修正させる**入口（§16.1 のエラー契約・§8.2）に限った。
@@ -1944,6 +1960,31 @@ WHERE  <条件木>                  -- 演算子は IR の閉集合（§5.1）
 同一のエラーコードで拒否する。** 区別すると、SQL 面が**列の存在オラクル**になり、
 マスクした列名の有無を総当たりで確認できてしまう。テーブル名についても同様
 （`data_table` の viewer でないテーブルは「存在しない」と同じ応答にする）。
+
+**SQL 面以外にも同じ契約を課す**（2 回目の検証 2-B-P2-1）: REST・取込・チャット・ワークフロー・スクリプト・
+ゲートウェイでは存在しない列と読めない列を同じ 403 `field_unavailable` にする（§5.2）。加えて、
+
+- 閲覧者文脈（`GET /data/tables/{id}/viewer-context`）の `masked_fields` はスキーマ管理者（owner）にだけ返す
+  （それ以外は常に空）。テーブル定義はスキーマ管理者以外には読める列だけで、表示順（`order`）は詰めて返す
+- 保存ビューの実行結果（`DataViewRun.display`・ミニアプリの ```data_grid）の表示設定から、閲覧者に読めない列を
+  指す箇所（列設定・並べ替えの代替列・グループ化・条件付き書式・カードの列）を外して返す
+- チャットの `data_schema` は読めない列の有無・件数を書かない
+- マスク列への書込の拒否は監査に deny（`reason: field_unavailable`・列名なし）で残す
+
+**残余リスク（設計上避けられないもの・記録）**:
+
+- **フィールドの `id` の欠番**: `FieldDef.id` は外部の識別子（不変・採番は単調）なので詰めない。読めない列の分だけ
+  `id` が飛び、「この位置に何か列がある」ことは分かる（名前・型・値は分からない）。外部の契約は参照名 `key` を
+  正とし、`id` を表示や推測に使わないこと
+- **テーブル名の重複（409 `name_taken`）**: テーブル名はテナント内で一意なので、見えないテーブルと同じ名前で
+  作ろうとすると 409 になり、その名前のテーブルがあることが分かる（中身・権限は分からない）
+- **見える unique 列の 409 `unique_violation`**: unique は**テーブル全体**の制約なので、見える列でも見えない行の値と
+  重なれば 409 になり、その値を持つ行の存在が分かる（どの行かは分からない）。**行ポリシーのあるテーブルで unique を
+  付けると、値の存在が他の編集者に分かる**（スキーマエディタで警告する）
+- **単一値のリンク**: 見えない参照先を持つ行で単一値のリンクを置き換えると 403（見えない参照先を黙って外さない・
+  PIT-20）、参照先が空なら 200 になり、見えない参照先の有無が分かる
+- **マスク列だけの変更**でも `rev` と `updated_at` は進み、閲覧者の履歴には版の欠番が出る（PIT-70 の追補）
+- **必須かつマスクの列**: 読めない人は作成も取込もできない（必須を満たせない）。スキーマ編集時に警告する
 
 ### 16.2 最適化層（AST があるから可能なもの）
 

@@ -92,10 +92,10 @@ impl DataStore {
         Ok(())
     }
 
-    /// 共有先の検査: id の形（subject を壊す文字の拒否）と、ユーザーは**同一テナントのディレクトリに
-    /// 居ること**（存在しない・他テナントの id への共有タプルを作らない）。ロールは StorageService の
-    /// 共有と同じく形だけを見る（IdP 同期前の部署へも共有できるようにするため）。解除は検査しない
-    /// （残った不正なタプルを消せるように）。
+    /// 共有先の検査: id の形（subject を壊す文字の拒否）と、ユーザー・ロール（部署）とも**同一テナントの
+    /// ディレクトリに居ること**（存在しない・他テナントの id への共有タプルを作らない・存在しないロールへの
+    /// 共有を「成功」として監査に残さない・検証 2-B-P3-3）。解除は検査しない（残った不正なタプルを消せる
+    /// ように）。
     async fn validate_share_target(
         &self,
         ctx: &AuthContext,
@@ -111,17 +111,28 @@ impl DataStore {
         }
         authz::validate_local_id(id)
             .map_err(|v| DataError::Invalid(format!("共有先 id が不正です: {v}")))?;
-        if let ShareTarget::User { id } = target {
-            let exists = self
-                .resolver
-                .user_exists(ctx, id)
-                .await
-                .map_err(DataError::Internal)?;
-            if !exists {
-                return Err(DataError::Invalid(format!(
-                    "共有先のユーザー '{id}' が見つかりません"
-                )));
-            }
+        let (exists, what) = match target {
+            ShareTarget::User { id } => (
+                self.resolver
+                    .user_exists(ctx, id)
+                    .await
+                    .map_err(DataError::Internal)?,
+                "共有先のユーザーが見つかりません",
+            ),
+            ShareTarget::Role { id } => (
+                self.resolver
+                    .role_exists(ctx, id)
+                    .await
+                    .map_err(DataError::Internal)?,
+                "共有先の部署（ロール）が見つかりません",
+            ),
+        };
+        if !exists {
+            return Err(DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                None,
+                what,
+            ));
         }
         Ok(())
     }

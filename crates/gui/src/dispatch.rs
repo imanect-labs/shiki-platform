@@ -474,7 +474,8 @@ fn map_data_err(e: data::DataError) -> ActionError {
     use data::DataError as DE;
     match e {
         DE::NotFound => ActionError::NotFound,
-        DE::Forbidden => ActionError::Forbidden,
+        // 存在しない列と読めない列は同じ（列の存在オラクルを作らない）。
+        DE::Forbidden | DE::FieldUnavailable => ActionError::Forbidden,
         DE::Invalid(m) => ActionError::Invalid(m),
         DE::InvalidInput(e) => ActionError::Invalid(e.message().to_string()),
         DE::NameTaken => ActionError::Invalid("同じ名前のテーブルが既にあります".into()),

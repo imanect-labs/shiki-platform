@@ -49,7 +49,11 @@ pub(crate) const MAX_COLUMN_WIDTH: u16 = 1200;
 const PSEUDO_KEYS: [&str; 3] = ["_owner", "_created_at", "_updated_at"];
 
 /// 表示設定（タグ付き enum・`kind` で種別を分ける）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+///
+/// 読み込み（`Deserialize`）は [`crate::view_spec_de`] の手書き実装（未知のキーを拒否しつつ、OpenAPI の
+/// 種別ごとのスキーマに `additionalProperties: false` を付けない＝`kind` を足した本文が厳密な JSON Schema
+/// 検証に通る・検証 C-P2-8）。
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ViewSpec {
     /// 表形式（既定）。
@@ -70,7 +74,6 @@ impl Default for ViewSpec {
 
 /// 表形式の表示設定。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct GridView {
     /// 列の設定（**並び順がそのまま表示順**）。ここに無い列はスキーマの順で末尾に表示する。
     #[serde(default)]
@@ -164,7 +167,6 @@ pub struct ConditionalFormat {
 
 /// カンバン（単一選択の列でカラム分け）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct KanbanView {
     /// カラム分けに使う単一選択（`select`）の列。
     pub group_field: String,
@@ -178,7 +180,6 @@ pub struct KanbanView {
 
 /// カレンダー（日付・日時の列で月の暦に配置）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct CalendarView {
     /// 配置に使う日付（`date` / `date_time`）の列か擬似列 `_created_at` / `_updated_at`。
     pub date_field: String,
@@ -189,7 +190,6 @@ pub struct CalendarView {
 
 /// ギャラリー（カードの一覧）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct GalleryView {
     /// カードの見出しにする列（省略時はレコードの先頭の列）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -220,21 +220,25 @@ fn invalid(msg: impl Into<String>) -> DataError {
 }
 
 impl ViewCheck<'_> {
-    /// 列を解決する（存在しない列は 422 相当の不正入力・マスク列の参照は 403）。
-    fn col(&self, key: &str, what: &str) -> Result<Col<'_>, DataError> {
+    /// 列を解決する。存在しない列とマスク列は**同じ** 403 `field_unavailable`（表示・並べ替え・条件の
+    /// いずれにも出せない・PIT-19。区別すると保存の検証が列の存在オラクルになる・data-platform §16.1）。
+    fn col(&self, key: &str, _what: &str) -> Result<Col<'_>, DataError> {
         if PSEUDO_KEYS.contains(&key) {
             return Ok(Col::Pseudo);
         }
-        let f = self.schema.field(key).ok_or_else(|| {
-            invalid(format!(
-                "{what}: フィールド '{key}' はスキーマに存在しません"
-            ))
-        })?;
         if self.masked.contains(key) {
-            // マスク列は表示・並べ替え・条件のいずれにも出せない（PIT-19・クエリと同じ 403）。
-            return Err(DataError::Forbidden);
+            return Err(DataError::FieldUnavailable);
         }
-        Ok(Col::Field(f))
+        self.schema
+            .field(key)
+            .map(Col::Field)
+            .ok_or(DataError::FieldUnavailable)
+    }
+
+    /// 保存者に見えない列（マスク列・存在しない列。両者を区別しない）か。
+    fn unseen(&self, key: &str) -> bool {
+        !PSEUDO_KEYS.contains(&key)
+            && (self.masked.contains(key) || self.schema.field(key).is_none())
     }
 
     /// 並べ替え・グループ化に使える列か（閲覧者ごと・時刻依存の派生列は索引が無く並べ替えられない）。
@@ -347,9 +351,10 @@ impl ViewCheck<'_> {
                 )));
             }
             // 非表示のマスク列は何も見せないので許す（他の人の画面から写した設定で保存を止めない）。
-            if c.hidden && self.masked.contains(&c.field) {
+            // 存在しない列も同じ扱い（マスク列と応答を変えると列の存在オラクルになる）。
+            if c.hidden && self.unseen(&c.field) {
                 if c.sort_by.is_some() || c.label.is_some() {
-                    return Err(DataError::Forbidden);
+                    return Err(DataError::FieldUnavailable);
                 }
                 continue;
             }

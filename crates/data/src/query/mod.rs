@@ -31,6 +31,7 @@ pub(crate) mod limits;
 pub(crate) mod optimizer_ops;
 pub(crate) mod planner;
 pub(crate) mod prepare;
+pub(crate) mod ref_operands;
 pub(crate) mod reject;
 pub(crate) mod run;
 pub(crate) mod scopes;

@@ -295,16 +295,14 @@ impl DataStore {
         let table = self
             .open_for_read(ctx, &az, table_id, AuditAction::DataIndexPromote, trace_id)
             .await?;
-        let f = table.schema.field(field).ok_or_else(|| {
-            DataError::input_detail(
-                crate::InvalidCode::InvalidInput,
-                Some(field),
-                format!("フィールド '{field}' はスキーマに存在しません"),
-            )
-        })?;
+        // 存在しない列と読めない列は同じ 403（列の存在オラクルを作らない・data-platform §16.1）。
         if self.masked_fields(ctx, &az, &table).await?.contains(field) {
-            return Err(DataError::Forbidden);
+            return Err(DataError::FieldUnavailable);
         }
+        let f = table
+            .schema
+            .field(field)
+            .ok_or(DataError::FieldUnavailable)?;
         if !promotable(f) {
             if f.field_type.is_derived() && !f.is_materialized() {
                 return Err(DataError::input_detail(

@@ -54,7 +54,15 @@ fn masked_columns_are_forbidden_everywhere() {
         json!({"search": "x", "search_fields": ["secret"]}),
     ] {
         let r = bind_query(&s, &m, &q(body.clone()));
-        assert!(matches!(r, Err(DataError::Forbidden)), "{body}: {r:?}");
+        assert!(
+            matches!(r, Err(DataError::FieldUnavailable)),
+            "{body}: {r:?}"
+        );
+        // 存在しない列も同じ応答（列の存在オラクルを作らない・data-platform §16.1）。
+        let unknown: Value =
+            serde_json::from_str(&body.to_string().replace("secret", "nope_zzz")).unwrap();
+        let u = bind_query(&s, &m, &q(unknown.clone()));
+        assert_eq!(format!("{r:?}"), format!("{u:?}"), "{unknown}");
     }
     // 暗黙の検索対象からはマスク列を外す（403 にはしない）。
     let b = bind_query(&s, &m, &q(json!({"search": "x"}))).unwrap();
@@ -69,7 +77,6 @@ fn reachability_and_types_are_enforced_before_execution() {
     let m = HashSet::new();
     for body in [
         json!({"filter": {"cmp": {"field": "memo", "op": "eq", "value": "x"}}}),
-        json!({"filter": {"cmp": {"field": "nope", "op": "eq", "value": "x"}}}),
         json!({"filter": {"cmp": {"field": "title", "op": "matches", "value": ".*"}}}),
         json!({"filter": {"cmp": {"field": "tags", "op": "lt", "value": "a"}}}),
         json!({"filter": {"cmp": {"field": "amount", "op": "eq", "value": "1"}}}),

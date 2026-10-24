@@ -80,6 +80,9 @@ impl DataStore {
             })
             .map_err(rej)?;
         let mut bq = self.note_candidates(table_id, &table, &masked, query, bound)?;
+        // ユーザー・部署の列の比較値は ID だけ（表示名で黙って 0 件にしない・検証 2-A-P2-3）。
+        self.check_ref_operands(ctx, &table.schema, query.filter.as_ref())
+            .await?;
         // 材料化した派生列で絞る・並べるなら、その前提（4 階層）を今の認可状態で検査し直す。崩れていれば
         // 降格（索引行を同一 Tx で破棄）してから束縛し直す＝その列はフィルタ/ソートに使えなくなる（PIT-71）。
         if bq.fields.values().any(|f| f.derived)

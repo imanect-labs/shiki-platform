@@ -762,7 +762,7 @@ async fn legacy_tables_migrate_idempotently_and_v1_operations_still_work() {
         )
         .await;
     assert!(
-        matches!(masked_filter, Err(DataError::Forbidden)),
+        matches!(masked_filter, Err(DataError::FieldUnavailable)),
         "{masked_filter:?}"
     );
     // computed: 行内評価は key で動く。

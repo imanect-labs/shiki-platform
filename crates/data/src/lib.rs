@@ -51,6 +51,7 @@ mod derived;
 mod field_key;
 mod formula;
 mod fsm;
+mod fsm_rules;
 mod fsm_store;
 mod index;
 mod job_lease;
@@ -73,6 +74,7 @@ mod record_update;
 mod revision;
 mod schema;
 mod schema_cache;
+mod schema_data_check;
 mod sql;
 mod stats;
 mod store;
@@ -85,6 +87,8 @@ mod transition;
 mod validate;
 mod view;
 mod view_spec;
+mod view_spec_de;
+mod view_spec_redact;
 mod viewer_context;
 
 /// クエリ条件の 2 値論理の共通テスト表（JSON・query-optimizer.md §3.1）。
@@ -106,6 +110,7 @@ pub use derived::types::{
 };
 pub use formula::{FormulaCmpOp, FormulaExpr, SwitchCase, MAX_FORMULA_DEPTH};
 pub use fsm::{FsmBody, FsmRef, FsmTransition};
+pub use fsm_rules::AllowedTransitions;
 pub use fsm_store::FsmStore;
 #[doc(hidden)]
 pub use index::text_index_delete_sql;
@@ -182,6 +187,9 @@ pub use view_spec::{
 };
 pub use viewer_context::TableViewerContext;
 
+/// [`DataError::FieldUnavailable`] の文言（存在しない列と読めない列で同一・列名を含めない）。
+pub const FIELD_UNAVAILABLE_MESSAGE: &str = "指定した列は存在しないか、参照できません";
+
 /// 集計スモールセル抑制の既定 K（PIT-17・design-caveats）。
 ///
 /// K 未満のグループ/全体集計は値を返さず suppressed 通知に置き換える。反復差分攻撃の
@@ -222,6 +230,8 @@ pub enum InvalidCode {
     SnapshotUnsupported,
     /// 状態遷移（FSM）の定義・遷移の誤り。
     FsmInvalid,
+    /// スキーマの改訂が既存のデータと矛盾する（値の無い行がある列を必須にする・使われている選択肢を外す）。
+    SchemaConflictsWithData,
 }
 
 impl InvalidCode {
@@ -242,6 +252,7 @@ impl InvalidCode {
             InvalidCode::InvalidInput => "invalid_input",
             InvalidCode::SnapshotUnsupported => "snapshot_unsupported",
             InvalidCode::FsmInvalid => "fsm_invalid",
+            InvalidCode::SchemaConflictsWithData => "schema_conflicts_with_data",
         }
     }
 
@@ -268,6 +279,9 @@ impl InvalidCode {
             InvalidCode::InvalidInput => "入力が正しくありません",
             InvalidCode::SnapshotUnsupported => "スナップショット読取では使えない指定です",
             InvalidCode::FsmInvalid => "状態遷移の定義または遷移が正しくありません",
+            InvalidCode::SchemaConflictsWithData => {
+                "既存のデータと矛盾するためスキーマを変更できません"
+            }
         }
     }
 }
@@ -349,6 +363,12 @@ pub enum DataError {
     NotFound,
     #[error("権限がありません")]
     Forbidden,
+    /// 存在しない列・閲覧者に読めない（マスクされた）列の指定（403・`code: field_unavailable`）。
+    ///
+    /// **両者を同じ応答にする**（同じ status・code・文言・列名を含めない）。区別すると REST・取込・チャット・
+    /// ワークフロー・スクリプトが列の存在オラクルになる（data-platform §5.2・§16.1・PIT-74 ⑤）。
+    #[error("{}", FIELD_UNAVAILABLE_MESSAGE)]
+    FieldUnavailable,
     /// 入力の誤り（理由は**ログにだけ**残し、利用者へは汎用の文言 `invalid_input` を返す）。
     /// 利用者へ理由を返す誤りは [`DataError::InvalidInput`]（構造化・安全な文言）。
     #[error("不正な入力: {0}")]
@@ -431,6 +451,11 @@ impl DataError {
         message: impl Into<String>,
     ) -> Self {
         DataError::InvalidInput(Box::new(InputError::detail(code, key, message)))
+    }
+
+    /// 構造化した入力の誤り（固定の文言つき・列名なし）。crate 外の入口（HTTP の見出しの検査など）用。
+    pub fn input_detail_public(code: InvalidCode, message: &'static str) -> Self {
+        DataError::input_detail(code, None, message)
     }
 
     /// クエリの最上位の未知のキー（400 `invalid_input`・キーは要求の書き手が書いたもの）。

@@ -573,7 +573,7 @@ async fn revocation_is_visible_on_the_very_next_request() {
         assert_eq!(it.data["total"], serde_json::Value::Null);
     }
 
-    // ④ テーブル viewer を剥奪 → 次のリクエストは 403。
+    // ④ テーブル viewer を剥奪 → 次のリクエストは拒否（見えないテーブルは存在しないのと同じ 404）。
     g.authz
         .delete_tuple(
             &g.bob.subject(),
@@ -583,7 +583,7 @@ async fn revocation_is_visible_on_the_very_next_request() {
         .await
         .unwrap();
     let r = g.store.run_query(&g.bob, g.orders, &q, None).await;
-    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    assert!(matches!(r, Err(DataError::NotFound)), "{r:?}");
     // alice（作成者・owner）は影響を受けない。
     let r = g
         .store

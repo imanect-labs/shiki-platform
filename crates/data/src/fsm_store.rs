@@ -23,8 +23,41 @@ pub struct FsmStore {
 }
 
 impl FsmStore {
+    /// FSM のストアを組む。FSM の本文の読み口をデータのストア（とその全複製）に登録する
+    /// （作成時の状態を FSM の初期状態に固定する検査に使う・[`crate::fsm_rules`]）。
     pub fn new(artifacts: Arc<ArtifactStore>, data: DataStore) -> Self {
+        let _ = data.fsm_artifacts.set(Arc::clone(&artifacts));
         FsmStore { artifacts, data }
+    }
+
+    /// レコードのいまの状態と、閲覧者がいま実行できる遷移先（editor・不可視行は 404・検証 2-C-P2-4）。
+    ///
+    /// グリッドの状態セルのメニュー用（表示の出し分けだけ。実行は [`Self::transition`] が改めて認可する）。
+    pub async fn allowed_transitions(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        record_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<crate::fsm_rules::AllowedTransitions, DataError> {
+        let table = self
+            .data
+            .table_for_transition(ctx, table_id, trace_id)
+            .await?;
+        let (fsm, status_field) = self
+            .data
+            .pinned_fsm(ctx, &table, trace_id)
+            .await?
+            .ok_or_else(|| {
+                DataError::input_detail(
+                    crate::InvalidCode::FsmInvalid,
+                    None,
+                    "このテーブルは状態遷移（FSM）で管理されていません",
+                )
+            })?;
+        self.data
+            .allowed_transitions_with(ctx, &table, record_id, &fsm, &status_field)
+            .await
     }
 
     /// FSM を保存する（対象テーブルのスキーマと照合検証 → artifact version 1）。
@@ -203,7 +236,7 @@ impl FsmStore {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn map_artifact(e: ArtifactError) -> DataError {
+pub(crate) fn map_artifact(e: ArtifactError) -> DataError {
     match e {
         ArtifactError::NotFound => DataError::NotFound,
         ArtifactError::Forbidden => DataError::Forbidden,

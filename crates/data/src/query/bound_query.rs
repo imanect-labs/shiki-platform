@@ -355,32 +355,20 @@ pub(crate) fn bind_query_scoped(
                         )
                     })?;
                     if pseudo(key).is_none() && key != "_id" {
-                        if j.binder.masked().contains(key) {
-                            return Err(DataError::Forbidden);
-                        }
-                        charge(j.binder.schema().fields.len());
-                        if j.binder.schema().field(key).is_none() {
-                            return Err(DataError::input_detail(
-                                crate::InvalidCode::InvalidInput,
-                                None,
-                                format!("フィールド '{k}' はスキーマに存在しません"),
-                            ));
-                        }
+                        // マスク列と存在しない列は同じ 403（列の存在オラクルを作らない）。
+                        j.binder.user_field(key)?;
                     }
                     j.select.push(key.to_string());
                 } else {
                     // 読めない（マスクされた）列の投影は 403（条件・並べ替え・SQL 面と揃える。黙って落とさない・
                     // 検証 C P3）。保存ビューの投影は実行前に閲覧者の読める列へ絞る（DataViewStore::query_for_run）。
+                    // 存在しない列も同じ 403（列の存在オラクルを作らない・data-platform §16.1）。
                     if masked.contains(k.as_str()) {
-                        return Err(DataError::Forbidden);
+                        return Err(DataError::FieldUnavailable);
                     }
                     charge(schema.fields.len());
                     if schema.field(k).is_none() {
-                        return Err(DataError::input_detail(
-                            crate::InvalidCode::InvalidInput,
-                            None,
-                            format!("フィールド '{k}' はスキーマに存在しません"),
-                        ));
+                        return Err(DataError::FieldUnavailable);
                     }
                     base.push(k.clone());
                 }

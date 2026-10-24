@@ -21,7 +21,7 @@ use crate::record::{map_unique, WrittenRow, WRITTEN_RETURNING};
 use crate::revision::{diff_fields, insert_revision, RevisionInsert};
 use crate::store::DataStore;
 use crate::stream::outbox::{emit_record_changes, Before, ChangeKind, RecordChange};
-use crate::validate::validate_record_data;
+use crate::validate::validate_record_patch;
 use crate::{map_db, DataError};
 
 /// [`DataStore::update_locked`] の結果。
@@ -139,7 +139,13 @@ impl DataStore {
         let current = current.into_record(&table.schema);
         // マスク対象フィールドへの書込（変更）は拒否（盲目上書き防止・PIT-19）。
         let masked = self
-            .ensure_fields_writable(ctx, az, table, Some(patch_obj))
+            .ensure_fields_writable(
+                ctx,
+                az,
+                table,
+                Some(patch_obj),
+                crate::mask::WriteAudit::new(AuditAction::DataRecordUpdate, trace_id),
+            )
             .await?;
         let old_map = current.data.as_object().cloned().unwrap_or_default();
         // リンク列: 書き手に見えない既存の参照先を残し、今回足した参照先だけを書き手の権限で検証する
@@ -156,12 +162,14 @@ impl DataStore {
                 merged.insert(k.clone(), v.clone());
             }
         }
-        let normalized = validate_record_data(
+        // 今回書いた列だけを検証する（既存の不整合が別の列の編集を妨げない・検証 2-A-P1-1）。
+        let normalized = validate_record_patch(
             ctx,
             &table.schema,
             &Value::Object(merged),
             self.resolver.as_ref(),
             self.max_multi_values,
+            &|k: &str| patch_obj.contains_key(k),
         )
         .await
         // 検証は merge 後の完全形に掛かる: patch で名指ししていない列の名前は返さない（読めない列の

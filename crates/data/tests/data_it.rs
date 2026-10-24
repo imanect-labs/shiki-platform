@@ -228,7 +228,15 @@ async fn table_crud_and_typed_record_crud() {
         json!({"title": "x", "applicant": "ghost"}),
     ] {
         let r = store.create_record(&c, table.id, bad.clone(), None).await;
-        assert!(matches!(&r, Err(e) if e.is_invalid()), "{bad} -> {r:?}");
+        // 未宣言の列は読めない列と同じ 403 `field_unavailable`（列の存在オラクルを作らない）。
+        if bad.get("nope").is_some() {
+            assert!(
+                matches!(&r, Err(DataError::FieldUnavailable)),
+                "{bad} -> {r:?}"
+            );
+        } else {
+            assert!(matches!(&r, Err(e) if e.is_invalid()), "{bad} -> {r:?}");
+        }
     }
 
     // unique 制約（code）: 同値は 409。
@@ -899,26 +907,27 @@ async fn table_rebac_with_live_openfga() {
         .await
         .expect("record");
 
-    // 未共有の bob は get/list/create/revisions すべて拒否（fail-closed）。
+    // 未共有の bob は get/list/create/revisions すべて拒否（fail-closed）。テーブルが見えない主体には
+    // 存在しない・削除済みと同じ 404（data-platform §16.1）。
     assert!(matches!(
         store.get_table(&bob, table.id, None).await,
-        Err(DataError::Forbidden)
+        Err(DataError::NotFound)
     ));
     assert!(matches!(
         store.get_record(&bob, table.id, rec.id, None).await,
-        Err(DataError::Forbidden)
+        Err(DataError::NotFound)
     ));
     assert!(matches!(
         store
             .create_record(&bob, table.id, json!({"title": "x"}), None)
             .await,
-        Err(DataError::Forbidden)
+        Err(DataError::NotFound)
     ));
     assert!(matches!(
         store
             .list_revisions(&bob, table.id, rec.id, None, 10, None)
             .await,
-        Err(DataError::Forbidden)
+        Err(DataError::NotFound)
     ));
 
     // viewer 共有（tuple 直書き＝共有 API は Task 9.3 の個別共有と合流予定）で読める。

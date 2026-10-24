@@ -66,7 +66,8 @@ async fn rejects_undeclared_and_derived_fields() {
     let err = validate_record_data(&ctx(), &s, &json!({"nope": 1}), &AllowAll, MAX_MULTI)
         .await
         .unwrap_err();
-    assert!(err.is_invalid(), "{err:?}");
+    // 未宣言の列は読めない列と同じ 403（列の存在オラクルを作らない）。
+    assert!(matches!(err, DataError::FieldUnavailable), "{err:?}");
 
     let mut lk = field("d", FieldType::Lookup);
     lk.lookup = Some(crate::model::LookupDef {

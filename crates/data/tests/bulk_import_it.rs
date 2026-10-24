@@ -278,10 +278,24 @@ async fn bulk_import_matches_single_creates_and_rejects_invalid_rows() {
     data[24]["tags"] = json!(["a", "b", "c", "d"]); // 多値要素数上限（3）
     data[29]["customer"] = json!([Uuid::new_v4().to_string()]); // 参照先が無い
     data[34]["assignee"] = json!("carol"); // 存在しないユーザー
-    data[39]["nope"] = json!(1); // 未宣言の列
+    data[39]["due"] = json!("2026-13-45"); // 日付でない（未宣言の列は取込全体を 403・下で確かめる）
     data[44]["status"] = json!("unknown"); // 選択肢外
     data[149]["amount"] = json!(2); // チャンクを跨ぐ取込内の unique 重複（3 行目の値が先）
     let bad_rows = [5, 10, 15, 20, 25, 30, 35, 40, 45, 150];
+    // 未宣言の列を含む作成行は、読めない列と同じく取込全体を 403 `field_unavailable`（列の存在オラクルを
+    // 作らない・検証 2-B-P2-1）。
+    let mut with_unknown = data.clone();
+    with_unknown[39]["nope"] = json!(1);
+    let r = store
+        .start_bulk_import(
+            &c,
+            bulk.id,
+            rows(with_unknown),
+            BulkImportOptions::default(),
+            None,
+        )
+        .await;
+    assert!(matches!(r, Err(data::DataError::FieldUnavailable)), "{r:?}");
 
     let id = store
         .start_bulk_import(
@@ -975,7 +989,7 @@ async fn schema_change_mid_import_revalidates_unapplied_rows() {
         .map(|i| {
             let mut r = rich_row(i, None);
             if i >= 400 {
-                r["extra"] = json!(format!("x{i}"));
+                r["status"] = json!("later");
             }
             r
         })
@@ -1001,17 +1015,20 @@ async fn schema_change_mid_import_revalidates_unapplied_rows() {
             .unwrap()
             .rows_invalid,
         200,
-        "旧スキーマでは extra が未宣言"
+        "旧スキーマでは later が選択肢に無い"
     );
-    // 1 チャンク適用してからスキーマを改訂（extra を索引つきで足す）。
+    // 1 チャンク適用してからスキーマを改訂（status に later を足す）。
     store
         .bulk_import_step(&tenant, t.id, id, 200)
         .await
         .unwrap();
     let mut s = t.schema.clone();
-    let mut extra = field("extra", FieldType::Text);
-    extra.indexed = true;
-    s.fields.push(extra);
+    s.fields
+        .iter_mut()
+        .find(|f| f.key == "status")
+        .unwrap()
+        .options
+        .push("later".into());
     store
         .update_table_schema(&c, t.id, s, Some(t.schema_version), None)
         .await
@@ -1023,8 +1040,8 @@ async fn schema_change_mid_import_revalidates_unapplied_rows() {
     assert_eq!(st.parity_mismatches, Some(0));
     store.backfill_table_index(&tenant, t.id).await.unwrap();
     assert_eq!(
-        count(&store, &c, t.id, Some(eq("extra", json!("x450")))).await,
-        1
+        count(&store, &c, t.id, Some(eq("status", json!("later")))).await,
+        200
     );
 }
 

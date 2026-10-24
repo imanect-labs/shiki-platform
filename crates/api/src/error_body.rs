@@ -119,6 +119,60 @@ pub struct ImportInvalidBody {
     pub message: String,
 }
 
+/// 403 の構造化コード。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ForbiddenCode {
+    /// 指定した列が存在しないか、閲覧者に読めない（両者を区別しない・列名を含めない）。
+    FieldUnavailable,
+}
+
+/// 構造化 403。`field_unavailable` は存在しない列と読めない列で**同一の本文**（列の存在オラクルを作らない・
+/// data-platform §16.1）。テーブル・操作の権限が無い 403 は従来どおり `{status, title}` だけ。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ForbiddenBody {
+    /// 常に 403。
+    pub status: u16,
+    pub title: String,
+    pub code: ForbiddenCode,
+    pub message: String,
+}
+
+impl ForbiddenBody {
+    pub fn field_unavailable() -> Self {
+        ForbiddenBody {
+            status: 403,
+            title: "Forbidden".into(),
+            code: ForbiddenCode::FieldUnavailable,
+            message: data::FIELD_UNAVAILABLE_MESSAGE.into(),
+        }
+    }
+}
+
+/// 要求の形の誤り（本文の JSON・パス・クエリ文字列の読取に失敗した・ルートやメソッドが無い）の構造化本文。
+///
+/// axum の抽出器の拒否（英語の平文）とルータの 404 / 405 を、サーバ全体で同じ形に寄せる
+/// （`crate::server::rejection`・検証 N14）。400 の `code` は `invalid_input`、それ以外は
+/// `unsupported_media_type` / `payload_too_large` / `not_found` / `method_not_allowed` / `bad_request`。
+/// `message` は利用者向けの日本語で、内部の型名・ライブラリの英語の文言を含まない。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RequestErrorBody {
+    pub status: u16,
+    pub title: String,
+    pub code: String,
+    pub message: String,
+}
+
+/// 構造化 422（クエリの入口の拒否・`data::QueryRejection` に `status` / `title` を足した本文・検証 C-P2-8）。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct QueryRejectionBody {
+    /// 常に 422。
+    pub status: u16,
+    pub title: String,
+    #[serde(flatten)]
+    pub rejection: data::QueryRejection,
+}
+
 /// 型を JSON 本文へ（直列化に失敗しない型だけを渡す）。
 pub(crate) fn to_body<T: Serialize>(v: &T) -> serde_json::Value {
     serde_json::to_value(v).unwrap_or_else(|_| serde_json::json!({}))

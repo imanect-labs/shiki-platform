@@ -126,8 +126,8 @@ pub(super) fn claims_of(
 }
 
 /// 読めない列への書込を含む行の文言（列名・値を含めない）。
-pub(super) const MASKED_WRITE_MESSAGE: &str =
-    "このレコード（またはフィールド）を書き込む権限がありません";
+/// 存在しない列への書込と同じ文言（列の存在オラクルを作らない）。
+pub(super) const MASKED_WRITE_MESSAGE: &str = crate::FIELD_UNAVAILABLE_MESSAGE;
 
 /// 検証エラーを行のエラー文言へ（入力の誤りだけを行に付け、内部エラーは呼び出し側が伝播する）。
 pub(super) fn row_message(e: DataError) -> Result<String, DataError> {
@@ -186,7 +186,18 @@ impl DataStore {
         let resolver = ChunkResolver::new(self.resolver.as_ref());
         // 読めない（マスクされた）列への書込は行ごとに拒否（create と同じ単一点・PIT-19）。
         // 文言に列名・値を含めない。
-        let masked = self.ensure_fields_writable(&ctx, &az, &table, None).await?;
+        let audit = crate::mask::WriteAudit::new(
+            AuditAction::DataRecordBulkImport,
+            imp.trace_id.as_deref(),
+        );
+        let masked = self
+            .ensure_fields_writable(&ctx, &az, &table, None, audit)
+            .await?;
+        let mut denied = false;
+        // FSM 管理テーブルの作成行の状態は初期状態に固定する（1 件の作成と同じ・検証 2-C-P2-3）。
+        let fsm = self
+            .fsm_initial(&ctx, &table, imp.trace_id.as_deref())
+            .await?;
         let mut outcomes: Vec<Result<Map<String, Value>, String>> = Vec::with_capacity(rows.len());
         for (i, (_, payload)) in rows.iter().enumerate() {
             if is_update[i] {
@@ -198,16 +209,24 @@ impl DataStore {
                 continue;
             }
             if let Some(obj) = payload.0.as_object() {
-                if Self::ensure_writable_fields(&masked, obj).is_err() {
+                if Self::ensure_writable_fields(&masked, &table.schema, obj).is_err() {
+                    denied = true;
                     outcomes.push(Err(MASKED_WRITE_MESSAGE.to_string()));
                     continue;
                 }
             }
-            let named = |k: &str| payload.0.as_object().is_some_and(|o| o.contains_key(k));
+            let mut payload = payload.0.clone();
+            if let (Some(fi), Value::Object(m)) = (&fsm, &mut payload) {
+                if let Err(e) = fi.apply(m) {
+                    outcomes.push(Err(row_message(e)?));
+                    continue;
+                }
+            }
+            let named = |k: &str| payload.as_object().is_some_and(|o| o.contains_key(k));
             let r = validate_record_data(
                 &ctx,
                 &table.schema,
-                &payload.0,
+                &payload,
                 &resolver,
                 self.max_multi_values,
             )
@@ -217,6 +236,10 @@ impl DataStore {
                 Ok(m) => Ok(m),
                 Err(e) => Err(row_message(e)?),
             });
+        }
+        if denied {
+            // 読めない列・存在しない列への書込はチャンクごとに 1 件の deny で残す（検証 2-B-P3-4）。
+            self.audit_field_deny(&ctx, table.id, audit).await;
         }
         // 参照先の存在と書き手からの可視性（create と同じ関数・リンク列ごとに 1 回で引く）。
         let ok_idx: Vec<usize> = (0..outcomes.len())

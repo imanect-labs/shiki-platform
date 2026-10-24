@@ -17,7 +17,7 @@
 //! 未知の列・派生列（書込不可）・同じフィールドへの重複した列は取込全体を 400 にする（入力の取り違えを
 //! 黙って捨てない）。行数は [`super::MAX_BULK_ROWS`] まで。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Number, Value};
 
@@ -41,9 +41,16 @@ fn invalid(msg: impl Into<String>) -> DataError {
 }
 
 /// 見出しをフィールドへ照合する（参照名 → 一意な表示名の順）。
-fn columns<'a>(schema: &'a TableSchema, headers: &[String]) -> Result<Vec<Column<'a>>, DataError> {
+///
+/// 書き手に読めない（マスクされた）列は**無いものとして**照合する（表示名の重複の判定にも数えない）。
+/// 読めない列と存在しない列の見出しは同じ 403 `field_unavailable`（列の存在オラクルを作らない）。
+fn columns<'a>(
+    schema: &'a TableSchema,
+    masked: &HashSet<String>,
+    headers: &[String],
+) -> Result<Vec<Column<'a>>, DataError> {
     let mut by_display: HashMap<&str, Vec<&FieldDef>> = HashMap::new();
-    for f in &schema.fields {
+    for f in schema.fields.iter().filter(|f| !masked.contains(&f.key)) {
         by_display
             .entry(f.display_name.as_str())
             .or_default()
@@ -62,7 +69,7 @@ fn columns<'a>(schema: &'a TableSchema, headers: &[String]) -> Result<Vec<Column
             out.push(Column::Key);
             continue;
         }
-        let f = match schema.field(h) {
+        let f = match schema.field(h).filter(|f| !masked.contains(&f.key)) {
             Some(f) => f,
             None => match by_display.get(h).map(Vec::as_slice) {
                 Some([f]) => *f,
@@ -71,7 +78,7 @@ fn columns<'a>(schema: &'a TableSchema, headers: &[String]) -> Result<Vec<Column
                         "列 '{h}' は表示名が重複しています（参照名で指定してください）"
                     )))
                 }
-                None => return Err(invalid(format!("列 '{h}' はテーブルにありません"))),
+                None => return Err(DataError::FieldUnavailable),
             },
         };
         if f.field_type.is_derived() || f.is_reverse_link() {
@@ -121,9 +128,25 @@ fn cell(f: &FieldDef, s: &str) -> Option<Value> {
     })
 }
 
+/// CSV の読取の誤りを利用者向けの文言へ（ライブラリの英語の文言・内部の型名を出さない・検証 N10）。
+fn csv_error(e: &csv::Error, line: usize) -> DataError {
+    match e.kind() {
+        csv::ErrorKind::UnequalLengths {
+            expected_len, len, ..
+        } => invalid(format!(
+            "CSV の {line} 行目の列の数が見出しと合いません（見出しは {expected_len} 列・この行は {len} 列）"
+        )),
+        csv::ErrorKind::Utf8 { .. } => invalid("CSV は UTF-8 で保存してください"),
+        _ => invalid(format!(
+            "CSV の {line} 行目を読めません（引用符の閉じ忘れなどを確かめてください）"
+        )),
+    }
+}
+
 /// CSV を取込行にする（形の変換だけ・検証はジョブ）。
 pub(crate) fn csv_rows(
     schema: &TableSchema,
+    masked: &HashSet<String>,
     bytes: &[u8],
 ) -> Result<Vec<BulkImportRow>, DataError> {
     if bytes.len() > MAX_BULK_CSV_BYTES {
@@ -141,16 +164,16 @@ pub(crate) fn csv_rows(
         .from_reader(bytes);
     let headers: Vec<String> = rd
         .headers()
-        .map_err(|e| invalid(format!("CSV の見出し行を読めません: {e}")))?
+        .map_err(|e| csv_error(&e, 1))?
         .iter()
         .map(str::to_string)
         .collect();
-    let cols = columns(schema, &headers)?;
+    let cols = columns(schema, masked, &headers)?;
     let mut out = Vec::new();
     for (i, rec) in rd.records().enumerate() {
         // 見出しが 1 行目なので、データの i 行目はファイルの i + 2 行目。
         let line = i + 2;
-        let rec = rec.map_err(|e| invalid(format!("CSV の {line} 行目を読めません: {e}")))?;
+        let rec = rec.map_err(|e| csv_error(&e, line))?;
         if out.len() >= MAX_BULK_ROWS {
             return Err(invalid(format!(
                 "1 回に取り込める行は {MAX_BULK_ROWS} 行までです"
@@ -209,7 +232,7 @@ mod tests {
     #[test]
     fn converts_cells_by_field_type() {
         let csv = "\u{feff}_key,件名,amount,tags\nk1,出張,\"1,000\",a;b\nk2,,12.50,\"[\"\"b\"\"]\"\n,宿泊,,\n";
-        let rows = csv_rows(&schema(), csv.as_bytes()).unwrap();
+        let rows = csv_rows(&schema(), &HashSet::new(), csv.as_bytes()).unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].key.as_deref(), Some("k1"));
         assert_eq!(
@@ -225,19 +248,47 @@ mod tests {
     #[test]
     fn rejects_unknown_derived_duplicate_and_malformed_input() {
         let s = schema();
-        let err = |c: &str| match csv_rows(&s, c.as_bytes()) {
+        let none = HashSet::new();
+        let err = |c: &str| match csv_rows(&s, &none, c.as_bytes()) {
             Err(DataError::Invalid(m)) => m,
             other => panic!("{other:?}"),
         };
-        assert!(err("title,nope\nx,y\n").contains("nope"));
+        assert!(matches!(
+            csv_rows(&s, &none, b"title,nope\nx,y\n"),
+            Err(DataError::FieldUnavailable)
+        ));
         assert!(err("title,合計\nx,1\n").contains("派生列"));
         assert!(err("title,件名\nx,y\n").contains("重複"));
         assert!(err("_key\nk\n").contains("フィールドの列がありません"));
         assert!(err("title\n").contains("行がありません"));
-        assert!(err("title,amount\nx\n").contains("2 行目"));
+        // 列の数の違いは利用者向けの文言（CSV ライブラリの英語・内部の型名を出さない・検証 N10）。
+        let m = err("title,amount\nx\n");
+        assert!(m.contains("2 行目") && m.contains("見出しは 2 列"), "{m}");
+        assert!(!m.contains("CSV error") && !m.contains("record"), "{m}");
         assert!(matches!(
-            csv_rows(&s, b"title\n\xff\xfe\n"),
+            csv_rows(&s, &none, b"title\n\xff\xfe\n"),
             Err(DataError::Invalid(m)) if m.contains("UTF-8")
         ));
+    }
+
+    /// 読めない列の見出しは、存在しない列と同じ 403（参照名でも表示名でも・列の存在オラクルを作らない）。
+    #[test]
+    fn masked_headers_are_indistinguishable_from_unknown_ones() {
+        let s = schema();
+        let masked: HashSet<String> = ["title".to_string()].into();
+        for c in [
+            "title,amount\nx,1\n",
+            "件名,amount\nx,1\n",
+            "zzz,amount\nx,1\n",
+        ] {
+            assert!(
+                matches!(
+                    csv_rows(&s, &masked, c.as_bytes()),
+                    Err(DataError::FieldUnavailable)
+                ),
+                "{c}"
+            );
+        }
+        assert!(csv_rows(&s, &masked, b"amount\n1\n").is_ok());
     }
 }

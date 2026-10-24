@@ -18,6 +18,10 @@ use crate::DataError;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct TableViewerContext {
     /// 閲覧者本人に**読めない**列の参照名（フィールドマスク・ビューの列設定に出せない）。
+    ///
+    /// **スキーマ管理者（`can_manage`）にだけ**返す（定義の全体を既に知っている人）。それ以外の閲覧者には
+    /// 常に空（読めない列の名前・有無・件数を返さない・検証 2-B-P2-1）。スキーマ管理者以外のテーブル定義は
+    /// 読める列だけなので（[`DataStore::get_table_for_viewer`]）、画面の出し分けはそれで足りる。
     pub masked_fields: Vec<String>,
     /// レコードを編集できる（テーブルの editor 以上）。行述語の書込条件は別途各行で効く。
     pub can_edit: bool,
@@ -53,16 +57,20 @@ impl DataStore {
                 &[(Relation::Editor, obj.clone()), (Relation::Owner, obj)],
             )
             .await?;
-        let mut masked: Vec<String> = self
-            .masked_fields(ctx, &az, &table)
-            .await?
-            .into_iter()
-            .collect();
+        let can_manage = rel.get(1).copied().unwrap_or(false);
+        let mut masked: Vec<String> = if can_manage {
+            self.masked_fields(ctx, &az, &table)
+                .await?
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        };
         masked.sort();
         Ok(TableViewerContext {
             masked_fields: masked,
             can_edit: rel.first().copied().unwrap_or(false),
-            can_manage: rel.get(1).copied().unwrap_or(false),
+            can_manage,
             max_view_lookup_columns: self.view_lookup_cap(ctx).await?,
         })
     }

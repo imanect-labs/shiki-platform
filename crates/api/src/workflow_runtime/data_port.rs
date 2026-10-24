@@ -30,6 +30,10 @@ pub(super) fn map_data(e: DataError) -> PortError {
     match e {
         DataError::NotFound => PortError::new("not_found", "対象が見つかりません", false),
         DataError::Forbidden => PortError::forbidden("data の権限がありません"),
+        // 存在しない列と読めない列は同じ応答（列の存在オラクルを作らない・data-platform §16.1）。
+        DataError::FieldUnavailable => {
+            PortError::new("field_unavailable", data::FIELD_UNAVAILABLE_MESSAGE, false)
+        }
         DataError::Invalid(m) => PortError::invalid(m),
         DataError::InvalidInput(e) => PortError::invalid(e.message().to_string()),
         // テーブル名の重複（再試行しても直らない）。

@@ -111,27 +111,39 @@ fn json_shape_is_tagged_by_kind_and_defaults_to_grid() {
 fn unknown_fields_are_rejected_everywhere() {
     assert!(matches!(
         check(&grid(vec![col("nope")])),
-        Err(DataError::Rejected(_))
+        Err(DataError::FieldUnavailable)
     ));
     let mut c = col("name");
     c.sort_by = Some("nope".into());
-    assert!(matches!(check(&grid(vec![c])), Err(DataError::Rejected(_))));
+    assert!(matches!(
+        check(&grid(vec![c])),
+        Err(DataError::FieldUnavailable)
+    ));
     let spec = ViewSpec::Kanban(KanbanView {
         group_field: "status".into(),
         card_fields: vec!["nope".into()],
         hide_empty: false,
     });
-    assert!(matches!(check(&spec), Err(DataError::Rejected(_))));
+    assert!(matches!(check(&spec), Err(DataError::FieldUnavailable)));
     // 擬似列は指せる。
     assert!(check(&grid(vec![col("_created_at"), col("_owner")])).is_ok());
+    // 非表示の存在しない列はマスク列と同じく許し、見出しを付けたらマスク列と同じ 403（列の存在オラクルを作らない）。
+    let mut hidden = col("nope");
+    hidden.hidden = true;
+    assert!(check(&grid(vec![hidden.clone()])).is_ok());
+    hidden.label = Some("x".into());
+    assert!(matches!(
+        check(&grid(vec![hidden])),
+        Err(DataError::FieldUnavailable)
+    ));
 }
 
 #[test]
 fn masked_columns_cannot_be_displayed_sorted_or_used_in_conditions() {
-    // 表示は 403。
+    // 表示は 403（存在しない列と同じ `field_unavailable`）。
     assert!(matches!(
         check(&grid(vec![col("salary")])),
-        Err(DataError::Forbidden)
+        Err(DataError::FieldUnavailable)
     ));
     // 非表示にした列設定は何も見せないので許す（見出し・並べ替えの代替を付けたら 403）。
     let mut hidden = col("salary");
@@ -140,12 +152,15 @@ fn masked_columns_cannot_be_displayed_sorted_or_used_in_conditions() {
     hidden.label = Some("給与".into());
     assert!(matches!(
         check(&grid(vec![hidden])),
-        Err(DataError::Forbidden)
+        Err(DataError::FieldUnavailable)
     ));
     // 並べ替えの代替列・グループ化・条件付き書式・カードにも出せない。
     let mut c = col("name");
     c.sort_by = Some("salary".into());
-    assert!(matches!(check(&grid(vec![c])), Err(DataError::Forbidden)));
+    assert!(matches!(
+        check(&grid(vec![c])),
+        Err(DataError::FieldUnavailable)
+    ));
     let spec = ViewSpec::Grid(GridView {
         group_by: vec![GroupConfig {
             field: "salary".into(),
@@ -154,7 +169,7 @@ fn masked_columns_cannot_be_displayed_sorted_or_used_in_conditions() {
         }],
         ..GridView::default()
     });
-    assert!(matches!(check(&spec), Err(DataError::Forbidden)));
+    assert!(matches!(check(&spec), Err(DataError::FieldUnavailable)));
     let spec = ViewSpec::Grid(GridView {
         conditional_format: vec![ConditionalFormat {
             condition: Condition::cmp("salary", CondOp::Gt, Some(json!(100))),
@@ -164,12 +179,12 @@ fn masked_columns_cannot_be_displayed_sorted_or_used_in_conditions() {
         }],
         ..GridView::default()
     });
-    assert!(matches!(check(&spec), Err(DataError::Forbidden)));
+    assert!(matches!(check(&spec), Err(DataError::FieldUnavailable)));
     let spec = ViewSpec::Gallery(GalleryView {
         title_field: Some("salary".into()),
         card_fields: vec![],
     });
-    assert!(matches!(check(&spec), Err(DataError::Forbidden)));
+    assert!(matches!(check(&spec), Err(DataError::FieldUnavailable)));
 }
 
 #[test]
