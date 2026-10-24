@@ -19,8 +19,9 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
 import { isRefField, RefPicker } from "@/components/data/ref-picker";
+import type { FsmInfo } from "@/components/data/transition-editor";
 import { createRecord, DataApiError, type DataRecord, type DataTable } from "@/lib/data-api";
-import { isEditable, parseInput } from "@/lib/data-view";
+import { fieldLabel, isEditable, parseInput, withFieldLabels } from "@/lib/data-view";
 
 const NONE = "__none__";
 
@@ -29,21 +30,28 @@ export function RecordDialog({
   onOpenChange,
   table,
   masked,
+  fsm,
   onCreated,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   table: DataTable;
   masked: ReadonlySet<string>;
+  /// FSM の状態の列（作成時は最初の状態に決まるので入力させない）。
+  fsm?: FsmInfo | null;
   onCreated: (r: DataRecord) => void;
 }) {
   const fields = React.useMemo(
     () =>
       [...table.schema.fields]
         .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-        .filter((f) => isEditable(f) && !masked.has(f.key)),
-    [table, masked],
+        .filter((f) => isEditable(f) && !masked.has(f.key) && f.key !== fsm?.field),
+    [table, masked, fsm?.field],
   );
+  const readable = React.useMemo(() => table.schema.fields.filter((f) => !masked.has(f.key)), [table, masked]);
+  const statusField = fsm ? table.schema.fields.find((f) => f.key === fsm.field && !masked.has(f.key)) : undefined;
+  // 作成時の状態（FSM の最初の状態・定義が読めなければ名前は出さない）。
+  const initialState = fsm?.body?.states[0] ?? null;
   const [values, setValues] = React.useState<Record<string, string>>({});
   /// 参照の列で選んだ値（id）。
   const [refs, setRefs] = React.useState<Record<string, string[]>>({});
@@ -71,6 +79,8 @@ export function RecordDialog({
     }
     setErrors(errs);
     if (Object.keys(errs).length) return;
+    // 必須の状態の列は最初の状態で作る（作成時の状態は FSM の最初の状態に固定・2-C-P2-3）。
+    if (statusField?.required && initialState) data[statusField.key] = initialState;
     setBusy(true);
     try {
       const r = await createRecord(table.id, data);
@@ -80,14 +90,22 @@ export function RecordDialog({
     } catch (err) {
       // 列に結び付いた理由（構造化 400 の field）はその列の下に出す。
       const field = err instanceof DataApiError ? err.field : null;
+      const message = err instanceof Error ? withFieldLabels(err.message, readable) : String(err);
       if (field && fields.some((f) => f.key === field)) {
-        setErrors({ [field]: (err as Error).message });
+        setErrors({ [field]: message });
         return;
       }
+      // 一意の重複でどの列か分からないとき（本文に field が無い）は、入れた値のうち一意の列を挙げる。
+      const uniqueCols =
+        err instanceof DataApiError && err.uniqueViolation
+          ? fields.filter((f) => f.unique && data[f.key] != null).map((f) => `「${fieldLabel(readable, f.key)}」`)
+          : [];
       toast({
         variant: "destructive",
-        title: "追加できませんでした",
-        description: err instanceof Error ? err.message : String(err),
+        title: field && readable.some((f) => f.key === field) ? `「${fieldLabel(readable, field)}」のため追加できませんでした` : "追加できませんでした",
+        description: uniqueCols.length
+          ? `同じ値のレコードが既にあります（重複できない列: ${uniqueCols.join("・")}）`
+          : message,
       });
     } finally {
       setBusy(false);
@@ -105,6 +123,13 @@ export function RecordDialog({
           <div className="max-h-[55dvh] space-y-3 overflow-y-auto px-0.5 scrollbar-subtle">
             {fields.length === 0 ? (
               <p className="text-sm text-muted-foreground">直接入力できる列がありません。</p>
+            ) : null}
+            {statusField ? (
+              <p className="rounded-md bg-muted/60 px-2.5 py-1.5 text-[11px] text-muted-foreground" data-testid="record-dialog-initial-state">
+                「{statusField.display_name || statusField.key}」は
+                {initialState ? `最初の状態（${initialState}）` : "最初の状態"}
+                で作られます。作った後に表のセルから進められます。
+              </p>
             ) : null}
             {fields.map((f) => {
               const id = `rec-${f.key}`;
