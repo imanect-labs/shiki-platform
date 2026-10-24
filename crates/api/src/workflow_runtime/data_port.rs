@@ -43,7 +43,7 @@ pub(super) fn map_data(e: DataError) -> PortError {
         // rev の不一致・unique（rev を指定しない書込は再試行で読み直して通り得る）。
         e @ (DataError::Conflict(_)
         | DataError::RevConflict { .. }
-        | DataError::UniqueViolation
+        | DataError::UniqueViolation { .. }
         | DataError::DerivedRecomputing { .. }) => {
             PortError::new("conflict", e.conflict_detail().unwrap_or_default(), true)
         }

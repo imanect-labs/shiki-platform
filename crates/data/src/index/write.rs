@@ -404,7 +404,23 @@ impl IndexWriter<'_> {
         insert_text(conn, keys, &batch.text).await?;
         insert_num(conn, keys, &batch.num).await?;
         insert_search(conn, keys, &batch.search).await?;
-        insert_unique(conn, keys, &batch.unique_insert, mode == Mode::Rebuild).await
+        match insert_unique(conn, keys, &batch.unique_insert, mode == Mode::Rebuild).await? {
+            None => Ok(()),
+            // 範囲外の id は無い列（u16::MAX）として列なしにする。
+            Some(fid) => {
+                Err(self.unique_violation(FieldId::try_from(fid).unwrap_or(FieldId::MAX), false))
+            }
+        }
+    }
+
+    /// 違反した列を名指しした 409（列の定義が見つからなければ列なし）。
+    fn unique_violation(&self, field: FieldId, link: bool) -> DataError {
+        DataError::UniqueViolation {
+            field: self
+                .schema
+                .field_by_id(field)
+                .map(|f| crate::ConflictField::of(f, link)),
+        }
     }
 
     /// リンク列の行（順方向・対称列があれば逆方向も同じ Tx）を書く。
@@ -442,12 +458,18 @@ impl IndexWriter<'_> {
                 Some(_) => resolver.table_int(conn, self.tenant_id, ref_table).await?,
                 None => None,
             };
-            match (symmetric, ref_int) {
+            let written = match (symmetric, ref_int) {
                 (Some(sym), Some(rt)) => {
-                    replace_link(conn, keys, field, record_int, &edges, (sym, rt)).await?;
+                    replace_link(conn, keys, field, record_int, &edges, (sym, rt)).await
                 }
-                _ => replace_forward(conn, keys, field, record_int, &edges).await?,
-            }
+                _ => replace_forward(conn, keys, field, record_int, &edges).await,
+            };
+            // カーディナリティ（部分一意）の違反は書いたリンク列を名指しする（逆方向行の違反でも、
+            // 書き手が書いたのはこの列）。
+            written.map_err(|e| match e {
+                DataError::UniqueViolation { field: None } => self.unique_violation(field, true),
+                other => other,
+            })?;
         }
         Ok(())
     }
@@ -658,46 +680,61 @@ async fn delete_unique(
     Ok(())
 }
 
+/// unique の行を入れる。重複した組があれば、その最初の列の `field_id` を `Some` で返す（値・相手の行は返さない）。
+///
+/// 重複を DB エラーにせず `ON CONFLICT` で飛ばし、入らなかった組から違反した列を特定する（エラーの文言や
+/// 制約名を解析しない・Tx を中断させない）。
 async fn insert_unique(
     conn: &mut PgConnection,
     keys: crate::model::TableKeys,
     rows: &[(i64, i16, String)],
     idempotent: bool,
-) -> Result<(), DataError> {
+) -> Result<Option<i16>, DataError> {
     if rows.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let recs: Vec<i64> = rows.iter().map(|r| r.0).collect();
     let fields: Vec<i16> = rows.iter().map(|r| r.1).collect();
     let norms: Vec<&str> = rows.iter().map(|r| r.2.as_str()).collect();
-    // バックフィルは同じレコードの行なら上書き（冪等）、他レコードの行と衝突したら 0 行＝重複。
+    // バックフィルは同じレコードの行なら上書き（冪等）、他レコードの行と衝突したら入らない＝重複。
+    // 書込は衝突したら入らない＝重複（409）。
     let conflict = if idempotent {
         " ON CONFLICT (tenant_int, table_int, field_id, val_norm) \
           DO UPDATE SET record_int = excluded.record_int \
           WHERE du.record_int = excluded.record_int"
     } else {
-        ""
+        " ON CONFLICT (tenant_int, table_int, field_id, val_norm) DO NOTHING"
     };
     let sql = format!(
         "INSERT INTO data_unique AS du (tenant_int, table_int, field_id, val_norm, record_int) \
          SELECT $1, $2, u.f, u.v, u.r FROM unnest($3::int8[], $4::int2[], $5::text[]) AS u(r, f, v)\
-         {conflict}"
+         {conflict} RETURNING du.record_int, du.field_id, du.val_norm"
     );
-    let n = sqlx::query(&sql)
+    let written: Vec<(i64, i16, String)> = sqlx::query_as(&sql)
         .bind(keys.tenant_int)
         .bind(keys.table_int)
         .bind(&recs)
         .bind(&fields)
         .bind(&norms)
-        .execute(&mut *conn)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| match &e {
-            sqlx::Error::Database(db) if db.is_unique_violation() => DataError::UniqueViolation,
+            sqlx::Error::Database(db) if db.is_unique_violation() => {
+                DataError::UniqueViolation { field: None }
+            }
             _ => map_db(e),
-        })?
-        .rows_affected();
-    if n != rows.len() as u64 {
-        return Err(DataError::UniqueViolation);
+        })?;
+    if written.len() == rows.len() {
+        return Ok(None);
     }
-    Ok(())
+    let written: std::collections::HashSet<(i64, i16, &str)> = written
+        .iter()
+        .map(|(r, f, v)| (*r, *f, v.as_str()))
+        .collect();
+    Ok(rows
+        .iter()
+        .find(|(r, f, v)| !written.contains(&(*r, *f, v.as_str())))
+        .map(|r| r.1)
+        // 数が合わないのに欠けた組が無い＝入力に同じ組が 2 度あった。最初の列で代表させる。
+        .or(Some(rows[0].1)))
 }

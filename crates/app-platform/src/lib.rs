@@ -69,7 +69,7 @@ impl From<data::DataError> for AppPlatformError {
             DataError::Gone(m) => AppPlatformError::Conflict(m),
             e @ (DataError::Conflict(_)
             | DataError::RevConflict { .. }
-            | DataError::UniqueViolation
+            | DataError::UniqueViolation { .. }
             | DataError::NameTaken
             | DataError::DerivedRecomputing { .. }) => {
                 AppPlatformError::Conflict(e.conflict_detail().unwrap_or_default())

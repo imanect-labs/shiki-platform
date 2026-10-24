@@ -219,9 +219,7 @@ pub(crate) async fn build_unique_now(
                 )
                 .await
                 .map_err(|e| match e {
-                    DataError::Conflict(_) | DataError::UniqueViolation => {
-                        DataError::UniqueViolation
-                    }
+                    DataError::Conflict(_) => DataError::UniqueViolation { field: None },
                     other => other,
                 })?;
         }

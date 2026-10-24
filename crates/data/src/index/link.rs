@@ -358,13 +358,14 @@ pub(crate) async fn delete_reverse_rows(
     Ok(())
 }
 
-/// カーディナリティ（部分一意）違反は 422（宣言した一意性への入力違反）。
+/// カーディナリティ（部分一意）違反は 409 `unique_violation`（unique 宣言の違反と同じ扱い。列は呼び出し側の
+/// [`super::write`] が書いたリンク列で名指しする）。
 #[allow(clippy::needless_pass_by_value)]
 fn map_link_error(e: sqlx::Error) -> DataError {
     match &e {
-        sqlx::Error::Database(db) if db.is_unique_violation() => DataError::Invalid(
-            "リンクのカーディナリティ（一対一・一対多の一意性）に違反しています".into(),
-        ),
+        sqlx::Error::Database(db) if db.is_unique_violation() => {
+            DataError::UniqueViolation { field: None }
+        }
         _ => map_db(e),
     }
 }

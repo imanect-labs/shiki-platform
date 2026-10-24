@@ -37,7 +37,8 @@ impl BadRequestBody {
 pub enum ConflictCode {
     /// 楽観ロック（rev）の不一致。`current_rev` に今の rev。
     RevConflict,
-    /// unique 宣言の違反（値・相手の行は返さない）。
+    /// unique 宣言・一対一 / 一対多のリンクの参照先の一意の違反（値・相手の行は返さない）。
+    /// 呼び出し側が読める列なら `field`（参照名）と、列の表示名つきの `message` を持つ。
     UniqueViolation,
     /// 材料化した派生列が参照先の変更を受けて再計算中（`field`）。
     DerivedRecomputing,
@@ -62,6 +63,9 @@ pub struct ConflictBody {
     pub current_rev: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
+    /// 利用者に見せてよい文言（`unique_violation` だけ・読める列なら表示名つき・値は含まない）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     /// 索引の準備の進捗（0〜1・不明なら null）。`index_preparing` のときだけ項目を持つ。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<Option<f64>>,
@@ -79,6 +83,7 @@ impl ConflictBody {
             code,
             current_rev: None,
             field: None,
+            message: None,
             progress: None,
             indexed_fields: None,
             max_indexed_fields: None,

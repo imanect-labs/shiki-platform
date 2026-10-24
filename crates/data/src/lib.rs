@@ -410,9 +410,11 @@ pub enum DataError {
     /// （行述語を通った＝閲覧できる行だけで起きる。不可視行は 404）。
     #[error("競合しています: rev が一致しません（現在 {current}）")]
     RevConflict { current: i64 },
-    /// unique 宣言の違反（409・`code: unique_violation`）。重複した値・相手の行は返さない。
+    /// unique 宣言・一対一 / 一対多のリンクの参照先の一意の違反（409・`code: unique_violation`）。
+    /// 重複した値・相手の行は返さない。`field` は違反した列（書き手が読める列のときだけ・
+    /// [`scrub_input_field`]）。
     #[error("競合しています: unique 制約に違反しています")]
-    UniqueViolation,
+    UniqueViolation { field: Option<ConflictField> },
     /// 材料化した派生列が参照先の変更を受けて再計算中（409・`code: derived_recomputing`・再試行可）。
     /// 完了までその列で絞り込み・並べ替えできない（data-platform §7.4）。
     #[error(
@@ -451,6 +453,44 @@ pub enum DataError {
     /// （data-platform §16.1）。存在しない列/テーブルと見えない列/テーブルは同一の内容になる。
     #[error("クエリを受け付けられません: {0}")]
     Rejected(Box<QueryRejection>),
+}
+
+/// 409 `unique_violation` を起こした列（参照名と表示名・値は持たない）。
+///
+/// 書き手が読めない列は名指ししない（[`scrub_input_field`] が外す）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictField {
+    /// 列の参照名。
+    pub key: String,
+    /// 列の表示名（文言に使う）。
+    pub display_name: String,
+    /// 一対一・一対多のリンクの参照先の一意の違反か（偽なら unique 宣言の違反）。
+    pub link: bool,
+}
+
+impl ConflictField {
+    pub(crate) fn of(f: &model::FieldDef, link: bool) -> Self {
+        let display_name = if f.display_name.trim().is_empty() {
+            f.key.clone()
+        } else {
+            f.display_name.clone()
+        };
+        ConflictField {
+            key: f.key.clone(),
+            display_name,
+            link,
+        }
+    }
+
+    /// 利用者に見せる文言（列の表示名つき・値と相手の行は含めない）。
+    pub fn message(&self) -> String {
+        let name = &self.display_name;
+        if self.link {
+            format!("「{name}」のリンク先は既に他のレコードから参照されています（一対一・一対多のリンク）")
+        } else {
+            format!("「{name}」の値は既に他のレコードで使われています（重複できない列）")
+        }
+    }
 }
 
 impl DataError {
@@ -516,7 +556,7 @@ impl DataError {
             self,
             DataError::Conflict(_)
                 | DataError::RevConflict { .. }
-                | DataError::UniqueViolation
+                | DataError::UniqueViolation { .. }
                 | DataError::DerivedRecomputing { .. }
                 | DataError::NameTaken
         )
@@ -529,7 +569,10 @@ impl DataError {
             DataError::RevConflict { current } => {
                 Some(format!("rev が一致しません（現在 {current}）"))
             }
-            DataError::UniqueViolation => Some("unique 制約に違反しています".into()),
+            DataError::UniqueViolation { field: Some(f) } => Some(f.message()),
+            DataError::UniqueViolation { field: None } => {
+                Some("unique 制約に違反しています".into())
+            }
             DataError::DerivedRecomputing { .. } => Some(self.to_string()),
             DataError::NameTaken => Some("同じ名前のテーブルが既にあります".into()),
             _ => None,
@@ -542,7 +585,7 @@ impl DataError {
         Some(match self {
             DataError::Conflict(_) => "conflict",
             DataError::RevConflict { .. } => "rev_conflict",
-            DataError::UniqueViolation => "unique_violation",
+            DataError::UniqueViolation { .. } => "unique_violation",
             DataError::DerivedRecomputing { .. } => "derived_recomputing",
             DataError::NameTaken => "name_taken",
             _ => return None,
@@ -559,6 +602,9 @@ pub(crate) fn schema_invalid(message: impl Into<String>) -> DataError {
 pub(crate) fn scrub_input_field(e: DataError, allowed: impl Fn(&str) -> bool) -> DataError {
     match e {
         DataError::InvalidInput(ie) => DataError::InvalidInput(Box::new(ie.scrub_field(allowed))),
+        DataError::UniqueViolation { field: Some(f) } if !allowed(&f.key) => {
+            DataError::UniqueViolation { field: None }
+        }
         other => other,
     }
 }
@@ -574,4 +620,53 @@ pub(crate) fn map_db(e: sqlx::Error) -> DataError {
         }
     }
     DataError::Internal(format!("db: {e}"))
+}
+
+#[cfg(test)]
+mod conflict_field_tests {
+    use super::*;
+
+    fn violation(key: &str) -> DataError {
+        DataError::UniqueViolation {
+            field: Some(ConflictField {
+                key: key.into(),
+                display_name: format!("{key} の表示名"),
+                link: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn unreadable_conflict_fields_are_not_named() {
+        // 読めない列は名指ししない（列なしの 409 にする）。
+        let e = scrub_input_field(violation("secret"), |k| k != "secret");
+        assert!(
+            matches!(e, DataError::UniqueViolation { field: None }),
+            "{e:?}"
+        );
+        assert_eq!(
+            e.conflict_detail().as_deref(),
+            Some("unique 制約に違反しています")
+        );
+        // 読める列はそのまま（表示名つきの文言）。
+        let e = scrub_input_field(violation("code"), |k| k != "secret");
+        assert!(
+            e.conflict_detail().unwrap().contains("code の表示名"),
+            "{e:?}"
+        );
+        assert_eq!(e.conflict_code(), Some("unique_violation"));
+    }
+
+    #[test]
+    fn conflict_field_falls_back_to_the_key_without_a_display_name() {
+        let mut f = model::FieldDef::new("code", model::FieldType::Text);
+        f.display_name = " ".into();
+        let c = ConflictField::of(&f, true);
+        assert_eq!(c.display_name, "code");
+        assert!(
+            c.message().contains("「code」のリンク先"),
+            "{}",
+            c.message()
+        );
+    }
 }

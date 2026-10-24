@@ -94,7 +94,7 @@ impl From<data::DataError> for GatewayError {
             // rev 不一致・unique 違反・再計算中・名前の重複を含む競合（文言は値・相手の行を含まない）。
             e @ (DataError::Conflict(_)
             | DataError::RevConflict { .. }
-            | DataError::UniqueViolation
+            | DataError::UniqueViolation { .. }
             | DataError::NameTaken
             | DataError::DerivedRecomputing { .. }) => {
                 GatewayError::Conflict(e.conflict_detail().unwrap_or_default())

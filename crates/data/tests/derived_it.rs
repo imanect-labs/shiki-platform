@@ -2,7 +2,7 @@
 //!
 //! 受け入れ条件:
 //! - N:N リンクの両方向が引け、両方向とも 1 パーティションに枝刈りされる（EXPLAIN）
-//! - `one_to_one` / `one_to_many` の一意性違反が 422
+//! - `one_to_one` / `one_to_many` の一意性違反が 409 `unique_violation`（列つき）
 //! - `per_viewer` / `volatile` 列への `indexed` / `unique` 宣言が 422
 //! - 数式の循環参照が 422
 //! - 金額の四則演算・集計が `numeric` で正確
@@ -292,7 +292,8 @@ async fn many_to_many_link_reads_both_directions_with_partition_pruning() {
     assert!(report.is_consistent(), "{report:?}");
 }
 
-/// 受け入れ条件: one_to_one / one_to_many の一意性違反が 422。
+/// 受け入れ条件: one_to_one / one_to_many の一意性違反が拒否される（参照先側の一意の違反は 409
+/// `unique_violation`・リンク列を名指し。単一値の側の要素数の超過は 400）。
 #[tokio::test]
 async fn link_cardinality_violations_are_422() {
     let Some(pool) = setup().await else { return };
@@ -344,11 +345,17 @@ async fn link_cardinality_violations_are_422() {
     )
     .await;
     rec(&store, &c, oo.id, json!({"l": ids(&[cs[0]])})).await;
-    invalid(
-        store
-            .create_record(&c, oo.id, json!({"l": ids(&[cs[0]])}), None)
-            .await,
-    );
+    // 参照先側の一意の違反は unique と同じ 409 `unique_violation`（書いたリンク列を名指しする）。
+    let dup = |r: Result<data::DataRecord, DataError>| match &r {
+        Err(DataError::UniqueViolation { field: Some(f) }) => {
+            assert_eq!((f.key.as_str(), f.link), ("l", true), "{r:?}");
+            assert!(f.message().contains("リンク先"), "{r:?}");
+        }
+        _ => panic!("unique_violation（列つき）のはず: {r:?}"),
+    };
+    dup(store
+        .create_record(&c, oo.id, json!({"l": ids(&[cs[0]])}), None)
+        .await);
     invalid(
         store
             .create_record(&c, oo.id, json!({"l": ids(&[cs[1], cs[2]])}), None)
@@ -368,11 +375,9 @@ async fn link_cardinality_violations_are_422() {
     )
     .await;
     rec(&store, &c, om.id, json!({"l": ids(&[cs[0], cs[1]])})).await;
-    invalid(
-        store
-            .create_record(&c, om.id, json!({"l": ids(&[cs[1]])}), None)
-            .await,
-    );
+    dup(store
+        .create_record(&c, om.id, json!({"l": ids(&[cs[1]])}), None)
+        .await);
     rec(&store, &c, om.id, json!({"l": ids(&[cs[2]])})).await;
     // many_to_one（v1 の record_ref と同じ向き）: src 側は 1 件まで、dst は共有できる。
     let mo = create_table(

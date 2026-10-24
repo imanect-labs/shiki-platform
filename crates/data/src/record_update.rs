@@ -208,7 +208,9 @@ impl DataStore {
         // 変更のあったフィールド（patches）の索引行と updated_at だけを書き換える（差分更新）。
         self.index_writer(plan, &table.schema, &ctx.tenant_id)
             .on_update(tx, written.record_int, &patches, written.row.updated_at)
-            .await?;
+            .await
+            // 409 unique で名指しするのは今回書いた列だけ（読めない列の名前を返さない）。
+            .map_err(|e| crate::scrub_input_field(e, |k| patch_obj.contains_key(k)))?;
         crate::derived::materialize::after_record_write(
             tx,
             &ctx.tenant_id,

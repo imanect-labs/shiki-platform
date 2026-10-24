@@ -959,6 +959,70 @@ async fn data_stream_routes_authorize_and_validate() {
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
+/// 409 `unique_violation` は読める列を名指しする（`field` に参照名・`message` に表示名・値は含めない）。
+/// ユーザーの列の絞り込みは ID の形式だけを見る（ディレクトリに居ない退職者の ID は 200・表示名は 400）。
+#[tokio::test]
+async fn unique_conflicts_name_the_column_and_user_filters_check_the_id_format() {
+    let Some(env) = setup().await else { return };
+    let mut code = FieldDef::new("code", FieldType::Text);
+    code.unique = true;
+    code.display_name = "社員番号".into();
+    let mut who = FieldDef::new("who", FieldType::UserRef);
+    who.indexed = true;
+    let alice = ctx("alice");
+    let t = env
+        .data
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: format!("unique-{}", Uuid::new_v4().simple()),
+                schema: TableSchema {
+                    fields: vec![FieldDef::new("title", FieldType::Text), code, who],
+                    status_field: None,
+                    row_policy: None,
+                    field_policy: vec![],
+                    aggregate_min_rows: None,
+                    fsm_ref: None,
+                    rag: None,
+                },
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let records = format!("/data/tables/{}/records", t.id);
+    let body = json!({ "data": { "title": "a", "code": "E-100" } });
+    let (s, b) = send(&env, post_json("alice", &records, &body)).await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let (s, b) = send(&env, post_json("alice", &records, &body)).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    assert_eq!(b["code"], "unique_violation", "{b}");
+    assert_eq!(b["field"], "code", "{b}");
+    let message = b["message"].as_str().unwrap();
+    assert!(message.contains("社員番号"), "{b}");
+    assert!(!b.to_string().contains("E-100"), "値を含めない: {b}");
+    let mut keys: Vec<&str> = b.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["code", "field", "message", "status", "title"], "{b}");
+
+    let query = format!("/data/tables/{}/query", t.id);
+    let filter =
+        |v: &str| json!({ "filter": { "cmp": { "field": "who", "op": "eq", "value": v } } });
+    // ディレクトリに居ない（退職した）人の ID でも形式が正しければ 200。
+    let (s, b) = send(
+        &env,
+        post_json("alice", &query, &filter("departed-user-42")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["items"].as_array().map(Vec::len), Some(0), "{b}");
+    // 表示名は 400 `value_type_mismatch`（列は書き手が名指ししたもの）。
+    let (s, b) = send(&env, post_json("alice", &query, &filter("山田 太郎"))).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
+    assert_eq!(b["code"], "value_type_mismatch", "{b}");
+    assert_eq!(b["field"], "who", "{b}");
+}
+
 /// 上限を超えた取込の本文は**残りを読み捨ててから** 413 を返す（検証 A P3）。送信の途中で応答して接続を
 /// 閉じると、前段のプロキシ（web の BFF `/api`）が本文の送信で EPIPE になり 413 ではなく 500 を返した。
 /// 実際の TCP で上限 + 8 MiB を送り切り、413 の応答を読めることを確かめる。

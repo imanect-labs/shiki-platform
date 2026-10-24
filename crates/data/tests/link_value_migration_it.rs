@@ -482,7 +482,7 @@ async fn v1_record_ref_values_migrate_to_arrays_online_and_idempotently() {
                 None,
             )
             .await;
-        assert!(matches!(r, Err(DataError::UniqueViolation)), "{r:?}");
+        assert!(matches!(r, Err(DataError::UniqueViolation { .. })), "{r:?}");
     }
 }
 

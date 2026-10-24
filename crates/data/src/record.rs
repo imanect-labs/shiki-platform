@@ -192,7 +192,9 @@ impl DataStore {
             false,
             trace_id,
         )
-        .await?;
+        .await
+        // 409 unique で名指しするのは書き手が名指しした列か読める列だけ。
+        .map_err(|e| crate::scrub_input_field(e, |k| named(k) || !masked.contains(k)))?;
         // 実データ変更の監査は書込と同一 Tx（原子的・コミット後の監査失敗で成功を偽らない）。
         self.record_audit_record_on(
             &mut tx,
@@ -493,7 +495,9 @@ impl DataStore {
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn map_unique(e: sqlx::Error) -> DataError {
     match &e {
-        sqlx::Error::Database(db) if db.is_unique_violation() => DataError::UniqueViolation,
+        sqlx::Error::Database(db) if db.is_unique_violation() => {
+            DataError::UniqueViolation { field: None }
+        }
         _ => map_db(e),
     }
 }

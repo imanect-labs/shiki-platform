@@ -721,7 +721,7 @@ mod tests {
         );
         assert!(row_message(DataError::Conflict("c".into())).is_ok());
         assert_eq!(
-            row_message(DataError::UniqueViolation).unwrap(),
+            row_message(DataError::UniqueViolation { field: None }).unwrap(),
             "unique 制約に違反しています"
         );
         assert!(row_message(DataError::Internal("db".into())).is_err());

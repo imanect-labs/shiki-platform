@@ -197,7 +197,8 @@
   - [x] **`single_valued = false` を明示的に渡しても、宣言が `true` なら FK 違反で書けない**
         （フラグ経由の制約迂回ができないことの確認）（同上）
   - [x] `FieldId` が 32,767 を超える採番要求が 422 で拒否される（`pivot_index_it::field_id_above_int2_is_rejected`。
-        **Phase 15 実装で 400 に変更**・data-platform §5.6）
+        **Phase 15 実装で変更**: 参照先側の一意の違反は unique と同じ 409 `unique_violation`（リンク列を名指し）、
+        単一値の側の要素数の超過は 400・data-platform §5.6）
   - [x] **切り詰めが起きる列でのソートが既存契約（data-platform.md §3.3）どおり動く**
         （`(val_prefix, record_int)` のタプル比較で重複・欠落が無いこと、同一プレフィクス内の完全値順を保証しないこと、
         応答に `sort_precision: "prefix"` が含まれることを、同一プレフィクス多数のデータで確認）
@@ -344,7 +345,8 @@
   - [x] N:N リンクの両方向が引け、**両方向とも 1 パーティションに枝刈りされる**（EXPLAIN で確認）
         （`derived_it::many_to_many_link_reads_both_directions_with_partition_pruning`）
   - [x] `OneToOne` / `OneToMany` の一意性違反が 422 で拒否される（`derived_it::link_cardinality_violations_are_422`。
-        **Phase 15 実装で 400 に変更**・data-platform §5.6）
+        **Phase 15 実装で変更**: 参照先側の一意の違反は unique と同じ 409 `unique_violation`（リンク列を名指し）、
+        単一値の側の要素数の超過は 400・data-platform §5.6）
   - [x] `PerViewer` / `Volatile` 列への `indexed`/`unique` 宣言が 422 で拒否される
         （`derived_it::viewer_dependent_or_volatile_columns_cannot_be_indexed_and_cycles_are_rejected`。**400 に変更**）
   - [x] **参照先テーブルの viewer 権限を持たないユーザーに、参照先の全件から計算したロールアップが

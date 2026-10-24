@@ -824,7 +824,7 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 | `FieldUnavailable` | 403 | `{status, title, code: "field_unavailable", message}`（`ForbiddenBody`） | 存在しない列・読めない（マスクされた）列の指定（**両者で同一の本文**・列名なし・§5.2・§16.1） |
 | `NotFound` | 404 | — | 不可視行・存在しない行（区別しない）。**テーブルが見えない（viewer でない）・存在しない・削除済み**も区別しない（§16.1・検証 2-A P3） |
 | `RevConflict` | 409 | `code: rev_conflict`・`current_rev` | 楽観ロック |
-| `UniqueViolation` | 409 | `code: unique_violation` | unique 宣言の違反（値・相手の行は返さない） |
+| `UniqueViolation` | 409 | `code: unique_violation`・`field?`（参照名）・`message`（表示名つき） | unique 宣言の違反・一対一 / 一対多のリンクの参照先の一意の違反（値・相手の行は返さない。列は書き手が読める列のときだけ名指しする） |
 | `DerivedRecomputing` | 409 | `code: derived_recomputing`・`field` | 材料化した派生列が再計算中（§7.4） |
 | `IndexPreparing` | 409 | `code: index_preparing`・`field`・`progress`（0〜1 か null） | 索引のバックフィル中（§10） |
 | `IndexApprovalRequired` | 409 | `code: index_approval_required`・`field`・`indexed_fields`・`max_indexed_fields` | 索引列数の上限超過（§10） |

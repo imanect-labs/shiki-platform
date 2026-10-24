@@ -252,7 +252,18 @@ impl From<data::DataError> for ApiError {
                 current_rev: Some(current),
                 ..ConflictBody::new(ConflictCode::RevConflict)
             }),
-            DE::UniqueViolation => conflict(ConflictBody::new(ConflictCode::UniqueViolation)),
+            // 読める列なら参照名と表示名つきの文言（data が読めない列を外してある）。値・相手の行は返さない。
+            DE::UniqueViolation { field } => {
+                let message = DE::UniqueViolation {
+                    field: field.clone(),
+                }
+                .conflict_detail();
+                conflict(ConflictBody {
+                    field: field.map(|f| f.key),
+                    message,
+                    ..ConflictBody::new(ConflictCode::UniqueViolation)
+                })
+            }
             DE::DerivedRecomputing { field } => conflict(ConflictBody {
                 field: Some(field),
                 ..ConflictBody::new(ConflictCode::DerivedRecomputing)
@@ -439,13 +450,30 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(body["code"], "rev_conflict");
         assert_eq!(body["current_rev"], 4);
-        let (_, body) = body_json(ApiError::from(DE::UniqueViolation)).await;
+        let (_, body) = body_json(ApiError::from(DE::UniqueViolation { field: None })).await;
         assert_eq!(body["code"], "unique_violation");
         assert_eq!(
             body.as_object().unwrap().len(),
-            3,
+            4,
             "値や相手の行を含めない: {body}"
         );
+        assert!(body.get("field").is_none(), "{body}");
+        // 読める列なら参照名と、表示名つきの文言。
+        let (_, body) = body_json(ApiError::from(DE::UniqueViolation {
+            field: Some(data::ConflictField {
+                key: "code".into(),
+                display_name: "社員番号".into(),
+                link: false,
+            }),
+        }))
+        .await;
+        assert_eq!(body["code"], "unique_violation");
+        assert_eq!(body["field"], "code");
+        assert!(
+            body["message"].as_str().unwrap().contains("社員番号"),
+            "{body}"
+        );
+        assert_eq!(body.as_object().unwrap().len(), 5, "{body}");
         let (_, body) = body_json(ApiError::from(DE::DerivedRecomputing {
             field: "total".into(),
         }))

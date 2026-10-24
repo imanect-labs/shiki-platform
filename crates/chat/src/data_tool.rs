@@ -129,7 +129,7 @@ fn denied(err: &DataError) -> ToolOutcome {
         DataError::Rejected(r) => format!("クエリを受け付けられません: {r}"),
         DataError::Conflict(_)
         | DataError::RevConflict { .. }
-        | DataError::UniqueViolation
+        | DataError::UniqueViolation { .. }
         | DataError::NameTaken
         | DataError::DerivedRecomputing { .. } => format!(
             "他の更新と競合しました。読み直してから再試行してください: {}",

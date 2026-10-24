@@ -244,7 +244,7 @@ async fn table_crud_and_typed_record_crud() {
         .create_record(&c, table.id, json!({"title": "重複", "code": "E-1"}), None)
         .await;
     assert!(
-        matches!(dup_code, Err(DataError::UniqueViolation)),
+        matches!(dup_code, Err(DataError::UniqueViolation { .. })),
         "{dup_code:?}"
     );
 
