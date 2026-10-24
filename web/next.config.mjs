@@ -29,8 +29,9 @@ const nextConfig = {
     // 中継（上流の切断を伝える・大きな取込を 413 で断る）が素通しに奪われていた。
     return {
       // WebSocket（共同編集の /api/collab/docs/{id}/ws）は route handler では受けられない。catch-all の
-      // /api/[...path] が先に一致すると upgrade が切られるので、ファイルより先に素通しする。
-      beforeFiles: [{ source: "/api/collab/:path*", destination: `${backendOrigin}/collab/:path*` }],
+      // /api/[...path] が先に一致すると upgrade が切られるので、その経路だけファイルより先に素通しする
+      // （collab の他の API は catch-all の中継に残し、上流停止時の 503 案内を保つ）。
+      beforeFiles: [{ source: "/api/collab/docs/:id/ws", destination: `${backendOrigin}/collab/docs/:id/ws` }],
       fallback: [
         // フロントの API 呼び出し（/api/me 等）→ shiki-server のルート（/me 等）。
         { source: "/api/:path*", destination: `${backendOrigin}/:path*` },

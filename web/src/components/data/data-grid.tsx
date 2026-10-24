@@ -181,6 +181,9 @@ type Props = {
   onSchemaChanged?: () => void;
 };
 
+/// 新しい行の判定で見込む端末とサーバの時計のずれ。
+const CLOCK_SKEW_MS = 5_000;
+
 /// 行の削除の同時実行数（多数の行を選んで消しても、ブラウザ・サーバへ一度に投げない）。
 const DELETE_CONCURRENCY = 6;
 
@@ -319,6 +322,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   const [newRowsUncounted, setNewRowsUncounted] = React.useState(false);
   /// 手元に無い新しい行の id（同じ行の再配信・更新を重ねて数えない）。
   const newIds = React.useRef<Set<string>>(new Set());
+  /// 読み直しを始めた時刻（壁時計）。これより後に作られた行は、配信の時点で更新済み（rev > 1）でも新しい行。
+  const loadedAtWall = React.useRef(Date.now());
   const hasNewRows = newRows > 0 || newRowsUncounted;
   const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set());
   const editorRef = React.useRef<DataEditorRef>(null);
@@ -520,9 +525,11 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         const i = indexById.current.get(record.id);
         if (i === undefined) {
           if (derived) return;
-          // 作られたばかりの行（rev 1）だけを新しいレコードと数える。手元に無い既存の行（未読込の先の行）の
-          // 更新は数えない。自分の取込で現れた行も数えない（取込が終われば読み直す）。
-          if (record.rev === 1 && !ownImport() && !newIds.current.has(record.id)) {
+          // 読み直しの後に作られた行だけを新しいレコードと数える（配信は今の行を載せるので、作成直後に更新された
+          // 行は rev > 1 で届く。作成時刻で見る・端末の時計のずれを少し見込む）。手元に無い既存の行（未読込の
+          // 先の行）の更新は数えない。自分の取込で現れた行も数えない（取込が終われば読み直す）。
+          const created = record.rev === 1 || Date.parse(record.created_at) >= loadedAtWall.current - CLOCK_SKEW_MS;
+          if (created && !ownImport() && !newIds.current.has(record.id)) {
             newIds.current.add(record.id);
             setNewRows(newIds.current.size);
           }
@@ -665,6 +672,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
     setInitial("loading");
     startedAt.current = performance.now();
+    loadedAtWall.current = Date.now();
     report({ loaded: 0, done: false, count: null, firstRenderMs: null });
     bump();
     void fetchNext();
@@ -1057,9 +1065,15 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
             let latest: DataRecord | null = null;
             try {
               latest = await getRecord(tableId, before.id);
-              if (j !== undefined) rows.current[j] = latest;
             } catch {
-              if (j !== undefined && rows.current[j].rev <= before.rev) rows.current[j] = before;
+              latest = null;
+            }
+            // 読み直しの間に行が消えた・並びが変わったかもしれないので、位置は待った後に引き直す。
+            if (gen !== generation.current) return;
+            const k = indexById.current.get(before.id);
+            if (k !== undefined) {
+              if (latest) rows.current[k] = latest;
+              else if (rows.current[k].rev <= before.rev) rows.current[k] = before;
             }
             // 相手が変えたのが別の列（この列は編集を始めた時の値のまま）なら、自分の値だけを最新の版に
             // もう一度書ける（相手の値は壊さない）。同じ列なら上書きになるので案内だけにする。

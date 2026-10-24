@@ -82,6 +82,8 @@ export type ImportJob = {
   clear: () => void;
   /// 開始の失敗の文言を消す（ファイルを選び直したとき）。
   dismissError: () => void;
+  /// 進捗の取得が一時的に失敗し、自動で取り直している（サーバの再起動中など）。
+  reconnecting: boolean;
 };
 
 /// テーブルの取込ジョブの状態（開始・進捗のポーリング）。ダイアログを閉じても進捗を追う。
@@ -119,8 +121,7 @@ export function useImportJob(tableId: string): ImportJob {
           setImportId(null);
           setStatus(null);
         } else {
-          // 一時的な失敗（サーバの再起動中の 503 など）: 止めずに間隔を延ばして取り直す。
-          setError(e instanceof Error ? e.message : String(e));
+          // 一時的な失敗（サーバの再起動中の 503 など）: 止めずに間隔を延ばして取り直す（画面は「再接続中」と出す）。
           setFailures((n) => n + 1);
         }
       }
@@ -171,6 +172,7 @@ export function useImportJob(tableId: string): ImportJob {
     start,
     clear,
     dismissError,
+    reconnecting: failures > 0 && Boolean(importId) && !isTerminal(status),
   };
 }
 
@@ -549,6 +551,12 @@ export function ImportDialog({
             </div>
           )}
 
+          {job.reconnecting ? (
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground" role="status" data-testid="import-reconnecting">
+              <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden />
+              サーバーに接続できません。自動で再接続しています…（取込はサーバー側で続いています）
+            </p>
+          ) : null}
           {job.error ? (
             <p
               className="flex items-start gap-1.5 rounded-md border border-destructive/40 bg-destructive/5 px-2.5 py-2 text-xs text-destructive"
