@@ -69,6 +69,14 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_tenant_message_idx
 CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_tenant_thread_idx
     ON audit_log (tenant_id, org, (metadata ->> 'thread_id'), created_at DESC, id DESC)
     WHERE metadata ? 'thread_id';
+
+-- #879 / migration 0083: サイドバー履歴のピン留め一覧・スレッドの run を thread_id で引く
+CREATE INDEX CONCURRENTLY IF NOT EXISTS thread_owner_pinned_idx
+    ON thread (tenant_id, org, owner, pinned_at DESC)
+    WHERE deleted_at IS NULL AND pinned_at IS NOT NULL;
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS generation_run_thread_idx
+    ON generation_run (tenant_id, thread_id, created_at);
 ```
 
 停止時間を取れる環境なら、事前作成せずにそのまま migration に任せてもよい（通常の
