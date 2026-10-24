@@ -23,6 +23,24 @@ test.describe("ツール実行表示ギャラリー", () => {
     if (SHOTS) await running.screenshot({ path: `${SHOTS}/tool-activity-running.png` });
   });
 
+  test("ステップの合間は畳まず、待ちの文言でローリングを出したままにする", async ({ page }) => {
+    const between = page.getByTestId("tool-activity-between");
+    await expect(between.getByText("次の手順を考えています")).toBeVisible();
+    await expect(between.getByTestId("tool-activity-rolling")).toBeVisible();
+    // 窓は件数ぶん（2 件なら 2 行）。固定 3 行だと本文との間に空白が残る。
+    const rows = await between.getByTestId("tool-activity-rolling").locator("> div").first().evaluate(
+      (el) => el.getBoundingClientRect().height / parseFloat(getComputedStyle(document.documentElement).fontSize),
+    );
+    expect(rows).toBeCloseTo(6, 1);
+    if (SHOTS) await between.screenshot({ path: `${SHOTS}/tool-activity-between.png` });
+  });
+
+  test("回答の本文が流れ始めたら、生成中でも 1 行要約に畳む", async ({ page }) => {
+    const answering = page.getByTestId("tool-activity-answering");
+    await expect(answering.getByText("2 件の操作")).toBeVisible();
+    await expect(answering.getByTestId("tool-activity-rolling")).toHaveCount(0);
+  });
+
   test("計画のサブタスクがあればフェーズ行に優先して出る", async ({ page }) => {
     const withPlan = page.getByTestId("tool-activity-running-with-plan");
     await expect(withPlan.getByText("市場規模と成長率を調べています")).toBeVisible();

@@ -84,7 +84,7 @@ pub struct LlmModelsResponse {
     pub default_model: String,
     /// モデルを選べるか（false なら選択 UI を出さない）。
     pub allow_user_choice: bool,
-    /// モデルを選んだときの思考の深さの初期値。
+    /// 特定のモデルで動くとき（選んだモデル・既定の特定モデル）の思考の深さの初期値。
     pub default_effort: EffortLevel,
     /// Auto の振り先（使えるモデルが無い構成では `null`）。
     pub auto: Option<AutoTarget>,

@@ -388,7 +388,7 @@ export function AiModelsView() {
         </SettingRow>
         <SettingRow
           label="思考の深さの初期値"
-          description="ユーザーがモデルを選んだときの初期値です。チャットごとに変えられます。"
+          description="Auto 以外のモデルで動くときの初期値です。チャットごとに変えられます。"
         >
           <SegmentedControl
             aria-label="思考の深さの初期値"
