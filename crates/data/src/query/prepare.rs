@@ -67,7 +67,7 @@ impl DataStore {
         }
         // 結合・半結合の参照先（閲覧者本人の権限で開く・PIT-20）。
         let scopes = self
-            .load_scope_tables(ctx, az, &table, query, trace_id)
+            .load_scope_tables(ctx, az, &table, &masked, query, trace_id)
             .await?;
         let opts = BindOpts {
             max_join_depth: self.limits.max_join_depth,

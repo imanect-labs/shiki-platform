@@ -93,6 +93,15 @@ impl DataStore {
                 "スナップショット読取は内部の不変な位置の順で返します（sort・集計・件数は指定できません）",
             ));
         }
+        // 材料化した派生列は索引行だけが値を持ち、本体にも版にも無い（derived/materialize.rs）。本体の SQL で
+        // 評価するスナップショット読取では常に値なし扱いになり、黙って 0 件になる。誤った結果を返さず 400。
+        if bq.fields.values().any(|f| f.derived) {
+            return Err(DataError::input_detail(
+                crate::InvalidCode::SnapshotUnsupported,
+                None,
+                "スナップショット読取では計算列（ルックアップ・ロールアップ・数式）で絞り込めません",
+            ));
+        }
         let st = |e: storage::StorageError| DataError::Internal(format!("stream: {e}"));
         let stream = self.stream_key(table.id);
         let bounds = storage::event::stream_bounds(&mut *conn, &stream)

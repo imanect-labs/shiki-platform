@@ -22,6 +22,11 @@ use crate::query::ir::CountResult;
 use crate::query::sql::{Bind, SqlBuf};
 use crate::{map_db, DataError};
 
+/// 結合を残した集計で、結合先 `k`（`joins` の添字 + 1）のレコードの個数を返す列の名前。
+pub(crate) fn join_count_col(k: usize) -> String {
+    format!("grp_count_j{k}")
+}
+
 impl Lowerer<'_> {
     /// 結合の各段の CTE（`t{i}` の列 `r0..r{i}`・`ordered` なら `o0..o{i}`）。`tph` は結合先ごとの
     /// `table_int` のプレースホルダ。返り値は CTE の定義の並び。
@@ -105,7 +110,8 @@ impl Lowerer<'_> {
             .collect()
     }
 
-    /// 結合を残した集計（列は [`Self::aggregate_sql`] と同じ: `grp_count`, `g0..`, `m0..`）。
+    /// 結合を残した集計（列は [`Self::aggregate_sql`] と同じ `grp_count`, `g0..`, `m0..` に、列を集計する
+    /// 結合先ごとの [`join_count_col`] を足したもの）。`grp_count` は組の数ではなく FROM の表のレコードの個数。
     pub(crate) fn joined_aggregate_sql(
         &self,
         src: &super::lower::Source<'_>,
@@ -127,7 +133,21 @@ impl Lowerer<'_> {
             };
             (table, format!("z0.r{}", c.src))
         };
-        let (inner, select, group) = self.agg_columns(&at, sql);
+        let (mut inner, mut select, group) = self.agg_columns(&at, sql);
+        // 抑制（PIT-17）の件数は組の数ではなく FROM の表のレコードの個数。多値リンクの結合は 1 レコードを
+        // 結合先の件数だけ組に増やすので、`count(*)` で判定すると 1 レコードでも K を素通りする。
+        // 列を集計する結合先は、その結合先のレコードの個数も返す（結合先の表の K で判定する）。
+        inner.push("z0.r0 AS k0".to_string());
+        if let Some(c) = select.first_mut() {
+            *c = "count(DISTINCT z.k0)::int8 AS grp_count".to_string();
+        }
+        for k in self.q.metric_joins() {
+            inner.push(format!("z0.r{k} AS k{k}"));
+            select.push(format!(
+                "count(DISTINCT z.k{k})::int8 AS {}",
+                join_count_col(k)
+            ));
+        }
         format!(
             "WITH cand AS MATERIALIZED ({source}), \
              pass AS MATERIALIZED (SELECT c.record_int FROM cand c WHERE {check}), \

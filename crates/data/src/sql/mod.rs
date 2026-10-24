@@ -204,6 +204,11 @@ impl DataStore {
     }
 
     /// テーブル名で開く（viewer でないテーブルは存在しないテーブルと同じ応答）。
+    ///
+    /// 名前の一意性（`(tenant_id, org, name)`）は大文字小文字を区別するので、`Sales`（見える）と `sales`
+    /// （見えない）が共存し得る。**大文字小文字を無視した候補すべての viewer を先に確かめ**（BatchCheck 1 往復）、
+    /// 見える候補の中から「完全一致 → （引用符なしなら）一意」の順で選ぶ。見えない同名異表記の有無で
+    /// 解決結果が変わらない（テーブルの存在オラクルを作らない・data-platform §16.1）。
     async fn open_by_name(
         &self,
         ctx: &AuthContext,
@@ -211,10 +216,13 @@ impl DataStore {
         t: &TableRef,
         trace_id: Option<&str>,
     ) -> Result<(DataTable, HashSet<String>), DataError> {
+        // 同名異表記の候補の上限。超えたら（完全一致を先頭に並べたうえで）一意の解決をしない。
+        const MAX_CANDIDATES: usize = 32;
         let rows: Vec<TableRow> = sqlx::query_as(&format!(
             "SELECT {TABLE_COLS} FROM data_table \
              WHERE tenant_id = $1 AND org = $2 AND deleted_at IS NULL AND lower(name) = lower($3) \
-             LIMIT 8"
+             ORDER BY (name = $3) DESC, id LIMIT {}",
+            MAX_CANDIDATES + 1
         ))
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
@@ -222,13 +230,34 @@ impl DataStore {
         .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
         .await
         .map_err(map_db)?;
-        let pick = rows
+        let truncated = rows.len() > MAX_CANDIDATES;
+        let items: Vec<(authz::Relation, authz::FgaObject)> = rows
             .iter()
-            .position(|r| r.name() == t.name)
-            .or_else(|| (!t.quoted && rows.len() == 1).then_some(0));
+            .take(MAX_CANDIDATES)
+            .map(|r| {
+                (
+                    authz::Relation::Viewer,
+                    ctx.ns().data_table(&r.id.to_string()),
+                )
+            })
+            .collect();
+        let allowed = az.check_all(ctx, &items).await?;
+        let visible: Vec<&TableRow> = rows
+            .iter()
+            .zip(allowed)
+            .filter_map(|(r, ok)| ok.then_some(r))
+            .collect();
+        let pick = visible
+            .iter()
+            .find(|r| r.name() == t.name)
+            .or_else(|| {
+                (!t.quoted && !truncated && visible.len() == 1)
+                    .then(|| visible.first())
+                    .flatten()
+            })
+            .map(|r| r.id);
         let found = match pick {
-            Some(i) => {
-                let id = rows[i].id;
+            Some(id) => {
                 match self
                     .open_for_read(ctx, az, id, AuditAction::DataQuerySql, trace_id)
                     .await

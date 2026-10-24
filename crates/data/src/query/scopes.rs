@@ -74,11 +74,17 @@ fn ref_of(schema: &TableSchema, key: &str) -> Option<Uuid> {
 
 impl DataStore {
     /// クエリが辿る参照先テーブルを閲覧者本人の権限で開く（半結合の入れ子・結合の連鎖を幅優先で）。
+    ///
+    /// 閲覧者にマスクされたリンク列（`base_masked`・入れ子は参照先ごとのマスク）の参照先は**開かない**。
+    /// 開くと、参照先が読めないときに 403 になり、束縛の `field_unavailable`（存在しない列と同じ）と
+    /// 区別できてしまう（マスク列の存在オラクル・data-platform §16.1 のエラー契約）。飛ばした列は束縛で
+    /// 存在しない列と同じ 403 `field_unavailable` になる。
     pub(crate) async fn load_scope_tables(
         &self,
         ctx: &AuthContext,
         az: &AuthzMemo<'_>,
         base: &DataTable,
+        base_masked: &HashSet<String>,
         q: &DataQuery,
         trace_id: Option<&str>,
     ) -> Result<ScopeTables, DataError> {
@@ -93,14 +99,18 @@ impl DataStore {
             pending.push((base.id, f.clone()));
         }
         for j in &q.joins {
-            let from_schema = match &j.from {
-                None => Some(base.schema.clone()),
+            let from = match &j.from {
+                None => Some((base.schema.clone(), base_masked.contains(&j.field))),
                 Some(a) => alias_table
                     .get(a)
                     .and_then(|id| out.get(*id))
-                    .map(|t| t.table.schema.clone()),
+                    .map(|t| (t.table.schema.clone(), t.masked.contains(&j.field))),
             };
-            let Some(rt) = from_schema.as_ref().and_then(|s| ref_of(s, &j.field)) else {
+            let Some(rt) = from
+                .as_ref()
+                .filter(|(_, masked)| !masked)
+                .and_then(|(s, _)| ref_of(s, &j.field))
+            else {
                 continue;
             };
             self.open_scope(ctx, az, rt, &mut out, trace_id).await?;
@@ -115,16 +125,19 @@ impl DataStore {
             if guard > 64 {
                 break;
             }
-            let schema = if table_id == base.id {
-                base.schema.clone()
+            let (schema, masked) = if table_id == base.id {
+                (base.schema.clone(), base_masked.clone())
             } else if let Some(t) = out.get(table_id) {
-                t.table.schema.clone()
+                (t.table.schema.clone(), t.masked.clone())
             } else {
                 continue;
             };
             let mut links = Vec::new();
             link_conds(&cond, &mut links);
             for (key, sub) in links {
+                if masked.contains(key) {
+                    continue;
+                }
                 let Some(rt) = ref_of(&schema, key) else {
                     continue;
                 };

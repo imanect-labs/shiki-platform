@@ -328,6 +328,20 @@ impl BoundQuery {
     pub(crate) fn is_aggregate(&self) -> bool {
         !self.metrics.is_empty()
     }
+
+    /// 指標で列を集計する結合先（`joins` の添字 + 1・昇順・重複なし）。結合を残した集計では、これらの
+    /// 結合先の表の `aggregate_min_rows` も各グループの結合先のレコードの個数で判定する（PIT-17）。
+    pub(crate) fn metric_joins(&self) -> Vec<usize> {
+        let mut v: Vec<usize> = self
+            .metrics
+            .iter()
+            .filter_map(|(_, c)| c.map(|c| c.src))
+            .filter(|s| *s > 0)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
 }
 
 static FALLBACK_FIELD: BField = BField {

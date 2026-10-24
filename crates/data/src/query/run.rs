@@ -44,7 +44,7 @@ use crate::policy::compile::compile_read_predicate;
 use crate::policy::compile_index::IndexGuardCtx;
 use crate::policy::material::{self, PolicyMaterial};
 use crate::store::DataStore;
-use crate::{map_db, DataError, DEFAULT_AGGREGATE_MIN_ROWS};
+use crate::{map_db, DataError};
 
 /// 件数の既定上限（`AtLeast(10_000)`・data-platform §5.4）。
 pub const DEFAULT_COUNT_CAP: u64 = 10_000;
@@ -717,11 +717,8 @@ impl DataStore {
                 let r = ex.aggregate(&bq.filter).await;
                 self.reject_record(table.id, &ex.stats, r)?
             };
-            let k = table
-                .schema
-                .aggregate_min_rows
-                .unwrap_or(DEFAULT_AGGREGATE_MIN_ROWS);
-            let (groups, suppressed) = super::aggregate::assemble(bq, &rows, k)?;
+            let mins = super::aggregate::min_rows(table, bq, scopes);
+            let (groups, suppressed) = super::aggregate::assemble(bq, &rows, &mins)?;
             result.groups = Some(groups);
             result.suppressed = suppressed;
             self.observe(&mut ex, shape, started);

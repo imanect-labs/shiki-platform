@@ -13,16 +13,63 @@ use super::bound::{BHaving, BoundQuery, FieldKind, GroupKey};
 use super::ir::{AggregateGroup, CondOp};
 use crate::{map_db, DataError};
 
-/// 集計の行をグループへ組み立てる。返り値 = (グループ列, 抑制発生)。
+/// 抑制の判定 1 つ（件数の列名・K）。FROM の表は `grp_count`（レコードの個数）と表の K、結合を残した
+/// 集計で列を集計する結合先は、その結合先のレコードの個数と結合先の表の K（ロールアップと同じく参照先の
+/// K を継承する・data-platform §7.2）。
+pub(crate) struct MinRows {
+    pub col: String,
+    pub k: i64,
+}
+
+/// 抑制の判定の並び（FROM の表 → 列を集計する結合先）。結合先の材料が無い（開けない）なら既定の K
+/// （その結合は組を作らないので結果は空）。
+pub(crate) fn min_rows(
+    table: &crate::model::DataTable,
+    q: &BoundQuery,
+    scopes: &super::scopes::ScopeTables,
+) -> Vec<MinRows> {
+    let k_of = |s: &crate::model::TableSchema| {
+        s.aggregate_min_rows
+            .unwrap_or(crate::DEFAULT_AGGREGATE_MIN_ROWS)
+    };
+    let mut out = vec![MinRows {
+        col: "grp_count".to_string(),
+        k: k_of(&table.schema),
+    }];
+    if q.joins.is_empty() {
+        return out;
+    }
+    for k in q.metric_joins() {
+        let kk = q
+            .joins
+            .get(k - 1)
+            .and_then(|j| q.scopes.get(j.scope))
+            .and_then(|s| scopes.get(s.table))
+            .map_or(crate::DEFAULT_AGGREGATE_MIN_ROWS, |st| {
+                k_of(&st.table.schema)
+            });
+        out.push(MinRows {
+            col: super::planner::join::join_count_col(k),
+            k: kk,
+        });
+    }
+    out
+}
+
+/// 集計の行をグループへ組み立てる。返り値 = (グループ列, 抑制発生)。どれか 1 つでも K 未満なら抑制する。
 pub(crate) fn assemble(
     q: &BoundQuery,
     rows: &[sqlx::postgres::PgRow],
-    k: i64,
+    mins: &[MinRows],
 ) -> Result<(Vec<AggregateGroup>, bool), DataError> {
     let mut groups = Vec::with_capacity(rows.len());
     let mut suppressed = false;
     for row in rows {
-        let cnt: i64 = row.try_get("grp_count").map_err(map_db)?;
+        let mut small = false;
+        for m in mins {
+            let cnt: i64 = row.try_get(m.col.as_str()).map_err(map_db)?;
+            small |= cnt < m.k;
+        }
         let mut key = Map::new();
         for (i, g) in q.group_by.iter().enumerate() {
             let f = q.col_field(*g);
@@ -47,7 +94,7 @@ pub(crate) fn assemble(
             let v: Option<f64> = row.try_get(format!("m{i}").as_str()).map_err(map_db)?;
             values.push(metric_value(*m, v));
         }
-        let (value, values) = suppress(cnt, k, values, &mut suppressed);
+        let (value, values) = suppress(small, values, &mut suppressed);
         groups.push(AggregateGroup { key, value, values });
     }
     let groups = finish(q, groups);
@@ -160,9 +207,9 @@ fn metric_value(m: super::ir::Metric, v: Option<f64>) -> Value {
     }
 }
 
-/// K 未満は値を伏せる（count 含む・全体集計も同様）。
-fn suppress(cnt: i64, k: i64, values: Vec<Value>, suppressed: &mut bool) -> (Value, Vec<Value>) {
-    if cnt < k {
+/// K 未満（`small`）は値を伏せる（count 含む・全体集計も同様）。
+fn suppress(small: bool, values: Vec<Value>, suppressed: &mut bool) -> (Value, Vec<Value>) {
+    if small {
         *suppressed = true;
         let n = values.len();
         return (Value::Null, vec![Value::Null; n]);
@@ -179,12 +226,12 @@ mod tests {
     #[test]
     fn small_cells_are_suppressed() {
         let mut s = false;
-        let (v, vs) = suppress(4, 5, vec![json!(4), json!(10.5)], &mut s);
+        let (v, vs) = suppress(4 < 5, vec![json!(4), json!(10.5)], &mut s);
         assert!(s);
         assert_eq!(v, Value::Null);
         assert_eq!(vs, vec![Value::Null, Value::Null]);
         let mut s = false;
-        let (v, vs) = suppress(5, 5, vec![json!(5)], &mut s);
+        let (v, vs) = suppress(5 < 5, vec![json!(5)], &mut s);
         assert!(!s);
         assert_eq!(v, json!(5));
         assert_eq!(vs, vec![json!(5)]);

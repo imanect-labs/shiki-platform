@@ -3704,3 +3704,357 @@ async fn reverse_link_labels_only_for_visible_referrers() {
         "{names:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⑮ 独立レビュー（データ読取）の確定指摘の回帰
+// ---------------------------------------------------------------------------
+
+/// ⑮-1（R1-A・R1-B・PIT-17）結合を残した集計の小セル抑制は、組の数ではなく **FROM の表のレコードの個数**で
+/// 判定し（多値リンクで 1 レコードを K 件以上の組に増やしても素通りしない）、結合先の列を集計するなら
+/// **結合先の表の `aggregate_min_rows`** も結合先のレコードの個数で判定する（ロールアップと同じ継承）。
+#[tokio::test]
+async fn joined_aggregate_small_cells_count_records_and_inherit_join_k() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let store = DataStore::new(pool, Arc::clone(&authz), Arc::new(AllowRefs));
+    let mut amount = field("amount", FieldType::Number);
+    amount.indexed = true;
+    let mut lines_schema = plain(vec![field("name", FieldType::Text), amount]);
+    lines_schema.aggregate_min_rows = Some(3);
+    let lines = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "klines".into(),
+                schema: lines_schema,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let mut grp = field("grp", FieldType::Select);
+    grp.options = vec!["a".into(), "b".into(), "c".into()];
+    grp.indexed = true;
+    let mut orders_schema = plain(vec![items_link(lines.id), grp]);
+    orders_schema.aggregate_min_rows = Some(2);
+    let orders = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "korders".into(),
+                schema: orders_schema,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let mut l = Vec::new();
+    for n in ["l1", "l2", "l3"] {
+        l.push(
+            store
+                .create_record(&alice, lines.id, json!({"name": n, "amount": 10}), None)
+                .await
+                .unwrap()
+                .id,
+        );
+    }
+    // a: 1 レコード × 3 明細（組は 3 件・レコードは 1 件 < 2）。
+    // b: 2 レコード × 同じ 2 明細（組は 4 件・レコード 2 件・明細 2 件 < 3）。
+    // c: 2 レコード × 3 明細（組は 6 件・レコード 2 件・明細 3 件）。
+    for (g, items) in [
+        ("a", vec![l[0], l[1], l[2]]),
+        ("b", vec![l[0], l[1]]),
+        ("b", vec![l[0], l[1]]),
+        ("c", vec![l[0], l[1], l[2]]),
+        ("c", vec![l[0], l[1], l[2]]),
+    ] {
+        store
+            .create_record(
+                &alice,
+                orders.id,
+                json!({"grp": g, "items": ids(&items)}),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let run = |q: serde_json::Value| {
+        let store = &store;
+        let alice = &alice;
+        async move {
+            let q: DataQuery = serde_json::from_value(q).unwrap();
+            let r = store.run_query(alice, orders.id, &q, None).await.unwrap();
+            let mut out: Vec<(String, Vec<serde_json::Value>)> = r
+                .groups
+                .unwrap()
+                .into_iter()
+                .map(|g| (g.key["grp"].as_str().unwrap().to_string(), g.values))
+                .collect();
+            out.sort_by(|x, y| x.0.cmp(&y.0));
+            (out, r.suppressed)
+        }
+    };
+    let null2 = vec![serde_json::Value::Null, serde_json::Value::Null];
+    // 結合先の列を集計する: a は FROM のレコード不足、b は結合先のレコード不足で抑制。
+    let (got, suppressed) = run(json!({
+        "joins": [{"alias": "l", "field": "items"}],
+        "group_by": ["grp"],
+        "aggregate": [{"metric": "count"}, {"metric": "sum", "field": "l.amount"}],
+    }))
+    .await;
+    assert!(suppressed);
+    assert_eq!(
+        got,
+        vec![
+            ("a".to_string(), null2.clone()),
+            ("b".to_string(), null2.clone()),
+            ("c".to_string(), vec![json!(6), json!(60.0)]),
+        ],
+        "組の数ではなくレコードの個数で抑制し、結合先の K も効くこと"
+    );
+    // 結合先の列を集計しない（件数だけ）: FROM の表の K だけ（b は 2 レコードなので出る）。
+    let (got, _) = run(json!({
+        "joins": [{"alias": "l", "field": "items"}],
+        "group_by": ["grp"],
+        "aggregate": [{"metric": "count"}],
+    }))
+    .await;
+    assert_eq!(
+        got,
+        vec![
+            ("a".to_string(), vec![serde_json::Value::Null]),
+            ("b".to_string(), vec![json!(4)]),
+            ("c".to_string(), vec![json!(6)]),
+        ]
+    );
+    // SQL 前段面も同じ経路（a の 1 レコードは組が 3 件でも抑制）。
+    let rows = sql_rows(
+        &store,
+        &alice,
+        "SELECT o.grp, COUNT(*) FROM korders o JOIN klines l ON o.items = l._id \
+         WHERE o.grp = 'a' GROUP BY o.grp",
+    )
+    .await;
+    assert_eq!(rows, vec![vec![json!("a"), serde_json::Value::Null]]);
+}
+
+/// ⑮-2（R1-C）マスクされたリンク列を半結合・結合・入れ子の半結合で名指ししても、参照先を開かずに
+/// 存在しない列と**同じ** 403 `field_unavailable`（参照先が読めないときの本文なし 403 と区別できない
+/// ＝マスク列の存在オラクルにならない・data-platform §16.1）。
+#[tokio::test]
+async fn masked_link_columns_are_indistinguishable_from_unknown_in_links_and_joins() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let store = DataStore::new(pool, Arc::clone(&authz), Arc::new(AllowRefs));
+    join_role(&authz, &alice, "keiri").await;
+    let keiri_only = |key: &str| FieldPolicy {
+        field: key.into(),
+        readable_by: PolicyExpr::HasRole {
+            role: "keiri".into(),
+            subtree: false,
+        },
+    };
+    // bob が viewer でない参照先（ここを開こうとすると 403 になる）。
+    let secret = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "secret".into(),
+                schema: plain(vec![field("name", FieldType::Text)]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let mut sub = field("sub", FieldType::RecordRef);
+    sub.ref_table = Some(secret.id);
+    sub.link = items_link(secret.id).link;
+    let mut mid_schema = plain(vec![field("name", FieldType::Text), sub]);
+    mid_schema.field_policy = vec![keiri_only("sub")];
+    let mid = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "mid".into(),
+                schema: mid_schema,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let mut hidden = field("hidden", FieldType::RecordRef);
+    hidden.ref_table = Some(secret.id);
+    hidden.link = items_link(secret.id).link;
+    let mut base_schema = plain(vec![
+        field("name", FieldType::Text),
+        items_link(mid.id),
+        hidden,
+    ]);
+    base_schema.field_policy = vec![keiri_only("hidden")];
+    let base = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "base".into(),
+                schema: base_schema,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    grant(&authz, &bob, Relation::Viewer, base.id).await;
+    grant(&authz, &bob, Relation::Viewer, mid.id).await;
+    store
+        .create_record(&alice, base.id, json!({"name": "x"}), None)
+        .await
+        .unwrap();
+    for (what, q) in [
+        ("link", json!({"filter": {"link": {"field": "$K"}}})),
+        (
+            "join",
+            json!({"joins": [{"alias": "s", "field": "$K"}], "select": ["name"]}),
+        ),
+        (
+            "nested link",
+            json!({"filter": {"link": {"field": "items", "filter": {"link": {"field": "$S"}}}}}),
+        ),
+        (
+            "nested join",
+            json!({"joins": [{"alias": "m", "field": "items"},
+                             {"alias": "s", "from": "m", "field": "$S"}],
+                   "select": ["name"]}),
+        ),
+    ] {
+        let run = |k: &str, s: &str| {
+            let q: DataQuery = serde_json::from_value(
+                serde_json::from_str(&q.to_string().replace("$K", k).replace("$S", s)).unwrap(),
+            )
+            .unwrap();
+            let store = &store;
+            let bob = &bob;
+            async move { format!("{:?}", store.run_query(bob, base.id, &q, None).await.err()) }
+        };
+        let masked = run("hidden", "sub").await;
+        let unknown = run("zzz_nope", "zzz_nope").await;
+        assert!(masked.contains("FieldUnavailable"), "{what}: {masked}");
+        assert_eq!(
+            masked, unknown,
+            "{what}: マスク列と存在しない列で応答が違う"
+        );
+    }
+}
+
+/// ⑮-3（R1-D）SQL のテーブル名の解決は、見えない同名異表記（`sales` と `Sales`）の有無で結果が変わらない
+/// （候補すべての viewer を先に確かめ、見える候補の中で完全一致 → 一意の順に選ぶ）。
+#[tokio::test]
+async fn sql_table_names_ignore_invisible_case_variants() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let store = DataStore::new(pool, Arc::clone(&authz), Arc::new(AllowRefs));
+    let shown = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "Sales".into(),
+                schema: plain(vec![field("name", FieldType::Text)]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    grant(&authz, &bob, Relation::Viewer, shown.id).await;
+    store
+        .create_record(&alice, shown.id, json!({"name": "visible"}), None)
+        .await
+        .unwrap();
+    let before = sales_answers(&store, &bob).await;
+    assert!(before[0].starts_with("ok"), "{before:?}");
+    assert!(before[4].starts_with("err"), "{before:?}");
+    // bob に見えない同名異表記を作っても、bob の解決結果は 1 文字も変わらない。
+    let invisible = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "sales".into(),
+                schema: plain(vec![field("name", FieldType::Text)]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .create_record(&alice, invisible.id, json!({"name": "secret"}), None)
+        .await
+        .unwrap();
+    let after = sales_answers(&store, &bob).await;
+    assert_eq!(before, after, "見えない同名異表記で解決結果が変わった");
+    // alice（両方見える）は完全一致で選ぶ。
+    assert_eq!(
+        sql_rows(&store, &alice, "SELECT name FROM sales").await,
+        vec![vec![json!("secret")]]
+    );
+    assert_eq!(
+        sql_rows(&store, &alice, "SELECT name FROM Sales").await,
+        vec![vec![json!("visible")]]
+    );
+}
+
+/// ⑮-4（R1-E）材料化した計算列は本体に値が無いので、スナップショット読取（本体の SQL で評価）で絞り込むと
+/// 黙って 0 件になる。誤った結果を返さず 400 `snapshot_unsupported`。
+#[tokio::test]
+async fn snapshot_read_rejects_filters_on_materialized_derived_columns() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let m = materialized_fixture(pool, authz).await;
+    let filter = json!({"cmp": {"field": "total", "op": "gte", "value": 0}});
+    let live: DataQuery = serde_json::from_value(json!({"filter": filter})).unwrap();
+    let r = m
+        .store
+        .run_query(&m.alice, m.orders, &live, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        r.items.unwrap().len(),
+        1,
+        "前提: ライブ読取では 1 件に当たる"
+    );
+    let snap: DataQuery =
+        serde_json::from_value(json!({"filter": filter, "snapshot": true})).unwrap();
+    let r = m.store.run_query(&m.alice, m.orders, &snap, None).await;
+    assert_eq!(
+        r.as_ref().err().and_then(DataError::invalid_code),
+        Some(data::InvalidCode::SnapshotUnsupported),
+        "{r:?}"
+    );
+}
+
+/// ⑮-3 の読取（bob の目に見える解決結果を文字列で並べる）。
+async fn sales_answers(store: &DataStore, bob: &AuthContext) -> Vec<String> {
+    let mut out = Vec::new();
+    for sql in [
+        "SELECT name FROM sales",
+        "SELECT name FROM SALES",
+        "SELECT name FROM Sales",
+        "SELECT name FROM \"Sales\"",
+        "SELECT name FROM \"sales\"",
+    ] {
+        let r = store.run_sql(bob, &sql_req(sql), None).await;
+        out.push(match r {
+            Ok(r) => format!("ok {:?}", r.rows),
+            Err(e) => format!("err {e:?}"),
+        });
+    }
+    out
+}
