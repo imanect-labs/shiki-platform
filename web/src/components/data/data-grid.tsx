@@ -119,7 +119,9 @@ function useGuardSyntheticClicks() {
 }
 
 type DisplayRow =
-  | { kind: "group"; level: number; key: string; label: string; count: number }
+  /// `open`: 読み込んだ最後の行を含む群（続きのページにまだ同じ群の行があり得る）。並びは群の順なので、
+  /// それ以外の群の件数は確定している。
+  | { kind: "group"; level: number; key: string; label: string; count: number; open: boolean }
   | { kind: "row"; index: number };
 
 export type DataGridHandle = {
@@ -287,6 +289,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   const bump = React.useCallback(() => setVersion((v) => v + 1), []);
   const [initial, setInitial] = React.useState<"loading" | "ready" | "error" | "preparing">("loading");
   const [newRows, setNewRows] = React.useState(0);
+  /// 件数の分からない新着（件数を含まない一括取込の知らせ）がある。
+  const [newRowsUncounted, setNewRowsUncounted] = React.useState(false);
+  const hasNewRows = newRows > 0 || newRowsUncounted;
   const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set());
   const editorRef = React.useRef<DataEditorRef>(null);
   const [selection, setSelection] = React.useState<GridSelection>({
@@ -526,8 +531,12 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       },
       onBulk: (count) => {
         if (gen !== generation.current) return;
-        // 取込などでまとめて作られた行: 並び順の途中に差し込まず、件数だけ数えて「表示する」を出す。
-        if (!ownImport()) setNewRows((n) => n + count);
+        // 取込などでまとめて作られた行: 並び順の途中に差し込まず、件数だけ数えて「表示する」を出す。件数の無い
+        // 知らせ（見える件数は読み直さないと分からない）は「新しいレコードがあります」とだけ出す。
+        if (!ownImport()) {
+          if (count === null) setNewRowsUncounted(true);
+          else setNewRows((n) => n + count);
+        }
         refreshCountSoon(gen);
       },
       onAwareness: (a) => {
@@ -617,6 +626,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     setLive(null);
     setFailure(null);
     setNewRows(0);
+    setNewRowsUncounted(false);
     // 読み直しの前の選択は新しい行と対応しないので外す（薄く残す直前の行に枠を残さない）。
     setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
     setInitial("loading");
@@ -696,6 +706,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         counts.set(key, (counts.get(key) ?? 0) + 1);
       }
     }
+    // 読み込んだ最後の行が属する群（とその祖先）だけは、続きのページで件数が増え得る。
+    const last = source.length ? pathOf(source[source.length - 1]) : [];
+    const openKeys = new Set(last.map((_, l) => last.slice(0, l + 1).join("\u0001")));
     let prev: string[] = [];
     source.forEach((r, index) => {
       const p = pathOf(r);
@@ -713,6 +726,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
               key,
               label: `${col?.label ?? groupKeys[l]}: ${groupLabel(r, groupKeys[l], col)}`,
               count: counts.get(key) ?? 0,
+              open: openKeys.has(key),
             });
           }
         }
@@ -735,6 +749,21 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [collapsed, version, display.length]);
+
+  // 空のテーブルを開いている間に別のタブ・他の人が行を足した（取込を含む）: 「まだレコードがありません」の
+  // まま新着の知らせだけを出さず、読み直して行を出す（3-A-7）。並びの途中に差し込む問題は空なら起きない。
+  // 絞り込み中は新着が条件に合うか分からないので、知らせ（「表示する」）に任せる（読み直しの繰り返しを避ける）。
+  const emptyReloadAt = React.useRef(0);
+  React.useEffect(() => {
+    if (!hasNewRows || initial !== "ready" || !done.current || rows.current.length > 0 || query.filter || fetchPageRef.current) return;
+    const wait = Math.max(0, emptyReloadAt.current + 2000 - Date.now());
+    const t = window.setTimeout(() => {
+      emptyReloadAt.current = Date.now();
+      reset();
+    }, wait);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasNewRows, newRows, initial, version]);
 
   const loadingRows = done.current ? 0 : LOADING_ROWS;
   const totalRows = display.length + (initial === "ready" ? loadingRows : 0);
@@ -787,7 +816,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         return {
           kind: GridCellKind.Text,
           data: d.label,
-          displayData: `${"　".repeat(d.level)}${open ? "▾" : "▸"} ${d.label}（${d.count}${done.current ? "" : "+"}）`,
+          // 件数は桁区切り。「+」は続きのページで増え得る群（読み込んだ最後の行の群）だけ（3-A-9）。
+          displayData: `${"　".repeat(d.level)}${open ? "▾" : "▸"} ${d.label}（${d.count.toLocaleString("ja-JP")}${d.open && !done.current ? "+" : ""}）`,
           allowOverlay: false,
           readonly: true,
           span: [0, columns.length - 1],
@@ -1440,7 +1470,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           data-testid="data-grid-selection"
           className={cn(
             "absolute left-4 z-20 flex items-center gap-2 rounded-xl border bg-card px-3 py-1.5 text-xs shadow-md",
-            newRows > 0 || live ? "bottom-16" : "bottom-4",
+            hasNewRows || live ? "bottom-16" : "bottom-4",
           )}
         >
           <span className="tabular-nums">{selectedRecords.length.toLocaleString("ja-JP")} 件を選択中</span>
@@ -1480,7 +1510,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           className={cn(
             // 編集欄（行の位置）に重ならないよう下端に出す（「新しいレコード」の案内があればその上）。
             "absolute left-1/2 z-20 flex w-[min(32rem,calc(100%-2rem))] -translate-x-1/2 items-start gap-2 rounded-xl border border-destructive/40 bg-card px-3 py-2 text-xs shadow-md",
-            newRows > 0 || live ? "bottom-16" : "bottom-4",
+            hasNewRows || live ? "bottom-16" : "bottom-4",
           )}
         >
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
@@ -1489,7 +1519,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           </span>
         </div>
       ) : null}
-      {newRows > 0 ? (
+      {hasNewRows ? (
         <button
           type="button"
           onClick={() => reset()}
@@ -1497,7 +1527,11 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           className="absolute bottom-4 left-1/2 z-20 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-primary/30 bg-card px-3 py-1.5 text-xs font-medium text-primary shadow-md transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <RefreshCw className="size-3.5" aria-hidden />
-          新しいレコード {newRows.toLocaleString("ja-JP")} 件 · 表示する
+          {newRowsUncounted
+            ? newRows > 0
+              ? `新しいレコード ${newRows.toLocaleString("ja-JP")} 件以上 · 表示する`
+              : "新しいレコードがあります · 表示する"
+            : `新しいレコード ${newRows.toLocaleString("ja-JP")} 件 · 表示する`}
         </button>
       ) : null}
       {live && initial === "ready" ? (

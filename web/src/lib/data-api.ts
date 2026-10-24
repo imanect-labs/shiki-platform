@@ -459,8 +459,9 @@ export type RecordStreamHandlers = {
   onReset: (reason: StreamResetReason | "schema_changed") => void;
   /// 他ユーザーのカーソル位置（データを含まない）。
   onAwareness?: (e: AwarenessEvent) => void;
-  /// 一括取込などでまとめて作られた行（1 件ずつのイベントの代わりに件数だけ届く）。
-  onBulk?: (count: number) => void;
+  /// 一括取込などでまとめて作られた行（1 件ずつのイベントの代わりに届く）。`count` は購読者本人に見える件数。
+  /// 件数を含まない知らせ（見える件数は読み直さないと分からない）は `null`。
+  onBulk?: (count: number | null) => void;
   /// 接続が切れた（ブラウザが Last-Event-ID 付きで自動で繋ぎ直す）。
   onError?: () => void;
   /// 繋がった（最初の接続・繋ぎ直しのたび）。
@@ -551,11 +552,15 @@ export function subscribeRecords(
     const d = parse<RecordRemovedEvent>(ev as MessageEvent);
     if (d) h.onRemoved(d);
   });
-  // 一括取込の要約（サーバが 1 件ずつ流す代わりに送る・件数だけ）。古いサーバは送らない。
+  // 一括取込の要約（サーバが 1 件ずつ流す代わりに送る）。見える件数を添えるサーバと、件数を添えずに「取り込まれた・
+  // 読み直せば見える」とだけ知らせるサーバの両方を受ける（件数の 0 は見える行が無いので知らせない）。
   es.addEventListener("records.bulk_applied", (ev) => {
     seen(ev);
-    const d = parse<{ count?: number }>(ev as MessageEvent);
-    if (d && typeof d.count === "number" && d.count > 0) h.onBulk?.(d.count);
+    const d = parse<{ count?: number | null }>(ev as MessageEvent);
+    if (!d) return;
+    if (typeof d.count === "number") {
+      if (d.count > 0) h.onBulk?.(d.count);
+    } else h.onBulk?.(null);
   });
   es.addEventListener("awareness", (ev) => {
     touch();

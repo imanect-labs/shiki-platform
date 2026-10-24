@@ -140,3 +140,59 @@ test("続きの読み込み位置が使えなくなったら、空行のまま�
   expect(rejected).toBe(true);
   expect(queries).toBeGreaterThanOrEqual(3);
 });
+
+test("取込の知らせは件数の有無どちらでも受け、空のテーブルを開いていれば読み直して行を出す（3-A-7）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  // 1. 空のテーブル: 件数を添えない取込の知らせで、「まだレコードがありません」のまま止まらず読み直す。
+  const empty = await seedTable(page, 0);
+  let served = 0;
+  await page.route(new RegExp(`/api/data/tables/${empty.tableId}/stream`), async (route) => {
+    served += 1;
+    if (served === 1) {
+      // 別のタブの取込で行が増えた（知らせの前に行を作っておく）。
+      await page.request.post(`/api/data/tables/${empty.tableId}/records`, {
+        headers: { "X-CSRF-Token": await csrf(page) },
+        data: { data: { code: "取込-1", amount: 1 } },
+      });
+    }
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+      body:
+        served === 1
+          ? `retry: 600000\n\nevent: stream.ready\ndata: {"position":4}\n\nid: 5\nevent: records.bulk_applied\ndata: {}\n\n`
+          : `retry: 600000\n\nevent: stream.ready\ndata: {"position":5}\n\n`,
+    });
+  });
+  await page.goto(`/data/${empty.tableId}`);
+  await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "1", { timeout: 15_000 });
+  await expect(page.getByTestId("data-grid-empty")).toBeHidden();
+
+  // 2. 行のあるテーブル: 件数の付いた知らせは件数を、件数の無い知らせは「以上」を添えて出す。
+  const full = await seedTable(page, 1);
+  let n = 0;
+  await page.route(new RegExp(`/api/data/tables/${full.tableId}/stream`), async (route) => {
+    n += 1;
+    const event = n === 1 ? `{"count":2}` : `{}`;
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+      body: `retry: 600000\n\nevent: stream.ready\ndata: {"position":${n * 10}}\n\nid: ${n * 10 + 1}\nevent: records.bulk_applied\ndata: ${event}\n\n`,
+    });
+  });
+  await page.goto(`/data/${full.tableId}`);
+  await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "1");
+  const banner = page.getByTestId("data-grid-new-rows");
+  await expect(banner).toHaveText(/新しいレコード 2 件 · 表示する/);
+  // 繋ぎ直し（非表示 → 表示）で件数の無い知らせを受ける。
+  const setVisibility = (state: "hidden" | "visible") =>
+    page.evaluate((s) => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => s });
+      document.dispatchEvent(new Event("visibilitychange"));
+    }, state);
+  await setVisibility("hidden");
+  await setVisibility("visible");
+  await expect(banner).toHaveText(/新しいレコード 2 件以上 · 表示する/);
+  await banner.click();
+  await expect(banner).toBeHidden();
+});
