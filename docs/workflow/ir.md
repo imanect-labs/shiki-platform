@@ -608,10 +608,9 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
     // 2b) 低額: FSM 遷移 API で自動承認
     { "id": "auto_approve", "type": "data.transition",
       "params": {
-        "table": "expense",
+        "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",   // 経費テーブルの id（§7.1・Phase 15.7 で名前ではなく UUID）
         "record": { "$from": "trigger", "path": "/record/id" },
-        "transition": "approve",
-        "input": { "$from": "run", "path": "/run_id" }
+        "to": "approved"                                   // 遷移名・遷移入力ではなく遷移先の status（§7.1）
       } },
 
     // 3) 両分岐の合流（どちらか一方だけ live・all で待って dead を吸収）

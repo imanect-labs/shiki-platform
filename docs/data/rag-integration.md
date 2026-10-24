@@ -14,7 +14,7 @@
   folder/file タグと同じ形で、テーブル共有の変更で索引を書き換えない。
 - **post-filter** はテーブルごとに「候補 `record_id` を可視集合に絞るクエリ 1 本」。テーブル viewer・
   行述語（v1 の意味論）・個別共有を REST の読取と同じ合成で評価する。**OpenFGA のタプルは 1 本も増やさない**。
-- **フィールドマスクは投影に入れられない**（スキーマ検証で 422）。`field_policy` や投影の定義が変わると
+- **フィールドマスクは投影に入れられない**（スキーマ検証で 400）。`field_policy` や投影の定義が変わると
   索引の**世代**が変わり、索引を破棄して作り直す。作り直しが終わるまでの古いチャンクは post-filter が
   世代不一致で落とす（fail-closed）。
 - 候補の型を `SourceRef { File | Record }` に多型化し、post-filter を file とレコードの混在に一般化した。
@@ -34,11 +34,11 @@
 
 | 規則 | 理由 |
 |---|---|
-| `title_field` 1 列＋ `body_fields` 0〜8 列。重複・存在しない列は 422 | 投影の形を閉じる |
+| `title_field` 1 列＋ `body_fields` 0〜8 列。重複・存在しない列は 400 | 投影の形を閉じる |
 | 投影できる型: text / number / date / datetime / select / multi_select / user_ref / role_ref | 保存値を持ち、閲覧者に依らず同じ値が見える |
-| **`field_policy` の対象列は 422** | §4 のフィールドマスクの穴 |
-| 派生列（lookup / computed / rollup / formula）は 422 | 参照先の 4 階層 authz を閲覧者本人の権限で読取時に計算する列で、全閲覧者共通のチャンクへ焼き込めない（PIT-20・PIT-71） |
-| file_ref / record_ref / リンクは 422 | 値が参照先の id で本文として意味を持たない。参照先の可視性を焼き込む経路も作らない |
+| **`field_policy` の対象列は 400** | §4 のフィールドマスクの穴 |
+| 派生列（lookup / computed / rollup / formula）は 400 | 参照先の 4 階層 authz を閲覧者本人の権限で読取時に計算する列で、全閲覧者共通のチャンクへ焼き込めない（PIT-20・PIT-71） |
+| file_ref / record_ref / リンクは 400 | 値が参照先の id で本文として意味を持たない。参照先の可視性を焼き込む経路も作らない |
 
 チャンク本文は「タイトル」と、本文列を宣言順に `表示名: 値` で改行連結したもの。null・欠落は行ごと省き、
 多値は `, ` で連結する。タイトル＋本文で **4,000 文字**（`MAX_RAG_CHUNK_CHARS`）で切り詰める
@@ -46,8 +46,8 @@
 （`crates/data/src/rag/projection.rs` の `render`）。
 
 検証は `validate_table_schema` の中で走るので、作成・改訂・ミニアプリのマニフェスト検証のすべてに効く。
-エラーは `DataError::Invalid`（data-platform の他のスキーマ検証と同じ「422」扱い。なお現状の API 層は
-`DataError::Invalid` を 400 に写している — 既存の挙動で本タスクでは変えていない）。
+エラーは `DataError::Invalid`（data-platform の他のスキーマ検証と同じ。API 層は **400** に写す。設計時は「422」と書いていたが、
+Phase 15 で 400（入力・スキーマの検証）と 422（入口の拒否）の書き分けを確定した・data-platform §5.6）。
 
 ## 2. 二段 authz
 
@@ -145,7 +145,7 @@ pub enum SearchHit {
 チャンクは書込時に静的に作るので、投影にマスク対象列を入れると、**行が見えるユーザーにはマスク列の値まで回答・
 引用に流れる**（全社員に見える人事レコードの給与列を隠しても RAG 経由で出る）。v1 は 3 段で塞ぐ。
 
-1. **スキーマ検証**: 投影に `field_policy` の対象列を含めると 422。後から `field_policy` を付ける改訂も同じ検証を
+1. **スキーマ検証**: 投影に `field_policy` の対象列を含めると 400。後から `field_policy` を付ける改訂も同じ検証を
    通るので、投影している列をマスクするには**同じ改訂で投影から外す**必要がある。
 2. **世代**（`generation`）: 次の材料の sha256（先頭 128 bit）。
 
@@ -235,7 +235,7 @@ outbox の `data.record.changed` を消費する。リアルタイム配信（`d
 
 | 項目 | PoC | 本番に要るもの |
 |---|---|---|
-| オプトイン・投影の検証（422） | ✅ `TableSchema.rag`・`validate_projection` | UI（テーブル設定の「検索対象にする」） |
+| オプトイン・投影の検証（400） | ✅ `TableSchema.rag`・`validate_projection` | UI（テーブル設定の「検索対象にする」） |
 | 世代・破棄と再構築 | ✅ 消費 Tx 内で同期に再構築 | jobq の世代付きジョブへ（索引バックフィルと同じ形）・進捗の可観測化 |
 | post-filter（クエリ 1 本） | ✅ `rag_visible_records`・`post_filter_sources` | `SearchService` への組み込み・`SearchDebug` の項目追加 |
 | pre-filter | ✅ `readable_tables`・`record_authz_tag` | folder/file と並列の `ListObjects`・タグ集合の和 |
@@ -263,5 +263,5 @@ PoC の結合テスト（`crates/rag/tests/record_search_poc_it.rs`・実 PG ＋
 3. `crates/api` の配線（`RecordVisibility` の実装・`RagIndexWorker` の起動・`SearchResponse.hits` の公開と TS 型）
 4. 再構築を jobq の世代付きジョブへ移す（消費 Tx を短く・大テーブルの再構築の進捗）
 5. チャットの `doc_search` / 引用パネル / 監査のレコード対応
-6. テーブル設定 UI（オプトインと投影の指定・422 の表示）
+6. テーブル設定 UI（オプトインと投影の指定・400 の表示）
 7. 閲覧者別の再投影（マスク列を投影に許す方式）は別設計（data-platform §15）

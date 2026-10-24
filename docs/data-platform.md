@@ -1659,6 +1659,10 @@ src / dst の 2 テーブルに跨る**（§7.1）ため、テナント内の分
   [Cybozu Inside Out 2018](https://blog.cybozu.io/entry/2018/08/08/080000)）。query-optimizer.md §8 のフィードバックと同じ記録を使う
 - **バックフィルの可観測性**: 索引昇格ジョブの進捗・残件・ETA を管理画面に出す
 - **多値上限**: `multi_select` / `link` の 1 レコードあたり要素数に上限（既定値を設定可能に）
+- **本番の設定（Phase 15 で追加・`crates/api/src/config.rs` の `DataConfig`）**: keyset カーソルの鍵は
+  `data.cursor_key_file`（`SHIKI__DATA__CURSOR_KEY_FILE`）か、無ければ `secrets.master_key_file` から用途別に導出する。
+  全レプリカで同じ鍵が要るので、どちらも無ければ起動エラーにする（`data.ephemeral_cursor_key = true` の起動時乱数は**開発専用**）。
+  SSE 配信は `data.stream.authz_ttl_ms`（既定 5,000）・`data.stream.retention_secs`（既定 600）。例は `deploy/compose/.env.example`
 - **プール分割の発火監視**: WAL 生成レート・`data_index_*` の死行率・**同一操作 p95 のテナント間比**を
   定点観測する（§12 第 2 段の閾値表）。**テナント間比はこの 3 つの中で唯一「容量ではなく公平性」を
   測る指標**であり、最初に閾値を超えるのはここになる見込み。ダッシュボードに常設する

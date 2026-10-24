@@ -26,6 +26,20 @@
 | S5 | テナント横断の集計を単一クエリで書く | 分割後は 1 クエリで全テナントを見られない。**各プールへ問い合わせて合算**する（`PoolRouter::all`） | レビュー（S3 の注記付き例外が該当箇所の一覧になる） |
 | S6 | 外部キーがテナント境界を跨ぐ | 分割後は親子が別ノードになり得る | 既存規約: 全 FK は `tenant_id` を含む複合キー（migration 0061・`tenant_scope.rs` の導出が前提にしている） |
 
+### 表の分類（Phase 15 で追加・監査 B1-8）
+
+S3・S4 の対象を取りこぼさないよう、lint（`crates/data/tests/shard_safety_lint.rs`）は **migrations の `create table data_*`
+（後で `drop table` されたものを除く）を網羅的に照合**し、全てがどちらかに分類されていることを求める
+（`every_data_table_in_migrations_is_classified`）。新しい `data_*` 表を足したら、どちらかへ載せないと CI が落ちる。
+
+| 分類 | 内容 | 例 |
+|---|---|---|
+| **テナント境界の表**（`DATA_TABLES`） | S3・S4 の対象。加えて**テナント消去（`DataStore::purge_tenant`）の対象に載っていること**を照合する（`every_tenant_data_table_is_purged`） | `data_record`・索引表・統計 4 表・取込のステージング など |
+| **システム表**（`SYSTEM_TABLES`・理由つき） | テナントに属さない。tenant 条件を持たず、purge の対象でもない。S3・S4 の対象外 | `data_planner_calib`（オプティマイザの較正用の固定表・migration 0096。既知の合成データだけで顧客データを含まない。全プールに同じ内容があり、較正はレジストリのプールで読む） |
+
+統計 4 表（`data_table_stats` / `data_field_stats` / `data_value_count` / `data_link_stats`）は、加えて PIT-75 の検査
+（`optimizer_statistics_are_only_touched_by_planner_and_stats_writers`）で、SQL を `query/planner/` と `stats/` にだけ許す。
+
 ### 例外の書き方
 
 保守スイープ（識別子移行ジョブ等）のように**意図的に**テナントを跨ぐ SQL は、直前 3 行以内に
