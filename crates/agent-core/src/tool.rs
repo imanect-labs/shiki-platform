@@ -6,7 +6,7 @@
 use authz::AuthContext;
 use serde::{Deserialize, Serialize};
 
-/// ツール実行の引用チャンク（doc_search の戻り。UI の citation ブロックへ）。
+/// ツール実行の引用（doc_search のチャンク・web_search / web_fetch のページ。UI の citation ブロックへ）。
 /// フロント `chat-api.ts` / `chat::Citation` と同型のフィールドを持つ。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Citation {
@@ -34,6 +34,59 @@ pub struct Citation {
     /// PDF のページ上の枠（PDF 以外は空）。
     #[serde(default)]
     pub boxes: Vec<rag::PageBox>,
+    /// Web の出典（web_search / web_fetch）。社内文書の引用は None（`node_id` を持つ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web: Option<WebSource>,
+}
+
+/// Web の出典（公開 web のページ）。社内文書と同じ台帳で番号を振る（#891）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSource {
+    /// ページの URL（http/https のみ・断片は落とす）。
+    pub url: String,
+    /// ページのタイトル（取得先が付けた値。無ければ空）。
+    pub title: String,
+}
+
+/// 抜粋の上限（文字）。取得したページは丸ごと持たない（UI のカードに出す分だけ）。
+const WEB_SNIPPET_MAX_CHARS: usize = 400;
+
+impl Citation {
+    /// Web のページを指す引用（番号は未採番。ループの台帳が振る）。
+    ///
+    /// http/https 以外の URL は引用にしない（`javascript:` 等を UI のリンクにさせない）。
+    /// 同じページは検索結果でも取得でも同じ引用（`chunk_id`）になり、同じ番号を使い回す。
+    #[must_use]
+    pub fn web(url: &str, title: &str, snippet: &str) -> Option<Self> {
+        let mut parsed = url::Url::parse(url.trim()).ok()?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            return None;
+        }
+        parsed.set_fragment(None);
+        let url = parsed.to_string();
+        let snippet = snippet.trim();
+        let snippet = match snippet.char_indices().nth(WEB_SNIPPET_MAX_CHARS) {
+            Some((at, _)) => format!("{}…", &snippet[..at]),
+            None => snippet.to_string(),
+        };
+        Some(Citation {
+            cite_id: 0,
+            node_id: String::new(),
+            chunk_id: format!("web:{url}"),
+            snippet,
+            page: None,
+            heading_path: Vec::new(),
+            score: 0.0,
+            version: None,
+            anchor: None,
+            quote: None,
+            boxes: Vec::new(),
+            web: Some(WebSource {
+                url,
+                title: title.trim().to_string(),
+            }),
+        })
+    }
 }
 
 /// ツール実行のエラー。
