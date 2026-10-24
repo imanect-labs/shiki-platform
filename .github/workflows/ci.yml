@@ -374,14 +374,30 @@ jobs:
             echo '```'
             echo '</details>'
           } > body.md
-          body="$(cat body.md)"
+          # ファイル別内訳はファイル数に比例して大きくなる。コメント本文の上限（65,536 字）を超えるなら内訳を省き、
+          # 本文は引数ではなくファイルで渡す（大きな本文で「Argument list too long」にならない）。
+          if [ "$(wc -c < body.md)" -gt 60000 ]; then
+            {
+              echo "$marker"
+              echo '## 📊 Rust test coverage'
+              echo "閾値ゲート: 行 **80%** 以上（\`cargo llvm-cov --fail-under-lines 80\`）"
+              echo
+              if [ -n "$total_line" ]; then
+                echo '```'
+                echo "$total_line"
+                echo '```'
+              fi
+              echo
+              echo 'ファイル別内訳はコメントの上限を超えるため省略しました（Coverage ジョブのログを参照）。'
+            } > body.md
+          fi
           existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
             --jq "[.[] | select(.user.login==\"github-actions[bot]\" and (.body | startswith(\"${marker}\")))] | last | .id")
           if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -X PATCH -f body="$body" >/dev/null
+            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -X PATCH -F body=@body.md >/dev/null
             echo "既存コメントを更新: $existing"
           else
-            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -f body="$body" >/dev/null
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -F body=@body.md >/dev/null
             echo "新規コメントを作成"
           fi
       # 全体カバレッジ 80% の絶対床ゲート。下回ったら CI を fail させる（カバレッジを下げない）。
