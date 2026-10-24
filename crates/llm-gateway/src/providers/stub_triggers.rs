@@ -226,6 +226,26 @@ const MOCK_SLIDE_EDIT_HTML: &str =
     "<div style=\"padding:64px\" data-ai-edited=\"1\"><h2>AI が改訂したスライド</h2>\
      <p>選択範囲を踏まえて要点を整理しました。</p><ul><li>結論を先頭に</li><li>数値の根拠を明示</li></ul></div>";
 
+/// ノートの提案モード（#886）: `notesuggest:<node_id>` で、語句の差し替えと節の削除を提案として
+/// 入れる（消す側は削除の提案の印・入れる側は提案の印。承認/棄却を E2E で確かめる）。
+pub(super) fn note_suggest_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let node_id = user_text.strip_prefix("notesuggest:")?.trim();
+    let tool = req.tools.iter().find(|t| t.name == "document.edit")?;
+    let input = serde_json::json!({
+        "node_id": node_id,
+        "mode": "suggest",
+        "ops": [
+            { "op": "replace_text", "find": "売上は12%増", "replace": "売上は14%増" },
+            { "op": "delete_section", "heading": "参考" }
+        ],
+    });
+    Some(tool_call_stream(tool.name.clone(), input, prompt_tokens))
+}
+
 /// モック AI が Office 文書（docx）へ追記する決定的な Markdown（officeedit: プレフィックス）。
 const MOCK_OFFICE_EDIT_MD: &str = "## AI による追記\n\n選択範囲を踏まえて要点を整理しました。";
 
