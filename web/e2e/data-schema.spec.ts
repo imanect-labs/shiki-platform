@@ -143,3 +143,77 @@ test("参照の値: レコードの追加でユーザーとリンクを候補か
   expect(saved.data.item).toHaveLength(1);
   expect(saved.data.item[0]).not.toBe(body.data.item[0]);
 });
+
+test("日本語名のリンクを 2 本足しても逆向きの列の参照名が重ならず、読める表示名になる（2-A-P2-1）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const refName = uniqueName("e2e-取引先");
+  const ref = await createTable(page, refName, [{ key: "title", display_name: "社名", type: "text", indexed: true }]);
+  const srcName = uniqueName("e2e-請求");
+  const id = await createTable(page, srcName, [{ key: "name", display_name: "件名", type: "text", indexed: true }]);
+  await page.goto(`/data/${id}`);
+  await expect(page.getByTestId("data-grid")).toBeVisible();
+  await page.getByTestId("schema-editor-open").click();
+  const editor = page.getByTestId("schema-editor");
+  for (const [label, oneToOne] of [["取引先", false], ["請求先", true]] as const) {
+    await page.getByTestId("schema-add-field").click();
+    const form = editor.getByTestId("schema-add-form");
+    await form.getByLabel("新しい列の表示名").fill(label);
+    await form.getByLabel("新しい列の型").click();
+    await page.getByRole("option", { name: "リンク", exact: true }).click();
+    await form.getByLabel("参照先のテーブル").click();
+    await page.getByRole("option", { name: refName }).click();
+    const symmetric = form.getByRole("switch", { name: "参照先にも逆向きの列を作る" });
+    if (oneToOne) {
+      // 一対一は逆向きの列が必須（オンのまま変えられない）。
+      await form.getByLabel("つながり方").click();
+      await page.getByRole("option", { name: /一対一/ }).click();
+      await expect(symmetric).toBeChecked();
+      await expect(symmetric).toBeDisabled();
+    } else {
+      await symmetric.click();
+    }
+    await form.getByTestId("schema-add-confirm").click();
+  }
+  await page.getByTestId("schema-save").click();
+  await expect(editor).toBeHidden();
+  const reverse = (await schemaOf(page, ref)).filter((f) => f.type === "record_ref");
+  expect(reverse).toHaveLength(2);
+  expect(new Set(reverse.map((f) => f.key)).size).toBe(2);
+  expect(reverse.map((f) => f.key)).not.toContain("rev");
+  await expect
+    .poll(async () => (await schemaOf(page, ref)).filter((f) => f.type === "record_ref").map((f) => f.display_name).sort())
+    .toEqual([`${srcName}（取引先）`, `${srcName}（請求先）`].sort());
+});
+
+test("行ポリシーのあるテーブルの一意・マスク列の必須には注意を出し、表示名は空にできない（2-B-P2-3・2-B-P3-5）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const headers = { "X-CSRF-Token": await csrf(page) };
+  const res = await page.request.post("/api/data/tables", {
+    headers,
+    data: {
+      name: uniqueName("e2e-行ポリシー"),
+      schema: {
+        fields: [
+          { key: "code", display_name: "コード", type: "text", indexed: true },
+          { key: "memo", display_name: "社内メモ", type: "text" },
+        ],
+        row_policy: { read: { any: ["is_owner", "public"] } },
+        field_policy: [{ field: "memo", readable_by: { has_role: { role: "a-corp/e2e-nobody", subtree: false } } }],
+      },
+    },
+  });
+  expect(res.status(), await res.text()).toBe(201);
+  const id = ((await res.json()) as { id: string }).id;
+  await page.goto(`/data/${id}`);
+  await page.getByTestId("schema-editor-open").click();
+  const editor = page.getByTestId("schema-editor");
+  await editor.getByRole("button", { name: "「コード」の設定" }).click();
+  await editor.getByRole("switch", { name: "重複を許さない（一意）" }).click();
+  await expect(editor.getByTestId("schema-warning-unique-row-policy")).toBeVisible();
+  await editor.getByRole("button", { name: "「社内メモ」の設定" }).click();
+  await editor.getByTestId("schema-settings-memo").getByRole("switch", { name: "必須" }).click();
+  await expect(editor.getByTestId("schema-warning-required-masked")).toBeVisible();
+  await editor.getByLabel("「code」の表示名").fill("");
+  await expect(editor.getByText("表示名を入れてください（空にはできません）")).toBeVisible();
+  await expect(page.getByTestId("schema-save")).toBeDisabled();
+});

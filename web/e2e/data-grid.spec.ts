@@ -340,4 +340,34 @@ test("選択中のセルのクリック → Enter → 入力は同じ行に保�
   res = await patched;
   expect(res.url()).toContain(rows[1].id);
   expect(res.request().postDataJSON()).toMatchObject({ patch: { code: "abcdef" } });
+
+  // 5. Enter で選択が 1 つ下へ移った直後（前のクリックから 500ms 以内）にそのセルをクリックしても、編集は
+  //    始まらない（ダブルクリックとみなさない・2-D-P3-3）。本当のダブルクリックでは始まる。
+  const top = await cellPoint(page, 0, 0);
+  await page.mouse.click(top.x, top.y);
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#portal textarea")).toBeVisible();
+  await page.keyboard.type("Z");
+  patched = patchOf();
+  await page.keyboard.press("Enter");
+  await patched;
+  const below = await cellPoint(page, 0, 1);
+  await page.mouse.click(below.x, below.y);
+  await page.waitForTimeout(200);
+  await expect(page.locator("#portal textarea")).toBeHidden();
+  await page.waitForTimeout(700);
+  await page.mouse.dblclick(below.x, below.y);
+  await expect(page.locator("#portal textarea")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#portal textarea")).toBeHidden();
+
+  // 6. F2 で編集を始め、Backspace で選んだセルを空にする（表計算と同じ）。
+  await page.keyboard.press("F2");
+  await expect(page.locator("#portal textarea")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#portal textarea")).toBeHidden();
+  patched = patchOf();
+  await page.keyboard.press("Backspace");
+  res = await patched;
+  expect(res.request().postDataJSON()).toMatchObject({ patch: { code: null } });
 });

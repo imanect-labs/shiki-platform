@@ -146,3 +146,123 @@ test("テーブル: 同じ名前は名前の欄に理由を出し、空のテー
   const gone = await page.request.get(`/api/data/tables/${tableId}`);
   expect([403, 404]).toContain(gone.status());
 });
+
+test("ユーザーの列の絞り込みは候補から選び、表示名で見せて id で比べる（2-A-P2-3）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const headers = { "X-CSRF-Token": await csrf(page) };
+  const res = await page.request.post("/api/data/tables", {
+    headers,
+    data: {
+      name: uniqueName("e2e-ユーザー絞り込み"),
+      schema: {
+        fields: [
+          { key: "name", display_name: "件名", type: "text", indexed: true },
+          { key: "who", display_name: "申請者", type: "user_ref", indexed: true },
+        ],
+      },
+    },
+  });
+  expect(res.status(), await res.text()).toBe(201);
+  const tableId = ((await res.json()) as { id: string }).id;
+  const BOB = "00000000-0000-0000-0000-000000000002";
+  const ALICE = "00000000-0000-0000-0000-000000000001";
+  for (const data of [{ name: "a", who: BOB }, { name: "b", who: ALICE }, { name: "c", who: BOB }]) {
+    const r = await page.request.post(`/api/data/tables/${tableId}/records`, { headers, data: { data } });
+    expect(r.status(), await r.text()).toBe(201);
+  }
+  const filters: unknown[] = [];
+  page.on("request", (r) => {
+    if (r.url().includes(`/data/tables/${tableId}/query`) && r.method() === "POST") {
+      const b = r.postDataJSON() as { filter?: unknown };
+      if (b.filter) filters.push(b.filter);
+    }
+  });
+  await page.goto(`/data/${tableId}`);
+  await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "3");
+  await page.getByTestId("data-filter-button").click();
+  await page.getByRole("button", { name: /条件を追加/ }).click();
+  await page.getByLabel("条件 1 の列").click();
+  await page.getByRole("option", { name: "申請者" }).click();
+  await page.getByRole("combobox", { name: "条件 1 の値" }).fill("bob");
+  await page.getByRole("option", { name: /bob@a-corp/ }).click();
+  // 選んだ値は表示名で出る（id は見せない）。
+  const picked = page.getByTestId("filter-ref-value");
+  await expect(picked).toContainText(/bob/i);
+  await expect(picked).not.toContainText(BOB);
+  await page.getByTestId("data-filter-apply").click();
+  await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "2");
+  expect(JSON.stringify(filters.at(-1))).toContain(BOB);
+});
+
+test("FSM のテーブルの状態のセルは進める先のメニューで開き、遷移 API で変える（2-C-P2-4）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const headers = { "X-CSRF-Token": await csrf(page) };
+  const res = await page.request.post("/api/data/tables", {
+    headers,
+    data: {
+      name: uniqueName("e2e-状態"),
+      schema: {
+        fields: [
+          { key: "name", display_name: "件名", type: "text", indexed: true },
+          { key: "status", display_name: "状態", type: "select", options: ["下書き", "承認待ち", "承認", "却下"], indexed: true },
+        ],
+        status_field: "status",
+      },
+    },
+  });
+  expect(res.status(), await res.text()).toBe(201);
+  const table = (await res.json()) as { id: string; schema: Record<string, unknown>; schema_version: number };
+  const fsm = await page.request.post("/api/data/fsms", {
+    headers,
+    data: {
+      name: uniqueName("e2e-flow"),
+      table_id: table.id,
+      body: {
+        states: ["下書き", "承認待ち", "承認", "却下"],
+        transitions: [
+          { from: "下書き", to: "承認待ち", actor: "public" },
+          { from: "承認待ち", to: "承認", actor: "public" },
+          { from: "承認待ち", to: "却下", actor: "public" },
+        ],
+      },
+    },
+  });
+  expect(fsm.status(), await fsm.text()).toBe(201);
+  const f = (await fsm.json()) as { id: string; version?: number };
+  const put = await page.request.put(`/api/data/tables/${table.id}/schema`, {
+    headers,
+    data: { schema: { ...table.schema, fsm_ref: { artifact_id: f.id, version: f.version ?? 1 } }, expected_schema_version: table.schema_version },
+  });
+  expect(put.status(), await put.text()).toBe(200);
+  const rec = await page.request.post(`/api/data/tables/${table.id}/records`, { headers, data: { data: { name: "申請", status: "下書き" } } });
+  expect(rec.status(), await rec.text()).toBe(201);
+  const recordId = ((await rec.json()) as { id: string }).id;
+
+  await page.goto(`/data/${table.id}`);
+  const grid = page.getByTestId("data-grid");
+  await expect(grid).toHaveAttribute("data-loaded", "1");
+  const box = (await grid.boundingBox())!;
+  await page.mouse.click(box.x + ROW_MARKER + COL_WIDTH + COL_WIDTH / 2, box.y + HEADER + ROW / 2);
+  await page.keyboard.press("Enter");
+  const menu = page.getByTestId("transition-editor");
+  await expect(menu).toBeVisible();
+  // 今の状態（下書き）から出る遷移の行き先だけ。
+  await expect(menu.getByRole("option")).toHaveText(["承認待ち"]);
+  const transitioned = page.waitForResponse((r) => r.url().includes(`/records/${recordId}/transition`));
+  await menu.getByRole("option", { name: "承認待ち" }).click();
+  expect((await transitioned).status()).toBe(200);
+  await expect
+    .poll(async () => ((await (await page.request.get(`/api/data/tables/${table.id}/records/${recordId}`)).json()) as { data: { status: string } }).data.status)
+    .toBe("承認待ち");
+  // 状態の列は Delete でも PATCH を送らない。
+  let patched = false;
+  page.on("request", (r) => {
+    if (r.url().includes(`/records/${recordId}`) && r.method() === "PATCH") patched = true;
+  });
+  await page.mouse.click(box.x + ROW_MARKER + COL_WIDTH + COL_WIDTH / 2, box.y + HEADER + ROW / 2);
+  // メニューを閉じた直後のクリックはダブルクリックとみなさない（メニューは開かない）。
+  await expect(menu).toBeHidden();
+  await page.keyboard.press("Delete");
+  await expect(page.getByText("「状態」は直接書き換えられません", { exact: true })).toBeVisible();
+  expect(patched).toBe(false);
+});

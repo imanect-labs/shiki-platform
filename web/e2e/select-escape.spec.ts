@@ -98,3 +98,51 @@ test("ドライブ: 共有ダイアログの権限の選択肢で Esc を押し�
   await page.getByRole("button", { name: `「${folder}」の操作` }).click();
   await expect(page.getByRole("menuitem", { name: "共有" })).toBeVisible();
 });
+
+test("/data: 参照の候補一覧（レコードの追加・絞り込みのユーザー）で Esc を押すと一覧だけ閉じ、入力は残る（2-A-P2-2）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const res = await page.request.post("/api/data/tables", {
+    headers: { "X-CSRF-Token": await csrf(page) },
+    data: {
+      name: uniqueName("e2e-esc-ref"),
+      schema: {
+        fields: [
+          { key: "name", display_name: "件名", type: "text", indexed: true },
+          { key: "who", display_name: "申請者", type: "user_ref", indexed: true },
+        ],
+      },
+    },
+  });
+  expect(res.status(), await res.text()).toBe(201);
+  const tableId = ((await res.json()) as { id: string }).id;
+  await page.goto(`/data/${tableId}`);
+  await expect(page.getByTestId("data-grid")).toBeVisible();
+
+  // 1. レコードの追加の参照の候補（自前の listbox）。
+  await page.getByTestId("add-record").click();
+  const dialog = page.getByTestId("record-dialog");
+  await dialog.getByLabel("件名").fill("入力は残る");
+  await dialog.locator("#rec-who").fill("bo");
+  const list = dialog.getByRole("listbox", { name: "候補" });
+  await expect(list).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(list).toBeHidden();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("件名")).toHaveValue("入力は残る");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect.poll(() => bodyPointerEvents(page)).not.toBe("none");
+
+  // 2. 絞り込み（ポップオーバー）のユーザーの値の候補。
+  await page.getByTestId("data-filter-button").click();
+  await page.getByRole("button", { name: /条件を追加/ }).click();
+  await page.getByLabel("条件 1 の列").click();
+  await page.getByRole("option", { name: "申請者" }).click();
+  const value = page.getByRole("combobox", { name: "条件 1 の値" });
+  await value.fill("bo");
+  const candidates = page.getByRole("listbox", { name: "候補" });
+  await expect(candidates).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(candidates).toBeHidden();
+  await expect(page.getByTestId("data-filter-apply")).toBeVisible();
+});
