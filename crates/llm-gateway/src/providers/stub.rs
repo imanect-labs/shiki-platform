@@ -29,7 +29,7 @@ use super::stub_stream::{
     paced_chunks_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
 };
 use super::stub_triggers::{
-    conversation_title_call, echo_system_call, note_tool_call, tool_search_call,
+    conversation_title_call, echo_system_call, note_suggest_call, note_tool_call, tool_search_call,
 };
 use super::timeouts::RequestClock;
 use crate::config::LlmTimeouts;
@@ -376,6 +376,9 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
 
     // --- ノートツール駆動（issue #282 の e2e）: savenote:<name>→save_note / docembed:<id>→document.embed。 ---
     if !has_tool_result(req) {
+        if let Some(s) = note_suggest_call(req, &user_text, prompt_tokens) {
+            return s;
+        }
         if let Some(s) = note_tool_call(req, &user_text, prompt_tokens) {
             return s;
         }
