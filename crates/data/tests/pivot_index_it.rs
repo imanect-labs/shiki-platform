@@ -56,7 +56,7 @@ async fn index_count_does_not_grow_with_tables_or_tenants() {
     .await
     .unwrap();
     // 1 パーティションあたりの索引は定数: PK 5（各索引テーブル）＋値索引 2（text/num）＋GIN 1
-    // ＋リンクの部分一意 1 = 9（data_record の PK を加えると §3.3 の「10 本」）。
+    // ＋リンクの部分一意 1 ＋片方向リンクの逆引き 1（migrations/0101）= 10（数え方は §3.3）。
     let per_partition: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_index ix JOIN pg_class c ON c.oid = ix.indrelid \
          WHERE c.relname IN ('data_index_text_p0', 'data_index_num_p0', 'data_link_p0', \
@@ -65,7 +65,7 @@ async fn index_count_does_not_grow_with_tables_or_tenants() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(per_partition, 9);
+    assert_eq!(per_partition, 10);
 
     // 3 テナント × 12 テーブル、各テーブルに索引宣言 5 列＋レコード。
     let mut written_rows = 0_i64;
