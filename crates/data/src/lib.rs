@@ -107,6 +107,8 @@ pub use bulk::{
 };
 pub use cursor::{CursorKey, CURSOR_KEY_LEN};
 pub use derived::links::{LINK_TRAVERSAL_SQL, MAX_LINK_VALUES_PER_RECORD};
+#[doc(hidden)]
+pub use derived::materialize::{DERIVED_PENDING_STEP_SQL, REFERRERS_BY_TARGET_SQL};
 pub use derived::types::{
     LinkCardinality, LinkDef, Materialization, ResultType, RollupDef, RollupOp,
 };

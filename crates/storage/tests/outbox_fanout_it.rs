@@ -773,3 +773,105 @@ async fn stream_delivery_seq_is_gapless_per_consumer_and_retained() {
     // `outbox_gc_isolated_it::stream_rows_within_retention_survive_gc` で確かめる（共有 DB で GC を
     // 回すと、並行する他テストの「残るはずの行」まで消してしまう）。
 }
+
+/// app 向けドメインイベント（`payload.event_type` 付き）を 1 件 INSERT して id を返す。
+async fn insert_typed(pool: &PgPool, tenant: &str, payload: serde_json::Value) -> i64 {
+    sqlx::query(
+        "INSERT INTO storage_event_outbox (org, tenant_id, node_id, version, op, actor, payload) \
+         VALUES ('acme', $1, $2, 1, 'create', 'tester', $3) RETURNING id",
+    )
+    .bind(tenant)
+    .bind(Uuid::new_v4())
+    .bind(payload)
+    .fetch_one(pool)
+    .await
+    .expect("insert typed event")
+    .get::<i64, _>("id")
+}
+
+/// 独立レビュー R2-E: ライブテールはレコード変更（`data.record.changed`）を SQL 側で除くので、取込が
+/// 積む大量の変更の後ろにあるアプリ向けイベントへ 1 回の取得で届く（`limit` 件ずつ読み捨てない）。
+#[tokio::test]
+async fn peek_app_events_skips_record_changes_in_sql() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let start = storage::event::latest_event_id(&pool, &tenant)
+        .await
+        .unwrap();
+    for i in 0..30 {
+        insert_typed(
+            &pool,
+            &tenant,
+            serde_json::json!({"event_type": "data.record.changed", "table_id": "x", "rev": i}),
+        )
+        .await;
+    }
+    let app = insert_typed(
+        &pool,
+        &tenant,
+        serde_json::json!({"event_type": "data.record.transitioned", "table_id": "x"}),
+    )
+    .await;
+    let peeked = storage::event::peek_app_events_after(&pool, &tenant, start, 10)
+        .await
+        .unwrap();
+    let ids: Vec<i64> = peeked.iter().map(|e| e.id).collect();
+    assert_eq!(
+        ids,
+        vec![app],
+        "レコード変更を読み捨てずに次のアプリ向けイベントへ届く"
+    );
+}
+
+/// 独立レビュー R2-B: スナップショット読取の「未採番の変更」は `limit` で打ち切り、本文は挙げた位置の値だけを
+/// 平らな形で返す（変更前の行の全体などを読み出さない）。
+#[tokio::test]
+async fn undelivered_table_events_are_limited_and_projected() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let table = Uuid::new_v4().to_string();
+    for i in 0..5 {
+        sqlx::query(
+            "INSERT INTO storage_event_outbox (org, tenant_id, node_id, version, op, actor, payload, \
+                                               private_payload) \
+             VALUES ('acme', $1, $2, 1, 'create', 'tester', $3, $4)",
+        )
+        .bind(&tenant)
+        .bind(Uuid::new_v4())
+        .bind(serde_json::json!({
+            "event_type": "data.record.changed", "table_id": table, "rev": i,
+            "change": "delete", "record_id": format!("r{i}"), "big": "x".repeat(1000),
+        }))
+        .bind(serde_json::json!({
+            "record_int": 100 + i,
+            "before": {"owner": "alice", "data": {"memo": "y".repeat(1000)}},
+        }))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let consumer = format!("snap-{}", Uuid::new_v4());
+    let mut conn = pool.acquire().await.unwrap();
+    let got = storage::event::undelivered_table_events(
+        &mut conn,
+        &consumer,
+        &tenant,
+        "data.record.changed",
+        &table,
+        &["change", "record_id", "rev", "missing"],
+        &["record_int", "before.owner"],
+        3,
+    )
+    .await
+    .unwrap();
+    assert_eq!(got.len(), 3, "limit で打ち切る");
+    let (payload, private) = &got[0];
+    assert_eq!(
+        payload,
+        &serde_json::json!({"change": "delete", "record_id": "r0", "rev": 0, "missing": null})
+    );
+    assert_eq!(
+        private.as_ref().unwrap(),
+        &serde_json::json!({"record_int": 100, "before.owner": "alice"})
+    );
+}

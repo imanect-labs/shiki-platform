@@ -45,6 +45,9 @@ use crate::{map_db, DataError};
 /// 基準位置より後の変更として数える上限（超えたら 410＝取り直し）。
 const MAX_CHANGED_SINCE: i64 = 100_000;
 
+/// 削除の旧 owner の位置（`private_payload` の中・未採番側の本文の射影のキー）。
+const BEFORE_OWNER: &str = "before.owner";
+
 /// 基準位置より後に変わった行。
 #[derive(Debug, Clone)]
 struct Changed {
@@ -236,15 +239,25 @@ impl DataStore {
                 "基準位置より後の変更が多すぎます。取り直してください".into(),
             ));
         }
+        // 未採番側も同じ上限で打ち切る（本文は判定に要る位置だけを読む）。
+        let rest = MAX_CHANGED_SINCE + 1 - streamed.len() as i64;
         let pending = storage::event::undelivered_table_events(
             &mut *conn,
             &self.stream_config.consumer,
             tenant_id,
             RECORD_CHANGED_EVENT,
             &table_id.to_string(),
+            &["change", "record_id", "rev"],
+            &["record_int", BEFORE_OWNER],
+            rest,
         )
         .await
         .map_err(st)?;
+        if pending.len() as i64 >= rest {
+            return Err(DataError::Gone(
+                "基準位置より後の変更が多すぎます。取り直してください".into(),
+            ));
+        }
         let mut out: HashMap<Uuid, Changed> = HashMap::new();
         let all = streamed
             .into_iter()
@@ -275,9 +288,10 @@ impl DataStore {
                 .as_ref()
                 .and_then(|p| p.get("record_int"))
                 .and_then(Value::as_i64);
+            // 採番済み側は本文そのまま（入れ子）、未採番側は位置をキーにした平らな形。
             let owner = private
                 .as_ref()
-                .and_then(|p| p.pointer("/before/owner"))
+                .and_then(|p| p.pointer("/before/owner").or_else(|| p.get(BEFORE_OWNER)))
                 .and_then(Value::as_str)
                 .map(str::to_string);
             let e = out.entry(id).or_insert(Changed {

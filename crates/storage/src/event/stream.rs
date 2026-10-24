@@ -247,30 +247,48 @@ impl StreamBounds {
     }
 }
 
-/// 台帳 consumer がまだ配送（採番）していない、テナント・テーブルのドメインイベントの本文
-/// （`payload`・`private_payload`）。スナップショット読取が「基準位置より後の変更」を引くのに使う。
+/// 台帳 consumer がまだ配送（採番）していない、テナント・テーブルのドメインイベントの本文の一部。
+/// スナップショット読取が「基準位置より後の変更」を引くのに使う。
 ///
+/// 本文（`payload`・`private_payload`）は丸ごと返さず、`payload_paths` / `private_paths` に挙げた
+/// 位置（`.` 区切りのキーの並び・例 `before.owner`）の値だけを、**その文字列をキーにした平らな
+/// オブジェクト**で返す（変更前の行の全体などの大きな本文を読み出さない）。値が無い位置は `null`。
+/// `private_payload` が無い行の 2 つ目は `None`。
+///
+/// 件数は `limit` で打ち切る（呼び出し側は `limit` 件に達したら数え切れないとして扱う）。
 /// `payload ->> 'table_id'` は索引（`storage_event_outbox_data_change_idx`）の式と同じ形で書く。
+#[allow(clippy::too_many_arguments)]
 pub async fn undelivered_table_events(
     conn: &mut PgConnection,
     consumer: &str,
     tenant_id: &str,
     event_type: &str,
     table_id: &str,
+    payload_paths: &[&str],
+    private_paths: &[&str],
+    limit: i64,
 ) -> Result<Vec<(Value, Option<Value>)>, StorageError> {
     let rows: Vec<(Value, Option<Value>)> = sqlx::query_as(
-        "SELECT o.payload, o.private_payload FROM storage_event_outbox o \
+        "SELECT (SELECT coalesce(jsonb_object_agg(k, o.payload #> string_to_array(k, '.')), \
+                                 '{}'::jsonb) FROM unnest($5::text[]) k), \
+                CASE WHEN o.private_payload IS NULL THEN NULL ELSE \
+                    (SELECT coalesce(jsonb_object_agg(k, o.private_payload #> string_to_array(k, '.')), \
+                                     '{}'::jsonb) FROM unnest($6::text[]) k) END \
+         FROM storage_event_outbox o \
          WHERE o.tenant_id = $1 AND o.payload ->> 'event_type' = $2 \
            AND o.payload ->> 'table_id' = $3 \
            AND NOT EXISTS ( \
                SELECT 1 FROM outbox_delivery d WHERE d.event_id = o.id AND d.consumer = $4 \
            ) \
-         ORDER BY o.id",
+         ORDER BY o.id LIMIT $7",
     )
     .bind(tenant_id)
     .bind(event_type)
     .bind(table_id)
     .bind(consumer)
+    .bind(payload_paths)
+    .bind(private_paths)
+    .bind(limit.max(0))
     .fetch_all(conn)
     .await?;
     Ok(rows)

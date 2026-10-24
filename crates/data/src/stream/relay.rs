@@ -184,7 +184,9 @@ impl DataStore {
                 continue;
             }
             // 失敗しても採番は止めない（派生の再配信は表示の鮮度の問題で、権限ではない）。Tx を
-            // 壊さないよう savepoint の中で行い、失敗したら巻き戻して再配信の台帳も戻す。
+            // 壊さないよう発行は savepoint の中で行い、失敗したら発行だけを巻き戻す。再配信の台帳
+            // （`claim_fanout` の `data_stream_fanout`）は savepoint の外で書いているので戻らず、
+            // この変更の再配信は再試行されない（取りこぼした派生値は次の変更か取り直しで追いつく）。
             let mut sp = sqlx::Connection::begin(&mut *tx).await.map_err(map_db)?;
             match self
                 .fanout_derived(&mut sp, &tenant_id, table_id, &srcs)
@@ -256,11 +258,10 @@ impl DataStore {
                     .fetch_all(&mut *tx)
                     .await
                     .map_err(map_db)?,
-                    None => sqlx::query_scalar(
-                        "SELECT DISTINCT src_record FROM data_link \
-                         WHERE tenant_int = $1 AND table_int = $2 AND field_id = $3 \
-                           AND dst_table_int = $4 AND dst_record = ANY($5::int8[]) LIMIT $6",
-                    )
+                    None => sqlx::query_scalar(&format!(
+                        "{} LIMIT $6",
+                        crate::derived::materialize::REFERRERS_BY_TARGET_SQL
+                    ))
                     .bind(x.keys.tenant_int)
                     .bind(x.keys.table_int)
                     .bind(field_id_i16(l.id)?)

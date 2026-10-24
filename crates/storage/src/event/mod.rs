@@ -238,6 +238,12 @@ pub async fn latest_event_id(pool: &sqlx::PgPool, tenant_id: &str) -> Result<i64
 ///
 /// storage の生の書込イベント（file create 等・event_type なし）は含めない（ノード可視性の
 /// 再検証なしにアプリへ流さない）。呼び出し側がテーブル束縛等の追加フィルタを行う。
+///
+/// レコード変更（`data.record.changed`・構造化データの `stream::outbox` が積む）も SQL 側で除く。
+/// ライブテールはこれを流さない（購読者ごとの行述語・マスクを評価する専用の配信だけが流す）ので、
+/// 取得してから捨てると、取込が 1 行ごとに積む大量の変更の後ろでアプリ向けイベントが `limit` 件ずつ
+/// しか進まず大きく遅れる。
+/// 部分索引 `storage_event_outbox_app_event_idx` の述語と同じ形で書く。
 pub async fn peek_app_events_after(
     pool: &sqlx::PgPool,
     tenant_id: &str,
@@ -250,6 +256,7 @@ pub async fn peek_app_events_after(
          FROM storage_event_outbox o \
          LEFT JOIN node n ON n.id = o.node_id \
          WHERE o.tenant_id = $1 AND o.id > $2 AND o.payload ? 'event_type' \
+           AND o.payload ->> 'event_type' <> 'data.record.changed' \
          ORDER BY o.id LIMIT $3",
     )
     .bind(tenant_id)

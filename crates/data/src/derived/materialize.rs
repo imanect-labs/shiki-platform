@@ -426,19 +426,15 @@ async fn enqueue_dependents(
             .await
             .map_err(map_db)?,
             // 片方向: 参照元のパーティション（table_int）の中で、変わった参照先を指す辺だけを引く。
-            None => sqlx::query_scalar(
-                "SELECT DISTINCT src_record FROM data_link \
-                 WHERE tenant_int = $1 AND table_int = $2 AND field_id = $3 \
-                   AND dst_table_int = $4 AND dst_record = ANY($5::int8[])",
-            )
-            .bind(ref_keys.tenant_int)
-            .bind(table_int)
-            .bind(link)
-            .bind(ref_keys.table_int)
-            .bind(record_ints)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(map_db)?,
+            None => sqlx::query_scalar(REFERRERS_BY_TARGET_SQL)
+                .bind(ref_keys.tenant_int)
+                .bind(table_int)
+                .bind(link)
+                .bind(ref_keys.table_int)
+                .bind(record_ints)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(map_db)?,
         };
         if affected.is_empty() {
             continue;
@@ -723,6 +719,19 @@ pub(crate) async fn viewers_contained(
     Ok(!src_users.is_empty() && src_users.iter().all(|u| dst_users.contains(u)))
 }
 
+/// 片方向リンク（対称列なし）の参照元の逆引き: 参照元のパーティション（`$2`）の中で、変わった参照先
+/// （`$4` の `$5`）を指す辺の参照元。`data_link_dst_idx`（migrations/0101）で引く（リンク列の全行を
+/// 読まない）。リレーの再配信は末尾に `LIMIT $6` を足して使う（[`crate::stream::relay`]）。
+pub const REFERRERS_BY_TARGET_SQL: &str = "SELECT DISTINCT src_record FROM data_link \
+     WHERE tenant_int = $1 AND table_int = $2 AND field_id = $3 \
+       AND dst_table_int = $4 AND dst_record = ANY($5::int8[])";
+
+/// 再計算待ちの 1 回分（主キーの順に `$3` 件・全待ち行を並べ替えない）。
+pub const DERIVED_PENDING_STEP_SQL: &str =
+    "SELECT field_id, record_int, gen FROM data_derived_pending \
+     WHERE tenant_int = $1 AND table_int = $2 \
+     ORDER BY field_id, record_int LIMIT $3";
+
 impl DataStore {
     /// 材料化した列の前提（4 階層）を今の状態で検査し直し、崩れた列を降格する。降格したら `true`。
     ///
@@ -838,17 +847,16 @@ impl DataStore {
         .await?;
         // 待ちの行はロックしない（参照先の更新 Tx は参照先の行ロックを持ったまま待ちを積むので、ここで
         // 待ちの行を押さえてから参照先を FOR SHARE で待つとデッドロックする）。読んだ世代だけを最後に消す。
-        let pending: Vec<(i16, i64, i64)> = sqlx::query_as(
-            "SELECT field_id, record_int, gen FROM data_derived_pending \
-             WHERE tenant_int = $1 AND table_int = $2 \
-             ORDER BY record_int, field_id LIMIT $3",
-        )
-        .bind(table.keys.tenant_int)
-        .bind(table.keys.table_int)
-        .bind(limit)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(map_db)?;
+        // 並びは主キー（tenant_int, table_int, field_id, record_int）の順（索引を前から LIMIT 件だけ読む・
+        // 全待ち行を並べ替えない）。行ごとに材料化した列を全部計算し直すが、消すのは読んだ (列, 行, 世代)
+        // だけなので、同じ行の別の列の待ちが次の回に残っても再計算が 1 回増えるだけで結果は変わらない。
+        let pending: Vec<(i16, i64, i64)> = sqlx::query_as(DERIVED_PENDING_STEP_SQL)
+            .bind(table.keys.tenant_int)
+            .bind(table.keys.table_int)
+            .bind(limit)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(map_db)?;
         if pending.is_empty() {
             tx.commit().await.map_err(map_db)?;
             return Ok(true);
