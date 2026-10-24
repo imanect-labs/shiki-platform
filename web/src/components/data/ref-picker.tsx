@@ -270,10 +270,12 @@ export function RefPicker({
             e.stopPropagation();
             onCancel();
           } else if (e.key === "Escape" && showList && !compact) {
-            // フォームの中の Esc は候補だけを閉じる（ダイアログは閉じない）。
+            // フォームの中の Esc は候補だけを閉じる（ダイアログは閉じない）。選ばずにやめたので探す語も消す
+            // （残すと値に入ったように見え、送ると黙って捨てられていた・3-A-11）。
             e.preventDefault();
             e.stopPropagation();
             setClosed(true);
+            setQ("");
           }
         }}
       />
@@ -327,6 +329,12 @@ export function RefPicker({
       </ul>
       ) : null}
       </div>
+      {!compact && !showList && q.trim() ? (
+        // 探す語を打ったまま候補を選ばずに離れた: 値には入らないことを知らせる（黙って捨てない・3-A-11）。
+        <p className="text-[11px] text-amber-700 dark:text-amber-400" role="status" data-testid="ref-picker-unpicked">
+          「{q.trim()}」はまだ選ばれていません。候補から選んでください（このままでは保存されません）
+        </p>
+      ) : null}
       {multi && onCommit ? (
         <div className="flex justify-end gap-1.5 pt-0.5">
           <button

@@ -174,10 +174,44 @@ const dateTimeFmt = new Intl.DateTimeFormat("ja-JP", {
 const numberFmt = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 10 });
 const expFmt = new Intl.NumberFormat("en-US", { notation: "scientific", maximumSignificantDigits: 6 });
 
+const utcDateTimeFmt = new Intl.DateTimeFormat("ja-JP", {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: "UTC",
+});
+
+/// 手元の時刻で扱う日時の下限（1900-01-01 UTC）。
+///
+/// タイムゾーンの表（IANA tz）は標準時の制定より前を各地の**地方平均時**で持つ（東京は 1888 年より前が
+/// +09:18:59）。その範囲を手元の時刻で出すと 0001-01-01 00:00 UTC が「0001/01/01 09:18」になり、意味のない
+/// 端数の時刻に見えていた（3-A-6）。1900 年より前の日時は **UTC で表示して「UTC」と添え**、時差の無い日時と
+/// して入力も UTC で読む（表示と入力で同じ値が往復する）。1900 年以降は従来どおり手元の時刻。
+const LOCAL_TIME_FROM = Date.UTC(1900, 0, 1);
+
 /// 日時の表示（年は 4 桁で揃える。0001 年が「1/01/01」と出ていた・D2 P3）。
 function formatDateTime(d: Date): string {
-  const parts = dateTimeFmt.formatToParts(d);
-  return parts.map((p) => (p.type === "year" ? p.value.padStart(4, "0") : p.value)).join("");
+  const utc = d.getTime() < LOCAL_TIME_FROM;
+  const parts = (utc ? utcDateTimeFmt : dateTimeFmt).formatToParts(d);
+  const text = parts.map((p) => (p.type === "year" ? p.value.padStart(4, "0") : p.value)).join("");
+  return utc ? `${text} UTC` : text;
+}
+
+/// 入力の日時（タイムゾーンの無い「2026-10-01 09:00」・datetime-local の値は手元の時刻、`Z`・オフセット付きは
+/// そのまま）を読む。1900 年より前のタイムゾーンの無い日時は UTC として読む（表示と揃える・`LOCAL_TIME_FROM`）。
+export function parseDateTimeInput(text: string): Date {
+  const t = text.trim();
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(t);
+  if (m && Number(m[1]) < 1900) {
+    const d = new Date(0);
+    // Date.UTC は 0〜99 年を 1900 年代に読み替えるので、年は setUTCFullYear で入れる。
+    d.setUTCFullYear(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    d.setUTCHours(Number(m[4] ?? 0), Number(m[5] ?? 0), Number(m[6] ?? 0), 0);
+    return d;
+  }
+  return new Date(t);
 }
 
 /// 数値の表示（桁区切り）。桁が多すぎてセルに収まらない値（±1e15 以上・極小値）は指数表記にして、
@@ -306,8 +340,8 @@ export function parseFilterValue(
     return d ? { ok: true, value: d } : { ok: false, error: "日付を選んでください（例: 2026-10-01）" };
   }
   if (type === "date_time" || resultType === "date_time") {
-    // datetime-local の値（タイムゾーンなし）は手元の時刻として UTC に直す。
-    const dt = new Date(t);
+    // datetime-local の値（タイムゾーンなし）は手元の時刻として UTC に直す（1900 年より前は UTC として読む）。
+    const dt = parseDateTimeInput(t);
     return Number.isNaN(dt.getTime()) ? { ok: false, error: "日時を選んでください" } : { ok: true, value: dt.toISOString() };
   }
   return { ok: true, value: t };
@@ -339,7 +373,7 @@ export function parseInput(
       return d ? { ok: true, value: d } : { ok: false, error: "日付は 2026-10-01 の形で入力してください（0001〜9999 年）" };
     }
     case "date_time": {
-      const d = new Date(t);
+      const d = parseDateTimeInput(t);
       return Number.isNaN(d.getTime())
         ? { ok: false, error: "日時を入力してください（例: 2026-10-01 09:00）" }
         : { ok: true, value: d.toISOString() };
@@ -529,11 +563,14 @@ export function buildFilter(rows: FilterRow[], advanced: Condition | null, colum
   return leaves.length === 1 ? leaves[0] : { all: leaves };
 }
 
-/// ISO の日時 → datetime-local の入力値（手元の時刻・分まで）。
+/// ISO の日時 → datetime-local の入力値（手元の時刻・分まで。1900 年より前は UTC・`parseDateTimeInput` と対）。
 export function toLocalInput(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   const p = (n: number) => String(n).padStart(2, "0");
+  if (d.getTime() < LOCAL_TIME_FROM) {
+    return `${String(d.getUTCFullYear()).padStart(4, "0")}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+  }
   return `${String(d.getFullYear()).padStart(4, "0")}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 

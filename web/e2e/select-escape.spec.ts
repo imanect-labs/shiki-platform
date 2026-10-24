@@ -99,7 +99,7 @@ test("ドライブ: 共有ダイアログの権限の選択肢で Esc を押し�
   await expect(page.getByRole("menuitem", { name: "共有" })).toBeVisible();
 });
 
-test("/data: 参照の候補一覧（レコードの追加・絞り込みのユーザー）で Esc を押すと一覧だけ閉じ、入力は残る（2-A-P2-2）", async ({ page }) => {
+test("/data: 参照の候補一覧（レコードの追加・絞り込みのユーザー）で Esc を押すと一覧だけ閉じ、他の欄の入力は残る（2-A-P2-2・3-A-11）", async ({ page }) => {
   await loginViaKeycloak(page);
   const res = await page.request.post("/api/data/tables", {
     headers: { "X-CSRF-Token": await csrf(page) },
@@ -129,6 +129,12 @@ test("/data: 参照の候補一覧（レコードの追加・絞り込みのユ�
   await expect(list).toBeHidden();
   await expect(dialog).toBeVisible();
   await expect(dialog.getByLabel("件名")).toHaveValue("入力は残る");
+  // 選ばずにやめた探す語は消える（値に入ったように見せて、送るときに黙って捨てない・3-A-11）。
+  await expect(dialog.locator("#rec-who")).toHaveValue("");
+  // 打ったまま別の欄へ移ると、まだ選ばれていないことを知らせる。
+  await dialog.locator("#rec-who").fill("bo");
+  await dialog.getByLabel("件名").click();
+  await expect(dialog.getByTestId("ref-picker-unpicked")).toContainText("「bo」はまだ選ばれていません");
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect.poll(() => bodyPointerEvents(page)).not.toBe("none");

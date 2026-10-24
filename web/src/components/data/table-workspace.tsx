@@ -560,10 +560,11 @@ export function TableWorkspace({
               <SelectTrigger aria-label="表示形式" className="h-8 w-auto min-w-24 gap-1.5 whitespace-nowrap text-[13px]">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
+              {/* 一覧は選択欄（狭い）の幅に揃えず、項目の幅に合わせる（「カレンダー」が折り返していた・3-A-5）。 */}
+              <SelectContent className="w-auto min-w-[var(--radix-select-trigger-width)]">
                 {kindOptions.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    <span className="inline-flex items-center gap-1.5">
+                  <SelectItem key={o.value} value={o.value} className="whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                       <o.icon className="size-3.5" aria-hidden />
                       {o.label}
                     </span>
