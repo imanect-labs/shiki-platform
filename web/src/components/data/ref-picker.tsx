@@ -316,7 +316,7 @@ export function refCellEditor(
   field: FieldDef,
   current: RefCellPayload,
 ): { editor: ProvideEditorComponent<TextCell>; disablePadding: true; disableStyling: true } {
-  const Editor: ProvideEditorComponent<TextCell> = ({ value, onFinishedEditing, initialValue }) => {
+  const Editor: ProvideEditorComponent<TextCell> = ({ value, onChange, onFinishedEditing, initialValue }) => {
     const [ids, setIds] = React.useState(current.ids);
     const commit = (next: string[], labels: Record<string, string>) => {
       const same = next.length === current.ids.length && next.every((x, i) => x === current.ids[i]);
@@ -328,7 +328,12 @@ export function refCellEditor(
           field={field}
           value={ids}
           labels={current.labels}
-          onChange={(next) => setIds(next)}
+          onChange={(next, labels) => {
+            setIds(next);
+            // 編集欄の外をクリックしたときも確定する（glide は外のクリックで今の値を確定する・Esc は取消）。
+            // 元に戻した値も渡す（同じ値なら onCellEdited が保存しない）。
+            onChange({ ...value, data: JSON.stringify({ ids: next, labels } satisfies RefCellPayload) });
+          }}
           onCommit={commit}
           onCancel={() => onFinishedEditing(undefined, [0, 0])}
           autoFocus
