@@ -115,11 +115,9 @@ export function StreamWaitingLine() {
       className="flex items-center gap-2 py-1 text-[13px] animate-in fade-in-0 duration-300"
     >
       <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" aria-hidden />
-      <span
-        key={label}
-        className="shiki-text-shimmer min-w-0 truncate font-medium animate-in fade-in-0 duration-300"
-      >
-        {label}…
+      {/* 入れ替えのアニメーションは外側に置く（shimmer と同じ要素だと光が止まる）。 */}
+      <span key={label} className="flex min-w-0 animate-in fade-in-0 duration-300">
+        <span className="shiki-text-shimmer min-w-0 truncate font-medium">{label}…</span>
       </span>
       {secs >= ELAPSED_AFTER_SECS ? (
         <span className="shrink-0 tabular-nums text-muted-foreground" aria-hidden>

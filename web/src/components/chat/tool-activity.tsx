@@ -292,18 +292,25 @@ export function ToolActivity({
           <Check className="size-3.5 shrink-0" style={{ color: season }} aria-hidden />
         )}
         <span
-          // 文言が変わったら薄く入れ替える（待ち時間の文言は数秒ごとに進む）。
+          // 文言が変わったら薄く入れ替える（待ち時間の文言は数秒ごとに進む）。入れ替えの
+          // アニメーションは外側に置く。光の流れ（shimmer）と同じ要素に付けると animation が
+          // 上書きされ、光が止まる。
           key={running ? phase : "done"}
           className={cn(
-            "min-w-0 truncate font-medium",
-            // 実行中は文字を光が舐める（止まって見える時間帯に「生きている」ことを伝える）。
+            "flex",
             // 終わった後の「N 件の操作」は短いので縮めない（狭い幅では文書チップの方を畳む）。
-            running
-              ? "shiki-text-shimmer animate-in fade-in-0 duration-300"
-              : "shrink-0 text-foreground/85",
+            running ? "min-w-0 animate-in fade-in-0 duration-300" : "shrink-0",
           )}
         >
-          {running ? phase : `${items.length} 件の操作`}
+          <span
+            className={cn(
+              "min-w-0 truncate font-medium",
+              // 実行中は文字を光が舐める（止まって見える時間帯に「生きている」ことを伝える）。
+              running ? "shiki-text-shimmer" : "text-foreground/85",
+            )}
+          >
+            {running ? phase : `${items.length} 件の操作`}
+          </span>
         </span>
         {running ? (
           <span className="shrink-0 tabular-nums text-muted-foreground">

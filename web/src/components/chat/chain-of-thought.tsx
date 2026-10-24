@@ -22,7 +22,7 @@ export function ChainOfThought({
   answering = false,
   /// 次のイベントを待っている間の文言（待った時間で進む）。待っていなければ null。
   waitingLabel = null,
-  /// 回答の本文が出始めているか（見出しを「準備しています」のままにしない）。
+  /// 回答の本文が出始めているか（思考もツールも無い応答では、見出しを本文の前だけ出す）。
   hasText = false,
 }: {
   thinking: string;
@@ -46,7 +46,7 @@ export function ChainOfThought({
 
   // 思考テキスト/引用のパネル。生成中は自動で開き、ユーザーが触ったらその意思を優先する。
   const expanded = userToggled ? open : streaming || open;
-  const status = statusText(streaming, thinking, tools.length > 0, waitingLabel, hasText);
+  const status = statusText(streaming, thinking, tools.length > 0, waitingLabel);
   // 完了後は冬で固定し、生成中だけ春（準備・思考）で控えめに彩る。
   const stageSeason = seasonVar(streaming ? 0 : 3);
 
@@ -63,7 +63,9 @@ export function ChainOfThought({
         waitingLabel={waitingLabel}
       />
 
-      {hasSide || (streaming && tools.length === 0 && citations.length === 0) ? (
+      {/* 思考もツールも無い応答では、本文が出る前の「準備しています」だけを出す。本文が出た後も
+          残すと、本文の末尾の待ち表示（「続きを考えています」）と食い違う見出しが並ぶ。 */}
+      {hasSide || (streaming && tools.length === 0 && citations.length === 0 && !hasText) ? (
         <>
           <button
             type="button"
@@ -80,14 +82,12 @@ export function ChainOfThought({
               aria-hidden
             />
             <span
-              // 待ち時間の文言は数秒ごとに進むので、変わったら薄く入れ替える。
+              // 待ち時間の文言は数秒ごとに進むので、変わったら薄く入れ替える。入れ替えは外側、
+              // 脈打ちは内側（同じ要素だと animation が上書きされ、片方しか効かない）。
               key={status}
-              className={cn(
-                "font-medium",
-                streaming && "animate-pulse animate-in fade-in-0 duration-300",
-              )}
+              className={cn(streaming && "animate-in fade-in-0 duration-300")}
             >
-              {status}
+              <span className={cn("font-medium", streaming && "animate-pulse")}>{status}</span>
             </span>
             <ChevronRight
               className={cn("size-3.5 transition-transform", expanded && "rotate-90")}
@@ -135,12 +135,10 @@ function statusText(
   thinking: string,
   hasTools: boolean,
   waitingLabel: string | null,
-  hasText: boolean,
 ): string {
   if (!streaming) return "思考プロセス";
   if (thinking.trim()) return "考えています…";
   if (waitingLabel) return `${waitingLabel}…`;
-  if (hasText) return "回答を書いています…";
   return hasTools ? "回答をまとめています…" : "準備しています…";
 }
 
