@@ -12,9 +12,13 @@ import { Check, Loader2, X } from "lucide-react";
 import * as React from "react";
 
 import type { ProvideEditorComponent, TextCell } from "@glideapps/glide-data-grid";
+import { LOCAL_ESCAPE_ATTR } from "@/components/ui/local-escape";
 import { getTable, runQuery, type DataTable, type FieldDef } from "@/lib/data-api";
+import { UNTITLED } from "@/lib/data-view";
 import { searchDirectory, searchRoles } from "@/lib/storage";
-import { cachedUserName } from "@/lib/user-names";
+import { cachedRoleName, rememberRoleName } from "@/lib/role-names";
+import { fetchMe } from "@/lib/api";
+import { cachedUserName, resolveUserNames } from "@/lib/user-names";
 import { cn } from "@/lib/utils";
 
 export type RefOption = { id: string; label: string; sub?: string };
@@ -48,6 +52,25 @@ function loadRefTable(id: string): Promise<DataTable | null> {
   return p;
 }
 
+let mePromise: Promise<{ id: string; label: string; email: string | null } | null> | null = null;
+/// 自分（ディレクトリの検索に出ない）を候補の先頭に出す。探す語が名前・メール・「自分」に合うときだけ。
+async function selfOption(q: string): Promise<RefOption | null> {
+  mePromise ??= fetchMe()
+    .then(async (me) => {
+      await resolveUserNames([me.id]);
+      return { id: me.id, label: cachedUserName(me.id) || me.email || "自分", email: me.email ?? null };
+    })
+    .catch(() => {
+      mePromise = null;
+      return null;
+    });
+  const me = await mePromise;
+  if (!me) return null;
+  const needle = q.trim().toLowerCase();
+  const hit = !needle || [me.label, me.email ?? "", "自分"].some((x) => x.toLowerCase().includes(needle));
+  return hit ? { id: me.id, label: `${me.label}（自分）`, sub: me.email ?? undefined } : null;
+}
+
 function useRefSearch(field: FieldDef, q: string) {
   const [state, setState] = React.useState<{ loading: boolean; items: RefOption[]; error: string | null }>({
     loading: true,
@@ -61,11 +84,16 @@ function useRefSearch(field: FieldDef, q: string) {
       try {
         let items: RefOption[] = [];
         if (field.type === "user_ref") {
-          const r = await searchDirectory({ q, limit: 10 });
+          const [r, self] = await Promise.all([searchDirectory({ q, limit: 10 }), selfOption(q)]);
           items = r.items.map((u) => ({ id: u.id, label: u.display_name, sub: u.email }));
+          // ディレクトリの検索は共有相手の検索なので自分を返さない。値には自分も選べるようにする。
+          if (self && !items.some((o) => o.id === self.id)) items = [self, ...items];
         } else if (field.type === "role_ref") {
           const r = await searchRoles({ q, limit: 10 });
-          items = r.items.map((x) => ({ id: x.id, label: x.display_name }));
+          items = r.items.map((x) => {
+            rememberRoleName(x.id, x.display_name);
+            return { id: x.id, label: x.display_name, sub: x.display_name !== x.id ? x.id : undefined };
+          });
         } else if (field.type === "record_ref" && field.ref_table) {
           const ref = await loadRefTable(field.ref_table);
           const title = titleField(ref);
@@ -81,7 +109,10 @@ function useRefSearch(field: FieldDef, q: string) {
           items = (res.items ?? [])
             .map((r) => {
               const v = title ? (r.data as Record<string, unknown> | null)?.[title.key] : null;
-              return { id: r.id, label: typeof v === "string" && v ? v : `${r.id.slice(0, 8)}…` };
+              // タイトルの空の行は「（タイトルなし）」と出し、見分けられるよう id の先頭を添える。
+              return typeof v === "string" && v
+                ? { id: r.id, label: v }
+                : { id: r.id, label: UNTITLED, sub: `ID ${r.id.slice(0, 8)}` };
             })
             .filter((o) => !needle || title?.indexed || o.label.toLowerCase().includes(needle.toLowerCase()))
             .slice(0, 20);
@@ -103,7 +134,8 @@ function useRefSearch(field: FieldDef, q: string) {
 export function refLabel(field: FieldDef, id: string, labels?: Record<string, string>): string {
   if (labels?.[id]) return labels[id];
   if (field.type === "user_ref") return cachedUserName(id) || `${id.slice(0, 8)}…`;
-  return `${id.slice(0, 8)}…`;
+  if (field.type === "role_ref") return cachedRoleName(id) || id;
+  return UNTITLED;
 }
 
 export function RefPicker({
@@ -117,6 +149,8 @@ export function RefPicker({
   id,
   compact,
   initialQuery,
+  ariaLabel,
+  listClassName,
 }: {
   field: FieldDef;
   value: string[];
@@ -130,6 +164,10 @@ export function RefPicker({
   compact?: boolean;
   /// 打鍵で開いたときの最初の文字（探す欄に入れておく）。
   initialQuery?: string;
+  /// 探す欄の読み上げ名（label 要素で名付けない場所で使う）。
+  ariaLabel?: string;
+  /// 候補の一覧の位置・幅の上書き（狭い欄の下に広く出すなど）。
+  listClassName?: string;
 }) {
   const multi = isMultiRef(field);
   const [q, setQ] = React.useState(initialQuery ?? "");
@@ -192,10 +230,13 @@ export function RefPicker({
         ref={inputRef}
         id={id}
         role="combobox"
+        aria-label={ariaLabel}
         aria-expanded={showList}
         aria-controls={listId}
         aria-autocomplete="list"
         aria-activedescendant={items[active] ? `${listId}-${active}` : undefined}
+        // 候補を開いている間の Esc は一覧だけを閉じる（外側のダイアログ・ポップオーバーは閉じない・2-A-P2-2）。
+        {...{ [LOCAL_ESCAPE_ATTR]: showList && !compact ? "true" : undefined }}
         value={q}
         onFocus={() => {
           setFocused(true);
@@ -245,6 +286,7 @@ export function RefPicker({
           "max-h-56 overflow-y-auto rounded-md border bg-popover p-1 scrollbar-subtle",
           // フォームの中では入力欄の下に重ねて出す（下の列を押し下げない）。
           !compact && "absolute inset-x-0 top-full z-50 mt-1 shadow-md",
+          listClassName,
         )}
       >
         {loading ? (

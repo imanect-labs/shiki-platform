@@ -22,11 +22,14 @@ import {
 } from "lucide-react";
 import * as React from "react";
 
+import { RefPicker } from "@/components/data/ref-picker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { CondOp, ConditionalFormat, FormatColor, GroupConfig, SortKey } from "@/lib/data-api";
+import type { CondOp, ConditionalFormat, FieldDef, FormatColor, GroupConfig, SortKey } from "@/lib/data-api";
+import { cachedRoleName, resolveRoleNames } from "@/lib/role-names";
+import { cachedUserName, resolveUserNames } from "@/lib/user-names";
 import {
   FORMAT_COLORS,
   isFilterable,
@@ -122,6 +125,81 @@ function opLabel(c: ColumnModel | undefined, op: CondOp): string {
   return OP_LABELS[op] ?? op;
 }
 
+/// ユーザー・部署の比較値（候補から 1 つ選ぶ・保存済みの値は表示名を引いて見せる）。
+function FilterRefValue({
+  field,
+  value,
+  onChange,
+  label,
+  className,
+}: {
+  field: FieldDef | { key: string; type: "user_ref" };
+  value: string;
+  onChange: (v: string) => void;
+  label: string;
+  className?: string;
+}) {
+  const [names, setNames] = React.useState<Record<string, string>>({});
+  const id = React.useId().replace(/:/g, "");
+  React.useEffect(() => {
+    if (!value) return;
+    let active = true;
+    const done = (name: string | null | undefined) => active && name && setNames((n) => ({ ...n, [value]: name }));
+    if (field.type === "user_ref") void resolveUserNames([value]).then(() => done(cachedUserName(value)));
+    else void resolveRoleNames([value]).then(() => done(cachedRoleName(value)));
+    return () => {
+      active = false;
+    };
+  }, [field.type, value]);
+  const [editing, setEditing] = React.useState(!value);
+  const name = value ? names[value] || (field.type === "user_ref" ? cachedUserName(value) : cachedRoleName(value)) || value : "";
+  if (value && !editing) {
+    // 選んだ値は 1 行の欄に表示名で出す（押すと選び直せる）。行の高さを他の条件と揃える。
+    return (
+      <div className={cn("flex h-8 items-center rounded-md border border-input bg-background text-[13px]", className)} data-testid="filter-ref-value">
+        <button
+          type="button"
+          aria-label={`${label}: ${name}（選び直す）`}
+          onClick={() => setEditing(true)}
+          className="min-w-0 flex-1 truncate rounded-l-md px-2.5 text-left hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {name}
+        </button>
+        <button
+          type="button"
+          aria-label={`${label}を外す`}
+          onClick={() => {
+            onChange("");
+            setEditing(true);
+          }}
+          className="mr-1 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <X className="size-3.5" aria-hidden />
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className={className} data-testid="filter-ref-value">
+      <RefPicker
+        field={field as FieldDef}
+        value={[]}
+        labels={names}
+        onChange={(ids, labels) => {
+          const id = ids[ids.length - 1] ?? "";
+          if (id && labels[id]) setNames((n) => ({ ...n, [id]: labels[id] }));
+          onChange(id);
+          if (id) setEditing(false);
+        }}
+        id={`filter-${id}`}
+        ariaLabel={label}
+        autoFocus={Boolean(value)}
+        listClassName="left-auto right-0 w-64"
+      />
+    </div>
+  );
+}
+
 /// 比較値の入力欄（列の型ごとの部品）。
 function ValueInput({
   col,
@@ -142,6 +220,17 @@ function ValueInput({
 }) {
   const t = col?.field?.type;
   const rt = col?.field?.result_type;
+  // 作成者（擬似列）もユーザーとして選ぶ。
+  const refField =
+    (t === "user_ref" || t === "role_ref") && col?.field
+      ? col.field
+      : col?.key === "_owner"
+        ? ({ key: "_owner", type: "user_ref" } as const)
+        : null;
+  if (refField) {
+    // ユーザー・部署は候補から選ぶ（表示名を打って黙って 0 件にならない・比べる値は id・2-A-P2-3）。
+    return <FilterRefValue field={refField} value={value} onChange={onChange} label={label} className={className} />;
+  }
   if ((t === "select" || t === "multi_select") && col?.field) {
     return (
       <Select value={value} onValueChange={onChange}>

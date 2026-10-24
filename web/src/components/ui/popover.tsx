@@ -3,6 +3,7 @@
 import * as React from "react";
 import * as PopoverPrimitive from "@radix-ui/react-popover";
 
+import { guardLocalEscape } from "@/components/ui/local-escape";
 import { cn } from "@/lib/utils";
 
 const Popover = PopoverPrimitive.Root;
@@ -13,6 +14,7 @@ function PopoverContent({
   className,
   align = "center",
   sideOffset = 6,
+  onEscapeKeyDown,
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Content>) {
   return (
@@ -27,6 +29,7 @@ function PopoverContent({
           className,
         )}
         {...props}
+        onEscapeKeyDown={guardLocalEscape(onEscapeKeyDown)}
       />
     </PopoverPrimitive.Portal>
   );

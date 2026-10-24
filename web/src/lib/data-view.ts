@@ -174,6 +174,12 @@ const dateTimeFmt = new Intl.DateTimeFormat("ja-JP", {
 const numberFmt = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 10 });
 const expFmt = new Intl.NumberFormat("en-US", { notation: "scientific", maximumSignificantDigits: 6 });
 
+/// 日時の表示（年は 4 桁で揃える。0001 年が「1/01/01」と出ていた・D2 P3）。
+function formatDateTime(d: Date): string {
+  const parts = dateTimeFmt.formatToParts(d);
+  return parts.map((p) => (p.type === "year" ? p.value.padStart(4, "0") : p.value)).join("");
+}
+
 /// 数値の表示（桁区切り）。桁が多すぎてセルに収まらない値（±1e15 以上・極小値）は指数表記にして、
 /// 符号と桁数が見えるようにする（右寄せのセルで左端が切れて符号・桁が消えていた・D-12）。
 export function formatNumber(n: number): string {
@@ -189,7 +195,7 @@ export function formatValue(v: unknown, field: FieldDef | null, key?: string): s
   const type = field?.type;
   if ((type === "date_time" || key === "_created_at" || key === "_updated_at") && typeof v === "string") {
     const d = new Date(v);
-    return Number.isNaN(d.getTime()) ? v : dateTimeFmt.format(d);
+    return Number.isNaN(d.getTime()) ? v : formatDateTime(d);
   }
   if (typeof v === "number") return formatNumber(v);
   if (typeof v === "string" && (type === "number" || field?.result_type === "number") && v !== "") {
@@ -215,6 +221,7 @@ export function displayCell(
   r: DataRecord,
   c: Pick<ColumnModel, "key" | "field">,
   userName: (id: string) => string | null | undefined,
+  roleName: (id: string) => string | null | undefined = () => null,
 ): { text: string; muted: boolean } {
   const v = cellValue(r, c.key);
   if ((v === null || v === undefined) && (r.suppressed_fields ?? []).includes(c.key)) {
@@ -226,11 +233,37 @@ export function displayCell(
   if (type === "user_ref" || c.key === "_owner") {
     return { text: ids(v).map((id) => userName(id) || id).join(", "), muted: false };
   }
+  if (type === "role_ref") {
+    return { text: ids(v).map((id) => roleName(id) || id).join(", "), muted: false };
+  }
   if (type === "record_ref") {
+    // タイトルの無い参照先（タイトル列が空・逆向きの列の参照元にタイトル列が無い）は id ではなく
+    // 「（タイトルなし）」と出す（UUID の先頭が並んで読めなかった・A P3）。
     const labels = (r.link_labels ?? {}) as Record<string, string>;
-    return { text: ids(v).map((id) => labels[id] || `${id.slice(0, 8)}…`).join(", "), muted: false };
+    const list = ids(v);
+    // 逆向きの列はサーバが参照元の見出しを返さないことがある: 1 件も見出しが無ければ件数で出す。
+    if (c.field?.link?.reverse && list.length && list.every((id) => !labels[id])) {
+      return { text: `${list.length.toLocaleString("ja-JP")} 件のレコード`, muted: true };
+    }
+    return { text: list.map((id) => labels[id] || UNTITLED).join(", "), muted: false };
   }
   return { text: formatValue(v, c.field, c.key), muted: false };
+}
+
+/// タイトルの無い参照先の表示。
+export const UNTITLED = "（タイトルなし）";
+
+/// 表示名を引く対象の部署 id（`role_ref` 列の値）。
+export function roleRefIds(rows: readonly DataRecord[], cols: readonly ColumnModel[]): string[] {
+  const keys = cols.filter((c) => c.field?.type === "role_ref").map((c) => c.key);
+  const out = new Set<string>();
+  for (const r of rows) {
+    for (const k of keys) {
+      const v = cellValue(r, k);
+      for (const id of Array.isArray(v) ? v : [v]) if (typeof id === "string" && id) out.add(id);
+    }
+  }
+  return [...out];
 }
 
 /// 表示名を引く対象の id（`user_ref` 列・作成者列の値）。
@@ -523,6 +556,34 @@ export function keyFromLabel(label: string, taken: ReadonlySet<string>): string 
     base = `${base}_${i}`;
   }
   return base;
+}
+
+/// サーバの文言の列の参照名（`'amount'`・`"amount"`）を表示名（「金額」）に直す。サーバは列を参照名で書くので、
+/// 日本語の表示名の列が `col_3` のように見えていた（A P3）。閲覧者が読める列（`fields`）だけを直す。
+export function withFieldLabels(message: string, fields: readonly Pick<FieldDef, "key" | "display_name">[]): string {
+  let out = message;
+  // 長い参照名から置き換える（`col_1` が `col_10` の一部を食わない）。
+  const sorted = [...fields].filter((f) => f.display_name && f.display_name !== f.key).sort((a, b) => b.key.length - a.key.length);
+  for (const f of sorted) {
+    const k = f.key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out.replace(new RegExp(`\\s?['"‘’“”]${k}['"‘’“”]\\s?`, "g"), `「${f.display_name}」`);
+  }
+  return out;
+}
+
+/// 列の参照名 → 見出し（表示名・無ければ参照名）。
+export function fieldLabel(fields: readonly Pick<FieldDef, "key" | "display_name">[], key: string): string {
+  return fields.find((f) => f.key === key)?.display_name || key;
+}
+
+/// `base` を参照名の規則（`^[a-z][a-z0-9_]{0,63}$`）に収め、`taken` と重ならないよう `_2`, `_3`… を付ける。
+export function uniqueKey(base: string, taken: ReadonlySet<string>): string {
+  let b = base.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^[^a-z]+/, "") || "col";
+  b = b.slice(0, 60);
+  if (!taken.has(b)) return b;
+  let i = 2;
+  while (taken.has(`${b}_${i}`)) i += 1;
+  return `${b}_${i}`;
 }
 
 /// 既定の表示設定（全列を表示する表）。

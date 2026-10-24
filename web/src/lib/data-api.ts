@@ -51,6 +51,8 @@ export type BulkRowError = S["BulkRowError"];
 export type StartImportRequest = S["StartImportRequest"];
 export type StartImportResponse = S["StartImportResponse"];
 export type ImportErrorsResponse = S["ImportErrorsResponse"];
+export type FsmBody = S["FsmBody"];
+export type FsmResponse = S["FsmResponse"];
 
 /// API の誤り（状態コード＋構造化した本文）。
 export class DataApiError extends Error {
@@ -324,6 +326,29 @@ export async function updateRecord(
       send("PATCH", { patch, expected_rev: expectedRev }),
     ),
   );
+}
+
+/// レコードの状態を遷移させる（FSM のテーブルの状態の列はこの API でだけ変わる・`expectedRev` の楽観ロック）。
+/// 定義に無い遷移は 400、実行できる人の条件を満たさないと 403。
+export async function transitionRecord(
+  tableId: string,
+  recordId: string,
+  to: string,
+  expectedRev: number,
+): Promise<DataRecord> {
+  return ok<DataRecord>(
+    await apiFetch(
+      `/data/tables/${enc(tableId)}/records/${enc(recordId)}/transition`,
+      send("POST", { to, expected_rev: expectedRev }),
+    ),
+  );
+}
+
+/// テーブルにピンされた FSM の定義（遷移の候補を出すため）。FSM の閲覧権限が無い人は 403/404 になるので、
+/// 呼び出し側は読めなければ候補を絞らずに出す（遷移の可否の正はサーバ）。
+export async function getFsm(id: string, version?: number): Promise<FsmResponse> {
+  const q = version != null ? `?version=${version}` : "";
+  return ok<FsmResponse>(await apiFetch(`/data/fsms/${enc(id)}${q}`));
 }
 
 export async function getRecord(tableId: string, recordId: string): Promise<DataRecord> {
