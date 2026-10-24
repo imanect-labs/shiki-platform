@@ -552,6 +552,11 @@ services:
       # data の keyset カーソル鍵（開発専用の起動時乱数。本番は SHIKI__DATA__CURSOR_KEY_FILE か
       # SHIKI__SECRETS__MASTER_KEY_FILE を設定し、これを false にする・Task 15.3）。
       SHIKI__DATA__EPHEMERAL_CURSOR_KEY: ${SHIKI__DATA__EPHEMERAL_CURSOR_KEY:-true}
+      # 鍵ファイル（コンテナ内のパス・鍵はボリュームでマウントする）。空なら未設定と同じ。
+      SHIKI__DATA__CURSOR_KEY_FILE: ${SHIKI__DATA__CURSOR_KEY_FILE:-}
+      # レコード変更の SSE 配信（認可材料の TTL ミリ秒・保持期間 秒）。空なら既定（5000・600）。
+      SHIKI__DATA__STREAM__AUTHZ_TTL_MS: ${SHIKI__DATA__STREAM__AUTHZ_TTL_MS:-}
+      SHIKI__DATA__STREAM__RETENTION_SECS: ${SHIKI__DATA__STREAM__RETENTION_SECS:-}
       # 公開 API ゲートウェイ（第2リスナ 8090）＋ B1 配信（第3リスナ 8091）・Task 9.6/9.11。
       SHIKI__GATEWAY__ENABLED: ${SHIKI__GATEWAY__ENABLED:-true}
       SHIKI__GATEWAY__PORT: "8090"

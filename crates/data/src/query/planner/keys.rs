@@ -121,7 +121,7 @@ pub(crate) fn to_payload(pos: &Pos) -> CursorPayload {
     }
 }
 
-/// カーソルの中身 → 位置（ソート指定と食い違えば 422・束縛は AAD でも検証済み）。
+/// カーソルの中身 → 位置（ソート指定と食い違えば 400・束縛は AAD でも検証済み）。
 pub(crate) fn from_payload(q: &BoundQuery, p: &CursorPayload) -> Result<Pos, DataError> {
     let invalid = || DataError::input(crate::InvalidCode::CursorInvalid);
     if p.sort_values.len() != q.sort.len() {

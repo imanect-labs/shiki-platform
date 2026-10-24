@@ -1,7 +1,7 @@
 //! クエリ IR v2（data-platform §5・Task 15.3）。外部契約（DTO）はここだけに置く。
 //!
 //! - 条件木（`all` / `any` / `not` / `cmp`）。演算子語彙は workflow IR の `Condition` に揃える
-//!   （`matches` は語彙として受けるが data では 422・索引が効かず DoS 面になるため）。
+//!   （`matches` は語彙として受けるが data では 400・索引が効かず DoS 面になるため）。
 //! - 意味論は **2 値論理**（query-optimizer.md §3.1）: 値なしの `neq` は真、`not` は補集合、
 //!   多値列の `eq` は「含む」、数値は数値として比較する。**行述語（row_policy）はこの表の対象外**で、
 //!   v1 の意味論（値なしの `ne` は偽）のまま別経路で評価する（§3.3）。
@@ -10,7 +10,7 @@
 //! - 推定値・統計値・戦略名・予測コストのフィールドは**持たない**（PIT-75）。
 //!
 //! v1 の形（`filter: {field, value}`・`sort: {field, descending}`・`aggregate: {group_by, metric, field}`・
-//! `offset`）も受理して v2 の形へ写す（保存済みビューと SDK の後方互換）。`offset` は 0 以外を 422 にする。
+//! `offset`）も受理して v2 の形へ写す（保存済みビューと SDK の後方互換）。`offset` は 0 以外を 400 にする。
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -49,7 +49,7 @@ pub enum CondOp {
     EndsWith,
     Exists,
     IsNull,
-    /// 正規表現。語彙の互換のためだけに受け、data では常に 422（索引が効かず DoS 面）。
+    /// 正規表現。語彙の互換のためだけに受け、data では常に 400（索引が効かず DoS 面）。
     Matches,
 }
 
@@ -232,7 +232,7 @@ pub struct DataQuery {
     /// 件数を数えるか（既定 false・上限付き正確カウント）。
     #[serde(default)]
     pub with_count: bool,
-    /// v1 の OFFSET（廃止）。0 以外は 422。
+    /// v1 の OFFSET（廃止）。0 以外は 400。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(deprecated)]
     pub offset: Option<i64>,

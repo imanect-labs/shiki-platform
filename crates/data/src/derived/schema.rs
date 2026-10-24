@@ -1,8 +1,8 @@
 //! 派生フィールドとリンク定義のスキーマ検証（保存時・data-platform §7）。
 //!
 //! - 同期の検証（[`validate_derived_field`]）: 定義の有無・参照先の列の存在・数式の形・宣言フラグ。
-//!   `indexed` は材料化可否が `invariant` で、値の型が索引に載るものだけ（`per_viewer` / `volatile` は 422）。
-//! - 非同期の準備（[`DataStore::prepare_derived`]）: 参照先テーブルを読み込んで循環を検出し（422）、
+//!   `indexed` は材料化可否が `invariant` で、値の型が索引に載るものだけ（`per_viewer` / `volatile` は 400）。
+//! - 非同期の準備（[`DataStore::prepare_derived`]）: 参照先テーブルを読み込んで循環を検出し（400）、
 //!   値の型と材料化可否（4 階層・OpenFGA のタプル比較で ① を証明）を**サーバが決めて**スキーマへ書く。
 //!   入力に書かれた `materialization` / `result_type` / 対称列の情報は信用しない。
 

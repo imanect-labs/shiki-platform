@@ -36,7 +36,7 @@ pub trait RefResolver: Send + Sync {
 /// - `full` = create（required の欠落を拒否）。update は merge 後の完全形を渡す。
 /// - datetime は UTC 固定幅 ISO-8601 へ正規化する（辞書順＝時刻順）。
 /// - number は `numeric_spec` に従って正規化する（data-platform §4.2）。
-/// - 多値（multi_select）の要素数は `max_multi_values` まで（PIT-72・超過は 422）。
+/// - 多値（multi_select）の要素数は `max_multi_values` まで（PIT-72・超過は 400）。
 pub(crate) async fn validate_record_data(
     ctx: &AuthContext,
     schema: &TableSchema,

@@ -18,7 +18,7 @@
 //! マスク列の値まで回答・引用に流れる。v1 は次の 3 段で塞ぐ。
 //!
 //! 1. **スキーマ検証**: 投影に `field_policy` の対象列・派生列（lookup / computed / rollup / formula）を
-//!    含めると 422（[`projection::validate_projection`]）
+//!    含めると 400（[`projection::validate_projection`]）
 //! 2. **世代**: `field_policy` と投影の定義から世代を作り、チャンクに刻む。世代が変わったら索引を破棄して
 //!    再構築する（[`indexer`]）。**再構築が終わるまでの古いチャンクは post-filter が世代不一致で落とす**
 //! 3. **実行時の再確認**: post-filter は閲覧者のマスク列と投影列の交差を確かめ、交差があれば全件を落とす

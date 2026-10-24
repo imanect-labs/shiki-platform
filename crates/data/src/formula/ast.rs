@@ -11,7 +11,7 @@ use utoipa::ToSchema;
 use crate::derived::types::RollupOp;
 use crate::DataError;
 
-/// 式の深さの上限（スキーマ保存時に 422）。
+/// 式の深さの上限（スキーマ保存時に 400）。
 pub const MAX_FORMULA_DEPTH: usize = 16;
 /// 式のノード数の上限。
 pub(crate) const MAX_FORMULA_NODES: usize = 256;

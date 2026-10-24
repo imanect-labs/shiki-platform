@@ -112,7 +112,7 @@ impl Lowerer<'_> {
     pub(crate) fn leaf_cond(&self, a: &Atom, x: &str, sql: &mut SqlBuf) -> String {
         let f = self.field(a.field);
         // 切り詰め行の再確認先（本体の完全値）。擬似列は長い値を持たず、材料化した派生列は本体に値が無い
-        // （束縛で長い比較値を 422 にしているので、派生列の比較は切り詰め行の再確認を要しない）。
+        // （束縛で長い比較値を 400 にしているので、派生列の比較は切り詰め行の再確認を要しない）。
         let body_field = (!f.is_pseudo() && !f.derived).then_some(f.id);
         match (&a.leaf, f.kind) {
             (Leaf::Exists, _) => "TRUE".into(),
@@ -702,7 +702,7 @@ impl Lowerer<'_> {
             let text = f.value_table() == IndexTable::Text;
             // 切り詰め行（data-platform §3.3）はプレフィクスでは値を区別できない。実フィールドは本体の
             // 完全値でグループ化する。材料化した派生列は本体に値が無いので、切り詰め行がグループに入ったか
-            // （gt{i}）を返し、組み立てで 422 にする（可視・条件を満たした行だけで判定する）。
+            // （gt{i}）を返し、組み立てで 400 にする（可視・条件を満たした行だけで判定する）。
             let val = if text && !f.is_pseudo() && !f.derived {
                 let kph = sql.push(Bind::Text(crate::field_key::json_key(f.id)));
                 sqlf!(

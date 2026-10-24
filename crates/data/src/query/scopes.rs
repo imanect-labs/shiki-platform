@@ -63,7 +63,7 @@ fn link_conds<'q>(c: &'q Condition, out: &mut Vec<(&'q str, Option<&'q Condition
     }
 }
 
-/// リンク列の参照先テーブル（`record_ref` でなければ `None`・束縛が 422 にする）。
+/// リンク列の参照先テーブル（`record_ref` でなければ `None`・束縛が 400 にする）。
 fn ref_of(schema: &TableSchema, key: &str) -> Option<Uuid> {
     schema
         .field(key)

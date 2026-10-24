@@ -198,7 +198,7 @@ pub struct DataConfig {
     /// 3. どちらも無く `ephemeral_cursor_key = true` なら起動時乱数（**開発専用**: 再起動・レプリカ間で
     ///    カーソルが無効になる）
     /// 4. それ以外は**起動エラー**（複数レプリカでカーソルが壊れる構成を黙って起動させない）
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_str_as_none")]
     pub cursor_key_file: Option<String>,
     /// 開発専用: カーソル鍵が設定されていなくても起動時乱数鍵で起動する（既定 false）。
     #[serde(default)]
@@ -213,12 +213,33 @@ pub struct DataConfig {
 pub struct DataStreamConfig {
     /// 購読中の認可材料の TTL（ミリ秒・既定 5,000）。**剥奪の配信への反映はこれだけ遅れ得る**
     /// （PIT-70）ので上限は 60,000。ロール変更・共有解除・テーブル権限の変更は TTL を待たずに反映する。
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_as_none_u64")]
     pub authz_ttl_ms: Option<u64>,
     /// ストリームの保持期間（秒・既定 600）。これより古い位置からの再開は `stream.reset`、
     /// スナップショット読取は 410。60〜86,400。
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_as_none_u64")]
     pub retention_secs: Option<u64>,
+}
+
+/// 空文字（空白だけ）を未設定として読む。compose の `${VAR:-}` は未設定の変数を空文字で渡すため。
+fn empty_str_as_none<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.filter(|s| !s.trim().is_empty()))
+}
+
+/// 数値の設定を、数値か数字の文字列で読む（空文字は未設定・[`empty_str_as_none`] と同じ理由）。
+fn empty_as_none_u64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumOrStr {
+        Num(u64),
+        Str(String),
+    }
+    match Option::<NumOrStr>::deserialize(d)? {
+        None => Ok(None),
+        Some(NumOrStr::Num(n)) => Ok(Some(n)),
+        Some(NumOrStr::Str(s)) if s.trim().is_empty() => Ok(None),
+        Some(NumOrStr::Str(s)) => s.trim().parse().map(Some).map_err(serde::de::Error::custom),
+    }
 }
 
 /// 認可材料の TTL の範囲（ミリ秒）。

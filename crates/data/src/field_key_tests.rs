@@ -111,7 +111,7 @@ fn update_rejects_key_change_and_foreign_ids() {
     let mut cur = schema(vec![FieldDef::new("applicant", FieldType::UserRef)]);
     let n = assign_field_ids(None, &mut cur).unwrap();
 
-    // 同じ id で key を変える → 422（key は不変）。
+    // 同じ id で key を変える → 400（key は不変）。
     let mut renamed = FieldDef::new("requester", FieldType::UserRef);
     renamed.id = 16;
     let mut next = schema(vec![renamed]);
@@ -122,7 +122,7 @@ fn update_rejects_key_change_and_foreign_ids() {
         "{err:?}"
     );
 
-    // 存在しない id の指定 → 422（ID はサーバだけが採番する）。
+    // 存在しない id の指定 → 400（ID はサーバだけが採番する）。
     let mut forged = FieldDef::new("other", FieldType::Text);
     forged.id = 99;
     let mut next = schema(vec![FieldDef::new("applicant", FieldType::UserRef), forged]);
@@ -206,7 +206,7 @@ fn legacy_upgrade_promotes_row_policy_fields_to_indexed() {
         }
     }))
     .unwrap();
-    // 旧規則のままでは検証を通らない（＝移行・改訂がすべて 422 になる状態の再現）。
+    // 旧規則のままでは検証を通らない（＝移行・改訂がすべて 400 になる状態の再現）。
     let mut raw = legacy.clone();
     assign_field_ids(None, &mut raw).unwrap();
     assert!(crate::schema::validate_table_schema(&raw).is_err());

@@ -57,7 +57,7 @@ pub(crate) fn validate_row_policy(
     if let Some(write) = &policy.write {
         validate_expr(schema, write, 0, "row_policy.write")?;
     }
-    // 行述語は索引テーブル上で評価する（data-platform §6.2）。参照列は indexed 必須（§6.3・422）。
+    // 行述語は索引テーブル上で評価する（data-platform §6.2）。参照列は indexed 必須（§6.3・400）。
     for (expr, path) in std::iter::once((&policy.read, "row_policy.read"))
         .chain(policy.write.as_ref().map(|w| (w, "row_policy.write")))
     {
@@ -69,7 +69,7 @@ pub(crate) fn validate_row_policy(
 /// row_policy が参照する**索引の無い**列を `indexed = true` に引き上げる。引き上げた列の key を返す。
 ///
 /// v1 から移行したテーブル（Task 15.3 より前の規則で保存された row_policy）向けの移行処理。
-/// 引き上げないと §6.3 の「参照列は indexed 必須」により以後のどのスキーマ改訂も 422 になり、
+/// 引き上げないと §6.3 の「参照列は indexed 必須」により以後のどのスキーマ改訂も 400 になり、
 /// 読取は本体の点検索に落ち続ける。派生フィールドは row_policy に使えない（検証で拒否される）ので触らない。
 pub(crate) fn promote_policy_fields(schema: &mut TableSchema) -> Vec<String> {
     fn collect<'a>(expr: &'a PolicyExpr, out: &mut Vec<&'a str>) {

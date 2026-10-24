@@ -291,7 +291,7 @@ fn types_are_inferred_and_rollups_checked() {
     assert!(cat
         .check_rollup(a, "x", "items", Some("amount"), RollupOp::Sum)
         .is_ok());
-    // 文字列の合計は 422。
+    // 文字列の合計は 400。
     assert!(cat
         .check_rollup(a, "x", "items", Some("name"), RollupOp::Sum)
         .is_err());

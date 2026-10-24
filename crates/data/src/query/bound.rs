@@ -3,10 +3,10 @@
 //! 外部の参照名（key）を内部 ID（`field_id`）へ解決し、型ごとに値を正規化した式 [`Expr`] を作る。
 //! ここを通らない条件はコンパイラに届かない（未宣言・未索引・型不整合・マスク列は実行前に拒否）。
 //!
-//! - filter / sort / group_by / aggregate の対象は `indexed || unique` 宣言済みのみ（422）
+//! - filter / sort / group_by / aggregate の対象は `indexed || unique` 宣言済みのみ（400）
 //! - マスク列は filter / sort / group_by / aggregate / search のいずれにも出せない（**403**・PIT-19）
 //! - `contains` / `ends_with` は `searchable` 宣言済みの text 列のみ（trigram GIN を要する）
-//! - `matches`（正規表現）は採用しない（422）
+//! - `matches`（正規表現）は採用しない（400）
 //! - システム擬似列 `_owner` / `_created_at` / `_updated_at` は常に索引済みで、駆動になれる
 
 use std::cell::RefCell;
@@ -367,7 +367,7 @@ pub(crate) struct Binder<'a> {
     masked: &'a HashSet<String>,
     fields: BTreeMap<FieldId, BField>,
     leaves: usize,
-    /// リンクの半結合を束縛する文脈（無ければリンクの条件は 422）。
+    /// リンクの半結合を束縛する文脈（無ければリンクの条件は 400）。
     ctx: Option<&'a RefCell<LinkCtx<'a>>>,
     /// この束縛器の表がリンクを何段辿った先か。
     depth: usize,
@@ -399,7 +399,7 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// 束縛器の表のリンク列とその参照先（マスク 403 → 未宣言 422 → リンク列でない 422 → 参照先が
+    /// 束縛器の表のリンク列とその参照先（マスク 403 → 未宣言 400 → リンク列でない 400 → 参照先が
     /// 読めない 403 の順）。
     pub(crate) fn link_target(
         &self,
@@ -477,7 +477,7 @@ impl<'a> Binder<'a> {
         })))
     }
 
-    /// フィルタ・ソート・集計で使う列を解決する（マスク 403 → 未宣言 422 → 未索引 422 の順）。
+    /// フィルタ・ソート・集計で使う列を解決する（マスク 403 → 未宣言 400 → 未索引 400 の順）。
     pub(crate) fn queryable(&mut self, key: &str) -> Result<BField, DataError> {
         if self.masked.contains(key) {
             return Err(DataError::Forbidden);
@@ -680,7 +680,7 @@ pub(crate) fn compare(f: &BField, op: CondOp, value: Option<&Value>) -> Result<E
 /// **本体の完全値で再確認**する契約だが、派生列は本体に値を持たない（再確認できない）。比較値を
 /// [`SAFE_BOUND_BYTES`] 以下に限れば、どの比較もプレフィクスだけで厳密に決まる（切り詰め行は
 /// 比較値より長いので等値にならず、大小・前方一致は比較値の長さの内側で決まる）。超える比較値は
-/// 偽陰性（と、その否定による偽陽性）を返す代わりに 422 にする。判定は比較値だけで決まり、
+/// 偽陰性（と、その否定による偽陽性）を返す代わりに 400 にする。判定は比較値だけで決まり、
 /// データに依存しない（行の有無・値の長さのオラクルにならない）。
 fn check_derived_text_operands(f: &BField, e: &Expr) -> Result<(), DataError> {
     let too_long = |s: &str| s.len() > SAFE_BOUND_BYTES;
@@ -803,7 +803,7 @@ fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, 
     }
 }
 
-/// 値 1 つを列の型へ正規化する（書込検証と同じ正準形・不一致は 422）。
+/// 値 1 つを列の型へ正規化する（書込検証と同じ正準形・不一致は 400）。
 fn scalar(f: &BField, v: &Value) -> Result<Val, DataError> {
     charge(1);
     let key = &f.key;
