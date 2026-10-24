@@ -545,7 +545,8 @@ async fn send_waiting_out_rate_limit(
     let text = clock.error_text(resp).await?;
     match header
         .or_else(|| retry_delay(&text))
-        .filter(|d| *d <= MAX_RATE_LIMIT_WAIT)
+        // 生成全体の締め切りを越える待ちはしない（暴走止めの上限を待ちで延ばさない）。
+        .filter(|d| *d <= MAX_RATE_LIMIT_WAIT && *d < clock.remaining())
     {
         Some(wait) => {
             tracing::warn!(?wait, "プロバイダが 429 で待ちを指示した（待って送り直す）");

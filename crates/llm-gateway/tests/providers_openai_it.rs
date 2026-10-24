@@ -323,7 +323,7 @@ async fn openai_stream_cut_midway_is_unavailable_not_a_clean_end() {
 /// いつもどおり上限の誤り）。
 #[tokio::test]
 async fn openai_waits_out_a_short_rate_limit_once() {
-    const LIMITED: &str = r#"[{"error":{"code":429,"details":[{"retryDelay": "0.05s"}]}}]"#;
+    const LIMITED: &str = r#"[{"error":{"code":429,"details":[{"retryDelay": "0.5s"}]}}]"#;
     async fn serve(statuses: Vec<StatusCode>) -> (String, Arc<Mutex<usize>>) {
         let calls = Arc::new(Mutex::new(0usize));
         let seen = calls.clone();
@@ -365,6 +365,23 @@ async fn openai_waits_out_a_short_rate_limit_once() {
         Err(LlmError::RateLimited(_))
     ));
     assert_eq!(*calls.lock().unwrap(), 2, "送り直しは 1 度だけ");
+
+    // 生成全体の締め切りより長い待ちはしない（すぐ上限の誤りとして返す）。
+    let (base, calls) = serve(vec![StatusCode::TOO_MANY_REQUESTS]).await;
+    let provider = OpenAiProvider::new(reqwest::Client::new(), base, None, "m").with_timeouts(
+        llm_gateway::LlmTimeouts {
+            first_response: std::time::Duration::from_secs(5),
+            idle: std::time::Duration::from_secs(5),
+            total: std::time::Duration::from_millis(300),
+        },
+    );
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        provider.stream(&req).await,
+        Err(LlmError::RateLimited(_))
+    ));
+    assert_eq!(*calls.lock().unwrap(), 1, "待たずに返す");
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
 }
 
 /// 本文（false）か思考（true）のデルタをつなげる。
