@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use authz::AuthContext;
+use reqwest::header::HeaderValue;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -35,8 +36,14 @@ pub struct QdrantVectorStore {
     http: reqwest::Client,
     base_url: String,
     collection: String,
+    /// Qdrant の API キー（`QDRANT__SERVICE__API_KEY` と対・#812）。None は無認証で送る。
+    /// ログ・Debug に出ないよう sensitive 印付きのヘッダ値で持つ。
+    api_key: Option<HeaderValue>,
     ready: AtomicBool,
 }
+
+/// API キーを載せるヘッダ名（Qdrant REST の正式名）。
+const API_KEY_HEADER: &str = "api-key";
 
 impl QdrantVectorStore {
     pub fn new(http: reqwest::Client, base_url: &str, embedding_model_version: &str) -> Self {
@@ -44,12 +51,60 @@ impl QdrantVectorStore {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
             collection: collection_name(embedding_model_version),
+            api_key: None,
             ready: AtomicBool::new(false),
         }
     }
 
+    /// 全リクエストに API キーを付ける（#812）。
+    ///
+    /// 全テナントのベクタが単一 collection にあるため、Qdrant に届く内部コンポーネントが
+    /// 1 つ侵害されるだけで全テナントに届く。ネットワーク到達性だけを信頼の根拠にしない。
+    /// 空文字は「未設定」と同じに扱う（compose は未設定の env を空文字で渡す）。
+    /// ヘッダに載せられない文字を含むキーは起動時に [`RagError::Config`] で落とす
+    /// （送信のたびに不可解な HTTP エラーで全件失敗させない）。
+    pub fn with_api_key(mut self, api_key: Option<&str>) -> Result<Self, RagError> {
+        self.api_key = match api_key.filter(|k| !k.is_empty()) {
+            Some(key) => {
+                let mut value = HeaderValue::from_str(key).map_err(|_| {
+                    RagError::Config("qdrant_api_key にヘッダへ載せられない文字があります".into())
+                })?;
+                value.set_sensitive(true);
+                Some(value)
+            }
+            None => None,
+        };
+        Ok(self)
+    }
+
+    /// API キーを付けて送るか（起動時の警告判定用）。
+    pub fn has_api_key(&self) -> bool {
+        self.api_key.is_some()
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
+    }
+
+    /// 全リクエストの起点。API キーの付与をここに一本化する（経路ごとの付け忘れを作らない）。
+    fn request(&self, method: reqwest::Method, url: String) -> reqwest::RequestBuilder {
+        let req = self.http.request(method, url);
+        match &self.api_key {
+            Some(key) => req.header(API_KEY_HEADER, key.clone()),
+            None => req,
+        }
+    }
+
+    fn get(&self, url: String) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::GET, url)
+    }
+
+    fn put(&self, url: String) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::PUT, url)
+    }
+
+    fn post(&self, url: String) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::POST, url)
     }
 
     /// 非 2xx を [`RagError::Vector`] に写す。
@@ -104,7 +159,6 @@ impl VectorStore for QdrantVectorStore {
         }
         // collection 存在確認 → 無ければ作成（並行作成の 409 は成功扱い＝冪等）。
         let exists = self
-            .http
             .get(self.url(&format!("/collections/{}/exists", self.collection)))
             .send()
             .await?;
@@ -113,7 +167,6 @@ impl VectorStore for QdrantVectorStore {
             .unwrap_or(false);
         if !exists {
             let resp = self
-                .http
                 .put(self.url(&format!("/collections/{}", self.collection)))
                 .json(&json!({
                     "vectors": {"size": dimension, "distance": "Cosine"}
@@ -131,7 +184,6 @@ impl VectorStore for QdrantVectorStore {
                 ("version", "integer"),
             ] {
                 let resp = self
-                    .http
                     .put(self.url(&format!("/collections/{}/index", self.collection)))
                     .json(&json!({"field_name": field, "field_schema": schema}))
                     .send()
@@ -143,7 +195,6 @@ impl VectorStore for QdrantVectorStore {
         }
         // alias を自 collection へ向ける（shadow 移行はここを別 collection に切替える）。
         let resp = self
-            .http
             .post(self.url("/collections/aliases"))
             .json(&json!({
                 "actions": [
@@ -160,7 +211,6 @@ impl VectorStore for QdrantVectorStore {
         // create のみで再試行する。
         if !resp.status().is_success() {
             let resp = self
-                .http
                 .post(self.url("/collections/aliases"))
                 .json(&json!({
                     "actions": [{"create_alias": {
@@ -201,7 +251,6 @@ impl VectorStore for QdrantVectorStore {
                 })
                 .collect();
             let resp = self
-                .http
                 .put(self.url(&format!("/collections/{ACTIVE_ALIAS}/points?wait=true")))
                 .json(&json!({"points": body_points}))
                 .send()
@@ -213,7 +262,6 @@ impl VectorStore for QdrantVectorStore {
 
     async fn delete_node(&self, ctx: &AuthContext, node_id: Uuid) -> Result<(), RagError> {
         let resp = self
-            .http
             .post(self.url(&format!(
                 "/collections/{ACTIVE_ALIAS}/points/delete?wait=true"
             )))
@@ -238,7 +286,6 @@ impl VectorStore for QdrantVectorStore {
         keep_version: i64,
     ) -> Result<(), RagError> {
         let resp = self
-            .http
             .post(self.url(&format!(
                 "/collections/{ACTIVE_ALIAS}/points/delete?wait=true"
             )))
@@ -265,7 +312,6 @@ impl VectorStore for QdrantVectorStore {
         tags: &[String],
     ) -> Result<(), RagError> {
         let resp = self
-            .http
             .post(self.url(&format!(
                 "/collections/{ACTIVE_ALIAS}/points/payload?wait=true"
             )))
@@ -291,7 +337,6 @@ impl VectorStore for QdrantVectorStore {
         query: &VectorSearch<'_>,
     ) -> Result<Vec<ScoredChunk>, RagError> {
         let resp = self
-            .http
             .post(self.url(&format!("/collections/{ACTIVE_ALIAS}/points/search")))
             .json(&json!({
                 "vector": query.vector,
@@ -329,7 +374,6 @@ impl VectorStore for QdrantVectorStore {
 
     async fn purge_tenant(&self, tenant_id: &str) -> Result<(), RagError> {
         let resp = self
-            .http
             .post(self.url(&format!(
                 "/collections/{ACTIVE_ALIAS}/points/delete?wait=true"
             )))

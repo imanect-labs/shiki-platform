@@ -58,9 +58,39 @@ async fn setup() -> Option<QdrantVectorStore> {
         reqwest::Client::new(),
         &url,
         &format!("test-model-{}", Uuid::new_v4()),
-    );
+    )
+    // API キー付きの Qdrant（compose は既定で付く・#812）なら同じキーを送る。
+    .with_api_key(api_key().as_deref())
+    .unwrap();
     store.ensure_ready(DIM).await.unwrap();
     Some(store)
+}
+
+/// `RAG_TEST_QDRANT_API_KEY`（未設定・空は無認証の Qdrant）。
+fn api_key() -> Option<String> {
+    std::env::var("RAG_TEST_QDRANT_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+}
+
+/// API キーを要求する Qdrant は、キー無し・誤ったキーを拒否する（#812）。
+///
+/// クライアント側でキーを付けていることだけでなく、compose の Qdrant が実際に
+/// 認証を強制していることを確かめる。`RAG_TEST_QDRANT_API_KEY` がある時だけ走る。
+#[tokio::test]
+async fn qdrant_with_api_key_rejects_missing_or_wrong_key() {
+    let (Ok(url), Some(_)) = (std::env::var("RAG_TEST_QDRANT_URL"), api_key()) else {
+        eprintln!("RAG_TEST_QDRANT_URL / RAG_TEST_QDRANT_API_KEY 未設定のためスキップ");
+        return;
+    };
+    let model = format!("test-model-{}", Uuid::new_v4());
+    for key in [None, Some("wrong-key")] {
+        let store = QdrantVectorStore::new(reqwest::Client::new(), &url, &model)
+            .with_api_key(key)
+            .unwrap();
+        let err = store.ensure_ready(DIM).await.unwrap_err();
+        assert!(err.to_string().contains("401"), "{key:?}: {err}");
+    }
 }
 
 fn unit(v: [f32; DIM]) -> Vec<f32> {

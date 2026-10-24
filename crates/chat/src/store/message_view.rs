@@ -163,7 +163,7 @@ impl ChatStore {
         };
         let is_actor = actor == ctx.principal.id;
         let state = (
-            self.event_stream(run_id, from_seq),
+            self.event_stream(&ctx.tenant_id, run_id, from_seq),
             self.clone(),
             ctx.clone(),
             HashSet::<String>::new(),

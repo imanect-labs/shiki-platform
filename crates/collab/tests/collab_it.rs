@@ -106,7 +106,8 @@ fn client_update(doc: &Doc, since: &StateVector) -> Vec<u8> {
 /// [`LiveDoc`] に適用→サーバ状態を双方に配って全員が同一文書になることを検証する。
 #[test]
 fn concurrent_edits_converge_via_live_doc() {
-    let live = LiveDoc::restore(Uuid::new_v4(), None, &empty_persisted()).expect("restore");
+    let live =
+        LiveDoc::restore(Uuid::new_v4(), "default", None, &empty_persisted()).expect("restore");
 
     // クライアント A: 先頭に "hello "、クライアント B: "world"（並行・互いを知らない）。
     let doc_a = Doc::new();
@@ -145,7 +146,8 @@ fn concurrent_edits_converge_via_live_doc() {
 /// 不正なバイト列（敵対的入力）は適用を拒否する（fail-closed）。
 #[test]
 fn garbage_update_is_rejected() {
-    let live = LiveDoc::restore(Uuid::new_v4(), None, &empty_persisted()).expect("restore");
+    let live =
+        LiveDoc::restore(Uuid::new_v4(), "default", None, &empty_persisted()).expect("restore");
     let err = live.apply_update_bytes(&[0xFF, 0x00, 0xAB, 0xCD]);
     assert!(err.is_err(), "壊れた update は拒否されること");
 }
@@ -164,7 +166,7 @@ async fn update_log_compacts_into_snapshot() {
         .await
         .expect("init");
 
-    let live = LiveDoc::restore(node_id, None, &empty_persisted()).expect("restore");
+    let live = LiveDoc::restore(node_id, "default", None, &empty_persisted()).expect("restore");
     let client = Doc::new();
     let text = client.get_or_insert_text("t");
 
@@ -185,7 +187,10 @@ async fn update_log_compacts_into_snapshot() {
     }
 
     // 圧縮済み: 残 update は COMPACT_EVERY 未満まで減っていること（無限肥大しない）。
-    let pending = store.pending_update_count(node_id).await.expect("count");
+    let pending = store
+        .pending_update_count(node_id, "default")
+        .await
+        .expect("count");
     assert!(
         pending < COMPACT_EVERY,
         "update log が圧縮されていること（残 {pending} 件）"
@@ -194,7 +199,8 @@ async fn update_log_compacts_into_snapshot() {
     // snapshot＋残 update からの復元が元文書に一致すること。
     let persisted = store.load(node_id, "default").await.expect("reload");
     assert!(persisted.snapshot.is_some(), "snapshot が作られていること");
-    let restored = LiveDoc::restore(node_id, None, &persisted).expect("restore from snapshot");
+    let restored =
+        LiveDoc::restore(node_id, "default", None, &persisted).expect("restore from snapshot");
     let full = restored.full_state().expect("full state");
     let check = Doc::new();
     let check_text = check.get_or_insert_text("t");
@@ -210,10 +216,13 @@ async fn update_log_compacts_into_snapshot() {
 
     // 最終圧縮（アンロード時パス）: 残 update がゼロになること。
     live.compact_now(&store).await.expect("最終圧縮");
-    let pending = store.pending_update_count(node_id).await.expect("count");
+    let pending = store
+        .pending_update_count(node_id, "default")
+        .await
+        .expect("count");
     assert_eq!(pending, 0, "最終圧縮で log が空になること");
     let persisted = store.load(node_id, "default").await.expect("reload");
-    let restored = LiveDoc::restore(node_id, None, &persisted).expect("restore");
+    let restored = LiveDoc::restore(node_id, "default", None, &persisted).expect("restore");
     assert_eq!(
         restored.full_state().expect("full"),
         full,
@@ -235,4 +244,102 @@ async fn load_is_tenant_scoped() {
         .expect("init");
     let err = store.load(node_id, "other-tenant").await;
     assert!(err.is_err(), "他テナントからのロードは NotFound になること");
+}
+
+/// 永続化の書込・読取はすべて tenant_id でも絞る（#815）。他テナントの node_id を渡しても
+/// 追記・圧縮・件数取得のいずれも当該ドキュメントに触れない。
+#[tokio::test]
+async fn writes_are_tenant_scoped() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let node_id = seed_file_node(&pool, "acme", "default").await;
+    let store = DocStore::new(pool.clone());
+    store
+        .load_or_init(node_id, "acme", "default")
+        .await
+        .expect("init");
+    store
+        .append_update(node_id, "default", b"u1", "tester")
+        .await
+        .expect("自テナントには追記できる");
+
+    // 他テナントからの追記は NotFound（seq も発番しない）。
+    let err = store
+        .append_update(node_id, "other-tenant", b"u2", "tester")
+        .await;
+    assert!(
+        matches!(err, Err(collab::CollabError::NotFound(_))),
+        "他テナントからの追記は拒否されること: {err:?}"
+    );
+    // 他テナントからの件数は 0、圧縮・保存記録も当該行を変えない。
+    assert_eq!(
+        store
+            .pending_update_count(node_id, "other-tenant")
+            .await
+            .expect("count"),
+        0
+    );
+    store
+        .compact(node_id, "other-tenant", b"snap", 10)
+        .await
+        .expect("他テナントの圧縮は no-op");
+    store
+        .set_saved_node_version(node_id, "other-tenant", 99)
+        .await
+        .expect("他テナントの記録は no-op");
+    let persisted = store.load(node_id, "default").await.expect("load");
+    assert_eq!(
+        persisted.updates,
+        vec![b"u1".to_vec()],
+        "update は残っている"
+    );
+    assert_eq!(persisted.next_seq, 2, "他テナントの追記で seq が進まない");
+    assert!(
+        persisted.snapshot.is_none(),
+        "他テナントの圧縮で snapshot が書かれない"
+    );
+    assert_eq!(persisted.saved_node_version, None);
+}
+
+/// DB 自体が親子の tenant 食い違いを拒否する（アプリの前段確認に頼らない・#815）。
+#[tokio::test]
+async fn db_rejects_collab_update_with_foreign_tenant() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let node_id = seed_file_node(&pool, "acme", "default").await;
+    let store = DocStore::new(pool.clone());
+    store
+        .load_or_init(node_id, "acme", "default")
+        .await
+        .expect("init");
+    let err = sqlx::query(
+        "INSERT INTO collab_update (node_id, tenant_id, seq, payload, author)
+         VALUES ($1, 'other-tenant', 1, 'x', 'tester')",
+    )
+    .bind(node_id)
+    .execute(&pool)
+    .await
+    .expect_err("親と異なる tenant の update は FK 違反");
+    let code = err
+        .as_database_error()
+        .and_then(|e| e.code())
+        .map(|c| c.to_string());
+    assert_eq!(code.as_deref(), Some("23503"), "FK 違反であること: {err}");
+
+    // collab_doc → node も同じ（他テナントの node に doc を作れない）。
+    let err = sqlx::query(
+        "INSERT INTO collab_doc (node_id, org, tenant_id) VALUES ($1, 'acme', 'other-tenant')
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(seed_file_node(&pool, "acme", "default").await)
+    .execute(&pool)
+    .await
+    .expect_err("他テナントの node への doc は FK 違反");
+    let code = err
+        .as_database_error()
+        .and_then(|e| e.code())
+        .map(|c| c.to_string());
+    assert_eq!(code.as_deref(), Some("23503"), "FK 違反であること: {err}");
 }

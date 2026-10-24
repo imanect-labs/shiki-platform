@@ -82,6 +82,10 @@ pub struct UploadRequest {
     pub sha256: String,
     /// 内容更新の対象ファイル ID。指定時は既存ファイルの新版アップロードになる。
     pub target_node_id: Option<Uuid>,
+    /// 内容更新の元にした版（楽観ロック・#827）。`target_node_id` と組で使い、今の版と違えば
+    /// 409（`code: "version_conflict"`・`current_version` 付き）。省略は無条件の新版。
+    #[serde(default)]
+    pub base_version: Option<i64>,
 }
 
 /// アップロード宣言レスポンス（declare）。
@@ -131,6 +135,7 @@ where
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
         (status = 404, description = "親フォルダが無い"),
+        (status = 409, description = "内容更新の版の衝突（base_version が古い）"),
     ),
     security(("session" = [])),
 )]
@@ -142,7 +147,7 @@ pub async fn begin_upload(
 ) -> Result<Json<UploadTicketResponse>, ApiError> {
     let ticket = state
         .storage
-        .begin_upload(
+        .begin_upload_with_base(
             &ctx,
             req.parent_id,
             req.name.as_deref().unwrap_or(""),
@@ -150,6 +155,7 @@ pub async fn begin_upload(
             &req.sha256,
             req.size,
             req.target_node_id,
+            req.base_version,
             trace.as_deref(),
         )
         .await?;
@@ -170,7 +176,7 @@ pub async fn begin_upload(
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
         (status = 404, description = "upload_id が無い"),
-        (status = 409, description = "同名衝突"),
+        (status = 409, description = "同名衝突・内容更新の版の衝突（base_version が古い）"),
     ),
     security(("session" = [])),
 )]

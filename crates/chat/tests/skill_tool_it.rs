@@ -233,7 +233,7 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
         .await
         .unwrap();
 
-    let mut rx = store.event_stream(res.run_id, 0);
+    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
     let mut done = false;
     let mut invoked: Option<serde_json::Value> = None;
     let mut tool_result_content = String::new();
@@ -314,7 +314,7 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
         )
         .await
         .unwrap();
-    let mut rx = store.event_stream(res.run_id, 0);
+    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
     let mut done = false;
     let mut saw_error_result = false;
     let mut saw_invoked = false;
