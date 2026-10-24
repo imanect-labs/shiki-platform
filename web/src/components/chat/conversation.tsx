@@ -10,7 +10,6 @@ import {
   ChevronUp,
   Clock3,
   FileDown,
-  Sparkles,
 } from "lucide-react";
 
 import {
@@ -70,6 +69,7 @@ import { SourcePanelAside, SourcePanelSheet } from "./citations/source-panel";
 import { type ToolActivityItem } from "./tool-activity";
 import { ChainOfThought } from "./chain-of-thought";
 import { Composer } from "./composer";
+import { PanelEmptyHint } from "./doc-chat-draft";
 import { WorkflowRefCard } from "./workflow-ref-card";
 import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
@@ -695,7 +695,7 @@ export function Conversation({
               pending.text,
               pending.attachments,
               pending.autonomous ?? false,
-              undefined,
+              pending.context,
               pending.skills,
             );
           }
@@ -769,19 +769,7 @@ export function Conversation({
               >
                 {/* パネルの空会話は「何ができるか」を軽く案内する（空白のままにしない）。 */}
                 {isPanel && messages.length === 0 && !stream && !notFound && !error ? (
-                  <div
-                    className="flex flex-col items-center gap-2 px-6 py-14 text-center"
-                    data-testid="panel-empty-hint"
-                  >
-                    <Sparkles className="size-6 text-muted-foreground/70" aria-hidden />
-                    <p className="text-sm font-medium text-foreground">
-                      このドキュメントについて AI に相談できます
-                    </p>
-                    <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">
-                      質問・要約・編集の依頼ができます。本文を選択して「AI
-                      に依頼」を押すと、選択箇所を指定して指示できます。
-                    </p>
-                  </div>
+                  <PanelEmptyHint />
                 ) : null}
                 {messages.map((m) =>
                   m.role === "user" ? (

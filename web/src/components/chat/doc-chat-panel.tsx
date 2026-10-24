@@ -6,11 +6,15 @@
 /// **アクティブ会話の保存先だけが違う**ため、そこを [`ActiveThreadStore`] に抽象化して共有する。
 /// ドキュメント:会話 = 1:N（`origin_note_id` = ドキュメントの node id で会話一覧を引く）。
 /// 会話 UI は既存 [`Conversation`]（variant=panel）を再利用する。
+///
+/// 会話は**最初の発話を送ったとき**に作る（[`DocChatDraft`]）。パネルを開いただけ・「新しい会話」を
+/// 押しただけでは作らない（空の会話がサイドバーの履歴に並ばないように）。
 
 import { Check, ChevronDown, Loader2, MessagesSquare, Plus } from "lucide-react";
 import * as React from "react";
 
 import { Conversation } from "@/components/chat/conversation";
+import { DocChatDraft } from "@/components/chat/doc-chat-draft";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,6 +23,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { createThread, getThread, listThreads, type Thread } from "@/lib/chat-api";
+import { HOME_SCOPE, moveModelChoice } from "@/lib/model-choice";
+import { stashPending, type PendingMessage } from "@/lib/pending-message";
+import { moveToolChoice } from "@/lib/tool-choice";
 import {
   readScoped,
   storageScopeGeneration,
@@ -61,12 +68,11 @@ export function DocChatPanel({
   const [activeThreadId, setActiveThreadIdState] = React.useState<string | null>(() =>
     store.read(),
   );
-  // ?thread= の会話がこの文書のものか確かめている間（確かめ終わるまで最初の会話を自動で作らない）。
+  // ?thread= の会話がこの文書のものか確かめている間（確かめ終わるまで入力欄を出さない）。
   const [verifyingInitial, setVerifyingInitial] = React.useState(Boolean(initialThreadId));
   const [conversations, setConversations] = React.useState<Thread[]>([]);
-  const [error, setError] = React.useState<string | null>(null);
-  const [busy, setBusy] = React.useState(false);
-  const creatingRef = React.useRef(false);
+  // 「新しい会話」を押して、まだ最初の発話を送っていない間（アクティブ会話はそのまま残す）。
+  const [drafting, setDrafting] = React.useState(false);
 
   // 非同期処理（会話の作成・確認）の完了で選ぶときは、開始時の世代（`startedAt`）を渡す。
   // 待つ間にログアウト（他タブを含む）があれば、前の人の会話 id を次の人のキーへ書かない（#817）。
@@ -91,7 +97,7 @@ export function DocChatPanel({
   React.useEffect(() => {
     if (!initialThreadId) {
       // ディープリンクが外れた（確かめている途中に同じ文書のクエリなし URL へ移った等）。
-      // 確認待ちのまま残すと、最初の会話の自動作成が止まり「準備中」から進まない。
+      // 確認待ちのまま残すと、入力欄が出ず「準備中」から進まない。
       setVerifyingInitial(false);
       return;
     }
@@ -102,8 +108,9 @@ export function DocChatPanel({
     const startedAt = storageScopeGeneration();
     getThread(initialThreadId)
       .then((t) => {
-        if (!cancelled && t.originNoteId === nodeId && t.id !== store.read()) {
-          setActive(t.id, startedAt);
+        if (!cancelled && t.originNoteId === nodeId) {
+          if (t.id !== store.read()) setActive(t.id, startedAt);
+          setDrafting(false);
         }
       })
       .catch(() => {
@@ -141,43 +148,36 @@ export function DocChatPanel({
     void refreshConversations();
   }, [refreshConversations, activeThreadId]);
 
-  // 会話未作成なら（editor のとき）最初の会話を作る。ref ガードで一度だけ。
-  React.useEffect(() => {
-    if (activeThreadId || verifyingInitial || !editable || creatingRef.current) return;
-    creatingRef.current = true;
-    const startedAt = storageScopeGeneration();
-    createThread(title, false, { originNoteId: nodeId })
-      .then((thread) => setActive(thread.id, startedAt))
-      .catch(() => {
-        creatingRef.current = false;
-        setError("チャットの準備に失敗しました。");
+  // 最初の発話で会話を作る。本文・モデル・ツールの選択はホームと同じく新しい会話へ引き継ぎ、
+  // 会話側がマウント時に送る（作成を待つ間にログアウトがあれば書き戻さない・#817）。
+  const startConversation = React.useCallback(
+    async (msg: PendingMessage) => {
+      const startedAt = storageScopeGeneration();
+      const n = conversations.length + 1;
+      const thread = await createThread(n <= 1 ? title : `${title} (${n})`, msg.autonomous ?? false, {
+        originNoteId: nodeId,
       });
-  }, [activeThreadId, verifyingInitial, editable, title, nodeId, setActive]);
+      stashPending(thread.id, msg, startedAt);
+      moveModelChoice(HOME_SCOPE, thread.id);
+      moveToolChoice(HOME_SCOPE, thread.id);
+      // 一覧はアクティブの変化で読み直される（上の effect）。
+      setActive(thread.id, startedAt);
+      setDrafting(false);
+    },
+    [conversations.length, title, nodeId, setActive],
+  );
 
   const selectConversation = React.useCallback(
     (id: string) => {
+      setDrafting(false);
       if (id !== activeThreadId) setActive(id);
     },
     [activeThreadId, setActive],
   );
 
-  const startNewConversation = React.useCallback(() => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    const n = conversations.length + 1;
-    const t = n <= 1 ? title : `${title} (${n})`;
-    const startedAt = storageScopeGeneration();
-    createThread(t, false, { originNoteId: nodeId })
-      .then((thread) => {
-        setActive(thread.id, startedAt);
-        void refreshConversations();
-      })
-      .catch(() => setError("新しい会話を作成できませんでした。"))
-      .finally(() => setBusy(false));
-  }, [busy, conversations.length, title, nodeId, setActive, refreshConversations]);
-
-  const activeIndex = conversations.findIndex((c) => c.id === activeThreadId);
+  // 表示中の会話（「新しい会話」の入力中は無し＝入力欄を出す）。
+  const shownThreadId = drafting ? null : activeThreadId;
+  const activeIndex = shownThreadId ? conversations.findIndex((c) => c.id === shownThreadId) : -1;
 
   return (
     <div
@@ -185,7 +185,8 @@ export function DocChatPanel({
       aria-label="ドキュメントのチャット"
       data-testid={`${testIdPrefix}-chat-panel`}
     >
-      {activeThreadId ? (
+      {/* 切り替え先がある（会話を 1 つ以上持つ）ときだけ出す。初めての会話は入力欄だけ。 */}
+      {activeThreadId || conversations.length > 0 ? (
         <div
           className="flex shrink-0 items-center gap-1 px-2 py-1.5 shiki-dash-bottom"
           data-testid={`${testIdPrefix}-conversation-switcher`}
@@ -199,7 +200,11 @@ export function DocChatPanel({
               >
                 <MessagesSquare className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
                 <span className="truncate">
-                  {activeIndex >= 0 ? `会話 ${activeIndex + 1}` : "会話"}
+                  {shownThreadId
+                    ? activeIndex >= 0
+                      ? `会話 ${activeIndex + 1}`
+                      : "会話"
+                    : "新しい会話"}
                 </span>
                 {conversations.length > 1 ? (
                   <span className="rounded-full bg-muted px-1.5 text-[11px] text-muted-foreground">
@@ -216,7 +221,7 @@ export function DocChatPanel({
                   <Check
                     className={cn(
                       "size-3.5 shrink-0",
-                      c.id === activeThreadId ? "opacity-100" : "opacity-0",
+                      c.id === shownThreadId ? "opacity-100" : "opacity-0",
                     )}
                     aria-hidden
                   />
@@ -235,17 +240,13 @@ export function DocChatPanel({
           {editable ? (
             <button
               type="button"
-              onClick={startNewConversation}
-              disabled={busy}
+              onClick={() => setDrafting(true)}
+              disabled={!shownThreadId}
               data-testid={`${testIdPrefix}-new-conversation`}
               className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12px] text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 pointer-coarse:min-h-10 pointer-coarse:text-[13px]"
               title="新しい会話を開始（この会話は履歴に残ります）"
             >
-              {busy ? (
-                <Loader2 className="size-3.5 animate-spin" aria-hidden />
-              ) : (
-                <Plus className="size-3.5" aria-hidden />
-              )}
+              <Plus className="size-3.5" aria-hidden />
               新しい会話
             </button>
           ) : null}
@@ -253,17 +254,15 @@ export function DocChatPanel({
       ) : null}
 
       <div className="min-h-0 flex-1">
-        {activeThreadId ? (
-          <Conversation key={activeThreadId} threadId={activeThreadId} variant="panel" />
-        ) : error ? (
-          <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
-            {error}
-          </div>
-        ) : editable ? (
+        {shownThreadId ? (
+          <Conversation key={shownThreadId} threadId={shownThreadId} variant="panel" />
+        ) : verifyingInitial ? (
           <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden />
             チャットを準備しています…
           </div>
+        ) : editable ? (
+          <DocChatDraft onStart={startConversation} />
         ) : (
           <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
             まだチャットが開始されていません。
@@ -298,7 +297,7 @@ export function useLocalActiveThreadStore(key: string): ActiveThreadStore {
       // localStorage は同一タブ内の setItem では storage イベントが出ない。ユーザーの確定
       // （/me 応答）だけを購読し、確定前に読んだ空の値をそのユーザーの保存値で読み直す。
       // 保存値が無い変化（ログアウトでスコープが解けた等）は通知しない（アクティブを null に
-      // 戻すと「会話が無い」とみなして新しい会話を作りに行くため）。
+      // 戻すと「会話が無い」とみなして、表示中の会話を新しい会話の入力欄に置き換えるため）。
       subscribe: (onChange) =>
         subscribeStorageScope(() => {
           try {
