@@ -269,16 +269,20 @@ function useRevealActiveThread({
   hasMore: boolean;
   loadMore: () => void;
 }) {
-  const done = React.useRef<{ id: string | null; pages: number; revealed: boolean }>({
-    id: null,
-    pages: 0,
-    revealed: false,
-  });
+  const done = React.useRef<{
+    id: string | null;
+    pages: number;
+    revealed: boolean;
+    /// 読み足しを頼んだ時点の件数（null は未依頼）。増えていなければ取得に失敗した。
+    requestedAt: number | null;
+  }>({ id: null, pages: 0, revealed: false, requestedAt: null });
   const [mountedWith] = React.useState(activeId);
 
   // 描画前に位置を決める（先頭が一瞬見えてから飛ぶちらつきを出さない）。
   React.useLayoutEffect(() => {
-    if (done.current.id !== activeId) done.current = { id: activeId, pages: 0, revealed: false };
+    if (done.current.id !== activeId) {
+      done.current = { id: activeId, pages: 0, revealed: false, requestedAt: null };
+    }
     const state = done.current;
     const container = containerRef.current;
     if (!activeId || state.revealed || loading || !container) return;
@@ -301,13 +305,24 @@ function useRevealActiveThread({
     if (activeId !== mountedWith) return;
     // 読み足し中は結果を待つ（最後のページに載っているかを見てから諦める）。
     if (loadingMore) return;
+    if (state.requestedAt !== null) {
+      // 取得できたページだけを数える。失敗したら今回は諦める（見つからない扱いにはしない・
+      // 失敗を繰り返し叩かない）。
+      const loaded = threads.length > state.requestedAt;
+      state.requestedAt = null;
+      if (!loaded) {
+        state.revealed = true;
+        return;
+      }
+      state.pages += 1;
+    }
     if (!hasMore || state.pages >= MAX_REVEAL_PAGES || UNREACHABLE.has(activeId)) {
       // 探しきれなかった会話は覚えておき、開き直すたびに同じページを取り直さない。
       if (hasMore) UNREACHABLE.add(activeId);
       state.revealed = true;
       return;
     }
-    state.pages += 1;
+    state.requestedAt = threads.length;
     loadMore();
   }, [containerRef, activeId, mountedWith, threads, loading, loadingMore, hasMore, loadMore]);
 }

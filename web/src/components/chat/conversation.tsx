@@ -1328,6 +1328,7 @@ function StreamingRow({
     !stream.approval;
   const waiting = useStreamWaiting({
     text: stream.text,
+    thinking: stream.thinking,
     textAtLastTool: stream.textAtLastTool,
     tools: stream.tools,
     awaitingUser: stream.approval !== null,

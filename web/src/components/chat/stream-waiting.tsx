@@ -41,6 +41,8 @@ function useIdleStep(signal: string, active: boolean, steps: readonly number[]):
 
 /// 末尾の待ち表示を出すまでの秒数も刻みに含める。
 const IDLE_STEPS = [...new Set([...WAITING_STEPS, SHOW_AFTER_SECS])].sort((a, b) => a - b);
+/// 思考が止まったとみなす刻み。
+const THINKING_STEPS = [SHOW_AFTER_SECS];
 
 export type StreamWaiting = {
   /// 最後のツールの後に回答の本文が流れ始めた（ツールのローリングを畳む）。
@@ -55,15 +57,17 @@ export type StreamWaiting = {
 
 /// 生成中のストリームから、待ち表示の出し分けを決める。
 ///
-/// 思考（reasoning）の差分は待ちを解かない。思考が流れている間も本文やツールは止まって
-/// いるので、そこで文言をリセットし続けると「結果を確認しています」から進まなくなる。
+/// 思考（reasoning）が流れている間は「考えています」とし、止まってから待ちの文言を進める
+/// （思考の後にツールの入力を長く書き出す間も、見出しが「考えています」で止まらない）。
 export function useStreamWaiting({
   text,
+  thinking,
   textAtLastTool,
   tools,
   awaitingUser,
 }: {
   text: string;
+  thinking: string;
   /// 最後のツール呼び出し時点の本文の長さ（それ以降が「ツールの後の本文」）。
   textAtLastTool: number;
   tools: ToolActivityItem[];
@@ -72,18 +76,33 @@ export function useStreamWaiting({
 }): StreamWaiting {
   const toolsRunning = tools.some((t) => t.running);
   const done = tools.filter((t) => !t.running).length;
-  const signal = `${text.length}:${tools.length}:${done}`;
+  const signal = `${text.length}:${thinking.length}:${tools.length}:${done}`;
   const waiting = !toolsRunning && !awaitingUser;
   const idleSecs = useIdleStep(signal, waiting, IDLE_STEPS);
+  // 思考が最後に伸びてからの秒数（ツールの実行で途切れないよう常に数える）。
+  const thinkingIdle = useIdleStep(String(thinking.length), true, THINKING_STEPS);
+  const thinkingFlowing = thinking.trim().length > 0 && thinkingIdle < SHOW_AFTER_SECS;
 
   const sinceTool = text.slice(textAtLastTool).trim();
   const hasTools = tools.length > 0;
   const answering = !toolsRunning && sinceTool.length >= ANSWER_MIN_CHARS;
   const context: WaitingContext =
-    hasTools && sinceTool.length === 0 ? "after_tool" : text.trim() ? "after_text" : "start";
-  // 本文が流れている最中は「待ち」ではない（止まってから待ちの文言を進める）。
+    hasTools && sinceTool.length === 0
+      ? "after_tool"
+      : text.trim()
+        ? "after_text"
+        : thinking.trim()
+          ? "after_thinking"
+          : "start";
+  // 本文・思考が流れている最中は「待ち」ではない（止まってから待ちの文言を進める）。
   const flowing = context === "after_text" && idleSecs < SHOW_AFTER_SECS;
-  const label = waiting ? (flowing ? "回答を書いています" : waitingPhrase(context, idleSecs)) : null;
+  const label = !waiting
+    ? null
+    : thinkingFlowing
+      ? "考えています"
+      : flowing
+        ? "回答を書いています"
+        : waitingPhrase(context, idleSecs);
   // ステップの合間はツールの見出しが、本文が出る前は思考の見出しが文言を受け持つ。
   const between = hasTools && !answering;
   const atBottom = waiting && !between && text.trim().length > 0;

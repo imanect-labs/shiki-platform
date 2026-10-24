@@ -11,7 +11,9 @@ export type WaitingContext =
   /// ツールの結果が返った後（次の手順を決めている／次の呼び出しを書いている）。
   | "after_tool"
   /// 本文の途中で止まった。
-  | "after_text";
+  | "after_text"
+  /// 思考（reasoning）が止まり、本文もツールもまだ来ない（ツールの入力を書き出している等）。
+  | "after_thinking";
 
 /// `[この秒数以上待ったら, 出す文言]`。秒数の昇順。
 const PHRASES: Record<WaitingContext, readonly (readonly [number, string])[]> = {
@@ -25,6 +27,12 @@ const PHRASES: Record<WaitingContext, readonly (readonly [number, string])[]> = 
     [4, "次の手順を考えています"],
     [10, "内容を組み立てています"],
     [18, "書き出す内容をまとめています"],
+    [35, "時間がかかっています。もう少しお待ちください"],
+  ],
+  after_thinking: [
+    [0, "考えています"],
+    [6, "内容を組み立てています"],
+    [15, "書き出す内容をまとめています"],
     [35, "時間がかかっています。もう少しお待ちください"],
   ],
   after_text: [

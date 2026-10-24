@@ -137,8 +137,10 @@ function statusText(
   waitingLabel: string | null,
 ): string {
   if (!streaming) return "思考プロセス";
-  if (thinking.trim()) return "考えています…";
+  // 待ちの文言（思考が流れている間は「考えています」）を優先する。思考の後に長く止まる間も
+  // 「考えています」のままにしない。
   if (waitingLabel) return `${waitingLabel}…`;
+  if (thinking.trim()) return "考えています…";
   return hasTools ? "回答をまとめています…" : "準備しています…";
 }
 
