@@ -60,7 +60,19 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS workflow_run_gc_idx
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS effect_journal_gc_idx
     ON effect_journal (tenant_id, created_at);
+
+-- #829 / migration 0082: 監査ログを 1 回答・1 会話の記録で絞る（持つ行だけの部分索引）
+CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_tenant_message_idx
+    ON audit_log (tenant_id, org, (metadata ->> 'message_id'), created_at DESC, id DESC)
+    WHERE metadata ? 'message_id';
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_tenant_thread_idx
+    ON audit_log (tenant_id, org, (metadata ->> 'thread_id'), created_at DESC, id DESC)
+    WHERE metadata ? 'thread_id';
 ```
+
+停止時間を取れる環境なら、事前作成せずにそのまま migration に任せてもよい（通常の
+`CREATE INDEX` なので、構築の間だけ対象表への書込が止まる）。
 
 途中で失敗すると**無効な index が残り、プランナに使われないまま書込コストだけ増える**。
 必ず確認して落としてからやり直す。

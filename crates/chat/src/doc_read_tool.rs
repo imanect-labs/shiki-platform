@@ -70,6 +70,16 @@ impl DocReadTool {
             None => rag::AuditTrail::from(trace_id),
         }
     }
+
+    /// 本文を読む前の権限確認（許可・拒否）の監査にも、回答の会話と ID を残す（#829）。
+    fn annotations(&self, trace_id: Option<&str>) -> serde_json::Map<String, serde_json::Value> {
+        let mut metadata = serde_json::json!({});
+        self.trail(trace_id).annotate(&mut metadata);
+        match metadata {
+            serde_json::Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        }
+    }
 }
 
 /// ツール引数を解釈したもの。
@@ -298,7 +308,7 @@ impl Tool for DocReadTool {
         // viewer 判定（共有リンクの遅延失効・監査を含む）。ここを通った Node だけが読み出しに渡る。
         let node = match self
             .storage
-            .get_metadata(ctx, input.file_id, trace_id)
+            .get_metadata_annotated(ctx, input.file_id, trace_id, &self.annotations(trace_id))
             .await
         {
             Ok(node) => node,
