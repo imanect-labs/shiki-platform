@@ -59,6 +59,21 @@ function toActiveCommand(s: SlashSuggestion): ActiveCommand {
   };
 }
 
+/// 書きかけの保存を待つ時間（打鍵が止まってから書く）。
+const DRAFT_SAVE_DELAY_MS = 400;
+/// 保存する書きかけの上限（文字数）。超える本文は保存しない（Web Storage の容量を食い潰さない）。
+const DRAFT_MAX_CHARS = 100_000;
+
+/// 書きかけを保存する。空・上限超過は保存値を消す（古い書きかけを後で戻さないため）。
+function saveDraft(key: string, value: string): void {
+  try {
+    if (value && value.length <= DRAFT_MAX_CHARS) writeScoped(key, value);
+    else removeScoped(key);
+  } catch {
+    /* 容量超過・プライベートモード等は保存しない（入力はそのまま続けられる） */
+  }
+}
+
 /// チャット入力。ローカル/ドライブからの添付、送信を担う。
 /// 添付ファイルはアップロード後に自動でベクトル化され、doc_search の対象になる。
 ///
@@ -153,15 +168,19 @@ export const Composer = React.memo(function Composer({
     if (saved) setValue((v) => v || saved);
     setDraftRestored(true);
   }, [draftKey, scopeReady, draftRestored]);
+  // 保存は打鍵ごとではなく、手が止まってからまとめて書く（長文の貼り付け後も入力を重くしない）。
+  // 画面を離れる（アンマウント）ときは待たずに書く（直後に別画面へ移っても取りこぼさない）。
+  const latestValue = React.useRef(value);
+  latestValue.current = value;
   React.useEffect(() => {
     if (!draftKey || !draftRestored) return;
-    try {
-      if (value) writeScoped(draftKey, value);
-      else removeScoped(draftKey);
-    } catch {
-      /* 容量超過・プライベートモード等は保存しない（入力はそのまま続けられる） */
-    }
+    const t = window.setTimeout(() => saveDraft(draftKey, value), DRAFT_SAVE_DELAY_MS);
+    return () => window.clearTimeout(t);
   }, [draftKey, draftRestored, value]);
+  React.useEffect(() => {
+    if (!draftKey || !draftRestored) return;
+    return () => saveDraft(draftKey, latestValue.current);
+  }, [draftKey, draftRestored]);
 
   // スラッシュコマンド（#387）。候補はカタログ（モデルが見ているものと同一）由来。
   const [suggestions, setSuggestions] = React.useState<SlashSuggestion[]>([]);
