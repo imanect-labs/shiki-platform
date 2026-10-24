@@ -157,6 +157,7 @@ crates/data/src/stats/
 | 多値列の `Eq c` | c を含む | 配列全体との一致 |
 | 多値列の `In [..]` | いずれかを含む | 左辺が配列だと常に偽 |
 | 多値列の `Contains` | いずれかの要素が部分文字列を含む | 要素の一致（`items.contains(&v)`） |
+| 多値列の `StartsWith` / `EndsWith` | いずれかの要素が前方 / 後方一致 | 左辺が配列だと常に偽 |
 | 空の多値列の `Exists` | 偽（要素 0 個＝索引行なし） | 真（`[]` は null ではない） |
 | 数値の等値 | 数値として比較（`1 = 1.0`） | JSON 値として比較（`1 ≠ 1.0`） |
 
@@ -164,7 +165,7 @@ crates/data/src/stats/
 利用者が 2 つの解釈を覚えずに済むようにするため。ワークフローの既存の分岐の振る舞いが変わるので、Task 15.7 で次を行う。
 
 - `eval.rs` の `Eq` / `Neq` / `In` / `Contains` / `Exists` を上表の多値・数値の規則に合わせる
-- 保存済みのワークフロー定義のうち、**配列値に対して `eq` / `neq` / `in` / `contains` を使っている条件を検出**し、
+- 保存済みのワークフロー定義のうち、**配列値に対して `eq` / `neq` / `in` / `contains` / `starts_with` / `ends_with` を使っている条件を検出**し、
   切替前に一覧化する（振る舞いが変わる候補）。ワークフローの検証器にも同じ検出を入れ、保存時に警告する
   （実装: `workflow_engine::semantics_warnings`。一覧は `shiki-admin workflow-conditions`、保存・検証 API と
   チャットの `emit_workflow` は `ir.condition_semantics_changed` の警告を返す。値の型は実行時まで決まらないので、

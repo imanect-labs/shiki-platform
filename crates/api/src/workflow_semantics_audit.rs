@@ -2,7 +2,8 @@
 //! 変わり得るものを一覧にする（Task 15.7）。`shiki-admin workflow-conditions` の本体。
 //!
 //! 検出の規則は保存時の警告と同じ関数（[`workflow_engine::semantics_warnings`]）。DB では
-//! 「比較演算子 eq / neq / in / contains / exists / is_null を含む」版だけを JSON パスで先に絞り
+//! 「比較演算子 eq / neq / in / contains / starts_with / ends_with / exists / is_null を含む」版だけを
+//! JSON パスで先に絞り
 //! （全件を読んでからフィルタしない）、keyset で少しずつ読む。運用ツールなので全テナントを走査する
 //! （`tenant` で絞れる）。読取専用。
 
@@ -49,7 +50,8 @@ pub async fn scan_page(
            AND (a.tenant_id, a.id, v.version) > ($3, $4, $5) \
            AND jsonb_path_exists(v.body, \
                  '$.** ? (@.op == \"eq\" || @.op == \"neq\" || @.op == \"in\" || \
-                          @.op == \"contains\" || @.op == \"exists\" || @.op == \"is_null\")') \
+                          @.op == \"contains\" || @.op == \"starts_with\" || \
+                          @.op == \"ends_with\" || @.op == \"exists\" || @.op == \"is_null\")') \
          ORDER BY a.tenant_id, a.id, v.version \
          LIMIT $6",
     )

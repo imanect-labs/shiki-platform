@@ -1,7 +1,7 @@
 //! `shiki-admin workflow-conditions [--tenant <t>] [--all-versions] [--batch <n>]`（Task 15.7）。
 //!
 //! 条件の意味論の切替（2026-10・query-optimizer.md §3.1）の**前に**、保存済みワークフローのうち
-//! 配列値に `eq` / `neq` / `in` / `contains` を使う条件（空配列の `exists` / `is_null`・`1.0` との等値を含む）を
+//! 配列値に `eq` / `neq` / `in` / `contains` / `starts_with` / `ends_with` を使う条件（空配列の `exists` / `is_null`・`1.0` との等値を含む）を
 //! 一覧にする。検出規則は保存時の警告と同じ（`workflow_engine::semantics_warnings`）。
 //!
 //! - 既定は各ワークフローの**最新版**。`--all-versions` で過去版も（ピンした版で走る run がある場合）。

@@ -465,7 +465,7 @@ async fn scheduled_workflow_queries_and_updates_with_the_delegators_permissions(
     assert_eq!(still.rev, 1, "拒否された run は何も書かない");
 }
 
-/// 受け入れ条件: 配列値に eq / neq / in / contains を使う保存済みワークフローが切替前に一覧化され、
+/// 受け入れ条件: 配列値に eq / neq / in / contains（と starts_with / ends_with）を使う保存済みワークフローが切替前に一覧化され、
 /// 保存時に警告が出る（`shiki-admin workflow-conditions` の本体と保存 API が同じ検出を使う）。
 #[tokio::test]
 async fn saved_workflows_with_array_conditions_are_listed() {
@@ -501,6 +501,22 @@ async fn saved_workflows_with_array_conditions_are_listed() {
         .create(&alice, &plain, &Catalog::default(), None)
         .await
         .unwrap();
+    // R3-3: 配列への starts_with（旧は常に偽・新はいずれかの要素）も DB の事前絞り込みを通って一覧に載る。
+    let prefix = json!({
+        "ir_version": 1, "name": "tags-prefix",
+        "input_schema": { "type": "object", "properties": {
+            "tags": { "type": "array", "items": { "type": "string" } } } },
+        "triggers": [ { "kind": "interactive" } ],
+        "nodes": [ { "id": "sw", "type": "control.branch", "params": { "condition":
+            { "cmp": { "left": { "$from": "input", "path": "/tags" }, "op": "starts_with", "right": "ur" } } } } ],
+        "edges": []
+    });
+    let (wf_prefix, prefix_ir) = env
+        .workflows
+        .create(&alice, &prefix, &Catalog::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(workflow_engine::semantics_warnings(&prefix_ir).len(), 1);
 
     // 一覧化（1 件ずつのページで keyset を回す）。
     let mut after = None;
@@ -521,8 +537,16 @@ async fn saved_workflows_with_array_conditions_are_listed() {
             None => break,
         }
     }
-    assert_eq!(found.len(), 1, "{found:?}");
-    assert_eq!(found[0].workflow_id, wf);
-    assert_eq!(found[0].name, "tags-branch");
-    assert_eq!(found[0].node_id.as_deref(), Some("br"));
+    assert_eq!(found.len(), 2, "{found:?}");
+    let eq_hit = found
+        .iter()
+        .find(|f| f.workflow_id == wf)
+        .expect("tags-branch");
+    assert_eq!(eq_hit.name, "tags-branch");
+    assert_eq!(eq_hit.node_id.as_deref(), Some("br"));
+    let sw_hit = found
+        .iter()
+        .find(|f| f.workflow_id == wf_prefix)
+        .expect("tags-prefix");
+    assert_eq!(sw_hit.node_id.as_deref(), Some("sw"));
 }

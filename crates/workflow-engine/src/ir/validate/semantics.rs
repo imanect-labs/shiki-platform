@@ -1,6 +1,7 @@
 //! 条件の意味論の切替（2026-10・query-optimizer.md §3.1）で振る舞いが変わり得る条件の検出（Task 15.7）。
 //!
-//! `control/eval.rs` を data の評価規則に揃えたため、配列値に対する `eq` / `neq` / `in` / `contains`、
+//! `control/eval.rs` を data の評価規則に揃えたため、配列値に対する `eq` / `neq` / `in` / `contains` /
+//! `starts_with` / `ends_with`、
 //! 空配列の `exists` / `is_null`、`1.0` のような整数値の小数との等値は、
 //! 保存済みのワークフローで分岐の結果が変わり得る。値の型は実行時まで決まらないので、**静的に配列と
 //! 分かる**ものだけを検出する:
@@ -39,7 +40,8 @@ impl Reason {
             Reason::ArrayOperand => format!(
                 "配列値に {op} を使っています。2026-10 から配列は「値の集合」として比較します\
                  （eq は要素を含むか・neq は含まないか・in はいずれかの要素が候補にあるか・\
-                 contains はいずれかの要素の部分文字列・空配列の exists は偽）。分岐の結果が変わる場合があります"
+                 contains / starts_with / ends_with はいずれかの要素の部分文字列・前方一致・後方一致・\
+                 空配列の exists は偽）。分岐の結果が変わる場合があります"
             ),
             Reason::IntegralFloat => format!(
                 "小数表記の整数（例: 1.0）と {op} で比較しています。2026-10 から数値は数値として比較します\
@@ -138,8 +140,11 @@ fn classify(cmp: &Comparison, schema: Option<&Value>) -> Option<Reason> {
                 _ => None,
             }
         }
-        // 空配列の扱いが変わる（空配列は値なし）。
-        CmpOp::Exists | CmpOp::IsNull if left_array => Some(Reason::ArrayOperand),
+        // starts_with / ends_with: 旧評価器は配列の左辺で常に偽・新しくは「いずれかの要素が前方 /
+        // 後方一致」（R3-3）。exists / is_null: 空配列の扱いが変わる（空配列は値なし）。
+        CmpOp::StartsWith | CmpOp::EndsWith | CmpOp::Exists | CmpOp::IsNull if left_array => {
+            Some(Reason::ArrayOperand)
+        }
         _ => None,
     }
 }
@@ -235,6 +240,28 @@ mod tests {
         assert!(at.contains(&(None, "/triggers/1/filter")), "{at:?}");
         // b2: 配列との neq・1.0・配列リテラルの contains・array 宣言の exists の 4 件（単値の eq / in は対象外）。
         assert_eq!(at.iter().filter(|(n, _)| *n == Some("b2")).count(), 4);
+    }
+
+    /// R3-3: 配列の左辺への starts_with / ends_with（旧は常に偽・新はいずれかの要素）を検出する。
+    #[test]
+    fn flags_starts_with_and_ends_with_on_arrays() {
+        let w = ir(json!({
+            "ir_version": 1, "name": "sw",
+            "input_schema": { "type": "object", "properties": {
+                "tags": { "type": "array", "items": { "type": "string" } },
+                "name": { "type": "string" } } },
+            "nodes": [ branch(json!({ "any": [
+                { "cmp": { "left": { "$from": "input", "path": "/tags" }, "op": "starts_with", "right": "ur" } },
+                { "cmp": { "left": ["urgent", "x"], "op": "ends_with", "right": "nt" } },
+                { "cmp": { "left": { "$from": "input", "path": "/name" }, "op": "starts_with", "right": "a" } }
+            ] })) ],
+            "edges": [],
+            "triggers": [ { "kind": "interactive" } ]
+        }));
+        let w = semantics_warnings(&w);
+        assert_eq!(w.len(), 2, "{w:#?}");
+        assert!(w[0].message.contains("starts_with"), "{}", w[0].message);
+        assert!(w[1].message.contains("ends_with"), "{}", w[1].message);
     }
 
     #[test]
