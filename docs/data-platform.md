@@ -188,14 +188,21 @@ create table data_record (
     table_int  bigint   not null,
     id         uuid     not null,   -- 外部向けの ID（API・SSE・監査・OpenFGA）
     record_int bigint   not null default nextval('data_record_int_seq'),  -- 内部キー（§3.2）
+    tenant_id  text     not null,   -- 外部の tenant 識別子（v1 から残す・FK と purge 用）
+    table_id   uuid     not null,   -- 外部のテーブル ID（同上）
     org        text     not null,
     data       jsonb    not null,   -- {"f16": "...", "f17": 12000}
     rev        bigint   not null default 1,
     owner      text     not null,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
-    primary key (tenant_int, table_int, id)
+    primary key (tenant_int, table_int, id),
+    foreign key (tenant_id, table_id) references data_table (tenant_id, id)
+        on update cascade on delete cascade deferrable initially immediate
 ) partition by hash (table_int);    -- 64 分割（サイズ分割・autovacuum 局所化）
+-- Phase 15 実装で変更: v1 の tenant_id / table_id と data_table への FK を残した（テーブル削除の
+-- cascade と、外部 ID での照合をそのまま使うため・migrations/0083）。物理列順は固定幅の列を幅の降順に並べる
+-- （アラインメントのパディングで record_int の節約が消えないように・data/internal-keys-benchmark.md）。
 -- 索引テーブルから本体を引く経路（ページの本体取得はこちら）
 create unique index on data_record (tenant_int, table_int, record_int);
 
@@ -305,6 +312,13 @@ N:N の主要経路がテーブル数に比例して劣化する。そこで**1 
 - 等値・`StartsWith`: プレフィクスで候補を絞り、`truncated = true` の候補のみ**本体で再確認**する
 - `data_unique`: 長い値は `val_norm = <先頭 2,000B> || ':' || sha256(全体)` として一意性を保つ
 - 全文の部分一致は `data_index_search`（trigram）が担当する（btree キー長の制約を受けない）
+- **材料化した派生列（§7.4）は本体に値を持たないので再確認ができない**（Phase 15 実装で追加）。比較値
+  （等値・`in`・`starts_with`・範囲の端）を `MAX_INDEX_KEY_BYTES − 4` = **1,996 バイト以下に限り**、
+  超える比較値は 400（`DataError::Invalid`）で拒否する。この長さ以内ならどの比較もプレフィクスだけで
+  厳密に決まる（判定は比較値だけで決まり、データの有無・長さのオラクルにならない）
+- **`group_by` の切り詰め値**: 実フィールドは切り詰め行だけ本体の完全値でグループ化する。材料化した派生列は
+  完全値が無いので、可視かつ条件を満たした行に切り詰め行が 1 つでもあれば 400 で拒否する
+  （違う値を 1 グループに混ぜた集計を返さない）
 
 **切り詰め値でのソートと keyset の契約**（曖昧にすると重複・欠落が出るので明文化する）:
 
@@ -331,13 +345,29 @@ N:N の主要経路がテーブル数に比例して劣化する。そこで**1 
   **それ以降に発生した変更を読取結果から除外**する（`data_record.updated_at` ではなく配信位置で判定し、
   SSE と同じ時間軸に揃える）
 - 保持期間を超えた `snapshot_seq` を指定されたら `410 Gone` を返し、再取得させる
+
+> **Phase 15 実装で確定した形**（`crates/data/src/query/snapshot.rs`）:
+>
+> - 並びは**内部の不変な位置（`record_int`）の順だけ**（おおむね作成順だが、採番のキャッシュで厳密な作成順ではない）。
+>   ソートキーは更新で動き重複・欠落の源になるので、`sort`・集計・件数（`with_count`）・結合／リンクの条件は
+>   指定できない（400）
+> - ページごとに「`snapshot_seq` より後に変わった行」（ストリームの `seq > S` と、まだ採番されていない outbox）を引き、
+>   現在の本体から除いたうえで、`S` 時点の値をリビジョンから復元して同じ位置に差し込む。`S` より後に作られた行は出さず、
+>   `S` より後に消えた行は `S` 時点の値で出す。行述語・条件は復元した値にも同じ SQL で評価する
+> - `S` より後の変更が **10 万件を超えたら 410**（数え切れない）。ストリームの保持期間（既定 10 分・§9.4）を過ぎた `S` も 410
+> - 派生値（ルックアップ等）とマスクは他の読取と同じく**読取時点に閲覧者本人の権限で**計算する（`S` 時点へ巻き戻さない）
+> - ライブページングの応答も `snapshot_seq`（読取時点の配信位置）を返す。SSE の `since` にこれを渡せば読取後の変更を取りこぼさない
 - **ライブページングでは「途中で行が消えた／二重に出た」をクライアントが検知できるよう、
   各ページに `snapshot_seq` を添えて返す**。グリッドはこれと SSE の `delivery_seq` を突き合わせて
   自前で整合を取る（再読込を強制しない）
 
-**索引の総本数はパーティションあたり 10 本の定数**（PK 6 本＝各テーブル 1 本ずつ、
-値索引 2 本＝`text`/`num`、GIN 1 本＝`search`、リンクのカーディナリティ強制用の部分一意 1 本。
-`link` は 2 行方式にしたため逆引き専用索引は不要）。`data_link_field` は
+**索引の総本数はパーティションあたり 13 本の定数**（PK 7 本＝`data_record` と索引 6 表に 1 本ずつ、
+`data_record` の `(tenant_int, table_int, record_int)` 一意索引 1 本、値索引 3 本＝`text`/`num`/`composite`、
+GIN 1 本＝`search`、リンクのカーディナリティ強制用の部分一意 1 本。
+`link` は 2 行方式にしたため逆引き専用索引は不要）。
+（Phase 15 実装で変更: 当初の「10 本」は `data_record` の一意索引と、§5.3 の複合索引表 `data_index_composite`（PK・値索引）を
+数えていなかった。数え方が変わっただけで、テナント数・テーブル数・列数に依存しない定数である点は同じ。
+`pivot_index_it::index_count_does_not_grow_with_tables_or_tenants` が確かめる。）`data_link_field` は
 **リンク列ごとに 1 行**の小さなメタデータ表で、レコード数には比例しない。
 **テナントが何社増えても、テーブルが何個増えても、列が何本増えても変わらない。**
 （v1 は「テナント数 × テーブル数 × 索引列数」本が単一 relation に載る。10³ 社 × 10² テーブル × 5 列で 5×10⁵ 本。）
@@ -347,7 +377,7 @@ N:N の主要経路がテーブル数に比例して劣化する。そこで**1 
 | 型 | 格納先 | 正規化 |
 |---|---|---|
 | `text` / `select` | `data_index_text` | そのまま |
-| `multi_select` | `data_index_text` | **要素ごとに 1 行**（`ord` 昇順）。包含判定が等値検索になる |
+| `multi_select` | `data_index_text` | **要素ごとに 1 行**（`ord` 昇順）。包含判定が等値検索になる。`searchable` を宣言すると `data_index_search` にも要素ごとに 1 行（部分一致は「要素のいずれかの部分文字列」・Phase 15 で text 以外に multi_select も許した） |
 | `number` | `data_index_num` | `numeric`（正確な小数） |
 | `date` | `data_index_text` | `YYYY-MM-DD` 固定幅 → 辞書順＝日付順 |
 | `date_time` | `data_index_text` | UTC 固定幅 ISO-8601 → 辞書順＝時刻順（v1 の正規化を踏襲） |
@@ -517,6 +547,13 @@ pub struct FieldDef {
     /// number 型のみ: 小数桁数と範囲。表示・丸めの規則を決め、
     /// 併せて将来の物理層差し替え時の変換を機械的にする（§15.1 の保険③）。
     pub numeric_spec: Option<NumericSpec>,
+    // Phase 15.4 で追加（§7）: record_ref のリンク定義・ロールアップ・数式と、
+    // サーバがスキーマ保存時に決める（入力は無視する）材料化可否と値の型。
+    pub link: Option<LinkDef>,
+    pub rollup: Option<RollupDef>,
+    pub formula: Option<FormulaExpr>,
+    pub materialization: Option<Materialization>,
+    pub result_type: Option<ResultType>,
 }
 
 /// `number` フィールドの精度宣言。
@@ -526,12 +563,14 @@ pub struct NumericSpec {
     /// scale を超える桁が来たときの扱い。
     pub on_excess_scale: ExcessScale,
     /// 許容範囲（省略時は型の上限）。**正規化後の値**に対して検証する。
-    pub min: Option<Decimal>,
-    pub max: Option<Decimal>,
+    /// Phase 15 実装で変更: 型は f64（JSON 数値のまま受ける）。比較は境界値を 10 進の最短表現として
+    /// 解釈して行う（`0.1` は 0.1 ちょうど）ので、2 進浮動小数の誤差は境界判定に入らない。NaN/∞ は拒否。
+    pub min: Option<f64>,
+    pub max: Option<f64>,
 }
 
 pub enum ExcessScale {
-    /// 422 で拒否する（既定。入力ミスを黙って変えない）
+    /// 拒否する（既定。入力ミスを黙って変えない・400）
     Reject,
     /// 指定の丸めモードで丸める
     Round(RoundingMode),
@@ -544,16 +583,18 @@ pub enum RoundingMode { HalfUp, HalfEven, Down, Up }
 **正規化規則を固定する**（未定義のままだと保存値・pivot 索引・集計・将来の変換で結果がずれる）。
 
 1. 書込時、値を **`scale` へ正規化**する。`on_excess_scale = Reject` なら
-   scale を超える桁がある入力は **422**（既定。黙って値を変えない）。
+   scale を超える桁がある入力は **400**（既定。黙って値を変えない）。
    `Round(mode)` なら宣言したモードで丸める
 2. **`min` / `max` の検証は正規化の後**に行う（丸めで境界を跨ぐケースの挙動を一意にする）
 3. **本体・索引・集計はすべて正規化後の同一値を使う**（本体と索引で丸めが違う事故を防ぐ）
 
 **スキーマ検証**（`NumericSpec` 自体の妥当性）:
 
-- `field_type != Number` に `numeric_spec` が付いていたら 422
-- `min > max` は 422
-- `scale` が範囲外（`> 9`）は 422
+- `field_type != Number` に `numeric_spec` が付いていたら 400
+- `min > max` は 400
+- `scale` が範囲外（`> 9`）は 400
+
+（スキーマ検証・入力値の検証の拒否は `DataError::Invalid` → **400**。HTTP ステータスの対応は §5.6。）
 
 > **`scale` を宣言させる理由**は 3 つ。①金額と割合と個数で丸め方が違うので、**表示規則を
 > スキーマが持つべき**（kintone / Airtable も小数桁数を列設定に持つ）②入力検証が決まる
@@ -601,27 +642,47 @@ JSONB: {"applicant": "佐藤"} → {"f16": "佐藤"}
 ```rust
 pub struct DataQuery {
     pub filter: Option<Condition>,   // AND/OR/NOT の条件木
-    pub sort: Vec<SortKey>,          // 複数キー
-    pub page: Page,                  // Cursor(keyset) | First(n)  ← OFFSET は廃止
-    pub group_by: Vec<FieldRef>,
-    pub aggregate: Vec<Metric>,
-    pub select: Option<Vec<FieldRef>>, // 投影（グリッドは可視列だけ取る）
-    pub search: Option<String>,        // 横断部分一致（searchable 列のみ）
+    pub sort: Vec<SortKey>,          // 複数キー（最大 4・空なら擬似列 updated_at の降順）
+    pub limit: Option<u32>,          // 1 ページの件数（既定 50・最大 200）
+    pub cursor: Option<String>,      // 前ページの next_cursor（不透明トークン）  ← OFFSET は廃止
+    pub select: Option<Vec<String>>, // 投影（グリッドは可視列だけ取る）
+    pub group_by: Vec<String>,
+    pub aggregate: Vec<MetricSpec>,  // 複数指標
+    pub joins: Vec<JoinSpec>,        // 宣言済みリンク列経由の INNER JOIN（最大 3 段・§16.1）
+    pub having: Option<HavingCond>,  // 集計後の条件（抑制されたグループの値は NULL＝どの比較も不成立）
+    pub group_sort: Vec<GroupSortKey>, pub group_limit: Option<u32>, // 集計結果の並べ替えと件数（最大 1,000）
+    pub search: Option<String>,        // 横断部分一致（searchable 列のみ・最大 256 文字）
+    pub search_fields: Option<Vec<String>>, // 部分一致の対象列を絞る（マスク列は 403）
+    pub with_count: bool,            // 上限付き件数（§5.4・既定 false）
+    pub offset: Option<i64>,         // v1 互換で受けるだけ（0 以外は 400）
+    pub snapshot: bool,              // スナップショット読取（§3.3）
 }
 
 pub enum Condition {
     All(Vec<Condition>),
     Any(Vec<Condition>),
     Not(Box<Condition>),
-    Cmp { field: FieldRef, op: CmpOp, value: Operand },
+    Cmp(CondCmp),        // CondCmp { field: String（参照名 key）, op: CondOp, value: Option<Json> }
+    Link(LinkCond),      // リンク列で辿った参照先に「見えて filter を満たす行」がある（半結合・§16.2）
 }
 
-pub enum CmpOp {
+pub enum CondOp {
     Eq, Neq, Lt, Lte, Gt, Gte, In,
     Contains, StartsWith, EndsWith,   // 文字列
     Exists, IsNull,                   // 有無
+    Matches,                          // 語彙の互換のためだけに受け、data では常に 400
 }
 ```
+
+> **Phase 15 実装で変更**（`crates/data/src/query/ir.rs`）: `Page` 型は作らず `limit` / `cursor` を平らに持つ
+> （v1 の SDK・保存済みビューの形を崩さないため。v1 の `filter: {field, value}`・単一 `sort`・単一 `aggregate`・
+> `offset` も受理して v2 の形へ写す）。条件の葉は `Condition::Cmp(CondCmp)`。15.10 の SQL 前段面に合わせて
+> `Link`・`joins`・`having`・`group_sort`・`group_limit`、15.3 で `search_fields`・`snapshot` を足した。
+> 応答 `QueryResult` は `items` / `groups`・`next_cursor`・`count`（`{"exact": n}` か `{"at_least": n}`）・
+> `sort_precision`（§3.3）・`sort_degraded`（§5.3）・`shares_truncated`・`suppressed`・`snapshot_seq`（§3.3）。
+> 推定値・統計値・戦略名・予測コストのフィールドは持たない（PIT-75）。
+> グリッドの HTTP 要求（`POST /data/tables/{id}/query` の `DataQueryRequest`）だけは `promote_indexes`（§10）を
+> 足せる。チャット・ワークフロー・ミニアプリの受け口は `DataQuery` そのもので、このフラグを持たない。
 
 **演算子語彙は workflow IR の `Condition`（`crates/workflow-engine/src/ir/`）に合わせる。**
 そうすることで `data.query` ノードは IR 条件を**変換なしで**渡せる。
@@ -630,6 +691,9 @@ pub enum CmpOp {
 （Task 15.7）。値なし・多値列での各演算子の定義、SQL 前段（3 値論理）からの翻訳規則、
 **行述語は v1 の意味論のまま（値なしの `Ne` は偽）であること**は [query-optimizer.md §3.1・§3.3](./data/query-optimizer.md) を正とする。
 `matches`（正規表現）は索引が効かず DoS 面にもなるため**採用しない**（IR 側にはあるが data では拒否）。
+語彙の一致は `crates/workflow-engine/tests/cmp_op_vocab.rs` が生成型の列挙値で検査し、意味論の一致は
+共通の表 `semantics_table.json`（`data::CONDITION_SEMANTICS_TABLE`）を workflow の評価器・data の参照評価器・
+実 SQL（索引経路と本体経路）の 3 者にかけて固定する（`semantics_table_it.rs`・`eval_semantics_tests.rs`）。
 
 > **`Not` の扱い**: `row_policy`（`PolicyExpr`）は意図的に `Not` を持たない（フィールドマスクとの
 > 相互作用で情報が漏れるため・`crates/data/src/policy/ast.rs`）。**クエリフィルタは別物なので `Not` を許す**。
@@ -653,14 +717,12 @@ v1 の `indexed_queryable` を継承・強化する。
 
 **索引未宣言の列を指定されたら 403 を返しつつ、自動昇格（§10）を提案する**のが UX 上の解。
 
+> **Phase 15 実装で変更**: 未宣言の列の指定は 403 ではなく **400**（入力の誤り。403 はマスク列＝見えない列に限る）。
+> グリッドが `promote_indexes: true` を付けたときだけ、400 で終わらせず自動昇格する（§10）。
+
 ### 5.3 ページング
 
-```rust
-pub enum Page {
-    First { limit: u32 },
-    Cursor { after: Cursor, limit: u32 },
-}
-```
+（Phase 15 実装では `Page` 型を作らず、`DataQuery` の `limit` と `cursor` で表す・§5.1。）
 
 カーソルは **全ソートキーの値 ＋ `record_int`（＋任意列ソートの区間番号）** を、サーバ鍵の AEAD で暗号化した不透明トークンにしたもの（`record_int` を外へ出さないため・§3.2）。
 
@@ -677,6 +739,17 @@ pub enum Page {
    （`data_index_composite(tenant_int, table_int, sort_set_id, val_concat, record_int)` を
    §10 の自動昇格と同じ機構でオンデマンド生成する）。生成までは「このソート組み合わせは
    深いページで劣化する」ことを API が明示して返す。
+
+> **Phase 15 実装の形**（`migrations/0087_data_index_composite.sql`・`crates/data/src/index/composite.rs`）:
+>
+> - ソートの組み合わせは `data_sort_set`（`spec` = `"16:a,17:d"`・`building` / `active`・バックフィルの進捗）に登録し、
+>   `data_index_composite` は PK `(tenant_int, table_int, sort_set_id, record_int)` と値索引
+>   `(tenant_int, table_int, sort_set_id, val)` の 2 本。`val` は**全順序（ソートキー → `record_int`）を保つ 1 列の
+>   `bytea`**（順序を保つ符号化。text はプレフィクス値から作るので、カーソルの定義と一致する）
+> - 組み合わせは**テーブルあたり 8 組まで**。登録は `data_table` 行の `FOR UPDATE` の下で行い、`building` の間は
+>   書込が write-through し、クエリには使わない（§10 と同じ）
+> - `sort_degraded: true` は、**可視行で見て**第 1 キーの同値群がページの 8 倍を超えた（＝この組み合わせの複合索引が
+>   まだ使えず、深いページほど遅くなる）ときだけ返す。見えない行の分布は応答に出ない
 
 **受け入れ条件には最悪ケース（第 1 キーが 1 値に偏ったテーブルでの複数ソート・深いページ）を含める**（§14）。
 
@@ -710,6 +783,8 @@ pub enum CountResult {
 不要なら指定しないよう案内している（[cybozu.dev](https://cybozu.dev/ja/kintone/tips/best-practices/performance/complement-technical-consideration-points/)）。
 Airtable / Teable / SharePoint も同種の妥協をしている（SharePoint の 5,000 件ビュー閾値が典型）。
 **上限値はテナント設定で変更可能**にする（小さいテーブルしか持たない顧客には正確な件数を出せる）。
+実装（Task 15.3）: `data_tenant_settings.count_cap`（1〜10,000,000・未設定は既定 10,000）。変更は組織管理者だけが
+`/org-admin/data/settings` で行い、監査に残す（`query_ops_it::count_cap_is_a_tenant_setting`）。
 
 ### 5.5 集計
 
@@ -720,6 +795,31 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 - **可視行に限る**（行述語を索引内で交差）
 - **スモールセル抑制（`DEFAULT_AGGREGATE_MIN_ROWS = 5`）を v1 のまま継承**（PIT-17）
 - 集計クエリ自体の監査記録も継承（反復差分攻撃の検知可能性）
+
+### 5.6 エラーと HTTP ステータス（Phase 15 実装で整理）
+
+設計時の本書と roadmap は入力の拒否を一律「422」と書いていたが、実装は **2 系統**に分けた。
+写像の正本は `crates/api/src/error.rs` の `From<data::DataError> for ApiError`。
+
+| `DataError` | HTTP | 本文 | 使う場面 |
+|---|---|---|---|
+| `Invalid` | **400** | `{status, title}`（理由はサーバのログと型付き API の `Display`） | 入力値・スキーマ・クエリ指定の誤り全般（型・required・多値の上限・`numeric_spec`・`row_policy` の参照列が未索引・数式の循環・`per_viewer` 列の `indexed`・リンクのカーディナリティ違反・RAG の投影・未宣言列でのフィルタ・`offset` ≠ 0・カーソルの改竄・スナップショット読取での `sort`） |
+| `Rejected(QueryRejection)` | **422** | `{status, title, code, message, hint?, location?, limit?, expected?}` | **入口の拒否**: SQL 前段面の部分集合外・名前解決不能（`syntax_error` / `unsupported` / `unknown_name` / `invalid_join` / `invalid_query`）・入口の資源上限（`limit_exceeded`・`limit.name` に `max_sql_bytes` 等・IR 直投入にも同じ上限）・`max_join_depth`・**ViewSpec の保存時検証**（`invalid_query`、ルックアップ列の上限は `limit_exceeded` / `max_view_lookup_columns`） |
+| `QueryTooExpensive` | 400 | `{code: "query_too_expensive", suggestions}`（`narrow_filter` / `promote_index` / `composite_index`） | 受付制御（[query-optimizer.md §5.4](./data/query-optimizer.md)）。推定値は含めない |
+| `Forbidden` | 403 | — | テーブル権限なし・マスク列の参照（PIT-19） |
+| `NotFound` | 404 | — | 不可視行・存在しない行（区別しない） |
+| `RevConflict` | 409 | `code: rev_conflict`・`current_rev` | 楽観ロック |
+| `UniqueViolation` | 409 | `code: unique_violation` | unique 宣言の違反（値・相手の行は返さない） |
+| `DerivedRecomputing` | 409 | `code: derived_recomputing`・`field` | 材料化した派生列が再計算中（§7.4） |
+| `IndexPreparing` | 409 | `code: index_preparing`・`field`・`progress`（0〜1 か null） | 索引のバックフィル中（§10） |
+| `IndexApprovalRequired` | 409 | `code: index_approval_required`・`field`・`indexed_fields`・`max_indexed_fields` | 索引列数の上限超過（§10） |
+| `Conflict` | 409 | `code: conflict` | 名前重複・取込 ID の再利用など |
+| `Gone` | 410 | — | スナップショット読取の基準位置が保持期間外（§3.3） |
+| `ReadOverloaded` | 429 | 固定文言 | テナントの読取の同時実行の枠が空かない（§16.8・再試行可） |
+
+400 と 422 を分けた理由: `Invalid` → 400 は Phase 9（v1）以来の API 全体の慣例で、15.1 以降もそれを変えなかった。
+422 は**構造化した理由を返して LLM・画面に自己修正させる**入口（§16.1 のエラー契約・§8.2）に限った。
+本文の形が違う（422 は `code` ほかを持つ）ので、クライアントは状態コードで出し分けられる。
 
 ---
 
@@ -766,7 +866,12 @@ AND ( EXISTS (SELECT 1 FROM data_index_text p WHERE p.tenant_int=$1 AND p.table_
 
 ### 6.3 新規制約: `row_policy` 参照フィールドは `indexed` 必須
 
-**スキーマ保存時に検証し、違反は 422 で拒否する。**
+**スキーマ保存時に検証し、違反は 400 で拒否する**（当初「422」・§5.6）。
+
+> **v1 から移行したテーブル**（Phase 15 実装で追加）: v1 は参照列の `indexed` を求めていなかったので、そのままでは
+> 以後のどのスキーマ改訂もこの検証で拒否される。索引の台帳を初期化するとき（Task 15.2 より前のテーブルの初回アクセス・
+> 常駐ワーカーのスイープ）に、`row_policy` が参照する列を**自動で `indexed` に昇格**してバックフィルする
+> （`field_identity_it::legacy_row_policy_on_unindexed_field_is_promoted_on_upgrade`・`ledger_init_promotes_row_policy_fields`）。
 
 理由: 行述語を本体側で評価すると、**権限が狭いユーザーほど遅くなる**。可視率 1% のユーザーが
 20 件のページを埋めるのに 2,000 件の本体を読むことになる（v1 にも存在する病）。
@@ -842,21 +947,38 @@ N:N を API から作れなかった）。
 
 ```rust
 pub struct LinkDef {
-    pub ref_table: TableId,
+    // 参照先テーブルは FieldDef.ref_table（v1 の record_ref と同じ場所）に置く
     pub cardinality: LinkCardinality,
-    /// 参照先に自動生成する対称列（逆方向行の field_id）。None なら片方向リンク。
+    /// 参照先に置いた対称列（逆方向行の field_id）。サーバが採番する。None なら片方向リンク。
     pub symmetric_field: Option<FieldId>,
+    /// 対称列を参照先に作るときの参照名（作成時の入力。参照先テーブルの owner 権限が要る）。
+    pub symmetric_key: Option<String>,
+    /// この列が対称列（逆方向・読取専用）か。サーバだけが立てる。
+    pub reverse: bool,
 }
 
 pub enum LinkCardinality {
     OneToOne,    // src 側・dst 側とも 1 件まで
     OneToMany,   // src 1 件 : dst 複数
+    ManyToOne,   // src 複数 : dst 1 件（v1 の record_ref と同じ向き）
     ManyToMany,  // 双方複数
 }
 ```
 
-- 値の表現は**常に配列**（`OneToOne` / `OneToMany` の片側は要素数 1 に制限）。
+> **Phase 15 実装で変更**（`crates/data/src/derived/types.rs`）: `ref_table` は `LinkDef` ではなく `FieldDef.ref_table` に置いた
+> （v1 の `record_ref` の定義をそのまま使い、`link` を持たない `record_ref` を v1 互換の `many_to_one`・片方向として扱うため）。
+> v1 の向きを表す `ManyToOne` を足した。対称列は入力の `symmetric_key` で作らせ、`symmetric_field` はサーバが採番する。
+> 対称列（`reverse = true`）は**スキーマ上のメタデータで、値を本体に持たない**。順方向の書込と同じ Tx で書いた
+> 逆方向行（`data_link.is_reverse`）を、閲覧者本人の権限で読取時に引く。対称列は読取専用で `indexed` / `required` にできず、
+> フィルタ・ソートにも使えない（リンク元の列で絞る）。
+
+- 値の表現は**常に配列**（`OneToOne` / `ManyToOne` の src 側は要素数 1 に制限）。空配列は「値なし」。
   v1 の単一 UUID 文字列からの移行は M1 で行う。
+  **実装（Task 15.4 追補・`migrations/0089`）**: 書込は v1 の単一 UUID 文字列も受け付けて配列で保存し、応答は
+  移行の前後どちらの保存形でも**常に配列**を返す（外部契約の変化。v1 のクライアントは文字列を受けていた）。既存レコードの
+  書き換えはオンラインのチャンク処理（`crates/data/src/link_values.rs`・索引ジョブキューの `link_values`）で、テーブル単位に
+  `record_int` 順に進み、冪等・中断再開でき、末尾まで進んだら全行を検査して文字列が残っていればもう一周する。
+  進捗は `data_link_value_migration`、テーブルの状態は `data_table.link_value_format`（1 = 文字列が残り得る / 2 = 移行済み）
 - **一意性は宣言だけでなく DB 制約で強制する**（`data_unique` はスカラー値用でリンク先をキーにしないため
   流用できない）。§3.3 の部分一意インデックス `(tenant_int, table_int, field_id, src_record) WHERE single_valued`
   1 本で両側を賄う。**2 行方式なので「dst 側の一意」は逆方向行に対する同じ制約になる**。
@@ -865,10 +987,19 @@ pub enum LinkCardinality {
   |---|---|---|---|
   | `OneToOne` | `true` | `true` | 双方 1 件まで |
   | `OneToMany`（src=one 側） | `false` | `true` | src は複数持てるが、各 dst は 1 つの src からのみ指される |
+  | `ManyToOne` | `true` | `false` | src は 1 つだけ指す（v1 の `record_ref`）。dst は複数から指されてよい |
   | `ManyToMany` | `false` | `false` | 制約なし（`ord` の要素数上限のみ） |
 
   片方向リンク（`symmetric_field = None`）で dst 側一意が要る場合は、逆方向行を
   「制約専用行」として書く（`is_reverse = true` かつクエリからは参照しない）。
+
+  > **Phase 15 実装で変更: 「制約専用の逆方向行」案は採らず、dst 側の一意が要るリンク（`OneToOne` / `OneToMany`）には
+  > 対称列を必須にした**（無ければスキーマ検証で 400）。逆方向行は参照先テーブル側の `field_id` と、その列の
+  > `data_link_field` の宣言（`single_valued` を固定する FK の参照先）を要する。対称列を持たない制約専用行は、
+  > この `field_id` の採番・スキーマ改訂でのカーディナリティ変更・撤去の扱いが参照先スキーマの外に宙に浮く。
+  > 対称列（読取専用・値は持たない）として宣言させれば、通常の逆方向行と同じ機構に載る。
+  > `OneToOne` の両側の一意も `data_link` の部分一意索引だけで強制する（`data_unique` は使わない）。リンク列への
+  > `unique` 宣言は受け付けない（一意性は `cardinality` で宣言する）。
 - **`single_valued` はレコード書込側が決めてはならない。** 部分一意インデックスの述語にフラグを使う以上、
   書込時に `false` を渡せば制約を迂回できてしまう。`data_link_field`（スキーマ改訂時にのみ書き換わる
   宣言メタデータ）への**複合外部キーで宣言値に固定する**（§3.3）。宣言が `true` のフィールドに
@@ -909,7 +1040,12 @@ pub enum FormulaExpr {
 }
 ```
 
-- **依存 DAG をスキーマ保存時に構築し、循環を検出して 422**（`MAX_FORMULA_DEPTH` も設ける）
+> **Phase 15 実装で変更**（`crates/data/src/formula/ast.rs`）: `Field` と `Rollup` の `link` / `target` は `FieldId` ではなく
+> **参照名（key）**で書く（script・IR・保存ビューと同じ外部契約。key は不変なので参照が失効しない）。小数 `n` 桁（0〜9）への
+> 四捨五入 `Round` を足した（`Div` は被演算子の小数桁の大きい方 + 6 桁へ偶数丸め）。`DateDiff` は **UTC の日付での日数の差**
+> （`to − from`）、`DateAdd` は日数（整数）を足す。式の深さの上限 `MAX_FORMULA_DEPTH` は 16。
+
+- **依存 DAG をスキーマ保存時に構築し、循環を検出して 400**（当初「422」・§5.6。`MAX_FORMULA_DEPTH` も設ける）
 - 算術は `numeric`（金額の正確性）
 - LLM / 開発者由来の任意式が SQL になる経路を作らない（v1 の設計原則を継承）
 - **`Now` を含む式は `Volatile`**（§7.4）。閲覧者には依存しないが**時刻に依存する**ため、
@@ -973,9 +1109,24 @@ pub enum Materialization {
 クエリ対象外にする**（古い値を返さない）。
 
 - **スキーマ保存時に参照先を推移的に辿って判定する**（多段参照は 1 つでも閲覧者依存があれば `PerViewer`）
-- `PerViewer` / `Volatile` なフィールドへの `indexed` / `unique` 宣言は**拒否**（422）
+- `PerViewer` / `Volatile` なフィールドへの `indexed` / `unique` 宣言は**拒否**（400・§5.6）
 - ロールアップのスモールセル抑制は参照先の `aggregate_min_rows` を継承
 - 詳細な脅威モデルは **PIT-71**
+
+> **Phase 15 実装で確定した規則**（`crates/data/src/derived/`・`migrations/0088_data_derived.sql`）:
+>
+> - **材料化するのは `Invariant` かつ `indexed` の列だけ**。値は**索引テーブル（`data_index_num` / `data_index_text`）の行としてだけ**
+>   持ち、本体 JSONB には書かない。材料化した値はフィルタ・ソートにだけ使い、**表示は常に閲覧者本人の権限で読取時に計算**する
+>   （材料化値を応答に出す経路が無い）
+> - **多段参照（参照先の派生列を対象にするもの）と対称列を辿るものは一律 `PerViewer`**（推移的な判定を省いて安全側に倒す）。
+>   ①の包含は「同一ミニアプリの所有テーブル」かつ OpenFGA のタプル比較で証明できた場合だけ
+> - 参照先の変更で陳腐化した値は再計算待ち（`data_derived_pending`・世代つき）に積み、待ちがある列はクエリ対象外（409
+>   `derived_recomputing`）。影響する参照元は依存登録（`data_derived_dep`）から 1 本の索引で引く
+> - ReBAC の変化による降格は、テーブルの ReBAC を crate の外で付け外しした側が呼ぶ `DataStore::after_table_rebac_changed`
+>   （**そのテーブル自身の材料化列に加えて、そのテーブルを参照先にする参照元の列も検査し直す**）と、読取・クエリの入口での
+>   4 階層の再検査の 2 段で行う（前者を呼び漏らしても後者で追いつく）。降格では索引行・再計算待ち・依存登録を同一 Tx で消す
+> - 個別共有の有無（④）は `data_table.has_record_shares`（共有の入口がタプルを書く前に同じ行で立てる・単調）で判定する。
+>   移行前から存在するテーブルは共有の有無を知る手段が無いので `true`（安全側）で初期化した
 
 ---
 
@@ -989,6 +1140,8 @@ pub enum Materialization {
 ### 8.2 設計
 
 **Rust 型を単一ソースとし、ts-rs / utoipa で TypeScript を生成**（「codegen が正・手書き型を作らない」）。
+実装（Task 15.5）は **utoipa → OpenAPI → `web/src/generated/api`**（`pnpm gen:api`）の 1 経路にした。
+ViewSpec は REST の要求・応答にしか現れず、SSE のイベント型（ts-rs の対象）ではないため。
 
 ```rust
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1020,9 +1173,9 @@ pub struct ColumnConfig {
 ```
 
 - **サーバが検証する**: 存在しない `field_id`・マスク列の表示指定・`PerViewer` 列でのソート指定を拒否
-- 検証の失敗は 422（構造化した理由・`invalid_query`。ルックアップ列の上限超過は `limit_exceeded`）。マスク列の参照だけはクエリと同じ 403
-- **1 ビューあたりのルックアップ・ロールアップ列は既定 12 本まで**（テナント設定 `max_view_lookup_columns` で変更可）。各列が 1 ページごとに
-  参照先の行述語つきの解決を要するため。超過はスキーマ検証で 422。SharePoint のリストビューも
+- 検証の失敗は 422（`DataError::Rejected`・構造化した理由・`invalid_query`。ルックアップ列の上限超過は `limit_exceeded`）。マスク列の参照だけはクエリと同じ 403
+- **1 ビューあたりのルックアップ・ロールアップ列は既定 12 本まで**（テナント設定 `max_view_lookup_columns` で変更可・1〜100）。各列が 1 ページごとに
+  参照先の行述語つきの解決を要するため。超過はビューの保存時検証で 422（`limit_exceeded`）。SharePoint のリストビューも
   ルックアップ等の結合を 12 本までに制限している（[Microsoft サポート](https://support.microsoft.com/en-us/sharepoint/lists/data-and-lists/list-view-threshold-for-large-lists-and-libraries)）。
   解決は列ごとの N+1 ではなく、ページの `record_int` の集合で列ごとに 1 本の一括クエリにする（query-optimizer.md §6.4）
 - 保存は v1 どおり `artifact(kind=data_view)` の枠に乗せ、ReBAC 共有と不変バージョンを継承
@@ -1092,6 +1245,32 @@ create unique index on outbox_delivery (consumer, delivery_seq);
 - クライアントに返す `Last-Event-ID` はこの low-water mark であり、
   **受信済みの最大値ではない**（最大値を返すと上記の欠落が再現する）
 
+> **Phase 15 実装で変更（Task 15.6・`migrations/0091`・`0093`・`crates/data/src/stream/`）**:
+>
+> - **採番の単位は「購読者（consumer）ごと」ではなく「テーブルごとのストリーム」**。リレーは台帳 consumer
+>   `data-stream` として outbox を claim し、`data.record.changed` を consumer `data-stream:<table_id>` のストリームへ
+>   `outbox_delivery_seq` から払い出した `delivery_seq` で永続化する。番号はテーブルの中で穴の無い連番で、
+>   テナント横断・テーブル横断の連番にはしない（他テナントの書込量が `Last-Event-ID` から読めてしまう・PIT-75 と同型）。
+>   リレー間の排他は台帳 consumer の採番行のロックで取る（同じレコードの変更は `rev` 順に採番される）
+> - 購読者ごとの差は配信時の可視性判定で付ける（§9.3）。**見えない行の番号はクライアントに届かない**ので、
+>   クライアント側で `prev + 1` の連続性は判定できない。low-water mark は**サーバ側**が持つ: 配信はストリームを
+>   昇順に読み、送った・送らなかったに関わらず連続して処理した位置まで進める。読んだ範囲に穴があればそれは
+>   保持期間による GC なので、先へ進まず `stream.reset` を送る（黙って飛ばさない）。サーバが昇順で送るので、
+>   クライアントの `Last-Event-ID` は**最後に受けた `id`** でよい
+> - 採番した台帳行は `retain_until`（保持期間・既定 600 秒・`data.stream.retention_secs` で 60〜86,400）まで GC しない。
+>   それより古い位置からの再開は `stream.reset`、スナップショット読取は 410（§3.3）
+> - outbox の行は公開部 `payload`（`event_type`・`table_id`・`record_id`・`rev`・`change`。値は載せない・汎用の consumer も読む）と
+>   **非公開部 `private_payload`**（ストリームと統計の消費側だけが読む）に分ける。非公開部は `table_int`・`record_int` と、
+>   **変更前の値**（旧 owner・行述語が参照する列・対称リンク列・値頻度表の対象列の前後の値）。汎用の consumer（workflow /
+>   miniapp のトリガ・RAG relay）はこの列を読まないので、内部キーと旧値が外へ出る経路が構造的に無い
+> - **派生値の再配信**: 参照先の変更で表示値が変わる参照元レコード（と、リンクの付け替えで対称列が変わる参照先レコード）には
+>   `change = derived` のイベントを積む。台帳 consumer の名前は設定で分けられ、同じ変更を複数のリレーが見るので、
+>   元のイベント id を `data_stream_fanout` へ先に書けた 1 つのリレーだけが積む（一意制約で重複しない）。1 段だけ辿り、
+>   影響が大きすぎるときはテーブル単位の `refresh` に畳む
+> - **GC と台帳 consumer の登録の排他**: 登録・バックログの写し・GC は同じ Tx 内のロックで相互に排除し、GC は
+>   ロックの後に登録済みの consumer を読む。GC で消えたイベントの配送記録はスキップする（未登録のまま全バックログを拾って
+>   一斉発火させない）
+
 **配信の確定点と再送（at-least-once ＋ クライアント冪等）。**
 `mark_delivered` による `delivery_seq` の払い出しは**購読者ストリームへの永続化**であり、ネットワーク送信の成功を
 意味しない。送信は永続化の後に行う。送信前に確定すると欠落し、送信後に確定すると重複するが、本設計は
@@ -1117,6 +1296,22 @@ GET /data/tables/{table_id}/stream?since=<delivery_seq>     (SSE)
   event: schema.changed    id=<delivery_seq>
   event: stream.reset      id=<delivery_seq>   ← 保持期間外。全件再取得を促す
 ```
+
+> **Phase 15 実装の形**（`crates/data/src/stream/events.rs`・型は utoipa から TS へ生成）:
+>
+> ```text
+> event: stream.ready      id=<delivery_seq>   data={position}                  接続直後の再開位置
+> event: record.upserted   id=<delivery_seq>   data={record, derived}           record はマスク・派生値を購読者本人の権限で適用
+> event: record.removed    id=<delivery_seq>   data={record_id}                 値を含まない（PIT-73）
+> event: schema.changed    id=<delivery_seq>   data={table_id, schema_version}  受けたら取り直す（接続は閉じる）
+> event: stream.reset      id=<delivery_seq>   data={reason}                    手元を捨てて再取得（reason = retention / authz_changed / refresh / overflow / table_deleted。接続は閉じる）
+> event: awareness                              data={principal, record_id, field, at}  データを含まない（§9.5）
+> ```
+>
+> - `derived = true` は派生値だけの再配信で `rev` は進まない。クライアントは**同じ `rev` でも**（手元以上なら）派生値を適用する。
+>   それ以外の `record.upserted` は `rev` が手元より大きいときだけ適用する
+> - 再開は `?since=` か `Last-Event-ID`（不正な値は 400）。購読は viewer だけ（`GET /data/tables/{id}/stream`・
+>   awareness の送信は `POST /data/tables/{id}/awareness`）
 
 **購読者ごとに行述語とフィールドマスクを再評価してから配信する。**
 見えない行・見えない列は物理的にストリームに乗らない。
@@ -1180,6 +1375,14 @@ before の可視性は、書込トランザクションが outbox へ**変更前
 ロール変更・共有解除・テーブル権限剥奪のイベントを検知した購読は TTL を待たず即時無効化する。
 なお **REST の読取経路は従来どおり毎回解決**であり、遅延は SSE 配信にのみ適用される。
 
+> **実装（Task 15.6）**: TTL は設定 `data.stream.authz_ttl_ms`（既定 5,000・100〜60,000 ミリ秒。範囲外は起動エラー）。
+> 実際に効いている値は閲覧者の文脈（`stream_revocation_delay_ms`）として画面へ返し、グリッドが「権限の変更の反映は最大◯秒遅れる」を
+> 出せるようにした。即時無効化は DB の世代（`data_stream_authz_epoch`・テーブル単位とテナント全体）で行う。レコードの個別共有・
+> 共有解除・テーブル削除は data が自分で、ロールの付け外し（IdP 同期）とテーブルの ReBAC の付け外しは変えた側が
+> `DataStore::notify_authz_changed` / `after_table_rebac_changed` で世代を進め、配信は毎バッチ（250 ms）世代を読み比べる。
+> 引き直した材料が前回と違えば（viewer の喪失・ロール・共有・マスクの変化）、行ごとの差分では取りこぼすので
+> **購読ごと `stream.reset{reason: authz_changed}` で閉じる**。
+
 ### 9.5 編集の並行制御
 
 **CRDT（Yjs）は採らない。** 行・列単位で可視性が異なるため購読者ごとにドキュメントを分割する必要があり、
@@ -1233,6 +1436,21 @@ absent  ──promote──▶  building  ──収束──▶  active  ──d
   SharePoint（オンプレ）は閾値超過後に索引を作れなかったが、本方式はオンラインのバックフィルなのでその制約は無い
 - v1 の `CREATE INDEX` 方式ではこの挙動は危険で選べなかった
 
+> **Phase 15 実装で確定した形**（Task 15.6・`crates/data/src/index/promote.rs`・`crates/api/src/routes/data_indexes.rs`）:
+>
+> - **自動昇格の契機はビューの保存と、/data グリッドのクエリ（`promote_indexes: true`）だけ**。グリッドの UI は利用者の
+>   並べ替え・絞り込みの操作でだけこのフラグを送る。チャット・ワークフロー・ミニアプリ（gateway）の経路は `DataQuery` そのものを
+>   受けるのでフラグを持たず、未索引の列は 400 のまま（意図しない経路で索引を増やさない・
+>   `data_query_surfaces::only_the_grid_request_can_ask_for_index_promotion`）。明示の昇格は `POST /data/tables/{id}/indexes`、
+>   状態（`absent` / `preparing` / `active` と進捗 0〜1）は `GET` で引く
+> - 昇格は**閲覧者でも上限内なら起こせる**（グリッドの並べ替えの UX）。マスク列は 403、閲覧者ごとの派生列は索引にできない（400）のまま。昇格は監査に残す
+> - 索引列数の上限は既定 20（擬似列とリンクを数えない・テナント設定 `max_indexed_fields` で 1〜1,000）。超える自動昇格は
+>   409 `index_approval_required` で止め、**owner だけ**が `approve: true` で承認できる
+> - 2 万行以上のテーブルの昇格は jobq のバックフィルを積み、その列を要するクエリは完了まで 409 `index_preparing`（進捗つき）
+> - **降格**: 2 万行以上のテーブルの索引行はスキーマ改訂の Tx で消さない（長い Tx でテーブル行のロックを持ち続けない）。台帳を
+>   `absent` にしてクエリと書込から外し、行はジョブ（`data_index_purge`・降格時点の最大 `record_int` までを消す）がチャンクで消す。
+>   後片付けが終わるまで同じ列の再昇格は 409 `index_preparing`
+
 ---
 
 ## 11. 各面からの参照
@@ -1250,6 +1468,15 @@ absent  ──promote──▶  building  ──収束──▶  active  ──d
 | **generative UI** | ❌ `TableProps` は静的データ埋め込み | **`ActionBinding` に `DataView { view_id, pinned_version }` を追加**し、`data_grid` コンポーネントを束縛で描画。クライアントが送れるのは `action_id + params` のみ（`ActionDispatcher` の不変条件を維持）。実装（Task 15.7）: ミニアプリの画面の `` ```data_grid ``（中身は束ねた保存ビューの別名）。ピンは `MiniAppBody.data_views` で、保存時に保存者の権限で解決する（`MiniAppStore`・ワークフローのピンと同じ流儀）。描画は `POST /mini-apps/{id}/ui-actions`（`action_id = data_grid:{別名}`・params は `DataViewPage` の `cursor` / `limit` だけ）で、定義はバンドル権限で読み、**行・列は閲覧者本人の権限で毎回評価**する（`DataViewStore::run_via_bundle`）。#604 で tool 束縛を撤去したので束縛は 3 種 |
 | **chat / agent-core** | ❌ data 系ツールがゼロ | **`data_query`（読取）・`data_record_write`（`requires_confirmation`）・`data_schema`（グラウンディング）**。`csv_tool.rs` の 3 ツールが最も近い先例。description には**発話ユーザーが viewer のテーブル一覧**を動的に載せる（`SkillTool` と同じ流儀・テーブル数は有界）。実装（Task 15.7）: `crates/chat/src/data_tool.rs`。一覧は 30 件まで、見えるテーブルが無ければ提示しない。`data_schema` は読めない列を載せない。`data_record_write` は作成・更新（status は FSM の遷移でだけ動く） |
 | **RAG** | ❌ 構造化データのフックがゼロ | **§11.1**。Task 15.8 で設計スパイク＋ PoC（[data/rag-integration.md](./data/rag-integration.md)）。本番の配線はポストアルファ |
+
+> **Phase 15 実装の補足（Task 15.7）**:
+>
+> - ワークフローの `data.transition` は遷移名ではなく **`table`（テーブル UUID）・`record`・`to`（遷移先の status）**（＋任意の
+>   `expected_rev`）で指定する（data の FSM は「現在の status → `to`」で定義されるため）。status は `data.record.update` では動かせない。
+>   `Shiki.data.transition(tableId, recordId, to, expectedRev)` も同じ形
+> - 生成 UI の data 束縛は**ミニアプリの画面の `` ```data_grid ``** として実装した。会話の回答（Yui の `` ```ui ``）の中の表は
+>   データ束縛を持たない（静的データのまま・未実装）
+> - 全面で同じ `data::DataQuery` 型を使うことは `crates/api/tests/data_query_surfaces.rs` がコンパイル時と実行時に固定する
 
 ### 11.1 RAG 統合（方向性）
 
@@ -1276,7 +1503,7 @@ v1 スコープでは**設計スパイクまで**（実装はポストアルフ�
 **スパイクの結果（Task 15.8）**: 詳細設計と PoC は [data/rag-integration.md](./data/rag-integration.md)。要点:
 
 - オプトインは `TableSchema.rag`（`title_field` ＋ `body_fields`）。投影できるのは保存値を持つ列だけで、
-  **マスク対象列・派生列・参照列は 422**
+  **マスク対象列・派生列・参照列は 400**（スキーマ検証・§5.6）
 - post-filter の入口は `DataStore::rag_visible_records`（テーブルごとに 1 本・REST の読取と同じ述語コンパイラ）。
   可視な行の投影を現在の値から返すので、レコードの hydrate も同じ 1 本で済む
 - 索引の**世代**（投影の定義＋`field_policy` 全体の sha256）をチャンクに刻み、世代が変わったら索引を破棄して作り直す。
@@ -1379,7 +1606,7 @@ src / dst の 2 テーブルに跨る**（§7.1）ため、テナント内の分
 | 引越中の整合（無停止移行） | 未設計。読取専用期間を許すか、二重書込＋切替かの判断が要る |
 | Keycloak / OpenFGA 共有プレーンのスケール | データプレーンを割っても identity は共有のまま（PIT-26）。OpenFGA の水平分割は別課題 |
 | テナント単位 PITR | フルプールでは物理 PITR で 1 社だけ戻せない。論理エクスポート/インポートによる部分復旧を用意する（design §4.12・Phase 12.10） |
-| `AuthzClient` に BatchCheck が無い | 現状 `try_join_all` で個別 check。OpenFGA の `/batch-check` を追加すべき |
+| ~~`AuthzClient` に BatchCheck が無い~~ | **解決（Task 15.9）**: `AuthzClient::batch_check`（OpenFGA の `/batch-check`・50 問ごと）を追加し、data のリクエストスコープ memo から使う（§16.4） |
 
 ---
 
@@ -1395,6 +1622,14 @@ src / dst の 2 テーブルに跨る**（§7.1）ため、テナント内の分
 | **M4: 旧方式撤去** | partial index を DROP し、`crates/data/src/index.rs` と `data_index_registry` を削除 | — |
 
 **データが小さい今が移行の最安時機**であり、顧客が増えてからでは M1/M2 のバックフィルコストが跳ね上がる。
+
+> **Phase 15 実装の結果**: M1〜M4 を Task 15.1〜15.3 で実施した（`migrations/0082`〜`0085`）。M4 で partial index と
+> `data_index_registry` を撤去し、ランタイム DDL はゼロになった（`no_runtime_ddl_lint.rs`）。ただし**本体経路
+> （`crates/data/src/query/v1.rs`・本体の JSONB を直接評価する単発 SQL）は撤去せず残した**。役割は ①機能フラグ
+> `SHIKI_DATA_READ_PATH=body` の切戻し先 ②必要な索引が `active` でない間（台帳が未初期化の Task 15.2 より前のテーブル・
+> システム擬似列の初回バックフィル中）の正しい経路（遅いが正しい・`statement_timeout` で上限を切る） ③parity 検証の基準。
+> 利用者が指定した列の索引がバックフィル中のときは本体経路に落とさず 409 `index_preparing`（§10）。材料化した派生列は
+> 本体に値が無いので本体経路では扱わない。v1 の `record_ref` の値の形（単一 UUID 文字列 → 配列）の移行は M1 の追補（§7.1）。
 
 ---
 
@@ -1412,7 +1647,12 @@ src / dst の 2 テーブルに跨る**（§7.1）ため、テナント内の分
   ⑦両方向のリンク走査がそれぞれ 1 パーティションに枝刈りされること
 - **統計**: 行数カウンタ・値頻度表（種類数の少ない列は正確な件数）・フィールド統計（最頻値・ヒストグラム）・
   リンク統計を持ち、outbox 消費側と統計収集ジョブで更新する。クエリコンパイラの戦略選択に使う
-  （Salesforce が自前オプティマイザを持つのと同じ理由）。詳細は [query-optimizer.md §4](./data/query-optimizer.md)
+  （Salesforce が自前オプティマイザを持つのと同じ理由）。詳細は [query-optimizer.md §4](./data/query-optimizer.md)。
+  実装（Task 15.12・`migrations/0092`）: 統計 4 表（`data_table_stats` / `data_field_stats` / `data_value_count` /
+  `data_link_stats`）。行数と値頻度は台帳 consumer `data-stats` が outbox の非公開部の前後の値からバッチで反映し、
+  **冪等性はその consumer の配送記録（同じ Tx の `mark_delivered`）で担保**する。フィールド統計・リンク統計・行幅は
+  jobq の統計収集ジョブ（変更行数 > 50 + 0.1 × 行数・索引昇格の完了時・推定外れの継続時に起動・テナント間で公平に claim）。
+  統計の読取は `query/planner/` に、書込は `src/stats/` に閉じる（`shard_safety_lint` の PIT-75 検査）
 - **走査効率を第一の指標にする**: リクエストごとの「走査した索引エントリ数 ÷ 返した行数」を記録し、
   テーブル・ビュー単位で p95 を出す。応答時間はキャッシュの温まり方や同居テナントで揺れるが、走査数は計画の良し悪しを
   直接表す（kintone も `Query_time` より `Rows_examined` を見るよう述べている・
@@ -1659,8 +1899,8 @@ WHERE  <条件木>                  -- 演算子は IR の閉集合（§5.1）
 |---|---|
 | **戦略選択** | ソート駆動／フィルタ駆動／認可駆動（見える行が少ない利用者）／交差駆動／複合索引駆動から、統計と**閲覧者の認可材料の大きさ**でコストを見積もって選ぶ（PIT-69・query-optimizer §5） |
 | **予算付きの切替** | 推定が外れて走査が伸びたら、次善の戦略の推定コストを予算として打ち切り、観測した選択率で選び直す（query-optimizer §6.2） |
-| **述語の並べ替え** | 「(1 − 選択率) / 単価」の大きい順に検査する。順序は `CASE` の入れ子で固定する |
-| **射影刈り込み** | `SELECT` に無い列を本体から取らない |
+| **述語の並べ替え** | 「(1 − 選択率) / 単価」の大きい順に検査する。順序は `CASE` の入れ子で固定する。**実装: 統計があるときにトップレベルの AND だけを選択率で並べる**（入れ子の項と統計の無いテーブルは葉の種類の静的順位。行述語の検査は常に最後） |
+| **射影刈り込み** | `SELECT` に無い列を本体から取らない。**実装: 本体の JSONB から射影の列と事後検査（行述語の Rust 再評価）が読む列だけを DB 側で取り出す**（キー集合はバインド）。派生列・対称列を射影するもの（計算の材料に他の列が要る）と結合を残したクエリは刈り込まない |
 | **JOIN の半結合化** | 結合先の列を `SELECT` にも `WHERE` にも使っていない場合、**認可述語つきの `EXISTS` へ変換する**（下記の注を必ず読むこと） |
 | **恒真・恒偽の畳み込み** | `HasRole` はホスト側で解決済みなので TRUE/FALSE に潰れる。潰れた枝ごと消す |
 | **プランキャッシュ** | 正規化したクエリ形状 → コンパイル済み SQL（§16.3） |
@@ -1696,6 +1936,17 @@ v2 でのテキスト変動源は ①`HasRole` の定数畳み込み ②フィ�
 | スキーマ由来の型・フィールド構造（`schema_version` 世代） | 値そのもの |
 | コンパイラのバージョン（契約が変われば形状も変わる） | |
 
+> **Phase 15 実装で変更**（`crates/data/src/query/planner/plan_cache.rs`・`COMPILER_VERSION = 2`）:
+>
+> - キャッシュの単位は **`(形状, 文の種類, 計画の変種)` → コンパイル済みの SQL テキストとバインドの種類の並び**。
+>   文の種類は件数探索・候補・ソート駆動・値なしの区間・件数・集計・本体取得など、計画の変種は実行時に決まる構造
+>   （戦略の入口・検査の並び・カーソルの有無・索引の状態・認可駆動の入口の形）で、値と認可材料は入らない
+> - 命中したら降下でテキストを組まず、同じ走査で**バインドの値だけ**を集める（バインドの種類の並びが食い違えば組み直す。
+>   検証ビルドでは命中のたびに組み直して一致を確かめる）。実測は [data/benchmarks.md](./data/benchmarks.md) §4
+> - **`HasRole` の畳み込み結果はキーに入れない**。成否を真偽のバインド（スイッチ）で渡し、SQL テキストを分岐させないようにした
+>   （テキストが分岐しないので、上表の「畳み込み結果を入れる」は不要になった。形状の数も材料の違いで増えない）
+> - 値の長さ・材料の有無（共有集合が空か等）もバインド（配列・型つき `NULL`）で渡す
+
 **認可材料をプランキャッシュへ混ぜてはならない。** 形状のキャッシュと材料は別物であり、
 混ぜると他人の材料が載ったプランを引く事故になる。`tenant_id` / `table_int` はバインド値なので
 キーに足す必要はない（足しても害はないがヒット率を下げる）。
@@ -1717,6 +1968,12 @@ p95 < 100ms の予算に対してこれは重い。
 - post-filter 用に **`AuthzClient::batch_check` を追加**する（現状 `try_join_all` で個別 check）
 
 PIT-18 の不変条件を弱めずに取れる、最も費用対効果の高い改善である。
+
+> **実装（Task 15.9・`crates/data/src/policy/memo.rs`）**: グリッド 1 画面（ページ＋件数＋lookup / rollup の解決）の OpenFGA 往復は
+> **計 2 回**: ①テーブル viewer・参照先テーブルの viewer・`has_role(subtree=true)` の名指しロールの check をまとめた
+> **BatchCheck 1 往復** ②個別共有の `list_objects(DataRecord)` 1 往復（`authz_memo_it::grid_screen_reads_with_at_most_two_fga_round_trips`）。
+> `has_role(subtree=true)` は配下ロール込みの集合を展開せず名指しのロールだけを check で判定するので、`MAX_ROLE_SET` 超過のエラーに
+> ならない。`has_role(subtree=false)` と `$user.roles` は従来どおり集合で引き、超過は fail-closed。
 
 **memo のキー契約**（ここを緩めると PIT-18 を破ることになる）:
 
@@ -1796,6 +2053,24 @@ covering read へ切り替える**。判定には平均行幅の統計が要る�
 
 > **Phase 15.2 のバックフィル自体がこの経路を要求する**ため、移行計画の前提として先に要る。
 
+> **実装（Task 15.11・15.7・`migrations/0090`・`0094`・`crates/data/src/bulk/`）**:
+>
+> - ステージング `data_bulk_staging`（行番号・行キー・COPY 時に採番した外部 ID・`payload`・状態・正規化値）と進捗
+>   `data_bulk_import`（`validating → applying → indexing → done`／`failed`）、取込内の一意性の予約 `data_bulk_key`。
+>   主体はジョブで `AuthContext` を組み直し、**チャンクごとに editor を問い直す**（昇格しない）
+> - **適用は 1 件の書込と同じ入口**（作成は `record_effects`、更新は `record_update` の行ロックつきの入口）を通るので、
+>   本体・索引行・revision・**outbox（SSE の発火）**・材料化・監査が通常経路と同じ規則で出る。取込そのものは**新規作成**で、
+>   既存レコードの更新を混ぜるのはワークフローの `data.bulk_upsert`（行ごとの `op` と任意の `expected_rev`）
+> - 検証を通った後に並行書込と競合した行（unique・リンクのカーディナリティ）は拒否として数え、行エラーに残す。
+>   `abort_on_invalid` なら 1 行でも不合格があれば何も適用しない。適用中にスキーマの版が変わったら未適用の行を検証し直す
+> - 索引の構築は `index_mode`（`auto` / `immediate` / `deferred`）。`deferred` は値索引を `building` に保持して後でバックフィルする
+> - **HTTP API**: `POST /data/tables/{id}/imports`（JSON の行）・`POST /data/tables/{id}/imports/csv`（`text/csv`・UTF-8・見出し行あり。
+>   列は参照名→表示名の順で照合・`_key` 列は行キー・multi_select / record_ref は `;` 区切りか JSON 配列）で開始（202）。
+>   進捗は `GET …/imports/{import_id}`、不合格・拒否の行は `GET …/imports/{import_id}/errors`（行番号の keyset）。
+>   本文の上限は 32 MiB（超過は構造化 413 `import_too_large`）、行数の上限は 100 万行、入力の形の誤りは構造化 400 `import_invalid`
+> - **10 万行の所定時間は 120 秒**（他テナントの p95 の悪化の許容は「平常 × 1.25 ＋ 2ms」）。根拠と実測（64〜77 秒）は
+>   [data/benchmarks.md](./data/benchmarks.md) §3
+
 ### 16.8 共有プールの公平性
 
 フルプールなので、1 テナントの重いクエリが他テナントを圧迫する。
@@ -1803,6 +2078,14 @@ covering read へ切り替える**。判定には平均行幅の統計が要る�
 
 → **テナント単位の同時実行数制限**を読取経路へ入れる
 （workflow-engine のトークンバケット実装を再利用・design §4.12 の API レート制限と同じ枠）。
+
+> **Phase 15 実装で変更**（Task 15.12・`crates/data/src/query/admission.rs`）: workflow のトークンバケットは使わず、
+> **プロセス内（レプリカごと）・テナント別の同時実行の枠を、予測コストのトークン（ミリ秒）で消費する**形にした。
+> 理由は 2 つ: ①トークンバケットは「時間あたりの回数」を数える仕組みで、重いクエリ 1 本と軽いクエリ 100 本を同じ物差しで
+> 測れない（同時に走っている重さを測りたい） ②`shiki-workflow-engine` は `shiki-data` に依存しているので、逆向きの依存は作れない。
+> 枠はテナントごとに独立しており（既定 8,000 トークン）、重いテナントのクエリ・統計収集はそのテナントの枠の中で待つ。
+> 待ち時間（3 秒）を過ぎたら 429（`ReadOverloaded`・再試行可）。予測コストが読取予算（既定 2 秒）を超える見込みのクエリは
+> そもそも実行しない（受付制御・[query-optimizer.md §5.4](./data/query-optimizer.md)）。全体の上限は `statement_timeout` と接続プールが担う。
 
 ### 16.9 残る未設計項目
 
