@@ -20,6 +20,8 @@ mod opts;
 mod run_model;
 pub use opts::parse_timezone;
 mod sink;
+/// 生成の枠と承認待ちの保留（検証 C-P1-3）。
+pub mod slot;
 mod stream_map;
 mod toolset;
 /// 記録済みスレッド → 剪定再生のステップ列（#532・`context-replay` CLI が使う）。
@@ -149,12 +151,17 @@ impl ChatWorker {
         self
     }
 
-    /// `concurrency` 本のワーカータスクと sweeper を起動する。
+    /// 同時に生成する run が `concurrency` 本のワーカーと sweeper を起動する。
+    ///
+    /// 枠（`concurrency`）はセマフォで持ち、承認待ちの run は枠を返して保留する（[`slot`]）。タスクは
+    /// 枠＋保留の上限ぶん起動し、各タスクは枠を取ってからジョブを取る。
     pub fn spawn(self, concurrency: usize) -> Vec<tokio::task::JoinHandle<()>> {
         let mut handles = Vec::new();
-        for i in 0..concurrency.max(1) {
+        let slots = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
+        for i in 0..concurrency.max(1) + slot::MAX_PARKED_APPROVALS {
             let w = self.clone();
-            handles.push(tokio::spawn(async move { w.run_loop(i).await }));
+            let slots = Arc::clone(&slots);
+            handles.push(tokio::spawn(async move { w.run_loop(i, slots).await }));
         }
         // 孤児回収 sweeper（backstop）。
         let sweeper = self.clone();
@@ -162,11 +169,17 @@ impl ChatWorker {
         handles
     }
 
-    /// jobq 消費ループ。
-    async fn run_loop(self, worker_index: usize) {
+    /// jobq 消費ループ（枠を取ってからジョブを取る）。
+    async fn run_loop(self, worker_index: usize, slots: Arc<tokio::sync::Semaphore>) {
         let worker_id = format!("chat-worker-{worker_index}");
         loop {
-            match self.claim_and_process(&worker_id).await {
+            let Ok(permit) = Arc::clone(&slots).acquire_owned().await else {
+                return; // セマフォが閉じた（終了）
+            };
+            let slot = slot::RunSlot::new(Arc::clone(&slots), permit);
+            let r = self.claim_and_process(&worker_id, &slot).await;
+            drop(slot); // 処理を終えたら枠を返す（保留中に返していれば何もしない）
+            match r {
                 Ok(true) => {}                                                     // 1 件処理した
                 Ok(false) => tokio::time::sleep(Duration::from_millis(300)).await, // 空
                 Err(e) => {
@@ -178,7 +191,11 @@ impl ChatWorker {
     }
 
     /// jobq から 1 件 claim して処理する。処理したら true。
-    async fn claim_and_process(&self, worker_id: &str) -> Result<bool, ChatError> {
+    async fn claim_and_process(
+        &self,
+        worker_id: &str,
+        slot: &Arc<slot::RunSlot>,
+    ) -> Result<bool, ChatError> {
         let mut conn = self
             .db
             .acquire()
@@ -213,7 +230,7 @@ impl ChatWorker {
         }
 
         let last_attempt = job.attempts >= job.max_attempts;
-        match self.process_run(run_id, worker_id).await {
+        match self.process_run(run_id, worker_id, slot).await {
             Ok(()) => {
                 jobq::ack(&mut conn, job.id)
                     .await
@@ -237,7 +254,12 @@ impl ChatWorker {
     }
 
     /// 1 run を生成する（claim→モード分岐→確定）。
-    async fn process_run(&self, run_id: Uuid, worker_id: &str) -> Result<(), ChatError> {
+    async fn process_run(
+        &self,
+        run_id: Uuid,
+        worker_id: &str,
+        slot: &Arc<slot::RunSlot>,
+    ) -> Result<(), ChatError> {
         let Some(run) = self
             .store
             .claim_run(run_id, worker_id, self.config.lease_secs)
@@ -330,7 +352,7 @@ impl ChatWorker {
             self.run_classic_mode(&ctx, &run, history.messages, &mut worker_sink)
                 .await
         } else {
-            self.run_agent_mode(&ctx, &run, history, cancel.clone(), &mut worker_sink)
+            self.run_agent_mode(&ctx, &run, history, cancel.clone(), &mut worker_sink, slot)
                 .await
         };
 

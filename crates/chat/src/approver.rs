@@ -40,6 +40,8 @@ pub struct DbApprover {
     /// 生成側で `opts.approval` に足すだけでは実行中モードトグルの再評価で消える。
     /// ここにも同じ集合を渡し、両方の経路で同じ実効ポリシになるようにしている。
     extra_pre_authorized: HashSet<String>,
+    /// 生成の枠（承認待ちの間は返して保留する・検証 C-P1-3）。未配線なら枠を握ったまま待つ。
+    slot: Option<Arc<crate::worker::slot::RunSlot>>,
 }
 
 /// 実行中の承認モード再評価に必要な材料（thread の現在値と突き合わせる）。
@@ -70,7 +72,15 @@ impl DbApprover {
             mode: None,
             last_clamp: Mutex::new(None),
             extra_pre_authorized: HashSet::new(),
+            slot: None,
         }
+    }
+
+    /// 承認待ちの間に返す生成の枠を配線する（検証 C-P1-3）。
+    #[must_use]
+    pub fn with_slot(mut self, slot: Arc<crate::worker::slot::RunSlot>) -> Self {
+        self.slot = Some(slot);
+        self
     }
 
     /// モードに依らず事前許可するツールを足す（システム領域ワークスペースの書込・#392）。
@@ -177,8 +187,16 @@ impl DbApprover {
         }
     }
 
-    /// 走行状態へ戻す（決定後の継続用・fencing 一致時のみ）。
+    /// 走行状態へ戻す（決定後の継続用・fencing 一致時のみ）。保留していた枠を取り直してから戻す
+    /// （ツールの実行と続きの生成は枠の中で行う）。承認待ちのツール呼び出しの記録を消す。
     async fn resume_running(&self) {
+        if let Some(slot) = &self.slot {
+            slot.resume().await;
+        }
+        let _ = self
+            .store
+            .clear_pending_approval(self.run_id, self.fencing_token)
+            .await;
         let _ = self
             .store
             .set_run_status_fenced(self.run_id, self.fencing_token, RunStatus::Running)
@@ -203,11 +221,20 @@ impl Approver for DbApprover {
         name: &str,
         _input: &serde_json::Value,
     ) -> ApprovalDecision {
-        // 承認待ちへ遷移（fencing 不一致なら no-op＝別ワーカーが takeover 済み）。
+        // 承認待ちのツール呼び出しを記録する（通常は SSE の承認要求を出す前に WorkerSink が記録済み・
+        // 冪等。API はこれと照合する）。続けて承認待ちへ遷移（fencing 不一致なら no-op＝takeover 済み）。
+        let _ = self
+            .store
+            .set_pending_approval(self.run_id, self.fencing_token, tool_call_id, name)
+            .await;
         let _ = self
             .store
             .set_run_status_fenced(self.run_id, self.fencing_token, RunStatus::WaitingApproval)
             .await;
+        // 待つ間は生成の枠を返す（未回答の承認が他の run を止めない・検証 C-P1-3）。
+        if let Some(slot) = &self.slot {
+            slot.park().await;
+        }
 
         let start = Instant::now();
         loop {

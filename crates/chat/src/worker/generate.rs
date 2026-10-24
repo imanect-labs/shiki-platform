@@ -152,6 +152,7 @@ impl ChatWorker {
         thread_history: ThreadHistory,
         cancel: Arc<AtomicBool>,
         sink: &mut WorkerSink,
+        slot: &Arc<super::slot::RunSlot>,
     ) -> Result<(), ChatError> {
         let ThreadHistory {
             messages: history,
@@ -197,12 +198,14 @@ impl ChatWorker {
         // 承認 UI/API/DbApprover は種別非依存で、承認が無ければ実行しない（fail-safe・破壊系を
         // 黙って走らせない）。これを配線しないと非自律チャットでは承認者不在により編集ツールが
         // 常に "requires explicit confirmation" で拒否され、共同編集が機能しない。
+        // 承認待ちの間は生成の枠を返して保留する（他の run を止めない・検証 C-P1-3）。
         let mut approver = crate::approver::DbApprover::new(
             self.store.clone(),
             run.run_id,
             run.fencing_token,
             cancel.clone(),
-        );
+        )
+        .with_slot(Arc::clone(slot));
         // 実行前フェーズ（#400）。非自律は常に Execute（門は自律の調査フローだけの概念）。
         let mut gate_stage = super::gate::GateStage::Execute;
         // 門が承認まで取り上げたツール（発話ごとのツール指定の注記で「承認後に使える」と言う・#734）。

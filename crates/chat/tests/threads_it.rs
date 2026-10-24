@@ -1416,3 +1416,113 @@ async fn viewer_event_stream_checks_thread_and_drops_legacy_citations() {
     );
     assert!(matches!(events.last(), Some(StreamEventKind::Done { .. })));
 }
+
+/// 検証 C-P1-3: 承認待ちのツール呼び出しは run に永続化され、承認 API はそれと照合する（別の id への決定は
+/// 400 で記録しない・以前は黙って記録され run は進まなかった）。承認待ちの間は生成の枠を返す（未回答の承認が
+/// 他の run を止めない）。決定後は枠を取り直してから続ける。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pending_approval_is_persisted_and_the_wait_releases_the_slot() {
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration as StdDuration;
+
+    use agent_core::Approver;
+    use chat::worker::slot::RunSlot;
+
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool, Arc::new(AllowAll::new())).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "承認の枠", true, None, None)
+        .await
+        .unwrap();
+    let res = store
+        .post_message(
+            &c,
+            thread.id,
+            "do danger",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    let run_id = res.run_id;
+    let claimed = store.claim_run(run_id, "w1", 30).await.unwrap().unwrap();
+
+    // 枠 1 本のワーカーを模す。この run が枠を持って承認待ちに入る。
+    let sem = Arc::new(tokio::sync::Semaphore::new(1));
+    let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
+    let slot = RunSlot::new(Arc::clone(&sem), permit);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let approver = DbApprover::new(store.clone(), run_id, claimed.fencing_token, cancel)
+        .with_timing(StdDuration::from_millis(50), StdDuration::from_secs(20))
+        .with_slot(Arc::clone(&slot));
+    let handle = tokio::spawn(async move {
+        approver
+            .decide("tc-9", "data_record_write", &serde_json::json!({}))
+            .await
+    });
+    let mut parked = false;
+    for _ in 0..60 {
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        if sem.available_permits() == 1 {
+            parked = true;
+            break;
+        }
+    }
+    assert!(parked, "承認待ちの間は枠を返す（他の run が生成できる）");
+    assert_eq!(
+        store.run_status(&c.tenant_id, run_id).await.unwrap(),
+        Some(RunStatus::WaitingApproval)
+    );
+    // 承認待ちのツール呼び出しが run に残る（再読込後も引ける）。
+    assert_eq!(
+        store.pending_approval(run_id).await.unwrap(),
+        Some(("tc-9".to_string(), "data_record_write".to_string()))
+    );
+    // 別の id への決定は記録しない（400）。
+    let r = store
+        .submit_approval(
+            &c,
+            thread.id,
+            run_id,
+            "stubtool_1",
+            "data_record_write",
+            true,
+            None,
+        )
+        .await;
+    assert!(matches!(r, Err(chat::ChatError::Invalid(_))), "{r:?}");
+    // 他の run が枠を使っている間に承認しても、枠が空くまで続きは走らない。
+    let other = Arc::clone(&sem).acquire_owned().await.unwrap();
+    assert!(store
+        .submit_approval(
+            &c,
+            thread.id,
+            run_id,
+            "tc-9",
+            "data_record_write",
+            true,
+            None
+        )
+        .await
+        .unwrap());
+    tokio::time::sleep(StdDuration::from_millis(300)).await;
+    assert!(!handle.is_finished(), "枠が空くまで待つ");
+    drop(other);
+    let decision = tokio::time::timeout(StdDuration::from_secs(5), handle)
+        .await
+        .expect("承認後に再開する")
+        .unwrap();
+    assert_eq!(decision, agent_core::ApprovalDecision::Approved);
+    assert_eq!(sem.available_permits(), 0, "再開した run が枠を持つ");
+    assert_eq!(store.pending_approval(run_id).await.unwrap(), None);
+    assert_eq!(
+        store.run_status(&c.tenant_id, run_id).await.unwrap(),
+        Some(RunStatus::Running)
+    );
+}

@@ -32,7 +32,7 @@ impl ChatStore {
         thread_id: Uuid,
         run_id: Uuid,
         tool_call_id: &str,
-        tool_name: &str,
+        claimed_tool_name: &str,
         approved: bool,
         trace_id: Option<&str>,
     ) -> Result<bool, ChatError> {
@@ -47,8 +47,9 @@ impl ChatStore {
         // 破壊系ツールは run の **actor 権限**で実行される。承認者 ≠ actor だと、共有 thread の
         // 別編集者が他人の権限での破壊操作を承認できてしまう（confused-deputy）。
         // よって**承認は run の actor 本人に限定**する（起案者が自分の権限使用を確認する）。
-        let actor: Option<String> = sqlx::query_scalar(
-            "SELECT actor FROM generation_run WHERE run_id = $1 AND thread_id = $2 AND tenant_id = $3",
+        let row: Option<(String, Option<sqlx::types::Json<serde_json::Value>>)> = sqlx::query_as(
+            "SELECT actor, pending_approval FROM generation_run \
+             WHERE run_id = $1 AND thread_id = $2 AND tenant_id = $3",
         )
         .bind(run_id)
         .bind(thread_id)
@@ -56,11 +57,44 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(|e| map_db(&e))?;
-        match actor {
+        let pending = match row {
             None => return Err(ChatError::NotFound),
-            Some(a) if a != ctx.principal.id => return Err(ChatError::Forbidden),
-            Some(_) => {}
+            Some((a, _)) if a != ctx.principal.id => return Err(ChatError::Forbidden),
+            Some((_, p)) => p.map(|j| j.0),
+        };
+        // 承認待ちのツール呼び出し（承認要求を出す前に run へ永続化済み）と照合する。承認待ちでない run・
+        // 別の呼び出しの id への決定は記録しない（記録しても誰も拾わず、run は進まないまま残る・検証 C-P1-3）。
+        // 監査・台帳のツール名はクライアントの申告ではなく run 側の値を使う。
+        let pending_name = pending
+            .as_ref()
+            .filter(|p| p.get("tool_call_id").and_then(|v| v.as_str()) == Some(tool_call_id))
+            .and_then(|p| {
+                p.get("tool_name")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            });
+        let Some(tool_name) = pending_name else {
+            // 先勝ちで既に決定済み（承認待ちが消えた直後の二重送信）は no-op として受ける。
+            let decided: Option<String> = sqlx::query_scalar(
+                "SELECT decision FROM run_approval WHERE run_id = $1 AND tool_call_id = $2",
+            )
+            .bind(run_id)
+            .bind(tool_call_id)
+            .fetch_optional(&self.db)
+            .await
+            .map_err(|e| map_db(&e))?;
+            if decided.is_some() {
+                return Ok(false);
+            }
+            return Err(ChatError::Invalid(
+                "承認待ちのツール呼び出しではありません（承認要求の tool_call_id を指定してください）"
+                    .into(),
+            ));
+        };
+        if claimed_tool_name != tool_name {
+            tracing::info!(claimed = claimed_tool_name, actual = %tool_name, "承認の申告ツール名が承認待ちと異なる（run 側の値を使う）");
         }
+        let tool_name = tool_name.as_str();
         let decision = if approved { "approved" } else { "rejected" };
         let inserted = sqlx::query(
             "INSERT INTO run_approval \
@@ -117,6 +151,67 @@ impl ChatStore {
         .await
         .map_err(|e| map_db(&e))?;
         Ok(d.map(|s| s == "approved"))
+    }
+
+    /// 承認待ちのツール呼び出しを run に記録する（承認要求の SSE を出す前・fencing 一致時のみ）。
+    pub async fn set_pending_approval(
+        &self,
+        run_id: Uuid,
+        fencing_token: i64,
+        tool_call_id: &str,
+        tool_name: &str,
+    ) -> Result<bool, ChatError> {
+        let updated = sqlx::query(
+            "UPDATE generation_run SET pending_approval = $3, updated_at = now() \
+             WHERE run_id = $1 AND fencing_token = $2",
+        )
+        .bind(run_id)
+        .bind(fencing_token)
+        .bind(sqlx::types::Json(json!({
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "requested_at": chrono::Utc::now(),
+        })))
+        .execute(&self.db)
+        .await
+        .map_err(|e| map_db(&e))?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// 承認待ちのツール呼び出しの記録を消す（決定を拾って再開するとき・fencing 一致時のみ）。
+    pub async fn clear_pending_approval(
+        &self,
+        run_id: Uuid,
+        fencing_token: i64,
+    ) -> Result<bool, ChatError> {
+        let updated = sqlx::query(
+            "UPDATE generation_run SET pending_approval = NULL \
+             WHERE run_id = $1 AND fencing_token = $2 AND pending_approval IS NOT NULL",
+        )
+        .bind(run_id)
+        .bind(fencing_token)
+        .execute(&self.db)
+        .await
+        .map_err(|e| map_db(&e))?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// 承認待ちのツール呼び出し（`(tool_call_id, tool_name)`・無ければ `None`）。
+    pub async fn pending_approval(
+        &self,
+        run_id: Uuid,
+    ) -> Result<Option<(String, String)>, ChatError> {
+        let p: Option<Option<sqlx::types::Json<serde_json::Value>>> =
+            sqlx::query_scalar("SELECT pending_approval FROM generation_run WHERE run_id = $1")
+                .bind(run_id)
+                .fetch_optional(&self.db)
+                .await
+                .map_err(|e| map_db(&e))?;
+        Ok(p.flatten().and_then(|j| {
+            let id = j.0.get("tool_call_id")?.as_str()?.to_string();
+            let name = j.0.get("tool_name")?.as_str()?.to_string();
+            Some((id, name))
+        }))
     }
 
     /// run の status を fencing 一致時のみ更新する（waiting_approval ⇄ running）。
