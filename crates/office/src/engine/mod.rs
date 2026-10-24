@@ -14,6 +14,7 @@ pub mod calc;
 pub mod chart;
 pub mod chart_insert;
 pub mod formula;
+pub mod op_schema;
 pub mod script;
 mod service;
 pub mod writer;

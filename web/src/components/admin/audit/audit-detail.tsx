@@ -5,8 +5,10 @@ import Link from "next/link";
 import { Check, ExternalLink, Filter, Link2, X } from "lucide-react";
 
 import type { AuditEvent, AuditQuery } from "@/lib/audit-api";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { citedChunks, citedFiles, formatTime, objectHref } from "./audit-query";
+import { actionCategoryLabel, actionLabel } from "./audit-vocab";
 
 export function Verdict({ decision }: { decision: string }) {
   const allow = decision === "allow";
@@ -24,6 +26,25 @@ export function actorLabel(e: AuditEvent): string {
 }
 
 /// 「この値で絞る」の小さなボタン。
+/// 操作の表示名と、記録された文字列（語彙に無い古い行は文字列だけ）。
+export function ActionName({ action, stacked = false }: { action: string; stacked?: boolean }) {
+  const label = actionLabel(action);
+  if (!label) return <span className="break-all font-mono">{action}</span>;
+  return (
+    <span className="min-w-0">
+      {label}
+      <span
+        className={cn(
+          "font-mono text-[11.5px] text-muted-foreground",
+          stacked ? "block break-all" : "ml-2 whitespace-nowrap",
+        )}
+      >
+        {action}
+      </span>
+    </span>
+  );
+}
+
 function NarrowButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <button
@@ -83,7 +104,12 @@ export function AuditDetail({
           <NarrowButton label="この人の記録で絞る" onClick={() => onNarrow({ actor: e.actor })} />
         </Row>
         <Row label="操作">
-          <span className="min-w-0 flex-1 break-all font-mono">{e.action}</span>
+          <span className="min-w-0 flex-1">
+            <ActionName action={e.action} stacked />
+            {actionCategoryLabel(e.action) ? (
+              <span className="mt-0.5 block text-xs text-muted-foreground">分類: {actionCategoryLabel(e.action)}</span>
+            ) : null}
+          </span>
           <NarrowButton label="この操作で絞る" onClick={() => onNarrow({ action: e.action })} />
         </Row>
         <Row label="対象">

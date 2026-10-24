@@ -39,6 +39,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 use std::collections::{HashMap, HashSet};
 
@@ -226,7 +227,7 @@ impl StorageService {
                 .record(
                     &sctx,
                     AuditEntry {
-                        action: "storage.upload_gc.expire",
+                        action: AuditAction::StorageUploadGcExpire,
                         object_type: "organization",
                         object_id: &org,
                         decision: Decision::Allow,
@@ -386,7 +387,7 @@ impl StorageService {
             .record(
                 &sctx,
                 AuditEntry {
-                    action: "storage.upload_gc.orphan_delete",
+                    action: AuditAction::StorageUploadGcOrphanDelete,
                     object_type: "organization",
                     object_id: &pair.org,
                     decision: Decision::Allow,

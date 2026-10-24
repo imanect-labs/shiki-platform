@@ -48,8 +48,114 @@ test("下書き: リロードしてもスレッド履歴から復元される", 
   await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 20_000 });
 
   // localStorage を消してリロード → 会話履歴の csv_draft ブロックから復元される。
-  await page.evaluate(() => window.localStorage.removeItem("shiki.csv-drafts.v1"));
+  // キーはユーザー単位（`shiki.csv-drafts.v1@<tenant>|<user>`・#817）なので接頭辞で消す。
+  await page.evaluate(() => {
+    const keys = Object.keys(window.localStorage).filter((k) => k.startsWith("shiki.csv-drafts.v1"));
+    for (const k of keys) window.localStorage.removeItem(k);
+  });
   await page.reload();
   await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 25_000 });
   await expect(page.getByTestId("draft-badge")).toBeVisible();
+});
+
+type StoredDraft = { name: string; content: string; source: string; rev: number };
+
+/// ユーザー単位のキー（`shiki.csv-drafts.v1@<tenant>|<user>`）に保存された下書き本文を読む。
+async function storedDraftContent(page: Page, name: string): Promise<string | undefined> {
+  return page.evaluate((n) => {
+    const key = Object.keys(window.localStorage).find((k) => k.startsWith("shiki.csv-drafts.v1@"));
+    const store = JSON.parse((key && window.localStorage.getItem(key)) ?? "{}");
+    return (Object.values(store) as StoredDraft[]).find((e) => e.name === n)?.content;
+  }, name);
+}
+
+test("下書き: /me より先に履歴を復元しても保存済みの手編集を上書きしない", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const csvName = uniqueName("手編集");
+  await sendFromHome(page, `savecsv:${csvName}`);
+  await page.waitForURL(/\/csv\/draft/, { timeout: 25_000 });
+  await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 20_000 });
+
+  // 保存済みの下書きを手編集した状態にする（source=user）。
+  const edited = "手編集,済み\n1,2";
+  await page.evaluate(
+    ({ name, csv }) => {
+      const key = Object.keys(window.localStorage).find((k) =>
+        k.startsWith("shiki.csv-drafts.v1@"),
+      );
+      if (!key) throw new Error("scoped draft key not found");
+      const store = JSON.parse(window.localStorage.getItem(key) ?? "{}");
+      for (const entry of Object.values(store) as StoredDraft[]) {
+        if (entry.name !== name) continue;
+        entry.content = csv;
+        entry.source = "user";
+        entry.rev += 1;
+      }
+      window.localStorage.setItem(key, JSON.stringify(store));
+    },
+    { name: csvName, csv: edited },
+  );
+
+  // /me を遅らせ、ユーザー未確定のうちに会話履歴からの復元を走らせる。
+  await page.route("**/api/me", async (route) => {
+    await new Promise((r) => setTimeout(r, 3_000));
+    await route.continue();
+  });
+  const meResponded = page.waitForResponse("**/api/me");
+  await page.reload();
+  await meResponded;
+  const grid = page.getByTestId("csv-draft-grid");
+  await expect(grid).toBeVisible({ timeout: 25_000 });
+  await expect.poll(() => storedDraftContent(page, csvName)).toBe(edited);
+  // 画面（エディタ）も保存済みの手編集で開く。AI 出力のまま開くと、次の編集や「ドライブに保存」で
+  // 手編集が上書きされる。グリッドは canvas 描画なので、保存要求に載る CSV で確かめる。
+  let savedCsv: string | undefined;
+  await page.route("**/api/tabular/save", async (route) => {
+    savedCsv = (route.request().postDataJSON() as { csv: string }).csv;
+    await route.abort();
+  });
+  await page.getByTestId("draft-save-button").click();
+  await page.getByTestId("save-draft-confirm").click();
+  await expect.poll(() => savedCsv).toBeDefined();
+  expect(savedCsv?.trim()).toBe(edited);
+});
+
+test("下書き: 持ち主の分からない旧来の素のキーは今のユーザーへ移さずに消す", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const csvName = uniqueName("旧キー");
+  await sendFromHome(page, `savecsv:${csvName}`);
+  await page.waitForURL(/\/csv\/draft/, { timeout: 25_000 });
+  await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 20_000 });
+
+  // #817 以前の素のキーに、前の人の下書きが残っている状態にする。
+  await page.evaluate(() => {
+    const entry = { threadId: "t-legacy", name: "前の人", content: "秘密,1", source: "user", rev: 1 };
+    window.localStorage.setItem("shiki.csv-drafts.v1", JSON.stringify({ "t-legacy 前の人": entry }));
+  });
+  await page.reload();
+  await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 25_000 });
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem("shiki.csv-drafts.v1")))
+    .toBeNull();
+  expect(await storedDraftContent(page, "前の人")).toBeUndefined();
+  expect(await storedDraftContent(page, csvName)).toBeDefined();
+});
+
+test("下書き: /me が失敗しても読み込み中のまま止まらず、再試行で開ける", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const csvName = uniqueName("再試行");
+  await sendFromHome(page, `savecsv:${csvName}`);
+  await page.waitForURL(/\/csv\/draft/, { timeout: 25_000 });
+  await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 20_000 });
+
+  // /me が 5xx を返す間はユーザーが確定せず、履歴からの復元を始められない。
+  await page.route("**/api/me", (route) => route.fulfill({ status: 503, body: "unavailable" }));
+  await page.reload();
+  const alert = page.getByRole("alert").filter({ hasText: "下書きを読み込めませんでした" });
+  await expect(alert).toBeVisible({ timeout: 20_000 });
+
+  // 復旧後に再試行すると、下書きが開く。
+  await page.unroute("**/api/me");
+  await alert.getByRole("button", { name: "再試行" }).click();
+  await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 25_000 });
 });

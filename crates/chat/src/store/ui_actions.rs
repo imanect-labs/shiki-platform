@@ -25,6 +25,7 @@
 //! アクセス経路も別物なので、UI の描画根拠にはしない。
 
 use std::collections::HashMap;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, Relation};
 use uuid::Uuid;
@@ -60,7 +61,7 @@ impl ChatStore {
             ctx,
             thread_id,
             Relation::Editor,
-            "thread.ui_action",
+            AuditAction::ThreadUiAction,
             trace_id,
         )
         .await?;

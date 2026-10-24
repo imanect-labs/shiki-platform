@@ -112,9 +112,10 @@ impl Sandbox for FakeSandbox {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         st.created += 1;
+        let tenant_id = spec.tenant_id.clone();
         st.created_specs.push(spec);
         let id = format!("fake-{}", st.created);
-        Ok(SandboxHandle { id })
+        Ok(SandboxHandle { id, tenant_id })
     }
 
     async fn exec(

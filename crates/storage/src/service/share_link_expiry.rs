@@ -9,6 +9,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 /// 期限切れ active リンクを持つ node（タイマの処理単位）。
 #[derive(sqlx::FromRow)]
@@ -122,7 +123,7 @@ impl StorageService {
                 .record(
                     &sctx,
                     AuditEntry {
-                        action: "node.share_link.expire",
+                        action: AuditAction::NodeShareLinkExpire,
                         object_type: n.kind.as_str(),
                         object_id: &n.node_id.to_string(),
                         decision: Decision::Allow,

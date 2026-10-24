@@ -21,7 +21,7 @@ use chrono::{Duration, Utc};
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
-use storage::audit::{AuditEntry, AuditRecorder, Decision};
+use storage::audit::{AuditAction, AuditCategory, AuditEntry, AuditRecorder, Decision};
 use storage::audit_view::{AuditCursor, AuditDecision, AuditFilter};
 use uuid::Uuid;
 
@@ -60,7 +60,7 @@ fn ctx(tenant: &str, org: &str, user: &str) -> AuthContext {
 async fn record(
     rec: &AuditRecorder,
     c: &AuthContext,
-    action: &str,
+    action: AuditAction,
     decision: Decision,
     trace: Option<&str>,
     metadata: serde_json::Value,
@@ -112,7 +112,7 @@ async fn search_is_scoped_filtered_and_pageable() {
     record(
         &rec,
         &alice,
-        "file.delete",
+        AuditAction::FileDelete,
         Decision::Allow,
         Some("tr-1"),
         json!({}),
@@ -121,7 +121,7 @@ async fn search_is_scoped_filtered_and_pageable() {
     record(
         &rec,
         &bob,
-        "file.download_url.issue",
+        AuditAction::FileDownloadUrlIssue,
         Decision::Deny,
         None,
         json!({}),
@@ -130,7 +130,7 @@ async fn search_is_scoped_filtered_and_pageable() {
     record(
         &rec,
         &bob,
-        "rag.search",
+        AuditAction::RagSearch,
         Decision::Allow,
         Some("tr-2"),
         json!({"cited_chunk_ids": ["chunk-a", "chunk-b"]}),
@@ -139,7 +139,7 @@ async fn search_is_scoped_filtered_and_pageable() {
     record(
         &rec,
         &alice,
-        "folder.create",
+        AuditAction::FolderCreate,
         Decision::Allow,
         None,
         json!({}),
@@ -148,7 +148,7 @@ async fn search_is_scoped_filtered_and_pageable() {
     record(
         &rec,
         &other,
-        "file.delete",
+        AuditAction::FileDelete,
         Decision::Allow,
         None,
         json!({}),
@@ -191,6 +191,18 @@ async fn search_is_scoped_filtered_and_pageable() {
     })
     .await;
     assert!(exact.is_empty(), "末尾の . が無ければ完全一致");
+    // 分類（#830）は語彙でその分類に属する操作のどれか。
+    let in_category = |c| {
+        by(AuditFilter {
+            category: Some(c),
+            ..window()
+        })
+    };
+    assert_eq!(in_category(AuditCategory::File).await.len(), 2);
+    let search = in_category(AuditCategory::Search).await;
+    assert_eq!(search.len(), 1);
+    assert_eq!(search[0].action, "rag.search");
+    assert!(in_category(AuditCategory::Secret).await.is_empty());
     let denied = by(AuditFilter {
         decision: Some(AuditDecision::Deny),
         ..window()

@@ -7,6 +7,7 @@
 //! 第3リスナ（インストール済み突合・app-gateway）が担う。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, AuthzClient, Consistency, Relation};
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
@@ -80,7 +81,7 @@ impl BundleStore {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "app.bundle.put",
+                    action: AuditAction::AppBundlePut,
                     object_type: "miniapp",
                     object_id: &artifact_id.to_string(),
                     decision: Decision::Allow,

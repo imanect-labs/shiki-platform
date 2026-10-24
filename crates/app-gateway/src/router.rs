@@ -6,8 +6,9 @@
 //! 全ての許可/拒否を監査へ残す（拒否は security タグ付き・trace_id 貫通）。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
-use authz::{AuthContext, AuthzClient, Principal, PrincipalKind};
+use authz::{AuthContext, AuthzClient, GroupLayout, Principal, PrincipalKind};
 use axum::{
     extract::{MatchedPath, State},
     http::{header, header::AUTHORIZATION, HeaderMap, HeaderValue, Method, Request, StatusCode},
@@ -59,14 +60,13 @@ pub struct GatewayState {
     /// per-call OpenFGA（ハンドラの第4ゲート）に使う認可クライアント。
     pub authz: Arc<dyn AuthzClient>,
     pub audit: AuditRecorder,
-    /// tenant クレームを必須にするか（SaaS `multi` は true・fail-closed）。
+    /// `tenant_id` の解決規則（内部 API の `resolve_tenant_id` と単一定義・#808）。
     ///
-    /// `multi` テナンシーで true にすると、tenant クレームの無いトークンは `default_tenant` へ
-    /// フォールバックせず拒否する（他テナントの既定テナントへ紛れ込むのを防ぐ）。`single`
-    /// （オンプレ/cell）は false でフォールバックを許す。
-    pub require_tenant_claim: bool,
-    /// single テナントのフォールバック（`require_tenant_claim=false` のときのみ使う）。
-    pub default_tenant: String,
+    /// `single`（オンプレ/cell）は [`authz::TenantSource::Fixed`] で設定の固定値を使い、
+    /// トークンの tenant クレームは**無視**する（クレームでテナントを選ばせない）。
+    /// `multi`（SaaS）は [`authz::TenantSource::Claim`] で tenant クレームを必須にし、
+    /// 欠落は既定テナントへフォールバックせず拒否する（fail-closed）。
+    pub tenant_source: authz::TenantSource,
     pub default_org: String,
     /// 能力アダプタの委譲先（Task 9.8）。
     pub caps: CapabilityDeps,
@@ -233,20 +233,17 @@ async fn authorize(
     let token = bearer(req)?;
     let identity = verify_gateway_token(&token, &*state.keys, &state.token_cfg).await?;
 
-    // テナント解決。multi では tenant クレーム必須（欠落は fail-closed で拒否＝既定テナントへ
-    // 紛れ込ませない）。single はフォールバックを許す。
-    let tenant = match identity.tenant.clone() {
-        Some(t) if !t.is_empty() => t,
-        _ if state.require_tenant_claim => {
-            return Err(GatewayError::Unauthenticated(
-                "tenant クレームがありません".into(),
-            ));
-        }
-        _ => state.default_tenant.clone(),
-    };
-    // org はグループの先頭セグメントから解決する（内部 API の resolve_org と同一規則）。
-    // グループ未付与のトークンは設定の default_org へフォールバックする。
-    let org = org_from_groups(&identity.groups).unwrap_or_else(|| state.default_org.clone());
+    // テナント解決（内部 API と同じ規則）。multi では tenant クレーム必須（欠落は fail-closed で
+    // 拒否＝既定テナントへ紛れ込ませない）。single は設定の固定値を使いクレームを無視する。
+    let tenant = state
+        .tenant_source
+        .resolve(identity.tenant.as_deref())
+        .map_err(|e| GatewayError::Unauthenticated(e.to_string()))?;
+    // org は解決済み tenant 配下の group（`/tenants/<tenant>/<org>`）から解決する
+    // （内部 API の resolve_org と同一規則・authz::org_group が単一定義・#811）。
+    // 該当 group の無いトークンは設定の default_org へフォールバックする。
+    let org = authz::org_group::resolve_org(&identity.groups, &tenant, group_layout(state))
+        .unwrap_or_else(|| state.default_org.clone());
     let auth = AuthContext::new(
         Principal {
             kind: PrincipalKind::User,
@@ -290,13 +287,13 @@ async fn authorize(
     })
 }
 
-/// グループパスの先頭セグメントを org として解決する（api::extract::resolve_org と同一規則）。
-fn org_from_groups(groups: &[String]) -> Option<String> {
-    groups
-        .iter()
-        .filter_map(|g| g.trim_start_matches('/').split('/').next())
-        .find(|seg| !seg.is_empty())
-        .map(str::to_string)
+/// テナンシーモードから group パスの解釈方式を決める（内部 API の `group_layout` と同じ写し）。
+/// multi（tenant クレーム必須）は自テナント配下のみ、single は旧形式（直下 group）も許す。
+fn group_layout(state: &GatewayState) -> GroupLayout {
+    match state.tenant_source {
+        authz::TenantSource::Claim => GroupLayout::TenantScoped,
+        authz::TenantSource::Fixed(_) => GroupLayout::TenantScopedOrLegacy,
+    }
 }
 
 /// ゲートウェイ判定を監査へ残す（拒否は security タグ・trace_id は後続 PR12 で貫通強化）。
@@ -319,7 +316,7 @@ async fn record(
         .record(
             auth,
             AuditEntry {
-                action: "gateway.call",
+                action: AuditAction::GatewayCall,
                 object_type: "miniapp",
                 object_id: &installation.app_id.to_string(),
                 decision,
@@ -346,21 +343,44 @@ async fn whoami(Extension(ctx): Extension<GatewayCtx>) -> Json<serde_json::Value
 
 #[cfg(test)]
 mod tests {
-    use super::org_from_groups;
+    use authz::{org_group::resolve_org, GroupLayout};
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(ToString::to_string).collect()
+    }
 
     #[test]
     fn org_resolution_matches_internal_rule() {
-        // 先頭グループの最上位セグメント（api::extract::resolve_org と同一規則）。
+        // 自テナント配下の org（内部 API の resolve_org と同一規則）。
         assert_eq!(
-            org_from_groups(&["/acme/dev".into(), "/other".into()]),
+            resolve_org(
+                &v(&["/tenants/t/acme/dev", "/tenants/u/other"]),
+                "t",
+                GroupLayout::TenantScoped
+            ),
             Some("acme".to_string())
         );
+        // multi: 他テナント配下・無修飾の旧 group はフォールバック（None）。
         assert_eq!(
-            org_from_groups(&["sales".into()]),
+            resolve_org(
+                &v(&["/tenants/u/x", "/sales"]),
+                "t",
+                GroupLayout::TenantScoped
+            ),
+            None
+        );
+        // single: 旧形式も使える。空・スラッシュのみはフォールバック。
+        assert_eq!(
+            resolve_org(&v(&["sales"]), "t", GroupLayout::TenantScopedOrLegacy),
             Some("sales".to_string())
         );
-        // 空・スラッシュのみはフォールバック（None）。
-        assert_eq!(org_from_groups(&[]), None);
-        assert_eq!(org_from_groups(&["/".into()]), None);
+        assert_eq!(
+            resolve_org(&[], "t", GroupLayout::TenantScopedOrLegacy),
+            None
+        );
+        assert_eq!(
+            resolve_org(&v(&["/"]), "t", GroupLayout::TenantScopedOrLegacy),
+            None
+        );
     }
 }

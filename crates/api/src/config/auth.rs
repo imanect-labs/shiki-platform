@@ -149,4 +149,18 @@ impl AuthConfig {
             .clone()
             .unwrap_or_else(|| format!("{}/protocol/openid-connect/certs", self.backchannel_base()))
     }
+
+    /// テナンシー設定を `tenant_id` の解決規則（[`authz::TenantSource`]）へ写す。
+    ///
+    /// 内部 API（`resolve_tenant_id`）と公開 API ゲートウェイの双方がこの写しを使い、
+    /// 規則を二重実装しない（#808）。single の固定値が未設定なら空として渡し、
+    /// 解決時に設定ミスとして拒否させる（`"default"` を黙って補わない）。
+    pub fn tenant_source(&self) -> authz::TenantSource {
+        match self.tenancy {
+            Tenancy::Single => {
+                authz::TenantSource::Fixed(self.tenant_id.clone().unwrap_or_default())
+            }
+            Tenancy::Multi => authz::TenantSource::Claim,
+        }
+    }
 }

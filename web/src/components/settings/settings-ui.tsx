@@ -138,7 +138,14 @@ export function SettingsItem({
 }
 
 /// アイコンの台（ホーム画面のショートカットと同じ角の大きい面）。`season` を渡すとその季節の色に灯す。
-export function IconTile({ icon: Icon, season }: { icon: LucideIcon; season?: number }) {
+/// `icon` は lucide のほか、`className` を受けるブランドのロゴ（OpenAI 等）も置ける。
+export function IconTile({
+  icon: Icon,
+  season,
+}: {
+  icon: LucideIcon | React.ComponentType<{ className?: string }>;
+  season?: number;
+}) {
   return (
     <span
       aria-hidden

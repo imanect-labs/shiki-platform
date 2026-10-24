@@ -447,3 +447,41 @@ async fn current_lock_reflects_session() {
         .unwrap()
         .is_none());
 }
+
+/// ロックの主キーは (tenant_id, file_id)（#815）。同じ file_id に他テナントの期限切れロック行が
+/// あっても、自テナントの LOCK はそれを奪って tenant_id を書き換えない（別行として共存する）。
+#[tokio::test]
+async fn lock_upsert_never_rewrites_other_tenant_row() {
+    let Some(env) = setup().await else { return };
+    let alice = ctx_for("alice", "default");
+    let node = create_docx(&env, &alice, "tenant-pk").await;
+    let token = token_for(&env, &alice, node.id);
+
+    sqlx::query(
+        "INSERT INTO office_lock (file_id, lock_id, locked_by, tenant_id, expires_at) \
+         VALUES ($1, 'foreign', 'user:tenant-b|bob', 'tenant-b', now() - interval '1 minute')",
+    )
+    .bind(node.id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+
+    let res = send(&env, lock_req(node.id, &token, "LOCK", Some("A1"))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT tenant_id, lock_id FROM office_lock WHERE file_id = $1 ORDER BY tenant_id",
+    )
+    .bind(node.id)
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("default".to_string(), "A1".to_string()),
+            ("tenant-b".to_string(), "foreign".to_string()),
+        ],
+        "他テナントの行は書き換えられず、自テナントの行が別に作られること"
+    );
+}

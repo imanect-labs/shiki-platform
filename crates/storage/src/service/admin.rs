@@ -5,6 +5,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 impl StorageService {
     /// テナント初期 admin へ org の member・admin・audit_viewer タプルを付与する（冪等・監査つき）。
@@ -43,7 +44,7 @@ impl StorageService {
             .record(
                 &ctx,
                 AuditEntry {
-                    action: "tenant.provision",
+                    action: AuditAction::TenantProvision,
                     object_type: "organization",
                     object_id: org,
                     decision: Decision::Allow,
@@ -59,7 +60,8 @@ impl StorageService {
     ///
     /// 撤去順（fail-safe・全段冪等＝途中失敗は再実行で収束）:
     /// 1. **FGA タプル**: DB からオブジェクトを列挙（node / role / org / artifact / secret /
-    ///    thread）し、各オブジェクトの直接タプルを一括剥奪する。**行を消す前に回収する**
+    ///    thread。org は `org` 引数に限らずテナント配下の全 org）し、各オブジェクトの直接タプルを
+    ///    一括剥奪する。**行を消す前に回収する**
     ///    （行が列挙元なので、先に消すと到達不能な孤児タプルになる）。識別子は tenant
     ///    名前空間経由なので他テナントに触れない。
     /// 2. **オブジェクトストア**: テナントに属する全 prefix（`{tenant_id}/` と
@@ -114,12 +116,18 @@ impl StorageService {
         for role_id in &role_ids {
             tuples_deleted += u64::from(self.authz.delete_object_tuples(&ns.role(role_id)).await?);
         }
-        // 1c. org のタプル（member）。
-        tuples_deleted += u64::from(
-            self.authz
-                .delete_object_tuples(&ns.organization(org))
-                .await?,
-        );
+        // 1c. org のタプル（member / admin）。**テナント配下の全 org** を剥がす（#816）。
+        //     1 テナント＝1 org とは限らない（部署ごとの org 等）。登録簿の org だけを剥がすと、
+        //     残りの org のタプルが列挙元の行を失った孤児になる。org 一覧は DB の行から導出し、
+        //     登録簿の org（引数）を必ず含める（行が 1 つも無くても初期 admin のタプルはある）。
+        let mut orgs = crate::tenant_scope::tenant_orgs(&self.db, tenant_id).await?;
+        if !orgs.iter().any(|o| o == org) {
+            orgs.push(org.to_string());
+        }
+        for o in &orgs {
+            tuples_deleted +=
+                u64::from(self.authz.delete_object_tuples(&ns.organization(o)).await?);
+        }
         // 1d. artifact のタプル（owner/editor/viewer・workflow プリンシパル委譲含む）。
         //     artifact:<tenant>|<id> を台帳（artifact テーブル）から列挙して撤去する（SAAS.2 完全削除）。
         {
@@ -260,7 +268,7 @@ impl StorageService {
             &mut tx,
             &ctx,
             AuditEntry {
-                action: "tenant.purge",
+                action: AuditAction::TenantPurge,
                 object_type: "organization",
                 object_id: org,
                 decision: Decision::Allow,
@@ -269,10 +277,13 @@ impl StorageService {
                     "tuples_deleted": tuples_deleted,
                     "objects_deleted": objects_deleted,
                     "roles": role_ids.len(),
+                    "orgs": orgs,
                     // 撤去範囲の証跡（#420）: 何テーブル・何行消したかを削除証明として残す。
                     "tables_purged": tables_purged,
                     // 各 DELETE が**直接**消した行数。tenant_id を持たず親から ON DELETE CASCADE される
-                    // 従属行（generation_event / collab_update 等）は含まない（Codex P2）。
+                    // 従属行は含まない（Codex P2）。#815 で generation_event / collab_update /
+                    // app_function_run も tenant_id を持ち子→親順で直接消すようになり、現スキーマでは
+                    // cascade だけで消える tenant 行は無い（tenant_id を持たないのは全体共有の表だけ）。
                     "rows_deleted_direct": rows_deleted,
                 }),
             },
@@ -292,7 +303,7 @@ impl StorageService {
         ctx: &AuthContext,
         relation: Relation,
         object: &FgaObject,
-        action: &str,
+        action: AuditAction,
         object_type: &str,
         object_id: &str,
         trace_id: Option<&str>,
@@ -332,7 +343,7 @@ impl StorageService {
         &self,
         ctx: &AuthContext,
         object: &FgaObject,
-        action: &str,
+        action: AuditAction,
         object_type: &str,
         object_id: &str,
         trace_id: Option<&str>,

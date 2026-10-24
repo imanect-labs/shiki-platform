@@ -93,6 +93,8 @@ struct PendingRow {
     staging_key: String,
     /// 内容更新（既存ファイルの新版）の対象。NULL は新規ファイル作成。
     target_node_id: Option<Uuid>,
+    /// 内容更新で申告した元の版（楽観ロック・#827）。NULL は無条件の新版。
+    base_version: Option<i64>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -232,10 +234,11 @@ fn node_fga_object(ns: &Namespace<'_>, kind: NodeKind, id: Uuid) -> FgaObject {
 }
 
 /// リネーム/移動の監査アクション名（種別ごと）。
-fn update_action(kind: NodeKind) -> &'static str {
+fn update_action(kind: NodeKind) -> crate::audit::AuditAction {
+    use crate::audit::AuditAction;
     match kind {
-        NodeKind::File => "file.update",
-        NodeKind::Folder => "folder.update",
+        NodeKind::File => AuditAction::FileUpdate,
+        NodeKind::Folder => AuditAction::FolderUpdate,
     }
 }
 

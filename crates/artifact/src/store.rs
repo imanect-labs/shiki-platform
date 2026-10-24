@@ -3,6 +3,7 @@
 //! 作成・不変バージョン追記・取得・名前解決・一覧・論理削除。共有は [`share`](crate::share)。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, AuthzClient, Consistency, ObjectType, Relation};
 use chrono::{DateTime, Utc};
@@ -150,7 +151,7 @@ impl ArtifactStore {
         }
         self.record_audit(
             ctx,
-            "artifact.create",
+            AuditAction::ArtifactCreate,
             &id.to_string(),
             trace_id,
             json!({ "kind": input.kind, "name": name }),
@@ -303,8 +304,14 @@ impl ArtifactStore {
         id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<(), ArtifactError> {
-        self.require(ctx, id, Relation::Owner, "artifact.delete", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::Owner,
+            AuditAction::ArtifactDelete,
+            trace_id,
+        )
+        .await?;
         let updated = sqlx::query(
             "UPDATE artifact SET deleted_at = now(), updated_at = now() \
              WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
@@ -317,8 +324,14 @@ impl ArtifactStore {
         if updated.rows_affected() == 0 {
             return Err(ArtifactError::NotFound);
         }
-        self.record_audit(ctx, "artifact.delete", &id.to_string(), trace_id, json!({}))
-            .await
+        self.record_audit(
+            ctx,
+            AuditAction::ArtifactDelete,
+            &id.to_string(),
+            trace_id,
+            json!({}),
+        )
+        .await
     }
 
     /// 生存行のメタを引く（認可済み前提の内部ヘルパ）。
@@ -345,7 +358,7 @@ impl ArtifactStore {
         ctx: &AuthContext,
         id: Uuid,
         relation: Relation,
-        action: &str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<authz::FgaObject, ArtifactError> {
         let obj = ctx.ns().artifact(&id.to_string());
@@ -382,7 +395,7 @@ impl ArtifactStore {
     pub(crate) async fn record_audit(
         &self,
         ctx: &AuthContext,
-        action: &str,
+        action: AuditAction,
         object_id: &str,
         trace_id: Option<&str>,
         metadata: serde_json::Value,

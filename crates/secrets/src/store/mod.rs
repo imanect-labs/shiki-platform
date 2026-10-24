@@ -4,6 +4,7 @@
 //! 平文を返し（能力ゲートウェイ内から呼ぶ）、その解決イベントを毎回監査する。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, AuthzClient, Consistency, Relation};
 use chrono::{DateTime, Utc};
@@ -16,11 +17,14 @@ use uuid::Uuid;
 
 use crate::binding::DestinationBinding;
 use crate::key_provider::{KeyProvider, WrappedKey};
+use crate::row_aad::{EncVersion, RowBinding};
 use crate::store_helpers::{normalize_hosts, to_meta, validate_name};
 use crate::{crypto, map_db, SecretError};
 
 /// can_use 授権（子モジュール＝private フィールドへ到達するため store の子に置く）。
 mod grant;
+/// 旧版（AAD なし）暗号文の再暗号化（遅延・一括・#814）。
+pub(crate) mod reencrypt;
 
 /// 参照名の上限長。
 pub(crate) const MAX_NAME_LEN: usize = 128;
@@ -74,6 +78,7 @@ struct SecretCipherRow {
     encrypted_dek: Vec<u8>,
     dek_nonce: Vec<u8>,
     key_provider: String,
+    enc_version: i16,
     allowed_hosts: Vec<String>,
 }
 
@@ -123,16 +128,23 @@ impl SecretStore {
         }
         let hosts = normalize_hosts(&input.allowed_hosts)?;
 
-        // envelope: DEK を作り平文を暗号化 → DEK をマスターキーで包む。
+        // envelope: DEK を作り平文を暗号化 → DEK をマスターキーで包む。暗号文は行
+        // （tenant_id・org・id）へ AAD で束縛するため、id は INSERT 前にここで採番する（#814）。
+        let id = Uuid::new_v4();
+        let binding = RowBinding {
+            tenant_id: &ctx.tenant_id,
+            org: &ctx.org,
+            id,
+        };
         let dek = crypto::KeyGuard(crypto::generate_key());
-        let sealed = crypto::seal(&dek.0, &input.plaintext)?;
+        let sealed = binding.seal(&dek.0, &input.plaintext)?;
         let wrapped = self.key_provider.wrap(&dek.0).await?;
 
         let row: SecretRow = sqlx::query_as(
             "INSERT INTO secret \
              (tenant_id, org, name, owner, allowed_hosts, ciphertext, nonce, \
-              encrypted_dek, dek_nonce, key_provider) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+              encrypted_dek, dek_nonce, key_provider, id, enc_version) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
              RETURNING id, name, owner, allowed_hosts, version, created_at, updated_at",
         )
         .bind(&ctx.tenant_id)
@@ -145,6 +157,8 @@ impl SecretStore {
         .bind(&wrapped.encrypted_dek)
         .bind(&wrapped.nonce)
         .bind(wrapped.provider_id.as_str())
+        .bind(id)
+        .bind(EncVersion::CURRENT.as_db())
         .fetch_one(&self.db)
         .await
         .map_err(|e| match &e {
@@ -154,7 +168,6 @@ impl SecretStore {
             _ => map_db(e),
         })?;
 
-        let id = row.id;
         let obj = ctx.ns().secret(&id.to_string());
         if let Err(e) = self
             .authz
@@ -173,7 +186,7 @@ impl SecretStore {
         }
         self.record_audit(
             ctx,
-            "secret.create",
+            AuditAction::SecretCreate,
             &id.to_string(),
             trace_id,
             json!({ "name": name }),
@@ -198,15 +211,37 @@ impl SecretStore {
                 "plaintext が短すぎます（自動レダクト不能）".into(),
             ));
         }
-        self.require(ctx, id, Relation::Owner, "secret.rotate", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::Owner,
+            AuditAction::SecretRotate,
+            trace_id,
+        )
+        .await?;
+        // 束縛先の org は**行の値**を使う（owner 判定の FGA は org を見ないため ctx.org と一致する保証がない）。
+        let org: Option<String> =
+            sqlx::query_scalar("SELECT org FROM secret WHERE tenant_id = $1 AND id = $2")
+                .bind(&ctx.tenant_id)
+                .bind(id)
+                .fetch_optional(&self.db)
+                .await
+                .map_err(map_db)?;
+        let org = org.ok_or(SecretError::NotFound)?;
+        let binding = RowBinding {
+            tenant_id: &ctx.tenant_id,
+            org: &org,
+            id,
+        };
         let dek = crypto::KeyGuard(crypto::generate_key());
-        let sealed = crypto::seal(&dek.0, &new_plaintext)?;
+        let sealed = binding.seal(&dek.0, &new_plaintext)?;
         let wrapped = self.key_provider.wrap(&dek.0).await?;
+        // ローテーションは常に現行版で書く（旧版行もここで移行される）。
         let row: Option<SecretRow> = sqlx::query_as(
             "UPDATE secret SET ciphertext = $3, nonce = $4, encrypted_dek = $5, \
-             dek_nonce = $6, key_provider = $7, version = version + 1, updated_at = now() \
-             WHERE tenant_id = $1 AND id = $2 \
+             dek_nonce = $6, key_provider = $7, enc_version = $9, version = version + 1, \
+             updated_at = now() \
+             WHERE tenant_id = $1 AND id = $2 AND org = $8 \
              RETURNING id, name, owner, allowed_hosts, version, created_at, updated_at",
         )
         .bind(&ctx.tenant_id)
@@ -216,13 +251,15 @@ impl SecretStore {
         .bind(&wrapped.encrypted_dek)
         .bind(&wrapped.nonce)
         .bind(wrapped.provider_id.as_str())
+        .bind(&org)
+        .bind(EncVersion::CURRENT.as_db())
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
         let row = row.ok_or(SecretError::NotFound)?;
         self.record_audit(
             ctx,
-            "secret.rotate",
+            AuditAction::SecretRotate,
             &id.to_string(),
             trace_id,
             json!({ "version": row.version }),
@@ -239,8 +276,14 @@ impl SecretStore {
         allowed_hosts: Vec<String>,
         trace_id: Option<&str>,
     ) -> Result<SecretMeta, SecretError> {
-        self.require(ctx, id, Relation::Owner, "secret.binding.update", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::Owner,
+            AuditAction::SecretBindingUpdate,
+            trace_id,
+        )
+        .await?;
         let hosts = normalize_hosts(&allowed_hosts)?;
         let row: Option<SecretRow> = sqlx::query_as(
             "UPDATE secret SET allowed_hosts = $3, updated_at = now() \
@@ -256,7 +299,7 @@ impl SecretStore {
         let row = row.ok_or(SecretError::NotFound)?;
         self.record_audit(
             ctx,
-            "secret.binding.update",
+            AuditAction::SecretBindingUpdate,
             &id.to_string(),
             trace_id,
             json!({}),
@@ -273,7 +316,13 @@ impl SecretStore {
         trace_id: Option<&str>,
     ) -> Result<(), SecretError> {
         let obj = self
-            .require(ctx, id, Relation::Owner, "secret.delete", trace_id)
+            .require(
+                ctx,
+                id,
+                Relation::Owner,
+                AuditAction::SecretDelete,
+                trace_id,
+            )
             .await?;
         let deleted = sqlx::query("DELETE FROM secret WHERE tenant_id = $1 AND id = $2")
             .bind(&ctx.tenant_id)
@@ -285,8 +334,14 @@ impl SecretStore {
             return Err(SecretError::NotFound);
         }
         let _ = self.authz.delete_object_tuples(&obj).await;
-        self.record_audit(ctx, "secret.delete", &id.to_string(), trace_id, json!({}))
-            .await
+        self.record_audit(
+            ctx,
+            AuditAction::SecretDelete,
+            &id.to_string(),
+            trace_id,
+            json!({}),
+        )
+        .await
     }
 
     /// 自分が owner のシークレット一覧（**参照名のみ**・平文は返さない）。
@@ -311,8 +366,14 @@ impl SecretStore {
         id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<SecretMeta, SecretError> {
-        self.require(ctx, id, Relation::CanUse, "secret.get_meta", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::CanUse,
+            AuditAction::SecretGetMeta,
+            trace_id,
+        )
+        .await?;
         let row: Option<SecretRow> = sqlx::query_as(
             "SELECT id, name, owner, allowed_hosts, version, created_at, updated_at \
              FROM secret WHERE tenant_id = $1 AND id = $2",
@@ -341,7 +402,8 @@ impl SecretStore {
         // 参照名 → 暗号化された素材（tenant＋org スコープ）。同一 tenant 内でも別 org の
         // シークレットを注入させない（org 境界・ctx.org でスコープ）。
         let row: Option<SecretCipherRow> = sqlx::query_as(
-            "SELECT id, ciphertext, nonce, encrypted_dek, dek_nonce, key_provider, allowed_hosts \
+            "SELECT id, ciphertext, nonce, encrypted_dek, dek_nonce, key_provider, enc_version, \
+                    allowed_hosts \
                  FROM secret WHERE tenant_id = $1 AND org = $2 AND name = $3",
         )
         .bind(&ctx.tenant_id)
@@ -356,8 +418,14 @@ impl SecretStore {
         let id = row.id;
 
         // can_use 権限を確認（無ければ解決拒否＋監査 deny）。
-        self.require(ctx, id, Relation::CanUse, "secret.resolve", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::CanUse,
+            AuditAction::SecretResolve,
+            trace_id,
+        )
+        .await?;
 
         // 宛先束縛を**復号前に**検証する（許可外ホストへ平文を一切出さない・監査 deny）。
         if let Some(host) = destination_host {
@@ -369,7 +437,7 @@ impl SecretStore {
                     .record(
                         ctx,
                         AuditEntry {
-                            action: "secret.destination_denied",
+                            action: AuditAction::SecretDestinationDenied,
                             object_type: "secret",
                             object_id: &id.to_string(),
                             decision: Decision::Deny,
@@ -389,12 +457,28 @@ impl SecretStore {
             provider_id: row.key_provider,
         };
         let dek = self.key_provider.unwrap(&wrapped).await?;
-        let plaintext = crypto::open(&dek.0, &row.nonce, &row.ciphertext)?;
+        // 暗号文は行（tenant_id・org・id）へ束縛されている。別行から複製された暗号文は
+        // ここで認証タグ不一致になり、平文を出さずに失敗する（#814）。行の org は WHERE で ctx.org。
+        let binding = RowBinding {
+            tenant_id: &ctx.tenant_id,
+            org: &ctx.org,
+            id,
+        };
+        let plaintext = binding.open(&dek.0, row.enc_version, &row.nonce, &row.ciphertext)?;
+        // 旧版（AAD なし）は初回利用で現行版へ遅延再暗号化する。失敗しても旧版のまま復号可能なので
+        // 解決自体は止めない（次回再試行・一括は shiki-admin secrets-reencrypt）。
+        if row.enc_version == EncVersion::Legacy.as_db() {
+            if let Err(e) =
+                reencrypt::upgrade_row(&self.db, binding, &dek.0, &plaintext, &row.nonce).await
+            {
+                tracing::warn!(secret_id = %id, error = %e, "旧版シークレットの遅延再暗号化に失敗（旧版のまま）");
+            }
+        }
 
         // 解決イベントを毎回監査（run 相関は trace_id）。
         self.record_audit(
             ctx,
-            "secret.resolve",
+            AuditAction::SecretResolve,
             &id.to_string(),
             trace_id,
             json!({ "name": name }),
@@ -415,7 +499,7 @@ impl SecretStore {
         ctx: &AuthContext,
         id: Uuid,
         relation: Relation,
-        action: &str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<authz::FgaObject, SecretError> {
         let obj = ctx.ns().secret(&id.to_string());
@@ -452,7 +536,7 @@ impl SecretStore {
     async fn record_audit(
         &self,
         ctx: &AuthContext,
-        action: &str,
+        action: AuditAction,
         object_id: &str,
         trace_id: Option<&str>,
         metadata: serde_json::Value,

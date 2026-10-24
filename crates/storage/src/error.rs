@@ -13,6 +13,10 @@ pub enum StorageError {
     /// 同一フォルダ内の名前衝突など（409）。
     #[error("名前が競合しています")]
     Conflict,
+    /// 内容更新で申告した版（base_version）より新しい版が既に保存されている（409・#827）。
+    /// `current` は今の版（クライアントが最新を開き直す・上書きを選ぶ材料）。
+    #[error("ファイルが他の保存で更新されています（現在の版 {current}）")]
+    VersionConflict { current: i64 },
     /// 入力が不正（400）。
     #[error("不正な引数: {0}")]
     Invalid(String),

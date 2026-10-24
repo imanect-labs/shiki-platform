@@ -11,6 +11,7 @@ import { Search, Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { SlashSuggestion } from "@/lib/slash-command";
+import { readScoped, writeScoped } from "@/lib/user-storage";
 import {
   Dialog,
   DialogContent,
@@ -19,12 +20,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
+/// 最近使ったスキル（ユーザー＋テナント単位のキー・ログアウトで消える・#817）。
 const RECENT_KEY = "shiki.composer.recent-skills";
 const MAX_RECENT = 5;
 
 function readRecent(): string[] {
   try {
-    const raw = window.localStorage.getItem(RECENT_KEY);
+    const raw = readScoped(RECENT_KEY);
     const v: unknown = raw ? JSON.parse(raw) : [];
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   } catch {
@@ -36,7 +38,7 @@ function readRecent(): string[] {
 export function recordRecentSkill(key: string): void {
   try {
     const next = [key, ...readRecent().filter((k) => k !== key)].slice(0, MAX_RECENT);
-    window.localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+    writeScoped(RECENT_KEY, JSON.stringify(next));
   } catch {
     /* プライベートモード等では保存しない */
   }

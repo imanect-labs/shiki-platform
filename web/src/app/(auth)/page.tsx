@@ -8,6 +8,7 @@ import { useMe } from "@/hooks/use-me";
 import { createThread, type Attachment } from "@/lib/chat-api";
 import type { ActiveCommand } from "@/lib/slash-command";
 import { stashPending } from "@/lib/pending-message";
+import { storageScopeGeneration } from "@/lib/user-storage";
 import { HOME_SCOPE, moveModelChoice } from "@/lib/model-choice";
 import { moveToolChoice } from "@/lib/tool-choice";
 import { titleFrom } from "@/lib/chat-store";
@@ -44,6 +45,7 @@ export default function HomePage() {
   ) => {
     if (starting || !text.trim()) return;
     setStarting(true);
+    const startedAt = storageScopeGeneration();
     try {
       // スラッシュコマンドは skill を確実にピンし、長ホライズン（エージェントモード）で開始する。
       // 通常チャットは max_steps=6 で、質問→計画→調査のような多段の作法が途中で切れるため。
@@ -58,14 +60,18 @@ export default function HomePage() {
       // ⚠️ 承認モードはここで触らない（Codex P1）。コマンドを選ぶ行為は「長ホライズンで
       // 実行してよい」の同意であって「事前許可の範囲を広げてよい」の同意ではない。
       // 承認モードは thread に永続する設定なので、緩和は明示操作に限る。
-      stashPending(thread.id, {
-        text,
-        attachments,
-        autonomous: asAutonomous,
-        skills: command
-          ? [{ artifactId: command.skillId, version: command.skillVersion }]
-          : undefined,
-      });
+      stashPending(
+        thread.id,
+        {
+          text,
+          attachments,
+          autonomous: asAutonomous,
+          skills: command
+            ? [{ artifactId: command.skillId, version: command.skillVersion }]
+            : undefined,
+        },
+        startedAt,
+      );
       // ホームで選んだモデルを新しいスレッドへ引き継ぐ（ホーム側は Auto に戻る・#553）。
       moveModelChoice(HOME_SCOPE, thread.id);
       // ツールの選択も最初の発話に載せるため新しいスレッドへ移す（#734）。

@@ -8,6 +8,7 @@
 //! 設定の変更は監査ログに 1 操作 1 行で残す。
 
 use std::collections::BTreeMap;
+use storage::audit::AuditAction;
 
 use axum::{
     extract::{Query, State},
@@ -123,6 +124,8 @@ pub async fn list_providers(
 // ---------------------------------------------------------------------------
 
 /// カタログのモデル 1 件（管理者向け・単価を含む）。
+#[allow(clippy::struct_excessive_bools)]
+// 表示用のモデルの属性（国外処理・思考・公開・本人専用）をそのまま写す。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AdminModel {
     pub id: String,
@@ -134,6 +137,9 @@ pub struct AdminModel {
     pub supports_effort: bool,
     /// テナントで有効か。
     pub enabled: bool,
+    /// 連携した本人だけが使うモデル（ChatGPT プラン・#854）。既定や Auto の振り先にしても、
+    /// 本人以外は Auto・次の候補に切り替わる。
+    pub personal: bool,
     /// 単価（マイクロ USD / 100 万トークン）。0 は未設定（自社 GPU 等）。
     pub prompt_price_micros_per_mtok: u64,
     pub completion_price_micros_per_mtok: u64,
@@ -217,6 +223,7 @@ pub async fn list_models(
             processed_abroad: m.processed_abroad,
             supports_effort: gw.supports_effort(m),
             enabled: settings.is_enabled(catalog, &m.id),
+            personal: gw.is_personal_model(m),
             prompt_price_micros_per_mtok: m.prompt_price_micros_per_mtok,
             completion_price_micros_per_mtok: m.completion_price_micros_per_mtok,
             context_window_tokens: m.context_window_tokens,
@@ -352,7 +359,7 @@ pub async fn update_settings(
         .record(
             &ctx,
             AuditEntry {
-                action: "org_admin.ai_settings.update",
+                action: AuditAction::OrgAdminAiSettingsUpdate,
                 object_type: "tenant_llm_settings",
                 object_id: &object_id,
                 decision: Decision::Allow,

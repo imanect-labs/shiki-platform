@@ -426,6 +426,7 @@ async fn replace_section_replaces_body_keeps_heading() {
 fn appended_ui_block_round_trips() {
     let live = LiveDoc::restore(
         Uuid::new_v4(),
+        "default",
         Some(collab::DocKind::Note),
         &empty_persisted(),
     )
@@ -487,6 +488,7 @@ async fn missing_heading_is_skipped() {
 fn ai_edit_produces_applicable_update() {
     let live = LiveDoc::restore(
         Uuid::new_v4(),
+        "default",
         Some(collab::DocKind::Note),
         &empty_persisted(),
     )

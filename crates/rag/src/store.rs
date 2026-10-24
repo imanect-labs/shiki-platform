@@ -106,10 +106,50 @@ pub async fn replace_chunks(
         });
         // 同一 (node, version) の重複ジョブが並行実行されても衝突しない（決定的 ID
         // かつ内容も決定的なので do nothing で同値。at-least-once 配信の並行冪等性）。
-        qb.push(" on conflict (id) do nothing");
-        qb.build().execute(&mut *tx).await?;
+        qb.push(" on conflict (id) do nothing returning id");
+        let inserted: Vec<(Uuid,)> = qb.build_query_as().fetch_all(&mut *tx).await?;
+        if inserted.len() < batch.len() {
+            ensure_skipped_are_own(&mut tx, ctx, node_id, batch).await?;
+        }
     }
     tx.commit().await?;
+    Ok(())
+}
+
+/// `do nothing` で入らなかった行が、すべて**同じテナント・同じノード**の既存行であることを確かめる。
+///
+/// 同ノード同版の並行ジョブ（先行 Tx が同じ決定的 ID を入れた）なら同値なので問題ない。
+/// 別ノード／別テナントの行と ID が衝突していたら、黙って欠落させず恒久エラーにする
+/// （chunk_id = uuid5(node_id, "{version}/{ordinal}") で node.id は大域 PK のため正常系では
+/// 起きない・#817）。挿入が全件通ったバッチでは呼ばれない（定常経路のコストは増えない）。
+async fn ensure_skipped_are_own(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ctx: &AuthContext,
+    node_id: Uuid,
+    batch: &[Chunk],
+) -> Result<(), RagError> {
+    let ids: Vec<Uuid> = batch.iter().map(|c| c.id).collect();
+    let (foreign,): (i64,) = sqlx::query_as(
+        "select count(*) from rag_chunk \
+         where id = any($1) and (tenant_id <> $2 or node_id <> $3)",
+    )
+    .bind(&ids)
+    .bind(&ctx.tenant_id)
+    .bind(node_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if foreign > 0 {
+        tracing::error!(
+            %node_id,
+            tenant_id = %ctx.tenant_id,
+            foreign,
+            "chunk_id が別ノード/別テナントの既存行と衝突（取り込みを拒否）"
+        );
+        return Err(RagError::ChunkIdConflict {
+            node_id,
+            count: foreign,
+        });
+    }
     Ok(())
 }
 

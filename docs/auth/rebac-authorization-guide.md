@@ -257,18 +257,19 @@ flowchart LR
   アプリ層（storage/api…）はこれらを直接呼べない。
 - 識別子を作る唯一の入口が `AuthContext::ns()`（`context.rs:76`）。ここは必ず `self.tenant_id` で名前空間化する。
   → **tenant を渡さずに識別子を組むことが型レベルで不可能**。acme のコンテキストからは `folder:beta|...` を組めない。
-- FGA から読み戻す側も対称的に守る: `strip_object_id`（`object.rs:188`）は自 tenant プレフィクスに一致しなければ `None`。
+- FGA から読み戻す側も対称的に守る: `strip_object_id`（`object.rs:237`）は自 tenant プレフィクスに一致しなければ `None`。
   他テナントのオブジェクトが混ざっても防御的に除外される。
 
 > **例外（背景ジョブ用の入口）**: 「型レベルで越境不能」が成り立つのは **`AuthContext` を持つリクエスト経路**。
 > `AuthContext` が無い背景処理には 2 つの `pub` な入口があり、そこでは**呼び出し側が tenant 境界を負う**:
 >
-> - `Namespace::for_tenant(tenant_id)`（`object.rs:115`）: tenant_id を明示してビルダを得る。委譲チェック・棚卸し
+> - `Namespace::for_tenant(tenant_id)`（`object.rs:138`）: tenant_id を明示してビルダを得る。委譲チェック・棚卸し
 >   （`workflow-engine` の delegation/inventory）など `AuthContext` が無い経路専用。渡す tenant_id は信頼できる源
 >   （台帳・キュー行）由来にし、必要なら `validate_tenant_id` を通すこと。
-> - `FgaObject::from_qualified(qualified)`（`object.rs:87`）: 保存済みの**完全修飾識別子**（委譲台帳
+> - `FgaObject::from_qualified(qualified, expected_tenant)`（`object.rs:106`）: 保存済みの**完全修飾識別子**（委譲台帳
 >   `workflow_delegation.object_ref` など、一度 `Namespace` を通して生成・保存したもの）を読み戻す専用。
->   形式（`<type>:<tenant>|<local>`）を最低限検証し、崩れていれば `None`（台帳破損・改竄を弾く）。**新規の生 id 組み立てには使わない**。
+>   形式（`<type>:<tenant>|<local>`）に加え、tenant 部が `expected_tenant`（台帳行の `tenant_id`）と一致することを検証し、
+>   崩れ・不一致は `None`（fail-closed。台帳破損・改竄で他テナントの object を指す行を弾く・#813）。**新規の生 id 組み立てには使わない**。
 >
 > レビュー時の含意: 背景ジョブのコードでは「tenant 越境は型が防ぐ」と思い込まず、これらの入口に渡す文字列の**出所と検証**を確認する。
 
@@ -316,10 +317,10 @@ sequenceDiagram
   R-->>M: SessionRecord { principal, ... }
   M->>M: Cookie tenant と record.tenant_id 一致検証（改竄拒否）
   M->>M: 状態変更系は double-submit CSRF 検証
-  M->>M: req.extensions に Principal と TenantId を載せる
+  M->>M: resolve_org(principal, tenant_id)（/tenants/<tenant>/<org> の org）
+  M->>M: req.extensions に Principal・TenantId・OrgId を載せる
   M->>H: next（保護ルートへ）
   H->>E: AuthContextExt を extract
-  E->>E: resolve_org(principal)（group 先頭セグメント）
   E-->>H: AuthContext { principal, org, tenant_id }
   H->>H: サービス呼び出し（第一引数に &AuthContext）
 ```
@@ -328,28 +329,42 @@ sequenceDiagram
 
 - **BFF（Backend-for-Frontend）**: ブラウザには**不透明セッション Cookie だけ**。トークンはブラウザに置かない。
   `Authorization: Bearer` 入口は撤去済み（`middleware/auth.rs:3-6`）。
-- middleware（`session.rs:30` の `require_session`）が state を使い、`Principal` と `TenantId` を
-  request extension に載せる（`session.rs:92-95`）。
+- middleware（`session.rs:30` の `require_session`）が state を使い、`Principal`・`TenantId`・`OrgId` を
+  request extension に載せる（`session.rs:92-95`）。org の解決はテナンシー設定に依存するため、ここで解く。
+- **org の解決（`resolve_org`・規則の本体は `authz::org_group`・#811）**: Keycloak group は
+  `/tenants/<tenant>/<org>[/<dept>]` に置き、**解決済み tenant_id の配下だけ**を見る（tenant はセグメント単位で比較し、
+  `/tenants/acme2/...` は `acme` に一致しない）。テナントルート（`/tenants/<tenant>`）だけでは org にならず、
+  自テナント配下の候補が複数ならソートして最小を採る（claim の並び順に依存しない）。該当無しは `default`。
+  multi（SaaS）ではテナント無修飾の旧 group（`/acme`）を org にも部署にもしない。single（オンプレ）は
+  自テナント配下が無ければ従来の直下 group（`/acme`・`/acme/eng`）を使い、その結果は #811 以前と同じ
+  （claim の先頭要素の先頭セグメント・ソートしない。`/tenants` 配下だけは除く）。公開 API ゲートウェイも同じ関数を使う。
 - extractor（`auth_context.rs` の `AuthContextExt`）は **state 非依存**で extension を読むだけ。
   「middleware が載せる → extractor が読む」の分業で、AuthContext を経由しないデータアクセスを構造的に書きにくくしている。
 - middleware はグループ単位で**一律適用**される。`route_table()`（`server.rs`）の `AccessPolicy`
   （`Public` / `Session` / `OrgAdmin` / `OrgAuditor` / `Provisioner` …）ごとに `route_layer` で付ける。個別ハンドラに認証チェックを散らさない。
 
-### tenant_id の解決 — `resolve_tenant_id`（`extract/auth_context.rs:76`）
+### tenant_id の解決 — `authz::TenantSource`（`authz/src/tenancy.rs`）
+
+規則は `authz::TenantSource` に**単一定義**し、内部 API の `resolve_tenant_id`（`extract/auth_context.rs:75`）と
+app-gateway の二重ゲートが共有する（入口によって別テナントへ解決される食い違いを作らない・#808）。
+設定からの変換は `AuthConfig::tenant_source()` の 1 か所。
 
 ```rust
-match auth.tenancy {
-    // SaaS: claim `tenant` 必須。欠落・空白は fail-closed で 401
-    Tenancy::Multi  => non_empty(principal.tenant_id.as_deref()).ok_or(Unauthorized)?,
-    // オンプレ/cell: 設定 auth.tenant_id の固定値（既定 "default"）
-    Tenancy::Single => non_empty(auth.tenant_id.as_deref()).ok_or(Unauthorized)?,
-}
-// 由来を問わず必ず文字ポリシー検証（authz::validate_tenant_id へ委譲）
-validate_tenant_id(&tenant_id)?;
+// AuthConfig::tenant_source(): single → Fixed(auth.tenant_id) / multi → Claim
+match self {
+    // オンプレ/cell: 設定 auth.tenant_id の固定値（既定 "default"）。claim `tenant` は無視
+    TenantSource::Fixed(fixed) => non_empty(Some(fixed)).ok_or(EmptyFixed)?,
+    // SaaS: claim `tenant` 必須。欠落・空白は fail-closed（呼び出し側で 401）
+    TenantSource::Claim => non_empty(claim).ok_or(MissingClaim)?,
+};
+// 由来を問わず必ず文字ポリシー検証（authz::validate_tenant_id）
+validate_tenant_id(tenant_id).map_err(Invalid)?;
 ```
 
 - **Multi（SaaS）**: JWT の `tenant` claim を使う。無ければ認証を通さない（越境の余地を残さない）。
-- **Single（オンプレ/cell）**: 設定の固定値。claim が無くても `tenant_id="default"` 名前空間で一様に動く。
+- **Single（オンプレ/cell）**: 設定の固定値。claim があっても無視し、`tenant_id="default"` 名前空間で一様に動く。
+  single では SaaS のテナント作成（`POST /admin/tenants`）を 409 `tenancy_single` で拒否する
+  （multi の設定漏れで全テナントが `default` に融合するのを防ぐ・#808）。
 
 ### Principal の 2 種別（PrincipalKind）
 
@@ -792,7 +807,7 @@ JWT の `roles` claim はあくまで識別メタデータで、認可判定に�
 
 ```mermaid
 flowchart TB
-  claims["IdP claims<br/>roles[] + groups[]"] --> desired["desired: あるべき role 集合<br/>（org グループ /org は除外・validate_local_id）"]
+  claims["IdP claims<br/>roles[] + groups[]（自テナント配下のみ）"] --> desired["desired: あるべき role 集合<br/>（org グループは除外・validate_local_id）"]
   fga["read_subject_objects(user, role)<br/>= 現在の直接タプル"] --> current["current: 現在の role 集合"]
   desired --> diff{差分}
   current --> diff
@@ -800,8 +815,10 @@ flowchart TB
   diff -->|"desired − current"| grant["directory_role upsert<br/>→ write_tuple(user, member, role)<br/>付与"]
 ```
 
-- **desired**（`desired_role_ids`, `callback.rs:254`）: `roles` claim ＋ `groups` claim を統合。org 同名グループ（`/org`）は
-  organization タプルの責務なので除外。`validate_local_id` で構造文字を弾く。
+- **desired**（`desired_role_ids`, `callback.rs:254`）: `roles` claim ＋ `groups` claim を統合。groups は
+  自テナント配下（`/tenants/<tenant>/...`）だけを、テナントルートからの相対パス（`/tenants/acme/acme/eng` → `acme/eng`）で
+  role id にする（他テナント配下は捨てる・#811）。org そのもののグループ（`acme`）は organization タプルの責務なので除外。
+  `validate_local_id` で構造文字を弾く。
 - **current**（`read_subject_objects`, `callback.rs:180`）: **直接タプルのみ**（継承展開しない）を自テナント名前空間で抽出。
   剥奪対象は「直接付与されたもの」が正なので `list_objects` ではなく `read_subject_objects` を使う。
 - **剥奪 → 付与**の順。付与時は台帳 `directory_role` を FGA タプルより先に upsert（purge 漏れ防止・#91）。

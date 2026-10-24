@@ -90,7 +90,7 @@ test("Office 文書: 右上に共有がある", async ({ page }) => {
 test("ワークフロー: 右上に共有がある（artifact 共有を再利用）", async ({ page }) => {
   await loginViaKeycloak(page);
   await page.goto("/workflows");
-  await page.getByRole("button", { name: "新しいワークフロー" }).click();
+  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
   await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
   await expect(page.getByTestId("workflow-share")).toBeVisible({ timeout: 20_000 });
   await page.getByTestId("workflow-share").click();

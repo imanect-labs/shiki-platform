@@ -5,6 +5,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 impl StorageService {
     /// フォルダをサブツリーごと論理削除する（ゴミ箱）。
@@ -25,7 +26,7 @@ impl StorageService {
             ctx,
             Relation::Editor,
             &ctx.ns().folder(&folder_id.to_string()),
-            "folder.delete",
+            AuditAction::FolderDelete,
             "folder",
             &folder_id.to_string(),
             trace_id,
@@ -61,7 +62,7 @@ impl StorageService {
             &mut tx,
             ctx,
             AuditEntry {
-                action: "folder.delete",
+                action: AuditAction::FolderDelete,
                 object_type: "folder",
                 object_id: &folder_id.to_string(),
                 decision: Decision::Allow,
@@ -107,7 +108,7 @@ impl StorageService {
             ctx,
             Relation::Editor,
             &ctx.ns().file(&file_id.to_string()),
-            "file.delete",
+            AuditAction::FileDelete,
             "file",
             &file_id.to_string(),
             trace_id,
@@ -138,7 +139,7 @@ impl StorageService {
             &mut tx,
             ctx,
             AuditEntry {
-                action: "file.delete",
+                action: AuditAction::FileDelete,
                 object_type: "file",
                 object_id: &file_id.to_string(),
                 decision: Decision::Allow,
@@ -184,7 +185,7 @@ impl StorageService {
             ctx,
             Relation::Member,
             &ctx.ns().organization(&ctx.org),
-            "trash.list",
+            AuditAction::TrashList,
             "organization",
             &ctx.org,
             trace_id,
@@ -263,7 +264,7 @@ impl StorageService {
             .record(
                 ctx,
                 AuditEntry {
-                    action: "trash.list",
+                    action: AuditAction::TrashList,
                     object_type: "organization",
                     object_id: &ctx.org,
                     decision: Decision::Allow,
