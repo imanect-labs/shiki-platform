@@ -35,8 +35,11 @@ export function PanelEmptyHint() {
 }
 
 export function DocChatDraft({
+  scope,
   onStart,
 }: {
+  /// モデル・ツールの選択の保存先（ホームや他の文書と共有しない）。作った会話へ引き継ぐ。
+  scope: string;
   /// 会話を作って最初の発話を渡す。失敗したら reject する（入力欄に案内を出す）。
   onStart: (msg: PendingMessage) => Promise<void>;
 }) {
@@ -83,6 +86,7 @@ export function DocChatDraft({
           disabled={starting}
           autonomous={autonomous}
           onAutonomousChange={setAutonomous}
+          scope={scope}
           autoFocus
         />
       </div>

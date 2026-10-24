@@ -23,7 +23,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { createThread, getThread, listThreads, type Thread } from "@/lib/chat-api";
-import { HOME_SCOPE, moveModelChoice } from "@/lib/model-choice";
+import { moveModelChoice } from "@/lib/model-choice";
 import { stashPending, type PendingMessage } from "@/lib/pending-message";
 import { moveToolChoice } from "@/lib/tool-choice";
 import {
@@ -148,6 +148,9 @@ export function DocChatPanel({
     void refreshConversations();
   }, [refreshConversations, activeThreadId]);
 
+  // 会話を作る前の入力欄のモデル・ツールの選択の保存先（ホームや他の文書の入力欄と分ける）。
+  const draftScope = `docdraft:${nodeId}`;
+
   // 最初の発話で会話を作る。本文・モデル・ツールの選択はホームと同じく新しい会話へ引き継ぎ、
   // 会話側がマウント時に送る（作成を待つ間にログアウトがあれば書き戻さない・#817）。
   const startConversation = React.useCallback(
@@ -158,13 +161,13 @@ export function DocChatPanel({
         originNoteId: nodeId,
       });
       stashPending(thread.id, msg, startedAt);
-      moveModelChoice(HOME_SCOPE, thread.id);
-      moveToolChoice(HOME_SCOPE, thread.id);
+      moveModelChoice(draftScope, thread.id);
+      moveToolChoice(draftScope, thread.id);
       // 一覧はアクティブの変化で読み直される（上の effect）。
       setActive(thread.id, startedAt);
       setDrafting(false);
     },
-    [conversations.length, title, nodeId, setActive],
+    [conversations.length, title, nodeId, draftScope, setActive],
   );
 
   const selectConversation = React.useCallback(
@@ -262,7 +265,7 @@ export function DocChatPanel({
             チャットを準備しています…
           </div>
         ) : editable ? (
-          <DocChatDraft onStart={startConversation} />
+          <DocChatDraft scope={draftScope} onStart={startConversation} />
         ) : (
           <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
             まだチャットが開始されていません。

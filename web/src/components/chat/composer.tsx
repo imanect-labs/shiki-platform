@@ -8,6 +8,7 @@ import { uploadFile, type NodeResponse } from "@/lib/storage";
 import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
 import { HOME_SCOPE } from "@/lib/model-choice";
 import { selectableTool, useToolChoice } from "@/lib/tool-choice";
+import { readScoped, removeScoped, useStorageScopeReady, writeScoped } from "@/lib/user-storage";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { ApprovalModeSelect, approvalModeDef } from "./approval-mode-select";
 import { ComposerModeButton } from "./composer-mode";
@@ -83,6 +84,8 @@ export const Composer = React.memo(function Composer({
   onApprovalModeChange,
   bypassAllowed = true,
   threadId,
+  scope,
+  draftKey,
   className,
 }: {
   onSubmit: (
@@ -119,6 +122,12 @@ export const Composer = React.memo(function Composer({
   /// スレッド内のコンポーザなら thread id。カタログにスレッドのピンを統合するのに使う
   /// （モデルが見ている集合と補完候補を一致させる・#387）。ホームでは未指定。
   threadId?: string;
+  /// モデル・ツールの選択の保存先。未指定ならスレッド（無ければホーム）。まだスレッドの無い
+  /// 入力欄（文書のアシスタントパネル等）がホームの選択を共有しないように分ける。
+  scope?: string;
+  /// 指定すると、書きかけの本文をユーザー単位で保存し、次にこの入力欄を開いたときに戻す
+  /// （ホームの新規チャット: 入力 → 別画面 → 戻ると続きから書ける）。送信で消える。
+  draftKey?: string;
   className?: string;
 }) {
   const [value, setValue] = React.useState("");
@@ -126,12 +135,33 @@ export const Composer = React.memo(function Composer({
   const [uploading, setUploading] = React.useState<Uploading | null>(null);
   const [menuOpen, setMenuOpen] = React.useState(false);
   const desktop = useMediaQuery("(min-width: 768px)");
-  const modelScope = threadId ?? HOME_SCOPE;
+  const modelScope = scope ?? threadId ?? HOME_SCOPE;
   // この発話に使うツール（#734）。送信時に会話側が読み出して空に戻す。
   const toolChoice = useToolChoice(modelScope);
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  // 書きかけの保存と復元（draftKey 指定時）。保存先はユーザー単位（ログアウトで消える・#817）
+  // なので、ユーザーが確定してから読む。保存は復元の後から（復元前の空で保存値を消さない）。
+  const scopeReady = useStorageScopeReady();
+  const [draftRestored, setDraftRestored] = React.useState(false);
+  React.useEffect(() => {
+    if (!draftKey || !scopeReady || draftRestored) return;
+    const saved = readScoped(draftKey);
+    // 確定を待つ間に打ち始めていたら、そちらを優先する（復元の完了で保存される）。
+    if (saved) setValue((v) => v || saved);
+    setDraftRestored(true);
+  }, [draftKey, scopeReady, draftRestored]);
+  React.useEffect(() => {
+    if (!draftKey || !draftRestored) return;
+    try {
+      if (value) writeScoped(draftKey, value);
+      else removeScoped(draftKey);
+    } catch {
+      /* 容量超過・プライベートモード等は保存しない（入力はそのまま続けられる） */
+    }
+  }, [draftKey, draftRestored, value]);
 
   // スラッシュコマンド（#387）。候補はカタログ（モデルが見ているものと同一）由来。
   const [suggestions, setSuggestions] = React.useState<SlashSuggestion[]>([]);
