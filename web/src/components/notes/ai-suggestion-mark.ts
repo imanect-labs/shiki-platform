@@ -47,9 +47,14 @@ const NODE_MARKABLE = [
   "tableHeader",
 ];
 
+/// 表の構造は、ブロックの属性に印があるときだけ丸ごと消す（セルの文字だけへの提案で行や表を
+/// 消さない・サーバの md 読み出しと同じ）。
+const STRUCTURE_ONLY = new Set(["table", "tableRow", "tableCell", "tableHeader"]);
+
 /// ブロックが丸ごと `markType` の印付きか（ノードの属性、または中身がすべて印付き）。
 function fullyMarked(node: PmNode, markType: MarkType): boolean {
   if (node.attrs[markType.name] === true) return true;
+  if (STRUCTURE_ONLY.has(node.type.name)) return false;
   if (node.isText) return node.marks.some((m) => m.type === markType);
   if (node.isTextblock) {
     // 文字がすべて印付き（強制改行などの文字でないものは問わない）。空の段落は印が無い限り対象外。

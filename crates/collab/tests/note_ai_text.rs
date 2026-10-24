@@ -651,3 +651,58 @@ fn deletion_marks_rewritten_by_the_editor_still_count() {
         report.skipped
     );
 }
+
+/// コードの文字は書式（提案の印）を持てないので、語句の差し替えは提案にせず、ブロックごとの
+/// 提案は要素の属性で示す。表のセルの文字を消す提案で、行や表は消えない。
+#[test]
+fn code_blocks_and_table_cells_in_suggest_mode() {
+    let live =
+        live("# 手順\n\n```rust\nconst N: u32 = 12;\n```\n\n| 項目 |\n| --- |\n| 古い値 |\n");
+    let report = edit(&live, vec![text("12", "14")], EditMode::Suggest);
+    assert!(
+        report.skipped[0].contains("replace_block"),
+        "{:?}",
+        report.skipped
+    );
+
+    let report = edit(
+        &live,
+        vec![
+            EditOp::ReplaceBlock {
+                find: "const N".into(),
+                markdown: "```rust\nconst N: u32 = 14;\n```\n".into(),
+                heading: None,
+            },
+            text("古い値", ""),
+        ],
+        EditMode::Suggest,
+    );
+    assert_eq!(report.applied, 2, "{:?}", report.skipped);
+    let out = md(&live);
+    assert!(
+        out.contains("const N: u32 = 14;") && !out.contains("= 12;"),
+        "{out}"
+    );
+    assert!(
+        out.contains("| 項目 |\n| --- |\n|  |"),
+        "行は残りセルが空になる: {out}"
+    );
+    let doc = client_of(&live);
+    let fragment = doc.get_or_insert_xml_fragment("default");
+    let txn = doc.transact();
+    let Some(XmlOut::Element(code)) = fragment.get(&txn, 1) else {
+        panic!("元のコード");
+    };
+    assert_eq!(
+        code.get_attribute(&txn, "aiDeletion"),
+        Some(Out::Any(Any::Bool(true)))
+    );
+}
+
+#[test]
+fn overlapping_occurrences_are_not_unique() {
+    let live = live("本文は ababa です。\n");
+    let report = edit(&live, vec![text("aba", "x")], EditMode::Direct);
+    assert_eq!(report.applied, 0);
+    assert!(report.skipped[0].contains("2 箇所"), "{:?}", report.skipped);
+}

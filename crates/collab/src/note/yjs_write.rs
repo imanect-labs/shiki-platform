@@ -90,11 +90,17 @@ pub fn mark_deleted(txn: &mut TransactionMut<'_>, el: &XmlElementRef) {
 }
 
 fn mark_all(txn: &mut TransactionMut<'_>, el: &XmlElementRef, key: &str) {
-    // 文字を持たない要素（区切り線・埋め込み・空の段落）は書式で印を付けられないので、
+    // 文字を持たない要素（区切り線・埋め込み・空の段落）と、文字が書式を持てないコードブロックは
     // 要素の属性に付ける（エディタはノードの属性として読み、承認/棄却で同じように扱う）。
-    if !has_text(txn, el) {
+    let tag = el.tag().to_string();
+    if tag == "codeBlock" || !has_text(txn, el) {
         el.insert_attribute(txn, key, Any::Bool(true));
         return;
+    }
+    // 表は丸ごとの提案であることを要素の属性で示す（セルの文字だけへの提案と区別する）。
+    // 中の文字にも印を付けて、取り消し線などで見えるようにする。
+    if tag == "table" {
+        el.insert_attribute(txn, key, Any::Bool(true));
     }
     // 子を先に収集してから編集する（走査中の変更を避ける）。
     let children: Vec<XmlOut> = el.children(txn).collect();

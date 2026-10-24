@@ -12,9 +12,7 @@
 
 use yrs::types::text::YChange;
 use yrs::types::Attrs;
-use yrs::{
-    Any, GetString, Out, ReadTxn, Text, Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut,
-};
+use yrs::{Any, Out, ReadTxn, Text, Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut};
 
 use super::ast::{Block, Inline, Marks, Table, TaskItem};
 
@@ -256,7 +254,18 @@ fn plain_text_of<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> String {
     let mut out = String::new();
     for child in el.children(txn) {
         match child {
-            XmlOut::Text(t) => out.push_str(&t.get_string(txn)),
+            // 削除の提案の文字は出さない（コードは要素の属性で印を持つが、念のため文字も見る）。
+            XmlOut::Text(t) => {
+                for d in t.diff(txn, YChange::identity) {
+                    let deleted = d
+                        .attributes
+                        .as_ref()
+                        .is_some_and(|a| is_on(a.get(DELETION)));
+                    if let (Out::Any(Any::String(s)), false) = (d.insert, deleted) {
+                        out.push_str(&s);
+                    }
+                }
+            }
             XmlOut::Element(e) => out.push_str(&plain_text_of(txn, &e)),
             XmlOut::Fragment(_) => {}
         }
@@ -282,6 +291,13 @@ fn is_deleted<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> bool {
         if is_on(attr_any(txn, el, DELETION).as_ref()) {
             *any = true;
             return true;
+        }
+        // 表の構造は要素の属性があるときだけ消す（セルの文字だけへの提案で行や表を消さない）。
+        if matches!(
+            &**el.tag(),
+            "table" | "tableRow" | "tableCell" | "tableHeader"
+        ) {
+            return false;
         }
         el.children(txn).all(|c| match c {
             XmlOut::Text(t) => t.diff(txn, YChange::identity).iter().all(|d| {

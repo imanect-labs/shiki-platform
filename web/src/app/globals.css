@@ -637,12 +637,13 @@
   .note-prose .note-ai-deletion {
     @apply mr-0.5 rounded-sm bg-destructive/10 text-muted-foreground line-through decoration-destructive/60;
   }
-  /* 文字を持たないブロック（区切り線・埋め込み・表）に付いた提案の印。段落・見出しは文字の印で
+  /* ブロックの属性に付いた提案の印（区切り線・埋め込み・表・コード＝コードは文字に書式を
+     持てない）。段落・見出しは文字の印で
      見えるので枠は付けない（空の段落に枠が出ると紛らわしい）。 */
-  .note-prose :is(hr, div, table)[data-ai-deletion] {
+  .note-prose :is(hr, div, table, pre)[data-ai-deletion] {
     @apply rounded-sm opacity-60 outline-dashed outline-1 outline-offset-2 outline-destructive/60;
   }
-  .note-prose :is(hr, div, table)[data-ai-suggestion] {
+  .note-prose :is(hr, div, table, pre)[data-ai-suggestion] {
     @apply rounded-sm outline-dashed outline-1 outline-offset-2 outline-primary/50;
   }
 }

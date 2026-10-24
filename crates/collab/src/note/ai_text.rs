@@ -144,6 +144,21 @@ struct Hit {
     whole_block: bool,
     /// Markdown の記号を外した語句で一致したか（差し替える側も同じく外す）。
     bare: bool,
+    /// コードブロックの中か（コードの文字は書式＝提案の印を持てない）。
+    in_code: bool,
+}
+
+/// 重なりも含めた一致の開始位置（「ababa」の「aba」は 0 と 2 の 2 件）。一意かどうかを
+/// 数えるので、`match_indices`（重ならない一致だけ）では足りない。
+fn overlapping_matches(hay: &str, needle: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(p) = hay[from..].find(needle) {
+        let at = from + p;
+        out.push(at);
+        from = at + hay[at..].chars().next().map_or(1, char::len_utf8);
+    }
+    out
 }
 
 /// 語句を含む段落・見出し・コードを、文書（または節）から 1 つだけ探す。
@@ -235,8 +250,10 @@ fn collect(
     needle: &str,
     found: &mut Found,
 ) {
-    match &*el.tag().to_string() {
+    let tag = el.tag().to_string();
+    match tag.as_str() {
         "paragraph" | "heading" | "codeBlock" => {
+            let in_code = tag == "codeBlock";
             let children: Vec<XmlOut> = el.children(txn).collect();
             let single = children.len() == 1;
             for child in children {
@@ -246,17 +263,18 @@ fn collect(
                 let Some(segment) = Segment::read(txn, text) else {
                     continue;
                 };
-                for (start, matched) in segment.plain.match_indices(needle) {
+                for start in overlapping_matches(&segment.plain, needle) {
                     found.tops.push(top);
                     if found.first.is_none() {
                         found.first = Some(Hit {
                             top,
                             path: path.clone(),
-                            whole_block: single && matched.len() == segment.plain.len(),
+                            whole_block: single && needle.len() == segment.plain.len(),
                             start,
-                            found: matched.to_string(),
+                            found: needle.to_string(),
                             segment: segment.clone(),
                             bare: false,
+                            in_code,
                         });
                     }
                 }
@@ -302,6 +320,12 @@ pub(super) fn replace_text(
         return Ok(());
     }
     let suggest = mode == EditMode::Suggest;
+    if suggest && hit.in_code {
+        return Err(
+            "コードブロックの中の語句は提案では差し替えられない（replace_block でブロックごと提案する）"
+                .into(),
+        );
+    }
     if replace.is_empty() && hit.whole_block && !suggest {
         remove_enclosing(txn, &hit);
         return Ok(());
@@ -623,6 +647,14 @@ mod tests {
             ("田中".into(), "鈴木".into())
         );
         assert_eq!(cut("Q3 report", "Q4 report"), ("Q3".into(), "Q4".into()));
+    }
+
+    #[test]
+    fn overlapping_matches_are_all_counted() {
+        use super::overlapping_matches;
+        assert_eq!(overlapping_matches("ababa", "aba"), vec![0, 2]);
+        assert_eq!(overlapping_matches("ああああ", "ああ"), vec![0, 3, 6]);
+        assert_eq!(overlapping_matches("abc", "x"), Vec::<usize>::new());
     }
 
     #[test]
