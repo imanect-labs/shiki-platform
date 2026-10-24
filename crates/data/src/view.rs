@@ -334,14 +334,9 @@ impl DataViewStore {
         }
         let table = self.data.get_table(ctx, body.table_id, trace_id).await?;
         let mut q = body.effective_query(Some(&table.schema));
-        // ビューの投影は作った人の列の並び。閲覧者が読めない（マスクされた）列は黙って外す
-        // （直接の要求の投影は 403・query::bound_query）。
         if q.select.is_some() {
             let az = self.data.authz_memo();
-            let masked = self.data.masked_fields(ctx, &az, &table).await?;
-            if let Some(sel) = q.select.as_mut() {
-                sel.retain(|k| !masked.contains(k));
-            }
+            omit_masked(&mut q, &self.data.masked_fields(ctx, &az, &table).await?);
         }
         Ok(q)
     }
@@ -406,12 +401,15 @@ impl DataViewStore {
         };
         check.check(&body.display)?;
         check.check_sort_keys(body.query.sort.iter().map(|k| k.field.as_str()))?;
-        let query = body.effective_query(Some(&table.schema));
+        let mut query = body.effective_query(Some(&table.schema));
         if body.query.aggregate.is_empty() {
             if let Some(select) = &query.select {
                 check.check_lookup_budget(select)?;
             }
         }
+        // 実行時と同じく、保存者が読めない列は投影から外して検査する（グリッドの既定の投影は
+        // 全列なので、外さないとマスク列を持つテーブルでは誰もビューを保存できない）。
+        omit_masked(&mut query, &masked);
         // 作成者が table viewer であること＋クエリの静的整合（未宣言/マスク列参照など）を
         // limit=1 の実行で検査する（run_query が field/mask/index 検証を一手に担う）。
         // 未索引の列は保存を契機に自動昇格する（data-platform §10）。グループ化の列と並べ替えの代替列も
@@ -471,5 +469,13 @@ fn map_artifact(e: ArtifactError) -> DataError {
         ArtifactError::Invalid(m) => DataError::Invalid(m),
         ArtifactError::Conflict(m) => DataError::Conflict(m),
         ArtifactError::Internal(m) => DataError::Internal(format!("artifact: {m}")),
+    }
+}
+
+/// ビューの投影は作った人の列の並び。閲覧者が読めない（マスクされた）列は黙って外す
+/// （直接の要求の投影は 403・`query::bound_query`）。
+fn omit_masked(q: &mut DataQuery, masked: &std::collections::HashSet<String>) {
+    if let Some(sel) = q.select.as_mut() {
+        sel.retain(|k| !masked.contains(k));
     }
 }
