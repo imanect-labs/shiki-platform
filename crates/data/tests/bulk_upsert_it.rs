@@ -231,7 +231,8 @@ async fn bulk_upsert_updates_through_the_single_update_entry() {
         "マスク列: {by_row:?}"
     );
     assert!(by_row[&5].contains("見つかりません"), "{by_row:?}");
-    assert!(by_row[&7].contains("unique"), "{by_row:?}");
+    // unique の違反は列を名指しする（値は含めない）。
+    assert!(by_row[&7].contains("重複できない列"), "{by_row:?}");
     assert!(by_row.contains_key(&8), "required: {by_row:?}");
     assert!(!by_row.contains_key(&1) && !by_row.contains_key(&6));
 
