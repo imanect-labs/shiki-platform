@@ -299,13 +299,14 @@ function useRevealActiveThread({
     }
     // 開いたまま移った先は読み足さず、通知での取り直しで行が現れるのを待つ。
     if (activeId !== mountedWith) return;
+    // 読み足し中は結果を待つ（最後のページに載っているかを見てから諦める）。
+    if (loadingMore) return;
     if (!hasMore || state.pages >= MAX_REVEAL_PAGES || UNREACHABLE.has(activeId)) {
       // 探しきれなかった会話は覚えておき、開き直すたびに同じページを取り直さない。
       if (hasMore) UNREACHABLE.add(activeId);
       state.revealed = true;
       return;
     }
-    if (loadingMore) return;
     state.pages += 1;
     loadMore();
   }, [containerRef, activeId, mountedWith, threads, loading, loadingMore, hasMore, loadMore]);
