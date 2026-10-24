@@ -24,7 +24,8 @@ export function DriveTabs() {
 }
 
 function FolderAwareTabs() {
-  const inFolder = useSearchParams().has("folder");
+  // DriveBrowser と同じ判定（`?folder=` の空値はルート扱い）。
+  const inFolder = Boolean(useSearchParams().get("folder"));
   return inFolder ? null : <DriveTabsBar />;
 }
 
@@ -56,7 +57,8 @@ function DriveTabsBar() {
                 data-testid={`drive-tab-${c.key}`}
                 className={cn(
                   "relative flex min-w-[4.5rem] flex-col items-center gap-1 rounded-lg px-2 pb-2.5 pt-1.5 text-[12px] outline-none",
-                  "transition-colors duration-[var(--duration-fast)] focus-visible:ring-2 focus-visible:ring-ring active:bg-accent/60",
+                  // 横スクロールの ul は縦もはみ出しを切るため、フォーカスリングは内側に描く。
+                  "transition-colors duration-[var(--duration-fast)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring active:bg-accent/60",
                   active ? "font-semibold text-foreground" : "font-medium text-muted-foreground",
                 )}
               >
