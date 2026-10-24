@@ -42,7 +42,12 @@ function withoutDeletionsIn(node: PMNode): PMNode | null {
   if (node.childCount === 0) return node;
   const content = withoutDeletions(node.content);
   // 中身がすべて削除の提案だったブロック（段落・見出し・項目・リスト）は丸ごと描かない。
-  if (content.childCount === 0 && !KEEP_EMPTY.has(node.type.name)) return null;
+  // 文字を消して強制改行だけが残った段落も同じ（サーバの md 読み出しと揃える）。
+  const removed = content.childCount !== node.childCount;
+  const visible = content.content.some((child) => child.type.name !== "hardBreak");
+  if (!KEEP_EMPTY.has(node.type.name) && (content.childCount === 0 || (removed && !visible))) {
+    return null;
+  }
   return node.copy(content);
 }
 
