@@ -569,3 +569,106 @@ async fn data_stream_is_bound_to_owned_tables() {
     .expect("SSE の最初のイベントが届く");
     assert!(frame.contains("stream.ready"), "{frame}");
 }
+
+/// R3-6: `Shiki.data.transition` の `expectedRev` 省略（本文に `expected_rev` が無い）は、ワークフローと
+/// 同じく**現在の rev**で遷移する（以前は B2 関数だけ 400）。rev を指定したら従来どおり楽観ロックを掛ける。
+#[tokio::test]
+async fn transition_without_expected_rev_uses_the_current_rev() {
+    use data::{FsmBody, FsmRef, FsmStore, FsmTransition, PolicyExpr};
+
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (_app_id, client, owned, _foreign) = fixture(&pool, &tenant).await;
+    // 所有テーブルに状態列と FSM（draft → submitted → approved）をピンする。
+    let authz = Arc::new(StubAuthz::allow_all());
+    let store = data::DataStore::new(pool.clone(), authz.clone(), Arc::new(common::FixedResolver));
+    let fsms = FsmStore::new(
+        Arc::new(artifact::ArtifactStore::new(pool.clone(), authz.clone())),
+        store.clone(),
+    );
+    let mut status = field("status", FieldType::Select);
+    status.options = vec!["draft".into(), "submitted".into(), "approved".into()];
+    let mut schema = simple_schema();
+    schema.fields.push(status);
+    schema.status_field = Some("status".into());
+    let c = ctx(&tenant);
+    store
+        .update_table_schema(&c, owned, schema.clone(), Some(1), None)
+        .await
+        .expect("状態列");
+    let step = |from: &str, to: &str| FsmTransition {
+        from: from.into(),
+        to: to.into(),
+        actor: PolicyExpr::Public,
+    };
+    let fsm_id = fsms
+        .create(
+            &c,
+            "flow",
+            owned,
+            &FsmBody {
+                states: vec!["draft".into(), "submitted".into(), "approved".into()],
+                transitions: vec![step("draft", "submitted"), step("submitted", "approved")],
+            },
+            None,
+        )
+        .await
+        .expect("fsm");
+    schema.fsm_ref = Some(FsmRef {
+        artifact_id: fsm_id,
+        version: 1,
+    });
+    store
+        .update_table_schema(&c, owned, schema, Some(2), None)
+        .await
+        .expect("pin fsm");
+
+    let app = build_gateway_router(state(pool.clone(), &tenant));
+    let tok = token(&client, ALL_SCOPES, &tenant);
+    let (s, created) = request_json(
+        &app,
+        "POST",
+        &format!("/gw/data/tables/{owned}/records"),
+        Some(&tok),
+        &json!({ "data": { "title": "経費A", "status": "draft" } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{created}");
+    let rec_id = created["id"].as_str().expect("id");
+    let path = format!("/gw/data/tables/{owned}/records/{rec_id}/transition");
+
+    // 古い rev を指定したら 409（楽観ロックは従来どおり）。
+    let (s, body) = request_json(
+        &app,
+        "POST",
+        &path,
+        Some(&tok),
+        &json!({ "to": "submitted", "expected_rev": 99 }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    // rev を省略 → 現在の rev で遷移する。
+    let (s, moved) = request_json(
+        &app,
+        "POST",
+        &path,
+        Some(&tok),
+        &json!({ "to": "submitted" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{moved}");
+    assert_eq!(moved["data"]["status"], "submitted");
+    assert_eq!(moved["rev"], 2);
+    // null も省略と同じ。
+    let (s, moved) = request_json(
+        &app,
+        "POST",
+        &path,
+        Some(&tok),
+        &json!({ "to": "approved", "expected_rev": null }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{moved}");
+    assert_eq!(moved["data"]["status"], "approved");
+    assert_eq!(moved["rev"], 3);
+}

@@ -232,7 +232,10 @@ pub(crate) async fn query(
 #[derive(Debug, Deserialize)]
 pub(crate) struct TransitionRequest {
     pub to: String,
-    pub expected_rev: i64,
+    /// 楽観ロックの rev。省略（`null`）は**現在の rev**で遷移する（ワークフローの `Shiki.data.transition`
+    /// と同じ・`expectedRev` を省略した B2 関数が 400 にならない・R3-6）。
+    #[serde(default)]
+    pub expected_rev: Option<i64>,
 }
 
 /// FSM 遷移（唯一の status 変更経路・actor 述語＋outbox＋監査は DataStore 内）。
@@ -243,19 +246,24 @@ pub(crate) async fn transition_record(
     Json(req): Json<TransitionRequest>,
 ) -> Result<Json<DataRecord>, GatewayError> {
     require_app_table(&state, &ctx, table_id).await?;
+    // rev の省略は現在の rev（呼出ユーザーの権限で読む・見えない行は読めず遷移もできない）。
+    let expected_rev = match req.expected_rev {
+        Some(rev) => rev,
+        None => {
+            state
+                .caps
+                .data
+                .get_record(&ctx.auth, table_id, record_id, None)
+                .await?
+                .rev
+        }
+    };
     // テーブルにピンされた FSM をテーブルの editor として読み、当該行で遷移する（HTTP・ワークフローと
     // 同じ単一の入口・FsmStore::transition）。
     let rec = state
         .caps
         .fsms
-        .transition(
-            &ctx.auth,
-            table_id,
-            record_id,
-            &req.to,
-            req.expected_rev,
-            None,
-        )
+        .transition(&ctx.auth, table_id, record_id, &req.to, expected_rev, None)
         .await?;
     Ok(Json(rec))
 }
