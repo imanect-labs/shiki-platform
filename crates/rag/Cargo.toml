@@ -25,8 +25,10 @@ async-trait.workspace = true
 futures.workspace = true
 # 検索 API の DTO を rag 側で単一定義し、api 層に手書きミラーを作らない（codegen が正）。
 utoipa.workspace = true
-# 引用監査に載せるクエリの sha256（生クエリ文字列を監査ログへ残さない）。
+# 引用監査に載せる検索語のハッシュ（生の検索語を監査ログへ残さない）。鍵付き（HMAC・#833）。
 sha2.workspace = true
+hmac.workspace = true
+rand.workspace = true
 # ParseSource::Bytes（外部 URL 由来の文書を worker に取りに行かせない・#405）の転送。
 base64.workspace = true
 # チャンク ID は uuid5(node_id, version, ordinal) の決定的生成（冪等 upsert の鍵）。
