@@ -54,6 +54,91 @@ pub async fn claim_undelivered(
     Ok(rows.into_iter().map(OutboxRow::into_event).collect())
 }
 
+/// [`claim_undelivered`] の、`after_id` より大きい id だけを見る版（走査の下限つき）。
+///
+/// 配送済みの全行を毎回走査しないための近道（[`ClaimHints`] が下限を決める）。`after_id` 以下で後から
+/// コミットした行は、定期的な全走査（下限 0）で拾う（取りこぼさない・遅れて届くだけ）。
+pub async fn claim_undelivered_after(
+    conn: &mut PgConnection,
+    consumer: &str,
+    after_id: i64,
+    limit: i64,
+) -> Result<Vec<OutboxEvent>, StorageError> {
+    if after_id <= 0 {
+        return claim_undelivered(conn, consumer, limit).await;
+    }
+    let rows: Vec<OutboxRow> = sqlx::query_as(
+        "SELECT o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
+                o.payload, o.created_at, coalesce(n.system, false) AS system \
+         FROM storage_event_outbox o \
+         LEFT JOIN node n ON n.id = o.node_id \
+         WHERE o.id > $3 AND NOT EXISTS ( \
+             SELECT 1 FROM outbox_delivery d \
+             WHERE d.consumer = $1 AND d.event_id = o.id \
+         ) \
+         ORDER BY o.id \
+         FOR UPDATE OF o SKIP LOCKED \
+         LIMIT $2",
+    )
+    .bind(consumer)
+    .bind(limit)
+    .bind(after_id)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(OutboxRow::into_event).collect())
+}
+
+/// 溜まっている間の全走査（下限 0）の間隔。後からコミットした小さい id の行はこの間隔以内に配送される。
+pub const CLAIM_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// コンシューマごとの走査の下限（プロセス内・[`claim_undelivered_after`] 用）。
+///
+/// [`claim_undelivered`] の anti-join は配送済みの全行を走査してからテールに届く（上の ⚠️）。一括取込で
+/// 10 万件のイベントが溜まると、コンシューマが 1 バッチ取るたびに配送済みの先頭から読み直し、1 回 1 秒を超えて
+/// 配信と取込を遅らせていた（2 回目の検証 2-D-P3-2・取込の遅れ）。**溜まっている間だけ**（直前のバッチが
+/// 上限まで埋まった）直近に取った最大の id を下限にしてテールから読み、[`CLAIM_SWEEP_INTERVAL`] ごとに
+/// 下限 0 の全走査で取りこぼし（後からコミットした行・巻き戻った取得）を拾う。溜まっていなければ毎回
+/// 全走査（GC で outbox が小さいので安い・後からコミットした行も遅らせない）。キーはプールとコンシューマ
+/// （id の空間はプールごと）。
+#[derive(Debug, Default)]
+pub struct ClaimHints {
+    inner: std::sync::Mutex<std::collections::HashMap<String, (i64, std::time::Instant)>>,
+}
+
+impl ClaimHints {
+    /// 次の claim の下限（全走査の時期なら 0）。
+    pub fn lower_bound(&self, key: &str) -> i64 {
+        let now = std::time::Instant::now();
+        let Ok(mut m) = self.inner.lock() else {
+            return 0;
+        };
+        let e = m
+            .entry(key.to_string())
+            .or_insert((0, now + CLAIM_SWEEP_INTERVAL));
+        if now >= e.1 {
+            e.1 = now + CLAIM_SWEEP_INTERVAL;
+            return 0;
+        }
+        e.0
+    }
+
+    /// 取った行を下限に反映する。バッチが上限（`limit`）まで埋まった＝溜まっているときだけ最大の id を
+    /// 下限にし（下げない）、埋まらなければ下限を外す（次は全走査）。
+    pub fn observe(&self, key: &str, events: &[OutboxEvent], limit: i64) {
+        let full = i64::try_from(events.len()).unwrap_or(i64::MAX) >= limit;
+        if let Ok(mut m) = self.inner.lock() {
+            let now = std::time::Instant::now();
+            let e = m
+                .entry(key.to_string())
+                .or_insert((0, now + CLAIM_SWEEP_INTERVAL));
+            match events.iter().map(|e| e.id).max() {
+                Some(max) if full => e.0 = e.0.max(max),
+                _ => e.0 = 0,
+            }
+        }
+    }
+}
+
 /// 指定コンシューマへの配送を台帳に記録する（[`claim_undelivered`] と同一 txn 内で呼ぶ）。
 ///
 /// `(consumer, event_id)` 主キーで冪等（再配信で同じ行を掴んでも二重記録にならない）。
@@ -205,4 +290,42 @@ pub async fn registered_consumers(conn: &mut PgConnection) -> Result<Vec<String>
         .fetch_all(conn)
         .await?;
     Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(id: i64) -> OutboxEvent {
+        OutboxEvent {
+            id,
+            org: String::new(),
+            tenant_id: String::new(),
+            node_id: uuid::Uuid::nil(),
+            version: 0,
+            op: "create".into(),
+            actor: String::new(),
+            trace_id: None,
+            payload: serde_json::Value::Null,
+            created_at: chrono::Utc::now(),
+            system: false,
+        }
+    }
+
+    #[test]
+    fn hints_raise_the_lower_bound_and_never_lower_it() {
+        let h = ClaimHints::default();
+        assert_eq!(h.lower_bound("k"), 0, "最初は全走査");
+        h.observe("k", &[ev(5), ev(9), ev(7)], 3);
+        assert_eq!(h.lower_bound("k"), 9, "溜まっている間はテールから");
+        h.observe("k", &[ev(3), ev(4), ev(2)], 3);
+        assert_eq!(h.lower_bound("k"), 9, "下限は下げない");
+        assert_eq!(
+            h.lower_bound("other"),
+            0,
+            "キーごと（プール・コンシューマ）"
+        );
+        h.observe("k", &[ev(12)], 3);
+        assert_eq!(h.lower_bound("k"), 0, "溜まっていなければ全走査");
+    }
 }

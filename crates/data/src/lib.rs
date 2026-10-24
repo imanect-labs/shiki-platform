@@ -64,6 +64,7 @@ mod numeric;
 pub mod policy;
 mod rag;
 // クエリ層の件数・コストモデル（µs の概算）は非負・有界の数値を f64 / u64 へ写す（DB の件数は 0 以上）。
+mod claim;
 #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
 mod query;
 mod record;

@@ -73,9 +73,9 @@ impl DataStore {
     /// 件数（レコード変更以外も含む）を返す。並行に呼んでよい（台帳 consumer の行ロックで直列化）。
     pub async fn consume_stats_once(&self) -> Result<usize, DataError> {
         let mut total = 0;
-        for (_, pool) in self.pools.all() {
+        for (pool_id, pool) in self.pools.all() {
             let mut tx = pool.begin().await.map_err(map_db)?;
-            total += consume_batch(&mut tx).await?;
+            total += consume_batch(&mut tx, self.pools.claim_hints(), pool_id).await?;
             tx.commit().await.map_err(map_db)?;
         }
         Ok(total)
@@ -87,14 +87,17 @@ fn st(e: storage::StorageError) -> DataError {
     DataError::Internal(format!("outbox: {e}"))
 }
 
-async fn consume_batch(tx: &mut PgConnection) -> Result<usize, DataError> {
+async fn consume_batch(
+    tx: &mut PgConnection,
+    hints: &storage::event::ClaimHints,
+    pool_id: &str,
+) -> Result<usize, DataError> {
     // 消費と数え直しの排他（コミットまで保持）。
     storage::event::lock_consumer_seq(&mut *tx, STATS_CONSUMER, None)
         .await
         .map_err(st)?;
-    let events = storage::event::claim_undelivered(&mut *tx, STATS_CONSUMER, STATS_BATCH)
-        .await
-        .map_err(st)?;
+    let events =
+        crate::claim::claim_batch(&mut *tx, hints, pool_id, STATS_CONSUMER, STATS_BATCH).await?;
     if events.is_empty() {
         return Ok(0);
     }

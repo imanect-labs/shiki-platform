@@ -25,12 +25,22 @@ pub const DEFAULT_POOL_ID: &str = "default";
 #[derive(Clone, Debug)]
 pub struct PoolRouter {
     default: PgPool,
+    /// outbox の claim の走査の下限（ルータの複製間で共有・キーはプールとコンシューマ）。
+    claim_hints: std::sync::Arc<crate::event::ClaimHints>,
 }
 
 impl PoolRouter {
     /// 単一プール構成（フルプール・第 1 段）のルータを作る。
     pub fn single(pool: PgPool) -> Self {
-        PoolRouter { default: pool }
+        PoolRouter {
+            default: pool,
+            claim_hints: std::sync::Arc::default(),
+        }
+    }
+
+    /// outbox の claim の走査の下限（[`crate::event::claim_undelivered_after`]）。
+    pub fn claim_hints(&self) -> &crate::event::ClaimHints {
+        &self.claim_hints
     }
 
     /// テナントの行を読み書きするプール。

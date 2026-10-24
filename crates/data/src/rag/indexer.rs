@@ -155,9 +155,9 @@ impl RagIndexWorker {
     /// outbox の未消費の変更を 1 バッチ索引へ反映する（全プール）。処理した outbox の件数を返す。
     pub async fn run_once(&self) -> Result<usize, DataError> {
         let mut total = 0;
-        for (_, pool) in self.store.pools.all() {
+        for (pool_id, pool) in self.store.pools.all() {
             let mut tx = pool.begin().await.map_err(map_db)?;
-            total += self.consume_batch(&mut tx).await?;
+            total += self.consume_batch(&mut tx, pool_id).await?;
             tx.commit().await.map_err(map_db)?;
         }
         Ok(total)
@@ -180,13 +180,22 @@ impl RagIndexWorker {
         })
     }
 
-    async fn consume_batch(&self, tx: &mut PgConnection) -> Result<usize, DataError> {
+    async fn consume_batch(
+        &self,
+        tx: &mut PgConnection,
+        pool_id: &str,
+    ) -> Result<usize, DataError> {
         storage::event::lock_consumer_seq(&mut *tx, &self.consumer, None)
             .await
             .map_err(st)?;
-        let events = storage::event::claim_undelivered(&mut *tx, &self.consumer, RAG_INDEX_BATCH)
-            .await
-            .map_err(st)?;
+        let events = crate::claim::claim_batch(
+            &mut *tx,
+            self.store.pools.claim_hints(),
+            pool_id,
+            &self.consumer,
+            RAG_INDEX_BATCH,
+        )
+        .await?;
         if events.is_empty() {
             return Ok(0);
         }

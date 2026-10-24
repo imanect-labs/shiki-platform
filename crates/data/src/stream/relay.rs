@@ -80,24 +80,29 @@ impl DataStore {
     /// 行ロックで直列化される）。
     pub async fn relay_record_changes_once(&self) -> Result<usize, DataError> {
         let mut total = 0;
-        for (_, pool) in self.pools.all() {
+        for (pool_id, pool) in self.pools.all() {
             let mut tx = pool.begin().await.map_err(map_db)?;
-            total += self.relay_batch(&mut tx).await?;
+            total += self.relay_batch(&mut tx, pool_id).await?;
             tx.commit().await.map_err(map_db)?;
         }
         Ok(total)
     }
 
-    async fn relay_batch(&self, tx: &mut PgConnection) -> Result<usize, DataError> {
+    async fn relay_batch(&self, tx: &mut PgConnection, pool_id: &str) -> Result<usize, DataError> {
         let st = |e: storage::StorageError| DataError::Internal(format!("outbox: {e}"));
         // 台帳 consumer の採番行をロック（並行リレーの排他・コミットまで保持）。
         let ledger = self.stream_config.consumer.as_str();
         storage::event::lock_consumer_seq(&mut *tx, ledger, None)
             .await
             .map_err(st)?;
-        let events = storage::event::claim_undelivered(&mut *tx, ledger, RELAY_BATCH)
-            .await
-            .map_err(st)?;
+        let events = crate::claim::claim_batch(
+            &mut *tx,
+            self.pools.claim_hints(),
+            pool_id,
+            ledger,
+            RELAY_BATCH,
+        )
+        .await?;
         if events.is_empty() {
             return Ok(0);
         }
