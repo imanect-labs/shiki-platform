@@ -20,8 +20,10 @@ test("同じ名前のファイルをもう一度添付すると、連番名で�
       mimeType: "text/plain",
       buffer: Buffer.from(`same name ${expected}\n`),
     });
-    // 添付チップに、実際に保存された名前が出る（失敗のトーストは出ない）。
-    await expect(page.getByText(expected, { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+    // 添付チップに、実際に保存された名前が出る（アップロード中の表示には元の名前が出るので、
+    // チップの中で確かめる）。
+    const chips = page.getByRole("button", { name: "添付を外す" }).locator("..");
+    await expect(chips.getByText(expected, { exact: true })).toBeVisible({ timeout: 20_000 });
   }
   await expect(page.getByText(`${name} のアップロードに失敗しました`)).toHaveCount(0);
 
