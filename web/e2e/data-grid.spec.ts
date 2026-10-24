@@ -22,21 +22,13 @@ async function cellPoint(page: Page, col: number, row: number) {
   };
 }
 
-/// セルを選んで Enter で編集を始める（canvas のグリッドはクリック直後にフォーカスが移りきらないことが
-/// あるので、入力欄が出るまで選び直す）。
+/// セルを 1 回クリックして Enter で編集を始める（クリック直後の Enter で開くこと自体を確かめるので、
+/// 選び直し・待ちは入れない。グリッドはクリックの確定でフォーカスを同期的に受け取る）。
 async function openCellEditor(page: Page, col: number, row: number) {
+  const p = await cellPoint(page, col, row);
+  await page.mouse.click(p.x, p.y);
+  await page.keyboard.press("Enter");
   const editor = page.locator("#portal textarea");
-  for (let i = 0; i < 4; i++) {
-    const p = await cellPoint(page, col, row);
-    await page.mouse.click(p.x, p.y);
-    await page.keyboard.press("Enter");
-    try {
-      await expect(editor).toBeVisible({ timeout: 1_500 });
-      return editor;
-    } catch {
-      await page.keyboard.press("Escape");
-    }
-  }
   await expect(editor).toBeVisible();
   return editor;
 }

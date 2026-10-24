@@ -21,6 +21,7 @@ import {
   CompactSelection,
   DataEditor,
   GridCellKind,
+  type DataEditorRef,
   type EditableGridCell,
   type GridCell,
   type GridColumn,
@@ -172,6 +173,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   const [initial, setInitial] = React.useState<"loading" | "ready" | "error" | "preparing">("loading");
   const [newRows, setNewRows] = React.useState(0);
   const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set());
+  const editorRef = React.useRef<DataEditorRef>(null);
   const [selection, setSelection] = React.useState<GridSelection>({
     columns: CompactSelection.empty(),
     rows: CompactSelection.empty(),
@@ -604,6 +606,11 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
 
   const onCellClicked = React.useCallback(
     ([, row]: Item) => {
+      // glide はクリックしたセルを選んだあと、グリッドへのフォーカスを次の描画フレームまで遅らせる
+      // （mousedown は既定の動作を止めているので、ブラウザもフォーカスを移さない）。その間のキー入力は
+      // body に落ち、クリック直後の Enter・文字入力で編集が始まらない。クリックの確定（mouseup）で
+      // 同期的にグリッドへフォーカスを移しておく（選択はこの時点で確定済み）。
+      editorRef.current?.focus();
       const d = display[row];
       if (d?.kind !== "group") return;
       setCollapsed((s) => {
@@ -812,13 +819,14 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         </div>
       ) : null}
       <DataEditor
+        ref={editorRef}
         theme={glideTheme}
         columns={gridColumns}
         rows={totalRows}
         rowHeight={rowHeight}
         getCellContent={getCellContent}
         onCellEdited={canEdit ? onCellEdited : undefined}
-        onCellClicked={groupKeys.length ? onCellClicked : undefined}
+        onCellClicked={onCellClicked}
         onVisibleRegionChanged={onVisibleRegionChanged}
         gridSelection={selection}
         onGridSelectionChange={setSelection}
