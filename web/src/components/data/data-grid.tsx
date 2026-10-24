@@ -58,6 +58,7 @@ import {
 import {
   DataApiError,
   deleteRecord,
+  getAllowedTransitions,
   getRecord,
   getViewerContext,
   postAwareness,
@@ -247,6 +248,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   fieldsRef.current = fields;
   const fsmRef = React.useRef(fsm);
   fsmRef.current = fsm;
+  const tableIdRef = React.useRef(tableId);
+  tableIdRef.current = tableId;
   const fetchPageRef = React.useRef(fetchPage);
   fetchPageRef.current = fetchPage;
   const embedded = Boolean(fetchPage);
@@ -1081,6 +1084,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         current: rc.fsmState,
         targets,
         known,
+        load: () => getAllowedTransitions(tableIdRef.current, rowRef.id),
         onPick: (to) => transitionRef.current(rowRef, to, label),
       }) as ProvideEditorCallbackResult<GridCell>;
     }
@@ -1168,12 +1172,25 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   /// 直前のクリック（mouseup）のセルと時刻。glide は「前のクリックから 500ms 以内」をセルに関係なくダブルクリック
   /// とみなすので、Enter で選択が移ったセルを直後にクリックすると編集が開いていた（2-D-P3-3）。
   const lastClick = React.useRef<{ col: number; row: number; at: number } | null>(null);
+  /// 直前の 2 回の mouseup の時刻（どこで離したかを問わない）。前回の mouseup がこのグリッドのセルのクリック
+  /// だったか（編集欄・メニューの中のクリックではないか）を見分ける。
+  const ups = React.useRef<{ prev: number; last: number }>({ prev: 0, last: 0 });
+  React.useEffect(() => {
+    const onUp = () => {
+      ups.current = { prev: ups.current.last, last: performance.now() };
+    };
+    window.addEventListener("mouseup", onUp, true);
+    return () => window.removeEventListener("mouseup", onUp, true);
+  }, []);
   const onCellClicked = React.useCallback(
     ([col, row]: Item, ev: { isDoubleClick?: boolean; preventDefault: () => void }) => {
       const prev = lastClick.current;
-      lastClick.current = { col, row, at: Date.now() };
-      if (ev.isDoubleClick && (!prev || prev.col !== col || prev.row !== row || Date.now() - prev.at > 600)) {
-        // 同じセルの 2 回目のクリックではない: 編集を開かない（選ぶだけ）。
+      lastClick.current = { col, row, at: performance.now() };
+      // ダブルクリックとして編集を開くのは、前回の mouseup が同じセルのクリックだったときだけ。
+      const prevWasThisCell =
+        prev !== null && prev.col === col && prev.row === row && Math.abs(prev.at - ups.current.prev) < 100;
+      if (ev.isDoubleClick && !prevWasThisCell) {
+        // 同じセルの 2 回目のクリックではない（Enter で移った直後・メニューを閉じた直後）: 選ぶだけ。
         ev.preventDefault();
       }
       // glide はクリックしたセルを選んだあと、グリッドへのフォーカスを次の描画フレームまで遅らせる

@@ -52,6 +52,7 @@ export type StartImportRequest = S["StartImportRequest"];
 export type StartImportResponse = S["StartImportResponse"];
 export type ImportErrorsResponse = S["ImportErrorsResponse"];
 export type FsmBody = S["FsmBody"];
+export type AllowedTransitions = S["AllowedTransitions"];
 export type FsmResponse = S["FsmResponse"];
 
 /// API の誤り（状態コード＋構造化した本文）。
@@ -146,6 +147,10 @@ function codeMessage(body: Record<string, unknown> | null): string | null {
       return "索引列の上限を超えるため、テーブルの管理者の承認が要ります";
     case "name_taken":
       return "同じ名前のテーブルがあります。別の名前にしてください";
+    case "field_unavailable":
+      return "指定した列は存在しないか、参照できません";
+    case "schema_conflicts_with_data":
+      return "今のデータと合わないため、この列の設定に変えられません";
     case "upstream_unavailable":
       return "サーバーに接続できません。少し待ってから再試行してください";
     case "read_timeout":
@@ -343,6 +348,13 @@ export async function transitionRecord(
       `/data/tables/${enc(tableId)}/records/${enc(recordId)}/transition`,
       send("POST", { to, expected_rev: expectedRev }),
     ),
+  );
+}
+
+/// レコードのいまの状態と、閲覧者がいま実行できる遷移先（実行できる人の条件まで評価済み）。
+export async function getAllowedTransitions(tableId: string, recordId: string): Promise<AllowedTransitions> {
+  return ok<AllowedTransitions>(
+    await apiFetch(`/data/tables/${enc(tableId)}/records/${enc(recordId)}/transitions`),
   );
 }
 

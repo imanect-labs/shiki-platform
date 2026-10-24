@@ -84,7 +84,7 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
         if (!active) return;
         setFirst(run);
         setTable(t);
-        setMasked(new Set(v.masked_fields));
+        setMasked(new Set(v.masked_fields ?? []));
         setWaiting(null);
       })
       .catch((e) => active && onFailure(e));
