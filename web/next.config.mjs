@@ -16,6 +16,9 @@ const backendOrigin = process.env.BACKEND_ORIGIN ?? "http://localhost:8080";
 
 const nextConfig = {
   reactStrictMode: true,
+  // 出力先の差し替え（既定は .next）。起動中の本番ビルドを壊さずに別ポートで dev/build を並走させるときだけ
+  // NEXT_DIST_DIR=.next-xxx を渡す（.gitignore・eslint・tsconfig は .next-* を除外済み）。
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   // コンテナ用の自己完結出力。node_modules 全体ではなく実際に使うものだけを
   // .next/standalone へまとめるので、イメージが数百 MB 小さくなる。
   // **サーバは `node server.js` で起動する**（`next start` ではない）。

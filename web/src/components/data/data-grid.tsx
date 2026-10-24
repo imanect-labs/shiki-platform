@@ -27,13 +27,17 @@ import {
   type GridColumn,
   type GridSelection,
   type Item,
+  type ProvideEditorCallbackResult,
   type Rectangle,
+  type TextCell,
   type Theme,
 } from "@glideapps/glide-data-grid";
-import { Loader2, RefreshCw, WifiOff } from "lucide-react";
+import { AlertTriangle, Loader2, RefreshCw, WifiOff } from "lucide-react";
 import * as React from "react";
+import { flushSync } from "react-dom";
 
 import { resolveColor, useGlideTheme } from "@/components/csv/glide-theme";
+import { GridTextEditor } from "@/components/data/grid-text-editor";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/use-toast";
 import {
@@ -127,6 +131,14 @@ type Props = {
   onPeers?: (peers: Peer[]) => void;
 };
 
+/// 行のセル（編集を始めた時点の行 id と rev を持たせる）。
+///
+/// glide は編集を開いた瞬間のセルの内容を編集欄に写し取り、確定時はその写し（`{...cell, data}`）を
+/// `onCellEdited` に渡す。行 id と rev をセルに載せておけば、編集中に SSE で行が新しい rev に置き換わっても
+/// **編集を始めた時点の rev** で `expected_rev` を送れる（他の人の更新を黙って上書きしない・D-1）。
+/// 表示行の位置も編集中に行の出現・消滅でずれうるので、確定先は位置ではなく行 id で引く。
+type RowCell = TextCell & { rowRef?: { id: string; rev: number } };
+
 /// 購読が止まった理由（グリッドの下に案内を出す）。
 type LiveProblem = { kind: "disconnected" } | { kind: "signed_out" };
 
@@ -169,7 +181,19 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   const done = React.useRef(false);
   const loading = React.useRef(false);
   const generation = React.useRef(0);
-  const pending = React.useRef<Set<string>>(new Set());
+  /// 保存中の行（行 id → 保存中の件数・薄く色を付ける）。
+  const pending = React.useRef<Map<string, number>>(new Map());
+  /// 同じ行の保存は順に送る（行 id → 直前の保存の完了）。自分の保存で進んだ rev（送った rev → 新しい rev）を
+  /// 覚えておき、保存の応答より前に同じ行の編集を始めていても**自分の更新だけ**を辿って rev を進める
+  /// （自分の直前の保存を「他の人の更新」と取り違えて 409 にしない）。他の人の更新は辿らないので 409 のまま。
+  const saveChain = React.useRef<Map<string, Promise<void>>>(new Map());
+  const ownAdvance = React.useRef<Map<string, Map<number, number>>>(new Map());
+  const followOwn = (id: string, rev: number): number => {
+    const adv = ownAdvance.current.get(id);
+    let r = rev;
+    for (let guard = 0; adv?.has(r) && guard < 1000; guard++) r = adv.get(r)!;
+    return r;
+  };
   /// 読み直しの間（並べ替え・絞り込みの変更・索引の準備中）に薄く見せておく直前の行。
   /// 新しい先頭ページが届いたら捨てる。見せている間は編集させない（新しい条件の行ではないため）。
   const stale = React.useRef<DataRecord[]>([]);
@@ -194,6 +218,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   const onPeersRef = React.useRef(onPeers);
   onPeersRef.current = onPeers;
   const [live, setLive] = React.useState<LiveProblem | null>(null);
+  /// 編集欄を開いている行（開いた時点の id・rev）。編集中にその行が他の人に更新されたら知らせる。
+  const editing = React.useRef<{ id: string; rev: number } | null>(null);
+  const [editStale, setEditStale] = React.useState(false);
   /// 読み込みの失敗の文言（権限を失ったときは既定の「読み込めませんでした」より具体的に出す）。
   const [failure, setFailure] = React.useState<string | null>(null);
   const peers = React.useRef<Map<string, Peer>>(new Map());
@@ -314,8 +341,19 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         const cur = rows.current[i];
         // 冪等: 手元より新しい rev だけ（派生値だけの再配信は同じ rev でも適用）。
         if (derived ? record.rev < cur.rev : record.rev <= cur.rev) return;
-        if (pending.current.has(record.id) && !derived) pending.current.delete(record.id);
         rows.current[i] = record;
+        // 編集中の行が他の人に更新された（自分の保存の反映は保存中か、自分の保存で進んだ rev かで区別する）:
+        // 確定すると競合になるので、編集中のまま知らせる。
+        const ed = editing.current;
+        if (
+          ed &&
+          ed.id === record.id &&
+          !derived &&
+          !pending.current.has(record.id) &&
+          record.rev > followOwn(record.id, ed.rev)
+        ) {
+          setEditStale(true);
+        }
         bump();
       },
       onRemoved: ({ record_id }) => {
@@ -389,6 +427,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     done.current = false;
     loading.current = false;
     pending.current.clear();
+    saveChain.current.clear();
+    ownAdvance.current.clear();
     if (peers.current.size) {
       peers.current.clear();
       publishPeers();
@@ -551,7 +591,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           : shown.muted
             ? { textDark: glideTheme.textLight, baseFontStyle: "italic 12px" }
             : undefined;
-      return {
+      const cell: RowCell = {
         kind: GridCellKind.Text,
         data: Array.isArray(v) ? v.join(", ") : v == null ? "" : String(v),
         displayData: text,
@@ -559,7 +599,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         readonly: !editable,
         contentAlign: numeric ? "right" : undefined,
         themeOverride: override,
+        rowRef: { id: r.id, rev: r.rev },
       };
+      return cell;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [display, columns, canEdit, grid, collapsed, editedBg, formatTheme, glideTheme, version, source, showingStale, namesVersion],
@@ -568,11 +610,24 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   const onCellEdited = React.useCallback(
     ([col, row]: Item, cell: EditableGridCell) => {
       if (cell.kind !== GridCellKind.Text) return;
-      const d = display[row];
       const c = columns[col];
-      if (!d || d.kind !== "row" || !c?.field) return;
-      const i = d.index;
-      const before = rows.current[i];
+      if (!c?.field) return;
+      // 確定先は編集を始めた時点の行（id）と rev。位置からは引かない（編集中に行がずれうる）。
+      const ref = (cell as RowCell).rowRef;
+      const d = display[row];
+      const i = ref ? indexById.current.get(ref.id) : d?.kind === "row" ? d.index : undefined;
+      if (i === undefined) {
+        toast({
+          variant: "destructive",
+          title: "保存できませんでした",
+          description: "編集していた行は削除されたか、見られなくなりました。",
+        });
+        return;
+      }
+      const current = rows.current[i];
+      const expectedRev = ref?.rev ?? current.rev;
+      // 比較・巻き戻しは編集を始めた時点の値ではなく今の行（他の人の更新を巻き戻さない）。
+      const before = current;
       const parsed = parseInput(cell.data, c.field);
       if (!parsed.ok) {
         toast({ variant: "destructive", title: `「${c.label}」を保存できません`, description: parsed.error });
@@ -582,14 +637,23 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       if (JSON.stringify(prevValue ?? null) === JSON.stringify(parsed.value ?? null)) return;
       // 先に見せる（保存中は薄く色を付ける）。
       rows.current[i] = { ...before, data: { ...(before.data as object), [c.key]: parsed.value } };
-      pending.current.add(before.id);
+      const id = before.id;
+      pending.current.set(id, (pending.current.get(id) ?? 0) + 1);
       bump();
-      updateRecord(tableId, before.id, { [c.key]: parsed.value }, before.rev)
-        .then((saved) => {
+      const gen = generation.current;
+      const run = (saveChain.current.get(id) ?? Promise.resolve())
+        .then(async () => {
+          const rev = followOwn(id, expectedRev);
+          const saved = await updateRecord(tableId, id, { [c.key]: parsed.value }, rev);
+          if (gen !== generation.current) return;
+          const adv = ownAdvance.current.get(id) ?? new Map<number, number>();
+          adv.set(rev, saved.rev);
+          ownAdvance.current.set(id, adv);
           const j = indexById.current.get(saved.id);
           if (j !== undefined && saved.rev >= rows.current[j].rev) rows.current[j] = saved;
         })
         .catch(async (e: unknown) => {
+          if (gen !== generation.current) return;
           const j = indexById.current.get(before.id);
           if (e instanceof DataApiError && e.revConflict) {
             // 他の人が先に更新した: 最新を読み直して見せる（自分の入力は反映しない）。
@@ -627,12 +691,32 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           }
         })
         .finally(() => {
-          pending.current.delete(before.id);
+          const n = (pending.current.get(id) ?? 1) - 1;
+          if (n > 0) pending.current.set(id, n);
+          else pending.current.delete(id);
+          if (saveChain.current.get(id) === run) saveChain.current.delete(id);
           bump();
         });
+      saveChain.current.set(id, run);
     },
     [display, columns, tableId, bump],
   );
+
+  /// 編集欄を開く（glide は開くときだけ呼ぶ）。確定の値を入力欄から読む編集欄を使い、開いた行を覚える
+  /// （描画中に呼ばれるので state は触らず ref だけ・知らせの解除は確定／取消の `onFinishedEditing`）。
+  const provideEditor = React.useCallback((cell: GridCell) => {
+    if (cell.kind !== GridCellKind.Text) return undefined;
+    editing.current = (cell as RowCell).rowRef ?? null;
+    return GridTextEditor as ProvideEditorCallbackResult<GridCell>;
+  }, []);
+  const onFinishedEditing = React.useCallback(() => {
+    editing.current = null;
+    setEditStale(false);
+  }, []);
+
+  const onSelectionChange = React.useCallback((s: GridSelection) => {
+    flushSync(() => setSelection(s));
+  }, []);
 
   const onVisibleRegionChanged = React.useCallback(
     (r: Rectangle) => {
@@ -820,6 +904,22 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           条件に合うレコードはありません
         </div>
       ) : null}
+      {editStale ? (
+        <div
+          role="alert"
+          data-testid="data-grid-edit-stale"
+          className={cn(
+            // 編集欄（行の位置）に重ならないよう下端に出す（「新しいレコード」の案内があればその上）。
+            "absolute left-1/2 z-20 flex w-[min(32rem,calc(100%-2rem))] -translate-x-1/2 items-start gap-2 rounded-xl border border-destructive/40 bg-card px-3 py-2 text-xs shadow-md",
+            newRows > 0 || live ? "bottom-16" : "bottom-4",
+          )}
+        >
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
+          <span className="flex-1 text-balance">
+            編集中に他の人がこの行を更新しました。確定しても上書きはせず、最新の内容を読み込み直します（Esc で編集をやめられます）。
+          </span>
+        </div>
+      ) : null}
       {newRows > 0 ? (
         <button
           type="button"
@@ -863,10 +963,17 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         rowHeight={rowHeight}
         getCellContent={getCellContent}
         onCellEdited={canEdit ? onCellEdited : undefined}
+        provideEditor={canEdit ? provideEditor : undefined}
+        onFinishedEditing={canEdit ? onFinishedEditing : undefined}
+        // 選択中のセルをもう一度クリックしても編集欄を開かない（開いたまま Enter を押すと「変更なしで確定 →
+        // 1 つ下へ移動」になり、続けて打った文字が下の行に保存されていた・D-10）。編集は Enter・ダブルクリック・
+        // 文字の入力で始める（表計算と同じ）。
+        cellActivationBehavior="double-click"
         onCellClicked={onCellClicked}
         onVisibleRegionChanged={onVisibleRegionChanged}
         gridSelection={selection}
-        onGridSelectionChange={setSelection}
+        // 選択は同期で確定する（クリック直後の Enter・打鍵が、選択の反映前の描画に届いて取りこぼされない）。
+        onGridSelectionChange={onSelectionChange}
         highlightRegions={highlightRegions}
         onHeaderClicked={onHeaderClick ? (col) => columns[col] && onHeaderClick(columns[col].key) : undefined}
         onHeaderMenuClick={onHeaderMenu ? (col, b) => columns[col] && onHeaderMenu(columns[col].key, b) : undefined}

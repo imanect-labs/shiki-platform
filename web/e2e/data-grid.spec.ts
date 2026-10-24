@@ -245,3 +245,99 @@ test("他の人のカーソルを表示し、権限の変更で読み直し、�
   await expect(banner).toContainText("自動反映が止まりました");
   await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "2");
 });
+
+test("編集中に他の人が同じ行を更新したら、編集を始めた時点の rev で送って黙って上書きしない（D-1）", async ({ page, browser }) => {
+  await loginViaKeycloak(page);
+  const tableId = await seedTable(page, ["A-1"]);
+  await page.goto(`/data/${tableId}`);
+  await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "1");
+
+  // 別のブラウザ（別セッション）で同じ行を更新する人。
+  const otherCtx = await browser.newContext();
+  const other = await otherCtx.newPage();
+  await loginViaKeycloak(other);
+
+  // 1. 自分が「金額」の編集を始め、入力したまま確定しない。
+  const editor = await openCellEditor(page, 1, 0);
+  await editor.fill("777");
+
+  // 2. その間に、もう一人が同じ行の同じ列を更新する（SSE で自分のグリッドにも届く）。
+  const [row] = await queryRows(other, tableId);
+  const upd = await other.request.patch(`/api/data/tables/${tableId}/records/${row.id}`, {
+    headers: { "X-CSRF-Token": await csrfOf(other) },
+    data: { patch: { amount: 555 }, expected_rev: row.rev },
+  });
+  expect(upd.status(), await upd.text()).toBe(200);
+  // 編集中の行が他の人に更新されたことを編集中のまま知らせる（SSE の到達の確認も兼ねる）。
+  await expect(page.getByTestId("data-grid-edit-stale")).toBeVisible({ timeout: 10_000 });
+
+  // 3. 自分が確定する: 編集を始めた時点の rev で送るので 409 になり、他の人の値は残る。
+  const patched = page.waitForResponse(
+    (r) => r.url().includes(`/data/tables/${tableId}/records/`) && r.request().method() === "PATCH",
+  );
+  await page.keyboard.press("Enter");
+  const res = await patched;
+  expect(res.request().postDataJSON()).toMatchObject({ expected_rev: row.rev });
+  expect(res.status()).toBe(409);
+  await expect(page.getByText("他の人が先に更新しました").first()).toBeVisible();
+  const [after] = await queryRows(other, tableId);
+  expect(after.data.amount).toBe(555);
+  await otherCtx.close();
+});
+
+test("選択中のセルのクリック → Enter → 入力は同じ行に保存し、Delete で空にし、Esc の後も Enter で編集できる（D-10）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const tableId = await seedTable(page, ["A-1", "B-2", "C-3"]);
+  await page.goto(`/data/${tableId}`);
+  await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "3");
+  const rows = await queryRows(page, tableId);
+  const patchOf = () =>
+    page.waitForResponse(
+      (r) => r.url().includes(`/data/tables/${tableId}/records/`) && r.request().method() === "PATCH",
+    );
+
+  // 1. 選んでいるセルをもう一度クリックしてから Enter → 入力 → Enter は、その行に保存する。
+  const p = await cellPoint(page, 1, 0);
+  await page.mouse.click(p.x, p.y);
+  // ダブルクリック（＝編集の開始）と区別される間を空けて、選択中のセルをもう一度クリックする。
+  await page.waitForTimeout(700);
+  await page.mouse.click(p.x, p.y);
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#portal textarea")).toBeVisible();
+  await page.keyboard.type("4242");
+  let patched = patchOf();
+  await page.keyboard.press("Enter");
+  let res = await patched;
+  expect(res.url()).toContain(rows[0].id);
+  expect(res.request().postDataJSON()).toMatchObject({ patch: { amount: 4242 } });
+
+  // 2. Esc で編集をやめた直後でも Enter で編集を始められる。
+  await page.mouse.click(p.x, p.y);
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#portal textarea")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#portal textarea")).toBeHidden();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#portal textarea")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#portal textarea")).toBeHidden();
+
+  // 3. Delete で選んだセルを空にする。
+  patched = patchOf();
+  await page.keyboard.press("Delete");
+  res = await patched;
+  expect(res.url()).toContain(rows[0].id);
+  expect(res.request().postDataJSON()).toMatchObject({ patch: { amount: null } });
+  expect(res.status()).toBe(200);
+
+  // 4. 選んだセルで打鍵を始めると、先頭の文字も欠けずに入る（編集欄が開く前の打鍵を取りこぼさない）。
+  const codeCell = await cellPoint(page, 0, 1);
+  await page.mouse.click(codeCell.x, codeCell.y);
+  await page.waitForTimeout(100);
+  patched = patchOf();
+  await page.keyboard.type("abcdef");
+  await page.keyboard.press("Enter");
+  res = await patched;
+  expect(res.url()).toContain(rows[1].id);
+  expect(res.request().postDataJSON()).toMatchObject({ patch: { code: "abcdef" } });
+});
