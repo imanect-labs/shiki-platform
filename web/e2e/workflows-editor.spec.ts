@@ -102,3 +102,45 @@ test("エディタ: 意味論の切替で結果が変わり得る条件を、開
   });
   await expect(canvas.locator('[aria-label="注意 1 件"]')).toBeVisible();
 });
+
+test("データを追加のレコードの値は JSON のオブジェクトに限り、文字列では保存しない（C-P2-1）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const headers = { "x-csrf-token": csrf };
+  const t = await page.request.post("/api/data/tables", {
+    headers,
+    data: { name: uniqueName("e2e-wf-data"), schema: { fields: [{ key: "name", display_name: "件名", type: "text" }] } },
+  });
+  expect(t.status(), await t.text()).toBe(201);
+  const tableId = ((await t.json()) as { id: string }).id;
+  const name = uniqueName("wf-data-object");
+  const res = await page.request.post("/api/workflows", {
+    headers,
+    data: {
+      ir: {
+        ir_version: 1,
+        name,
+        display_name: name,
+        declared_scopes: ["data.write"],
+        triggers: [{ kind: "interactive" }],
+        nodes: [{ id: "c", type: "data.record.create", label: "データを追加", params: { table: tableId, data: { name: "x" } } }],
+        edges: [],
+      },
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const id = ((await res.json()) as { id: string }).id;
+  await page.goto(`/workflows/${id}`);
+  await page.locator(".react-flow").getByText("データを追加").first().click();
+  const value = page.getByLabel("レコードの値");
+  await value.fill('"文字列"');
+  await expect(page.getByText("{ … } のオブジェクトで書いてください")).toBeVisible();
+  await value.fill('{"name": "出張"}');
+  await expect(page.getByText("{ … } のオブジェクトで書いてください")).toHaveCount(0);
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+  const saved = (await (await page.request.get(`/api/workflows/${id}`)).json()) as {
+    ir: { nodes: { params: { data: unknown } }[] };
+  };
+  expect(saved.ir.nodes[0].params.data).toEqual({ name: "出張" });
+});

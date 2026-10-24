@@ -192,6 +192,7 @@ export function DataRecordCreateForm(props: FormProps) {
         refCandidates={refCandidates}
         inMapRegion={inMapRegion}
         multiline
+        json="object"
         placeholder='例: {"name": "出張旅費", "amount": 12000}'
         error={fieldErrors.get("data")}
       />
@@ -243,6 +244,7 @@ export function DataRecordUpdateForm(props: FormProps) {
         refCandidates={refCandidates}
         inMapRegion={inMapRegion}
         multiline
+        json="object"
         placeholder='例: {"status": "承認"}（null で値を消す）'
         error={fieldErrors.get("patch")}
       />
@@ -320,6 +322,7 @@ export function DataBulkUpsertForm(props: FormProps) {
         refCandidates={refCandidates}
         inMapRegion={inMapRegion}
         multiline
+        json="array"
         placeholder='例: [{"data": {"name": "書籍"}}, {"id": "…", "rev": 3, "data": {"amount": 0}}]'
         error={fieldErrors.get("rows")}
       />

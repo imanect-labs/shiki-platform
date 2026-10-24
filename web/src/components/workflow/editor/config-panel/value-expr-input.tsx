@@ -60,6 +60,9 @@ type Props = {
   /// 複数行の固定値（プロンプト等）。
   multiline?: boolean;
   error?: string | null;
+  /// 固定値を JSON のオブジェクト（または配列）に限る（業務データの値など）。文字列としては保存しない:
+  /// 読めない間は IR に値を入れず（保存時の検証で「未入力」として止まる）、その場で理由を出す（C-P2-1）。
+  json?: "object" | "array";
 };
 
 export function ValueExprInput({
@@ -71,16 +74,32 @@ export function ValueExprInput({
   placeholder,
   multiline,
   error,
+  json,
 }: Props) {
   const mode = modeOf(value);
   const from = mode === "from" ? (value as unknown as FromRef) : null;
   const template = mode === "template" ? (value as unknown as TemplateExpr) : null;
   const literal = mode === "literal" ? literalText(value) : { text: "", isJson: false };
   const [jsonMode, setJsonMode] = React.useState(literal.isJson);
+  // JSON 限定の欄の入力中の文字（読めない間も消さずに見せる）。
+  const [jsonDraft, setJsonDraft] = React.useState<string | null>(null);
+  const jsonError = React.useMemo(() => {
+    if (!json || mode !== "literal") return null;
+    const text = jsonDraft ?? literal.text;
+    if (text.trim() === "") return null;
+    try {
+      const v = JSON.parse(text) as unknown;
+      const ok = json === "array" ? Array.isArray(v) : v !== null && typeof v === "object" && !Array.isArray(v);
+      return ok ? null : json === "array" ? "[ … ] の配列で書いてください" : "{ … } のオブジェクトで書いてください";
+    } catch {
+      return "JSON として読めません（引用符・カンマ・括弧を確かめてください）";
+    }
+  }, [json, mode, jsonDraft, literal.text]);
 
   const setMode = (next: Mode) => {
     if (next === mode) return;
-    if (next === "literal") onChange("" as unknown as ValueExpr);
+    setJsonDraft(null);
+    if (next === "literal") onChange((json ? undefined : "") as unknown as ValueExpr);
     // 全体参照は path 省略が正（JSON Pointer の "/" は空文字キーであり全体ではない）。
     if (next === "from") onChange({ $from: "input" } as unknown as ValueExpr);
     if (next === "template")
@@ -113,7 +132,35 @@ export function ValueExprInput({
         </Select>
       </div>
 
-      {mode === "literal" ? (
+      {mode === "literal" && json ? (
+        <div className="space-y-1">
+          <Textarea
+            aria-label={label}
+            value={jsonDraft ?? literal.text}
+            rows={4}
+            placeholder={placeholder}
+            spellCheck={false}
+            aria-invalid={jsonError ? true : undefined}
+            onChange={(e) => {
+              const text = e.target.value;
+              setJsonDraft(text);
+              try {
+                const v = JSON.parse(text) as unknown;
+                const ok = json === "array" ? Array.isArray(v) : v !== null && typeof v === "object" && !Array.isArray(v);
+                onChange((ok ? v : undefined) as ValueExpr);
+              } catch {
+                onChange(undefined as unknown as ValueExpr);
+              }
+            }}
+            className={cn("font-mono text-xs", (error || jsonError) && "border-destructive")}
+          />
+          {jsonError ? (
+            <p className="text-[11px] text-destructive" role="alert">
+              {jsonError}
+            </p>
+          ) : null}
+        </div>
+      ) : mode === "literal" ? (
         <div className="space-y-1">
           {multiline ? (
             <Textarea

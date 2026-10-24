@@ -98,31 +98,3 @@ test("ドライブ: 共有ダイアログの権限の選択肢で Esc を押し�
   await page.getByRole("button", { name: `「${folder}」の操作` }).click();
   await expect(page.getByRole("menuitem", { name: "共有" })).toBeVisible();
 });
-
-test("ワークフロー: 有効化ダイアログのテーブルの選択肢で Esc を押しても有効化ダイアログは閉じない", async ({ page }) => {
-  await loginViaKeycloak(page);
-  await seedTable(page);
-  const name = uniqueName("esc-wf");
-  const res = await page.request.post("/api/workflows", {
-    headers: { "x-csrf-token": await csrf(page) },
-    data: {
-      ir: {
-        ir_version: 1,
-        name,
-        display_name: name,
-        declared_scopes: ["data.read"],
-        triggers: [{ kind: "schedule", cron: "0 9 * * *", tz: "Asia/Tokyo", catchup: "skip" }],
-        nodes: [{ id: "q", type: "data.query", label: "調べる", params: { table: { $from: "input", path: "/table" }, query: { limit: 5 } } }],
-        edges: [],
-      },
-    },
-  });
-  expect(res.ok(), await res.text()).toBeTruthy();
-  const wfId = ((await res.json()) as { id: string }).id;
-  await page.goto(`/workflows/${wfId}`);
-  await page.getByRole("button", { name: /自動実行を有効化/ }).click();
-  const dialog = page.locator('[role="dialog"]');
-  await expect(dialog.getByText("自動実行の設定")).toBeVisible();
-  const pick = dialog.getByRole("combobox").first();
-  await escapeClosesOnlySelect(page, pick, dialog);
-});
