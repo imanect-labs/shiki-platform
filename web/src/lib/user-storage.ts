@@ -29,6 +29,9 @@ export function isUserDataKey(key: string): boolean {
     key === "shiki.composer.recent-skills" ||
     key.startsWith("shiki.composer.recent-skills@") ||
     key.startsWith("docchat:active:") ||
+    // 入力欄で選んだモデル（sessionStorage・[`model-choice`](@/lib/model-choice)）。次の人の
+    // 最初の発話（ホーム・文書のパネル）に前の人の選択を載せない。
+    key.startsWith("shiki:model-choice:") ||
     // ホームの入力欄の書きかけ（[`Composer`](@/components/chat/composer) の draftKey）。
     key.startsWith("shiki.composer.draft:") ||
     // 引用箇所の手がかり（文書本文の断片・[`stashCiteLocator`](@/lib/citation-locate)）。

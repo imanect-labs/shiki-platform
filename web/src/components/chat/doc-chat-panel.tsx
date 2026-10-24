@@ -233,7 +233,10 @@ export function DocChatPanel({
 
   // 表示中の会話（「新しい会話」の入力中は無し＝入力欄を出す）。
   const shownThreadId = drafting ? null : activeThreadId;
-  showingDraftRef.current = shownThreadId === null;
+  // 購読側が読む値は、コミットした表示に合わせる（破棄されたレンダーの値を残さない）。
+  React.useEffect(() => {
+    showingDraftRef.current = shownThreadId === null;
+  }, [shownThreadId]);
   const activeIndex = shownThreadId ? conversations.findIndex((c) => c.id === shownThreadId) : -1;
 
   return (

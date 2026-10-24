@@ -205,7 +205,10 @@ export const Composer = React.memo(function Composer({
   // 保存は打鍵ごとではなく、手が止まってからまとめて書く（長文の貼り付け後も入力を重くしない）。
   // 画面を離れる（アンマウント・リロードやタブを閉じる）ときは待たずに書く（直後に離れても取りこぼさない）。
   const latestValue = React.useRef(value);
-  latestValue.current = value;
+  // コミットした値だけを持つ（破棄されたレンダーの値を保存しない）。保存の effect より先に置く。
+  React.useEffect(() => {
+    latestValue.current = value;
+  }, [value]);
   React.useEffect(() => {
     if (!draftKey || !draftRestored) return;
     const generation = draftGeneration.current;
