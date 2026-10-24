@@ -177,7 +177,7 @@ outbox の `data.record.changed` を消費する。リアルタイム配信（`d
 書込 Tx ──outbox(data.record.changed)──▶ RagIndexWorker（台帳 consumer: data-rag-index）
                                             │ テーブルごとに: 現在の世代 vs 索引の世代
                                             ├─ 一致 → 触れたレコードを現在の行から投影 → upsert / remove
-                                            ├─ 不一致（初回・field_policy / 投影の変更）→ reset_table → 全件を投影し直す
+                                            ├─ 不一致（初回・field_policy / 投影の変更・前回の作り直しが未完）→ reset_table → 全件を投影し直す → 完了を確定
                                             └─ 削除済み・オプトアウト → reset_table(None)
                                             ▼
                                    RecordChunkSink（実装は rag 側: 埋め込み → Qdrant ＋ Tantivy）
@@ -187,6 +187,11 @@ outbox の `data.record.changed` を消費する。リアルタイム配信（`d
   保存形キーで `jsonb_object_agg`）。順序の入れ替わり・再配信で古い値が勝たない。行が無ければチャンクを消す。
 - **可視性を焼かない**: 索引は全行を持つ（行述語を掛けずに読む）。可視性は検索時の post-filter が毎回評価する
   ので、行述語・共有・ロールの変更では索引を書き換えない。
+- **作り直しの完了は全ページの反映の後に確定する**: sink の世代は `reset_table` の時点で付け替わるので、それだけでは
+  作り直しが途中で失敗・停止したことが分からない（再配信で世代一致の増分経路に入ると、空・途中までの索引が完成扱いになる）。
+  完了は最後のページまで反映できた後に `data_rag_index_state(tenant_int, table_int, consumer, generation)` へ outbox の配送記録と
+  同じ Tx で書き、増分経路へ入るのは **sink の世代とこの台帳の世代がどちらも一致する**ときだけにする。途中で失敗すれば台帳も
+  巻き戻り、次の周期で作り直し直す。台帳は台帳 consumer（sink の系統）ごとに持ち、オプトアウトで消す・テナント消去の対象。
 - **schema / refresh / derived のイベント**は世代の照合だけ行う（派生列は投影できないので本文は変わらない）。
 - **冪等・at-least-once**: sink は `record_id` 単位の upsert / remove。反映と `mark_delivered` は同じ Tx で、
   sink が失敗すれば Tx ごと巻き戻って次の周期で再配信される。並行する消費は台帳 consumer の採番行のロックで直列化する。

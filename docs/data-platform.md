@@ -1551,6 +1551,10 @@ absent  ──promote──▶  building  ──収束──▶  active  ──d
 > - 生成 UI の data 束縛は**ミニアプリの画面の `` ```data_grid ``** として実装した。会話の回答（Yui の `` ```ui ``）の中の表は
 >   データ束縛を持たない（静的データのまま・未実装）
 > - 全面で同じ `data::DataQuery` 型を使うことは `crates/api/tests/data_query_surfaces.rs` がコンパイル時と実行時に固定する
+> - app-gateway の data ルートは、入口のテーブルだけでなく**結合・半結合・lookup / rollup・リンク値で辿る参照先もアプリ所有テーブルに
+>   限る**（`data::TableReach`・`crates/app-gateway/src/routes/mod.rs` の `app_table_stores`）。アプリ所有テーブルのリンク列が
+>   非所有テーブルを指すと、呼出ユーザーがそのテーブルを読めても、アプリ経由では lookup / rollup は null・リンク値は落ち、結合・半結合は 403 になる
+>   （ユーザーが参照先を読めないときと同じ応答）。ワークフローの委譲（[workflow/engine.md §6.8](./workflow/engine.md) ③）も同じ仕組み
 
 ### 11.1 RAG 統合（方向性）
 
