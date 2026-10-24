@@ -37,7 +37,7 @@ import * as React from "react";
 import { flushSync } from "react-dom";
 
 import { resolveColor, useGlideTheme } from "@/components/csv/glide-theme";
-import { GridTextEditor } from "@/components/data/grid-text-editor";
+import { makeGridTextEditor, useGridTypeAhead } from "@/components/data/grid-text-editor";
 import { isRefField, refCellEditor, type RefCellPayload } from "@/components/data/ref-picker";
 import {
   transitionCellEditor,
@@ -1076,10 +1076,25 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   /// （描画中に呼ばれるので state は触らず ref だけ・知らせの解除は確定／取消の `onFinishedEditing`）。
   const columnsRef = React.useRef(columns);
   columnsRef.current = columns;
+  // 編集欄の部品が読み込まれる前（ページで最初に開くとき）の打鍵を預かる（3-A-1）。
+  const getCellContentRef = React.useRef(getCellContent);
+  getCellContentRef.current = getCellContent;
+  const selectionRef = React.useRef(selection);
+  selectionRef.current = selection;
+  const typeAhead = useGridTypeAhead(
+    (cell) => {
+      const c = getCellContentRef.current(cell);
+      return c.kind === GridCellKind.Text && c.allowOverlay && !c.readonly;
+    },
+    () => selectionRef.current.current?.cell,
+  );
+  const TextEditor = React.useMemo(() => makeGridTextEditor(typeAhead), [typeAhead]);
   const provideEditor = React.useCallback((cell: GridCell) => {
     if (cell.kind !== GridCellKind.Text) return undefined;
     const rc = cell as RowCell;
     editing.current = rc.rowRef ?? null;
+    const textEditor = !(fsmRef.current && rc.fsmState !== undefined && rc.rowRef) && !(rc.refField && rc.refValue);
+    typeAhead.loaded(textEditor);
     // 参照の列は候補から選ぶ編集欄（A-6）。
     const f = fsmRef.current;
     if (f && rc.fsmState !== undefined && rc.rowRef) {
@@ -1096,8 +1111,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     }
     const field = rc.refField ? columnsRef.current.find((c) => c.key === rc.refField)?.field : null;
     if (field && rc.refValue) return refCellEditor(field, rc.refValue) as ProvideEditorCallbackResult<GridCell>;
-    return GridTextEditor as ProvideEditorCallbackResult<GridCell>;
-  }, []);
+    return TextEditor as ProvideEditorCallbackResult<GridCell>;
+  }, [typeAhead, TextEditor]);
   const onFinishedEditing = React.useCallback(() => {
     editing.current = null;
     setEditStale(false);
@@ -1525,6 +1540,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         onCellEdited={canEdit ? onCellEdited : undefined}
         provideEditor={canEdit ? provideEditor : undefined}
         onFinishedEditing={canEdit ? onFinishedEditing : undefined}
+        onKeyDown={canEdit ? typeAhead.onKeyDown : undefined}
         // 選択中のセルをもう一度クリックしても編集欄を開かない（開いたまま Enter を押すと「変更なしで確定 →
         // 1 つ下へ移動」になり、続けて打った文字が下の行に保存されていた・D-10）。編集は Enter・ダブルクリック・
         // 文字の入力で始める（表計算と同じ）。

@@ -376,3 +376,94 @@ test("選択中のセルのクリック → Enter → 入力は同じ行に保�
   res = await patched;
   expect(res.request().postDataJSON()).toMatchObject({ patch: { code: null } });
 });
+
+test("ページを開いて最初の打鍵で始めた編集も、編集欄が開く前の文字を落とさない（3-A-1）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const tableId = await seedTable(page, ["A-1", "B-2", "C-3"]);
+  const rows = await queryRows(page, tableId);
+  const patchOf = () =>
+    page.waitForResponse(
+      (r) => r.url().includes(`/data/tables/${tableId}/records/`) && r.request().method() === "PATCH",
+    );
+  const fresh = async () => {
+    // 読み込み直すたびに glide の編集欄の部品は遅延読み込みからやり直しになる（最初の 1 回だけ取りこぼしていた）。
+    await page.goto(`/data/${tableId}`);
+    await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "3");
+  };
+
+  // 1. 開いた直後の最初の打鍵で編集を始め、続けて打った文字も Enter も欠けない（「1500」が「500」にならない）。
+  await fresh();
+  let p = await cellPoint(page, 1, 0);
+  await page.mouse.click(p.x, p.y);
+  let patched = patchOf();
+  await page.keyboard.type("1500");
+  await page.keyboard.press("Enter");
+  let res = await patched;
+  expect(res.url()).toContain(rows[0].id);
+  expect(res.request().postDataJSON()).toMatchObject({ patch: { amount: 1500 } });
+
+  // 2. 1 文字 → すぐ Enter でも保存する（「3」→ Enter で値が変わらなかった）。
+  await fresh();
+  p = await cellPoint(page, 1, 1);
+  await page.mouse.click(p.x, p.y);
+  patched = patchOf();
+  await page.keyboard.press("3");
+  await page.keyboard.press("Enter");
+  res = await patched;
+  expect(res.url()).toContain(rows[1].id);
+  expect(res.request().postDataJSON()).toMatchObject({ patch: { amount: 3 } });
+
+  // 3. Enter で開いた直後の打鍵は、選択された元の値を置き換える（表計算と同じ）。
+  await fresh();
+  p = await cellPoint(page, 0, 2);
+  await page.mouse.click(p.x, p.y);
+  patched = patchOf();
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("XY");
+  await page.keyboard.press("Enter");
+  res = await patched;
+  expect(res.url()).toContain(rows[2].id);
+  expect(res.request().postDataJSON()).toMatchObject({ patch: { code: "XY" } });
+});
+
+test("編集欄を開いている間にグリッドがフォーカスを取り返しても、入力は編集欄に入り続ける（3-D-4）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const codes = ["R-1", "R-2", "R-3", "R-4", "R-5"];
+  const tableId = await seedTable(page, codes);
+  await page.goto(`/data/${tableId}`);
+  await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "5");
+  const sent: string[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "PATCH" && r.url().includes(`/data/tables/${tableId}/records/`)) {
+      const code = (r.postDataJSON() as { patch?: { code?: string } }).patch?.code;
+      if (code) sent.push(code);
+    }
+  });
+
+  // 1. クリックの後のグリッドの遅れたフォーカス（glide は次の描画フレームでグリッドへフォーカスを戻す）が、
+  //    開いたばかりの編集欄から入力を奪わない。
+  const editor = await openCellEditor(page, 0, 0);
+  await page.evaluate(() => {
+    const canvas = document.querySelector('[data-testid="data-grid"] canvas') as HTMLCanvasElement | null;
+    canvas?.focus();
+  });
+  await expect(editor).toBeFocused();
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.type("stolen");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => sent).toContain("stolen");
+
+  // 2. 最後の行を保存した直後に先頭の行を続けて編集しても、どの編集も取りこぼさない（保存・SSE の反映の
+  //    再描画で編集欄が閉じない）。
+  for (let i = 0; i < 20; i++) {
+    const p = await cellPoint(page, 0, i % 5);
+    await page.mouse.click(p.x, p.y);
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#portal textarea")).toBeVisible();
+    await page.keyboard.press("ControlOrMeta+a");
+    await page.keyboard.type(`fast-${i}`);
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(80);
+  }
+  await expect.poll(() => [...Array(20).keys()].filter((i) => !sent.includes(`fast-${i}`)), { timeout: 15_000 }).toEqual([]);
+});
