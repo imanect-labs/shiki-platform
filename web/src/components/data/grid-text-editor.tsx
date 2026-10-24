@@ -135,13 +135,21 @@ export function GridTextEditor({ value, onChange, onFinishedEditing, isHighlight
     mounted.current = true;
     const ta = ref.current;
     if (!ta) return;
+    // 描画（useState の初期化）から確定までの間にも打鍵は預かりに積まれる（遅延読み込みの直後は描画と確定の間が
+    // 空く）。確定の時点で預かりを読み直し、その間の文字・確定を落とさない（3-A-1 の再発: 「1500」が「150」）。
+    const latest = ahead ? (typeAhead?.peek() ?? ahead) : null;
+    if (latest && latest.text !== ahead?.text) {
+      const v = latest.text ? (isHighlighted ? latest.text : initial.current + latest.text) : initial.current;
+      ta.value = v;
+      setText(v);
+    }
     ta.focus();
     const n = ta.value.length;
-    ta.setSelectionRange(isHighlighted && !ahead?.text ? 0 : n, n);
-    if (ahead) {
+    ta.setSelectionRange(isHighlighted && !latest?.text ? 0 : n, n);
+    if (latest) {
       typeAhead?.drop();
-      if (ahead.text) onChange({ ...value, data: ta.value });
-      if (ahead.finish) finishWith(ta.value, ahead.finish);
+      if (latest.text) onChange({ ...value, data: ta.value });
+      if (latest.finish) finishWith(ta.value, latest.finish);
     }
     return () => {
       mounted.current = false;
