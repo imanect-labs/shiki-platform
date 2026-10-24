@@ -105,6 +105,9 @@ pub(super) struct Sub {
     gap_since: Option<std::time::Instant>,
     /// 材料を解決した時点の認可の世代（これが進んだら TTL を待たずに引き直す）。
     epochs: HashMap<Uuid, i64>,
+    /// 接続後まだ awareness の現在の状態を渡していない（次のバッチで、有効期間内の他ユーザーの
+    /// カーソルを可視性の判定を通してから送る）。
+    pub(super) awareness_snapshot: bool,
 }
 
 #[derive(Default)]
@@ -166,6 +169,9 @@ impl DataStore {
     /// `since` は `Last-Event-ID`（連続して受けた最後の位置）。保持期間外・未来の位置は
     /// `stream.reset` を 1 件送って閉じる（クライアントは取り直して `since` なしで繋ぎ直す）。
     /// `since` が無ければ現在の位置から（REST の応答の `snapshot_seq` を渡すと取りこぼしが無い）。
+    ///
+    /// `stream.ready` の後の最初のバッチで、接続前に置かれた他ユーザーのカーソル（awareness の有効期間内・
+    /// 本人の分と離脱済みを除く）を、変更イベントと同じ可視性の判定とマスクを通してから送る。
     pub async fn subscribe_records(
         &self,
         ctx: &AuthContext,
@@ -234,6 +240,7 @@ impl DataStore {
                 auth,
                 gap_since: None,
                 epochs,
+                awareness_snapshot: true,
             });
         self.ensure_stream_task();
         Ok(RecordStream { rx })
@@ -631,10 +638,17 @@ impl DataStore {
                     break;
                 }
             }
-            // awareness（データを含まない・見えない行・マスク列のものは送らない）。
+            // awareness（データを含まない・見えない行・マスク列のものは送らない）。接続直後の購読者には
+            // 有効期間内の現在の状態（離脱済みを除く）も、同じ判定を通して送る。
             if !terminal {
+                let snapshot = std::mem::take(&mut s.awareness_snapshot);
                 for a in &awareness {
                     if a.principal == s.ctx.principal.id {
+                        continue;
+                    }
+                    // 前のバッチより後の更新か、接続直後のスナップショット（離脱済みは除く）だけ。
+                    let wanted = a.fresh || (snapshot && a.record_id.is_some());
+                    if !wanted {
                         continue;
                     }
                     if a.field.as_ref().is_some_and(|f| s.auth.masked.contains(f)) {

@@ -31,6 +31,9 @@ pub(super) struct Aware {
     pub(super) field: Option<String>,
     pub(super) at: DateTime<Utc>,
     pub(super) state: Option<usize>,
+    /// 前のバッチより後の更新（既存の購読者にも配る）。`false` は接続直後の購読者へ渡す
+    /// 現在の状態（スナップショット）にだけ載せる。
+    pub(super) fresh: bool,
 }
 
 /// 1 バッチ分の読込結果。
@@ -147,23 +150,27 @@ impl DataStore {
             entries.truncate(cut + 1);
         }
         let changes: Vec<Raw> = entries.iter().filter_map(parse_entry).collect();
-        // awareness（短命・データを含まない）。
+        // awareness（短命・データを含まない）。接続直後の購読者がいれば、有効期間内の現在の状態
+        // （主体ごとに 1 行）も読む（それより前に置かれたカーソルを新しい購読者が知るため）。
         let since = awareness_after.unwrap_or_else(Utc::now);
         let ttl = chrono::Duration::from_std(self.stream_config.awareness_ttl)
             .unwrap_or(chrono::Duration::seconds(30));
+        let snapshot = subs.iter().any(|s| s.awareness_snapshot);
         let aw_rows: Vec<AwRow> = sqlx::query_as(
             "SELECT principal, record_id, field_key, updated_at FROM data_stream_awareness \
-             WHERE tenant_id = $1 AND table_id = $2 AND updated_at > $3 AND updated_at > $4 \
+             WHERE tenant_id = $1 AND table_id = $2 AND ($5 OR updated_at > $3) AND updated_at > $4 \
              ORDER BY updated_at",
         )
         .bind(tenant_id)
         .bind(table.id)
         .bind(since)
         .bind(Utc::now() - ttl)
+        .bind(snapshot)
         .fetch_all(&mut *conn)
         .await
         .map_err(map_db)?;
-        let awareness_at = aw_rows.last().map(|r| r.updated_at).or(Some(since));
+        // 配った位置は新しい側へしか動かさない（スナップショットの古い行で巻き戻さない）。
+        let awareness_at = Some(aw_rows.iter().map(|r| r.updated_at).fold(since, Ord::max));
         let mut ids: Vec<Uuid> = changes
             .iter()
             .filter(|r| !matches!(r.kind, ChangeKind::Schema | ChangeKind::Refresh))
@@ -200,6 +207,7 @@ impl DataStore {
             .into_iter()
             .map(|a| Aware {
                 state: a.record_id.and_then(|id| st.after(id)),
+                fresh: a.updated_at > since,
                 principal: a.principal,
                 record_id: a.record_id,
                 field: a.field_key,

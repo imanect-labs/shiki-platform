@@ -1689,3 +1689,168 @@ async fn fsm_transition_reaches_subscribers() {
     assert_eq!(ups[0].1["status"], json!("done"));
     assert_eq!(c.rows[&r.id].0, 2);
 }
+
+fn awareness_of(ms: &[StreamMessage]) -> Vec<Value> {
+    ms.iter()
+        .filter(|m| matches!(m.event, StreamEvent::Awareness(_)))
+        .map(|m| m.event.data_json())
+        .collect()
+}
+
+/// 接続前に置かれた他ユーザーのカーソルが、新しい購読者に `stream.ready` の直後（最初のバッチ）で
+/// 届く。見えない行を指すもの・マスク列のもの・本人の分・離脱済みは届かず、既存の購読者に重複しない。
+#[tokio::test]
+async fn new_subscriber_receives_current_awareness_without_leaking_invisible_rows() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let fx = fixture(pool, authz, manual()).await;
+    let shared = fx
+        .store
+        .create_record(
+            &fx.alice,
+            fx.table,
+            json!({"applicant": "bob", "title": "共有"}),
+            None,
+        )
+        .await
+        .unwrap();
+    // applicant = alice: alice・carol（keiri）には見え、bob には見えない。
+    let secret = fx
+        .store
+        .create_record(
+            &fx.alice,
+            fx.table,
+            json!({"applicant": "alice", "title": "秘"}),
+            None,
+        )
+        .await
+        .unwrap();
+    // 既存の購読者（carol）。
+    let mut sc = fx
+        .store
+        .subscribe_records(&fx.carol, fx.table, None, None)
+        .await
+        .unwrap();
+    let mut cc = Client::default();
+    tick(&fx).await;
+    drain(&mut sc, &mut cc).await;
+
+    fx.store
+        .post_awareness(
+            &fx.alice,
+            fx.table,
+            Some(shared.id),
+            Some("title".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    fx.store
+        .post_awareness(
+            &fx.carol,
+            fx.table,
+            Some(secret.id),
+            Some("title".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    tick(&fx).await;
+    let (ms, _) = drain(&mut sc, &mut cc).await;
+    let aw = awareness_of(&ms);
+    assert_eq!(
+        aw.len(),
+        1,
+        "carol には alice のカーソルだけ（本人の分は除く）: {aw:?}"
+    );
+    assert_eq!(aw[0]["principal"], json!("alice"));
+
+    // bob は 2 つのカーソルが置かれた後に接続する。
+    let mut sb = fx
+        .store
+        .subscribe_records(&fx.bob, fx.table, None, None)
+        .await
+        .unwrap();
+    let mut cb = Client::default();
+    tick(&fx).await;
+    let (ms, _) = drain(&mut sb, &mut cb).await;
+    assert!(
+        matches!(ms.first().map(|m| &m.event), Some(StreamEvent::Ready(_))),
+        "stream.ready が先: {:?}",
+        cb.raw
+    );
+    let aw = awareness_of(&ms);
+    assert_eq!(aw.len(), 1, "見える行の alice のカーソルだけ: {:?}", cb.raw);
+    assert_eq!(aw[0]["principal"], json!("alice"));
+    assert_eq!(aw[0]["record_id"], json!(shared.id));
+    assert_eq!(aw[0]["field"], json!("title"));
+    assert!(aw[0].get("data").is_none() && !aw[0].to_string().contains("共有"));
+    let secret_id = secret.id.to_string();
+    assert!(
+        !cb.raw.iter().any(|r| r.contains(&secret_id)),
+        "見えない行の id は漏れない: {:?}",
+        cb.raw
+    );
+    // 既存の購読者には同じカーソルを重複して送らない。
+    let (ms, _) = drain(&mut sc, &mut cc).await;
+    assert!(
+        awareness_of(&ms).is_empty(),
+        "既存の購読者に再送しない: {:?}",
+        cc.raw
+    );
+    // スナップショットは 1 回だけ。
+    tick(&fx).await;
+    let (ms, _) = drain(&mut sb, &mut cb).await;
+    assert!(awareness_of(&ms).is_empty(), "2 回目のバッチでは送らない");
+
+    // 見える人には見えない行のカーソルも届く（alice は keiri）・本人の分は除く。
+    let mut sa = fx
+        .store
+        .subscribe_records(&fx.alice, fx.table, None, None)
+        .await
+        .unwrap();
+    let mut ca = Client::default();
+    tick(&fx).await;
+    let (ms, _) = drain(&mut sa, &mut ca).await;
+    let aw = awareness_of(&ms);
+    assert_eq!(aw.len(), 1, "carol のカーソルだけ: {:?}", ca.raw);
+    assert_eq!(aw[0]["principal"], json!("carol"));
+    assert_eq!(aw[0]["record_id"], json!(secret.id));
+
+    // 離脱（record_id = null）は既存の購読者にだけ届き、新しい購読者のスナップショットには載らない。
+    // マスク列（salary は bob に読めない）のカーソルも新しい購読者に届かない。
+    fx.store
+        .post_awareness(&fx.alice, fx.table, None, None, None)
+        .await
+        .unwrap();
+    fx.store
+        .post_awareness(
+            &fx.carol,
+            fx.table,
+            Some(shared.id),
+            Some("salary".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    tick(&fx).await;
+    let (ms, _) = drain(&mut sb, &mut cb).await;
+    let aw = awareness_of(&ms);
+    assert_eq!(aw.len(), 1, "既存の bob には alice の離脱だけ: {aw:?}");
+    assert_eq!(aw[0]["principal"], json!("alice"));
+    assert!(aw[0]["record_id"].is_null());
+    let mut sb2 = fx
+        .store
+        .subscribe_records(&fx.bob, fx.table, None, None)
+        .await
+        .unwrap();
+    let mut cb2 = Client::default();
+    tick(&fx).await;
+    let (ms, _) = drain(&mut sb2, &mut cb2).await;
+    assert!(
+        awareness_of(&ms).is_empty(),
+        "離脱済み・マスク列のカーソルは送らない: {:?}",
+        cb2.raw
+    );
+}
