@@ -19,6 +19,7 @@ import * as React from "react";
 import {
   Check,
   ChevronRight,
+  Cpu,
   FilePlus2,
   FileSpreadsheet,
   FileText,
@@ -50,6 +51,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { SELECTABLE_TOOLS, useToolChoice } from "@/lib/tool-choice";
+import { useModelSummary } from "./model-picker";
 import {
   SkillBrowser,
   SkillRow,
@@ -77,6 +79,8 @@ export type PlusMenuProps = {
   /// スラッシュコマンドを持つスキル（#387）。選ぶと入力欄へコマンドが確定する。
   skills?: SlashSuggestion[];
   onPickSkill?: (s: SlashSuggestion) => void;
+  /// スマホのシートに「モデル」の行を出し、押したら選ぶ面を開く（入力欄にモデルを出していないとき）。
+  onOpenModel?: () => void;
 };
 
 /// 閉じきってから走らせる操作の予約（ドライブ・スキル一覧を開く）。
@@ -352,8 +356,10 @@ function PlusSheet({
   pickSkill,
   modelScope,
   openSkills,
+  onOpenModel,
 }: SharedProps) {
   const create = useCreateContent({ parentId: createParentId });
+  const modelSummary = useModelSummary(modelScope);
   const after = useAfterClose();
   const ranked = useRankedSkills(skills, open);
   const [query, setQuery] = React.useState("");
@@ -421,10 +427,26 @@ function PlusSheet({
           </div>
         </PlusSection>
 
-        {/* ③ ツール（#734・この発話にだけ優先して使う） */}
+        {/* ③ モデル（入力欄にモデルを出していないときだけ・選ぶと入力欄に出る） */}
+        {onOpenModel && modelSummary ? (
+          <PlusSection title="モデル">
+            <button
+              type="button"
+              onClick={() => thenOpen(onOpenModel)}
+              data-testid="composer-open-model"
+              className="flex h-12 w-full items-center gap-3 rounded-xl border border-border bg-card px-3 text-left text-[15px] transition-colors active:bg-accent"
+            >
+              <Cpu className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
+              <span className="min-w-0 flex-1 truncate">{modelSummary}</span>
+              <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            </button>
+          </PlusSection>
+        ) : null}
+
+        {/* ④ ツール（#734・この発話にだけ優先して使う） */}
         <ToolChoiceSection scope={modelScope} />
 
-        {/* ④ スキル */}
+        {/* ⑤ スキル */}
         {skills.length > 0 && onPickSkill ? (
           <PlusSection title="スキル">
             <SkillSearchInput value={query} onChange={setQuery} />

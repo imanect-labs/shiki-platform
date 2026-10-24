@@ -23,7 +23,9 @@ export function SlideDraftCard({ raw, threadId }: { raw: unknown; threadId: stri
         <Presentation className="size-4.5" aria-hidden />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="truncate text-sm font-medium">{draft.name}</span>
+        <span className="block truncate text-sm font-medium" title={draft.name}>
+          {draft.name}
+        </span>
         <span className="mt-0.5 block text-xs text-muted-foreground">
           下書きスライドを用意しました。内容を確認・編集して「ドライブに保存」で確定します。
         </span>
