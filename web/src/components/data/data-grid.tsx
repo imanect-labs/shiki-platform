@@ -409,13 +409,17 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       const waiting = e instanceof DataApiError && (e.indexPreparing || e.approvalRequired);
       if (first) {
         setFailure(
-          e instanceof DataApiError && (e.status === 403 || e.status === 404)
+          e instanceof DataApiError && e.code === "field_unavailable"
+            ? // 絞り込み・並べ替えに、存在しないか読めない列が入っている（ビューの古い条件など）。
+              "絞り込み・並べ替えに、存在しないか見られない列が含まれています。条件を見直してください"
+            : e instanceof DataApiError && (e.status === 403 || e.status === 404)
             ? "このテーブルを見る権限がありません（共有が外されたか、削除されました）"
-            : e instanceof DataApiError && (e.readTimeout || e.status === 400)
-              ? // 負荷で時間切れ（少し待てば読める）・条件の誤り（構造化した理由）はその文言を出す。
+            : e instanceof DataApiError && (e.readTimeout || e.status === 400 || e.code === "upstream_unavailable")
+              ? // 負荷で時間切れ（少し待てば読める）・条件の誤り（構造化した理由）・サーバに届かないはその文言を出す
+                // （列は表示名に直す）。
                 e.retryAfterSec
                 ? `${e.message}（${e.retryAfterSec} 秒ほど）`
-                : e.message
+                : withFieldLabels(e.message, fieldsRef.current ?? [])
               : null,
         );
         setInitial(waiting ? "preparing" : "error");
