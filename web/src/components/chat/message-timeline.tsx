@@ -32,6 +32,9 @@ export function appendStreamText(segments: StreamSegment[], text: string): Strea
   if (last?.kind === "text") {
     return [...segments.slice(0, -1), { kind: "text", text: last.text + text }];
   }
+  // 空白だけ（ツールの後の改行など）では区切りを作らない。作ると直前の操作のまとまりが末尾で
+  // なくなって終わった扱いになり、確定時（空白だけの本文は捨てる）と配置も変わる。
+  if (!text.trim()) return segments;
   return [...segments, { kind: "text", text }];
 }
 

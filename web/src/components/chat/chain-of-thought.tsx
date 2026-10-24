@@ -64,13 +64,13 @@ export function ChainOfThought({
               style={{ color: stageSeason }}
               aria-hidden
             />
-            <span
-              // 待ち時間の文言は数秒ごとに進むので、変わったら薄く入れ替える。入れ替えは外側、
-              // 脈打ちは内側（同じ要素だと animation が上書きされ、片方しか効かない）。
-              key={status}
-              className={cn(live && "animate-in fade-in-0 duration-300")}
-            >
-              <span className={cn("font-medium", live && "animate-pulse")}>{status}</span>
+            {/* 文言の変化を読み上げる領域は差し替えない（key を付けると領域ごと作り直されて
+                読み上げられない）。入れ替えは中、脈打ちはさらに内側（同じ要素だと animation が
+                上書きされ、片方しか効かない）。 */}
+            <span aria-live="polite">
+              <span key={status} className={cn("block", live && "animate-in fade-in-0 duration-300")}>
+                <span className={cn("font-medium", live && "animate-pulse")}>{status}</span>
+              </span>
             </span>
             <ChevronRight
               className={cn("size-3.5 transition-transform", expanded && "rotate-90")}
