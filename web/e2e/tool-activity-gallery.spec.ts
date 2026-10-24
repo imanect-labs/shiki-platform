@@ -8,19 +8,37 @@ import { test, expect } from "@playwright/test";
 /// `SHOTS_DIR` を渡すと各状態の PNG を保存する。
 const SHOTS = process.env.SHOTS_DIR;
 
+/// まとまりの表示が 1 行（ボタン 1 つぶん）に収まっているか。開閉も伸び縮みもしない前提。
+async function expectOneLine(cell: import("@playwright/test").Locator) {
+  const panel = cell.getByTestId("tool-activity");
+  const header = panel.getByRole("button").first();
+  const [ph, hh] = await Promise.all([
+    panel.evaluate((el) => el.getBoundingClientRect().height),
+    header.evaluate((el) => el.getBoundingClientRect().height),
+  ]);
+  expect(Math.abs(ph - hh)).toBeLessThan(1);
+}
+
 test.describe("ツール実行表示ギャラリー", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/reference/tool-activity");
   });
 
-  test("実行中はフェーズ行＋直近 3 件のローリングを出す", async ({ page }) => {
+  test("実行中は 1 行で、いま実行中の操作と並行の件数を出す", async ({ page }) => {
     const running = page.getByTestId("tool-activity-running");
     await expect(running).toBeVisible();
-    // フィクスチャは 5 件だが、折りたたみ時に見えるのは直近 3 件だけ。
-    await expect(running.getByText(/を閲覧中/)).toHaveCount(3);
-    // フェーズ行はツールの種別から導く（旧実装の日本語プレフィックス一致に依存しない）。
-    await expect(running.getByText("ページを読んでいます")).toBeVisible();
+    // フィクスチャは 5 件（うち 3 件が並行で実行中）。1 行には最新の 1 件と、ほかの件数を出す。
+    await expect(running.getByText(/meti\.go\.jp.* を閲覧中/)).toBeVisible();
+    await expect(running.getByText("ほか 2 件")).toBeVisible();
+    await expectOneLine(running);
     if (SHOTS) await running.screenshot({ path: `${SHOTS}/tool-activity-running.png` });
+  });
+
+  test("ステップの合間も 1 行のまま、待ちの文言を出す", async ({ page }) => {
+    const between = page.getByTestId("tool-activity-between");
+    await expect(between.getByText("次の手順を考えています")).toBeVisible();
+    await expectOneLine(between);
+    if (SHOTS) await between.screenshot({ path: `${SHOTS}/tool-activity-between.png` });
   });
 
   test("計画のサブタスクがあればフェーズ行に優先して出る", async ({ page }) => {
@@ -28,12 +46,13 @@ test.describe("ツール実行表示ギャラリー", () => {
     await expect(withPlan.getByText("市場規模と成長率を調べています")).toBeVisible();
   });
 
-  test("完了後は 1 行要約に畳み、押すと全件・並行・成否・結果要約を出す", async ({ page }) => {
+  test("完了後は 1 行要約（件数と内訳）のまま、押すと全件・並行・成否・結果要約を出す", async ({ page }) => {
     const done = page.getByTestId("tool-activity-done");
-    // 完了後は**畳んだ 1 行要約**（件数と内訳）。走行中のロールは終わっているので、
-    // ここで全件を出しっぱなしにすると会話が縦に伸びる（#386 の作り直しで畳む側へ寄せた）。
+    // 完了後も 1 行（件数と内訳）。往復する回答でまとまりごとに行が並ぶので、ここが伸びると
+    // 回答が縦に長くなる。
     await expect(done.getByText("5 件の操作")).toBeVisible();
     await expect(done.getByText(/web 3/)).toBeVisible();
+    await expectOneLine(done);
     await expect(done.getByText("並行して 2 件")).toHaveCount(0);
     if (SHOTS) await done.screenshot({ path: `${SHOTS}/tool-activity-open.png` });
 
