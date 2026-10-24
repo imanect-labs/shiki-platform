@@ -17,7 +17,6 @@ use std::time::Instant;
 use storage::audit::AuditAction;
 
 use authz::{AuthContext, AuthzClient};
-use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
@@ -56,6 +55,8 @@ pub struct SearchService {
     fulltext: Arc<dyn FulltextIndex>,
     authz: Arc<dyn AuthzClient>,
     audit: AuditRecorder,
+    /// 監査に残す検索語ハッシュの鍵（#833）。
+    query_hash_key: crate::QueryHashKey,
 }
 
 /// 検索の内部出力（API 層が debug の出し分けを行う）。
@@ -112,6 +113,12 @@ impl SearchService {
                 "関連度の閾値が有限の relevance_low <= relevance_high になっていない"
             );
         }
+        let query_hash_key = config.query_hash_key.clone().unwrap_or_else(|| {
+            tracing::warn!(
+                "rag.query_hash_key 未設定: 起動時乱数鍵を使用（再起動・別レプリカとは同じ検索語でも監査のハッシュが揃わない）"
+            );
+            crate::QueryHashKey::random()
+        });
         SearchService {
             pool,
             config,
@@ -121,6 +128,7 @@ impl SearchService {
             fulltext,
             authz,
             audit,
+            query_hash_key,
         }
     }
 
@@ -413,9 +421,10 @@ impl SearchService {
         scope: Option<&SearchScope>,
         trail: crate::AuditTrail<'_>,
     ) -> Result<(), RagError> {
-        // tenant を混ぜ、tenant 横断でのレインボーテーブル再利用を防ぐ（真のペッパーは
-        // KeyProvider（Phase 10）導入時に移行。監査ログ閲覧自体は管理権限で保護される）。
-        let query_sha256 = hex_sha256(&format!("{}\x00{}", ctx.tenant_id, query));
+        // 検索語はサーバだけが持つ鍵で HMAC する（#833）。監査閲覧者は管理者でなくてもなれるので、
+        // 鍵なしのハッシュだと「この語で検索した人がいるか」を自分で計算して確かめられてしまう。
+        // 旧方式（鍵なしの sha256・`query_sha256`）の行とは突き合わせられない（キー名で区別する）。
+        let query_hmac = self.query_hash_key.digest(&ctx.tenant_id, query);
         let (allowed_files, denied_files): (Vec<&Uuid>, Vec<&Uuid>) = {
             let mut allowed = Vec::new();
             let mut denied = Vec::new();
@@ -429,7 +438,7 @@ impl SearchService {
             (allowed, denied)
         };
         let mut metadata = serde_json::json!({
-            "query_sha256": query_sha256,
+            "query_hmac": query_hmac,
             "cited_chunk_ids": results.iter().map(|r| r.chunk_id).collect::<Vec<_>>(),
             "cited_file_ids": results.iter().map(|r| r.file_id).collect::<Vec<_>>(),
             "file_decisions": { "allowed": allowed_files, "denied": denied_files },
@@ -450,7 +459,7 @@ impl SearchService {
                 AuditEntry {
                     action: AuditAction::RagSearch,
                     object_type: "rag_query",
-                    object_id: &query_sha256,
+                    object_id: &query_hmac,
                     decision: Decision::Allow,
                     trace_id: trail.trace_id,
                     metadata,
@@ -459,14 +468,4 @@ impl SearchService {
             .await?;
         Ok(())
     }
-}
-
-fn hex_sha256(text: &str) -> String {
-    use std::fmt::Write;
-    let mut hasher = Sha256::new();
-    hasher.update(text.as_bytes());
-    hasher.finalize().iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
 }

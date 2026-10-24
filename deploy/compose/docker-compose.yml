@@ -657,6 +657,9 @@ services:
       SHIKI__RAG__INDEX_DATA_DIR: /var/lib/shiki/index
       # reranker へ渡す候補数（遅さは候補数に比例・#561）。
       SHIKI__RAG__RERANK_POOL: ${SHIKI__RAG__RERANK_POOL:-16}
+      # 監査に残す検索語ハッシュの鍵（32 バイト以上・#833）。未設定は起動時乱数（再起動・別レプリカ
+      # とは同じ検索語でもハッシュが揃わない）。同じ語の記録を突き合わせたい本番では注入する。
+      SHIKI__RAG__QUERY_HASH_KEY: ${SHIKI__RAG__QUERY_HASH_KEY:-}
       # reranker の生スコアの下限（空 = 足切りしない・#100）。
       SHIKI__RAG__MIN_RERANK_SCORE: ${SHIKI__RAG__MIN_RERANK_SCORE:-}
       # 関連度ラベル（高/中/低）の閾値と、それを測った reranker のモデル（#424）。
