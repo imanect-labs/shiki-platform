@@ -89,8 +89,18 @@ pub(crate) fn bind_query_scoped(
     opts: BindOpts,
 ) -> Result<BoundQuery, DataError> {
     if q.offset.is_some_and(|o| o != 0) {
-        return Err(DataError::Invalid(
-            "offset は廃止されました。next_cursor を cursor に渡してください".into(),
+        return Err(DataError::input_detail(
+            crate::InvalidCode::OffsetNotSupported,
+            None,
+            "offset は廃止されました。next_cursor を cursor に渡してください",
+        ));
+    }
+    // limit 0（負値は 0 に丸めて受ける）は「件数だけ」（with_count）のときだけ。黙って 1 行にしない（検証 C P3）。
+    if q.limit == Some(0) && !q.with_count && q.aggregate.is_empty() {
+        return Err(DataError::input_detail(
+            crate::InvalidCode::InvalidInput,
+            Some("limit"),
+            "limit は 1〜200 で指定してください（件数だけを取るときは with_count: true と limit: 0）",
         ));
     }
     let ctx = RefCell::new(LinkCtx {
@@ -105,8 +115,10 @@ pub(crate) fn bind_query_scoped(
     }
     if let Some(text) = q.search.as_deref().filter(|s| !s.is_empty()) {
         if text.chars().count() > 256 {
-            return Err(DataError::Invalid(
-                "search が長すぎます（最大 256 文字）".into(),
+            return Err(DataError::input_detail(
+                crate::InvalidCode::ValueTooLong,
+                None,
+                "search が長すぎます（最大 256 文字）",
             ));
         }
         parts.push(b.search(text, q.search_fields.as_deref())?);
@@ -118,42 +130,53 @@ pub(crate) fn bind_query_scoped(
     };
 
     if q.sort.len() > MAX_SORT_KEYS {
-        return Err(DataError::Invalid(format!(
-            "ソートキーが多すぎます（最大 {MAX_SORT_KEYS}）"
-        )));
+        return Err(DataError::input_detail(
+            crate::InvalidCode::TooManyValues,
+            None,
+            format!("ソートキーが多すぎます（最大 {MAX_SORT_KEYS}）"),
+        ));
     }
     let mut sort = Vec::with_capacity(q.sort.len());
     let mut precision = SortPrecision::Exact;
     let mut seen = HashSet::new();
     for k in &q.sort {
         if k.field.contains('.') {
-            return Err(DataError::Invalid(format!(
+            return Err(DataError::input_detail(crate::InvalidCode::InvalidInput, None, format!(
                 "ソートキー '{}': 結合先の列では並べ替えられません（FROM の表の列を指定してください）",
                 k.field
             )));
         }
         let f = b.queryable(&k.field)?;
         if f.multi() {
-            return Err(DataError::Invalid(format!(
-                "フィールド '{}' はソートに使えません（多値・リンク）",
-                k.field
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::FieldNotSortable,
+                Some(&k.field),
+                format!(
+                    "フィールド '{}' はソートに使えません（多値・リンク）",
+                    k.field
+                ),
+            ));
         }
         if !seen.insert(f.id) {
-            return Err(DataError::Invalid(format!(
-                "ソートキー '{}' が重複しています",
-                k.field
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                None,
+                format!("ソートキー '{}' が重複しています", k.field),
+            ));
         }
         if f.ty == Some(FieldType::Text) {
             precision = SortPrecision::Prefix;
         }
         // 材料化した派生列は複数ソートの複合索引を持たない（第 1 キーか単独のソートだけ）。
         if f.derived && q.sort.len() > 1 {
-            return Err(DataError::Invalid(format!(
-                "派生フィールド '{}' は複数キーのソートに使えません",
-                k.field
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::FieldNotSortable,
+                Some(&k.field),
+                format!(
+                    "派生フィールド '{}' は複数キーのソートに使えません",
+                    k.field
+                ),
+            ));
         }
         sort.push(BSort {
             field: f.id,
@@ -178,16 +201,24 @@ pub(crate) fn bind_query_scoped(
     let mut joins: Vec<JoinB<'_>> = Vec::with_capacity(q.joins.len());
     for j in &q.joins {
         if !is_valid_field_key(&j.alias) || joins.iter().any(|x| x.alias == j.alias) {
-            return Err(DataError::Invalid(format!(
-                "結合の別名 '{}' が不正か重複しています（英小文字・数字・_）",
-                j.alias
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                None,
+                format!(
+                    "結合の別名 '{}' が不正か重複しています（英小文字・数字・_）",
+                    j.alias
+                ),
+            ));
         }
         let from = match &j.from {
             None => 0,
             Some(a) => {
                 joins.iter().position(|x| &x.alias == a).ok_or_else(|| {
-                    DataError::Invalid(format!("結合元の別名 '{a}' は先に結合されていません"))
+                    DataError::input_detail(
+                        crate::InvalidCode::InvalidInput,
+                        None,
+                        format!("結合元の別名 '{a}' は先に結合されていません"),
+                    )
                 })? + 1
             }
         };
@@ -237,15 +268,19 @@ pub(crate) fn bind_query_scoped(
         let c = col_ref(&mut b, &mut joins, g)?;
         let f = col_field(&b, &joins, c);
         if f.multi() || f.is_pseudo() {
-            return Err(DataError::Invalid(format!(
-                "フィールド '{g}' は集計/グループ化に使えません"
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::FieldNotSortable,
+                None,
+                format!("フィールド '{g}' は集計/グループ化に使えません"),
+            ));
         }
         group_by.push(c);
     }
     if !group_by.is_empty() && q.aggregate.is_empty() {
-        return Err(DataError::Invalid(
-            "group_by には aggregate の指定が必要です".into(),
+        return Err(DataError::input_detail(
+            crate::InvalidCode::InvalidInput,
+            None,
+            "group_by には aggregate の指定が必要です",
         ));
     }
     let mut metrics = Vec::new();
@@ -253,13 +288,19 @@ pub(crate) fn bind_query_scoped(
         metrics.push(bind_metric(&mut b, &mut joins, m)?);
     }
     if metrics.len() > MAX_METRICS {
-        return Err(DataError::Invalid("集計指標が多すぎます（最大 8）".into()));
+        return Err(DataError::input_detail(
+            crate::InvalidCode::TooManyValues,
+            None,
+            "集計指標が多すぎます（最大 8）",
+        ));
     }
     let visible = metrics.len();
     let aggregate = visible > 0;
     if !aggregate && (q.having.is_some() || !q.group_sort.is_empty() || q.group_limit.is_some()) {
-        return Err(DataError::Invalid(
-            "having / group_sort / group_limit には aggregate の指定が必要です".into(),
+        return Err(DataError::input_detail(
+            crate::InvalidCode::InvalidInput,
+            None,
+            "having / group_sort / group_limit には aggregate の指定が必要です",
         ));
     }
     let having = match &q.having {
@@ -272,23 +313,30 @@ pub(crate) fn bind_query_scoped(
             (Some(name), None) => {
                 let c = col_ref(&mut b, &mut joins, name)?;
                 let i = group_by.iter().position(|g| *g == c).ok_or_else(|| {
-                    DataError::Invalid(format!("並べ替えの '{name}' は group_by にありません"))
+                    DataError::input_detail(
+                        crate::InvalidCode::InvalidInput,
+                        None,
+                        format!("並べ替えの '{name}' は group_by にありません"),
+                    )
                 })?;
                 GroupKey::Group(i)
             }
             (None, Some(m)) => GroupKey::Metric(metric_index(&mut b, &mut joins, &mut metrics, m)?),
             _ => {
-                return Err(DataError::Invalid(
-                    "group_sort の各キーには field か metric のどちらか一方を指定してください"
-                        .into(),
+                return Err(DataError::input_detail(
+                    crate::InvalidCode::InvalidInput,
+                    None,
+                    "group_sort の各キーには field か metric のどちらか一方を指定してください",
                 ))
             }
         };
         group_sort.push((key, k.descending));
     }
     if metrics.len() > MAX_METRICS_WITH_HIDDEN {
-        return Err(DataError::Invalid(
-            "HAVING・並べ替えに使う集計指標が多すぎます".into(),
+        return Err(DataError::input_detail(
+            crate::InvalidCode::InvalidInput,
+            None,
+            "HAVING・並べ替えに使う集計指標が多すぎます",
         ));
     }
 
@@ -300,7 +348,11 @@ pub(crate) fn bind_query_scoped(
             for k in keys {
                 if let Some((alias, key)) = k.split_once('.') {
                     let j = joins.iter_mut().find(|j| j.alias == alias).ok_or_else(|| {
-                        DataError::Invalid(format!("別名 '{alias}' は結合にありません"))
+                        DataError::input_detail(
+                            crate::InvalidCode::InvalidInput,
+                            None,
+                            format!("別名 '{alias}' は結合にありません"),
+                        )
                     })?;
                     if pseudo(key).is_none() && key != "_id" {
                         if j.binder.masked().contains(key) {
@@ -308,18 +360,27 @@ pub(crate) fn bind_query_scoped(
                         }
                         charge(j.binder.schema().fields.len());
                         if j.binder.schema().field(key).is_none() {
-                            return Err(DataError::Invalid(format!(
-                                "フィールド '{k}' はスキーマに存在しません"
-                            )));
+                            return Err(DataError::input_detail(
+                                crate::InvalidCode::InvalidInput,
+                                None,
+                                format!("フィールド '{k}' はスキーマに存在しません"),
+                            ));
                         }
                     }
                     j.select.push(key.to_string());
                 } else {
+                    // 読めない（マスクされた）列の投影は 403（条件・並べ替え・SQL 面と揃える。黙って落とさない・
+                    // 検証 C P3）。保存ビューの投影は実行前に閲覧者の読める列へ絞る（DataViewStore::query_for_run）。
+                    if masked.contains(k.as_str()) {
+                        return Err(DataError::Forbidden);
+                    }
                     charge(schema.fields.len());
                     if schema.field(k).is_none() {
-                        return Err(DataError::Invalid(format!(
-                            "フィールド '{k}' はスキーマに存在しません"
-                        )));
+                        return Err(DataError::input_detail(
+                            crate::InvalidCode::InvalidInput,
+                            None,
+                            format!("フィールド '{k}' はスキーマに存在しません"),
+                        ));
                     }
                     base.push(k.clone());
                 }
@@ -445,10 +506,13 @@ fn col_ref(b: &mut Binder<'_>, joins: &mut [JoinB<'_>], name: &str) -> Result<Co
     match name.split_once('.') {
         None => Ok(ColRef::base(b.queryable(name)?.id)),
         Some((alias, key)) => {
-            let i = joins
-                .iter()
-                .position(|j| j.alias == alias)
-                .ok_or_else(|| DataError::Invalid(format!("別名 '{alias}' は結合にありません")))?;
+            let i = joins.iter().position(|j| j.alias == alias).ok_or_else(|| {
+                DataError::input_detail(
+                    crate::InvalidCode::InvalidInput,
+                    None,
+                    format!("別名 '{alias}' は結合にありません"),
+                )
+            })?;
             let f = joins[i].binder.queryable(key)?;
             Ok(ColRef {
                 src: i + 1,
@@ -480,15 +544,20 @@ fn bind_metric(
     if m.metric == Metric::Count {
         return Ok((Metric::Count, None));
     }
-    let name = m
-        .field
-        .as_ref()
-        .ok_or_else(|| DataError::Invalid("この集計には field（number）が必要です".into()))?;
+    let name = m.field.as_ref().ok_or_else(|| {
+        DataError::input_detail(
+            crate::InvalidCode::InvalidInput,
+            None,
+            "この集計には field（number）が必要です",
+        )
+    })?;
     let c = col_ref(b, joins, name)?;
     if col_field(b, joins, c).kind != FieldKind::Num {
-        return Err(DataError::Invalid(format!(
-            "集計対象 '{name}' は number である必要があります"
-        )));
+        return Err(DataError::input_detail(
+            crate::InvalidCode::ValueTypeMismatch,
+            None,
+            format!("集計対象 '{name}' は number である必要があります"),
+        ));
     }
     Ok((m.metric, Some(c)))
 }
@@ -516,7 +585,11 @@ fn bind_having(
     depth: usize,
 ) -> Result<BHaving, DataError> {
     if depth > super::ir::MAX_CONDITION_DEPTH {
-        return Err(DataError::Invalid("HAVING のネストが深すぎます".into()));
+        return Err(DataError::input_detail(
+            crate::InvalidCode::InvalidInput,
+            None,
+            "HAVING のネストが深すぎます",
+        ));
     }
     Ok(match h {
         HavingCond::All(v) => BHaving::All(
@@ -535,12 +608,18 @@ fn bind_having(
                 c.op,
                 CondOp::Eq | CondOp::Neq | CondOp::Lt | CondOp::Lte | CondOp::Gt | CondOp::Gte
             ) {
-                return Err(DataError::Invalid(
-                    "HAVING の比較は eq / neq / lt / lte / gt / gte だけです".into(),
+                return Err(DataError::input_detail(
+                    crate::InvalidCode::InvalidInput,
+                    None,
+                    "HAVING の比較は eq / neq / lt / lte / gt / gte だけです",
                 ));
             }
             let value = c.value.as_f64().ok_or_else(|| {
-                DataError::Invalid("HAVING の比較値は数値で指定してください".into())
+                DataError::input_detail(
+                    crate::InvalidCode::InvalidInput,
+                    None,
+                    "HAVING の比較値は数値で指定してください",
+                )
             })?;
             BHaving::Cmp {
                 metric: metric_index(b, joins, metrics, &c.metric)?,

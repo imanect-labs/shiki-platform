@@ -128,11 +128,11 @@ async fn small_table_sort_enables_the_index_synchronously() {
             None,
         )
         .await;
-    assert!(matches!(v1, Err(DataError::Invalid(_))), "{v1:?}");
+    assert!(matches!(&v1, Err(e) if e.is_invalid()), "{v1:?}");
     // チャット・ワークフロー・ミニアプリの経路（昇格の要求なし）は従来どおり拒否し、昇格もしない
     // （昇格の契機はビューの保存とグリッドの明示の要求だけ・data-platform §10・監査 B1-10）。
     let plain = store.run_query(&bob, table.id, &by("memo"), None).await;
-    assert!(matches!(plain, Err(DataError::Invalid(_))), "{plain:?}");
+    assert!(matches!(&plain, Err(e) if e.is_invalid()), "{plain:?}");
     let t = store.get_table(&alice, table.id, None).await.unwrap();
     assert!(
         !t.schema.field("memo").unwrap().indexed,

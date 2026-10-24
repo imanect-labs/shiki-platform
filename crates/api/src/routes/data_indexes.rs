@@ -77,11 +77,11 @@ pub async fn list_indexes(
     request_body = PromoteIndexRequest,
     responses(
         (status = 200, description = "昇格の結果（active・または preparing と進捗）", body = data::IndexPromotion),
-        (status = 400, description = "存在しない列・索引にできない列（閲覧者ごとの派生列・対称列）"),
+        (status = 400, description = "存在しない列・索引にできない列（閲覧者ごとの派生列・対称列）", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "viewer でない・マスク列・承認は owner のみ"),
         (status = 404, description = "存在しない"),
-        (status = 409, description = "上限超過（code=index_approval_required）・前回の降格の後片付け中（code=index_preparing）"),
+        (status = 409, description = "上限超過（code=index_approval_required）・前回の降格の後片付け中（code=index_preparing）", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]

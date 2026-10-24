@@ -132,6 +132,7 @@ pub(super) const MASKED_WRITE_MESSAGE: &str =
 pub(super) fn row_message(e: DataError) -> Result<String, DataError> {
     match e {
         DataError::Invalid(m) => Ok(m),
+        DataError::InvalidInput(e) => Ok(e.message().to_string()),
         e if e.is_conflict() => Ok(e.conflict_detail().unwrap_or_default()),
         other => Err(other),
     }
@@ -201,6 +202,7 @@ impl DataStore {
                     continue;
                 }
             }
+            let named = |k: &str| payload.0.as_object().is_some_and(|o| o.contains_key(k));
             let r = validate_record_data(
                 &ctx,
                 &table.schema,
@@ -208,7 +210,8 @@ impl DataStore {
                 &resolver,
                 self.max_multi_values,
             )
-            .await;
+            .await
+            .map_err(|e| crate::scrub_input_field(e, |k| named(k) || !masked.contains(k)));
             outcomes.push(match r {
                 Ok(m) => Ok(m),
                 Err(e) => Err(row_message(e)?),

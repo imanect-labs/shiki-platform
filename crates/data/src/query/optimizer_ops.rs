@@ -351,7 +351,7 @@ impl DataStore {
     ) -> Result<T, DataError> {
         let fields: Vec<String> = match &r {
             Err(DataError::IndexApprovalRequired { field, .. }) => vec![field.clone()],
-            Err(DataError::Invalid(_)) => crate::index::promote::query_fields(query)
+            Err(e) if e.is_invalid() => crate::index::promote::query_fields(query)
                 .into_iter()
                 .filter(|k| {
                     !masked.contains(k)

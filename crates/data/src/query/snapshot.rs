@@ -87,8 +87,10 @@ impl DataStore {
         scope: &CursorScope<'_>,
     ) -> Result<(QueryResult, Vec<DataRecord>), DataError> {
         if !query.sort.is_empty() || bq.is_aggregate() || query.with_count {
-            return Err(DataError::Invalid(
-                "スナップショット読取は内部の不変な位置の順で返します（sort・集計・件数は指定できません）".into(),
+            return Err(DataError::input_detail(
+                crate::InvalidCode::SnapshotUnsupported,
+                None,
+                "スナップショット読取は内部の不変な位置の順で返します（sort・集計・件数は指定できません）",
             ));
         }
         let st = |e: storage::StorageError| DataError::Internal(format!("stream: {e}"));
@@ -101,7 +103,7 @@ impl DataStore {
                 let p = self.cursor.open(scope, tok)?;
                 let s = p
                     .snapshot_seq
-                    .ok_or_else(|| DataError::Invalid("カーソルが不正です".into()))?;
+                    .ok_or_else(|| DataError::input(crate::InvalidCode::CursorInvalid))?;
                 (s, p.record_int)
             }
             None => (bounds.head, 0),

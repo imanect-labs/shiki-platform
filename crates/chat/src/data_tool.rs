@@ -119,10 +119,12 @@ fn denied(err: &DataError) -> ToolOutcome {
         }
         // 入力の誤りは理由を返して自己修正させる（テーブルの閲覧権限は確認済みの段階のもの）。
         DataError::Invalid(m) => format!("入力が不正です: {m}"),
+        DataError::InvalidInput(e) => format!("入力が不正です（{}）: {}", e.code().as_str(), e.message()),
         DataError::Rejected(r) => format!("クエリを受け付けられません: {r}"),
         DataError::Conflict(_)
         | DataError::RevConflict { .. }
         | DataError::UniqueViolation
+        | DataError::NameTaken
         | DataError::DerivedRecomputing { .. } => format!(
             "他の更新と競合しました。読み直してから再試行してください: {}",
             err.conflict_detail().unwrap_or_default()
@@ -131,7 +133,8 @@ fn denied(err: &DataError) -> ToolOutcome {
         DataError::IndexPreparing { .. }
         | DataError::IndexApprovalRequired { .. }
         | DataError::QueryTooExpensive { .. }
-        | DataError::ReadOverloaded => err.to_string(),
+        | DataError::ReadOverloaded
+        | DataError::ReadTimeout => err.to_string(),
         DataError::Internal(_) => {
             tracing::warn!(error = %err, "data ツールが失敗（モデルへは汎用メッセージを返す）");
             "データの操作に失敗しました。".into()
@@ -291,6 +294,12 @@ impl Tool for DataQueryTool {
         input: Value,
         trace_id: Option<&str>,
     ) -> Result<ToolOutcome, ToolError> {
+        // クエリの最上位の未知のキー（limitt 等）は黙って無視せず、モデルが自己修正できるよう返す。
+        if let Some(q) = input.get("query").filter(|q| !q.is_null()) {
+            if let Err(e) = DataQuery::from_request(q.clone()) {
+                return Ok(denied(&e));
+            }
+        }
         let input: DataQueryToolInput = serde_json::from_value(input).map_err(|e| invalid(&e))?;
         let table_id = match self.catalog.resolve(&input.table) {
             Ok(id) => id,

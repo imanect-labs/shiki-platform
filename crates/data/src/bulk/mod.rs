@@ -372,6 +372,16 @@ impl CopyRows {
                 "{row_no} 行目: data は JSON オブジェクトである必要があります"
             )));
         }
+        // NUL は Postgres の jsonb が保存できない（取込の開始で 400・500 にしない・検証 D-8）。
+        if crate::validate::contains_nul(&row.data)
+            || row.key.as_deref().is_some_and(|k| k.contains('\0'))
+        {
+            return Err(DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                None,
+                format!("{row_no} 行目: NUL 文字（U+0000）は使えません"),
+            ));
+        }
         let payload = row.data.to_string();
         if payload.len() > MAX_BULK_ROW_BYTES {
             return Err(DataError::Invalid(format!(

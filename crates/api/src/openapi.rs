@@ -210,6 +210,13 @@ use utoipa::{
         crate::routes::app_install::admin_revoke_trusted_key,
     ),
     components(schemas(
+        crate::error_body::BadRequestBody,
+        crate::error_body::ConflictBody,
+        crate::error_body::ConflictCode,
+        crate::error_body::PayloadTooLargeBody,
+        crate::error_body::RetryLaterBody,
+        crate::error_body::ImportInvalidBody,
+        data::InvalidCode,
         crate::routes::me::MeResponse,
         crate::routes::me_security::SecurityOverview,
         crate::routes::me_security::PasswordInfo,
@@ -466,6 +473,8 @@ use utoipa::{
         data::StreamResetEvent,
         data::StreamResetReason,
         data::AwarenessEvent,
+        data::RecordsBulkAppliedEvent,
+        data::StreamKeepaliveEvent,
         // 索引の自動昇格（Task 15.6）。
         crate::routes::data_indexes::PromoteIndexRequest,
         crate::routes::data_imports::ImportRowInput,
@@ -508,6 +517,8 @@ use utoipa::{
         // SQL 互換インターフェース（Task 15.10）。
         data::SqlRequest,
         data::SqlQueryResult,
+        data::SqlCell,
+        data::SqlCellItem,
         data::QueryRejection,
         data::RejectCode,
         data::RejectLimit,

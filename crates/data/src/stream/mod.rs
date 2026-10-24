@@ -31,8 +31,9 @@ pub(crate) mod relay;
 pub(crate) mod visibility;
 
 pub use events::{
-    AwarenessEvent, RecordRemovedEvent, RecordUpsertedEvent, SchemaChangedEvent, StreamEvent,
-    StreamMessage, StreamReadyEvent, StreamResetEvent, StreamResetReason,
+    AwarenessEvent, RecordRemovedEvent, RecordUpsertedEvent, RecordsBulkAppliedEvent,
+    SchemaChangedEvent, StreamEvent, StreamKeepaliveEvent, StreamMessage, StreamReadyEvent,
+    StreamResetEvent, StreamResetReason,
 };
 pub use hub::{RecordStream, StreamConfig};
 pub use outbox::RECORD_CHANGED_EVENT;

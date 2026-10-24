@@ -295,21 +295,33 @@ impl DataStore {
             .open_for_read(ctx, &az, table_id, "data.index.promote", trace_id)
             .await?;
         let f = table.schema.field(field).ok_or_else(|| {
-            DataError::Invalid(format!("フィールド '{field}' はスキーマに存在しません"))
+            DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                Some(field),
+                format!("フィールド '{field}' はスキーマに存在しません"),
+            )
         })?;
         if self.masked_fields(ctx, &az, &table).await?.contains(field) {
             return Err(DataError::Forbidden);
         }
         if !promotable(f) {
             if f.field_type.is_derived() && !f.is_materialized() {
-                return Err(DataError::Invalid(format!(
-                    "派生フィールド '{field}' は索引にできません（閲覧者ごと・時刻依存の値）"
-                )));
+                return Err(DataError::input_detail(
+                    crate::InvalidCode::FieldNotSortable,
+                    Some(field),
+                    format!(
+                        "派生フィールド '{field}' は索引にできません（閲覧者ごと・時刻依存の値）"
+                    ),
+                ));
             }
             if f.is_reverse_link() {
-                return Err(DataError::Invalid(format!(
-                    "対称列 '{field}' は索引にできません（リンク元の列で絞り込んでください）"
-                )));
+                return Err(DataError::input_detail(
+                    crate::InvalidCode::FieldNotSortable,
+                    Some(field),
+                    format!(
+                        "対称列 '{field}' は索引にできません（リンク元の列で絞り込んでください）"
+                    ),
+                ));
             }
             return self.field_index_state(&ctx.tenant_id, &table, f).await;
         }

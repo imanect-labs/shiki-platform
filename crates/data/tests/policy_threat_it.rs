@@ -17,7 +17,8 @@
     clippy::expect_used,
     clippy::panic,
     clippy::print_stderr,
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    clippy::many_single_char_names
 )]
 
 use std::sync::Arc;
@@ -543,10 +544,7 @@ async fn client_filters_cannot_bypass_predicate() {
                 None,
             )
             .await;
-        assert!(
-            matches!(r, Err(DataError::Invalid(_))),
-            "{bad_field}: {r:?}"
-        );
+        assert!(matches!(&r, Err(e) if e.is_invalid()), "{bad_field}: {r:?}");
     }
     // 型不一致（number フィールドに文字列）も実行前 400。
     let r = f
@@ -564,7 +562,7 @@ async fn client_filters_cannot_bypass_predicate() {
             None,
         )
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
 
     // SQL 風の値はリテラルとして扱われる（注入不能・0 件になるだけ）。
     let page = f
@@ -847,7 +845,7 @@ async fn lookup_does_not_leak_invisible_reference() {
         format!("{probe_missing:?}"),
         "参照先の実在有無で応答が変わらないこと"
     );
-    assert!(matches!(probe_existing, Err(DataError::Invalid(_))));
+    assert!(matches!(&probe_existing, Err(e) if e.is_invalid()));
     // ⑪ SQL 前段面: lookup の値も、参照先テーブルの行も、閲覧者本人の権限で同じに見える。
     for who in [&alice, &bob] {
         sql_mirror(&store, who, members.id, "members").await;
@@ -1276,7 +1274,7 @@ async fn rollup_does_not_bypass_reference_table_rebac() {
         ..DataQuery::default()
     };
     let r = store.run_query(&bob, orders.id, &q, None).await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     // ⑪ SQL 前段面: 参照先テーブルの viewer でない bob には、JOIN 先も「存在しないテーブル」と同じ応答。
     sql_mirror(&store, &bob, orders.id, "orders").await;
     let joined = store
@@ -1465,7 +1463,7 @@ async fn rollup_and_lookup_apply_reference_row_policy_per_viewer() {
         .create_record(&bob, orders.id, json!({"items": ids(&[private.id])}), None)
         .await;
     assert!(
-        matches!(&r, Err(DataError::Invalid(m)) if m.contains("見つかりません")),
+        matches!(&r, Err(e) if e.invalid_message().is_some_and(|m| m.contains("見つかりません"))),
         "{r:?}"
     );
     // ⑪ SQL 前段面: lookup / rollup / 数式の値も、JOIN も、閲覧者本人の行述語・マスクで同じに見える。
@@ -1679,7 +1677,7 @@ impl Materialized {
             .run_query(&self.alice, self.orders, &self.by_total(), None)
             .await;
         assert!(
-            matches!(r, Err(DataError::Invalid(_))),
+            matches!(&r, Err(e) if e.is_invalid()),
             "{case}: 降格した列はソートに使えない: {r:?}"
         );
     }
@@ -1766,7 +1764,7 @@ async fn materialized_rollup_is_discarded_when_reference_record_is_shared() {
         .store
         .update_table_schema(&m.alice, m.orders, s, None, None)
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     // ⑪ SQL 前段面でも同じ（材料化を破棄した列は閲覧者本人の権限で計算し直した値）。
     for who in [&m.alice, &m.bob] {
         sql_mirror(&m.store, who, m.orders, "orders").await;
@@ -1791,7 +1789,7 @@ async fn materialized_rollup_is_discarded_when_table_rebac_changes() {
         .store
         .run_query(&m.bob, m.orders, &m.by_total(), None)
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     // 明示の再検査の入口（ReBAC を変えた経路から呼ぶ）は、降格済みなら何もしない。
     assert!(!m
         .store
@@ -1854,7 +1852,7 @@ async fn materialized_rollup_is_discarded_on_query_and_on_field_policy() {
         .store
         .run_query(&m.bob, m.orders, &m.by_total(), None)
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     m.assert_discarded("ReBAC の変更（クエリの入口）").await;
 
     let m = materialized_fixture(pool, authz).await;
@@ -1973,7 +1971,7 @@ async fn long_derived_text_checks_do_not_leak_invisible_rows() {
     assert_eq!(groups[0].value, json!(1));
     // alice: 自分に見える長い行があるので 422（違う値を 1 グループに混ぜない）。
     let r = store.run_query(&alice, table.id, &group, None).await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     // 長い比較値は誰が投げても・行があってもなくても同じ 422（存在・長さのオラクルにならない）。
     for who in [&alice, &bob] {
         for v in [long.clone(), format!("{}Z", "a".repeat(2000))] {
@@ -1986,7 +1984,7 @@ async fn long_derived_text_checks_do_not_leak_invisible_rows() {
                 ..DataQuery::default()
             };
             let r = store.run_query(who, table.id, &q, None).await;
-            assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+            assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
         }
     }
     // 受け付けた比較は見える行の中で厳密（bob の前方一致に alice の行は出ない）。
@@ -2258,13 +2256,22 @@ async fn sql_mirror(store: &DataStore, who: &AuthContext, table_id: Uuid, name: 
                     .position(|k| x.message.contains(&format!("'{k}'")))
                     .unwrap_or_else(|| panic!("{name}: {x:?}"));
                 let masked = keys.remove(i);
-                // IR でもその列の値は返らない（マスク）。
-                for (_, m) in ir_rows(store, who, table_id, std::slice::from_ref(&masked)).await {
-                    assert!(
-                        !m.contains_key(&masked),
-                        "{name}: マスク列 {masked} が IR で返った"
-                    );
-                }
+                // IR でもその列は投影できない（読めない列の投影は黙って落とさず 403・検証 C P3）。
+                let r = store
+                    .run_query(
+                        who,
+                        table_id,
+                        &DataQuery {
+                            select: Some(vec![masked.clone()]),
+                            ..DataQuery::default()
+                        },
+                        None,
+                    )
+                    .await;
+                assert!(
+                    matches!(r, Err(DataError::Forbidden)),
+                    "{name}: マスク列 {masked} を IR で投影できた: {r:?}"
+                );
             }
             Ok(_) => {
                 let rows = sql_rows(store, who, &sql).await;
@@ -2814,10 +2821,7 @@ async fn link_updates_keep_targets_the_writer_cannot_see() {
         )
         .await
         .unwrap_err();
-    assert!(
-        matches!(hidden_err, DataError::Invalid(_)),
-        "{hidden_err:?}"
-    );
+    assert!(hidden_err.is_invalid(), "{hidden_err:?}");
     assert_eq!(format!("{hidden_err:?}"), format!("{missing_err:?}"));
     // 単一値の見えない参照先は付け替えられない（黙って外させない）。除去は見えない参照先を残すだけ。
     let r = f
@@ -3104,7 +3108,7 @@ async fn share_targets_import_observers_optimizer_admin_and_audit_vocabulary() {
                 None,
             )
             .await;
-        assert!(matches!(r, Err(DataError::Invalid(_))), "{bad}: {r:?}");
+        assert!(matches!(&r, Err(e) if e.is_invalid()), "{bad}: {r:?}");
     }
     store
         .share_record(
@@ -3226,4 +3230,134 @@ async fn reference_policy_change_resets_referrer_subscriptions() {
         }
     }
     assert!(reset, "参照元の購読に stream.reset が届く: {seen:?}");
+}
+
+/// ⑬（C-P2-4・C-P2-5・C P3）構造化した 400 の文言・テーブル定義の応答・投影の拒否が、読めない（マスクされた）
+/// 列の名前・ポリシーの定義（ロール名）を漏らさない。
+/// - 必須の読めない列の欠落は `required_missing` だが、列名（`field`）も文言も出さない
+/// - スキーマ管理者（owner）以外の `get_table_for_viewer` / `list_tables_for_viewer` は読める列だけを返し、
+///   `field_policy`・`row_policy` を返さない（owner には全体）
+/// - 直接の要求の投影（`select`）に読めない列を入れると 403（黙って落とさない・SQL 面と揃える）
+#[tokio::test]
+async fn structured_errors_and_table_definitions_never_reveal_masked_columns() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let carol = ctx(&tenant, "carol");
+    let store = DataStore::new(pool, Arc::clone(&authz), Arc::new(AllowRefs));
+    join_role(&authz, &alice, "bmgr").await;
+    join_role(&authz, &carol, "bmgr").await;
+    let mut schema = staff_schema();
+    let mut code = field("secret_code", FieldType::Text);
+    code.required = true;
+    schema.fields.push(code);
+    schema.field_policy.push(FieldPolicy {
+        field: "secret_code".into(),
+        readable_by: PolicyExpr::HasRole {
+            role: "bmgr".into(),
+            subtree: false,
+        },
+    });
+    // 行述語が参照する列は indexed 必須。
+    schema.fields[0].indexed = true;
+    schema.row_policy = Some(RowPolicy {
+        read: PolicyExpr::Any(vec![
+            PolicyExpr::HasRole {
+                role: "bmgr".into(),
+                subtree: false,
+            },
+            PolicyExpr::FieldCmp {
+                field: "name".into(),
+                op: CmpOp::Ne,
+                value: PolicyOperand::Lit(json!("hidden-row")),
+            },
+        ]),
+        write: None,
+    });
+    let t = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "staff".into(),
+                schema,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    grant(&authz, &bob, Relation::Editor, t.id).await;
+    grant(&authz, &carol, Relation::Editor, t.id).await;
+
+    // 必須の読めない列の欠落: コードは出すが、列名は出さない。
+    let err = store
+        .create_record(&bob, t.id, json!({"name": "b"}), None)
+        .await
+        .unwrap_err();
+    let DataError::InvalidInput(ie) = &err else {
+        panic!("{err:?}");
+    };
+    assert_eq!(ie.code(), data::InvalidCode::RequiredMissing, "{err:?}");
+    assert_eq!(ie.field_key(), None, "読めない列の名前を返さない: {err:?}");
+    assert!(!ie.message().contains("secret_code"), "{err:?}");
+    // 読める必須列の欠落なら列名を返す（書き手は読める）。
+    let err = store
+        .create_record(&carol, t.id, json!({"name": "c"}), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.invalid_code(), Some(data::InvalidCode::RequiredMissing));
+    let DataError::InvalidInput(ie) = &err else {
+        panic!("{err:?}");
+    };
+    assert_eq!(ie.field_key(), Some("secret_code"));
+
+    // テーブル定義: bob には読める列だけ・ポリシーの定義なし。
+    let seen = store.get_table_for_viewer(&bob, t.id, None).await.unwrap();
+    let keys: Vec<&str> = seen.schema.fields.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(keys, vec!["name"], "{keys:?}");
+    assert!(seen.schema.field_policy.is_empty());
+    assert!(seen.schema.row_policy.is_none());
+    let text = serde_json::to_string(&seen).unwrap();
+    for leak in ["emp_no", "secret_code", "bmgr", "hidden-row"] {
+        assert!(!text.contains(leak), "{leak}: {text}");
+    }
+    let listed = store.list_tables_for_viewer(&bob, 50).await.unwrap();
+    let text = serde_json::to_string(&listed).unwrap();
+    for leak in ["emp_no", "secret_code", "bmgr", "hidden-row"] {
+        assert!(!text.contains(leak), "一覧 {leak}: {text}");
+    }
+    // carol（bmgr・owner ではない）は列は見えるが、ポリシーの定義は見えない。
+    let seen = store
+        .get_table_for_viewer(&carol, t.id, None)
+        .await
+        .unwrap();
+    assert_eq!(seen.schema.fields.len(), 3);
+    assert!(seen.schema.field_policy.is_empty() && seen.schema.row_policy.is_none());
+    // owner（スキーマ管理者）には全体。
+    let full = store
+        .get_table_for_viewer(&alice, t.id, None)
+        .await
+        .unwrap();
+    assert_eq!(full.schema.field_policy.len(), 2);
+    assert!(full.schema.row_policy.is_some());
+
+    // 投影に読めない列を入れると 403（黙って落とさない）。読める列だけなら通る。
+    let q = |sel: &[&str]| DataQuery {
+        select: Some(sel.iter().map(|s| (*s).to_string()).collect()),
+        ..DataQuery::default()
+    };
+    let r = store
+        .run_query(&bob, t.id, &q(&["name", "emp_no"]), None)
+        .await;
+    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    store
+        .run_query(&bob, t.id, &q(&["name"]), None)
+        .await
+        .unwrap();
+    store
+        .run_query(&carol, t.id, &q(&["name", "emp_no"]), None)
+        .await
+        .unwrap();
 }

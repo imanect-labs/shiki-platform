@@ -25,7 +25,7 @@ use crate::index::IndexTable;
 use crate::model::{DataTable, FieldId};
 use crate::revision::{diff_fields, insert_revisions, RevisionInsert};
 use crate::store::DataStore;
-use crate::stream::outbox::{emit_record_changes, Before, ChangeKind, RecordChange};
+use crate::stream::outbox::{emit_record_changes_as, Before, ChangeKind, RecordChange};
 use crate::DataError;
 
 /// 本体を INSERT 済みの新規レコード（書込 Tx 上）。
@@ -44,7 +44,8 @@ impl DataStore {
     ///
     /// `defer(field, table)` が真の組の索引行は書かない（一括取込の索引の遅延構築・その組は
     /// `building` で、適用後のバックフィルが本体から作る）。1 件の create は常に偽を渡す。
-    #[allow(clippy::too_many_arguments)] // 書込 Tx・主体・テーブル・計画・対象・遅延・trace は全て別物。
+    /// `bulk` は一括取込の行（SSE が 1 件ずつでなく `records.bulk_applied` にまとめる）。
+    #[allow(clippy::too_many_arguments)] // 書込 Tx・主体・テーブル・計画・対象・遅延・取込・trace は全て別物。
     pub(crate) async fn after_records_created(
         &self,
         conn: &mut PgConnection,
@@ -53,6 +54,7 @@ impl DataStore {
         plan: &IndexPlan,
         recs: &[CreatedRecord<'_>],
         defer: impl Fn(FieldId, IndexTable) -> bool,
+        bulk: bool,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
         if recs.is_empty() {
@@ -118,6 +120,6 @@ impl DataStore {
                 }),
             })
             .collect();
-        emit_record_changes(conn, ctx, table, &changes, trace_id).await
+        emit_record_changes_as(conn, ctx, table, &changes, bulk, trace_id).await
     }
 }

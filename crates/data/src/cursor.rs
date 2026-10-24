@@ -34,8 +34,6 @@ const NONCE_LEN: usize = 12;
 const MAX_TOKEN_LEN: usize = 4_096;
 /// AAD のドメイン分離ラベル（他用途の暗号文と取り違えない）。
 const AAD_LABEL: &[u8] = b"shiki/data/cursor/v1";
-/// 拒否時の文言（理由を区別しない・record_int や鍵の情報を含めない）。
-const INVALID: &str = "カーソルが不正です";
 
 /// カーソル暗号鍵（32 バイト）。鍵ファイルの形式は secrets のマスターキーと同じ。
 #[derive(Clone)]
@@ -169,7 +167,7 @@ impl CursorCodec {
         scope: &CursorScope<'_>,
         token: &str,
     ) -> Result<CursorPayload, DataError> {
-        let invalid = || DataError::Invalid(INVALID.into());
+        let invalid = || DataError::input(crate::InvalidCode::CursorInvalid);
         if token.is_empty() || token.len() > MAX_TOKEN_LEN {
             return Err(invalid());
         }

@@ -79,6 +79,7 @@ mod store;
 mod stream;
 mod table_list;
 mod table_load;
+mod table_redact;
 mod tenant_settings;
 mod transition;
 mod validate;
@@ -128,7 +129,7 @@ pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
 pub use query::admission::{QuerySuggestion, DEFAULT_READ_BUDGET_MS, DEFAULT_TENANT_READ_TOKENS};
 pub use query::ir::{
     AggregateGroup, CondCmp, CondOp, Condition, CountResult, DataQuery, GroupSortKey, HavingCmp,
-    HavingCond, JoinSpec, LinkCond, Metric, MetricSpec, QueryResult, SortKey,
+    HavingCond, JoinSpec, LinkCond, Metric, MetricSpec, QueryResult, SortKey, DATA_QUERY_KEYS,
 };
 pub use query::limits::{
     QueryLimits, MAX_AST_DEPTH, MAX_AST_NODES, MAX_COMPILE_MS, MAX_COMPILE_WORK, MAX_JOIN_DEPTH,
@@ -158,14 +159,15 @@ pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordS
 pub use record_share::RecordShareRole;
 pub use schema::validate_table_schema_public;
 pub use sql::render::{render_sql, RENDER_PSEUDO};
-pub use sql::{CompiledSql, SqlQueryResult, SqlRequest};
+pub use sql::{CompiledSql, SqlCell, SqlCellItem, SqlQueryResult, SqlRequest};
 pub use stats::analyze::AnalyzeOutcome;
 pub use stats::{StatsWorker, STATS_ANALYZE_QUEUE, STATS_CONSUMER, VALUE_COUNT_MAX_DISTINCT};
 pub use store::{DataStore, NewDataTable};
 pub use stream::{
     AwarenessEvent, RecordRemovedEvent, RecordStream, RecordStreamRelayWorker, RecordUpsertedEvent,
-    SchemaChangedEvent, StreamConfig, StreamEvent, StreamMessage, StreamReadyEvent,
-    StreamResetEvent, StreamResetReason, LEDGER_CONSUMER, RECORD_CHANGED_EVENT,
+    RecordsBulkAppliedEvent, SchemaChangedEvent, StreamConfig, StreamEvent, StreamKeepaliveEvent,
+    StreamMessage, StreamReadyEvent, StreamResetEvent, StreamResetReason, LEDGER_CONSUMER,
+    RECORD_CHANGED_EVENT,
 };
 pub use tenant_settings::{DataTenantSettings, MAX_COUNT_CAP, MAX_INDEXED_FIELDS_CEILING};
 pub use transition::TRANSITION_EVENT_TYPE;
@@ -186,6 +188,160 @@ pub use viewer_context::TableViewerContext;
 /// 完全防御（差分プライバシー）は非目標で、集計クエリ自体の監査記録で検知可能性を残す。
 pub const DEFAULT_AGGREGATE_MIN_ROWS: i64 = 5;
 
+/// 入力の誤り（400）の構造化コード（data-platform §5.6・検証 C-P2-4）。
+///
+/// HTTP・ゲートウェイ・ワークフロー・チャットのエラー形が同じ語彙を使う（`snake_case`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InvalidCode {
+    /// カーソルが不正・期限切れ・鍵の入替えで読めない（先頭から読み直す）。
+    CursorInvalid,
+    /// v1 の `offset`（0 以外）は使えない（カーソルで続きを読む）。
+    OffsetNotSupported,
+    /// 索引の無い列で絞り込み・並べ替えようとした。
+    FieldNotIndexed,
+    /// 並べ替え・絞り込み・集計に使えない列（閲覧者ごとの派生列・対称列・多値など）。
+    FieldNotSortable,
+    /// 比較値・入力値の型が列の型と合わない。
+    ValueTypeMismatch,
+    /// 値が範囲外（数値の min / max・小数桁・日付の範囲）。
+    ValueOutOfRange,
+    /// 値が長すぎる（文字数の上限）。
+    ValueTooLong,
+    /// 必須の列に値が無い。
+    RequiredMissing,
+    /// 選択肢に無い値・重複した選択。
+    InvalidOption,
+    /// 値の数が多すぎる（多値・リンク・条件の数）。
+    TooManyValues,
+    /// スキーマ・ビュー・ポリシーの定義が不正（定義を書いた本人へ理由を返す）。
+    SchemaInvalid,
+    /// 入力の形の誤り（NUL 文字・未知のキー・`limit` の範囲・形の合わない要求など）。
+    InvalidInput,
+    /// スナップショット読取で使えない指定（並べ替え・集計・結合など）。
+    SnapshotUnsupported,
+    /// 状態遷移（FSM）の定義・遷移の誤り。
+    FsmInvalid,
+}
+
+impl InvalidCode {
+    /// コードの文字列（`snake_case`）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InvalidCode::CursorInvalid => "cursor_invalid",
+            InvalidCode::OffsetNotSupported => "offset_not_supported",
+            InvalidCode::FieldNotIndexed => "field_not_indexed",
+            InvalidCode::FieldNotSortable => "field_not_sortable",
+            InvalidCode::ValueTypeMismatch => "value_type_mismatch",
+            InvalidCode::ValueOutOfRange => "value_out_of_range",
+            InvalidCode::ValueTooLong => "value_too_long",
+            InvalidCode::RequiredMissing => "required_missing",
+            InvalidCode::InvalidOption => "invalid_option",
+            InvalidCode::TooManyValues => "too_many_values",
+            InvalidCode::SchemaInvalid => "schema_invalid",
+            InvalidCode::InvalidInput => "invalid_input",
+            InvalidCode::SnapshotUnsupported => "snapshot_unsupported",
+            InvalidCode::FsmInvalid => "fsm_invalid",
+        }
+    }
+
+    /// 既定の文言（値・列名・内部 ID を含まない）。
+    pub fn default_message(self) -> &'static str {
+        match self {
+            InvalidCode::CursorInvalid => {
+                "続きを読む位置（カーソル）が無効です。最初から読み直してください"
+            }
+            InvalidCode::OffsetNotSupported => {
+                "offset は使えません。next_cursor で続きを読んでください"
+            }
+            InvalidCode::FieldNotIndexed => {
+                "この列では絞り込み・並べ替えできません（索引がありません）"
+            }
+            InvalidCode::FieldNotSortable => "この列は並べ替え・絞り込み・集計に使えません",
+            InvalidCode::ValueTypeMismatch => "値の型が列の型と合いません",
+            InvalidCode::ValueOutOfRange => "値が範囲外です",
+            InvalidCode::ValueTooLong => "値が長すぎます",
+            InvalidCode::RequiredMissing => "必須の列に値がありません",
+            InvalidCode::InvalidOption => "選択肢にない値です",
+            InvalidCode::TooManyValues => "値の数が多すぎます",
+            InvalidCode::SchemaInvalid => "定義が正しくありません",
+            InvalidCode::InvalidInput => "入力が正しくありません",
+            InvalidCode::SnapshotUnsupported => "スナップショット読取では使えない指定です",
+            InvalidCode::FsmInvalid => "状態遷移の定義または遷移が正しくありません",
+        }
+    }
+}
+
+/// 入力の誤り（400）の構造化した理由。
+///
+/// **文言には値・閲覧者が読めない列名・内部 ID・`record_int`・SQL 断片を入れられない設計にする**:
+/// 文言を作る入口は [`InputError::new`]（コードの既定文言）・[`InputError::field`]（＋列の参照名）・
+/// [`InputError::detail`] だけ。`detail` は**要求の書き手が自分で書いた名前**（クエリ・スキーマ・FSM の定義の
+/// 参照名）と宣言済みの上限だけから作る（値を埋め込まない）。列の参照名は、書き手が要求で名指しした列か
+/// 書き手が読める列に限る（書込の検証は名指ししていない列の名前を外す・[`InputError::scrub_field`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputError {
+    code: InvalidCode,
+    field: Option<String>,
+    message: std::borrow::Cow<'static, str>,
+}
+
+impl InputError {
+    /// コードの既定文言で作る。
+    pub fn new(code: InvalidCode) -> Self {
+        InputError {
+            code,
+            field: None,
+            message: std::borrow::Cow::Borrowed(code.default_message()),
+        }
+    }
+
+    /// コードの既定文言＋列の参照名（UI が列の表示名を添えて出す）。
+    pub fn field(code: InvalidCode, key: &str) -> Self {
+        InputError {
+            field: Some(key.to_string()),
+            ..InputError::new(code)
+        }
+    }
+
+    /// 理由の文言つき（要求の書き手が自分で書いた名前と宣言済みの上限だけから作ること・型の注記を参照）。
+    pub(crate) fn detail(code: InvalidCode, key: Option<&str>, message: impl Into<String>) -> Self {
+        InputError {
+            code,
+            field: key.map(str::to_string),
+            message: std::borrow::Cow::Owned(message.into()),
+        }
+    }
+
+    pub fn code(&self) -> InvalidCode {
+        self.code
+    }
+
+    /// 対象の列の参照名（あれば）。
+    pub fn field_key(&self) -> Option<&str> {
+        self.field.as_deref()
+    }
+
+    /// 利用者に見せてよい文言。
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// 列名を外して既定文言に戻す（書き手が名指ししていない・読めない列の名前を返さない）。
+    pub(crate) fn scrub_field(self, allowed: impl Fn(&str) -> bool) -> Self {
+        match &self.field {
+            Some(k) if !allowed(k) => InputError::new(self.code),
+            _ => self,
+        }
+    }
+}
+
+impl std::fmt::Display for InputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 /// 構造化データ操作のエラー。
 #[derive(Debug, thiserror::Error)]
 pub enum DataError {
@@ -193,8 +349,19 @@ pub enum DataError {
     NotFound,
     #[error("権限がありません")]
     Forbidden,
+    /// 入力の誤り（理由は**ログにだけ**残し、利用者へは汎用の文言 `invalid_input` を返す）。
+    /// 利用者へ理由を返す誤りは [`DataError::InvalidInput`]（構造化・安全な文言）。
     #[error("不正な入力: {0}")]
     Invalid(String),
+    /// 入力の誤り（400・構造化したコードと利用者に見せてよい文言・[`InputError`]）。
+    #[error("不正な入力: {0}")]
+    InvalidInput(Box<InputError>),
+    /// テーブル名の重複（409・`code: name_taken`）。
+    #[error("競合しています: 同じ名前のテーブルが既にあります")]
+    NameTaken,
+    /// 読取が statement timeout で打ち切られた（503・`code: read_timeout`・再試行可）。
+    #[error("読取が時間内に終わりませんでした")]
+    ReadTimeout,
     /// 名前重複・取込 ID の再利用・並行のスキーマ切替など（409・`code: conflict`）。
     /// rev 不一致・unique 違反・再計算中はクライアントが出し分けられるよう個別の変種にする。
     #[error("競合しています: {0}")]
@@ -247,7 +414,58 @@ pub enum DataError {
 }
 
 impl DataError {
-    /// 409 の競合（汎用・rev 不一致・unique 違反・再計算中）か。
+    /// 構造化した入力の誤り（400）を作る。
+    pub fn input(code: InvalidCode) -> Self {
+        DataError::InvalidInput(Box::new(InputError::new(code)))
+    }
+
+    /// 構造化した入力の誤り（400・列の参照名つき）を作る。
+    pub fn input_field(code: InvalidCode, key: &str) -> Self {
+        DataError::InvalidInput(Box::new(InputError::field(code, key)))
+    }
+
+    /// 構造化した入力の誤り（理由の文言つき・[`InputError::detail`] の制約に従うこと）。
+    pub(crate) fn input_detail(
+        code: InvalidCode,
+        key: Option<&str>,
+        message: impl Into<String>,
+    ) -> Self {
+        DataError::InvalidInput(Box::new(InputError::detail(code, key, message)))
+    }
+
+    /// クエリの最上位の未知のキー（400 `invalid_input`・キーは要求の書き手が書いたもの）。
+    pub fn unknown_query_key(key: &str) -> Self {
+        DataError::input_detail(
+            InvalidCode::InvalidInput,
+            Some(key),
+            format!("クエリのキー '{key}' は使えません（綴りを確かめてください）"),
+        )
+    }
+
+    /// 入力の誤り（400・構造化の有無を問わない）か。
+    pub fn is_invalid(&self) -> bool {
+        matches!(self, DataError::Invalid(_) | DataError::InvalidInput(_))
+    }
+
+    /// 入力の誤りの文言（行のエラー文言・ツールの応答用。構造化した誤りは安全な文言）。
+    pub fn invalid_message(&self) -> Option<String> {
+        match self {
+            DataError::Invalid(m) => Some(m.clone()),
+            DataError::InvalidInput(e) => Some(e.message().to_string()),
+            _ => None,
+        }
+    }
+
+    /// 入力の誤りのコード（構造化していない誤りは `invalid_input`）。
+    pub fn invalid_code(&self) -> Option<InvalidCode> {
+        match self {
+            DataError::Invalid(_) => Some(InvalidCode::InvalidInput),
+            DataError::InvalidInput(e) => Some(e.code()),
+            _ => None,
+        }
+    }
+
+    /// 409 の競合（汎用・rev 不一致・unique 違反・再計算中・名前の重複）か。
     pub fn is_conflict(&self) -> bool {
         matches!(
             self,
@@ -255,6 +473,7 @@ impl DataError {
                 | DataError::RevConflict { .. }
                 | DataError::UniqueViolation
                 | DataError::DerivedRecomputing { .. }
+                | DataError::NameTaken
         )
     }
 
@@ -267,6 +486,7 @@ impl DataError {
             }
             DataError::UniqueViolation => Some("unique 制約に違反しています".into()),
             DataError::DerivedRecomputing { .. } => Some(self.to_string()),
+            DataError::NameTaken => Some("同じ名前のテーブルが既にあります".into()),
             _ => None,
         }
     }
@@ -279,12 +499,34 @@ impl DataError {
             DataError::RevConflict { .. } => "rev_conflict",
             DataError::UniqueViolation => "unique_violation",
             DataError::DerivedRecomputing { .. } => "derived_recomputing",
+            DataError::NameTaken => "name_taken",
             _ => return None,
         })
     }
 }
 
+/// スキーマ・ビュー・ポリシーの定義の誤り（定義を書いた本人へ返す文言・[`InputError::detail`] の制約に従う）。
+pub(crate) fn schema_invalid(message: impl Into<String>) -> DataError {
+    DataError::input_detail(InvalidCode::SchemaInvalid, None, message)
+}
+
+/// 書込の検証の誤りから、書き手が名指ししていない・読めない列の名前を外す（[`InputError::scrub_field`]）。
+pub(crate) fn scrub_input_field(e: DataError, allowed: impl Fn(&str) -> bool) -> DataError {
+    match e {
+        DataError::InvalidInput(ie) => DataError::InvalidInput(Box::new(ie.scrub_field(allowed))),
+        other => other,
+    }
+}
+
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn map_db(e: sqlx::Error) -> DataError {
+    // statement timeout（57014 query_canceled）は再試行できる 503 にする（検証 C-P2-6・D-3）。
+    // 理由（SQL・値）はログにだけ残す。
+    if let sqlx::Error::Database(db) = &e {
+        if db.code().as_deref() == Some("57014") {
+            tracing::warn!(error = %e, "statement timeout で打ち切りました");
+            return DataError::ReadTimeout;
+        }
+    }
     DataError::Internal(format!("db: {e}"))
 }

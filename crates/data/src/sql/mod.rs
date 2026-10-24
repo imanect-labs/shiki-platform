@@ -58,13 +58,33 @@ pub struct SqlRequest {
     pub with_count: bool,
 }
 
+/// [`SqlQueryResult::rows`] のセルの形（OpenAPI 用・実体は `serde_json::Value`）。
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum SqlCell {
+    Text(String),
+    Number(f64),
+    Bool(bool),
+    /// 多値（multi_select）・リンク（参照先の id）・ルックアップ。
+    List(Vec<SqlCellItem>),
+}
+
+/// 配列のセルの要素（OpenAPI 用）。
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum SqlCellItem {
+    Text(String),
+    Number(f64),
+    Bool(bool),
+}
+
 /// SQL での読取の結果（表形式）。推定値・統計値・戦略名・内部キーは含まない（PIT-75）。
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct SqlQueryResult {
     /// 列名（SELECT の並び・別名があれば別名）。
     pub columns: Vec<String>,
-    /// 行（各行は `columns` と同じ並び）。
-    #[schema(value_type = Vec<Vec<Object>>)]
+    /// 行（各行は `columns` と同じ並び）。セルは JSON のスカラー（文字列・数値・真偽）か null、多値・リンクは配列。
+    #[schema(value_type = Vec<Vec<Option<SqlCell>>>)]
     pub rows: Vec<Vec<Value>>,
     /// 次ページのカーソル（無ければ終端）。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -103,6 +123,10 @@ impl DataStore {
         req: &SqlRequest,
         trace_id: Option<&str>,
     ) -> Result<SqlQueryResult, DataError> {
+        // NUL は Postgres の text が受けられない（入口で 400・検証 D-8）。
+        if req.sql.contains('\0') || req.cursor.as_deref().is_some_and(|c| c.contains('\0')) {
+            return Err(crate::validate::nul_error(None));
+        }
         let az = self.authz_memo();
         let mut budget = CompileBudget::new(&self.limits);
         let compiled = self

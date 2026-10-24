@@ -207,6 +207,53 @@ impl ArtifactStore {
         })
     }
 
+    /// **参照元にピンされた版**の取得チョークポイント（FSM ↔ テーブルの `fsm_ref`・検証 C-P1-1）。
+    ///
+    /// アーティファクト自体の viewer は要求しない。認可は**参照元**（例: テーブルの editor）で行い、
+    /// 「その版が参照元にピンされていること」の照合と合わせて**呼び出し側の責務**（`data::FsmStore` 等）。
+    /// [`Self::get_version_via_bundle`] と同じく、照合なしの公開 API に繋がないこと（任意 artifact の
+    /// 読み出し口になる）。種別が `kind` でなければ見つからない扱い。読み出しは監査に残す。
+    pub async fn get_version_pinned(
+        &self,
+        ctx: &AuthContext,
+        id: Uuid,
+        version: i64,
+        kind: crate::ArtifactKind,
+        holder: &str,
+        trace_id: Option<&str>,
+    ) -> Result<ArtifactVersion, ArtifactError> {
+        let row: Option<(Json<serde_json::Value>, String, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT v.body, v.created_by, v.created_at FROM artifact_version v \
+             WHERE v.tenant_id = $1 AND v.artifact_id = $2 AND v.version = $3 \
+               AND EXISTS (SELECT 1 FROM artifact a \
+                           WHERE a.tenant_id = $1 AND a.id = $2 AND a.kind = $4 \
+                             AND a.deleted_at IS NULL)",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(id)
+        .bind(version)
+        .bind(kind.as_str())
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        let (body, created_by, created_at) = row.ok_or(ArtifactError::NotFound)?;
+        self.record_audit(
+            ctx,
+            "artifact.read_via_reference",
+            &id.to_string(),
+            trace_id,
+            json!({ "holder": holder, "version": version }),
+        )
+        .await?;
+        Ok(ArtifactVersion {
+            artifact_id: id,
+            version,
+            body: body.0,
+            created_by,
+            created_at,
+        })
+    }
+
     /// バージョン履歴（メタのみ・新しい順）。viewer 権限。
     pub async fn list_versions(
         &self,

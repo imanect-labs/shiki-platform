@@ -39,6 +39,7 @@ pub(super) struct PendingUpdate {
 fn update_row_message(e: DataError) -> Result<String, DataError> {
     match e {
         DataError::Invalid(m) => Ok(m),
+        DataError::InvalidInput(e) => Ok(e.message().to_string()),
         e if e.is_conflict() => Ok(e.conflict_detail().unwrap_or_default()),
         DataError::NotFound => Ok("更新対象のレコードが見つかりません".into()),
         DataError::Forbidden => {

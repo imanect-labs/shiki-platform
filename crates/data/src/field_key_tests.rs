@@ -117,7 +117,8 @@ fn update_rejects_key_change_and_foreign_ids() {
     let mut next = schema(vec![renamed]);
     let err = assign_field_ids(Some((&cur, n)), &mut next).unwrap_err();
     assert!(
-        matches!(&err, DataError::Invalid(m) if m.contains("key は変更できません")),
+        err.invalid_message()
+            .is_some_and(|m| m.contains("key は変更できません")),
         "{err:?}"
     );
 

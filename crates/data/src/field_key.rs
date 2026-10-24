@@ -64,40 +64,40 @@ pub(crate) fn validate_identity(schema: &TableSchema) -> Result<(), DataError> {
     let mut ids = HashSet::new();
     for f in &schema.fields {
         if !(FIRST_USER_FIELD_ID..=MAX_FIELD_ID).contains(&f.id) {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールド '{}' の id {} が範囲外です（{FIRST_USER_FIELD_ID}〜{MAX_FIELD_ID}）",
                 f.key, f.id
             )));
         }
         if !ids.insert(f.id) {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールド id {} が重複しています",
                 f.id
             )));
         }
         let dn = f.display_name.trim();
         if dn.is_empty() || dn.chars().count() > MAX_DISPLAY_NAME_CHARS {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールド '{}' の display_name は 1〜{MAX_DISPLAY_NAME_CHARS} 文字で指定してください",
                 f.key
             )));
         }
         if dn.chars().any(char::is_control) {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールド '{}' の display_name に制御文字は使えません",
                 f.key
             )));
         }
         if let Some(d) = &f.description {
             if d.chars().count() > MAX_DESCRIPTION_CHARS {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "フィールド '{}' の description が長すぎます（最大 {MAX_DESCRIPTION_CHARS} 文字）",
                     f.key
                 )));
             }
         }
         if f.searchable && !f.field_type.supports_search() {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールド '{}': searchable は text・multi_select 型にのみ指定できます",
                 f.key
             )));
@@ -144,20 +144,20 @@ pub(crate) fn assign_field_ids(
                 match existing_by_id.get(&f.id) {
                     Some(k) if *k == f.key => {}
                     Some(k) => {
-                        return Err(DataError::Invalid(format!(
+                        return Err(crate::schema_invalid(format!(
                             "フィールド id {} の key は変更できません（'{k}' → '{}'）。表示名は display_name で変更してください",
                             f.id, f.key
                         )));
                     }
                     None => {
-                        return Err(DataError::Invalid(format!(
+                        return Err(crate::schema_invalid(format!(
                             "フィールド id {} は存在しません（新しいフィールドは id を省略してください）",
                             f.id
                         )));
                     }
                 }
             } else if !(FIRST_USER_FIELD_ID..=MAX_FIELD_ID).contains(&f.id) {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "フィールド '{}' の id {} が範囲外です（{FIRST_USER_FIELD_ID}〜{MAX_FIELD_ID}）",
                     f.key, f.id
                 )));
@@ -166,16 +166,16 @@ pub(crate) fn assign_field_ids(
             f.id = *id;
         } else {
             if counter > i32::from(MAX_FIELD_ID) {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "フィールド ID が上限（{MAX_FIELD_ID}）に達しました"
                 )));
             }
             f.id = FieldId::try_from(counter)
-                .map_err(|_| DataError::Invalid("フィールド ID の採番に失敗しました".into()))?;
+                .map_err(|_| crate::schema_invalid("フィールド ID の採番に失敗しました"))?;
             counter += 1;
         }
         if !seen_ids.insert(f.id) {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールド id {} が重複しています",
                 f.id
             )));

@@ -347,7 +347,7 @@ async fn key_change_is_rejected() {
         .update_table_schema(&c, table.id, next, None, None)
         .await;
     assert!(
-        matches!(&r, Err(DataError::Invalid(m)) if m.contains("key は変更できません")),
+        matches!(&r, Err(e) if e.invalid_message().is_some_and(|m| m.contains("key は変更できません"))),
         "{r:?}"
     );
     // ② v1 流のリネーム（id 省略・name だけ変える）→ 旧フィールドの削除として 422。
@@ -361,7 +361,7 @@ async fn key_change_is_rejected() {
     let r = store
         .update_table_schema(&c, table.id, v1_style, None, None)
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     // ③ 存在しない id の指定（ID の偽造・再利用）→ 422。
     let mut forged = table.schema.clone();
     let mut extra = FieldDef::new("extra", FieldType::Text);
@@ -370,7 +370,7 @@ async fn key_change_is_rejected() {
     let r = store
         .update_table_schema(&c, table.id, forged, None, None)
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     // スキーマは変わっていない。
     let got = store.get_table(&c, table.id, None).await.unwrap();
     assert_eq!(got.schema, table.schema);
@@ -581,7 +581,7 @@ async fn legacy_tables_migrate_idempotently_and_v1_operations_still_work() {
 
     // --- 中断: 壊れたテーブルの移行は失敗し、ロールバックされて v1 のまま残る ---
     let r = store.migrate_table_field_keys(&tenant, broken).await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     let (fmt, data): (i16, Value) = sqlx::query_as(
         "SELECT t.key_format, r.data FROM data_table t JOIN data_record r \
            ON r.tenant_id = t.tenant_id AND r.table_id = t.id \

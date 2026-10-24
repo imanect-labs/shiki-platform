@@ -1178,7 +1178,37 @@ async fn bulk_import_transition_derived_schema_and_awareness_reach_subscribers()
         .unwrap();
     tick(&fx).await;
     let (ms, _) = drain(&mut s, &mut c).await;
-    assert_eq!(upserts(&ms).len(), 10, "bob の行だけ: {:?}", c.raw.len());
+    // 取込の行は 1 件ずつ配らず、bob に見える行の数だけを records.bulk_applied にまとめる（検証 D-11）。
+    // 値は含まない・見えない行は数えない。
+    assert!(
+        upserts(&ms).is_empty(),
+        "取込の行は 1 件ずつ配らない: {:?}",
+        c.raw.len()
+    );
+    let bulk: u64 = ms
+        .iter()
+        .filter_map(|m| match &m.event {
+            StreamEvent::BulkApplied(e) => Some(e.count),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(bulk, 10, "bob の行だけ数える");
+    assert!(ms
+        .iter()
+        .filter(|m| matches!(m.event, StreamEvent::BulkApplied(_)))
+        .all(|m| m.id.is_some() && !m.event.data_json().to_string().contains("bulk0")));
+    // まとめた最後の位置まで進んでいる（Last-Event-ID で取込の行を取りこぼさない）。
+    let last = ms.iter().filter_map(|m| m.id).max().unwrap();
+    // 手元へは REST で取り直す（以降の awareness の確認に見える行を 1 件使う）。
+    let page = fx
+        .store
+        .run_query(&fx.bob, fx.table, &data::DataQuery::default(), None)
+        .await
+        .unwrap();
+    for r in page.items.unwrap() {
+        c.rows.insert(r.id, (r.rev, r.data));
+    }
+    assert!(last > 0);
 
     // awareness: 見えない行を指すカーソルは届かず、見える行のものはデータなしで届く。
     let hidden = fx
@@ -1567,10 +1597,9 @@ async fn snapshot_read_is_stable_across_concurrent_changes() {
         limit: Some(4),
         ..data::DataQuery::default()
     };
-    assert!(matches!(
-        fx.store.run_query(&fx.bob, fx.table, &misuse, None).await,
-        Err(DataError::Invalid(_))
-    ));
+    assert!(
+        matches!(&fx.store.run_query(&fx.bob, fx.table, &misuse, None).await, Err(e) if e.is_invalid())
+    );
     // sort は受けない。
     let sorted = data::DataQuery {
         sort: vec![data::SortKey {
@@ -1580,10 +1609,14 @@ async fn snapshot_read_is_stable_across_concurrent_changes() {
         snapshot: true,
         ..data::DataQuery::default()
     };
-    assert!(matches!(
-        fx.store.run_query(&fx.bob, fx.table, &sorted, None).await,
-        Err(DataError::Invalid(_))
-    ));
+    assert_eq!(
+        fx.store
+            .run_query(&fx.bob, fx.table, &sorted, None)
+            .await
+            .err()
+            .and_then(|e| e.invalid_code()),
+        Some(data::InvalidCode::SnapshotUnsupported)
+    );
 }
 
 #[tokio::test]

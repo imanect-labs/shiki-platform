@@ -79,7 +79,7 @@ fn reachability_and_types_are_enforced_before_execution() {
         json!({"group_by": ["title"]}),
     ] {
         let r = bind_query(&s, &m, &q(body.clone()));
-        assert!(matches!(r, Err(DataError::Invalid(_))), "{body}: {r:?}");
+        assert!(matches!(&r, Err(e) if e.is_invalid()), "{body}: {r:?}");
     }
 }
 

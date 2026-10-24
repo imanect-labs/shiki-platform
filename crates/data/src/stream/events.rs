@@ -8,7 +8,13 @@
 //! event: schema.changed    id=<delivery_seq>   data={table_id, schema_version} 受けたら取り直す（接続は閉じる）
 //! event: stream.reset      id=<delivery_seq>   data={reason}                手元を捨てて再取得（接続は閉じる）
 //! event: awareness                              data={principal, record_id, field, at}  データを含まない
+//! event: records.bulk_applied id=<delivery_seq> data={count}               一括取込で見えるようになった行の数
+//! event: keepalive                              data={at}                  15 秒ごと（途絶したら再接続する）
 //! ```
+//!
+//! **一括取込**（検証 D-11）: 取込が作った行は 1 件ずつの `record.upserted` ではなく、配信のまとまりごとに
+//! `records.bulk_applied`（購読者本人に見える行の数だけ・値を含まない）にまとめる。クライアントは件数を
+//! 案内して、利用者の操作で取り直す。`id` はまとめた最後の位置（`Last-Event-ID` で欠落なく再開できる）。
 //!
 //! # クライアントの冪等規則（at-least-once・§9.2）
 //!
@@ -83,6 +89,18 @@ pub struct AwarenessEvent {
     pub at: DateTime<Utc>,
 }
 
+/// 一括取込で購読者本人に見えるようになった行の数（値を含まない・取込の行を 1 件ずつ配らない）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RecordsBulkAppliedEvent {
+    pub count: u64,
+}
+
+/// 接続が生きていることの通知（15 秒ごと・`at` はサーバの時刻）。途絶したらクライアントは繋ぎ直す。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct StreamKeepaliveEvent {
+    pub at: DateTime<Utc>,
+}
+
 /// 配信イベント。
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
@@ -93,6 +111,8 @@ pub enum StreamEvent {
     SchemaChanged(SchemaChangedEvent),
     Reset(StreamResetEvent),
     Awareness(AwarenessEvent),
+    BulkApplied(RecordsBulkAppliedEvent),
+    Keepalive(StreamKeepaliveEvent),
 }
 
 impl StreamEvent {
@@ -105,6 +125,8 @@ impl StreamEvent {
             StreamEvent::SchemaChanged(_) => "schema.changed",
             StreamEvent::Reset(_) => "stream.reset",
             StreamEvent::Awareness(_) => "awareness",
+            StreamEvent::BulkApplied(_) => "records.bulk_applied",
+            StreamEvent::Keepalive(_) => "keepalive",
         }
     }
 
@@ -117,6 +139,8 @@ impl StreamEvent {
             StreamEvent::SchemaChanged(e) => serde_json::to_value(e),
             StreamEvent::Reset(e) => serde_json::to_value(e),
             StreamEvent::Awareness(e) => serde_json::to_value(e),
+            StreamEvent::BulkApplied(e) => serde_json::to_value(e),
+            StreamEvent::Keepalive(e) => serde_json::to_value(e),
         };
         v.unwrap_or(serde_json::Value::Null)
     }

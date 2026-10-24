@@ -126,7 +126,7 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<DataTenantSettings, DataError> {
         if max_view_lookup_columns.is_some_and(|c| c == 0 || c > MAX_VIEW_LOOKUP_COLUMNS_CEILING) {
-            return Err(DataError::Invalid(format!(
+            return Err(DataError::input_detail(crate::InvalidCode::InvalidInput, None, format!(
                 "ルックアップ・ロールアップ列の上限は 1〜{MAX_VIEW_LOOKUP_COLUMNS_CEILING} で指定してください"
             )));
         }
@@ -177,9 +177,11 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<DataTenantSettings, DataError> {
         if max_indexed_fields.is_some_and(|c| c == 0 || c > MAX_INDEXED_FIELDS_CEILING) {
-            return Err(DataError::Invalid(format!(
-                "索引列数の上限は 1〜{MAX_INDEXED_FIELDS_CEILING} で指定してください"
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                None,
+                format!("索引列数の上限は 1〜{MAX_INDEXED_FIELDS_CEILING} で指定してください"),
+            ));
         }
         let v = max_indexed_fields.map(|c| i32::try_from(c).unwrap_or(i32::MAX));
         let mut tx = self
@@ -227,9 +229,11 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<DataTenantSettings, DataError> {
         if count_cap.is_some_and(|c| c == 0 || c > MAX_COUNT_CAP) {
-            return Err(DataError::Invalid(format!(
-                "件数の上限は 1〜{MAX_COUNT_CAP} で指定してください"
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                None,
+                format!("件数の上限は 1〜{MAX_COUNT_CAP} で指定してください"),
+            ));
         }
         let cap = count_cap.map(|c| i64::try_from(c).unwrap_or(i64::MAX));
         let mut tx = self

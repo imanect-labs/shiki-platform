@@ -934,3 +934,58 @@ async fn data_stream_routes_authorize_and_validate() {
     .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
+
+/// 上限を超えた取込の本文は**残りを読み捨ててから** 413 を返す（検証 A P3）。送信の途中で応答して接続を
+/// 閉じると、前段のプロキシ（web の BFF `/api`）が本文の送信で EPIPE になり 413 ではなく 500 を返した。
+/// 実際の TCP で上限 + 8 MiB を送り切り、413 の応答を読めることを確かめる。
+#[tokio::test]
+async fn oversized_import_is_drained_before_413_over_a_real_socket() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let Some(env) = setup().await else { return };
+    let t = table(&env, "imports-drain").await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = env.app.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let total = api::routes::data_imports::MAX_IMPORT_BODY_BYTES + 8 * 1024 * 1024;
+    let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let head = format!(
+        "POST /data/tables/{}/imports/csv HTTP/1.1\r\nhost: {addr}\r\n\
+         cookie: shiki_session=sid-alice.{TENANT}; shiki_csrf=csrf-alice\r\n\
+         x-csrf-token: csrf-alice\r\ncontent-type: text/csv\r\ncontent-length: {total}\r\n\r\n",
+        t.id
+    );
+    sock.write_all(head.as_bytes()).await.unwrap();
+    let chunk = vec![b'x'; 256 * 1024];
+    let mut sent = 0usize;
+    while sent < total {
+        let n = chunk.len().min(total - sent);
+        sock.write_all(&chunk[..n])
+            .await
+            .unwrap_or_else(|e| panic!("本文を送り切れない（{sent} / {total} バイトで {e}）"));
+        sent += n;
+    }
+    sock.flush().await.unwrap();
+    let mut resp = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = tokio::time::timeout(Duration::from_secs(30), sock.read(&mut buf))
+            .await
+            .expect("応答が来ない")
+            .unwrap();
+        if n == 0 {
+            break;
+        }
+        resp.extend_from_slice(&buf[..n]);
+        let text = String::from_utf8_lossy(&resp);
+        if text.contains("\r\n\r\n") && text.contains("import_too_large") {
+            break;
+        }
+    }
+    let text = String::from_utf8_lossy(&resp);
+    assert!(text.starts_with("HTTP/1.1 413"), "{text}");
+    assert!(text.contains("\"import_too_large\""), "{text}");
+    server.abort();
+}

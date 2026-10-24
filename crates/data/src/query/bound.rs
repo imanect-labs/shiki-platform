@@ -410,15 +410,25 @@ impl<'a> Binder<'a> {
         }
         charge(self.schema.fields.len());
         let f = self.schema.field(key).ok_or_else(|| {
-            DataError::Invalid(format!("フィールド '{key}' はスキーマに存在しません"))
+            DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                Some(key),
+                format!("フィールド '{key}' はスキーマに存在しません"),
+            )
         })?;
         let (FieldType::RecordRef, Some(rt)) = (f.field_type, f.ref_table) else {
-            return Err(DataError::Invalid(format!(
-                "フィールド '{key}' はリンク列（record_ref）ではありません"
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                Some(key),
+                format!("フィールド '{key}' はリンク列（record_ref）ではありません"),
+            ));
         };
         let ctx = self.ctx.ok_or_else(|| {
-            DataError::Invalid("この読み方ではリンクの条件・結合を使えません".into())
+            DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                None,
+                "この読み方ではリンクの条件・結合を使えません",
+            )
         })?;
         let tables = ctx.borrow().tables;
         let st = tables.get(rt).ok_or(DataError::Forbidden)?;
@@ -429,8 +439,10 @@ impl<'a> Binder<'a> {
     fn link_cond(&mut self, lc: &LinkCond) -> Result<Expr, DataError> {
         let (f, st) = self.link_target(&lc.field)?;
         let Some(ctx) = self.ctx else {
-            return Err(DataError::Invalid(
-                "この読み方ではリンクの条件を使えません".into(),
+            return Err(DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                None,
+                "この読み方ではリンクの条件を使えません",
             ));
         };
         let max = ctx.borrow().max_depth;
@@ -476,13 +488,17 @@ impl<'a> Binder<'a> {
         }
         charge(self.schema.fields.len());
         let f = self.schema.field(key).ok_or_else(|| {
-            DataError::Invalid(format!("フィールド '{key}' はスキーマに存在しません"))
+            DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                Some(key),
+                format!("フィールド '{key}' はスキーマに存在しません"),
+            )
         })?;
         if f.field_type.is_derived() {
             // 材料化した（invariant かつ indexed の）列だけ。閲覧者ごと・時刻依存の値で並べたり絞ったり
             // すると見えない行の値が順序から漏れる（PIT-71・PIT-19 と同型）。
             if !f.is_materialized() {
-                return Err(DataError::Invalid(format!(
+                return Err(DataError::input_detail(crate::InvalidCode::FieldNotSortable, Some(key), format!(
                     "派生フィールド '{key}' はフィルタ/ソート/集計に使えません（閲覧者ごと・時刻依存の値、または indexed でない列）"
                 )));
             }
@@ -505,14 +521,22 @@ impl<'a> Binder<'a> {
             return Ok(b);
         }
         if f.is_reverse_link() {
-            return Err(DataError::Invalid(format!(
+            return Err(DataError::input_detail(
+                crate::InvalidCode::FieldNotSortable,
+                Some(key),
+                format!(
                 "対称列 '{key}' はフィルタ/ソートに使えません（リンク元の列で絞り込んでください）"
-            )));
+            ),
+            ));
         }
         if !(f.indexed || f.unique) {
-            return Err(DataError::Invalid(format!(
-                "フィールド '{key}' はフィルタ/ソート対象として宣言されていません（indexed）"
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::FieldNotIndexed,
+                Some(key),
+                format!(
+                    "フィールド '{key}' はフィルタ/ソート対象として宣言されていません（indexed）"
+                ),
+            ));
         }
         let kind = match f.field_type {
             FieldType::Number => FieldKind::Num,
@@ -537,9 +561,11 @@ impl<'a> Binder<'a> {
     pub(crate) fn condition(&mut self, c: &Condition, depth: usize) -> Result<Expr, DataError> {
         charge(1);
         if depth > MAX_CONDITION_DEPTH {
-            return Err(DataError::Invalid(format!(
-                "条件のネストが深すぎます（最大 {MAX_CONDITION_DEPTH}）"
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::TooManyValues,
+                None,
+                format!("条件のネストが深すぎます（最大 {MAX_CONDITION_DEPTH}）"),
+            ));
         }
         Ok(match c {
             Condition::All(v) => Expr::And(
@@ -557,9 +583,11 @@ impl<'a> Binder<'a> {
             Condition::Cmp(cmp) => {
                 self.leaves += 1;
                 if self.leaves > MAX_CONDITION_LEAVES {
-                    return Err(DataError::Invalid(format!(
-                        "条件が多すぎます（最大 {MAX_CONDITION_LEAVES}）"
-                    )));
+                    return Err(DataError::input_detail(
+                        crate::InvalidCode::TooManyValues,
+                        None,
+                        format!("条件が多すぎます（最大 {MAX_CONDITION_LEAVES}）"),
+                    ));
                 }
                 let f = self.queryable(&cmp.field)?;
                 compare(&f, cmp.op, cmp.value.as_ref())?
@@ -591,15 +619,21 @@ impl<'a> Binder<'a> {
         for k in keys {
             let f = self.queryable(&k)?;
             if explicit && !f.searchable {
-                return Err(DataError::Invalid(format!(
+                return Err(DataError::input_detail(
+                    crate::InvalidCode::FieldNotIndexed,
+                    Some(&k),
+                    format!(
                     "フィールド '{k}' は部分一致検索の対象として宣言されていません（searchable）"
-                )));
+                ),
+                ));
             }
             terms.push(Expr::atom(f.id, Leaf::Contains(text.to_string())));
         }
         if terms.is_empty() {
-            return Err(DataError::Invalid(
-                "部分一致検索の対象列（searchable）がありません".into(),
+            return Err(DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                None,
+                "部分一致検索の対象列（searchable）がありません",
             ));
         }
         Ok(Expr::Or(terms))
@@ -664,7 +698,7 @@ fn check_derived_text_operands(f: &BField, e: &Expr) -> Result<(), DataError> {
         _ => false,
     };
     if long {
-        return Err(DataError::Invalid(format!(
+        return Err(DataError::input_detail(crate::InvalidCode::ValueTooLong, Some(&f.key), format!(
             "派生フィールド '{}' の比較値が長すぎます（最大 {SAFE_BOUND_BYTES} バイト。派生値は索引に先頭部分だけを持つため、長い値では厳密に比較できません）",
             f.key
         )));
@@ -674,11 +708,19 @@ fn check_derived_text_operands(f: &BField, e: &Expr) -> Result<(), DataError> {
 
 fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, DataError> {
     let key = &f.key;
-    let need = || DataError::Invalid(format!("'{key}' の比較には value が必要です"));
+    let need = || {
+        DataError::input_detail(
+            crate::InvalidCode::ValueTypeMismatch,
+            Some(key),
+            format!("'{key}' の比較には value が必要です"),
+        )
+    };
     let leaf = |l: Leaf| Ok(Expr::atom(f.id, l));
     match op {
-        CondOp::Matches => Err(DataError::Invalid(
-            "matches（正規表現）は構造化データのクエリでは使えません".into(),
+        CondOp::Matches => Err(DataError::input_detail(
+            crate::InvalidCode::InvalidInput,
+            None,
+            "matches（正規表現）は構造化データのクエリでは使えません",
         )),
         CondOp::Exists => leaf(Leaf::Exists),
         CondOp::IsNull => Ok(Expr::Not(Box::new(Expr::atom(f.id, Leaf::Exists)))),
@@ -689,12 +731,18 @@ fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, 
         )))),
         CondOp::In => {
             let arr = value.and_then(Value::as_array).ok_or_else(|| {
-                DataError::Invalid(format!("'{key}' の in は配列で指定してください"))
+                DataError::input_detail(
+                    crate::InvalidCode::ValueTypeMismatch,
+                    Some(key),
+                    format!("'{key}' の in は配列で指定してください"),
+                )
             })?;
             if arr.len() > MAX_IN_VALUES {
-                return Err(DataError::Invalid(format!(
-                    "'{key}' の in は最大 {MAX_IN_VALUES} 件です"
-                )));
+                return Err(DataError::input_detail(
+                    crate::InvalidCode::TooManyValues,
+                    Some(key),
+                    format!("'{key}' の in は最大 {MAX_IN_VALUES} 件です"),
+                ));
             }
             let vals = arr
                 .iter()
@@ -704,9 +752,11 @@ fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, 
         }
         CondOp::Lt | CondOp::Lte | CondOp::Gt | CondOp::Gte => {
             if f.multi() {
-                return Err(DataError::Invalid(format!(
-                    "'{key}'（多値・リンク）に大小比較は使えません"
-                )));
+                return Err(DataError::input_detail(
+                    crate::InvalidCode::FieldNotSortable,
+                    Some(key),
+                    format!("'{key}'（多値・リンク）に大小比較は使えません"),
+                ));
             }
             let v = scalar(f, value.ok_or_else(need)?)?;
             let (lo, hi) = match op {
@@ -719,21 +769,33 @@ fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, 
         }
         CondOp::StartsWith | CondOp::Contains | CondOp::EndsWith => {
             if !matches!(f.kind, FieldKind::Text | FieldKind::Multi) {
-                return Err(DataError::Invalid(format!(
-                    "'{key}' は文字列の部分一致に使えません"
-                )));
+                return Err(DataError::input_detail(
+                    crate::InvalidCode::ValueTypeMismatch,
+                    Some(key),
+                    format!("'{key}' は文字列の部分一致に使えません"),
+                ));
             }
             let s = value.and_then(Value::as_str).ok_or_else(|| {
-                DataError::Invalid(format!("'{key}' の値は文字列で指定してください"))
+                DataError::input_detail(
+                    crate::InvalidCode::ValueTypeMismatch,
+                    Some(key),
+                    format!("'{key}' の値は文字列で指定してください"),
+                )
             })?;
             if s.chars().count() > 1_000 {
-                return Err(DataError::Invalid(format!("'{key}' の値が長すぎます")));
+                return Err(DataError::input_detail(
+                    crate::InvalidCode::ValueTooLong,
+                    Some(key),
+                    format!("'{key}' の値が長すぎます"),
+                ));
             }
             match op {
                 CondOp::StartsWith => leaf(Leaf::StartsWith(s.to_string())),
-                _ if !f.searchable => Err(DataError::Invalid(format!(
-                    "'{key}' は部分一致検索の対象として宣言されていません（searchable）"
-                ))),
+                _ if !f.searchable => Err(DataError::input_detail(
+                    crate::InvalidCode::FieldNotIndexed,
+                    Some(key),
+                    format!("'{key}' は部分一致検索の対象として宣言されていません（searchable）"),
+                )),
                 CondOp::Contains => leaf(Leaf::Contains(s.to_string())),
                 _ => leaf(Leaf::EndsWith(s.to_string())),
             }
@@ -752,7 +814,11 @@ fn scalar(f: &BField, v: &Value) -> Result<Val, DataError> {
                 _ => None,
             };
             d.map(Val::Num).ok_or_else(|| {
-                DataError::Invalid(format!("フィルタ '{key}' は数値で指定してください"))
+                DataError::input_detail(
+                    crate::InvalidCode::ValueTypeMismatch,
+                    Some(key),
+                    format!("フィルタ '{key}' は数値で指定してください"),
+                )
             })
         }
         FieldKind::Link => v
@@ -760,14 +826,45 @@ fn scalar(f: &BField, v: &Value) -> Result<Val, DataError> {
             .and_then(|s| Uuid::parse_str(s).ok())
             .map(Val::Ref)
             .ok_or_else(|| {
-                DataError::Invalid(format!("フィルタ '{key}' は UUID 文字列で指定してください"))
+                DataError::input_detail(
+                    crate::InvalidCode::ValueTypeMismatch,
+                    Some(key),
+                    format!("フィルタ '{key}' は UUID 文字列で指定してください"),
+                )
             }),
         FieldKind::Text | FieldKind::Multi => {
             let s = v.as_str().ok_or_else(|| {
-                DataError::Invalid(format!("フィルタ '{key}' は文字列で指定してください"))
+                DataError::input_detail(
+                    crate::InvalidCode::ValueTypeMismatch,
+                    Some(key),
+                    format!("フィルタ '{key}' は文字列で指定してください"),
+                )
             })?;
+            // 日付・日時の列に日付でない文字列を比べさせない（文字列比較で誤った結果を黙って返さない・検証 A-9）。
+            if matches!(f.ty, Some(FieldType::Date | FieldType::DateTime))
+                && !valid_temporal(f.ty, s)
+            {
+                return Err(DataError::input_detail(
+                    crate::InvalidCode::ValueTypeMismatch,
+                    Some(key),
+                    if f.ty == Some(FieldType::Date) {
+                        format!("フィルタ '{key}' は日付（YYYY-MM-DD）で指定してください")
+                    } else {
+                        format!("フィルタ '{key}' は日時（タイムゾーン付きの ISO 8601）で指定してください")
+                    },
+                ));
+            }
             Ok(Val::Text(normalize_text(f.ty, s)))
         }
+    }
+}
+
+/// 日付・日時の比較値として解釈できるか（書込検証と同じ形式）。
+fn valid_temporal(ty: Option<FieldType>, s: &str) -> bool {
+    match ty {
+        Some(FieldType::Date) => NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok(),
+        Some(FieldType::DateTime) => DateTime::parse_from_rfc3339(s).is_ok(),
+        _ => true,
     }
 }
 

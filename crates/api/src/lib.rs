@@ -20,6 +20,7 @@
 pub mod config;
 pub mod data_refs;
 pub mod error;
+pub mod error_body;
 pub mod extract;
 pub mod health;
 pub mod insights;

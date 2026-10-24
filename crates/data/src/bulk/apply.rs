@@ -359,7 +359,7 @@ impl DataStore {
                 sp.commit().await.map_err(map_db)?;
                 return Ok((done, Vec::new()));
             }
-            Err(e) if e.is_conflict() || matches!(e, DataError::Invalid(_)) => {
+            Err(e) if e.is_conflict() || e.is_invalid() => {
                 // 検証の後の並行書込と競合した行がある: チャンクを巻き戻し、行ごとにやり直す。
                 sp.rollback().await.map_err(map_db)?;
                 tracing::info!(error = %e, "チャンクの適用が競合したため行ごとに適用します");
@@ -386,7 +386,7 @@ impl DataStore {
                     one.commit().await.map_err(map_db)?;
                     applied.extend(done);
                 }
-                Err(e) if e.is_conflict() || matches!(e, DataError::Invalid(_)) => {
+                Err(e) if e.is_conflict() || e.is_invalid() => {
                     one.rollback().await.map_err(map_db)?;
                     rejected.push((p.row_no, row_message(e)?));
                 }
@@ -452,7 +452,7 @@ impl DataStore {
                 data: &p.data,
             });
         }
-        self.after_records_created(conn, ctx, table, plan, &recs, defer, trace_id)
+        self.after_records_created(conn, ctx, table, plan, &recs, defer, true, trace_id)
             .await?;
         Ok(out)
     }

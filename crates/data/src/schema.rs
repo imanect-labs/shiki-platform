@@ -23,12 +23,22 @@ const MAX_OPTION_LEN: usize = 128;
 pub(crate) fn validate_table_name(name: &str) -> Result<&str, DataError> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(DataError::Invalid("name が空です".into()));
+        return Err(DataError::input_detail(
+            crate::InvalidCode::RequiredMissing,
+            Some("name"),
+            "テーブル名を入力してください",
+        ));
     }
-    if name.len() > MAX_TABLE_NAME_LEN {
-        return Err(DataError::Invalid(format!(
-            "name が長すぎます（最大 {MAX_TABLE_NAME_LEN} 文字）"
-        )));
+    if name.contains('\0') {
+        return Err(crate::validate::nul_error(Some("name")));
+    }
+    // 上限は文字数（Unicode スカラー値の数・UI の「字」と同じ数え方・検証 A-2）。
+    if name.chars().count() > MAX_TABLE_NAME_LEN {
+        return Err(DataError::input_detail(
+            crate::InvalidCode::ValueTooLong,
+            Some("name"),
+            format!("テーブル名が長すぎます（最大 {MAX_TABLE_NAME_LEN} 文字）"),
+        ));
     }
     Ok(name)
 }
@@ -49,24 +59,30 @@ pub fn validate_table_schema_public(schema: &TableSchema) -> Result<(), DataErro
 }
 
 pub(crate) fn validate_table_schema(schema: &TableSchema) -> Result<(), DataError> {
+    // 参照名・表示名・選択肢・ポリシーの文字列に NUL があれば 400（Postgres の jsonb は NUL を保存できない）。
+    let doc =
+        serde_json::to_value(schema).map_err(|e| DataError::Internal(format!("schema: {e}")))?;
+    if crate::validate::contains_nul(&doc) {
+        return Err(crate::validate::nul_error(None));
+    }
     if schema.fields.is_empty() {
-        return Err(DataError::Invalid("fields が空です".into()));
+        return Err(crate::schema_invalid("fields が空です"));
     }
     if schema.fields.len() > MAX_FIELDS {
-        return Err(DataError::Invalid(format!(
+        return Err(crate::schema_invalid(format!(
             "フィールド数が多すぎます（最大 {MAX_FIELDS}）"
         )));
     }
     let mut keys = HashSet::new();
     for f in &schema.fields {
         if !is_valid_field_key(&f.key) {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールドの key '{}' が不正です（^[a-z][a-z0-9_]{{0,63}}$）",
                 f.key
             )));
         }
         if !keys.insert(f.key.as_str()) {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールドの key '{}' が重複しています",
                 f.key
             )));
@@ -79,7 +95,7 @@ pub(crate) fn validate_table_schema(schema: &TableSchema) -> Result<(), DataErro
     }
     for fp in &schema.field_policy {
         if schema.field(&fp.field).is_none() {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "field_policy の対象 '{}' が fields にありません",
                 fp.field
             )));
@@ -90,24 +106,24 @@ pub(crate) fn validate_table_schema(schema: &TableSchema) -> Result<(), DataErro
     crate::rag::projection::validate_projection(schema)?;
     if let Some(k) = schema.aggregate_min_rows {
         if k < 1 {
-            return Err(DataError::Invalid(
-                "aggregate_min_rows は 1 以上で指定してください".into(),
+            return Err(crate::schema_invalid(
+                "aggregate_min_rows は 1 以上で指定してください",
             ));
         }
     }
     // FSM 参照があれば status_field は必須（遷移対象の状態フィールドが要る）。
     // FSM 定義本体（states/transitions）の検証は fsm ストア保存時に行う。
     if schema.fsm_ref.is_some() && schema.status_field.is_none() {
-        return Err(DataError::Invalid(
-            "fsm_ref を持つテーブルは status_field が必須です".into(),
+        return Err(crate::schema_invalid(
+            "fsm_ref を持つテーブルは status_field が必須です",
         ));
     }
     if let Some(status) = &schema.status_field {
         let f = schema.field(status).ok_or_else(|| {
-            DataError::Invalid(format!("status_field '{status}' が fields にありません"))
+            crate::schema_invalid(format!("status_field '{status}' が fields にありません"))
         })?;
         if f.field_type != FieldType::Select {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "status_field '{status}' は select 型である必要があります"
             )));
         }
@@ -126,19 +142,19 @@ fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
     match f.field_type {
         FieldType::Select | FieldType::MultiSelect => {
             if f.options.is_empty() || f.options.len() > MAX_OPTIONS {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "'{name}': options は 1〜{MAX_OPTIONS} 件で指定してください"
                 )));
             }
             let mut seen = HashSet::new();
             for o in &f.options {
-                if o.is_empty() || o.len() > MAX_OPTION_LEN {
-                    return Err(DataError::Invalid(format!(
+                if o.is_empty() || o.chars().count() > MAX_OPTION_LEN {
+                    return Err(crate::schema_invalid(format!(
                         "'{name}': 選択肢は 1〜{MAX_OPTION_LEN} 文字で指定してください"
                     )));
                 }
                 if !seen.insert(o.as_str()) {
-                    return Err(DataError::Invalid(format!(
+                    return Err(crate::schema_invalid(format!(
                         "'{name}': 選択肢 '{o}' が重複しています"
                     )));
                 }
@@ -146,39 +162,39 @@ fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
         }
         FieldType::RecordRef => {
             if f.ref_table.is_none() {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "'{name}': record_ref には ref_table が必須です"
                 )));
             }
         }
         FieldType::Lookup => {
             let def = f.lookup.as_ref().ok_or_else(|| {
-                DataError::Invalid(format!("'{name}': lookup には lookup 定義が必須です"))
+                crate::schema_invalid(format!("'{name}': lookup には lookup 定義が必須です"))
             })?;
             let via = schema.field(&def.via_field).ok_or_else(|| {
-                DataError::Invalid(format!(
+                crate::schema_invalid(format!(
                     "'{name}': lookup.via_field '{}' が fields にありません",
                     def.via_field
                 ))
             })?;
             if via.field_type != FieldType::RecordRef {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "'{name}': lookup.via_field '{}' は record_ref 型である必要があります",
                     def.via_field
                 )));
             }
             if !is_valid_field_key(&def.target_field) {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "'{name}': lookup.target_field が不正です"
                 )));
             }
         }
         FieldType::Computed => {
             let def = f.computed.as_ref().ok_or_else(|| {
-                DataError::Invalid(format!("'{name}': computed には computed 定義が必須です"))
+                crate::schema_invalid(format!("'{name}': computed には computed 定義が必須です"))
             })?;
             if def.fields.is_empty() {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "'{name}': computed.fields が空です"
                 )));
             }
@@ -188,12 +204,12 @@ fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
             };
             for src in &def.fields {
                 let sf = schema.field(src).ok_or_else(|| {
-                    DataError::Invalid(format!(
+                    crate::schema_invalid(format!(
                         "'{name}': computed.fields の '{src}' が fields にありません"
                     ))
                 })?;
                 if sf.field_type != want {
-                    return Err(DataError::Invalid(format!(
+                    return Err(crate::schema_invalid(format!(
                         "'{name}': computed({:?}) の対象 '{src}' は {want:?} 型である必要があります",
                         def.op
                     )));
@@ -205,7 +221,7 @@ fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
     // 派生フィールド（書込不可）に unique/required は意味を持たないため拒否する。indexed は
     // 材料化できる（invariant）列だけ（validate_derived_field・data-platform §7.4）。
     if f.field_type.is_derived() && (f.unique || f.required) {
-        return Err(DataError::Invalid(format!(
+        return Err(crate::schema_invalid(format!(
             "'{name}': 派生フィールド（lookup/computed/rollup/formula）に required/unique は指定できません"
         )));
     }
@@ -223,7 +239,7 @@ fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
                 | FieldType::RecordRef
         )
     {
-        return Err(DataError::Invalid(format!(
+        return Err(crate::schema_invalid(format!(
             "'{name}': この型に unique は指定できません"
         )));
     }
@@ -244,26 +260,26 @@ pub(crate) fn validate_schema_update(
     validate_table_schema(next)?;
     for cur in &current.fields {
         let Some(nf) = next.field_by_id(cur.id) else {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールド '{}' は削除できません（additive 変更のみ）",
                 cur.key
             )));
         };
         if nf.key != cur.key {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールド id {} の key は変更できません（'{}' → '{}'）",
                 cur.id, cur.key, nf.key
             )));
         }
         if nf.field_type != cur.field_type {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールド '{}' の型は変更できません",
                 cur.key
             )));
         }
         // 型固有の定義（参照先・派生定義）も不変（保存済み値の解釈が変わるため）。
         if nf.ref_table != cur.ref_table {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールド '{}' の ref_table は変更できません",
                 cur.key
             )));
@@ -271,7 +287,7 @@ pub(crate) fn validate_schema_update(
         // 精度宣言も不変（保存済みの値と索引は宣言時の規則で正規化されている。変えるなら
         // 既存値の再正規化が要るため、改訂経路では受けない）。
         if nf.numeric_spec != cur.numeric_spec {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールド '{}' の numeric_spec は変更できません",
                 cur.key
             )));
@@ -281,14 +297,14 @@ pub(crate) fn validate_schema_update(
             || nf.rollup != cur.rollup
             || nf.formula != cur.formula
         {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールド '{}' の lookup/computed/rollup/formula 定義は変更できません",
                 cur.key
             )));
         }
         // リンク定義（カーディナリティ・対称列）も不変（変えるなら既存行の再検証が要る・§7.1）。
         if nf.link != cur.link {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "フィールド '{}' の link は変更できません",
                 cur.key
             )));

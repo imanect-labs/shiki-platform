@@ -475,10 +475,12 @@ fn map_data_err(e: data::DataError) -> ActionError {
         DE::NotFound => ActionError::NotFound,
         DE::Forbidden => ActionError::Forbidden,
         DE::Invalid(m) => ActionError::Invalid(m),
+        DE::InvalidInput(e) => ActionError::Invalid(e.message().to_string()),
+        DE::NameTaken => ActionError::Invalid("同じ名前のテーブルが既にあります".into()),
         DE::Rejected(r) => ActionError::Invalid(r.to_string()),
         DE::Gone(m) => ActionError::Invalid(format!("ページの位置が古くなりました: {m}")),
         DE::IndexPreparing { field, progress } => ActionError::IndexPreparing { field, progress },
-        DE::ReadOverloaded | DE::QueryTooExpensive { .. } => {
+        DE::ReadOverloaded | DE::ReadTimeout | DE::QueryTooExpensive { .. } => {
             ActionError::Unavailable(e.to_string())
         }
         other => ActionError::Internal(other.to_string()),

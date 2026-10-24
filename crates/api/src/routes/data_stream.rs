@@ -32,6 +32,9 @@ use crate::{
     state::AppState,
 };
 
+/// `keepalive` イベントの間隔（コメント行の keep-alive も同じ間隔）。
+const STREAM_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// 購読の開始位置。
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct StreamQuery {
@@ -103,13 +106,28 @@ pub async fn stream_records(
         .data
         .subscribe_records(&ctx, id, since, trace.as_deref())
         .await?;
-    let stream = futures::stream::unfold(rx, |mut rx| async move {
-        let m = rx.next().await?;
-        Some((Ok::<Event, Infallible>(to_sse(&m)), rx))
+    // 15 秒ごとに `keepalive` イベントを送る（コメント行はブラウザの EventSource から読めないため、
+    // クライアントが途絶を検知して繋ぎ直せるよう名前つきのイベントにする・検証 D-2）。
+    let mut tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + STREAM_KEEPALIVE,
+        STREAM_KEEPALIVE,
+    );
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let stream = futures::stream::unfold((rx, tick), |(mut rx, mut tick)| async move {
+        let m = tokio::select! {
+            m = rx.next() => m?,
+            _ = tick.tick() => data::StreamMessage {
+                id: None,
+                event: data::StreamEvent::Keepalive(data::StreamKeepaliveEvent {
+                    at: chrono::Utc::now(),
+                }),
+            },
+        };
+        Some((Ok::<Event, Infallible>(to_sse(&m)), (rx, tick)))
     });
     Ok(super::sse_util::no_buffer(
         Sse::new(stream)
-            .keep_alive(KeepAlive::default())
+            .keep_alive(KeepAlive::new().interval(STREAM_KEEPALIVE))
             .into_response(),
     ))
 }

@@ -174,12 +174,12 @@ impl FormulaExpr {
 /// 構造の検証（深さ・ノード数・リテラル）。参照の解決と型は [`crate::derived::graph`] が見る。
 pub(crate) fn validate_shape(name: &str, e: &FormulaExpr) -> Result<(), DataError> {
     if e.depth() > MAX_FORMULA_DEPTH {
-        return Err(DataError::Invalid(format!(
+        return Err(crate::schema_invalid(format!(
             "'{name}': 数式が深すぎます（最大 {MAX_FORMULA_DEPTH}）"
         )));
     }
     if e.count() > MAX_FORMULA_NODES {
-        return Err(DataError::Invalid(format!(
+        return Err(crate::schema_invalid(format!(
             "'{name}': 数式が大きすぎます（最大 {MAX_FORMULA_NODES} ノード）"
         )));
     }
@@ -191,34 +191,34 @@ pub(crate) fn validate_shape(name: &str, e: &FormulaExpr) -> Result<(), DataErro
         match n {
             FormulaExpr::Lit(v) => match v {
                 Value::String(s) if s.len() > MAX_LITERAL_BYTES => {
-                    err = Some(DataError::Invalid(format!(
+                    err = Some(crate::schema_invalid(format!(
                         "'{name}': 数式の文字列リテラルが長すぎます"
                     )));
                 }
                 Value::Array(_) | Value::Object(_) => {
-                    err = Some(DataError::Invalid(format!(
+                    err = Some(crate::schema_invalid(format!(
                         "'{name}': 数式のリテラルは number / string / bool / null のみです"
                     )));
                 }
                 Value::Number(num) if super::decimal::Decimal::from_number(num).is_none() => {
-                    err = Some(DataError::Invalid(format!(
+                    err = Some(crate::schema_invalid(format!(
                         "'{name}': 数式の数値リテラルを正確に表せません"
                     )));
                 }
                 _ => {}
             },
             FormulaExpr::Round(_, s) if *s > MAX_ROUND_SCALE => {
-                err = Some(DataError::Invalid(format!(
+                err = Some(crate::schema_invalid(format!(
                     "'{name}': round の桁数は 0〜{MAX_ROUND_SCALE} です"
                 )));
             }
             FormulaExpr::Concat(v) | FormulaExpr::And(v) | FormulaExpr::Or(v) if v.is_empty() => {
-                err = Some(DataError::Invalid(format!(
+                err = Some(crate::schema_invalid(format!(
                     "'{name}': concat / and / or の引数が空です"
                 )));
             }
             FormulaExpr::Switch { cases, .. } if cases.is_empty() => {
-                err = Some(DataError::Invalid(format!(
+                err = Some(crate::schema_invalid(format!(
                     "'{name}': switch の分岐が空です"
                 )));
             }

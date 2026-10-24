@@ -156,7 +156,7 @@ impl Catalog {
                     .map(|(_, k)| k.as_str())
                     .chain(std::iter::once(node.1.as_str()))
                     .collect();
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "派生フィールドの依存が循環しています（{}）",
                     names.join(" → ")
                 )));
@@ -164,7 +164,7 @@ impl Catalog {
             _ => {}
         }
         if path.len() >= MAX_DERIVED_CHAIN {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "派生フィールドの依存が深すぎます（最大 {MAX_DERIVED_CHAIN}）"
             )));
         }
@@ -314,12 +314,12 @@ impl Catalog {
         op: RollupOp,
     ) -> Result<(), DataError> {
         let Some(rt) = self.ref_of(table, link) else {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "'{name}': ロールアップのリンク列 '{link}' は record_ref である必要があります"
             )));
         };
         let Some(rtab) = self.tables.get(&rt) else {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "'{name}': ロールアップの参照先テーブルが見つかりません"
             )));
         };
@@ -327,12 +327,12 @@ impl Catalog {
             if op == RollupOp::Count {
                 return Ok(());
             }
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "'{name}': {op:?} には target が必要です"
             )));
         };
         if rtab.schema.field(t).is_none() {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "'{name}': ロールアップの対象 '{t}' が参照先にありません"
             )));
         }
@@ -346,7 +346,7 @@ impl Catalog {
             ),
         };
         if !ok {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "'{name}': {op:?} の対象 '{t}' の型が合いません"
             )));
         }

@@ -22,6 +22,8 @@ pub(super) struct Parsed {
     pub(super) rev: i64,
     pub(super) before: Option<usize>,
     pub(super) after: Option<usize>,
+    /// 一括取込が作った行（配信は `records.bulk_applied` にまとめる）。
+    pub(super) bulk: bool,
 }
 
 /// awareness の 1 件（`state` は判定対象の行の添字）。
@@ -55,6 +57,7 @@ struct Raw {
     kind: ChangeKind,
     rev: i64,
     before: Option<Value>,
+    bulk: bool,
 }
 
 fn parse_entry(e: &storage::event::StreamEntry) -> Option<Raw> {
@@ -79,6 +82,12 @@ fn parse_entry(e: &storage::event::StreamEntry) -> Option<Raw> {
             .and_then(|p| p.get("before"))
             .filter(|b| b.is_object())
             .cloned(),
+        bulk: e
+            .private_payload
+            .as_ref()
+            .and_then(|p| p.get("bulk"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -200,6 +209,7 @@ impl DataStore {
                     rev: r.rev,
                     before,
                     after,
+                    bulk: r.bulk,
                 }
             })
             .collect();

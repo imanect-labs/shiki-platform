@@ -31,6 +31,11 @@ pub(super) fn map_data(e: DataError) -> PortError {
         DataError::NotFound => PortError::new("not_found", "対象が見つかりません", false),
         DataError::Forbidden => PortError::forbidden("data の権限がありません"),
         DataError::Invalid(m) => PortError::invalid(m),
+        DataError::InvalidInput(e) => PortError::invalid(e.message().to_string()),
+        // テーブル名の重複（再試行しても直らない）。
+        e @ DataError::NameTaken => {
+            PortError::new("conflict", e.conflict_detail().unwrap_or_default(), false)
+        }
         // rev の不一致・unique（rev を指定しない書込は再試行で読み直して通り得る）。
         e @ (DataError::Conflict(_)
         | DataError::RevConflict { .. }
@@ -42,6 +47,11 @@ pub(super) fn map_data(e: DataError) -> PortError {
         DataError::ReadOverloaded => {
             PortError::new("rate_limited", "data の読取が混み合っています", true)
         }
+        DataError::ReadTimeout => PortError::new(
+            "read_timeout",
+            "data の読取が時間内に終わりませんでした",
+            true,
+        ),
         e @ (DataError::IndexPreparing { .. } | DataError::IndexApprovalRequired { .. }) => {
             PortError::new("index_preparing", e.to_string(), true)
         }
@@ -223,40 +233,15 @@ impl DataPort<'_> {
                 to,
                 expected_rev,
             } => {
-                // ピンされた版の FSM 定義を artifact チョークポイント（FsmStore）経由で解決する（api の
-                // 遷移ルート・ゲートウェイと同じ手順）。ガード・actor 述語は data が当該行で再評価する。
-                let table = self
-                    .data
-                    .get_table(&actor, table_id, trace)
-                    .await
-                    .map_err(map_data)?;
-                let fsm_ref = table.schema.fsm_ref.clone().ok_or_else(|| {
-                    PortError::invalid("このテーブルは FSM 管理されていません（fsm_ref 未設定）")
-                })?;
-                let status_field = table.schema.status_field.clone().ok_or_else(|| {
-                    PortError::invalid("このテーブルに status_field がありません")
-                })?;
-                let (_, fsm) = self
-                    .fsms
-                    .get(&actor, fsm_ref.artifact_id, Some(fsm_ref.version), trace)
-                    .await
-                    .map_err(map_data)?;
+                // テーブルにピンされた FSM をテーブルの editor として読み、当該行で遷移する（api の遷移
+                // ルート・ゲートウェイと同じ単一の入口 FsmStore::transition・検証 C-P1-1）。
                 let rev = match expected_rev {
                     Some(r) => r,
                     None => self.current_rev(&actor, table_id, record_id, trace).await?,
                 };
                 to_value(
-                    self.data
-                        .transition_record(
-                            &actor,
-                            table_id,
-                            record_id,
-                            &to,
-                            rev,
-                            &fsm,
-                            &status_field,
-                            trace,
-                        )
+                    self.fsms
+                        .transition(&actor, table_id, record_id, &to, rev, trace)
                         .await
                         .map_err(map_data)?,
                 )

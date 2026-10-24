@@ -162,7 +162,10 @@ impl DataStore {
             self.resolver.as_ref(),
             self.max_multi_values,
         )
-        .await?;
+        .await
+        // 検証は merge 後の完全形に掛かる: patch で名指ししていない列の名前は返さない（読めない列の
+        // 既存値の誤りが列名を漏らさない）。
+        .map_err(|e| crate::scrub_input_field(e, |k| patch_obj.contains_key(k)))?;
         // FSM 管理テーブルの status は直接 update できない（遷移 API 経由でのみ・Task 9.10）。
         Self::reject_fsm_status_write(table, patch_obj.keys())?;
         let patches = diff_fields(&old_map, &normalized);

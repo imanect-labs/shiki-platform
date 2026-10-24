@@ -594,7 +594,12 @@ pub enum RoundingMode { HalfUp, HalfEven, Down, Up }
 - `min > max` は 400
 - `scale` が範囲外（`> 9`）は 400
 
-（スキーマ検証・入力値の検証の拒否は `DataError::Invalid` → **400**。HTTP ステータスの対応は §5.6。）
+（スキーマ検証・入力値の検証の拒否は構造化 400（`schema_invalid` / `value_out_of_range` 等）。HTTP ステータスの対応は §5.6。）
+
+> **精度の限界（検証 A P3 の仕様確認）**: 値は JSON の数値で受ける。整数は i64 / u64 の範囲なら正確に保存する。
+> 小数はサーバが受け取った時点で IEEE 754 倍精度に解釈されるので、17 桁を超える有効桁はサーバでは検出できない
+> （`numeric_spec` を宣言した列は、本体と索引で同じ値を保てない桁を 400 にする）。17 桁以上の値を正確に扱う画面は
+> 送る前に桁を検査する。
 
 > **`scale` を宣言させる理由**は 3 つ。①金額と割合と個数で丸め方が違うので、**表示規則を
 > スキーマが持つべき**（kintone / Airtable も小数桁数を列設定に持つ）②入力検証が決まる
@@ -803,7 +808,8 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 
 | `DataError` | HTTP | 本文 | 使う場面 |
 |---|---|---|---|
-| `Invalid` | **400** | `{status, title}`（理由はサーバのログと型付き API の `Display`） | 入力値・スキーマ・クエリ指定の誤り全般（型・required・多値の上限・`numeric_spec`・`row_policy` の参照列が未索引・数式の循環・`per_viewer` 列の `indexed`・リンクのカーディナリティ違反・RAG の投影・未宣言列でのフィルタ・`offset` ≠ 0・カーソルの改竄・スナップショット読取での `sort`） |
+| `InvalidInput(InputError)` | **400** | `{status, title, code, message, field?}`（検証 C-P2-4 で構造化） | 入力値・スキーマ・クエリ指定の誤り全般。`code` は `cursor_invalid`（改竄・鍵の入替え・形式不正）/ `offset_not_supported` / `field_not_indexed` / `field_not_sortable` / `value_type_mismatch`（日付の列に日付でない比較値を含む）/ `value_out_of_range`（`numeric_spec`・日付は 0001〜9999 年・閏秒不可）/ `value_too_long`（**文字数**＝Unicode スカラー値で数える。テキスト 10,000 字・テーブル名 128 字）/ `required_missing` / `invalid_option` / `too_many_values` / `schema_invalid`（定義を書いた本人へ理由を返す）/ `snapshot_unsupported` / `fsm_invalid` / `invalid_input`（NUL 文字・`limit` が 0 で件数だけでない・最上位の未知のキー・形の誤り）。`message` には**値・閲覧者が読めない列名・内部 ID・`record_int`・SQL 断片を入れない**（文言を作る入口は `InputError` の構築子だけ。書込の検証は書き手が名指ししていない列の名前を外す） |
+| `Invalid` | **400** | `{status, title, code: "invalid_input", message}`（汎用の文言・理由はサーバのログだけ） | 理由をまだ構造化していない入力の誤り（理由の文言を利用者へ返さない） |
 | `Rejected(QueryRejection)` | **422** | `{status, title, code, message, hint?, location?, limit?, expected?}` | **入口の拒否**: SQL 前段面の部分集合外・名前解決不能（`syntax_error` / `unsupported` / `unknown_name` / `invalid_join` / `invalid_query`）・入口の資源上限（`limit_exceeded`・`limit.name` に `max_sql_bytes` 等・IR 直投入にも同じ上限）・`max_join_depth`・**ViewSpec の保存時検証**（`invalid_query`、ルックアップ列の上限は `limit_exceeded` / `max_view_lookup_columns`） |
 | `QueryTooExpensive` | 400 | `{code: "query_too_expensive", suggestions}`（`narrow_filter` / `promote_index` / `composite_index`） | 受付制御（[query-optimizer.md §5.4](./data/query-optimizer.md)）。推定値は含めない |
 | `Forbidden` | 403 | — | テーブル権限なし・マスク列の参照（PIT-19） |
@@ -813,9 +819,22 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 | `DerivedRecomputing` | 409 | `code: derived_recomputing`・`field` | 材料化した派生列が再計算中（§7.4） |
 | `IndexPreparing` | 409 | `code: index_preparing`・`field`・`progress`（0〜1 か null） | 索引のバックフィル中（§10） |
 | `IndexApprovalRequired` | 409 | `code: index_approval_required`・`field`・`indexed_fields`・`max_indexed_fields` | 索引列数の上限超過（§10） |
-| `Conflict` | 409 | `code: conflict` | 名前重複・取込 ID の再利用など |
+| `NameTaken` | 409 | `code: name_taken` | 同じ名前のテーブルが既にある |
+| `Conflict` | 409 | `code: conflict` | 取込 ID の再利用・並行のスキーマ切替など |
 | `Gone` | 410 | — | スナップショット読取の基準位置が保持期間外（§3.3） |
 | `ReadOverloaded` | 429 | 固定文言 | テナントの読取の同時実行の枠が空かない（§16.8・再試行可） |
+| `ReadTimeout` | **503** | `{status, title, code: "read_timeout", message}`＋`Retry-After` | statement timeout（SQLSTATE 57014）で打ち切った（再試行可・SQL や推定値は返さない） |
+
+> 補足（検証 C P3）: 直接の要求の投影（`select`）に読めない（マスクされた）列を入れると **403**（条件・並べ替え・
+> SQL 面と同じく黙って落とさない）。保存ビューの投影は実行前に閲覧者が読める列へ絞る。HTTP の
+> `POST /data/tables/{id}/query` とゲートウェイ・チャット・ワークフローのクエリは、最上位の未知のキー
+> （`limitt` 等）を `invalid_input`（`field` にそのキー）で拒否する（保存済みのビューの読み戻しは寛容なまま）。
+> 件数の形は 2 つある（意図的に揃えていない・互換のため）: `POST …/query`（`with_count: true`）の
+> `QueryResult.count` は `CountResult`（`{"exact": n}` か `{"at_least": n}`）、v1 互換の
+> `GET /data/tables/{id}/records/count` は `{"count": n, "at_least": bool}`（`at_least: true` なら n 件以上）。
+> どちらも同じ上限付き件数（§5.4）。`limit: 0` ＋ `with_count: true` は件数だけを取る（ページは空）。
+> カーソルは**テーブル・クエリの形には束縛するが利用者には束縛しない**（他人のカーソルを使っても、結果は
+> 使った人の権限で絞られるので漏洩はない）。
 
 400 と 422 を分けた理由: `Invalid` → 400 は Phase 9（v1）以来の API 全体の慣例で、15.1 以降もそれを変えなかった。
 422 は**構造化した理由を返して LLM・画面に自己修正させる**入口（§16.1 のエラー契約・§8.2）に限った。
@@ -831,7 +850,7 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 |---|---|---|
 | ① テーブル ReBAC | OpenFGA `data_table` viewer/editor/owner | **変更なし** |
 | ② 行述語 ABAC | `PolicyExpr` → `WHERE` 断片へコンパイル・値は必ずバインド | **同じ AST・同じ材料解決。出力先が索引テーブル条件になる** |
-| ③ フィールドマスク | `field_policy` で応答から除去＋filter/sort から 403 | **変更なし**（§5.2 に継承）。**Phase 15 で追補**: 読めない列には作成・一括取込でも書けない（更新と同じ 403）。読めない列に依存する派生列（数式・計算・ルックアップ・ロールアップ。経由するリンク列か参照先で辿る列が読めない）も、その閲覧者には読めない列と同じ扱い（応答・検索・SSE・閲覧者文脈で一律）。履歴は読めない列の変更記録を返さない（読めない列だけの版は版ごと返さない） |
+| ③ フィールドマスク | `field_policy` で応答から除去＋filter/sort から 403 | **変更なし**（§5.2 に継承）。**Phase 15 で追補**: 読めない列には作成・一括取込でも書けない（更新と同じ 403）。読めない列に依存する派生列（数式・計算・ルックアップ・ロールアップ。経由するリンク列か参照先で辿る列が読めない）も、その閲覧者には読めない列と同じ扱い（応答・検索・SSE・閲覧者文脈で一律）。履歴は読めない列の変更記録を返さない（読めない列だけの版は版ごと返さない）。**テーブル定義の応答**（`GET /data/tables`・`GET /data/tables/{id}`・ゲートウェイの `data.schema`）は、スキーマ管理者（テーブルの owner）以外には**読める列だけ**を返し、`field_policy`・`row_policy`・RAG の投影設定を返さない（検証 C-P2-5・`DataStore::get_table_for_viewer`） |
 | ④ 行個別共有 | `data_record` スパースタプル（`= ANY($n::uuid[])`） | **タプルは変更なし**（uuid のまま）。材料解決時に `record_int` へ引き直して `= ANY($n::bigint[])` で効かせる |
 
 ### 6.1 材料解決
@@ -1320,7 +1339,16 @@ GET /data/tables/{table_id}/stream?since=<delivery_seq>     (SSE)
 > event: schema.changed    id=<delivery_seq>   data={table_id, schema_version}  受けたら取り直す（接続は閉じる）
 > event: stream.reset      id=<delivery_seq>   data={reason}                    手元を捨てて再取得（reason = retention / authz_changed / refresh / overflow / table_deleted。接続は閉じる）
 > event: awareness                              data={principal, record_id, field, at}  データを含まない（§9.5）
+> event: records.bulk_applied id=<delivery_seq> data={count}                   一括取込で見えるようになった行の数（検証 D-11）
+> event: keepalive                              data={at}                        15 秒ごと（途絶したらクライアントが繋ぎ直す・検証 D-2）
 > ```
+>
+> - **一括取込の行は 1 件ずつ配らない**: 取込が作った行は、配信のまとまりごとに `records.bulk_applied`（購読者本人に
+>   見える行の数だけ・値を含まない）にまとめる。`id` はまとめた最後の位置で、`Last-Event-ID` で欠落なく再開できる。
+>   クライアントは件数を案内し、利用者の操作で取り直す。汎用の outbox consumer が読む payload は変えない
+>   （ワークフロー・ミニアプリのトリガ・RAG は従来どおり 1 件ずつ受ける）。consumer は 1 回の claim を 500 件にして
+>   取込の直後の滞留を短くした（検証 D-14）
+> - `keepalive` はコメント行の keep-alive に加えて送る名前つきのイベント（ブラウザの EventSource はコメント行を読めない）
 >
 > - `derived = true` は派生値だけの再配信で `rev` は進まない。クライアントは**同じ `rev` でも**（手元以上なら）派生値を適用する。
 >   それ以外の `record.upserted` は `rev` が手元より大きいときだけ適用する
@@ -1459,7 +1487,9 @@ absent  ──promote──▶  building  ──収束──▶  active  ──d
 >   状態（`absent` / `preparing` / `active` と進捗 0〜1）は `GET` で引く
 > - 昇格は**閲覧者でも上限内なら起こせる**（グリッドの並べ替えの UX）。マスク列は 403、閲覧者ごとの派生列は索引にできない（400）のまま。昇格は監査に残す
 > - 索引列数の上限は既定 20（擬似列とリンクを数えない・テナント設定 `max_indexed_fields` で 1〜1,000）。超える自動昇格は
->   409 `index_approval_required` で止め、**owner だけ**が `approve: true` で承認できる
+>   409 `index_approval_required` で止め、**owner だけ**が `approve: true` で承認できる。上限は**自動昇格**に掛かる。
+>   テーブル作成・スキーマ改訂で `indexed: true` を宣言するのは owner（スキーマ管理者）だけの明示の操作なので、
+>   それ自体を承認として扱い上限で止めない（監査に残る・検証 A P3 の仕様確認）
 > - 2 万行以上のテーブルの昇格は jobq のバックフィルを積み、その列を要するクエリは完了まで 409 `index_preparing`（進捗つき）
 > - **降格**: 2 万行以上のテーブルの索引行はスキーマ改訂の Tx で消さない（長い Tx でテーブル行のロックを持ち続けない）。台帳を
 >   `absent` にしてクエリと書込から外し、行はジョブ（`data_index_purge`・降格時点の最大 `record_int` までを消す）がチャンクで消す。

@@ -215,8 +215,13 @@ impl CapabilityNodeExecutor {
         let p: DataQueryParams = parse_params(params)?;
         let table_id = resolve_uuid(&p.table, r, "data.query: table")?;
         let raw = params.get("query").cloned().unwrap_or_else(|| json!({}));
-        let query: DataQuery = serde_json::from_value(bind_values(&raw, r)?)
-            .map_err(|e| PortError::invalid(format!("data.query: query が不正: {e}")))?;
+        // 最上位の未知のキー（綴り誤り）は黙って無視せず不正として返す（data の単一の定義で判定）。
+        let query = DataQuery::from_request(bind_values(&raw, r)?).map_err(|e| {
+            PortError::invalid(format!(
+                "data.query: query が不正: {}",
+                e.invalid_message().unwrap_or_else(|| e.to_string())
+            ))
+        })?;
         let out = self.ports.data_query(ec, table_id, &query).await?;
         self.audit(
             &ec.tenant_id,

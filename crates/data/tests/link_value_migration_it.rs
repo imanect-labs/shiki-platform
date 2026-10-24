@@ -525,7 +525,7 @@ async fn v1_record_ref_writes_emit_arrays() {
         json!({"req": ["not-a-uuid"]}),
     ] {
         let r = store.create_record(&c, t.id, bad.clone(), None).await;
-        assert!(matches!(r, Err(DataError::Invalid(_))), "{bad}: {r:?}");
+        assert!(matches!(&r, Err(e) if e.is_invalid()), "{bad}: {r:?}");
     }
     // 新しく作ったテーブルは最初から配列の形式（移行の対象にならない）。
     let (ti, tb) = keys_of(&pool, &tenant, t.id).await;

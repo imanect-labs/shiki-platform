@@ -45,7 +45,7 @@ pub(crate) fn validate_projection(schema: &TableSchema) -> Result<(), DataError>
         return Ok(());
     };
     if p.body_fields.len() > MAX_RAG_BODY_FIELDS {
-        return Err(DataError::Invalid(format!(
+        return Err(crate::schema_invalid(format!(
             "rag.body_fields は {MAX_RAG_BODY_FIELDS} 列までです"
         )));
     }
@@ -57,20 +57,20 @@ pub(crate) fn validate_projection(schema: &TableSchema) -> Result<(), DataError>
     let mut seen = HashSet::new();
     for key in std::iter::once(&p.title_field).chain(&p.body_fields) {
         if !seen.insert(key.as_str()) {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "rag: 列 '{key}' が投影に重複しています"
             )));
         }
-        let f = schema
-            .field(key)
-            .ok_or_else(|| DataError::Invalid(format!("rag: 列 '{key}' が fields にありません")))?;
+        let f = schema.field(key).ok_or_else(|| {
+            crate::schema_invalid(format!("rag: 列 '{key}' が fields にありません"))
+        })?;
         if masked.contains(key.as_str()) {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "rag: 列 '{key}' はフィールドマスク（field_policy）の対象のため検索の投影に含められません"
             )));
         }
         if !projectable(f) {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "rag: 列 '{key}' の型は検索の投影に含められません（派生列・参照列・リンクは不可）"
             )));
         }
@@ -225,7 +225,9 @@ mod tests {
         let s = schema(proj("title", &["body", "salary"]), &["salary"]);
         let e = validate_projection(&s).unwrap_err();
         assert!(
-            matches!(e, DataError::Invalid(ref m) if m.contains("field_policy")),
+            e.invalid_code() == Some(crate::InvalidCode::SchemaInvalid)
+                && e.invalid_message()
+                    .is_some_and(|m| m.contains("field_policy")),
             "{e:?}"
         );
         // タイトル側でも同じ。

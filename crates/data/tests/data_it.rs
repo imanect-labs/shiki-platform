@@ -202,7 +202,10 @@ async fn table_crud_and_typed_record_crud() {
             None,
         )
         .await;
-    assert!(matches!(dup, Err(DataError::Conflict(_))), "{dup:?}");
+    assert!(
+        matches!(dup, Err(DataError::NameTaken)),
+        "同名は 409 name_taken: {dup:?}"
+    );
 
     // 型検証付き CRUD（受け入れ条件 9.2-1）。
     let rec = store
@@ -225,7 +228,7 @@ async fn table_crud_and_typed_record_crud() {
         json!({"title": "x", "applicant": "ghost"}),
     ] {
         let r = store.create_record(&c, table.id, bad.clone(), None).await;
-        assert!(matches!(r, Err(DataError::Invalid(_))), "{bad} -> {r:?}");
+        assert!(matches!(&r, Err(e) if e.is_invalid()), "{bad} -> {r:?}");
     }
 
     // unique 制約（code）: 同値は 409。
@@ -365,7 +368,7 @@ async fn expression_indexes_created_and_used() {
             None,
         )
         .await;
-    assert!(matches!(bad, Err(DataError::Invalid(_))), "{bad:?}");
+    assert!(matches!(&bad, Err(e) if e.is_invalid()), "{bad:?}");
 
     // EXPLAIN で pivot 索引が使われる（受け入れ条件 9.2-2・プラン面）。実行した文を同じバインドで計画し直す。
     let (_, dbg) = store
@@ -468,7 +471,7 @@ async fn record_refs_validated_and_file_ref_denied() {
             None,
         )
         .await;
-    assert!(matches!(missing, Err(DataError::Invalid(_))), "{missing:?}");
+    assert!(matches!(&missing, Err(e) if e.is_invalid()), "{missing:?}");
 
     // 読めないファイル参照は「見つからない」で拒否（存在オラクルなし）。
     let file_denied = store
@@ -480,7 +483,7 @@ async fn record_refs_validated_and_file_ref_denied() {
         )
         .await;
     assert!(
-        matches!(file_denied, Err(DataError::Invalid(_))),
+        matches!(&file_denied, Err(e) if e.is_invalid()),
         "{file_denied:?}"
     );
 }
@@ -672,7 +675,7 @@ async fn schema_update_additive_and_index_reapply() {
         )
         .await;
     assert!(
-        matches!(breaking, Err(DataError::Invalid(_))),
+        matches!(&breaking, Err(e) if e.is_invalid()),
         "{breaking:?}"
     );
     let stale = store
@@ -851,7 +854,7 @@ async fn date_normalized_and_ref_table_immutable() {
             None,
         )
         .await;
-    assert!(matches!(res, Err(DataError::Invalid(_))), "{res:?}");
+    assert!(matches!(&res, Err(e) if e.is_invalid()), "{res:?}");
 }
 
 /// 実 OpenFGA でのテーブル ReBAC（第1層）検証: 未共有ユーザーは CRUD も履歴も拒否。

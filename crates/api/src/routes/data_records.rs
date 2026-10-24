@@ -112,11 +112,11 @@ pub struct RevisionListResponse {
     request_body = CreateRecordRequest,
     responses(
         (status = 201, description = "作成した", body = DataRecord),
-        (status = 400, description = "検証エラー（型・必須・選択肢・参照整合）"),
+        (status = 400, description = "検証エラー（型・必須・選択肢・参照整合）", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "テーブルが存在しない"),
-        (status = 409, description = "unique 制約違反（code=unique_violation）"),
+        (status = 409, description = "unique 制約違反（code=unique_violation）", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -141,7 +141,7 @@ pub async fn create_record(
     params(("id" = Uuid, Path, description = "テーブル ID"), ListRecordsQuery),
     responses(
         (status = 200, description = "一覧", body = RecordListResponse),
-        (status = 400, description = "フィルタ/ソート指定が不正"),
+        (status = 400, description = "フィルタ/ソート指定が不正", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "テーブルが存在しない"),
@@ -244,11 +244,11 @@ pub async fn get_record(
     request_body = UpdateRecordRequest,
     responses(
         (status = 200, description = "更新後のレコード", body = DataRecord),
-        (status = 400, description = "検証エラー"),
+        (status = 400, description = "検証エラー", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
-        (status = 409, description = "rev 不一致（同時更新・code=rev_conflict・current_rev）または unique 制約違反（code=unique_violation）"),
+        (status = 409, description = "rev 不一致（同時更新・code=rev_conflict・current_rev）または unique 制約違反（code=unique_violation）", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -287,7 +287,7 @@ pub async fn update_record(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
-        (status = 409, description = "rev 不一致（同時更新・code=rev_conflict・current_rev）"),
+        (status = 409, description = "rev 不一致（同時更新・code=rev_conflict・current_rev）", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -355,7 +355,7 @@ pub async fn list_revisions(
     ),
     responses(
         (status = 200, description = "件数", body = RecordCountResponse),
-        (status = 400, description = "フィルタ指定が不正"),
+        (status = 400, description = "フィルタ指定が不正", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "テーブルが存在しない"),

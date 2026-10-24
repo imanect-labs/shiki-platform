@@ -93,7 +93,11 @@ fn reject_is_default_and_refuses_excess_scale() {
     assert_eq!(normalize_number(&f, &json!(12.34)).unwrap(), json!(12.34));
     assert_eq!(normalize_number(&f, &json!(12)).unwrap(), json!(12));
     let err = normalize_number(&f, &json!(12.345)).unwrap_err();
-    assert!(matches!(err, DataError::Invalid(_)), "{err:?}");
+    assert_eq!(
+        err.invalid_code(),
+        Some(crate::InvalidCode::ValueOutOfRange),
+        "{err:?}"
+    );
 }
 
 #[test]

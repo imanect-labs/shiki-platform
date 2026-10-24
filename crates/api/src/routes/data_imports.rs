@@ -128,34 +128,82 @@ pub struct ImportErrorsResponse {
 
 /// 入力の形の誤り（構造化 400・`import_invalid`）。
 fn invalid(message: &str) -> ApiError {
-    ApiError::UnprocessableJson(serde_json::json!({
-        "status": 400,
-        "title": "Bad Request",
-        "code": "import_invalid",
-        "message": message,
-    }))
+    ApiError::UnprocessableJson(crate::error_body::to_body(
+        &crate::error_body::ImportInvalidBody {
+            status: 400,
+            title: "Bad Request".into(),
+            code: "import_invalid".into(),
+            message: message.to_string(),
+        },
+    ))
 }
 
 /// 取込の開始で起きた data のエラー（入力の誤りは文言つきの構造化 400・それ以外は共通の対応）。
 fn start_error(e: data::DataError) -> ApiError {
     match e {
         data::DataError::Invalid(m) => invalid(&m),
+        data::DataError::InvalidInput(e) => invalid(e.message()),
         other => ApiError::from(other),
     }
 }
 
+/// 構造化 413（`import_too_large`）。
+fn too_large() -> ApiError {
+    ApiError::PayloadTooLargeJson(crate::error_body::to_body(
+        &crate::error_body::PayloadTooLargeBody {
+            status: 413,
+            title: "Payload Too Large".into(),
+            code: "import_too_large".into(),
+            max_bytes: MAX_IMPORT_BODY_BYTES,
+        },
+    ))
+}
+
+/// 上限を超えた本文を読み捨てる量の上限（これを超えたら読まずに 413 を返して接続を閉じる）。
+const MAX_DRAIN_BYTES: usize = 8 * MAX_IMPORT_BODY_BYTES;
+/// 上限を超えた本文を読み捨てる時間の上限。
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// 本文を上限付きで読む（超えたら構造化 413）。
+///
+/// 上限を超えても**残りを読み捨ててから** 413 を返す（有界・[`MAX_DRAIN_BYTES`]・[`DRAIN_TIMEOUT`]）。
+/// 送信の途中で応答して接続を閉じると、前段のプロキシ（web の BFF `/api`）が本文の送信で EPIPE になり、
+/// 413 ではなく 500 を返していた（検証 A P3）。
 async fn read_body(body: Body) -> Result<axum::body::Bytes, ApiError> {
-    axum::body::to_bytes(body, MAX_IMPORT_BODY_BYTES)
+    use futures::StreamExt;
+    let mut stream = body.into_data_stream();
+    let read = async {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut over = false;
+        let mut seen = 0usize;
+        while let Some(chunk) = stream.next().await {
+            let Ok(data) = chunk else {
+                return Err(ApiError::BadRequest("本文を読めませんでした".into()));
+            };
+            seen = seen.saturating_add(data.len());
+            if over {
+                // 上限を超えた後は読み捨てる（読み捨ての上限を超えたら打ち切る）。
+                if seen > MAX_DRAIN_BYTES {
+                    break;
+                }
+                continue;
+            }
+            if buf.len() + data.len() > MAX_IMPORT_BODY_BYTES {
+                over = true;
+                buf = Vec::new();
+                continue;
+            }
+            buf.extend_from_slice(&data);
+        }
+        if over {
+            Err(too_large())
+        } else {
+            Ok(axum::body::Bytes::from(buf))
+        }
+    };
+    tokio::time::timeout(DRAIN_TIMEOUT, read)
         .await
-        .map_err(|_| {
-            ApiError::PayloadTooLargeJson(serde_json::json!({
-                "status": 413,
-                "title": "Payload Too Large",
-                "code": "import_too_large",
-                "max_bytes": MAX_IMPORT_BODY_BYTES,
-            }))
-        })
+        .unwrap_or_else(|_| Err(too_large()))
 }
 
 async fn started(
@@ -179,11 +227,11 @@ async fn started(
     request_body = StartImportRequest,
     responses(
         (status = 202, description = "取込を始めた（検証と適用は非同期）", body = StartImportResponse),
-        (status = 400, description = "入力の形の誤り（code=import_invalid・行数超過・行キーの重複・JSON の構文）"),
+        (status = 400, description = "入力の形の誤り（code=import_invalid・行数超過・行キーの重複・JSON の構文）", body = crate::error_body::ImportInvalidBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "editor でない"),
         (status = 404, description = "テーブルが存在しない"),
-        (status = 413, description = "本文が大きすぎる（code=import_too_large）"),
+        (status = 413, description = "本文が大きすぎる（code=import_too_large）", body = crate::error_body::PayloadTooLargeBody),
     ),
     security(("session" = [])),
 )]
@@ -225,11 +273,11 @@ pub async fn start_import(
     request_body(content = String, content_type = "text/csv", description = "UTF-8 の CSV（見出し行あり・`_key` 列は行キー）"),
     responses(
         (status = 202, description = "取込を始めた（検証と適用は非同期）", body = StartImportResponse),
-        (status = 400, description = "入力の形の誤り（code=import_invalid・未知の列・派生列・行数超過・文字コード）"),
+        (status = 400, description = "入力の形の誤り（code=import_invalid・未知の列・派生列・行数超過・文字コード）", body = crate::error_body::ImportInvalidBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "editor でない"),
         (status = 404, description = "テーブルが存在しない"),
-        (status = 413, description = "本文が大きすぎる（code=import_too_large）"),
+        (status = 413, description = "本文が大きすぎる（code=import_too_large）", body = crate::error_body::PayloadTooLargeBody),
     ),
     security(("session" = [])),
 )]

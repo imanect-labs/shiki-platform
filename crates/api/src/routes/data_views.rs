@@ -43,11 +43,12 @@ pub struct DataQueryRequest {
     request_body = DataQueryRequest,
     responses(
         (status = 200, description = "クエリ結果（rows または groups）", body = QueryResult),
-        (status = 400, description = "クエリ指定が不正"),
+        (status = 400, description = "クエリ指定が不正", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない（マスク列の参照を含む）"),
         (status = 404, description = "テーブルが存在しない"),
-        (status = 409, description = "列の索引を準備中（code=index_preparing・field・progress）・索引の承認が要る（code=index_approval_required）・材料化した派生列が参照先の変更を受けて再計算中（code=derived_recomputing・field）"),
+        (status = 503, description = "読取が statement timeout で打ち切られた（code=read_timeout・Retry-After・再試行可）", body = crate::error_body::RetryLaterBody),
+        (status = 409, description = "列の索引を準備中（code=index_preparing・field・progress）・索引の承認が要る（code=index_approval_required）・材料化した派生列が参照先の変更を受けて再計算中（code=derived_recomputing・field）", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -56,8 +57,9 @@ pub async fn run_query(
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
-    Json(req): Json<DataQueryRequest>,
+    Json(raw): Json<serde_json::Value>,
 ) -> Result<Json<QueryResult>, ApiError> {
+    let req = DataQueryRequest::from_value(raw)?;
     let r = if req.promote_indexes {
         state
             .data
@@ -70,6 +72,27 @@ pub async fn run_query(
             .await?
     };
     Ok(Json(r))
+}
+
+impl DataQueryRequest {
+    /// 本文を読む。最上位の未知のキーは黙って無視せず構造化 400（`invalid_input`・`field` にそのキー）。
+    pub(crate) fn from_value(mut raw: serde_json::Value) -> Result<Self, ApiError> {
+        let promote_indexes = match raw.as_object_mut().map(|o| o.remove("promote_indexes")) {
+            None | Some(None | Some(serde_json::Value::Null)) => false,
+            Some(Some(serde_json::Value::Bool(b))) => b,
+            Some(Some(_)) => {
+                return Err(data::DataError::input_field(
+                    data::InvalidCode::ValueTypeMismatch,
+                    "promote_indexes",
+                )
+                .into())
+            }
+        };
+        Ok(DataQueryRequest {
+            query: DataQuery::from_request(raw)?,
+            promote_indexes,
+        })
+    }
 }
 
 /// SQL（閉じた部分集合）で読む（Task 15.10・data-platform §16.1）。
@@ -85,10 +108,11 @@ pub async fn run_query(
     request_body = SqlRequest,
     responses(
         (status = 200, description = "表形式の結果（columns / rows）", body = SqlQueryResult),
-        (status = 400, description = "入力が不正（索引の無い列での絞り込みなど）"),
+        (status = 400, description = "入力が不正（索引の無い列での絞り込みなど）", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 422, description = "部分集合外・名前が見つからない・資源上限（構造化した理由）", body = data::QueryRejection),
+        (status = 503, description = "読取が statement timeout で打ち切られた（code=read_timeout・Retry-After・再試行可）", body = crate::error_body::RetryLaterBody),
     ),
     security(("session" = [])),
 )]
@@ -178,11 +202,11 @@ pub async fn list_table_views(
     request_body = CreateViewRequest,
     responses(
         (status = 201, description = "作成した", body = ViewResponse),
-        (status = 400, description = "クエリ/スキーマが不正"),
+        (status = 400, description = "クエリ/スキーマが不正", body = crate::error_body::BadRequestBody),
         (status = 422, description = "表示設定が不正・ルックアップ列の上限超過（構造化した理由）", body = data::QueryRejection),
         (status = 401, description = "未認証"),
         (status = 403, description = "対象テーブルの権限がない・マスク列を指定した"),
-        (status = 409, description = "同名ビューが既に存在する・索引の承認が要る"),
+        (status = 409, description = "同名ビューが既に存在する・索引の承認が要る", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -214,12 +238,12 @@ pub async fn create_view(
     request_body = UpdateViewRequest,
     responses(
         (status = 200, description = "追記後のビュー", body = ViewResponse),
-        (status = 400, description = "クエリ/スキーマが不正"),
+        (status = 400, description = "クエリ/スキーマが不正", body = crate::error_body::BadRequestBody),
         (status = 422, description = "表示設定が不正・ルックアップ列の上限超過（構造化した理由）", body = data::QueryRejection),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない・マスク列を指定した"),
         (status = 404, description = "存在しない"),
-        (status = 409, description = "expected_version 不一致"),
+        (status = 409, description = "expected_version 不一致", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]

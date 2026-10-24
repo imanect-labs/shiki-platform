@@ -161,6 +161,19 @@ pub(crate) async fn emit_record_changes(
     changes: &[RecordChange<'_>],
     trace_id: Option<&str>,
 ) -> Result<(), DataError> {
+    emit_record_changes_as(conn, ctx, table, changes, false, trace_id).await
+}
+
+/// [`emit_record_changes`] の一括取込版の区別つき（`bulk` は private payload にだけ載せる・SSE の配信が
+/// 取込の行を `records.bulk_applied` にまとめる材料。汎用の consumer が読む payload は変えない）。
+pub(crate) async fn emit_record_changes_as(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    table: &DataTable,
+    changes: &[RecordChange<'_>],
+    bulk: bool,
+    trace_id: Option<&str>,
+) -> Result<(), DataError> {
     if changes.is_empty() {
         return Ok(());
     }
@@ -179,6 +192,7 @@ pub(crate) async fn emit_record_changes(
             let private = json!({
                 "table_int": table.keys.table_int,
                 "record_int": c.record_int,
+                "bulk": bulk,
                 "before": c.before.as_ref().map(|b| before_material(&keys, b)),
                 // 値頻度表の材料（統計の消費側だけが読む・crate::stats）。持たない古い形式の変更は
                 // 消費側が数え直しへ倒す。

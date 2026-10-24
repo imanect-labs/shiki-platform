@@ -62,7 +62,7 @@ pub(crate) fn spawn_miniapp_triggers(deps: TriggerDeps) {
     tracing::info!("miniapp event/cron トリガを起動しました");
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sqlx::FromRow, Clone)]
 struct Subscription {
     tenant_id: String,
     org: String,
@@ -70,8 +70,9 @@ struct Subscription {
     function: String,
 }
 
-/// 1 回に claim する outbox の件数。
-const EVENT_BATCH: usize = 50;
+/// 1 回に claim する outbox の件数（claim は配送済みの行を走査するので、1 回の件数を大きくして回数を減らす・
+/// 一括取込の 10 万件で 50 件ずつだと追いつくまで数十分かかった・検証 D-14）。
+const EVENT_BATCH: usize = 500;
 
 async fn event_tick(deps: &TriggerDeps) -> anyhow::Result<usize> {
     let mut tx = deps.db.begin().await?;
@@ -84,18 +85,27 @@ async fn event_tick(deps: &TriggerDeps) -> anyhow::Result<usize> {
     let ids: Vec<i64> = events.iter().map(|e| e.id).collect();
     // 突合対象（event_type 付きのみ）を集めてから ack（at-least-once の台帳→起動は at-most-once）。
     let mut dispatches: Vec<(Subscription, serde_json::Value, String)> = Vec::new();
+    // 購読の照会はバッチ内で (テナント, event_type) ごとに 1 回（一括取込の直後は同じ組のイベントが
+    // 数万件並ぶ・検証 D-14）。
+    let mut subs_of: std::collections::HashMap<(String, String), Vec<Subscription>> =
+        std::collections::HashMap::new();
     for event in &events {
         let Some(event_type) = event.payload.get("event_type").and_then(|v| v.as_str()) else {
             continue;
         };
-        let subs: Vec<Subscription> = sqlx::query_as(
-            "SELECT tenant_id, org, app_id, function FROM app_event_subscription \
-             WHERE tenant_id = $1 AND event_type = $2",
-        )
-        .bind(&event.tenant_id)
-        .bind(event_type)
-        .fetch_all(&mut *tx)
-        .await?;
+        let key = (event.tenant_id.clone(), event_type.to_string());
+        if !subs_of.contains_key(&key) {
+            let found: Vec<Subscription> = sqlx::query_as(
+                "SELECT tenant_id, org, app_id, function FROM app_event_subscription \
+                 WHERE tenant_id = $1 AND event_type = $2",
+            )
+            .bind(&event.tenant_id)
+            .bind(event_type)
+            .fetch_all(&mut *tx)
+            .await?;
+            subs_of.insert(key.clone(), found);
+        }
+        let subs = subs_of.get(&key).cloned().unwrap_or_default();
         for sub in subs {
             // 越境防止: payload が他アプリのリソース（table_id/app_id）を指す場合は配送しない
             // （event_type だけでの購読が他アプリのイベント payload を受け取るのを防ぐ・SSE 経路と同等）。

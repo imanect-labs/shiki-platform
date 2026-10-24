@@ -329,11 +329,21 @@ impl DataViewStore {
         body: &DataViewBody,
         trace_id: Option<&str>,
     ) -> Result<DataQuery, DataError> {
-        if !body.needs_projection() {
+        if !body.needs_projection() && body.query.select.is_none() {
             return Ok(body.effective_query(None));
         }
         let table = self.data.get_table(ctx, body.table_id, trace_id).await?;
-        Ok(body.effective_query(Some(&table.schema)))
+        let mut q = body.effective_query(Some(&table.schema));
+        // ビューの投影は作った人の列の並び。閲覧者が読めない（マスクされた）列は黙って外す
+        // （直接の要求の投影は 403・query::bound_query）。
+        if q.select.is_some() {
+            let az = self.data.authz_memo();
+            let masked = self.data.masked_fields(ctx, &az, &table).await?;
+            if let Some(sel) = q.select.as_mut() {
+                sel.retain(|k| !masked.contains(k));
+            }
+        }
+        Ok(q)
     }
 
     /// テーブルの保存ビューのうち、閲覧者が使えるもの（本人が owner ＋ 共有されたもの・更新の新しい順）。

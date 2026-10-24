@@ -30,7 +30,7 @@ fn codec() -> CursorCodec {
 }
 
 fn is_rejected(r: &Result<CursorPayload, DataError>) -> bool {
-    matches!(r, Err(DataError::Invalid(m)) if m == INVALID)
+    matches!(&r, Err(DataError::InvalidInput(e)) if e.code() == crate::InvalidCode::CursorInvalid)
 }
 
 #[test]

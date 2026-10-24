@@ -343,7 +343,8 @@ impl DataStore {
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(db) if db.is_unique_violation() => {
-                DataError::Conflict(format!("テーブル名 '{name}' は既に存在します"))
+                tracing::info!(%name, "テーブル名の重複（409 name_taken）");
+                DataError::NameTaken
             }
             _ => map_db(e),
         })?;

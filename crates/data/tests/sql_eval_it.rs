@@ -566,7 +566,7 @@ fn sql_failure(e: &DataError) -> Failure {
             | data::RejectCode::LimitExceeded => Failure::Unsupported,
         },
         DataError::Forbidden | DataError::NotFound => Failure::Name,
-        DataError::Invalid(m) => ir_invalid(m),
+        e if e.is_invalid() => ir_invalid(&e.invalid_message().unwrap_or_default()),
         _ => Failure::Unsupported,
     }
 }
@@ -595,7 +595,7 @@ fn ir_invalid(m: &str) -> Failure {
 fn ir_failure(e: &DataError) -> Failure {
     match e {
         DataError::Forbidden | DataError::NotFound => Failure::Name,
-        DataError::Invalid(m) => ir_invalid(m),
+        e if e.is_invalid() => ir_invalid(&e.invalid_message().unwrap_or_default()),
         DataError::Rejected(r) if r.code == data::RejectCode::UnknownName => Failure::Name,
         _ => Failure::Unsupported,
     }

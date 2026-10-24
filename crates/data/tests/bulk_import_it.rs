@@ -447,7 +447,7 @@ async fn bulk_import_input_checks_and_abort_on_invalid() {
         async move { store.start_bulk_import(&c, t.id, r, o, None).await }
     };
     let invalid =
-        |r: Result<Uuid, DataError>| assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+        |r: Result<Uuid, DataError>| assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     invalid(start(vec![], BulkImportOptions::default()).await);
     invalid(
         start(

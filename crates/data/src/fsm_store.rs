@@ -105,6 +105,70 @@ impl FsmStore {
         Ok((v.version, body))
     }
 
+    /// テーブルのレコードを状態遷移する（HTTP・ワークフロー・スクリプト・ゲートウェイの**単一の入口**）。
+    ///
+    /// テーブルにピンされた FSM（`fsm_ref` の版）は**テーブル側の参照として**読む: 呼出主体に FSM の
+    /// アーティファクト自体の閲覧権限は要求せず、テーブルの editor であることを確かめてから読む
+    /// （FSM の作成者でないテーブル editor が遷移できなかった・検証 C-P1-1）。行の可視性・actor 述語・
+    /// ガードは [`DataStore::transition_record`] が当該行で評価する。
+    #[allow(clippy::too_many_arguments)] // 主体・テーブル・行・遷移先・rev・trace は全て別物。
+    pub async fn transition(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        record_id: Uuid,
+        to: &str,
+        expected_rev: i64,
+        trace_id: Option<&str>,
+    ) -> Result<crate::model::DataRecord, DataError> {
+        let table = self.data.get_table(ctx, table_id, trace_id).await?;
+        let not_managed = || {
+            DataError::input_detail(
+                crate::InvalidCode::FsmInvalid,
+                None,
+                "このテーブルは状態遷移（FSM）で管理されていません",
+            )
+        };
+        let fsm_ref = table.schema.fsm_ref.clone().ok_or_else(not_managed)?;
+        let status_field = table.schema.status_field.clone().ok_or_else(not_managed)?;
+        // FSM の本文を読む前にテーブルの editor を確かめる（閲覧者に定義を読ませない）。
+        self.data
+            .authorize_table(
+                ctx,
+                table_id,
+                authz::Relation::Editor,
+                "data.record.transition",
+                trace_id,
+            )
+            .await?;
+        let v = self
+            .artifacts
+            .get_version_pinned(
+                ctx,
+                fsm_ref.artifact_id,
+                fsm_ref.version,
+                ArtifactKind::Fsm,
+                &format!("data_table:{table_id}"),
+                trace_id,
+            )
+            .await
+            .map_err(map_artifact)?;
+        let fsm: FsmBody = serde_json::from_value(v.body)
+            .map_err(|e| DataError::Internal(format!("fsm body 破損: {e}")))?;
+        self.data
+            .transition_record(
+                ctx,
+                table_id,
+                record_id,
+                to,
+                expected_rev,
+                &fsm,
+                &status_field,
+                trace_id,
+            )
+            .await
+    }
+
     async fn validate_against_table(
         &self,
         ctx: &AuthContext,

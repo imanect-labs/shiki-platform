@@ -36,11 +36,19 @@ impl DataStore {
     ) -> Result<(DataTable, HashSet<String>, ScopeTables, BoundQuery), DataError> {
         // 入口の資源上限（SQL 前段面と同じ上限を IR 直投入にも課す・data-platform §16.1.1）。
         check_ir(query, &self.limits).map_err(|r| DataError::Rejected(Box::new(r)))?;
+        // 比較値・検索語・カーソルに NUL があれば 400（Postgres の text は NUL を受けられない・検証 D-8）。
+        let doc =
+            serde_json::to_value(query).map_err(|e| DataError::Internal(format!("query: {e}")))?;
+        if crate::validate::contains_nul(&doc) {
+            return Err(crate::validate::nul_error(None));
+        }
         let linked =
             !query.joins.is_empty() || query.filter.as_ref().is_some_and(super::scopes::has_link);
         if query.snapshot && linked {
-            return Err(DataError::Invalid(
-                "スナップショット読取では結合・リンクの条件を使えません".into(),
+            return Err(DataError::input_detail(
+                crate::InvalidCode::SnapshotUnsupported,
+                None,
+                "スナップショット読取では結合・リンクの条件を使えません",
             ));
         }
         let mut table = self

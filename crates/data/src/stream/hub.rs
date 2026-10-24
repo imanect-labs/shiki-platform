@@ -33,8 +33,9 @@ use uuid::Uuid;
 
 use super::auth::{Resolved, SubAuth};
 use super::events::{
-    AwarenessEvent, RecordRemovedEvent, RecordUpsertedEvent, SchemaChangedEvent, StreamEvent,
-    StreamMessage, StreamReadyEvent, StreamResetEvent, StreamResetReason,
+    AwarenessEvent, RecordRemovedEvent, RecordUpsertedEvent, RecordsBulkAppliedEvent,
+    SchemaChangedEvent, StreamEvent, StreamMessage, StreamReadyEvent, StreamResetEvent,
+    StreamResetReason,
 };
 use super::outbox::ChangeKind;
 use super::visibility::{eval_group, group_plan, verify, visible, Decomposed, Viewer};
@@ -585,7 +586,27 @@ impl DataStore {
             let mut out: Vec<Out> = Vec::new();
             let mut terminal = false;
             let mut cursor = s.cursor;
+            // 一括取込の作成行は 1 件ずつ配らず、見える行の数だけを `records.bulk_applied` にまとめる
+            // （位置はまとめた最後の行・順序を保つため他のイベントの前で吐き出す・検証 D-11）。
+            let mut bulk: Option<(i64, u64)> = None;
+            let flush = |bulk: &mut Option<(i64, u64)>, out: &mut Vec<Out>| {
+                if let Some((seq, count)) = bulk.take() {
+                    out.push(Out::Msg(StreamMessage {
+                        id: Some(seq),
+                        event: StreamEvent::BulkApplied(RecordsBulkAppliedEvent { count }),
+                    }));
+                }
+            };
             for p in parsed.iter().filter(|p| p.seq > s.cursor) {
+                if p.bulk && p.kind == ChangeKind::Create {
+                    if vis(p.after) {
+                        let e = bulk.get_or_insert((p.seq, 0));
+                        *e = (p.seq, e.1 + 1);
+                    }
+                    cursor = p.seq;
+                    continue;
+                }
+                flush(&mut bulk, &mut out);
                 match p.kind {
                     ChangeKind::Schema => {
                         out.push(Out::Msg(StreamMessage {
@@ -638,6 +659,7 @@ impl DataStore {
                     break;
                 }
             }
+            flush(&mut bulk, &mut out);
             // awareness（データを含まない・見えない行・マスク列のものは送らない）。接続直後の購読者には
             // 有効期間内の現在の状態（離脱済みを除く）も、同じ判定を通して送る。
             if !terminal {

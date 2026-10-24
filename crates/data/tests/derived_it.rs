@@ -179,7 +179,7 @@ async fn many_to_many_link_reads_both_directions_with_partition_pruning() {
             None,
         )
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
 
     // 逆方向行は参照先側の table_int に載る（二重書込ではなく同一 Tx の 2 行）。
     let (ti, cust_tb) = keys_of(&pool, &tenant, customers.id).await;
@@ -324,10 +324,10 @@ async fn link_cardinality_violations_are_422() {
             None,
         )
         .await;
-    assert!(matches!(bad, Err(DataError::Invalid(_))), "{bad:?}");
+    assert!(matches!(&bad, Err(e) if e.is_invalid()), "{bad:?}");
 
     let invalid = |r: Result<data::DataRecord, DataError>| {
-        assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+        assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     };
     // one_to_one。
     let oo = create_table(
@@ -399,7 +399,7 @@ async fn link_cardinality_violations_are_422() {
     let mut next = mo.schema.clone();
     next.fields[0].link.as_mut().unwrap().cardinality = LinkCardinality::ManyToMany;
     let r = store.update_table_schema(&c, mo.id, next, None, None).await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     let mut forged = link("x", t, LinkCardinality::ManyToMany, None);
     forged.link.as_mut().unwrap().reverse = true;
     forged.link.as_mut().unwrap().symmetric_field = Some(16);
@@ -413,7 +413,7 @@ async fn link_cardinality_violations_are_422() {
             None,
         )
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
 }
 
 fn lines_schema(k: Option<i64>) -> TableSchema {
@@ -466,21 +466,21 @@ async fn viewer_dependent_or_volatile_columns_cannot_be_indexed_and_cycles_are_r
     let mut f = base();
     f.push(total.clone());
     let r = create(f, "o1").await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     // now を含む数式（volatile）も 422。
     let mut age = formula("age", json!({"date_diff": ["now", {"lit": "2026-01-01"}]}));
     age.indexed = true;
     let mut f = base();
     f.push(age.clone());
     let r = create(f, "o2").await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     // unique は派生フィールドには常に 422。
     let mut uq = formula("double", json!({"mul": [{"field": "price"}, {"lit": 2}]}));
     uq.unique = true;
     let mut f = base();
     f.push(uq);
     let r = create(f, "o3").await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     // indexed を外せば保存でき、サーバが材料化可否と型を決める（入力の宣言は信用しない）。
     total.indexed = false;
     total.materialization = Some(Materialization::Invariant);
@@ -504,7 +504,7 @@ async fn viewer_dependent_or_volatile_columns_cannot_be_indexed_and_cycles_are_r
         ..DataQuery::default()
     };
     let r = store.run_query(&c, t.id, &q, None).await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
 
     // 数式の循環（自テーブル内）は 422。
     let mut f = base();
@@ -512,7 +512,7 @@ async fn viewer_dependent_or_volatile_columns_cannot_be_indexed_and_cycles_are_r
     f.push(formula("y", json!({"add": [{"field": "x"}, {"lit": 1}]})));
     let r = create(f, "cyc").await;
     assert!(
-        matches!(&r, Err(DataError::Invalid(m)) if m.contains("循環")),
+        matches!(&r, Err(e) if e.invalid_message().is_some_and(|m| m.contains("循環"))),
         "{r:?}"
     );
     // テーブルを跨ぐ循環: lines.back（orders の total を集計）→ orders.total（lines.back を集計）。
@@ -548,7 +548,7 @@ async fn viewer_dependent_or_volatile_columns_cannot_be_indexed_and_cycles_are_r
         .update_table_schema(&c, orders.id, os, None, None)
         .await;
     assert!(
-        matches!(&r, Err(DataError::Invalid(m)) if m.contains("循環")),
+        matches!(&r, Err(e) if e.invalid_message().is_some_and(|m| m.contains("循環"))),
         "{r:?}"
     );
 }
@@ -621,7 +621,7 @@ async fn money_arithmetic_and_rollups_are_exact() {
     let r = store
         .create_record(&c, orders.id, json!({"total": 1}), None)
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
 }
 
 /// ロールアップのスモールセル抑制は参照先の aggregate_min_rows を継承する（PIT-17）。
@@ -1004,7 +1004,10 @@ async fn long_derived_text_comparisons_are_exact_or_refused() {
     ] {
         let r = run(Condition::cmp("label", op, Some(v))).await;
         match r {
-            Err(DataError::Invalid(m)) => assert!(m.contains("label"), "{m}"),
+            Err(e) if e.is_invalid() => {
+                let m = e.invalid_message().unwrap_or_default();
+                assert!(m.contains("label"), "{m}");
+            }
             other => panic!("{op:?}: {other:?}"),
         }
     }
@@ -1072,7 +1075,7 @@ async fn long_derived_text_comparisons_are_exact_or_refused() {
         ..DataQuery::default()
     };
     let r = store.run_query(&c, t.id, &agg("label", None), None).await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     let only_short = Condition::cmp("body", CondOp::Eq, Some(json!(short)));
     let r = store
         .run_query(&c, t.id, &agg("label", Some(only_short)), None)

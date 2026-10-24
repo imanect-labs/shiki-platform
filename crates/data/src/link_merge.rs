@@ -175,10 +175,11 @@ impl DataStore {
                     );
                 }
                 Merged::NotFound => {
-                    return Err(DataError::Invalid(format!(
-                        "'{}' の参照先レコードが見つかりません",
-                        f.key
-                    )));
+                    return Err(DataError::input_detail(
+                        crate::InvalidCode::InvalidOption,
+                        Some(&f.key),
+                        format!("'{}' の参照先レコードが見つかりません", f.key),
+                    ));
                 }
                 Merged::Forbidden => return Err(DataError::Forbidden),
             }

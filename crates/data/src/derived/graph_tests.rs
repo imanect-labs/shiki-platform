@@ -245,7 +245,10 @@ fn cycles_are_rejected_locally_and_across_tables() {
     ));
     cat.tables.get_mut(&a).unwrap().schema = s;
     let err = cat.check_cycles(a).unwrap_err();
-    assert!(matches!(err, DataError::Invalid(m) if m.contains("循環")));
+    assert!(
+        err.invalid_message().is_some_and(|m| m.contains("循環")),
+        "{err:?}"
+    );
 
     // テーブルを跨ぐ: A.total → B.back_total → A.total。
     let (mut cat, a, b) = fixture();

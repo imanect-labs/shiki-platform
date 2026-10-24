@@ -172,7 +172,7 @@ pub(crate) async fn create_symmetric_fields(
             continue;
         };
         if ref_table == table_id {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "'{}': 自己参照のリンクに対称列は作れません",
                 f.key
             )));
@@ -187,13 +187,13 @@ pub(crate) async fn create_symmetric_fields(
         .await
         .map_err(map_db)?;
         let Some((Json(mut ref_schema), next_id, tenant_int, ref_table_int)) = row else {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "'{}': リンクの参照先テーブルが見つかりません",
                 f.key
             )));
         };
         if !is_valid_field_key(&sym_key) || ref_schema.field(&sym_key).is_some() {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "'{}': 対称列の key '{sym_key}' は参照先で使えません（不正または重複）",
                 f.key
             )));
@@ -201,9 +201,7 @@ pub(crate) async fn create_symmetric_fields(
         let sym_id = FieldId::try_from(next_id)
             .ok()
             .filter(|id| *id <= crate::model::MAX_FIELD_ID)
-            .ok_or_else(|| {
-                DataError::Invalid("参照先のフィールド ID が上限に達しています".into())
-            })?;
+            .ok_or_else(|| crate::schema_invalid("参照先のフィールド ID が上限に達しています"))?;
         let mut sym = FieldDef::new(sym_key.clone(), FieldType::RecordRef);
         sym.id = sym_id;
         sym.order = ref_schema.fields.iter().map(|x| x.order).max().unwrap_or(0) + 1;

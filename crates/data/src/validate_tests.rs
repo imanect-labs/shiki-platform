@@ -66,7 +66,7 @@ async fn rejects_undeclared_and_derived_fields() {
     let err = validate_record_data(&ctx(), &s, &json!({"nope": 1}), &AllowAll, MAX_MULTI)
         .await
         .unwrap_err();
-    assert!(matches!(err, DataError::Invalid(_)));
+    assert!(err.is_invalid(), "{err:?}");
 
     let mut lk = field("d", FieldType::Lookup);
     lk.lookup = Some(crate::model::LookupDef {
@@ -79,7 +79,7 @@ async fn rejects_undeclared_and_derived_fields() {
     let err = validate_record_data(&ctx(), &s, &json!({"d": "v"}), &AllowAll, MAX_MULTI)
         .await
         .unwrap_err();
-    assert!(matches!(err, DataError::Invalid(_)));
+    assert!(err.is_invalid(), "{err:?}");
 }
 
 #[tokio::test]

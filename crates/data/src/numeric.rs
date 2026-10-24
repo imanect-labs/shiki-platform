@@ -216,19 +216,19 @@ pub(crate) fn validate_spec(f: &FieldDef) -> Result<(), DataError> {
     };
     let name = &f.key;
     if f.field_type != FieldType::Number {
-        return Err(DataError::Invalid(format!(
+        return Err(crate::schema_invalid(format!(
             "'{name}': numeric_spec は number 型にのみ指定できます"
         )));
     }
     if spec.scale > MAX_SCALE {
-        return Err(DataError::Invalid(format!(
+        return Err(crate::schema_invalid(format!(
             "'{name}': numeric_spec.scale は 0〜{MAX_SCALE} で指定してください"
         )));
     }
     let bound = |v: Option<f64>, label: &str| -> Result<Option<Dec>, DataError> {
         v.map(|x| {
             Dec::from_f64(x).ok_or_else(|| {
-                DataError::Invalid(format!(
+                crate::schema_invalid(format!(
                     "'{name}': numeric_spec.{label} は有限の数値で指定してください"
                 ))
             })
@@ -238,7 +238,7 @@ pub(crate) fn validate_spec(f: &FieldDef) -> Result<(), DataError> {
     let (min, max) = (bound(spec.min, "min")?, bound(spec.max, "max")?);
     if let (Some(lo), Some(hi)) = (&min, &max) {
         if lo > hi {
-            return Err(DataError::Invalid(format!(
+            return Err(crate::schema_invalid(format!(
                 "'{name}': numeric_spec.min が max より大きくなっています"
             )));
         }
@@ -253,19 +253,28 @@ pub(crate) fn normalize_number(f: &FieldDef, v: &Value) -> Result<Value, DataErr
         return Ok(v.clone());
     };
     let Value::Number(n) = v else {
-        return Err(DataError::Invalid(format!(
-            "フィールド '{name}' は 数値 である必要があります"
-        )));
+        return Err(DataError::input_detail(
+            crate::InvalidCode::ValueTypeMismatch,
+            Some(name),
+            format!("フィールド '{name}' は 数値 である必要があります"),
+        ));
     };
-    let dec = Dec::parse(&n.to_string())
-        .ok_or_else(|| DataError::Invalid(format!("'{name}' の数値を解釈できません")))?;
+    let dec = Dec::parse(&n.to_string()).ok_or_else(|| {
+        DataError::input_detail(
+            crate::InvalidCode::ValueTypeMismatch,
+            Some(name),
+            format!("'{name}' の数値を解釈できません"),
+        )
+    })?;
     let scale = usize::from(spec.scale);
     let normalized = if dec.scale() > scale {
         match spec.on_excess_scale {
             ExcessScale::Reject => {
-                return Err(DataError::Invalid(format!(
-                    "'{name}' は小数 {scale} 桁までです（超過桁は丸めずに拒否します）"
-                )));
+                return Err(DataError::input_detail(
+                    crate::InvalidCode::ValueOutOfRange,
+                    Some(name),
+                    format!("'{name}' は小数 {scale} 桁までです（超過桁は丸めずに拒否します）"),
+                ));
             }
             ExcessScale::Round(mode) => dec.round_to(scale, mode),
         }
@@ -275,24 +284,28 @@ pub(crate) fn normalize_number(f: &FieldDef, v: &Value) -> Result<Value, DataErr
     // 範囲は正規化後の値で検証する（§4.2 規則 2）。境界は validate_spec で有限と確認済み。
     if let Some(lo) = spec.min.and_then(Dec::from_f64) {
         if normalized < lo {
-            return Err(DataError::Invalid(format!(
-                "'{name}' は {} 以上である必要があります",
-                lo.canonical()
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::ValueOutOfRange,
+                Some(name),
+                format!("'{name}' は {} 以上である必要があります", lo.canonical()),
+            ));
         }
     }
     if let Some(hi) = spec.max.and_then(Dec::from_f64) {
         if normalized > hi {
-            return Err(DataError::Invalid(format!(
-                "'{name}' は {} 以下である必要があります",
-                hi.canonical()
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::ValueOutOfRange,
+                Some(name),
+                format!("'{name}' は {} 以下である必要があります", hi.canonical()),
+            ));
         }
     }
     to_json_number(&normalized).ok_or_else(|| {
-        DataError::Invalid(format!(
-            "'{name}' の有効桁数が多すぎます（本体と索引で同じ値を保てません）"
-        ))
+        DataError::input_detail(
+            crate::InvalidCode::ValueOutOfRange,
+            Some(name),
+            format!("'{name}' の有効桁数が多すぎます（本体と索引で同じ値を保てません）"),
+        )
     })
 }
 

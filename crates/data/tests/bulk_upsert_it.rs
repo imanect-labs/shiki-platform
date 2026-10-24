@@ -371,7 +371,7 @@ async fn bulk_upsert_rejects_malformed_input_up_front() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(err, data::DataError::Invalid(_)), "{err:?}");
+    assert!(err.is_invalid(), "{err:?}");
     // 作成行に expected_rev は付けられない。
     let err = store
         .start_bulk_upsert(
@@ -388,7 +388,7 @@ async fn bulk_upsert_rejects_malformed_input_up_front() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(err, data::DataError::Invalid(_)), "{err:?}");
+    assert!(err.is_invalid(), "{err:?}");
 }
 
 /// 取込 ID を決めて始める入口は冪等（ワークフローの再実行で二重に取り込まない）。

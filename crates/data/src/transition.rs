@@ -83,13 +83,21 @@ impl DataStore {
             .get(status_field)
             .and_then(Value::as_str)
             .ok_or_else(|| {
-                DataError::Invalid(format!("status フィールド '{status_field}' がありません"))
+                DataError::input_detail(
+                    crate::InvalidCode::FsmInvalid,
+                    None,
+                    "レコードに状態が設定されていません",
+                )
             })?
             .to_string();
         // ②定義外遷移は 422（Invalid）。
-        let transition = fsm
-            .transition(&from, to)
-            .ok_or_else(|| DataError::Invalid(format!("定義外の遷移です（{from} → {to}）")))?;
+        let transition = fsm.transition(&from, to).ok_or_else(|| {
+            DataError::input_detail(
+                crate::InvalidCode::FsmInvalid,
+                None,
+                "この状態からは指定の状態へ遷移できません",
+            )
+        })?;
         // ③actor 述語を当該行に評価（不許可 403）。読取述語ではなく actor 述語を使う。
         if !self
             .actor_allows(ctx, &az, &table, record_id, &transition.actor)

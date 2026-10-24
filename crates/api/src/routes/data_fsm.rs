@@ -66,10 +66,10 @@ pub struct TransitionRequest {
     request_body = CreateFsmRequest,
     responses(
         (status = 201, description = "作成した", body = FsmResponse),
-        (status = 400, description = "FSM 定義が不正（状態/遷移/actor/options 不一致）"),
+        (status = 400, description = "FSM 定義が不正（状態/遷移/actor/options 不一致）", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "対象テーブルの権限がない"),
-        (status = 409, description = "同名 FSM が既に存在する"),
+        (status = 409, description = "同名 FSM が既に存在する", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -101,11 +101,11 @@ pub async fn create_fsm(
     request_body = UpdateFsmRequest,
     responses(
         (status = 200, description = "追記後の FSM", body = FsmResponse),
-        (status = 400, description = "FSM 定義が不正"),
+        (status = 400, description = "FSM 定義が不正", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
-        (status = 409, description = "expected_version 不一致"),
+        (status = 409, description = "expected_version 不一致", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -175,11 +175,11 @@ pub async fn get_fsm(
     request_body = TransitionRequest,
     responses(
         (status = 200, description = "遷移後のレコード", body = DataRecord),
-        (status = 400, description = "定義外の遷移・FSM 未設定・status 欠落"),
+        (status = 400, description = "定義外の遷移・FSM 未設定・status 欠落", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "actor 述語を満たさない"),
         (status = 404, description = "テーブル/レコードが存在しない（不可視を含む）"),
-        (status = 409, description = "rev 不一致（同時更新・code=rev_conflict・current_rev）"),
+        (status = 409, description = "rev 不一致（同時更新・code=rev_conflict・current_rev）", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -190,34 +190,16 @@ pub async fn transition_record(
     Path((id, record_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<TransitionRequest>,
 ) -> Result<Json<DataRecord>, ApiError> {
-    // テーブルの fsm_ref を解決し、ピンされたバージョンの FSM 定義をチョークポイント経由で読む。
-    let table = state.data.get_table(&ctx, id, trace.as_deref()).await?;
-    let fsm_ref = table.schema.fsm_ref.clone().ok_or_else(|| {
-        ApiError::BadRequest("このテーブルは FSM 管理されていません（fsm_ref 未設定）".into())
-    })?;
-    let status_field =
-        table.schema.status_field.clone().ok_or_else(|| {
-            ApiError::BadRequest("このテーブルに status_field がありません".into())
-        })?;
-    let (_, fsm) = state
-        .fsms
-        .get(
-            &ctx,
-            fsm_ref.artifact_id,
-            Some(fsm_ref.version),
-            trace.as_deref(),
-        )
-        .await?;
+    // テーブルにピンされた FSM をテーブルの editor として読み、当該行で遷移する（単一の入口・
+    // FSM のアーティファクト自体の閲覧権限は要求しない・検証 C-P1-1）。
     let updated = state
-        .data
-        .transition_record(
+        .fsms
+        .transition(
             &ctx,
             id,
             record_id,
             &req.to,
             req.expected_rev,
-            &fsm,
-            &status_field,
             trace.as_deref(),
         )
         .await?;

@@ -71,10 +71,9 @@ async fn count_cap_is_a_tenant_setting() {
         "他テナントには効かない"
     );
     // 範囲外は 422、既定へ戻せる。
-    assert!(matches!(
-        store.update_tenant_count_cap(&a, Some(0), None).await,
-        Err(DataError::Invalid(_))
-    ));
+    assert!(
+        matches!(&store.update_tenant_count_cap(&a, Some(0), None).await, Err(e) if e.is_invalid())
+    );
     store.update_tenant_count_cap(&a, None, None).await.unwrap();
     let r = store.run_query(&a, ta.id, &q, None).await.unwrap();
     assert_eq!(r.count, Some(CountResult::Exact(6)));

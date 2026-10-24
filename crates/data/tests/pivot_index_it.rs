@@ -315,7 +315,7 @@ async fn multi_value_limit_is_enforced() {
             None,
         )
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     let ok = store
         .create_record(
             &c,
@@ -336,7 +336,7 @@ async fn multi_value_limit_is_enforced() {
         )
         .await;
     assert!(
-        matches!(r, Err(DataError::Invalid(_))),
+        matches!(&r, Err(e) if e.is_invalid()),
         "update も同じ上限: {r:?}"
     );
     // 既定（50）でも同様。
@@ -349,7 +349,7 @@ async fn multi_value_limit_is_enforced() {
     let r = default_store
         .create_record(&c, t2.id, json!({ "many": tags }), None)
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
 }
 
 /// ランダムな英数字（圧縮で縮まない＝btree キー上限を本当に超える値）。
@@ -956,7 +956,7 @@ async fn field_id_above_int2_is_rejected() {
             None,
         )
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     // 採番が上限に達した（next_field_id = 32,767）テーブルへ 2 列足すと、2 列目で拒否される。
     let table = create_table(
         &store,
@@ -983,7 +983,7 @@ async fn field_id_above_int2_is_rejected() {
     let r = store
         .update_table_schema(&c, table.id, over, None, None)
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
 }
 
 /// NumericSpec（data-platform §4.2）: 本体・索引・unique が正規化後の同一値を使う。
@@ -1047,7 +1047,7 @@ async fn numeric_spec_normalizes_body_and_index_identically() {
         json!({"qty": 1.5}),
     ] {
         let r = store.create_record(&c, table.id, bad.clone(), None).await;
-        assert!(matches!(r, Err(DataError::Invalid(_))), "{bad} -> {r:?}");
+        assert!(matches!(&r, Err(e) if e.is_invalid()), "{bad} -> {r:?}");
     }
     // 宣言は不変（改訂で変えられない）。
     let mut changed = table.schema.clone();
@@ -1055,7 +1055,7 @@ async fn numeric_spec_normalizes_body_and_index_identically() {
     let r = store
         .update_table_schema(&c, table.id, changed, None, None)
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     // number 以外への指定はスキーマ検証で 422。
     let mut bad = field("t", FieldType::Text);
     bad.numeric_spec = Some(NumericSpec {
@@ -1074,7 +1074,7 @@ async fn numeric_spec_normalizes_body_and_index_identically() {
             None,
         )
         .await;
-    assert!(matches!(r, Err(DataError::Invalid(_))), "{r:?}");
+    assert!(matches!(&r, Err(e) if e.is_invalid()), "{r:?}");
     let report = store.verify_index_parity(&tenant, table.id).await.unwrap();
     assert!(report.is_consistent(), "{report:?}");
 }

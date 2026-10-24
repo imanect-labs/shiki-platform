@@ -65,7 +65,13 @@ pub(crate) async fn get_schema(
     Extension(ctx): Extension<GatewayCtx>,
     Path(table_id): Path<Uuid>,
 ) -> Result<Json<GwTableSchema>, GatewayError> {
-    let t = require_app_table(&state, &ctx, table_id).await?;
+    require_app_table(&state, &ctx, table_id).await?;
+    // 呼出ユーザーが読めない列・ポリシーの定義は返さない（スキーマ管理者以外・検証 C-P2-5）。
+    let t = state
+        .caps
+        .data
+        .get_table_for_viewer(&ctx.auth, table_id, None)
+        .await?;
     Ok(Json(GwTableSchema {
         id: t.id,
         name: t.name,
@@ -210,9 +216,11 @@ pub(crate) async fn query(
     State(state): State<GatewayState>,
     Extension(ctx): Extension<GatewayCtx>,
     Path(table_id): Path<Uuid>,
-    Json(q): Json<DataQuery>,
+    Json(raw): Json<Value>,
 ) -> Result<Json<QueryResult>, GatewayError> {
     require_app_table(&state, &ctx, table_id).await?;
+    // 最上位の未知のキー（綴り誤り）は黙って無視せず 400。
+    let q = DataQuery::from_request(raw)?;
     let result = state
         .caps
         .data
@@ -234,31 +242,18 @@ pub(crate) async fn transition_record(
     Path((table_id, record_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<TransitionRequest>,
 ) -> Result<Json<DataRecord>, GatewayError> {
-    let table = require_app_table(&state, &ctx, table_id).await?;
-    let fsm_ref = table.schema.fsm_ref.clone().ok_or_else(|| {
-        GatewayError::Invalid("このテーブルは FSM 管理されていません（fsm_ref 未設定）".into())
-    })?;
-    let status_field =
-        table.schema.status_field.clone().ok_or_else(|| {
-            GatewayError::Invalid("このテーブルに status_field がありません".into())
-        })?;
-    // ピンされたバージョンの FSM 定義を artifact チョークポイント（FsmStore）経由で解決する。
-    let (_, fsm) = state
-        .caps
-        .fsms
-        .get(&ctx.auth, fsm_ref.artifact_id, Some(fsm_ref.version), None)
-        .await?;
+    require_app_table(&state, &ctx, table_id).await?;
+    // テーブルにピンされた FSM をテーブルの editor として読み、当該行で遷移する（HTTP・ワークフローと
+    // 同じ単一の入口・FsmStore::transition）。
     let rec = state
         .caps
-        .data
-        .transition_record(
+        .fsms
+        .transition(
             &ctx.auth,
             table_id,
             record_id,
             &req.to,
             req.expected_rev,
-            &fsm,
-            &status_field,
             None,
         )
         .await?;

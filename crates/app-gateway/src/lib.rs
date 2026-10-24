@@ -84,11 +84,14 @@ impl From<data::DataError> for GatewayError {
             DataError::NotFound => GatewayError::NotFound,
             DataError::Forbidden => GatewayError::Forbidden("この操作は許可されていません".into()),
             DataError::Invalid(m) => GatewayError::Invalid(m),
+            // 構造化した入力の誤り（文言は利用者に見せてよいもの・値や読めない列名を含まない）。
+            DataError::InvalidInput(e) => GatewayError::Invalid(e.message().to_string()),
             DataError::Gone(m) => GatewayError::Conflict(m),
-            // rev 不一致・unique 違反・再計算中を含む競合（文言は値・相手の行を含まない）。
+            // rev 不一致・unique 違反・再計算中・名前の重複を含む競合（文言は値・相手の行を含まない）。
             e @ (DataError::Conflict(_)
             | DataError::RevConflict { .. }
             | DataError::UniqueViolation
+            | DataError::NameTaken
             | DataError::DerivedRecomputing { .. }) => {
                 GatewayError::Conflict(e.conflict_detail().unwrap_or_default())
             }
@@ -97,7 +100,10 @@ impl From<data::DataError> for GatewayError {
             }
             // 受付制御（重すぎるクエリ）: 文言は固定（推定値を含まない・PIT-75）。
             e @ DataError::QueryTooExpensive { .. } => GatewayError::Invalid(e.to_string()),
-            e @ DataError::ReadOverloaded => GatewayError::RateLimited(e.to_string()),
+            // 枠の不足・statement timeout（再試行可）。
+            e @ (DataError::ReadOverloaded | DataError::ReadTimeout) => {
+                GatewayError::RateLimited(e.to_string())
+            }
             // 入口での拒否（資源上限・部分集合外）。文言は構造化理由の説明（存在オラクルを含まない）。
             DataError::Rejected(r) => GatewayError::Invalid(r.message),
             DataError::Internal(m) => {

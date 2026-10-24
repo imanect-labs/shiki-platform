@@ -33,8 +33,8 @@ use std::collections::{HashMap, HashSet};
 use authz::AuthContext;
 use common::{create_table, ctx, field, schema, setup, store_with, unique_tenant};
 use data::{
-    CmpOp, CondOp, Condition, DataError, DataQuery, DataStore, FieldType, ForcedStrategy,
-    PolicyExpr, PolicyOperand, QueryTuning, ReadPath, RowPolicy, SortKey, SortPrecision,
+    CmpOp, CondOp, Condition, DataQuery, DataStore, FieldType, ForcedStrategy, PolicyExpr,
+    PolicyOperand, QueryTuning, ReadPath, RowPolicy, SortKey, SortPrecision,
 };
 use serde_json::{json, Value};
 use sqlx::PgPool;
@@ -1147,7 +1147,7 @@ async fn row_policy_on_unindexed_field_is_422() {
         )
         .await;
     assert!(
-        matches!(r, Err(DataError::Invalid(ref m)) if m.contains("indexed")),
+        matches!(&r, Err(e) if e.invalid_message().is_some_and(|m| m.contains("indexed"))),
         "{r:?}"
     );
 }

@@ -381,6 +381,43 @@ struct DataQueryWire {
     snapshot: bool,
 }
 
+/// [`DataQuery`] の受理形の最上位のキー（[`DataQueryWire`] と同じ集合・未知のキーの検出用）。
+pub const DATA_QUERY_KEYS: &[&str] = &[
+    "filter",
+    "sort",
+    "limit",
+    "cursor",
+    "select",
+    "group_by",
+    "aggregate",
+    "joins",
+    "having",
+    "group_sort",
+    "group_limit",
+    "search",
+    "search_fields",
+    "with_count",
+    "offset",
+    "snapshot",
+];
+
+impl DataQuery {
+    /// 要求の入口で受けたクエリを読む。**最上位の未知のキー**（`limitt` 等の綴り誤り）は黙って無視せず
+    /// 400（`invalid_input`・`field` にそのキー）にする（LLM・SDK が自己修正できる・検証 C P3）。
+    /// 保存済みのビュー等の読み戻しには使わない（後方互換のため従来どおり寛容に読む）。
+    pub fn from_request(v: serde_json::Value) -> Result<DataQuery, crate::DataError> {
+        if let Some(obj) = v.as_object() {
+            if let Some(k) = obj.keys().find(|k| !DATA_QUERY_KEYS.contains(&k.as_str())) {
+                return Err(crate::DataError::unknown_query_key(k));
+            }
+        }
+        serde_json::from_value(v).map_err(|e| {
+            tracing::info!(error = %e, "クエリの形が不正です");
+            crate::DataError::input(crate::InvalidCode::InvalidInput)
+        })
+    }
+}
+
 impl From<DataQueryWire> for DataQuery {
     fn from(w: DataQueryWire) -> Self {
         let filter = w.filter.map(|f| match f {

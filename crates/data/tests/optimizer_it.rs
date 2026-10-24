@@ -202,7 +202,7 @@ async fn value_counts_follow_the_outbox_and_survive_recount() {
         store
             .run_query_debug(&c, table.id, &by_memo, &QueryTuning::default())
             .await,
-        Err(DataError::Invalid(_))
+        Err(e) if e.is_invalid()
     ));
     let report = store.table_optimizer_report(&c, table.id).await.unwrap();
     assert!(

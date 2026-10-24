@@ -109,8 +109,10 @@ impl DataStore {
         .await?;
         let table = self.fetch_live(ctx, table_id).await?;
         // 読めない（マスクされた）列への書込は作成でも 403（更新・取込と同じ単一点・PIT-19）。
-        self.ensure_fields_writable(ctx, &az, &table, data.as_object())
+        let masked = self
+            .ensure_fields_writable(ctx, &az, &table, data.as_object())
             .await?;
+        let named = |k: &str| data.as_object().is_some_and(|o| o.contains_key(k));
         let normalized = validate_record_data(
             ctx,
             &table.schema,
@@ -118,7 +120,9 @@ impl DataStore {
             self.resolver.as_ref(),
             self.max_multi_values,
         )
-        .await?;
+        .await
+        // 列名を返すのは書き手が名指しした列か読める列だけ（必須の欠落が読めない列の名前を漏らさない）。
+        .map_err(|e| crate::scrub_input_field(e, |k| named(k) || !masked.contains(k)))?;
         // FSM 管理テーブルでも create は初期 status を置ける（以降の status 変更は遷移 API 経由・
         // Task 9.10）。「初期状態のみ許可」の厳密化は FSM 定義の参照が要るため後続で行う。
         self.check_record_refs(ctx, &table.schema, &normalized)
@@ -172,6 +176,7 @@ impl DataStore {
                 data: &normalized,
             }],
             |_, _| false,
+            false,
             trace_id,
         )
         .await?;
@@ -348,9 +353,11 @@ impl DataStore {
         };
         for f in fields {
             if f == status {
-                return Err(DataError::Invalid(format!(
-                    "status '{status}' は遷移 API（transition）経由でのみ変更できます"
-                )));
+                return Err(DataError::input_detail(
+                    crate::InvalidCode::FsmInvalid,
+                    Some(status),
+                    format!("status '{status}' は遷移 API（transition）経由でのみ変更できます"),
+                ));
             }
         }
         Ok(())
@@ -410,10 +417,11 @@ impl DataStore {
                         if let Ok(id) = Uuid::parse_str(s) {
                             vec![id]
                         } else {
-                            errors[i] = Some(DataError::Invalid(format!(
-                                "'{}' は UUID 文字列である必要があります",
-                                f.key
-                            )));
+                            errors[i] = Some(DataError::input_detail(
+                                crate::InvalidCode::ValueTypeMismatch,
+                                Some(&f.key),
+                                format!("'{}' は UUID 文字列である必要があります", f.key),
+                            ));
                             continue;
                         }
                     }
@@ -449,10 +457,11 @@ impl DataStore {
                 .await?;
             for (i, ids) in per_record {
                 if ids.iter().any(|id| !visible.rows.contains_key(id)) {
-                    errors[i] = Some(DataError::Invalid(format!(
-                        "'{}' の参照先レコードが見つかりません",
-                        f.key
-                    )));
+                    errors[i] = Some(DataError::input_detail(
+                        crate::InvalidCode::InvalidOption,
+                        Some(&f.key),
+                        format!("'{}' の参照先レコードが見つかりません", f.key),
+                    ));
                 }
             }
         }

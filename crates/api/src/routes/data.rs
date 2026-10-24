@@ -49,9 +49,9 @@ pub struct TableListResponse {
     request_body = CreateTableRequest,
     responses(
         (status = 201, description = "作成した", body = DataTable),
-        (status = 400, description = "スキーマが不正"),
+        (status = 400, description = "スキーマが不正", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
-        (status = 409, description = "同名テーブルが既に存在する"),
+        (status = 409, description = "同名テーブルが既に存在する", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -89,11 +89,14 @@ pub async fn list_tables(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
 ) -> Result<Json<TableListResponse>, ApiError> {
-    let items = state.data.list_tables(&ctx, 200).await?;
+    // スキーマ管理者（owner）以外には読める列だけ・ポリシーの定義なしで返す（検証 C-P2-5）。
+    let items = state.data.list_tables_for_viewer(&ctx, 200).await?;
     Ok(Json(TableListResponse { items }))
 }
 
 /// テーブルのメタ＋スキーマを取得する（viewer）。
+///
+/// スキーマ管理者（owner）以外には**読める列だけ**を返し、`field_policy`・`row_policy`・RAG の投影設定は返さない。
 #[utoipa::path(
     get,
     path = "/data/tables/{id}",
@@ -112,8 +115,12 @@ pub async fn get_table(
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
 ) -> Result<Json<DataTable>, ApiError> {
+    // スキーマ管理者（owner）以外には読める列だけ・ポリシーの定義なしで返す（検証 C-P2-5）。
     Ok(Json(
-        state.data.get_table(&ctx, id, trace.as_deref()).await?,
+        state
+            .data
+            .get_table_for_viewer(&ctx, id, trace.as_deref())
+            .await?,
     ))
 }
 
@@ -154,11 +161,11 @@ pub async fn get_viewer_context(
     request_body = UpdateSchemaRequest,
     responses(
         (status = 200, description = "改訂後のテーブル", body = DataTable),
-        (status = 400, description = "スキーマが不正（型変更・削除を含む）"),
+        (status = 400, description = "スキーマが不正（型変更・削除を含む）", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない（owner でない）"),
         (status = 404, description = "存在しない"),
-        (status = 409, description = "expected_schema_version 不一致"),
+        (status = 409, description = "expected_schema_version 不一致", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]

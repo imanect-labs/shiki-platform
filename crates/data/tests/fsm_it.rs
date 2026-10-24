@@ -218,7 +218,7 @@ async fn approval_flow_transitions_and_guards() {
             None,
         )
         .await;
-    assert!(matches!(direct, Err(DataError::Invalid(_))), "{direct:?}");
+    assert!(matches!(&direct, Err(e) if e.is_invalid()), "{direct:?}");
 
     let fsm = approval_fsm();
     // draft→submitted は申請者 alice のみ（承認者 bob は actor 述語外＝403）。
@@ -267,7 +267,7 @@ async fn approval_flow_transitions_and_guards() {
             None,
         )
         .await;
-    assert!(matches!(bad, Err(DataError::Invalid(_))), "{bad:?}");
+    assert!(matches!(&bad, Err(e) if e.is_invalid()), "{bad:?}");
 
     // submitted→approved は承認者 bob のみ（申請者 alice は 403）。
     let alice_approve = store
@@ -360,4 +360,104 @@ async fn approval_flow_transitions_and_guards() {
     .expect("audit count")
     .get(0);
     assert!(audit_count >= 4, "allow×2 + deny×2 以上");
+}
+
+/// テーブルにピンされた FSM は**テーブル側の参照として**読む（検証 C-P1-1）。FSM の作成者でない
+/// テーブル editor が、FSM のアーティファクトの閲覧権限なしに遷移できる。テーブルの viewer だけでは
+/// 遷移できず（403）、テーブルが見えない主体には存在も分からない（404）。単一の入口
+/// （`FsmStore::transition`）は HTTP・ワークフロー・スクリプト・ゲートウェイが共有する。
+#[tokio::test]
+async fn table_editor_transitions_without_fsm_artifact_access() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice"); // テーブルと FSM の作成者
+    let bob = ctx(&tenant, "bob"); // テーブル editor（FSM の閲覧権限なし）
+    let carol = ctx(&tenant, "carol"); // テーブル viewer
+    let dave = ctx(&tenant, "dave"); // 権限なし
+    let store = DataStore::new(pool.clone(), Arc::clone(&authz), Arc::new(AllowRefs));
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        pool.clone(),
+        Arc::clone(&authz),
+    ));
+    let fsms = FsmStore::new(Arc::clone(&artifacts), store.clone());
+    let table = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "expense".into(),
+                schema: expense_schema(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let fsm_id = fsms
+        .create(&alice, "approval", table.id, &approval_fsm(), None)
+        .await
+        .unwrap();
+    let mut schema = expense_schema();
+    schema.fsm_ref = Some(FsmRef {
+        artifact_id: fsm_id,
+        version: 1,
+    });
+    store
+        .update_table_schema(&alice, table.id, schema, Some(1), None)
+        .await
+        .unwrap();
+    let obj = alice.ns().data_table(&table.id.to_string());
+    authz
+        .write_tuple(&bob.subject(), Relation::Editor, &obj)
+        .await
+        .unwrap();
+    authz
+        .write_tuple(&carol.subject(), Relation::Viewer, &obj)
+        .await
+        .unwrap();
+    // bob は FSM のアーティファクトを読めない（前提）。
+    assert!(fsms.get(&bob, fsm_id, Some(1), None).await.is_err());
+    let rec = store
+        .create_record(
+            &bob,
+            table.id,
+            json!({"applicant": "bob", "approver": "alice", "status": "draft", "amount": 1}),
+            None,
+        )
+        .await
+        .unwrap();
+    // テーブル editor は自分の行を遷移できる（actor 述語は当該行で評価）。
+    let moved = fsms
+        .transition(&bob, table.id, rec.id, "submitted", rec.rev, None)
+        .await
+        .expect("table editor transitions without FSM artifact access");
+    assert_eq!(moved.data["status"], json!("submitted"));
+    // 定義外の遷移は構造化 400（fsm_invalid）。
+    let bad = fsms
+        .transition(&bob, table.id, rec.id, "draft", moved.rev, None)
+        .await;
+    assert_eq!(
+        bad.as_ref().err().and_then(DataError::invalid_code),
+        Some(data::InvalidCode::FsmInvalid),
+        "{bad:?}"
+    );
+    // テーブル viewer は遷移できない（403）。
+    let r = fsms
+        .transition(&carol, table.id, rec.id, "approved", moved.rev, None)
+        .await;
+    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    // テーブルが見えない主体には存在も分からない。
+    let r = fsms
+        .transition(&dave, table.id, rec.id, "approved", moved.rev, None)
+        .await;
+    assert!(
+        matches!(r, Err(DataError::NotFound | DataError::Forbidden)),
+        "{r:?}"
+    );
+    // 承認者 alice（作成者）は FSM の通常経路でも遷移できる。
+    let done = fsms
+        .transition(&alice, table.id, rec.id, "approved", moved.rev, None)
+        .await
+        .unwrap();
+    assert_eq!(done.data["status"], json!("approved"));
 }

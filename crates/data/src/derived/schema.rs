@@ -24,7 +24,7 @@ use crate::{map_db, DataError};
 /// リンク定義・派生フィールドの同期検証（[`crate::schema`] の型別検証から呼ぶ）。
 pub(crate) fn validate_derived_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
     let name = &f.key;
-    let bad = |m: &str| Err(DataError::Invalid(format!("'{name}': {m}")));
+    let bad = |m: &str| Err(crate::schema_invalid(format!("'{name}': {m}")));
     if let Some(link) = &f.link {
         if f.field_type != FieldType::RecordRef {
             return bad("link は record_ref 型にのみ指定できます");
@@ -74,9 +74,11 @@ pub(crate) fn validate_derived_field(schema: &TableSchema, f: &FieldDef) -> Resu
                     return;
                 }
                 let r = match n {
-                    FormulaExpr::Field(k) if schema.field(k).is_none() => Err(DataError::Invalid(
-                        format!("'{name}': 数式の参照 '{k}' が fields にありません"),
-                    )),
+                    FormulaExpr::Field(k) if schema.field(k).is_none() => {
+                        Err(crate::schema_invalid(format!(
+                            "'{name}': 数式の参照 '{k}' が fields にありません"
+                        )))
+                    }
                     FormulaExpr::Rollup { link, target, op } => check_link_ref(schema, name, link)
                         .and_then(|()| check_target(name, target.as_deref(), *op)),
                     _ => Ok(()),
@@ -108,10 +110,10 @@ pub(crate) fn validate_derived_field(schema: &TableSchema, f: &FieldDef) -> Resu
 fn check_link_ref(schema: &TableSchema, name: &str, link: &str) -> Result<(), DataError> {
     match schema.field(link) {
         Some(l) if l.field_type == FieldType::RecordRef && l.ref_table.is_some() => Ok(()),
-        Some(_) => Err(DataError::Invalid(format!(
+        Some(_) => Err(crate::schema_invalid(format!(
             "'{name}': リンク列 '{link}' は record_ref である必要があります"
         ))),
-        None => Err(DataError::Invalid(format!(
+        None => Err(crate::schema_invalid(format!(
             "'{name}': リンク列 '{link}' が fields にありません"
         ))),
     }
@@ -119,10 +121,10 @@ fn check_link_ref(schema: &TableSchema, name: &str, link: &str) -> Result<(), Da
 
 fn check_target(name: &str, target: Option<&str>, op: RollupOp) -> Result<(), DataError> {
     match target {
-        Some(t) if !is_valid_field_key(t) => Err(DataError::Invalid(format!(
+        Some(t) if !is_valid_field_key(t) => Err(crate::schema_invalid(format!(
             "'{name}': ロールアップの target が不正です"
         ))),
-        None if op != RollupOp::Count => Err(DataError::Invalid(format!(
+        None if op != RollupOp::Count => Err(crate::schema_invalid(format!(
             "'{name}': {op:?} には target が必要です"
         ))),
         _ => Ok(()),
@@ -171,7 +173,7 @@ fn reset_server_fields(
             Some(c) => {
                 // 既存のリンク定義は不変（カーディナリティの変更は既存行の再検証が要る・§7.1）。
                 if f.link != c.link {
-                    return Err(DataError::Invalid(format!(
+                    return Err(crate::schema_invalid(format!(
                         "フィールド '{}' の link は変更できません",
                         f.key
                     )));
@@ -181,7 +183,7 @@ fn reset_server_fields(
                 if let Some(l) = &f.link {
                     // 対称列（逆方向）と対称列の ID はサーバだけが作る。
                     if l.reverse || l.symmetric_field.is_some() {
-                        return Err(DataError::Invalid(format!(
+                        return Err(crate::schema_invalid(format!(
                             "フィールド '{}': link.reverse / link.symmetric_field は指定できません（symmetric_key で作成します）",
                             f.key
                         )));
@@ -253,8 +255,8 @@ impl DataStore {
             .map(|rt| (Relation::Viewer, ctx.ns().data_table(&rt.to_string())))
             .collect();
         if az.check_all(ctx, &asks).await?.iter().any(|ok| !ok) {
-            return Err(DataError::Invalid(
-                "派生フィールドの参照先テーブルが見つかりません".into(),
+            return Err(crate::schema_invalid(
+                "派生フィールドの参照先テーブルが見つかりません",
             ));
         }
         let cat = self
@@ -378,7 +380,7 @@ impl DataStore {
                     continue;
                 }
                 if loaded.len() >= MAX_CATALOG_TABLES {
-                    return Err(DataError::Invalid(format!(
+                    return Err(crate::schema_invalid(format!(
                         "派生フィールドが辿るテーブルが多すぎます（最大 {MAX_CATALOG_TABLES}）"
                     )));
                 }
