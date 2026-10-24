@@ -87,6 +87,16 @@ impl ChatStore {
         .await?;
         // 付け直しで時刻を更新しない（既にピン留め済みなら元の時刻のまま＝並びが跳ねない）。
         // 新しく付けるのは本人のピン留めが上限未満のときだけ（一覧に出ないピンを作らない）。
+        // 数えてから付けるまでを本人単位のロックで直列化する（同時に付けて上限を超えない）。
+        let mut tx = self.db.begin().await.map_err(map_db)?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('thread_pin:' || $1, 0))")
+            .bind(format!(
+                "{}|{}|{}",
+                ctx.tenant_id, ctx.org, ctx.principal.id
+            ))
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db)?;
         let updated = sqlx::query(
             "UPDATE thread SET pinned_at = CASE WHEN $3 THEN coalesce(pinned_at, now()) END \
              WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL \
@@ -101,15 +111,29 @@ impl ChatStore {
         .bind(&ctx.org)
         .bind(&ctx.principal.id)
         .bind(MAX_PINNED)
-        .execute(&self.db)
+        .execute(&mut *tx)
         .await
         .map_err(map_db)?;
         if updated.rows_affected() == 0 {
-            // 生存は require_thread で確認済みなので、ここに来るのは上限で拒否したとき。
+            // 外す操作、または途中で削除された（生きていない）なら NotFound。それ以外は上限。
+            let alive: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM thread \
+                 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL)",
+            )
+            .bind(thread_id)
+            .bind(&ctx.tenant_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(map_db)?;
+            tx.rollback().await.map_err(map_db)?;
+            if !pinned || !alive {
+                return Err(ChatError::NotFound);
+            }
             return Err(ChatError::Invalid(format!(
                 "ピン留めは {MAX_PINNED} 件までです。ほかのピン留めを外してください"
             )));
         }
+        tx.commit().await.map_err(map_db)?;
         self.record_allow(
             ctx,
             AuditAction::ThreadPin,
@@ -143,7 +167,9 @@ impl ChatStore {
                 trace_id,
             )
             .await?;
-        let revoked = self.revoke_all_shares(ctx, thread_id, &obj).await?;
+        let revoked = self
+            .revoke_all_shares(ctx, thread_id, &obj, trace_id)
+            .await?;
 
         let mut tx = self.db.begin().await.map_err(map_db)?;
         let updated = sqlx::query(
@@ -193,6 +219,7 @@ impl ChatStore {
         ctx: &AuthContext,
         thread_id: Uuid,
         obj: &authz::FgaObject,
+        trace_id: Option<&str>,
     ) -> Result<usize, ChatError> {
         let tuples = self
             .authz
@@ -210,14 +237,26 @@ impl ChatStore {
                 continue;
             };
             let subject = target.subject(&ns);
-            self.authz
-                .delete_tuple(&subject, role.relation(), obj)
-                .await
-                .map_err(|e| ChatError::Internal(e.to_string()))?;
+            // ワークスペースフォルダを先に外す。スレッドのタプルを先に消すと、フォルダ側で失敗した
+            // ときに再試行で剥奪対象が見つからず、フォルダの editor が残ってしまう。
             if matches!(role, ThreadRole::Editor) {
                 self.set_workspace_editor(ctx, thread_id, &subject, false)
                     .await?;
             }
+            self.authz
+                .delete_tuple(&subject, role.relation(), obj)
+                .await
+                .map_err(|e| ChatError::Internal(e.to_string()))?;
+            // 削除の確定（後段）が失敗しても剥奪は済んでいるので、剥奪ごとに監査を残す。
+            self.record_share_audit(
+                ctx,
+                thread_id,
+                AuditAction::ThreadUnshare,
+                &target,
+                role,
+                trace_id,
+            )
+            .await?;
             revoked += 1;
         }
         Ok(revoked)

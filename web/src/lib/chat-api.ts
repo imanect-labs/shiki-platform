@@ -286,35 +286,31 @@ export async function setThreadSkills(threadId: string, skills: ArtifactPin[]): 
 /// スレッドの更新リクエスト（**`UpdateThreadRequest` から生成**した型）。
 type UpdateThreadRequest = components["schemas"]["UpdateThreadRequest"];
 
-/// スレッドを更新する（PATCH /threads/{id}）。失敗は利用者向けの文言で投げる
-/// （入力の誤り・ピン留めの上限など 400 はサーバの説明をそのまま出す）。
+/// スレッドを更新する（PATCH /threads/{id}）。失敗は利用者向けの文言で投げる。
+/// サーバは 400 の理由を本文に載せないので、操作ごとに 400 の意味を `invalid` で渡す。
 async function patchThread(
   threadId: string,
   body: UpdateThreadRequest,
   failure: string,
+  invalid = failure,
 ): Promise<void> {
   const res = await apiFetch(`/threads/${threadId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    let detail = "";
-    if (res.status === 400) {
-      try {
-        detail = ((await res.json()) as { detail?: string }).detail ?? "";
-      } catch {
-        /* 本文が JSON でなければ既定の文言 */
-      }
-    }
-    throw new Error(detail || failure);
-  }
+  if (!res.ok) throw new Error(res.status === 400 ? invalid : failure);
   notifyThreadsChanged();
 }
 
 /// スレッドの名前を変える（owner のみ）。以後は自動タイトルで上書きされない。
 export function renameThread(threadId: string, title: string): Promise<void> {
-  return patchThread(threadId, { title }, "名前を変更できませんでした。");
+  return patchThread(
+    threadId,
+    { title },
+    "名前を変更できませんでした。",
+    "名前は 1〜200 文字で入力してください。",
+  );
 }
 
 /// ピン留めを付け外しする（owner のみ）。
@@ -323,6 +319,8 @@ export function setThreadPinned(threadId: string, pinned: boolean): Promise<void
     threadId,
     { pinned },
     pinned ? "ピン留めできませんでした。" : "ピン留めを外せませんでした。",
+    // 付けるときの 400 はピン留めの上限（MAX_PINNED・50 件）。
+    "ピン留めは 50 件までです。ほかのピン留めを外してください。",
   );
 }
 
