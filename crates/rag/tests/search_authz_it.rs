@@ -38,13 +38,19 @@ use common::{
 use rag::pipeline::{consumer, relay, PipelineDeps};
 use rag::types::{BlockType, ParsedBlock, ParsedDocument};
 use rag::{
-    DocumentParser, ParseRequest, RagConfig, RagError, SearchMode, SearchService, TantivyFulltext,
+    DocumentParser, ParseRequest, QueryHashKey, RagConfig, RagError, SearchMode, SearchService,
+    TantivyFulltext,
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use storage::audit::AuditRecorder;
 use storage::event::{emit_on, WriteEvent};
 use storage::{IndexerStorage, WriteOp};
 use uuid::Uuid;
+
+/// 監査の検索語ハッシュの鍵（固定）。期待値を同じ鍵で計算して突き合わせる。
+fn test_query_hash_key() -> QueryHashKey {
+    QueryHashKey::try_from("0123456789abcdef0123456789abcdef".to_owned()).unwrap()
+}
 
 /// ファイル名から決定的な本文を返すパーサ（検索語「売上」を必ず含む）。
 struct ContentParser;
@@ -130,6 +136,7 @@ async fn setup() -> Option<Env> {
     let config = RagConfig {
         enabled: true,
         consumer_concurrency: 2,
+        query_hash_key: Some(test_query_hash_key()),
         ..RagConfig::default()
     };
     let vector = Arc::new(FakeVectorStore::default());
@@ -552,7 +559,16 @@ async fn citations_and_decisions_are_audited_with_trace_id() {
             .any(|v| v.as_str() == Some(file.to_string().as_str())),
         "file 粒度の認可判定（allow）が記録される"
     );
-    assert!(metadata["query_sha256"].as_str().unwrap().len() == 64);
+    // 検索語はサーバの鍵で HMAC した値だけを残す（#833・鍵なしの旧 query_sha256 は残さない）。
+    assert_eq!(
+        metadata["query_hmac"].as_str(),
+        Some(
+            test_query_hash_key()
+                .digest(&env.alice.tenant_id, "売上")
+                .as_str()
+        )
+    );
+    assert!(metadata.get("query_sha256").is_none());
     assert!(
         metadata.get("message_id").is_none(),
         "回答の外の検索には付けない"
