@@ -164,7 +164,7 @@ async fn post_message_is_transactional_outbox() {
     .await
     .unwrap();
     let claimed_by_worker = store
-        .run_status(res.run_id)
+        .run_status(&c.tenant_id, res.run_id)
         .await
         .unwrap()
         .is_some_and(|s| s != chat::RunStatus::Queued);
@@ -295,7 +295,7 @@ async fn cancel_is_cooperative_and_visible_to_claim() {
         )
         .await
         .unwrap();
-    let status = store.run_status(res.run_id).await.unwrap();
+    let status = store.run_status(&c.tenant_id, res.run_id).await.unwrap();
     assert_eq!(status, Some(chat::RunStatus::Cancelled));
 }
 
@@ -322,10 +322,48 @@ async fn replay_returns_events_after_cursor() {
             .unwrap();
     }
     // cursor=1 以降（seq 2,3）だけ返る（Last-Event-ID 再開・非重複）。
-    let events = store.replay_events(run_id, 1).await.unwrap();
+    let events = store.replay_events(&c.tenant_id, run_id, 1).await.unwrap();
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].seq, 2);
     assert_eq!(events[1].seq, 3);
+
+    // イベント行の tenant_id は run 行から写される（複合 FK (tenant_id, run_id) の子・#815）。
+    let tenants: Vec<String> =
+        sqlx::query_scalar("SELECT DISTINCT tenant_id FROM generation_event WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(tenants, vec![tenant.clone()]);
+
+    // 他テナントからは run_id を知っていても読めない（replay も状態も空・#815）。
+    assert!(store
+        .replay_events("other-tenant", run_id, 0)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store.run_status("other-tenant", run_id).await.unwrap(),
+        None
+    );
+
+    // DB 自体が親 run と異なる tenant のイベント行を拒否する（アプリの前段確認に頼らない）。
+    let err = sqlx::query(
+        "INSERT INTO generation_event (run_id, tenant_id, seq, type, payload) \
+         VALUES ($1, 'other-tenant', 99, 'token', '{}'::jsonb)",
+    )
+    .bind(run_id)
+    .execute(&pool)
+    .await
+    .expect_err("親と異なる tenant のイベントは FK 違反");
+    assert_eq!(
+        err.as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .map(|c| c.to_string())
+            .as_deref(),
+        Some("23503"),
+        "FK 違反であること: {err}"
+    );
 }
 
 /// 発話ごとのツール指定（#734）は run 行へスナップショットされ、claim で読み戻せる。

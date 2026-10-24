@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use authz::AuthContext;
 use base64::Engine as _;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::Deserialize;
 
 use crate::error::RagError;
@@ -21,6 +22,30 @@ impl HttpDocumentParser {
             base_url: base_url.trim_end_matches('/').to_string(),
         }
     }
+}
+
+/// ingestion-worker 呼び出しに付ける共有トークン（Bearer）のヘッダ集合を組む（#812）。
+///
+/// worker の呼び出し口（parse / embed / rerank / edit）は全て `reqwest::Client` を受け取るので、
+/// トークンは**クライアントの既定ヘッダ**として一箇所で載せる（呼び出し口ごとの付け忘れを作らない）。
+/// 返り値は `reqwest::ClientBuilder::default_headers` にそのまま渡す。
+///
+/// - `None`／空文字: 空のヘッダ集合（無認証の worker への後方互換。警告は配線側で出す）。
+/// - ヘッダに載せられない文字を含む: [`RagError::Config`]（起動時に落とす）。
+///
+/// **Qdrant 用のクライアントにはこのヘッダを載せない**。Qdrant は `Authorization: Bearer` も
+/// API キーとして解釈するため、worker のトークンが別サービスへ漏れる。
+pub fn worker_auth_headers(token: Option<&str>) -> Result<HeaderMap, RagError> {
+    let mut headers = HeaderMap::new();
+    if let Some(token) = token.filter(|t| !t.is_empty()) {
+        let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| {
+            RagError::Config("worker_auth_token にヘッダへ載せられない文字があります".into())
+        })?;
+        // ログ・Debug 出力に値を出さない。
+        value.set_sensitive(true);
+        headers.insert(AUTHORIZATION, value);
+    }
+    Ok(headers)
 }
 
 /// worker の 422 構造化エラー（`{"detail": {"error", "detail"}}`）。

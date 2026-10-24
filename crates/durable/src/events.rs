@@ -36,14 +36,16 @@ pub async fn append_event<'e>(
     run.validate();
     ev.validate();
     let n = key.len();
+    // run 行から写す列（chat の tenant_id 等）は採番と同じ RETURNING で取る（親の正本を写す・#815）。
+    let (copied_cols, copied_vals, copied_ret) = ev.copied_column_sql(key);
     // seq は run 行のカウンタを `UPDATE ... RETURNING` で採る（`max(seq)+1` を数えない）。
     // 同じ UPDATE が行ロックと採番を兼ねるので、並行追記でも seq は重複しない。
     // 詳細は `RunTableSpec::event_seq_column` のコメント。
     let sql = format!(
         "WITH bumped AS (UPDATE {run_table} SET {ctr} = {ctr} + 1 \
-                         WHERE {pred} AND {fencing} = ${f} RETURNING {ctr} AS next_seq) \
-         INSERT INTO {evt} ({key_cols}, {seq}, {kind_col}, {payload_col}) \
-         SELECT {key_vals}, bumped.next_seq, ${k}, ${p} FROM bumped \
+                         WHERE {pred} AND {fencing} = ${f} RETURNING {ctr} AS next_seq{copied_ret}) \
+         INSERT INTO {evt} ({key_cols}{copied_cols}, {seq}, {kind_col}, {payload_col}) \
+         SELECT {key_vals}{copied_vals}, bumped.next_seq, ${k}, ${p} FROM bumped \
          RETURNING {seq}",
         evt = ev.table,
         key_cols = key.column_list(),
@@ -91,11 +93,12 @@ pub async fn append_event_unfenced<'e>(
         .collect::<Vec<_>>()
         .join(", ");
     let n = key.len();
+    let (copied_cols, copied_vals, copied_ret) = ev.copied_column_sql(key);
     let sql = format!(
         "WITH bumped AS (UPDATE {run_table} SET {ctr} = {ctr} + 1 \
-                         WHERE {pred} AND {status} IN ({statuses}) RETURNING {ctr} AS next_seq) \
-         INSERT INTO {evt} ({key_cols}, {seq}, {kind_col}, {payload_col}) \
-         SELECT {key_vals}, bumped.next_seq, ${k}, ${p} FROM bumped \
+                         WHERE {pred} AND {status} IN ({statuses}) RETURNING {ctr} AS next_seq{copied_ret}) \
+         INSERT INTO {evt} ({key_cols}{copied_cols}, {seq}, {kind_col}, {payload_col}) \
+         SELECT {key_vals}{copied_vals}, bumped.next_seq, ${k}, ${p} FROM bumped \
          RETURNING {seq}",
         evt = ev.table,
         key_cols = key.column_list(),

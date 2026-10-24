@@ -218,7 +218,7 @@ async fn run_to_done(
         .post_message(c, thread_id, text, &[], None, Some(true), false, &[], None)
         .await
         .unwrap();
-    let mut rx = store.event_stream(res.run_id, 0);
+    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
     let mut events = Vec::new();
     for _ in 0..500 {
         // Coverage（cargo-llvm-cov）実行時は計装＋並列テストバイナリで大きく遅くなるため

@@ -50,10 +50,16 @@ pub(super) const EVENT_SPEC: EventTableSpec = EventTableSpec {
     seq_column: "seq",
     kind_column: "type",
     payload_column: "payload",
+    // イベント行の tenant_id は run 行から写す（複合 FK (tenant_id, run_id) の子・#815）。
+    copied_run_columns: &["tenant_id"],
 };
 
 /// run 行のキーカラム（chat は run_id 単独キー。workflow は tenant 複合キーで同じ形に乗る）。
 pub(super) const RUN_KEY_COLUMNS: &[&str] = &["run_id"];
+
+/// イベントを**読む**ときのキー（tenant 込み・#815）。`generation_event` は `(tenant_id, run_id)` の
+/// 複合 FK の子で、読み手は run_id だけでなく自テナントでも絞る（別経路から呼ばれても越境しない）。
+pub(super) const EVENT_READ_KEY_COLUMNS: &[&str] = &["tenant_id", "run_id"];
 
 /// ワーカーが claim した run（生成に必要な材料一式）。
 // generation_run の行の射影（DB の boolean 列をそのまま写す）。状態機械に畳むと
@@ -423,7 +429,8 @@ impl ChatStore {
             "SELECT e.payload FROM generation_run r \
              CROSS JOIN LATERAL ( \
                  SELECT payload FROM generation_event \
-                 WHERE run_id = r.run_id AND type = 'context_usage' \
+                 WHERE tenant_id = r.tenant_id AND run_id = r.run_id \
+                   AND type = 'context_usage' \
                  ORDER BY seq DESC LIMIT 1 \
              ) e \
              WHERE r.thread_id = $1 AND r.tenant_id = $2 \
@@ -561,28 +568,37 @@ impl ChatStore {
         ))
     }
 
-    /// run の現在状態を引く（SSE の端末判定・crash safety）。
-    pub async fn run_status(&self, run_id: Uuid) -> Result<Option<RunStatus>, ChatError> {
-        let s: Option<String> =
-            sqlx::query_scalar("SELECT status FROM generation_run WHERE run_id = $1")
-                .bind(run_id)
-                .fetch_optional(&self.db)
-                .await
-                .map_err(map_db)?;
+    /// run の現在状態を引く（SSE の端末判定・crash safety）。他テナントの run は `None`。
+    pub async fn run_status(
+        &self,
+        tenant_id: &str,
+        run_id: Uuid,
+    ) -> Result<Option<RunStatus>, ChatError> {
+        let s: Option<String> = sqlx::query_scalar(
+            "SELECT status FROM generation_run WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(tenant_id)
+        .bind(run_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
         Ok(s.and_then(|s| RunStatus::parse(&s)))
     }
 
     /// `from_seq` より後のイベントを replay する（真実のソース・SSE の補填/復元）。
+    ///
+    /// 他テナントの run_id を渡しても 0 件（tenant_id でも絞る・#815）。
     pub async fn replay_events(
         &self,
+        tenant_id: &str,
         run_id: Uuid,
         from_seq: i64,
     ) -> Result<Vec<StreamEvent>, ChatError> {
-        let kv = [KeyValue::Uuid(run_id)];
+        let kv = [KeyValue::Text(tenant_id), KeyValue::Uuid(run_id)];
         let rows: Vec<(i64, StreamEventKind)> = durable::replay_events(
             &self.db,
             &EVENT_SPEC,
-            &Key::new(RUN_KEY_COLUMNS, &kv),
+            &Key::new(EVENT_READ_KEY_COLUMNS, &kv),
             from_seq,
         )
         .await

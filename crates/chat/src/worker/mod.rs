@@ -298,8 +298,14 @@ impl ChatWorker {
             .build_history(&ctx, run.thread_id, run.message_id)
             .await?;
         // 自律 run はステップ境界のチェックポイントを durable run 行へ永続化する（resume・#351）。
-        let mut worker_sink = WorkerSink::new(self.store.clone(), run_id, fencing, cancel.clone())
-            .with_checkpoints(run.autonomous);
+        let mut worker_sink = WorkerSink::new(
+            self.store.clone(),
+            &run.tenant_id,
+            run_id,
+            fencing,
+            cancel.clone(),
+        )
+        .with_checkpoints(run.autonomous);
 
         // 既定では非自律チャットも agent-core ループ（Chat プロファイル）を通す＝モデルが
         // ツール発火を裁量する（挨拶等は検索しない・generative UI も通常チャットで出る。issue #102）。

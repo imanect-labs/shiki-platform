@@ -92,8 +92,16 @@ pub async fn record_on(
     // チェーン対象のみ **tenant_id + org 単位**で直列化し、直前の **chained 行** に連結する
     // （未チェーンの読取/deny 行は跨いで無視する）。SaaS の共用プール Postgres でも
     // ハッシュチェーンをテナント内に閉じる（同一 org を複数テナントが共有しても越境連結しない・SAAS.1）。
+    //
+    // ロックキーは **64bit**（`hashtextextended`・#816）。旧実装の `hashtext` は 32bit で、フルプールで
+    // テナント×org の組が増えると誕生日衝突で**無関係なテナント同士が互いの監査書込を待つ**
+    // （約 7.7 万組で衝突確率 50%）。`audit_chain:` 接頭辞は他の bigint advisory lock
+    // （`share_link:` 等）とキーを分けるため。
+    // ⚠️ 旧版（32bit キー）と混在して動く間は、同じ (tenant, org) を新旧が別キーでロックするため
+    // 直列化されず、chained 行が同じ prev_hash を指して**チェーンが分岐し得る**。このリリースは
+    // **旧バイナリと並走させず非ローリングで切り替える**（docs/guides/tenant-ops.md「アップグレード時の注意」）。
     let prev_hash: Option<String> = if chained {
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('audit_chain:' || $1, 0))")
             .bind(format!("{}|{}", ctx.tenant_id, ctx.org))
             .execute(&mut *conn)
             .await?;

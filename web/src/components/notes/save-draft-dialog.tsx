@@ -28,6 +28,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useMe } from "@/hooks/use-me";
+import { useStorageScopeReady } from "@/lib/user-storage";
 import { cn } from "@/lib/utils";
 
 export type SaveTarget = { name: string; parentId: string | null };
@@ -145,6 +147,38 @@ export function SaveDraftDialog({
 // ---------------------------------------------------------------------------
 // 下書き画面（ノート・スライド・CSV）共通のクローム・状態バッジ・タブ・空状態。
 // ---------------------------------------------------------------------------
+
+/// 下書き画面の読み込み中表示。会話履歴からの復元はユーザー確定（/me）まで待つ（#817）ので、
+/// /me が 401 以外（403・5xx・ネットワーク断）で失敗したときは待ち続けず、失敗を伝えて取り直せる
+/// ようにする（401 はログイン画面へ送られるので待ち表示のままでよい）。
+export function DraftLoading() {
+  const scopeReady = useStorageScopeReady();
+  const me = useMe();
+  if (!scopeReady && me.error) {
+    return (
+      <div
+        className="flex min-h-[40vh] flex-col items-center justify-center gap-2 text-center text-sm"
+        role="alert"
+      >
+        <FileWarning className="size-6 text-muted-foreground/60" aria-hidden />
+        <p className="text-destructive">下書きを読み込めませんでした。</p>
+        <button
+          type="button"
+          onClick={me.reload}
+          className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        >
+          再試行
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+      <FileWarning className="size-6 text-muted-foreground/60" aria-hidden />
+      下書きを読み込んでいます…
+    </div>
+  );
+}
 
 /// 「下書き・未保存」バッジ（文字で示す・ドットは使わない）。
 export function DraftBadge({ testId }: { testId?: string }) {

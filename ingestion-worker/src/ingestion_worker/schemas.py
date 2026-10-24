@@ -55,8 +55,9 @@ class ParsedBlock(BaseModel):
 class ParseRequest(BaseModel):
     """パース要求。入力は URL か**インラインバイト列のどちらか一方**。
 
-    `source_url` は worker が自分で取りに行く（httpx・SSRF ガード無し）。したがって
-    **StorageService が発行した内部向け・短 TTL の presigned GET URL に限る**。
+    `source_url` は worker が自分で取りに行く（httpx・解決後 IP の検証は無い）。したがって
+    **StorageService が発行した内部向け・短 TTL の presigned GET URL に限る**。worker 側でも
+    `SOURCE_URL_ALLOWED_HOSTS` に無いホストは取りに行かない（security.py・#812）。
     外部 URL 由来の文書（web_fetch の PDF 等）は、呼び出し側がガード済み経路で取得した
     バイト列を `content_base64` で渡すこと。ここに任意 URL を渡せると worker が
     confused deputy になり、呼び出し側の宛先制限を丸ごと迂回できる（#405・PIT-48）。

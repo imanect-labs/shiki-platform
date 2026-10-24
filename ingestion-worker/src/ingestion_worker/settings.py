@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     # 起動時にモデルを読み込んで空打ちしておく（バックグラウンド）。しないと、起動後や
     # 久しぶりの最初の検索が reranker の読み込み（torch の import を含めて十数秒）を待つ。
     warmup_models: bool = True
+    # shiki-server と共有するトークン（`Authorization: Bearer`・#812）。/healthz 以外の
+    # 全エンドポイントで要求する。server 側 SHIKI__RAG__WORKER_AUTH_TOKEN と同じ値にする。
+    # 空は後方互換で無認証のまま受け付ける（起動時に警告する）。
+    worker_auth_token: str = ""
+    # /parse の source_url で取りに行ってよいホスト（カンマ区切り。`host` か `host:port`）。
+    # presigned URL の発行元（server の SHIKI__STORAGE__S3__INTERNAL_ENDPOINT 等）だけを書く。
+    # 空なら URL 経路を全て拒否する（fail-closed・#812）。content_base64 経路は影響しない。
+    source_url_allowed_hosts: str = ""
 
 
 @lru_cache
