@@ -23,6 +23,10 @@ pub struct ExecCtx {
     pub principal_kind: String,
     /// OTel トレース id（監査 ↔ Langfuse ↔ OTel を同一トレースに束ねる）。
     pub trace_id: Option<String>,
+    /// 実行中の run（監査で run とワークフローを特定する・ノード実行外は `None`）。
+    pub run_id: Option<Uuid>,
+    /// 実行中の step の path（監査用・ノード実行外は `None`）。
+    pub step_path: Option<String>,
 }
 
 /// ポート呼び出しの失敗（executor が [`NodeError`](crate::run::NodeError) に写す）。

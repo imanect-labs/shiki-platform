@@ -111,6 +111,8 @@ fn default_rate_refill() -> f64 {
 /// 「スコープ ceiling 外の呼び出しが out_of_scope で監査される」・検証 C-P2-3）。
 struct RunAudit {
     recorder: storage::audit::AuditRecorder,
+    /// run からワークフローを引く（out_of_scope の監査に workflow / run を残す・検証 N9）。
+    db: sqlx::PgPool,
 }
 impl CapabilityAudit for RunAudit {
     fn record(&self, tenant_id: &str, api: &str, allowed: bool, meta: &Value) {
@@ -125,9 +127,37 @@ impl CapabilityAudit for RunAudit {
         self.record(&ec.tenant_id, api, false, meta);
         let ctx = auth::auth_ctx(ec);
         let recorder = self.recorder.clone();
-        let (api, meta, trace) = (api.to_string(), meta.clone(), ec.trace_id.clone());
+        let db = self.db.clone();
+        let (api, mut meta, trace) = (api.to_string(), meta.clone(), ec.trace_id.clone());
+        let (run_id, step, kind) = (ec.run_id, ec.step_path.clone(), ec.principal_kind.clone());
         // 監査は同期の呼び出し口から非同期に書く（ノードの失敗を待たせない・書込失敗は warn）。
         tokio::spawn(async move {
+            // どのワークフローのどの run・step かを残す（run が無い呼び出しは主体だけ）。
+            if let Some(o) = meta.as_object_mut() {
+                if let Some(run_id) = run_id {
+                    o.insert("run_id".into(), serde_json::json!(run_id));
+                    let wf: Option<(uuid::Uuid, i64)> = sqlx::query_as(
+                        "SELECT workflow_id, version FROM workflow_run \
+                         WHERE tenant_id = $1 AND run_id = $2",
+                    )
+                    .bind(&ctx.tenant_id)
+                    .bind(run_id)
+                    .fetch_optional(&db)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "out_of_scope の監査でワークフローを引けません");
+                        None
+                    });
+                    if let Some((workflow_id, version)) = wf {
+                        o.insert("workflow_id".into(), serde_json::json!(workflow_id));
+                        o.insert("workflow_version".into(), serde_json::json!(version));
+                    }
+                }
+                if let Some(step) = step {
+                    o.entry("step").or_insert_with(|| serde_json::json!(step));
+                }
+                o.insert("principal_kind".into(), serde_json::json!(kind));
+            }
             let entry = storage::audit::AuditEntry {
                 action: storage::audit::AuditAction::WorkflowCapabilityOutOfScope,
                 object_type: "workflow_capability",
@@ -190,6 +220,7 @@ async fn build_prod_executor(
     });
     let journal = EffectJournal::new(deps.db.clone());
     let audit = Arc::new(RunAudit {
+        db: deps.db.clone(),
         recorder: storage::audit::AuditRecorder::new(deps.db.clone()),
     });
     let mut executor = CapabilityNodeExecutor::new(ports, journal, audit).with_http_allowlist(
@@ -447,13 +478,28 @@ mod audit_tests {
         let tenant = format!("t-{}", uuid::Uuid::new_v4());
         let audit = RunAudit {
             recorder: storage::audit::AuditRecorder::new(pool.clone()),
+            db: pool.clone(),
         };
+        let run_id = uuid::Uuid::new_v4();
+        let workflow_id = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO workflow_run (tenant_id, run_id, org, workflow_id, version, trigger_kind, principal) \
+             VALUES ($1, $2, 'acme', $3, 3, 'schedule', 'wf-1')",
+        )
+        .bind(&tenant)
+        .bind(run_id)
+        .bind(workflow_id)
+        .execute(&pool)
+        .await
+        .unwrap();
         let ec = workflow_engine::ExecCtx {
             tenant_id: tenant.clone(),
             org: "acme".into(),
             principal: "wf-1".into(),
             principal_kind: "workflow".into(),
             trace_id: Some("trace-oos".into()),
+            run_id: Some(run_id),
+            step_path: Some("n1".into()),
         };
         audit.record_out_of_scope(
             &ec,
@@ -481,5 +527,11 @@ mod audit_tests {
         assert_eq!(row.2, "deny");
         assert_eq!(row.3, "trace-oos");
         assert_eq!(row.4["reason"], "out_of_scope");
+        // どのワークフローのどの run・step かが分かる（検証 N9）。
+        assert_eq!(row.4["run_id"], serde_json::json!(run_id));
+        assert_eq!(row.4["workflow_id"], serde_json::json!(workflow_id));
+        assert_eq!(row.4["workflow_version"], 3);
+        assert_eq!(row.4["step"], "n1");
+        assert_eq!(row.4["principal_kind"], "workflow");
     }
 }

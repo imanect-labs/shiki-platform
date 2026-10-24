@@ -104,6 +104,8 @@ impl CapabilityNodeExecutor {
             principal: ctx.principal.clone(),
             principal_kind: ctx.principal_kind.clone(),
             trace_id: ctx.trace_id.clone(),
+            run_id: Some(ctx.run_id),
+            step_path: Some(ctx.step_path.clone()),
         }
     }
 
