@@ -6,6 +6,7 @@ use crate::ir::{Trigger, WorkflowIr};
 impl RegistrationService {
     /// 同意画面の提案 grants を IR から静的に列挙する（純関数・最終選択は有効化者）。
     #[must_use]
+    #[allow(clippy::too_many_lines)] // ノード種ごとの提案の表（exhaustive に並べる方が漏れを見つけやすい）。
     pub fn consent_plan(ir: &WorkflowIr) -> Vec<SuggestedGrant> {
         let mut out: Vec<SuggestedGrant> = Vec::new();
         let mut push = |g: SuggestedGrant| {
@@ -108,6 +109,26 @@ impl RegistrationService {
                             needs_user_pick: false,
                         });
                     }
+                }
+                // 構造化データ（Task 15.7）: テーブル単位で委譲する（読取 = viewer・書込 = editor）。
+                // schedule / event の run は委譲元ユーザーの権限で行が絞られる（ポート実装）。
+                crate::vocab::NodeType::DataQuery
+                | crate::vocab::NodeType::DataRecordCreate
+                | crate::vocab::NodeType::DataRecordUpdate
+                | crate::vocab::NodeType::DataRecordDelete
+                | crate::vocab::NodeType::DataTransition
+                | crate::vocab::NodeType::DataBulkUpsert => {
+                    let table = literal_str(&node.params, "table");
+                    let read = nt == crate::vocab::NodeType::DataQuery;
+                    push(SuggestedGrant {
+                        scope: if read { "data.read" } else { "data.write" }.into(),
+                        object_kind: "data_table".into(),
+                        object_id: table.clone(),
+                        object_name: None,
+                        relation: if read { "viewer" } else { "editor" }.into(),
+                        source,
+                        needs_user_pick: table.is_none(),
+                    });
                 }
                 crate::vocab::NodeType::WorkflowStart => {
                     let name = literal_str(&node.params, "name");

@@ -60,6 +60,14 @@ impl LocalKeyFileProvider {
     }
 }
 
+/// 鍵ファイルの中身を 32 バイトの鍵へ正規化する（生 32 バイト or base64・改行可）。
+///
+/// マスターキーファイルと同じ形式を他のサーバ鍵（構造化データのカーソル鍵など）でも使うための
+/// 公開入口。形式を 1 か所に保ち、鍵ファイルの扱いを流儀ごとに分岐させない。
+pub fn decode_key_material(raw: &[u8]) -> Result<[u8; KEY_LEN], CryptoError> {
+    decode_master_key(raw)
+}
+
 /// マスターキーのバイト列を 32 バイトへ正規化する（base64 or 生バイト）。
 fn decode_master_key(raw: &[u8]) -> Result<[u8; KEY_LEN], CryptoError> {
     // 生バイトが 32 バイトならそのまま。

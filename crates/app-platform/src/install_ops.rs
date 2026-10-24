@@ -196,6 +196,10 @@ impl InstallService {
             if let Err(e) = self.authz.delete_object_tuples(&obj).await {
                 tracing::warn!(error = %e, table_id = %id, "アンインストール時の tuple 撤去に失敗");
             }
+            // 撤去した ReBAC を配信へ知らせる（archive 済みでも開いている購読を次のバッチで落とす）。
+            if let Err(e) = self.data.notify_authz_changed(ctx, Some(*id)).await {
+                tracing::warn!(error = %e, table_id = %id, "アンインストール時の配信の世代更新に失敗");
+            }
         }
         if let Some(inst) = &installation {
             self.disable_clients_best_effort(

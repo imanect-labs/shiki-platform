@@ -7,6 +7,7 @@ import { PenSquare, Search, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   APPS_NAV,
+  DATA_NAV,
   DRIVE_ICON,
   DRIVE_ROOT,
   SKILLS_NAV,
@@ -55,7 +56,7 @@ function NavTile({
   );
 }
 
-/// スマホのドロワ上部: 「新しいチャット」（主ボタン）と検索を 1 段に、その下にナビ 4 マスを 1 行。
+/// スマホのドロワ上部: 「新しいチャット」（主ボタン）と検索を 1 段に、その下にナビ 5 マスを 1 行。
 /// 履歴に使える縦幅を広げるため、ドライブの子メニューはここに出さない（ドライブ画面側の ⋯ が導線）。
 function MobileNav({ onNavigate }: { onNavigate?: () => void }) {
   const router = useRouter();
@@ -66,6 +67,7 @@ function MobileNav({ onNavigate }: { onNavigate?: () => void }) {
     SKILLS_NAV,
     APPS_NAV,
     WORKFLOWS_NAV,
+    DATA_NAV,
   ];
 
   return (
@@ -92,7 +94,7 @@ function MobileNav({ onNavigate }: { onNavigate?: () => void }) {
           <Search className="size-5" aria-hidden />
         </button>
       </div>
-      <nav aria-label="メインナビゲーション" className="grid grid-cols-4 gap-1">
+      <nav aria-label="メインナビゲーション" className="grid grid-cols-5 gap-1">
         {tiles.map((t) => (
           <NavTile
             key={t.key}
@@ -231,6 +233,16 @@ export function SidebarNav({
           active={isActivePath(WORKFLOWS_NAV.href, pathname)}
           onClick={() => {
             router.push(WORKFLOWS_NAV.href);
+            onNavigate?.();
+          }}
+        />
+        <NavItem
+          icon={DATA_NAV.icon}
+          label={DATA_NAV.label}
+          collapsed={collapsed}
+          active={isActivePath(DATA_NAV.href, pathname)}
+          onClick={() => {
+            router.push(DATA_NAV.href);
             onNavigate?.();
           }}
         />

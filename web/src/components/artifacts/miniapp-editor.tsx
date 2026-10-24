@@ -121,6 +121,9 @@ export function MiniAppEditorDialog({
               ? { artifact_id: skill.id, version: skill.currentVersion }
               : null,
       workflows: pins,
+      // 画面の表（```data_grid）が参照する保存ビューのピンは、この画面では編集しないので
+      // 版も含めてそのまま引き継ぐ（保存で落とすと表が描けなくなる・Task 15.7）。
+      ...(app?.body.data_views?.length ? { data_views: app.body.data_views } : {}),
     };
     setBusy(true);
     setError(null);

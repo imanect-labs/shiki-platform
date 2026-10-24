@@ -4,6 +4,8 @@
 //! `waiting_approval` にし、`run_approval` に決定が入るまで（or キャンセルまで）**ブロック**する。
 //! 待機中もハートビート（別タスク）がリースを延長するため、リースは失効しない。決定/キャンセルで
 //! 走行状態へ戻して継続する。**タイムアウトは既定 deny**（承認なしに破壊系を実行しない・fail-safe）。
+//! 承認待ちの保留の上限（プロセス全体・ユーザーごと・[`crate::worker::slot`]）を超える要求は待たずに
+//! 却下し、理由を `failure_recovery`（action = [`APPROVAL_OVERLOADED`]）で知らせる。
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,8 +21,11 @@ use crate::store::ChatStore;
 
 /// 決定ポーリング間隔（既定）。
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
-/// 承認待ちの最大時間（既定・超過は deny）。
-const MAX_WAIT: Duration = Duration::from_mins(30);
+/// 承認待ちの最大時間（既定・超過は deny）。ジョブを失った承認待ちの回収（sweeper）も、最後に
+/// 生きていた時刻からこれを過ぎた run を期限切れとして確定する。
+pub const APPROVAL_MAX_WAIT: Duration = Duration::from_mins(30);
+/// 承認待ちの上限で承認要求を待たずに却下したときの `failure_recovery` の action（R3-5）。
+pub const APPROVAL_OVERLOADED: &str = "approval_overloaded";
 
 /// `run_approval` を待つ承認者。1 run に紐づく（run_id＋fencing でゾンビ書込を防ぐ）。
 pub struct DbApprover {
@@ -40,6 +45,16 @@ pub struct DbApprover {
     /// 生成側で `opts.approval` に足すだけでは実行中モードトグルの再評価で消える。
     /// ここにも同じ集合を渡し、両方の経路で同じ実効ポリシになるようにしている。
     extra_pre_authorized: HashSet<String>,
+    /// 生成の枠（承認待ちの間は返して保留する・検証 C-P1-3）と、保留の上限を数える主体
+    /// （tenant・user・R3-5）。未配線なら枠を握ったまま待つ。
+    slot: Option<SlotBinding>,
+}
+
+/// 承認待ちの間に返す枠と、保留の上限を数える主体。
+struct SlotBinding {
+    slot: Arc<crate::worker::slot::RunSlot>,
+    tenant_id: String,
+    user: String,
 }
 
 /// 実行中の承認モード再評価に必要な材料（thread の現在値と突き合わせる）。
@@ -66,11 +81,29 @@ impl DbApprover {
             fencing_token,
             cancel,
             poll_interval: POLL_INTERVAL,
-            max_wait: MAX_WAIT,
+            max_wait: APPROVAL_MAX_WAIT,
             mode: None,
             last_clamp: Mutex::new(None),
             extra_pre_authorized: HashSet::new(),
+            slot: None,
         }
+    }
+
+    /// 承認待ちの間に返す生成の枠を配線する（検証 C-P1-3）。保留の上限（ユーザーごと・R3-5）は
+    /// `tenant_id` × `user`（run の実行主体）で数える。
+    #[must_use]
+    pub fn with_slot(
+        mut self,
+        slot: Arc<crate::worker::slot::RunSlot>,
+        tenant_id: &str,
+        user: &str,
+    ) -> Self {
+        self.slot = Some(SlotBinding {
+            slot,
+            tenant_id: tenant_id.to_string(),
+            user: user.to_string(),
+        });
+        self
     }
 
     /// モードに依らず事前許可するツールを足す（システム領域ワークスペースの書込・#392）。
@@ -177,12 +210,48 @@ impl DbApprover {
         }
     }
 
-    /// 走行状態へ戻す（決定後の継続用・fencing 一致時のみ）。
+    /// 走行状態へ戻す（決定後の継続用・fencing 一致時のみ）。保留していた枠を取り直してから戻す
+    /// （ツールの実行と続きの生成は枠の中で行う）。承認待ちのツール呼び出しの記録を消す。
     async fn resume_running(&self) {
+        if let Some(b) = &self.slot {
+            b.slot.resume().await;
+        }
+        let _ = self
+            .store
+            .clear_pending_approval(self.run_id, self.fencing_token)
+            .await;
         let _ = self
             .store
             .set_run_status_fenced(self.run_id, self.fencing_token, RunStatus::Running)
             .await;
+    }
+}
+
+impl DbApprover {
+    /// 保留の上限で承認を待てないときの後始末（承認待ちの記録を消し、理由をストリームに出す）。
+    ///
+    /// 承認要求の SSE を出す前に記録された承認待ちのツール呼び出し（`WorkerSink`）を消す。run の状態は
+    /// 走行中のまま（承認待ちへ遷移しない）。却下として返すので、ツールは実行されない。
+    async fn refuse_overloaded(&self, refusal: crate::worker::slot::ParkRefusal) {
+        tracing::warn!(run_id = %self.run_id, ?refusal, "承認待ちの上限のため承認要求を却下");
+        let _ = self
+            .store
+            .clear_pending_approval(self.run_id, self.fencing_token)
+            .await;
+        if let Err(e) = self
+            .store
+            .append_stream_event(
+                self.run_id,
+                self.fencing_token,
+                &StreamEventKind::FailureRecovery {
+                    detail: refusal.detail(),
+                    action: APPROVAL_OVERLOADED.to_string(),
+                },
+            )
+            .await
+        {
+            tracing::warn!(run_id = %self.run_id, error = %e, "approval_overloaded 通知の追記に失敗");
+        }
     }
 }
 
@@ -203,12 +272,24 @@ impl Approver for DbApprover {
         name: &str,
         _input: &serde_json::Value,
     ) -> ApprovalDecision {
-        // 承認待ちへ遷移（fencing 不一致なら no-op＝別ワーカーが takeover 済み）。
+        // 待つ間は生成の枠を返す（未回答の承認が他の run を止めない・検証 C-P1-3）。保留の上限
+        // （プロセス全体・ユーザーごと）を超えるなら**待たずに却下**する（枠を握ったまま待たない・R3-5）。
+        if let Some(b) = &self.slot {
+            if let Err(refusal) = b.slot.park(&b.tenant_id, &b.user).await {
+                self.refuse_overloaded(refusal).await;
+                return ApprovalDecision::Rejected;
+            }
+        }
+        // 承認待ちのツール呼び出しを記録する（通常は SSE の承認要求を出す前に WorkerSink が記録済み・
+        // 冪等。API はこれと照合する）。続けて承認待ちへ遷移（fencing 不一致なら no-op＝takeover 済み）。
+        let _ = self
+            .store
+            .set_pending_approval(self.run_id, self.fencing_token, tool_call_id, name)
+            .await;
         let _ = self
             .store
             .set_run_status_fenced(self.run_id, self.fencing_token, RunStatus::WaitingApproval)
             .await;
-
         let start = Instant::now();
         loop {
             // 明示キャンセル（共有フラグ or DB フラグ）で待機を打ち切る。

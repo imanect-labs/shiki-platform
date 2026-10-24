@@ -221,6 +221,25 @@ impl WorkerSink {
 #[async_trait::async_trait]
 impl EventSink for WorkerSink {
     async fn emit(&mut self, event: AgentEvent) -> Result<(), AgentError> {
+        // 承認要求は、SSE で利用者に見せる前に承認待ちのツール呼び出しを run へ永続化する（承認 API が
+        // 照合する・画面の再読込後も引ける・検証 C-P1-3）。
+        if let AgentEvent::ApprovalRequested {
+            tool_call_id, name, ..
+        } = &event
+        {
+            match self
+                .store
+                .set_pending_approval(self.run_id, self.fencing_token, tool_call_id, name)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.lost_lease = true;
+                    return Err(AgentError::Sink("lease lost (fencing mismatch)".into()));
+                }
+                Err(e) => return Err(AgentError::Sink(e.to_string())),
+            }
+        }
         let kind = to_stream_kind(&event);
         match self
             .store

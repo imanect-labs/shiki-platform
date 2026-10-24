@@ -45,6 +45,8 @@ type Props = {
   layout: EditorLayout;
   selection: Selection;
   serverErrors: ValidationError[];
+  /// 保存を止めない警告（ノードに注意の印を出す）。
+  serverWarnings?: ValidationError[];
   dispatch: React.Dispatch<EditorAction>;
 };
 
@@ -52,9 +54,10 @@ function edgeKey(e: IrEdge): string {
   return `${e.from}|${e.from_port ?? "out"}|${e.to}`;
 }
 
-export function Canvas({ ir, layout, selection, serverErrors, dispatch }: Props) {
+export function Canvas({ ir, layout, selection, serverErrors, serverWarnings, dispatch }: Props) {
   const { fitView, screenToFlowPosition } = useReactFlow();
   const errors = React.useMemo(() => mapErrors(serverErrors), [serverErrors]);
+  const warnings = React.useMemo(() => mapErrors(serverWarnings ?? []), [serverWarnings]);
   const positions = React.useMemo(() => resolvePositions(ir, layout), [ir, layout]);
 
   const onAddFrom = React.useCallback(
@@ -82,6 +85,7 @@ export function Canvas({ ir, layout, selection, serverErrors, dispatch }: Props)
       data: {
         irNode: n,
         errors: errors.byNode.get(n.id) ?? [],
+        warnings: warnings.byNode.get(n.id) ?? [],
         onAddFrom: (port: string, nodeType: string) => onAddFrom(n.id, port, nodeType),
       } satisfies NodeCardData,
     }));
@@ -95,7 +99,7 @@ export function Canvas({ ir, layout, selection, serverErrors, dispatch }: Props)
       });
     });
     return nodes;
-  }, [ir, positions, selection, errors, onAddFrom]);
+  }, [ir, positions, selection, errors, warnings, onAddFrom]);
 
   // ── IR → React Flow edges（トリガ→エントリの視覚接続を含む）────────────
   const rfEdges = React.useMemo<RfEdge[]>(() => {

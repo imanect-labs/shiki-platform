@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use script_runtime::engine::{Limits, ScriptEngine};
+use script_runtime::engine::{EngineHandle, Limits};
 use serde_json::{json, Value};
 
 use crate::capability::{check_scope_ceiling, CapabilityAudit, EffectJournal, ScopeCeiling};
@@ -41,7 +41,7 @@ pub struct CapabilityNodeExecutor {
     pub(super) ratelimit: Option<TokenBucket>,
     pub(super) ratelimit_cfg: BucketConfig,
     /// script.run 用エンジン（未設定なら script ノードは permanent 失敗）。
-    pub(super) script_engine: Option<Arc<ScriptEngine>>,
+    pub(super) script_engine: Option<EngineHandle>,
     pub(super) script_limits: Limits,
     /// http.request の egress allowlist（secret 宛先束縛と AND・空なら secret 必須）。
     pub(super) http_allowlist: Vec<String>,
@@ -80,10 +80,11 @@ impl CapabilityNodeExecutor {
         self
     }
 
-    /// script.run 用エンジンを設定する。
+    /// script.run 用エンジンを設定する（[`EngineHandle::shared`] なら、コンパイルの完了は script を実行する
+    /// ノードだけが待つ）。
     #[must_use]
-    pub fn with_script_engine(mut self, engine: Arc<ScriptEngine>, limits: Limits) -> Self {
-        self.script_engine = Some(engine);
+    pub fn with_script_engine(mut self, engine: impl Into<EngineHandle>, limits: Limits) -> Self {
+        self.script_engine = Some(engine.into());
         self.script_limits = limits;
         self
     }
@@ -104,6 +105,8 @@ impl CapabilityNodeExecutor {
             principal: ctx.principal.clone(),
             principal_kind: ctx.principal_kind.clone(),
             trace_id: ctx.trace_id.clone(),
+            run_id: Some(ctx.run_id),
+            step_path: Some(ctx.step_path.clone()),
         }
     }
 
@@ -313,10 +316,9 @@ impl NodeExecutor for CapabilityNodeExecutor {
 
         // scope ceiling ゲート（二重ゲートの一段目）。
         if let ScopeCeiling::Denied(_) = Self::check_ceiling(node_type, ctx) {
-            self.audit.record(
-                &ctx.tenant_id,
+            self.audit.record_out_of_scope(
+                &Self::exec_ctx(ctx),
                 node_type,
-                false,
                 &json!({ "reason": "out_of_scope", "step": ctx.step_path }),
             );
             return NodeResult::fail(
@@ -343,6 +345,14 @@ impl NodeExecutor for CapabilityNodeExecutor {
             NodeType::CsvQuery => self.node_csv_query(params, ctx, &ec, &r).await,
             NodeType::CsvPatch => self.node_csv_patch(params, ctx, &ec, &r).await,
             NodeType::CsvWrite => self.node_csv_write(params, ctx, &ec, &r).await,
+            NodeType::DataQuery => self.node_data_query(params, &ec, &r).await,
+            NodeType::DataRecordCreate
+            | NodeType::DataRecordUpdate
+            | NodeType::DataRecordDelete
+            | NodeType::DataTransition
+            | NodeType::DataBulkUpsert => {
+                self.node_data_write(node_type, params, ctx, &ec, &r).await
+            }
             // 制御ノードは上で return 済み・予約語彙は available_stage_a ゲートで返却済み。
             _ => unreachable!("制御ノード/予約語彙は上で処理済み"),
         };

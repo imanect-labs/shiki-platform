@@ -65,6 +65,10 @@ pub struct PipelineDeps {
 pub fn spawn_pipeline(deps: PipelineDeps) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let deps = Arc::new(deps);
+        // outbox の GC に「processed_at の ack を待て」と伝える（3 回目の検証 3-D-1）。GC は ack
+        // コンシューマが登録されているときだけ processed_at を待つ（RAG 無効の配備で outbox を
+        // 無制限に増やさない）。relay が claim を始める前に登録する。GC の初回は起動の 1 分後。
+        register_ack_consumer(&deps.pool).await;
         loop {
             match run_as_leader(&deps).await {
                 Ok(()) => {
@@ -77,6 +81,29 @@ pub fn spawn_pipeline(deps: PipelineDeps) -> tokio::task::JoinHandle<()> {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     })
+}
+
+/// `processed_at` の ack コンシューマとして登録する（成功するまで再試行）。
+async fn register_ack_consumer(pool: &sqlx::PgPool) {
+    let mut backoff = std::time::Duration::from_secs(1);
+    loop {
+        let res = match pool.acquire().await {
+            Ok(mut conn) => {
+                storage::event::register_ack_consumer(&mut conn, storage::event::RAG_ACK_CONSUMER)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            Err(e) => Err(e.to_string()),
+        };
+        match res {
+            Ok(_) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, "outbox の ack コンシューマの登録に失敗（再試行）");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(std::time::Duration::from_secs(30));
+            }
+        }
+    }
 }
 
 /// advisory lock を獲得できたら relay/consumer ループを回す（リーダー）。

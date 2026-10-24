@@ -66,6 +66,7 @@ pub struct RunDetail {
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
+    /// ステップ（**実行の順**: 実行に入った・終わった順に並べ、まだ実行していないものを末尾に置く・検証 C P3）。
     pub steps: Vec<StepOverview>,
 }
 
@@ -185,7 +186,8 @@ impl RunStore {
                     (output IS NOT NULL) AS has_output, error, next_retry_at, wake_at, \
                     updated_at, langfuse_trace_id \
              FROM step_execution \
-             WHERE tenant_id = $1 AND run_id = $2 ORDER BY step_path",
+             WHERE tenant_id = $1 AND run_id = $2 \
+             ORDER BY (status IN ('pending', 'ready')), updated_at, step_path",
         )
         .bind(tenant_id)
         .bind(run_id)

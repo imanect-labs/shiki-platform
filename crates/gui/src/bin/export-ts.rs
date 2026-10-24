@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use ts_rs::TS;
 
-use gui::action::{ActionBinding, HandlerBinding, WorkflowBinding, WorkflowPin};
+use gui::action::{ActionBinding, DataViewBinding, HandlerBinding, WorkflowBinding, WorkflowPin};
 use gui::miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
 use gui::skill::{
     FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody, SkillScript,
@@ -40,6 +40,8 @@ fn main() {
         HandlerBinding,
         WorkflowBinding,
         WorkflowPin,
+        // 画面の表（data_grid）の保存ビューのデータ束縛（Task 15.7）。
+        DataViewBinding,
         GuiValidationError,
         // skill（Task 6.7）とミニアプリ（Task 6.10）の body 型。
         SkillBody,

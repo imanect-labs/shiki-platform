@@ -24,7 +24,7 @@ mod store_helpers;
 
 pub use binding::{host_allowed, DestinationBinding};
 pub use crypto::{CryptoError, KeyGuard};
-pub use key_provider::{KeyProvider, LocalKeyFileProvider, WrappedKey};
+pub use key_provider::{decode_key_material, KeyProvider, LocalKeyFileProvider, WrappedKey};
 pub use redact::Redactor;
 pub use store::reencrypt::{count_legacy_secrets, reencrypt_legacy_secrets, ReencryptReport};
 pub use store::{NewSecret, ResolvedSecret, SecretMeta, SecretStore};

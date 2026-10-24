@@ -11,9 +11,12 @@ name = "data"
 
 [dependencies]
 tracing.workspace = true
+opentelemetry.workspace = true
+csv.workspace = true
 shiki-authz.workspace = true
 shiki-storage.workspace = true
 shiki-artifact.workspace = true
+shiki-jobq.workspace = true
 
 sqlx.workspace = true
 serde.workspace = true
@@ -22,17 +25,27 @@ thiserror.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
 sha2.workspace = true
+hmac.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 # DTO を単一定義し api 層に手書きミラーを作らない（codegen が正）。
 utoipa.workspace = true
+# keyset カーソルの AEAD（Task 15.1・secrets と同じ AES-256-GCM）。
+aes-gcm = { version = "0.10", features = ["aes", "alloc"] }
+rand.workspace = true
+base64.workspace = true
+# 識別子移行ジョブの常駐ワーカー。
+tokio.workspace = true
+# record_int の集合演算（和・積・差）の 64 ビット Roaring ビットマップ（Task 15.12・query-optimizer.md §6.4）。
+roaring = "0.10"
+# SQL 互換インターフェースのパーサ（Task 15.10・閉じた部分集合だけを IR へ写す）。
+sqlparser.workspace = true
 
 [dev-dependencies]
-tokio.workspace = true
 reqwest.workspace = true
 
 # lib 名 authz/storage で参照するため machete が誤検出する。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-storage", "shiki-artifact"]
+ignored = ["shiki-authz", "shiki-storage", "shiki-artifact", "shiki-jobq"]
 
 [lints]
 workspace = true

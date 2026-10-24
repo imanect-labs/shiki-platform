@@ -439,14 +439,20 @@ export function Conversation({
       onApprovalRequested: (req) =>
         updateStream((s) => (s ? { ...s, approval: req, approvalPending: false } : s)),
       onApprovalResolved: (res) =>
-        updateStream((s) =>
-          s && s.approval?.tool_call_id === res.tool_call_id
-            ? { ...s, approval: null, approvalPending: false }
-            : s,
-        ),
+        updateStream((s) => {
+          if (!s) return s;
+          // 却下した操作は失敗ではなく「却下しました」と出す（3-A-8）。
+          const tools = res.approved
+            ? s.tools
+            : s.tools.map((t) => (t.id === res.tool_call_id ? { ...t, rejected: true } : t));
+          return s.approval?.tool_call_id === res.tool_call_id
+            ? { ...s, tools, approval: null, approvalPending: false }
+            : { ...s, tools };
+        }),
       // 承認モードのクランプ（org 禁止・他人による緩和）は明示的に知らせる（黙って降格しない・#350）。
+      // 承認待ちが多すぎて操作を実行しなかったことも同じ枠で知らせる（ツールの表示は「却下」になるため）。
       onFailureRecovery: (r) => {
-        if (r.action === "mode_clamped") setNotice(r.detail);
+        if (r.action === "mode_clamped" || r.action === "approval_overloaded") setNotice(r.detail);
       },
       onStatus: (status: RunStatus) => {
         if (status === "cancelled") setError("生成をキャンセルしました。");

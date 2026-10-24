@@ -6,8 +6,9 @@
 //!
 //! 落とし穴対応（docs/design-caveats.md）:
 //! - **PIT-18**: 述語材料（ロール集合・個別共有 ID）は OpenFGA 側にある。上限
-//!   （[`material::MAX_ROLE_SET`] / [`material::MAX_SHARED_IDS`]）・TTL＋世代キャッシュ・
-//!   超過時 fail-closed（可視が減る方向）で `IN(数千)` の肥大とタプル爆発を防ぐ。
+//!   （[`material::MAX_ROLE_SET`] / [`material::MAX_SHARED_IDS`]）・超過時 fail-closed（可視が減る方向）で
+//!   `IN(数千)` の肥大とタプル爆発を防ぐ。材料はリクエストごとに引き直し、同一リクエスト内だけ
+//!   [`memo`] で覚える（リクエスト跨ぎのキャッシュは置かない・Task 15.9）。
 //!   RAG の可読集合（PIT-1）と同一方針。
 //! - **PIT-21**: WHERE 注入は必要条件にすぎない。文法を閉じ（[`ast`]）、値は常に
 //!   バインドし、フィールド名はスキーマ検証済み識別子のみ埋め込む。漏れ口ごとの
@@ -15,7 +16,11 @@
 
 pub(crate) mod ast;
 pub(crate) mod compile;
+pub(crate) mod compile_index;
 pub(crate) mod material;
+pub(crate) mod memo;
+pub(crate) mod reach;
 pub(crate) mod validate;
 
 pub use ast::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
+pub use reach::TableReach;

@@ -143,17 +143,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
 }
 
 fn table_schema() -> TableSchema {
-    let mut title = FieldDef {
-        name: "title".into(),
-        field_type: FieldType::Text,
-        required: true,
-        unique: false,
-        indexed: false,
-        options: vec![],
-        ref_table: None,
-        lookup: None,
-        computed: None,
-    };
+    let mut title = FieldDef::new("title", FieldType::Text);
     title.required = true;
     TableSchema {
         fields: vec![title],
@@ -162,6 +152,7 @@ fn table_schema() -> TableSchema {
         field_policy: vec![],
         aggregate_min_rows: None,
         fsm_ref: None,
+        rag: None,
     }
 }
 
@@ -312,6 +303,24 @@ async fn install_provisions_tables_tuples_and_pins() {
         "{writes:?}"
     );
 
+    // テーブルの ReBAC を変えたので、配信の認可材料の世代が進んでいる（購読を次のバッチで引き直させる・
+    // Task 15.7 の 15.6 からの申し送り）。
+    let epoch_of = |pool: PgPool, tenant: String, table: Uuid| async move {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT epoch FROM data_stream_authz_epoch WHERE tenant_id = $1 AND scope = $2",
+        )
+        .bind(&tenant)
+        .bind(table)
+        .fetch_optional(&pool)
+        .await
+        .unwrap()
+    };
+    let installed_epoch = epoch_of(pool.clone(), tenant.clone(), installed.table_ids[0]).await;
+    assert!(
+        installed_epoch.is_some(),
+        "インストールでテーブルの世代が進む"
+    );
+
     // outbox に app.installed が出ている。
     let (events,): (i64,) = sqlx::query_as(
         "SELECT count(*) FROM storage_event_outbox \
@@ -337,6 +346,9 @@ async fn install_provisions_tables_tuples_and_pins() {
     assert_eq!(deleted, 1);
     let deleted_objs = h.authz.deleted_objects.lock().unwrap().clone();
     assert!(deleted_objs.contains(&table_obj), "{deleted_objs:?}");
+    // tuple 撤去でも世代が進む（開いている購読を落とす）。
+    let after = epoch_of(pool.clone(), tenant.clone(), installed.table_ids[0]).await;
+    assert!(after > installed_epoch, "{after:?} > {installed_epoch:?}");
     let (active,): (i64,) = sqlx::query_as(
         "SELECT count(*) FROM app_installation \
          WHERE tenant_id = $1 AND app_id = $2 AND status = 'active'",

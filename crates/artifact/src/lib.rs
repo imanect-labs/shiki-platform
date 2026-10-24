@@ -12,6 +12,7 @@
 //! - **kind は閉じた集合**（[`ArtifactKind`]）: Task 6.7/6.10/10.1/10.11 が同じテーブル・
 //!   同じ共有 API・同じ監査経路に乗る。
 
+mod by_ref;
 mod model;
 mod share;
 mod store;
