@@ -4,7 +4,12 @@
 //! - unique 宣言の違反: 作成・更新のどちらでも、違反した列（複数の unique 列のうちの当たった方）を返す
 //! - 一対一 / 一対多のリンクの参照先の一意の違反は `derived_it::link_cardinality_violations_are_422`
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::many_single_char_names
+)]
 
 mod common;
 
