@@ -217,7 +217,8 @@ async fn fixture(n_orders: usize) -> Option<Fx> {
             .create_record(
                 who,
                 customers.id,
-                json!({"name": format!("顧客{i}"), "city": c, "tier": i % 2, "note": "機密"}),
+                // note は誰も読めない（＝誰も書けない）列なので値を入れない（読めない列への書込は 403・PIT-19）。
+                json!({"name": format!("顧客{i}"), "city": c, "tier": i % 2}),
                 None,
             )
             .await

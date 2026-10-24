@@ -601,6 +601,8 @@ mod tests {
             owner: "alice".into(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            suppressed_fields: Vec::new(),
+            link_labels: std::collections::BTreeMap::new(),
         };
         let result = |items: Vec<DataRecord>| QueryResult {
             items: Some(items),

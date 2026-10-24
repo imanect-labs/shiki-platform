@@ -29,6 +29,26 @@ pub(crate) struct RefRows {
     pub types: HashMap<String, FieldType>,
     /// スモールセル抑制の K（参照先の `aggregate_min_rows` を継承・PIT-17）。
     pub min_rows: i64,
+    /// 参照先のタイトル列（表示順で先頭の、閲覧者に読めるテキスト列）。リンクの表示名に使う。
+    pub title_key: Option<String>,
+}
+
+impl RefRows {
+    /// 参照先の表示名（id → タイトル列の値・空は除く）。
+    pub(crate) fn labels(&self) -> HashMap<Uuid, String> {
+        let Some(tk) = &self.title_key else {
+            return HashMap::new();
+        };
+        self.rows
+            .iter()
+            .filter_map(|(id, row)| {
+                row.get(tk)
+                    .and_then(Value::as_str)
+                    .filter(|t| !t.is_empty())
+                    .map(|t| (*id, t.to_string()))
+            })
+            .collect()
+    }
 }
 
 /// 行のリンク列の値（参照先 id の並び）。保存形は配列（移行前の v1 の単一 UUID 文字列も要素 1 件として読む）、
@@ -43,6 +63,11 @@ pub(crate) fn linked_ids(row: &Map<String, Value>, link_key: &str) -> Vec<Uuid> 
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// ロールアップがスモールセル抑制に掛かるか（可視なリンク先が K 件未満・参照先が見えない）。
+pub(crate) fn rollup_suppressed(ids: &[Uuid], refs: Option<&RefRows>) -> bool {
+    refs.is_none_or(|r| (ids.iter().filter(|i| r.rows.contains_key(i)).count() as i64) < r.min_rows)
 }
 
 /// ロールアップの値。可視なリンク先が K 件未満なら抑制（null）。
@@ -158,6 +183,39 @@ impl Env for RowEnv<'_> {
 }
 
 impl RowEval<'_> {
+    /// スモールセル抑制で値を伏せた派生列（[`crate::model::DataRecord::suppressed_fields`]）。
+    ///
+    /// 抑制に掛かったロールアップと、抑制に掛かったロールアップを式に含み値が null になった数式。
+    /// `values` は [`Self::evaluate`] の結果。
+    pub(crate) fn suppressed(
+        &self,
+        row: &Map<String, Value>,
+        values: &Map<String, Value>,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        for f in &self.schema.fields {
+            if self.masked.contains(&f.key) || !values.get(&f.key).is_some_and(Value::is_null) {
+                continue;
+            }
+            let hit = match (f.field_type, &f.rollup, &f.formula) {
+                (FieldType::Rollup, Some(d), _) => {
+                    rollup_suppressed(&linked_ids(row, &d.link), self.refs.get(&d.link))
+                }
+                (FieldType::Formula, _, Some(e)) => e.rollups().into_iter().any(|n| match n {
+                    FormulaExpr::Rollup { link, .. } => {
+                        rollup_suppressed(&linked_ids(row, link), self.refs.get(link))
+                    }
+                    _ => false,
+                }),
+                _ => false,
+            };
+            if hit {
+                out.push(f.key.clone());
+            }
+        }
+        out
+    }
+
     /// 行の派生フィールドを依存順に計算する（`row` は閲覧者に読める列だけを持つこと）。
     pub(crate) fn evaluate(&self, row: &Map<String, Value>) -> Map<String, Value> {
         let mut results: HashMap<String, FVal> = HashMap::new();

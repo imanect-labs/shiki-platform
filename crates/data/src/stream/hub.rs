@@ -715,15 +715,15 @@ impl DataStore {
                 Some(c) => crate::policy::memo::AuthzMemo::resume(self.authz.as_ref(), c),
                 None => self.authz_memo(),
             };
+            // 1 件の読取と同じ出口（派生値・リンク値の存在秘匿 → マスク）。
             let r = self
-                .resolve_derived_fields(&s.ctx, &az, table, &s.auth.masked, &mut recs)
+                .project_read(&s.ctx, &az, table, &s.auth.masked, &mut recs)
                 .await;
             s.auth.carry = Some(az.into_carry());
             if let Err(e) = r {
                 tracing::warn!(error = %e, table_id = %table.id, "SSE: 派生値の計算に失敗");
                 return Err("derived_error");
             }
-            Self::apply_mask_records(&s.auth.masked, &mut recs);
             records = recs.into_iter().map(|r| (r.id, r)).collect();
         }
         for o in out {

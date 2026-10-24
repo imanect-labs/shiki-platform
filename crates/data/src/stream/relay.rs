@@ -393,6 +393,38 @@ async fn emit_derived(
     emit_record_changes(tx, &ctx, table, &changes, None).await
 }
 
+/// 参照先 `table_id` の行述語・マスク（スキーマ）・テーブル権限・生死が変わったとき、この表を参照する表
+/// （リンク列・対称列・派生列の参照先にしている表）の購読へテーブル単位の `refresh`（`stream.reset`）を
+/// 積む（呼び出し側の Tx・B-P2-1）。参照元の行の値は変わらないが、ルックアップ・ロールアップ・リンク値の
+/// 見え方が閲覧者ごとに変わるので、開いている画面に取り直させる。
+pub(crate) async fn emit_refresh_for_referrers(
+    conn: &mut PgConnection,
+    tenant_id: &str,
+    table_id: Uuid,
+) -> Result<usize, DataError> {
+    let filter = serde_json::json!([{ "ref_table": table_id }]);
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM data_table \
+         WHERE tenant_id = $1 AND deleted_at IS NULL AND id <> $2 \
+           AND schema -> 'fields' @> $3::jsonb \
+         ORDER BY id",
+    )
+    .bind(tenant_id)
+    .bind(table_id)
+    .bind(Json(&filter))
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(map_db)?;
+    let mut n = 0;
+    for id in ids {
+        if let Some((t, org)) = table_row_with_org(conn, tenant_id, id).await? {
+            super::outbox::emit_table_refresh(conn, &system_ctx(tenant_id, &org), &t).await?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 /// 生存テーブル行と org（保守経路・tenant スコープ）。
 pub(crate) async fn table_row_with_org(
     conn: &mut PgConnection,

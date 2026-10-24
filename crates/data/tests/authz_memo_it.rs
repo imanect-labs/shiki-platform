@@ -383,6 +383,8 @@ async fn grid() -> Option<Grid> {
         );
     }
     let link: Vec<String> = line_ids.iter().map(ToString::to_string).collect();
+    // salary は hr だけが読める（＝書ける）列なので、値を入れる alice は hr（読めない列への書込は 403）。
+    join_role(&authz, &alice, "hr").await;
     for t in ["o1", "o2", "o3"] {
         store
             .create_record(

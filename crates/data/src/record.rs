@@ -67,6 +67,8 @@ impl RecordRow {
             owner: self.owner,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            suppressed_fields: Vec::new(),
+            link_labels: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -95,7 +97,9 @@ impl DataStore {
         data: Value,
         trace_id: Option<&str>,
     ) -> Result<DataRecord, DataError> {
-        self.require(
+        let az = self.authz_memo();
+        self.require_in(
+            &az,
             ctx,
             table_id,
             Relation::Editor,
@@ -104,6 +108,9 @@ impl DataStore {
         )
         .await?;
         let table = self.fetch_live(ctx, table_id).await?;
+        // 読めない（マスクされた）列への書込は作成でも 403（更新・取込と同じ単一点・PIT-19）。
+        self.ensure_fields_writable(ctx, &az, &table, data.as_object())
+            .await?;
         let normalized = validate_record_data(
             ctx,
             &table.schema,
@@ -169,11 +176,11 @@ impl DataStore {
         )
         .await?;
         // 実データ変更の監査は書込と同一 Tx（原子的・コミット後の監査失敗で成功を偽らない）。
-        self.record_audit_on(
+        self.record_audit_record_on(
             &mut tx,
             ctx,
             "data.record.create",
-            &row.id.to_string(),
+            row.id,
             trace_id,
             serde_json::json!({ "table_id": table_id }),
         )
@@ -205,9 +212,8 @@ impl DataStore {
         let mut records = vec![row.into_record(&table.schema)];
         // 派生値は閲覧者本人の権限で計算し、マスク列は計算にも応答にも出さない（PIT-19・PIT-20）。
         let masked = self.masked_fields(ctx, &az, &table).await?;
-        self.resolve_derived_fields(ctx, &az, &table, &masked, &mut records)
+        self.project_read(ctx, &az, &table, &masked, &mut records)
             .await?;
-        Self::apply_mask_records(&masked, &mut records);
         Ok(records.remove(0))
     }
 
@@ -319,11 +325,11 @@ impl DataStore {
             trace_id,
         )
         .await?;
-        self.record_audit_on(
+        self.record_audit_record_on(
             &mut tx,
             ctx,
             "data.record.delete",
-            &id.to_string(),
+            id,
             trace_id,
             serde_json::json!({ "table_id": table_id }),
         )

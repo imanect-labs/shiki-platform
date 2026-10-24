@@ -115,39 +115,119 @@ impl DataStore {
             .map_err(|_| DataError::NotFound)?;
         }
         let limit = limit.clamp(1, 200);
-        let rows: Vec<RevisionRow> = sqlx::query_as(
-            "SELECT record_id, rev, changed_by, change_kind, patch, created_at \
-             FROM data_record_revision \
-             WHERE tenant_id = $1 AND table_id = $2 AND record_id = $3 \
-               AND ($4::bigint IS NULL OR rev < $4) \
-             ORDER BY rev DESC LIMIT $5",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(table_id)
-        .bind(record_id)
-        .bind(before_rev)
-        .bind(limit)
-        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
-        .await
-        .map_err(map_db)?;
         let masked = self.masked_fields(ctx, &az, &table).await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| {
+        // 読めない列だけが変わった更新は、その版ごと閲覧者に返さない（変更の時刻も読めない列の情報・
+        // B-P3-1）。間引いた分はページを埋めるまで続きを引く（上限付き）。
+        let mut out: Vec<RecordRevision> = Vec::new();
+        let mut cursor = before_rev;
+        for _ in 0..MAX_REVISION_PAGES {
+            let rows: Vec<RevisionRow> = sqlx::query_as(
+                "SELECT record_id, rev, changed_by, change_kind, patch, created_at \
+                 FROM data_record_revision \
+                 WHERE tenant_id = $1 AND table_id = $2 AND record_id = $3 \
+                   AND ($4::bigint IS NULL OR rev < $4) \
+                 ORDER BY rev DESC LIMIT $5",
+            )
+            .bind(&ctx.tenant_id)
+            .bind(table_id)
+            .bind(record_id)
+            .bind(cursor)
+            .bind(limit)
+            .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+            .await
+            .map_err(map_db)?;
+            let exhausted = i64::try_from(rows.len()).unwrap_or(i64::MAX) < limit;
+            cursor = rows.last().map(|r| r.rev).or(cursor);
+            for r in rows {
                 let mut patch = r.patch.0;
-                Self::apply_mask_patches(&masked, &mut patch);
                 upgrade_link_patches(&table.schema, &mut patch);
-                RecordRevision {
+                let had = !patch.is_empty();
+                Self::apply_mask_patches(&masked, &mut patch);
+                if had && patch.is_empty() && r.change_kind == "update" {
+                    continue;
+                }
+                out.push(RecordRevision {
                     record_id: r.record_id,
                     rev: r.rev,
                     changed_by: r.changed_by,
                     change_kind: r.change_kind,
                     patch,
                     created_at: r.created_at,
+                });
+                if i64::try_from(out.len()).unwrap_or(i64::MAX) >= limit {
+                    break;
                 }
-            })
-            .collect())
+            }
+            if exhausted || i64::try_from(out.len()).unwrap_or(i64::MAX) >= limit {
+                break;
+            }
+        }
+        // リンク列の差分も、閲覧者に見える参照先だけにする（レコードの読取と同じ存在秘匿・§7.2）。
+        self.filter_link_patches(ctx, &az, &table, &masked, &mut out)
+            .await?;
+        Ok(out)
     }
+
+    /// 履歴の差分のリンク値を、閲覧者本人の権限で見える参照先だけに絞る（リンク列ごとに 1 回で引く）。
+    async fn filter_link_patches(
+        &self,
+        ctx: &AuthContext,
+        az: &crate::policy::memo::AuthzMemo<'_>,
+        table: &crate::model::DataTable,
+        masked: &std::collections::HashSet<String>,
+        revs: &mut [RecordRevision],
+    ) -> Result<(), DataError> {
+        for f in &table.schema.fields {
+            if f.field_type != crate::model::FieldType::RecordRef || masked.contains(&f.key) {
+                continue;
+            }
+            let Some(rt) = f.ref_table else { continue };
+            let ids: Vec<Uuid> = revs
+                .iter()
+                .flat_map(|r| r.patch.iter())
+                .filter(|p| p.field == f.key)
+                .flat_map(|p| link_ids(&p.old).into_iter().chain(link_ids(&p.new)))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if ids.is_empty() {
+                continue;
+            }
+            let visible = self
+                .visible_ref_rows(ctx, az, rt, &ids, &std::collections::BTreeSet::new(), 0)
+                .await?
+                .rows;
+            for p in revs
+                .iter_mut()
+                .flat_map(|r| r.patch.iter_mut())
+                .filter(|p| p.field == f.key)
+            {
+                for v in [&mut p.old, &mut p.new] {
+                    if let Value::Array(a) = v {
+                        a.retain(|e| {
+                            e.as_str()
+                                .and_then(|s| Uuid::parse_str(s).ok())
+                                .is_some_and(|id| visible.contains_key(&id))
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 間引いた版の分を埋めるために続けて引くページ数の上限。
+const MAX_REVISION_PAGES: usize = 5;
+
+/// 差分のリンク値（配列へ寄せた後）の参照先 id。
+fn link_ids(v: &Value) -> Vec<Uuid> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|s| Uuid::parse_str(s).ok())
+        .collect()
 }
 
 /// 履歴の差分に残る v1 の `record_ref` の値（単一 UUID 文字列）を、レコードの読取と同じ配列の形へ寄せる

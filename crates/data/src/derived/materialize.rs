@@ -146,6 +146,7 @@ async fn compute_invariant(
                     .schema
                     .aggregate_min_rows
                     .unwrap_or(DEFAULT_AGGREGATE_MIN_ROWS),
+                title_key: None,
             },
         );
     }

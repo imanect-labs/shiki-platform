@@ -47,6 +47,11 @@ impl DataStore {
         if let Err(e) = self.notify_authz_changed(ctx, Some(table_id)).await {
             tracing::warn!(error = %e, %table_id, "テーブル ReBAC 変更後の配信の世代更新に失敗");
         }
+        // この表を参照する表の購読にも取り直させる（参照先の viewer の変化でルックアップ・リンク値の
+        // 見え方が変わる・B-P2-1）。
+        if let Err(e) = self.refresh_referrers(&ctx.tenant_id, table_id).await {
+            tracing::warn!(error = %e, %table_id, "テーブル ReBAC 変更後の参照元の取り直しの発行に失敗");
+        }
         let dependents = match self
             .materialization_dependents(&ctx.tenant_id, table_id)
             .await
@@ -66,6 +71,22 @@ impl DataStore {
                 }
             }
         }
+    }
+
+    /// この表を参照する表の購読へ `stream.reset` を積む（[`super::relay::emit_refresh_for_referrers`]）。
+    pub(crate) async fn refresh_referrers(
+        &self,
+        tenant_id: &str,
+        table_id: Uuid,
+    ) -> Result<(), DataError> {
+        let mut tx = self
+            .pools
+            .for_tenant(tenant_id)
+            .begin()
+            .await
+            .map_err(map_db)?;
+        super::relay::emit_refresh_for_referrers(&mut tx, tenant_id, table_id).await?;
+        tx.commit().await.map_err(map_db)
     }
 
     /// `ref_table_id` を参照先にする材料化列を持つテーブル（参照元・生存のみ）。

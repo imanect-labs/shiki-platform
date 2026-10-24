@@ -228,7 +228,8 @@ impl DataStore {
         // 応答もマスクを掛けて返す（遷移した本人が読めない列の値を応答で漏らさない・PIT-19）。
         let mut out = [row.into_record(&table.schema)];
         let masked = self.masked_fields(ctx, &az, &table).await?;
-        Self::apply_mask_records(&masked, &mut out);
+        self.project_read(ctx, &az, &table, &masked, &mut out)
+            .await?;
         let [out] = out;
         Ok(out)
     }

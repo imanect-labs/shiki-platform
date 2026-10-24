@@ -141,9 +141,33 @@ async fn field_mask_hides_and_blocks_search() {
         )
         .await
         .expect("table");
+    // salary は経理だけが読める（＝書ける）列なので、値は経理の kei（テーブル editor）が入れる。
+    let kei = ctx(&tenant, "kei");
+    authz
+        .write_tuple(&kei.subject(), Relation::Member, &kei.ns().role("keiri"))
+        .await
+        .expect("kei keiri");
+    authz
+        .write_tuple(
+            &kei.subject(),
+            Relation::Editor,
+            &kei.ns().data_table(&table.id.to_string()),
+        )
+        .await
+        .expect("kei editor");
+    // 経理でない alice（テーブル owner でも）は salary を含む作成ができない（読めない列への書込は 403）。
+    let denied = store
+        .create_record(
+            &alice,
+            table.id,
+            json!({"dept": "sales", "amount": 1, "salary": 1, "name": "x"}),
+            None,
+        )
+        .await;
+    assert!(matches!(denied, Err(DataError::Forbidden)), "{denied:?}");
     seed(
         &store,
-        &alice,
+        &kei,
         table.id,
         &[("sales", 10.0, 500.0), ("sales", 20.0, 900.0)],
     )

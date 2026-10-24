@@ -124,6 +124,10 @@ pub(super) fn claims_of(
     Ok(out)
 }
 
+/// 読めない列への書込を含む行の文言（列名・値を含めない）。
+pub(super) const MASKED_WRITE_MESSAGE: &str =
+    "このレコード（またはフィールド）を書き込む権限がありません";
+
 /// 検証エラーを行のエラー文言へ（入力の誤りだけを行に付け、内部エラーは呼び出し側が伝播する）。
 pub(super) fn row_message(e: DataError) -> Result<String, DataError> {
     match e {
@@ -178,6 +182,9 @@ impl DataStore {
 
         // 型・required・多値要素数上限（create と同じ検証器。DB の Tx の外で行う）。
         let resolver = ChunkResolver::new(self.resolver.as_ref());
+        // 読めない（マスクされた）列への書込は行ごとに拒否（create と同じ単一点・PIT-19）。
+        // 文言に列名・値を含めない。
+        let masked = self.ensure_fields_writable(&ctx, &az, &table, None).await?;
         let mut outcomes: Vec<Result<Map<String, Value>, String>> = Vec::with_capacity(rows.len());
         for (i, (_, payload)) in rows.iter().enumerate() {
             if is_update[i] {
@@ -187,6 +194,12 @@ impl DataStore {
                     }),
                 );
                 continue;
+            }
+            if let Some(obj) = payload.0.as_object() {
+                if Self::ensure_writable_fields(&masked, obj).is_err() {
+                    outcomes.push(Err(MASKED_WRITE_MESSAGE.to_string()));
+                    continue;
+                }
             }
             let r = validate_record_data(
                 &ctx,

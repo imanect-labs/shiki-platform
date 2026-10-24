@@ -2,7 +2,8 @@
 //! **同じ入口**（[`DataStore::update_locked`]）を通る。
 //!
 //! 入口が 1 つなので、行述語つきロック・書込述語・`rev` の照合・マスク列への書込拒否・検証器・
-//! FSM の status 直書き拒否・参照先の可視性・索引の差分更新・材料化・リビジョン・outbox・監査が
+//! FSM の status 直書き拒否・参照先の可視性（今回足した参照先だけ・見えない既存の参照先は残す・
+//! [`crate::link_merge`]）・索引の差分更新・材料化・リビジョン・outbox・監査が
 //! どちらの経路でも同じに効く（一括経路だけ抜ける不変条件を作らない）。
 
 use authz::{AuthContext, Relation};
@@ -91,7 +92,13 @@ impl DataStore {
         } else {
             tx.commit().await.map_err(map_db)?;
         }
-        Ok(out.record)
+        // 応答は読取と同じ出口を通す（書き手に見えない参照先の id・件数を応答で漏らさない・§7.2）。
+        let masked = self.masked_fields(ctx, &az, &table).await?;
+        let mut out = [out.record];
+        self.project_read(ctx, &az, &table, &masked, &mut out)
+            .await?;
+        let [record] = out;
+        Ok(record)
     }
 
     /// 呼び出し側の Tx 上で 1 件を更新する（テーブル行の `FOR KEY SHARE` は呼び出し側が [`lock_plan`] で取得済み）。
@@ -130,10 +137,16 @@ impl DataStore {
         }
         let current = current.into_record(&table.schema);
         // マスク対象フィールドへの書込（変更）は拒否（盲目上書き防止・PIT-19）。
-        let masked = self.masked_fields(ctx, az, table).await?;
-        Self::ensure_writable_fields(&masked, patch_obj)?;
-        // merge: null は除去・それ以外は上書き。
+        let masked = self
+            .ensure_fields_writable(ctx, az, table, Some(patch_obj))
+            .await?;
         let old_map = current.data.as_object().cloned().unwrap_or_default();
+        // リンク列: 書き手に見えない既存の参照先を残し、今回足した参照先だけを書き手の権限で検証する
+        // （patch に無いリンク列は検証しない・crate::link_merge）。
+        let patch_obj = &self
+            .merge_link_patch(ctx, az, table, &old_map, patch_obj)
+            .await?;
+        // merge: null は除去・それ以外は上書き。
         let mut merged = old_map.clone();
         for (k, v) in patch_obj {
             if v.is_null() {
@@ -152,8 +165,6 @@ impl DataStore {
         .await?;
         // FSM 管理テーブルの status は直接 update できない（遷移 API 経由でのみ・Task 9.10）。
         Self::reject_fsm_status_write(table, patch_obj.keys())?;
-        self.check_record_refs(ctx, &table.schema, &normalized)
-            .await?;
         let patches = diff_fields(&old_map, &normalized);
         if patches.is_empty() {
             let mut out = [current];
@@ -232,11 +243,11 @@ impl DataStore {
             trace_id,
         )
         .await?;
-        self.record_audit_on(
+        self.record_audit_record_on(
             tx,
             ctx,
             "data.record.update",
-            &id.to_string(),
+            id,
             trace_id,
             serde_json::json!({ "table_id": table_id, "rev": new_rev }),
         )

@@ -424,14 +424,14 @@ impl DataStore {
         }
         // 本体の後段（派生フィールド・マスク・投影）はトランザクションの外で行う。
         if let Some(mut items) = rows {
-            self.resolve_derived_fields(ctx, az, &table, &masked, &mut items)
+            self.project_read(ctx, az, &table, &masked, &mut items)
                 .await?;
-            Self::apply_mask_records(&masked, &mut items);
             if let Some(sel) = &bq.select {
                 for r in &mut items {
                     if let Some(obj) = r.data.as_object_mut() {
                         obj.retain(|k, _| sel.contains(k));
                     }
+                    r.suppressed_fields.retain(|k| sel.contains(k));
                 }
             }
             if let Some(mut joined) = joined {
@@ -444,9 +444,8 @@ impl DataStore {
                         continue;
                     };
                     let (ints, mut recs): (Vec<i64>, Vec<DataRecord>) = map.drain().unzip();
-                    self.resolve_derived_fields(ctx, az, &st.table, &st.masked, &mut recs)
+                    self.project_read(ctx, az, &st.table, &st.masked, &mut recs)
                         .await?;
-                    Self::apply_mask_records(&st.masked, &mut recs);
                     map.extend(ints.into_iter().zip(recs));
                 }
                 items = Self::compose_joined(&bq, &joined, items);

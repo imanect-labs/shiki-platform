@@ -369,6 +369,15 @@ pub struct DataRecord {
     pub owner: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// スモールセル抑制（参照先の `aggregate_min_rows` を継承・PIT-17）で値を伏せた派生列の参照名
+    /// （見える参照先が K 件未満のロールアップと、それを式に含む数式）。値は null で、画面は空欄ではなく
+    /// 「件数が少ないため非表示」と出す。判定は閲覧者に見える行だけで決まる（見えない行の件数は漏れない）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suppressed_fields: Vec<String>,
+    /// リンク列の参照先の表示名（参照先レコードの外部 ID → 参照先のタイトル列＝表示順で先頭の、閲覧者に
+    /// 読めるテキスト列の値）。閲覧者本人の権限で見える参照先だけ（リンク値の存在秘匿と同じ取得から作る）。
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub link_labels: std::collections::BTreeMap<String, String>,
 }
 
 /// フィールド単位の変更差分（リビジョン changelog の 1 要素・Task 9.5）。

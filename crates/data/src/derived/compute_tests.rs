@@ -42,6 +42,7 @@ fn refs(amounts: &[serde_json::Value], k: i64) -> RefRows {
         ]
         .into(),
         min_rows: k,
+        title_key: None,
     }
 }
 

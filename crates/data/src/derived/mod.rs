@@ -4,6 +4,9 @@
 //!
 //! 取得済みの行へ派生フィールドと対称列を埋める（[`DataStore::resolve_derived_fields`]）。
 //!
+//! 0. **順方向のリンク列**（存在秘匿・§7.2）: 保存値の参照先 id のうち、閲覧者本人の権限で見えない
+//!    もの（参照先テーブルの viewer なし・行述語で不可視・削除済み）を落とす。REST・SQL・チャット・SSE・
+//!    ビュー・ミニアプリ・ワークフロー出力は全てこの出口を通る（書込側の扱いは [`crate::link_merge`]）。
 //! 1. **対称列**（参照先から見た逆リンク・読取専用）: 順方向の書込と同じ Tx で書いた逆方向行
 //!    （`data_link`・自分側の `table_int` に載るので 1 パーティション）を引き、参照元テーブルの行を
 //!    閲覧者が見えるものだけに絞る。
@@ -59,13 +62,28 @@ struct LinkUse {
     targets: BTreeSet<String>,
 }
 
-/// スキーマが読取時の解決を要するか（派生フィールドか対称列がある）。
+/// スキーマが読取時の解決を要するか（派生フィールド・対称列・順方向のリンク列がある）。
+///
+/// 順方向のリンク列も解決の対象: 保存値には書き手が付けた全参照先の id が入っているので、閲覧者に
+/// 見えない参照先（行述語で不可視・参照先テーブルの viewer なし）の id と件数を読取の出口で落とす
+/// （§7.2 の存在秘匿）。
 pub(crate) fn needs_resolution(table: &DataTable) -> bool {
+    table.schema.fields.iter().any(resolves_on_read)
+}
+
+/// 読取時に閲覧者の権限で値が決まる列か（派生フィールド・リンク列）。
+fn resolves_on_read(f: &crate::model::FieldDef) -> bool {
+    f.field_type.is_derived() || f.field_type == FieldType::RecordRef
+}
+
+/// 順方向のリンク列（値を本体に持つリンク・対称列ではない）。
+fn forward_links(table: &DataTable) -> impl Iterator<Item = (&crate::model::FieldDef, Uuid)> {
     table
         .schema
         .fields
         .iter()
-        .any(|f| f.field_type.is_derived() || f.is_reverse_link())
+        .filter(|f| f.field_type == FieldType::RecordRef && !f.is_reverse_link())
+        .filter_map(|f| f.ref_table.map(|t| (f, t)))
 }
 
 /// 派生フィールドが辿るリンク列の参照名と、その参照先テーブル（SSE の派生値の再配信・Task 15.6）。
@@ -130,11 +148,45 @@ pub(crate) fn first_hop_tables(table: &DataTable) -> Vec<Uuid> {
             .schema
             .fields
             .iter()
-            .filter(|f| f.is_reverse_link())
+            .filter(|f| f.field_type == FieldType::RecordRef)
             .filter_map(|f| f.ref_table),
     );
     out.remove(&table.id);
     out.into_iter().collect()
+}
+
+/// 行のリンク列 `key` の値を見える参照先だけに絞り（並び順は保つ）、残した参照先の表示名を添える。
+fn retain_visible_links(
+    rows: &mut [DataRecord],
+    key: &str,
+    visible: &HashSet<Uuid>,
+    labels: &HashMap<Uuid, String>,
+) {
+    for r in rows.iter_mut() {
+        let Some(obj) = r.data.as_object_mut() else {
+            continue;
+        };
+        if !obj.contains_key(key) {
+            continue;
+        }
+        let kept: Vec<Uuid> = linked_ids(obj, key)
+            .into_iter()
+            .filter(|id| visible.contains(id))
+            .collect();
+        for id in &kept {
+            if let Some(l) = labels.get(id) {
+                r.link_labels.insert(id.to_string(), l.clone());
+            }
+        }
+        obj.insert(
+            key.to_string(),
+            Value::Array(
+                kept.iter()
+                    .map(|id| Value::String(id.to_string()))
+                    .collect(),
+            ),
+        );
+    }
 }
 
 impl DataStore {
@@ -172,6 +224,38 @@ impl DataStore {
             if rows.is_empty() || !needs_resolution(table) {
                 return Ok(());
             }
+            // ⓪ 順方向のリンク列（存在秘匿・§7.2）: 参照先をリンク列ごとに 1 回、閲覧者本人の権限で引き、
+            // 見えない参照先の id を値から落とす（並び順は保つ）。派生列が辿るリンクは同じ取得を ② に使う。
+            let uses = link_uses(table);
+            let mut refs: HashMap<String, RefRows> = HashMap::new();
+            let no_targets = BTreeSet::new();
+            for (f, rt) in forward_links(table) {
+                if masked.contains(&f.key) {
+                    continue; // 列ごと応答から落ちる（呼び出し側の投影）。
+                }
+                let (visible, labels) = if depth >= MAX_RESOLVE_DEPTH {
+                    // 辿れる段数を超えた先は「見えない」側に倒す。
+                    (HashSet::new(), HashMap::new())
+                } else {
+                    let ids: Vec<Uuid> = rows
+                        .iter()
+                        .filter_map(|r| r.data.as_object())
+                        .flat_map(|m| linked_ids(m, &f.key))
+                        .collect::<HashSet<_>>()
+                        .into_iter()
+                        .collect();
+                    let targets = uses.get(&f.key).map_or(&no_targets, |u| &u.targets);
+                    let r = self
+                        .visible_ref_rows(ctx, az, rt, &ids, targets, depth + 1)
+                        .await?;
+                    let out = (r.rows.keys().copied().collect(), r.labels());
+                    if uses.contains_key(&f.key) {
+                        refs.insert(f.key.clone(), r);
+                    }
+                    out
+                };
+                retain_visible_links(rows, &f.key, &visible, &labels);
+            }
             // 計算の材料（閲覧者に読める列だけ）。
             let mut work: Vec<Map<String, Value>> = rows
                 .iter()
@@ -207,10 +291,12 @@ impl DataStore {
                     }
                 }
             }
-            // ② 参照先の行（リンク列ごとに 1 回）。
-            let mut refs: HashMap<String, RefRows> = HashMap::new();
+            // ② 参照先の行（リンク列ごとに 1 回・⓪ で引いた順方向のリンクは引き直さない）。
             if depth < MAX_RESOLVE_DEPTH {
-                for (link, u) in link_uses(table) {
+                for (link, u) in uses {
+                    if refs.contains_key(&link) {
+                        continue;
+                    }
                     let Some(rt) = u.ref_table else { continue };
                     let ids: Vec<Uuid> = work
                         .iter()
@@ -234,6 +320,7 @@ impl DataStore {
             };
             for (i, r) in rows.iter_mut().enumerate() {
                 let values = eval.evaluate(&work[i]);
+                r.suppressed_fields = eval.suppressed(&work[i], &values);
                 if let Some(obj) = r.data.as_object_mut() {
                     for (k, v) in values {
                         obj.insert(k, v);
@@ -319,15 +406,15 @@ impl DataStore {
                     owner,
                     created_at: chrono::DateTime::UNIX_EPOCH,
                     updated_at: chrono::DateTime::UNIX_EPOCH,
+                    suppressed_fields: Vec::new(),
+                    link_labels: std::collections::BTreeMap::new(),
                 })
                 .collect();
             // 参照先の派生列を対象にする場合（多段）は、参照先でも閲覧者の権限で計算する。
-            let needs_derived = targets.iter().any(|t| {
-                ref_table
-                    .schema
-                    .field(t)
-                    .is_some_and(|f| f.field_type.is_derived() || f.is_reverse_link())
-            });
+            // 参照先のリンク列を射影する lookup も、参照先の参照先の存在秘匿を同じ規則で掛ける。
+            let needs_derived = targets
+                .iter()
+                .any(|t| ref_table.schema.field(t).is_some_and(resolves_on_read));
             if needs_derived {
                 self.resolve_derived_at(ctx, az, &ref_table, &ref_masked, &mut recs, depth)
                     .await?;
@@ -356,6 +443,16 @@ impl DataStore {
                     .schema
                     .aggregate_min_rows
                     .unwrap_or(DEFAULT_AGGREGATE_MIN_ROWS),
+                title_key: {
+                    let mut text: Vec<&crate::model::FieldDef> = ref_table
+                        .schema
+                        .fields
+                        .iter()
+                        .filter(|f| f.field_type == FieldType::Text && !ref_masked.contains(&f.key))
+                        .collect();
+                    text.sort_by_key(|f| f.order);
+                    text.first().map(|f| f.key.clone())
+                },
             })
         })
     }

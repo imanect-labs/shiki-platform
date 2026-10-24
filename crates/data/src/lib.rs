@@ -54,6 +54,7 @@ mod fsm;
 mod fsm_store;
 mod index;
 mod key_migration;
+mod link_merge;
 mod link_values;
 mod mask;
 mod model;

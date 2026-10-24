@@ -219,12 +219,38 @@ impl DataStore {
         self.feedback.clear_samples();
     }
 
+    /// 組織管理者の運用面の入口: そのテーブルの **viewer でもある**こと（管理者権限は閲覧権を含意しない・
+    /// PIT-65・アンビエント権限の禁止）。見えないテーブルは「見つからない」。閲覧者に読めない列の名前は
+    /// 候補から外すため、マスク集合を返す。
+    async fn optimizer_gate(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+    ) -> Result<std::collections::HashSet<String>, DataError> {
+        let az = self.authz_memo();
+        let viewer = az
+            .check(
+                ctx,
+                authz::Relation::Viewer,
+                &ctx.ns().data_table(&table_id.to_string()),
+            )
+            .await?;
+        if !viewer {
+            return Err(DataError::NotFound);
+        }
+        let table = self.fetch_live(ctx, table_id).await?;
+        self.masked_fields(ctx, &az, &table).await
+    }
+
     /// 管理画面: テーブルのクエリ最適化の報告（組織管理者・呼び出し側のルートが `OrgAdmin` を掛ける）。
+    ///
+    /// 管理者自身がテーブルの viewer であることも要求する（[`Self::optimizer_gate`]）。
     pub async fn table_optimizer_report(
         &self,
         ctx: &AuthContext,
         table_id: Uuid,
     ) -> Result<TableOptimizerReport, DataError> {
+        let masked = self.optimizer_gate(ctx, table_id).await?;
         let fixed: Option<bool> = sqlx::query_scalar(
             "SELECT planner_fixed FROM data_table \
              WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL",
@@ -247,6 +273,7 @@ impl DataStore {
             .feedback
             .candidates(table_id)
             .into_iter()
+            .filter(|(_, fields, _)| !fields.iter().any(|f| masked.contains(f)))
             .map(|(k, fields, n)| OptimizerIndexCandidate {
                 kind: match k {
                     CandidateKind::CompositeIndex => OptimizerCandidateKind::CompositeIndex,
@@ -277,6 +304,7 @@ impl DataStore {
         fixed: bool,
         trace_id: Option<&str>,
     ) -> Result<TableOptimizerReport, DataError> {
+        self.optimizer_gate(ctx, table_id).await?;
         let mut tx = self
             .pools
             .for_tenant(&ctx.tenant_id)

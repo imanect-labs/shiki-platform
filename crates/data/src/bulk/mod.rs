@@ -491,6 +491,16 @@ impl DataStore {
         if rows.is_empty() {
             return Err(DataError::Invalid("取り込む行がありません".into()));
         }
+        // 読めない（マスクされた）列へ書く作成行を含む取込は全体を 403（1 件の作成と同じ単一点・PIT-19）。
+        // 検証段でも行ごとに確かめ直す（開始から検証までの間のポリシー変更に追従する）。更新行は適用段で
+        // 1 件の更新と同じ入口（行ロックの下）が行ごとに拒否する。
+        let az = self.authz_memo();
+        let masked = self.ensure_fields_writable(ctx, &az, &table, None).await?;
+        for r in rows.iter().filter(|r| r.record_id.is_none()) {
+            if let Some(obj) = r.data.as_object() {
+                Self::ensure_writable_fields(&masked, obj)?;
+            }
+        }
         if rows.len() > MAX_BULK_ROWS {
             return Err(DataError::Invalid(format!(
                 "1 回に取り込める行は {MAX_BULK_ROWS} 行までです"
@@ -644,14 +654,15 @@ impl DataStore {
         .map_err(map_db)
     }
 
-    /// 取込の進捗（editor）。別のテーブルの取込 ID は「見つからない」。
+    /// 取込の進捗（editor かつ取込の作成者・テーブル owner・組織管理者）。別のテーブルの取込 ID・
+    /// 見せない取込は「見つからない」。
     pub async fn bulk_import_status(
         &self,
         ctx: &AuthContext,
         table_id: Uuid,
         import_id: Uuid,
     ) -> Result<BulkImportStatus, DataError> {
-        let keys = self.bulk_import_gate(ctx, table_id).await?;
+        let keys = self.bulk_import_gate(ctx, table_id, import_id).await?;
         #[allow(clippy::type_complexity)]
         let row: Option<(
             String,
@@ -707,19 +718,13 @@ impl DataStore {
         after_row: i64,
         limit: i64,
     ) -> Result<Vec<BulkRowError>, DataError> {
-        let keys = self.bulk_import_gate(ctx, table_id).await?;
+        let keys = self.bulk_import_gate(ctx, table_id, import_id).await?;
         let mut conn = self
             .pools
             .for_tenant(&ctx.tenant_id)
             .acquire()
             .await
             .map_err(map_db)?;
-        let found = load_import(&mut conn, keys.tenant_int, import_id, false)
-            .await?
-            .is_some_and(|i| i.table_int == keys.table_int);
-        if !found {
-            return Err(DataError::NotFound);
-        }
         let rows: Vec<(i64, Option<String>, Option<String>)> = sqlx::query_as(
             "SELECT row_no, row_key, error FROM data_bulk_staging \
              WHERE tenant_int = $1 AND import_id = $2 AND row_no > $3 AND state IN ($4, $5) \
@@ -744,13 +749,20 @@ impl DataStore {
             .collect())
     }
 
-    /// 観測 API の入口（editor・生存テーブル）。
+    /// 観測 API の入口（editor・生存テーブル・**取込の作成者かテーブル owner か組織管理者**）。
+    ///
+    /// 取込の状態と行エラー（行の値の断片を含みうる）は、同じテーブルの editor でも他人の取込なら
+    /// 見せない（B-P3-4）。組織管理者もテーブルの editor であることが前提（アンビエント権限の禁止）。
+    /// 見せない取込・別のテーブルの取込は「見つからない」（存在を区別しない）。
     async fn bulk_import_gate(
         &self,
         ctx: &AuthContext,
         table_id: Uuid,
+        import_id: Uuid,
     ) -> Result<TableKeys, DataError> {
-        self.require(
+        let az = self.authz_memo();
+        self.require_in(
+            &az,
             ctx,
             table_id,
             Relation::Editor,
@@ -758,7 +770,34 @@ impl DataStore {
             None,
         )
         .await?;
-        Ok(self.fetch_live(ctx, table_id).await?.keys)
+        let keys = self.fetch_live(ctx, table_id).await?.keys;
+        let mut conn = self
+            .pools
+            .for_tenant(&ctx.tenant_id)
+            .acquire()
+            .await
+            .map_err(map_db)?;
+        let imp = load_import(&mut conn, keys.tenant_int, import_id, false)
+            .await?
+            .filter(|i| i.table_int == keys.table_int)
+            .ok_or(DataError::NotFound)?;
+        drop(conn);
+        let creator = imp.auth_context(&ctx.tenant_id)?;
+        if creator.principal.kind == ctx.principal.kind && creator.principal.id == ctx.principal.id
+        {
+            return Ok(keys);
+        }
+        let ns = ctx.ns();
+        if az
+            .check(ctx, Relation::Owner, &ns.data_table(&table_id.to_string()))
+            .await?
+            || az
+                .check(ctx, Relation::Admin, &ns.organization(&ctx.org))
+                .await?
+        {
+            return Ok(keys);
+        }
+        Err(DataError::NotFound)
     }
 
     /// 取込を 1 ステップ（現在の段の 1 チャンク・最大 `max_rows` 行）進める。冪等・中断再開可。

@@ -46,6 +46,7 @@ impl DataStore {
     ) -> Result<(), DataError> {
         self.require_record_share_right(ctx, table_id, record_id, "data.record.share", trace_id)
             .await?;
+        self.validate_share_target(ctx, target).await?;
         // タプルを書く**前に**「個別共有あり」を立て、このテーブルを参照先にする材料化列を降格する
         // （共有の有無で行集合が変わる＝材料化の前提の第 4 階層が崩れる・PIT-71）。タプルの書込に
         // 失敗しても旗は立ったまま（安全側）。
@@ -84,10 +85,48 @@ impl DataStore {
         Ok(())
     }
 
+    /// 共有先の検査: id の形（subject を壊す文字の拒否）と、ユーザーは**同一テナントのディレクトリに
+    /// 居ること**（存在しない・他テナントの id への共有タプルを作らない）。ロールは StorageService の
+    /// 共有と同じく形だけを見る（IdP 同期前の部署へも共有できるようにするため）。解除は検査しない
+    /// （残った不正なタプルを消せるように）。
+    async fn validate_share_target(
+        &self,
+        ctx: &AuthContext,
+        target: &ShareTarget,
+    ) -> Result<(), DataError> {
+        let id = match target {
+            ShareTarget::User { id } | ShareTarget::Role { id } => id,
+        };
+        if id != id.trim() {
+            return Err(DataError::Invalid(
+                "共有先 id の前後に空白は使えません".into(),
+            ));
+        }
+        authz::validate_local_id(id)
+            .map_err(|v| DataError::Invalid(format!("共有先 id が不正です: {v}")))?;
+        if let ShareTarget::User { id } = target {
+            let exists = self
+                .resolver
+                .user_exists(ctx, id)
+                .await
+                .map_err(DataError::Internal)?;
+            if !exists {
+                return Err(DataError::Invalid(format!(
+                    "共有先のユーザー '{id}' が見つかりません"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// 共有・解除の後: SSE の購読へ TTL を待たずに知らせる（世代を進める・PIT-70 ③）。
     async fn after_share_change(&self, ctx: &AuthContext, table_id: Uuid) {
         if let Err(e) = self.notify_authz_changed(ctx, Some(table_id)).await {
             tracing::warn!(error = %e, %table_id, "SSE への共有変更の通知に失敗（購読は TTL で引き直す）");
+        }
+        // この表を参照する表の購読にも取り直させる（共有先から見たルックアップ・リンク値が変わる）。
+        if let Err(e) = self.refresh_referrers(&ctx.tenant_id, table_id).await {
+            tracing::warn!(error = %e, %table_id, "共有変更後の参照元の取り直しの発行に失敗");
         }
     }
 

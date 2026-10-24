@@ -536,6 +536,9 @@ impl DataStore {
         .await?;
         // 購読者へスキーマの改訂を知らせる（SSE は schema.changed を送って閉じる・Task 15.6）。
         crate::stream::outbox::emit_schema_changed(&mut tx, ctx, &row, trace_id).await?;
+        // この表を参照する表の購読にも取り直させる（行述語・マスクの変更で参照元のルックアップ・
+        // リンク値の見え方が変わる・B-P2-1）。
+        crate::stream::relay::emit_refresh_for_referrers(&mut tx, &ctx.tenant_id, id).await?;
         tx.commit().await.map_err(map_db)?;
         // 版は DB 照合で必ず変わって見えるが、古い本文はここで落としておく（世代切替）。
         self.schema_cache.invalidate_table(&ctx.tenant_id, id);
@@ -582,6 +585,7 @@ impl DataStore {
             "参照先テーブルが削除された",
         )
         .await?;
+        crate::stream::relay::emit_refresh_for_referrers(&mut tx, &ctx.tenant_id, id).await?;
         tx.commit().await.map_err(map_db)?;
         self.schema_cache.invalidate_table(&ctx.tenant_id, id);
         self.record_audit_best_effort(
@@ -747,7 +751,7 @@ impl DataStore {
         Ok(())
     }
 
-    /// 既存 Tx 上で監査を残す（実データ変更用・Chain=Yes・書込と原子的）。
+    /// 既存 Tx 上で監査を残す（実データ変更用・Chain=Yes・書込と原子的）。対象はテーブル（`data_table`）。
     pub(crate) async fn record_audit_on(
         &self,
         conn: &mut sqlx::PgConnection,
@@ -757,12 +761,58 @@ impl DataStore {
         trace_id: Option<&str>,
         metadata: serde_json::Value,
     ) -> Result<(), DataError> {
+        Self::audit_on(
+            conn,
+            ctx,
+            action,
+            "data_table",
+            object_id,
+            trace_id,
+            metadata,
+        )
+        .await
+    }
+
+    /// [`Self::record_audit_on`] のレコード版（`object_type = data_record`・`object_id` はレコードの外部 ID）。
+    ///
+    /// 監査の語彙は個別共有・遷移（`data.record.share` / `data.record.transition`）と同じ。テーブルは
+    /// `metadata.table_id` に載せる。
+    pub(crate) async fn record_audit_record_on(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        ctx: &AuthContext,
+        action: &str,
+        record_id: Uuid,
+        trace_id: Option<&str>,
+        metadata: serde_json::Value,
+    ) -> Result<(), DataError> {
+        Self::audit_on(
+            conn,
+            ctx,
+            action,
+            "data_record",
+            &record_id.to_string(),
+            trace_id,
+            metadata,
+        )
+        .await
+    }
+
+    async fn audit_on(
+        conn: &mut sqlx::PgConnection,
+        ctx: &AuthContext,
+        action: &str,
+        object_type: &str,
+        object_id: &str,
+        trace_id: Option<&str>,
+        metadata: serde_json::Value,
+    ) -> Result<(), DataError> {
         storage::audit::record_on(
             conn,
             ctx,
             AuditEntry {
                 action,
-                object_type: "data_table",
+                object_type,
                 object_id,
                 decision: Decision::Allow,
                 trace_id,

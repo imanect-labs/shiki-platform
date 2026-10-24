@@ -479,6 +479,8 @@ impl RowOut {
                 owner: r.owner,
                 created_at: r.created_at,
                 updated_at: r.updated_at,
+                suppressed_fields: Vec::new(),
+                link_labels: std::collections::BTreeMap::new(),
             },
         }
     }

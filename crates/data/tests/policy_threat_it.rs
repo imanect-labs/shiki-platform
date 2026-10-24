@@ -1342,7 +1342,8 @@ async fn rollup_and_lookup_apply_reference_row_policy_per_viewer() {
         ]),
         write: None,
     });
-    // 原価（cost）は keiri ロールだけが読める。
+    // 原価（cost）は keiri ロールだけが読める。読めない列へは書けないので、原価を入れる alice は keiri。
+    join_role(&authz, &alice, "keiri").await;
     lines_schema.field_policy = vec![FieldPolicy {
         field: "cost".into(),
         readable_by: PolicyExpr::HasRole {
@@ -1415,14 +1416,21 @@ async fn rollup_and_lookup_apply_reference_row_policy_per_viewer() {
         .unwrap();
     assert_eq!(alice_view.data["total"], json!(350));
     assert_eq!(alice_view.data["n"], json!(2));
-    // alice も keiri ではないので原価は集計に入らない（マスク列は持ち出さない・PIT-19）。
-    assert_eq!(alice_view.data["cost_total"], json!(0));
+    // keiri の alice には原価の合計が見える。
+    assert_eq!(alice_view.data["cost_total"], json!(61));
     // bob には非公開行が見えない → 合計・件数・lookup・数式から消える（null ではなく可視分だけ）。
     let bob_view = store.get_record(&bob, orders.id, o.id, None).await.unwrap();
     assert_eq!(bob_view.data["total"], json!(100));
     assert_eq!(bob_view.data["n"], json!(1));
     assert_eq!(bob_view.data["names"], json!(["公開"]));
     assert_eq!(bob_view.data["doubled"], json!(200));
+    // keiri でない bob には、原価（参照先のマスク列）に依存するロールアップは列ごと出ない
+    // （マスク列は値も「値なしで計算した結果」も持ち出さない・PIT-19）。
+    assert!(
+        bob_view.data.get("cost_total").is_none(),
+        "{:?}",
+        bob_view.data
+    );
     // 個別共有した行だけが追加で集計に入る（解除すれば即時に戻る）。
     let target = storage::ShareTarget::User { id: "bob".into() };
     store
@@ -1850,6 +1858,8 @@ async fn materialized_rollup_is_discarded_on_query_and_on_field_policy() {
     m.assert_discarded("ReBAC の変更（クエリの入口）").await;
 
     let m = materialized_fixture(pool, authz).await;
+    // alice は keiri（マスクの対象外）なので、降格の判定（ソート不可は 422）をそのまま見られる。
+    join_role(&m.authz, &m.alice, "keiri").await;
     let mut s = m
         .store
         .get_table(&m.alice, m.lines, None)
@@ -1868,8 +1878,21 @@ async fn materialized_rollup_is_discarded_on_query_and_on_field_policy() {
         .await
         .unwrap();
     m.assert_discarded("field_policy 後付け").await;
-    // マスクされた列は集計の材料にもならない（alice も keiri ではない）。
-    assert_eq!(m.total_seen_by(&m.alice).await, json!(0));
+    assert_eq!(m.total_seen_by(&m.alice).await, json!(350));
+    // マスクされた列は集計の材料にもならない: keiri でない bob には合計の列ごと出ず、ソートは 403。
+    grant(&m.authz, &m.bob, Relation::Viewer, m.orders).await;
+    grant(&m.authz, &m.bob, Relation::Viewer, m.lines).await;
+    let got = m
+        .store
+        .get_record(&m.bob, m.orders, m.order_id, None)
+        .await
+        .unwrap();
+    assert!(got.data.get("total").is_none(), "{:?}", got.data);
+    let r = m
+        .store
+        .run_query(&m.bob, m.orders, &m.by_total(), None)
+        .await;
+    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
     // ⑪ SQL 前段面でも同じ（材料化を破棄した列は閲覧者本人の権限で計算し直した値）。
     for who in [&m.alice, &m.bob] {
         sql_mirror(&m.store, who, m.orders, "orders").await;
@@ -2009,7 +2032,8 @@ async fn sse_never_streams_invisible_rows_or_masked_fields() {
         return;
     };
     let f = fixture(pool, authz).await;
-    // マスク列つきの表（amount は経理だけが読める）。
+    // マスク列つきの表（amount は経理だけが読める）。読めない列へは書けないので、書き手の alice は経理。
+    join_role(&f.authz, &f.alice, "keiri").await;
     let mut schema = expense_schema_with_policy();
     schema.field_policy = vec![FieldPolicy {
         field: "amount".into(),
@@ -2361,4 +2385,845 @@ async fn sql_mirror(store: &DataStore, who: &AuthContext, table_id: Uuid, name: 
     b.sort();
     assert_eq!(a, b, "{name}: グループ化の結果が違う");
     assert_eq!(sql.suppressed, ir.suppressed);
+}
+
+// ---------------------------------------------------------------------------
+// ⑫ 実操作検証の指摘（Phase 15・担当 B）: 書込面のマスク・リンク値の存在秘匿・派生列のマスク・
+//    履歴・個別共有の宛先・取込の観測・オプティマイザの管理面・監査の語彙・参照先変更の配信
+// ---------------------------------------------------------------------------
+
+/// 同一テナントのディレクトリに居るユーザーだけを「居る」と答える参照解決（個別共有の宛先の検証用）。
+struct DirectoryRefs(Vec<&'static str>);
+
+#[async_trait]
+impl RefResolver for DirectoryRefs {
+    async fn user_exists(&self, _: &AuthContext, id: &str) -> Result<bool, String> {
+        Ok(self.0.contains(&id))
+    }
+    async fn role_exists(&self, _: &AuthContext, _: &str) -> Result<bool, String> {
+        Ok(true)
+    }
+    async fn file_readable(&self, _: &AuthContext, _: Uuid) -> Result<bool, String> {
+        Ok(true)
+    }
+}
+
+async fn join_role(authz: &Arc<dyn AuthzClient>, who: &AuthContext, role: &str) {
+    authz
+        .write_tuple(&who.subject(), Relation::Member, &who.ns().role(role))
+        .await
+        .expect("role member");
+}
+
+/// 社員番号（unique・indexed）は bmgr ロールだけが読める社員表。
+fn staff_schema() -> TableSchema {
+    let mut emp_no = field("emp_no", FieldType::Text);
+    emp_no.unique = true;
+    emp_no.indexed = true;
+    let mut s = plain(vec![field("name", FieldType::Text), emp_no]);
+    s.field_policy = vec![FieldPolicy {
+        field: "emp_no".into(),
+        readable_by: PolicyExpr::HasRole {
+            role: "bmgr".into(),
+            subtree: false,
+        },
+    }];
+    s
+}
+
+/// ⑫-1（B-P0-1）読めない（マスクされた）列へは作成・一括取込（JSON・CSV）でも書けない。
+/// 既存値の有無で応答が変わらない（unique 違反から値を当てさせない）。開始後にポリシーが変わっても、
+/// 検証段の行エラーに列名・値を出さない。
+#[tokio::test]
+async fn masked_column_cannot_be_written_on_create_or_import() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let store = DataStore::new(pool, Arc::clone(&authz), Arc::new(AllowRefs));
+    join_role(&authz, &alice, "bmgr").await;
+    let t = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "staff".into(),
+                schema: staff_schema(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    grant(&authz, &bob, Relation::Editor, t.id).await;
+    store
+        .create_record(&alice, t.id, json!({"name": "a", "emp_no": "E103"}), None)
+        .await
+        .unwrap();
+    // 既存の値でも無い値でも同じ 403（409 / 201 の差で既存値を当てられない）。
+    for v in ["E103", "E999"] {
+        let r = store
+            .create_record(&bob, t.id, json!({"name": "b", "emp_no": v}), None)
+            .await;
+        assert!(matches!(r, Err(DataError::Forbidden)), "{v}: {r:?}");
+        let r = store
+            .start_bulk_import(
+                &bob,
+                t.id,
+                vec![data::BulkImportRow {
+                    key: None,
+                    data: json!({"name": "b", "emp_no": v}),
+                }],
+                data::BulkImportOptions::default(),
+                None,
+            )
+            .await;
+        assert!(matches!(r, Err(DataError::Forbidden)), "{v}: {r:?}");
+        let csv = format!("name,emp_no\nb,{v}\n");
+        let r = store
+            .start_bulk_import_csv(
+                &bob,
+                t.id,
+                csv.as_bytes(),
+                data::BulkImportOptions::default(),
+                None,
+            )
+            .await;
+        assert!(matches!(r, Err(DataError::Forbidden)), "{v}: {r:?}");
+    }
+    // マスク列を含まない作成は通る（読める列だけの書込は妨げない）。
+    store
+        .create_record(&bob, t.id, json!({"name": "b"}), None)
+        .await
+        .unwrap();
+    // 取込を始めた後で書き手が bmgr から外れた: 検証段で行ごとに拒否し、文言に列名・値を出さない。
+    let imp = store
+        .start_bulk_import(
+            &alice,
+            t.id,
+            vec![data::BulkImportRow {
+                key: Some("r1".into()),
+                data: json!({"name": "c", "emp_no": "E103"}),
+            }],
+            data::BulkImportOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    authz
+        .delete_tuple(&alice.subject(), Relation::Member, &alice.ns().role("bmgr"))
+        .await
+        .unwrap();
+    store.run_bulk_import(&tenant, t.id, imp).await.unwrap();
+    let errs = store
+        .bulk_import_errors(&alice, t.id, imp, 0, 10)
+        .await
+        .unwrap();
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    for leak in ["emp_no", "E103", "重複"] {
+        assert!(!errs[0].message.contains(leak), "{leak}: {errs:?}");
+    }
+}
+
+/// 案件（担当者本人だけが見える）と、案件へのリンクを持つ親の表。
+struct LinkFixture {
+    store: DataStore,
+    authz: Arc<dyn AuthzClient>,
+    alice: AuthContext,
+    bob: AuthContext,
+    projects: Uuid,
+    parent: Uuid,
+    /// alice だけに見える案件。
+    hidden: Vec<Uuid>,
+    /// bob にも見える案件。
+    shown: Vec<Uuid>,
+    /// bob に権限の無い表の行。
+    secret: Uuid,
+    rec: Uuid,
+}
+
+async fn link_fixture(pool: PgPool, authz: Arc<dyn AuthzClient>) -> LinkFixture {
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let store = DataStore::new(pool, Arc::clone(&authz), Arc::new(AllowRefs));
+    let mut person = field("person", FieldType::UserRef);
+    person.indexed = true;
+    let mut ps = plain(vec![person, field("name", FieldType::Text)]);
+    // 作成者（alice）は全件、それ以外は担当の案件だけが見える。
+    ps.row_policy = Some(RowPolicy {
+        read: PolicyExpr::Any(vec![
+            PolicyExpr::IsOwner,
+            PolicyExpr::FieldCmp {
+                field: "person".into(),
+                op: CmpOp::Eq,
+                value: PolicyOperand::UserId,
+            },
+        ]),
+        write: None,
+    });
+    let projects = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "projects".into(),
+                schema: ps,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let secrets = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "secrets".into(),
+                schema: plain(vec![field("name", FieldType::Text)]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let mut kids = items_link(projects.id);
+    kids.key = "kids".into();
+    kids.display_name = "kids".into();
+    let mut lead = field("lead", FieldType::RecordRef);
+    lead.ref_table = Some(projects.id);
+    lead.link = Some(LinkDef {
+        cardinality: LinkCardinality::ManyToOne,
+        symmetric_field: None,
+        symmetric_key: None,
+        reverse: false,
+    });
+    let mut other = items_link(secrets.id);
+    other.key = "other".into();
+    other.display_name = "other".into();
+    let parent = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "parent".into(),
+                schema: plain(vec![field("title", FieldType::Text), kids, lead, other]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    grant(&authz, &bob, Relation::Viewer, projects.id).await;
+    grant(&authz, &bob, Relation::Editor, parent.id).await;
+    let mk = |who: &'static str, n: &'static str| {
+        store.create_record(&alice, projects.id, json!({"person": who, "name": n}), None)
+    };
+    let a1 = mk("alice", "a1").await.unwrap().id;
+    let b1 = mk("bob", "b1").await.unwrap().id;
+    let a2 = mk("alice", "a2").await.unwrap().id;
+    let b2 = mk("bob", "b2").await.unwrap().id;
+    let a3 = mk("alice", "a3").await.unwrap().id;
+    let secret = store
+        .create_record(&alice, secrets.id, json!({"name": "s"}), None)
+        .await
+        .unwrap()
+        .id;
+    let rec = store
+        .create_record(
+            &alice,
+            parent.id,
+            json!({"title": "親", "kids": ids(&[a1, b1, a2, b2, a3]), "lead": ids(&[a1]),
+                   "other": ids(&[secret])}),
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    LinkFixture {
+        store,
+        authz,
+        alice,
+        bob,
+        projects: projects.id,
+        parent: parent.id,
+        hidden: vec![a1, a2, a3],
+        shown: vec![b1, b2],
+        secret,
+        rec,
+    }
+}
+
+/// ⑫-2（B-P1-1）リンク列の値に、閲覧者に見えない参照先（行述語で不可視・権限の無い表）の id と件数が
+/// 出ない。REST（get / query）・SQL・履歴・SSE の全面で同じ。
+#[tokio::test]
+async fn link_values_never_expose_invisible_targets() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let f = link_fixture(pool, authz).await;
+    let shown = ids(&f.shown);
+    let got = f
+        .store
+        .get_record(&f.bob, f.parent, f.rec, None)
+        .await
+        .unwrap();
+    assert_eq!(got.data["kids"], shown, "見える参照先だけ（並び順は保つ）");
+    assert_eq!(got.data["lead"], json!([]), "単一値でも見えなければ空");
+    assert_eq!(got.data["other"], json!([]), "権限の無い表の行は出ない");
+    // 参照先の表示名（タイトル列）も見える参照先の分だけ。
+    let labels: Vec<(String, String)> = got.link_labels.clone().into_iter().collect();
+    let mut want: Vec<(String, String)> = vec![
+        (f.shown[0].to_string(), "b1".to_string()),
+        (f.shown[1].to_string(), "b2".to_string()),
+    ];
+    want.sort();
+    assert_eq!(labels, want);
+    let whole = serde_json::to_string(&got).unwrap();
+    let q = f
+        .store
+        .run_query(&f.bob, f.parent, &DataQuery::default(), None)
+        .await
+        .unwrap()
+        .items
+        .unwrap()
+        .remove(0);
+    assert_eq!(q.data["kids"], shown);
+    assert_eq!(q.data["other"], json!([]));
+    let rows = sql_rows(&f.store, &f.bob, "SELECT kids, other FROM parent").await;
+    assert_eq!(rows, vec![vec![shown.clone(), json!([])]]);
+    let revs = f
+        .store
+        .list_revisions(&f.bob, f.parent, f.rec, None, 50, None)
+        .await
+        .unwrap();
+    let all = serde_json::to_string(&revs).unwrap();
+    // 作成者（alice）には全部見える。
+    let mine = f
+        .store
+        .get_record(&f.alice, f.parent, f.rec, None)
+        .await
+        .unwrap();
+    assert_eq!(mine.data["kids"].as_array().unwrap().len(), 5);
+    // SSE: bob の購読に届く更新にも見えない参照先は載らない。
+    let mut stream = f
+        .store
+        .subscribe_records(&f.bob, f.parent, None, None)
+        .await
+        .unwrap();
+    f.store
+        .update_record(&f.alice, f.parent, f.rec, json!({"title": "更新"}), 1, None)
+        .await
+        .unwrap();
+    let mut seen = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut got_up = false;
+    while std::time::Instant::now() < deadline && !got_up {
+        if let Ok(Some(m)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await
+        {
+            if let data::StreamEvent::Upserted(u) = &m.event {
+                assert_eq!(u.record.data["kids"], shown);
+                got_up = true;
+            }
+            seen.push(format!("{}", m.event.data_json()));
+        }
+    }
+    assert!(got_up, "{seen:?}");
+    let all = format!("{all}\n{whole}\n{}", seen.join("\n"));
+    for leak in f.hidden.iter().chain([&f.secret]) {
+        assert!(!all.contains(&leak.to_string()), "{leak} が漏れた: {all}");
+    }
+}
+
+/// ⑫-3（B-P0-2・B-P1-2）書き手に見えない既存の参照先は、見える分だけの更新で消えない。関係ない列は
+/// 見えない参照先を持つ行でも編集できる。検証するのは今回足した参照先だけで、見えない既存の id を
+/// 送っても「見つからない」と同じ応答（オラクルなし）。単一値の見えない参照先は付け替えられない。
+#[tokio::test]
+async fn link_updates_keep_targets_the_writer_cannot_see() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let f = link_fixture(pool, authz).await;
+    let (b1, b2) = (f.shown[0], f.shown[1]);
+    let (a1, a2, a3) = (f.hidden[0], f.hidden[1], f.hidden[2]);
+    // 関係ない列だけの更新（見えない参照先を持つ行でも 200）。
+    let r = f
+        .store
+        .update_record(&f.bob, f.parent, f.rec, json!({"title": "bob"}), 1, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        r.data["kids"],
+        ids(&f.shown),
+        "応答にも見えない参照先は出ない"
+    );
+    // 見えている配列をそのまま送り返す（UI の典型）→ 変化なし。
+    let r = f
+        .store
+        .update_record(
+            &f.bob,
+            f.parent,
+            f.rec,
+            json!({"kids": ids(&f.shown)}),
+            2,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.rev, 2, "見えない分を残すので差分なし");
+    // 見える分から 1 件外す → 見えない 3 件は元の位置に残る。
+    let r = f
+        .store
+        .update_record(
+            &f.bob,
+            f.parent,
+            f.rec,
+            json!({"kids": ids(&[b1])}),
+            2,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.data["kids"], ids(&[b1]));
+    let a = f
+        .store
+        .get_record(&f.alice, f.parent, f.rec, None)
+        .await
+        .unwrap();
+    assert_eq!(a.data["kids"], ids(&[a1, b1, a2, a3]));
+    assert_eq!(a.data["lead"], ids(&[a1]));
+    assert_eq!(a.data["other"], ids(&[f.secret]));
+    // 見えない既存の id を送る・存在しない id を送る → 同じ 400。
+    let hidden_err = f
+        .store
+        .update_record(
+            &f.bob,
+            f.parent,
+            f.rec,
+            json!({"kids": ids(&[b1, a1])}),
+            3,
+            None,
+        )
+        .await
+        .unwrap_err();
+    let missing_err = f
+        .store
+        .update_record(
+            &f.bob,
+            f.parent,
+            f.rec,
+            json!({"kids": ids(&[b1, Uuid::new_v4()])}),
+            3,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(hidden_err, DataError::Invalid(_)),
+        "{hidden_err:?}"
+    );
+    assert_eq!(format!("{hidden_err:?}"), format!("{missing_err:?}"));
+    // 単一値の見えない参照先は付け替えられない（黙って外させない）。除去は見えない参照先を残すだけ。
+    let r = f
+        .store
+        .update_record(
+            &f.bob,
+            f.parent,
+            f.rec,
+            json!({"lead": ids(&[b2])}),
+            3,
+            None,
+        )
+        .await;
+    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    let r = f
+        .store
+        .update_record(&f.bob, f.parent, f.rec, json!({"lead": null}), 3, None)
+        .await
+        .unwrap();
+    assert_eq!(r.rev, 3, "見えない参照先は残る＝差分なし");
+    // 一括 upsert の更新行も同じ入口（見えない参照先を残す）。
+    let imp = f
+        .store
+        .start_bulk_upsert(
+            &f.bob,
+            f.parent,
+            vec![data::BulkUpsertRow {
+                key: None,
+                record_id: Some(f.rec),
+                expected_rev: None,
+                data: json!({"kids": ids(&[b2])}),
+            }],
+            data::BulkImportOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    f.store
+        .run_bulk_import(&f.bob.tenant_id, f.parent, imp)
+        .await
+        .unwrap();
+    let a = f
+        .store
+        .get_record(&f.alice, f.parent, f.rec, None)
+        .await
+        .unwrap();
+    assert_eq!(a.data["kids"], ids(&[a1, b2, a2, a3]));
+    // 参照先の行が見えるようになれば、その id は bob にも出る（絞り込みは読取時・保存値は保たれる）。
+    f.store
+        .update_record(&f.alice, f.projects, a1, json!({"person": "bob"}), 1, None)
+        .await
+        .unwrap();
+    let b = f
+        .store
+        .get_record(&f.bob, f.parent, f.rec, None)
+        .await
+        .unwrap();
+    assert_eq!(b.data["kids"], ids(&[a1, b2]));
+    let _ = &f.authz;
+}
+
+/// ⑫-4（B-P2-4・B-P3-1）読めない列に依存する派生列（数式・参照先の読めない列の lookup）は、その閲覧者には
+/// 読めない列と同じ扱い（応答に出ない・検索に使えない・閲覧者文脈で隠す列に入る）。履歴は読めない列の
+/// 変更記録を返さず、読めない列だけが変わった版は版ごと返さない。
+#[tokio::test]
+async fn derived_columns_over_masked_fields_are_masked_and_revisions_hide_masked_changes() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let store = DataStore::new(pool, Arc::clone(&authz), Arc::new(AllowRefs));
+    join_role(&authz, &alice, "keiri").await;
+    let mut bonus = field("bonus", FieldType::Formula);
+    bonus.formula =
+        Some(serde_json::from_value(json!({"mul": [{"field": "salary"}, {"lit": 2}]})).unwrap());
+    let mut label = field("label", FieldType::Formula);
+    label.formula = Some(serde_json::from_value(json!({"upper": {"field": "name"}})).unwrap());
+    let mut es = plain(vec![
+        field("name", FieldType::Text),
+        field("salary", FieldType::Number),
+        bonus,
+        label,
+    ]);
+    es.aggregate_min_rows = Some(3);
+    es.field_policy = vec![FieldPolicy {
+        field: "salary".into(),
+        readable_by: PolicyExpr::HasRole {
+            role: "keiri".into(),
+            subtree: false,
+        },
+    }];
+    let emp = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "emp".into(),
+                schema: es,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let mut link = items_link(emp.id);
+    link.key = "who".into();
+    link.display_name = "who".into();
+    let mut sal = field("sal", FieldType::Lookup);
+    sal.lookup = Some(LookupDef {
+        via_field: "who".into(),
+        target_field: "salary".into(),
+    });
+    let mut names = field("names", FieldType::Lookup);
+    names.lookup = Some(LookupDef {
+        via_field: "who".into(),
+        target_field: "name".into(),
+    });
+    // 社員表の K（3）を継承するロールアップ（見える社員が 1 人なのでスモールセル抑制に掛かる・PIT-17）。
+    let mut cnt = field("cnt", FieldType::Rollup);
+    cnt.rollup = Some(RollupDef {
+        link: "who".into(),
+        target: None,
+        op: RollupOp::Count,
+    });
+    let teams = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "teams".into(),
+                schema: plain(vec![link, sal, names, cnt]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    for t in [emp.id, teams.id] {
+        grant(&authz, &bob, Relation::Viewer, t).await;
+    }
+    let emp_rec = store
+        .create_record(&alice, emp.id, json!({"name": "e", "salary": 100}), None)
+        .await
+        .unwrap();
+    let tm = store
+        .create_record(&alice, teams.id, json!({"who": ids(&[emp_rec.id])}), None)
+        .await
+        .unwrap();
+    let alice_emp = store
+        .get_record(&alice, emp.id, emp_rec.id, None)
+        .await
+        .unwrap();
+    assert_eq!(alice_emp.data["bonus"], json!(200));
+    let bob_emp = store
+        .get_record(&bob, emp.id, emp_rec.id, None)
+        .await
+        .unwrap();
+    let keys: Vec<&String> = bob_emp.data.as_object().unwrap().keys().collect();
+    assert!(bob_emp.data.get("salary").is_none(), "{keys:?}");
+    assert!(
+        bob_emp.data.get("bonus").is_none(),
+        "読めない列の数式は列ごと出ない: {keys:?}"
+    );
+    assert_eq!(bob_emp.data["label"], json!("E"), "関係ない数式は出る");
+    let bt = store.get_record(&bob, teams.id, tm.id, None).await.unwrap();
+    assert!(
+        bt.data.get("sal").is_none(),
+        "参照先の読めない列の lookup も出ない"
+    );
+    assert_eq!(bt.data["names"], json!(["e"]));
+    // 抑制した値は null のまま「抑制した」ことだけを示す（画面は空欄でなく「件数が少ないため非表示」）。
+    assert_eq!(bt.data["cnt"], serde_json::Value::Null);
+    assert_eq!(bt.suppressed_fields, vec!["cnt".to_string()]);
+    let at = store
+        .get_record(&alice, teams.id, tm.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        at.suppressed_fields,
+        vec!["cnt".to_string()],
+        "全件見える人にも同じ規則"
+    );
+    assert!(
+        serde_json::to_value(&alice_emp)
+            .unwrap()
+            .get("suppressed_fields")
+            .is_none(),
+        "抑制が無ければ応答に出ない"
+    );
+    let vc = store
+        .table_viewer_context(&bob, emp.id, None)
+        .await
+        .unwrap();
+    assert!(vc.masked_fields.contains(&"bonus".to_string()), "{vc:?}");
+    let by_bonus = DataQuery {
+        sort: vec![SortKey {
+            field: "bonus".into(),
+            descending: true,
+        }],
+        ..DataQuery::default()
+    };
+    let r = store.run_query(&bob, emp.id, &by_bonus, None).await;
+    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    // 履歴: 読めない列だけの更新（rev 2）は bob に返らない。混ざった更新（rev 3）は読める列だけ。
+    store
+        .update_record(&alice, emp.id, emp_rec.id, json!({"salary": 300}), 1, None)
+        .await
+        .unwrap();
+    store
+        .update_record(
+            &alice,
+            emp.id,
+            emp_rec.id,
+            json!({"salary": 400, "name": "f"}),
+            2,
+            None,
+        )
+        .await
+        .unwrap();
+    let revs = store
+        .list_revisions(&bob, emp.id, emp_rec.id, None, 50, None)
+        .await
+        .unwrap();
+    let got: Vec<(i64, Vec<String>)> = revs
+        .iter()
+        .map(|r| (r.rev, r.patch.iter().map(|p| p.field.clone()).collect()))
+        .collect();
+    assert_eq!(
+        got,
+        vec![(3, vec!["name".to_string()]), (1, vec!["name".to_string()])]
+    );
+    // ページの大きさ 1 でも間引いた版で途切れない（続きを引いて埋める）。
+    let page = store
+        .list_revisions(&bob, emp.id, emp_rec.id, Some(3), 1, None)
+        .await
+        .unwrap();
+    assert_eq!(page.iter().map(|r| r.rev).collect::<Vec<_>>(), vec![1]);
+    let alice_revs = store
+        .list_revisions(&alice, emp.id, emp_rec.id, None, 50, None)
+        .await
+        .unwrap();
+    assert_eq!(alice_revs.len(), 3);
+}
+
+/// ⑫-5（B-P3-3・B-P3-4・B-P3-6・B-P2-2）個別共有の宛先はディレクトリに居るユーザーだけ。取込の状態・
+/// 行エラーは作成者・テーブル owner だけ（他の editor には「見つからない」）。組織管理者でもテーブルの
+/// viewer でなければオプティマイザの報告は「見つからない」。レコードの書込の監査は `data_record` で残る。
+#[tokio::test]
+async fn share_targets_import_observers_optimizer_admin_and_audit_vocabulary() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let carol = ctx(&tenant, "carol");
+    let store = DataStore::new(
+        pool.clone(),
+        Arc::clone(&authz),
+        Arc::new(DirectoryRefs(vec!["alice", "bob", "carol"])),
+    );
+    let t = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "notes".into(),
+                schema: plain(vec![field("name", FieldType::Text)]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let rec = store
+        .create_record(&alice, t.id, json!({"name": "n"}), None)
+        .await
+        .unwrap();
+    // 個別共有: 居ないユーザー・他テナント形の id は 400、居るユーザーは通る。
+    for bad in ["ghost", "x|y"] {
+        let r = store
+            .share_record(
+                &alice,
+                t.id,
+                rec.id,
+                &storage::ShareTarget::User { id: bad.into() },
+                data::RecordShareRole::Viewer,
+                None,
+            )
+            .await;
+        assert!(matches!(r, Err(DataError::Invalid(_))), "{bad}: {r:?}");
+    }
+    store
+        .share_record(
+            &alice,
+            t.id,
+            rec.id,
+            &storage::ShareTarget::User { id: "bob".into() },
+            data::RecordShareRole::Viewer,
+            None,
+        )
+        .await
+        .unwrap();
+    // 取込の観測: bob の取込は bob と owner（alice）だけが見られる。carol（editor）には存在ごと見えない。
+    grant(&authz, &bob, Relation::Editor, t.id).await;
+    grant(&authz, &carol, Relation::Editor, t.id).await;
+    let imp = store
+        .start_bulk_import(
+            &bob,
+            t.id,
+            vec![data::BulkImportRow {
+                key: None,
+                data: json!({"name": 1}),
+            }],
+            data::BulkImportOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    store.run_bulk_import(&tenant, t.id, imp).await.unwrap();
+    for who in [&bob, &alice] {
+        store.bulk_import_status(who, t.id, imp).await.unwrap();
+        store
+            .bulk_import_errors(who, t.id, imp, 0, 10)
+            .await
+            .unwrap();
+    }
+    let st = store.bulk_import_status(&carol, t.id, imp).await;
+    assert!(matches!(st, Err(DataError::NotFound)), "{st:?}");
+    let er = store.bulk_import_errors(&carol, t.id, imp, 0, 10).await;
+    assert!(matches!(er, Err(DataError::NotFound)), "{er:?}");
+    // オプティマイザの管理面: 組織管理者（dave）でもテーブルの viewer でなければ 404。
+    let dave = ctx(&tenant, "dave");
+    authz
+        .write_tuple(
+            &dave.subject(),
+            Relation::Admin,
+            &dave.ns().organization(&dave.org),
+        )
+        .await
+        .unwrap();
+    let r = store.table_optimizer_report(&dave, t.id).await;
+    assert!(matches!(r, Err(DataError::NotFound)), "{r:?}");
+    let r = store.set_table_fixed_plan(&dave, t.id, true, None).await;
+    assert!(matches!(r, Err(DataError::NotFound)), "{r:?}");
+    grant(&authz, &dave, Relation::Viewer, t.id).await;
+    store.table_optimizer_report(&dave, t.id).await.unwrap();
+    // 組織管理者はテーブルの editor であれば他人の取込も見られる。
+    grant(&authz, &dave, Relation::Editor, t.id).await;
+    store.bulk_import_status(&dave, t.id, imp).await.unwrap();
+    // 監査の語彙: レコードの作成・更新・削除は data_record（object_id はレコードの外部 ID）。
+    let r2 = store
+        .update_record(&alice, t.id, rec.id, json!({"name": "m"}), 1, None)
+        .await
+        .unwrap();
+    store
+        .delete_record(&alice, t.id, rec.id, r2.rev, None)
+        .await
+        .unwrap();
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT action, object_type, object_id FROM audit_log \
+         WHERE tenant_id = $1 AND action IN ('data.record.create', 'data.record.update', \
+           'data.record.delete') AND decision = 'allow' ORDER BY id",
+    )
+    .bind(&tenant)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    for (action, ty, id) in rows {
+        assert_eq!(ty, "data_record", "{action}");
+        assert_eq!(id, rec.id.to_string(), "{action}");
+    }
+}
+
+/// ⑫-6（B-P2-1）参照先テーブルに行述語を後付けすると、参照元テーブルの購読に `stream.reset` が届く
+/// （開いている画面が古いルックアップ値・リンク値のまま残らない）。
+#[tokio::test]
+async fn reference_policy_change_resets_referrer_subscriptions() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let f = link_fixture(pool, authz).await;
+    let mut stream = f
+        .store
+        .subscribe_records(&f.bob, f.parent, None, None)
+        .await
+        .unwrap();
+    let projects = f.store.get_table(&f.alice, f.projects, None).await.unwrap();
+    let mut s = projects.schema.clone();
+    s.row_policy = None;
+    f.store
+        .update_table_schema(&f.alice, f.projects, s, None, None)
+        .await
+        .unwrap();
+    let mut seen = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let mut reset = false;
+    while std::time::Instant::now() < deadline && !reset {
+        match tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await {
+            Ok(Some(m)) => {
+                if let data::StreamEvent::Reset(r) = &m.event {
+                    assert_eq!(r.reason, data::StreamResetReason::Refresh);
+                    reset = true;
+                }
+                seen.push(format!("{} {}", m.event.name(), m.event.data_json()));
+            }
+            Ok(None) => break,
+            Err(_) => {}
+        }
+    }
+    assert!(reset, "参照元の購読に stream.reset が届く: {seen:?}");
 }
