@@ -1474,9 +1474,20 @@ async fn reader_loop(
     out
 }
 
+/// 10 万行の取込の所定時間（Task 15.11 受け入れ条件・定義と根拠は `docs/data/benchmarks.md` §3）。
+const IMPORT_100K_LIMIT: Duration = Duration::from_mins(2);
+
+/// 取込中の他テナントの読取 p95 が「悪化しない」の許容（相対 25% ＋ 絶対 2ms・根拠は
+/// `docs/data/benchmarks.md` §3）。同じ 4 vCPU の上で DB・取込・読取が CPU を分け合う計測環境の揺れを許す幅。
+fn p95_not_worse(base: f64, during: f64) -> bool {
+    during <= base * 1.25 + 2.0
+}
+
 /// 計測: 10 万行の取込の所要時間（索引の同期／遅延構築）と、取込中の他テナントの読取 p95。
 /// 重いので `DATA_BENCH=1` のときだけ走る。読取と取込が同じスレッドを奪い合わないよう（本番の
 /// ワーカーも多スレッドのランタイムで別タスク）、マルチスレッドのランタイムで測る。
+/// 所定時間（[`IMPORT_100K_LIMIT`]）内に終わることと、他テナントの p95 が悪化しないこと（[`p95_not_worse`]）を
+/// 索引の同期・遅延構築の両方で確かめる。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bench_100k_import() {
     if std::env::var("DATA_BENCH").as_deref() != Ok("1") {
@@ -1580,6 +1591,15 @@ async fn bench_100k_import() {
             p95(during.clone()),
             base.len(),
             during.len()
+        );
+        assert!(
+            total <= IMPORT_100K_LIMIT,
+            "{mode:?}: 10 万行の取込が所定時間 {IMPORT_100K_LIMIT:?} を超えた: {total:?}"
+        );
+        let (b95, d95) = (p95(base), p95(during));
+        assert!(
+            p95_not_worse(b95, d95),
+            "{mode:?}: 取込中に他テナントの読取 p95 が悪化した: {b95:.1}ms → {d95:.1}ms"
         );
     }
 }

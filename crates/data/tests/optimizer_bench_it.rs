@@ -450,10 +450,22 @@ async fn bench_regret_calibration_and_fairness() {
     eprintln!("較正: 前 {:?}", cal.before);
     eprintln!("較正: 後 {:?}", cal.after);
     eprintln!(
-        "予測コストと実測の相関（対数）: 較正前 {corr_before:?}（{n_before} 件）→ 較正後 {corr_after:?}（{n_after} 件）"
+        "予測コストと実測の相関（対数・代表クエリ）: 較正前 {corr_before:?}（{n_before} 件）→ 較正後 {corr_after:?}（{n_after} 件）"
+    );
+    eprintln!(
+        "較正の検証用の操作 {} 本: 相関 {:?} → {:?}・平均対数誤差 {:.3} → {:.3}",
+        cal.validation_samples,
+        cal.correlation_before,
+        cal.correlation_after,
+        cal.log_error_before,
+        cal.log_error_after
     );
     assert_ne!(cal.after, cal.before);
     assert!(corr_after.is_some());
+    assert!(
+        cal.log_error_after < cal.log_error_before,
+        "較正で単価の予測が実測に近づく"
+    );
 
     // ④ 後悔比（自動 ÷ 全戦略の最短）。
     eprintln!("| クエリ | 自動（ms・初手→最終） | 最短の戦略（ms） | 後悔比 |");
