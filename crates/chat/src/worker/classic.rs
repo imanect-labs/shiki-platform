@@ -18,10 +18,7 @@ use crate::ChatError;
 /// **利用上限だけは種別を保つ**（agent 経路の `generate.rs` と同じ扱い）。`Unavailable` に
 /// 潰すと、llm-gateway が整形した再開目安付きの 1 行が会話では定型文に置き換わる。
 fn map_llm_error(e: llm_gateway::LlmError) -> ChatError {
-    match e {
-        llm_gateway::LlmError::RateLimited(msg) => ChatError::RateLimited(msg),
-        other => ChatError::Unavailable(format!("llm: {other}")),
-    }
+    ChatError::from_llm(e)
 }
 
 impl ChatWorker {

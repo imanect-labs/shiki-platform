@@ -25,7 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/use-toast";
-import { uploadFile } from "@/lib/storage";
+import { uploadNewFile } from "@/lib/storage";
 
 type Phase =
   | { kind: "running" }
@@ -73,8 +73,9 @@ export function ExportDialog({
       const file = new File([blob], fileName, {
         type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
       });
-      await uploadFile({ file });
-      toast({ title: "ドライブに保存しました", description: fileName });
+      // 同じ名前があれば連番名で保存する（書き出し直すたびに失敗していた・#880）。
+      const node = await uploadNewFile({ file });
+      toast({ title: "ドライブに保存しました", description: node.name });
       onClose();
     } catch (e) {
       toast({
