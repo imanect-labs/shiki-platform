@@ -107,7 +107,8 @@ test.describe("スマホのチャット", () => {
     await phone.getByTestId("composer-open-model").click();
     const picker = phone.getByTestId("model-picker");
     await expect(picker).toBeVisible();
-    await picker.locator('[data-testid^="model-option-"]:not([data-testid="model-option-default"])').first().click();
+    // プロバイダの見出しの中の行（モデル）を選ぶ（モデルの id が default でも Auto の行と取り違えない）。
+    await picker.getByRole("group").getByRole("option").first().click();
     await phone.keyboard.press("Escape");
     await expect(picker).toBeHidden();
 
@@ -121,7 +122,7 @@ test.describe("スマホのチャット", () => {
 
     // Auto に戻すと 1 行に戻る。
     await model.click();
-    await phone.getByTestId("model-option-default").click();
+    await phone.getByTestId("model-picker").getByRole("option", { name: /Auto|組織の既定/ }).click();
     await expect(model).toBeHidden();
     expect((await bar.boundingBox())?.height ?? 0).toBeLessThanOrEqual(58);
     await phone.context().close();
