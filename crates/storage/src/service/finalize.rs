@@ -21,7 +21,7 @@ impl StorageService {
         // 所有者束縛: アップロードを宣言した本人のみ finalize できる（upload_id 漏洩での横取り防止）。
         // tenant_id も条件に含め、同一 org 内でも tenant 跨ぎを遮断する。
         let pending: PendingRow = sqlx::query_as(
-            "SELECT parent_id, name, content_type, declared_sha256, declared_size, staging_key, target_node_id \
+            "SELECT parent_id, name, content_type, declared_sha256, declared_size, staging_key, target_node_id, base_version \
              FROM pending_upload \
              WHERE upload_id = $1 AND org = $2 AND tenant_id = $3 AND created_by = $4",
         )
@@ -139,6 +139,7 @@ impl StorageService {
                     actual_size as i64,
                     &pending.content_type,
                     &final_key,
+                    pending.base_version,
                     trace_id,
                 )
                 .await
@@ -317,6 +318,7 @@ impl StorageService {
         size: i64,
         content_type: &str,
         final_key: &str,
+        base_version: Option<i64>,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
         let mut tx = self.db.begin().await?;
@@ -340,14 +342,16 @@ impl StorageService {
         )
         .await?;
         // UPDATE は対象行をロックするため、並行内容更新の lost-update を防げる。
+        // base_version があれば「その版のままなら」の条件付きにする（間に入った保存を上書きしない）。
         let sql = format!(
             "UPDATE node \
              SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = {NEXT_CONTENT_VERSION}, \
              updated_by = $7, updated_at = now() \
              WHERE id = $4 AND org = $5 AND tenant_id = $6 AND kind = 'file' AND deleted_at IS NULL \
+             AND ($8::bigint IS NULL OR version = $8) \
              RETURNING {NODE_COLS}"
         );
-        let row: NodeRow = sqlx::query_as(&sql)
+        let row: Option<NodeRow> = sqlx::query_as(&sql)
             .bind(sha256)
             .bind(size)
             .bind(content_type)
@@ -355,9 +359,27 @@ impl StorageService {
             .bind(&ctx.org)
             .bind(&ctx.tenant_id)
             .bind(&ctx.principal.id)
+            .bind(base_version)
             .fetch_optional(&mut *tx)
-            .await?
-            .ok_or(StorageError::NotFound)?;
+            .await?;
+        let Some(row) = row else {
+            // 版が変わっていたのか、ファイルが消えたのかを分ける（txn は破棄＝pending は残る）。
+            if base_version.is_some() {
+                let current: Option<i64> = sqlx::query_scalar(
+                    "SELECT version FROM node \
+                     WHERE id = $1 AND org = $2 AND tenant_id = $3 AND kind = 'file' AND deleted_at IS NULL",
+                )
+                .bind(target)
+                .bind(&ctx.org)
+                .bind(&ctx.tenant_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                if let Some(current) = current {
+                    return Err(StorageError::VersionConflict { current });
+                }
+            }
+            return Err(StorageError::NotFound);
+        };
         let node = row_to_node(row)?;
         self.record_version(
             &mut tx,

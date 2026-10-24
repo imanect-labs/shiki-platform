@@ -116,6 +116,7 @@ impl From<ExecRequest> for pb::ExecRequest {
             kind: kind as i32,
             payload,
             timeout_ms: timeout_ms.unwrap_or(0),
+            tenant_id: String::new(), // 呼び出し側がハンドルから埋める（#810）
         }
     }
 }
@@ -254,6 +255,7 @@ impl TryFrom<pb::ExecRequest> for ExecRequest {
     fn try_from(r: pb::ExecRequest) -> Result<Self, Self::Error> {
         let pb::ExecRequest {
             sandbox_id: _,
+            tenant_id: _, // テナント照合は orchestrator の server 層が担う（#810）
             kind,
             payload,
             timeout_ms,

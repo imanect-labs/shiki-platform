@@ -19,6 +19,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { createThread, getThread, listThreads, type Thread } from "@/lib/chat-api";
+import {
+  readScoped,
+  storageScopeGeneration,
+  subscribeStorageScope,
+  writeScoped,
+} from "@/lib/user-storage";
 import { cn } from "@/lib/utils";
 
 /// アクティブ会話 id の保存先の抽象（ノート=Yjs meta・Office=localStorage）。
@@ -62,8 +68,11 @@ export function DocChatPanel({
   const [busy, setBusy] = React.useState(false);
   const creatingRef = React.useRef(false);
 
+  // 非同期処理（会話の作成・確認）の完了で選ぶときは、開始時の世代（`startedAt`）を渡す。
+  // 待つ間にログアウト（他タブを含む）があれば、前の人の会話 id を次の人のキーへ書かない（#817）。
   const setActive = React.useCallback(
-    (id: string) => {
+    (id: string, startedAt?: number) => {
+      if (startedAt !== undefined && startedAt !== storageScopeGeneration()) return;
       store.write(id);
       setActiveThreadIdState(id);
     },
@@ -90,9 +99,12 @@ export function DocChatPanel({
     appliedInitialRef.current = initialThreadId;
     let cancelled = false;
     setVerifyingInitial(true);
+    const startedAt = storageScopeGeneration();
     getThread(initialThreadId)
       .then((t) => {
-        if (!cancelled && t.originNoteId === nodeId && t.id !== store.read()) setActive(t.id);
+        if (!cancelled && t.originNoteId === nodeId && t.id !== store.read()) {
+          setActive(t.id, startedAt);
+        }
       })
       .catch(() => {
         /* 見えない・存在しない会話は適用しない（保存済みの選択のまま）。 */
@@ -133,8 +145,9 @@ export function DocChatPanel({
   React.useEffect(() => {
     if (activeThreadId || verifyingInitial || !editable || creatingRef.current) return;
     creatingRef.current = true;
+    const startedAt = storageScopeGeneration();
     createThread(title, false, { originNoteId: nodeId })
-      .then((thread) => setActive(thread.id))
+      .then((thread) => setActive(thread.id, startedAt))
       .catch(() => {
         creatingRef.current = false;
         setError("チャットの準備に失敗しました。");
@@ -154,9 +167,10 @@ export function DocChatPanel({
     setError(null);
     const n = conversations.length + 1;
     const t = n <= 1 ? title : `${title} (${n})`;
+    const startedAt = storageScopeGeneration();
     createThread(t, false, { originNoteId: nodeId })
       .then((thread) => {
-        setActive(thread.id);
+        setActive(thread.id, startedAt);
         void refreshConversations();
       })
       .catch(() => setError("新しい会話を作成できませんでした。"))
@@ -261,27 +275,38 @@ export function DocChatPanel({
 }
 
 /// localStorage をアクティブ会話 id の保存先にする [`ActiveThreadStore`]（Office 文書用・
-/// Yjs を持たないドキュメントの per-user 会話継続）。
+/// Yjs を持たないドキュメントの per-user 会話継続）。キーはユーザー＋テナント単位で、
+/// ログアウトで消える（[`@/lib/user-storage`]・#817）。
 export function useLocalActiveThreadStore(key: string): ActiveThreadStore {
   return React.useMemo<ActiveThreadStore>(() => {
     const storageKey = `docchat:active:${key}`;
     return {
       read: () => {
         try {
-          return window.localStorage.getItem(storageKey);
+          return readScoped(storageKey);
         } catch {
           return null;
         }
       },
       write: (id) => {
         try {
-          window.localStorage.setItem(storageKey, id);
+          writeScoped(storageKey, id);
         } catch {
           /* プライベートモード等では保存できない（セッション内は state が保持する） */
         }
       },
-      // localStorage は同一タブ内の setItem では storage イベントが出ないため購読対象なし。
-      subscribe: () => () => {},
+      // localStorage は同一タブ内の setItem では storage イベントが出ない。ユーザーの確定
+      // （/me 応答）だけを購読し、確定前に読んだ空の値をそのユーザーの保存値で読み直す。
+      // 保存値が無い変化（ログアウトでスコープが解けた等）は通知しない（アクティブを null に
+      // 戻すと「会話が無い」とみなして新しい会話を作りに行くため）。
+      subscribe: (onChange) =>
+        subscribeStorageScope(() => {
+          try {
+            if (readScoped(storageKey) !== null) onChange();
+          } catch {
+            /* 読めない環境では追従しない */
+          }
+        }),
     };
   }, [key]);
 }

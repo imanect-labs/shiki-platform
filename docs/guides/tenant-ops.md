@@ -6,8 +6,14 @@ SaaS のテナント作成・削除・名前空間移行の運用手順。実装
 
 - `auth.provisioner_client_id` / `auth.provisioner_client_secret` が設定されていること
   （未設定なら `/admin/*` はルート自体が存在しない＝fail-closed）。
+- `auth.tenancy=multi` であること（`SHIKI__AUTH__TENANCY=multi`）。single のままテナント作成を呼ぶと
+  409 `tenancy_single` で拒否される（single は全ユーザーを固定テナントに解決するため、作ったテナントに誰も入れない・#808）。
+  single＋provisioner 設定時は起動ログに warn が出る。
 - provisioner は Keycloak の confidential client（service account 有効・realm-management ロール
   `manage-users` / `manage-realm` / `query-*` 付与・audience `shiki-api`）。dev は realm import 済み。
+- realm の User Profile で `tenant` / `roles` を**宣言済み・管理者のみ閲覧/編集**であること
+  （`deploy/keycloak/README.md`「User Profile」・#809）。宣言が無いと Keycloak 26 は admin REST 経由の
+  `tenant` も保存せず、作成したテナントの初期 admin がログインできない（プロビジョニングが黙って効かない）。
 
 ## テナント作成（1 操作）
 
@@ -78,16 +84,18 @@ curl -s -X DELETE "$SHIKI/admin/tenants/acme" -H "Authorization: Bearer $TOKEN"
 1. tenant 行を `deleting` へ
 2. セッション全失効（Redis）
 3. Keycloak: `tenant` 属性一致ユーザーと org グループを削除
-4. データ purge: FGA タプル（node/role/org）→ オブジェクト `{tenant}/` prefix → DB 行（1 txn・FK 順）
+4. データ purge: FGA タプル（node/role/org。org は登録簿の 1 つに限らずテナント配下の全 org・#816）→ オブジェクト `{tenant}/` prefix → DB 行（1 txn・FK 順）
 5. tenant 行を `deleted`（tombstone）へ
 
 DB 行の対象は `information_schema` から `tenant_id` 列を持つ実テーブルを**実行時に導出**し、FK 依存の
 子→親順で削除する（`storage::tenant_scope`・#420）。保持するのは `audit_log`（削除証跡）と `tenant`
 （tombstone）だけで、それ以外は自動的に対象になる —— 新しいテーブルが増えても消し忘れない。
 撤去したテーブル数と行数は `tenant.purge` 監査の `tables_purged` / `rows_deleted_direct` に残る。
-`rows_deleted_direct` は各 `DELETE` が**直接**消した行数で、`tenant_id` を持たず親から
-`ON DELETE CASCADE` される従属行（`generation_event` / `collab_update` 等）は含まない
-——消滅証明に使う際はこの定義に注意する。
+`rows_deleted_direct` は各 `DELETE` が**直接**消した行数。#815（migration 0080）以降は
+`generation_event` / `collab_update` / `app_function_run` も `tenant_id` を持ち、子→親順で直接消されて
+この数に含まれる（`tenant_id` を持たない表は全体共有の `maintenance_schedule` / `outbox_consumer` /
+`scheduler_lease` だけ）。0080 適用前の環境では、これらは親から `ON DELETE CASCADE` で消え、
+数に含まれない——消滅証明に使う際はこの定義に注意する。
 
 > ⚠️ 2026-08 以前はテーブル名を手で列挙しており、**51 テーブル中 13 しか消していなかった**。
 > チャット履歴・RAG の本文・構造化データ・ワークフロー履歴・利用量が撤去後も残っていた（#420）。
@@ -101,6 +109,24 @@ DB 行の対象は `information_schema` から `tenant_id` 列を持つ実テー
 部署異動・ロール剥奪は**次回ログインで自動反映**（それまではセッション TTL 内は旧権限が残る点に注意。
 即時失効が必要ならセッション削除を併用）。role タプルの正は IdP claims — **FGA へ手動で role
 member タプルを足しても次回ログインで剥がれる**。本番の SCIM/グループ完全同期は SAAS.6。
+
+## シークレット暗号文の行束縛への移行（shiki-admin secrets-reencrypt）
+
+#814 以降、シークレットの暗号文は AAD で行（`tenant_id`・`org`・`secret_id`）に束縛される（`enc_version=1`）。
+それ以前に作られた行（`enc_version=0`）は読み出し時に遅延で移行されるが、**使われない行は旧版のまま残り、
+暗号素材を別の行へ複製すると復号できてしまう**。デプロイ後に一度、明示的に移行する。
+
+```bash
+shiki-admin secrets-reencrypt                     # dry-run（旧版の件数だけ表示）
+shiki-admin secrets-reencrypt --execute           # 行単位に再暗号化（DEK 再利用・冪等・稼働中に実行可）
+shiki-admin secrets-reencrypt --execute --batch 500
+```
+
+- 復号できない行は書き換えずに残し、件数を表示して**非 0 で終了**する（改竄・鍵不一致の疑い。調査対象）。
+- 新版で書かれた行は旧バイナリでは復号できない。**移行後のバイナリのロールバックは不可**と考えること。
+- **旧バイナリと新バイナリを並走させない**（ローリング更新しない・停止して入れ替える）。旧バイナリの rotate は
+  `enc_version` を書かないため、新バイナリが移行した行を旧バイナリが書き直すと復号不能な行ができる。
+- バックアップ内の旧版暗号文は引き続き旧形式で有効（保持期限の経過で消える）。
 
 ## テナント名前空間の移行（shiki-admin retenant）
 
@@ -139,3 +165,9 @@ shiki-admin retenant --from default --to acme --execute
 - **IdP の tenant 属性**: リネーム後、Keycloak ユーザーの `attributes.tenant` を CLI が
   自動追従する（provisioner 設定時）。未設定の場合は**手動で更新するまで新ログインが
   旧テナント名前空間に落ちる**ため、必ず更新すること。
+
+## アップグレード時の注意
+
+- **#816 のリリースは旧バイナリと並走させない（非ローリングで切り替える）**: 監査チェーンの直列化ロックが
+  32bit → 64bit キーに変わり、新旧が同じ (tenant, org) を別キーでロックするため、並走中の chained 書込で
+  ハッシュチェーンが分岐し得る。compose は単一コンテナなので停止 → 起動の順で入れ替える。

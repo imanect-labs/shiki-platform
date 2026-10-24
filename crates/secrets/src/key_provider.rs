@@ -93,7 +93,9 @@ impl KeyProvider for LocalKeyFileProvider {
     }
 
     async fn wrap(&self, dek: &[u8]) -> Result<WrappedKey, CryptoError> {
-        let sealed = crypto::seal(&self.master_key, dek)?;
+        // DEK の包みは AAD なし（provider 層は行を知らない・wire 形式不変）。行への束縛は
+        // DEK で包む平文側（`row_aad`）で行うため、包んだ DEK ごと別行へ複製しても復号できない。
+        let sealed = crypto::seal(&self.master_key, dek, &[])?;
         Ok(WrappedKey {
             encrypted_dek: sealed.ciphertext,
             nonce: sealed.nonce,
@@ -105,7 +107,12 @@ impl KeyProvider for LocalKeyFileProvider {
         if wrapped.provider_id != self.id {
             return Err(CryptoError::Decrypt);
         }
-        let dek = crypto::open(&self.master_key, &wrapped.nonce, &wrapped.encrypted_dek)?;
+        let dek = crypto::open(
+            &self.master_key,
+            &wrapped.nonce,
+            &wrapped.encrypted_dek,
+            &[],
+        )?;
         if dek.len() != KEY_LEN {
             return Err(CryptoError::BadKeyLength);
         }

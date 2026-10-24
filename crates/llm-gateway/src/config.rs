@@ -21,6 +21,8 @@ pub enum ProviderKind {
     /// OpenAI Responses API（`/v1/responses`）。Chat Completions を話さないモデル用
     /// （OpenCode Go の GPT 系など）。
     OpenaiResponses,
+    /// 連携者の ChatGPT プラン（Sign in with ChatGPT・#854）。接続は [`GatewayConfig::chatgpt`]。
+    ChatgptPlan,
     /// テスト/CI 用の決定的スタブ（外部依存なし）。
     #[default]
     Stub,
@@ -33,6 +35,7 @@ impl ProviderKind {
             ProviderKind::Openai => "openai",
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenaiResponses => "openai_responses",
+            ProviderKind::ChatgptPlan => "chatgpt_plan",
             ProviderKind::Stub => "stub",
         }
     }
@@ -44,7 +47,7 @@ impl ProviderKind {
     pub const fn effort_by_default(self) -> bool {
         matches!(
             self,
-            ProviderKind::Anthropic | ProviderKind::OpenaiResponses
+            ProviderKind::Anthropic | ProviderKind::OpenaiResponses | ProviderKind::ChatgptPlan
         )
     }
 }
@@ -316,6 +319,67 @@ impl Default for LlmTimeouts {
     }
 }
 
+/// 利用制限（月次コスト上限・#757）。**既定は無効**で、プレビュー環境だけで有効にする。
+///
+/// 二段で守る: ①ユーザー 1 人あたりの月額（全プロバイダ合算）②プロバイダ別の環境総枠。
+/// ①は 1 人の使い過ぎで全員が止まるのを防ぎ、②は API キーの請求額そのものを守る。
+/// どちらも**生成を始める前**に判定し、超えていれば 429 相当で拒否する（design §4.5）。
+///
+/// 組織の予算上限（Phase 12.1）とは別物。あちらは顧客管理者が管理画面で決める恒久機能で、
+/// こちらは運営がデプロイ設定で掛ける環境の安全弁。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UsageLimitsConfig {
+    /// 制限を掛けるか。false（既定）なら集計の問い合わせも行わない。
+    #[serde(default)]
+    pub enabled: bool,
+    /// ユーザー 1 人あたりの月額上限（マイクロ USD）。未設定は無制限。
+    #[serde(default)]
+    pub per_user_usd_micros: Option<i64>,
+    /// プロバイダ別の環境総枠（マイクロ USD／月）。列挙しないプロバイダは無制限。
+    #[serde(default)]
+    pub providers: Vec<ProviderLimit>,
+}
+
+/// 1 つの請求先（API キー）の環境総枠。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderLimit {
+    /// この枠を**共有する**プロバイダ ID（[`ProviderConfig::id`]。既定プロバイダは
+    /// [`DEFAULT_PROVIDER_ID`]）。
+    ///
+    /// **枠は API キー単位**なので、1 つのキーを複数のプロバイダ設定で使っているなら全部
+    /// 列挙する（例: OpenCode Go は話す API 形式ごとにプロバイダを分けるが、キーと請求は 1 つ）。
+    pub providers: Vec<String>,
+    /// 月額上限（マイクロ USD）。
+    pub usd_micros: i64,
+}
+
+impl UsageLimitsConfig {
+    /// 問い合わせが要らない（無効、または上限を一つも持たない）か。
+    #[must_use]
+    pub fn is_noop(&self) -> bool {
+        !self.enabled || (self.per_user_usd_micros.is_none() && self.providers.is_empty())
+    }
+
+    /// ユーザー 1 人あたりの月額上限（無効なら掛けない）。
+    #[must_use]
+    pub fn per_user(&self) -> Option<i64> {
+        self.enabled.then_some(self.per_user_usd_micros).flatten()
+    }
+
+    /// このプロバイダが属する環境総枠（無効・未列挙は無制限）。
+    ///
+    /// 返り値の [`ProviderLimit::providers`] が「合算して数える ID の集合」になる。
+    #[must_use]
+    pub fn provider_limit(&self, provider_id: &str) -> Option<&ProviderLimit> {
+        if !self.enabled {
+            return None;
+        }
+        self.providers
+            .iter()
+            .find(|p| p.providers.iter().any(|id| id == provider_id))
+    }
+}
+
 /// gateway 全体の設定。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayConfig {
@@ -333,6 +397,13 @@ pub struct GatewayConfig {
     /// LLM 呼び出しのタイムアウト（最初の応答・無通信・全体）。
     #[serde(default)]
     pub timeouts: LlmTimeouts,
+    /// 利用制限（月次コスト上限・プレビュー環境向け）。既定は無効。
+    #[serde(default)]
+    pub limits: UsageLimitsConfig,
+    /// ChatGPT プランの接続（`chatgpt_plan` のプロバイダが使う・#854）。プロセスで 1 つを
+    /// 共有する（リフレッシュの直列化のため。gateway を何度組んでも同じものを渡す）。
+    #[serde(skip)]
+    pub chatgpt: Option<std::sync::Arc<crate::chatgpt::ChatGptAccount>>,
 }
 
 #[cfg(test)]

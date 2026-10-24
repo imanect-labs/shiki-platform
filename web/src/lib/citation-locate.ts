@@ -13,6 +13,7 @@
 import * as React from "react";
 
 import type { Citation } from "@/lib/chat-api";
+import { storageScopeReady } from "@/lib/user-storage";
 
 /// `find` の長さ（文字）。1 段落に収まりやすく、Collabora の検索にも通る長さにする。
 const FIND_CHARS = 48;
@@ -69,6 +70,8 @@ const STORE_TTL_MS = 10 * 60_000;
 
 /// クリック時に手がかりを置く（開いた先の画面が `cite` で読む）。
 export function stashCiteLocator(c: Citation): void {
+  // 手がかりは文書本文の断片。他タブのログアウトで消した後の古い画面からは書かない（#817）。
+  if (!storageScopeReady()) return;
   try {
     const now = Date.now();
     // 古い受け渡しを掃除する（溜めない）。

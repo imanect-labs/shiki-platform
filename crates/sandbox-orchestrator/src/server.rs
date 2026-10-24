@@ -14,9 +14,9 @@ use sandbox_client::{
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-use crate::backend::Backend;
+use crate::backend::{Backend, Instance};
 use crate::config::OrchestratorEnv;
-use crate::registry::Registry;
+use crate::registry::{Lookup, Registry};
 use crate::validate;
 
 /// gRPC サービス。バックエンド＋レジストリ＋ランタイム設定を束ねる。
@@ -34,6 +34,54 @@ impl SandboxSvc {
             _env: env,
         }
     }
+
+    /// 呼び出し元テナントに束縛して registry を引く（#810）。
+    ///
+    /// sandbox_id の推測不能性と内部ネットワークだけに頼らない多層防御。未登録と他テナント所有は
+    /// クライアントへ区別せず not_found を返し（存在を漏らさない）、後者は越境の試行として監査に残す。
+    async fn owned_instance(
+        &self,
+        sandbox_id: &str,
+        tenant_id: &str,
+        op: &'static str,
+    ) -> Result<Arc<dyn Instance>, Status> {
+        if is_blank_tenant(tenant_id) {
+            return Err(tenant_missing());
+        }
+        match self.registry.get(sandbox_id, tenant_id).await {
+            Lookup::Found(instance) => Ok(instance),
+            Lookup::Missing => Err(sandbox_not_found()),
+            Lookup::Foreign => {
+                audit_foreign(sandbox_id, tenant_id, op);
+                Err(sandbox_not_found())
+            }
+        }
+    }
+}
+
+/// 空の tenant_id か（テナント不明の要求は照合のしようが無いため fail-closed で拒否する）。
+/// 判定は registry と無関係なので、存在の有無は漏れない。
+fn is_blank_tenant(tenant_id: &str) -> bool {
+    tenant_id.trim().is_empty()
+}
+
+fn tenant_missing() -> Status {
+    Status::invalid_argument("tenant_id missing")
+}
+
+fn sandbox_not_found() -> Status {
+    Status::not_found("sandbox not found")
+}
+
+/// 他テナント所有の sandbox_id を指す要求を監査に残す（ID 漏洩・内部侵害の兆候）。
+fn audit_foreign(sandbox_id: &str, tenant_id: &str, op: &'static str) {
+    tracing::warn!(
+        target: "sandbox_audit",
+        sandbox_id = %sandbox_id,
+        caller_tenant = %tenant_id,
+        op,
+        "sandbox tenant mismatch (rejected as not_found)"
+    );
 }
 
 fn to_status(e: SandboxError) -> Status {
@@ -67,6 +115,10 @@ impl SandboxService for SandboxSvc {
             .spec
             .ok_or_else(|| Status::invalid_argument("spec missing"))?;
         let spec = SandboxSpec::try_from(spec_pb).map_err(to_status)?;
+        // 登録テナントが以降の全 RPC の照合キーになるため、空は受け付けない（#810）。
+        if is_blank_tenant(&spec.tenant_id) {
+            return Err(tenant_missing());
+        }
         // PIT-24: 隔離クラスを監査に残し、機微度ポリシ（現状 allow-all）を通す。
         validate::check_isolation(&spec).map_err(|e| validate_err(&e))?;
         tracing::info!(
@@ -103,10 +155,8 @@ impl SandboxService for SandboxSvc {
     ) -> Result<Response<Self::ExecStream>, Status> {
         let req = request.into_inner();
         let instance = self
-            .registry
-            .get(&req.sandbox_id)
-            .await
-            .ok_or_else(|| Status::not_found("sandbox not found"))?;
+            .owned_instance(&req.sandbox_id, &req.tenant_id, "exec")
+            .await?;
 
         let sandbox_id = req.sandbox_id.clone();
         let exec = ExecRequest::try_from(req).map_err(to_status)?;
@@ -132,10 +182,8 @@ impl SandboxService for SandboxSvc {
         validate::check_file_size(req.content.len()).map_err(|e| validate_err(&e))?;
         let path = validate::normalize_workspace_path(&req.path).map_err(|e| validate_err(&e))?;
         let instance = self
-            .registry
-            .get(&req.sandbox_id)
-            .await
-            .ok_or_else(|| Status::not_found("sandbox not found"))?;
+            .owned_instance(&req.sandbox_id, &req.tenant_id, "put_file")
+            .await?;
         instance
             .put_file(&path, req.content)
             .await
@@ -150,10 +198,8 @@ impl SandboxService for SandboxSvc {
         let req = request.into_inner();
         let path = validate::normalize_workspace_path(&req.path).map_err(|e| validate_err(&e))?;
         let instance = self
-            .registry
-            .get(&req.sandbox_id)
-            .await
-            .ok_or_else(|| Status::not_found("sandbox not found"))?;
+            .owned_instance(&req.sandbox_id, &req.tenant_id, "get_file")
+            .await?;
         let content = instance.get_file(&path).await.map_err(to_status)?;
         validate::check_file_size(content.len()).map_err(|e| validate_err(&e))?;
         Ok(Response::new(pb::GetFileResponse { content }))
@@ -166,10 +212,8 @@ impl SandboxService for SandboxSvc {
         let req = request.into_inner();
         let path = validate::normalize_workspace_path(&req.path).map_err(|e| validate_err(&e))?;
         let instance = self
-            .registry
-            .get(&req.sandbox_id)
-            .await
-            .ok_or_else(|| Status::not_found("sandbox not found"))?;
+            .owned_instance(&req.sandbox_id, &req.tenant_id, "list_dir")
+            .await?;
         let mut entries = instance.list_dir(&path).await.map_err(to_status)?;
         entries.truncate(validate::MAX_DIR_ENTRIES);
         let entries = entries
@@ -188,8 +232,19 @@ impl SandboxService for SandboxSvc {
         request: Request<pb::DestroyRequest>,
     ) -> Result<Response<pb::DestroyResponse>, Status> {
         let req = request.into_inner();
-        if let Some(instance) = self.registry.remove(&req.sandbox_id).await {
-            instance.destroy().await.map_err(to_status)?;
+        if is_blank_tenant(&req.tenant_id) {
+            return Err(tenant_missing());
+        }
+        // destroy は冪等（未登録＝破棄済み・TTL 掃除済みは成功扱い）。他テナント所有も未登録と同じ
+        // 応答にして存在を漏らさず、何も破棄しない（#810）。
+        match self
+            .registry
+            .remove_owned(&req.sandbox_id, &req.tenant_id)
+            .await
+        {
+            Lookup::Found(instance) => instance.destroy().await.map_err(to_status)?,
+            Lookup::Missing => {}
+            Lookup::Foreign => audit_foreign(&req.sandbox_id, &req.tenant_id, "destroy"),
         }
         Ok(Response::new(pb::DestroyResponse {}))
     }

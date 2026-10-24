@@ -169,9 +169,10 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
     for s in due {
         // (schedule_id, scheduled_at) 一意＝リーダー交代/再起動でも同一時刻の二重起動なし。
         let inserted = sqlx::query(
-            "INSERT INTO app_function_run (schedule_id, scheduled_at) VALUES ($1, $2) \
-             ON CONFLICT DO NOTHING",
+            "INSERT INTO app_function_run (tenant_id, schedule_id, scheduled_at) \
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         )
+        .bind(&s.tenant_id)
         .bind(s.id)
         .bind(s.next_run_at)
         .execute(&mut *tx)

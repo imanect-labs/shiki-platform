@@ -96,13 +96,8 @@ pub(crate) fn wire_gateway(
         },
         authz: authz.clone(),
         audit: storage::audit::AuditRecorder::new(db.clone()),
-        // multi テナンシーでは tenant クレームを必須にする（fail-closed）。
-        require_tenant_claim: matches!(config.auth.tenancy, api::config::Tenancy::Multi),
-        default_tenant: config
-            .auth
-            .tenant_id
-            .clone()
-            .unwrap_or_else(|| "default".to_string()),
+        // 内部 API と同じ解決規則（single=固定値・multi=tenant クレーム必須で fail-closed）。
+        tenant_source: config.auth.tenant_source(),
         default_org: "default".to_string(),
         caps: app_gateway::CapabilityDeps {
             db: db.clone(),
