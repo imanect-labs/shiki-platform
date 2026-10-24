@@ -112,14 +112,18 @@ test.describe("スマホのチャット", () => {
       sheet.getByRole("button", { name: /ファイル・写真/ }).click(),
     ]);
     // ファイルを選んでいる間はシートが残る（閉じるアニメーション中も見えるので data-state で見る）。
+    // 少し待つのは、押した後に遅れて閉じる回帰も拾うため。
     await phone.waitForTimeout(500);
     await expect(sheet).toHaveAttribute("data-state", "open");
 
     const name = `mobile-attach-${Date.now().toString(36)}.txt`;
     await chooser.setFiles({ name, mimeType: "text/plain", buffer: Buffer.from("添付のテスト") });
-    // 選んだらシートを閉じ、入力欄の上に添付が付く（完全一致でトーストの文と分ける）。
+    // 選んだらシートを閉じ、入力欄の上に添付が付く（アップロード中のチップと分けるため「添付を外す」を持つものを見る）。
     await expect(sheet).toBeHidden();
-    await expect(phone.getByText(name, { exact: true })).toBeVisible({ timeout: 30_000 });
+    const chip = phone
+      .locator("span", { has: phone.getByRole("button", { name: "添付を外す" }) })
+      .filter({ hasText: name });
+    await expect(chip).toBeVisible({ timeout: 30_000 });
     await phone.context().close();
   });
 

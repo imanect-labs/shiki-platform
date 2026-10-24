@@ -70,6 +70,7 @@ const SHEET_SKILLS_SEARCH = 6;
 export type PlusMenuProps = {
   open: boolean;
   onOpenChange: (v: boolean) => void;
+  /// 端末のファイルを選ぶ。スマホのシートは開いたままにするので、ファイルを選んだら呼び出し側で閉じる。
   onUploadLocal: () => void;
   onOpenDrive: () => void;
   /// モデル選択のスコープ（スレッド id かホーム・#553）。
