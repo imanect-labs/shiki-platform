@@ -62,6 +62,27 @@ impl TenantLlmSettings {
         catalog.models.iter().filter(|m| self.allows(m)).collect()
     }
 
+    /// カタログから消えたモデルを指す既定・Auto の振り先を外す（読むたびに通す・#878）。
+    ///
+    /// デプロイ設定のモデルは差し替わり得る（ChatGPT プランのモデルはアカウント次第）。保存済みの
+    /// 既定がカタログに無いモデルを指したままだと、管理者が何を保存しても検証で弾かれ、利用者の
+    /// 一覧にも使えないモデルが残っていた。既定は Auto に、Auto の振り先の上書きはデプロイ設定に
+    /// 戻す。許可リストに残った ID はカタログで絞られるので害が無く、次の保存で消える。
+    #[must_use]
+    pub fn reconciled(mut self, catalog: &ModelCatalog) -> Self {
+        if self.default_model != AUTO_MODEL && catalog.get(&self.default_model).is_none() {
+            self.default_model = AUTO_MODEL.to_string();
+        }
+        if self
+            .auto_model
+            .as_deref()
+            .is_some_and(|m| catalog.get(m).is_none())
+        {
+            self.auto_model = None;
+        }
+        self
+    }
+
     fn allows(&self, entry: &ModelEntry) -> bool {
         match &self.allowed_models {
             None => !entry.requires_opt_in,
@@ -257,6 +278,8 @@ pub fn apply_patch(
     current: &TenantLlmSettings,
     patch: &SettingsPatch,
 ) -> Result<TenantLlmSettings, SettingsError> {
+    // 消えたモデルを指す既定・Auto の振り先は、触っていない項目でも保存を止めないよう外して始める。
+    let current = &current.clone().reconciled(catalog);
     let mut next = current.clone();
     // 保存した時点で許可リストを確定させる（未保存ならいまカタログの既定で使えるものから始める）。
     let mut allowed: Vec<String> = current
@@ -797,5 +820,76 @@ mod tests {
         assert_eq!(next.allowed_models, without(&["local".into()]));
         assert_eq!(next.jpy_per_usd_centi, Some(15_000));
         assert_eq!(next.auto_model.as_deref(), Some("sonnet"));
+    }
+
+    /// 既定に選んでいたモデルがデプロイ設定から消えた組織（#878・プレビューで実際に起きた形）。
+    fn stale_org() -> TenantLlmSettings {
+        TenantLlmSettings {
+            default_model: "chatgpt:gone".into(),
+            auto_model: Some("also-gone".into()),
+            allowed_models: Some(vec!["chatgpt:gone".into(), "opus".into(), "sonnet".into()]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn models_removed_from_the_catalog_are_dropped_when_read() {
+        let s = stale_org().reconciled(&catalog());
+        assert_eq!(s.default_model, AUTO_MODEL);
+        assert_eq!(s.auto_model, None);
+        // カタログに残っているものはそのまま（許可リストもカタログで絞られる）。
+        let c = catalog();
+        let ids: Vec<&str> = s.enabled_models(&c).iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["sonnet", "opus"]);
+        let kept = TenantLlmSettings {
+            default_model: "opus".into(),
+            auto_model: Some("sonnet".into()),
+            ..Default::default()
+        };
+        assert_eq!(kept.clone().reconciled(&catalog()), kept);
+    }
+
+    #[test]
+    fn stale_default_does_not_block_saving_unrelated_changes() {
+        // モデルの公開だけを保存する（既定には触れない）。以前は既定の検証で 400 になっていた。
+        let publish = SettingsPatch {
+            models: vec![("gpt-6-luna".into(), true)],
+            ..Default::default()
+        };
+        let next = apply_patch(&catalog(), &stale_org(), &publish).unwrap();
+        assert!(next.is_enabled(&catalog(), "gpt-6-luna"));
+        assert_eq!(
+            next.default_model, AUTO_MODEL,
+            "保存すると消えた既定は Auto になる"
+        );
+        assert_eq!(next.auto_model, None);
+        // 新しい既定を指定すればそれが入る。消えたモデルを改めて指定するのは従来どおり誤り。
+        let set_default = SettingsPatch {
+            default_model: Some("opus".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            apply_patch(&catalog(), &stale_org(), &set_default)
+                .unwrap()
+                .default_model,
+            "opus"
+        );
+        let ghost = SettingsPatch {
+            default_model: Some("chatgpt:gone".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            apply_patch(&catalog(), &stale_org(), &ghost),
+            Err(SettingsError::UnknownModel("chatgpt:gone".into()))
+        );
+    }
+
+    #[test]
+    fn stale_default_resolves_to_auto_for_users() {
+        // 利用者がモデルを指定しなければ既定＝Auto の振り先で生成できる（使えないモデルへ行かない）。
+        let s = stale_org().reconciled(&catalog());
+        let r = resolve(&s, None, None).unwrap();
+        assert!(r.auto);
+        assert!(s.is_enabled(&catalog(), &r.model), "{}", r.model);
     }
 }
