@@ -69,18 +69,24 @@ export function DocChatDraft({
       setStarting(true);
       setError(null);
       // スラッシュコマンドはこの発話にだけ skill を適用し、長ホライズンで実行する（会話内と同じ）。
-      onStart({
+      // 失敗したら入力欄が本文・添付・コマンドを戻す（restoreOnError）。選択箇所はここで戻す。
+      return onStart({
         text,
         attachments,
         context,
         autonomous: autonomous || command != null,
         skills: command ? [{ artifactId: command.skillId, version: command.skillVersion }] : undefined,
-      }).catch(() => {
-        // 送信時に取り出した選択箇所は戻す（もう一度送るときに選び直さなくてよいように）。
-        if (context) setPendingSelection(context);
-        setError("会話を開始できませんでした。もう一度お試しください。");
-        setStarting(false);
-      });
+      }).then(
+        () => setStarting(false),
+        (e: unknown) => {
+          if (context) setPendingSelection(context);
+          // 理由（許可されていないモデル等）を伝える。分からなければ一般的な案内にする。
+          const reason = e instanceof Error && e.message ? `（${e.message}）` : "";
+          setError(`送信できませんでした${reason}。もう一度お試しください。`);
+          setStarting(false);
+          throw e;
+        },
+      );
     },
     [starting, autonomous, onStart],
   );
@@ -103,6 +109,7 @@ export function DocChatDraft({
           onAutonomousChange={setAutonomous}
           scope={scope}
           onHasInputChange={onDirtyChange}
+          restoreOnError
           autoFocus
         />
       </div>

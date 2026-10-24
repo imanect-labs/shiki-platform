@@ -111,6 +111,7 @@ export const Composer = React.memo(function Composer({
   scope,
   draftKey,
   onHasInputChange,
+  restoreOnError = false,
   className,
 }: {
   onSubmit: (
@@ -120,7 +121,10 @@ export const Composer = React.memo(function Composer({
     context?: SelectionContext,
     /// 確定中のスラッシュコマンド（#387）。呼び出し側が skill のピンとモードを整える。
     command?: ActiveCommand,
-  ) => void;
+  ) => void | Promise<void>;
+  /// 指定すると、`onSubmit` が返した Promise が reject したときに送った入力（本文・添付・コマンド）を
+  /// 入力欄へ戻す（送れなかった発話を打ち直させない）。
+  restoreOnError?: boolean;
   /// 生成中に停止する（指定時は送信ボタンが停止ボタンに変わる）。
   onStop?: () => void;
   placeholder?: string;
@@ -271,11 +275,20 @@ export const Composer = React.memo(function Composer({
     const body = typed ? typed.rest : value;
     const text = composeText(active, body);
     if (!text) return;
-    onSubmit(text, attachments, takePendingSelection() ?? undefined, active ?? undefined);
+    const sentAttachments = attachments;
+    const result = onSubmit(text, attachments, takePendingSelection() ?? undefined, active ?? undefined);
     setValue("");
     setAttachments([]);
     setCommand(null);
     setSlashDismissed(false);
+    if (restoreOnError && result) {
+      result.catch(() => {
+        // 失敗を待つ間に打ち直していたら、そちらを優先する。
+        setValue((v) => v || body);
+        setAttachments((a) => (a.length > 0 ? a : sentAttachments));
+        setCommand((c) => c ?? active);
+      });
+    }
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

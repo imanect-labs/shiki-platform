@@ -75,6 +75,14 @@ export function DocChatPanel({
   // 会話を作る前の入力欄を出しているか・そこに書きかけがあるか（外部からの切り替えで消さないため）。
   const showingDraftRef = React.useRef(false);
   const draftDirtyRef = React.useRef(false);
+  // 会話の選択の版。最初の発話を送る間に会話が切り替わったら（自分の選択・ディープリンク・
+  // 共同編集者）、送り終えても表示を奪わない。
+  const selectionVersionRef = React.useRef(0);
+  // 作ったが最初の発話を送れなかった会話（送り直しで使い回し、空の会話を増やさない）。
+  // 別の会話へ切り替えたら捨てる（その会話が一覧から開かれて使われ得るため）。
+  const unsentThreadRef = React.useRef<{ nodeId: string; id: string; generation: number } | null>(
+    null,
+  );
   const onDraftDirtyChange = React.useCallback((dirty: boolean) => {
     draftDirtyRef.current = dirty;
   }, []);
@@ -84,6 +92,8 @@ export function DocChatPanel({
   const setActive = React.useCallback(
     (id: string, startedAt?: number) => {
       if (startedAt !== undefined && startedAt !== storageScopeGeneration()) return;
+      selectionVersionRef.current += 1;
+      unsentThreadRef.current = null;
       store.write(id);
       setActiveThreadIdState(id);
     },
@@ -97,6 +107,8 @@ export function DocChatPanel({
       // 会話を共有する）。入力欄を相手の会話に置き換えると本文が消えるので、新しい会話の入力欄
       // として残す（相手の会話は切り替えから開ける）。
       if (showingDraftRef.current && draftDirtyRef.current) setDrafting(true);
+      selectionVersionRef.current += 1;
+      unsentThreadRef.current = null;
       setActiveThreadIdState(store.read());
     });
   }, [store]);
@@ -162,11 +174,6 @@ export function DocChatPanel({
   // 会話を作る前の入力欄のモデル・ツールの選択の保存先（ホームや他の文書の入力欄と分ける）。
   const draftScope = `docdraft:${nodeId}`;
 
-  // 作ったが最初の発話を送れなかった会話（送り直しで使い回し、空の会話を増やさない）。
-  const unsentThreadRef = React.useRef<{ nodeId: string; id: string } | null>(null);
-  // 会話の選択の版。作成を待つ間に別の会話を選んだら、作成完了で表示を奪わない。
-  const selectionVersionRef = React.useRef(0);
-
   // 最初の発話で会話を作り、**ここで送る**（会話側のマウントに頼らない＝作成を待つ間に
   // パネルを閉じても発話は届く）。会話側は進行中の run として読み込んで表示する（再訪と同じ）。
   const startConversation = React.useCallback(
@@ -174,27 +181,32 @@ export function DocChatPanel({
       const startedAt = storageScopeGeneration();
       const selection = selectionVersionRef.current;
       const unsent = unsentThreadRef.current;
-      let threadId = unsent?.nodeId === nodeId ? unsent.id : null;
+      unsentThreadRef.current = null;
+      let threadId =
+        unsent?.nodeId === nodeId && unsent.generation === startedAt ? unsent.id : null;
       if (!threadId) {
         const n = conversations.length + 1;
         const thread = await createThread(n <= 1 ? title : `${title} (${n})`, msg.autonomous, {
           originNoteId: nodeId,
         });
         threadId = thread.id;
-        unsentThreadRef.current = { nodeId, id: threadId };
       }
       // 待つ間にログアウト（他タブを含む）があれば、前の人の発話・選択を送らない・移さない（#817）。
       if (startedAt !== storageScopeGeneration()) return;
       const tools = readToolChoice(draftScope);
-      await postMessage(threadId, msg.text, msg.attachments, {
-        agentMode: msg.autonomous,
-        autonomous: msg.autonomous,
-        context: msg.context,
-        skills: msg.skills,
-        model: readModelChoice(draftScope),
-        tools,
-      });
-      unsentThreadRef.current = null;
+      try {
+        await postMessage(threadId, msg.text, msg.attachments, {
+          agentMode: msg.autonomous,
+          autonomous: msg.autonomous,
+          context: msg.context,
+          skills: msg.skills,
+          model: readModelChoice(draftScope),
+          tools,
+        });
+      } catch (e) {
+        unsentThreadRef.current = { nodeId, id: threadId, generation: startedAt };
+        throw e;
+      }
       // ツールはこの発話にだけ効く（受理されたら空に戻す）。モデルは会話の続きでも使う。
       settleToolChoice(draftScope, tools);
       if (startedAt !== storageScopeGeneration()) return;
