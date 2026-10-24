@@ -297,6 +297,16 @@
   }
 }
 
+/* 進み具合が分からない段階の進捗バー（データの一括取込の検証・索引）。左から右へ流れる。 */
+@keyframes data-import-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
 @layer components {
   /* 実行中の枠を走る光弧。要素は position:relative・rounded-* 前提（border-radius を継承）。 */
   .shiki-running-border::after {

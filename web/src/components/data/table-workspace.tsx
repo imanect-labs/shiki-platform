@@ -18,12 +18,14 @@ import {
   Save,
   Settings2,
   Table2,
+  Upload,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
 
 import { CalendarMonth, GalleryGrid, KanbanBoard } from "@/components/data/card-views";
 import { DataGrid, type DataGridHandle, type DataGridStatus } from "@/components/data/data-grid";
+import { ImportDialog, importProgress, useImportJob } from "@/components/data/import-dialog";
 import { RecordDialog } from "@/components/data/record-dialog";
 import { SchemaEditor } from "@/components/data/schema-editor";
 import {
@@ -38,8 +40,10 @@ import { usePageChrome } from "@/components/shell/page-header-context";
 import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "@/components/ui/use-toast";
 import { useMe } from "@/hooks/use-me";
+import { directoryNames, peerColor, type Peer } from "@/lib/data-awareness";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import {
   DataApiError,
@@ -74,6 +78,37 @@ type Loaded = {
   spec: ViewSpec;
   query: DataQuery;
 };
+
+/// 同じテーブルを見ている他の人（色はグリッドの枠と同じ・値は含まない）。
+function PeerStrip({ peers, label }: { peers: Peer[]; label: (p: Peer) => string }) {
+  if (peers.length === 0) return null;
+  const shown = peers.slice(0, 4);
+  return (
+    <div className="flex items-center" data-testid="data-peers" aria-label={`ほかに ${peers.length} 人が表示中`}>
+      {shown.map((p) => {
+        const text = label(p);
+        return (
+          <Tooltip key={p.principal}>
+            <TooltipTrigger asChild>
+              <span
+                tabIndex={0}
+                className="-ml-1.5 flex size-6 items-center justify-center rounded-full border-2 border-background text-[10px] font-semibold text-white outline-none first:ml-0 focus-visible:ring-2 focus-visible:ring-ring"
+                style={{ backgroundColor: peerColor(p.principal) }}
+                aria-label={text}
+              >
+                {text.slice(0, 1)}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">{text}</TooltipContent>
+          </Tooltip>
+        );
+      })}
+      {peers.length > shown.length ? (
+        <span className="ml-1 text-[11px] text-muted-foreground">+{peers.length - shown.length}</span>
+      ) : null}
+    </div>
+  );
+}
 
 function countLabel(s: DataGridStatus | null): string {
   if (!s) return "";
@@ -126,6 +161,10 @@ export function TableWorkspace({
   const [schemaOpen, setSchemaOpen] = React.useState(false);
   const [recordOpen, setRecordOpen] = React.useState(false);
   const [viewLoading, setViewLoading] = React.useState(false);
+  const [importOpen, setImportOpen] = React.useState(false);
+  const importJob = useImportJob(table.id);
+  const [peers, setPeers] = React.useState<Peer[]>([]);
+  const [names, setNames] = React.useState<Map<string, string>>(new Map());
 
   const grid: GridView | null = spec.kind === "grid" ? spec : null;
 
@@ -280,6 +319,8 @@ export function TableWorkspace({
       if (p) return setProblem({ kind: "preparing", ...p });
       const a = e.approvalRequired;
       if (a) return setProblem({ kind: "approval", ...a });
+      // 見る権限が無い（共有が外れた等）はグリッドが本文で案内する（上の帯と二重に出さない）。
+      if (e.status === 403 || e.status === 404) return setProblem(null);
     }
     setProblem({ kind: "error", message: e.message });
   }, []);
@@ -318,6 +359,44 @@ export function TableWorkspace({
       toast({ variant: "destructive", title: "索引を作れませんでした", description: e instanceof Error ? e.message : String(e) });
     }
   };
+
+  // 取込が終わったら表を読み直す（取り込んだ行を見せる）。
+  const importStatus = importJob.status?.status;
+  const prevImportStatus = React.useRef(importStatus);
+  React.useEffect(() => {
+    const prev = prevImportStatus.current;
+    prevImportStatus.current = importStatus;
+    if (!prev || prev === importStatus) return;
+    if (importStatus === "done" || importStatus === "indexing") {
+      if (prev !== "indexing") gridRef.current?.reload();
+      if (importStatus === "done" && !importOpen) {
+        const s = importJob.status;
+        toast({
+          title: "取込が終わりました",
+          description: s ? `${s.rows_applied.toLocaleString("ja-JP")} 行を取り込みました` : undefined,
+        });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importStatus]);
+
+  // 他の人の表示名（初めて誰かが現れたときに 1 回だけ引く）。
+  React.useEffect(() => {
+    if (peers.length === 0 || peers.every((p) => names.has(p.principal))) return;
+    let active = true;
+    void directoryNames().then((m) => active && setNames(m));
+    return () => {
+      active = false;
+    };
+  }, [peers, names]);
+  const peerLabel = React.useCallback(
+    (p: Peer) => {
+      const who = names.get(p.principal) ?? "他のユーザー";
+      const col = p.field ? columns.find((c) => c.key === p.field)?.label : null;
+      return col ? `${who}（「${col}」を選択中）` : `${who}（行を選択中）`;
+    },
+    [names, columns],
+  );
 
   const switchKind = (kind: ViewSpec["kind"]) => {
     if (kind === spec.kind) return;
@@ -418,6 +497,7 @@ export function TableWorkspace({
           ) : null}
         </div>
         <div className="ml-auto flex items-center gap-2 max-sm:w-full max-sm:justify-end">
+          {spec.kind === "grid" ? <PeerStrip peers={peers} label={peerLabel} /> : null}
           <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground" data-testid="data-count" aria-live="polite">
             {countLabel(status)}
           </span>
@@ -447,6 +527,30 @@ export function TableWorkspace({
               options={kindOptions}
             />
           )}
+          {viewer.can_edit ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 gap-1.5 px-2.5 text-[13px]"
+              onClick={() => setImportOpen(true)}
+              data-testid="import-open"
+              aria-label={importJob.running ? "CSV の取込（進行中）" : "CSV から取り込む"}
+            >
+              {importJob.running ? (
+                <Loader2 className="size-4 animate-spin text-primary" aria-hidden />
+              ) : (
+                <Upload className="size-4" aria-hidden />
+              )}
+              <span className="max-sm:sr-only">
+                {importJob.running && importJob.status
+                  ? `取込中${(() => {
+                      const p = importProgress(importJob.status);
+                      return p == null ? "" : ` ${Math.round(p * 100)}%`;
+                    })()}`
+                  : "取り込む"}
+              </span>
+            </Button>
+          ) : null}
           {viewer.can_edit ? (
             <Button size="sm" className="h-8" onClick={() => setRecordOpen(true)} data-testid="add-record">
               <Plus className="size-4" aria-hidden />
@@ -521,6 +625,9 @@ export function TableWorkspace({
               onQueryError={onQueryError}
               onStatus={setStatus}
               waiting={waiting}
+              // 利用者の並べ替え・絞り込みを索引の自動昇格の契機にする（/data のグリッドからだけ）。
+              promoteIndexes
+              onPeers={setPeers}
             />
           )
         ) : spec.kind === "kanban" ? (
@@ -539,6 +646,9 @@ export function TableWorkspace({
         </p>
       ) : null}
 
+      {viewer.can_edit ? (
+        <ImportDialog open={importOpen} onOpenChange={setImportOpen} table={table} job={importJob} />
+      ) : null}
       <SchemaEditor open={schemaOpen} onOpenChange={setSchemaOpen} table={table} onSaved={onTableChanged} />
       <RecordDialog
         open={recordOpen}

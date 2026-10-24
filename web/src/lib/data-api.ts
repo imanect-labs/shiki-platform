@@ -41,6 +41,16 @@ export type RecordRemovedEvent = S["RecordRemovedEvent"];
 export type StreamReadyEvent = S["StreamReadyEvent"];
 export type StreamResetEvent = S["StreamResetEvent"];
 export type SchemaChangedEvent = S["SchemaChangedEvent"];
+export type StreamResetReason = S["StreamResetReason"];
+export type AwarenessEvent = S["AwarenessEvent"];
+export type AwarenessRequest = S["AwarenessRequest"];
+export type DataQueryRequest = S["DataQueryRequest"];
+export type BulkImportStatus = S["BulkImportStatus"];
+export type BulkIndexMode = S["BulkIndexMode"];
+export type BulkRowError = S["BulkRowError"];
+export type StartImportRequest = S["StartImportRequest"];
+export type StartImportResponse = S["StartImportResponse"];
+export type ImportErrorsResponse = S["ImportErrorsResponse"];
 
 /// API の誤り（状態コード＋構造化した本文）。
 export class DataApiError extends Error {
@@ -53,7 +63,9 @@ export class DataApiError extends Error {
     this.name = "DataApiError";
   }
 
-  /// 409 の種類（`index_preparing` / `index_approval_required`）。rev の衝突は `null`。
+  /// 構造化した誤りの種類（409: `rev_conflict` / `unique_violation` / `derived_recomputing` /
+  /// `conflict` / `index_preparing` / `index_approval_required`、400: `import_invalid`、
+  /// 413: `import_too_large` など）。本文に `code` が無ければ `null`。
   get code(): string | null {
     const c = this.body?.code;
     return typeof c === "string" ? c : null;
@@ -78,9 +90,47 @@ export class DataApiError extends Error {
     };
   }
 
-  /// rev の楽観ロックの衝突（他の人が先に更新した）。
+  /// rev の楽観ロックの衝突（他の人が先に更新した・`code=rev_conflict`）。
   get revConflict(): boolean {
-    return this.status === 409 && this.code === null;
+    return this.status === 409 && this.code === "rev_conflict";
+  }
+
+  /// unique 制約の違反（同じ値のレコードが既にある・`code=unique_violation`）。
+  get uniqueViolation(): boolean {
+    return this.status === 409 && this.code === "unique_violation";
+  }
+
+  /// 材料化した派生列が参照先の変更を受けて再計算中（`code=derived_recomputing`）。
+  get derivedRecomputing(): { field: string } | null {
+    if (this.status !== 409 || this.code !== "derived_recomputing") return null;
+    return { field: String(this.body?.field ?? "") };
+  }
+}
+
+/// 構造化した誤りの既定の文言（本文に `message` が無いとき）。列の参照名は呼び出し側が表示名に
+/// 直して出し直せるよう、ここでは列名を含めない。
+function codeMessage(body: Record<string, unknown> | null): string | null {
+  switch (body?.code) {
+    case "rev_conflict":
+      return "他の人が先に更新しました。最新の内容を読み込み直してください";
+    case "unique_violation":
+      return "同じ値のレコードが既にあります（重複できない列です）";
+    case "derived_recomputing":
+      return "参照先の変更を受けて列を再計算しています。しばらくしてから再試行してください";
+    case "conflict":
+      return "他の操作と競合しました。もう一度お試しください";
+    case "index_preparing":
+      return "この列の索引を準備しています。完了するまでお待ちください";
+    case "index_approval_required":
+      return "索引列の上限を超えるため、テーブルの管理者の承認が要ります";
+    case "import_too_large": {
+      const max = Number(body?.max_bytes ?? 0);
+      return max > 0
+        ? `ファイルが大きすぎます（上限 ${Math.floor(max / (1024 * 1024))} MB）。分割して取り込んでください`
+        : "ファイルが大きすぎます。分割して取り込んでください";
+    }
+    default:
+      return null;
   }
 }
 
@@ -120,11 +170,8 @@ async function ok<T>(res: Response): Promise<T> {
   const message =
     (typeof body?.message === "string" && body.message) ||
     (typeof body?.detail === "string" && body.detail) ||
-    (body?.code === "index_preparing"
-      ? "この列の索引を準備しています。完了するまでお待ちください"
-      : body?.code === "index_approval_required"
-        ? "索引列の上限を超えるため、テーブルの管理者の承認が要ります"
-        : fallbackMessage(res.status));
+    codeMessage(body) ||
+    fallbackMessage(res.status);
   throw new DataApiError(res.status, body, message);
 }
 
@@ -181,14 +228,19 @@ export async function getViewerContext(id: string): Promise<TableViewerContext> 
 // ---------------------------------------------------------------------------
 
 /// 宣言的クエリ（行述語・マスクは閲覧者本人の権限でサーバが合成する）。
+///
+/// `promoteIndexes` は未索引の列での並べ替え・絞り込みを**索引の自動昇格の契機にする**明示の要求
+/// （data-platform §10）。**/data のグリッドで利用者が並べ替え・絞り込みを操作したときだけ** true にする
+/// （それ以外の経路では未索引の列は 400 のまま）。
 export async function runQuery(
   tableId: string,
   query: DataQuery,
-  init?: { signal?: AbortSignal },
+  init?: { signal?: AbortSignal; promoteIndexes?: boolean },
 ): Promise<QueryResult> {
+  const body: DataQueryRequest = init?.promoteIndexes ? { ...query, promote_indexes: true } : query;
   return ok<QueryResult>(
     await apiFetch(`/data/tables/${enc(tableId)}/query`, {
-      ...send("POST", query),
+      ...send("POST", body),
       signal: init?.signal,
     }),
   );
@@ -278,10 +330,19 @@ export type RecordStreamHandlers = {
   onUpserted: (e: RecordUpsertedEvent) => void;
   onRemoved: (e: RecordRemovedEvent) => void;
   /// 手元を捨てて読み直す（保持期間外・権限の変更・溢れ・スキーマ改訂）。接続はサーバが閉じる。
-  onReset: (reason: string) => void;
+  /// `authz_changed` / `table_deleted` は**直前の行を見せ続けてはいけない**（呼び出し側が即時に消す）。
+  onReset: (reason: StreamResetReason | "schema_changed") => void;
+  /// 他ユーザーのカーソル位置（データを含まない）。
+  onAwareness?: (e: AwarenessEvent) => void;
   /// 接続が切れた（ブラウザが Last-Event-ID 付きで自動で繋ぎ直す）。
   onError?: () => void;
+  /// 繋ぎ直せない（403・404・401 などで EventSource が諦めた、または再接続の失敗が続いた）。購読は
+  /// 閉じている。原因は EventSource から読めないので、呼び出し側が REST で確かめて案内する。
+  onTerminal?: () => void;
 };
+
+/// 再接続の失敗がこの回数続いたら諦める（サーバが落ち続けている間に繋ぎ直しを繰り返さない）。
+const MAX_STREAM_RETRIES = 6;
 
 /// レコード変更を購読する。`since` は REST の応答の `snapshot_seq`（読取と購読の間の変更を取りこぼさない）。
 ///
@@ -295,6 +356,7 @@ export function subscribeRecords(
   const q = since != null ? `?since=${since}` : "";
   const es = new EventSource(`/api/data/tables/${enc(tableId)}/stream${q}`, { withCredentials: true });
   let closed = false;
+  let failures = 0;
   const close = () => {
     closed = true;
     es.close();
@@ -305,6 +367,9 @@ export function subscribeRecords(
     } catch {
       return null;
     }
+  };
+  es.onopen = () => {
+    failures = 0;
   };
   es.addEventListener("stream.ready", (ev) => {
     const d = parse<StreamReadyEvent>(ev as MessageEvent);
@@ -318,6 +383,10 @@ export function subscribeRecords(
     const d = parse<RecordRemovedEvent>(ev as MessageEvent);
     if (d) h.onRemoved(d);
   });
+  es.addEventListener("awareness", (ev) => {
+    const d = parse<AwarenessEvent>(ev as MessageEvent);
+    if (d) h.onAwareness?.(d);
+  });
   es.addEventListener("stream.reset", (ev) => {
     const d = parse<StreamResetEvent>(ev as MessageEvent);
     close();
@@ -328,9 +397,74 @@ export function subscribeRecords(
     h.onReset("schema_changed");
   });
   es.onerror = () => {
-    if (!closed) h.onError?.();
+    if (closed) return;
+    // HTTP の誤り（403・404・401）や text/event-stream 以外の応答では、ブラウザは繋ぎ直さずに閉じる。
+    failures += 1;
+    if (es.readyState === EventSource.CLOSED || failures > MAX_STREAM_RETRIES) {
+      close();
+      h.onTerminal?.();
+      return;
+    }
+    h.onError?.();
   };
   return close;
+}
+
+/// 自分のカーソル位置を他の閲覧者へ知らせる（データを含まない・`record_id: null` は離脱）。
+export async function postAwareness(tableId: string, body: AwarenessRequest): Promise<void> {
+  await ok<void>(await apiFetch(`/data/tables/${enc(tableId)}/awareness`, send("POST", body)));
+}
+
+// ---------------------------------------------------------------------------
+// 一括取込（CSV・JSON の行・進捗・行エラー）
+// ---------------------------------------------------------------------------
+
+/// 取込の本文の上限（サーバの `MAX_IMPORT_BODY_BYTES` と同じ・超えると 413）。画面で先に知らせるための値で、
+/// 正はサーバの検査。
+export const MAX_IMPORT_BYTES = 32 * 1024 * 1024;
+
+export type ImportOptions = { indexMode?: BulkIndexMode; abortOnInvalid?: boolean };
+
+/// CSV で取込を始める（editor・見出し行の列はフィールドの参照名か表示名・`_key` は行キー）。
+export async function startCsvImport(
+  tableId: string,
+  csv: Blob | string,
+  opts: ImportOptions = {},
+): Promise<StartImportResponse> {
+  const q = new URLSearchParams();
+  if (opts.indexMode) q.set("index_mode", opts.indexMode);
+  if (opts.abortOnInvalid) q.set("abort_on_invalid", "true");
+  const qs = q.toString();
+  return ok<StartImportResponse>(
+    await apiFetch(`/data/tables/${enc(tableId)}/imports/csv${qs ? `?${qs}` : ""}`, {
+      method: "POST",
+      headers: { "Content-Type": "text/csv; charset=utf-8" },
+      body: csv,
+    }),
+  );
+}
+
+/// JSON の行で取込を始める。
+export async function startJsonImport(tableId: string, body: StartImportRequest): Promise<StartImportResponse> {
+  return ok<StartImportResponse>(await apiFetch(`/data/tables/${enc(tableId)}/imports`, send("POST", body)));
+}
+
+export async function getImport(tableId: string, importId: string): Promise<BulkImportStatus> {
+  return ok<BulkImportStatus>(await apiFetch(`/data/tables/${enc(tableId)}/imports/${enc(importId)}`));
+}
+
+/// 不合格・拒否された行（行番号の昇順・`afterRow` は前ページの `next_after_row`）。
+export async function listImportErrors(
+  tableId: string,
+  importId: string,
+  afterRow?: number | null,
+  limit = 100,
+): Promise<ImportErrorsResponse> {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (afterRow != null) q.set("after_row", String(afterRow));
+  return ok<ImportErrorsResponse>(
+    await apiFetch(`/data/tables/${enc(tableId)}/imports/${enc(importId)}/errors?${q.toString()}`),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -351,9 +485,9 @@ export async function runMiniAppDataGrid(
       send("POST", { version, action_id: `data_grid:${alias}`, params: page }),
     ),
   );
-  const result = r.result as unknown as { kind?: string; result?: DataViewRun } | null;
-  if (result?.kind !== "data_view" || !result.result) {
+  // 結果は束縛種別ごとの判別共用体（生成型 `UiActionResult`）。表のボタンは `data_view` だけ。
+  if (r.result.kind !== "data_view") {
     throw new DataApiError(500, null, "表の結果を読めませんでした");
   }
-  return result.result;
+  return r.result.result;
 }

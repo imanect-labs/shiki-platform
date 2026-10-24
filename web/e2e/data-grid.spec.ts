@@ -22,6 +22,25 @@ async function cellPoint(page: Page, col: number, row: number) {
   };
 }
 
+/// セルを選んで Enter で編集を始める（canvas のグリッドはクリック直後にフォーカスが移りきらないことが
+/// あるので、入力欄が出るまで選び直す）。
+async function openCellEditor(page: Page, col: number, row: number) {
+  const editor = page.locator("#portal textarea");
+  for (let i = 0; i < 4; i++) {
+    const p = await cellPoint(page, col, row);
+    await page.mouse.click(p.x, p.y);
+    await page.keyboard.press("Enter");
+    try {
+      await expect(editor).toBeVisible({ timeout: 1_500 });
+      return editor;
+    } catch {
+      await page.keyboard.press("Escape");
+    }
+  }
+  await expect(editor).toBeVisible();
+  return editor;
+}
+
 async function queryRows(page: Page, tableId: string) {
   const res = await page.request.post(`/api/data/tables/${tableId}/query`, {
     data: { limit: 50 },
@@ -74,12 +93,8 @@ test("テーブル作成 → 列追加 → レコード編集 → ビュー保�
 
   // 4. セルを編集する（rev の楽観ロックで保存される）。
   await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "1");
-  const amountCell = await cellPoint(page, 1, 0);
   // セルを選んで Enter で編集を始め、入力欄に書いて Enter で確定する。
-  await page.mouse.click(amountCell.x, amountCell.y);
-  await page.keyboard.press("Enter");
-  const editor = page.locator("#portal textarea");
-  await expect(editor).toBeVisible();
+  const editor = await openCellEditor(page, 1, 0);
   await editor.fill("9500");
   const patched = page.waitForResponse(
     (r) => r.url().includes(`/data/tables/${tableId}/records/`) && r.request().method() === "PATCH",
@@ -123,4 +138,118 @@ test("テーブル作成 → 列追加 → レコード編集 → ビュー保�
   await expect(page.getByTestId("view-switcher")).toContainText("既定のビュー");
   await page.getByTestId("data-columns-button").click();
   await expect(page.getByLabel("「名前」の見出し")).toHaveValue("名前");
+});
+
+async function csrfOf(page: Page): Promise<string> {
+  return (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+}
+
+/// API でテーブルと行を作る（列: コード（unique・索引）・金額）。
+async function seedTable(page: Page, codes: string[]) {
+  const headers = { "X-CSRF-Token": await csrfOf(page) };
+  const res = await page.request.post("/api/data/tables", {
+    headers,
+    data: {
+      name: uniqueName("e2e-ライブ"),
+      schema: {
+        fields: [
+          { key: "code", display_name: "コード", type: "text", indexed: true, unique: true },
+          { key: "amount", display_name: "金額", type: "number" },
+        ],
+      },
+    },
+  });
+  expect(res.status(), await res.text()).toBe(201);
+  const tableId = ((await res.json()) as { id: string }).id;
+  for (const [i, code] of codes.entries()) {
+    const r = await page.request.post(`/api/data/tables/${tableId}/records`, {
+      headers,
+      data: { data: { code, amount: (i + 1) * 100 } },
+    });
+    expect(r.status(), await r.text()).toBe(201);
+  }
+  return tableId;
+}
+
+test("unique の列に重複する値を入れると、競合ではなく重複の文言を出して元に戻す", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const tableId = await seedTable(page, ["A-1", "B-2"]);
+  await page.goto(`/data/${tableId}`);
+  await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "2");
+  // グリッドの 1 行目と同じ並び（既定の並び）で、もう一方の行の値を入れる。
+  const rows = await queryRows(page, tableId);
+  const other = String(rows[1].data.code);
+
+  const editor = await openCellEditor(page, 0, 0);
+  await editor.fill(other);
+  const patched = page.waitForResponse(
+    (r) => r.url().includes(`/data/tables/${tableId}/records/`) && r.request().method() === "PATCH",
+  );
+  await page.keyboard.press("Enter");
+  const res = await patched;
+  expect(res.status()).toBe(409);
+  expect(((await res.json()) as { code?: string }).code).toBe("unique_violation");
+  await expect(page.getByText("「コード」に同じ値のレコードが既にあります").first()).toBeVisible();
+  // 他の人の更新（rev 競合）の文言は出さない。
+  await expect(page.getByText("他の人が先に更新しました")).toHaveCount(0);
+  const after = await queryRows(page, tableId);
+  expect(after[0].data.code).toBe(rows[0].data.code);
+});
+
+test("他の人のカーソルを表示し、権限の変更で読み直し、購読が拒否されたら止めて案内する", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const tableId = await seedTable(page, ["A-1", "B-2"]);
+  const rows = await queryRows(page, tableId);
+
+  // 変更の購読（SSE）を差し替えて、サーバが送る形のイベントを決め打ちで流す（EventSource は本物）。
+  let mode: "awareness" | "reset" | "forbidden" = "awareness";
+  const bob = "00000000-0000-0000-0000-000000000002";
+  await page.route(new RegExp(`/api/data/tables/${tableId}/stream`), async (route) => {
+    if (mode === "forbidden") return route.fulfill({ status: 403, body: "" });
+    const events =
+      mode === "reset"
+        ? [`event: stream.reset\ndata: ${JSON.stringify({ reason: "authz_changed" })}`]
+        : [
+            `event: stream.ready\ndata: ${JSON.stringify({ position: 0 })}`,
+            `event: awareness\ndata: ${JSON.stringify({ principal: bob, record_id: rows[0].id, field: "amount", at: new Date().toISOString() })}`,
+          ];
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+      body: `retry: 500\n\n${events.join("\n\n")}\n\n`,
+    });
+  });
+
+  await page.goto(`/data/${tableId}`);
+  await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "2");
+
+  // 1. 他の人の位置（データを含まない）がツールバーの顔ぶれに出る。
+  const peers = page.getByTestId("data-peers");
+  await expect(peers).toBeVisible();
+  await expect(peers.locator("[aria-label*='「金額」を選択中']")).toHaveCount(1);
+
+  // 2. 自分がセルを選ぶと、位置（行 id と列の参照名だけ）を送る。
+  const sent = page.waitForRequest(
+    (r) => r.url().includes(`/data/tables/${tableId}/awareness`) && r.method() === "POST",
+  );
+  const cell = await cellPoint(page, 1, 1);
+  await page.mouse.click(cell.x, cell.y);
+  const body = (await sent).postDataJSON() as { record_id: string; field: string | null };
+  expect(body).toEqual({ record_id: rows[1].id, field: "amount" });
+
+  // 3. 権限が変わった（stream.reset authz_changed）: 直前の行を残さず読み直す。
+  const reread = page.waitForRequest(
+    (r) => r.url().includes(`/data/tables/${tableId}/query`) && r.method() === "POST",
+  );
+  mode = "reset";
+  await reread;
+  // 読み直したあとの購読は拒否される（共有が外れた等）。
+  mode = "forbidden";
+
+  // 4. 購読が 403 で繋ぎ直せない: 繋ぎ直しを繰り返さずに止め、案内と「読み直す」を出す
+  //    （テーブル自体は読めるので、行は見えたまま）。
+  const banner = page.getByTestId("data-grid-live-problem");
+  await expect(banner).toBeVisible({ timeout: 15_000 });
+  await expect(banner).toContainText("自動反映が止まりました");
+  await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "2");
 });

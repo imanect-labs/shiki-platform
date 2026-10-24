@@ -8,7 +8,11 @@
 /// - **セル編集は `rev` の楽観ロック**: 書いた値を先に見せ、409（他の人が先に更新）はその行を読み直す。
 /// - **変更の購読（SSE）**: 先頭ページの `snapshot_seq` から購読し、`(record_id, rev)` で冪等に適用する
 ///   （手元の rev 以下・派生値だけの再配信で rev 未満は捨てる）。手元に無い行の出現は件数だけ数えて
-///   「読み込む」を出す（並び順の途中に勝手に差し込まない）。`stream.reset` は手元を捨てて読み直す。
+///   「読み込む」を出す（並び順の途中に勝手に差し込まない）。`stream.reset` は手元を捨てて読み直す
+///   （権限の変更 `authz_changed`・テーブルの削除は直前の行を薄く残さず**即時に消して**から読み直す）。
+///   購読が 403 などで繋ぎ直せなくなったら止め、REST で原因を確かめて案内する（再接続の嵐にしない）。
+/// - **awareness**: 選んでいるセルの位置（行 id・列の参照名だけ・値なし）を送り、他の人の位置を色付きの
+///   枠で描く（data-platform §9.5）。
 /// - 行グループ化は並べ替えの先頭キーで区切った見出し行、条件付き書式は表示中の値で評価する。
 
 import "@glideapps/glide-data-grid/dist/index.css";
@@ -25,15 +29,24 @@ import {
   type Rectangle,
   type Theme,
 } from "@glideapps/glide-data-grid";
-import { Loader2, RefreshCw } from "lucide-react";
+import { Loader2, RefreshCw, WifiOff } from "lucide-react";
 import * as React from "react";
 
 import { resolveColor, useGlideTheme } from "@/components/csv/glide-theme";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/use-toast";
 import {
+  AWARENESS_HEARTBEAT_MS,
+  PEER_TTL_MS,
+  peerColor,
+  withAlpha,
+  type Peer,
+} from "@/lib/data-awareness";
+import {
   DataApiError,
   getRecord,
+  getViewerContext,
+  postAwareness,
   runQuery,
   subscribeRecords,
   updateRecord,
@@ -103,7 +116,15 @@ type Props = {
   bare?: boolean;
   /// 索引の準備中・承認待ちの案内（失敗ではない待ちの状態・整ったら呼び出し側が `reload` する）。
   waiting?: { message: string; progress: number | null } | null;
+  /// 未索引の列での並べ替え・絞り込みを索引の自動昇格の契機にする（/data の画面で利用者が操作したときだけ・
+  /// data-platform §10）。埋め込み（`fetchPage`）では使わない。
+  promoteIndexes?: boolean;
+  /// 他ユーザーの位置が変わった（ツールバーに顔ぶれを出すため）。
+  onPeers?: (peers: Peer[]) => void;
 };
+
+/// 購読が止まった理由（グリッドの下に案内を出す）。
+type LiveProblem = { kind: "disconnected" } | { kind: "signed_out" };
 
 function groupLabel(v: unknown, col: ColumnModel | undefined): string {
   const s = formatValue(v, col?.field ?? null, col?.key);
@@ -127,6 +148,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     fetchPage,
     bare,
     waiting,
+    promoteIndexes,
+    onPeers,
   },
   ref,
 ) {
@@ -159,6 +182,19 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   onStatusRef.current = onStatus;
   const onErrorRef = React.useRef(onQueryError);
   onErrorRef.current = onQueryError;
+  const promoteRef = React.useRef(promoteIndexes);
+  promoteRef.current = promoteIndexes;
+  const onPeersRef = React.useRef(onPeers);
+  onPeersRef.current = onPeers;
+  const [live, setLive] = React.useState<LiveProblem | null>(null);
+  /// 読み込みの失敗の文言（権限を失ったときは既定の「読み込めませんでした」より具体的に出す）。
+  const [failure, setFailure] = React.useState<string | null>(null);
+  const peers = React.useRef<Map<string, Peer>>(new Map());
+  const [peerVersion, setPeerVersion] = React.useState(0);
+  const publishPeers = React.useCallback(() => {
+    setPeerVersion((v) => v + 1);
+    onPeersRef.current?.([...peers.current.values()]);
+  }, []);
 
   const queryKey = JSON.stringify(query);
   const groupKeys = React.useMemo(() => (grid?.group_by ?? []).map((g) => g.field), [grid]);
@@ -182,9 +218,15 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     try {
       const q: DataQuery = JSON.parse(queryKey) as DataQuery;
       const limit = first ? FIRST_PAGE : NEXT_PAGE;
+      // 昇格の要求は並べ替え・絞り込みがあるときだけ（無ければ索引は関係しない）。
+      const promote = Boolean(promoteRef.current) && Boolean(q.filter || q.sort?.length);
       const res = fetchPageRef.current
         ? await fetchPageRef.current(cursor.current, limit)
-        : await runQuery(tableId, { ...q, limit, cursor: cursor.current ?? undefined, with_count: false });
+        : await runQuery(
+            tableId,
+            { ...q, limit, cursor: cursor.current ?? undefined, with_count: false },
+            { promoteIndexes: promote },
+          );
       if (gen !== generation.current) return;
       const items = res.items ?? [];
       for (const r of items) {
@@ -214,7 +256,14 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       if (gen !== generation.current) return;
       // 索引の準備中・承認待ちは画面側の案内（進捗・承認）に任せ、ここは失敗として見せない。
       const waiting = e instanceof DataApiError && (e.indexPreparing || e.approvalRequired);
-      if (first) setInitial(waiting ? "preparing" : "error");
+      if (first) {
+        setFailure(
+          e instanceof DataApiError && (e.status === 403 || e.status === 404)
+            ? "このテーブルを見る権限がありません（共有が外されたか、削除されました）"
+            : null,
+        );
+        setInitial(waiting ? "preparing" : "error");
+      }
       onErrorRef.current?.(e instanceof Error ? e : new Error(String(e)));
     } finally {
       if (gen === generation.current) loading.current = false;
@@ -259,24 +308,73 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         report({ loaded: rows.current.length });
         bump();
       },
-      onReset: () => {
+      onReset: (reason) => {
         if (gen !== generation.current) return;
-        reset();
+        // 権限が変わった・テーブルが消えた: 見えなくなったかもしれない行を一瞬でも残さない。
+        reset({ dropStale: reason === "authz_changed" || reason === "table_deleted" });
+      },
+      onAwareness: (a) => {
+        if (gen !== generation.current) return;
+        if (!a.record_id) peers.current.delete(a.principal);
+        else peers.current.set(a.principal, { principal: a.principal, recordId: a.record_id, field: a.field ?? null, seenAt: Date.now() });
+        publishPeers();
+      },
+      onError: () => {
+        // ブラウザが繋ぎ直している（Last-Event-ID 付き）。案内は諦めたときだけ出す。
+      },
+      onTerminal: () => {
+        if (gen !== generation.current) return;
+        closeStream.current = null;
+        void diagnoseStream(gen);
       },
     });
   };
 
-  const reset = React.useCallback(() => {
+  /// 購読が繋ぎ直せなくなった理由を REST で確かめる（EventSource は状態コードを読めない）。
+  const diagnoseStream = async (gen: number) => {
+    try {
+      await getViewerContext(tableId);
+      if (gen === generation.current) setLive({ kind: "disconnected" });
+    } catch (e) {
+      if (gen !== generation.current) return;
+      if (e instanceof DataApiError && (e.status === 403 || e.status === 404)) {
+        // 見る権限を失った: 手元の行を即時に捨てて案内だけにする。
+        generation.current += 1;
+        rows.current = [];
+        stale.current = [];
+        indexById.current = new Map();
+        peers.current.clear();
+        publishPeers();
+        setFailure("このテーブルを見る権限がなくなりました（削除されたか、共有が外されました）");
+        setInitial("error");
+        report({ loaded: 0, done: false, count: null });
+        bump();
+      } else if (e instanceof DataApiError && e.status === 401) {
+        setLive({ kind: "signed_out" });
+      } else {
+        setLive({ kind: "disconnected" });
+      }
+    }
+  };
+
+  const reset = React.useCallback((opts?: { dropStale?: boolean }) => {
     generation.current += 1;
     closeStream.current?.();
     closeStream.current = null;
-    if (rows.current.length) stale.current = rows.current;
+    if (opts?.dropStale) stale.current = [];
+    else if (rows.current.length) stale.current = rows.current;
     rows.current = [];
     indexById.current = new Map();
     cursor.current = null;
     done.current = false;
     loading.current = false;
     pending.current.clear();
+    if (peers.current.size) {
+      peers.current.clear();
+      publishPeers();
+    }
+    setLive(null);
+    setFailure(null);
     setNewRows(0);
     // 読み直しの前の選択は新しい行と対応しないので外す（薄く残す直前の行に枠を残さない）。
     setSelection({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
@@ -285,7 +383,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     report({ loaded: 0, done: false, count: null, firstRenderMs: null });
     bump();
     void fetchNext();
-  }, [bump, fetchNext, report]);
+  }, [bump, fetchNext, report, publishPeers]);
 
   React.useEffect(() => {
     reset();
@@ -295,7 +393,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     };
   }, [reset]);
 
-  React.useImperativeHandle(ref, () => ({ reload: reset }), [reset]);
+  React.useImperativeHandle(ref, () => ({ reload: () => reset() }), [reset]);
 
   // ---- 表示行（グループ見出しを挟む） ----
   const colByKey = React.useMemo(() => new Map(columns.map((c) => [c.key, c])), [columns]);
@@ -468,10 +566,24 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
             });
           } else {
             if (j !== undefined) rows.current[j] = before;
+            const recomputing = e instanceof DataApiError ? e.derivedRecomputing : null;
+            const labelOf = (key: string) => columns.find((x) => x.key === key)?.label ?? key;
             toast({
               variant: "destructive",
-              title: "保存できませんでした",
-              description: e instanceof Error ? e.message : String(e),
+              title:
+                e instanceof DataApiError && e.uniqueViolation
+                  ? `「${c.label}」に同じ値のレコードが既にあります`
+                  : recomputing
+                    ? `「${labelOf(recomputing.field)}」を再計算しています`
+                    : "保存できませんでした",
+              description:
+                e instanceof DataApiError && e.uniqueViolation
+                  ? "この列は重複できません。別の値を入れてください（入力は元に戻しました）。"
+                  : recomputing
+                    ? "参照先の変更を受けた再計算が終わるまで、この行は保存できません。しばらくしてから再試行してください。"
+                    : e instanceof Error
+                      ? e.message
+                      : String(e),
             });
           }
         })
@@ -503,6 +615,93 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     },
     [display],
   );
+
+  // ---- awareness（自分の位置を送る・他の人の位置を描く） ----
+  const selectedCell = selection.current?.cell;
+  const myPosition = React.useMemo(() => {
+    if (embedded || !selectedCell || initial !== "ready") return null;
+    const [col, row] = selectedCell;
+    const d = display[row];
+    const c = columns[col];
+    if (d?.kind !== "row" || !c) return null;
+    const r = rows.current[d.index];
+    if (!r) return null;
+    // 擬似列（作成日時など）はスキーマの列ではないので、行だけを知らせる。
+    return { record_id: r.id, field: c.field ? c.key : null };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedded, selectedCell?.[0], selectedCell?.[1], display, columns, initial]);
+  const positionKey = myPosition ? `${myPosition.record_id}\u0001${myPosition.field ?? ""}` : "";
+  const sentPosition = React.useRef("");
+  React.useEffect(() => {
+    if (embedded) return;
+    const send = () => {
+      sentPosition.current = positionKey;
+      postAwareness(tableId, myPosition ?? { record_id: null, field: null }).catch(() => {
+        // 位置は付加情報（失敗しても編集・閲覧は続ける）。
+      });
+    };
+    // 選択の移動は少し待ってまとめる（矢印キーの連打で送り続けない）。離脱は前に送っていたときだけ。
+    const t = window.setTimeout(() => {
+      if (positionKey !== sentPosition.current) send();
+    }, 250);
+    // 選んでいる間は送り直す（サーバは 30 秒より古い位置を配らない）。
+    const hb = myPosition ? window.setInterval(send, AWARENESS_HEARTBEAT_MS) : undefined;
+    return () => {
+      window.clearTimeout(t);
+      if (hb) window.clearInterval(hb);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [positionKey, tableId, embedded]);
+  // 画面を離れたら位置を消す（他の人の画面に古い枠を残さない）。
+  React.useEffect(() => {
+    if (embedded) return;
+    return () => {
+      if (sentPosition.current) {
+        void postAwareness(tableId, { record_id: null, field: null }).catch(() => undefined);
+        sentPosition.current = "";
+      }
+    };
+  }, [tableId, embedded]);
+  // 送り直しが途絶えた人（タブを閉じた等）は消す。
+  React.useEffect(() => {
+    if (embedded) return;
+    const t = window.setInterval(() => {
+      const now = Date.now();
+      let changed = false;
+      for (const [k, p] of peers.current) {
+        if (now - p.seenAt > PEER_TTL_MS) {
+          peers.current.delete(k);
+          changed = true;
+        }
+      }
+      if (changed) publishPeers();
+    }, 5_000);
+    return () => window.clearInterval(t);
+  }, [embedded, publishPeers]);
+
+  const highlightRegions = React.useMemo(() => {
+    if (peers.current.size === 0 || showingStale) return undefined;
+    const rowOf = new Map<number, number>();
+    display.forEach((d, i) => {
+      if (d.kind === "row") rowOf.set(d.index, i);
+    });
+    const colOf = new Map(columns.map((c, i) => [c.key, i]));
+    // "solid" は塗り（透過色）＋枠（不透明の同じ色）。"solid-outline" は枠が背景と混ざって見えにくい。
+    const out: { color: string; range: Rectangle; style: "solid" }[] = [];
+    for (const p of peers.current.values()) {
+      const idx = indexById.current.get(p.recordId);
+      const y = idx === undefined ? undefined : rowOf.get(idx);
+      if (y === undefined) continue;
+      const x = p.field ? colOf.get(p.field) : undefined;
+      out.push({
+        color: withAlpha(peerColor(p.principal), 0.14),
+        range: x === undefined ? { x: 0, y, width: columns.length, height: 1 } : { x, y, width: 1, height: 1 },
+        style: "solid",
+      });
+    }
+    return out.length ? out : undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peerVersion, display, columns, showingStale]);
 
   const rowHeight = ROW_HEIGHTS[grid?.row_height ?? "short"];
 
@@ -561,10 +760,10 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       ) : null}
       {initial === "error" ? (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-card text-sm text-muted-foreground">
-          <p>行を読み込めませんでした</p>
+          <p className="max-w-sm text-balance text-center">{failure ?? "行を読み込めませんでした"}</p>
           <button
             type="button"
-            onClick={reset}
+            onClick={() => reset()}
             className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <RefreshCw className="size-3.5" aria-hidden />
@@ -580,13 +779,37 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       {newRows > 0 ? (
         <button
           type="button"
-          onClick={reset}
+          onClick={() => reset()}
           data-testid="data-grid-new-rows"
           className="absolute bottom-4 left-1/2 z-20 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-primary/30 bg-card px-3 py-1.5 text-xs font-medium text-primary shadow-md transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <RefreshCw className="size-3.5" aria-hidden />
           新しいレコード {newRows} 件 · 表示する
         </button>
+      ) : null}
+      {live && initial === "ready" ? (
+        <div
+          role="status"
+          data-testid="data-grid-live-problem"
+          className="absolute bottom-4 left-1/2 z-20 flex w-[min(30rem,calc(100%-2rem))] -translate-x-1/2 items-center gap-2 rounded-xl border bg-card px-3 py-2 text-xs shadow-md"
+        >
+          <WifiOff className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="flex-1 text-balance">
+            {live.kind === "signed_out"
+              ? "ログインが切れたため、他の人の変更の自動反映を止めました。もう一度ログインしてください。"
+              : "他の人の変更の自動反映が止まりました。表示中の行は古い可能性があります。"}
+          </span>
+          {live.kind === "disconnected" ? (
+            <button
+              type="button"
+              onClick={() => reset()}
+              className="inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <RefreshCw className="size-3.5" aria-hidden />
+              読み直す
+            </button>
+          ) : null}
+        </div>
       ) : null}
       <DataEditor
         theme={glideTheme}
@@ -599,6 +822,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         onVisibleRegionChanged={onVisibleRegionChanged}
         gridSelection={selection}
         onGridSelectionChange={setSelection}
+        highlightRegions={highlightRegions}
         onHeaderClicked={onHeaderClick ? (col) => columns[col] && onHeaderClick(columns[col].key) : undefined}
         onHeaderMenuClick={onHeaderMenu ? (col, b) => columns[col] && onHeaderMenu(columns[col].key, b) : undefined}
         onColumnResize={
