@@ -45,7 +45,7 @@ use crate::vocab::NodeType;
 pub struct ParamsIssue {
     /// `/params/...` の JSON Pointer 風 path（フォームフィールドへの写像用）。
     pub path: String,
-    /// 人向けメッセージ（serde のエラーメッセージそのまま）。
+    /// 人向けメッセージ（serde の文言は日本語へ直す・型名や英語の文言を含めない）。
     pub message: String,
 }
 
@@ -81,8 +81,48 @@ fn check_as<T: DeserializeOwned>(raw: &Value) -> Result<(), ParamsIssue> {
         Ok(_) => Ok(()),
         Err(e) => Err(ParamsIssue {
             path: pointer_path(&track.path()),
-            message: e.to_string(),
+            message: humanize(&e.to_string()),
         }),
+    }
+}
+
+/// serde の英語の文言を利用者向けの日本語へ（項目名だけを拾い、型名・英語の文言を出さない・検証 N11）。
+fn humanize(raw: &str) -> String {
+    let msg = raw.split(" at line ").next().unwrap_or(raw);
+    let quoted = |s: &str| -> Option<String> {
+        let start = s.find('`')? + 1;
+        let end = start + s[start..].find('`')?;
+        Some(s[start..end].to_string())
+    };
+    if let Some(rest) = msg.strip_prefix("missing field ") {
+        return quoted(rest).map_or_else(
+            || "必要な項目がありません".into(),
+            |f| format!("項目 '{f}' がありません"),
+        );
+    }
+    if let Some(rest) = msg.strip_prefix("unknown field ") {
+        return quoted(rest).map_or_else(
+            || "使えない項目があります".into(),
+            |f| format!("項目 '{f}' は使えません"),
+        );
+    }
+    if msg.starts_with("unknown variant ") {
+        return "選択肢にない値です".into();
+    }
+    if msg.starts_with("invalid type") {
+        return "値の型が正しくありません".into();
+    }
+    if msg.starts_with("invalid length") {
+        return "値の数が正しくありません".into();
+    }
+    if msg.starts_with("invalid value") {
+        return "値が正しくありません".into();
+    }
+    // 自前の検証（日本語）の文言はそのまま返す。
+    if msg.is_ascii() {
+        "値が正しくありません".into()
+    } else {
+        msg.to_string()
     }
 }
 
@@ -154,7 +194,7 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
 /// executor 向け: params を typed struct として取り出す（保存済み IR は V1 済みのため
 /// 失敗は internal 扱い・呼び出し側が `bad_params` の permanent 失敗にする）。
 pub fn parse<T: DeserializeOwned>(raw: &Value) -> Result<T, String> {
-    serde_json::from_value(raw.clone()).map_err(|e| e.to_string())
+    serde_json::from_value(raw.clone()).map_err(|e| humanize(&e.to_string()))
 }
 
 #[cfg(test)]
@@ -169,6 +209,16 @@ mod tests {
         // serde_path_to_error は未知フィールド名まで path に含める。
         assert_eq!(err.path, "/params/bogus");
         assert!(err.message.contains("bogus"), "{}", err.message);
+        assert!(!err.message.contains("unknown field"), "{}", err.message);
+    }
+
+    #[test]
+    fn missing_field_message_is_japanese() {
+        assert_eq!(humanize("missing field `data`"), "項目 'data' がありません");
+        assert_eq!(
+            humanize("invalid type: string \"x\", expected struct Foo at line 1 column 2"),
+            "値の型が正しくありません"
+        );
     }
 
     #[test]

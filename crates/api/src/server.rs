@@ -16,6 +16,7 @@ use axum::{
 
 mod build;
 mod http_util;
+pub(crate) mod rejection;
 pub use build::build_router;
 
 use crate::{health, openapi, routes, state::AppState};

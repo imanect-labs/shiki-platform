@@ -178,7 +178,7 @@ async fn read_body(body: Body) -> Result<axum::body::Bytes, ApiError> {
         let mut seen = 0usize;
         while let Some(chunk) = stream.next().await {
             let Ok(data) = chunk else {
-                return Err(ApiError::BadRequest("本文を読めませんでした".into()));
+                return Err(invalid("本文を読めませんでした"));
             };
             seen = seen.saturating_add(data.len());
             if over {
@@ -244,7 +244,13 @@ pub async fn start_import(
 ) -> Result<(StatusCode, Json<StartImportResponse>), ApiError> {
     let bytes = read_body(body).await?;
     let req: StartImportRequest = serde_json::from_slice(&bytes)
-        .map_err(|e| invalid(&format!("取込の本文を読めません: {e}")))?;
+        // serde の英語の文言・内部の型名を出さない（検証 N10）。
+        .map_err(|e| {
+            invalid(&format!(
+                "取込の本文を読めません: {}",
+                crate::server::rejection::serde_message(&e.to_string())
+            ))
+        })?;
     let rows = req
         .rows
         .into_iter()

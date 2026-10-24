@@ -60,7 +60,13 @@ fn last_event_id(headers: &HeaderMap) -> Result<Option<i64>, ApiError> {
             .ok()
             .and_then(|s| s.trim().parse::<i64>().ok())
             .map(Some)
-            .ok_or_else(|| ApiError::BadRequest("Last-Event-ID が不正です".into())),
+            // 構造化 400 `cursor_invalid`（購読を最初から張り直させる・検証 2-B-P3-6）。
+            .ok_or_else(|| {
+                ApiError::from(data::DataError::input_detail_public(
+                    data::InvalidCode::CursorInvalid,
+                    "続きの位置（Last-Event-ID）が正しくありません。最初から購読し直してください",
+                ))
+            }),
     }
 }
 
@@ -86,7 +92,7 @@ fn to_sse(m: &data::StreamMessage) -> Event {
     params(("id" = Uuid, Path, description = "テーブル ID"), StreamQuery),
     responses(
         (status = 200, description = "SSE（text/event-stream）。各イベントの data は StreamEvent の対応する型", body = data::StreamEvent),
-        (status = 400, description = "Last-Event-ID が不正"),
+        (status = 400, description = "Last-Event-ID が不正（code=cursor_invalid）", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "テーブルの viewer でない"),
         (status = 404, description = "存在しない"),
@@ -172,6 +178,10 @@ mod tests {
         h.insert("last-event-id", "42".parse().unwrap());
         assert_eq!(last_event_id(&h).unwrap(), Some(42));
         h.insert("last-event-id", "x".parse().unwrap());
-        assert!(last_event_id(&h).is_err());
+        // 本文つきの構造化 400（cursor_invalid）。
+        match last_event_id(&h) {
+            Err(ApiError::UnprocessableJson(b)) => assert_eq!(b["code"], "cursor_invalid"),
+            other => panic!("{other:?}"),
+        }
     }
 }

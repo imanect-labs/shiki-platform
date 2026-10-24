@@ -165,13 +165,13 @@ pub async fn list_records(
             value: serde_json::json!(n),
         }),
         (Some(_), Some(_), Some(_)) => {
-            return Err(ApiError::BadRequest(
-                "filter_value と filter_number は同時に指定できません".into(),
+            return Err(ApiError::invalid_input(
+                "filter_value と filter_number は同時に指定できません",
             ))
         }
         (Some(_), None, None) => {
-            return Err(ApiError::BadRequest(
-                "filter_field には filter_value か filter_number が必要です".into(),
+            return Err(ApiError::invalid_input(
+                "filter_field には filter_value か filter_number が必要です",
             ))
         }
         (None, _, _) => None,
@@ -379,8 +379,8 @@ pub async fn count_records(
             value: serde_json::json!(n),
         }),
         (Some(_), _, _) => {
-            return Err(ApiError::BadRequest(
-                "filter_field には filter_value か filter_number のどちらか一方が必要です".into(),
+            return Err(ApiError::invalid_input(
+                "filter_field には filter_value か filter_number のどちらか一方が必要です",
             ))
         }
         (None, _, _) => None,
