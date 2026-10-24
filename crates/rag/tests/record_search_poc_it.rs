@@ -33,9 +33,9 @@ use authz::{
     Principal, ReadTupleKey, Relation, Subject,
 };
 use data::{
-    CmpOp, DataError, DataStore, FieldDef, FieldPolicy, FieldType, NewDataTable, PolicyExpr,
-    PolicyOperand, RagIndexWorker, RagProjection, RecordChunk, RecordChunkSink, RecordShareRole,
-    RefResolver, RowPolicy, TableSchema,
+    CmpOp, DataError, DataStore, FieldDef, FieldPolicy, FieldType, InvalidCode, NewDataTable,
+    PolicyExpr, PolicyOperand, RagIndexWorker, RagProjection, RecordChunk, RecordChunkSink,
+    RecordShareRole, RefResolver, RowPolicy, TableSchema,
 };
 use rag::{
     post_filter_sources, readable_tables, record_results, RagError, RecordProjection,
@@ -714,7 +714,8 @@ async fn row_level_permissions_apply_to_record_search() {
     env.worker.unregister().await.unwrap();
 }
 
-/// 投影にマスク対象列を含めるスキーマは拒否（作成・改訂の両方・422 = `DataError::Invalid`）。
+/// 投影にマスク対象列を含めるスキーマは拒否（作成・改訂の両方・400 = `DataError::InvalidInput`・
+/// `code: schema_invalid`）。
 #[tokio::test]
 async fn masked_columns_cannot_be_projected() {
     let _serial = serial_lock().lock().await;
@@ -743,7 +744,8 @@ async fn masked_columns_cannot_be_projected() {
         )
         .await;
     assert!(
-        matches!(r, Err(DataError::Invalid(ref m)) if m.contains("field_policy")),
+        matches!(r, Err(DataError::InvalidInput(ref e))
+            if e.code() == InvalidCode::SchemaInvalid && e.message().contains("field_policy")),
         "{r:?}"
     );
     // 存在しない列も拒否（派生列・参照列の拒否は data の単体テストで固定）。
@@ -760,7 +762,7 @@ async fn masked_columns_cannot_be_projected() {
                 None
             )
             .await,
-        Err(DataError::Invalid(_))
+        Err(DataError::InvalidInput(ref e)) if e.code() == InvalidCode::SchemaInvalid
     ));
 
     // 改訂時: 投影している memo 列に後から field_policy を付ける → 拒否（投影から外さない限り通らない）。
@@ -785,7 +787,8 @@ async fn masked_columns_cannot_be_projected() {
         .update_table_schema(&alice, t.id, next, Some(t.schema_version), None)
         .await;
     assert!(
-        matches!(r, Err(DataError::Invalid(ref m)) if m.contains("field_policy")),
+        matches!(r, Err(DataError::InvalidInput(ref e))
+            if e.code() == InvalidCode::SchemaInvalid && e.message().contains("field_policy")),
         "{r:?}"
     );
     env.worker.unregister().await.unwrap();
