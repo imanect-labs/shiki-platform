@@ -240,7 +240,7 @@ async fn event_targets_app_scopes_to_owned_resources() {
     let (table_id,): (Uuid,) = sqlx::query_as(
         "INSERT INTO data_table (tenant_id, org, app_id, name, schema, created_by, \
                tenant_int, table_int) \
-             VALUES ($1, 'acme', $2, $3, '{}'::jsonb, 'installer', $4, $5) RETURNING id",
+             VALUES ($1, 'acme', $2, $3, '{\"fields\": []}'::jsonb, 'installer', $4, $5) RETURNING id",
     )
     .bind(&tenant)
     .bind(app_id)
