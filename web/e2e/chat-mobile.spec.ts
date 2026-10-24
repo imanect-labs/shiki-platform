@@ -24,22 +24,18 @@ async function phonePage(browser: Browser, page: Page): Promise<Page> {
 }
 
 test.describe("スマホのチャット", () => {
-  test("入力欄は文字の段と操作の段の 2 段で、長い URL があっても会話が横にはみ出さない", async ({
+  test("入力欄は既定のモデルなら 1 行で、長い URL があっても会話が横にはみ出さない", async ({
     browser,
     page,
   }) => {
     const phone = await phonePage(browser, page);
     await phone.goto("/");
 
-    // 2 段（文字の段 ＋ 「+」・モデル・送信の段・#768）。空のときは約 108px に収まる。
+    // モデルを選んでいない（Auto）ときは 1 行の丸いバー（約 54px）で、モデルのボタンは出さない。
     const bar = phone.getByTestId("composer");
     await expect(bar).toBeVisible();
-    const box = await bar.boundingBox();
-    expect(box?.height ?? 0).toBeLessThanOrEqual(116);
-    await expect(phone.getByTestId("model-button")).toBeVisible();
-    const textBox = await phone.getByLabel("メッセージを入力").boundingBox();
-    const modelBox = await phone.getByTestId("model-button").boundingBox();
-    expect((textBox?.y ?? 0) + (textBox?.height ?? 0)).toBeLessThanOrEqual((modelBox?.y ?? 0) + 1);
+    expect((await bar.boundingBox())?.height ?? 0).toBeLessThanOrEqual(58);
+    await expect(phone.getByTestId("model-button")).toBeHidden();
 
     // タッチ端末では Enter は改行（送信はボタン）。
     const input = phone.getByLabel("メッセージを入力");
@@ -91,13 +87,43 @@ test.describe("スマホのチャット", () => {
     await expect(phone.getByLabel("メッセージを入力")).not.toBeFocused();
     await phone.keyboard.press("Escape");
 
-    // 「+」は下からのシート（添付 → 作成 → ツール → スキル）。モデルは送信の左のボタン（#768）。
+    // 「+」は下からのシート（添付 → 作成 → モデル → ツール → スキル）。
     await phone.getByRole("button", { name: "追加メニューを開く" }).click();
     const sheet = phone.getByTestId("composer-plus-sheet");
     await expect(sheet).toBeVisible();
     await expect(sheet.getByRole("button", { name: /ファイル・写真/ })).toBeVisible();
     await expect(sheet.getByTestId("composer-create-note")).toBeVisible();
-    await expect(sheet.getByTestId("composer-model-menu")).toHaveCount(0);
+    await expect(sheet.getByTestId("composer-open-model")).toBeVisible();
+    await phone.context().close();
+  });
+
+  test("「+」のシートからモデルを選ぶと、入力欄にモデルが出て 2 段になる", async ({ browser, page }) => {
+    const phone = await phonePage(browser, page);
+    await phone.goto("/");
+    const bar = phone.getByTestId("composer");
+    await expect(phone.getByTestId("model-button")).toBeHidden();
+
+    await phone.getByRole("button", { name: "追加メニューを開く" }).click();
+    await phone.getByTestId("composer-open-model").click();
+    const picker = phone.getByTestId("model-picker");
+    await expect(picker).toBeVisible();
+    await picker.locator('[data-testid^="model-option-"]:not([data-testid="model-option-default"])').first().click();
+    await phone.keyboard.press("Escape");
+    await expect(picker).toBeHidden();
+
+    // 選んだモデルは送信の左に出て、入力欄は文字の段と操作の段の 2 段になる。
+    const model = phone.getByTestId("model-button");
+    await expect(model).toBeVisible();
+    const textBox = await phone.getByLabel("メッセージを入力").boundingBox();
+    const modelBox = await model.boundingBox();
+    expect((textBox?.y ?? 0) + (textBox?.height ?? 0)).toBeLessThanOrEqual((modelBox?.y ?? 0) + 1);
+    expect((await bar.boundingBox())?.height ?? 0).toBeLessThanOrEqual(116);
+
+    // Auto に戻すと 1 行に戻る。
+    await model.click();
+    await phone.getByTestId("model-option-default").click();
+    await expect(model).toBeHidden();
+    expect((await bar.boundingBox())?.height ?? 0).toBeLessThanOrEqual(58);
     await phone.context().close();
   });
 });
