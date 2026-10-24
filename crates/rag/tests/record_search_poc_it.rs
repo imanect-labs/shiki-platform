@@ -139,6 +139,8 @@ impl AuthzClient for CountingAuthz {
 struct FakeRecordIndex {
     tables: Mutex<HashMap<(String, Uuid), TableIdx>>,
     resets: AtomicUsize,
+    /// 立っている間 upsert を失敗させる（作り直しの途中で sink が落ちる場合の再現）。
+    fail_upserts: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -175,6 +177,9 @@ impl RecordChunkSink for FakeRecordIndex {
         Ok(())
     }
     async fn upsert(&self, chunks: &[RecordChunk]) -> Result<(), DataError> {
+        if self.fail_upserts.load(Ordering::SeqCst) {
+            return Err(DataError::Internal("sink: upsert failed".into()));
+        }
         let mut g = self.tables.lock().unwrap();
         for c in chunks {
             let t = g.entry((c.tenant_id.clone(), c.table_id)).or_default();
@@ -915,5 +920,73 @@ async fn adding_field_policy_invalidates_and_rebuilds_index() {
     assert!(r.results.is_empty());
     env.drain().await;
     assert!(env.index.chunk_bodies(&env.tenant, t.id).is_empty());
+    env.worker.unregister().await.unwrap();
+}
+
+/// C2: 作り直し（初回・世代の切替）の途中で sink が失敗しても、再配信で増分経路に入って空・途中までの
+/// 索引を完成扱いにしない。sink の世代は破棄の時点で付け替わるが、完了は全ページの反映の後に消費 Tx と
+/// 同じ Tx で確定するので、次の周期は作り直し直す。
+#[tokio::test]
+async fn failed_rebuild_is_redone_on_the_next_cycle() {
+    let _serial = serial_lock().lock().await;
+    let Some(env) = setup().await else { return };
+    let alice = env.ctx("alice");
+    // オプトイン前に行を作って配送し切る（作り直しの再配信に行の変更イベントが混ざらないようにする）。
+    let mut s = expense_schema();
+    s.row_policy = None;
+    let rag = s.rag.take();
+    let t = env
+        .store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "late-opt-in".into(),
+                schema: s,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    for (title, memo) in [("大阪出張", "新幹線"), ("東京出張", "ホテル")] {
+        env.store
+            .create_record(
+                &alice,
+                t.id,
+                json!({"applicant": "alice", "title": title, "memo": memo, "salary": 1}),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    env.drain().await;
+    assert!(env.index.chunk_bodies(&env.tenant, t.id).is_empty());
+
+    // オプトイン（schema イベントだけ）→ 作り直しの upsert が失敗する。
+    let mut next = t.schema.clone();
+    next.rag = rag;
+    env.store
+        .update_table_schema(&alice, t.id, next, Some(t.schema_version), None)
+        .await
+        .unwrap();
+    env.index.fail_upserts.store(true, Ordering::SeqCst);
+    assert!(env.worker.run_once().await.is_err(), "作り直しが失敗する");
+    // sink は破棄済みで世代も付け替わっている（ここで完成扱いにすると空の索引のままになる）。
+    assert!(env
+        .index
+        .generation(&env.tenant, t.id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(env.index.chunk_bodies(&env.tenant, t.id).is_empty());
+
+    // 次の周期（再配信は schema イベントだけで、触れた行は無い）でも作り直し、全件が索引に入る。
+    env.index.fail_upserts.store(false, Ordering::SeqCst);
+    let resets = env.index.resets.load(Ordering::SeqCst);
+    env.drain().await;
+    assert_eq!(env.index.resets.load(Ordering::SeqCst), resets + 1);
+    assert_eq!(env.index.chunk_bodies(&env.tenant, t.id).len(), 2);
+    // 完了した後の周期は増分経路（作り直さない）。
+    env.drain().await;
+    assert_eq!(env.index.resets.load(Ordering::SeqCst), resets + 1);
     env.worker.unregister().await.unwrap();
 }

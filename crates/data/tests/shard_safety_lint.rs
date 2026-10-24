@@ -54,6 +54,8 @@ const DATA_TABLES: &[&str] = &[
     "data_field_stats",
     "data_value_count",
     "data_link_stats",
+    // RAG 増分索引の確定した世代（Task 15.8 のスパイク）。
+    "data_rag_index_state",
 ];
 
 /// `data_` で始まるが**テナントに属さない**システム表（理由つき）。S3/S4 の対象外。

@@ -67,6 +67,8 @@ const PURGE_TENANT_INT_TABLES: &[&str] = &[
     "data_table_stats",
     // リンク値の保存形の移行の進捗（Task 15.4）。
     "data_link_value_migration",
+    // RAG 増分索引の確定した世代（Task 15.8 のスパイク）。
+    "data_rag_index_state",
 ];
 
 /// テナント消去で `tenant_id` を条件に消す表（`data_table` / `data_tenant_settings` は個別に消す）。

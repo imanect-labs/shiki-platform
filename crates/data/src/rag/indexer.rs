@@ -12,6 +12,9 @@
 //! - **世代が変わったら破棄して作り直す**。`field_policy`・投影の定義が変わると世代が変わる
 //!   （[`super::projection::generation`]）。sink の世代と一致しなければ、テーブルのチャンクを全部捨ててから
 //!   全件を投影し直す。作り直しが終わるまでの古いチャンクは post-filter が世代不一致で落とす
+//! - **作り直しの完了は全ページの反映の後に確定する**。sink の世代は破棄の時点で付け替わるので、完了は
+//!   `data_rag_index_state` に消費 Tx と同じ Tx で記録し、増分経路へ入るのは sink とこの台帳の世代が
+//!   どちらも一致するときだけ。作り直しが途中で失敗・停止すれば台帳は巻き戻り、次の周期で作り直し直す
 //! - **現在の行から作る**。イベントの payload の値は使わず、消費時点の行を読み直す（順序の入れ替わり・
 //!   再配信で古い値が勝たない）。行が無ければチャンクを消す
 //! - 冪等: sink は `record_id` 単位の upsert / remove。反映と `mark_delivered` は同じ Tx（sink が失敗すれば
@@ -249,19 +252,30 @@ impl RagIndexWorker {
         let loaded = crate::stream::relay::table_row_with_org(tx, tenant_id, table_id).await?;
         let current_gen = loaded.as_ref().and_then(|(t, _)| generation(&t.schema));
         let indexed_gen = self.sink.generation(tenant_id, table_id).await?;
-        let (Some((table, org)), Some(gen)) = (loaded, current_gen) else {
-            // 削除済み・オプトアウト: 索引に残っていれば外す。
-            if indexed_gen.is_some() {
-                self.sink.reset_table(tenant_id, table_id, None).await?;
+        let (table, org, gen) = match (loaded, current_gen) {
+            (Some((table, org)), Some(gen)) => (table, org, gen),
+            (loaded, _) => {
+                // 削除済み・オプトアウト: 索引に残っていれば外す（確定した世代も消す）。
+                if indexed_gen.is_some() {
+                    self.sink.reset_table(tenant_id, table_id, None).await?;
+                }
+                if let Some((t, _)) = &loaded {
+                    forget_generation(tx, t, &self.consumer).await?;
+                }
+                return Ok(());
             }
-            return Ok(());
         };
-        if indexed_gen.as_deref() != Some(gen.as_str()) {
-            // 世代の切替（初回・field_policy / 投影の変更）: 破棄して全件を作り直す。
+        // 作り直しが最後まで終わった世代（消費 Tx と同じ Tx で確定したもの）。sink の世代は破棄の時点で
+        // 付け替わるので、それだけでは作り直しの途中で失敗したことが分からない（C2）。
+        let built = built_generation(tx, &table, &self.consumer).await?;
+        if indexed_gen.as_deref() != Some(gen.as_str()) || built.as_deref() != Some(gen.as_str()) {
+            // 世代の切替（初回・field_policy / 投影の変更・前回の作り直しが途中で止まった）:
+            // 破棄して全件を作り直し、全ページの反映が成功した後にだけ世代を確定する。
             self.sink
                 .reset_table(tenant_id, table_id, Some(&gen))
                 .await?;
-            return self.rebuild(tx, tenant_id, &table, &org, &gen).await;
+            self.rebuild(tx, tenant_id, &table, &org, &gen).await?;
+            return confirm_generation(tx, &table, &self.consumer, &gen).await;
         }
         if touched.records.is_empty() {
             return Ok(());
@@ -302,6 +316,66 @@ impl RagIndexWorker {
             }
         }
     }
+}
+
+/// 作り直しが最後まで終わった世代（台帳 consumer ごと・無ければ `None`）。
+async fn built_generation(
+    tx: &mut PgConnection,
+    table: &DataTable,
+    consumer: &str,
+) -> Result<Option<String>, DataError> {
+    sqlx::query_scalar(
+        "SELECT generation FROM data_rag_index_state \
+         WHERE tenant_int = $1 AND table_int = $2 AND consumer = $3",
+    )
+    .bind(table.keys.tenant_int)
+    .bind(table.keys.table_int)
+    .bind(consumer)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(map_db)
+}
+
+/// 作り直しの完了を確定する（outbox の配送記録と同じ Tx・失敗すれば一緒に巻き戻る）。
+async fn confirm_generation(
+    tx: &mut PgConnection,
+    table: &DataTable,
+    consumer: &str,
+    gen: &str,
+) -> Result<(), DataError> {
+    sqlx::query(
+        "INSERT INTO data_rag_index_state (tenant_int, table_int, consumer, generation) \
+         VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (tenant_int, table_int, consumer) \
+         DO UPDATE SET generation = EXCLUDED.generation, updated_at = now()",
+    )
+    .bind(table.keys.tenant_int)
+    .bind(table.keys.table_int)
+    .bind(consumer)
+    .bind(gen)
+    .execute(&mut *tx)
+    .await
+    .map_err(map_db)?;
+    Ok(())
+}
+
+/// 確定した世代を消す（オプトアウト）。
+async fn forget_generation(
+    tx: &mut PgConnection,
+    table: &DataTable,
+    consumer: &str,
+) -> Result<(), DataError> {
+    sqlx::query(
+        "DELETE FROM data_rag_index_state \
+         WHERE tenant_int = $1 AND table_int = $2 AND consumer = $3",
+    )
+    .bind(table.keys.tenant_int)
+    .bind(table.keys.table_int)
+    .bind(consumer)
+    .execute(&mut *tx)
+    .await
+    .map_err(map_db)?;
+    Ok(())
 }
 
 /// 投影に使う行（`record_int` は keyset の位置にだけ使い、crate の外へ出さない・PIT-75）。
