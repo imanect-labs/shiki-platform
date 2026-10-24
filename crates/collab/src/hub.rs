@@ -340,6 +340,10 @@ impl CollabHub {
         mode: note::EditMode,
     ) -> Result<note::EditReport, CollabError> {
         let (update, report) = doc.apply_ai_edit(ops, mode)?;
+        if report.applied == 0 {
+            // 何も適用していない（全部か無しか・#886）。記録も配信もしない。
+            return Ok(report);
+        }
         doc.persist_ai_update(&self.store, &update, ctx).await?;
         // 接続中の人間へライブ配信する（from=0 は合成 id・全接続が受信）。
         doc.broadcast(0, ai_sync_update_frame(&update));

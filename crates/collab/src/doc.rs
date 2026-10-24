@@ -333,6 +333,10 @@ impl LiveDoc {
     /// AI 編集オペを共有ドキュメントに適用し、生成された update（差分）と適用結果を返す
     /// （Task 11P.4）。トランザクション origin を AI にして人間編集と区別する。返した
     /// update は呼び出し側が永続化＋ブロードキャストする（人間の update と同じ経路）。
+    ///
+    /// **全部適用するか、何も適用しない**（#886）。先に写しで試し、1 つでも適用できない操作が
+    /// あれば共有ドキュメントは変えずに理由を返す（`applied == 0`・update は空）。一部だけ
+    /// 適用して失敗を返すと、AI が同じ ops を送り直して適用済みの分が二重に入る。
     pub fn apply_ai_edit(
         &self,
         ops: &[crate::note::EditOp],
@@ -340,6 +344,29 @@ impl LiveDoc {
     ) -> Result<(Vec<u8>, crate::note::EditReport), CollabError> {
         let awareness = self.read_awareness()?;
         let doc = awareness.doc();
+        let trial = Doc::new();
+        {
+            let full = doc
+                .transact()
+                .encode_state_as_update_v1(&StateVector::default());
+            let mut txn = trial.transact_mut();
+            apply_bytes(&mut txn, &full)?;
+        }
+        let dry = {
+            let fragment = trial.get_or_insert_xml_fragment(crate::note::yjs_map::FRAGMENT_NAME);
+            let meta = trial.get_or_insert_map(crate::note::yjs_map::META_MAP_NAME);
+            let mut txn = trial.transact_mut();
+            crate::note::ai_edit::apply_ops(&mut txn, &fragment, &meta, ops, mode)
+        };
+        if !dry.skipped.is_empty() {
+            return Ok((
+                Vec::new(),
+                crate::note::EditReport {
+                    applied: 0,
+                    skipped: dry.skipped,
+                },
+            ));
+        }
         let fragment = doc.get_or_insert_xml_fragment(crate::note::yjs_map::FRAGMENT_NAME);
         let meta = doc.get_or_insert_map(crate::note::yjs_map::META_MAP_NAME);
         let before = doc.transact().state_vector();
@@ -413,7 +440,9 @@ impl LiveDoc {
 
     /// ノートに以前の書き込みが残した BigInt の数値属性を Number に直し、その update を
     /// 記録する（#886・ロード時に 1 度）。md は変わらないので保存の契機にはしない。
-    /// 記録に失敗しても次のロードでまた直すだけなので、呼び出し側は警告に留めてよい。
+    ///
+    /// 追記に失敗したら全状態の snapshot へ圧縮して残す（[`Self::persist_ai_update`] と同じ）。
+    /// 記録されない修復の上に人の編集が積まれると、再ロードでその編集が依存を欠いて失われる。
     pub async fn repair_note_attrs(&self, store: &DocStore) -> Result<usize, CollabError> {
         let (update, fixed) = {
             let awareness = self.read_awareness()?;
@@ -430,11 +459,24 @@ impl LiveDoc {
             let update = doc.transact().encode_state_as_update_v1(&before);
             (update, fixed)
         };
-        let seq = store
+        match store
             .append_update(self.node_id, &self.tenant_id, &update, "system:repair")
-            .await?;
-        self.last_persisted_seq.store(seq, Ordering::SeqCst);
-        self.appended_since_compact.fetch_add(1, Ordering::SeqCst);
+            .await
+        {
+            Ok(seq) => {
+                self.last_persisted_seq.store(seq, Ordering::SeqCst);
+                self.appended_since_compact.fetch_add(1, Ordering::SeqCst);
+            }
+            Err(e) => {
+                let upto = self.last_persisted_seq.load(Ordering::SeqCst);
+                let snapshot = self.full_state()?;
+                store
+                    .compact(self.node_id, &self.tenant_id, &snapshot, upto)
+                    .await
+                    .map_err(|_| e)?;
+                self.appended_since_compact.store(0, Ordering::SeqCst);
+            }
+        }
         Ok(fixed)
     }
 

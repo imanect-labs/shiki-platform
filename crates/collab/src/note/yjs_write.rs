@@ -90,6 +90,12 @@ pub fn mark_deleted(txn: &mut TransactionMut<'_>, el: &XmlElementRef) {
 }
 
 fn mark_all(txn: &mut TransactionMut<'_>, el: &XmlElementRef, key: &str) {
+    // 文字を持たない要素（区切り線・埋め込み・空の段落）は書式で印を付けられないので、
+    // 要素の属性に付ける（エディタはノードの属性として読み、承認/棄却で同じように扱う）。
+    if !has_text(txn, el) {
+        el.insert_attribute(txn, key, Any::Bool(true));
+        return;
+    }
     // 子を先に収集してから編集する（走査中の変更を避ける）。
     let children: Vec<XmlOut> = el.children(txn).collect();
     for child in children {
@@ -106,6 +112,15 @@ fn mark_all(txn: &mut TransactionMut<'_>, el: &XmlElementRef, key: &str) {
             XmlOut::Fragment(_) => {}
         }
     }
+}
+
+/// 要素の中に 1 文字でも文字があるか。
+fn has_text(txn: &TransactionMut<'_>, el: &XmlElementRef) -> bool {
+    el.children(txn).any(|c| match c {
+        XmlOut::Text(t) => t.len(txn) > 0,
+        XmlOut::Element(e) => has_text(txn, &e),
+        XmlOut::Fragment(_) => false,
+    })
 }
 
 /// リストのブロック（同じ種類のリスト）の項目を、既存のリスト `list` の `at` 番目へ入れる

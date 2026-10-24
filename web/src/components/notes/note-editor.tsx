@@ -24,7 +24,7 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import type { CollabProvider } from "@/lib/collab";
 import { cn } from "@/lib/utils";
-import { AiDeletionMark, AiSuggestionMark } from "./ai-suggestion-mark";
+import { AiDeletionMark, AiSuggestionMark, countSuggestions } from "./ai-suggestion-mark";
 import { ShikiEmbed } from "./embed/shiki-embed-node";
 import { LivePreview } from "./live-preview";
 import { MarkdownClipboard } from "./markdown-clipboard";
@@ -185,16 +185,9 @@ function SuggestionReviewBar({ editor }: { editor: Editor }) {
   React.useEffect(() => {
     const update = () => {
       const { aiSuggestion, aiDeletion } = editor.schema.marks;
-      if (!aiSuggestion) {
-        setCount(0);
-        return;
-      }
       // 入れる提案・消す提案のどちらかがあればバーを出す。
-      let n = 0;
-      editor.state.doc.descendants((node) => {
-        if (node.isText && node.marks.some((m) => m.type === aiSuggestion || m.type === aiDeletion)) n += 1;
-      });
-      setCount(n);
+      const types = [aiSuggestion, aiDeletion].filter((t) => t !== undefined);
+      setCount(types.length === 0 ? 0 : countSuggestions(editor.state.doc, types));
     };
     update();
     editor.on("transaction", update);

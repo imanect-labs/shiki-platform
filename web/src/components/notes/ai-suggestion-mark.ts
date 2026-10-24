@@ -4,6 +4,9 @@
 /// - `aiSuggestion`: AI が入れようとしているテキスト。
 /// - `aiDeletion`: AI が消そうとしているテキスト（消さずに印だけ付けてある）。
 ///
+/// 文字を持たないブロック（区切り線・埋め込み・空の段落）には書式で印を付けられないので、
+/// サーバはノードの属性（同じ名前）に付ける。承認/棄却はどちらの形も同じように扱う。
+///
 /// どちらも **md に落とさない**（Task 11P.2 の往復対象外・Yjs snapshot 側の正本に保つ）。
 /// 承認 = 入れる側の印を外して本文化し、消す側を削除。棄却 = 入れる側を削除し、消す側の印を外して元に戻す。
 
@@ -25,13 +28,41 @@ declare module "@tiptap/core" {
 /// 表のセルは丸ごと消すと表の形が崩れるので、中身の文字だけを消す。
 const KEEP_WHOLE = new Set(["tableCell", "tableHeader"]);
 
-/// 文字を持ち、その文字がすべて `markType` の印付きのブロックか。
+/// ノードの属性として印を持てるブロック（文字を持たないことがあるもの）。
+const NODE_MARKABLE = [
+  "paragraph",
+  "heading",
+  "codeBlock",
+  "horizontalRule",
+  "shikiEmbed",
+  "blockquote",
+  "bulletList",
+  "orderedList",
+  "taskList",
+  "listItem",
+  "taskItem",
+  "table",
+];
+
+/// ブロックが丸ごと `markType` の印付きか（ノードの属性、または中身がすべて印付き）。
 function fullyMarked(node: PmNode, markType: MarkType): boolean {
-  if (node.isText || node.textContent.length === 0) return false;
+  if (node.attrs[markType.name] === true) return true;
+  if (node.isText) return node.marks.some((m) => m.type === markType);
+  if (node.isTextblock) {
+    // 文字がすべて印付き（強制改行などの文字でないものは問わない）。空の段落は印が無い限り対象外。
+    let any = false;
+    let all = true;
+    node.forEach((child) => {
+      if (!child.isText) return;
+      any = true;
+      if (!child.marks.some((m) => m.type === markType)) all = false;
+    });
+    return any && all;
+  }
+  if (node.childCount === 0) return false;
   let all = true;
-  node.descendants((child) => {
-    if (child.isText && !child.marks.some((m) => m.type === markType)) all = false;
-    return all;
+  node.forEach((child) => {
+    if (!fullyMarked(child, markType)) all = false;
   });
   return all;
 }
@@ -56,16 +87,39 @@ function deleteMarked(tr: Transaction, doc: PmNode, markType: MarkType): boolean
   return ranges.length > 0;
 }
 
-/// `markType` の印だけを外す（文字は残す）。何か外したら true。
+/// `markType` の印だけを外す（文字・ブロックは残す）。何か外したら true。
 function unmark(tr: Transaction, doc: PmNode, markType: MarkType): boolean {
   let changed = false;
   doc.descendants((node, pos) => {
     if (node.isText && node.marks.some((m) => m.type === markType)) {
       tr.removeMark(pos, pos + node.nodeSize, markType);
       changed = true;
+    } else if (node.attrs[markType.name] === true) {
+      tr.setNodeMarkup(pos, undefined, { ...node.attrs, [markType.name]: null });
+      changed = true;
     }
   });
   return changed;
+}
+
+/// 文書に提案（入れる・消す）が残っている数（文字のかたまり・ブロック）。
+export function countSuggestions(doc: PmNode, markTypes: MarkType[]): number {
+  let n = 0;
+  doc.descendants((node) => {
+    if (markTypes.some((t) => node.attrs[t.name] === true)) n += 1;
+    else if (node.isText && node.marks.some((m) => markTypes.includes(m.type))) n += 1;
+  });
+  return n;
+}
+
+/// 提案の印をブロックの属性として持たせる（Yjs の要素の属性 ↔ ノードの属性）。
+function blockFlag(name: string, dataAttr: string) {
+  return {
+    default: null,
+    keepOnSplit: false,
+    parseHTML: (el: HTMLElement) => (el.hasAttribute(dataAttr) ? true : null),
+    renderHTML: (attrs: Record<string, unknown>) => (attrs[name] === true ? { [dataAttr]: "true" } : {}),
+  };
 }
 
 export const AiSuggestionMark = Mark.create({
@@ -73,6 +127,18 @@ export const AiSuggestionMark = Mark.create({
   // y-prosemirror が Yjs の formatting attribute `aiSuggestion` をこのマークに対応づける。
   // inclusive=false: 提案範囲の直後の入力は提案扱いにしない。
   inclusive: false,
+
+  addGlobalAttributes() {
+    return [
+      {
+        types: NODE_MARKABLE,
+        attributes: {
+          aiSuggestion: blockFlag("aiSuggestion", "data-ai-suggestion"),
+          aiDeletion: blockFlag("aiDeletion", "data-ai-deletion"),
+        },
+      },
+    ];
+  },
 
   parseHTML() {
     return [{ tag: "span[data-ai-suggestion]" }];

@@ -5,7 +5,8 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 /// ノートの AI 編集の提案モード（#886）: 消す側にも提案の印が付き、棄却すると元の本文に戻り、
 /// 承認すると差し替え・節の削除が反映される（前提: LLM=stub の `notesuggest:<node_id>`）。
 
-const BODY = "# 週次レポート\n\n## 概要\n\n売上は12%増だった。\n\n## 参考\n\n前回のメモを参照。\n";
+// 「参考」の節には文字を持たない区切り線も入れる（ブロックの属性に付く印も確かめる）。
+const BODY = "# 週次レポート\n\n## 概要\n\n売上は12%増だった。\n\n## 参考\n\n前回のメモを参照。\n\n---\n";
 
 async function createNote(page: Page, name: string): Promise<string> {
   return page.evaluate(
@@ -45,12 +46,14 @@ test("棄却すると、消す提案も入れる提案も元の本文に戻る",
   await expect(editor.locator("[data-ai-deletion]", { hasText: "12" })).toBeVisible();
   await expect(editor.locator("[data-ai-suggestion]", { hasText: "14" })).toBeVisible();
   await expect(editor.locator("h2 [data-ai-deletion]", { hasText: "参考" })).toBeVisible();
+  await expect(editor.locator("hr[data-ai-deletion]")).toHaveCount(1);
 
   await page.getByTestId("note-reject-suggestions").click();
   await expect(page.getByTestId("note-suggestion-bar")).toBeHidden();
   await expect(editor.getByText("売上は12%増だった。", { exact: true })).toBeVisible();
   await expect(editor.getByRole("heading", { name: "参考" })).toBeVisible();
   await expect(editor.getByText("前回のメモを参照。")).toBeVisible();
+  await expect(editor.locator("hr")).toHaveCount(1);
   await expect(editor.locator("[data-ai-deletion], [data-ai-suggestion]")).toHaveCount(0);
 });
 
@@ -65,5 +68,6 @@ test("承認すると、差し替えと節の削除が本文になる", async ({
   await expect(editor.getByRole("heading", { name: "参考" })).toHaveCount(0);
   await expect(editor.getByText("前回のメモを参照。")).toHaveCount(0);
   await expect(editor.locator("h2")).toHaveCount(1);
+  await expect(editor.locator("hr")).toHaveCount(0);
   await expect(editor.locator("[data-ai-deletion], [data-ai-suggestion]")).toHaveCount(0);
 });

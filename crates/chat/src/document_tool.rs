@@ -224,7 +224,8 @@ impl Tool for DocumentEditTool {
          insert_after_heading・delete_section（見出しごと消す）・move_section（before_heading の前へ。\
          省略で末尾）。append は末尾に追記、replace_all は全文の作り直し（最終手段）、set_meta は\
          タイトル・タグ等。既定は直接適用（あなたの名義で反映）。mode=\"suggest\" で提案として入れ、\
-         人間が承認/棄却できる。適用できなかった操作は理由が返るので、直してからその操作だけ呼び直す。\
+         人間が承認/棄却できる。ops は全部適用されるか何も適用されないかのどちらかで、適用できない\
+         ときは理由が返るので、直して ops 全体を送り直す。\
          グラフ等の図は markdown に ```ui ブロックとして書く（末尾に図だけ足すなら document.embed）。"
     }
     fn input_schema(&self) -> serde_json::Value {
@@ -253,7 +254,7 @@ impl Tool for DocumentEditTool {
                             "find": { "type": "string", "description": "場所を決める本文の語句（replace_text / replace_block / insert_after）。文書全体で一意に" },
                             "replace": { "type": "string", "description": "差し替える文字（replace_text・書式記号は使えない・空で削除）" },
                             "markdown": { "type": "string", "description": "入れる/置換する Markdown（replace_block / insert_after / replace_section / insert_after_heading / append / replace_all）" },
-                            "heading": { "type": "string", "description": "対象の見出しの文字（節単位の操作）。find を使う操作では、探す範囲をその節に絞る" },
+                            "heading": { "type": "string", "description": "対象の見出しの文字（節単位の操作）。find を使う操作では、探す範囲をその節に絞る。同じ見出しが複数あるときは「親の見出し > 見出し」" },
                             "before_heading": { "type": "string", "description": "move_section の移動先（この見出しの前へ。省略で末尾）" },
                             "key": { "type": "string", "description": "プロパティ名（set_meta・title/icon/tags/任意）" },
                             "value": { "type": "string", "description": "プロパティ値（set_meta・tags は , 区切り）" }
@@ -303,31 +304,22 @@ impl Tool for DocumentEditTool {
             collab::note::EditMode::Direct => "直接適用",
             collab::note::EditMode::Suggest => "提案",
         };
-        use std::fmt::Write as _;
-        let mut content = format!(
-            "ノート「{}」を編集しました（{mode_label}・{} 件適用）。",
-            node.name, report.applied
-        );
-        // 1 件でも適用できなければ失敗として返す（成功と言い切らせない・#886）。適用済みの操作を
-        // 呼び直すと二重になるので、呼び直すのは失敗した操作だけだと伝える。
-        let failed = !report.skipped.is_empty();
-        if failed {
-            let _ = write!(
-                content,
-                "\n次の操作は適用していません（直してからこの操作だけを呼び直す）:\n- {}",
+        // 適用は全部か無しか（#886）。1 つでも適用できなければ何も変えずに理由を返す
+        // （成功と言い切らせない・直した ops 全体を送り直せば二重にならない）。
+        if !report.skipped.is_empty() || report.applied == 0 {
+            return Ok(ToolOutcome::error(format!(
+                "ノート「{}」は変更していません（操作は全部適用するか、何も適用しないかのどちらか）。\
+                 次の理由を直して、ops 全体を送り直す:\n- {}",
+                node.name,
                 report.skipped.join("\n- ")
-            );
-        }
-        if report.applied == 0 {
-            return Ok(ToolOutcome::error(content));
+            )));
         }
         // 編集結果をチャットに残す（#381）。Yjs へ適用した時点で共有ドキュメントは変わって
         // いるが、版はセッションの保存契機で進むためここでは載せない（嘘の版を出さない）。
-        let mut outcome = if failed {
-            ToolOutcome::error(content)
-        } else {
-            ToolOutcome::ok(content)
-        };
+        let mut outcome = ToolOutcome::ok(format!(
+            "ノート「{}」を編集しました（{mode_label}・{} 件適用）。",
+            node.name, report.applied
+        ));
         outcome
             .document_refs
             .push(crate::document_ref::payload(node.id, &node.name, None));

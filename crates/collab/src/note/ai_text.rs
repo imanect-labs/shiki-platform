@@ -25,9 +25,10 @@ use yrs::{
     Any, Out, Text, TransactionMut, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut, XmlTextRef,
 };
 
-use super::ai_edit::{element_text, find_heading, section_end, EditMode};
+use super::ai_edit::EditMode;
 use super::ast::Block;
 use super::md_parse::parse_markdown;
+use super::sections::{section, visible_text};
 use super::yjs_write::{insert_blocks_at, insert_list_items_at, mark_deleted};
 
 /// 提案の印（書式として持つ・md には落とさない）。
@@ -62,29 +63,60 @@ impl Parent {
     }
 }
 
-/// テキストの 1 区切り（強制改行で分かれる）。書式の切れ目ごとの範囲を持つ。
+/// テキストの 1 区切り（強制改行で分かれる）。
+///
+/// 探すのは人と AI に見えている文字（`plain`・削除の提案が付いた文字を除く）で、Yjs を
+/// 変えるときは実際の位置（`offs` で写す）を使う。書式の切れ目は実際の位置で持つ。
 #[derive(Clone)]
 struct Segment {
     text: XmlTextRef,
     plain: String,
+    /// 見えている文字の n バイト目の、実際の位置（末尾に全体の長さを足して len+1 個）。
+    offs: Vec<usize>,
     runs: Vec<(usize, usize, Attrs)>,
 }
 
 impl Segment {
     fn read(txn: &TransactionMut<'_>, text: XmlTextRef) -> Option<Self> {
         let mut plain = String::new();
+        let mut offs = Vec::new();
         let mut runs = Vec::new();
+        let mut actual = 0usize;
         for diff in text.diff(txn, YChange::identity) {
             // 文字列以外（埋め込み）は長さの数え方が違うので、この区切りでは探さない。
             let Out::Any(Any::String(s)) = diff.insert else {
                 return None;
             };
-            let start = plain.len();
-            plain.push_str(&s);
             let attrs = diff.attributes.map(|a| *a).unwrap_or_default();
-            runs.push((start, plain.len(), attrs));
+            let deleted = matches!(attrs.get(DELETION), Some(Any::Bool(true)));
+            if !deleted {
+                plain.push_str(&s);
+                offs.extend(actual..actual + s.len());
+            }
+            runs.push((actual, actual + s.len(), attrs));
+            actual += s.len();
         }
-        Some(Segment { text, plain, runs })
+        offs.push(actual);
+        Some(Segment {
+            text,
+            plain,
+            offs,
+            runs,
+        })
+    }
+
+    /// 見えている文字の `v` バイト目から始まる範囲の、実際の始まり。
+    fn start_of(&self, v: usize) -> usize {
+        self.offs[v]
+    }
+
+    /// 見えている文字の `v` バイト目で終わる範囲の、実際の終わり（後ろの削除の提案は含めない）。
+    fn end_of(&self, v: usize) -> usize {
+        if v == 0 {
+            self.offs[0]
+        } else {
+            self.offs[v - 1] + 1
+        }
     }
 
     /// `at` バイト目の文字の書式（範囲外は空）。
@@ -130,14 +162,7 @@ fn find_unique(
         );
     }
     let (from, to) = match heading {
-        Some(h) => {
-            let idx = find_heading(txn, fragment, h)
-                .ok_or_else(|| format!("見出し「{h}」が見つからない"))?;
-            (
-                idx,
-                section_end(txn, fragment, idx, heading_level_of(txn, fragment, idx)),
-            )
-        }
+        Some(h) => section(txn, fragment, h)?,
         None => (0, fragment.len(txn)),
     };
     // 本文の文字どおりで探し、無ければ Markdown の記号（`**`・行頭の `- ` 等）を外して探す。
@@ -146,26 +171,34 @@ fn find_unique(
     if !bare.is_empty() && bare != find {
         needles.push(bare);
     }
+    // 最上位のブロックは 1 回の走査で辿る（`get(i)` は先頭から数え直すので O(n²) になる）。
+    let tops: Vec<(u32, XmlElementRef)> = fragment
+        .children(txn)
+        .enumerate()
+        .skip(from as usize)
+        .take((to - from) as usize)
+        .filter_map(|(i, c)| match c {
+            XmlOut::Element(el) => Some((i as u32, el)),
+            _ => None,
+        })
+        .collect();
+    let root = Parent::Root(fragment.clone());
     for (i, needle) in needles.iter().enumerate() {
-        let mut hits = Vec::new();
-        let root = Parent::Root(fragment.clone());
-        for top in from..to {
-            if let Some(XmlOut::Element(el)) = fragment.get(txn, top) {
-                let mut path = vec![(root.clone(), top)];
-                collect(txn, &el, &mut path, top, needle, &mut hits);
-            }
+        let mut found = Found::default();
+        for (top, el) in &tops {
+            let mut path = vec![(root.clone(), *top)];
+            collect(txn, el, &mut path, *top, needle, &mut found);
         }
-        match hits.len() {
-            0 => {}
-            1 => {
-                let mut hit = hits.remove(0);
+        match (found.first, found.tops.len()) {
+            (None, _) => {}
+            (Some(mut hit), 1) => {
                 hit.bare = i > 0;
                 return Ok(hit);
             }
-            n => {
-                let mut places: Vec<String> = hits
-                    .iter()
-                    .map(|h| match heading_before(txn, fragment, h.top) {
+            (Some(_), n) => {
+                let mut places: Vec<String> = sections_of(txn, fragment, &found.tops)
+                    .into_iter()
+                    .map(|h| match h {
                         Some(s) => format!("「{s}」の節"),
                         None => "最初の見出しより前".into(),
                     })
@@ -183,6 +216,15 @@ fn find_unique(
     ))
 }
 
+/// 一致の集計。中身まで持つのは最初の 1 件だけ（一意でなければ使わないので、残りは
+/// 場所だけを数える。一致のたびに段落の全文を複製しない）。
+#[derive(Default)]
+struct Found {
+    first: Option<Hit>,
+    /// 一致ごとの、フラグメント直下の位置。
+    tops: Vec<u32>,
+}
+
 /// 要素の中の段落・見出し・コードを辿り、`needle` の一致を集める。
 fn collect(
     txn: &TransactionMut<'_>,
@@ -190,7 +232,7 @@ fn collect(
     path: &mut Vec<(Parent, u32)>,
     top: u32,
     needle: &str,
-    hits: &mut Vec<Hit>,
+    found: &mut Found,
 ) {
     match &*el.tag().to_string() {
         "paragraph" | "heading" | "codeBlock" => {
@@ -203,16 +245,19 @@ fn collect(
                 let Some(segment) = Segment::read(txn, text) else {
                     continue;
                 };
-                for (start, found) in segment.plain.match_indices(needle) {
-                    hits.push(Hit {
-                        top,
-                        path: path.clone(),
-                        whole_block: single && found.len() == segment.plain.len(),
-                        start,
-                        found: found.to_string(),
-                        segment: segment.clone(),
-                        bare: false,
-                    });
+                for (start, matched) in segment.plain.match_indices(needle) {
+                    found.tops.push(top);
+                    if found.first.is_none() {
+                        found.first = Some(Hit {
+                            top,
+                            path: path.clone(),
+                            whole_block: single && matched.len() == segment.plain.len(),
+                            start,
+                            found: matched.to_string(),
+                            segment: segment.clone(),
+                            bare: false,
+                        });
+                    }
                 }
             }
         }
@@ -221,7 +266,7 @@ fn collect(
             for (i, child) in el.children(txn).enumerate() {
                 if let XmlOut::Element(inner) = child {
                     path.push((parent.clone(), i as u32));
-                    collect(txn, &inner, path, top, needle, hits);
+                    collect(txn, &inner, path, top, needle, found);
                     path.pop();
                 }
             }
@@ -269,10 +314,11 @@ pub(super) fn replace_text(
     } else {
         (prefix, suffix)
     };
-    let del_start = hit.start + prefix;
-    let del_len = old.len() - prefix - suffix;
-    let ins = &replace[prefix..replace.len() - suffix];
     let seg = &hit.segment;
+    let del_start = seg.start_of(hit.start + prefix);
+    let del_end = seg.end_of(hit.start + old.len() - suffix).max(del_start);
+    let del_len = del_end - del_start;
+    let ins = &replace[prefix..replace.len() - suffix];
     let mut fmt = if del_len > 0 {
         seg.attrs_at(del_start)
     } else if del_start > 0 {
@@ -509,16 +555,26 @@ fn strip_markdown(s: &str) -> String {
         .replace('`', "")
 }
 
-/// `top` より前で一番近い見出しの文字。
-fn heading_before(txn: &TransactionMut<'_>, fragment: &XmlFragmentRef, top: u32) -> Option<String> {
-    (0..=top).rev().find_map(|i| match fragment.get(txn, i) {
-        Some(XmlOut::Element(el)) if &**el.tag() == "heading" => Some(element_text(txn, &el)),
-        _ => None,
-    })
-}
-
-fn heading_level_of(txn: &TransactionMut<'_>, fragment: &XmlFragmentRef, idx: u32) -> u8 {
-    super::ai_edit::heading_level(txn, fragment, idx)
+/// 各 `tops`（昇順）より前で一番近い見出しの文字（本文を 1 回だけ前から辿る）。
+fn sections_of(
+    txn: &TransactionMut<'_>,
+    fragment: &XmlFragmentRef,
+    tops: &[u32],
+) -> Vec<Option<String>> {
+    let last = tops.iter().copied().max().unwrap_or(0);
+    let mut current: Option<String> = None;
+    let mut at: Vec<Option<String>> = Vec::with_capacity(last as usize + 1);
+    for child in fragment.children(txn).take(last as usize + 1) {
+        if let XmlOut::Element(el) = &child {
+            if &**el.tag() == "heading" {
+                current = Some(visible_text(txn, el));
+            }
+        }
+        at.push(current.clone());
+    }
+    tops.iter()
+        .map(|t| at.get(*t as usize).cloned().flatten())
+        .collect()
 }
 
 fn flag(key: &str) -> Attrs {

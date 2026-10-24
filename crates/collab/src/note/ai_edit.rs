@@ -18,13 +18,15 @@
 //! 棄却すれば元の本文が残る。
 
 use serde::Deserialize;
+use yrs::types::text::YChange;
 use yrs::{
-    GetString, MapRef, TransactionMut, Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut,
+    Any, MapRef, Out, Text, TransactionMut, Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut,
 };
 
 use super::ai_text;
 use super::ast::Block;
 use super::md_parse::parse_markdown;
+use super::sections;
 use super::yjs_map;
 use super::yjs_meta::write_meta_pair;
 use super::yjs_write::mark_deleted;
@@ -96,7 +98,8 @@ pub struct EditReport {
 /// 編集オペ列をトランザクションに適用する（`suggest` なら提案マーク付き）。
 ///
 /// 見つからない見出し・一意でない語句等は理由付きで skip として記録し、適用可能な操作は
-/// 進める（部分適用）。
+/// 進める。共有ドキュメントへは全部か無しかで適用する（[`crate::LiveDoc::apply_ai_edit`] が
+/// 先に写しで試す）。
 pub fn apply_ops(
     txn: &mut TransactionMut<'_>,
     fragment: &XmlFragmentRef,
@@ -139,14 +142,6 @@ fn scope(heading: Option<&String>) -> Option<&str> {
     heading.map(|h| h.trim()).filter(|h| !h.is_empty())
 }
 
-fn heading_index(
-    txn: &TransactionMut<'_>,
-    fragment: &XmlFragmentRef,
-    heading: &str,
-) -> Result<u32, String> {
-    find_heading(txn, fragment, heading).ok_or_else(|| format!("見出し「{heading}」が見つからない"))
-}
-
 /// フラグメント直下の `start..end` を消す（提案モードは削除の提案の印を付けるだけ）。
 fn remove_blocks(
     txn: &mut TransactionMut<'_>,
@@ -159,10 +154,18 @@ fn remove_blocks(
         return;
     }
     if mode == EditMode::Suggest {
-        for i in start..end {
-            if let Some(XmlOut::Element(el)) = fragment.get(txn, i) {
-                mark_deleted(txn, &el);
-            }
+        // 1 回の走査で集めてから印を付ける（`get(i)` を繰り返すと O(n²)）。
+        let targets: Vec<XmlElementRef> = fragment
+            .children(txn)
+            .skip(start as usize)
+            .take((end - start) as usize)
+            .filter_map(|c| match c {
+                XmlOut::Element(el) => Some(el),
+                _ => None,
+            })
+            .collect();
+        for el in &targets {
+            mark_deleted(txn, el);
         }
     } else {
         fragment.remove_range(txn, start, end - start);
@@ -191,14 +194,12 @@ fn apply_one(
             insert_blocks(txn, fragment, at, &blocks, mode);
         }
         EditOp::InsertAfterHeading { heading, markdown } => {
-            let idx = heading_index(txn, fragment, heading)?;
+            let idx = sections::heading_at(txn, fragment, heading)?;
             let blocks = parse_markdown(markdown);
             insert_blocks(txn, fragment, idx + 1, &blocks, mode);
         }
         EditOp::ReplaceSection { heading, markdown } => {
-            let idx = heading_index(txn, fragment, heading)?;
-            let level = heading_level(txn, fragment, idx);
-            let end = section_end(txn, fragment, idx, level);
+            let (idx, end) = sections::section(txn, fragment, heading)?;
             // 見出しの次〜節末を消して置換内容を入れる（見出し自体は残す）。
             remove_blocks(txn, fragment, idx + 1, end, mode);
             let at = if mode == EditMode::Suggest {
@@ -210,9 +211,7 @@ fn apply_one(
             insert_blocks(txn, fragment, at, &blocks, mode);
         }
         EditOp::DeleteSection { heading } => {
-            let idx = heading_index(txn, fragment, heading)?;
-            let level = heading_level(txn, fragment, idx);
-            let end = section_end(txn, fragment, idx, level);
+            let (idx, end) = sections::section(txn, fragment, heading)?;
             remove_blocks(txn, fragment, idx, end, mode);
         }
         EditOp::MoveSection {
@@ -250,11 +249,9 @@ fn move_section(
     before: Option<&str>,
     mode: EditMode,
 ) -> Result<(), String> {
-    let idx = heading_index(txn, fragment, heading)?;
-    let level = heading_level(txn, fragment, idx);
-    let end = section_end(txn, fragment, idx, level);
+    let (idx, end) = sections::section(txn, fragment, heading)?;
     let target = match before {
-        Some(b) => heading_index(txn, fragment, b)?,
+        Some(b) => sections::heading_at(txn, fragment, b)?,
         None => fragment.len(txn),
     };
     if target == idx || target == end {
@@ -262,6 +259,12 @@ fn move_section(
     }
     if idx < target && target < end {
         return Err(format!("移動先の見出しが「{heading}」の節の中にある"));
+    }
+    // 読んで入れ直すと提案の印が落ち、未決の提案が黙って確定する。
+    if has_pending_suggestion(txn, fragment, idx, end) {
+        return Err(format!(
+            "「{heading}」の節に未決の提案がある（人が承認か棄却をしてから移す）"
+        ));
     }
     let blocks = yjs_map::read_block_range(txn, fragment, idx, end);
     if mode == EditMode::Suggest {
@@ -290,74 +293,31 @@ fn insert_blocks(
     yjs_map::insert_blocks_at(txn, fragment, at, blocks, mode == EditMode::Suggest);
 }
 
-/// テキスト一致（trim・大小無視）で最初の見出し要素の index を返す。
-pub(super) fn find_heading(
-    txn: &TransactionMut<'_>,
-    fragment: &XmlFragmentRef,
-    heading: &str,
-) -> Option<u32> {
-    let target = heading.trim().to_lowercase();
-    for (idx, child) in fragment.children(txn).enumerate() {
-        if let XmlOut::Element(el) = child {
-            if &**el.tag() == "heading" && element_text(txn, &el).trim().to_lowercase() == target {
-                return Some(idx as u32);
-            }
-        }
-    }
-    None
-}
-
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // level は 1..=6 に有界。
-pub(super) fn heading_level(txn: &TransactionMut<'_>, fragment: &XmlFragmentRef, idx: u32) -> u8 {
-    fragment
-        .get(txn, idx)
-        .and_then(|node| match node {
-            XmlOut::Element(el) => match el.get_attribute(txn, "level") {
-                Some(yrs::Out::Any(yrs::Any::BigInt(n))) => Some(n as u8),
-                Some(yrs::Out::Any(yrs::Any::Number(n))) => Some(n as u8),
-                _ => Some(1),
-            },
-            _ => None,
-        })
-        .unwrap_or(1)
-}
-
-/// 節の終端（次の同/上位レベル見出し、または文書末尾）を返す。
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // level は 1..=6 に有界。
-pub(super) fn section_end(
+/// `start..end` のブロックに、提案の印（入れる・消す）が残っているか。
+fn has_pending_suggestion(
     txn: &TransactionMut<'_>,
     fragment: &XmlFragmentRef,
     start: u32,
-    level: u8,
-) -> u32 {
-    let total = fragment.len(txn);
-    let mut i = start + 1;
-    while i < total {
-        if let Some(XmlOut::Element(el)) = fragment.get(txn, i) {
-            if &**el.tag() == "heading" {
-                let l = match el.get_attribute(txn, "level") {
-                    Some(yrs::Out::Any(yrs::Any::BigInt(n))) => n as u8,
-                    Some(yrs::Out::Any(yrs::Any::Number(n))) => n as u8,
-                    _ => 1,
-                };
-                if l <= level {
-                    return i;
-                }
-            }
+    end: u32,
+) -> bool {
+    fn marked(txn: &TransactionMut<'_>, el: &XmlElementRef) -> bool {
+        let flagged = |k: &str| matches!(el.get_attribute(txn, k), Some(Out::Any(Any::Bool(true))));
+        if flagged(ai_text::SUGGESTION) || flagged(ai_text::DELETION) {
+            return true;
         }
-        i += 1;
+        el.children(txn).any(|c| match c {
+            XmlOut::Text(t) => t.diff(txn, YChange::identity).iter().any(|d| {
+                d.attributes.as_ref().is_some_and(|a| {
+                    a.contains_key(ai_text::SUGGESTION) || a.contains_key(ai_text::DELETION)
+                })
+            }),
+            XmlOut::Element(e) => marked(txn, &e),
+            XmlOut::Fragment(_) => false,
+        })
     }
-    total
-}
-
-pub(super) fn element_text(txn: &TransactionMut<'_>, el: &XmlElementRef) -> String {
-    let mut out = String::new();
-    for child in el.children(txn) {
-        match child {
-            XmlOut::Text(t) => out.push_str(&t.get_string(txn)),
-            XmlOut::Element(e) => out.push_str(&element_text(txn, &e)),
-            XmlOut::Fragment(_) => {}
-        }
-    }
-    out
+    fragment
+        .children(txn)
+        .skip(start as usize)
+        .take(end.saturating_sub(start) as usize)
+        .any(|c| matches!(c, XmlOut::Element(el) if marked(txn, &el)))
 }
