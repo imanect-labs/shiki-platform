@@ -148,7 +148,7 @@ export function AuditDetail({
           </Row>
         ) : null}
         <Row label="チェーン">
-          {/* 連結しているだけで、検証の仕組みはまだ無い（PIT-12・#828）。改ざん検知とは書かない。 */}
+          {/* 検証は「チェーンを検証」から（#828）。鍵も外部アンカーも無いので改ざん防止とは書かない（PIT-12）。 */}
           <span className="text-muted-foreground">
             {e.chained ? "ハッシュチェーンに連結（実データを変える操作）" : "連結なし（読み取り・拒否の記録）"}
           </span>

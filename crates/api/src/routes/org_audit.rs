@@ -50,6 +50,12 @@ pub(crate) fn org_audit_route_decls() -> Vec<RouteDecl> {
             AccessPolicy::OrgAuditor,
             || get(export_events),
         ),
+        r(
+            "/org-audit/verify",
+            &["GET"],
+            AccessPolicy::OrgAuditor,
+            || get(super::org_audit_verify::verify_chain),
+        ),
     ]
 }
 

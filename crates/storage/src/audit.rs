@@ -1,10 +1,13 @@
 //! 監査ログ基盤（Task 1.9）。
 //!
 //! 全データ操作と認可判定（who/what/object/decision/trace_id）を append-only に記録する。
-//! `prev_hash`/`entry_hash` でハッシュチェーンの種を蒔くが、**改竄耐性は主張しない**
-//! （アプリ経路の追記のみ・PIT-12）。trace_id は OTel と共有し Langfuse 突合の土台とする。
+//! 実データを変える操作の行は `prev_hash`/`entry_hash` でハッシュチェーンに連結し、
+//! [`crate::audit_chain`] で先頭からたどって検証できる（#828）。鍵も外部アンカーも無いので、
+//! DB に書き込める者がチェーンを丸ごと計算し直す改竄は検知できない（PIT-12）。
+//! trace_id は OTel と共有し Langfuse 突合の土台とする。
 
 use authz::AuthContext;
+use chrono::{DateTime, SubsecRound, Utc};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, PgPool};
@@ -52,6 +55,11 @@ impl AuditRecorder {
     /// 同じ接続プールで監査ログを読む窓口（#634）。書き込みとは型を分ける。
     pub fn viewer(&self) -> crate::audit_view::AuditViewer {
         crate::audit_view::AuditViewer::new(self.db.clone())
+    }
+
+    /// 同じ接続プールでハッシュチェーンを検証する窓口（#828）。
+    pub fn chain_verifier(&self) -> crate::audit_chain::AuditChainVerifier {
+        crate::audit_chain::AuditChainVerifier::new(self.db.clone())
     }
 
     /// 専用トランザクションで 1 件記録する（読取/deny 経路用）。**チェーンしない**:
@@ -119,12 +127,40 @@ pub async fn record_on(
     };
 
     let metadata_str = entry.metadata.to_string();
-    let entry_hash = compute_entry_hash(prev_hash.as_deref(), ctx, &entry, &metadata_str);
+    // ハッシュに入れる metadata は、連結行では **Postgres が jsonb として表記した文字列**にする（#828）。
+    // serde_json の表記は jsonb を往復すると変わることがある（`1e16` が整数の桁に展開される・
+    // キーの並び・空白）ので、記録時も検証時も同じ `::jsonb::text` を使う。連結しない行は検証しない
+    // ので、往復を省いて serde_json の表記のまま計算する。
+    let hashed_metadata = if chained {
+        sqlx::query_scalar::<_, String>("SELECT $1::jsonb::text")
+            .bind(&metadata_str)
+            .fetch_one(&mut *conn)
+            .await?
+    } else {
+        metadata_str.clone()
+    };
+    // 作成時刻もハッシュに入れる（#828）。DB の既定値ではなくここで決め、マイクロ秒に丸めて
+    // そのまま保存する（timestamptz の精度と揃え、検証で同じ値を作り直せるようにする）。
+    let created_at = Utc::now().trunc_subsecs(6);
+    let entry_hash = entry_hash(&HashInput {
+        version: HASH_VERSION,
+        prev_hash: prev_hash.as_deref(),
+        tenant_id: &ctx.tenant_id,
+        org: &ctx.org,
+        actor: &ctx.principal.id,
+        action: entry.action.as_str(),
+        object_type: entry.object_type,
+        object_id: entry.object_id,
+        decision: entry.decision.as_str(),
+        trace_id: entry.trace_id,
+        metadata: &hashed_metadata,
+        created_at,
+    });
 
     sqlx::query(
         "INSERT INTO audit_log \
-         (tenant_id, org, actor, action, object_type, object_id, decision, trace_id, metadata, chained, prev_hash, entry_hash) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)",
+         (tenant_id, org, actor, action, object_type, object_id, decision, trace_id, metadata, chained, prev_hash, entry_hash, created_at, hash_version) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14)",
     )
     .bind(&ctx.tenant_id)
     .bind(&ctx.org)
@@ -138,33 +174,60 @@ pub async fn record_on(
     .bind(chained)
     .bind(prev_hash.as_deref())
     .bind(&entry_hash)
+    .bind(created_at)
+    .bind(HASH_VERSION)
     .execute(&mut *conn)
     .await?;
     Ok(())
 }
 
-/// `entry_hash = sha256(prev_hash || 正規化フィールド)`。決定的（テスト可能）。
-fn compute_entry_hash(
-    prev_hash: Option<&str>,
-    ctx: &AuthContext,
-    entry: &AuditEntry<'_>,
-    metadata_str: &str,
-) -> String {
+/// 新しく記録する行のハッシュの版（#828）。
+///
+/// - 1: `sha256(prev_hash | tenant_id | org | actor | action | object_type | object_id | decision | trace_id | metadata)`
+///   （#828 より前の行。作成時刻を含まない）
+/// - 2: 1 の末尾に `| v2 | created_at（UNIX マイクロ秒）` を足したもの。metadata は Postgres の
+///   `jsonb::text` の表記（版 1 は serde_json の表記）
+pub const HASH_VERSION: i16 = 2;
+
+/// ハッシュの入力（記録と検証で同じものを使う）。
+#[derive(Debug, Clone, Copy)]
+pub struct HashInput<'a> {
+    pub version: i16,
+    pub prev_hash: Option<&'a str>,
+    pub tenant_id: &'a str,
+    pub org: &'a str,
+    pub actor: &'a str,
+    pub action: &'a str,
+    pub object_type: &'a str,
+    pub object_id: &'a str,
+    pub decision: &'a str,
+    pub trace_id: Option<&'a str>,
+    /// metadata の文字列（版 2 は Postgres の `jsonb::text`、版 1 は serde_json の既定の表記）。
+    pub metadata: &'a str,
+    pub created_at: DateTime<Utc>,
+}
+
+/// `entry_hash`。決定的（テスト可能）。版 1 は作成時刻を含まない。
+pub fn entry_hash(h: &HashInput<'_>) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(prev_hash.unwrap_or("").as_bytes());
+    hasher.update(h.prev_hash.unwrap_or("").as_bytes());
     for field in [
-        ctx.tenant_id.as_str(),
-        ctx.org.as_str(),
-        ctx.principal.id.as_str(),
-        entry.action.as_str(),
-        entry.object_type,
-        entry.object_id,
-        entry.decision.as_str(),
-        entry.trace_id.unwrap_or(""),
-        metadata_str,
+        h.tenant_id,
+        h.org,
+        h.actor,
+        h.action,
+        h.object_type,
+        h.object_id,
+        h.decision,
+        h.trace_id.unwrap_or(""),
+        h.metadata,
     ] {
         hasher.update(b"|");
         hasher.update(field.as_bytes());
+    }
+    if h.version >= 2 {
+        hasher.update(b"|v2|");
+        hasher.update(h.created_at.timestamp_micros().to_string().as_bytes());
     }
     hex::encode(hasher.finalize())
 }
@@ -172,72 +235,61 @@ fn compute_entry_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use authz::Principal;
-    use serde_json::json;
 
-    fn ctx() -> AuthContext {
-        AuthContext::new(
-            Principal {
-                kind: authz::PrincipalKind::User,
-                id: "alice".into(),
-                email: None,
-                groups: vec![],
-                roles: vec![],
-                tenant_id: None,
-            },
-            "acme".into(),
-            "default".into(),
-        )
-    }
-
-    fn entry(action: AuditAction) -> AuditEntry<'static> {
-        AuditEntry {
-            action,
+    fn input(version: i16) -> HashInput<'static> {
+        HashInput {
+            version,
+            prev_hash: Some("prev"),
+            tenant_id: "default",
+            org: "acme",
+            actor: "alice",
+            action: AuditAction::FileUploadFinalize.as_str(),
             object_type: "file",
             object_id: "f1",
-            decision: Decision::Allow,
+            decision: Decision::Allow.as_str(),
             trace_id: Some("trace-1"),
-            metadata: json!({}),
+            metadata: "{}",
+            created_at: DateTime::from_timestamp_micros(1_792_000_000_123_456).unwrap_or_default(),
         }
     }
 
     #[test]
     fn entry_hash_is_deterministic() {
-        let c = ctx();
-        let h1 = compute_entry_hash(
-            Some("prev"),
-            &c,
-            &entry(AuditAction::FileUploadFinalize),
-            "{}",
-        );
-        let h2 = compute_entry_hash(
-            Some("prev"),
-            &c,
-            &entry(AuditAction::FileUploadFinalize),
-            "{}",
-        );
-        assert_eq!(h1, h2);
-        assert_eq!(h1.len(), 64);
+        assert_eq!(entry_hash(&input(2)), entry_hash(&input(2)));
+        assert_eq!(entry_hash(&input(2)).len(), 64);
     }
 
     #[test]
-    fn entry_hash_chains_on_prev() {
-        let c = ctx();
-        let a = compute_entry_hash(None, &c, &entry(AuditAction::FileDelete), "{}");
-        let b = compute_entry_hash(Some(&a), &c, &entry(AuditAction::FileDelete), "{}");
+    fn entry_hash_chains_on_prev_and_covers_fields() {
+        let base = entry_hash(&input(2));
+        let mut h = input(2);
+        h.prev_hash = None;
         // prev が変われば hash も変わる（チェーンが効く）。
-        assert_ne!(a, b);
+        assert_ne!(entry_hash(&h), base);
+        let mut h = input(2);
+        h.decision = Decision::Deny.as_str();
+        assert_ne!(entry_hash(&h), base);
+        let mut h = input(2);
+        h.metadata = r#"{"k":1}"#;
+        assert_ne!(entry_hash(&h), base);
     }
 
     #[test]
-    fn entry_hash_changes_with_decision() {
-        let c = ctx();
-        let allow = entry(AuditAction::FileDownloadUrlIssue);
-        let mut deny = entry(AuditAction::FileDownloadUrlIssue);
-        deny.decision = Decision::Deny;
+    fn v2_covers_created_at_but_v1_does_not() {
+        let mut later = input(2);
+        later.created_at += chrono::Duration::microseconds(1);
         assert_ne!(
-            compute_entry_hash(None, &c, &allow, "{}"),
-            compute_entry_hash(None, &c, &deny, "{}")
+            entry_hash(&later),
+            entry_hash(&input(2)),
+            "時刻の書き換えを検知する"
         );
+        let mut later_v1 = input(1);
+        later_v1.created_at += chrono::Duration::seconds(10);
+        assert_eq!(
+            entry_hash(&later_v1),
+            entry_hash(&input(1)),
+            "版 1 は時刻を含まない"
+        );
+        assert_ne!(entry_hash(&input(1)), entry_hash(&input(2)));
     }
 }
