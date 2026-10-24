@@ -207,11 +207,17 @@ export function ToolActivity({
   phaseOverride = null,
   /// 参照ドキュメント。running 時のフェーズ行に最大 MAX_CITATION_CHIPS 件のチップとして表示。
   citations = [],
+  /// 最後のツールの後に回答の本文が流れ始めた（＝ツールを使う段階が終わった）。
+  answering = false,
+  /// ステップの合間（次のイベント待ち）のフェーズ行の文言。待った時間に応じて親が進める。
+  waitingLabel = null,
 }: {
   items: ToolActivityItem[];
   streaming?: boolean;
   phaseOverride?: string | null;
   citations?: Citation[];
+  answering?: boolean;
+  waitingLabel?: string | null;
 }) {
   // 開閉は**自動で閉じない**。既定は畳んだまま（直近 3 件がロールするだけ）で、ヘッダを押すと
   // 全件のタイムラインになる。**実行状態から開閉を導かない**のが要点で、`running` はステップ
@@ -227,8 +233,13 @@ export function ToolActivity({
   const nodeNames = useNodeNames(nodeIds);
   const hasTools = items.length > 0;
   const toolsRunning = hasTools && items.some((it) => it.running);
+  // ステップの合間（結果が返り、次の呼び出しを待つ間）も実行中として扱う。ツールの running
+  // だけで導くと、ステップ境界のたびにローリングが消えて現れ、見出しも ✓ と回転を行き来する
+  // （パカパカする）。回答の本文が流れ始めたら、ツールを使う段階は終わったとみなして畳む。
+  const between = streaming && hasTools && !toolsRunning && !answering;
   // 描画対象が無い間は計時しない（生成開始直後の空振りを避ける）。
-  const running = streaming && (toolsRunning || (!hasTools && citations.length > 0));
+  const running =
+    streaming && (toolsRunning || between || (!hasTools && citations.length > 0));
   const elapsed = useElapsed(running);
 
   if (!hasTools && citations.length === 0) return null;
@@ -261,6 +272,9 @@ export function ToolActivity({
   const lastCategory = describeTool(items[items.length - 1]).category;
   const season = seasonVar(seasonIndexFor(lastCategory, running));
   const summary = summarizeTools(items);
+  const phase = toolsRunning
+    ? (phaseOverride ?? phaseLabel(items, true))
+    : (phaseOverride ?? waitingLabel ?? "次の手順を考えています");
 
   return (
     <div className="mb-2.5" data-testid="tool-activity">
@@ -276,14 +290,18 @@ export function ToolActivity({
           <Check className="size-3.5 shrink-0" style={{ color: season }} aria-hidden />
         )}
         <span
+          // 文言が変わったら薄く入れ替える（待ち時間の文言は数秒ごとに進む）。
+          key={running ? phase : "done"}
           className={cn(
             "min-w-0 truncate font-medium",
             // 実行中は文字を光が舐める（止まって見える時間帯に「生きている」ことを伝える）。
             // 終わった後の「N 件の操作」は短いので縮めない（狭い幅では文書チップの方を畳む）。
-            running ? "shiki-text-shimmer" : "shrink-0 text-foreground/85",
+            running
+              ? "shiki-text-shimmer animate-in fade-in-0 duration-300"
+              : "shrink-0 text-foreground/85",
           )}
         >
-          {running ? (phaseOverride ?? phaseLabel(items, true)) : `${items.length} 件の操作`}
+          {running ? phase : `${items.length} 件の操作`}
         </span>
         {running ? (
           <span className="shrink-0 tabular-nums text-muted-foreground">

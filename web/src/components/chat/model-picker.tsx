@@ -48,14 +48,27 @@ function defaultOption(data: LlmModelsResponse): { label: string; target: string
   };
 }
 
+/// 組織の既定が特定のモデルならそのモデル（Auto なら null）。
+function defaultModelOf(data: LlmModelsResponse): LlmModelOption | null {
+  if (data.default_model === "auto") return null;
+  return data.models.find((m) => m.id === data.default_model) ?? null;
+}
+
 /// 選んだモデルが公開から外れていたら Auto に戻す（送信時の 400 を避ける）。
+/// 既定のまま思考の深さだけ変えた選択（`model: null`）は、既定が思考の深さを選べるモデルで
+/// なくなったら（Auto に変わった等）外す。
 function useValidChoice(scope: string, data: LlmModelsResponse | null) {
   const [choice, setChoice] = useModelChoice(scope);
-  const model = choice ? data?.models.find((m) => m.id === choice.model) : undefined;
+  const model = choice?.model ? data?.models.find((m) => m.id === choice.model) : undefined;
+  const valid =
+    !data ||
+    !choice ||
+    (data.allow_user_choice &&
+      (choice.model === null ? Boolean(defaultModelOf(data)?.supports_effort) : Boolean(model)));
   React.useEffect(() => {
-    if (data && choice && (!data.allow_user_choice || !model)) setChoice(null);
-  }, [data, choice, model, setChoice]);
-  return { choice, setChoice, model };
+    if (!valid) setChoice(null);
+  }, [valid, setChoice]);
+  return { choice: valid ? choice : null, setChoice, model };
 }
 
 /// 検索の正規化（全角半角・大小を寄せる）。
@@ -475,13 +488,17 @@ export function ModelButton({ scope, className }: { scope: string; className?: s
   if (!data || !data.allow_user_choice || data.models.length === 0) return null;
 
   // 選んでいないときの表示: 既定が Auto なら「Auto」、特定のモデルならその名前。
-  const fallback =
-    data.default_model === "auto"
-      ? null
-      : (data.models.find((m) => m.id === data.default_model) ?? null);
+  const fallback = defaultModelOf(data);
   const name = model?.label ?? fallback?.label ?? "Auto";
-  const effort = model?.supports_effort && choice ? effortLabel(choice.effort) : null;
+  // 実際に動くモデル。既定が特定のモデルなら、選ばなくても思考の深さを変えられる
+  // （Auto は振り先が思考の深さも決めるので出さない）。
+  const effective = model ?? fallback;
+  const currentEffort = choice?.effort ?? data.default_effort;
+  const effort = effective?.supports_effort ? effortLabel(currentEffort) : null;
   const summary = effort ? `${name}・${effort}` : name;
+  // 既定のモデルのまま思考の深さだけ変える。既定の深さに戻したら選択ごと外す（Auto と同じ扱い）。
+  const setDefaultEffort = (e: EffortLevel) =>
+    setChoice(e === data.default_effort ? null : { model: null, effort: e });
 
   return (
     <PickerSurface
@@ -518,20 +535,25 @@ export function ModelButton({ scope, className }: { scope: string; className?: s
             listRef={listRef}
             onPick={(id) => {
               if (id === null) {
+                // 既定が思考の深さを選べるモデルなら、選んでいた深さを引き継いで開いたままにする。
+                if (fallback?.supports_effort) {
+                  setDefaultEffort(currentEffort);
+                  return;
+                }
                 setChoice(null);
                 setOpen(false);
                 return;
               }
               const picked = data.models.find((m) => m.id === id);
-              setChoice({ model: id, effort: choice?.effort ?? data.default_effort });
+              setChoice({ model: id, effort: currentEffort });
               // 思考の深さを選べるモデルなら、続けて変えられるよう開いたままにする。
               if (!picked?.supports_effort) setOpen(false);
             }}
           />
-          {model?.supports_effort && choice ? (
+          {effective?.supports_effort ? (
             <EffortSlider
-              effort={choice.effort}
-              onChange={(e) => setChoice({ model: model.id, effort: e })}
+              effort={currentEffort}
+              onChange={(e) => (model ? setChoice({ model: model.id, effort: e }) : setDefaultEffort(e))}
             />
           ) : null}
         </>

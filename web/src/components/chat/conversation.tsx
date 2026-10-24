@@ -69,6 +69,7 @@ import { EvidenceTable, EvidenceToggle } from "./citations/evidence-table";
 import { SourcePanelAside, SourcePanelSheet } from "./citations/source-panel";
 import { type ToolActivityItem } from "./tool-activity";
 import { ChainOfThought } from "./chain-of-thought";
+import { StreamWaitingLine, useStreamWaiting } from "./stream-waiting";
 import { Composer } from "./composer";
 import { WorkflowRefCard } from "./workflow-ref-card";
 import { NoteRefCard } from "./note-ref-card";
@@ -89,6 +90,8 @@ import { cn } from "@/lib/utils";
 /// ストリーミング中のアシスタント応答の蓄積状態。
 type StreamState = {
   text: string;
+  /// 最後のツール呼び出し時点の `text` の長さ（それ以降が「ツールの後の本文」）。
+  textAtLastTool: number;
   thinking: string;
   tools: ToolActivityItem[];
   citations: Citation[];
@@ -133,6 +136,7 @@ type QueuedMessage = {
 
 const EMPTY_STREAM: StreamState = {
   text: "",
+  textAtLastTool: 0,
   thinking: "",
   tools: [],
   citations: [],
@@ -288,29 +292,30 @@ export function Conversation({
       onThinking: (t) => updateStream((s) => (s ? { ...s, thinking: s.thinking + t } : s)),
       onToken: (t) => updateStream((s) => (s ? { ...s, text: s.text + t } : s)),
       onToolCall: (call) =>
-        updateStream((s) =>
-          s
-            ? {
-                ...s,
-                // ステップの区切りで段落を落とす。ツールを挟んだ発話は別の思考なので、
-                // 繋げて書くと「〜します。〜しました。〜します。」が 1 段落に連なって読めない。
-                text: paragraphBreak(s.text),
-                tools: [
-                  ...s.tools,
-                  {
-                    // この出現の一意キー（呼び出し ID はループで再利用され得る）。
-                    key: newId(),
-                    id: call.id,
-                    name: call.name,
-                    running: true,
-                    input: call.input,
-                    step: call.step,
-                    viaSubagent: call.viaSubagent,
-                  },
-                ],
-              }
-            : s,
-        ),
+        updateStream((s) => {
+          if (!s) return s;
+          // ステップの区切りで段落を落とす。ツールを挟んだ発話は別の思考なので、
+          // 繋げて書くと「〜します。〜しました。〜します。」が 1 段落に連なって読めない。
+          const text = paragraphBreak(s.text);
+          return {
+            ...s,
+            text,
+            textAtLastTool: text.length,
+            tools: [
+              ...s.tools,
+              {
+                // この出現の一意キー（呼び出し ID はループで再利用され得る）。
+                key: newId(),
+                id: call.id,
+                name: call.name,
+                running: true,
+                input: call.input,
+                step: call.step,
+                viaSubagent: call.viaSubagent,
+              },
+            ],
+          };
+        }),
       // 成否と観測テキストを保持する（失敗を成功と同じ見た目にしない・#358/#386）。
       // **同じ id が複数ステップで再利用され得る**（stub の `loop:` は毎ステップ
       // `stubtool_1` を出す）。全件更新すると過去行の成否まで上書きされるため、
@@ -1321,6 +1326,12 @@ function StreamingRow({
     stream.tools.length === 0 &&
     stream.plan.length === 0 &&
     !stream.approval;
+  const waiting = useStreamWaiting({
+    text: stream.text,
+    textAtLastTool: stream.textAtLastTool,
+    tools: stream.tools,
+    awaitingUser: stream.approval !== null,
+  });
   return (
     <MessageCitationsProvider messageKey="streaming" citations={stream.citations} text={stream.text}>
       <Message className="justify-start">
@@ -1335,6 +1346,9 @@ function StreamingRow({
             citations={stream.citations}
             streaming
             phase={runningSubtask(stream.plan)}
+            answering={waiting.answering}
+            waitingLabel={waiting.label}
+            hasText={stream.text.trim().length > 0}
           />
           {stream.budget ? <BudgetBanner {...stream.budget} /> : null}
           {stream.approval ? (
@@ -1353,6 +1367,7 @@ function StreamingRow({
               <Markdown streaming>{linkifyCitations(stream.text, stream.citations)}</Markdown>
             </div>
           ) : null}
+          {waiting.atBottom ? <StreamWaitingLine idleSecs={waiting.idleSecs} /> : null}
           {stream.workflowRefs.map((workflow, i) => (
             <WorkflowRefCard key={i} raw={workflow} />
           ))}

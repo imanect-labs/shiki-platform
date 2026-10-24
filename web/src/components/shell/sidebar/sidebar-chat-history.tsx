@@ -243,6 +243,75 @@ export function SidebarChatHistory({
   );
 }
 
+/// 今いる会話の行を最初から見える位置に置く（開いた瞬間に先頭が出て、探して下へ送らずに済む）。
+///
+/// 履歴を開いた（スマホのドロワ・PC の折りたたみ解除＝マウント）とき、または今いる会話が
+/// 変わったときに 1 度だけ行う。見えていれば動かさない（PC で行を押した直後に一覧が跳ねない）。
+/// 読み込み済みに無い古い会話は、続きを [`MAX_REVEAL_PAGES`] ページまで読み足して探す。
+/// 1 度見せた後は追わない（自分でスクロールした位置を、読み足しや通知で巻き戻さない）。
+function useRevealActiveThread({
+  containerRef,
+  activeId,
+  threads,
+  loading,
+  loadingMore,
+  hasMore,
+  loadMore,
+}: {
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  activeId: string | null;
+  threads: Thread[];
+  loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  loadMore: () => void;
+}) {
+  const done = React.useRef<{ id: string | null; pages: number; revealed: boolean }>({
+    id: null,
+    pages: 0,
+    revealed: false,
+  });
+
+  // 描画前に位置を決める（先頭が一瞬見えてから飛ぶちらつきを出さない）。
+  React.useLayoutEffect(() => {
+    if (done.current.id !== activeId) done.current = { id: activeId, pages: 0, revealed: false };
+    const state = done.current;
+    const container = containerRef.current;
+    if (!activeId || state.revealed || loading || !container) return;
+    const row = container.querySelector<HTMLElement>('[aria-current="page"]');
+    if (row) {
+      state.revealed = true;
+      const box = container.getBoundingClientRect();
+      const r = row.getBoundingClientRect();
+      if (r.top >= box.top && r.bottom <= box.bottom) return;
+      // 一覧の中ほどに置く（前後の会話も見えるように）。
+      container.scrollTop += r.top - box.top - (box.height - r.height) / 2;
+      return;
+    }
+    // 読み込み済みなのに行が無い（種類フィルタで隠れている）なら探さない。
+    if (threads.some((t) => t.id === activeId)) {
+      state.revealed = true;
+      return;
+    }
+    if (!hasMore || state.pages >= MAX_REVEAL_PAGES) {
+      state.revealed = true;
+      return;
+    }
+    if (loadingMore) return;
+    state.pages += 1;
+    loadMore();
+  }, [containerRef, activeId, threads, loading, loadingMore, hasMore, loadMore]);
+}
+
+/// 今いる会話を探して読み足す上限（1 ページ 30 件）。これより古い会話は先頭のままにする。
+const MAX_REVEAL_PAGES = 5;
+
+/// 今の画面の会話 ID（通常は `/c/{id}`、文書の横の会話は `?thread=`）。
+function activeThreadIdOf(pathname: string, threadParam: string | null): string | null {
+  const m = /^\/c\/([^/]+)/.exec(pathname);
+  return m ? decodeURIComponent(m[1]) : threadParam;
+}
+
 function SidebarChatHistoryInner({
   mobile,
   onNavigate,
@@ -272,6 +341,16 @@ function SidebarChatHistoryInner({
     [threads, filter],
   );
   const groups = groupThreadsByDate(shown);
+  const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  useRevealActiveThread({
+    containerRef: scrollRef,
+    activeId: activeThreadIdOf(pathname, searchParams.get("thread")),
+    threads,
+    loading,
+    loadingMore,
+    hasMore,
+    loadMore,
+  });
 
   let body: React.ReactNode;
   if (loading) {
@@ -327,7 +406,10 @@ function SidebarChatHistoryInner({
 
   // 見出しと種類フィルタは一覧と一緒にスクロールして上へ流す（固定すると一覧の縦幅を常に食う）。
   return (
-    <div className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-2.5 pb-2 max-md:px-2">
+    <div
+      ref={scrollRef}
+      className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-2.5 pb-2 max-md:px-2"
+    >
       <div className="flex items-center justify-between gap-2 px-2.5 pt-2 max-md:px-3 max-md:pt-3">
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.07em] text-sidebar-foreground/45 max-md:text-xs">
           履歴
