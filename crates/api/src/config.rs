@@ -206,11 +206,12 @@ mod backends;
 mod tests;
 
 pub use auth::{AuthConfig, SessionConfig, Tenancy};
+pub(crate) use backends::chatgpt_model_id;
 pub use backends::{
-    AuthzConfig, ChatConfig, LangfuseConfig, LlmAutoConfig, LlmBackend, LlmConfig, LlmLimitsConfig,
-    LlmModelEntry, LlmProviderEntry, LlmProviderLimit, LogFormat, ObjectStoreBackend,
-    StorageConfig, TabularConfig, TelemetryConfig, UploadGcConfig, VectorConfig,
-    VectorStoreBackend, WebSearchBackend, WebSearchConfig,
+    AuthzConfig, ChatConfig, LangfuseConfig, LlmAutoConfig, LlmBackend, LlmChatGptConfig,
+    LlmConfig, LlmLimitsConfig, LlmModelEntry, LlmProviderEntry, LlmProviderLimit, LogFormat,
+    ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig, UploadGcConfig,
+    VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -292,6 +293,7 @@ impl AppConfig {
         Self::check_upload_gc_bounds(&self.storage)?;
         Self::check_llm_timeouts(&self.llm)?;
         Self::check_llm_limits(&self.llm)?;
+        Self::check_llm_chatgpt(&self.llm)?;
         // 必須 URL。
         let mut urls: Vec<(&str, &str)> = vec![
             ("auth.issuer", self.auth.issuer.as_str()),
@@ -371,6 +373,55 @@ impl AppConfig {
         Ok(())
     }
 
+    /// ChatGPT プラン（#854）の設定を検証する（有効なのに使えるモデルが無い・ID の衝突を弾く）。
+    fn check_llm_chatgpt(llm: &LlmConfig) -> Result<(), ConfigError> {
+        let c = &llm.chatgpt;
+        if !c.enabled {
+            return Ok(());
+        }
+        if c.credential_path.trim().is_empty() {
+            return Err(ConfigError::Invalid(
+                "llm.chatgpt.credential_path が空です".into(),
+            ));
+        }
+        if c.models.is_empty() {
+            return Err(ConfigError::Invalid(
+                "llm.chatgpt.models に 1 つ以上のモデル（slug）が必要です".into(),
+            ));
+        }
+        if llm
+            .providers
+            .iter()
+            .any(|p| p.id == llm_gateway::CHATGPT_PROVIDER_ID)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "llm.providers[].id の {} は llm.chatgpt が使うため指定できません",
+                llm_gateway::CHATGPT_PROVIDER_ID
+            )));
+        }
+        let ids: Vec<String> = c
+            .models
+            .iter()
+            .map(|s| backends::chatgpt_model_id(s))
+            .collect();
+        if let Some(dup) = ids
+            .iter()
+            .enumerate()
+            .find(|(i, id)| {
+                // `models` が空なら、既定モデルと同じ ID の合成エントリが先頭に入る（先勝ちで引かれる）。
+                let synthesized =
+                    llm.models.is_empty() && llm.default_model.as_deref() == Some(id.as_str());
+                ids[..*i].contains(id) || llm.models.iter().any(|m| &m.id == *id) || synthesized
+            })
+            .map(|(_, id)| id)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "llm.chatgpt.models のモデル ID が重複しています: {dup}"
+            )));
+        }
+        Ok(())
+    }
+
     /// 利用制限の値を検証する（金額クリティカル・効かない設定で起動させない）。
     ///
     /// 負の上限は即座に全員を止めるので弾く。プロバイダ ID の綴り違いは**黙って上限が
@@ -396,7 +447,9 @@ impl AppConfig {
             }
             for id in &entry.providers {
                 let known = id == llm_gateway::DEFAULT_PROVIDER_ID
-                    || llm.providers.iter().any(|q| &q.id == id);
+                    || llm.providers.iter().any(|q| &q.id == id)
+                    // ChatGPT プラン（#854）は有効なとき予約 ID で自動登録される。
+                    || (llm.chatgpt.enabled && id == llm_gateway::CHATGPT_PROVIDER_ID);
                 if !known {
                     return Err(ConfigError::Invalid(format!(
                         "llm.limits.providers に未知のプロバイダ ID があります: {id}\

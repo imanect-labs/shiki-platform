@@ -11,6 +11,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 
 use crate::accounting::{UsageRecord, UsageRecorder};
+use crate::chatgpt::ChatGptPlanProvider;
 use crate::config::{
     AutoConfig, GatewayConfig, LlmTimeouts, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind,
     DEFAULT_PROVIDER_ID,
@@ -29,6 +30,9 @@ use crate::tenant::{
 };
 use crate::usage_report::{UsageFilter, UsageReport, UsageReporter};
 use std::sync::Arc;
+
+/// ChatGPT プランの照合・モデルの見え方（gateway.rs の行数上限のため分割）。
+mod chatgpt_gate;
 
 /// 会計の「利用元」（管理画面の利用元別集計・`llm_usage.source`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -114,6 +118,8 @@ struct Inner {
     usage: UsageReporter,
     limits: UsageLimiter,
     langfuse: Option<LangfuseClient>,
+    /// ChatGPT プランのアダプタ（生成は呼び出し主体に結び付けて行う・#854）。
+    chatgpt_plan: Option<Arc<ChatGptPlanProvider>>,
 }
 
 impl LlmGateway {
@@ -134,12 +140,19 @@ impl LlmGateway {
             .as_ref()
             .map(|c| LangfuseClient::new(http.clone(), c));
         let mut providers: HashMap<String, ProviderSlot> = HashMap::new();
+        let chatgpt_plan = chatgpt_gate::plan_provider(&http, &config)?;
         for pc in std::iter::once(&config.provider).chain(config.extra_providers.iter()) {
             let id = pc.effective_id().to_string();
             if providers.contains_key(&id) {
                 return Err(LlmError::Config(format!("duplicate llm provider id: {id}")));
             }
-            let provider = build_provider(http.clone(), pc, &config.catalog, config.timeouts)?;
+            let provider = build_provider(
+                http.clone(),
+                pc,
+                &config.catalog,
+                config.timeouts,
+                chatgpt_plan.as_ref(),
+            )?;
             providers.insert(
                 id,
                 ProviderSlot {
@@ -168,6 +181,7 @@ impl LlmGateway {
                 usage: UsageReporter::new(db.clone()),
                 limits: UsageLimiter::new(db),
                 langfuse,
+                chatgpt_plan,
                 config,
             }),
         })
@@ -237,12 +251,13 @@ impl LlmGateway {
     }
 
     /// チャットのモデル指定を組織の設定で解決する（許可外は `Err`・API は 400 に写す）。
+    /// 設定は呼び出し主体から見たもの（[`Self::settings_for`]・本人専用のモデルを除く）。
     pub async fn resolve_choice(
         &self,
         ctx: &AuthContext,
         choice: &ModelChoice,
     ) -> Result<Result<ResolvedChoice, ChoiceError>, sqlx::Error> {
-        let settings = self.inner.tenants.load(ctx).await?;
+        let settings = self.settings_for(ctx).await?;
         Ok(resolve_choice(
             &self.inner.config.catalog,
             &self.inner.config.auto,
@@ -260,7 +275,7 @@ impl LlmGateway {
         snapshot: &ResolvedChoice,
         skill_model: Option<&str>,
     ) -> Result<Result<ResolvedChoice, ChoiceError>, sqlx::Error> {
-        let settings = self.inner.tenants.load(ctx).await?;
+        let settings = self.settings_for(ctx).await?;
         Ok(tenant::resolve_at_run(
             &self.inner.config.catalog,
             &self.inner.config.auto,
@@ -344,6 +359,10 @@ impl LlmGateway {
             .providers
             .get(entry.provider_id())
             .ok_or_else(|| LlmError::Config(format!("unknown provider for model: {logical}")))?;
+        if slot.config.kind == ProviderKind::ChatgptPlan {
+            // 連携者のプラン枠。本人以外（他の利用者・ワークフロー等）には使わせない。
+            self.ensure_chatgpt_owner(ctx)?;
+        }
         let permitted = self
             .inner
             .tenants
@@ -361,7 +380,13 @@ impl LlmGateway {
         }
         req.model = Some(entry.resolved_id().to_string());
 
-        stream_with_retry(slot.provider.as_ref(), &req, &UNAVAILABLE_BACKOFF).await
+        match (&self.inner.chatgpt_plan, slot.config.kind) {
+            // 連携者のプラン枠は、トークンの取得時にも呼び出し主体と照合し直す（再試行のたびにも）。
+            (Some(p), ProviderKind::ChatgptPlan) => {
+                stream_with_retry(&p.for_caller(ctx), &req, &UNAVAILABLE_BACKOFF).await
+            }
+            _ => stream_with_retry(slot.provider.as_ref(), &req, &UNAVAILABLE_BACKOFF).await,
+        }
     }
 
     /// 利用制限（月次コスト上限・プレビュー環境向け）を生成前に確かめる。
@@ -526,6 +551,7 @@ fn build_provider(
     pc: &ProviderConfig,
     catalog: &ModelCatalog,
     timeouts: LlmTimeouts,
+    chatgpt_plan: Option<&Arc<ChatGptPlanProvider>>,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
     // 共有 HTTP クライアント（接続プール共有・タイムアウトなし）をそのまま各アダプタへ渡し、
     // タイムアウト（最初の応答・無通信・全体）は各アダプタが共通のヘルパで測る（#554）。
@@ -573,6 +599,10 @@ fn build_provider(
                     .with_timeouts(timeouts),
             ))
         }
+        // 実体は build で先に組む（呼び出し主体に結び付けて使うので型付きでも持つ）。
+        ProviderKind::ChatgptPlan => chatgpt_plan
+            .map(|p| Arc::clone(p) as Arc<dyn LlmProvider>)
+            .ok_or_else(|| LlmError::Config("chatgpt_plan requires llm.chatgpt".into())),
         ProviderKind::Anthropic => {
             let base = pc
                 .base_url
@@ -722,6 +752,7 @@ mod tests {
             &cfg.provider,
             &cfg.catalog,
             LlmTimeouts::default(),
+            None,
         )
         .unwrap();
         assert_eq!(p.name(), "stub");
@@ -739,7 +770,8 @@ mod tests {
                 reqwest::Client::new(),
                 &ok.provider,
                 &ok.catalog,
-                LlmTimeouts::default()
+                LlmTimeouts::default(),
+                None,
             )
             .unwrap()
             .name(),
@@ -751,6 +783,7 @@ mod tests {
             &missing.provider,
             &missing.catalog,
             LlmTimeouts::default(),
+            None,
         );
         assert!(matches!(res, Err(LlmError::Config(_))));
     }
@@ -763,7 +796,8 @@ mod tests {
                 reqwest::Client::new(),
                 &ok.provider,
                 &ok.catalog,
-                LlmTimeouts::default()
+                LlmTimeouts::default(),
+                None,
             )
             .unwrap()
             .name(),
@@ -776,6 +810,7 @@ mod tests {
             &missing.provider,
             &missing.catalog,
             LlmTimeouts::default(),
+            None,
         );
         assert!(matches!(res, Err(LlmError::Config(_))));
     }
@@ -789,7 +824,8 @@ mod tests {
                 reqwest::Client::new(),
                 &ok.provider,
                 &ok.catalog,
-                LlmTimeouts::default()
+                LlmTimeouts::default(),
+                None,
             )
             .unwrap()
             .name(),
@@ -802,6 +838,7 @@ mod tests {
             &missing.provider,
             &missing.catalog,
             LlmTimeouts::default(),
+            None,
         );
         assert!(matches!(res, Err(LlmError::Config(_))));
     }
