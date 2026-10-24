@@ -229,8 +229,10 @@ export const Composer = React.memo(function Composer({
   const [slashIndex, setSlashIndex] = React.useState(0);
   const [slashDismissed, setSlashDismissed] = React.useState(false);
 
-  // コマンドを確定すると本文は空になるので、本文だけでなくコマンド・添付も入力として数える。
-  const hasInput = value.trim().length > 0 || command !== null || attachments.length > 0;
+  // コマンドを確定すると本文は空になるので、本文だけでなくコマンド・添付（アップロード中を含む）も
+  // 入力として数える。
+  const hasInput =
+    uploading !== null || value.trim().length > 0 || command !== null || attachments.length > 0;
   React.useEffect(() => {
     onHasInputChange?.(hasInput);
   }, [onHasInputChange, hasInput]);
