@@ -695,7 +695,7 @@ export function Conversation({
               pending.text,
               pending.attachments,
               pending.autonomous ?? false,
-              pending.context,
+              undefined,
               pending.skills,
             );
           }

@@ -3,17 +3,27 @@
 /// ドキュメントのチャットパネルの「まだ会話が無い」状態（最初の発話の入力欄）。
 ///
 /// パネルを開いただけでは会話を作らない（開いただけで履歴に空の会話が並ぶのを防ぐ）。
-/// 最初の発話を送った時点で親（[`DocChatPanel`]）が会話を作り、本文はホームと同じく
-/// pending として会話側へ渡す（会話がマウント時に 1 度だけ送る）。
+/// 最初の発話を送った時点で親（[`DocChatPanel`]）が会話を作り、そのまま発話を送る。
 
 import { Sparkles } from "lucide-react";
 import * as React from "react";
 
 import { Composer } from "@/components/chat/composer";
 import type { Attachment } from "@/lib/chat-api";
-import type { PendingMessage } from "@/lib/pending-message";
 import { setPendingSelection, type SelectionContext } from "@/lib/selection-context";
 import type { ActiveCommand } from "@/lib/slash-command";
+
+/// 会話を作る前の入力欄から送る最初の発話。
+export type FirstMessage = {
+  text: string;
+  attachments: Attachment[];
+  /// エディタの選択コンテキスト（選択→AI 指示）。
+  context?: SelectionContext;
+  /// エージェントモード（スラッシュコマンドなら常に true）。
+  autonomous: boolean;
+  /// **この発話にだけ**適用する skill（スラッシュコマンド・#387）。
+  skills?: { artifactId: string; version?: number | null }[];
+};
 
 /// パネルの空会話の案内（空白のままにしない）。会話の作成前後で同じ見た目にするため共有する。
 export function PanelEmptyHint() {
@@ -42,7 +52,7 @@ export function DocChatDraft({
   /// モデル・ツールの選択の保存先（ホームや他の文書と共有しない）。作った会話へ引き継ぐ。
   scope: string;
   /// 会話を作って最初の発話を渡す。失敗したら reject する（入力欄に案内を出す）。
-  onStart: (msg: PendingMessage) => Promise<void>;
+  onStart: (msg: FirstMessage) => Promise<void>;
   /// 入力欄に送れる入力（本文・コマンド・添付）があるか（書きかけ）が変わったときに呼ぶ。
   /// 外れる（アンマウント）ときは false。
   onDirtyChange?: (dirty: boolean) => void;

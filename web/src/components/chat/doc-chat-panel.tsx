@@ -14,7 +14,7 @@ import { Check, ChevronDown, Loader2, MessagesSquare, Plus } from "lucide-react"
 import * as React from "react";
 
 import { Conversation } from "@/components/chat/conversation";
-import { DocChatDraft } from "@/components/chat/doc-chat-draft";
+import { DocChatDraft, type FirstMessage } from "@/components/chat/doc-chat-draft";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,10 +22,9 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { createThread, getThread, listThreads, type Thread } from "@/lib/chat-api";
-import { moveModelChoice } from "@/lib/model-choice";
-import { stashPending, type PendingMessage } from "@/lib/pending-message";
-import { moveToolChoice } from "@/lib/tool-choice";
+import { createThread, getThread, listThreads, postMessage, type Thread } from "@/lib/chat-api";
+import { moveModelChoice, readModelChoice } from "@/lib/model-choice";
+import { readToolChoice, settleToolChoice } from "@/lib/tool-choice";
 import {
   readScoped,
   storageScopeGeneration,
@@ -163,27 +162,57 @@ export function DocChatPanel({
   // 会話を作る前の入力欄のモデル・ツールの選択の保存先（ホームや他の文書の入力欄と分ける）。
   const draftScope = `docdraft:${nodeId}`;
 
-  // 最初の発話で会話を作る。本文・モデル・ツールの選択はホームと同じく新しい会話へ引き継ぎ、
-  // 会話側がマウント時に送る（作成を待つ間にログアウトがあれば書き戻さない・#817）。
+  // 作ったが最初の発話を送れなかった会話（送り直しで使い回し、空の会話を増やさない）。
+  const unsentThreadRef = React.useRef<{ nodeId: string; id: string } | null>(null);
+  // 会話の選択の版。作成を待つ間に別の会話を選んだら、作成完了で表示を奪わない。
+  const selectionVersionRef = React.useRef(0);
+
+  // 最初の発話で会話を作り、**ここで送る**（会話側のマウントに頼らない＝作成を待つ間に
+  // パネルを閉じても発話は届く）。会話側は進行中の run として読み込んで表示する（再訪と同じ）。
   const startConversation = React.useCallback(
-    async (msg: PendingMessage) => {
+    async (msg: FirstMessage) => {
       const startedAt = storageScopeGeneration();
-      const n = conversations.length + 1;
-      const thread = await createThread(n <= 1 ? title : `${title} (${n})`, msg.autonomous ?? false, {
-        originNoteId: nodeId,
+      const selection = selectionVersionRef.current;
+      const unsent = unsentThreadRef.current;
+      let threadId = unsent?.nodeId === nodeId ? unsent.id : null;
+      if (!threadId) {
+        const n = conversations.length + 1;
+        const thread = await createThread(n <= 1 ? title : `${title} (${n})`, msg.autonomous, {
+          originNoteId: nodeId,
+        });
+        threadId = thread.id;
+        unsentThreadRef.current = { nodeId, id: threadId };
+      }
+      // 待つ間にログアウト（他タブを含む）があれば、前の人の発話・選択を送らない・移さない（#817）。
+      if (startedAt !== storageScopeGeneration()) return;
+      const tools = readToolChoice(draftScope);
+      await postMessage(threadId, msg.text, msg.attachments, {
+        agentMode: msg.autonomous,
+        autonomous: msg.autonomous,
+        context: msg.context,
+        skills: msg.skills,
+        model: readModelChoice(draftScope),
+        tools,
       });
-      stashPending(thread.id, msg, startedAt);
-      moveModelChoice(draftScope, thread.id);
-      moveToolChoice(draftScope, thread.id);
+      unsentThreadRef.current = null;
+      // ツールはこの発話にだけ効く（受理されたら空に戻す）。モデルは会話の続きでも使う。
+      settleToolChoice(draftScope, tools);
+      if (startedAt !== storageScopeGeneration()) return;
+      moveModelChoice(draftScope, threadId);
+      if (selection !== selectionVersionRef.current) {
+        void refreshConversations();
+        return;
+      }
       // 一覧はアクティブの変化で読み直される（上の effect）。
-      setActive(thread.id, startedAt);
+      setActive(threadId, startedAt);
       setDrafting(false);
     },
-    [conversations.length, title, nodeId, draftScope, setActive],
+    [conversations.length, title, nodeId, draftScope, setActive, refreshConversations],
   );
 
   const selectConversation = React.useCallback(
     (id: string) => {
+      selectionVersionRef.current += 1;
       setDrafting(false);
       if (id !== activeThreadId) setActive(id);
     },
