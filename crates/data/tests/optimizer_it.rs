@@ -240,6 +240,7 @@ async fn analyze_covers_derived_and_symmetric_columns_and_purge_removes_stats() 
         cardinality: LinkCardinality::ManyToOne,
         symmetric_field: None,
         symmetric_key: Some("children".into()),
+        symmetric_display_name: None,
         reverse: false,
     });
     let mut doubled = field("doubled", FieldType::Formula);

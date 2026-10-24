@@ -87,6 +87,7 @@ fn link(key: &str, to: Uuid, sym: &str) -> data::FieldDef {
         cardinality: LinkCardinality::ManyToOne,
         symmetric_field: None,
         symmetric_key: Some(sym.into()),
+        symmetric_display_name: None,
         reverse: false,
     });
     f

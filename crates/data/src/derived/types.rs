@@ -65,6 +65,10 @@ pub struct LinkDef {
     /// 対称列を参照先に作るときの参照名（作成時の入力。参照先テーブルの owner 権限が要る）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symmetric_key: Option<String>,
+    /// 対称列を参照先に作るときの表示名（作成時の入力・省略時は参照名）。作成後の変更は参照先の
+    /// スキーマの改訂で行う（ここを書き換えても対称列の表示名は変わらない）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symmetric_display_name: Option<String>,
     /// この列が対称列（逆方向・読取専用）か。サーバだけが設定する（入力では作れない）。
     ///
     /// 対称列は**スキーマ上のメタデータ**で、値は本体に持たない。順方向の書込と同じ Tx で書いた
@@ -175,6 +179,7 @@ mod tests {
             cardinality: LinkCardinality::ManyToMany,
             symmetric_field: None,
             symmetric_key: Some("projects".into()),
+            symmetric_display_name: None,
             reverse: false,
         };
         let v = serde_json::to_value(&d).unwrap();

@@ -462,7 +462,7 @@ impl DataStore {
             IndexState::Absent => IndexStatus::Absent,
         };
         let progress = if status == IndexStatus::Preparing {
-            backfill_progress(&mut conn, table.keys).await?
+            preparing_progress(&mut conn, table.keys).await?
         } else {
             None
         };
@@ -620,7 +620,7 @@ impl DataStore {
     }
 }
 
-/// バックフィルの進捗（0〜1・行が無ければ `None`）。
+/// バックフィルの進捗（0〜1・行が無ければ `None`・索引の一覧の表示用）。
 #[allow(clippy::cast_precision_loss)] // 進捗の比（表示用・件数は 2^52 未満）。
 pub(crate) async fn backfill_progress(
     conn: &mut PgConnection,
@@ -642,6 +642,52 @@ pub(crate) async fn backfill_progress(
             (done as f64 / total as f64).clamp(0.0, 1.0)
         }
     }))
+}
+
+/// 索引の準備の進捗（0〜1 未満・分からなければ `None`）。準備中の索引について呼ぶ。
+///
+/// バックフィルが走っていればその進み具合。バックフィルの行が終わっている（前回の構築の名残り）か無いのに
+/// 索引が準備中なのは、一括取込が値索引を保持している（遅延構築）間なので、取込の適用の進み具合を返す。
+/// 準備中のあいだは 1.0 を返さない（「完了」と誤って見せない・検証 2-D-P3-4）。
+#[allow(clippy::cast_precision_loss)] // 進捗の比（表示用・件数は 2^52 未満）。
+pub(crate) async fn preparing_progress(
+    conn: &mut PgConnection,
+    keys: TableKeys,
+) -> Result<Option<f64>, DataError> {
+    const BEFORE_DONE: f64 = 0.99;
+    let ratio = |done: i64, total: i64| (done as f64 / total as f64).clamp(0.0, BEFORE_DONE);
+    let row: Option<(String, i64, i64)> = sqlx::query_as(
+        "SELECT status, rows_done, rows_total FROM data_index_backfill \
+         WHERE tenant_int = $1 AND table_int = $2",
+    )
+    .bind(keys.tenant_int)
+    .bind(keys.table_int)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(map_db)?;
+    if let Some((status, done, total)) = &row {
+        if status != "done" && *total > 0 {
+            return Ok(Some(ratio(*done, *total)));
+        }
+    }
+    // 取込が値索引を保持している（適用中・索引の仕上げ前）。
+    let held: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT rows_applied, rows_total FROM data_bulk_import \
+         WHERE tenant_int = $1 AND table_int = $2 AND index_hold \
+           AND status IN ('validating', 'applying', 'indexing') \
+         ORDER BY created_at LIMIT 1",
+    )
+    .bind(keys.tenant_int)
+    .bind(keys.table_int)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(map_db)?;
+    Ok(match (held, row) {
+        (Some((applied, total)), _) if total > 0 => Some(ratio(applied, total)),
+        // 終わった直後の切替の隙間（状態の更新待ち）は「ほぼ完了」。
+        (_, Some(_)) => Some(BEFORE_DONE),
+        _ => None,
+    })
 }
 
 #[cfg(test)]

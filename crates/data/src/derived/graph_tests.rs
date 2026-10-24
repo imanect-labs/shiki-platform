@@ -29,6 +29,7 @@ fn link(id: u16, key: &str, to: Uuid) -> FieldDef {
         cardinality: LinkCardinality::ManyToMany,
         symmetric_field: None,
         symmetric_key: None,
+        symmetric_display_name: None,
         reverse: false,
     });
     d

@@ -82,6 +82,8 @@ pub(crate) async fn traverse(
 pub(crate) struct ReverseValues {
     pub values: HashMap<Uuid, Vec<Uuid>>,
     pub truncated: std::collections::HashSet<Uuid>,
+    /// 見える参照元の表示名（参照元のタイトル列・順方向のリンクと同じ規則）。
+    pub labels: HashMap<Uuid, String>,
 }
 
 impl DataStore {
@@ -124,7 +126,10 @@ impl DataStore {
         let visible = self
             .visible_ref_rows(ctx, az, src_table_id, &dsts, &BTreeSet::new(), depth + 1)
             .await?;
-        let mut out = ReverseValues::default();
+        let mut out = ReverseValues {
+            labels: visible.labels(),
+            ..ReverseValues::default()
+        };
         let mut seen: HashMap<i64, i64> = HashMap::new();
         for (s, d) in edges {
             let n = seen.entry(s).or_default();
@@ -204,12 +209,22 @@ pub(crate) async fn create_symmetric_fields(
             .ok_or_else(|| crate::schema_invalid("参照先のフィールド ID が上限に達しています"))?;
         let mut sym = FieldDef::new(sym_key.clone(), FieldType::RecordRef);
         sym.id = sym_id;
+        // 作成時に表示名を付けられる（保存の後に参照先の改訂を別に送らなくてよい・省略時は参照名）。
+        if let Some(name) = link
+            .symmetric_display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        {
+            sym.display_name = name.to_string();
+        }
         sym.order = ref_schema.fields.iter().map(|x| x.order).max().unwrap_or(0) + 1;
         sym.ref_table = Some(table_id);
         sym.link = Some(LinkDef {
             cardinality: link.cardinality.mirror(),
             symmetric_field: Some(f.id),
             symmetric_key: None,
+            symmetric_display_name: None,
             reverse: true,
         });
         ref_schema.fields.push(sym);

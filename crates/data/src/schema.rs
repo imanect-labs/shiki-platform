@@ -303,7 +303,14 @@ pub(crate) fn validate_schema_update(
             )));
         }
         // リンク定義（カーディナリティ・対称列）も不変（変えるなら既存行の再検証が要る・§7.1）。
-        if nf.link != cur.link {
+        // 対称列の表示名は作成時の入力だけなので比べない（作成後の変更は参照先の改訂で行う）。
+        let strip = |l: &Option<crate::derived::types::LinkDef>| {
+            l.clone().map(|mut l| {
+                l.symmetric_display_name = None;
+                l
+            })
+        };
+        if strip(&nf.link) != strip(&cur.link) {
             return Err(crate::schema_invalid(format!(
                 "フィールド '{}' の link は変更できません",
                 cur.key

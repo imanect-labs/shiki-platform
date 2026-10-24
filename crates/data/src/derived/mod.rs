@@ -274,6 +274,12 @@ impl DataStore {
                         .await?
                 };
                 for (i, r) in rows.iter_mut().enumerate() {
+                    // 見える参照元の表示名（順方向のリンクと同じ規則・見えない参照元は値にも名前にも出ない）。
+                    for u in rv.values.get(&r.id).into_iter().flatten() {
+                        if let Some(l) = rv.labels.get(u) {
+                            r.link_labels.insert(u.to_string(), l.clone());
+                        }
+                    }
                     let ids: Vec<Value> = rv
                         .values
                         .get(&r.id)

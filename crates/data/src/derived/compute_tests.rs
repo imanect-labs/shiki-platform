@@ -103,6 +103,7 @@ fn link_field(key: &str, card: Option<LinkCardinality>) -> FieldDef {
         cardinality: c,
         symmetric_field: None,
         symmetric_key: None,
+        symmetric_display_name: None,
         reverse: false,
     });
     d

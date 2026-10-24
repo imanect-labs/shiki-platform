@@ -1324,6 +1324,7 @@ async fn referenced_record_change_refreshes_referrer_derived_values() {
         cardinality: LinkCardinality::ManyToOne,
         symmetric_field: None,
         symmetric_key: None,
+        symmetric_display_name: None,
         reverse: false,
     });
     let mut cname = FieldDef::new("customer_name", FieldType::Lookup);

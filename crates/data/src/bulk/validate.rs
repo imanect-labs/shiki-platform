@@ -677,6 +677,7 @@ mod tests {
             cardinality: LinkCardinality::OneToOne,
             symmetric_field: Some(30),
             symmetric_key: None,
+            symmetric_display_name: None,
             reverse: false,
         });
         let mut many = f(19, "many", FieldType::RecordRef);
@@ -685,6 +686,7 @@ mod tests {
             cardinality: LinkCardinality::ManyToMany,
             symmetric_field: Some(31),
             symmetric_key: None,
+            symmetric_display_name: None,
             reverse: false,
         });
         let schema = TableSchema {

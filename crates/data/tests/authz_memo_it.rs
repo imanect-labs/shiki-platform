@@ -323,6 +323,7 @@ async fn grid() -> Option<Grid> {
         cardinality: LinkCardinality::ManyToMany,
         symmetric_field: None,
         symmetric_key: None,
+        symmetric_display_name: None,
         reverse: false,
     });
     let mut names = field("names", FieldType::Lookup);

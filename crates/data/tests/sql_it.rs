@@ -112,6 +112,7 @@ fn link(key: &str, to: Uuid, card: LinkCardinality, sym: Option<&str>) -> data::
         cardinality: card,
         symmetric_field: None,
         symmetric_key: sym.map(Into::into),
+        symmetric_display_name: None,
         reverse: false,
     });
     f

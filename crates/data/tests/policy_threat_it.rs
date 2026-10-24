@@ -1137,6 +1137,7 @@ fn items_link(to: Uuid) -> FieldDef {
         cardinality: LinkCardinality::ManyToMany,
         symmetric_field: None,
         symmetric_key: None,
+        symmetric_display_name: None,
         reverse: false,
     });
     f
@@ -2609,6 +2610,7 @@ async fn link_fixture(pool: PgPool, authz: Arc<dyn AuthzClient>) -> LinkFixture 
         cardinality: LinkCardinality::ManyToOne,
         symmetric_field: None,
         symmetric_key: None,
+        symmetric_display_name: None,
         reverse: false,
     });
     let mut other = items_link(secrets.id);
@@ -3594,5 +3596,111 @@ async fn unknown_and_masked_columns_are_indistinguishable_everywhere() {
     assert!(
         !text.contains("emp_no") && !text.contains("zzz_nope"),
         "{text}"
+    );
+}
+
+/// ⑮（2 回目の検証・web の依頼）対称列（逆リンク）にも参照元の表示名（`link_labels`）を返す。
+/// 返すのは閲覧者に見える参照元だけ（順方向のリンクと同じ規則・権限の無い表の行は値にも名前にも出ない）。
+/// 対称列は作成時に表示名を付けられる。
+#[tokio::test]
+async fn reverse_link_labels_only_for_visible_referrers() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let store = DataStore::new(pool, Arc::clone(&authz), Arc::new(AllowRefs));
+    let projects = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "projects-rev".into(),
+                schema: plain(vec![field("name", FieldType::Text)]),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let parent = |name: &'static str, sym: &'static str, label: Option<&'static str>| {
+        let mut kids = items_link(projects.id);
+        kids.key = "kids".into();
+        if let Some(l) = kids.link.as_mut() {
+            l.symmetric_key = Some(sym.into());
+            l.symmetric_display_name = label.map(str::to_string);
+        }
+        let store = &store;
+        let alice = &alice;
+        async move {
+            store
+                .create_table(
+                    alice,
+                    NewDataTable {
+                        name: name.into(),
+                        schema: plain(vec![field("title", FieldType::Text), kids]),
+                    },
+                    None,
+                )
+                .await
+                .unwrap()
+        }
+    };
+    let open = parent("open-rev", "open_parents", Some("公開の親（kids）")).await;
+    let closed = parent("closed-rev", "closed_parents", None).await;
+    grant(&authz, &bob, Relation::Viewer, projects.id).await;
+    grant(&authz, &bob, Relation::Viewer, open.id).await;
+    let p1 = store
+        .create_record(&alice, projects.id, json!({"name": "p1"}), None)
+        .await
+        .unwrap()
+        .id;
+    let shown = store
+        .create_record(
+            &alice,
+            open.id,
+            json!({"title": "公開", "kids": ids(&[p1])}),
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    store
+        .create_record(
+            &alice,
+            closed.id,
+            json!({"title": "秘密", "kids": ids(&[p1])}),
+            None,
+        )
+        .await
+        .unwrap();
+    // 対称列の表示名は作成時に付けたもの（省略は参照名）。
+    let ps = store.get_table(&alice, projects.id, None).await.unwrap();
+    assert_eq!(
+        ps.schema.field("open_parents").unwrap().display_name,
+        "公開の親（kids）"
+    );
+    assert_eq!(
+        ps.schema.field("closed_parents").unwrap().display_name,
+        "closed_parents"
+    );
+    // bob: 見える参照元の値と表示名だけ。
+    let got = store.get_record(&bob, projects.id, p1, None).await.unwrap();
+    assert_eq!(got.data["open_parents"], ids(&[shown]));
+    assert_eq!(got.data["closed_parents"], json!([]));
+    assert_eq!(
+        got.link_labels.get(&shown.to_string()).map(String::as_str),
+        Some("公開")
+    );
+    let text = serde_json::to_string(&got).unwrap();
+    assert!(!text.contains("秘密"), "{text}");
+    // alice（両方見える）には両方の表示名。
+    let mine = store
+        .get_record(&alice, projects.id, p1, None)
+        .await
+        .unwrap();
+    let names: Vec<&str> = mine.link_labels.values().map(String::as_str).collect();
+    assert!(
+        names.contains(&"公開") && names.contains(&"秘密"),
+        "{names:?}"
     );
 }

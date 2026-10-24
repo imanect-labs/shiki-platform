@@ -737,10 +737,13 @@ async fn deferred_index_build_keeps_concurrent_writes() {
         filter: Some(eq("status", json!("approved"))),
         ..DataQuery::default()
     };
-    assert!(matches!(
-        store.run_query(&c, t.id, &q, None).await,
-        Err(DataError::IndexPreparing { .. })
-    ));
+    // 進捗は取込の適用の進み具合（準備中に 1.0＝完了と見せない・検証 2-D-P3-4）。
+    match store.run_query(&c, t.id, &q, None).await {
+        Err(DataError::IndexPreparing { progress, .. }) => {
+            assert!(progress.is_some_and(|p| p < 1.0), "{progress:?}");
+        }
+        other => panic!("{other:?}"),
+    }
     assert_eq!(count(&store, &c, t.id, None).await, 40);
 
     // 適用と並行して書く: 別タスクが作成・更新・削除を続ける。
@@ -1302,6 +1305,7 @@ fn link(key: &str, to: Uuid, card: LinkCardinality, sym: Option<&str>) -> FieldD
         cardinality: card,
         symmetric_field: None,
         symmetric_key: sym.map(Into::into),
+        symmetric_display_name: None,
         reverse: false,
     });
     f

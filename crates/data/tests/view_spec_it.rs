@@ -199,6 +199,7 @@ async fn people_table(env: &Env, alice: &AuthContext) -> Uuid {
         cardinality: LinkCardinality::ManyToMany,
         symmetric_field: None,
         symmetric_key: None,
+        symmetric_display_name: None,
         reverse: false,
     });
     let mut team_count = field("team_count", FieldType::Rollup);
