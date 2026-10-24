@@ -35,10 +35,13 @@ export function appendStreamText(segments: StreamSegment[], text: string): Strea
   return [...segments, { kind: "text", text }];
 }
 
-/// 思考の差分を足す（直前が操作のまとまりならそこへ）。
+/// 思考の差分を足す（直前が**まだツールの無い**操作のまとまりならそこへ）。
+///
+/// ツールの後に来た思考は新しいまとまりにする。同じまとまりに入れると、思考の行（まとまりの
+/// 先頭）がツールの上に差し込まれて、表示済みのツールが下へ押し出される。
 export function appendStreamThinking(segments: StreamSegment[], text: string): StreamSegment[] {
   const last = segments[segments.length - 1];
-  if (last?.kind === "work") {
+  if (last?.kind === "work" && last.toolKeys.length === 0) {
     return [...segments.slice(0, -1), { ...last, thinking: last.thinking + text }];
   }
   return [...segments, { kind: "work", thinking: text, toolKeys: [] }];
@@ -86,9 +89,11 @@ export function segmentsFromBlocks(blocks: ContentBlock[]): TimelineSegment[] {
   }
   const out: TimelineSegment[] = [];
   let toolIndex = 0;
-  const work = () => {
+  // `afterTools` なら、ツールを含むまとまりには足さない（思考はツールの後なら新しいまとまり・
+  // 生成中の appendStreamThinking と同じ区切り方）。
+  const work = (afterTools = false) => {
     const last = out[out.length - 1];
-    if (last?.kind === "work") return last;
+    if (last?.kind === "work" && !(afterTools && last.tools.length > 0)) return last;
     const seg: TimelineSegment = { kind: "work", key: `s${out.length}`, thinking: "", tools: [] };
     out.push(seg);
     return seg;
@@ -103,7 +108,7 @@ export function segmentsFromBlocks(blocks: ContentBlock[]): TimelineSegment[] {
       if (last?.kind === "text") last.text = `${last.text}\n\n${text}`;
       else out.push({ kind: "text", key: `s${out.length}`, text });
     } else if (b.type === "thinking") {
-      work().thinking += b.text;
+      work(true).thinking += b.text;
     } else if (b.type === "tool_call") {
       const res = results.get(b.id)?.shift();
       work().tools.push({

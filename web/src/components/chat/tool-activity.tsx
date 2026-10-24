@@ -368,10 +368,13 @@ function RollingBelt({
       <div className="relative" style={{ height: `${rows * ROW_REM}rem` }}>
         {slots.map((it, i) => {
           const row = i - ghosts; // 0 = 窓の最上段、-1 = 押し出された行
+          // 押し出された行は送られながら消えるためだけに残す。動かさない（履歴の）窓では要らない。
+          if (row < 0 && !animate) return null;
           return (
             <motion.div
               key={it.key}
-              className="absolute inset-x-0 top-0"
+              // 押し出された行は見えないが窓の上（見出しの位置）に重なるので、押下を奪わない。
+              className={cn("absolute inset-x-0 top-0", row < 0 && "pointer-events-none")}
               // 新着は窓の下から入ってくる（初回は下端の外に置いてから定位置へ送る）。
               initial={animate ? { y: `${rows * ROW_REM}rem`, opacity: 0 } : false}
               animate={{ y: `${row * ROW_REM}rem`, opacity: row < 0 ? 0 : 1 }}
