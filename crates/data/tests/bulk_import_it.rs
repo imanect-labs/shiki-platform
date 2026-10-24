@@ -256,7 +256,15 @@ async fn bulk_import_matches_single_creates_and_rejects_invalid_rows() {
         );
     }
     let single = create_table(&store, &c, "single", rich_with_refs(customers.id)).await;
-    let bulk = create_table(&store, &c, "bulk", rich_with_refs(customers.id)).await;
+    // 行のエラーは列の表示名で名指しする（参照名・内部語を出さない・3 回目の検証 3-B-3）。
+    let mut bulk_schema = rich_with_refs(customers.id);
+    bulk_schema
+        .fields
+        .iter_mut()
+        .find(|f| f.key == "amount")
+        .unwrap()
+        .display_name = "金額".into();
+    let bulk = create_table(&store, &c, "bulk", bulk_schema).await;
     // 既存の行（unique の衝突相手）。
     store
         .create_record(
@@ -347,16 +355,29 @@ async fn bulk_import_matches_single_creates_and_rejects_invalid_rows() {
             .clone()
     };
     assert!(msg(5).contains("必須"), "{}", msg(5));
-    assert!(msg(10).contains("数値"), "{}", msg(10));
-    assert!(msg(15).contains("unique"), "{}", msg(15));
-    assert!(msg(20).contains("unique"), "{}", msg(20));
+    assert!(
+        msg(10).contains("「金額」は数字で指定してください"),
+        "{}",
+        msg(10)
+    );
+    // unique の違反は REST の 409 と同じ文言（表示名・「重複できない列」・参照名や「unique」を出さない）。
+    for row in [15, 20, 150] {
+        let m = msg(row);
+        assert!(
+            m.contains("「金額」") && m.contains("重複できない列"),
+            "{row}: {m}"
+        );
+        assert!(
+            !m.contains("unique") && !m.contains("'amount'"),
+            "{row}: {m}"
+        );
+    }
     assert!(
         msg(25).contains("最大") || msg(25).contains("多"),
         "{}",
         msg(25)
     );
     assert!(msg(30).contains("見つかりません"), "{}", msg(30));
-    assert!(msg(150).contains("unique"), "{}", msg(150));
     assert_eq!(errors[0].key.as_deref(), Some("k5"));
     // 2 ページ目（keyset）。
     let page2 = store
@@ -1671,8 +1692,15 @@ async fn bulk_import_materializes_invariant_rollups_and_enforces_link_cardinalit
         errs.iter().map(|e| e.row_no).collect::<Vec<_>>(),
         vec![2, 3, 4]
     );
-    assert!(errs[0].message.contains("カーディナリティ"), "{errs:?}");
-    assert!(errs[1].message.contains("カーディナリティ"), "{errs:?}");
+    // 1 件の書込の 409 と同じ文言（列の表示名・内部語を出さない・3 回目の検証 3-B-3）。
+    assert!(
+        errs[0].message.contains("一対一・一対多のリンク"),
+        "{errs:?}"
+    );
+    assert!(
+        errs[1].message.contains("一対一・一対多のリンク"),
+        "{errs:?}"
+    );
     // 逆方向（対称列）も同じ Tx で書かれている。
     let seat3 = store
         .get_record(&c, seats.id, seat_ids[3], None)

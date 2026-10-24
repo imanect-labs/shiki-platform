@@ -569,9 +569,7 @@ impl<'a> Binder<'a> {
             return Err(DataError::input_detail(
                 crate::InvalidCode::FieldNotIndexed,
                 Some(key),
-                format!(
-                    "フィールド '{key}' はフィルタ/ソート対象として宣言されていません（indexed）"
-                ),
+                format!("'{key}' では絞り込み・並べ替えできません（索引がありません）"),
             ));
         }
         let kind = match f.field_type {
@@ -662,9 +660,7 @@ impl<'a> Binder<'a> {
                 return Err(DataError::input_detail(
                     crate::InvalidCode::FieldNotIndexed,
                     Some(&k),
-                    format!(
-                    "フィールド '{k}' は部分一致検索の対象として宣言されていません（searchable）"
-                ),
+                    format!("'{k}' は部分一致検索の対象ではありません"),
                 ));
             }
             terms.push(Expr::atom(f.id, Leaf::Contains(text.to_string())));
@@ -673,7 +669,7 @@ impl<'a> Binder<'a> {
             return Err(DataError::input_detail(
                 crate::InvalidCode::InvalidInput,
                 None,
-                "部分一致検索の対象列（searchable）がありません",
+                "部分一致検索の対象の列がありません",
             ));
         }
         Ok(Expr::Or(terms))
@@ -826,7 +822,7 @@ fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, 
                 _ if !f.searchable => Err(DataError::input_detail(
                     crate::InvalidCode::FieldNotIndexed,
                     Some(key),
-                    format!("'{key}' は部分一致検索の対象として宣言されていません（searchable）"),
+                    format!("'{key}' は部分一致検索の対象ではありません"),
                 )),
                 CondOp::Contains => leaf(Leaf::Contains(s.to_string())),
                 _ => leaf(Leaf::EndsWith(s.to_string())),
@@ -861,7 +857,7 @@ fn scalar(f: &BField, v: &Value) -> Result<Val, DataError> {
                 DataError::input_detail(
                     crate::InvalidCode::ValueTypeMismatch,
                     Some(key),
-                    format!("フィルタ '{key}' は UUID 文字列で指定してください"),
+                    format!("フィルタ '{key}' は ID（UUID）で指定してください"),
                 )
             }),
         FieldKind::Text | FieldKind::Multi => {

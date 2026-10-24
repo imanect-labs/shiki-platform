@@ -102,7 +102,7 @@ async fn validate_inner(
             return Err(field_err(
                 InvalidCode::InvalidInput,
                 key,
-                format!("フィールド '{key}' は派生フィールドのため書込できません"),
+                format!("'{key}' は自動で計算する列のため書き込めません"),
             ));
         }
         if f.is_reverse_link() {
@@ -169,7 +169,7 @@ fn required_missing(key: &str) -> DataError {
     field_err(
         InvalidCode::RequiredMissing,
         key,
-        format!("必須フィールド '{key}' がありません"),
+        format!("必須の '{key}' に値がありません"),
     )
 }
 
@@ -222,7 +222,7 @@ fn type_mismatch(name: &str, want: &str) -> DataError {
     field_err(
         InvalidCode::ValueTypeMismatch,
         name,
-        format!("フィールド '{name}' は {want} である必要があります"),
+        format!("'{name}' は{want}で指定してください"),
     )
 }
 
@@ -230,9 +230,9 @@ fn type_mismatch(name: &str, want: &str) -> DataError {
 fn validate_date(name: &str, v: &Value) -> Result<Value, DataError> {
     let s = v
         .as_str()
-        .ok_or_else(|| type_mismatch(name, "YYYY-MM-DD 文字列"))?;
+        .ok_or_else(|| type_mismatch(name, "日付（YYYY-MM-DD）"))?;
     let d = NaiveDate::parse_from_str(s, "%Y-%m-%d")
-        .map_err(|_| type_mismatch(name, "YYYY-MM-DD 文字列"))?;
+        .map_err(|_| type_mismatch(name, "日付（YYYY-MM-DD）"))?;
     // 固定幅（辞書順＝日付順）を保てる 0001〜9999 年だけ（紀元前・5 桁の年を拒否・検証 D-12）。
     if !(1..=9999).contains(&d.year()) {
         return Err(out_of_range(
@@ -249,8 +249,9 @@ fn validate_date(name: &str, v: &Value) -> Result<Value, DataError> {
 fn validate_date_time(name: &str, v: &Value) -> Result<Value, DataError> {
     let s = v
         .as_str()
-        .ok_or_else(|| type_mismatch(name, "RFC3339 文字列"))?;
-    let dt = DateTime::parse_from_rfc3339(s).map_err(|_| type_mismatch(name, "RFC3339 文字列"))?;
+        .ok_or_else(|| type_mismatch(name, "日時（タイムゾーン付きの ISO 8601）"))?;
+    let dt = DateTime::parse_from_rfc3339(s)
+        .map_err(|_| type_mismatch(name, "日時（タイムゾーン付きの ISO 8601）"))?;
     // UTC 固定幅（マイクロ秒・Z 終端）へ正規化: 辞書順＝時刻順を保証する。
     let utc: DateTime<Utc> = dt.with_timezone(&Utc);
     // 閏秒（:60）は保存形の固定幅・時刻順を崩すので受け付けない。年も 0001〜9999 だけ（検証 D-12）。
@@ -280,7 +281,7 @@ async fn validate_field_value(
     let type_err = |want: &str| type_mismatch(name, want);
     match f.field_type {
         FieldType::Text => {
-            let s = v.as_str().ok_or_else(|| type_err("文字列"))?;
+            let s = v.as_str().ok_or_else(|| type_err("文字"))?;
             // 上限は文字数（Unicode スカラー値の数・UI の「字」と同じ数え方・検証 A-3）。
             if s.chars().count() > MAX_TEXT_LEN {
                 return Err(field_err(
@@ -292,23 +293,23 @@ async fn validate_field_value(
             Ok(v.clone())
         }
         FieldType::Number => {
-            let n = v.as_f64().ok_or_else(|| type_err("数値"))?;
+            let n = v.as_f64().ok_or_else(|| type_err("数字"))?;
             if !n.is_finite() {
-                return Err(type_err("有限の数値"));
+                return Err(type_err("有限の数字"));
             }
             crate::numeric::normalize_number(f, v)
         }
         FieldType::Date => validate_date(name, v),
         FieldType::DateTime => validate_date_time(name, v),
         FieldType::Select => {
-            let s = v.as_str().ok_or_else(|| type_err("文字列"))?;
+            let s = v.as_str().ok_or_else(|| type_err("文字"))?;
             if !f.options.iter().any(|o| o == s) {
                 return Err(not_an_option(name));
             }
             Ok(v.clone())
         }
         FieldType::MultiSelect => {
-            let arr = v.as_array().ok_or_else(|| type_err("文字列配列"))?;
+            let arr = v.as_array().ok_or_else(|| type_err("選択肢の配列"))?;
             if arr.len() > max_multi_values {
                 return Err(field_err(
                     InvalidCode::TooManyValues,
@@ -318,7 +319,7 @@ async fn validate_field_value(
             }
             let mut seen = std::collections::HashSet::new();
             for item in arr {
-                let s = item.as_str().ok_or_else(|| type_err("文字列配列"))?;
+                let s = item.as_str().ok_or_else(|| type_err("選択肢の配列"))?;
                 if !f.options.iter().any(|o| o == s) {
                     return Err(not_an_option(name));
                 }
@@ -386,7 +387,7 @@ async fn validate_field_value(
             Err(field_err(
                 InvalidCode::InvalidInput,
                 name,
-                format!("フィールド '{name}' は派生フィールドのため書込できません"),
+                format!("'{name}' は自動で計算する列のため書き込めません"),
             ))
         }
     }
@@ -407,7 +408,7 @@ fn validate_link_value(
             Value::Array(a) => a.clone(),
             _ => {
                 return Err(field_err(InvalidCode::ValueTypeMismatch, name, format!(
-                        "フィールド '{name}' は UUID 文字列（または要素 1 件までの UUID 配列）である必要があります"
+                        "'{name}' はリンク先のレコードの ID（または ID 1 件までの配列）で指定してください"
                     ),
                 ))
             }
@@ -419,7 +420,7 @@ fn validate_link_value(
         field_err(
             InvalidCode::ValueTypeMismatch,
             name,
-            format!("フィールド '{name}' は UUID 文字列の配列 である必要があります"),
+            format!("'{name}' はリンク先のレコードの ID の配列で指定してください"),
         )
     })?;
     let max = if link.cardinality.src_single() {
@@ -460,7 +461,7 @@ fn require_nonempty_str<'v>(v: &'v Value, name: &str) -> Result<&'v str, DataErr
         field_err(
             InvalidCode::ValueTypeMismatch,
             name,
-            format!("'{name}' は文字列である必要があります"),
+            format!("'{name}' は文字で指定してください"),
         )
     })?;
     if s.is_empty() || s.len() > crate::ref_id::MAX_REF_ID_BYTES {
@@ -478,14 +479,14 @@ fn require_uuid_str(v: &Value, name: &str) -> Result<Uuid, DataError> {
         field_err(
             InvalidCode::ValueTypeMismatch,
             name,
-            format!("'{name}' は UUID 文字列である必要があります"),
+            format!("'{name}' は ID（UUID）で指定してください"),
         )
     })?;
     Uuid::parse_str(s).map_err(|_| {
         field_err(
             InvalidCode::ValueTypeMismatch,
             name,
-            format!("'{name}' は UUID 文字列である必要があります"),
+            format!("'{name}' は ID（UUID）で指定してください"),
         )
     })
 }

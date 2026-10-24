@@ -214,32 +214,31 @@ pub(crate) fn validate_spec(f: &FieldDef) -> Result<(), DataError> {
     let Some(spec) = &f.numeric_spec else {
         return Ok(());
     };
-    let name = &f.key;
+    // 定義の誤りは表示名で名指しする（参照名・内部の項目名を見せない・3 回目の検証 3-B-6）。
+    let name = f.label();
     if f.field_type != FieldType::Number {
         return Err(crate::schema_invalid(format!(
-            "'{name}': numeric_spec は number 型にのみ指定できます"
+            "「{name}」：小数の桁数・範囲は数値の列にだけ指定できます"
         )));
     }
     if spec.scale > MAX_SCALE {
         return Err(crate::schema_invalid(format!(
-            "'{name}': numeric_spec.scale は 0〜{MAX_SCALE} で指定してください"
+            "「{name}」の小数の桁数は 0〜{MAX_SCALE} で指定してください"
         )));
     }
     let bound = |v: Option<f64>, label: &str| -> Result<Option<Dec>, DataError> {
         v.map(|x| {
             Dec::from_f64(x).ok_or_else(|| {
-                crate::schema_invalid(format!(
-                    "'{name}': numeric_spec.{label} は有限の数値で指定してください"
-                ))
+                crate::schema_invalid(format!("「{name}」の{label}は有限の数字で指定してください"))
             })
         })
         .transpose()
     };
-    let (min, max) = (bound(spec.min, "min")?, bound(spec.max, "max")?);
+    let (min, max) = (bound(spec.min, "最小値")?, bound(spec.max, "最大値")?);
     if let (Some(lo), Some(hi)) = (&min, &max) {
         if lo > hi {
             return Err(crate::schema_invalid(format!(
-                "'{name}': numeric_spec.min が max より大きくなっています"
+                "「{name}」の最小値が最大値より大きくなっています"
             )));
         }
     }
@@ -256,14 +255,14 @@ pub(crate) fn normalize_number(f: &FieldDef, v: &Value) -> Result<Value, DataErr
         return Err(DataError::input_detail(
             crate::InvalidCode::ValueTypeMismatch,
             Some(name),
-            format!("フィールド '{name}' は 数値 である必要があります"),
+            format!("'{name}' は数字で指定してください"),
         ));
     };
     let dec = Dec::parse(&n.to_string()).ok_or_else(|| {
         DataError::input_detail(
             crate::InvalidCode::ValueTypeMismatch,
             Some(name),
-            format!("'{name}' の数値を解釈できません"),
+            format!("'{name}' の数字を解釈できません"),
         )
     })?;
     let scale = usize::from(spec.scale);
@@ -287,7 +286,7 @@ pub(crate) fn normalize_number(f: &FieldDef, v: &Value) -> Result<Value, DataErr
             return Err(DataError::input_detail(
                 crate::InvalidCode::ValueOutOfRange,
                 Some(name),
-                format!("'{name}' は {} 以上である必要があります", lo.canonical()),
+                format!("'{name}' は {} 以上で指定してください", lo.canonical()),
             ));
         }
     }
@@ -296,7 +295,7 @@ pub(crate) fn normalize_number(f: &FieldDef, v: &Value) -> Result<Value, DataErr
             return Err(DataError::input_detail(
                 crate::InvalidCode::ValueOutOfRange,
                 Some(name),
-                format!("'{name}' は {} 以下である必要があります", hi.canonical()),
+                format!("'{name}' は {} 以下で指定してください", hi.canonical()),
             ));
         }
     }

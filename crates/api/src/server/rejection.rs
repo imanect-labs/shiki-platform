@@ -77,7 +77,7 @@ fn classify(status: StatusCode, text: &str) -> (StatusCode, &'static str, String
         return (
             StatusCode::BAD_REQUEST,
             "invalid_input",
-            format!("クエリ文字列を読めません: {}", serde_message(rest)),
+            format!("クエリ文字列を読めません: {}", query_message(rest)),
         );
     }
     if text.starts_with(PATH) || text.starts_with("Wrong number of path arguments") {
@@ -159,6 +159,42 @@ pub(crate) fn serde_message(raw: &str) -> String {
     }
 }
 
+/// クエリ文字列（`serde_urlencoded`）の誤りを利用者向けの日本語へ。JSON の誤りとは文言の形が違う
+/// （`expected_rev: invalid digit found in string` のように項目名が前に付く）ので、JSON と呼ばない
+/// （3 回目の検証 3-B-6: `expected_rev=abc` が「JSON の形が正しくありません」だった）。
+pub(crate) fn query_message(raw: &str) -> String {
+    let (field, msg) = match raw.split_once(": ") {
+        Some((f, m))
+            if !f.is_empty()
+                && f.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') =>
+        {
+            (Some(f), m)
+        }
+        _ => (None, raw),
+    };
+    if msg.starts_with("missing field ") || msg.starts_with("unknown field ") {
+        return serde_message(msg);
+    }
+    let want = if msg.contains("digit")
+        || msg.contains("number")
+        || msg.contains("integer")
+        || msg.contains("float")
+    {
+        "（数値で指定してください）"
+    } else if msg.contains("true") && msg.contains("false") {
+        "（true か false で指定してください）"
+    } else if msg.contains("UUID") || msg.contains("uuid") {
+        "（識別子は UUID で指定してください）"
+    } else {
+        ""
+    };
+    match field {
+        Some(f) => format!("項目 '{f}' の値が正しくありません{want}"),
+        None => format!("値が正しくありません{want}"),
+    }
+}
+
 /// serde_json の「… at line L column C」の位置を外す。
 fn split_position(raw: &str) -> (&str, Option<(u64, u64)>) {
     if let Some(i) = raw.rfind(" at line ") {
@@ -204,6 +240,32 @@ mod tests {
         assert!(m.contains("サロゲート"));
         let m = serde_message("unknown variant `zz`, expected one of `a`, `b`");
         japanese_only(&m);
+    }
+
+    #[test]
+    fn query_string_errors_are_not_called_json() {
+        let (_, _, m) = classify(
+            StatusCode::BAD_REQUEST,
+            "Failed to deserialize query string: expected_rev: invalid digit found in string",
+        );
+        assert_eq!(
+            m,
+            "クエリ文字列を読めません: 項目 'expected_rev' の値が正しくありません（数値で指定してください）"
+        );
+        let (_, _, m) = classify(
+            StatusCode::BAD_REQUEST,
+            "Failed to deserialize query string: limit: invalid digit found in string",
+        );
+        assert!(m.contains("'limit'") && !m.contains("JSON"), "{m}");
+        let (_, _, m) = classify(
+            StatusCode::BAD_REQUEST,
+            "Failed to deserialize query string: missing field `expected_rev`",
+        );
+        assert!(
+            m.contains("'expected_rev' がありません") && !m.contains("JSON"),
+            "{m}"
+        );
+        assert!(!m.contains("missing field") && !m.contains("Failed"), "{m}");
     }
 
     #[test]

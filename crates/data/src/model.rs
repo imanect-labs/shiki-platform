@@ -124,8 +124,9 @@ pub struct FieldDef {
     /// 表示名（自由文・日本語可・いつでも変更可）。省略時は `key`。
     #[serde(default)]
     pub display_name: String,
-    /// 既定の表示順（ビューが上書き可能）。全フィールド省略時は宣言順。
-    #[serde(default)]
+    /// 既定の表示順（ビューが上書き可能）。全フィールド省略時は宣言順。改訂で省略した既存の列は今の順を
+    /// 保ち、新しい列は末尾に置く。保存時に重複・欠番を詰める（0 からの連番）。
+    #[serde(default = "order_unset")]
     pub order: i32,
     /// 説明（列ヘッダのツールチップ）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -225,7 +226,23 @@ pub enum RoundingMode {
     Up,
 }
 
+/// 入力で `order` を省略した印（[`crate::field_key::assign_field_ids`] が採番する・保存値には残らない）。
+pub(crate) const ORDER_UNSET: i32 = i32::MIN;
+
+fn order_unset() -> i32 {
+    ORDER_UNSET
+}
+
 impl FieldDef {
+    /// 利用者向けの文言に使う列の名前（表示名・空なら参照名）。
+    pub fn label(&self) -> &str {
+        if self.display_name.trim().is_empty() {
+            &self.key
+        } else {
+            &self.display_name
+        }
+    }
+
     /// 最小のフィールド定義（`id` 未採番・`display_name` = `key`）。
     pub fn new(key: impl Into<String>, field_type: FieldType) -> Self {
         let key = key.into();

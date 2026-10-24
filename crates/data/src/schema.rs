@@ -261,8 +261,8 @@ pub(crate) fn validate_schema_update(
     for cur in &current.fields {
         let Some(nf) = next.field_by_id(cur.id) else {
             return Err(crate::schema_invalid(format!(
-                "フィールド '{}' は削除できません（additive 変更のみ）",
-                cur.key
+                "「{}」は削除できません（列の追加と変更だけができます）",
+                cur.label()
             )));
         };
         if nf.key != cur.key {
@@ -273,23 +273,23 @@ pub(crate) fn validate_schema_update(
         }
         if nf.field_type != cur.field_type {
             return Err(crate::schema_invalid(format!(
-                "フィールド '{}' の型は変更できません",
-                cur.key
+                "「{}」の型は変更できません（別の型にするには新しい列を追加してください）",
+                cur.label()
             )));
         }
         // 型固有の定義（参照先・派生定義）も不変（保存済み値の解釈が変わるため）。
         if nf.ref_table != cur.ref_table {
             return Err(crate::schema_invalid(format!(
-                "フィールド '{}' の ref_table は変更できません",
-                cur.key
+                "「{}」の参照先のテーブルは変更できません",
+                cur.label()
             )));
         }
         // 精度宣言も不変（保存済みの値と索引は宣言時の規則で正規化されている。変えるなら
         // 既存値の再正規化が要るため、改訂経路では受けない）。
         if nf.numeric_spec != cur.numeric_spec {
             return Err(crate::schema_invalid(format!(
-                "フィールド '{}' の numeric_spec は変更できません",
-                cur.key
+                "「{}」の小数の桁数・範囲は作成後に変更できません",
+                cur.label()
             )));
         }
         if nf.lookup != cur.lookup
@@ -298,8 +298,8 @@ pub(crate) fn validate_schema_update(
             || nf.formula != cur.formula
         {
             return Err(crate::schema_invalid(format!(
-                "フィールド '{}' の lookup/computed/rollup/formula 定義は変更できません",
-                cur.key
+                "「{}」の計算の定義（ルックアップ・集計・数式）は作成後に変更できません",
+                cur.label()
             )));
         }
         // リンク定義（カーディナリティ・対称列）も不変（変えるなら既存行の再検証が要る・§7.1）。
@@ -312,8 +312,8 @@ pub(crate) fn validate_schema_update(
         };
         if strip(&nf.link) != strip(&cur.link) {
             return Err(crate::schema_invalid(format!(
-                "フィールド '{}' の link は変更できません",
-                cur.key
+                "「{}」のリンクの種類（対応の数・対称列）は作成後に変更できません",
+                cur.label()
             )));
         }
     }

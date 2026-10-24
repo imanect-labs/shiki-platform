@@ -127,9 +127,14 @@ fn denied(err: &DataError) -> ToolOutcome {
             format!("入力が不正です（{}）: {}", e.code().as_str(), e.message())
         }
         DataError::Rejected(r) => format!("クエリを受け付けられません: {r}"),
+        // unique 違反は再試行で解決しない（値を変えるか、既存のレコードを更新する・3 回目の検証 3-B-3）。
+        DataError::UniqueViolation { .. } => format!(
+            "重複できない列の値が既に使われているため書き込めませんでした（unique_violation・再試行では解決しません）。\
+             値を変えるか、既存のレコードを更新してください: {}",
+            err.conflict_detail().unwrap_or_default()
+        ),
         DataError::Conflict(_)
         | DataError::RevConflict { .. }
-        | DataError::UniqueViolation { .. }
         | DataError::NameTaken
         | DataError::DerivedRecomputing { .. } => format!(
             "他の更新と競合しました。読み直してから再試行してください: {}",
@@ -652,6 +657,25 @@ mod tests {
             denied(&DataError::Internal("db down".into())).content,
             "データの操作に失敗しました。"
         );
+    }
+
+    /// unique 違反は「競合・再試行」ではなく、再試行で解決しないことと列の表示名を伝える（3-B-3）。
+    #[test]
+    fn unique_violation_is_not_reported_as_a_retryable_conflict() {
+        let msg = denied(&DataError::UniqueViolation {
+            field: Some(data::ConflictField {
+                key: "code".into(),
+                display_name: "社員番号".into(),
+                link: false,
+            }),
+        })
+        .content;
+        assert!(
+            msg.contains("unique_violation") && msg.contains("社員番号"),
+            "{msg}"
+        );
+        assert!(msg.contains("再試行では解決しません"), "{msg}");
+        assert!(!msg.contains("競合しました"), "{msg}");
     }
 
     #[test]

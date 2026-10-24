@@ -166,6 +166,29 @@ async fn schema_changes_that_conflict_with_data_are_rejected() {
     );
     let msg = r.unwrap_err().invalid_message().unwrap();
     assert!(msg.contains("メモ") && msg.contains("1 件"), "{msg}");
+    assert!(!msg.contains("件 あるため"), "余分な空白（3-A-2）: {msg}");
+    // 行のあるテーブルへ必須の新しい列を足す → 同じ 400（既存の列の必須化と対称・3 回目の検証 3-A-10）。
+    let r = store
+        .update_table_schema(
+            &c,
+            t.id,
+            with(&|s| {
+                let mut f = data::FieldDef::new("due", data::FieldType::Date);
+                f.display_name = "期限".into();
+                f.required = true;
+                s.fields.push(f);
+            }),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(
+        code_of(&r),
+        Some(InvalidCode::SchemaConflictsWithData),
+        "{r:?}"
+    );
+    let msg = r.unwrap_err().invalid_message().unwrap();
+    assert!(msg.contains("「期限」") && msg.contains("2 件"), "{msg}");
     // 使われている選択肢を外す → 400（単一選択・複数選択とも）。
     let r = store
         .update_table_schema(

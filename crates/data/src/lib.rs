@@ -136,7 +136,8 @@ pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
 pub use query::admission::{QuerySuggestion, DEFAULT_READ_BUDGET_MS, DEFAULT_TENANT_READ_TOKENS};
 pub use query::ir::{
     AggregateGroup, CondCmp, CondOp, Condition, CountResult, DataQuery, GroupSortKey, HavingCmp,
-    HavingCond, JoinSpec, LinkCond, Metric, MetricSpec, QueryResult, SortKey, DATA_QUERY_KEYS,
+    HavingCond, JoinSpec, LinkCond, Metric, MetricSpec, QueryParseError, QueryResult, SortKey,
+    DATA_QUERY_KEYS,
 };
 pub use query::limits::{
     QueryLimits, MAX_AST_DEPTH, MAX_AST_NODES, MAX_COMPILE_MS, MAX_COMPILE_WORK, MAX_JOIN_DEPTH,
@@ -353,10 +354,7 @@ impl InputError {
             } else {
                 display
             };
-            let m = self
-                .message
-                .replace(&format!("'{key}'"), &format!("「{label}」"));
-            self.message = std::borrow::Cow::Owned(m);
+            self.message = std::borrow::Cow::Owned(relabel_text(&self.message, key, label));
         }
         self
     }
@@ -367,6 +365,42 @@ impl InputError {
             Some(k) if !allowed(k) => InputError::new(self.code),
             _ => self,
         }
+    }
+}
+
+/// 文言の `'key'` を `「label」` にする。かぎ括弧は前後の語と離さない（「必須フィールド 「件名」 がありません」の
+/// ような余分な空白を作らない・3 回目の検証 3-A-2）。
+pub(crate) fn relabel_text(message: &str, key: &str, label: &str) -> String {
+    let quoted = format!("'{key}'");
+    let to = format!("「{label}」");
+    message
+        .replace(&format!(" {quoted} "), &to)
+        .replace(&format!(" {quoted}"), &to)
+        .replace(&format!("{quoted} "), &to)
+        .replace(&quoted, &to)
+}
+
+/// 列を名指しする入力の誤りの文言を、閲覧者が読める列なら表示名にする（クエリ・スキーマの拒否・3-A-3）。
+pub(crate) fn relabel_for_schema(
+    e: DataError,
+    schema: &model::TableSchema,
+    readable: impl Fn(&str) -> bool,
+) -> DataError {
+    match e {
+        DataError::InvalidInput(ie) => {
+            let field = ie
+                .field_key()
+                .filter(|k| readable(k))
+                .and_then(|k| schema.field(k))
+                .map(|f| (f.key.clone(), f.display_name.clone()));
+            match field {
+                Some((key, display)) => {
+                    DataError::InvalidInput(Box::new(ie.relabel(&key, &display)))
+                }
+                None => DataError::InvalidInput(ie),
+            }
+        }
+        other => other,
     }
 }
 
@@ -413,7 +447,7 @@ pub enum DataError {
     /// unique 宣言・一対一 / 一対多のリンクの参照先の一意の違反（409・`code: unique_violation`）。
     /// 重複した値・相手の行は返さない。`field` は違反した列（書き手が読める列のときだけ・
     /// [`scrub_input_field`]）。
-    #[error("競合しています: unique 制約に違反しています")]
+    #[error("競合しています: 値が既に他のレコードで使われています（重複できない列）")]
     UniqueViolation { field: Option<ConflictField> },
     /// 材料化した派生列が参照先の変更を受けて再計算中（409・`code: derived_recomputing`・再試行可）。
     /// 完了までその列で絞り込み・並べ替えできない（data-platform §7.4）。
@@ -454,6 +488,9 @@ pub enum DataError {
     #[error("クエリを受け付けられません: {0}")]
     Rejected(Box<QueryRejection>),
 }
+
+/// 列を名指しできない（書き手が読めない列の）unique 違反の文言。値・相手の行・列名を含めない。
+pub const UNIQUE_VIOLATION_MESSAGE: &str = "値が既に他のレコードで使われています（重複できない列）";
 
 /// 409 `unique_violation` を起こした列（参照名と表示名・値は持たない）。
 ///
@@ -570,9 +607,7 @@ impl DataError {
                 Some(format!("rev が一致しません（現在 {current}）"))
             }
             DataError::UniqueViolation { field: Some(f) } => Some(f.message()),
-            DataError::UniqueViolation { field: None } => {
-                Some("unique 制約に違反しています".into())
-            }
+            DataError::UniqueViolation { field: None } => Some(UNIQUE_VIOLATION_MESSAGE.into()),
             DataError::DerivedRecomputing { .. } => Some(self.to_string()),
             DataError::NameTaken => Some("同じ名前のテーブルが既にあります".into()),
             _ => None,
@@ -646,7 +681,7 @@ mod conflict_field_tests {
         );
         assert_eq!(
             e.conflict_detail().as_deref(),
-            Some("unique 制約に違反しています")
+            Some(UNIQUE_VIOLATION_MESSAGE)
         );
         // 読める列はそのまま（表示名つきの文言）。
         let e = scrub_input_field(violation("code"), |k| k != "secret");

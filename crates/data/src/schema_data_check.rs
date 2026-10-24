@@ -1,6 +1,7 @@
 //! スキーマの改訂と既存データの整合（検証 2-A-P1-1 ①）。
 //!
-//! 値の無い行がある列への「必須」の付与・使われている選択肢の削除を通すと、既存の行が検証に通らなくなる。
+//! 値の無い行がある列への「必須」の付与・行のあるテーブルへの必須の新しい列の追加・使われている選択肢の
+//! 削除を通すと、既存の行が検証に通らなくなる。
 //! 改訂の Tx（テーブル行を `FOR UPDATE` 済み＝並行する書込はこの前後に直列化される）の中で既存データを
 //! 数え、矛盾があれば理由（列の表示名・件数）付きの 400 `schema_conflicts_with_data` で拒否する
 //! （一意化の 409 と同じく、改訂の前に数えて止める）。
@@ -25,6 +26,29 @@ pub(crate) async fn check_schema_against_data(
     current: &TableSchema,
     next: &TableSchema,
 ) -> Result<(), DataError> {
+    // 行のあるテーブルに必須の新しい列を足すと、既存の行がどれも値を持たず検証に通らなくなる（既存の列を
+    // 必須にする改訂と同じ矛盾・3 回目の検証 3-A-10）。同じ理由で拒否する。
+    for nf in &next.fields {
+        if !nf.required
+            || nf.field_type.is_derived()
+            || nf.is_reverse_link()
+            || current.field_by_id(nf.id).is_some()
+        {
+            continue;
+        }
+        let n = count(conn, keys, MISSING, &json_key(nf.id), &[]).await?;
+        if n > 0 {
+            return Err(conflict(
+                nf,
+                format!(
+                    "「{}」は必須の列として追加できません。値の無いレコードが {}あります（必須にしない列として追加し、\
+                     値を入れてから必須にしてください）",
+                    label(nf),
+                    amount(n)
+                ),
+            ));
+        }
+    }
     for cur in &current.fields {
         let Some(nf) = next.field_by_id(cur.id) else {
             continue;
@@ -38,7 +62,7 @@ pub(crate) async fn check_schema_against_data(
                 return Err(conflict(
                     nf,
                     format!(
-                        "「{}」に値の無いレコードが {} あるため必須にできません（先に値を入れてください）",
+                        "「{}」に値の無いレコードが {}あるため必須にできません（先に値を入れてください）",
                         label(nf),
                         amount(n)
                     ),
@@ -60,7 +84,7 @@ pub(crate) async fn check_schema_against_data(
                 return Err(conflict(
                     nf,
                     format!(
-                        "「{}」の選択肢「{}」は {} のレコードで使われているため外せません（先に値を変えてください）",
+                        "「{}」の選択肢「{}」は {}のレコードで使われているため外せません（先に値を変えてください）",
                         label(nf),
                         removed.join("」「"),
                         amount(n)
@@ -104,11 +128,7 @@ async fn count(
 }
 
 fn label(f: &FieldDef) -> &str {
-    if f.display_name.trim().is_empty() {
-        &f.key
-    } else {
-        &f.display_name
-    }
+    f.label()
 }
 
 fn amount(n: i64) -> String {

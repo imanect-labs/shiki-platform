@@ -79,10 +79,16 @@ impl DataStore {
                 bind_query_scoped(&table.schema, &masked, query, &scopes, opts)
             })
             .map_err(rej)?;
-        let mut bq = self.note_candidates(table_id, &table, &masked, query, bound)?;
+        // 列を名指しする拒否の文言は、読める列なら表示名にする（参照名を見せない・3 回目の検証 3-A-3）。
+        let label =
+            |e: DataError| crate::relabel_for_schema(e, &table.schema, |k| !masked.contains(k));
+        let mut bq = self
+            .note_candidates(table_id, &table, &masked, query, bound)
+            .map_err(label)?;
         // ユーザー・部署の列の比較値は ID の形式だけ（表示名で黙って 0 件にしない・存在は問わない・
         // 検証 2-A-P2-3）。
-        super::ref_operands::check_ref_operands(&table.schema, query.filter.as_ref())?;
+        super::ref_operands::check_ref_operands(&table.schema, query.filter.as_ref())
+            .map_err(label)?;
         // 材料化した派生列で絞る・並べるなら、その前提（4 階層）を今の認可状態で検査し直す。崩れていれば
         // 降格（索引行を同一 Tx で破棄）してから束縛し直す＝その列はフィルタ/ソートに使えなくなる（PIT-71）。
         if bq.fields.values().any(|f| f.derived)

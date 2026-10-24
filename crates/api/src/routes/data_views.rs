@@ -45,7 +45,7 @@ pub struct DataQueryRequest {
         (status = 200, description = "クエリ結果（rows または groups）", body = QueryResult),
         (status = 400, description = "クエリ指定が不正", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限がない（マスク列の参照を含む）"),
+        (status = 403, description = "権限がない（本文なし）・存在しない列か読めない列を参照した（code=field_unavailable）", body = crate::error_body::ForbiddenBody),
         (status = 404, description = "テーブルが存在しない"),
         (status = 503, description = "読取が statement timeout で打ち切られた（code=read_timeout・Retry-After・再試行可）", body = crate::error_body::RetryLaterBody),
         (status = 409, description = "列の索引を準備中（code=index_preparing・field・progress）・索引の承認が要る（code=index_approval_required）・材料化した派生列が参照先の変更を受けて再計算中（code=derived_recomputing・field）", body = crate::error_body::ConflictBody),
@@ -88,8 +88,16 @@ impl DataQueryRequest {
                 .into())
             }
         };
+        let query = DataQuery::parse_request(raw).map_err(|e| match e {
+            data::QueryParseError::Data(d) => ApiError::from(d),
+            // 他の本文と同じ「本文（JSON）を読めません: …」（serde の文言は訳して内部語を出さない）。
+            data::QueryParseError::Shape(e) => ApiError::invalid_input(&format!(
+                "本文（JSON）を読めません: {}",
+                crate::server::rejection::serde_message(&e.to_string())
+            )),
+        })?;
         Ok(DataQueryRequest {
-            query: DataQuery::from_request(raw)?,
+            query,
             promote_indexes,
         })
     }
@@ -205,7 +213,7 @@ pub async fn list_table_views(
         (status = 400, description = "クエリ/スキーマが不正", body = crate::error_body::BadRequestBody),
         (status = 422, description = "表示設定が不正・ルックアップ列の上限超過（構造化した理由）", body = crate::error_body::QueryRejectionBody),
         (status = 401, description = "未認証"),
-        (status = 403, description = "対象テーブルの権限がない・マスク列を指定した"),
+        (status = 403, description = "対象テーブルの権限がない（本文なし）・存在しない列か読めない列を指定した（code=field_unavailable）", body = crate::error_body::ForbiddenBody),
         (status = 409, description = "同名ビューが既に存在する・索引の承認が要る", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),

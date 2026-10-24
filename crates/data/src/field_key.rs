@@ -187,11 +187,7 @@ pub(crate) fn assign_field_ids(
             trimmed.to_string()
         };
     }
-    if next.fields.iter().all(|f| f.order == 0) {
-        for (i, f) in next.fields.iter_mut().enumerate() {
-            f.order = i32::try_from(i).unwrap_or(i32::MAX);
-        }
-    }
+    assign_orders(current.map(|(s, _)| s), next);
     let max_assigned = next
         .fields
         .iter()
@@ -199,6 +195,44 @@ pub(crate) fn assign_field_ids(
         .max()
         .unwrap_or(0);
     Ok(counter.max(max_assigned))
+}
+
+/// 表示順を決める（3 回目の検証 3-B-7: 省略した列を 0 番に置き、既存の 0 番と重複させていた）。
+///
+/// - 全列で省略（または全て 0）: 宣言順。
+/// - 省略した既存の列: 今の順を保つ。省略した新しい列: 末尾（宣言順）。
+/// - 最後に 0 からの連番へ詰める（重複・欠番を残さない）。同じ値どうしは宣言順。
+fn assign_orders(current: Option<&TableSchema>, next: &mut TableSchema) {
+    use crate::model::ORDER_UNSET;
+    let unset_or_zero = |o: i32| o == ORDER_UNSET || o == 0;
+    if next.fields.iter().all(|f| unset_or_zero(f.order)) {
+        for (i, f) in next.fields.iter_mut().enumerate() {
+            f.order = i32::try_from(i).unwrap_or(i32::MAX);
+        }
+        return;
+    }
+    let existing: HashMap<FieldId, i32> = current
+        .map(|s| s.fields.iter().map(|f| (f.id, f.order)).collect())
+        .unwrap_or_default();
+    // (区分: 0 = 順を持つ・1 = 末尾に足す, 順, 宣言順) で並べて連番にする。
+    let mut keys: Vec<(u8, i32, usize)> = next
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            if f.order != ORDER_UNSET {
+                (0, f.order, i)
+            } else if let Some(o) = existing.get(&f.id) {
+                (0, *o, i)
+            } else {
+                (1, 0, i)
+            }
+        })
+        .collect();
+    keys.sort_unstable();
+    for (rank, (_, _, i)) in keys.into_iter().enumerate() {
+        next.fields[i].order = i32::try_from(rank).unwrap_or(i32::MAX);
+    }
 }
 
 /// v1 形式（`key_format = 1`）のスキーマを 3 層へ機械的に引き上げる（data-platform §4.3）。

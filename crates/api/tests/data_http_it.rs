@@ -1021,6 +1021,16 @@ async fn unique_conflicts_name_the_column_and_user_filters_check_the_id_format()
     assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
     assert_eq!(b["code"], "value_type_mismatch", "{b}");
     assert_eq!(b["field"], "who", "{b}");
+    // 形の誤りも他の本文と同じ「本文（JSON）を読めません: …」（汎用の文言にしない・3 回目の検証 3-B-6）。
+    let (s, b) = send(&env, post_json("alice", &query, &json!({ "limit": "abc" }))).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
+    assert_eq!(b["code"], "invalid_input", "{b}");
+    let m = b["message"].as_str().unwrap();
+    assert!(m.starts_with("本文（JSON）を読めません"), "{b}");
+    assert!(
+        !m.contains("expected") && !m.contains("invalid type"),
+        "{b}"
+    );
 }
 
 /// 上限を超えた取込の本文は**残りを読み捨ててから** 413 を返す（検証 A P3）。送信の途中で応答して接続を

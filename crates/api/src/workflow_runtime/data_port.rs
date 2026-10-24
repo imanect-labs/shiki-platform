@@ -40,10 +40,16 @@ pub(super) fn map_data(e: DataError) -> PortError {
         e @ DataError::NameTaken => {
             PortError::new("conflict", e.conflict_detail().unwrap_or_default(), false)
         }
-        // rev の不一致・unique（rev を指定しない書込は再試行で読み直して通り得る）。
+        // unique 違反は再試行しても直らない（同じ値は同じく重複する・3 回目の検証 3-B-3）。REST・取込・
+        // チャットと同じ `unique_violation`・列の表示名つきの文言。
+        e @ DataError::UniqueViolation { .. } => PortError::new(
+            "unique_violation",
+            e.conflict_detail().unwrap_or_default(),
+            false,
+        ),
+        // rev の不一致（rev を指定しない書込は再試行で読み直して通り得る）。
         e @ (DataError::Conflict(_)
         | DataError::RevConflict { .. }
-        | DataError::UniqueViolation { .. }
         | DataError::DerivedRecomputing { .. }) => {
             PortError::new("conflict", e.conflict_detail().unwrap_or_default(), true)
         }
@@ -345,5 +351,27 @@ mod tests {
         assert!(map_data(DataError::Conflict("rev".into())).retryable);
         assert!(!map_data(DataError::Invalid("x".into())).retryable);
         assert!(map_data(DataError::Internal("db".into())).retryable);
+    }
+
+    /// unique 違反は REST・取込・チャットと同じ `unique_violation`・再試行不可・列の表示名つき（3-B-3）。
+    #[test]
+    fn unique_violation_is_not_retryable_and_names_the_display_name() {
+        let e = map_data(DataError::UniqueViolation {
+            field: Some(data::ConflictField {
+                key: "code".into(),
+                display_name: "社員番号".into(),
+                link: false,
+            }),
+        });
+        assert_eq!(e.code, "unique_violation");
+        assert!(!e.retryable);
+        assert!(
+            e.message.contains("社員番号") && !e.message.contains("code"),
+            "{}",
+            e.message
+        );
+        let e = map_data(DataError::UniqueViolation { field: None });
+        assert_eq!(e.code, "unique_violation");
+        assert!(!e.retryable);
     }
 }

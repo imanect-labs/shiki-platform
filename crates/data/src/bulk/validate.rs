@@ -43,7 +43,7 @@ pub(super) struct Claim {
     pub key: String,
     /// `Some(参照先テーブル)` ならリンクの参照先（`key` は参照先レコードの外部 ID）。
     pub link: Option<LinkClaim>,
-    /// エラー文言に出すフィールドの参照名。
+    /// エラー文言に出すフィールドの表示名（空なら参照名）。
     pub label: String,
 }
 
@@ -55,18 +55,14 @@ pub(super) struct LinkClaim {
 }
 
 impl Claim {
+    /// 409 `unique_violation` と同じ文言（列の表示名・値と相手の行は含めない・[`crate::ConflictField::message`]）。
     fn message(&self) -> String {
-        if self.link.is_some() {
-            format!(
-                "'{}' のリンク先は既に他のレコードから参照されています（一対一・一対多のカーディナリティ）",
-                self.label
-            )
-        } else {
-            format!(
-                "'{}' の値が既存のレコードまたは取込内の別の行と重複しています（unique）",
-                self.label
-            )
+        crate::ConflictField {
+            key: String::new(),
+            display_name: self.label.clone(),
+            link: self.link.is_some(),
         }
+        .message()
     }
 
     fn pair(&self) -> (i16, String) {
@@ -93,7 +89,7 @@ pub(super) fn claims_of(
                     field: field_id_i16(f.id)?,
                     key: norm,
                     link: None,
-                    label: f.key.clone(),
+                    label: crate::ConflictField::of(f, false).display_name,
                 });
             }
         }
@@ -118,7 +114,7 @@ pub(super) fn claims_of(
                     ref_table,
                     symmetric: field_id_i16(sym)?,
                 }),
-                label: f.key.clone(),
+                label: crate::ConflictField::of(f, true).display_name,
             });
         }
     }
@@ -706,11 +702,19 @@ mod tests {
         assert_eq!(got[0].field, 16);
         assert_eq!(got[0].key, "X-1");
         assert!(got[0].link.is_none());
-        assert!(got[0].message().contains("unique"));
+        assert!(
+            got[0].message().contains("重複できない列"),
+            "{}",
+            got[0].message()
+        );
         assert_eq!(got[1].field, 18);
         assert_eq!(got[1].key, a);
         assert_eq!(got[1].link.as_ref().unwrap().symmetric, 30);
-        assert!(got[1].message().contains("カーディナリティ"));
+        assert!(
+            got[1].message().contains("一対一・一対多"),
+            "{}",
+            got[1].message()
+        );
     }
 
     #[test]
@@ -722,7 +726,7 @@ mod tests {
         assert!(row_message(DataError::Conflict("c".into())).is_ok());
         assert_eq!(
             row_message(DataError::UniqueViolation { field: None }).unwrap(),
-            "unique 制約に違反しています"
+            crate::UNIQUE_VIOLATION_MESSAGE
         );
         assert!(row_message(DataError::Internal("db".into())).is_err());
         assert!(row_message(DataError::Forbidden).is_err());

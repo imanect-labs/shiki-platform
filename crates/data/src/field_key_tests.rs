@@ -248,3 +248,67 @@ fn encode_decode_roundtrip_and_drop_unknown() {
     let back = decode_record(&s, &json!({"f16": "x", "f99": "leak", "title": "v1"}));
     assert_eq!(Value::Object(back), json!({"title": "x"}));
 }
+
+/// 改訂で `order` を省略した列: 既存の列は今の順を保ち、新しい列は末尾。重複は詰める（3 回目の検証 3-B-7:
+/// 省略した新しい列が 0 番になり、既存の 0 番と重複していた）。入力の JSON の省略で確かめる。
+#[test]
+fn omitted_orders_append_new_fields_and_duplicates_are_compacted() {
+    let mut cur: TableSchema = serde_json::from_value(json!({
+        "fields": [
+            {"key": "a", "type": "text"},
+            {"key": "b", "type": "text"},
+            {"key": "c", "type": "text"}
+        ]
+    }))
+    .unwrap();
+    let n = assign_field_ids(None, &mut cur).unwrap();
+    let orders = |s: &TableSchema| -> Vec<(String, i32)> {
+        let mut v: Vec<(String, i32)> = s.fields.iter().map(|f| (f.key.clone(), f.order)).collect();
+        v.sort_by_key(|(_, o)| *o);
+        v
+    };
+    assert_eq!(
+        orders(&cur),
+        vec![("a".into(), 0), ("b".into(), 1), ("c".into(), 2)],
+        "全列で省略は宣言順"
+    );
+    // b を先頭へ動かし、新しい列 d は order を省略する（a・c も省略＝今の順を保つ）。
+    let mut next: TableSchema = serde_json::from_value(json!({
+        "fields": [
+            {"key": "d", "type": "text"},
+            {"key": "a", "type": "text"},
+            {"key": "b", "type": "text", "order": -1},
+            {"key": "c", "type": "text"}
+        ]
+    }))
+    .unwrap();
+    assign_field_ids(Some((&cur, n)), &mut next).unwrap();
+    assert_eq!(
+        orders(&next),
+        vec![
+            ("b".into(), 0),
+            ("a".into(), 1),
+            ("c".into(), 2),
+            ("d".into(), 3)
+        ],
+        "新しい列は末尾・連番に詰める"
+    );
+    // 重複した order は宣言順で詰める。
+    let mut dup: TableSchema = serde_json::from_value(json!({
+        "fields": [
+            {"key": "a", "type": "text", "order": 0},
+            {"key": "b", "type": "text", "order": 0},
+            {"key": "c", "type": "text", "order": 7}
+        ]
+    }))
+    .unwrap();
+    assign_field_ids(Some((&cur, n)), &mut dup).unwrap();
+    assert_eq!(
+        orders(&dup),
+        vec![("a".into(), 0), ("b".into(), 1), ("c".into(), 2)]
+    );
+    assert!(dup
+        .fields
+        .iter()
+        .all(|f| f.order != crate::model::ORDER_UNSET));
+}
