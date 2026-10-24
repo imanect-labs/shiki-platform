@@ -31,6 +31,8 @@ export function inputHints(schema: unknown): WorkflowInputHint[] {
     if (options && options.length >= 2) {
       hint.type = "choice";
       hint.options = options.slice(0, 20);
+      // 値の配列（items.enum）は複数選択（文字列 1 つを送ると、起動のときに入力の検証で断られる）
+      if (type === "array") hint.multi = true;
     } else if (type === "number" || type === "integer") {
       hint.type = "number";
       if (typeof p.minimum === "number" && typeof p.maximum === "number") Object.assign(hint, { min: p.minimum, max: p.maximum });

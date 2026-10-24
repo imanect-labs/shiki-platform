@@ -121,6 +121,9 @@ export function MiniAppEditorDialog({
     setWorkflowToAdd("");
     setTab("build");
     setValidity({ errors: 0 });
+    // 開くたびに組み立てるを作り直す（前に開いたときの段を、別のアプリや取り消した編集のまま残さない）
+    setBuilderKey((k) => k + 1);
+    setInputs({});
     setError(null);
     void listArtifacts("skill").then(setSkills).catch(() => setSkills([]));
     void listArtifacts("workflow").then(setWorkflows).catch(() => setWorkflows([]));
@@ -140,20 +143,23 @@ export function MiniAppEditorDialog({
   };
 
   // 束ねたワークフローの入力の定義（組み立てるで部品の候補と、足りない必須の入力を出すため）。
-  // 読めなくても組み立ては使える（候補が出ないだけ）。
+  // 版ごとに 1 回だけ読む（読めなくても組み立ては使える。候補が出ないだけ）。
+  const requested = React.useRef(new Set<string>());
   React.useEffect(() => {
-    let alive = true;
+    if (!open) requested.current.clear();
+  }, [open]);
+  React.useEffect(() => {
+    if (!open) return;
     for (const p of pins) {
-      if (inputs[p.alias] !== undefined) continue;
+      const key = `${p.artifact_id}@${p.version}`;
+      if (requested.current.has(key)) continue;
+      requested.current.add(key);
       void getWorkflowVersion(p.artifact_id, p.version)
-        .then((w) => alive && setInputs((m) => ({ ...m, [p.alias]: inputHints(w.ir.input_schema) })))
-        .catch(() => alive && setInputs((m) => ({ ...m, [p.alias]: [] })));
+        .then((w) => setInputs((m) => ({ ...m, [key]: inputHints(w.ir.input_schema) })))
+        .catch(() => setInputs((m) => ({ ...m, [key]: [] })));
     }
-    return () => {
-      alive = false;
-    };
-  }, [pins, inputs]);
-  const choices = React.useMemo<WorkflowChoice[]>(() => pins.map((p) => ({ name: p.alias, inputs: inputs[p.alias] })), [pins, inputs]);
+  }, [pins, open]);
+  const choices = React.useMemo<WorkflowChoice[]>(() => pins.map((p) => ({ name: p.alias, inputs: inputs[`${p.artifact_id}@${p.version}`] })), [pins, inputs]);
   const onValidity = React.useCallback((v: ScreenValidity) => setValidity(v), []);
   const blocked = tab === "build" && validity.errors > 0;
 

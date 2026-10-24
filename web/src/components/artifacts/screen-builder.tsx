@@ -53,14 +53,15 @@ export function ScreenBuilder({
     [onScreenChange],
   );
 
+  // 保存を止めるのは、組み立てで直した app の段のエラーだけ（直していない段は元の記述のまま保存され、サーバーが確かめる）
   const errors = React.useMemo(
-    () => blocks.reduce((n, b) => (b.type === "app" ? n + checkApp(b.figure, { workflows, allowChat: false }).filter((p) => p.severity === "error").length : n), 0),
+    () => blocks.reduce((n, b) => (b.type === "app" && b.touched ? n + checkApp(b.figure, { workflows, allowChat: false }).filter((p) => p.severity === "error").length : n), 0),
     [blocks, workflows],
   );
   React.useEffect(() => onValidity({ errors }), [errors, onValidity]);
 
-  // 元の画面の、空行だけの段（図と文章の間の区切り）は見せない。つなぎ直しのために並びには残す
-  const visible = blocks.flatMap((b, i) => (b.type === "text" && b.pos !== undefined && !b.text.trim() ? [] : [i]));
+  // 元の画面で空行だけだった段（図と文章の間の区切り）は見せない。つなぎ直しのために並びには残す
+  const visible = blocks.flatMap((b, i) => (b.type === "text" && b.spacer ? [] : [i]));
   const update = (id: string, fn: (b: ScreenBlock) => ScreenBlock) => commit(blocks.map((b) => (b.id === id ? fn(b) : b)));
   /// 見えている段の並びで、from 番目を to 番目の前へ動かす（to は動かす前の位置。末尾は visible.length）。
   const move = (from: number, to: number) => {
@@ -131,15 +132,13 @@ export function ScreenBuilder({
               {b.type === "text" ? (
                 <textarea
                   aria-label="文章"
-                  value={b.text.replace(/^\n+|\n+$/g, "")}
+                  value={b.body}
+                  // 前後の空行（図との区切り）は段が別に持つので、ここでは中身だけを直す
                   onChange={(e) => {
-                    // 段の端の空行（図との区切り）は残す
-                    const lead = /^\n*/.exec(b.text)![0];
-                    const trail = /\n*$/.exec(b.text)![0];
                     const v = e.currentTarget.value;
-                    update(b.id, (x) => ({ ...x, text: `${lead}${v}${trail}` }));
+                    update(b.id, (x) => (x.type === "text" ? { ...x, body: v } : x));
                   }}
-                  rows={Math.min(8, Math.max(2, b.text.split("\n").length))}
+                  rows={Math.min(8, Math.max(2, b.body.split("\n").length))}
                   placeholder="説明の文（Markdown）"
                   className="block w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm leading-relaxed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
@@ -165,7 +164,7 @@ export function ScreenBuilder({
           <Plus className="size-4" aria-hidden />
           入力とボタン
         </Button>
-        <Button type="button" variant="outline" size="sm" onClick={() => add(newTextBlock("\n"))}>
+        <Button type="button" variant="outline" size="sm" onClick={() => add(newTextBlock())}>
           <Plus className="size-4" aria-hidden />
           文章
         </Button>
