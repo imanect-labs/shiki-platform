@@ -3,6 +3,7 @@
 import type { components } from "@/generated/api";
 
 import { apiFetch } from "./api";
+import { numberedName } from "./file-name";
 import { sha256Hex } from "./sha256";
 
 export type NodeResponse = components["schemas"]["NodeResponse"];
@@ -219,6 +220,35 @@ export function getNode(id: string): Promise<NodeResponse> {
 /// 1 ファイルをアップロードする。`targetNodeId` 指定で既存ファイルへの新バージョン。
 /// `name` 指定でファイル名を差し替える（同名衝突時に「両方残す」で連番名にする）。
 /// `baseVersion` は新バージョンの元にした版（#827）。今の版と違えば 409 の StorageApiError になる。
+const MAX_FREE_NAME_TRIES = 50;
+
+/// 新しいファイルとして置く（同じ名前があれば空いている連番名で保存する・#880）。
+///
+/// チャットの添付やスライドの書き出しのように「このファイルを置きたい」意図がはっきりしている
+/// ときに使う（ドライブのアップロードは、利用者に新しいバージョン／両方残す／スキップを聞く）。
+/// 送る前に同じフォルダの同名を確かめ、見えない同名（読めない・直前に作られた）は finalize の
+/// 409 で気付いて次の番号へ進む。iPhone の写真は `IMG_xxxx.jpeg` や `image.jpg` で重なりやすい。
+export async function uploadNewFile(opts: {
+  file: File;
+  parentId?: string;
+  onProgress?: (fraction: number) => void;
+}): Promise<NodeResponse> {
+  const parent = opts.parentId ?? null;
+  const candidates = [
+    opts.file.name,
+    ...Array.from({ length: MAX_FREE_NAME_TRIES }, (_, i) => numberedName(opts.file.name, i + 1)),
+  ];
+  for (const name of candidates) {
+    if (await findSiblingByName(parent, name).catch(() => null)) continue;
+    try {
+      return await uploadFile({ ...opts, name });
+    } catch (e) {
+      if (!isConflict(e)) throw e;
+    }
+  }
+  throw new Error("空いている名前が見つかりませんでした");
+}
+
 export async function uploadFile(opts: {
   file: File;
   parentId?: string;

@@ -26,3 +26,11 @@ export function stemRange(name: string): [number, number] {
   const ext = fileExtension(name);
   return [0, ext === null ? name.length : name.length - ext.length - 1];
 }
+
+/// 「議事録.md」→「議事録 (1).md」。拡張子の前に連番を入れる（先頭ドットだけの名前は拡張子扱いしない）。
+/// 同じ名前のファイルを「両方残す」ときの名前（ドライブのアップロード・チャットの添付で共有）。
+export function numberedName(name: string, n: number): string {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return `${name} (${n})`;
+  return `${name.slice(0, dot)} (${n})${name.slice(dot)}`;
+}
