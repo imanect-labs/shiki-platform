@@ -109,18 +109,18 @@ fn finish(q: &BoundQuery, mut groups: Vec<AggregateGroup>) -> Vec<AggregateGroup
     if !q.group_sort.is_empty() {
         groups.sort_by(|a, b| {
             for (k, desc) in &q.group_sort {
-                let (x, y) = match k {
+                // グループ列は列型で比べ方を決める（キーは常に文字列。テキスト列の '10' と '2' を数値に
+                // 解釈すると辞書順にならず、'2'・'10'・'1a' で比較が循環して全順序が崩れる）。指標は数値。
+                let (x, y, numeric) = match k {
                     GroupKey::Group(i) => {
-                        let name = q
-                            .group_by
-                            .get(*i)
-                            .map(|c| q.col_key(*c))
-                            .unwrap_or_default();
-                        (a.key.get(&name).cloned(), b.key.get(&name).cloned())
+                        let col = q.group_by.get(*i).copied();
+                        let name = col.map(|c| q.col_key(c)).unwrap_or_default();
+                        let numeric = col.is_some_and(|c| q.col_field(c).kind == FieldKind::Num);
+                        (a.key.get(&name), b.key.get(&name), numeric)
                     }
-                    GroupKey::Metric(i) => (a.values.get(*i).cloned(), b.values.get(*i).cloned()),
+                    GroupKey::Metric(i) => (a.values.get(*i), b.values.get(*i), true),
                 };
-                let o = cmp_nulls_last(x.as_ref(), y.as_ref(), *desc);
+                let o = cmp_nulls_last(x, y, *desc, numeric);
                 if o != std::cmp::Ordering::Equal {
                     return o;
                 }
@@ -140,8 +140,17 @@ fn finish(q: &BoundQuery, mut groups: Vec<AggregateGroup>) -> Vec<AggregateGroup
     groups
 }
 
-/// 値の比較（数値は数値として・文字列は辞書順・値なしは昇順でも降順でも末尾）。
-fn cmp_nulls_last(lhs: Option<&Value>, rhs: Option<&Value>, desc: bool) -> std::cmp::Ordering {
+/// 値の比較（値なしは昇順でも降順でも末尾）。どちらの比べ方でも全順序になる。
+///
+/// - `numeric`（数値列のグループ・指標）: 数値として比べる。数値に読めない値は（来ない想定だが）
+///   数値の後ろに辞書順で並べる。
+/// - それ以外（テキスト・日付・選択肢などのグループ）: 文字列の辞書順。数値に読めても数値にしない。
+fn cmp_nulls_last(
+    lhs: Option<&Value>,
+    rhs: Option<&Value>,
+    desc: bool,
+    numeric: bool,
+) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let lhs = lhs.filter(|v| !v.is_null());
     let rhs = rhs.filter(|v| !v.is_null());
@@ -150,12 +159,20 @@ fn cmp_nulls_last(lhs: Option<&Value>, rhs: Option<&Value>, desc: bool) -> std::
         (None, Some(_)) => Ordering::Greater,
         (Some(_), None) => Ordering::Less,
         (Some(left), Some(right)) => {
-            let ord = match (as_num(left), as_num(right)) {
-                (Some(ln), Some(rn)) => ln.partial_cmp(&rn).unwrap_or(Ordering::Equal),
-                _ => left
-                    .as_str()
+            let text = || {
+                left.as_str()
                     .unwrap_or("")
-                    .cmp(right.as_str().unwrap_or("")),
+                    .cmp(right.as_str().unwrap_or(""))
+            };
+            let ord = if numeric {
+                match (as_num(left), as_num(right)) {
+                    (Some(ln), Some(rn)) => ln.total_cmp(&rn),
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => text(),
+                }
+            } else {
+                text()
             };
             if desc {
                 ord.reverse()
@@ -235,6 +252,34 @@ mod tests {
         assert!(!s);
         assert_eq!(v, json!(5));
         assert_eq!(vs, vec![json!(5)]);
+    }
+
+    /// テキスト列のグループは辞書順（数値に読めるキーも数値にしない）・数値列のグループと指標は数値順。
+    /// どちらも全順序（'2'・'10'・'1a' で循環しない）。
+    #[test]
+    fn group_keys_compare_by_column_type() {
+        use std::cmp::Ordering;
+        let s = |v: &str| json!(v);
+        let (two, ten, mixed) = (s("2"), s("10"), s("1a"));
+        let text = |a: &Value, b: &Value| cmp_nulls_last(Some(a), Some(b), false, false);
+        assert_eq!(text(&ten, &two), Ordering::Less, "辞書順: '10' < '2'");
+        assert_eq!(text(&mixed, &two), Ordering::Less);
+        assert_eq!(text(&ten, &mixed), Ordering::Less);
+        let mut keys = vec![two.clone(), ten.clone(), mixed.clone()];
+        keys.sort_by(|a, b| text(a, b));
+        assert_eq!(keys, vec![ten.clone(), mixed.clone(), two.clone()]);
+        let num = |a: &Value, b: &Value| cmp_nulls_last(Some(a), Some(b), false, true);
+        assert_eq!(num(&two, &ten), Ordering::Less, "数値順: 2 < 10");
+        assert_eq!(num(&s("1.5"), &json!(2)), Ordering::Less);
+        // 数値に読めない値は数値の後ろ（全順序を保つ）。
+        assert_eq!(num(&ten, &mixed), Ordering::Less);
+        assert_eq!(num(&mixed, &two), Ordering::Greater);
+        // 値なしは昇順でも降順でも末尾。
+        assert_eq!(
+            cmp_nulls_last(None, Some(&two), true, false),
+            Ordering::Greater
+        );
+        assert_eq!(cmp_nulls_last(Some(&two), None, true, true), Ordering::Less);
     }
 
     #[test]
