@@ -354,3 +354,14 @@ fn materialized_refs_follow_formula_dependencies() {
     );
     assert!(cat.materialized_refs(a, "age").is_empty());
 }
+
+/// 天井の判定（`field_link_tables`）も自テーブル内の依存を辿る: `with_tax = total * 1.1` は rollup `total`
+/// の参照先 `b` に依存する（名指しした列の直接の rollup だけを見ると素通りする）。
+#[test]
+fn field_link_tables_follow_formula_dependencies() {
+    let (cat, a, b) = fixture();
+    let s = &cat.tables[&a].schema;
+    assert_eq!(crate::derived::field_link_tables(s, "with_tax"), vec![b]);
+    assert_eq!(crate::derived::field_link_tables(s, "total"), vec![b]);
+    assert!(crate::derived::field_link_tables(s, "age").is_empty());
+}

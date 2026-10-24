@@ -135,27 +135,42 @@ fn link_uses(table: &DataTable) -> HashMap<String, LinkUse> {
 /// 派生列 `key` が 1 段目に辿る参照先テーブル（lookup の経由リンク・rollup / 数式の rollup のリンク）。
 ///
 /// 天井つきの読取（[`crate::TableReach`]）で、材料化した派生列を絞り込み・並べ替えに使ってよいかの
-/// 判定に使う（材料化は 1 段の参照に限る・多段は材料化しない）。
+/// 判定に使う（材料化は 1 段の参照に限る・多段は材料化しない）。**自テーブル内の依存（数式が参照する
+/// 列・計算列の入力）も辿る**: `with_tax = total + 1` の `total` が rollup なら、その参照先も数える
+/// （名指しした列だけを見ると、間接に依存する材料化列で天井の外の値を探れる・[`graph::Catalog::materialized_refs`]
+/// と同じ辿り方）。
 pub(crate) fn field_link_tables(schema: &crate::model::TableSchema, key: &str) -> Vec<Uuid> {
-    let Some(f) = schema.field(key) else {
-        return Vec::new();
-    };
-    let mut links: Vec<&str> = Vec::new();
-    if let Some(d) = &f.lookup {
-        links.push(&d.via_field);
-    }
-    if let Some(d) = &f.rollup {
-        links.push(&d.link);
-    }
-    if let Some(e) = &f.formula {
-        for n in e.rollups() {
-            if let FormulaExpr::Rollup { link, .. } = n {
-                links.push(link);
-            }
+    let mut links: BTreeSet<String> = BTreeSet::new();
+    let mut stack = vec![key.to_string()];
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    while let Some(k) = stack.pop() {
+        if !seen.insert(k.clone()) {
+            continue;
+        }
+        let Some(f) = schema.field(&k) else {
+            continue;
+        };
+        if let Some(d) = &f.lookup {
+            links.insert(d.via_field.clone());
+        }
+        if let Some(d) = &f.rollup {
+            links.insert(d.link.clone());
+        }
+        if let Some(d) = &f.computed {
+            stack.extend(d.fields.iter().cloned());
+        }
+        if let Some(e) = &f.formula {
+            e.walk(&mut |n| match n {
+                FormulaExpr::Field(k) => stack.push(k.clone()),
+                FormulaExpr::Rollup { link, .. } => {
+                    links.insert(link.clone());
+                }
+                _ => {}
+            });
         }
     }
     let out: BTreeSet<Uuid> = links
-        .into_iter()
+        .iter()
         .filter_map(|l| schema.field(l).and_then(|lf| lf.ref_table))
         .collect();
     out.into_iter().collect()
