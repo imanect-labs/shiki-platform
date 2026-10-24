@@ -72,6 +72,21 @@ test.describe("スマホのドロワとアカウントメニュー", () => {
     await expect(drawer).toHaveCount(0);
   });
 
+  test("メニューを閉じたあともキーボードでドロワを操作できる", async ({ browser, page }) => {
+    const phone = await phonePage(browser, page);
+    await phone.goto("/");
+    const { drawer, box } = await openDrawer(phone);
+    await openAccountMenu(phone);
+    await phone.touchscreen.tap(box.x + box.width + 20, box.y + box.height / 3);
+    await expect(phone.getByRole("menu")).toHaveCount(0);
+
+    const drive = drawer.getByRole("link", { name: "ドライブ" });
+    await drive.focus();
+    await drive.press("Enter");
+    await expect(phone).toHaveURL(/\/drive/);
+    await expect(drawer).toHaveCount(0);
+  });
+
   test("メニューの項目はそのまま選べる", async ({ browser, page }) => {
     const phone = await phonePage(browser, page);
     await phone.goto("/");

@@ -102,7 +102,9 @@ function useNestedLayerDismissPress(
         getComputedStyle(el).pointerEvents === "none";
     };
     const onClick = (e: MouseEvent) => {
-      if (!pressed.current) return;
+      // `pressed` は次の押下まで残るので、押下を伴わない click（キーボード・支援技術・
+      // el.click() は detail が 0）まで巻き込まない。
+      if (!pressed.current || e.detail === 0) return;
       e.preventDefault();
       e.stopPropagation();
     };
