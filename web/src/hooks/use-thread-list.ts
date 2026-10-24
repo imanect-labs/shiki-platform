@@ -18,6 +18,10 @@ export type ThreadList = {
   /// 手元の行を書き換える（`null` は取り除く）。改名・削除の直後に使う: 通知での取り直しは
   /// 先頭ページだけなので、それより古い行は書き換えないと古い表示のまま残る。
   patchLocal: (id: string, patch: Partial<Thread> | null) => void;
+  /// 手元に無い行を並び順の位置へ足す（あれば置き換える）。ピン留めを外した行を一覧へ戻すのに使う。
+  /// 読み込み済みの範囲（続きがあるなら末尾の行より新しい行）に入るものだけ足す。それより古い行は
+  /// 続きの読み足しで届くので、ここで足すと並び（keyset 順）が崩れる。
+  upsertLocal: (thread: Thread) => void;
 };
 
 /// `(updated_at, id)` の降順で a が b より後ろ（古い）か。サーバの keyset 順と一致させる。
@@ -136,7 +140,21 @@ export function useThreadList(query = "", enabled = true): ThreadList {
     );
   }, []);
 
-  return { threads, loading, loadingMore, error, hasMore: cursor !== null, loadMore, patchLocal };
+  const hasMore = cursor !== null;
+  const upsertLocal = React.useCallback(
+    (thread: Thread) => {
+      setThreads((prev) => {
+        const rest = prev.filter((t) => t.id !== thread.id);
+        const edge = rest[rest.length - 1];
+        if (hasMore && edge && isOlder(thread, edge)) return rest;
+        const at = rest.findIndex((t) => isOlder(t, thread));
+        return at < 0 ? [...rest, thread] : [...rest.slice(0, at), thread, ...rest.slice(at)];
+      });
+    },
+    [hasMore],
+  );
+
+  return { threads, loading, loadingMore, error, hasMore, loadMore, patchLocal, upsertLocal };
 }
 
 /// ピン留めしたスレッド（ピン留めの新しい順・全件）。一覧の変更通知で取り直す。

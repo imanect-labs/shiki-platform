@@ -179,7 +179,8 @@ function SidebarChatHistoryInner({
   mobile: boolean;
   onNavigate?: () => void;
 }) {
-  const { threads, loading, loadingMore, hasMore, loadMore, patchLocal } = useThreadList();
+  const { threads, loading, loadingMore, hasMore, loadMore, patchLocal, upsertLocal } =
+    useThreadList();
   const { threads: pinned, patchLocal: patchPinned } = usePinnedThreads();
   // 種類フィルタで読み足した行が全部隠れると sentinel が見えたままになり、IntersectionObserver が
   // 再発火しない。取得完了ごとに件数を渡し、見えていれば続きを読む（!hasMore で止まる）。
@@ -233,7 +234,12 @@ function SidebarChatHistoryInner({
       },
       togglePin: (thread, pin) => {
         setThreadPinned(thread.id, pin)
-          .then(() => patchLocal(thread.id, { pinnedAt: pin ? new Date().toISOString() : null }))
+          .then(() => {
+            // 外した行は日付の欄へ戻す。先頭ページより古い行は通知の取り直しでは戻らないので、
+            // 手元に無ければここで足す（読み込み済みの範囲に入るときだけ）。
+            if (pin) patchLocal(thread.id, { pinnedAt: new Date().toISOString() });
+            else upsertLocal({ ...thread, pinnedAt: null });
+          })
           .catch((e: unknown) =>
             toast({
               variant: "destructive",
@@ -244,7 +250,7 @@ function SidebarChatHistoryInner({
       share: setShareTarget,
       remove: setDeleteTarget,
     }),
-    [patchLocal, patchPinned],
+    [patchLocal, patchPinned, upsertLocal],
   );
 
   const confirmDelete = async () => {
