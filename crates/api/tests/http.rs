@@ -1032,3 +1032,136 @@ async fn openapi_json_is_served() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+// --- ChatGPT プランの接続（/me/chatgpt・#854） ---------------------------------
+
+/// ChatGPT プランを有効にした gateway を載せる（資格情報は一時ディレクトリ・認証サーバへは出ない範囲だけ叩く）。
+fn state_with_chatgpt(sessions: Arc<dyn SessionStore>, dir: &std::path::Path) -> AppState {
+    let mut state = state_with(sessions, None);
+    let mut config = (*state.config).clone();
+    config.llm.chatgpt.enabled = true;
+    config.llm.chatgpt.models = vec!["gpt-6.1-sol".into()];
+    state.config = Arc::new(config);
+    let account = llm_gateway::ChatGptAccount::open(
+        reqwest::Client::new(),
+        llm_gateway::ChatGptSettings::new(dir.join("chatgpt.json")),
+    );
+    let gateway_config = llm_gateway::GatewayConfig {
+        extra_providers: vec![llm_gateway::ProviderConfig {
+            id: llm_gateway::CHATGPT_PROVIDER_ID.into(),
+            kind: llm_gateway::ProviderKind::ChatgptPlan,
+            ..Default::default()
+        }],
+        catalog: llm_gateway::ModelCatalog {
+            default_model: "m".into(),
+            models: vec![llm_gateway::ModelEntry {
+                id: "m".into(),
+                ..Default::default()
+            }],
+        },
+        chatgpt: Some(Arc::new(account)),
+        ..Default::default()
+    };
+    let db = PgPoolOptions::new()
+        .acquire_timeout(Duration::from_millis(300))
+        .connect_lazy(&state.config.database.url)
+        .unwrap();
+    state.llm = Some(Arc::new(
+        llm_gateway::LlmGateway::build(db, reqwest::Client::new(), gateway_config).unwrap(),
+    ));
+    state
+}
+
+/// セッション＋CSRF（二重送信）付きで状態変更系を叩く。
+async fn send_with_session(
+    app: axum::Router,
+    method: &str,
+    uri: &str,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(COOKIE, "shiki_session=sid-valid.default; shiki_csrf=csrf")
+        .header("x-csrf-token", "csrf");
+    let body = match body {
+        Some(v) => {
+            req = req.header("content-type", "application/json");
+            Body::from(v.to_string())
+        }
+        None => Body::empty(),
+    };
+    let resp = app.oneshot(req.body(body).unwrap()).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn chatgpt_routes_are_unavailable_unless_enabled() {
+    let app = build_router(state_with(store_with_valid_session().await, None));
+    let (status, body) = get_with_session(app.clone(), "/me/chatgpt").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["state"], "unavailable");
+    for (method, uri) in [
+        ("POST", "/me/chatgpt/login"),
+        ("POST", "/me/chatgpt/callback"),
+        ("DELETE", "/me/chatgpt"),
+    ] {
+        let body = (uri == "/me/chatgpt/callback")
+            .then(|| serde_json::json!({ "callback_url": "http://127.0.0.1:1455/auth/callback" }));
+        let (status, _) = send_with_session(app.clone(), method, uri, body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri}");
+    }
+}
+
+#[tokio::test]
+async fn chatgpt_login_starts_and_rejects_wrong_callbacks_with_a_reason() {
+    let dir = std::env::temp_dir().join(format!("shiki-chatgpt-http-{}", uuid::Uuid::new_v4()));
+    let app = build_router(state_with_chatgpt(store_with_valid_session().await, &dir));
+
+    let (status, body) = get_with_session(app.clone(), "/me/chatgpt").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["state"], "not_connected");
+
+    // 認可 URL は OpenAI の認証サーバ（トークンは応答に含めない）。
+    let (status, body) = send_with_session(app.clone(), "POST", "/me/chatgpt/login", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let url = body["authorize_url"].as_str().unwrap();
+    assert!(
+        url.starts_with("https://auth.openai.com/api/accounts/authorize?"),
+        "{url}"
+    );
+
+    // 貼り間違い・古い URL は交換せず、理由を detail で返す。
+    for (pasted, reason) in [
+        ("https://chatgpt.com/", "127.0.0.1"),
+        (
+            "http://127.0.0.1:1455/auth/callback?code=c&state=stale&client_id=oaiapp_x",
+            "最新のログイン",
+        ),
+    ] {
+        let (status, body) = send_with_session(
+            app.clone(),
+            "POST",
+            "/me/chatgpt/callback",
+            Some(serde_json::json!({ "callback_url": pasted })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{pasted}");
+        assert!(
+            body["detail"].as_str().unwrap().contains(reason),
+            "{pasted}: {body}"
+        );
+    }
+
+    // 未接続の切断は何もせず成功する（失効の送信は無い）。
+    let (status, _) = send_with_session(app.clone(), "DELETE", "/me/chatgpt", None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, body) = get_with_session(app, "/me/chatgpt").await;
+    assert_eq!(body["state"], "not_connected");
+    let _ = std::fs::remove_dir_all(dir);
+}

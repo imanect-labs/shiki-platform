@@ -787,7 +787,7 @@ async fn event_stream_replays_appended_events() {
         .unwrap();
 
     // from_seq=0 で全リプレイ。Done を受け取ったら終了。
-    let mut rx = store.event_stream(run_id, 0);
+    let mut rx = store.event_stream(&c.tenant_id, run_id, 0);
     let mut tokens = String::new();
     let mut done = false;
     for _ in 0..50 {
@@ -873,7 +873,7 @@ async fn agent_mode_worker_runs_to_done() {
         .await
         .unwrap();
 
-    let mut rx = store.event_stream(res.run_id, 0);
+    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
     let mut done = false;
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(20), rx.next())
@@ -941,7 +941,8 @@ async fn db_approver_blocks_until_decision() {
     let mut waited = false;
     for _ in 0..40 {
         tokio::time::sleep(StdDuration::from_millis(50)).await;
-        if store.run_status(run_id).await.unwrap() == Some(RunStatus::WaitingApproval) {
+        if store.run_status(&c.tenant_id, run_id).await.unwrap() == Some(RunStatus::WaitingApproval)
+        {
             waited = true;
             break;
         }
@@ -973,7 +974,7 @@ async fn db_approver_blocks_until_decision() {
         .unwrap();
     assert_eq!(decision, agent_core::ApprovalDecision::Approved);
     assert_eq!(
-        store.run_status(run_id).await.unwrap(),
+        store.run_status(&c.tenant_id, run_id).await.unwrap(),
         Some(RunStatus::Running)
     );
 

@@ -14,11 +14,65 @@
 //!   `job_queue_dead` へ移送＝DLQ）。DLQ からは [`requeue_dead`] で再投入する。
 //!
 //! 消費側は payload の冪等キー（RAG なら `(node_id, version, op)`）で二重処理を防ぐこと。
+//!
+//! # テナント間の公平性（#816）
+//!
+//! フルプールでは 1 キューを全テナントが共有する。取り出しを到着順（`id`）にすると、1 テナントの
+//! 大量投入が捌けるまで他テナントが待たされる。そこで投入時に **`fair_seq`**（start-time fair
+//! queuing の開始タグ）を振り、[`claim`] は `fair_seq` 順に取る:
+//!
+//! `fair_seq = max(そのテナントのキュー内の最大 fair_seq + 1, キューの仮想時刻)`
+//!
+//! 各テナントは 1 ジョブにつき fair_seq を 1 しか進められないので、洪水テナントのジョブは先へ
+//! 伸び、後から来たテナントは仮想時刻から始まって洪水と交互に取り出される。保証は
+//! **ジョブ件数**の公平（ジョブの重さは見ない）で、テナント内の順序は投入順のまま。
+//! 同時投入で同じ値になったら `id` 順。
+//!
+//! **仮想時刻はキューごとに単調増加する値として `job_queue_vtime` に保持する**: [`claim`] が
+//! 確保した行の最大 fair_seq **＋ 1**（処理に入ったジョブの終了タグ）まで進める（下がらない）。
+//! ＋1 が要るのは、キューが空になったテナントの再投入のため: ack で行が消えるとテナント末尾は
+//! 参照できず、仮想時刻が「確保した fair_seq」止まりだと、1 件ずつ投入しては処理されるテナントが
+//! 毎回同じ値を振られて仮想時刻を進めず、他テナントの滞留を無期限に追い越せた。終了タグまで
+//! 進めておけば、空になったテナントも直前に処理された自分のジョブの次から始まる。キュー内の行から毎回求める方式（最小
+//! fair_seq・可視な先頭の最小 fair_seq）は、バックオフ明け・defer 明け・consumer のクラッシュで
+//! **古い fair_seq の行が可視に戻った瞬間に過去へ巻き戻り**、その直後に投入した後着テナントが
+//! 先行テナントの残りを丸ごと追い越せた（失敗ジョブを 1 件抱えるだけで繰り返せる）。保持した
+//! 仮想時刻なら、可視に戻った古い行は先に処理されるだけで、後着の開始位置を引きずらない。
+//! [`fail`] / [`defer`] は fair_seq を**据え置く**（テナント内の順序を崩さない）。その代わり、可視に
+//! 戻った再試行は仮想時刻より小さい値のまま新規ジョブより先に出るので、失敗を繰り返すテナントの
+//! 取り分は最大 `max_attempts` 倍まで上振れする（有界。id 順の旧方式より悪くはならない）。
+//!
+//! **近似として許容していること**: 同じテナントが同じキューへ**並行トランザクション**で投入すると、
+//! 互いの未 commit 行が見えず同じ fair_seq 列を重ねて振る（取り分がその並行数倍になる）。
+//! テナント単位の advisory lock で直列化すると、投入元のドメイントランザクション（チャットの発話・
+//! relay のバッチ）が commit まで同じテナントの他の書込を待たせ、複数キューへ投入する txn 同士で
+//! デッドロックし得る。上振れは「同時に投入しているトランザクション数」倍で有界なので、公平性の
+//! 近似として受け入れる（rag の relay / consumer はリーダー選出で 1 プロセス・並列 2）。
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::PgConnection;
 use std::time::Duration;
+
+/// 行に振る `fair_seq` の SQL 式（モジュール冒頭の「テナント間の公平性」）。
+///
+/// `$queue` / `$tenant` はキュー名・テナントを表す SQL 式。参照はどちらも 1 行だけ:
+/// テナント末尾は `job_queue_tenant_idx` の後端、仮想時刻は `job_queue_vtime` の主キー。
+macro_rules! fair_seq_expr {
+    ($queue:literal, $tenant:literal) => {
+        concat!(
+            "greatest(",
+            "coalesce((select q.fair_seq + 1 from job_queue q where q.tenant_id = ",
+            $tenant,
+            " and q.queue = ",
+            $queue,
+            " order by q.fair_seq desc limit 1), 0), ",
+            "coalesce((select v.vt from job_queue_vtime v where v.queue = ",
+            $queue,
+            "), 0))"
+        )
+    };
+}
 
 /// jobq のエラー。現状は DB エラーの薄い包み（呼び出し側でリトライ判断する）。
 #[derive(Debug, thiserror::Error)]
@@ -75,11 +129,15 @@ pub struct DeadJob {
 }
 
 /// ジョブを 1 件投入する。ドメイン書込と同一トランザクション上で呼べる。
+///
+/// `fair_seq`（テナント間の公平性・モジュール冒頭）を同じ文で振る。
 pub async fn enqueue_on(conn: &mut PgConnection, job: NewJob<'_>) -> Result<i64, JobqError> {
-    let id: i64 = sqlx::query_scalar(
-        "insert into job_queue (queue, tenant_id, payload, max_attempts, trace_id) \
-         values ($1, $2, $3, $4, $5) returning id",
-    )
+    let id: i64 = sqlx::query_scalar(concat!(
+        "insert into job_queue (queue, tenant_id, payload, max_attempts, trace_id, fair_seq) \
+         values ($1, $2, $3, $4, $5, ",
+        fair_seq_expr!("$1", "$2"),
+        ") returning id"
+    ))
     .bind(job.queue)
     .bind(job.tenant_id)
     .bind(job.payload)
@@ -94,6 +152,14 @@ pub async fn enqueue_on(conn: &mut PgConnection, job: NewJob<'_>) -> Result<i64,
 ///
 /// 単一 UPDATE 文（サブクエリに `FOR UPDATE SKIP LOCKED`）なので複数 consumer が
 /// 競合しても同一ジョブを二重確保しない。`attempts` はここで +1 される。
+///
+/// 取り出し順は `fair_seq, id`（テナント間の公平性・モジュール冒頭）。`job_queue_fair_idx` を
+/// キュー内で先頭から辿り、読み飛ばすのは処理中・バックオフ中の行だけ。
+///
+/// 同じ文でキューの仮想時刻（`job_queue_vtime`）を確保した行の最大 fair_seq ＋ 1 まで進める。
+/// 更新するのは**上回るときだけ**（可視に戻った古い行を取っても下げない。上回らない claim は
+/// この行のロックも取らない）。
+/// 行が無ければ作る（初回の同時作成で負けた側の値は捨てる＝次の claim で追いつく近似）。
 pub async fn claim(
     conn: &mut PgConnection,
     queue: &str,
@@ -101,16 +167,30 @@ pub async fn claim(
     limit: i64,
 ) -> Result<Vec<ClaimedJob>, JobqError> {
     let jobs = sqlx::query_as::<_, ClaimedJob>(
-        "update job_queue set visible_at = now() + $3 * interval '1 second', \
-                              attempts = attempts + 1 \
-         where id in ( \
-             select id from job_queue \
-             where queue = $1 and visible_at <= now() \
-             order by id \
-             limit $2 \
-             for update skip locked \
+        "with claimed as ( \
+             update job_queue set visible_at = now() + $3 * interval '1 second', \
+                                  attempts = attempts + 1 \
+             where id in ( \
+                 select id from job_queue \
+                 where queue = $1 and visible_at <= now() \
+                 order by fair_seq, id \
+                 limit $2 \
+                 for update skip locked \
+             ) \
+             returning id, queue, tenant_id, payload, attempts, max_attempts, trace_id, \
+                       enqueued_at, fair_seq \
+         ), top as (select max(fair_seq) + 1 as mx from claimed), \
+         bumped as ( \
+             update job_queue_vtime v set vt = top.mx from top \
+             where v.queue = $1 and v.vt < top.mx returning 1 \
+         ), created as ( \
+             insert into job_queue_vtime (queue, vt) select $1, top.mx from top \
+             where top.mx is not null \
+               and not exists (select 1 from job_queue_vtime where queue = $1) \
+             on conflict (queue) do nothing returning 1 \
          ) \
-         returning id, queue, tenant_id, payload, attempts, max_attempts, trace_id, enqueued_at",
+         select id, queue, tenant_id, payload, attempts, max_attempts, trace_id, enqueued_at \
+         from claimed",
     )
     .bind(queue)
     .bind(limit)
@@ -157,6 +237,7 @@ pub async fn fail(
         return Ok(FailOutcome::Dead);
     }
 
+    // fair_seq は据え置く（仮想時刻は保持しているので巻き戻らない・モジュール冒頭）。
     let attempts = sqlx::query_scalar::<_, i32>(
         "update job_queue set visible_at = now() + $2 * interval '1 second' \
          where id = $1 returning attempts",
@@ -179,6 +260,8 @@ pub async fn fail(
 /// 解けること**を呼び出し側が保証すること（chat の run 直列化なら、先行 run は
 /// 完了・キャンセル・DLQ のいずれかで必ず端末状態になる）。
 pub async fn defer(conn: &mut PgConnection, id: i64, delay: Duration) -> Result<(), JobqError> {
+    // fair_seq は据え置く: 振り直すと先送りのたびにテナント末尾へ回り、テナント内の投入順と
+    // 取り分を崩す（chat は数秒ごとに先送りする）。
     sqlx::query(
         "update job_queue \
          set visible_at = now() + $2 * interval '1 second', \
@@ -210,12 +293,17 @@ pub async fn kill(conn: &mut PgConnection, id: i64, error: &str) -> Result<bool,
 }
 
 /// DLQ の 1 件を元キューへ再投入する（attempts はリセット）。無ければ `false`。
+///
+/// `fair_seq` は [`enqueue_on`] と同じ式で振り直す（新規投入と同じ扱い。DLQ に落ちた時点の
+/// 古い値で割り込ませない）。
 pub async fn requeue_dead(conn: &mut PgConnection, id: i64) -> Result<bool, JobqError> {
-    let requeued = sqlx::query_scalar::<_, i64>(
+    let requeued = sqlx::query_scalar::<_, i64>(concat!(
         "with revived as (delete from job_queue_dead where id = $1 returning *) \
-         insert into job_queue (queue, tenant_id, payload, max_attempts, trace_id) \
-         select queue, tenant_id, payload, max_attempts, trace_id from revived returning id",
-    )
+         insert into job_queue (queue, tenant_id, payload, max_attempts, trace_id, fair_seq) \
+         select r.queue, r.tenant_id, r.payload, r.max_attempts, r.trace_id, ",
+        fair_seq_expr!("r.queue", "r.tenant_id"),
+        " from revived r returning id"
+    ))
     .bind(id)
     .fetch_optional(conn)
     .await?;

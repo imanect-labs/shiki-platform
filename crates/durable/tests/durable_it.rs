@@ -36,6 +36,7 @@ const EVENT_SPEC: EventTableSpec = EventTableSpec {
     seq_column: "seq",
     kind_column: "kind",
     payload_column: "payload",
+    copied_run_columns: &[],
 };
 
 const KEY_COLUMNS: &[&str] = &["tenant_id", "run_id"];

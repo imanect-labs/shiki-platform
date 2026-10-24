@@ -29,6 +29,10 @@ pub enum ApiError {
     /// 機能が無効/未準備（RAG 無効設定など）。理由はログのみ（クライアントへ漏らさない）。
     #[error("利用できません: {0}")]
     ServiceUnavailable(String),
+    /// 利用上限・レート制限（429）。文言は**そのままユーザーへ出せる**ものだけを入れる
+    /// （会話に表示される・llm-gateway 側で整形済み）。
+    #[error("{0}")]
+    RateLimited(String),
     #[error("内部エラー: {0}")]
     Internal(String),
 }
@@ -42,6 +46,7 @@ impl ApiError {
             ApiError::Conflict | ApiError::ConflictJson(_) => StatusCode::CONFLICT,
             ApiError::BadRequest(_) | ApiError::UnprocessableJson(_) => StatusCode::BAD_REQUEST,
             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -61,6 +66,16 @@ impl IntoResponse for ApiError {
         // 構造化ボディはそのまま返す（検証エラーの per-node/per-edge 詳細を保つ）。
         if let ApiError::UnprocessableJson(payload) | ApiError::ConflictJson(payload) = self {
             return (status, Json(payload)).into_response();
+        }
+        // 429 だけは文言を `detail` に載せる。上限額と再開の目安を含み、**そのまま出せる**
+        // ものに限られている（他の種別は上流の詳細を含むため載せない）。
+        if let ApiError::RateLimited(ref detail) = self {
+            let body = Json(json!({
+                "status": status.as_u16(),
+                "title": status.canonical_reason().unwrap_or("Error"),
+                "detail": detail,
+            }));
+            return (status, body).into_response();
         }
         let body = Json(json!({
             "status": status.as_u16(),
@@ -83,6 +98,13 @@ impl From<storage::StorageError> for ApiError {
             SE::Forbidden => ApiError::Forbidden,
             SE::NotFound => ApiError::NotFound,
             SE::Conflict => ApiError::Conflict,
+            // 版の衝突は今の版を返す（クライアントが「最新を開く／上書き」を選べるように）。
+            SE::VersionConflict { current } => ApiError::ConflictJson(json!({
+                "status": 409,
+                "title": "Conflict",
+                "code": "version_conflict",
+                "current_version": current,
+            })),
             // Invalid と整合性エラー（宣言ハッシュ不一致・staging 未完了等）はどちらも
             // クライアント起因の 400。
             SE::Invalid(msg) | SE::Integrity(msg) => ApiError::BadRequest(msg),
@@ -115,7 +137,7 @@ impl From<chat::ChatError> for ApiError {
             CE::Invalid(msg) => ApiError::BadRequest(msg),
             CE::Unavailable(msg) => ApiError::ServiceUnavailable(format!("chat: {msg}")),
             // 整形済みの文言をそのまま返す（`chat:` を前置しない・会話に表示されるため）。
-            CE::RateLimited(msg) => ApiError::ServiceUnavailable(msg),
+            CE::RateLimited(msg) => ApiError::RateLimited(msg),
             CE::Internal(msg) => ApiError::Internal(format!("chat: {msg}")),
         }
     }
@@ -187,7 +209,7 @@ impl From<llm_gateway::LlmError> for ApiError {
             LE::Unavailable(msg) => ApiError::ServiceUnavailable(format!("llm: {msg}")),
             // 上限超過は**そのまま出せる文言**（provider.rs で整形済み）。`llm:` 等の接頭辞を
             // 付けない — この文字列は会話にそのまま表示される。
-            LE::RateLimited(msg) => ApiError::ServiceUnavailable(msg),
+            LE::RateLimited(msg) => ApiError::RateLimited(msg),
             LE::BadRequest(msg) => ApiError::BadRequest(msg),
             LE::Config(msg) | LE::Internal(msg) => ApiError::Internal(format!("llm: {msg}")),
         }
@@ -240,6 +262,13 @@ mod tests {
         assert!(matches!(ApiError::from(SE::Forbidden), ApiError::Forbidden));
         assert!(matches!(ApiError::from(SE::NotFound), ApiError::NotFound));
         assert!(matches!(ApiError::from(SE::Conflict), ApiError::Conflict));
+        match ApiError::from(SE::VersionConflict { current: 7 }) {
+            ApiError::ConflictJson(body) => {
+                assert_eq!(body["code"], "version_conflict");
+                assert_eq!(body["current_version"], 7);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
         assert!(matches!(
             ApiError::from(SE::Invalid("bad".into())),
             ApiError::BadRequest(_)
@@ -330,5 +359,30 @@ mod tests {
         assert_eq!(ApiError::Unauthorized.to_string(), "認証が必要です");
         assert_eq!(ApiError::Forbidden.to_string(), "権限がありません");
         assert_eq!(ApiError::Internal("x".into()).to_string(), "内部エラー: x");
+    }
+
+    #[tokio::test]
+    async fn rate_limited_returns_429_with_the_message_in_detail() {
+        use axum::body::to_bytes;
+        // 429 の文言は上限額と再開の目安を含み、そのままユーザーへ出せる（llm-gateway が整形）。
+        const MSG: &str =
+            "プレビュー環境の今月の利用上限（$5.00）に達しました。翌月 1 日にリセットされます。";
+        let res = ApiError::RateLimited(MSG.into()).into_response();
+        assert_eq!(res.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["status"], 429);
+        assert_eq!(v["detail"], MSG);
+    }
+
+    #[tokio::test]
+    async fn other_errors_do_not_leak_detail_into_the_body() {
+        use axum::body::to_bytes;
+        // 429 以外は上流の詳細を含み得るので、ボディへ載せない（ログにのみ残す）。
+        let res = ApiError::ServiceUnavailable("qdrant: connection refused".into()).into_response();
+        let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(v.get("detail").is_none(), "{v}");
+        assert_eq!(v["status"], 503);
     }
 }

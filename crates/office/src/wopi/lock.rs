@@ -69,16 +69,16 @@ pub(crate) async fn lock(
     locked_by: &str,
 ) -> Result<(), OfficeError> {
     // upsert: 未ロック（行なし）/ 期限切れ / 同一 lock_id（＝延長）のみ書き換える。
-    // tenant_id 条件を UPDATE 側にも課し、隔離境界を SQL レベルで強制する。
+    // 衝突キーは主キー (tenant_id, file_id)（#815）。衝突先は必ず自テナントの行なので、
+    // 期限切れロックの奪取でも他テナントの行を自テナントへ書き換えることは無い（tenant_id は SET しない）。
     let updated: Option<(String,)> = sqlx::query_as(
         "INSERT INTO office_lock (file_id, lock_id, locked_by, tenant_id, expires_at) \
          VALUES ($1, $2, $3, $4, now() + $5::interval) \
-         ON CONFLICT (file_id) DO UPDATE \
+         ON CONFLICT (tenant_id, file_id) DO UPDATE \
          SET lock_id = EXCLUDED.lock_id, locked_by = EXCLUDED.locked_by, \
-             tenant_id = EXCLUDED.tenant_id, expires_at = EXCLUDED.expires_at \
+             expires_at = EXCLUDED.expires_at \
          WHERE office_lock.expires_at <= now() \
-            OR (office_lock.tenant_id = EXCLUDED.tenant_id \
-                AND office_lock.lock_id = EXCLUDED.lock_id) \
+            OR office_lock.lock_id = EXCLUDED.lock_id \
          RETURNING lock_id",
     )
     .bind(file_id)

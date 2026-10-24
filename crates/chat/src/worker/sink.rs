@@ -30,6 +30,8 @@ pub(crate) struct CheckpointEnvelope {
 /// 生成イベントの受け口（1 run 分）。
 pub(crate) struct WorkerSink {
     store: ChatStore,
+    /// run のテナント（イベントログの読み戻しを tenant でも絞る・#815）。
+    tenant_id: String,
     run_id: Uuid,
     fencing_token: i64,
     cancel: Arc<AtomicBool>,
@@ -46,12 +48,14 @@ pub(crate) struct WorkerSink {
 impl WorkerSink {
     pub(crate) fn new(
         store: ChatStore,
+        tenant_id: &str,
         run_id: Uuid,
         fencing_token: i64,
         cancel: Arc<AtomicBool>,
     ) -> Self {
         WorkerSink {
             store,
+            tenant_id: tenant_id.to_string(),
             run_id,
             fencing_token,
             cancel,
@@ -86,7 +90,11 @@ impl WorkerSink {
     /// `up_to_seq`＝チェックポイント境界までに限定する（中断ステップの途中イベントは当該ステップ
     /// ごと再生成されるため、混ぜると二重になる）。写像はライブ経路と同一の [`Self::accumulate`]。
     pub(crate) async fn seed_from_log(&mut self, up_to_seq: i64) -> Result<(), crate::ChatError> {
-        for ev in self.store.replay_events(self.run_id, 0).await? {
+        for ev in self
+            .store
+            .replay_events(&self.tenant_id, self.run_id, 0)
+            .await?
+        {
             if ev.seq > up_to_seq {
                 break; // replay は seq 昇順
             }

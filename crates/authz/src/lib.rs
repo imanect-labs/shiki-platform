@@ -35,6 +35,7 @@ pub mod model;
 pub mod object;
 pub mod scope;
 pub mod subject;
+pub mod tenancy;
 pub mod vocab;
 
 pub use client::{AuthzClient, Consistency, OpenFgaClient, OpenFgaConfig, ReadTupleKey};
@@ -44,4 +45,5 @@ pub use ident::{validate_local_id, validate_tenant_id, IdentViolation};
 pub use object::{FgaObject, Namespace, TENANT_SEP};
 pub use scope::CapabilityScope;
 pub use subject::Subject;
+pub use tenancy::{TenantResolveError, TenantSource};
 pub use vocab::{ObjectType, Relation};

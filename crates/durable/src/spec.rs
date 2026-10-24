@@ -57,6 +57,11 @@ pub struct EventTableSpec {
     pub kind_column: &'static str,
     /// ペイロードカラム名（jsonb）。
     pub payload_column: &'static str,
+    /// 追記時に **run 行から写す**列（例: chat の `tenant_id`）。キーに含まれない親の属性を
+    /// イベント行へ持たせるためのもの（#815）。値は採番と同じ `UPDATE ... RETURNING` で run 行から
+    /// 取るので、呼び出し側の申告ではなく親の正本が入る（親子の食い違いを作らない）。
+    /// キー列と重複してはならない。写す列が無いドメインは `&[]`。
+    pub copied_run_columns: &'static [&'static str],
 }
 
 impl RunTableSpec {
@@ -89,6 +94,33 @@ impl EventTableSpec {
         assert_ident(self.seq_column);
         assert_ident(self.kind_column);
         assert_ident(self.payload_column);
+        for c in self.copied_run_columns {
+            assert_ident(c);
+        }
+    }
+
+    /// 写し列を足したイベント INSERT の列リストと、`bumped` CTE から取る値リスト・RETURNING 句。
+    ///
+    /// 戻り値は `(INSERT 列の追加分, SELECT 値の追加分, RETURNING の追加分)`。いずれも先頭に
+    /// `, ` が付く（写し列が無ければ空文字列）。キー列との重複は同じ列を 2 度 INSERT する
+    /// 不正 SQL になるため、プログラミングエラーとして落とす。
+    pub(crate) fn copied_column_sql(&self, key: &Key<'_>) -> (String, String, String) {
+        for c in self.copied_run_columns {
+            assert!(
+                !key.columns.contains(c),
+                "copied_run_columns はキー列と重複できない: {c}"
+            );
+        }
+        let list = |prefix: &str| -> String {
+            let mut out = String::new();
+            for c in self.copied_run_columns {
+                out.push_str(", ");
+                out.push_str(prefix);
+                out.push_str(c);
+            }
+            out
+        };
+        (list(""), list("bumped."), list(""))
     }
 }
 
@@ -202,6 +234,49 @@ mod tests {
         assert_eq!(key.column_list(), "tenant_id, run_id");
         assert_eq!(key.placeholders(), "$1, $2");
         assert_eq!(key.len(), 2);
+    }
+
+    #[test]
+    fn copied_columns_come_from_bumped_run_row() {
+        let ev = EventTableSpec {
+            table: "evt",
+            seq_column: "seq",
+            kind_column: "type",
+            payload_column: "payload",
+            copied_run_columns: &["tenant_id"],
+        };
+        ev.validate();
+        let id = Uuid::nil();
+        let values = [KeyValue::Uuid(id)];
+        let key = Key::new(&["run_id"], &values);
+        let (cols, vals, ret) = ev.copied_column_sql(&key);
+        assert_eq!(cols, ", tenant_id");
+        assert_eq!(vals, ", bumped.tenant_id");
+        assert_eq!(ret, ", tenant_id");
+
+        let none = EventTableSpec {
+            copied_run_columns: &[],
+            ..ev
+        };
+        assert_eq!(
+            none.copied_column_sql(&key),
+            (String::new(), String::new(), String::new())
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "キー列と重複できない")]
+    fn copied_column_must_not_overlap_key() {
+        let ev = EventTableSpec {
+            table: "evt",
+            seq_column: "seq",
+            kind_column: "type",
+            payload_column: "payload",
+            copied_run_columns: &["tenant_id"],
+        };
+        let values = [KeyValue::Text("t1"), KeyValue::Uuid(Uuid::nil())];
+        let key = Key::new(K2, &values);
+        ev.copied_column_sql(&key);
     }
 
     #[test]

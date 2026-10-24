@@ -223,8 +223,8 @@ impl StorageService {
         // レート制限（総当たり・Argon2 CPU DoS の抑止・B-3）。principal と token の双方で数え、
         // どちらか超過なら Argon2 も DB 参照もせず即 deny する（DoS の芽を先に断つ）。
         let now = Utc::now();
-        let principal_key = format!("p:{}|{}", ctx.tenant_id, ctx.principal.id);
-        let token_key = format!("t:{token}");
+        let principal_key = share_link_ratelimit::principal_key(&ctx.tenant_id, &ctx.principal.id);
+        let token_key = share_link_ratelimit::token_key(&ctx.tenant_id, &ctx.org, token);
         if !self.redeem_limiter.check(&principal_key, now)
             || !self.redeem_limiter.check(&token_key, now)
         {

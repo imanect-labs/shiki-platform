@@ -215,6 +215,11 @@ jobq（自作 Postgres キュー）の延長＋状態機械として `crates/wor
    盗んだトークンを攻撃者サーバへ POST する経路を構造的に塞ぐ。リダイレクト追従時も再検証する（PIT-36）。
 4. **暗号化**: envelope encryption。マスターキーは新トレイト **`KeyProvider`**
    （クラウド=Cloud KMS / オンプレ=ローカルキーファイル・将来 HSM）。
+   暗号文は AEAD の AAD で**行（`tenant_id`・`org`・`secret_id`）に束縛**し、暗号素材を別テナント/別 org/
+   別 secret の行へ複製しても復号できない（`enc_version=1`・#814）。AAD 無しの旧版行（`enc_version=0`）は
+   読み出しのみ許し、初回解決時と `shiki-admin secrets-reencrypt` で現行版へ移す（v1 として作られた暗号文の
+   v0 への格下げと未知の版は fail-closed。ただし移行前に取得された v0 の暗号素材は、v0 の受け入れを止めるまで
+   別の行へ持ち込めるため、全行移行後に v0 を拒否する follow-up が残る）。
 5. **監査**: 解決（=利用）イベントを毎回記録（run_id・ノード・宛先ホスト）。
 
 ## 6. ミニアプリ（パッケージ形式）

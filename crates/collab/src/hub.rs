@@ -152,7 +152,12 @@ impl CollabHub {
                 .load_or_init(node_id, &node.org, &node.tenant_id)
                 .await?;
             let kind = DocKind::from_name(&node.name);
-            let live = Arc::new(LiveDoc::restore(node_id, kind, &persisted)?);
+            let live = Arc::new(LiveDoc::restore(
+                node_id,
+                &node.tenant_id,
+                kind,
+                &persisted,
+            )?);
             let saver = if kind.is_some() {
                 saver::import_if_stale(
                     &live,

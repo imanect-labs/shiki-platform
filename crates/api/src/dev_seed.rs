@@ -2,7 +2,7 @@
 //! 冪等投入する。`SHIKI_DEV_SEED=true` のときのみ作動する（fail-safe）。
 
 use anyhow::Context;
-use api::config::{AuthConfig, Tenancy};
+use api::config::AuthConfig;
 use authz::{client::OpenFgaClient, AuthContext, AuthzClient, Consistency, Principal, Relation};
 use storage::DirectoryStore;
 
@@ -95,7 +95,7 @@ pub(crate) async fn dev_seed(
         // `resolve_tenant_id` が固定 `auth.tenant_id` を使うため、fixture の `u.tenant`（a-corp 等）で
         // 書くと `user:<u.tenant>|...` になり `user:<auth.tenant_id>|...` の check と一致せず未認可に
         // なる。よって single では `auth.tenant_id` を、multi では claim 相当の `u.tenant` を使う。
-        let seed_tenant = effective_seed_tenant(auth, u.tenant);
+        let seed_tenant = effective_seed_tenant(auth, u.tenant)?;
         let ctx = AuthContext::new(
             Principal {
                 kind: authz::PrincipalKind::User,
@@ -103,10 +103,10 @@ pub(crate) async fn dev_seed(
                 email: None,
                 groups: vec![],
                 roles: vec![],
-                tenant_id: Some(seed_tenant.to_string()),
+                tenant_id: Some(seed_tenant.clone()),
             },
             u.org.to_string(),
-            seed_tenant.to_string(),
+            seed_tenant.clone(),
         );
         let subject = ctx.subject();
         let object = ctx.ns().organization(u.org);
@@ -133,7 +133,7 @@ pub(crate) async fn dev_seed(
         }
         // ディレクトリ（共有相手検索）へ投入。ON CONFLICT 更新で冪等。
         directory
-            .upsert_user(u.id, seed_tenant, u.org, u.email, u.display_name)
+            .upsert_user(u.id, &seed_tenant, u.org, u.email, u.display_name)
             .await
             .context("dev seed: directory_user の投入に失敗")?;
     }
@@ -143,7 +143,7 @@ pub(crate) async fn dev_seed(
     for r in SEED_ROLES {
         // ユーザー seed と同じく **実行時の実効テナント**へ書く（single では auth.tenant_id）。
         // fixture の r.tenant を直接使うとユーザーと別 tenant に書かれ role 共有が機能しない。
-        let seed_tenant = effective_seed_tenant(auth, r.tenant);
+        let seed_tenant = effective_seed_tenant(auth, r.tenant)?;
         for member in r.members {
             let ctx = AuthContext::new(
                 Principal {
@@ -152,10 +152,10 @@ pub(crate) async fn dev_seed(
                     email: None,
                     groups: vec![],
                     roles: vec![],
-                    tenant_id: Some(seed_tenant.to_string()),
+                    tenant_id: Some(seed_tenant.clone()),
                 },
                 r.org.to_string(),
-                seed_tenant.to_string(),
+                seed_tenant.clone(),
             );
             let subject = ctx.subject();
             let role_obj = ctx.ns().role(r.id);
@@ -174,12 +174,12 @@ pub(crate) async fn dev_seed(
             }
             // AI 活用分析の部署集計用の写し（#751）。ログイン時の同期で claims の集合に置き換わる。
             directory
-                .replace_user_roles(seed_tenant, r.org, member, &[(r.id.to_string(), true)])
+                .replace_user_roles(&seed_tenant, r.org, member, &[(r.id.to_string(), true)])
                 .await
                 .context("dev seed: directory_user_role の投入に失敗")?;
         }
         directory
-            .upsert_role(r.id, seed_tenant, r.org, r.display_name)
+            .upsert_role(r.id, &seed_tenant, r.org, r.display_name)
             .await
             .context("dev seed: directory_role の投入に失敗")?;
     }
@@ -206,18 +206,13 @@ async fn seed_org_relation(
     Ok(())
 }
 
-/// dev seed の実効テナント。single は runtime と一致させるため固定 `auth.tenant_id` を、
-/// multi は fixture の tenant（claim 相当）を使う。
-fn effective_seed_tenant<'a>(auth: &'a AuthConfig, fixture_tenant: &'a str) -> &'a str {
-    match auth.tenancy {
-        Tenancy::Single => auth
-            .tenant_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("default"),
-        Tenancy::Multi => fixture_tenant,
-    }
+/// dev seed の実効テナント。runtime と同じ規則（`authz::TenantSource`・#808）で解決する:
+/// single は固定 `auth.tenant_id`（fixture の tenant は無視）、multi は fixture の tenant（claim 相当）。
+/// 固定値が空など runtime が 401 にする設定では seed も失敗させる（別名前空間へ黙って書かない）。
+fn effective_seed_tenant(auth: &AuthConfig, fixture_tenant: &str) -> anyhow::Result<String> {
+    auth.tenant_source()
+        .resolve(Some(fixture_tenant))
+        .map_err(|e| anyhow::anyhow!("dev seed: tenant_id を解決できません: {e}"))
 }
 
 /// dev seed の有効化フラグ（`SHIKI_DEV_SEED` が真値のときのみ true）。

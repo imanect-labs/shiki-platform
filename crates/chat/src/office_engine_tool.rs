@@ -131,13 +131,20 @@ impl OfficeReadTool {
     }
 }
 
+/// 任意の文字列項目の空文字（空白だけも）を省略として扱う。任意項目を `""` で埋めてくるモデルが
+/// あり、そのまま渡すと「シート「」がありません」で失敗する（#859）。
+fn blank_as_none<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let v = Option::<String>::deserialize(d)?;
+    Ok(v.filter(|s| !s.trim().is_empty()))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReadInput {
     node_id: Uuid,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "blank_as_none")]
     range: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "blank_as_none")]
     sheet: Option<String>,
     #[serde(default)]
     details: bool,
@@ -200,7 +207,7 @@ impl OfficeExcelEditTool {
 struct EditInput {
     node_id: Uuid,
     summary: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "blank_as_none")]
     sheet: Option<String>,
     ops: Vec<serde_json::Value>,
 }

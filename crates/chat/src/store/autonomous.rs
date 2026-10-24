@@ -148,10 +148,9 @@ impl ChatStore {
         after_seq: i64,
     ) -> Result<u64, ChatError> {
         let deleted = sqlx::query(
-            "DELETE FROM generation_event \
-             WHERE run_id = $1 AND seq > $3 \
-               AND EXISTS (SELECT 1 FROM generation_run \
-                           WHERE run_id = $1 AND fencing_token = $2)",
+            "DELETE FROM generation_event e USING generation_run r \
+             WHERE r.run_id = $1 AND r.fencing_token = $2 \
+               AND e.tenant_id = r.tenant_id AND e.run_id = r.run_id AND e.seq > $3",
         )
         .bind(run_id)
         .bind(fencing_token)

@@ -147,8 +147,9 @@ impl DelegationStore {
                 continue;
             }
             if let Some(relation) = Relation::parse(&d.relation) {
-                let Some(obj) = FgaObject::from_qualified(&d.object_ref) else {
-                    tracing::error!(object_ref = %d.object_ref, "委譲台帳の object_ref が不正形式（撤去スキップ）");
+                // 行は tenant_id = tenant で絞り込み済み。tenant 部の不一致（台帳破損・改竄）も None。
+                let Some(obj) = FgaObject::from_qualified(&d.object_ref, tenant) else {
+                    tracing::error!(object_ref = %d.object_ref, tenant = %tenant, "委譲台帳の object_ref が不正形式またはテナント不一致（撤去スキップ）");
                     continue;
                 };
                 self.authz
@@ -295,11 +296,12 @@ impl DelegationStore {
         let delegations = self.active_delegations(tenant_id, workflow_id).await?;
         for d in &delegations {
             let subject = Namespace::for_tenant(tenant_id).user(&d.delegator);
-            let Some(obj) = FgaObject::from_qualified(&d.object_ref) else {
-                // 台帳が壊れている＝委譲を検証できない → fail-closed で不許可（再同意要求）。
+            let Some(obj) = FgaObject::from_qualified(&d.object_ref, tenant_id) else {
+                // 台帳が壊れている（形式崩れ・他テナントの object）＝委譲を検証できない
+                // → fail-closed で不許可（再同意要求）。
                 self.suspend(tenant_id, workflow_id).await?;
                 return Ok(RunAdmission::DelegationInvalid(format!(
-                    "委譲台帳の object_ref が不正形式: {}",
+                    "委譲台帳の object_ref が不正形式またはテナント不一致: {}",
                     d.object_ref
                 )));
             };
@@ -332,8 +334,8 @@ impl DelegationStore {
         let mut revoked_workflows: Vec<Uuid> = Vec::new();
         for d in &delegations {
             let subject = Namespace::for_tenant(tenant_id).user(&d.delegator);
-            let Some(obj) = FgaObject::from_qualified(&d.object_ref) else {
-                tracing::error!(object_ref = %d.object_ref, "委譲台帳の object_ref が不正形式（棚卸しスキップ）");
+            let Some(obj) = FgaObject::from_qualified(&d.object_ref, tenant_id) else {
+                tracing::error!(object_ref = %d.object_ref, tenant = %tenant_id, "委譲台帳の object_ref が不正形式またはテナント不一致（棚卸しスキップ）");
                 continue;
             };
             let Some(relation) = Relation::parse(&d.relation) else {
