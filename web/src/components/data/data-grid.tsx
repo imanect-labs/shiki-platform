@@ -55,6 +55,7 @@ import {
   runQuery,
   subscribeRecords,
   updateRecord,
+  type RecordSubscription,
   type CountResult,
   type DataQuery,
   type DataRecord,
@@ -139,8 +140,12 @@ type Props = {
 /// 表示行の位置も編集中に行の出現・消滅でずれうるので、確定先は位置ではなく行 id で引く。
 type RowCell = TextCell & { rowRef?: { id: string; rev: number } };
 
-/// 購読が止まった理由（グリッドの下に案内を出す）。
-type LiveProblem = { kind: "disconnected" } | { kind: "signed_out" };
+/// 購読が止まった理由（グリッドの下に案内を出す）。`reconnecting` はサーバに届かない間（停止・再起動中）で、
+/// 間隔を空けて自動で繋ぎ直す。
+type LiveProblem = { kind: "disconnected" } | { kind: "signed_out" } | { kind: "reconnecting" };
+
+/// サーバに届かないときの繋ぎ直しの間隔（2, 4, 8, 16, 30, 30… 秒）。
+const RECONNECT_MS = (attempt: number) => Math.min(30_000, 2_000 * 2 ** attempt);
 
 function groupLabel(r: DataRecord, key: string, col: ColumnModel | undefined): string {
   const s = col
@@ -181,6 +186,12 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
   const done = React.useRef(false);
   const loading = React.useRef(false);
   const generation = React.useRef(0);
+  /// 先頭からの読み直し（fetchNext より後で定義する reset を、fetchNext の中から呼ぶため）。
+  const resetRef = React.useRef<(() => void) | null>(null);
+  const fetchNextRef = React.useRef<(() => Promise<void>) | null>(null);
+  const lastCursorReset = React.useRef(0);
+  /// 最後に知らされた見えている範囲（行の位置）。
+  const visibleRegion = React.useRef<Rectangle | null>(null);
   /// 保存中の行（行 id → 保存中の件数・薄く色を付ける）。
   const pending = React.useRef<Map<string, number>>(new Map());
   /// 同じ行の保存は順に送る（行 id → 直前の保存の完了）。自分の保存で進んだ rev（送った rev → 新しい rev）を
@@ -286,8 +297,35 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       }
       report({ loaded: rows.current.length, done: done.current });
       bump();
+      // 見えている範囲が既に末尾に届いている（行が少ないページ・行の権限で絞られて短いページ）なら、スクロールを
+      // 待たずに続きを取る（glide は見える範囲が変わったときしか知らせない）。
+      const v = visibleRegion.current;
+      if (!done.current && v && v.y + v.height + PREFETCH_ROWS >= rows.current.length) {
+        window.setTimeout(() => {
+          if (gen === generation.current) void fetchNextRef.current?.();
+        }, 0);
+      }
     } catch (e) {
       if (gen !== generation.current) return;
+      // 続きのページの位置（カーソル）が使えなくなった（サーバの再起動で鍵が変わった・スナップショットの保持
+      // 切れ）: 空行のまま止めず、先頭から読み直す（D-9）。古いサーバは code の無い 400 を返すので、先頭ページは
+      // 同じ条件で読めていた続きのページの 400 もカーソルの失効とみなす。
+      if (
+        !first &&
+        e instanceof DataApiError &&
+        (e.code === "cursor_invalid" || e.code === "snapshot_expired" || e.status === 410 || (e.status === 400 && !e.code)) &&
+        // 読み直しても続きが同じ理由で読めない（位置の失効ではない）なら繰り返さない。
+        Date.now() - lastCursorReset.current > 15_000
+      ) {
+        lastCursorReset.current = Date.now();
+        loading.current = false;
+        toast({
+          title: "読み込み位置が古くなったため、先頭から読み直しました",
+          description: "サーバーの再起動などで続きの位置が使えなくなりました。",
+        });
+        resetRef.current?.();
+        return;
+      }
       // 索引の準備中・承認待ちは画面側の案内（進捗・承認）に任せ、ここは失敗として見せない。
       const waiting = e instanceof DataApiError && (e.indexPreparing || e.approvalRequired);
       if (first) {
@@ -326,10 +364,36 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     }, 400);
   };
 
-  const closeStream = React.useRef<(() => void) | null>(null);
+  const closeStream = React.useRef<RecordSubscription | null>(null);
+  /// 非表示のタブで止めている購読の再開位置（`since`）。HTTP/1.1 では同じホストへの接続が 6 本までなので、
+  /// 裏のタブが購読を持ち続けると新しいタブが開けなくなる（D-4）。非表示の間は閉じて、表示されたら続きから
+  /// 繋ぎ直す（保持期間を過ぎていればサーバが stream.reset を送り、読み直す）。
+  const paused = React.useRef<{ since: number | null; gen: number } | null>(null);
+  const reconnectTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttempt = React.useRef(0);
+  /// 予約中の繋ぎ直しの位置（非表示になったら予約を止めて、表示されたらここから繋ぐ）。
+  const retryAt = React.useRef<{ since: number | null; gen: number } | null>(null);
+  const clearReconnect = () => {
+    if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+    reconnectTimer.current = null;
+  };
   const subscribe = (since: number | null, gen: number) => {
     closeStream.current?.();
+    closeStream.current = null;
+    clearReconnect();
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      paused.current = { since, gen };
+      return;
+    }
+    paused.current = null;
+    let opened = false;
     closeStream.current = subscribeRecords(tableId, since, {
+      onOpen: () => {
+        if (gen !== generation.current) return;
+        opened = true;
+        reconnectAttempt.current = 0;
+        setLive((l) => (l?.kind === "reconnecting" ? null : l));
+      },
       onUpserted: ({ record, derived }) => {
         if (gen !== generation.current) return;
         const i = indexById.current.get(record.id);
@@ -371,6 +435,12 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         // 権限が変わった・テーブルが消えた: 見えなくなったかもしれない行を一瞬でも残さない。
         reset({ dropStale: reason === "authz_changed" || reason === "table_deleted" });
       },
+      onBulk: (count) => {
+        if (gen !== generation.current) return;
+        // 取込などでまとめて作られた行: 並び順の途中に差し込まず、件数だけ数えて「表示する」を出す。
+        setNewRows((n) => n + count);
+        refreshCountSoon(gen);
+      },
       onAwareness: (a) => {
         if (gen !== generation.current) return;
         if (!a.record_id) peers.current.delete(a.principal);
@@ -380,19 +450,38 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       onError: () => {
         // ブラウザが繋ぎ直している（Last-Event-ID 付き）。案内は諦めたときだけ出す。
       },
-      onTerminal: () => {
+      onTerminal: (lastId) => {
         if (gen !== generation.current) return;
         closeStream.current = null;
-        void diagnoseStream(gen);
+        void diagnoseStream(gen, lastId, opened);
       },
     });
   };
 
   /// 購読が繋ぎ直せなくなった理由を REST で確かめる（EventSource は状態コードを読めない）。
-  const diagnoseStream = async (gen: number) => {
+  ///
+  /// - REST も届かない（サーバの停止・再起動中・BFF の 502）: 「再接続しています」を出し、間隔を空けて最後に
+  ///   受け取った番号から繋ぎ直す
+  /// - REST は読める: 一度は繋がっていた購読が切れた（再起動の直後など）なら 1 回だけすぐ繋ぎ直す。最初から
+  ///   繋がらない（購読だけ拒否された）なら止めて「読み直す」を出す（繋ぎ直しの嵐にしない）
+  /// - 403・404: 見る権限を失った。401: ログインが切れた
+  const diagnoseStream = async (gen: number, lastId: number | null, wasOpen: boolean) => {
+    const retryLater = () => {
+      setLive({ kind: "reconnecting" });
+      clearReconnect();
+      retryAt.current = { since: lastId, gen };
+      const wait = RECONNECT_MS(reconnectAttempt.current);
+      reconnectAttempt.current += 1;
+      reconnectTimer.current = setTimeout(() => {
+        reconnectTimer.current = null;
+        if (gen === generation.current) subscribe(lastId, gen);
+      }, wait);
+    };
     try {
       await getViewerContext(tableId);
-      if (gen === generation.current) setLive({ kind: "disconnected" });
+      if (gen !== generation.current) return;
+      if (wasOpen) subscribe(lastId, gen);
+      else setLive({ kind: "disconnected" });
     } catch (e) {
       if (gen !== generation.current) return;
       if (e instanceof DataApiError && (e.status === 403 || e.status === 404)) {
@@ -410,7 +499,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       } else if (e instanceof DataApiError && e.status === 401) {
         setLive({ kind: "signed_out" });
       } else {
-        setLive({ kind: "disconnected" });
+        retryLater();
       }
     }
   };
@@ -419,6 +508,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     generation.current += 1;
     closeStream.current?.();
     closeStream.current = null;
+    paused.current = null;
+    clearReconnect();
+    reconnectAttempt.current = 0;
     if (opts?.dropStale) stale.current = [];
     else if (rows.current.length) stale.current = rows.current;
     rows.current = [];
@@ -450,10 +542,36 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     return () => {
       generation.current += 1;
       closeStream.current?.();
+      clearReconnect();
       if (countTimer.current) clearTimeout(countTimer.current);
     };
   }, [reset]);
 
+  // 非表示のタブは購読を止め、表示されたら続きから繋ぎ直す（D-4）。
+  React.useEffect(() => {
+    if (embedded) return;
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        const sub = closeStream.current;
+        if (sub) {
+          paused.current = { since: sub.lastEventId(), gen: generation.current };
+          sub();
+          closeStream.current = null;
+        } else if (reconnectTimer.current && retryAt.current) {
+          paused.current = retryAt.current;
+        }
+        clearReconnect();
+      } else {
+        const p = paused.current;
+        if (p && p.gen === generation.current) subscribe(p.since, p.gen);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedded, tableId]);
+
+  resetRef.current = () => reset();
   React.useImperativeHandle(ref, () => ({ reload: () => reset() }), [reset]);
 
   // ---- 表示行（グループ見出しを挟む） ----
@@ -718,8 +836,10 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     flushSync(() => setSelection(s));
   }, []);
 
+  fetchNextRef.current = fetchNext;
   const onVisibleRegionChanged = React.useCallback(
     (r: Rectangle) => {
+      visibleRegion.current = r;
       if (r.y + r.height + PREFETCH_ROWS >= display.length) void fetchNext();
     },
     [display.length, fetchNext],
@@ -937,13 +1057,19 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           data-testid="data-grid-live-problem"
           className="absolute bottom-4 left-1/2 z-20 flex w-[min(30rem,calc(100%-2rem))] -translate-x-1/2 items-center gap-2 rounded-xl border bg-card px-3 py-2 text-xs shadow-md"
         >
-          <WifiOff className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          {live.kind === "reconnecting" ? (
+            <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />
+          ) : (
+            <WifiOff className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          )}
           <span className="flex-1 text-balance">
             {live.kind === "signed_out"
               ? "ログインが切れたため、他の人の変更の自動反映を止めました。もう一度ログインしてください。"
-              : "他の人の変更の自動反映が止まりました。表示中の行は古い可能性があります。"}
+              : live.kind === "reconnecting"
+                ? "サーバーとの接続が切れました。再接続しています（表示中の行は古い可能性があります）。"
+                : "他の人の変更の自動反映が止まりました。表示中の行は古い可能性があります。"}
           </span>
-          {live.kind === "disconnected" ? (
+          {live.kind !== "signed_out" ? (
             <button
               type="button"
               onClick={() => reset()}

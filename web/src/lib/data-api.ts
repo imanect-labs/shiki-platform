@@ -334,11 +334,17 @@ export type RecordStreamHandlers = {
   onReset: (reason: StreamResetReason | "schema_changed") => void;
   /// 他ユーザーのカーソル位置（データを含まない）。
   onAwareness?: (e: AwarenessEvent) => void;
+  /// 一括取込などでまとめて作られた行（1 件ずつのイベントの代わりに件数だけ届く）。
+  onBulk?: (count: number) => void;
   /// 接続が切れた（ブラウザが Last-Event-ID 付きで自動で繋ぎ直す）。
   onError?: () => void;
-  /// 繋ぎ直せない（403・404・401 などで EventSource が諦めた、または再接続の失敗が続いた）。購読は
-  /// 閉じている。原因は EventSource から読めないので、呼び出し側が REST で確かめて案内する。
-  onTerminal?: () => void;
+  /// 繋がった（最初の接続・繋ぎ直しのたび）。
+  onOpen?: () => void;
+  /// 繋ぎ直せない（403・404・401 や、サーバが落ちていて BFF が 502 を返したなどで EventSource が諦めた、
+  /// または再接続の失敗が続いた）。購読は閉じている。原因は EventSource から読めないので、呼び出し側が
+  /// REST で確かめて案内する。`lastEventId` は最後に受け取ったイベントの番号（`since` に渡すと続きから
+  /// 繋ぎ直せる・まだ何も受け取っていなければ購読を始めたときの `since`）。
+  onTerminal?: (lastEventId: number | null) => void;
 };
 
 /// 再接続の失敗がこの回数続いたら諦める（サーバが落ち続けている間に繋ぎ直しを繰り返さない）。
@@ -348,15 +354,24 @@ const MAX_STREAM_RETRIES = 6;
 ///
 /// 到達は at-least-once。冪等な適用（`(record_id, rev)`）は呼び出し側の責務。`stream.reset` /
 /// `schema.changed` を受けたら購読を閉じて `onReset` を呼ぶ（以後の再接続は呼び出し側が読み直してから行う）。
+/// 購読の後始末（呼ぶと閉じる）と、最後に受け取ったイベントの番号（一時停止から `since` で再開するため）。
+export type RecordSubscription = (() => void) & { lastEventId: () => number | null };
+
 export function subscribeRecords(
   tableId: string,
   since: number | null | undefined,
   h: RecordStreamHandlers,
-): () => void {
+): RecordSubscription {
   const q = since != null ? `?since=${since}` : "";
   const es = new EventSource(`/api/data/tables/${enc(tableId)}/stream${q}`, { withCredentials: true });
   let closed = false;
   let failures = 0;
+  // 最後に受け取ったイベントの番号（自前で繋ぎ直すときの `since`）。
+  let lastId: number | null = since ?? null;
+  const seen = (ev: Event) => {
+    const n = Number((ev as MessageEvent).lastEventId);
+    if ((ev as MessageEvent).lastEventId !== "" && Number.isFinite(n)) lastId = n;
+  };
   const close = () => {
     closed = true;
     es.close();
@@ -370,18 +385,28 @@ export function subscribeRecords(
   };
   es.onopen = () => {
     failures = 0;
+    h.onOpen?.();
   };
   es.addEventListener("stream.ready", (ev) => {
+    seen(ev);
     const d = parse<StreamReadyEvent>(ev as MessageEvent);
     if (d) h.onReady?.(d.position);
   });
   es.addEventListener("record.upserted", (ev) => {
+    seen(ev);
     const d = parse<RecordUpsertedEvent>(ev as MessageEvent);
     if (d) h.onUpserted(d);
   });
   es.addEventListener("record.removed", (ev) => {
+    seen(ev);
     const d = parse<RecordRemovedEvent>(ev as MessageEvent);
     if (d) h.onRemoved(d);
+  });
+  // 一括取込の要約（サーバが 1 件ずつ流す代わりに送る・件数だけ）。古いサーバは送らない。
+  es.addEventListener("records.bulk_applied", (ev) => {
+    seen(ev);
+    const d = parse<{ count?: number }>(ev as MessageEvent);
+    if (d && typeof d.count === "number" && d.count > 0) h.onBulk?.(d.count);
   });
   es.addEventListener("awareness", (ev) => {
     const d = parse<AwarenessEvent>(ev as MessageEvent);
@@ -402,12 +427,12 @@ export function subscribeRecords(
     failures += 1;
     if (es.readyState === EventSource.CLOSED || failures > MAX_STREAM_RETRIES) {
       close();
-      h.onTerminal?.();
+      h.onTerminal?.(lastId);
       return;
     }
     h.onError?.();
   };
-  return close;
+  return Object.assign(close, { lastEventId: () => lastId });
 }
 
 /// 自分のカーソル位置を他の閲覧者へ知らせる（データを含まない・`record_id: null` は離脱）。
