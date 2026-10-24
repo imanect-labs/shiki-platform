@@ -841,6 +841,127 @@ async fn deferred_index_build_keeps_concurrent_writes() {
     assert!(p.is_consistent(), "{p:?}");
 }
 
+/// 遅延構築で保持するのは取込が値を書く列の索引だけ（検証 D-5）。取込が触れない列の既存の索引は
+/// 取込の間も使える（以前はテーブルの全ての値索引が building になり、取込の間ずっと 409 だった）。
+#[tokio::test]
+async fn deferred_import_keeps_untouched_indexes_active() {
+    let _g = serial().await;
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool.clone());
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let t = create_table(&store, &c, "t", rich_schema()).await;
+    for i in 0..10 {
+        store
+            .create_record(&c, t.id, rich_row(100_000 + i, None), None)
+            .await
+            .unwrap();
+    }
+    // 取込は title と amount だけを書く（status・due・tags は値を持たない）。
+    let n = 1_200;
+    let id = store
+        .start_bulk_import(
+            &c,
+            t.id,
+            rows(
+                (0..n)
+                    .map(|i| json!({"title": format!("imp-{i:05}"), "amount": i}))
+                    .collect(),
+            ),
+            BulkImportOptions {
+                index_mode: BulkIndexMode::Deferred,
+                ..BulkImportOptions::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    detach_job(&pool, id).await;
+    loop {
+        let s = store
+            .bulk_import_step(&tenant, t.id, id, 500)
+            .await
+            .unwrap();
+        if s.status != "validating" {
+            break;
+        }
+    }
+    let st = store.bulk_import_status(&c, t.id, id).await.unwrap();
+    assert_eq!(st.status, "applying");
+    assert!(st.index_deferred);
+    let (ti, tb) = keys_of(&pool, &tenant, t.id).await;
+    let fid = |k: &str| i16::try_from(t.schema.field(k).unwrap().id).unwrap();
+    let states = ledger(&pool, ti, tb).await;
+    let state_of = |f: i16, tbl: i16| {
+        states
+            .iter()
+            .find(|(x, y, _)| *x == f && *y == tbl)
+            .map(|s| s.2.clone())
+    };
+    assert_eq!(state_of(fid("title"), 1).as_deref(), Some("building"));
+    assert_eq!(state_of(fid("amount"), 2).as_deref(), Some("building"));
+    for k in ["status", "due", "tags"] {
+        assert_eq!(
+            state_of(fid(k), 1).as_deref(),
+            Some("active"),
+            "取込が書かない列 {k} は保持しない"
+        );
+    }
+    // 取込が書かない列では、取込の途中でも絞り込み・並べ替えできる。
+    let q = DataQuery {
+        filter: Some(eq("status", json!("approved"))),
+        sort: vec![SortKey {
+            field: "due".into(),
+            descending: false,
+        }],
+        ..DataQuery::default()
+    };
+    store.run_query(&c, t.id, &q, None).await.unwrap();
+    let q = DataQuery {
+        filter: Some(eq("title", json!("imp-00001"))),
+        ..DataQuery::default()
+    };
+    assert!(matches!(
+        store.run_query(&c, t.id, &q, None).await,
+        Err(DataError::IndexPreparing { .. })
+    ));
+    // 適用の途中で取込の行が増えても、取込が書かない列の結果は本体と一致する（取込の行は値なし）。
+    store
+        .bulk_import_step(&tenant, t.id, id, 300)
+        .await
+        .unwrap();
+    let approved = count(&store, &c, t.id, Some(eq("status", json!("approved")))).await;
+    let truth: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM data_record WHERE tenant_int = $1 AND table_int = $2 AND data->>$3 = 'approved'",
+    )
+    .bind(ti)
+    .bind(tb)
+    .bind(format!("f{}", fid("status")))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(approved, truth as u64);
+    loop {
+        if store
+            .bulk_import_step(&tenant, t.id, id, 500)
+            .await
+            .unwrap()
+            .done
+        {
+            break;
+        }
+    }
+    let st = store.bulk_import_status(&c, t.id, id).await.unwrap();
+    assert_eq!(st.status, "done", "{st:?}");
+    assert_eq!(st.parity_mismatches, Some(0), "{st:?}");
+    let p = store.verify_index_parity(&tenant, t.id).await.unwrap();
+    assert!(p.is_consistent(), "{p:?}");
+    assert_eq!(
+        count(&store, &c, t.id, Some(eq("title", json!("imp-00001")))).await,
+        1
+    );
+}
+
 /// 実行中にスキーマが改訂されたら、未適用の行を新しいスキーマで検証し直す。
 #[tokio::test]
 async fn schema_change_mid_import_revalidates_unapplied_rows() {

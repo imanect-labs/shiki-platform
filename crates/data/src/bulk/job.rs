@@ -10,13 +10,12 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::{enqueue_import, BULK_CHUNK, BULK_IMPORT_QUEUE};
+use crate::job_lease::{JobLease, JOB_VT};
 use crate::store::DataStore;
 use crate::{map_db, DataError};
 
 /// 1 ジョブで進めるチャンク数。
 const CHUNKS_PER_JOB: usize = 20;
-/// 可視タイムアウト（1 ジョブの想定所要より十分長く）。
-const BULK_VT: Duration = Duration::from_mins(15);
 /// 終わった取込の作業領域・エラー行を残す日数。
 const RETAIN_DAYS: i32 = 7;
 
@@ -35,12 +34,15 @@ impl DataStore {
     pub async fn consume_bulk_job_once(&self) -> Result<bool, DataError> {
         for (_, pool) in self.pools.all() {
             let mut conn = pool.acquire().await.map_err(map_db)?;
-            let mut jobs = jobq::claim(&mut conn, BULK_IMPORT_QUEUE, BULK_VT, 1)
+            // 可視期限は短く、処理中はハートビートで延ばす（落ちたらすぐ再配信・crate::job_lease）。
+            let mut jobs = jobq::claim(&mut conn, BULK_IMPORT_QUEUE, JOB_VT, 1)
                 .await
                 .map_err(|e| DataError::Internal(format!("jobq: {e}")))?;
             drop(conn);
             let Some(job) = jobs.pop() else { continue };
+            let lease = JobLease::start(&self.pools, &job.tenant_id, job.id);
             let outcome = self.run_bulk_job(&job).await;
+            drop(lease);
             let mut tx = pool.begin().await.map_err(map_db)?;
             match outcome {
                 Ok(again) => {

@@ -25,6 +25,7 @@ use super::state::{activate_building, load_states, sync_ledger, IndexPlan};
 use super::write::{IndexWriter, IndexedRecord};
 use super::{IndexState, IndexTable, MAX_MULTI_VALUES_CEILING};
 use crate::field_key::decode_record;
+use crate::job_lease::{JobLease, JOB_VT};
 use crate::key_migration::KEY_FORMAT_LEGACY;
 use crate::link_values::{LINK_VALUES_OP, LINK_VALUE_CHUNK};
 use crate::model::{FieldId, TableKeys, TableSchema};
@@ -37,8 +38,6 @@ pub const INDEX_BACKFILL_QUEUE: &str = "data_index_backfill";
 pub const BACKFILL_CHUNK: i64 = 500;
 /// ジョブ 1 件で処理するチャンク数（残りは続きのジョブへ）。
 const CHUNKS_PER_JOB: usize = 40;
-/// 可視タイムアウト（1 ジョブの想定所要より十分長く）。
-const BACKFILL_VT: Duration = Duration::from_mins(15);
 /// スイープ 1 回で初期化するテーブル数の上限。
 const INIT_SWEEP_BATCH: i64 = 50;
 
@@ -683,12 +682,15 @@ impl DataStore {
     pub async fn consume_index_job_once(&self) -> Result<bool, DataError> {
         for (_, pool) in self.pools.all() {
             let mut conn = pool.acquire().await.map_err(map_db)?;
-            let mut jobs = jobq::claim(&mut conn, INDEX_BACKFILL_QUEUE, BACKFILL_VT, 1)
+            // 可視期限は短く、処理中はハートビートで延ばす（落ちたらすぐ再配信・crate::job_lease）。
+            let mut jobs = jobq::claim(&mut conn, INDEX_BACKFILL_QUEUE, JOB_VT, 1)
                 .await
                 .map_err(|e| DataError::Internal(format!("jobq: {e}")))?;
             drop(conn);
             let Some(job) = jobs.pop() else { continue };
+            let lease = JobLease::start(&self.pools, &job.tenant_id, job.id);
             let outcome = self.run_index_job(&job).await;
+            drop(lease);
             let mut tx = pool.begin().await.map_err(map_db)?;
             match outcome {
                 Ok(continue_backfill) => {
@@ -886,7 +888,9 @@ impl IndexBackfillWorker {
     pub fn new(store: DataStore) -> Self {
         IndexBackfillWorker {
             store,
-            poll: Duration::from_secs(15),
+            // ジョブの拾い上げは短い間隔で（スキーマ改訂で積んだバックフィルをすぐ始める）、
+            // 台帳の初期化・積み直しのスイープは 15 秒ごと。
+            poll: Duration::from_secs(2),
         }
     }
 
@@ -896,9 +900,13 @@ impl IndexBackfillWorker {
     }
 
     async fn run(self) {
+        let mut sweep_at = tokio::time::Instant::now();
         loop {
-            if let Err(e) = self.store.enqueue_index_backfills_if_needed().await {
-                tracing::warn!(error = %e, "索引台帳の初期化スイープに失敗");
+            if tokio::time::Instant::now() >= sweep_at {
+                if let Err(e) = self.store.enqueue_index_backfills_if_needed().await {
+                    tracing::warn!(error = %e, "索引台帳の初期化スイープに失敗");
+                }
+                sweep_at = tokio::time::Instant::now() + Duration::from_secs(15);
             }
             loop {
                 match self.store.consume_index_job_once().await {

@@ -28,14 +28,13 @@ use super::{
 };
 use crate::index::state::load_states;
 use crate::index::{IndexState, IndexTable};
+use crate::job_lease::{JobLease, JOB_VT};
 use crate::key_migration::KEY_FORMAT_LEGACY;
 use crate::model::{FieldId, TableKeys, TableSchema, SYSTEM_FIELD_CREATED_AT, SYSTEM_FIELD_OWNER};
 use crate::store::DataStore;
 use crate::stream::outbox::RECORD_CHANGED_EVENT;
 use crate::{map_db, DataError};
 
-/// ジョブの可視性タイムアウト（大きなテーブルの収集が終わる前に再配信しない）。
-const ANALYZE_VT: Duration = Duration::from_mins(15);
 /// 統計収集の文の `statement_timeout`（ミリ秒）。
 const ANALYZE_STATEMENT_TIMEOUT_MS: u64 = 120_000;
 /// 等深ヒストグラムの区間数。
@@ -59,11 +58,14 @@ impl DataStore {
     pub async fn run_stats_job_once(&self) -> Result<bool, DataError> {
         for (_, pool) in self.pools.all() {
             let mut conn = pool.acquire().await.map_err(map_db)?;
-            let mut jobs = jobq::claim(&mut conn, STATS_ANALYZE_QUEUE, ANALYZE_VT, 1)
+            // 可視期限は短く、収集中はハートビートで延ばす（大きなテーブルの収集中に再配信しない・
+            // 落ちたらすぐ再配信・crate::job_lease）。
+            let mut jobs = jobq::claim(&mut conn, STATS_ANALYZE_QUEUE, JOB_VT, 1)
                 .await
                 .map_err(|e| DataError::Internal(format!("jobq: {e}")))?;
             drop(conn);
             let Some(job) = jobs.pop() else { continue };
+            let lease = JobLease::start(&self.pools, &job.tenant_id, job.id);
             let table_id = job
                 .payload
                 .get("table_id")
@@ -75,6 +77,7 @@ impl DataStore {
                     "統計収集ジョブの payload が不正です".into(),
                 )),
             };
+            drop(lease);
             let mut tx = pool.begin().await.map_err(map_db)?;
             match outcome {
                 Ok(()) => {

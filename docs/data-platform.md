@@ -2081,7 +2081,9 @@ covering read へ切り替える**。判定には平均行幅の統計が要る�
 >   既存レコードの更新を混ぜるのはワークフローの `data.bulk_upsert`（行ごとの `op` と任意の `expected_rev`）
 > - 検証を通った後に並行書込と競合した行（unique・リンクのカーディナリティ）は拒否として数え、行エラーに残す。
 >   `abort_on_invalid` なら 1 行でも不合格があれば何も適用しない。適用中にスキーマの版が変わったら未適用の行を検証し直す
-> - 索引の構築は `index_mode`（`auto` / `immediate` / `deferred`）。`deferred` は値索引を `building` に保持して後でバックフィルする
+> - 索引の構築は `index_mode`（`auto` / `immediate` / `deferred`）。`deferred` は**取込の作成行が値を書く列の**値索引を `building` に保持して
+  後でバックフィルする（取込が値を書かない列の既存の索引は `active` のまま使える。null は索引行を持たないため）。
+  取込・バックフィル・統計収集のジョブは可視期限を 60 秒に取り、処理中はハートビート（20 秒ごと）で延ばす（落ちたら 1 分以内に再配信）
 > - **HTTP API**: `POST /data/tables/{id}/imports`（JSON の行）・`POST /data/tables/{id}/imports/csv`（`text/csv`・UTF-8・見出し行あり。
 >   列は参照名→表示名の順で照合・`_key` 列は行キー・multi_select / record_ref は `;` 区切りか JSON 配列）で開始（202）。
 >   進捗は `GET …/imports/{import_id}`、不合格・拒否の行は `GET …/imports/{import_id}/errors`（行番号の keyset）。

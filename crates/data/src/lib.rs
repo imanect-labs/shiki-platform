@@ -53,6 +53,7 @@ mod formula;
 mod fsm;
 mod fsm_store;
 mod index;
+mod job_lease;
 mod key_migration;
 mod link_merge;
 mod link_values;

@@ -178,8 +178,15 @@ pub async fn enqueue_unless_pending_on(
 
 /// 可視なジョブを最大 `limit` 件確保し、`visible_at` を `now() + vt` へ進める。
 ///
-/// 単一 UPDATE 文（サブクエリに `FOR UPDATE SKIP LOCKED`）なので複数 consumer が
+/// 単一文（確保する行を `FOR UPDATE SKIP LOCKED` で選ぶ CTE ＋ UPDATE）なので複数 consumer が
 /// 競合しても同一ジョブを二重確保しない。`attempts` はここで +1 される。
+///
+/// **確保する行は `MATERIALIZED` の CTE で 1 回だけ選ぶ**。`where id in (select … limit $2 for update
+/// skip locked)` の形は、統計が古い（キューが空に近いときに analyze された）と計画が
+/// 「外側の seq scan × 内側のサブクエリを行ごとに再実行」の Nested Loop Semi Join になり、再実行の
+/// たびに直前に自分で更新した行を飛ばして次の行を返すため、**`limit` を超える行を確保していた**。
+/// 呼び出し側は返った行のうち処理する分しか見ないので、残りは可視期限が切れるまで誰にも処理されない
+/// （索引のバックフィルが 15 分止まった原因）。
 ///
 /// 取り出し順は `fair_seq, id`（テナント間の公平性・モジュール冒頭）。`job_queue_fair_idx` を
 /// キュー内で先頭から辿り、読み飛ばすのは処理中・バックオフ中の行だけ。
@@ -195,18 +202,18 @@ pub async fn claim(
     limit: i64,
 ) -> Result<Vec<ClaimedJob>, JobqError> {
     let jobs = sqlx::query_as::<_, ClaimedJob>(
-        "with claimed as ( \
-             update job_queue set visible_at = now() + $3 * interval '1 second', \
-                                  attempts = attempts + 1 \
-             where id in ( \
-                 select id from job_queue \
-                 where queue = $1 and visible_at <= now() \
-                 order by fair_seq, id \
-                 limit $2 \
-                 for update skip locked \
-             ) \
-             returning id, queue, tenant_id, payload, attempts, max_attempts, trace_id, \
-                       enqueued_at, fair_seq \
+        "with picked as materialized ( \
+             select id from job_queue \
+             where queue = $1 and visible_at <= now() \
+             order by fair_seq, id \
+             limit $2 \
+             for update skip locked \
+         ), claimed as ( \
+             update job_queue j set visible_at = now() + $3 * interval '1 second', \
+                                    attempts = j.attempts + 1 \
+             from picked where j.id = picked.id \
+             returning j.id, j.queue, j.tenant_id, j.payload, j.attempts, j.max_attempts, \
+                       j.trace_id, j.enqueued_at, j.fair_seq \
          ), top as (select max(fair_seq) + 1 as mx from claimed), \
          bumped as ( \
              update job_queue_vtime v set vt = top.mx from top \
@@ -235,6 +242,23 @@ pub async fn ack(conn: &mut PgConnection, id: i64) -> Result<(), JobqError> {
         .execute(conn)
         .await?;
     Ok(())
+}
+
+/// 処理中のジョブの可視期限を `now() + vt` まで延ばす（ハートビート）。
+///
+/// 長いジョブは可視期限を短く取り、処理の区切りごとにこれを呼んで延ばす。consumer が落ちれば延長が
+/// 止まり、短い期限のうちに他の consumer（再起動後の自分）へ再配信される。ジョブが既に無い
+/// （ack 済み・DLQ へ移送済み）なら `false`。
+pub async fn extend(conn: &mut PgConnection, id: i64, vt: Duration) -> Result<bool, JobqError> {
+    let n = sqlx::query(
+        "update job_queue set visible_at = now() + $2 * interval '1 second' where id = $1",
+    )
+    .bind(id)
+    .bind(vt.as_secs_f64())
+    .execute(conn)
+    .await?
+    .rows_affected();
+    Ok(n > 0)
 }
 
 /// 処理失敗。試行上限内なら `backoff` 後に再配信、上限到達なら DLQ へ移送する。

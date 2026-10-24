@@ -99,8 +99,16 @@ pub(super) async fn hold_index(
     .fetch_optional(&mut *conn)
     .await
     .map_err(map_db)?;
+    // 保持するのは**取込が値を書く列**の索引だけ（検証 D-5）。取込の行がどれも値を持たない列は、
+    // 取込の行について索引行が要らない（null は索引行を持たない）ので active のまま使える
+    // （以前は全列を保持し、取込の間はテーブル全体が並べ替え・絞り込みできなかった）。
+    let written = written_keys(conn, imp).await?;
     for (field, t, state) in load_states(conn, table.keys).await? {
-        if state == IndexState::Active && deferrable(&table.schema, field, t) {
+        let writes = table
+            .schema
+            .field_by_id(field)
+            .is_some_and(|d| written.contains(&d.key));
+        if state == IndexState::Active && writes && deferrable(&table.schema, field, t) {
             set_state(conn, table.keys, field, t, IndexState::Building).await?;
         }
     }
@@ -115,6 +123,29 @@ pub(super) async fn hold_index(
     .map_err(map_db)?;
     tracing::info!(import_id = %imp.id, "索引を遅延構築します（値索引を building に保持）");
     Ok(true)
+}
+
+/// 取込の作成行（検証に合格した行）が null でない値を持つ列の参照名。
+///
+/// 作成行の本体は検証済みの値そのもの（`normalized` を `encode_record` して入れる）なので、ここに無い列は
+/// 取込の行について索引行を作らない。更新行は 1 件の更新と同じく索引を write-through する。
+async fn written_keys(
+    conn: &mut PgConnection,
+    imp: &ImportRow,
+) -> Result<HashSet<String>, DataError> {
+    let keys: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT e.key FROM data_bulk_staging s, jsonb_each(s.normalized) e \
+         WHERE s.tenant_int = $1 AND s.import_id = $2 AND s.state = $3 AND s.op = $4 \
+           AND jsonb_typeof(e.value) <> 'null'",
+    )
+    .bind(imp.tenant_int)
+    .bind(imp.id)
+    .bind(ST_VALID)
+    .bind(OP_CREATE)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(map_db)?;
+    Ok(keys.into_iter().collect())
 }
 
 /// 取込の作業領域を片付ける（不合格・拒否の行はエラー報告のために残す）。
