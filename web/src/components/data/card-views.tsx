@@ -30,14 +30,18 @@ function useRecords(tableId: string, query: DataQuery, onError: (e: Error) => vo
   const [state, setState] = React.useState<Loaded>({ items: [], cursor: null, loading: true, error: null });
   const key = JSON.stringify(query);
   const gen = React.useRef(0);
+  /// 読み込み中か（描画を待たずに重ね押しを止める・同じ描画の中の連続クリックでも 1 本だけ）。
+  const inflight = React.useRef(false);
   const load = React.useCallback(
     async (cursor: string | null) => {
       const g = gen.current;
+      inflight.current = true;
       setState((s) => ({ ...s, loading: true }));
       try {
         const q = JSON.parse(key) as DataQuery;
         const res = await runQuery(tableId, { ...q, limit: 200, cursor: cursor ?? undefined });
         if (g !== gen.current) return;
+        inflight.current = false;
         setState((s) => {
           // 続きの読み込みは、手元にある行を重ねない（同じページが二度届いても予定・カードを重複させない）。
           const seen = new Set(cursor ? s.items.map((r) => r.id) : []);
@@ -46,6 +50,7 @@ function useRecords(tableId: string, query: DataQuery, onError: (e: Error) => vo
         });
       } catch (e) {
         if (g !== gen.current) return;
+        inflight.current = false;
         const err = e instanceof Error ? e : new Error(String(e));
         setState((s) => ({ ...s, loading: false, error: err.message }));
         onError(err);
@@ -60,7 +65,7 @@ function useRecords(tableId: string, query: DataQuery, onError: (e: Error) => vo
     void load(null);
   }, [load]);
   // 読み込み中は続きを重ねて要求しない（同じカーソルの並行読込で行が重複する）。
-  return { ...state, more: () => state.cursor && !state.loading && void load(state.cursor) };
+  return { ...state, more: () => state.cursor && !inflight.current && void load(state.cursor) };
 }
 
 type CountResultLike = { exact: number } | { at_least: number };
@@ -368,6 +373,8 @@ export function CalendarMonth({
     const day = isDateOnly ? v.slice(0, 10) : ymd(new Date(v));
     byDay.set(day, [...(byDay.get(day) ?? []), r]);
   }
+  // 読み込み済みの最後の日（日付の早い順に読むので、続きがあればこの日の途中から後ろが未読込）。
+  const lastDay = cursor ? [...byDay.keys()].sort().at(-1) ?? null : null;
   const start = new Date(month);
   start.setDate(1 - month.getDay());
   const cells = Array.from({ length: 42 }, (_, i) => {
@@ -396,6 +403,18 @@ export function CalendarMonth({
         <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground" data-testid="calendar-count" aria-live="polite">
           {loading && items.length === 0 ? "" : `この月 ${items.length.toLocaleString("ja-JP")}${cursor ? "+" : ""} 件`}
         </span>
+        {cursor && items.length > 0 ? (
+          // 予定は日付の早い順に読むので、続きがある間は月の後半の日が空に見える（予定が無いのと区別できるよう知らせる）。
+          <button
+            type="button"
+            onClick={more}
+            disabled={loading}
+            data-testid="calendar-partial"
+            className="whitespace-nowrap rounded text-xs text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+          >
+            {lastDay ? `${Number(lastDay.slice(8, 10))} 日以降は一部未読込 · 続きを読み込む` : "続きを読み込む"}
+          </button>
+        ) : null}
         {onSpecChange && dateColumns.length > 0 ? (
           <div className="ml-auto flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground max-sm:sr-only">日付の列</span>
