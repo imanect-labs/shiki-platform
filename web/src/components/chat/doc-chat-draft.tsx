@@ -37,16 +37,24 @@ export function PanelEmptyHint() {
 export function DocChatDraft({
   scope,
   onStart,
+  onDirtyChange,
 }: {
   /// モデル・ツールの選択の保存先（ホームや他の文書と共有しない）。作った会話へ引き継ぐ。
   scope: string;
   /// 会話を作って最初の発話を渡す。失敗したら reject する（入力欄に案内を出す）。
   onStart: (msg: PendingMessage) => Promise<void>;
+  /// 入力欄に本文があるか（書きかけ）が変わったときに呼ぶ。外れる（アンマウント）ときは false。
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   // エージェントモード（会話内の入力欄と同じく、この発話から切り替えられる）。
   const [autonomous, setAutonomous] = React.useState(false);
   const [starting, setStarting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const onValueChange = React.useCallback(
+    (value: string) => onDirtyChange?.(value.trim().length > 0),
+    [onDirtyChange],
+  );
+  React.useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   const submit = React.useCallback(
     (text: string, attachments: Attachment[], context?: SelectionContext, command?: ActiveCommand) => {
@@ -87,6 +95,7 @@ export function DocChatDraft({
           autonomous={autonomous}
           onAutonomousChange={setAutonomous}
           scope={scope}
+          onValueChange={onValueChange}
           autoFocus
         />
       </div>

@@ -8,7 +8,14 @@ import { uploadFile, type NodeResponse } from "@/lib/storage";
 import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
 import { HOME_SCOPE } from "@/lib/model-choice";
 import { selectableTool, useToolChoice } from "@/lib/tool-choice";
-import { readScoped, removeScoped, useStorageScopeReady, writeScoped } from "@/lib/user-storage";
+import {
+  readScoped,
+  removeScoped,
+  storageScopeGeneration,
+  subscribeStorageScope,
+  useStorageScopeReady,
+  writeScoped,
+} from "@/lib/user-storage";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { ApprovalModeSelect, approvalModeDef } from "./approval-mode-select";
 import { ComposerModeButton } from "./composer-mode";
@@ -65,7 +72,9 @@ const DRAFT_SAVE_DELAY_MS = 400;
 const DRAFT_MAX_CHARS = 100_000;
 
 /// 書きかけを保存する。空・上限超過は保存値を消す（古い書きかけを後で戻さないため）。
-function saveDraft(key: string, value: string): void {
+/// `generation` は復元したときの世代。その後にログアウトがあれば書かない（次の人のキーへ移さない）。
+function saveDraft(key: string, value: string, generation: number): void {
+  if (generation !== storageScopeGeneration()) return;
   try {
     if (value && value.length <= DRAFT_MAX_CHARS) writeScoped(key, value);
     else removeScoped(key);
@@ -101,6 +110,7 @@ export const Composer = React.memo(function Composer({
   threadId,
   scope,
   draftKey,
+  onValueChange,
   className,
 }: {
   onSubmit: (
@@ -143,6 +153,8 @@ export const Composer = React.memo(function Composer({
   /// 指定すると、書きかけの本文をユーザー単位で保存し、次にこの入力欄を開いたときに戻す
   /// （ホームの新規チャット: 入力 → 別画面 → 戻ると続きから書ける）。送信で消える。
   draftKey?: string;
+  /// 本文が変わるたびに呼ぶ（入力途中かどうかを親が知る必要があるとき）。
+  onValueChange?: (value: string) => void;
   className?: string;
 }) {
   const [value, setValue] = React.useState("");
@@ -157,12 +169,28 @@ export const Composer = React.memo(function Composer({
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
+  React.useEffect(() => {
+    onValueChange?.(value);
+  }, [onValueChange, value]);
+
   // 書きかけの保存と復元（draftKey 指定時）。保存先はユーザー単位（ログアウトで消える・#817）
   // なので、ユーザーが確定してから読む。保存は復元の後から（復元前の空で保存値を消さない）。
   const scopeReady = useStorageScopeReady();
   const [draftRestored, setDraftRestored] = React.useState(false);
+  // 復元したときの世代。ログアウト（他タブを含む）で世代が進んだら、前の人の書きかけを
+  // 入力欄から捨て、次の人のキーへ書かない（#817）。
+  const draftGeneration = React.useRef(0);
+  React.useEffect(() => {
+    if (!draftKey) return;
+    return subscribeStorageScope(() => {
+      if (storageScopeGeneration() === draftGeneration.current) return;
+      setValue("");
+      setDraftRestored(false);
+    });
+  }, [draftKey]);
   React.useEffect(() => {
     if (!draftKey || !scopeReady || draftRestored) return;
+    draftGeneration.current = storageScopeGeneration();
     const saved = readScoped(draftKey);
     // 確定を待つ間に打ち始めていたら、そちらを優先する（復元の完了で保存される）。
     if (saved) setValue((v) => v || saved);
@@ -174,12 +202,14 @@ export const Composer = React.memo(function Composer({
   latestValue.current = value;
   React.useEffect(() => {
     if (!draftKey || !draftRestored) return;
-    const t = window.setTimeout(() => saveDraft(draftKey, value), DRAFT_SAVE_DELAY_MS);
+    const generation = draftGeneration.current;
+    const t = window.setTimeout(() => saveDraft(draftKey, value, generation), DRAFT_SAVE_DELAY_MS);
     return () => window.clearTimeout(t);
   }, [draftKey, draftRestored, value]);
   React.useEffect(() => {
     if (!draftKey || !draftRestored) return;
-    return () => saveDraft(draftKey, latestValue.current);
+    const generation = draftGeneration.current;
+    return () => saveDraft(draftKey, latestValue.current, generation);
   }, [draftKey, draftRestored]);
 
   // スラッシュコマンド（#387）。候補はカタログ（モデルが見ているものと同一）由来。

@@ -73,6 +73,12 @@ export function DocChatPanel({
   const [conversations, setConversations] = React.useState<Thread[]>([]);
   // 「新しい会話」を押して、まだ最初の発話を送っていない間（アクティブ会話はそのまま残す）。
   const [drafting, setDrafting] = React.useState(false);
+  // 会話を作る前の入力欄を出しているか・そこに書きかけがあるか（外部からの切り替えで消さないため）。
+  const showingDraftRef = React.useRef(false);
+  const draftDirtyRef = React.useRef(false);
+  const onDraftDirtyChange = React.useCallback((dirty: boolean) => {
+    draftDirtyRef.current = dirty;
+  }, []);
 
   // 非同期処理（会話の作成・確認）の完了で選ぶときは、開始時の世代（`startedAt`）を渡す。
   // 待つ間にログアウト（他タブを含む）があれば、前の人の会話 id を次の人のキーへ書かない（#817）。
@@ -87,7 +93,13 @@ export function DocChatPanel({
 
   // 外部変更（別クライアントの切替）に追従する。
   React.useEffect(() => {
-    return store.subscribe(() => setActiveThreadIdState(store.read()));
+    return store.subscribe(() => {
+      // 会話の無い状態で書きかけている間に、共同編集者が最初の会話を作った（ノートはアクティブ
+      // 会話を共有する）。入力欄を相手の会話に置き換えると本文が消えるので、新しい会話の入力欄
+      // として残す（相手の会話は切り替えから開ける）。
+      if (showingDraftRef.current && draftDirtyRef.current) setDrafting(true);
+      setActiveThreadIdState(store.read());
+    });
   }, [store]);
 
   // ?thread= で来た会話をアクティブへ（値が変わるたび反映・deep link 切替対応）。
@@ -180,6 +192,7 @@ export function DocChatPanel({
 
   // 表示中の会話（「新しい会話」の入力中は無し＝入力欄を出す）。
   const shownThreadId = drafting ? null : activeThreadId;
+  showingDraftRef.current = shownThreadId === null;
   const activeIndex = shownThreadId ? conversations.findIndex((c) => c.id === shownThreadId) : -1;
 
   return (
@@ -240,11 +253,11 @@ export function DocChatPanel({
             </DropdownMenuContent>
           </DropdownMenu>
           <span className="flex-1" />
-          {editable ? (
+          {/* 新しい会話の入力欄を出している間は出さない（左の表示と重なり、押しても何も起きない）。 */}
+          {editable && shownThreadId ? (
             <button
               type="button"
               onClick={() => setDrafting(true)}
-              disabled={!shownThreadId}
               data-testid={`${testIdPrefix}-new-conversation`}
               className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12px] text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 pointer-coarse:min-h-10 pointer-coarse:text-[13px]"
               title="新しい会話を開始（この会話は履歴に残ります）"
@@ -265,7 +278,11 @@ export function DocChatPanel({
             チャットを準備しています…
           </div>
         ) : editable ? (
-          <DocChatDraft scope={draftScope} onStart={startConversation} />
+          <DocChatDraft
+            scope={draftScope}
+            onStart={startConversation}
+            onDirtyChange={onDraftDirtyChange}
+          />
         ) : (
           <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
             まだチャットが開始されていません。

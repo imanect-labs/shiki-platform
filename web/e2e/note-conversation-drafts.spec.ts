@@ -125,6 +125,7 @@ test("分割ビュー: 会話の切替と「新しい会話」（1:N・旧会話
   // 「新しい会話」→ 入力欄だけ出る（押しただけでは作らない＝スイッチャは 1 件のまま）。
   await page.getByTestId("note-new-conversation").click();
   await expect(page.getByTestId("note-conversation-switcher")).toContainText("新しい会話");
+  await expect(page.getByTestId("note-new-conversation")).toHaveCount(0);
   await page.getByTestId("note-conversation-switcher").getByRole("button").first().click();
   await expect(page.getByRole("menuitem", { name: /会話 2/ })).toHaveCount(0);
   await page.keyboard.press("Escape");
