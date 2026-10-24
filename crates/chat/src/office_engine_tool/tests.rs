@@ -406,3 +406,24 @@ fn word_edit_requires_confirmation_and_lists_every_op_in_the_schema() {
     }
     assert_eq!(listed.len(), ops.len());
 }
+
+#[test]
+fn blank_sheet_and_range_are_treated_as_omitted() {
+    // 任意項目を "" で埋めてくるモデルがある（#859）。「シート「」がありません」にしない。
+    let id = "00000000-0000-0000-0000-0000000000aa";
+    let r: ReadInput =
+        serde_json::from_value(serde_json::json!({ "node_id": id, "range": "", "sheet": "  " }))
+            .unwrap();
+    assert_eq!((r.range, r.sheet), (None, None));
+    let r: ReadInput = serde_json::from_value(
+        serde_json::json!({ "node_id": id, "range": "A1:B2", "sheet": "Sheet1" }),
+    )
+    .unwrap();
+    assert_eq!(r.range.as_deref(), Some("A1:B2"));
+    assert_eq!(r.sheet.as_deref(), Some("Sheet1"));
+    let e: EditInput = serde_json::from_value(
+        serde_json::json!({ "node_id": id, "summary": "s", "sheet": "", "ops": [] }),
+    )
+    .unwrap();
+    assert_eq!(e.sheet, None);
+}

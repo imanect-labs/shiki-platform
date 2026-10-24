@@ -267,3 +267,274 @@ async fn defer_reschedules_without_consuming_attempts() {
         .unwrap();
     assert!(jobs.is_empty(), "ack 済みは再配信されない");
 }
+
+/// 1 件 claim → ack を繰り返し、取り出したテナント順を返す。
+async fn drain_tenants(pool: &PgPool, queue: &str, n: usize) -> Vec<(String, i64)> {
+    let mut conn = pool.acquire().await.unwrap();
+    let mut out = Vec::new();
+    for _ in 0..n {
+        let jobs = jobq::claim(&mut conn, queue, Duration::from_secs(300), 1)
+            .await
+            .unwrap();
+        let Some(job) = jobs.into_iter().next() else {
+            break;
+        };
+        jobq::ack(&mut conn, job.id).await.unwrap();
+        out.push((job.tenant_id, job.id));
+    }
+    out
+}
+
+/// #816: 1 テナントが先に大量投入しても、後から来たテナントは洪水が捌けるのを待たずに
+/// 交互に取り出される（到着順 `ORDER BY id` だと後着は 30 件待たされる）。
+#[tokio::test]
+async fn claim_interleaves_tenants_instead_of_draining_the_flood_first() {
+    let Some(pool) = setup().await else { return };
+    let queue = unique_queue("fair");
+    let mut flood_ids = Vec::new();
+    for _ in 0..30 {
+        flood_ids.push(enqueue(&pool, &queue, "flood", 5).await);
+    }
+    let late_a = enqueue(&pool, &queue, "late-a", 5).await;
+    let late_b = enqueue(&pool, &queue, "late-b", 5).await;
+
+    let order = drain_tenants(&pool, &queue, 40).await;
+    assert_eq!(
+        order.len(),
+        32,
+        "全件取り出せる（取りこぼし・二重配信なし）"
+    );
+    let pos = |id: i64| order.iter().position(|(_, j)| *j == id).unwrap();
+    assert!(
+        pos(late_a) < 3 && pos(late_b) < 3,
+        "後着テナントは先頭近くで取り出される: {order:?}"
+    );
+    // テナント内の順序（投入順）は保たれる。
+    let flood_order: Vec<i64> = order
+        .iter()
+        .filter(|(t, _)| t == "flood")
+        .map(|(_, id)| *id)
+        .collect();
+    assert_eq!(flood_order, flood_ids, "テナント内は投入順");
+}
+
+/// #816: 後着テナントが続けて投入しても、洪水テナントを飢えさせない（1:1 で交互）。
+/// 公平はキュー単位で、別キューの投入は順序に影響しない。
+#[tokio::test]
+async fn claim_alternates_between_two_backlogged_tenants() {
+    let Some(pool) = setup().await else { return };
+    let queue = unique_queue("fair2");
+    let other = unique_queue("fair2-other");
+    for _ in 0..10 {
+        enqueue(&pool, &queue, "a", 5).await;
+    }
+    // 別キューに b の大量投入があっても、このキューの b の開始位置は変わらない。
+    for _ in 0..20 {
+        enqueue(&pool, &other, "b", 5).await;
+    }
+    for _ in 0..10 {
+        enqueue(&pool, &queue, "b", 5).await;
+    }
+    let order = drain_tenants(&pool, &queue, 20).await;
+    let tenants: Vec<&str> = order.iter().map(|(t, _)| t.as_str()).collect();
+    let expected: Vec<&str> = std::iter::repeat_n(["a", "b"], 10).flatten().collect();
+    assert_eq!(tenants, expected, "2 テナントが 1:1 で交互に取り出される");
+}
+
+/// #816: 1 件ずつ投入しては処理されるテナント（キューが毎回空になる）が、滞留テナントを
+/// 飢えさせない。仮想時刻が「確保した fair_seq」止まりだと、空になったテナントの再投入が毎回
+/// 同じ値を振られて仮想時刻を進めず、滞留テナントは 1 件目の後ずっと追い越され続けた。
+#[tokio::test]
+async fn trickling_tenant_does_not_starve_the_backlog() {
+    let Some(pool) = setup().await else { return };
+    let queue = unique_queue("trickle");
+    for _ in 0..10 {
+        enqueue(&pool, &queue, "a", 5).await;
+    }
+    let mut conn = pool.acquire().await.unwrap();
+    let mut order = Vec::new();
+    for _ in 0..20 {
+        // b はキューに自分の行が無くなるたびに 1 件だけ投入する。
+        let b_queued: i64 = sqlx::query_scalar(
+            "select count(*) from job_queue where queue = $1 and tenant_id = 'b'",
+        )
+        .bind(&queue)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if b_queued == 0 {
+            enqueue(&pool, &queue, "b", 5).await;
+        }
+        let job = jobq::claim(&mut conn, &queue, Duration::from_secs(300), 1)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        jobq::ack(&mut conn, job.id).await.unwrap();
+        order.push((job.tenant_id, job.id));
+    }
+    let a_count = order.iter().filter(|(t, _)| t == "a").count();
+    assert_eq!(a_count, 10, "a の滞留は b と交互に全部出る: {order:?}");
+    assert!(max_run(&order, "b") <= 1, "b が連続しない: {order:?}");
+}
+
+/// 取り出し順の中で、`tenant` が連続して出る最長の長さ。
+fn max_run(order: &[(String, i64)], tenant: &str) -> usize {
+    let (mut best, mut cur) = (0, 0);
+    for (t, _) in order {
+        cur = if t == tenant { cur + 1 } else { 0 };
+        best = best.max(cur);
+    }
+    best
+}
+
+/// 行を今すぐ可視にする（バックオフ明け・vt 切れを待たずに再現する）。
+async fn make_visible(pool: &PgPool, id: i64) {
+    sqlx::query("update job_queue set visible_at = now() where id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// #816: 先頭の行が**不可視**（バックオフ中・defer 中・長時間の処理中）でも、後着テナントに
+/// その古い fair_seq が振られて先行テナントの残りを追い越すことはない。
+#[tokio::test]
+async fn invisible_head_does_not_let_late_tenant_jump_the_backlog() {
+    let Some(pool) = setup().await else { return };
+    for mode in ["fail", "defer", "in_flight"] {
+        let queue = unique_queue(&format!("fair-{mode}"));
+        for _ in 0..10 {
+            enqueue(&pool, &queue, "a", 5).await;
+        }
+        let mut conn = pool.acquire().await.unwrap();
+        // a の先頭（fair_seq 最小）を 1 時間不可視にする。
+        let head = jobq::claim(&mut conn, &queue, Duration::from_hours(1), 1)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        match mode {
+            "fail" => {
+                let outcome = jobq::fail(&mut conn, head.id, "transient", Duration::from_hours(1))
+                    .await
+                    .unwrap();
+                assert!(matches!(outcome, FailOutcome::Retry { .. }));
+            }
+            "defer" => jobq::defer(&mut conn, head.id, Duration::from_hours(1))
+                .await
+                .unwrap(),
+            _ => {} // claim したまま ack しない（vt 1 時間の長い処理）。
+        }
+        // a は先へ進む（4 件処理）。
+        assert_eq!(drain_tenants(&pool, &queue, 4).await.len(), 4);
+        // 後着テナント b が 5 件投入する。
+        for _ in 0..5 {
+            enqueue(&pool, &queue, "b", 5).await;
+        }
+        let order = drain_tenants(&pool, &queue, 20).await;
+        assert_eq!(order.len(), 10, "{mode}: 不可視の行以外は全部出る");
+        assert!(
+            max_run(&order, "b") <= 1 && max_run(&order, "a") <= 1,
+            "{mode}: 後着 b は a の残りと交互（不可視の先頭に引きずられない）: {order:?}"
+        );
+        assert!(
+            !order.iter().any(|(_, id)| *id == head.id),
+            "{mode}: 不可視の行は出てこない"
+        );
+    }
+}
+
+/// #816: 古い fair_seq の行が**可視に戻った後**（バックオフ明け・defer 明け・クラッシュによる
+/// vt 切れ）も、仮想時刻は巻き戻らない。戻った行は先に処理されるだけで、その直後に同じテナントが
+/// 投入した分は先行テナントの残りと交互になる（失敗ジョブ 1 件を抱えて割り込む手口を塞ぐ）。
+#[tokio::test]
+async fn revisible_old_row_does_not_rewind_the_virtual_time() {
+    let Some(pool) = setup().await else { return };
+    for mode in ["fail", "defer", "crash"] {
+        let queue = unique_queue(&format!("rewind-{mode}"));
+        let x_head = enqueue(&pool, &queue, "x", 5).await;
+        for _ in 0..20 {
+            enqueue(&pool, &queue, "a", 5).await;
+        }
+        let mut conn = pool.acquire().await.unwrap();
+        let head = jobq::claim(&mut conn, &queue, Duration::from_hours(1), 1)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(head.id, x_head, "x の 1 件が先頭");
+        match mode {
+            "fail" => {
+                jobq::fail(&mut conn, head.id, "transient", Duration::from_hours(1))
+                    .await
+                    .unwrap();
+            }
+            "defer" => jobq::defer(&mut conn, head.id, Duration::from_hours(1))
+                .await
+                .unwrap(),
+            _ => {} // consumer がクラッシュ（ack も fail もしない）。
+        }
+        // a が 10 件進む。
+        assert_eq!(drain_tenants(&pool, &queue, 10).await.len(), 10);
+        // x の行がバックオフ明け／vt 切れで可視に戻り、x がすぐ 10 件投入する。
+        make_visible(&pool, head.id).await;
+        for _ in 0..10 {
+            enqueue(&pool, &queue, "x", 5).await;
+        }
+        let order = drain_tenants(&pool, &queue, 40).await;
+        assert_eq!(order.len(), 21);
+        assert_eq!(order[0].1, head.id, "{mode}: 戻った古い行は先に処理される");
+        // 戻った行の直後に x の新規分が続けて出るのは高々 1 件（同じ仮想時刻のタイ）。
+        // 巻き戻ると x の 10 件が a の残り 10 件より全部先に出る（連続 11）。
+        assert!(
+            max_run(&order, "x") <= 2,
+            "{mode}: x の新規分は a の残りと交互: {order:?}"
+        );
+    }
+}
+
+/// #816: defer しても fair_seq は据え置き。先送りした行はテナント内の順番と取り分を保ち、
+/// 可視に戻れば元の位置から取り出される（テナント末尾へ回されない）。
+#[tokio::test]
+async fn defer_keeps_tenant_order_and_share() {
+    let Some(pool) = setup().await else { return };
+    let queue = unique_queue("defer-order");
+    let mut a_ids = Vec::new();
+    for _ in 0..5 {
+        a_ids.push(enqueue(&pool, &queue, "a", 5).await);
+        enqueue(&pool, &queue, "b", 5).await;
+    }
+    let mut conn = pool.acquire().await.unwrap();
+    let head = jobq::claim(&mut conn, &queue, Duration::from_secs(300), 1)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(head.id, a_ids[0]);
+    // 何度先送りしても（chat は数秒ごと）位置は変わらない。
+    for _ in 0..3 {
+        jobq::defer(&mut conn, head.id, Duration::ZERO)
+            .await
+            .unwrap();
+        let again = jobq::claim(&mut conn, &queue, Duration::from_secs(300), 1)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(again.id, head.id, "先送りした行は先頭のまま");
+    }
+    jobq::defer(&mut conn, head.id, Duration::ZERO)
+        .await
+        .unwrap();
+    let order = drain_tenants(&pool, &queue, 20).await;
+    let tenants: Vec<&str> = order.iter().map(|(t, _)| t.as_str()).collect();
+    let expected: Vec<&str> = std::iter::repeat_n(["a", "b"], 5).flatten().collect();
+    assert_eq!(tenants, expected, "交互のまま（a の取り分は減らない）");
+    let a_order: Vec<i64> = order
+        .iter()
+        .filter(|(t, _)| t == "a")
+        .map(|(_, id)| *id)
+        .collect();
+    assert_eq!(a_order, a_ids, "a の投入順は保たれる");
+}

@@ -3,6 +3,8 @@
 //! 単一定義: チャットのツール（office.read / office.excel_edit）と評価台が同じものを使う。
 //! 操作の語彙は [`super::ops::SheetOp`] が正で、ここの列挙とずれないことをテストで確かめる。
 
+use crate::engine::op_schema::{ops_items_schema, OpFields};
+
 /// office.read の説明。
 pub const READ_DESCRIPTION: &str =
 "Excel ブック（.xlsx / .ods）と Word 文書（.docx / .odt）を読む。人が開いて編集中なら未保存の内容も含めて読める。\n\
@@ -77,8 +79,114 @@ pub fn read_schema() -> serde_json::Value {
     })
 }
 
-/// office.excel_edit の入力スキーマ（op の中身は説明文に書き、スキーマは op 名の列挙だけにする:
-/// union 型の詳細スキーマは一部のプロバイダ（DeepSeek 等）の function 検証が拒否するため）。
+/// office.excel_edit の操作と、それぞれが受け付ける項目（`op` 以外・ops.rs の [`SheetOp`] と一致させる）。
+///
+/// [`SheetOp`]: super::ops::SheetOp
+pub const SHEET_OP_FIELDS: OpFields = &[
+    ("set_values", &["range", "values"]),
+    ("fill_formula", &["range", "formula"]),
+    (
+        "format",
+        &["range", "number_format", "font", "fill", "align", "border"],
+    ),
+    (
+        "style_table",
+        &[
+            "range",
+            "theme",
+            "header_rows",
+            "total_row",
+            "total_rows",
+            "banded",
+        ],
+    ),
+    ("merge", &["range", "center"]),
+    ("unmerge", &["range"]),
+    ("column_width", &["columns", "width"]),
+    ("row_height", &["rows", "height"]),
+    ("insert_rows", &["sheet", "before", "count"]),
+    ("delete_rows", &["rows"]),
+    ("insert_columns", &["sheet", "before", "count"]),
+    ("delete_columns", &["columns"]),
+    ("hide_rows", &["rows"]),
+    ("show_rows", &["rows"]),
+    ("hide_columns", &["columns"]),
+    ("show_columns", &["columns"]),
+    ("clear", &["range", "what"]),
+    ("sort", &["range", "by", "has_header"]),
+    ("autofilter", &["range", "sheet", "enabled"]),
+    ("freeze", &["sheet", "cell"]),
+    ("add_sheet", &["name", "position"]),
+    ("rename_sheet", &["sheet", "name"]),
+    ("delete_sheet", &["sheet"]),
+    ("move_sheet", &["sheet", "position"]),
+    ("sheet_props", &["sheet", "tab_color", "visible"]),
+    ("conditional_format", &["range", "when", "style"]),
+    ("clear_conditional_formats", &["range"]),
+    (
+        "data_validation",
+        &[
+            "range",
+            "rule",
+            "input_message",
+            "error_message",
+            "allow_blank",
+        ],
+    ),
+    ("define_name", &["name", "range"]),
+    (
+        "add_chart",
+        &[
+            "sheet",
+            "name",
+            "type",
+            "data",
+            "anchor",
+            "width_cm",
+            "height_cm",
+            "title",
+            "legend",
+            "legend_position",
+            "colors",
+            "data_labels",
+            "y_number_format",
+            "series",
+            "stacked",
+            "percent",
+            "x_title",
+            "y_title",
+            "first_row_is_header",
+            "first_column_is_header",
+        ],
+    ),
+    ("delete_chart", &["sheet", "name"]),
+    (
+        "page_setup",
+        &[
+            "sheet",
+            "orientation",
+            "paper",
+            "fit_to",
+            "scale",
+            "margins_cm",
+            "center_horizontally",
+            "print_area",
+            "repeat_rows",
+            "gridlines",
+            "header",
+            "footer",
+        ],
+    ),
+];
+
+/// どの操作にも書ける項目（parse.rs が、その操作だけの既定シートとして扱う）。
+pub const SHEET_SHARED_FIELDS: &[(&str, &str)] = &[(
+    "sheet",
+    "範囲にシート名が無いときの、この操作だけの既定シート（シート自体を対象にする操作では対象のシート名）",
+)];
+
+/// office.excel_edit の入力スキーマ。各操作の項目の形は説明文に書き、スキーマには項目名だけを
+/// 型なしで並べる（理由は [`crate::engine::op_schema`]）。
 pub fn excel_edit_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -89,23 +197,46 @@ pub fn excel_edit_schema() -> serde_json::Value {
             "ops": {
                 "type": "array",
                 "minItems": 1,
-                "description": "操作の並び（上から順に・全部成功か全部取り消し）。各操作の項目は説明文を参照",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "op": { "type": "string", "enum": [
-                            "set_values", "fill_formula", "format", "style_table", "merge", "unmerge", "column_width", "row_height",
-                            "insert_rows", "delete_rows", "insert_columns", "delete_columns", "hide_rows", "show_rows",
-                            "hide_columns", "show_columns", "clear", "sort", "autofilter", "freeze", "add_sheet",
-                            "rename_sheet", "delete_sheet", "move_sheet", "sheet_props", "conditional_format",
-                            "clear_conditional_formats", "data_validation", "define_name", "add_chart", "delete_chart",
-                            "page_setup"
-                        ] }
-                    },
-                    "required": ["op"]
-                }
+                "description": "操作の並び（上から順に・全部成功か全部取り消し）。各操作の項目の形は説明文を参照",
+                "items": ops_items_schema(SHEET_OP_FIELDS, SHEET_SHARED_FIELDS)
             }
         },
         "required": ["node_id", "summary", "ops"]
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::calc::ops::SheetOp;
+    use crate::engine::op_schema::probe;
+
+    #[test]
+    fn field_table_matches_the_sheet_op_enum() {
+        let table: Vec<&str> = SHEET_OP_FIELDS.iter().map(|(op, _)| *op).collect();
+        assert_eq!(
+            probe::variants::<SheetOp>(),
+            table,
+            "操作名が ops.rs と食い違う"
+        );
+        for (op, fields) in SHEET_OP_FIELDS {
+            let actual =
+                probe::fields::<SheetOp>(op).expect("flatten の無い操作は項目を列挙できる");
+            assert_eq!(&actual, fields, "{op} の項目が ops.rs と食い違う");
+        }
+    }
+
+    #[test]
+    fn schema_declares_every_field_without_a_type() {
+        let s = excel_edit_schema();
+        let props = &s["properties"]["ops"]["items"]["properties"];
+        assert_eq!(
+            props["op"]["enum"].as_array().unwrap().len(),
+            SHEET_OP_FIELDS.len()
+        );
+        for f in ["type", "data", "anchor", "values", "range", "font", "sheet"] {
+            assert!(props.get(f).is_some(), "{f} がスキーマに無い");
+            assert!(props[f].get("type").is_none(), "{f} は型なしにする");
+        }
+    }
 }

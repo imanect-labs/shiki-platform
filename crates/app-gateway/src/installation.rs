@@ -154,6 +154,20 @@ const COLS: &str = "id, app_id, app_name, installed_version, granted_scopes, \
                     budget_models, budget_daily_usd_micros, budget_max_tokens, agent_tools, \
                     frontend_bundle, server_bundle, server_spec";
 
+/// active な app_id の大域一意索引（migration 0081・B1 配信のテナント跨ぎ解決の前提）。
+const ACTIVE_APP_ID_UIDX: &str = "app_installation_active_app_id_uidx";
+
+/// [`ACTIVE_APP_ID_UIDX`] の一意制約違反か（他の制約の違反は従来どおり Internal に落とす）。
+fn violates_active_app_id(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(db)
+        if db.is_unique_violation() && db.constraint() == Some(ACTIVE_APP_ID_UIDX))
+}
+
+/// 別テナントに同じ app_id の active 行がある＝B1 配信の解決先が曖昧になるため拒否する。
+fn active_app_id_conflict() -> GatewayError {
+    GatewayError::Conflict("同じ app_id の有効なインストールが別テナントに存在します".into())
+}
+
 /// インストール台帳ストア（Postgres・tenant スコープ）。
 #[derive(Clone)]
 pub struct AppInstallationStore {
@@ -168,11 +182,42 @@ impl AppInstallationStore {
     /// インストールを作成/更新する（tenant 内 1 アプリ 1 行・再インストールは upsert）。
     ///
     /// 本 PR ではデブ用の直接作成。PR9 の同意フローが単一 Tx＋補償で置き換える。
+    ///
+    /// ON CONFLICT の arbiter は `(tenant_id, app_id)` だけで、active な app_id の大域一意索引
+    /// （migration 0081 [`ACTIVE_APP_ID_UIDX`]）は arbiter ではない。そのため同一テナントの初回
+    /// インストールが並行すると、後着は arbiter の事前確認をすり抜けて大域一意索引で一意制約違反に
+    /// なる。自テナントの行（先着分）があるときだけ 1 回取り直し、DO UPDATE で冪等に成功させる。
+    /// 取り直しても違反する・自テナントの行が無いなら、別テナントの active 行によるもの＝409。
     pub async fn upsert(
         &self,
         ctx: &AuthContext,
         new: NewAppInstallation<'_>,
     ) -> Result<AppInstallation, GatewayError> {
+        let row = match self.try_upsert(ctx, &new).await {
+            Ok(row) => row,
+            Err(e) if violates_active_app_id(&e) => {
+                if !self.exists_in_tenant(ctx, new.app_id).await? {
+                    return Err(active_app_id_conflict());
+                }
+                self.try_upsert(ctx, &new).await.map_err(|e| {
+                    if violates_active_app_id(&e) {
+                        active_app_id_conflict()
+                    } else {
+                        map_db(e)
+                    }
+                })?
+            }
+            Err(e) => return Err(map_db(e)),
+        };
+        Ok(row.into())
+    }
+
+    /// upsert の 1 回分（エラーの解釈は呼び出し側）。
+    async fn try_upsert(
+        &self,
+        ctx: &AuthContext,
+        new: &NewAppInstallation<'_>,
+    ) -> Result<Row, sqlx::Error> {
         let sql = format!(
             "INSERT INTO app_installation \
                  (tenant_id, org, app_id, app_name, installed_version, granted_scopes, \
@@ -197,7 +242,7 @@ impl AppInstallationStore {
                  updated_at = now() \
              RETURNING {COLS}"
         );
-        let row: Row = sqlx::query_as(&sql)
+        sqlx::query_as(&sql)
             .bind(&ctx.tenant_id)
             .bind(&ctx.org)
             .bind(new.app_id)
@@ -216,8 +261,23 @@ impl AppInstallationStore {
             .bind(&new.server_spec)
             .fetch_one(&self.db)
             .await
-            .map_err(map_db)?;
-        Ok(row.into())
+    }
+
+    /// 自テナントに app_id の行（status を問わない）があるか（upsert の取り直し判定）。
+    async fn exists_in_tenant(
+        &self,
+        ctx: &AuthContext,
+        app_id: Uuid,
+    ) -> Result<bool, GatewayError> {
+        let (exists,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM app_installation WHERE tenant_id = $1 AND app_id = $2)",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(app_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(exists)
     }
 
     /// azp（登録 client_id）から**有効な**インストールを引く（ゲートウェイの二重ゲート第2段）。
@@ -264,9 +324,16 @@ impl AppInstallationStore {
 
     /// app_id から**有効な**インストールを引く（テナント跨ぎ・B1 配信用）。
     ///
-    /// B1 第3リスナは cookie/token を持たず URL にテナントを含まない（opaque origin 配信）。
-    /// `app_id`（mini_app_code アーティファクトの UUID）はテナント跨ぎで一意なため、これで
-    /// 解決し、返った `tenant_id` でバンドルキー（tenant スコープの content address）を組む。
+    /// **テナントで絞れない理由**: B1 第3リスナ（`/a/{app_id}/{sha256}`）は cookie/token を持たず
+    /// URL にもテナントを含まない（opaque origin・cookieless 配信・iframe の `src` がそのまま
+    /// immutable キャッシュの鍵）。呼び出し文脈にテナントが無いので、`app_id` から active
+    /// インストールと所属テナントを解決し、返った `tenant_id` でバンドルキー（tenant スコープの
+    /// content address）を組む。仮に URL にテナントを載せても未認証の入力でしかなく、認可の
+    /// 根拠にはならない。
+    ///
+    /// **一意性**: active な `app_id` の大域一意は DB の部分一意索引で保証する（migration 0081
+    /// `app_installation_active_app_id_uidx`）。それでも 2 行返れば不変条件違反として
+    /// fail-closed（Internal）にし、任意の 1 行を選ぶ `LIMIT 1` には戻さない。
     /// バンドルはアプリ自身のフロント資産（content-addressed・ピン一致必須）でユーザーデータを
     /// 含まないため、この解決でテナント隔離は損なわれない。
     pub async fn resolve_active_by_app_global(
@@ -274,16 +341,24 @@ impl AppInstallationStore {
         app_id: Uuid,
     ) -> Result<Option<(String, AppInstallation)>, GatewayError> {
         // tenant を先に解決してから tenant スコープの取得へ（Row の FromRow を汚さない）。
-        let tenant: Option<(String,)> = sqlx::query_as(
+        // LIMIT 2 で「複数該当」を検知できる最小限だけ読む。
+        let tenants: Vec<(String,)> = sqlx::query_as(
             "SELECT tenant_id FROM app_installation \
-             WHERE app_id = $1 AND status = 'active' LIMIT 1",
+             WHERE app_id = $1 AND status = 'active' LIMIT 2",
         )
         .bind(app_id)
-        .fetch_optional(&self.db)
+        .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
-        let Some((tenant_id,)) = tenant else {
-            return Ok(None);
+        let tenant_id = match tenants.as_slice() {
+            [] => return Ok(None),
+            [(tenant_id,)] => tenant_id.clone(),
+            _ => {
+                tracing::error!(%app_id, "active な app_id が複数テナントに存在（不変条件違反）");
+                return Err(GatewayError::Internal(
+                    "インストールの解決先が一意ではありません".into(),
+                ));
+            }
         };
         let installation = self.resolve_active_by_app(&tenant_id, app_id).await?;
         Ok(installation.map(|i| (tenant_id, i)))

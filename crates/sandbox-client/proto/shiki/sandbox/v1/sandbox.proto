@@ -58,6 +58,10 @@ message Spec {
   uint64 ttl_ms = 9;            // Ephemeral 寿命
 }
 
+// create 以外の RPC は sandbox_id に加えて呼び出し元の tenant_id を必ず載せる（#810）。
+// orchestrator は create 時に記録したテナントと照合し、不一致・未登録は区別せず not_found
+// （destroy は冪等のため no-op）を返す。空の tenant_id は invalid_argument で拒否する。
+// sandbox_id の推測不能性と内部ネットワークだけに頼らない多層防御。
 message CreateRequest { Spec spec = 1; }
 message CreateResponse { string sandbox_id = 1; }
 
@@ -72,6 +76,7 @@ message ExecRequest {
   ExecKind kind = 2;
   string payload = 3;          // Python コード or シェルコマンド
   uint64 timeout_ms = 4;       // 0 = spec の exec_timeout_ms
+  string tenant_id = 5;        // 呼び出し元テナント（create 時の spec.tenant_id と一致必須）
 }
 
 enum ExecChannel {
@@ -110,12 +115,14 @@ message PutFileRequest {
   string sandbox_id = 1;
   string path = 2;
   bytes content = 3;
+  string tenant_id = 4;
 }
 message PutFileResponse {}
 
 message GetFileRequest {
   string sandbox_id = 1;
   string path = 2;
+  string tenant_id = 3;
 }
 message GetFileResponse { bytes content = 1; }
 
@@ -127,8 +134,12 @@ message DirEntry {
 message ListDirRequest {
   string sandbox_id = 1;
   string path = 2;
+  string tenant_id = 3;
 }
 message ListDirResponse { repeated DirEntry entries = 1; }
 
-message DestroyRequest { string sandbox_id = 1; }
+message DestroyRequest {
+  string sandbox_id = 1;
+  string tenant_id = 2;
+}
 message DestroyResponse {}

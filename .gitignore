@@ -6,6 +6,9 @@
 .env
 *.env
 !*.env.example
+# 手元に置く LLM プロバイダの API キー（giken-ops の tfvars / GitHub Secrets へ流す用の控え）。
+/key
+
 # Collabora のバージョンピン正本。シークレットではなく manifest（*.env の巻き添えを外す）。
 # 除外されたままだと office-image.yml が source で落ち、Office 用イメージが一切ビルドされない。
 !deploy/docker/collabora/office-manifest.env

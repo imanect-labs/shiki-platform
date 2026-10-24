@@ -240,8 +240,22 @@ pub struct AddTrustedKeyRequest {
 }
 
 /// provisioner を actor とする合成 AuthContext（信頼鍵はテナント横断の管理操作）。
-fn provisioner_ctx(actor: &str, tenant_id: &str, org: Option<&str>) -> authz::AuthContext {
-    authz::AuthContext::new(
+///
+/// `tenant_id`/`org` はリクエスト（ボディ/クエリ）由来なので信頼せず、テナント作成
+/// （`routes::admin`）と同じ `authz::validate_tenant_id` で検証してから組み立てる
+/// （FGA 識別子 `<type>:<tenant>|<local>`・`app_trusted_key` 行の名前空間を崩させない）。
+fn provisioner_ctx(
+    actor: &str,
+    tenant_id: &str,
+    org: Option<&str>,
+) -> Result<authz::AuthContext, ApiError> {
+    authz::validate_tenant_id(tenant_id)
+        .map_err(|_| ApiError::BadRequest("tenant_id に使用できない文字が含まれています".into()))?;
+    if let Some(org) = org {
+        authz::validate_tenant_id(org)
+            .map_err(|_| ApiError::BadRequest("org に使用できない文字が含まれています".into()))?;
+    }
+    Ok(authz::AuthContext::new(
         authz::Principal {
             kind: authz::PrincipalKind::User,
             id: actor.to_string(),
@@ -252,7 +266,7 @@ fn provisioner_ctx(actor: &str, tenant_id: &str, org: Option<&str>) -> authz::Au
         },
         org.unwrap_or(tenant_id).to_string(),
         tenant_id.to_string(),
-    )
+    ))
 }
 
 /// 信頼鍵を登録する（/admin 面・provisioner Bearer）。
@@ -271,7 +285,7 @@ pub(crate) async fn admin_add_trusted_key(
     axum::Extension(actor): axum::Extension<crate::routes::admin::ProvisionerIdentity>,
     Json(req): Json<AddTrustedKeyRequest>,
 ) -> Result<Json<TrustedKey>, ApiError> {
-    let ctx = provisioner_ctx(&actor.0, &req.tenant_id, req.org.as_deref());
+    let ctx = provisioner_ctx(&actor.0, &req.tenant_id, req.org.as_deref())?;
     let key = hex::decode(req.public_key_hex.trim())
         .map_err(|_| ApiError::BadRequest("public_key_hex が不正です".into()))?;
     let added = state
@@ -299,7 +313,7 @@ pub(crate) async fn admin_list_trusted_keys(
     axum::Extension(actor): axum::Extension<crate::routes::admin::ProvisionerIdentity>,
     axum::extract::Query(q): axum::extract::Query<TrustedKeyTenantQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let ctx = provisioner_ctx(&actor.0, &q.tenant_id, None);
+    let ctx = provisioner_ctx(&actor.0, &q.tenant_id, None)?;
     let items = state.installs.trusted_keys().list_active(&ctx).await?;
     Ok(Json(serde_json::json!({ "items": items })))
 }
@@ -317,7 +331,7 @@ pub(crate) async fn admin_revoke_trusted_key(
     Path(key_id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<TrustedKeyTenantQuery>,
 ) -> Result<axum::http::StatusCode, ApiError> {
-    let ctx = provisioner_ctx(&actor.0, &q.tenant_id, None);
+    let ctx = provisioner_ctx(&actor.0, &q.tenant_id, None)?;
     state.installs.trusted_keys().revoke(&ctx, &key_id).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -358,4 +372,45 @@ pub(crate) fn trusted_key_route_decls() -> Vec<crate::server::RouteDecl> {
             || delete(admin_revoke_trusted_key),
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provisioner_ctx_accepts_valid_tenant_and_defaults_org() {
+        let ctx = provisioner_ctx("prov", "a-corp", None).expect("valid");
+        assert_eq!(ctx.tenant_id, "a-corp");
+        assert_eq!(ctx.org, "a-corp");
+        let ctx = provisioner_ctx("prov", "a-corp", Some("sales")).expect("valid");
+        assert_eq!(ctx.org, "sales");
+    }
+
+    #[test]
+    fn provisioner_ctx_rejects_forbidden_tenant_id() {
+        // 名前空間区切り・構造文字・空・予約名はいずれも 400（fail-closed）。
+        for bad in ["", "a|b", "a:b", "a#b", "a@b", "a/b", "a b", ".", ".."] {
+            assert!(
+                matches!(
+                    provisioner_ctx("prov", bad, None),
+                    Err(ApiError::BadRequest(_))
+                ),
+                "tenant_id={bad:?} は拒否されるべき"
+            );
+        }
+    }
+
+    #[test]
+    fn provisioner_ctx_rejects_forbidden_org() {
+        for bad in ["", "x|y", "x/y"] {
+            assert!(
+                matches!(
+                    provisioner_ctx("prov", "a-corp", Some(bad)),
+                    Err(ApiError::BadRequest(_))
+                ),
+                "org={bad:?} は拒否されるべき"
+            );
+        }
+    }
 }

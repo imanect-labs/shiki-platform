@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from ingestion_worker import model_registry
 from ingestion_worker.main import create_app
 from ingestion_worker.model_registry import ModelRegistry
+from ingestion_worker.settings import get_settings
 
 
 class FakeEmbedding:
@@ -38,11 +39,26 @@ class FakeRegistry(ModelRegistry):
         self._reranker = FakeReranker()
 
 
+# 本番と同じく共有トークン・許可ホストを設定した状態で全テストを走らせる（#812）。
+# 既存テストの source_url は `http://minio:9000/...`。
+TEST_WORKER_TOKEN = "test-worker-token"
+TEST_ALLOWED_HOSTS = "minio:9000"
+
+
 @pytest.fixture
-def client() -> TestClient:
+def worker_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WORKER_AUTH_TOKEN", TEST_WORKER_TOKEN)
+    monkeypatch.setenv("SOURCE_URL_ALLOWED_HOSTS", TEST_ALLOWED_HOSTS)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def client(worker_env: None) -> TestClient:
     original = model_registry.get_registry()
     model_registry.set_registry_for_tests(FakeRegistry())
     try:
-        yield TestClient(create_app())
+        yield TestClient(create_app(), headers={"Authorization": f"Bearer {TEST_WORKER_TOKEN}"})
     finally:
         model_registry.set_registry_for_tests(original)

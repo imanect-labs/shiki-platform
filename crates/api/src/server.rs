@@ -128,6 +128,16 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/me/sessions/{id}", &["DELETE"], Session, || {
             delete(routes::me_security::sign_out_session)
         }),
+        // ChatGPT プランの接続（プレビュー環境の個人利用・#854。無効な環境では 404）。
+        r("/me/chatgpt", &["GET", "DELETE"], Session, || {
+            get(routes::me_chatgpt::get_chatgpt).delete(routes::me_chatgpt::disconnect_chatgpt)
+        }),
+        r("/me/chatgpt/login", &["POST"], Session, || {
+            post(routes::me_chatgpt::start_chatgpt_login)
+        }),
+        r("/me/chatgpt/callback", &["POST"], Session, || {
+            post(routes::me_chatgpt::complete_chatgpt_login)
+        }),
         // パスキー登録・OTP 設定・パスワード変更・資格情報削除を Keycloak の画面で始める（302）。
         r("/auth/action", &["GET"], Session, || {
             get(routes::auth::start_account_action)

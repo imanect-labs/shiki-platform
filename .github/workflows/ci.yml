@@ -50,7 +50,7 @@ jobs:
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           df -h /
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
           components: rustfmt, clippy
@@ -82,7 +82,7 @@ jobs:
           persist-credentials: false
       - name: free disk space (不要プリインストール削除)
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -124,7 +124,7 @@ jobs:
       # 一度も同時に立ち上がらない。ローカルの `docker compose up` だけが壊れる。
       - name: compose port gate (ホストポートの二重 publish 禁止)
         run: bash scripts/check-compose-ports.sh
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -147,7 +147,7 @@ jobs:
       # EmbarkStudios/cargo-deny-action@v2 は内部で `--log-level warn` を渡すが、
       # 新しい cargo-deny CLI はこれを廃止したため `unrecognized subcommand 'warn'` で全 PR が赤化する。
       # cargo-machete と同じく taiki-e/install-action でバイナリを入れ、引数を自分で制御する。
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -171,7 +171,7 @@ jobs:
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           df -h /
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
       # 除外クレート（別 target）とメイン target を別々にキャッシュする。
@@ -222,7 +222,7 @@ jobs:
       # Ubuntu 24.04 は AppArmor が非特権 userns 生成を制限するため解除する（runsc --rootless 前提）。
       - name: allow unprivileged userns (AppArmor)
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -250,7 +250,7 @@ jobs:
           persist-credentials: false
       # Takumi Guard: uv sync 前に PyPI プロキシを設定（匿名＝ブロックのみ）。
       - uses: flatt-security/setup-takumi-guard-pypi@a01b3b2a6436d3df60d4e29c805ad83a704aadc5 # v1.3.0
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           cache-dependency-glob: "ingestion-worker/uv.lock"
@@ -276,7 +276,7 @@ jobs:
       # llvm-cov target ＋ compose ボリュームでディスクが逼迫するため先に解放する。
       - name: free disk space (不要プリインストール削除)
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
           components: llvm-tools-preview
@@ -324,6 +324,8 @@ jobs:
           STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/shiki
           STORAGE_TEST_S3_ENDPOINT: http://localhost:9000
           RAG_TEST_QDRANT_URL: http://localhost:6333
+          # compose の Qdrant は API キー付き（.env.example の dev 値・#812）。
+          RAG_TEST_QDRANT_API_KEY: shiki-qdrant-dev-key
         # coverage は cargo test（バイナリ逐次＝in-process 共有 fixture が壊れない安全な実行
         # モデル）のまま。nextest はプロセス毎実行で in-process 共有状態に依存する IT を壊す
         # 実績があり不採用。速度は debuginfo 削減の計装ビルド短縮＋cache-on-failure で稼ぐ。
@@ -405,7 +407,7 @@ jobs:
       # Takumi Guard: pnpm install 前に npm プロキシを設定（匿名＝ブロックのみ）。
       # リポジトリの .npmrc に registry はあるが、Action がジョブ全体の userconfig も揃える。
       - uses: flatt-security/setup-takumi-guard-npm@14f07d0cbc739b42a1b7c70a04c2b84cd1318ddd # v1.4.0
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -440,7 +442,7 @@ jobs:
       COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -483,6 +485,11 @@ jobs:
         working-directory: deploy/compose
         run: bash smoke-bff.sh
 
+      # tenant / roles 属性はユーザーが Account API で書き換えられない（越境防止）・管理者は書ける（#809）。
+      - name: smoke test (Keycloak User Profile — tenant / roles は管理者のみ)
+        working-directory: deploy/compose
+        run: bash smoke-keycloak-user-profile.sh
+
       - name: smoke test (skillex)
         working-directory: deploy/compose
         run: |
@@ -512,7 +519,7 @@ jobs:
       COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

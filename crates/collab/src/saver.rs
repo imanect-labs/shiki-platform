@@ -83,7 +83,7 @@ pub async fn save_doc(
     {
         Ok(node) => {
             store
-                .set_saved_node_version(doc.node_id, node.version)
+                .set_saved_node_version(doc.node_id, &doc.tenant_id, node.version)
                 .await?;
             Ok(Some(node.version))
         }
@@ -93,7 +93,7 @@ pub async fn save_doc(
             // 進んでも、外部インポートが未保存の CRDT 編集を全置換で消さないようにする
             // （CRDT 自体は collab_doc/collab_update に永続済み・レビュー指摘対応）。
             doc.mark_dirty(&ctx);
-            if let Err(mark_err) = store.set_pending_save(doc.node_id).await {
+            if let Err(mark_err) = store.set_pending_save(doc.node_id, &doc.tenant_id).await {
                 // DB まで落ちている場合はマーカーも書けない（collab 全体が停止している状況）。
                 // 保存エラー自体を返すことを優先し、ここは警告に留める。
                 tracing::warn!(node_id = %doc.node_id, error = %mark_err,
@@ -141,8 +141,10 @@ pub async fn import_if_stale(
     // ロード時（共有前・並行 append 無し）なので upto_seq は確定値でよい。
     let snapshot = doc.full_state()?;
     store
-        .overwrite_snapshot(node_id, &snapshot, upto_seq)
+        .overwrite_snapshot(node_id, &doc.tenant_id, &snapshot, upto_seq)
         .await?;
-    store.set_saved_node_version(node_id, node_version).await?;
+    store
+        .set_saved_node_version(node_id, &doc.tenant_id, node_version)
+        .await?;
     Ok(())
 }

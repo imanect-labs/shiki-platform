@@ -187,10 +187,7 @@ impl AuditRetention {
     ) -> Result<SweepReport, StorageError> {
         let mut tx = self.db.begin().await?;
         // 記録側（record_on）と同じロック: チェーンの末尾の読み書き・境目の更新・削除の記録を直列にする。
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
-            .bind(format!("{tenant_id}|{org}"))
-            .execute(&mut *tx)
-            .await?;
+        crate::audit::lock_chain(&mut tx, tenant_id, org).await?;
 
         // 連結行は **id 順で先頭から連続した期限切れの部分だけ**を消す。作成時刻はレプリカの時計
         // （版 1 はトランザクション開始時刻）で決まり id 順と逆転しうるので、「期限より古い最後の行」

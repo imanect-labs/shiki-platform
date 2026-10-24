@@ -371,3 +371,23 @@ fn page_setup_header_footer_fields() {
     assert_eq!(v["footer"]["right"], json!([{"t": "date"}]));
     assert_eq!(v["footer"]["left"], json!([]));
 }
+
+#[test]
+fn parse_ops_drops_blank_filler_from_models_that_fill_every_field() {
+    // スキーマに全操作の項目を並べると、使わない項目を空で埋めてくるモデルがある（#859）。
+    use super::super::parse::parse_ops;
+    let parsed = parse_ops(&[json!({
+        "op": "add_chart", "type": "line", "data": "A1:K11", "anchor": "G2",
+        "values": "", "range": "", "font": {}, "rows": null, "columns": [], "sheet": ""
+    })])
+    .unwrap();
+    assert!(matches!(parsed[0].0, SheetOp::AddChart { .. }));
+
+    // シート名の空文字は省略（その操作の既定シートにしない）。
+    let parsed = parse_ops(&[json!({"op": "merge", "range": "A1:B1", "sheet": " "})]).unwrap();
+    assert_eq!(parsed[0].1, None);
+
+    // 値の入った余分な項目は従来どおり誤りとして返す（黙って捨てない）。
+    let err = parse_ops(&[json!({"op": "merge", "range": "A1:B1", "values": [[1]]})]).unwrap_err();
+    assert!(err.message.contains("values"), "{}", err.message);
+}

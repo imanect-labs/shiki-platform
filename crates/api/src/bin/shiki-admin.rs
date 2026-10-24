@@ -2,12 +2,16 @@
 //!
 //! ```text
 //! shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]
+//! shiki-admin secrets-reencrypt [--execute] [--batch <n>]
 //! shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]
 //! shiki-admin audit-retention --tenant <t> --days <n> [--actor <id>]
 //! ```
 //!
+//! `secrets-reencrypt` は旧版（AAD なし）シークレットを行束縛の現行版へ移す（#814・
+//! `shiki_admin/secrets_reencrypt.rs`）。
 //! `audit-viewer`: 監査閲覧者（`organization#audit_viewer`・#634）を付ける・外す（即時実行）。
 //! `audit-retention`: 監査ログの保持期間（90〜3650 日・既定 365・#831）を設定する（即時実行）。
+//! 以下は `retenant` の説明。
 //!
 //! - `--legacy`: SAAS.1（#84）以前の**旧無印 FGA 識別子/オブジェクトキー**を tenant 名前空間形式へ
 //!   移す（DB 行は day-1 で tenant_id を持つため不変・blob.object_key のみ書き換え）。
@@ -42,6 +46,8 @@ mod audit_retention;
 mod audit_viewer;
 #[path = "shiki_admin/keys.rs"]
 mod keys;
+#[path = "shiki_admin/secrets_reencrypt.rs"]
+mod secrets_reencrypt;
 use keys::{pre_migration_object_key, renamespace_object_key};
 
 // 移行対象テーブルは `storage::tenant_scope` が information_schema から導出する（#420）。
@@ -54,11 +60,15 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("retenant") => retenant(&args[1..]).await,
+        Some("secrets-reencrypt") => secrets_reencrypt::run(&args[1..]).await,
         Some("audit-viewer") => audit_viewer::run(&args[1..]).await,
         Some("audit-retention") => audit_retention::run(&args[1..]).await,
         _ => {
             eprintln!(
-                "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]\n       shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]\n       shiki-admin audit-retention --tenant <t> --days <n> [--actor <id>]"
+                "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]\n       \
+                 shiki-admin secrets-reencrypt [--execute] [--batch <n>]\n       \
+                 shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]\n       \
+                 shiki-admin audit-retention --tenant <t> --days <n> [--actor <id>]"
             );
             bail!("不明なサブコマンド");
         }

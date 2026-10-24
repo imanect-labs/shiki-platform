@@ -38,9 +38,9 @@ pub use config::RagConfig;
 pub use embedding::{EmbedInput, EmbedResponse, EmbeddingProvider, HttpEmbeddingProvider};
 pub use error::RagError;
 pub use fulltext::{FulltextDoc, FulltextIndex};
-pub use fulltext_tantivy::TantivyFulltext;
+pub use fulltext_tantivy::{TantivyFulltext, TantivyLimits};
 pub use parser::{DocumentParser, ParseRequest, ParseSource};
-pub use parser_http::HttpDocumentParser;
+pub use parser_http::{worker_auth_headers, HttpDocumentParser};
 pub use pipeline::{spawn_pipeline, IngestMessage, PipelineDeps, RAG_INGEST_QUEUE};
 pub use rerank::{HttpReranker, Reranker};
 pub use search::{

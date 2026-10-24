@@ -262,6 +262,7 @@ async fn main() -> anyhow::Result<()> {
     // 共有クライアントは無期限のため、worker 遅延がハンドラを永久ブロックしないよう専用に切る。
     let compose_http = reqwest::Client::builder()
         .timeout(Duration::from_mins(1))
+        .default_headers(wiring::worker_headers(&config)?)
         .build()
         .context("docx compose 用 HTTP クライアントの構築に失敗")?;
     let docx_composer = Arc::new(office::DocxComposer::new(

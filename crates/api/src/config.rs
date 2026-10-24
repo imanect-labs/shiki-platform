@@ -206,11 +206,12 @@ mod backends;
 mod tests;
 
 pub use auth::{AuthConfig, SessionConfig, Tenancy};
+pub(crate) use backends::chatgpt_model_id;
 pub use backends::{
     AuditRetentionConfig, AuthzConfig, ChatConfig, LangfuseConfig, LlmAutoConfig, LlmBackend,
-    LlmConfig, LlmModelEntry, LlmProviderEntry, LogFormat, ObjectStoreBackend, StorageConfig,
-    TabularConfig, TelemetryConfig, UploadGcConfig, VectorConfig, VectorStoreBackend,
-    WebSearchBackend, WebSearchConfig,
+    LlmChatGptConfig, LlmConfig, LlmLimitsConfig, LlmModelEntry, LlmProviderEntry,
+    LlmProviderLimit, LogFormat, ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig,
+    UploadGcConfig, VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -272,7 +273,7 @@ impl AppConfig {
 
     /// 値の整合性を検証する（必須 URL のパース可否など）。
     pub fn validate(&self) -> Result<(), ConfigError> {
-        Self::check_tenancy_supported(self.auth.tenancy)?;
+        Self::check_tenancy_supported(&self.auth)?;
         if self.auth.issuer.trim().is_empty() {
             return Err(ConfigError::Invalid("auth.issuer が空です".into()));
         }
@@ -291,6 +292,8 @@ impl AppConfig {
         Self::check_session_bounds(&self.session)?;
         Self::check_upload_gc_bounds(&self.storage)?;
         Self::check_llm_timeouts(&self.llm)?;
+        Self::check_llm_limits(&self.llm)?;
+        Self::check_llm_chatgpt(&self.llm)?;
         // 必須 URL。
         let mut urls: Vec<(&str, &str)> = vec![
             ("auth.issuer", self.auth.issuer.as_str()),
@@ -329,15 +332,26 @@ impl AppConfig {
     /// - 解決時に `tenant_id` の禁止文字（`| : # @`・空白）を fail-closed 検証
     ///
     /// なおオンボーディング自動化・課金・クォータ（SAAS.2〜4）は**隔離の安全性とは独立の運用トラック**。
-    // 現状は info ログのみで Err を返さないが、他の `check_*` バリデータと同じ
+    ///
+    /// `single` で provisioner 資格情報が揃っている場合は警告だけ出す（#808）。provisioner は
+    /// ミニアプリ同意インストールの Keycloak client 登録（オンプレでも使う）を兼ねるため起動は
+    /// 止めず、テナント作成（`POST /admin/tenants`）だけをハンドラ側で fail-closed に拒否する。
+    // 現状はログのみで Err を返さないが、他の `check_*` バリデータと同じ
     // `-> Result<(), ConfigError>` 形を保ち `validate()` で一様に `?` 連結できるようにする。
     #[allow(clippy::unnecessary_wraps)]
-    fn check_tenancy_supported(tenancy: Tenancy) -> Result<(), ConfigError> {
-        if tenancy == Tenancy::Multi {
-            tracing::info!(
+    fn check_tenancy_supported(auth: &AuthConfig) -> Result<(), ConfigError> {
+        match auth.tenancy {
+            Tenancy::Multi => tracing::info!(
                 "auth.tenancy=multi: 全隔離層（authz 識別子名前空間化・storage キー・audit チェーン・\
                  session/DB 行）を tenant_id スコープで強制します（SAAS.1・#84 完了）"
-            );
+            ),
+            Tenancy::Single if auth.provisioner_credentials().is_some() => tracing::warn!(
+                tenant_id = ?auth.tenant_id,
+                "auth.tenancy=single で provisioner が設定されています: 全ログインは固定の \
+                 auth.tenant_id へ解決され、POST /admin/tenants は拒否されます（SaaS なら \
+                 auth.tenancy=multi を設定してください）"
+            ),
+            Tenancy::Single => {}
         }
         Ok(())
     }
@@ -354,6 +368,103 @@ impl AppConfig {
         ] {
             if secs == 0 {
                 return Err(ConfigError::Invalid(format!("{name} は 1 以上が必要です")));
+            }
+        }
+        Ok(())
+    }
+
+    /// ChatGPT プラン（#854）の設定を検証する（有効なのに使えるモデルが無い・ID の衝突を弾く）。
+    fn check_llm_chatgpt(llm: &LlmConfig) -> Result<(), ConfigError> {
+        let c = &llm.chatgpt;
+        if !c.enabled {
+            return Ok(());
+        }
+        if c.credential_path.trim().is_empty() {
+            return Err(ConfigError::Invalid(
+                "llm.chatgpt.credential_path が空です".into(),
+            ));
+        }
+        if c.models.is_empty() {
+            return Err(ConfigError::Invalid(
+                "llm.chatgpt.models に 1 つ以上のモデル（slug）が必要です".into(),
+            ));
+        }
+        if llm
+            .providers
+            .iter()
+            .any(|p| p.id == llm_gateway::CHATGPT_PROVIDER_ID)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "llm.providers[].id の {} は llm.chatgpt が使うため指定できません",
+                llm_gateway::CHATGPT_PROVIDER_ID
+            )));
+        }
+        let ids: Vec<String> = c
+            .models
+            .iter()
+            .map(|s| backends::chatgpt_model_id(s))
+            .collect();
+        if let Some(dup) = ids
+            .iter()
+            .enumerate()
+            .find(|(i, id)| {
+                // `models` が空なら、既定モデルと同じ ID の合成エントリが先頭に入る（先勝ちで引かれる）。
+                let synthesized =
+                    llm.models.is_empty() && llm.default_model.as_deref() == Some(id.as_str());
+                ids[..*i].contains(id) || llm.models.iter().any(|m| &m.id == *id) || synthesized
+            })
+            .map(|(_, id)| id)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "llm.chatgpt.models のモデル ID が重複しています: {dup}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// 利用制限の値を検証する（金額クリティカル・効かない設定で起動させない）。
+    ///
+    /// 負の上限は即座に全員を止めるので弾く。プロバイダ ID の綴り違いは**黙って上限が
+    /// 掛からない**状態を作るため、`llm.providers[].id`（と既定プロバイダ）に無い ID を
+    /// 指していたら起動を止める（fail-closed）。
+    fn check_llm_limits(llm: &LlmConfig) -> Result<(), ConfigError> {
+        if llm.limits.per_user_usd_micros.is_some_and(|v| v < 0) {
+            return Err(ConfigError::Invalid(
+                "llm.limits.per_user_usd_micros は 0 以上が必要です".into(),
+            ));
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        for entry in &llm.limits.providers {
+            if entry.usd_micros < 0 {
+                return Err(ConfigError::Invalid(
+                    "llm.limits.providers[].usd_micros は 0 以上が必要です".into(),
+                ));
+            }
+            if entry.providers.is_empty() {
+                return Err(ConfigError::Invalid(
+                    "llm.limits.providers[].providers は 1 つ以上の ID が必要です".into(),
+                ));
+            }
+            for id in &entry.providers {
+                let known = id == llm_gateway::DEFAULT_PROVIDER_ID
+                    || llm.providers.iter().any(|q| &q.id == id)
+                    // ChatGPT プラン（#854）は有効なとき予約 ID で自動登録される。
+                    || (llm.chatgpt.enabled && id == llm_gateway::CHATGPT_PROVIDER_ID);
+                if !known {
+                    return Err(ConfigError::Invalid(format!(
+                        "llm.limits.providers に未知のプロバイダ ID があります: {id}\
+                         （llm.providers[].id か {} を指定）",
+                        llm_gateway::DEFAULT_PROVIDER_ID
+                    )));
+                }
+                // 同じ ID が 2 つの枠に属すとどちらで数えるか決まらない（先勝ちで黙って
+                // 緩い方へ倒れ得る）ので弾く。
+                if seen.contains(&id.as_str()) {
+                    return Err(ConfigError::Invalid(format!(
+                        "llm.limits.providers でプロバイダ ID が重複しています: {id}"
+                    )));
+                }
+                seen.push(id);
             }
         }
         Ok(())

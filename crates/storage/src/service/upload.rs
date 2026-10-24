@@ -29,6 +29,39 @@ impl StorageService {
         target_node_id: Option<Uuid>,
         trace_id: Option<&str>,
     ) -> Result<UploadTicket, StorageError> {
+        self.begin_upload_with_base(
+            ctx,
+            parent_id,
+            name,
+            content_type,
+            declared_sha256,
+            declared_size,
+            target_node_id,
+            None,
+            trace_id,
+        )
+        .await
+    }
+
+    /// [`Self::begin_upload`] に、内容更新の楽観ロック（`base_version`）を足したもの（#827）。
+    ///
+    /// `base_version` は `target_node_id` と組で使う（新規作成では無視）。申告した版が今の版と
+    /// 違えば declare の時点で [`StorageError::VersionConflict`] にし、finalize でも版更新を
+    /// `version = base_version` の条件付きにして、その間に入った保存を上書きしない。
+    #[allow(clippy::too_many_arguments)] // 宣言メタ一式は凝集した 1 操作の引数。
+    pub async fn begin_upload_with_base(
+        &self,
+        ctx: &AuthContext,
+        parent_id: Option<Uuid>,
+        name: &str,
+        content_type: &str,
+        declared_sha256: &str,
+        declared_size: i64,
+        target_node_id: Option<Uuid>,
+        base_version: Option<i64>,
+        trace_id: Option<&str>,
+    ) -> Result<UploadTicket, StorageError> {
+        let base_version = target_node_id.and(base_version);
         if !is_valid_sha256_hex(declared_sha256) {
             return Err(StorageError::Invalid(
                 "sha256 が 64 桁の hex ではありません".into(),
@@ -62,6 +95,14 @@ impl StorageService {
                 trace_id,
             )
             .await?;
+            // 開いた後に他の保存が入っていれば、バイトを送らせる前に止める。
+            if let Some(base) = base_version {
+                if existing.version != base {
+                    return Err(StorageError::VersionConflict {
+                        current: existing.version,
+                    });
+                }
+            }
             (existing.parent_id, existing.name)
         } else {
             validate_name(name)?;
@@ -101,8 +142,8 @@ impl StorageService {
         let staging_key = staging_object_key(&ctx.tenant_id, &ctx.org, &upload_id.to_string());
         sqlx::query(
             "INSERT INTO pending_upload \
-             (upload_id, org, tenant_id, parent_id, name, content_type, declared_sha256, declared_size, staging_key, created_by, target_node_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+             (upload_id, org, tenant_id, parent_id, name, content_type, declared_sha256, declared_size, staging_key, created_by, target_node_id, base_version) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(upload_id)
         .bind(&ctx.org)
@@ -115,6 +156,7 @@ impl StorageService {
         .bind(&staging_key)
         .bind(&ctx.principal.id)
         .bind(target_node_id)
+        .bind(base_version)
         .execute(&self.db)
         .await?;
 

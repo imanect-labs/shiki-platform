@@ -217,6 +217,8 @@ audit_actions! {
     GatewayCall = "gateway.call", "公開 API を呼び出し", Gateway;
     GatewayNotifySend = "gateway.notify.send", "通知を送信", Gateway;
     InsightsClassify = "insights.classify", "AI 活用の用途を分類", System;
+    MeChatgptConnect = "me.chatgpt.connect", "ChatGPT プランを連携", Chat;
+    MeChatgptDisconnect = "me.chatgpt.disconnect", "ChatGPT プランの連携を解除", Chat;
     MiniappResolve = "miniapp.resolve", "ミニアプリを開く", App;
     NodeBreadcrumbRead = "node.breadcrumb.read", "フォルダの階層を参照", Folder;
     NodeSearch = "node.search", "ドライブを検索", Search;

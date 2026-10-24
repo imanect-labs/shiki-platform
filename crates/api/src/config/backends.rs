@@ -195,6 +195,93 @@ pub struct LlmConfig {
     /// 1 回の生成全体の上限秒（既定 900 = 15 分・暴走の安全弁）。
     #[serde(default = "default_llm_total_timeout_secs")]
     pub total_timeout_secs: u64,
+    /// 利用制限（月次コスト上限・プレビュー環境向け）。既定は無効。
+    #[serde(default)]
+    pub limits: LlmLimitsConfig,
+    /// ChatGPT プラン（Sign in with ChatGPT）での個人利用（プレビュー環境向け・#854）。既定は無効。
+    #[serde(default)]
+    pub chatgpt: LlmChatGptConfig,
+}
+
+/// ChatGPT プランの接続（設定表現・`[llm.chatgpt]`）。既定は無効で、プレビュー環境だけで有効にする。
+///
+/// 有効にすると、プロバイダ `chatgpt` と `models` のモデル（論理名 `chatgpt:<slug>`）が
+/// カタログに加わる。設定画面（接続済みアプリ）から連携した**本人だけ**が使える。
+/// 接続はプロセスで 1 件・資格情報は `credential_path` のファイルに置く（単一レプリカ前提）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmChatGptConfig {
+    /// 有効にするか（既定 false）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 資格情報ファイルのパス（0600 で書く。ボリュームが無ければ再デプロイで消える）。
+    #[serde(default = "default_chatgpt_credential_path")]
+    pub credential_path: String,
+    /// カタログに載せるモデル（ChatGPT の `/v1/models` の `slug`）。設定画面に、接続した
+    /// アカウントで使えるモデルが出る。環境変数ではカンマ区切りでも書ける。
+    #[serde(default, deserialize_with = "slugs")]
+    pub models: Vec<String>,
+}
+
+fn default_chatgpt_credential_path() -> String {
+    "/var/lib/shiki/chatgpt.json".to_string()
+}
+
+impl Default for LlmChatGptConfig {
+    fn default() -> Self {
+        LlmChatGptConfig {
+            enabled: false,
+            credential_path: default_chatgpt_credential_path(),
+            models: Vec::new(),
+        }
+    }
+}
+
+/// 配列か、カンマ区切りの文字列（`SHIKI__LLM__CHATGPT__MODELS=a,b`）を受ける。
+fn slugs<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Slugs {
+        List(Vec<String>),
+        Csv(String),
+    }
+    let list = match Slugs::deserialize(d)? {
+        Slugs::List(v) => v,
+        Slugs::Csv(s) => s.split(',').map(str::to_string).collect(),
+    };
+    Ok(list
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
+}
+
+/// 利用制限（設定表現・`[llm.limits]`）。既定は無効で、プレビュー環境だけで有効にする。
+///
+/// ユーザー 1 人あたりの月額と、プロバイダ別の環境総枠の二段
+/// （[`llm_gateway::UsageLimitsConfig`]）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LlmLimitsConfig {
+    /// 制限を掛けるか（既定 false）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// ユーザー 1 人あたりの月額上限（マイクロ USD）。未設定・0 は無制限。
+    #[serde(default)]
+    pub per_user_usd_micros: Option<i64>,
+    /// プロバイダ別の環境総枠。
+    #[serde(default)]
+    pub providers: Vec<LlmProviderLimit>,
+}
+
+/// 1 つの請求先（API キー）の環境総枠（設定表現）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmProviderLimit {
+    /// この枠を共有する `llm.providers[].id`（既定プロバイダは `default`）。
+    ///
+    /// **枠は API キー単位**。1 つのキーを複数のプロバイダ設定で使っているなら全部列挙する
+    /// （OpenCode Go は API 形式ごとにプロバイダを分けるが、キーと請求は 1 つ）。
+    pub providers: Vec<String>,
+    /// 月額上限（マイクロ USD）。
+    pub usd_micros: i64,
 }
 
 const fn default_llm_first_response_timeout_secs() -> u64 {
@@ -227,6 +314,8 @@ impl Default for LlmConfig {
             first_response_timeout_secs: default_llm_first_response_timeout_secs(),
             idle_timeout_secs: default_llm_idle_timeout_secs(),
             total_timeout_secs: default_llm_total_timeout_secs(),
+            limits: LlmLimitsConfig::default(),
+            chatgpt: LlmChatGptConfig::default(),
         }
     }
 }
@@ -266,6 +355,27 @@ impl LlmConfig {
             self.idle_timeout_secs,
             self.total_timeout_secs,
         )
+    }
+
+    /// llm-gateway の利用制限へ写す（`validate` で非負を保証済み）。
+    ///
+    /// 0 は「無制限」として扱う（env で空文字を置けないため、0 で無効化できるようにする）。
+    #[must_use]
+    pub fn usage_limits(&self) -> llm_gateway::UsageLimitsConfig {
+        llm_gateway::UsageLimitsConfig {
+            enabled: self.limits.enabled,
+            per_user_usd_micros: self.limits.per_user_usd_micros.filter(|&v| v > 0),
+            providers: self
+                .limits
+                .providers
+                .iter()
+                .filter(|p| p.usd_micros > 0 && !p.providers.is_empty())
+                .map(|p| llm_gateway::ProviderLimit {
+                    providers: p.providers.clone(),
+                    usd_micros: p.usd_micros,
+                })
+                .collect(),
+        }
     }
 
     /// llm-gateway のモデルカタログへ写す。既定モデルは `default_model` → カタログ先頭 →
@@ -308,11 +418,41 @@ impl LlmConfig {
                 })
                 .collect()
         };
+        let mut models = models;
+        models.extend(self.chatgpt_models());
         llm_gateway::ModelCatalog {
             default_model,
             models,
         }
     }
+
+    /// ChatGPT プランのモデル（無効なら空）。単価 0（利用者のプラン枠で払う）・国外処理。
+    /// 組織の管理者が公開するまで使わせない（`requires_opt_in`。組織のデータを個人のアカウントへ
+    /// 送るので、AI 設定を保存していない組織でも既定で有効にしない）。
+    fn chatgpt_models(&self) -> Vec<llm_gateway::ModelEntry> {
+        if !self.chatgpt.enabled {
+            return Vec::new();
+        }
+        self.chatgpt
+            .models
+            .iter()
+            .map(|slug| llm_gateway::ModelEntry {
+                id: chatgpt_model_id(slug),
+                real_id: Some(slug.clone()),
+                provider: Some(llm_gateway::CHATGPT_PROVIDER_ID.to_string()),
+                display_name: Some(format!("{slug}（ChatGPT）")),
+                description: Some("あなたの ChatGPT プランで実行します".to_string()),
+                processed_abroad: true,
+                requires_opt_in: true,
+                ..Default::default()
+            })
+            .collect()
+    }
+}
+
+/// ChatGPT プランのモデルの論理名（他プロバイダの同名モデルと衝突させない）。
+pub(crate) fn chatgpt_model_id(slug: &str) -> String {
+    format!("chatgpt:{slug}")
 }
 
 /// モデルカタログの 1 エントリ（設定表現）。単価はマイクロ USD / 100万トークン。
