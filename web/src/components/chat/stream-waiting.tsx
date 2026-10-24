@@ -72,7 +72,9 @@ export function useStreamWaiting({
   const answering = !toolsRunning && sinceTool.length >= ANSWER_MIN_CHARS;
   const context: WaitingContext =
     hasTools && sinceTool.length === 0 ? "after_tool" : text.trim() ? "after_text" : "start";
-  const label = waiting ? waitingPhrase(context, idleSecs) : null;
+  // 本文が流れている最中は「待ち」ではない（止まってから待ちの文言を進める）。
+  const flowing = context === "after_text" && idleSecs < SHOW_AFTER_SECS;
+  const label = waiting ? (flowing ? "回答を書いています" : waitingPhrase(context, idleSecs)) : null;
   // ステップの合間はツールの見出しが、本文が出る前は思考の見出しが文言を受け持つ。
   const between = hasTools && !answering;
   const atBottom = waiting && !between && text.trim().length > 0;
