@@ -126,45 +126,8 @@ impl DataStore {
         max_view_lookup_columns: Option<u32>,
         trace_id: Option<&str>,
     ) -> Result<DataTenantSettings, DataError> {
-        if max_view_lookup_columns.is_some_and(|c| c == 0 || c > MAX_VIEW_LOOKUP_COLUMNS_CEILING) {
-            return Err(DataError::input_detail(crate::InvalidCode::InvalidInput, None, format!(
-                "ルックアップ・ロールアップ列の上限は 1〜{MAX_VIEW_LOOKUP_COLUMNS_CEILING} で指定してください"
-            )));
-        }
-        let v = max_view_lookup_columns.map(|c| i32::try_from(c).unwrap_or(i32::MAX));
-        let mut tx = self
-            .pools
-            .for_tenant(&ctx.tenant_id)
-            .begin()
+        self.update_tenant_settings(ctx, None, None, Some(max_view_lookup_columns), trace_id)
             .await
-            .map_err(map_db)?;
-        sqlx::query(
-            "INSERT INTO data_tenant_settings (tenant_id, max_view_lookup_columns) VALUES ($1, $2) \
-             ON CONFLICT (tenant_id) DO UPDATE SET \
-               max_view_lookup_columns = excluded.max_view_lookup_columns, updated_at = now()",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(v)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db)?;
-        storage::audit::record_on(
-            &mut tx,
-            ctx,
-            AuditEntry {
-                action: AuditAction::DataTenantSettingsUpdate,
-                object_type: "data_tenant_settings",
-                object_id: &ctx.tenant_id,
-                decision: Decision::Allow,
-                trace_id,
-                metadata: json!({ "max_view_lookup_columns": max_view_lookup_columns }),
-            },
-            storage::audit::Chain::Yes,
-        )
-        .await
-        .map_err(|e| DataError::Internal(format!("audit: {e}")))?;
-        tx.commit().await.map_err(map_db)?;
-        self.tenant_settings(ctx).await
     }
 
     /// テーブルあたりの索引列数の上限を変更する（`None` で既定 20 へ戻す・1〜1,000・監査に残す）。
@@ -177,47 +140,8 @@ impl DataStore {
         max_indexed_fields: Option<u32>,
         trace_id: Option<&str>,
     ) -> Result<DataTenantSettings, DataError> {
-        if max_indexed_fields.is_some_and(|c| c == 0 || c > MAX_INDEXED_FIELDS_CEILING) {
-            return Err(DataError::input_detail(
-                crate::InvalidCode::InvalidInput,
-                None,
-                format!("索引列数の上限は 1〜{MAX_INDEXED_FIELDS_CEILING} で指定してください"),
-            ));
-        }
-        let v = max_indexed_fields.map(|c| i32::try_from(c).unwrap_or(i32::MAX));
-        let mut tx = self
-            .pools
-            .for_tenant(&ctx.tenant_id)
-            .begin()
+        self.update_tenant_settings(ctx, None, Some(max_indexed_fields), None, trace_id)
             .await
-            .map_err(map_db)?;
-        sqlx::query(
-            "INSERT INTO data_tenant_settings (tenant_id, max_indexed_fields) VALUES ($1, $2) \
-             ON CONFLICT (tenant_id) DO UPDATE SET max_indexed_fields = excluded.max_indexed_fields, \
-               updated_at = now()",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(v)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db)?;
-        storage::audit::record_on(
-            &mut tx,
-            ctx,
-            AuditEntry {
-                action: AuditAction::DataTenantSettingsUpdate,
-                object_type: "data_tenant_settings",
-                object_id: &ctx.tenant_id,
-                decision: Decision::Allow,
-                trace_id,
-                metadata: json!({ "max_indexed_fields": max_indexed_fields }),
-            },
-            storage::audit::Chain::Yes,
-        )
-        .await
-        .map_err(|e| DataError::Internal(format!("audit: {e}")))?;
-        tx.commit().await.map_err(map_db)?;
-        self.tenant_settings(ctx).await
     }
 
     /// 件数の上限を変更する（`None` で既定へ戻す・1〜[`MAX_COUNT_CAP`]・監査に残す）。
@@ -229,14 +153,69 @@ impl DataStore {
         count_cap: Option<u64>,
         trace_id: Option<&str>,
     ) -> Result<DataTenantSettings, DataError> {
-        if count_cap.is_some_and(|c| c == 0 || c > MAX_COUNT_CAP) {
+        self.update_tenant_settings(ctx, Some(count_cap), None, None, trace_id)
+            .await
+    }
+
+    /// テナント設定をまとめて変更する（各項目: `None` = 変えない・`Some(None)` = 既定へ戻す・
+    /// `Some(Some(v))` = v に変える）。
+    ///
+    /// **全項目の範囲を先に検証してから** 1 つの Tx で書き、監査も同じ Tx に 1 件だけ残す（変えた項目を
+    /// metadata に並べる）。1 つでも範囲外なら何も書かない（前段だけ確定して 400 を返さない・R3-4）。
+    /// 変える項目が 1 つも無ければ書かずに現在の設定を返す。呼び出し側が組織管理者であることを確認
+    /// してから呼ぶこと（ここは認可しない）。
+    #[allow(clippy::option_option)] // 省略（変えない）と null（既定へ戻す）を区別する。
+    pub async fn update_tenant_settings(
+        &self,
+        ctx: &AuthContext,
+        count_cap: Option<Option<u64>>,
+        max_indexed_fields: Option<Option<u32>>,
+        max_view_lookup_columns: Option<Option<u32>>,
+        trace_id: Option<&str>,
+    ) -> Result<DataTenantSettings, DataError> {
+        // ① 検証（全部済ませてから書く）。
+        if count_cap
+            .flatten()
+            .is_some_and(|c| c == 0 || c > MAX_COUNT_CAP)
+        {
             return Err(DataError::input_detail(
                 crate::InvalidCode::InvalidInput,
                 None,
                 format!("件数の上限は 1〜{MAX_COUNT_CAP} で指定してください"),
             ));
         }
-        let cap = count_cap.map(|c| i64::try_from(c).unwrap_or(i64::MAX));
+        if max_indexed_fields
+            .flatten()
+            .is_some_and(|c| c == 0 || c > MAX_INDEXED_FIELDS_CEILING)
+        {
+            return Err(DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                None,
+                format!("索引列数の上限は 1〜{MAX_INDEXED_FIELDS_CEILING} で指定してください"),
+            ));
+        }
+        if max_view_lookup_columns
+            .flatten()
+            .is_some_and(|c| c == 0 || c > MAX_VIEW_LOOKUP_COLUMNS_CEILING)
+        {
+            return Err(DataError::input_detail(crate::InvalidCode::InvalidInput, None, format!(
+                "ルックアップ・ロールアップ列の上限は 1〜{MAX_VIEW_LOOKUP_COLUMNS_CEILING} で指定してください"
+            )));
+        }
+        if count_cap.is_none() && max_indexed_fields.is_none() && max_view_lookup_columns.is_none()
+        {
+            return self.tenant_settings(ctx).await;
+        }
+        // ② 1 つの Tx で書く（指定の無い項目は既存の値のまま・新しい行では既定＝NULL）。
+        let cap = count_cap
+            .flatten()
+            .map(|c| i64::try_from(c).unwrap_or(i64::MAX));
+        let idx = max_indexed_fields
+            .flatten()
+            .map(|c| i32::try_from(c).unwrap_or(i32::MAX));
+        let lookups = max_view_lookup_columns
+            .flatten()
+            .map(|c| i32::try_from(c).unwrap_or(i32::MAX));
         let mut tx = self
             .pools
             .for_tenant(&ctx.tenant_id)
@@ -244,14 +223,39 @@ impl DataStore {
             .await
             .map_err(map_db)?;
         sqlx::query(
-            "INSERT INTO data_tenant_settings (tenant_id, count_cap) VALUES ($1, $2) \
-             ON CONFLICT (tenant_id) DO UPDATE SET count_cap = excluded.count_cap, updated_at = now()",
+            "INSERT INTO data_tenant_settings \
+               (tenant_id, count_cap, max_indexed_fields, max_view_lookup_columns) \
+             VALUES ($1, $2, $4, $6) \
+             ON CONFLICT (tenant_id) DO UPDATE SET \
+               count_cap = CASE WHEN $3 THEN excluded.count_cap \
+                 ELSE data_tenant_settings.count_cap END, \
+               max_indexed_fields = CASE WHEN $5 THEN excluded.max_indexed_fields \
+                 ELSE data_tenant_settings.max_indexed_fields END, \
+               max_view_lookup_columns = CASE WHEN $7 THEN excluded.max_view_lookup_columns \
+                 ELSE data_tenant_settings.max_view_lookup_columns END, \
+               updated_at = now()",
         )
         .bind(&ctx.tenant_id)
         .bind(cap)
+        .bind(count_cap.is_some())
+        .bind(idx)
+        .bind(max_indexed_fields.is_some())
+        .bind(lookups)
+        .bind(max_view_lookup_columns.is_some())
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;
+        // 監査（変えた項目だけ）。
+        let mut metadata = serde_json::Map::new();
+        if let Some(v) = count_cap {
+            metadata.insert("count_cap".into(), json!(v));
+        }
+        if let Some(v) = max_indexed_fields {
+            metadata.insert("max_indexed_fields".into(), json!(v));
+        }
+        if let Some(v) = max_view_lookup_columns {
+            metadata.insert("max_view_lookup_columns".into(), json!(v));
+        }
         storage::audit::record_on(
             &mut tx,
             ctx,
@@ -261,7 +265,7 @@ impl DataStore {
                 object_id: &ctx.tenant_id,
                 decision: Decision::Allow,
                 trace_id,
-                metadata: json!({ "count_cap": count_cap }),
+                metadata: serde_json::Value::Object(metadata),
             },
             storage::audit::Chain::Yes,
         )

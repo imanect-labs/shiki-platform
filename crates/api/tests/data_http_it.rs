@@ -846,6 +846,62 @@ async fn org_admin_data_routes_require_org_admin() {
         (b["count_cap"].clone(), b["max_indexed_fields"].clone()),
         (json!(500), json!(30))
     );
+    // R3-4: 後段の値が範囲外なら、前段の値も変えずに 400（監査も増えない）。
+    let audits = |pool: sqlx::PgPool| async move {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_log WHERE tenant_id = $1 \
+               AND action = 'data.tenant_settings.update'",
+        )
+        .bind(TENANT)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    let audits_before = audits(env.pool.clone()).await;
+    for bad in [
+        json!({ "count_cap": 700, "max_indexed_fields": 0 }),
+        json!({ "count_cap": 700, "max_indexed_fields": 40, "max_view_lookup_columns": 1000 }),
+    ] {
+        let (s, b) = send(&env, put_json("admin", "/org-admin/data/settings", &bad)).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad} {b}");
+    }
+    let (s, b) = send(&env, get("admin", "/org-admin/data/settings")).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(
+        (
+            b["count_cap"].clone(),
+            b["max_indexed_fields"].clone(),
+            b["max_view_lookup_columns"].clone()
+        ),
+        (json!(500), json!(30), json!(null)),
+        "範囲外を含む更新は何も変えない"
+    );
+    assert_eq!(audits(env.pool.clone()).await, audits_before);
+    // 3 つを一度に変えると監査は 1 件（変えた項目が並ぶ）。
+    let (s, b) = send(
+        &env,
+        put_json(
+            "admin",
+            "/org-admin/data/settings",
+            &json!({ "count_cap": 600, "max_indexed_fields": 25, "max_view_lookup_columns": 8 }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["max_view_lookup_columns"], json!(8));
+    assert_eq!(audits(env.pool.clone()).await, audits_before + 1);
+    let meta: Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE tenant_id = $1 \
+           AND action = 'data.tenant_settings.update' ORDER BY id DESC LIMIT 1",
+    )
+    .bind(TENANT)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        meta,
+        json!({ "count_cap": 600, "max_indexed_fields": 25, "max_view_lookup_columns": 8 })
+    );
 }
 
 /// 索引（監査 B2-8）: viewer が状態を引ける・昇格できる。権限なし・未知の列・存在しないテーブルの形。

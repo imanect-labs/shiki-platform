@@ -163,14 +163,14 @@ pub async fn get_data_settings(
     Ok(Json(state.data.tenant_settings(&ctx).await?))
 }
 
-/// テナントの構造化データ設定を更新する（範囲外は 400・監査に残す）。
+/// テナントの構造化データ設定を更新する（範囲外が 1 つでもあれば何も変えずに 400・監査に残す）。
 #[utoipa::path(
     put,
     path = "/org-admin/data/settings",
     request_body = UpdateDataSettingsRequest,
     responses(
         (status = 200, description = "更新後の設定", body = data::DataTenantSettings),
-        (status = 400, description = "範囲外"),
+        (status = 400, description = "範囲外（1 つでも範囲外なら何も変えない）"),
         (status = 403, description = "組織管理者ではない"),
     ),
     security(("session" = [])),
@@ -181,21 +181,17 @@ pub async fn update_data_settings(
     trace: TraceIdExt,
     Json(req): Json<UpdateDataSettingsRequest>,
 ) -> Result<Json<data::DataTenantSettings>, ApiError> {
-    let mut settings = state
+    // 3 つの値は data がまとめて検証してから 1 つの Tx で書く（1 つでも範囲外なら何も変えない・
+    // 監査も 1 件・R3-4）。`count_cap` の省略は null と同じ（既定へ戻す・従来どおり）。
+    let settings = state
         .data
-        .update_tenant_count_cap(&ctx, req.count_cap, trace.as_deref())
+        .update_tenant_settings(
+            &ctx,
+            Some(req.count_cap),
+            req.max_indexed_fields,
+            req.max_view_lookup_columns,
+            trace.as_deref(),
+        )
         .await?;
-    if let Some(cap) = req.max_indexed_fields {
-        settings = state
-            .data
-            .update_tenant_index_cap(&ctx, cap, trace.as_deref())
-            .await?;
-    }
-    if let Some(cap) = req.max_view_lookup_columns {
-        settings = state
-            .data
-            .update_tenant_view_lookup_cap(&ctx, cap, trace.as_deref())
-            .await?;
-    }
     Ok(Json(settings))
 }
