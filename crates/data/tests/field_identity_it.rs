@@ -463,7 +463,7 @@ async fn seed_legacy_table(
         .unwrap();
     }
     // v1 の式インデックス（フィールド名を埋め込んだ部分インデックス）は Task 15.3 のマイグレーション
-    // （0085）で撤去済み。移行前の既存テーブルにも残っていない前提で再現する。
+    // （0086）で撤去済み。移行前の既存テーブルにも残っていない前提で再現する。
     let _ = legacy_index_on;
     id
 }
@@ -1012,7 +1012,7 @@ async fn legacy_row_policy_on_unindexed_field_is_promoted_on_upgrade() {
     assert_eq!(list(alice).await, 2);
 }
 
-/// 3 層形式で台帳が未初期化のテーブル（0086 が台帳を作り直させた等）でも、台帳の初期化で同じく
+/// 3 層形式で台帳が未初期化のテーブル（0087 が台帳を作り直させた等）でも、台帳の初期化で同じく
 /// row_policy の参照列を indexed に引き上げ、スキーマの版を進める（監査 B1-1）。
 #[tokio::test]
 async fn ledger_init_promotes_row_policy_fields() {

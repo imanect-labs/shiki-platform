@@ -80,6 +80,9 @@ const RUNNING: ToolActivityItem[] = [
 ];
 
 /// 完了（成功・失敗混在・並行あり）。展開すると step 境界でグループ化される。
+/// ステップの合間: 呼び出しは全件返り、次の呼び出しがまだ来ていない（2 件＝窓は 2 行ぶん）。
+const BETWEEN: ToolActivityItem[] = RUNNING.slice(0, 2);
+
 const DONE: ToolActivityItem[] = [
   {
     key: "d1",
@@ -290,16 +293,16 @@ export default function ToolActivityGalleryPage() {
       <header>
         <h1 className="text-lg font-semibold tracking-tight">ツール実行表示</h1>
         <p className="mt-1 text-[13px] text-muted-foreground">
-          チャットのツール実行可視化（issue #386）。実行中はフェーズ行＋直近 3
-          件のローリング、完了後は 1 行要約に畳み、クリックで全件のタイムラインを開く。
+          チャットのツール実行可視化（issue #386）。操作のまとまりは常に 1 行: 実行中はいまの操作
+          （変わるたびに 1 行ぶん送る）、合間は待ちの文言、終わったら要約。クリックで全件のタイムラインを開く。
         </p>
       </header>
 
-      <Cell id="rolling-demo" title="ローリングの動き（再生で 1 件ずつ増える）">
+      <Cell id="rolling-demo" title="1 行の送り（再生で 1 件ずつ増える）">
         <RollingDemo />
       </Cell>
 
-      <Cell id="running" title="実行中（フェーズ行＋ローリング 3 行・5 件中の直近 3 件）">
+      <Cell id="running" title="実行中（3 件が並行。最新の 1 件と、ほかの件数）">
         <ToolActivity items={RUNNING} streaming />
       </Cell>
 
@@ -307,7 +310,11 @@ export default function ToolActivityGalleryPage() {
         <ToolActivity items={RUNNING} streaming phaseOverride="市場規模と成長率を調べています" />
       </Cell>
 
-      <Cell id="done" title="完了（折りたたみ 1 行要約。クリックで展開）">
+      <Cell id="between" title="ステップの合間（全件完了・生成中。待ちの文言）">
+        <ToolActivity items={BETWEEN} streaming waitingLabel="次の手順を考えています" />
+      </Cell>
+
+      <Cell id="done" title="完了（1 行要約。クリックで全件）">
         <ToolActivity items={DONE} />
       </Cell>
 

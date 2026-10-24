@@ -248,14 +248,14 @@ impl UnitCosts {
     }
 }
 
-/// 較正ベンチの表の行数（migration 0097 の `generate_series(1, 20000)` と一致させる）。
+/// 較正ベンチの表の行数（migration 0098 の `generate_series(1, 20000)` と一致させる）。
 const CALIB_ROWS: i64 = 20_000;
 /// 点検索・本体取得の回数。
 const CALIB_PROBES: i64 = 2_000;
 /// 各操作の反復回数（中央値を採る）。
 const CALIB_RUNS: usize = 5;
 
-/// 起動時の較正ベンチ: 較正用の固定表（`data_planner_calib`・migration 0097 の既知の合成データ）で
+/// 起動時の較正ベンチ: 較正用の固定表（`data_planner_calib`・migration 0098 の既知の合成データ）で
 /// 範囲走査・点検索・本体取得・往復を計測して単価を置き換える。読取だけで DDL は打たない。
 /// 顧客データには触れない。
 pub(crate) async fn calibrate(
@@ -314,7 +314,7 @@ async fn calibrate_in_tx(
     ] {
         sqlx::query(s).execute(&mut *conn).await.map_err(map_db)?;
     }
-    // 較正用の固定表（migration 0097 が作る・テナントに属さない合成データ）。ランタイム DDL は打たない
+    // 較正用の固定表（migration 0098 が作る・テナントに属さない合成データ）。ランタイム DDL は打たない
     // （15.3: ランタイム DDL ゼロ）。行数が想定と違えば計測が意味を持たないので較正しない。
     let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM data_planner_calib")
         .fetch_one(&mut *conn)

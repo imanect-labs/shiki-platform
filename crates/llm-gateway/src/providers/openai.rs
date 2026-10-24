@@ -383,7 +383,7 @@ impl LlmProvider for OpenAiProvider {
         }
         let builder = self.identity.apply(builder, req.session_id.as_deref());
         let clock = RequestClock::start(self.timeouts, "openai");
-        let resp = clock.send(builder).await?;
+        let resp = send_waiting_out_rate_limit(&clock, builder).await?;
         let status = resp.status();
         if !status.is_success() {
             let text = clock.error_text(resp).await?;
@@ -411,7 +411,8 @@ impl LlmProvider for OpenAiProvider {
             let mut stop = StopReason::EndTurn;
             // 最後に受け取った finish_reason が "stop" か（終端が欠けたストリームは昇格させない）。
             let mut said_stop = false;
-            let mut finished = false;
+            // 終わりの合図（`[DONE]` か finish_reason）を受け取ったか・SSE でない行（[`cut_short`]）。
+            let (mut completed, mut stray) = (false, String::new());
             // 本文先頭の `<think>…</think>` は思考として流す（対象モデルだけ・#584）。
             let mut think_tags = think_tags.then(ThinkSplitter::default);
 
@@ -429,11 +430,12 @@ impl LlmProvider for OpenAiProvider {
                     let line = String::from_utf8_lossy(&line);
                     let line = line.trim();
                     let Some(data) = line.strip_prefix("data:") else {
+                        keep_stray(&mut stray, line);
                         continue;
                     };
                     let data = data.trim();
                     if data == "[DONE]" {
-                        finished = true;
+                        completed = true;
                         break 'outer;
                     }
                     let Ok(v): Result<Value, _> = serde_json::from_str(data) else {
@@ -479,10 +481,14 @@ impl LlmProvider for OpenAiProvider {
                     if let Some(fr) = choice.get("finish_reason").and_then(Value::as_str) {
                         stop = map_finish_reason(Some(fr));
                         said_stop = fr == "stop";
+                        completed = true;
                     }
                 }
             }
-            let _ = finished;
+            if let Some(e) = cut_short(completed, &stray) {
+                let _ = tx.unbounded_send(Err(e));
+                return;
+            }
             for piece in think_tags
                 .as_mut()
                 .map(ThinkSplitter::finish)
@@ -513,9 +519,100 @@ impl LlmProvider for OpenAiProvider {
     }
 }
 
+/// 429 の指示どおりに待つ上限（これより長い待ちは、利用者へ「上限に達した」と返す）。
+const MAX_RATE_LIMIT_WAIT: std::time::Duration = std::time::Duration::from_mins(1);
+
+/// 429 が短い待ち（`Retry-After`・Gemini API の `RetryInfo.retryDelay`）を示すときは、その分
+/// だけ待って 1 度だけ送り直す（#897）。Gemini API の無料枠は 1 分あたりの入力トークンが小さく
+/// （Gemma は 16,000）、数回の生成で「32 秒待て」と返る。すぐ失敗にすると会話全体のやり直しに
+/// なる。待っても通らなければ、いつもどおり上限の誤りとして返す（呼び出し側の対応表で扱う）。
+async fn send_waiting_out_rate_limit(
+    clock: &RequestClock,
+    builder: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, LlmError> {
+    let again = builder.try_clone();
+    let resp = clock.send(builder).await?;
+    let Some(again) = again.filter(|_| resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS)
+    else {
+        return Ok(resp);
+    };
+    let header = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_secs);
+    let text = clock.error_text(resp).await?;
+    match header
+        .or_else(|| retry_delay(&text))
+        // 生成全体の締め切りを越える待ちはしない（暴走止めの上限を待ちで延ばさない）。
+        .filter(|d| *d <= MAX_RATE_LIMIT_WAIT && *d < clock.remaining())
+    {
+        Some(wait) => {
+            tracing::warn!(?wait, "プロバイダが 429 で待ちを指示した（待って送り直す）");
+            tokio::time::sleep(wait).await;
+            clock.send(again).await
+        }
+        None => Err(LlmError::RateLimited(crate::provider::rate_limit_message(
+            &text,
+        ))),
+    }
+}
+
+/// Gemini API の 429 の本文にある `"retryDelay": "32s"` を読む。
+fn retry_delay(body: &str) -> Option<std::time::Duration> {
+    let rest = &body[body.find("\"retryDelay\"")? + "\"retryDelay\"".len()..];
+    let start = rest.find('"')? + 1;
+    let end = start + rest[start..].find('"')?;
+    let secs: f64 = rest[start..end].strip_suffix('s')?.parse().ok()?;
+    // 巨大・負・NaN は読めないものとして扱う（from_secs_f64 は panic する）。
+    std::time::Duration::try_from_secs_f64(secs).ok()
+}
+
+/// SSE でない行を理由の表示用に残す（Gemini API は流し始めた後に素の `[{"error": …}]` で切る）。
+fn keep_stray(stray: &mut String, line: &str) {
+    if !line.is_empty() && !line.starts_with(':') && stray.len() < 2048 {
+        stray.push_str(line);
+    }
+}
+
+/// 終わりの合図（`[DONE]` も finish_reason も）が無いまま切れたストリームの誤り。
+///
+/// 正常な終わりにしない。思考の途中で切れた応答を「本文もツール呼び出しも無い回答」として畳むと、
+/// エージェントは何もせずに終わる（Gemini API の Gemma で実測・#897）。一時障害として返し、まだ
+/// 何も確定していなければ gateway が送り直す。`stray` は SSE でない行（素のエラー JSON 等）。
+fn cut_short(completed: bool, stray: &str) -> Option<LlmError> {
+    if completed {
+        return None;
+    }
+    let why = if stray.is_empty() {
+        "stream ended before completion".to_string()
+    } else {
+        format!("stream ended with: {stray}")
+    };
+    Some(LlmError::Unavailable(format!(
+        "{}openai {why}",
+        crate::provider::CUT_BY_PROVIDER
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_delay_is_read_from_gemini_rate_limit_bodies() {
+        let body = r#"[{"error":{"code":429,"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay": "32s"}]}}]"#;
+        assert_eq!(retry_delay(body), Some(std::time::Duration::from_secs(32)));
+        assert_eq!(
+            retry_delay(r#"{"retryDelay":"1.5s"}"#),
+            Some(std::time::Duration::from_millis(1500))
+        );
+        assert_eq!(retry_delay(r#"{"error":"quota"}"#), None);
+        assert_eq!(retry_delay(r#"{"retryDelay":"soon"}"#), None);
+        assert_eq!(retry_delay(r#"{"retryDelay":"1e20s"}"#), None);
+        assert_eq!(retry_delay(r#"{"retryDelay":"-1s"}"#), None);
+    }
 
     #[test]
     fn assistant_tool_use_maps_to_openai_tool_calls() {

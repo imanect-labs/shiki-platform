@@ -302,7 +302,7 @@
   - [x] 集計のスモールセル抑制と集計クエリ監査が v1 と同じ挙動（PIT-17 継承）
         （`query_v2_it::aggregates_match_between_paths_with_small_cell_suppression`・`query_ops_it::aggregate_queries_are_audited`）
   - [x] `grep -r "CREATE INDEX" crates/data/src` が 0 件（ランタイム DDL ゼロ）（`no_runtime_ddl_lint::data_crate_issues_no_runtime_ddl`。
-        起動時の較正も migration 0097 の固定表を読むだけ）
+        起動時の較正も migration 0098 の固定表を読むだけ）
 
 ### Task 15.4: リンク／ルックアップ／ロールアップ／数式＋Materialization 規則
 - **area**: data / **path**: `crates/data/src/derived/`, `crates/data/src/formula/`
@@ -728,7 +728,7 @@
     - **バッチ駆動**（`= ANY($ids)` で段ごとに一括検査）を、リンク多段の条件とグリッドのルックアップ解決
       （data-platform §16.9 の N+1）に使う。集合の和・積・差は `record_int` の Roaring ビットマップで持つ
       （実装: バッチ駆動は**自動選択では選ばず**、リンクを辿る解決と強制戦略だけで使う。交差駆動は自動選択の候補・query-optimizer.md §6.4）
-    - （実装で追加: 較正は固定表 `data_planner_calib`（migration 0097・テナントに属さないシステム表）を読むだけでランタイム DDL を
+    - （実装で追加: 較正は固定表 `data_planner_calib`（migration 0098・テナントに属さないシステム表）を読むだけでランタイム DDL を
       打たない。管理 API `/org-admin/data/tables/{id}/optimizer`・`/org-admin/data/optimizer` と管理画面。形の取り出しは
       `shiki-admin data-table-shape`・ベンチは `DATA_BENCH_SHAPE`）
 - **受け入れ条件**:

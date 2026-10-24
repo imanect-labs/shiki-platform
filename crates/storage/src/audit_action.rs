@@ -285,11 +285,14 @@ audit_actions! {
     TenantPurge = "tenant.purge", "テナントを撤去", Admin;
     TenantRetenant = "tenant.retenant", "テナント ID を変更", Admin;
     ThreadCreate = "thread.create", "スレッドを作成", Chat;
+    ThreadDelete = "thread.delete", "スレッドを削除", Chat;
     ThreadFeedback = "thread.feedback", "回答を評価", Chat;
     ThreadGet = "thread.get", "スレッドを参照", Chat;
     ThreadMessage = "thread.message", "メッセージを参照", Chat;
     ThreadMessages = "thread.messages", "メッセージの一覧", Chat;
+    ThreadPin = "thread.pin", "スレッドのピン留めを変更", Chat;
     ThreadPost = "thread.post", "メッセージを送信", Chat;
+    ThreadRename = "thread.rename", "スレッドの名前を変更", Chat;
     ThreadRunCancel = "thread.run.cancel", "生成を中止", Chat;
     ThreadRunGet = "thread.run.get", "生成の状態を参照", Chat;
     ThreadSetAutonomousMode = "thread.set_autonomous_mode", "承認モードを変更", Chat;

@@ -333,6 +333,10 @@ impl LiveDoc {
     /// AI 編集オペを共有ドキュメントに適用し、生成された update（差分）と適用結果を返す
     /// （Task 11P.4）。トランザクション origin を AI にして人間編集と区別する。返した
     /// update は呼び出し側が永続化＋ブロードキャストする（人間の update と同じ経路）。
+    ///
+    /// **全部適用するか、何も適用しない**（#886）。先に写しで試し、1 つでも適用できない操作が
+    /// あれば共有ドキュメントは変えずに理由を返す（`applied == 0`・update は空）。一部だけ
+    /// 適用して失敗を返すと、AI が同じ ops を送り直して適用済みの分が二重に入る。
     pub fn apply_ai_edit(
         &self,
         ops: &[crate::note::EditOp],
@@ -340,14 +344,38 @@ impl LiveDoc {
     ) -> Result<(Vec<u8>, crate::note::EditReport), CollabError> {
         let awareness = self.read_awareness()?;
         let doc = awareness.doc();
-        let fragment = doc.get_or_insert_xml_fragment(crate::note::yjs_map::FRAGMENT_NAME);
-        let meta = doc.get_or_insert_map(crate::note::yjs_map::META_MAP_NAME);
-        let before = doc.transact().state_vector();
+        // 写し（別の client id）で試し、全部通ったら写しで作った update をそのまま共有
+        // ドキュメントへ取り込む。試しと本番を別々に適用すると、その間に入った人の編集で
+        // 本番だけが一部失敗しうる。取り込みは CRDT のマージなので、人の編集とも収束する。
+        let trial = Doc::new();
+        let base = {
+            let full = doc
+                .transact()
+                .encode_state_as_update_v1(&StateVector::default());
+            let mut txn = trial.transact_mut();
+            apply_bytes(&mut txn, &full)?;
+            txn.state_vector()
+        };
         let report = {
-            let mut txn = doc.transact_mut_with(crate::note::AI_ORIGIN);
+            let fragment = trial.get_or_insert_xml_fragment(crate::note::yjs_map::FRAGMENT_NAME);
+            let meta = trial.get_or_insert_map(crate::note::yjs_map::META_MAP_NAME);
+            let mut txn = trial.transact_mut();
             crate::note::ai_edit::apply_ops(&mut txn, &fragment, &meta, ops, mode)
         };
-        let update = doc.transact().encode_state_as_update_v1(&before);
+        if !report.skipped.is_empty() {
+            return Ok((
+                Vec::new(),
+                crate::note::EditReport {
+                    applied: 0,
+                    skipped: report.skipped,
+                },
+            ));
+        }
+        let update = trial.transact().encode_state_as_update_v1(&base);
+        {
+            let mut txn = doc.transact_mut_with(crate::note::AI_ORIGIN);
+            apply_bytes(&mut txn, &update)?;
+        }
         Ok((update, report))
     }
 
@@ -409,6 +437,48 @@ impl LiveDoc {
                 .await?;
         }
         Ok(())
+    }
+
+    /// ノートに以前の書き込みが残した BigInt の数値属性を Number に直し、その update を
+    /// 記録する（#886・ロード時に 1 度）。md は変わらないので保存の契機にはしない。
+    ///
+    /// 追記に失敗したら全状態の snapshot へ圧縮して残す（[`Self::persist_ai_update`] と同じ）。
+    /// 記録されない修復の上に人の編集が積まれると、再ロードでその編集が依存を欠いて失われる。
+    pub async fn repair_note_attrs(&self, store: &DocStore) -> Result<usize, CollabError> {
+        let (update, fixed) = {
+            let awareness = self.read_awareness()?;
+            let doc = awareness.doc();
+            let fragment = doc.get_or_insert_xml_fragment(crate::note::yjs_map::FRAGMENT_NAME);
+            let before = doc.transact().state_vector();
+            let fixed = {
+                let mut txn = doc.transact_mut();
+                crate::note::yjs_write::repair_number_attrs(&mut txn, &fragment)
+            };
+            if fixed == 0 {
+                return Ok(0);
+            }
+            let update = doc.transact().encode_state_as_update_v1(&before);
+            (update, fixed)
+        };
+        match store
+            .append_update(self.node_id, &self.tenant_id, &update, "system:repair")
+            .await
+        {
+            Ok(seq) => {
+                self.last_persisted_seq.store(seq, Ordering::SeqCst);
+                self.appended_since_compact.fetch_add(1, Ordering::SeqCst);
+            }
+            Err(e) => {
+                let upto = self.last_persisted_seq.load(Ordering::SeqCst);
+                let snapshot = self.full_state()?;
+                store
+                    .compact(self.node_id, &self.tenant_id, &snapshot, upto)
+                    .await
+                    .map_err(|_| e)?;
+                self.appended_since_compact.store(0, Ordering::SeqCst);
+            }
+        }
+        Ok(fixed)
     }
 
     /// md 全文を全置換で取り込む（外部書込のインポート・Task 11P.2 単方向規約）。

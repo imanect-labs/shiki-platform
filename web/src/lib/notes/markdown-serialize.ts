@@ -10,14 +10,45 @@
 /// クリップボードは揮発的でありサーバ保存時は Rust が再正規化するため、
 /// バイト単位一致ではなく「同じ意味・同じ正規形」を目標にする。
 
-import type { Fragment, Mark, Node as PMNode } from "@tiptap/pm/model";
+import { Fragment, type Mark, type Node as PMNode } from "@tiptap/pm/model";
 
 /// フラグメント（スライス内容・ドキュメント本体）を正規化 md へ描画する。
 /// 末尾は単一改行（Rust `render_markdown` と同じく空でなければ改行終端）。
+///
+/// AI の削除の提案（`aiDeletion` の印）は、サーバの保存と同じく「承認したら」の形で描く
+/// （旧文と新文を並べない・#886）。
 export function serializeFragment(fragment: Fragment): string {
-  const blocks = collectBlocks(fragment);
+  const blocks = collectBlocks(withoutDeletions(fragment));
   const body = renderBlocks(blocks);
   return body.length > 0 ? `${body}\n` : "";
+}
+
+/// 表の形を保つため、中身が無くなっても残すノード（Rust の md 読み出しと同じ）。
+const KEEP_EMPTY = new Set(["table", "tableRow", "tableCell", "tableHeader"]);
+
+/// 削除の提案が付いた文字・ブロックを取り除いたフラグメント。
+function withoutDeletions(fragment: Fragment): Fragment {
+  const out: PMNode[] = [];
+  fragment.forEach((node) => {
+    const kept = withoutDeletionsIn(node);
+    if (kept) out.push(kept);
+  });
+  return Fragment.fromArray(out);
+}
+
+function withoutDeletionsIn(node: PMNode): PMNode | null {
+  if (node.attrs.aiDeletion === true) return null;
+  if (node.isText) return node.marks.some((m) => m.type.name === "aiDeletion") ? null : node;
+  if (node.childCount === 0) return node;
+  const content = withoutDeletions(node.content);
+  // 中身がすべて削除の提案だったブロック（段落・見出し・項目・リスト）は丸ごと描かない。
+  // 文字を消して強制改行だけが残った段落も同じ（サーバの md 読み出しと揃える）。
+  const removed = content.childCount !== node.childCount;
+  const visible = content.content.some((child) => child.type.name !== "hardBreak");
+  if (!KEEP_EMPTY.has(node.type.name) && (content.childCount === 0 || (removed && !visible))) {
+    return null;
+  }
+  return node.copy(content);
 }
 
 /// フラグメントを配列に写す（forEach を素直な反復に）。

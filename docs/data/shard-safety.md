@@ -35,7 +35,7 @@ S3・S4 の対象を取りこぼさないよう、lint（`crates/data/tests/shar
 | 分類 | 内容 | 例 |
 |---|---|---|
 | **テナント境界の表**（`DATA_TABLES`） | S3・S4 の対象。加えて**テナント消去（`DataStore::purge_tenant`）の対象に載っていること**を照合する（`every_tenant_data_table_is_purged`） | `data_record`・索引表・統計 4 表・取込のステージング など |
-| **システム表**（`SYSTEM_TABLES`・理由つき） | テナントに属さない。tenant 条件を持たず、purge の対象でもない。S3・S4 の対象外 | `data_planner_calib`（オプティマイザの較正用の固定表・migration 0097。既知の合成データだけで顧客データを含まない。全プールに同じ内容があり、較正はレジストリのプールで読む） |
+| **システム表**（`SYSTEM_TABLES`・理由つき） | テナントに属さない。tenant 条件を持たず、purge の対象でもない。S3・S4 の対象外 | `data_planner_calib`（オプティマイザの較正用の固定表・migration 0098。既知の合成データだけで顧客データを含まない。全プールに同じ内容があり、較正はレジストリのプールで読む） |
 
 統計 4 表（`data_table_stats` / `data_field_stats` / `data_value_count` / `data_link_stats`）は、加えて PIT-75 の検査
 （`optimizer_statistics_are_only_touched_by_planner_and_stats_writers`）で、SQL を `query/planner/` と `stats/` にだけ許す。

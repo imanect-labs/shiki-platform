@@ -26,7 +26,7 @@ pub struct TenantLlmSettings {
     pub default_model: String,
     /// ユーザーがチャットでモデルを選べるか。
     pub allow_user_choice: bool,
-    /// ユーザーがモデルを選んだときの思考強度の初期値。
+    /// 特定のモデルで動くとき（ユーザーが選んだモデル・既定の特定モデル）の思考強度の初期値。
     pub default_effort: Effort,
     /// Auto の振り先の上書き（`None` はデプロイ設定）。
     pub auto_model: Option<String>,

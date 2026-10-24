@@ -2,8 +2,8 @@
 //!
 //! - **件数の上限はテナント設定**（data-platform §5.4）: 既定 10,000・テナントごとに変更でき、他テナントに効かない
 //! - **索引がバックフィル中の列は「準備中」**（data-platform §10: building の間は駆動にもフィルタにも使わせない）
-//! - **一意性に空白期間を作らない**（0085 で旧方式の一意な式インデックスを撤去した後も）:
-//!   0084 の状態でバックフィル途中だったテーブルに 0085 / 0086 を当てても、重複は 409 になる
+//! - **一意性に空白期間を作らない**（0086 で旧方式の一意な式インデックスを撤去した後も）:
+//!   0085 の状態でバックフィル途中だったテーブルに 0086 / 0087 を当てても、重複は 409 になる
 
 #![allow(
     clippy::unwrap_used,
@@ -144,8 +144,8 @@ async fn building_index_on_a_requested_field_is_not_ready() {
     assert_eq!(r.items.unwrap().len(), 1);
 }
 
-/// 0084 の状態（旧方式の一意な式インデックスがまだ一意性を守り、data_unique はバックフィル途中）から
-/// 0085（旧方式の撤去）・0086（一意索引の作り直し）を当てても、一意性は途切れない。
+/// 0085 の状態（旧方式の一意な式インデックスがまだ一意性を守り、data_unique はバックフィル途中）から
+/// 0086（旧方式の撤去）・0087（一意索引の作り直し）を当てても、一意性は途切れない。
 #[tokio::test]
 async fn uniqueness_survives_the_upgrade_from_a_mid_backfill_state() {
     let Some(admin) = setup().await else { return };
@@ -161,14 +161,14 @@ async fn uniqueness_survives_the_upgrade_from_a_mid_backfill_state() {
         .connect(&url)
         .await
         .unwrap();
-    // 0085 / 0086 の手前の状態を作る（0084 まで＋ 0087 以降の独立した追加テーブル。
-    // テストの書込は現行コードで行うため、0085 / 0086 と無関係な新しいテーブルは先に置く）。
+    // 0086 / 0087 の手前の状態を作る（0085 まで＋ 0088 以降の独立した追加テーブル。
+    // テストの書込は現行コードで行うため、0086 / 0087 と無関係な新しいテーブルは先に置く）。
     let full = sqlx::migrate!("../../migrations");
     let mut before = sqlx::migrate!("../../migrations");
     before.migrations = full
         .migrations
         .iter()
-        .filter(|m| !(85..=86).contains(&m.version))
+        .filter(|m| !(86..=87).contains(&m.version))
         .cloned()
         .collect::<Vec<_>>()
         .into();
@@ -209,7 +209,7 @@ async fn uniqueness_survives_the_upgrade_from_a_mid_backfill_state() {
     .await
     .unwrap();
 
-    // 0085 / 0086 を当てる。
+    // 0086 / 0087 を当てる。
     full.run(&pool).await.unwrap();
 
     // 重複は 409（初回アクセスで台帳を作り直し、unique を同期構築してから書込を通す）。
@@ -244,7 +244,7 @@ async fn uniqueness_survives_the_upgrade_from_a_mid_backfill_state() {
     .unwrap();
     assert_eq!(rows, 6, "既存 5 行＋新規 1 行が一意索引に載る");
 
-    // 書込経路の保険: 一意索引が active でなければ書込を通さない（0086 を経ない経路でも空白期間を作らない）。
+    // 書込経路の保険: 一意索引が active でなければ書込を通さない（0087 を経ない経路でも空白期間を作らない）。
     sqlx::query(
         "UPDATE data_index_state SET state = 'building' \
          WHERE tenant_int = $1 AND table_int = $2 AND index_table = 4",
