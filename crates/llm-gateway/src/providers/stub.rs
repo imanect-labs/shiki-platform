@@ -16,6 +16,8 @@
 //!   遅延ツールを次のターンで呼ぶ（[`super::stub_triggers::tool_search_call`]）。
 //! - `echosystem:` … 受け取った system プロンプトをそのまま本文で返す（system の組み立て
 //!   ＝今日の日付などが実際にモデルへ届くことの検証用・#546）。
+//! - `<conversation>…</conversation>` … 包みの中の最初の行を返す（会話の自動タイトル用。
+//!   「回答: 」を付けない）。
 
 use std::time::Duration;
 
@@ -26,7 +28,9 @@ use super::stub_fixtures::yui_reply;
 use super::stub_stream::{
     paced_chunks_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
 };
-use super::stub_triggers::{echo_system_call, note_tool_call, tool_search_call};
+use super::stub_triggers::{
+    conversation_title_call, echo_system_call, note_tool_call, tool_search_call,
+};
 use super::timeouts::RequestClock;
 use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Role, StopReason, StreamDelta, Usage};
@@ -261,6 +265,7 @@ fn fixed_reply_call(
     yui_call(user_text, prompt_tokens)
         .or_else(|| reasoning_call(req, user_text, prompt_tokens))
         .or_else(|| echo_system_call(req, user_text, prompt_tokens))
+        .or_else(|| conversation_title_call(user_text, prompt_tokens))
 }
 
 /// 図の回答 `yui:<kind>`（#530）: ```ui ブロックを含む本文を数文字ずつ流す

@@ -21,6 +21,18 @@ pub(super) fn echo_system_call(
     })
 }
 
+/// `<conversation>` で包んだ発話（会話の自動タイトル・chat の worker/title.rs）には、包みの中の
+/// 最初の空でない行を返す（「回答: 」を付けない）。付けると、画面のどこにでもタイトルとして
+/// 「回答:」が出て、本文の回答を探す e2e が履歴の行に当たってしまう。
+pub(super) fn conversation_title_call(user_text: &str, prompt_tokens: u64) -> Option<DeltaStream> {
+    let inner = user_text
+        .strip_prefix("<conversation>")?
+        .trim_end()
+        .strip_suffix("</conversation>")?;
+    let first = inner.lines().map(str::trim).find(|l| !l.is_empty())?;
+    Some(text_stream(first, prompt_tokens))
+}
+
 /// tool search の決定的駆動 `toolsearch:<query>`（遅延ツールの検索→読み込み→呼び出しの e2e）。
 ///
 /// 1 ターン目に `tool_search` を `{query}` で呼び、直前の観測が読み込み参照を持てば
@@ -369,5 +381,28 @@ mod tests {
         // 指示側に編集語があれば起動する（対照）。
         let with_intent = format!("{text}\nこのスライドを書き直して");
         assert!(wants_edit(&with_intent));
+    }
+}
+
+#[cfg(test)]
+mod conversation_title_tests {
+    use super::*;
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn returns_first_line_inside_conversation_tags() {
+        let mut s = conversation_title_call(
+            "<conversation>\n\n  経費の締め日は？\n次の行\n</conversation>",
+            1,
+        )
+        .expect("包みがあれば応答する");
+        let mut out = String::new();
+        while let Some(Ok(d)) = s.next().await {
+            if let crate::model::StreamDelta::TextDelta { text } = d {
+                out.push_str(&text);
+            }
+        }
+        assert_eq!(out.trim(), "経費の締め日は？");
+        assert!(conversation_title_call("経費の締め日は？", 1).is_none());
     }
 }

@@ -18,10 +18,27 @@ use authz::{
     AuthContext, AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, Principal,
     ReadTupleKey, Relation, Subject,
 };
-use chat::{ChatError, ChatStore};
+use chat::{ChatError, ChatStore, ThreadRole};
 use sqlx::{postgres::PgPoolOptions, PgPool};
+use storage::model::ShareTarget;
 
-struct AllowAll;
+/// 全許可のモック authz。共有の剥奪を観測するため、タプルを手元に保持する。
+#[derive(Default)]
+struct AllowAll {
+    tuples: std::sync::Mutex<Vec<ReadTupleKey>>,
+}
+
+impl AllowAll {
+    fn relations_on(&self, object: &str) -> Vec<String> {
+        self.tuples
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.object == object)
+            .map(|t| format!("{}#{}", t.relation, t.user))
+            .collect()
+    }
+}
 
 #[async_trait]
 impl AuthzClient for AllowAll {
@@ -36,26 +53,47 @@ impl AuthzClient for AllowAll {
     }
     async fn write_tuple(
         &self,
-        _s: &Subject,
-        _r: Relation,
-        _o: &FgaObject,
+        s: &Subject,
+        r: Relation,
+        o: &FgaObject,
     ) -> Result<bool, AuthzError> {
+        self.tuples.lock().unwrap().push(ReadTupleKey {
+            user: s.as_str().to_string(),
+            relation: r.as_str().to_string(),
+            object: o.as_str().to_string(),
+        });
         Ok(true)
     }
     async fn delete_tuple(
         &self,
-        _s: &Subject,
-        _r: Relation,
-        _o: &FgaObject,
+        s: &Subject,
+        r: Relation,
+        o: &FgaObject,
     ) -> Result<bool, AuthzError> {
-        Ok(true)
+        let mut tuples = self.tuples.lock().unwrap();
+        let before = tuples.len();
+        tuples.retain(|t| {
+            !(t.user == s.as_str() && t.relation == r.as_str() && t.object == o.as_str())
+        });
+        Ok(tuples.len() != before)
     }
     async fn read_tuples(
         &self,
-        _o: &FgaObject,
-        _r: Option<Relation>,
+        o: &FgaObject,
+        r: Option<Relation>,
     ) -> Result<Vec<ReadTupleKey>, AuthzError> {
-        Ok(vec![])
+        Ok(self
+            .tuples
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.object == o.as_str() && r.is_none_or(|r| t.relation == r.as_str()))
+            .map(|t| ReadTupleKey {
+                user: t.user.clone(),
+                relation: t.relation.clone(),
+                object: t.object.clone(),
+            })
+            .collect())
     }
     async fn list_objects(
         &self,
@@ -110,9 +148,11 @@ fn ctx(tenant: &str) -> AuthContext {
 }
 
 async fn store(pool: &PgPool) -> ChatStore {
-    ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
-        .await
-        .unwrap()
+    store_with(pool, Arc::new(AllowAll::default())).await
+}
+
+async fn store_with(pool: &PgPool, authz: Arc<AllowAll>) -> ChatStore {
+    ChatStore::connect(pool.clone(), authz, None).await.unwrap()
 }
 
 async fn post(store: &ChatStore, c: &AuthContext, thread_id: uuid::Uuid, text: &str) -> uuid::Uuid {
@@ -342,4 +382,104 @@ async fn delete_hides_thread_and_cancels_runs() {
         .is_none());
     // 残した会話はそのまま開ける。
     assert!(store.get_thread(&c, keep.id, None).await.is_ok());
+}
+
+/// 削除は共有（viewer / editor）をすべて剥奪する（owner のタプルは残す）。
+#[tokio::test]
+async fn delete_revokes_all_shares() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(AllowAll::default());
+    let store = store_with(&pool, authz.clone()).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "共有した会話", false, None, None)
+        .await
+        .unwrap();
+    for (id, role) in [("bob", ThreadRole::Viewer), ("carol", ThreadRole::Editor)] {
+        store
+            .share_thread(
+                &c,
+                thread.id,
+                &ShareTarget::User { id: id.into() },
+                role,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let obj = c.ns().thread(&thread.id.to_string());
+    assert_eq!(
+        authz.relations_on(obj.as_str()).len(),
+        3,
+        "owner＋共有 2 件"
+    );
+
+    store.delete_thread(&c, thread.id, None).await.unwrap();
+    let left = authz.relations_on(obj.as_str());
+    assert_eq!(left.len(), 1, "共有は剥奪され owner だけ残る: {left:?}");
+    assert!(left[0].starts_with("owner#"), "{left:?}");
+}
+
+/// ピン留めは上限まで。上限に達したら新しく付けられず、付け直し・外すことはできる。
+#[tokio::test]
+async fn pin_limit_is_enforced() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool).await;
+    let c = ctx(&tenant);
+    let limit = usize::try_from(chat::store::MAX_PINNED).unwrap();
+    let mut ids = Vec::new();
+    for i in 0..=limit {
+        let t = store
+            .create_thread(&c, &format!("会話 {i}"), false, None, None)
+            .await
+            .unwrap();
+        ids.push(t.id);
+    }
+    for id in &ids[..limit] {
+        store.set_thread_pinned(&c, *id, true, None).await.unwrap();
+    }
+    assert!(matches!(
+        store.set_thread_pinned(&c, ids[limit], true, None).await,
+        Err(ChatError::Invalid(_))
+    ));
+    // 付け直しは上限に数えない。外せば次を付けられる。
+    store
+        .set_thread_pinned(&c, ids[0], true, None)
+        .await
+        .unwrap();
+    store
+        .set_thread_pinned(&c, ids[0], false, None)
+        .await
+        .unwrap();
+    store
+        .set_thread_pinned(&c, ids[limit], true, None)
+        .await
+        .unwrap();
+    assert_eq!(store.list_pinned_threads(&c).await.unwrap().len(), limit);
+}
+
+/// 自動タイトルを試すのはユーザーの発話が 3 件までの間（失敗し続けても毎回は呼ばない）。
+#[tokio::test]
+async fn title_seed_stops_after_three_user_messages() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "仮", false, None, None)
+        .await
+        .unwrap();
+    for i in 1..=3 {
+        post(&store, &c, thread.id, &format!("質問 {i}")).await;
+    }
+    let seed = store.title_seed(thread.id, &tenant).await.unwrap();
+    assert_eq!(seed.as_deref(), Some("質問 1\n\n質問 2\n\n質問 3"));
+    post(&store, &c, thread.id, "質問 4").await;
+    assert!(store
+        .title_seed(thread.id, &tenant)
+        .await
+        .unwrap()
+        .is_none());
 }

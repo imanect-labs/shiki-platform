@@ -82,8 +82,12 @@ function RenameField({
   React.useEffect(() => {
     // メニューが閉じてフォーカスを戻し終えてから入れる（でないと ⋯ に奪われる）。
     const id = requestAnimationFrame(() => {
-      ref.current?.focus();
-      ref.current?.select();
+      const el = ref.current;
+      if (!el) return;
+      el.focus();
+      el.select();
+      // 全選択で末尾までスクロールされると名前の先頭が隠れるので、先頭を見せる。
+      el.scrollLeft = 0;
     });
     return () => cancelAnimationFrame(id);
   }, []);
@@ -100,7 +104,8 @@ function RenameField({
       maxLength={200}
       enterKeyHint="done"
       onKeyDown={(e) => {
-        if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+        // 変換確定の Enter では確定しない（Safari は isComposing が false で keyCode 229 を送る）。
+        if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
           e.preventDefault();
           finish(e.currentTarget.value);
         } else if (e.key === "Escape") {
@@ -111,7 +116,8 @@ function RenameField({
       onBlur={(e) => finish(e.currentTarget.value)}
       className={cn(
         "h-8 w-full min-w-0 rounded-[9px] border border-sidebar-ring/50 bg-background px-2.5 text-[13px] text-sidebar-foreground outline-none",
-        "focus-visible:ring-[3px] focus-visible:ring-sidebar-ring/20",
+        // リングは内側に描く（行の左右の端からはみ出さない）。
+        "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sidebar-ring/25",
         // iOS は 16px 未満の入力欄でズームするため、スマホは 16px にする。
         mobile && "h-12 rounded-[10px] px-3 text-base",
       )}

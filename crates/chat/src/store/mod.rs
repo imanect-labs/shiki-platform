@@ -25,7 +25,7 @@ mod yui_actions;
 pub use feedback::{MessageFeedback, FEEDBACK_CATEGORIES};
 pub use post::PostResult;
 pub use runs::{ClaimedRun, CurrentRun, RunContext, CHAT_GENERATION_QUEUE};
-pub use thread_manage::MAX_THREAD_TITLE_CHARS;
+pub use thread_manage::{MAX_PINNED, MAX_THREAD_TITLE_CHARS};
 pub use threads::ThreadOrigin;
 pub use yui_actions::{YuiActionRequest, YuiAppDraft};
 

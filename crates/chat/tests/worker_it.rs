@@ -249,15 +249,18 @@ async fn worker_generates_streams_and_persists_projection() {
     });
     assert!(has_text, "確定メッセージに本文 projection が残ること");
 
-    // 自動タイトル: 最初の発話から付き、`done` より前にイベントが届く（stub は「回答: 」＋
-    // 受け取った発話を返すので、中身は問わず仮タイトルから置き換わったことを見る）。
-    let title_event = title_event.expect("thread_title イベントが done より前に届くこと");
+    // 自動タイトル: 最初の発話から付き、`done` より前にイベントが届く（stub は包みの中の
+    // 最初の行＝発話をそのまま返す）。
+    assert_eq!(
+        title_event.as_deref(),
+        Some("hello world"),
+        "thread_title イベントが done より前に届くこと"
+    );
     let titled = store.get_thread(&c, thread.id, None).await.unwrap();
     assert_eq!(
-        titled.title, title_event,
-        "保存したタイトルをイベントで配る"
+        titled.title, "hello world",
+        "仮タイトルが生成タイトルに置き換わる"
     );
-    assert_ne!(titled.title, "t", "仮タイトルが生成タイトルに置き換わる");
     // 確定後は付け直さない（材料を返さない）。
     assert!(store
         .title_seed(thread.id, &tenant)

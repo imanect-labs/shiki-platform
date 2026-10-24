@@ -10,19 +10,21 @@ use super::*;
 
 use authz::{AuthContext, Relation};
 use serde_json::json;
-use storage::audit::{AuditEntry, Decision};
+use storage::audit::{record_on, AuditAction, AuditEntry, Chain, Decision};
+use storage::model::ShareTarget;
 use uuid::Uuid;
 
 use super::threads::{map_db, map_storage, ThreadRow, THREAD_COLUMNS};
-use crate::model::Thread;
+use crate::model::{Thread, ThreadRole};
 
 /// ユーザーが付けるタイトルの上限（文字）。サイドバーでは 1 行に切り詰めて出す。
 pub const MAX_THREAD_TITLE_CHARS: usize = 200;
 
-/// サイドバーのピン留めの上限件数（一覧の先頭に全件出すため）。
-const MAX_PINNED: i64 = 50;
+/// サイドバーのピン留めの上限件数（一覧の先頭に全件出すため。超える付与は拒否する）。
+pub const MAX_PINNED: i64 = 50;
 
-/// 自動タイトルの材料にする最初のユーザー発話の件数・文字数。
+/// 自動タイトルの材料にする最初のユーザー発話の件数・文字数。発話がこれを超えたら
+/// （失敗し続けていても）もう試さない。
 const TITLE_SEED_MESSAGES: i64 = 3;
 const TITLE_SEED_CHARS: usize = 1500;
 
@@ -36,8 +38,14 @@ impl ChatStore {
         trace_id: Option<&str>,
     ) -> Result<(), ChatError> {
         let title = normalize_user_title(title)?;
-        self.require_thread(ctx, thread_id, Relation::Owner, "thread.rename", trace_id)
-            .await?;
+        self.require_thread(
+            ctx,
+            thread_id,
+            Relation::Owner,
+            AuditAction::ThreadRename,
+            trace_id,
+        )
+        .await?;
         let updated = sqlx::query(
             "UPDATE thread SET title = $3, title_pending = false \
              WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
@@ -51,8 +59,14 @@ impl ChatStore {
         if updated.rows_affected() == 0 {
             return Err(ChatError::NotFound);
         }
-        self.record_allow(ctx, "thread.rename", thread_id, trace_id, json!({}))
-            .await
+        self.record_allow(
+            ctx,
+            AuditAction::ThreadRename,
+            thread_id,
+            trace_id,
+            json!({}),
+        )
+        .await
     }
 
     /// ピン留めを付け外しする（owner のみ）。
@@ -63,25 +77,42 @@ impl ChatStore {
         pinned: bool,
         trace_id: Option<&str>,
     ) -> Result<(), ChatError> {
-        self.require_thread(ctx, thread_id, Relation::Owner, "thread.pin", trace_id)
-            .await?;
+        self.require_thread(
+            ctx,
+            thread_id,
+            Relation::Owner,
+            AuditAction::ThreadPin,
+            trace_id,
+        )
+        .await?;
         // 付け直しで時刻を更新しない（既にピン留め済みなら元の時刻のまま＝並びが跳ねない）。
+        // 新しく付けるのは本人のピン留めが上限未満のときだけ（一覧に出ないピンを作らない）。
         let updated = sqlx::query(
             "UPDATE thread SET pinned_at = CASE WHEN $3 THEN coalesce(pinned_at, now()) END \
-             WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
+             WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL \
+               AND (NOT $3 OR pinned_at IS NOT NULL OR \
+                    (SELECT count(*) FROM thread p \
+                      WHERE p.tenant_id = $2 AND p.org = $4 AND p.owner = $5 \
+                        AND p.deleted_at IS NULL AND p.pinned_at IS NOT NULL) < $6)",
         )
         .bind(thread_id)
         .bind(&ctx.tenant_id)
         .bind(pinned)
+        .bind(&ctx.org)
+        .bind(&ctx.principal.id)
+        .bind(MAX_PINNED)
         .execute(&self.db)
         .await
         .map_err(map_db)?;
         if updated.rows_affected() == 0 {
-            return Err(ChatError::NotFound);
+            // 生存は require_thread で確認済みなので、ここに来るのは上限で拒否したとき。
+            return Err(ChatError::Invalid(format!(
+                "ピン留めは {MAX_PINNED} 件までです。ほかのピン留めを外してください"
+            )));
         }
         self.record_allow(
             ctx,
-            "thread.pin",
+            AuditAction::ThreadPin,
             thread_id,
             trace_id,
             json!({ "pinned": pinned }),
@@ -89,18 +120,31 @@ impl ChatStore {
         .await
     }
 
-    /// スレッドを削除する（owner のみ・論理削除）。
+    /// スレッドを削除する（owner のみ・論理削除・取り消し不可）。
     ///
-    /// 削除後は一覧から消え、共有相手を含めて誰も開けない（[`Self::require_thread`] が削除済みを
-    /// NotFound にする）。生成中・順番待ちの run は停止を要求する（ワーカーがキャンセルで確定する）。
+    /// 先に共有をすべて剥奪する（editor に付けた自律ワークスペースフォルダの editor も・
+    /// [`Self::unshare_thread`] と同じ）。復元しない削除なので、共有相手のタプルを残さない。
+    /// その後、削除と生成中・順番待ちの run の停止要求と監査を 1 トランザクションで確定する。
+    /// 削除後は一覧から消え、誰も開けない（[`Self::require_thread`] が削除済みを NotFound にする）。
+    /// 投稿（`post_message`）とはスレッド行のロックで直列化するので、削除と同時に積まれた run も
+    /// 停止要求の対象になるか、投稿の方が NotFound になる。
     pub async fn delete_thread(
         &self,
         ctx: &AuthContext,
         thread_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<(), ChatError> {
-        self.require_thread(ctx, thread_id, Relation::Owner, "thread.delete", trace_id)
+        let obj = self
+            .require_thread(
+                ctx,
+                thread_id,
+                Relation::Owner,
+                AuditAction::ThreadDelete,
+                trace_id,
+            )
             .await?;
+        let revoked = self.revoke_all_shares(ctx, thread_id, &obj).await?;
+
         let mut tx = self.db.begin().await.map_err(map_db)?;
         let updated = sqlx::query(
             "UPDATE thread SET deleted_at = now(), pinned_at = NULL \
@@ -125,9 +169,58 @@ impl ChatStore {
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;
-        tx.commit().await.map_err(map_db)?;
-        self.record_allow(ctx, "thread.delete", thread_id, trace_id, json!({}))
+        record_on(
+            &mut tx,
+            ctx,
+            AuditEntry {
+                action: AuditAction::ThreadDelete,
+                object_type: "thread",
+                object_id: &thread_id.to_string(),
+                decision: Decision::Allow,
+                trace_id,
+                metadata: json!({ "revoked_shares": revoked }),
+            },
+            Chain::Yes,
+        )
+        .await
+        .map_err(map_storage)?;
+        tx.commit().await.map_err(map_db)
+    }
+
+    /// スレッドの共有（viewer / commenter / editor）をすべて剥奪し、剥奪した件数を返す。
+    async fn revoke_all_shares(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        obj: &authz::FgaObject,
+    ) -> Result<usize, ChatError> {
+        let tuples = self
+            .authz
+            .read_tuples(obj, None)
             .await
+            .map_err(|e| ChatError::Internal(e.to_string()))?;
+        let ns = ctx.ns();
+        let mut revoked = 0;
+        for t in tuples {
+            let Some(role) = Relation::parse(&t.relation).and_then(ThreadRole::from_relation)
+            else {
+                continue;
+            };
+            let Some(target) = ShareTarget::parse_subject(&ns, &t.user) else {
+                continue;
+            };
+            let subject = target.subject(&ns);
+            self.authz
+                .delete_tuple(&subject, role.relation(), obj)
+                .await
+                .map_err(|e| ChatError::Internal(e.to_string()))?;
+            if matches!(role, ThreadRole::Editor) {
+                self.set_workspace_editor(ctx, thread_id, &subject, false)
+                    .await?;
+            }
+            revoked += 1;
+        }
+        Ok(revoked)
     }
 
     /// 自分のピン留めしたスレッド（ピン留めの新しい順・上限 [`MAX_PINNED`] 件）。
@@ -162,6 +255,8 @@ impl ChatStore {
              JOIN thread t ON t.id = m.thread_id AND t.tenant_id = m.tenant_id \
              WHERE m.thread_id = $1 AND m.tenant_id = $2 AND m.role = 'user' \
                AND t.title_pending AND t.deleted_at IS NULL \
+               AND (SELECT count(*) FROM message u \
+                     WHERE u.thread_id = $1 AND u.tenant_id = $2 AND u.role = 'user') <= $3 \
              ORDER BY m.created_at, m.id LIMIT $3",
         )
         .bind(thread_id)
@@ -214,7 +309,7 @@ impl ChatStore {
     async fn record_allow(
         &self,
         ctx: &AuthContext,
-        action: &str,
+        action: AuditAction,
         thread_id: Uuid,
         trace_id: Option<&str>,
         metadata: serde_json::Value,

@@ -140,7 +140,11 @@ export function useThreadList(query = "", enabled = true): ThreadList {
 }
 
 /// ピン留めしたスレッド（ピン留めの新しい順・全件）。一覧の変更通知で取り直す。
-export function usePinnedThreads(enabled = true): Thread[] {
+/// `patchLocal` は取り直しを待たずに手元の行を書き換える（改名の直後に古い名前へ戻らないように）。
+export function usePinnedThreads(enabled = true): {
+  threads: Thread[];
+  patchLocal: (id: string, patch: Partial<Thread>) => void;
+} {
   const [threads, setThreads] = React.useState<Thread[]>([]);
   React.useEffect(() => {
     if (!enabled) return;
@@ -164,5 +168,8 @@ export function usePinnedThreads(enabled = true): Thread[] {
       unsubscribe();
     };
   }, [enabled]);
-  return threads;
+  const patchLocal = React.useCallback((id: string, patch: Partial<Thread>) => {
+    setThreads((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }, []);
+  return { threads, patchLocal };
 }

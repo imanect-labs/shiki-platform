@@ -49,6 +49,18 @@ pub async fn update_thread(
         ));
     }
     let store = chat_store(&state)?;
+    // 失敗し得る検証（ノートの解決）を先に済ませ、途中まで適用して失敗する経路を減らす。
+    let note = match req.note_id {
+        Some(note_id) => Some((
+            note_id,
+            state
+                .storage
+                .get_metadata(&ctx, note_id, trace.as_deref())
+                .await?
+                .name,
+        )),
+        None => None,
+    };
     if let Some(title) = &req.title {
         store
             .rename_thread(&ctx, id, title, trace.as_deref())
@@ -59,13 +71,9 @@ pub async fn update_thread(
             .set_thread_pinned(&ctx, id, pinned, trace.as_deref())
             .await?;
     }
-    if let Some(note_id) = req.note_id {
-        let node = state
-            .storage
-            .get_metadata(&ctx, note_id, trace.as_deref())
-            .await?;
+    if let Some((note_id, name)) = note {
         store
-            .set_thread_origin_note(&ctx, id, note_id, &node.name, trace.as_deref())
+            .set_thread_origin_note(&ctx, id, note_id, &name, trace.as_deref())
             .await?;
     }
     Ok(StatusCode::NO_CONTENT)

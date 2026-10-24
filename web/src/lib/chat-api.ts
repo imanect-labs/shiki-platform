@@ -185,20 +185,8 @@ export function subscribeThreadsChanged(listener: () => void): () => void {
 
 // ── REST ──────────────────────────────────────────────────────────────
 
-type ApiThread = {
-  id: string;
-  title: string;
-  agent_mode: boolean;
-  autonomous_mode?: AutonomousMode;
-  skill_pins?: { skill_id: string; skill_version: number }[];
-  mini_app_id?: string | null;
-  mini_app_version?: number | null;
-  origin_note_id?: string | null;
-  origin_note_name?: string | null;
-  pinned_at?: string | null;
-  created_at: string;
-  updated_at: string;
-};
+/// スレッドの API 表現（**`crates/chat` の `Thread` から生成**した型）。
+type ApiThread = components["schemas"]["Thread"];
 
 function toThread(t: ApiThread): Thread {
   return {
@@ -295,10 +283,14 @@ export async function setThreadSkills(threadId: string, skills: ArtifactPin[]): 
   notifyThreadsChanged();
 }
 
-/// スレッドを更新する（PATCH /threads/{id}）。失敗は利用者向けの文言で投げる。
+/// スレッドの更新リクエスト（**`UpdateThreadRequest` から生成**した型）。
+type UpdateThreadRequest = components["schemas"]["UpdateThreadRequest"];
+
+/// スレッドを更新する（PATCH /threads/{id}）。失敗は利用者向けの文言で投げる
+/// （入力の誤り・ピン留めの上限など 400 はサーバの説明をそのまま出す）。
 async function patchThread(
   threadId: string,
-  body: { title?: string; pinned?: boolean },
+  body: UpdateThreadRequest,
   failure: string,
 ): Promise<void> {
   const res = await apiFetch(`/threads/${threadId}`, {
@@ -306,7 +298,17 @@ async function patchThread(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(failure);
+  if (!res.ok) {
+    let detail = "";
+    if (res.status === 400) {
+      try {
+        detail = ((await res.json()) as { detail?: string }).detail ?? "";
+      } catch {
+        /* 本文が JSON でなければ既定の文言 */
+      }
+    }
+    throw new Error(detail || failure);
+  }
   notifyThreadsChanged();
 }
 

@@ -332,7 +332,8 @@ impl ChatWorker {
             return Ok(());
         }
         // `done` を積むと購読が閉じるので、タイトルのイベントはその前に済ませる。
-        if gen_result.is_ok() {
+        // 停止（ユーザーの停止・削除）の確定はタイトルを待たない。
+        if gen_result.is_ok() && !cancel.load(Ordering::Relaxed) {
             title_task.finish().await;
         }
 

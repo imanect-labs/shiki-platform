@@ -14,3 +14,7 @@ alter table thread
 create index thread_owner_pinned_idx
     on thread (tenant_id, org, owner, pinned_at desc)
     where deleted_at is null and pinned_at is not null;
+
+-- スレッドの run を引く索引（削除時の停止要求・いま映す run・順番待ちの判定が thread_id で引く）。
+create index generation_run_thread_idx
+    on generation_run (tenant_id, thread_id, created_at);

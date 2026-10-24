@@ -402,16 +402,30 @@ impl ChatStore {
         trace_id: Option<&str>,
     ) -> Result<authz::FgaObject, ChatError> {
         let obj = ctx.ns().thread(&thread_id.to_string());
-        let ok = self
-            .authz
-            .check(
-                &ctx.subject(),
-                relation,
-                &obj,
-                Consistency::HigherConsistency,
+        // 認可と生存の確認は互いに依存しないので並行に引く（往復を直列に重ねない）。
+        let check = async {
+            self.authz
+                .check(
+                    &ctx.subject(),
+                    relation,
+                    &obj,
+                    Consistency::HigherConsistency,
+                )
+                .await
+                .map_err(|e| ChatError::Internal(e.to_string()))
+        };
+        let alive = async {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM thread \
+                 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL)",
             )
+            .bind(thread_id)
+            .bind(&ctx.tenant_id)
+            .fetch_one(&self.db)
             .await
-            .map_err(|e| ChatError::Internal(e.to_string()))?;
+            .map_err(map_db)
+        };
+        let (ok, alive) = tokio::try_join!(check, alive)?;
         if !ok {
             let _ = self
                 .audit
@@ -429,15 +443,6 @@ impl ChatStore {
                 .await;
             return Err(ChatError::Forbidden);
         }
-        let alive: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM thread \
-             WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL)",
-        )
-        .bind(thread_id)
-        .bind(&ctx.tenant_id)
-        .fetch_one(&self.db)
-        .await
-        .map_err(map_db)?;
         if !alive {
             return Err(ChatError::NotFound);
         }
