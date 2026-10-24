@@ -92,8 +92,14 @@ impl ChatStore {
                     .into(),
             ));
         };
+        // 申告のツール名が承認待ちと違う決定は記録しない（利用者が見た承認要求と別のものを承認したことに
+        // なり得る・監査の記録が誤る・3 回目の検証 3-B-4）。
         if claimed_tool_name != tool_name {
-            tracing::info!(claimed = claimed_tool_name, actual = %tool_name, "承認の申告ツール名が承認待ちと異なる（run 側の値を使う）");
+            tracing::info!(claimed = claimed_tool_name, actual = %tool_name, "承認の申告ツール名が承認待ちと異なる（400）");
+            return Err(ChatError::Invalid(
+                "承認待ちのツール呼び出しとツール名が一致しません（承認要求の tool_name を指定してください）"
+                    .into(),
+            ));
         }
         let tool_name = tool_name.as_str();
         let decision = if approved { "approved" } else { "rejected" };

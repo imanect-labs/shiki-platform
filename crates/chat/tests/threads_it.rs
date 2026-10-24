@@ -1497,6 +1497,16 @@ async fn pending_approval_is_persisted_and_the_wait_releases_the_slot() {
         )
         .await;
     assert!(matches!(r, Err(chat::ChatError::Invalid(_))), "{r:?}");
+    // 正しい id に別のツール名を申告した決定も記録しない（400・3 回目の検証 3-B-4）。
+    let r = store
+        .submit_approval(&c, thread.id, run_id, "tc-9", "shell", true, None)
+        .await;
+    assert!(matches!(r, Err(chat::ChatError::Invalid(_))), "{r:?}");
+    assert_eq!(
+        store.pending_approval(run_id).await.unwrap(),
+        Some(("tc-9".to_string(), "data_record_write".to_string())),
+        "承認待ちのまま"
+    );
     // 他の run が枠を使っている間に承認しても、枠が空くまで続きは走らない。
     let other = Arc::clone(&sem).acquire_owned().await.unwrap();
     assert!(store
