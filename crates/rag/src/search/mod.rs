@@ -143,9 +143,9 @@ impl SearchService {
         top_k: Option<u32>,
         mode: SearchMode,
         scope: Option<&SearchScope>,
-        trace_id: Option<&str>,
+        trail: impl Into<crate::AuditTrail<'_>>,
     ) -> Result<SearchOutput, RagError> {
-        self.search_bounded(ctx, query, top_k, mode, scope, &[], trace_id)
+        self.search_bounded(ctx, query, top_k, mode, scope, &[], trail.into())
             .await
     }
 
@@ -162,7 +162,7 @@ impl SearchService {
         mode: SearchMode,
         scope: Option<&SearchScope>,
         bounds: &[&SearchScope],
-        trace_id: Option<&str>,
+        trail: crate::AuditTrail<'_>,
     ) -> Result<SearchOutput, RagError> {
         let top_k = (top_k.unwrap_or(self.config.default_top_k as u32) as usize)
             .clamp(1, self.config.max_top_k);
@@ -335,7 +335,7 @@ impl SearchService {
         let results = self.build_results(ctx, &ranked, &rows).await?;
 
         // 8. 引用監査（Task 2.7 受入条件: 引用 chunk と認可判定が監査ログに残る）。
-        self.audit_citations(ctx, query, &results, &file_decisions, scope, trace_id)
+        self.audit_citations(ctx, query, &results, &file_decisions, scope, trail)
             .await?;
 
         debug.stage_ms = timings;
@@ -419,7 +419,7 @@ impl SearchService {
         results: &[SearchResult],
         file_decisions: &HashMap<Uuid, bool>,
         scope: Option<&SearchScope>,
-        trace_id: Option<&str>,
+        trail: crate::AuditTrail<'_>,
     ) -> Result<(), RagError> {
         // 検索語はサーバだけが持つ鍵で HMAC する（#833）。監査閲覧者は管理者でなくてもなれるので、
         // 鍵なしのハッシュだと「この語で検索した人がいるか」を自分で計算して確かめられてしまう。
@@ -451,6 +451,8 @@ impl SearchService {
                 "files": scope.files,
             });
         }
+        // チャットの回答のための検索なら、会話と回答を残す（1 回答の判定と引用を引ける・#829）。
+        trail.annotate(&mut metadata);
         self.audit
             .record(
                 ctx,
@@ -459,7 +461,7 @@ impl SearchService {
                     object_type: "rag_query",
                     object_id: &query_hmac,
                     decision: Decision::Allow,
-                    trace_id,
+                    trace_id: trail.trace_id,
                     metadata,
                 },
             )

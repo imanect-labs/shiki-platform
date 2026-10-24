@@ -569,6 +569,35 @@ async fn citations_and_decisions_are_audited_with_trace_id() {
         )
     );
     assert!(metadata.get("query_sha256").is_none());
+    assert!(
+        metadata.get("message_id").is_none(),
+        "回答の外の検索には付けない"
+    );
+
+    // チャットの回答のための検索は、会話と回答を残す（1 回答の判定と引用を引ける・#829）。
+    let (thread, message) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    env.search
+        .search(
+            &env.alice,
+            "売上",
+            Some(5),
+            SearchMode::Hybrid,
+            None,
+            rag::AuditTrail::for_answer(Some("trace-answer"), thread, message),
+        )
+        .await
+        .unwrap();
+    let (metadata, trace_id): (serde_json::Value, Option<String>) = sqlx::query_as(
+        "select metadata, trace_id from audit_log \
+         where tenant_id = $1 and action = 'rag.search' order by id desc limit 1",
+    )
+    .bind(&env.alice.tenant_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(trace_id.as_deref(), Some("trace-answer"));
+    assert_eq!(metadata["thread_id"], serde_json::json!(thread));
+    assert_eq!(metadata["message_id"], serde_json::json!(message));
 }
 
 /// 検索結果が位置情報（アンカー・前後の文脈）を持ち、その版のブロック列を窓で読めること。

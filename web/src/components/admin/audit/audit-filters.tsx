@@ -48,7 +48,9 @@ function Field({ label, htmlFor, children, className }: {
 export function AuditFilters({ query, onApply }: { query: AuditQuery; onApply: (q: AuditQuery) => void }) {
   const [draft, setDraft] = React.useState<AuditQuery>(query);
   React.useEffect(() => setDraft(query), [query]);
-  const advancedSet = Boolean(query.object_type || query.object_id || query.chunk_id || query.trace_id);
+  const advancedSet = Boolean(
+    query.object_type || query.object_id || query.chunk_id || query.trace_id || query.thread_id || query.message_id,
+  );
   const [advanced, setAdvanced] = React.useState(advancedSet);
   React.useEffect(() => {
     if (advancedSet) setAdvanced(true);
@@ -70,6 +72,8 @@ export function AuditFilters({ query, onApply }: { query: AuditQuery; onApply: (
     query.object_id,
     query.chunk_id,
     query.trace_id,
+    query.thread_id,
+    query.message_id,
   ].filter(Boolean).length;
   const hasConditions = conditionCount > 0;
   // スマホでは期間だけを出し、ほかの条件は開いたときだけ（一覧を先に見せる）。PC は常に出す。
@@ -214,7 +218,7 @@ export function AuditFilters({ query, onApply }: { query: AuditQuery; onApply: (
         </Field>
       </div>
       {advanced ? (
-        <div className={cn("grid grid-cols-2 gap-x-3 gap-y-2 md:grid-cols-4", mobileHidden)}>
+        <div className={cn("grid grid-cols-2 gap-x-3 gap-y-2 md:grid-cols-3", mobileHidden)}>
           <Field label="対象の種類" htmlFor="audit-object-type">
             <Input
               id="audit-object-type"
@@ -252,6 +256,24 @@ export function AuditFilters({ query, onApply }: { query: AuditQuery; onApply: (
               className="h-8 font-mono"
             />
           </Field>
+          <Field label="会話の ID" htmlFor="audit-thread">
+            <Input
+              id="audit-thread"
+              value={draft.thread_id ?? ""}
+              onChange={(e) => set({ thread_id: e.target.value })}
+              autoComplete="off"
+              className="h-8 font-mono"
+            />
+          </Field>
+          <Field label="回答の ID" htmlFor="audit-message">
+            <Input
+              id="audit-message"
+              value={draft.message_id ?? ""}
+              onChange={(e) => set({ message_id: e.target.value })}
+              autoComplete="off"
+              className="h-8 font-mono"
+            />
+          </Field>
         </div>
       ) : null}
       <div className={cn("flex flex-wrap items-center gap-2", mobileHidden)}>
@@ -262,7 +284,7 @@ export function AuditFilters({ query, onApply }: { query: AuditQuery; onApply: (
           className="inline-flex items-center gap-1 rounded-md text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11"
         >
           <ChevronDown className={cn("size-3.5 transition-transform", advanced && "rotate-180")} aria-hidden />
-          詳しい条件（対象・引用チャンク・trace_id）
+          詳しい条件（対象・引用チャンク・trace_id・会話・回答）
         </button>
         {rangeError ? (
           <span role="alert" className="text-xs text-destructive">

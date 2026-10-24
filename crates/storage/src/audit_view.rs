@@ -59,6 +59,10 @@ pub struct AuditFilter {
     /// 引用されたチャンク ID（`rag.search` の `metadata.cited_chunk_ids` に含む行）。
     pub chunk_id: Option<String>,
     pub trace_id: Option<String>,
+    /// 会話（チャットの回答のための検索・読み出しが `metadata.thread_id` に持つ・#829）。
+    pub thread_id: Option<String>,
+    /// 回答（assistant のメッセージ・`metadata.message_id`・#829）。
+    pub message_id: Option<String>,
 }
 
 /// keyset ページングの位置（直前のページの最後の行）。
@@ -276,6 +280,15 @@ fn build_query<'a>(
     if let Some(trace) = &f.trace_id {
         q.push(" AND a.trace_id = ").push_bind(trace);
     }
+    // 部分索引（0076）に載るよう、索引の述語（metadata ? '...'）も同じ形で書く。
+    if let Some(thread) = &f.thread_id {
+        q.push(" AND a.metadata ? 'thread_id' AND a.metadata ->> 'thread_id' = ")
+            .push_bind(thread);
+    }
+    if let Some(message) = &f.message_id {
+        q.push(" AND a.metadata ? 'message_id' AND a.metadata ->> 'message_id' = ")
+            .push_bind(message);
+    }
     if let Some(c) = after {
         q.push(" AND (a.created_at, a.id) < (")
             .push_bind(c.created_at)
@@ -343,6 +356,8 @@ mod tests {
             object_id: Some("f1".into()),
             chunk_id: Some("c1".into()),
             trace_id: Some("t".into()),
+            thread_id: Some("th".into()),
+            message_id: Some("m".into()),
             ..AuditFilter::default()
         };
         let after = Some(AuditCursor {
@@ -361,7 +376,9 @@ mod tests {
         assert!(sql.contains("a.action LIKE"));
         assert!(sql.contains("a.action = ANY($12)"));
         assert!(sql.contains("(a.created_at, a.id) <"));
-        assert!(sql.ends_with("ORDER BY a.created_at DESC, a.id DESC LIMIT $19"));
+        assert!(sql.contains("a.metadata ->> 'thread_id' = $17"));
+        assert!(sql.contains("a.metadata ->> 'message_id' = $18"));
+        assert!(sql.ends_with("ORDER BY a.created_at DESC, a.id DESC LIMIT $21"));
         // 利用者の入力は SQL に埋め込まない。
         assert!(!sql.contains("bob@example.com"));
         assert!(!sql.contains("f1"));
