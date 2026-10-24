@@ -16,7 +16,13 @@ import { useRouter } from "next/navigation";
 import * as React from "react";
 
 import { ConfirmDialog } from "@/components/drive/dialogs";
-import { AddFieldForm, FieldSettings, isDerived } from "@/components/data/schema-field-form";
+import {
+  AddFieldForm,
+  FieldSettings,
+  isDerived,
+  type SymmetricName,
+  type TableTraits,
+} from "@/components/data/schema-field-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,7 +49,7 @@ import {
   type FieldDef,
   type TableIndexOverview,
 } from "@/lib/data-api";
-import { FIELD_TYPE_LABELS } from "@/lib/data-view";
+import { FIELD_TYPE_LABELS, withFieldLabels } from "@/lib/data-view";
 import { cn } from "@/lib/utils";
 
 type Draft = FieldDef & { isNew?: boolean };
@@ -105,7 +111,17 @@ export function SchemaEditor({
   const [confirmClose, setConfirmClose] = React.useState(false);
   const [confirmDeleteTable, setConfirmDeleteTable] = React.useState(false);
   const [tables, setTables] = React.useState<DataTable[] | null>(null);
+  /// 保存前に足したリンクの列が参照先に作る逆向きの列（保存後に表示名を付ける）。
+  const symmetricNames = React.useRef<Map<string, SymmetricName>>(new Map());
   const router = useRouter();
+  // 属性の警告の材料（行ポリシー・マスク。owner には定義が返る）。
+  const traits: TableTraits = React.useMemo(
+    () => ({
+      rowPolicy: Boolean(table.schema.row_policy),
+      masked: new Set((table.schema.field_policy ?? []).map((p) => p.field)),
+    }),
+    [table.schema],
+  );
 
   // 開いたときだけ下書きを作り直す（索引の付け外しでスキーマの版が進んでも、未保存の編集は消さない）。
   const tableRef = React.useRef(table);
@@ -116,6 +132,7 @@ export function SchemaEditor({
     setFields([...t.schema.fields].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map((f) => ({ ...f })));
     setAdding(false);
     setExpanded(null);
+    symmetricNames.current = new Map();
     listIndexes(t.id).then(setOverview).catch(() => setOverview(null));
     // リンクの参照先の名前（定義の要約）に使う。
     listTables()
@@ -156,7 +173,32 @@ export function SchemaEditor({
     });
   };
 
+  // 表示名を空にした列（元は表示名があった列）。空のまま保存すると見出しが参照名（col_4 など）になる。
+  const emptyNames = React.useMemo(() => {
+    const before = new Map(table.schema.fields.map((f) => [f.key, f.display_name ?? ""]));
+    return new Set(
+      kept.filter((f) => !(f.display_name ?? "").trim() && (f.isNew || (before.get(f.key) ?? "").trim())).map((f) => f.key),
+    );
+  }, [kept, table]);
+
+  /// 新しいリンクの列が参照先に作った逆向きの列へ、読める表示名（「<テーブル名>（<列名>）」）を付ける。
+  /// サーバは逆向きの列を参照名だけで作るので、付けないと見出しが参照名になる。失敗しても列は使える。
+  const nameSymmetricColumns = async (added: SymmetricName[]) => {
+    for (const s of added) {
+      try {
+        const ref = await getTable(s.refTable);
+        const f = ref.schema.fields.find((x) => x.key === s.key);
+        if (!f || (f.display_name && f.display_name !== f.key)) continue;
+        const fields = ref.schema.fields.map((x) => (x.key === s.key ? { ...x, display_name: s.displayName } : x));
+        await updateSchema(ref.id, { ...ref.schema, fields }, ref.schema_version);
+      } catch {
+        // 参照先の表示名は後から列の編集で付けられる（逆向きの列そのものはできている）。
+      }
+    }
+  };
+
   const save = async () => {
+    if (emptyNames.size) return;
     setSaving(true);
     try {
       // 索引の状態は最新のスキーマに従う（このシートで付け外しした分も反映済み）。
@@ -180,21 +222,29 @@ export function SchemaEditor({
           : { ...f, order: i };
       });
       const saved = await updateSchema(table.id, { ...table.schema, fields: next }, table.schema_version);
+      const added = kept.filter((f) => f.isNew).flatMap((f) => symmetricNames.current.get(f.key) ?? []);
+      if (added.length) await nameSymmetricColumns(added);
       toast({ title: "列の設定を保存しました" });
       onSaved(saved);
       onOpenChange(false);
     } catch (e) {
       const field = e instanceof DataApiError ? e.field : null;
       const fieldLabel = field ? fields.find((f) => f.key === field)?.display_name || field : null;
+      // 一意にした列に重複があって保存できない（本文に列が無ければ、今回一意にした列を挙げる）。
+      const madeUnique = fields
+        .filter((f) => f.unique && !table.schema.fields.find((x) => x.key === f.key)?.unique && !f.isNew)
+        .map((f) => `「${f.display_name || f.key}」`);
       toast({
         variant: "destructive",
         title: fieldLabel ? `「${fieldLabel}」を保存できませんでした` : "保存できませんでした",
         description:
-          e instanceof DataApiError && e.status === 409 && (e.code === "conflict" || e.code === "rev_conflict" || e.code === null)
-            ? "他の人がスキーマを変更しました。開き直してからもう一度お試しください。"
-            : e instanceof Error
-              ? e.message
-              : String(e),
+          e instanceof DataApiError && e.uniqueViolation
+            ? `既存のレコードに同じ値があるため、${fieldLabel ? `「${fieldLabel}」` : madeUnique.join("・") || "この列"}を一意にできません。重複を直してからもう一度保存してください。`
+            : e instanceof DataApiError && e.status === 409 && (e.code === "conflict" || e.code === "rev_conflict" || e.code === null)
+              ? "他の人がスキーマを変更しました。開き直してからもう一度お試しください。"
+              : e instanceof Error
+                ? withFieldLabels(e.message, fields)
+                : String(e),
       });
     } finally {
       setSaving(false);
@@ -292,11 +342,19 @@ export function SchemaEditor({
                     <div className="min-w-0 flex-1">
                       <Input
                         aria-label={`「${f.key}」の表示名`}
+                        aria-invalid={emptyNames.has(f.key) || undefined}
+                        aria-describedby={emptyNames.has(f.key) ? `name-error-${f.key}` : undefined}
                         value={f.display_name ?? ""}
-                        placeholder={f.key}
+                        placeholder="表示名"
+                        maxLength={100}
                         onChange={(e) => patchField(f.key, { ...f, display_name: e.target.value })}
-                        className="h-8 text-[13px]"
+                        className={cn("h-8 text-[13px]", emptyNames.has(f.key) && "border-destructive focus-visible:ring-destructive/40")}
                       />
+                      {emptyNames.has(f.key) ? (
+                        <p id={`name-error-${f.key}`} className="mt-0.5 text-[11px] text-destructive" role="alert">
+                          表示名を入れてください（空にはできません）
+                        </p>
+                      ) : null}
                       <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
                         <span className="font-mono">{f.key}</span>·<span>{FIELD_TYPE_LABELS[f.type]}</span>
                         {f.required ? <Badge variant="muted">必須</Badge> : null}
@@ -347,7 +405,13 @@ export function SchemaEditor({
                     </div>
                   </div>
                   {expanded === f.key ? (
-                    <FieldSettings field={f} fields={kept} tables={tables} onChange={(nf) => patchField(f.key, nf)} />
+                    <FieldSettings
+                      field={f}
+                      fields={kept}
+                      tables={tables}
+                      traits={traits}
+                      onChange={(nf) => patchField(f.key, nf)}
+                    />
                   ) : null}
                 </li>
               );
@@ -361,9 +425,12 @@ export function SchemaEditor({
             <AddFieldForm
               fields={kept}
               tableId={table.id}
+              tableName={table.name}
+              traits={traits}
               onCancel={() => setAdding(false)}
-              onAdd={(f) => {
+              onAdd={(f, sym) => {
                 setFields((fs) => [...fs, { ...f, isNew: true }]);
+                if (sym) symmetricNames.current.set(f.key, sym);
                 setAdding(false);
               }}
             />
@@ -393,7 +460,7 @@ export function SchemaEditor({
           <Button variant="outline" onClick={() => requestClose(false)}>
             閉じる
           </Button>
-          <Button onClick={save} disabled={!dirty || saving} data-testid="schema-save">
+          <Button onClick={save} disabled={!dirty || saving || emptyNames.size > 0} data-testid="schema-save">
             {saving ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
             保存
           </Button>

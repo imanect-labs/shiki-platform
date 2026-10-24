@@ -7,7 +7,7 @@
 /// - 必須・一意・検索・選択肢・数値の桁と範囲・説明を編集できる。可否と値の検査の正はサーバ（構造化 400 の
 ///   理由を出す）。ここは入力の形を整えるだけ
 
-import { Plus, X } from "lucide-react";
+import { AlertTriangle, Plus, X } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { getTable, listTables, type DataTable, type FieldDef, type FieldType } from "@/lib/data-api";
-import { FIELD_TYPE_LABELS, keyFromLabel } from "@/lib/data-view";
+import { FIELD_TYPE_LABELS, keyFromLabel, uniqueKey } from "@/lib/data-view";
 import { FormulaSyntaxError, formatFormula, parseFormula } from "@/lib/formula-text";
 import type { components } from "@/generated/api";
 import { cn } from "@/lib/utils";
@@ -78,20 +78,29 @@ function useTables(open: boolean) {
   return tables;
 }
 
-function useTableSchema(id: string | null | undefined) {
+/// 参照先のスキーマ（読み込み中・読めないときは `null`、読めなかったら `failed`）。
+function useTableSchema(id: string | null | undefined): DataTable | null;
+function useTableSchema(id: string | null | undefined, withState: true): { table: DataTable | null; failed: boolean };
+function useTableSchema(id: string | null | undefined, withState?: true) {
   const [t, setT] = React.useState<DataTable | null>(null);
+  const [failed, setFailed] = React.useState(false);
   React.useEffect(() => {
     let active = true;
     setT(null);
+    setFailed(false);
     if (!id) return;
     getTable(id)
       .then((x) => active && setT(x))
-      .catch(() => active && setT(null));
+      .catch(() => {
+        if (!active) return;
+        setT(null);
+        setFailed(true);
+      });
     return () => {
       active = false;
     };
   }, [id]);
-  return t;
+  return withState ? { table: t, failed } : t;
 }
 
 function Field({ label, htmlFor, children, hint }: { label: string; htmlFor?: string; children: React.ReactNode; hint?: string }) {
@@ -111,21 +120,24 @@ function Toggle({
   checked,
   onChange,
   disabled,
+  locked,
   hint,
 }: {
   label: string;
   checked: boolean;
   onChange: (v: boolean) => void;
   disabled?: boolean;
+  /// 変えられないが薄くしない（必ずオンになる設定で、理由の説明を読ませる）。
+  locked?: boolean;
   hint?: string;
 }) {
   return (
-    <label className={cn("flex items-start justify-between gap-3 text-xs", disabled && "opacity-50")}>
+    <label className={cn("flex items-start justify-between gap-3 text-xs", disabled && !locked && "opacity-50")}>
       <span>
         {label}
         {hint ? <span className="block text-[11px] text-muted-foreground">{hint}</span> : null}
       </span>
-      <Switch aria-label={label} checked={checked} disabled={disabled} onCheckedChange={onChange} />
+      <Switch aria-label={label} checked={checked} disabled={disabled || locked} onCheckedChange={onChange} />
     </label>
   );
 }
@@ -277,8 +289,46 @@ function NumericSpecEditor({ field, onChange }: { field: FieldDef; onChange: (f:
   );
 }
 
+/// テーブルの性質のうち、列の属性の警告に使うもの（スキーマ管理者だけが知る行ポリシー・マスク）。
+export type TableTraits = {
+  /// 行ポリシー（行ごとの閲覧の絞り込み）がある。
+  rowPolicy: boolean;
+  /// フィールドマスク（一部の人に隠す列）の参照名。
+  masked: ReadonlySet<string>;
+};
+
+export const NO_TRAITS: TableTraits = { rowPolicy: false, masked: new Set() };
+
+function Warning({ children, testId }: { children: React.ReactNode; testId?: string }) {
+  return (
+    <p
+      className="flex items-start gap-1.5 rounded-md border px-2 py-1.5 text-[11px] leading-relaxed text-foreground"
+      // 「待ち・注意」の帯と同じ秋色（data-problem と揃える）。
+      style={{
+        borderColor: "color-mix(in oklab, var(--season-autumn) 40%, transparent)",
+        backgroundColor: "color-mix(in oklab, var(--season-autumn) 8%, transparent)",
+      }}
+      role="note"
+      data-testid={testId}
+    >
+      <AlertTriangle className="mt-px size-3.5 shrink-0 text-[var(--season-autumn)]" aria-hidden />
+      <span>{children}</span>
+    </p>
+  );
+}
+
 /// 直接入力の列の属性（必須・一意・検索・選択肢・数値）。新しい列と既存の列で共通。
-function BasicAttributes({ field, onChange, isNew }: { field: FieldDef; onChange: (f: FieldDef) => void; isNew: boolean }) {
+function BasicAttributes({
+  field,
+  onChange,
+  isNew,
+  traits = NO_TRAITS,
+}: {
+  field: FieldDef;
+  onChange: (f: FieldDef) => void;
+  isNew: boolean;
+  traits?: TableTraits;
+}) {
   const t = field.type;
   return (
     <div className="space-y-2.5">
@@ -299,6 +349,12 @@ function BasicAttributes({ field, onChange, isNew }: { field: FieldDef; onChange
         checked={Boolean(field.required)}
         onChange={(required) => onChange({ ...field, required })}
       />
+      {field.required && traits.masked.has(field.key) ? (
+        // 必須かつマスク: 読めない editor は作成・取込で値を入れられず、常に拒否される（2-B-P3-5）。
+        <Warning testId="schema-warning-required-masked">
+          この列は一部の人には隠しています。必須にすると、この列を読めない編集者はレコードの追加・取込ができなくなります。
+        </Warning>
+      ) : null}
       {t === "text" || t === "number" || t === "date" ? (
         <Toggle
           label="重複を許さない（一意）"
@@ -306,6 +362,12 @@ function BasicAttributes({ field, onChange, isNew }: { field: FieldDef; onChange
           checked={Boolean(field.unique)}
           onChange={(unique) => onChange({ ...field, unique })}
         />
+      ) : null}
+      {field.unique && traits.rowPolicy && (t === "text" || t === "number" || t === "date") ? (
+        // 行ポリシーのあるテーブルの一意: 重複の拒否で、見えない行に同じ値があることが分かる（2-B-P2-3）。
+        <Warning testId="schema-warning-unique-row-policy">
+          このテーブルは行ごとに見られる人を絞っています。一意にすると、見られない行に同じ値があることが、重複の拒否から他の編集者に分かります。
+        </Warning>
       ) : null}
       {t === "text" || t === "multi_select" ? (
         <Toggle
@@ -323,22 +385,27 @@ function BasicAttributes({ field, onChange, isNew }: { field: FieldDef; onChange
 export function DefinitionSummary({ field, fields, tables }: { field: FieldDef; fields: FieldDef[]; tables: DataTable[] | null }) {
   const labelOf = (k: string) => fields.find((f) => f.key === k)?.display_name || k;
   const tableName = (id: string | null | undefined) => tables?.find((t) => t.id === id)?.name ?? "（見られないテーブル）";
+  // 参照先の列は参照先テーブルの表示名で出す（日本語名の列の参照名 col_N をそのまま見せない）。
+  const targetLabel = (via: string, k: string) => {
+    const ref = fields.find((f) => f.key === via)?.ref_table;
+    return tables?.find((t) => t.id === ref)?.schema.fields.find((f) => f.key === k)?.display_name || k;
+  };
   let text: string | null = null;
   if (field.type === "record_ref") {
     text = `参照先: ${tableName(field.ref_table)}${field.link ? `・${CARDINALITY_LABEL[field.link.cardinality]}` : ""}${
       field.link?.reverse ? "・逆向きの列（読み取り専用）" : ""
     }`;
   } else if (field.type === "lookup" && field.lookup) {
-    text = `「${labelOf(field.lookup.via_field)}」の先の ${field.lookup.target_field}`;
+    text = `「${labelOf(field.lookup.via_field)}」の先の「${targetLabel(field.lookup.via_field, field.lookup.target_field)}」`;
   } else if (field.type === "rollup" && field.rollup) {
     const op = ROLLUP_OPS.find((o) => o.value === field.rollup?.op)?.label ?? field.rollup.op;
-    text = `「${labelOf(field.rollup.link)}」の先の${field.rollup.target ? ` ${field.rollup.target} の` : ""}${op}`;
+    text = `「${labelOf(field.rollup.link)}」の先の${field.rollup.target ? `「${targetLabel(field.rollup.link, field.rollup.target)}」の` : ""}${op}`;
   } else if (field.type === "formula" && field.formula) {
     text = `= ${formatFormula(field.formula, (k) => fields.find((f) => f.key === k)?.display_name || null)}`;
   }
   if (!text) return null;
   return (
-    <p className="rounded-md bg-muted/60 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground" data-testid="schema-definition">
+    <p className="rounded-md bg-muted/60 px-2.5 py-1.5 text-[11px] text-muted-foreground" data-testid="schema-definition">
       {text}
     </p>
   );
@@ -350,11 +417,13 @@ export function FieldSettings({
   fields,
   onChange,
   tables,
+  traits,
 }: {
   field: FieldDef;
   fields: FieldDef[];
   onChange: (f: FieldDef) => void;
   tables: DataTable[] | null;
+  traits?: TableTraits;
 }) {
   return (
     <div className="space-y-2.5 border-t bg-muted/20 px-3 py-3" data-testid={`schema-settings-${field.key}`}>
@@ -374,7 +443,7 @@ export function FieldSettings({
           参照先・集計・式は変えられません。変えたいときは新しい列を作ってください（この列はビューの「列」で隠せます）。
         </p>
       ) : (
-        <BasicAttributes field={field} onChange={onChange} isNew={false} />
+        <BasicAttributes field={field} onChange={onChange} isNew={false} traits={traits} />
       )}
     </div>
   );
@@ -382,16 +451,27 @@ export function FieldSettings({
 
 export type NewField = { label: string; def: FieldDef };
 
+/// 新しいリンクの列が参照先に作る逆向きの列（参照名と表示名）。保存後に表示名を参照先へ付ける。
+export type SymmetricName = { key: string; refTable: string; displayName: string };
+
+/// 一対一のリンクは参照先の側の一意をサーバが逆向きの列で強制するので、逆向きの列が要る。
+const needsSymmetric = (c: LinkCardinality | undefined) => c === "one_to_one" || c === "one_to_many";
+
 /// 新しい列の追加フォーム。`onAdd` に参照名を決めた列の定義を渡す。
 export function AddFieldForm({
   fields,
   tableId,
+  tableName,
+  traits,
   onAdd,
   onCancel,
 }: {
   fields: FieldDef[];
   tableId: string;
-  onAdd: (f: FieldDef) => void;
+  /// このテーブルの名前（逆向きの列の表示名「<テーブル名>（<列名>）」に使う）。
+  tableName: string;
+  traits?: TableTraits;
+  onAdd: (f: FieldDef, symmetric?: SymmetricName) => void;
   onCancel: () => void;
 }) {
   const [label, setLabel] = React.useState("");
@@ -404,6 +484,12 @@ export function AddFieldForm({
   const via = type === "lookup" ? def.lookup?.via_field : type === "rollup" ? def.rollup?.link : null;
   const viaField = links.find((f) => f.key === via);
   const target = useTableSchema(viaField?.ref_table);
+  // リンクの参照先（逆向きの列の参照名が参照先の既存の列と重ならないよう、参照先の参照名を見る）。
+  const { table: refTable, failed: refFailed } = useTableSchema(type === "record_ref" ? def.ref_table : null, true);
+  const selfRef = type === "record_ref" && def.ref_table === tableId;
+  const cardinality = def.link?.cardinality ?? "many_to_one";
+  // 一対一は逆向きの列が必須（自己参照では作れないので選べない）。
+  const symmetricOn = !selfRef && (symmetric || needsSymmetric(cardinality));
   const taken = new Set(fields.map((f) => f.key));
 
   const changeType = (t: FieldType) => {
@@ -430,6 +516,12 @@ export function AddFieldForm({
     if (!label.trim()) return "列の名前を入れてください";
     if ((type === "select" || type === "multi_select") && !(def.options ?? []).length) return "選択肢を 1 つ以上入れてください";
     if (type === "record_ref" && !def.ref_table) return "参照先のテーブルを選んでください";
+    if (type === "record_ref" && selfRef && needsSymmetric(cardinality)) {
+      return "同じテーブルを参照する一対一のリンクは作れません（多対一か多対多を選んでください）";
+    }
+    if (type === "record_ref" && symmetricOn && !refTable) {
+      return refFailed ? "参照先のテーブルを読めないため、逆向きの列を作れません" : "参照先のテーブルを読み込んでいます…";
+    }
     if (type === "lookup" && (!def.lookup?.via_field || !def.lookup?.target_field)) return "リンクの列と、参照先の列を選んでください";
     if (type === "rollup") {
       const op = ROLLUP_OPS.find((o) => o.value === def.rollup?.op);
@@ -444,14 +536,20 @@ export function AddFieldForm({
     if (missing) return;
     const key = keyFromLabel(label, taken);
     const out: FieldDef = { ...def, key, display_name: label.trim(), type };
+    let sym: SymmetricName | undefined;
     if (type === "record_ref") {
-      out.link = {
-        cardinality: def.link?.cardinality ?? "many_to_one",
-        ...(symmetric ? { symmetric_key: keyFromLabel(`${label}_rev`, new Set()) } : {}),
-      };
+      // 逆向きの列の参照名は、この列の参照名から作り、参照先の既存の参照名と重ねない（日本語名の列で
+      // 常に `rev` になり 2 本目が作れなかった・2-A-P2-1）。
+      const symKey = symmetricOn
+        ? uniqueKey(`${key}_rev`, new Set((refTable?.schema.fields ?? []).map((f) => f.key)))
+        : null;
+      out.link = { cardinality, ...(symKey ? { symmetric_key: symKey } : {}) };
+      if (symKey && def.ref_table) {
+        sym = { key: symKey, refTable: def.ref_table, displayName: `${tableName}（${label.trim()}）` };
+      }
     }
     if (type === "formula" && formulaResult?.ok) out.formula = formulaResult.expr;
-    onAdd(out);
+    onAdd(out, sym);
   };
 
   const targetFields = (target?.schema.fields ?? []).filter((f) => !f.link?.reverse);
@@ -503,15 +601,23 @@ export function AddFieldForm({
           <Field label="つながり方">
             <SimpleSelect
               label="つながり方"
-              value={def.link?.cardinality ?? "many_to_one"}
-              onChange={(cardinality) => setDef({ ...def, link: { ...def.link, cardinality } })}
+              value={cardinality}
+              onChange={(c) => setDef({ ...def, link: { ...def.link, cardinality: c } })}
               options={CARDINALITIES}
             />
           </Field>
           <Toggle
             label="参照先にも逆向きの列を作る"
-            hint="参照先のテーブルから、こちらの行を一覧できます（参照先の管理者である必要があります）"
-            checked={symmetric}
+            hint={
+              selfRef
+                ? "同じテーブルを参照するリンクには逆向きの列を作れません"
+                : needsSymmetric(cardinality)
+                  ? "一対一のリンクは、参照先の行が重ならないよう逆向きの列で確かめるため必ず作ります（参照先の管理者である必要があります）"
+                  : `参照先のテーブルから、こちらの行を一覧できます。列名は「${tableName}（${label.trim() || "この列"}）」になります（参照先の管理者である必要があります）`
+            }
+            checked={symmetricOn}
+            disabled={selfRef}
+            locked={!selfRef && needsSymmetric(cardinality)}
             onChange={setSymmetric}
           />
         </div>
@@ -588,7 +694,7 @@ export function AddFieldForm({
       ) : null}
 
       {!isDerived(type) && type !== "record_ref" ? (
-        <BasicAttributes field={{ ...def, type }} onChange={setDef} isNew />
+        <BasicAttributes field={{ ...def, type }} onChange={setDef} isNew traits={traits} />
       ) : null}
 
       {missing && label.trim() ? (
