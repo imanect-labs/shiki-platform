@@ -146,11 +146,14 @@ export function unsortableReason(c: ColumnModel): string {
   return "この列は並べ替えできません";
 }
 
-/// 直接編集できる列か（派生列・参照系は読み取り専用）。
+/// 直接編集できる列か（派生列・逆向きのリンク・ファイルは読み取り専用）。ユーザー・部署・リンクは候補から選ぶ。
 export function isEditable(f: FieldDef | null): boolean {
   if (!f) return false;
-  return ["text", "number", "date", "date_time", "select", "multi_select"].includes(f.type);
+  if (f.type === "record_ref") return !f.link?.reverse;
+  return ["text", "number", "date", "date_time", "select", "multi_select", "user_ref", "role_ref"].includes(f.type);
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /// レコードの列の値（擬似列はレコードのメタ）。
 export function cellValue(r: DataRecord, key: string): unknown {
@@ -323,6 +326,26 @@ export function parseInput(
       return bad.length
         ? { ok: false, error: `選択肢にない値です: ${bad.join(", ")}` }
         : { ok: true, value: parts };
+    }
+    case "user_ref":
+    case "role_ref":
+    case "record_ref": {
+      // 候補から選んだ値（{ids, labels} の JSON）か、id の貼り付け（カンマ区切り）。
+      let ids: string[];
+      if (t.startsWith("{")) {
+        try {
+          ids = ((JSON.parse(t) as { ids?: unknown }).ids as string[]) ?? [];
+        } catch {
+          return { ok: false, error: "値を読めませんでした" };
+        }
+      } else {
+        ids = t.split(/[,、\s]+/).filter(Boolean);
+        if (field.type !== "role_ref" && ids.some((x) => !UUID_RE.test(x))) {
+          return { ok: false, error: "候補から選んでください（Enter で候補の一覧を開きます）" };
+        }
+      }
+      if (field.type === "record_ref") return { ok: true, value: ids };
+      return { ok: true, value: ids[0] ?? null };
     }
     default:
       return { ok: true, value: t };

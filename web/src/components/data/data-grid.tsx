@@ -38,6 +38,7 @@ import { flushSync } from "react-dom";
 
 import { resolveColor, useGlideTheme } from "@/components/csv/glide-theme";
 import { GridTextEditor } from "@/components/data/grid-text-editor";
+import { isRefField, refCellEditor, type RefCellPayload } from "@/components/data/ref-picker";
 import { ConfirmDialog } from "@/components/drive/dialogs";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/use-toast";
@@ -148,7 +149,12 @@ type Props = {
 /// `onCellEdited` に渡す。行 id と rev をセルに載せておけば、編集中に SSE で行が新しい rev に置き換わっても
 /// **編集を始めた時点の rev** で `expected_rev` を送れる（他の人の更新を黙って上書きしない・D-1）。
 /// 表示行の位置も編集中に行の出現・消滅でずれうるので、確定先は位置ではなく行 id で引く。
-type RowCell = TextCell & { rowRef?: { id: string; rev: number } };
+type RowCell = TextCell & {
+  rowRef?: { id: string; rev: number };
+  /// 参照の列（ユーザー・部署・リンク）: 列の参照名と今の値（編集欄が候補から選ぶ）。
+  refField?: string;
+  refValue?: RefCellPayload;
+};
 
 /// 購読が止まった理由（グリッドの下に案内を出す）。`reconnecting` はサーバに届かない間（停止・再起動中）で、
 /// 間隔を空けて自動で繋ぎ直す。
@@ -741,6 +747,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
           : shown.muted
             ? { textDark: glideTheme.textLight, baseFontStyle: "italic 12px" }
             : undefined;
+      const ref = isRefField(c.field);
+      const ids = (Array.isArray(v) ? v : v == null ? [] : [v]).filter((x): x is string => typeof x === "string");
       const cell: RowCell = {
         kind: GridCellKind.Text,
         data: Array.isArray(v) ? v.join(", ") : v == null ? "" : String(v),
@@ -750,6 +758,15 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         contentAlign: numeric ? "right" : undefined,
         themeOverride: override,
         rowRef: { id: r.id, rev: r.rev },
+        ...(ref
+          ? {
+              refField: c.key,
+              refValue: {
+                ids,
+                labels: Object.fromEntries(ids.map((id) => [id, displayCell({ ...r, data: { [c.key]: id } } as DataRecord, c, cachedUserName).text])),
+              },
+            }
+          : {}),
       };
       return cell;
     },
@@ -785,8 +802,22 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       }
       const prevValue = cellValue(before, c.key);
       if (JSON.stringify(prevValue ?? null) === JSON.stringify(parsed.value ?? null)) return;
-      // 先に見せる（保存中は薄く色を付ける）。
-      rows.current[i] = { ...before, data: { ...(before.data as object), [c.key]: parsed.value } };
+      // 先に見せる（保存中は薄く色を付ける）。参照の列は選んだ候補の見出しも添える。
+      let pickedLabels: Record<string, string> = {};
+      if (isRefField(c.field) && cell.data.startsWith("{")) {
+        try {
+          pickedLabels = (JSON.parse(cell.data) as RefCellPayload).labels ?? {};
+        } catch {
+          pickedLabels = {};
+        }
+      }
+      rows.current[i] = {
+        ...before,
+        data: { ...(before.data as object), [c.key]: parsed.value },
+        ...(c.field.type === "record_ref"
+          ? { link_labels: { ...((before.link_labels ?? {}) as Record<string, string>), ...pickedLabels } }
+          : {}),
+      };
       const id = before.id;
       pending.current.set(id, (pending.current.get(id) ?? 0) + 1);
       bump();
@@ -854,9 +885,15 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
 
   /// 編集欄を開く（glide は開くときだけ呼ぶ）。確定の値を入力欄から読む編集欄を使い、開いた行を覚える
   /// （描画中に呼ばれるので state は触らず ref だけ・知らせの解除は確定／取消の `onFinishedEditing`）。
+  const columnsRef = React.useRef(columns);
+  columnsRef.current = columns;
   const provideEditor = React.useCallback((cell: GridCell) => {
     if (cell.kind !== GridCellKind.Text) return undefined;
-    editing.current = (cell as RowCell).rowRef ?? null;
+    const rc = cell as RowCell;
+    editing.current = rc.rowRef ?? null;
+    // 参照の列は候補から選ぶ編集欄（A-6）。
+    const field = rc.refField ? columnsRef.current.find((c) => c.key === rc.refField)?.field : null;
+    if (field && rc.refValue) return refCellEditor(field, rc.refValue) as ProvideEditorCallbackResult<GridCell>;
     return GridTextEditor as ProvideEditorCallbackResult<GridCell>;
   }, []);
   const onFinishedEditing = React.useCallback(() => {

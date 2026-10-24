@@ -1,7 +1,7 @@
 "use client";
 
-/// レコードの追加フォーム（Task 15.5）。直接入力できる列（テキスト・数値・日付・選択）だけを並べ、
-/// 値の検査は画面でも行う（正はサーバの検証器・不合格は理由を表示）。
+/// レコードの追加フォーム（Task 15.5）。直接入力できる列（テキスト・数値・日付・選択）と、候補から選ぶ参照の列
+/// （ユーザー・部署・リンク・A-6）を並べ、値の検査は画面でも行う（正はサーバの検証器・不合格は理由を表示）。
 
 import { Loader2 } from "lucide-react";
 import * as React from "react";
@@ -18,7 +18,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
-import { createRecord, type DataRecord, type DataTable } from "@/lib/data-api";
+import { isRefField, RefPicker } from "@/components/data/ref-picker";
+import { createRecord, DataApiError, type DataRecord, type DataTable } from "@/lib/data-api";
 import { isEditable, parseInput } from "@/lib/data-view";
 
 const NONE = "__none__";
@@ -44,11 +45,14 @@ export function RecordDialog({
     [table, masked],
   );
   const [values, setValues] = React.useState<Record<string, string>>({});
+  /// 参照の列で選んだ値（id）。
+  const [refs, setRefs] = React.useState<Record<string, string[]>>({});
   const [errors, setErrors] = React.useState<Record<string, string>>({});
   const [busy, setBusy] = React.useState(false);
   React.useEffect(() => {
     if (open) {
       setValues({});
+      setRefs({});
       setErrors({});
     }
   }, [open]);
@@ -58,7 +62,8 @@ export function RecordDialog({
     const data: Record<string, unknown> = {};
     const errs: Record<string, string> = {};
     for (const f of fields) {
-      const raw = values[f.key] ?? "";
+      const picked = refs[f.key];
+      const raw = isRefField(f) ? (picked?.length ? JSON.stringify({ ids: picked }) : "") : (values[f.key] ?? "");
       const p = parseInput(raw, f);
       if (!p.ok) errs[f.key] = p.error;
       else if (p.value !== null) data[f.key] = p.value;
@@ -73,6 +78,12 @@ export function RecordDialog({
       onCreated(r);
       onOpenChange(false);
     } catch (err) {
+      // 列に結び付いた理由（構造化 400 の field）はその列の下に出す。
+      const field = err instanceof DataApiError ? err.field : null;
+      if (field && fields.some((f) => f.key === field)) {
+        setErrors({ [field]: (err as Error).message });
+        return;
+      }
       toast({
         variant: "destructive",
         title: "追加できませんでした",
@@ -104,7 +115,14 @@ export function RecordDialog({
                     {label}
                     {f.required ? <span className="ml-0.5 text-destructive">*</span> : null}
                   </label>
-                  {f.type === "select" ? (
+                  {isRefField(f) ? (
+                    <RefPicker
+                      id={id}
+                      field={f}
+                      value={refs[f.key] ?? []}
+                      onChange={(ids) => setRefs((s) => ({ ...s, [f.key]: ids }))}
+                    />
+                  ) : f.type === "select" ? (
                     <Select
                       value={values[f.key] || NONE}
                       onValueChange={(v) => setValues((s) => ({ ...s, [f.key]: v === NONE ? "" : v }))}
