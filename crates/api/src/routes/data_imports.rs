@@ -161,7 +161,10 @@ fn too_large() -> ApiError {
 
 /// 上限を超えた本文を読み捨てる量の上限（これを超えたら読まずに 413 を返して接続を閉じる）。
 const MAX_DRAIN_BYTES: usize = 8 * MAX_IMPORT_BODY_BYTES;
-/// 上限を超えた本文を読み捨てる時間の上限。
+/// 上限を超えた本文を読み捨てる時間の上限（**上限を超えた後の読み捨てにだけ**掛ける）。
+///
+/// 上限内の本文の受信にはこの時間を掛けない（遅い回線で 32MiB を送ると 30 秒を超えうる・R3-1）。
+/// 通常の受信の時間はルートの `SessionLongRunning`（300 秒）が律する。
 const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// 本文を上限付きで読む（超えたら構造化 413）。
@@ -170,40 +173,53 @@ const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// 送信の途中で応答して接続を閉じると、前段のプロキシ（web の BFF `/api`）が本文の送信で EPIPE になり、
 /// 413 ではなく 500 を返していた（検証 A P3）。
 async fn read_body(body: Body) -> Result<axum::body::Bytes, ApiError> {
+    read_limited(
+        body.into_data_stream(),
+        MAX_IMPORT_BODY_BYTES,
+        MAX_DRAIN_BYTES,
+        DRAIN_TIMEOUT,
+    )
+    .await
+}
+
+/// [`read_body`] の本体（上限・読み捨ての量と時間を引数にとる・テストで小さくするため）。
+///
+/// `drain_timeout` は上限を超えた時点から数える（上限内の受信には時間の上限を掛けない）。
+/// 読み捨ての時間か量を使い切ったら、残りを読まずに 413 を返す。
+async fn read_limited<S, E>(
+    mut stream: S,
+    max_bytes: usize,
+    max_drain_bytes: usize,
+    drain_timeout: std::time::Duration,
+) -> Result<axum::body::Bytes, ApiError>
+where
+    S: futures::Stream<Item = Result<axum::body::Bytes, E>> + Unpin,
+{
     use futures::StreamExt;
-    let mut stream = body.into_data_stream();
-    let read = async {
-        let mut buf: Vec<u8> = Vec::new();
-        let mut over = false;
-        let mut seen = 0usize;
-        while let Some(chunk) = stream.next().await {
-            let Ok(data) = chunk else {
-                return Err(invalid("本文を読めませんでした"));
-            };
-            seen = seen.saturating_add(data.len());
-            if over {
-                // 上限を超えた後は読み捨てる（読み捨ての上限を超えたら打ち切る）。
-                if seen > MAX_DRAIN_BYTES {
-                    break;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut seen = 0usize;
+    // 上限内の受信: 時間の上限なし（ルートのタイムアウトに任せる）。
+    while let Some(chunk) = stream.next().await {
+        let Ok(data) = chunk else {
+            return Err(invalid("本文を読めませんでした"));
+        };
+        seen = seen.saturating_add(data.len());
+        if buf.len() + data.len() > max_bytes {
+            // 上限を超えた: ここからの読み捨てにだけ時間の上限を掛ける。
+            let drain = async {
+                while seen <= max_drain_bytes {
+                    match stream.next().await {
+                        Some(Ok(d)) => seen = seen.saturating_add(d.len()),
+                        Some(Err(_)) | None => break,
+                    }
                 }
-                continue;
-            }
-            if buf.len() + data.len() > MAX_IMPORT_BODY_BYTES {
-                over = true;
-                buf = Vec::new();
-                continue;
-            }
-            buf.extend_from_slice(&data);
+            };
+            let _ = tokio::time::timeout(drain_timeout, drain).await;
+            return Err(too_large());
         }
-        if over {
-            Err(too_large())
-        } else {
-            Ok(axum::body::Bytes::from(buf))
-        }
-    };
-    tokio::time::timeout(DRAIN_TIMEOUT, read)
-        .await
-        .unwrap_or_else(|_| Err(too_large()))
+        buf.extend_from_slice(&data);
+    }
+    Ok(axum::body::Bytes::from(buf))
 }
 
 async fn started(
@@ -374,4 +390,82 @@ pub async fn list_import_errors(
         items,
         next_after_row,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    type Chunk = Result<axum::body::Bytes, std::io::Error>;
+
+    /// 各塊の前に `delay` 待つストリーム（遅い回線の模擬）。
+    fn slow(
+        chunks: Vec<&'static [u8]>,
+        delay: Duration,
+    ) -> impl futures::Stream<Item = Chunk> + Unpin {
+        Box::pin(futures::stream::iter(chunks).then(move |c| async move {
+            tokio::time::sleep(delay).await;
+            Ok::<_, std::io::Error>(axum::body::Bytes::from_static(c))
+        }))
+    }
+
+    use futures::StreamExt;
+
+    fn is_413(e: &ApiError) -> bool {
+        matches!(e, ApiError::PayloadTooLargeJson(_))
+    }
+
+    /// R3-1: 上限内の本文は、受信に読み捨ての時間の上限より長くかかっても 413 にならない。
+    #[tokio::test]
+    async fn slow_body_within_limit_is_not_too_large() {
+        let chunks: Vec<&'static [u8]> = vec![b"ab", b"cd", b"ef", b"gh"];
+        let drain = Duration::from_millis(50);
+        let started = std::time::Instant::now();
+        let got = read_limited(slow(chunks, Duration::from_millis(40)), 16, 64, drain)
+            .await
+            .expect("上限内なら読める");
+        assert!(
+            started.elapsed() > drain * 2,
+            "読み捨ての時間を超えて受信した"
+        );
+        assert_eq!(&got[..], b"abcdefgh");
+    }
+
+    /// 上限を超えたら 413（残りを読み捨てる）。
+    #[tokio::test]
+    async fn over_limit_is_too_large() {
+        let chunks: Vec<&'static [u8]> = vec![b"abcd", b"efgh", b"ijkl"];
+        let e = read_limited(slow(chunks, Duration::ZERO), 6, 64, Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        assert!(is_413(&e));
+    }
+
+    /// 上限を超えた後の読み捨ては時間の上限で打ち切る（終わらない本文でも 413 を返す）。
+    #[tokio::test]
+    async fn drain_after_over_limit_is_bounded_in_time() {
+        let endless = Box::pin(futures::stream::repeat_with(|| ()).then(|_| async {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"xxxx"))
+        }));
+        let started = std::time::Instant::now();
+        let e = read_limited(endless, 6, usize::MAX, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(is_413(&e));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// 上限を超えた後の読み捨ては量の上限でも打ち切る。
+    #[tokio::test]
+    async fn drain_after_over_limit_is_bounded_in_bytes() {
+        let endless = Box::pin(futures::stream::repeat_with(|| {
+            Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"xxxx"))
+        }));
+        let e = read_limited(endless, 6, 64, Duration::from_secs(60))
+            .await
+            .unwrap_err();
+        assert!(is_413(&e));
+    }
 }
