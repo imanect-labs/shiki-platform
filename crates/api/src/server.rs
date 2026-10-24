@@ -384,9 +384,16 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/threads", &["GET", "POST"], Session, || {
             get(routes::chat::list_threads).post(routes::chat::create_thread)
         }),
-        r("/threads/{id}", &["GET", "PATCH"], Session, || {
-            get(routes::chat::get_thread).patch(routes::chat_notes::set_thread_origin_note)
-        }),
+        r(
+            "/threads/{id}",
+            &["GET", "PATCH", "DELETE"],
+            Session,
+            || {
+                get(routes::chat::get_thread)
+                    .patch(routes::chat_manage::update_thread)
+                    .delete(routes::chat_manage::delete_thread)
+            },
+        ),
         r("/threads/{id}/skills", &["PUT"], Session, || {
             put(routes::chat_skills::set_thread_skills)
         }),

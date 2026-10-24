@@ -21,6 +21,8 @@ mod run_model;
 pub use opts::parse_timezone;
 mod sink;
 mod stream_map;
+/// 会話の自動タイトル（本文と並行して最初の発話から付ける）。
+mod title;
 mod toolset;
 /// 記録済みスレッド → 剪定再生のステップ列（#532・`context-replay` CLI が使う）。
 pub mod trajectory;
@@ -294,6 +296,9 @@ impl ChatWorker {
             )
             .await;
 
+        // 自動タイトルは本文と並行して付ける（タイトルが仮のスレッドだけ・失敗しても生成は続く）。
+        let title_task = self.spawn_title_task(&ctx, &run);
+
         let history = self
             .build_history(&ctx, run.thread_id, run.message_id)
             .await?;
@@ -325,6 +330,10 @@ impl ChatWorker {
         // リースを失っていたら（別ワーカー takeover）確定しない。
         if worker_sink.lost_lease() {
             return Ok(());
+        }
+        // `done` を積むと購読が閉じるので、タイトルのイベントはその前に済ませる。
+        if gen_result.is_ok() {
+            title_task.finish().await;
         }
 
         let content: Vec<ContentBlock> = worker_sink.content().to_vec();

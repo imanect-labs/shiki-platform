@@ -214,6 +214,7 @@ async fn worker_generates_streams_and_persists_projection() {
     let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
     let mut text = String::new();
     let mut done = false;
+    let mut title_event = None;
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(15), rx.next())
             .await
@@ -221,6 +222,7 @@ async fn worker_generates_streams_and_persists_projection() {
         let Some(ev) = next else { break };
         match ev.event {
             StreamEventKind::Token { text: t } => text.push_str(&t),
+            StreamEventKind::ThreadTitle { title } => title_event = Some(title),
             StreamEventKind::Done { .. } => {
                 done = true;
                 break;
@@ -246,6 +248,22 @@ async fn worker_generates_streams_and_persists_projection() {
         _ => false,
     });
     assert!(has_text, "確定メッセージに本文 projection が残ること");
+
+    // 自動タイトル: 最初の発話から付き、`done` より前にイベントが届く（stub は「回答: 」＋
+    // 受け取った発話を返すので、中身は問わず仮タイトルから置き換わったことを見る）。
+    let title_event = title_event.expect("thread_title イベントが done より前に届くこと");
+    let titled = store.get_thread(&c, thread.id, None).await.unwrap();
+    assert_eq!(
+        titled.title, title_event,
+        "保存したタイトルをイベントで配る"
+    );
+    assert_ne!(titled.title, "t", "仮タイトルが生成タイトルに置き換わる");
+    // 確定後は付け直さない（材料を返さない）。
+    assert!(store
+        .title_seed(thread.id, &tenant)
+        .await
+        .unwrap()
+        .is_none());
 
     // 会計が刻まれている（tenant スコープ・冪等キー）。
     let usage_count: i64 =
