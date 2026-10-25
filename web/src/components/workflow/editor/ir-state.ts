@@ -52,8 +52,8 @@ export type EditorState = {
   serverErrors: ValidationError[];
   /// 保存を止めない警告（`ir.condition_semantics_changed` など・保存/検証の応答の `warnings`）。
   serverWarnings: ValidationError[];
-  /// 直前の `update_node`（同じノードの同じ項目への連続入力を undo 1 段にまとめる）。
-  /// 他の編集・選択の変更・undo/redo で切れる。
+  /// 直前の `update_node`・`update_meta`（同じノード・ワークフローの同じ項目への連続入力を undo 1 段に
+  /// まとめる。`update_meta` は id が空）。他の編集・選択の変更・undo/redo で切れる。
   lastEdit: { id: string; field: string; at: number } | null;
 };
 
@@ -74,7 +74,12 @@ export type EditorAction =
   /// switch の case 出口名変更（params 更新と当該ポートのエッジ from_port 追随を 1 手で行う）。
   | { type: "rename_out_port"; id: string; fromPort: string; toPort: string; params: unknown }
   | { type: "rename_node"; id: string; nextId: string }
-  | { type: "update_meta"; patch: Partial<Pick<WorkflowIr, "display_name" | "description" | "policies" | "declared_scopes">> }
+  /// `at` は `update_node` と同じ（入力項目の連続入力を undo 1 段にまとめる）。
+  | {
+      type: "update_meta";
+      patch: Partial<Pick<WorkflowIr, "display_name" | "description" | "policies" | "declared_scopes" | "input_schema">>;
+      at?: number;
+    }
   | { type: "set_triggers"; triggers: Trigger[] }
   | { type: "select"; selection: Selection }
   /// 今の選択が `selection` のときだけ外す（React Flow の選択解除の通知用。先に別の要素を選んだ通知が
@@ -444,7 +449,24 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       };
     }
     case "update_meta": {
-      return withIr(state, { ...state.ir, ...action.patch } as WorkflowIr);
+      const ir = { ...state.ir, ...action.patch } as WorkflowIr;
+      // ノードの id は空にならないので、空の id をワークフロー自体の項目の印にする。
+      const field = `meta:${Object.keys(action.patch).sort().join(",")}`;
+      const last = state.lastEdit;
+      if (
+        action.at !== undefined &&
+        last &&
+        last.id === "" &&
+        last.field === field &&
+        action.at - last.at < COALESCE_MS &&
+        state.undoStack.length > 0
+      ) {
+        return { ...state, ir, dirty: true, redoStack: [], lastEdit: { ...last, at: action.at } };
+      }
+      return {
+        ...withIr(state, ir),
+        lastEdit: action.at === undefined ? null : { id: "", field, at: action.at },
+      };
     }
     case "set_triggers": {
       const next = withIr(state, { ...state.ir, triggers: action.triggers });
@@ -550,7 +572,9 @@ export function useEditorState(
   // 連続入力をまとめる判定の時刻は dispatch 時に付ける（reducer を純粋に保つ）。
   const dispatch = React.useCallback(
     (action: EditorAction) =>
-      rawDispatch(action.type === "update_node" ? { ...action, at: Date.now() } : action),
+      rawDispatch(
+        action.type === "update_node" || action.type === "update_meta" ? { ...action, at: Date.now() } : action,
+      ),
     [],
   );
   return [state, dispatch];

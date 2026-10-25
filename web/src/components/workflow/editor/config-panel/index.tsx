@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { FadeSlide } from "@/components/ui/motion-primitives";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { useMediaQuery } from "@/hooks/use-media-query";
+import { inputFieldsOf } from "@/lib/workflow-input-schema";
 import type { Node as IrNode, Trigger } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { EditorContext } from "../workflow-editor";
@@ -50,7 +51,7 @@ import {
 } from "./forms-files";
 import { patchParams } from "./params";
 import { TriggerPanel } from "./trigger-panel";
-import type { RefCandidate } from "./value-expr-input";
+import { InputFieldsContext, type RefCandidate } from "./value-expr-input";
 
 const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "storage.read": StorageReadForm,
@@ -93,7 +94,8 @@ function blankRequired(node: IrNode): string[] {
     .map(([key]) => key);
 }
 
-/// 祖先ノード（`$from nodes.<id>.output` の参照候補）を逆辺 BFS で求める。
+/// 祖先ノード（`$from nodes.<id>.output` の参照候補）を逆辺 BFS で求める。ノード種は出力の形から
+/// 項目の候補を出すのに使う。
 function ancestorsOf(ctx: EditorContext, nodeId: string): RefCandidate[] {
   const incoming = new Map<string, string[]>();
   for (const e of ctx.state.ir.edges) {
@@ -115,6 +117,7 @@ function ancestorsOf(ctx: EditorContext, nodeId: string): RefCandidate[] {
       id: n.id,
       label:
         n.label || NODE_CATALOG.find((c) => c.type === n.type)?.label_ja || n.id,
+      type: n.type,
     }));
 }
 
@@ -127,6 +130,8 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
     [ctx, node.id],
   );
   const inMapRegion = node.parent != null;
+  // 入力項目（「差し込む」・参照先の候補）。
+  const inputFields = React.useMemo(() => inputFieldsOf(ctx.state.ir.input_schema), [ctx.state.ir.input_schema]);
 
   // 欄に写せる誤り（path か文言の項目名）は欄の下に出し、上の帯には欄の無いものだけを出す。
   const errorView = React.useMemo(
@@ -203,14 +208,16 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
         ) : null}
         {Form ? (
           // ノードを選び直したらフォームの手元の状態（入力方法の切り替えなど）を持ち越さない。
-          <Form
-            key={node.id}
-            node={node}
-            dispatch={ctx.dispatch}
-            refCandidates={refCandidates}
-            inMapRegion={inMapRegion}
-            fieldErrors={fieldErrors}
-          />
+          <InputFieldsContext.Provider value={inputFields}>
+            <Form
+              key={node.id}
+              node={node}
+              dispatch={ctx.dispatch}
+              refCandidates={refCandidates}
+              inMapRegion={inMapRegion}
+              fieldErrors={fieldErrors}
+            />
+          </InputFieldsContext.Provider>
         ) : (
           <p className="text-xs text-muted-foreground">このブロックに設定はありません</p>
         )}
@@ -272,6 +279,8 @@ export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
             triggers={ir.triggers as Trigger[]}
             index={selection.index}
             onChange={(triggers) => ctx.dispatch({ type: "set_triggers", triggers })}
+            inputSchema={ir.input_schema}
+            onInputSchemaChange={(input_schema) => ctx.dispatch({ type: "update_meta", patch: { input_schema } })}
           />
         </div>
       </>

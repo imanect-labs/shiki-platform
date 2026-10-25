@@ -4,10 +4,15 @@
 ///
 /// IT に詳しくない人向けに「固定値」「前の結果から」「文章を組み立て」の 3 モードで見せる。
 /// $from の source は閉集合（input / trigger / each / nodes.<id>.output）で、ブロックの結果は
-/// 祖先候補（呼び出し側が渡す）からセレクトする。
+/// 祖先候補（呼び出し側が渡す）、入力項目は input_schema（`InputFieldsContext`）から選ぶ。
+///
+/// 文字の欄には「差し込む」を置く（BUG-1）。選ぶとカーソル位置に `{名前}` を入れて vars に参照を足し、
+/// 固定値ならテンプレート（文章を組み立て）へ切り替える。差し込み名は path から付ける（/title → title）。
+/// 固定値に `{{x}}`・`{x}`・`${x}` と書くと差し込みにならず文字のまま送られるので、その場で知らせ、
+/// ワンクリックでテンプレートに変換できるようにする（テンプレートの記法は `{name}`・`{{` は波括弧そのもの）。
 
 import * as React from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Trash2, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,9 +26,33 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
-import type { FromRef, TemplateExpr, ValueExpr } from "@/generated/workflow-ir";
+import type { TemplateExpr, ValueExpr } from "@/generated/workflow-ir";
+import type { InputFieldInfo } from "@/lib/workflow-input-schema";
+import { InsertMenu, RefPicker } from "./ref-picker";
+import {
+  escapeTemplateText,
+  findSuspects,
+  fixEscapedVars,
+  guessRef,
+  insertIntoLiteral,
+  insertVar,
+  isFromRef,
+  joinPieces,
+  literalToTemplate,
+  renameVar,
+  templateIssues,
+  templatePieces,
+  templateToText,
+  varNameFor,
+  type RefCandidate,
+  type RefContext,
+  type RefValue,
+} from "./value-refs";
 
-export type RefCandidate = { id: string; label: string };
+export type { RefCandidate };
+
+/// この実行の入力項目（ワークフローの input_schema の properties）。設定パネルが渡す。
+export const InputFieldsContext = React.createContext<InputFieldInfo[]>([]);
 
 type Mode = "literal" | "from" | "template";
 
@@ -41,12 +70,14 @@ function literalText(value: unknown): { text: string; isJson: boolean } {
   return { text: JSON.stringify(value), isJson: true };
 }
 
-const SOURCE_LABELS: Record<string, string> = {
-  input: "この実行の入力",
-  trigger: "きっかけの内容",
-  each: "繰り返し中の要素",
-  run: "実行情報",
+/// 注意の色（設定パネルの「保存はできますが、確認してください」と揃える）。
+const NOTE_STYLE: React.CSSProperties = {
+  borderColor: "color-mix(in oklab, var(--season-autumn) 45%, transparent)",
+  backgroundColor: "color-mix(in oklab, var(--season-autumn) 8%, transparent)",
 };
+
+type TextEl = HTMLInputElement | HTMLTextAreaElement;
+type Range = { start: number; end: number };
 
 type Props = {
   label: string;
@@ -76,10 +107,18 @@ export function ValueExprInput({
   error,
   json,
 }: Props) {
-  const mode = modeOf(value);
-  const from = mode === "from" ? (value as unknown as FromRef) : null;
-  const template = mode === "template" ? (value as unknown as TemplateExpr) : null;
-  const literal = mode === "literal" ? literalText(value) : { text: "", isJson: false };
+  const inputFields = React.useContext(InputFieldsContext);
+  const ctx = React.useMemo<RefContext>(
+    () => ({ inputFields, ancestors: refCandidates, inMapRegion: Boolean(inMapRegion) }),
+    [inputFields, refCandidates, inMapRegion],
+  );
+  // 「前の結果から」を選んだが、まだ参照先を選んでいない間（IR は変えずに候補を見せる）。
+  const [pendingFrom, setPendingFrom] = React.useState(false);
+  const actual = modeOf(value);
+  const mode: Mode = pendingFrom && actual !== "from" ? "from" : actual;
+  const from = actual === "from" ? (value as RefValue) : null;
+  const template = actual === "template" ? (value as TemplateExpr) : null;
+  const literal = actual === "literal" ? literalText(value) : { text: "", isJson: false };
   const [jsonMode, setJsonMode] = React.useState(literal.isJson);
   // JSON 限定の欄の入力中の文字（読めない間も消さずに見せる）。
   const [jsonDraft, setJsonDraft] = React.useState<string | null>(null);
@@ -96,40 +135,110 @@ export function ValueExprInput({
     }
   }, [json, mode, jsonDraft, literal.text]);
 
+  // 差し込む位置（最後にカーソルがあった所）と、差し込んだ後にカーソルを置く位置。
+  const textRef = React.useRef<TextEl | null>(null);
+  const selection = React.useRef<Range | null>(null);
+  const caretAfter = React.useRef<number | null>(null);
+  const remember = (e: React.SyntheticEvent<TextEl>) => {
+    const el = e.currentTarget;
+    selection.current = { start: el.selectionStart ?? el.value.length, end: el.selectionEnd ?? el.value.length };
+  };
+  React.useLayoutEffect(() => {
+    const at = caretAfter.current;
+    const el = textRef.current;
+    if (at === null || !el) return;
+    caretAfter.current = null;
+    el.focus();
+    el.setSelectionRange(at, at);
+    selection.current = { start: at, end: at };
+  });
+
+  const emit = (next: ValueExpr) => {
+    setPendingFrom(false);
+    onChange(next);
+  };
+
+  // 文字として差し込める欄か（JSON として扱う固定値・JSON 限定の欄には差し込まない）。
+  const textual =
+    (mode === "literal" && !json && !jsonMode && (value === undefined || typeof value === "string")) ||
+    mode === "template";
+
+  const insert = (ref: RefValue) => {
+    if (template) {
+      const range = selection.current ?? { start: template.$template.length, end: template.$template.length };
+      const r = insertVar(template, range, ref);
+      caretAfter.current = r.caret;
+      emit(r.template as ValueExpr);
+      return;
+    }
+    const text = typeof value === "string" ? value : "";
+    // カーソルの位置は固定値の文字の位置。テンプレートでは波括弧が二重になるので位置を写して差し込む。
+    const range = selection.current ?? { start: text.length, end: text.length };
+    const r = insertIntoLiteral(text, range, ref);
+    caretAfter.current = r.caret;
+    emit(r.template as ValueExpr);
+  };
+
   const setMode = (next: Mode) => {
     if (next === mode) return;
     setJsonDraft(null);
-    if (next === "literal") onChange((json ? undefined : "") as unknown as ValueExpr);
-    // 全体参照は path 省略が正（JSON Pointer の "/" は空文字キーであり全体ではない）。
-    if (next === "from") onChange({ $from: "input" } as unknown as ValueExpr);
-    if (next === "template")
-      onChange({ $template: "", vars: {} } as unknown as ValueExpr);
+    // 前の欄のカーソル位置は持ち越さない（固定値とテンプレートでは文字の位置が違う）。
+    selection.current = null;
+    // 参照先を選ぶ前に元の入力方法へ戻した（IR は変えていない）。
+    if (pendingFrom && next === actual) {
+      setPendingFrom(false);
+      return;
+    }
+    if (next !== "literal") setJsonMode(false);
+    if (next === "from") {
+      // 参照先の既定は入れない（入力全体を黙って入れない）。候補から選ばせる。1 つだけ差し込んだ
+      // テンプレートはその参照にする。
+      const [only, ...others] = template ? Object.entries(template.vars ?? {}) : [];
+      if (template && only && others.length === 0 && isFromRef(only[1]) && template.$template.trim() === `{${only[0]}}`) {
+        emit(only[1] as ValueExpr);
+        return;
+      }
+      setPendingFrom(true);
+      return;
+    }
+    if (next === "literal") {
+      if (template) emit((json ? undefined : templateToText(template.$template)) as ValueExpr);
+      else emit((json ? undefined : "") as ValueExpr);
+      return;
+    }
+    // テンプレートへ: 参照は 1 つの差し込みにする。固定値は差し込みのつもりの書き方（`{{x}}` など）を
+    // 差し込みに直し、ほかの文字はそのまま出るように残す（「差し込みに変換する」と同じ）。
+    if (from) {
+      const { name } = varNameFor(from, {});
+      emit({ $template: `{${name}}`, vars: { [name]: from } } as ValueExpr);
+      return;
+    }
+    emit(
+      (typeof value === "string" ? literalToTemplate(value, ctx) : { $template: escapeTemplateText(literal.text), vars: {} }) as ValueExpr,
+    );
   };
 
-  const sources: { value: string; label: string }[] = [
-    { value: "input", label: SOURCE_LABELS.input },
-    { value: "trigger", label: SOURCE_LABELS.trigger },
-    ...(inMapRegion ? [{ value: "each", label: SOURCE_LABELS.each }] : []),
-    ...refCandidates.map((c) => ({
-      value: `nodes.${c.id}.output`,
-      label: `「${c.label}」の結果`,
-    })),
-  ];
+  const suspects = mode === "literal" && textual && typeof value === "string" ? findSuspects(value) : [];
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between gap-2">
-        <label className="text-xs font-medium text-foreground">{label}</label>
-        <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
-          <SelectTrigger className="h-6 w-auto gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent align="end">
-            <SelectItem value="literal">固定値</SelectItem>
-            <SelectItem value="from">前の結果から</SelectItem>
-            <SelectItem value="template">文章を組み立て</SelectItem>
-          </SelectContent>
-        </Select>
+    <div className="space-y-1.5" data-value-expr={label}>
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
+        <label className="min-w-0 text-xs font-medium text-foreground">{label}</label>
+        <div className="ml-auto flex items-center gap-0.5">
+          {textual ? (
+            <InsertMenu ctx={ctx} onPick={insert} onClosed={() => textRef.current?.focus()} />
+          ) : null}
+          <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
+            <SelectTrigger className="h-6 w-auto gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="literal">固定値</SelectItem>
+              <SelectItem value="from">前の結果から</SelectItem>
+              <SelectItem value="template">文章を組み立て</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {mode === "literal" && json ? (
@@ -147,9 +256,9 @@ export function ValueExprInput({
               try {
                 const v = JSON.parse(text) as unknown;
                 const ok = json === "array" ? Array.isArray(v) : v !== null && typeof v === "object" && !Array.isArray(v);
-                onChange((ok ? v : undefined) as ValueExpr);
+                emit((ok ? v : undefined) as ValueExpr);
               } catch {
-                onChange(undefined as unknown as ValueExpr);
+                emit(undefined as unknown as ValueExpr);
               }
             }}
             className={cn("font-mono text-xs", (error || jsonError) && "border-destructive")}
@@ -162,44 +271,49 @@ export function ValueExprInput({
         </div>
       ) : mode === "literal" ? (
         <div className="space-y-1">
-          {multiline ? (
-            <Textarea
-              value={literal.text}
-              rows={3}
-              placeholder={placeholder}
-              onChange={(e) => {
-                const text = e.target.value;
-                if (jsonMode) {
-                  try {
-                    onChange(JSON.parse(text) as ValueExpr);
-                    return;
-                  } catch {
-                    // 不完全な JSON 入力中は文字列のまま保持。
-                  }
+          <TextField
+            multiline={multiline}
+            label={label}
+            value={literal.text}
+            placeholder={placeholder}
+            invalid={Boolean(error)}
+            textRef={textRef}
+            onSelect={remember}
+            onChange={(text) => {
+              if (jsonMode) {
+                try {
+                  emit(JSON.parse(text) as ValueExpr);
+                  return;
+                } catch {
+                  // 不完全な JSON 入力中は文字列のまま保持。
                 }
-                onChange(text as unknown as ValueExpr);
-              }}
-              className={cn(error && "border-destructive")}
-            />
-          ) : (
-            <Input
-              value={literal.text}
-              placeholder={placeholder}
-              onChange={(e) => {
-                const text = e.target.value;
-                if (jsonMode) {
-                  try {
-                    onChange(JSON.parse(text) as ValueExpr);
-                    return;
-                  } catch {
-                    // 入力途中。
-                  }
-                }
-                onChange(text as unknown as ValueExpr);
-              }}
-              className={cn("h-8", error && "border-destructive")}
-            />
-          )}
+              }
+              emit(text as unknown as ValueExpr);
+            }}
+          />
+          {suspects.length > 0 ? (
+            <div role="note" className="space-y-1.5 rounded-md border p-2 text-[11px] leading-relaxed" style={NOTE_STYLE} data-testid="literal-var-warning">
+              <p className="flex items-start gap-1.5">
+                <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-[var(--season-autumn)]" aria-hidden />
+                <span>
+                  {suspects
+                    .slice(0, 3)
+                    .map((s) => `「${s.text}」`)
+                    .join("")}
+                  {suspects.length > 3 ? ` ほか ${suspects.length - 3} 件` : ""}
+                  は差し込みになりません。固定値のままでは文字のまま送られます。
+                </span>
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => emit(literalToTemplate(literal.text, ctx) as ValueExpr)}
+              >
+                差し込みに変換する
+              </Button>
+            </div>
+          ) : null}
           <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Switch
               checked={jsonMode}
@@ -209,12 +323,12 @@ export function ValueExprInput({
                 // OFF: 文字列に戻す）。トグルだけで型が変わらない齟齬を防ぐ。
                 if (on) {
                   try {
-                    onChange(JSON.parse(literal.text) as ValueExpr);
+                    emit(JSON.parse(literal.text) as ValueExpr);
                   } catch {
                     // 解釈できないテキストは文字列のまま（入力継続で解釈される）。
                   }
                 } else if (literal.isJson) {
-                  onChange(literal.text as unknown as ValueExpr);
+                  emit(literal.text as unknown as ValueExpr);
                 }
               }}
               className="scale-75"
@@ -224,44 +338,22 @@ export function ValueExprInput({
         </div>
       ) : null}
 
-      {mode === "from" && from ? (
-        <div className="space-y-1.5 rounded-md border bg-muted/40 p-2">
-          <Select
-            value={from.$from}
-            onValueChange={(v) =>
-              onChange({ ...from, $from: v } as unknown as ValueExpr)
-            }
-          >
-            <SelectTrigger className="h-8">
-              <SelectValue placeholder="参照元" />
-            </SelectTrigger>
-            <SelectContent>
-              {sources.map((s) => (
-                <SelectItem key={s.value} value={s.value}>
-                  {s.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Input
-            value={from.path ?? ""}
-            onChange={(e) =>
-              onChange({
-                ...from,
-                path: e.target.value || undefined,
-              } as unknown as ValueExpr)
-            }
-            placeholder="取り出す場所（例 /items/0/name・空で全体）"
-            className="h-8 font-mono text-xs max-md:text-base"
-          />
+      {mode === "from" ? (
+        <div className="rounded-md border bg-muted/40 p-2">
+          <RefPicker value={from} ctx={ctx} onChange={(r) => emit(r as ValueExpr)} />
         </div>
       ) : null}
 
       {mode === "template" && template ? (
         <TemplateEditor
           template={template}
-          sources={sources}
-          onChange={(next) => onChange(next as unknown as ValueExpr)}
+          ctx={ctx}
+          label={label}
+          multiline={multiline}
+          invalid={Boolean(error)}
+          textRef={textRef}
+          onSelect={remember}
+          onChange={(next) => emit(next as ValueExpr)}
         />
       ) : null}
 
@@ -271,112 +363,183 @@ export function ValueExprInput({
   );
 }
 
+/// 1 行／複数行の文字の欄（差し込む位置を覚えるため ref と選択の通知を受ける）。
+function TextField({
+  multiline,
+  label,
+  value,
+  placeholder,
+  invalid,
+  textRef,
+  onSelect,
+  onChange,
+  rows = 3,
+}: {
+  multiline?: boolean;
+  label: string;
+  value: string;
+  placeholder?: string;
+  invalid: boolean;
+  textRef: React.RefObject<TextEl | null>;
+  onSelect: (e: React.SyntheticEvent<TextEl>) => void;
+  onChange: (text: string) => void;
+  rows?: number;
+}) {
+  if (multiline) {
+    return (
+      <Textarea
+        ref={textRef as React.Ref<HTMLTextAreaElement>}
+        aria-label={label}
+        value={value}
+        rows={rows}
+        placeholder={placeholder}
+        onSelect={onSelect}
+        onChange={(e) => {
+          onSelect(e);
+          onChange(e.target.value);
+        }}
+        className={cn(invalid && "border-destructive")}
+      />
+    );
+  }
+  return (
+    <Input
+      ref={textRef as React.Ref<HTMLInputElement>}
+      aria-label={label}
+      value={value}
+      placeholder={placeholder}
+      onSelect={onSelect}
+      onChange={(e) => {
+        onSelect(e);
+        onChange(e.target.value);
+      }}
+      className={cn("h-8", invalid && "border-destructive")}
+    />
+  );
+}
+
 function TemplateEditor({
   template,
-  sources,
+  ctx,
+  label,
+  multiline,
+  invalid,
+  textRef,
+  onSelect,
   onChange,
 }: {
   template: TemplateExpr;
-  sources: { value: string; label: string }[];
+  ctx: RefContext;
+  label: string;
+  multiline?: boolean;
+  invalid: boolean;
+  textRef: React.RefObject<TextEl | null>;
+  onSelect: (e: React.SyntheticEvent<TextEl>) => void;
   onChange: (next: TemplateExpr) => void;
 }) {
   const vars = Object.entries(template.vars ?? {});
+  const issues = templateIssues(template);
+
+  const removeVar = (name: string) => {
+    const next = { ...(template.vars ?? {}) };
+    delete next[name];
+    // 本文の `{name}` も外す（残すと実行で「vars にありません」になる）。
+    const pieces = templatePieces(template.$template).filter((p) => !(p.kind === "var" && p.name === name));
+    onChange({ $template: joinPieces(pieces), vars: next });
+  };
+
+  const addMissing = () => {
+    const next = { ...(template.vars ?? {}) };
+    for (const name of issues.missing) next[name] = guessRef(name, ctx) as ValueExpr;
+    onChange({ ...template, vars: next });
+  };
+
   return (
     <div className="space-y-1.5 rounded-md border bg-muted/40 p-2">
-      <Textarea
+      <TextField
+        multiline={multiline}
+        label={label}
         value={template.$template}
-        rows={3}
         placeholder={"例: {name} さんの申請が届きました"}
-        onChange={(e) => onChange({ ...template, $template: e.target.value })}
+        invalid={invalid}
+        textRef={textRef}
+        onSelect={onSelect}
+        onChange={(text) => onChange({ ...template, $template: text })}
       />
-      <p className="text-[11px] text-muted-foreground">
-        {"{名前}"} の部分に下の値が入ります
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        <code className="whitespace-nowrap font-mono">{"{名前}"}</code> の所に下の値が入ります。波括弧そのものは{" "}
+        <code className="whitespace-nowrap font-mono">{"{{ }}"}</code> と書きます
       </p>
-      {vars.map(([name, expr], i) => {
-        const ref =
-          expr && typeof expr === "object" && "$from" in (expr as object)
-            ? (expr as unknown as FromRef)
-            : null;
-        return (
-          <div key={i} className="flex items-center gap-1.5">
+      {issues.missing.length > 0 ? (
+        <TemplateNote
+          text={`${issues.missing.map((n) => `「{${n}}」`).join("")}に入る値がありません（このままでは実行で失敗します）`}
+          action="差し込む値を足す"
+          onAction={addMissing}
+        />
+      ) : null}
+      {issues.escaped.length > 0 ? (
+        <TemplateNote
+          text={`${issues.escaped.map((n) => `「{{${n}}}」`).join("")}は波括弧そのものとして出ます（差し込まれません）`}
+          action={`${issues.escaped.map((n) => `{${n}}`).join("・")} に直す`}
+          onAction={() => onChange(fixEscapedVars(template))}
+        />
+      ) : null}
+      {vars.map(([name, expr], i) => (
+        <div key={i} className="space-y-1 rounded-md border bg-background p-1.5" data-testid="template-var">
+          <div className="flex items-center gap-1">
+            <span className="font-mono text-[11px] text-muted-foreground" aria-hidden>
+              {"{"}
+            </span>
             <Input
               value={name}
               onChange={(e) => {
-                const next = { ...(template.vars ?? {}) };
-                delete next[name];
-                next[e.target.value] = expr;
-                onChange({ ...template, vars: next });
+                const next = renameVar(template, name, e.target.value);
+                if (next) onChange(next);
               }}
               placeholder="名前"
-              className="h-7 w-20 text-xs max-md:text-base"
+              className="h-7 w-24 font-mono text-xs max-md:text-base"
               aria-label="差し込み名"
             />
-            <Select
-              value={ref?.$from ?? "input"}
-              onValueChange={(v) => {
-                const next = { ...(template.vars ?? {}) };
-                next[name] = {
-                  $from: v,
-                  path: ref?.path,
-                } as unknown as ValueExpr;
-                onChange({ ...template, vars: next });
-              }}
-            >
-              <SelectTrigger className="h-7 flex-1 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {sources.map((s) => (
-                  <SelectItem key={s.value} value={s.value}>
-                    {s.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Input
-              value={ref?.path ?? ""}
-              onChange={(e) => {
-                const next = { ...(template.vars ?? {}) };
-                next[name] = {
-                  $from: ref?.$from ?? "input",
-                  path: e.target.value || undefined,
-                } as unknown as ValueExpr;
-                onChange({ ...template, vars: next });
-              }}
-              placeholder="/path"
-              className="h-7 w-24 font-mono text-[11px] max-md:text-base"
-              aria-label="取り出す場所"
-            />
+            <span className="font-mono text-[11px] text-muted-foreground" aria-hidden>
+              {"}"}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">に入る値</span>
             <Button
               variant="ghost"
               size="icon"
               className="size-7"
-              aria-label="差し込みを削除"
-              onClick={() => {
-                const next = { ...(template.vars ?? {}) };
-                delete next[name];
-                onChange({ ...template, vars: next });
-              }}
+              aria-label={`差し込み「${name}」を削除`}
+              onClick={() => removeVar(name)}
             >
               <Trash2 className="size-3.5" aria-hidden />
             </Button>
           </div>
-        );
-      })}
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-7 text-xs"
-        onClick={() => {
-          const next = { ...(template.vars ?? {}) };
-          let n = vars.length + 1;
-          while (next[`v${n}`]) n += 1;
-          next[`v${n}`] = { $from: "input" } as unknown as ValueExpr;
-          onChange({ ...template, vars: next });
-        }}
-      >
-        <Plus className="size-3.5" aria-hidden />
-        差し込みを追加
+          {isFromRef(expr) ? null : (
+            <p className="px-0.5 text-[11px] text-muted-foreground">
+              固定の値: <code className="break-all font-mono">{JSON.stringify(expr)}</code>
+            </p>
+          )}
+          <RefPicker
+            value={isFromRef(expr) ? expr : null}
+            ctx={ctx}
+            ariaLabel={`「${name}」に入る値`}
+            onChange={(r) => onChange({ ...template, vars: { ...(template.vars ?? {}), [name]: r as ValueExpr } })}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TemplateNote({ text, action, onAction }: { text: string; action: string; onAction: () => void }) {
+  return (
+    <div role="note" className="space-y-1.5 rounded-md border p-2 text-[11px] leading-relaxed" style={NOTE_STYLE}>
+      <p className="flex items-start gap-1.5">
+        <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-[var(--season-autumn)]" aria-hidden />
+        <span>{text}</span>
+      </p>
+      <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onAction}>
+        {action}
       </Button>
     </div>
   );

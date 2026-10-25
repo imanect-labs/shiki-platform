@@ -1,0 +1,358 @@
+/// 値の入力欄（value-expr-input.tsx）の参照・差し込みの計算（描画を持たない・BUG-1）。
+///
+/// - 参照の候補: 入力項目（input_schema の properties）・祖先ブロックの出力・map 領域内の each・
+///   入力全体・きっかけの内容全体。参照先の既定を「入力全体」にせず、ここから選ばせる。
+/// - 差し込み名の自動命名（path の末尾。同じ名前で別の参照があれば連番）。
+/// - テンプレートの字句（`{name}` が差し込み・`{{` `}}` は波括弧そのもの・ir.md §3.2）。規則は実行時の
+///   crates/workflow-engine/src/ir/expr.rs の `template_pieces` と同じ（保存時の検証もそれで読む）。
+/// - 固定値に書かれた差し込みのつもりの文字（`{{x}}`・`{x}`・`${x}`）の検出と、テンプレートへの変換。
+
+import { NODE_CATALOG } from "@/generated/workflow-catalog";
+import type { FromRef, TemplateExpr, ValueExpr } from "@/generated/workflow-ir";
+import type { InputFieldInfo } from "@/lib/workflow-input-schema";
+
+/// `nodes.<id>.output` の参照候補（祖先ブロック）。`type` があれば出力の形から項目の候補も出す。
+export type RefCandidate = { id: string; label: string; type?: string };
+
+/// 組み立てる参照（`path`・`default` は省略できる）。
+export type RefValue = Pick<FromRef, "$from"> & Partial<Pick<FromRef, "path" | "default">>;
+
+/// 候補の 1 つ。`key` は `$from` と `path` から作る（同じ参照は同じ key）。
+export type RefOption = {
+  key: string;
+  ref: RefValue;
+  label: string;
+  group: string;
+};
+
+export type RefContext = {
+  inputFields: InputFieldInfo[];
+  ancestors: RefCandidate[];
+  inMapRegion: boolean;
+};
+
+export const SOURCE_LABELS: Record<string, string> = {
+  input: "この実行の入力",
+  trigger: "きっかけの内容",
+  each: "繰り返し中の要素",
+  run: "実行情報",
+};
+
+export function refKey(ref: { $from: string; path?: string | null }): string {
+  return `${ref.$from}|${ref.path ?? ""}`;
+}
+
+export function isFromRef(v: unknown): v is RefValue {
+  return v !== null && typeof v === "object" && typeof (v as { $from?: unknown }).$from === "string";
+}
+
+/// JSON Pointer の 1 段（`~` と `/` をエスケープする）。
+const pointerSegment = (s: string) => s.replace(/~/g, "~0").replace(/\//g, "~1");
+const unpointerSegment = (s: string) => s.replace(/~1/g, "/").replace(/~0/g, "~");
+
+function pathOf(segments: string[]): string | undefined {
+  return segments.length > 0 ? `/${segments.map(pointerSegment).join("/")}` : undefined;
+}
+
+/// ノード種の出力の最上位の項目名（カタログの `output_shape` から）。読めなければ空。
+///
+/// 形はカタログの単一定義から生成される（crates/workflow-engine/src/vocab/catalog.rs）。生成物にまだ無い版でも
+/// 動くよう、項目があるときだけ読む。
+export function outputKeys(nodeType: string | undefined): string[] {
+  const entry = NODE_CATALOG.find((c) => c.type === nodeType);
+  return entry && "output_shape" in entry && typeof entry.output_shape === "string" ? shapeKeys(entry.output_shape) : [];
+}
+
+/// 出力の形（TS 風の表記・例 `{ text: string, model: string }`）の最上位の項目名。
+/// 「レコード { … }」のような短い前置きまでは読み、文の途中のオブジェクト（「… は { … }」）は読まない。
+export function shapeKeys(shape: string): string[] {
+  const open = shape.indexOf("{");
+  if (open < 0 || open > 8 || shape.slice(0, open).includes("（")) return [];
+  const keys: string[] = [];
+  let depth = 0;
+  let seg = "";
+  const flush = () => {
+    const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\??\s*:/.exec(seg);
+    if (m && !keys.includes(m[1])) keys.push(m[1]);
+    seg = "";
+  };
+  for (const ch of shape.slice(open + 1)) {
+    if ("{[(<（".includes(ch)) depth += 1;
+    if ("}])>）".includes(ch)) {
+      if (depth === 0) break;
+      depth -= 1;
+    }
+    if (ch === "," && depth === 0) flush();
+    else seg += ch;
+  }
+  flush();
+  return keys;
+}
+
+/// 参照の候補（差し込むメニューと参照先の選択に使う）。並びは画面の並び。
+export function refOptions({ inputFields, ancestors, inMapRegion }: RefContext): RefOption[] {
+  const out: RefOption[] = [];
+  const add = (ref: RefValue, label: string, group: string) => out.push({ key: refKey(ref), ref, label, group });
+  for (const f of inputFields) {
+    add({ $from: "input", path: pathOf([f.key]) }, f.title ? `${f.title}（${f.key}）` : f.key, "入力項目");
+  }
+  for (const a of ancestors) {
+    const from = `nodes.${a.id}.output`;
+    for (const k of outputKeys(a.type)) add({ $from: from, path: pathOf([k]) }, `「${a.label}」の ${k}`, "前のブロックの結果");
+    add({ $from: from }, `「${a.label}」の結果（全体）`, "前のブロックの結果");
+  }
+  if (inMapRegion) {
+    add({ $from: "each", path: "/item" }, "繰り返し中の要素", "繰り返し");
+    add({ $from: "each", path: "/index" }, "繰り返しの番号（0 から）", "繰り返し");
+  }
+  add({ $from: "input" }, `${SOURCE_LABELS.input}（全体）`, "そのほか");
+  add({ $from: "trigger" }, `${SOURCE_LABELS.trigger}（全体）`, "そのほか");
+  return out;
+}
+
+/// 場所を手で書くときの参照元（`$from` の閉集合・ir.md §3.1）。
+export function sourceOptions({ ancestors, inMapRegion }: RefContext): { value: string; label: string }[] {
+  return [
+    { value: "input", label: SOURCE_LABELS.input },
+    { value: "trigger", label: SOURCE_LABELS.trigger },
+    ...(inMapRegion ? [{ value: "each", label: SOURCE_LABELS.each }] : []),
+    ...ancestors.map((a) => ({ value: `nodes.${a.id}.output`, label: `「${a.label}」の結果` })),
+  ];
+}
+
+/// 場所を手で書くときの path の候補（参照元ごと）。
+export function pathHints(from: string, ctx: RefContext): string[] {
+  if (from === "input") return ctx.inputFields.map((f) => `/${pointerSegment(f.key)}`);
+  if (from === "each") return ["/item", "/index"];
+  const m = /^nodes\.(.+)\.output$/.exec(from);
+  if (m) {
+    const a = ctx.ancestors.find((x) => x.id === m[1]);
+    return outputKeys(a?.type).map((k) => `/${k}`);
+  }
+  return [];
+}
+
+/// 選択中の参照の表示（候補に無いものは参照元と path で書く）。
+export function refLabel(ref: RefValue, ctx: RefContext): string {
+  const hit = refOptions(ctx).find((o) => o.key === refKey(ref));
+  if (hit) return hit.label;
+  const source = sourceOptions(ctx).find((s) => s.value === ref.$from)?.label ?? ref.$from;
+  return ref.path ? `${source} ${ref.path}` : source;
+}
+
+function sameRef(a: unknown, ref: RefValue): boolean {
+  return isFromRef(a) && a.$from === ref.$from && (a.path ?? undefined) === (ref.path ?? undefined) && a.default === undefined;
+}
+
+/// 差し込み名を path から付ける（/title → title・/items/0/name → name）。既に同じ参照があればその名前を使う。
+/// 同じ名前で別の値があれば `title_2`・`title_3` と連番にする。
+export function varNameFor(ref: RefValue, vars: TemplateExpr["vars"]): { name: string; reused: boolean } {
+  for (const [name, v] of Object.entries(vars ?? {})) if (sameRef(v, ref)) return { name, reused: true };
+  const segments = (ref.path ?? "").split("/").filter(Boolean).map(unpointerSegment);
+  const last = [...segments].reverse().find((s) => !/^\d+$/.test(s));
+  const node = /^nodes\.(.+)\.output$/.exec(ref.$from)?.[1];
+  const raw = last ?? (segments.length > 0 ? `${node ?? ref.$from}_${segments.at(-1)}` : (node ?? ref.$from));
+  const base = raw.replace(/[{}\s]/g, "_") || "v";
+  let name = base;
+  for (let n = 2; vars && name in vars; n += 1) name = `${base}_${n}`;
+  return { name, reused: false };
+}
+
+// ── テンプレートの字句 ──────────────────────────────────────────────
+
+export type TemplatePiece =
+  | { kind: "text"; text: string }
+  | { kind: "escaped"; char: "{" | "}" }
+  | { kind: "var"; name: string };
+
+/// テンプレート文字列を字句に分ける（実行時の `template_pieces` と同じ規則）。
+/// エスケープ `{{`→`{`・`}}`→`}` を先に読む。`{` から次の `}` までが差し込みの名前で、閉じが無い `{` と
+/// 対にならない `}` は文字のまま。
+export function templatePieces(template: string): TemplatePiece[] {
+  const out: TemplatePiece[] = [];
+  let textStart = 0;
+  let i = 0;
+  const flush = (to: number) => {
+    if (textStart < to) out.push({ kind: "text", text: template.slice(textStart, to) });
+  };
+  while (i < template.length) {
+    const c = template[i];
+    if ((c === "{" || c === "}") && template[i + 1] === c) {
+      flush(i);
+      out.push({ kind: "escaped", char: c });
+      i += 2;
+      textStart = i;
+    } else if (c === "{") {
+      const close = template.indexOf("}", i + 1);
+      if (close >= 0) {
+        flush(i);
+        out.push({ kind: "var", name: template.slice(i + 1, close) });
+        i = close + 1;
+        textStart = i;
+      } else {
+        i += 1;
+      }
+    } else {
+      i += 1;
+    }
+  }
+  flush(template.length);
+  return out;
+}
+
+/// 字句をテンプレート文字列に戻す。
+export function joinPieces(pieces: TemplatePiece[]): string {
+  return pieces
+    .map((p) => (p.kind === "text" ? p.text : p.kind === "escaped" ? p.char + p.char : `{${p.name}}`))
+    .join("");
+}
+
+/// 固定の文字をテンプレートの中にそのまま出す書き方にする（波括弧を二重にする）。
+export const escapeTemplateText = (text: string) => text.replace(/[{}]/g, (c) => c + c);
+
+/// テンプレートを固定値に戻したときの文字（エスケープを外し、差し込みは `{name}` のまま残す）。
+export function templateToText(template: string): string {
+  return templatePieces(template)
+    .map((p) => (p.kind === "text" ? p.text : p.kind === "escaped" ? p.char : `{${p.name}}`))
+    .join("");
+}
+
+/// テンプレートの問題（保存時の検証と同じ判定を手元で先に出す）。
+/// - `missing`: vars に無い差し込み（実行すると step が失敗する）
+/// - `escaped`: vars のキーを `{{key}}` と書いたもの（差し込まれず `{key}` の文字が出る）
+export function templateIssues(t: TemplateExpr): { missing: string[]; escaped: string[] } {
+  const vars = t.vars ?? {};
+  const pieces = templatePieces(t.$template);
+  const missing: string[] = [];
+  const escaped: string[] = [];
+  pieces.forEach((p, i) => {
+    if (p.kind === "var" && !(p.name in vars) && !missing.includes(p.name)) missing.push(p.name);
+    const key = escapedVarAt(pieces, i);
+    if (key && key in vars && !escaped.includes(key)) escaped.push(key);
+  });
+  return { missing, escaped };
+}
+
+/// `{{` 文字 `}}` の並び（i が `{{` の位置）なら中の文字（前後の空白を除く）。
+function escapedVarAt(pieces: TemplatePiece[], i: number): string | null {
+  const [a, b, c] = [pieces[i], pieces[i + 1], pieces[i + 2]];
+  if (a?.kind === "escaped" && a.char === "{" && b?.kind === "text" && c?.kind === "escaped" && c.char === "}") {
+    return b.text.trim();
+  }
+  return null;
+}
+
+/// `{{key}}` と書いた vars のキーを差し込み `{key}` に直す。
+export function fixEscapedVars(t: TemplateExpr): TemplateExpr {
+  const vars = t.vars ?? {};
+  const pieces = templatePieces(t.$template);
+  const out: TemplatePiece[] = [];
+  for (let i = 0; i < pieces.length; i += 1) {
+    const key = escapedVarAt(pieces, i);
+    if (key && key in vars) {
+      out.push({ kind: "var", name: key });
+      i += 2;
+    } else {
+      out.push(pieces[i]);
+    }
+  }
+  return { ...t, $template: joinPieces(out) };
+}
+
+/// 差し込み名を変える（テンプレートの中の `{old}` も一緒に直す）。新しい名前が既にあれば変えない。
+export function renameVar(t: TemplateExpr, from: string, to: string): TemplateExpr | null {
+  const vars = t.vars ?? {};
+  if (from === to) return t;
+  if (to in vars || /[{}]/.test(to)) return null;
+  // キーの並びを保つ（一覧の行が入れ替わらないように）。
+  const next = Object.fromEntries(Object.entries(vars).map(([k, v]) => [k === from ? to : k, v]));
+  const pieces = templatePieces(t.$template).map((p) =>
+    p.kind === "var" && p.name === from ? { ...p, name: to } : p,
+  );
+  return { $template: joinPieces(pieces), vars: next };
+}
+
+// ── 固定値の中の差し込みのつもりの書き方 ───────────────────────────────
+
+export type Suspect = { start: number; end: number; text: string; name: string };
+
+/// `${x}`・`{{x}}`・`{x}`（x は名前らしい文字・`input.title` のような . 区切りも拾う）。
+/// JSON の `{"a": 1}` のような文字は拾わない。
+const SUSPECT_RE = /\$\{\s*([\p{L}_][\p{L}\p{N}_.]*)\s*\}|\{\{\s*([\p{L}_][\p{L}\p{N}_.]*)\s*\}\}|\{\s*([\p{L}_][\p{L}\p{N}_.]*)\s*\}/gu;
+
+export function findSuspects(text: string): Suspect[] {
+  const out: Suspect[] = [];
+  for (const m of text.matchAll(SUSPECT_RE)) {
+    out.push({ start: m.index, end: m.index + m[0].length, text: m[0], name: m[1] ?? m[2] ?? m[3] });
+  }
+  return out;
+}
+
+/// 差し込みのつもりの名前から参照を推し量る（`input.title`・`nodes.ask.output.text`・祖先の id・入力項目のキー）。
+/// 当てはまらなければ入力の同じ名前の項目とみなす（変換後の差し込みの行で直せる）。
+export function guessRef(name: string, ctx: RefContext): RefValue {
+  const seg = name.split(".").filter(Boolean);
+  const ref = (from: string, rest: string[]): RefValue => ({ $from: from, ...(rest.length ? { path: pathOf(rest) } : {}) });
+  if (seg[0] === "input") return ref("input", seg.slice(1));
+  if (seg[0] === "trigger") return ref("trigger", seg.slice(1));
+  if (seg[0] === "each" && ctx.inMapRegion) return ref("each", seg.slice(1));
+  if (seg[0] === "item" && ctx.inMapRegion) return ref("each", seg);
+  if (seg[0] === "nodes" && seg.length >= 2) {
+    const rest = seg.slice(2);
+    return ref(`nodes.${seg[1]}.output`, rest[0] === "output" ? rest.slice(1) : rest);
+  }
+  const ancestor = ctx.ancestors.find((a) => a.id === seg[0]);
+  if (ancestor) {
+    const rest = seg.slice(1);
+    return ref(`nodes.${ancestor.id}.output`, rest[0] === "output" ? rest.slice(1) : rest);
+  }
+  return ref("input", seg);
+}
+
+/// 固定値の文字をテンプレートにする。差し込みのつもりの書き方は差し込みに、ほかの波括弧は文字のまま
+/// （二重にして）出す。
+export function literalToTemplate(text: string, ctx: RefContext): TemplateExpr {
+  const vars: NonNullable<TemplateExpr["vars"]> = {};
+  let template = "";
+  let at = 0;
+  for (const s of findSuspects(text)) {
+    template += escapeTemplateText(text.slice(at, s.start));
+    const ref = guessRef(s.name, ctx);
+    const { name, reused } = varNameFor(ref, vars);
+    if (!reused) vars[name] = ref as ValueExpr;
+    template += `{${name}}`;
+    at = s.end;
+  }
+  template += escapeTemplateText(text.slice(at));
+  return { $template: template, vars };
+}
+
+/// テンプレートの `start`〜`end` を差し込み `{name}` で置き換え、vars に参照を足す。
+/// 返す `caret` は差し込みの直後の位置。
+export function insertVar(
+  t: TemplateExpr,
+  range: { start: number; end: number },
+  ref: RefValue,
+): { template: TemplateExpr; caret: number } {
+  const vars = { ...(t.vars ?? {}) };
+  const { name, reused } = varNameFor(ref, vars);
+  if (!reused) vars[name] = ref as ValueExpr;
+  const token = `{${name}}`;
+  const start = Math.max(0, Math.min(range.start, t.$template.length));
+  const end = Math.max(start, Math.min(range.end, t.$template.length));
+  return {
+    template: { $template: t.$template.slice(0, start) + token + t.$template.slice(end), vars },
+    caret: start + token.length,
+  };
+}
+
+/// 固定値の文字の `start`〜`end` に差し込み、テンプレートに切り替える（前後の文字はそのまま出るように二重にする）。
+export function insertIntoLiteral(
+  text: string,
+  range: { start: number; end: number },
+  ref: RefValue,
+): { template: TemplateExpr; caret: number } {
+  const before = escapeTemplateText(text.slice(0, range.start));
+  const after = escapeTemplateText(text.slice(range.end));
+  return insertVar({ $template: before + after, vars: {} }, { start: before.length, end: before.length }, ref);
+}

@@ -5,7 +5,8 @@
 /// - スケジュール: プリセット（毎時/毎日/毎週/毎月）から cron を生成し、次回実行を
 ///   cron-parser でプレビュー。上級者向けに raw cron 欄も残す。
 /// - できごと: source（ファイル保存）＋対象フォルダ（既存の FolderPicker 再利用）。
-/// - 手動: ボタンから実行（ラベルのみ）。
+/// - 手動: ボタンから実行。実行するときに入れてもらう入力項目（IR の `input_schema`・GAP-12）を編集する
+///   （input_schema はワークフローに 1 つで、手動の実行・ミニアプリのボタン・チャットからの実行で共通）。
 
 import * as React from "react";
 import parser from "cron-parser";
@@ -23,6 +24,7 @@ import {
 import { FolderPicker, type FolderChoice } from "@/components/artifacts/folder-picker";
 import type { Trigger } from "@/generated/workflow-ir";
 import { Field } from "./common";
+import { InputSchemaEditor } from "./input-schema-editor";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -297,10 +299,15 @@ export function TriggerPanel({
   triggers,
   index,
   onChange,
+  inputSchema,
+  onInputSchemaChange,
 }: {
   triggers: Trigger[];
   index: number;
   onChange: (next: Trigger[]) => void;
+  /// ワークフローの入力項目（IR の `input_schema`）。
+  inputSchema: unknown;
+  onInputSchemaChange: (next: unknown) => void;
 }) {
   const trigger = triggers[index];
   if (!trigger) return null;
@@ -336,9 +343,14 @@ export function TriggerPanel({
       ) : null}
       {trigger.kind === "event" ? <EventEditor trigger={trigger} onChange={replace} /> : null}
       {trigger.kind === "interactive" ? (
-        <p className="text-[11px] text-muted-foreground">
-          「実行」ボタンや AI チャットから手動で開始できます
-        </p>
+        <>
+          <p className="text-[11px] text-muted-foreground">
+            「実行」ボタンや AI チャットから手動で開始できます
+          </p>
+          <div className="border-t pt-3">
+            <InputSchemaEditor schema={inputSchema} onChange={onInputSchemaChange} />
+          </div>
+        </>
       ) : null}
       <div className="flex items-center gap-2 border-t pt-3">
         <Button
