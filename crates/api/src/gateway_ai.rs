@@ -185,6 +185,13 @@ impl AgentPort for GatewayAgentPort {
             .clamp(1, MAX_STEPS_CEILING);
         let mut opts = AgentOptions::chat(max_steps);
         opts.model = spec.model.clone();
+        // 省略時だけ組織の既定で解決する（agent-core の既定＝デプロイ既定に頼らない・明示モデルは
+        // 置き換えない・BUG-12）。
+        if opts.model.is_none() {
+            let choice = app_gateway::resolve_omitted_model(&self.llm, ctx, None).await?;
+            opts.model = Some(choice.model);
+            opts.effort = choice.effort;
+        }
         if let Some(cap) = spec.max_tokens.and_then(|t| u32::try_from(t).ok()) {
             opts.max_tokens = Some(opts.max_tokens.map_or(cap, |d| d.min(cap)));
         }
@@ -293,6 +300,94 @@ mod tests {
         // 宣言なし → 提示なし。
         let (tools, skipped) = build_tools(&[], &all, None, None);
         assert!(tools.is_empty() && skipped.is_empty());
+    }
+
+    /// モデルを省略したミニアプリの agent.invoke は、agent-core の既定（デプロイ既定）ではなく組織の既定で
+    /// 動き、会計にも同じ名前が残る（BUG-12）。`STORAGE_TEST_DATABASE_URL` が無ければスキップ。
+    #[tokio::test]
+    #[allow(clippy::print_stderr)]
+    async fn omitted_agent_model_follows_the_organization_default() {
+        use futures::StreamExt;
+        let Ok(url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+            eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+        let entry = |id: &str| llm_gateway::ModelEntry {
+            id: id.into(),
+            ..Default::default()
+        };
+        let llm = LlmGateway::build(
+            pool.clone(),
+            reqwest::Client::new(),
+            llm_gateway::GatewayConfig {
+                catalog: llm_gateway::ModelCatalog {
+                    default_model: "stub-m".into(),
+                    models: vec![entry("stub-m"), entry("stub-n")],
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let tenant = format!("t-{}", uuid::Uuid::new_v4().simple());
+        let ctx = AuthContext::new(
+            authz::Principal {
+                kind: authz::PrincipalKind::User,
+                id: "alice".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some(tenant.clone()),
+            },
+            "acme".into(),
+            tenant.clone(),
+        );
+        let patch = llm_gateway::SettingsPatch {
+            default_model: Some("stub-n".into()),
+            ..Default::default()
+        };
+        llm.update_tenant_settings(&ctx, &patch)
+            .await
+            .unwrap()
+            .unwrap();
+        let port = GatewayAgentPort {
+            llm: Arc::new(llm),
+            search: None,
+            storage: None,
+        };
+        let app_id = uuid::Uuid::new_v4();
+        let events = port
+            .invoke(
+                &ctx,
+                AgentInvokeSpec {
+                    app_id,
+                    prompt: "こんにちは".into(),
+                    model: None,
+                    declared_tools: vec![],
+                    scopes: vec![],
+                    max_tokens: None,
+                    max_steps: Some(1),
+                    max_cost_usd_micros: 1_000_000,
+                    trace_id: None,
+                },
+            )
+            .await
+            .unwrap();
+        let events: Vec<AiEvent> = events.collect().await;
+        assert!(events.iter().any(|e| e.event == "done"), "{events:?}");
+        let models: Vec<String> =
+            sqlx::query_scalar("SELECT model FROM llm_usage WHERE tenant_id = $1 AND app_id = $2")
+                .bind(&tenant)
+                .bind(app_id)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(models, ["stub-n"]);
     }
 
     #[test]

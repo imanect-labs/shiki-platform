@@ -4,6 +4,7 @@
 //! - scope なし 403 ／ モデル allowlist 403・未指定 400 ／ 日次予算超過 429
 //! - llm.invoke の SSE ストリーミングと `llm_usage` への (app_id×user) 会計
 //! - agent.invoke がインストール時ピンの宣言ツール・日次残額を port へ渡すこと
+//! - モデルの省略は組織の既定で解決し、明示モデルは置き換えない（BUG-12）
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -13,6 +14,7 @@ use app_gateway::{build_gateway_router, AiPin, AppInstallationStore, NewAppInsta
 use axum::http::StatusCode;
 use common::{ctx, setup, state, token};
 use http_body_util::BodyExt;
+use llm_gateway::SettingsPatch;
 use serde_json::json;
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -246,4 +248,127 @@ async fn agent_invoke_passes_pinned_tools_and_remaining_budget() {
     .await;
     assert_eq!(s, StatusCode::OK, "{sse}");
     assert!(sse.contains("\"scopes\":[\"agent.invoke\"]"), "{sse}");
+}
+
+/// 組織の AI 設定を変える（管理画面の保存と同じ経路・state の gateway を使う）。
+async fn set_llm_settings(st: &app_gateway::GatewayState, tenant: &str, patch: SettingsPatch) {
+    st.caps
+        .llm
+        .as_ref()
+        .unwrap()
+        .update_tenant_settings(&ctx(tenant), &patch)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+/// このアプリの会計の行のモデル名（driver task が Done 後に記録するので、`want` 件まで最大 5 秒待つ）。
+async fn usage_models(pool: &PgPool, tenant: &str, app_id: Uuid, want: usize) -> Vec<String> {
+    let mut models = Vec::new();
+    for _ in 0..50 {
+        models = sqlx::query_scalar(
+            "SELECT model FROM llm_usage WHERE tenant_id = $1 AND app_id = $2 ORDER BY id",
+        )
+        .bind(tenant)
+        .bind(app_id)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        if models.len() >= want {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    models
+}
+
+/// モデルを省略した llm.invoke は、デプロイ既定（stub-m）ではなく組織の既定で生成し、会計にも同じ名前が残る。
+/// 明示したモデルはそのまま使う（組織の既定に置き換えない）。
+#[tokio::test]
+async fn llm_invoke_without_a_model_follows_the_organization_default() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (app_id, client) = install(&pool, &tenant, AiPin::default()).await;
+    let st = state(pool.clone(), &tenant);
+    set_llm_settings(
+        &st,
+        &tenant,
+        SettingsPatch {
+            default_model: Some("stub-n".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    let app = build_gateway_router(st);
+    let tok = token(&client, AI_SCOPES, &tenant);
+    let msg = json!([{ "role": "user", "content": [ { "type": "text", "text": "hi" } ] }]);
+
+    for body in [
+        json!({ "messages": msg }),
+        json!({ "model": "", "messages": msg }),
+    ] {
+        let (s, sse) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &body).await;
+        assert_eq!(s, StatusCode::OK, "{sse}");
+    }
+    assert_eq!(
+        usage_models(&pool, &tenant, app_id, 2).await,
+        ["stub-n", "stub-n"]
+    );
+
+    let (s, sse) = post_sse(
+        &app,
+        "/gw/ai/llm/invoke",
+        &tok,
+        &json!({ "model": "stub-m", "messages": msg }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{sse}");
+    assert_eq!(
+        usage_models(&pool, &tenant, app_id, 3).await,
+        ["stub-n", "stub-n", "stub-m"]
+    );
+}
+
+/// インストール時に許可したモデルを明示し、組織がそのモデルを無効にすると 400 になる。組織の既定（許可モデルの
+/// 外）へ振り替えて生成することも、会計の行が残ることもない（fail-closed）。
+#[tokio::test]
+async fn an_explicit_model_disabled_by_the_organization_is_not_replaced() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (app_id, client) = install(
+        &pool,
+        &tenant,
+        AiPin {
+            budget_models: vec!["stub-m".into()],
+            ..AiPin::default()
+        },
+    )
+    .await;
+    let st = state(pool.clone(), &tenant);
+    set_llm_settings(
+        &st,
+        &tenant,
+        SettingsPatch {
+            default_model: Some("stub-n".into()),
+            models: vec![("stub-m".into(), false)],
+            ..Default::default()
+        },
+    )
+    .await;
+    let app = build_gateway_router(st);
+    let tok = token(&client, AI_SCOPES, &tenant);
+    let msg = json!([{ "role": "user", "content": [ { "type": "text", "text": "hi" } ] }]);
+    let (s, body) = post_sse(
+        &app,
+        "/gw/ai/llm/invoke",
+        &tok,
+        &json!({ "model": "stub-m", "messages": msg }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    // 許可モデルがあるアプリは省略できない（組織の既定へ落とさない・従来どおり）。
+    let (s, _) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &json!({ "messages": msg })).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(usage_models(&pool, &tenant, app_id, 0).await.is_empty());
 }

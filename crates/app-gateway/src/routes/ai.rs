@@ -8,16 +8,23 @@
 //! ①モデル allowlist ②日次 USD 予算 = min(宣言, 管理者キャップ)・超過 429
 //! ③max_tokens キャップ。予算は `llm_usage` の当日集計で事前チェックし、agent は
 //! 残額を agent-core Budget にも渡す（ループ中の超過も止まる）。
+//!
+//! **モデルの省略**は組織の既定（Auto を含む・本人専用のモデルは除く）で解決する（BUG-12・D-30）。
+//! 明示したモデルは置き換えない（インストール時に同意した許可モデルの外へ振り替えない）。明示モデルの
+//! 許可は allowlist（①）と gateway の `stream` が確かめる。
 
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use authz::AuthContext;
 use axum::{
     extract::State,
     response::sse::{Event, KeepAlive, Sse},
     Extension, Json,
 };
-use llm_gateway::{GenerateRequest, GenerationRecord, LlmGateway, StreamDelta};
+use llm_gateway::{
+    ChoiceError, Effort, GenerateRequest, GenerationRecord, LlmGateway, ResolvedChoice, StreamDelta,
+};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -53,6 +60,30 @@ pub(crate) fn check_model_allowed(pin: &AiPin, model: Option<&str>) -> Result<()
         None => Err(GatewayError::Invalid(
             "このアプリはモデル allowlist が設定されています。model を明示してください".into(),
         )),
+    }
+}
+
+/// モデルを省略した呼び出しのモデルを、組織の既定（Auto を含む・本人専用のモデルは除く）で決める。
+///
+/// 思考強度は、既定が特定のモデルなら `effort`（無ければ組織の既定）、Auto なら Auto の設定に従う
+/// （チャットと同じ・アプリの指定で Auto の思考強度は変えない）。agent.invoke の port（api）も使う。
+pub async fn resolve_omitted_model(
+    llm: &LlmGateway,
+    auth: &AuthContext,
+    effort: Option<Effort>,
+) -> Result<ResolvedChoice, GatewayError> {
+    match llm.resolve_node_choice(auth, None, effort).await {
+        Ok(Ok(choice)) => Ok(choice),
+        // 省略で起こるのは「使えるモデルが無い」だけ（選択の禁止・無効なモデルは明示したときだけ）。
+        Ok(Err(ChoiceError::NoModel)) => Err(GatewayError::Invalid(
+            "組織で使えるモデルがありません。管理者に AI の設定を確認してもらってください".into(),
+        )),
+        Ok(Err(e)) => Err(GatewayError::Invalid(e.to_string())),
+        Err(e) => {
+            // DB 詳細は out-of-trust クライアントへ出さない（tracing にのみ残す）。
+            tracing::error!(error = %e, "組織の AI 設定の読み出しに失敗");
+            Err(GatewayError::Internal("内部エラーが発生しました".into()))
+        }
     }
 }
 
@@ -124,15 +155,20 @@ pub(crate) async fn llm_invoke(
     if req.messages.is_empty() {
         return Err(GatewayError::Invalid("messages が空です".into()));
     }
+    // 空文字は省略と同じ（allowlist の照合・組織の既定の解決とも）。
+    req.model = req.model.filter(|m| !m.is_empty());
     check_model_allowed(pin, req.model.as_deref())?;
     check_budget(&llm, &ctx, state.caps.ai_daily_cap_usd_micros).await?;
     req.max_tokens = cap_max_tokens(req.max_tokens, pin.budget_max_tokens);
     strip_reasoning(&mut req);
 
-    let logical_model = req
-        .model
-        .clone()
-        .unwrap_or_else(|| llm.default_model().to_string());
+    // 省略時だけ組織の既定で解決する（明示モデルは置き換えない）。解決後の名前を生成と会計に使う。
+    if req.model.is_none() {
+        let choice = resolve_omitted_model(&llm, &ctx.auth, req.effort).await?;
+        req.effort = choice.effort;
+        req.model = Some(choice.model);
+    }
+    let logical_model = req.model.clone().unwrap_or_default();
     let input_preview: String = req
         .messages
         .last()
@@ -244,11 +280,13 @@ pub(crate) struct AgentInvokeRequest {
 pub(crate) async fn agent_invoke(
     State(state): State<GatewayState>,
     Extension(ctx): Extension<GatewayCtx>,
-    Json(req): Json<AgentInvokeRequest>,
+    Json(mut req): Json<AgentInvokeRequest>,
 ) -> Result<SseResult, GatewayError> {
     if req.prompt.trim().is_empty() {
         return Err(GatewayError::Invalid("prompt が空です".into()));
     }
+    // 空文字は省略と同じ（省略時のモデルは port が組織の既定で解決する）。
+    req.model = req.model.filter(|m| !m.is_empty());
     let pin = &ctx.installation.ai;
     check_model_allowed(pin, req.model.as_deref())?;
     // 予算は llm-gateway の会計が正（agent の LLM 呼び出しも app_id 付きで同じ財布に落ちる）。

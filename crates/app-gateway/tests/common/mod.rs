@@ -352,17 +352,21 @@ pub fn stub_llm(pool: PgPool) -> Arc<llm_gateway::LlmGateway> {
             session_header: None,
             ..Default::default()
         },
+        // stub-n は組織の既定の切り替え（モデル省略時の解決・BUG-12）を見るための 2 つ目のモデル。
         catalog: ModelCatalog {
             default_model: "stub-m".into(),
-            models: vec![ModelEntry {
-                id: "stub-m".into(),
-                real_id: None,
-                // 有償単価（1M tok = 1 USD）＝トークン消費でコストが載る。
-                prompt_price_micros_per_mtok: 1_000_000,
-                completion_price_micros_per_mtok: 1_000_000,
-                context_window_tokens: None,
-                ..Default::default()
-            }],
+            models: ["stub-m", "stub-n"]
+                .into_iter()
+                .map(|id| ModelEntry {
+                    id: id.into(),
+                    real_id: None,
+                    // 有償単価（1M tok = 1 USD）＝トークン消費でコストが載る。
+                    prompt_price_micros_per_mtok: 1_000_000,
+                    completion_price_micros_per_mtok: 1_000_000,
+                    context_window_tokens: None,
+                    ..Default::default()
+                })
+                .collect(),
         },
         langfuse: None,
         ..Default::default()
