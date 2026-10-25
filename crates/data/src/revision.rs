@@ -170,7 +170,7 @@ impl DataStore {
     }
 
     /// 履歴の差分のリンク値を、閲覧者本人の権限で見える参照先だけに絞る（リンク列ごとに 1 回で引く）。
-    async fn filter_link_patches(
+    pub(crate) async fn filter_link_patches(
         &self,
         ctx: &AuthContext,
         az: &crate::policy::memo::AuthzMemo<'_>,
@@ -233,7 +233,7 @@ fn link_ids(v: &Value) -> Vec<Uuid> {
 
 /// 履歴の差分に残る v1 の `record_ref` の値（単一 UUID 文字列）を、レコードの読取と同じ配列の形へ寄せる
 /// （値の移行前に記録された差分も、現行の外部形で返す）。
-fn upgrade_link_patches(schema: &crate::model::TableSchema, patch: &mut [FieldPatch]) {
+pub(crate) fn upgrade_link_patches(schema: &crate::model::TableSchema, patch: &mut [FieldPatch]) {
     for p in patch {
         if schema
             .field(&p.field)

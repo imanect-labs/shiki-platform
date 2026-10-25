@@ -12,7 +12,7 @@
 //! | `rev` の楽観ロック（指定した行だけ） | `update_locked` |
 //! | マスク列への書込拒否（PIT-19） | `ensure_writable_fields` |
 //! | 型・required・参照先の可視性（PIT-20）・FSM の status 直書き拒否 | 1 件の更新と同じ検証器 |
-//! | 索引の差分更新・材料化・リビジョン・outbox（SSE）・監査 | 1 件の更新と同じ副作用 |
+//! | 索引の差分更新・材料化・リビジョン・outbox（SSE）・監査 | 1 件の更新と同じ副作用（outbox には一括の目印） |
 
 use authz::AuthContext;
 use serde_json::{Map, Value};
@@ -77,6 +77,8 @@ impl DataStore {
                     r.id,
                     &r.patch,
                     r.expected_rev,
+                    // 一括取込の行（outbox の目印・ワークフローのトリガは発火しない・D-26）。
+                    true,
                     trace_id,
                 )
                 .await

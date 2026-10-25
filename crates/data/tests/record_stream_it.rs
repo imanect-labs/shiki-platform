@@ -1219,6 +1219,67 @@ async fn bulk_import_summary_skips_per_row_checks_and_reveals_no_count() {
     );
 }
 
+/// 一括 upsert の更新行は、一括の目印（ワークフローのトリガを発火させない・GAP-07）が付いても、1 件の更新と
+/// 同じく行ごとに判定して配る（要約 `records.bulk_applied` にまとめるのは取込の作成行だけ）。
+#[tokio::test]
+async fn bulk_upsert_update_rows_are_still_delivered_per_row() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let fx = fixture(pool, authz, manual()).await;
+    let rec = fx
+        .store
+        .create_record(
+            &fx.alice,
+            fx.table,
+            json!({"applicant": "bob", "title": "before"}),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut sb = fx
+        .store
+        .subscribe_records(&fx.bob, fx.table, None, None)
+        .await
+        .unwrap();
+    let mut cb = Client::default();
+    tick(&fx).await;
+    drain(&mut sb, &mut cb).await;
+    let import = fx
+        .store
+        .start_bulk_upsert(
+            &fx.alice,
+            fx.table,
+            vec![data::BulkUpsertRow {
+                key: None,
+                record_id: Some(rec.id),
+                expected_rev: None,
+                data: json!({"title": "after"}),
+            }],
+            BulkImportOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    fx.store
+        .run_bulk_import(&fx.alice.tenant_id, fx.table, import)
+        .await
+        .unwrap();
+    tick(&fx).await;
+    let (mb, _) = drain(&mut sb, &mut cb).await;
+    assert!(
+        !mb.iter()
+            .any(|m| matches!(m.event, StreamEvent::BulkApplied(_))),
+        "更新行は要約にしない: {mb:?}"
+    );
+    let ups = upserts(&mb);
+    assert!(
+        ups.iter()
+            .any(|(id, data)| *id == rec.id && data["title"] == "after"),
+        "{ups:?}"
+    );
+}
+
 #[tokio::test]
 async fn bulk_import_transition_derived_schema_and_awareness_reach_subscribers() {
     let Some((pool, authz)) = setup().await else {

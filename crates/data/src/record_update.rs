@@ -20,7 +20,7 @@ use crate::policy::memo::AuthzMemo;
 use crate::record::{map_unique, WrittenRow, WRITTEN_RETURNING};
 use crate::revision::{diff_fields, insert_revision, RevisionInsert};
 use crate::store::DataStore;
-use crate::stream::outbox::{emit_record_changes, Before, ChangeKind, RecordChange};
+use crate::stream::outbox::{emit_record_changes_as, Before, ChangeKind, RecordChange};
 use crate::validate::validate_record_patch;
 use crate::{map_db, DataError};
 
@@ -84,6 +84,7 @@ impl DataStore {
                 id,
                 patch_obj,
                 Some(expected_rev),
+                false,
                 trace_id,
             )
             .await?;
@@ -105,8 +106,9 @@ impl DataStore {
     /// 呼び出し側の Tx 上で 1 件を更新する（テーブル行の `FOR KEY SHARE` は呼び出し側が [`lock_plan`] で取得済み）。
     ///
     /// テーブルの editor は呼び出し側が確認済みであること。`expected_rev = None` は `rev` を照合しない
-    /// （行ロックの下の後勝ち。一括書込で `rev` を指定しなかった行）。
-    #[allow(clippy::too_many_arguments)] // Tx・認可の文脈・計画・行識別・楽観ロックの束。
+    /// （行ロックの下の後勝ち。一括書込で `rev` を指定しなかった行）。`bulk` は一括 upsert の更新行
+    /// （outbox の非公開部に目印を付け、ワークフローのトリガが一括取込で発火しないようにする・D-26）。
+    #[allow(clippy::too_many_arguments)] // Tx・認可の文脈・計画・行識別・楽観ロック・一括の目印の束。
     #[allow(clippy::too_many_lines)] // 検証・ロック・マスク・リビジョン・索引を 1 Tx で順に行う。
     pub(crate) async fn update_locked(
         &self,
@@ -118,6 +120,7 @@ impl DataStore {
         id: Uuid,
         patch_obj: &Map<String, Value>,
         expected_rev: Option<i64>,
+        bulk: bool,
         trace_id: Option<&str>,
     ) -> Result<Updated, DataError> {
         let table_id = table.id;
@@ -236,7 +239,7 @@ impl DataStore {
         .await?;
         // outbox（同一 Tx・SSE の源）。before の可視性判定に旧 owner と行述語の参照列の旧値を添える。
         let old_stored = Value::Object(encode_record(&table.schema, &old_map));
-        emit_record_changes(
+        emit_record_changes_as(
             tx,
             ctx,
             table,
@@ -254,6 +257,7 @@ impl DataStore {
                     stored: &new_stored,
                 }),
             }],
+            bulk,
             trace_id,
         )
         .await?;
