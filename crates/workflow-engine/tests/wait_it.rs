@@ -2,6 +2,8 @@
 //!
 //! - wait(duration) がワーカー解放を跨いで wake_at 到来後に継続する（durable）
 //! - wait(event) が outbox イベント（`wake_event_waits`）で起床する
+//! - wait(event) は gate（実行主体がイベントの対象を読めるか）が認めたときだけ起床する
+//! - wait(event) の filter の評価エラー（大小比較の型不一致）では起床しない
 //! - wait(event) の timeout が continue（timeout ポート）／fail（run 失敗）で解決する
 
 #![allow(
@@ -12,7 +14,7 @@
     clippy::needless_pass_by_value
 )]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
@@ -21,7 +23,47 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use workflow_engine::run::graph::RunGraph;
 use workflow_engine::run::{MapFanout, OnItemError, OnTimeout, Suspend};
-use workflow_engine::{NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus};
+use workflow_engine::{
+    EventWaitGate, EventWaitSubscriber, NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore,
+    RunStoreError, StepStatus,
+};
+
+/// wait(event) の起床を認める／認めない gate（問われた購読者を記録する）。
+struct Gate {
+    allow: bool,
+    asked: Mutex<Vec<EventWaitSubscriber>>,
+}
+
+impl Gate {
+    fn new(allow: bool) -> Self {
+        Gate {
+            allow,
+            asked: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn asked(&self) -> Vec<EventWaitSubscriber> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl EventWaitGate for Gate {
+    async fn admits(&self, subscriber: &EventWaitSubscriber) -> Result<bool, RunStoreError> {
+        self.asked.lock().unwrap().push(subscriber.clone());
+        Ok(self.allow)
+    }
+}
+
+/// 確かめられない（認可基盤の障害など）gate。
+struct BrokenGate;
+
+#[async_trait]
+impl EventWaitGate for BrokenGate {
+    async fn admits(&self, _subscriber: &EventWaitSubscriber) -> Result<bool, RunStoreError> {
+        Err(RunStoreError::Internal("authz unavailable".into()))
+    }
+}
 
 /// wait/map を suspend/fanout 指示に、他ノードを out 成功にする駆動用 executor。
 struct WaitMapExecutor;
@@ -206,11 +248,26 @@ async fn wait_event_is_woken_by_matching_event() {
 
     // イベント到来で起床する（wake_event_waits＝relay の消費経路）。
     let payload = json!({ "doc": 1 });
+    let gate = Gate::new(true);
     let woke = store
-        .wake_event_waits(&tenant, "storage.write", None, &payload)
+        .wake_event_waits(&tenant, "storage.write", None, &payload, &gate)
         .await
         .unwrap();
     assert_eq!(woke, 1, "イベントで起床");
+    // gate には購読した run の実行主体が渡る（relay がその主体で閲覧を確かめる）。
+    let asked = gate.asked();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(
+        asked[0],
+        EventWaitSubscriber {
+            tenant_id: tenant.clone(),
+            org: "acme".into(),
+            run_id,
+            step_path: "w".into(),
+            principal: "alice".into(),
+            principal_kind: "user".into(),
+        }
+    );
     while w.claim_and_run_once("w1").await.unwrap() {}
 
     assert_eq!(
@@ -241,11 +298,16 @@ async fn wait_event_with_non_folder_scope_never_wakes() {
     let w = worker(pool.clone(), &tenant);
     while w.claim_and_run_once("w1").await.unwrap() {}
 
+    let gate = Gate::new(true);
     let woke = store
-        .wake_event_waits(&tenant, "storage.write", None, &json!({ "doc": 1 }))
+        .wake_event_waits(&tenant, "storage.write", None, &json!({ "doc": 1 }), &gate)
         .await
         .unwrap();
     assert_eq!(woke, 0, "非 folder scope は起床しない（fail-closed）");
+    assert!(
+        gate.asked().is_empty(),
+        "scope に合わない購読は gate に問わない"
+    );
     assert_eq!(
         store
             .step_statuses(&tenant, run_id)
@@ -257,6 +319,125 @@ async fn wait_event_with_non_folder_scope_never_wakes() {
             .1,
         StepStatus::WaitingEvent,
         "待機のまま（全購読化しない）"
+    );
+}
+
+/// scope の無い（テナント内のどのイベントにも一致する）購読でも、gate が認めなければ起こさず、
+/// ペイロードも渡さない。購読は残り、認められるイベントが来れば起きる。確かめられなければ Err を返し
+/// （relay は配送済みにせず配り直す）、購読は待機のまま。
+#[tokio::test]
+async fn wait_event_is_not_woken_unless_the_gate_admits() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let ir = wait_ir(json!({ "kind": "event", "source": "storage.write", "scope": {} }));
+    let run_id = create_run(&store, &tenant, &ir).await;
+    let w = worker(pool.clone(), &tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+    let (st, tn, db) = (&store, &tenant, &pool);
+    let w_status = move || async move {
+        st.step_statuses(tn, run_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|(p, _)| p == "w")
+            .unwrap()
+            .1
+    };
+    let w_output = move || async move {
+        sqlx::query_scalar::<_, Option<Value>>(
+            "SELECT output FROM step_execution WHERE tenant_id = $1 AND run_id = $2 AND step_path = 'w'",
+        )
+        .bind(tn)
+        .bind(run_id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+    };
+    assert_eq!(w_status().await, StepStatus::WaitingEvent);
+
+    // 実行主体が読めない対象のイベント: 起こさない・出力に何も載らない。
+    let secret = json!({ "file_id": "someone-else", "actor": "bob" });
+    let deny = Gate::new(false);
+    let woke = store
+        .wake_event_waits(&tenant, "storage.write", None, &secret, &deny)
+        .await
+        .unwrap();
+    assert_eq!(woke, 0, "gate が認めないので起床しない");
+    assert_eq!(
+        deny.asked().len(),
+        1,
+        "scope と filter に合った購読は gate に問う"
+    );
+    assert_eq!(w_status().await, StepStatus::WaitingEvent);
+    assert_eq!(
+        w_output().await,
+        None,
+        "読めない対象のペイロードを出力に載せない"
+    );
+
+    // 確かめられない: Err を返し、起こさない。
+    let err = store
+        .wake_event_waits(&tenant, "storage.write", None, &secret, &BrokenGate)
+        .await;
+    assert!(err.is_err(), "確かめられなければ Err（relay が配り直す）");
+    assert_eq!(w_status().await, StepStatus::WaitingEvent);
+
+    // 購読は残っているので、読める対象のイベントで起きる。
+    let mine = json!({ "file_id": "mine", "actor": "alice" });
+    let woke = store
+        .wake_event_waits(&tenant, "storage.write", None, &mine, &Gate::new(true))
+        .await
+        .unwrap();
+    assert_eq!(woke, 1);
+    assert_eq!(w_output().await, Some(mine));
+}
+
+/// engine.md §5.6: wait の filter の評価エラー（数値と文字列の大小比較・BUG-14）では起こさない（gate にも
+/// 問わない）。型が合うイベントでは起きる。
+#[tokio::test]
+async fn wait_event_filter_type_error_does_not_wake() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let ir = wait_ir(json!({
+        "kind": "event", "source": "storage.write",
+        "filter": { "cmp": { "left": { "$from": "event", "path": "/size" }, "op": "gt", "right": "10" } }
+    }));
+    let run_id = create_run(&store, &tenant, &ir).await;
+    let w = worker(pool.clone(), &tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+
+    let gate = Gate::new(true);
+    let woke = store
+        .wake_event_waits(
+            &tenant,
+            "storage.write",
+            None,
+            &json!({ "size": 12 }),
+            &gate,
+        )
+        .await
+        .unwrap();
+    assert_eq!(woke, 0, "型の合わない filter では起床しない");
+    assert!(
+        gate.asked().is_empty(),
+        "filter に合わない購読は gate に問わない"
+    );
+    let woke = store
+        .wake_event_waits(
+            &tenant,
+            "storage.write",
+            None,
+            &json!({ "size": "12" }),
+            &gate,
+        )
+        .await
+        .unwrap();
+    assert_eq!(woke, 1, "文字列どうしなら比べられる");
+    assert_eq!(
+        store.run_status(&tenant, run_id).await.unwrap(),
+        Some(RunStatus::Running)
     );
 }
 

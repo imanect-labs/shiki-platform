@@ -159,6 +159,29 @@ impl RegistrationService {
                         needs_user_pick: table.is_none(),
                     });
                 }
+                // wait(event) のフォルダ束縛: 起床は実行主体が保存されたファイルを読めるときだけ
+                // （relay の閲覧確認）なので、schedule / event の run にはフォルダの閲覧の委譲が要る。
+                // scope の無い購読は委譲したものの中でしか起きないので、提案しない。
+                crate::vocab::NodeType::ControlWait => {
+                    let folder = node
+                        .params
+                        .get("scope")
+                        .and_then(|s| s.get("folder"))
+                        .and_then(serde_json::Value::as_str);
+                    if let (Some("event"), Some(folder)) =
+                        (node.params.get("kind").and_then(|k| k.as_str()), folder)
+                    {
+                        push(SuggestedGrant {
+                            scope: "storage.read".into(),
+                            object_kind: "folder".into(),
+                            object_id: Some(folder.to_string()),
+                            object_name: None,
+                            relation: "viewer".into(),
+                            source,
+                            needs_user_pick: false,
+                        });
+                    }
+                }
                 crate::vocab::NodeType::WorkflowStart => {
                     let name = literal_str(&node.params, "name");
                     push(SuggestedGrant {
@@ -255,6 +278,31 @@ mod tests {
         );
         assert_eq!(w.object_id.as_deref(), Some(FOLDER));
         assert!(!w.needs_user_pick);
+    }
+
+    /// wait(event) のフォルダは閲覧の委譲を提案する（起床は実行主体が読めるファイルの保存だけ）。
+    /// scope の無い wait・時間の wait は提案しない。
+    #[test]
+    fn wait_event_folder_suggests_a_viewer_grant() {
+        let plan = plan(&json!([
+            { "id": "w", "type": "control.wait",
+              "params": { "kind": "event", "source": "storage.write", "scope": { "folder": FOLDER } } },
+            { "id": "any", "type": "control.wait",
+              "params": { "kind": "event", "source": "storage.write", "scope": {} } },
+            { "id": "t", "type": "control.wait", "params": { "kind": "duration", "duration_sec": 60 } }
+        ]));
+        let w = by_source(&plan, "w");
+        assert_eq!(
+            (
+                w.scope.as_str(),
+                w.object_kind.as_str(),
+                w.relation.as_str()
+            ),
+            ("storage.read", "folder", "viewer")
+        );
+        assert_eq!(w.object_id.as_deref(), Some(FOLDER));
+        assert!(!w.needs_user_pick);
+        assert_eq!(plan.len(), 1, "{plan:?}");
     }
 
     /// 対象が値式（前の結果・入力・トリガ）なら、有効化者が選ぶ。csv.write のフォルダ省略も

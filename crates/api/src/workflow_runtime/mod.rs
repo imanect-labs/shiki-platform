@@ -308,6 +308,7 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
     let launcher_dyn = workflow_engine::run::launcher::into_dyn(launcher);
     let tick = std::time::Duration::from_secs(deps.config.tick_secs.max(1));
     let relay_db = deps.db.clone();
+    let relay_storage = Arc::clone(&deps.storage);
     let tick_runs = deps.runs.clone();
     let tick_concurrency = concurrency_store;
     // claim の走査の下限（アイドルの間は outbox を走査しない・3 回目の検証 3-D-1）。
@@ -335,6 +336,7 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                         &sched,
                         &tick_runs,
                         launcher_dyn.as_ref(),
+                        &relay_storage,
                     )
                     .await
                     {

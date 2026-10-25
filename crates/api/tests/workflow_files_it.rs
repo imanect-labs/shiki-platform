@@ -4,6 +4,8 @@
 //!   書込主体が載り、`{"$from":"trigger","path":"/file_id"}` で storage.read / csv.query が読める。
 //!   削除とフォルダの作成では発火しない。wait(event) の起床にも同じ形が渡る。イベントは本番と同じ
 //!   `api::workflow_runtime::relay_events` で配り、run は本番の executor（`ProdNodePorts`）で流す。
+//! - wait(event) は、run の実行主体が保存されたファイルを読めるときだけ起きる。scope の無い購読でも、
+//!   他人の読めないファイルの保存では起きず、その id・書いた人は実行履歴に載らない。
 //! - **BUG-10**: 同意計画が csv.* の対象ファイルを提案し、その委譲で schedule の run（workflow
 //!   プリンシパル）が csv.query / csv.patch できる。委譲が無ければファイルが見えず（not_found）失敗する。
 //!
@@ -42,6 +44,7 @@ impl workflow_engine::CapabilityAudit for NoopAudit {
 
 struct Env {
     pool: sqlx::PgPool,
+    fga: Arc<dyn AuthzClient>,
     storage: Arc<storage::StorageService>,
     workflows: WorkflowStore,
     runs: RunStore,
@@ -215,6 +218,7 @@ async fn setup() -> Option<Env> {
     ));
     Some(Env {
         pool,
+        fga,
         storage,
         workflows,
         runs,
@@ -256,6 +260,7 @@ impl Env {
                 &sched,
                 &self.runs,
                 &self.launcher,
+                &self.storage,
             )
             .await
             .expect("relay");
@@ -266,6 +271,31 @@ impl Env {
             assert!(std::time::Instant::now() < deadline, "{what} にならない");
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
+    }
+
+    /// 同じテナント・組織の別の利用者（ドライブのルートにフォルダを作れる）。
+    async fn user(&self, id: &str) -> AuthContext {
+        let ctx = AuthContext::new(
+            Principal {
+                kind: PrincipalKind::User,
+                id: id.into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some(self.tenant.clone()),
+            },
+            self.tenant.clone(),
+            self.tenant.clone(),
+        );
+        self.fga
+            .write_tuple(
+                &ctx.subject(),
+                Relation::Member,
+                &ctx.ns().organization(&ctx.org),
+            )
+            .await
+            .expect("member tuple");
+        ctx
     }
 
     /// ワークフローの run（作成順）: (run_id, 入力, 状態)。
@@ -546,6 +576,105 @@ async fn wait_event_receives_the_saved_file() {
     assert_eq!(w["actor"], "alice");
     let (_, rd, _) = env.step(run, "rd").await;
     assert_eq!(rd.unwrap()["text"], "done");
+}
+
+/// scope の無い wait(event) でも、run の実行主体（alice）が読めない他人のファイルの保存では起きない。
+/// そのファイルの id・書いた人は実行履歴に載らず、alice が読めるファイルの保存で初めて起きる。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wait_event_without_scope_ignores_files_the_principal_cannot_read() {
+    let Some(env) = setup().await else { return };
+    let bob = env.user("bob").await;
+    let ir = json!({
+        "ir_version": 1, "name": "wait-any-upload",
+        "declared_scopes": ["storage.read"],
+        "triggers": [ { "kind": "interactive" } ],
+        "nodes": [
+            { "id": "w", "type": "control.wait", "params": {
+                "kind": "event", "source": "storage.write", "scope": {}, "timeout_sec": 600 } }
+        ],
+        "edges": []
+    });
+    let (wf, _) = env
+        .workflows
+        .create(&env.alice, &ir, &Catalog::default(), None)
+        .await
+        .expect("保存");
+    let run = env
+        .launcher
+        .start_interactive(&env.alice, wf, &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let worker = env.worker();
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+    let e = &env;
+    let w_status = move || async move {
+        e.runs
+            .step_statuses(&e.tenant, run)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|(p, _)| p == "w")
+            .map(|(_, s)| s)
+    };
+    assert_eq!(w_status().await, Some(StepStatus::WaitingEvent));
+
+    // bob が自分だけのフォルダに保存する（alice は読めない）。
+    let private = env
+        .storage
+        .create_folder(&bob, None, "bob-private", None)
+        .await
+        .unwrap();
+    let hidden = env
+        .storage
+        .write_file_internal(&bob, Some(private.id), "salary.csv", b"x", "text/csv", None)
+        .await
+        .unwrap();
+    let hidden_id = hidden.id;
+    env.relay_until("bob の保存の配送", || async move {
+        e.delivered("create", hidden_id).await
+    })
+    .await;
+    assert_eq!(
+        w_status().await,
+        Some(StepStatus::WaitingEvent),
+        "読めないファイルの保存では起きない"
+    );
+    let (_, out, _) = env.step(run, "w").await;
+    assert_eq!(out, None, "読めないファイルの id・書いた人を出力に載せない");
+    let leaked: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM run_event WHERE tenant_id = $1 AND run_id = $2            AND payload::text LIKE '%' || $3 || '%')",
+    )
+    .bind(&env.tenant)
+    .bind(run)
+    .bind(hidden.id.to_string())
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert!(!leaked, "実行の記録にも読めないファイルの id が残らない");
+
+    // alice が読めるファイルの保存で起き、そのファイルが渡る。
+    let mine = env
+        .storage
+        .write_file_internal(&env.alice, None, "memo.txt", b"hi", "text/plain", None)
+        .await
+        .unwrap();
+    env.relay_until("alice の保存で wait が起きる", || async move {
+        e.runs
+            .run_status(&e.tenant, run)
+            .await
+            .unwrap()
+            .is_some_and(|s| s != RunStatus::Running)
+    })
+    .await;
+    assert_eq!(
+        env.runs.run_status(&env.tenant, run).await.unwrap(),
+        Some(RunStatus::Succeeded)
+    );
+    let (_, out, _) = env.step(run, "w").await;
+    let out = out.unwrap();
+    assert_eq!(out["file_id"], mine.id.to_string());
+    assert_eq!(out["actor"], "alice");
 }
 
 /// 同意計画が csv.* の対象ファイルを提案し、その委譲で schedule の run が CSV を集計・編集できる

@@ -4,9 +4,11 @@
 //!   `wait_subscription` を登録する（ワーカーを解放）。
 //! - 起床は **`ready` に戻さず直接 terminal 化**する（相対 duration の再登録バグを避ける・§9.1）:
 //!   - `wake_due_timers`（timer）: `step_execution.wake_at <= now` を out で terminal 化。
-//!   - `wake_event_waits`（event）: イベント到来を祖先束縛 scope＋filter で照合し out で terminal 化。
+//!   - `wake_event_waits`（event）: イベント到来を祖先束縛 scope＋filter で照合し、[`EventWaitGate`]
+//!     （実行主体がイベントの対象を読めるか）を通ったものだけ out で terminal 化。
 //!   - `expire_due_waits`（timeout）: `wait_subscription.timeout_at <= now` を on_timeout に従い解決。
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use sqlx::types::Json;
@@ -21,6 +23,33 @@ use crate::control::event_filter_matches;
 use crate::ir::expr::Condition;
 use crate::ir::WorkflowIr;
 use crate::vocab::RunEventKind;
+
+/// wait(event) を購読した run（起こす前に、実行主体がイベントを受け取ってよいかを確かめる材料）。
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct EventWaitSubscriber {
+    pub tenant_id: String,
+    pub org: String,
+    pub run_id: Uuid,
+    pub step_path: String,
+    /// 実行主体の subject local id。
+    pub principal: String,
+    /// 実行主体の種別（'user' or 'workflow'）。
+    pub principal_kind: String,
+}
+
+/// wait(event) を起こしてよいかの判定（イベントの対象を、購読した run の実行主体が読めるか）。
+///
+/// 購読は登録の時点で実行主体の権限を確かめておらず、scope の無い購読はテナント内のどのイベントにも
+/// 一致する。ペイロード（対象の id・書いた人など）は step の出力として実行履歴に残るので、起こす前に毎回
+/// 実行主体の ReBAC で確かめる（読めない対象のイベントでは起こさず、何も渡さない・fail-closed）。
+/// イベントの対象が何か（ファイルなど）はイベント源ごとに違うので、relay がイベントごとに組んで渡す。
+#[async_trait]
+pub trait EventWaitGate: Send + Sync {
+    /// `Ok(true)` のときだけ起こす。`Ok(false)` なら起こさず、購読は残して次のイベントを待つ。
+    /// `Err` は確かめられなかった（認可基盤の一時的な障害など）ことを表す。`wake_event_waits` はそのまま
+    /// `Err` を返すので、relay はイベントを配送済みにせず次の tick で配り直す。
+    async fn admits(&self, subscriber: &EventWaitSubscriber) -> Result<bool, RunStoreError>;
+}
 
 /// wait の中断を永続化する（checkpoint TX 内）。terminal 化はしない（起床時に行う）。
 pub(super) async fn handle_suspend(
@@ -330,20 +359,30 @@ impl RunStore {
     /// イベント到来で `wait(event)` を起床する（同一マッチャ・祖先束縛 scope＋filter・engine.md §5.5）。
     ///
     /// `event_folder` はイベント発生フォルダ id（祖先束縛の照合対象）。out ポート・ペイロードを output に。
+    /// scope と filter に合った購読も、`gate` が実行主体に対象の閲覧を認めたものだけを起こす。
     pub async fn wake_event_waits(
         &self,
         tenant_id: &str,
         source: &str,
         event_folder: Option<Uuid>,
         payload: &Value,
+        gate: &dyn EventWaitGate,
     ) -> Result<usize, RunStoreError> {
+        #[derive(sqlx::FromRow)]
+        struct EventWaitRow {
+            #[sqlx(flatten)]
+            subscriber: EventWaitSubscriber,
+            spec: Json<Value>,
+            ir_snapshot: Json<Value>,
+        }
         // scope 束縛: folder scope はイベントフォルダの祖先（node_closure・自分自身 depth 0 を含む）に
         // 購読の folder が含まれれば一致（祖先束縛）。**ワイルドカードは scope 空/欠落のみ**（run 内購読の
         // 文書化済み挙動）。folder 以外のキーだけを持つ scope（未対応形状）はワイルドカードに縮退させず
-        // 一切マッチしない（fail-closed・誤形状が全購読化する事故を防ぐ）。
-        type EventWaitRow = (Uuid, String, Json<Value>, Json<Value>);
+        // 一切マッチしない（fail-closed・誤形状が全購読化する事故を防ぐ）。scope は実行主体の権限を
+        // 表さない（購読時に確かめていない）ので、閲覧の可否は下の gate が確かめる。
         let rows: Vec<EventWaitRow> = sqlx::query_as(
-            "SELECT w.run_id, w.step_path, w.spec, r.ir_snapshot \
+            "SELECT w.tenant_id, r.org, w.run_id, w.step_path, r.principal, r.principal_kind, \
+                    w.spec, r.ir_snapshot \
              FROM wait_subscription w \
              JOIN workflow_run r ON r.tenant_id = w.tenant_id AND r.run_id = w.run_id \
              WHERE w.tenant_id = $1 AND w.source = $2 AND w.kind = 'event' AND NOT w.fired \
@@ -362,7 +401,12 @@ impl RunStore {
         .await
         .map_err(map_db)?;
         let mut woke = 0;
-        for (run_id, step_path, spec, ir_json) in rows {
+        for row in rows {
+            let EventWaitRow {
+                subscriber,
+                spec,
+                ir_snapshot,
+            } = row;
             // filter 評価（fail-closed: 不正 filter・不一致は起床しない・engine.md §5.6）。
             if let Some(filter_json) = spec.0.get("filter").filter(|v| !v.is_null()) {
                 match serde_json::from_value::<Condition>(filter_json.clone()) {
@@ -381,14 +425,18 @@ impl RunStore {
                     }
                 }
             }
-            let Some(graph) = graph_from_snapshot(ir_json.0) else {
+            // 実行主体が対象を読めなければ起こさない（ペイロードを実行履歴に出さない・fail-closed）。
+            if !gate.admits(&subscriber).await? {
+                continue;
+            }
+            let Some(graph) = graph_from_snapshot(ir_snapshot.0) else {
                 continue;
             };
             if wake_step_and_advance(
                 &self.db,
                 tenant_id,
-                run_id,
-                &step_path,
+                subscriber.run_id,
+                &subscriber.step_path,
                 Some("out"),
                 payload.clone(),
                 &graph,

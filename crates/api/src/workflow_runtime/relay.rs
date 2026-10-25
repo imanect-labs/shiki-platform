@@ -3,8 +3,11 @@
 //! storage.write の 1 件を、トリガの run 入力（`$from trigger`）と wait(event) の到来イベントに
 //! 写して配る（engine.md §5.4・§5.5 の同一マッチャ）。
 
+use async_trait::async_trait;
 use serde_json::{json, Value};
-use workflow_engine::{RunStore, SchedulerStore};
+use workflow_engine::{
+    EventWaitGate, EventWaitSubscriber, RunStore, RunStoreError, SchedulerStore,
+};
 
 /// 1 tick で捌く outbox の最大バッチ数と、1 バッチの件数（claim は配送済みの行を走査するので、1 回の件数を
 /// 大きくして回数を減らす・一括取込の 10 万件で 64 件ずつだと追いつくまで 15〜20 分かかった・検証 D-14）。
@@ -14,19 +17,21 @@ const RELAY_BATCH: usize = 500;
 /// outbox の workflow 未配送イベントを処理する（storage.write のみ・at-least-once）。
 ///
 /// 各イベントを ①トリガマッチ（run 起動）②wait(event) 起床、の両方へ配る（engine.md §5.5 同一マッチャ）。
-/// いずれも祖先束縛 scope（イベント発生フォルダ id）＋filter で照合する。スケジューラの tick から呼ぶ
-/// ほか、結合テストが本番と同じ経路でイベントを配るために使う。
+/// いずれも祖先束縛 scope（イベント発生フォルダ id）＋filter で照合する。wait(event) はさらに、購読した
+/// run の実行主体が保存されたファイルを読めるときだけ起こす（`storage` の viewer 確認・[`SavedFileGate`]）。
+/// スケジューラの tick から呼ぶほか、結合テストが本番と同じ経路でイベントを配るために使う。
 pub async fn relay_events(
     db: &sqlx::PgPool,
     hints: &storage::event::ClaimHints,
     sched: &SchedulerStore,
     runs: &RunStore,
     launcher: &dyn workflow_engine::RunLauncher,
+    storage: &storage::StorageService,
 ) -> Result<(), anyhow::Error> {
     // 溜まっていれば 1 tick の中で続けて捌く（構造化データのレコード変更も outbox に乗るので、一括取込の
     // 直後は件数が多い。1 tick 1 バッチだと他の consumer と GC を長く止める・Task 15.6）。
     for _ in 0..RELAY_BATCHES_PER_TICK {
-        if relay_events_batch(db, hints, sched, runs, launcher).await? < RELAY_BATCH {
+        if relay_events_batch(db, hints, sched, runs, launcher, storage).await? < RELAY_BATCH {
             break;
         }
     }
@@ -39,6 +44,7 @@ async fn relay_events_batch(
     sched: &SchedulerStore,
     runs: &RunStore,
     launcher: &dyn workflow_engine::RunLauncher,
+    storage: &storage::StorageService,
 ) -> Result<usize, anyhow::Error> {
     let mut tx = db.begin().await?;
     let events = storage::event::claim_undelivered_hinted(
@@ -71,8 +77,21 @@ async fn relay_events_batch(
                 launcher,
             )
             .await?;
-        runs.wake_event_waits(&ev.tenant_id, "storage.write", write.folder, &write.payload)
-            .await?;
+        // 確かめられなかった（認可基盤の一時障害など）ときは Err でバッチごと配送済みにせず、次の tick で
+        // 配り直す（トリガの発火・起こした wait は自 tx で冪等）。
+        let gate = SavedFileGate {
+            storage,
+            file_id: ev.node_id,
+            trace_id: ev.trace_id.as_deref(),
+        };
+        runs.wake_event_waits(
+            &ev.tenant_id,
+            "storage.write",
+            write.folder,
+            &write.payload,
+            &gate,
+        )
+        .await?;
         ids.push(ev.id);
     }
     storage::event::mark_delivered(&mut tx, "workflow", &ids).await?;
@@ -82,6 +101,48 @@ async fn relay_events_batch(
         "outbox → workflow event matcher / wait へ relay"
     );
     Ok(events.len())
+}
+
+/// wait(event) を起こす前に、購読した run の実行主体が保存されたファイルを読めるか（viewer）を確かめる。
+///
+/// wait(event) の購読は scope が空でもよく（テナント内のどの保存にも一致する）、購読時に実行主体の権限も
+/// 確かめていない。読めないファイルの id・書いた人などを run の実行履歴に出さないよう、起こすたびに
+/// StorageService（読取の認可チョークポイント・強整合の OpenFGA check と監査）で確かめる。トリガは
+/// 有効化の時点で有効化者がフォルダを読めることを確かめている（`RegistrationService::enable`）ので
+/// 対象にしない。
+struct SavedFileGate<'a> {
+    storage: &'a storage::StorageService,
+    file_id: uuid::Uuid,
+    trace_id: Option<&'a str>,
+}
+
+#[async_trait]
+impl EventWaitGate for SavedFileGate<'_> {
+    async fn admits(&self, sub: &EventWaitSubscriber) -> Result<bool, RunStoreError> {
+        let ctx = super::auth::principal_ctx(
+            &sub.tenant_id,
+            &sub.org,
+            &sub.principal,
+            &sub.principal_kind,
+        );
+        // 監査に「wait(event) の起床の確認」であることを残す（利用者が開いた記録と見分ける）。
+        let mut note = serde_json::Map::new();
+        note.insert("via".into(), json!("workflow.wait_event"));
+        note.insert("run_id".into(), json!(sub.run_id.to_string()));
+        note.insert("step".into(), json!(sub.step_path));
+        match self
+            .storage
+            .get_metadata_annotated(&ctx, self.file_id, self.trace_id, &note)
+            .await
+        {
+            Ok(_) => Ok(true),
+            // 読めない（存在を明かさない not_found を含む）・保存の後に消えたファイルでは起こさない。
+            Err(storage::StorageError::Forbidden | storage::StorageError::NotFound) => Ok(false),
+            Err(e) => Err(RunStoreError::Internal(format!(
+                "wait(event) の閲覧確認に失敗: {e}"
+            ))),
+        }
+    }
 }
 
 /// storage.write として配る 1 件（祖先束縛の照合に使うフォルダと、run 入力になるペイロード）。
@@ -94,8 +155,14 @@ struct StorageWriteEvent {
 
 /// outbox の 1 件を storage.write のイベントへ写す（ファイルの保存でなければ None）。
 ///
-/// 発火するのはファイルの作成と新しい版の保存（op = create / update）だけで、削除・移動・名前の変更・
-/// 復元・フォルダの作成では発火しない（トリガは「ファイルが保存されたとき」・BUG-8）。
+/// 配るのはファイルの作成と新しい版の保存（op = create / update）だけで、削除・移動・名前の変更・
+/// 復元・フォルダの作成は配らない（トリガは「ファイルが保存されたとき」・BUG-8）。
+///
+/// 祖先束縛の照合に使うフォルダは outbox の `parent_id`。新しい版の保存のうち、利用者のアップロード
+/// （finalize）・内容の更新（content_update）・提案の採用は `parent_id` を載せないので、フォルダを束縛した
+/// トリガ・wait には一致しない（載せるのはチャット・エージェントのワークスペースへの上書きだけ）。
+/// 上書き保存で起動させるには、自分が書いたファイルで自分を起こし続ける循環の抑止が先に要るので、
+/// ここでは広げていない（同じ CSV を上書きする run が、その保存で再び起動する）。
 ///
 /// ペイロード（`$from trigger` と wait(event) の出力）の形:
 ///
@@ -186,7 +253,7 @@ mod tests {
                 "parent_id": FOLDER, "size": 12, "actor": "alice", "blob_sha256": "abc",
             })
         );
-        // 新しい版の保存も発火する（親が載っている経路）。
+        // 新しい版の保存も配る（親が載っている経路＝ワークスペースへの上書き）。
         let up = event(
             "update",
             json!({ "kind": "file", "blob_sha256": "def", "size": 3, "parent_id": FOLDER }),
