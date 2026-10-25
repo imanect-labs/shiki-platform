@@ -8,8 +8,9 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use data::{DataTable, NewDataTable, TableSchema};
+use data::{DataTable, NewDataTable, TableSchema, TableShareRole};
 use serde::{Deserialize, Serialize};
+use storage::ShareTarget;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -40,6 +41,23 @@ pub struct UpdateSchemaRequest {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TableListResponse {
     pub items: Vec<DataTable>,
+}
+
+/// テーブルの共有・解除リクエスト（共有語彙は viewer / editor のみ・#864）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ShareTableRequest {
+    pub target: ShareTarget,
+    pub role: TableShareRole,
+}
+
+/// テーブルの共有先 1 件。`display_name` / `email` は呼び出し元テナント（＋ org）のディレクトリから
+/// 解決した表示用の補助（別テナント・未登録は `null`。`email` は user のみ・#741 と同じ）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TableShareEntry {
+    pub target: ShareTarget,
+    pub role: TableShareRole,
+    pub display_name: Option<String>,
+    pub email: Option<String>,
 }
 
 /// テーブルを作成する（スキーマ検証＋索引台帳の初期化・201）。
@@ -212,6 +230,105 @@ pub async fn delete_table(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// テーブルを共有する（owner・viewer / editor・冪等）。
+#[utoipa::path(
+    put,
+    path = "/data/tables/{id}/shares",
+    params(("id" = Uuid, Path, description = "テーブル ID")),
+    request_body = ShareTableRequest,
+    responses(
+        (status = 204, description = "共有を付与した"),
+        (status = 400, description = "共有相手の指定が不正（id の形・同じテナントに居ない）・本文（JSON）を読めない", body = crate::error_body::BadRequestBody),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限がない（owner でない）"),
+        (status = 404, description = "存在しない（不可視を含む）"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn share_table(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ShareTableRequest>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .data
+        .share_table(&ctx, id, &req.target, req.role, trace.as_deref())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// テーブルの共有を解除する（owner・冪等・即時反映。開いている購読は次のバッチで閉じる）。
+#[utoipa::path(
+    delete,
+    path = "/data/tables/{id}/shares",
+    params(("id" = Uuid, Path, description = "テーブル ID")),
+    request_body = ShareTableRequest,
+    responses(
+        (status = 204, description = "共有を解除した"),
+        (status = 400, description = "共有相手の id の形が不正・本文（JSON）を読めない", body = crate::error_body::BadRequestBody),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限がない（owner でない）"),
+        (status = 404, description = "存在しない（不可視を含む）"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn unshare_table(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ShareTableRequest>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .data
+        .unshare_table(&ctx, id, &req.target, req.role, trace.as_deref())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// テーブルの共有先の一覧（owner）。
+#[utoipa::path(
+    get,
+    path = "/data/tables/{id}/shares",
+    params(("id" = Uuid, Path, description = "テーブル ID")),
+    responses(
+        (status = 200, description = "共有先の一覧", body = [TableShareEntry]),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限がない（owner でない）"),
+        (status = 404, description = "存在しない（不可視を含む）"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn list_table_shares(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<TableShareEntry>>, ApiError> {
+    let entries = state
+        .data
+        .list_table_shares(&ctx, id, trace.as_deref())
+        .await?;
+    let profiles =
+        super::share_profiles::resolve(&state, &ctx, entries.iter().map(|(t, _)| t)).await;
+    Ok(Json(
+        entries
+            .into_iter()
+            .map(|(target, role)| {
+                let p = profiles.get(&target);
+                TableShareEntry {
+                    target,
+                    role,
+                    display_name: p.display_name,
+                    email: p.email,
+                }
+            })
+            .collect(),
+    ))
+}
+
 /// 構造化データ（Task 9.2/9.3/9.5）のルート宣言（route_table から分離・同じ宣言的マップの一部）。
 pub(crate) fn data_route_decls() -> Vec<RouteDecl> {
     use crate::server::AccessPolicy::Session;
@@ -226,6 +343,16 @@ pub(crate) fn data_route_decls() -> Vec<RouteDecl> {
         r("/data/tables/{id}/schema", &["PUT"], Session, || {
             put(self::update_table_schema)
         }),
+        r(
+            "/data/tables/{id}/shares",
+            &["GET", "PUT", "DELETE"],
+            Session,
+            || {
+                get(self::list_table_shares)
+                    .put(self::share_table)
+                    .delete(self::unshare_table)
+            },
+        ),
         r(
             "/data/tables/{id}/viewer-context",
             &["GET"],
