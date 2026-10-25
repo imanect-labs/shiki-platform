@@ -42,22 +42,22 @@
 
 | 区分 | 件数 | 内訳 |
 | --- | --- | --- |
-| 既知の不具合（human 報告） | 5 | BUG-1〜5。原因はすべて特定済み（§3） |
-| 調査で見つけた不具合 | 20 | BUG-6〜25（§4） |
+| 既知の不具合（human 報告） | 5 | BUG-1〜5。5 件とも直した（ブランチ `workflow-app-quality`・未 PR）。BUG-3 は説明文まで。効果の測定（GAP-30）は未着手 |
+| 調査で見つけた不具合 | 34 | BUG-6〜39（§4）。第 1 弾で 13 件を直した（BUG-26・27 を含む）。BUG-26〜39 は第 1 弾の実装とレビューで見つけたもの |
 | 不足機能 | 41 | GAP-01〜41（§5）。P0 が 7 件 |
 | 新機能 | 2 | FEAT-1（決定モデル）・FEAT-2（アプリエディタ）（§6） |
 | 実践シナリオ | 12 | APP-01〜12（§7）。今の機能で組めるのは 2 本（03・08。日付や重複対策は script 頼み）、回避策つきで 5 本、一部だけ 1 本、不可 4 本 |
-| human 判断待ち | 20 | D-1〜20（§8） |
+| human 判断待ち | 54 | D-1〜D-54（§8）。D-1〜10・D-21〜32 は決定済み。D-33〜50 は第 1 弾の結果から、D-51〜54 は第 2 弾の設計から |
 
 ## 3. 既知の不具合（human 報告）
 
 | ID | 内容 | 原因（要約） | 状態 | PR |
 | --- | --- | --- | --- | --- |
-| BUG-1 | ワークフローの変数が機能せず、文字列がそのまま埋め込まれる | 4 つの欠陥の重なり（下記） | 修正中 | |
-| BUG-2 | ノードを DnD で動かすと連続的に動かず、ドロップ位置へ瞬間移動する | 制御モードでドラッグ中の位置を捨てている＋座標の無いノードがあると全体を平行移動する | 修正中 | |
-| BUG-3 | Shiki 内で AI にワークフロー（アプリ）を作らせる機能が十分に働くか不明 | AI が読む唯一の仕様（ツールの説明文）が誤っており、params の形も教えていない。アプリ（画面・テーブル）は作れない | 修正中（説明文） | |
-| BUG-4 | LLM 呼び出しノードで LLM を選びにくい | モデル欄が自由入力で、照合先も組織の許可リストではない | 修正中（UI） | |
-| BUG-5 | CSV 集計ノードでファイルを選べないように見える | `csv.*` の 3 ノードだけ設定フォームが未登録 | 修正中 | |
+| BUG-1 | ワークフローの変数が機能せず、文字列がそのまま埋め込まれる | 4 つの欠陥の重なり（下記） | 直した（4 つとも） | |
+| BUG-2 | ノードを DnD で動かすと連続的に動かず、ドロップ位置へ瞬間移動する | 制御モードでドラッグ中の位置を捨てている＋座標の無いノードがあると全体を平行移動する | 直した（BUG-9・25 も） | |
+| BUG-3 | Shiki 内で AI にワークフロー（アプリ）を作らせる機能が十分に働くか不明 | AI が読む唯一の仕様（ツールの説明文）が誤っており、params の形も教えていない。アプリ（画面・テーブル）は作れない | 説明文と検証の穴を直した。効果の測定（GAP-30）とアプリの残り（D-10）は未着手 | |
+| BUG-4 | LLM 呼び出しノードで LLM を選びにくい | モデル欄が自由入力で、照合先も組織の許可リストではない | 直した（一覧から選ぶ・照合先を組織の許可リストに）。本人専用モデルが一覧に混ざる件は BUG-33 | |
+| BUG-5 | CSV 集計ノードでファイルを選べないように見える | `csv.*` の 3 ノードだけ設定フォームが未登録 | 直した（設定フォーム・ドライブから選ぶ・有効化でファイルを選ぶ） | |
 
 ### BUG-1 変数が文字列のまま埋め込まれる
 
@@ -137,25 +137,39 @@ AI がワークフローを作る経路は、チャットの `emit_workflow` / `
 | ID | 優先度 | 内容 | 根拠 | 状態 | PR |
 | --- | --- | --- | --- | --- | --- |
 | BUG-6 | P0 | `agent.invoke` が自然文の指示を Python コードとして実行する。パレットと右パネルは「AI エージェント」「添付の資料を確認して要点をまとめて」と見せているので、その通りに書くと必ず失敗する | `api/src/workflow_runtime/ports.rs:267-326` | agent-core につなぐ（D-4）・設計中 | |
-| BUG-7 | P0 | V2 が `from_port` の存在を検証しない。存在しないポートのエッジが保存でき、実行時は dead edge になって下流が黙って skipped になる（run は成功扱い） | `ir/validate/v2_graph.rs:67-95`・ir.md §8 V2 | 修正中 | |
-| BUG-8 | P0 | ファイル保存トリガの run 入力にファイル ID・名前・op が無い（outbox の `{kind, blob_sha256, size, parent_id}` そのまま）。削除でも発火する | `api/src/workflow_runtime/mod.rs:438-456` | 修正中 | |
-| BUG-9 | P1 | エッジを選択・削除できない。エッジをクリックしてから Delete を押すと直前に選んでいたノードが消える。1 回の削除で Undo が 2 段に分かれ、座標も戻らない | `canvas.tsx:106-127,170-201`・`ir-state.ts` | 修正中 | |
-| BUG-10 | P1 | csv.* の同意計画が無く、schedule／event の run は権限不足で失敗する（有効化は成功してしまう） | `registration/consent.rs` | 修正中 | |
-| BUG-11 | P1 | 保存時のモデル照合が組織の許可リストを見ない。Compose では照合自体を飛ばす | `v3_vocab.rs:54-74`・`save.rs:78-84` | 修正中 | |
+| BUG-7 | P0 | V2 が `from_port` の存在を検証しない。存在しないポートのエッジが保存でき、実行時は dead edge になって下流が黙って skipped になる（run は成功扱い） | `ir/validate/v2_graph.rs:67-95`・ir.md §8 V2 | 直した | |
+| BUG-8 | P0 | ファイル保存トリガの run 入力にファイル ID・名前・op が無い（outbox の `{kind, blob_sha256, size, parent_id}` そのまま）。削除でも発火する | `api/src/workflow_runtime/mod.rs:438-456` | 直した。run 入力は `{file_id, version, op, kind, parent_id, size, actor, blob_sha256}`。発火はファイルの作成と版の保存だけ。調べ直すと、削除で起きていたのはトリガではなく scope の無い `wait(event)` だった（BUG-27）。新しい版の保存では起きない（BUG-28） | |
+| BUG-9 | P1 | エッジを選択・削除できない。エッジをクリックしてから Delete を押すと直前に選んでいたノードが消える。1 回の削除で Undo が 2 段に分かれ、座標も戻らない | `canvas.tsx:106-127,170-201`・`ir-state.ts` | 直した | |
+| BUG-10 | P1 | csv.* の同意計画が無く、schedule／event の run は権限不足で失敗する（有効化は成功してしまう） | `registration/consent.rs` | 直した | |
+| BUG-11 | P1 | 保存時のモデル照合が組織の許可リストを見ない。Compose では照合自体を飛ばす | `v3_vocab.rs:54-74`・`save.rs:78-84` | 直した | |
 | BUG-12 | P1 | モデル省略時にデプロイ既定で動き、組織の既定・Auto を無視する（skill・ミニアプリの AI も同じ） | `ports.rs:215-219`・`skill.rs:92`・`app-gateway/src/routes/ai.rs:133-136` | 組織の既定に揃える（D-5）・未着手 | |
-| BUG-13 | P1 | 任意項目の参照が解決できないと黙ってフォールバックする（folder→ルート、input→run 入力全体、path_suffix→空文字、workflow.start の input→null） | `capability.rs:88-92,244-248,368-372`・`script.rs:61-65`・`skill.rs:42-46`・`capability_ai.rs:139-145` | 修正中 | |
-| BUG-14 | P1 | 条件の大小比較で型が合わないと黙って false になる（ir.md §3.3 は `expr_type_error`）。固定値の数字は文字列として保存されるので、金額の比較が黙って逆に流れる | `control/eval.rs` の `compare_ordered` | 修正中 | |
-| BUG-15 | P1 | `llm.invoke`・`agent.invoke` の既定 params が入力全体（オブジェクト）を参照し、置いたまま実行すると「prompt が解決できません」で落ちる | `ir-state.ts:97-100` | 修正中 | |
-| BUG-16 | P2 | 「条件を追加」の既定の左辺が `path: "/"`（空文字キー）で、eq は常に偽・neq は常に真 | `forms-control.tsx:212` | 修正中 | |
+| BUG-13 | P1 | 任意項目の参照が解決できないと黙ってフォールバックする（folder→ルート、input→run 入力全体、path_suffix→空文字、workflow.start の input→null） | `capability.rs:88-92,244-248,368-372`・`script.rs:61-65`・`skill.rs:42-46`・`capability_ai.rs:139-145` | 直した | |
+| BUG-14 | P1 | 条件の大小比較で型が合わないと黙って false になる（ir.md §3.3 は `expr_type_error`）。固定値の数字は文字列として保存されるので、金額の比較が黙って逆に流れる | `control/eval.rs` の `compare_ordered` | 直した | |
+| BUG-15 | P1 | `llm.invoke`・`agent.invoke` の既定 params が入力全体（オブジェクト）を参照し、置いたまま実行すると「prompt が解決できません」で落ちる | `ir-state.ts:97-100` | 直した（同じ欠陥の rag.search は BUG-26） | |
+| BUG-16 | P2 | 「条件を追加」の既定の左辺が `path: "/"`（空文字キー）で、eq は常に偽・neq は常に真 | `forms-control.tsx:212` | 直した | |
 | BUG-17 | P1 | ミニアプリの任意の skill ピンが壊れると、アプリ全体が「見つかりません」になる | `crates/gui/src/miniapp_store.rs::resolve` | 未着手 | |
 | BUG-18 | P1 | 共有で editor にした人にミニアプリの編集ボタンが出ない（UI が owner だけに出す） | `apps/[id]/page.tsx:48` | 未着手 | |
 | BUG-19 | P1 | ボタンの run が終わってもミニアプリの表（data_grid）が読み直されない | `apps/[id]/page.tsx`・`data-grid.tsx` | 未着手 | |
 | BUG-20 | P2 | 待ち（wait）の run が「実行中」のまま表示され、開いている間 3 秒ごとに読み直し続ける | `RunStatus`・`apps/[id]/page.tsx` | 未着手 | |
-| BUG-21 | P2 | 必須項目の欠落エラーが欄に写らない（サーバは日本語化し、web は英語の原文しか照合しない） | `validation.ts:37-50`・`params/mod.rs:97-102` | 修正中 | |
+| BUG-21 | P2 | 必須項目の欠落エラーが欄に写らない（サーバは日本語化し、web は英語の原文しか照合しない） | `validation.ts:37-50`・`params/mod.rs:97-102` | 直した | |
 | BUG-22 | P1 | `dev-up.sh` がカーソル鍵（`SHIKI__DATA__EPHEMERAL_CURSOR_KEY`）と tabular runner のパスを渡しておらず、native 起動が bail／csv.* が失敗する | `.claude/skills/pr/scripts/dev-up.sh:512-585,631` | 回避策あり（§9） | |
 | BUG-23 | P1 | `storage.read` がバイナリ文書（PDF・docx・xlsx）を不可逆に文字化けした text で返す | `capability.rs`（`from_utf8_lossy`） | GAP-14 で扱う | |
 | BUG-24 | P2 | data_grid のページ送りのたびに resolve と監査（`miniapp.resolve`・`artifact.read_via_bundle`）が走る | `crates/gui/src/miniapp_data.rs` | 未着手 | |
-| BUG-25 | P2 | トリガの座標を添字（`trigger:${i}`）で保存しており、前のトリガを消すと別のトリガに付け替わる | `workflow-editor.tsx` | 修正中 | |
+| BUG-25 | P2 | トリガの座標を添字（`trigger:${i}`）で保存しており、前のトリガを消すと別のトリガに付け替わる | `workflow-editor.tsx` | 直した | |
+| BUG-26 | P1 | `rag.search` の既定 query も入力全体のオブジェクトを指し、置いたまま実行すると必ず失敗する（BUG-15 と同じ欠陥） | `ir-state.ts:131-132` | 直した | |
+| BUG-27 | P0 | scope の無い `wait(event)` が、テナント内の誰のファイルの保存でも起きる。起床の前に実行主体の権限を確かめないので、読めないファイルの file_id・actor・parent_id・size が step 出力に残る。filter に actor を書けば特定の人の保存を見張れる | `run/store/wait.rs:351`・`nodes/exec.rs:255-258` | 直した（起こす前に実行主体の viewer を確かめる `EventWaitGate`・D-33）。同意計画に wait のフォルダの閲覧を足した | |
+| BUG-28 | P1 | 新しい版の保存（presigned の finalize・content_update・提案の採用）で、ファイル保存トリガと folder を指定した `wait(event)` が起きない（outbox に parent_id が無い）。同じ CSV を上書きしても run が起動しない | `storage/src/service/finalize.rs:414`・`content_update.rs:130`・`proposal.rs:244` | 未着手（循環の抑止が先・D-38）。AI の説明文は「上書き保存での起動は当てにしない」に直した | |
+| BUG-29 | P1 | ファイル保存トリガに自己発火・循環の抑止が無い。event で起動した run が束縛フォルダへ書くと、自分の保存で再び起動し続ける | `workflow_runtime/relay.rs` | 未着手（D-26 の因果の鎖を storage にも広げる・D-38） | |
+| BUG-30 | P2 | switch の case を消す・on_error を fail_run に戻す・on_timeout を変えると、消えた出口のエッジが残る。保存は `ir.unknown_port` で止まるが、キャンバスに描けず選んで消せない恐れがある | `forms-control.tsx`・`config-panel/common.tsx` | 未着手 | |
+| BUG-31 | P1 | 条件の右辺の固定値は文字列（`"50000"`）で保存される。BUG-14 を直したので、数値との大小比較は黙って偽ではなく run の失敗になる | `forms-control.tsx:190-193` | 一部（保存時に `ir.condition_semantics_changed` で警告する）。UI で数値として保存するのは未着手 | |
+| BUG-32 | P2 | `storage.read` の既定 params が `file: {$from: input, path: /file_id}` のままで、スケジュールで有効化すると「入力が無いので失敗します」と出る | `ir-state.ts:134-135` | 未着手 | |
+| BUG-33 | P1 | `/llm/models` に本人専用（ChatGPT プラン）のモデルが混ざる。ワークフローで選ぶと保存時の照合で弾かれる。応答に印が無いので web では除けない | `routes/llm_models.rs:132-133`・`model-field.tsx:41` | 未着手（API の形を変える・D-46） | |
+| BUG-34 | P2 | input_schema の項目の並びが、保存して開き直すとキーの辞書順に変わる（serde_json に preserve_order が無い） | workspace の serde_json | 未着手 | |
+| BUG-35 | P2 | input_schema の `format: date` をエンジンが検査しない（画面の入力欄が YYYY-MM-DD を送る前提） | `input_schema.rs` | 未着手 | |
+| BUG-36 | P1 | ファイル保存トリガの run 入力の項目（`/file_id` など）を、値の欄の参照の候補から選べない。形が relay.rs のコメントにしか無く、生成した型にもカタログにも無い | `value-refs.ts`（refOptions・pathHints） | 未着手（D-47） | |
+| BUG-37 | P2 | 組織がすべてのモデルを無効にすると、保存時のモデル照合が飛ぶ（「LLM が未構成」と「許可が 0 件」を同じ空で表している） | `workflow_catalog.rs:34-50`・`v3_vocab.rs:75` | 未着手 | |
+| BUG-38 | P2 | 有効化ダイアログが、`$from: trigger`（トリガで保存されたファイル）を「前のブロックの結果で決まる」と説明する。実際はトリガのフォルダの委譲で読める | `enable-dialog.tsx:112` | 未着手 | |
+| BUG-39 | P1 | ファイル保存トリガは有効化の時点で有効化した人の閲覧を確かめるだけで、発火の時点では workflow プリンシパルの閲覧を確かめない。委譲やフォルダの共有を外した後も、run 入力に file_id・actor が載る | `scheduler/store.rs`（match_event） | 未着手（D-50） | |
 
 ## 5. 不足機能
 
@@ -171,13 +185,13 @@ GAP-01〜05・18・20 は §3〜§4 の不具合と同じものなので、こ�
 | GAP-09 | P1 | ミニアプリの画面に run の結果（出力・失敗理由）が返らない。アプリだけを共有された人に結果を返す経路も無い | 02・07・11・12 | 前倒し（D-3）・設計中 |
 | GAP-10 | P1 | Yui app の部品の不足（ファイル添付・ユーザー／部署・テーブルの行の選択） | 01・04・05・07・11 | D-19 待ち |
 | GAP-11 | P1 | ミニアプリ編集画面で保存ビュー（data_views）を束ねられない。ワークフローの版を上げる操作も無い | 全部 | 未着手 |
-| GAP-12 | P1 | エディタに input_schema（入力項目）の編集 UI が無い。画面の `as` 名との突き合わせも無い | interactive 全部 | 修正中 |
+| GAP-12 | P1 | エディタに input_schema（入力項目）の編集 UI が無い。画面の `as` 名との突き合わせも無い | interactive 全部 | 編集 UI は直した（キーを変えると参照も追随する）。画面の `as` 名との突き合わせは未着手 |
 | GAP-13 | P1 | `llm.invoke` の構造化出力（`output_schema`）が無い（ir.md §7.3 にあるが未実装） | 02・04・05・07・09・10 | 未着手 |
 | GAP-14 | P1 | PDF・Word の本文を読めない（`doc.read` を `rag::SearchService::read_document` の上に作る案） | 04・05・07・09 | 未着手 |
 | GAP-15 | P1 | 発火時刻・相対日付・週月の丸めが無い（schedule のペイロードは Null） | 03・06・08・11 | 未着手 |
 | GAP-16 | P1 | 自然キーでの upsert と加算更新が無い | 06・08・10 | 未着手 |
 | GAP-17 | P1 | 実行した本人を `$from` で参照できない（`run` は `{run_id, tenant_id}` だけ） | 01・11 | 未着手 |
-| GAP-19 | P1 | `http.request` ノードに Content-Type・任意ヘッダが付かない（script の経路は付く） | 外部通知 | 修正中（Content-Type） |
+| GAP-19 | P1 | `http.request` ノードに Content-Type・任意ヘッダが付かない（script の経路は付く） | 外部通知 | Content-Type は直した（オブジェクト・配列の本文は application/json）。任意ヘッダは未着手 |
 | GAP-21 | P2 | メール受信・Webhook 受信のトリガが無い | 02 | 未着手 |
 | GAP-22 | P2 | PDF・Excel・Word の帳票を生成できない | 03・06・08 | 未着手 |
 | GAP-23 | P2 | 200 行を超えるページ送りのループが無い。`storage.list` は 100 件で打ち切り | 03・10 | 未着手 |
@@ -191,13 +205,13 @@ GAP-01〜05・18・20 は §3〜§4 の不具合と同じものなので、こ�
 
 | ID | 優先度 | 内容 | 状態 |
 | --- | --- | --- | --- |
-| GAP-29 | P0 | ノードの params・出力の形を LLM が知る手段が無い（カタログから生成して説明文に載せる。`describe_node` ツールの案も） | 修正中 |
+| GAP-29 | P0 | ノードの params・出力の形を LLM が知る手段が無い（カタログから生成して説明文に載せる。`describe_node` ツールの案も） | 直した（params の形は ts-rs の宣言から、出力の形はカタログの `output_shape` から作り、説明文に載せる。`describe_node` は作らない。説明文は約 12,000 字になり tool_search に影響する・D-41） |
 | GAP-30 | P0 | AI 作成の評価ハーネスが無い（`eval/app-builder/`。課題集＋採点: 保存時検証を通るか・実行して期待結果になるか） | 未着手 |
 | GAP-31 | P1 | 既存ワークフローを探すツール（`list_workflows`）が無い。新しい会話から「経費フローを直して」と頼めない | 未着手 |
 | GAP-32 | P1 | AI がテーブル・保存ビュー・ミニアプリ本体を作れない。Yui app の書き方も教えていない | D-10 待ち |
 | GAP-33 | P1 | ワークフローエディタ・ミニアプリエディタに「AI に依頼」パネルが無い（Task 10.13 の「エディタ内 AI」・UI 文言は「AI 編集で変更できます」と案内している） | D-10 待ち |
 | GAP-34 | P1 | AI が作ったワークフローを試運転して確かめる手段が無い（閉ループが無い） | D-10 待ち |
-| GAP-35 | P1 | V1（serde）のエラーが 1 往復 1 件・path なしで返る。V4 がテーブル・フォルダ id の実在を見ない（ir.md §8 V4） | 未着手 |
+| GAP-35 | P1 | V1（serde）のエラーが 1 往復 1 件・path なしで返る。V4 がテーブル・フォルダ id の実在を見ない（ir.md §8 V4）。input_schema を保存時に検証しない（`$ref`・`oneOf` を書いても起動時まで通る）。`$from: input` の path を input_schema と照合しない | 未着手 |
 
 ### 5.3 ミニアプリ・エディタの操作感
 
@@ -207,8 +221,8 @@ GAP-01〜05・18・20 は §3〜§4 の不具合と同じものなので、こ�
 | GAP-37 | P1 | 利用者の権限の事前確認が無い（共有しても、表とワークフローの書き先の権限は本人の ReBAC で評価される。足りなくても開いた後か run の失敗で初めて分かる） | 未着手 |
 | GAP-38 | P2 | 呼び名の不統一（パレットの「業務データ」とほかの画面の「テーブル」） | 未着手 |
 | GAP-39 | P2 | ワークフローエディタの操作: 複数選択・コピー／貼り付け・接続の妥当性の事前検査（`isValidConnection`）・エッジの付け替え・キーボード操作（Esc・Ctrl+A など）・未接続ノードが入口として走る落とし穴 | 未着手 |
-| GAP-40 | P1 | ファイルを扱うフローの部品: `csv.patch` の base_rev を出力から取れない、`csv.query` の rows が文字列の 2 次元配列だけ、xlsx・Shift_JIS 非対応、有効化ダイアログでファイルを選べない | 一部修正中 |
-| GAP-41 | P2 | 誤りの文言が利用者向けでない（ミニアプリの 409 が「API 409」、503 が「結果を確かめられませんでした」、入力の誤りが `/amount` のような JSON Pointer、ワークフローの LLM エラーが英語の原文） | 一部修正中 |
+| GAP-40 | P1 | ファイルを扱うフローの部品: `csv.patch` の base_rev を出力から取れない、`csv.query` の rows が文字列の 2 次元配列だけ、xlsx・Shift_JIS 非対応、有効化ダイアログでファイルを選べない。`csv.write` の content は文字列か base64 しか CSV として扱わず、`csv.query` の出力 `{columns, rows}` を渡すと JSON の文字列がそのまま .csv に保存される | 有効化ダイアログでファイルを選べるようにした。残りは未着手 |
+| GAP-41 | P2 | 誤りの文言が利用者向けでない（ミニアプリの 409 が「API 409」、503 が「結果を確かめられませんでした」、入力の誤りが `/amount` のような JSON Pointer、ワークフローの LLM エラーが英語の原文） | ワークフローの LLM エラーは直した（日本語にし、原文はログへ）。残りは未着手 |
 
 ## 6. 新機能
 
@@ -411,9 +425,9 @@ GAP-01〜05・18・20 は §3〜§4 の不具合と同じものなので、こ�
 | D-6 | FEAT-1 のトレイト境界（新トレイト `DecisionProvider`／`LlmProvider` に既定実装つきのメソッド／トレイトを変えず skill で PoC）とノード名（`ai.decide` など） | 新トレイト `DecisionProvider`・`ai.decide`。先に GAP-13（構造化出力）を入れる | **推奨案で進める**（2026-10-25） |
 | D-7 | FEAT-1 で信頼度がしきい値未満のときの扱い | 承認待ち（D-1）ができるまでは「要確認テーブルに行を作って終える」 | 未決。D-1 で承認待ちノードを前倒しするので、しきい値未満は承認待ちへ回す案に更新して提案する |
 | D-8 | PR #902（FEAT-2 の組み込み・draft）を先にマージするか | 先にマージし、本キャンペーンはその上に載せる | **先にマージする**（2026-10-25）。**2026-10-25 にマージ済み**（`4ddcc9bc`）。ready にしたあと Codex の指摘 1 件（タブを移るだけで保存の検証が外れる）を元のセッションが `3e9fed9` で直し、Codex の再レビューで指摘なし・CI 全緑を確かめた。CodeRabbit はレート制限でレビューを飛ばした |
-| D-9 | 実 LLM の検証に使うモデルと枠（Gemini API の Gemma 4 無料枠・有償キー） | | **Anthropic の Claude Haiku 5.5（`claude-haiku-5-5`）を使う**（2026-10-25）。**使ってよい額は約 $100**（クレジット $290 のうち）。ゲートウェイの利用上限（`llm.limits`・プロバイダ `anthropic`・月 $100）で止まるようにしてある。キーは作業ツリー直下の `key`（`.gitignore` 済み・権限 600） |
+| D-9 | 実 LLM の検証に使うモデルと枠（Gemini API の Gemma 4 無料枠・有償キー） | | **Anthropic の Claude Haiku 5.5（`claude-haiku-5-5`）を使う**（2026-10-25）。**使ってよい額は約 $100**（クレジット $290 のうち）。歯止めは 3 段: (1) 中継（§9.2）が 2026-10-25 からの累計を DB の外に記録し $95 で止める (2) gateway の利用上限（月 $100） (3) human が Anthropic Console のワークスペースに上限を設定済み。キーは作業ツリー直下の `key`（`.gitignore` 済み・権限 600）で、読むのは中継だけ |
 | D-10 | AI 作成の閉ループ: 試運転ツール（本人の権限・承認カードつき）、テーブル・保存ビュー・ミニアプリを作るツール、エディタ内 AI、アプリ作成時の手数上限 | どれも入れる。順序は説明文の修正 → 評価ハーネス → 試運転 → 作成ツール | **推奨案で進める**（2026-10-25） |
-| D-11 | テンプレートの記法を `{name}`（ir.md §3.2）のままにするか、`{{name}}` も差し込みとして受けるか | `{name}` のまま。`{{name}}` は保存時に警告し、UI でワンクリック変換 | |
+| D-11 | テンプレートの記法を `{name}`（ir.md §3.2）のままにするか、`{{name}}` も差し込みとして受けるか | `{name}` のまま。`{{name}}` は保存時に警告し、UI でワンクリック変換 | 第 1 弾で推奨案のとおり実装した（警告 `ir.template_escaped_var`）。承認を待つ |
 | D-12 | 正本の追記の提案: ir.md §6.2 にファイル保存イベントのペイロード、§7 に csv.* の行、engine.md にパラメータ解決の節、ir.md §8 の V2・V4・V7 の実装状況 | | |
 | D-13 | web に単体テストの仕組み（vitest）を足すか（CI の変更を伴う） | 足す（reducer と座標計算を無検査のままにしない） | |
 | D-14 | キャンペーンの利用者シナリオを `web/e2e/campaign-*.manual.spec.ts` として残すか | 残す（回帰の網にする） | |
@@ -435,6 +449,28 @@ GAP-01〜05・18・20 は §3〜§4 の不具合と同じものなので、こ�
 | D-30 | モデルの解決（BUG-12）の細則: 明示したモデルが後で無効になったら fail-closed／組織がモデル選択を禁じているときはワークフローでもモデルを指定させない／本人専用モデル（ChatGPT プラン）はワークフローの解決から外す／ミニアプリは省略時だけ解決し、明示モデルは置き換えない | このとおり | **推奨どおり承認**（2026-10-25） |
 | D-31 | 既存の閲覧の範囲（GAP-09 の調査で発見）: ワークフローの viewer が、他人が起動した interactive run の入力と step 出力（その人の権限で読んだデータ）を読める。続けるか | 別の Issue で扱う（GAP-09 は待たずに進める） | **推奨どおり承認**（2026-10-25） |
 | D-32 | 正本の改訂: 上の設計に伴う ir.md（§6・§7.3・§7.4・§7.8・§8・§9）・engine.md（パラメータ解決・待機中の run の数え方）・data-platform.md §9.2（run 入力に値を載せる）・design.md（トレイト表・モデルカタログ）・miniapp-platform.md の改訂を、実装の PR に提案として含める | 含める（human がレビューで確かめる） | **推奨どおり承認**（2026-10-25） |
+| D-33 | **トレイト境界**: エンジンに `EventWaitGate`（`wait(event)` を起こす前に、run の実行主体がイベントの対象を読めるかを確かめる口）を足した。実装は api 側の `SavedFileGate`（StorageService の `get_metadata_annotated` で viewer を確かめ、監査を残す）。BUG-27 の must 修正でレビュー担当が入れた | 承認する（既存の差し替えトレイト 6 種には触れていない。外すとテストが落ちることを確かめた） | |
+| D-34 | BUG-14 の範囲: ir.md §3.3 は型の合わない比較をすべて `expr_type_error` とする。実装は大小比較（lt・lte・gt・gte）だけを失敗にし、eq・in・contains などの型違いと、左辺が配列の大小比較は偽のまま | ir.md を実装に合わせて改訂する（data 側と共通の意味論表に揃える） | |
+| D-35 | null の扱い: ir.md §3.1 は default の無い null を失敗とする。実装は、値式全体の null は通し（項目を空にする書込のため）、`$template` の差し込みの null は失敗にした | ir.md §3.1 に「値式全体の null は値として通す」例外を書き足す | |
+| D-36 | switch の value が解決できないとき、default へ流さず `expr_resolve_error` で失敗させた | このまま。ir.md §5.2 に明記する（「無ければその他へ」は `$from` に default を書く） | |
+| D-37 | テンプレートの閉じの無い `{`（`a { b`）を文字のまま通している | 保存時に警告する（エラーにはしない） | |
+| D-38 | 新しい版の保存でファイル保存トリガを起こすか（BUG-28） | 循環の抑止（BUG-29。D-26 の因果の鎖を storage にも広げる）と同じ PR で入れる。Office の自動保存のたびに run が起きる点は、トリガ側の debounce で抑える | |
+| D-39 | ファイル保存トリガの run 入力に name・content_type を載せるか | 載せない（`storage.read` の出力から取る）。拡張子で filter したい要望が出たら、発火時の閲覧確認（D-50）と一緒に足す | |
+| D-40 | folder を省略した `storage.write`・`csv.write` は schedule / event の run ではルートに書くので、フォルダの委譲では救えない | 有効化の時点で止め、理由を出す（「保存先のフォルダを指定してください」） | |
+| D-41 | emit_workflow の説明文が 1,819 字から約 12,000 字に増えた。BM25 だけの手元測定で、関係ない依頼で一緒に読み込まれる率が 32/48 → 41/48、1 位になる件数が 28 → 23 に変わった（1 回あたり約 4k トークン増） | agent-core の tool_search の索引に入れる文を、ツールごとの検索用の短い文に分ける（説明文の全文は索引に入れない） | |
+| D-42 | 出力の形（`output_shape`）を人が読む TS 風の文字列でカタログに持ち、web が字句解析して候補にしている | カタログに構造化した項目（名前・型の配列）を足し、文字列はそこから作る | |
+| D-43 | 必須の文字の欄（`llm.invoke` の prompt・`agent.invoke` の instruction・`rag.search` の query・`csv.query` の sql）が空のとき | 保存は通す。保存時に path つきで警告し、有効化と実行の前に止める | |
+| D-44 | エディタの細部: 同じ欄への連続入力を 1.5 秒で Undo 1 段にまとめる／Undo・Redo・きっかけの編集で layout を保存し直す／開いただけでは layout を保存しない | このまま | |
+| D-45 | 有効化ダイアログで「入力で決まるので渡さない」と判定するのを、テーブルとファイルだけにし、フォルダには広げない（親フォルダの権限は配下に効くので、選ばせる意味が残る） | このまま | |
+| D-46 | **API の形の変更**: `/llm/models` に本人専用モデルの印を足すか、`?purpose=workflow` でワークフローの照合と同じ集合を返す（BUG-33・D-30 と揃える） | `?purpose=workflow` を足す | |
+| D-47 | イベントのペイロードの形を、カタログ（イベントの種類ごとの `payload_fields`）から生成し、UI の参照の候補と AI の説明文に出す（BUG-36・codegen が正） | する。GAP-07 のデータ変更トリガの run 入力も同じ表に載せる | |
+| D-48 | `csv.query` の SQL 欄に入力の値を差し込める。自由入力をそのまま SQL に入れる使い方は文字の注入になりうる（runner は SELECT だけ・対象は run が読めるファイルに限る） | 差し込みは残す。SQL のパラメータ束縛（`?` と値の配列）を後で足し、エディタはそちらへ誘導する | |
+| D-49 | `wait(event)` の scope を空のまま許すか（ir.md §6.2 はトリガの scope を必須にしている） | 新しく保存するものは folder を必須にする（V3）。保存済みのものは起床時の確認（D-33）で守る | |
+| D-50 | ファイル保存トリガの発火時にも、workflow プリンシパルがファイルを読めるかを確かめるか（BUG-39） | 確かめる（`wait(event)` と同じ gate を使う） | |
+| D-51 | 予算の歯止め（第 2 弾 FEAT-1 の H13）: 中継の累計上限 $95・gateway の月 $100・Console の上限 | **済み**。中継は 2026-10-25 に用意した（§9.2）。Console の上限は human が設定済み（2026-10-25） | 済み |
+| D-52 | FEAT-1（決定モデル）の判断 H1〜H12・H14・H15（§12 と付録 B） | H1 (a)・H2 (a)・H3 (c)・H4 (a)・H5 (b)・H6 (a)・H7 (c)・H8 (a)・H9 (a)・H10 先に承認・H11 (a)・H12 (a)・H14 SCOPE_FREE_APIS に入れる（認可の語彙）・H15 (a) validate の応答に `node_ports` を足す（API の追加） | |
+| D-53 | D-10（AI 作成の閉ループ）の判断 HD-1〜7（§12 と付録 B） | HD-1 (a) テーブルの改訂・アプリの改訂・試運転だけ承認・HD-2 (b)・HD-3 (a) crates/yui の表から生成・HD-4 (c) 既定 24 手・HD-5 (a) 約 $23 を配る・HD-6 (a) 実データで試運転・HD-7 (a) 開いている画面＋右のパネル | |
+| D-54 | GAP-30（評価ハーネス）の判断 1〜7（§12 と付録 B） | 1 は前提が消えた（`target/debug/shiki-server` は第 1 弾のビルドで上書き済み）。修正前の版（V0 = `81a9899b`）は別の worktree でビルドし直す。2 は中継で済み。3 (a)・4 (a)・5 (a)・6 (a)・7 (a) | |
 
 ## 9. 検証環境 runbook
 
@@ -454,7 +490,7 @@ GAP-01〜05・18・20 は §3〜§4 の不具合と同じものなので、こ�
 ```bash
 export SHIKI__DATA__EPHEMERAL_CURSOR_KEY=true
 export SHIKI__TABULAR__RUNNER_PATH=$PWD/crates/tabular/runner/target/debug/shiki-tabular-runner
-export SHIKI_CONFIG=~/.config/shiki-dev/llm.toml   # 実 LLM を足すとき（下記）
+export SHIKI_CONFIG=~/.config/shiki-dev/llm-stub.toml   # 既定は stub。利用者として使う検証は llm-haiku.toml（下記）
 bash .claude/skills/pr/scripts/dev-up.sh
 ```
 
@@ -462,7 +498,11 @@ bash .claude/skills/pr/scripts/dev-up.sh
   - `llm-stub.toml`: 既定は stub、Haiku 5.5 を追加プロバイダ `anthropic` として並べる。E2E の回帰（stub の応答に依存する spec）はこちらで流す。stub の通常応答は `回答: <user_text>` なので、`llm.invoke` の prompt の解決をそのまま観測できる。
   - `llm-haiku.toml`: 既定が Haiku 5.5（Auto も Haiku 5.5・effort low）、stub を追加プロバイダとして並べる。利用者として実際に使う検証はこちら。**`dev-up.sh` は `SHIKI__LLM__BACKEND` を既定で stub にするので、`export SHIKI__LLM__BACKEND=anthropic` も要る**（env が TOML より優先される）。
   - 単価は入力 $0.10・出力 $0.50／100 万トークン（プロンプトが 100K トークン以下のとき。超えると 5 倍）。カタログの窓は 100K に抑えてある。
-  - **予算は約 $100（D-9）**。両方の設定でプロバイダ ID を `anthropic` に揃え、`[llm.limits]` で月 $100 の総枠を掛けてある（DB の `llm_usage` で判定するので、`--reset-db` で消すと数え直しになる。消す前に §10 に使った額を書き残す）。使った額は `select sum(cost_usd_micros) from llm_usage where provider='anthropic'` 相当で確かめ、§10 に記録する。
+  - **予算は約 $100（D-9）**。歯止めは 3 段にしてある。
+    1. **中継**（`~/.config/shiki-dev/anthropic-relay.py`・`127.0.0.1:8787`・リポジトリの外）。本物のキーを読むのは中継だけで、製品の設定（両方の TOML の `base_url = "http://127.0.0.1:8787"`）にはダミーのキーしか入れない。中継を通らない呼び出しは 401 で落ちる。2026-10-25 からの累計を DB の外の台帳（`~/.local/state/shiki-campaign/anthropic-spend.jsonl`）に記録し、送る前に「累計＋max_tokens ぶんの出力」が $95 を超えるなら 403 で止める。月で区切らず、`--reset-db` でも消えない。通すモデルは `claude-haiku-5-5` だけ。累計は `curl -s 127.0.0.1:8787/spend` で見る。評価ハーネスなどは `x-campaign-tag` ヘッダを付けると台帳で用途を分けられる。
+       起動: `setsid nohup python3 ~/.config/shiki-dev/anthropic-relay.py > ~/.local/state/shiki-campaign/relay.log 2>&1 &`
+    2. **gateway の利用上限**（`[llm.limits]`・プロバイダ `anthropic`・月 $100）。DB の `llm_usage` で判定するので、日本時間の暦月と `--reset-db` で数え直しになる。中継の補助として残す。
+    3. **Anthropic Console のワークスペースの上限**（human が設定済み・2026-10-25）。
 - Haiku 5.5 の制約（shiki の Anthropic アダプタは実サーバで未検証だった）: thinking は既定で有効（adaptive）・`temperature`／`top_p`／`top_k` を送ると 400・assistant の prefill は 400・送り返した thinking ブロックの前の履歴を変えると 400。2026-10-25 に curl で確かめた結果、アダプタと同じく thinking ブロックを落として tool_result を返すループは 400 にならずに完了した。
 - ログインは `/login` から入る。入力は `#username` / `#password` / `#kc-login`。dev seed は alice（admin）・bob・charlie（別テナント）、パスワードはすべて `password`。
 
@@ -487,6 +527,16 @@ bash .claude/skills/pr/scripts/dev-up.sh
 
 - 調査（9 本の並列調査）: BUG-1〜5 の原因を特定。BUG-6〜25・GAP-06〜41・APP-01〜12・FEAT-1 の設計案・検証環境の runbook をまとめた。
 - 検証環境: `shiki-server` と tabular runner の debug ビルド、web の依存、compose のインフライメージを用意した。
+- 設計: 第 1 弾（§11）と第 2 弾（§12）を書き、反証レビューを当てた。
+- PR #902（FEAT-2）が main に入った（`4ddcc9bc`）。
+- 予算の中継を用意した（§9.2）。curl での確かめと疎通確認で $0.0009 を使った。
+- **第 1 弾の修正**（ブランチ `workflow-app-quality`・26 コミット・未 PR）。Rust 3 列・web 3 列で実装し、Rust・web それぞれに独立レビューを当て、指摘を直した。
+  - 直したもの: BUG-1〜5、BUG-7〜11・13〜16・21・25・26・27、GAP-12（編集 UI）・19（Content-Type）・29・41（ワークフローの LLM エラー）。
+  - レビューの must は 1 件（BUG-27: scope の無い `wait(event)` が他人のファイルの保存で起き、読めないファイルの情報が step 出力に残る）。起こす前に実行主体の閲覧を確かめる形で直し、gate を外すとテストが落ちることを確かめた。このとき新しいトレイト `EventWaitGate` が入った（D-33）。
+  - 実装とレビューで見つけたもの: BUG-26〜39、D-33〜50。
+  - 各列の検証: engine の単体 252 件・結合 17 本 104 件、api の単体 219 件・結合（workflow_files_it・workflow_nodes_it・workflow_catalog_it ほか）、chat の単体 157 件、tsc・lint。web の E2E（新規 16 件）は、スタックが無いので esbuild で束ねたハーネスでだけ流した（修正前の版で落ち、修正後に通ることを確かめた）。本物のスタックでは未実行。
+  - origin/main（`6f7be8c1`）へ rebase した（衝突なし）。
+  - 修正前の版の `target/debug/shiki-server` は上書きされた。評価ハーネスの V0 は別の worktree でビルドし直す（D-54）。
 
 ## 11. 前倒し機能の設計（第 1 弾・2026-10-25）
 設計 4 本を書き、それぞれに反証レビュー（セキュリティ・実現性・業務の 3 観点で誤りを探す）を当てた。4 本とも「要修正」で、指摘を反映した改訂版を正とする。全文は付録 A。human の判断は §8 の D-21〜D-32。
@@ -638,7 +688,7 @@ PR 単位のタスク（改訂前。改訂の分割の直しは付録 A）:
 | T7 | docs: ir.md §7.3・§8 V3・design.md のモデル省略規則を改訂し、台帳の BUG-12 と判断事項を更新する（human の承認後） | S | human 決定 6・T3 |
 
 ## 12. 新機能と AI 作成の設計（第 2 弾・2026-10-25）
-第 1 弾と同じく、設計 3 本に反証レビューを当てた。3 本とも「要修正」で、改訂版を正とする。全文は付録 B。human の判断は §8 の D-33 以降。
+第 1 弾と同じく、設計 3 本に反証レビューを当てた。3 本とも「要修正」で、改訂版を正とする。全文は付録 B。human の判断は §8 の D-51〜D-54。
 
 ### FEAT-1 決定モデルノード（ai.decide）と GAP-13 構造化出力
 
