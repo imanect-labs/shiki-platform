@@ -24,7 +24,7 @@ function ThemeToggle({ className }: { className?: string }) {
       role="radiogroup"
       aria-label="テーマ"
       className={cn(
-        "inline-flex items-center gap-0.5 rounded-lg border border-border bg-muted/40 p-0.5",
+        "inline-flex items-center gap-0.5 rounded-lg border border-border bg-muted/70 p-0.5",
         className,
       )}
     >
@@ -40,11 +40,11 @@ function ThemeToggle({ className }: { className?: string }) {
             title={label}
             onClick={() => setTheme(value)}
             className={cn(
-              "inline-flex size-7 items-center justify-center rounded-md transition-colors",
+              "inline-flex size-7 items-center justify-center rounded-md border transition-colors",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               active
-                ? "bg-background text-foreground shadow-xs"
-                : "text-muted-foreground hover:text-foreground",
+                ? "border-border bg-background text-foreground shadow-xs"
+                : "border-transparent text-muted-foreground hover:text-foreground",
             )}
           >
             <Icon className="size-4" aria-hidden />

@@ -63,7 +63,7 @@ pub use profile::{
 };
 pub use tool::{
     ArtifactRef, ArtifactStore, AttachmentRef, AttachmentStore, Citation, CsvDraft, SlideDraft,
-    Tool, ToolError, ToolOutcome, ToolUsage,
+    Tool, ToolError, ToolOutcome, ToolUsage, WebSource,
 };
 pub use tool_search::CatalogSearch;
 pub use tools::{

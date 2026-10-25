@@ -7,9 +7,9 @@ import { ListChecks } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { FooterButton } from "@/components/chat/message-footer";
-import { citationAt, citationLocator } from "@/lib/citation";
+import { citationAt, citationLocator, sourceKeyOf } from "@/lib/citation";
 import { useMessageCitations, useSourcePanel } from "./citation-context";
-import { DocIcon, NumberBadge, SnippetText } from "./citation-parts";
+import { NumberBadge, SnippetText, SourceIcon } from "./citation-parts";
 
 export function EvidenceTable() {
   const message = useMessageCitations();
@@ -35,7 +35,7 @@ export function EvidenceTable() {
               <span className="mt-[2px] flex shrink-0 gap-0.5">
                 {r.ns.map((n) => {
                   const c = citationAt(message.citations, n)!;
-                  return <NumberBadge key={n} n={n} colorIndex={colorOf[c.node_id]} />;
+                  return <NumberBadge key={n} n={n} colorIndex={colorOf[sourceKeyOf(c)]} />;
                 })}
               </span>
               <span>{r.claim}</span>
@@ -60,9 +60,9 @@ export function EvidenceTable() {
                       <SnippetText text={c.snippet} claim={r.claim} around={16} />
                     </span>
                     <span className="mt-1 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-                      <DocIcon meta={meta} className="size-3" />
-                      <span className="truncate">{message.nameOf(c.node_id)}</span>
-                      {locator ? <span className="shrink-0">・ {locator}</span> : null}
+                      <SourceIcon citation={c} meta={meta} className="size-3" />
+                      <span className="truncate">{message.nameOf(c)}</span>
+                      {locator ? <span className="min-w-0 shrink-0 truncate max-w-[50%]">・ {locator}</span> : null}
                     </span>
                   </Body>
                 );

@@ -366,8 +366,61 @@ impl Tool for WebFetchTool {
             chars_out = rendered.chars().count(),
             "web_fetch 抽出完了"
         );
-        Ok(ToolOutcome::ok(rendered))
+        // エラーページ（404・ボット除けの 403 等）は出典にしない（根拠にならない）。
+        if !status.is_success() {
+            return Ok(ToolOutcome::ok(crate::cite::defuse(&rendered).into_owned()));
+        }
+        Ok(cited(&page, target.url.as_str(), &rendered))
     }
+}
+
+/// 取得結果に出典の番号を付ける（#891）。
+///
+/// 先頭に仮の印を書き、ループの台帳が社内文書・検索結果と同じ通し番号に置き換える
+/// （検索で見つけた URL を取得したら、検索結果と同じ番号になる）。本文は取得先が制御できるので、
+/// 仮の印の形の文字列は番号に化けないよう無害化する。
+fn cited(page: &render::Page, url: &str, rendered: &str) -> ToolOutcome {
+    let body = crate::cite::defuse(rendered);
+    let Some(citation) = crate::tool::Citation::web(
+        url,
+        page.title.as_deref().unwrap_or(""),
+        &excerpt(&page.body),
+    ) else {
+        return ToolOutcome::ok(body.into_owned());
+    };
+    let mut out = ToolOutcome::ok(format!("{} {body}", crate::cite::placeholder(0)));
+    out.citations = vec![citation];
+    out
+}
+
+/// 抜粋に取る文字数（引用側の上限より 1 字多く取り、切ったことが分かるようにする）。
+const EXCERPT_CHARS: usize = 401;
+
+/// 出典カードに出す抜粋（本文の先頭を地の文にしたもの。Markdown の行頭記号は落とす）。
+///
+/// 改行の無い巨大な本文（圧縮された HTML・1 段落の文書）でも、必要な字数しか写さない。
+fn excerpt(markdown: &str) -> String {
+    let mut out = String::new();
+    let mut left = EXCERPT_CHARS;
+    for line in markdown.lines() {
+        let line = line
+            .trim()
+            .trim_start_matches(['#', '>', '*', '-', '|', ' ']);
+        if line.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+            left -= 1;
+        }
+        let taken: String = line.chars().take(left).collect();
+        left -= taken.chars().count();
+        out.push_str(&taken);
+        if left == 0 {
+            break;
+        }
+    }
+    out
 }
 
 /// PDF/Office を Docling でパースして本文へ落とす。

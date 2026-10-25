@@ -13,7 +13,7 @@ import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 
 import { cn } from "@/lib/utils";
-import { citationAt } from "@/lib/citation";
+import { citationAt, citationLocator, isWebCitation, sourceKeyOf, webHost } from "@/lib/citation";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { SourceBlocks, hasBlockAnchor } from "./source-blocks";
@@ -27,10 +27,10 @@ import {
   type MessageCitations,
 } from "./citation-context";
 import {
-  DocIcon,
   NumberBadge,
-  OpenOriginalLink,
+  OpenSourceLink,
   SnippetText,
+  SourceIcon,
   docColorStyle,
   formatDate,
 } from "./citation-parts";
@@ -98,7 +98,8 @@ export function SourcePanelView({
   const passage = passageOf(message, n);
   const order = panelOrder(message);
   const idx = passage ? order.indexOf(passage.n) : -1;
-  const meta = citation ? message.metas[citation.node_id] : undefined;
+  const web = citation && isWebCitation(citation) ? citation.web : null;
+  const meta = citation && !web ? message.metas[citation.node_id] : undefined;
   const folder = useNodeMeta(meta?.parentId)?.name;
   const updated = formatDate(meta?.updatedAt);
   const headingRef = React.useRef<HTMLHeadingElement>(null);
@@ -118,10 +119,11 @@ export function SourcePanelView({
   }, [n, message.key]);
 
   if (!citation || !passage) return null;
-  const color = message.groups.colorOf[citation.node_id];
+  const key = sourceKeyOf(citation);
+  const color = message.groups.colorOf[key];
   const claim = message.claims.get(passage.n) ?? message.claims.get(n);
   const siblings =
-    message.groups.docs.find((d) => d.nodeId === citation.node_id)?.passages.filter((p) => p !== passage) ?? [];
+    message.groups.docs.find((d) => d.key === key)?.passages.filter((p) => p !== passage) ?? [];
   const prev = idx > 0 ? order[idx - 1] : null;
   const next = idx >= 0 && idx < order.length - 1 ? order[idx + 1] : null;
   const heading = citation.heading_path ?? [];
@@ -148,25 +150,27 @@ export function SourcePanelView({
 
   // PDF が読めない（取得・解析に失敗）ときは、ページ表示を出さず本文だけにする。
   const isPdf = (citation.boxes?.length ?? 0) > 0 && typeof citation.version === "number" && !pdfFailed;
-  const where = [citation.page != null ? `p.${citation.page}` : null, ...heading].filter(Boolean).join(" › ");
+  const where = web
+    ? citationLocator(citation)
+    : [citation.page != null ? `p.${citation.page}` : null, ...heading].filter(Boolean).join(" › ");
+  // 見出しの下の 1 行（Web の出典はサイト、文書はフォルダと更新日）。
+  const subline = web ? webHost(web.url) : [folder, updated ? `${updated} 更新` : null].filter(Boolean).join(" · ");
 
   return (
     <div className="flex h-full min-h-0 flex-col" onKeyDown={onKeyDown}>
       <div className="flex items-center gap-2.5 px-4 py-3 shiki-dash-bottom max-md:py-2 max-md:pr-2">
-        <DocIcon meta={meta} className="shrink-0" />
+        <SourceIcon citation={citation} meta={meta} />
         <div className="min-w-0 flex-1">
           <h2
             ref={headingRef}
             tabIndex={-1}
             className="truncate text-[13.5px] font-medium leading-snug outline-none"
-            title={message.nameOf(citation.node_id)}
+            title={message.nameOf(citation)}
           >
-            {message.nameOf(citation.node_id)}
+            {message.nameOf(citation)}
           </h2>
-          {folder || updated ? (
-            <div className="truncate text-[11.5px] leading-snug text-muted-foreground">
-              {[folder, updated ? `${updated} 更新` : null].filter(Boolean).join(" · ")}
-            </div>
+          {subline ? (
+            <div className="truncate text-[11.5px] leading-snug text-muted-foreground">{subline}</div>
           ) : null}
         </div>
         {idx >= 0 && order.length > 1 ? (
@@ -204,7 +208,7 @@ export function SourcePanelView({
 
         <div className="flex shrink-0 items-center gap-2">
           <span className="min-w-0 truncate text-[11.5px] text-muted-foreground" title={where || undefined}>
-            {where || "原文"}
+            {where || (web ? "抜粋" : "原文")}
           </span>
           {/* 版の注記は省略しない（場所の文字列が長くても、古い版だと必ず分かるように）。 */}
           {staleVersion ? (
@@ -267,7 +271,7 @@ export function SourcePanelView({
             </div>
           ) : null}
         {siblings.length === 0 ? <span className="flex-1" /> : null}
-        <OpenOriginalLink nodeId={citation.node_id} meta={meta} citation={citation} variant="outline" />
+        <OpenSourceLink citation={citation} meta={meta} variant="outline" />
       </div>
     </div>
   );
