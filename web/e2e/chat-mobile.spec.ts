@@ -97,6 +97,27 @@ test.describe("スマホのチャット", () => {
     await phone.context().close();
   });
 
+  test("「+」のシートの「ファイル・写真」で選ばずに戻っても、シートは開いたまま", async ({
+    browser,
+    page,
+  }) => {
+    const phone = await phonePage(browser, page);
+    await phone.goto("/");
+
+    await phone.getByRole("button", { name: "追加メニューを開く" }).click();
+    const sheet = phone.getByTestId("composer-plus-sheet");
+    await expect(sheet).toBeVisible();
+    const [chooser] = await Promise.all([
+      phone.waitForEvent("filechooser"),
+      sheet.getByRole("button", { name: /ファイル・写真/ }).click(),
+    ]);
+    // ファイルの無い change（選ばずに戻った）でも閉じない。選び直せるようにシートを残す。
+    await chooser.setFiles([]);
+    await phone.waitForTimeout(500);
+    await expect(sheet).toHaveAttribute("data-state", "open");
+    await phone.context().close();
+  });
+
   test("「+」のシートの「ファイル・写真」は、ファイルを選ぶまでシートを閉じない", async ({
     browser,
     page,
