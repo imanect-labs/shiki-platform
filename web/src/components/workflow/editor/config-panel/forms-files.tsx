@@ -321,6 +321,7 @@ function ContentTypeField({ node, dispatch, refCandidates, inMapRegion, fieldErr
     return (
       <ValueExprInput
         label="ファイルの種類（省略可）"
+        text
         value={value}
         onChange={(v) => patchParams(dispatch, node, { content_type: v })}
         refCandidates={refCandidates}
@@ -366,6 +367,7 @@ export function StorageWriteForm(props: FormProps) {
     <div className="space-y-4">
       <ValueExprInput
         label="ファイル名"
+        text
         value={p.name as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { name: v })}
         refCandidates={refCandidates}
@@ -375,6 +377,7 @@ export function StorageWriteForm(props: FormProps) {
       />
       <ValueExprInput
         label="内容"
+        text
         value={p.content as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { content: v })}
         refCandidates={refCandidates}
@@ -566,6 +569,7 @@ export function CsvQueryForm(props: FormProps) {
       ) : (
         <ValueExprInput
           label="SQL（読み取りだけの SELECT）"
+          text
           value={p.sql as ValueExpr}
           onChange={(v) => patchParams(dispatch, node, { sql: v })}
           refCandidates={refCandidates}
@@ -682,6 +686,7 @@ export function CsvWriteForm(props: FormProps) {
     <div className="space-y-4">
       <ValueExprInput
         label="ファイル名"
+        text
         value={p.name as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { name: v })}
         refCandidates={refCandidates}
@@ -691,6 +696,7 @@ export function CsvWriteForm(props: FormProps) {
       />
       <ValueExprInput
         label="CSV の内容"
+        text
         value={p.content as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { content: v })}
         refCandidates={refCandidates}

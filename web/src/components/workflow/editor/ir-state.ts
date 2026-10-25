@@ -154,7 +154,8 @@ export function defaultParams(nodeType: string): unknown {
     case "csv.patch":
       return { ops: [] };
     case "csv.write":
-      return { name: "output.csv", content: { $from: "input" } };
+      // 入力全体（オブジェクト）を入れると JSON の文字がそのまま .csv に保存される（失敗もしない）。
+      return { name: "output.csv", content: "" };
     default:
       return {};
   }

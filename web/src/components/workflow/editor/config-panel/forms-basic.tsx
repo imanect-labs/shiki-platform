@@ -31,6 +31,7 @@ export function RagSearchForm({ node, dispatch, refCandidates, inMapRegion, fiel
     <div className="space-y-3">
       <ValueExprInput
         label="検索する内容"
+        text
         value={p.query as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { query: v })}
         refCandidates={refCandidates}
@@ -58,6 +59,7 @@ export function LlmInvokeForm({ node, dispatch, refCandidates, inMapRegion, fiel
     <div className="space-y-3">
       <ValueExprInput
         label="AI への指示"
+        text
         value={p.prompt as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { prompt: v })}
         refCandidates={refCandidates}
@@ -73,6 +75,7 @@ export function LlmInvokeForm({ node, dispatch, refCandidates, inMapRegion, fiel
       />
       <ValueExprInput
         label="前提の指示（省略可）"
+        text
         value={p.system as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { system: v })}
         refCandidates={refCandidates}
@@ -118,6 +121,7 @@ export function AgentInvokeForm({ node, dispatch, refCandidates, inMapRegion, fi
     <div className="space-y-3">
       <ValueExprInput
         label="エージェントへの依頼"
+        text
         value={p.instruction as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { instruction: v })}
         refCandidates={refCandidates}
@@ -166,6 +170,7 @@ export function WorkflowStartForm({ node, dispatch, refCandidates, inMapRegion, 
     <div className="space-y-3">
       <ValueExprInput
         label="起動するワークフロー名"
+        text
         value={p.name as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { name: v })}
         refCandidates={refCandidates}

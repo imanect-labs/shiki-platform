@@ -6,8 +6,10 @@
 /// $from の source は閉集合（input / trigger / each / nodes.<id>.output）で、ブロックの結果は
 /// 祖先候補（呼び出し側が渡す）、入力項目は input_schema（`InputFieldsContext`）から選ぶ。
 ///
-/// 文字の欄には「差し込む」を置く（BUG-1）。選ぶとカーソル位置に `{名前}` を入れて vars に参照を足し、
-/// 固定値ならテンプレート（文章を組み立て）へ切り替える。差し込み名は path から付ける（/title → title）。
+/// 文字を求める欄（`text`）には「差し込む」を置く（BUG-1）。選ぶとカーソル位置に `{名前}` を入れて vars に
+/// 参照を足し、固定値ならテンプレート（文章を組み立て）へ切り替える。差し込み名は path から付ける（/title → title）。
+/// 文字でない欄（リスト・数・オブジェクト・比較の値・ID）には出さない: 差し込むと値が文字列に変わり、
+/// 保存は通っても実行で型が合わなくなる。参照は「前の結果から」で `$from` のまま入れる。
 /// 固定値に `{{x}}`・`{x}`・`${x}` と書くと差し込みにならず文字のまま送られるので、その場で知らせ、
 /// ワンクリックでテンプレートに変換できるようにする（テンプレートの記法は `{name}`・`{{` は波括弧そのもの）。
 
@@ -94,6 +96,8 @@ type Props = {
   /// 固定値を JSON のオブジェクト（または配列）に限る（業務データの値など）。文字列としては保存しない:
   /// 読めない間は IR に値を入れず（保存時の検証で「未入力」として止まる）、その場で理由を出す（C-P2-1）。
   json?: "object" | "array";
+  /// 文字を求める欄（指示・検索語・名前・内容など）。「差し込む」と固定値の差し込みの注意を出す。
+  text?: boolean;
 };
 
 export function ValueExprInput({
@@ -106,6 +110,7 @@ export function ValueExprInput({
   multiline,
   error,
   json,
+  text,
 }: Props) {
   const inputFields = React.useContext(InputFieldsContext);
   const ctx = React.useMemo<RefContext>(
@@ -155,13 +160,17 @@ export function ValueExprInput({
 
   const emit = (next: ValueExpr) => {
     setPendingFrom(false);
+    // 入力方法が変わったら前のカーソル位置は使わない（固定値とテンプレートでは文字の位置が違う。
+    // 差し込んだ直後の位置は描画の後に置き直す）。
+    if (modeOf(next) !== actual) selection.current = null;
     onChange(next);
   };
 
-  // 文字として差し込める欄か（JSON として扱う固定値・JSON 限定の欄には差し込まない）。
+  // 文字として差し込める欄か（文字を求める欄だけ。JSON として扱う固定値・JSON 限定の欄には差し込まない）。
   const textual =
-    (mode === "literal" && !json && !jsonMode && (value === undefined || typeof value === "string")) ||
-    mode === "template";
+    Boolean(text) &&
+    ((mode === "literal" && !json && !jsonMode && (value === undefined || typeof value === "string")) ||
+      mode === "template");
 
   const insert = (ref: RefValue) => {
     if (template) {
@@ -354,6 +363,9 @@ export function ValueExprInput({
           textRef={textRef}
           onSelect={remember}
           onChange={(next) => emit(next as ValueExpr)}
+          onReshape={() => {
+            selection.current = null;
+          }}
         />
       ) : null}
 
@@ -427,6 +439,7 @@ function TemplateEditor({
   textRef,
   onSelect,
   onChange,
+  onReshape,
 }: {
   template: TemplateExpr;
   ctx: RefContext;
@@ -436,11 +449,14 @@ function TemplateEditor({
   textRef: React.RefObject<TextEl | null>;
   onSelect: (e: React.SyntheticEvent<TextEl>) => void;
   onChange: (next: TemplateExpr) => void;
+  /// 本文を入力欄の外で書き換える前に呼ぶ（覚えているカーソル位置がずれるので捨てる）。
+  onReshape: () => void;
 }) {
   const vars = Object.entries(template.vars ?? {});
   const issues = templateIssues(template);
 
   const removeVar = (name: string) => {
+    onReshape();
     const next = { ...(template.vars ?? {}) };
     delete next[name];
     // 本文の `{name}` も外す（残すと実行で「vars にありません」になる）。
@@ -481,7 +497,10 @@ function TemplateEditor({
         <TemplateNote
           text={`${issues.escaped.map((n) => `「{{${n}}}」`).join("")}は波括弧そのものとして出ます（差し込まれません）`}
           action={`${issues.escaped.map((n) => `{${n}}`).join("・")} に直す`}
-          onAction={() => onChange(fixEscapedVars(template))}
+          onAction={() => {
+            onReshape();
+            onChange(fixEscapedVars(template));
+          }}
         />
       ) : null}
       {vars.map(([name, expr], i) => (
@@ -494,7 +513,9 @@ function TemplateEditor({
               value={name}
               onChange={(e) => {
                 const next = renameVar(template, name, e.target.value);
-                if (next) onChange(next);
+                if (!next) return;
+                onReshape();
+                onChange(next);
               }}
               placeholder="名前"
               className="h-7 w-24 font-mono text-xs max-md:text-base"

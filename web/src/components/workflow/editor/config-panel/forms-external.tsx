@@ -60,6 +60,7 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
       </div>
       <ValueExprInput
         label="URL の続き（省略可）"
+        text
         value={p.path_suffix as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { path_suffix: v })}
         refCandidates={refCandidates}
@@ -69,6 +70,7 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
       />
       <ValueExprInput
         label="送る内容（省略可）"
+        text
         value={p.body as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { body: v })}
         refCandidates={refCandidates}
