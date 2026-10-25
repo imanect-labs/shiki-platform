@@ -99,6 +99,19 @@ pub struct RunOrigin {
     pub parent_run_id: Option<Uuid>,
 }
 
+/// running の run が多重度（`max_parallel_runs`）に数える条件（SQL の述語・別名 `r`）。
+///
+/// **待機中の run は数えない**（D-26・H10 (1)）: 実行中・実行待ち（ready / running）の step が無く、
+/// wait（waiting_timer / waiting_event）で止まっている run。承認やイベントを何日も待つ run が枠を
+/// 占めて、新しい起動が queued のまま進まなくなるのを防ぐ。起床して上限を一時的に超えるのは許す。
+pub(crate) const ACTIVE_RUN: &str = "NOT ( \
+     NOT EXISTS (SELECT 1 FROM step_execution s \
+                 WHERE s.tenant_id = r.tenant_id AND s.run_id = r.run_id \
+                   AND s.status IN ('ready', 'running')) \
+     AND EXISTS (SELECT 1 FROM step_execution s \
+                 WHERE s.tenant_id = r.tenant_id AND s.run_id = r.run_id \
+                   AND s.status IN ('waiting_timer', 'waiting_event')))";
+
 /// run/step のデータチョークポイント。
 #[derive(Clone)]
 pub struct RunStore {
@@ -137,7 +150,7 @@ impl RunStore {
     /// **run 多重度**（engine.md §8.3・10.5）: `policies.max_parallel_runs` を超える場合は
     /// `on_trigger_overflow` に従い **queue**（status=queued で滞留・scheduler tick が promote）
     /// または **skip**（run を作らず `None`）。判定は per-workflow advisory lock で直列化する
-    /// （並行 create の数え漏れによる上限突破を防ぐ）。
+    /// （並行 create の数え漏れによる上限突破を防ぐ）。待機中の run（[`ACTIVE_RUN`]）は数えない。
     #[allow(clippy::too_many_arguments)]
     pub async fn create_run(
         &self,
@@ -222,10 +235,11 @@ impl RunStore {
                 return Ok(existing);
             }
         }
-        let active: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM workflow_run \
-             WHERE tenant_id = $1 AND workflow_id = $2 AND status IN ('queued', 'running')",
-        )
+        let active: i64 = sqlx::query_scalar(&format!(
+            "SELECT count(*) FROM workflow_run r \
+             WHERE r.tenant_id = $1 AND r.workflow_id = $2 \
+               AND (r.status = 'queued' OR (r.status = 'running' AND {ACTIVE_RUN}))"
+        ))
         .bind(tenant_id)
         .bind(workflow_id)
         .fetch_one(&mut *tx)

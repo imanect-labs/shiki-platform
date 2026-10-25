@@ -1,8 +1,8 @@
 //! run 多重度の promote と run timeout の強制（Task 10.5・engine.md §8.3/§5.3）。
 //!
 //! scheduler tick（リーダー）から呼ばれる:
-//! - [`RunStore::promote_queued_runs`] — max_parallel_runs 未満の workflow の最古 queued run を
-//!   running へ昇格（entry step を ready 化・run.started 追記）。バックプレッシャの解放側。
+//! - [`RunStore::promote_queued_runs`] — max_parallel_runs 未満（待機中の run は数えない）の workflow の
+//!   最古 queued run を running へ昇格（entry step を ready 化・run.started 追記）。バックプレッシャの解放側。
 //! - [`RunStore::expire_run_timeouts`] — `timeout_at` 超過の running run を fail_reason=run_timeout
 //!   でキャンセル・ドレインに載せる（最終 status は failed）。
 
@@ -72,10 +72,13 @@ impl RunStore {
                 .get("policies")
                 .and_then(|p| serde_json::from_value(p.clone()).ok())
                 .unwrap_or_default();
-            let running: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM workflow_run \
-                 WHERE tenant_id = $1 AND workflow_id = $2 AND status = 'running'",
-            )
+            // 待機中の run は数えない（create_run と同じ述語・D-26）。
+            let running: i64 = sqlx::query_scalar(&format!(
+                "SELECT count(*) FROM workflow_run r \
+                 WHERE r.tenant_id = $1 AND r.workflow_id = $2 AND r.status = 'running' \
+                   AND {}",
+                super::ACTIVE_RUN
+            ))
             .bind(tenant_id)
             .bind(workflow_id)
             .fetch_one(&mut *tx)

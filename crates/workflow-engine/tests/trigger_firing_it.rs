@@ -1,10 +1,11 @@
-//! イベントトリガの発火の結果・再試行・抑止の結合テスト（GAP-07 の T0・T2・実 Postgres）。
+//! イベントトリガの発火の結果・再試行・抑止の結合テスト（GAP-07 の T0・T2・T2.5・実 Postgres）。
 //!
 //! - 起動の一時失敗は捨てずに再試行し、回数の上限で打ち切る（D-21）
 //! - 委譲の不成立・多重度あふれの見送りは再試行しない
 //! - 同じイベントで run を二重に作らない（`(trigger_id, trigger_event_id)` の一意）
 //! - 因果の鎖: 自分の書込で自分を起こさない・循環・深さ（D-26）。起動した run に鎖を引き継ぐ
 //! - queued の上限で発火を捨てる
+//! - 待機中の run は max_parallel_runs に数えない（D-26・H10）
 
 #![allow(
     clippy::unwrap_used,
@@ -23,8 +24,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 use workflow_engine::run::graph::RunGraph;
 use workflow_engine::{
-    EventTriggerRef, FireOutcome, LaunchOutcome, RunLauncher, RunOrigin, RunStore, SchedulerStore,
-    SkipReason, WorkflowIr,
+    EventTriggerRef, FireOutcome, LaunchOutcome, RunLauncher, RunOrigin, RunStatus, RunStore,
+    SchedulerStore, SkipReason, WorkflowIr,
 };
 
 /// 決めた結果を順に返す launcher（尽きたら最後の結果を返し続ける）。呼ばれた event_id を記録する。
@@ -511,4 +512,107 @@ async fn same_event_creates_one_run() {
     .unwrap();
     assert_eq!(chain, vec![wf]);
     assert_eq!(cause, Some(first));
+}
+
+/// 待機中の run は max_parallel_runs に数えない（11 件待っていても新しい run は running になる）。
+#[tokio::test]
+async fn waiting_runs_do_not_count_against_max_parallel_runs() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let runs = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let wf = Uuid::new_v4();
+    let (ir, graph) = wait_ir(10);
+    let input = json!({});
+    let create = || {
+        runs.create_run(
+            &tenant,
+            "acme",
+            wf,
+            1,
+            "interactive",
+            None,
+            "alice",
+            "user",
+            &input,
+            &ir,
+            &graph,
+        )
+    };
+    for _ in 0..11 {
+        let run = create().await.unwrap().unwrap();
+        // 待機の step で止まった状態にする（ワーカーが wait を checkpoint した後と同じ）。
+        sqlx::query(
+            "UPDATE step_execution SET status = 'waiting_event' WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(&tenant)
+        .bind(run)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let fresh = create().await.unwrap().unwrap();
+    assert_eq!(
+        runs.run_status(&tenant, fresh).await.unwrap(),
+        Some(RunStatus::Running),
+        "待機中の run は枠を占めない"
+    );
+    // 実行中（ready / running の step がある）の run は従来どおり数える。
+    let (ir1, graph1) = wait_ir(1);
+    let wf1 = Uuid::new_v4();
+    let busy = runs
+        .create_run(
+            &tenant,
+            "acme",
+            wf1,
+            1,
+            "interactive",
+            None,
+            "alice",
+            "user",
+            &json!({}),
+            &ir1,
+            &graph1,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        runs.run_status(&tenant, busy).await.unwrap(),
+        Some(RunStatus::Running)
+    );
+    let next = runs
+        .create_run(
+            &tenant,
+            "acme",
+            wf1,
+            1,
+            "interactive",
+            None,
+            "alice",
+            "user",
+            &json!({}),
+            &ir1,
+            &graph1,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        runs.run_status(&tenant, next).await.unwrap(),
+        Some(RunStatus::Queued)
+    );
+    // 先の run が待機に入れば、queued の run は promote される。
+    sqlx::query(
+        "UPDATE step_execution SET status = 'waiting_event' WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&tenant)
+    .bind(busy)
+    .execute(&pool)
+    .await
+    .unwrap();
+    runs.promote_queued_runs(Some(&tenant)).await.unwrap();
+    assert_eq!(
+        runs.run_status(&tenant, next).await.unwrap(),
+        Some(RunStatus::Running)
+    );
 }
