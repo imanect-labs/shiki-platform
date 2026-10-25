@@ -80,6 +80,35 @@ impl RegistrationService {
                         needs_user_pick: folder.is_none(),
                     });
                 }
+                // CSV 表データ（Task 11P.9）: 実行は TabularService のファイル ReBAC で決まる
+                // （query = viewer@file・patch = editor@file・write = 保存先フォルダの作成権限）。
+                // schedule / event の run は委譲が無いと「csv 権限なし」で落ちるので、storage.* と
+                // 同じ形で対象を提案する（BUG-10）。
+                crate::vocab::NodeType::CsvQuery | crate::vocab::NodeType::CsvPatch => {
+                    let file = literal_str(&node.params, "file");
+                    let read = nt == crate::vocab::NodeType::CsvQuery;
+                    push(SuggestedGrant {
+                        scope: if read { "csv.read" } else { "csv.write" }.into(),
+                        object_kind: "file".into(),
+                        object_id: file.clone(),
+                        object_name: None,
+                        relation: if read { "viewer" } else { "editor" }.into(),
+                        source,
+                        needs_user_pick: file.is_none(),
+                    });
+                }
+                crate::vocab::NodeType::CsvWrite => {
+                    let folder = literal_str(&node.params, "folder");
+                    push(SuggestedGrant {
+                        scope: "csv.write".into(),
+                        object_kind: "folder".into(),
+                        object_id: folder.clone(),
+                        object_name: None,
+                        relation: "editor".into(),
+                        source,
+                        needs_user_pick: folder.is_none(),
+                    });
+                }
                 crate::vocab::NodeType::RagSearch => {
                     // 検索範囲はユーザーが選ぶ（実効 = 委譲 ∩ pre/post filter）。
                     push(SuggestedGrant {
@@ -154,5 +183,96 @@ fn literal_str(params: &serde_json::Value, key: &str) -> Option<String> {
     match params.get(key) {
         Some(serde_json::Value::String(s)) => Some(s.clone()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{RegistrationService, SuggestedGrant};
+    use crate::ir::WorkflowIr;
+    use serde_json::json;
+
+    const FILE: &str = "11111111-2222-3333-4444-555555555555";
+    const FOLDER: &str = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+
+    fn plan(nodes: &serde_json::Value) -> Vec<SuggestedGrant> {
+        let ir = WorkflowIr::from_json(&json!({
+            "ir_version": 1, "name": "wf",
+            "declared_scopes": ["csv.read", "csv.write"],
+            "nodes": nodes, "edges": []
+        }))
+        .expect("test IR");
+        RegistrationService::consent_plan(&ir)
+    }
+
+    fn by_source<'a>(plan: &'a [SuggestedGrant], node: &str) -> &'a SuggestedGrant {
+        let source = format!("node:{node}");
+        let found = plan.iter().find(|g| g.source == source);
+        assert!(found.is_some(), "{source} の提案が無い: {plan:?}");
+        found.expect("提案がある")
+    }
+
+    /// csv.* もリテラルの対象は id 付きで提案する（schedule / event の run が委譲で読める・BUG-10）。
+    #[test]
+    fn csv_nodes_suggest_literal_files_and_folders() {
+        let plan = plan(&json!([
+            { "id": "q", "type": "csv.query", "params": { "file": FILE, "sql": "SELECT 1" } },
+            { "id": "p", "type": "csv.patch",
+              "params": { "file": FILE, "base_rev": 1, "ops": [] } },
+            { "id": "w", "type": "csv.write",
+              "params": { "folder": FOLDER, "name": "out", "content": "a\n1\n" } }
+        ]));
+        let q = by_source(&plan, "q");
+        assert_eq!(
+            (
+                q.scope.as_str(),
+                q.object_kind.as_str(),
+                q.relation.as_str()
+            ),
+            ("csv.read", "file", "viewer")
+        );
+        assert_eq!(q.object_id.as_deref(), Some(FILE));
+        assert!(!q.needs_user_pick);
+        let p = by_source(&plan, "p");
+        assert_eq!(
+            (
+                p.scope.as_str(),
+                p.object_kind.as_str(),
+                p.relation.as_str()
+            ),
+            ("csv.write", "file", "editor")
+        );
+        assert_eq!(p.object_id.as_deref(), Some(FILE));
+        assert!(!p.needs_user_pick);
+        let w = by_source(&plan, "w");
+        assert_eq!(
+            (
+                w.scope.as_str(),
+                w.object_kind.as_str(),
+                w.relation.as_str()
+            ),
+            ("csv.write", "folder", "editor")
+        );
+        assert_eq!(w.object_id.as_deref(), Some(FOLDER));
+        assert!(!w.needs_user_pick);
+    }
+
+    /// 対象が値式（前の結果・入力・トリガ）なら、有効化者が選ぶ。csv.write のフォルダ省略も
+    /// storage.write と同じく選ばせる。
+    #[test]
+    fn csv_nodes_with_dynamic_targets_need_a_pick() {
+        let plan = plan(&json!([
+            { "id": "q", "type": "csv.query",
+              "params": { "file": { "$from": "trigger", "path": "/file_id" }, "sql": "SELECT 1" } },
+            { "id": "p", "type": "csv.patch",
+              "params": { "file": { "$from": "input", "path": "/file" }, "base_rev": 1, "ops": [] } },
+            { "id": "w", "type": "csv.write", "params": { "name": "out", "content": "a\n1\n" } }
+        ]));
+        for id in ["q", "p", "w"] {
+            let g = by_source(&plan, id);
+            assert!(g.needs_user_pick, "{id}: {g:?}");
+            assert_eq!(g.object_id, None, "{id}");
+        }
+        assert_eq!(by_source(&plan, "w").object_kind, "folder");
     }
 }
