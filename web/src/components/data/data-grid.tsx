@@ -1117,6 +1117,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
             // 入力を元に戻す。ただし保存待ちの間に SSE で新しい版（他の人の更新）が届いていれば、それがサーバの
             // 今の内容なので古い版で上書きしない。
             if (j !== undefined && rows.current[j].rev <= before.rev) rows.current[j] = before;
+            // 書けなくなった（共有が editor → viewer に変わった等・見える権限は残るので購読は閉じない）: テーブルと
+            // 閲覧者の文脈を取り直し、編集・取込の操作を消す（以後の入力が 403 を繰り返さない）。
+            if (e instanceof DataApiError && e.status === 403) onSchemaChangedRef.current?.();
             const recomputing = e instanceof DataApiError ? e.derivedRecomputing : null;
             const labelOf = (key: string) => columns.find((x) => x.key === key)?.label ?? key;
             // 重複した列はサーバが名指しする（読める列だけ・無ければ今書いた列）。

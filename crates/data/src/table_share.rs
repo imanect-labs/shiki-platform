@@ -6,6 +6,9 @@
 //! - 共有・解除・共有先の一覧ができるのは**テーブルの owner**（`Relation::Owner`）だけ。テーブルが
 //!   見えない主体には 404（存在しない・削除済みと区別しない）、見えるが owner でない主体には 403。
 //! - 付与できる役割は viewer / editor だけ（owner の横展開はしない）。
+//! - **ミニアプリ所有のテーブル（`app_id` あり）は付与・解除・一覧とも 403**: アクセスはアプリのインストールと
+//!   スコープで配る（インストールが付けたロールのタプルを /data から外させない・インストールした人が owner を
+//!   持っていても同じ）。拒否は監査に deny で残す。
 //! - 共有先は id の形と**同一テナントのディレクトリに居ること**を検査する（レコードの個別共有と同じ）。
 //!   解除は形だけ検査する（残った不正なタプルも消せるように）。
 //! - 監査に失敗したらタプルを補償して戻す（監査に残らない共有・解除を作らない）。
@@ -17,7 +20,7 @@
 use authz::{AuthContext, Relation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use storage::audit::AuditAction;
+use storage::audit::{AuditAction, AuditEntry, Decision};
 use storage::ShareTarget;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -63,15 +66,8 @@ impl DataStore {
         role: TableShareRole,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
-        let table = self
-            .require_table_owner(ctx, table_id, AuditAction::DataTableShare, trace_id)
+        self.require_table_owner(ctx, table_id, AuditAction::DataTableShare, trace_id)
             .await?;
-        // ミニアプリ所有のテーブルは付与しない（アクセスはアプリのインストール・スコープで管理する。インストール
-        // した人も owner を持つが、/data から直接配ると、アプリの外からの読み書きの入口が増える）。解除は許す
-        // （以前に付けた共有を外せるように）。
-        if table.app_id.is_some() {
-            return Err(DataError::Forbidden);
-        }
         self.validate_share_target(ctx, target).await?;
         let obj = ctx.ns().data_table(&table_id.to_string());
         let subject = target.subject(&ctx.ns());
@@ -180,8 +176,11 @@ impl DataStore {
             .collect())
     }
 
-    /// 共有の操作の権限: テーブルの owner（不可視は 404・owner でなければ 403・不足は監査 deny）。
-    /// 削除済みのテーブルは 404。
+    /// 共有の操作の権限: テーブルの owner で、ミニアプリ所有でないこと。
+    ///
+    /// 存在しない・削除済みのテーブルは**誰にも** 404（authz より先に生存を引く: 削除後も残るタプルで
+    /// 「見えるので 403」になり、削除済みを存在しないものと区別させないため）。不可視は 404・owner でなければ
+    /// 403（`require` が deny を監査）。ミニアプリ所有のテーブルは owner でも 403 で、deny を監査に残す。
     async fn require_table_owner(
         &self,
         ctx: &AuthContext,
@@ -189,8 +188,26 @@ impl DataStore {
         action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<crate::model::DataTable, DataError> {
+        let table = self.fetch_live(ctx, table_id).await?;
         self.require(ctx, table_id, Relation::Owner, action, trace_id)
             .await?;
-        self.fetch_live(ctx, table_id).await
+        if table.app_id.is_some() {
+            let _ = self
+                .audit
+                .record(
+                    ctx,
+                    AuditEntry {
+                        action,
+                        object_type: "data_table",
+                        object_id: &table_id.to_string(),
+                        decision: Decision::Deny,
+                        trace_id,
+                        metadata: json!({ "reason": "app_owned" }),
+                    },
+                )
+                .await;
+            return Err(DataError::Forbidden);
+        }
+        Ok(table)
     }
 }

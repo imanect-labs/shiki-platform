@@ -551,13 +551,36 @@ async fn only_owner_can_share_and_invisible_is_not_found() {
         .await
         .unwrap();
     let obj = fx.alice.ns().data_table(&app_table.id.to_string());
-    // インストールした人（owner を持つ）でも、ミニアプリ所有のテーブルは /data から共有できない。
+    // インストールした人（owner を持つ）でも、ミニアプリ所有のテーブルは /data から共有・解除・一覧できない
+    // （インストールが付けたロールのタプルを外させない）。拒否は監査に deny で残る。
     assert!(matches!(
         fx.store
             .share_table(&fx.alice, app_table.id, &t, v, None)
             .await,
         Err(DataError::Forbidden)
     ));
+    assert!(matches!(
+        fx.store
+            .unshare_table(&fx.alice, app_table.id, &t, v, None)
+            .await,
+        Err(DataError::Forbidden)
+    ));
+    assert!(matches!(
+        fx.store
+            .list_table_shares(&fx.alice, app_table.id, None)
+            .await,
+        Err(DataError::Forbidden)
+    ));
+    let app_denies: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND object_id = $2 AND decision = 'deny' \
+         AND metadata ->> 'reason' = 'app_owned'",
+    )
+    .bind(&fx.alice.tenant_id)
+    .bind(app_table.id.to_string())
+    .fetch_one(&fx.pool)
+    .await
+    .unwrap();
+    assert_eq!(app_denies, 3, "アプリ所有の拒否は監査に deny で残る");
     // インストールと同じ形にする: owner はミニアプリ、利用者は editor。
     fx.authz
         .write_tuple(
@@ -582,7 +605,7 @@ async fn only_owner_can_share_and_invisible_is_not_found() {
         Err(DataError::Forbidden)
     ));
 
-    // 削除済みのテーブルは owner にも 404。
+    // 削除済みのテーブルは owner にも、タプルが残っている共有相手（bob）にも 404（存在しないのと区別しない）。
     fx.store
         .delete_table(&fx.alice, fx.table, None)
         .await
@@ -593,6 +616,10 @@ async fn only_owner_can_share_and_invisible_is_not_found() {
     ));
     assert!(matches!(
         fx.store.list_table_shares(&fx.alice, fx.table, None).await,
+        Err(DataError::NotFound)
+    ));
+    assert!(matches!(
+        fx.store.list_table_shares(&fx.bob, fx.table, None).await,
         Err(DataError::NotFound)
     ));
 }
@@ -761,11 +788,9 @@ async fn app_tables_with_materialized_columns_cannot_be_shared() {
         t.schema.field("total").unwrap().materialization,
         Some(Materialization::Invariant)
     );
-    assert!(fx
-        .store
-        .list_table_shares(&fx.alice, orders.id, None)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(matches!(
+        fx.store.list_table_shares(&fx.alice, orders.id, None).await,
+        Err(DataError::Forbidden)
+    ));
     let _ = order;
 }
