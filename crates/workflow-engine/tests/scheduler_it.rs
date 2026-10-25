@@ -183,6 +183,92 @@ async fn disabled_workflow_does_not_fire() {
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 0);
 }
 
+/// catchup=none（#904）: 稼働中の時刻どおりの occurrence は発火し、スケジューラ停止中に時刻を過ぎた
+/// occurrence（猶予を超えて遅れたもの）は捨てる（watermark だけ前進）。
+#[tokio::test]
+async fn catchup_none_fires_on_time_and_drops_misfires() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let wf = Uuid::new_v4();
+    register(
+        &pool,
+        &tenant,
+        wf,
+        "enabled",
+        "trg-none",
+        "schedule",
+        None,
+        json!({ "cron": "0 * * * *", "tz": "UTC", "catchup": "none" }),
+    )
+    .await;
+    let set_watermark = |at| {
+        let pool = pool.clone();
+        let tenant = tenant.clone();
+        async move {
+            sqlx::query("UPDATE workflow_trigger SET last_planned_at = $2 WHERE tenant_id = $1")
+                .bind(&tenant)
+                .bind(at)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+    let store = SchedulerStore::new(pool.clone());
+    let launcher = Arc::new(CountingLauncher {
+        launches: AtomicUsize::new(0),
+    });
+
+    // ① 稼働中: 前回の tick（00:59:55）から 01:00:03 の tick までに 01:00 が到来 → 時刻どおりに発火する。
+    set_watermark(Utc.with_ymd_and_hms(2026, 7, 7, 0, 59, 55).unwrap()).await;
+    let fired = store
+        .tick_schedules(
+            Utc.with_ymd_and_hms(2026, 7, 7, 1, 0, 3).unwrap(),
+            Some(&tenant),
+            launcher.as_ref(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fired, 1,
+        "時刻どおりの occurrence は catchup=none でも発火する"
+    );
+
+    // ② 停止明け: 01:00 の後に止まり 03:30 に再開 → 02:00・03:00 は時刻を大きく過ぎているので捨てる。
+    set_watermark(Utc.with_ymd_and_hms(2026, 7, 7, 1, 0, 3).unwrap()).await;
+    let fired = store
+        .tick_schedules(
+            Utc.with_ymd_and_hms(2026, 7, 7, 3, 30, 0).unwrap(),
+            Some(&tenant),
+            launcher.as_ref(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fired, 0, "停止中に過ぎた occurrence は捨てる（misfire）");
+    let watermark: chrono::DateTime<Utc> =
+        sqlx::query_scalar("SELECT last_planned_at FROM workflow_trigger WHERE tenant_id = $1")
+            .bind(&tenant)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        watermark,
+        Utc.with_ymd_and_hms(2026, 7, 7, 3, 30, 0).unwrap(),
+        "捨てた分も watermark で消化する"
+    );
+
+    // ③ 再開後の次の時刻（04:00）は再び時刻どおりに発火する。
+    let fired = store
+        .tick_schedules(
+            Utc.with_ymd_and_hms(2026, 7, 7, 4, 0, 2).unwrap(),
+            Some(&tenant),
+            launcher.as_ref(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fired, 1);
+    assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+}
+
 /// フォルダノード＋自己 closure（depth 0）を作る。`parent` を渡すと祖先 closure も張る。
 async fn mk_folder(pool: &PgPool, tenant: &str, id: Uuid, parent: Option<Uuid>) {
     sqlx::query(
