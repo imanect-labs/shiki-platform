@@ -32,6 +32,7 @@ pub mod gui_errors;
 pub mod llm_models;
 pub mod me;
 pub mod me_chatgpt;
+pub mod me_custom_instructions;
 pub mod me_security;
 pub mod mini_apps;
 pub mod office;
