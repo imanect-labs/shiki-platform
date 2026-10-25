@@ -8,7 +8,7 @@
 ///   このノードの既定ポートへつないで追加する（ノードの「尻尾」に生える）。
 
 import * as React from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
 import { AlertCircle, Plus, TriangleAlert } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -29,8 +29,8 @@ export type NodeCardData = {
   errors: ValidationError[];
   /// 保存を止めない警告（条件の意味論の切替で結果が変わり得る等）。
   warnings?: ValidationError[];
-  /// このノードの `port` から新ノードをつないで追加する。
-  onAddFrom: (port: string, nodeType: string) => void;
+  /// `fromId` の `port` から新ノードをつないで追加する（全ノード共通の参照の変わらない関数）。
+  onAddFrom: (fromId: string, port: string, nodeType: string) => void;
   [key: string]: unknown;
 };
 
@@ -75,12 +75,22 @@ function portColor(port: string): string {
   return "!bg-primary";
 }
 
-export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData }) {
+export function NodeCard({ id, data, selected }: NodeProps & { data: NodeCardData }) {
   const { irNode, errors, onAddFrom } = data;
   const warnings = data.warnings ?? [];
   const entry = NODE_CATALOG.find((c) => c.type === irNode.type);
   const Icon = nodeIcon(irNode.type);
   const ports = outputPorts(irNode);
+  // 出口が変わったら（振り分けの出口名の変更・エラー時の出口の追加など）ハンドルの位置を測り直す。
+  // キャンバスは計測結果を引き継ぐので、大きさが変わらない変更では React Flow が自分では測り直さない。
+  const updateNodeInternals = useUpdateNodeInternals();
+  const portsKey = JSON.stringify(ports);
+  const measuredPorts = React.useRef(portsKey);
+  React.useEffect(() => {
+    if (measuredPorts.current === portsKey) return;
+    measuredPorts.current = portsKey;
+    updateNodeInternals(id);
+  }, [id, portsKey, updateNodeInternals]);
   const hasError = errors.length > 0;
   const [menuOpen, setMenuOpen] = React.useState(false);
   // カテゴリ由来の季節色（アイコンチップの tint で示す）。エラー時は破壊的色を優先。
@@ -232,7 +242,7 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
             contextLabel={`「${irNode.label || entry?.label_ja || irNode.id}」の後ろに追加`}
             onPick={(nodeType) => {
               setMenuOpen(false);
-              onAddFrom(ports[0] ?? "out", nodeType);
+              onAddFrom(irNode.id, ports[0] ?? "out", nodeType);
             }}
           />
         </PopoverContent>

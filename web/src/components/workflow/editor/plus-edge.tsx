@@ -2,6 +2,7 @@
 
 /// エッジ（中点の挿入プラスボタン付き・ポート名ラベル）。
 /// マウスではホバーで現れ、タッチ端末（hover が無い）では常時表示・大きめにする。
+/// クリックで選択でき（線を太く・主色に）、選んでいる間は削除ボタンを出す（Delete キーが無い端末向け）。
 
 import * as React from "react";
 import {
@@ -10,7 +11,7 @@ import {
   getBezierPath,
   type EdgeProps,
 } from "@xyflow/react";
-import { Plus } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,8 @@ export type PlusEdgeData = {
   irEdge: IrEdge;
   /// このエッジ上に新ノードを割り込ませる。
   onInsert: (nodeType: string, position: { x: number; y: number }) => void;
+  /// このつながりを消す（選択中に出す削除ボタン）。
+  onDelete: () => void;
   errorMessages: string[];
   [key: string]: unknown;
 };
@@ -62,7 +65,7 @@ export function PlusEdge({
         id={id}
         path={path}
         className={cn(
-          "!stroke-[1.5]",
+          selected ? "!stroke-[2.5]" : "!stroke-[1.5]",
           hasError
             ? "!stroke-destructive"
             : selected
@@ -75,7 +78,7 @@ export function PlusEdge({
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           className="nodrag nopan pointer-events-auto absolute"
         >
-          <div className="group/edge flex items-center gap-1">
+          <div className="group/edge relative flex items-center gap-1">
             {portText ? (
               <span className="rounded-full border bg-background px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">
                 {portText}
@@ -90,7 +93,8 @@ export function PlusEdge({
                     "flex size-5 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-sm pointer-coarse:size-7",
                     "transition-opacity duration-fast pointer-fine:opacity-0 pointer-fine:group-hover/edge:opacity-100 focus-visible:opacity-100",
                     "hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                    (menuOpen || selected) && "opacity-100",
+                    // 開いている間・選択中は常に出す（`pointer-fine:` 付きで上書きしないと hover 前の透明が勝つ）。
+                    (menuOpen || selected) && "pointer-fine:opacity-100",
                   )}
                 >
                   <Plus className="size-3.5" aria-hidden />
@@ -106,6 +110,20 @@ export function PlusEdge({
                 />
               </PopoverContent>
             </Popover>
+            {selected ? (
+              // ＋の位置を動かさないよう、＋の右隣に重ねて置く。
+              <button
+                type="button"
+                aria-label="このつながりを削除"
+                onClick={data.onDelete}
+                className={cn(
+                  "absolute left-full ml-1 flex size-5 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-sm pointer-coarse:ml-1.5 pointer-coarse:size-7",
+                  "hover:border-destructive hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                )}
+              >
+                <Trash2 className="size-3" aria-hidden />
+              </button>
+            ) : null}
           </div>
         </div>
       </EdgeLabelRenderer>

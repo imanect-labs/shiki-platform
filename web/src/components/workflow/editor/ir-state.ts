@@ -1,18 +1,41 @@
 /// エディタの単一情報源（IR＋レイアウト＋選択＋検証エラー）の reducer。
 ///
-/// **IR が正**: React Flow の nodes/edges は IR＋layout からの導出値（canvas.tsx の useMemo）。
+/// **IR が正**: React Flow の nodes/edges は IR＋layout からの導出値（canvas.tsx）。
 /// 全編集はここの action を通り、undo（≤50）と dirty 追跡が一元化される。
 /// 座標変更は IR を汚さず layout のみ更新する（undo 対象外・自動保存）。
+/// layout は開いた時点で全座標を埋めて持ち（`seedLayout`）、消したノードの座標も手元では残す
+/// （Undo で同じ位置に戻すため。保存のときに今の IR に無いものを落とす）。
 
 import * as React from "react";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { Edge, Node, Trigger, ValidationError, WorkflowIr } from "@/generated/workflow-ir";
 import type { EditorLayout } from "@/lib/workflow-api";
+import { carryTriggerPositions, seedLayout } from "./auto-layout";
 
 export type Selection =
   | { kind: "none" }
   | { kind: "node"; id: string }
-  | { kind: "trigger"; index: number };
+  | { kind: "trigger"; index: number }
+  /// つながり（`edgeKey` の `from|from_port|to`）。選ぶとノードの選択は外れる（選択は常に 1 つ）。
+  | { kind: "edge"; key: string };
+
+/// つながりの識別子（同じ出口から同じ先へのエッジは 1 本だけ・`connect` が重複を作らない）。
+export function edgeKey(e: Edge): string {
+  return `${e.from}|${e.from_port ?? "out"}|${e.to}`;
+}
+
+function sameSelection(a: Selection, b: Selection): boolean {
+  switch (a.kind) {
+    case "none":
+      return b.kind === "none";
+    case "node":
+      return b.kind === "node" && b.id === a.id;
+    case "trigger":
+      return b.kind === "trigger" && b.index === a.index;
+    case "edge":
+      return b.kind === "edge" && b.key === a.key;
+  }
+}
 
 export type EditorState = {
   ir: WorkflowIr;
@@ -29,6 +52,9 @@ export type EditorState = {
   serverErrors: ValidationError[];
   /// 保存を止めない警告（`ir.condition_semantics_changed` など・保存/検証の応答の `warnings`）。
   serverWarnings: ValidationError[];
+  /// 直前の `update_node`（同じノードの同じ項目への連続入力を undo 1 段にまとめる）。
+  /// 他の編集・選択の変更・undo/redo で切れる。
+  lastEdit: { id: string; field: string; at: number } | null;
 };
 
 export type EditorAction =
@@ -38,16 +64,22 @@ export type EditorAction =
   | { type: "insert_before"; nodeType: string; before: string; position: { x: number; y: number } }
   | { type: "connect"; from: string; fromPort: string; to: string }
   | { type: "delete_nodes"; ids: string[] }
-  | { type: "delete_edges"; edges: Edge[] }
+  /// ノードとつながりをまとめて消す（キャンバスの Delete キー・つながりの削除ボタン）。undo は 1 段。
+  | { type: "delete_elements"; nodes: string[]; edges: Edge[] }
   | { type: "move"; positions: Record<string, { x: number; y: number }> }
+  /// `key` は `triggerKeys` のきっかけの座標キー。
   | { type: "move_trigger"; key: string; position: { x: number; y: number } }
-  | { type: "update_node"; id: string; patch: Partial<Node> }
+  /// `at` は dispatch した時刻（`useEditorState` が付ける・連続入力をまとめる判定に使う）。
+  | { type: "update_node"; id: string; patch: Partial<Node>; at?: number }
   /// switch の case 出口名変更（params 更新と当該ポートのエッジ from_port 追随を 1 手で行う）。
   | { type: "rename_out_port"; id: string; fromPort: string; toPort: string; params: unknown }
   | { type: "rename_node"; id: string; nextId: string }
   | { type: "update_meta"; patch: Partial<Pick<WorkflowIr, "display_name" | "description" | "policies" | "declared_scopes">> }
   | { type: "set_triggers"; triggers: Trigger[] }
   | { type: "select"; selection: Selection }
+  /// 今の選択が `selection` のときだけ外す（React Flow の選択解除の通知用。先に別の要素を選んだ通知が
+  /// 来ていれば何もしない）。
+  | { type: "deselect"; selection: Selection }
   | { type: "set_errors"; errors: ValidationError[] }
   | { type: "set_warnings"; warnings: ValidationError[] }
   | { type: "saved"; version: number; savedIr: WorkflowIr; ir?: WorkflowIr; declaredScopes?: string[] }
@@ -56,6 +88,8 @@ export type EditorAction =
   | { type: "redo" };
 
 const MAX_UNDO = 50;
+/// 同じ項目への入力がこれ以上あいたら、まとめずに undo を 1 段積む。
+const COALESCE_MS = 1500;
 
 /// ノード id の採番（種別接頭辞＋連番・`^[a-z][a-z0-9_]{0,63}$` 準拠）。
 export function newNodeId(ir: WorkflowIr, nodeType: string): string {
@@ -163,7 +197,46 @@ function pushUndo(state: EditorState): Pick<EditorState, "undoStack" | "redoStac
 }
 
 function withIr(state: EditorState, ir: WorkflowIr): EditorState {
-  return { ...state, ...pushUndo(state), ir, dirty: true };
+  return { ...state, ...pushUndo(state), ir, dirty: true, lastEdit: null };
+}
+
+/// ノードとつながりを消す（つながっているエッジも一緒に消える）。undo は 1 段。
+/// 座標（layout）は消さない: Undo で戻したノードを同じ位置に出すため（保存時に今の IR に無いものを落とす）。
+function deleteElements(state: EditorState, nodeIds: string[], edges: Edge[]): EditorState {
+  const ids = new Set(nodeIds);
+  const keys = new Set(edges.map(edgeKey));
+  const nodes = state.ir.nodes.filter((n) => !ids.has(n.id));
+  const nextEdges = state.ir.edges.filter(
+    (e) => !ids.has(e.from) && !ids.has(e.to) && !keys.has(edgeKey(e)),
+  );
+  if (nodes.length === state.ir.nodes.length && nextEdges.length === state.ir.edges.length) {
+    return state;
+  }
+  return {
+    ...withIr(state, { ...state.ir, nodes, edges: nextEdges }),
+    selection: { kind: "none" },
+  };
+}
+
+/// `update_node` が変えた項目（params は変わった最上位のキーまで見る。`patchParams` は変えないキーの値を
+/// 使い回すので参照比較で足りる）。
+function editedField(prev: Node | undefined, patch: Partial<Node>): string {
+  const keys = Object.keys(patch).sort();
+  if (keys.length === 1 && keys[0] === "params") {
+    const before = prev?.params;
+    const after = patch.params;
+    if (isRecord(before) && isRecord(after)) {
+      const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+        .filter((k) => before[k] !== after[k])
+        .sort();
+      return `params:${changed.join(",")}`;
+    }
+  }
+  return keys.join(",");
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
 export function editorReducer(state: EditorState, action: EditorAction): EditorState {
@@ -256,35 +329,10 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         ],
       });
     }
-    case "delete_nodes": {
-      const ids = new Set(action.ids);
-      if (ids.size === 0) return state;
-      const next = withIr(state, {
-        ...state.ir,
-        nodes: state.ir.nodes.filter((n) => !ids.has(n.id)),
-        edges: state.ir.edges.filter((e) => !ids.has(e.from) && !ids.has(e.to)),
-      });
-      const positions = { ...(state.layout.positions ?? {}) };
-      for (const id of ids) delete positions[id];
-      return {
-        ...next,
-        layout: { ...state.layout, positions },
-        layoutDirty: true,
-        selection: { kind: "none" },
-      };
-    }
-    case "delete_edges": {
-      if (action.edges.length === 0) return state;
-      const keys = new Set(
-        action.edges.map((e) => `${e.from}|${e.from_port ?? "out"}|${e.to}`),
-      );
-      return withIr(state, {
-        ...state.ir,
-        edges: state.ir.edges.filter(
-          (e) => !keys.has(`${e.from}|${e.from_port ?? "out"}|${e.to}`),
-        ),
-      });
-    }
+    case "delete_nodes":
+      return deleteElements(state, action.ids, []);
+    case "delete_elements":
+      return deleteElements(state, action.nodes, action.edges);
     case "move": {
       return {
         ...state,
@@ -306,12 +354,33 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       };
     }
     case "update_node": {
-      return withIr(state, {
+      const ir = {
         ...state.ir,
         nodes: state.ir.nodes.map((n) =>
           n.id === action.id ? ({ ...n, ...action.patch } as Node) : n,
         ),
-      });
+      };
+      const field = editedField(
+        state.ir.nodes.find((n) => n.id === action.id),
+        action.patch,
+      );
+      const last = state.lastEdit;
+      // 同じノードの同じ項目への連続入力は、直前の undo の段に含める（1 文字ごとに積むと
+      // 上限 50 段がすぐ埋まり、Undo も 1 文字ずつしか戻らない）。
+      if (
+        action.at !== undefined &&
+        last &&
+        last.id === action.id &&
+        last.field === field &&
+        action.at - last.at < COALESCE_MS &&
+        state.undoStack.length > 0
+      ) {
+        return { ...state, ir, dirty: true, redoStack: [], lastEdit: { ...last, at: action.at } };
+      }
+      return {
+        ...withIr(state, ir),
+        lastEdit: action.at === undefined ? null : { id: action.id, field, at: action.at },
+      };
     }
     case "rename_out_port": {
       return withIr(state, {
@@ -335,11 +404,9 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       ) {
         return state;
       }
+      // 元の id の座標も残す（Undo で元の id に戻したときに同じ位置へ出すため）。
       const positions = { ...(state.layout.positions ?? {}) };
-      if (positions[action.id]) {
-        positions[nextId] = positions[action.id];
-        delete positions[action.id];
-      }
+      if (positions[action.id]) positions[nextId] = positions[action.id];
       const renamed = withIr(state, {
         ...state.ir,
         nodes: state.ir.nodes.map((n) => {
@@ -370,10 +437,24 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       return withIr(state, { ...state.ir, ...action.patch } as WorkflowIr);
     }
     case "set_triggers": {
-      return withIr(state, { ...state.ir, triggers: action.triggers });
+      const next = withIr(state, { ...state.ir, triggers: action.triggers });
+      // きっかけの座標キーは内容から決まるので、編集で変わったキーへ座標を写す（BUG-25）。
+      // 写すものが無くても保存し直す: 旧形式（添字のキー）の layout が残っていると、きっかけを消した後に
+      // 開き直したとき、添字の読み替えで別のきっかけの座標が付いてしまう。
+      const saved = state.layout.triggers ?? {};
+      const triggers = carryTriggerPositions(state.ir.triggers, action.triggers, saved);
+      return {
+        ...next,
+        layout: triggers === saved ? state.layout : { ...state.layout, triggers },
+        layoutDirty: true,
+      };
     }
     case "select":
-      return { ...state, selection: action.selection };
+      return { ...state, selection: action.selection, lastEdit: null };
+    case "deselect":
+      return sameSelection(state.selection, action.selection)
+        ? { ...state, selection: { kind: "none" }, lastEdit: null }
+        : state;
     case "set_errors":
       return { ...state, serverErrors: action.errors };
     case "set_warnings":
@@ -399,6 +480,8 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       // 古い PUT の完了が新しいドラッグの未保存分を握り潰さないよう、送った layout と
       // 現在の layout が同一参照のときだけクリーンにする。
       return state.layout === action.layout ? { ...state, layoutDirty: false } : state;
+    // undo/redo は layout も保存し直す: 保存する layout は今の IR にあるものだけに絞るため、
+    // 戻したノードの座標が前の保存で落ちていることがある（手元には残っている）。
     case "undo": {
       const prev = state.undoStack.at(-1);
       if (!prev) return state;
@@ -408,6 +491,8 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         undoStack: state.undoStack.slice(0, -1),
         redoStack: [...state.redoStack, state.ir],
         dirty: true,
+        layoutDirty: true,
+        lastEdit: null,
       };
     }
     case "redo": {
@@ -419,6 +504,8 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         redoStack: state.redoStack.slice(0, -1),
         undoStack: [...state.undoStack, state.ir],
         dirty: true,
+        layoutDirty: true,
+        lastEdit: null,
       };
     }
     default:
@@ -426,15 +513,15 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
   }
 }
 
-export function useEditorState(initial: {
-  ir: WorkflowIr;
-  version: number;
-  layout: EditorLayout;
-}) {
-  return React.useReducer(editorReducer, {
+type EditorInit = { ir: WorkflowIr; version: number; layout: EditorLayout };
+
+function initEditorState(initial: EditorInit): EditorState {
+  return {
     ir: initial.ir,
     savedVersion: initial.version,
-    layout: initial.layout,
+    // 全ノード・全きっかけの座標を手元で決めて持つ（開いただけでは保存しない。何かを動かしたら
+    // 全座標が保存される）。座標の無いノードが混ざると 1 つ動かすだけで全体が平行移動するため（BUG-2）。
+    layout: seedLayout(initial.ir, initial.layout),
     selection: { kind: "none" },
     dirty: false,
     layoutDirty: false,
@@ -442,5 +529,19 @@ export function useEditorState(initial: {
     redoStack: [],
     serverErrors: [],
     serverWarnings: [],
-  } satisfies EditorState);
+    lastEdit: null,
+  };
+}
+
+export function useEditorState(
+  initial: EditorInit,
+): [EditorState, React.Dispatch<EditorAction>] {
+  const [state, rawDispatch] = React.useReducer(editorReducer, initial, initEditorState);
+  // 連続入力をまとめる判定の時刻は dispatch 時に付ける（reducer を純粋に保つ）。
+  const dispatch = React.useCallback(
+    (action: EditorAction) =>
+      rawDispatch(action.type === "update_node" ? { ...action, at: Date.now() } : action),
+    [],
+  );
+  return [state, dispatch];
 }

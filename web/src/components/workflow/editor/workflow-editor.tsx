@@ -33,6 +33,7 @@ import {
 } from "@/lib/workflow-api";
 import { AddNodeSheet } from "./add-node-sheet";
 import { addAction, endTarget, type AddTarget } from "./add-target";
+import { layoutForSave } from "./auto-layout";
 import { Canvas } from "./canvas";
 import { useEditorState } from "./ir-state";
 import { MobileFlow } from "./mobile-flow";
@@ -131,13 +132,21 @@ export function WorkflowEditor({
   }, []);
 
   // ── レイアウト自動保存（1s debounce・非バージョン）───────────────────────
+  // 手元の layout は開いた時点で全座標を埋めてあるので、何かを動かすと全ノードの座標が保存される
+  // （座標の無いノードを残すと、次に開いたとき 1 つ動かすだけで全体が平行移動する）。
+  // 送る直前の IR で絞る（IR の編集のたびに保存の待ちをやり直さないよう ref で読む）。
+  const irRef = React.useRef(state.ir);
+  React.useEffect(() => {
+    irRef.current = state.ir;
+  }, [state.ir]);
   React.useEffect(() => {
     if (!state.layoutDirty) return;
     // 送ったスナップショットを渡し、完了時に「まだ最新か」を reducer 側で照合する
     //（古い PUT の完了が新しいドラッグ分の保存をスキップさせない）。
     const snapshot = state.layout;
     const timer = setTimeout(() => {
-      putLayout(workflowId, snapshot)
+      // 手元に残している消したノードの座標（Undo 用）は送らない。
+      putLayout(workflowId, layoutForSave(irRef.current, snapshot))
         .then(() => dispatch({ type: "layout_saved", layout: snapshot }))
         .catch(() => {
           // 座標は化粧品（次回 dagre で復元可能）。失敗は黙って次回に任せる。
