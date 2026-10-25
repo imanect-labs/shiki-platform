@@ -10,10 +10,15 @@
 //! 未実装 variant の IR は V3 が「Stage A では未対応」として保存を拒否する。
 
 mod catalog;
+mod event_catalog;
 mod node_type;
 mod scope;
 
 pub(crate) use catalog::static_output_ports;
+pub use event_catalog::{
+    event_catalog, payload_fields, DataChangePayload, EventCatalogEntry, EventPayloadField,
+    StorageWritePayload, MAX_DATA_PAYLOAD_BYTES,
+};
 pub use catalog::{node_catalog, IdempotencyClass, NodeCatalogEntry, NodeCategory};
 pub use node_type::NodeType;
 pub use scope::Scope;

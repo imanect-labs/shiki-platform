@@ -237,14 +237,9 @@ struct StorageWriteEvent {
 /// 上書き保存で起動させるには、自分が書いたファイルで自分を起こし続ける循環の抑止が先に要るので、
 /// ここでは広げていない（同じ CSV を上書きする run が、その保存で再び起動する）。
 ///
-/// ペイロード（`$from trigger` と wait(event) の出力）の形:
-///
-/// ```jsonc
-/// { "file_id": "<uuid>", "version": 3, "op": "create",   // create | update
-///   "kind": "file", "parent_id": "<uuid>", "size": 1234,
-///   "actor": "<書込主体の id>",                          // ワークフロー経由の書込はワークフロー id
-///   "blob_sha256": "…" }                                 // 従来から載っていたキー（互換のため残す）
-/// ```
+/// ペイロード（`$from trigger` と wait(event) の出力）の形は、ワークフローの語彙のカタログが単一定義
+/// （[`workflow_engine::vocab::StorageWritePayload`]・`payload_fields(storage.write)`・D-47）。web の参照の
+/// 候補と AI の説明文も同じ表から作る。
 ///
 /// ファイル名と content_type は載せない。outbox に無く、載せるにはメタデータの取得と、トリガごとの
 /// 実行主体（委譲）でファイルを読めるかの確認が要る。名前などは storage.read（実行主体の ReBAC を通る）
@@ -271,18 +266,19 @@ fn storage_write_event(ev: &storage::event::OutboxEvent) -> Option<StorageWriteE
         .as_str()
         .and_then(|s| uuid::Uuid::parse_str(s).ok());
     let field = |k: &str| ev.payload.get(k).cloned().unwrap_or(Value::Null);
+    let payload = workflow_engine::vocab::StorageWritePayload {
+        file_id: ev.node_id.to_string(),
+        version: ev.version,
+        op: ev.op.clone(),
+        kind: "file".into(),
+        parent_id,
+        size: field("size"),
+        actor: ev.actor.clone(),
+        blob_sha256: field("blob_sha256"),
+    };
     Some(StorageWriteEvent {
         folder,
-        payload: json!({
-            "file_id": ev.node_id.to_string(),
-            "version": ev.version,
-            "op": ev.op,
-            "kind": "file",
-            "parent_id": parent_id,
-            "size": field("size"),
-            "actor": ev.actor,
-            "blob_sha256": field("blob_sha256"),
-        }),
+        payload: serde_json::to_value(payload).unwrap_or(Value::Null),
     })
 }
 

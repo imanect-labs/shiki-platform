@@ -56,6 +56,9 @@ export type { RefCandidate };
 /// この実行の入力項目（ワークフローの input_schema の properties）。設定パネルが渡す。
 export const InputFieldsContext = React.createContext<InputFieldInfo[]>([]);
 
+/// ワークフローのイベントトリガの source（きっかけの内容の項目を候補に出す・BUG-36）。設定パネルが渡す。
+export const TriggerSourcesContext = React.createContext<string[]>([]);
+
 type Mode = "literal" | "from" | "template";
 
 function modeOf(value: ValueExpr | undefined): Mode {
@@ -113,9 +116,10 @@ export function ValueExprInput({
   text,
 }: Props) {
   const inputFields = React.useContext(InputFieldsContext);
+  const triggerSources = React.useContext(TriggerSourcesContext);
   const ctx = React.useMemo<RefContext>(
-    () => ({ inputFields, ancestors: refCandidates, inMapRegion: Boolean(inMapRegion) }),
-    [inputFields, refCandidates, inMapRegion],
+    () => ({ inputFields, ancestors: refCandidates, inMapRegion: Boolean(inMapRegion), triggerSources }),
+    [inputFields, refCandidates, inMapRegion, triggerSources],
   );
   // 「前の結果から」を選んだが、まだ参照先を選んでいない間（IR は変えずに候補を見せる）。
   const [pendingFrom, setPendingFrom] = React.useState(false);

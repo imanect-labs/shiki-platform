@@ -52,7 +52,7 @@ import {
 import { patchParams } from "./params";
 import type { InputRefUsage } from "./input-schema-editor";
 import { TriggerPanel } from "./trigger-panel";
-import { InputFieldsContext, type RefCandidate } from "./value-expr-input";
+import { InputFieldsContext, TriggerSourcesContext, type RefCandidate } from "./value-expr-input";
 import { inputRefKeys } from "./value-refs";
 
 const FORMS: Record<string, React.ComponentType<FormProps>> = {
@@ -134,6 +134,12 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
   const inMapRegion = node.parent != null;
   // 入力項目（「差し込む」・参照先の候補）。
   const inputFields = React.useMemo(() => inputFieldsOf(ctx.state.ir.input_schema), [ctx.state.ir.input_schema]);
+  // きっかけの内容の項目（イベントトリガの source ごと・D-47）。
+  const triggerSources = React.useMemo(
+    () =>
+      (ctx.state.ir.triggers ?? []).flatMap((t) => (t.kind === "event" ? [t.source as string] : [])),
+    [ctx.state.ir.triggers],
+  );
 
   // 欄に写せる誤り（path か文言の項目名）は欄の下に出し、上の帯には欄の無いものだけを出す。
   const errorView = React.useMemo(
@@ -211,14 +217,16 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
         {Form ? (
           // ノードを選び直したらフォームの手元の状態（入力方法の切り替えなど）を持ち越さない。
           <InputFieldsContext.Provider value={inputFields}>
-            <Form
-              key={node.id}
-              node={node}
-              dispatch={ctx.dispatch}
-              refCandidates={refCandidates}
-              inMapRegion={inMapRegion}
-              fieldErrors={fieldErrors}
-            />
+            <TriggerSourcesContext.Provider value={triggerSources}>
+              <Form
+                key={node.id}
+                node={node}
+                dispatch={ctx.dispatch}
+                refCandidates={refCandidates}
+                inMapRegion={inMapRegion}
+                fieldErrors={fieldErrors}
+              />
+            </TriggerSourcesContext.Provider>
           </InputFieldsContext.Provider>
         ) : (
           <p className="text-xs text-muted-foreground">このブロックに設定はありません</p>

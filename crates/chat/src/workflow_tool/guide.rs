@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use serde_json::Value;
 use workflow_engine::ir::expr::CmpOp;
 use workflow_engine::ir::params::{compact_ts, params_shape};
-use workflow_engine::vocab::{node_catalog, EventSource, NodeType};
+use workflow_engine::vocab::{event_catalog, node_catalog, EventSource, NodeType};
 use workflow_engine::ValidationError;
 
 /// 説明文に載せる使えるモデルの件数の上限（説明文を膨らませない・検証エラーにも候補が出る）。
@@ -198,6 +198,34 @@ fn event_sources() -> String {
         .join(" | ")
 }
 
+/// きっかけの内容（`$from trigger` と wait(event) の出力）の項目（イベントのカタログの単一定義・D-47）。
+///
+/// 同じ項目を持つ source はまとめて 1 行にする（データ変更の 3 種は同じ形）。
+fn trigger_payloads() -> String {
+    let mut out = String::from(
+        "【きっかけの内容】event トリガの run では {\"$from\":\"trigger\",\"path\":\"/<項目>\"} で読む（control.wait の event は出力を nodes.<id>.output の path で読む）。\n",
+    );
+    let mut groups: Vec<(Vec<&str>, &[workflow_engine::vocab::EventPayloadField])> = Vec::new();
+    for e in event_catalog().into_iter().filter(|e| e.available) {
+        match groups
+            .iter_mut()
+            .find(|(_, f)| std::ptr::eq(*f, e.payload_fields))
+        {
+            Some((sources, _)) => sources.push(e.source.as_str()),
+            None => groups.push((vec![e.source.as_str()], e.payload_fields)),
+        }
+    }
+    for (sources, fields) in groups {
+        let body = fields
+            .iter()
+            .map(|f| format!("{}: {}（{}）", f.name, f.ty, f.description_ja))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(out, "- {}: {{ {body} }}", sources.join(" / "));
+    }
+    out
+}
+
 /// emit_workflow の説明文（`models` は発話ユーザーの組織で使えるモデル）。
 pub(super) fn emit_description(models: Option<&[String]>) -> String {
     let mut d = String::from(
@@ -217,6 +245,7 @@ pub(super) fn emit_description(models: Option<&[String]>) -> String {
         node = NODE_SHAPE,
         edge = EDGE_SHAPE,
     );
+    d.push_str(&trigger_payloads());
     let _ = write!(
         d,
         "【値の書き方】params の値（ValueExpr）は次の 3 つ。\n\
@@ -475,6 +504,11 @@ mod tests {
         // 演算子の一覧とイベント source は型・語彙から生成する。
         assert!(d.contains("\"starts_with\""), "{d}");
         assert!(d.contains("EventSource = \"storage.write\""), "{d}");
+        // きっかけの内容の項目もイベントのカタログから生成する（D-47・BUG-36）。
+        assert!(
+            d.contains("- storage.write: { file_id: string（保存されたファイルの ID）"),
+            "{d}"
+        );
         // 旧説明文の誤り（mustache の差し込み・port: next・<祖先ノードid>）を含まない。
         assert!(!d.contains("{{変数}}") && !d.contains("\"port\":\"next\""));
         assert!(!d.contains("<祖先ノードid>"));

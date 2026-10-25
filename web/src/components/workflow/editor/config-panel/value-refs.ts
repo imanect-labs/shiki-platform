@@ -1,14 +1,15 @@
 /// 値の入力欄（value-expr-input.tsx）の参照・差し込みの計算（描画を持たない・BUG-1）。
 ///
 /// - 参照の候補: 入力項目（input_schema の properties）・祖先ブロックの出力・map 領域内の each・
-///   入力全体・きっかけの内容全体。参照先の既定を「入力全体」にせず、ここから選ばせる。
+///   きっかけの内容の項目（イベントのカタログの単一定義・D-47）・入力全体・きっかけの内容全体。
+///   参照先の既定を「入力全体」にせず、ここから選ばせる。
 /// - 差し込み名の自動命名（path の末尾。同じ名前で別の参照があれば連番）。
 /// - テンプレートの字句（`{name}` が差し込み・`{{` `}}` は波括弧そのもの・ir.md §3.2）。規則は実行時の
 ///   crates/workflow-engine/src/ir/expr.rs の `template_pieces` と同じ（保存時の検証もそれで読む）。
 /// - 固定値に書かれた差し込みのつもりの文字（`{{x}}`・`{x}`・`${x}`）の検出と、テンプレートへの変換。
 /// - 入力項目への参照（`$from: "input"` の path の先頭の段）の収集と、キーの変更への追随（GAP-12）。
 
-import { NODE_CATALOG } from "@/generated/workflow-catalog";
+import { EVENT_CATALOG, NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { FromRef, TemplateExpr, ValueExpr } from "@/generated/workflow-ir";
 import type { InputFieldInfo } from "@/lib/workflow-input-schema";
 
@@ -30,6 +31,8 @@ export type RefContext = {
   inputFields: InputFieldInfo[];
   ancestors: RefCandidate[];
   inMapRegion: boolean;
+  /// ワークフローのイベントトリガの source（きっかけの内容の項目を候補に出す・BUG-36）。
+  triggerSources?: string[];
 };
 
 export const SOURCE_LABELS: Record<string, string> = {
@@ -90,8 +93,21 @@ export function shapeKeys(shape: string): string[] {
   return keys;
 }
 
+/// きっかけの内容の項目（イベントトリガの source ごとのペイロードの項目・カタログの単一定義・D-47）。
+/// 複数のきっかけが同じ項目を持てば 1 つにまとめる。
+export function triggerFields(sources: string[] | undefined): { name: string; description: string }[] {
+  const out: { name: string; description: string }[] = [];
+  for (const source of sources ?? []) {
+    const entry = EVENT_CATALOG.find((e) => e.source === source);
+    for (const f of entry?.payload_fields ?? []) {
+      if (!out.some((o) => o.name === f.name)) out.push({ name: f.name, description: f.description_ja });
+    }
+  }
+  return out;
+}
+
 /// 参照の候補（差し込むメニューと参照先の選択に使う）。並びは画面の並び。
-export function refOptions({ inputFields, ancestors, inMapRegion }: RefContext): RefOption[] {
+export function refOptions({ inputFields, ancestors, inMapRegion, triggerSources }: RefContext): RefOption[] {
   const out: RefOption[] = [];
   const add = (ref: RefValue, label: string, group: string) => out.push({ key: refKey(ref), ref, label, group });
   for (const f of inputFields) {
@@ -105,6 +121,9 @@ export function refOptions({ inputFields, ancestors, inMapRegion }: RefContext):
   if (inMapRegion) {
     add({ $from: "each", path: "/item" }, "繰り返し中の要素", "繰り返し");
     add({ $from: "each", path: "/index" }, "繰り返しの番号（0 から）", "繰り返し");
+  }
+  for (const f of triggerFields(triggerSources)) {
+    add({ $from: "trigger", path: pathOf([f.name]) }, `${f.description}（${f.name}）`, SOURCE_LABELS.trigger);
   }
   add({ $from: "input" }, `${SOURCE_LABELS.input}（全体）`, "そのほか");
   add({ $from: "trigger" }, `${SOURCE_LABELS.trigger}（全体）`, "そのほか");
@@ -125,6 +144,7 @@ export function sourceOptions({ ancestors, inMapRegion }: RefContext): { value: 
 export function pathHints(from: string, ctx: RefContext): string[] {
   if (from === "input") return ctx.inputFields.map((f) => `/${pointerSegment(f.key)}`);
   if (from === "each") return ["/item", "/index"];
+  if (from === "trigger") return triggerFields(ctx.triggerSources).map((f) => `/${pointerSegment(f.name)}`);
   const m = /^nodes\.(.+)\.output$/.exec(from);
   if (m) {
     const a = ctx.ancestors.find((x) => x.id === m[1]);
