@@ -118,3 +118,46 @@ test("有効化: 実行の入力でテーブルを決めるブロックはテー
   await expect(dialog.getByLabel("渡すテーブル")).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "同意して有効化" })).toBeEnabled();
 });
+
+test("有効化: 実行の入力でファイルを決めるブロックはファイルを選ばせず、固定のファイルは名前で示す", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const cookies = await page.context().cookies();
+  const csrf = cookies.find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const fileName = `${uniqueName("wf-enable-file")}.csv`;
+  const file = await page.request.post("/api/tabular/save", {
+    headers: { "x-csrf-token": csrf },
+    data: { parent_id: null, name: fileName, csv: "a,b\n1,2\n" },
+  });
+  expect(file.ok(), await file.text()).toBeTruthy();
+  const fileId = ((await file.json()) as { node_id: string }).node_id;
+  const name = uniqueName("enable-input-file");
+  const res = await page.request.post("/api/workflows", {
+    headers: { "x-csrf-token": csrf, "content-type": "application/json" },
+    data: {
+      ir: {
+        ir_version: 1,
+        name,
+        display_name: name,
+        declared_scopes: ["storage.read"],
+        triggers: [{ kind: "schedule", cron: "0 9 * * *", tz: "Asia/Tokyo", catchup: "skip" }],
+        nodes: [
+          { id: "r1", type: "storage.read", label: "受け取ったファイルを読む", params: { file: { $from: "input", path: "/file_id" } } },
+          { id: "r2", type: "storage.read", label: "台帳を読む", params: { file: fileId } },
+        ],
+        edges: [{ from: "r1", from_port: "out", to: "r2" }],
+      },
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const id = ((await res.json()) as { id: string }).id;
+  await page.goto(`/workflows/${id}`);
+  await page.getByRole("button", { name: /自動実行を有効化/ }).click();
+  const dialog = page.locator('[role="dialog"]');
+  await expect(dialog.getByText("自動実行の設定")).toBeVisible();
+  // 入力で決まるファイルは選ばせず、理由を示す（「対象を選択してください」で止まらない）。
+  await expect(dialog.getByText(/「受け取ったファイルを読む」のファイルは実行の入力で決まるため/)).toBeVisible();
+  await expect(dialog.getByRole("button", { name: /渡すファイルを/ })).toHaveCount(0);
+  // 固定のファイルは ID ではなく名前で出る。
+  await expect(dialog.getByText(`ファイル「${fileName}」`)).toBeVisible({ timeout: 10_000 });
+  await expect(dialog.getByRole("button", { name: "同意して有効化" })).toBeEnabled();
+});

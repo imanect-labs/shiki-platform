@@ -359,3 +359,117 @@ test("設定パネル: ブロック名の連続入力は Undo 1 回で入力前�
   await expect(page.getByTestId("rf__node-a")).toContainText("受付");
   await expect(page.getByTestId("rf__node-a")).not.toContainText("一次確認");
 });
+
+// ── ノードの設定フォーム（BUG-5・BUG-15・BUG-16・BUG-21）─────────────────
+
+/// ドライブの選択ダイアログの先頭に並ぶ名前（一覧は名前の昇順で 50 件ずつ。開発 DB に過去の実行の
+/// ファイルが溜まっても先頭に来るよう、時刻を逆順にした固定長の鍵を頭に付ける）。
+function firstInDriveName(prefix: string): string {
+  const key = (Number.MAX_SAFE_INTEGER - Date.now()).toString(36).padStart(11, "0");
+  return `00-${key}-${prefix}-${Math.floor(Math.random() * 1e4)}`;
+}
+
+test("CSV を集計: ドライブから CSV を選び、SQL を書いて保存できる（BUG-5・BUG-21）", async ({ page }) => {
+  test.setTimeout(180_000);
+  await loginViaKeycloak(page);
+  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const fileName = `${firstInDriveName("wf-csv")}.csv`;
+  const created = await page.request.post("/api/tabular/save", {
+    headers: { "x-csrf-token": csrf },
+    data: { parent_id: null, name: fileName, csv: "item,amount\n交通費,1200\n書籍,3000\n交通費,800\n" },
+  });
+  expect(created.ok(), await created.text()).toBeTruthy();
+  const fileId = ((await created.json()) as { node_id: string }).node_id;
+
+  await page.goto("/workflows");
+  await expect(page.getByText("読み込み中…")).toHaveCount(0);
+  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
+  await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
+  const workflowId = new URL(page.url()).pathname.split("/").pop()!;
+
+  // 置いた直後から設定の欄が出る（「このブロックに設定はありません」ではない）。
+  await page.getByRole("button", { name: "最初のブロック" }).click();
+  await page.getByRole("button", { name: /^CSV を集計/ }).click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  await expect(panel.getByLabel("SQL")).toHaveValue("SELECT * FROM data LIMIT 100");
+  await expect(panel.getByText("このブロックに設定はありません")).toHaveCount(0);
+  // ファイルが未選択の誤り（サーバは「項目 'file' がありません」）は、上の帯ではなくファイルの欄の下に出る。
+  await expect(panel.getByText("入力してください")).toBeVisible({ timeout: 10_000 });
+  await expect(panel.getByText(/項目 'file'/)).toHaveCount(0);
+
+  // ドライブから CSV を選ぶと、ファイル名と列の案内が出る（誤りも消える）。
+  await panel.getByRole("button", { name: "集計する CSV ファイルを選ぶ" }).click();
+  const picker = page.getByRole("dialog", { name: "CSV ファイルを選ぶ" });
+  await picker.getByRole("button", { name: fileName }).click();
+  await expect(picker).toHaveCount(0);
+  await expect(panel.getByText(fileName)).toBeVisible();
+  const columns = panel.getByTestId("csv-columns");
+  await expect(columns).toContainText("item", { timeout: 20_000 });
+  await expect(columns).toContainText("amount");
+  await expect(panel.getByText("入力してください")).toHaveCount(0, { timeout: 10_000 });
+
+  // SQL を書いて試しに実行すると、本人の権限で上位の行が見える。
+  const sql = "SELECT item, SUM(amount) AS total FROM data GROUP BY item ORDER BY item";
+  await panel.getByLabel("SQL").fill(sql);
+  await panel.getByRole("button", { name: "試しに実行" }).click();
+  const preview = panel.getByTestId("csv-preview");
+  await expect(preview).toContainText("total", { timeout: 20_000 });
+  await expect(preview).toContainText("交通費");
+  await expect(preview).toContainText("2000");
+
+  // 保存 API が 200 を返し、保存した定義にファイルと SQL が入っている。
+  const saved = page.waitForResponse(
+    (r) => r.request().method() === "PUT" && r.url().endsWith(`/workflows/${workflowId}`),
+  );
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  expect((await saved).status()).toBe(200);
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+  const wf = (await (await page.request.get(`/api/workflows/${workflowId}`)).json()) as {
+    ir: { nodes: { type: string; params: unknown }[] };
+  };
+  expect(wf.ir.nodes.find((n) => n.type === "csv.query")?.params).toEqual({ file: fileId, sql });
+
+  // 開き直しても ID ではなくファイル名で出る。
+  await page.reload();
+  await page.locator(".react-flow").getByText("CSV を集計").first().click();
+  await expect(page.getByRole("complementary", { name: "ブロックの設定" }).getByText(fileName)).toBeVisible({
+    timeout: 15_000,
+  });
+});
+
+test("既定の値: 追加した条件は入力全体を path なしで指し、AI に聞くの指示は空で入力を促す（BUG-16・BUG-15）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await page.goto("/workflows");
+  await expect(page.getByText("読み込み中…")).toHaveCount(0);
+  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
+  await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
+  const workflowId = new URL(page.url()).pathname.split("/").pop()!;
+  const canvas = page.locator(".react-flow");
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+
+  // 条件分岐に条件を足すと、左辺は入力全体（path なし）になる（"/" は空文字キーを指す）。
+  await page.getByRole("button", { name: "最初のブロック" }).click();
+  await page.getByRole("button", { name: /^条件分岐/ }).click();
+  await panel.getByRole("button", { name: "条件を追加" }).click();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+  const wf = (await (await page.request.get(`/api/workflows/${workflowId}`)).json()) as {
+    ir: { nodes: { type: string; params: Record<string, unknown> }[] };
+  };
+  const condition = wf.ir.nodes.find((n) => n.type === "control.branch")?.params.condition as {
+    all: { cmp: { left: unknown } }[];
+  };
+  expect(condition.all).toHaveLength(2);
+  expect(condition.all[1].cmp.left).toEqual({ $from: "input" });
+
+  // 「AI に聞く」は指示が空のまま置かれ（入力全体のオブジェクトを指さない）、欄の下で入力を促す。
+  // （モデルの照合は環境で変わるので、ここでは保存しない。）
+  await canvas.getByLabel("次のブロックを追加").first().click();
+  await page.getByRole("button", { name: /^AI に聞く/ }).click();
+  await expect(panel.getByText("入力してください")).toBeVisible();
+  await panel.getByPlaceholder("例: 次の文章を 3 行で要約してください").fill("今日の予定を 3 行でまとめてください");
+  await expect(panel.getByText("入力してください")).toHaveCount(0);
+});
