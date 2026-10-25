@@ -24,7 +24,7 @@ import {
 import { FolderPicker, type FolderChoice } from "@/components/artifacts/folder-picker";
 import type { Trigger } from "@/generated/workflow-ir";
 import { Field } from "./common";
-import { InputSchemaEditor } from "./input-schema-editor";
+import { InputSchemaEditor, type InputRefUsage } from "./input-schema-editor";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -301,13 +301,16 @@ export function TriggerPanel({
   onChange,
   inputSchema,
   onInputSchemaChange,
+  inputUsages,
 }: {
   triggers: Trigger[];
   index: number;
   onChange: (next: Trigger[]) => void;
-  /// ワークフローの入力項目（IR の `input_schema`）。
+  /// ワークフローの入力項目（IR の `input_schema`）。`renames` はキーを変えた項目（旧キー → 新キー）。
   inputSchema: unknown;
-  onInputSchemaChange: (next: unknown) => void;
+  onInputSchemaChange: (next: unknown, renames?: Record<string, string>) => void;
+  /// ブロックが参照している入力項目のキー（定義に無いキーを知らせる）。
+  inputUsages?: InputRefUsage[];
 }) {
   const trigger = triggers[index];
   if (!trigger) return null;
@@ -348,7 +351,7 @@ export function TriggerPanel({
             「実行」ボタンや AI チャットから手動で開始できます
           </p>
           <div className="border-t pt-3">
-            <InputSchemaEditor schema={inputSchema} onChange={onInputSchemaChange} />
+            <InputSchemaEditor schema={inputSchema} onChange={onInputSchemaChange} usages={inputUsages} />
           </div>
         </>
       ) : null}

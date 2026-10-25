@@ -6,6 +6,7 @@
 /// - テンプレートの字句（`{name}` が差し込み・`{{` `}}` は波括弧そのもの・ir.md §3.2）。規則は実行時の
 ///   crates/workflow-engine/src/ir/expr.rs の `template_pieces` と同じ（保存時の検証もそれで読む）。
 /// - 固定値に書かれた差し込みのつもりの文字（`{{x}}`・`{x}`・`${x}`）の検出と、テンプレートへの変換。
+/// - 入力項目への参照（`$from: "input"` の path の先頭の段）の収集と、キーの変更への追随（GAP-12）。
 
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { FromRef, TemplateExpr, ValueExpr } from "@/generated/workflow-ir";
@@ -138,6 +139,63 @@ export function refLabel(ref: RefValue, ctx: RefContext): string {
   if (hit) return hit.label;
   const source = sourceOptions(ctx).find((s) => s.value === ref.$from)?.label ?? ref.$from;
   return ref.path ? `${source} ${ref.path}` : source;
+}
+
+// ── 入力項目への参照（キーの変更・削除に追随する） ─────────────────────────
+
+/// `$from: "input"` の path の先頭の段（入力項目のキー）。path が無い（入力全体）なら null。
+function inputKeyOf(v: Record<string, unknown>): { key: string; rest: string } | null {
+  if (v.$from !== "input" || typeof v.path !== "string" || !v.path.startsWith("/")) return null;
+  const [head, ...rest] = v.path.slice(1).split("/");
+  return { key: unpointerSegment(head), rest: rest.length > 0 ? `/${rest.join("/")}` : "" };
+}
+
+/// 入力項目の定義に無いキーを指す参照なら、そのキー（項目を消した・キーを書き換えた後に残った参照）。
+/// 入力項目を 1 つも定義していないワークフローでは判定しない（入力の形が決まっていない）。
+export function missingInputKey(ref: RefValue | null, ctx: RefContext): string | null {
+  if (!ref || ctx.inputFields.length === 0) return null;
+  const hit = inputKeyOf(ref as Record<string, unknown>);
+  return hit && !ctx.inputFields.some((f) => f.key === hit.key) ? hit.key : null;
+}
+
+/// params の中（差し込みの vars を含む）で参照している入力項目のキー。
+export function inputRefKeys(value: unknown, out: Set<string> = new Set()): Set<string> {
+  if (Array.isArray(value)) {
+    for (const v of value) inputRefKeys(v, out);
+  } else if (value !== null && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const hit = inputKeyOf(obj);
+    if (hit) out.add(hit.key);
+    for (const v of Object.values(obj)) inputRefKeys(v, out);
+  }
+  return out;
+}
+
+/// 入力項目のキーの変更（旧キー → 新キー）に合わせて、params の中の `$from: "input"` の path の先頭の段を
+/// 書き換える（差し込みの vars も）。一度に読み替えるので、2 つのキーの入れ替えでも混ざらない。
+/// 何も変わらなければ同じオブジェクトを返す。
+export function rewriteInputRefs(value: unknown, renames: Record<string, string>): unknown {
+  if (Array.isArray(value)) {
+    const next = value.map((v) => rewriteInputRefs(v, renames));
+    return next.some((v, i) => v !== value[i]) ? next : value;
+  }
+  if (value !== null && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    let changed = false;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      const next = rewriteInputRefs(v, renames);
+      if (next !== v) changed = true;
+      out[k] = next;
+    }
+    const hit = inputKeyOf(obj);
+    if (hit && Object.hasOwn(renames, hit.key)) {
+      out.path = `/${pointerSegment(renames[hit.key])}${hit.rest}`;
+      changed = true;
+    }
+    return changed ? out : value;
+  }
+  return value;
 }
 
 function sameRef(a: unknown, ref: RefValue): boolean {

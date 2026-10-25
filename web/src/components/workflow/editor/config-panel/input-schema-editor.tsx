@@ -7,9 +7,12 @@
 /// パターン・入れ子など）の定義は壊さず「JSON で編集」で開く。
 /// キーはブロックの「差し込む」の候補になり、ミニアプリの画面の部品の `as` の名前と対応する。
 /// 誤り（キーの重なりなど）がある間は定義に書き戻さず、行の下に理由を出す。
+/// キーを変えると、ブロックの参照（`$from: "input"` の path）も同じ 1 手で新しいキーへ書き換える
+/// （呼び出し側へ旧キー → 新キーを渡す）。項目を消しても参照は残るので、定義に無いキーを使っている
+/// ブロックを一覧で知らせる。
 
 import * as React from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,18 +29,28 @@ import { cn } from "@/lib/utils";
 import {
   buildInputSchema,
   INPUT_FIELD_KINDS,
+  INPUT_KEY_RE,
   inputRowErrors,
   parseInputSchema,
   type InputFieldKind,
   type InputFieldRow,
 } from "@/lib/workflow-input-schema";
 
+/// ブロックが参照している入力項目のキーと、そのブロックの表示名。
+export type InputRefUsage = { key: string; blocks: string[] };
+
+/// 行ごとの、今の定義でのキー（足したばかりの行は null）。キーの変更をブロックの参照へ写すのに使う。
+type Origins = (string | null)[];
+
 export function InputSchemaEditor({
   schema,
   onChange,
+  usages = [],
 }: {
   schema: unknown;
-  onChange: (next: unknown) => void;
+  /// `renames` は表でキーを変えた項目（旧キー → 新キー）。
+  onChange: (next: unknown, renames?: Record<string, string>) => void;
+  usages?: InputRefUsage[];
 }) {
   const parsed = React.useMemo(() => parseInputSchema(schema), [schema]);
   // 表で書けない形は必ず JSON で見せる（Undo などで外から変わったときも、表で上書きして壊さない）。
@@ -46,31 +59,45 @@ export function InputSchemaEditor({
   if (parsed === null && !preferJson) setPreferJson(true);
   const jsonMode = preferJson || parsed === null;
   // 誤りのある間の行（定義には書き戻していない）。定義が外から変わったら（Undo など）捨てる。
-  const [draft, setDraft] = React.useState<InputFieldRow[] | null>(null);
+  const [draft, setDraft] = React.useState<{ rows: InputFieldRow[]; origins: Origins } | null>(null);
   const [draftFor, setDraftFor] = React.useState<unknown>(schema);
   if (draftFor !== schema) {
     setDraftFor(schema);
     setDraft(null);
   }
-  const rows = draft ?? parsed?.fields ?? [];
+  const committed = parsed?.fields ?? [];
+  const rows = draft?.rows ?? committed;
+  const origins: Origins = draft?.origins ?? committed.map((f) => f.key);
   const errors = inputRowErrors(rows);
 
-  const update = (next: InputFieldRow[]) => {
+  const update = (next: InputFieldRow[], nextOrigins: Origins) => {
     if (inputRowErrors(next).size > 0) {
-      setDraft(next);
+      setDraft({ rows: next, origins: nextOrigins });
       return;
     }
     setDraft(null);
-    onChange(buildInputSchema({ fields: next, rest: parsed?.rest ?? {} }));
+    const renames: Record<string, string> = {};
+    next.forEach((r, i) => {
+      const from = nextOrigins[i];
+      if (from !== null && from !== r.key) renames[from] = r.key;
+    });
+    onChange(buildInputSchema({ fields: next, rest: parsed?.rest ?? {} }), renames);
   };
   const patchRow = (i: number, patch: Partial<InputFieldRow>) =>
-    update(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  const addRow = () => {
+    update(
+      rows.map((r, j) => (j === i ? { ...r, ...patch } : r)),
+      origins,
+    );
+  const addRow = (key?: string) => {
     const keys = new Set(rows.map((r) => r.key));
     let n = rows.length + 1;
     while (keys.has(`field_${n}`)) n += 1;
-    update([...rows, { key: `field_${n}`, title: "", kind: "string", required: false, options: [] }]);
+    update([...rows, { key: key ?? `field_${n}`, title: "", kind: "string", required: false, options: [] }], [...origins, null]);
   };
+  // 定義に無いキーを使っているブロック（項目を消した・キーを JSON で書き換えた・AI が作った定義など）。
+  // 誤りのある間の行ではなく、保存される定義と突き合わせる。
+  const declared = new Set(committed.map((f) => f.key));
+  const dangling = jsonMode ? [] : usages.filter((u) => !declared.has(u.key));
 
   return (
     <div className="space-y-2.5" data-testid="input-schema-editor">
@@ -99,7 +126,12 @@ export function InputSchemaEditor({
               row={row}
               error={errors.get(i) ?? null}
               onChange={(patch) => patchRow(i, patch)}
-              onRemove={() => update(rows.filter((_, j) => j !== i))}
+              onRemove={() =>
+                update(
+                  rows.filter((_, j) => j !== i),
+                  origins.filter((_, j) => j !== i),
+                )
+              }
             />
           ))}
           {draft !== null ? (
@@ -107,10 +139,17 @@ export function InputSchemaEditor({
               直すまで入力項目の変更は保存されません
             </p>
           ) : null}
-          <Button variant="outline" size="sm" className="h-7 text-xs" onClick={addRow}>
+          <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => addRow()}>
             <Plus className="size-3.5" aria-hidden />
             項目を追加
           </Button>
+          {dangling.length > 0 ? (
+            <DanglingRefs
+              usages={dangling}
+              // 誤りのある行を直している間は足さない（直しかけの行と重なるかもしれない）。
+              onAdd={draft === null ? addRow : undefined}
+            />
+          ) : null}
         </>
       )}
     </div>
@@ -213,6 +252,46 @@ function FieldRow({
           {error}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+/// 定義に無いキーを使っているブロックの一覧（実行すると、その参照は「解決できません」で失敗する）。
+function DanglingRefs({ usages, onAdd }: { usages: InputRefUsage[]; onAdd?: (key: string) => void }) {
+  return (
+    <div
+      role="note"
+      className="space-y-1.5 rounded-md border p-2 text-[11px] leading-relaxed"
+      style={{
+        borderColor: "color-mix(in oklab, var(--season-autumn) 45%, transparent)",
+        backgroundColor: "color-mix(in oklab, var(--season-autumn) 8%, transparent)",
+      }}
+      data-testid="input-dangling-refs"
+    >
+      <p className="flex items-start gap-1.5">
+        <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-[var(--season-autumn)]" aria-hidden />
+        <span>
+          入力項目に無いキーを使っているブロックがあります。このまま実行すると、そのブロックは失敗します。
+          項目を足すか、ブロックの参照先を選び直してください。
+        </span>
+      </p>
+      <ul className="space-y-1">
+        {usages.map((u) => (
+          <li key={u.key} className="flex items-center justify-between gap-2">
+            <span className="min-w-0 break-words">
+              <code className="font-mono">{u.key}</code>
+              {"（"}
+              {u.blocks.map((b) => `「${b}」`).join("")}
+              {"）"}
+            </span>
+            {onAdd && INPUT_KEY_RE.test(u.key) ? (
+              <Button variant="outline" size="sm" className="h-7 shrink-0 text-xs" onClick={() => onAdd(u.key)}>
+                項目に足す
+              </Button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

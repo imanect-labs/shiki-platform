@@ -11,6 +11,7 @@ import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { Edge, Node, Trigger, ValidationError, WorkflowIr } from "@/generated/workflow-ir";
 import type { EditorLayout } from "@/lib/workflow-api";
 import { carryTriggerPositions, seedLayout } from "./auto-layout";
+import { rewriteInputRefs } from "./config-panel/value-refs";
 
 export type Selection =
   | { kind: "none" }
@@ -75,9 +76,12 @@ export type EditorAction =
   | { type: "rename_out_port"; id: string; fromPort: string; toPort: string; params: unknown }
   | { type: "rename_node"; id: string; nextId: string }
   /// `at` は `update_node` と同じ（入力項目の連続入力を undo 1 段にまとめる）。
+  /// `inputRenames` は入力項目のキーの変更（旧キー → 新キー）。ブロックの参照（`$from: "input"` の path）を
+  /// 同じ 1 手で書き換える（残すと保存は通り、実行で「解決できません」になる）。
   | {
       type: "update_meta";
       patch: Partial<Pick<WorkflowIr, "display_name" | "description" | "policies" | "declared_scopes" | "input_schema">>;
+      inputRenames?: Record<string, string>;
       at?: number;
     }
   | { type: "set_triggers"; triggers: Trigger[] }
@@ -450,7 +454,14 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       };
     }
     case "update_meta": {
+      const renames = action.inputRenames ?? {};
       const ir = { ...state.ir, ...action.patch } as WorkflowIr;
+      if (Object.keys(renames).length > 0) {
+        ir.nodes = state.ir.nodes.map((n) => {
+          const params = rewriteInputRefs(n.params, renames);
+          return params === n.params ? n : ({ ...n, params } as Node);
+        });
+      }
       // ノードの id は空にならないので、空の id をワークフロー自体の項目の印にする。
       const field = `meta:${Object.keys(action.patch).sort().join(",")}`;
       const last = state.lastEdit;

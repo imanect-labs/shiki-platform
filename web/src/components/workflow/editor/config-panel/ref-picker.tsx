@@ -3,11 +3,12 @@
 /// 参照先の選択と「差し込む」メニュー（値の入力欄の部品・BUG-1）。
 ///
 /// - `RefPicker`: 候補（入力項目・前のブロックの結果・繰り返し中の要素）から選ぶ。候補に無い場所は
-///   「場所を指定する…」で参照元と path（候補つき）を手で書ける。
+///   「場所を指定する…」で参照元と path（候補つき）を手で書ける。入力項目の定義に無いキーを指す参照
+///   （項目を消した後に残ったものなど）には注意を出す。
 /// - `InsertMenu`: 候補を選ぶと、呼び出し側がカーソル位置に `{名前}` を差し込む。
 
 import * as React from "react";
-import { Braces } from "lucide-react";
+import { Braces, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +31,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  missingInputKey,
   pathHints,
   refKey,
   refOptions,
@@ -74,6 +76,7 @@ export function RefPicker({
   const listId = React.useId();
   const keepDefault = value?.default !== undefined ? { default: value.default } : {};
   const hints = custom ? pathHints(value?.$from ?? "input", ctx) : [];
+  const missing = missingInputKey(value, ctx);
 
   return (
     <div className="space-y-1.5">
@@ -147,6 +150,14 @@ export function RefPicker({
             </datalist>
           ) : null}
         </div>
+      ) : null}
+      {missing !== null ? (
+        <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground" role="note" data-testid="ref-missing-input">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-[var(--season-autumn)]" aria-hidden />
+          <span>
+            入力項目に「{missing}」がありません（このままでは実行で失敗します）。きっかけの設定で項目を足すか、参照先を選び直してください
+          </span>
+        </p>
       ) : null}
     </div>
   );

@@ -50,8 +50,10 @@ import {
   StorageWriteForm,
 } from "./forms-files";
 import { patchParams } from "./params";
+import type { InputRefUsage } from "./input-schema-editor";
 import { TriggerPanel } from "./trigger-panel";
 import { InputFieldsContext, type RefCandidate } from "./value-expr-input";
+import { inputRefKeys } from "./value-refs";
 
 const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "storage.read": StorageReadForm,
@@ -238,8 +240,19 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
   );
 }
 
+/// ブロックが参照している入力項目のキー（`$from: "input"` の path の先頭の段）と、そのブロックの表示名。
+function inputUsagesOf(nodes: IrNode[]): InputRefUsage[] {
+  const byKey = new Map<string, string[]>();
+  for (const n of nodes) {
+    const label = n.label || NODE_CATALOG.find((c) => c.type === n.type)?.label_ja || n.id;
+    for (const key of inputRefKeys(n.params)) byKey.set(key, [...(byKey.get(key) ?? []), label]);
+  }
+  return [...byKey].map(([key, blocks]) => ({ key, blocks }));
+}
+
 export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
   const { selection, ir } = ctx.state;
+  const inputUsages = React.useMemo(() => inputUsagesOf(ir.nodes), [ir.nodes]);
   const desktop = useMediaQuery("(min-width: 768px)");
   const sheet = !desktop;
   const close = () => ctx.dispatch({ type: "select", selection: { kind: "none" } });
@@ -280,7 +293,10 @@ export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
             index={selection.index}
             onChange={(triggers) => ctx.dispatch({ type: "set_triggers", triggers })}
             inputSchema={ir.input_schema}
-            onInputSchemaChange={(input_schema) => ctx.dispatch({ type: "update_meta", patch: { input_schema } })}
+            onInputSchemaChange={(input_schema, inputRenames) =>
+              ctx.dispatch({ type: "update_meta", patch: { input_schema }, inputRenames })
+            }
+            inputUsages={inputUsages}
           />
         </div>
       </>
