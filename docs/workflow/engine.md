@@ -478,9 +478,12 @@ cron の評価区間は `workflow_trigger.last_planned_at`（watermark）→ 現
 スケジューラ停止中に生じた「穴」（misfire）は、この区間列挙の上で IR の `catchup` に従う（ir.md §6）。
 
 - `skip`（既定）: 区間内の未発火のうち **直近 1 occurrence のみ**発火する（残りは watermark 前進で消化）。
-- `none`: 区間内の最新 occurrence が評価時刻から猶予（`ON_TIME_GRACE`＝60 秒・tick の既定は 5 秒）以内なら
-  時刻どおりとして発火し、それより遅れた occurrence（停止中の穴）はすべて捨てる（watermark だけ前進させる）。
-  区間をまるごと捨てると稼働中の発火まで捨ててしまう（#904）。
+- `none`: 区間内の最新 occurrence を、スケジューラが動き続けていた（前回の評価から `MAX_LIVE_TICK_GAP`＝5 分以内・
+  重い tick ループやリーダー交代の待ちを含む）か、評価時刻から猶予（`ON_TIME_GRACE`＝60 秒）以内に来たものなら
+  時刻どおりとして発火し、それ以外（停止中の穴）はすべて捨てる（watermark だけ前進させる）。区間をまるごと
+  捨てると稼働中の発火まで捨ててしまう（#904）。
+- DST の終わりで同じ壁時計の時刻が 2 回あるときは先の 1 回だけを occurrence とする（ir.md §6.1「二重時刻は先勝ち」・
+  全 catchup 共通）。
 - `all`（全部再生）は **v1 でやらない**（ir.md §6 で確定済み）。
 
 ### 5.3 占有 TX（冪等発火）

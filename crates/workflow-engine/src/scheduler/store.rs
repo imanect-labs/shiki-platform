@@ -8,8 +8,13 @@ use super::cron;
 use super::RunLauncher;
 
 /// `catchup: "none"` で「時刻どおり」とみなす遅れの上限。tick は既定 5 秒ごとなので、稼働中の occurrence は
-/// 数秒の遅れで評価される。これを超えて遅れた occurrence はスケジューラ停止中の穴（misfire）として捨てる。
+/// 数秒の遅れで評価される。
 pub const ON_TIME_GRACE: chrono::TimeDelta = chrono::TimeDelta::seconds(60);
+
+/// `catchup: "none"` でスケジューラが「動き続けていた」とみなす tick の間隔の上限（前回の評価からの経過）。
+/// 1 回の tick ループが重い（取込直後の大量イベントの relay 等）・`tick_secs` を大きくした・リーダーの
+/// 交代（リース満了待ち）で間が空いても、この範囲なら区間内の最新 occurrence は停止中の穴ではないので発火する。
+pub const MAX_LIVE_TICK_GAP: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
 
 /// スケジューラ操作のエラー。
 #[derive(Debug, thiserror::Error)]
@@ -102,12 +107,17 @@ impl SchedulerStore {
             // 作成〜初回 tick の間に到来した occurrence を取りこぼす。
             let after = t.last_planned_at.unwrap_or(t.created_at);
             let occ: Vec<DateTime<Utc>> = if catchup == "none" {
-                // **時刻どおりの発火だけ**（区間内の最新 occurrence が今から猶予内なら発火）。猶予を超えて
-                // 遅れた occurrence ＝スケジューラ停止中の穴（misfire）は捨てて watermark だけ前進させる
+                // **時刻どおりの発火だけ**: 区間内の最新 occurrence を、スケジューラが動き続けていた
+                // （前回の評価から MAX_LIVE_TICK_GAP 以内）か、今から ON_TIME_GRACE 以内に来たものなら発火する。
+                // それ以外（スケジューラ停止中の穴＝misfire）は捨てて watermark だけ前進させる
                 // （ir.md §6.1・engine.md §5.2）。区間をまるごと捨てると、稼働中の時刻どおりの発火まで
                 // 捨てて一度も発火しない（#904）。
                 match cron::latest_occurrence_between(cron5, tz, after, now) {
-                    Ok(Some(last)) if now - last <= ON_TIME_GRACE => vec![last],
+                    Ok(Some(last))
+                        if now - after <= MAX_LIVE_TICK_GAP || now - last <= ON_TIME_GRACE =>
+                    {
+                        vec![last]
+                    }
                     Ok(_) => Vec::new(),
                     Err(_) => continue,
                 }

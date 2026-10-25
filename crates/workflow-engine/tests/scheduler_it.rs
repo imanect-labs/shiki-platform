@@ -267,6 +267,22 @@ async fn catchup_none_fires_on_time_and_drops_misfires() {
         .unwrap();
     assert_eq!(fired, 1);
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+
+    // ④ 稼働中だが tick ループが重く間が空いた（04:59:58 → 05:01:05・05:00 から 65 秒遅れ）: 停止ではないので発火する。
+    set_watermark(Utc.with_ymd_and_hms(2026, 7, 7, 4, 59, 58).unwrap()).await;
+    let fired = store
+        .tick_schedules(
+            Utc.with_ymd_and_hms(2026, 7, 7, 5, 1, 5).unwrap(),
+            Some(&tenant),
+            launcher.as_ref(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fired, 1,
+        "遅い tick でも動き続けていたなら時刻どおりとして発火する"
+    );
+    assert_eq!(launcher.launches.load(Ordering::SeqCst), 3);
 }
 
 /// フォルダノード＋自己 closure（depth 0）を作る。`parent` を渡すと祖先 closure も張る。
