@@ -34,6 +34,8 @@ use std::sync::Arc;
 
 /// ChatGPT プランの照合・モデルの見え方（gateway.rs の行数上限のため分割）。
 mod chatgpt_gate;
+/// ノード（ワークフロー・ミニアプリ）のモデル解決（同上）。
+mod node_choice;
 
 /// 会計の「利用元」（管理画面の利用元別集計・`llm_usage.source`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

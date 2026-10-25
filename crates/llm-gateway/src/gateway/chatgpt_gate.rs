@@ -104,7 +104,7 @@ pub(super) fn plan_provider(
 }
 
 /// `hidden` のモデルを使えないものとして見せる（既定がそれなら Auto）。
-fn without_models(
+pub(super) fn without_models(
     catalog: &crate::config::ModelCatalog,
     mut settings: TenantLlmSettings,
     hidden: &[&str],

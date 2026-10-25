@@ -16,6 +16,10 @@ use sqlx::PgPool;
 use crate::config::{AutoConfig, ModelCatalog, ModelEntry};
 use crate::model::Effort;
 
+/// ノード（ワークフロー・ミニアプリ）のモデル指定の解決（tenant.rs の行数上限のため分割）。
+mod node_choice;
+pub use node_choice::resolve_node_choice;
+
 /// 「Auto」を表すモデル指定。
 pub const AUTO_MODEL: &str = "auto";
 
