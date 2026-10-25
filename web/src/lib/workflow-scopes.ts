@@ -5,6 +5,8 @@ export const SCOPE_LABELS: Record<string, string> = {
   "data.write": "業務データを書く",
   "storage.read": "ファイルを読む",
   "storage.write": "ファイルを保存する",
+  "csv.read": "CSV を読む",
+  "csv.write": "CSV を書く",
   "rag.query": "社内ドキュメントを検索する",
   "http.egress": "外部サービスへ送信する",
   "workflow.start": "別のワークフローを起動する",

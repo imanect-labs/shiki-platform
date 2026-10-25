@@ -31,17 +31,68 @@ export function mapErrors(errors: ValidationError[]): ErrorMap {
   return { byNode, byEdge, global };
 }
 
-/// `/params/<field>/...` の先頭フィールド名（右パネルのフィールドハイライト用）。
-/// サーバの params の読み取りの誤り（serde の原文 `params が不正です: missing field \`data\`` など）から、
-/// 欄の名前と利用者向けの文言を取り出す（欄の赤字と上の帯に同じ内容が英語で二重に出ていた・C2 N11）。
-export function serdeParamError(message: string): { field: string; message: string } | null {
-  const missing = /missing field `([a-z_][a-z0-9_]*)`/.exec(message);
-  if (missing) return { field: missing[1], message: "入力してください" };
+/// サーバの params の読み取りの誤り（`params が不正です: 項目 'data' がありません` など）から、
+/// 欄の名前と誤りの種類を取り出す。サーバは serde の英語の文言を日本語に直して返す
+/// （`params/mod.rs` の humanize・BUG-21）。英語の原文（`missing field \`data\``）は古いサーバ向けに残す。
+export function serdeParamError(
+  message: string,
+): { field: string; kind: "missing" | "unknown" | "invalid"; message: string } | null {
+  const missing = /項目 '([^']+)' がありません/.exec(message) ?? /missing field `([^`]+)`/.exec(message);
+  if (missing) return { field: missing[1], kind: "missing", message: "入力してください" };
+  const unknown = /項目 '([^']+)' は使えません/.exec(message) ?? /unknown field `([^`]+)`/.exec(message);
+  if (unknown) {
+    return { field: unknown[1], kind: "unknown", message: `「${unknown[1]}」はこのブロックでは使えない項目です` };
+  }
   const invalid = /invalid (?:type|value)[^`]*?(?:at|for) `?([a-z_][a-z0-9_]*)`?/.exec(message);
-  if (invalid) return { field: invalid[1], message: "値の形が正しくありません" };
+  if (invalid) return { field: invalid[1], kind: "invalid", message: "値の形が正しくありません" };
   return null;
 }
 
+/// 右パネルでの誤りの出し分け。
+export type NodeErrorView = {
+  /// 欄の下に出す誤り（params の最上位の項目名 → 文言・同じ欄の 2 件目以降は捨てる）。
+  fields: Map<string, string>;
+  /// 上の帯に出す誤り（欄に写せないもの）。`removable` は params の最上位にある使えない項目で、
+  /// 帯から取り除ける（フォームはその項目の欄を描かないので、ほかに消す手段が無い）。
+  banner: { message: string; removable?: string }[];
+};
+
+const PARAMS_PREFIX = "params が不正です: ";
+
+/// 1 つのノードの誤りを、欄の下に出すものと上の帯に出すものに分ける。
+///
+/// - path が `/params/<項目>/…` なら、その項目の欄へ（文言の `params が不正です: ` は欄の下では外す）。
+/// - path が `/params` だけの欠落（`項目 'x' がありません`）は、文言の項目名の欄へ「入力してください」。
+/// - 最上位の使えない項目（path が `/params/<項目>` で文言も同じ項目）は帯へ（取り除けるようにする）。
+export function nodeErrorView(errors: ValidationError[]): NodeErrorView {
+  const fields = new Map<string, string>();
+  const banner: NodeErrorView["banner"] = [];
+  for (const e of errors) {
+    const head = paramField(e.path);
+    // 文言から項目名を拾うのは params の読み取りの誤り（path が無いか `/params`）だけ。
+    const serde = !e.path || e.path === "/params" || head !== null ? serdeParamError(e.message) : null;
+    if (serde?.kind === "unknown" && (head === null || head === serde.field)) {
+      banner.push({ message: serde.message, removable: serde.field });
+      continue;
+    }
+    const field = head ?? serde?.field ?? null;
+    if (!field) {
+      banner.push({ message: e.message });
+      continue;
+    }
+    if (fields.has(field)) continue;
+    const message =
+      head === null && serde
+        ? serde.message
+        : e.message.startsWith(PARAMS_PREFIX)
+          ? e.message.slice(PARAMS_PREFIX.length)
+          : e.message;
+    fields.set(field, message);
+  }
+  return { fields, banner };
+}
+
+/// `/params/<field>/...` の先頭フィールド名（右パネルのフィールドハイライト用）。
 export function paramField(path: string | undefined | null): string | null {
   if (!path?.startsWith("/params/")) return null;
   const rest = path.slice("/params/".length);

@@ -19,16 +19,14 @@ import type { Node as IrNode, Trigger } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { EditorContext } from "../workflow-editor";
 import { nodeIcon } from "../icons";
-import { mapErrors, paramField, serdeParamError } from "../validation";
+import { defaultParams } from "../ir-state";
+import { mapErrors, nodeErrorView } from "../validation";
 import { CommonSection } from "./common";
 import {
   AgentInvokeForm,
   LlmInvokeForm,
   RagSearchForm,
   SkillInvokeForm,
-  StorageListForm,
-  StorageReadForm,
-  StorageWriteForm,
   WorkflowStartForm,
   type FormProps,
 } from "./forms-basic";
@@ -42,6 +40,15 @@ import {
   DataTransitionForm,
 } from "./forms-data";
 import { HttpRequestForm, ScriptRunForm } from "./forms-external";
+import {
+  CsvPatchForm,
+  CsvQueryForm,
+  CsvWriteForm,
+  StorageListForm,
+  StorageReadForm,
+  StorageWriteForm,
+} from "./forms-files";
+import { patchParams } from "./params";
 import { TriggerPanel } from "./trigger-panel";
 import type { RefCandidate } from "./value-expr-input";
 
@@ -67,7 +74,24 @@ const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "data.record.delete": DataRecordDeleteForm,
   "data.transition": DataTransitionForm,
   "data.bulk_upsert": DataBulkUpsertForm,
+  "csv.query": CsvQueryForm,
+  "csv.patch": CsvPatchForm,
+  "csv.write": CsvWriteForm,
 };
+
+/// 置いたときに空の文字で入れてある必須の欄（`defaultParams` の `""`）のうち、まだ空のもの。
+/// 保存は通るが中身の無い指示で動いてしまうので、欄の下で入力を促す（BUG-15）。
+function blankRequired(node: IrNode): string[] {
+  const defaults = defaultParams(node.type);
+  if (!defaults || typeof defaults !== "object") return [];
+  const params = (node.params ?? {}) as Record<string, unknown>;
+  return Object.entries(defaults as Record<string, unknown>)
+    .filter(([key, v]) => {
+      const cur = params[key];
+      return v === "" && (cur === undefined || (typeof cur === "string" && cur.trim() === ""));
+    })
+    .map(([key]) => key);
+}
 
 /// 祖先ノード（`$from nodes.<id>.output` の参照候補）を逆辺 BFS で求める。
 function ancestorsOf(ctx: EditorContext, nodeId: string): RefCandidate[] {
@@ -104,20 +128,17 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
   );
   const inMapRegion = node.parent != null;
 
-  // path 付きエラー → 先頭フィールド名で写像（同一フィールド複数はまとめる）。
+  // 欄に写せる誤り（path か文言の項目名）は欄の下に出し、上の帯には欄の無いものだけを出す。
+  const errorView = React.useMemo(
+    () => nodeErrorView(mapErrors(ctx.state.serverErrors).byNode.get(node.id) ?? []),
+    [ctx.state.serverErrors, node.id],
+  );
   const fieldErrors = React.useMemo(() => {
-    const errors = mapErrors(ctx.state.serverErrors).byNode.get(node.id) ?? [];
-    const map = new Map<string, string>();
-    for (const e of errors) {
-      const serde = paramField(e.path) ? null : serdeParamError(e.message);
-      const field = paramField(e.path) ?? serde?.field;
-      if (field && !map.has(field)) map.set(field, serde?.message ?? e.message);
-    }
+    const map = new Map(errorView.fields);
+    for (const key of blankRequired(node)) if (!map.has(key)) map.set(key, "入力してください");
     return map;
-  }, [ctx.state.serverErrors, node.id]);
-  const nodeErrors = mapErrors(ctx.state.serverErrors).byNode.get(node.id) ?? [];
-  // 欄に写せた誤り（path か serde の原文の項目名）は欄の下に出し、上の帯には欄の無いものだけを出す。
-  const unmappedErrors = nodeErrors.filter((e) => !paramField(e.path) && !serdeParamError(e.message));
+  }, [errorView, node]);
+  const params = (node.params ?? {}) as Record<string, unknown>;
   const nodeWarnings = mapErrors(ctx.state.serverWarnings).byNode.get(node.id) ?? [];
 
   return (
@@ -144,10 +165,21 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
         )}
       </div>
       <div className="flex-1 space-y-5 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle">
-        {unmappedErrors.length > 0 ? (
+        {errorView.banner.length > 0 ? (
           <ul className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-2 text-[11px] text-destructive">
-            {unmappedErrors.map((e, i) => (
-              <li key={i}>{e.message}</li>
+            {errorView.banner.map((e, i) => (
+              <li key={i} className="flex items-start justify-between gap-2">
+                <span className="min-w-0">{e.message}</span>
+                {e.removable && e.removable in params ? (
+                  <button
+                    type="button"
+                    className="shrink-0 font-medium underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() => patchParams(ctx.dispatch, node, { [e.removable!]: undefined })}
+                  >
+                    取り除く
+                  </button>
+                ) : null}
+              </li>
             ))}
           </ul>
         ) : null}
@@ -170,7 +202,9 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
           </div>
         ) : null}
         {Form ? (
+          // ノードを選び直したらフォームの手元の状態（入力方法の切り替えなど）を持ち越さない。
           <Form
+            key={node.id}
             node={node}
             dispatch={ctx.dispatch}
             refCandidates={refCandidates}

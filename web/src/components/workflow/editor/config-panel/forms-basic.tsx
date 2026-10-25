@@ -1,6 +1,7 @@
 "use client";
 
-/// 能力ノードのフォーム（ファイル読む/保存/一覧・社内検索・AI に聞く・AI エージェント・別フロー起動）。
+/// 能力ノードのフォーム（社内検索・AI に聞く・AI エージェント・別フロー起動・スキル）。
+/// ファイル（storage.* / csv.*）のフォームは forms-files.tsx にある。
 ///
 /// フィールドは codegen の typed 契約（NodeParamsByType）に対応する（効かない設定は出さない）。
 
@@ -22,71 +23,6 @@ export type FormProps = {
   inMapRegion: boolean;
   fieldErrors: Map<string, string>;
 };
-
-export function StorageReadForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
-  const p = paramsOf<NodeParamsByType["storage.read"]>(node);
-  return (
-    <ValueExprInput
-      label="読むファイル"
-      value={p.file as ValueExpr | undefined}
-      onChange={(v) => patchParams(dispatch, node, { file: v })}
-      refCandidates={refCandidates}
-      inMapRegion={inMapRegion}
-      placeholder="ファイル ID"
-      error={fieldErrors.get("file")}
-    />
-  );
-}
-
-export function StorageWriteForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
-  const p = paramsOf<NodeParamsByType["storage.write"]>(node);
-  return (
-    <div className="space-y-3">
-      <ValueExprInput
-        label="ファイル名"
-        value={p.name as ValueExpr | undefined}
-        onChange={(v) => patchParams(dispatch, node, { name: v })}
-        refCandidates={refCandidates}
-        inMapRegion={inMapRegion}
-        placeholder="例: report.md"
-        error={fieldErrors.get("name")}
-      />
-      <ValueExprInput
-        label="内容"
-        value={p.content as ValueExpr | undefined}
-        onChange={(v) => patchParams(dispatch, node, { content: v })}
-        refCandidates={refCandidates}
-        inMapRegion={inMapRegion}
-        multiline
-        error={fieldErrors.get("content")}
-      />
-      <ValueExprInput
-        label="保存先フォルダ（省略可）"
-        value={p.folder as ValueExpr | undefined}
-        onChange={(v) => patchParams(dispatch, node, { folder: v })}
-        refCandidates={refCandidates}
-        inMapRegion={inMapRegion}
-        placeholder="フォルダ ID（空欄でマイドライブ）"
-        error={fieldErrors.get("folder")}
-      />
-    </div>
-  );
-}
-
-export function StorageListForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
-  const p = paramsOf<NodeParamsByType["storage.list"]>(node);
-  return (
-    <ValueExprInput
-      label="一覧するフォルダ（省略可）"
-      value={p.folder as ValueExpr | undefined}
-      onChange={(v) => patchParams(dispatch, node, { folder: v })}
-      refCandidates={refCandidates}
-      inMapRegion={inMapRegion}
-      placeholder="フォルダ ID（空欄でマイドライブ）"
-      error={fieldErrors.get("folder")}
-    />
-  );
-}
 
 export function RagSearchForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
   const p = paramsOf<NodeParamsByType["rag.search"]>(node);

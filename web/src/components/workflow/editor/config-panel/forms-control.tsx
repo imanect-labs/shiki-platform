@@ -209,7 +209,8 @@ export function ConditionEditor({
             comparisons: [
               ...flat.comparisons,
               {
-                left: { $from: "input", path: "/" } as unknown as ValueExpr,
+                // 入力全体は path を書かない（"/" は空文字キーを指し、eq は常に偽・neq は常に真になる・BUG-16）。
+                left: { $from: "input" } as unknown as ValueExpr,
                 op: "eq",
                 right: "" as unknown as ValueExpr,
               } as Comparison,

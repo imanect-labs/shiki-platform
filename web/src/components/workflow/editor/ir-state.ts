@@ -112,6 +112,10 @@ export function defaultOutPort(nodeType: string): string {
 /// カタログの既定 params（必須フィールドの雛形・右パネルで埋める前提の最小形）。
 /// **入力全体を指す `$from` は `path` を持たない**（JSON Pointer の `"/"` は
 /// 「空文字キーのプロパティ」であり全体ではない・実行時に解決不能になる）。
+/// 利用者が書くしかない必須の文字の欄は `""` で入れる（右パネルが空のままなら「入力してください」と出す）。
+/// 文字を求める欄に入力全体（オブジェクト）を入れると、置いたまま実行したとき必ず失敗する（BUG-15）。
+/// 一覧から選ばせる欄（csv.* のファイル・data.* のテーブル）は入れない（保存時の検証の「項目がありません」が
+/// 欄の下に出る）。
 export function defaultParams(nodeType: string): unknown {
   switch (nodeType) {
     case "control.branch":
@@ -127,11 +131,11 @@ export function defaultParams(nodeType: string): unknown {
     case "storage.write":
       return { name: "output.txt", content: { $from: "input" } };
     case "rag.search":
-      return { query: { $from: "input" } };
+      return { query: "" };
     case "llm.invoke":
-      return { prompt: { $from: "input" } };
+      return { prompt: "" };
     case "agent.invoke":
-      return { instruction: { $from: "input" } };
+      return { instruction: "" };
     case "http.request":
       return { url: "https://" };
     case "script.run":
@@ -140,6 +144,12 @@ export function defaultParams(nodeType: string): unknown {
       return { skill: "" };
     case "workflow.start":
       return { name: "" };
+    case "csv.query":
+      return { sql: "SELECT * FROM data LIMIT 100" };
+    case "csv.patch":
+      return { ops: [] };
+    case "csv.write":
+      return { name: "output.csv", content: { $from: "input" } };
     default:
       return {};
   }
