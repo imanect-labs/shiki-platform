@@ -919,6 +919,41 @@ async fn saved_workflows_with_array_conditions_are_listed() {
         .await
         .unwrap();
     assert_eq!(workflow_engine::semantics_warnings(&prefix_ir).len(), 1);
+    // BUG-14: 大小比較のしきい値を数字の文字列で保存した定義（数値との比較は run の失敗に変わる）も載る。
+    let threshold = json!({
+        "ir_version": 1, "name": "amount-threshold",
+        "triggers": [ { "kind": "interactive" } ],
+        "nodes": [ { "id": "big", "type": "control.branch", "params": { "condition":
+            { "cmp": { "left": { "$from": "input", "path": "/amount" }, "op": "gte", "right": "50000" } } } } ],
+        "edges": []
+    });
+    let (wf_threshold, _) = env
+        .workflows
+        .create(&alice, &threshold, &Catalog::default(), None)
+        .await
+        .unwrap();
+    // テンプレートの `{{key}}` は保存時の警告には出るが、条件の一覧には混ぜない（DB の事前絞り込みは
+    // eq で通る）。
+    let template = json!({
+        "ir_version": 1, "name": "template-branch",
+        "triggers": [ { "kind": "interactive" } ],
+        "nodes": [
+            { "id": "br", "type": "control.branch", "params": { "condition":
+                { "cmp": { "left": { "$from": "input", "path": "/n" }, "op": "eq", "right": 3 } } } },
+            { "id": "ask", "type": "llm.invoke", "params": { "prompt": {
+                "$template": "数は {{n}} です", "vars": { "n": { "$from": "input", "path": "/n" } } } } }
+        ],
+        "edges": [ { "from": "br", "from_port": "true", "to": "ask" } ]
+    });
+    let (_, template_ir) = env
+        .workflows
+        .create(&alice, &template, &Catalog::default(), None)
+        .await
+        .unwrap();
+    assert!(workflow_engine::semantics_warnings(&template_ir).is_empty());
+    let saved = workflow_engine::save_warnings(&template_ir);
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert_eq!(saved[0].code, workflow_engine::TEMPLATE_ESCAPED_VAR);
 
     // 一覧化（1 件ずつのページで keyset を回す）。
     let mut after = None;
@@ -939,7 +974,16 @@ async fn saved_workflows_with_array_conditions_are_listed() {
             None => break,
         }
     }
-    assert_eq!(found.len(), 2, "{found:?}");
+    assert_eq!(found.len(), 3, "{found:?}");
+    assert!(
+        found.iter().all(|f| f.name != "template-branch"),
+        "テンプレートの警告は条件の一覧に出ない: {found:?}"
+    );
+    let threshold_hit = found
+        .iter()
+        .find(|f| f.workflow_id == wf_threshold)
+        .expect("amount-threshold");
+    assert_eq!(threshold_hit.node_id.as_deref(), Some("big"));
     let eq_hit = found
         .iter()
         .find(|f| f.workflow_id == wf)

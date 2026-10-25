@@ -40,13 +40,18 @@ pub struct SaveWorkflowResponse {
     pub warnings: Vec<ValidationError>,
 }
 
-/// 保存した IR の警告（`ir.condition_semantics_changed` など）。保存者が気付けるようログにも残す。
+/// 保存した IR の警告（`ir.condition_semantics_changed`・`ir.template_escaped_var` など）。
+/// 条件の意味論の切替に当たるものは、運用が気付けるようログにも残す。
 fn save_warnings(ir: &workflow_engine::WorkflowIr, id: Uuid) -> Vec<ValidationError> {
-    let warnings = workflow_engine::semantics_warnings(ir);
-    if !warnings.is_empty() {
+    let warnings = workflow_engine::save_warnings(ir);
+    let semantics = warnings
+        .iter()
+        .filter(|w| w.code == workflow_engine::SEMANTICS_CHANGED)
+        .count();
+    if semantics > 0 {
         tracing::warn!(
             workflow = %id,
-            count = warnings.len(),
+            count = semantics,
             "条件の意味論の切替（2026-10）で振る舞いが変わり得る条件を含むワークフローを保存しました"
         );
     }
@@ -137,11 +142,11 @@ pub async fn validate_workflow(
     // 保存と同じく、ノードが要するスコープを補完してから検証する（検証 C-P1-2・結果を保存と揃える）。
     let (ir, _) = workflow_engine::complete_declared_scopes(&req.ir);
     let (errors, warnings) = match workflow_engine::validate(&ir, &catalog) {
-        Ok(ir) => (Vec::new(), workflow_engine::semantics_warnings(&ir)),
+        Ok(ir) => (Vec::new(), workflow_engine::save_warnings(&ir)),
         // スキーマ（V1）を通る IR なら、他の誤りがあっても警告は出す（エディタが同時に表示する）。
         Err(errors) => {
             let warnings = workflow_engine::WorkflowIr::from_json(&ir)
-                .map(|ir| workflow_engine::semantics_warnings(&ir))
+                .map(|ir| workflow_engine::save_warnings(&ir))
                 .unwrap_or_default();
             (errors, warnings)
         }

@@ -165,8 +165,9 @@ impl Tool for EmitWorkflowTool {
                 let mut text = format!(
                     "ワークフロー「{display}」を保存しました（id: {id}, v{version}）。ユーザーにはカードが表示され、エディタで開けます。"
                 );
-                // 保存は止めない警告（条件の意味論の切替で分岐の結果が変わり得る条件・Task 15.7）。
-                let warnings = workflow_engine::semantics_warnings(&ir);
+                // 保存は止めない警告（条件の意味論の切替で分岐の結果が変わり得る条件・Task 15.7・
+                // テンプレートの `{{key}}` など）。保存 API と同じ集合。
+                let warnings = workflow_engine::save_warnings(&ir);
                 if !warnings.is_empty() {
                     text.push_str("\n注意（保存はしました・意図どおりか確かめてください）:");
                     for w in &warnings {

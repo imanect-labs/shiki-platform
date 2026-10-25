@@ -4,6 +4,7 @@
 //! - enqueue 直後クラッシュ→再 tick でも同一 occurrence の run は 1 つ（冪等）
 //! - storage 書込イベントでワークフローが起動する
 //! - 無効化済みワークフローのトリガは発火しない
+//! - filter の評価エラー（大小比較の型不一致）では発火しない（fail-closed）
 //! - リーダーリースは同時に 1 つだけが保持する
 
 #![allow(
@@ -462,4 +463,58 @@ async fn leader_lease_is_mutually_exclusive() {
     assert!(b.acquire_or_renew().await.unwrap(), "解放後は b が取れる");
     // 後片付け。
     b.release().await.unwrap();
+}
+
+/// engine.md §5.6: filter の評価エラー（数値と文字列の大小比較・BUG-14）は発火しない（fail-closed）。
+/// 型が合えば同じ filter で発火する。
+#[tokio::test]
+async fn event_trigger_filter_type_error_does_not_fire() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let wf = Uuid::new_v4();
+    let folder = Uuid::new_v4();
+    mk_folder(&pool, &tenant, folder, None).await;
+    register(
+        &pool,
+        &tenant,
+        wf,
+        "enabled",
+        "trg-filter",
+        "event",
+        Some("storage.write"),
+        json!({ "scope": { "folder": folder.to_string() },
+                "filter": { "cmp": { "left": { "$from": "trigger", "path": "/size" },
+                                     "op": "gt", "right": "10" } } }),
+    )
+    .await;
+    let store = SchedulerStore::new(pool.clone());
+    let launcher = Arc::new(CountingLauncher {
+        launches: AtomicUsize::new(0),
+    });
+    let fired = store
+        .match_event(
+            &tenant,
+            "storage.write",
+            91,
+            Some(folder),
+            &json!({ "size": 12 }),
+            launcher.as_ref(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fired, 0, "数値と文字列の大小比較は発火しない");
+    // 文字列どうしなら比べられる（"12" > "10"）。
+    let fired = store
+        .match_event(
+            &tenant,
+            "storage.write",
+            92,
+            Some(folder),
+            &json!({ "size": "12" }),
+            launcher.as_ref(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fired, 1);
+    assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
 }

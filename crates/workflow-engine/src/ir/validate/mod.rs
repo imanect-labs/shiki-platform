@@ -81,6 +81,17 @@ pub struct Catalog {
     pub skills: BTreeMap<String, std::collections::BTreeSet<String>>,
 }
 
+/// 保存を止めない警告をすべて返す（保存 API・検証 API・チャットの emit_workflow が利用者へ示す）。
+///
+/// 条件の意味論の切替で振る舞いが変わり得る条件（[`SEMANTICS_CHANGED`]・[`semantics_warnings`]）と、
+/// vars のキーを `{{key}}` と書いたテンプレート（[`TEMPLATE_ESCAPED_VAR`]）。
+#[must_use]
+pub fn save_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
+    let mut out = semantics_warnings(ir);
+    out.extend(template::warnings(ir));
+    out
+}
+
 /// IR の JSON を V1〜V7 で検証する。エラーが 1 件でもあれば `Err(全件)`。
 ///
 /// 成功時はパース済み [`WorkflowIr`] を返す（保存に使う）。
@@ -311,9 +322,11 @@ mod tests {
             "edges": []
         });
         let parsed = validate(&ir, &catalog()).expect("保存は止めない");
-        let w = semantics_warnings(&parsed);
+        let w = save_warnings(&parsed);
         assert_eq!(w.len(), 2, "{w:#?}");
         assert!(w.iter().all(|e| e.code == TEMPLATE_ESCAPED_VAR));
+        // 条件の意味論の切替の一覧（shiki-admin workflow-conditions）には混ぜない。
+        assert!(semantics_warnings(&parsed).is_empty());
     }
 
     /// AI が書きがちな誤り（存在しない出口・vars に無い差し込み・祖先でない vars の参照）は全件まとめて返す。

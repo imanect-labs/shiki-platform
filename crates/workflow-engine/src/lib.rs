@@ -34,7 +34,8 @@ pub use delegation::{
 };
 pub use ir::scopes::complete_declared_scopes;
 pub use ir::validate::{
-    semantics_warnings, validate, Catalog, ValidationError, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR,
+    save_warnings, semantics_warnings, validate, Catalog, ValidationError, SEMANTICS_CHANGED,
+    TEMPLATE_ESCAPED_VAR,
 };
 pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};

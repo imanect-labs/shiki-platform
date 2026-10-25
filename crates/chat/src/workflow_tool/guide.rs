@@ -327,7 +327,7 @@ mod tests {
             let plain = embedded(raw, None);
             let ir = WorkflowIr::from_json(&plain).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(
-                workflow_engine::semantics_warnings(&ir).is_empty(),
+                workflow_engine::save_warnings(&ir).is_empty(),
                 "{name}: 警告が出る例は載せない"
             );
             validate(&plain, &Catalog::default())
