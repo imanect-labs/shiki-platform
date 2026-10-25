@@ -1,13 +1,21 @@
-//! `GET /llm/models` — チャットで選べるモデルの一覧（一般ユーザー向け・#553）。
+//! `GET /llm/models` — 選べるモデルの一覧（一般ユーザー向け・#553）。
 //!
 //! テナント管理者が絞った範囲（モデルカタログ ∩ テナントで有効）だけを返す。接続先や単価、
 //! プロバイダの実モデル ID は返さない（選ぶのに要らない情報を利用者へ出さない）。
+//!
+//! `?purpose=workflow` はワークフローの `llm.invoke` のモデル欄向けで、保存時の照合・実行時の解決と同じ
+//! 見え方（本人専用のモデルを呼び出し主体によらず除く）で返す（BUG-33・D-46）。既定・Auto の振り先も
+//! その見え方で計算するので、モデル欄の「組織の既定に従う（現在: …）」が実際の解決と一致する。
 
 use std::sync::Arc;
 
-use axum::{extract::State, routing::get, Json};
+use axum::{
+    extract::{Query, State},
+    routing::get,
+    Json,
+};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     error::ApiError,
@@ -54,6 +62,26 @@ impl From<EffortLevel> for llm_gateway::Effort {
     }
 }
 
+/// モデル一覧の用途（どの見え方で返すか）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelPurpose {
+    /// チャット。呼び出した本人から見た一覧（本人専用のモデルは連携した本人にだけ出る）。
+    #[default]
+    Chat,
+    /// ワークフローの `llm.invoke`。保存時の照合・実行時の解決と同じ一覧（本人専用のモデルは本人にも出さない）。
+    Workflow,
+}
+
+/// `GET /llm/models` のクエリ。
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ListModelsQuery {
+    /// 一覧の用途（省略は chat）。
+    #[serde(default)]
+    pub purpose: ModelPurpose,
+}
+
 /// 選べるモデル 1 件。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LlmModelOption {
@@ -80,9 +108,9 @@ pub struct AutoTarget {
 /// `GET /llm/models` のレスポンス。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LlmModelsResponse {
-    /// 新しいチャットの既定（`auto` かモデル ID）。
+    /// 組織の既定（`auto` かモデル ID）。チャットの新しい会話と、ワークフローでモデルを省略したときに使う。
     pub default_model: String,
-    /// モデルを選べるか（false なら選択 UI を出さない）。
+    /// モデルを選べるか（false ならチャットは選択 UI を出さず、ワークフローは既定以外のモデルを保存できない）。
     pub allow_user_choice: bool,
     /// 特定のモデルで動くとき（選んだモデル・既定の特定モデル）の思考の深さの初期値。
     pub default_effort: EffortLevel,
@@ -107,10 +135,11 @@ pub(crate) fn provider_label(gw: &llm_gateway::LlmGateway, provider_id: &str) ->
         .map_or_else(|| provider_id.to_string(), |p| p.label)
 }
 
-/// チャットで選べるモデルの一覧。
+/// 選べるモデルの一覧（既定はチャット・`purpose=workflow` はワークフローのモデル欄）。
 #[utoipa::path(
     get,
     path = "/llm/models",
+    params(ListModelsQuery),
     responses(
         (status = 200, description = "選べるモデル", body = LlmModelsResponse),
         (status = 401, description = "未認証"),
@@ -121,13 +150,26 @@ pub(crate) fn provider_label(gw: &llm_gateway::LlmGateway, provider_id: &str) ->
 pub async fn list_models(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
+    Query(q): Query<ListModelsQuery>,
 ) -> Result<Json<LlmModelsResponse>, ApiError> {
-    let gw = gateway(&state)?;
-    // 呼び出した本人から見た設定（使えない本人専用のモデルを除き、既定・Auto もそれに従う・#854）。
-    let settings = gw
-        .settings_for(&ctx)
+    models_for(gateway(&state)?, &ctx, q.purpose)
         .await
-        .map_err(|e| ApiError::Internal(format!("tenant llm settings: {e}")))?;
+        .map(Json)
+}
+
+/// 用途ごとの見え方で、選べるモデルの一覧を組む。
+pub(crate) async fn models_for(
+    gw: &llm_gateway::LlmGateway,
+    ctx: &authz::AuthContext,
+    purpose: ModelPurpose,
+) -> Result<LlmModelsResponse, ApiError> {
+    let settings = match purpose {
+        // 呼び出した本人から見た設定（使えない本人専用のモデルを除き、既定・Auto もそれに従う・#854）。
+        ModelPurpose::Chat => gw.settings_for(ctx).await,
+        // ワークフローの照合・解決と同じ設定（本人専用のモデルは本人にも出さない・BUG-33）。
+        ModelPurpose::Workflow => gw.settings_without_personal(ctx).await,
+    }
+    .map_err(|e| ApiError::Internal(format!("tenant llm settings: {e}")))?;
     let catalog = gw.catalog();
     let models = settings
         .enabled_models(catalog)
@@ -148,11 +190,163 @@ pub async fn list_models(
         model,
         effort: effort.into(),
     });
-    Ok(Json(LlmModelsResponse {
+    Ok(LlmModelsResponse {
         default_model: settings.default_model,
         allow_user_choice: settings.allow_user_choice,
         default_effort: settings.default_effort.into(),
         auto,
         models,
-    }))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llm_gateway::{
+        AutoConfig, ChatGptAccount, ChatGptSettings, GatewayConfig, LlmGateway, ModelCatalog,
+        ModelEntry, ProviderConfig, ProviderKind, SettingsPatch, CHATGPT_PROVIDER_ID,
+    };
+
+    /// stub の fast・smart ＋ ChatGPT プラン（chatgpt:gpt・Auto の振り先）。連携者は `ctx` の本人。
+    fn gateway(pool: sqlx::PgPool, ctx: &authz::AuthContext, dir: &std::path::Path) -> LlmGateway {
+        let path = dir.join("chatgpt.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "client_id": "oaiapp_1",
+                "owner": {"tenant_id": ctx.tenant_id, "org": ctx.org, "principal_id": ctx.principal.id},
+                "tokens": {
+                    "access_token": "at",
+                    "refresh_token": "rt",
+                    "expires_at": "2999-01-01T00:00:00Z"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let entry = |id: &str| ModelEntry {
+            id: id.into(),
+            ..Default::default()
+        };
+        LlmGateway::build(
+            pool,
+            reqwest::Client::new(),
+            GatewayConfig {
+                extra_providers: vec![ProviderConfig {
+                    id: CHATGPT_PROVIDER_ID.into(),
+                    kind: ProviderKind::ChatgptPlan,
+                    ..Default::default()
+                }],
+                catalog: ModelCatalog {
+                    default_model: "fast".into(),
+                    models: vec![
+                        entry("fast"),
+                        entry("smart"),
+                        ModelEntry {
+                            id: "chatgpt:gpt".into(),
+                            real_id: Some("gpt".into()),
+                            provider: Some(CHATGPT_PROVIDER_ID.into()),
+                            ..Default::default()
+                        },
+                    ],
+                },
+                auto: AutoConfig {
+                    model: "chatgpt:gpt".into(),
+                    ..AutoConfig::default()
+                },
+                chatgpt: Some(std::sync::Arc::new(ChatGptAccount::open(
+                    reqwest::Client::new(),
+                    ChatGptSettings::new(path),
+                ))),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn ids(res: &LlmModelsResponse) -> Vec<&str> {
+        res.models.iter().map(|m| m.id.as_str()).collect()
+    }
+
+    /// `purpose=workflow` は、連携者本人にも本人専用のモデルを出さず、保存時の照合（`WorkflowModels::ids`）と
+    /// 同じ集合を返す。既定・Auto の振り先もその見え方で計算する（BUG-33・D-46）。
+    /// 実 DB の組織の設定を読むので `STORAGE_TEST_DATABASE_URL` が無ければスキップ。
+    #[tokio::test]
+    #[allow(clippy::print_stderr)]
+    async fn workflow_purpose_matches_the_workflow_model_check() {
+        let Ok(url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+            eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+        let tenant = format!("llmm-{}", uuid::Uuid::new_v4().simple());
+        let owner = authz::AuthContext::new(
+            authz::Principal {
+                kind: authz::PrincipalKind::User,
+                id: "owner".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some(tenant.clone()),
+            },
+            "acme".into(),
+            tenant,
+        );
+        let dir = std::env::temp_dir().join(format!("shiki-llmm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gw = gateway(pool, &owner, &dir);
+
+        // チャット: 連携者本人には本人専用のモデルが出て、Auto もそれに振られる。
+        let chat = models_for(&gw, &owner, ModelPurpose::Chat).await.unwrap();
+        assert_eq!(ids(&chat), ["fast", "smart", "chatgpt:gpt"]);
+        assert_eq!(chat.auto.as_ref().unwrap().model, "chatgpt:gpt");
+        // ワークフロー: 本人でも出さず、Auto は次の候補（デプロイ既定の fast）。
+        let wf = models_for(&gw, &owner, ModelPurpose::Workflow)
+            .await
+            .unwrap();
+        assert_eq!(ids(&wf), ["fast", "smart"]);
+        assert_eq!(wf.default_model, "auto");
+        assert_eq!(wf.auto.as_ref().unwrap().model, "fast");
+        let check = crate::workflow_catalog::WorkflowModels::new(Some(gw.clone()), Vec::new());
+        assert_eq!(check.ids(&owner).await.unwrap(), ids(&wf));
+
+        // 管理者が既定を本人専用のモデルにし、選択を禁じても、ワークフローの既定は本人専用にならない。
+        let patch = SettingsPatch {
+            default_model: Some("chatgpt:gpt".into()),
+            allow_user_choice: Some(false),
+            ..Default::default()
+        };
+        gw.update_tenant_settings(&owner, &patch)
+            .await
+            .unwrap()
+            .unwrap();
+        let chat = models_for(&gw, &owner, ModelPurpose::Chat).await.unwrap();
+        assert_eq!(chat.default_model, "chatgpt:gpt");
+        let wf = models_for(&gw, &owner, ModelPurpose::Workflow)
+            .await
+            .unwrap();
+        assert_eq!(wf.default_model, "auto");
+        assert!(!wf.allow_user_choice);
+        assert_eq!(ids(&wf), ["fast", "smart"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn purpose_defaults_to_chat_and_parses_workflow() {
+        let q: ListModelsQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(q.purpose, ModelPurpose::Chat);
+        let q: ListModelsQuery =
+            serde_json::from_value(serde_json::json!({ "purpose": "workflow" })).unwrap();
+        assert_eq!(q.purpose, ModelPurpose::Workflow);
+        assert!(
+            serde_json::from_value::<ListModelsQuery>(serde_json::json!({ "purpose": "x" }))
+                .is_err()
+        );
+    }
 }

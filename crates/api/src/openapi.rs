@@ -279,6 +279,7 @@ use utoipa::{
         crate::routes::documents::CreateSheetRequest,
         crate::routes::documents::ExportDocumentRequest,
         crate::routes::llm_models::EffortLevel,
+        crate::routes::llm_models::ModelPurpose,
         crate::routes::llm_models::LlmModelOption,
         crate::routes::llm_models::AutoTarget,
         crate::routes::llm_models::LlmModelsResponse,
