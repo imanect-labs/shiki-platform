@@ -438,6 +438,9 @@ pub(crate) async fn wire_chat(
         .as_ref()
         .map(|_| Arc::new(chat::StorageArtifactStore::new(Arc::clone(storage))) as _);
     let web_search = crate::wiring_websearch::wire_websearch(config, http)?;
+    // emit_workflow の照合・説明文のモデル（保存 API と同じく組織の許可リスト・BUG-11）。
+    let workflow_models =
+        api::workflow_catalog::WorkflowModels::new(Some(gateway.clone()), Vec::new());
     let worker = chat::ChatWorker::new(
         db.clone(),
         store.clone(),
@@ -463,11 +466,12 @@ pub(crate) async fn wire_chat(
             // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）。
             // カタログ源は保存 API（build_catalog）と同一実装を注入する（検証乖離の禁止）。
             workflow_store: Some(Arc::clone(workflows)),
+            // モデルは呼び出し主体から見た組織の許可リスト（保存 API と同じ・BUG-11）。
             workflow_catalog: Some(Arc::new(
                 api::workflow_catalog::ApiWorkflowCatalogSource::new(
                     secrets.cloned(),
                     Some(Arc::clone(skill_installs)),
-                    config.llm.models.iter().map(|m| m.id.clone()).collect(),
+                    workflow_models,
                 ),
             )),
             // AI ノート共同編集（document.edit / document.read・Task 11P.4）。

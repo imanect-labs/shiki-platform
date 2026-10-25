@@ -68,20 +68,24 @@ pub struct ValidationErrorResponse {
     pub errors: Vec<ValidationError>,
 }
 
-/// API 層でカタログを組む（Stage A: 登録済み secret の名前→許可ホスト・モデルカタログ）。
+/// API 層でカタログを組む（Stage A: 登録済み secret の名前→許可ホスト・使えるモデル）。
 ///
 /// 実装は [`crate::workflow_catalog::build_catalog_from`]（emit_workflow と共有・乖離禁止）。
+/// モデルは gateway があれば呼び出し主体から見た組織の許可リスト（BUG-11）、無ければデプロイ設定。
 pub(crate) async fn build_catalog(
     state: &AppState,
     ctx: &authz::AuthContext,
 ) -> Result<Catalog, ApiError> {
-    let models: Vec<String> = state
-        .config
-        .llm
-        .models
-        .iter()
-        .map(|m| m.id.clone())
-        .collect();
+    let models = crate::workflow_catalog::WorkflowModels::new(
+        state.llm.as_deref().cloned(),
+        state
+            .config
+            .llm
+            .models
+            .iter()
+            .map(|m| m.id.clone())
+            .collect(),
+    );
     crate::workflow_catalog::build_catalog_from(
         state.secrets.as_deref(),
         Some(&state.skill_installs),

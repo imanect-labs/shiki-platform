@@ -1,6 +1,6 @@
 //! ワークフロー検証カタログの単一構築点（Task 10.13）。
 //!
-//! カタログ（発話ユーザーの secret 名→許可ホスト・設定済みモデル一覧）は
+//! カタログ（発話ユーザーの secret 名→許可ホスト・使えるモデル一覧）は
 //! **保存 API と AI 編集ツール（emit_workflow）が同一実装を共有する**。ここが分裂すると
 //! 「エディタでは通るが AI 経由では落ちる」乖離が生まれるため、構築ロジックはこの 1 箇所に置く。
 
@@ -8,11 +8,54 @@ use std::sync::Arc;
 
 use workflow_engine::Catalog;
 
+/// llm.invoke の model を照合する集合の材料。
+///
+/// gateway があれば**呼び出し主体から見た組織の許可リスト ∩ 本人専用でないモデル**（BUG-11）。
+/// 実行時は gateway が同じ許可リストで拒否するので、保存時もそこへ揃える（管理者が無効にした
+/// モデル・opt-in 前のモデルを保存で弾く）。ChatGPT プランのモデルは連携した本人の枠で、
+/// schedule / event の run（実行主体はワークフロー）では使えないため、本人であっても除く。
+/// gateway が無い構成（LLM 未構成）では従来どおりデプロイ設定のモデル id を使う。
+#[derive(Clone)]
+pub enum WorkflowModels {
+    Gateway(llm_gateway::LlmGateway),
+    Configured(Vec<String>),
+}
+
+impl WorkflowModels {
+    /// gateway があればそれを、無ければデプロイ設定の id を材料にする。
+    #[must_use]
+    pub fn new(gateway: Option<llm_gateway::LlmGateway>, configured: Vec<String>) -> Self {
+        match gateway {
+            Some(gw) => WorkflowModels::Gateway(gw),
+            None => WorkflowModels::Configured(configured),
+        }
+    }
+
+    /// 呼び出し主体から見た、llm.invoke に書けるモデル id（カタログ順）。
+    pub async fn ids(&self, ctx: &authz::AuthContext) -> Result<Vec<String>, String> {
+        match self {
+            WorkflowModels::Configured(ids) => Ok(ids.clone()),
+            WorkflowModels::Gateway(gw) => {
+                let settings = gw
+                    .settings_for(ctx)
+                    .await
+                    .map_err(|e| format!("組織の AI 設定: {e}"))?;
+                Ok(settings
+                    .enabled_models(gw.catalog())
+                    .into_iter()
+                    .filter(|m| !gw.is_personal_model(m))
+                    .map(|m| m.id.clone())
+                    .collect())
+            }
+        }
+    }
+}
+
 /// カタログを組む（secrets 未配線ならモデルのみ・skill_installs 未配線なら skill 照合は空集合）。
 pub async fn build_catalog_from(
     secrets: Option<&secrets::SecretStore>,
     skill_installs: Option<&app_platform::SkillInstallService>,
-    models: &[String],
+    models: &WorkflowModels,
     ctx: &authz::AuthContext,
 ) -> Result<Catalog, String> {
     let mut catalog = Catalog::default();
@@ -34,7 +77,7 @@ pub async fn build_catalog_from(
             .map_err(|e| format!("skill インストール一覧: {e}"))?;
     }
     // モデルカタログ（llm.invoke の model 照合）。
-    catalog.models = models.to_vec();
+    catalog.models = models.ids(ctx).await?;
     Ok(catalog)
 }
 
@@ -42,7 +85,7 @@ pub async fn build_catalog_from(
 pub struct ApiWorkflowCatalogSource {
     secrets: Option<Arc<secrets::SecretStore>>,
     skill_installs: Option<Arc<app_platform::SkillInstallService>>,
-    models: Vec<String>,
+    models: WorkflowModels,
 }
 
 impl ApiWorkflowCatalogSource {
@@ -50,7 +93,7 @@ impl ApiWorkflowCatalogSource {
     pub fn new(
         secrets: Option<Arc<secrets::SecretStore>>,
         skill_installs: Option<Arc<app_platform::SkillInstallService>>,
-        models: Vec<String>,
+        models: WorkflowModels,
     ) -> Self {
         ApiWorkflowCatalogSource {
             secrets,
@@ -71,5 +114,10 @@ impl chat::WorkflowCatalogSource for ApiWorkflowCatalogSource {
         )
         .await
         .map_err(|e| format!("カタログ構築に失敗: {e}"))
+    }
+
+    /// 説明文用のモデル一覧（secret・skill の一覧は引かない・照合と同じ集合）。
+    async fn models(&self, ctx: &authz::AuthContext) -> Result<Vec<String>, String> {
+        self.models.ids(ctx).await
     }
 }
