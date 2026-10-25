@@ -42,6 +42,9 @@ pub struct AppConfig {
     /// シークレット管理（Task 10.9）。既定は無効（マスターキー未設定なら /secrets は 503）。
     #[serde(default)]
     pub secrets: SecretsConfig,
+    /// 構造化データ（Task 15.1: keyset カーソルの暗号鍵）。
+    #[serde(default)]
+    pub data: DataConfig,
     /// ワークフロー実行時（run ワーカー/スケジューラ/イベント relay・Task 10・Stage A W3）。
     /// 既定は無効（/workflows は保存のみ）。
     #[serde(default)]
@@ -183,6 +186,95 @@ pub struct SecretsConfig {
     pub master_key_file: Option<String>,
 }
 
+/// 構造化データの設定（`SHIKI__DATA__*`）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DataConfig {
+    /// keyset カーソル（`record_int` を含む不透明トークン）の AES-256-GCM 鍵ファイルのパス。
+    /// 形式は secrets のマスターキーと同じ（32 バイト生 or base64）。
+    ///
+    /// 鍵の決め方（Task 15.3・全レプリカで同じ鍵になること）:
+    /// 1. `cursor_key_file` があればそれ
+    /// 2. 無ければ `secrets.master_key_file` から用途別に導出（HMAC-SHA256・ドメイン分離ラベル付き）
+    /// 3. どちらも無く `ephemeral_cursor_key = true` なら起動時乱数（**開発専用**: 再起動・レプリカ間で
+    ///    カーソルが無効になる）
+    /// 4. それ以外は**起動エラー**（複数レプリカでカーソルが壊れる構成を黙って起動させない）
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    pub cursor_key_file: Option<String>,
+    /// 開発専用: カーソル鍵が設定されていなくても起動時乱数鍵で起動する（既定 false）。
+    #[serde(default)]
+    pub ephemeral_cursor_key: bool,
+    /// レコード変更の SSE 差分配信（`SHIKI__DATA__STREAM__*`・Task 15.6・data-platform §9）。
+    #[serde(default)]
+    pub stream: DataStreamConfig,
+}
+
+/// SSE 差分配信の設定。未指定は `data::StreamConfig` の既定（TTL 5 秒・保持 10 分）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DataStreamConfig {
+    /// 購読中の認可材料の TTL（ミリ秒・既定 5,000）。**剥奪の配信への反映はこれだけ遅れ得る**
+    /// （PIT-70）ので上限は 60,000。ロール変更・共有解除・テーブル権限の変更は TTL を待たずに反映する。
+    #[serde(default, deserialize_with = "empty_as_none_u64")]
+    pub authz_ttl_ms: Option<u64>,
+    /// ストリームの保持期間（秒・既定 600）。これより古い位置からの再開は `stream.reset`、
+    /// スナップショット読取は 410。60〜86,400。
+    #[serde(default, deserialize_with = "empty_as_none_u64")]
+    pub retention_secs: Option<u64>,
+}
+
+/// 空文字（空白だけ）を未設定として読む。compose の `${VAR:-}` は未設定の変数を空文字で渡すため。
+fn empty_str_as_none<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.filter(|s| !s.trim().is_empty()))
+}
+
+/// 数値の設定を、数値か数字の文字列で読む（空文字は未設定・[`empty_str_as_none`] と同じ理由）。
+fn empty_as_none_u64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumOrStr {
+        Num(u64),
+        Str(String),
+    }
+    match Option::<NumOrStr>::deserialize(d)? {
+        None => Ok(None),
+        Some(NumOrStr::Num(n)) => Ok(Some(n)),
+        Some(NumOrStr::Str(s)) if s.trim().is_empty() => Ok(None),
+        Some(NumOrStr::Str(s)) => s.trim().parse().map(Some).map_err(serde::de::Error::custom),
+    }
+}
+
+/// 認可材料の TTL の範囲（ミリ秒）。
+const STREAM_AUTHZ_TTL_MS: std::ops::RangeInclusive<u64> = 100..=60_000;
+/// 保持期間の範囲（秒）。
+const STREAM_RETENTION_SECS: std::ops::RangeInclusive<u64> = 60..=86_400;
+
+impl DataStreamConfig {
+    /// `data::StreamConfig` へ写す（範囲外は起動エラー）。
+    pub fn to_stream_config(&self) -> Result<data::StreamConfig, ConfigError> {
+        let mut c = data::StreamConfig::default();
+        if let Some(ms) = self.authz_ttl_ms {
+            if !STREAM_AUTHZ_TTL_MS.contains(&ms) {
+                return Err(ConfigError::Invalid(format!(
+                    "data.stream.authz_ttl_ms は {}〜{} で指定してください（{ms}）",
+                    STREAM_AUTHZ_TTL_MS.start(),
+                    STREAM_AUTHZ_TTL_MS.end()
+                )));
+            }
+            c.authz_ttl = std::time::Duration::from_millis(ms);
+        }
+        if let Some(secs) = self.retention_secs {
+            if !STREAM_RETENTION_SECS.contains(&secs) {
+                return Err(ConfigError::Invalid(format!(
+                    "data.stream.retention_secs は {}〜{} で指定してください（{secs}）",
+                    STREAM_RETENTION_SECS.start(),
+                    STREAM_RETENTION_SECS.end()
+                )));
+            }
+            c.retention = std::time::Duration::from_secs(secs);
+        }
+        Ok(c)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub host: String,
@@ -202,6 +294,8 @@ pub struct DatabaseConfig {
 
 mod auth;
 mod backends;
+#[cfg(test)]
+mod data_tests;
 #[cfg(test)]
 mod tests;
 
@@ -293,6 +387,7 @@ impl AppConfig {
         Self::check_upload_gc_bounds(&self.storage)?;
         Self::check_llm_timeouts(&self.llm)?;
         Self::check_llm_limits(&self.llm)?;
+        self.data.stream.to_stream_config()?;
         Self::check_llm_chatgpt(&self.llm)?;
         // 必須 URL。
         let mut urls: Vec<(&str, &str)> = vec![

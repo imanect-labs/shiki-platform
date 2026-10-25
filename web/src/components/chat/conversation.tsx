@@ -10,7 +10,6 @@ import {
   ChevronUp,
   Clock3,
   FileDown,
-  Sparkles,
 } from "lucide-react";
 
 import {
@@ -77,6 +76,7 @@ import {
   type StreamSegment,
 } from "./message-timeline";
 import { Composer } from "./composer";
+import { PanelEmptyHint } from "./doc-chat-draft";
 import { WorkflowRefCard } from "./workflow-ref-card";
 import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
@@ -439,14 +439,20 @@ export function Conversation({
       onApprovalRequested: (req) =>
         updateStream((s) => (s ? { ...s, approval: req, approvalPending: false } : s)),
       onApprovalResolved: (res) =>
-        updateStream((s) =>
-          s && s.approval?.tool_call_id === res.tool_call_id
-            ? { ...s, approval: null, approvalPending: false }
-            : s,
-        ),
+        updateStream((s) => {
+          if (!s) return s;
+          // 却下した操作は失敗ではなく「却下しました」と出す（3-A-8）。
+          const tools = res.approved
+            ? s.tools
+            : s.tools.map((t) => (t.id === res.tool_call_id ? { ...t, rejected: true } : t));
+          return s.approval?.tool_call_id === res.tool_call_id
+            ? { ...s, tools, approval: null, approvalPending: false }
+            : { ...s, tools };
+        }),
       // 承認モードのクランプ（org 禁止・他人による緩和）は明示的に知らせる（黙って降格しない・#350）。
+      // 承認待ちが多すぎて操作を実行しなかったことも同じ枠で知らせる（ツールの表示は「却下」になるため）。
       onFailureRecovery: (r) => {
-        if (r.action === "mode_clamped") setNotice(r.detail);
+        if (r.action === "mode_clamped" || r.action === "approval_overloaded") setNotice(r.detail);
       },
       onStatus: (status: RunStatus) => {
         if (status === "cancelled") setError("生成をキャンセルしました。");
@@ -789,19 +795,7 @@ export function Conversation({
               >
                 {/* パネルの空会話は「何ができるか」を軽く案内する（空白のままにしない）。 */}
                 {isPanel && messages.length === 0 && !stream && !notFound && !error ? (
-                  <div
-                    className="flex flex-col items-center gap-2 px-6 py-14 text-center"
-                    data-testid="panel-empty-hint"
-                  >
-                    <Sparkles className="size-6 text-muted-foreground/70" aria-hidden />
-                    <p className="text-sm font-medium text-foreground">
-                      このドキュメントについて AI に相談できます
-                    </p>
-                    <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">
-                      質問・要約・編集の依頼ができます。本文を選択して「AI
-                      に依頼」を押すと、選択箇所を指定して指示できます。
-                    </p>
-                  </div>
+                  <PanelEmptyHint />
                 ) : null}
                 {messages.map((m) =>
                   m.role === "user" ? (

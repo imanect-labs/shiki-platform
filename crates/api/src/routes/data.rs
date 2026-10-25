@@ -42,16 +42,16 @@ pub struct TableListResponse {
     pub items: Vec<DataTable>,
 }
 
-/// テーブルを作成する（スキーマ検証＋式インデックス生成・201）。
+/// テーブルを作成する（スキーマ検証＋索引台帳の初期化・201）。
 #[utoipa::path(
     post,
     path = "/data/tables",
     request_body = CreateTableRequest,
     responses(
         (status = 201, description = "作成した", body = DataTable),
-        (status = 400, description = "スキーマが不正"),
+        (status = 400, description = "スキーマが不正", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
-        (status = 409, description = "同名テーブルが既に存在する"),
+        (status = 409, description = "同名テーブルが既に存在する", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -89,11 +89,14 @@ pub async fn list_tables(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
 ) -> Result<Json<TableListResponse>, ApiError> {
-    let items = state.data.list_tables(&ctx, 200).await?;
+    // スキーマ管理者（owner）以外には読める列だけ・ポリシーの定義なしで返す（検証 C-P2-5）。
+    let items = state.data.list_tables_for_viewer(&ctx, 200).await?;
     Ok(Json(TableListResponse { items }))
 }
 
 /// テーブルのメタ＋スキーマを取得する（viewer）。
+///
+/// スキーマ管理者（owner）以外には**読める列だけ**を返し、`field_policy`・`row_policy`・RAG の投影設定は返さない。
 #[utoipa::path(
     get,
     path = "/data/tables/{id}",
@@ -112,12 +115,45 @@ pub async fn get_table(
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
 ) -> Result<Json<DataTable>, ApiError> {
+    // スキーマ管理者（owner）以外には読める列だけ・ポリシーの定義なしで返す（検証 C-P2-5）。
     Ok(Json(
-        state.data.get_table(&ctx, id, trace.as_deref()).await?,
+        state
+            .data
+            .get_table_for_viewer(&ctx, id, trace.as_deref())
+            .await?,
     ))
 }
 
-/// スキーマを改訂する（owner・additive のみ・式インデックス差分適用）。
+/// スキーマを改訂する（owner・additive のみ・増えた索引は既存レコードをバックフィル）。
+/// テーブルに対する自分の文脈（読めない列・編集/スキーマ変更の可否・ビューのルックアップ列の上限）。
+///
+/// 画面の出し分け専用（実際の読み書きは各 API が改めて認可する）。
+#[utoipa::path(
+    get,
+    path = "/data/tables/{id}/viewer-context",
+    params(("id" = Uuid, Path, description = "テーブル ID")),
+    responses(
+        (status = 200, description = "閲覧者の文脈", body = data::TableViewerContext),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限がない"),
+        (status = 404, description = "存在しない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn get_viewer_context(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+) -> Result<Json<data::TableViewerContext>, ApiError> {
+    Ok(Json(
+        state
+            .data
+            .table_viewer_context(&ctx, id, trace.as_deref())
+            .await?,
+    ))
+}
+
 #[utoipa::path(
     put,
     path = "/data/tables/{id}/schema",
@@ -125,11 +161,11 @@ pub async fn get_table(
     request_body = UpdateSchemaRequest,
     responses(
         (status = 200, description = "改訂後のテーブル", body = DataTable),
-        (status = 400, description = "スキーマが不正（型変更・削除を含む）"),
+        (status = 400, description = "スキーマが不正（型変更・削除を含む）", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない（owner でない）"),
         (status = 404, description = "存在しない"),
-        (status = 409, description = "expected_schema_version 不一致"),
+        (status = 409, description = "expected_schema_version 不一致", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -191,6 +227,12 @@ pub(crate) fn data_route_decls() -> Vec<RouteDecl> {
             put(self::update_table_schema)
         }),
         r(
+            "/data/tables/{id}/viewer-context",
+            &["GET"],
+            Session,
+            || get(self::get_viewer_context),
+        ),
+        r(
             "/data/tables/{id}/records",
             &["GET", "POST"],
             Session,
@@ -214,6 +256,12 @@ pub(crate) fn data_route_decls() -> Vec<RouteDecl> {
         ),
         r("/data/tables/{id}/records/count", &["GET"], Session, || {
             get(super::data_records::count_records)
+        }),
+        r("/data/tables/{id}/stream", &["GET"], Session, || {
+            get(super::data_stream::stream_records)
+        }),
+        r("/data/tables/{id}/awareness", &["POST"], Session, || {
+            axum::routing::post(super::data_stream::post_awareness)
         }),
         r(
             "/data/tables/{id}/records/{record_id}/shares",

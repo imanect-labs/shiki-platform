@@ -18,7 +18,7 @@ use crate::{
     GatewayError,
 };
 
-use super::require_app_table;
+use super::{app_table_stores, require_app_table};
 
 /// アプリへ見せるテーブルの最小メタデータ。
 #[derive(Debug, Serialize)]
@@ -65,7 +65,13 @@ pub(crate) async fn get_schema(
     Extension(ctx): Extension<GatewayCtx>,
     Path(table_id): Path<Uuid>,
 ) -> Result<Json<GwTableSchema>, GatewayError> {
-    let t = require_app_table(&state, &ctx, table_id).await?;
+    require_app_table(&state, &ctx, table_id).await?;
+    // 呼出ユーザーが読めない列・ポリシーの定義は返さない（スキーマ管理者以外・検証 C-P2-5）。
+    let t = state
+        .caps
+        .data
+        .get_table_for_viewer(&ctx.auth, table_id, None)
+        .await?;
     Ok(Json(GwTableSchema {
         id: t.id,
         name: t.name,
@@ -77,7 +83,8 @@ pub(crate) async fn get_schema(
 #[derive(Debug, Deserialize)]
 pub(crate) struct ListRecordsQuery {
     pub limit: Option<i64>,
-    pub offset: Option<i64>,
+    /// 前ページの `next_cursor`（OFFSET は廃止・keyset ページング）。
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,6 +92,9 @@ pub(crate) struct GwRecordList {
     pub items: Vec<DataRecord>,
     /// 個別共有集合が上限（PIT-18）で切り詰められた（可視減方向のフォールバック）。
     pub shares_truncated: bool,
+    /// 次ページのカーソル（無ければ終端）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// レコード一覧（行述語適用済み。フィルタ/集計は `POST .../query` を使う）。
@@ -94,9 +104,8 @@ pub(crate) async fn list_records(
     Path(table_id): Path<Uuid>,
     Query(q): Query<ListRecordsQuery>,
 ) -> Result<Json<GwRecordList>, GatewayError> {
-    require_app_table(&state, &ctx, table_id).await?;
-    let page = state
-        .caps
+    let app = app_table_stores(&state, &ctx, table_id).await?;
+    let page = app
         .data
         .list_records(
             &ctx.auth,
@@ -105,7 +114,7 @@ pub(crate) async fn list_records(
                 filter: None,
                 sort: None,
                 limit: q.limit.unwrap_or(50),
-                offset: q.offset.unwrap_or(0),
+                cursor: q.cursor,
             },
             None,
         )
@@ -113,6 +122,7 @@ pub(crate) async fn list_records(
     Ok(Json(GwRecordList {
         items: page.items,
         shares_truncated: page.shares_truncated,
+        next_cursor: page.next_cursor,
     }))
 }
 
@@ -127,9 +137,8 @@ pub(crate) async fn create_record(
     Path(table_id): Path<Uuid>,
     Json(req): Json<CreateRecordRequest>,
 ) -> Result<Json<DataRecord>, GatewayError> {
-    require_app_table(&state, &ctx, table_id).await?;
-    let rec = state
-        .caps
+    let app = app_table_stores(&state, &ctx, table_id).await?;
+    let rec = app
         .data
         .create_record(&ctx.auth, table_id, req.data, None)
         .await?;
@@ -141,9 +150,8 @@ pub(crate) async fn get_record(
     Extension(ctx): Extension<GatewayCtx>,
     Path((table_id, record_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<DataRecord>, GatewayError> {
-    require_app_table(&state, &ctx, table_id).await?;
-    let rec = state
-        .caps
+    let app = app_table_stores(&state, &ctx, table_id).await?;
+    let rec = app
         .data
         .get_record(&ctx.auth, table_id, record_id, None)
         .await?;
@@ -164,9 +172,8 @@ pub(crate) async fn update_record(
     Path((table_id, record_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<UpdateRecordRequest>,
 ) -> Result<Json<DataRecord>, GatewayError> {
-    require_app_table(&state, &ctx, table_id).await?;
-    let rec = state
-        .caps
+    let app = app_table_stores(&state, &ctx, table_id).await?;
+    let rec = app
         .data
         .update_record(
             &ctx.auth,
@@ -191,10 +198,8 @@ pub(crate) async fn delete_record(
     Path((table_id, record_id)): Path<(Uuid, Uuid)>,
     Query(q): Query<DeleteRecordQuery>,
 ) -> Result<Json<Value>, GatewayError> {
-    require_app_table(&state, &ctx, table_id).await?;
-    state
-        .caps
-        .data
+    let app = app_table_stores(&state, &ctx, table_id).await?;
+    app.data
         .delete_record(&ctx.auth, table_id, record_id, q.expected_rev, None)
         .await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
@@ -205,21 +210,22 @@ pub(crate) async fn query(
     State(state): State<GatewayState>,
     Extension(ctx): Extension<GatewayCtx>,
     Path(table_id): Path<Uuid>,
-    Json(q): Json<DataQuery>,
+    Json(raw): Json<Value>,
 ) -> Result<Json<QueryResult>, GatewayError> {
-    require_app_table(&state, &ctx, table_id).await?;
-    let result = state
-        .caps
-        .data
-        .run_query(&ctx.auth, table_id, &q, None)
-        .await?;
+    let app = app_table_stores(&state, &ctx, table_id).await?;
+    // 最上位の未知のキー（綴り誤り）は黙って無視せず 400。
+    let q = DataQuery::from_request(raw)?;
+    let result = app.data.run_query(&ctx.auth, table_id, &q, None).await?;
     Ok(Json(result))
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct TransitionRequest {
     pub to: String,
-    pub expected_rev: i64,
+    /// 楽観ロックの rev。省略（`null`）は**現在の rev**で遷移する（ワークフローの `Shiki.data.transition`
+    /// と同じ・`expectedRev` を省略した B2 関数が 400 にならない・R3-6）。
+    #[serde(default)]
+    pub expected_rev: Option<i64>,
 }
 
 /// FSM 遷移（唯一の status 変更経路・actor 述語＋outbox＋監査は DataStore 内）。
@@ -229,33 +235,81 @@ pub(crate) async fn transition_record(
     Path((table_id, record_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<TransitionRequest>,
 ) -> Result<Json<DataRecord>, GatewayError> {
-    let table = require_app_table(&state, &ctx, table_id).await?;
-    let fsm_ref = table.schema.fsm_ref.clone().ok_or_else(|| {
-        GatewayError::Invalid("このテーブルは FSM 管理されていません（fsm_ref 未設定）".into())
-    })?;
-    let status_field =
-        table.schema.status_field.clone().ok_or_else(|| {
-            GatewayError::Invalid("このテーブルに status_field がありません".into())
-        })?;
-    // ピンされたバージョンの FSM 定義を artifact チョークポイント（FsmStore）経由で解決する。
-    let (_, fsm) = state
-        .caps
+    let app = app_table_stores(&state, &ctx, table_id).await?;
+    // rev の省略は現在の rev（呼出ユーザーの権限で読む・見えない行は読めず遷移もできない）。
+    let expected_rev = match req.expected_rev {
+        Some(rev) => rev,
+        None => {
+            app.data
+                .get_record(&ctx.auth, table_id, record_id, None)
+                .await?
+                .rev
+        }
+    };
+    // テーブルにピンされた FSM をテーブルの editor として読み、当該行で遷移する（HTTP・ワークフローと
+    // 同じ単一の入口・FsmStore::transition）。
+    let rec = app
         .fsms
-        .get(&ctx.auth, fsm_ref.artifact_id, Some(fsm_ref.version), None)
-        .await?;
-    let rec = state
-        .caps
-        .data
-        .transition_record(
-            &ctx.auth,
-            table_id,
-            record_id,
-            &req.to,
-            req.expected_rev,
-            &fsm,
-            &status_field,
-            None,
-        )
+        .transition(&ctx.auth, table_id, record_id, &req.to, expected_rev, None)
         .await?;
     Ok(Json(rec))
+}
+
+/// レコード変更の購読の開始位置（`Last-Event-ID` ヘッダが優先）。
+#[derive(Debug, Deserialize)]
+pub(crate) struct StreamQuery {
+    pub since: Option<i64>,
+}
+
+/// レコード変更の SSE（data.read・Task 15.7 で app-gateway へ公開）。
+///
+/// ミニアプリ（B1 のグリッド等）が自分の所有テーブルの変更をリアルタイムに受ける入口。中身は
+/// data の配信（`DataStore::subscribe_records`）そのもので、**呼出ユーザーの行述語とフィールドマスクを
+/// 購読者ごとに評価**し、可視→不可視・削除は `record.removed`（id のみ）を送る（data-platform §9.3）。
+/// テーブル単位の束縛しか持たない `events.subscribe`（ドメインイベントのライブテール）には
+/// レコード変更を流さず、こちらへ分ける（見えない行の id・変更の事実を漏らさない）。
+pub(crate) async fn stream_records(
+    State(state): State<GatewayState>,
+    Extension(ctx): Extension<GatewayCtx>,
+    Path(table_id): Path<Uuid>,
+    Query(q): Query<StreamQuery>,
+    headers: axum::http::HeaderMap,
+) -> Result<axum::response::Response, GatewayError> {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use axum::response::IntoResponse;
+
+    let app = app_table_stores(&state, &ctx, table_id).await?;
+    let since = match headers.get("last-event-id") {
+        None => q.since,
+        Some(v) => Some(
+            v.to_str()
+                .ok()
+                .and_then(|s| s.trim().parse::<i64>().ok())
+                .ok_or_else(|| GatewayError::Invalid("Last-Event-ID が不正です".into()))?,
+        ),
+    };
+    let rx = app
+        .data
+        .subscribe_records(&ctx.auth, table_id, since, None)
+        .await?;
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        let m = rx.next().await?;
+        let ev = Event::default()
+            .event(m.event.name())
+            .data(m.event.data_json().to_string());
+        let ev = match m.id {
+            Some(id) => ev.id(id.to_string()),
+            None => ev,
+        };
+        Some((Ok::<Event, std::convert::Infallible>(ev), rx))
+    });
+    let mut resp = Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response();
+    // プロキシに溜めさせない（api の SSE と同じ）。
+    resp.headers_mut().insert(
+        "x-accel-buffering",
+        axum::http::HeaderValue::from_static("no"),
+    );
+    Ok(resp)
 }

@@ -125,6 +125,12 @@ vocab_enum! {
         CsvPatch => "csv.patch",
         /// 新規 CSV の保存（作成権限・Task 11P.9）。
         CsvWrite => "csv.write",
+        /// 構造化データ（テーブル）の検索・集計（`data::DataQuery`・本人の行述語/マスク・Task 15.7）。
+        DataQuery => "data_query",
+        /// テーブルの列（参照名・型・選択肢）のグラウンディング（読めない列は載せない・Task 15.7）。
+        DataSchema => "data_schema",
+        /// テーブルのレコードの作成・更新（editor ＋書込述語・承認必須・Task 15.7）。
+        DataRecordWrite => "data_record_write",
     }
 }
 
@@ -192,7 +198,11 @@ impl ToolName {
             | Self::FsAppend
             | Self::FsEdit
             | Self::Subagent
-            | Self::EmitUi => ToolLoading::Eager,
+            | Self::EmitUi
+            // 構造化データの読取は「社内の知識源」として doc_search と同じく常時載せる（発話ユーザーに
+            // 見えるテーブルが 1 つも無ければ提示しない・description のテーブル一覧は有界）。
+            | Self::DataQuery
+            | Self::DataSchema => ToolLoading::Eager,
             Self::FsDelete
             | Self::Shell
             | Self::EmitWorkflow
@@ -214,7 +224,8 @@ impl ToolName {
             | Self::OfficeWordEdit
             | Self::CsvQuery
             | Self::CsvPatch
-            | Self::CsvWrite => ToolLoading::Deferred,
+            | Self::CsvWrite
+            | Self::DataRecordWrite => ToolLoading::Deferred,
         }
     }
 
@@ -265,6 +276,9 @@ impl ToolName {
             Self::CsvQuery => "csv sql query table select aggregate 表 集計 検索",
             Self::CsvPatch => "csv table edit update row cell 表 行 セル 編集 更新",
             Self::CsvWrite => "csv table create write save 表 作成 保存",
+            Self::DataRecordWrite => {
+                "data table record row create update write insert テーブル レコード 行 追加 登録 更新 書き込み"
+            }
             Self::Skill
             | Self::SkillSearch
             | Self::DocSearch
@@ -280,7 +294,9 @@ impl ToolName {
             | Self::FsAppend
             | Self::FsEdit
             | Self::Subagent
-            | Self::EmitUi => "",
+            | Self::EmitUi
+            | Self::DataQuery
+            | Self::DataSchema => "",
         }
     }
 }

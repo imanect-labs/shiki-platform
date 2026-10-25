@@ -51,6 +51,11 @@ pub enum RagError {
     /// 正常系では起きず、再試行しても直らない恒久エラーとして job を失敗させ可視化する。
     #[error("chunk_id が別ノードの既存チャンクと衝突しました: node={node_id} 件数={count}")]
     ChunkIdConflict { node_id: uuid::Uuid, count: i64 },
+
+    /// ファイル以外の検索ソース（構造化データの可視性問い合わせなど・Task 15.8）の失敗。
+    /// 材料解決の失敗も含むので一時エラー扱い（fail-closed で検索ごと失敗させる）。
+    #[error("検索ソースエラー: {0}")]
+    Source(String),
 }
 
 impl RagError {
@@ -66,7 +71,8 @@ impl RagError {
             | RagError::Db(_)
             | RagError::Jobq(_)
             | RagError::Storage(_)
-            | RagError::Authz(_) => true,
+            | RagError::Authz(_)
+            | RagError::Source(_) => true,
             RagError::Parse { .. }
             | RagError::EmbeddingVersionMismatch { .. }
             | RagError::Serde(_)

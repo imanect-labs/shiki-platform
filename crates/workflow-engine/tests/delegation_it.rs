@@ -473,3 +473,104 @@ async fn inventory_and_reenable_skip_ledger_row_pointing_to_other_tenant() {
         "他テナントのタプルには触れない（越境 delete をしない）"
     );
 }
+
+struct AllowRefs;
+#[async_trait::async_trait]
+impl data::RefResolver for AllowRefs {
+    async fn user_exists(&self, _: &AuthContext, _: &str) -> Result<bool, String> {
+        Ok(true)
+    }
+    async fn role_exists(&self, _: &AuthContext, _: &str) -> Result<bool, String> {
+        Ok(true)
+    }
+    async fn file_readable(&self, _: &AuthContext, _: Uuid) -> Result<bool, String> {
+        Ok(true)
+    }
+}
+
+/// 棚卸しで `data_table` の委譲タプルを撤去したら、data の配信の認可の世代を進める（Task 15.7）。
+///
+/// 知らせないと、ワークフロー主体の SSE 購読が TTL まで旧権限で配信を受け続ける（PIT-70）。
+#[tokio::test]
+async fn inventory_tells_data_when_it_revokes_a_table_tuple() {
+    let Some((pool, fga)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let data = data::DataStore::new(
+        pool.clone(),
+        fga.clone() as Arc<dyn AuthzClient>,
+        Arc::new(AllowRefs),
+    );
+    let table = data
+        .create_table(
+            &alice,
+            data::NewDataTable {
+                name: "inv-table".into(),
+                schema: data::TableSchema {
+                    fields: vec![data::FieldDef::new("title", data::FieldType::Text)],
+                    status_field: None,
+                    row_policy: None,
+                    field_policy: vec![],
+                    aggregate_min_rows: None,
+                    fsm_ref: None,
+                    rag: None,
+                },
+            },
+            None,
+        )
+        .await
+        .expect("table");
+    let store = DelegationStore::new(pool.clone(), fga.clone()).with_data(data.clone());
+    let object = alice.ns().data_table(&table.id.to_string());
+    let workflow_id = Uuid::new_v4();
+    store
+        .enable(
+            &alice,
+            workflow_id,
+            1,
+            &["data.read".into()],
+            &[GrantRequest {
+                scope: "data.read".into(),
+                object: object.clone(),
+                relation: Relation::Viewer,
+            }],
+        )
+        .await
+        .expect("enable");
+    let epoch = |pool: PgPool, tenant: String, table_id: Uuid| async move {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT epoch FROM data_stream_authz_epoch WHERE tenant_id = $1 AND scope = $2",
+        )
+        .bind(tenant)
+        .bind(table_id)
+        .fetch_optional(&pool)
+        .await
+        .unwrap()
+    };
+    let before = epoch(pool.clone(), tenant.clone(), table.id).await;
+
+    // alice（委譲者・owner）がテーブルの権限を失う → 棚卸しがワークフローのタプルを撤去する。
+    fga.delete_tuple(&alice.subject(), Relation::Owner, &object)
+        .await
+        .unwrap();
+    let revoked = store.inventory(&tenant).await.expect("inventory");
+    assert!(revoked.contains(&workflow_id));
+    let wf_subject = alice.ns().workflow_principal(&workflow_id.to_string());
+    assert!(!fga
+        .check(
+            &wf_subject,
+            Relation::Viewer,
+            &object,
+            authz::Consistency::HigherConsistency
+        )
+        .await
+        .unwrap());
+
+    let after = epoch(pool.clone(), tenant.clone(), table.id).await;
+    assert!(
+        after.unwrap_or(0) > before.unwrap_or(0),
+        "撤去したテーブルの配信の世代が進む: {before:?} → {after:?}"
+    );
+}

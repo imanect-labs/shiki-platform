@@ -18,4 +18,11 @@ skill: ComponentPin | null,
 /**
  * 束ねるワークフロー（kind=workflow・画面のボタンの実行先はこの集合に限る）。
  */
-workflows: Array<NamedComponentPin>, };
+workflows: Array<NamedComponentPin>, 
+/**
+ * 束ねる保存ビュー（kind=data_view・画面の ```data_grid が参照できるのはこの集合に限る・Task 15.7）。
+ *
+ * 定義（クエリ）は保存した版に固定し、**データは閲覧者本人の権限で毎回評価する**
+ * （[`ActionBinding::DataView`](crate::ActionBinding::DataView)）。
+ */
+data_views?: Array<NamedComponentPin>, };

@@ -72,6 +72,62 @@ struct CheckResponse {
     allowed: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct BatchCheckItem<'a> {
+    tuple_key: TupleKey<'a>,
+    /// 応答の対応付けに使う id（`^[\w\d-]{1,36}$`）。入力の添字をそのまま使う。
+    correlation_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchCheckRequest<'a> {
+    checks: Vec<BatchCheckItem<'a>>,
+    authorization_model_id: &'a str,
+    consistency: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct BatchCheckResponse {
+    #[serde(default)]
+    result: std::collections::HashMap<String, BatchCheckSingle>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BatchCheckSingle {
+    #[serde(default)]
+    allowed: bool,
+    #[serde(default)]
+    error: Option<Value>,
+}
+
+/// BatchCheck 1 回あたりの最大問数（OpenFGA の既定 `maxChecksPerBatchCheck`）。
+pub const MAX_CHECKS_PER_BATCH: usize = 50;
+
+/// BatchCheck の応答を入力順の判定列へ戻す。
+///
+/// 1 問でもエラー・欠落があれば全体をエラーにする（単発 `check` の失敗と同じく fail-closed。
+/// 「判定できなかった問い」を拒否扱いで黙って続けると、上位で権限不足と通信障害を区別できない）。
+fn decode_batch_check(resp: BatchCheckResponse, n: usize) -> Result<Vec<bool>, AuthzError> {
+    let mut result = resp.result;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let Some(single) = result.remove(&i.to_string()) else {
+            return Err(AuthzError::Unexpected {
+                status: 200,
+                body: format!("batch-check の応答に correlation_id {i} がありません"),
+            });
+        };
+        if let Some(err) = single.error {
+            return Err(AuthzError::Unexpected {
+                status: 200,
+                body: format!("batch-check の問い {i} が失敗しました: {err}"),
+            });
+        }
+        out.push(single.allowed);
+    }
+    Ok(out)
+}
+
 /// OpenFGA Read API の応答 1 件（`object#relation@user` の実タプル）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReadTupleKey {
@@ -214,6 +270,52 @@ impl FgaHttp {
         let resp = ensure_ok(resp).await?;
         let parsed: CheckResponse = resp.json().await?;
         Ok(parsed.allowed)
+    }
+
+    /// 複数の `(user, relation, object)` を **1 往復**で判定する（OpenFGA v1.8+ の BatchCheck）。
+    ///
+    /// 結果は `items` と同じ順。1 回の問数は [`MAX_CHECKS_PER_BATCH`] 以下であること
+    /// （分割は呼び出し側＝[`crate::client::OpenFgaClient`] が行う）。
+    pub async fn batch_check(
+        &self,
+        store_id: &str,
+        model_id: &str,
+        items: &[(&str, &str, &str)],
+        consistency: &str,
+    ) -> Result<Vec<bool>, AuthzError> {
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+        if items.len() > MAX_CHECKS_PER_BATCH {
+            return Err(AuthzError::Unexpected {
+                status: 0,
+                body: format!(
+                    "batch-check の問数 {} が上限 {MAX_CHECKS_PER_BATCH} を超えています",
+                    items.len()
+                ),
+            });
+        }
+        let url = format!("{}/stores/{}/batch-check", self.base_url, store_id);
+        let body = BatchCheckRequest {
+            checks: items
+                .iter()
+                .enumerate()
+                .map(|(i, (user, relation, object))| BatchCheckItem {
+                    tuple_key: TupleKey {
+                        user,
+                        relation,
+                        object,
+                    },
+                    correlation_id: i.to_string(),
+                })
+                .collect(),
+            authorization_model_id: model_id,
+            consistency,
+        };
+        let resp = self.http.post(&url).json(&body).send().await?;
+        let resp = ensure_ok(resp).await?;
+        let parsed: BatchCheckResponse = resp.json().await?;
+        decode_batch_check(parsed, items.len())
     }
 
     /// オブジェクトに張られた tuple を列挙する（共有相手一覧）。
@@ -439,4 +541,61 @@ async fn ensure_ok_idempotent(
         }
     }
     Err(AuthzError::Unexpected { status, body })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decode(v: Value, n: usize) -> Result<Vec<bool>, AuthzError> {
+        decode_batch_check(serde_json::from_value(v).unwrap(), n)
+    }
+
+    #[test]
+    fn batch_check_decodes_in_input_order() {
+        let v = serde_json::json!({ "result": {
+            "1": { "allowed": false },
+            "0": { "allowed": true },
+            "2": { "allowed": true }
+        }});
+        assert_eq!(decode(v, 3).unwrap(), vec![true, false, true]);
+    }
+
+    #[test]
+    fn batch_check_item_error_fails_closed() {
+        let v = serde_json::json!({ "result": {
+            "0": { "allowed": true },
+            "1": { "error": { "inputError": "validation_error", "message": "x" } }
+        }});
+        assert!(decode(v, 2).is_err(), "1 問の失敗で全体をエラーにする");
+    }
+
+    #[test]
+    fn batch_check_missing_correlation_fails_closed() {
+        let v = serde_json::json!({ "result": { "0": { "allowed": true } } });
+        assert!(
+            decode(v, 2).is_err(),
+            "欠けた問いを拒否扱いで黙って続けない"
+        );
+    }
+
+    #[test]
+    fn batch_check_request_shape() {
+        let body = BatchCheckRequest {
+            checks: vec![BatchCheckItem {
+                tuple_key: TupleKey {
+                    user: "user:t|a",
+                    relation: "viewer",
+                    object: "data_table:t|x",
+                },
+                correlation_id: "0".into(),
+            }],
+            authorization_model_id: "m",
+            consistency: HIGHER_CONSISTENCY,
+        };
+        let v = serde_json::to_value(&body).unwrap();
+        assert_eq!(v["checks"][0]["tuple_key"]["object"], "data_table:t|x");
+        assert_eq!(v["checks"][0]["correlation_id"], "0");
+        assert_eq!(v["consistency"], "HIGHER_CONSISTENCY");
+    }
 }

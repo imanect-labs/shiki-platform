@@ -4,6 +4,7 @@ import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 
+import { guardLocalEscape } from "@/components/ui/local-escape";
 import { useMergedRef, useSwipeToDismiss } from "@/hooks/use-swipe-to-dismiss";
 import { cn } from "@/lib/utils";
 
@@ -61,6 +62,7 @@ function DialogContent({
   children,
   showClose = true,
   ref,
+  onEscapeKeyDown,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & { showClose?: boolean }) {
   const closeRef = React.useRef<HTMLButtonElement>(null);
@@ -92,6 +94,8 @@ function DialogContent({
           className,
         )}
         {...props}
+        // 中の候補一覧（参照の選択など）が自分で閉じる Esc ではダイアログを閉じない（2-A-P2-2）。
+        onEscapeKeyDown={guardLocalEscape(onEscapeKeyDown)}
       >
         <div aria-hidden className="mx-auto h-1.5 w-9 rounded-full bg-muted-foreground/25 sm:hidden" />
         {children}

@@ -96,7 +96,10 @@ pub(crate) fn wire_office(
 ///
 /// ブラウザ向けの面なので、内部 API と同じ host（`server.host`）で待ち受ける。
 /// 上流の 3xx をブラウザへそのまま返すため、リダイレクトを追わない専用クライアントを使う。
-pub(crate) async fn spawn_office_relay(config: &AppConfig) -> anyhow::Result<()> {
+pub(crate) async fn spawn_office_relay(
+    config: &AppConfig,
+    shutdown: &crate::shutdown::Shutdown,
+) -> anyhow::Result<()> {
     if !config.office.enabled || config.office.relay_port == 0 {
         if config.office.enabled {
             tracing::warn!(
@@ -131,8 +134,11 @@ pub(crate) async fn spawn_office_relay(config: &AppConfig) -> anyhow::Result<()>
         .await
         .with_context(|| format!("office 中継の bind に失敗しました（{bind}）"))?;
     tracing::info!(%bind, %upstream_base, "office 中継を起動しました（ブラウザ ↔ Collabora）");
+    let shutdown = shutdown.clone();
     tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, router).await {
+        // 停止の合図で受付を止める（メインリスナと同時・shutdown.rs）。
+        let server = axum::serve(listener, router).with_graceful_shutdown(shutdown.wait());
+        if let Err(e) = server.await {
             tracing::error!(error = %e, "office 中継が停止しました");
         }
     });

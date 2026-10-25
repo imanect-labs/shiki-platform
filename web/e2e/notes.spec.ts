@@ -218,13 +218,14 @@ test("ノート分割ビュー: チャットパネルの開閉とスレッド紐
   const nodeId = await createNoteViaApi(page, uniqueName("split-note"));
   await openNote(page, nodeId);
 
-  // アシスタントパネルを開く → スレッドが自動作成され Conversation が出る。
+  // アシスタントパネルを開く → 入力欄が出る。開いただけでは会話を作らない
+  // （空の会話が履歴に並ばない）ので、会話の切替（＝既存の会話）はまだ無い。
   await page.getByTestId("note-ask-ai").click();
   await expect(page.getByTestId("note-chat-panel")).toBeVisible();
-  // コンポーザ（メッセージ入力）が見える＝Conversation が載っている。
   await expect(page.getByTestId("note-chat-panel").getByLabel("メッセージを入力")).toBeVisible({
     timeout: 15_000,
   });
+  await expect(page.getByTestId("note-conversation-switcher")).toHaveCount(0);
 
   // 閉じる → パネルが消える。エディタは残る。
   await page.getByRole("button", { name: "チャットを閉じる" }).click();
@@ -253,11 +254,13 @@ test("分割ビュー fail-closed: スレッド非共有では会話が見えな
   const nodeId = await createNoteViaApi(page, uniqueName("failclosed-note"));
   await openNote(page, nodeId);
 
-  // alice がチャットパネルを開いてスレッドを作成（thread_id が meta に入る）。
+  // alice がチャットパネルで最初の発話を送ってスレッドを作成（thread_id が meta に入る）。
   await page.getByTestId("note-ask-ai").click();
-  await expect(page.getByTestId("note-chat-panel").getByLabel("メッセージを入力")).toBeVisible({
-    timeout: 15_000,
-  });
+  const aliceInput = page.getByTestId("note-chat-panel").getByLabel("メッセージを入力");
+  await expect(aliceInput).toBeVisible({ timeout: 15_000 });
+  await aliceInput.fill("こんにちは");
+  await aliceInput.press("Enter");
+  await expect(page.getByTestId("note-conversation-switcher")).toBeVisible({ timeout: 15_000 });
 
   // bob をノートの editor に共有する（スレッドは共有しない＝別 ReBAC）。
   await shareViaApi(page, nodeId, "editor");

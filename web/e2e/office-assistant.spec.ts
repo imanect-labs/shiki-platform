@@ -26,7 +26,7 @@ test("アシスタントパネルを開いて会話を準備できる", async ({
 
   await page.getByTestId("office-ask-ai").click();
   await expect(page.getByTestId("office-chat-panel")).toBeVisible();
-  // 会話が自動作成され、入力欄が出る（DocChatPanel の準備完了）。
+  // 入力欄が出る（DocChatPanel の準備完了）。会話は最初の発話を送ったときに作る。
   await expect(
     page.getByTestId("office-chat-panel").getByPlaceholder(/尋ねて|メッセージ|指示/),
   ).toBeVisible({ timeout: 20_000 });

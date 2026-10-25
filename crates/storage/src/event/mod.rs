@@ -14,20 +14,31 @@
 //! - 本モジュール: 発行（[`emit_on`]）・`processed_at` 経路の消費（[`claim`]/[`mark_processed`]）・
 //!   読み取り専用のライブテール（[`latest_event_id`]/[`peek_app_events_after`]）。
 //! - [`delivery`]: per-consumer 配送台帳（P10-A0）。
+//! - [`ack`]: `processed_at` で ack するコンシューマ（RAG の relay）の登録（GC が `processed_at` を待つかの正本）。
 //! - [`gc`]: GC と滞留観測（#413）。バックグラウンド実行は [`crate::outbox_gc`]。
+//! - [`stream`]: 購読ストリームの配信位置（`delivery_seq`・Phase 15 Task 15.6）。
 //!
 //! [`StorageService`]: crate::service::StorageService
 
+mod ack;
 mod delivery;
 mod gc;
+mod stream;
 
+pub use ack::{ack_consumers, register_ack_consumer, unregister_ack_consumer, RAG_ACK_CONSUMER};
 pub use delivery::{
-    claim_undelivered, mark_delivered, register_consumer, register_consumer_on_pool,
-    registered_consumers, unregister_consumer,
+    claim_probe, claim_undelivered, claim_undelivered_after, claim_undelivered_hinted,
+    mark_delivered, register_consumer, register_consumer_on_pool, registered_consumers,
+    unregister_consumer, ClaimHints, ClaimPlan, ClaimProbe, CLAIM_FULL_SWEEP_INTERVAL,
+    CLAIM_SWEEP_INTERVAL,
 };
 pub use gc::{
-    gc_delivered, gc_delivered_registered, outbox_backlog, ConsumerLag, OutboxBacklog,
+    gc_delivered, gc_delivered_registered, outbox_backlog, ConsumerLag, HeadBlocker, OutboxBacklog,
     DEFAULT_GC_BATCH,
+};
+pub use stream::{
+    lock_consumer_seq, mark_delivered_seq, private_payloads, stream_bounds, stream_entries_after,
+    undelivered_table_events, StreamBounds, StreamEntry,
 };
 
 use authz::AuthContext;
@@ -95,6 +106,54 @@ pub async fn emit_on(
     .bind(&ctx.principal.id)
     .bind(trace_id)
     .bind(&payload_str)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// 既存トランザクション上で複数件を 1 文で発行する（一括書込・各件に consumer 非公開の材料を添える）。
+///
+/// `private_payload` は `storage_event_outbox.private_payload` へ入り、**汎用の consumer
+/// （[`claim`] / [`claim_undelivered`] / [`peek_app_events_after`]）は読まない**。購読ストリームの
+/// before 判定の旧値など、外へ出してはならない材料だけを置く（Phase 15 Task 15.6）。
+pub async fn emit_many_on(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    events: &[(WriteEvent, Option<Value>)],
+    trace_id: Option<&str>,
+) -> Result<(), StorageError> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let mut node_ids = Vec::with_capacity(events.len());
+    let mut versions = Vec::with_capacity(events.len());
+    let mut ops = Vec::with_capacity(events.len());
+    let mut payloads = Vec::with_capacity(events.len());
+    let mut privates: Vec<Option<String>> = Vec::with_capacity(events.len());
+    for (e, p) in events {
+        node_ids.push(e.node_id);
+        versions.push(e.version);
+        ops.push(e.op.as_str().to_string());
+        payloads.push(e.payload.to_string());
+        privates.push(p.as_ref().map(Value::to_string));
+    }
+    sqlx::query(
+        "INSERT INTO storage_event_outbox \
+         (org, tenant_id, node_id, version, op, actor, trace_id, payload, private_payload) \
+         SELECT $1, $2, e.node_id, e.version, e.op, $3, $4, e.payload::jsonb, e.private::jsonb \
+         FROM unnest($5::uuid[], $6::int8[], $7::text[], $8::text[], $9::text[]) \
+              WITH ORDINALITY AS e(node_id, version, op, payload, private, ord) \
+         ORDER BY e.ord",
+    )
+    .bind(&ctx.org)
+    .bind(&ctx.tenant_id)
+    .bind(&ctx.principal.id)
+    .bind(trace_id)
+    .bind(&node_ids)
+    .bind(&versions)
+    .bind(&ops)
+    .bind(&payloads)
+    .bind(&privates)
     .execute(conn)
     .await?;
     Ok(())
@@ -179,6 +238,12 @@ pub async fn latest_event_id(pool: &sqlx::PgPool, tenant_id: &str) -> Result<i64
 ///
 /// storage の生の書込イベント（file create 等・event_type なし）は含めない（ノード可視性の
 /// 再検証なしにアプリへ流さない）。呼び出し側がテーブル束縛等の追加フィルタを行う。
+///
+/// レコード変更（`data.record.changed`・構造化データの `stream::outbox` が積む）も SQL 側で除く。
+/// ライブテールはこれを流さない（購読者ごとの行述語・マスクを評価する専用の配信だけが流す）ので、
+/// 取得してから捨てると、取込が 1 行ごとに積む大量の変更の後ろでアプリ向けイベントが `limit` 件ずつ
+/// しか進まず大きく遅れる。
+/// 部分索引 `storage_event_outbox_app_event_idx` の述語と同じ形で書く。
 pub async fn peek_app_events_after(
     pool: &sqlx::PgPool,
     tenant_id: &str,
@@ -191,6 +256,7 @@ pub async fn peek_app_events_after(
          FROM storage_event_outbox o \
          LEFT JOIN node n ON n.id = o.node_id \
          WHERE o.tenant_id = $1 AND o.id > $2 AND o.payload ? 'event_type' \
+           AND o.payload ->> 'event_type' <> 'data.record.changed' \
          ORDER BY o.id LIMIT $3",
     )
     .bind(tenant_id)

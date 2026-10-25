@@ -13,48 +13,12 @@
 
 use std::sync::Arc;
 
-use script_runtime::{compile, HostCall, HostResponse, Limits, ScriptEngine};
+use script_runtime::{compile, EngineHandle, HostCall, HostResponse, Limits};
 use storage::content_address::{miniapp_bundle_key, sha256_hex};
 use storage::ObjectStore;
 use uuid::Uuid;
 
 use crate::AppPlatformError;
-
-/// ミニアプリ関数用の Shiki API 拡張（ゲスト wasm を再ビルドせずに data/notify を足す）。
-///
-/// ゲストのブートストラップが公開する低レベル import `__shiki_hostcall` を直接使い、
-/// `Shiki.data.*` / `Shiki.notify.*` を定義する（api 名はホスト側 ALLOWED_APIS の閉集合に
-/// 照合される・ここは糖衣のみで権限は増えない）。コンパイル済みユーザーコードの**前**に
-/// 実行される。
-const MINIAPP_PRELUDE: &str = r"
-(function () {
-  function call(api, args) {
-    var resp = __shiki_hostcall(JSON.stringify({ api: api, args: args || {} }));
-    var parsed = JSON.parse(resp);
-    if (parsed && parsed.ok) { return parsed.value; }
-    var err = (parsed && parsed.error) || {};
-    var e = new Error(err.message || 'host call failed');
-    e.name = 'ShikiError';
-    e.code = err.code || 'internal';
-    e.retryable = !!err.retryable;
-    throw e;
-  }
-  Shiki.data = {
-    listTables: function () { return call('data.list_tables', {}); },
-    query: function (tableId, body) { return call('data.query', { table_id: tableId, body: body || {} }); },
-    get: function (tableId, recordId) { return call('data.get', { table_id: tableId, record_id: recordId }); },
-    create: function (tableId, data) { return call('data.create', { table_id: tableId, body: { data: data } }); },
-    update: function (tableId, recordId, patch, expectedRev) {
-      return call('data.update', { table_id: tableId, record_id: recordId, body: { patch: patch, expected_rev: expectedRev } });
-    }
-  };
-  Shiki.notify = {
-    send: function (recipient, title, body) {
-      return call('notify.send', { body: { recipient: recipient, title: title, body: body || null } });
-    }
-  };
-})();
-";
 
 /// 1 関数実行の上限（アルファ既定・fuel/メモリ/ホスト呼び出し数/実行時間）。
 fn function_limits() -> Limits {
@@ -126,7 +90,8 @@ pub struct FunctionOutcome {
 
 /// B2 関数ランナ（engine＋コード取得＋ホスト委譲の束）。
 pub struct FunctionRunner {
-    engine: Arc<ScriptEngine>,
+    /// 共有エンジンなら、コンパイルの完了は関数を実行するときに待つ（起動の経路で待たない）。
+    engine: EngineHandle,
     store: Arc<dyn ObjectStore>,
     http: reqwest::Client,
     /// サーバ内から到達するゲートウェイの origin（例 `http://127.0.0.1:8090`）。
@@ -135,7 +100,7 @@ pub struct FunctionRunner {
 
 impl FunctionRunner {
     pub fn new(
-        engine: Arc<ScriptEngine>,
+        engine: impl Into<EngineHandle>,
         store: Arc<dyn ObjectStore>,
         gateway_origin: String,
     ) -> Result<Self, AppPlatformError> {
@@ -146,7 +111,7 @@ impl FunctionRunner {
             .build()
             .map_err(|e| AppPlatformError::Internal(format!("http client: {e}")))?;
         Ok(FunctionRunner {
-            engine,
+            engine: engine.into(),
             store,
             http,
             gateway_origin,
@@ -193,11 +158,18 @@ impl FunctionRunner {
             function: inv.function.clone(),
             actor: inv.actor,
         });
-        let engine = Arc::clone(&self.engine);
+        let engine = self.engine.get().await.map_err(|e| {
+            AppPlatformError::Internal(format!("script エンジンを準備できません: {e}"))
+        })?;
         let limits = function_limits();
         let handle = tokio::runtime::Handle::current();
         // prelude はコンパイル後に前置する（compile の禁止構文 lint はユーザーコードにのみ適用）。
-        let compiled_js = format!("{MINIAPP_PRELUDE}\n{}", compiled.compiled_js);
+        // `Shiki.data.*` / `Shiki.notify.*` の糖衣（ゲスト wasm を再ビルドせずに足す・script-runtime の共通定義）。
+        let compiled_js = format!(
+            "{}\n{}",
+            script_runtime::prelude::miniapp_prelude(),
+            compiled.compiled_js
+        );
         let outcome = tokio::task::spawn_blocking(move || {
             let host_fn: script_runtime::engine::HostFn =
                 Box::new(move |call: &HostCall| handle.block_on(handler.handle(call)));
@@ -278,6 +250,19 @@ impl GatewayHostCallHandler {
                 self.gateway(
                     "PATCH",
                     &format!("/gw/data/tables/{table}/records/{id}"),
+                    call.args.get("body").cloned(),
+                )
+                .await
+            }
+            // FSM 遷移（status を進める唯一の経路・ガードと actor 述語はゲートウェイ先の DataStore が評価）。
+            "data.transition" => {
+                let (table, id) = match table_and_id(&call.args) {
+                    Ok(v) => v,
+                    Err(e) => return e,
+                };
+                self.gateway(
+                    "POST",
+                    &format!("/gw/data/tables/{table}/records/{id}/transition"),
                     call.args.get("body").cloned(),
                 )
                 .await

@@ -1,0 +1,670 @@
+/// 構造化データ（業務データのテーブル）の API クライアント（Task 15.5）。
+///
+/// 型はすべて OpenAPI（utoipa）から生成した `@/generated/api` を使う（手書きの型を作らない）。
+/// 誤りは {@link DataApiError} に状態コードと構造化した理由（`code` / `message` / 索引の進捗など）を
+/// 載せて投げ、画面が「再読込」「準備中」「承認が要る」を出し分けられるようにする。
+
+import { apiFetch } from "@/lib/api";
+import type { components } from "@/generated/api";
+
+type S = components["schemas"];
+
+export type DataTable = S["DataTable"];
+export type TableSchema = S["TableSchema"];
+export type FieldDef = S["FieldDef"];
+export type FieldType = S["FieldType"];
+export type DataRecord = S["DataRecord"];
+export type DataQuery = S["DataQuery"];
+export type Condition = S["Condition"];
+export type CondOp = S["CondOp"];
+export type SortKey = S["SortKey"];
+export type QueryResult = S["QueryResult"];
+export type CountResult = S["CountResult"];
+export type ViewSpec = S["ViewSpec"];
+export type GridView = S["GridView"];
+export type ColumnConfig = S["ColumnConfig"];
+export type GroupConfig = S["GroupConfig"];
+export type ConditionalFormat = S["ConditionalFormat"];
+export type FormatColor = S["FormatColor"];
+export type RowHeight = S["RowHeight"];
+export type DataViewBody = S["DataViewBody"];
+export type DataViewSummary = S["DataViewSummary"];
+export type ViewResponse = S["ViewResponse"];
+export type DataViewRun = S["DataViewRun"];
+export type TableViewerContext = S["TableViewerContext"];
+export type TableIndexOverview = S["TableIndexOverview"];
+export type IndexPromotion = S["IndexPromotion"];
+export type IndexStatus = S["IndexStatus"];
+export type QueryRejection = S["QueryRejection"];
+export type RecordUpsertedEvent = S["RecordUpsertedEvent"];
+export type RecordsBulkAppliedEvent = S["RecordsBulkAppliedEvent"];
+export type RecordRemovedEvent = S["RecordRemovedEvent"];
+export type StreamReadyEvent = S["StreamReadyEvent"];
+export type StreamResetEvent = S["StreamResetEvent"];
+export type SchemaChangedEvent = S["SchemaChangedEvent"];
+export type StreamResetReason = S["StreamResetReason"];
+export type AwarenessEvent = S["AwarenessEvent"];
+export type AwarenessRequest = S["AwarenessRequest"];
+export type DataQueryRequest = S["DataQueryRequest"];
+export type BulkImportStatus = S["BulkImportStatus"];
+export type BulkIndexMode = S["BulkIndexMode"];
+export type BulkRowError = S["BulkRowError"];
+export type StartImportRequest = S["StartImportRequest"];
+export type StartImportResponse = S["StartImportResponse"];
+export type ImportErrorsResponse = S["ImportErrorsResponse"];
+export type FsmBody = S["FsmBody"];
+export type AllowedTransitions = S["AllowedTransitions"];
+export type FsmResponse = S["FsmResponse"];
+/// 構造化した誤りの本文（400 入力の誤り・403 列が使えない・409 競合・要求の形の誤り）。
+export type BadRequestBody = S["BadRequestBody"];
+export type ForbiddenBody = S["ForbiddenBody"];
+export type ConflictBody = S["ConflictBody"];
+export type RequestErrorBody = S["RequestErrorBody"];
+
+/// テーブルが見つからない（存在しない・削除済み・見る権限が無い）。サーバは見えないテーブルを存在しない
+/// テーブルと同じ 404 にするので、画面もどれかを言い分けない（言い分けると存在が分かる）。
+export const TABLE_NOT_FOUND = "テーブルが見つかりません。削除されたか、見る権限がありません。";
+
+/// API の誤り（状態コード＋構造化した本文）。
+export class DataApiError extends Error {
+  constructor(
+    public status: number,
+    public body: Record<string, unknown> | null,
+    message: string,
+    /// `Retry-After`（秒・503 read_timeout / 429 で再試行までの目安）。
+    public retryAfterSec: number | null = null,
+  ) {
+    super(message);
+    this.name = "DataApiError";
+  }
+
+  /// 誤りに関係する列の参照名（構造化した 400 の `field`・409 の索引の準備中など）。呼び出し側が表示名に直す。
+  get field(): string | null {
+    const f = this.body?.field;
+    return typeof f === "string" && f ? f : null;
+  }
+
+  /// テーブル名の重複（`name_taken`）。
+  get nameTaken(): boolean {
+    return this.status === 409 && this.code === "name_taken";
+  }
+
+  /// 読み取りが時間内に終わらなかった（負荷・`read_timeout`）。少し待てば読める。
+  get readTimeout(): boolean {
+    return this.status === 503 && (this.code === "read_timeout" || this.code === null);
+  }
+
+  /// 構造化した誤りの種類（409: `rev_conflict` / `unique_violation` / `derived_recomputing` /
+  /// `conflict` / `index_preparing` / `index_approval_required`、400: `import_invalid`、
+  /// 413: `import_too_large` など）。本文に `code` が無ければ `null`。
+  get code(): string | null {
+    const c = this.body?.code;
+    return typeof c === "string" ? c : null;
+  }
+
+  /// 索引の準備中（並べ替え・絞り込みに使えるまで待つ）。
+  get indexPreparing(): { field: string; progress: number | null } | null {
+    if (this.status !== 409 || this.code !== "index_preparing") return null;
+    return {
+      field: String(this.body?.field ?? ""),
+      progress: typeof this.body?.progress === "number" ? (this.body.progress as number) : null,
+    };
+  }
+
+  /// 索引列の上限を超える（owner の承認が要る）。
+  get approvalRequired(): { field: string; indexed: number; cap: number } | null {
+    if (this.status !== 409 || this.code !== "index_approval_required") return null;
+    return {
+      field: String(this.body?.field ?? ""),
+      indexed: Number(this.body?.indexed_fields ?? 0),
+      cap: Number(this.body?.max_indexed_fields ?? 0),
+    };
+  }
+
+  /// rev の楽観ロックの衝突（他の人が先に更新した・`code=rev_conflict`）。
+  get revConflict(): boolean {
+    return this.status === 409 && this.code === "rev_conflict";
+  }
+
+  /// unique 制約・一対一 / 一対多のリンクの参照先の一意の違反（`code=unique_violation`）。サーバは呼び出し側が
+  /// 読める列なら `field`（参照名）と表示名つきの `message` を返す（読めない列・値は返さない）。
+  get uniqueViolation(): boolean {
+    return this.status === 409 && this.code === "unique_violation";
+  }
+
+  /// 存在しない列・読めない列の指定（403 `field_unavailable`・両者を区別しない・列名なし）。
+  get fieldUnavailable(): boolean {
+    return this.status === 403 && this.code === "field_unavailable";
+  }
+
+  /// 材料化した派生列が参照先の変更を受けて再計算中（`code=derived_recomputing`）。
+  get derivedRecomputing(): { field: string } | null {
+    if (this.status !== 409 || this.code !== "derived_recomputing") return null;
+    return { field: String(this.body?.field ?? "") };
+  }
+}
+
+/// 構造化した誤りの既定の文言（本文に `message` が無いとき）。列の参照名は呼び出し側が表示名に
+/// 直して出し直せるよう、ここでは列名を含めない。
+function codeMessage(body: Record<string, unknown> | null): string | null {
+  switch (body?.code) {
+    case "rev_conflict":
+      return "他の人が先に更新しました。最新の内容を読み込み直してください";
+    case "unique_violation":
+      return "同じ値のレコードが既にあります（重複できない列です）";
+    case "derived_recomputing":
+      return "参照先の変更を受けて列を再計算しています。しばらくしてから再試行してください";
+    case "conflict":
+      return "他の操作と競合しました。もう一度お試しください";
+    case "index_preparing":
+      return "この列の索引を準備しています。完了するまでお待ちください";
+    case "index_approval_required":
+      return "索引列の上限を超えるため、テーブルの管理者の承認が要ります";
+    case "name_taken":
+      return "同じ名前のテーブルがあります。別の名前にしてください";
+    case "field_unavailable":
+      return "指定した列は存在しないか、参照できません";
+    case "schema_conflicts_with_data":
+      return "今のデータと合わないため、この列の設定に変えられません";
+    case "upstream_unavailable":
+      return "サーバーに接続できません。少し待ってから再試行してください";
+    case "read_timeout":
+      return "混み合っていて読み込みが時間内に終わりませんでした。少し待ってから再試行してください";
+    case "cursor_invalid":
+      return "読み込み位置が古くなりました。最初から読み込み直してください";
+    case "offset_not_supported":
+      return "この読み方はできません（続きは読み込み位置で取ってください）";
+    case "field_not_indexed":
+      return "この列は索引が無いため、並べ替え・絞り込みに使えません";
+    case "field_not_sortable":
+      return "この列では並べ替えできません";
+    case "value_type_mismatch":
+      return "値の種類が列と合いません（数値の列に文字を入れた・日付の形が違うなど）";
+    case "value_out_of_range":
+      return "値が範囲の外です";
+    case "value_too_long":
+      return "文字数が多すぎます";
+    case "required_missing":
+      return "必須の列が空です";
+    case "invalid_option":
+      return "選択肢に無い値です";
+    case "too_many_values":
+      return "選べる数を超えています";
+    case "schema_invalid":
+      return "列の設定が正しくありません";
+    case "invalid_input":
+      return "使えない文字が含まれています";
+    case "snapshot_unsupported":
+      return "この並べ替えでは固定の読み取りができません";
+    case "fsm_invalid":
+      return "状態の遷移の定義が正しくありません";
+    // 要求の形の誤り（RequestErrorBody・サーバは日本語の message を付けるので、無いときの予備）。
+    case "payload_too_large":
+      return "送る内容が大きすぎます";
+    case "unsupported_media_type":
+      return "送る内容の形式が正しくありません";
+    case "not_found":
+      return "見つかりませんでした";
+    case "method_not_allowed":
+      return "この操作はできません";
+    case "bad_request":
+      return "要求が正しくありません";
+    case "import_too_large": {
+      const max = Number(body?.max_bytes ?? 0);
+      return max > 0
+        ? `ファイルが大きすぎます（上限 ${Math.floor(max / (1024 * 1024))} MB）。分割して取り込んでください`
+        : "ファイルが大きすぎます。分割して取り込んでください";
+    }
+    default:
+      return null;
+  }
+}
+
+/// 状態コードごとの既定の文言（本文に理由が無いとき）。
+function fallbackMessage(status: number): string {
+  switch (status) {
+    case 400:
+      return "入力が正しくありません";
+    case 401:
+      return "ログインが切れました。もう一度ログインしてください";
+    case 403:
+      return "この操作の権限がありません";
+    case 404:
+      return "見つかりませんでした（削除されたか、権限がありません）";
+    case 409:
+      return "他の操作と競合しました。最新の内容を読み込み直してください";
+    case 410:
+      return "読み取りの基準が古くなりました。最初から読み込み直してください";
+    case 429:
+      return "混み合っています。しばらくしてから再試行してください";
+    case 413:
+      return "送る内容が大きすぎます";
+    case 502:
+    case 504:
+      return "サーバーに接続できませんでした。しばらくしてから再試行してください";
+    case 503:
+      return "混み合っていて処理が時間内に終わりませんでした。少し待ってから再試行してください";
+    default:
+      return `サーバーエラー（${status}）`;
+  }
+}
+
+async function ok<T>(res: Response): Promise<T> {
+  if (res.ok) {
+    if (res.status === 204) return undefined as T;
+    return (await res.json()) as T;
+  }
+  let body: Record<string, unknown> | null = null;
+  try {
+    body = (await res.json()) as Record<string, unknown>;
+  } catch {
+    body = null;
+  }
+  // 構造化した誤り（{code, message, field?}）の message は利用者に見せてよい文言（サーバが閲覧者の読めない
+  // 列名・値・内部 ID を入れない）。無ければ code・状態コードの既定の文言にする。
+  const message =
+    (typeof body?.message === "string" && body.message) ||
+    (typeof body?.detail === "string" && body.detail) ||
+    codeMessage(body) ||
+    fallbackMessage(res.status);
+  const ra = Number(res.headers.get("retry-after"));
+  throw new DataApiError(res.status, body, message, Number.isFinite(ra) && ra > 0 ? ra : null);
+}
+
+function send(method: string, body: unknown): RequestInit {
+  return {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
+}
+
+const enc = encodeURIComponent;
+
+// ---------------------------------------------------------------------------
+// テーブル
+// ---------------------------------------------------------------------------
+
+export async function listTables(): Promise<DataTable[]> {
+  const r = await ok<S["TableListResponse"]>(await apiFetch("/data/tables"));
+  return r.items;
+}
+
+export async function getTable(id: string): Promise<DataTable> {
+  return ok<DataTable>(await apiFetch(`/data/tables/${enc(id)}`));
+}
+
+export async function createTable(name: string, schema: TableSchema): Promise<DataTable> {
+  return ok<DataTable>(await apiFetch("/data/tables", send("POST", { name, schema })));
+}
+
+export async function updateSchema(
+  id: string,
+  schema: TableSchema,
+  expectedSchemaVersion: number,
+): Promise<DataTable> {
+  return ok<DataTable>(
+    await apiFetch(
+      `/data/tables/${enc(id)}/schema`,
+      send("PUT", { schema, expected_schema_version: expectedSchemaVersion }),
+    ),
+  );
+}
+
+export async function deleteTable(id: string): Promise<void> {
+  await ok<void>(await apiFetch(`/data/tables/${enc(id)}`, { method: "DELETE" }));
+}
+
+export async function getViewerContext(id: string): Promise<TableViewerContext> {
+  return ok<TableViewerContext>(await apiFetch(`/data/tables/${enc(id)}/viewer-context`));
+}
+
+// ---------------------------------------------------------------------------
+// クエリ・レコード
+// ---------------------------------------------------------------------------
+
+/// 宣言的クエリ（行述語・マスクは閲覧者本人の権限でサーバが合成する）。
+///
+/// `promoteIndexes` は未索引の列での並べ替え・絞り込みを**索引の自動昇格の契機にする**明示の要求
+/// （data-platform §10）。**/data のグリッドで利用者が並べ替え・絞り込みを操作したときだけ** true にする
+/// （それ以外の経路では未索引の列は 400 のまま）。
+export async function runQuery(
+  tableId: string,
+  query: DataQuery,
+  init?: { signal?: AbortSignal; promoteIndexes?: boolean },
+): Promise<QueryResult> {
+  const body: DataQueryRequest = init?.promoteIndexes ? { ...query, promote_indexes: true } : query;
+  return ok<QueryResult>(
+    await apiFetch(`/data/tables/${enc(tableId)}/query`, {
+      ...send("POST", body),
+      signal: init?.signal,
+    }),
+  );
+}
+
+export async function createRecord(tableId: string, data: Record<string, unknown>): Promise<DataRecord> {
+  return ok<DataRecord>(await apiFetch(`/data/tables/${enc(tableId)}/records`, send("POST", { data })));
+}
+
+/// レコードを部分更新する（`expectedRev` の楽観ロック・不一致は `DataApiError.revConflict`）。
+export async function updateRecord(
+  tableId: string,
+  recordId: string,
+  patch: Record<string, unknown>,
+  expectedRev: number,
+): Promise<DataRecord> {
+  return ok<DataRecord>(
+    await apiFetch(
+      `/data/tables/${enc(tableId)}/records/${enc(recordId)}`,
+      send("PATCH", { patch, expected_rev: expectedRev }),
+    ),
+  );
+}
+
+/// レコードの状態を遷移させる（FSM のテーブルの状態の列はこの API でだけ変わる・`expectedRev` の楽観ロック）。
+/// 定義に無い遷移は 400、実行できる人の条件を満たさないと 403。
+export async function transitionRecord(
+  tableId: string,
+  recordId: string,
+  to: string,
+  expectedRev: number,
+): Promise<DataRecord> {
+  return ok<DataRecord>(
+    await apiFetch(
+      `/data/tables/${enc(tableId)}/records/${enc(recordId)}/transition`,
+      send("POST", { to, expected_rev: expectedRev }),
+    ),
+  );
+}
+
+/// レコードのいまの状態と、閲覧者がいま実行できる遷移先（実行できる人の条件まで評価済み）。
+export async function getAllowedTransitions(tableId: string, recordId: string): Promise<AllowedTransitions> {
+  return ok<AllowedTransitions>(
+    await apiFetch(`/data/tables/${enc(tableId)}/records/${enc(recordId)}/transitions`),
+  );
+}
+
+/// テーブルにピンされた FSM の定義（遷移の候補を出すため）。FSM の閲覧権限が無い人は 403/404 になるので、
+/// 呼び出し側は読めなければ候補を絞らずに出す（遷移の可否の正はサーバ）。
+export async function getFsm(id: string, version?: number): Promise<FsmResponse> {
+  const q = version != null ? `?version=${version}` : "";
+  return ok<FsmResponse>(await apiFetch(`/data/fsms/${enc(id)}${q}`));
+}
+
+export async function getRecord(tableId: string, recordId: string): Promise<DataRecord> {
+  return ok<DataRecord>(await apiFetch(`/data/tables/${enc(tableId)}/records/${enc(recordId)}`));
+}
+
+export async function deleteRecord(tableId: string, recordId: string, expectedRev: number): Promise<void> {
+  await ok<void>(
+    await apiFetch(
+      `/data/tables/${enc(tableId)}/records/${enc(recordId)}?expected_rev=${expectedRev}`,
+      { method: "DELETE" },
+    ),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 索引
+// ---------------------------------------------------------------------------
+
+export async function listIndexes(tableId: string): Promise<TableIndexOverview> {
+  return ok<TableIndexOverview>(await apiFetch(`/data/tables/${enc(tableId)}/indexes`));
+}
+
+/// 列の索引を有効にする（2 万行未満は即時・それ以上は準備中）。上限超過は `approve` が要る。
+export async function promoteIndex(tableId: string, field: string, approve = false): Promise<IndexPromotion> {
+  return ok<IndexPromotion>(
+    await apiFetch(`/data/tables/${enc(tableId)}/indexes`, send("POST", { field, approve })),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 保存ビュー
+// ---------------------------------------------------------------------------
+
+export async function listViews(tableId: string): Promise<DataViewSummary[]> {
+  const r = await ok<S["ViewListResponse"]>(await apiFetch(`/data/tables/${enc(tableId)}/views`));
+  return r.items;
+}
+
+export async function getView(id: string, version?: number): Promise<ViewResponse> {
+  const q = version != null ? `?version=${version}` : "";
+  return ok<ViewResponse>(await apiFetch(`/data/views/${enc(id)}${q}`));
+}
+
+export async function createView(name: string, body: DataViewBody): Promise<ViewResponse> {
+  return ok<ViewResponse>(await apiFetch("/data/views", send("POST", { name, ...body })));
+}
+
+export async function updateView(
+  id: string,
+  body: DataViewBody,
+  expectedVersion: number,
+): Promise<ViewResponse> {
+  return ok<ViewResponse>(
+    await apiFetch(`/data/views/${enc(id)}`, send("PUT", { ...body, expected_version: expectedVersion })),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 変更の購読（SSE・data-platform §9）
+// ---------------------------------------------------------------------------
+
+export type RecordStreamHandlers = {
+  onReady?: (position: number) => void;
+  onUpserted: (e: RecordUpsertedEvent) => void;
+  onRemoved: (e: RecordRemovedEvent) => void;
+  /// 手元を捨てて読み直す（保持期間外・権限の変更・溢れ・スキーマ改訂）。接続はサーバが閉じる。
+  /// `authz_changed` / `table_deleted` は**直前の行を見せ続けてはいけない**（呼び出し側が即時に消す）。
+  onReset: (reason: StreamResetReason | "schema_changed") => void;
+  /// 他ユーザーのカーソル位置（データを含まない）。
+  onAwareness?: (e: AwarenessEvent) => void;
+  /// 一括取込などでまとめて作られた行（1 件ずつのイベントの代わりに届く）。件数は含まない（見える件数は
+  /// 権限で人ごとに違い、読み直さないと分からない・data-platform §9.3）。
+  onBulk?: () => void;
+  /// 接続が切れた（ブラウザが Last-Event-ID 付きで自動で繋ぎ直す）。
+  onError?: () => void;
+  /// 繋がった（最初の接続・繋ぎ直しのたび）。
+  onOpen?: () => void;
+  /// 繋ぎ直せない（403・404・401 や、サーバが落ちていて BFF が 502 を返したなどで EventSource が諦めた、
+  /// または再接続の失敗が続いた）。購読は閉じている。原因は EventSource から読めないので、呼び出し側が
+  /// REST で確かめて案内する。`lastEventId` は最後に受け取ったイベントの番号（`since` に渡すと続きから
+  /// 繋ぎ直せる・まだ何も受け取っていなければ購読を始めたときの `since`）。
+  onTerminal?: (lastEventId: number | null) => void;
+};
+
+/// 再接続の失敗がこの回数続いたら諦める（サーバが落ち続けている間に繋ぎ直しを繰り返さない）。
+const MAX_STREAM_RETRIES = 6;
+/// サーバの keepalive（15 秒ごと）がこの間届かなければ、接続が黙って死んだとみなして閉じる（D-2）。
+/// keepalive を一度でも受け取った接続だけで見る（送らない古いサーバでは見ない）。
+const STREAM_IDLE_MS = 45_000;
+
+/// レコード変更を購読する。`since` は REST の応答の `snapshot_seq`（読取と購読の間の変更を取りこぼさない）。
+///
+/// 到達は at-least-once。冪等な適用（`(record_id, rev)`）は呼び出し側の責務。`stream.reset` /
+/// `schema.changed` を受けたら購読を閉じて `onReset` を呼ぶ（以後の再接続は呼び出し側が読み直してから行う）。
+/// 購読の後始末（呼ぶと閉じる）と、最後に受け取ったイベントの番号（一時停止から `since` で再開するため）。
+export type RecordSubscription = (() => void) & { lastEventId: () => number | null };
+
+export function subscribeRecords(
+  tableId: string,
+  since: number | null | undefined,
+  h: RecordStreamHandlers,
+): RecordSubscription {
+  const q = since != null ? `?since=${since}` : "";
+  const es = new EventSource(`/api/data/tables/${enc(tableId)}/stream${q}`, { withCredentials: true });
+  let closed = false;
+  let failures = 0;
+  // 最後に受け取ったイベントの番号（自前で繋ぎ直すときの `since`）。
+  let lastId: number | null = since ?? null;
+  const seen = (ev: Event) => {
+    touch();
+    const n = Number((ev as MessageEvent).lastEventId);
+    if ((ev as MessageEvent).lastEventId !== "" && Number.isFinite(n)) lastId = n;
+  };
+  // 最後に何か（イベント・keepalive・接続）が届いた時刻と、keepalive を送るサーバか。
+  let lastActivity = Date.now();
+  let keepalives = false;
+  const touch = () => {
+    lastActivity = Date.now();
+  };
+  const watchdog = window.setInterval(() => {
+    if (closed || !keepalives || es.readyState !== EventSource.OPEN) return;
+    if (Date.now() - lastActivity > STREAM_IDLE_MS) {
+      // 黙って止まった接続（BFF・経路の半開き）: 閉じて呼び出し側に繋ぎ直させる（最後の番号から）。
+      close();
+      h.onTerminal?.(lastId);
+    }
+  }, 5_000);
+  const close = () => {
+    closed = true;
+    window.clearInterval(watchdog);
+    es.close();
+  };
+  const parse = <T,>(ev: MessageEvent): T | null => {
+    try {
+      return JSON.parse(String(ev.data)) as T;
+    } catch {
+      return null;
+    }
+  };
+  es.onopen = () => {
+    failures = 0;
+    touch();
+    h.onOpen?.();
+  };
+  es.addEventListener("keepalive", () => {
+    keepalives = true;
+    touch();
+  });
+  es.addEventListener("stream.ready", (ev) => {
+    seen(ev);
+    const d = parse<StreamReadyEvent>(ev as MessageEvent);
+    if (d) h.onReady?.(d.position);
+  });
+  es.addEventListener("record.upserted", (ev) => {
+    seen(ev);
+    const d = parse<RecordUpsertedEvent>(ev as MessageEvent);
+    if (d) h.onUpserted(d);
+  });
+  es.addEventListener("record.removed", (ev) => {
+    seen(ev);
+    const d = parse<RecordRemovedEvent>(ev as MessageEvent);
+    if (d) h.onRemoved(d);
+  });
+  // 一括取込の要約（サーバが 1 件ずつ流す代わりに送る・件数なし）。
+  es.addEventListener("records.bulk_applied", (ev) => {
+    seen(ev);
+    const d = parse<RecordsBulkAppliedEvent>(ev as MessageEvent);
+    if (d) h.onBulk?.();
+  });
+  es.addEventListener("awareness", (ev) => {
+    touch();
+    const d = parse<AwarenessEvent>(ev as MessageEvent);
+    if (d) h.onAwareness?.(d);
+  });
+  es.addEventListener("stream.reset", (ev) => {
+    const d = parse<StreamResetEvent>(ev as MessageEvent);
+    close();
+    h.onReset(d?.reason ?? "refresh");
+  });
+  es.addEventListener("schema.changed", () => {
+    close();
+    h.onReset("schema_changed");
+  });
+  es.onerror = () => {
+    if (closed) return;
+    // HTTP の誤り（403・404・401）や text/event-stream 以外の応答では、ブラウザは繋ぎ直さずに閉じる。
+    failures += 1;
+    if (es.readyState === EventSource.CLOSED || failures > MAX_STREAM_RETRIES) {
+      close();
+      h.onTerminal?.(lastId);
+      return;
+    }
+    h.onError?.();
+  };
+  return Object.assign(close, { lastEventId: () => lastId });
+}
+
+/// 自分のカーソル位置を他の閲覧者へ知らせる（データを含まない・`record_id: null` は離脱）。
+export async function postAwareness(tableId: string, body: AwarenessRequest): Promise<void> {
+  await ok<void>(await apiFetch(`/data/tables/${enc(tableId)}/awareness`, send("POST", body)));
+}
+
+// ---------------------------------------------------------------------------
+// 一括取込（CSV・JSON の行・進捗・行エラー）
+// ---------------------------------------------------------------------------
+
+/// 取込の本文の上限（サーバの `MAX_IMPORT_BODY_BYTES` と同じ・超えると 413）。画面で先に知らせるための値で、
+/// 正はサーバの検査。
+export const MAX_IMPORT_BYTES = 32 * 1024 * 1024;
+
+export type ImportOptions = { indexMode?: BulkIndexMode; abortOnInvalid?: boolean };
+
+/// CSV で取込を始める（editor・見出し行の列はフィールドの参照名か表示名・`_key` は行キー）。
+export async function startCsvImport(
+  tableId: string,
+  csv: Blob | string,
+  opts: ImportOptions = {},
+): Promise<StartImportResponse> {
+  const q = new URLSearchParams();
+  if (opts.indexMode) q.set("index_mode", opts.indexMode);
+  if (opts.abortOnInvalid) q.set("abort_on_invalid", "true");
+  const qs = q.toString();
+  return ok<StartImportResponse>(
+    await apiFetch(`/data/tables/${enc(tableId)}/imports/csv${qs ? `?${qs}` : ""}`, {
+      method: "POST",
+      headers: { "Content-Type": "text/csv; charset=utf-8" },
+      body: csv,
+    }),
+  );
+}
+
+/// JSON の行で取込を始める。
+export async function startJsonImport(tableId: string, body: StartImportRequest): Promise<StartImportResponse> {
+  return ok<StartImportResponse>(await apiFetch(`/data/tables/${enc(tableId)}/imports`, send("POST", body)));
+}
+
+export async function getImport(tableId: string, importId: string): Promise<BulkImportStatus> {
+  return ok<BulkImportStatus>(await apiFetch(`/data/tables/${enc(tableId)}/imports/${enc(importId)}`));
+}
+
+/// 不合格・拒否された行（行番号の昇順・`afterRow` は前ページの `next_after_row`）。
+export async function listImportErrors(
+  tableId: string,
+  importId: string,
+  afterRow?: number | null,
+  limit = 100,
+): Promise<ImportErrorsResponse> {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (afterRow != null) q.set("after_row", String(afterRow));
+  return ok<ImportErrorsResponse>(
+    await apiFetch(`/data/tables/${enc(tableId)}/imports/${enc(importId)}/errors?${q.toString()}`),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ミニアプリの画面の表（```data_grid・Task 15.7 の束縛）
+// ---------------------------------------------------------------------------
+
+/// ミニアプリが束ねた保存ビュー（別名）を 1 ページ実行する。送れるのはページ位置と件数だけで、条件・
+/// 並べ替えはピンした版のビューの定義が使われる。行・列は閲覧者本人の権限で評価される。
+export async function runMiniAppDataGrid(
+  appId: string,
+  version: number,
+  alias: string,
+  page: S["DataViewPage"],
+): Promise<DataViewRun> {
+  const r = await ok<S["UiActionResponse"]>(
+    await apiFetch(
+      `/mini-apps/${enc(appId)}/ui-actions`,
+      send("POST", { version, action_id: `data_grid:${alias}`, params: page }),
+    ),
+  );
+  // 結果は束縛種別ごとの判別共用体（生成型 `UiActionResult`）。表のボタンは `data_view` だけ。
+  if (r.result.kind !== "data_view") {
+    throw new DataApiError(500, null, "表の結果を読めませんでした");
+  }
+  return r.result.result;
+}

@@ -28,6 +28,7 @@ pub mod artifacts;
 pub mod attachments;
 pub mod autonomous;
 pub mod csv_tool;
+pub mod data_tool;
 pub mod doc_read_tool;
 pub mod document_ref;
 pub mod document_tool;
@@ -64,7 +65,7 @@ pub use gui_actions::{ChatActionLedger, ChatSubmitHandler};
 pub use model::{
     Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunModel, RunStatus,
     SelectionContext, SelectionKind, SkillPin, StreamEvent, StreamEventKind, Thread, ThreadRole,
-    UiActionRun, UiActionRunStatus, UiActionValue,
+    UiActionRun, UiActionRunStatus, UiActionValue, WebSource,
 };
 pub use skill_catalog::{
     merge_entries as merge_skill_catalog_entries, OwnedSkillCatalog, SkillCatalogEntry,

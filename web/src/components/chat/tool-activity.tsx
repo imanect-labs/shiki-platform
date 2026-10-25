@@ -21,7 +21,7 @@
 import * as React from "react";
 
 import { AnimatePresence, motion } from "motion/react";
-import { AlertTriangle, Check, ChevronDown, Loader2 } from "lucide-react";
+import { AlertTriangle, Ban, Check, ChevronDown, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
@@ -29,11 +29,13 @@ import { EASE_STANDARD } from "@/components/ui/motion-primitives";
 import { useNodeNames } from "@/lib/node-name-cache";
 import { toolFacts } from "@/lib/tool-facts";
 import type { Citation } from "@/lib/chat-api";
+import { isWebCitation } from "@/lib/citation";
 import {
   describeTool,
   nodeIdOf,
   seasonIndexFor,
   summarizeTools,
+  rejectedLabel,
   withTense,
 } from "@/lib/tool-display";
 
@@ -63,7 +65,30 @@ export type ToolActivityItem = {
   /// 委譲の要約（subagent_run イベント・#391）。担当範囲とステップ数を展開時に出す。
   /// 子の生イベントは親へ流れないため、UI が出せるのはこの要約だけ。ライブ限定の付加情報。
   subagent?: { boundary: string; steps: number; toolCalls: number };
+  /// 承認を求めた操作を利用者が却下した（`approval_resolved` の approved=false・ライブ限定）。確定した会話では
+  /// tool_result の本文から読む（[`wasRejected`]）。
+  rejected?: boolean;
 };
+
+/// 利用者が承認を却下して実行しなかった操作か（3-A-8）。失敗ではないので赤い失敗として出さない。
+///
+/// ライブでは `approval_resolved` から、確定した会話では tool_result（ok=false）の本文から判断する。本文は
+/// サーバの観測テキスト（「操作 '…' はユーザーに却下されました（実行していません）。」）か、構造化した本文
+/// （`{"rejected": true}`・`status` / `code` が `rejected`）のどちらでも読む。
+export function wasRejected(item: Pick<ToolActivityItem, "ok" | "result" | "rejected">): boolean {
+  if (item.rejected) return true;
+  if (item.ok !== false || !item.result) return false;
+  const text = item.result.trim();
+  if (text.startsWith("{")) {
+    try {
+      const o = JSON.parse(text) as Record<string, unknown>;
+      if (o.rejected === true || o.status === "rejected" || o.code === "rejected" || o.code === "approval_rejected") return true;
+    } catch {
+      // 本文が JSON でなければ文言で見る。
+    }
+  }
+  return /却下されました/.test(text);
+}
 
 /// 展開時の 1 件の**固定高さ**（rem・2 行ぶん）。中身（見出し＋事実行）は約 2.4rem。
 /// **余りは行と行のあいだに置く**。見出し→事実行の間隔と行間が同じだと、事実行が下の行の
@@ -143,8 +168,9 @@ function CitationChips({
   const docs = React.useMemo(() => {
     const seen = new Set<string>();
     return citations.filter((c) =>
-      // 閲覧できない出典（番号だけ）はファイルのチップにしない。
-      c.withheld || seen.has(c.node_id) ? false : (seen.add(c.node_id), true),
+      // 閲覧できない出典（番号だけ）はファイルのチップにしない。Web の出典はツールの行が
+      // 取得先のホストを既に出しているので重ねない。
+      c.withheld || isWebCitation(c) || seen.has(c.node_id) ? false : (seen.add(c.node_id), true),
     );
   }, [citations]);
   if (docs.length === 0) return null;
@@ -193,7 +219,7 @@ export function ToolActivity({
   // node_id しか持たないツール（office/document/slide/csv）と citation のファイル名を解決する。
   const nodeIds = React.useMemo(() => {
     const ids = items.map((it) => nodeIdOf(it)).filter((v): v is string => v !== null);
-    for (const c of citations) ids.push(c.node_id);
+    for (const c of citations) if (!isWebCitation(c)) ids.push(c.node_id);
     return [...new Set(ids)];
   }, [items, citations]);
   const nodeNames = useNodeNames(nodeIds);
@@ -239,7 +265,8 @@ export function ToolActivity({
   const season = seasonVar(seasonIndexFor(lastCategory, running));
   const summary = summarizeTools(items);
   const runningItems = items.filter((it) => it.running);
-  const failed = items.filter((it) => it.ok === false).length;
+  const failed = items.filter((it) => it.ok === false && !wasRejected(it)).length;
+  const onlyRejected = items.length === 1 && wasRejected(items[0]);
   const nameOf = (it: ToolActivityItem) => {
     const id = nodeIdOf(it);
     return id ? nodeNames[id] : null;
@@ -252,7 +279,9 @@ export function ToolActivity({
     : running
       ? (phaseOverride ?? waitingLabel ?? "次の手順を考えています")
       : only
-        ? withTense(describeTool(only, nameOf(only)), false, only.ok === false)
+        ? onlyRejected
+          ? rejectedLabel(describeTool(only, nameOf(only)))
+          : withTense(describeTool(only, nameOf(only)), false, only.ok === false)
         : `${items.length} 件の操作`;
   // 文言の送り方: 実行中のツールが変わるたびに 1 行ぶん送る（同じ文言のまま待つ間は動かさない）。
   const tickerKey = toolsRunning ? (phaseOverride ?? current.key) : label;
@@ -269,6 +298,8 @@ export function ToolActivity({
           <Loader2 className="size-3.5 shrink-0 animate-spin" style={{ color: season }} aria-hidden />
         ) : only && failed > 0 ? (
           <AlertTriangle className="size-3.5 shrink-0 text-destructive" aria-hidden />
+        ) : onlyRejected ? (
+          <Ban className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
         ) : (
           <Check className="size-3.5 shrink-0" style={{ color: season }} aria-hidden />
         )}
@@ -278,7 +309,13 @@ export function ToolActivity({
           className={cn(
             "font-medium",
             // 実行中は文字を光が舐める（止まって見える時間帯に「生きている」ことを伝える）。
-            running ? "shiki-text-shimmer" : only && failed > 0 ? "text-destructive" : "text-foreground/85",
+            running
+              ? "shiki-text-shimmer"
+              : only && failed > 0
+                ? "text-destructive"
+                : onlyRejected
+                  ? "text-muted-foreground"
+                  : "text-foreground/85",
           )}
         >
           {label}
@@ -395,7 +432,8 @@ function ActivityLine({
   const nodeId = nodeIdOf(item);
   const described = describeTool(item, nodeId ? nodeNames[nodeId] : null);
   const Icon = described.icon;
-  const failed = item.ok === false;
+  const rejected = wasRejected(item);
+  const failed = item.ok === false && !rejected;
   const facts = toolFacts(item.input, item.result);
   const detail =
     showResult && item.subagent
@@ -411,16 +449,19 @@ function ActivityLine({
   if (!known) everUnknown.current = true;
   return (
     <div className="flex items-start gap-2 text-[13px]" style={{ height: `${ROW_REM}rem` }}>
-      <StatusIcon running={item.running} failed={failed} />
+      <StatusIcon running={item.running} failed={failed} rejected={rejected} />
       <div className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-1.5">
           <Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
           <span
             // 行の主役は「何を調べているか」。ここが弱いと実況が読めない（参照 UI も
             // クエリだけは本文と同じ濃さで出している）。
-            className={cn("min-w-0 truncate", failed ? "text-destructive" : "text-foreground")}
+            className={cn(
+              "min-w-0 truncate",
+              failed ? "text-destructive" : rejected ? "text-muted-foreground" : "text-foreground",
+            )}
           >
-            {withTense(described, item.running, failed)}
+            {rejected ? rejectedLabel(described) : withTense(described, item.running, failed)}
           </span>
           {item.viaSubagent ? (
             <span className="shrink-0 text-[11px] text-muted-foreground/70">委譲先</span>
@@ -490,7 +531,7 @@ function ActivityLine({
   );
 }
 
-function StatusIcon({ running, failed }: { running: boolean; failed: boolean }) {
+function StatusIcon({ running, failed, rejected }: { running: boolean; failed: boolean; rejected?: boolean }) {
   if (running) {
     return (
       <Loader2
@@ -498,6 +539,9 @@ function StatusIcon({ running, failed }: { running: boolean; failed: boolean }) 
         aria-hidden
       />
     );
+  }
+  if (rejected) {
+    return <Ban className="mt-[3px] size-3.5 shrink-0 text-muted-foreground" aria-hidden />;
   }
   if (failed) {
     return <AlertTriangle className="mt-[3px] size-3.5 shrink-0 text-destructive" aria-hidden />;

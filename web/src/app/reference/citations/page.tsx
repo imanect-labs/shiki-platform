@@ -20,7 +20,7 @@ import { EvidenceTable } from "@/components/chat/citations/evidence-table";
 import { SourcePanelAside, SourcePanelView } from "@/components/chat/citations/source-panel";
 import { linkifyCitations } from "@/lib/citation";
 import type { Citation } from "@/lib/chat-api";
-import { ANSWER, ANSWER_NO_MARKERS, CITATIONS, METAS } from "./fixtures";
+import { ANSWER, ANSWER_NO_MARKERS, CITATIONS, METAS, MIXED_ANSWER, MIXED_CITATIONS } from "./fixtures";
 
 function Cell({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
   return (
@@ -55,9 +55,13 @@ function Answer({
 }
 
 /// 出典パネルを静的に描く（state を直接渡す）。
-function StaticPanel({ n }: { n: number }) {
+function StaticPanel({ n, mixed = false }: { n: number; mixed?: boolean }) {
   return (
-    <MessageCitationsProvider messageKey="static-panel" citations={CITATIONS} text={ANSWER}>
+    <MessageCitationsProvider
+      messageKey={mixed ? "static-panel-mixed" : "static-panel"}
+      citations={mixed ? MIXED_CITATIONS : CITATIONS}
+      text={mixed ? MIXED_ANSWER : ANSWER}
+    >
       <PanelFrame n={n} />
     </MessageCitationsProvider>
   );
@@ -72,9 +76,13 @@ function PanelFrame({ n }: { n: number }) {
   );
 }
 
-function StaticCard({ n }: { n: number }) {
+function StaticCard({ n, mixed = false }: { n: number; mixed?: boolean }) {
   return (
-    <MessageCitationsProvider messageKey="static-card" citations={CITATIONS} text={ANSWER}>
+    <MessageCitationsProvider
+      messageKey={mixed ? "static-card-mixed" : "static-card"}
+      citations={mixed ? MIXED_CITATIONS : CITATIONS}
+      text={mixed ? MIXED_ANSWER : ANSWER}
+    >
       <CardFrame n={n} />
     </MessageCitationsProvider>
   );
@@ -98,7 +106,7 @@ export default function CitationGalleryPage() {
             <header>
               <h1 className="text-lg font-semibold tracking-tight">引用表示</h1>
               <p className="mt-1 text-[13px] text-muted-foreground">
-                RAG の引用（issue #505）。回答直後は 1 行に畳み、開くと文書ごとの一覧。番号はホバーで原文、
+                RAG と Web の引用（issue #505・#891）。回答直後は 1 行に畳み、開くと文書ごとの一覧。番号はホバーで原文、
                 クリックで出典パネル。メッセージのアクションから「根拠を確認」。
               </p>
             </header>
@@ -132,6 +140,26 @@ export default function CitationGalleryPage() {
             <Cell id="no-markers" title="本文に番号が無い回答（全件を「参照した文書」として出す）">
               <Answer messageKey="no-markers" text={ANSWER_NO_MARKERS}>
                 <CitationSources defaultOpen />
+              </Answer>
+            </Cell>
+
+            <Cell id="web" title="社内文書と Web の出典が混ざった回答（同じ番号の空間・Web は元ページを新しいタブで開く）">
+              <Answer messageKey="web" text={MIXED_ANSWER} citations={MIXED_CITATIONS}>
+                <CitationSources defaultOpen />
+              </Answer>
+            </Cell>
+
+            <Cell id="web-card" title="Web の出典の原文カード（番号 3 にホバーしたとき）">
+              <StaticCard n={3} mixed />
+            </Cell>
+
+            <Cell id="web-panel" title="Web の出典の出典パネル（番号 4 を開いたとき）">
+              <StaticPanel n={4} mixed />
+            </Cell>
+
+            <Cell id="web-evidence" title="社内文書と Web の出典が混ざった根拠の対照表">
+              <Answer messageKey="web-evidence" text={MIXED_ANSWER} citations={MIXED_CITATIONS}>
+                <EvidenceTable />
               </Answer>
             </Cell>
 

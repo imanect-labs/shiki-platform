@@ -7,6 +7,8 @@
 //!   scheduler 起床）で結線する。[`event_filter_matches`] はトリガ/wait のイベント filter 評価。
 
 pub mod eval;
+#[cfg(test)]
+mod eval_semantics_tests;
 
 use serde_json::Value;
 

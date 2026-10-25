@@ -127,7 +127,8 @@ mod tests {
     #[test]
     fn scope_stage_a_subset() {
         assert!(Scope::StorageRead.available_stage_a());
-        assert!(!Scope::DataRead.available_stage_a());
+        assert!(Scope::DataRead.available_stage_a());
+        assert!(Scope::DataWrite.available_stage_a());
         assert!(!Scope::NotifySend.available_stage_a());
         assert!(!Scope::SheetRead.available_stage_a());
         assert!(!Scope::SandboxExec.available_stage_a());
@@ -149,6 +150,24 @@ mod tests {
         );
         assert_eq!(required_scope(NodeType::RagSearch), Some(Scope::RagQuery));
         assert_eq!(required_scope(NodeType::DataQuery), Some(Scope::DataRead));
+        for nt in [
+            NodeType::DataRecordCreate,
+            NodeType::DataRecordUpdate,
+            NodeType::DataRecordDelete,
+            NodeType::DataTransition,
+            NodeType::DataBulkUpsert,
+        ] {
+            assert_eq!(
+                required_scope(nt),
+                Some(Scope::DataWrite),
+                "{}",
+                nt.as_str()
+            );
+        }
+        // script の Shiki.data.*（HostCall api 名）も同じ表で引く（未マップは fail-closed で拒否）。
+        assert_eq!(Scope::for_api("data.list_tables"), Some(Scope::DataRead));
+        assert_eq!(Scope::for_api("data.create"), Some(Scope::DataWrite));
+        assert_eq!(Scope::for_api("data.update"), Some(Scope::DataWrite));
         assert_eq!(
             required_scope(NodeType::HumanApproval),
             Some(Scope::NotifySend)

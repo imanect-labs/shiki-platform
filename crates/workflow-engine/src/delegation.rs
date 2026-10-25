@@ -53,16 +53,109 @@ fn map_db(e: sqlx::Error) -> DelegationError {
     DelegationError::Internal(format!("db: {e}"))
 }
 
+/// 対象をワークフローへ委譲している**現在有効な**委譲元のうち、`required` を満たす relation で委譲した
+/// 者（最後に付与したユーザーの subject local id）。
+///
+/// 構造化データの schedule / event run は、ワークフロー主体に委譲されたテーブルを**委譲元ユーザーの
+/// 権限で**読み書きする（行述語・フィールドマスクを委譲元で評価する・Task 15.7）。
+///
+/// 委譲元は**その操作に足る relation を自ら委譲した者**からだけ選ぶ（書込なら editor / owner・読取なら
+/// viewer 以上）。台帳の一意キーは (delegator, scope, object_ref) なので、B が editor で委譲した対象を
+/// A が viewer だけで再有効化すると両方の行が残る。relation を見ずに最新の委譲元を選ぶと、B のタプルで
+/// 入口の検査を通った書込が、書込を委譲していない A の権限で走る（confused-deputy・R3-2）。
+/// 該当が無ければ `None`（呼び出し側は拒否する・fail-closed）。委譲元が今も権限を持つかは呼び出し側の
+/// 読み書き自体（委譲元の AuthContext で OpenFGA に問う）が確かめる。
+pub async fn active_delegator(
+    db: &PgPool,
+    tenant_id: &str,
+    workflow_id: Uuid,
+    object: &FgaObject,
+    required: Relation,
+) -> Result<Option<String>, DelegationError> {
+    let satisfying = relations_satisfying(required);
+    sqlx::query_scalar(
+        "SELECT delegator FROM workflow_delegation \
+         WHERE tenant_id = $1 AND workflow_id = $2 AND object_ref = $3 AND revoked_at IS NULL \
+           AND relation = ANY($4) \
+         ORDER BY granted_at DESC, delegator LIMIT 1",
+    )
+    .bind(tenant_id)
+    .bind(workflow_id)
+    .bind(object.as_str())
+    .bind(satisfying)
+    .fetch_optional(db)
+    .await
+    .map_err(map_db)
+}
+
+/// 委譲元 `delegator` が `required` を満たす relation でワークフローへ委譲している、**現在有効な**
+/// 対象（`object_ref` が `prefix` で始まるもの・例 `data_table:`）。上限 `limit` 件（超過分は返さない
+/// ＝到達できる対象が減る方向・fail-closed）。
+///
+/// 構造化データの schedule / event run が、入口のテーブルから結合・リンクで辿ってよいテーブルの天井を
+/// 組むのに使う（engine.md §6.8「委譲していないテーブルは、委譲元が読めても読めない」）。委譲元本人が
+/// 委譲したものだけを数える（他の委譲元が委譲したテーブルを、この委譲元の権限で読まない）。
+pub async fn delegated_objects(
+    db: &PgPool,
+    tenant_id: &str,
+    workflow_id: Uuid,
+    delegator: &str,
+    prefix: &str,
+    required: Relation,
+    limit: i64,
+) -> Result<Vec<String>, DelegationError> {
+    let satisfying = relations_satisfying(required);
+    sqlx::query_scalar(
+        "SELECT DISTINCT object_ref FROM workflow_delegation \
+         WHERE tenant_id = $1 AND workflow_id = $2 AND delegator = $3 AND revoked_at IS NULL \
+           AND relation = ANY($4) AND starts_with(object_ref, $5) \
+         ORDER BY object_ref LIMIT $6",
+    )
+    .bind(tenant_id)
+    .bind(workflow_id)
+    .bind(delegator)
+    .bind(satisfying)
+    .bind(prefix)
+    .bind(limit)
+    .fetch_all(db)
+    .await
+    .map_err(map_db)
+}
+
+/// `required` を含意する委譲の relation（`data_table` の `owner ⊇ editor ⊇ viewer`・
+/// `crates/authz/model/authorization-model.fga` の定義に従う）。それ以外の relation は自身だけ。
+fn relations_satisfying(required: Relation) -> Vec<&'static str> {
+    match required {
+        Relation::Viewer => vec!["viewer", "editor", "owner"],
+        Relation::Editor => vec!["editor", "owner"],
+        other => vec![other.as_str()],
+    }
+}
+
 /// 委譲・登録の管理（authz クライアント＋DB）。
 #[derive(Clone)]
 pub struct DelegationStore {
     db: PgPool,
     authz: Arc<dyn AuthzClient>,
+    /// テーブルの委譲タプルを撤去したときに data へ知らせる先（Task 15.7・任意）。
+    data: Option<data::DataStore>,
 }
 
 impl DelegationStore {
     pub fn new(db: PgPool, authz: Arc<dyn AuthzClient>) -> Self {
-        DelegationStore { db, authz }
+        DelegationStore {
+            db,
+            authz,
+            data: None,
+        }
+    }
+
+    /// 棚卸しで `data_table` の委譲タプルを撤去したとき、data に ReBAC の変更を知らせる
+    /// （配信の認可の世代・材料化の前提を引き直させる・[`data::DataStore::after_table_rebac_changed`]）。
+    #[must_use]
+    pub fn with_data(mut self, data: data::DataStore) -> Self {
+        self.data = Some(data);
+        self
     }
 
     /// ワークフローを有効化し委譲を付与する（engine.md §10.1・全体 fail-closed）。
@@ -379,9 +472,52 @@ impl DelegationStore {
                 if !revoked_workflows.contains(&d.workflow_id) {
                     revoked_workflows.push(d.workflow_id);
                 }
+                self.notify_table_rebac_changed(tenant_id, d.workflow_id, &d.object_ref)
+                    .await;
             }
         }
         Ok(revoked_workflows)
+    }
+
+    /// 撤去したタプルが `data_table` なら data に知らせる（best-effort・失敗は data 側がログに残す）。
+    ///
+    /// 知らせないと、ワークフロー主体の SSE 購読が最大 TTL まで旧権限で配信を受け続け、材料化の
+    /// 前提（テーブル viewer の範囲）も次の読取まで検査し直されない（PIT-70）。
+    async fn notify_table_rebac_changed(
+        &self,
+        tenant_id: &str,
+        workflow_id: Uuid,
+        object_ref: &str,
+    ) {
+        let Some(data) = &self.data else {
+            return;
+        };
+        let Some(table_id) = object_ref
+            .split_once(':')
+            .filter(|(ty, _)| *ty == "data_table")
+            .and_then(|(_, rest)| Namespace::for_tenant(tenant_id).strip_object_id(rest))
+            .and_then(|local| Uuid::parse_str(local).ok())
+        else {
+            return;
+        };
+        // 主体は撤去されたワークフロー（org は registration のもの・無ければ空で tenant だけ効く）。
+        let org: Option<(String,)> = sqlx::query_as(
+            "SELECT org FROM workflow_registration WHERE tenant_id = $1 AND workflow_id = $2",
+        )
+        .bind(tenant_id)
+        .bind(workflow_id)
+        .fetch_optional(&self.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, %workflow_id, "棚卸しの通知で registration の org を読めない");
+            None
+        });
+        let ctx = AuthContext::for_workflow(
+            tenant_id.to_string(),
+            org.map(|(o,)| o).unwrap_or_default(),
+            &workflow_id.to_string(),
+        );
+        data.after_table_rebac_changed(&ctx, table_id).await;
     }
 
     /// registration を `suspended_reconsent` にする（失権検知時）。
@@ -436,4 +572,27 @@ struct DelegationRow {
     scope: String,
     object_ref: String,
     relation: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relations_satisfying;
+    use authz::Relation;
+
+    /// 書込（editor）は viewer の委譲では満たされない（R3-2）。
+    #[test]
+    fn editor_is_not_satisfied_by_viewer_delegation() {
+        let w = relations_satisfying(Relation::Editor);
+        assert!(w.contains(&"editor") && w.contains(&"owner"));
+        assert!(!w.contains(&"viewer"));
+        let r = relations_satisfying(Relation::Viewer);
+        assert!(r.contains(&"viewer") && r.contains(&"editor") && r.contains(&"owner"));
+        assert_eq!(relations_satisfying(Relation::Owner), vec!["owner"]);
+    }
+
+    /// 階層の外の relation は自身だけで満たされる。
+    #[test]
+    fn other_relations_are_satisfied_only_by_themselves() {
+        assert_eq!(relations_satisfying(Relation::CanUse), vec!["can_use"]);
+    }
 }

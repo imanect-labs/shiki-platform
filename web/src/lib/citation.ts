@@ -1,11 +1,57 @@
-/// 引用（doc_search のソース）の解釈を一か所にまとめる（issue #505）。
+/// 引用（doc_search の文書・web_search / web_fetch の Web ページ）の解釈を一か所にまとめる（issue #505）。
 ///
 /// - 本文の `[n]` → 引用の解決は `citationAt` だけが行う。サーバが振った応答内の通し番号
 ///   （`cite_id`）で引く（#508）。採番前に保存された旧データ（`cite_id` が 0）だけは、従来どおり
 ///   「メッセージ内の引用を到着順に並べた配列の n-1 番目」で引く。
 /// - 表示は「引用箇所（チャンク）ごとの番号」を保ったまま、一覧だけを文書ごとにまとめる。
 /// - 回答の文（主張）と原文の対応は、本文中の `[n]` の直前の 1 文から推定する。
+/// - Web の出典（`web` を持つ）も同じ番号の空間に入る（#891）。一覧のまとまり・色は「出所」
+///   （文書は node_id、Web はページの URL）ごとに分ける。
 import type { Citation } from "@/lib/chat-api";
+
+/// Web の出典（ページの URL とタイトル）。
+export type WebSource = NonNullable<Citation["web"]>;
+
+/// Web の出典か（社内文書のファイルを指さない）。
+export function isWebCitation(c: Pick<Citation, "web" | "node_id">): c is Citation & { web: WebSource } {
+  return c.web != null && !c.node_id;
+}
+
+/// 引用の出所のキー（文書は node_id、Web はページの URL）。一覧のまとまりと色の単位。
+export function sourceKeyOf(c: Pick<Citation, "web" | "node_id">): string {
+  return isWebCitation(c) ? `web:${c.web.url}` : c.node_id;
+}
+
+/// リンクにしてよい Web の URL（http/https のみ）。それ以外は null（`javascript:` 等を開かせない）。
+export function safeWebUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/// URL のホスト名（`www.` は落とす）。壊れた URL は元の文字列。
+export function webHost(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "") || url;
+  } catch {
+    return url;
+  }
+}
+
+/// URL を人が読む形にする（スキームと末尾の `/` を落とし、パーセントエンコードを戻す）。
+export function displayUrl(url: string): string {
+  let s = url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  try {
+    s = decodeURI(s);
+  } catch {
+    // 壊れたエンコードはそのまま見せる。
+  }
+  return s.replace(/^www\./, "");
+}
 
 /// 本文中の引用マーカーのリンク先。Markdown の a レンダラがこの接頭辞で引用チップに差し替える。
 export const CITE_HREF_PREFIX = "#cite-";
@@ -24,8 +70,14 @@ export function numberOf(citations: readonly Citation[], i: number): number {
 /// 本文の `[n]` に対応する引用（無ければ undefined）。
 export function citationAt(citations: readonly Citation[], n: number): Citation | undefined {
   if (!Number.isInteger(n) || n < 1) return undefined;
-  if (hasCiteIds(citations)) return citations.find((c) => c.cite_id === n && !c.withheld);
-  return citations[n - 1];
+  // 同じ番号が複数届くのは同じ箇所の再ヒット。後のものを使う（Web の出典は検索結果の後に
+  // 取得したページが届く。取得したページのタイトルと本文の方が、モデルが読んだものに近い）。
+  if (!hasCiteIds(citations)) return citations[n - 1];
+  for (let i = citations.length - 1; i >= 0; i--) {
+    const c = citations[i];
+    if (c.cite_id === n && !c.withheld) return c;
+  }
+  return undefined;
 }
 
 /// `[n]` が「閲覧できない出典」か。共有された会話で閲覧者の権限では読めない文書の引用は、
@@ -189,9 +241,14 @@ export type CitedPassage = {
   used: boolean;
 };
 
-/// 文書ごとにまとめた引用。
+/// 出所（文書・Web ページ）ごとにまとめた引用。
 export type CitedDocument = {
+  /// 出所のキー（[`sourceKeyOf`]）。
+  key: string;
+  /// 文書の node id（Web の出典は空）。
   nodeId: string;
+  /// Web の出典ならページ（文書は null）。
+  web: WebSource | null;
   passages: CitedPassage[];
 };
 
@@ -202,7 +259,7 @@ export type CitationGroups = {
   unused: CitedPassage[];
   /// 本文に引用マーカーが 1 つでもあるか。無ければ全引用を「参照した」として docs に入れる。
   hasMarkers: boolean;
-  /// node_id → 文書の色番号（四季の巡回）。本文のチップと一覧で同じ色を使う。
+  /// 出所のキー（[`sourceKeyOf`]）→ 色番号（四季の巡回）。本文のチップと一覧で同じ色を使う。
   colorOf: Record<string, number>;
   /// 本文で引用された番号の集合。
   usedNumbers: Set<number>;
@@ -233,6 +290,8 @@ export function groupCitations(
       // 番号を振り直す前の旧データは別番号、振り直した後は同じ番号で再ヒットする。
       if (!hit.ns.includes(n)) hit.ns.push(n);
       hit.used ||= used;
+      // 本文の番号（citationAt）と同じく後に届いたものを見せる。
+      hit.citation = c;
       return;
     }
     const p: CitedPassage = { n, ns: [n], citation: c, used };
@@ -257,24 +316,33 @@ export function groupCitations(
       unused.push(p);
       continue;
     }
-    const id = p.citation.node_id;
-    const doc = docMap.get(id) ?? { nodeId: id, passages: [], first: Number.POSITIVE_INFINITY };
+    const c = p.citation;
+    const key = sourceKeyOf(c);
+    const doc = docMap.get(key) ?? {
+      key,
+      nodeId: c.node_id,
+      web: isWebCitation(c) ? c.web : null,
+      passages: [],
+      first: Number.POSITIVE_INFINITY,
+    };
     doc.passages.push(p);
     doc.first = Math.min(doc.first, firstUse(p));
-    docMap.set(id, doc);
+    docMap.set(key, doc);
   }
   const docs = [...docMap.values()]
     .sort((a, b) => a.first - b.first)
-    .map(({ nodeId, passages }) => ({
+    .map(({ key, nodeId, web, passages }) => ({
+      key,
       nodeId,
+      web,
       passages: passages.sort((a, b) => firstUse(a) - firstUse(b)),
     }));
 
   const colorOf: Record<string, number> = {};
-  for (const d of docs) colorOf[d.nodeId] = Object.keys(colorOf).length;
+  for (const d of docs) colorOf[d.key] = Object.keys(colorOf).length;
   for (const p of unused) {
-    const id = p.citation.node_id;
-    if (!(id in colorOf)) colorOf[id] = Object.keys(colorOf).length;
+    const key = sourceKeyOf(p.citation);
+    if (!(key in colorOf)) colorOf[key] = Object.keys(colorOf).length;
   }
   return { docs, unused, hasMarkers, colorOf, usedNumbers };
 }
@@ -286,8 +354,9 @@ export function claimsByNumber(runs: readonly CitationRun[]): Map<number, string
   return out;
 }
 
-/// 見出しパスの末尾と、あればページ（一覧・カードの「場所」表示）。
-export function citationLocator(c: Pick<Citation, "heading_path" | "page">): string {
+/// 見出しパスの末尾と、あればページ（一覧・カードの「場所」表示）。Web の出典はページの URL。
+export function citationLocator(c: Pick<Citation, "heading_path" | "page" | "web" | "node_id">): string {
+  if (isWebCitation(c)) return displayUrl(c.web.url);
   const last = c.heading_path && c.heading_path.length > 0 ? c.heading_path[c.heading_path.length - 1] : "";
   if (c.page != null) return last ? `p.${c.page} ・ ${last}` : `p.${c.page}`;
   return last;

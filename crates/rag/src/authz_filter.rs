@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use authz::{AuthContext, AuthzClient, Consistency, ObjectType, Relation};
+use authz::{AuthContext, AuthzClient, CheckTuple, Consistency, ObjectType, Relation};
 use uuid::Uuid;
 
 use crate::error::RagError;
@@ -71,7 +71,8 @@ pub struct PostFilterOutcome {
 
 /// file 粒度の OpenFGA 最終検証（HigherConsistency・PIT-11）。
 ///
-/// 候補を file（node）単位にまとめて並列 check し、deny の chunk を全て落とす。
+/// 候補を file（node）単位にまとめて BatchCheck（[`AuthzClient::batch_check`]）で判定し、
+/// deny の chunk を全て落とす。
 /// reranker の**前**に呼ぶこと（読めない chunk に rerank 計算を浪費しない・PIT-2）。
 pub async fn post_filter_by_file(
     ctx: &AuthContext,
@@ -87,27 +88,7 @@ pub async fn post_filter_by_file(
             .collect()
     };
 
-    let subject = ctx.subject();
-    let checks = distinct_files.iter().map(|file_id| {
-        let object = ctx.ns().file(&file_id.to_string());
-        let subject = subject.clone();
-        async move {
-            let allowed = authz
-                .check(
-                    &subject,
-                    Relation::Viewer,
-                    &object,
-                    // 剥奪の即時反映が要る正しさクリティカル経路（PIT-11）。
-                    Consistency::HigherConsistency,
-                )
-                .await?;
-            Ok::<(Uuid, bool), RagError>((*file_id, allowed))
-        }
-    });
-    let file_decisions: HashMap<Uuid, bool> = futures::future::try_join_all(checks)
-        .await?
-        .into_iter()
-        .collect();
+    let file_decisions = file_decisions(ctx, authz, distinct_files).await?;
 
     let denied_files = file_decisions.values().filter(|allowed| !**allowed).count();
     let before = candidates.len();
@@ -121,4 +102,36 @@ pub async fn post_filter_by_file(
         allowed,
         file_decisions,
     })
+}
+
+/// file 粒度の最終 check（BatchCheck 1 往復・50 問ごと・HigherConsistency）の判定表。
+///
+/// [`post_filter_by_file`] と、レコードを含む多型の post-filter
+/// （[`crate::record_source::post_filter_sources`]）が共有する（file の判定規則を 2 つに分けない）。
+pub(crate) async fn file_decisions(
+    ctx: &AuthContext,
+    authz: &dyn AuthzClient,
+    distinct_files: Vec<Uuid>,
+) -> Result<HashMap<Uuid, bool>, RagError> {
+    // file ごとの check を BatchCheck 1 往復（50 問ごと）にまとめる（Task 15.9）。
+    let subject = ctx.subject();
+    let items: Vec<CheckTuple> = distinct_files
+        .iter()
+        .map(|file_id| CheckTuple {
+            subject: subject.clone(),
+            relation: Relation::Viewer,
+            object: ctx.ns().file(&file_id.to_string()),
+        })
+        .collect();
+    // 剥奪の即時反映が要る正しさクリティカル経路（PIT-11）。
+    let allowed = authz
+        .batch_check(&items, Consistency::HigherConsistency)
+        .await?;
+    if allowed.len() != distinct_files.len() {
+        return Err(RagError::Authz(authz::AuthzError::Unexpected {
+            status: 0,
+            body: "batch_check の応答数が問い数と一致しません".into(),
+        }));
+    }
+    Ok(distinct_files.into_iter().zip(allowed).collect())
 }
