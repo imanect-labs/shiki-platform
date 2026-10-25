@@ -7,14 +7,16 @@ use crate::ir::expr::ValueExpr;
 
 /// `llm.invoke` — llm-gateway 直行（pure・課金あり）。
 ///
-/// `model` はモデルカタログ照合（V3）が必須性を担保する（カタログ未設定環境のみ省略可）。
+/// `model` は省略可。省略すると実行のたびに実行主体の組織の既定（Auto を含む）で解決する
+/// （チャットと同じ規則・ir.md §7.3）。指定したときは保存時に組織が許可したモデル（本人専用を除く）
+/// へ照合し（V3）、実行時にも照らし直す（使えなければ既定へ戻さずに失敗する）。
 /// `effort`/`output_schema` は llm-gateway 経路の enforcement 実装時に追加する（契約に
 /// 「効かないフィールド」を含めない方針・ir.md §7.3）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct LlmInvokeParams {
-    /// モデル id（テナントのモデルカタログへ保存時照合・実行時再照合）。
+    /// モデル id（省略＝組織の既定。指定時は組織が許可したモデルへ保存時照合・実行時再照合）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model: Option<String>,
