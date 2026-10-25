@@ -2,14 +2,17 @@
 //!
 //! [`ParamResolver`] は [`ValueResolver`](crate::control::eval::ValueResolver) を実装し、
 //! `$from` の源（`input` / `trigger` / `run` / `nodes.<id>.output`）を [`NodeContext`] から供給する。
-//! executor は本モジュールのヘルパ（[`resolve_field`] ＋型変換）で params の各フィールドを解決する。
+//! executor は本モジュールのヘルパ（[`param`] / [`opt_param`] ＋型変換）で params の値式フィールドを
+//! 1 つずつ解決する（params 全体へは掛けない・PIT-36）。解決は [`resolve_deep`] の 1 か所に集める。
 //! `each`（map 領域の要素コンテキスト）は [`NodeContext::each`] から解決する（領域外は `None`）。
 
 use serde_json::Value;
 
-use crate::control::eval::{resolve_value, ValueResolver};
+use crate::control::eval::{resolve_deep, EvalError, ValueResolver};
 use crate::ir::expr::{FromRef, ValueExpr};
 use crate::run::NodeContext;
+
+use super::ports::PortError;
 
 /// `$from` の源を `NodeContext` から解決するリゾルバ。
 pub struct ParamResolver<'a> {
@@ -53,13 +56,57 @@ impl ValueResolver for ParamResolver<'_> {
     }
 }
 
-/// params の 1 フィールドを `ValueExpr` として解決する（未定義キーは `None`）。
-#[must_use]
-pub fn resolve_field(params: &Value, key: &str, r: &dyn ValueResolver) -> Option<Value> {
-    let raw = params.get(key)?;
-    // フィールドは $from / $template / リテラルのいずれか（untagged ValueExpr）。
-    let expr: ValueExpr = serde_json::from_value(raw.clone()).ok()?;
-    resolve_value(&expr, r)
+/// params の 1 フィールドを `ValueExpr` として解決する（未定義キーは `Ok(None)`）。
+pub fn resolve_field(
+    params: &Value,
+    key: &str,
+    r: &dyn ValueResolver,
+) -> Result<Option<Value>, EvalError> {
+    let Some(raw) = params.get(key) else {
+        return Ok(None);
+    };
+    // フィールドは $from / $template / リテラルのいずれか（ValueExpr の手書き Deserialize は失敗しない）。
+    let expr: ValueExpr =
+        serde_json::from_value(raw.clone()).unwrap_or_else(|_| ValueExpr::Literal(raw.clone()));
+    resolve_deep(&expr, r).map(Some)
+}
+
+/// 必須の値式フィールドを解決する。解決できなければ `expr_resolve_error`（`what` は「ノード: 項目」）。
+///
+/// 解決の失敗は permanent（同じ入力で再試行しても解決しない）。
+pub fn param(e: &ValueExpr, r: &dyn ValueResolver, what: &str) -> Result<Value, PortError> {
+    resolve_deep(e, r)
+        .map_err(|err| PortError::new(err.code, format!("{what}: {}", err.message), false))
+}
+
+/// 省略できる値式フィールド。**項目が無いときだけ** `None` を返す。
+///
+/// 書いてある参照が解決できなければ失敗させ、黙って既定値（ルートフォルダ・run 入力全体・空文字など）へ
+/// 落とさない（書き先の取り違えを防ぐ・ir.md §3.1）。
+pub fn opt_param(
+    e: Option<&ValueExpr>,
+    r: &dyn ValueResolver,
+    what: &str,
+) -> Result<Option<Value>, PortError> {
+    e.map(|e| param(e, r, what)).transpose()
+}
+
+/// 解決した値の型を確かめる（違えば `invalid`・`kind` は「文字列」「UUID」など）。
+pub fn typed<T>(
+    v: &Value,
+    what: &str,
+    kind: &str,
+    conv: impl FnOnce(&Value) -> Option<T>,
+) -> Result<T, PortError> {
+    conv(v).ok_or_else(|| {
+        // 「UUID」のような英字の型名は前後を空ける（「文字列」は詰める）。
+        let kind = if kind.is_ascii() {
+            format!(" {kind} ")
+        } else {
+            kind.to_string()
+        };
+        PortError::invalid(format!("{what} が{kind}ではありません"))
+    })
 }
 
 /// 解決結果を文字列として取り出す（String のみ・型不一致は `None`）。
@@ -139,7 +186,7 @@ mod tests {
         let ctx = ctx_with(json!({ "file_id": "abc" }), Value::Null);
         let r = ParamResolver::new(&ctx);
         let params = json!({ "id": { "$from": "input", "path": "/file_id" } });
-        assert_eq!(resolve_field(&params, "id", &r), Some(json!("abc")));
+        assert_eq!(resolve_field(&params, "id", &r), Ok(Some(json!("abc"))));
     }
 
     #[test]
@@ -147,7 +194,10 @@ mod tests {
         let ctx = ctx_with(json!({}), json!({ "read_file": { "text": "hello" } }));
         let r = ParamResolver::new(&ctx);
         let params = json!({ "content": { "$from": "nodes.read_file.output", "path": "/text" } });
-        assert_eq!(resolve_field(&params, "content", &r), Some(json!("hello")));
+        assert_eq!(
+            resolve_field(&params, "content", &r),
+            Ok(Some(json!("hello")))
+        );
     }
 
     #[test]
@@ -158,9 +208,12 @@ mod tests {
             "method": "POST",
             "topk": { "$from": "input", "path": "/missing", "default": 5 }
         });
-        assert_eq!(resolve_field(&params, "method", &r), Some(json!("POST")));
-        assert_eq!(resolve_field(&params, "topk", &r), Some(json!(5)));
-        assert_eq!(resolve_field(&params, "absent", &r), None);
+        assert_eq!(
+            resolve_field(&params, "method", &r),
+            Ok(Some(json!("POST")))
+        );
+        assert_eq!(resolve_field(&params, "topk", &r), Ok(Some(json!(5))));
+        assert_eq!(resolve_field(&params, "absent", &r), Ok(None));
     }
 
     #[test]
@@ -174,9 +227,9 @@ mod tests {
         let ctx = ctx_with_each(json!({ "item": { "name": "a.txt" }, "index": 3 }));
         let r = ParamResolver::new(&ctx);
         let item = json!({ "x": { "$from": "each", "path": "/item/name" } });
-        assert_eq!(resolve_field(&item, "x", &r), Some(json!("a.txt")));
+        assert_eq!(resolve_field(&item, "x", &r), Ok(Some(json!("a.txt"))));
         let idx = json!({ "x": { "$from": "each", "path": "/index" } });
-        assert_eq!(resolve_field(&idx, "x", &r), Some(json!(3)));
+        assert_eq!(resolve_field(&idx, "x", &r), Ok(Some(json!(3))));
     }
 
     #[test]
@@ -184,6 +237,34 @@ mod tests {
         let ctx = ctx_with(json!({}), Value::Null);
         let r = ParamResolver::new(&ctx);
         let params = json!({ "x": { "$from": "each", "path": "/item" } });
-        assert_eq!(resolve_field(&params, "x", &r), None);
+        assert_eq!(
+            resolve_field(&params, "x", &r).unwrap_err().code,
+            crate::control::eval::EXPR_RESOLVE_ERROR
+        );
+    }
+
+    #[test]
+    fn opt_param_falls_back_only_when_absent() {
+        let ctx = ctx_with(json!({ "folder": "not-a-uuid" }), Value::Null);
+        let r = ParamResolver::new(&ctx);
+        assert_eq!(opt_param(None, &r, "storage.write: folder").unwrap(), None);
+        // 書いてある参照が解決できなければ既定値（ルート）へ落とさず失敗。
+        let missing: ValueExpr =
+            serde_json::from_value(json!({ "$from": "input", "path": "/nope" })).unwrap();
+        let err = opt_param(Some(&missing), &r, "storage.write: folder").unwrap_err();
+        assert_eq!(err.code, "expr_resolve_error");
+        assert!(
+            err.message.starts_with("storage.write: folder: "),
+            "{}",
+            err.message
+        );
+        // 解決できても型が違えば invalid（黙って None にしない）。
+        let present: ValueExpr =
+            serde_json::from_value(json!({ "$from": "input", "path": "/folder" })).unwrap();
+        let v = opt_param(Some(&present), &r, "storage.write: folder")
+            .unwrap()
+            .unwrap();
+        let err = typed(&v, "storage.write: folder", "UUID", as_uuid).unwrap_err();
+        assert_eq!(err.code, "invalid");
     }
 }

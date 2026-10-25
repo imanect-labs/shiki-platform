@@ -89,6 +89,59 @@ impl ValueExpr {
     }
 }
 
+/// `$template` の字句（ir.md §3.2）。実行時の組み立て（`control::eval`）と保存時検証 V5 が
+/// **同じ [`template_pieces`] で読む**（検証と実行で `{` / `}` の解釈がずれないように）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemplatePiece<'a> {
+    /// そのまま出す文字列。
+    Text(&'a str),
+    /// エスケープ `{{` / `}}` が表す波括弧 1 文字。
+    Escaped(char),
+    /// `{name}` の差し込み（name は vars のキー）。
+    Var(&'a str),
+}
+
+/// テンプレート文字列を字句に分ける。
+///
+/// エスケープ `{{`→`{`・`}}`→`}` をプレースホルダより先に読む。`{` から次の `}` までが差し込みの名前で、
+/// 閉じが無い `{` と対にならない `}` は文字のまま出す。
+#[must_use]
+pub fn template_pieces(template: &str) -> Vec<TemplatePiece<'_>> {
+    // `{` `}` は ASCII なので、バイト位置で切っても UTF-8 の文字の途中にはならない。
+    let bytes = template.as_bytes();
+    let mut out = Vec::new();
+    let mut text_start = 0;
+    let mut i = 0;
+    fn flush<'a>(out: &mut Vec<TemplatePiece<'a>>, template: &'a str, from: usize, to: usize) {
+        if from < to {
+            out.push(TemplatePiece::Text(&template[from..to]));
+        }
+    }
+    while i < bytes.len() {
+        match bytes[i] {
+            b @ (b'{' | b'}') if bytes.get(i + 1) == Some(&b) => {
+                flush(&mut out, template, text_start, i);
+                out.push(TemplatePiece::Escaped(char::from(b)));
+                i += 2;
+                text_start = i;
+            }
+            b'{' => {
+                if let Some(close) = template[i + 1..].find('}') {
+                    flush(&mut out, template, text_start, i);
+                    out.push(TemplatePiece::Var(&template[i + 1..i + 1 + close]));
+                    i += close + 2;
+                    text_start = i;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    flush(&mut out, template, text_start, bytes.len());
+    out
+}
+
 /// 条件木（`all`/`any`/`not` 合成＋閉じた op・ir.md §3.3）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -193,6 +246,34 @@ mod tests {
         // 形の崩れた値式はリテラル（V5 が生 JSON から弾く）。
         let bad: ValueExpr = serde_json::from_value(json!({"$from": "input", "typo": 1})).unwrap();
         assert!(matches!(bad, ValueExpr::Literal(_)));
+    }
+
+    #[test]
+    fn template_pieces_read_escapes_before_placeholders() {
+        use TemplatePiece::{Escaped, Text, Var};
+        assert_eq!(
+            template_pieces("件名: {title} / {{literal}} {{{who}}}"),
+            vec![
+                Text("件名: "),
+                Var("title"),
+                Text(" / "),
+                Escaped('{'),
+                Text("literal"),
+                Escaped('}'),
+                Text(" "),
+                Escaped('{'),
+                Var("who"),
+                Escaped('}'),
+            ]
+        );
+        // 閉じの無い `{`・対にならない `}` は文字のまま。
+        assert_eq!(
+            template_pieces("a { b } c"),
+            vec![Text("a "), Var(" b "), Text(" c")]
+        );
+        assert_eq!(template_pieces("a { b"), vec![Text("a { b")]);
+        assert_eq!(template_pieces("x}y"), vec![Text("x}y")]);
+        assert_eq!(template_pieces(""), vec![]);
     }
 
     #[test]

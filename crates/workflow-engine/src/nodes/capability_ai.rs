@@ -8,7 +8,6 @@
 use secrets::DestinationBinding;
 use serde_json::{json, Value};
 
-use crate::control::eval::resolve_value;
 use crate::ir::params::{
     AgentInvokeParams, HttpRequestParams, LlmInvokeParams, SecretAttach, SecretAttachKind,
 };
@@ -18,7 +17,7 @@ use super::capability::parse_params;
 use super::exec::CapabilityNodeExecutor;
 use super::http::{check_destination, redirect_denied, summarize_response, HttpDenied};
 use super::ports::{AgentInvokeReq, ExecCtx, HttpSendReq, LlmInvokeReq, PortError};
-use super::resolver::{as_bytes, as_string, as_u32, ParamResolver};
+use super::resolver::{as_bytes, as_string, as_u32, opt_param, param, typed, ParamResolver};
 
 /// レスポンス本文を JSON（不能ならテキスト）に整形する（1MB 上限）。
 pub(super) fn parse_body(bytes: &[u8]) -> Value {
@@ -44,20 +43,17 @@ impl CapabilityNodeExecutor {
     ) -> Result<Value, PortError> {
         self.rate_check(ec, "llm.invoke").await?;
         let p: LlmInvokeParams = parse_params(params)?;
-        let prompt = resolve_value(&p.prompt, r)
-            .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("llm.invoke: prompt が解決できません"))?;
+        let what = "llm.invoke: prompt";
+        let prompt = typed(&param(&p.prompt, r, what)?, what, "文字列", as_string)?;
         let model = p.model.clone();
-        let system = p
-            .system
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .and_then(|v| as_string(&v));
-        let max_tokens = p
-            .max_tokens
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .and_then(|v| as_u32(&v));
+        let what = "llm.invoke: system";
+        let system = opt_param(p.system.as_ref(), r, what)?
+            .map(|v| typed(&v, what, "文字列", as_string))
+            .transpose()?;
+        let what = "llm.invoke: max_tokens";
+        let max_tokens = opt_param(p.max_tokens.as_ref(), r, what)?
+            .map(|v| typed(&v, what, "0 以上の整数", as_u32))
+            .transpose()?;
         let out = self
             .ports
             .llm_invoke(
@@ -92,16 +88,14 @@ impl CapabilityNodeExecutor {
     ) -> Result<Value, PortError> {
         self.rate_check(ec, "agent.invoke").await?;
         let p: AgentInvokeParams = parse_params(params)?;
-        let code = resolve_value(&p.instruction, r)
-            .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("agent.invoke: instruction が解決できません"))?;
+        let what = "agent.invoke: instruction";
+        let code = typed(&param(&p.instruction, r, what)?, what, "文字列", as_string)?;
         // egress_allowlist は縮小のみ（リテラル配列）。ポートが上限として spec を組む。
         let egress_allowlist = p.egress_allowlist.clone();
-        let timeout_ms = p
-            .max_duration_sec
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .and_then(|v| as_u32(&v))
+        let what = "agent.invoke: max_duration_sec";
+        let timeout_ms = opt_param(p.max_duration_sec.as_ref(), r, what)?
+            .map(|v| typed(&v, what, "0 以上の整数", as_u32))
+            .transpose()?
             .map(|s| u64::from(s) * 1000);
         let out = self
             .ports
@@ -136,13 +130,17 @@ impl CapabilityNodeExecutor {
 
         let p: HttpRequestParams = parse_params(params)?;
         let method = p.method.unwrap_or_default().as_str().to_string();
-        let suffix = p
-            .path_suffix
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .and_then(|v| as_string(&v))
+        // path_suffix を書いたのに解決できないときはベース URL へ送らない（BUG-13）。ホスト部の url は
+        // String 型のリテラルで、値式を解決しない（PIT-36 の型防御）。
+        let what = "http.request: path_suffix";
+        let suffix = opt_param(p.path_suffix.as_ref(), r, what)?
+            .map(|v| typed(&v, what, "文字列", as_string))
+            .transpose()?
             .unwrap_or_default();
         let url = format!("{}{suffix}", p.url);
+        // 本文の中の入れ子の $from / $template も展開する（`{"$from":…}` のまま外部へ送らない）。
+        // 値の解決は secret に触れる前に済ませる。
+        let body = opt_param(p.body.as_ref(), r, "http.request: body")?.map(|v| as_bytes(&v));
 
         // secret 解決（あれば）→ 宛先束縛の照合材料。
         let resolved_secret = if let Some(sref) = &p.secret {
@@ -163,12 +161,6 @@ impl CapabilityNodeExecutor {
             headers.push((hname, hval));
         }
         headers.push(("Idempotency-Key".to_string(), ctx.idempotency_key.clone()));
-
-        let body = p
-            .body
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .map(|v| as_bytes(&v));
 
         // Stage A は **常にリダイレクト非追従**（3xx は拒否）。`follow_stripped` は追従先の宛先束縛
         // 再照合（各ホップの host ∈ binding）が要るため後続で実装するまで fail-closed で扱う

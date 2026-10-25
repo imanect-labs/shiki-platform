@@ -460,3 +460,84 @@ async fn data_writes_are_applied_at_most_once() {
     ));
     assert_ne!(w[before].idempotency_key, w[before + 1].idempotency_key);
 }
+
+/// DB 必要（effect_journal）: data.bulk_upsert の rows の中の入れ子の $from / $template は値へ展開して
+/// から data へ渡す（生の値式を行の値として書かない・BUG-1）。data.record.create の data も同じ関数で展開する。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bulk_upsert_rows_resolve_nested_refs() {
+    let Ok(db) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&db)
+        .await
+        .expect("test DB 接続");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migrate");
+    let ports = Arc::new(DataPorts::default());
+    let exec = CapabilityNodeExecutor::new(
+        ports.clone(),
+        EffectJournal::new(pool),
+        Arc::new(CapturingAudit::default()),
+    );
+    let input = json!({ "title": "出張旅費", "amount": 12000 });
+    let params = json!({ "table": TABLE, "rows": [
+        { "key": "r1", "data": { "title": { "$from": "input", "path": "/title" },
+                                 "amount": { "$from": "input", "path": "/amount" } } },
+        { "key": "r2", "data": { "title": { "$template": "{t}（控え）", "vars": {
+            "t": { "$from": "input", "path": "/title" } } } } }
+    ] });
+    let c = ctx(
+        input.clone(),
+        &["data.write"],
+        &format!("wf:bulk:{}", Uuid::new_v4()),
+    );
+    let res = exec.execute("data.bulk_upsert", &params, &c).await;
+    assert!(res.ok, "{:?}", res.error);
+    {
+        let w = ports.writes.lock().unwrap();
+        let DataWriteOp::BulkUpsert { rows, .. } = &w.last().unwrap().op else {
+            panic!("一括 upsert が届く: {:?}", w.last().map(|r| &r.op));
+        };
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].data,
+            json!({ "title": "出張旅費", "amount": 12000 })
+        );
+        assert_eq!(rows[1].data, json!({ "title": "出張旅費（控え）" }));
+    }
+
+    // 行の中の参照が解決できなければ一括取込を始めない。
+    let before = ports.writes.lock().unwrap().len();
+    let missing = json!({ "table": TABLE, "rows": [
+        { "data": { "title": { "$from": "input", "path": "/nope" } } } ] });
+    let c = ctx(
+        input.clone(),
+        &["data.write"],
+        &format!("wf:bulk:{}", Uuid::new_v4()),
+    );
+    let res = exec.execute("data.bulk_upsert", &missing, &c).await;
+    assert_eq!(res.error.unwrap().code, "expr_resolve_error");
+    assert_eq!(ports.writes.lock().unwrap().len(), before);
+
+    // data.record.create の data の中のテンプレートも同じく展開する。
+    let create = json!({ "table": TABLE, "data": {
+        "title": { "$template": "{t} / {a} 円", "vars": {
+            "t": { "$from": "input", "path": "/title" }, "a": { "$from": "input", "path": "/amount" } } } } });
+    let c = ctx(
+        input,
+        &["data.write"],
+        &format!("wf:create:{}", Uuid::new_v4()),
+    );
+    let res = exec.execute("data.record.create", &create, &c).await;
+    assert!(res.ok, "{:?}", res.error);
+    let w = ports.writes.lock().unwrap();
+    assert!(matches!(
+        &w.last().unwrap().op,
+        DataWriteOp::Create { data } if data == &json!({ "title": "出張旅費 / 12000 円" })
+    ));
+}

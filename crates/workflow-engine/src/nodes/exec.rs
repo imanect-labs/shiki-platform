@@ -18,8 +18,9 @@ use script_runtime::engine::{EngineHandle, Limits};
 use serde_json::{json, Value};
 
 use crate::capability::{check_scope_ceiling, CapabilityAudit, EffectJournal, ScopeCeiling};
-use crate::control::eval::resolve_value;
+use crate::control::eval::{resolve_deep, EvalError};
 use crate::control::{branch_port, switch_port};
+use crate::ir::expr::ValueExpr;
 use crate::ir::params::{
     self, BranchParams, MapItemError, MapParams, SwitchParams, WaitKind, WaitParams, WaitTimeout,
 };
@@ -116,7 +117,7 @@ impl CapabilityNodeExecutor {
         check_scope_ceiling(api, &effective)
     }
 
-    /// control.branch: 条件を評価して `true`/`false` ポートを確定する。
+    /// control.branch: 条件を評価して `true`/`false` ポートを確定する（型不一致などは step の失敗）。
     fn eval_branch(params: &Value, ctx: &NodeContext) -> NodeResult {
         let p: BranchParams = match params::parse(params) {
             Ok(p) => p,
@@ -125,7 +126,10 @@ impl CapabilityNodeExecutor {
             }
         };
         let r = ParamResolver::new(ctx);
-        NodeResult::ok_port(ctx.input.clone(), branch_port(&p.condition, &r))
+        match branch_port(&p.condition, &r) {
+            Ok(port) => NodeResult::ok_port(ctx.input.clone(), port),
+            Err(e) => eval_failed("branch の条件", &e),
+        }
     }
 
     /// control.switch: value を各 case とリテラル一致で照合し、一致 port（無ければ default）を確定する。
@@ -138,8 +142,10 @@ impl CapabilityNodeExecutor {
         };
         let cases: Vec<(String, Value)> = p.cases.into_iter().map(|c| (c.port, c.equals)).collect();
         let r = ParamResolver::new(ctx);
-        let port = switch_port(&p.value, &cases, &r);
-        NodeResult::ok_port(ctx.input.clone(), &port)
+        match switch_port(&p.value, &cases, &r) {
+            Ok(port) => NodeResult::ok_port(ctx.input.clone(), &port),
+            Err(e) => eval_failed("switch の value", &e),
+        }
     }
 
     /// control.wait: params から中断指示（timer/event）を組む（durable 化は checkpoint 側・engine.md §9）。
@@ -152,17 +158,18 @@ impl CapabilityNodeExecutor {
         };
         let r = ParamResolver::new(ctx);
         let now = Utc::now();
+        // 書いてある値式が解決できなければ「無い」扱い（無期限待ちなど）にせず失敗させる。
+        let resolve = |e: Option<&ValueExpr>| e.map(|e| resolve_deep(e, &r)).transpose();
         match p.kind {
             WaitKind::Duration => {
-                let Some(secs) = p
-                    .duration_sec
-                    .as_ref()
-                    .and_then(|e| resolve_value(e, &r))
-                    .and_then(|v| v.as_i64())
-                else {
+                let secs = match resolve(p.duration_sec.as_ref()) {
+                    Ok(v) => v,
+                    Err(e) => return eval_failed("wait の duration_sec", &e),
+                };
+                let Some(secs) = secs.as_ref().and_then(Value::as_i64) else {
                     return NodeResult::fail(
                         "bad_params",
-                        "wait(duration) に duration_sec がありません",
+                        "wait(duration) には整数の duration_sec が必要です",
                         false,
                     );
                 };
@@ -177,15 +184,14 @@ impl CapabilityNodeExecutor {
                 NodeResult::wait(Suspend::Timer { wake_at })
             }
             WaitKind::Until => {
-                let Some(ts) = p
-                    .until
-                    .as_ref()
-                    .and_then(|e| resolve_value(e, &r))
-                    .and_then(|v| v.as_str().map(String::from))
-                else {
+                let until = match resolve(p.until.as_ref()) {
+                    Ok(v) => v,
+                    Err(e) => return eval_failed("wait の until", &e),
+                };
+                let Some(ts) = until.as_ref().and_then(Value::as_str).map(String::from) else {
                     return NodeResult::fail(
                         "bad_params",
-                        "wait(until) に until がありません",
+                        "wait(until) には日時の文字列（RFC3339）の until が必要です",
                         false,
                     );
                 };
@@ -214,12 +220,22 @@ impl CapabilityNodeExecutor {
                 };
                 // timeout_sec 未指定は無期限待ち（timeout_at=None）。負値・過大値は不正として拒否する
                 // （checked 演算で panic させず bad_params の permanent 失敗として checkpoint する）。
-                let timeout_at = match p
-                    .timeout_sec
-                    .as_ref()
-                    .and_then(|e| resolve_value(e, &r))
-                    .and_then(|v| v.as_i64())
-                {
+                let timeout = match resolve(p.timeout_sec.as_ref()) {
+                    Ok(v) => v,
+                    Err(e) => return eval_failed("wait の timeout_sec", &e),
+                };
+                let timeout_sec = match timeout.as_ref().map(Value::as_i64) {
+                    None => None,
+                    Some(Some(s)) => Some(s),
+                    Some(None) => {
+                        return NodeResult::fail(
+                            "bad_params",
+                            "wait(event) の timeout_sec は整数で指定してください",
+                            false,
+                        )
+                    }
+                };
+                let timeout_at = match timeout_sec {
                     Some(s) if s < 0 => {
                         return NodeResult::fail("bad_params", "timeout_sec は非負", false)
                     }
@@ -257,8 +273,10 @@ impl CapabilityNodeExecutor {
             }
         };
         let r = ParamResolver::new(ctx);
-        let Some(items_val) = resolve_value(&p.items, &r) else {
-            return NodeResult::fail("expr_resolve_error", "map の items が解決できません", false);
+        // 配列リテラルの要素に置いた $from / $template も展開する（ir.md §3.1「任意の位置」）。
+        let items_val = match resolve_deep(&p.items, &r) {
+            Ok(v) => v,
+            Err(e) => return eval_failed("map の items", &e),
         };
         let Some(items) = items_val.as_array() else {
             return NodeResult::fail("bad_params", "map の items が配列ではありません", false);
@@ -280,6 +298,11 @@ impl CapabilityNodeExecutor {
             on_item_error,
         })
     }
+}
+
+/// 制御ノードの値式・条件の評価エラーを permanent な step の失敗にする（同じ入力では直らない）。
+fn eval_failed(what: &str, e: &EvalError) -> NodeResult {
+    NodeResult::fail(e.code, format!("{what}: {}", e.message), false)
 }
 
 #[async_trait]

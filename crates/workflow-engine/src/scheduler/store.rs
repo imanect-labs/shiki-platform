@@ -283,8 +283,15 @@ impl SchedulerStore {
             // filter 評価（イベントペイロードに対して・fail-closed: 不正 filter/不一致は発火しない・§5.6）。
             if let Some(filter_json) = t.spec.0.get("filter").filter(|v| !v.is_null()) {
                 match serde_json::from_value::<crate::ir::expr::Condition>(filter_json.clone()) {
-                    Ok(cond) if crate::control::event_filter_matches(&cond, payload) => {}
-                    Ok(_) => continue,
+                    Ok(cond) => match crate::control::event_filter_matches(&cond, payload) {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        // 型不一致などの評価エラーは発火しない（黙って発火させない・engine.md §5.6）。
+                        Err(e) => {
+                            tracing::warn!(code = e.code, error = %e.message, tenant = tenant_id, trigger = %t.trigger_id, "トリガ filter の評価に失敗（fail-closed）");
+                            continue;
+                        }
+                    },
                     Err(e) => {
                         tracing::warn!(error = %e, tenant = tenant_id, trigger = %t.trigger_id, "トリガ filter が不正（fail-closed）");
                         continue;

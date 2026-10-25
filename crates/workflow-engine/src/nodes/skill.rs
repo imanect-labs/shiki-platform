@@ -10,7 +10,6 @@
 
 use serde_json::{json, Value};
 
-use crate::control::eval::resolve_value;
 use crate::ir::params::SkillInvokeParams;
 use crate::ir::validate::parse_skill_ref;
 use crate::run::NodeContext;
@@ -18,7 +17,7 @@ use crate::run::NodeContext;
 use super::capability::parse_params;
 use super::exec::CapabilityNodeExecutor;
 use super::ports::{ExecCtx, LlmInvokeReq, PortError};
-use super::resolver::ParamResolver;
+use super::resolver::{opt_param, ParamResolver};
 
 impl CapabilityNodeExecutor {
     pub(super) async fn node_skill_invoke(
@@ -39,10 +38,8 @@ impl CapabilityNodeExecutor {
         // 実行時再検証（保存時 OK でもアンインストール/剥奪で消えている・fail-closed）。
         let skill = self.ports.skill_resolve(ec, name, version).await?;
 
-        let input = p
-            .input
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
+        // input を省いたときだけステップ入力を渡す（書いた参照が解決できなければ失敗・BUG-13）。
+        let input = opt_param(p.input.as_ref(), r, "skill.invoke: input")?
             .unwrap_or_else(|| ctx.input.clone());
 
         let out = if let Some(source) = &skill.shiki_script {

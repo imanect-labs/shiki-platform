@@ -7,7 +7,6 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::capability::{op_digest, JournalDecision};
-use crate::control::eval::resolve_value;
 use crate::ir::params::{
     CsvPatchParams, CsvQueryParams, CsvWriteParams, RagSearchParams, StorageListParams,
     StorageReadParams, StorageWriteParams, WorkflowStartParams,
@@ -16,7 +15,9 @@ use crate::run::NodeContext;
 
 use super::exec::CapabilityNodeExecutor;
 use super::ports::{CsvPatchReq, CsvWriteReq, ExecCtx, PortError, StorageWriteReq};
-use super::resolver::{as_bytes, as_string, as_u32, as_uuid, ParamResolver};
+use super::resolver::{
+    as_bytes, as_string, as_u32, as_uuid, opt_param, param, typed, ParamResolver,
+};
 
 /// params を typed struct として取り出す（保存済み IR は V1 済み・失敗は permanent 扱い）。
 pub(super) fn parse_params<T: serde::de::DeserializeOwned>(raw: &Value) -> Result<T, PortError> {
@@ -28,6 +29,17 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     format!("{:x}", h.finalize())
+}
+
+/// 省略できるフォルダ指定。項目が無ければルート（`None`）、書いてあれば UUID に解決できること。
+fn folder_param(
+    e: Option<&crate::ir::expr::ValueExpr>,
+    r: &ParamResolver<'_>,
+    what: &str,
+) -> Result<Option<uuid::Uuid>, PortError> {
+    opt_param(e, r, what)?
+        .map(|v| typed(&v, what, "UUID", as_uuid))
+        .transpose()
 }
 
 impl CapabilityNodeExecutor {
@@ -63,10 +75,8 @@ impl CapabilityNodeExecutor {
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
         let p: StorageReadParams = parse_params(params)?;
-        let raw = resolve_value(&p.file, r)
-            .ok_or_else(|| PortError::invalid("storage.read: file が解決できません"))?;
-        let file_id = as_uuid(&raw)
-            .ok_or_else(|| PortError::invalid("storage.read: file が UUID ではありません"))?;
+        let what = "storage.read: file";
+        let file_id = typed(&param(&p.file, r, what)?, what, "UUID", as_uuid)?;
         let out = self.ports.storage_read(ec, file_id).await?;
         self.audit(
             &ec.tenant_id,
@@ -85,22 +95,15 @@ impl CapabilityNodeExecutor {
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
         let p: StorageWriteParams = parse_params(params)?;
-        let parent_id = p
-            .folder
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .and_then(|v| as_uuid(&v));
-        let name = resolve_value(&p.name, r)
-            .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("storage.write: name が解決できません"))?;
-        let bytes = resolve_value(&p.content, r)
-            .map(|v| as_bytes(&v))
-            .ok_or_else(|| PortError::invalid("storage.write: content が解決できません"))?;
-        let content_type = p
-            .content_type
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .and_then(|v| as_string(&v))
+        // folder を書いたのに解決できない・UUID でないときはルートへ書かない（BUG-13）。
+        let parent_id = folder_param(p.folder.as_ref(), r, "storage.write: folder")?;
+        let what = "storage.write: name";
+        let name = typed(&param(&p.name, r, what)?, what, "文字列", as_string)?;
+        let bytes = as_bytes(&param(&p.content, r, "storage.write: content")?);
+        let what = "storage.write: content_type";
+        let content_type = opt_param(p.content_type.as_ref(), r, what)?
+            .map(|v| typed(&v, what, "文字列", as_string))
+            .transpose()?
             .unwrap_or_else(|| "application/octet-stream".to_string());
 
         // op_digest は書込の同一性（親/名前/内容ハッシュ）で安定。冪等キーはステップ固定。
@@ -143,11 +146,7 @@ impl CapabilityNodeExecutor {
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
         let p: StorageListParams = parse_params(params)?;
-        let parent_id = p
-            .folder
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .and_then(|v| as_uuid(&v));
+        let parent_id = folder_param(p.folder.as_ref(), r, "storage.list: folder")?;
         let out = self.ports.storage_list(ec, parent_id).await?;
         self.audit(
             &ec.tenant_id,
@@ -168,14 +167,12 @@ impl CapabilityNodeExecutor {
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
         let p: RagSearchParams = parse_params(params)?;
-        let query = resolve_value(&p.query, r)
-            .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("rag.search: query が解決できません"))?;
-        let top_k = p
-            .top_k
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .and_then(|v| as_u32(&v));
+        let what = "rag.search: query";
+        let query = typed(&param(&p.query, r, what)?, what, "文字列", as_string)?;
+        let what = "rag.search: top_k";
+        let top_k = opt_param(p.top_k.as_ref(), r, what)?
+            .map(|v| typed(&v, what, "0 以上の整数", as_u32))
+            .transpose()?;
         let out = self.ports.rag_search(ec, &query, top_k).await?;
         // クエリ本文は監査に載せない（PII 混入回避）。件数のみ。
         let n = out
@@ -238,14 +235,10 @@ impl CapabilityNodeExecutor {
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
         let p: WorkflowStartParams = parse_params(params)?;
-        let name = resolve_value(&p.name, r)
-            .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("workflow.start: name が解決できません"))?;
-        let input = p
-            .input
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .unwrap_or(Value::Null);
+        let what = "workflow.start: name";
+        let name = typed(&param(&p.name, r, what)?, what, "文字列", as_string)?;
+        // input を書いたのに解決できないときは null で子を起動しない（BUG-13）。
+        let input = opt_param(p.input.as_ref(), r, "workflow.start: input")?.unwrap_or(Value::Null);
         self.do_workflow_start(ec, &ctx.idempotency_key, &name, &input)
             .await
     }
@@ -261,12 +254,10 @@ impl CapabilityNodeExecutor {
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
         let p: CsvQueryParams = parse_params(params)?;
-        let file_id = resolve_value(&p.file, r)
-            .and_then(|v| as_uuid(&v))
-            .ok_or_else(|| PortError::invalid("csv.query: file が UUID に解決できません"))?;
-        let sql = resolve_value(&p.sql, r)
-            .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("csv.query: sql が解決できません"))?;
+        let what = "csv.query: file";
+        let file_id = typed(&param(&p.file, r, what)?, what, "UUID", as_uuid)?;
+        let what = "csv.query: sql";
+        let sql = typed(&param(&p.sql, r, what)?, what, "文字列", as_string)?;
         let out = self.ports.csv_query(ec, file_id, &sql).await?;
         // SQL 本文は監査に載せない（PII/秘匿クエリ回避）。件数のみ。
         let rows = out
@@ -293,14 +284,11 @@ impl CapabilityNodeExecutor {
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
         let p: CsvPatchParams = parse_params(params)?;
-        let file_id = resolve_value(&p.file, r)
-            .and_then(|v| as_uuid(&v))
-            .ok_or_else(|| PortError::invalid("csv.patch: file が UUID に解決できません"))?;
-        let base_rev = resolve_value(&p.base_rev, r)
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| PortError::invalid("csv.patch: base_rev が整数に解決できません"))?;
-        let ops = resolve_value(&p.ops, r)
-            .ok_or_else(|| PortError::invalid("csv.patch: ops が解決できません"))?;
+        let what = "csv.patch: file";
+        let file_id = typed(&param(&p.file, r, what)?, what, "UUID", as_uuid)?;
+        let what = "csv.patch: base_rev";
+        let base_rev = typed(&param(&p.base_rev, r, what)?, what, "整数", Value::as_i64)?;
+        let ops = param(&p.ops, r, "csv.patch: ops")?;
         if !ops.is_array() {
             return Err(PortError::invalid(
                 "csv.patch: ops は配列である必要があります",
@@ -365,17 +353,10 @@ impl CapabilityNodeExecutor {
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
         let p: CsvWriteParams = parse_params(params)?;
-        let parent_id = p
-            .folder
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .and_then(|v| as_uuid(&v));
-        let name = resolve_value(&p.name, r)
-            .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("csv.write: name が解決できません"))?;
-        let csv_bytes = resolve_value(&p.content, r)
-            .map(|v| as_bytes(&v))
-            .ok_or_else(|| PortError::invalid("csv.write: content が解決できません"))?;
+        let parent_id = folder_param(p.folder.as_ref(), r, "csv.write: folder")?;
+        let what = "csv.write: name";
+        let name = typed(&param(&p.name, r, what)?, what, "文字列", as_string)?;
+        let csv_bytes = as_bytes(&param(&p.content, r, "csv.write: content")?);
 
         let digest = op_digest(
             "csv.write",

@@ -18,13 +18,12 @@ use crate::capability::{
 };
 use crate::run::NodeContext;
 
-use crate::control::eval::resolve_value;
 use crate::ir::params::ScriptRunParams;
 
 use super::capability::parse_params;
 use super::exec::CapabilityNodeExecutor;
 use super::ports::{ExecCtx, NodePorts, PortError, StorageWriteReq};
-use super::resolver::{as_bytes, ParamResolver};
+use super::resolver::{as_bytes, opt_param, ParamResolver};
 
 /// `run_script_source` の引数束（script.run と skill.invoke で共用・7 引数制限対応）。
 pub(super) struct ScriptRunReq<'a> {
@@ -58,10 +57,9 @@ impl CapabilityNodeExecutor {
             PortError::invalid("script.run: source.inline がありません（artifact 参照は Stage B）")
         })?;
         let r = ParamResolver::new(ctx);
-        let input = p
-            .input
-            .as_ref()
-            .and_then(|e| resolve_value(e, &r))
+        // input を省いたときだけステップ入力を渡す（書いた参照が解決できなければ run 入力全体へ
+        // 黙って差し替えない・BUG-13）。入れ子の $from / $template も展開する。
+        let input = opt_param(p.input.as_ref(), &r, "script.run: input")?
             .unwrap_or_else(|| ctx.input.clone());
         // script.run は node の scope_ceiling をそのまま使う（絞り込みなし）。
         self.run_script_source(ScriptRunReq {

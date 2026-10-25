@@ -366,8 +366,15 @@ impl RunStore {
             // filter 評価（fail-closed: 不正 filter・不一致は起床しない・engine.md §5.6）。
             if let Some(filter_json) = spec.0.get("filter").filter(|v| !v.is_null()) {
                 match serde_json::from_value::<Condition>(filter_json.clone()) {
-                    Ok(cond) if event_filter_matches(&cond, payload) => {}
-                    Ok(_) => continue,
+                    Ok(cond) => match event_filter_matches(&cond, payload) {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        // 型不一致などの評価エラーは起床させない（engine.md §5.6）。
+                        Err(e) => {
+                            tracing::warn!(code = e.code, error = %e.message, tenant = tenant_id, "wait filter の評価に失敗（fail-closed）");
+                            continue;
+                        }
+                    },
                     Err(e) => {
                         tracing::warn!(error = %e, tenant = tenant_id, "wait filter が不正（fail-closed）");
                         continue;

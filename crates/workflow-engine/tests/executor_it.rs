@@ -9,7 +9,8 @@
     clippy::expect_used,
     clippy::panic,
     clippy::pedantic,
-    clippy::cognitive_complexity
+    clippy::cognitive_complexity,
+    clippy::print_stderr
 )]
 
 use std::sync::{Arc, Mutex};
@@ -54,6 +55,8 @@ struct FakePorts {
     skill: Mutex<Option<workflow_engine::nodes::ResolvedSkillView>>,
     /// llm_invoke へ渡った system（skill instructions の伝播検証用）。
     last_llm_system: Mutex<Option<String>>,
+    /// workflow_start へ渡った（name, input）（入れ子の値の展開の検証用）。
+    last_start: Mutex<Option<(String, Value)>>,
 }
 impl FakePorts {
     fn with_http_status(status: u16) -> Self {
@@ -133,9 +136,10 @@ impl NodePorts for FakePorts {
     async fn workflow_start(
         &self,
         _ctx: &ExecCtx,
-        _name: &str,
-        _input: &Value,
+        name: &str,
+        input: &Value,
     ) -> Result<Value, PortError> {
+        *self.last_start.lock().unwrap() = Some((name.to_string(), input.clone()));
         Ok(json!({ "run_id": Uuid::nil().to_string() }))
     }
     async fn csv_query(
@@ -673,4 +677,241 @@ async fn skill_invoke_script_http_denied_outside_binding() {
     assert!(!res.ok, "束縛外ホストへの送信は失敗すべき");
     // 外部送信は一切発生していない（fail-closed）。
     assert!(ports.last_http.lock().unwrap().is_none());
+}
+
+// --- 値の解決（BUG-1・BUG-13: 入れ子の $from / $template・解決できない参照は失敗）---
+
+/// 申請の入力（BUG-1 の再現と同じ値）。
+fn expense_input() -> Value {
+    json!({ "title": "出張旅費", "amount": 12000, "msg": "hello" })
+}
+
+/// llm.invoke の prompt を $template にすると、ポートには差し込んだ後の文字列が届く。
+#[tokio::test]
+async fn llm_prompt_template_reaches_the_port_substituted() {
+    let exec = executor(
+        Arc::new(FakePorts::default()),
+        Arc::new(CapturingAudit::default()),
+    );
+    let params = json!({ "prompt": { "$template": "件名: {title}（{amount} 円）を要約して",
+        "vars": { "title": { "$from": "input", "path": "/title" },
+                  "amount": { "$from": "input", "path": "/amount" } } } });
+    let res = exec
+        .execute("llm.invoke", &params, &ctx(expense_input(), vec![]))
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(
+        res.output["text"],
+        json!("echo:件名: 出張旅費（12000 円）を要約して")
+    );
+
+    // vars に無い名前（UI の既定名 v1 のまま）は空文字で送らず失敗する。
+    let bad = json!({ "prompt": { "$template": "件名: {title}",
+        "vars": { "v1": { "$from": "input", "path": "/title" } } } });
+    let res = exec
+        .execute("llm.invoke", &bad, &ctx(expense_input(), vec![]))
+        .await;
+    assert!(!res.ok);
+    assert_eq!(res.error.unwrap().code, "expr_resolve_error");
+}
+
+/// http.request の body の入れ子の $from は値へ展開してから送る（`{"$from":…}` を外部へ送らない）。
+#[tokio::test]
+async fn http_body_nested_refs_are_resolved_before_sending() {
+    let ports = Arc::new(FakePorts::with_http_status(200));
+    let exec = executor(Arc::clone(&ports), Arc::new(CapturingAudit::default()));
+    let scopes = vec!["http.egress".to_string()];
+    let params = json!({ "method": "POST", "url": "https://api.example.com/hook",
+        "body": { "text": { "$from": "input", "path": "/msg" },
+                  "blocks": [ { "$template": "{t}: {a} 円", "vars": {
+                      "t": { "$from": "input", "path": "/title" },
+                      "a": { "$from": "input", "path": "/amount" } } } ] } });
+    let res = exec
+        .execute(
+            "http.request",
+            &params,
+            &ctx(expense_input(), scopes.clone()),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    let sent = ports.last_http.lock().unwrap().take().unwrap();
+    let body: Value = serde_json::from_slice(&sent.body.unwrap()).unwrap();
+    assert_eq!(
+        body,
+        json!({ "text": "hello", "blocks": ["出張旅費: 12000 円"] })
+    );
+
+    // path_suffix を書いたのに解決できないときはベース URL へ送らない（BUG-13）。
+    let suffix = json!({ "method": "POST", "url": "https://api.example.com/hook",
+        "path_suffix": { "$from": "input", "path": "/channel" } });
+    let res = exec
+        .execute("http.request", &suffix, &ctx(expense_input(), scopes))
+        .await;
+    assert_eq!(res.error.unwrap().code, "expr_resolve_error");
+    assert!(
+        ports.last_http.lock().unwrap().is_none(),
+        "外部送信は発生しない"
+    );
+}
+
+/// script.run の input: 入れ子の $from・$template を展開して main(input) へ渡す。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_input_nested_refs_and_templates_are_resolved() {
+    let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
+    let exec = CapabilityNodeExecutor::new(
+        Arc::new(FakePorts::default()) as Arc<dyn NodePorts>,
+        lazy_journal(),
+        Arc::new(CapturingAudit::default()),
+    )
+    .with_script_engine(engine, script_runtime::engine::Limits::default());
+    let source = json!({ "inline": "function main(i){ return { got: i }; }" });
+    let params = json!({ "source": source, "input": {
+        "title": { "$from": "input", "path": "/title" },
+        "amount": { "$from": "input", "path": "/amount" },
+        "summary": { "$template": "件名: {title} / 金額: {amount} 円", "vars": {
+            "title": { "$from": "input", "path": "/title" },
+            "amount": { "$from": "input", "path": "/amount" } } } } });
+    let res = exec
+        .execute("script.run", &params, &ctx(expense_input(), vec![]))
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(
+        res.output["got"],
+        json!({ "title": "出張旅費", "amount": 12000, "summary": "件名: 出張旅費 / 金額: 12000 円" })
+    );
+
+    // input を書いたのに解決できなければ run 入力全体へ黙って差し替えない（BUG-13）。
+    let missing = json!({ "source": source, "input": { "$from": "input", "path": "/nope" } });
+    let res = exec
+        .execute("script.run", &missing, &ctx(expense_input(), vec![]))
+        .await;
+    assert_eq!(res.error.unwrap().code, "expr_resolve_error");
+    // input を省いたときだけステップ入力を渡す。
+    let omitted = json!({ "source": source });
+    let res = exec
+        .execute("script.run", &omitted, &ctx(expense_input(), vec![]))
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(res.output["got"], expense_input());
+}
+
+/// skill.invoke の input も入れ子の参照を展開する（instructions だけの skill は input を prompt にする）。
+#[tokio::test]
+async fn skill_input_nested_refs_are_resolved() {
+    let ports = Arc::new(FakePorts::default());
+    *ports.skill.lock().unwrap() = Some(workflow_engine::nodes::ResolvedSkillView {
+        name: "expense".into(),
+        instructions: "経費規程に従って確認する。".into(),
+        shiki_script: None,
+        allowed_scopes: None,
+    });
+    let exec = executor(Arc::clone(&ports), Arc::new(CapturingAudit::default()));
+    let params = json!({ "skill": "skill:expense@1", "input": {
+        "title": { "$from": "input", "path": "/title" },
+        "note": { "$template": "{a} 円", "vars": { "a": { "$from": "input", "path": "/amount" } } } } });
+    let res = exec
+        .execute("skill.invoke", &params, &ctx(expense_input(), vec![]))
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    let prompt = res.output["text"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("echo:")
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(prompt).unwrap(),
+        json!({ "title": "出張旅費", "note": "12000 円" })
+    );
+}
+
+/// storage.write の folder を書いたのに解決できないときはルートへ書かない（BUG-13）。
+#[tokio::test]
+async fn storage_write_unresolved_folder_does_not_fall_back_to_root() {
+    let ports = Arc::new(FakePorts::default());
+    let exec = executor(Arc::clone(&ports), Arc::new(CapturingAudit::default()));
+    let scopes = vec!["storage.write".to_string()];
+    for (folder, code) in [
+        (
+            json!({ "$from": "input", "path": "/folder" }),
+            "expr_resolve_error",
+        ),
+        (json!({ "$from": "input", "path": "/title" }), "invalid"),
+    ] {
+        let params = json!({ "name": "o.txt", "content": "x", "folder": folder });
+        let res = exec
+            .execute(
+                "storage.write",
+                &params,
+                &ctx(expense_input(), scopes.clone()),
+            )
+            .await;
+        assert_eq!(res.error.unwrap().code, code, "{folder}");
+    }
+    assert!(
+        ports.last_write.lock().unwrap().is_none(),
+        "書込は発生しない"
+    );
+}
+
+/// 条件の大小比較で型が合わない（文字列の「10000」と数値）ときは黙って false にせず失敗する（BUG-14）。
+#[tokio::test]
+async fn branch_type_mismatch_fails_the_step() {
+    let exec = executor(
+        Arc::new(FakePorts::default()),
+        Arc::new(CapturingAudit::default()),
+    );
+    let params = json!({ "condition": { "cmp": {
+        "left": { "$from": "input", "path": "/amount" }, "op": "gte", "right": "10000" } } });
+    let res = exec
+        .execute("control.branch", &params, &ctx(expense_input(), vec![]))
+        .await;
+    assert!(!res.ok);
+    let err = res.error.unwrap();
+    assert_eq!(err.code, "expr_type_error");
+    assert!(
+        err.message.contains("数値") && err.message.contains("文字列"),
+        "{}",
+        err.message
+    );
+}
+
+/// DB 必要（effect_journal）: workflow.start の input も入れ子の参照を展開し、書いた参照が解決できなければ
+/// null で子を起動しない（BUG-13）。
+#[tokio::test]
+async fn workflow_start_input_nested_refs_are_resolved() {
+    let Ok(db) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&db)
+        .await
+        .expect("test DB 接続");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migrate");
+    let ports = Arc::new(FakePorts::default());
+    let exec = CapabilityNodeExecutor::new(
+        Arc::clone(&ports) as Arc<dyn NodePorts>,
+        EffectJournal::new(pool),
+        Arc::new(CapturingAudit::default()),
+    );
+    let mut c = ctx(expense_input(), vec!["workflow.start".into()]);
+    c.idempotency_key = format!("wf:start-test:{}", Uuid::new_v4());
+    let params = json!({ "name": "child-wf", "input": {
+        "title": { "$from": "input", "path": "/title" },
+        "lines": [ { "$template": "{a} 円", "vars": { "a": { "$from": "input", "path": "/amount" } } } ] } });
+    let res = exec.execute("workflow.start", &params, &c).await;
+    assert!(res.ok, "{:?}", res.error);
+    let (name, input) = ports.last_start.lock().unwrap().take().unwrap();
+    assert_eq!(name, "child-wf");
+    assert_eq!(input, json!({ "title": "出張旅費", "lines": ["12000 円"] }));
+
+    c.idempotency_key = format!("wf:start-test:{}", Uuid::new_v4());
+    let missing = json!({ "name": "child-wf", "input": { "$from": "input", "path": "/nope" } });
+    let res = exec.execute("workflow.start", &missing, &c).await;
+    assert_eq!(res.error.unwrap().code, "expr_resolve_error");
+    assert!(ports.last_start.lock().unwrap().is_none(), "子は起動しない");
 }

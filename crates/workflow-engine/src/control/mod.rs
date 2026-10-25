@@ -13,7 +13,7 @@ mod eval_semantics_tests;
 use serde_json::Value;
 
 use crate::ir::expr::{Condition, FromRef, ValueExpr};
-use eval::{eval_condition, resolve_value, ValueResolver};
+use eval::{eval_condition, resolve_deep, EvalError, ValueResolver};
 
 /// イベントペイロードに対する `$from` リゾルバ（トリガ/wait の filter 評価用）。
 ///
@@ -35,35 +35,41 @@ impl ValueResolver for PayloadResolver<'_> {
     }
 }
 
-/// イベント filter がペイロードに一致するか（fail-closed: 型不一致・未解決は false）。
-pub fn event_filter_matches(filter: &Condition, payload: &Value) -> bool {
+/// イベント filter がペイロードに一致するか。
+///
+/// 評価エラー（型不一致など）は `Err`。呼び出し側は発火・起床させない（fail-closed・engine.md §5.6）。
+pub fn event_filter_matches(filter: &Condition, payload: &Value) -> Result<bool, EvalError> {
     eval_condition(filter, &PayloadResolver { payload })
 }
 
-/// branch の出力ポートを決める（条件成立で `"true"`、不成立で `"false"`）。
-pub fn branch_port(condition: &Condition, r: &dyn ValueResolver) -> &'static str {
-    if eval_condition(condition, r) {
+/// branch の出力ポートを決める（条件成立で `"true"`、不成立で `"false"`）。評価エラーは step の失敗。
+pub fn branch_port(
+    condition: &Condition,
+    r: &dyn ValueResolver,
+) -> Result<&'static str, EvalError> {
+    Ok(if eval_condition(condition, r)? {
         "true"
     } else {
         "false"
-    }
+    })
 }
 
 /// switch の出力ポートを決める（`value` を各 case とリテラル一致で照合・無ければ `default`）。
 ///
 /// `cases` は `(port_name, 一致リテラル)` の順序付きリスト。最初に一致した port を返す。
+/// `value` が解決できない（default も無い）ときは `default` へ流さず失敗させる（ir.md §3.1）。
 pub fn switch_port(
     value_expr: &ValueExpr,
     cases: &[(String, Value)],
     r: &dyn ValueResolver,
-) -> String {
-    let value = resolve_value(value_expr, r);
+) -> Result<String, EvalError> {
+    let value = resolve_deep(value_expr, r)?;
     for (port, expected) in cases {
-        if value.as_ref() == Some(expected) {
-            return port.clone();
+        if &value == expected {
+            return Ok(port.clone());
         }
     }
-    "default".to_string()
+    Ok("default".to_string())
 }
 
 #[cfg(test)]
@@ -102,13 +108,13 @@ mod tests {
             op: CmpOp::Gt,
             right: Some(ValueExpr::Literal(json!(3))),
         });
-        assert_eq!(branch_port(&cond, &r), "true");
+        assert_eq!(branch_port(&cond, &r), Ok("true"));
         let cond2 = Condition::Cmp(Comparison {
             left: from("/n"),
             op: CmpOp::Gt,
             right: Some(ValueExpr::Literal(json!(10))),
         });
-        assert_eq!(branch_port(&cond2, &r), "false");
+        assert_eq!(branch_port(&cond2, &r), Ok("false"));
     }
 
     #[test]
@@ -118,9 +124,16 @@ mod tests {
             ("img".to_string(), json!("png")),
             ("doc".to_string(), json!("pdf")),
         ];
-        assert_eq!(switch_port(&from("/kind"), &cases, &r), "doc");
+        assert_eq!(switch_port(&from("/kind"), &cases, &r).unwrap(), "doc");
 
         let r2 = resolver(json!({ "kind": "zip" }));
-        assert_eq!(switch_port(&from("/kind"), &cases, &r2), "default");
+        assert_eq!(switch_port(&from("/kind"), &cases, &r2).unwrap(), "default");
+
+        // 値が解決できないときは default へ黙って流さない（expr_resolve_error）。
+        let r3 = resolver(json!({}));
+        assert_eq!(
+            switch_port(&from("/kind"), &cases, &r3).unwrap_err().code,
+            eval::EXPR_RESOLVE_ERROR
+        );
     }
 }
