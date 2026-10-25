@@ -5,6 +5,8 @@ import { apiFetch } from "@/lib/api";
 export type LlmModelsResponse = components["schemas"]["LlmModelsResponse"];
 export type LlmModelOption = components["schemas"]["LlmModelOption"];
 export type EffortLevel = components["schemas"]["EffortLevel"];
+/// モデル一覧の見え方（chat: 本人から見た一覧・workflow: ワークフローの照合と同じ一覧＝本人専用を除く）。
+export type ModelPurpose = components["schemas"]["ModelPurpose"];
 export type AdminProvider = components["schemas"]["AdminProvider"];
 export type AdminModel = components["schemas"]["AdminModel"];
 export type AdminModelsResponse = components["schemas"]["AdminModelsResponse"];
@@ -43,9 +45,10 @@ async function json<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
-/// チャットで選べるモデル（一般ユーザー）。
-export async function fetchLlmModels(): Promise<LlmModelsResponse> {
-  return json(await apiFetch("/llm/models"));
+/// 選べるモデル（一般ユーザー）。`workflow` はワークフローのモデル欄向け（保存時の照合・実行時の解決と
+/// 同じ一覧・組織の既定と Auto の振り先もその見え方・BUG-33）。
+export async function fetchLlmModels(purpose: ModelPurpose = "chat"): Promise<LlmModelsResponse> {
+  return json(await apiFetch(purpose === "chat" ? "/llm/models" : `/llm/models?purpose=${purpose}`));
 }
 
 export async function fetchAdminProviders(): Promise<AdminProvider[]> {

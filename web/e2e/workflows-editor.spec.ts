@@ -479,14 +479,17 @@ test("既定の値: 追加した条件は入力全体を path なしで指し、
 type LlmModel = { id: string; label: string };
 type LlmModels = { models: LlmModel[] } & Record<string, unknown>;
 
-/// 組織で使えるモデルの一覧（`/llm/models`）。LLM が構成されていなければ null。
+/// ワークフローで使えるモデルの一覧（`/llm/models?purpose=workflow`・モデル欄と同じ）。LLM が構成されて
+/// いなければ null。
 async function llmModels(page: Page): Promise<LlmModels | null> {
-  const res = await page.request.get("/api/llm/models");
+  const res = await page.request.get("/api/llm/models?purpose=workflow");
   return res.ok() ? ((await res.json()) as LlmModels) : null;
 }
 
-/// 「要約する」（AI に聞く）1 つだけのワークフローを作る。モデルを入れるのは保存時の照合（モデルカタログを
-/// 設定した環境では必須）を通すため。
+/// モデル欄が読む一覧の URL（`?purpose=workflow` を含めて当てる。glob は query まで一致を求める）。
+const isLlmModels = (url: URL) => url.pathname.endsWith("/api/llm/models");
+
+/// 「要約する」（AI に聞く）1 つだけのワークフローを作る（model は渡したときだけ書く。省略は組織の既定）。
 async function createLlmFlow(
   page: Page,
   opts: { prompt?: unknown; model?: string | null; inputSchema?: unknown },
@@ -818,7 +821,7 @@ test("モデル: 一覧に無いモデルは値を消さずに赤字で知らせ
 
   // 保存の後に管理者がそのモデルを外した状況（一覧から外し、別のモデルだけを返す）。
   const other = { id: "e2e-other-model", label: "ほかのモデル", provider_label: "テスト", processed_abroad: false, supports_effort: false, description: null };
-  await page.route("**/api/llm/models", (route) => route.fulfill({ json: { ...models!, models: [other] } }));
+  await page.route(isLlmModels, (route) => route.fulfill({ json: { ...models!, models: [other] } }));
   await openFlow(page, id);
   await page.locator(".react-flow").getByText("要約する").first().click();
   const panel = page.getByRole("complementary", { name: "ブロックの設定" });
@@ -826,8 +829,8 @@ test("モデル: 一覧に無いモデルは値を消さずに赤字で知らせ
   await expect(panel.getByTestId("workflow-model-button")).toContainText(saved.id);
 
   // 一覧を取れない（LLM の構成の不調など）ときは、自由入力に戻して注意書きを出す（値はそのまま）。
-  await page.unroute("**/api/llm/models");
-  await page.route("**/api/llm/models", (route) =>
+  await page.unroute(isLlmModels);
+  await page.route(isLlmModels, (route) =>
     route.fulfill({ status: 503, json: { detail: "AI が構成されていません" } }),
   );
   await page.reload();

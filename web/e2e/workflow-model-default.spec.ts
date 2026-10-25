@@ -1,0 +1,259 @@
+import { expect, test, type Browser, type Page } from "@playwright/test";
+
+import { loginViaKeycloak, uniqueName } from "./helpers";
+
+/// ワークフローの「AI に聞く」のモデル欄: 「組織の既定に従う」の行（BUG-12・BUG-33・D-5・D-30・D-46）。
+///
+/// - 一覧は `/llm/models?purpose=workflow`（保存時の照合・実行時の解決と同じ見え方）。
+/// - 先頭の「組織の既定に従う（現在: …）」を選ぶと、保存した IR から model が消える。
+/// - 省略したブロックを実行すると、step の出力の model が組織の既定（Auto なら振り先）になる。
+/// - 組織がモデルの選択を禁じていれば、モデルの行は選べず、既定と違うモデルは外すよう促す。
+/// 前提: compose の shiki-server が SHIKI__WORKFLOW__ENABLED=true・LLM は stub。
+
+type LlmModel = { id: string; label: string };
+type LlmModels = {
+  default_model: string;
+  allow_user_choice: boolean;
+  auto: { model: string; label: string; effort: "low" | "medium" | "high" } | null;
+  models: LlmModel[];
+} & Record<string, unknown>;
+
+const EFFORT_LABEL = { low: "速い", medium: "標準", high: "じっくり" } as const;
+
+/// ワークフローのモデル欄が読む一覧の URL（query の有無によらず当てる）。
+const isWorkflowModels = (url: URL) => url.pathname.endsWith("/api/llm/models");
+
+/// ワークフローで使えるモデルの一覧。LLM が構成されていなければ null。
+async function workflowModels(page: Page): Promise<LlmModels | null> {
+  const res = await page.request.get("/api/llm/models?purpose=workflow");
+  return res.ok() ? ((await res.json()) as LlmModels) : null;
+}
+
+/// 「現在: …」に出る組織の既定（model-field.tsx の orgDefaultLabel と同じ書き方）。
+function orgDefaultLabel(data: LlmModels): string {
+  if (data.default_model !== "auto") {
+    return data.models.find((m) => m.id === data.default_model)?.label ?? data.default_model;
+  }
+  return data.auto ? `Auto（${data.auto.label}・${EFFORT_LABEL[data.auto.effort]}）` : "Auto";
+}
+
+/// 実行したときに動くモデルの id（Auto なら振り先）。
+function orgDefaultModel(data: LlmModels): string | undefined {
+  return data.default_model === "auto" ? data.auto?.model : data.default_model;
+}
+
+async function csrfHeader(page: Page): Promise<Record<string, string>> {
+  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  return { "x-csrf-token": csrf, "content-type": "application/json" };
+}
+
+/// 「要約する」（AI に聞く）1 つだけのワークフローを作る（model は渡したときだけ書く）。
+async function createLlmFlow(page: Page, model?: string): Promise<string> {
+  const name = uniqueName("wf-model");
+  const res = await page.request.post("/api/workflows", {
+    headers: await csrfHeader(page),
+    data: {
+      ir: {
+        ir_version: 1,
+        name,
+        display_name: name,
+        triggers: [{ kind: "interactive" }],
+        nodes: [
+          {
+            id: "ask",
+            type: "llm.invoke",
+            label: "要約する",
+            params: { prompt: "今日の予定をまとめてください", ...(model ? { model } : {}) },
+          },
+        ],
+        edges: [],
+      },
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  return ((await res.json()) as { id: string }).id;
+}
+
+async function openBlock(page: Page, id: string) {
+  await page.goto(`/workflows/${id}`);
+  const canvas = page.locator(".react-flow");
+  await expect(canvas.getByText("要約する").first()).toBeVisible({ timeout: 15_000 });
+  await canvas.getByText("要約する").first().click();
+  return page.getByRole("complementary", { name: "ブロックの設定" });
+}
+
+async function saveFlow(page: Page) {
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+}
+
+async function savedParams(page: Page, id: string): Promise<Record<string, unknown>> {
+  const ir = ((await (await page.request.get(`/api/workflows/${id}`)).json()) as {
+    ir: { nodes: { params: Record<string, unknown> }[] };
+  }).ir;
+  return ir.nodes[0].params;
+}
+
+test("モデル: 先頭の「組織の既定に従う」に今の既定が出て、選んで保存すると IR から model が消える", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const models = await workflowModels(page);
+  test.skip(!models || models.models.length === 0, "LLM が構成されていない（使えるモデルがない）環境");
+  const data = models!;
+  const first = data.models[0];
+  const id = await createLlmFlow(page, first.id);
+  const panel = await openBlock(page, id);
+
+  const button = panel.getByTestId("workflow-model-button");
+  await expect(button).toContainText(first.label);
+  await button.click();
+  const picker = page.getByTestId("workflow-model-picker");
+  const row = picker.getByTestId("model-option-default");
+  await expect(row).toContainText("組織の既定に従う");
+  await expect(row).toContainText(`現在: ${orgDefaultLabel(data)}`);
+  await row.click();
+  await expect(picker).toHaveCount(0);
+  await expect(button).toContainText(`組織の既定（${orgDefaultLabel(data)}）`);
+  await expect(panel.getByText("省略すると組織の既定で動きます")).toBeVisible();
+
+  await saveFlow(page);
+  const params = await savedParams(page, id);
+  expect(params).not.toHaveProperty("model");
+  expect(params.prompt).toBe("今日の予定をまとめてください");
+});
+
+test("モデル: キーボードだけで一覧を開き、「組織の既定に従う」を選べる", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const models = await workflowModels(page);
+  test.skip(!models || models.models.length === 0, "LLM が構成されていない（使えるモデルがない）環境");
+  const id = await createLlmFlow(page, models!.models[0].id);
+  const panel = await openBlock(page, id);
+
+  const button = panel.getByTestId("workflow-model-button");
+  await button.focus();
+  await page.keyboard.press("Enter");
+  const picker = page.getByTestId("workflow-model-picker");
+  await expect(picker.getByRole("listbox", { name: "モデル" })).toBeVisible();
+  // 開いた直後の注目は今のモデル（既定の行の次）。上へ 1 つで既定の行、Enter で選ぶ。
+  await expect(picker.locator('[role="option"][data-active="true"]')).toContainText(models!.models[0].label);
+  await page.keyboard.press("ArrowUp");
+  await expect(picker.getByTestId("model-option-default")).toHaveAttribute("data-active", "true");
+  await page.keyboard.press("Enter");
+  await expect(picker).toHaveCount(0);
+  await expect(button).toContainText("組織の既定（");
+
+  await saveFlow(page);
+  expect(await savedParams(page, id)).not.toHaveProperty("model");
+});
+
+test("モデル: 省略したブロックを実行すると、step の出力の model が組織の既定になる", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const models = await workflowModels(page);
+  test.skip(!models || models.models.length === 0, "LLM が構成されていない（使えるモデルがない）環境");
+  const expected = orgDefaultModel(models!);
+  const id = await createLlmFlow(page);
+
+  const start = await page.request.post(`/api/workflows/${id}/runs`, {
+    headers: await csrfHeader(page),
+    data: { input: {} },
+  });
+  expect(start.status(), await start.text()).toBe(202);
+  const runId = ((await start.json()) as { run_id: string | null }).run_id;
+  expect(runId).toBeTruthy();
+
+  // 実行は非同期なので、step が終わるまで待つ。
+  let step: { status: string; output: { model?: string; text?: string } } | null = null;
+  await expect
+    .poll(
+      async () => {
+        const res = await page.request.get(`/api/workflows/${id}/runs/${runId}/steps?path=ask`);
+        if (!res.ok()) return "pending";
+        step = (await res.json()) as typeof step;
+        return step!.status;
+      },
+      { timeout: 60_000 },
+    )
+    .toBe("succeeded");
+  expect(step!.output.model).toBe(expected);
+});
+
+test("モデル: 組織がモデルの選択を禁じていると、モデルの行は選べず、既定と違うモデルは外すよう促す", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const models = await workflowModels(page);
+  test.skip(!models || models.models.length === 0, "LLM が構成されていない（使えるモデルがない）環境");
+  const saved = models!.models[0];
+  // 保存の後に管理者が選択を禁じ、既定を Auto にした状況（一覧の応答だけを差し替える）。
+  const locked: LlmModels = {
+    ...models!,
+    default_model: "auto",
+    allow_user_choice: false,
+    auto: models!.auto ?? { model: saved.id, label: saved.label, effort: "low" },
+  };
+  const id = await createLlmFlow(page, saved.id);
+  await page.route(isWorkflowModels, (route) => route.fulfill({ json: locked }));
+  const panel = await openBlock(page, id);
+
+  await expect(panel.getByText("この組織ではモデルを選べません。「組織の既定に従う」にしてください")).toBeVisible();
+  const button = panel.getByTestId("workflow-model-button");
+  await button.click();
+  const picker = page.getByTestId("workflow-model-picker");
+  await expect(picker.getByTestId("workflow-model-locked")).toContainText("この組織ではモデルを選べません");
+  const modelRow = picker.getByTestId(`model-option-${saved.id}`);
+  await expect(modelRow).toHaveAttribute("aria-disabled", "true");
+  // 選べない行は押しても何も起きない（一覧は開いたまま・ボタンの表示も変わらない）。
+  await modelRow.click({ force: true });
+  await expect(picker).toBeVisible();
+  await expect(button).toContainText(saved.label);
+  await button.click();
+  await expect(picker).toHaveCount(0);
+
+  await panel.getByRole("button", { name: "組織の既定に戻す" }).click();
+  await expect(button).toContainText(`組織の既定（${orgDefaultLabel(locked)}）`);
+  await expect(panel.getByRole("button", { name: "組織の既定に戻す" })).toHaveCount(0);
+  await expect(panel.getByText(/この組織ではモデルを選べません（管理者の設定）/)).toBeVisible();
+
+  await saveFlow(page);
+  expect(await savedParams(page, id)).not.toHaveProperty("model");
+});
+
+/// スマホ幅（設定は下からのシート）: シートの中に広げた一覧でも既定に従う行を選べ、横にはみ出さない。
+test("スマホ: シートの中の一覧で「組織の既定に従う」を選べる", async ({ browser, page }) => {
+  test.setTimeout(180_000);
+  const phone = await phonePage(browser, page);
+  const models = await workflowModels(page);
+  test.skip(!models || models.models.length === 0, "LLM が構成されていない（使えるモデルがない）環境");
+  const id = await createLlmFlow(page, models!.models[0].id);
+  await phone.goto(`/workflows/${id}`);
+  const flow = phone.getByTestId("workflow-mobile-flow");
+  await expect(flow).toBeVisible({ timeout: 15_000 });
+
+  await flow.getByRole("button", { name: /要約する/ }).filter({ hasText: "要約する" }).click();
+  const sheet = phone.getByRole("dialog");
+  await sheet.getByTestId("workflow-model-button").click();
+  const picker = sheet.getByTestId("workflow-model-picker");
+  await expect(picker).toBeVisible();
+  await picker.getByTestId("model-option-default").click();
+  await expect(picker).toHaveCount(0);
+  await expect(sheet.getByTestId("workflow-model-button")).toContainText(`組織の既定（${orgDefaultLabel(models!)}）`);
+  expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  await expect(sheet).toBeVisible();
+});
+
+/// ログインは PC の画面で済ませ、そのセッションをタッチ端末の文脈へ持ち込む（chat-mobile.spec と同じ）。
+async function phonePage(browser: Browser, page: Page): Promise<Page> {
+  await loginViaKeycloak(page);
+  const ctx = await browser.newContext({
+    storageState: await page.context().storageState(),
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+    deviceScaleFactor: 3,
+    ignoreHTTPSErrors: true,
+  });
+  return ctx.newPage();
+}

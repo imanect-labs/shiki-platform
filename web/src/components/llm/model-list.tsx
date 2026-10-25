@@ -5,6 +5,8 @@
 /// - 一覧はプロバイダごとの見出しで分け、1 モデル 1 行（名前・国外処理・選択中の印を列で揃える）。
 /// - モデルが多いときは検索欄を出す。矢印キー／Enter／Home／End で選べ、日本語入力の変換中は奪わない。
 /// - 先頭の「既定」の行（モデルを指定しない選択）は呼び出し側が文言ごと渡す（渡さなければ出さない）。
+/// - 組織がモデルの選択を禁じているときは、モデルの行を選べない行として見せる（`modelsDisabled`・
+///   キーボードでも止まらない）。選べるのは既定の行だけになる。
 /// 一覧は `GET /llm/models`（組織の管理者が公開したモデル）をそのまま使う。
 
 import * as React from "react";
@@ -98,6 +100,7 @@ export function ModelList({
   surface,
   listRef,
   defaultRow = null,
+  modelsDisabled = false,
 }: {
   data: LlmModelsResponse;
   /// 選択中のモデル ID（`null` は既定の行）。
@@ -108,6 +111,8 @@ export function ModelList({
   listRef: React.RefObject<HTMLDivElement | null>;
   /// 先頭の「既定」の行。`null` なら出さない（モデルを必ず選ぶ欄）。
   defaultRow?: ModelListDefaultRow | null;
+  /// モデルの行を選べなくする（組織がモデルの選択を禁じている・既定の行だけ選べる）。
+  modelsDisabled?: boolean;
 }) {
   const listId = React.useId();
   const [rawQuery, setQuery] = React.useState("");
@@ -120,10 +125,10 @@ export function ModelList({
     defaultRow !== null &&
     (!query || matchesText(`${defaultRow.label} ${defaultRow.keywords ?? ""}`, query));
 
-  // キーボードで動かす順（画面の並びと同じ）。
+  // キーボードで動かす順（画面の並びと同じ・選べない行は飛ばす）。
   const keys = [
     ...(showDefault ? [DEFAULT_KEY] : []),
-    ...groups.flatMap((g) => g.models.map((m) => m.id)),
+    ...(modelsDisabled ? [] : groups.flatMap((g) => g.models.map((m) => m.id))),
   ];
   const currentKey = current ?? DEFAULT_KEY;
   const [active, setActive] = React.useState(() => Math.max(0, keys.indexOf(currentKey)));
@@ -191,25 +196,31 @@ export function ModelList({
     testId: string,
   ) => {
     const selected = key === currentKey;
+    const disabled = modelsDisabled && key !== DEFAULT_KEY;
     return (
       <div
         key={key}
         id={optionId(key)}
         role="option"
         aria-selected={selected}
+        aria-disabled={disabled || undefined}
         data-active={key === activeKey}
         data-testid={testId}
         onMouseMove={() => {
+          if (disabled) return;
           scrollToActive.current = false;
           setActive(keys.indexOf(key));
         }}
-        onClick={() => pickKey(key)}
+        onClick={() => {
+          if (!disabled) pickKey(key);
+        }}
         className={cn(
           // 指で押す狭い画面は 44px、ポインタの広い画面は詰める。scroll-mt は上に貼り付く
           // プロバイダ見出しの高さ分（キーボードで上へ動いたとき行が見出しの下に隠れない）。
           "flex h-11 scroll-mt-10 cursor-pointer select-none items-center gap-2 rounded-md px-2.5 text-sm sm:h-9 sm:text-[13px]",
           "data-[active=true]:bg-accent",
           selected && "font-medium",
+          disabled && "cursor-not-allowed text-muted-foreground",
         )}
       >
         {label}

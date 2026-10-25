@@ -1,32 +1,55 @@
 "use client";
 
-/// 「AI に聞く」（llm.invoke）のモデル欄（BUG-4）。
+/// 「AI に聞く」（llm.invoke）のモデル欄（BUG-4・BUG-12・BUG-33）。
 ///
-/// 選べるのは組織の管理者が公開したモデル（`GET /llm/models`・チャットのモデル選択と同じ一覧と部品）。
+/// 選べるのは組織の管理者が公開したモデル（`GET /llm/models?purpose=workflow`・保存時の照合と実行時の解決と
+/// 同じ一覧で、本人専用のモデルは出ない）。部品はチャットのモデル選択と同じ一覧を使う。
 /// ボタンに今のモデル名を出し、押すと一覧を開く。PC はポップオーバー、設定パネルが下からのシートの
 /// ときはシートの中に一覧を広げる（シートの上にシートを重ねない）。
 ///
+/// - 一覧の先頭は「組織の既定に従う（現在: …）」の行。選ぶと params から model を外す（省略は実行のたびに
+///   組織の既定で解決される・D-5）。新しいブロックもこの状態から始まる
+/// - 組織がモデルの選択を禁じている: モデルの行は選べず、既定に従う行だけ（ワークフローでも選ばせない・D-30）。
+///   保存済みのモデルが既定と違えば赤字で知らせ、「組織の既定に戻す」を出す
 /// - 読み込み中: Skeleton
-/// - 一覧を取れない: 自由入力に戻し、注意書きを出す（保存時の照合はサーバが行う）
+/// - 一覧を取れない: 自由入力に戻し、注意書きを出す（空欄で組織の既定・保存時の照合はサーバが行う）
 /// - 保存済みのモデルが一覧に無い: 「このモデルは使えません: X」を赤字で出す（値は消さない）
-///
-/// 「モデルを指定しない（組織の既定に従う）」の行は出さない。省略したときの意味（D-5）が実装に入るまでは、
-/// モデルカタログを設定した環境では保存時の検証（V3）がモデルを必須にしているため。
 
 import * as React from "react";
 import { ChevronDown } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ModelList } from "@/components/llm/model-list";
+import { EFFORT_LABEL } from "@/components/admin/format";
+import { ModelList, type ModelListDefaultRow } from "@/components/llm/model-list";
 import { useMediaQuery } from "@/hooks/use-media-query";
+import type { LlmModelsResponse } from "@/lib/admin-ai-api";
 import { useLlmModelsState } from "@/lib/model-choice";
 import { cn } from "@/lib/utils";
 import { Field } from "./common";
 
 /// 設定パネルがシートになる幅（config-panel/index.tsx と同じ）。
 const PANEL_QUERY = "(min-width: 768px)";
+
+const LOCKED_NOTE = "この組織ではモデルを選べません（管理者の設定）";
+
+/// 組織の既定で今動くモデルの表示（Auto なら振り先と思考の深さ・チャットの「Auto」の行と同じ書き方）。
+export function orgDefaultLabel(data: LlmModelsResponse): string {
+  if (data.default_model !== "auto") {
+    return data.models.find((m) => m.id === data.default_model)?.label ?? data.default_model;
+  }
+  return data.auto ? `Auto（${data.auto.label}・${EFFORT_LABEL[data.auto.effort]}）` : "Auto";
+}
+
+function defaultRow(data: LlmModelsResponse): ModelListDefaultRow {
+  return {
+    label: "組織の既定に従う",
+    target: `現在: ${orgDefaultLabel(data)}`,
+    keywords: "既定 組織 auto おまかせ",
+  };
+}
 
 export function ModelField({
   value,
@@ -38,7 +61,7 @@ export function ModelField({
   /// サーバの検証の誤り（`/params/model`）。
   error?: string | null;
 }) {
-  const state = useLlmModelsState();
+  const state = useLlmModelsState("workflow");
   const desktop = useMediaQuery(PANEL_QUERY);
   const [open, setOpen] = React.useState(false);
   const listRef = React.useRef<HTMLDivElement | null>(null);
@@ -60,14 +83,14 @@ export function ModelField({
         error={error}
         hint={
           state.status === "error"
-            ? "モデルの一覧を読み込めませんでした。管理者が登録したモデル ID をそのまま書いてください"
+            ? "モデルの一覧を読み込めませんでした。空欄なら組織の既定で動きます。指定するときは管理者が登録したモデル ID をそのまま書いてください"
             : "使えるモデルがありません。管理者に AI の設定を確かめてもらってください"
         }
       >
         <Input
           value={value ?? ""}
           onChange={(e) => onChange(e.target.value || undefined)}
-          placeholder="モデル ID"
+          placeholder="空欄で組織の既定"
           aria-label="モデル ID"
           aria-invalid={error ? true : undefined}
           className="h-8 font-mono text-xs max-md:text-base"
@@ -77,18 +100,33 @@ export function ModelField({
   }
 
   const data = state.data;
+  const locked = !data.allow_user_choice;
   const current = value ? data.models.find((m) => m.id === value) : undefined;
+  // 選択を禁じた組織では、既定と同じモデル（を書いた保存済みの定義）だけが通る（保存時の照合と同じ）。
+  const lockedOut = locked && value !== undefined && value !== data.default_model;
   // サーバの誤りがあればそちらを出す（使えるモデルの一覧も添えてある）。無ければ手元の一覧で先に知らせる。
-  const message = error ?? (value && !current ? `このモデルは使えません: ${value}` : null);
+  const message =
+    error ??
+    (lockedOut
+      ? "この組織ではモデルを選べません。「組織の既定に従う」にしてください"
+      : value && !current
+        ? `このモデルは使えません: ${value}`
+        : null);
   const pick = (id: string | null) => {
-    if (id) onChange(id);
+    onChange(id ?? undefined);
     setOpen(false);
   };
+  const shown = value === undefined ? `組織の既定（${orgDefaultLabel(data)}）` : (current?.label ?? value);
+  const hint = locked
+    ? `${LOCKED_NOTE}。組織の既定で動きます`
+    : value === undefined
+      ? "省略すると組織の既定で動きます。管理者が既定を変えると、このブロックのモデルも変わります"
+      : current?.description || "管理者が使えるようにしたモデルから選びます";
 
   const button = (
     <button
       type="button"
-      aria-label={`モデル: ${current?.label ?? value ?? "未選択"}（変更する）`}
+      aria-label={`モデル: ${shown}（変更する）`}
       aria-expanded={open}
       data-testid="workflow-model-button"
       onClick={desktop ? undefined : () => setOpen((o) => !o)}
@@ -98,20 +136,32 @@ export function ModelField({
         message && "border-destructive",
       )}
     >
-      <span className={cn("min-w-0 flex-1 truncate", !current && !value && "text-muted-foreground")}>
-        {current?.label ?? value ?? "モデルを選ぶ"}
-      </span>
+      <span className={cn("min-w-0 flex-1 truncate", value === undefined && "text-muted-foreground")}>{shown}</span>
       {current ? <span className="shrink-0 text-[11px] text-muted-foreground">{current.provider_label}</span> : null}
       <ChevronDown className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} aria-hidden />
     </button>
   );
+  const list = (surface: "popover" | "sheet") => (
+    <>
+      {locked ? (
+        <p className="shrink-0 px-2.5 pb-1 pt-1.5 text-[11.5px] text-muted-foreground" data-testid="workflow-model-locked">
+          {LOCKED_NOTE}
+        </p>
+      ) : null}
+      <ModelList
+        data={data}
+        current={current?.id ?? null}
+        onPick={pick}
+        surface={surface}
+        listRef={listRef}
+        defaultRow={defaultRow(data)}
+        modelsDisabled={locked}
+      />
+    </>
+  );
 
   return (
-    <Field
-      label="モデル"
-      error={message}
-      hint={current?.description || "管理者が使えるようにしたモデルから選びます"}
-    >
+    <Field label="モデル" error={message} hint={hint}>
       {desktop ? (
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild>{button}</PopoverTrigger>
@@ -121,19 +171,20 @@ export function ModelField({
             className="flex max-h-[min(var(--radix-popover-content-available-height),24rem)] w-80 flex-col p-1.5"
             data-testid="workflow-model-picker"
           >
-            <ModelList data={data} current={current?.id ?? null} onPick={pick} surface="popover" listRef={listRef} />
+            {list("popover")}
           </PopoverContent>
         </Popover>
       ) : (
         <>
           {button}
-          {open ? (
-            <InlineList onClose={() => setOpen(false)}>
-              <ModelList data={data} current={current?.id ?? null} onPick={pick} surface="sheet" listRef={listRef} />
-            </InlineList>
-          ) : null}
+          {open ? <InlineList onClose={() => setOpen(false)}>{list("sheet")}</InlineList> : null}
         </>
       )}
+      {lockedOut ? (
+        <Button type="button" variant="outline" size="sm" onClick={() => onChange(undefined)}>
+          組織の既定に戻す
+        </Button>
+      ) : null}
     </Field>
   );
 }
