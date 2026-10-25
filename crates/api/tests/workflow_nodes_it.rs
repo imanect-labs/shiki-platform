@@ -118,16 +118,16 @@ async fn setup() -> Option<Harness> {
                     session_header: None,
                     ..Default::default()
                 },
+                // stub-smart は組織の既定の切り替え（BUG-12）を見るための 2 つ目のモデル。
                 catalog: llm_gateway::ModelCatalog {
                     default_model: "stub".into(),
-                    models: vec![llm_gateway::ModelEntry {
-                        id: "stub".into(),
-                        real_id: None,
-                        prompt_price_micros_per_mtok: 0,
-                        completion_price_micros_per_mtok: 0,
-                        context_window_tokens: None,
-                        ..Default::default()
-                    }],
+                    models: ["stub", "stub-smart"]
+                        .into_iter()
+                        .map(|id| llm_gateway::ModelEntry {
+                            id: id.into(),
+                            ..Default::default()
+                        })
+                        .collect(),
                 },
                 langfuse: None,
                 ..Default::default()
@@ -179,14 +179,13 @@ async fn setup() -> Option<Harness> {
 }
 
 impl Harness {
-    /// 本番 executor を組む（FakeSandbox＋http allowlist を差し込める）。
-    fn executor(
+    /// 本番ポート（sandbox・RAG を差し込める）。
+    fn ports(
         &self,
         sandbox: Option<Arc<dyn sandbox_client::Sandbox>>,
-        http_allowlist: Vec<String>,
         search: Option<Arc<rag::SearchService>>,
-    ) -> Arc<dyn NodeExecutor> {
-        let ports = Arc::new(api::workflow_runtime::ProdNodePorts {
+    ) -> Arc<api::workflow_runtime::ProdNodePorts> {
+        Arc::new(api::workflow_runtime::ProdNodePorts {
             storage: Arc::clone(&self.storage),
             search,
             gateway: Arc::clone(&self.gateway),
@@ -200,7 +199,17 @@ impl Harness {
             db: self.pool.clone(),
             data: None,
             fsms: None,
-        });
+        })
+    }
+
+    /// 本番 executor を組む（FakeSandbox＋http allowlist を差し込める）。
+    fn executor(
+        &self,
+        sandbox: Option<Arc<dyn sandbox_client::Sandbox>>,
+        http_allowlist: Vec<String>,
+        search: Option<Arc<rag::SearchService>>,
+    ) -> Arc<dyn NodeExecutor> {
+        let ports = self.ports(sandbox, search);
         let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
         Arc::new(
             CapabilityNodeExecutor::new(
@@ -995,10 +1004,11 @@ async fn llm_model_errors_are_recorded_in_japanese() {
     .await
     .unwrap();
     let err = err.expect("step の誤り");
-    assert_eq!(err["code"], "invalid");
+    assert_eq!(err["code"], "model_unavailable");
     assert_eq!(
         err["message"],
-        "AI モデル「no-such-model」は登録されていません。ノードの設定でモデルを選び直してください。"
+        "AI モデル「no-such-model」は登録されていません。\
+         ノードの設定でモデルを選び直すか、「組織の既定に従う」にしてください。"
     );
     // 非再試行（設定を直すまで通らない）なので 1 回で確定する。
     let attempts: i32 = sqlx::query_scalar(
@@ -1010,4 +1020,156 @@ async fn llm_model_errors_are_recorded_in_japanese() {
     .await
     .unwrap();
     assert_eq!(attempts, 1);
+}
+
+// ------- Test 10: llm.invoke のモデルの解決（BUG-12）----------------------------
+
+impl Harness {
+    /// 組織の AI 設定を変える（管理画面の保存と同じ経路）。
+    async fn set_llm_settings(&self, patch: llm_gateway::SettingsPatch) {
+        self.gateway
+            .update_tenant_settings(&self.alice, &patch)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    /// ノード `ai` の step の出力と誤り。
+    async fn step_output(&self, run_id: Uuid) -> (Value, Value) {
+        let (output, error): (Option<Value>, Option<Value>) = sqlx::query_as(
+            "SELECT output, error FROM step_execution \
+             WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'ai'",
+        )
+        .bind(&self.tenant)
+        .bind(run_id)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap();
+        (output.unwrap_or(Value::Null), error.unwrap_or(Value::Null))
+    }
+
+    /// このテナントのワークフローの会計の行のモデル名（記録順）。
+    async fn workflow_usage_models(&self) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT model FROM llm_usage WHERE tenant_id = $1 AND source = 'workflow' ORDER BY id",
+        )
+        .bind(&self.tenant)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap()
+    }
+}
+
+fn llm_ir(name: &str, model: Option<&str>) -> Value {
+    let mut params = json!({ "prompt": "hello" });
+    if let Some(m) = model {
+        params["model"] = json!(m);
+    }
+    json!({
+        "ir_version": 1, "name": name, "declared_scopes": [],
+        "nodes": [{ "id": "ai", "type": "llm.invoke", "params": params }],
+        "edges": []
+    })
+}
+
+/// モデルを省略した llm.invoke は、デプロイ既定（stub）ではなく組織の既定で動き、出力・会計に同じ名前が残る。
+/// ワークフローの実行主体（schedule / event の run）でも同じモデルになる。
+#[tokio::test]
+async fn llm_omitted_model_follows_the_organization_default() {
+    let Some(h) = setup().await else { return };
+    h.set_llm_settings(llm_gateway::SettingsPatch {
+        default_model: Some("stub-smart".into()),
+        ..Default::default()
+    })
+    .await;
+    let (run_id, status) = h
+        .run_to_completion(
+            &llm_ir("llm-org-default", None),
+            &json!({}),
+            h.executor(None, vec![], None),
+        )
+        .await;
+    assert_eq!(status, RunStatus::Succeeded);
+    let (output, _) = h.step_output(run_id).await;
+    assert_eq!(output["model"], "stub-smart", "{output}");
+    assert_eq!(h.workflow_usage_models().await, ["stub-smart"]);
+
+    // Auto＋振り先の上書き → 上書き先。実行主体がワークフロー（委譲で動く run）でも組織の設定は同じ。
+    h.set_llm_settings(llm_gateway::SettingsPatch {
+        default_model: Some(llm_gateway::AUTO_MODEL.into()),
+        auto_model: Some(Some("stub-smart".into())),
+        ..Default::default()
+    })
+    .await;
+    let ec = workflow_engine::ExecCtx {
+        tenant_id: h.tenant.clone(),
+        org: h.org.clone(),
+        principal: "wf-schedule".into(),
+        principal_kind: "workflow".into(),
+        trace_id: None,
+        run_id: None,
+        step_path: Some("ai".into()),
+    };
+    let out = workflow_engine::NodePorts::llm_invoke(
+        h.ports(None, None).as_ref(),
+        &ec,
+        workflow_engine::LlmInvokeReq {
+            model: None,
+            system: None,
+            prompt: "hello".into(),
+            max_tokens: None,
+            idempotency_key: format!("it:{}", Uuid::new_v4()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["model"], "stub-smart");
+    assert_eq!(
+        h.workflow_usage_models().await,
+        ["stub-smart", "stub-smart"]
+    );
+}
+
+/// 明示したモデルを管理者が無効にすると、組織の既定へ戻さずに非再試行で失敗し、生成も会計も起きない。
+#[tokio::test]
+async fn llm_explicit_model_fails_closed_once_disabled() {
+    let Some(h) = setup().await else { return };
+    // executor は組むのが重い（script engine）ので 1 つを使い回す。
+    let executor = h.executor(None, vec![], None);
+    let wf_id = h.save(&llm_ir("llm-pinned", Some("stub-smart"))).await;
+    h.set_llm_settings(llm_gateway::SettingsPatch {
+        models: vec![("stub-smart".into(), false)],
+        ..Default::default()
+    })
+    .await;
+    let (run_id, status) = h.run(wf_id, &json!({}), Arc::clone(&executor)).await;
+    assert_eq!(status, RunStatus::Failed);
+    let (_, err) = h.step_output(run_id).await;
+    assert_eq!(err["code"], "model_unavailable", "{err}");
+    assert_eq!(
+        err["message"],
+        "AI モデル「stub-smart」はこの組織では使えません。\
+         ノードの設定でモデルを選び直すか、「組織の既定に従う」にしてください。"
+    );
+    assert!(h.workflow_usage_models().await.is_empty());
+
+    // 組織がモデルの選択を禁じると、既定と違うモデルは失敗する（省略したものは既定で動く）。
+    h.set_llm_settings(llm_gateway::SettingsPatch {
+        models: vec![("stub-smart".into(), true)],
+        default_model: Some("stub".into()),
+        allow_user_choice: Some(false),
+        ..Default::default()
+    })
+    .await;
+    let (run_id, status) = h.run(wf_id, &json!({}), Arc::clone(&executor)).await;
+    assert_eq!(status, RunStatus::Failed);
+    assert_eq!(
+        h.step_output(run_id).await.1["code"],
+        "model_choice_disabled"
+    );
+    let (run_id, status) = h
+        .run_to_completion(&llm_ir("llm-locked-default", None), &json!({}), executor)
+        .await;
+    assert_eq!(status, RunStatus::Succeeded);
+    assert_eq!(h.step_output(run_id).await.0["model"], "stub");
 }

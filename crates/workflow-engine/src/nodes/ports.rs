@@ -83,7 +83,8 @@ pub struct StorageWriteReq {
 /// llm.invoke の要求（llm-gateway 直行・モデル/予算はゲートウェイ側カタログで解決）。
 #[derive(Debug, Clone)]
 pub struct LlmInvokeReq {
-    /// 論理モデル名（未指定はゲートウェイ既定）。
+    /// 論理モデル名。`None` は組織の既定（ポート実装が実行主体の組織の設定で解決する・Auto を含む）。
+    /// 指定したモデルが使えなければ既定へ戻さずに失敗する（fail-closed・BUG-12）。
     pub model: Option<String>,
     pub system: Option<String>,
     /// user メッセージ本文（Stage A は単発）。
@@ -183,6 +184,9 @@ pub trait NodePorts: Send + Sync {
     ) -> Result<Value, PortError>;
 
     /// llm.invoke（`LlmGateway.stream` ＋ `record_generation`・trace_id を記録）。
+    ///
+    /// 返す Value は `{ text, model }`。`model` は解決後の論理モデル名（実際に使ったモデル・会計と同じ名前）で、
+    /// executor が監査に使う。
     async fn llm_invoke(&self, ctx: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError>;
 
     /// agent.invoke（`Sandbox` トレイト・ティアは admin ポリシー既定・capability 縮小のみ）。

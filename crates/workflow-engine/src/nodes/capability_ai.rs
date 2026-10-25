@@ -31,6 +31,11 @@ pub(super) fn parse_body(bytes: &[u8]) -> Value {
         .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(slice).into_owned()))
 }
 
+/// llm_invoke ポートの出力から、実際に使ったモデルの名前を取る（ポートが返さなければ指定値）。
+pub(super) fn resolved_model<'a>(out: &'a Value, requested: Option<&'a str>) -> Option<&'a str> {
+    out.get("model").and_then(Value::as_str).or(requested)
+}
+
 impl CapabilityNodeExecutor {
     // --- llm.invoke ------------------------------------------------------
 
@@ -45,7 +50,8 @@ impl CapabilityNodeExecutor {
         let p: LlmInvokeParams = parse_params(params)?;
         let what = "llm.invoke: prompt";
         let prompt = typed(&param(&p.prompt, r, what)?, what, "文字列", as_string)?;
-        let model = p.model.clone();
+        // 空文字は省略と同じ（組織の既定・保存時検証 V3 と揃える）。
+        let model = p.model.clone().filter(|m| !m.is_empty());
         let what = "llm.invoke: system";
         let system = opt_param(p.system.as_ref(), r, what)?
             .map(|v| typed(&v, what, "文字列", as_string))
@@ -67,12 +73,13 @@ impl CapabilityNodeExecutor {
                 },
             )
             .await?;
-        // prompt 本文は監査に載せない（モデル名のみ）。
+        // prompt 本文は監査に載せない（モデル名のみ）。model は実際に使ったモデル（ポートが解決した名前）、
+        // requested_model はノードの設定（null は組織の既定に従った）。
         self.audit(
             &ec.tenant_id,
             "llm.invoke",
             true,
-            &json!({ "model": model }),
+            &json!({ "model": resolved_model(&out, model.as_deref()), "requested_model": model }),
         );
         Ok(out)
     }

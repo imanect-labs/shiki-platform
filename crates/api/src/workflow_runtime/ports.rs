@@ -20,6 +20,7 @@ use storage::model::ChildSort;
 
 use super::auth::auth_ctx;
 use super::llm_error::llm_port_error;
+use super::llm_model::resolve_for_workflow;
 use storage::StorageService;
 use uuid::Uuid;
 use workflow_engine::{
@@ -215,8 +216,12 @@ impl NodePorts for ProdNodePorts {
 
     async fn llm_invoke(&self, ec: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError> {
         let ctx = auth_ctx(ec);
+        // モデルは実行のたびに実行主体の組織の設定で決める（省略は組織の既定・BUG-12）。解決後の名前を
+        // 生成・会計・出力に同じ値で使う（gateway の既定に任せると会計の名前とずれる）。
+        let choice = resolve_for_workflow(&self.gateway, ec, &ctx, req.model.as_deref()).await?;
         let mut greq = GenerateRequest::new(vec![Message::text(Role::User, req.prompt.clone())]);
-        greq.model = req.model.clone();
+        greq.model = Some(choice.model.clone());
+        greq.effort = choice.effort;
         greq.system = req.system.clone();
         greq.max_tokens = req.max_tokens;
         // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
@@ -235,10 +240,7 @@ impl NodePorts for ProdNodePorts {
                 _ => {}
             }
         }
-        let model = req
-            .model
-            .clone()
-            .unwrap_or_else(|| self.gateway.default_model().to_string());
+        let model = choice.model;
         // 生成記録（trace_id で監査 ↔ Langfuse ↔ OTel を束ねる・本文プレビューは短く）。
         self.gateway
             .record_generation(

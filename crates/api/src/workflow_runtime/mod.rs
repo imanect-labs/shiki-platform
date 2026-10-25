@@ -8,6 +8,7 @@
 mod auth;
 mod data_port;
 mod llm_error;
+mod llm_model;
 mod ports;
 mod relay;
 mod skill_port;

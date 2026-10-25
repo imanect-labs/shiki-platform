@@ -7,6 +7,8 @@
 use llm_gateway::LlmError;
 use workflow_engine::{ExecCtx, PortError};
 
+use super::llm_model;
+
 /// 実行履歴に出す定型文（モデル名を差し込むものは [`llm_port_error`] が組み立てる）。
 mod message {
     /// 上流がタイムアウトした。
@@ -43,7 +45,7 @@ pub(super) fn llm_port_error(ec: &ExecCtx, e: &LlmError) -> PortError {
         "llm.invoke の呼び出しに失敗"
     );
     match e {
-        LlmError::Config(detail) => PortError::invalid(config_message(detail)),
+        LlmError::Config(detail) => config_error(detail),
         LlmError::BadRequest(_) => PortError::invalid(message::REJECTED),
         // gateway が利用者向けに整形した 1 行（上限の種類と再開の目安）をそのまま出す。
         LlmError::RateLimited(line) => PortError::unavailable(line.clone()),
@@ -59,31 +61,28 @@ pub(super) fn llm_port_error(ec: &ExecCtx, e: &LlmError) -> PortError {
     }
 }
 
-/// `LlmError::Config` の原文を利用者向けの 1 行にする。
+/// `LlmError::Config` を利用者向けの 1 行の誤りにする（どれも設定を直すまで通らないので再試行しない）。
 ///
-/// モデル名はノードの設定に書いた値なので文言に含める（どの設定を直すかが分かる）。gateway が最初から
-/// 日本語で書いた文言（ChatGPT プランの本人限定など）は利用者向けなので、そのまま出す。
-fn config_message(detail: &str) -> String {
+/// モデル名はノードの設定に書いた値なので文言に含める（どの設定を直すかが分かる）。モデルは実行の前に
+/// 解決しているので（`llm_model.rs`）、未登録・無効がここに来るのは解決と生成の間に管理者が設定を
+/// 変えたときだけで、解決の失敗と同じ code・文言にする。gateway が最初から日本語で書いた文言
+/// （ChatGPT プランの本人限定など）は利用者向けなので、そのまま出す。
+fn config_error(detail: &str) -> PortError {
     if let Some(model) = detail.strip_prefix("unknown model: ") {
-        return format!(
-            "AI モデル「{model}」は登録されていません。ノードの設定でモデルを選び直してください。"
-        );
+        return llm_model::unknown_model(model);
     }
     if let Some(model) = detail.strip_prefix("model is not enabled for this organization: ") {
-        return format!(
-            "AI モデル「{model}」はこの組織では使えません。ノードの設定でモデルを選び直すか、\
-             管理者に有効化を依頼してください。"
-        );
+        return llm_model::disabled_model(model);
     }
     if let Some(model) = detail.strip_prefix("unknown provider for model: ") {
-        return format!(
+        return PortError::invalid(format!(
             "AI モデル「{model}」の接続先が設定されていません。管理者にお問い合わせください。"
-        );
+        ));
     }
     if detail.is_ascii() {
-        message::MISCONFIGURED.to_string()
+        PortError::invalid(message::MISCONFIGURED)
     } else {
-        detail.to_string()
+        PortError::invalid(detail)
     }
 }
 
@@ -121,9 +120,12 @@ mod tests {
         let unknown = llm_port_error(&ec(), &LlmError::Config("unknown model: gpt-x-mini".into()));
         assert_eq!(
             unknown.message,
-            "AI モデル「gpt-x-mini」は登録されていません。ノードの設定でモデルを選び直してください。"
+            "AI モデル「gpt-x-mini」は登録されていません。\
+             ノードの設定でモデルを選び直すか、「組織の既定に従う」にしてください。"
         );
-        assert_eq!(unknown.code, "invalid");
+        // 実行前の解決の失敗と同じ code（設定を直すまで通らない）。
+        assert_eq!(unknown.code, "model_unavailable");
+        assert!(!unknown.retryable);
         let disabled = llm_port_error(
             &ec(),
             &LlmError::Config("model is not enabled for this organization: big".into()),

@@ -15,6 +15,7 @@ use crate::ir::validate::parse_skill_ref;
 use crate::run::NodeContext;
 
 use super::capability::parse_params;
+use super::capability_ai::resolved_model;
 use super::exec::CapabilityNodeExecutor;
 use super::ports::{ExecCtx, LlmInvokeReq, PortError};
 use super::resolver::{opt_param, ParamResolver};
@@ -80,7 +81,8 @@ impl CapabilityNodeExecutor {
             // 自然言語 instructions を code として渡すと Python として実行されてしまう
             // （レビュー指摘）。エージェンティックなツールループが要るスキルはチャット側の
             // skill ツール（PR #354）が担い、ワークフローの instructions-only skill は
-            // 「skill 指示付きの LLM 呼び出し」として実行する。
+            // 「skill 指示付きの LLM 呼び出し」として実行する。モデルは指定しない（ポートが実行主体の
+            // 組織の既定で解決する・BUG-12）。
             self.rate_check(ec, "llm.invoke").await?;
             self.ports
                 .llm_invoke(
@@ -96,12 +98,13 @@ impl CapabilityNodeExecutor {
                 .await?
         };
 
-        self.audit(
-            &ec.tenant_id,
-            "skill.invoke",
-            true,
-            &json!({ "skill": p.skill, "via": if skill.shiki_script.is_some() { "script" } else { "llm" } }),
-        );
+        // llm 経由のときは実際に使ったモデル（組織の既定で解決した名前）も残す。
+        let meta = if skill.shiki_script.is_some() {
+            json!({ "skill": p.skill, "via": "script" })
+        } else {
+            json!({ "skill": p.skill, "via": "llm", "model": resolved_model(&out, None) })
+        };
+        self.audit(&ec.tenant_id, "skill.invoke", true, &meta);
         Ok(out)
     }
 }

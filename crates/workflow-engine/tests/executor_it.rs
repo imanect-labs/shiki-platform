@@ -55,6 +55,8 @@ struct FakePorts {
     skill: Mutex<Option<workflow_engine::nodes::ResolvedSkillView>>,
     /// llm_invoke へ渡った system（skill instructions の伝播検証用）。
     last_llm_system: Mutex<Option<String>>,
+    /// llm_invoke へ渡った model（省略が None のまま届くかの検証用）。
+    last_llm_model: Mutex<Option<Option<String>>>,
     /// workflow_start へ渡った（name, input）（入れ子の値の展開の検証用）。
     last_start: Mutex<Option<(String, Value)>>,
 }
@@ -97,7 +99,10 @@ impl NodePorts for FakePorts {
     }
     async fn llm_invoke(&self, _ctx: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError> {
         *self.last_llm_system.lock().unwrap() = req.system.clone();
-        Ok(json!({ "text": format!("echo:{}", req.prompt) }))
+        *self.last_llm_model.lock().unwrap() = Some(req.model.clone());
+        // 本番のポートと同じく、省略は組織の既定で解決した名前を返す。
+        let model = req.model.unwrap_or_else(|| "org-default".into());
+        Ok(json!({ "text": format!("echo:{}", req.prompt), "model": model }))
     }
     async fn agent_invoke(&self, _ctx: &ExecCtx, _req: AgentInvokeReq) -> Result<Value, PortError> {
         Ok(json!({ "stdout": "ok" }))
@@ -499,6 +504,46 @@ async fn llm_invoke_is_scope_free() {
     assert_eq!(res.output["text"], json!("echo:hi"));
 }
 
+/// モデルの省略（空文字を含む）はポートへ None で渡り、監査には実際に使ったモデル（ポートが解決した名前）と
+/// ノードの指定（null は組織の既定）が残る（BUG-12）。
+#[tokio::test]
+async fn llm_invoke_audits_the_resolved_and_requested_model() {
+    let ports = Arc::new(FakePorts::default());
+    let audit = Arc::new(CapturingAudit::default());
+    let exec = executor(Arc::clone(&ports), Arc::clone(&audit));
+    for params in [
+        json!({ "prompt": "hi" }),
+        json!({ "prompt": "hi", "model": "" }),
+    ] {
+        let res = exec
+            .execute("llm.invoke", &params, &ctx(json!({}), vec![]))
+            .await;
+        assert!(res.ok, "{:?}", res.error);
+        assert_eq!(*ports.last_llm_model.lock().unwrap(), Some(None));
+    }
+    let res = exec
+        .execute(
+            "llm.invoke",
+            &json!({ "prompt": "hi", "model": "pinned" }),
+            &ctx(json!({}), vec![]),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    let records = audit.records.lock().unwrap();
+    let metas: Vec<&Value> = records
+        .iter()
+        .filter(|(api, ok, _)| api == "llm.invoke" && *ok)
+        .map(|(_, _, meta)| meta)
+        .collect();
+    assert_eq!(metas.len(), 3);
+    for meta in &metas[..2] {
+        assert_eq!(meta["model"], "org-default");
+        assert_eq!(meta["requested_model"], Value::Null);
+    }
+    assert_eq!(metas[2]["model"], "pinned");
+    assert_eq!(metas[2]["requested_model"], "pinned");
+}
+
 // --- skill.invoke（#344 Task 10.1b）---
 
 #[tokio::test]
@@ -527,11 +572,13 @@ async fn skill_invoke_instructions_route_via_llm() {
     // instructions は system として伝播する。
     let system = ports.last_llm_system.lock().unwrap().clone().unwrap();
     assert!(system.contains("経費規程に従って確認する。"));
-    // 監査に skill.invoke が経路つきで残る。
+    // モデルは指定せずに渡り（組織の既定）、監査に skill.invoke が経路と実際に使ったモデルつきで残る。
+    assert_eq!(*ports.last_llm_model.lock().unwrap(), Some(None));
     let records = audit.records.lock().unwrap();
-    assert!(records
-        .iter()
-        .any(|(api, ok, meta)| api == "skill.invoke" && *ok && meta["via"] == "llm"));
+    assert!(records.iter().any(|(api, ok, meta)| api == "skill.invoke"
+        && *ok
+        && meta["via"] == "llm"
+        && meta["model"] == "org-default"));
 }
 
 #[tokio::test]
