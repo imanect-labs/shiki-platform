@@ -4,10 +4,10 @@
 ///
 /// スケジュール/イベントで自動実行するには、**自分の権限の範囲から**ワークフローに
 /// 権限を渡す（委譲）必要がある。consent-plan（IR 静的分析）の提案を日本語で見せ、
-/// 対象未確定のものはフォルダピッカーで選ばせてから enable する。
+/// 対象未確定のものはテーブル・フォルダ・ファイルのピッカーで選ばせてから enable する。
 
 import * as React from "react";
-import { AlertTriangle, FolderOpen, Loader2, ShieldCheck } from "lucide-react";
+import { AlertTriangle, FileText, FolderOpen, Loader2, ShieldCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,7 +22,9 @@ import { toast } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
 import { SCOPE_LABELS } from "@/lib/workflow-scopes";
 import { FolderPicker } from "@/components/artifacts/folder-picker";
+import { DrivePicker } from "@/components/chat/drive-picker";
 import { DataTableSelect, useDataTables } from "@/components/workflow/editor/config-panel/forms-data";
+import { DriveItemName, isCsvFile } from "@/components/workflow/editor/config-panel/forms-files";
 import {
   disableWorkflow,
   enableWorkflow,
@@ -40,11 +42,20 @@ const RELATION_LABELS: Record<string, string> = {
   can_use: "使用",
 };
 
+/// 委譲の対象の種類ごとの呼び名と、対象を決める params の項目（`dynamic` の判定に使う）。
+/// フォルダは判定しない: 親フォルダに渡した権限は配下にも効くので、前の結果で決まるフォルダでも
+/// 親を選んで渡す意味がある（テーブルとファイルには階層が無い）。
+const TARGETS: Record<string, { what: string; param?: string }> = {
+  data_table: { what: "テーブル", param: "table" },
+  file: { what: "ファイル", param: "file" },
+  folder: { what: "フォルダ" },
+};
+
 type GrantRow = SuggestedGrant & {
   picked?: { id: string; name: string };
-  /// テーブルを実行の入力など前の結果から決めるブロック（`$from`）の権限。有効化の時点では対象が決まらない
-  /// ので選ばせない（選ぶと権限だけ渡り、実行の対象とは無関係になる・C-P2-2）。
-  dynamic?: { label: string; fromInput: boolean };
+  /// 対象（テーブル・ファイル）を実行の入力など前の結果から決めるブロック（`$from`）の権限。
+  /// 有効化の時点では対象が決まらないので選ばせない（選ぶと権限だけ渡り、実行の対象とは無関係になる・C-P2-2）。
+  dynamic?: { label: string; fromInput: boolean; what: string };
 };
 
 export function EnableDialog({
@@ -67,6 +78,7 @@ export function EnableDialog({
     grants: GrantRow[];
   } | null>(null);
   const [pickerFor, setPickerFor] = React.useState<number | null>(null);
+  const [filePickerFor, setFilePickerFor] = React.useState<number | null>(null);
   const [busy, setBusy] = React.useState(false);
   /// スケジュールで動くか（入力の無い実行で「入力からテーブルを決める」ブロックは動かない）。
   const [schedule, setSchedule] = React.useState(false);
@@ -74,10 +86,10 @@ export function EnableDialog({
   const needsTables = (plan?.grants ?? []).some((g) => g.objectKind === "data_table");
   const { tables } = useDataTables(open && needsTables);
   const tableName = (id: string | null) => (id ? tables?.find((t) => t.id === id)?.name : undefined);
-  const pickTable = (i: number, id: string) => {
+  const pick = (i: number, picked: { id: string; name: string }) => {
     if (!plan) return;
     const grants = [...plan.grants];
-    grants[i] = { ...grants[i], picked: { id, name: tableName(id) ?? id } };
+    grants[i] = { ...grants[i], picked };
     setPlan({ ...plan, grants });
   };
 
@@ -86,15 +98,19 @@ export function EnableDialog({
     setPlan(null);
     Promise.all([getConsentPlan(workflowId, version), getWorkflowVersion(workflowId, version).catch(() => null)])
       .then(([p, wf]) => {
-        // 提案の出どころ（`node:<id>`）のブロックが、テーブルを前の結果から決めているか。
+        // 提案の出どころ（`node:<id>`）のブロックが、対象を前の結果から決めているか。
         const nodes = new Map((wf?.ir.nodes ?? []).map((n) => [n.id, n]));
         setSchedule(Boolean(wf?.ir.triggers.some((t) => t.kind === "schedule")));
         const grants: GrantRow[] = p.grants.map((g) => {
           const node = g.source.startsWith("node:") ? nodes.get(g.source.slice(5)) : undefined;
-          const table = (node?.params as { table?: unknown } | undefined)?.table;
-          if (g.objectKind === "data_table" && g.needsUserPick && table && typeof table === "object" && "$from" in table) {
-            const from = String((table as { $from: unknown }).$from);
-            return { ...g, dynamic: { label: node?.label || node?.id || "", fromInput: from === "input" } };
+          const target = TARGETS[g.objectKind];
+          const value = target?.param ? (node?.params as Record<string, unknown> | undefined)?.[target.param] : undefined;
+          if (target && g.needsUserPick && value && typeof value === "object" && "$from" in value) {
+            const from = String((value as { $from: unknown }).$from);
+            return {
+              ...g,
+              dynamic: { label: node?.label || node?.id || "", fromInput: from === "input", what: target.what },
+            };
           }
           return g;
         });
@@ -110,7 +126,7 @@ export function EnableDialog({
   }, [open, workflowId, version]);
 
   // 対象未確定の grant は種類を問わず有効化をブロックする（fail-closed）。
-  // ピッカーを出せるのは folder のみ・それ以外（将来の種類）は保存側の見直しを促す。
+  // ピッカーを出せるのはテーブル・フォルダ・ファイル。それ以外（将来の種類）は保存側の見直しを促す。
   const unresolved = (plan?.grants ?? []).filter((g) => g.needsUserPick && !g.picked && !g.dynamic);
 
   const enable = async () => {
@@ -230,15 +246,22 @@ export function EnableDialog({
                         </span>
                         <span className={cn("block text-muted-foreground", !g.dynamic && "truncate")}>
                           {g.dynamic
-                            ? `「${g.dynamic.label}」のテーブルは${g.dynamic.fromInput ? "実行の入力" : "前のブロックの結果"}で決まるため、ここでは渡せません。${
+                            ? `「${g.dynamic.label}」の${g.dynamic.what}は${g.dynamic.fromInput ? "実行の入力" : "前のブロックの結果"}で決まるため、ここでは渡せません。${
                                 schedule && g.dynamic.fromInput
-                                  ? "スケジュールの実行には入力が無いので、このブロックは失敗します。自動で動かすならブロックでテーブルを一覧から選んでください。"
-                                  : "自動で動かすときは、そのテーブルを使える権限が要ります。"
+                                  ? `スケジュールの実行には入力が無いので、このブロックは失敗します。自動で動かすならブロックで${g.dynamic.what}を${g.objectKind === "data_table" ? "一覧" : "ドライブ"}から選んでください。`
+                                  : `自動で動かすときは、その${g.dynamic.what}を使える権限が要ります。`
                               }`
-                            : g.objectKind === "data_table" && (g.picked || g.objectId)
-                            ? `テーブル「${g.picked?.name ?? tableName(g.objectId) ?? g.objectId}」`
                             : g.picked
-                            ? `フォルダ「${g.picked.name}」`
+                            ? `${TARGETS[g.objectKind]?.what ?? ""}「${g.picked.name}」`
+                            : g.objectKind === "data_table" && g.objectId
+                            ? `テーブル「${tableName(g.objectId) ?? g.objectId}」`
+                            : (g.objectKind === "file" || g.objectKind === "folder") && g.objectId
+                            ? (
+                                <>
+                                  {TARGETS[g.objectKind].what}「
+                                  <DriveItemName id={g.objectId} fallback={g.objectId} />」
+                                </>
+                              )
                             : g.objectName
                               ? `「${g.objectName}」`
                               : g.objectId
@@ -255,7 +278,7 @@ export function EnableDialog({
                             label="渡すテーブル"
                             value={g.picked?.id ?? null}
                             tables={tables}
-                            onChange={(id) => pickTable(i, id)}
+                            onChange={(id) => pick(i, { id, name: tableName(id) ?? id })}
                           />
                         </div>
                       ) : null}
@@ -267,6 +290,18 @@ export function EnableDialog({
                           onClick={() => setPickerFor(i)}
                         >
                           <FolderOpen className="size-3.5" aria-hidden />
+                          {g.picked ? "変更" : "選ぶ"}
+                        </Button>
+                      ) : null}
+                      {g.needsUserPick && g.objectKind === "file" && !g.dynamic ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 shrink-0 text-xs"
+                          aria-label={`渡すファイルを${g.picked ? "変更" : "選ぶ"}`}
+                          onClick={() => setFilePickerFor(i)}
+                        >
+                          <FileText className="size-3.5" aria-hidden />
                           {g.picked ? "変更" : "選ぶ"}
                         </Button>
                       ) : null}
@@ -300,15 +335,21 @@ export function EnableDialog({
           open={pickerFor !== null}
           onOpenChange={(o) => !o && setPickerFor(null)}
           onSelect={(choice) => {
-            if (pickerFor !== null && plan) {
-              const grants = [...plan.grants];
-              grants[pickerFor] = {
-                ...grants[pickerFor],
-                picked: { id: choice.id, name: choice.name },
-              };
-              setPlan({ ...plan, grants });
-            }
+            if (pickerFor !== null) pick(pickerFor, { id: choice.id, name: choice.name });
             setPickerFor(null);
+          }}
+        />
+        <DrivePicker
+          open={filePickerFor !== null}
+          onOpenChange={(o) => !o && setFilePickerFor(null)}
+          title="渡すファイルを選ぶ"
+          description="このワークフローに権限を渡すファイルを選んでください。"
+          accept={
+            filePickerFor !== null && plan?.grants[filePickerFor]?.scope.startsWith("csv.") ? isCsvFile : undefined
+          }
+          onSelect={(n) => {
+            if (filePickerFor !== null) pick(filePickerFor, { id: n.id, name: n.name });
+            setFilePickerFor(null);
           }}
         />
       </DialogContent>
