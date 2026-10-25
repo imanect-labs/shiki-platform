@@ -14,8 +14,9 @@ use std::sync::Arc;
 use agent_core::{Tool, ToolError, ToolName, ToolOutcome};
 use authz::AuthContext;
 use uuid::Uuid;
-use workflow_engine::vocab::node_catalog;
 use workflow_engine::{Catalog, ValidationError, WorkflowStore, WorkflowStoreError};
+
+mod guide;
 
 /// 発話ユーザー視点のカタログ（secret 名→許可ホスト・モデル一覧）を供給する差し込み点。
 ///
@@ -24,10 +25,18 @@ use workflow_engine::{Catalog, ValidationError, WorkflowStore, WorkflowStoreErro
 #[async_trait::async_trait]
 pub trait WorkflowCatalogSource: Send + Sync {
     async fn catalog(&self, ctx: &AuthContext) -> Result<Catalog, String>;
+
+    /// llm.invoke に書けるモデル（[`Catalog::models`] と同じ集合・空なら照合しない）。
+    ///
+    /// emit_workflow の説明文に run ごとに載せる。既定はカタログ全体を組んで取り出す（secret・skill の
+    /// 一覧も引くので、モデルだけを安く引ける実装は上書きする）。
+    async fn models(&self, ctx: &AuthContext) -> Result<Vec<String>, String> {
+        self.catalog(ctx).await.map(|c| c.models)
+    }
 }
 
-/// 検証エラー全件をモデルが自己修正しやすい形に整形する。
-fn format_validation_errors(errors: &[ValidationError]) -> String {
+/// 検証エラー全件をモデルが自己修正しやすい形に整形する（params の誤りにはそのノード種の形を添える）。
+fn format_validation_errors(errors: &[ValidationError], ir: &serde_json::Value) -> String {
     let mut out = format!(
         "ワークフロー IR の検証に失敗しました（{} 件）。全件を修正して emit_workflow を再実行してください。\n",
         errors.len()
@@ -45,40 +54,12 @@ fn format_validation_errors(errors: &[ValidationError]) -> String {
         }
         out.push('\n');
     }
-    out
-}
-
-/// ノード語彙の要約（説明文用・カタログ単一定義から生成し手書きドリフトを防ぐ）。
-fn catalog_summary() -> String {
-    let mut out = String::from("利用可能なノード type:\n");
-    for e in node_catalog().into_iter().filter(|e| e.available) {
-        let _ = write!(
-            out,
-            "- {}（{}）: {}",
-            e.node_type.as_str(),
-            e.label_ja,
-            e.description_ja
-        );
-        if !e.output_ports.is_empty() && e.output_ports != ["next"] && e.output_ports != ["out"] {
-            let _ = write!(out, "・出力ポート: {}", e.output_ports.join("/"));
-        }
-        if let Some(scope) = e.required_scope {
-            let _ = write!(out, "・要 declared_scopes: {}", scope.as_str());
-        }
-        out.push('\n');
+    let hints = guide::validation_hints(errors, ir);
+    if !hints.is_empty() {
+        out.push_str("補足:\n");
+        out.push_str(&hints);
     }
     out
-}
-
-fn emit_description() -> String {
-    format!(
-        "ワークフロー（自動化フロー）を JSON IR として保存する。新規作成は ir のみ、既存の編集は workflow_id を併せて渡す（編集前に必ず read_workflow で現在の IR を読むこと）。\n\
-         IR の骨格: {{\"ir_version\":1, \"name\":\"英小文字とハイフンの安定名\", \"display_name\":\"日本語表示名\", \"declared_scopes\":[…], \"triggers\":[{{\"kind\":\"interactive\"}} | {{\"kind\":\"schedule\",\"cron\":\"0 9 * * *\",\"tz\":\"Asia/Tokyo\"}} | {{\"kind\":\"event\",\"source\":\"storage.write\",\"scope\":{{\"folder\":\"<uuid>\"}}}}], \"nodes\":[{{\"id\":\"英小文字_数字\",\"type\":\"…\",\"label\":\"日本語\",\"params\":{{…}}}}], \"edges\":[{{\"from\":\"nodeA\",\"port\":\"next\",\"to\":\"nodeB\"}}]}}\n\
-         値の参照: params 内では {{\"$from\":\"<祖先ノードid>\",\"path\":\"/フィールド\"}}（実行入力は \"input\"）、文章の組み立ては {{\"$template\":\"…{{{{変数}}}}…\",\"vars\":{{…}}}}、それ以外はリテラル。\n\
-         検証に失敗した場合はエラー全件が返るので、修正して再実行する。成功するとユーザーにはカードが表示され、エディタで開ける。\n\
-         {}",
-        catalog_summary()
-    )
 }
 
 /// ワークフロー IR の生成/更新ツール。
@@ -89,12 +70,20 @@ pub struct EmitWorkflowTool {
 }
 
 impl EmitWorkflowTool {
+    /// 使えるモデルを説明文に載せない版（モデルは検証エラーの候補で知らせる）。
     pub fn new(store: Arc<WorkflowStore>, catalog: Arc<dyn WorkflowCatalogSource>) -> Self {
         EmitWorkflowTool {
             store,
             catalog,
-            description: emit_description(),
+            description: guide::emit_description(None),
         }
+    }
+
+    /// 発話ユーザーの組織で使えるモデルを説明文に載せる（run ごとに組む・空なら照合しない旨を書く）。
+    #[must_use]
+    pub fn with_models(mut self, models: &[String]) -> Self {
+        self.description = guide::emit_description(Some(models));
+        self
     }
 }
 
@@ -199,9 +188,9 @@ impl Tool for EmitWorkflowTool {
                 }));
                 Ok(outcome)
             }
-            Err(WorkflowStoreError::Validation(errors)) => {
-                Ok(ToolOutcome::error(format_validation_errors(&errors)))
-            }
+            Err(WorkflowStoreError::Validation(errors)) => Ok(ToolOutcome::error(
+                format_validation_errors(&errors, &ir_json),
+            )),
             // 権限不足・競合等もモデルに観測させ、ユーザーへ言語化させる（run は失敗させない）。
             Err(WorkflowStoreError::Artifact(e)) => Ok(ToolOutcome::error(format!(
                 "ワークフローの保存に失敗しました: {e}"
@@ -280,7 +269,7 @@ mod tests {
     /// ノードカタログに登録した data ノードは emit_workflow の説明へ自動で載る（Task 15.7・手書きしない）。
     #[test]
     fn emit_description_lists_data_nodes_from_the_catalog() {
-        let d = emit_description();
+        let d = guide::emit_description(None);
         for t in [
             "data.query",
             "data.record.create",
@@ -291,7 +280,25 @@ mod tests {
         ] {
             assert!(d.contains(&format!("- {t}（")), "{t} が説明に無い");
         }
-        assert!(d.contains("要 declared_scopes: data.read"));
-        assert!(d.contains("要 declared_scopes: data.write"));
+        assert!(d.contains("スコープ data.read。"));
+        assert!(d.contains("スコープ data.write。"));
+    }
+
+    /// params の誤りには、そのノード種の params の形を添える（LLM が自分で直せるように）。
+    #[test]
+    fn validation_errors_carry_the_params_shape_of_the_node() {
+        let ir = serde_json::json!({
+            "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "read_file", "type": "storage.read", "params": { "id": "x" } }],
+            "edges": []
+        });
+        let errors = workflow_engine::validate(&ir, &Catalog::default()).unwrap_err();
+        let text = format_validation_errors(&errors, &ir);
+        assert!(text.contains("[ir.schema_violation]"), "{text}");
+        assert!(text.contains("node: read_file, path: /params/id"), "{text}");
+        assert!(
+            text.contains("補足:\nstorage.read の params の形（? は省略可）: { file: ValueExpr }"),
+            "{text}"
+        );
     }
 }

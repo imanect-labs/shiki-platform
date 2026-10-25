@@ -16,7 +16,8 @@ use super::ChatWorker;
 use crate::store::ClaimedRun;
 
 impl ChatWorker {
-    /// 全プロファイル共通のツール（検索・コード実行・web・generative UI・ワークフロー）。
+    /// 全プロファイル共通のツール（検索・コード実行・web・generative UI）。ワークフローは
+    /// [`Self::push_workflow_tools`]（発話ユーザーのモデル一覧を引くため async）。
     ///
     /// `attachments` は会話の添付で、`code_interpreter` が実行前に `/workspace` へ置く（#379）。
     pub(super) fn push_core_tools(
@@ -78,17 +79,32 @@ impl ChatWorker {
             }
             tools.push(Arc::new(fetch));
         }
-        // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）:
-        // ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。
-        if let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) {
-            tools.push(Arc::new(crate::workflow_tool::EmitWorkflowTool::new(
-                store.clone(),
-                catalog.clone(),
-            )));
-            tools.push(Arc::new(crate::workflow_tool::ReadWorkflowTool::new(
-                store.clone(),
-            )));
+    }
+
+    /// AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）。
+    ///
+    /// ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。emit_workflow の
+    /// 説明文には発話ユーザーの組織で使えるモデルを載せる（保存時の照合と同じ集合）。引けなければ
+    /// run を落とさず、モデルを載せない説明文にする（候補は検証エラーで返る）。
+    pub(super) async fn push_workflow_tools(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        ctx: &AuthContext,
+    ) {
+        let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) else {
+            return;
+        };
+        let mut emit = crate::workflow_tool::EmitWorkflowTool::new(store.clone(), catalog.clone());
+        match catalog.models(ctx).await {
+            Ok(models) => emit = emit.with_models(&models),
+            Err(e) => {
+                tracing::warn!(error = %e, "モデル一覧の取得に失敗（emit_workflow の説明文に載せない）");
+            }
         }
+        tools.push(Arc::new(emit));
+        tools.push(Arc::new(crate::workflow_tool::ReadWorkflowTool::new(
+            store.clone(),
+        )));
     }
 
     /// ドキュメント共同編集ツールの配線（ノート=Task 11P.4／スライド=Task 11.3）。

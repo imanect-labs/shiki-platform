@@ -171,6 +171,8 @@ impl ChatWorker {
         // 提示ツール一式（共通＋ドキュメント/Office/CSV）は worker/toolset.rs に集約する。
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         self.push_core_tools(&mut tools, &skills, attachments, run);
+        // AI ワークフロー編集（説明文に発話ユーザーのモデル一覧を載せる・Task 10.13）。
+        self.push_workflow_tools(&mut tools, ctx).await;
         // skill ツール（カタログ引き・#344 Task 10.11）。
         self.push_skill_tool(&mut tools, ctx, run, &skills).await;
         // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋
