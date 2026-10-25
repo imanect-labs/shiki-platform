@@ -16,6 +16,28 @@ use super::ChatWorker;
 use crate::store::ClaimedRun;
 
 impl ChatWorker {
+    /// 全プロファイルで提示するツール一式（自律専用のものは含まない）。積む順が提示の順になる。
+    pub(super) async fn base_tools(
+        &self,
+        ctx: &AuthContext,
+        run: &ClaimedRun,
+        skills: &[crate::skill::AppliedSkill],
+        attachments: Vec<AttachmentRef>,
+    ) -> Vec<Arc<dyn Tool>> {
+        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+        self.push_core_tools(&mut tools, skills, attachments, run);
+        // AI ワークフロー編集（説明文に発話ユーザーのモデル一覧を載せる・Task 10.13）。
+        self.push_workflow_tools(&mut tools, ctx).await;
+        // skill ツール（カタログ引き・#344 Task 10.11）。
+        self.push_skill_tool(&mut tools, ctx, run, skills).await;
+        // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋Office 編集/CSV。
+        self.push_collab_tools(&mut tools);
+        self.push_office_and_csv_tools(&mut tools);
+        // 構造化データ（発話ユーザーに見えるテーブルがあるときだけ・Task 15.7）。
+        self.push_data_tools(&mut tools, ctx).await;
+        tools
+    }
+
     /// 全プロファイル共通のツール（検索・コード実行・web・generative UI）。ワークフローは
     /// [`Self::push_workflow_tools`]（発話ユーザーのモデル一覧を引くため async）。
     ///
