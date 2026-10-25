@@ -416,14 +416,17 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 ```jsonc
 { "id": "classify", "type": "llm.invoke",
   "params": {
-    "model": "…",                  // テナントのモデルカタログに保存時存在照合＋実行時再照合
-    "effort": "low",               // low | medium | high
+    "model": "…",                  // 省略可。省略すると組織の既定（Auto を含む）。指定時は組織が許可したモデルへ保存時照合＋実行時再照合
+    "effort": "low",               // 予約（未実装）
     "prompt": { "$template": "…", "vars": { /* … */ } },
     "output_schema": { /* JSON Schema サブセット（input_schema と同じ）→ structured output */ }
   } }
 ```
 
-- `model` はテナントのモデルカタログに保存時存在照合し、実行時にも再照合する（§8 V3・[engine.md](./engine.md) §6 の fail-closed）。
+- `model` を省略すると（空文字も同じ）、**実行のたびに**実行主体の組織（tenant_id ＋ org）の AI 設定で解決する。チャットと同じ規則（llm-gateway の `resolve_choice`）で、既定が Auto なら Auto の振り先と思考強度を使う。本人専用のモデル（ChatGPT プラン）は、実行主体によらず候補から外す（誰が起動しても同じモデルになる）。
+- `model` を指定すると、保存時に組織が許可したモデル（本人専用を除く）と照合する（§8 V3）。実行時にも同じ規則で照らし直し、使えなくなっていれば組織の既定へ戻さずに失敗する（[engine.md](./engine.md) §6 の fail-closed）。
+- 組織がモデルの選択を許していないときは、既定と異なる `model` を `ir.model_choice_disabled` で拒否する（実行時も同じ規則で失敗する）。
+- 出力は `{ "text", "model" }`。`model` は実際に使ったモデルの論理名で、会計・監査にも同じ名前を残す。
 - `output_schema` を指定すると structured output になる。スキーマは `input_schema` と同じ JSON Schema サブセット（§2）。
 
 ### 7.4 `agent.invoke`
@@ -524,7 +527,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 |---|---|---|---|
 | V1 | スキーマ | JSON Schema（deny-unknown・型・必須） | `ir.schema_violation` |
 | V2 | グラフ | id 一意・エッジ参照存在・ポート存在・DAG・入エッジ制約・領域閉包・出口一意・到達可能性 | `ir.graph_cycle` 等 |
-| V3 | 語彙照合 | ノード type・declared_scopes・ツール名・モデル名を codegen 語彙と登録カタログの閉じた集合へ照合 | `ir.unknown_scope` |
+| V3 | 語彙照合 | ノード type・declared_scopes・ツール名・モデル名を codegen 語彙と登録カタログ（モデルは組織が許可したもの・本人専用を除く）の閉じた集合へ照合 | `ir.unknown_scope`・`ir.unknown_model`・`ir.model_choice_disabled` |
 | V4 | 参照存在 | skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノード URL ホストを許容）・テーブル/フォルダ id | `ir.unknown_skill` |
 | V5 | データフロー | `$from` の祖先性・default 要否・条件木の型整合（静的に分かる範囲）・regex コンパイル | `ir.bad_ref` |
 | V6 | script コンパイル | inline script の swc パース・禁止構文（[script.md](./script.md) §3。artifact 参照は version 固定なので存在のみ） | `ir.script_syntax` |
@@ -534,7 +537,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 
 - **V1 スキーマ**: トップレベルからノード params まで、JSON Schema で型・必須・deny-unknown を検証する。未知フィールドは全階層で拒否する（§2）。
 - **V2 グラフ**: `id` 一意、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1、全ノードのエントリからの到達可能性を検証する。
-- **V3 語彙照合**: ノード `type`・`declared_scopes`・ツール名（`allowed_tools`）・モデル名を codegen が生成した閉じた語彙と、テナントの登録カタログ（モデルカタログ等）へ照合する。**ハルシネーション境界**であり、実在しない語彙を参照する IR（特に AI 生成）を保存前に拒否する。
+- **V3 語彙照合**: ノード `type`・`declared_scopes`・ツール名（`allowed_tools`）・モデル名を codegen が生成した閉じた語彙と、テナントの登録カタログ（モデルは組織が許可したモデル・本人専用を除く）へ照合する。**ハルシネーション境界**であり、実在しない語彙を参照する IR（特に AI 生成）を保存前に拒否する。`llm.invoke` の `model` は省略可で、省略（空文字を含む）は照合しない（実行時に組織の既定で解決する・§7.3）。組織がモデルの選択を禁じていれば、既定と異なるモデルを `ir.model_choice_disabled` で拒否する。
 - **V4 参照存在**: skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノードの `http.request` URL ホストを許容する）・テーブル/フォルダ id の実在を検証する。
 - **V5 データフロー**: `$from` の `nodes.<id>` が祖先か、全パスで先行しない場合に `default` があるか、条件木の左右の型が静的に整合するか、`matches` の regex がコンパイルできるかを検証する（§3）。
 - **V6 script コンパイル**: inline script を swc でパースし、禁止構文を弾く（[script.md](./script.md) §3）。artifact 参照は version 固定なので存在確認のみ。
