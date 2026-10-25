@@ -42,7 +42,11 @@ pub struct TemplateExpr {
 }
 
 /// パラメータ値（リテラル / `$from` / `$template`）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+///
+/// 直列化は untagged。**読み込みは手書き**（[`Deserialize`] の実装を参照）: serde の構造体は配列からも
+/// 位置引数で読めるため、untagged の導出だと `["x", "y"]` が `$from: "x", path: "y"` の参照に化け、
+/// `in` の候補リストをリテラルで書けなかった（Task 15.7 で修正）。
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
 #[serde(untagged)]
 #[ts(export)]
 pub enum ValueExpr {
@@ -52,6 +56,27 @@ pub enum ValueExpr {
     Template(TemplateExpr),
     /// リテラル JSON（object/array/string/number/bool/null）。
     Literal(#[ts(type = "unknown")] serde_json::Value),
+}
+
+impl<'de> Deserialize<'de> for ValueExpr {
+    /// `$from` / `$template` キーを持つ**オブジェクト**だけを値式として読み、それ以外（配列を含む）は
+    /// リテラル。値式の形が崩れたオブジェクトは従来どおりリテラルとして読み、保存時検証 V5 が
+    /// 「不正な $from 式」として弾く（生 JSON を走査する）。
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        if let serde_json::Value::Object(m) = &v {
+            if m.contains_key("$from") {
+                if let Ok(f) = serde_json::from_value::<FromRef>(v.clone()) {
+                    return Ok(ValueExpr::From(f));
+                }
+            } else if m.contains_key("$template") {
+                if let Ok(t) = serde_json::from_value::<TemplateExpr>(v.clone()) {
+                    return Ok(ValueExpr::Template(t));
+                }
+            }
+        }
+        Ok(ValueExpr::Literal(v))
+    }
 }
 
 impl ValueExpr {
@@ -160,6 +185,14 @@ mod tests {
         assert!(matches!(t, ValueExpr::Template(_)));
         let l: ValueExpr = serde_json::from_value(json!(42)).unwrap();
         assert!(matches!(l, ValueExpr::Literal(_)));
+        // 配列は位置引数の構造体として読まない（`in` の候補リスト・Task 15.7）。
+        let a: ValueExpr = serde_json::from_value(json!(["x", "y"])).unwrap();
+        assert_eq!(a, ValueExpr::Literal(json!(["x", "y"])));
+        let a: ValueExpr = serde_json::from_value(json!(["hi {n}", {}])).unwrap();
+        assert!(matches!(a, ValueExpr::Literal(_)));
+        // 形の崩れた値式はリテラル（V5 が生 JSON から弾く）。
+        let bad: ValueExpr = serde_json::from_value(json!({"$from": "input", "typo": 1})).unwrap();
+        assert!(matches!(bad, ValueExpr::Literal(_)));
     }
 
     #[test]

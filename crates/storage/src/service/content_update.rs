@@ -10,6 +10,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 use crate::content_address::sha256_hex;
 
@@ -40,7 +41,7 @@ impl StorageService {
             ctx,
             Relation::Editor,
             &ctx.ns().file(&file_id.to_string()),
-            "file.write.content",
+            AuditAction::FileWriteContent,
             "file",
             &file_id.to_string(),
             trace_id,
@@ -110,7 +111,7 @@ impl StorageService {
             &mut tx,
             ctx,
             AuditEntry {
-                action: "file.write.content",
+                action: AuditAction::FileWriteContent,
                 object_type: "file",
                 object_id: &node.id.to_string(),
                 decision: Decision::Allow,

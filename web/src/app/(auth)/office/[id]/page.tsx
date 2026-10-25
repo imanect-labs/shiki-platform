@@ -11,7 +11,7 @@
 
 import { Download, FileWarning, History, MessageSquare, PlugZap, Share2 } from "lucide-react";
 import Link from "next/link";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import * as React from "react";
 
 import { ShareDialog } from "@/components/drive/share-dialog";
@@ -50,7 +50,6 @@ type LoadState =
 export default function OfficePage() {
   const params = useParams<{ id: string }>();
   const fileId = params.id;
-  const router = useRouter();
   const [state, setState] = React.useState<LoadState>({ phase: "loading" });
   const searchParams = useSearchParams();
   // サイドバーの履歴・検索から来たときは、アシスタントを開いてその会話を指定する（?thread=・#598）。
@@ -283,7 +282,9 @@ export default function OfficePage() {
           <OfficeEditor
             ref={editorRef}
             session={state.session}
-            onClose={() => router.push("/drive")}
+            // Collabora 側の閉じる（スマホ左上の戻る等）もヘッダの戻ると同じ行き先にする
+            // （チャットから開いたらチャットへ戻る。直前が無いときだけドライブ）。
+            onClose={back.onClick}
             findText={findText}
           />
         </div>

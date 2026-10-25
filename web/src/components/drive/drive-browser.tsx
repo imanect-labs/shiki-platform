@@ -57,7 +57,8 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 ///
 /// スマホ（md 未満）はタイトルバーが無いので、本文の先頭に見出し（パンくず＋フォルダ名）を
 /// 置き、その右に並べ替えと表示切替を 1 段で並べる。新規作成・アップロードは右下の
-/// 「＋ 新規」に集め、検索とドライブの切替は右上の浮いたボタン（DriveChrome）から出す。
+/// 「＋ 新規」に集め、検索は右上の浮いたボタン（DriveChrome）、区画の切替は上端のタブ
+/// （DriveTabs・drive/layout.tsx）から出す。
 export function DriveBrowser() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -281,7 +282,6 @@ export function DriveBrowser() {
   return (
     <div className="flex flex-col gap-4 max-md:gap-3">
       <DriveChrome
-        current="home"
         back={back}
         search={{ open: searchVisible, onToggle: toggleMobileSearch }}
       />

@@ -6,6 +6,7 @@
 use axum::{extract::State, Extension, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Decision};
 use uuid::Uuid;
 
@@ -49,7 +50,7 @@ pub(crate) async fn send(
         .record(
             &ctx.auth,
             AuditEntry {
-                action: "gateway.notify.send",
+                action: AuditAction::GatewayNotifySend,
                 object_type: "miniapp",
                 object_id: &ctx.installation.app_id.to_string(),
                 decision: Decision::Allow,

@@ -31,6 +31,7 @@ pub mod limits;
 pub mod model;
 pub mod provider;
 pub mod providers;
+mod retry;
 pub mod tenant;
 pub mod tool_loading;
 pub mod usage_report;

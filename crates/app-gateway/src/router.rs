@@ -6,6 +6,7 @@
 //! 全ての許可/拒否を監査へ残す（拒否は security タグ付き・trace_id 貫通）。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, AuthzClient, GroupLayout, Principal, PrincipalKind};
 use axum::{
@@ -80,6 +81,10 @@ pub struct GatewayCtx {
     pub installation: AppInstallation,
 }
 
+/// 401 の固定の文言（理由を含めない）。
+const UNAUTHENTICATED_MSG: &str =
+    "認証に失敗しました。アクセストークンが無いか、無効または期限切れです";
+
 impl IntoResponse for GatewayError {
     fn into_response(self) -> Response {
         let status = match self {
@@ -92,6 +97,26 @@ impl IntoResponse for GatewayError {
             GatewayError::Upstream(_) => StatusCode::BAD_GATEWAY,
             GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
+        // 401 は理由（JWT の解析・署名検証・クレームの誤り）を返さない。内部の型名・ライブラリの英語の文言が
+        // 混ざり（`JWT ヘッダ不正: JSON error: expected value…`）、トークンの組み立てを試す手掛かりにもなる
+        // （3 回目の検証 3-B-5）。理由はログにだけ残し、本文は固定の構造化した形にする。
+        if let GatewayError::Unauthenticated(reason) = &self {
+            tracing::info!(reason = %reason, "gateway: 認証に失敗（401）");
+            let mut resp = (
+                status,
+                Json(json!({
+                    "status": 401,
+                    "code": "unauthenticated",
+                    "error": UNAUTHENTICATED_MSG,
+                })),
+            )
+                .into_response();
+            resp.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static("Bearer error=\"invalid_token\""),
+            );
+            return resp;
+        }
         (status, Json(json!({ "error": self.to_string() }))).into_response()
     }
 }
@@ -315,7 +340,7 @@ async fn record(
         .record(
             auth,
             AuditEntry {
-                action: "gateway.call",
+                action: AuditAction::GatewayCall,
                 object_type: "miniapp",
                 object_id: &installation.app_id.to_string(),
                 decision,

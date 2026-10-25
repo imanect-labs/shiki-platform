@@ -34,6 +34,23 @@ pub struct SaveWorkflowResponse {
     pub id: Uuid,
     pub version: i64,
     pub name: String,
+    /// 保存した宣言スコープ（ノードが要するスコープを保存の入口で補完したもの・検証 C-P1-2）。
+    pub declared_scopes: Vec<String>,
+    /// 保存は止めない警告（条件の意味論の切替で分岐の結果が変わり得る条件など・Task 15.7）。
+    pub warnings: Vec<ValidationError>,
+}
+
+/// 保存した IR の警告（`ir.condition_semantics_changed` など）。保存者が気付けるようログにも残す。
+fn save_warnings(ir: &workflow_engine::WorkflowIr, id: Uuid) -> Vec<ValidationError> {
+    let warnings = workflow_engine::semantics_warnings(ir);
+    if !warnings.is_empty() {
+        tracing::warn!(
+            workflow = %id,
+            count = warnings.len(),
+            "条件の意味論の切替（2026-10）で振る舞いが変わり得る条件を含むワークフローを保存しました"
+        );
+    }
+    warnings
 }
 
 /// バージョン取得レスポンス（IR 本文付き）。
@@ -87,6 +104,10 @@ pub struct ValidateWorkflowRequest {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ValidateWorkflowResponse {
     pub errors: Vec<ValidationError>,
+    /// 保存したときの宣言スコープ（ノードが要するスコープを補完した後・検証 C-P1-2）。IR が読めなければ空。
+    pub declared_scopes: Vec<String>,
+    /// 保存は止めない警告（`ir.condition_semantics_changed` など・Task 15.7）。
+    pub warnings: Vec<ValidationError>,
 }
 
 /// IR を保存せず検証する（dnd エディタのライブ検証・Task 10.12）。
@@ -109,11 +130,32 @@ pub async fn validate_workflow(
     Json(req): Json<ValidateWorkflowRequest>,
 ) -> Result<Json<ValidateWorkflowResponse>, ApiError> {
     let catalog = build_catalog(&state, &ctx).await?;
-    let errors = match workflow_engine::validate(&req.ir, &catalog) {
-        Ok(_) => Vec::new(),
-        Err(errors) => errors,
+    // 保存と同じく、ノードが要するスコープを補完してから検証する（検証 C-P1-2・結果を保存と揃える）。
+    let (ir, _) = workflow_engine::complete_declared_scopes(&req.ir);
+    let (errors, warnings) = match workflow_engine::validate(&ir, &catalog) {
+        Ok(ir) => (Vec::new(), workflow_engine::semantics_warnings(&ir)),
+        // スキーマ（V1）を通る IR なら、他の誤りがあっても警告は出す（エディタが同時に表示する）。
+        Err(errors) => {
+            let warnings = workflow_engine::WorkflowIr::from_json(&ir)
+                .map(|ir| workflow_engine::semantics_warnings(&ir))
+                .unwrap_or_default();
+            (errors, warnings)
+        }
     };
-    Ok(Json(ValidateWorkflowResponse { errors }))
+    let declared_scopes = ir
+        .get("declared_scopes")
+        .and_then(serde_json::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Json(ValidateWorkflowResponse {
+        errors,
+        declared_scopes,
+        warnings,
+    }))
 }
 
 /// 検証エラーを 400 として返す（全件を JSON body へ）。
@@ -154,12 +196,15 @@ pub async fn create_workflow(
         .create(&ctx, &req.ir, &catalog, trace.as_deref())
         .await
         .map_err(map_store_err)?;
+    let warnings = save_warnings(&ir, id);
     Ok((
         StatusCode::CREATED,
         Json(SaveWorkflowResponse {
             id,
             version: 1,
+            declared_scopes: ir.declared_scopes.clone(),
             name: ir.name,
+            warnings,
         }),
     ))
 }
@@ -200,10 +245,13 @@ pub async fn update_workflow(
         )
         .await
         .map_err(map_store_err)?;
+    let warnings = save_warnings(&ir, id);
     Ok(Json(SaveWorkflowResponse {
         id,
         version,
+        declared_scopes: ir.declared_scopes.clone(),
         name: ir.name,
+        warnings,
     }))
 }
 

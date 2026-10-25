@@ -5,6 +5,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 impl StorageService {
     /// フォルダに対する指定 relation を本人 ctx で検証する（deny は監査つき Forbidden）。
@@ -38,7 +39,7 @@ impl StorageService {
             ctx,
             relation,
             &ctx.ns().folder(&folder_id.to_string()),
-            "workspace.select",
+            AuditAction::WorkspaceSelect,
             "folder",
             &folder_id.to_string(),
             trace_id,
@@ -59,7 +60,7 @@ impl StorageService {
         self.require_read(
             ctx,
             &ctx.ns().folder(&node_id.to_string()),
-            "node.system.get",
+            AuditAction::NodeSystemGet,
             "folder",
             &node_id.to_string(),
             None,
@@ -130,7 +131,7 @@ impl StorageService {
                     ctx,
                     Relation::Editor,
                     &ctx.ns().folder(&p.to_string()),
-                    "folder.create",
+                    AuditAction::FolderCreate,
                     "folder",
                     &p.to_string(),
                     trace_id,
@@ -143,7 +144,7 @@ impl StorageService {
                     ctx,
                     Relation::Member,
                     &ctx.ns().organization(&ctx.org),
-                    "folder.create",
+                    AuditAction::FolderCreate,
                     "organization",
                     &ctx.org,
                     trace_id,
@@ -222,7 +223,7 @@ impl StorageService {
                 &mut tx,
                 ctx,
                 AuditEntry {
-                    action: "folder.create",
+                    action: AuditAction::FolderCreate,
                     object_type: "folder",
                     object_id: &folder_id.to_string(),
                     decision: Decision::Allow,

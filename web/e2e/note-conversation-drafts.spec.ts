@@ -113,16 +113,27 @@ test("分割ビュー: 会話の切替と「新しい会話」（1:N・旧会話
   const nodeId = await createNoteViaApi(page, uniqueName("split-1n"));
   await openNote(page, nodeId);
 
-  // アシスタントを開く → 会話が自動作成され、スイッチャが出る。
+  // アシスタントを開くだけでは会話を作らない（スイッチャは出ない）。最初の発話で作られる。
   await page.getByTestId("note-ask-ai").click();
-  await expect(page.getByTestId("note-chat-panel").getByLabel("メッセージを入力")).toBeVisible({
-    timeout: 20_000,
-  });
-  await expect(page.getByTestId("note-conversation-switcher")).toBeVisible();
+  const input = page.getByTestId("note-chat-panel").getByLabel("メッセージを入力");
+  await expect(input).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId("note-conversation-switcher")).toHaveCount(0);
+  await input.fill("最初の会話");
+  await input.press("Enter");
+  await expect(page.getByTestId("note-conversation-switcher")).toBeVisible({ timeout: 20_000 });
 
-  // 「新しい会話」→ 新スレッド（旧会話は履歴に残る＝スイッチャに 2 件）。
+  // 「新しい会話」→ 入力欄だけ出る（押しただけでは作らない＝スイッチャは 1 件のまま）。
   await page.getByTestId("note-new-conversation").click();
-  await expect(page.getByTestId("note-chat-panel").getByLabel("メッセージを入力")).toBeVisible({
+  await expect(page.getByTestId("note-conversation-switcher")).toContainText("新しい会話");
+  await expect(page.getByTestId("note-new-conversation")).toHaveCount(0);
+  await page.getByTestId("note-conversation-switcher").getByRole("button").first().click();
+  await expect(page.getByRole("menuitem", { name: /会話 2/ })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  // 送ると新スレッドになる（旧会話は履歴に残る＝スイッチャに 2 件）。
+  await input.fill("二つ目の会話");
+  await input.press("Enter");
+  await expect(page.getByTestId("note-conversation-switcher")).toContainText("会話 2", {
     timeout: 20_000,
   });
   // スイッチャのバッジ（会話数）が 2 になる。

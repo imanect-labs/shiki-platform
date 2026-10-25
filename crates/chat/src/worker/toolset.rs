@@ -24,21 +24,27 @@ impl ChatWorker {
         tools: &mut Vec<Arc<dyn Tool>>,
         skills: &[crate::skill::AppliedSkill],
         attachments: Vec<AttachmentRef>,
+        run: &ClaimedRun,
     ) {
         if let Some(search) = &self.search {
             // skill の知識スコープを doc_search に反映する（Task 6.8・絞り込みのみ・
             // 複数ピンは全ピンが scope を持つ時のみ union・#344）。
             let scope = crate::skill::combined_scope(skills);
-            let doc_search = DocSearchTool::with_scope(search.clone(), scope.clone());
+            // この回答のための検索・読み出しとして監査に残す（1 回答の判定と引用を引ける・#829）。
+            let doc_search = DocSearchTool::with_scope(search.clone(), scope.clone())
+                .for_answer(run.thread_id, run.message_id);
             // 当たった文書を引用の外まで読む（#425）。認可は StorageService の viewer 判定で、
             // 知識スコープは検索と同じものを課す（スコープ ∩ ReBAC）。
             if let Some(storage) = &self.storage {
                 tools.push(Arc::new(doc_search.with_doc_read()));
-                tools.push(Arc::new(crate::doc_read_tool::DocReadTool::with_scope(
-                    search.clone(),
-                    storage.clone(),
-                    scope,
-                )));
+                tools.push(Arc::new(
+                    crate::doc_read_tool::DocReadTool::with_scope(
+                        search.clone(),
+                        storage.clone(),
+                        scope,
+                    )
+                    .for_answer(run.thread_id, run.message_id),
+                ));
             } else {
                 tools.push(Arc::new(doc_search));
             }
@@ -177,6 +183,37 @@ impl ChatWorker {
                 tabular.clone(),
             )));
         }
+    }
+
+    /// 構造化データのツール（data_query / data_schema / data_record_write・Task 15.7）。
+    ///
+    /// DataStore が配線され、**発話ユーザーに見えるテーブルが 1 つ以上ある**ときだけ提示する
+    /// （見えるテーブルが無ければ使い道が無い・description の一覧は有界）。一覧の取得失敗は run を
+    /// 落とさない（warn してツールを出さない）。認可は各呼び出しで data が本人の権限で毎回判定する。
+    pub(super) async fn push_data_tools(&self, tools: &mut Vec<Arc<dyn Tool>>, ctx: &AuthContext) {
+        use crate::data_tool::{
+            DataQueryTool, DataRecordWriteTool, DataSchemaTool, DataTableCatalog,
+        };
+        let Some(data) = &self.data else {
+            return;
+        };
+        let catalog = match DataTableCatalog::load(data, ctx).await {
+            Ok(c) if !c.is_empty() => Arc::new(c),
+            Ok(_) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, "テーブル一覧の取得に失敗（data ツールを提示しない）");
+                return;
+            }
+        };
+        tools.push(Arc::new(DataQueryTool::new(
+            data.clone(),
+            Arc::clone(&catalog),
+        )));
+        tools.push(Arc::new(DataSchemaTool::new(
+            data.clone(),
+            Arc::clone(&catalog),
+        )));
+        tools.push(Arc::new(DataRecordWriteTool::new(data.clone(), catalog)));
     }
 
     /// 自律ツール（file CRUD/grep/shell）を tools へ追加する。

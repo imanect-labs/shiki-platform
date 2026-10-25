@@ -181,6 +181,30 @@ impl EffectJournal {
         Ok(())
     }
 
+    /// 副作用が**起きなかったと分かっている**予約を外す（Proceed の後にチョークポイントが拒否・検証エラーを
+    /// 返した書込）。外さないと同じステップの再実行が回収の猶予（数分）まで `InProgress` で待たされる。
+    ///
+    /// 結果が未確定（DB 障害など、副作用が起きたか分からない）なら呼ばない。結果を記録済みの行・
+    /// 別の操作の行は消さない。
+    pub async fn release(
+        &self,
+        tenant_id: &str,
+        idempotency_key: &str,
+        digest: &str,
+    ) -> Result<(), JournalError> {
+        sqlx::query(
+            "DELETE FROM effect_journal WHERE tenant_id = $1 AND idempotency_key = $2 \
+               AND op_digest = $3 AND result_summary IS NULL",
+        )
+        .bind(tenant_id)
+        .bind(idempotency_key)
+        .bind(digest)
+        .execute(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(())
+    }
+
     /// DB トランザクション内で「予約→（呼び出し側が副作用）→結果更新」する版のための予約 INSERT。
     ///
     /// storage.write のように副作用と journal を**同一 TX**で書ける内部能力向け。UNIQUE で占有し、

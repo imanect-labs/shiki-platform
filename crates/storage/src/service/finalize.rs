@@ -5,6 +5,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 impl StorageService {
     /// finalize: staging を読み戻して内容ハッシュを検証し、content-addressed に昇格してノード化する。
@@ -45,7 +46,7 @@ impl StorageService {
                     ctx,
                     Relation::Editor,
                     &ctx.ns().file(&target.to_string()),
-                    "file.content.update",
+                    AuditAction::FileContentUpdate,
                     "file",
                     &target.to_string(),
                     trace_id,
@@ -59,7 +60,7 @@ impl StorageService {
                         ctx,
                         Relation::Editor,
                         &ctx.ns().folder(&p.to_string()),
-                        "file.upload.finalize",
+                        AuditAction::FileUploadFinalize,
                         "folder",
                         &p.to_string(),
                         trace_id,
@@ -73,7 +74,7 @@ impl StorageService {
                         ctx,
                         Relation::Member,
                         &ctx.ns().organization(&ctx.org),
-                        "file.upload.finalize",
+                        AuditAction::FileUploadFinalize,
                         "organization",
                         &ctx.org,
                         trace_id,
@@ -198,7 +199,7 @@ impl StorageService {
                         &mut tx,
                         ctx,
                         AuditEntry {
-                            action: "file.upload.finalize",
+                            action: AuditAction::FileUploadFinalize,
                             object_type: "file",
                             object_id: &node.id.to_string(),
                             decision: Decision::Allow,
@@ -394,7 +395,7 @@ impl StorageService {
             &mut tx,
             ctx,
             AuditEntry {
-                action: "file.content.update",
+                action: AuditAction::FileContentUpdate,
                 object_type: "file",
                 object_id: &node.id.to_string(),
                 decision: Decision::Allow,

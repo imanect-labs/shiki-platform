@@ -7,6 +7,8 @@
 //! - **宣言的バックエンド束縛**（[`action`] / [`dispatch`]）: 図のボタンからの操作はサーバーが
 //!   引いた束縛経由のみ・実行ユーザー権限で認可（アンビエント権限なし・confused-deputy 防御）。
 //! - **ワークフロー名の解決**（[`resolver`]）: ボタンの `-> workflow 名前` を版に固定する。
+//! - **表のデータ束縛**（[`data_grid`]・Task 15.7）: 画面の ```data_grid は束ねた保存ビューの
+//!   ピン版を、閲覧者本人の権限で毎回評価して描く（[`ActionBinding::DataView`]）。
 
 // #[cfg(test)] は本番のみ厳格化する lint を許容する。
 #![cfg_attr(
@@ -22,9 +24,11 @@
 )]
 
 pub mod action;
+pub mod data_grid;
 pub mod dispatch;
 pub mod miniapp;
 pub mod miniapp_actions;
+mod miniapp_data;
 pub mod miniapp_store;
 pub mod resolver;
 pub mod skill;
@@ -34,7 +38,8 @@ pub mod store;
 pub mod validate;
 pub mod vocab;
 
-pub use action::{ActionBinding, HandlerBinding, WorkflowBinding, WorkflowPin};
+pub use action::{ActionBinding, DataViewBinding, HandlerBinding, WorkflowBinding, WorkflowPin};
+pub use data_grid::{data_grid_action_id, data_grid_alias, data_grid_blocks, DataGridBlock};
 pub use dispatch::{
     ActionDispatcher, ActionError, ActionHandler, ActionLedger, ActionSource, WorkflowStarter,
 };

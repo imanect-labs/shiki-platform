@@ -63,9 +63,25 @@ impl From<data::DataError> for AppPlatformError {
         use data::DataError;
         match e {
             DataError::NotFound => AppPlatformError::NotFound,
-            DataError::Forbidden => AppPlatformError::Forbidden,
+            DataError::Forbidden | DataError::FieldUnavailable => AppPlatformError::Forbidden,
             DataError::Invalid(m) => AppPlatformError::Invalid(m),
-            DataError::Conflict(m) => AppPlatformError::Conflict(m),
+            DataError::InvalidInput(e) => AppPlatformError::Invalid(e.message().to_string()),
+            DataError::Gone(m) => AppPlatformError::Conflict(m),
+            e @ (DataError::Conflict(_)
+            | DataError::RevConflict { .. }
+            | DataError::UniqueViolation { .. }
+            | DataError::NameTaken
+            | DataError::DerivedRecomputing { .. }) => {
+                AppPlatformError::Conflict(e.conflict_detail().unwrap_or_default())
+            }
+            e @ (DataError::IndexPreparing { .. }
+            | DataError::IndexApprovalRequired { .. }
+            | DataError::ReadOverloaded
+            | DataError::ReadTimeout) => AppPlatformError::Conflict(e.to_string()),
+            // 受付制御（重すぎるクエリ）: 文言は固定（推定値を含まない・PIT-75）。
+            e @ DataError::QueryTooExpensive { .. } => AppPlatformError::Invalid(e.to_string()),
+            // 入口での拒否（資源上限・部分集合外）。
+            DataError::Rejected(r) => AppPlatformError::Invalid(r.message),
             DataError::Internal(m) => AppPlatformError::Internal(m),
         }
     }

@@ -24,7 +24,7 @@ import * as React from "react";
 
 import { serializeFragment } from "@/lib/notes/markdown-serialize";
 import { parseMarkdownToNodes } from "@/lib/notes/markdown-parse";
-import { AiSuggestionMark } from "./ai-suggestion-mark";
+import { AiDeletionMark, AiSuggestionMark } from "./ai-suggestion-mark";
 import { embedSlashItems } from "./embed/embed-slash-items";
 import { ShikiEmbed } from "./embed/shiki-embed-node";
 import { LivePreview } from "./live-preview";
@@ -61,6 +61,7 @@ export function DraftNoteEditor({ seed, onChangeMarkdown, onReady }: DraftNoteEd
       TaskItem.configure({ nested: true }),
       Placeholder.configure({ placeholder: "入力するか、「/」でコマンドを呼び出す…" }),
       AiSuggestionMark,
+      AiDeletionMark,
       ShikiEmbed,
       MarkdownClipboard,
       LivePreview,

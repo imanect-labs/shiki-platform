@@ -20,6 +20,7 @@
 pub mod config;
 pub mod data_refs;
 pub mod error;
+pub mod error_body;
 pub mod extract;
 pub mod health;
 pub mod insights;
@@ -36,6 +37,7 @@ pub mod state;
 pub mod telemetry;
 pub mod workflow_catalog;
 pub mod workflow_runtime;
+pub mod workflow_semantics_audit;
 
 pub use server::build_router;
 pub use state::AppState;

@@ -152,6 +152,7 @@ impl ChatWorker {
         thread_history: ThreadHistory,
         cancel: Arc<AtomicBool>,
         sink: &mut WorkerSink,
+        slot: &Arc<super::slot::RunSlot>,
     ) -> Result<(), ChatError> {
         let ThreadHistory {
             messages: history,
@@ -169,13 +170,15 @@ impl ChatWorker {
 
         // 提示ツール一式（共通＋ドキュメント/Office/CSV）は worker/toolset.rs に集約する。
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-        self.push_core_tools(&mut tools, &skills, attachments);
+        self.push_core_tools(&mut tools, &skills, attachments, run);
         // skill ツール（カタログ引き・#344 Task 10.11）。
         self.push_skill_tool(&mut tools, ctx, run, &skills).await;
         // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋
         // Office 編集/CSV ツール（worker/toolset.rs に集約）。
         self.push_collab_tools(&mut tools);
         self.push_office_and_csv_tools(&mut tools);
+        // 構造化データ（発話ユーザーに見えるテーブルがあるときだけ・Task 15.7）。
+        self.push_data_tools(&mut tools, ctx).await;
 
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {
@@ -195,12 +198,14 @@ impl ChatWorker {
         // 承認 UI/API/DbApprover は種別非依存で、承認が無ければ実行しない（fail-safe・破壊系を
         // 黙って走らせない）。これを配線しないと非自律チャットでは承認者不在により編集ツールが
         // 常に "requires explicit confirmation" で拒否され、共同編集が機能しない。
+        // 承認待ちの間は生成の枠を返して保留する（他の run を止めない・検証 C-P1-3）。
         let mut approver = crate::approver::DbApprover::new(
             self.store.clone(),
             run.run_id,
             run.fencing_token,
             cancel.clone(),
-        );
+        )
+        .with_slot(Arc::clone(slot), &ctx.tenant_id, &ctx.principal.id);
         // 実行前フェーズ（#400）。非自律は常に Execute（門は自律の調査フローだけの概念）。
         let mut gate_stage = super::gate::GateStage::Execute;
         // 門が承認まで取り上げたツール（発話ごとのツール指定の注記で「承認後に使える」と言う・#734）。
@@ -325,6 +330,8 @@ impl ChatWorker {
             // 利用枠超過は**そのまま会話に出す文言**（llm-gateway で整形済み）。`agent:` を
             // 前置すると、ユーザーには読めない内部語が残る。
             agent_core::AgentError::RateLimited(msg) => ChatError::RateLimited(msg),
+            // 要求の拒否（400 等）は再試行しても同じなので、種別を分けて 1 回で止める（#877）。
+            agent_core::AgentError::Llm(msg) => ChatError::from_agent_llm(&msg),
             other => ChatError::Unavailable(format!("agent: {other}")),
         })?;
         let _ = outcome; // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理

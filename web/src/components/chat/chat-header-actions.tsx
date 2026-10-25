@@ -6,7 +6,7 @@
 /// - PC のバーには従来どおり文字の「共有」ボタンも出す（幅に余裕があるため）。
 /// - スマホではタイトルを出さず、⋯ メニューの先頭に会話名を出す。
 ///
-/// スレッドのリネーム/削除は backend 未提供（/threads/{id} は GET のみ）のため、実在する操作のみ置く。
+/// スレッドの名前の変更・ピン留め・削除はサイドバー履歴の行メニューに置く（ここには置かない）。
 
 import { ChartPie, Copy, Settings, Share2, SquarePen } from "lucide-react";
 import { useRouter } from "next/navigation";

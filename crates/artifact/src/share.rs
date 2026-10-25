@@ -5,6 +5,7 @@
 
 use authz::{AuthContext, Relation};
 use serde_json::json;
+use storage::audit::AuditAction;
 use storage::model::ShareTarget;
 use uuid::Uuid;
 
@@ -41,7 +42,13 @@ impl ArtifactStore {
     ) -> Result<(), ArtifactError> {
         validate_share_target(target)?;
         let obj = self
-            .require(ctx, id, Relation::Owner, "artifact.share", trace_id)
+            .require(
+                ctx,
+                id,
+                Relation::Owner,
+                AuditAction::ArtifactShare,
+                trace_id,
+            )
             .await?;
         let granted = self
             .authz
@@ -51,7 +58,7 @@ impl ArtifactStore {
         if let Err(e) = self
             .record_audit(
                 ctx,
-                "artifact.share",
+                AuditAction::ArtifactShare,
                 &id.to_string(),
                 trace_id,
                 json!({ "target": target, "role": role }),
@@ -80,7 +87,13 @@ impl ArtifactStore {
     ) -> Result<(), ArtifactError> {
         validate_share_target(target)?;
         let obj = self
-            .require(ctx, id, Relation::Owner, "artifact.unshare", trace_id)
+            .require(
+                ctx,
+                id,
+                Relation::Owner,
+                AuditAction::ArtifactUnshare,
+                trace_id,
+            )
             .await?;
         let revoked = self
             .authz
@@ -90,7 +103,7 @@ impl ArtifactStore {
         if let Err(e) = self
             .record_audit(
                 ctx,
-                "artifact.unshare",
+                AuditAction::ArtifactUnshare,
                 &id.to_string(),
                 trace_id,
                 json!({ "target": target, "role": role }),
@@ -116,7 +129,13 @@ impl ArtifactStore {
         trace_id: Option<&str>,
     ) -> Result<Vec<(ShareTarget, ArtifactRole)>, ArtifactError> {
         let obj = self
-            .require(ctx, id, Relation::Owner, "artifact.shares.list", trace_id)
+            .require(
+                ctx,
+                id,
+                Relation::Owner,
+                AuditAction::ArtifactSharesList,
+                trace_id,
+            )
             .await?;
         let tuples = self
             .authz

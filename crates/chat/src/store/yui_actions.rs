@@ -15,6 +15,7 @@
 //! `ui_action_binding` に残したものだけを使う。画面から束縛は送れない。
 
 use std::collections::HashMap;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, Relation};
 use gui::{
@@ -121,7 +122,7 @@ impl ChatStore {
             ctx,
             thread_id,
             Relation::Editor,
-            "thread.ui_action",
+            AuditAction::ThreadUiAction,
             trace_id,
         )
         .await
@@ -150,7 +151,7 @@ impl ChatStore {
                 ctx,
                 thread_id,
                 Relation::Editor,
-                "thread.ui_action",
+                AuditAction::ThreadUiAction,
                 trace_id,
             )
             .await
@@ -333,7 +334,7 @@ impl ChatStore {
             ctx,
             thread_id,
             Relation::Viewer,
-            "thread.yui_save_as_app",
+            AuditAction::ThreadYuiSaveAsApp,
             trace_id,
         )
         .await?;

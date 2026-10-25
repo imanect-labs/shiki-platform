@@ -22,6 +22,9 @@ shiki-script-runtime.workspace = true
 shiki-secrets.workspace = true
 # 保持期間 GC を日次ジョブとして回す（engine.md §12.2・重い削除を tick に同居させない）。
 shiki-jobq.workspace = true
+# data ノードの params は data の `DataQuery` をそのまま使う（変換層・面ごとのフィルタ表現を作らない・
+# data-platform §11）。実行は NodePorts 越し（チョークポイント呼び出しは server 側）。
+shiki-data.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
@@ -66,6 +69,7 @@ ignored = [
     "shiki-durable",
     "shiki-secrets",
     "shiki-jobq",
+    "shiki-data",
 ]
 
 [lints]

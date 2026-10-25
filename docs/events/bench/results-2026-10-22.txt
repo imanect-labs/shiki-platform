@@ -1,0 +1,740 @@
+# outbox → job_queue 経路のフルプール実測（#818・2026-10-22）
+
+生成: docs/events/bench/outbox-pool-bench.sh（emit / mixed / scan / jobs の出力を連結。NOTICE 行は除去）。
+機材: docker の PostgreSQL 16.15（Alpine）・既定設定・4 vCPU を他のビルドと共有（loadavg 3〜15）。絶対値ではなく伸び方を見ること。
+emit の WAL/イベントは pg_current_wal_lsn（クラスタ全体）の差分なので、同居 DB の書込を含む上限値である。
+
+実行時刻と、スクリプトの版:
+- emit 10:24Z・jobs 10:41Z: 初版。emit と jobs の計測ロジックは最終版と同じ。
+- mixed の待ち無し 2 本（11:44〜11:47Z）・scan（11:49〜11:55Z）: 下記の修正後に再実行した。
+- mixed の本番周期（CONSUMERS=code）: 2026-10-23 に、コンシューマを「処理してから固定 sleep」で駆動する版で 2 回再実行した
+  （以前は pgbench -R のポアソン到着で駆動しており、本番に無い空白とバーストが入っていた）。
+- 再実行の前に直したのは次の点。
+  - relay レイテンシを payload.relayed_at（INSERT 時の clock_timestamp()）− created_at で測る。
+    初版は enqueued_at（relay txn 開始の now()）を使っており、過小・負値になり得た。
+  - event_type を各テナントに 1 割ずつ配る（初版は g % 10 で、番号が 0 で終わるテナントにしか付かなかった）。
+  - 活動中テナントの SSE カーソルを、自社の 1 つ前の event_type イベントに置く（走査窓の行数をラベルに出す）。
+  - 休眠テナントの SSE poll（カーソル 0）を追加した。
+  - 安全柵を current_database() の ^shiki_[0-9]+$ 照合にした。
+  - mixed の wait を pid ごとにした。
+
+# outbox pool bench 2026-10-22T10:24Z
+server: PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+shared_buffers=128MB work_mem=4MB nproc=4
+
+## emit（outbox INSERT のみ・待ち無し・4 クライアント・20 秒・T=1）
+latency average = 2.917 ms
+tps = 1371.178206 (without initial connection time)
+WAL/イベント: 10964 B（27371 件）
+
+## emit（outbox INSERT のみ・待ち無し・4 クライアント・20 秒・T=1000）
+latency average = 1.519 ms
+tps = 2634.018148 (without initial connection time)
+WAL/イベント: 489 B（52601 件）
+# outbox pool bench 2026-10-22T11:44Z
+server: PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+shared_buffers=128MB work_mem=4MB nproc=4
+
+## mixed RATE=1000 ev/s SECS=60 CONSUMERS=db（T=1000）
+loadavg(start): 3.64 3.39 3.04
+loadavg(end): 6.65 4.32 3.38
+emit   latency average = 16652.127 ms tps = 497.716995 (without initial connection time)
+relay  latency average = 5.992 ms tps = 166.891553 (without initial connection time)
+wf     latency average = 5.832 ms tps = 171.466338 (without initial connection time)
+mf     latency average = 5.823 ms tps = 171.724071 (without initial connection time)
+gc     latency average = 15.293 ms tps = 4.654837 (without initial connection time)
+| 投入イベント総数（outbox id 採番数） | 29855 |  |
+| outbox 残存行（GC 後） | 420 | max id 29855 |
+| relay 未処理残 | 28 |  |
+| relay 済み（job_queue 投入） | 29827 | p50 10.5 ms / p99 37.3 ms / max 158.7 ms |
+| ledger miniapp-functions 配送済み | 29824 | p50 9.5 ms / p99 36.7 ms / max 206.2 ms |
+| ledger workflow 配送済み | 29855 | p50 9.5 ms / p99 35.0 ms / max 187.8 ms |
+| ledger miniapp-functions 未配送残 | 31 |  |
+| ledger workflow 未配送残 | 0 |  |
+# outbox pool bench 2026-10-22T11:46Z
+server: PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+shared_buffers=128MB work_mem=4MB nproc=4
+
+## mixed RATE=3000 ev/s SECS=60 CONSUMERS=db（T=1000）
+loadavg(start): 6.27 4.28 3.37
+loadavg(end): 9.98 5.65 3.90
+emit   latency average = 17327.405 ms tps = 1086.445888 (without initial connection time)
+relay  latency average = 9.584 ms tps = 104.339423 (without initial connection time)
+wf     latency average = 10.860 ms tps = 92.083520 (without initial connection time)
+mf     latency average = 10.896 ms tps = 91.780438 (without initial connection time)
+gc     latency average = 35.030 ms tps = 4.537211 (without initial connection time)
+| 投入イベント総数（outbox id 採番数） | 65159 |  |
+| outbox 残存行（GC 後） | 264 | max id 65159 |
+| relay 未処理残 | 59 |  |
+| relay 済み（job_queue 投入） | 65100 | p50 13.3 ms / p99 62.3 ms / max 637.6 ms |
+| ledger miniapp-functions 配送済み | 65137 | p50 18.4 ms / p99 72.1 ms / max 645.5 ms |
+| ledger workflow 配送済み | 65137 | p50 18.1 ms / p99 64.6 ms / max 566.7 ms |
+| ledger miniapp-functions 未配送残 | 22 |  |
+| ledger workflow 未配送残 | 22 |  |
+（注）本番周期（CONSUMERS=code）は 2026-10-23 に固定 sleep 駆動で 2 回再計測した。1 回目は書込側がスケジュールに遅れ（平均 2.2 s）バーストになった回。§8.3(d) の表は 2 回目
+## 本番周期 1 回目（書込側が遅れてバースト）
+
+# outbox pool bench 2026-10-23T05:29Z
+server: PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+shared_buffers=128MB work_mem=4MB nproc=4
+
+## mixed RATE=100 ev/s SECS=120 CONSUMERS=code（T=1000）
+loadavg(start): 3.32 4.06 2.86
+loadavg(end): 3.21 3.61 2.83
+emit   latency average = 2159.543 ms tps = 101.456405 (without initial connection time)
+relay  latency average = 540.215 ms tps = 1.851115 (without initial connection time)
+wf     latency average = 5053.555 ms tps = 0.197881 (without initial connection time)
+mf     latency average = 5052.277 ms tps = 0.197931 (without initial connection time)
+gc     latency average = 60334.065 ms tps = 0.016574 (without initial connection time)
+| 投入イベント総数（outbox id 採番数） | 12172 |  |
+| outbox 残存行（GC 後） | 11022 | max id 12172 |
+| relay 未処理残 | 543 |  |
+| relay 済み（job_queue 投入） | 11629 | p50 7412.7 ms / p99 16350.1 ms / max 16836.3 ms |
+| ledger miniapp-functions 配送済み | 1150 | p50 54973.0 ms / p99 105572.4 ms / max 105691.8 ms |
+| ledger workflow 配送済み | 1472 | p50 53581.0 ms / p99 102629.8 ms / max 102743.2 ms |
+| ledger miniapp-functions 未配送残 | 11022 |  |
+| ledger workflow 未配送残 | 10700 |  |
+
+## 本番周期 2 回目（§8.3(d) の表の値）
+
+# outbox pool bench 2026-10-23T05:31Z
+server: PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+shared_buffers=128MB work_mem=4MB nproc=4
+
+## mixed RATE=100 ev/s SECS=120 CONSUMERS=code（T=1000）
+loadavg(start): 4.04 3.78 2.92
+loadavg(end): 4.10 4.07 3.14
+emit   latency average = 14.081 ms tps = 99.537122 (without initial connection time)
+relay  latency average = 511.762 ms tps = 1.954032 (without initial connection time)
+wf     latency average = 5015.931 ms tps = 0.199365 (without initial connection time)
+mf     latency average = 5014.173 ms tps = 0.199435 (without initial connection time)
+gc     latency average = 60499.804 ms tps = 0.016529 (without initial connection time)
+| 投入イベント総数（outbox id 採番数） | 11941 |  |
+| outbox 残存行（GC 後） | 10791 | max id 11941 |
+| relay 未処理残 | 34 |  |
+| relay 済み（job_queue 投入） | 11907 | p50 270.9 ms / p99 662.8 ms / max 1119.7 ms |
+| ledger miniapp-functions 配送済み | 1150 | p50 54111.8 ms / p99 104130.8 ms / max 104276.6 ms |
+| ledger workflow 配送済み | 1472 | p50 52864.2 ms / p99 101042.7 ms / max 101175.0 ms |
+| ledger miniapp-functions 未配送残 | 10791 |  |
+| ledger workflow 未配送残 | 10469 |  |
+
+# outbox pool bench 2026-10-22T11:49Z
+server: PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+shared_buffers=128MB work_mem=4MB nproc=4
+
+## scan N=10000 T=1
+| query | median | buffers (last run) |
+|---|---:|---|
+| claim（RAG relay・processed_at 経路） | 1.062 ms | shared hit=368 |
+| claim_undelivered（workflow・追いついている台帳） | 7.027 ms | shared hit=898 |
+| mark_delivered 64 件 | 3.471 ms | shared hit=706 |
+| GC 1 バッチ（1000 行 DELETE） | 24.422 ms | shared hit=6377 |
+| latest_event_id（活動中テナント） | 0.111 ms | shared hit=3 |
+| latest_event_id（イベントの無いテナント） | 1.725 ms | shared hit=336 |
+| peek_app_events_after（SSE 1 poll・活動中テナント・走査窓 10 行） | 0.162 ms | shared hit=10 |
+| peek_app_events_after（SSE 1 poll・休眠テナント・カーソル 0） | 2.413 ms | shared hit=339 |
+| テナント消去（outbox 1 テナント分 DELETE・台帳は CASCADE） | 227.586 ms | shared hit=20339 |
+| size: outbox heap / idx / delivery heap / delivery idx | 2688 kB / 256 kB / 1584 kB / 1688 kB | 306 B/行 (outbox 全体) |
+
+## scan N=1000000 T=1
+| query | median | buffers (last run) |
+|---|---:|---|
+| claim（RAG relay・processed_at 経路） | 0.549 ms | shared hit=368 |
+| claim_undelivered（workflow・追いついている台帳） | 775.629 ms | shared hit=297 read=60672 dirtied=3 |
+| mark_delivered 64 件 | 3.222 ms | shared hit=763 dirtied=1 written=1 |
+| GC 1 バッチ（1000 行 DELETE） | 24.120 ms | shared hit=11042 |
+| latest_event_id（活動中テナント） | 0.078 ms | shared hit=4 |
+| latest_event_id（イベントの無いテナント） | 97.622 ms | shared hit=9198 read=24138 |
+| peek_app_events_after（SSE 1 poll・活動中テナント・走査窓 10 行） | 0.140 ms | shared hit=11 |
+| peek_app_events_after（SSE 1 poll・休眠テナント・カーソル 0） | 145.250 ms | shared hit=9681 read=23658 |
+| テナント消去（outbox 1 テナント分 DELETE・台帳は CASCADE） | 24099.651 ms | shared hit=2000000 read=33339 dirtied=33335 written=21362 |
+| size: outbox heap / idx / delivery heap / delivery idx | 260 MB / 21 MB / 153 MB / 163 MB | 296 B/行 (outbox 全体) |
+
+## scan N=10000 T=100
+| query | median | buffers (last run) |
+|---|---:|---|
+| claim（RAG relay・processed_at 経路） | 1.150 ms | shared hit=371 |
+| claim_undelivered（workflow・追いついている台帳） | 11.154 ms | shared hit=909 |
+| mark_delivered 64 件 | 3.073 ms | shared hit=686 dirtied=1 written=1 |
+| GC 1 バッチ（1000 行 DELETE） | 26.363 ms | shared hit=7385 |
+| latest_event_id（活動中テナント） | 0.098 ms | shared hit=8 |
+| latest_event_id（イベントの無いテナント） | 1.747 ms | shared hit=343 |
+| peek_app_events_after（SSE 1 poll・活動中テナント・走査窓 1999 行） | 0.683 ms | shared hit=85 |
+| peek_app_events_after（SSE 1 poll・休眠テナント・カーソル 0） | 2.205 ms | shared hit=346 |
+| テナント消去（outbox 1 テナント分 DELETE・台帳は CASCADE） | 5.680 ms | shared hit=546 |
+| size: outbox heap / idx / delivery heap / delivery idx | 2744 kB / 256 kB / 1592 kB / 1736 kB | 311 B/行 (outbox 全体) |
+
+## scan N=1000000 T=100
+| query | median | buffers (last run) |
+|---|---:|---|
+| claim（RAG relay・processed_at 経路） | 0.975 ms | shared hit=388 |
+| claim_undelivered（workflow・追いついている台帳） | 840.399 ms | shared hit=436 read=61378 dirtied=3 written=3 |
+| mark_delivered 64 件 | 3.701 ms | shared hit=763 dirtied=1 written=1 |
+| GC 1 バッチ（1000 行 DELETE） | 28.938 ms | shared hit=11043 |
+| latest_event_id（活動中テナント） | 0.132 ms | shared hit=10 |
+| latest_event_id（イベントの無いテナント） | 74.402 ms | shared hit=9216 read=24827 |
+| peek_app_events_after（SSE 1 poll・活動中テナント・走査窓 1999 行） | 0.650 ms | shared hit=86 |
+| peek_app_events_after（SSE 1 poll・休眠テナント・カーソル 0） | 133.281 ms | shared hit=9699 read=24347 |
+| テナント消去（outbox 1 テナント分 DELETE・台帳は CASCADE） | 655.790 ms | shared hit=22722 read=31324 dirtied=10000 written=5193 |
+| size: outbox heap / idx / delivery heap / delivery idx | 266 MB / 21 MB / 153 MB / 163 MB | 301 B/行 (outbox 全体) |
+
+## scan N=10000 T=1000
+| query | median | buffers (last run) |
+|---|---:|---|
+| claim（RAG relay・processed_at 経路） | 1.068 ms | shared hit=378 |
+| claim_undelivered（workflow・追いついている台帳） | 7.814 ms | shared hit=916 |
+| mark_delivered 64 件 | 3.665 ms | shared hit=686 dirtied=1 written=1 |
+| GC 1 バッチ（1000 行 DELETE） | 32.021 ms | shared hit=7381 |
+| latest_event_id（活動中テナント） | 0.318 ms | shared hit=44 |
+| latest_event_id（イベントの無いテナント） | 2.279 ms | shared hit=399 |
+| peek_app_events_after（SSE 1 poll・活動中テナント・走査窓 10000 行） | 2.691 ms | shared hit=350 |
+| peek_app_events_after（SSE 1 poll・休眠テナント・カーソル 0） | 2.871 ms | shared hit=346 |
+| テナント消去（outbox 1 テナント分 DELETE・台帳は CASCADE） | 3.184 ms | shared hit=366 |
+| size: outbox heap / idx / delivery heap / delivery idx | 2744 kB / 256 kB / 1592 kB / 1736 kB | 311 B/行 (outbox 全体) |
+
+## scan N=1000000 T=1000
+| query | median | buffers (last run) |
+|---|---:|---|
+| claim（RAG relay・processed_at 経路） | 0.880 ms | shared hit=374 |
+| claim_undelivered（workflow・追いついている台帳） | 757.834 ms | shared hit=341 read=61402 dirtied=3 written=3 |
+| mark_delivered 64 件 | 3.546 ms | shared hit=763 dirtied=1 written=1 |
+| GC 1 バッチ（1000 行 DELETE） | 26.849 ms | shared hit=11039 |
+| latest_event_id（活動中テナント） | 0.367 ms | shared hit=45 |
+| latest_event_id（イベントの無いテナント） | 247.233 ms | shared hit=2746 read=36799 written=1 |
+| peek_app_events_after（SSE 1 poll・活動中テナント・走査窓 19999 行） | 5.229 ms | shared hit=749 |
+| peek_app_events_after（SSE 1 poll・休眠テナント・カーソル 0） | 144.007 ms | shared hit=14802 read=19279 |
+| テナント消去（outbox 1 テナント分 DELETE・台帳は CASCADE） | 168.252 ms | shared hit=15627 read=20441 |
+| size: outbox heap / idx / delivery heap / delivery idx | 266 MB / 21 MB / 153 MB / 163 MB | 302 B/行 (outbox 全体) |
+
+## scan N=100000 T=1000
+| query | median | buffers (last run) |
+|---|---:|---|
+| claim（RAG relay・processed_at 経路） | 0.480 ms | shared hit=367 |
+| claim_undelivered（workflow・追いついている台帳） | 129.263 ms | shared hit=5735 |
+| mark_delivered 64 件 | 3.892 ms | shared hit=693 dirtied=1 written=1 |
+| GC 1 バッチ（1000 行 DELETE） | 47.823 ms | shared hit=10447 |
+| latest_event_id（活動中テナント） | 0.236 ms | shared hit=45 |
+| latest_event_id（イベントの無いテナント） | 17.267 ms | shared hit=3958 |
+| peek_app_events_after（SSE 1 poll・活動中テナント・走査窓 19999 行） | 4.852 ms | shared hit=747 |
+| peek_app_events_after（SSE 1 poll・休眠テナント・カーソル 0） | 19.061 ms | shared hit=3425 |
+| テナント消去（outbox 1 テナント分 DELETE・台帳は CASCADE） | 21.290 ms | shared hit=3612 |
+| size: outbox heap / idx / delivery heap / delivery idx | 27 MB / 2224 kB / 15 MB / 16 MB | 302 B/行 (outbox 全体) |
+
+## EXPLAIN (ANALYZE, BUFFERS)（代表ケース）
+
+### scan N=10000 T=1000 — claim（RAG relay・processed_at 経路）
+
+```
+Limit  (cost=0.56..551.74 rows=64 width=240) (actual time=0.110..0.957 rows=64 loops=1)
+  Buffers: shared hit=378
+  ->  LockRows  (cost=0.56..551.74 rows=64 width=240) (actual time=0.108..0.948 rows=64 loops=1)
+        Buffers: shared hit=378
+        ->  Nested Loop Left Join  (cost=0.56..551.10 rows=64 width=240) (actual time=0.064..0.839 rows=64 loops=1)
+              Buffers: shared hit=260
+              ->  Index Scan using storage_event_outbox_unprocessed_idx on storage_event_outbox o  (cost=0.14..15.10 rows=64 width=233) (actual time=0.027..0.059 rows=64 loops=1)
+                    Filter: (processed_at IS NULL)
+                    Buffers: shared hit=4
+              ->  Index Scan using node_pkey on node n  (cost=0.42..8.38 rows=1 width=23) (actual time=0.012..0.012 rows=1 loops=64)
+                    Index Cond: (id = o.node_id)
+                    Buffers: shared hit=256
+Planning:
+  Buffers: shared hit=410
+Planning Time: 11.362 ms
+Execution Time: 1.091 ms
+```
+
+### scan N=10000 T=1000 — claim_undelivered（workflow・追いついている台帳）
+
+```
+Limit  (cost=1202.50..1203.30 rows=64 width=246) (actual time=7.278..7.374 rows=64 loops=1)
+  Buffers: shared hit=916
+  ->  LockRows  (cost=1202.50..1203.30 rows=64 width=246) (actual time=7.276..7.366 rows=64 loops=1)
+        Buffers: shared hit=916
+        ->  Sort  (cost=1202.50..1202.66 rows=64 width=246) (actual time=7.245..7.253 rows=64 loops=1)
+              Sort Key: o.id
+              Sort Method: quicksort  Memory: 42kB
+              Buffers: shared hit=798
+              ->  Nested Loop Left Join  (cost=569.02..1200.58 rows=64 width=246) (actual time=6.587..7.174 rows=64 loops=1)
+                    Buffers: shared hit=795
+                    ->  Hash Anti Join  (cost=568.60..1062.09 rows=64 width=239) (actual time=6.540..6.590 rows=64 loops=1)
+                          Hash Cond: (o.id = d.event_id)
+                          Buffers: shared hit=539
+                          ->  Seq Scan on storage_event_outbox o  (cost=0.00..443.00 rows=10000 width=233) (actual time=0.008..2.206 rows=10000 loops=1)
+                                Buffers: shared hit=343
+                          ->  Hash  (cost=444.40..444.40 rows=9936 width=14) (actual time=3.149..3.150 rows=9936 loops=1)
+                                Buckets: 16384  Batches: 1  Memory Usage: 594kB
+                                Buffers: shared hit=196
+                                ->  Seq Scan on outbox_delivery d  (cost=0.00..444.40 rows=9936 width=14) (actual time=0.005..1.945 rows=9936 loops=1)
+                                      Filter: (consumer = 'workflow'::text)
+                                      Rows Removed by Filter: 9936
+                                      Buffers: shared hit=196
+                    ->  Index Scan using node_pkey on node n  (cost=0.42..2.16 rows=1 width=23) (actual time=0.009..0.009 rows=1 loops=64)
+                          Index Cond: (id = o.node_id)
+                          Buffers: shared hit=256
+Planning:
+  Buffers: shared hit=476
+Planning Time: 3.296 ms
+Execution Time: 7.705 ms
+```
+
+### scan N=10000 T=1000 — mark_delivered 64 件
+
+```
+Insert on outbox_delivery  (cost=1.58..44.35 rows=0 width=0) (actual time=2.255..2.257 rows=0 loops=1)
+  Conflict Resolution: NOTHING
+  Conflict Arbiter Indexes: outbox_delivery_pkey
+  Tuples Inserted: 64
+  Conflicting Tuples: 0
+  Buffers: shared hit=686 dirtied=1 written=1
+  InitPlan 1 (returns $0)
+    ->  Result  (cost=0.00..1.30 rows=64 width=8) (actual time=0.005..0.017 rows=64 loops=1)
+          ->  ProjectSet  (cost=0.00..0.34 rows=64 width=4) (actual time=0.004..0.009 rows=64 loops=1)
+                ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1 loops=1)
+  ->  Index Scan using storage_event_outbox_pkey on storage_event_outbox o  (cost=0.29..43.05 rows=10 width=58) (actual time=0.089..0.206 rows=64 loops=1)
+        Index Cond: (id = ANY ($0))
+        Buffers: shared hit=134
+Planning:
+  Buffers: shared hit=158
+Planning Time: 1.681 ms
+Trigger for constraint outbox_delivery_event_id_fkey: time=2.196 calls=64
+Execution Time: 4.581 ms
+```
+
+### scan N=10000 T=1000 — GC 1 バッチ（1000 行 DELETE）
+
+```
+Delete on storage_event_outbox  (cost=34472.09..34952.47 rows=0 width=0) (actual time=9.711..9.718 rows=0 loops=1)
+  Buffers: shared hit=7381
+  ->  Hash Semi Join  (cost=34472.09..34952.47 rows=1000 width=38) (actual time=4.984..8.629 rows=1000 loops=1)
+        Hash Cond: (storage_event_outbox.id = "ANY_subquery".id)
+        Buffers: shared hit=5378
+        ->  Seq Scan on storage_event_outbox  (cost=0.00..443.00 rows=10000 width=14) (actual time=0.006..2.329 rows=10000 loops=1)
+              Buffers: shared hit=343
+        ->  Hash  (cost=34459.59..34459.59 rows=1000 width=40) (actual time=4.949..4.953 rows=1000 loops=1)
+              Buckets: 1024  Batches: 1  Memory Usage: 79kB
+              Buffers: shared hit=5035
+              ->  Subquery Scan on "ANY_subquery"  (cost=0.29..34459.59 rows=1000 width=40) (actual time=0.138..4.644 rows=1000 loops=1)
+                    Buffers: shared hit=5035
+                    ->  Limit  (cost=0.29..34449.59 rows=1000 width=14) (actual time=0.124..4.385 rows=1000 loops=1)
+                          Buffers: shared hit=5035
+                          ->  LockRows  (cost=0.29..114096.39 rows=3312 width=14) (actual time=0.122..4.275 rows=1000 loops=1)
+                                Buffers: shared hit=5035
+                                ->  Index Scan using storage_event_outbox_pkey on storage_event_outbox o  (cost=0.29..114063.27 rows=3312 width=14) (actual time=0.085..3.595 rows=1000 loops=1)
+                                      Filter: ((processed_at IS NOT NULL) AND ((SubPlan 1) >= 2))
+                                      Buffers: shared hit=4035
+                                      SubPlan 1
+                                        ->  Aggregate  (cost=11.33..11.34 rows=1 width=8) (actual time=0.003..0.003 rows=1 loops=1000)
+                                              Buffers: shared hit=4000
+                                              ->  Index Scan using outbox_delivery_event_idx on outbox_delivery d  (cost=0.29..11.33 rows=2 width=0) (actual time=0.001..0.002 rows=2 loops=1000)
+                                                    Index Cond: (event_id = o.id)
+                                                    Filter: (consumer = ANY ('{miniapp-functions,workflow}'::text[]))
+                                                    Buffers: shared hit=4000
+Planning:
+  Buffers: shared hit=219
+Planning Time: 2.669 ms
+Trigger for constraint outbox_delivery_event_id_fkey: time=25.421 calls=1000
+Execution Time: 35.575 ms
+```
+
+### scan N=10000 T=1000 — latest_event_id（活動中テナント）
+
+```
+Result  (cost=66.89..66.90 rows=1 width=8) (actual time=0.328..0.329 rows=1 loops=1)
+  Buffers: shared hit=44
+  InitPlan 1 (returns $0)
+    ->  Limit  (cost=0.29..66.89 rows=1 width=8) (actual time=0.323..0.324 rows=1 loops=1)
+          Buffers: shared hit=44
+          ->  Index Scan Backward using storage_event_outbox_pkey on storage_event_outbox  (cost=0.29..666.28 rows=10 width=8) (actual time=0.321..0.322 rows=1 loops=1)
+                Index Cond: (id IS NOT NULL)
+                Filter: (tenant_id = 'tenant-1'::text)
+                Rows Removed by Filter: 999
+                Buffers: shared hit=44
+Planning:
+  Buffers: shared hit=99
+Planning Time: 1.253 ms
+Execution Time: 0.394 ms
+```
+
+### scan N=10000 T=1000 — latest_event_id（イベントの無いテナント）
+
+```
+Result  (cost=66.89..66.90 rows=1 width=8) (actual time=2.230..2.232 rows=1 loops=1)
+  Buffers: shared hit=399
+  InitPlan 1 (returns $0)
+    ->  Limit  (cost=0.29..66.89 rows=1 width=8) (actual time=2.227..2.227 rows=0 loops=1)
+          Buffers: shared hit=399
+          ->  Index Scan Backward using storage_event_outbox_pkey on storage_event_outbox  (cost=0.29..666.28 rows=10 width=8) (actual time=2.226..2.226 rows=0 loops=1)
+                Index Cond: (id IS NOT NULL)
+                Filter: (tenant_id = 'tenant-none'::text)
+                Rows Removed by Filter: 10000
+                Buffers: shared hit=399
+Planning:
+  Buffers: shared hit=99
+Planning Time: 0.758 ms
+Execution Time: 2.279 ms
+```
+
+### scan N=10000 T=1000 — peek_app_events_after（SSE 1 poll・活動中テナント・走査窓 10000 行）
+
+```
+Limit  (cost=526.45..526.45 rows=1 width=132) (actual time=2.286..2.289 rows=1 loops=1)
+  Buffers: shared hit=350
+  ->  Sort  (cost=526.45..526.45 rows=1 width=132) (actual time=2.285..2.287 rows=1 loops=1)
+        Sort Key: o.id
+        Sort Method: quicksort  Memory: 25kB
+        Buffers: shared hit=350
+        ->  Nested Loop Left Join  (cost=0.42..526.44 rows=1 width=132) (actual time=0.027..2.230 rows=1 loops=1)
+              Buffers: shared hit=347
+              ->  Seq Scan on storage_event_outbox o  (cost=0.00..518.00 rows=1 width=147) (actual time=0.008..2.209 rows=1 loops=1)
+                    Filter: ((id > 0) AND (payload ? 'event_type'::text) AND (tenant_id = 'tenant-1'::text))
+                    Rows Removed by Filter: 9999
+                    Buffers: shared hit=343
+              ->  Index Scan using node_pkey on node n  (cost=0.42..8.44 rows=1 width=17) (actual time=0.017..0.017 rows=1 loops=1)
+                    Index Cond: (id = o.node_id)
+                    Buffers: shared hit=4
+Planning:
+  Buffers: shared hit=391
+Planning Time: 2.394 ms
+Execution Time: 2.376 ms
+```
+
+### scan N=10000 T=1000 — peek_app_events_after（SSE 1 poll・休眠テナント・カーソル 0）
+
+```
+Limit  (cost=526.45..526.45 rows=1 width=132) (actual time=3.330..3.332 rows=0 loops=1)
+  Buffers: shared hit=346
+  ->  Sort  (cost=526.45..526.45 rows=1 width=132) (actual time=3.327..3.330 rows=0 loops=1)
+        Sort Key: o.id
+        Sort Method: quicksort  Memory: 25kB
+        Buffers: shared hit=346
+        ->  Nested Loop Left Join  (cost=0.42..526.44 rows=1 width=132) (actual time=3.285..3.286 rows=0 loops=1)
+              Buffers: shared hit=343
+              ->  Seq Scan on storage_event_outbox o  (cost=0.00..518.00 rows=1 width=147) (actual time=3.283..3.284 rows=0 loops=1)
+                    Filter: ((id > 0) AND (payload ? 'event_type'::text) AND (tenant_id = 'tenant-none'::text))
+                    Rows Removed by Filter: 10000
+                    Buffers: shared hit=343
+              ->  Index Scan using node_pkey on node n  (cost=0.42..8.44 rows=1 width=17) (never executed)
+                    Index Cond: (id = o.node_id)
+Planning:
+  Buffers: shared hit=391
+Planning Time: 3.583 ms
+Execution Time: 3.496 ms
+```
+
+### scan N=10000 T=1000 — テナント消去（outbox 1 テナント分 DELETE・台帳は CASCADE）
+
+```
+Delete on storage_event_outbox  (cost=0.00..468.00 rows=0 width=0) (actual time=1.619..1.620 rows=0 loops=1)
+  Buffers: shared hit=366
+  ->  Seq Scan on storage_event_outbox  (cost=0.00..468.00 rows=10 width=6) (actual time=0.017..1.512 rows=10 loops=1)
+        Filter: (tenant_id = 'tenant-1'::text)
+        Rows Removed by Filter: 9990
+        Buffers: shared hit=343
+Planning:
+  Buffers: shared hit=79
+Planning Time: 0.706 ms
+Trigger for constraint outbox_delivery_event_id_fkey: time=1.370 calls=10
+Execution Time: 3.082 ms
+```
+
+### scan N=1000000 T=1000 — claim（RAG relay・processed_at 経路）
+
+```
+Limit  (cost=0.56..292.40 rows=33 width=240) (actual time=0.109..0.600 rows=64 loops=1)
+  Buffers: shared hit=374
+  ->  LockRows  (cost=0.56..292.40 rows=33 width=240) (actual time=0.108..0.593 rows=64 loops=1)
+        Buffers: shared hit=374
+        ->  Nested Loop Left Join  (cost=0.56..292.07 rows=33 width=240) (actual time=0.053..0.488 rows=64 loops=1)
+              Buffers: shared hit=260
+              ->  Index Scan using storage_event_outbox_unprocessed_idx on storage_event_outbox o  (cost=0.14..13.63 rows=33 width=233) (actual time=0.023..0.049 rows=64 loops=1)
+                    Filter: (processed_at IS NULL)
+                    Buffers: shared hit=4
+              ->  Index Scan using node_pkey on node n  (cost=0.42..8.44 rows=1 width=23) (actual time=0.007..0.007 rows=1 loops=64)
+                    Index Cond: (id = o.node_id)
+                    Buffers: shared hit=256
+Planning:
+  Buffers: shared hit=410
+Planning Time: 2.945 ms
+Execution Time: 0.693 ms
+```
+
+### scan N=1000000 T=1000 — claim_undelivered（workflow・追いついている台帳）
+
+```
+Limit  (cost=4.31..386.53 rows=64 width=246) (actual time=756.462..756.929 rows=64 loops=1)
+  Buffers: shared hit=341 read=61402 dirtied=3 written=3
+  ->  LockRows  (cost=4.31..161716.60 rows=27078 width=246) (actual time=756.461..756.901 rows=64 loops=1)
+        Buffers: shared hit=341 read=61402 dirtied=3 written=3
+        ->  Nested Loop Left Join  (cost=4.31..161445.82 rows=27078 width=246) (actual time=756.421..756.824 rows=64 loops=1)
+              Buffers: shared hit=228 read=61401 written=3
+              ->  Merge Anti Join  (cost=3.89..149131.73 rows=27078 width=239) (actual time=756.343..756.371 rows=64 loops=1)
+                    Merge Cond: (o.id = d.event_id)
+                    Buffers: shared hit=45 read=61328 written=3
+                    ->  Index Scan using storage_event_outbox_pkey on storage_event_outbox o  (cost=0.42..60048.73 rows=1000020 width=233) (actual time=0.023..295.009 rows=1000000 loops=1)
+                          Buffers: shared hit=16 read=36796 written=3
+                    ->  Index Scan using outbox_delivery_event_idx on outbox_delivery d  (cost=0.43..74388.19 rows=986137 width=14) (actual time=0.020..320.077 rows=999936 loops=1)
+                          Filter: (consumer = 'workflow'::text)
+                          Rows Removed by Filter: 999936
+                          Buffers: shared hit=29 read=24532
+              ->  Index Scan using node_pkey on node n  (cost=0.42..0.45 rows=1 width=23) (actual time=0.007..0.007 rows=1 loops=64)
+                    Index Cond: (id = o.node_id)
+                    Buffers: shared hit=183 read=73
+Planning:
+  Buffers: shared hit=405 read=75
+Planning Time: 3.529 ms
+Execution Time: 757.226 ms
+```
+
+### scan N=1000000 T=1000 — mark_delivered 64 件
+
+```
+Insert on outbox_delivery  (cost=1.72..49.75 rows=0 width=0) (actual time=1.775..1.778 rows=0 loops=1)
+  Conflict Resolution: NOTHING
+  Conflict Arbiter Indexes: outbox_delivery_pkey
+  Tuples Inserted: 64
+  Conflicting Tuples: 0
+  Buffers: shared hit=763 dirtied=1 written=1
+  InitPlan 1 (returns $0)
+    ->  Result  (cost=0.00..1.30 rows=64 width=8) (actual time=0.004..0.014 rows=64 loops=1)
+          ->  ProjectSet  (cost=0.00..0.34 rows=64 width=4) (actual time=0.003..0.007 rows=64 loops=1)
+                ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1 loops=1)
+  ->  Index Scan using storage_event_outbox_pkey on storage_event_outbox o  (cost=0.42..48.45 rows=10 width=58) (actual time=0.072..0.377 rows=64 loops=1)
+        Index Cond: (id = ANY ($0))
+        Buffers: shared hit=198
+Planning:
+  Buffers: shared hit=158
+Planning Time: 1.132 ms
+Trigger for constraint outbox_delivery_event_id_fkey: time=1.878 calls=64
+Execution Time: 3.752 ms
+```
+
+### scan N=1000000 T=1000 — GC 1 バッチ（1000 行 DELETE）
+
+```
+Delete on storage_event_outbox  (cost=25659.34..33432.08 rows=0 width=0) (actual time=5.013..5.016 rows=0 loops=1)
+  Buffers: shared hit=11039
+  ->  Nested Loop  (cost=25659.34..33432.08 rows=1000 width=38) (actual time=3.079..4.404 rows=1000 loops=1)
+        Buffers: shared hit=9036
+        ->  HashAggregate  (cost=25658.91..25668.91 rows=1000 width=40) (actual time=3.064..3.196 rows=1000 loops=1)
+              Group Key: "ANY_subquery".id
+              Batches: 1  Memory Usage: 193kB
+              Buffers: shared hit=5036
+              ->  Subquery Scan on "ANY_subquery"  (cost=0.42..25656.41 rows=1000 width=40) (actual time=0.066..2.784 rows=1000 loops=1)
+                    Buffers: shared hit=5036
+                    ->  Limit  (cost=0.42..25646.41 rows=1000 width=14) (actual time=0.056..2.618 rows=1000 loops=1)
+                          Buffers: shared hit=5036
+                          ->  LockRows  (cost=0.42..8548551.71 rows=333329 width=14) (actual time=0.055..2.541 rows=1000 loops=1)
+                                Buffers: shared hit=5036
+                                ->  Index Scan using storage_event_outbox_pkey on storage_event_outbox o  (cost=0.42..8545218.43 rows=333329 width=14) (actual time=0.037..2.150 rows=1000 loops=1)
+                                      Filter: ((processed_at IS NOT NULL) AND ((SubPlan 1) >= 2))
+                                      Buffers: shared hit=4036
+                                      SubPlan 1
+                                        ->  Aggregate  (cost=8.47..8.48 rows=1 width=8) (actual time=0.002..0.002 rows=1 loops=1000)
+                                              Buffers: shared hit=4000
+                                              ->  Index Scan using outbox_delivery_event_idx on outbox_delivery d  (cost=0.43..8.47 rows=2 width=0) (actual time=0.001..0.001 rows=2 loops=1000)
+                                                    Index Cond: (event_id = o.id)
+                                                    Filter: (consumer = ANY ('{miniapp-functions,workflow}'::text[]))
+                                                    Buffers: shared hit=4000
+        ->  Index Scan using storage_event_outbox_pkey on storage_event_outbox  (cost=0.42..7.77 rows=1 width=14) (actual time=0.001..0.001 rows=1 loops=1000)
+              Index Cond: (id = "ANY_subquery".id)
+              Buffers: shared hit=4000
+Planning:
+  Buffers: shared hit=221
+Planning Time: 1.821 ms
+Trigger for constraint outbox_delivery_event_id_fkey: time=20.570 calls=1000
+Execution Time: 25.947 ms
+```
+
+### scan N=1000000 T=1000 — latest_event_id（活動中テナント）
+
+```
+Result  (cost=65.93..65.94 rows=1 width=8) (actual time=0.334..0.335 rows=1 loops=1)
+  Buffers: shared hit=45
+  InitPlan 1 (returns $0)
+    ->  Limit  (cost=0.42..65.93 rows=1 width=8) (actual time=0.329..0.329 rows=1 loops=1)
+          Buffers: shared hit=45
+          ->  Index Scan Backward using storage_event_outbox_pkey on storage_event_outbox  (cost=0.42..65048.83 rows=993 width=8) (actual time=0.327..0.328 rows=1 loops=1)
+                Index Cond: (id IS NOT NULL)
+                Filter: (tenant_id = 'tenant-1'::text)
+                Rows Removed by Filter: 999
+                Buffers: shared hit=45
+Planning:
+  Buffers: shared hit=99
+Planning Time: 1.116 ms
+Execution Time: 0.411 ms
+```
+
+### scan N=1000000 T=1000 — latest_event_id（イベントの無いテナント）
+
+```
+Result  (cost=65.93..65.94 rows=1 width=8) (actual time=267.823..267.824 rows=1 loops=1)
+  Buffers: shared hit=2746 read=36799 written=1
+  InitPlan 1 (returns $0)
+    ->  Limit  (cost=0.42..65.93 rows=1 width=8) (actual time=267.819..267.819 rows=0 loops=1)
+          Buffers: shared hit=2746 read=36799 written=1
+          ->  Index Scan Backward using storage_event_outbox_pkey on storage_event_outbox  (cost=0.42..65048.83 rows=993 width=8) (actual time=267.816..267.817 rows=0 loops=1)
+                Index Cond: (id IS NOT NULL)
+                Filter: (tenant_id = 'tenant-none'::text)
+                Rows Removed by Filter: 1000000
+                Buffers: shared hit=2746 read=36799 written=1
+Planning:
+  Buffers: shared hit=71 read=28
+Planning Time: 1.006 ms
+Execution Time: 267.960 ms
+```
+
+### scan N=1000000 T=1000 — peek_app_events_after（SSE 1 poll・活動中テナント・走査窓 19999 行）
+
+```
+Limit  (cost=0.84..1416.88 rows=2 width=132) (actual time=2.873..5.140 rows=1 loops=1)
+  Buffers: shared hit=749
+  ->  Nested Loop Left Join  (cost=0.84..1416.88 rows=2 width=132) (actual time=2.871..5.138 rows=1 loops=1)
+        Buffers: shared hit=749
+        ->  Index Scan using storage_event_outbox_pkey on storage_event_outbox o  (cost=0.42..1400.01 rows=2 width=147) (actual time=2.813..5.077 rows=1 loops=1)
+              Index Cond: (id > 980001)
+              Filter: ((payload ? 'event_type'::text) AND (tenant_id = 'tenant-1'::text))
+              Rows Removed by Filter: 19998
+              Buffers: shared hit=745
+        ->  Index Scan using node_pkey on node n  (cost=0.42..8.44 rows=1 width=17) (actual time=0.052..0.053 rows=1 loops=1)
+              Index Cond: (id = o.node_id)
+              Buffers: shared hit=4
+Planning:
+  Buffers: shared hit=387
+Planning Time: 2.737 ms
+Execution Time: 5.229 ms
+```
+
+### scan N=1000000 T=1000 — peek_app_events_after（SSE 1 poll・休眠テナント・カーソル 0）
+
+```
+Limit  (cost=42671.70..42680.57 rows=76 width=132) (actual time=138.725..143.892 rows=0 loops=1)
+  Buffers: shared hit=14802 read=19279
+  ->  Gather Merge  (cost=42671.70..42680.57 rows=76 width=132) (actual time=138.723..143.889 rows=0 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=14802 read=19279
+        ->  Sort  (cost=41671.68..41671.77 rows=38 width=132) (actual time=127.080..127.082 rows=0 loops=3)
+              Sort Key: o.id
+              Sort Method: quicksort  Memory: 25kB
+              Buffers: shared hit=14802 read=19279
+              Worker 0:  Sort Method: quicksort  Memory: 25kB
+              Worker 1:  Sort Method: quicksort  Memory: 25kB
+              ->  Nested Loop Left Join  (cost=0.42..41670.68 rows=38 width=132) (actual time=127.037..127.038 rows=0 loops=3)
+                    Buffers: shared hit=14786 read=19279
+                    ->  Parallel Seq Scan on storage_event_outbox o  (cost=0.00..41356.81 rows=38 width=147) (actual time=127.035..127.036 rows=0 loops=3)
+                          Filter: ((id > 0) AND (payload ? 'event_type'::text) AND (tenant_id = 'tenant-none'::text))
+                          Rows Removed by Filter: 333333
+                          Buffers: shared hit=14786 read=19279
+                    ->  Index Scan using node_pkey on node n  (cost=0.42..8.26 rows=1 width=17) (never executed)
+                          Index Cond: (id = o.node_id)
+Planning:
+  Buffers: shared hit=392
+Planning Time: 2.672 ms
+Execution Time: 144.007 ms
+```
+
+### scan N=1000000 T=1000 — テナント消去（outbox 1 テナント分 DELETE・台帳は CASCADE）
+
+```
+Delete on storage_event_outbox  (cost=0.00..46565.25 rows=0 width=0) (actual time=135.935..135.936 rows=0 loops=1)
+  Buffers: shared hit=15627 read=20441
+  ->  Seq Scan on storage_event_outbox  (cost=0.00..46565.25 rows=993 width=6) (actual time=0.026..134.224 rows=1000 loops=1)
+        Filter: (tenant_id = 'tenant-1'::text)
+        Rows Removed by Filter: 999000
+        Buffers: shared hit=13624 read=20441
+Planning:
+  Buffers: shared hit=79
+Planning Time: 0.568 ms
+Trigger for constraint outbox_delivery_event_id_fkey: time=26.912 calls=1000
+Execution Time: 163.104 ms
+```
+# outbox pool bench 2026-10-22T10:41Z
+server: PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+shared_buffers=128MB work_mem=4MB nproc=4
+
+## jobs B=1000（rag_ingest・99% が tenant-0）
+| query | median | buffers (last run) |
+|---|---:|---|
+| jobq::claim（rag_ingest・limit 2） | 0.384 ms | shared hit=37 |
+| jobq::claim（chat_generation・別キュー・limit 1） | 0.573 ms | shared hit=44 |
+| jobq::delete_tenant（小テナント） | 0.320 ms | shared hit=37 |
+| HOL: 小テナントの最初のジョブの前に並ぶ件数 | 990 | size 504 kB |
+
+## jobs B=100000（rag_ingest・99% が tenant-0）
+| query | median | buffers (last run) |
+|---|---:|---|
+| jobq::claim（rag_ingest・limit 2） | 0.366 ms | shared hit=35 |
+| jobq::claim（chat_generation・別キュー・limit 1） | 13.384 ms | shared hit=2616 |
+| jobq::delete_tenant（小テナント） | 9.664 ms | shared hit=2342 |
+| HOL: 小テナントの最初のジョブの前に並ぶ件数 | 99000 | size 25 MB |
+
+## jobs B=1000000（rag_ingest・99% が tenant-0）
+| query | median | buffers (last run) |
+|---|---:|---|
+| jobq::claim（rag_ingest・limit 2） | 0.341 ms | shared hit=42 |
+| jobq::claim（chat_generation・別キュー・limit 1） | 285.412 ms | shared hit=17 read=25993 dirtied=3 written=13 |
+| jobq::delete_tenant（小テナント） | 128.915 ms | shared hit=14546 read=8734 |
+| HOL: 小テナントの最初のジョブの前に並ぶ件数 | 990000 | size 248 MB |
+
+## EXPLAIN (ANALYZE, BUFFERS)（代表ケース）
+
+### jobs B=1000000 — jobq::claim（rag_ingest・limit 2）
+
+```
+Update on job_queue  (cost=1.01..17.50 rows=2 width=50) (actual time=0.170..0.181 rows=2 loops=1)
+  Buffers: shared hit=42
+  ->  Nested Loop  (cost=1.01..17.50 rows=2 width=50) (actual time=0.095..0.100 rows=2 loops=1)
+        Buffers: shared hit=19
+        ->  Unique  (cost=0.59..0.60 rows=2 width=40) (actual time=0.081..0.083 rows=2 loops=1)
+              Buffers: shared hit=11
+              ->  Sort  (cost=0.59..0.59 rows=2 width=40) (actual time=0.079..0.080 rows=2 loops=1)
+                    Sort Key: "ANY_subquery".id
+                    Sort Method: quicksort  Memory: 25kB
+                    Buffers: shared hit=11
+                    ->  Subquery Scan on "ANY_subquery"  (cost=0.42..0.58 rows=2 width=40) (actual time=0.049..0.053 rows=2 loops=1)
+                          Buffers: shared hit=8
+                          ->  Limit  (cost=0.42..0.56 rows=2 width=14) (actual time=0.038..0.041 rows=2 loops=1)
+                                Buffers: shared hit=8
+                                ->  LockRows  (cost=0.42..66784.92 rows=1000199 width=14) (actual time=0.037..0.040 rows=2 loops=1)
+                                      Buffers: shared hit=8
+                                      ->  Index Scan using job_queue_pkey on job_queue job_queue_1  (cost=0.42..56782.93 rows=1000199 width=14) (actual time=0.018..0.021 rows=2 loops=1)
+                                            Filter: ((queue = 'rag_ingest'::text) AND (visible_at <= now()))
+                                            Buffers: shared hit=6
+        ->  Index Scan using job_queue_pkey on job_queue  (cost=0.42..8.44 rows=1 width=18) (actual time=0.006..0.006 rows=1 loops=2)
+              Index Cond: (id = "ANY_subquery".id)
+              Buffers: shared hit=8
+Planning:
+  Buffers: shared hit=155
+Planning Time: 1.254 ms
+Execution Time: 0.351 ms
+```
+
+### jobs B=1000000 — jobq::claim（chat_generation・別キュー・limit 1）
+
+```
+Update on job_queue  (cost=71.76..79.80 rows=1 width=50) (actual time=251.997..252.002 rows=1 loops=1)
+  Buffers: shared hit=17 read=25993 dirtied=3 written=13
+  ->  Nested Loop  (cost=71.76..79.80 rows=1 width=50) (actual time=251.882..251.886 rows=1 loops=1)
+        Buffers: shared hit=10 read=25986 dirtied=1 written=13
+        ->  HashAggregate  (cost=71.34..71.35 rows=1 width=40) (actual time=251.850..251.853 rows=1 loops=1)
+              Group Key: "ANY_subquery".id
+              Batches: 1  Memory Usage: 24kB
+              Buffers: shared hit=6 read=25986 dirtied=1 written=13
+              ->  Subquery Scan on "ANY_subquery"  (cost=0.42..71.33 rows=1 width=40) (actual time=251.827..251.831 rows=1 loops=1)
+                    Buffers: shared hit=6 read=25986 dirtied=1 written=13
+                    ->  Limit  (cost=0.42..71.32 rows=1 width=14) (actual time=251.770..251.772 rows=1 loops=1)
+                          Buffers: shared hit=6 read=25986 dirtied=1 written=13
+                          ->  LockRows  (cost=0.42..56790.94 rows=801 width=14) (actual time=251.768..251.769 rows=1 loops=1)
+                                Buffers: shared hit=6 read=25986 dirtied=1 written=13
+                                ->  Index Scan using job_queue_pkey on job_queue job_queue_1  (cost=0.42..56782.93 rows=801 width=14) (actual time=251.716..251.716 rows=1 loops=1)
+                                      Filter: ((queue = 'chat_generation'::text) AND (visible_at <= now()))
+                                      Rows Removed by Filter: 1000000
+                                      Buffers: shared hit=5 read=25986 dirtied=1 written=13
+        ->  Index Scan using job_queue_pkey on job_queue  (cost=0.42..8.44 rows=1 width=18) (actual time=0.024..0.024 rows=1 loops=1)
+              Index Cond: (id = "ANY_subquery".id)
+              Buffers: shared hit=4
+Planning:
+  Buffers: shared hit=136 read=19
+Planning Time: 1.269 ms
+Execution Time: 252.349 ms
+```

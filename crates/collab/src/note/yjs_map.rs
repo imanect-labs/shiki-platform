@@ -12,9 +12,7 @@
 
 use yrs::types::text::YChange;
 use yrs::types::Attrs;
-use yrs::{
-    Any, GetString, Out, ReadTxn, Text, Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut,
-};
+use yrs::{Any, Out, ReadTxn, Text, Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut};
 
 use super::ast::{Block, Inline, Marks, Table, TaskItem};
 
@@ -35,10 +33,27 @@ pub fn read_blocks<T: ReadTxn>(txn: &T, fragment: &XmlFragmentRef) -> Vec<Block>
     children_to_blocks(txn, fragment.children(txn).collect())
 }
 
+/// フラグメント直下の `start..end` のブロックを読む（節の移動・#886）。
+pub fn read_block_range<T: ReadTxn>(
+    txn: &T,
+    fragment: &XmlFragmentRef,
+    start: u32,
+    end: u32,
+) -> Vec<Block> {
+    let children = fragment
+        .children(txn)
+        .skip(start as usize)
+        .take(end.saturating_sub(start) as usize)
+        .collect();
+    children_to_blocks(txn, children)
+}
+
 fn children_to_blocks<T: ReadTxn>(txn: &T, children: Vec<XmlOut>) -> Vec<Block> {
     let mut blocks = Vec::new();
     for child in children {
         match child {
+            // 削除の提案が付いたブロックは、承認されたものとして md に出さない（#886）。
+            XmlOut::Element(el) if is_deleted(txn, &el) => {}
             XmlOut::Element(el) => blocks.push(read_block(txn, &el)),
             // ブロック位置に裸の XmlText が来た場合は段落として救済する。
             XmlOut::Text(t) => {
@@ -84,7 +99,9 @@ fn read_block<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> Block {
 fn read_list_items<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> Vec<Vec<Block>> {
     el.children(txn)
         .filter_map(|c| match c {
-            XmlOut::Element(item) => Some(children_to_blocks(txn, item.children(txn).collect())),
+            XmlOut::Element(item) if !is_deleted(txn, &item) => {
+                Some(children_to_blocks(txn, item.children(txn).collect()))
+            }
             _ => None,
         })
         .collect()
@@ -93,7 +110,7 @@ fn read_list_items<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> Vec<Vec<Block>> {
 fn read_task_items<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> Vec<TaskItem> {
     el.children(txn)
         .filter_map(|c| match c {
-            XmlOut::Element(item) => Some(TaskItem {
+            XmlOut::Element(item) if !is_deleted(txn, &item) => Some(TaskItem {
                 checked: attr_bool(txn, &item, "checked").unwrap_or(false),
                 content: children_to_blocks(txn, item.children(txn).collect()),
             }),
@@ -109,6 +126,9 @@ fn read_table<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> Table {
         let XmlOut::Element(row_el) = row else {
             continue;
         };
+        if is_deleted(txn, &row_el) {
+            continue;
+        }
         let mut cells: Vec<Vec<Inline>> = Vec::new();
         let mut is_header_row = false;
         for cell in row_el.children(txn) {
@@ -175,6 +195,12 @@ fn read_inlines<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> Vec<Inline> {
 fn text_to_inlines<T: ReadTxn>(txn: &T, text: &yrs::XmlTextRef) -> Vec<Inline> {
     text.diff(txn, YChange::identity)
         .into_iter()
+        .filter(|diff| {
+            !diff
+                .attributes
+                .as_ref()
+                .is_some_and(|a| is_on(a.get(DELETION)))
+        })
         .filter_map(|diff| {
             let Out::Any(Any::String(s)) = diff.insert else {
                 return None;
@@ -183,12 +209,17 @@ fn text_to_inlines<T: ReadTxn>(txn: &T, text: &yrs::XmlTextRef) -> Vec<Inline> {
                 .attributes
                 .map(|attrs| marks_from_attrs(&attrs))
                 .unwrap_or_default();
-            Some(Inline::Text {
-                text: s.to_string(),
-                marks,
-            })
+            Some((s.to_string(), marks))
         })
-        .collect()
+        // md に出ない属性（提案の印）だけが違う隣り合うかたまりは 1 つにまとめる
+        // （分けると `**前年**` `**比**` のように強調が割れる）。
+        .fold(Vec::new(), |mut out: Vec<Inline>, (s, marks)| {
+            match out.last_mut() {
+                Some(Inline::Text { text, marks: prev }) if *prev == marks => text.push_str(&s),
+                _ => out.push(Inline::Text { text: s, marks }),
+            }
+            out
+        })
 }
 
 fn marks_from_attrs(attrs: &Attrs) -> Marks {
@@ -223,12 +254,66 @@ fn plain_text_of<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> String {
     let mut out = String::new();
     for child in el.children(txn) {
         match child {
-            XmlOut::Text(t) => out.push_str(&t.get_string(txn)),
+            // 削除の提案の文字は出さない（コードは要素の属性で印を持つが、念のため文字も見る）。
+            XmlOut::Text(t) => {
+                for d in t.diff(txn, YChange::identity) {
+                    let deleted = d
+                        .attributes
+                        .as_ref()
+                        .is_some_and(|a| is_on(a.get(DELETION)));
+                    if let (Out::Any(Any::String(s)), false) = (d.insert, deleted) {
+                        out.push_str(&s);
+                    }
+                }
+            }
             XmlOut::Element(e) => out.push_str(&plain_text_of(txn, &e)),
             XmlOut::Fragment(_) => {}
         }
     }
     out
+}
+
+/// AI の削除の提案の印（書式・要素の属性。`ai_text` と同じ名前）。
+const DELETION: &str = "aiDeletion";
+
+/// 提案の印が付いているか。サーバは `true` で書くが、人がその段落を編集すると y-prosemirror が
+/// マークの属性（`{}`）で書き直すので、`null`・`false` 以外はすべて「付いている」とみなす。
+pub(super) fn is_on(v: Option<&Any>) -> bool {
+    !matches!(v, None | Some(Any::Null | Any::Bool(false)))
+}
+
+/// 削除の提案が付いた要素か（要素の属性に付いている、または文字がすべて印付き）。
+///
+/// md は「提案を承認したら」の形で書く（保存・RAG・document.read に旧文と新文が並ばない）。
+/// 人が棄却すれば次の保存で元に戻る。
+fn is_deleted<T: ReadTxn>(txn: &T, el: &XmlElementRef) -> bool {
+    fn walk<T: ReadTxn>(txn: &T, el: &XmlElementRef, any: &mut bool) -> bool {
+        if is_on(attr_any(txn, el, DELETION).as_ref()) {
+            *any = true;
+            return true;
+        }
+        // 表の構造は要素の属性があるときだけ消す（セルの文字だけへの提案で行や表を消さない）。
+        if matches!(
+            &**el.tag(),
+            "table" | "tableRow" | "tableCell" | "tableHeader"
+        ) {
+            return false;
+        }
+        el.children(txn).all(|c| match c {
+            XmlOut::Text(t) => t.diff(txn, YChange::identity).iter().all(|d| {
+                let empty = matches!(&d.insert, Out::Any(Any::String(s)) if s.is_empty());
+                *any |= !empty;
+                empty
+                    || d.attributes
+                        .as_ref()
+                        .is_some_and(|a| is_on(a.get(DELETION)))
+            }),
+            XmlOut::Element(e) => walk(txn, &e, any),
+            XmlOut::Fragment(_) => true,
+        })
+    }
+    let mut any = false;
+    walk(txn, el, &mut any) && any
 }
 
 // --- 属性読みの寛容ヘルパ（JS 側は number/string どちらもあり得る） ---

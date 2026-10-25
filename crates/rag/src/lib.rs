@@ -8,9 +8,13 @@
 //! - **差し替え点**: [`DocumentParser`] / [`EmbeddingProvider`] / [`Reranker`] /
 //!   `VectorStore` / `FulltextIndex` はトレイト裏（クラウド/オンプレ差はここで吸収）。
 //! - 公開トレイトの第一引数は `&AuthContext`。
+//! - **構造化データのレコード（Task 15.8 スパイク）**: 候補の出所を [`SourceRef`] で多型化し、
+//!   post-filter をレコードへ一般化した（[`record_source`]・テーブルごとに可視性クエリ 1 本・
+//!   OpenFGA のタプルを増やさない）。ファイル検索の経路は変えていない。
 
 pub mod admin;
 pub mod anchor;
+pub mod audit_trail;
 pub mod authz_filter;
 pub mod chunker;
 pub mod config;
@@ -22,6 +26,8 @@ pub mod fusion;
 pub mod parser;
 pub mod parser_http;
 pub mod pipeline;
+pub mod query_key;
+pub mod record_source;
 pub mod rerank;
 pub mod search;
 pub mod search_types;
@@ -32,6 +38,7 @@ pub mod vector_store;
 
 pub use admin::RagAdmin;
 pub use anchor::{Anchor, BoxOrigin, PageBox, TextQuote};
+pub use audit_trail::AuditTrail;
 pub use config::RagConfig;
 pub use embedding::{EmbedInput, EmbedResponse, EmbeddingProvider, HttpEmbeddingProvider};
 pub use error::RagError;
@@ -40,14 +47,20 @@ pub use fulltext_tantivy::{TantivyFulltext, TantivyLimits};
 pub use parser::{DocumentParser, ParseRequest, ParseSource};
 pub use parser_http::{worker_auth_headers, HttpDocumentParser};
 pub use pipeline::{spawn_pipeline, IngestMessage, PipelineDeps, RAG_INGEST_QUEUE};
+pub use query_key::QueryHashKey;
+pub use record_source::{
+    post_filter_sources, readable_tables, record_authz_tag, record_results, AllowedCandidate,
+    RecordProjection, RecordVisibility, SourceCandidate, SourcePostFilterOutcome, SourceRef,
+    VisibleRecords,
+};
 pub use rerank::{HttpReranker, Reranker};
 pub use search::{
     Cursor, DocRead, DocReadPage, ReadFrom, ReadSource, SearchOutput, SearchService,
     DEFAULT_READ_CHARS, MAX_READ_CHARS,
 };
 pub use search_types::{
-    DocBlock, DocBlocksPage, Relevance, SearchDebug, SearchMode, SearchRequest, SearchResponse,
-    SearchResult, SearchScope, StageTimings,
+    DocBlock, DocBlocksPage, RecordSearchResult, Relevance, SearchDebug, SearchHit, SearchMode,
+    SearchRequest, SearchResponse, SearchResult, SearchScope, StageTimings,
 };
 pub use vector_qdrant::QdrantVectorStore;
 pub use vector_store::{ChunkPoint, PreFilter, ScoredChunk, VectorSearch, VectorStore};

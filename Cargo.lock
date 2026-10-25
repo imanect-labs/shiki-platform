@@ -1396,9 +1396,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.5"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
 ]
@@ -3314,7 +3314,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4024,7 +4024,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "once_cell",
@@ -4044,7 +4044,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn",
@@ -4695,6 +4695,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "roaring"
+version = "0.10.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19e8d2cfa184d94d0726d650a9f4a1be7f9b76ac9fdb954219878dc00c1c1e7b"
+dependencies = [
+ "bytemuck",
+ "byteorder",
 ]
 
 [[package]]
@@ -5384,6 +5394,7 @@ dependencies = [
  "shiki-artifact",
  "shiki-authz",
  "shiki-collab",
+ "shiki-data",
  "shiki-durable",
  "shiki-gui",
  "shiki-jobq",
@@ -5428,15 +5439,24 @@ dependencies = [
 name = "shiki-data"
 version = "0.0.0"
 dependencies = [
+ "aes-gcm",
  "async-trait",
+ "base64",
  "chrono",
+ "csv",
+ "hmac 0.12.1",
+ "opentelemetry",
+ "rand 0.8.6",
  "reqwest 0.12.28",
+ "roaring",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "shiki-artifact",
  "shiki-authz",
+ "shiki-jobq",
  "shiki-storage",
+ "sqlparser",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
@@ -5478,6 +5498,7 @@ dependencies = [
  "shiki-agent-core",
  "shiki-artifact",
  "shiki-authz",
+ "shiki-data",
  "shiki-storage",
  "shiki-workflow-engine",
  "shiki-yui",
@@ -5574,13 +5595,16 @@ dependencies = [
  "axum",
  "base64",
  "futures",
+ "hmac 0.12.1",
  "lindera",
  "lindera-tantivy",
+ "rand 0.8.6",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "shiki-authz",
+ "shiki-data",
  "shiki-jobq",
  "shiki-storage",
  "sqlx",
@@ -5793,6 +5817,7 @@ dependencies = [
  "sha2 0.10.9",
  "shiki-artifact",
  "shiki-authz",
+ "shiki-data",
  "shiki-durable",
  "shiki-jobq",
  "shiki-script-runtime",

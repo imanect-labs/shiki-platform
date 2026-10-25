@@ -24,6 +24,7 @@ use crate::providers::{
     anthropic::AnthropicProvider, openai::OpenAiProvider,
     openai_responses::OpenAiResponsesProvider, stub::StubProvider,
 };
+use crate::retry::{resume_unsettled, stream_with_retry, MIDSTREAM_RETRIES, UNAVAILABLE_BACKOFF};
 use crate::tenant::{
     self, apply_patch, resolve_choice, ChoiceError, ModelChoice, ResolvedChoice, SettingsError,
     SettingsPatch, TenantLlmSettings, TenantLlmStore,
@@ -228,11 +229,23 @@ impl LlmGateway {
     }
 
     /// テナントの AI 設定を読む（行が無ければ既定＝全モデル有効・Auto）。
+    ///
+    /// カタログから消えたモデルを指す既定・Auto の振り先は外して返す（[`TenantLlmSettings::reconciled`]）。
     pub async fn tenant_settings(
         &self,
         ctx: &AuthContext,
     ) -> Result<TenantLlmSettings, sqlx::Error> {
-        self.inner.tenants.load(ctx).await
+        let saved = self.inner.tenants.load(ctx).await?;
+        let settings = saved.clone().reconciled(&self.inner.config.catalog);
+        if settings != saved {
+            tracing::warn!(
+                org = %ctx.org,
+                default_model = %saved.default_model,
+                auto_model = ?saved.auto_model,
+                "組織の AI 設定がカタログに無いモデルを指しているので、既定・Auto の振り先を戻して扱います"
+            );
+        }
+        Ok(settings)
     }
 
     /// 組織の AI 設定を更新する（読み・検証・保存を 1 トランザクションで直列化し、保存後の設定を返す）。
@@ -380,13 +393,14 @@ impl LlmGateway {
         }
         req.model = Some(entry.resolved_id().to_string());
 
-        match (&self.inner.chatgpt_plan, slot.config.kind) {
-            // 連携者のプラン枠は、トークンの取得時にも呼び出し主体と照合し直す（再試行のたびにも）。
-            (Some(p), ProviderKind::ChatgptPlan) => {
-                stream_with_retry(&p.for_caller(ctx), &req, &UNAVAILABLE_BACKOFF).await
-            }
-            _ => stream_with_retry(slot.provider.as_ref(), &req, &UNAVAILABLE_BACKOFF).await,
+        // 連携者のプラン枠は、トークンの取得時にも呼び出し主体と照合し直す（再試行のたびにも）。
+        if let (Some(p), ProviderKind::ChatgptPlan) = (&self.inner.chatgpt_plan, slot.config.kind) {
+            return stream_with_retry(&p.for_caller(ctx), &req, &UNAVAILABLE_BACKOFF).await;
         }
+        // 流れ始めた後に切れても、まだ何も確定していなければ送り直す（#897）。
+        let provider = Arc::clone(&slot.provider);
+        let first = stream_with_retry(provider.as_ref(), &req, &UNAVAILABLE_BACKOFF).await?;
+        Ok(resume_unsettled(provider, req, first, MIDSTREAM_RETRIES))
     }
 
     /// 利用制限（月次コスト上限・プレビュー環境向け）を生成前に確かめる。
@@ -622,100 +636,10 @@ fn build_provider(
     }
 }
 
-/// 接続確立前（最初のバイト前）の Unavailable を再試行するまでの待ち時間（試行の間ごと）。
-///
-/// 最初のバイト前なので、送り直しても二重に生成されることはない。Gemini API の
-/// gemma-4-31b-it は数回に 1 回 500 を返し、すぐの 1 回だけでは足りなかった（#743）。
-const UNAVAILABLE_BACKOFF: [std::time::Duration; 2] = [
-    std::time::Duration::from_millis(500),
-    std::time::Duration::from_millis(1500),
-];
-
-/// `backoff` の数だけ、接続確立前の Unavailable を待ってから送り直す。
-async fn stream_with_retry(
-    provider: &dyn LlmProvider,
-    req: &GenerateRequest,
-    backoff: &[std::time::Duration],
-) -> Result<DeltaStream, LlmError> {
-    let mut waits = backoff.iter();
-    loop {
-        match provider.stream(req).await {
-            Err(LlmError::Unavailable(e)) => {
-                let Some(wait) = waits.next() else {
-                    return Err(LlmError::Unavailable(e));
-                };
-                tracing::warn!(error = %e, ?wait, "llm provider unavailable, retrying");
-                tokio::time::sleep(*wait).await;
-            }
-            other => return other,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{ModelCatalog, ModelEntry, ProviderConfig};
-
-    /// 最初の `fail` 回は `err` を返し、その後は空のストリームを返す。
-    struct Flaky {
-        fail: usize,
-        err: fn() -> LlmError,
-        calls: std::sync::atomic::AtomicUsize,
-    }
-
-    #[async_trait::async_trait]
-    impl LlmProvider for Flaky {
-        fn name(&self) -> &'static str {
-            "flaky"
-        }
-        async fn stream(&self, _req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
-            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if n < self.fail {
-                return Err((self.err)());
-            }
-            Ok(Box::pin(futures::stream::empty()))
-        }
-    }
-
-    #[tokio::test]
-    async fn unavailable_before_first_byte_is_retried_as_many_times_as_backoff_allows() {
-        let backoff = [std::time::Duration::from_millis(1); 2];
-        let req = GenerateRequest::new(Vec::new());
-        let unavailable = || LlmError::Unavailable("500".into());
-        let calls = |p: &Flaky| p.calls.load(std::sync::atomic::Ordering::SeqCst);
-
-        let p = Flaky {
-            fail: 2,
-            err: unavailable,
-            calls: 0.into(),
-        };
-        assert!(stream_with_retry(&p, &req, &backoff).await.is_ok());
-        assert_eq!(calls(&p), 3);
-
-        let p = Flaky {
-            fail: 3,
-            err: unavailable,
-            calls: 0.into(),
-        };
-        assert!(matches!(
-            stream_with_retry(&p, &req, &backoff).await,
-            Err(LlmError::Unavailable(_))
-        ));
-        assert_eq!(calls(&p), 3);
-
-        // 直せば通るたぐいの誤りは送り直さない。
-        let p = Flaky {
-            fail: 1,
-            err: || LlmError::BadRequest("400".into()),
-            calls: 0.into(),
-        };
-        assert!(matches!(
-            stream_with_retry(&p, &req, &backoff).await,
-            Err(LlmError::BadRequest(_))
-        ));
-        assert_eq!(calls(&p), 1);
-    }
 
     /// 指定 kind ＋ base_url ＋ api_key から最小構成の設定を組む。
     fn config(kind: ProviderKind, base_url: Option<&str>, api_key: Option<&str>) -> GatewayConfig {

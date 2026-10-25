@@ -9,6 +9,7 @@ pub mod expr;
 pub mod input_schema;
 pub mod node;
 pub mod params;
+pub mod scopes;
 pub mod trigger;
 pub mod validate;
 

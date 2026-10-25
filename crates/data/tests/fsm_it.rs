@@ -78,17 +78,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
 }
 
 fn field(name: &str, ty: FieldType) -> FieldDef {
-    FieldDef {
-        name: name.into(),
-        field_type: ty,
-        required: false,
-        unique: false,
-        indexed: false,
-        options: vec![],
-        ref_table: None,
-        lookup: None,
-        computed: None,
-    }
+    FieldDef::new(name, ty)
 }
 
 fn expense_schema() -> TableSchema {
@@ -114,6 +104,7 @@ fn expense_schema() -> TableSchema {
         field_policy: vec![],
         aggregate_min_rows: None,
         fsm_ref: None,
+        rag: None,
     }
 }
 
@@ -227,7 +218,7 @@ async fn approval_flow_transitions_and_guards() {
             None,
         )
         .await;
-    assert!(matches!(direct, Err(DataError::Invalid(_))), "{direct:?}");
+    assert!(matches!(&direct, Err(e) if e.is_invalid()), "{direct:?}");
 
     let fsm = approval_fsm();
     // draft→submitted は申請者 alice のみ（承認者 bob は actor 述語外＝403）。
@@ -276,7 +267,7 @@ async fn approval_flow_transitions_and_guards() {
             None,
         )
         .await;
-    assert!(matches!(bad, Err(DataError::Invalid(_))), "{bad:?}");
+    assert!(matches!(&bad, Err(e) if e.is_invalid()), "{bad:?}");
 
     // submitted→approved は承認者 bob のみ（申請者 alice は 403）。
     let alice_approve = store
@@ -323,7 +314,10 @@ async fn approval_flow_transitions_and_guards() {
             None,
         )
         .await;
-    assert!(matches!(stale, Err(DataError::Conflict(_))), "{stale:?}");
+    assert!(
+        matches!(stale, Err(DataError::RevConflict { current }) if current == approved.rev),
+        "{stale:?}"
+    );
 
     // リビジョンに transition が残る（フィールド単位差分・受け入れ条件）。
     let revs = store
@@ -366,4 +360,201 @@ async fn approval_flow_transitions_and_guards() {
     .expect("audit count")
     .get(0);
     assert!(audit_count >= 4, "allow×2 + deny×2 以上");
+}
+
+/// テーブルにピンされた FSM は**テーブル側の参照として**読む（検証 C-P1-1）。FSM の作成者でない
+/// テーブル editor が、FSM のアーティファクトの閲覧権限なしに遷移できる。テーブルの viewer だけでは
+/// 遷移できず（403）、テーブルが見えない主体には存在も分からない（404）。単一の入口
+/// （`FsmStore::transition`）は HTTP・ワークフロー・スクリプト・ゲートウェイが共有する。
+#[tokio::test]
+async fn table_editor_transitions_without_fsm_artifact_access() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice"); // テーブルと FSM の作成者
+    let bob = ctx(&tenant, "bob"); // テーブル editor（FSM の閲覧権限なし）
+    let carol = ctx(&tenant, "carol"); // テーブル viewer
+    let dave = ctx(&tenant, "dave"); // 権限なし
+    let store = DataStore::new(pool.clone(), Arc::clone(&authz), Arc::new(AllowRefs));
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        pool.clone(),
+        Arc::clone(&authz),
+    ));
+    let fsms = FsmStore::new(Arc::clone(&artifacts), store.clone());
+    let table = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "expense".into(),
+                schema: expense_schema(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let fsm_id = fsms
+        .create(&alice, "approval", table.id, &approval_fsm(), None)
+        .await
+        .unwrap();
+    let mut schema = expense_schema();
+    schema.fsm_ref = Some(FsmRef {
+        artifact_id: fsm_id,
+        version: 1,
+    });
+    store
+        .update_table_schema(&alice, table.id, schema, Some(1), None)
+        .await
+        .unwrap();
+    let obj = alice.ns().data_table(&table.id.to_string());
+    authz
+        .write_tuple(&bob.subject(), Relation::Editor, &obj)
+        .await
+        .unwrap();
+    authz
+        .write_tuple(&carol.subject(), Relation::Viewer, &obj)
+        .await
+        .unwrap();
+    // bob は FSM のアーティファクトを読めない（前提）。
+    assert!(fsms.get(&bob, fsm_id, Some(1), None).await.is_err());
+    let rec = store
+        .create_record(
+            &bob,
+            table.id,
+            json!({"applicant": "bob", "approver": "alice", "status": "draft", "amount": 1}),
+            None,
+        )
+        .await
+        .unwrap();
+    // テーブル editor は自分の行を遷移できる（actor 述語は当該行で評価）。
+    let moved = fsms
+        .transition(&bob, table.id, rec.id, "submitted", rec.rev, None)
+        .await
+        .expect("table editor transitions without FSM artifact access");
+    assert_eq!(moved.data["status"], json!("submitted"));
+    // 定義外の遷移は構造化 400（fsm_invalid）。
+    let bad = fsms
+        .transition(&bob, table.id, rec.id, "draft", moved.rev, None)
+        .await;
+    assert_eq!(
+        bad.as_ref().err().and_then(DataError::invalid_code),
+        Some(data::InvalidCode::FsmInvalid),
+        "{bad:?}"
+    );
+    // テーブル viewer は遷移できない（403）。
+    let r = fsms
+        .transition(&carol, table.id, rec.id, "approved", moved.rev, None)
+        .await;
+    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    // テーブルが見えない主体には存在も分からない。
+    let r = fsms
+        .transition(&dave, table.id, rec.id, "approved", moved.rev, None)
+        .await;
+    assert!(
+        matches!(r, Err(DataError::NotFound | DataError::Forbidden)),
+        "{r:?}"
+    );
+    // 承認者 alice（作成者）は FSM の通常経路でも遷移できる。
+    let done = fsms
+        .transition(&alice, table.id, rec.id, "approved", moved.rev, None)
+        .await
+        .unwrap();
+    assert_eq!(done.data["status"], json!("approved"));
+
+    // 作成時の状態は FSM の初期状態（states の先頭）に固定する（検証 2-C-P2-3）。
+    let r = store
+        .create_record(
+            &bob,
+            table.id,
+            json!({"applicant": "bob", "approver": "alice", "status": "approved", "amount": 1}),
+            None,
+        )
+        .await;
+    assert_eq!(
+        r.as_ref().err().and_then(DataError::invalid_code),
+        Some(data::InvalidCode::FsmInvalid),
+        "{r:?}"
+    );
+    let fresh = store
+        .create_record(
+            &bob,
+            table.id,
+            json!({"applicant": "bob", "approver": "alice", "amount": 2}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(fresh.data["status"], json!("draft"), "省略は初期状態");
+    // 一括取込の作成行も同じ（違う状態は行の不合格・省略は初期状態）。
+    let imp = store
+        .start_bulk_import(
+            &bob,
+            table.id,
+            vec![
+                data::BulkImportRow {
+                    key: Some("bad".into()),
+                    data: json!({"applicant": "bob", "approver": "alice", "status": "approved", "amount": 3}),
+                },
+                data::BulkImportRow {
+                    key: Some("ok".into()),
+                    data: json!({"applicant": "bob", "approver": "alice", "amount": 4}),
+                },
+            ],
+            data::BulkImportOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    store.run_bulk_import(&tenant, table.id, imp).await.unwrap();
+    let errs = store
+        .bulk_import_errors(&bob, table.id, imp, 0, 10)
+        .await
+        .unwrap();
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(errs[0].key.as_deref(), Some("bad"), "{errs:?}");
+
+    // いま実行できる遷移先（グリッドの状態セルのメニュー・検証 2-C-P2-4）。
+    let a = fsms
+        .allowed_transitions(&bob, table.id, fresh.id, None)
+        .await
+        .unwrap();
+    assert_eq!(a.current.as_deref(), Some("draft"));
+    assert_eq!(
+        a.transitions,
+        vec!["submitted".to_string()],
+        "申請者は提出だけ"
+    );
+    assert_eq!(a.rev, fresh.rev);
+    let a = fsms
+        .allowed_transitions(&alice, table.id, fresh.id, None)
+        .await
+        .unwrap();
+    assert!(
+        a.transitions.is_empty(),
+        "承認者は下書きを動かせない: {a:?}"
+    );
+    let sub = fsms
+        .transition(&bob, table.id, fresh.id, "submitted", fresh.rev, None)
+        .await
+        .unwrap();
+    let a = fsms
+        .allowed_transitions(&alice, table.id, sub.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        a.transitions,
+        vec!["approved".to_string(), "rejected".to_string()]
+    );
+    // viewer は候補も引けない（遷移と同じ 403）・見えない主体には存在も分からない。
+    let r = fsms
+        .allowed_transitions(&carol, table.id, sub.id, None)
+        .await;
+    assert!(matches!(r, Err(DataError::Forbidden)), "{r:?}");
+    let r = fsms
+        .allowed_transitions(&dave, table.id, sub.id, None)
+        .await;
+    assert!(
+        matches!(r, Err(DataError::NotFound | DataError::Forbidden)),
+        "{r:?}"
+    );
 }

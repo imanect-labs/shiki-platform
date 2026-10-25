@@ -538,3 +538,76 @@ async fn defer_keeps_tenant_order_and_share() {
         .collect();
     assert_eq!(a_order, a_ids, "a の投入順は保たれる");
 }
+
+/// `limit` を超えて確保しない（索引のバックフィルが 15 分止まった根本原因・検証 A25/D-5）。
+///
+/// 統計が古いと（キューが空に近いときに analyze された等）計画が「外側の seq scan × 内側の
+/// `limit … for update skip locked` を行ごとに再実行」になり得る。旧実装の `where id in (subquery)` は
+/// その計画で再実行のたびに自分が更新した行を飛ばして次の行を返し、limit 1 で可視な行を全部確保した
+/// （呼び出し側は 1 件しか処理しないので、残りは可視期限まで放置される）。計画の揺れを再現するため、
+/// このセッションの計画を汎用計画＋Nested Loop Semi Join（Materialize なし）に寄せて確かめる。
+#[tokio::test]
+async fn claim_never_takes_more_than_limit_even_with_a_rescanning_plan() {
+    let Some(pool) = setup().await else { return };
+    let queue = unique_queue("overclaim");
+    let mut ids = Vec::new();
+    for _ in 0..4 {
+        ids.push(enqueue(&pool, &queue, "a-corp", 5).await);
+    }
+    let mut conn = pool.acquire().await.unwrap();
+    for s in [
+        "set plan_cache_mode = force_generic_plan",
+        "set enable_hashagg = off",
+        "set enable_sort = off",
+        "set enable_hashjoin = off",
+        "set enable_mergejoin = off",
+        "set enable_material = off",
+    ] {
+        sqlx::query(s).execute(&mut *conn).await.unwrap();
+    }
+    let claimed = jobq::claim(&mut conn, &queue, Duration::from_secs(300), 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1, "limit 1 で 1 件だけ確保する");
+    assert_eq!(claimed[0].id, ids[0], "先頭（fair_seq 順）を確保する");
+    // 確保しなかった行は可視のまま（次の claim ですぐ取れる）。
+    let hidden: i64 = sqlx::query_scalar(
+        "select count(*) from job_queue where queue = $1 and visible_at > now()",
+    )
+    .bind(&queue)
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(hidden, 1, "不可視になったのは確保した 1 件だけ");
+    sqlx::query("reset all").execute(&mut *conn).await.unwrap();
+    let next = jobq::claim(&mut conn, &queue, Duration::from_secs(300), 1)
+        .await
+        .unwrap();
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].id, ids[1]);
+}
+
+/// ハートビートで可視期限を延ばせる（ack 済みのジョブは延ばせない）。
+#[tokio::test]
+async fn extend_pushes_visibility_and_reports_missing_jobs() {
+    let Some(pool) = setup().await else { return };
+    let queue = unique_queue("extend");
+    let id = enqueue(&pool, &queue, "a-corp", 5).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let claimed = jobq::claim(&mut conn, &queue, Duration::from_secs(0), 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    // 期限 0 で確保 → 延長しなければすぐ再配信されるが、延長すると見えなくなる。
+    assert!(jobq::extend(&mut conn, id, Duration::from_secs(300))
+        .await
+        .unwrap());
+    let again = jobq::claim(&mut conn, &queue, Duration::from_secs(300), 1)
+        .await
+        .unwrap();
+    assert!(again.is_empty(), "延長した期限内は再配信されない");
+    jobq::ack(&mut conn, id).await.unwrap();
+    assert!(!jobq::extend(&mut conn, id, Duration::from_secs(300))
+        .await
+        .unwrap());
+}

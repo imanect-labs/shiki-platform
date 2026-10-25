@@ -1,12 +1,13 @@
 //! ミニアプリの保存・解決（Task 6.10）。
 //!
-//! 保存時は**作成者の権限**で全ピン（skill/workflow）の存在・kind・viewer を検証する。画面の
+//! 保存時は**作成者の権限**で全ピン（skill/workflow/data_view）の存在・kind・viewer を検証する。画面の
 //! ボタンの実行先がバンドルの別名に限られることは body の検証（[`validate_miniapp_body`]）が見る。
 //! 解決（実行）時は**ミニアプリ本体の viewer**のみを要求し、部品はバンドル権限
 //! チョークポイント（[`ArtifactStore::get_version_via_bundle`]）で読む — 共有相手は
 //! 部品を個別共有されなくても実行できる（miniapp-platform §7）。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use artifact::{ArtifactError, ArtifactKind, ArtifactStore, NewArtifact};
 use authz::AuthContext;
@@ -132,7 +133,7 @@ impl MiniAppStore {
 
         // 解決を監査に残す（誰が・どの版を・どのピン集合で実行面へ持ち出したか・Task 6.12）。
         let entry = AuditEntry {
-            action: "miniapp.resolve",
+            action: AuditAction::MiniappResolve,
             object_type: "artifact",
             object_id: &id.to_string(),
             decision: Decision::Allow,
@@ -141,6 +142,7 @@ impl MiniAppStore {
                 "version": version,
                 "skill": body.skill,
                 "workflows": body.workflows,
+                "data_views": body.data_views,
             }),
         };
         if let Err(e) = self.audit.record(ctx, entry).await {
@@ -182,6 +184,35 @@ impl MiniAppStore {
                 .await
             {
                 errors.push(e.at(format!("workflows[{i}]")));
+            }
+        }
+        // 保存ビュー（Task 15.7）: 保存する人が**その版を読める**こと（viewer・kind・版の実在）を
+        // 確かめて版に固定する。データの権限はここでは広げない（実行時に閲覧者本人で毎回評価する）。
+        for (i, view) in body.data_views.iter().enumerate() {
+            let pin = ComponentPin {
+                artifact_id: view.artifact_id,
+                version: view.version,
+            };
+            let path = format!("data_views[{i}]");
+            match self
+                .check_pin(ctx, &pin, ArtifactKind::DataView, trace_id)
+                .await
+            {
+                Ok(raw) => {
+                    if data::DataViewBody::from_stored(raw).is_err() {
+                        errors.push(
+                            GuiValidationError::new(
+                                "miniapp.data_view_broken",
+                                format!(
+                                    "保存ビュー {}（v{}）の本文を読めません",
+                                    view.artifact_id, view.version
+                                ),
+                            )
+                            .at(path),
+                        );
+                    }
+                }
+                Err(e) => errors.push(e.at(path)),
             }
         }
         if errors.is_empty() {

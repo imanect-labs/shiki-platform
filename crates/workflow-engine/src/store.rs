@@ -51,6 +51,9 @@ impl WorkflowStore {
         catalog: &Catalog,
         trace_id: Option<&str>,
     ) -> Result<(Uuid, WorkflowIr), WorkflowStoreError> {
+        // ノードが要するスコープを declared_scopes へ補完してから検証・保存する（検証 C-P1-2）。
+        let (completed, _) = crate::ir::scopes::complete_declared_scopes(ir_json);
+        let ir_json = &completed;
         let ir = validate(ir_json, catalog).map_err(WorkflowStoreError::Validation)?;
         let artifact = self
             .artifacts
@@ -77,6 +80,9 @@ impl WorkflowStore {
         expected_version: Option<i64>,
         trace_id: Option<&str>,
     ) -> Result<(i64, WorkflowIr), WorkflowStoreError> {
+        // ノードが要するスコープを declared_scopes へ補完してから検証・保存する（検証 C-P1-2）。
+        let (completed, _) = crate::ir::scopes::complete_declared_scopes(ir_json);
+        let ir_json = &completed;
         let ir = validate(ir_json, catalog).map_err(WorkflowStoreError::Validation)?;
         // 対象 artifact が workflow 種であり、名前が IR と一致することを確認する。
         // 汎用 artifact API 経由で作られた別種（prompt/mini_app 等）を workflow エンドポイントで

@@ -4,17 +4,20 @@
 //! [`crate::record`] が禁止）。1 トランザクションで:
 //! ①行ロック（行述語込み・不可視 404） ②現 status ∈ from 検証（定義外 422→Invalid）
 //! ③actor 述語を**当該行に**評価（不許可 403） ④status 更新＋rev+1＋revision(transition)
-//! ⑤outbox `data.record.transitioned`（同一 Tx） ⑥監査 Chain::Yes。
+//! ⑤outbox `data.record.transitioned`（同一 Tx・トリガ用）と `data.record.changed`（SSE 用・Task 15.6）
+//! ⑥監査 Chain::Yes。
 //!
 //! **副作用はここに含めない**（通知/転記/AI は Phase 10 workflow-engine のトリガ）。
 //! ワークフローが status を進める場合も必ずこの API を叩く（ガード・認可を再評価）。
 
 use authz::{AuthContext, Relation};
 use serde_json::{json, Value};
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Chain, Decision};
 use storage::event::{emit_on, WriteEvent, WriteOp};
 use uuid::Uuid;
 
+use crate::field_key::{decode_record, encode_record};
 use crate::fsm::FsmBody;
 use crate::revision::{insert_revision, RevisionInsert};
 use crate::store::DataStore;
@@ -31,6 +34,7 @@ impl DataStore {
     /// `fsm` / `status_field` は呼び出し側（api 層）が fsm_ref のピンバージョンを
     /// artifact チョークポイント経由で解決して渡す（data crate は artifact へ直接依存しない）。
     #[allow(clippy::too_many_arguments)] // 遷移の入力束（fsm 定義＋行識別＋楽観ロック）。
+    #[allow(clippy::too_many_lines)] // 1 Tx の手順列（①〜⑥＋索引）。分けると Tx 境界が追いにくい。
     pub async fn transition_record(
         &self,
         ctx: &AuthContext,
@@ -46,40 +50,58 @@ impl DataStore {
             ctx,
             table_id,
             Relation::Editor,
-            "data.record.transition",
+            AuditAction::DataRecordTransition,
             trace_id,
         )
         .await?;
         let table = self.fetch_live(ctx, table_id).await?;
+        let az = self.authz_memo();
 
-        let mut tx = self.db.begin().await.map_err(map_db)?;
+        let db = self.pools.for_tenant(&ctx.tenant_id);
+        let mut tx = db.begin().await.map_err(map_db)?;
+        // 索引の計画（テーブル行を FOR KEY SHARE・レコード行より先に取る・Task 15.2）。
+        let plan = crate::index::state::lock_plan(
+            &mut tx,
+            &ctx.tenant_id,
+            table_id,
+            table.keys,
+            table.schema_version,
+        )
+        .await?;
         // ①行ロック（行述語込み・不可視は 404＝存在オラクルなし）。
         let current = self
-            .lock_visible_by_id(ctx, &mut tx, &table, record_id)
+            .lock_visible_by_id(ctx, &az, &mut tx, &table, record_id)
             .await?
             .ok_or(DataError::NotFound)?;
         if current.rev != expected_rev {
-            return Err(DataError::Conflict(format!(
-                "rev が一致しません（現在 {}・指定 {expected_rev}）",
-                current.rev
-            )));
+            return Err(DataError::RevConflict {
+                current: current.rev,
+            });
         }
-        let from = current
-            .data
-            .0
+        // 保存形（"f{id}"）を外部形（key）へ戻してから status を読む。
+        let mut data = decode_record(&table.schema, &current.data.0);
+        let from = data
             .get(status_field)
             .and_then(Value::as_str)
             .ok_or_else(|| {
-                DataError::Invalid(format!("status フィールド '{status_field}' がありません"))
+                DataError::input_detail(
+                    crate::InvalidCode::FsmInvalid,
+                    None,
+                    "レコードに状態が設定されていません",
+                )
             })?
             .to_string();
         // ②定義外遷移は 422（Invalid）。
-        let transition = fsm
-            .transition(&from, to)
-            .ok_or_else(|| DataError::Invalid(format!("定義外の遷移です（{from} → {to}）")))?;
+        let transition = fsm.transition(&from, to).ok_or_else(|| {
+            DataError::input_detail(
+                crate::InvalidCode::FsmInvalid,
+                None,
+                "この状態からは指定の状態へ遷移できません",
+            )
+        })?;
         // ③actor 述語を当該行に評価（不許可 403）。読取述語ではなく actor 述語を使う。
         if !self
-            .actor_allows(ctx, &table, record_id, &transition.actor)
+            .actor_allows(ctx, &az, &table, record_id, &transition.actor)
             .await?
         {
             let _ = self
@@ -87,7 +109,7 @@ impl DataStore {
                 .record(
                     ctx,
                     AuditEntry {
-                        action: "data.record.transition",
+                        action: AuditAction::DataRecordTransition,
                         object_type: "data_record",
                         object_id: &record_id.to_string(),
                         decision: Decision::Deny,
@@ -101,18 +123,22 @@ impl DataStore {
 
         // ④status 更新＋rev+1＋revision。
         let new_rev = current.rev + 1;
-        let mut data = current.data.0.as_object().cloned().unwrap_or_default();
         data.insert(status_field.to_string(), Value::String(to.to_string()));
-        let row: crate::record::RecordRow = sqlx::query_as(
+        let new_stored = Value::Object(encode_record(&table.schema, &data));
+        let written: crate::record::WrittenRow = sqlx::query_as(&format!(
             "UPDATE data_record SET data = $4, rev = $5, updated_at = now() \
-             WHERE tenant_id = $1 AND table_id = $2 AND id = $3 \
-             RETURNING id, table_id, data, rev, owner, created_at, updated_at",
-        )
+             WHERE tenant_int = $6 AND table_int = $7 AND tenant_id = $1 AND table_id = $2 \
+               AND id = $3 \
+             RETURNING {}",
+            crate::record::WRITTEN_RETURNING
+        ))
         .bind(&ctx.tenant_id)
         .bind(table_id)
         .bind(record_id)
-        .bind(sqlx::types::Json(Value::Object(data)))
+        .bind(sqlx::types::Json(&new_stored))
         .bind(new_rev)
+        .bind(table.keys.tenant_int)
+        .bind(table.keys.table_int)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -121,6 +147,20 @@ impl DataStore {
             old: Value::String(from.clone()),
             new: Value::String(to.to_string()),
         }];
+        // status の索引行と updated_at だけを書き換える（差分更新・同一 Tx）。
+        self.index_writer(&plan, &table.schema, &ctx.tenant_id)
+            .on_update(&mut tx, written.record_int, &patch, written.row.updated_at)
+            .await?;
+        crate::derived::materialize::after_record_write(
+            &mut tx,
+            &ctx.tenant_id,
+            &table,
+            written.record_int,
+            Some(&data),
+        )
+        .await?;
+        let record_int = written.record_int;
+        let row = written.row;
         insert_revision(
             &mut tx,
             ctx,
@@ -154,12 +194,35 @@ impl DataStore {
         )
         .await
         .map_err(|e| DataError::Internal(format!("outbox: {e}")))?;
+        // レコード変更の outbox（SSE 差分配信の源・Task 15.6）。遷移のトリガ用イベントとは別に、行の
+        // 変更として発行する（購読者ごとに before / after の可視性を判定する材料を添える）。
+        crate::stream::outbox::emit_record_changes(
+            &mut tx,
+            ctx,
+            &table,
+            &[crate::stream::outbox::RecordChange {
+                record_id,
+                record_int,
+                rev: new_rev,
+                kind: crate::stream::outbox::ChangeKind::Update,
+                before: Some(crate::stream::outbox::Before {
+                    owner: &current.owner,
+                    stored: &current.data.0,
+                }),
+                after: Some(crate::stream::outbox::Before {
+                    owner: &current.owner,
+                    stored: &new_stored,
+                }),
+            }],
+            trace_id,
+        )
+        .await?;
         // ⑥監査（実データ変更・書込と同一 Tx・Chain=Yes）。
         storage::audit::record_on(
             &mut tx,
             ctx,
             AuditEntry {
-                action: "data.record.transition",
+                action: AuditAction::DataRecordTransition,
                 object_type: "data_record",
                 object_id: &record_id.to_string(),
                 decision: Decision::Allow,
@@ -171,6 +234,12 @@ impl DataStore {
         .await
         .map_err(|e| DataError::Internal(format!("audit: {e}")))?;
         tx.commit().await.map_err(map_db)?;
-        Ok(row.into_record())
+        // 応答もマスクを掛けて返す（遷移した本人が読めない列の値を応答で漏らさない・PIT-19）。
+        let mut out = [row.into_record(&table.schema)];
+        let masked = self.masked_fields(ctx, &az, &table).await?;
+        self.project_read(ctx, &az, &table, &masked, &mut out)
+            .await?;
+        let [out] = out;
+        Ok(out)
     }
 }

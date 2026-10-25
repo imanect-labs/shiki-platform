@@ -9,7 +9,8 @@ use super::*;
 use durable::{Key, KeyValue};
 use uuid::Uuid;
 
-use super::runs::{map_db, EVENT_SPEC, RUN_KEY_COLUMNS, RUN_SPEC};
+use super::runs::{map_db, CHAT_GENERATION_QUEUE, EVENT_SPEC, RUN_KEY_COLUMNS, RUN_SPEC};
+use crate::approver::APPROVAL_MAX_WAIT;
 use crate::model::{StreamEvent, StreamEventKind};
 
 impl ChatStore {
@@ -41,7 +42,8 @@ impl ChatStore {
             &Key::new(RUN_KEY_COLUMNS, &kv),
             event.tag(),
             &payload,
-            &["queued", "running"],
+            // 承認待ちも端末ではない（承認待ちのまま失われた run を確定できるように）。
+            &["queued", "running", "waiting_approval"],
         )
         .await
         .map_err(map_db)?;
@@ -51,7 +53,8 @@ impl ChatStore {
         };
         let thread_id: Option<Uuid> = sqlx::query_scalar(
             "UPDATE generation_run SET status = 'failed', last_error = $2, \
-             lease_until = NULL, updated_at = now() WHERE run_id = $1 RETURNING thread_id",
+             lease_until = NULL, pending_approval = NULL, updated_at = now() \
+             WHERE run_id = $1 RETURNING thread_id",
         )
         .bind(run_id)
         .bind(detail)
@@ -73,17 +76,25 @@ impl ChatStore {
         Ok(true)
     }
 
-    /// 孤児回収 sweeper（backstop）: リースが大きく失効した running run を failed 化する。
-    /// 主経路は jobq の再配信＋claim takeover。ここはジョブが失われた場合の保険。
-    /// 各孤児へ Error イベントを追記して UI にも失敗を反映する。
+    /// 孤児回収 sweeper（backstop）。主経路は jobq の再配信＋claim takeover で、ここは**ジョブが
+    /// 失われた**場合の保険（ジョブが残っている run は再配信に任せて触らない）。戻り値は処理した run 数。
+    ///
+    /// - running: リースが大きく失効したものを failed 化する（Error イベントで UI にも反映）。
+    /// - waiting_approval: 以前は対象外で、ジョブを失った承認待ちは永久に承認待ちのまま残った
+    ///   （検証 P1）。最後に生きていた時刻（`lease_until`）から承認の期限（[`APPROVAL_MAX_WAIT`]）を
+    ///   過ぎていれば failed 化し、期限内ならジョブを積み直す（ワーカーが取り直して承認を求め直す＝
+    ///   再起動後の再配信と同じ経路）。
     pub async fn reap_orphaned_runs(&self, grace_secs: i64) -> Result<u64, ChatError> {
         let ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT run_id FROM generation_run \
-             WHERE status = 'running' AND lease_until IS NOT NULL \
-               AND lease_until < now() - ($1 || ' seconds')::interval \
+            "SELECT r.run_id FROM generation_run r \
+             WHERE r.status = 'running' AND r.lease_until IS NOT NULL \
+               AND r.lease_until < now() - ($1 || ' seconds')::interval \
+               AND NOT EXISTS (SELECT 1 FROM job_queue j WHERE j.queue = $2 \
+                               AND j.payload->>'run_id' = r.run_id::text) \
              LIMIT 100",
         )
         .bind(grace_secs)
+        .bind(CHAT_GENERATION_QUEUE)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -101,6 +112,91 @@ impl ChatStore {
                 n += 1;
             }
         }
+        Ok(n + self.recover_orphaned_approvals(grace_secs).await?)
+    }
+
+    /// ジョブを失った承認待ちの run を、期限切れなら failed 化し、期限内ならジョブを積み直す。
+    async fn recover_orphaned_approvals(&self, grace_secs: i64) -> Result<u64, ChatError> {
+        let max_wait = i64::try_from(APPROVAL_MAX_WAIT.as_secs()).unwrap_or(i64::MAX);
+        let rows: Vec<(Uuid, bool)> = sqlx::query_as(
+            "SELECT r.run_id, r.lease_until < now() - ($2 || ' seconds')::interval \
+             FROM generation_run r \
+             WHERE r.status = 'waiting_approval' \
+               AND (r.lease_until IS NULL OR r.lease_until < now() - ($1 || ' seconds')::interval) \
+               AND NOT EXISTS (SELECT 1 FROM job_queue j WHERE j.queue = $3 \
+                               AND j.payload->>'run_id' = r.run_id::text) \
+             LIMIT 100",
+        )
+        .bind(grace_secs)
+        .bind(max_wait)
+        .bind(CHAT_GENERATION_QUEUE)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        let mut n = 0;
+        for (id, expired) in rows {
+            let done = if expired {
+                self.force_fail_run(
+                    id,
+                    crate::error::failure_message::APPROVAL_EXPIRED,
+                    "orphaned while waiting for approval (approval deadline passed)",
+                )
+                .await
+                .unwrap_or(false)
+            } else {
+                self.requeue_orphaned_approval(id, grace_secs)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(run_id = %id, error = %e, "承認待ちの run のジョブの積み直しに失敗");
+                        false
+                    })
+            };
+            if done {
+                n += 1;
+            }
+        }
         Ok(n)
+    }
+
+    /// 承認待ちの run にジョブを積み直す。run 行をロックして条件を確かめ直す（並行する sweeper
+    /// どうしで二重に積まない・その間にワーカーが取り直した run には積まない）。
+    async fn requeue_orphaned_approval(
+        &self,
+        run_id: Uuid,
+        grace_secs: i64,
+    ) -> Result<bool, ChatError> {
+        let mut tx = self.db.begin().await.map_err(map_db)?;
+        let row: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT r.tenant_id, r.trace_id FROM generation_run r \
+             WHERE r.run_id = $1 AND r.status = 'waiting_approval' \
+               AND (r.lease_until IS NULL OR r.lease_until < now() - ($2 || ' seconds')::interval) \
+               AND NOT EXISTS (SELECT 1 FROM job_queue j WHERE j.queue = $3 \
+                               AND j.payload->>'run_id' = r.run_id::text) \
+             FOR UPDATE OF r SKIP LOCKED",
+        )
+        .bind(run_id)
+        .bind(grace_secs)
+        .bind(CHAT_GENERATION_QUEUE)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_db)?;
+        let Some((tenant_id, trace_id)) = row else {
+            return Ok(false);
+        };
+        jobq::enqueue_on(
+            &mut tx,
+            jobq::NewJob {
+                queue: CHAT_GENERATION_QUEUE,
+                tenant_id: &tenant_id,
+                payload: &serde_json::json!({ "run_id": run_id }),
+                trace_id: trace_id.as_deref(),
+                max_attempts: 3,
+            },
+        )
+        .await
+        .map_err(|e| ChatError::Internal(format!("enqueue: {e}")))?;
+        tx.commit().await.map_err(map_db)?;
+        tracing::warn!(run_id = %run_id, "ジョブを失った承認待ちの run にジョブを積み直した");
+        Ok(true)
     }
 }

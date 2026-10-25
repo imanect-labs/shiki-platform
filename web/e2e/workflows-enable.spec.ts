@@ -84,3 +84,37 @@ test("有効化: スケジュール設定→同意→有効→停止", async ({ 
   await expect(page.getByText(/自動実行を無効にしました/).first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/自動実行 有効/)).toHaveCount(0);
 });
+
+test("有効化: 実行の入力でテーブルを決めるブロックはテーブルを選ばせず、スケジュールでは動かないことを示す（C-P2-2）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const cookies = await page.context().cookies();
+  const csrf = cookies.find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const name = uniqueName("enable-input-table");
+  const res = await page.request.post("/api/workflows", {
+    headers: { "x-csrf-token": csrf, "content-type": "application/json" },
+    data: {
+      ir: {
+        ir_version: 1,
+        name,
+        display_name: name,
+        declared_scopes: ["data.read"],
+        triggers: [{ kind: "schedule", cron: "0 9 * * *", tz: "Asia/Tokyo", catchup: "skip" }],
+        nodes: [
+          { id: "q", type: "data.query", label: "選んだ表を調べる", params: { table: { $from: "input", path: "/table" }, query: { limit: 5 } } },
+        ],
+        edges: [],
+      },
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const id = ((await res.json()) as { id: string }).id;
+  await page.goto(`/workflows/${id}`);
+  await page.getByRole("button", { name: /自動実行を有効化/ }).click();
+  const dialog = page.locator('[role="dialog"]');
+  await expect(dialog.getByText("自動実行の設定")).toBeVisible();
+  // テーブルの選択は出さず、理由（入力で決まる・スケジュールでは入力が無い）を示す。
+  await expect(dialog.getByText(/「選んだ表を調べる」のテーブルは実行の入力で決まるため/)).toBeVisible();
+  await expect(dialog.getByText(/スケジュールの実行には入力が無いので/)).toBeVisible();
+  await expect(dialog.getByLabel("渡すテーブル")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "同意して有効化" })).toBeEnabled();
+});

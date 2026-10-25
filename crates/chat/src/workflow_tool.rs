@@ -173,9 +173,24 @@ impl Tool for EmitWorkflowTool {
         match saved {
             Ok((id, version, ir)) => {
                 let display = ir.display_name.clone().unwrap_or_else(|| ir.name.clone());
-                let mut outcome = ToolOutcome::ok(format!(
+                let mut text = format!(
                     "ワークフロー「{display}」を保存しました（id: {id}, v{version}）。ユーザーにはカードが表示され、エディタで開けます。"
-                ));
+                );
+                // 保存は止めない警告（条件の意味論の切替で分岐の結果が変わり得る条件・Task 15.7）。
+                let warnings = workflow_engine::semantics_warnings(&ir);
+                if !warnings.is_empty() {
+                    text.push_str("\n注意（保存はしました・意図どおりか確かめてください）:");
+                    for w in &warnings {
+                        let _ = write!(
+                            text,
+                            "\n- [{}] {}（node: {}）",
+                            w.code,
+                            w.message,
+                            w.node_id.as_deref().unwrap_or("トリガ")
+                        );
+                    }
+                }
+                let mut outcome = ToolOutcome::ok(text);
                 outcome.workflow_refs.push(serde_json::json!({
                     "id": id,
                     "name": ir.name,
@@ -255,5 +270,28 @@ impl Tool for ReadWorkflowTool {
                 "ワークフローを読み取れませんでした: {e}"
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ノードカタログに登録した data ノードは emit_workflow の説明へ自動で載る（Task 15.7・手書きしない）。
+    #[test]
+    fn emit_description_lists_data_nodes_from_the_catalog() {
+        let d = emit_description();
+        for t in [
+            "data.query",
+            "data.record.create",
+            "data.record.update",
+            "data.record.delete",
+            "data.transition",
+            "data.bulk_upsert",
+        ] {
+            assert!(d.contains(&format!("- {t}（")), "{t} が説明に無い");
+        }
+        assert!(d.contains("要 declared_scopes: data.read"));
+        assert!(d.contains("要 declared_scopes: data.write"));
     }
 }

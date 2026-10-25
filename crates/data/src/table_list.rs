@@ -7,7 +7,7 @@ use authz::{AuthContext, ObjectType, Relation};
 use uuid::Uuid;
 
 use crate::model::DataTable;
-use crate::store::{DataStore, TableRow};
+use crate::store::{DataStore, TableRow, TABLE_COLS};
 use crate::{map_db, DataError};
 
 impl DataStore {
@@ -49,7 +49,7 @@ impl DataStore {
         )
         .bind(&ctx.tenant_id)
         .bind(app_id)
-        .fetch_all(&self.db)
+        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
         .await
         .map_err(map_db)?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
@@ -81,19 +81,18 @@ impl DataStore {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let rows: Vec<TableRow> = sqlx::query_as(
-            "SELECT id, name, app_id, schema, schema_version, created_by, created_at, updated_at \
-             FROM data_table \
+        let rows: Vec<TableRow> = sqlx::query_as(&format!(
+            "SELECT {TABLE_COLS} FROM data_table \
              WHERE tenant_id = $1 AND org = $2 AND id = ANY($3) AND deleted_at IS NULL \
                AND ($5::uuid IS NULL OR app_id = $5) \
-             ORDER BY updated_at DESC, id DESC LIMIT $4",
-        )
+             ORDER BY updated_at DESC, id DESC LIMIT $4"
+        ))
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(&ids)
         .bind(limit)
         .bind(app_id)
-        .fetch_all(&self.db)
+        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
         .await
         .map_err(map_db)?;
         Ok(rows.into_iter().map(TableRow::into_table).collect())

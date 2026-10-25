@@ -71,12 +71,13 @@ impl gui::WorkflowStarter for LauncherWorkflowStarter {
 
 /// 図のボタンの実行系を配線する（Task 6.5・#604）。
 ///
-/// 利用可能な束縛先（chat.submit ハンドラ・workflow 起動）だけを登録する。
+/// 利用可能な束縛先（chat.submit ハンドラ・workflow 起動・保存ビューの表）だけを登録する。
 /// 未登録の束縛はディスパッチ時に 503（Unavailable）で fail-closed。
 pub(crate) fn wire_ui_actions(
     db: &sqlx::PgPool,
     chat: Option<&Arc<chat::ChatStore>>,
     workflow_launcher: Option<&Arc<workflow_engine::WorkflowRunLauncher>>,
+    data_views: Option<&Arc<data::DataViewStore>>,
 ) -> Arc<gui::ActionDispatcher> {
     let mut dispatcher = gui::ActionDispatcher::new(storage::audit::AuditRecorder::new(db.clone()));
     if let Some(chat) = chat {
@@ -87,6 +88,11 @@ pub(crate) fn wire_ui_actions(
     }
     if let Some(launcher) = workflow_launcher {
         dispatcher.set_workflow_starter(Arc::new(LauncherWorkflowStarter(Arc::clone(launcher))));
+    }
+    // 画面の表（data_grid）のデータ束縛（Task 15.7）。実行は閲覧者本人の権限で data のクエリ
+    // チョークポイントを通る（ビューの定義はミニアプリならバンドル権限で読む）。
+    if let Some(views) = data_views {
+        dispatcher.set_data_views((**views).clone());
     }
     Arc::new(dispatcher)
 }

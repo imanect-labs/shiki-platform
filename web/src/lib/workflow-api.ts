@@ -27,8 +27,20 @@ export type WorkflowSummary = {
   updatedAt: string;
 };
 
-/// 保存結果。
-export type SaveResult = { id: string; version: number; name: string };
+/// 保存結果（`warnings` は保存を止めない警告・`ir.condition_semantics_changed` など）。
+///
+/// 応答の型は OpenAPI の `SaveWorkflowResponse`。警告の要素はエディタ全体で使う ts-rs 生成の
+/// `ValidationError`（同じ Rust 型 `workflow_engine::ValidationError` から生成）に揃える。
+export type SaveResult = Omit<Schemas["SaveWorkflowResponse"], "warnings"> & {
+  warnings: ValidationError[];
+};
+
+/// 検証の結果（`errors` 空 = 保存可能・`warnings` は保存を止めない）。`declaredScopes` はノードが要する
+/// スコープをサーバが補完した宣言（保存するとこの宣言になる・C-P1-2）。
+export type ValidateResult = { errors: ValidationError[]; warnings: ValidationError[]; declaredScopes: string[] | null };
+
+/// 意味論の切替で分岐の結果が変わり得る条件の警告コード（`workflow_engine::SEMANTICS_CHANGED`）。
+export const SEMANTICS_CHANGED = "ir.condition_semantics_changed";
 
 /// 検証エラー（保存 400 / validate 200 の両方で同じ形）。
 export class WorkflowValidationError extends Error {
@@ -142,10 +154,15 @@ export async function updateWorkflow(
 }
 
 /// 保存せず検証のみ（dnd のライブ検証・600ms debounce で呼ぶ）。
-export async function validateWorkflow(ir: WorkflowIr): Promise<ValidationError[]> {
+export async function validateWorkflow(ir: WorkflowIr): Promise<ValidateResult> {
   const res = await apiFetch("/workflows/validate", json("POST", { ir }));
-  const body = await ok<{ errors: ValidationError[] }>(res);
-  return body.errors;
+  const body = await ok<
+    Omit<Schemas["ValidateWorkflowResponse"], "errors" | "warnings"> & {
+      errors: ValidationError[];
+      warnings?: ValidationError[];
+    }
+  >(res);
+  return { errors: body.errors, warnings: body.warnings ?? [], declaredScopes: body.declared_scopes ?? null };
 }
 
 // ── エディタレイアウト（ノード座標・IR 外・非バージョン）──────────────

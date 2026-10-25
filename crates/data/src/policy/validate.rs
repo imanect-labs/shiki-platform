@@ -19,7 +19,7 @@ pub(crate) fn validate_role_level_expr(expr: &PolicyExpr, path: &str) -> Result<
 
 fn validate_role_level_at(expr: &PolicyExpr, depth: usize, path: &str) -> Result<(), DataError> {
     if depth > MAX_POLICY_DEPTH {
-        return Err(DataError::Invalid(format!(
+        return Err(crate::schema_invalid(format!(
             "{path}: ネストが深すぎます（最大 {MAX_POLICY_DEPTH}）"
         )));
     }
@@ -27,13 +27,13 @@ fn validate_role_level_at(expr: &PolicyExpr, depth: usize, path: &str) -> Result
         PolicyExpr::Public => Ok(()),
         PolicyExpr::HasRole { role, .. } => {
             if role.is_empty() || role.len() > 256 {
-                return Err(DataError::Invalid(format!("{path}: role が不正です")));
+                return Err(crate::schema_invalid(format!("{path}: role が不正です")));
             }
             Ok(())
         }
         PolicyExpr::Any(children) | PolicyExpr::All(children) => {
             if children.is_empty() || children.len() > MAX_POLICY_BRANCHES {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "{path}: any/all の子は 1〜{MAX_POLICY_BRANCHES} 件で指定してください"
                 )));
             }
@@ -42,7 +42,7 @@ fn validate_role_level_at(expr: &PolicyExpr, depth: usize, path: &str) -> Result
             }
             Ok(())
         }
-        PolicyExpr::FieldCmp { .. } | PolicyExpr::IsOwner => Err(DataError::Invalid(format!(
+        PolicyExpr::FieldCmp { .. } | PolicyExpr::IsOwner => Err(crate::schema_invalid(format!(
             "{path}: 行の値に依存する式（field_cmp/is_owner）はフィールドマスクに使えません"
         ))),
     }
@@ -57,7 +57,63 @@ pub(crate) fn validate_row_policy(
     if let Some(write) = &policy.write {
         validate_expr(schema, write, 0, "row_policy.write")?;
     }
+    // 行述語は索引テーブル上で評価する（data-platform §6.2）。参照列は indexed 必須（§6.3・400）。
+    for (expr, path) in std::iter::once((&policy.read, "row_policy.read"))
+        .chain(policy.write.as_ref().map(|w| (w, "row_policy.write")))
+    {
+        require_indexed(schema, expr, path)?;
+    }
     Ok(())
+}
+
+/// row_policy が参照する**索引の無い**列を `indexed = true` に引き上げる。引き上げた列の key を返す。
+///
+/// v1 から移行したテーブル（Task 15.3 より前の規則で保存された row_policy）向けの移行処理。
+/// 引き上げないと §6.3 の「参照列は indexed 必須」により以後のどのスキーマ改訂も 400 になり、
+/// 読取は本体の点検索に落ち続ける。派生フィールドは row_policy に使えない（検証で拒否される）ので触らない。
+pub(crate) fn promote_policy_fields(schema: &mut TableSchema) -> Vec<String> {
+    fn collect<'a>(expr: &'a PolicyExpr, out: &mut Vec<&'a str>) {
+        match expr {
+            PolicyExpr::Any(v) | PolicyExpr::All(v) => v.iter().for_each(|c| collect(c, out)),
+            PolicyExpr::FieldCmp { field, .. } => out.push(field),
+            _ => {}
+        }
+    }
+    let Some(policy) = schema.row_policy.clone() else {
+        return Vec::new();
+    };
+    let mut refs = Vec::new();
+    collect(&policy.read, &mut refs);
+    if let Some(w) = &policy.write {
+        collect(w, &mut refs);
+    }
+    let mut promoted = Vec::new();
+    for f in &mut schema.fields {
+        if refs.contains(&f.key.as_str()) && !(f.indexed || f.unique) && !f.field_type.is_derived()
+        {
+            f.indexed = true;
+            promoted.push(f.key.clone());
+        }
+    }
+    promoted
+}
+
+fn require_indexed(schema: &TableSchema, expr: &PolicyExpr, path: &str) -> Result<(), DataError> {
+    match expr {
+        PolicyExpr::Any(v) | PolicyExpr::All(v) => {
+            for c in v {
+                require_indexed(schema, c, path)?;
+            }
+            Ok(())
+        }
+        PolicyExpr::FieldCmp { field, .. } => match schema.field(field) {
+            Some(f) if !(f.indexed || f.unique) => Err(crate::schema_invalid(format!(
+                "{path}: row_policy が参照するフィールド '{field}' は indexed の宣言が必要です"
+            ))),
+            _ => Ok(()),
+        },
+        _ => Ok(()),
+    }
 }
 
 /// FSM actor 述語などの単発式検証（行レベル述語と同じ文法・型整合）。
@@ -76,19 +132,19 @@ fn validate_expr(
     path: &str,
 ) -> Result<(), DataError> {
     if depth > MAX_POLICY_DEPTH {
-        return Err(DataError::Invalid(format!(
+        return Err(crate::schema_invalid(format!(
             "{path}: ネストが深すぎます（最大 {MAX_POLICY_DEPTH}）"
         )));
     }
     match expr {
         PolicyExpr::Any(children) | PolicyExpr::All(children) => {
             if children.is_empty() {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "{path}: any/all の子が空です（空は常に不成立になるため定義エラーとして拒否）"
                 )));
             }
             if children.len() > MAX_POLICY_BRANCHES {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "{path}: any/all の子が多すぎます（最大 {MAX_POLICY_BRANCHES}）"
                 )));
             }
@@ -100,45 +156,45 @@ fn validate_expr(
         PolicyExpr::Public | PolicyExpr::IsOwner => Ok(()),
         PolicyExpr::HasRole { role, .. } => {
             if role.is_empty() || role.len() > 256 {
-                return Err(DataError::Invalid(format!("{path}: role が不正です")));
+                return Err(crate::schema_invalid(format!("{path}: role が不正です")));
             }
             Ok(())
         }
         PolicyExpr::FieldCmp { field, op, value } => {
             let f = schema.field(field).ok_or_else(|| {
-                DataError::Invalid(format!(
+                crate::schema_invalid(format!(
                     "{path}: フィールド '{field}' がスキーマにありません"
                 ))
             })?;
             // 派生フィールドは述語の材料にしない（値が書込時検証を通らないため信頼できない）。
             if matches!(f.field_type, FieldType::Lookup | FieldType::Computed) {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "{path}: 派生フィールド '{field}' は row_policy に使えません"
                 )));
             }
             match value {
                 PolicyOperand::UserId => {
                     if f.field_type != FieldType::UserRef {
-                        return Err(DataError::Invalid(format!(
+                        return Err(crate::schema_invalid(format!(
                             "{path}: '$user.id' は user_ref フィールドにのみ比較できます（'{field}' は {:?}）",
                             f.field_type
                         )));
                     }
                     if !matches!(op, CmpOp::Eq | CmpOp::Ne) {
-                        return Err(DataError::Invalid(format!(
+                        return Err(crate::schema_invalid(format!(
                             "{path}: '$user.id' の演算子は eq/ne のみです"
                         )));
                     }
                 }
                 PolicyOperand::UserRoles { .. } => {
                     if f.field_type != FieldType::RoleRef {
-                        return Err(DataError::Invalid(format!(
+                        return Err(crate::schema_invalid(format!(
                             "{path}: '$user.roles' は role_ref フィールドにのみ比較できます（'{field}' は {:?}）",
                             f.field_type
                         )));
                     }
                     if *op != CmpOp::In {
-                        return Err(DataError::Invalid(format!(
+                        return Err(crate::schema_invalid(format!(
                             "{path}: '$user.roles' の演算子は in のみです"
                         )));
                     }
@@ -168,7 +224,7 @@ fn validate_lit(
     match op {
         CmpOp::Eq | CmpOp::Ne => {
             if !scalar_ok(v) {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "{path}: '{field}'（{ty:?}）とリテラル {v} は比較できません"
                 )));
             }
@@ -177,20 +233,20 @@ fn validate_lit(
             // number の in はコンパイラ側で未対応（配列 numeric 比較を組まない）。
             // 述語が実行時 500 になるのを防ぐため保存時に拒否する（Codex P2）。
             if ty == FieldType::Number {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "{path}: number フィールドに in は使えません（eq/ne を使ってください）"
                 )));
             }
             let arr = v.as_array().ok_or_else(|| {
-                DataError::Invalid(format!("{path}: in のリテラルは配列で指定してください"))
+                crate::schema_invalid(format!("{path}: in のリテラルは配列で指定してください"))
             })?;
             if arr.is_empty() || arr.len() > 100 {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "{path}: in の配列は 1〜100 件で指定してください"
                 )));
             }
             if !arr.iter().all(scalar_ok) {
-                return Err(DataError::Invalid(format!(
+                return Err(crate::schema_invalid(format!(
                     "{path}: in の配列要素が '{field}'（{ty:?}）と型不一致です"
                 )));
             }
@@ -206,34 +262,29 @@ mod tests {
     use serde_json::json;
 
     fn field(name: &str, ty: FieldType) -> FieldDef {
-        FieldDef {
-            name: name.into(),
-            field_type: ty,
-            required: false,
-            unique: false,
-            indexed: false,
-            options: vec![],
-            ref_table: None,
-            lookup: None,
-            computed: None,
-        }
+        FieldDef::new(name, ty)
     }
 
     fn schema() -> TableSchema {
         let mut status = field("status", FieldType::Select);
         status.options = vec!["draft".into(), "done".into()];
+        let mut fields = vec![
+            field("applicant", FieldType::UserRef),
+            field("dept", FieldType::RoleRef),
+            field("amount", FieldType::Number),
+            status,
+        ];
+        for f in &mut fields {
+            f.indexed = true;
+        }
         TableSchema {
-            fields: vec![
-                field("applicant", FieldType::UserRef),
-                field("dept", FieldType::RoleRef),
-                field("amount", FieldType::Number),
-                status,
-            ],
+            fields,
             status_field: None,
             row_policy: None,
             field_policy: vec![],
             aggregate_min_rows: None,
             fsm_ref: None,
+            rag: None,
         }
     }
 
@@ -368,6 +419,24 @@ mod tests {
             value: PolicyOperand::Lit(json!([1])),
         });
         assert!(validate_row_policy(&schema(), &bad_elem).is_err());
+    }
+
+    #[test]
+    fn row_policy_requires_indexed_fields() {
+        let mut s = schema();
+        s.fields[0].indexed = false;
+        let p = policy(PolicyExpr::FieldCmp {
+            field: "applicant".into(),
+            op: CmpOp::Eq,
+            value: PolicyOperand::UserId,
+        });
+        let r = validate_row_policy(&s, &p);
+        assert!(
+            matches!(&r, Err(e) if e.invalid_code() == Some(crate::InvalidCode::SchemaInvalid) && e.invalid_message().is_some_and(|m| m.contains("indexed"))),
+            "{r:?}"
+        );
+        // FSM の actor 述語は id 指定で本体を評価するので索引を要求しない。
+        assert!(validate_policy_expr(&s, &p.read, "fsm.actor").is_ok());
     }
 
     #[test]

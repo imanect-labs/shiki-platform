@@ -22,8 +22,9 @@ use super::auth::auth_ctx;
 use storage::StorageService;
 use uuid::Uuid;
 use workflow_engine::{
-    CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts,
-    PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq, WorkflowRunLauncher,
+    CsvPatchReq, CsvWriteReq, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
+    NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
+    WorkflowRunLauncher,
 };
 
 /// 本番ポート（AppState のチョークポイント参照を保持）。
@@ -42,8 +43,30 @@ pub struct ProdNodePorts {
     pub launcher: WorkflowRunLauncher,
     /// http.request の外部送信クライアント（リダイレクト非追従の別クライアントも内部で使う）。
     pub http: reqwest::Client,
-    /// workflow.start の名前解決に使う（artifact 名 → workflow_id）。
+    /// workflow.start の名前解決に使う（artifact 名 → workflow_id）。委譲台帳（data の委譲元）も引く。
     pub db: PgPool,
+    /// 構造化データ（data.* ノード・`Shiki.data.*`・Task 15.7）。未結線なら data ノードは「未構成」で失敗する。
+    pub data: Option<Arc<data::DataStore>>,
+    /// data.transition の FSM 定義の解決（artifact チョークポイント経由）。
+    pub fsms: Option<Arc<data::FsmStore>>,
+}
+
+impl ProdNodePorts {
+    /// data のポート（data と FSM の両方が結線されていること）。
+    fn data_port(&self) -> Result<super::data_port::DataPort<'_>, PortError> {
+        match (&self.data, &self.fsms) {
+            (Some(data), Some(fsms)) => Ok(super::data_port::DataPort {
+                data,
+                fsms,
+                db: &self.db,
+            }),
+            _ => Err(PortError::new(
+                "unsupported",
+                "構造化データ（data）が構成されていません",
+                false,
+            )),
+        }
+    }
 }
 
 fn map_storage(e: storage::StorageError) -> PortError {
@@ -496,6 +519,32 @@ impl NodePorts for ProdNodePorts {
             "version": saved.version,
             "name": saved.name,
         }))
+    }
+
+    async fn data_list_tables(&self, ec: &ExecCtx) -> Result<Value, PortError> {
+        self.data_port()?.list_tables(ec).await
+    }
+
+    async fn data_query(
+        &self,
+        ec: &ExecCtx,
+        table_id: Uuid,
+        query: &data::DataQuery,
+    ) -> Result<Value, PortError> {
+        self.data_port()?.query(ec, table_id, query).await
+    }
+
+    async fn data_get(
+        &self,
+        ec: &ExecCtx,
+        table_id: Uuid,
+        record_id: Uuid,
+    ) -> Result<Value, PortError> {
+        self.data_port()?.get(ec, table_id, record_id).await
+    }
+
+    async fn data_write(&self, ec: &ExecCtx, req: DataWriteReq) -> Result<Value, PortError> {
+        self.data_port()?.write(ec, req).await
     }
 }
 

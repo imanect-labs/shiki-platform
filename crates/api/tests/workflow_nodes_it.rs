@@ -198,6 +198,8 @@ impl Harness {
             launcher: self.launcher.clone(),
             http: reqwest::Client::new(),
             db: self.pool.clone(),
+            data: None,
+            fsms: None,
         });
         let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
         Arc::new(
@@ -233,6 +235,8 @@ impl Harness {
             launcher: self.launcher.clone(),
             http: reqwest::Client::new(),
             db: self.pool.clone(),
+            data: None,
+            fsms: None,
         });
         Arc::new(CapabilityNodeExecutor::new(
             ports,

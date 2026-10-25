@@ -1,4 +1,4 @@
-import { Home, type LucideIcon, ScrollText, Sparkles, Users } from "lucide-react";
+import { Database, Home, type LucideIcon, ScrollText, Sparkles, Users } from "lucide-react";
 
 import type { MeResponse } from "@/lib/api";
 
@@ -89,6 +89,23 @@ export const ADMIN_SECTIONS: AdminSection[] = [
           { label: "モデル", href: "/admin/ai/models" },
           { label: "プロバイダ", href: "/admin/ai/providers" },
           { label: "分析の設定", href: "/admin/ai/insights/settings" },
+        ],
+      },
+    ],
+  },
+  {
+    key: "data",
+    label: "データ",
+    icon: Database,
+    href: "/admin/data/settings",
+    prefix: "/admin/data",
+    access: "admin",
+    menu: [
+      {
+        label: "業務データ",
+        items: [
+          { label: "設定", href: "/admin/data/settings" },
+          { label: "クエリ最適化", href: "/admin/data/optimizer" },
         ],
       },
     ],
