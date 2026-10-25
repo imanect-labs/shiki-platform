@@ -335,19 +335,26 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
     }
 }
 
+/// 静的な出力ポートと、ポートが params から動的に決まるか（ir.md §5.2）。
+///
+/// switch のみ動的・branch は true/false・approval は §7.8 予約の approved/rejected。カタログと保存時検証
+/// V2（`from_port` の存在）が読む単一定義。
+pub(crate) fn static_output_ports(nt: NodeType) -> (&'static [&'static str], bool) {
+    match nt {
+        NodeType::ControlBranch => (&["true", "false"], false),
+        NodeType::ControlSwitch => (&[], true),
+        NodeType::HumanApproval => (&["approved", "rejected"], false),
+        _ => (&["out"], false),
+    }
+}
+
 /// 1 ノード種のエントリを組む。
 fn entry(nt: NodeType) -> NodeCatalogEntry {
     use IdempotencyClass::{BestEffort, EngineDedup, Pure};
 
     let (category, label_ja, description_ja) = labels(nt);
 
-    // 出力ポート（switch のみ動的・branch は true/false・approval は §7.8 予約の approved/rejected）。
-    let (output_ports, dynamic_ports): (&'static [&'static str], bool) = match nt {
-        NodeType::ControlBranch => (&["true", "false"], false),
-        NodeType::ControlSwitch => (&[], true),
-        NodeType::HumanApproval => (&["approved", "rejected"], false),
-        _ => (&["out"], false),
-    };
+    let (output_ports, dynamic_ports) = static_output_ports(nt);
 
     // 冪等性区分（ir.md §7 の表・予約語彙は設計上の区分）。
     let idempotency = match nt {

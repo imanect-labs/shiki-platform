@@ -13,6 +13,7 @@ mod catalog;
 mod node_type;
 mod scope;
 
+pub(crate) use catalog::static_output_ports;
 pub use catalog::{node_catalog, IdempotencyClass, NodeCatalogEntry, NodeCategory};
 pub use node_type::NodeType;
 pub use scope::Scope;

@@ -1,10 +1,10 @@
-//! V2: グラフ制約（id 一意・エッジ参照・DAG・入エッジ制約・領域閉包・到達性・ir.md §8）。
+//! V2: グラフ制約（id 一意・エッジ参照・ポート存在・DAG・入エッジ制約・領域閉包・到達性・ir.md §8）。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::ValidationError;
-use crate::ir::WorkflowIr;
-use crate::vocab::NodeType;
+use crate::ir::{Node, OnError, WorkflowIr};
+use crate::vocab::{static_output_ports, NodeType};
 
 /// V2 検証を実行しエラーを収集する。
 pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
@@ -64,8 +64,9 @@ pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
         .iter()
         .map(|n| (n.id.as_str(), n.parent.as_deref()))
         .collect();
+    let nodes_by_id: HashMap<&str, &Node> = ir.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
     let mut in_edges: BTreeMap<&str, usize> = BTreeMap::new();
-    for e in &ir.edges {
+    for (i, e) in ir.edges.iter().enumerate() {
         let edge_label = format!("{} -> {}", e.from, e.to);
         let from_ok = ids.contains(e.from.as_str());
         let to_ok = ids.contains(e.to.as_str());
@@ -78,6 +79,22 @@ pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
                 .at_edge(&edge_label),
             );
             continue;
+        }
+        // ポート存在（ir.md §5.2）: 無い出口のエッジは実行時に dead になり、下流が黙って skip される。
+        if let Some(from) = nodes_by_id.get(e.from.as_str()) {
+            if let Some(ports) = output_ports(from) {
+                if !ports.contains(e.from_port.as_str()) {
+                    errors.push(
+                        ValidationError::new(
+                            "ir.unknown_port",
+                            unknown_port_message(from, &e.from_port, &ports),
+                        )
+                        .at_node(&e.from)
+                        .at_edge(&edge_label)
+                        .at_path(format!("/edges/{i}/from_port")),
+                    );
+                }
+            }
         }
         // 領域閉包: from と to は同じ parent（同一領域）に属す。
         if parent_of.get(e.from.as_str()).copied().flatten()
@@ -122,6 +139,61 @@ pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
             format!("グラフに循環があります（例: {cycle_node} を含む）"),
         ));
     }
+}
+
+/// ノードの出力ポート集合（ir.md §5.2）。未知の type は `None`（V3 が拒否する）。
+///
+/// カタログの静的ポート（通常 `out`・branch `true`/`false`）に、設定から決まる構造ポートを足す:
+/// switch の `cases[].port` と `default`、`on_error: continue` の `error`、wait の `on_timeout: continue`
+/// の `timeout`（V1 が wait(event) に限る）。実行時に発しないポート（switch の `out` など）は含めない。
+fn output_ports(node: &Node) -> Option<BTreeSet<&str>> {
+    let nt = NodeType::parse(&node.node_type)?;
+    let (statics, dynamic) = static_output_ports(nt);
+    let mut ports: BTreeSet<&str> = statics.iter().copied().collect();
+    if dynamic {
+        let cases = node
+            .params
+            .get("cases")
+            .and_then(serde_json::Value::as_array);
+        for c in cases.into_iter().flatten() {
+            if let Some(p) = c.get("port").and_then(serde_json::Value::as_str) {
+                ports.insert(p);
+            }
+        }
+        ports.insert("default");
+    }
+    if nt == NodeType::ControlWait
+        && node
+            .params
+            .get("on_timeout")
+            .and_then(serde_json::Value::as_str)
+            == Some("continue")
+    {
+        ports.insert("timeout");
+    }
+    if node.on_error == OnError::Continue {
+        ports.insert("error");
+    }
+    Some(ports)
+}
+
+/// 無い出口を指すエッジの文言（使える出口と、設定で出せる出口の手がかりを添える）。
+fn unknown_port_message(node: &Node, port: &str, ports: &BTreeSet<&str>) -> String {
+    let list = ports.iter().copied().collect::<Vec<_>>().join(", ");
+    let hint = match port {
+        "error" => "。error 出口は on_error を continue にしたときだけ使えます",
+        "timeout" => {
+            "。timeout 出口は wait(event) で on_timeout を continue にしたときだけ使えます"
+        }
+        "out" if node.node_type == "control.switch" => {
+            "。振り分けは cases の port か default から出ます"
+        }
+        _ => "",
+    };
+    format!(
+        "ノード {} に出口 '{port}' はありません（使える出口: {list}）{hint}",
+        node.id
+    )
 }
 
 /// map 領域の構造制約（ir.md §5.3）: 各領域は入口 ≥1・**出口ちょうど 1**・**ネスト最大深さ 2**。
@@ -420,6 +492,87 @@ mod tests {
             &mut errs,
         );
         assert!(errs.iter().any(|e| e.code == "ir.region_too_deep"));
+    }
+
+    /// 2 ノード（`a` の出口 `port` → `b`）の IR を V2 に通し、ir.unknown_port のエラーを返す。
+    #[allow(clippy::needless_pass_by_value)] // json! をそのまま渡す。
+    fn unknown_ports(a: serde_json::Value, port: &str) -> Vec<ValidationError> {
+        let mut errs = Vec::new();
+        check(
+            &ir(json!({
+                "ir_version": 1, "name": "wf",
+                "nodes": [ a, { "id": "b", "type": "storage.read", "params": {} } ],
+                "edges": [ { "from": "a", "from_port": port, "to": "b" } ]
+            })),
+            &mut errs,
+        );
+        errs.retain(|e| e.code == "ir.unknown_port");
+        errs
+    }
+
+    /// ir.md §5.2・§8 V2: 無い出口のエッジ（AI が書きがちな next / yes）は保存時に拒否する。
+    #[test]
+    fn edge_from_unknown_port_is_rejected() {
+        let read = json!({ "id": "a", "type": "storage.read", "params": {} });
+        assert!(unknown_ports(read.clone(), "out").is_empty());
+        let errs = unknown_ports(read, "next");
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].node_id.as_deref(), Some("a"));
+        assert_eq!(errs[0].edge.as_deref(), Some("a -> b"));
+        assert_eq!(errs[0].path.as_deref(), Some("/edges/0/from_port"));
+        assert!(
+            errs[0].message.contains("使える出口: out"),
+            "{}",
+            errs[0].message
+        );
+
+        let branch = json!({ "id": "a", "type": "control.branch", "params": { "condition":
+            { "cmp": { "left": 1, "op": "eq", "right": 1 } } } });
+        for ok in ["true", "false"] {
+            assert!(unknown_ports(branch.clone(), ok).is_empty(), "{ok}");
+        }
+        for bad in ["yes", "out"] {
+            assert_eq!(unknown_ports(branch.clone(), bad).len(), 1, "{bad}");
+        }
+    }
+
+    #[test]
+    fn switch_ports_are_its_cases_and_default() {
+        let sw = json!({ "id": "a", "type": "control.switch", "params": {
+            "value": { "$from": "input", "path": "/kind" },
+            "cases": [ { "port": "pdf", "equals": "pdf" }, { "port": "img", "equals": "png" } ] } });
+        for ok in ["pdf", "img", "default"] {
+            assert!(unknown_ports(sw.clone(), ok).is_empty(), "{ok}");
+        }
+        // switch は out を発しない（エディタの古い版が作った out のエッジは dead だった）。
+        let errs = unknown_ports(sw.clone(), "out");
+        assert_eq!(errs.len(), 1);
+        assert!(errs[0].message.contains("default"), "{}", errs[0].message);
+        assert_eq!(unknown_ports(sw, "doc").len(), 1);
+    }
+
+    #[test]
+    fn error_and_timeout_ports_follow_the_settings() {
+        let cont =
+            json!({ "id": "a", "type": "storage.read", "on_error": "continue", "params": {} });
+        assert!(unknown_ports(cont.clone(), "error").is_empty());
+        assert!(unknown_ports(cont, "out").is_empty());
+        let fail = json!({ "id": "a", "type": "storage.read", "params": {} });
+        let errs = unknown_ports(fail, "error");
+        assert_eq!(errs.len(), 1);
+        assert!(errs[0].message.contains("on_error"), "{}", errs[0].message);
+
+        let wait_cont = json!({ "id": "a", "type": "control.wait", "params": {
+            "kind": "event", "source": "storage.write", "timeout_sec": 60, "on_timeout": "continue" } });
+        assert!(unknown_ports(wait_cont.clone(), "timeout").is_empty());
+        assert!(unknown_ports(wait_cont, "out").is_empty());
+        let wait_fail = json!({ "id": "a", "type": "control.wait", "params": {
+            "kind": "event", "source": "storage.write", "timeout_sec": 60 } });
+        assert_eq!(unknown_ports(wait_fail, "timeout").len(), 1);
+        // map も on_error: continue なら error 出口を持つ（領域の失敗を流す）。
+        let map = json!({ "id": "a", "type": "control.map", "on_error": "continue",
+            "params": { "items": [] } });
+        assert!(unknown_ports(map, "error").is_empty());
     }
 
     #[test]

@@ -11,6 +11,9 @@
 //! - 右辺が整数値の小数（`1.0`）のリテラル（数値の等値）
 //!
 //! 保存は止めない（警告）。同じ関数を保存 API・検証 API・`shiki-admin`（保存済み定義の一覧化）が使う。
+//! 保存を止めない警告はほかに、テンプレートの差し込みの書き誤り（`{{key}}`・[`super::TEMPLATE_ESCAPED_VAR`]）
+//! もここから返す（保存 API・チャットの emit_workflow がそのまま利用者へ示す）。条件の意味論の切替だけを
+//! 見たい呼び出し側は `code == SEMANTICS_CHANGED` で絞る。
 
 use serde_json::Value;
 
@@ -51,7 +54,8 @@ impl Reason {
     }
 }
 
-/// IR の条件のうち、意味論の切替で振る舞いが変わり得るものを警告として返す。
+/// 保存を止めない警告を返す: 意味論の切替で振る舞いが変わり得る条件（[`SEMANTICS_CHANGED`]）と、
+/// vars のキーを `{{key}}` と書いたテンプレート（[`super::TEMPLATE_ESCAPED_VAR`]）。
 #[must_use]
 pub fn semantics_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     let mut out = Vec::new();
@@ -94,6 +98,7 @@ pub fn semantics_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
             );
         });
     }
+    out.extend(super::template::warnings(ir));
     out
 }
 

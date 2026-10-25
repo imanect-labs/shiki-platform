@@ -7,6 +7,8 @@ mod refs;
 pub(crate) use refs::parse_skill_ref;
 mod semantics;
 pub use semantics::{semantics_warnings, SEMANTICS_CHANGED};
+mod template;
+pub use template::TEMPLATE_ESCAPED_VAR;
 mod v2_graph;
 mod v3_vocab;
 mod v5_dataflow;
@@ -186,6 +188,8 @@ fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<Valida
             "run_timeout_sec が上限（30 日）を超過しています".to_string(),
         ));
     }
+    // テンプレートの vars の数（ir.md §3.2・§8）。
+    template::check_limits(ir, errors);
     // 条件木の深さ（トリガ filter・branch/wait params の condition）。
     for t in &ir.triggers {
         if let crate::ir::Trigger::Event(ev) = t {
@@ -291,6 +295,45 @@ mod tests {
                 "{bad} が拒否されるべき: {errs:?}"
             );
         }
+    }
+
+    /// BUG-1 の再現（AI が `{{変数}}` で書いた IR）: 保存は通すが、波括弧が出ることを警告で知らせる。
+    #[test]
+    fn mustache_template_saves_with_a_warning() {
+        let ir = json!({
+            "ir_version": 1, "name": "bug1-mustache", "declared_scopes": [],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "echo", "type": "script.run", "params": {
+                "source": { "inline": "function main(i){ return { got: i }; }" },
+                "input": { "$template": "件名: {{title}} / 金額: {{amount}} 円",
+                    "vars": { "title": { "$from": "input", "path": "/title" },
+                              "amount": { "$from": "input", "path": "/amount" } } } } }],
+            "edges": []
+        });
+        let parsed = validate(&ir, &catalog()).expect("保存は止めない");
+        let w = semantics_warnings(&parsed);
+        assert_eq!(w.len(), 2, "{w:#?}");
+        assert!(w.iter().all(|e| e.code == TEMPLATE_ESCAPED_VAR));
+    }
+
+    /// AI が書きがちな誤り（存在しない出口・vars に無い差し込み・祖先でない vars の参照）は全件まとめて返す。
+    #[test]
+    fn ai_style_mistakes_are_all_reported() {
+        let ir = json!({
+            "ir_version": 1, "name": "wf", "declared_scopes": ["storage.write"],
+            "nodes": [
+                { "id": "ask", "type": "llm.invoke", "params": { "prompt": "要約して" } },
+                { "id": "save", "type": "storage.write", "params": {
+                    "name": { "$template": "summary-{d}.md", "vars": { "date": "2026-10-25" } },
+                    "content": { "$template": "{t}", "vars": { "t": { "$from": "ask" } } } } }
+            ],
+            "edges": [{ "from": "ask", "from_port": "next", "to": "save" }]
+        });
+        let errs = validate(&ir, &catalog()).unwrap_err();
+        let codes: Vec<&str> = errs.iter().map(|e| e.code.as_str()).collect();
+        assert!(codes.contains(&"ir.unknown_port"), "{errs:#?}");
+        assert!(codes.contains(&"ir.bad_template"), "{errs:#?}");
+        assert!(codes.contains(&"ir.bad_ref"), "{errs:#?}");
     }
 
     #[test]
