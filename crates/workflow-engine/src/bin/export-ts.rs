@@ -13,11 +13,13 @@ use workflow_engine::ir::edge::Edge;
 use workflow_engine::ir::expr::{CmpOp, Comparison, Condition, FromRef, TemplateExpr, ValueExpr};
 use workflow_engine::ir::node::{Backoff, Node, OnError, RetryPolicy};
 use workflow_engine::ir::params::{
-    AgentInvokeParams, BranchParams, CsvPatchParams, CsvQueryParams, CsvWriteParams, HttpMethod,
-    HttpRequestParams, HttpSecretRef, JoinMode, JoinParams, LlmInvokeParams, MapItemError,
-    MapParams, RagSearchParams, RedirectPolicy, ScriptRunParams, ScriptSourceSpec, SecretAttach,
-    SecretAttachKind, SkillInvokeParams, StorageListParams, StorageReadParams, StorageWriteParams,
-    SwitchCase, SwitchParams, WaitKind, WaitParams, WaitTimeout, WorkflowStartParams,
+    AgentInvokeParams, BranchParams, CsvPatchParams, CsvQueryParams, CsvWriteParams,
+    DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
+    DataRecordUpdateParams, DataTransitionParams, HttpMethod, HttpRequestParams, HttpSecretRef,
+    JoinMode, JoinParams, LlmInvokeParams, MapItemError, MapParams, RagSearchParams,
+    RedirectPolicy, ScriptRunParams, ScriptSourceSpec, SecretAttach, SecretAttachKind,
+    SkillInvokeParams, StorageListParams, StorageReadParams, StorageWriteParams, SwitchCase,
+    SwitchParams, WaitKind, WaitParams, WaitTimeout, WorkflowStartParams,
 };
 use workflow_engine::ir::trigger::{
     Catchup, EventTrigger, InteractiveTrigger, ScheduleTrigger, Trigger, TriggerKind,
@@ -49,6 +51,12 @@ const PARAMS_BY_TYPE: &[(NodeType, &str)] = &[
     (NodeType::CsvQuery, "CsvQueryParams"),
     (NodeType::CsvPatch, "CsvPatchParams"),
     (NodeType::CsvWrite, "CsvWriteParams"),
+    (NodeType::DataQuery, "DataQueryParams"),
+    (NodeType::DataRecordCreate, "DataRecordCreateParams"),
+    (NodeType::DataRecordUpdate, "DataRecordUpdateParams"),
+    (NodeType::DataRecordDelete, "DataRecordDeleteParams"),
+    (NodeType::DataTransition, "DataTransitionParams"),
+    (NodeType::DataBulkUpsert, "DataBulkUpsertParams"),
 ];
 
 fn main() {
@@ -121,6 +129,12 @@ fn main() {
         CsvQueryParams,
         CsvPatchParams,
         CsvWriteParams,
+        DataQueryParams,
+        DataRecordCreateParams,
+        DataRecordUpdateParams,
+        DataRecordDeleteParams,
+        DataTransitionParams,
+        DataBulkUpsertParams,
         // ---- カタログ ----
         NodeCategory,
         IdempotencyClass,

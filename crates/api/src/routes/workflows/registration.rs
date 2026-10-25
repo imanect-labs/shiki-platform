@@ -15,6 +15,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Decision};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -52,7 +53,7 @@ pub struct RegistrationResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SuggestedGrantItem {
     pub scope: String,
-    /// folder / file / secret / workflow。
+    /// folder / file / secret / workflow / data_table。
     pub object_kind: String,
     /// 確定済み対象 id（リテラル参照・secret 名解決済みのとき）。
     pub object_id: Option<String>,
@@ -78,7 +79,7 @@ pub struct ConsentPlanResponse {
 pub struct GrantItem {
     /// declared_scope の 1 要素（例: `storage.read`）。
     pub scope: String,
-    /// 対象種別（folder / file / secret / workflow）。
+    /// 対象種別（folder / file / secret / workflow / data_table）。
     pub object_type: String,
     /// 対象 id。
     pub object_id: String,
@@ -275,18 +276,43 @@ pub async fn enable_workflow(
         .iter()
         .map(|g| to_grant_request(&ctx, g))
         .collect::<Result<Vec<_>, _>>()?;
+    // 有効化の前後で data_table の委譲（ワークフロー主体のタプル）が付け外しされ得る（全面再同意は
+    // 外れた委譲を撤去する）。前の委譲先も控えておき、後でまとめて data へ知らせる。
+    let before = state
+        .workflow_registration
+        .view(&ctx.tenant_id, id)
+        .await
+        .map_err(map_enable_err)?;
     state
         .workflow_registration
         .enable(&ctx, id, req.version, &ir, &grants)
         .await
         .map_err(map_enable_err)?;
+    let mut tables: std::collections::BTreeSet<Uuid> = req
+        .grants
+        .iter()
+        .filter(|g| g.object_type == "data_table")
+        .filter_map(|g| Uuid::parse_str(&g.object_id).ok())
+        .collect();
+    let ns = ctx.ns();
+    tables.extend(before.delegations.iter().filter_map(|d| {
+        let (ty, rest) = d.object_ref.split_once(':')?;
+        (ty == "data_table")
+            .then(|| ns.strip_object_id(rest))
+            .flatten()
+            .and_then(|local| Uuid::parse_str(local).ok())
+    }));
+    for table_id in tables {
+        // テーブルの ReBAC を data の外で変えた（配信の材料・材料化の前提を引き直させる・best-effort）。
+        state.data.after_table_rebac_changed(&ctx, table_id).await;
+    }
     // 監査はコミット済み操作の記録（失敗しても操作結果は変えず、欠落をログで顕在化する）。
     if let Err(e) = state
         .audit
         .record(
             &ctx,
             AuditEntry {
-                action: "workflow.enable",
+                action: AuditAction::WorkflowEnable,
                 object_type: "workflow",
                 object_id: &id.to_string(),
                 decision: Decision::Allow,
@@ -336,7 +362,7 @@ pub async fn disable_workflow(
         .record(
             &ctx,
             AuditEntry {
-                action: "workflow.disable",
+                action: AuditAction::WorkflowDisable,
                 object_type: "workflow",
                 object_id: &id.to_string(),
                 decision: Decision::Allow,
@@ -377,6 +403,9 @@ fn to_grant_request(ctx: &authz::AuthContext, g: &GrantItem) -> Result<GrantRequ
         "file" => ns.file(&g.object_id),
         "secret" => ns.secret(&g.object_id),
         "workflow" => ns.artifact(&g.object_id),
+        // 構造化データのテーブル（data.* ノード・Task 15.7）。ワークフロー主体を data_table の
+        // viewer / editor の subject にする（認可モデルは既存・relation 名は増やさない）。
+        "data_table" => ns.data_table(&g.object_id),
         other => return Err(ApiError::BadRequest(format!("未知の object_type: {other}"))),
     };
     let relation = authz::Relation::parse(&g.relation)

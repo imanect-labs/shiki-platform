@@ -21,6 +21,18 @@ pub(super) fn echo_system_call(
     })
 }
 
+/// `<conversation>` で包んだ発話（会話の自動タイトル・chat の worker/title.rs）には、包みの中の
+/// 最初の空でない行を返す（「回答: 」を付けない）。付けると、画面のどこにでもタイトルとして
+/// 「回答:」が出て、本文の回答を探す e2e が履歴の行に当たってしまう。
+pub(super) fn conversation_title_call(user_text: &str, prompt_tokens: u64) -> Option<DeltaStream> {
+    let inner = user_text
+        .strip_prefix("<conversation>")?
+        .trim_end()
+        .strip_suffix("</conversation>")?;
+    let first = inner.lines().map(str::trim).find(|l| !l.is_empty())?;
+    Some(text_stream(first, prompt_tokens))
+}
+
 /// tool search の決定的駆動 `toolsearch:<query>`（遅延ツールの検索→読み込み→呼び出しの e2e）。
 ///
 /// 1 ターン目に `tool_search` を `{query}` で呼び、直前の観測が読み込み参照を持てば
@@ -53,6 +65,22 @@ pub(super) fn tool_search_call(
         serde_json::json!({}),
         prompt_tokens,
     ))
+}
+
+/// 汎用の決定的呼び出し `calltool:<ツール名> <入力 JSON>`（Task 15.7）。
+///
+/// LLM が出す入力をそのまま与えて、ツールの提示・実行・観測の経路を実 LLM 無しで通す e2e 用。
+/// 提示に無いツールなら呼ばない（`None`＝本文の応答へ落ちる・「提示しない」ことの検証に使える）。
+pub(super) fn generic_tool_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let rest = user_text.strip_prefix("calltool:")?.trim();
+    let (name, raw) = rest.split_once(char::is_whitespace).unwrap_or((rest, "{}"));
+    let input = serde_json::from_str(raw.trim()).unwrap_or_else(|_| serde_json::json!({}));
+    let t = req.tools.iter().find(|t| t.name == name)?;
+    Some(tool_call_stream(t.name.clone(), input, prompt_tokens))
 }
 
 /// ドキュメント下書き/編集ツールの決定的駆動（issue #282 / Task 11.3 の e2e）。
@@ -226,6 +254,26 @@ const MOCK_SLIDE_EDIT_HTML: &str =
     "<div style=\"padding:64px\" data-ai-edited=\"1\"><h2>AI が改訂したスライド</h2>\
      <p>選択範囲を踏まえて要点を整理しました。</p><ul><li>結論を先頭に</li><li>数値の根拠を明示</li></ul></div>";
 
+/// ノートの提案モード（#886）: `notesuggest:<node_id>` で、語句の差し替えと節の削除を提案として
+/// 入れる（消す側は削除の提案の印・入れる側は提案の印。承認/棄却を E2E で確かめる）。
+pub(super) fn note_suggest_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let node_id = user_text.strip_prefix("notesuggest:")?.trim();
+    let tool = req.tools.iter().find(|t| t.name == "document.edit")?;
+    let input = serde_json::json!({
+        "node_id": node_id,
+        "mode": "suggest",
+        "ops": [
+            { "op": "replace_text", "find": "売上は12%増", "replace": "売上は14%増" },
+            { "op": "delete_section", "heading": "参考" }
+        ],
+    });
+    Some(tool_call_stream(tool.name.clone(), input, prompt_tokens))
+}
+
 /// モック AI が Office 文書（docx）へ追記する決定的な Markdown（officeedit: プレフィックス）。
 const MOCK_OFFICE_EDIT_MD: &str = "## AI による追記\n\n選択範囲を踏まえて要点を整理しました。";
 
@@ -369,5 +417,28 @@ mod tests {
         // 指示側に編集語があれば起動する（対照）。
         let with_intent = format!("{text}\nこのスライドを書き直して");
         assert!(wants_edit(&with_intent));
+    }
+}
+
+#[cfg(test)]
+mod conversation_title_tests {
+    use super::*;
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn returns_first_line_inside_conversation_tags() {
+        let mut s = conversation_title_call(
+            "<conversation>\n\n  経費の締め日は？\n次の行\n</conversation>",
+            1,
+        )
+        .expect("包みがあれば応答する");
+        let mut out = String::new();
+        while let Some(Ok(d)) = s.next().await {
+            if let crate::model::StreamDelta::TextDelta { text } = d {
+                out.push_str(&text);
+            }
+        }
+        assert_eq!(out.trim(), "経費の締め日は？");
+        assert!(conversation_title_call("経費の締め日は？", 1).is_none());
     }
 }

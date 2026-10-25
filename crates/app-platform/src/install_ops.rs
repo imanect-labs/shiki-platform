@@ -3,6 +3,7 @@
 //! アンインストール・オフライン import・補償/監査/outbox ヘルパ。本体（同意インストール）は
 //! [`crate::install`]。
 
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Decision};
 use storage::event::{emit_on, WriteEvent, WriteOp};
 use uuid::Uuid;
@@ -195,6 +196,10 @@ impl InstallService {
             if let Err(e) = self.authz.delete_object_tuples(&obj).await {
                 tracing::warn!(error = %e, table_id = %id, "アンインストール時の tuple 撤去に失敗");
             }
+            // 撤去した ReBAC を配信へ知らせる（archive 済みでも開いている購読を次のバッチで落とす）。
+            if let Err(e) = self.data.notify_authz_changed(ctx, Some(*id)).await {
+                tracing::warn!(error = %e, table_id = %id, "アンインストール時の配信の世代更新に失敗");
+            }
         }
         if let Some(inst) = &installation {
             self.disable_clients_best_effort(
@@ -203,8 +208,14 @@ impl InstallService {
             )
             .await;
         }
-        self.record_audit(ctx, app_id, "app.uninstall", Decision::Allow, trace_id)
-            .await;
+        self.record_audit(
+            ctx,
+            app_id,
+            AuditAction::AppUninstall,
+            Decision::Allow,
+            trace_id,
+        )
+        .await;
         self.emit_app_event(
             ctx,
             app_id,
@@ -239,7 +250,7 @@ impl InstallService {
             .code
             .publish(ctx, id, None, Some(signature), trace_id)
             .await?;
-        self.record_audit(ctx, id, "app.import", Decision::Allow, trace_id)
+        self.record_audit(ctx, id, AuditAction::AppImport, Decision::Allow, trace_id)
             .await;
         Ok(entry)
     }
@@ -301,8 +312,14 @@ impl InstallService {
         tables: &[Uuid],
         trace_id: Option<&str>,
     ) {
-        self.record_audit(ctx, app_id, "app.install", Decision::Allow, trace_id)
-            .await;
+        self.record_audit(
+            ctx,
+            app_id,
+            AuditAction::AppInstall,
+            Decision::Allow,
+            trace_id,
+        )
+        .await;
         self.emit_app_event(
             ctx,
             app_id,
@@ -317,7 +334,7 @@ impl InstallService {
         &self,
         ctx: &AuthContext,
         app_id: Uuid,
-        action: &'static str,
+        action: AuditAction,
         decision: Decision,
         trace_id: Option<&str>,
     ) {
@@ -344,7 +361,7 @@ impl InstallService {
         &self,
         ctx: &AuthContext,
         app_id: Uuid,
-        action: &'static str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) {
         self.record_audit(ctx, app_id, action, Decision::Deny, trace_id)

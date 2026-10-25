@@ -8,6 +8,7 @@
 //! 設定の変更は監査ログに 1 操作 1 行で残す。
 
 use std::collections::BTreeMap;
+use storage::audit::AuditAction;
 
 use axum::{
     extract::{Query, State},
@@ -358,7 +359,7 @@ pub async fn update_settings(
         .record(
             &ctx,
             AuditEntry {
-                action: "org_admin.ai_settings.update",
+                action: AuditAction::OrgAdminAiSettingsUpdate,
                 object_type: "tenant_llm_settings",
                 object_id: &object_id,
                 decision: Decision::Allow,

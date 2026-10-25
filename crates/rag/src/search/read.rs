@@ -16,6 +16,7 @@
 //! 本文を読み出したことは監査に残す（検索を経由しない本文の経路になるため）。
 
 use std::fmt::Write as _;
+use storage::audit::AuditAction;
 
 use authz::AuthContext;
 use storage::audit::{AuditEntry, Decision};
@@ -116,8 +117,9 @@ impl SearchService {
         node: &storage::Node,
         from: &ReadFrom,
         max_chars: usize,
-        trace_id: Option<&str>,
+        trail: impl Into<crate::AuditTrail<'_>>,
     ) -> Result<DocRead, RagError> {
+        let trail = trail.into();
         let max_chars = max_chars.clamp(1, MAX_READ_CHARS);
         // 索引にある最新版と、その版にブロック列があるか（1 本の SQL で引く）。
         let Some((version, has_blocks)) = sqlx::query_as::<_, (i64, bool)>(
@@ -175,7 +177,7 @@ impl SearchService {
             self.audit_read(
                 ctx,
                 node,
-                trace_id,
+                trail,
                 serde_json::json!({
                     "version": version,
                     "source": source_name,
@@ -200,7 +202,7 @@ impl SearchService {
         self.audit_read(
             ctx,
             node,
-            trace_id,
+            trail,
             serde_json::json!({
                 "version": version,
                 "source": source_name,
@@ -223,18 +225,19 @@ impl SearchService {
         &self,
         ctx: &AuthContext,
         node: &storage::Node,
-        trace_id: Option<&str>,
-        metadata: serde_json::Value,
+        trail: crate::AuditTrail<'_>,
+        mut metadata: serde_json::Value,
     ) -> Result<(), RagError> {
+        trail.annotate(&mut metadata);
         self.audit
             .record(
                 ctx,
                 AuditEntry {
-                    action: "rag.doc_read",
+                    action: AuditAction::RagDocRead,
                     object_type: "file",
                     object_id: &node.id.to_string(),
                     decision: Decision::Allow,
-                    trace_id,
+                    trace_id: trail.trace_id,
                     metadata,
                 },
             )

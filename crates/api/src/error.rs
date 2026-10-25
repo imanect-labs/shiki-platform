@@ -13,6 +13,9 @@ pub enum ApiError {
     Unauthorized,
     #[error("権限がありません")]
     Forbidden,
+    /// 構造化 403 本文（`code` と利用者に見せてよい文言・`field_unavailable` 等）。
+    #[error("権限がありません")]
+    ForbiddenJson(serde_json::Value),
     #[error("対象が見つかりません")]
     NotFound,
     #[error("競合しています")]
@@ -26,6 +29,9 @@ pub enum ApiError {
     /// `BadRequest` は body が `{status,title}` に潰れるため、詳細ペイロードにはこちらを使う。
     #[error("検証エラー")]
     UnprocessableJson(serde_json::Value),
+    /// 422（構造化した拒否理由をそのまま返す・SQL 前段面の入口の拒否）。
+    #[error("処理できません")]
+    Unprocessable422(serde_json::Value),
     /// 機能が無効/未準備（RAG 無効設定など）。理由はログのみ（クライアントへ漏らさない）。
     #[error("利用できません: {0}")]
     ServiceUnavailable(String),
@@ -35,19 +41,48 @@ pub enum ApiError {
     RateLimited(String),
     #[error("内部エラー: {0}")]
     Internal(String),
+    /// 保持期間を過ぎた位置の再開（スナップショット読取の基準位置など）。最初から取り直す。
+    #[error("保持期間を過ぎました")]
+    Gone,
+    /// 本文が上限を超えた（構造化 413・一括取込の `import_too_large` 等）。
+    #[error("本文が大きすぎます")]
+    PayloadTooLargeJson(serde_json::Value),
+    /// 再試行できる 503（構造化本文 ＋ `Retry-After` 秒・statement timeout の `read_timeout` 等）。
+    #[error("一時的に利用できません")]
+    RetryLaterJson {
+        body: serde_json::Value,
+        retry_after_secs: u64,
+    },
 }
+
+impl ApiError {
+    /// 構造化 400 `invalid_input`（文言は利用者に見せてよい日本語だけを渡す）。
+    pub fn invalid_input(message: &str) -> Self {
+        ApiError::UnprocessableJson(crate::error_body::to_body(
+            &crate::error_body::BadRequestBody::new(data::InvalidCode::InvalidInput, message, None),
+        ))
+    }
+}
+
+/// 再試行できる 503 の `Retry-After`（秒）。
+pub const RETRY_AFTER_SECS: u64 = 2;
 
 impl ApiError {
     fn status(&self) -> StatusCode {
         match self {
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
-            ApiError::Forbidden => StatusCode::FORBIDDEN,
+            ApiError::Forbidden | ApiError::ForbiddenJson(_) => StatusCode::FORBIDDEN,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::Conflict | ApiError::ConflictJson(_) => StatusCode::CONFLICT,
             ApiError::BadRequest(_) | ApiError::UnprocessableJson(_) => StatusCode::BAD_REQUEST,
-            ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::Unprocessable422(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            ApiError::ServiceUnavailable(_) | ApiError::RetryLaterJson { .. } => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             ApiError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::Gone => StatusCode::GONE,
+            ApiError::PayloadTooLargeJson(_) => StatusCode::PAYLOAD_TOO_LARGE,
         }
     }
 }
@@ -63,8 +98,25 @@ impl IntoResponse for ApiError {
         if let ApiError::ServiceUnavailable(ref detail) = self {
             tracing::warn!(error = %detail, "サービス利用不可（503）");
         }
+        if let ApiError::RetryLaterJson {
+            body,
+            retry_after_secs,
+        } = self
+        {
+            let mut resp = (status, Json(body)).into_response();
+            if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string()) {
+                resp.headers_mut()
+                    .insert(axum::http::header::RETRY_AFTER, v);
+            }
+            return resp;
+        }
         // 構造化ボディはそのまま返す（検証エラーの per-node/per-edge 詳細を保つ）。
-        if let ApiError::UnprocessableJson(payload) | ApiError::ConflictJson(payload) = self {
+        if let ApiError::UnprocessableJson(payload)
+        | ApiError::ConflictJson(payload)
+        | ApiError::ForbiddenJson(payload)
+        | ApiError::Unprocessable422(payload)
+        | ApiError::PayloadTooLargeJson(payload) = self
+        {
             return (status, Json(payload)).into_response();
         }
         // 429 だけは文言を `detail` に載せる。上限額と再開の目安を含み、**そのまま出せる**
@@ -134,8 +186,11 @@ impl From<chat::ChatError> for ApiError {
         match err {
             CE::NotFound => ApiError::NotFound,
             CE::Forbidden => ApiError::Forbidden,
-            CE::Invalid(msg) => ApiError::BadRequest(msg),
+            // 入力の誤りは構造化 400（文言は利用者向けの日本語・検証 N8）。
+            CE::Invalid(msg) => ApiError::invalid_input(&msg),
             CE::Unavailable(msg) => ApiError::ServiceUnavailable(format!("chat: {msg}")),
+            // プロバイダが要求を拒否した（400 等）。本文に詳細は載せない（ログにのみ残る）。
+            CE::Rejected(msg) => ApiError::BadRequest(format!("chat: {msg}")),
             // 整形済みの文言をそのまま返す（`chat:` を前置しない・会話に表示されるため）。
             CE::RateLimited(msg) => ApiError::RateLimited(msg),
             CE::Internal(msg) => ApiError::Internal(format!("chat: {msg}")),
@@ -158,18 +213,117 @@ impl From<artifact::ArtifactError> for ApiError {
 
 impl From<data::DataError> for ApiError {
     fn from(err: data::DataError) -> Self {
+        use crate::error_body::{
+            to_body, BadRequestBody, ConflictBody, ConflictCode, ForbiddenBody, RetryLaterBody,
+        };
         use data::DataError as DE;
+        let conflict = |b: ConflictBody| ApiError::ConflictJson(to_body(&b));
         match err {
             DE::NotFound => ApiError::NotFound,
             DE::Forbidden => ApiError::Forbidden,
-            DE::Invalid(msg) => ApiError::BadRequest(msg),
-            DE::Conflict(reason) => {
-                // 409 の切り分け（rev 不一致 / 同名 / unique 違反）を追跡できるようログに残す
-                // （ボディは他リソースと同じ最小形を維持する）。
-                tracing::info!(%reason, "data conflict (409)");
-                ApiError::Conflict
+            // 存在しない列と読めない列は同じ 403（同じ code・同じ文言・列名なし・data-platform §16.1）。
+            DE::FieldUnavailable => {
+                ApiError::ForbiddenJson(to_body(&ForbiddenBody::field_unavailable()))
             }
+            // 理由を構造化していない入力の誤りは汎用の文言（理由はログだけ・値や読めない列名を返さない）。
+            DE::Invalid(msg) => {
+                tracing::info!(reason = %msg, "data invalid (400)");
+                ApiError::UnprocessableJson(to_body(&BadRequestBody::new(
+                    data::InvalidCode::InvalidInput,
+                    data::InvalidCode::InvalidInput.default_message(),
+                    None,
+                )))
+            }
+            // 構造化した入力の誤り（code・利用者に見せてよい文言・対象の列の参照名）。
+            DE::InvalidInput(e) => ApiError::UnprocessableJson(to_body(&BadRequestBody::new(
+                e.code(),
+                e.message(),
+                e.field_key(),
+            ))),
+            // 409 はクライアントが「他の人が先に更新した（rev）」「同じ値が既にある（unique）」
+            // 「参照先の変更を受けて再計算中」「同名のテーブル」「その他」を出し分けられるよう `code` で
+            // 構造化する（値・相手の行・内部キーは含めない。理由の文言はログにだけ残す）。
+            DE::Conflict(reason) => {
+                tracing::info!(%reason, "data conflict (409)");
+                conflict(ConflictBody::new(ConflictCode::Conflict))
+            }
+            DE::NameTaken => conflict(ConflictBody::new(ConflictCode::NameTaken)),
+            DE::RevConflict { current } => conflict(ConflictBody {
+                current_rev: Some(current),
+                ..ConflictBody::new(ConflictCode::RevConflict)
+            }),
+            // 読める列なら参照名と表示名つきの文言（data が読めない列を外してある）。値・相手の行は返さない。
+            DE::UniqueViolation { field } => {
+                let message = DE::UniqueViolation {
+                    field: field.clone(),
+                }
+                .conflict_detail();
+                conflict(ConflictBody {
+                    field: field.map(|f| f.key),
+                    message,
+                    ..ConflictBody::new(ConflictCode::UniqueViolation)
+                })
+            }
+            DE::DerivedRecomputing { field } => conflict(ConflictBody {
+                field: Some(field),
+                ..ConflictBody::new(ConflictCode::DerivedRecomputing)
+            }),
             DE::Internal(msg) => ApiError::Internal(format!("data: {msg}")),
+            DE::Gone(reason) => {
+                tracing::info!(%reason, "data gone (410)");
+                ApiError::Gone
+            }
+            // 索引の準備中・承認待ちは UI が「準備中」「承認が要る」を出し分けられるよう構造化する
+            // （値・内部キー・件数を含めない）。
+            DE::IndexPreparing { field, progress } => conflict(ConflictBody {
+                field: Some(field),
+                progress: Some(progress),
+                ..ConflictBody::new(ConflictCode::IndexPreparing)
+            }),
+            DE::IndexApprovalRequired {
+                field,
+                indexed,
+                cap,
+            } => conflict(ConflictBody {
+                field: Some(field),
+                indexed_fields: Some(indexed),
+                max_indexed_fields: Some(cap),
+                ..ConflictBody::new(ConflictCode::IndexApprovalRequired)
+            }),
+            // 受付制御（予測コストが読取予算を超える）。提案の語彙だけで、推定値・予測コスト・
+            // 計画名を含めない（PIT-75）。
+            DE::QueryTooExpensive { suggestions } => {
+                ApiError::UnprocessableJson(serde_json::json!({
+                    "status": 400,
+                    "title": "Bad Request",
+                    "code": "query_too_expensive",
+                    "suggestions": suggestions.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                }))
+            }
+            // テナントの同時実行の枠（再試行可）。文言は固定で、推定値を含まない（PIT-75）。
+            DE::ReadOverloaded => {
+                ApiError::RateLimited("混み合っています。しばらくしてから再試行してください".into())
+            }
+            // statement timeout（再試行可・SQL や推定値は返さない）。
+            DE::ReadTimeout => ApiError::RetryLaterJson {
+                body: to_body(&RetryLaterBody {
+                    status: 503,
+                    title: "Service Unavailable".into(),
+                    code: "read_timeout".into(),
+                    message: "読取が時間内に終わりませんでした。しばらくしてから再試行してください"
+                        .into(),
+                }),
+                retry_after_secs: RETRY_AFTER_SECS,
+            },
+            // 入口での拒否（SQL 前段面の部分集合外・名前解決不能・資源上限）。422 と構造化した理由
+            // （LLM が自己修正できる・存在しない列と見えない列は同一の本文・data-platform §16.1）。
+            DE::Rejected(r) => {
+                ApiError::Unprocessable422(to_body(&crate::error_body::QueryRejectionBody {
+                    status: 422,
+                    title: "Unprocessable Entity".into(),
+                    rejection: *r,
+                }))
+            }
         }
     }
 }
@@ -286,6 +440,157 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         (status, value)
+    }
+
+    /// data の 409 は `code` で種類を出し分ける（rev 競合・unique 違反・再計算中・その他・監査 B1-6）。
+    #[tokio::test]
+    async fn data_conflicts_are_structured_by_code() {
+        use data::DataError as DE;
+        let (status, body) = body_json(ApiError::from(DE::RevConflict { current: 4 })).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "rev_conflict");
+        assert_eq!(body["current_rev"], 4);
+        let (_, body) = body_json(ApiError::from(DE::UniqueViolation { field: None })).await;
+        assert_eq!(body["code"], "unique_violation");
+        assert_eq!(
+            body.as_object().unwrap().len(),
+            4,
+            "値や相手の行を含めない: {body}"
+        );
+        assert!(body.get("field").is_none(), "{body}");
+        // 読める列なら参照名と、表示名つきの文言。
+        let (_, body) = body_json(ApiError::from(DE::UniqueViolation {
+            field: Some(data::ConflictField {
+                key: "code".into(),
+                display_name: "社員番号".into(),
+                link: false,
+            }),
+        }))
+        .await;
+        assert_eq!(body["code"], "unique_violation");
+        assert_eq!(body["field"], "code");
+        assert!(
+            body["message"].as_str().unwrap().contains("社員番号"),
+            "{body}"
+        );
+        assert_eq!(body.as_object().unwrap().len(), 5, "{body}");
+        let (_, body) = body_json(ApiError::from(DE::DerivedRecomputing {
+            field: "total".into(),
+        }))
+        .await;
+        assert_eq!(body["code"], "derived_recomputing");
+        assert_eq!(body["field"], "total");
+        let (status, body) = body_json(ApiError::from(DE::Conflict(
+            "テーブル名 'x' は既に存在します".into(),
+        )))
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "conflict");
+        assert!(body.get("detail").is_none(), "理由の文言は返さない: {body}");
+    }
+
+    /// data の 400 は構造化（code・安全な文言・列の参照名）。理由を構造化していない誤りは汎用の文言で、
+    /// 内部の理由（値・列名を含み得る）を本文に出さない（検証 C-P2-4）。
+    #[tokio::test]
+    async fn data_bad_requests_are_structured_and_safe() {
+        use data::{DataError as DE, InvalidCode};
+        let (status, body) = body_json(ApiError::from(DE::input_field(
+            InvalidCode::ValueTooLong,
+            "memo",
+        )))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "value_too_long");
+        assert_eq!(body["field"], "memo");
+        assert_eq!(body["message"], InvalidCode::ValueTooLong.default_message());
+        let (status, body) = body_json(ApiError::from(DE::Invalid(
+            "'salary' の値 'secret-123' は不正です".into(),
+        )))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_input");
+        let text = body.to_string();
+        assert!(
+            !text.contains("salary") && !text.contains("secret-123"),
+            "{text}"
+        );
+        assert!(body.get("field").is_none());
+        let (status, body) = body_json(ApiError::from(DE::NameTaken)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "name_taken");
+    }
+
+    /// statement timeout は再試行できる 503（`read_timeout`・`Retry-After`）。
+    #[tokio::test]
+    async fn read_timeout_is_retryable_503() {
+        let resp = ApiError::from(data::DataError::ReadTimeout).into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("2")
+        );
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["code"], "read_timeout");
+    }
+
+    /// SQL 前段面の入口の拒否は 422 と構造化した理由（code / message / location / limit / expected）を
+    /// 本文の最上位にそのまま返す（LLM の自己修正に使う・Task 15.10）。
+    #[tokio::test]
+    async fn query_rejection_is_422_with_structured_reason() {
+        let r: data::QueryRejection = serde_json::from_value(serde_json::json!({
+            "code": "limit_exceeded",
+            "message": "クエリが入口の上限 max_ast_depth（32）を超えています",
+            "location": {"line": 1, "column": 30},
+            "limit": {"name": "max_ast_depth", "max": 32},
+        }))
+        .unwrap();
+        let (status, body) =
+            body_json(ApiError::from(data::DataError::Rejected(Box::new(r)))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["status"], 422);
+        assert_eq!(body["code"], "limit_exceeded");
+        assert_eq!(body["limit"]["name"], "max_ast_depth");
+        assert_eq!(body["location"]["line"], 1);
+        let r: data::QueryRejection = serde_json::from_value(serde_json::json!({
+            "code": "unknown_name",
+            "message": "列 'salary' は見つからないか、参照できません",
+            "expected": ["_id", "name"],
+        }))
+        .unwrap();
+        let (status, body) =
+            body_json(ApiError::from(data::DataError::Rejected(Box::new(r)))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["code"], "unknown_name");
+        assert_eq!(body["expected"], serde_json::json!(["_id", "name"]));
+    }
+
+    /// 受付制御（重すぎるクエリ）は提案の語彙だけの構造化 400、枠の不足は 429。推定値・予測コスト・
+    /// 計画名は本文に出ない（PIT-75）。
+    #[tokio::test]
+    async fn query_admission_errors_carry_no_estimates() {
+        let (status, body) = body_json(ApiError::from(data::DataError::QueryTooExpensive {
+            suggestions: vec![
+                data::QuerySuggestion::NarrowFilter,
+                data::QuerySuggestion::PromoteIndex,
+                data::QuerySuggestion::CompositeIndex,
+            ],
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "query_too_expensive");
+        assert_eq!(
+            body["suggestions"],
+            serde_json::json!(["narrow_filter", "promote_index", "composite_index"])
+        );
+        let text = body.to_string();
+        for banned in ["cost", "estimate", "strategy", "rows", "ms"] {
+            assert!(!text.contains(banned), "{banned}: {text}");
+        }
+        let (status, _) = body_json(ApiError::from(data::DataError::ReadOverloaded)).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]

@@ -117,7 +117,11 @@ pub fn build_router(state: AppState) -> Router {
         .merge(org_admin)
         .merge(org_audit)
         .merge(admin)
-        .with_state(state);
+        .with_state(state)
+        // 抽出器の拒否（英語の平文）・ルータの 404 / 405 を構造化本文へ（検証 N14・WOPI は対象外）。
+        .layer(middleware::map_response(
+            super::rejection::structure_plain_errors,
+        ));
     // WOPI は状態適用済み（`Router<()>`）のため、`with_state` 後に merge する。
     // 後段の telemetry/Trace/CORS レイヤは merge 済みの全ルート（WOPI 含む）に掛かる。
     if let Some(wopi) = wopi {

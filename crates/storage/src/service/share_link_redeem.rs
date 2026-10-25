@@ -9,6 +9,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 use super::share_link_util::verify_password;
 use crate::model::GeneralAccessLevel;
@@ -134,7 +135,7 @@ impl StorageService {
             &mut tx,
             ctx,
             AuditEntry {
-                action: "node.share_link.redeem",
+                action: AuditAction::NodeShareLinkRedeem,
                 object_type: l.kind.as_str(),
                 object_id: &node,
                 decision: Decision::Allow,
@@ -352,7 +353,7 @@ impl StorageService {
         trace_id: Option<&str>,
     ) -> StorageError {
         let entry = AuditEntry {
-            action: "node.share_link.redeem",
+            action: AuditAction::NodeShareLinkRedeem,
             object_type,
             object_id,
             decision: Decision::Deny,

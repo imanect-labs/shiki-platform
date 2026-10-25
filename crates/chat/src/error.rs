@@ -15,6 +15,10 @@ pub enum ChatError {
     /// LLM プロバイダ等の一時障害（再試行可能・503 相当）。
     #[error("service unavailable: {0}")]
     Unavailable(String),
+    /// LLM プロバイダが要求を受け付けなかった（400・設定の誤り等）。**再試行しても同じ結果**に
+    /// なるので、ジョブを再試行せずに 1 回目で失敗を確定する（#877）。
+    #[error("llm rejected: {0}")]
+    Rejected(String),
     /// プロバイダの利用枠超過（429）。**この文字列はそのまま会話へ表示される**ので、
     /// Display に内部語の接頭辞を付けない（`llm-gateway` が整形済みの 1 行を渡す）。
     #[error("{0}")]
@@ -37,6 +41,12 @@ pub mod failure_message {
         "AI モデルに接続できませんでした。しばらくしてからもう一度お試しください。";
     /// 生成がリース失効で中断された（孤児回収）。
     pub const INTERRUPTED: &str = "応答の生成が中断されました。もう一度お試しください。";
+    /// 承認待ちのまま中断され、承認の期限も過ぎた（孤児回収）。
+    pub const APPROVAL_EXPIRED: &str =
+        "承認の期限が切れたため、応答の生成を中断しました。もう一度お試しください。";
+    /// モデル（プロバイダ）が要求を受け付けなかった。待っても直らないので別のモデルを促す。
+    pub const MODEL_REJECTED: &str = "選んだ AI モデルでは応答を生成できませんでした。\
+                                      別のモデルを選んでもう一度お試しください。";
     /// 上記に当てはまらない失敗。
     pub const GENERIC: &str = "応答の生成に失敗しました。もう一度お試しください。\
                                問題が続く場合は管理者にお問い合わせください。";
@@ -62,11 +72,52 @@ impl ChatError {
                     failure_message::GENERIC.to_string()
                 }
             }
+            Self::Rejected(_) => failure_message::MODEL_REJECTED.to_string(),
             Self::NotFound | Self::Forbidden | Self::Invalid(_) | Self::Internal(_) => {
                 failure_message::GENERIC.to_string()
             }
         }
     }
+
+    /// 生成ジョブを再試行してよいか（一時障害か）。
+    ///
+    /// プロバイダが要求を受け付けなかった（[`Self::Rejected`]）ときは何度送っても同じなので、
+    /// 再試行せずに失敗を確定する。再試行の間は「生成中」に見え続けるため（#877）。
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        !matches!(self, Self::Rejected(_))
+    }
+
+    /// agent ループの LLM エラー（`AgentError::Llm` の文字列）を写す。
+    ///
+    /// agent-core は LLM エラーを [`llm_gateway::LlmError`] の `Display` で文字列にして渡す
+    /// （利用枠超過だけは種別を保つ）。要求の拒否（`BadRequest`）と設定の誤り（`Config`）は
+    /// 先頭の語で見分け、再試行しない [`Self::Rejected`] にする。それ以外は一時障害として扱う。
+    #[must_use]
+    pub fn from_agent_llm(msg: &str) -> Self {
+        if is_rejection(msg) {
+            Self::Rejected(format!("agent: llm error: {msg}"))
+        } else {
+            Self::Unavailable(format!("agent: llm error: {msg}"))
+        }
+    }
+
+    /// gateway のエラーを写す（agent を通らない経路）。利用枠超過は種別を保つ。
+    #[must_use]
+    pub fn from_llm(e: llm_gateway::LlmError) -> Self {
+        match e {
+            llm_gateway::LlmError::RateLimited(msg) => Self::RateLimited(msg),
+            e @ (llm_gateway::LlmError::BadRequest(_) | llm_gateway::LlmError::Config(_)) => {
+                Self::Rejected(format!("llm: {e}"))
+            }
+            other => Self::Unavailable(format!("llm: {other}")),
+        }
+    }
+}
+
+/// `LlmError` の `Display` が要求の拒否・設定の誤りを表すか。
+fn is_rejection(msg: &str) -> bool {
+    msg.starts_with("llm bad request:") || msg.starts_with("llm config error:")
 }
 
 #[cfg(test)]
@@ -117,5 +168,38 @@ mod tests {
         ] {
             assert_eq!(e.user_message(), failure_message::GENERIC, "{e}");
         }
+    }
+
+    #[test]
+    fn provider_rejection_is_not_retried_and_points_to_another_model() {
+        // agent-core は LlmError を Display で文字列にして AgentError::Llm へ入れる。
+        for e in [
+            llm_gateway::LlmError::BadRequest("responses 400: model is not supported".into()),
+            llm_gateway::LlmError::Config("unknown model: x".into()),
+        ] {
+            let agent = ChatError::from_agent_llm(&e.to_string());
+            assert!(matches!(agent, ChatError::Rejected(_)), "{agent:?}");
+            assert!(!agent.is_retryable());
+            assert_eq!(agent.user_message(), failure_message::MODEL_REJECTED);
+            // 上流の詳細は会話へ出さない（サーバ側の Display にだけ残る）。
+            assert!(!agent.user_message().contains("400"));
+            assert!(agent.to_string().contains("llm error"), "{agent}");
+
+            let direct = ChatError::from_llm(e);
+            assert!(matches!(direct, ChatError::Rejected(_)), "{direct:?}");
+        }
+    }
+
+    #[test]
+    fn transient_llm_failures_stay_retryable() {
+        let e = llm_gateway::LlmError::Unavailable("openai 502".into());
+        let agent = ChatError::from_agent_llm(&e.to_string());
+        assert!(matches!(agent, ChatError::Unavailable(_)));
+        assert!(agent.is_retryable());
+        assert!(ChatError::from_llm(e).is_retryable());
+        // 利用枠超過は種別を保つ（文言はそのまま出す）。
+        let rl = ChatError::from_llm(llm_gateway::LlmError::RateLimited("上限".into()));
+        assert!(matches!(rl, ChatError::RateLimited(ref m) if m == "上限"));
+        assert!(ChatError::Internal("db".into()).is_retryable());
     }
 }

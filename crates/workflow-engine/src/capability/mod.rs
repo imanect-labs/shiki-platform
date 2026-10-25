@@ -21,6 +21,12 @@ pub use journal::{op_digest, EffectJournal, JournalDecision, JournalError};
 pub trait CapabilityAudit: Send + Sync {
     /// 能力呼び出しを 1 件記録する（api・許可可否・レダクト済みメタ）。
     fn record(&self, tenant_id: &str, api: &str, allowed: bool, meta: &Value);
+
+    /// 実効スコープ（scope_ceiling）の外の呼び出しを拒否した（`out_of_scope`）。実行主体つきで監査ログ
+    /// （`audit_log`）へ残す実装を差せる（検証 C-P2-3）。既定は [`Self::record`] へ委ねる。
+    fn record_out_of_scope(&self, ec: &crate::nodes::ports::ExecCtx, api: &str, meta: &Value) {
+        self.record(&ec.tenant_id, api, false, meta);
+    }
 }
 
 /// 能力呼び出しが拒否された理由。

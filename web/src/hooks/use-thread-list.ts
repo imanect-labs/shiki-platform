@@ -15,6 +15,13 @@ export type ThreadList = {
   hasMore: boolean;
   /// 続きを読み足す（無限スクロールの sentinel から呼ぶ）。
   loadMore: () => void;
+  /// 手元の行を書き換える（`null` は取り除く）。改名・削除の直後に使う: 通知での取り直しは
+  /// 先頭ページだけなので、それより古い行は書き換えないと古い表示のまま残る。
+  patchLocal: (id: string, patch: Partial<Thread> | null) => void;
+  /// 手元に無い行を並び順の位置へ足す（あれば置き換える）。ピン留めを外した行を一覧へ戻すのに使う。
+  /// 読み込み済みの範囲（続きがあるなら末尾の行より新しい行）に入るものだけ足す。それより古い行は
+  /// 続きの読み足しで届くので、ここで足すと並び（keyset 順）が崩れる。
+  upsertLocal: (thread: Thread) => void;
 };
 
 /// `(updated_at, id)` の降順で a が b より後ろ（古い）か。サーバの keyset 順と一致させる。
@@ -125,5 +132,62 @@ export function useThreadList(query = "", enabled = true): ThreadList {
       });
   }, [cursor, query]);
 
-  return { threads, loading, loadingMore, error, hasMore: cursor !== null, loadMore };
+  const patchLocal = React.useCallback((id: string, patch: Partial<Thread> | null) => {
+    setThreads((prev) =>
+      patch === null
+        ? prev.filter((t) => t.id !== id)
+        : prev.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+    );
+  }, []);
+
+  const hasMore = cursor !== null;
+  const upsertLocal = React.useCallback(
+    (thread: Thread) => {
+      setThreads((prev) => {
+        const rest = prev.filter((t) => t.id !== thread.id);
+        const edge = rest[rest.length - 1];
+        if (hasMore && edge && isOlder(thread, edge)) return rest;
+        const at = rest.findIndex((t) => isOlder(t, thread));
+        return at < 0 ? [...rest, thread] : [...rest.slice(0, at), thread, ...rest.slice(at)];
+      });
+    },
+    [hasMore],
+  );
+
+  return { threads, loading, loadingMore, error, hasMore, loadMore, patchLocal, upsertLocal };
+}
+
+/// ピン留めしたスレッド（ピン留めの新しい順・全件）。一覧の変更通知で取り直す。
+/// `patchLocal` は取り直しを待たずに手元の行を書き換える（改名の直後に古い名前へ戻らないように）。
+export function usePinnedThreads(enabled = true): {
+  threads: Thread[];
+  patchLocal: (id: string, patch: Partial<Thread>) => void;
+} {
+  const [threads, setThreads] = React.useState<Thread[]>([]);
+  React.useEffect(() => {
+    if (!enabled) return;
+    let active = true;
+    // 連続した通知で古い応答が後から届いても上書きしない。
+    let latest = 0;
+    const load = () => {
+      const seq = ++latest;
+      listThreads(undefined, { pinned: true })
+        .then(({ threads: pinned }) => {
+          if (active && seq === latest) setThreads(pinned);
+        })
+        .catch(() => {
+          /* 取れなければ前回の表示を残す（履歴の本体は別に出る） */
+        });
+    };
+    load();
+    const unsubscribe = subscribeThreadsChanged(load);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [enabled]);
+  const patchLocal = React.useCallback((id: string, patch: Partial<Thread>) => {
+    setThreads((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }, []);
+  return { threads, patchLocal };
 }

@@ -1,8 +1,9 @@
-//! 宣言的バックエンド束縛（Task 6.5・#604）。
+//! 宣言的バックエンド束縛（Task 6.5・#604・Task 15.7）。
 //!
-//! 図のボタンから実行できる操作は、本モジュールの束縛**のみ**。束縛は
+//! 図のボタン・画面の表から実行できる操作は、本モジュールの束縛**のみ**。束縛は
 //! ①明示登録サーバハンドラ（閉語彙・会話に送る `chat.submit`）
-//! ②workflow-engine 対話トリガ起動（バージョンピン）の 2 系統に閉じる。
+//! ②workflow-engine 対話トリガ起動（バージョンピン）
+//! ③保存ビューのデータ束縛（`data_grid`・バージョンピン・閲覧者本人の権限で毎回評価）の 3 系統に閉じる。
 //! クライアントは実行時に `action_id + params` しか送れず、束縛はサーバーが保存済みの
 //! 本文（回答・ミニアプリの画面）と確定時の解決から作る（アンビエント権限なし）。
 
@@ -12,7 +13,7 @@ use uuid::Uuid;
 
 use crate::vocab::HandlerKind;
 
-/// アクション束縛（2 系統の閉集合）。
+/// アクション束縛（3 系統の閉集合）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
@@ -21,6 +22,9 @@ pub enum ActionBinding {
     Handler(HandlerBinding),
     /// workflow-engine の対話トリガ起動（本人 ReBAC ∩ 宣言スコープ ∩ ノード設定）。
     Workflow(WorkflowBinding),
+    /// 保存ビューのデータ束縛（`data_grid` の描画・Task 15.7）。定義はピンした版に固定し、
+    /// 行・列は**閲覧者本人**の権限（テーブル viewer・行述語・フィールドマスク）で毎回評価する。
+    DataView(DataViewBinding),
 }
 
 impl ActionBinding {
@@ -29,6 +33,7 @@ impl ActionBinding {
         match self {
             ActionBinding::Handler(b) => &b.id,
             ActionBinding::Workflow(b) => &b.id,
+            ActionBinding::DataView(b) => &b.id,
         }
     }
 
@@ -37,6 +42,7 @@ impl ActionBinding {
         match self {
             ActionBinding::Handler(_) => "handler",
             ActionBinding::Workflow(_) => "workflow",
+            ActionBinding::DataView(_) => "data_view",
         }
     }
 
@@ -53,8 +59,9 @@ impl ActionBinding {
                 HandlerKind::ChatSubmit => true,
             },
             // ワークフロー起動は「もう一度回す」があり得るので抑止しない（同じ送信の再送は
-            // 呼び出し側の冪等キーで 1 回にする）。
-            ActionBinding::Workflow(_) => false,
+            // 呼び出し側の冪等キーで 1 回にする）。表の描画は読取だけ（ページ送り・再描画で
+            // 何度でも実行する）。
+            ActionBinding::Workflow(_) | ActionBinding::DataView(_) => false,
         }
     }
 }
@@ -75,6 +82,23 @@ pub struct HandlerBinding {
 pub struct WorkflowBinding {
     pub id: String,
     pub workflow: WorkflowPin,
+}
+
+/// 保存ビューのデータ束縛（Task 15.7）。
+///
+/// クライアントが送れるのは `action_id`（`data_grid:{別名}`）と params（ページ位置・件数の
+/// [`data::DataViewPage`]）だけ。この束縛は**サーバーが保存済みの画面とピンから作る**
+/// （条件・並べ替え・投影はピンした版のビューの [`data::DataQuery`] で、面ごとの独自フィルタ表現を持たない）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct DataViewBinding {
+    pub id: String,
+    /// 保存ビュー（artifact kind=data_view）の id。
+    pub view_id: Uuid,
+    /// 保存時に固定した版（JSON 経由の数値のため TS では number）。
+    #[ts(type = "number")]
+    pub pinned_version: i64,
 }
 
 /// ワークフロー参照（検証・解決で **artifact_id＋version が焼き込まれる**＝再現性）。
@@ -116,6 +140,21 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(b.kind_str(), "workflow");
+
+        let b: ActionBinding = serde_json::from_value(serde_json::json!({
+            "type": "data_view", "id": "data_grid:経費",
+            "view_id": Uuid::nil(), "pinned_version": 3
+        }))
+        .unwrap();
+        assert_eq!(b.kind_str(), "data_view");
+        assert_eq!(b.id(), "data_grid:経費");
+        assert!(!b.single_use(), "表の描画は何度でも実行する");
+        // 束縛は条件を持てない（条件はピンしたビューの DataQuery だけ・面ごとの独自表現を作らない）。
+        assert!(serde_json::from_value::<ActionBinding>(serde_json::json!({
+            "type": "data_view", "id": "g", "view_id": Uuid::nil(), "pinned_version": 1,
+            "filter": { "cmp": { "field": "x", "op": "eq", "value": 1 } }
+        }))
+        .is_err());
     }
 
     #[test]

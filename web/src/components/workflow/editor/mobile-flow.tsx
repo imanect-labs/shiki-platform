@@ -9,7 +9,7 @@
 /// - 完全なグラフ編集（任意の接続・座標）はキャンバスで行う（「キャンバスで開く」）。
 
 import * as React from "react";
-import { AlertCircle, ChevronRight, CornerDownRight, GitMerge, Plus } from "lucide-react";
+import { AlertCircle, ChevronRight, CornerDownRight, GitMerge, Plus, TriangleAlert } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
@@ -27,6 +27,7 @@ type Props = {
   ir: WorkflowIr;
   selection: Selection;
   serverErrors: ValidationError[];
+  serverWarnings?: ValidationError[];
   dispatch: React.Dispatch<EditorAction>;
   /// ＋が押された（追加先を親へ渡し、親がブロック選択のシートを開く）。
   onAdd: (target: AddTarget, contextLabel: string) => void;
@@ -82,6 +83,7 @@ function StepCard({
   detail,
   selected,
   errorCount = 0,
+  warningCount = 0,
   onClick,
 }: {
   icon: React.ElementType;
@@ -91,6 +93,7 @@ function StepCard({
   detail?: string;
   selected: boolean;
   errorCount?: number;
+  warningCount?: number;
   onClick: () => void;
 }) {
   const hasError = errorCount > 0;
@@ -131,6 +134,14 @@ function StepCard({
           <AlertCircle className="size-3" aria-hidden />
           要修正 {errorCount}
         </span>
+      ) : warningCount > 0 ? (
+        <span
+          className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium text-[var(--season-autumn)]"
+          style={{ backgroundColor: "color-mix(in oklab, var(--season-autumn) 14%, transparent)" }}
+        >
+          <TriangleAlert className="size-3" aria-hidden />
+          注意 {warningCount}
+        </span>
       ) : null}
       <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
     </button>
@@ -155,8 +166,9 @@ function MergeRow({ name }: { name: string }) {
   );
 }
 
-export function MobileFlow({ ir, selection, serverErrors, dispatch, onAdd }: Props) {
+export function MobileFlow({ ir, selection, serverErrors, serverWarnings, dispatch, onAdd }: Props) {
   const errors = React.useMemo(() => mapErrors(serverErrors), [serverErrors]);
+  const warnings = React.useMemo(() => mapErrors(serverWarnings ?? []), [serverWarnings]);
   const byId = React.useMemo(() => new Map(ir.nodes.map((n) => [n.id, n])), [ir.nodes]);
 
   const select = (next: Selection) => dispatch({ type: "select", selection: next });
@@ -171,6 +183,7 @@ export function MobileFlow({ ir, selection, serverErrors, dispatch, onAdd }: Pro
         name={nodeName(node)}
         selected={selection.kind === "node" && selection.id === node.id}
         errorCount={errors.byNode.get(node.id)?.length ?? 0}
+        warningCount={warnings.byNode.get(node.id)?.length ?? 0}
         onClick={() => select({ kind: "node", id: node.id })}
       />
     );

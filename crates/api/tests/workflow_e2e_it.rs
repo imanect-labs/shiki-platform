@@ -219,6 +219,8 @@ async fn interactive_run_completes_through_production_executor() {
         launcher: launcher.clone(),
         http: reqwest::Client::new(),
         db: env.pool.clone(),
+        data: None,
+        fsms: None,
     });
     let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
     let executor: Arc<dyn workflow_engine::NodeExecutor> = Arc::new(

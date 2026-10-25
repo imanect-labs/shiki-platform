@@ -69,6 +69,7 @@ git switch -c <branch-name> origin/main   # 作業中のブランチは git reba
 | 統合 | `cd deploy/compose && cp .env.example .env && docker compose up -d --build shiki-server && bash smoke-bff.sh` |
 
 結合テストは環境変数が無いと**黙ってスキップ**される（`OPENFGA_TEST_URL`・`STORAGE_TEST_DATABASE_URL`・`RAG_TEST_QDRANT_URL` 等）。「緑だった」ではなく、意図したテストが実際に走ったかを確認する。
+`crates/data` の読取経路を変えたら `policy_threat_it` を ci.yml の `data-strategies` ジョブと同じ環境変数（`SHIKI_DATA_READ_PATH` / `SHIKI_DATA_FORCE_STRATEGY` ほか）で全経路回す。性能ベンチは `DATA_BENCH=1`（Web は `DATA_PERF=1`）のときだけ走る（手順は `docs/data/benchmarks.md`）。
 
 ## 正本ドキュメント
 

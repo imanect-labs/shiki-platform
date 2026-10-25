@@ -59,27 +59,47 @@ pub(crate) fn validate_fsm(
 ) -> Result<(), crate::DataError> {
     use crate::DataError;
     if body.states.is_empty() {
-        return Err(DataError::Invalid("fsm: states が空です".into()));
+        return Err(DataError::input_detail(
+            crate::InvalidCode::FsmInvalid,
+            None,
+            "fsm: states が空です",
+        ));
     }
     let states: std::collections::HashSet<&str> = body.states.iter().map(String::as_str).collect();
     if states.len() != body.states.len() {
-        return Err(DataError::Invalid("fsm: states に重複があります".into()));
+        return Err(DataError::input_detail(
+            crate::InvalidCode::FsmInvalid,
+            None,
+            "fsm: states に重複があります",
+        ));
     }
     if body.transitions.is_empty() {
-        return Err(DataError::Invalid("fsm: transitions が空です".into()));
+        return Err(DataError::input_detail(
+            crate::InvalidCode::FsmInvalid,
+            None,
+            "fsm: transitions が空です",
+        ));
     }
     for (i, t) in body.transitions.iter().enumerate() {
         if !states.contains(t.from.as_str()) {
-            return Err(DataError::Invalid(format!(
-                "fsm: transition[{i}] の from '{}' が states にありません",
-                t.from
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::FsmInvalid,
+                None,
+                format!(
+                    "fsm: transition[{i}] の from '{}' が states にありません",
+                    t.from
+                ),
+            ));
         }
         if !states.contains(t.to.as_str()) {
-            return Err(DataError::Invalid(format!(
-                "fsm: transition[{i}] の to '{}' が states にありません",
-                t.to
-            )));
+            return Err(DataError::input_detail(
+                crate::InvalidCode::FsmInvalid,
+                None,
+                format!(
+                    "fsm: transition[{i}] の to '{}' が states にありません",
+                    t.to
+                ),
+            ));
         }
         // actor 述語は行レベル述語と同じ文法・型整合で検証する（field_cmp のフィールド実在等）。
         crate::policy::validate::validate_policy_expr(
@@ -90,18 +110,26 @@ pub(crate) fn validate_fsm(
     }
     // status_field が select でその options が states と一致することを検証する。
     let status_field = schema.status_field.as_deref().ok_or_else(|| {
-        DataError::Invalid("fsm: テーブルに status_field が定義されていません".into())
+        DataError::input_detail(
+            crate::InvalidCode::FsmInvalid,
+            None,
+            "fsm: テーブルに status_field が定義されていません",
+        )
     })?;
     let field = schema.field(status_field).ok_or_else(|| {
-        DataError::Invalid(format!(
-            "fsm: status_field '{status_field}' が fields にありません"
-        ))
+        DataError::input_detail(
+            crate::InvalidCode::FsmInvalid,
+            None,
+            format!("fsm: status_field '{status_field}' が fields にありません"),
+        )
     })?;
     let opts: std::collections::HashSet<&str> = field.options.iter().map(String::as_str).collect();
     if opts != states {
-        return Err(DataError::Invalid(format!(
-            "fsm: status_field '{status_field}' の options が states と一致しません"
-        )));
+        return Err(DataError::input_detail(
+            crate::InvalidCode::FsmInvalid,
+            None,
+            format!("fsm: status_field '{status_field}' の options が states と一致しません"),
+        ));
     }
     Ok(())
 }
@@ -113,38 +141,17 @@ mod tests {
     use crate::policy::ast::{CmpOp, PolicyOperand};
 
     fn schema() -> TableSchema {
-        let mut status = FieldDef {
-            name: "status".into(),
-            field_type: FieldType::Select,
-            required: false,
-            unique: false,
-            indexed: true,
-            options: vec!["draft".into(), "submitted".into(), "approved".into()],
-            ref_table: None,
-            lookup: None,
-            computed: None,
-        };
+        let mut status = FieldDef::new("status", FieldType::Select);
+        status.indexed = true;
         status.options = vec!["draft".into(), "submitted".into(), "approved".into()];
         TableSchema {
-            fields: vec![
-                FieldDef {
-                    name: "approver".into(),
-                    field_type: FieldType::UserRef,
-                    required: false,
-                    unique: false,
-                    indexed: false,
-                    options: vec![],
-                    ref_table: None,
-                    lookup: None,
-                    computed: None,
-                },
-                status,
-            ],
+            fields: vec![FieldDef::new("approver", FieldType::UserRef), status],
             status_field: Some("status".into()),
             row_policy: None,
             field_policy: vec![],
             aggregate_min_rows: None,
             fsm_ref: None,
+            rag: None,
         }
     }
 
@@ -184,7 +191,7 @@ mod tests {
         assert!(validate_fsm(&b, &schema()).is_err());
         // options 不一致。
         let mut s = schema();
-        if let Some(f) = s.fields.iter_mut().find(|f| f.name == "status") {
+        if let Some(f) = s.fields.iter_mut().find(|f| f.key == "status") {
             f.options = vec!["draft".into()];
         }
         assert!(validate_fsm(&body(), &s).is_err());

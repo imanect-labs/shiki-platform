@@ -21,7 +21,7 @@ use chrono::{Duration, Utc};
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
-use storage::audit::{AuditEntry, AuditRecorder, Decision};
+use storage::audit::{AuditAction, AuditCategory, AuditEntry, AuditRecorder, Decision};
 use storage::audit_view::{AuditCursor, AuditDecision, AuditFilter};
 use uuid::Uuid;
 
@@ -60,7 +60,7 @@ fn ctx(tenant: &str, org: &str, user: &str) -> AuthContext {
 async fn record(
     rec: &AuditRecorder,
     c: &AuthContext,
-    action: &str,
+    action: AuditAction,
     decision: Decision,
     trace: Option<&str>,
     metadata: serde_json::Value,
@@ -112,7 +112,7 @@ async fn search_is_scoped_filtered_and_pageable() {
     record(
         &rec,
         &alice,
-        "file.delete",
+        AuditAction::FileDelete,
         Decision::Allow,
         Some("tr-1"),
         json!({}),
@@ -121,7 +121,7 @@ async fn search_is_scoped_filtered_and_pageable() {
     record(
         &rec,
         &bob,
-        "file.download_url.issue",
+        AuditAction::FileDownloadUrlIssue,
         Decision::Deny,
         None,
         json!({}),
@@ -130,16 +130,16 @@ async fn search_is_scoped_filtered_and_pageable() {
     record(
         &rec,
         &bob,
-        "rag.search",
+        AuditAction::RagSearch,
         Decision::Allow,
         Some("tr-2"),
-        json!({"cited_chunk_ids": ["chunk-a", "chunk-b"]}),
+        json!({"cited_chunk_ids": ["chunk-a", "chunk-b"], "thread_id": "th-1", "message_id": "m-1"}),
     )
     .await;
     record(
         &rec,
         &alice,
-        "folder.create",
+        AuditAction::FolderCreate,
         Decision::Allow,
         None,
         json!({}),
@@ -148,10 +148,11 @@ async fn search_is_scoped_filtered_and_pageable() {
     record(
         &rec,
         &other,
-        "file.delete",
+        AuditAction::FileDelete,
         Decision::Allow,
         None,
-        json!({}),
+        // 別テナントで同じ回答 ID を持つ行（越境して出ないこと）。
+        json!({"thread_id": "th-1", "message_id": "m-1"}),
     )
     .await;
 
@@ -191,6 +192,18 @@ async fn search_is_scoped_filtered_and_pageable() {
     })
     .await;
     assert!(exact.is_empty(), "末尾の . が無ければ完全一致");
+    // 分類（#830）は語彙でその分類に属する操作のどれか。
+    let in_category = |c| {
+        by(AuditFilter {
+            category: Some(c),
+            ..window()
+        })
+    };
+    assert_eq!(in_category(AuditCategory::File).await.len(), 2);
+    let search = in_category(AuditCategory::Search).await;
+    assert_eq!(search.len(), 1);
+    assert_eq!(search[0].action, "rag.search");
+    assert!(in_category(AuditCategory::Secret).await.is_empty());
     let denied = by(AuditFilter {
         decision: Some(AuditDecision::Deny),
         ..window()
@@ -204,6 +217,26 @@ async fn search_is_scoped_filtered_and_pageable() {
     .await;
     assert_eq!(cited.len(), 1);
     assert_eq!(cited[0].action, "rag.search");
+    // 1 回答・1 会話の判定と引用（#829）。
+    let answer = by(AuditFilter {
+        message_id: Some("m-1".into()),
+        ..window()
+    })
+    .await;
+    assert_eq!(answer.len(), 1, "自テナントの回答の行だけ");
+    assert_eq!(answer[0].action, "rag.search");
+    let conversation = by(AuditFilter {
+        thread_id: Some("th-1".into()),
+        ..window()
+    })
+    .await;
+    assert_eq!(conversation.len(), 1);
+    assert!(by(AuditFilter {
+        message_id: Some("m-2".into()),
+        ..window()
+    })
+    .await
+    .is_empty());
     let traced = by(AuditFilter {
         trace_id: Some("tr-1".into()),
         ..window()

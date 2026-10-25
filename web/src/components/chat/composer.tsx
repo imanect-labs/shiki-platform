@@ -4,10 +4,18 @@ import * as React from "react";
 import { ArrowUp, Bot, HardDrive, Loader2, Paperclip, Sparkles, Square, TextSelect, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { uploadFile, type NodeResponse } from "@/lib/storage";
+import { uploadNewFile, type NodeResponse } from "@/lib/storage";
 import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
 import { HOME_SCOPE, useModelChoice } from "@/lib/model-choice";
 import { selectableTool, useToolChoice } from "@/lib/tool-choice";
+import {
+  readScoped,
+  removeScoped,
+  storageScopeGeneration,
+  subscribeStorageScope,
+  useStorageScopeReady,
+  writeScoped,
+} from "@/lib/user-storage";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { ApprovalModeSelect, approvalModeDef } from "./approval-mode-select";
 import { ComposerModeButton } from "./composer-mode";
@@ -58,6 +66,23 @@ function toActiveCommand(s: SlashSuggestion): ActiveCommand {
   };
 }
 
+/// 書きかけの保存を待つ時間（打鍵が止まってから書く）。
+const DRAFT_SAVE_DELAY_MS = 400;
+/// 保存する書きかけの上限（文字数）。超える本文は保存しない（Web Storage の容量を食い潰さない）。
+const DRAFT_MAX_CHARS = 100_000;
+
+/// 書きかけを保存する。空・上限超過は保存値を消す（古い書きかけを後で戻さないため）。
+/// `generation` は復元したときの世代。その後にログアウトがあれば書かない（次の人のキーへ移さない）。
+function saveDraft(key: string, value: string, generation: number): void {
+  if (generation !== storageScopeGeneration()) return;
+  try {
+    if (value && value.length <= DRAFT_MAX_CHARS) writeScoped(key, value);
+    else removeScoped(key);
+  } catch {
+    /* 容量超過・プライベートモード等は保存しない（入力はそのまま続けられる） */
+  }
+}
+
 /// チャット入力。ローカル/ドライブからの添付、送信を担う。
 /// 添付ファイルはアップロード後に自動でベクトル化され、doc_search の対象になる。
 ///
@@ -83,6 +108,10 @@ export const Composer = React.memo(function Composer({
   onApprovalModeChange,
   bypassAllowed = true,
   threadId,
+  scope,
+  draftKey,
+  onHasInputChange,
+  restoreOnError = false,
   className,
 }: {
   onSubmit: (
@@ -92,7 +121,10 @@ export const Composer = React.memo(function Composer({
     context?: SelectionContext,
     /// 確定中のスラッシュコマンド（#387）。呼び出し側が skill のピンとモードを整える。
     command?: ActiveCommand,
-  ) => void;
+  ) => void | Promise<void>;
+  /// 指定すると、`onSubmit` が返した Promise が reject したときに送った入力（本文・添付・コマンド）を
+  /// 入力欄へ戻す（送れなかった発話を打ち直させない）。
+  restoreOnError?: boolean;
   /// 生成中に停止する（指定時は送信ボタンが停止ボタンに変わる）。
   onStop?: () => void;
   placeholder?: string;
@@ -119,6 +151,15 @@ export const Composer = React.memo(function Composer({
   /// スレッド内のコンポーザなら thread id。カタログにスレッドのピンを統合するのに使う
   /// （モデルが見ている集合と補完候補を一致させる・#387）。ホームでは未指定。
   threadId?: string;
+  /// モデル・ツールの選択の保存先。未指定ならスレッド（無ければホーム）。まだスレッドの無い
+  /// 入力欄（文書のアシスタントパネル等）がホームの選択を共有しないように分ける。
+  scope?: string;
+  /// 指定すると、書きかけの本文をユーザー単位で保存し、次にこの入力欄を開いたときに戻す
+  /// （ホームの新規チャット: 入力 → 別画面 → 戻ると続きから書ける）。送信で消える。
+  draftKey?: string;
+  /// 送れる入力（本文・確定済みのコマンド・添付）があるかが変わったときに呼ぶ
+  /// （入力途中かどうかを親が知る必要があるとき）。
+  onHasInputChange?: (hasInput: boolean) => void;
   className?: string;
 }) {
   const [value, setValue] = React.useState("");
@@ -126,7 +167,7 @@ export const Composer = React.memo(function Composer({
   const [uploading, setUploading] = React.useState<Uploading | null>(null);
   const [menuOpen, setMenuOpen] = React.useState(false);
   const desktop = useMediaQuery("(min-width: 768px)");
-  const modelScope = threadId ?? HOME_SCOPE;
+  const modelScope = scope ?? threadId ?? HOME_SCOPE;
   // スマホでモデルを選んでいない（Auto・組織の既定の）ときは、入力欄にモデルを出さずに 1 行の
   // バーにする（「＋」のシートから選ぶ）。PC は常に 2 段。初回描画とずれないよう切替は max-md: で行う。
   const [modelChoice] = useModelChoice(modelScope);
@@ -138,11 +179,66 @@ export const Composer = React.memo(function Composer({
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
+  // 書きかけの保存と復元（draftKey 指定時）。保存先はユーザー単位（ログアウトで消える・#817）
+  // なので、ユーザーが確定してから読む。保存は復元の後から（復元前の空で保存値を消さない）。
+  const scopeReady = useStorageScopeReady();
+  const [draftRestored, setDraftRestored] = React.useState(false);
+  // 復元したときの世代。ログアウト（他タブを含む）で世代が進んだら、前の人の書きかけを
+  // 入力欄から捨て、次の人のキーへ書かない（#817）。
+  const draftGeneration = React.useRef(0);
+  React.useEffect(() => {
+    if (!draftKey) return;
+    return subscribeStorageScope(() => {
+      if (storageScopeGeneration() === draftGeneration.current) return;
+      setValue("");
+      setDraftRestored(false);
+    });
+  }, [draftKey]);
+  React.useEffect(() => {
+    if (!draftKey || !scopeReady || draftRestored) return;
+    draftGeneration.current = storageScopeGeneration();
+    const saved = readScoped(draftKey);
+    // 確定を待つ間に打ち始めていたら、そちらを優先する（復元の完了で保存される）。
+    if (saved) setValue((v) => v || saved);
+    setDraftRestored(true);
+  }, [draftKey, scopeReady, draftRestored]);
+  // 保存は打鍵ごとではなく、手が止まってからまとめて書く（長文の貼り付け後も入力を重くしない）。
+  // 画面を離れる（アンマウント・リロードやタブを閉じる）ときは待たずに書く（直後に離れても取りこぼさない）。
+  const latestValue = React.useRef(value);
+  // コミットした値だけを持つ（破棄されたレンダーの値を保存しない）。保存の effect より先に置く。
+  React.useEffect(() => {
+    latestValue.current = value;
+  }, [value]);
+  React.useEffect(() => {
+    if (!draftKey || !draftRestored) return;
+    const generation = draftGeneration.current;
+    const t = window.setTimeout(() => saveDraft(draftKey, value, generation), DRAFT_SAVE_DELAY_MS);
+    return () => window.clearTimeout(t);
+  }, [draftKey, draftRestored, value]);
+  React.useEffect(() => {
+    if (!draftKey || !draftRestored) return;
+    const generation = draftGeneration.current;
+    const flush = () => saveDraft(draftKey, latestValue.current, generation);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, [draftKey, draftRestored]);
+
   // スラッシュコマンド（#387）。候補はカタログ（モデルが見ているものと同一）由来。
   const [suggestions, setSuggestions] = React.useState<SlashSuggestion[]>([]);
   const [command, setCommand] = React.useState<ActiveCommand | null>(null);
   const [slashIndex, setSlashIndex] = React.useState(0);
   const [slashDismissed, setSlashDismissed] = React.useState(false);
+
+  // コマンドを確定すると本文は空になるので、本文だけでなくコマンド・添付（アップロード中を含む）も
+  // 入力として数える。
+  const hasInput =
+    uploading !== null || value.trim().length > 0 || command !== null || attachments.length > 0;
+  React.useEffect(() => {
+    onHasInputChange?.(hasInput);
+  }, [onHasInputChange, hasInput]);
 
   React.useEffect(() => {
     let active = true;
@@ -184,11 +280,20 @@ export const Composer = React.memo(function Composer({
     const body = typed ? typed.rest : value;
     const text = composeText(active, body);
     if (!text) return;
-    onSubmit(text, attachments, takePendingSelection() ?? undefined, active ?? undefined);
+    const sentAttachments = attachments;
+    const result = onSubmit(text, attachments, takePendingSelection() ?? undefined, active ?? undefined);
     setValue("");
     setAttachments([]);
     setCommand(null);
     setSlashDismissed(false);
+    if (restoreOnError && result) {
+      result.catch(() => {
+        // 失敗を待つ間に打ち直していたら、そちらを優先する。
+        setValue((v) => v || body);
+        setAttachments((a) => (a.length > 0 ? a : sentAttachments));
+        setCommand((c) => c ?? active);
+      });
+    }
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -245,12 +350,13 @@ export const Composer = React.memo(function Composer({
     setMenuOpen(false);
     setUploading({ name: file.name, fraction: 0 });
     try {
-      const node = await uploadFile({
+      // 同じ名前があれば連番名で置く（同じ写真をもう一度添付すると 409 で失敗していた・#880）。
+      const node = await uploadNewFile({
         file,
         onProgress: (fraction) => setUploading({ name: file.name, fraction }),
       });
       addAttachment(node);
-      toast({ description: `${file.name} をアップロードしました（自動でベクトル化されます）` });
+      toast({ description: `${node.name} をアップロードしました（自動でベクトル化されます）` });
     } catch {
       toast({ description: `${file.name} のアップロードに失敗しました` });
     } finally {

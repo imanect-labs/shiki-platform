@@ -15,9 +15,9 @@ use async_trait::async_trait;
 use authz::client::{OpenFgaClient, OpenFgaConfig};
 use authz::{AuthContext, AuthzClient, Principal, Relation};
 use data::{
-    Aggregate, CmpOp, DataError, DataQuery, DataStore, DataViewBody, DataViewStore, FieldDef,
-    FieldPolicy, FieldType, Metric, NewDataTable, PolicyExpr, PolicyOperand, QueryFilter,
-    RefResolver, RowPolicy, TableSchema,
+    CmpOp, DataError, DataQuery, DataStore, DataViewBody, DataViewStore, FieldDef, FieldPolicy,
+    FieldType, Metric, NewDataTable, PolicyExpr, PolicyOperand, RefResolver, RowPolicy,
+    TableSchema,
 };
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
@@ -78,17 +78,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
 }
 
 fn field(name: &str, ty: FieldType) -> FieldDef {
-    FieldDef {
-        name: name.into(),
-        field_type: ty,
-        required: false,
-        unique: false,
-        indexed: false,
-        options: vec![],
-        ref_table: None,
-        lookup: None,
-        computed: None,
-    }
+    FieldDef::new(name, ty)
 }
 
 /// dept/amount/salary（マスク）を持つ人事テーブル。全 viewer が全行可視（行制限なし）。
@@ -114,6 +104,7 @@ fn hr_schema() -> TableSchema {
         }],
         aggregate_min_rows: Some(3),
         fsm_ref: None,
+        rag: None,
     }
 }
 
@@ -150,9 +141,36 @@ async fn field_mask_hides_and_blocks_search() {
         )
         .await
         .expect("table");
+    // salary は経理だけが読める（＝書ける）列なので、値は経理の kei（テーブル editor）が入れる。
+    let kei = ctx(&tenant, "kei");
+    authz
+        .write_tuple(&kei.subject(), Relation::Member, &kei.ns().role("keiri"))
+        .await
+        .expect("kei keiri");
+    authz
+        .write_tuple(
+            &kei.subject(),
+            Relation::Editor,
+            &kei.ns().data_table(&table.id.to_string()),
+        )
+        .await
+        .expect("kei editor");
+    // 経理でない alice（テーブル owner でも）は salary を含む作成ができない（読めない列への書込は 403）。
+    let denied = store
+        .create_record(
+            &alice,
+            table.id,
+            json!({"dept": "sales", "amount": 1, "salary": 1, "name": "x"}),
+            None,
+        )
+        .await;
+    assert!(
+        matches!(denied, Err(DataError::FieldUnavailable)),
+        "{denied:?}"
+    );
     seed(
         &store,
-        &alice,
+        &kei,
         table.id,
         &[("sales", 10.0, 500.0), ("sales", 20.0, 900.0)],
     )
@@ -172,17 +190,18 @@ async fn field_mask_hides_and_blocks_search() {
             &alice,
             table.id,
             &DataQuery {
-                filter: Some(QueryFilter {
-                    field: "salary".into(),
-                    value: json!(500),
-                }),
+                filter: Some(data::Condition::cmp(
+                    "salary",
+                    data::CondOp::Eq,
+                    Some(json!(500)),
+                )),
                 ..Default::default()
             },
             None,
         )
         .await;
     assert!(
-        matches!(by_filter, Err(DataError::Forbidden)),
+        matches!(by_filter, Err(DataError::FieldUnavailable)),
         "{by_filter:?}"
     );
     let by_sort = store
@@ -190,32 +209,38 @@ async fn field_mask_hides_and_blocks_search() {
             &alice,
             table.id,
             &DataQuery {
-                sort: Some(data::QuerySort {
+                sort: vec![data::SortKey {
                     field: "salary".into(),
                     descending: true,
-                }),
+                }],
                 ..Default::default()
             },
             None,
         )
         .await;
-    assert!(matches!(by_sort, Err(DataError::Forbidden)), "{by_sort:?}");
+    assert!(
+        matches!(by_sort, Err(DataError::FieldUnavailable)),
+        "{by_sort:?}"
+    );
     let by_agg = store
         .run_query(
             &alice,
             table.id,
             &DataQuery {
-                aggregate: Some(Aggregate {
-                    group_by: vec![],
+                group_by: vec![],
+                aggregate: vec![data::MetricSpec {
                     metric: Metric::Avg,
                     field: Some("salary".into()),
-                }),
+                }],
                 ..Default::default()
             },
             None,
         )
         .await;
-    assert!(matches!(by_agg, Err(DataError::Forbidden)), "{by_agg:?}");
+    assert!(
+        matches!(by_agg, Err(DataError::FieldUnavailable)),
+        "{by_agg:?}"
+    );
 }
 
 #[tokio::test]
@@ -297,7 +322,10 @@ async fn field_mask_blocks_writes_for_unauthorized() {
             None,
         )
         .await;
-    assert!(matches!(denied, Err(DataError::Forbidden)), "{denied:?}");
+    assert!(
+        matches!(denied, Err(DataError::FieldUnavailable)),
+        "{denied:?}"
+    );
 }
 
 #[tokio::test]
@@ -348,11 +376,11 @@ async fn aggregate_suppresses_small_cells() {
             &alice,
             table.id,
             &DataQuery {
-                aggregate: Some(Aggregate {
-                    group_by: vec!["dept".into()],
+                group_by: vec!["dept".into()],
+                aggregate: vec![data::MetricSpec {
                     metric: Metric::Sum,
                     field: Some("amount".into()),
-                }),
+                }],
                 ..Default::default()
             },
             None,
@@ -390,7 +418,11 @@ async fn saved_view_reevaluates_per_viewer() {
     // 行ポリシー: 本人（owner）のみ可読。
     let schema = TableSchema {
         fields: vec![
-            field("owner_ref", FieldType::UserRef),
+            // row_policy が参照する列は indexed 必須（Task 15.3）。
+            FieldDef {
+                indexed: true,
+                ..field("owner_ref", FieldType::UserRef)
+            },
             field("note", FieldType::Text),
         ],
         status_field: None,
@@ -405,6 +437,7 @@ async fn saved_view_reevaluates_per_viewer() {
         field_policy: vec![],
         aggregate_min_rows: None,
         fsm_ref: None,
+        rag: None,
     };
     let table = store
         .create_table(
@@ -455,7 +488,7 @@ async fn saved_view_reevaluates_per_viewer() {
             &DataViewBody {
                 table_id: table.id,
                 query: DataQuery::default(),
-                display: json!({"kind": "list"}),
+                display: data::ViewSpec::default(),
             },
             None,
         )

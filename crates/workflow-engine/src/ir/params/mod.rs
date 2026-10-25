@@ -14,6 +14,7 @@
 
 mod ai;
 mod control;
+mod data;
 mod external;
 mod storage;
 mod tabular;
@@ -22,6 +23,10 @@ pub use ai::{AgentInvokeParams, LlmInvokeParams, SkillInvokeParams};
 pub use control::{
     BranchParams, JoinMode, JoinParams, MapItemError, MapParams, SwitchCase, SwitchParams,
     WaitKind, WaitParams, WaitTimeout,
+};
+pub use data::{
+    DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
+    DataRecordUpdateParams, DataTransitionParams, MAX_WORKFLOW_BULK_ROWS,
 };
 pub use external::{
     HttpMethod, HttpRequestParams, HttpSecretRef, RedirectPolicy, ScriptRunParams,
@@ -40,7 +45,7 @@ use crate::vocab::NodeType;
 pub struct ParamsIssue {
     /// `/params/...` の JSON Pointer 風 path（フォームフィールドへの写像用）。
     pub path: String,
-    /// 人向けメッセージ（serde のエラーメッセージそのまま）。
+    /// 人向けメッセージ（serde の文言は日本語へ直す・型名や英語の文言を含めない）。
     pub message: String,
 }
 
@@ -76,8 +81,48 @@ fn check_as<T: DeserializeOwned>(raw: &Value) -> Result<(), ParamsIssue> {
         Ok(_) => Ok(()),
         Err(e) => Err(ParamsIssue {
             path: pointer_path(&track.path()),
-            message: e.to_string(),
+            message: humanize(&e.to_string()),
         }),
+    }
+}
+
+/// serde の英語の文言を利用者向けの日本語へ（項目名だけを拾い、型名・英語の文言を出さない・検証 N11）。
+fn humanize(raw: &str) -> String {
+    let msg = raw.split(" at line ").next().unwrap_or(raw);
+    let quoted = |s: &str| -> Option<String> {
+        let start = s.find('`')? + 1;
+        let end = start + s[start..].find('`')?;
+        Some(s[start..end].to_string())
+    };
+    if let Some(rest) = msg.strip_prefix("missing field ") {
+        return quoted(rest).map_or_else(
+            || "必要な項目がありません".into(),
+            |f| format!("項目 '{f}' がありません"),
+        );
+    }
+    if let Some(rest) = msg.strip_prefix("unknown field ") {
+        return quoted(rest).map_or_else(
+            || "使えない項目があります".into(),
+            |f| format!("項目 '{f}' は使えません"),
+        );
+    }
+    if msg.starts_with("unknown variant ") {
+        return "選択肢にない値です".into();
+    }
+    if msg.starts_with("invalid type") {
+        return "値の型が正しくありません".into();
+    }
+    if msg.starts_with("invalid length") {
+        return "値の数が正しくありません".into();
+    }
+    if msg.starts_with("invalid value") {
+        return "値が正しくありません".into();
+    }
+    // 自前の検証（日本語）の文言はそのまま返す。
+    if msg.is_ascii() {
+        "値が正しくありません".into()
+    } else {
+        msg.to_string()
     }
 }
 
@@ -135,6 +180,12 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
         NodeType::CsvQuery => check_as::<CsvQueryParams>(raw),
         NodeType::CsvPatch => check_as::<CsvPatchParams>(raw),
         NodeType::CsvWrite => check_as::<CsvWriteParams>(raw),
+        NodeType::DataQuery => check_as::<DataQueryParams>(raw),
+        NodeType::DataRecordCreate => check_as::<DataRecordCreateParams>(raw),
+        NodeType::DataRecordUpdate => check_as::<DataRecordUpdateParams>(raw),
+        NodeType::DataRecordDelete => check_as::<DataRecordDeleteParams>(raw),
+        NodeType::DataTransition => check_as::<DataTransitionParams>(raw),
+        NodeType::DataBulkUpsert => check_as::<DataBulkUpsertParams>(raw),
         // 予約語彙は V3 が「Stage A では未対応」で拒否する（params 契約は実装フェーズで追加）。
         _ => Ok(()),
     }
@@ -143,7 +194,7 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
 /// executor 向け: params を typed struct として取り出す（保存済み IR は V1 済みのため
 /// 失敗は internal 扱い・呼び出し側が `bad_params` の permanent 失敗にする）。
 pub fn parse<T: DeserializeOwned>(raw: &Value) -> Result<T, String> {
-    serde_json::from_value(raw.clone()).map_err(|e| e.to_string())
+    serde_json::from_value(raw.clone()).map_err(|e| humanize(&e.to_string()))
 }
 
 #[cfg(test)]
@@ -158,6 +209,16 @@ mod tests {
         // serde_path_to_error は未知フィールド名まで path に含める。
         assert_eq!(err.path, "/params/bogus");
         assert!(err.message.contains("bogus"), "{}", err.message);
+        assert!(!err.message.contains("unknown field"), "{}", err.message);
+    }
+
+    #[test]
+    fn missing_field_message_is_japanese() {
+        assert_eq!(humanize("missing field `data`"), "項目 'data' がありません");
+        assert_eq!(
+            humanize("invalid type: string \"x\", expected struct Foo at line 1 column 2"),
+            "値の型が正しくありません"
+        );
     }
 
     #[test]
@@ -176,7 +237,28 @@ mod tests {
     #[test]
     fn reserved_vocab_is_not_checked() {
         // 予約語彙は V3 が拒否するため params 契約対象外。
-        assert!(check_params(NodeType::DataQuery, &json!({ "whatever": 1 })).is_ok());
+        assert!(check_params(NodeType::NotifySend, &json!({ "whatever": 1 })).is_ok());
+    }
+
+    #[test]
+    fn data_query_uses_the_data_query_type_itself() {
+        // 条件木は data の DataQuery（= workflow IR と同じ語彙の {"cmp":{field,op,value}}）。
+        let ok = check_params(
+            NodeType::DataQuery,
+            &json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+                     "query": { "filter": { "all": [
+                         { "cmp": { "field": "status", "op": "eq", "value": "pending" } },
+                         { "cmp": { "field": "amount", "op": "gte", "value": { "$from": "input", "path": "/min" } } }
+                     ] }, "sort": [ { "field": "amount", "descending": true } ], "limit": 20 } }),
+        );
+        assert!(ok.is_ok(), "{ok:?}");
+        // DataQuery の未知キー（OFFSET 以外の独自表現）は data の型が拒否する。
+        let err = check_params(
+            NodeType::DataQuery,
+            &json!({ "table": "t", "query": { "filter": { "eq": { "status": "x" } } } }),
+        )
+        .unwrap_err();
+        assert!(err.path.starts_with("/params/query"), "{err:?}");
     }
 
     #[test]
@@ -257,6 +339,37 @@ mod tests {
             (
                 NodeType::SkillInvoke,
                 json!({ "skill": "skill:expense@1", "input": { "$from": "input" } }),
+            ),
+            (
+                NodeType::DataQuery,
+                json!({ "table": { "$from": "input", "path": "/table" },
+                        "query": { "filter": { "cmp": { "field": "status", "op": "eq", "value": "pending" } } } }),
+            ),
+            (
+                NodeType::DataRecordCreate,
+                json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+                        "data": { "title": { "$from": "input", "path": "/title" } } }),
+            ),
+            (
+                NodeType::DataRecordUpdate,
+                json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+                        "record": { "$from": "nodes.q.output", "path": "/items/0/id" },
+                        "patch": { "note": "checked" },
+                        "expected_rev": { "$from": "nodes.q.output", "path": "/items/0/rev" } }),
+            ),
+            (
+                NodeType::DataRecordDelete,
+                json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", "record": { "$from": "input", "path": "/id" } }),
+            ),
+            (
+                NodeType::DataTransition,
+                json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+                        "record": { "$from": "trigger", "path": "/record_id" }, "to": "approved" }),
+            ),
+            (
+                NodeType::DataBulkUpsert,
+                json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+                        "rows": { "$from": "nodes.gen.output", "path": "/rows" } }),
             ),
         ];
         for (nt, raw) in cases {

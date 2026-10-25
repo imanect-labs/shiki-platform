@@ -33,6 +33,12 @@ pub enum LlmError {
     Internal(String),
 }
 
+/// プロバイダが応答の途中でストリームを切ったことを示す [`LlmError::Unavailable`] の接頭辞（#897）。
+///
+/// gateway はこの印の付いた失敗だけを、まだ何も確定していなければ送り直す。こちらの
+/// タイムアウト（全体・無通信）は暴走止めなので送り直さない（接頭辞を付けない）。
+pub(crate) const CUT_BY_PROVIDER: &str = "cut by provider: ";
+
 /// ストリーミング生成の結果ストリーム。
 pub type DeltaStream = BoxStream<'static, Result<StreamDelta, LlmError>>;
 

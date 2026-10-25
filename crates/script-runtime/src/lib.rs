@@ -14,6 +14,7 @@ pub mod compile;
 pub mod engine;
 pub mod frames;
 pub mod host;
+pub mod prelude;
 mod runtime_io;
 pub mod server;
 mod wasi_stub;
@@ -25,6 +26,6 @@ pub mod proto {
 }
 
 pub use compile::{compile, CompileError, CompiledScript};
-pub use engine::{ExecOutcome, Limits, ScriptEngine, Termination};
+pub use engine::{EngineHandle, ExecOutcome, Limits, ScriptEngine, Termination};
 pub use frames::{validate_host_call, FrameError};
 pub use host::{HostCall, HostCallHandler, HostResponse};

@@ -13,6 +13,8 @@
     clippy::print_stderr
 )]
 
+mod common;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -143,17 +145,7 @@ fn unique_tenant() -> String {
 }
 
 fn field(name: &str, ty: FieldType) -> FieldDef {
-    FieldDef {
-        name: name.into(),
-        field_type: ty,
-        required: false,
-        unique: false,
-        indexed: false,
-        options: vec![],
-        ref_table: None,
-        lookup: None,
-        computed: None,
-    }
+    FieldDef::new(name, ty)
 }
 
 /// 経費テーブル相当のスキーマ（title 必須・amount 索引・status 選択・申請者 user 参照）。
@@ -175,6 +167,7 @@ fn expense_schema() -> TableSchema {
         field_policy: vec![],
         aggregate_min_rows: None,
         fsm_ref: None,
+        rag: None,
     }
 }
 
@@ -209,7 +202,10 @@ async fn table_crud_and_typed_record_crud() {
             None,
         )
         .await;
-    assert!(matches!(dup, Err(DataError::Conflict(_))), "{dup:?}");
+    assert!(
+        matches!(dup, Err(DataError::NameTaken)),
+        "同名は 409 name_taken: {dup:?}"
+    );
 
     // 型検証付き CRUD（受け入れ条件 9.2-1）。
     let rec = store
@@ -232,7 +228,15 @@ async fn table_crud_and_typed_record_crud() {
         json!({"title": "x", "applicant": "ghost"}),
     ] {
         let r = store.create_record(&c, table.id, bad.clone(), None).await;
-        assert!(matches!(r, Err(DataError::Invalid(_))), "{bad} -> {r:?}");
+        // 未宣言の列は読めない列と同じ 403 `field_unavailable`（列の存在オラクルを作らない）。
+        if bad.get("nope").is_some() {
+            assert!(
+                matches!(&r, Err(DataError::FieldUnavailable)),
+                "{bad} -> {r:?}"
+            );
+        } else {
+            assert!(matches!(&r, Err(e) if e.is_invalid()), "{bad} -> {r:?}");
+        }
     }
 
     // unique 制約（code）: 同値は 409。
@@ -240,7 +244,7 @@ async fn table_crud_and_typed_record_crud() {
         .create_record(&c, table.id, json!({"title": "重複", "code": "E-1"}), None)
         .await;
     assert!(
-        matches!(dup_code, Err(DataError::Conflict(_))),
+        matches!(dup_code, Err(DataError::UniqueViolation { .. })),
         "{dup_code:?}"
     );
 
@@ -286,23 +290,36 @@ async fn expression_indexes_created_and_used() {
         .await
         .expect("create table");
 
-    // 台帳に載る（amount=btree_numeric, status=btree_text, code=unique_text）。
-    let kinds: Vec<(String, String)> = sqlx::query_as(
-        "SELECT field, kind FROM data_index_registry WHERE tenant_id = $1 AND table_id = $2 ORDER BY field",
+    // 宣言した索引は pivot 索引テーブルの台帳に active で載る（Task 15.3 で旧方式の式インデックスは撤去・
+    // ランタイム DDL ゼロ）。amount=num, status=text, code=text+unique。
+    let states: Vec<(i16, i16, String)> = sqlx::query_as(
+        "SELECT s.field_id, s.index_table, s.state FROM data_index_state s \
+         JOIN data_table t ON t.tenant_int = s.tenant_int AND t.table_int = s.table_int \
+         WHERE t.tenant_id = $1 AND t.id = $2 AND s.field_id >= 16 ORDER BY 1, 2",
     )
     .bind(&tenant)
     .bind(table.id)
     .fetch_all(&pool)
     .await
-    .expect("registry rows");
-    assert_eq!(
-        kinds,
-        vec![
-            ("amount".to_string(), "btree_numeric".to_string()),
-            ("code".to_string(), "unique_text".to_string()),
-            ("status".to_string(), "btree_text".to_string()),
-        ]
-    );
+    .expect("ledger rows");
+    let id = |k: &str| i16::try_from(table.schema.field(k).expect(k).id).unwrap();
+    let mut want = vec![
+        (id("amount"), 2, "active".to_string()),
+        (id("status"), 1, "active".to_string()),
+        (id("code"), 1, "active".to_string()),
+        (id("code"), 4, "active".to_string()),
+    ];
+    want.sort();
+    assert_eq!(states, want);
+    let legacy: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname LIKE $1) \
+             OR to_regclass('data_index_registry') IS NOT NULL",
+    )
+    .bind(format!("dr\\_{}\\_%", table.id.simple()))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!legacy, "旧方式の式インデックスと台帳は撤去済み");
 
     for i in 0..50 {
         store
@@ -331,7 +348,7 @@ async fn expression_indexes_created_and_used() {
                     descending: true,
                 }),
                 limit: 10,
-                offset: 0,
+                cursor: None,
             },
             None,
         )
@@ -359,27 +376,35 @@ async fn expression_indexes_created_and_used() {
             None,
         )
         .await;
-    assert!(matches!(bad, Err(DataError::Invalid(_))), "{bad:?}");
+    assert!(matches!(&bad, Err(e) if e.is_invalid()), "{bad:?}");
 
-    // EXPLAIN で式インデックスが使われる（受け入れ条件 9.2-2・プラン面）。
-    // 小テーブルでは seqscan が選ばれ得るため無効化してプランを確認する。
-    let mut conn = pool.acquire().await.expect("conn");
-    sqlx::query("SET enable_seqscan = off")
-        .execute(&mut *conn)
+    // EXPLAIN で pivot 索引が使われる（受け入れ条件 9.2-2・プラン面）。実行した文を同じバインドで計画し直す。
+    let (_, dbg) = store
+        .run_query_debug(
+            &c,
+            table.id,
+            &data::DataQuery {
+                filter: Some(data::Condition::cmp(
+                    "status",
+                    data::CondOp::Eq,
+                    Some(json!("draft")),
+                )),
+                ..Default::default()
+            },
+            &data::QueryTuning::default(),
+        )
         .await
-        .expect("disable seqscan");
-    let plan: Value = sqlx::query_scalar(&format!(
-        "EXPLAIN (FORMAT JSON) SELECT id FROM data_record \
-         WHERE tenant_id = '{tenant}' AND table_id = '{}' AND (data ->> 'status') = 'draft'",
-        table.id
-    ))
-    .fetch_one(&mut *conn)
-    .await
-    .expect("explain");
-    let plan_text = plan.to_string();
+        .expect("debug query");
+    let drive = dbg
+        .statements
+        .iter()
+        .find(|s| s.label != "probe" && s.label != "fetch")
+        .expect("drive statement");
+    let plan = common::explain_small(&pool, drive).await;
+    let names = common::index_names(&plan);
     assert!(
-        plan_text.contains("Index Scan") || plan_text.contains("Bitmap Index Scan"),
-        "式インデックスが使われること: {plan_text}"
+        names.iter().any(|n| n.starts_with("data_index_text")),
+        "pivot 索引が使われること: {plan}"
     );
 }
 
@@ -403,6 +428,7 @@ async fn record_refs_validated_and_file_ref_denied() {
                     field_policy: vec![],
                     aggregate_min_rows: None,
                     fsm_ref: None,
+                    rag: None,
                 },
             },
             None,
@@ -427,6 +453,7 @@ async fn record_refs_validated_and_file_ref_denied() {
                     field_policy: vec![],
                     aggregate_min_rows: None,
                     fsm_ref: None,
+                    rag: None,
                 },
             },
             None,
@@ -452,7 +479,7 @@ async fn record_refs_validated_and_file_ref_denied() {
             None,
         )
         .await;
-    assert!(matches!(missing, Err(DataError::Invalid(_))), "{missing:?}");
+    assert!(matches!(&missing, Err(e) if e.is_invalid()), "{missing:?}");
 
     // 読めないファイル参照は「見つからない」で拒否（存在オラクルなし）。
     let file_denied = store
@@ -464,7 +491,7 @@ async fn record_refs_validated_and_file_ref_denied() {
         )
         .await;
     assert!(
-        matches!(file_denied, Err(DataError::Invalid(_))),
+        matches!(&file_denied, Err(e) if e.is_invalid()),
         "{file_denied:?}"
     );
 }
@@ -500,7 +527,10 @@ async fn revisions_track_field_diffs_and_optimistic_lock() {
     let stale = store
         .update_record(&c, table.id, rec.id, json!({"amount": 300}), 1, None)
         .await;
-    assert!(matches!(stale, Err(DataError::Conflict(_))), "{stale:?}");
+    assert!(
+        matches!(stale, Err(DataError::RevConflict { current: 2 })),
+        "{stale:?}"
+    );
 
     // フィールド除去（null）と追加。
     store
@@ -587,6 +617,7 @@ async fn schema_update_additive_and_index_reapply() {
                     field_policy: vec![],
                     aggregate_min_rows: None,
                     fsm_ref: None,
+                    rag: None,
                 },
             },
             None,
@@ -610,6 +641,7 @@ async fn schema_update_additive_and_index_reapply() {
                 field_policy: vec![],
                 aggregate_min_rows: None,
                 fsm_ref: None,
+                rag: None,
             },
             Some(1),
             None,
@@ -618,14 +650,19 @@ async fn schema_update_additive_and_index_reapply() {
         .expect("schema update");
     assert_eq!(updated.schema_version, 2);
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM data_index_registry WHERE tenant_id = $1 AND table_id = $2",
+        "SELECT count(*) FROM data_index_state s \
+         JOIN data_table t ON t.tenant_int = s.tenant_int AND t.table_int = s.table_int \
+         WHERE t.tenant_id = $1 AND t.id = $2 AND s.field_id >= 16 AND s.state = 'active'",
     )
     .bind(&tenant)
     .bind(table.id)
     .fetch_one(&pool)
     .await
-    .expect("registry count");
-    assert_eq!(count, 2, "改訂で式インデックスが差分適用される");
+    .expect("ledger count");
+    assert_eq!(
+        count, 2,
+        "改訂で索引台帳が差分適用される（空テーブルは即 active）"
+    );
 
     // 型変更・削除は拒否。schema_version 不一致は 409。
     let breaking = store
@@ -639,13 +676,14 @@ async fn schema_update_additive_and_index_reapply() {
                 field_policy: vec![],
                 aggregate_min_rows: None,
                 fsm_ref: None,
+                rag: None,
             },
             None,
             None,
         )
         .await;
     assert!(
-        matches!(breaking, Err(DataError::Invalid(_))),
+        matches!(&breaking, Err(e) if e.is_invalid()),
         "{breaking:?}"
     );
     let stale = store
@@ -659,6 +697,7 @@ async fn schema_update_additive_and_index_reapply() {
                 field_policy: vec![],
                 aggregate_min_rows: None,
                 fsm_ref: None,
+                rag: None,
             },
             Some(1),
             None,
@@ -730,6 +769,7 @@ async fn date_normalized_and_ref_table_immutable() {
                     field_policy: vec![],
                     aggregate_min_rows: None,
                     fsm_ref: None,
+                    rag: None,
                 },
             },
             None,
@@ -756,6 +796,7 @@ async fn date_normalized_and_ref_table_immutable() {
                     field_policy: vec![],
                     aggregate_min_rows: None,
                     fsm_ref: None,
+                    rag: None,
                 },
             },
             None,
@@ -774,6 +815,7 @@ async fn date_normalized_and_ref_table_immutable() {
                     field_policy: vec![],
                     aggregate_min_rows: None,
                     fsm_ref: None,
+                    rag: None,
                 },
             },
             None,
@@ -794,6 +836,7 @@ async fn date_normalized_and_ref_table_immutable() {
                     field_policy: vec![],
                     aggregate_min_rows: None,
                     fsm_ref: None,
+                    rag: None,
                 },
             },
             None,
@@ -813,12 +856,13 @@ async fn date_normalized_and_ref_table_immutable() {
                 field_policy: vec![],
                 aggregate_min_rows: None,
                 fsm_ref: None,
+                rag: None,
             },
             None,
             None,
         )
         .await;
-    assert!(matches!(res, Err(DataError::Invalid(_))), "{res:?}");
+    assert!(matches!(&res, Err(e) if e.is_invalid()), "{res:?}");
 }
 
 /// 実 OpenFGA でのテーブル ReBAC（第1層）検証: 未共有ユーザーは CRUD も履歴も拒否。
@@ -863,26 +907,27 @@ async fn table_rebac_with_live_openfga() {
         .await
         .expect("record");
 
-    // 未共有の bob は get/list/create/revisions すべて拒否（fail-closed）。
+    // 未共有の bob は get/list/create/revisions すべて拒否（fail-closed）。テーブルが見えない主体には
+    // 存在しない・削除済みと同じ 404（data-platform §16.1）。
     assert!(matches!(
         store.get_table(&bob, table.id, None).await,
-        Err(DataError::Forbidden)
+        Err(DataError::NotFound)
     ));
     assert!(matches!(
         store.get_record(&bob, table.id, rec.id, None).await,
-        Err(DataError::Forbidden)
+        Err(DataError::NotFound)
     ));
     assert!(matches!(
         store
             .create_record(&bob, table.id, json!({"title": "x"}), None)
             .await,
-        Err(DataError::Forbidden)
+        Err(DataError::NotFound)
     ));
     assert!(matches!(
         store
             .list_revisions(&bob, table.id, rec.id, None, 10, None)
             .await,
-        Err(DataError::Forbidden)
+        Err(DataError::NotFound)
     ));
 
     // viewer 共有（tuple 直書き＝共有 API は Task 9.3 の個別共有と合流予定）で読める。

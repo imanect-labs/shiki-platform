@@ -44,11 +44,12 @@ impl SearchService {
         mode: SearchMode,
         base: Option<&SearchScope>,
         narrow: &SearchScope,
-        trace_id: Option<&str>,
+        trail: impl Into<crate::AuditTrail<'_>>,
     ) -> Result<SearchOutput, RagError> {
+        let trail = trail.into();
         let base = base.filter(|b| !b.is_empty());
         if narrow.is_empty() {
-            return self.search(ctx, query, top_k, mode, base, trace_id).await;
+            return self.search(ctx, query, top_k, mode, base, trail).await;
         }
         let scope = self.narrow_scope(ctx, base, narrow).await?;
         if scope.is_empty() {
@@ -58,7 +59,7 @@ impl SearchService {
                 &[],
                 &std::collections::HashMap::new(),
                 Some(&scope),
-                trace_id,
+                trail,
             )
             .await?;
             return Ok(SearchOutput {
@@ -68,7 +69,7 @@ impl SearchService {
         }
         // 知識スコープと絞り込みの両方を検索時点の木で再検証する（両方の内側 = 交差の内側）。
         let bounds: Vec<&SearchScope> = base.into_iter().chain(std::iter::once(narrow)).collect();
-        self.search_bounded(ctx, query, top_k, mode, Some(&scope), &bounds, trace_id)
+        self.search_bounded(ctx, query, top_k, mode, Some(&scope), &bounds, trail)
             .await
     }
 

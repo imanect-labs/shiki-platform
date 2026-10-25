@@ -30,7 +30,7 @@ pub enum NodeCategory {
     Developer,
     /// フロー間連携。
     Workflow,
-    /// 業務データ（予約）。
+    /// 業務データ（テーブル・Task 15.7）。
     Data,
     /// 通知・人間参加（予約）。
     Notify,
@@ -220,6 +220,12 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
         ),
         NodeType::DataRecordUpdate => (C::Data, "データを更新", "業務データのレコードを書き換える"),
         NodeType::DataTransition => (C::Data, "状態を進める", "申請・承認などの状態を次へ進める"),
+        NodeType::DataRecordDelete => (C::Data, "データを削除", "業務データのレコードを削除する"),
+        NodeType::DataBulkUpsert => (
+            C::Data,
+            "データをまとめて登録",
+            "業務データにレコードをまとめて追加・更新する",
+        ),
         NodeType::NotifySend => (C::Notify, "通知を送る", "アプリ内の通知を相手に届ける"),
         NodeType::SkillInvoke => (
             C::Skill,
@@ -349,6 +355,8 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         | NodeType::DataRecordCreate
         | NodeType::DataRecordUpdate
         | NodeType::DataTransition
+        | NodeType::DataRecordDelete
+        | NodeType::DataBulkUpsert
         | NodeType::NotifySend
         | NodeType::WorkflowStart
         | NodeType::MemorySet
@@ -382,6 +390,7 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         | NodeType::DataQuery
         | NodeType::DataRecordCreate
         | NodeType::DataRecordUpdate
+        | NodeType::DataRecordDelete
         | NodeType::DataTransition
         | NodeType::HttpRequest => (Some(30), Some(120)),
         NodeType::RagSearch => (Some(60), Some(120)),
@@ -389,7 +398,8 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         NodeType::WorkflowStart => (Some(10), Some(30)),
         NodeType::ScriptRun => (Some(30), Some(360)),
         NodeType::SkillInvoke => (Some(60), Some(360)),
-        NodeType::LlmInvoke => (Some(120), Some(600)),
+        // 一括 upsert は取込ジョブを同期で最後まで進める（最大 5,000 行・1 チャンク 500 行）。
+        NodeType::LlmInvoke | NodeType::DataBulkUpsert => (Some(120), Some(600)),
         NodeType::AgentInvoke => (Some(600), Some(3600)),
         _ => (None, None),
     };

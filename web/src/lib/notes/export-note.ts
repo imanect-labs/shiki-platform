@@ -57,6 +57,8 @@ export function buildDocxMarkdown(editor: Editor): string {
   doc.forEach((node) => nodes.push(node));
 
   for (const node of nodes) {
+    // AI の削除の提案が付いた埋め込みは、md と同じく「承認したら」の形で出さない（#886）。
+    if (node.attrs.aiDeletion === true) continue;
     if (node.type.name !== "shikiEmbed") {
       parts.push(serializeFragment(Fragment.from(node)).trimEnd());
       continue;

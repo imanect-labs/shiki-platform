@@ -17,6 +17,7 @@
 //! 実行時の実効権限は常に 実行主体 ReBAC ∩ スキル宣言（認可は artifact チョークポイント）。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, AuthzClient, Relation, Subject};
 use chrono::{DateTime, Utc};
@@ -117,7 +118,7 @@ impl SkillInstallService {
             return Err(AppPlatformError::Invalid("skill ではありません".into()));
         }
         if meta.owner != ctx.principal.id {
-            self.audit_deny(ctx, skill_id, "skill.publish", trace_id)
+            self.audit_deny(ctx, skill_id, AuditAction::SkillPublish, trace_id)
                 .await;
             return Err(AppPlatformError::Forbidden);
         }
@@ -154,7 +155,7 @@ impl SkillInstallService {
                 .iter()
                 .any(|k| verify_digest_signature(&signing, sig, k).is_ok());
             if !ok {
-                self.audit_deny(ctx, skill_id, "skill.publish.signature", trace_id)
+                self.audit_deny(ctx, skill_id, AuditAction::SkillPublishSignature, trace_id)
                     .await;
                 return Err(AppPlatformError::Forbidden);
             }
@@ -196,7 +197,7 @@ impl SkillInstallService {
         }
         self.record(
             ctx,
-            "skill.publish",
+            AuditAction::SkillPublish,
             &skill_id.to_string(),
             trace_id,
             json!({ "name": meta.name, "version": label, "trust_tier": trust_tier }),
@@ -249,8 +250,13 @@ impl SkillInstallService {
                     .iter()
                     .any(|k| verify_digest_signature(&signing, &sig, k).is_ok());
                 if !ok {
-                    self.audit_deny(ctx, entry.artifact_id, "skill.install.signature", trace_id)
-                        .await;
+                    self.audit_deny(
+                        ctx,
+                        entry.artifact_id,
+                        AuditAction::SkillInstallSignature,
+                        trace_id,
+                    )
+                    .await;
                     return Err(AppPlatformError::Forbidden);
                 }
                 // 署名検証済み: 本人へ viewer を付与（個別共有なしで読める・冪等）。
@@ -304,7 +310,7 @@ impl SkillInstallService {
 
         self.record(
             ctx,
-            "skill.install",
+            AuditAction::SkillInstall,
             &entry.artifact_id.to_string(),
             trace_id,
             json!({ "name": entry.name, "version": entry.version, "trust_tier": entry.trust_tier }),
@@ -335,7 +341,7 @@ impl SkillInstallService {
         }
         self.record(
             ctx,
-            "skill.uninstall",
+            AuditAction::SkillUninstall,
             name,
             trace_id,
             json!({ "name": name }),
@@ -395,7 +401,7 @@ impl SkillInstallService {
     pub(crate) async fn record(
         &self,
         ctx: &AuthContext,
-        action: &'static str,
+        action: AuditAction,
         object_id: &str,
         trace_id: Option<&str>,
         metadata: serde_json::Value,
@@ -409,7 +415,7 @@ impl SkillInstallService {
             metadata,
         };
         if let Err(e) = self.audit.record(ctx, entry).await {
-            tracing::warn!(error = %e, action, "skill レジストリの監査記録に失敗");
+            tracing::warn!(error = %e, action = %action, "skill レジストリの監査記録に失敗");
         }
     }
 
@@ -417,7 +423,7 @@ impl SkillInstallService {
         &self,
         ctx: &AuthContext,
         skill_id: Uuid,
-        action: &'static str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) {
         let entry = AuditEntry {
@@ -429,7 +435,7 @@ impl SkillInstallService {
             metadata: json!({}),
         };
         if let Err(e) = self.audit.record(ctx, entry).await {
-            tracing::warn!(error = %e, action, "skill レジストリの監査記録に失敗");
+            tracing::warn!(error = %e, action = %action, "skill レジストリの監査記録に失敗");
         }
     }
 }

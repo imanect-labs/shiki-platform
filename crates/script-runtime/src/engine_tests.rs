@@ -164,3 +164,35 @@ fn terminated_maps_every_variant() {
         Some(("kaboom".to_string(), "internal".to_string(), false))
     );
 }
+
+/// プロセスで共有するエンジンは 1 回だけ作る（起動の短縮・ゲストのコンパイルは数秒〜十数秒）。
+#[test]
+fn shared_engine_is_compiled_once() {
+    let started = std::time::Instant::now();
+    let a = ScriptEngine::shared().expect("engine");
+    let first = started.elapsed();
+    let started = std::time::Instant::now();
+    let b = ScriptEngine::shared().expect("engine");
+    let second = started.elapsed();
+    assert!(std::sync::Arc::ptr_eq(&a, &b));
+    assert!(second < first, "初回 {first:?}・2 回目 {second:?}");
+}
+
+/// 共有エンジンへのハンドルは作るだけではコンパイルを待たず、`get` で同じエンジンを返す（起動の経路で
+/// コンパイルを待たない・3 回目の検証: HTTP リスナがコンパイルを待って開かなかった）。
+#[tokio::test]
+async fn engine_handle_defers_the_compile_to_first_use() {
+    let started = std::time::Instant::now();
+    let h = super::EngineHandle::shared();
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(100),
+        "ハンドルを作るだけでコンパイルを待たない"
+    );
+    let a = h.get().await.expect("engine");
+    assert!(h.is_ready());
+    let b = ScriptEngine::shared().expect("engine");
+    assert!(std::sync::Arc::ptr_eq(&a, &b), "共有エンジンと同じ");
+    let ready = super::EngineHandle::from(std::sync::Arc::clone(&a));
+    assert!(ready.is_ready());
+    assert!(std::sync::Arc::ptr_eq(&ready.get().await.unwrap(), &a));
+}

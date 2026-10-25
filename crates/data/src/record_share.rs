@@ -8,13 +8,14 @@
 use authz::{AuthContext, Consistency, Relation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Decision};
 use storage::ShareTarget;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::store::DataStore;
-use crate::DataError;
+use crate::{map_db, DataError};
 
 /// 個別共有の役割（共有語彙は viewer/editor のみ・owner の横展開は防ぐ）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -44,8 +45,19 @@ impl DataStore {
         role: RecordShareRole,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
-        self.require_record_share_right(ctx, table_id, record_id, "data.record.share", trace_id)
-            .await?;
+        self.require_record_share_right(
+            ctx,
+            table_id,
+            record_id,
+            AuditAction::DataRecordShare,
+            trace_id,
+        )
+        .await?;
+        self.validate_share_target(ctx, target).await?;
+        // タプルを書く**前に**「個別共有あり」を立て、このテーブルを参照先にする材料化列を降格する
+        // （共有の有無で行集合が変わる＝材料化の前提の第 4 階層が崩れる・PIT-71）。タプルの書込に
+        // 失敗しても旗は立ったまま（安全側）。
+        self.mark_record_shared(ctx, table_id).await?;
         let obj = ctx.ns().data_record(&record_id.to_string());
         let subject = target.subject(&ctx.ns());
         let wrote = self
@@ -58,7 +70,7 @@ impl DataStore {
         if let Err(e) = self
             .record_share_audit(
                 ctx,
-                "data.record.share",
+                AuditAction::DataRecordShare,
                 record_id,
                 trace_id,
                 json!({ "table_id": table_id, "target": target, "role": role }),
@@ -76,7 +88,64 @@ impl DataStore {
             }
             return Err(e);
         }
+        self.after_share_change(ctx, table_id).await;
         Ok(())
+    }
+
+    /// 共有先の検査: id の形（subject を壊す文字の拒否）と、ユーザー・ロール（部署）とも**同一テナントの
+    /// ディレクトリに居ること**（存在しない・他テナントの id への共有タプルを作らない・存在しないロールへの
+    /// 共有を「成功」として監査に残さない・検証 2-B-P3-3）。解除は検査しない（残った不正なタプルを消せる
+    /// ように）。
+    async fn validate_share_target(
+        &self,
+        ctx: &AuthContext,
+        target: &ShareTarget,
+    ) -> Result<(), DataError> {
+        let id = match target {
+            ShareTarget::User { id } | ShareTarget::Role { id } => id,
+        };
+        if id != id.trim() {
+            return Err(DataError::Invalid(
+                "共有先 id の前後に空白は使えません".into(),
+            ));
+        }
+        authz::validate_local_id(id)
+            .map_err(|v| DataError::Invalid(format!("共有先 id が不正です: {v}")))?;
+        let (exists, what) = match target {
+            ShareTarget::User { id } => (
+                self.resolver
+                    .user_exists(ctx, id)
+                    .await
+                    .map_err(DataError::Internal)?,
+                "共有先のユーザーが見つかりません",
+            ),
+            ShareTarget::Role { id } => (
+                self.resolver
+                    .role_exists(ctx, id)
+                    .await
+                    .map_err(DataError::Internal)?,
+                "共有先の部署（ロール）が見つかりません",
+            ),
+        };
+        if !exists {
+            return Err(DataError::input_detail(
+                crate::InvalidCode::InvalidInput,
+                None,
+                what,
+            ));
+        }
+        Ok(())
+    }
+
+    /// 共有・解除の後: SSE の購読へ TTL を待たずに知らせる（世代を進める・PIT-70 ③）。
+    async fn after_share_change(&self, ctx: &AuthContext, table_id: Uuid) {
+        if let Err(e) = self.notify_authz_changed(ctx, Some(table_id)).await {
+            tracing::warn!(error = %e, %table_id, "SSE への共有変更の通知に失敗（購読は TTL で引き直す）");
+        }
+        // この表を参照する表の購読にも取り直させる（共有先から見たルックアップ・リンク値が変わる）。
+        if let Err(e) = self.refresh_referrers(&ctx.tenant_id, table_id).await {
+            tracing::warn!(error = %e, %table_id, "共有変更後の参照元の取り直しの発行に失敗");
+        }
     }
 
     /// 個別共有を解除する（冪等・即時反映）。
@@ -89,8 +158,14 @@ impl DataStore {
         role: RecordShareRole,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
-        self.require_record_share_right(ctx, table_id, record_id, "data.record.unshare", trace_id)
-            .await?;
+        self.require_record_share_right(
+            ctx,
+            table_id,
+            record_id,
+            AuditAction::DataRecordUnshare,
+            trace_id,
+        )
+        .await?;
         let obj = ctx.ns().data_record(&record_id.to_string());
         let subject = target.subject(&ctx.ns());
         let removed = self
@@ -102,7 +177,7 @@ impl DataStore {
         if let Err(e) = self
             .record_share_audit(
                 ctx,
-                "data.record.unshare",
+                AuditAction::DataRecordUnshare,
                 record_id,
                 trace_id,
                 json!({ "table_id": table_id, "target": target, "role": role }),
@@ -120,7 +195,41 @@ impl DataStore {
             }
             return Err(e);
         }
+        self.after_share_change(ctx, table_id).await;
         Ok(())
+    }
+
+    /// テーブルに「レコード個別共有あり」を立て、依存する材料化列を同一 Tx で降格する。
+    async fn mark_record_shared(&self, ctx: &AuthContext, table_id: Uuid) -> Result<(), DataError> {
+        let mut table = self.fetch_live(ctx, table_id).await?;
+        let mut tx = self
+            .pools
+            .for_tenant(&ctx.tenant_id)
+            .begin()
+            .await
+            .map_err(map_db)?;
+        sqlx::query(
+            "UPDATE data_table SET has_record_shares = true \
+             WHERE tenant_id = $1 AND id = $2 AND NOT has_record_shares",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(table_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db)?;
+        table.has_record_shares = true;
+        crate::derived::materialize::demote_dependents(
+            &mut tx,
+            &ctx.tenant_id,
+            table.keys,
+            Some((
+                table.id,
+                &crate::derived::materialize::catalog_entry(&table),
+            )),
+            "参照先にレコード個別共有が作られた",
+        )
+        .await?;
+        tx.commit().await.map_err(map_db)
     }
 
     /// 共有権限の検査: テーブル owner または当該レコードの作成者（本人に可視な行のみ）。
@@ -129,15 +238,16 @@ impl DataStore {
         ctx: &AuthContext,
         table_id: Uuid,
         record_id: Uuid,
-        action: &str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
         // 前段: テーブル viewer（第1層）＋行可視性（第2層）。不可視は 404（オラクルなし）。
-        self.require(ctx, table_id, Relation::Viewer, action, trace_id)
+        let az = self.authz_memo();
+        self.require_in(&az, ctx, table_id, Relation::Viewer, action, trace_id)
             .await?;
         let table = self.fetch_live(ctx, table_id).await?;
         let row = self
-            .select_visible_by_id(ctx, &table, record_id)
+            .select_visible_by_id(ctx, &az, &table, record_id)
             .await?
             .ok_or(DataError::NotFound)?;
         if row.owner == ctx.principal.id {
@@ -176,7 +286,7 @@ impl DataStore {
     async fn record_share_audit(
         &self,
         ctx: &AuthContext,
-        action: &str,
+        action: AuditAction,
         record_id: Uuid,
         trace_id: Option<&str>,
         metadata: serde_json::Value,

@@ -190,18 +190,22 @@ pub async fn resolve_mini_app(
 }
 
 /// ミニアプリの画面のボタンを実行する（画面から読み直し・値の検証・冪等キー・実行者権限・監査つき）。
+///
+/// 画面の表（```data_grid）も同じ入口で描く: `action_id` は `data_grid:{別名}`、`params` は
+/// `DataViewPage`（`cursor`・`limit` だけ）、冪等キーは不要。結果は `result.kind = "data_view"` と
+/// `result.result`（`DataViewRun`）で、行・列は**閲覧者本人の権限**で毎回評価したもの（Task 15.7）。
 #[utoipa::path(
     post,
     path = "/mini-apps/{id}/ui-actions",
     params(("id" = Uuid, Path, description = "ミニアプリ ID")),
     request_body = MiniAppActionRequest,
     responses(
-        (status = 200, description = "実行した（同じ冪等キーの再送は前の結果）", body = UiActionResponse),
+        (status = 200, description = "実行した（同じ冪等キーの再送は前の結果）・表は DataViewRun", body = UiActionResponse),
         (status = 400, description = "値の検証エラー・冪等キーが無い"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "ボタンが見つからない"),
-        (status = 409, description = "同じ送信が起動の途中"),
+        (status = 409, description = "同じ送信が起動の途中・表の列の索引を準備中（code=index_preparing・field・progress）"),
         (status = 503, description = "実行先が無効"),
     ),
     security(("session" = [])),

@@ -27,6 +27,8 @@ export type EditorState = {
   undoStack: WorkflowIr[];
   redoStack: WorkflowIr[];
   serverErrors: ValidationError[];
+  /// 保存を止めない警告（`ir.condition_semantics_changed` など・保存/検証の応答の `warnings`）。
+  serverWarnings: ValidationError[];
 };
 
 export type EditorAction =
@@ -47,7 +49,8 @@ export type EditorAction =
   | { type: "set_triggers"; triggers: Trigger[] }
   | { type: "select"; selection: Selection }
   | { type: "set_errors"; errors: ValidationError[] }
-  | { type: "saved"; version: number; savedIr: WorkflowIr; ir?: WorkflowIr }
+  | { type: "set_warnings"; warnings: ValidationError[] }
+  | { type: "saved"; version: number; savedIr: WorkflowIr; ir?: WorkflowIr; declaredScopes?: string[] }
   | { type: "layout_saved"; layout: EditorLayout }
   | { type: "undo" }
   | { type: "redo" };
@@ -373,16 +376,25 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       return { ...state, selection: action.selection };
     case "set_errors":
       return { ...state, serverErrors: action.errors };
-    case "saved":
+    case "set_warnings":
+      return { ...state, serverWarnings: action.warnings };
+    case "saved": {
+      // 保存中に続けた編集が無ければ、サーバが補完した宣言スコープ（保存した版の値）を手元の IR に入れる
+      // （履歴には積まない・保存済みの内容と同じなので dirty にしない）。
+      const completed =
+        !action.ir && action.declaredScopes && state.ir === action.savedIr
+          ? ({ ...state.ir, declared_scopes: action.declaredScopes } as WorkflowIr)
+          : null;
       return {
         ...state,
         savedVersion: action.version,
         // 保存中に続けた編集を「保存済み」と偽らない: PUT へ送ったスナップショットと
         // 現在の IR が同一（reducer は毎編集で新オブジェクトを作る＝参照比較で足りる）の
         // ときだけ dirty を下ろす。
-        dirty: action.ir ? false : state.ir !== action.savedIr,
-        ...(action.ir ? { ir: action.ir } : {}),
+        dirty: action.ir || completed ? false : state.ir !== action.savedIr,
+        ...(action.ir ? { ir: action.ir } : completed ? { ir: completed } : {}),
       };
+    }
     case "layout_saved":
       // 古い PUT の完了が新しいドラッグの未保存分を握り潰さないよう、送った layout と
       // 現在の layout が同一参照のときだけクリーンにする。
@@ -429,5 +441,6 @@ export function useEditorState(initial: {
     undoStack: [],
     redoStack: [],
     serverErrors: [],
+    serverWarnings: [],
   } satisfies EditorState);
 }

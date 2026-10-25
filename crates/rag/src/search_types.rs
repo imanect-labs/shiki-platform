@@ -111,6 +111,35 @@ pub struct SearchResult {
     pub boxes: Vec<crate::anchor::PageBox>,
 }
 
+/// 構造化データのレコードを出所とする引用 1 件（Task 15.8 スパイク・docs/data/rag-integration.md）。
+///
+/// 本文は検索時に post-filter が**現在の値から作り直した**投影（索引のチャンク本文ではない）。
+/// 投影列はフィールドマスク対象にできない（data のスキーマ検証）ので、閲覧者ごとの再マスクは要らない。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RecordSearchResult {
+    pub chunk_id: Uuid,
+    pub table_id: Uuid,
+    pub record_id: Uuid,
+    /// 投影を作ったレコードの版。
+    pub rev: i64,
+    /// タイトル列の値。
+    pub title: String,
+    /// 本文列の「表示名: 値」の連結。
+    pub content: String,
+    pub score: f32,
+}
+
+/// 多型の検索結果（file 前提を崩す・Task 15.8）。`kind` で出所を判別する。
+///
+/// 既存の [`SearchResult`] は `file` の中身としてそのまま使う（ファイル検索の応答形は変えない）。
+/// API への公開（`SearchResponse.results` の置き換え）はポストアルファの別タスク。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SearchHit {
+    File(SearchResult),
+    Record(RecordSearchResult),
+}
+
 /// 版のブロック列の 1 ブロック（出典パネルの描画用・#508）。
 #[derive(Debug, Clone, Serialize, ToSchema, sqlx::FromRow)]
 pub struct DocBlock {

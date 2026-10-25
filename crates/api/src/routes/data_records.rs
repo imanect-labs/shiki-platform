@@ -49,7 +49,8 @@ pub struct ListRecordsQuery {
     /// 降順ソート（既定 false）。
     pub sort_desc: Option<bool>,
     pub limit: Option<i64>,
-    pub offset: Option<i64>,
+    /// 前ページの `next_cursor`（OFFSET は廃止・keyset ページング）。
+    pub cursor: Option<String>,
 }
 
 /// レコード一覧レスポンス。
@@ -59,6 +60,13 @@ pub struct RecordListResponse {
     /// 個別共有集合が上限（PIT-18）で切り詰められ、共有経由の一部行が
     /// 表示されていない可能性がある（fail-closed・可視減方向）。
     pub shares_truncated: bool,
+    /// 次ページのカーソル（無ければ終端）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// ソートの精度（切り詰めが起こり得る列で並べたら `prefix`）。
+    pub sort_precision: data::SortPrecision,
+    /// この複数ソートの組み合わせは複合索引の準備中で、深いページほど遅くなる（data-platform §5.3）。
+    pub sort_degraded: bool,
 }
 
 /// レコード個別共有リクエスト（共有語彙は viewer/editor のみ・Task 9.3）。
@@ -71,7 +79,10 @@ pub struct ShareRecordRequest {
 /// 件数レスポンス（行述語適用済み・Task 9.3）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RecordCountResponse {
+    /// 件数（`at_least` なら上限値＝少なくともこの件数）。
     pub count: i64,
+    /// 上限に達した（`count` 件以上ある）。
+    pub at_least: bool,
 }
 
 /// 削除クエリ（楽観ロック必須）。
@@ -101,11 +112,11 @@ pub struct RevisionListResponse {
     request_body = CreateRecordRequest,
     responses(
         (status = 201, description = "作成した", body = DataRecord),
-        (status = 400, description = "検証エラー（型・必須・選択肢・参照整合）"),
+        (status = 400, description = "検証エラー（型・必須・選択肢・参照整合）", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限がない"),
+        (status = 403, description = "権限がない（本文なし）・存在しない列か読めない列を書いた（code=field_unavailable）", body = crate::error_body::ForbiddenBody),
         (status = 404, description = "テーブルが存在しない"),
-        (status = 409, description = "unique 制約違反"),
+        (status = 409, description = "unique 制約違反（code=unique_violation）", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -130,7 +141,7 @@ pub async fn create_record(
     params(("id" = Uuid, Path, description = "テーブル ID"), ListRecordsQuery),
     responses(
         (status = 200, description = "一覧", body = RecordListResponse),
-        (status = 400, description = "フィルタ/ソート指定が不正"),
+        (status = 400, description = "フィルタ/ソート指定が不正", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "テーブルが存在しない"),
@@ -154,13 +165,13 @@ pub async fn list_records(
             value: serde_json::json!(n),
         }),
         (Some(_), Some(_), Some(_)) => {
-            return Err(ApiError::BadRequest(
-                "filter_value と filter_number は同時に指定できません".into(),
+            return Err(ApiError::invalid_input(
+                "filter_value と filter_number は同時に指定できません",
             ))
         }
         (Some(_), None, None) => {
-            return Err(ApiError::BadRequest(
-                "filter_field には filter_value か filter_number が必要です".into(),
+            return Err(ApiError::invalid_input(
+                "filter_field には filter_value か filter_number が必要です",
             ))
         }
         (None, _, _) => None,
@@ -178,7 +189,7 @@ pub async fn list_records(
                 filter,
                 sort,
                 limit: q.limit.unwrap_or(50),
-                offset: q.offset.unwrap_or(0),
+                cursor: q.cursor.clone(),
             },
             trace.as_deref(),
         )
@@ -186,6 +197,9 @@ pub async fn list_records(
     Ok(Json(RecordListResponse {
         items: page.items,
         shares_truncated: page.shares_truncated,
+        next_cursor: page.next_cursor,
+        sort_precision: page.sort_precision,
+        sort_degraded: page.sort_degraded,
     }))
 }
 
@@ -230,11 +244,11 @@ pub async fn get_record(
     request_body = UpdateRecordRequest,
     responses(
         (status = 200, description = "更新後のレコード", body = DataRecord),
-        (status = 400, description = "検証エラー"),
+        (status = 400, description = "検証エラー", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限がない"),
+        (status = 403, description = "権限がない（本文なし）・存在しない列か読めない列を書いた（code=field_unavailable）", body = crate::error_body::ForbiddenBody),
         (status = 404, description = "存在しない"),
-        (status = 409, description = "rev 不一致（同時更新）または unique 制約違反"),
+        (status = 409, description = "rev 不一致（同時更新・code=rev_conflict・current_rev）または unique 制約違反（code=unique_violation）", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -273,7 +287,7 @@ pub async fn update_record(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
-        (status = 409, description = "rev 不一致（同時更新）"),
+        (status = 409, description = "rev 不一致（同時更新・code=rev_conflict・current_rev）", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -341,7 +355,7 @@ pub async fn list_revisions(
     ),
     responses(
         (status = 200, description = "件数", body = RecordCountResponse),
-        (status = 400, description = "フィルタ指定が不正"),
+        (status = 400, description = "フィルタ指定が不正", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "テーブルが存在しない"),
@@ -365,17 +379,20 @@ pub async fn count_records(
             value: serde_json::json!(n),
         }),
         (Some(_), _, _) => {
-            return Err(ApiError::BadRequest(
-                "filter_field には filter_value か filter_number のどちらか一方が必要です".into(),
+            return Err(ApiError::invalid_input(
+                "filter_field には filter_value か filter_number のどちらか一方が必要です",
             ))
         }
         (None, _, _) => None,
     };
     let count = state
         .data
-        .count_records(&ctx, id, filter.as_ref(), trace.as_deref())
+        .count_records_capped(&ctx, id, filter.as_ref(), trace.as_deref())
         .await?;
-    Ok(Json(RecordCountResponse { count }))
+    Ok(Json(RecordCountResponse {
+        count: count.value() as i64,
+        at_least: matches!(count, data::CountResult::AtLeast(_)),
+    }))
 }
 
 /// レコードを個別共有する（テーブル owner またはレコード作成者・冪等）。
@@ -389,6 +406,7 @@ pub async fn count_records(
     request_body = ShareRecordRequest,
     responses(
         (status = 204, description = "共有を付与した"),
+        (status = 400, description = "共有相手・ロールの指定が不正・本文（JSON）を読めない", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない（owner/作成者でない）"),
         (status = 404, description = "存在しない（不可視を含む）"),

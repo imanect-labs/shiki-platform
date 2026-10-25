@@ -4,6 +4,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, Relation};
 use serde_json::json;
@@ -28,7 +29,13 @@ impl ChatStore {
         trace_id: Option<&str>,
     ) -> Result<(), ChatError> {
         let obj = self
-            .require_thread(ctx, thread_id, Relation::Owner, "thread.share", trace_id)
+            .require_thread(
+                ctx,
+                thread_id,
+                Relation::Owner,
+                AuditAction::ThreadShare,
+                trace_id,
+            )
             .await?;
         let subject = target.subject(&ctx.ns());
         let granted = self
@@ -44,7 +51,14 @@ impl ChatStore {
             false
         };
         if let Err(e) = self
-            .record_share_audit(ctx, thread_id, "thread.share", target, role, trace_id)
+            .record_share_audit(
+                ctx,
+                thread_id,
+                AuditAction::ThreadShare,
+                target,
+                role,
+                trace_id,
+            )
             .await
         {
             if granted {
@@ -103,7 +117,13 @@ impl ChatStore {
         trace_id: Option<&str>,
     ) -> Result<(), ChatError> {
         let obj = self
-            .require_thread(ctx, thread_id, Relation::Owner, "thread.unshare", trace_id)
+            .require_thread(
+                ctx,
+                thread_id,
+                Relation::Owner,
+                AuditAction::ThreadUnshare,
+                trace_id,
+            )
             .await?;
         let subject = target.subject(&ctx.ns());
         let revoked = self
@@ -119,7 +139,14 @@ impl ChatStore {
             false
         };
         if let Err(e) = self
-            .record_share_audit(ctx, thread_id, "thread.unshare", target, role, trace_id)
+            .record_share_audit(
+                ctx,
+                thread_id,
+                AuditAction::ThreadUnshare,
+                target,
+                role,
+                trace_id,
+            )
             .await
         {
             if revoked {
@@ -189,7 +216,7 @@ impl ChatStore {
                 ctx,
                 thread_id,
                 Relation::Owner,
-                "thread.shares.list",
+                AuditAction::ThreadSharesList,
                 trace_id,
             )
             .await?;
@@ -212,11 +239,11 @@ impl ChatStore {
         Ok(out)
     }
 
-    async fn record_share_audit(
+    pub(super) async fn record_share_audit(
         &self,
         ctx: &AuthContext,
         thread_id: Uuid,
-        action: &str,
+        action: AuditAction,
         target: &ShareTarget,
         role: ThreadRole,
         trace_id: Option<&str>,

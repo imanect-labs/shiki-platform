@@ -25,6 +25,8 @@ export interface GwTable {
 export interface GwRecordList<T = Record<string, unknown>> {
   items: { id: string; table_id: string; data: T; rev: number; owner: string }[];
   shares_truncated: boolean;
+  /** 次ページのカーソル（無ければ終端）。 */
+  next_cursor?: string;
 }
 
 export interface GwRecord<T = Record<string, unknown>> {
@@ -78,11 +80,12 @@ export class ShikiGateway {
   }
   listRecords<T = Record<string, unknown>>(
     tableId: string,
-    opts?: { limit?: number; offset?: number },
+    opts?: { limit?: number; cursor?: string },
   ): Promise<GwRecordList<T>> {
     const q = new URLSearchParams();
     if (opts?.limit !== undefined) q.set("limit", String(opts.limit));
-    if (opts?.offset !== undefined) q.set("offset", String(opts.offset));
+    // keyset ページング（前ページの next_cursor を渡す・OFFSET は廃止）。
+    if (opts?.cursor !== undefined) q.set("cursor", opts.cursor);
     const qs = q.toString();
     return this.request("GET", `/gw/data/tables/${tableId}/records${qs ? `?${qs}` : ""}`);
   }

@@ -4,6 +4,7 @@ use authz::{AuthContext, Relation};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::types::Json;
+use storage::audit::AuditAction;
 use uuid::Uuid;
 
 use crate::model::{Artifact, ArtifactVersion, VersionMeta};
@@ -28,7 +29,7 @@ impl ArtifactStore {
             ctx,
             id,
             Relation::Editor,
-            "artifact.version.append",
+            AuditAction::ArtifactVersionAppend,
             trace_id,
         )
         .await?;
@@ -83,7 +84,7 @@ impl ArtifactStore {
             &mut tx,
             ctx,
             storage::audit::AuditEntry {
-                action: "artifact.version.append",
+                action: AuditAction::ArtifactVersionAppend,
                 object_type: "artifact",
                 object_id: &id.to_string(),
                 decision: storage::audit::Decision::Allow,
@@ -112,8 +113,14 @@ impl ArtifactStore {
         id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Artifact, ArtifactError> {
-        self.require(ctx, id, Relation::Viewer, "artifact.get", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::Viewer,
+            AuditAction::ArtifactGet,
+            trace_id,
+        )
+        .await?;
         self.fetch_live(ctx, id).await
     }
 
@@ -125,8 +132,14 @@ impl ArtifactStore {
         version: i64,
         trace_id: Option<&str>,
     ) -> Result<ArtifactVersion, ArtifactError> {
-        self.require(ctx, id, Relation::Viewer, "artifact.version.get", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::Viewer,
+            AuditAction::ArtifactVersionGet,
+            trace_id,
+        )
+        .await?;
         // 論理削除済みアーティファクトのバージョン本文は読めない（tuple 残存でも body を返さない）。
         let row: Option<(Json<serde_json::Value>, String, DateTime<Utc>)> = sqlx::query_as(
             "SELECT v.body, v.created_by, v.created_at FROM artifact_version v \
@@ -172,7 +185,7 @@ impl ArtifactStore {
             ctx,
             bundle_id,
             Relation::Viewer,
-            "artifact.read_via_bundle",
+            AuditAction::ArtifactReadViaBundle,
             trace_id,
         )
         .await?;
@@ -192,7 +205,7 @@ impl ArtifactStore {
         // バンドル越しの部品読み出しを監査に残す（誰が・どのバンドル経由で・どの部品版を）。
         self.record_audit(
             ctx,
-            "artifact.read_via_bundle",
+            AuditAction::ArtifactReadViaBundle,
             &component_id.to_string(),
             trace_id,
             json!({ "bundle_id": bundle_id, "version": version }),
@@ -200,6 +213,53 @@ impl ArtifactStore {
         .await?;
         Ok(ArtifactVersion {
             artifact_id: component_id,
+            version,
+            body: body.0,
+            created_by,
+            created_at,
+        })
+    }
+
+    /// **参照元にピンされた版**の取得チョークポイント（FSM ↔ テーブルの `fsm_ref`・検証 C-P1-1）。
+    ///
+    /// アーティファクト自体の viewer は要求しない。認可は**参照元**（例: テーブルの editor）で行い、
+    /// 「その版が参照元にピンされていること」の照合と合わせて**呼び出し側の責務**（`data::FsmStore` 等）。
+    /// [`Self::get_version_via_bundle`] と同じく、照合なしの公開 API に繋がないこと（任意 artifact の
+    /// 読み出し口になる）。種別が `kind` でなければ見つからない扱い。読み出しは監査に残す。
+    pub async fn get_version_pinned(
+        &self,
+        ctx: &AuthContext,
+        id: Uuid,
+        version: i64,
+        kind: crate::ArtifactKind,
+        holder: &str,
+        trace_id: Option<&str>,
+    ) -> Result<ArtifactVersion, ArtifactError> {
+        let row: Option<(Json<serde_json::Value>, String, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT v.body, v.created_by, v.created_at FROM artifact_version v \
+             WHERE v.tenant_id = $1 AND v.artifact_id = $2 AND v.version = $3 \
+               AND EXISTS (SELECT 1 FROM artifact a \
+                           WHERE a.tenant_id = $1 AND a.id = $2 AND a.kind = $4 \
+                             AND a.deleted_at IS NULL)",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(id)
+        .bind(version)
+        .bind(kind.as_str())
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        let (body, created_by, created_at) = row.ok_or(ArtifactError::NotFound)?;
+        self.record_audit(
+            ctx,
+            AuditAction::ArtifactReadViaReference,
+            &id.to_string(),
+            trace_id,
+            json!({ "holder": holder, "version": version }),
+        )
+        .await?;
+        Ok(ArtifactVersion {
+            artifact_id: id,
             version,
             body: body.0,
             created_by,
@@ -218,7 +278,7 @@ impl ArtifactStore {
             ctx,
             id,
             Relation::Viewer,
-            "artifact.versions.list",
+            AuditAction::ArtifactVersionsList,
             trace_id,
         )
         .await?;

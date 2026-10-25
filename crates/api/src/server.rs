@@ -16,6 +16,7 @@ use axum::{
 
 mod build;
 mod http_util;
+pub(crate) mod rejection;
 pub use build::build_router;
 
 use crate::{health, openapi, routes, state::AppState};
@@ -205,6 +206,9 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/directory/roles", &["GET"], Session, || {
             get(routes::directory::search_roles)
         }),
+        r("/directory/users/names", &["POST"], Session, || {
+            post(routes::directory::resolve_user_names)
+        }),
         // permission-aware 検索（Phase 2・二段 authz は rag::SearchService 内で一律強制）。
         r("/search", &["POST"], Session, || {
             post(routes::search::search)
@@ -384,9 +388,16 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/threads", &["GET", "POST"], Session, || {
             get(routes::chat::list_threads).post(routes::chat::create_thread)
         }),
-        r("/threads/{id}", &["GET", "PATCH"], Session, || {
-            get(routes::chat::get_thread).patch(routes::chat_notes::set_thread_origin_note)
-        }),
+        r(
+            "/threads/{id}",
+            &["GET", "PATCH", "DELETE"],
+            Session,
+            || {
+                get(routes::chat::get_thread)
+                    .patch(routes::chat_manage::update_thread)
+                    .delete(routes::chat_manage::delete_thread)
+            },
+        ),
         r("/threads/{id}/skills", &["PUT"], Session, || {
             put(routes::chat_skills::set_thread_skills)
         }),
@@ -529,6 +540,8 @@ pub fn route_table() -> Vec<RouteDecl> {
     table.extend(routes::tabular::tabular_route_decls());
     table.extend(routes::data::data_route_decls());
     table.extend(routes::data_views::data_view_route_decls());
+    table.extend(routes::data_indexes::data_index_route_decls());
+    table.extend(routes::data_imports::data_import_route_decls());
     table.extend(routes::data_fsm::data_fsm_route_decls());
     table.extend(routes::app_platform::app_platform_route_decls());
     table.extend(routes::app_install::app_install_route_decls());
@@ -536,6 +549,7 @@ pub fn route_table() -> Vec<RouteDecl> {
     table.extend(routes::office::office_route_decls());
     table.extend(routes::llm_models::llm_model_route_decls());
     table.extend(routes::org_admin_ai::org_admin_ai_route_decls());
+    table.extend(routes::org_admin_data::org_admin_data_route_decls());
     table.extend(routes::org_admin_insights::org_admin_insights_route_decls());
     table.extend(routes::org_audit::org_audit_route_decls());
     table

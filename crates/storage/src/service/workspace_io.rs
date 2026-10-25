@@ -15,6 +15,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 use crate::content_address::sha256_hex;
 
 /// [`write_file_at`](StorageService::write_file_at) の結果。
@@ -171,7 +172,7 @@ impl StorageService {
             ctx,
             Relation::Editor,
             &ctx.ns().folder(&parent_id.to_string()),
-            "file.write.workspace",
+            AuditAction::FileWriteWorkspace,
             "folder",
             &parent_id.to_string(),
             trace_id,
@@ -308,9 +309,9 @@ impl StorageService {
         )
         .await?;
         let action = if created {
-            "file.write.workspace.create"
+            AuditAction::FileWriteWorkspaceCreate
         } else {
-            "file.write.workspace.update"
+            AuditAction::FileWriteWorkspaceUpdate
         };
         audit::record_on(
             tx,
@@ -415,7 +416,7 @@ impl StorageService {
         self.require_read(
             ctx,
             &ctx.ns().folder(&parent_id.to_string()),
-            "file.resolve.workspace",
+            AuditAction::FileResolveWorkspace,
             "folder",
             &parent_id.to_string(),
             trace_id,

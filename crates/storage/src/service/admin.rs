@@ -5,6 +5,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::audit::AuditAction;
 
 impl StorageService {
     /// テナント初期 admin へ org の member・admin・audit_viewer タプルを付与する（冪等・監査つき）。
@@ -43,7 +44,7 @@ impl StorageService {
             .record(
                 &ctx,
                 AuditEntry {
-                    action: "tenant.provision",
+                    action: AuditAction::TenantProvision,
                     object_type: "organization",
                     object_id: org,
                     decision: Decision::Allow,
@@ -262,12 +263,18 @@ impl StorageService {
                     .await?
                     .rows_affected();
         }
+        // `tenant_id` を持たず内部整数キー `tenant_int` で境界を持つ表（構造化データの索引テーブル・
+        // Task 15.2）も同じ Tx で消す。`tenant_placement`（保持）から tenant_int を引く。
+        let int_tables = crate::tenant_scope::tenant_int_scoped_tables(&self.db).await?;
+        tables_purged += int_tables.len();
+        rows_deleted +=
+            crate::tenant_scope::delete_tenant_int_rows(&mut tx, &int_tables, tenant_id).await?;
         // 撤去の監査（ハッシュチェーン連結・削除証跡）。
         audit::record_on(
             &mut tx,
             &ctx,
             AuditEntry {
-                action: "tenant.purge",
+                action: AuditAction::TenantPurge,
                 object_type: "organization",
                 object_id: org,
                 decision: Decision::Allow,
@@ -302,7 +309,7 @@ impl StorageService {
         ctx: &AuthContext,
         relation: Relation,
         object: &FgaObject,
-        action: &str,
+        action: AuditAction,
         object_type: &str,
         object_id: &str,
         trace_id: Option<&str>,
@@ -342,10 +349,34 @@ impl StorageService {
         &self,
         ctx: &AuthContext,
         object: &FgaObject,
-        action: &str,
+        action: AuditAction,
         object_type: &str,
         object_id: &str,
         trace_id: Option<&str>,
+    ) -> Result<(), StorageError> {
+        self.require_read_annotated(
+            ctx,
+            object,
+            action,
+            object_type,
+            object_id,
+            trace_id,
+            &serde_json::Map::new(),
+        )
+        .await
+    }
+
+    /// [`Self::require_read`] に、deny の監査 metadata へ書き足す値（会話・回答の ID など・#829）を添える。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn require_read_annotated(
+        &self,
+        ctx: &AuthContext,
+        object: &FgaObject,
+        action: AuditAction,
+        object_type: &str,
+        object_id: &str,
+        trace_id: Option<&str>,
+        annotations: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), StorageError> {
         // 読取認可。共有解除の即時反映（PIT-11）が要るため強整合で問い合わせる。
         let allowed = self
@@ -367,7 +398,10 @@ impl StorageService {
                         object_id,
                         decision: Decision::Deny,
                         trace_id,
-                        metadata: json!({ "relation": Relation::Viewer.as_str() }),
+                        metadata: annotated(
+                            json!({ "relation": Relation::Viewer.as_str() }),
+                            annotations,
+                        ),
                     },
                 )
                 .await?;
@@ -375,4 +409,15 @@ impl StorageService {
         }
         Ok(())
     }
+}
+
+/// 監査の metadata（オブジェクト）に `annotations` を書き足す。
+fn annotated(
+    mut metadata: serde_json::Value,
+    annotations: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
+    if let Some(obj) = metadata.as_object_mut() {
+        obj.extend(annotations.clone());
+    }
+    metadata
 }

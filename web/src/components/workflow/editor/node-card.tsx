@@ -9,7 +9,7 @@
 
 import * as React from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { AlertCircle, Plus } from "lucide-react";
+import { AlertCircle, Plus, TriangleAlert } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -27,6 +27,8 @@ import { categoryVar } from "../category-accent";
 export type NodeCardData = {
   irNode: IrNode;
   errors: ValidationError[];
+  /// 保存を止めない警告（条件の意味論の切替で結果が変わり得る等）。
+  warnings?: ValidationError[];
   /// このノードの `port` から新ノードをつないで追加する。
   onAddFrom: (port: string, nodeType: string) => void;
   [key: string]: unknown;
@@ -75,6 +77,7 @@ function portColor(port: string): string {
 
 export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData }) {
   const { irNode, errors, onAddFrom } = data;
+  const warnings = data.warnings ?? [];
   const entry = NODE_CATALOG.find((c) => c.type === irNode.type);
   const Icon = nodeIcon(irNode.type);
   const ports = outputPorts(irNode);
@@ -94,6 +97,7 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
         "hover:-translate-y-0.5 hover:shadow-md",
         selected && "shadow-lg ring-2 ring-primary",
         hasError && "border-destructive",
+        !hasError && warnings.length > 0 && "border-[var(--season-autumn)]",
       )}
     >
       {/* 入力ポート（join は複数エッジを受けるが handle は 1 つ）。 */}
@@ -144,6 +148,28 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
                   <li key={i}>{e.message}</li>
                 ))}
                 {errors.length > 5 ? <li>ほか {errors.length - 5} 件</li> : null}
+              </ul>
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+        {!hasError && warnings.length > 0 ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                tabIndex={0}
+                className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full text-[var(--season-autumn)] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                style={{ backgroundColor: "color-mix(in oklab, var(--season-autumn) 16%, transparent)" }}
+                aria-label={`注意 ${warnings.length} 件`}
+              >
+                <TriangleAlert className="size-3.5" aria-hidden />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-80">
+              <ul className="list-disc space-y-1 pl-4 text-xs">
+                {warnings.slice(0, 3).map((e, i) => (
+                  <li key={i}>{e.message}</li>
+                ))}
+                {warnings.length > 3 ? <li>ほか {warnings.length - 3} 件</li> : null}
               </ul>
             </TooltipContent>
           </Tooltip>

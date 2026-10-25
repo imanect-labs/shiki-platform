@@ -3,6 +3,7 @@
 //! 作成・不変バージョン追記・取得・名前解決・一覧・論理削除。共有は [`share`](crate::share)。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use authz::{AuthContext, AuthzClient, Consistency, ObjectType, Relation};
 use chrono::{DateTime, Utc};
@@ -46,7 +47,7 @@ pub struct SkillSummary {
 
 /// artifact 行。
 #[derive(sqlx::FromRow)]
-struct ArtifactRow {
+pub(crate) struct ArtifactRow {
     id: Uuid,
     kind: String,
     name: String,
@@ -57,7 +58,7 @@ struct ArtifactRow {
 }
 
 impl ArtifactRow {
-    fn into_artifact(self) -> Result<Artifact, ArtifactError> {
+    pub(crate) fn into_artifact(self) -> Result<Artifact, ArtifactError> {
         Ok(Artifact {
             id: self.id,
             kind: ArtifactKind::parse(&self.kind)
@@ -150,7 +151,7 @@ impl ArtifactStore {
         }
         self.record_audit(
             ctx,
-            "artifact.create",
+            AuditAction::ArtifactCreate,
             &id.to_string(),
             trace_id,
             json!({ "kind": input.kind, "name": name }),
@@ -303,8 +304,14 @@ impl ArtifactStore {
         id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<(), ArtifactError> {
-        self.require(ctx, id, Relation::Owner, "artifact.delete", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            id,
+            Relation::Owner,
+            AuditAction::ArtifactDelete,
+            trace_id,
+        )
+        .await?;
         let updated = sqlx::query(
             "UPDATE artifact SET deleted_at = now(), updated_at = now() \
              WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
@@ -317,8 +324,14 @@ impl ArtifactStore {
         if updated.rows_affected() == 0 {
             return Err(ArtifactError::NotFound);
         }
-        self.record_audit(ctx, "artifact.delete", &id.to_string(), trace_id, json!({}))
-            .await
+        self.record_audit(
+            ctx,
+            AuditAction::ArtifactDelete,
+            &id.to_string(),
+            trace_id,
+            json!({}),
+        )
+        .await
     }
 
     /// 生存行のメタを引く（認可済み前提の内部ヘルパ）。
@@ -345,7 +358,7 @@ impl ArtifactStore {
         ctx: &AuthContext,
         id: Uuid,
         relation: Relation,
-        action: &str,
+        action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<authz::FgaObject, ArtifactError> {
         let obj = ctx.ns().artifact(&id.to_string());
@@ -382,7 +395,7 @@ impl ArtifactStore {
     pub(crate) async fn record_audit(
         &self,
         ctx: &AuthContext,
-        action: &str,
+        action: AuditAction,
         object_id: &str,
         trace_id: Option<&str>,
         metadata: serde_json::Value,
@@ -410,6 +423,12 @@ fn validate_name(name: &str) -> Result<&str, ArtifactError> {
     if name.is_empty() {
         return Err(ArtifactError::Invalid("name が空です".into()));
     }
+    // NUL 文字は Postgres の text に保存できない（DB の誤りの 500 にしない・検証 2-D-P3-1）。
+    if name.contains('\0') {
+        return Err(ArtifactError::Invalid(
+            "name に NUL 文字（U+0000）は使えません".into(),
+        ));
+    }
     if name.len() > MAX_NAME_LEN {
         return Err(ArtifactError::Invalid(format!(
             "name が長すぎます（最大 {MAX_NAME_LEN} 文字）"
@@ -418,9 +437,25 @@ fn validate_name(name: &str) -> Result<&str, ArtifactError> {
     Ok(name)
 }
 
+/// 値の中（入れ子の配列・オブジェクトのキーと文字列）に NUL があるか。
+fn contains_nul(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::String(s) => s.contains('\0'),
+        serde_json::Value::Array(a) => a.iter().any(contains_nul),
+        serde_json::Value::Object(m) => m.iter().any(|(k, v)| k.contains('\0') || contains_nul(v)),
+        _ => false,
+    }
+}
+
 /// 本文 JSON のサイズ上限を検証する。
 pub(crate) fn validate_body(body: &serde_json::Value) -> Result<(), ArtifactError> {
     // serde_json の直列化長で近似（DB の jsonb サイズとオーダー一致で十分）。
+    // jsonb は文字列の NUL（U+0000）を保存できない（DB の誤りの 500 にしない・検証 2-D-P3-1）。
+    if contains_nul(body) {
+        return Err(ArtifactError::Invalid(
+            "body に NUL 文字（U+0000）は使えません".into(),
+        ));
+    }
     let size = serde_json::to_vec(body)
         .map_err(|e| ArtifactError::Invalid(format!("body: {e}")))?
         .len();
@@ -441,6 +476,9 @@ mod tests {
         assert!(validate_name("  wf-1  ").is_ok_and(|n| n == "wf-1"));
         assert!(validate_name("   ").is_err());
         assert!(validate_name(&"x".repeat(129)).is_err());
+        assert!(validate_name("a\0b").is_err());
+        assert!(validate_body(&serde_json::json!({"x": "a\u{0}b"})).is_err());
+        assert!(validate_body(&serde_json::json!({"x": "a\\u0000b"})).is_ok());
     }
 
     #[test]

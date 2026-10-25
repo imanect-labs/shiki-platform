@@ -10,7 +10,6 @@ import {
   ChevronUp,
   Clock3,
   FileDown,
-  Sparkles,
 } from "lucide-react";
 
 import {
@@ -43,7 +42,6 @@ import { popPending } from "@/lib/pending-message";
 import { readModelChoice } from "@/lib/model-choice";
 import { readToolChoice, settleToolChoice } from "@/lib/tool-choice";
 import { triggerDownload } from "@/lib/storage";
-import { linkifyCitations } from "@/lib/citation";
 import { newId } from "@/lib/chat-store";
 import { selectionKindLabel, type SelectionContext } from "@/lib/selection-context";
 import type { ActiveCommand } from "@/lib/slash-command";
@@ -51,7 +49,6 @@ import { Message, MessageContent } from "@/components/prompt-kit/message";
 import { invokeChatYuiAction } from "@/lib/artifact-api";
 import { SaveAsAppDialog, type SaveAsAppTarget } from "@/components/artifacts/save-as-app-dialog";
 import { Loader } from "@/components/prompt-kit/loader";
-import { Markdown } from "@/components/prompt-kit/markdown";
 import {
   hasOpenRuns,
   hasYuiBlock,
@@ -68,8 +65,18 @@ import { CitationSources } from "./citations/citation-sources";
 import { EvidenceTable, EvidenceToggle } from "./citations/evidence-table";
 import { SourcePanelAside, SourcePanelSheet } from "./citations/source-panel";
 import { type ToolActivityItem } from "./tool-activity";
-import { ChainOfThought } from "./chain-of-thought";
+import { StreamWaitingLine, useStreamWaiting } from "./stream-waiting";
+import {
+  appendStreamText,
+  appendStreamThinking,
+  appendStreamTool,
+  MessageTimeline,
+  resolveStreamSegments,
+  segmentsFromBlocks,
+  type StreamSegment,
+} from "./message-timeline";
 import { Composer } from "./composer";
+import { PanelEmptyHint } from "./doc-chat-draft";
 import { WorkflowRefCard } from "./workflow-ref-card";
 import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
@@ -89,6 +96,8 @@ import { cn } from "@/lib/utils";
 /// ストリーミング中のアシスタント応答の蓄積状態。
 type StreamState = {
   text: string;
+  /// 本文と操作のまとまり（思考・ツール）を起きた順に並べたもの（`message-timeline.tsx`）。
+  segments: StreamSegment[];
   thinking: string;
   tools: ToolActivityItem[];
   citations: Citation[];
@@ -133,6 +142,7 @@ type QueuedMessage = {
 
 const EMPTY_STREAM: StreamState = {
   text: "",
+  segments: [],
   thinking: "",
   tools: [],
   citations: [],
@@ -285,32 +295,42 @@ export function Conversation({
   // 送信/復元で共通の SSE ハンドラ。蓄積を stream state に反映し、端末で確定する。
   const makeHandlers = React.useCallback((): StreamHandlers => {
     return {
-      onThinking: (t) => updateStream((s) => (s ? { ...s, thinking: s.thinking + t } : s)),
-      onToken: (t) => updateStream((s) => (s ? { ...s, text: s.text + t } : s)),
-      onToolCall: (call) =>
+      onThinking: (t) =>
         updateStream((s) =>
           s
-            ? {
-                ...s,
-                // ステップの区切りで段落を落とす。ツールを挟んだ発話は別の思考なので、
-                // 繋げて書くと「〜します。〜しました。〜します。」が 1 段落に連なって読めない。
-                text: paragraphBreak(s.text),
-                tools: [
-                  ...s.tools,
-                  {
-                    // この出現の一意キー（呼び出し ID はループで再利用され得る）。
-                    key: newId(),
-                    id: call.id,
-                    name: call.name,
-                    running: true,
-                    input: call.input,
-                    step: call.step,
-                    viaSubagent: call.viaSubagent,
-                  },
-                ],
-              }
+            ? { ...s, thinking: s.thinking + t, segments: appendStreamThinking(s.segments, t) }
             : s,
         ),
+      onToken: (t) =>
+        updateStream((s) =>
+          s ? { ...s, text: s.text + t, segments: appendStreamText(s.segments, t) } : s,
+        ),
+      onToolCall: (call) =>
+        updateStream((s) => {
+          if (!s) return s;
+          // ステップの区切りで段落を落とす。ツールを挟んだ発話は別の思考なので、
+          // 繋げて書くと「〜します。〜しました。〜します。」が 1 段落に連なって読めない。
+          const text = paragraphBreak(s.text);
+          // この出現の一意キー（呼び出し ID はループで再利用され得る）。
+          const key = newId();
+          return {
+            ...s,
+            text,
+            segments: appendStreamTool(s.segments, key),
+            tools: [
+              ...s.tools,
+              {
+                key,
+                id: call.id,
+                name: call.name,
+                running: true,
+                input: call.input,
+                step: call.step,
+                viaSubagent: call.viaSubagent,
+              },
+            ],
+          };
+        }),
       // 成否と観測テキストを保持する（失敗を成功と同じ見た目にしない・#358/#386）。
       // **同じ id が複数ステップで再利用され得る**（stub の `loop:` は毎ステップ
       // `stubtool_1` を出す）。全件更新すると過去行の成否まで上書きされるため、
@@ -419,14 +439,20 @@ export function Conversation({
       onApprovalRequested: (req) =>
         updateStream((s) => (s ? { ...s, approval: req, approvalPending: false } : s)),
       onApprovalResolved: (res) =>
-        updateStream((s) =>
-          s && s.approval?.tool_call_id === res.tool_call_id
-            ? { ...s, approval: null, approvalPending: false }
-            : s,
-        ),
+        updateStream((s) => {
+          if (!s) return s;
+          // 却下した操作は失敗ではなく「却下しました」と出す（3-A-8）。
+          const tools = res.approved
+            ? s.tools
+            : s.tools.map((t) => (t.id === res.tool_call_id ? { ...t, rejected: true } : t));
+          return s.approval?.tool_call_id === res.tool_call_id
+            ? { ...s, tools, approval: null, approvalPending: false }
+            : { ...s, tools };
+        }),
       // 承認モードのクランプ（org 禁止・他人による緩和）は明示的に知らせる（黙って降格しない・#350）。
+      // 承認待ちが多すぎて操作を実行しなかったことも同じ枠で知らせる（ツールの表示は「却下」になるため）。
       onFailureRecovery: (r) => {
-        if (r.action === "mode_clamped") setNotice(r.detail);
+        if (r.action === "mode_clamped" || r.action === "approval_overloaded") setNotice(r.detail);
       },
       onStatus: (status: RunStatus) => {
         if (status === "cancelled") setError("生成をキャンセルしました。");
@@ -769,19 +795,7 @@ export function Conversation({
               >
                 {/* パネルの空会話は「何ができるか」を軽く案内する（空白のままにしない）。 */}
                 {isPanel && messages.length === 0 && !stream && !notFound && !error ? (
-                  <div
-                    className="flex flex-col items-center gap-2 px-6 py-14 text-center"
-                    data-testid="panel-empty-hint"
-                  >
-                    <Sparkles className="size-6 text-muted-foreground/70" aria-hidden />
-                    <p className="text-sm font-medium text-foreground">
-                      このドキュメントについて AI に相談できます
-                    </p>
-                    <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">
-                      質問・要約・編集の依頼ができます。本文を選択して「AI
-                      に依頼」を押すと、選択箇所を指定して指示できます。
-                    </p>
-                  </div>
+                  <PanelEmptyHint />
                 ) : null}
                 {messages.map((m) =>
                   m.role === "user" ? (
@@ -936,18 +950,22 @@ function finalizeStream(
   provisional: NonNullable<ChatMessageT["provisional"]>,
 ) {
   const blocks: ContentBlock[] = [];
-  // 思考は先頭に置き、完了後も「思考プロセス」として残す。
-  if (s.thinking.trim()) blocks.push({ type: "thinking", text: s.thinking });
-  // ツール実行履歴（検索など）も確定メッセージへ残す。AssistantRow / ChainOfThought は
-  // tool_call ブロックから履歴を描画するため、これが無いと done 後に履歴が消える。
-  for (const t of s.tools) {
-    blocks.push({ type: "tool_call", id: t.id, name: t.name, input: t.input, step: t.step });
-    // 成否と観測テキストも残す（履歴でも失敗と結果要約が見えるようにする・#358/#386）。
-    if (t.ok !== undefined) {
-      blocks.push({ type: "tool_result", tool_call_id: t.id, content: t.result ?? "", ok: t.ok });
+  // 本文・思考・ツールは起きた順に残す（サーバの projection と同じ並び）。生成中と同じ配置で
+  // 描けるので、確定で表示が組み替わらない。ツール実行履歴が無いと done 後に履歴が消える。
+  for (const seg of resolveStreamSegments(s.segments, s.tools)) {
+    if (seg.kind === "text") {
+      if (seg.text.trim()) blocks.push({ type: "text", text: seg.text });
+      continue;
+    }
+    if (seg.thinking.trim()) blocks.push({ type: "thinking", text: seg.thinking });
+    for (const t of seg.tools) {
+      blocks.push({ type: "tool_call", id: t.id, name: t.name, input: t.input, step: t.step });
+      // 成否と観測テキストも残す（履歴でも失敗と結果要約が見えるようにする・#358/#386）。
+      if (t.ok !== undefined) {
+        blocks.push({ type: "tool_result", tool_call_id: t.id, content: t.result ?? "", ok: t.ok });
+      }
     }
   }
-  if (s.text.trim()) blocks.push({ type: "text", text: s.text });
   for (const c of s.citations) blocks.push(c);
   // ツール成果物（保存済みファイル）も確定メッセージへ残す。
   for (const f of s.files) blocks.push({ type: "file_ref", node_id: f.node_id, name: f.name });
@@ -1160,47 +1178,12 @@ const AssistantRow = React.memo(function AssistantRow({
     const t = window.setTimeout(onChanged, 4000);
     return () => window.clearTimeout(t);
   }, [openRuns, uiRuns, onChanged]);
-  const thinking = blocks
-    .filter((b): b is Extract<ContentBlock, { type: "thinking" }> => b.type === "thinking")
-    .map((b) => b.text)
-    .join("");
-  // text ブロックは**ツールを挟むたびに切れる**（間に tool_call ブロックが入る）。
-  // 連結ではなく段落として繋ぐ（ライブ表示と揃える）。ベタ連結だと
-  // 「〜します。〜しました。〜します。」が 1 段落に連なって読めない。
-  const text = blocks
-    .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
-    // 先頭は空行だけを落とす（字下げは残す）。```ui のボタンの id はサーバーが保存済みの各ブロックを
-    // そのまま読んで求めるので、フェンスの字下げを変えると id が合わなくなる（#604）。
-    .map((b) => b.text.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd())
-    .filter(Boolean)
+  // 本文と操作のまとまりを起きた順に（生成中と同じ配置）。
+  const segments = React.useMemo(() => segmentsFromBlocks(blocks), [blocks]);
+  // コピー・引用の対応付け用の本文全体。区切りは段落として繋ぐ（ライブ表示と揃える）。
+  const text = segments
+    .flatMap((seg) => (seg.kind === "text" ? [seg.text] : []))
     .join("\n\n");
-  // ツール結果を tool_call_id で引く（#358/#386）。**同じ id が複数回現れ得る**ため
-  // （ループで再利用される呼び出し ID）、id ごとに出現順のキューとして持ち、
-  // 呼び出しへ順番に対応付ける（最後の結果を全行へ適用しない）。
-  const toolResults = new Map<string, Extract<ContentBlock, { type: "tool_result" }>[]>();
-  for (const b of blocks) {
-    if (b.type !== "tool_result") continue;
-    const q = toolResults.get(b.tool_call_id);
-    if (q) q.push(b);
-    else toolResults.set(b.tool_call_id, [b]);
-  }
-  const tools: ToolActivityItem[] = blocks
-    .filter((b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call")
-    .map((b, i) => {
-      const res = toolResults.get(b.id)?.shift();
-      return {
-        // 確定メッセージ内での出現位置は安定（再レンダーで並びが変わらない）。
-        key: `${b.id}-${i}`,
-        id: b.id,
-        name: b.name,
-        running: false,
-        input: b.input,
-        // 生成型は Option<u32> を `number | null` にする。UI は「不明」を undefined で扱う。
-        step: b.step ?? undefined,
-        ok: res?.ok ?? undefined,
-        result: res?.content,
-      };
-    });
   const citations = React.useMemo(
     () => blocks.filter((b): b is Citation => b.type === "citation"),
     [blocks],
@@ -1236,12 +1219,11 @@ const AssistantRow = React.memo(function AssistantRow({
     <MessageCitationsProvider messageKey={messageId} citations={citations} text={text}>
       <Message className="group justify-start">
         <div className="w-full min-w-0">
-          <ChainOfThought thinking={thinking} tools={tools} citations={citations} />
-          {text ? (
-            <YuiActionContext.Provider value={yuiHost}>
-              <Markdown>{linkifyCitations(text, citations)}</Markdown>
-            </YuiActionContext.Provider>
-          ) : null}
+          <YuiActionContext.Provider value={yuiHost}>
+            <div className="space-y-2">
+              <MessageTimeline segments={segments} citations={citations} />
+            </div>
+          </YuiActionContext.Provider>
           {workflowRefs.map((b, i) => (
             <WorkflowRefCard key={i} raw={b.workflow} />
           ))}
@@ -1322,21 +1304,35 @@ function StreamingRow({
     stream.tools.length === 0 &&
     stream.plan.length === 0 &&
     !stream.approval;
+  const segments = resolveStreamSegments(stream.segments, stream.tools);
+  const last = segments[segments.length - 1];
+  const waiting = useStreamWaiting({
+    text: stream.text,
+    thinking: stream.thinking,
+    tools: stream.tools,
+    tail: !last ? null : last.kind === "text" ? last : { kind: "work", hasTools: last.tools.length > 0 },
+    awaitingUser: stream.approval !== null,
+  });
   return (
     <MessageCitationsProvider messageKey="streaming" citations={stream.citations} text={stream.text}>
       <Message className="justify-start">
         <div className="w-full min-w-0 space-y-2">
           {stream.plan.length > 0 ? <PlanPanel subtasks={stream.plan} /> : null}
-          {/* streaming は「生成中か」であって「本文が出ていないか」ではない。旧実装は
-              `!stream.text` を渡していたため、本文が 1 文字出た瞬間にツール表示が畳まれ、
-              その後に走るツール（本文 → ツール → 本文の往復）が見えなくなっていた（#386）。 */}
-          <ChainOfThought
-            thinking={stream.thinking}
-            tools={stream.tools}
+          {/* 本文と操作のまとまりを起きた順に並べ、生成中の表示は末尾に置く（往復する回答で
+              「いま何をしているか」が先頭に取り残されない）。 */}
+          <MessageTimeline
+            segments={segments}
             citations={stream.citations}
             streaming
             phase={runningSubtask(stream.plan)}
+            waitingLabel={waiting.label}
           />
+          {showLoader ? (
+            <MessageContent className="py-1">
+              <Loader variant="typing" />
+            </MessageContent>
+          ) : null}
+          {waiting.atBottom ? <StreamWaitingLine /> : null}
           {stream.budget ? <BudgetBanner {...stream.budget} /> : null}
           {stream.approval ? (
             <ApprovalCard
@@ -1344,15 +1340,6 @@ function StreamingRow({
               pending={stream.approvalPending}
               onDecision={onApproval}
             />
-          ) : null}
-          {showLoader ? (
-            <MessageContent className="py-1">
-              <Loader variant="typing" />
-            </MessageContent>
-          ) : stream.text ? (
-            <div className="text-[15px] leading-relaxed">
-              <Markdown streaming>{linkifyCitations(stream.text, stream.citations)}</Markdown>
-            </div>
           ) : null}
           {stream.workflowRefs.map((workflow, i) => (
             <WorkflowRefCard key={i} raw={workflow} />
