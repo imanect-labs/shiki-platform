@@ -47,6 +47,7 @@ fn to_citation(r: &SearchResult) -> Citation {
         anchor: r.anchor,
         quote: r.quote.clone(),
         boxes: r.boxes.clone(),
+        web: None,
     }
 }
 

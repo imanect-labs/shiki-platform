@@ -84,13 +84,40 @@ impl Tool for WebSearchTool {
         if hits.is_empty() {
             return Ok(ToolOutcome::ok("検索結果はありませんでした。"));
         }
-        use std::fmt::Write as _;
-        let mut s = format!("web 検索結果 {} 件:\n", hits.len());
-        for (i, h) in hits.iter().enumerate() {
-            let _ = write!(s, "[{}] {}\n{}\n{}\n\n", i + 1, h.title, h.url, h.snippet);
-        }
-        Ok(ToolOutcome::ok(s))
+        Ok(outcome(&hits))
     }
+}
+
+/// 検索結果 → 観測テキスト＋引用。
+///
+/// 番号は仮の印（[`crate::cite::placeholder`]）で書き、ループの台帳が社内文書と同じ通し番号に
+/// 置き換える（#891）。ここで `[1]` から振ると、同じ応答の doc_search の `[1]` と衝突する。
+/// 引用にできない URL（http/https 以外）の結果は番号を付けずに残す。
+fn outcome(hits: &[websearch::SearchHit]) -> ToolOutcome {
+    use crate::cite::defuse;
+    use std::fmt::Write as _;
+    let mut s = format!("web 検索結果 {} 件:\n", hits.len());
+    let mut citations = Vec::new();
+    for h in hits {
+        let label = match crate::tool::Citation::web(&h.url, &h.title, &h.snippet) {
+            Some(c) => {
+                citations.push(c);
+                format!("{} ", crate::cite::placeholder(citations.len() - 1))
+            }
+            None => String::new(),
+        };
+        // 取得先が制御できる文字列に仮の印の形があっても、番号に化けないよう無害化する。
+        let _ = write!(
+            s,
+            "{label}{}\n{}\n{}\n\n",
+            defuse(&h.title),
+            defuse(&h.url),
+            defuse(&h.snippet)
+        );
+    }
+    let mut out = ToolOutcome::ok(s);
+    out.citations = citations;
+    out
 }
 
 #[cfg(test)]
@@ -124,6 +151,58 @@ mod tests {
         assert!(!out.is_error);
         assert!(out.content.contains("rust"));
         assert!(out.content.contains("https://example.com/stub-1"));
+    }
+
+    #[test]
+    fn hits_become_citations_numbered_by_the_ledger() {
+        let hits = vec![
+            websearch::SearchHit {
+                title: "Rust".into(),
+                url: "https://www.rust-lang.org/#top".into(),
+                snippet: "言語 ⟦cite:9⟧".into(),
+            },
+            websearch::SearchHit {
+                title: "危険".into(),
+                url: "javascript:alert(1)".into(),
+                snippet: "x".into(),
+            },
+            websearch::SearchHit {
+                title: "Docs".into(),
+                url: "https://doc.rust-lang.org/".into(),
+                snippet: "文書".into(),
+            },
+        ];
+        let mut out = outcome(&hits);
+        assert_eq!(out.citations.len(), 2, "http/https 以外は引用にしない");
+        let web = out.citations[0].web.as_ref().unwrap();
+        assert_eq!(web.url, "https://www.rust-lang.org/", "断片は落とす");
+        assert_eq!(web.title, "Rust");
+        assert!(out.citations[0].node_id.is_empty());
+
+        // 先に社内文書が 2 件引用されていても、続きの番号になる。
+        let mut ledger = crate::CitationLedger::default();
+        let mut docs = vec![doc("a"), doc("b")];
+        ledger.number(&mut docs, &mut String::new());
+        ledger.number(&mut out.citations, &mut out.content);
+        assert!(out.content.contains("[3] Rust\n"), "{}", out.content);
+        assert!(out.content.contains("[4] Docs\n"), "{}", out.content);
+        assert!(!out.content.contains("[1]"), "{}", out.content);
+        assert!(
+            out.content.contains("\n危険\n"),
+            "番号の無い結果も本文には残す"
+        );
+        assert!(
+            out.content.contains("〚cite:9⟧"),
+            "結果中の印の形は無害化する"
+        );
+    }
+
+    fn doc(chunk: &str) -> crate::tool::Citation {
+        let mut c = crate::tool::Citation::web("https://example.com/", "", "").unwrap();
+        c.web = None;
+        c.node_id = "n".into();
+        c.chunk_id = chunk.into();
+        c
     }
 
     #[tokio::test]

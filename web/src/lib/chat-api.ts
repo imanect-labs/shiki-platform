@@ -597,6 +597,8 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
           boxes: kind.boxes,
           // 閲覧者が読めない文書の引用は、サーバが番号だけの出典に置き換えて送る（#513）。
           withheld: kind.withheld,
+          // Web の出典（web_search / web_fetch・#891）。
+          web: kind.web,
         });
         break;
       case "file_ref":

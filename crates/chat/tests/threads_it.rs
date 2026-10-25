@@ -1117,6 +1117,15 @@ async fn tool_result_bodies_are_hidden_from_other_viewers() {
     );
 }
 
+/// Web の出典（`node_id` を持たない・#891）。
+fn web_cite(cite_id: u32) -> chat::Citation {
+    let page =
+        agent_core::Citation::web("https://example.com/a", "例", "公開ページの抜粋").unwrap();
+    let mut c = chat::Citation::from(&page);
+    c.cite_id = cite_id;
+    c
+}
+
 /// 閲覧者が読めない文書の引用は、番号だけの「閲覧できない出典」に置き換わる（#508）。
 ///
 /// 落とすと本文の `[n]` が欠番として描けない（読めないのが最大番号だと、残りの引用からは
@@ -1160,10 +1169,12 @@ async fn unreadable_citations_become_number_only_stubs() {
     let secret = uuid::Uuid::new_v4().to_string();
     let content = vec![
         ContentBlock::Text {
-            text: "条件です[1]。期限です[2]。".into(),
+            text: "条件です[1]。期限です[2]。報道です[3]。".into(),
         },
         cite(1, &readable),
         cite(2, &secret),
+        // Web の出典（公開 web のページ・#891）。ファイルの権限で見直さず、そのまま見せる。
+        ContentBlock::Citation(web_cite(3)),
     ];
     sqlx::query("UPDATE message SET content = $2 WHERE id = $1")
         .bind(posted.assistant_message_id)
@@ -1179,6 +1190,12 @@ async fn unreadable_citations_become_number_only_stubs() {
         .lock()
         .unwrap()
         .push(viewer.ns().file(&secret).as_str().to_string());
+    // Web の出典をファイル（node_id は空）として判定してしまうと、ここで拒否されて番号だけになる。
+    authz
+        .deny
+        .lock()
+        .unwrap()
+        .push(viewer.ns().file("").as_str().to_string());
     let theirs = store.get_messages(&viewer, thread.id, None).await.unwrap();
     let cites: Vec<&chat::Citation> = theirs
         .iter()
@@ -1188,11 +1205,18 @@ async fn unreadable_citations_become_number_only_stubs() {
             _ => None,
         })
         .collect();
-    assert_eq!(cites.len(), 2, "番号は詰めない");
+    assert_eq!(cites.len(), 3, "番号は詰めない");
     assert!(!cites[0].withheld && cites[0].node_id == readable);
     let stub = cites[1];
     assert!(stub.withheld && stub.cite_id == 2);
     assert!(stub.node_id.is_empty() && stub.snippet.is_empty() && stub.version.is_none());
+    let web = cites[2];
+    assert!(
+        !web.withheld && web.cite_id == 3,
+        "Web の出典はそのまま: {web:?}"
+    );
+    assert_eq!(web.web.as_ref().unwrap().url, "https://example.com/a");
+    assert_eq!(web.snippet, "公開ページの抜粋");
 }
 
 /// 生成中の SSE 再送も、保存済みメッセージと同じく閲覧者の権限で見直す（#513）。
@@ -1249,6 +1273,8 @@ async fn viewer_event_stream_redacts_for_other_viewers() {
         cite(2, &secret),
         // 同じファイルの 2 つ目の引用（判定の使い回しでも結果が変わらないこと）。
         cite(3, &secret),
+        // Web の出典（#891）。ファイルの権限で見直さず、そのまま流す。
+        StreamEventKind::Citation(web_cite(4)),
         StreamEventKind::Done {
             message_id: res.assistant_message_id,
         },
@@ -1263,10 +1289,13 @@ async fn viewer_event_stream_redacts_for_other_viewers() {
     viewer.principal.id = "bob".into();
     // **閲覧者（bob）にだけ**拒否する。実装が誤って実行主体（alice）の権限で判定すると、
     // bob にも抜粋が流れてこのテストが落ちる。
-    authz.deny_for.lock().unwrap().push((
-        viewer.subject().to_string(),
-        viewer.ns().file(&secret).as_str().to_string(),
-    ));
+    // Web の出典をファイル（node_id は空）として判定してしまうと、ここで拒否されて番号だけになる。
+    for node in [secret.as_str(), ""] {
+        authz.deny_for.lock().unwrap().push((
+            viewer.subject().to_string(),
+            viewer.ns().file(node).as_str().to_string(),
+        ));
+    }
 
     let collect = |ctx: AuthContext| {
         let store = store.clone();
@@ -1307,11 +1336,16 @@ async fn viewer_event_stream_redacts_for_other_viewers() {
             _ => None,
         })
         .collect();
-    assert_eq!(cites.len(), 3, "番号は詰めない");
+    assert_eq!(cites.len(), 4, "番号は詰めない");
     assert!(!cites[0].withheld && cites[0].node_id == readable);
-    for stub in &cites[1..] {
+    for stub in &cites[1..3] {
         assert!(stub.withheld && stub.node_id.is_empty() && stub.snippet.is_empty());
     }
+    assert!(
+        !cites[3].withheld && cites[3].web.is_some() && cites[3].snippet == "公開ページの抜粋",
+        "Web の出典はそのまま: {:?}",
+        cites[3]
+    );
 
     // 実行主体（alice）: 自分のツール結果は見える。読める引用はそのまま（bob への拒否は効かない）。
     let mine = collect(owner.clone()).await;

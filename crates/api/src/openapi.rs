@@ -362,6 +362,7 @@ use utoipa::{
         chat::UiActionValue,
         chat::ContentBlock,
         chat::Citation,
+        chat::WebSource,
         chat::Attachment,
         chat::SelectionContext,
         chat::SelectionKind,
