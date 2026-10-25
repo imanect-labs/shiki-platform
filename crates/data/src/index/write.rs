@@ -527,12 +527,21 @@ impl Batch {
 /// **組ごとに主キー (tenant_int, table_int, field_id, record_int, ord) の前方一致で引く形にする**（検証 D-6）。
 /// `field_id = ANY($3) AND record_int = ANY($4)` の形は、新しい列で統計が古いと Postgres が値索引
 /// (tenant_int, table_int, field_id, val, record_int) を選び、`record_int` の配列の要素ごとにその列の索引行を
-/// 全部読み直した（バックフィルの 1 チャンクの削除が 3.5 秒・行数の 2 乗で遅くなる）。配列を `unnest` との結合に
-/// 開くと、内側の探索は 4 列とも等値になり、値索引では等値の前方一致が 3 列で止まるので主キーが選ばれる。
+/// 全部読み直した（バックフィルの 1 チャンクの削除が 3.5 秒・行数の 2 乗で遅くなる）。
+///
+/// 配列を `unnest` との結合に開くだけでは足りない（#915）。統計が古いとハッシュ結合が選ばれ、内側は
+/// (tenant_int, table_int, field_id) の 3 列で列の索引行を全部読む。この 3 列の前方一致は主キーと値索引で
+/// コストがほぼ同じなので、どちらの索引になるかも統計の具合で入れ替わる。そこで組ごとの探索を
+/// `LATERAL … OFFSET 0`（引き上げ不可＝必ず組ごとのパラメータ付き探索）にして行の ctid を集め、
+/// 本体は TID で消す。内側の条件は 4 列とも等値なので、主キー以外の索引は前方一致で負け、計画が統計に依らない。
+/// ctid はパーティションをまたぐと一意でないが、同じテーブルの行は 1 パーティション
+/// （`table_int` のハッシュ）に収まり、外側も `tenant_int` / `table_int` で絞るので取り違えない。
 pub(crate) fn delete_sql(relation: &str, record_column: &str) -> String {
     format!(
-        "DELETE FROM {relation} t USING unnest($3::int2[]) AS f(id), unnest($4::int8[]) AS r(id) \
-         WHERE t.tenant_int = $1 AND t.table_int = $2 AND t.field_id = f.id AND t.{record_column} = r.id"
+        "DELETE FROM {relation} t WHERE t.tenant_int = $1 AND t.table_int = $2 AND t.ctid = ANY(ARRAY(\
+         SELECT i.ctid FROM unnest($3::int2[]) AS f(id) CROSS JOIN unnest($4::int8[]) AS r(id) \
+         CROSS JOIN LATERAL (SELECT ctid FROM {relation} WHERE tenant_int = $1 AND table_int = $2 \
+         AND field_id = f.id AND {record_column} = r.id OFFSET 0) i))"
     )
 }
 
