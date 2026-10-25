@@ -1464,7 +1464,8 @@ before の可視性は、書込トランザクションが outbox へ**変更前
 > 共有解除・テーブル削除は data が自分で、ロールの付け外し（IdP 同期）とテーブルの ReBAC の付け外しは変えた側が
 > `DataStore::notify_authz_changed` / `after_table_rebac_changed` で世代を進め、配信は毎バッチ（250 ms）世代を読み比べる。
 > 引き直した材料が前回と違えば（viewer の喪失・ロール・共有・マスクの変化）、行ごとの差分では取りこぼすので
-> **購読ごと `stream.reset{reason: authz_changed}` で閉じる**。
+> **購読ごと `stream.reset{reason: authz_changed}` で閉じる**。テーブルの editor の得失（共有の viewer ⇄ editor の変更）も
+> 見える行は変わらないが画面の操作（編集・追加・取込）が変わるので同じく閉じ、グリッドは閲覧者の文脈を取り直す。
 
 ### 9.5 編集の並行制御
 

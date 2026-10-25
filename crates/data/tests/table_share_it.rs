@@ -477,6 +477,49 @@ async fn unshare_resets_the_open_stream_of_the_revoked_user() {
     );
 }
 
+/// 見える範囲が変わらない viewer ⇄ editor の変更でも、開いている購読に `authz_changed` が届く
+/// （画面が編集・追加・取込の操作を出し直す）。
+#[tokio::test]
+async fn role_change_resets_the_open_stream_even_if_rows_are_unchanged() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let fx = fixture(pool, authz).await;
+    fx.record("acme").await;
+    fx.share(&user("bob"), TableShareRole::Viewer).await;
+    for (grant, revoke) in [
+        (Some(TableShareRole::Editor), None),
+        (None, Some(TableShareRole::Editor)),
+    ] {
+        let mut bob = fx
+            .store
+            .subscribe_records(&fx.bob, fx.table, None, None)
+            .await
+            .unwrap();
+        tick(&fx).await; // 世代の基準を取る
+        let (_, closed) = drain(&mut bob).await;
+        assert!(!closed);
+        if let Some(r) = grant {
+            fx.share(&user("bob"), r).await;
+        }
+        if let Some(r) = revoke {
+            fx.unshare(&user("bob"), r).await;
+        }
+        tick(&fx).await;
+        let (events, closed) = drain(&mut bob).await;
+        assert!(closed, "役割の変更で購読ごと落ちる: {events:?}");
+        assert!(
+            matches!(
+                events.last(),
+                Some(StreamEvent::Reset(data::StreamResetEvent {
+                    reason: StreamResetReason::AuthzChanged
+                }))
+            ),
+            "{events:?}"
+        );
+    }
+}
+
 /// owner 以外は 403（見えるが owner でない）、見えないテーブル・削除済みは 404。ミニアプリが owner の
 /// テーブル（利用者は editor）も利用者には共有できない。
 #[tokio::test]
