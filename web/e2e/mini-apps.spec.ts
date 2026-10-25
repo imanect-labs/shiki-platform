@@ -150,6 +150,11 @@ test.describe("ミニアプリ（画面の作成・実行・バンドル権限�
     await label.fill("品名=x");
     await expect(editor.getByText("ラベルに「=」は使えません").first()).toBeVisible();
     await expect(dialog.getByRole("button", { name: "作成" })).toBeDisabled();
+    // プレビューへ移っても保存できないまま。戻るとエラーの段がそのまま残っている。
+    await dialog.getByRole("tab", { name: "プレビュー" }).click();
+    await expect(dialog.getByRole("button", { name: "作成" })).toBeDisabled();
+    await dialog.getByRole("tab", { name: "組み立てる" }).click();
+    await expect(editor.getByText("ラベルに「=」は使えません").first()).toBeVisible();
     await label.fill("品名");
     await expect(dialog.getByRole("button", { name: "作成" })).toBeEnabled();
 

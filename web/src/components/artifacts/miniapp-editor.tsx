@@ -102,6 +102,8 @@ export function MiniAppEditorDialog({
   // 画面が外から変わったとき（雛形を入れた）に組み立てるを作り直すための印
   const [builderKey, setBuilderKey] = React.useState(0);
   const [validity, setValidity] = React.useState<ScreenValidity>({ errors: 0 });
+  // 書くタブで記述を直したか（組み立てるの段は、次に開くときに分け直す）
+  const sourceEdited = React.useRef(false);
   const [inputs, setInputs] = React.useState<Record<string, WorkflowChoice["inputs"]>>({});
   const [skills, setSkills] = React.useState<ArtifactMeta[]>([]);
   const [workflows, setWorkflows] = React.useState<ArtifactMeta[]>([]);
@@ -121,6 +123,7 @@ export function MiniAppEditorDialog({
     setWorkflowToAdd("");
     setTab("build");
     setValidity({ errors: 0 });
+    sourceEdited.current = false;
     // 開くたびに組み立てるを作り直す（前に開いたときの段を、別のアプリや取り消した編集のまま残さない）
     setBuilderKey((k) => k + 1);
     setInputs({});
@@ -160,8 +163,21 @@ export function MiniAppEditorDialog({
     }
   }, [pins, open]);
   const choices = React.useMemo<WorkflowChoice[]>(() => pins.map((p) => ({ name: p.alias, inputs: inputs[`${p.artifact_id}@${p.version}`] })), [pins, inputs]);
-  const onValidity = React.useCallback((v: ScreenValidity) => setValidity(v), []);
-  const blocked = tab === "build" && validity.errors > 0;
+  // 書くタブで直した後は、隠れている組み立てる（直す前の段）の数え直しを使わない（ワークフローを外したときなど）
+  const onValidity = React.useCallback((v: ScreenValidity) => {
+    if (!sourceEdited.current) setValidity(v);
+  }, []);
+  // 組み立てるで出たエラーはタブを移っても保存を止める（プレビューへ移るだけで保存できないように）。
+  // 外れるのは組み立てるで直したときか、書くタブで記述を直したとき（そのときは書いた記述を保存時のサーバーが確かめる）
+  const blocked = validity.errors > 0;
+  // 書くタブで直した記述は、次に組み立てるを開くときに段へ分け直す
+  const selectTab = (next: Tab) => {
+    if (next === "build" && sourceEdited.current) {
+      sourceEdited.current = false;
+      setBuilderKey((k) => k + 1);
+    }
+    setTab(next);
+  };
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -300,7 +316,7 @@ export function MiniAppEditorDialog({
                     type="button"
                     role="tab"
                     aria-selected={tab === x.id}
-                    onClick={() => setTab(x.id)}
+                    onClick={() => selectTab(x.id)}
                     className={cn(
                       "rounded-md px-2 py-1 transition-colors pointer-coarse:px-3 pointer-coarse:py-2",
                       tab === x.id ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground",
@@ -311,16 +327,18 @@ export function MiniAppEditorDialog({
                 ))}
               </div>
             </div>
-            {tab === "build" ? (
+            {/* 組み立てるはタブを移っても消さずに隠す（段・選択・エラーを持ち続けるため） */}
+            <div hidden={tab !== "build"}>
               <ScreenBuilder
                 key={builderKey}
                 screen={screen}
                 onScreenChange={setScreen}
                 workflows={choices}
                 onValidity={onValidity}
-                onOpenSource={() => setTab("write")}
+                onOpenSource={() => selectTab("write")}
               />
-            ) : tab === "preview" ? (
+            </div>
+            {tab === "build" ? null : tab === "preview" ? (
               <div className="min-h-64 rounded-lg border border-border px-6 py-4" data-testid="miniapp-preview">
                 {screen.trim() ? (
                   <Markdown>{screen}</Markdown>
@@ -332,7 +350,11 @@ export function MiniAppEditorDialog({
               <textarea
                 id="app-screen"
                 value={screen}
-                onChange={(e) => setScreen(e.target.value)}
+                onChange={(e) => {
+                  setScreen(e.target.value);
+                  sourceEdited.current = true;
+                  setValidity({ errors: 0 });
+                }}
                 required
                 rows={14}
                 spellCheck={false}
