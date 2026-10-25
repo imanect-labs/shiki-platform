@@ -38,21 +38,23 @@ export function AttachmentThumb({
   /// 右上の「外す」・アップロード中の表示など、四角の上に重ねるもの。
   children?: React.ReactNode;
 }) {
-  const [signed, setSigned] = React.useState<string | null>(null);
-  const [failed, setFailed] = React.useState(false);
+  const [signed, setSigned] = React.useState<{ nodeId: string; url: string } | null>(null);
+  // 失敗は「何を読もうとして失敗したか」に結び付ける（画像が替わったら読み直す）。
+  const [failedFor, setFailedFor] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (src || !nodeId) return;
     let active = true;
     downloadUrl(nodeId)
-      .then(({ url }) => active && setSigned(url))
-      .catch(() => active && setFailed(true));
+      .then(({ url }) => active && setSigned({ nodeId, url }))
+      .catch(() => active && setFailedFor(`node:${nodeId}`));
     return () => {
       active = false;
     };
   }, [nodeId, src]);
 
-  const url = src ?? signed;
+  const url = src ?? (signed && signed.nodeId === nodeId ? signed.url : null);
+  const failed = failedFor !== null && (failedFor === url || failedFor === `node:${nodeId}`);
   return (
     <span
       title={name}
@@ -69,7 +71,7 @@ export function AttachmentThumb({
           alt={name}
           draggable={false}
           decoding="async"
-          onError={() => setFailed(true)}
+          onError={() => setFailedFor(url)}
           className={cn("size-full rounded-[inherit] object-cover", imgClassName)}
         />
       ) : (
