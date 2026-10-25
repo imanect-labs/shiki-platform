@@ -140,7 +140,11 @@ impl CapabilityNodeExecutor {
         let url = format!("{}{suffix}", p.url);
         // 本文の中の入れ子の $from / $template も展開する（`{"$from":…}` のまま外部へ送らない）。
         // 値の解決は secret に触れる前に済ませる。
-        let body = opt_param(p.body.as_ref(), r, "http.request: body")?.map(|v| as_bytes(&v));
+        let body = opt_param(p.body.as_ref(), r, "http.request: body")?;
+        // オブジェクト・配列の本文は JSON として送る（script 経路の `Shiki.http.request` と揃える・GAP-19）。
+        // 文字列はそのまま・`{ "base64": … }` はバイト列なので、種類を決めつけない。
+        let json_body = body.as_ref().is_some_and(is_json_body);
+        let body = body.map(|v| as_bytes(&v));
 
         // secret 解決（あれば）→ 宛先束縛の照合材料。
         let resolved_secret = if let Some(sref) = &p.secret {
@@ -161,6 +165,9 @@ impl CapabilityNodeExecutor {
             headers.push((hname, hval));
         }
         headers.push(("Idempotency-Key".to_string(), ctx.idempotency_key.clone()));
+        if json_body {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
 
         // Stage A は **常にリダイレクト非追従**（3xx は拒否）。`follow_stripped` は追従先の宛先束縛
         // 再照合（各ホップの host ∈ binding）が要るため後続で実装するまで fail-closed で扱う
@@ -240,6 +247,23 @@ impl CapabilityNodeExecutor {
     }
 }
 
+/// http.request の本文を JSON として送るか（オブジェクト・配列）。
+///
+/// `{ "base64": "…" }` は [`as_bytes`] がバイト列に戻すので JSON ではない（解読できないときは
+/// JSON のまま送られるので JSON 扱い）。
+fn is_json_body(v: &Value) -> bool {
+    use base64::Engine as _;
+    match v {
+        Value::Array(_) => true,
+        Value::Object(map) => !matches!(
+            map.get("base64"),
+            Some(Value::String(b64))
+                if base64::engine::general_purpose::STANDARD.decode(b64).is_ok()
+        ),
+        _ => false,
+    }
+}
+
 /// secret 添付方式からヘッダ名/値を決める（`bearer` → Authorization: Bearer、`header` → 指定ヘッダ）。
 pub(super) fn attach_secret(attach: Option<&SecretAttach>, value: &str) -> (String, String) {
     match attach.map_or(SecretAttachKind::Bearer, |a| a.kind) {
@@ -255,7 +279,7 @@ pub(super) fn attach_secret(attach: Option<&SecretAttach>, value: &str) -> (Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{attach_secret, parse_body};
+    use super::{attach_secret, is_json_body, parse_body};
     use crate::ir::params::{SecretAttach, SecretAttachKind};
     use serde_json::json;
 
@@ -273,6 +297,19 @@ mod tests {
             Some(1024 * 1024),
             "CAP で切り詰め"
         );
+    }
+
+    /// オブジェクト・配列の本文だけを JSON として送る（GAP-19）。
+    #[test]
+    fn json_body_is_objects_and_arrays_but_not_base64_bytes() {
+        assert!(is_json_body(&json!({ "text": "hi" })));
+        assert!(is_json_body(&json!([1, 2])));
+        // 文字列・数値はそのまま（種類を決めつけない）。
+        assert!(!is_json_body(&json!("plain")));
+        assert!(!is_json_body(&json!(3)));
+        // base64 はバイト列に戻る（解読できなければ JSON のまま送られる）。
+        assert!(!is_json_body(&json!({ "base64": "aGk=" })));
+        assert!(is_json_body(&json!({ "base64": "***" })));
     }
 
     #[test]

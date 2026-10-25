@@ -866,3 +866,103 @@ async fn csv_query_denied_without_declared_scope() {
     let steps = h.step_map(run_id).await;
     assert_eq!(steps.get("q"), Some(&StepStatus::Failed));
 }
+
+// ------- Test 8: http.request の Content-Type（GAP-19）-----------------------
+
+/// 受けた要求（ヘッダと本文の生の文字列）を溜めるローカル HTTP サーバ。返り値は (base URL, 溜まった要求)。
+async fn spawn_http_recorder() -> (String, Arc<tokio::sync::Mutex<Vec<String>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let store = Arc::clone(&seen);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                // ヘッダの終わりまで読み、Content-Length の分だけ本文を読む。
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let Ok(n) = sock.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len = text[..end]
+                            .lines()
+                            .find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case("content-length")
+                                    .then(|| v.trim().parse::<usize>().ok())?
+                            })
+                            .unwrap_or(0);
+                        if raw.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                store
+                    .lock()
+                    .await
+                    .push(String::from_utf8_lossy(&raw).into_owned());
+                let body = br#"{"ok":true}"#;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+            });
+        }
+    });
+    (format!("http://{addr}"), seen)
+}
+
+/// オブジェクト・配列の本文は `Content-Type: application/json` で送る（script 経路の
+/// `Shiki.http.request` と揃える）。文字列の本文には種類を付けない。
+#[tokio::test]
+async fn http_request_sends_object_bodies_as_json() {
+    let Some(h) = setup().await else { return };
+    let (base, seen) = spawn_http_recorder().await;
+    let executor = h.executor(None, vec!["127.0.0.1".into()], None);
+    let ir = json!({
+        "ir_version": 1, "name": "http-content-type",
+        "declared_scopes": ["http.egress"],
+        "nodes": [
+            { "id": "obj", "type": "http.request", "params": {
+                "method": "POST", "url": format!("{base}/obj"),
+                "body": { "text": { "$from": "input", "path": "/msg" } } } },
+            { "id": "arr", "type": "http.request", "params": {
+                "method": "POST", "url": format!("{base}/arr"), "body": [1, 2] } },
+            { "id": "str", "type": "http.request", "params": {
+                "method": "POST", "url": format!("{base}/str"), "body": "plain text" } }
+        ],
+        "edges": [ { "from": "obj", "to": "arr" }, { "from": "arr", "to": "str" } ]
+    });
+    let (_run, status) = h
+        .run_to_completion(&ir, &json!({ "msg": "こんにちは" }), executor)
+        .await;
+    assert_eq!(status, RunStatus::Succeeded);
+
+    let seen = seen.lock().await;
+    let request = |path: &str| {
+        seen.iter()
+            .find(|r| r.starts_with(&format!("POST /{path} ")))
+            .unwrap_or_else(|| panic!("/{path} への要求が無い: {seen:?}"))
+            .to_ascii_lowercase()
+    };
+    let obj = request("obj");
+    assert!(obj.contains("content-type: application/json"), "{obj}");
+    let raw_obj = seen.iter().find(|r| r.starts_with("POST /obj ")).unwrap();
+    assert!(raw_obj.ends_with(r#"{"text":"こんにちは"}"#), "{raw_obj}");
+    assert!(request("arr").contains("content-type: application/json"));
+    let plain = request("str");
+    assert!(!plain.contains("content-type"), "{plain}");
+}
