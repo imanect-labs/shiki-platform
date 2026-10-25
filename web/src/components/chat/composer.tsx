@@ -346,6 +346,8 @@ export const Composer = React.memo(function Composer({
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+    // スマホの「+」のシートはファイルを選ぶまで開いておき、選んだら閉じる。
+    setMenuOpen(false);
     setUploading({ name: file.name, fraction: 0 });
     try {
       // 同じ名前があれば連番名で置く（同じ写真をもう一度添付すると 409 で失敗していた・#880）。
