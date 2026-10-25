@@ -966,3 +966,48 @@ async fn http_request_sends_object_bodies_as_json() {
     let plain = request("str");
     assert!(!plain.contains("content-type"), "{plain}");
 }
+
+// ------- Test 9: llm.invoke の誤りの文言（GAP-41）----------------------------
+
+/// 使えないモデルの誤りは、実行履歴に利用者向けの日本語で残る（gateway の英語の原文は出さない）。
+#[tokio::test]
+async fn llm_model_errors_are_recorded_in_japanese() {
+    let Some(h) = setup().await else { return };
+    let executor = h.executor(None, vec![], None);
+    let ir = json!({
+        "ir_version": 1, "name": "llm-unknown-model",
+        "declared_scopes": [],
+        "nodes": [
+            { "id": "ai", "type": "llm.invoke",
+              "params": { "model": "no-such-model", "prompt": "hello" } }
+        ],
+        "edges": []
+    });
+    // 保存時の照合はカタログが空なので通る（実行時に gateway が拒否する経路を見る）。
+    let (run_id, status) = h.run_to_completion(&ir, &json!({}), executor).await;
+    assert_eq!(status, RunStatus::Failed);
+    let err: Option<Value> = sqlx::query_scalar(
+        "SELECT error FROM step_execution WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'ai'",
+    )
+    .bind(&h.tenant)
+    .bind(run_id)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    let err = err.expect("step の誤り");
+    assert_eq!(err["code"], "invalid");
+    assert_eq!(
+        err["message"],
+        "AI モデル「no-such-model」は登録されていません。ノードの設定でモデルを選び直してください。"
+    );
+    // 非再試行（設定を直すまで通らない）なので 1 回で確定する。
+    let attempts: i32 = sqlx::query_scalar(
+        "SELECT attempt FROM step_execution WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'ai'",
+    )
+    .bind(&h.tenant)
+    .bind(run_id)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    assert_eq!(attempts, 1);
+}

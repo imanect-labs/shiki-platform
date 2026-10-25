@@ -19,6 +19,7 @@ use sqlx::PgPool;
 use storage::model::ChildSort;
 
 use super::auth::auth_ctx;
+use super::llm_error::llm_port_error;
 use storage::StorageService;
 use uuid::Uuid;
 use workflow_engine::{
@@ -224,11 +225,11 @@ impl NodePorts for ProdNodePorts {
             .gateway
             .stream(&ctx, greq)
             .await
-            .map_err(|e| llm_port_error(&e))?;
+            .map_err(|e| llm_port_error(ec, &e))?;
         let mut text = String::new();
         let mut usage = Usage::default();
         while let Some(item) = stream.next().await {
-            match item.map_err(|e| PortError::unavailable(format!("llm stream: {e}")))? {
+            match item.map_err(|e| llm_port_error(ec, &e))? {
                 StreamDelta::TextDelta { text: t } => text.push_str(&t),
                 StreamDelta::Done { usage: u, .. } => usage = u,
                 _ => {}
@@ -557,34 +558,4 @@ fn cell_to_json(cell: Option<&str>) -> Value {
 fn preview(s: &str) -> String {
     let flat: String = s.chars().take(200).collect();
     flat.replace('\n', " ")
-}
-
-/// gateway の失敗をワークフローの再試行分類へ写す。
-///
-/// 設定・入力の誤り（未知のモデル・組織が許可していないモデル・プロバイダの 4xx）は、設定を
-/// 変えない限り何度やっても通らないので再試行しない。到達障害やレート制限だけを再試行する。
-fn llm_port_error(e: &llm_gateway::LlmError) -> PortError {
-    match e {
-        llm_gateway::LlmError::Config(_) | llm_gateway::LlmError::BadRequest(_) => {
-            PortError::invalid(format!("llm: {e}"))
-        }
-        _ => PortError::unavailable(format!("llm: {e}")),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn llm_config_errors_are_not_retried() {
-        use llm_gateway::LlmError;
-        // 組織が許可していないモデルは設定を変えるまで通らない → 再試行しない。
-        let e = llm_port_error(&LlmError::Config("model is not enabled".into()));
-        assert!(!e.retryable);
-        assert!(!llm_port_error(&LlmError::BadRequest("bad".into())).retryable);
-        // 到達障害・レート制限は再試行する。
-        assert!(llm_port_error(&LlmError::Unavailable("down".into())).retryable);
-        assert!(llm_port_error(&LlmError::RateLimited("429".into())).retryable);
-    }
 }
