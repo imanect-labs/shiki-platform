@@ -435,10 +435,11 @@ impl NodePorts for ProdNodePorts {
                 "workflow が存在しません: {name}"
             )));
         };
-        // 実行主体の権限で子 run を起動（fire-and-forget）。
+        // 実行主体の権限で子 run を起動（fire-and-forget）。子は親の run の因果の鎖を引き継ぐ（子の書込が
+        // 親のデータ変更トリガを起こす循環を抑止する・D-26）。
         let run_id = self
             .launcher
-            .start_interactive(&ctx, workflow_id, input)
+            .start_child(&ctx, workflow_id, input, ec.run_id)
             .await
             .map_err(|e| match e {
                 // 入力が子ワークフローの input_schema に合わない＝何度やっても通らない（再試行しない）。

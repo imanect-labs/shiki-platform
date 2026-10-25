@@ -312,6 +312,7 @@ audit_actions! {
     WorkflowDataDelegated = "workflow.data.delegated", "委譲されたテーブルかを確認", Workflow;
     WorkflowDisable = "workflow.disable", "ワークフローを無効化", Workflow;
     WorkflowEnable = "workflow.enable", "ワークフローを有効化", Workflow;
+    WorkflowTriggerSuppressed = "workflow.trigger.suppressed", "イベントトリガの発火を抑止", Workflow;
     WorkspaceSelect = "workspace.select", "作業フォルダを選択", Folder;
 }
 

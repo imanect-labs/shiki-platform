@@ -90,6 +90,15 @@ pub struct ClaimedStep {
 /// 時計ずれと最後の heartbeat の遅延を吸収するための余白。
 const RESUME_GRACE_MARGIN_SECS: i64 = 5;
 
+/// run の由来（[`RunStore::create_run_from`]・GAP-07）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunOrigin {
+    /// 発火元の outbox イベント（イベントトリガの run・`(trigger_id, trigger_event_id)` で一意）。
+    pub trigger_event_id: Option<i64>,
+    /// 親の run（workflow.start で起動した子）。
+    pub parent_run_id: Option<Uuid>,
+}
+
 /// run/step のデータチョークポイント。
 #[derive(Clone)]
 pub struct RunStore {
@@ -122,7 +131,8 @@ impl RunStore {
     /// run を作成し本体ノードを一括実体化する（root=ready・他=pending・run.started 追記）。
     ///
     /// `trigger_id` は発火元トリガ（schedule/event の実体化トリガ id・interactive は None）。run 履歴の
-    /// リプレイ/監査/キャンセルがどのトリガ由来か辿れるようにする。
+    /// リプレイ/監査/キャンセルがどのトリガ由来か辿れるようにする。由来（イベント・親の run）を持つ run は
+    /// [`Self::create_run_from`] で作る。
     ///
     /// **run 多重度**（engine.md §8.3・10.5）: `policies.max_parallel_runs` を超える場合は
     /// `on_trigger_overflow` に従い **queue**（status=queued で滞留・scheduler tick が promote）
@@ -143,6 +153,45 @@ impl RunStore {
         ir_snapshot: &Value,
         graph: &RunGraph,
     ) -> Result<Option<Uuid>, RunStoreError> {
+        self.create_run_from(
+            tenant_id,
+            org,
+            workflow_id,
+            version,
+            trigger_kind,
+            trigger_id,
+            principal,
+            principal_kind,
+            input,
+            ir_snapshot,
+            graph,
+            RunOrigin::default(),
+        )
+        .await
+    }
+
+    /// [`Self::create_run`] の由来つき版（GAP-07）。
+    ///
+    /// - `origin.trigger_event_id`: 発火元の outbox イベント。`(trigger_id, trigger_event_id)` で一意にし、
+    ///   同じイベントで作った run が既にあればそれを返す（再配送・再試行で二重に作らない・PIT-31）。
+    /// - `origin.parent_run_id`: 親の run（workflow.start の子）。子は親の鎖 ∪ {親のワークフロー} を
+    ///   同じ Tx で引き継ぐ（子の書込が親を起こす循環を見つける・D-26）。
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub async fn create_run_from(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        workflow_id: Uuid,
+        version: i64,
+        trigger_kind: &str,
+        trigger_id: Option<&str>,
+        principal: &str,
+        principal_kind: &str,
+        input: &Value,
+        ir_snapshot: &Value,
+        graph: &RunGraph,
+        origin: RunOrigin,
+    ) -> Result<Option<Uuid>, RunStoreError> {
         let policies: crate::ir::Policies = ir_snapshot
             .get("policies")
             .and_then(|p| serde_json::from_value(p.clone()).ok())
@@ -156,6 +205,23 @@ impl RunStore {
             .execute(&mut *tx)
             .await
             .map_err(map_db)?;
+        // 同じイベントで作った run があればそれを返す（多重度の判定より先・見送りに化けさせない）。
+        if let (Some(tid), Some(eid)) = (trigger_id, origin.trigger_event_id) {
+            let existing: Option<Uuid> = sqlx::query_scalar(
+                "SELECT run_id FROM workflow_run \
+                 WHERE tenant_id = $1 AND trigger_id = $2 AND trigger_event_id = $3",
+            )
+            .bind(tenant_id)
+            .bind(tid)
+            .bind(eid)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_db)?;
+            if existing.is_some() {
+                tx.rollback().await.map_err(map_db)?;
+                return Ok(existing);
+            }
+        }
         let active: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM workflow_run \
              WHERE tenant_id = $1 AND workflow_id = $2 AND status IN ('queued', 'running')",
@@ -172,16 +238,38 @@ impl RunStore {
             return Ok(None);
         }
         let queued = overflow; // queue（既定）: 滞留させ tick が promote する。
+                               // 親の鎖（workflow.start の子）。親が見つからなければ鎖は空（由来だけ残す）。
+        let chain: Vec<Uuid> = match origin.parent_run_id {
+            Some(parent) => sqlx::query_as::<_, (Uuid, Vec<Uuid>)>(
+                "SELECT workflow_id, trigger_chain FROM workflow_run \
+                 WHERE tenant_id = $1 AND run_id = $2",
+            )
+            .bind(tenant_id)
+            .bind(parent)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_db)?
+            .map(|(wf, mut chain)| {
+                if !chain.contains(&wf) {
+                    chain.push(wf);
+                }
+                chain
+            })
+            .unwrap_or_default(),
+            None => Vec::new(),
+        };
 
         let status = if queued { "queued" } else { "running" };
         let run_id: Uuid = sqlx::query_scalar(
             "INSERT INTO workflow_run \
              (tenant_id, org, workflow_id, version, trigger_kind, trigger_id, principal, \
-              principal_kind, input, ir_snapshot, status, started_at, timeout_at) \
+              principal_kind, input, ir_snapshot, status, started_at, timeout_at, \
+              trigger_event_id, trigger_chain, cause_run_id) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
                      CASE WHEN $11 = 'running' THEN now() END, \
                      CASE WHEN $11 = 'running' \
-                          THEN now() + ($12 || ' seconds')::interval END) \
+                          THEN now() + ($12 || ' seconds')::interval END, \
+                     $13, $14, $15) \
              RETURNING run_id",
         )
         .bind(tenant_id)
@@ -196,6 +284,9 @@ impl RunStore {
         .bind(Json(ir_snapshot))
         .bind(status)
         .bind(i64::from(policies.run_timeout_sec))
+        .bind(origin.trigger_event_id)
+        .bind(&chain)
+        .bind(origin.parent_run_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;

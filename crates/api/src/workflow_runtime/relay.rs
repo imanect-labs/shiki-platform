@@ -3,6 +3,8 @@
 //! storage.write の 1 件を、トリガの run 入力（`$from trigger`）と wait(event) の到来イベントに
 //! 写して配る（engine.md §5.4・§5.5 の同一マッチャ）。
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use workflow_engine::{
@@ -14,42 +16,112 @@ use workflow_engine::{
 const RELAY_BATCHES_PER_TICK: usize = 32;
 const RELAY_BATCH: usize = 500;
 
-/// outbox の workflow 未配送イベントを処理する（storage.write のみ・at-least-once）。
+/// relay が使う依存（イベントの照合・起動・閲覧の確認・データ変更の見え方）。
+pub struct RelayDeps<'a> {
+    pub db: &'a sqlx::PgPool,
+    pub hints: &'a storage::event::ClaimHints,
+    pub sched: &'a SchedulerStore,
+    pub runs: &'a RunStore,
+    pub launcher: &'a dyn workflow_engine::RunLauncher,
+    pub storage: &'a storage::StorageService,
+    /// データ変更トリガ・wait(event) の見え方（委譲元・実行主体の権限で読む・GAP-07）。
+    pub data: &'a Arc<data::DataStore>,
+    pub fsms: &'a Arc<data::FsmStore>,
+}
+
+/// outbox の workflow 未配送イベントを処理する（storage.write とデータ変更・at-least-once）。
 ///
 /// 各イベントを ①トリガマッチ（run 起動）②wait(event) 起床、の両方へ配る（engine.md §5.5 同一マッチャ）。
-/// いずれも祖先束縛 scope（イベント発生フォルダ id）＋filter で照合する。wait(event) はさらに、購読した
+/// storage.write は祖先束縛 scope（イベント発生フォルダ id）＋filter で照合する。wait(event) はさらに、購読した
 /// run の実行主体が保存されたファイルを読めるときだけ起こす（`storage` の viewer 確認・[`SavedFileGate`]）。
-/// スケジューラの tick から呼ぶほか、結合テストが本番と同じ経路でイベントを配るために使う。
-pub async fn relay_events(
-    db: &sqlx::PgPool,
-    hints: &storage::event::ClaimHints,
-    sched: &SchedulerStore,
-    runs: &RunStore,
-    launcher: &dyn workflow_engine::RunLauncher,
-    storage: &storage::StorageService,
-) -> Result<(), anyhow::Error> {
+/// データ変更（`data.record.changed` / `data.record.transitioned`）は [`super::relay_data`] が配る。
+/// 続けて、起動に一時失敗したトリガの発火を再試行する（D-21）。
+/// スケジューラの relay ループから呼ぶほか、結合テストが本番と同じ経路でイベントを配るために使う。
+pub async fn relay_events(deps: &RelayDeps<'_>) -> Result<(), anyhow::Error> {
     // 溜まっていれば 1 tick の中で続けて捌く（構造化データのレコード変更も outbox に乗るので、一括取込の
     // 直後は件数が多い。1 tick 1 バッチだと他の consumer と GC を長く止める・Task 15.6）。
     for _ in 0..RELAY_BATCHES_PER_TICK {
-        if relay_events_batch(db, hints, sched, runs, launcher, storage).await? < RELAY_BATCH {
+        if relay_events_batch(deps).await? < RELAY_BATCH {
             break;
         }
+    }
+    retry_firings(deps).await?;
+    Ok(())
+}
+
+/// 起動に一時失敗したトリガの発火を再試行し、打ち切ったものを監査に残す（D-21）。
+async fn retry_firings(deps: &RelayDeps<'_>) -> Result<(), anyhow::Error> {
+    let report = deps
+        .sched
+        .retry_pending_firings(chrono::Utc::now(), None, deps.launcher)
+        .await?;
+    for g in &report.gave_up {
+        let org: Option<String> = sqlx::query_scalar(
+            "SELECT org FROM workflow_registration WHERE tenant_id = $1 AND workflow_id = $2",
+        )
+        .bind(&g.tenant_id)
+        .bind(g.workflow_id)
+        .fetch_optional(deps.db)
+        .await?;
+        audit_suppressed(
+            deps.db,
+            &g.tenant_id,
+            org.as_deref().unwrap_or_default(),
+            &g.trigger_id,
+            g.event_id,
+            "gave_up",
+            None,
+        )
+        .await;
     }
     Ok(())
 }
 
-async fn relay_events_batch(
+/// トリガの発火を抑止・打ち切ったことを監査に残す（件数ではなく 1 件ずつ・不可視による不発火は残さない）。
+///
+/// 書込の失敗は警告に留める（relay を止めない）。
+pub(super) async fn audit_suppressed(
     db: &sqlx::PgPool,
-    hints: &storage::event::ClaimHints,
-    sched: &SchedulerStore,
-    runs: &RunStore,
-    launcher: &dyn workflow_engine::RunLauncher,
-    storage: &storage::StorageService,
-) -> Result<usize, anyhow::Error> {
-    let mut tx = db.begin().await?;
+    tenant_id: &str,
+    org: &str,
+    trigger_id: &str,
+    event_id: i64,
+    reason: &str,
+    trace_id: Option<&str>,
+) {
+    let ctx = authz::AuthContext::new(
+        authz::Principal {
+            kind: authz::PrincipalKind::User,
+            id: "system:workflow-relay".into(),
+            email: None,
+            groups: vec![],
+            roles: vec![],
+            tenant_id: Some(tenant_id.to_string()),
+        },
+        org.to_string(),
+        tenant_id.to_string(),
+    );
+    let entry = storage::audit::AuditEntry {
+        action: storage::audit::AuditAction::WorkflowTriggerSuppressed,
+        object_type: "workflow_trigger",
+        object_id: trigger_id,
+        decision: storage::audit::Decision::Deny,
+        trace_id,
+        metadata: json!({ "reason": reason, "event_id": event_id }),
+    };
+    if let Err(e) = storage::audit::AuditRecorder::new(db.clone())
+        .record(&ctx, entry)
+        .await
+    {
+        tracing::warn!(error = %e, trigger_id, reason, "トリガの抑止の監査に失敗");
+    }
+}
+
+async fn relay_events_batch(deps: &RelayDeps<'_>) -> Result<usize, anyhow::Error> {
+    let mut tx = deps.db.begin().await?;
     let events = storage::event::claim_undelivered_hinted(
         &mut tx,
-        hints,
+        deps.hints,
         "workflow",
         "workflow",
         RELAY_BATCH as i64,
@@ -67,31 +139,32 @@ async fn relay_events_batch(
             continue;
         };
         // match_event / wake_event_waits は自 tx（trigger_firing UNIQUE・wait_subscription fired）で冪等。
-        sched
+        deps.sched
             .match_event(
                 &ev.tenant_id,
                 "storage.write",
                 ev.id,
                 write.folder,
                 &write.payload,
-                launcher,
+                deps.launcher,
             )
             .await?;
         // 確かめられなかった（認可基盤の一時障害など）ときは Err でバッチごと配送済みにせず、次の tick で
         // 配り直す（トリガの発火・起こした wait は自 tx で冪等）。
         let gate = SavedFileGate {
-            storage,
+            storage: deps.storage,
             file_id: ev.node_id,
             trace_id: ev.trace_id.as_deref(),
         };
-        runs.wake_event_waits(
-            &ev.tenant_id,
-            "storage.write",
-            write.folder,
-            &write.payload,
-            &gate,
-        )
-        .await?;
+        deps.runs
+            .wake_event_waits(
+                &ev.tenant_id,
+                "storage.write",
+                write.folder,
+                &write.payload,
+                &gate,
+            )
+            .await?;
         ids.push(ev.id);
     }
     storage::event::mark_delivered(&mut tx, "workflow", &ids).await?;

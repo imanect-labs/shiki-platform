@@ -215,8 +215,10 @@ async fn interactive_and_scheduled_run_complete_with_exactly_once_effects() {
         "schedule",
         "trg-1",
         &serde_json::Value::Null,
+        None,
     )
     .await
+    .run_id()
     .expect("scheduled run id");
     let worker2 = WorkflowWorker::new(runs.clone(), exec.clone(), WorkerConfig::default())
         .scoped_to_tenant(&tenant);
@@ -293,11 +295,18 @@ async fn suspended_workflow_scheduled_launch_creates_no_run() {
         "schedule",
         "trg-1",
         &serde_json::Value::Null,
+        None,
     )
     .await;
+    // 委譲の不成立は再試行しない見送り（一時失敗と区別する・D-21）。
     assert!(
-        result.is_none(),
-        "委譲失効時は run を作らない（fail-closed）"
+        matches!(
+            result,
+            workflow_engine::LaunchOutcome::Skipped(
+                workflow_engine::SkipReason::DelegationInvalid(_)
+            )
+        ),
+        "委譲失効時は run を作らない（fail-closed）: {result:?}"
     );
 }
 

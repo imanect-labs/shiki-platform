@@ -24,7 +24,7 @@ pub enum SchedulerStoreError {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn map_db(e: sqlx::Error) -> SchedulerStoreError {
+pub(super) fn map_db(e: sqlx::Error) -> SchedulerStoreError {
     SchedulerStoreError::Internal(format!("db: {e}"))
 }
 
@@ -54,7 +54,7 @@ struct EventTriggerRow {
 /// スケジューラ/マッチャの永続化。
 #[derive(Clone)]
 pub struct SchedulerStore {
-    db: PgPool,
+    pub(super) db: PgPool,
 }
 
 impl SchedulerStore {
@@ -195,6 +195,7 @@ impl SchedulerStore {
             return Ok(false);
         }
         // run_id が NULL（新規占有 or クラッシュ残り）→ ロック保持中に launch して記録する。
+        // 見送り・一時失敗は run_id NULL のまま（occurrence は 1 回きり・再試行はしない）。
         let run_id = launcher
             .launch(
                 &t.tenant_id,
@@ -202,8 +203,10 @@ impl SchedulerStore {
                 "schedule",
                 &t.trigger_id,
                 &serde_json::Value::Null,
+                None,
             )
-            .await;
+            .await
+            .run_id();
         sqlx::query(
             "UPDATE schedule_occurrence SET run_id = $5 \
              WHERE tenant_id = $1 AND workflow_id = $2 AND trigger_id = $3 AND scheduled_at = $4",
@@ -298,50 +301,17 @@ impl SchedulerStore {
                     }
                 }
             }
-            // (trigger_id, event_id) UNIQUE で 1 イベント 1 run。占有 INSERT ＋ FOR UPDATE 行ロックで
-            // 並行 tick/再配信を直列化しつつ、launch 前クラッシュで run_id が NULL のまま残った firing は
-            // 次配信で再起動できるようにする（occurrence と同じ回復方式）。
-            let mut tx = self.db.begin().await.map_err(map_db)?;
-            sqlx::query(
-                "INSERT INTO trigger_firing (tenant_id, trigger_id, event_id) \
-                 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-            )
-            .bind(&t.tenant_id)
-            .bind(&t.trigger_id)
-            .bind(event_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db)?;
-            let existing_run: Option<Uuid> = sqlx::query_scalar(
-                "SELECT run_id FROM trigger_firing \
-                 WHERE tenant_id = $1 AND trigger_id = $2 AND event_id = $3 FOR UPDATE",
-            )
-            .bind(&t.tenant_id)
-            .bind(&t.trigger_id)
-            .bind(event_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(map_db)?;
-            if existing_run.is_some() {
-                tx.commit().await.map_err(map_db)?; // 既に発火済み。
-                continue;
-            }
-            let run_id = launcher
-                .launch(&t.tenant_id, t.workflow_id, "event", &t.trigger_id, payload)
-                .await;
-            sqlx::query(
-                "UPDATE trigger_firing SET run_id = $4 \
-                 WHERE tenant_id = $1 AND trigger_id = $2 AND event_id = $3",
-            )
-            .bind(&t.tenant_id)
-            .bind(&t.trigger_id)
-            .bind(event_id)
-            .bind(run_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db)?;
-            tx.commit().await.map_err(map_db)?;
-            if run_id.is_some() {
+            // (trigger_id, event_id) で 1 イベント 1 run。占有・起動・結果の記録は firing の共通の経路
+            // （一時失敗は再試行を待つ・D-21）。storage.write は因果の鎖をまだ使わない（BUG-29）。
+            let target = super::EventTriggerRef {
+                tenant_id: t.tenant_id.clone(),
+                trigger_id: t.trigger_id.clone(),
+                workflow_id: t.workflow_id,
+            };
+            if let super::FireOutcome::Fired(_) = self
+                .fire_event_trigger(&target, event_id, payload, None, launcher)
+                .await?
+            {
                 fired += 1;
             }
         }

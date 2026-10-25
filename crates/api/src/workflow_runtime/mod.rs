@@ -23,7 +23,7 @@ use workflow_engine::{
 };
 
 pub use ports::ProdNodePorts;
-pub use relay::relay_events;
+pub use relay::{relay_events, RelayDeps};
 
 /// ワークフロー実行時の設定（既定は無効・compose/e2e で有効化）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,7 +302,7 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
     // 実行履歴 GC（engine.md §12.2）はここでは起動しない。`workflow.enabled` と独立した保守
     // ランタイムとして `wiring::wire_workflow` が enabled ゲートの外で起動する（#448）。
 
-    // ② スケジューラ ③ イベント relay（単一リーダー・tick ループ・detach）。
+    // ② スケジューラ ③ イベント relay（単一リーダー・それぞれのループ・detach）。
     let leader_id = format!("wf-sched-{}", std::process::id());
     let lease = LeaderLease::new(deps.db.clone(), leader_id, deps.config.lease_secs);
     let sched = SchedulerStore::new(deps.db.clone());
@@ -310,6 +310,12 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
     let tick = std::time::Duration::from_secs(deps.config.tick_secs.max(1));
     let relay_db = deps.db.clone();
     let relay_storage = Arc::clone(&deps.storage);
+    let relay_data = Arc::clone(&deps.data);
+    let relay_fsms = Arc::clone(&deps.fsms);
+    let relay_runs = deps.runs.clone();
+    let relay_sched = sched.clone();
+    let relay_launcher = Arc::clone(&launcher_dyn);
+    let relay_lease = lease.clone();
     let tick_runs = deps.runs.clone();
     let tick_concurrency = concurrency_store;
     // claim の走査の下限（アイドルの間は outbox を走査しない・3 回目の検証 3-D-1）。
@@ -323,6 +329,33 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
         tracing::error!(error = %e, "workflow consumer 登録に失敗");
     }
 
+    // ③ イベント relay は tick（cron・timer・timeout）とは別のループで回す（データ変更の照合が重くても
+    // スケジュールの発火や期限の回収を遅らせない・GAP-07）。リーダーは同じリース（同じ保持者）。
+    tokio::spawn(async move {
+        loop {
+            match relay_lease.acquire_or_renew().await {
+                Ok(true) => {
+                    let relay = RelayDeps {
+                        db: &relay_db,
+                        hints: &claim_hints,
+                        sched: &relay_sched,
+                        runs: &relay_runs,
+                        launcher: relay_launcher.as_ref(),
+                        storage: &relay_storage,
+                        data: &relay_data,
+                        fsms: &relay_fsms,
+                    };
+                    if let Err(e) = relay_events(&relay).await {
+                        tracing::warn!(error = %e, "イベント relay でエラー");
+                    }
+                }
+                Ok(false) => {} // 別インスタンスがリーダー。
+                Err(e) => tracing::warn!(error = %e, "リーダーリース取得に失敗"),
+            }
+            tokio::time::sleep(tick).await;
+        }
+    });
+
     tokio::spawn(async move {
         loop {
             match lease.acquire_or_renew().await {
@@ -330,18 +363,6 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                     let now = chrono::Utc::now();
                     if let Err(e) = sched.tick_schedules(now, None, launcher_dyn.as_ref()).await {
                         tracing::warn!(error = %e, "スケジューラ tick でエラー");
-                    }
-                    if let Err(e) = relay_events(
-                        &relay_db,
-                        &claim_hints,
-                        &sched,
-                        &tick_runs,
-                        launcher_dyn.as_ref(),
-                        &relay_storage,
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %e, "イベント relay でエラー");
                     }
                     // wait(timer) 起床・wait(event/timer) の timeout 回収（engine.md §5.1）。
                     if let Err(e) = tick_runs.wake_due_timers(now, None).await {

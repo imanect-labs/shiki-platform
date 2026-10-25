@@ -46,6 +46,9 @@ struct Env {
     pool: sqlx::PgPool,
     fga: Arc<dyn AuthzClient>,
     storage: Arc<storage::StorageService>,
+    /// relay のデータ変更の経路（このテストでは使わない・relay の依存として渡す）。
+    data: Arc<data::DataStore>,
+    fsms: Arc<data::FsmStore>,
     workflows: WorkflowStore,
     runs: RunStore,
     launcher: WorkflowRunLauncher,
@@ -55,6 +58,22 @@ struct Env {
     tabular: bool,
     tenant: String,
     alice: AuthContext,
+}
+
+/// 参照先を確かめない resolver（このテストはテーブルを作らない）。
+struct NoRefs;
+
+#[async_trait::async_trait]
+impl data::RefResolver for NoRefs {
+    async fn user_exists(&self, _: &AuthContext, _: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+    async fn role_exists(&self, _: &AuthContext, _: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+    async fn file_readable(&self, _: &AuthContext, _: Uuid) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 /// 隔離ランナーの実体（`SHIKI_TABULAR_RUNNER` か除外クレートの既定ビルド先）。
@@ -190,6 +209,12 @@ async fn setup() -> Option<Env> {
         ))
     });
     let artifacts = Arc::new(artifact::ArtifactStore::new(pool.clone(), Arc::clone(&fga)));
+    let data = Arc::new(data::DataStore::new(
+        pool.clone(),
+        Arc::clone(&fga),
+        Arc::new(NoRefs),
+    ));
+    let fsms = Arc::new(data::FsmStore::new(Arc::clone(&artifacts), (*data).clone()));
     let workflows = WorkflowStore::new(Arc::clone(&artifacts));
     let runs = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let delegation = DelegationStore::new(pool.clone(), Arc::clone(&fga));
@@ -220,6 +245,8 @@ async fn setup() -> Option<Env> {
         pool,
         fga,
         storage,
+        data,
+        fsms,
         workflows,
         runs,
         launcher,
@@ -254,14 +281,16 @@ impl Env {
         let worker = self.worker();
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         loop {
-            api::workflow_runtime::relay_events(
-                &self.pool,
-                &storage::event::ClaimHints::default(),
-                &sched,
-                &self.runs,
-                &self.launcher,
-                &self.storage,
-            )
+            api::workflow_runtime::relay_events(&api::workflow_runtime::RelayDeps {
+                db: &self.pool,
+                hints: &storage::event::ClaimHints::default(),
+                sched: &sched,
+                runs: &self.runs,
+                launcher: &self.launcher,
+                storage: &self.storage,
+                data: &self.data,
+                fsms: &self.fsms,
+            })
             .await
             .expect("relay");
             while worker.claim_and_run_once("w1").await.unwrap() {}

@@ -12,9 +12,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::graph::RunGraph;
-use super::store::RunStore;
+use super::store::{RunOrigin, RunStore};
 use crate::delegation::{DelegationStore, RunAdmission};
-use crate::scheduler::RunLauncher;
+use crate::scheduler::{LaunchOutcome, RunLauncher, SkipReason};
 use crate::store::WorkflowStore;
 use crate::WorkflowIr;
 
@@ -51,7 +51,28 @@ impl WorkflowRunLauncher {
             .get_latest(ctx, workflow_id, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
-        self.create_interactive_run(ctx, workflow_id, version, &ir, input)
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, None)
+            .await
+    }
+
+    /// run の中から子のワークフローを起動する（workflow.start・`Shiki.workflow.*`）。
+    ///
+    /// 権限・入力の検査は [`Self::start_interactive`] と同じ。子の run は親の run の因果の鎖
+    /// （親の鎖 ∪ {親のワークフロー}）を引き継ぐ。子の書込が起こすイベントで親（祖先）のトリガが
+    /// 起きる循環を、子が別の run でも見つけられるようにする（D-26）。
+    pub async fn start_child(
+        &self,
+        ctx: &AuthContext,
+        workflow_id: Uuid,
+        input: &Value,
+        parent_run_id: Option<Uuid>,
+    ) -> Result<Option<Uuid>, LauncherError> {
+        let (version, ir) = self
+            .workflows
+            .get_latest(ctx, workflow_id, None)
+            .await
+            .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, parent_run_id)
             .await
     }
 
@@ -63,6 +84,7 @@ impl WorkflowRunLauncher {
         version: i64,
         ir: &WorkflowIr,
         input: &Value,
+        parent_run_id: Option<Uuid>,
     ) -> Result<Option<Uuid>, LauncherError> {
         // 入力の契約（input_schema）は run を作る前に必ず確かめる。対話起動の全経路
         // （API・会話の図のボタン・ミニアプリ）がここを通るので、画面の検証に頼らない。
@@ -81,7 +103,7 @@ impl WorkflowRunLauncher {
         };
         let run_id = self
             .runs
-            .create_run(
+            .create_run_from(
                 &ctx.tenant_id,
                 &ctx.org,
                 workflow_id,
@@ -93,6 +115,10 @@ impl WorkflowRunLauncher {
                 input,
                 &ir_json,
                 &graph,
+                RunOrigin {
+                    trigger_event_id: None,
+                    parent_run_id,
+                },
             )
             .await
             .map_err(|e| LauncherError::Run(e.to_string()))?;
@@ -116,7 +142,7 @@ impl WorkflowRunLauncher {
             .get_version(ctx, workflow_id, version, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
-        self.create_interactive_run(ctx, workflow_id, version, &ir, input)
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, None)
             .await
     }
 
@@ -139,11 +165,13 @@ impl WorkflowRunLauncher {
             .get_version_via_bundle(ctx, bundle_id, workflow_id, version, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
-        self.create_interactive_run(ctx, workflow_id, version, &ir, input)
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, None)
             .await
     }
 
     /// schedule/event の run を起動する（委譲チェック→workflow プリンシパルで create_run）。
+    ///
+    /// `Err` は一時的な失敗（IR・DB・OpenFGA）。起動しないと決まったものは `Ok(Skipped)`。
     async fn launch_delegated(
         &self,
         tenant_id: &str,
@@ -151,7 +179,8 @@ impl WorkflowRunLauncher {
         trigger_kind: &str,
         trigger_id: &str,
         payload: &Value,
-    ) -> Result<Option<Uuid>, LauncherError> {
+        event_id: Option<i64>,
+    ) -> Result<LaunchOutcome, LauncherError> {
         // registration から **有効化バージョンと org** を取る（enable 時に固定した版・org で実行する）。
         // 未登録/未有効化なら run を作らない。
         let Some((org, enabled_version)) = self
@@ -160,7 +189,7 @@ impl WorkflowRunLauncher {
             .await
             .map_err(|e| LauncherError::Delegation(format!("{e:?}")))?
         else {
-            return Ok(None);
+            return Ok(LaunchOutcome::Skipped(SkipReason::NotEnabled));
         };
 
         // workflow プリンシパルの AuthContext（registration の org）で **enabled_version の IR** を読む。
@@ -190,7 +219,9 @@ impl WorkflowRunLauncher {
                     reason,
                     "委譲チェック不成立のため run を開始しません"
                 );
-                return Ok(None);
+                return Ok(LaunchOutcome::Skipped(SkipReason::DelegationInvalid(
+                    reason.clone(),
+                )));
             }
         }
 
@@ -199,7 +230,7 @@ impl WorkflowRunLauncher {
         // event ペイロードを run 入力に載せる（$from trigger/$from input で参照可能・schedule は Null）。
         let run_id = self
             .runs
-            .create_run(
+            .create_run_from(
                 tenant_id,
                 &org,
                 workflow_id,
@@ -211,10 +242,18 @@ impl WorkflowRunLauncher {
                 payload,
                 &ir_json,
                 &graph,
+                RunOrigin {
+                    trigger_event_id: event_id,
+                    parent_run_id: None,
+                },
             )
             .await
             .map_err(|e| LauncherError::Run(e.to_string()))?;
-        Ok(run_id)
+        // None = policies.on_trigger_overflow=skip による多重度あふれ（再試行しても同じ）。
+        Ok(run_id.map_or(
+            LaunchOutcome::Skipped(SkipReason::Overflow),
+            LaunchOutcome::Started,
+        ))
     }
 }
 
@@ -227,18 +266,25 @@ impl RunLauncher for WorkflowRunLauncher {
         trigger_kind: &str,
         trigger_id: &str,
         payload: &Value,
-    ) -> Option<Uuid> {
+        event_id: Option<i64>,
+    ) -> LaunchOutcome {
         match self
-            .launch_delegated(tenant_id, workflow_id, trigger_kind, trigger_id, payload)
+            .launch_delegated(
+                tenant_id,
+                workflow_id,
+                trigger_kind,
+                trigger_id,
+                payload,
+                event_id,
+            )
             .await
         {
-            Ok(run_id) => run_id,
-            // 一時障害（IR 取得/DB/OpenFGA）は None を返すが、occurrence の run_id は NULL のまま
-            // 残るため次 tick で再試行される（scheduler の run_id NULL 再試行・delegation-invalid は
-            // registration suspend で再発火しない＝両者は自然に区別される）。
+            Ok(outcome) => outcome,
+            // 一時障害（IR 取得/DB/OpenFGA）。イベントの発火は呼び出し側が再試行する（trigger_firing の
+            // pending・D-21）。委譲の不成立・多重度あふれは Skipped で返り、再試行しない。
             Err(e) => {
-                tracing::warn!(error = %e, tenant = tenant_id, "run 起動に失敗（次 tick で再試行）");
-                None
+                tracing::warn!(error = %e, tenant = tenant_id, "run 起動に失敗");
+                LaunchOutcome::Failed(e.to_string())
             }
         }
     }

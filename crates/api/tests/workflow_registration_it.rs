@@ -117,9 +117,10 @@ impl RunLauncher for CountingLauncher {
         _trigger_kind: &str,
         _trigger_id: &str,
         _payload: &Value,
-    ) -> Option<Uuid> {
+        _event_id: Option<i64>,
+    ) -> workflow_engine::LaunchOutcome {
         self.launches.fetch_add(1, Ordering::SeqCst);
-        Some(Uuid::new_v4())
+        workflow_engine::LaunchOutcome::Started(Uuid::new_v4())
     }
 }
 
