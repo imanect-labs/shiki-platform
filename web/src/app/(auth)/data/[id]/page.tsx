@@ -50,14 +50,22 @@ export default function DataTablePage({ params }: { params: Promise<{ id: string
       .catch(() => undefined);
   }, [id]);
 
-  /// スキーマの改訂を受けたとき: 列（追加・削除・読めない列）と閲覧者の文脈を取り直す（失敗しても今の表示は保つ）。
+  /// スキーマの改訂を受けたとき・読取が 404 になったとき: 列（追加・削除・読めない列）と閲覧者の文脈を取り直す。
+  /// テーブルが見えなくなっていれば（共有の解除・削除＝404）ページを「開けません」に切り替え、それ以外の
+  /// 失敗では今の表示を保つ。
   const reloadSchema = React.useCallback(() => {
     Promise.all([getTable(id), getViewerContext(id)])
       .then(([t, v]) => {
         setTable(t);
         setViewer(v);
       })
-      .catch(() => undefined);
+      .catch((e) => {
+        if (e instanceof DataApiError && e.status === 404) {
+          setTable(null);
+          setViewer(null);
+          setError(TABLE_NOT_FOUND);
+        }
+      });
   }, [id]);
 
   React.useEffect(() => {

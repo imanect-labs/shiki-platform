@@ -634,6 +634,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         setInitial("error");
         report({ loaded: 0, done: false, count: null });
         bump();
+        // 画面側にも知らせる（/data はページごと「開けません」に切り替え、編集・取込の操作を残さない・#864）。
+        onErrorRef.current?.(e);
       } else if (e instanceof DataApiError && e.status === 401) {
         setLive({ kind: "signed_out" });
       } else {

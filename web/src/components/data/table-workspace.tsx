@@ -17,6 +17,7 @@ import {
   Plus,
   Save,
   Settings2,
+  Share2,
   Table2,
   Upload,
 } from "lucide-react";
@@ -29,6 +30,7 @@ import { ImportDialog, importProgress, useImportJob } from "@/components/data/im
 import { RecordDialog } from "@/components/data/record-dialog";
 import { useFsm } from "@/components/data/transition-editor";
 import { SchemaEditor } from "@/components/data/schema-editor";
+import { TableShareDialog } from "@/components/data/table-share-dialog";
 import {
   ColumnsControl,
   FilterControl,
@@ -37,7 +39,7 @@ import {
   SortControl,
 } from "@/components/data/view-controls";
 import { ViewSwitcher } from "@/components/data/view-switcher";
-import { usePageChrome } from "@/components/shell/page-header-context";
+import { ChromeIconButton, usePageChrome } from "@/components/shell/page-header-context";
 import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -172,6 +174,7 @@ export function TableWorkspace({
   const [recordOpen, setRecordOpen] = React.useState(false);
   const [viewLoading, setViewLoading] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
   const importJob = useImportJob(table.id);
   const [peers, setPeers] = React.useState<Peer[]>([]);
   const [names, setNames] = React.useState<Map<string, string>>(new Map());
@@ -337,11 +340,16 @@ export function TableWorkspace({
       const a = e.approvalRequired;
       if (a) return setProblem({ kind: "approval", ...a });
       // テーブルが見つからない（共有が外れた・削除された＝404）・使えない列（403 field_unavailable）は
-      // グリッドが本文で案内する（上の帯と二重に出さない）。
-      if (e.status === 404 || e.fieldUnavailable) return setProblem(null);
+      // グリッドが本文で案内する（上の帯と二重に出さない）。404 はテーブルと閲覧者の文脈を取り直させ、
+      // 本当に見えなくなっていればページごと「開けません」に切り替える（編集・取込の操作を残さない）。
+      if (e.status === 404) {
+        onSchemaStale?.();
+        return setProblem(null);
+      }
+      if (e.fieldUnavailable) return setProblem(null);
     }
     setProblem({ kind: "error", message: e.message });
-  }, []);
+  }, [onSchemaStale]);
 
   // グリッドは条件の誤り（400 の構造化した理由）・時間切れ（503）を表の中で出すので、上の帯と二重に出さない。
   const onGridError = React.useCallback(
@@ -451,8 +459,14 @@ export function TableWorkspace({
       title: table.name,
       subtitle: loaded.viewId ? loaded.name : undefined,
       back: { href: "/data", label: "テーブル一覧へ" },
+      // テーブルの共有は owner だけ（サーバも owner 以外を 403 にする）。PC はバー右・スマホは右上に出る。
+      actions: viewer.can_manage ? (
+        <ChromeIconButton label="テーブルを共有" onClick={() => setShareOpen(true)} data-testid="table-share-open">
+          <Share2 aria-hidden />
+        </ChromeIconButton>
+      ) : undefined,
     }),
-    [table.name, loaded.viewId, loaded.name],
+    [table.name, loaded.viewId, loaded.name, viewer.can_manage],
   );
 
   const err = (e: Error) => onQueryError(e);
@@ -710,6 +724,15 @@ export function TableWorkspace({
 
       {viewer.can_edit ? (
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} table={table} job={importJob} />
+      ) : null}
+      {viewer.can_manage ? (
+        <TableShareDialog
+          open={shareOpen}
+          onOpenChange={setShareOpen}
+          tableId={table.id}
+          name={table.name}
+          shareUrl={typeof window === "undefined" ? undefined : `${window.location.origin}/data/${table.id}`}
+        />
       ) : null}
       <SchemaEditor open={schemaOpen} onOpenChange={setSchemaOpen} table={table} onSaved={onTableChanged} />
       <RecordDialog
