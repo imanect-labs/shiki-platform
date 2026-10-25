@@ -17,9 +17,6 @@ use workflow_engine::ValidationError;
 /// 説明文に載せる使えるモデルの件数の上限（説明文を膨らませない・検証エラーにも候補が出る）。
 const MAX_LISTED_MODELS: usize = 30;
 
-/// 例の llm.invoke の model に入れる仮の値（説明文では先頭の使えるモデルに置き換え、無ければ項目ごと消す）。
-const MODEL_PLACEHOLDER: &str = "\"__MODEL__\"";
-
 /// nodes の要素の形（`ir::node::Node` のキー・テストで型のキーと突き合わせる）。
 const NODE_SHAPE: &str = r#"{"id":"<ノード id>","type":"<ノード種>","label":"日本語の短い名前","params":{…},"parent"?:"<map の id>","on_error"?:"fail_run"|"continue","retry"?:{"max_attempts":3},"timeout_sec"?:60}"#;
 
@@ -41,7 +38,6 @@ pub(super) const EXAMPLE_SUMMARIZE: &str = r##"{
   "nodes": [
     { "id": "summarize", "type": "llm.invoke", "label": "要約する",
       "params": {
-        "model": "__MODEL__",
         "system": "あなたは社内の問い合わせ窓口の担当者です。",
         "prompt": { "$template": "次の問い合わせを 3 行で要約してください。\n件名: {title}\n本文: {body}",
                     "vars": { "title": { "$from": "input", "path": "/title" },
@@ -78,8 +74,7 @@ pub(super) const EXAMPLE_REVIEW: &str = r#"{
     { "id": "per_item", "type": "control.map", "label": "1 件ずつ",
       "params": { "items": { "$from": "nodes.find.output", "path": "/items" }, "on_item_error": "collect" } },
     { "id": "review", "type": "llm.invoke", "parent": "per_item", "label": "確認点を挙げる",
-      "params": { "model": "__MODEL__",
-                  "prompt": { "$template": "次の申請で確認すべき点を箇条書きで挙げてください。\n{record}",
+      "params": { "prompt": { "$template": "次の申請で確認すべき点を箇条書きで挙げてください。\n{record}",
                               "vars": { "record": { "$from": "each", "path": "/item/data" } } } } },
     { "id": "save_review", "type": "storage.write", "parent": "per_item", "label": "確認メモを保存",
       "params": { "name": { "$template": "review-{id}.md", "vars": { "id": { "$from": "each", "path": "/item/id" } } },
@@ -127,25 +122,23 @@ fn minify(json: &str) -> String {
     out
 }
 
-/// 説明文に載せる例の IR（1 行の JSON）。
-///
-/// llm.invoke の model は、使えるモデルがあれば先頭のモデルにする（カタログがあると model は必須）。
-/// 無ければ項目ごと消す（照合しない構成では省略できる）。
-pub(super) fn example_json(raw: &str, models: Option<&[String]>) -> String {
-    let min = minify(raw);
-    match models.and_then(<[String]>::first) {
-        Some(model) => min.replace(
-            MODEL_PLACEHOLDER,
-            &serde_json::to_string(model).unwrap_or_default(),
-        ),
-        None => min.replace(&format!("\"model\":{MODEL_PLACEHOLDER},"), ""),
-    }
+/// 説明文に載せる例の IR（1 行の JSON）。llm.invoke の model は書かない（省略が正しい書き方で、
+/// 組織の既定のモデルで動く・BUG-12）。
+pub(super) fn example_json(raw: &str) -> String {
+    minify(raw)
 }
 
-/// llm.invoke のモデルの案内（`None` はカタログを引けなかった）。
+/// llm.invoke のモデルの案内（`None` はモデルの一覧を引けなかった）。
+///
+/// model はふつう省略させる（組織の既定で動き、管理者が既定を変えれば追随する）。指定できるモデルが
+/// 無い構成（LLM 未構成・組織の許可が 0 件）では書かせない（書くと検証で拒否される・BUG-37）。
 fn models_section(models: Option<&[String]>) -> String {
+    const OMIT: &str = "model はふつう省略する（省略すると組織の既定のモデルで動く）。";
     match models {
-        Some([]) => "model は照合されない（省略するとデプロイの既定のモデルで動く）。".to_string(),
+        Some([]) => {
+            "model は書かない（省略すると組織の既定のモデルで動く。この組織で指定できるモデルは無い）。"
+                .to_string()
+        }
         Some(ids) => {
             let shown = ids
                 .iter()
@@ -159,12 +152,11 @@ fn models_section(models: Option<&[String]>) -> String {
             } else {
                 String::new()
             };
-            format!("model は必須で、次の id のどれかを書く（このユーザーの組織で使えるもの）: {shown}{more}。")
+            format!("{OMIT}指定するときは次の id のどれかを書く（このユーザーの組織で使えるもの）: {shown}{more}。")
         }
-        None => {
-            "model には組織で使えるモデルの id を書く（違えば検証エラーに使えるモデルが出る）。"
-                .to_string()
-        }
+        None => format!(
+            "{OMIT}指定すると組織で使えるモデルと照合され、使えなければ検証エラーに使えるモデルが出る。"
+        ),
     }
 }
 
@@ -243,8 +235,8 @@ pub(super) fn emit_description(models: Option<&[String]>) -> String {
          例 1（入力を AI で要約してファイルに保存する）: {ex1}\n\
          例 2（毎朝、承認待ちの高額の申請を 1 件ずつ AI で確認し、取得に失敗したら記録する）: {ex2}\n\
          【llm.invoke のモデル】{models}\n",
-        ex1 = example_json(EXAMPLE_SUMMARIZE, models),
-        ex2 = example_json(EXAMPLE_REVIEW, models),
+        ex1 = example_json(EXAMPLE_SUMMARIZE),
+        ex2 = example_json(EXAMPLE_REVIEW),
         models = models_section(models),
     );
     d.push_str(&catalog_summary());
@@ -311,45 +303,47 @@ mod tests {
     }
 
     /// 説明文に埋め込む形の例を IR として読む。
-    fn embedded(raw: &str, models: Option<&[String]>) -> Value {
-        serde_json::from_str(&example_json(raw, models)).unwrap()
+    fn embedded(raw: &str) -> Value {
+        serde_json::from_str(&example_json(raw)).unwrap()
     }
 
-    /// 説明文の例は、モデルのカタログが無い構成でもある構成でも、そのまま V1〜V7 を通る。
+    /// 説明文の例は、照合しない構成でも、組織のモデルで照合する構成でも、そのまま V1〜V7 を通る
+    /// （model を書かないので、組織の既定で動く）。
     #[test]
     fn examples_pass_validation_with_and_without_a_model_catalog() {
         let with_models = Catalog {
-            models: vec!["model-a".into(), "model-b".into()],
+            models: Some(vec!["model-a".into(), "model-b".into()]),
             ..Catalog::default()
         };
-        let ids = with_models.models.clone();
+        let locked = Catalog {
+            model_lock: Some("auto".into()),
+            ..Catalog {
+                models: Some(Vec::new()),
+                ..Catalog::default()
+            }
+        };
         for (name, raw) in examples() {
-            let plain = embedded(raw, None);
-            let ir = WorkflowIr::from_json(&plain).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let ir_json = embedded(raw);
+            let ir = WorkflowIr::from_json(&ir_json).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(
                 workflow_engine::save_warnings(&ir).is_empty(),
                 "{name}: 警告が出る例は載せない"
             );
-            validate(&plain, &Catalog::default())
-                .unwrap_or_else(|e| panic!("{name}（カタログなし）: {e:?}"));
-            let modeled = embedded(raw, Some(&ids));
-            validate(&modeled, &with_models)
-                .unwrap_or_else(|e| panic!("{name}（カタログあり）: {e:?}"));
+            for (label, catalog) in [
+                ("カタログなし", &Catalog::default()),
+                ("カタログあり", &with_models),
+                ("選択の禁止・許可 0 件", &locked),
+            ] {
+                validate(&ir_json, catalog).unwrap_or_else(|e| panic!("{name}（{label}）: {e:?}"));
+            }
             // 1 行にしても元の JSON と同じ値（文字列の中の空白・改行は残る）。
             let original: Value = serde_json::from_str(raw).unwrap();
-            let mut restored = modeled.clone();
-            for node in restored["nodes"].as_array_mut().unwrap() {
-                if let Some(m) = node["params"].get_mut("model") {
-                    *m = Value::String("__MODEL__".into());
-                }
-            }
-            assert_eq!(restored, original, "{name}");
-            for rendered in [example_json(raw, None), example_json(raw, Some(&ids))] {
-                assert!(!rendered.contains("__MODEL__"), "{name}: {rendered}");
-            }
+            assert_eq!(ir_json, original, "{name}");
+            assert!(
+                ir.nodes.iter().all(|n| n.params.get("model").is_none()),
+                "{name}: 例に model を書かない"
+            );
         }
-        // カタログがあるのに model を入れない例は保存できない（入れる処理が効いていることの確認）。
-        assert!(validate(&embedded(EXAMPLE_SUMMARIZE, None), &with_models).is_err());
     }
 
     /// 条件木の例は control.branch の condition としてそのまま保存できる。
@@ -378,7 +372,7 @@ mod tests {
                 && id.len() <= 64
         };
         for (name, raw) in examples() {
-            let ir = embedded(raw, None);
+            let ir = embedded(raw);
             // 差し込みは {name}。{{ はエスケープなので例に書かない。
             assert!(
                 !raw.contains("{{") && !raw.contains("}}"),
@@ -405,8 +399,8 @@ mod tests {
         // 2 つの例で、出口・領域・参照の書き方をひととおり見せる。
         let all = format!(
             "{}{}",
-            example_json(EXAMPLE_SUMMARIZE, None),
-            example_json(EXAMPLE_REVIEW, None)
+            example_json(EXAMPLE_SUMMARIZE),
+            example_json(EXAMPLE_REVIEW)
         );
         for needle in [
             "\"from_port\":\"out\"",
@@ -510,23 +504,37 @@ mod tests {
         assert!(d.contains(
             "次の id のどれかを書く（このユーザーの組織で使えるもの）: fast-model, smart-model。"
         ));
-        // 例の llm.invoke には先頭のモデルが入る。
-        assert!(d.contains("\"model\":\"fast-model\""));
         let many: Vec<String> = (0..35).map(|i| format!("m{i}")).collect();
         let d = emit_description(Some(&many));
         assert!(d.contains("m29（ほか 5 件）"), "件数の上限");
         assert!(!d.contains("m30"));
         let d = emit_description(Some(&[]));
-        assert!(d.contains("model は照合されない"));
-        assert!(
-            !d.contains("\"model\":"),
-            "照合しない構成では例に model を書かない"
-        );
+        assert!(d.contains("model は書かない"), "指定できるモデルが無い構成");
+    }
+
+    /// model は省略が正しい書き方（組織の既定で動く）。必須・デプロイの既定とは書かず、例にも model を書かない
+    /// （BUG-12）。
+    #[test]
+    fn description_says_an_omitted_model_follows_the_organization_default() {
+        let ids: Vec<String> = vec!["fast-model".into()];
+        for models in [None, Some(&ids[..]), Some(&[][..])] {
+            let d = emit_description(models);
+            assert!(
+                d.contains("省略すると組織の既定のモデルで動く"),
+                "{models:?}"
+            );
+            assert!(!d.contains("model は必須"), "{models:?}");
+            assert!(!d.contains("デプロイの既定"), "{models:?}");
+            assert!(
+                !d.contains("\"model\":"),
+                "{models:?}: 例に model を書かない"
+            );
+        }
     }
 
     #[test]
     fn hints_add_the_params_shape_of_the_failing_node_type() {
-        let ir = embedded(EXAMPLE_SUMMARIZE, None);
+        let ir = embedded(EXAMPLE_SUMMARIZE);
         let errors = vec![
             ValidationError::new(
                 "ir.schema_violation",

@@ -10,15 +10,25 @@ use workflow_engine::Catalog;
 
 /// llm.invoke の model を照合する集合の材料。
 ///
-/// gateway があれば**呼び出し主体から見た組織の許可リスト ∩ 本人専用でないモデル**（BUG-11）。
-/// 実行時は gateway が同じ許可リストで拒否するので、保存時もそこへ揃える（管理者が無効にした
-/// モデル・opt-in 前のモデルを保存で弾く）。ChatGPT プランのモデルは連携した本人の枠で、
-/// schedule / event の run（実行主体はワークフロー）では使えないため、本人であっても除く。
-/// gateway が無い構成（LLM 未構成）では従来どおりデプロイ設定のモデル id を使う。
+/// gateway があれば**組織の許可リストから本人専用のモデルを除いたもの**（BUG-11・BUG-12）。
+/// 実行時は gateway が同じ設定（[`llm_gateway::LlmGateway::settings_without_personal`]）でモデルを
+/// 解決するので、保存時もそこへ揃える（管理者が無効にしたモデル・opt-in 前のモデルを保存で弾く）。
+/// ChatGPT プランのモデルは連携した本人の枠で、ワークフローは誰が起動しても使わないため、本人であっても除く。
+/// gateway が無い構成（LLM 未構成）では従来どおりデプロイ設定のモデル id を使う（空なら照合しない）。
 #[derive(Clone)]
 pub enum WorkflowModels {
     Gateway(llm_gateway::LlmGateway),
     Configured(Vec<String>),
+}
+
+/// 保存時のモデル照合の材料（[`Catalog::models`] と [`Catalog::model_lock`] に入れる）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkflowModelCheck {
+    /// llm.invoke に書けるモデル id（カタログ順）。`None` は照合しない（LLM 未構成）。
+    /// gateway があれば、許可が 0 件でも `Some(空)`（明示したモデルを全部拒否する・BUG-37）。
+    pub ids: Option<Vec<String>>,
+    /// 組織がモデルの選択を禁じているときの既定（`auto` かモデル ID）。
+    pub lock: Option<String>,
 }
 
 impl WorkflowModels {
@@ -31,23 +41,35 @@ impl WorkflowModels {
         }
     }
 
-    /// 呼び出し主体から見た、llm.invoke に書けるモデル id（カタログ順）。
-    pub async fn ids(&self, ctx: &authz::AuthContext) -> Result<Vec<String>, String> {
+    /// 保存時の照合の材料（呼び出し主体の組織の設定・本人専用を除く）。
+    pub async fn check(&self, ctx: &authz::AuthContext) -> Result<WorkflowModelCheck, String> {
         match self {
-            WorkflowModels::Configured(ids) => Ok(ids.clone()),
+            WorkflowModels::Configured(ids) => Ok(WorkflowModelCheck {
+                ids: (!ids.is_empty()).then(|| ids.clone()),
+                lock: None,
+            }),
             WorkflowModels::Gateway(gw) => {
                 let settings = gw
-                    .settings_for(ctx)
+                    .settings_without_personal(ctx)
                     .await
                     .map_err(|e| format!("組織の AI 設定: {e}"))?;
-                Ok(settings
-                    .enabled_models(gw.catalog())
-                    .into_iter()
-                    .filter(|m| !gw.is_personal_model(m))
-                    .map(|m| m.id.clone())
-                    .collect())
+                Ok(WorkflowModelCheck {
+                    ids: Some(
+                        settings
+                            .enabled_models(gw.catalog())
+                            .into_iter()
+                            .map(|m| m.id.clone())
+                            .collect(),
+                    ),
+                    lock: (!settings.allow_user_choice).then_some(settings.default_model),
+                })
             }
         }
+    }
+
+    /// llm.invoke に書けるモデル id（カタログ順・照合しない構成では空）。
+    pub async fn ids(&self, ctx: &authz::AuthContext) -> Result<Vec<String>, String> {
+        Ok(self.check(ctx).await?.ids.unwrap_or_default())
     }
 }
 
@@ -76,8 +98,10 @@ pub async fn build_catalog_from(
             .await
             .map_err(|e| format!("skill インストール一覧: {e}"))?;
     }
-    // モデルカタログ（llm.invoke の model 照合）。
-    catalog.models = models.ids(ctx).await?;
+    // llm.invoke の model 照合（組織が許可したモデルと、選択を禁じた組織の既定）。
+    let check = models.check(ctx).await?;
+    catalog.models = check.ids;
+    catalog.model_lock = check.lock;
     Ok(catalog)
 }
 

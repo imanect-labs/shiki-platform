@@ -26,12 +26,15 @@ mod guide;
 pub trait WorkflowCatalogSource: Send + Sync {
     async fn catalog(&self, ctx: &AuthContext) -> Result<Catalog, String>;
 
-    /// llm.invoke に書けるモデル（[`Catalog::models`] と同じ集合・空なら照合しない）。
+    /// llm.invoke に書けるモデル（[`Catalog::models`] と同じ集合・照合しない構成と許可が 0 件はどちらも空）。
     ///
-    /// emit_workflow の説明文に run ごとに載せる。既定はカタログ全体を組んで取り出す（secret・skill の
-    /// 一覧も引くので、モデルだけを安く引ける実装は上書きする）。
+    /// emit_workflow の説明文に run ごとに載せる。空なら説明文は model を書かないよう案内する（省略は
+    /// 組織の既定で動く）。既定はカタログ全体を組んで取り出す（secret・skill の一覧も引くので、
+    /// モデルだけを安く引ける実装は上書きする）。
     async fn models(&self, ctx: &AuthContext) -> Result<Vec<String>, String> {
-        self.catalog(ctx).await.map(|c| c.models)
+        self.catalog(ctx)
+            .await
+            .map(|c| c.models.unwrap_or_default())
     }
 }
 
@@ -79,7 +82,7 @@ impl EmitWorkflowTool {
         }
     }
 
-    /// 発話ユーザーの組織で使えるモデルを説明文に載せる（run ごとに組む・空なら照合しない旨を書く）。
+    /// 発話ユーザーの組織で使えるモデルを説明文に載せる（run ごとに組む・空なら model を書かない旨を書く）。
     #[must_use]
     pub fn with_models(mut self, models: &[String]) -> Self {
         self.description = guide::emit_description(Some(models));

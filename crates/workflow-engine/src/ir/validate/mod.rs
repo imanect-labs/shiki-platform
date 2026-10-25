@@ -73,8 +73,14 @@ impl ValidationError {
 pub struct Catalog {
     /// 登録済み secret の参照名 → 許可ホスト（V4 secret 照合・宛先束縛の事前チェック）。
     pub secrets: BTreeMap<String, Vec<String>>,
-    /// テナントのモデルカタログ（llm.invoke の model 照合・空なら照合スキップ）。
-    pub models: Vec<String>,
+    /// llm.invoke に書けるモデル（組織が許可したモデル・本人専用を除く）。
+    ///
+    /// `None` は照合しない（LLM が未構成）。`Some` は空でも照合する（組織が許可したモデルが 0 件なら
+    /// 明示したモデルはすべて拒否する・BUG-37）。model の省略はどちらでも通る（組織の既定・BUG-12）。
+    pub models: Option<Vec<String>>,
+    /// 組織がモデルの選択を禁じているときの既定（`auto` かモデル ID）。`Some` なら、これと違う
+    /// model を拒否する（ワークフローでもモデルを選ばせない・D-30）。
+    pub model_lock: Option<String>,
     /// 保存ユーザーのインストール済み skill（name → レジストリ version 集合・V4 skill 照合・
     /// #344 Task 10.1b）。インストールはユーザー単位のため保存者基準で照合し、実行時は
     /// 実行主体の ReBAC で再検証する（fail-closed が最終防衛線・ir.md §8）。

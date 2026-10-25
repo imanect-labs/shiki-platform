@@ -153,7 +153,7 @@ struct TestCatalogSource;
 impl chat::WorkflowCatalogSource for TestCatalogSource {
     async fn catalog(&self, _ctx: &AuthContext) -> Result<Catalog, String> {
         Ok(Catalog {
-            models: vec!["m".into()],
+            models: Some(vec!["m".into()]),
             ..Catalog::default()
         })
     }

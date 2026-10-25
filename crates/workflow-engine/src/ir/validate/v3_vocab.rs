@@ -23,6 +23,44 @@ fn model_candidates(models: &[String]) -> String {
     }
 }
 
+/// llm.invoke の model を組織の設定へ照合する（エラーはモデル欄に写るよう呼び出し側が path を付ける）。
+///
+/// - 省略・空文字は照合しない（実行のたびに組織の既定で解決する・BUG-12）。
+/// - 組織が選択を禁じていれば、既定と違うモデルを拒否する（実行時の解決と同じ規則・D-30）。
+/// - 組織が許可したモデルに無ければ拒否し、使えるモデルを添える（利用者も AI も候補から選び直せる）。
+///   許可が 0 件の組織では、明示したモデルはすべて拒否する（照合を飛ばさない・BUG-37）。
+fn check_model(params: &serde_json::Value, catalog: &Catalog) -> Option<ValidationError> {
+    let model = params
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .filter(|m| !m.is_empty())?;
+    if catalog
+        .model_lock
+        .as_deref()
+        .is_some_and(|lock| lock != model)
+    {
+        return Some(ValidationError::new(
+            "ir.model_choice_disabled",
+            format!(
+                "この組織ではモデルを選べません: {model}（「組織の既定に従う」にして、model を書かないでください）"
+            ),
+        ));
+    }
+    let models = catalog.models.as_ref()?;
+    if models.iter().any(|m| m == model) {
+        return None;
+    }
+    let candidates = if models.is_empty() {
+        "組織で使えるモデルがありません".to_string()
+    } else {
+        model_candidates(models)
+    };
+    Some(ValidationError::new(
+        "ir.unknown_model",
+        format!("このモデルは使えません: {model}（{candidates}）"),
+    ))
+}
+
 /// V3: 語彙照合（Stage A available 集合へ）。
 pub(super) fn v3_vocab(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError>) {
     for scope in &ir.declared_scopes {
@@ -70,35 +108,9 @@ pub(super) fn v3_vocab(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Vali
                         );
                     }
                 }
-                // llm.invoke の model をモデルカタログへ照合（カタログが空なら省略）。エラーはモデル欄に
-                // 出るよう path を付け、使えるモデルを添える（利用者も AI も候補から選び直せる）。
-                if nt == NodeType::LlmInvoke && !catalog.models.is_empty() {
-                    match node.params.get("model").and_then(|v| v.as_str()) {
-                        Some(model) if catalog.models.iter().any(|m| m == model) => {}
-                        Some(model) => errors.push(
-                            ValidationError::new(
-                                "ir.unknown_model",
-                                format!(
-                                    "このモデルは使えません: {model}（{}）",
-                                    model_candidates(&catalog.models)
-                                ),
-                            )
-                            .at_node(&node.id)
-                            .at_path(MODEL_PATH),
-                        ),
-                        // model 欠落/非文字列も保存時に弾く（LLM ゲートウェイ経路に必須）。
-                        None => errors.push(
-                            ValidationError::new(
-                                "ir.missing_model",
-                                format!(
-                                    "llm.invoke（node {}）は params.model が必要です（{}）",
-                                    node.id,
-                                    model_candidates(&catalog.models)
-                                ),
-                            )
-                            .at_node(&node.id)
-                            .at_path(MODEL_PATH),
-                        ),
+                if nt == NodeType::LlmInvoke {
+                    if let Some(e) = check_model(&node.params, catalog) {
+                        errors.push(e.at_node(&node.id).at_path(MODEL_PATH));
                     }
                 }
             }
@@ -174,7 +186,7 @@ mod tests {
 
     fn models(ids: &[&str]) -> Catalog {
         Catalog {
-            models: ids.iter().map(ToString::to_string).collect(),
+            models: Some(ids.iter().map(ToString::to_string).collect()),
             ..Catalog::default()
         }
     }
@@ -184,7 +196,7 @@ mod tests {
             Ok(_) => Vec::new(),
             Err(errs) => errs
                 .into_iter()
-                .filter(|e| e.code.ends_with("_model"))
+                .filter(|e| e.code.contains("model"))
                 .collect(),
         }
     }
@@ -211,33 +223,69 @@ mod tests {
         );
     }
 
+    /// model の省略と空文字は組織の既定に従うので、照合しない（BUG-12）。
     #[test]
-    fn missing_model_also_has_path_and_candidates() {
-        let errs = model_errors(&json!({ "prompt": "hi" }), &models(&["a"]));
-        assert_eq!(errs.len(), 1, "{errs:?}");
-        assert_eq!(errs[0].code, "ir.missing_model");
-        assert_eq!(errs[0].path.as_deref(), Some("/params/model"));
-        assert!(
-            errs[0].message.contains("使えるモデル: a"),
-            "{}",
-            errs[0].message
-        );
+    fn omitted_or_empty_model_follows_the_organization_default() {
+        for catalog in [models(&["a"]), models(&[]), Catalog::default()] {
+            assert!(model_errors(&json!({ "prompt": "hi" }), &catalog).is_empty());
+            assert!(model_errors(&json!({ "model": "", "prompt": "hi" }), &catalog).is_empty());
+        }
     }
 
     #[test]
-    fn known_model_passes_and_empty_catalog_skips_matching() {
+    fn known_model_passes_and_an_unconfigured_llm_skips_matching() {
         assert!(model_errors(
             &json!({ "model": "a", "prompt": "hi" }),
             &models(&["a", "b"])
         )
         .is_empty());
-        // カタログが空（LLM 未構成）なら照合しない（従来どおり）。
+        // LLM が未構成（照合先が無い）なら照合しない（従来どおり）。
         assert!(model_errors(
             &json!({ "model": "anything", "prompt": "hi" }),
             &Catalog::default()
         )
         .is_empty());
-        assert!(model_errors(&json!({ "prompt": "hi" }), &Catalog::default()).is_empty());
+    }
+
+    /// 組織が許可したモデルが 0 件なら、明示したモデルはすべて拒否する（照合を飛ばさない・BUG-37）。
+    #[test]
+    fn an_organization_without_models_rejects_every_explicit_model() {
+        let errs = model_errors(&json!({ "model": "a", "prompt": "hi" }), &models(&[]));
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].code, "ir.unknown_model");
+        assert_eq!(errs[0].path.as_deref(), Some("/params/model"));
+        assert!(
+            errs[0].message.contains("組織で使えるモデルがありません"),
+            "{}",
+            errs[0].message
+        );
+    }
+
+    /// 組織がモデルの選択を禁じていれば、既定と違うモデルを拒否する（既定と同じ・省略は通す・D-30）。
+    #[test]
+    fn a_locked_organization_rejects_models_other_than_its_default() {
+        let locked = |lock: &str| Catalog {
+            model_lock: Some(lock.into()),
+            ..models(&["a", "b"])
+        };
+        let errs = model_errors(&json!({ "model": "b", "prompt": "hi" }), &locked("a"));
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].code, "ir.model_choice_disabled");
+        assert_eq!(errs[0].node_id.as_deref(), Some("ask"));
+        assert_eq!(errs[0].path.as_deref(), Some("/params/model"));
+        assert!(
+            errs[0].message.contains("組織の既定に従う"),
+            "{}",
+            errs[0].message
+        );
+        assert!(model_errors(&json!({ "model": "a", "prompt": "hi" }), &locked("a")).is_empty());
+        assert!(model_errors(&json!({ "prompt": "hi" }), &locked("a")).is_empty());
+        // 既定が Auto の組織では、どのモデルも書けない。
+        let errs = model_errors(&json!({ "model": "a", "prompt": "hi" }), &locked("auto"));
+        assert_eq!(errs[0].code, "ir.model_choice_disabled");
+        // Auto の文字列はモデルではない（実行時の解決と同じ）。
+        let errs = model_errors(&json!({ "model": "auto", "prompt": "hi" }), &locked("auto"));
+        assert_eq!(errs[0].code, "ir.unknown_model");
     }
 
     #[test]
