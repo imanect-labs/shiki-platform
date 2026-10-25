@@ -16,6 +16,7 @@ mod ai;
 mod control;
 mod data;
 mod external;
+mod shape;
 mod storage;
 mod tabular;
 
@@ -32,6 +33,7 @@ pub use external::{
     HttpMethod, HttpRequestParams, HttpSecretRef, RedirectPolicy, ScriptRunParams,
     ScriptSourceSpec, SecretAttach, SecretAttachKind, WorkflowStartParams,
 };
+pub use shape::{compact_ts, params_shape, params_type_name, ParamsShape, COMMON_TYPES};
 pub use storage::{RagSearchParams, StorageListParams, StorageReadParams, StorageWriteParams};
 pub use tabular::{CsvPatchParams, CsvQueryParams, CsvWriteParams};
 

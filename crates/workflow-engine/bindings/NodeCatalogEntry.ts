@@ -59,4 +59,8 @@ timeout_default_sec: number | null,
 /**
  * step timeout の上限秒。
  */
-timeout_max_sec: number | null, };
+timeout_max_sec: number | null, 
+/**
+ * 出力の形（TS 風の表記・後続が `$from: nodes.<id>.output` の path で参照する）。予約語彙は空文字。
+ */
+output_shape: string, };

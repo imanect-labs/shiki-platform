@@ -13,13 +13,13 @@ use workflow_engine::ir::edge::Edge;
 use workflow_engine::ir::expr::{CmpOp, Comparison, Condition, FromRef, TemplateExpr, ValueExpr};
 use workflow_engine::ir::node::{Backoff, Node, OnError, RetryPolicy};
 use workflow_engine::ir::params::{
-    AgentInvokeParams, BranchParams, CsvPatchParams, CsvQueryParams, CsvWriteParams,
-    DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
-    DataRecordUpdateParams, DataTransitionParams, HttpMethod, HttpRequestParams, HttpSecretRef,
-    JoinMode, JoinParams, LlmInvokeParams, MapItemError, MapParams, RagSearchParams,
-    RedirectPolicy, ScriptRunParams, ScriptSourceSpec, SecretAttach, SecretAttachKind,
-    SkillInvokeParams, StorageListParams, StorageReadParams, StorageWriteParams, SwitchCase,
-    SwitchParams, WaitKind, WaitParams, WaitTimeout, WorkflowStartParams,
+    params_type_name, AgentInvokeParams, BranchParams, CsvPatchParams, CsvQueryParams,
+    CsvWriteParams, DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams,
+    DataRecordDeleteParams, DataRecordUpdateParams, DataTransitionParams, HttpMethod,
+    HttpRequestParams, HttpSecretRef, JoinMode, JoinParams, LlmInvokeParams, MapItemError,
+    MapParams, RagSearchParams, RedirectPolicy, ScriptRunParams, ScriptSourceSpec, SecretAttach,
+    SecretAttachKind, SkillInvokeParams, StorageListParams, StorageReadParams, StorageWriteParams,
+    SwitchCase, SwitchParams, WaitKind, WaitParams, WaitTimeout, WorkflowStartParams,
 };
 use workflow_engine::ir::trigger::{
     Catchup, EventTrigger, InteractiveTrigger, ScheduleTrigger, Trigger, TriggerKind,
@@ -30,34 +30,6 @@ use workflow_engine::vocab::{
     node_catalog, EventSource, IdempotencyClass, NodeCatalogEntry, NodeCategory, NodeType,
     RunEventKind, Scope,
 };
-
-/// Stage A 実装済みノード種 → params 型名（TS の `NodeParamsByType` マップの単一定義）。
-const PARAMS_BY_TYPE: &[(NodeType, &str)] = &[
-    (NodeType::ControlBranch, "BranchParams"),
-    (NodeType::ControlSwitch, "SwitchParams"),
-    (NodeType::ControlJoin, "JoinParams"),
-    (NodeType::ControlMap, "MapParams"),
-    (NodeType::ControlWait, "WaitParams"),
-    (NodeType::StorageRead, "StorageReadParams"),
-    (NodeType::StorageWrite, "StorageWriteParams"),
-    (NodeType::StorageList, "StorageListParams"),
-    (NodeType::RagSearch, "RagSearchParams"),
-    (NodeType::LlmInvoke, "LlmInvokeParams"),
-    (NodeType::AgentInvoke, "AgentInvokeParams"),
-    (NodeType::HttpRequest, "HttpRequestParams"),
-    (NodeType::ScriptRun, "ScriptRunParams"),
-    (NodeType::SkillInvoke, "SkillInvokeParams"),
-    (NodeType::WorkflowStart, "WorkflowStartParams"),
-    (NodeType::CsvQuery, "CsvQueryParams"),
-    (NodeType::CsvPatch, "CsvPatchParams"),
-    (NodeType::CsvWrite, "CsvWriteParams"),
-    (NodeType::DataQuery, "DataQueryParams"),
-    (NodeType::DataRecordCreate, "DataRecordCreateParams"),
-    (NodeType::DataRecordUpdate, "DataRecordUpdateParams"),
-    (NodeType::DataRecordDelete, "DataRecordDeleteParams"),
-    (NodeType::DataTransition, "DataTransitionParams"),
-    (NodeType::DataBulkUpsert, "DataBulkUpsertParams"),
-];
 
 fn main() {
     // 出力先ディレクトリ（authz-vocab.ts と同じ generated 直下・単一ファイルにまとめる）。
@@ -150,7 +122,12 @@ fn main() {
 
     // ノードカタログ定数＋ params マップ型（UI パレット・右パネルの単一ソース）。
     let catalog_json = serde_json::to_string_pretty(&node_catalog()).expect("カタログ JSON 直列化");
-    let params_map: Vec<String> = PARAMS_BY_TYPE
+    // Stage A 実装済みノード種 → params 型名（対応は params の単一定義から引く・手書きの表を持たない）。
+    let params_by_type: Vec<(NodeType, String)> = NodeType::ALL
+        .iter()
+        .filter_map(|nt| params_type_name(*nt).map(|ty| (*nt, ty)))
+        .collect();
+    let params_map: Vec<String> = params_by_type
         .iter()
         .map(|(nt, ty)| format!("  \"{}\": {ty};", nt.as_str()))
         .collect();
@@ -162,7 +139,7 @@ fn main() {
          export const NODE_CATALOG: readonly NodeCatalogEntry[] = {catalog_json} as const;\n\n\
          /// Stage A 実装済みノード種 → params 型（右パネルのフォーム契約）。\n\
          export type NodeParamsByType = {{\n{}\n}};\n",
-        PARAMS_BY_TYPE
+        params_by_type
             .iter()
             .map(|(_, ty)| format!("  {ty},"))
             .collect::<Vec<_>>()

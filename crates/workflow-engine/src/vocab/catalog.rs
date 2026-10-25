@@ -129,6 +129,8 @@ pub struct NodeCatalogEntry {
     pub timeout_default_sec: Option<u32>,
     /// step timeout の上限秒。
     pub timeout_max_sec: Option<u32>,
+    /// 出力の形（TS 風の表記・後続が `$from: nodes.<id>.output` の path で参照する）。予約語彙は空文字。
+    pub output_shape: &'static str,
 }
 
 /// カタログ全量（NodeType::ALL と同順・exhaustive match で漏れを構造的に防ぐ）。
@@ -425,6 +427,96 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         idempotency,
         timeout_default_sec,
         timeout_max_sec,
+        output_shape: output_shape(nt),
+    }
+}
+
+/// 出力の形（ノード種ごと・exhaustive）。AI の説明文と右パネルの「前のノードの出力」の単一定義。
+///
+/// 出力は能力ポート（api の `ProdNodePorts`・storage・data）と executor が組む JSON で、型としての
+/// 定義を持たない。ここを変えずに出力を変えると AI が誤った path を書くので、出力側を変えたら
+/// ここも直す。予約語彙は空文字（実装時に足す）。
+#[allow(clippy::too_many_lines)]
+const fn output_shape(nt: NodeType) -> &'static str {
+    use NodeType as N;
+    match nt {
+        N::ControlBranch | N::ControlSwitch | N::ControlJoin => {
+            "実行の入力をそのまま通す（分岐・合流の結果としては参照しない）"
+        }
+        N::ControlMap => {
+            "{ items: Array<unknown>（領域の出口ノードの出力・要素の順）, errors: Array<{ index: number, error: { code: string, message: string } }>（on_item_error: collect のとき） }"
+        }
+        N::ControlWait => "event なら届いたできごとの内容・時間待ちは null",
+        N::StorageRead => {
+            "{ id: string, name: string, content_type: string, size: number, text: string }"
+        }
+        N::StorageWrite => {
+            "{ id: string, name: string, version: number, sha256: string, size: number }"
+        }
+        N::StorageList => {
+            "{ items: Array<{ id: string, name: string, kind: string, size: number }> }（最大 100 件）"
+        }
+        N::RagSearch => {
+            "{ results: Array<{ file_id: string, file_name: string, content: string, score: number }> }"
+        }
+        N::LlmInvoke => "{ text: string, model: string }",
+        N::AgentInvoke => "{ stdout: string, exit_code: number }",
+        N::HttpRequest => {
+            "{ status: number, host: string, body: unknown（JSON なら解析した値・それ以外は文字列） }"
+        }
+        N::ScriptRun => "main(input) の戻り値そのもの",
+        N::WorkflowStart => "{ run_id: string | null }（子の結果は待たない）",
+        N::SkillInvoke => {
+            "script を持つ skill は main の戻り値・指示だけの skill は { text: string, model: string }"
+        }
+        N::CsvQuery => {
+            "{ columns: Array<string>, column_types: Array<string>, rows: Array<Array<unknown>>, total_rows: number, truncated: boolean }"
+        }
+        N::CsvPatch => "{ node_id: string, version: number, rows: number, cols: number }",
+        N::CsvWrite => "{ node_id: string, version: number, name: string }",
+        N::DataQuery => {
+            "{ items?: Array<{ id: string, data: { [列の参照名]: unknown }, rev: number, … }>, groups?: Array<集計の行>（aggregate のとき）, next_cursor?: string, count?: { exact: number } | { at_least: number }（with_count のとき） }"
+        }
+        N::DataRecordCreate | N::DataRecordUpdate | N::DataTransition => {
+            "レコード { id: string, table_id: string, data: { [列の参照名]: unknown }, rev: number, owner: string, created_at: string, updated_at: string }"
+        }
+        N::DataRecordDelete => "{ id: string, deleted: true }",
+        N::DataBulkUpsert => {
+            "{ import_id: string, status: string, rows_total: number, rows_applied: number, rows_invalid: number, rows_rejected: number, errors: Array<{ row: number, key: string | null, message: string }>, last_error: string | null }"
+        }
+        N::NotifySend
+        | N::ControlLoop
+        | N::ControlAssert
+        | N::DebugLog
+        | N::TransformTemplate
+        | N::TransformParse
+        | N::TransformSerialize
+        | N::TransformRegex
+        | N::TransformMap
+        | N::TransformFilter
+        | N::TransformReduce
+        | N::SheetRead
+        | N::SheetWrite
+        | N::SheetAppend
+        | N::DocRead
+        | N::DocEdit
+        | N::DocComment
+        | N::MemoryGet
+        | N::MemorySet
+        | N::EventPublish
+        | N::WorkflowCall
+        | N::LlmEmbed
+        | N::LlmExtract
+        | N::AiReview
+        | N::AiEval
+        | N::AiOcr
+        | N::AiImageAnalyze
+        | N::AiImageGenerate
+        | N::AiTranscribe
+        | N::AiSpeech
+        | N::GraphqlQuery
+        | N::SandboxExec
+        | N::HumanApproval => "",
     }
 }
 
@@ -485,6 +577,29 @@ mod tests {
                 e.label_ja
             );
         }
+    }
+
+    /// 使えるノードは出力の形を持ち（AI の説明文・右パネルが参照する）、予約語彙は持たない。
+    #[test]
+    fn output_shape_is_defined_exactly_for_stage_a_nodes() {
+        for e in node_catalog() {
+            assert_eq!(
+                !e.output_shape.is_empty(),
+                e.available,
+                "{} の出力の形",
+                e.node_type.as_str()
+            );
+        }
+        let find = |nt: NodeType| {
+            node_catalog()
+                .into_iter()
+                .find(|e| e.node_type == nt)
+                .unwrap()
+        };
+        assert_eq!(
+            find(NodeType::LlmInvoke).output_shape,
+            "{ text: string, model: string }"
+        );
     }
 
     #[test]
