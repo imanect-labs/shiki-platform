@@ -8,6 +8,7 @@
 mod auth;
 mod data_port;
 mod ports;
+mod relay;
 mod skill_port;
 
 use std::sync::Arc;
@@ -20,6 +21,7 @@ use workflow_engine::{
 };
 
 pub use ports::ProdNodePorts;
+pub use relay::relay_events;
 
 /// ワークフロー実行時の設定（既定は無効・compose/e2e で有効化）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,95 +376,6 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
         }
     });
     tracing::info!("ワークフロースケジューラ/イベント relay を起動しました");
-}
-
-/// outbox の workflow 未配送イベントを 1 バッチ処理する（storage.write のみ・at-least-once）。
-///
-/// 各イベントを ①トリガマッチ（run 起動）②wait(event) 起床、の両方へ配る（engine.md §5.5 同一マッチャ）。
-/// いずれも祖先束縛 scope（イベント発生フォルダ id）＋filter で照合する。
-async fn relay_events(
-    db: &sqlx::PgPool,
-    hints: &storage::event::ClaimHints,
-    sched: &SchedulerStore,
-    runs: &RunStore,
-    launcher: &dyn workflow_engine::RunLauncher,
-) -> Result<(), anyhow::Error> {
-    // 溜まっていれば 1 tick の中で続けて捌く（構造化データのレコード変更も outbox に乗るので、一括取込の
-    // 直後は件数が多い。1 tick 1 バッチだと他の consumer と GC を長く止める・Task 15.6）。
-    for _ in 0..RELAY_BATCHES_PER_TICK {
-        if relay_events_batch(db, hints, sched, runs, launcher).await? < RELAY_BATCH {
-            break;
-        }
-    }
-    Ok(())
-}
-
-/// 1 tick で捌く outbox の最大バッチ数と、1 バッチの件数（claim は配送済みの行を走査するので、1 回の件数を
-/// 大きくして回数を減らす・一括取込の 10 万件で 64 件ずつだと追いつくまで 15〜20 分かかった・検証 D-14）。
-const RELAY_BATCHES_PER_TICK: usize = 32;
-const RELAY_BATCH: usize = 500;
-
-async fn relay_events_batch(
-    db: &sqlx::PgPool,
-    hints: &storage::event::ClaimHints,
-    sched: &SchedulerStore,
-    runs: &RunStore,
-    launcher: &dyn workflow_engine::RunLauncher,
-) -> Result<usize, anyhow::Error> {
-    let mut tx = db.begin().await?;
-    let events = storage::event::claim_undelivered_hinted(
-        &mut tx,
-        hints,
-        "workflow",
-        "workflow",
-        RELAY_BATCH as i64,
-    )
-    .await?;
-    if events.is_empty() {
-        return Ok(0);
-    }
-    let mut ids = Vec::with_capacity(events.len());
-    for ev in &events {
-        // data サービス由来イベント（FSM 遷移等・payload.event_type 付き）は storage.write では
-        // ない。Phase 10.3 の data トリガが消費するまでは配送済みにしてスキップする
-        // （storage.write として誤発火させない・Task 9.10）。
-        if ev
-            .payload
-            .get("event_type")
-            .and_then(|v| v.as_str())
-            .is_some()
-        {
-            ids.push(ev.id);
-            continue;
-        }
-        // Stage A: 全 WriteOp を storage.write source に写像。祖先束縛はイベント発生フォルダ id で照合。
-        let event_folder = ev
-            .payload
-            .get("parent_id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| uuid::Uuid::parse_str(s).ok());
-        // match_event / wake_event_waits は自 tx（trigger_firing UNIQUE・wait_subscription fired）で冪等。
-        sched
-            .match_event(
-                &ev.tenant_id,
-                "storage.write",
-                ev.id,
-                event_folder,
-                &ev.payload,
-                launcher,
-            )
-            .await?;
-        runs.wake_event_waits(&ev.tenant_id, "storage.write", event_folder, &ev.payload)
-            .await?;
-        ids.push(ev.id);
-    }
-    storage::event::mark_delivered(&mut tx, "workflow", &ids).await?;
-    tx.commit().await?;
-    tracing::debug!(
-        count = ids.len(),
-        "outbox → workflow event matcher / wait へ relay"
-    );
-    Ok(events.len())
 }
 
 async fn build_bucket(redis_url: &str) -> Result<TokenBucket, anyhow::Error> {
