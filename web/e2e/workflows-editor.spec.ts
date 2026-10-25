@@ -612,6 +612,168 @@ test("差し込む: 固定値に {{title}} と書くとその場で知らせ、�
   });
 });
 
+test("差し込む: 文字を求める欄だけに出し、CSV を保存の内容は入力全体ではなく空で置く（BUG-1・BUG-15）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await page.goto("/workflows");
+  await expect(page.getByText("読み込み中…")).toHaveCount(0);
+  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
+  await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
+  const canvas = page.locator(".react-flow");
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  const insertIn = (label: string) =>
+    panel.locator(`[data-value-expr="${label}"]`).getByRole("button", { name: "差し込む" });
+
+  // 名前は文字の欄なので差し込める。渡す入力（オブジェクト）は差し込むと文字列に変わるので出さない
+  // （参照は「前の結果から」で $from のまま入れる）。
+  await page.getByRole("button", { name: "最初のブロック" }).click();
+  await page.getByRole("button", { name: /^別のフローを開始/ }).click();
+  await expect(insertIn("起動するワークフロー名")).toHaveCount(1);
+  await expect(panel.locator('[data-value-expr="渡す入力（省略可）"]')).toBeVisible();
+  await expect(insertIn("渡す入力（省略可）")).toHaveCount(0);
+
+  // 「CSV を保存」の内容は空の固定値で置かれ（入力全体を JSON のまま .csv にしない）、欄の下で入力を促す。
+  await canvas.getByLabel("次のブロックを追加").first().click();
+  await page.getByRole("button", { name: /^CSV を保存/ }).click();
+  const content = panel.locator('[data-value-expr="CSV の内容"]');
+  await expect(content.getByRole("combobox").filter({ hasText: "固定値" })).toBeVisible();
+  await expect(content.getByLabel("CSV の内容")).toHaveValue("");
+  await expect(content.getByText("入力してください")).toBeVisible();
+  await expect(insertIn("CSV の内容")).toHaveCount(1);
+  await content.getByLabel("CSV の内容").fill("品目,金額\n交通費,1200");
+  await expect(content.getByText("入力してください")).toHaveCount(0);
+});
+
+test("入力項目: キーを変えるとブロックの参照も新しいキーになり、消すと残った参照を知らせる（GAP-12）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const models = await llmModels(page);
+  const id = await createLlmFlow(page, {
+    model: models?.models[0]?.id,
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string", title: "件名" }, body: { type: "string", title: "本文" } },
+    },
+    prompt: { $template: "{title} を要約してください", vars: { title: { $from: "input", path: "/title" } } },
+  });
+  await openFlow(page, id);
+  const canvas = page.locator(".react-flow");
+  const triggerPanel = page.getByRole("complementary", { name: "きっかけの設定" });
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+
+  // 件名のキーを打ち直す（いったん空にすると誤りの間は定義に書き戻さず、打ち終えたキーへ参照が付いてくる）。
+  await canvas.getByText("手動で実行").first().click();
+  const titleRow = triggerPanel
+    .getByTestId("input-field-row")
+    .filter({ has: page.getByRole("button", { name: "入力項目「件名」を削除" }) });
+  const key = titleRow.getByLabel("キー", { exact: true });
+  await key.fill("");
+  await expect(titleRow.getByText("キーを入れてください")).toBeVisible();
+  await key.pressSequentially("subject");
+  await expect(key).toHaveValue("subject");
+  await expect(triggerPanel.getByTestId("input-dangling-refs")).toHaveCount(0);
+
+  // ブロックの差し込みは新しいキーを指す（定義に無いキーの注意は出ない）。
+  await canvas.getByText("要約する").first().click();
+  await expect(panel.getByRole("combobox", { name: "「title」に入る値" })).toContainText("件名（subject）");
+  await expect(panel.getByTestId("ref-missing-input")).toHaveCount(0);
+  await saveFlow(page);
+  const ir = await savedIr(page, id);
+  expect(Object.keys((ir.input_schema as { properties: Record<string, unknown> }).properties).sort()).toEqual([
+    "body",
+    "subject",
+  ]);
+  expect(ir.nodes[0].params.prompt).toEqual({
+    $template: "{title} を要約してください",
+    vars: { title: { $from: "input", path: "/subject" } },
+  });
+
+  // 項目を消すと、参照が残っているブロックをきっかけの設定とブロックの設定の両方で知らせる。
+  await canvas.getByText("手動で実行").first().click();
+  await triggerPanel.getByRole("button", { name: "入力項目「件名」を削除" }).click();
+  const dangling = triggerPanel.getByTestId("input-dangling-refs");
+  await expect(dangling).toContainText("subject");
+  await expect(dangling).toContainText("「要約する」");
+  await canvas.getByText("要約する").first().click();
+  await expect(panel.getByTestId("ref-missing-input")).toContainText("入力項目に「subject」がありません");
+
+  // 「項目に足す」で同じキーの項目を戻すと、注意は消える。
+  await canvas.getByText("手動で実行").first().click();
+  await dangling.getByRole("button", { name: "項目に足す" }).click();
+  await expect(dangling).toHaveCount(0);
+  await expect(triggerPanel.getByTestId("input-field-row")).toHaveCount(2);
+  await expect(triggerPanel.getByLabel("キー", { exact: true }).nth(1)).toHaveValue("subject");
+});
+
+test("差し込む: {{key}} を直すボタンと差し込み名の変更で、本文の {名前} と vars が対応したまま保存される（BUG-1）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const models = await llmModels(page);
+  const id = await createLlmFlow(page, {
+    model: models?.models[0]?.id,
+    inputSchema: { type: "object", properties: { title: { type: "string", title: "件名" } } },
+    prompt: { $template: "{{title}} と {title} を要約してください", vars: { title: { $from: "input", path: "/title" } } },
+  });
+  await openFlow(page, id);
+  await page.locator(".react-flow").getByText("要約する").first().click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  const prompt = panel.locator('[data-value-expr="AI への指示"]');
+  const text = prompt.getByLabel("AI への指示");
+
+  // {{title}} は波括弧そのものとして出る。ボタンで差し込みに直す。
+  await expect(prompt.getByText("「{{title}}」は波括弧そのものとして出ます（差し込まれません）")).toBeVisible();
+  await prompt.getByRole("button", { name: "{title} に直す" }).click();
+  await expect(text).toHaveValue("{title} と {title} を要約してください");
+
+  // 差し込み名を変えると本文の {title} も全部変わる。続けて差し込むと同じ参照の名前を使い回す。
+  await prompt.getByTestId("template-var").getByLabel("差し込み名").fill("subject");
+  await expect(text).toHaveValue("{subject} と {subject} を要約してください");
+  await prompt.getByRole("button", { name: "差し込む" }).click();
+  await page.getByRole("menuitem", { name: "件名（title）" }).click();
+  await expect(text).toHaveValue("{subject} と {subject} を要約してください{subject}");
+  await expect(prompt.getByTestId("template-var")).toHaveCount(1);
+
+  await saveFlow(page);
+  const ir = await savedIr(page, id);
+  expect(ir.nodes[0].params.prompt).toEqual({
+    $template: "{subject} と {subject} を要約してください{subject}",
+    vars: { subject: { $from: "input", path: "/title" } },
+  });
+});
+
+test("差し込む: 差し込みに変換した直後は、固定値のときのカーソル位置ではなく末尾に差し込む（BUG-1）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const models = await llmModels(page);
+  const id = await createLlmFlow(page, {
+    model: models?.models[0]?.id,
+    inputSchema: { type: "object", properties: { title: { type: "string", title: "件名" } } },
+  });
+  await openFlow(page, id);
+  await page.locator(".react-flow").getByText("要約する").first().click();
+  const prompt = page.getByRole("complementary", { name: "ブロックの設定" }).locator('[data-value-expr="AI への指示"]');
+  const text = prompt.getByLabel("AI への指示");
+  await text.fill("{{title}} を要約 {x}");
+  // カーソルを固定値の 2 文字目に置いてから変換する（テンプレートでは文字の位置がずれる）。
+  await text.click();
+  await page.keyboard.press("Home");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await prompt.getByTestId("literal-var-warning").getByRole("button", { name: "差し込みに変換する" }).click();
+  await expect(text).toHaveValue("{title} を要約 {x}");
+  await prompt.getByRole("button", { name: "差し込む" }).click();
+  await page.getByRole("menuitem", { name: "件名（title）" }).click();
+  await expect(text).toHaveValue("{title} を要約 {x}{title}");
+});
+
 test("モデル: AI に聞くのモデルを一覧から選び、答えの長さの上限と一緒に保存できる（BUG-4）", async ({ page }) => {
   test.setTimeout(120_000);
   await loginViaKeycloak(page);
