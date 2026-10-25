@@ -13,6 +13,7 @@ import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { Node as IrNode, ValueExpr } from "@/generated/workflow-ir";
 import type { EditorAction } from "../ir-state";
 import { Field, NumberInput } from "./common";
+import { ModelField } from "./model-field";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput, type RefCandidate } from "./value-expr-input";
 
@@ -51,6 +52,8 @@ export function RagSearchForm({ node, dispatch, refCandidates, inMapRegion, fiel
 
 export function LlmInvokeForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
   const p = paramsOf<NodeParamsByType["llm.invoke"]>(node);
+  // 出力の上限は数で入れる。前の結果から決める定義（AI が作ったものなど）はそのまま値の欄で見せる。
+  const maxTokensLiteral = p.max_tokens === undefined || typeof p.max_tokens === "number";
   return (
     <div className="space-y-3">
       <ValueExprInput
@@ -63,20 +66,11 @@ export function LlmInvokeForm({ node, dispatch, refCandidates, inMapRegion, fiel
         placeholder="例: 次の文章を 3 行で要約してください"
         error={fieldErrors.get("prompt")}
       />
-      <Field
-        label="モデル"
-        hint="管理者が登録したモデル名"
+      <ModelField
+        value={typeof p.model === "string" ? p.model : undefined}
+        onChange={(model) => patchParams(dispatch, node, { model })}
         error={fieldErrors.get("model")}
-      >
-        <Input
-          value={(p.model as string | undefined) ?? ""}
-          onChange={(e) =>
-            patchParams(dispatch, node, { model: e.target.value || undefined })
-          }
-          placeholder="例: gpt-x-mini"
-          className="h-8"
-        />
-      </Field>
+      />
       <ValueExprInput
         label="前提の指示（省略可）"
         value={p.system as ValueExpr | undefined}
@@ -85,7 +79,34 @@ export function LlmInvokeForm({ node, dispatch, refCandidates, inMapRegion, fiel
         inMapRegion={inMapRegion}
         multiline
         placeholder="例: あなたは丁寧なアシスタントです"
+        error={fieldErrors.get("system")}
       />
+      {maxTokensLiteral ? (
+        <Field
+          label="答えの長さの上限（トークン・省略可）"
+          hint="空欄で標準"
+          error={fieldErrors.get("max_tokens")}
+        >
+          <NumberInput
+            value={typeof p.max_tokens === "number" ? p.max_tokens : null}
+            min={1}
+            placeholder="例: 1000"
+            error={Boolean(fieldErrors.get("max_tokens"))}
+            onChange={(n) =>
+              patchParams(dispatch, node, { max_tokens: n === null ? undefined : Math.max(1, Math.round(n)) })
+            }
+          />
+        </Field>
+      ) : (
+        <ValueExprInput
+          label="答えの長さの上限（トークン・省略可）"
+          value={p.max_tokens as ValueExpr | undefined}
+          onChange={(v) => patchParams(dispatch, node, { max_tokens: v })}
+          refCandidates={refCandidates}
+          inMapRegion={inMapRegion}
+          error={fieldErrors.get("max_tokens")}
+        />
+      )}
     </div>
   );
 }

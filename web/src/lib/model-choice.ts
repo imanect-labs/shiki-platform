@@ -88,18 +88,19 @@ export function useModelChoice(scope: string): [ModelChoice, (c: ModelChoice) =>
 // 保存したとき（invalidateLlmModels）に取り直す。古い一覧のまま送ると 400 になり、新しく公開した
 // モデルもリロードまで出ないため。
 const STALE_MS = 30_000;
-let modelsCache: { data: LlmModelsResponse | null; at: number } | null = null;
+/// `failed` は手元に一覧が無いまま取得に失敗したか（読み込み中と見分ける・ワークフローのモデル欄）。
+let modelsCache: { data: LlmModelsResponse | null; at: number; failed: boolean } | null = null;
 let inflight: Promise<void> | null = null;
 const modelListeners = new Set<() => void>();
 
 function refreshLlmModels(): Promise<void> {
   inflight ??= fetchLlmModels()
     .then((data) => {
-      modelsCache = { data, at: Date.now() };
+      modelsCache = { data, at: Date.now(), failed: false };
     })
     // 取れなければ手元の値のまま（次の契機で取り直す）。初回なら null＝選択 UI を出さない。
     .catch(() => {
-      modelsCache ??= { data: null, at: 0 };
+      if (!modelsCache?.data) modelsCache = { data: null, at: 0, failed: true };
     })
     .finally(() => {
       inflight = null;
@@ -114,17 +115,22 @@ export function invalidateLlmModels(): void {
   if (modelListeners.size > 0) void refreshLlmModels();
 }
 
-/// 選べるモデル（ページ内で共有する）。取れなければ `null`（選択 UI を出さない）。
-export function useLlmModels(): LlmModelsResponse | null {
-  const [data, setData] = React.useState<LlmModelsResponse | null>(modelsCache?.data ?? null);
+/// 共有キャッシュを購読し、`read` で読んだ値を返す（`same` なら再描画しない）。
+function useModelsCache<T>(read: () => T, same: (a: T, b: T) => boolean): T {
+  const [value, setValue] = React.useState<T>(read);
   React.useEffect(() => {
-    const sync = () => setData(modelsCache?.data ?? null);
+    const sync = () =>
+      setValue((prev) => {
+        const next = read();
+        return same(prev, next) ? prev : next;
+      });
     modelListeners.add(sync);
-    sync();
     const refreshIfStale = () => {
       if (!modelsCache || Date.now() - modelsCache.at > STALE_MS) void refreshLlmModels();
     };
+    // 取り直しを始めてから読む（失敗の後の取り直しの間は読み込み中に見せる）。
     refreshIfStale();
+    sync();
     const onVisible = () => {
       if (document.visibilityState === "visible") refreshIfStale();
     };
@@ -133,6 +139,35 @@ export function useLlmModels(): LlmModelsResponse | null {
       modelListeners.delete(sync);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, []);
-  return data;
+  }, [read, same]);
+  return value;
+}
+
+const readModels = () => modelsCache?.data ?? null;
+
+/// 選べるモデル（ページ内で共有する）。取れなければ `null`（選択 UI を出さない）。
+export function useLlmModels(): LlmModelsResponse | null {
+  return useModelsCache(readModels, Object.is);
+}
+
+/// 選べるモデルの一覧の読み込み状態（読み込み中と取得失敗を見分けたい欄向け）。
+export type LlmModelsState =
+  | { status: "loading"; data: null }
+  | { status: "ready"; data: LlmModelsResponse }
+  | { status: "error"; data: null };
+
+function readModelsState(): LlmModelsState {
+  if (modelsCache?.data) return { status: "ready", data: modelsCache.data };
+  // 失敗の後に取り直している間は読み込み中として見せる。
+  if (modelsCache?.failed && !inflight) return { status: "error", data: null };
+  return { status: "loading", data: null };
+}
+
+const sameModelsState = (a: LlmModelsState, b: LlmModelsState) =>
+  a.status === b.status && a.data === b.data;
+
+/// `useLlmModels` と同じ共有キャッシュを、読み込み中・取得失敗・取得済みの別つきで返す
+/// （ワークフローの「AI に聞く」のモデル欄: 読み込み中は Skeleton、失敗なら自由入力に戻す）。
+export function useLlmModelsState(): LlmModelsState {
+  return useModelsCache(readModelsState, sameModelsState);
 }
