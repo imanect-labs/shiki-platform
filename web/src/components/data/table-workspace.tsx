@@ -175,6 +175,8 @@ export function TableWorkspace({
   const [viewLoading, setViewLoading] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
+  // テーブルの共有は owner だけ。ミニアプリ所有のテーブルはアプリのインストールで配るので共有しない（サーバも 403）。
+  const canShare = viewer.can_manage && !table.app_id;
   const importJob = useImportJob(table.id);
   const [peers, setPeers] = React.useState<Peer[]>([]);
   const [names, setNames] = React.useState<Map<string, string>>(new Map());
@@ -459,14 +461,14 @@ export function TableWorkspace({
       title: table.name,
       subtitle: loaded.viewId ? loaded.name : undefined,
       back: { href: "/data", label: "テーブル一覧へ" },
-      // テーブルの共有は owner だけ（サーバも owner 以外を 403 にする）。PC はバー右・スマホは右上に出る。
-      actions: viewer.can_manage ? (
+      // PC はバー右・スマホは右上に出る。
+      actions: canShare ? (
         <ChromeIconButton label="テーブルを共有" onClick={() => setShareOpen(true)} data-testid="table-share-open">
           <Share2 aria-hidden />
         </ChromeIconButton>
       ) : undefined,
     }),
-    [table.name, loaded.viewId, loaded.name, viewer.can_manage],
+    [table.name, loaded.viewId, loaded.name, canShare],
   );
 
   const err = (e: Error) => onQueryError(e);
@@ -725,7 +727,7 @@ export function TableWorkspace({
       {viewer.can_edit ? (
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} table={table} job={importJob} />
       ) : null}
-      {viewer.can_manage ? (
+      {canShare ? (
         <TableShareDialog
           open={shareOpen}
           onOpenChange={setShareOpen}

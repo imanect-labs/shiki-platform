@@ -875,7 +875,8 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 > **テーブルの共有（#864）**: ①のタプルは、テーブルの **owner だけ**が `PUT / DELETE / GET /data/tables/{id}/shares`
 > （`DataStore::share_table` / `unshare_table` / `list_table_shares`）でユーザー・部署（`role#member`）へ付け外しできる。
 > 付与できる役割は **viewer / editor だけ**で、owner は付け外ししない。見えないテーブルは 404、見えるが owner でなければ 403
-> （ミニアプリが owner のテーブルは利用者が owner でないので共有できない）。共有先は id の形と同一テナントのディレクトリに
+> （**ミニアプリ所有のテーブル（`app_id` あり）は付与できない**: アクセスはアプリのインストールとスコープで配るので、インストールした人が
+> owner を持っていても 403。以前の共有を外す解除は許す）。共有先は id の形と同一テナントのディレクトリに
 > 居ることを検査し（レコードの個別共有と同じ・存在しない相手は 400）、監査（`data.table.share` / `unshare` / `shares.list`）に
 > 失敗したらタプルを補償する。共有しても行述語・フィールドマスクは開いた人の権限で効く。付け外しの後は
 > `after_table_rebac_changed` を呼ぶので、**取消は即時に反映**する（REST は次の要求から 404、開いている購読は TTL を待たず

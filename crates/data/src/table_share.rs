@@ -63,8 +63,15 @@ impl DataStore {
         role: TableShareRole,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
-        self.require_table_owner(ctx, table_id, AuditAction::DataTableShare, trace_id)
+        let table = self
+            .require_table_owner(ctx, table_id, AuditAction::DataTableShare, trace_id)
             .await?;
+        // ミニアプリ所有のテーブルは付与しない（アクセスはアプリのインストール・スコープで管理する。インストール
+        // した人も owner を持つが、/data から直接配ると、アプリの外からの読み書きの入口が増える）。解除は許す
+        // （以前に付けた共有を外せるように）。
+        if table.app_id.is_some() {
+            return Err(DataError::Forbidden);
+        }
         self.validate_share_target(ctx, target).await?;
         let obj = ctx.ns().data_table(&table_id.to_string());
         let subject = target.subject(&ctx.ns());
@@ -181,9 +188,9 @@ impl DataStore {
         table_id: Uuid,
         action: AuditAction,
         trace_id: Option<&str>,
-    ) -> Result<(), DataError> {
+    ) -> Result<crate::model::DataTable, DataError> {
         self.require(ctx, table_id, Relation::Owner, action, trace_id)
             .await?;
-        self.fetch_live(ctx, table_id).await.map(|_| ())
+        self.fetch_live(ctx, table_id).await
     }
 }

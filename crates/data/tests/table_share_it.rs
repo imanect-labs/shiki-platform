@@ -551,6 +551,13 @@ async fn only_owner_can_share_and_invisible_is_not_found() {
         .await
         .unwrap();
     let obj = fx.alice.ns().data_table(&app_table.id.to_string());
+    // インストールした人（owner を持つ）でも、ミニアプリ所有のテーブルは /data から共有できない。
+    assert!(matches!(
+        fx.store
+            .share_table(&fx.alice, app_table.id, &t, v, None)
+            .await,
+        Err(DataError::Forbidden)
+    ));
     // インストールと同じ形にする: owner はミニアプリ、利用者は editor。
     fx.authz
         .write_tuple(
@@ -639,10 +646,11 @@ fn link_to(to: Uuid) -> FieldDef {
     f
 }
 
-/// 共有の直後（読取を待たず）に材料化の前提が検査し直される: 参照元 orders だけを bob に共有すると
-/// viewer 集合の包含（orders ⊆ lines）が崩れ、orders の材料化列はその場で降格して索引行が消える（PIT-71）。
+/// 材料化列はミニアプリ所有のテーブルの組にしか付かず、ミニアプリ所有のテーブルは /data から共有できない:
+/// インストールした人（owner）が参照元 orders を bob に共有しようとしても 403 で、材料化の前提（viewer 集合の
+/// 包含）は崩れず、材料化データ（索引行・依存登録）もそのまま残る（PIT-71）。
 #[tokio::test]
-async fn share_rechecks_materialization_immediately() {
+async fn app_tables_with_materialized_columns_cannot_be_shared() {
     let Some((pool, authz)) = setup().await else {
         return;
     };
@@ -726,18 +734,24 @@ async fn share_rechecks_materialization_immediately() {
     };
     assert!(materialized().await > 0, "前提: 材料化した索引行がある");
 
-    fx.store
-        .share_table(
-            &fx.alice,
-            orders.id,
-            &user("bob"),
-            TableShareRole::Viewer,
-            None,
-        )
-        .await
-        .unwrap();
-    // 読取の入口を通る前に、材料化データ（索引行・依存登録）がもう無い。
-    assert_eq!(materialized().await, 0, "共有の直後に降格していない");
+    let before = materialized().await;
+    assert!(matches!(
+        fx.store
+            .share_table(
+                &fx.alice,
+                orders.id,
+                &user("bob"),
+                TableShareRole::Viewer,
+                None,
+            )
+            .await,
+        Err(DataError::Forbidden)
+    ));
+    assert_eq!(
+        materialized().await,
+        before,
+        "共有を拒んだので材料化はそのまま"
+    );
     let t = fx
         .store
         .get_table(&fx.alice, orders.id, None)
@@ -745,19 +759,13 @@ async fn share_rechecks_materialization_immediately() {
         .unwrap();
     assert_eq!(
         t.schema.field("total").unwrap().materialization,
-        Some(Materialization::PerViewer)
+        Some(Materialization::Invariant)
     );
-    // bob は lines を見られないので、合計は閲覧者本人の権限で計算され空になる（700 は返らない）。
-    let seen = fx
+    assert!(fx
         .store
-        .get_record(&fx.bob, orders.id, order.id, None)
+        .list_table_shares(&fx.alice, orders.id, None)
         .await
-        .unwrap();
-    assert_eq!(seen.data["total"], Value::Null, "{:?}", seen.data);
-    let own = fx
-        .store
-        .get_record(&fx.alice, orders.id, order.id, None)
-        .await
-        .unwrap();
-    assert_eq!(own.data["total"], json!(700));
+        .unwrap()
+        .is_empty());
+    let _ = order;
 }
