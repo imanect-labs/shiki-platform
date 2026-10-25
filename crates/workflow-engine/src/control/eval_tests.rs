@@ -180,6 +180,20 @@ fn template_unresolved_var_fails_closed() {
     );
 }
 
+/// ir.md §3.1: 差し込みの値が null（default 無し）でも空文字で埋めず失敗させる（AI の出力の /text が
+/// null だった、など）。リテラルの null を書いた var は書いたとおり空にする。
+#[test]
+fn template_null_var_fails_closed() {
+    let r = resolver(&[("nodes.ask.output", json!({ "text": null }))]);
+    let t = expr(json!({ "$template": "要約: {summary}",
+        "vars": { "summary": { "$from": "nodes.ask.output", "path": "/text" } } }));
+    let err = resolve_deep(&t, &r).unwrap_err();
+    assert_eq!(err.code, EXPR_RESOLVE_ERROR);
+    assert!(err.message.contains("{summary}"), "{}", err.message);
+    let literal = expr(json!({ "$template": "[{x}]", "vars": { "x": null } }));
+    assert_eq!(resolve_deep(&literal, &r), Ok(json!("[]")));
+}
+
 #[test]
 fn template_var_default_is_substituted() {
     let r = resolver(&[("input", json!({ "who": null }))]);

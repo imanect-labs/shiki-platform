@@ -52,7 +52,8 @@ impl EvalError {
 ///
 /// - `$from`: 値が無い（パス不在・null）なら default、それも無ければ [`EXPR_RESOLVE_ERROR`]。
 ///   値が null で default も無いときは null のまま返す（項目を空にする書込などで使う）。
-/// - `$template`: `{name}` を vars で置き換える。vars に無い名前・解決できない var は [`EXPR_RESOLVE_ERROR`]。
+/// - `$template`: `{name}` を vars で置き換える。vars に無い名前・解決できない var（`$from` の値が null で
+///   default も無いものを含む・空文字を黙って埋め込まない）は [`EXPR_RESOLVE_ERROR`]。
 /// - リテラル: object / array の中の `$from` / `$template` も再帰的に解決する。
 ///
 /// params 全体へは掛けない。値式（`ValueExpr`）型のフィールドにだけ使う（URL・secret 名・skill 参照などの
@@ -125,7 +126,15 @@ fn resolve_template(t: &TemplateExpr, r: &dyn ValueResolver) -> Result<String, E
                         "$template の {{{name}}} が vars にありません"
                     )));
                 };
-                let v = resolve_deep(var, r).map_err(|e| EvalError {
+                let v = match var {
+                    // 値式全体の null（項目を空にする書込など）と違い、差し込みの null は空文字として
+                    // 黙って埋まるだけなので、解決できないものとして扱う（ir.md §3.1）。
+                    ValueExpr::From(f) => lookup(f, r)
+                        .filter(|v| !v.is_null())
+                        .ok_or_else(|| unresolved(f)),
+                    other => resolve_deep(other, r),
+                }
+                .map_err(|e| EvalError {
                     code: e.code,
                     message: format!("$template の {{{name}}}: {}", e.message),
                 })?;
