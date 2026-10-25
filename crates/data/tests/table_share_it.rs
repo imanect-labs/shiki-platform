@@ -794,3 +794,74 @@ async fn app_tables_with_materialized_columns_cannot_be_shared() {
     ));
     let _ = order;
 }
+
+/// 共有の操作は、認可より前に旧形式のテーブルを移行しない（見えない主体が共有 API を叩くだけで、識別子の
+/// 移行・索引台帳の初期化を起こせない）。生存は副作用のない読み取りで確かめ、移行を伴う読込は認可の後。
+#[tokio::test]
+async fn share_api_does_not_migrate_tables_before_authorization() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let fx = fixture(pool, authz).await;
+    let tenant = fx.alice.tenant_id.clone();
+    let mut conn = fx.pool.acquire().await.unwrap();
+    let placement = storage::tenant::ensure_placement(&mut conn, &tenant)
+        .await
+        .unwrap();
+    let table_int = storage::tenant::allocate_table_int(&mut conn)
+        .await
+        .unwrap();
+    // v1 形式（識別子未移行・索引台帳なし）のテーブル。bob には見えない。
+    let legacy: Uuid = sqlx::query_scalar(
+        "INSERT INTO data_table (tenant_id, org, name, schema, created_by, tenant_int, table_int, \
+           key_format, next_field_id) \
+         VALUES ($1, 'acme', 'legacy', $2, 'alice', $3, $4, 1, 16) RETURNING id",
+    )
+    .bind(&tenant)
+    .bind(json!({"fields": [{"name": "title", "type": "text", "indexed": true}]}))
+    .bind(placement.tenant_int)
+    .bind(table_int)
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    for r in [
+        fx.store
+            .share_table(
+                &fx.bob,
+                legacy,
+                &user("carol"),
+                TableShareRole::Viewer,
+                None,
+            )
+            .await,
+        fx.store
+            .unshare_table(
+                &fx.bob,
+                legacy,
+                &user("carol"),
+                TableShareRole::Viewer,
+                None,
+            )
+            .await,
+        fx.store
+            .list_table_shares(&fx.bob, legacy, None)
+            .await
+            .map(|_| ()),
+    ] {
+        assert!(matches!(r, Err(DataError::NotFound)), "{r:?}");
+    }
+    let (key_format, init): (i16, bool) = sqlx::query_as(
+        "SELECT key_format, pivot_index_init FROM data_table WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(&tenant)
+    .bind(legacy)
+    .fetch_one(&fx.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (key_format, init),
+        (1, false),
+        "見えない主体の呼び出しで移行が走った"
+    );
+}

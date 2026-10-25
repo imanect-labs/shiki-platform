@@ -178,8 +178,8 @@ impl DataStore {
 
     /// 共有の操作の権限: テーブルの owner で、ミニアプリ所有でないこと。
     ///
-    /// 存在しない・削除済みのテーブルは**誰にも** 404（authz より先に生存を引く: 削除後も残るタプルで
-    /// 「見えるので 403」になり、削除済みを存在しないものと区別させないため）。不可視は 404・owner でなければ
+    /// 存在しない・削除済みのテーブルは**誰にも** 404（authz より先に副作用のない読み取りで生存を確かめる:
+    /// 削除後も残るタプルで「見えるので 403」になり、削除済みを存在しないものと区別させないため）。不可視は 404・owner でなければ
     /// 403（`require` が deny を監査）。ミニアプリ所有のテーブルは owner でも 403 で、deny を監査に残す。
     async fn require_table_owner(
         &self,
@@ -188,9 +188,24 @@ impl DataStore {
         action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<crate::model::DataTable, DataError> {
-        let table = self.fetch_live(ctx, table_id).await?;
+        // 生存の確認は副作用のない読み取りで（`fetch_live` は旧形式のテーブルを移行し索引台帳を初期化するので、
+        // 認可より前に呼ぶと見えない主体でも移行・同期構築を起こせる）。移行を伴う読込は認可の後。
+        let live: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM data_table \
+             WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(table_id)
+        .fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
+        .await
+        .map_err(crate::map_db)?;
+        if live.is_none() {
+            return Err(DataError::NotFound);
+        }
         self.require(ctx, table_id, Relation::Owner, action, trace_id)
             .await?;
+        let table = self.fetch_live(ctx, table_id).await?;
         if table.app_id.is_some() {
             let _ = self
                 .audit
