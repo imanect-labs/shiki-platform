@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Browser, type Page } from "@playwright/test";
 
 import { loginViaKeycloak, uniqueName } from "./helpers";
 
@@ -473,3 +473,267 @@ test("既定の値: 追加した条件は入力全体を path なしで指し、
   await panel.getByPlaceholder("例: 次の文章を 3 行で要約してください").fill("今日の予定を 3 行でまとめてください");
   await expect(panel.getByText("入力してください")).toHaveCount(0);
 });
+
+// ── 差し込み・入力項目・モデルの選択（BUG-1・GAP-12・BUG-4）───────────────────
+
+type LlmModel = { id: string; label: string };
+type LlmModels = { models: LlmModel[] } & Record<string, unknown>;
+
+/// 組織で使えるモデルの一覧（`/llm/models`）。LLM が構成されていなければ null。
+async function llmModels(page: Page): Promise<LlmModels | null> {
+  const res = await page.request.get("/api/llm/models");
+  return res.ok() ? ((await res.json()) as LlmModels) : null;
+}
+
+/// 「要約する」（AI に聞く）1 つだけのワークフローを作る。モデルを入れるのは保存時の照合（モデルカタログを
+/// 設定した環境では必須）を通すため。
+async function createLlmFlow(
+  page: Page,
+  opts: { prompt?: unknown; model?: string | null; inputSchema?: unknown },
+): Promise<string> {
+  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const name = uniqueName("wf-vars");
+  const res = await page.request.post("/api/workflows", {
+    headers: { "x-csrf-token": csrf, "content-type": "application/json" },
+    data: {
+      ir: {
+        ir_version: 1,
+        name,
+        display_name: name,
+        triggers: [{ kind: "interactive" }],
+        input_schema: opts.inputSchema ?? null,
+        nodes: [
+          {
+            id: "ask",
+            type: "llm.invoke",
+            label: "要約する",
+            params: { prompt: opts.prompt ?? "", ...(opts.model ? { model: opts.model } : {}) },
+          },
+        ],
+        edges: [],
+      },
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  return ((await res.json()) as { id: string }).id;
+}
+
+async function openFlow(page: Page, id: string) {
+  await page.goto(`/workflows/${id}`);
+  await expect(page.locator(".react-flow").getByText("要約する").first()).toBeVisible({ timeout: 15_000 });
+}
+
+async function saveFlow(page: Page) {
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+}
+
+type SavedIr = { input_schema: unknown; nodes: { id: string; params: Record<string, unknown> }[] };
+
+async function savedIr(page: Page, id: string): Promise<SavedIr> {
+  return ((await (await page.request.get(`/api/workflows/${id}`)).json()) as { ir: SavedIr }).ir;
+}
+
+test("差し込む: 入力項目を足し、AI に聞くの指示に差し込んで保存すると $template と vars になる（BUG-1・GAP-12）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const models = await llmModels(page);
+  const id = await createLlmFlow(page, { model: models?.models[0]?.id });
+  await openFlow(page, id);
+  const canvas = page.locator(".react-flow");
+
+  // きっかけ（手動で実行）の設定で、入力項目「件名（title・必須）」を足す。
+  await canvas.getByText("手動で実行").first().click();
+  const triggerPanel = page.getByRole("complementary", { name: "きっかけの設定" });
+  await triggerPanel.getByRole("button", { name: "項目を追加" }).click();
+  const row = triggerPanel.getByTestId("input-field-row");
+  await row.getByLabel("表示名").fill("件名");
+  await row.getByLabel("キー").fill("title");
+  await row.getByRole("switch", { name: "必須" }).click();
+
+  // 指示を書き、末尾に「差し込む」から件名を入れる（固定値から文章の組み立てに切り替わる）。
+  await canvas.getByText("要約する").first().click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  const prompt = panel.locator('[data-value-expr="AI への指示"]');
+  await prompt.getByLabel("AI への指示").fill("次の件名を 1 行で要約してください: ");
+  await prompt.getByRole("button", { name: "差し込む" }).click();
+  await page.getByRole("menuitem", { name: "件名（title）" }).click();
+  await expect(prompt.getByLabel("AI への指示")).toHaveValue("次の件名を 1 行で要約してください: {title}");
+  await expect(prompt.getByRole("combobox").filter({ hasText: "文章を組み立て" })).toBeVisible();
+  await expect(prompt.getByTestId("template-var").getByLabel("差し込み名")).toHaveValue("title");
+  await expect(prompt.getByRole("combobox", { name: "「title」に入る値" })).toContainText("件名（title）");
+
+  // 保存した定義: 入力項目は JSON Schema、指示は $template と vars（入力の /title を指す）。
+  await saveFlow(page);
+  const ir = await savedIr(page, id);
+  expect(ir.input_schema).toEqual({
+    type: "object",
+    properties: { title: { type: "string", title: "件名" } },
+    required: ["title"],
+  });
+  expect(ir.nodes[0].params.prompt).toEqual({
+    $template: "次の件名を 1 行で要約してください: {title}",
+    vars: { title: { $from: "input", path: "/title" } },
+  });
+});
+
+test("差し込む: 固定値に {{title}} と書くとその場で知らせ、変換ボタンで文章の組み立てにする（BUG-1）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const models = await llmModels(page);
+  const id = await createLlmFlow(page, {
+    model: models?.models[0]?.id,
+    inputSchema: { type: "object", properties: { title: { type: "string", title: "件名" } } },
+  });
+  await openFlow(page, id);
+  await page.locator(".react-flow").getByText("要約する").first().click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  const prompt = panel.locator('[data-value-expr="AI への指示"]');
+
+  // n8n・Dify の書き方（{{title}}）は差し込みにならず、文字のまま送られる。
+  await prompt.getByLabel("AI への指示").fill("{{title}} を要約してください");
+  const warning = prompt.getByTestId("literal-var-warning");
+  await expect(warning).toContainText("「{{title}}」は差し込みになりません");
+  await warning.getByRole("button", { name: "差し込みに変換する" }).click();
+  await expect(warning).toHaveCount(0);
+  await expect(prompt.getByLabel("AI への指示")).toHaveValue("{title} を要約してください");
+  await expect(prompt.getByRole("combobox").filter({ hasText: "文章を組み立て" })).toBeVisible();
+  await expect(prompt.getByRole("combobox", { name: "「title」に入る値" })).toContainText("件名（title）");
+
+  await saveFlow(page);
+  const ir = await savedIr(page, id);
+  expect(ir.nodes[0].params.prompt).toEqual({
+    $template: "{title} を要約してください",
+    vars: { title: { $from: "input", path: "/title" } },
+  });
+});
+
+test("モデル: AI に聞くのモデルを一覧から選び、答えの長さの上限と一緒に保存できる（BUG-4）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const models = await llmModels(page);
+  test.skip(!models || models.models.length === 0, "LLM が構成されていない（使えるモデルがない）環境");
+  const [first] = models!.models;
+  // 今と違うモデルを選ぶ（1 つしかなければ同じものを選び直す）。
+  const target = models!.models.at(-1)!;
+  const id = await createLlmFlow(page, { prompt: "今日の予定をまとめてください", model: first.id });
+  await openFlow(page, id);
+  await page.locator(".react-flow").getByText("要約する").first().click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+
+  // ボタンには今のモデルの表示名が出て、押すと一覧（チャットと同じ部品）が開く。
+  const button = panel.getByTestId("workflow-model-button");
+  await expect(button).toContainText(first.label);
+  await button.click();
+  const picker = page.getByTestId("workflow-model-picker");
+  await expect(picker.getByRole("listbox", { name: "モデル" })).toBeVisible();
+  await picker.getByTestId(`model-option-${target.id}`).click();
+  await expect(picker).toHaveCount(0);
+  await expect(button).toContainText(target.label);
+
+  // 答えの長さの上限は数で入れる（空欄で標準）。
+  await panel.getByPlaceholder("例: 1000").fill("800");
+
+  await saveFlow(page);
+  const ir = await savedIr(page, id);
+  expect(ir.nodes[0].params.model).toBe(target.id);
+  expect(ir.nodes[0].params.max_tokens).toBe(800);
+});
+
+test("モデル: 一覧に無いモデルは値を消さずに赤字で知らせ、一覧を取れないときは自由入力に戻す（BUG-4）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const models = await llmModels(page);
+  test.skip(!models || models.models.length === 0, "LLM が構成されていない（使えるモデルがない）環境");
+  const saved = models!.models[0];
+  const id = await createLlmFlow(page, { prompt: "今日の予定をまとめてください", model: saved.id });
+
+  // 保存の後に管理者がそのモデルを外した状況（一覧から外し、別のモデルだけを返す）。
+  const other = { id: "e2e-other-model", label: "ほかのモデル", provider_label: "テスト", processed_abroad: false, supports_effort: false, description: null };
+  await page.route("**/api/llm/models", (route) => route.fulfill({ json: { ...models!, models: [other] } }));
+  await openFlow(page, id);
+  await page.locator(".react-flow").getByText("要約する").first().click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  await expect(panel.getByText(`このモデルは使えません: ${saved.id}`)).toBeVisible();
+  await expect(panel.getByTestId("workflow-model-button")).toContainText(saved.id);
+
+  // 一覧を取れない（LLM の構成の不調など）ときは、自由入力に戻して注意書きを出す（値はそのまま）。
+  await page.unroute("**/api/llm/models");
+  await page.route("**/api/llm/models", (route) =>
+    route.fulfill({ status: 503, json: { detail: "AI が構成されていません" } }),
+  );
+  await page.reload();
+  await page.locator(".react-flow").getByText("要約する").first().click();
+  await expect(panel.getByText("モデルの一覧を読み込めませんでした")).toBeVisible({ timeout: 15_000 });
+  await expect(panel.getByLabel("モデル ID")).toHaveValue(saved.id);
+});
+
+/// スマホ幅（設定は下からのシート）: 入力項目の追加・差し込む・モデルの一覧がシートの中で使え、横にはみ出さない。
+test("スマホ: 入力項目・差し込む・モデルの一覧をシートの中で使える（BUG-1・GAP-12・BUG-4）", async ({
+  browser,
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const phone = await phonePage(browser, page);
+  const models = await llmModels(page);
+  const id = await createLlmFlow(page, { model: models?.models[0]?.id });
+  await phone.goto(`/workflows/${id}`);
+  const flow = phone.getByTestId("workflow-mobile-flow");
+  await expect(flow).toBeVisible({ timeout: 15_000 });
+  const noOverflow = async (sheet: ReturnType<Page["getByRole"]>) =>
+    expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+
+  // きっかけのシートで入力項目を足す（カードの間の「＋」は文字を持たないので hasText で外す）。
+  await flow.getByRole("button", { name: /手動で実行/ }).filter({ hasText: "手動で実行" }).click();
+  // シートの読み上げ名は見出し（SheetTitle）になる。開いているシートは 1 つだけ。
+  const triggerSheet = phone.getByRole("dialog");
+  await triggerSheet.getByRole("button", { name: "項目を追加" }).click();
+  const row = triggerSheet.getByTestId("input-field-row");
+  await row.getByLabel("表示名").fill("件名");
+  await row.getByLabel("キー").fill("title");
+  await noOverflow(triggerSheet);
+  await phone.keyboard.press("Escape");
+  await expect(triggerSheet).toHaveCount(0);
+
+  // ブロックのシートで差し込み、モデルの一覧をシートの中に広げて選ぶ。
+  await flow.getByRole("button", { name: /要約する/ }).filter({ hasText: "要約する" }).click();
+  const sheet = phone.getByRole("dialog");
+  await expect(sheet.getByText("要約する").first()).toBeVisible();
+  const prompt = sheet.locator('[data-value-expr="AI への指示"]');
+  await prompt.getByLabel("AI への指示").fill("要約: ");
+  await prompt.getByRole("button", { name: "差し込む" }).click();
+  await phone.getByRole("menuitem", { name: "件名（title）" }).click();
+  await expect(prompt.getByLabel("AI への指示")).toHaveValue("要約: {title}");
+  await noOverflow(sheet);
+  if (models && models.models.length > 0) {
+    const target = models.models.at(-1)!;
+    await sheet.getByTestId("workflow-model-button").click();
+    const picker = sheet.getByTestId("workflow-model-picker");
+    await expect(picker).toBeVisible();
+    await picker.getByTestId(`model-option-${target.id}`).click();
+    await expect(picker).toHaveCount(0);
+    await expect(sheet.getByTestId("workflow-model-button")).toContainText(target.label);
+    await expect(sheet).toBeVisible();
+  }
+  await noOverflow(sheet);
+});
+
+/// ログインは PC の画面で済ませ、そのセッションをタッチ端末の文脈へ持ち込む（chat-mobile.spec と同じ）。
+async function phonePage(browser: Browser, page: Page): Promise<Page> {
+  await loginViaKeycloak(page);
+  const ctx = await browser.newContext({
+    storageState: await page.context().storageState(),
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+    deviceScaleFactor: 3,
+    ignoreHTTPSErrors: true,
+  });
+  return ctx.newPage();
+}
