@@ -568,7 +568,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       onReset: (reason) => {
         if (gen !== generation.current) return;
         // スキーマが変わった: 列（追加・削除・読めない列）も取り直してもらう（行だけ読み直すと古い列のまま）。
-        if (reason === "schema_changed") onSchemaChangedRef.current?.();
+        // 権限が変わった（共有の役割の変更など）: 閲覧者の文脈（編集・取込の可否）も取り直す。
+        if (reason === "schema_changed" || reason === "authz_changed") onSchemaChangedRef.current?.();
         // 権限が変わった・テーブルが消えた: 見えなくなったかもしれない行を一瞬でも残さない。
         reset({ dropStale: reason === "authz_changed" || reason === "table_deleted" });
       },
