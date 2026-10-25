@@ -22,7 +22,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/components/ui/use-toast";
 import { SettingsPage, SettingsRow, SettingsSection, SoonBadge } from "./settings-ui";
@@ -71,7 +70,7 @@ function CharCount({ id, text }: { id: string; text: string }) {
 }
 
 /// 設定 → パーソナライズ。カスタム指示は保存され、以後の発話で AI の system プロンプトへ渡る（#900）。
-/// 記憶・Web 検索の既定はまだ API が無いため「準備中」（操作できない）。
+/// 記憶・Web 検索の既定はまだ API が無いため「準備中」（説明だけを出し、操作は置かない）。
 export function AiView() {
   const [base, setBase] = React.useState<CustomInstructionsDraft | null>(null);
   const [draft, setDraft] = React.useState<CustomInstructionsDraft | null>(null);
@@ -95,10 +94,12 @@ export function AiView() {
   const save = async () => {
     if (!draft || !dirty || problem || saving) return;
     setSaving(true);
+    const sent = draft;
     try {
-      const saved = await saveCustomInstructions(draft);
+      const saved = await saveCustomInstructions(sent);
       setBase(saved);
-      setDraft(saved);
+      // 保存中に書き足した分は消さない（送った時点から変わっていなければ保存値へ揃える）。
+      setDraft((cur) => (cur === sent ? saved : cur));
       toast({ title: "カスタム指示を保存しました", description: "次に送る発話から反映されます。" });
     } catch (e) {
       toast({
@@ -212,25 +213,17 @@ export function AiView() {
           </>
         }
       >
-        <SettingsRow label="会話を記憶する" description="過去のチャットから好みや前提を覚え、次の回答に活かします。">
-          <Switch checked={false} disabled aria-label="会話を記憶する" />
-        </SettingsRow>
-        <SettingsRow label="記憶を消去" description="これまでに覚えた内容をすべて忘れます。">
-          <Button variant="outline" size="sm" disabled>
-            記憶を消去
-          </Button>
-        </SettingsRow>
-        <SettingsRow label="Web 検索を既定で使う" description="新しいチャットで Web 検索を最初から有効にします。">
-          <Switch checked={false} disabled aria-label="Web 検索を既定で使う" />
-        </SettingsRow>
+        <SettingsRow label="会話を記憶する" description="過去のチャットから好みや前提を覚え、次の回答に活かします。" />
+        <SettingsRow label="記憶を消去" description="これまでに覚えた内容をすべて忘れます。" />
+        <SettingsRow label="Web 検索を既定で使う" description="新しいチャットで Web 検索を最初から有効にします。" />
       </SettingsSection>
 
       {dirty ? (
-        <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3 shadow-md max-md:bottom-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-card px-4 py-3 shadow-md max-md:bottom-[max(0.75rem,env(safe-area-inset-bottom))]">
           <p className={cn("text-[13px]", problem ? "text-destructive" : "text-muted-foreground")} role="status">
             {problem ?? "保存していない変更があります"}
           </p>
-          <div className="flex gap-2">
+          <div className="ml-auto flex gap-2">
             <Button variant="outline" size="sm" onClick={() => setDraft(base)} disabled={saving}>
               取り消す
             </Button>

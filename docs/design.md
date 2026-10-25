@@ -435,6 +435,13 @@ flowchart LR
   返す。書き直しはさせない）。**執筆は委譲しない**が、**検証は執筆ではないので委譲する** — 書いた本人が
   同じコンテキストで自分の主張を確かめると確証バイアスがそのまま残るため（#407）。子の消費は
   `Spent::add_external` で親へ積み、親の予算で止まる（トークンが十数倍になり得る機構の唯一の安全弁）。
+- **カスタム指示（設定 → パーソナライズ・#900）**: 本人が「自己紹介」「答え方の希望」（各 1500 文字）と
+  「口調」を登録する（`user_custom_instruction`・tenant_id＋org＋user_id で 1 人 1 行・`GET/PUT /me/custom-instructions`）。
+  生成ワーカーは run の実行主体の分を読み、system のプロファイル基本指示の後・skill の指示文／発話ごとの
+  ツール指定／門の注記／今日の日付より前に `<custom_instructions>` で区切って足す（本文の山括弧は全角化し、
+  閉じタグを偽造させない）。本人の発話と同じ重みの希望で、ツール・承認・認可には触れず、規則・手順と
+  食い違えばそちらを優先させる。保存は次の発話から効く。変更は監査に残す
+  （`me.custom_instructions.update`・本文は残さず文字数と口調だけ）。
 - **会話履歴は tenant スコープのスキーマで新設（SAAS.1 / #91）**: thread/message テーブルは既存規約を踏襲し
   全行 `tenant_id text not null`＋複合 PK/unique に `tenant_id` を含める（例: `node` の
   `(org, tenant_id, parent_id, name)`）。thread の OpenFGA オブジェクトも `thread:<tenant>|<id>` になるよう

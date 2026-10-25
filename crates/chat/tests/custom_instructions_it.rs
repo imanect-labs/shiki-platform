@@ -287,14 +287,15 @@ async fn audit_records_lengths_but_not_the_text() {
         )
         .await
         .unwrap();
-    let (action, metadata): (String, serde_json::Value) = sqlx::query_as(
-        "SELECT action, metadata FROM audit_log WHERE tenant_id = $1 ORDER BY id DESC LIMIT 1",
+    let (action, metadata, chained): (String, serde_json::Value, bool) = sqlx::query_as(
+        "SELECT action, metadata, chained FROM audit_log WHERE tenant_id = $1 ORDER BY id DESC LIMIT 1",
     )
     .bind(&tenant)
     .fetch_one(&pool)
     .await
     .unwrap();
     assert_eq!(action, "me.custom_instructions.update");
+    assert!(chained, "設定の変更は改竄検知のチェーンに載る");
     assert_eq!(
         metadata,
         serde_json::json!({ "about_chars": 11, "style_chars": 3, "tone": "formal" })

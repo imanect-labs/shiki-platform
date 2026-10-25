@@ -5,7 +5,7 @@
 
 use authz::AuthContext;
 use serde_json::json;
-use storage::audit::{AuditAction, AuditEntry, Decision};
+use storage::audit::{record_on, AuditAction, AuditEntry, Chain, Decision};
 
 use crate::custom_instructions::{CustomInstructionTone, CustomInstructions};
 use crate::error::ChatError;
@@ -40,8 +40,9 @@ impl ChatStore {
 
     /// 本人のカスタム指示を置き換える（正規化・上限検査のうえ保存し、保存した値を返す）。
     ///
-    /// すべて空にしたら行を消す（「設定なし」と同じ状態に戻す）。監査には文字数と口調だけを残し、
-    /// 本文は残さない（個人の記述・管理者は会話本文を読めない PIT-65 と同じ扱い）。
+    /// すべて空にしたら行を消す（「設定なし」と同じ状態に戻す）。変更と監査は同じトランザクションで
+    /// 書く（監査の無い変更を残さない）。監査には文字数と口調だけを残し、本文は残さない（個人の記述。
+    /// 管理者に会話本文を読ませない design §4.12・FR-9 と同じ扱い）。
     pub async fn put_custom_instructions(
         &self,
         ctx: &AuthContext,
@@ -49,6 +50,7 @@ impl ChatStore {
         trace_id: Option<&str>,
     ) -> Result<CustomInstructions, ChatError> {
         let value = input.normalized()?;
+        let mut tx = self.db.begin().await.map_err(map_db)?;
         if value.is_empty() {
             sqlx::query(
                 "DELETE FROM user_custom_instruction \
@@ -57,7 +59,7 @@ impl ChatStore {
             .bind(&ctx.tenant_id)
             .bind(&ctx.org)
             .bind(&ctx.principal.id)
-            .execute(&self.db)
+            .execute(&mut *tx)
             .await
             .map_err(map_db)?;
         } else {
@@ -74,28 +76,30 @@ impl ChatStore {
             .bind(&value.about)
             .bind(&value.style)
             .bind(value.tone.as_str())
-            .execute(&self.db)
+            .execute(&mut *tx)
             .await
             .map_err(map_db)?;
         }
-        self.audit
-            .record(
-                ctx,
-                AuditEntry {
-                    action: AuditAction::MeCustomInstructionsUpdate,
-                    object_type: "custom_instructions",
-                    object_id: &ctx.principal.id,
-                    decision: Decision::Allow,
-                    trace_id,
-                    metadata: json!({
-                        "about_chars": value.about.chars().count(),
-                        "style_chars": value.style.chars().count(),
-                        "tone": value.tone.as_str(),
-                    }),
-                },
-            )
-            .await
-            .map_err(map_storage)?;
+        record_on(
+            &mut tx,
+            ctx,
+            AuditEntry {
+                action: AuditAction::MeCustomInstructionsUpdate,
+                object_type: "custom_instructions",
+                object_id: &ctx.principal.id,
+                decision: Decision::Allow,
+                trace_id,
+                metadata: json!({
+                    "about_chars": value.about.chars().count(),
+                    "style_chars": value.style.chars().count(),
+                    "tone": value.tone.as_str(),
+                }),
+            },
+            Chain::Yes,
+        )
+        .await
+        .map_err(map_storage)?;
+        tx.commit().await.map_err(map_db)?;
         Ok(value)
     }
 }

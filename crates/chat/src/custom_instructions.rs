@@ -88,7 +88,7 @@ pub struct CustomInstructions {
 impl CustomInstructions {
     /// 保存前の正規化と検査。
     ///
-    /// 前後の空白を落とし、改行は `\n` に揃え、改行・タブ以外の制御文字を除く。上限を超えたら
+    /// 前後の空白を落とし、改行は `\n` に揃え、改行・タブ以外の制御文字と BOM を除く。上限を超えたら
     /// 黙って切らずに拒否する（何が保存されたか本人に分からなくなるため）。
     pub fn normalized(self) -> Result<Self, ChatError> {
         Ok(CustomInstructions {
@@ -137,7 +137,9 @@ fn normalize_field(label: &str, raw: &str) -> Result<String, ChatError> {
     let unified = raw.replace("\r\n", "\n").replace('\r', "\n");
     let cleaned: String = unified
         .chars()
-        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        // BOM（U+FEFF）は見えない混入物なので落とす（画面は JS の trim で端の BOM を数えないため、
+        // サーバの文字数が画面の表示を超えないようにする）。
+        .filter(|c| (!c.is_control() || *c == '\n' || *c == '\t') && *c != '\u{FEFF}')
         .collect();
     let trimmed = cleaned.trim().to_string();
     let n = trimmed.chars().count();
@@ -227,6 +229,10 @@ mod tests {
         .normalized()
         .unwrap();
         assert_eq!(n.about, "一行目\n二行目\t末尾");
+        let bom = ci("\u{FEFF}本文\u{FEFF}", "", CustomInstructionTone::Default)
+            .normalized()
+            .unwrap();
+        assert_eq!(bom.about, "本文");
         assert_eq!(n.style, "x");
         assert_eq!(n.tone, CustomInstructionTone::Casual);
     }
