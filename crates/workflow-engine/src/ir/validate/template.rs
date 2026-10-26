@@ -2,7 +2,8 @@
 //!
 //! - V5: `{name}` が vars のキーにあること（[`missing_placeholders`]。vars の中の参照は V5 の走査が見る）
 //! - V7: vars の数が [`MAX_TEMPLATE_VARS`] 以下であること（[`check_limits`]）
-//! - 保存を止めない警告: vars のキーを `{{key}}` と書いた（波括弧そのものが出て差し込まれない・[`warnings`]）
+//! - 保存を止めない警告: vars のキーを `{{key}}` と書いた（波括弧そのものが出て差し込まれない）・閉じの無い `{`
+//!   （差し込みにならず文字のまま出る・D-37）（[`warnings`]）
 
 use serde_json::{Map, Value};
 
@@ -12,6 +13,8 @@ use crate::ir::{Trigger, WorkflowIr};
 
 /// 警告のコード: `{{key}}`（エスケープした波括弧）で vars のキーを囲んでいる。
 pub const TEMPLATE_ESCAPED_VAR: &str = "ir.template_escaped_var";
+/// 警告のコード: 閉じの無い `{` がある（差し込みにならず文字のまま出る・D-37）。
+pub const TEMPLATE_UNCLOSED_BRACE: &str = "ir.template_unclosed_brace";
 
 /// JSON Pointer の子の位置（`~` と `/` をエスケープする）。
 pub(super) fn child(path: &str, key: &str) -> String {
@@ -107,9 +110,13 @@ pub(super) fn check_limits(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
     });
 }
 
-/// 保存を止めない警告: vars のキーを `{{key}}` と書いたテンプレート（差し込まれず `{key}` の文字が出る）。
+/// 保存を止めない警告（テンプレートの書き方の誤りらしいもの）。
 ///
-/// n8n や Dify の書き方に慣れた利用者・AI が書きがち。`{{ key }}` のように空白を挟んだものも拾う。
+/// - vars のキーを `{{key}}` と書いた（差し込まれず `{key}` の文字が出る）。n8n や Dify の書き方に慣れた
+///   利用者・AI が書きがち。`{{ key }}` のように空白を挟んだものも拾う。
+/// - 閉じの無い `{`（`a { b`）。実行時は文字のまま出す（エラーにはしない・D-37）が、`{name` の閉じ忘れは
+///   差し込んだつもりで差し込まれないので知らせる。字句は実行時と同じ [`template_pieces`] で読み、
+///   文字の字句に残った `{` を閉じの無いものとみなす（`{{` と閉じた `{…}` は別の字句になる）。
 #[must_use]
 pub(super) fn warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     let mut out = Vec::new();
@@ -118,6 +125,20 @@ pub(super) fn warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
             return; // 形の崩れは V5 のエラー。
         };
         let pieces = template_pieces(&t.template);
+        if pieces
+            .iter()
+            .any(|p| matches!(p, TemplatePiece::Text(text) if text.contains('{')))
+        {
+            let mut e = ValidationError::new(
+                TEMPLATE_UNCLOSED_BRACE,
+                "閉じの無い { があります（差し込みにならず、文字のまま出ます）。差し込むなら {名前} と閉じ、波括弧そのものを出すなら {{ と書きます",
+            )
+            .at_path(path);
+            if let Some(id) = node_id {
+                e = e.at_node(id);
+            }
+            out.push(e);
+        }
         for w in pieces.windows(3) {
             let [TemplatePiece::Escaped('{'), TemplatePiece::Text(key), TemplatePiece::Escaped('}')] =
                 w
@@ -187,6 +208,32 @@ mod tests {
         assert_eq!(w[0].path.as_deref(), Some("/params/input"));
         assert!(w[0].message.contains("{{title}}") && w[0].message.contains("{title} と書きます"));
         assert!(w[1].message.contains("{amount}"), "{}", w[1].message);
+    }
+
+    /// D-37: 閉じの無い `{` は保存を止めずに知らせる（1 つのテンプレートに 1 件）。`{{`・閉じた差し込み・
+    /// 対にならない `}` は対象外。
+    #[test]
+    fn warns_on_unclosed_brace() {
+        let w = warnings(&script_with_input(json!({
+            "$template": "件名: {title / 金額 { 円", "vars": { "title": "x" } })));
+        assert_eq!(w.len(), 1, "{w:#?}");
+        assert_eq!(w[0].code, TEMPLATE_UNCLOSED_BRACE);
+        assert_eq!(w[0].node_id.as_deref(), Some("echo"));
+        assert_eq!(w[0].path.as_deref(), Some("/params/input"));
+        for ok in ["{title} {{literal}} x}y", "{{ だけ", "閉じた {title}"] {
+            let w = warnings(&script_with_input(
+                json!({ "$template": ok, "vars": { "title": "x" } }),
+            ));
+            assert!(
+                w.iter().all(|e| e.code != TEMPLATE_UNCLOSED_BRACE),
+                "{ok}: {w:#?}"
+            );
+        }
+        // 閉じの無い `{` の後ろに `{{` があっても拾う（エスケープは別の字句）。
+        let w = warnings(&script_with_input(
+            json!({ "$template": "a { b {{c", "vars": {} }),
+        ));
+        assert_eq!(w.len(), 1, "{w:#?}");
     }
 
     #[test]

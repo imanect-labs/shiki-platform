@@ -41,7 +41,7 @@ pub use ir::scopes::complete_declared_scopes;
 pub use ir::validate::{
     pattern_within, save_warnings, semantics_warnings, valid_host_pattern, validate, Catalog,
     CatalogTable, ValidationError, APPROVAL_TIMEOUTS_EXCEED_RUN, REPLY_WITHOUT_INTERACTIVE,
-    SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR,
+    SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE,
 };
 pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};

@@ -14,7 +14,7 @@ pub use reply::{MAX_REPLIES, REPLY_WITHOUT_INTERACTIVE};
 mod semantics;
 pub use semantics::{semantics_warnings, SEMANTICS_CHANGED};
 mod template;
-pub use template::TEMPLATE_ESCAPED_VAR;
+pub use template::{TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE};
 mod v2_graph;
 mod v3_vocab;
 pub use v3_vocab::{OVERLAPPING_DATA_TRIGGERS, WAIT_FILTER_ALIAS};
@@ -105,7 +105,8 @@ pub struct Catalog {
 /// 保存を止めない警告をすべて返す（保存 API・検証 API・チャットの emit_workflow が利用者へ示す）。
 ///
 /// 条件の意味論の切替で振る舞いが変わり得る条件（[`SEMANTICS_CHANGED`]・[`semantics_warnings`]）と、
-/// vars のキーを `{{key}}` と書いたテンプレート（[`TEMPLATE_ESCAPED_VAR`]）と、同じテーブルで重なる
+/// vars のキーを `{{key}}` と書いたテンプレート（[`TEMPLATE_ESCAPED_VAR`]）と、閉じの無い `{` のある
+/// テンプレート（[`TEMPLATE_UNCLOSED_BRACE`]・D-37）と、同じテーブルで重なる
 /// データ変更トリガ（[`OVERLAPPING_DATA_TRIGGERS`]）と、wait(event) の filter の別名（[`WAIT_FILTER_ALIAS`]）と、
 /// 続けて待つ承認の期限の合計が実行の期限以上のもの（[`APPROVAL_TIMEOUTS_EXCEED_RUN`]）と、手動で動かす
 /// きっかけの無い IR の画面に返す結果（[`REPLY_WITHOUT_INTERACTIVE`]）。
