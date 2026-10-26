@@ -79,10 +79,11 @@ pub(super) const EXAMPLE_REVIEW: &str = r#"{
       "params": { "prompt": { "$template": "次の申請で確認すべき点を箇条書きで挙げてください。\n{record}",
                               "vars": { "record": { "$from": "each", "path": "/item/data" } } } } },
     { "id": "save_review", "type": "storage.write", "parent": "per_item", "label": "確認メモを保存",
-      "params": { "name": { "$template": "review-{id}.md", "vars": { "id": { "$from": "each", "path": "/item/id" } } },
+      "params": { "folder": "<保存先のフォルダの id>",
+                  "name": { "$template": "review-{id}.md", "vars": { "id": { "$from": "each", "path": "/item/id" } } },
                   "content": { "$from": "nodes.review.output", "path": "/text" } } },
     { "id": "record_failure", "type": "storage.write", "label": "失敗を記録",
-      "params": { "name": "review-failed.txt",
+      "params": { "folder": "<保存先のフォルダの id>", "name": "review-failed.txt",
                   "content": { "$from": "nodes.find.output", "path": "/error/message" } } }
   ],
   "edges": [
@@ -256,6 +257,7 @@ pub(super) fn emit_description(models: Option<&[String]>) -> String {
          - 参照 {{\"$from\":\"<source>\",\"path\":\"/キー/0\",\"default\":既定値}}（path・default は省略可）。source は input（実行の入力）・trigger（トリガの内容）・run（{{run_id, tenant_id}}）・nodes.<id>.output（エッジでたどれる前のノードの出力。形は【ノード】の出力）・each（map 領域の中だけ）のどれか。中身は path（JSON Pointer・/ で始める）で指し、source に input.title のような書き方はしない。解決できず default も無ければ step は失敗する。\n\
          - 文章の組み立て {{\"$template\":\"件名: {{title}}（{{count}} 件）\",\"vars\":{{\"title\":{{\"$from\":\"input\",\"path\":\"/title\"}},\"count\":…}}}}。差し込みは {{名前}} で、名前は vars のキー（vars に無い名前はエラー）。{{{{ と }}}} は差し込みではなく波括弧そのものを出す書き方（{{{{title}}}} と書くと「{{title}}」という文字が出る）。\n\
          - url・secret・skill・model など型が string の項目はリテラルの文字列だけ（参照は書けない）。テーブル・フォルダ・ファイルの id は実在する uuid を書く（data_schema・doc_search などで調べる。推測しない）。\n\
+         - schedule・event で動かすワークフローの storage.write・csv.write には folder を必ず書く（省略はルートへの保存で、自動の実行はルートに書けないので有効化できない）。llm.invoke の prompt・agent.invoke の instruction・rag.search の query・csv.query の sql は空にしない（空のままでは有効化も実行もできない）。\n\
          - 条件（control.branch の condition・トリガと control.wait の filter）: {{\"cmp\":{{\"left\":値,\"op\":CmpOp,\"right\":値}}}}・{{\"all\":[条件…]}}・{{\"any\":[条件…]}}・{{\"not\":条件}}。CmpOp = {ops}（exists・is_null は right を書かない）。例: {cond}\n\
          - data.query の filter は形が違う: {{\"cmp\":{{\"field\":\"<列の参照名>\",\"op\":CmpOp,\"value\":値}}}}（all / any / not は同じ）。\n",
         ops = compact_ts::<CmpOp>(),
@@ -394,6 +396,12 @@ mod tests {
             assert!(
                 workflow_engine::save_warnings(&ir).is_empty(),
                 "{name}: 警告が出る例は載せない"
+            );
+            // そのまま有効化できる（schedule の例の保存先フォルダの省略などを載せない・D-40・D-43）。
+            assert_eq!(
+                workflow_engine::enable_blockers(&ir),
+                Vec::new(),
+                "{name}: 有効化できない例は載せない"
             );
             for (label, catalog) in [
                 ("カタログなし", &Catalog::default()),
