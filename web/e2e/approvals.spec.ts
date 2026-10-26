@@ -423,7 +423,7 @@ test("承認を待つブロック: テーブルを変えると前のテーブル
   expect(params.show_fields).toEqual(["title"]);
 });
 
-test("承認を待つブロック: テーブルに無い受信箱の列は外すボタン付きで出し、保存の誤りも欄に出す（GAP-08）", async ({ page }) => {
+test("承認を待つブロック: テーブルに無い受信箱の列・担当者の列を出し、外せて、保存の誤りも欄に出す（GAP-08）", async ({ page }) => {
   test.setTimeout(120_000);
   await loginViaKeycloak(page);
   const s = await setup(page);
@@ -436,7 +436,10 @@ test("承認を待つブロック: テーブルに無い受信箱の列は外す
     const res = await route.fetch();
     const body = (await res.json()) as { ir: { nodes: { id: string; params: Record<string, unknown> }[] } };
     const node = body.ir.nodes.find((n) => n.id === "ok");
-    if (node) node.params.show_fields = ["title", "ghost", "amount"];
+    if (node) {
+      node.params.show_fields = ["title", "ghost", "amount"];
+      node.params.assignees = [{ field: "approver" }, { field: "ghost_user" }, { field: "title" }];
+    }
     await route.fulfill({ response: res, json: body });
   });
   await page.goto(`/workflows/${s.workflowId}`);
@@ -450,6 +453,10 @@ test("承認を待つブロック: テーブルに無い受信箱の列は外す
   await expect(panel.getByRole("button", { name: "金額", pressed: true })).toBeVisible();
   const stray = panel.getByRole("list", { name: "選べない列" });
   await expect(stray).toContainText("このテーブルに無い列: ghost");
+  // 担当者の列も同じ（テーブルの owner には定義の全体が見えているので「無い」と言い切れる）。見えるがユーザーの
+  // 列でないものは、無いとは言わずに種類で言う。
+  await expect(panel.getByText("このテーブルに無い列: ghost_user")).toBeVisible();
+  await expect(panel.getByText("ユーザー・部署の列ではありません: title")).toBeVisible();
 
   // ほかの欄を直して保存すると、サーバの検証（ir.unknown_field）で止まり、理由が受信箱に出す列の欄に出る。
   await panel.getByPlaceholder("例: 経費申請の承認").fill("経費申請の承認（課長）");
@@ -460,12 +467,16 @@ test("承認を待つブロック: テーブルに無い受信箱の列は外す
   await stray.getByRole("button", { name: "列 ghost を外す" }).click();
   await expect(stray).toHaveCount(0);
   await expect(panel.getByRole("button", { name: "金額", pressed: true })).toBeVisible();
+  await panel.getByRole("button", { name: "相手 3 を外す" }).click();
+  await panel.getByRole("button", { name: "相手 2 を外す" }).click();
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
   const saved = (await (await page.request.get(`/api/workflows/${s.workflowId}`)).json()) as {
     ir: { nodes: { id: string; params: Record<string, unknown> }[] };
   };
-  expect(saved.ir.nodes.find((n) => n.id === "ok")?.params.show_fields).toEqual(["title", "amount"]);
+  const params = saved.ir.nodes.find((n) => n.id === "ok")?.params ?? {};
+  expect(params.show_fields).toEqual(["title", "amount"]);
+  expect(params.assignees).toEqual([{ field: "approver" }]);
 });
 
 const FGA_URL = process.env.E2E_OPENFGA_URL ?? "http://localhost:8082";
@@ -498,51 +509,76 @@ async function grantTableEditor(page: Page, tenant: string, userId: string, tabl
   expect(res.ok(), await res.text()).toBeTruthy();
 }
 
-test("承認を待つブロック: テーブルの owner でない編集者には、読めない列を「テーブルに無い列」と言わない（GAP-08）", async ({ browser }) => {
-  test.setTimeout(150_000);
-  // alice: 金額を誰にも読めない列（マスク）にした、状態の遷移の規則つきのテーブルを作る。
-  const aliceCtx = await browser.newContext();
-  const alice = await aliceCtx.newPage();
-  await loginViaKeycloak(alice);
-  const aliceHeaders = await csrfHeaders(alice);
+/// alice が作る、`masked` の列を誰にも読めない列（マスク）にした、状態の遷移の規則つきのテーブル。
+async function maskedFsmTable(
+  page: Page,
+  prefix: string,
+  fields: Record<string, unknown>[],
+  masked: string[],
+): Promise<string> {
+  const headers = await csrfHeaders(page);
   const states = ["申請中", "承認", "却下"];
-  const tableName = uniqueName("e2e-給与の申請");
-  const created = await alice.request.post("/api/data/tables", {
-    headers: aliceHeaders,
+  const nobody = { has_role: { role: "a-corp/e2e-nobody", subtree: false } };
+  const created = await page.request.post("/api/data/tables", {
+    headers,
     data: {
-      name: tableName,
+      name: uniqueName(prefix),
       schema: {
-        fields: [
-          { key: "title", display_name: "件名", type: "text", indexed: true },
-          { key: "amount", display_name: "金額", type: "number" },
-          { key: "approver", display_name: "承認者", type: "user_ref", indexed: true },
-          { key: "status", display_name: "状態", type: "select", options: states, indexed: true },
-        ],
+        fields: [...fields, { key: "status", display_name: "状態", type: "select", options: states, indexed: true }],
         status_field: "status",
-        field_policy: [{ field: "amount", readable_by: { has_role: { role: "a-corp/e2e-nobody", subtree: false } } }],
+        field_policy: masked.map((field) => ({ field, readable_by: nobody })),
       },
     },
   });
   expect(created.status(), await created.text()).toBe(201);
   const table = (await created.json()) as { id: string; schema: Record<string, unknown>; schema_version: number };
-  const fsm = await alice.request.post("/api/data/fsms", {
-    headers: aliceHeaders,
+  const fsm = await page.request.post("/api/data/fsms", {
+    headers,
     data: {
-      name: uniqueName("e2e-給与の申請の流れ"),
+      name: uniqueName(`${prefix}の流れ`),
       table_id: table.id,
       body: { states, transitions: [{ from: "申請中", to: "承認", actor: "public" }, { from: "申請中", to: "却下", actor: "public" }] },
     },
   });
   expect(fsm.status(), await fsm.text()).toBe(201);
   const f = (await fsm.json()) as { id: string; version?: number };
-  const put = await alice.request.put(`/api/data/tables/${table.id}/schema`, {
-    headers: aliceHeaders,
+  const put = await page.request.put(`/api/data/tables/${table.id}/schema`, {
+    headers,
     data: {
       schema: { ...table.schema, fsm_ref: { artifact_id: f.id, version: f.version ?? 1 } },
       expected_schema_version: table.schema_version,
     },
   });
   expect(put.status(), await put.text()).toBe(200);
+  return table.id;
+}
+
+test("承認を待つブロック: テーブルの owner でない編集者には、読めない列を「テーブルに無い列」と言わない（GAP-08）", async ({ browser }) => {
+  test.setTimeout(150_000);
+  // alice: 金額と別の承認者の列を誰にも読めない列にしたテーブルと、ユーザーの列が読めない列だけのテーブルを作る。
+  const aliceCtx = await browser.newContext();
+  const alice = await aliceCtx.newPage();
+  await loginViaKeycloak(alice);
+  const tableId = await maskedFsmTable(
+    alice,
+    "e2e-給与の申請",
+    [
+      { key: "title", display_name: "件名", type: "text", indexed: true },
+      { key: "amount", display_name: "金額", type: "number" },
+      { key: "approver", display_name: "承認者", type: "user_ref", indexed: true },
+      { key: "secret_approver", display_name: "別の承認者", type: "user_ref" },
+    ],
+    ["amount", "secret_approver"],
+  );
+  const otherId = await maskedFsmTable(
+    alice,
+    "e2e-人事の申請",
+    [
+      { key: "title", display_name: "件名", type: "text", indexed: true },
+      { key: "owner_user", display_name: "担当者", type: "user_ref" },
+    ],
+    ["owner_user"],
+  );
   await aliceCtx.close();
 
   // bob: テーブルの editor（owner ではない）。bob に返る定義からは読めない金額が落ちる。
@@ -550,18 +586,19 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   const bob = await bobCtx.newPage();
   await loginAs(bob, "bob");
   const me = (await (await bob.request.get("/api/me")).json()) as { id: string; tenant_id: string };
-  await grantTableEditor(bob, me.tenant_id, me.id, table.id);
-  const seen = (await (await bob.request.get(`/api/data/tables/${table.id}`)).json()) as {
+  await grantTableEditor(bob, me.tenant_id, me.id, tableId);
+  await grantTableEditor(bob, me.tenant_id, me.id, otherId);
+  const seen = (await (await bob.request.get(`/api/data/tables/${tableId}`)).json()) as {
     schema: { fields: { key: string }[] };
   };
   expect(seen.schema.fields.map((x) => x.key)).toEqual(["title", "approver", "status"]);
-  const viewer = (await (await bob.request.get(`/api/data/tables/${table.id}/viewer-context`)).json()) as {
+  const viewer = (await (await bob.request.get(`/api/data/tables/${tableId}/viewer-context`)).json()) as {
     can_edit: boolean;
     can_manage: boolean;
   };
   expect(viewer).toMatchObject({ can_edit: true, can_manage: false });
 
-  // 受信箱に金額を出す承認（保存の検証は定義の全体で照合するので、bob にも保存できる）。
+  // 受信箱に金額を出し、読めない列の人にも出す承認（保存の検証は定義の全体で照合するので、bob にも保存できる）。
   const name = uniqueName("salary-approval");
   const flow = await bob.request.post("/api/workflows", {
     headers: await csrfHeaders(bob),
@@ -578,14 +615,25 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
             label: "上長の承認",
             params: {
               title: "給与の申請の承認",
-              record: { table: table.id, id: { $from: "input", path: "/record_id" } },
-              assignees: [{ field: "approver" }],
+              record: { table: tableId, id: { $from: "input", path: "/record_id" } },
+              assignees: [{ field: "approver" }, { field: "secret_approver" }],
               approve: { to: "承認" },
               show_fields: ["title", "amount"],
             },
           },
+          {
+            id: "ok2",
+            type: "human.approval",
+            label: "部長の承認",
+            params: {
+              title: "人事の申請の承認",
+              record: { table: otherId, id: { $from: "input", path: "/record_id" } },
+              assignees: [{ field: "owner_user" }],
+              approve: { to: "承認" },
+            },
+          },
         ],
-        edges: [],
+        edges: [{ from: "ok", from_port: "approved", to: "ok2" }],
         input_schema: { type: "object", properties: { record_id: { type: "string" } } },
         policies: { run_timeout_sec: 1209600 },
       },
@@ -602,7 +650,10 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
     const res = await route.fetch();
     const body = (await res.json()) as { ir: { nodes: { id: string; params: Record<string, unknown> }[] } };
     const node = body.ir.nodes.find((n) => n.id === "ok");
-    if (node) node.params.show_fields = ["title", "ghost", "amount"];
+    if (node) {
+      node.params.show_fields = ["title", "ghost", "amount"];
+      node.params.assignees = [{ field: "approver" }, { field: "secret_approver" }, { field: "ghost_user" }];
+    }
     await route.fulfill({ response: res, json: body });
   });
   await bob.goto(`/workflows/${workflowId}`);
@@ -621,6 +672,10 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   await expect(stray).toContainText(`${NEUTRAL}ghost`);
   await expect(stray).not.toContainText("このテーブルに無い列");
   await expect(stray.getByRole("button", { name: "列 amount を外す" })).toBeVisible();
+  // 担当者の列も同じ（読めない別の承認者の列も、無い列も断定しない）。
+  await expect(panel.getByText(`${NEUTRAL}secret_approver`)).toBeVisible();
+  await expect(panel.getByText(`${NEUTRAL}ghost_user`)).toBeVisible();
+  await expect(panel.getByText("このテーブルに無い列")).toHaveCount(0);
 
   // ほかの欄を直すと検証が走り、サーバが「無い」と返した ghost だけを断定する（金額は全体の定義にあるので返らない）。
   await panel.getByPlaceholder("例: 経費申請の承認").fill("給与の申請の承認（部長）");
@@ -628,6 +683,8 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   await expect(panel.getByText("列 ghost はこのテーブルにありません")).toBeVisible();
   await expect(stray).toContainText(`${NEUTRAL}amount`);
   await expect(stray).not.toContainText("このテーブルに無い列: amount");
+  await expect(panel.getByText("このテーブルに無い列: ghost_user")).toBeVisible();
+  await expect(panel.getByText(`${NEUTRAL}secret_approver`)).toBeVisible();
 
   // ghost を外すと、金額がサーバの誤りの添字（/params/show_fields/1）へ詰まる。次の検証の応答が来る前でも、
   // 前の検証の添字を今の並びに当てて金額を「無い」と言わない。
@@ -646,13 +703,22 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   release();
   await expect(panel.getByText("列 ghost はこのテーブルにありません")).toHaveCount(0, { timeout: 15_000 });
 
-  // 外さずに保存でき、受信箱に出す列に金額が残る。
+  // 無い担当者の列だけ外して保存でき、受信箱に出す列に金額が、担当者に読めない列の人が残る。
+  await panel.getByRole("button", { name: "相手 3 を外す" }).click();
   await bob.getByRole("button", { name: "保存", exact: true }).click();
   await expect(bob.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
   const saved = (await (await bob.request.get(`/api/workflows/${workflowId}`)).json()) as {
     ir: { nodes: { id: string; params: Record<string, unknown> }[] };
   };
-  expect(saved.ir.nodes.find((n) => n.id === "ok")?.params.show_fields).toEqual(["title", "amount"]);
+  const params = saved.ir.nodes.find((n) => n.id === "ok")?.params ?? {};
+  expect(params.show_fields).toEqual(["title", "amount"]);
+  expect(params.assignees).toEqual([{ field: "approver" }, { field: "secret_approver" }]);
+
+  // ユーザーの列が読めない列だけのテーブルでも、「このテーブルにユーザー・部署の列がありません」と言わない。
+  await canvas.getByText("部長の承認").first().click();
+  await expect(panel.getByText("あなたが読める列に、ユーザー・部署の列がありません")).toBeVisible();
+  await expect(panel.getByText(`${NEUTRAL}owner_user`)).toBeVisible();
+  await expect(panel.getByText("このテーブルにユーザー・部署の列がありません")).toHaveCount(0);
   await bobCtx.close();
 });
 

@@ -106,19 +106,31 @@ function useSeesWholeTable(tableId: string | null): boolean {
   return whole?.id === tableId && whole.value;
 }
 
-/// サーバの検証が「テーブルに無い」（ir.unknown_field）と返した受信箱の列。サーバは定義の全体で照合するので、
-/// 読めないだけの列は返らない。誤りの path の添字は検証の対象だった IR の値で引く（検証の後に外す・並べ替えると
-/// 添字がずれ、今の並びに当てると別の列を「無い」と言ってしまう）。検証の後にテーブルを変えていたら何も返さない。
-function serverUnknownShowFields(check: ServerCheck, tableId: string): Set<string> {
+/// サーバの検証が「テーブルに無い」（ir.unknown_field）と返した列（受信箱に出す列は `/params/show_fields/{i}`、
+/// 担当者の列は `/params/assignees/{i}/field`）。サーバは定義の全体で照合するので、読めないだけの列は返らない。
+/// 誤りの path の添字は検証の対象だった IR の値で引く（検証の後に外す・並べ替えると添字がずれ、今の並びに当てると
+/// 別の列を「無い」と言ってしまう）。検証の後にテーブルを変えていたら何も返さない。
+function serverUnknownFields(check: ServerCheck, tableId: string, list: "show_fields" | "assignees"): Set<string> {
   const keys = new Set<string>();
   const p = check.node ? paramsOf<Params>(check.node) : null;
   if (!p || p.record?.table !== tableId) return keys;
+  const at = list === "show_fields" ? /^\/params\/show_fields\/(\d+)$/ : /^\/params\/assignees\/(\d+)\/field$/;
   for (const e of check.errors) {
-    const m = e.code === "ir.unknown_field" ? /^\/params\/show_fields\/(\d+)$/.exec(e.path ?? "") : null;
-    const key = m ? p.show_fields?.[Number(m[1])] : undefined;
+    const m = e.code === "ir.unknown_field" ? at.exec(e.path ?? "") : null;
+    if (!m) continue;
+    const i = Number(m[1]);
+    const key = list === "show_fields" ? p.show_fields?.[i] : p.assignees?.[i]?.field;
     if (key) keys.add(key);
   }
   return keys;
+}
+
+/// 選べる列に無い保存済みの列の注記（`certain` は赤字で出す）。`missing`（定義の全体が見えている・サーバが無いと
+/// 返した）でなければ、読めないだけで実在する列かもしれないので「無い」と断定しない。
+function unselectableNote(key: string, missing: boolean): { text: string; certain: boolean } {
+  return missing
+    ? { text: `このテーブルに無い列: ${key}`, certain: true }
+    : { text: `この画面では選べない列（テーブルに無いか、あなたが読めない列）: ${key}`, certain: false };
 }
 
 export function HumanApprovalForm(props: FormProps) {
@@ -128,7 +140,8 @@ export function HumanApprovalForm(props: FormProps) {
   const fsmTables = React.useMemo(() => (tables ?? []).filter((t) => Boolean(t.schema.fsm_ref)), [tables]);
   const table = fsmTables.find((t) => t.id === p.record?.table) ?? null;
   const seesWholeTable = useSeesWholeTable(table?.id ?? null);
-  const serverMissing = table ? serverUnknownShowFields(serverCheck, table.id) : new Set<string>();
+  const missingShowFields = table ? serverUnknownFields(serverCheck, table.id, "show_fields") : new Set<string>();
+  const missingAssignees = table ? serverUnknownFields(serverCheck, table.id, "assignees") : new Set<string>();
   const states = statesOf(table);
   const set = (patch: Partial<Record<keyof Params, unknown>>) => patchParams(dispatch, node, patch);
   const record = p.record ?? { table: "", id: { $from: "trigger", path: "/record_id" } as ValueExpr };
@@ -183,7 +196,14 @@ export function HumanApprovalForm(props: FormProps) {
         placeholder="行の ID"
       />
 
-      <AssigneesField {...props} table={table} assignees={p.assignees ?? []} onChange={(assignees) => set({ assignees })} />
+      <AssigneesField
+        {...props}
+        table={table}
+        assignees={p.assignees ?? []}
+        seesWholeTable={seesWholeTable}
+        knownMissing={(k) => seesWholeTable || missingAssignees.has(k)}
+        onChange={(assignees) => set({ assignees })}
+      />
 
       {CHOICES.map((c) => {
         const value = p[c.key] as ApprovalChoice | undefined;
@@ -205,7 +225,7 @@ export function HumanApprovalForm(props: FormProps) {
         table={table}
         value={p.show_fields ?? []}
         error={fieldErrors.get("show_fields")}
-        knownMissing={(k) => seesWholeTable || serverMissing.has(k)}
+        knownMissing={(k) => seesWholeTable || missingShowFields.has(k)}
         onChange={(v) => set({ show_fields: v.length ? v : undefined })}
       />
 
@@ -336,6 +356,9 @@ function ChoiceField({
 }
 
 /// 受信箱に出す相手（行のユーザー・ロールの列／固定のユーザー／固定のロール）。
+///
+/// 列が選べる列に無いとき、「テーブルに無い」と言うのは `knownMissing` が真のときだけ（受信箱に出す列と同じ）。
+/// owner 以外に返る定義には読めない列が無いので、読めないだけのユーザーの列を「無い」と言わない。
 function AssigneesField({
   node,
   refCandidates,
@@ -343,13 +366,23 @@ function AssigneesField({
   fieldErrors,
   table,
   assignees,
+  seesWholeTable,
+  knownMissing,
   onChange,
 }: FormProps & {
   table: DataTable | null;
   assignees: ApprovalAssignee[];
+  seesWholeTable: boolean;
+  knownMissing: (key: string) => boolean;
   onChange: (next: ApprovalAssignee[]) => void;
 }) {
   const refFields = (table?.schema.fields ?? []).filter((f) => f.type === "user_ref" || f.type === "role_ref");
+  // 見えるがユーザー・部署の列でない列（サーバは ir.bad_assignee で止める）は、無いとは言わずに種類で言う。
+  const visible = new Set((table?.schema.fields ?? []).map((f) => f.key));
+  const strayNote = (key: string) =>
+    visible.has(key)
+      ? { text: `ユーザー・部署の列ではありません: ${key}`, certain: true }
+      : unselectableNote(key, knownMissing(key));
   const update = (i: number, next: ApprovalAssignee) => onChange(assignees.map((a, j) => (j === i ? next : a)));
   const blank = (kind: AssigneeKind): ApprovalAssignee =>
     kind === "field" ? { field: refFields[0]?.key ?? "" } : kind === "user" ? { user: "" } : { role: "" };
@@ -385,8 +418,8 @@ function AssigneesField({
               </Button>
             </div>
             {kind === "field" ? (
-              refFields.length ? (
-                <>
+              <>
+                {refFields.length ? (
                   <Select value={a.field ?? ""} onValueChange={(field) => update(i, { field })}>
                     <SelectTrigger aria-label={`相手 ${i + 1} の列`} className="h-8 text-[13px]">
                       <SelectValue placeholder="列を選ぶ" />
@@ -399,15 +432,19 @@ function AssigneesField({
                       ))}
                     </SelectContent>
                   </Select>
-                  {a.field && !refFields.some((f) => f.key === a.field) ? (
-                    <p className="text-[11px] text-destructive">このテーブルに無い列: {a.field}</p>
-                  ) : null}
-                </>
-              ) : (
-                <p className="text-[11px] text-muted-foreground">
-                  {table ? "このテーブルにユーザー・部署の列がありません" : "先にテーブルを選んでください"}
-                </p>
-              )
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">
+                    {!table
+                      ? "先にテーブルを選んでください"
+                      : seesWholeTable
+                        ? "このテーブルにユーザー・部署の列がありません"
+                        : "あなたが読める列に、ユーザー・部署の列がありません"}
+                  </p>
+                )}
+                {table && a.field && !refFields.some((f) => f.key === a.field) ? (
+                  <StrayNote {...strayNote(a.field)} />
+                ) : null}
+              </>
             ) : (
               <ValueExprInput
                 label={kind === "user" ? "ユーザーの ID" : "部署（ロール）の ID"}
@@ -465,9 +502,7 @@ function ShowFieldsField({
     .map((k) =>
       k === table.schema.status_field
         ? { key: k, text: `状態の列は選べません: ${k}`, certain: true }
-        : knownMissing(k)
-          ? { key: k, text: `このテーブルに無い列: ${k}`, certain: true }
-          : { key: k, text: `この画面では選べない列（テーブルに無いか、あなたが読めない列）: ${k}`, certain: false },
+        : { key: k, ...unselectableNote(k, knownMissing(k)) },
     );
   return (
     <fieldset className="space-y-1.5">
@@ -516,5 +551,12 @@ function ShowFieldsField({
       ) : null}
       {error ? <p className="text-[11px] text-destructive">{error}</p> : null}
     </fieldset>
+  );
+}
+
+/// 担当者の選べない列の注記（断定できるものだけ赤字）。
+function StrayNote({ text, certain }: { text: string; certain: boolean }) {
+  return (
+    <p className={cn("break-all text-[11px]", certain ? "text-destructive" : "text-muted-foreground")}>{text}</p>
   );
 }
