@@ -585,7 +585,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 - `title`（1〜120 字）・`instructions`（2000 字以内）はリテラルだけ（行の値を受信箱へ写さない）。受信箱に出す中身は、担当者本人の権限で行を読み直して作る（`show_fields` は 30 列まで・担当者に読めない列は出ない）。
 - `approve` は必須、`reject` / `return` は省略可。`to` は互いに異なる FSM の状態（保存時 V4）、`comment` は `required` / `optional`。
 - `timeout_sec`（リテラル・`policies.run_timeout_sec` 未満・V7）と `on_timeout`（`fail` 既定 / `continue` で `timeout` 出口）。期限なしの承認も run の期限が来れば取り消される。続けて待つ承認の期限の合計が run の期限以上なら保存時に警告する（`ir.approval_timeouts_exceed_run`）。エディタは承認を置くと `run_timeout_sec` を 14 日にする提案を出す。
-- **出口**（§5.2）: 判断の状態ならその出口、判断の外の状態へ遷移した・行が消えたら `withdrawn`。停止時の rev（`suspend_rev`）以下の遷移では起きない（直前の自分の遷移で取り下げにしない）。
+- **出口**（§5.2）: 判断の状態ならその出口、判断の外の状態へ遷移した・行が消えたら `withdrawn`。停止時の rev（`suspend_rev`）以下の遷移では起きない（直前の自分の遷移で取り下げにしない）。待つ間に実行主体の委譲・テーブルの権限が外れたら、どの出口へも進めずに run を失敗させる（`actor_unavailable`・後続が委譲なしで中途半端に走らない・D-62・[engine.md](./engine.md) §9.6）。
 - **停止時の検査**: 行の状態（`from_state`）から判断の行き先への遷移が FSM に無ければ `approval_not_decidable`（permanent）。担当者がいなければ `approval_no_assignee`。
 - **出力**: `{ approval_id, decision: approve|reject|return|withdrawn|timeout, to, decided_by, decided_at, comment, record_id, rev }`（行の値は載せない）。
 - **要求スコープ**: `notify.send`（人へのお知らせ・承認の依頼を含む・D-25）と `data.read`（行を読み、判断の遷移を実行主体の見え方で受け取る）。保存時の scope 補完が両方を足し、同意計画はテーブルの閲覧を提案する。

@@ -933,23 +933,27 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
   遷移した人・判断の種別が一致するものだけを採る。テーブル画面・ミニアプリ・別のワークフローからの遷移でも同じ承認が決まる。
 - **受付の突合**（relay の tick・`reconciled_at IS NULL` の保留中）: 購読の commit より前に起きて配送済みになった遷移を、
   実行主体の見え方で行を読み直して決める（いまの状態が `from_state` なら待ち続け、判断の状態ならその出口、それ以外・
-  見えない（消えた）なら `withdrawn`）。実行主体の委譲・テーブルの権限が停止の後に外れてテーブルを読めないとき（委譲が
-  無い・data がテーブル単位で NotFound / Forbidden を返す。user 主体の run の本人や委譲元が ReBAC を失った場合を含み、
-  テーブルの削除とは区別しない）は、判断の遷移も実行主体に見えず待っても決まらないので `withdrawn` にし、決着の監査に
-  `reason: actor_unavailable` を残す（判断の遷移を受けた relay も同じ。受信箱で判断されたのに run が期限まで待つ食い違いを
-  作らない）。承認の依頼の監査（`workflow.approval.request`）も
-  ここで書く。
+  見えない（消えた）なら `withdrawn`）。承認の依頼の監査（`workflow.approval.request`）もここで書く。
+- **実行主体の失権**（D-62）: 実行主体の委譲・テーブルの権限が停止の後に外れてテーブルを読めないとき（委譲が無い・data が
+  テーブル単位で NotFound / Forbidden を返す。user 主体の run の本人や委譲元が ReBAC を失った場合を含み、テーブルの削除とは
+  区別しない）は、判断の遷移も実行主体に見えず待っても決まらない。どの出口へ進めても後続が委譲なしで中途半端に走り、
+  各チョークポイントの認可で失敗するだけなので、**出口へは進めずに run を失敗で終える**。step は出力を書かずに失敗し
+  （`error.code = actor_unavailable`・retryable でない）、run は `failed`（`fail_reason = actor_unavailable`・失敗の分類は
+  permission）、台帳は `cancelled`、決着の監査に `reason: actor_unavailable` を残す。受付の突合・判断の遷移を受けた relay
+  （受信箱で判断されたのに run が期限まで待つ食い違いを作らない）・期限の 3 経路で同じに扱う。
 - **行の削除**: outbox の削除を受けたら、実行主体の data.get が NotFound であることを確かめて `withdrawn` にする。
 - **期限**: `expire_due_waits` と同じ経路で台帳を `expired` にする（`on_timeout: continue` は `timeout` 出口・`fail` は run の
-  失敗）。受信箱は承認の期限と run の期限の早い方を過ぎたら出さず、判断 API は 409 で拒む。期限ちょうどに遷移した場合は、
-  run は時間切れへ進み行は判断の状態になり得る（後続の遷移が FSM で失敗して見える）。
+  失敗）。その前に scheduler の tick が、期限の来た承認の実行主体がまだテーブルを読めるかを確かめ、読めなければ上の失権と
+  して run を失敗させる（確かめが一時障害で終わったら、その tick の wait timeout の回収を見送る）。受信箱は承認の期限と run の
+  期限の早い方を過ぎたら出さず、判断 API は 409 で拒む。期限ちょうどに遷移した場合は、run は時間切れへ進み行は判断の状態に
+  なり得る（後続の遷移が FSM で失敗して見える）。
 - **取消**: run の失敗・取消（`cancel_remaining_steps`・ドレイン）と同じ Tx で保留中の台帳を `cancelled` にする。
 - **受信箱**（`/approvals`）: 台帳で本人か所属ロール宛てで、run が実行中・step が待機中・期限前のものを引き、**行を承認者本人の
   権限で読み直して**、見える行で今の状態が `from_state` のものだけを出す（見えない行は件数にも数えない・出す列はマスク後）。
   判断 API は承認者本人の権限で `FsmStore::transition(expected_rev)` を呼ぶ（ワークフローの権限で遷移しない）。遷移の前に
   行がいまも `from_state` かを確かめ、違えば 409（判断の外で動いた行を、relay が取り下げる前の数秒に別の状態から判断の
   行き先へ進めさせない）。
-- **決着の監査**: `workflow.approval.resolve`（起床・取り下げ・期限切れ・system）・`workflow.approval.decide`（判断 API・承認者）。
+- **決着の監査**: `workflow.approval.resolve`（起床・取り下げ・期限切れ・実行主体の失権・system）・`workflow.approval.decide`（判断 API・承認者）。
 - 待機中の run は `max_parallel_runs` に数えない（§8.3）。
 
 ---
