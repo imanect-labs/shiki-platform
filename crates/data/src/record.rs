@@ -26,6 +26,13 @@ use crate::stream::outbox::{emit_record_changes, Before, ChangeKind, RecordChang
 use crate::validate::validate_record_data;
 use crate::{map_db, DataError};
 
+/// [`DataStore::filter_visible_records`] の結果（開いたテーブルと、候補と同じ順の見える行）。
+#[derive(Debug, Clone)]
+pub struct FilteredRecords {
+    pub table: crate::model::DataTable,
+    pub records: Vec<Option<DataRecord>>,
+}
+
 /// data_record 行。
 #[derive(Clone, sqlx::FromRow)]
 pub(crate) struct RecordRow {
@@ -240,8 +247,9 @@ impl DataStore {
     /// 同じテーブルのレコードをまとめて取得する（`ids` と同じ順・不可視・不在は `None`）。
     ///
     /// [`Self::get_record`] と同じ判定（テーブルの viewer・行述語・派生値は閲覧者本人の権限・マスク）を、
-    /// テーブルの読込・認可の問い（リクエストのメモ）・マスクの判定を 1 回にまとめて行う（承認の受信箱が担当の
-    /// 行を承認者本人の権限で読み直す・GAP-08）。テーブルが見えなければ `Err(NotFound / Forbidden)`。
+    /// テーブルの読込・認可の問い（リクエストのメモ）・マスクの判定を 1 回にまとめて行い、行は候補の id を
+    /// 1 本のクエリで引く（承認の受信箱が担当の行を承認者本人の権限で読み直す・GAP-08・BUG-43）。テーブルが
+    /// 見えなければ `Err(NotFound / Forbidden)`（Deny の監査を残す）。
     pub async fn get_records(
         &self,
         ctx: &AuthContext,
@@ -256,21 +264,54 @@ impl DataStore {
         let table = self
             .open_for_read(ctx, &az, table_id, AuditAction::DataRecordGet, trace_id)
             .await?;
-        let mut found: Vec<(usize, DataRecord)> = Vec::with_capacity(ids.len());
-        for (i, id) in ids.iter().enumerate() {
-            if let Some(row) = self.select_visible_by_id(ctx, &az, &table, *id).await? {
-                found.push((i, row.into_record(&table.schema)));
-            }
+        self.visible_records_in(ctx, &az, &table, ids).await
+    }
+
+    /// 他人が書いた候補（承認の受信箱の台帳など）を、閲覧者に見える行だけに絞る（`ids` と同じ順・不可視・
+    /// 不在は `None`）。判定と読み方は [`Self::get_records`] と同じ（二段: テーブルの viewer・行述語）。
+    ///
+    /// テーブルが見えない（viewer でない・無い・削除済み）なら `Ok(None)` で、**Deny の監査を残さない**。
+    /// 閲覧者が求めた読取ではなく、候補を見える分へ絞るだけなので（受信箱の件数を読み直すたびに、見えない
+    /// テーブルの Deny が増えないように・BUG-43）。閲覧者が開いた 1 件は [`Self::get_records`] で読む。
+    pub async fn filter_visible_records(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Option<FilteredRecords>, DataError> {
+        let az = self.authz_memo();
+        let Some(table) = self.open_for_filter(ctx, &az, table_id).await? else {
+            return Ok(None);
+        };
+        let records = self.visible_records_in(ctx, &az, &table, ids).await?;
+        Ok(Some(FilteredRecords { table, records }))
+    }
+
+    /// 開いたテーブルの候補の行を 1 本のクエリで引き、閲覧者の見え方（派生値・マスク）にして `ids` の順に並べる。
+    async fn visible_records_in(
+        &self,
+        ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
+        table: &crate::model::DataTable,
+        ids: &[Uuid],
+    ) -> Result<Vec<Option<DataRecord>>, DataError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
         }
-        let masked = self.masked_fields(ctx, &az, &table).await?;
-        let (slots, mut records): (Vec<usize>, Vec<DataRecord>) = found.into_iter().unzip();
-        self.project_read(ctx, &az, &table, &masked, &mut records)
+        let mut unique = ids.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        let rows = self.select_visible_by_ids(ctx, az, table, &unique).await?;
+        let mut records: Vec<DataRecord> = rows
+            .into_iter()
+            .map(|row| row.into_record(&table.schema))
+            .collect();
+        let masked = self.masked_fields(ctx, az, table).await?;
+        self.project_read(ctx, az, table, &masked, &mut records)
             .await?;
-        let mut out: Vec<Option<DataRecord>> = vec![None; ids.len()];
-        for (slot, rec) in slots.into_iter().zip(records) {
-            out[slot] = Some(rec);
-        }
-        Ok(out)
+        let by_id: std::collections::HashMap<Uuid, DataRecord> =
+            records.into_iter().map(|r| (r.id, r)).collect();
+        Ok(ids.iter().map(|id| by_id.get(id).cloned()).collect())
     }
 
     /// レコードを削除する（editor・楽観ロック・削除リビジョン記録）。

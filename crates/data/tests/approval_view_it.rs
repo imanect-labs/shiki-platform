@@ -4,6 +4,7 @@
 //!   ユーザー／ロールの列の値。マスクされた担当者の列は入らない。行述語で見えない行は 404、テーブルの viewer で
 //!   ない主体は 404、状態の列が読めなければ field_unavailable
 //! - `DataStore::get_records`: `ids` と同じ順で、見えない・無い行は `None`。マスク列は落とす
+//! - `DataStore::filter_visible_records`: 同じ判定で、テーブルが見えなければ `None`（Deny の監査を残さない）
 
 #![allow(
     clippy::unwrap_used,
@@ -294,4 +295,64 @@ async fn approval_reads_follow_row_and_field_visibility() {
         .await
         .unwrap()
         .is_empty());
+    // 同じ id を重ねても、それぞれの位置に同じ行が入る（1 本のクエリで引いて id で並べ直す）。
+    let got = store
+        .get_records(&bob, table.id, &[r.id, missing, r.id], None)
+        .await
+        .unwrap();
+    assert_eq!(
+        got.iter()
+            .map(|g| g.as_ref().map(|x| x.id))
+            .collect::<Vec<_>>(),
+        [Some(r.id), None, Some(r.id)]
+    );
+
+    // 候補の絞り込み（受信箱）: 判定は get_records と同じ（見えない行・無い行は None・マスク列は落とす）で、
+    // 開いたテーブルの定義も返す。テーブルが見えなければ誤りではなく None で、Deny の監査を残さない（BUG-43）。
+    let filtered = store
+        .filter_visible_records(&bob, table.id, &[other.id, r.id, missing])
+        .await
+        .unwrap()
+        .expect("bob にはテーブルが見える");
+    assert_eq!(filtered.table.id, table.id);
+    assert_eq!(
+        filtered.table.schema.status_field.as_deref(),
+        Some("status")
+    );
+    assert!(filtered.records[0].is_none() && filtered.records[2].is_none());
+    let mine = filtered.records[1].as_ref().unwrap();
+    assert_eq!(mine.data["title"], "出張旅費");
+    assert!(mine.data.get("memo").is_none() && mine.data.get("deputy").is_none());
+    let denials = |who: String| {
+        let pool = pool.clone();
+        let tenant = tenant.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND actor = $2 \
+                   AND decision = 'deny'",
+            )
+            .bind(tenant)
+            .bind(who)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let before = denials(dave.principal.id.clone()).await;
+    for _ in 0..3 {
+        assert!(store
+            .filter_visible_records(&dave, table.id, &[r.id])
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .filter_visible_records(&bob, Uuid::new_v4(), &[r.id])
+            .await
+            .unwrap()
+            .is_none());
+    }
+    assert_eq!(denials(dave.principal.id.clone()).await, before);
+    // 本人が求めた読取（get_records）は従来どおり Deny を残す。
+    let _ = store.get_records(&dave, table.id, &[r.id], None).await;
+    assert_eq!(denials(dave.principal.id.clone()).await, before + 1);
 }

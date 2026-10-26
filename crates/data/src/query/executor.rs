@@ -92,6 +92,42 @@ impl DataStore {
             .map_err(map_db)
     }
 
+    /// 候補 id のうち**可視な行**を 1 本のクエリで引く（まとめ取り・承認の受信箱・BUG-43）。
+    ///
+    /// 行述語は [`Self::select_visible_by_id`] と同じ合成（v1 の意味論・個別共有込み）で、id だけを
+    /// `= ANY($n)` に替える（[`Self::select_visible_projection`] と同じ形）。不可視・不存在の id は結果に
+    /// 含まれない（両者を区別しない）。並びは保証しない（呼び出し側が id で引き直す）。
+    pub(crate) async fn select_visible_by_ids(
+        &self,
+        ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
+        table: &DataTable,
+        ids: &[Uuid],
+    ) -> Result<Vec<RecordRow>, DataError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pred = self.read_predicate(ctx, az, table).await?;
+        let ids_ph = SCOPE_BINDS + 1 + pred.binds.len();
+        let sql = format!(
+            "SELECT {SELECT_COLS} FROM data_record {RECORD_ALIAS} \
+             WHERE r.tenant_id = $1 AND r.table_id = $2 \
+               AND r.tenant_int = $3 AND r.table_int = $4 AND ({}) \
+               AND r.id = ANY(${ids_ph}::uuid[])",
+            pred.sql
+        );
+        let q = bind_all(
+            sqlx::query_as::<Postgres, RecordRow>(&sql),
+            ctx,
+            table,
+            &pred.binds,
+        )
+        .bind(ids.to_vec());
+        q.fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+            .await
+            .map_err(map_db)
+    }
+
     /// 候補 id のうち**可視な行の投影列だけ**を 1 本のクエリで引く（RAG の post-filter・Task 15.8）。
     ///
     /// 行述語は [`Self::select_visible_by_id`] と同じ合成（v1 の意味論・個別共有込み）。`keys` は

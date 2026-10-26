@@ -5,6 +5,8 @@
 //! - [`DataStore::open_for_read`]: 読取の入口。テーブル viewer・1 段目の参照先テーブル viewer・名指しロール
 //!   （`has_role(subtree=true)`）の check を **BatchCheck 1 往復**へ束ねてリクエストのメモへ入れ、テーブル
 //!   viewer を要求する（data-platform §16.4）。
+//! - [`DataStore::open_for_filter`]: 候補の絞り込みの入口（同じ問いを束ねるが、見えないテーブルは Deny の
+//!   監査に残さず `None`・承認の受信箱・BUG-43）。
 
 use std::sync::Arc;
 
@@ -181,6 +183,35 @@ impl DataStore {
         match peeked {
             Some(t) => Ok(t),
             None => self.fetch_live(ctx, table_id).await,
+        }
+    }
+
+    /// 候補の絞り込みの入口: テーブル viewer なら生存テーブル行を、見えない・無い・削除済みなら `None` を返す
+    /// （[`Self::open_for_read`] と同じ問いを同じメモに束ねるが、**見えないことを Deny の監査に残さない**。
+    /// 閲覧者が求めた読取ではなく、他人が書いた候補を見える分へ絞るだけ・BUG-43）。
+    pub(crate) async fn open_for_filter(
+        &self,
+        ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
+        table_id: Uuid,
+    ) -> Result<Option<DataTable>, DataError> {
+        let peeked = self.peek_live(ctx, table_id).await?;
+        let object = ctx.ns().data_table(&table_id.to_string());
+        let mut items = vec![(Relation::Viewer, object.clone())];
+        if let Some(t) = &peeked {
+            self.read_prefetch(ctx, t, &mut items).await?;
+        }
+        az.check_all(ctx, &items).await?;
+        if !az.check(ctx, Relation::Viewer, &object).await? {
+            return Ok(None);
+        }
+        match peeked {
+            Some(t) => Ok(Some(t)),
+            None => match self.fetch_live(ctx, table_id).await {
+                Ok(t) => Ok(Some(t)),
+                Err(DataError::NotFound) => Ok(None),
+                Err(e) => Err(e),
+            },
         }
     }
 

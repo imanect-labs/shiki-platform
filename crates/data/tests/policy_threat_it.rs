@@ -4078,3 +4078,130 @@ async fn sales_answers(store: &DataStore, bob: &AuthContext) -> Vec<String> {
     }
     out
 }
+
+/// ⑬ まとめ取り（承認の受信箱の読み直し・BUG-43）も、1 件の読取と同じ合成（行述語・ロール・個別共有・剥奪の
+/// 即時反映）で 1 本のクエリに載せる。不可視と不存在は区別しない（どちらも `None`）。テーブルが見えない主体には、
+/// 読取の口（`get_records`）は 404、候補の絞り込みの口（`filter_visible_records`）は `None`。
+#[tokio::test]
+async fn batch_reads_follow_the_same_row_visibility_as_single_reads() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let f = fixture(pool, authz).await;
+    let missing = Uuid::new_v4();
+    let ids = [f.alice_rec, f.bob_rec, missing];
+    let seen = |rows: &[Option<data::DataRecord>]| -> Vec<Option<Uuid>> {
+        rows.iter().map(|r| r.as_ref().map(|r| r.id)).collect()
+    };
+    // 1 件の読取で見える行と同じ行だけが見える。
+    let single = |who: &AuthContext| {
+        let who = who.clone();
+        let store = f.store.clone();
+        let table = f.table_id;
+        async move {
+            let mut out = Vec::new();
+            for id in ids {
+                out.push(
+                    store
+                        .get_record(&who, table, id, None)
+                        .await
+                        .ok()
+                        .map(|r| r.id),
+                );
+            }
+            out
+        }
+    };
+    for who in [&f.alice, &f.bob] {
+        let got = f
+            .store
+            .get_records(who, f.table_id, &ids, None)
+            .await
+            .unwrap();
+        assert_eq!(seen(&got), single(who).await, "{}", who.principal.id);
+        let filtered = f
+            .store
+            .filter_visible_records(who, f.table_id, &ids)
+            .await
+            .unwrap()
+            .expect("テーブルは見える");
+        assert_eq!(seen(&filtered.records), seen(&got));
+    }
+    let got = f
+        .store
+        .get_records(&f.bob, f.table_id, &ids, None)
+        .await
+        .unwrap();
+    assert_eq!(seen(&got), [None, Some(f.bob_rec), None]);
+
+    // ロールの述語: 経理になった bob には alice の行も見える。
+    join_role(&f.authz, &f.bob, "keiri").await;
+    let keiri = ctx(&f.bob.tenant_id, "bob");
+    let got = f
+        .store
+        .get_records(&keiri, f.table_id, &ids, None)
+        .await
+        .unwrap();
+    assert_eq!(seen(&got), [Some(f.alice_rec), Some(f.bob_rec), None]);
+    f.authz
+        .delete_tuple(
+            &f.bob.subject(),
+            Relation::Member,
+            &f.bob.ns().role("keiri"),
+        )
+        .await
+        .unwrap();
+
+    // 個別共有: 共有した行が追加で見え、解除で直ちに見えなくなる。
+    let carol = ctx(&f.bob.tenant_id, "carol");
+    f.authz_grant_editor(&carol, f.table_id).await;
+    let target = storage::ShareTarget::User { id: "carol".into() };
+    f.store
+        .share_record(
+            &f.alice,
+            f.table_id,
+            f.alice_rec,
+            &target,
+            RecordShareRole::Viewer,
+            None,
+        )
+        .await
+        .unwrap();
+    let got = f
+        .store
+        .filter_visible_records(&carol, f.table_id, &ids)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(seen(&got.records), [Some(f.alice_rec), None, None]);
+    f.store
+        .unshare_record(
+            &f.alice,
+            f.table_id,
+            f.alice_rec,
+            &target,
+            RecordShareRole::Viewer,
+            None,
+        )
+        .await
+        .unwrap();
+    let got = f
+        .store
+        .get_records(&carol, f.table_id, &ids, None)
+        .await
+        .unwrap();
+    assert_eq!(seen(&got), [None, None, None]);
+
+    // テーブルが見えない主体: 読取の口は 404（不在と同形）、絞り込みの口は None。
+    let dave = ctx(&f.bob.tenant_id, "dave");
+    let denied = f.store.get_records(&dave, f.table_id, &ids, None).await;
+    let absent = f.store.get_records(&dave, Uuid::new_v4(), &ids, None).await;
+    assert!(matches!(denied, Err(DataError::NotFound)), "{denied:?}");
+    assert_eq!(format!("{denied:?}"), format!("{absent:?}"));
+    assert!(f
+        .store
+        .filter_visible_records(&dave, f.table_id, &ids)
+        .await
+        .unwrap()
+        .is_none());
+}
