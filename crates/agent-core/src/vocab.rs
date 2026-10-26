@@ -229,6 +229,26 @@ impl ToolName {
         }
     }
 
+    /// tool search の索引に**説明文の代わりに**入れる短い文（空なら説明文をそのまま入れる・D-41）。
+    ///
+    /// 説明文はモデルが使い方を読む仕様で、長いほど関係ない依頼の語にも当たる（BM25 で弱く当たり続け、
+    /// 一緒に読み込まれて文脈を食う）。仕様を説明文に足すたびに検索の順位が動かないよう、説明文が長い・
+    /// run ごとに組み立てるツールはここに「何をするツールか」だけを短く書く。読み込んだ後にモデルが読む
+    /// 説明文は変えない。
+    #[must_use]
+    pub const fn search_text(self) -> &'static str {
+        match self {
+            // 説明文は IR の仕様・例・ノードの params と出力の形を載せて 1 万字を超える（GAP-29）。
+            Self::EmitWorkflow => {
+                "ワークフロー（自動化フロー）を新しく作る、または既存のワークフローを直して保存する。\
+                 毎日・毎朝の決まった時刻（定期実行）やできごとをきっかけに、複数の手順を自動で実行する\
+                 仕組みを作る。create or update a workflow automation: scheduled cron jobs, event triggers, \
+                 multi-step flows."
+            }
+            _ => "",
+        }
+    }
+
     /// tool search の索引に足す検索語（description に現れない言い換え・英語の別名）。
     ///
     /// description は日本語だが、モデルは英語で検索することが多い。ここで橋を架ける。
@@ -304,6 +324,20 @@ impl ToolName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 検索用の短い文は索引に入る遅延ツールにだけ書く（常時ロードは検索しない）。短く保つ（D-41）。
+    #[test]
+    fn search_texts_are_short_and_only_for_deferred_tools() {
+        for t in ToolName::ALL {
+            let text = t.search_text();
+            if text.is_empty() {
+                continue;
+            }
+            assert_eq!(t.loading(), ToolLoading::Deferred, "{}", t.as_str());
+            assert!(text.chars().count() <= 300, "{}: {}", t.as_str(), text);
+        }
+        assert!(!ToolName::EmitWorkflow.search_text().is_empty());
+    }
 
     #[test]
     fn roundtrip_all_tool_names() {

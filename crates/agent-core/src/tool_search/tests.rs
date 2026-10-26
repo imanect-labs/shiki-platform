@@ -314,3 +314,42 @@ fn eval_catalog_matches_the_production_ranking() {
         ["office.edit"]
     );
 }
+
+/// D-41: 検索用の短い文を持つツール（emit_workflow）は、説明文の全文ではなくその文で索引に入る。
+/// 説明文にほかのツールの語（スライド・CSV・ノート）がいくら載っていても、それらの依頼で一緒に読み込まれない。
+/// 読み込んだときの要約は説明文の先頭のまま（モデルが読む説明文は変えない）。
+#[test]
+fn tools_with_a_search_text_are_indexed_by_it_not_by_the_long_description() {
+    let long = format!(
+        "ワークフロー（自動化フロー）を JSON IR として保存する。{}",
+        "スライドを編集する・CSV を集計する・ノートの本文を読むノードを並べられる。".repeat(200)
+    );
+    let mut defs = catalog();
+    defs.push(def("emit_workflow", &long));
+    let s = prepare(defs, &enabled()).1.expect("有効になる");
+    for q in ["スライドを編集", "CSV を集計", "ノートの本文"] {
+        let hits = query(&s, q);
+        assert!(!hits.is_empty(), "{q}");
+        assert!(
+            !hits.contains(&"emit_workflow".to_string()),
+            "{q}: {hits:?}"
+        );
+    }
+    for q in [
+        "毎朝 決まった時刻に 自動で実行する仕組みを作る",
+        "create a scheduled workflow",
+    ] {
+        assert_eq!(
+            query(&s, q).first().map(String::as_str),
+            Some("emit_workflow"),
+            "{q}"
+        );
+    }
+    let content = s
+        .handle_lexical(&json!({ "query": "select:emit_workflow" }))
+        .content;
+    assert!(
+        content.contains("emit_workflow: ワークフロー（自動化フロー）を JSON IR として保存する。"),
+        "{content}"
+    );
+}
