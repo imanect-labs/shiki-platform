@@ -924,9 +924,11 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
   遷移した人・判断の種別が一致するものだけを採る。テーブル画面・ミニアプリ・別のワークフローからの遷移でも同じ承認が決まる。
 - **受付の突合**（relay の tick・`reconciled_at IS NULL` の保留中）: 購読の commit より前に起きて配送済みになった遷移を、
   実行主体の見え方で行を読み直して決める（いまの状態が `from_state` なら待ち続け、判断の状態ならその出口、それ以外・
-  見えない（消えた）なら `withdrawn`）。実行主体の委譲・権限が停止の後に外れて行を読めないときは、判断の遷移も実行主体に
-  見えず待っても決まらないので `withdrawn` にし、決着の監査に `reason: actor_unavailable` を残す（判断の遷移を受けた relay
-  も同じ。受信箱で判断されたのに run が期限まで待つ食い違いを作らない）。承認の依頼の監査（`workflow.approval.request`）も
+  見えない（消えた）なら `withdrawn`）。実行主体の委譲・テーブルの権限が停止の後に外れてテーブルを読めないとき（委譲が
+  無い・data がテーブル単位で NotFound / Forbidden を返す。user 主体の run の本人や委譲元が ReBAC を失った場合を含み、
+  テーブルの削除とは区別しない）は、判断の遷移も実行主体に見えず待っても決まらないので `withdrawn` にし、決着の監査に
+  `reason: actor_unavailable` を残す（判断の遷移を受けた relay も同じ。受信箱で判断されたのに run が期限まで待つ食い違いを
+  作らない）。承認の依頼の監査（`workflow.approval.request`）も
   ここで書く。
 - **行の削除**: outbox の削除を受けたら、実行主体の data.get が NotFound であることを確かめて `withdrawn` にする。
 - **期限**: `expire_due_waits` と同じ経路で台帳を `expired` にする（`on_timeout: continue` は `timeout` 出口・`fail` は run の
