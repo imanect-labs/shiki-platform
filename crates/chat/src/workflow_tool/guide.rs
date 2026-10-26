@@ -269,9 +269,17 @@ pub(super) fn emit_description(models: Option<&[String]>) -> String {
         ex2 = example_json(EXAMPLE_REVIEW),
         models = models_section(models),
     );
+    d.push_str(REPLY_GUIDE);
     d.push_str(&catalog_summary());
     d
 }
+
+/// 結果を画面に返すノード（workflow.reply）の書き方の指針（GAP-09・D-28）。
+const REPLY_GUIDE: &str = "【画面に返す結果】workflow.reply は、ボタン（ミニアプリ・会話の図）から起動した本人の画面に結果を出す（schedule・event の run と、繰り返し（map）の中では使えない。10 個まで）。\n\
+- 成功の結果は副作用（データの追加・ファイルの保存など）の最後に置く（途中で失敗したのに「完了しました」と見せない）。待つ前に「受け付けました」を返すのは可。\n\
+- 業務上の失敗（先に借りられた・在庫が無い）は、失敗し得るノードを on_error: \"continue\" にして error の出口の先に tone: \"error\" の reply を置く。分岐ごとに別の reply を置ける。\n\
+- format は text（文章）・markdown・table（配列の各要素が 1 行・columns で列を選ぶ）・file_link（社内検索の /results なら file: {\"id_path\":\"/file_id\",\"name_path\":\"/file_name\"}）。\n\
+- label・columns の見出しなど固定の文言は、アプリを使う人全員に見える（秘密を書かない）。値は押した本人の権限で読んだものだけが入る。\n";
 
 /// 検証エラーの補足（LLM が自分で直すための材料）。
 ///
@@ -533,6 +541,32 @@ mod tests {
         // 旧説明文の誤り（mustache の差し込み・port: next・<祖先ノードid>）を含まない。
         assert!(!d.contains("{{変数}}") && !d.contains("\"port\":\"next\""));
         assert!(!d.contains("<祖先ノードid>"));
+    }
+
+    /// 画面に返す結果の書き方の指針が載る（副作用の最後・error の出口・固定の文言は全員に見える・GAP-09）。
+    #[test]
+    fn description_explains_where_to_put_replies() {
+        let d = emit_description(None);
+        assert!(d.contains("- workflow.reply（結果を画面に返す）"), "{d}");
+        assert!(d.contains("成功の結果は副作用"), "{d}");
+        assert!(
+            d.contains("error の出口の先に tone: \"error\" の reply"),
+            "{d}"
+        );
+        assert!(d.contains("アプリを使う人全員に見える"), "{d}");
+        // 例の reply を含む IR は保存時検証を通る。
+        let ir = serde_json::json!({
+            "ir_version": 1, "name": "lend", "triggers": [{ "kind": "interactive" }],
+            "nodes": [
+                { "id": "ok", "type": "workflow.reply",
+                  "params": { "format": "text", "tone": "success", "value": "貸し出しました" } },
+                { "id": "refs", "type": "workflow.reply",
+                  "params": { "format": "file_link", "value": [],
+                              "file": { "id_path": "/file_id", "name_path": "/file_name" } } }
+            ],
+            "edges": [{ "from": "ok", "to": "refs" }]
+        });
+        validate(&ir, &Catalog::default()).unwrap();
     }
 
     /// 各ノードの params の形と出力の形が説明文に載る（ts-rs の宣言・カタログから生成）。
