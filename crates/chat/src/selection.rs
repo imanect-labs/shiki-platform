@@ -20,6 +20,10 @@ pub enum SelectionKind {
     /// Office 文書（Collabora・docx/xlsx/pptx）の選択。excerpt は Action_Copy で取得した
     /// 選択テキスト。locator は無し（Collabora 側の位置は WOPI ホストからは参照しない）。
     OfficeSelection,
+    /// スキルエディタで編集中のスキル全体（#919）。excerpt は SkillBody 相当の JSON
+    /// （name・description・instructions ほか）。draft_name はスキル名。locator は無し。
+    /// 部分選択ではなく全体を渡すため、抜粋の上限は [`SKILL_DRAFT_EXCERPT_MAX_CHARS`]。
+    SkillDraft,
 }
 
 /// エディタの選択コンテキスト（クライアント由来＝信用しない・api 層で検証してから受理）。
@@ -43,16 +47,30 @@ pub struct SelectionContext {
 /// 選択抜粋の上限（文字数・プロンプト肥大とメモリ圧迫の遮断）。
 pub const SELECTION_EXCERPT_MAX_CHARS: usize = 8_000;
 
+/// 編集中スキルの抜粋の上限（文字数）。指示文の上限（32KiB）＋設定が収まる大きさにする
+/// （切れた内容を AI が丸ごと書き直すと、切れた後ろが消えるため）。
+pub const SKILL_DRAFT_EXCERPT_MAX_CHARS: usize = 48_000;
+
+impl SelectionKind {
+    /// 抜粋の上限（文字数）。
+    #[must_use]
+    pub const fn excerpt_max_chars(self) -> usize {
+        match self {
+            Self::SkillDraft => SKILL_DRAFT_EXCERPT_MAX_CHARS,
+            Self::NoteSelection | Self::CsvRange | Self::SlideSelection | Self::OfficeSelection => {
+                SELECTION_EXCERPT_MAX_CHARS
+            }
+        }
+    }
+}
+
 impl SelectionContext {
     /// 抜粋・下書き名・locator をサーバ側の上限へ切り詰める（受理時に必ず通す）。
     #[must_use]
     pub fn clamped(mut self) -> Self {
-        if self.excerpt.chars().count() > SELECTION_EXCERPT_MAX_CHARS {
-            self.excerpt = self
-                .excerpt
-                .chars()
-                .take(SELECTION_EXCERPT_MAX_CHARS)
-                .collect();
+        let max = self.kind.excerpt_max_chars();
+        if self.excerpt.chars().count() > max {
+            self.excerpt = self.excerpt.chars().take(max).collect();
         }
         if let Some(name) = &self.draft_name {
             if name.chars().count() > 200 {

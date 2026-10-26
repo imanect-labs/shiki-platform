@@ -95,6 +95,9 @@ vocab_enum! {
         /// AI 生成 CSV を**下書き**として用意するツール（csv_draft カード化・保存しない・
         /// 確認不要・save_note と同型の下書き確定型・Task 11.11）。
         SaveCsv => "save_csv",
+        /// AI 生成スキルを**下書き**として用意するツール（skill_draft カード化・保存しない・
+        /// 確認不要・save_note と同型の下書き確定型・#919）。保存はスキルエディタで人が行う。
+        SaveSkill => "save_skill",
         /// 新規 Word 文書（.docx）を作成するツール（#381）。空テンプレを実体化してから
         /// Collabora へ本文を paste する（md エディタ下書きは廃止・承認ゲート対象）。
         SaveDocument => "save_document",
@@ -213,6 +216,7 @@ impl ToolName {
             | Self::SaveNote
             | Self::SaveSlide
             | Self::SaveCsv
+            | Self::SaveSkill
             | Self::SaveDocument
             | Self::SaveSheet
             | Self::SlideEdit
@@ -247,6 +251,9 @@ impl ToolName {
             Self::SaveNote => "note markdown create save draft ノート メモ 作成 保存",
             Self::SaveSlide => "slide presentation deck create draft スライド プレゼン 資料 作成",
             Self::SaveCsv => "csv table spreadsheet create draft 表 作成",
+            Self::SaveSkill => {
+                "skill prompt instructions create draft edit スキル 指示文 プロンプト 作成 編集"
+            }
             Self::SaveDocument => "word docx document create report 文書 ワード 報告書 作成",
             Self::SaveSheet => {
                 "excel xlsx spreadsheet sheet workbook create 表計算 エクセル スプレッドシート 作成"

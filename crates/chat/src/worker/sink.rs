@@ -186,6 +186,11 @@ impl WorkerSink {
                     draft: draft.clone(),
                 });
             }
+            StreamEventKind::SkillDraft { draft } => {
+                self.content.push(ContentBlock::SkillDraft {
+                    draft: draft.clone(),
+                });
+            }
             // AI が作成/編集した文書への参照（#381）。成果物への導線として履歴に残す。
             StreamEventKind::DocumentRef { document } => {
                 self.content.push(ContentBlock::DocumentRef {
@@ -356,6 +361,21 @@ mod tests {
         };
         match to_stream_kind(&ev) {
             StreamEventKind::CsvDraft { draft: d } => assert_eq!(d, draft),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skill_draft_event_maps_to_sse_and_projection() {
+        // AgentEvent::SkillDraft → SSE skill_draft（履歴 projection でも残る・#919）。
+        let draft = serde_json::json!({ "name": "expense", "skill": { "description": "d" } });
+        let ev = AgentEvent::SkillDraft {
+            draft: draft.clone(),
+        };
+        let kind = to_stream_kind(&ev);
+        assert_eq!(kind.tag(), "skill_draft");
+        match kind {
+            StreamEventKind::SkillDraft { draft: d } => assert_eq!(d, draft),
             other => panic!("unexpected: {other:?}"),
         }
     }

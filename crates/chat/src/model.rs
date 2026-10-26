@@ -211,6 +211,10 @@ pub enum ContentBlock {
     /// `draft = {name, csv}`（csv=CSV 本文・StorageService 未作成）。
     /// フロントは下書き CSV 画面を開いて詰めてから「ドライブに保存」で確定する。
     CsvDraft { draft: serde_json::Value },
+    /// 未保存の下書きスキルカード（save_skill の下書き確定型・#919）。
+    /// `draft = {name, skill}`（skill=SkillBody 相当・保存時検証済み・artifact 未保存）。
+    /// フロントはスキルエディタを開いて詰めてから人が保存する。
+    SkillDraft { draft: serde_json::Value },
     /// AI が作成/編集した文書への参照カード（#381）。
     /// `document = {id, name, kind, version}`（kind=office/note/csv/slide・実在ノードのみ）。
     /// フロントは kind に応じて /office/{id}・/notes/{id}・/csv/{id}・/slides/{id} へ導線を出す。

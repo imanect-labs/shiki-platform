@@ -170,6 +170,12 @@ pub(crate) async fn emit_tool_events(
         })
         .await?;
     }
+    for draft in &outcome.skill_drafts {
+        sink.emit(AgentEvent::SkillDraft {
+            draft: draft.clone(),
+        })
+        .await?;
+    }
     for document in &outcome.document_refs {
         sink.emit(AgentEvent::DocumentRef {
             document: document.clone(),

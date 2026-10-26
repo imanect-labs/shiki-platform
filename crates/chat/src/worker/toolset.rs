@@ -102,6 +102,8 @@ impl ChatWorker {
         tools.push(Arc::new(crate::slide_tool::SaveSlideTool::new()));
         // 下書き CSV（csv_draft・下書き確定型・Task 11.11・storage 非依存・確定は UI 保存）。
         tools.push(Arc::new(crate::csv_tool::SaveCsvTool::new()));
+        // 下書きスキル（skill_draft・下書き確定型・#919・保存はスキルエディタで人が行う）。
+        tools.push(Arc::new(crate::skill_draft_tool::SaveSkillTool::new()));
         let (Some(collab), Some(storage)) = (&self.collab, &self.storage) else {
             return;
         };

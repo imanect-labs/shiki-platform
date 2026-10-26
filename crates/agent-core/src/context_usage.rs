@@ -238,6 +238,7 @@ fn reads_material(name: &str) -> bool {
         | ToolName::SaveNote
         | ToolName::SaveSlide
         | ToolName::SaveCsv
+        | ToolName::SaveSkill
         | ToolName::SaveDocument
         | ToolName::SaveSheet
         | ToolName::SlideEdit
