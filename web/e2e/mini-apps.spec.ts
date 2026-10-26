@@ -454,6 +454,78 @@ test.describe("ミニアプリ（画面に返す結果）", () => {
     expect(reads.get(oldId)).toBe(1);
   });
 
+  test("古い記録の結果は run の状態が変わったら取り直し、前に読んだ失敗を出し続けない（GAP-09）", async ({ page }) => {
+    test.setTimeout(240_000);
+    await loginViaKeycloak(page);
+    const flow = uniqueName("reply-resume");
+    const appId = await openAppWith(
+      page,
+      flow,
+      [
+        {
+          id: "accepted",
+          type: "workflow.reply",
+          params: {
+            format: "text",
+            value: { $template: "{amount} 円で受け付けました", vars: { amount: { $from: "input", path: "/amount" } } },
+          },
+        },
+      ],
+      [],
+    );
+    const runs = page.getByTestId("yui-runs");
+    await apply(page, "100");
+    await expect(runs.locator("li").last()).toHaveAttribute("data-status", "succeeded", { timeout: 60_000 });
+    const old = runs.locator("li").first();
+    const oldId = (await old.getAttribute("data-run-id")) ?? "";
+    expect(oldId).not.toBe("");
+
+    // 古い行の run が、いったん失敗していた（あとで再開して成功する・run_id は変わらない）形を、記録の一覧と
+    // 1 件の読み込みの両方に作る。
+    const failure = { message: "一時的に失敗しました（e2e）", reference: "e2e00001" };
+    let failed = true;
+    let reads = 0;
+    await page.route(
+      (url) => url.pathname === `/api/mini-apps/${appId}/runs`,
+      async (route) => {
+        const res = await route.fetch();
+        const body = (await res.json()) as { runs: Record<string, unknown>[] };
+        for (const r of body.runs) {
+          if (failed && r.run_id === oldId) Object.assign(r, { status: "failed", failure });
+        }
+        await route.fulfill({ response: res, json: body });
+      },
+    );
+    await page.route(
+      (url) => url.pathname === `/api/mini-apps/${appId}/runs/${oldId}`,
+      async (route) => {
+        reads += 1;
+        const res = await route.fetch();
+        const body = (await res.json()) as Record<string, unknown>;
+        if (failed) Object.assign(body, { status: "failed", failure });
+        await route.fulfill({ response: res, json: body });
+      },
+    );
+    // もう 1 回押すと古い行は結果を付けずに返る（失敗の形）。開くと 1 回だけ読み、失敗と結果を出す。
+    await apply(page, "200");
+    await expect(runs.locator("li")).toHaveCount(2);
+    await expect(runs.locator("li").last()).toHaveAttribute("data-status", "succeeded", { timeout: 60_000 });
+    await expect(old).toHaveAttribute("data-status", "failed");
+    await old.getByRole("button", { name: "結果" }).click();
+    await expect(old.getByTestId("yui-run-failure")).toContainText("一時的に失敗しました（e2e）");
+    await expect(old.getByTestId("yui-run-result")).toContainText("100 円で受け付けました");
+    expect(reads).toBe(1);
+
+    // 再開して成功した後に記録が読み直されると、状態が変わった古い行の結果を 1 回だけ取り直し、前の失敗は消える。
+    failed = false;
+    await apply(page, "300");
+    await expect(runs.locator("li")).toHaveCount(3);
+    await expect(old).toHaveAttribute("data-status", "succeeded", { timeout: 60_000 });
+    await expect(old.getByTestId("yui-run-failure")).toHaveCount(0);
+    await expect(old.getByTestId("yui-run-result")).toContainText("100 円で受け付けました");
+    await expect.poll(() => reads).toBe(2);
+  });
+
   test("ボタンで行を足す短いフローが終わると、ページを読み直さずに画面の表に行が出る（BUG-19）", async ({ page }) => {
     test.setTimeout(180_000);
     await loginViaKeycloak(page);

@@ -88,6 +88,53 @@ function hasResultArea(r: YuiRun): boolean {
   );
 }
 
+/// 結果が付いていない古い記録か（一覧は未確定の run と最新の終わった 1 件にだけ結果を付ける・開いたときに読む）。
+function needsLoad(r: YuiRun): boolean {
+  return r.reply == null && Boolean(r.has_reply) && r.run_id != null;
+}
+
+/// 読み込んだ結果が、どの状態の run のものか（同じ run でも、失敗した run を再開すると状態と結果が変わる）。
+function loadKey(r: YuiRun): string | null {
+  return r.run_id ? `${r.run_id}:${r.status}:${r.failure?.reference ?? ""}` : null;
+}
+
+type LoadedRun = { run: YuiRun | null; error: boolean };
+
+/// 結果が付いていない古い記録の結果を、開いたときに読む（GAP-09）。
+///
+/// - 読み込みの関数は依存に入れない（画面は記録を読み直すたびに作り直すので、入れると開いている古い行の結果を
+///   読み直しのたびに取り直す）。
+/// - 読んだ結果と読み込み中の要求は行が持ち、run の状態ごとに 1 回だけ読む（閉じて開き直しても、開発時に effect
+///   が 2 回走っても取り直さない）。失敗した run を再開したときのように状態が変わったら取り直す。
+function useLoadedRun(run: YuiRun, active: boolean): LoadedRun {
+  const host = React.useContext(YuiActionContext);
+  const loadRun = React.useRef(host?.loadRun);
+  loadRun.current = host?.loadRun;
+  const key = loadKey(run);
+  const runId = run.run_id;
+  const [loaded, setLoaded] = React.useState<(LoadedRun & { key: string }) | null>(null);
+  const pending = React.useRef<{ key: string; promise: Promise<YuiRun> } | null>(null);
+  const done = loaded !== null && loaded.key === key;
+  React.useEffect(() => {
+    const load = loadRun.current;
+    if (!active || done || !load || !runId || !key) return;
+    let live = true;
+    let req = pending.current;
+    if (!req || req.key !== key) {
+      req = { key, promise: load(runId) };
+      pending.current = req;
+    }
+    req.promise.then(
+      (r) => live && setLoaded({ key, run: r, error: false }),
+      () => live && setLoaded({ key, run: null, error: true }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [active, done, key, runId]);
+  return done ? { run: loaded.run, error: loaded.error } : { run: null, error: false };
+}
+
 /// 図のボタンで起動したワークフローの記録（図の下・新しいものが下）。新しい 1 件は結果を開いた状態で出す。
 export function YuiRunList({ runs }: { runs: readonly YuiRun[] }) {
   if (runs.length === 0) return null;
@@ -115,6 +162,7 @@ function YuiRunRow({ run: r, latest }: { run: YuiRun; latest: boolean }) {
   const area = hasResultArea(r);
   // 新しい 1 件は開き、古いものは閉じておく（押すたびに一覧が伸びて画面を押し下げない）。
   const [open, setOpen] = React.useState(latest);
+  const loaded = useLoadedRun(r, area && open && needsLoad(r));
   const wasLatest = React.useRef(latest);
   React.useEffect(() => {
     // 新しい起動が足されて最新でなくなったら閉じる。
@@ -158,41 +206,20 @@ function YuiRunRow({ run: r, latest }: { run: YuiRun; latest: boolean }) {
       </div>
       {area && open ? (
         <div id={resultId} className="mt-1.5 min-w-0 border-t border-border/60 pt-1.5" data-testid="yui-run-result">
-          <YuiRunResult run={r} />
+          <YuiRunResult run={r} loaded={loaded} />
         </div>
       ) : null}
     </li>
   );
 }
 
-/// 1 件の結果（待ちの状態・失敗の理由・返した節）。結果が付いていない古い記録は開いたときに読む。
-export function YuiRunResult({ run }: { run: YuiRun }) {
-  const host = React.useContext(YuiActionContext);
-  // 読み込んだ結果（どの run のものか）。
-  const [fetched, setFetched] = React.useState<{ runId: string; run: YuiRun } | null>(null);
-  const [loadError, setLoadError] = React.useState(false);
-  const needsLoad = run.reply == null && Boolean(run.has_reply) && run.run_id != null;
-  // 読み込みの関数は依存に入れない（画面は記録を読み直すたびに作り直すので、入れると開いている古い行の結果を
-  // 読み直しのたびに取り直す）。同じ run を読み込み済みなら取り直さない。
-  const loadRun = React.useRef(host?.loadRun);
-  loadRun.current = host?.loadRun;
-  const loaded = fetched && fetched.runId === run.run_id ? fetched.run : null;
-  const fetchedRunId = fetched?.runId ?? null;
-  React.useEffect(() => {
-    const load = loadRun.current;
-    const runId = run.run_id;
-    if (!needsLoad || !load || !runId || fetchedRunId === runId) return;
-    let live = true;
-    setLoadError(false);
-    load(runId).then(
-      (r) => live && setFetched({ runId, run: r }),
-      () => live && setLoadError(true),
-    );
-    return () => {
-      live = false;
-    };
-  }, [needsLoad, run.run_id, fetchedRunId]);
-  const r = needsLoad && loaded ? { ...run, reply: loaded.reply, failure: loaded.failure ?? run.failure } : run;
+/// 1 件の結果（待ちの状態・失敗の理由・返した節）。結果が付いていない古い記録は、行が開いたときに読んだもの
+/// （`loaded`・[`useLoadedRun`]）を出す。
+export function YuiRunResult({ run, loaded }: { run: YuiRun; loaded: LoadedRun }) {
+  const wanted = needsLoad(run);
+  // 失敗の理由は記録の一覧のもの（いまの状態）を先に使う（読み込んだ結果の失敗は、一覧に無いときだけ）。
+  const r =
+    wanted && loaded.run ? { ...run, reply: loaded.run.reply, failure: run.failure ?? loaded.run.failure } : run;
   const sections = r.reply?.sections ?? [];
   const omitted = r.reply?.omitted ?? 0;
   return (
@@ -228,8 +255,8 @@ export function YuiRunResult({ run }: { run: YuiRun }) {
           <p className="mt-0.5 text-[11px] text-destructive/80">参照番号: {r.failure.reference}</p>
         </div>
       ) : null}
-      {needsLoad && !loaded ? (
-        loadError ? (
+      {wanted && !loaded.run ? (
+        loaded.error ? (
           <p className="text-muted-foreground">結果を読み込めませんでした。ページを読み直してください</p>
         ) : (
           <p className="flex items-center gap-1.5 text-muted-foreground" role="status">
