@@ -23,6 +23,7 @@ mod history;
 mod limits;
 mod map_region;
 mod ops;
+mod outcome;
 mod wait;
 mod wait_data;
 
@@ -30,6 +31,7 @@ pub use approval::{ApprovalWait, PendingApproval, ResolvedApproval};
 pub use gc::{GcReport, HistoryGcWorker, WORKFLOW_GC_QUEUE};
 pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
 pub use ops::{CancelOutcome, ResumeOutcome};
+pub use outcome::{LiveState, OwnOutcome, RunOutcomeReader, MAX_REPLY_BYTES, MAX_REPLY_SECTIONS};
 pub use wait::{EventWaitGate, EventWaitSubscriber};
 pub use wait_data::DataWaitCandidate;
 
@@ -282,12 +284,12 @@ impl RunStore {
             "INSERT INTO workflow_run \
              (tenant_id, org, workflow_id, version, trigger_kind, trigger_id, principal, \
               principal_kind, input, ir_snapshot, status, started_at, timeout_at, \
-              trigger_event_id, trigger_chain, cause_run_id) \
+              trigger_event_id, trigger_chain, cause_run_id, reply_nodes) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
                      CASE WHEN $11 = 'running' THEN now() END, \
                      CASE WHEN $11 = 'running' \
                           THEN now() + ($12 || ' seconds')::interval END, \
-                     $13, $14, $15) \
+                     $13, $14, $15, $16) \
              RETURNING run_id",
         )
         .bind(tenant_id)
@@ -305,6 +307,8 @@ impl RunStore {
         .bind(origin.trigger_event_id)
         .bind(&chain)
         .bind(origin.parent_run_id)
+        // 結果を画面に返すノード（実行順）。読取口が ir_snapshot を開かずに引く（GAP-09）。
+        .bind(graph.reply_nodes())
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;

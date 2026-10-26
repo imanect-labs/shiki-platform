@@ -19,9 +19,10 @@ use workflow_engine::ir::params::{
     DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
     DataRecordUpdateParams, DataTransitionParams, HttpMethod, HttpRequestParams, HttpSecretRef,
     HumanApprovalParams, JoinMode, JoinParams, LlmInvokeParams, MapItemError, MapParams,
-    RagSearchParams, RedirectPolicy, ScriptRunParams, ScriptSourceSpec, SecretAttach,
-    SecretAttachKind, SkillInvokeParams, StorageListParams, StorageReadParams, StorageWriteParams,
-    SwitchCase, SwitchParams, WaitKind, WaitParams, WaitTimeout, WorkflowStartParams,
+    RagSearchParams, RedirectPolicy, ReplyColumn, ReplyFileSpec, ReplyFormat, ReplyTone,
+    ScriptRunParams, ScriptSourceSpec, SecretAttach, SecretAttachKind, SkillInvokeParams,
+    StorageListParams, StorageReadParams, StorageWriteParams, SwitchCase, SwitchParams, WaitKind,
+    WaitParams, WaitTimeout, WorkflowReplyParams, WorkflowStartParams,
 };
 use workflow_engine::ir::trigger::{
     Catchup, EventTrigger, InteractiveTrigger, ScheduleTrigger, Trigger, TriggerKind,
@@ -114,6 +115,11 @@ fn main() {
         ApprovalComment,
         ApprovalChoice,
         HumanApprovalParams,
+        ReplyFormat,
+        ReplyTone,
+        ReplyColumn,
+        ReplyFileSpec,
+        WorkflowReplyParams,
         // ---- カタログ ----
         NodeCategory,
         IdempotencyClass,

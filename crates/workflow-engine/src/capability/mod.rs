@@ -74,6 +74,8 @@ const SCOPE_FREE_APIS: &[&str] = &[
     // `.shiki` script / agent 経由で行う能力呼び出しは、その API のスコープが個別に効く
     // （script の Shiki.* は HostBridge が、agent は agent.invoke 経路がゲートする・#344）。
     "skill.invoke",
+    // 結果を画面に返すだけ（値を整形する pure ノード・外部にもデータにも届かない・GAP-09）。
+    "workflow.reply",
 ];
 
 /// 能力 API に必要なスコープが実効スコープに含まれるか判定する（scope 天井）。
@@ -117,6 +119,16 @@ mod tests {
     fn empty_delegation_yields_empty_effective() {
         let eff = effective_scopes(&["storage.read".into()], &[]);
         assert!(eff.is_empty(), "委譲ゼロなら実効ゼロ（fail-closed）");
+    }
+
+    /// 結果を画面に返すノードはスコープを要さない（宣言が空の IR でも実行できる・GAP-09）。
+    #[test]
+    fn reply_is_scope_free() {
+        assert_eq!(
+            check_scope_ceiling("workflow.reply", &BTreeSet::new()),
+            ScopeCeiling::Allowed
+        );
+        assert_eq!(Scope::for_api("workflow.reply"), None);
     }
 
     #[test]

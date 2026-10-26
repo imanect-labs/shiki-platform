@@ -26,6 +26,8 @@ vocab_enum! {
         HttpRequest => "http.request",
         ScriptRun => "script.run",
         WorkflowStart => "workflow.start",
+        /// 結果を起動した本人の画面に返す（ボタン・会話から起動した run だけ・GAP-09・pure）。
+        WorkflowReply => "workflow.reply",
         // ---- CSV 表データ（Task 11P.9・隔離 DuckDB 経由の tabular サービス）----
         /// CSV への読み取り専用 SQL（viewer・pure）。
         CsvQuery => "csv.query",
@@ -131,6 +133,7 @@ impl NodeType {
                 | NodeType::ScriptRun
                 | NodeType::SkillInvoke
                 | NodeType::WorkflowStart
+                | NodeType::WorkflowReply
                 | NodeType::CsvQuery
                 | NodeType::CsvPatch
                 | NodeType::CsvWrite
@@ -173,6 +176,7 @@ mod tests {
                 "http.request",
                 "script.run",
                 "workflow.start",
+                "workflow.reply",
                 "csv.query",
                 "csv.patch",
                 "csv.write",

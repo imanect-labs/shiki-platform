@@ -16,7 +16,7 @@ use super::{
     DataRecordUpdateParams, DataTransitionParams, HttpRequestParams, HumanApprovalParams,
     JoinParams, LlmInvokeParams, MapParams, RagSearchParams, ScriptRunParams, SkillInvokeParams,
     StorageListParams, StorageReadParams, StorageWriteParams, SwitchParams, WaitParams,
-    WorkflowStartParams,
+    WorkflowReplyParams, WorkflowStartParams,
 };
 use crate::vocab::NodeType;
 
@@ -116,6 +116,7 @@ fn visit_params_type<V: ParamsTypeVisitor>(nt: NodeType, v: V) -> Option<V::Out>
         N::HttpRequest => v.visit::<HttpRequestParams>(),
         N::ScriptRun => v.visit::<ScriptRunParams>(),
         N::WorkflowStart => v.visit::<WorkflowStartParams>(),
+        N::WorkflowReply => v.visit::<WorkflowReplyParams>(),
         N::SkillInvoke => v.visit::<SkillInvokeParams>(),
         N::CsvQuery => v.visit::<CsvQueryParams>(),
         N::CsvPatch => v.visit::<CsvPatchParams>(),

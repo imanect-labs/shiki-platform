@@ -20,6 +20,8 @@ pub struct RunGraph {
     join_modes: HashMap<String, JoinMode>,
     /// parent:null（本体）ノードの id 一覧（run 開始時に一括実体化する集合）。
     root_body_nodes: Vec<String>,
+    /// 結果を画面に返すノード（workflow.reply）の id（実行順＝トポロジカル順・同じ順位なら IR 順）。
+    reply_nodes: Vec<String>,
 }
 
 impl RunGraph {
@@ -66,6 +68,11 @@ impl RunGraph {
             .map(|n| n.id.clone())
             .collect();
 
+        let reply_nodes = topological_order(ir)
+            .into_iter()
+            .filter(|id| node_types.get(id).copied().flatten() == Some(NodeType::WorkflowReply))
+            .collect();
+
         RunGraph {
             node_types,
             parents,
@@ -73,7 +80,13 @@ impl RunGraph {
             out_edges,
             join_modes,
             root_body_nodes,
+            reply_nodes,
         }
+    }
+
+    /// 結果を画面に返すノードの id（実行順・本体にだけ置ける＝V2）。run に持たせ、読取口が step を引く。
+    pub fn reply_nodes(&self) -> &[String] {
+        &self.reply_nodes
     }
 
     /// control.join の待ち合わせモード（未登録＝非 join は既定 All）。
@@ -138,6 +151,48 @@ impl RunGraph {
     }
 }
 
+/// 本体（parent:null）ノードのトポロジカル順（起点からの段数の順・同じ段なら IR 順）。
+///
+/// 段数は起点（入るエッジの無いノード）からの最長の道のり（Kahn 法で前から決める）。循環は V2 が保存時に
+/// 弾く。循環が残っていても止まらず、辿れなかったノードは IR 順で後ろに足す。
+fn topological_order(ir: &WorkflowIr) -> Vec<String> {
+    let body: Vec<&str> = ir
+        .nodes
+        .iter()
+        .filter(|n| n.parent.is_none())
+        .map(|n| n.id.as_str())
+        .collect();
+    let index: HashMap<&str, usize> = body.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+    let mut indegree = vec![0usize; body.len()];
+    let mut next: Vec<Vec<usize>> = vec![Vec::new(); body.len()];
+    for e in &ir.edges {
+        if let (Some(&from), Some(&to)) = (index.get(e.from.as_str()), index.get(e.to.as_str())) {
+            indegree[to] += 1;
+            next[from].push(to);
+        }
+    }
+    let mut depth: Vec<Option<usize>> = vec![None; body.len()];
+    let mut queue: std::collections::VecDeque<usize> =
+        (0..body.len()).filter(|i| indegree[*i] == 0).collect();
+    for &i in &queue {
+        depth[i] = Some(0);
+    }
+    while let Some(i) = queue.pop_front() {
+        let d = depth[i].unwrap_or(0);
+        for &j in &next[i] {
+            depth[j] = Some(depth[j].map_or(d + 1, |cur| cur.max(d + 1)));
+            indegree[j] -= 1;
+            if indegree[j] == 0 {
+                queue.push_back(j);
+            }
+        }
+    }
+    let mut order: Vec<usize> = (0..body.len()).collect();
+    // 段の決まらないノード（循環の中）は最後に回す。
+    order.sort_by_key(|&i| (indegree[i] != 0, depth[i].unwrap_or(usize::MAX), i));
+    order.into_iter().map(|i| body[i].to_string()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +219,29 @@ mod tests {
         assert_eq!(g.in_edges("b"), &[("a".to_string(), "out".to_string())]);
         assert_eq!(g.out_edges("a"), &[("out".to_string(), "b".to_string())]);
         assert_eq!(g.node_type("a"), Some(NodeType::StorageRead));
+        assert!(g.reply_nodes().is_empty());
+    }
+
+    /// 結果のノードは実行順（トポロジカル順・同じ順位なら IR 順）に並ぶ（IR の書き順ではない）。
+    #[test]
+    fn reply_nodes_follow_the_execution_order() {
+        let reply = |id: &str| json!({ "id": id, "type": "workflow.reply", "params": {} });
+        let g = RunGraph::build(&ir(json!({
+            "ir_version": 1, "name": "wf",
+            "nodes": [
+                reply("last"),
+                { "id": "a", "type": "storage.read", "params": {} },
+                reply("second"),
+                reply("first"),
+                reply("also_second")
+            ],
+            "edges": [
+                { "from": "a", "to": "first" },
+                { "from": "first", "to": "second" },
+                { "from": "first", "to": "also_second" },
+                { "from": "second", "to": "last" }
+            ]
+        })));
+        assert_eq!(g.reply_nodes(), ["first", "second", "also_second", "last"]);
     }
 }

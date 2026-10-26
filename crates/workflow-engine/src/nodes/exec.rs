@@ -446,6 +446,10 @@ impl NodeExecutor for CapabilityNodeExecutor {
         if nt == NodeType::HumanApproval {
             return self.node_human_approval(params, ctx).await;
         }
+        // 結果を画面に返す（値を整形するだけの pure ノード・GAP-09）。
+        if nt == NodeType::WorkflowReply {
+            return super::reply::execute(params, ctx);
+        }
 
         let ec = Self::exec_ctx(ctx);
         let r = ParamResolver::new(ctx);

@@ -40,7 +40,8 @@ pub use delegation::{
 pub use ir::scopes::complete_declared_scopes;
 pub use ir::validate::{
     save_warnings, semantics_warnings, validate, Catalog, CatalogTable, ValidationError,
-    APPROVAL_TIMEOUTS_EXCEED_RUN, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR,
+    APPROVAL_TIMEOUTS_EXCEED_RUN, REPLY_WITHOUT_INTERACTIVE, SEMANTICS_CHANGED,
+    TEMPLATE_ESCAPED_VAR,
 };
 pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};
@@ -63,6 +64,10 @@ pub use run::{
 pub use run::{
     CancelOutcome, GcReport, HistoryGcWorker, ResumeOutcome, RunDetail, RunEventRow, RunListFilter,
     RunListItem, RunStatusReader, StepDetail, StepOverview,
+};
+pub use run::{
+    FailureCategory, LiveState, OwnOutcome, ReplyBody, ReplyFile, ReplySection, ReplyTone,
+    RunFailure, RunOutcomeReader, RunReply, WaitingFor,
 };
 pub use scheduler::{
     Coalesce, DataTriggerCandidate, EventTriggerRef, FileTriggerCandidate, FireOutcome,

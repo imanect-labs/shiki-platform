@@ -195,6 +195,11 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
             "別のフローを開始",
             "別のワークフローを起動する（結果は待たない）",
         ),
+        NodeType::WorkflowReply => (
+            C::Workflow,
+            "結果を画面に返す",
+            "ボタンや会話から起動した人の画面に、処理の結果を表示する",
+        ),
         NodeType::CsvQuery => (
             C::Storage,
             "CSV を集計",
@@ -429,6 +434,8 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         NodeType::RagSearch => (Some(60), Some(120)),
         NodeType::NotifySend => (Some(30), Some(60)),
         NodeType::WorkflowStart => (Some(10), Some(30)),
+        // 値を整形するだけ（能力を呼ばない）。
+        NodeType::WorkflowReply => (Some(5), Some(10)),
         NodeType::ScriptRun => (Some(30), Some(360)),
         NodeType::SkillInvoke => (Some(60), Some(360)),
         // 一括 upsert は取込ジョブを同期で最後まで進める（最大 5,000 行・1 チャンク 500 行）。
@@ -490,6 +497,9 @@ const fn output_shape(nt: NodeType) -> &'static str {
         }
         N::ScriptRun => "main(input) の戻り値そのもの",
         N::WorkflowStart => "{ run_id: string | null }（子の結果は待たない）",
+        N::WorkflowReply => {
+            "画面に出す節 { format: \"text\" | \"markdown\" | \"table\" | \"file_link\", label?: string, tone: string, truncated: boolean, text?: string（text・markdown）, columns?: Array<string>, rows?: Array<Array<string>>, total_rows?: number（table）, files?: Array<{ id: string, name: string }>（file_link） }（後続から参照するものではない）"
+        }
         N::SkillInvoke => {
             "script を持つ skill は main の戻り値・指示だけの skill は { text: string, model: string }"
         }

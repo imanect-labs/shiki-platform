@@ -9,9 +9,11 @@
 //! ノード種ごとの実処理は [`NodeExecutor`] トレイト裏（能力ノードは Task 10.6a/10.8/10.10）。
 //! 制御ノード（branch/join 等）は [`store`] の前進ロジックが直接扱う（能力を呼ばない・pure）。
 
+pub mod failure;
 pub mod graph;
 pub mod launcher;
 pub mod model;
+pub mod outcome;
 pub mod readiness;
 pub mod store;
 pub mod worker;
@@ -23,11 +25,15 @@ use uuid::Uuid;
 
 pub use launcher::{LauncherError, WorkflowRunLauncher};
 pub use model::{idempotency_key, RunStatus, StepStatus};
+pub use outcome::{
+    FailureCategory, ReplyBody, ReplyFile, ReplySection, ReplyTone, RunFailure, RunReply,
+    WaitingFor,
+};
 pub use store::{
     ApprovalWait, CancelOutcome, DataWaitCandidate, EventWaitGate, EventWaitSubscriber, GcReport,
-    HistoryGcWorker, PendingApproval, ResolvedApproval, ResumeOutcome, RunDetail, RunEventRow,
-    RunListFilter, RunListItem, RunOrigin, RunStatusReader, RunStore, RunStoreError, StepDetail,
-    StepOverview, WORKFLOW_GC_QUEUE,
+    HistoryGcWorker, LiveState, OwnOutcome, PendingApproval, ResolvedApproval, ResumeOutcome,
+    RunDetail, RunEventRow, RunListFilter, RunListItem, RunOrigin, RunOutcomeReader,
+    RunStatusReader, RunStore, RunStoreError, StepDetail, StepOverview, WORKFLOW_GC_QUEUE,
 };
 pub use worker::{ConcurrencyLimits, WorkerConfig, WorkflowWorker, DEFAULT_LEASE_SECS};
 

@@ -17,6 +17,7 @@ mod control;
 mod data;
 mod external;
 mod human;
+mod reply;
 mod shape;
 mod storage;
 mod tabular;
@@ -38,6 +39,10 @@ pub use human::{
     ApprovalAssignee, ApprovalChoice, ApprovalComment, ApprovalDecisionKind, ApprovalRecord,
     HumanApprovalParams, MAX_APPROVAL_ASSIGNEES, MAX_APPROVAL_INSTRUCTIONS_CHARS,
     MAX_APPROVAL_LABEL_CHARS, MAX_APPROVAL_SHOW_FIELDS, MAX_APPROVAL_TITLE_CHARS,
+};
+pub use reply::{
+    ReplyColumn, ReplyFileSpec, ReplyFormat, ReplyTone, WorkflowReplyParams, MAX_REPLY_COLUMNS,
+    MAX_REPLY_LABEL_CHARS,
 };
 pub use shape::{compact_ts, params_shape, params_type_name, ParamsShape, COMMON_TYPES};
 pub use storage::{RagSearchParams, StorageListParams, StorageReadParams, StorageWriteParams};
@@ -194,6 +199,14 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
         NodeType::DataRecordDelete => check_as::<DataRecordDeleteParams>(raw),
         NodeType::DataTransition => check_as::<DataTransitionParams>(raw),
         NodeType::DataBulkUpsert => check_as::<DataBulkUpsertParams>(raw),
+        NodeType::WorkflowReply => {
+            check_as::<WorkflowReplyParams>(raw)?;
+            let parsed: WorkflowReplyParams = parse(raw).map_err(|message| ParamsIssue {
+                path: "/params".to_string(),
+                message,
+            })?;
+            parsed.check_cross_fields()
+        }
         NodeType::HumanApproval => {
             check_as::<HumanApprovalParams>(raw)?;
             let parsed: HumanApprovalParams = parse(raw).map_err(|message| ParamsIssue {
@@ -355,6 +368,11 @@ mod tests {
             (
                 NodeType::SkillInvoke,
                 json!({ "skill": "skill:expense@1", "input": { "$from": "input" } }),
+            ),
+            (
+                NodeType::WorkflowReply,
+                json!({ "format": "markdown", "label": "回答", "tone": "success",
+                        "value": { "$from": "nodes.gen.output", "path": "/text" } }),
             ),
             (
                 NodeType::DataQuery,

@@ -12,6 +12,7 @@ pub mod capability_data;
 pub mod exec;
 pub mod http;
 pub mod ports;
+pub mod reply;
 pub mod resolver;
 pub mod script;
 pub mod skill;

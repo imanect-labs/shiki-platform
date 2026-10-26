@@ -491,6 +491,32 @@ async fn script_http_reflected_secret_is_redacted() {
     assert!(!dump.contains("super-secret-token"), "{dump}");
 }
 
+/// 結果を画面に返すノードは、宣言したスコープが空でも実行できる（scope 天井の外にしない・GAP-09）。
+#[tokio::test]
+async fn reply_runs_without_declared_scopes() {
+    let audit = Arc::new(CapturingAudit::default());
+    let exec = executor(Arc::new(FakePorts::default()), Arc::clone(&audit));
+    let res = exec
+        .execute(
+            "workflow.reply",
+            &json!({ "format": "text", "label": "受付", "tone": "success",
+                     "value": { "$from": "input", "path": "/title" } }),
+            &ctx(json!({ "title": "出張旅費" }), Vec::new()),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(res.taken_ports, ["out"]);
+    assert_eq!(
+        res.output,
+        json!({ "label": "受付", "tone": "success", "truncated": false,
+                "format": "text", "text": "出張旅費" })
+    );
+    assert!(
+        audit.records.lock().unwrap().is_empty(),
+        "能力を呼ばない（監査も残らない）"
+    );
+}
+
 #[tokio::test]
 async fn wait_returns_suspend_directive() {
     let exec = executor(

@@ -7,6 +7,8 @@ mod approval;
 pub use approval::{CatalogTable, APPROVAL_TIMEOUTS_EXCEED_RUN};
 mod refs;
 pub(crate) use refs::parse_skill_ref;
+mod reply;
+pub use reply::{MAX_REPLIES, REPLY_WITHOUT_INTERACTIVE};
 mod semantics;
 pub use semantics::{semantics_warnings, SEMANTICS_CHANGED};
 mod template;
@@ -99,13 +101,15 @@ pub struct Catalog {
 /// 条件の意味論の切替で振る舞いが変わり得る条件（[`SEMANTICS_CHANGED`]・[`semantics_warnings`]）と、
 /// vars のキーを `{{key}}` と書いたテンプレート（[`TEMPLATE_ESCAPED_VAR`]）と、同じテーブルで重なる
 /// データ変更トリガ（[`OVERLAPPING_DATA_TRIGGERS`]）と、wait(event) の filter の別名（[`WAIT_FILTER_ALIAS`]）と、
-/// 続けて待つ承認の期限の合計が実行の期限以上のもの（[`APPROVAL_TIMEOUTS_EXCEED_RUN`]）。
+/// 続けて待つ承認の期限の合計が実行の期限以上のもの（[`APPROVAL_TIMEOUTS_EXCEED_RUN`]）と、手動で動かす
+/// きっかけの無い IR の画面に返す結果（[`REPLY_WITHOUT_INTERACTIVE`]）。
 #[must_use]
 pub fn save_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     let mut out = semantics_warnings(ir);
     out.extend(template::warnings(ir));
     out.extend(v3_vocab::event_warnings(ir));
     out.extend(approval::warnings(ir));
+    out.extend(reply::warnings(ir));
     out
 }
 
@@ -160,8 +164,9 @@ pub fn validate(
     }
     // V7: 上限（他段より先に軽く弾く）。
     v7_limits(value, &ir, &mut errors);
-    // V2: グラフ（id 一意・エッジ参照・DAG・入エッジ制約・領域閉包・到達性）。
+    // V2: グラフ（id 一意・エッジ参照・DAG・入エッジ制約・領域閉包・到達性・reply は本体だけ）。
     v2_graph::check(&ir, &mut errors);
+    reply::v2(&ir, &mut errors);
     // V3: 語彙照合（node type・scope・event source・model）。
     v3_vocab::v3_vocab(&ir, catalog, &mut errors);
     // V4: 参照存在（secret の宛先束縛事前チェック＋skill のインストール済み照合・#344・承認のテーブルと状態）。
@@ -221,6 +226,8 @@ fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<Valida
     template::check_limits(ir, errors);
     // 承認の期限は実行の期限未満（GAP-08）。
     approval::v7(ir, errors);
+    // 画面に返す結果の数とリテラルの型（GAP-09）。
+    reply::v7(ir, errors);
     // 条件木の深さ（トリガ filter・branch/wait params の condition）。
     for t in &ir.triggers {
         if let crate::ir::Trigger::Event(ev) = t {
