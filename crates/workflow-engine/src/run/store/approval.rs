@@ -183,6 +183,18 @@ pub(super) async fn wake_approval(
         tx.rollback().await.map_err(map_db)?;
         return Ok(false);
     }
+    // 台帳の行をロックしてからコメントを読む。判断 API は、コメントを置いてから遷移して commit するまで、この行の
+    // ロックを持つ（[`crate::approval::ApprovalStore::begin_decision`]）。遷移と同時に起きても、その commit を
+    // 待って置いたコメントを拾う（BUG-47）。
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT approval_id FROM workflow_approval \
+         WHERE tenant_id = $1 AND approval_id = $2 FOR UPDATE",
+    )
+    .bind(tenant_id)
+    .bind(wait.approval_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(map_db)?;
     // 判断に添えたコメント（遷移の後の rev・遷移した人・判断の種別が一致するものだけ）。
     let comment: Option<String> = match (res.kind(), res.rev, res.decided_by.as_deref()) {
         (Some(kind), Some(rev), Some(by)) => sqlx::query_scalar(

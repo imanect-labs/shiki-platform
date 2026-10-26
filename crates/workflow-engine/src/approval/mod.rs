@@ -13,7 +13,7 @@
 
 mod inbox;
 
-pub use inbox::{ApprovalRow, ApprovalStore, InboxCursor};
+pub use inbox::{ApprovalRow, ApprovalStore, DecisionStart, DecisionTx, InboxCursor};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

@@ -11,8 +11,9 @@
 //! - 担当者でない・存在しない・行が見えないは、どれも同じ 404（存在の手がかりを出さない）。判断も、行が本人に
 //!   見えるかを台帳の状態（決まった・期限切れ）・選択肢・コメントの検査より前に確かめる。
 //!
-//! 判断に添えるコメントは、遷移の後の rev の鍵で遷移の前に置き、遷移に失敗したら外す（遷移と同時に起床しても
-//! 拾える・失敗した判断のコメントを残さない）。
+//! 判断に添えるコメントは、遷移の後の rev と作者の鍵で遷移の前に置き、遷移に失敗したら外す。置く → 遷移 →
+//! 外す、は台帳の行のロックを持った 1 つの Tx で行い、要求が取り消されても別の task で最後まで走らせる（遷移と
+//! 同時に起床しても commit を待って拾える・失敗した判断のコメントを残さない・BUG-47）。
 
 use std::collections::BTreeMap;
 
@@ -29,7 +30,7 @@ use storage::audit::{AuditAction, AuditEntry, Decision};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 use workflow_engine::ir::params::{ApprovalComment, ApprovalDecisionKind};
-use workflow_engine::{ApprovalRow, InboxCursor};
+use workflow_engine::{ApprovalRow, DecisionStart, InboxCursor};
 
 use crate::{
     error::ApiError,
@@ -600,11 +601,7 @@ pub async fn decide_approval(
     if !row.decidable {
         let expired = row.status == "pending" && row.deadline.is_some_and(|d| d <= Utc::now());
         return Err(if expired || row.status == "expired" {
-            approval_error(
-                StatusCode::CONFLICT,
-                ApprovalErrorCode::Expired,
-                "期限を過ぎたため判断できません",
-            )
+            expired_error()
         } else {
             already_decided()
         });
@@ -637,66 +634,131 @@ pub async fn decide_approval(
         audit().record(&state, &ctx, Decision::Deny).await;
         return Err(already_decided());
     }
-    let next_rev = req.expected_rev.saturating_add(1);
-    if let Some(body) = comment {
-        let put = store(&state)
-            .put_comment(
-                &ctx.tenant_id,
-                id,
-                next_rev,
-                &ctx.principal.id,
-                req.decision,
-                body,
-            )
-            .await
-            .map_err(internal)?;
-        if !put {
-            return Err(approval_error(
-                StatusCode::CONFLICT,
-                ApprovalErrorCode::Deciding,
-                "ほかの担当者がこの承認を判断しています。読み直してください",
-            ));
-        }
-    }
-    let result = state
-        .fsms
-        .transition(
-            &ctx,
-            row.table_id,
-            row.record_id,
-            &choice.to,
-            req.expected_rev,
-            trace.as_deref(),
-        )
-        .await;
-    let decision = if result.is_ok() {
-        Decision::Allow
-    } else {
-        Decision::Deny
+    // 置く → 遷移 → 失敗なら外す、を台帳の行のロックを持った 1 つの Tx で行う（BUG-47）。要求が取り消されても
+    // 途中で止めないよう、別の task で最後まで走らせる（遷移だけが済んでコメントが消える・置いたコメントが
+    // 残って次の判断を塞ぐ、を作らない）。
+    let work = DecideWork {
+        id,
+        row,
+        to: choice.to,
+        decision: req.decision,
+        comment: comment.map(str::to_string),
+        expected_rev: req.expected_rev,
+        trace: trace.0.clone(),
     };
-    audit().record(&state, &ctx, decision).await;
-    match result {
-        Ok(rec) => Ok((
-            StatusCode::ACCEPTED,
-            Json(ApprovalDecisionResponse {
-                status: "deciding".into(),
-                rev: rec.rev,
-            }),
-        )),
-        Err(e) => {
-            // コメントの取り消しに失敗したことはログに残し、利用者には遷移の誤り（403・409・422）を返す
-            // （500 にすると、押した人には何が起きたか分からない）。
-            if comment.is_some() {
-                if let Err(drop) = store(&state)
-                    .drop_comment(&ctx.tenant_id, id, next_rev, &ctx.principal.id)
-                    .await
-                {
-                    tracing::warn!(error = %drop, approval_id = %id, "判断に失敗したコメントの取り消しに失敗");
-                }
+    let task_state = state.clone();
+    tokio::spawn(async move { work.run(&task_state, &ctx).await })
+        .await
+        .map_err(internal)?
+}
+
+/// 判断の受付から遷移・確定までの材料（別の task に渡す）。
+struct DecideWork {
+    id: Uuid,
+    row: ApprovalRow,
+    /// 判断の行き先。
+    to: String,
+    decision: ApprovalDecisionKind,
+    comment: Option<String>,
+    expected_rev: i64,
+    trace: Option<String>,
+}
+
+impl DecideWork {
+    /// 台帳の行をロックし、コメントを置いて承認者本人の権限で遷移する。遷移に成功したら確定し、失敗したら
+    /// 取り消す（コメントは遷移に成功した判断のものだけが残る）。
+    async fn run(
+        self,
+        state: &AppState,
+        ctx: &AuthContext,
+    ) -> Result<(StatusCode, Json<ApprovalDecisionResponse>), ApiError> {
+        let mut decision_tx = match store(state)
+            .begin_decision(&ctx.tenant_id, self.id)
+            .await
+            .map_err(internal)?
+        {
+            DecisionStart::Open(t) => t,
+            DecisionStart::Busy => {
+                return Err(approval_error(
+                    StatusCode::CONFLICT,
+                    ApprovalErrorCode::Deciding,
+                    "ほかの担当者がこの承認を判断しています。読み直してください",
+                ))
             }
-            Err(decision_error(e))
+            DecisionStart::Closed { expired: true } => return Err(expired_error()),
+            DecisionStart::Closed { expired: false } => return Err(already_decided()),
+        };
+        let next_rev = self.expected_rev.saturating_add(1);
+        if let Some(body) = self.comment.as_deref() {
+            decision_tx
+                .put_comment(next_rev, &ctx.principal.id, self.decision, body)
+                .await
+                .map_err(internal)?;
+        }
+        let trace = self.trace.as_deref();
+        let result = state
+            .fsms
+            .transition(
+                ctx,
+                self.row.table_id,
+                self.row.record_id,
+                &self.to,
+                self.expected_rev,
+                trace,
+            )
+            .await;
+        let audit = DecisionAudit {
+            id: self.id,
+            row: &self.row,
+            decision: self.decision,
+            to: Some(&self.to),
+            comment: self.comment.is_some(),
+            trace,
+        };
+        audit
+            .record(
+                state,
+                ctx,
+                if result.is_ok() {
+                    Decision::Allow
+                } else {
+                    Decision::Deny
+                },
+            )
+            .await;
+        match result {
+            Ok(rec) => {
+                // 遷移は済んでいる（取り消せない）ので、確定に失敗しても受け付けたと返す（コメントは失われ得る）。
+                if let Err(e) = decision_tx.commit().await {
+                    tracing::error!(error = %e, approval_id = %self.id, "判断の受付の確定に失敗（遷移は済み）");
+                }
+                Ok((
+                    StatusCode::ACCEPTED,
+                    Json(ApprovalDecisionResponse {
+                        status: "deciding".into(),
+                        rev: rec.rev,
+                    }),
+                ))
+            }
+            Err(e) => {
+                // コメントの取り消しに失敗したことはログに残し、利用者には遷移の誤り（403・409・422）を返す
+                // （500 にすると、押した人には何が起きたか分からない・落とした Tx は接続に戻るときに取り消される）。
+                if let Err(rb) = decision_tx.rollback().await {
+                    tracing::warn!(error = %rb, approval_id = %self.id, "判断に失敗したコメントの取り消しに失敗");
+                }
+                Err(decision_error(e))
+            }
         }
     }
+}
+
+/// 期限を過ぎた承認（409）。
+fn expired_error() -> ApiError {
+    approval_error(
+        StatusCode::CONFLICT,
+        ApprovalErrorCode::Expired,
+        "期限を過ぎたため判断できません",
+    )
 }
 
 /// もう決まった・取り消された承認（409）。

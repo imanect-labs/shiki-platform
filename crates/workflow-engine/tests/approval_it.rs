@@ -407,6 +407,60 @@ impl Env {
         c.remove(0)
     }
 
+    /// 判断 API と同じ口で、承認のコメント（承認の判断）を置いて確定する。
+    async fn comment(&self, approval: Uuid, rev: i64, who: &str, body: &str) {
+        let mut d = self.open_decision(approval).await;
+        d.put_comment(
+            rev,
+            who,
+            workflow_engine::ir::params::ApprovalDecisionKind::Approve,
+            body,
+        )
+        .await
+        .unwrap();
+        d.commit().await.unwrap();
+    }
+
+    /// 判断の受付を始める（台帳の行をロックする）。
+    async fn open_decision(&self, approval: Uuid) -> workflow_engine::DecisionTx {
+        match self
+            .inbox
+            .begin_decision(&self.tenant, approval)
+            .await
+            .unwrap()
+        {
+            workflow_engine::DecisionStart::Open(d) => d,
+            _ => panic!("判断を受け付けられる"),
+        }
+    }
+
+    /// テストで作った run を消す（台帳・step は run と一緒に消える。購読は外部キーが無いので先に消す）。
+    async fn forget_run(&self, run: Uuid) {
+        for sql in [
+            "DELETE FROM wait_subscription WHERE tenant_id = $1 AND run_id = $2",
+            "DELETE FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+        ] {
+            sqlx::query(sql)
+                .bind(&self.tenant)
+                .bind(run)
+                .execute(&self.pool)
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn comments(&self, approval: Uuid) -> Vec<(i64, String, String)> {
+        sqlx::query_as(
+            "SELECT rev, author, body FROM workflow_approval_comment \
+             WHERE tenant_id = $1 AND approval_id = $2 ORDER BY author",
+        )
+        .bind(&self.tenant)
+        .bind(approval)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap()
+    }
+
     fn transition(&self, to: &str, actor: &str, rev: i64) -> Value {
         json!({
             "source": "data.transition", "table_id": TABLE, "record_id": self.record, "rev": rev,
@@ -508,31 +562,11 @@ async fn approval_waits_for_the_decision_and_settles_the_ledger() {
         i64::MAX
     ));
 
-    // bob が受信箱からコメントを添えて承認した（遷移の後の rev 5）。別の人の同じ鍵は置けない。
-    assert!(env
-        .inbox
-        .put_comment(
-            &env.tenant,
-            item.approval_id,
-            5,
-            "bob",
-            workflow_engine::ir::params::ApprovalDecisionKind::Approve,
-            "規程どおりです"
-        )
-        .await
-        .unwrap());
-    assert!(!env
-        .inbox
-        .put_comment(
-            &env.tenant,
-            item.approval_id,
-            5,
-            "carol",
-            workflow_engine::ir::params::ApprovalDecisionKind::Approve,
-            "横入り"
-        )
-        .await
-        .unwrap());
+    // bob が受信箱からコメントを添えて承認した（遷移の後の rev 5）。別の人も同じ rev に置ける（鍵に作者を含む・
+    // 置き残しが別の人の判断を塞がない・BUG-47）が、起床で採るのは遷移した人のものだけ。
+    for (who, body) in [("carol", "横入り"), ("bob", "規程どおりです")] {
+        env.comment(item.approval_id, 5, who, body).await;
+    }
     assert!(env
         .runs
         .wake_data_wait(&c, &env.transition("approved", "bob", 5))
@@ -598,17 +632,7 @@ async fn transitions_outside_the_decisions_withdraw_the_approval() {
     let run = env.start(&approval_ir(None)).await;
     let c = env.candidate().await;
     let a = c.approval().unwrap().approval_id;
-    env.inbox
-        .put_comment(
-            &env.tenant,
-            a,
-            5,
-            "alice",
-            workflow_engine::ir::params::ApprovalDecisionKind::Approve,
-            "x",
-        )
-        .await
-        .unwrap();
+    env.comment(a, 5, "alice", "x").await;
     assert!(env
         .runs
         .wake_data_wait(&c, &env.transition("draft", "alice", 5))
@@ -690,4 +714,60 @@ async fn cancelling_the_run_cancels_the_pending_approval() {
         .await
         .unwrap()
         .is_empty());
+}
+
+/// 判断の受付（置く → 遷移 → 失敗なら外す）は台帳の行のロックを持った 1 つの Tx（BUG-47）。取り消した・落とした
+/// 受付のコメントは残らず、同じ人が同じ rev に置き直せる。受付の間に起きた起床（relay）は、その commit を待って
+/// 置いたコメントを拾う。受付が行を持っている間の別の受付は「判断中」になる。
+#[tokio::test]
+async fn decision_comments_live_and_die_with_the_decision_tx() {
+    let Some(pool) = setup().await else { return };
+    let env = Env::new(pool).await;
+    let run = env.start(&approval_ir(None)).await;
+    let c = env.candidate().await;
+    let a = c.approval().unwrap().approval_id;
+    let approve = workflow_engine::ir::params::ApprovalDecisionKind::Approve;
+
+    // 取り消した受付・落とした受付（要求の取り消し）のコメントは残らない。
+    let mut d = env.open_decision(a).await;
+    d.put_comment(5, "bob", approve, "1 回目").await.unwrap();
+    d.rollback().await.unwrap();
+    {
+        let mut d = env.open_decision(a).await;
+        d.put_comment(5, "bob", approve, "2 回目").await.unwrap();
+    }
+    assert!(env.comments(a).await.is_empty());
+
+    // 受付が行を持っている間の別の受付は、待ち切れずに「判断中」。
+    let mut d = env.open_decision(a).await;
+    d.put_comment(5, "bob", approve, "規程どおりです")
+        .await
+        .unwrap();
+    assert!(matches!(
+        env.inbox.begin_decision(&env.tenant, a).await.unwrap(),
+        workflow_engine::DecisionStart::Busy
+    ));
+
+    // 受付の間に遷移が配送されても、起床は受付の commit を待ってコメントを拾う。
+    let runs = env.runs.clone();
+    let woke = tokio::spawn({
+        let c = c.clone();
+        let ev = env.transition("approved", "bob", 5);
+        async move { runs.wake_data_wait(&c, &ev).await.unwrap() }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(!woke.is_finished(), "起床は受付の commit を待つ");
+    d.commit().await.unwrap();
+    assert!(woke.await.unwrap());
+    let (st, ports, out) = env.step(run, "ok").await;
+    assert_eq!(
+        (st, ports),
+        (StepStatus::Succeeded, vec!["approved".to_string()])
+    );
+    assert_eq!(out.unwrap()["comment"], "規程どおりです");
+    assert_eq!(
+        env.comments(a).await,
+        vec![(5, "bob".to_string(), "規程どおりです".to_string())]
+    );
+    env.forget_run(run).await;
 }

@@ -1327,8 +1327,20 @@ impl Env {
         assert_eq!(audit["run_id"], json!(run));
     }
 
-    /// テストで作った run を消す（step・購読・承認の台帳は FK で消える・同じ DB のほかのテストやサーバに残さない）。
+    /// テストで作った run を消す（step・承認の台帳は FK で消え、購読は先に消す・同じ DB のほかのテストやサーバに
+    /// 残さない）。
     async fn forget_runs(&self, wf: Uuid) {
+        // 購読は run への外部キーが無いので先に消す（台帳・step は run と一緒に消える）。
+        sqlx::query(
+            "DELETE FROM wait_subscription w USING workflow_run r \
+             WHERE w.tenant_id = r.tenant_id AND w.run_id = r.run_id \
+               AND r.tenant_id = $1 AND r.workflow_id = $2",
+        )
+        .bind(TENANT)
+        .bind(wf)
+        .execute(&self.pool)
+        .await
+        .unwrap();
         sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1 AND workflow_id = $2")
             .bind(TENANT)
             .bind(wf)
@@ -2441,5 +2453,169 @@ async fn inbox_reads_do_not_audit_tables_the_user_cannot_see() {
     let (st, _) = env.get(&env.bob, &format!("/approvals/{unseen}")).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
     assert!(env.table_denials(&env.bob, hidden).await >= 1);
+    env.forget_runs(wf).await;
+}
+
+impl Env {
+    /// 行を `FOR UPDATE` で押さえた Tx（遷移を止める）と、その Tx の id（待っている人を見つける）。
+    async fn hold_record(
+        &self,
+        record: Uuid,
+    ) -> (sqlx::Transaction<'static, sqlx::Postgres>, String) {
+        let mut tx = self.pool.begin().await.unwrap();
+        sqlx::query("SELECT 1 FROM data_record WHERE tenant_id = $1 AND id = $2 FOR UPDATE")
+            .bind(TENANT)
+            .bind(record)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let xid: String =
+            sqlx::query_scalar("SELECT (pg_current_xact_id()::text::bigint % 4294967296)::text")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        (tx, xid)
+    }
+
+    /// Tx `xid` のロックを誰かが待つまで待つ（上限 20 秒）。
+    async fn wait_blocked_on(&self, xid: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'transactionid' \
+                   AND NOT granted AND transactionid::text = $1)",
+            )
+            .bind(xid)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap();
+            if waiting {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "誰もロックを待たない");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// 行の状態が `want` になるまで待つ（上限 20 秒）。
+    async fn wait_status(&self, table: Uuid, record: Uuid, want: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let row = self
+                .data
+                .get_record(&self.alice, table, record, None)
+                .await
+                .unwrap();
+            if row.data["status"] == want {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "行が {want} にならない"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn comment_rows(&self, approval: &str) -> Vec<(i64, String, String)> {
+        sqlx::query_as(
+            "SELECT rev, author, body FROM workflow_approval_comment \
+             WHERE tenant_id = $1 AND approval_id = $2 ORDER BY author",
+        )
+        .bind(TENANT)
+        .bind(Uuid::parse_str(approval).unwrap())
+        .fetch_all(&self.pool)
+        .await
+        .unwrap()
+    }
+}
+
+/// 判断の受付（コメントを置く → 遷移 → 失敗なら外す）は、要求が途中で取り消されても最後まで走る（BUG-47）。
+/// 遷移を待っている間に要求を取り消しても、判断は遷移とコメントの両方が揃って決まり、置いたコメントだけが残って
+/// 次の判断を塞ぐことはない。別の人が同じ rev に置き残したコメント（直す前の置き残し）も、正しい承認者の判断を
+/// 塞がない（鍵に作者を含む）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_decisions_neither_lose_nor_strand_their_comment() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.expense_table().await;
+    let wf = env.enable(table, None).await;
+    let first = env.submit(table, "出張旅費", &env.bob).await;
+    let second = env.submit(table, "会議費", &env.bob).await;
+    env.settle().await;
+
+    // 1 件目: 遷移を待っている間に、押した人の要求が取り消された（画面を閉じた・通信が切れた）。
+    let item = env
+        .item_for(&env.bob, first)
+        .await
+        .expect("bob の受信箱に出る");
+    let id = item["approval_id"].as_str().unwrap().to_string();
+    let rev = item["record"]["rev"].as_i64().unwrap();
+    let (hold, xid) = env.hold_record(first).await;
+    let pending = tokio::spawn(env.app.clone().oneshot(req(
+        "POST",
+        &env.bob,
+        &format!("/approvals/{id}/decision"),
+        Body::from(
+            json!({ "decision": "approve", "comment": "1 回目", "expected_rev": rev }).to_string(),
+        ),
+    )));
+    env.wait_blocked_on(&xid).await;
+    pending.abort();
+    assert!(pending.await.is_err(), "要求は取り消された");
+    hold.commit().await.unwrap();
+    // 判断は最後まで走り、遷移とコメントが揃って決まる。
+    env.wait_status(table, first, "approved").await;
+    env.settle().await;
+    let run = env.run_of(wf, first).await;
+    let (st, ports, out) = env.step(run, "ok").await;
+    assert_eq!(
+        (st.as_str(), ports),
+        ("succeeded", vec!["approved".to_string()])
+    );
+    assert_eq!(out.unwrap()["comment"], "1 回目");
+    assert_eq!(
+        env.comment_rows(&id).await,
+        vec![(rev + 1, env.bob.principal.id.clone(), "1 回目".to_string())]
+    );
+
+    // 2 件目: 別の人（経理の carol）が同じ rev に置き残したコメントがあっても、bob はコメント付きで判断できる。
+    let item = env
+        .item_for(&env.bob, second)
+        .await
+        .expect("bob の受信箱に出る");
+    let id = item["approval_id"].as_str().unwrap().to_string();
+    let rev = item["record"]["rev"].as_i64().unwrap();
+    sqlx::query(
+        "INSERT INTO workflow_approval_comment (tenant_id, approval_id, rev, author, decision, body) \
+         VALUES ($1, $2, $3, $4, 'approve', '置き残し')",
+    )
+    .bind(TENANT)
+    .bind(Uuid::parse_str(&id).unwrap())
+    .bind(rev + 1)
+    .bind(&env.carol.principal.id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    let (st, body) = env
+        .decide(
+            &env.bob,
+            &id,
+            json!({ "decision": "approve", "comment": "規程どおりです", "expected_rev": rev }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    env.settle().await;
+    let run = env.run_of(wf, second).await;
+    let (st, ports, out) = env.step(run, "ok").await;
+    assert_eq!(
+        (st.as_str(), ports),
+        ("succeeded", vec!["approved".to_string()])
+    );
+    assert_eq!(
+        out.unwrap()["comment"],
+        "規程どおりです",
+        "遷移した人のコメントだけを採る"
+    );
     env.forget_runs(wf).await;
 }

@@ -217,56 +217,107 @@ impl ApprovalStore {
         Ok(row.map(ApprovalRow::from))
     }
 
-    /// 判断に添えるコメントを、遷移の後の rev（`rev`）の鍵で先に置く（遷移と同時に起床しても拾えるように）。
+    /// 判断の受付を始める（判断 API・承認者本人の遷移の前）。台帳の行を `FOR UPDATE` でロックした Tx を返す。
     ///
-    /// 同じ承認・同じ rev の鍵が既にあれば（別の担当者が同じ版で判断中）置かずに `false`。遷移に失敗したら
-    /// [`Self::drop_comment`] で外す。
-    pub async fn put_comment(
+    /// コメントは [`DecisionTx::put_comment`] でこの Tx に置き、遷移に成功したら [`DecisionTx::commit`]、
+    /// 失敗したら [`DecisionTx::rollback`] する（落としても取り消される）。置く → 遷移 → 失敗なら外す、の 3 手が
+    /// 1 つの Tx に入るので、遷移に失敗した判断・要求の取り消しのコメントは残らない（BUG-47）。起床（relay・
+    /// 期限・突合）は台帳の行をロックしてからコメントを読むので、遷移と同時に起きても commit を待って拾う。
+    ///
+    /// 別の判断が行を持ったまま待ち切れなければ [`DecisionStart::Busy`]。台帳の行が無くなっていれば
+    /// [`DecisionStart::Closed`]。
+    pub async fn begin_decision(
         &self,
         tenant_id: &str,
         approval_id: Uuid,
+    ) -> Result<DecisionStart, RunStoreError> {
+        let mut tx = self.db.begin().await.map_err(map_db)?;
+        // 別の担当者の判断（遷移の間ロックを持つ）を際限なく待たない（待てなければ「判断中」）。
+        sqlx::query("SET LOCAL lock_timeout = '3s'")
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db)?;
+        let locked = sqlx::query_scalar::<_, Uuid>(
+            "SELECT approval_id FROM workflow_approval \
+             WHERE tenant_id = $1 AND approval_id = $2 FOR UPDATE",
+        )
+        .bind(tenant_id)
+        .bind(approval_id)
+        .fetch_optional(&mut *tx)
+        .await;
+        match locked {
+            Ok(Some(_)) => Ok(DecisionStart::Open(DecisionTx {
+                tx,
+                tenant_id: tenant_id.to_string(),
+                approval_id,
+            })),
+            Ok(None) => Ok(DecisionStart::Closed { expired: false }),
+            Err(e) if lock_not_available(&e) => Ok(DecisionStart::Busy),
+            Err(e) => Err(map_db(e)),
+        }
+    }
+}
+
+/// [`ApprovalStore::begin_decision`] の結果。
+pub enum DecisionStart {
+    /// 受け付けられる（台帳の行をロックした）。
+    Open(DecisionTx),
+    /// 別の担当者の判断が台帳の行を持っていて、待ち切れなかった。
+    Busy,
+    /// もう判断できない（台帳の行が無い・決まった・取り消された。`expired` は期限を過ぎたから）。
+    Closed { expired: bool },
+}
+
+/// 判断の受付の Tx（台帳の行のロックを持つ・[`ApprovalStore::begin_decision`]）。
+pub struct DecisionTx {
+    tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    tenant_id: String,
+    approval_id: Uuid,
+}
+
+impl DecisionTx {
+    /// 判断に添えるコメントを、遷移の後の rev（`rev`）と作者の鍵で置く（commit するまで誰にも見えない）。
+    ///
+    /// 同じ人が同じ rev に置いたもの（取り消し前の置き残し）は書き換える。
+    pub async fn put_comment(
+        &mut self,
         rev: i64,
         author: &str,
         decision: ApprovalDecisionKind,
         body: &str,
-    ) -> Result<bool, RunStoreError> {
-        let done = sqlx::query(
+    ) -> Result<(), RunStoreError> {
+        sqlx::query(
             "INSERT INTO workflow_approval_comment (tenant_id, approval_id, rev, author, decision, body) \
-             VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+             VALUES ($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT (tenant_id, approval_id, rev, author) DO UPDATE SET \
+               decision = EXCLUDED.decision, body = EXCLUDED.body, created_at = now()",
         )
-        .bind(tenant_id)
-        .bind(approval_id)
+        .bind(&self.tenant_id)
+        .bind(self.approval_id)
         .bind(rev)
         .bind(author)
         .bind(decision.as_str())
         .bind(body)
-        .execute(&self.db)
-        .await
-        .map_err(map_db)?;
-        Ok(done.rows_affected() == 1)
-    }
-
-    /// [`Self::put_comment`] で置いたコメントを外す（遷移に失敗した判断のコメントを残さない）。
-    pub async fn drop_comment(
-        &self,
-        tenant_id: &str,
-        approval_id: Uuid,
-        rev: i64,
-        author: &str,
-    ) -> Result<(), RunStoreError> {
-        sqlx::query(
-            "DELETE FROM workflow_approval_comment \
-             WHERE tenant_id = $1 AND approval_id = $2 AND rev = $3 AND author = $4",
-        )
-        .bind(tenant_id)
-        .bind(approval_id)
-        .bind(rev)
-        .bind(author)
-        .execute(&self.db)
+        .execute(&mut *self.tx)
         .await
         .map_err(map_db)?;
         Ok(())
     }
+
+    /// 遷移に成功した判断を確定する（コメントを見えるようにし、台帳の行のロックを外す）。
+    pub async fn commit(self) -> Result<(), RunStoreError> {
+        self.tx.commit().await.map_err(map_db)
+    }
+
+    /// 遷移に失敗した判断を取り消す（置いたコメントを残さない）。
+    pub async fn rollback(self) -> Result<(), RunStoreError> {
+        self.tx.rollback().await.map_err(map_db)
+    }
+}
+
+/// ロックを待ち切れなかった（`lock_timeout`・SQLSTATE 55P03）。
+fn lock_not_available(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(d) if d.code().as_deref() == Some("55P03"))
 }
 
 #[cfg(test)]
