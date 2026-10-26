@@ -268,8 +268,9 @@ impl ApprovalStore {
         // ロックを取ってから、いま判断できるかを確かめ直す（別の文なので、API が判断できるかを確かめた後に確定した
         // 起床・期限切れも見える）。
         // 期限は**いまの時刻**（`clock_timestamp()`・Tx の開始時刻ではない）で決める。ここで期限前なら、遷移と
-        // 受け付けた判断の記録（[`DecisionTx::accept`]）を同じ Tx で commit するまで、期限の回収はこの行のロックを
-        // 待ち、受け付けた判断で決める（BUG-45）。
+        // 受け付けた判断の記録（[`DecisionTx::accept`]）を同じ Tx で commit するまで、承認の期限の回収はこの行の
+        // ロックを待ち、受け付けた判断で決める（BUG-45）。run の期限の回収（`expire_run_timeouts`）は run 全体を
+        // 止めるので、受け付けた判断の後に run の期限が来れば、行は判断の状態・run は時間切れと分かれ得る。
         let state: Option<(String, bool, bool, bool)> = sqlx::query_as(
             "SELECT a.status, a.accepted IS NOT NULL, \
                     COALESCE(r.status = 'running' AND s.status = 'waiting_event', false), \
