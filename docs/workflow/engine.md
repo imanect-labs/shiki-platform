@@ -847,9 +847,12 @@ promote は同じ述語で数える。
 
 promote（scheduler tick・全テナント）は**ワークフローごとに誤りを閉じ込める**。1 つのワークフローの誤りは警告に
 残して次のワークフローへ進み（次の tick で取り直す）、ほかのワークフロー・ほかのテナントの昇格を止めない。
-ピンした IR（`ir_snapshot`）を読めない queued run は待っても昇格できず先頭に居座るので、失敗の経路と同じく残る
-step を cancelled にして `run.failed` を積み、`failed`（`fail_reason = internal`・失敗の分類は unknown）で終わらせて
-先頭から外す。
+ピンした IR（`ir_snapshot`）を**知っている版で**読めない queued run は待っても昇格できず先頭に居座るので、失敗の経路と
+同じく残る step を cancelled にして `run.failed` を積み、`failed`（`fail_reason = internal`・失敗の分類は unknown）で
+終わらせて先頭から外す。ただし `ir_version` がこのエンジンの知っている版（`MAX_IR_VERSION`）より新しい IR は失敗させず、
+そのワークフローだけを見送って警告に残す（後ろの run も古い順を守って残る）。ローリングデプロイの途中で古い版のリーダーが
+新しい版の IR を読めない（`WorkflowIr` は deny_unknown_fields）だけなので、新しい版のリーダーが次の tick で拾う（D-65）。
+`ir_version` が書かれていない・整数でないものは新しい版とは扱わない。
 
 ---
 
