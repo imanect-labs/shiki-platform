@@ -189,9 +189,15 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
   );
 
   // 欄に写せる誤り（path か文言の項目名）は欄の下に出し、上の帯には欄の無いものだけを出す。
-  const errorView = React.useMemo(
-    () => nodeErrorView(mapErrors(ctx.state.serverErrors).byNode.get(node.id) ?? []),
+  const nodeErrors = React.useMemo(
+    () => mapErrors(ctx.state.serverErrors).byNode.get(node.id) ?? [],
     [ctx.state.serverErrors, node.id],
+  );
+  const errorView = React.useMemo(() => nodeErrorView(nodeErrors), [nodeErrors]);
+  // 誤りの添字を検証した時点の値で引くための材料（フォームが今の並びに当てて取り違えない）。
+  const serverCheck = React.useMemo(
+    () => ({ errors: nodeErrors, node: ctx.state.serverErrorsIr?.nodes.find((n) => n.id === node.id) ?? null }),
+    [nodeErrors, ctx.state.serverErrorsIr, node.id],
   );
   const allWarnings = React.useMemo(
     () => mapErrors(ctx.state.serverWarnings).byNode.get(node.id) ?? [],
@@ -288,6 +294,7 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
                 refCandidates={refCandidates}
                 inMapRegion={inMapRegion}
                 fieldErrors={fieldErrors}
+                serverCheck={serverCheck}
               />
             </TriggerSourcesContext.Provider>
           </InputFieldsContext.Provider>

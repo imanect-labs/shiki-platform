@@ -9,12 +9,16 @@ import * as React from "react";
 
 import { Input } from "@/components/ui/input";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
-import type { Node as IrNode, ValueExpr } from "@/generated/workflow-ir";
+import type { Node as IrNode, ValidationError, ValueExpr } from "@/generated/workflow-ir";
 import type { EditorAction } from "../ir-state";
 import { Field, NumberInput } from "./common";
 import { ModelField } from "./model-field";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput, type RefCandidate } from "./value-expr-input";
+
+/// このノードへのサーバ検証の誤り（path 付き）と、その検証の対象だったこのノード（無ければ `null`）。
+/// 誤りの path の添字はこのノードの値で引く（検証の後に並びが変わっても、今の値に取り違えない）。
+export type ServerCheck = { errors: ValidationError[]; node: IrNode | null };
 
 export type FormProps = {
   node: IrNode;
@@ -22,6 +26,7 @@ export type FormProps = {
   refCandidates: RefCandidate[];
   inMapRegion: boolean;
   fieldErrors: Map<string, string>;
+  serverCheck: ServerCheck;
 };
 
 export function RagSearchForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {

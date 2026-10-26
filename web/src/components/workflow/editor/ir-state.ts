@@ -52,6 +52,9 @@ export type EditorState = {
   undoStack: WorkflowIr[];
   redoStack: WorkflowIr[];
   serverErrors: ValidationError[];
+  /// `serverErrors` を返した検証の対象の IR（無ければ `null`）。誤りの path の添字（`/params/show_fields/1` など）を
+  /// この IR で引けば、検証の後に並びが変わっても今の値に取り違えない（次の検証の応答が来るまでの間）。
+  serverErrorsIr: WorkflowIr | null;
   /// 保存を止めない警告（`ir.condition_semantics_changed` など・保存/検証の応答の `warnings`）。
   serverWarnings: ValidationError[];
   /// 直前の `update_node`・`update_meta`（同じノード・ワークフローの同じ項目への連続入力を undo 1 段に
@@ -90,7 +93,8 @@ export type EditorAction =
   /// 今の選択が `selection` のときだけ外す（React Flow の選択解除の通知用。先に別の要素を選んだ通知が
   /// 来ていれば何もしない）。
   | { type: "deselect"; selection: Selection }
-  | { type: "set_errors"; errors: ValidationError[] }
+  /// `ir` は検証した IR（誤りの添字をその時点の値で引く）。誤りを消すだけなら省く。
+  | { type: "set_errors"; errors: ValidationError[]; ir?: WorkflowIr }
   | { type: "set_warnings"; warnings: ValidationError[] }
   | { type: "saved"; version: number; savedIr: WorkflowIr; ir?: WorkflowIr; declaredScopes?: string[] }
   | { type: "layout_saved"; layout: EditorLayout }
@@ -534,7 +538,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         ? { ...state, selection: { kind: "none" }, lastEdit: null }
         : state;
     case "set_errors":
-      return { ...state, serverErrors: action.errors };
+      return { ...state, serverErrors: action.errors, serverErrorsIr: action.ir ?? null };
     case "set_warnings":
       return { ...state, serverWarnings: action.warnings };
     case "saved": {
@@ -606,6 +610,7 @@ function initEditorState(initial: EditorInit): EditorState {
     undoStack: [],
     redoStack: [],
     serverErrors: [],
+    serverErrorsIr: null,
     serverWarnings: [],
     lastEdit: null,
   };

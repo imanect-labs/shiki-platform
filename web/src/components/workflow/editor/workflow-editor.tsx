@@ -100,10 +100,11 @@ export function WorkflowEditor({
   // ── ライブ検証（600ms debounce・保存しない）─────────────────────────────
   React.useEffect(() => {
     if (!state.dirty) return;
+    const ir = state.ir;
     const timer = setTimeout(() => {
-      validateWorkflow(state.ir)
+      validateWorkflow(ir)
         .then(({ errors, warnings, declaredScopes }) => {
-          dispatch({ type: "set_errors", errors });
+          dispatch({ type: "set_errors", errors, ir });
           dispatch({ type: "set_warnings", warnings });
           if (declaredScopes) setScopes(declaredScopes);
         })
@@ -205,7 +206,7 @@ export function WorkflowEditor({
       return true;
     } catch (e) {
       if (e instanceof WorkflowValidationError) {
-        dispatch({ type: "set_errors", errors: e.errors });
+        dispatch({ type: "set_errors", errors: e.errors, ir: irToSave });
         toast({
           variant: "destructive",
           title: "保存できません（検証エラー）",

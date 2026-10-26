@@ -21,10 +21,11 @@ import type {
   ApprovalComment,
   ValueExpr,
 } from "@/generated/workflow-ir";
-import type { DataTable } from "@/lib/data-api";
+import { getViewerContext, type DataTable } from "@/lib/data-api";
+import { cn } from "@/lib/utils";
 import { Field, NumberInput } from "./common";
 import { DataTableSelect, useDataTables } from "./forms-data";
-import type { FormProps } from "./forms-basic";
+import type { FormProps, ServerCheck } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
 
@@ -85,12 +86,49 @@ function kindOf(a: ApprovalAssignee): AssigneeKind {
   return "field";
 }
 
+/// テーブルの定義の全体が見えているか（スキーマ管理者＝owner・viewer-context の `can_manage`）。
+///
+/// owner 以外に返る定義は読めない列を落としてあり（data の redact_table）、読めない列の名前も返らないので、
+/// 定義に無い列が「テーブルに無い」のか「読めない」のかを画面では決められない。読み込み中・読めないときは
+/// 見えていないものとして扱う（「無い」と断定しない側へ倒す）。
+function useSeesWholeTable(tableId: string | null): boolean {
+  const [whole, setWhole] = React.useState<{ id: string; value: boolean } | null>(null);
+  React.useEffect(() => {
+    if (!tableId) return;
+    let active = true;
+    getViewerContext(tableId)
+      .then((v) => active && setWhole({ id: tableId, value: v.can_manage }))
+      .catch(() => active && setWhole({ id: tableId, value: false }));
+    return () => {
+      active = false;
+    };
+  }, [tableId]);
+  return whole?.id === tableId && whole.value;
+}
+
+/// サーバの検証が「テーブルに無い」（ir.unknown_field）と返した受信箱の列。サーバは定義の全体で照合するので、
+/// 読めないだけの列は返らない。誤りの path の添字は検証の対象だった IR の値で引く（検証の後に外す・並べ替えると
+/// 添字がずれ、今の並びに当てると別の列を「無い」と言ってしまう）。検証の後にテーブルを変えていたら何も返さない。
+function serverUnknownShowFields(check: ServerCheck, tableId: string): Set<string> {
+  const keys = new Set<string>();
+  const p = check.node ? paramsOf<Params>(check.node) : null;
+  if (!p || p.record?.table !== tableId) return keys;
+  for (const e of check.errors) {
+    const m = e.code === "ir.unknown_field" ? /^\/params\/show_fields\/(\d+)$/.exec(e.path ?? "") : null;
+    const key = m ? p.show_fields?.[Number(m[1])] : undefined;
+    if (key) keys.add(key);
+  }
+  return keys;
+}
+
 export function HumanApprovalForm(props: FormProps) {
-  const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
+  const { node, dispatch, refCandidates, inMapRegion, fieldErrors, serverCheck } = props;
   const { tables } = useDataTables();
   const p = paramsOf<Params>(node);
   const fsmTables = React.useMemo(() => (tables ?? []).filter((t) => Boolean(t.schema.fsm_ref)), [tables]);
   const table = fsmTables.find((t) => t.id === p.record?.table) ?? null;
+  const seesWholeTable = useSeesWholeTable(table?.id ?? null);
+  const serverMissing = table ? serverUnknownShowFields(serverCheck, table.id) : new Set<string>();
   const states = statesOf(table);
   const set = (patch: Partial<Record<keyof Params, unknown>>) => patchParams(dispatch, node, patch);
   const record = p.record ?? { table: "", id: { $from: "trigger", path: "/record_id" } as ValueExpr };
@@ -167,6 +205,7 @@ export function HumanApprovalForm(props: FormProps) {
         table={table}
         value={p.show_fields ?? []}
         error={fieldErrors.get("show_fields")}
+        knownMissing={(k) => seesWholeTable || serverMissing.has(k)}
         onChange={(v) => set({ show_fields: v.length ? v : undefined })}
       />
 
@@ -401,23 +440,35 @@ function AssigneesField({
 
 /// 受信箱に出す列（担当者に読めない列は出ない）。
 ///
-/// 保存済みの値のうち選べる列に無いもの（テーブルの列が消えた・AI が書いた・状態の列）はボタンに出ないので、
-/// 外すボタン付きで別に出す（出さないと見えないまま保存が ir.unknown_field で止まり、上限の数にも入る）。
+/// 保存済みの値のうち選べる列に無いもの（テーブルの列が消えた・AI が書いた・状態の列・自分に読めない列）は
+/// ボタンに出ないので、外すボタン付きで別に出す（出さないと見えないまま保存が ir.unknown_field で止まり、上限の
+/// 数にも入る）。「テーブルに無い」と言うのは `knownMissing` が真のときだけ（定義の全体が見えている・サーバが
+/// 無いと返した）。それ以外は読めないだけで実在する列かもしれないので、断定しない。
 function ShowFieldsField({
   table,
   value,
   error,
+  knownMissing,
   onChange,
 }: {
   table: DataTable | null;
   value: string[];
   error?: string;
+  knownMissing: (key: string) => boolean;
   onChange: (next: string[]) => void;
 }) {
   if (!table) return null;
   const fields = table.schema.fields.filter((f) => f.key !== table.schema.status_field);
   const selectable = new Set(fields.map((f) => f.key));
-  const stray = value.filter((k) => !selectable.has(k));
+  const stray = value
+    .filter((k) => !selectable.has(k))
+    .map((k) =>
+      k === table.schema.status_field
+        ? { key: k, text: `状態の列は選べません: ${k}`, certain: true }
+        : knownMissing(k)
+          ? { key: k, text: `このテーブルに無い列: ${k}`, certain: true }
+          : { key: k, text: `この画面では選べない列（テーブルに無いか、あなたが読めない列）: ${k}`, certain: false },
+    );
   return (
     <fieldset className="space-y-1.5">
       <legend className="text-xs font-medium">受信箱に出す列</legend>
@@ -441,11 +492,15 @@ function ShowFieldsField({
       </div>
       {stray.length ? (
         <ul className="space-y-1" aria-label="選べない列">
-          {stray.map((k) => (
-            <li key={k} className="flex items-center justify-between gap-2 text-[11px] text-destructive">
-              <span className="min-w-0 break-all">
-                {k === table.schema.status_field ? `状態の列は選べません: ${k}` : `このテーブルに無い列: ${k}`}
-              </span>
+          {stray.map(({ key: k, text, certain }) => (
+            <li
+              key={k}
+              className={cn(
+                "flex items-center justify-between gap-2 text-[11px]",
+                certain ? "text-destructive" : "text-muted-foreground",
+              )}
+            >
+              <span className="min-w-0 break-all">{text}</span>
               <Button
                 variant="ghost"
                 size="icon"
