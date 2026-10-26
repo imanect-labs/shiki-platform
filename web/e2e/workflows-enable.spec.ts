@@ -161,3 +161,117 @@ test("有効化: 実行の入力でファイルを決めるブロックはファ
   await expect(dialog.getByText(`ファイル「${fileName}」`)).toBeVisible({ timeout: 10_000 });
   await expect(dialog.getByRole("button", { name: "同意して有効化" })).toBeEnabled();
 });
+
+/// 保存は通るが、そのままでは動かせない設定（D-40・D-43）: 必須の文字の欄が空のブロックと、スケジュールで動くのに
+/// 保存先のフォルダを省いた書込。有効化のダイアログは理由をブロックの名前つきで示し、有効化のボタンを押せない。
+/// サーバの有効化も同じ理由で 409 `not_ready` を返す。
+test("有効化: 指示が空のブロックと保存先を省いた書込があると、理由を示して有効化させない（D-40・D-43）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const cookies = await page.context().cookies();
+  const csrf = cookies.find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const name = uniqueName("enable-not-ready");
+  const res = await page.request.post("/api/workflows", {
+    headers: { "x-csrf-token": csrf, "content-type": "application/json" },
+    data: {
+      ir: {
+        ir_version: 1,
+        name,
+        display_name: name,
+        triggers: [{ kind: "schedule", cron: "0 9 * * *", tz: "Asia/Tokyo", catchup: "skip" }],
+        nodes: [
+          { id: "ask", type: "llm.invoke", label: "日報をまとめる", params: { prompt: "" } },
+          {
+            id: "save",
+            type: "storage.write",
+            label: "まとめを保存",
+            params: { name: "日報.md", content: { $from: "nodes.ask.output", path: "/text" } },
+          },
+        ],
+        edges: [{ from: "ask", from_port: "out", to: "save" }],
+      },
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const saved = (await res.json()) as { id: string; warnings: { code: string; path?: string }[] };
+  // 保存は止めず、空の欄は path つきの警告で知らせる。
+  expect(saved.warnings).toEqual(
+    expect.arrayContaining([expect.objectContaining({ code: "ir.required_text_empty", path: "/params/prompt" })]),
+  );
+
+  await page.goto(`/workflows/${saved.id}`);
+  await page.getByRole("button", { name: /自動実行を有効化/ }).click();
+  const dialog = page.locator('[role="dialog"]');
+  await expect(dialog.getByText("自動実行の設定")).toBeVisible();
+  const blockers = dialog.getByTestId("enable-blockers");
+  await expect(blockers).toContainText("このままでは有効化できません");
+  await expect(blockers).toContainText("「日報をまとめる」「AI への指示」が空です");
+  await expect(blockers).toContainText("「まとめを保存」保存先のフォルダを指定してください");
+  await expect(dialog.getByRole("button", { name: "設定を直してください（2 件）" })).toBeDisabled();
+
+  // 画面を通さずに有効化しても、同じ理由で止まる（有効化は記録されない）。
+  const enable = await page.request.post(`/api/workflows/${saved.id}/enable`, {
+    headers: { "x-csrf-token": csrf, "content-type": "application/json" },
+    data: { version: 1, grants: [] },
+  });
+  expect(enable.status()).toBe(409);
+  const body = (await enable.json()) as { code: string; errors: { code: string; node_id: string }[] };
+  expect(body.code).toBe("not_ready");
+  expect(body.errors.map((e) => [e.code, e.node_id])).toEqual([
+    ["ir.required_text_empty", "ask"],
+    ["ir.write_folder_required", "save"],
+  ]);
+  const reg = await page.request.get(`/api/workflows/${saved.id}/registration`);
+  expect(((await reg.json()) as { status: string }).status).toBe("none");
+});
+
+/// ファイル保存のきっかけで決まるファイル（`$from: trigger`）は「前のブロックの結果」ではなく、きっかけの
+/// フォルダに渡す閲覧の権限で読める（BUG-38）。ファイルを選ばせない。
+test("有効化: きっかけで保存されたファイルを読むブロックは、きっかけのフォルダの権限で読めると示す（BUG-38）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const cookies = await page.context().cookies();
+  const csrf = cookies.find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const headers = { "x-csrf-token": csrf, "content-type": "application/json" };
+  const folder = await page.request.post("/api/folders", {
+    headers,
+    data: { name: uniqueName("e2e-受付の箱"), parent_id: null },
+  });
+  expect(folder.ok(), await folder.text()).toBeTruthy();
+  const folderId = ((await folder.json()) as { id: string }).id;
+  const name = uniqueName("enable-trigger-file");
+  const res = await page.request.post("/api/workflows", {
+    headers,
+    data: {
+      ir: {
+        ir_version: 1,
+        name,
+        display_name: name,
+        declared_scopes: ["storage.read"],
+        triggers: [{ kind: "event", source: "storage.write", scope: { folder: folderId } }],
+        nodes: [
+          {
+            id: "read",
+            type: "storage.read",
+            label: "届いたファイルを読む",
+            params: { file: { $from: "trigger", path: "/file_id" } },
+          },
+        ],
+        edges: [],
+      },
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const id = ((await res.json()) as { id: string }).id;
+  await page.goto(`/workflows/${id}`);
+  await page.getByRole("button", { name: /自動実行を有効化/ }).click();
+  const dialog = page.locator('[role="dialog"]');
+  await expect(dialog.getByText("自動実行の設定")).toBeVisible();
+  await expect(
+    dialog.getByText(
+      "「届いたファイルを読む」のファイルはきっかけ（保存されたファイル）で決まるため、ここでは選びません。きっかけのフォルダに渡す閲覧の権限で読めます。",
+    ),
+  ).toBeVisible();
+  await expect(dialog.getByText(/前のブロックの結果で決まる/)).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: /渡すファイルを/ })).toHaveCount(0);
+  await expect(dialog.getByTestId("enable-blockers")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "同意して有効化" })).toBeEnabled();
+});

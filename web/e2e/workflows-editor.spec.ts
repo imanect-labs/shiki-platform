@@ -939,3 +939,243 @@ async function phonePage(browser: Browser, page: Page): Promise<Page> {
   });
   return ctx.newPage();
 }
+
+// ── 第 1 弾の残りの直し（BUG-30〜32・40・41・D-37・D-42・D-43）─────────────────────
+
+/// IR を BFF 経由で保存してエディタで開く（座標なし・自動配置）。
+async function openIr(page: Page, ir: Record<string, unknown>): Promise<string> {
+  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const name = uniqueName("wf-small-fix");
+  const res = await page.request.post("/api/workflows", {
+    headers: { "x-csrf-token": csrf, "content-type": "application/json" },
+    data: { ir: { ir_version: 1, name, display_name: name, triggers: [{ kind: "interactive" }], ...ir } },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const id = ((await res.json()) as { id: string }).id;
+  await page.goto(`/workflows/${id}`);
+  await expect(page.locator(".react-flow__node").first()).toBeVisible({ timeout: 15_000 });
+  await settleViewport(page);
+  return id;
+}
+
+const scriptNode = (id: string, label: string) => ({
+  id,
+  type: "script.run",
+  label,
+  params: { source: { inline: "function main(input) { return input; }" } },
+});
+
+test("出口を消す設定: 振り分けの行き先を消す・失敗時をフローの失敗に戻すと、その出口のつながりも消え、Undo で戻る（BUG-30）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await openIr(page, {
+    nodes: [
+      {
+        id: "sw",
+        type: "control.switch",
+        label: "区分で振り分け",
+        params: {
+          value: { $from: "input", path: "/kind" },
+          cases: [
+            { port: "travel", equals: "交通費" },
+            { port: "meal", equals: "会食費" },
+          ],
+        },
+      },
+      { ...scriptNode("t", "交通費の処理"), on_error: "continue" },
+      scriptNode("m", "会食費の処理"),
+      scriptNode("rec", "失敗を記録"),
+    ],
+    edges: [
+      { from: "sw", from_port: "travel", to: "t" },
+      { from: "sw", from_port: "meal", to: "m" },
+      { from: "t", from_port: "error", to: "rec" },
+    ],
+  });
+  const travel = page.getByTestId("rf__edge-e:sw|travel|t");
+  const meal = page.getByTestId("rf__edge-e:sw|meal|m");
+  const error = page.getByTestId("rf__edge-e:t|error|rec");
+  await expect(travel).toHaveCount(1);
+  await expect(error).toHaveCount(1);
+
+  // 振り分けの行き先（travel）を消すと、その出口のつながりも同じ 1 手で消える（ほかの出口は残る）。
+  await page.getByTestId("rf__node-sw").click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  await panel.getByRole("button", { name: "行き先を削除" }).first().click();
+  await expect(travel).toHaveCount(0);
+  await expect(meal).toHaveCount(1);
+  await page.locator(".react-flow__pane").click({ position: { x: 24, y: 24 } });
+  await page.keyboard.press("Control+z");
+  await expect(travel).toHaveCount(1);
+
+  // 失敗したときを「フローを失敗にする」に戻すと、エラー時の出口のつながりが消える。
+  await page.getByTestId("rf__node-t").click();
+  await panel.getByRole("combobox").filter({ hasText: "エラー用の出口に流す" }).click();
+  await page.getByRole("option", { name: "フローを失敗にする" }).click();
+  await expect(error).toHaveCount(0);
+  await page.locator(".react-flow__pane").click({ position: { x: 24, y: 24 } });
+  await page.keyboard.press("Control+z");
+  await expect(error).toHaveCount(1);
+  // 保存しても消えた出口の誤り（ir.unknown_port）にならない。
+  await page.getByTestId("rf__node-sw").click();
+  await panel.getByRole("button", { name: "行き先を削除" }).first().click();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.react-flow [aria-label^="検証エラー"]')).toHaveCount(0);
+});
+
+test("条件の比べる値: 数値の入力項目と比べる数字は数として保存し、文字の項目と比べる数字は文字のまま（BUG-31）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const cmp = (path: string, op: string) => ({ cmp: { left: { $from: "input", path }, op, right: "" } });
+  const id = await openIr(page, {
+    input_schema: {
+      type: "object",
+      properties: { amount: { type: "integer", title: "金額" }, code: { type: "string", title: "コード" } },
+    },
+    nodes: [
+      {
+        id: "br",
+        type: "control.branch",
+        label: "高額か",
+        params: { condition: { all: [cmp("/amount", "gte"), cmp("/code", "eq")] } },
+      },
+    ],
+    edges: [],
+  });
+  await page.getByTestId("rf__node-br").click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  const rights = panel.locator('[data-value-expr="比べる値"]');
+  await rights.nth(0).getByLabel("比べる値").fill("50,000");
+  await expect(rights.nth(0).getByTestId("numeric-literal-note")).toBeVisible();
+  await rights.nth(1).getByLabel("比べる値").fill("001");
+  await expect(rights.nth(1).getByTestId("numeric-literal-note")).toHaveCount(0);
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+  const wf = (await (await page.request.get(`/api/workflows/${id}`)).json()) as {
+    ir: { nodes: { params: { condition: { all: { cmp: { right: unknown } }[] } } }[] };
+  };
+  const [amount, code] = wf.ir.nodes[0].params.condition.all;
+  expect(amount.cmp.right).toBe(50000);
+  expect(code.cmp.right).toBe("001");
+});
+
+test("ファイルを読む: 置いた直後はファイルが未選択で、前の結果を指さない（BUG-32）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await openIr(page, { nodes: [scriptNode("a", "受付")], edges: [] });
+  const canvas = page.locator(".react-flow");
+  await canvas.getByLabel("次のブロックを追加").first().click();
+  await page.getByRole("button", { name: /^ファイルを読む/ }).click();
+  // ドライブから選ぶ欄で置かれ（「前の結果から」の参照の欄ではない）、選ぶまで入力を促す。スケジュールで
+  // 有効化しても「入力が無いので失敗します」にならない（既定で実行の入力を指さない）。
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  await expect(panel.getByText("ファイルが選ばれていません")).toBeVisible();
+  await expect(panel.getByRole("button", { name: /選ぶ/ }).first()).toBeVisible();
+  await expect(panel.locator('[data-value-expr="読むファイル"]')).toHaveCount(0);
+});
+
+test("参照の候補: 前のブロックの出力の項目をカタログの項目から出す（D-42）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await openIr(page, {
+    nodes: [
+      { id: "r", type: "storage.read", label: "台帳を読む", params: { file: "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1" } },
+      scriptNode("s", "整える"),
+      { id: "ask", type: "llm.invoke", label: "要約する", params: { prompt: "要約: " } },
+    ],
+    edges: [
+      { from: "r", from_port: "out", to: "s" },
+      { from: "s", from_port: "out", to: "ask" },
+    ],
+  });
+  await page.getByTestId("rf__node-ask").click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  await panel.locator('[data-value-expr="AI への指示"]').getByRole("button", { name: "差し込む" }).click();
+  for (const key of ["id", "name", "content_type", "size", "text"]) {
+    await expect(page.getByRole("menuitem", { name: `「台帳を読む」の ${key}`, exact: true })).toBeVisible();
+  }
+  // script の戻り値は形が決まらないので、項目は出さず結果全体だけを出す。
+  await expect(page.getByRole("menuitem", { name: "「整える」の結果（全体）" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /^「整える」の (?!結果)/ })).toHaveCount(0);
+});
+
+test("保存時の警告: 閉じの無い { と、空の SQL を知らせる（D-37・D-43）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await openIr(page, {
+    nodes: [
+      {
+        id: "ask",
+        type: "llm.invoke",
+        label: "要約する",
+        params: {
+          prompt: { $template: "件名: {title の内容を要約してください", vars: { title: { $from: "input", path: "/title" } } },
+        },
+      },
+      { id: "q", type: "csv.query", label: "集計する", params: { file: "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", sql: "" } },
+    ],
+    edges: [{ from: "ask", from_port: "out", to: "q" }],
+  });
+  const canvas = page.locator(".react-flow");
+  await expect(canvas.locator('[aria-label="注意 1 件"]')).toHaveCount(2, { timeout: 15_000 });
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  await page.getByTestId("rf__node-ask").click();
+  await expect(panel.getByTestId("node-warnings")).toContainText("閉じの無い { があります");
+  // 空の必須の欄は注意の帯ではなく、欄の下で入力を促す（有効化・実行の前に止まる）。
+  await page.getByTestId("rf__node-q").click();
+  await expect(panel.getByTestId("node-warnings")).toHaveCount(0);
+  await expect(panel.getByText("入力してください")).toBeVisible();
+  await expect(page.getByTestId("workflow-warnings")).toContainText("確認が必要な設定 2 件");
+});
+
+test("キャンバス: 短いつながりでは、出口のラベルが尻尾の＋に重ならない（BUG-41）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await openIr(page, {
+    nodes: [
+      { id: "br", type: "control.branch", label: "高額か", params: { condition: { cmp: { left: { $from: "input" }, op: "exists" } } } },
+      scriptNode("a", "承認へ回す"),
+    ],
+    edges: [{ from: "br", from_port: "true", to: "a" }],
+  });
+  const tail = await page.getByTestId("rf__node-br").getByLabel("次のブロックを追加").boundingBox();
+  expect(tail).not.toBeNull();
+  const labels = page.locator(".react-flow__edgelabel-renderer span").filter({ hasText: /^はい$/ });
+  const n = await labels.count();
+  for (let i = 0; i < n; i += 1) {
+    const b = (await labels.nth(i).boundingBox())!;
+    const overlap =
+      b.x < tail!.x + tail!.width && tail!.x < b.x + b.width && b.y < tail!.y + tail!.height && tail!.y < b.y + b.height;
+    expect(overlap, `ラベル ${JSON.stringify(b)} と尻尾の＋ ${JSON.stringify(tail)}`).toBe(false);
+  }
+  // 出口の名前はカードの出口の並びに出ている。
+  await expect(page.getByTestId("rf__node-br")).toContainText("はい");
+});
+
+test("スマホ: ブロックの設定シートは下端に余白を取り、最後の欄が画面の下端に付かない（BUG-40）", async ({
+  browser,
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const phone = await phonePage(browser, page);
+  const id = await createLlmFlow(page, { prompt: "今日の予定をまとめてください" });
+  await phone.goto(`/workflows/${id}`);
+  const flow = phone.getByTestId("workflow-mobile-flow");
+  await expect(flow).toBeVisible({ timeout: 15_000 });
+  await flow.getByRole("button", { name: /要約する/ }).filter({ hasText: "要約する" }).click();
+  const sheet = phone.getByRole("dialog");
+  const last = sheet.getByRole("button", { name: "このブロックを削除" });
+  await last.scrollIntoViewIfNeeded();
+  // 本文を末尾まで送る（最後の欄がいちばん下に来る位置）。
+  await sheet.locator(".overflow-y-auto").first().evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
+  await nextFrame(phone);
+  const box = (await last.boundingBox())!;
+  const viewport = phone.viewportSize()!;
+  // 左下に浮くボタン（高さ 44px 程度）の上に出る。
+  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height - 64);
+});
