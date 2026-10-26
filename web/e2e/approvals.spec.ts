@@ -598,7 +598,7 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   };
   expect(viewer).toMatchObject({ can_edit: true, can_manage: false });
 
-  // 受信箱に金額を出し、読めない列の人にも出す承認（保存の検証は定義の全体で照合するので、bob にも保存できる）。
+  // bob が保存できる形で作る（保存の照合は保存者の見え方で行うので、bob に読めない列は保存で止まる）。
   const name = uniqueName("salary-approval");
   const flow = await bob.request.post("/api/workflows", {
     headers: await csrfHeaders(bob),
@@ -616,9 +616,9 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
             params: {
               title: "給与の申請の承認",
               record: { table: tableId, id: { $from: "input", path: "/record_id" } },
-              assignees: [{ field: "approver" }, { field: "secret_approver" }],
+              assignees: [{ field: "approver" }],
               approve: { to: "承認" },
-              show_fields: ["title", "amount"],
+              show_fields: ["title"],
             },
           },
           {
@@ -628,7 +628,7 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
             params: {
               title: "人事の申請の承認",
               record: { table: otherId, id: { $from: "input", path: "/record_id" } },
-              assignees: [{ field: "owner_user" }],
+              assignees: [{ user: me.id }],
               approve: { to: "承認" },
             },
           },
@@ -642,7 +642,8 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   expect(flow.ok(), await flow.text()).toBeTruthy();
   const workflowId = ((await flow.json()) as { id: string }).id;
 
-  // テーブルに本当に無い列（ghost）も混ぜた版を開く（AI が書いた・検証が入る前に保存した）。
+  // 読めない列（金額・別の承認者・担当者）とテーブルに本当に無い列（ghost）を入れた版を開く（owner の alice が
+  // 書いた・保存の照合が保存者の見え方になる前に保存した）。
   let injected = false;
   await bob.route(`**/api/workflows/${workflowId}`, async (route) => {
     if (injected || route.request().method() !== "GET") return route.continue();
@@ -654,6 +655,8 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
       node.params.show_fields = ["title", "ghost", "amount"];
       node.params.assignees = [{ field: "approver" }, { field: "secret_approver" }, { field: "ghost_user" }];
     }
+    const node2 = body.ir.nodes.find((n) => n.id === "ok2");
+    if (node2) node2.params.assignees = [{ user: me.id }, { field: "owner_user" }];
     await route.fulfill({ response: res, json: body });
   });
   await bob.goto(`/workflows/${workflowId}`);
@@ -677,17 +680,21 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   await expect(panel.getByText(`${NEUTRAL}ghost_user`)).toBeVisible();
   await expect(panel.getByText("このテーブルに無い列")).toHaveCount(0);
 
-  // ほかの欄を直すと検証が走り、サーバが「無い」と返した ghost だけを断定する（金額は全体の定義にあるので返らない）。
+  // ほかの欄を直すと検証が走る。サーバは bob の見え方で照合するので、読めない金額・別の承認者も、無い ghost と
+  // 同じ「このテーブルにありません」で返す。欄の下にはどちらとも言わない言い方で出し、注記も断定に変えない。
+  const SHOW_GHOST = "列 ghost は、テーブルに無いか、あなたが読めない列です。外すまで保存できません";
   await panel.getByPlaceholder("例: 経費申請の承認").fill("給与の申請の承認（部長）");
-  await expect(stray).toContainText("このテーブルに無い列: ghost", { timeout: 15_000 });
-  await expect(panel.getByText("列 ghost はこのテーブルにありません")).toBeVisible();
+  await expect(panel.getByText(SHOW_GHOST)).toBeVisible({ timeout: 15_000 });
+  await expect(
+    panel.getByText("担当者の列 secret_approver は、テーブルに無いか、あなたが読めない列です。外すまで保存できません"),
+  ).toBeVisible();
+  await expect(panel.getByText(/このテーブルにありません/)).toHaveCount(0);
+  await expect(panel.getByText("このテーブルに無い列")).toHaveCount(0);
   await expect(stray).toContainText(`${NEUTRAL}amount`);
-  await expect(stray).not.toContainText("このテーブルに無い列: amount");
-  await expect(panel.getByText("このテーブルに無い列: ghost_user")).toBeVisible();
-  await expect(panel.getByText(`${NEUTRAL}secret_approver`)).toBeVisible();
+  await expect(stray).toContainText(`${NEUTRAL}ghost`);
 
   // ghost を外すと、金額がサーバの誤りの添字（/params/show_fields/1）へ詰まる。次の検証の応答が来る前でも、
-  // 前の検証の添字を今の並びに当てて金額を「無い」と言わない。
+  // 前の検証の添字を今の並びに当てて、金額の誤りにすり替えない。応答が来たら金額の誤りになる。
   let release: () => void = () => {};
   const held = new Promise<void>((r) => (release = r));
   await bob.route("**/api/workflows/validate", async (route) => {
@@ -697,28 +704,38 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   const validating = bob.waitForRequest("**/api/workflows/validate");
   await stray.getByRole("button", { name: "列 ghost を外す" }).click();
   await expect(stray).toContainText(`${NEUTRAL}amount`);
-  await expect(stray).not.toContainText("このテーブルに無い列");
   await validating;
-  await expect(stray).not.toContainText("このテーブルに無い列");
+  await expect(panel.getByText(SHOW_GHOST)).toBeVisible();
+  await expect(panel.getByText(/列 amount は/)).toHaveCount(0);
   release();
-  await expect(panel.getByText("列 ghost はこのテーブルにありません")).toHaveCount(0, { timeout: 15_000 });
-
-  // 無い担当者の列だけ外して保存でき、受信箱に出す列に金額が、担当者に読めない列の人が残る。
-  await panel.getByRole("button", { name: "相手 3 を外す" }).click();
-  await bob.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(bob.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
-  const saved = (await (await bob.request.get(`/api/workflows/${workflowId}`)).json()) as {
-    ir: { nodes: { id: string; params: Record<string, unknown> }[] };
-  };
-  const params = saved.ir.nodes.find((n) => n.id === "ok")?.params ?? {};
-  expect(params.show_fields).toEqual(["title", "amount"]);
-  expect(params.assignees).toEqual([{ field: "approver" }, { field: "secret_approver" }]);
+  await expect(
+    panel.getByText("列 amount は、テーブルに無いか、あなたが読めない列です。外すまで保存できません"),
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(stray).not.toContainText("このテーブルに無い列");
+  await bob.unroute("**/api/workflows/validate");
 
   // ユーザーの列が読めない列だけのテーブルでも、「このテーブルにユーザー・部署の列がありません」と言わない。
   await canvas.getByText("部長の承認").first().click();
   await expect(panel.getByText("あなたが読める列に、ユーザー・部署の列がありません")).toBeVisible();
   await expect(panel.getByText(`${NEUTRAL}owner_user`)).toBeVisible();
   await expect(panel.getByText("このテーブルにユーザー・部署の列がありません")).toHaveCount(0);
+  await panel.getByRole("button", { name: "相手 2 を外す" }).click();
+
+  // 読めない列・無い列を外せば保存できる。
+  await canvas.getByText("上長の承認").first().click();
+  await stray.getByRole("button", { name: "列 amount を外す" }).click();
+  await expect(stray).toHaveCount(0);
+  await panel.getByRole("button", { name: "相手 3 を外す" }).click();
+  await panel.getByRole("button", { name: "相手 2 を外す" }).click();
+  await bob.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(bob.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+  const saved = (await (await bob.request.get(`/api/workflows/${workflowId}`)).json()) as {
+    ir: { nodes: { id: string; params: Record<string, unknown> }[] };
+  };
+  const params = saved.ir.nodes.find((n) => n.id === "ok")?.params ?? {};
+  expect(params.show_fields).toEqual(["title"]);
+  expect(params.assignees).toEqual([{ field: "approver" }]);
+  expect(saved.ir.nodes.find((n) => n.id === "ok2")?.params.assignees).toEqual([{ user: me.id }]);
   await bobCtx.close();
 });
 

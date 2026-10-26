@@ -23,6 +23,7 @@ import type {
 } from "@/generated/workflow-ir";
 import { getViewerContext, type DataTable } from "@/lib/data-api";
 import { cn } from "@/lib/utils";
+import { paramField } from "../validation";
 import { Field, NumberInput } from "./common";
 import { DataTableSelect, useDataTables } from "./forms-data";
 import type { FormProps, ServerCheck } from "./forms-basic";
@@ -106,27 +107,35 @@ function useSeesWholeTable(tableId: string | null): boolean {
   return whole?.id === tableId && whole.value;
 }
 
-/// サーバの検証が「テーブルに無い」（ir.unknown_field）と返した列（受信箱に出す列は `/params/show_fields/{i}`、
-/// 担当者の列は `/params/assignees/{i}/field`）。サーバは定義の全体で照合するので、読めないだけの列は返らない。
-/// 誤りの path の添字は検証の対象だった IR の値で引く（検証の後に外す・並べ替えると添字がずれ、今の並びに当てると
-/// 別の列を「無い」と言ってしまう）。検証の後にテーブルを変えていたら何も返さない。
-function serverUnknownFields(check: ServerCheck, tableId: string, list: "show_fields" | "assignees"): Set<string> {
-  const keys = new Set<string>();
+/// 受信箱に出す列・担当者の列の欄の下に出すサーバの誤り（`message` はその欄に写した 1 件目）。
+///
+/// サーバは保存者の見え方で照合する（owner 以外は読める列だけ）ので、定義の全体が見えていない人には、読めない
+/// 列も無い列と同じ「このテーブルにありません」（ir.unknown_field）で返る（区別させない）。そのまま出すと読めない
+/// 列を「無い」と言うので、無いか読めない列という言い方に直す。列の名前は検証の対象だった IR の値で引く（検証の
+/// 後に外す・並べ替えると添字がずれる）。
+function listError(
+  message: string | undefined,
+  check: ServerCheck,
+  list: "show_fields" | "assignees",
+  seesWholeTable: boolean,
+): string | undefined {
+  if (!message || seesWholeTable) return message;
+  const shown = check.errors.find((e) => paramField(e.path) === list);
+  if (shown?.code !== "ir.unknown_field" || shown.message !== message) return message;
   const p = check.node ? paramsOf<Params>(check.node) : null;
-  if (!p || p.record?.table !== tableId) return keys;
   const at = list === "show_fields" ? /^\/params\/show_fields\/(\d+)$/ : /^\/params\/assignees\/(\d+)\/field$/;
-  for (const e of check.errors) {
-    const m = e.code === "ir.unknown_field" ? at.exec(e.path ?? "") : null;
-    if (!m) continue;
-    const i = Number(m[1]);
-    const key = list === "show_fields" ? p.show_fields?.[i] : p.assignees?.[i]?.field;
-    if (key) keys.add(key);
-  }
-  return keys;
+  const m = at.exec(shown.path ?? "");
+  const i = m ? Number(m[1]) : -1;
+  const key = list === "show_fields" ? p?.show_fields?.[i] : p?.assignees?.[i]?.field;
+  const what = list === "show_fields" ? "列" : "担当者の列";
+  return key
+    ? `${what} ${key} は、テーブルに無いか、あなたが読めない列です。外すまで保存できません`
+    : `${what}に、テーブルに無いか、あなたが読めない列があります。外すまで保存できません`;
 }
 
-/// 選べる列に無い保存済みの列の注記（`certain` は赤字で出す）。`missing`（定義の全体が見えている・サーバが無いと
-/// 返した）でなければ、読めないだけで実在する列かもしれないので「無い」と断定しない。
+/// 選べる列に無い保存済みの列の注記（`certain` は赤字で出す）。`missing`（定義の全体が見えている）でなければ、
+/// 読めないだけで実在する列かもしれないので「無い」と断定しない（サーバの ir.unknown_field も、owner 以外には
+/// 無い列と読めない列を区別しない）。
 function unselectableNote(key: string, missing: boolean): { text: string; certain: boolean } {
   return missing
     ? { text: `このテーブルに無い列: ${key}`, certain: true }
@@ -140,8 +149,6 @@ export function HumanApprovalForm(props: FormProps) {
   const fsmTables = React.useMemo(() => (tables ?? []).filter((t) => Boolean(t.schema.fsm_ref)), [tables]);
   const table = fsmTables.find((t) => t.id === p.record?.table) ?? null;
   const seesWholeTable = useSeesWholeTable(table?.id ?? null);
-  const missingShowFields = table ? serverUnknownFields(serverCheck, table.id, "show_fields") : new Set<string>();
-  const missingAssignees = table ? serverUnknownFields(serverCheck, table.id, "assignees") : new Set<string>();
   const states = statesOf(table);
   const set = (patch: Partial<Record<keyof Params, unknown>>) => patchParams(dispatch, node, patch);
   const record = p.record ?? { table: "", id: { $from: "trigger", path: "/record_id" } as ValueExpr };
@@ -201,7 +208,7 @@ export function HumanApprovalForm(props: FormProps) {
         table={table}
         assignees={p.assignees ?? []}
         seesWholeTable={seesWholeTable}
-        knownMissing={(k) => seesWholeTable || missingAssignees.has(k)}
+        error={listError(fieldErrors.get("assignees"), serverCheck, "assignees", seesWholeTable)}
         onChange={(assignees) => set({ assignees })}
       />
 
@@ -224,8 +231,8 @@ export function HumanApprovalForm(props: FormProps) {
       <ShowFieldsField
         table={table}
         value={p.show_fields ?? []}
-        error={fieldErrors.get("show_fields")}
-        knownMissing={(k) => seesWholeTable || missingShowFields.has(k)}
+        error={listError(fieldErrors.get("show_fields"), serverCheck, "show_fields", seesWholeTable)}
+        seesWholeTable={seesWholeTable}
         onChange={(v) => set({ show_fields: v.length ? v : undefined })}
       />
 
@@ -357,23 +364,23 @@ function ChoiceField({
 
 /// 受信箱に出す相手（行のユーザー・ロールの列／固定のユーザー／固定のロール）。
 ///
-/// 列が選べる列に無いとき、「テーブルに無い」と言うのは `knownMissing` が真のときだけ（受信箱に出す列と同じ）。
-/// owner 以外に返る定義には読めない列が無いので、読めないだけのユーザーの列を「無い」と言わない。
+/// 列が選べる列に無いとき、「テーブルに無い」と言うのは `seesWholeTable` が真のときだけ（受信箱に出す列と同じ）。
+/// owner 以外に返る定義には読めない列が無いので、読めないだけのユーザーの列を「無い」と言わない。`error` は
+/// 欄の下に出すサーバの誤り（[`listError`] で言い方を直したもの）。
 function AssigneesField({
   node,
   refCandidates,
   inMapRegion,
-  fieldErrors,
   table,
   assignees,
   seesWholeTable,
-  knownMissing,
+  error,
   onChange,
 }: FormProps & {
   table: DataTable | null;
   assignees: ApprovalAssignee[];
   seesWholeTable: boolean;
-  knownMissing: (key: string) => boolean;
+  error?: string;
   onChange: (next: ApprovalAssignee[]) => void;
 }) {
   const refFields = (table?.schema.fields ?? []).filter((f) => f.type === "user_ref" || f.type === "role_ref");
@@ -382,7 +389,7 @@ function AssigneesField({
   const strayNote = (key: string) =>
     visible.has(key)
       ? { text: `ユーザー・部署の列ではありません: ${key}`, certain: true }
-      : unselectableNote(key, knownMissing(key));
+      : unselectableNote(key, seesWholeTable);
   const update = (i: number, next: ApprovalAssignee) => onChange(assignees.map((a, j) => (j === i ? next : a)));
   const blank = (kind: AssigneeKind): ApprovalAssignee =>
     kind === "field" ? { field: refFields[0]?.key ?? "" } : kind === "user" ? { user: "" } : { role: "" };
@@ -458,9 +465,7 @@ function AssigneesField({
           </div>
         );
       })}
-      {fieldErrors.get("assignees") ? (
-        <p className="text-[11px] text-destructive">{fieldErrors.get("assignees")}</p>
-      ) : null}
+      {error ? <p className="text-[11px] text-destructive">{error}</p> : null}
       <Button
         variant="outline"
         size="sm"
@@ -479,19 +484,19 @@ function AssigneesField({
 ///
 /// 保存済みの値のうち選べる列に無いもの（テーブルの列が消えた・AI が書いた・状態の列・自分に読めない列）は
 /// ボタンに出ないので、外すボタン付きで別に出す（出さないと見えないまま保存が ir.unknown_field で止まり、上限の
-/// 数にも入る）。「テーブルに無い」と言うのは `knownMissing` が真のときだけ（定義の全体が見えている・サーバが
-/// 無いと返した）。それ以外は読めないだけで実在する列かもしれないので、断定しない。
+/// 数にも入る）。「テーブルに無い」と言うのは `seesWholeTable`（定義の全体が見えている）のときだけ。それ以外は
+/// 読めないだけで実在する列かもしれないので、断定しない。
 function ShowFieldsField({
   table,
   value,
   error,
-  knownMissing,
+  seesWholeTable,
   onChange,
 }: {
   table: DataTable | null;
   value: string[];
   error?: string;
-  knownMissing: (key: string) => boolean;
+  seesWholeTable: boolean;
   onChange: (next: string[]) => void;
 }) {
   if (!table) return null;
@@ -502,7 +507,7 @@ function ShowFieldsField({
     .map((k) =>
       k === table.schema.status_field
         ? { key: k, text: `状態の列は選べません: ${k}`, certain: true }
-        : { key: k, ...unselectableNote(k, knownMissing(k)) },
+        : { key: k, ...unselectableNote(k, seesWholeTable) },
     );
   return (
     <fieldset className="space-y-1.5">
