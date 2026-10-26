@@ -27,7 +27,9 @@ mod outcome;
 mod wait;
 mod wait_data;
 
-pub use approval::{ApprovalWait, PendingApproval, ResolvedApproval};
+pub use approval::{
+    ApprovalWait, DueApprovalCursor, DueApprovalPage, PendingApproval, ResolvedApproval,
+};
 pub use gc::{GcReport, HistoryGcWorker, WORKFLOW_GC_QUEUE};
 pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
 pub use limits::PromoteReport;

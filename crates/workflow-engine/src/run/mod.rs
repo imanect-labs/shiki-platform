@@ -30,10 +30,11 @@ pub use outcome::{
     WaitingFor,
 };
 pub use store::{
-    ApprovalWait, CancelOutcome, DataWaitCandidate, EventWaitGate, EventWaitSubscriber, GcReport,
-    HistoryGcWorker, LiveState, OwnOutcome, PendingApproval, PromoteReport, ResolvedApproval,
-    ResumeOutcome, RunDetail, RunEventRow, RunListFilter, RunListItem, RunOrigin, RunOutcomeReader,
-    RunStatusReader, RunStore, RunStoreError, StepDetail, StepOverview, WORKFLOW_GC_QUEUE,
+    ApprovalWait, CancelOutcome, DataWaitCandidate, DueApprovalCursor, DueApprovalPage,
+    EventWaitGate, EventWaitSubscriber, GcReport, HistoryGcWorker, LiveState, OwnOutcome,
+    PendingApproval, PromoteReport, ResolvedApproval, ResumeOutcome, RunDetail, RunEventRow,
+    RunListFilter, RunListItem, RunOrigin, RunOutcomeReader, RunStatusReader, RunStore,
+    RunStoreError, StepDetail, StepOverview, WORKFLOW_GC_QUEUE,
 };
 pub use worker::{ConcurrencyLimits, WorkerConfig, WorkflowWorker, DEFAULT_LEASE_SECS};
 

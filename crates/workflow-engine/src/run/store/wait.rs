@@ -359,6 +359,10 @@ impl RunStore {
     }
 
     /// due な `wait_subscription` の timeout を処理する（continue→timeout ポート / fail→run 失敗・§9.2）。
+    ///
+    /// 承認（`spec.approval`）の購読は扱わない。承認の期限切れは、実行主体がまだテーブルを読めるかを確かめて
+    /// から決める（api の `expire_due_approvals`・D-62）。こちらで確かめずに timeout の出口へ進めない。承認の
+    /// 確かめが一時障害で滞っても、ほかの wait の timeout の回収はここで毎回進む。
     pub async fn expire_due_waits(
         &self,
         now: DateTime<Utc>,
@@ -370,6 +374,7 @@ impl RunStore {
              FROM wait_subscription w \
              JOIN workflow_run r ON r.tenant_id = w.tenant_id AND r.run_id = w.run_id \
              WHERE w.timeout_at <= $1 AND NOT w.fired AND r.status = 'running' \
+               AND NOT (w.spec ? 'approval') \
                AND (($2::text IS NULL) OR (w.tenant_id = $2)) \
              ORDER BY w.timeout_at LIMIT 256",
         )
@@ -383,24 +388,6 @@ impl RunStore {
             let Some(graph) = graph_from_snapshot(ir_json.0) else {
                 continue;
             };
-            // 承認の期限切れは台帳も同じ Tx で確定する（GAP-08）。
-            if let Some(wait) = super::approval::ApprovalWait::from_spec(&spec.0) {
-                if super::approval::wake_approval(
-                    &self.db,
-                    &tenant,
-                    run_id,
-                    &step_path,
-                    &wait,
-                    &crate::approval::ApprovalResolution::expired(wait.on_timeout),
-                    &graph,
-                )
-                .await?
-                .is_some()
-                {
-                    woke += 1;
-                }
-                continue;
-            }
             // on_timeout=continue → timeout ポート、fail → run 失敗（None）。
             let port = if spec.0.get("on_timeout").and_then(Value::as_str) == Some("continue") {
                 Some("timeout")

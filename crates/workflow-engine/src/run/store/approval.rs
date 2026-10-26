@@ -4,8 +4,9 @@
 //!   `suspend_rev`）を同じ Tx で書く。再実行・再開（at-least-once）でも同じ承認 id を上書きして待ち直す。
 //! - **起床**（relay・受付の突合・行の削除）: その行の遷移で `rev > suspend_rev` のものだけを、遷移先の状態に
 //!   応じた出口へ写す。判断の外の状態・行が消えたら取り下げ。step の terminal 化と台帳の確定を同じ Tx で行う。
-//! - **期限**: `expire_due_waits` と同じ Tx で台帳を `expired` にする。台帳の行をロックしてから決め、判断 API が
-//!   期限内に受け付けた判断（`accepted`・遷移は済み）があれば、期限切れにせずその判断で決める（BUG-45）。
+//! - **期限**: 期限の来た承認（[`RunStore::due_approvals`]）を api の tick が実行主体を確かめてから決め、step の
+//!   terminal 化と同じ Tx で台帳を `expired` にする（`expire_due_waits` は承認を扱わない）。台帳の行をロックしてから
+//!   決め、判断 API が期限内に受け付けた判断（`accepted`・遷移は済み）があれば、期限切れにせずその判断で決める（BUG-45）。
 //! - **実行主体の失権**（D-62）: 待つ間に委譲・テーブルの権限が外れたら、出口へ進めずに run を失敗で終える
 //!   （step の `error.code`・run の `fail_reason` は `actor_unavailable`・台帳は `cancelled`）。判断は api の
 //!   relay（受付の突合・判断の遷移・期限の前の確かめ）が行い、ここは同じ Tx で確定するだけ。
@@ -55,6 +56,24 @@ pub struct PendingApproval {
     pub suspend_rev: i64,
     pub assignees: i64,
     pub wait: ApprovalWait,
+}
+
+/// 期限の来た承認の走査の続きの位置（期限・承認 id の昇順で、ここより後ろを読む）。
+///
+/// 決められずに残った承認（確かめが一時障害で終わった・ピンした IR を読めない）を、同じ走査の次のページで
+/// 読み直さないために使う（[`RunStore::due_approvals`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DueApprovalCursor {
+    pub timeout_at: DateTime<Utc>,
+    pub approval_id: Uuid,
+}
+
+/// 期限の来た承認の 1 ページ（[`RunStore::due_approvals`]）。
+#[derive(Debug, Clone)]
+pub struct DueApprovalPage {
+    pub approvals: Vec<PendingApproval>,
+    /// 続きがあり得るときの位置（ページが埋まった・読めない購読を飛ばした行も含めて数える）。
+    pub next: Option<DueApprovalCursor>,
 }
 
 /// 確定した承認（監査の材料）。
@@ -375,7 +394,7 @@ const PENDING_FROM: &str = "SELECT a.tenant_id, r.org, a.run_id, a.step_path, r.
             a.workflow_id, a.table_id, a.from_state, a.suspend_rev, \
             (SELECT count(*) FROM workflow_approval_assignee x \
               WHERE x.tenant_id = a.tenant_id AND x.approval_id = a.approval_id) AS assignees, \
-            w.spec \
+            w.spec, w.timeout_at AS due_at, a.approval_id \
      FROM workflow_approval a \
      JOIN workflow_run r ON r.tenant_id = a.tenant_id AND r.run_id = a.run_id AND r.status = 'running' \
      JOIN step_execution s ON s.tenant_id = a.tenant_id AND s.run_id = a.run_id \
@@ -403,29 +422,51 @@ impl RunStore {
             .collect())
     }
 
-    /// 期限の来た保留中の承認（期限の古い順）。期限切れにする前に、実行主体がまだテーブルを読めるかを
-    /// 確かめる材料（D-62・読めなければ期限の出口へ進めずに run を失敗させる）。
+    /// 期限の来た保留中の承認（期限・承認 id の昇順で `after` より後ろ）。期限切れにする前に、実行主体がまだ
+    /// テーブルを読めるかを確かめる材料（D-62・読めなければ期限の出口へ進めずに run を失敗させる）。
+    ///
+    /// 決められずに残った承認を同じ走査で読み直さないよう、続きは `next` の位置から読む（期限の古い承認が
+    /// 確かめられないまま先頭に居座っても、後ろの承認の回収を止めない）。
     pub async fn due_approvals(
         &self,
         now: DateTime<Utc>,
         tenant_scope: Option<&str>,
+        after: Option<DueApprovalCursor>,
         limit: i64,
-    ) -> Result<Vec<PendingApproval>, RunStoreError> {
+    ) -> Result<DueApprovalPage, RunStoreError> {
+        #[derive(sqlx::FromRow)]
+        struct DueRow {
+            #[sqlx(flatten)]
+            pending: PendingRow,
+            due_at: DateTime<Utc>,
+            approval_id: Uuid,
+        }
         let sql = format!(
             "{PENDING_FROM} AND w.timeout_at <= $1 AND (($2::text IS NULL) OR (a.tenant_id = $2)) \
-             ORDER BY w.timeout_at LIMIT $3"
+               AND (($3::timestamptz IS NULL) OR (w.timeout_at, a.approval_id) > ($3, $4)) \
+             ORDER BY w.timeout_at, a.approval_id LIMIT $5"
         );
-        let rows: Vec<PendingRow> = sqlx::query_as(&sql)
+        let rows: Vec<DueRow> = sqlx::query_as(&sql)
             .bind(now)
             .bind(tenant_scope)
+            .bind(after.map(|c| c.timeout_at))
+            .bind(after.map_or(Uuid::nil(), |c| c.approval_id))
             .bind(limit)
             .fetch_all(&self.db)
             .await
             .map_err(map_db)?;
-        Ok(rows
-            .into_iter()
-            .filter_map(PendingRow::into_pending)
-            .collect())
+        let full = i64::try_from(rows.len()).is_ok_and(|n| n >= limit);
+        let next = rows.last().filter(|_| full).map(|r| DueApprovalCursor {
+            timeout_at: r.due_at,
+            approval_id: r.approval_id,
+        });
+        Ok(DueApprovalPage {
+            approvals: rows
+                .into_iter()
+                .filter_map(|r| r.pending.into_pending())
+                .collect(),
+            next,
+        })
     }
 
     /// 行（テーブル, 行）に束縛した保留中の承認（行の削除で取り下げる材料）。
@@ -505,10 +546,10 @@ impl RunStore {
         .await
     }
 
-    /// 期限の来た承認を期限切れにする（監査の材料を返す・[`Self::expire_due_waits`] より先に呼ぶ）。
+    /// 期限の来た承認を、実行主体を確かめずに期限切れにする（監査の材料を返す・エンジンの結合テスト用）。
     ///
-    /// `expire_due_waits` も承認の期限切れを同じ経路で確定するので、こちらを呼ばなくても承認は期限で
-    /// 流れる（こちらは確定したものを返すだけの違い）。
+    /// 本番の tick は api の `expire_due_approvals`（実行主体がまだテーブルを読めるかを確かめてから決める・D-62）
+    /// を使う。[`Self::expire_due_waits`] は承認を扱わない（確かめていない承認を timeout の出口へ進めない）。
     pub async fn expire_due_approvals(
         &self,
         now: DateTime<Utc>,

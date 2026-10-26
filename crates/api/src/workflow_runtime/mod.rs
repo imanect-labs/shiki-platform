@@ -30,7 +30,9 @@ use workflow_engine::{
 
 pub use ports::ProdNodePorts;
 pub use relay::{relay_events, retry_event_firings, RelayDeps};
-pub use relay_approval::expire_due_approvals;
+pub use relay_approval::{
+    expire_due_approvals, expire_due_approvals_within, DueApprovalSweep, DueSweepLimits,
+};
 
 /// ワークフロー実行時の設定（既定は無効・compose/e2e で有効化）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -450,22 +452,25 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                         tracing::warn!(error = %e, "waiting_timer 起床でエラー");
                     }
                     // 承認の期限切れ（決着の監査を残す・GAP-08）。実行主体が失権した承認は期限の出口へ進めずに
-                    // run を失敗させる（D-62）。確かめが一時障害で終わったら、確かめないまま承認を期限の出口へ
-                    // 進めないよう、この tick の wait timeout 回収（承認も期限切れにする）を見送る。
+                    // run を失敗させる（D-62）。確かめが一時障害で終わった承認だけを次の tick に残し、ほかの
+                    // 承認（ほかのテナントの分を含む）は止めない。
                     match expire_due_approvals(
                         &tick_db, &tick_runs, &tick_data, &tick_fsms, now, None,
                     )
                     .await
                     {
-                        Ok(()) => {
-                            if let Err(e) = tick_runs.expire_due_waits(now, None).await {
-                                tracing::warn!(error = %e, "wait timeout 回収でエラー");
-                            }
-                        }
-                        Err(e) => tracing::warn!(
-                            error = %e,
-                            "承認の期限切れの回収でエラー（wait timeout の回収も次の tick に回す）"
+                        Ok(s) if s.deferred > 0 || s.more => tracing::warn!(
+                            resolved = s.resolved,
+                            deferred = s.deferred,
+                            more = s.more,
+                            "承認の期限切れの回収で決めずに残した承認があります（次の tick で続ける）"
                         ),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "承認の期限切れの回収でエラー"),
+                    }
+                    // wait(event) の timeout の回収（承認は扱わない・上の回収が滞っても毎回進める）。
+                    if let Err(e) = tick_runs.expire_due_waits(now, None).await {
+                        tracing::warn!(error = %e, "wait timeout 回収でエラー");
                     }
                     // ユーザーキャンセルのドレイン回収（running 完走後の terminal 化・Task 10.14）。
                     if let Err(e) = tick_runs.drain_cancel_requested(None).await {

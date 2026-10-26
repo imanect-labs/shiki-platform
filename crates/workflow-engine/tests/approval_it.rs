@@ -691,7 +691,7 @@ async fn expired_approvals_take_the_timeout_port() {
     );
     assert_eq!(out.unwrap()["decision"], "timeout");
     assert_eq!(env.ledger(run).await.0, "expired");
-    // 期限の回収（承認以外も見る口）は確定済みの承認を二度扱わない。
+    // wait の timeout の回収（承認以外の口）は承認を扱わない（確定済みの承認を二度扱うこともない）。
     assert_eq!(
         env.runs
             .expire_due_waits(later, Some(&env.tenant))
@@ -699,6 +699,64 @@ async fn expired_approvals_take_the_timeout_port() {
             .unwrap(),
         0
     );
+}
+
+/// wait の timeout の回収（承認以外の口）は承認を期限切れにしない（実行主体を確かめる api の回収だけが決める・
+/// D-62）。期限の来た承認は期限・承認 id の順に、続きの位置から読める（決められずに残った承認を、同じ回収の
+/// 次のページで読み直さない）。
+#[tokio::test]
+async fn due_approvals_are_left_to_the_checked_sweep_and_page_by_keyset() {
+    let Some(pool) = setup().await else { return };
+    let env = Env::new(pool).await;
+    let first = env.start(&approval_ir(Some(60))).await;
+    let second = env.start(&approval_ir(Some(60))).await;
+    let later = chrono::Utc::now() + chrono::Duration::seconds(120);
+    assert_eq!(
+        env.runs
+            .expire_due_waits(later, Some(&env.tenant))
+            .await
+            .unwrap(),
+        0,
+        "承認の購読は wait の timeout の回収で扱わない"
+    );
+    for run in [first, second] {
+        assert_eq!(env.step(run, "ok").await.0, StepStatus::WaitingEvent);
+        assert_eq!(env.ledger(run).await.0, "pending");
+    }
+
+    let page = env
+        .runs
+        .due_approvals(later, Some(&env.tenant), None, 1)
+        .await
+        .unwrap();
+    assert_eq!(page.approvals.len(), 1);
+    let next = page.next.expect("ページが埋まったので続きがある");
+    let rest = env
+        .runs
+        .due_approvals(later, Some(&env.tenant), Some(next), 1)
+        .await
+        .unwrap();
+    assert_eq!(rest.approvals.len(), 1);
+    assert_ne!(
+        rest.approvals[0].wait.approval_id, page.approvals[0].wait.approval_id,
+        "読んだ承認を続きで読み直さない"
+    );
+    let tail = env
+        .runs
+        .due_approvals(later, Some(&env.tenant), rest.next, 1)
+        .await
+        .unwrap();
+    assert!(tail.approvals.is_empty());
+    assert!(tail.next.is_none());
+    let all = env
+        .runs
+        .due_approvals(later, Some(&env.tenant), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(all.approvals.len(), 2);
+    assert!(all.next.is_none(), "ページが埋まらなければ続きは無い");
+    env.forget_run(first).await;
+    env.forget_run(second).await;
 }
 
 /// run の取消で台帳は cancelled になり、受信箱から消える。

@@ -9,7 +9,8 @@
 //! - **行の削除**: outbox の削除（`data.record.changed` / delete）を受けたら、その行に束縛した保留中の承認を、
 //!   実行主体の `data_get` が NotFound であることを確かめて取り下げる（見えなくなっただけでは取り下げない）。
 //! - **期限**（[`expire_due_approvals`]・scheduler の tick）: 期限の来た承認を期限切れにする（on_timeout で
-//!   timeout の出口か run の失敗）。その前に実行主体がまだテーブルを読めるかを確かめる。
+//!   timeout の出口か run の失敗）。その前に実行主体がまだテーブルを読めるかを確かめる。承認の期限切れを決めるのは
+//!   ここだけで、確かめが一時障害で終わった承認は決めずに残す（ほかの承認・ほかの wait の回収は止めない）。
 //!
 //! **実行主体の失権**（D-62）: 受付の突合・判断の遷移を受けた relay・期限の 3 つとも、実行主体の委譲・テーブルの
 //! 権限が停止の後に外れていたら（委譲が無い・テーブル単位の NotFound / Forbidden・user 主体の本人の失権を含む）、
@@ -25,7 +26,8 @@ use storage::audit::{AuditAction, AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
 pub(super) use workflow_engine::approval::ACTOR_UNAVAILABLE;
 use workflow_engine::{
-    ApprovalResolution, ApprovalWait, EventWaitSubscriber, ExecCtx, ResolvedApproval, RunStore,
+    ApprovalResolution, ApprovalWait, EventWaitSubscriber, ExecCtx, PendingApproval,
+    ResolvedApproval, RunStore,
 };
 
 use super::auth::auth_ctx;
@@ -117,10 +119,12 @@ pub(super) async fn resolve(
     res: &ApprovalResolution,
     reason: Option<&str>,
 ) -> Result<(), anyhow::Error> {
-    resolve_on(deps.db, deps.runs, subscriber, wait, res, reason).await
+    resolve_on(deps.db, deps.runs, subscriber, wait, res, reason)
+        .await
+        .map(|_| ())
 }
 
-/// [`resolve`] の本体（relay の外の tick からも呼ぶ）。
+/// [`resolve`] の本体（relay の外の tick からも呼ぶ・戻り値 = 起こしたか）。
 async fn resolve_on(
     db: &sqlx::PgPool,
     runs: &RunStore,
@@ -128,23 +132,24 @@ async fn resolve_on(
     wait: &ApprovalWait,
     res: &ApprovalResolution,
     reason: Option<&str>,
-) -> Result<(), anyhow::Error> {
+) -> Result<bool, anyhow::Error> {
     // 監査には確定した status を書く（期限切れのつもりでも、判断 API が期限内に受け付けた判断で決まり得る）。
-    if let Some(status) = runs.resolve_approval(subscriber, wait, res).await? {
-        audit_resolved_because(
-            db,
-            &ResolvedApproval {
-                tenant_id: subscriber.tenant_id.clone(),
-                org: subscriber.org.clone(),
-                approval_id: wait.approval_id,
-                run_id: subscriber.run_id,
-                status: status.to_string(),
-            },
-            reason,
-        )
-        .await;
-    }
-    Ok(())
+    let Some(status) = runs.resolve_approval(subscriber, wait, res).await? else {
+        return Ok(false);
+    };
+    audit_resolved_because(
+        db,
+        &ResolvedApproval {
+            tenant_id: subscriber.tenant_id.clone(),
+            org: subscriber.org.clone(),
+            approval_id: wait.approval_id,
+            run_id: subscriber.run_id,
+            status: status.to_string(),
+        },
+        reason,
+    )
+    .await;
+    Ok(true)
 }
 
 /// 受付の突合（上のモジュールの説明）。
@@ -259,8 +264,30 @@ pub(super) async fn fail_unavailable(
 }
 
 /// 期限の来た承認を 1 回に読む件数と、1 tick に読む回数の上限（超えた分は次の tick）。
-const DUE_BATCH: i64 = 256;
-const DUE_PAGES: i64 = 16;
+const DUE_LIMITS: DueSweepLimits = DueSweepLimits {
+    batch: 256,
+    pages: 16,
+};
+
+/// 期限の回収の 1 回に読む件数と回数の上限（[`expire_due_approvals_within`]）。
+#[derive(Debug, Clone, Copy)]
+pub struct DueSweepLimits {
+    /// 1 回に読む件数。
+    pub batch: i64,
+    /// 1 回の回収で読む回数。
+    pub pages: usize,
+}
+
+/// 期限の回収の結果（tick が警告に残す）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DueApprovalSweep {
+    /// 決着させた承認の数。
+    pub resolved: usize,
+    /// 確かめ・確定が一時障害で終わり、決めずに残した承認の数（次の tick で確かめ直す）。
+    pub deferred: usize,
+    /// 上限まで読んでも続きがあった（残りは次の tick）。
+    pub more: bool,
+}
 
 /// 承認の期限の回収（scheduler の tick・結合テストも同じ口を呼ぶ）。
 ///
@@ -269,9 +296,10 @@ const DUE_PAGES: i64 = 16;
 /// で失敗させ（受付の突合・判断の遷移を受けた relay と揃える・D-62）、読めるなら期限切れにする（on_timeout で
 /// timeout の出口か run の失敗）。どちらも決着の監査を書く。
 ///
-/// `expire_due_waits` より先に呼ぶ（あちらも承認を期限切れにするので、確かめていない承認が timeout の出口へ進む）。
-/// 確かめが一時障害で終わったとき・1 tick の上限を超えたときは `Err` を返す。呼び出し側はその tick の
-/// `expire_due_waits` を見送る（確かめないまま期限の出口へ進めない・次の tick で続ける）。
+/// 承認の期限切れはここだけが決める（`expire_due_waits` は承認を扱わない）。1 件の確かめ・確定が一時障害で
+/// 終わっても、その承認だけを決めずに残し（期限の出口へは進めない・次の tick で確かめ直す）、ほかの承認
+/// （ほかのテナントの分を含む）の回収を続ける。決められずに残った承認は、同じ回収の次のページで読み直さない
+/// （期限・承認 id の位置から続きを読む）。`Err` は期限の来た承認を読めなかったときだけ。
 pub async fn expire_due_approvals(
     db: &sqlx::PgPool,
     runs: &RunStore,
@@ -279,44 +307,76 @@ pub async fn expire_due_approvals(
     fsms: &FsmStore,
     now: chrono::DateTime<chrono::Utc>,
     tenant_scope: Option<&str>,
-) -> Result<(), anyhow::Error> {
+) -> Result<DueApprovalSweep, anyhow::Error> {
+    expire_due_approvals_within(db, runs, data, fsms, now, tenant_scope, DUE_LIMITS).await
+}
+
+/// [`expire_due_approvals`] を、1 回に読む件数と回数の上限を決めて呼ぶ（結合テストが小さなページで呼ぶ）。
+#[doc(hidden)]
+pub async fn expire_due_approvals_within(
+    db: &sqlx::PgPool,
+    runs: &RunStore,
+    data: &DataStore,
+    fsms: &FsmStore,
+    now: chrono::DateTime<chrono::Utc>,
+    tenant_scope: Option<&str>,
+    limits: DueSweepLimits,
+) -> Result<DueApprovalSweep, anyhow::Error> {
     let port = DataPort { data, fsms, db };
-    for _ in 0..DUE_PAGES {
-        let due = runs.due_approvals(now, tenant_scope, DUE_BATCH).await?;
-        let last_page = i64::try_from(due.len()).is_ok_and(|n| n < DUE_BATCH);
-        for p in due {
-            let ec = exec_ctx(&p.subscriber);
-            let lost = match port.actor(&ec, p.table_id, Relation::Viewer).await {
-                Err(e) if !e.retryable => Ok(true),
-                Err(e) => Err(format!("{}: {}", e.code, e.message)),
-                Ok(a) => table_unreadable(&a, p.table_id)
-                    .await
-                    .map_err(|e| e.to_string()),
-            };
-            let (res, reason) = match lost {
-                Ok(true) => (
-                    ApprovalResolution::actor_unavailable(),
-                    Some(ACTOR_UNAVAILABLE),
-                ),
-                Ok(false) => (ApprovalResolution::expired(p.wait.on_timeout), None),
-                // 確かめられないまま期限切れにすると、失権した実行主体で後続が走り得る。次の tick で確かめ直す。
+    let mut sweep = DueApprovalSweep::default();
+    let mut after = None;
+    for _ in 0..limits.pages {
+        let page = runs
+            .due_approvals(now, tenant_scope, after, limits.batch)
+            .await?;
+        for p in page.approvals {
+            match expire_one(db, runs, &port, &p).await {
+                Ok(true) => sweep.resolved += 1,
+                Ok(false) => {}
+                // 確かめられないまま期限切れにすると、失権した実行主体で後続が走り得る。この承認だけを残し、
+                // 次の tick で確かめ直す（ほかの承認の回収は止めない）。
                 Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "承認 {} の期限の前の確かめに失敗: {e}",
-                        p.wait.approval_id
-                    ));
+                    sweep.deferred += 1;
+                    tracing::warn!(
+                        error = %e,
+                        approval_id = %p.wait.approval_id,
+                        tenant = %p.subscriber.tenant_id,
+                        "承認の期限の前の確かめに失敗（この承認は次の tick で確かめ直す）"
+                    );
                 }
-            };
-            resolve_on(db, runs, &p.subscriber, &p.wait, &res, reason).await?;
+            }
         }
-        if last_page {
-            return Ok(());
+        match page.next {
+            Some(next) => after = Some(next),
+            None => return Ok(sweep),
         }
     }
-    Err(anyhow::anyhow!(
-        "期限の来た承認が 1 tick の上限（{} 件）を超えました（次の tick で続ける）",
-        DUE_BATCH * DUE_PAGES
-    ))
+    sweep.more = true;
+    Ok(sweep)
+}
+
+/// 期限の来た承認 1 件を、実行主体を確かめてから決める（戻り値 = 決着させたか・一時障害は `Err`）。
+async fn expire_one(
+    db: &sqlx::PgPool,
+    runs: &RunStore,
+    port: &DataPort<'_>,
+    p: &PendingApproval,
+) -> Result<bool, anyhow::Error> {
+    let ec = exec_ctx(&p.subscriber);
+    let lost = match port.actor(&ec, p.table_id, Relation::Viewer).await {
+        Err(e) if !e.retryable => true,
+        Err(e) => return Err(anyhow::anyhow!("{}: {}", e.code, e.message)),
+        Ok(a) => table_unreadable(&a, p.table_id).await?,
+    };
+    let (res, reason) = if lost {
+        (
+            ApprovalResolution::actor_unavailable(),
+            Some(ACTOR_UNAVAILABLE),
+        )
+    } else {
+        (ApprovalResolution::expired(p.wait.on_timeout), None)
+    };
+    resolve_on(db, runs, &p.subscriber, &p.wait, &res, reason).await
 }
 
 /// 実行主体がテーブルそのものを読めないか（テーブル単位の NotFound / Forbidden）。行が見えないだけなら偽。

@@ -1511,6 +1511,119 @@ async fn due_approvals_of_an_unavailable_actor_fail_instead_of_timing_out() {
     env.cleanup().await;
 }
 
+/// 期限の来た承認の 1 件の確かめが一時障害で終わっても、その承認だけを決めずに残し（期限の出口へは進めない）、
+/// 後ろに並ぶ承認の回収を止めない。決めずに残した承認は同じ回収の次のページで読み直さない。wait の timeout の
+/// 回収（承認以外の口）も、確かめていない承認を期限切れにしない。障害が解ければ次の回収で期限切れになる。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transiently_unverifiable_due_approval_does_not_hold_up_the_rest() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let (stuck_table, kept_table) = (env.expense_table().await, env.expense_table().await);
+    let stuck_wf = env.enable(stuck_table, Some(3600)).await;
+    let kept_wf = env.enable(kept_table, Some(3600)).await;
+    let stuck_record = env.submit(stuck_table, "出張の精算", &env.bob).await;
+    let kept_record = env.submit(kept_table, "会議室の予約", &env.bob).await;
+    env.settle().await;
+    let stuck = env.run_of(stuck_wf, stuck_record).await;
+    let kept = env.run_of(kept_wf, kept_record).await;
+    assert_eq!(env.step(stuck, "ok").await.0, "waiting_event");
+    assert_eq!(env.step(kept, "ok").await.0, "waiting_event");
+
+    // 確かめられない承認を先頭に並べる（期限の古い順に読む）。
+    for (run, ago) in [(stuck, "2 minutes"), (kept, "1 minute")] {
+        sqlx::query(&format!(
+            "UPDATE wait_subscription SET timeout_at = now() - interval '{ago}' \
+             WHERE tenant_id = $1 AND run_id = $2 AND NOT fired"
+        ))
+        .bind(&env.tenant)
+        .bind(run)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    }
+    // そのテーブルの定義を今の型で読めなくする（data は Internal＝一時障害を返し続ける）。
+    let (schema, version): (Value, i64) = sqlx::query_as(
+        "SELECT schema, schema_version FROM data_table WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(stuck_table)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    let put_schema = |schema: Value, version: i64| {
+        sqlx::query(
+            "UPDATE data_table SET schema = $3, schema_version = $4 WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(env.tenant.clone())
+        .bind(stuck_table)
+        .bind(schema)
+        .bind(version)
+        .execute(&env.pool)
+    };
+    put_schema(json!("壊れた定義"), version + 1000)
+        .await
+        .unwrap();
+
+    // 1 件ずつのページで読んでも、確かめられない承認を読み直さずに後ろの承認まで進む。
+    let sweep = api::workflow_runtime::expire_due_approvals_within(
+        &env.pool,
+        &env.runs,
+        &env.data,
+        &env.fsms,
+        chrono::Utc::now(),
+        Some(env.tenant.as_str()),
+        api::workflow_runtime::DueSweepLimits { batch: 1, pages: 4 },
+    )
+    .await
+    .expect("1 件の一時障害で回収全体を止めない");
+    assert_eq!(
+        sweep,
+        api::workflow_runtime::DueApprovalSweep {
+            resolved: 1,
+            deferred: 1,
+            more: false,
+        }
+    );
+    let (st, ports, _) = env.step(kept, "ok").await;
+    assert_eq!(
+        (st.as_str(), ports),
+        ("succeeded", vec!["timeout".to_string()])
+    );
+    assert_eq!(env.approval_of(kept).await.1, "expired");
+    // 確かめられなかった承認は決めずに残り、wait の timeout の回収も期限切れにしない。
+    env.runs
+        .expire_due_waits(chrono::Utc::now(), Some(env.tenant.as_str()))
+        .await
+        .unwrap();
+    assert_eq!(env.step(stuck, "ok").await.0, "waiting_event");
+    let (stuck_id, status) = env.approval_of(stuck).await;
+    assert_eq!(status, "pending");
+    assert!(env.resolve_audit(stuck_id).await.is_none());
+
+    // 障害が解ければ、次の回収で期限切れになる。
+    put_schema(schema, version).await.unwrap();
+    let sweep = api::workflow_runtime::expire_due_approvals(
+        &env.pool,
+        &env.runs,
+        &env.data,
+        &env.fsms,
+        chrono::Utc::now(),
+        Some(env.tenant.as_str()),
+    )
+    .await
+    .unwrap();
+    assert_eq!((sweep.resolved, sweep.deferred), (1, 0));
+    let (st, ports, _) = env.step(stuck, "ok").await;
+    assert_eq!(
+        (st.as_str(), ports),
+        ("succeeded", vec!["timeout".to_string()])
+    );
+    assert_eq!(env.approval_of(stuck).await.1, "expired");
+    env.forget_runs(stuck_wf).await;
+    env.forget_runs(kept_wf).await;
+    env.cleanup().await;
+}
+
 impl Env {
     /// 受付済みの申請（下書き → 申請 → 受付・alice）と、それを承認に掛ける対話のワークフロー（alice が起動）。
     async fn interactive_approval(&self, table: Uuid) -> Uuid {
