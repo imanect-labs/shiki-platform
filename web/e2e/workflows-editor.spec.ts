@@ -1133,6 +1133,22 @@ test("保存時の警告: 閉じの無い { と、空の SQL を知らせる（D
   await expect(page.getByTestId("workflow-warnings")).toContainText("確認が必要な設定 2 件");
 });
 
+test("実行の前の確認: 指示が空のままでは実行せず、理由を知らせる（D-43）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const id = await createLlmFlow(page, {});
+  await page.goto(`/workflows/${id}`);
+  await expect(page.locator(".react-flow__node").first()).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "実行", exact: true }).click();
+  await page.getByRole("button", { name: "実行する" }).click();
+  await expect(page.getByText("実行に失敗しました").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/「AI への指示」が空です/).first()).toBeVisible();
+  // run は作られない（実行履歴へ移らない）。
+  await expect(page).toHaveURL(new RegExp(`/workflows/${id}$`));
+  const runs = (await (await page.request.get(`/api/workflows/${id}/runs`)).json()) as { items: unknown[] };
+  expect(runs.items).toHaveLength(0);
+});
+
 test("キャンバス: 短いつながりでは、出口のラベルが尻尾の＋に重ならない（BUG-41）", async ({ page }) => {
   test.setTimeout(120_000);
   await loginViaKeycloak(page);
