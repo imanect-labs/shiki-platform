@@ -269,12 +269,20 @@ pub fn extract_action_blocks(markdown: &str) -> Vec<ActionBlock> {
 /// 閉じているか・入れ子（引用・箇条書きの中）か・エラーのある図かを問わず書き換える（操作を持つ図を偽のボタン
 /// として見せない・束ねていない表を描かない）。他の言語のコードブロックの中の行も書き換えるが、文字のまま
 /// 見せる場所なので害は無い（安全側）。正規表現に頼らず行頭を読む（失敗しても素通りさせない）。
+///
+/// 行は CommonMark と同じく `\r\n`・`\r`・`\n` のどれでも区切り（区切りはそのまま残す）、情報文字列は
+/// 文字参照とバックスラッシュエスケープを解いてから言語を読む（[`fence_language_is_figure`]）。
 pub fn neutralize_fences(markdown: &str) -> String {
     let mut out = String::with_capacity(markdown.len());
-    for (i, line) in markdown.split('\n').enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
+    let mut rest = markdown;
+    loop {
+        let (line, eol, next) = match rest.find(['\r', '\n']) {
+            None => (rest, "", None),
+            Some(k) => {
+                let len = if rest[k..].starts_with("\r\n") { 2 } else { 1 };
+                (&rest[..k], &rest[k..k + len], Some(&rest[k + len..]))
+            }
+        };
         match fence_to_neutralize(line) {
             Some(end) => {
                 out.push_str(&line[..end]);
@@ -282,8 +290,12 @@ pub fn neutralize_fences(markdown: &str) -> String {
             }
             None => out.push_str(line),
         }
+        out.push_str(eol);
+        match next {
+            Some(n) => rest = n,
+            None => return out,
+        }
     }
-    out
 }
 
 /// 書き換えるフェンスの開きなら、フェンスの文字の終わりの位置（その後ろの情報文字列を `text` にする）。
@@ -320,13 +332,85 @@ fn fence_to_neutralize(line: &str) -> Option<usize> {
         return None;
     }
     let end = i + run;
-    let lang: String = line[end..]
-        .trim_start()
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-        .collect::<String>()
-        .to_ascii_lowercase();
-    matches!(lang.as_str(), "ui" | "yui" | "data_grid" | "data-grid").then_some(end)
+    fence_language_is_figure(&line[end..]).then_some(end)
+}
+
+/// フェンスの情報文字列（フェンスの文字の後ろ）が、図・表の言語（`ui`・`yui`・`data_grid`・`data-grid`）か。
+///
+/// 画面（micromark）と同じく、最初の語（空白・タブまで）の文字参照（`&#105;`・`&#x69;`）とバックスラッシュ
+/// エスケープ（`\_`）を解いてから、`language-<語>` のクラス名として読む。解いた語に空白が入ると、クラス名の
+/// 後ろの組（`x&#32;language-ui`）も画面では言語として読まれるので、組ごとに見る。名前の文字参照（`&colon;`
+/// など）は表を持たないので、含むなら図として扱う（失敗しても素通りさせない・安全側）。大文字小文字は問わない。
+fn fence_language_is_figure(info: &str) -> bool {
+    let word = info
+        .trim_start_matches([' ', '\t'])
+        .split([' ', '\t'])
+        .next()
+        .unwrap_or_default();
+    let Some(lang) = decode_info_word(word) else {
+        return true;
+    };
+    let class = format!("language-{lang}").to_lowercase();
+    class
+        .split(|c: char| c.is_whitespace() || c == '\u{feff}')
+        .filter_map(|t| t.strip_prefix("language-"))
+        .any(|t| {
+            let head: String = t
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                .collect();
+            matches!(head.as_str(), "ui" | "yui" | "data_grid" | "data-grid")
+        })
+}
+
+/// 情報文字列の語の文字参照（数値）とバックスラッシュエスケープを CommonMark と同じく解く。名前の文字参照を
+/// 含むなら `None`（解けない・呼び出し側は図として扱う）。
+fn decode_info_word(word: &str) -> Option<String> {
+    let mut out = String::with_capacity(word.len());
+    let mut rest = word;
+    while let Some(c) = rest.chars().next() {
+        let after = &rest[c.len_utf8()..];
+        if c == '\\' {
+            // ASCII の句読点だけがエスケープになる（ほかはバックスラッシュのまま）。
+            if let Some(n) = after.chars().next().filter(char::is_ascii_punctuation) {
+                out.push(n);
+                rest = &after[1..];
+                continue;
+            }
+        } else if c == '&' {
+            let semi = after.find(';').filter(|k| *k <= 32);
+            let body = semi.map(|k| &after[..k]);
+            if let Some(ch) = body.and_then(numeric_reference) {
+                out.push(ch);
+                rest = &after[semi.unwrap_or_default() + 1..];
+                continue;
+            }
+            let named = body.is_some_and(|b| {
+                b.starts_with(|c: char| c.is_ascii_alphabetic())
+                    && b.chars().all(|c| c.is_ascii_alphanumeric())
+            });
+            if named {
+                return None;
+            }
+        }
+        out.push(c);
+        rest = after;
+    }
+    Some(out)
+}
+
+/// 数値の文字参照の本体（`#105`・`#x69`）を解く（桁数の上限・0 と不正な値は U+FFFD・CommonMark と同じ）。
+fn numeric_reference(body: &str) -> Option<char> {
+    let num = body.strip_prefix('#')?;
+    let (digits, radix, max) = match num.strip_prefix(['x', 'X']) {
+        Some(hex) => (hex, 16, 6),
+        None => (num, 10, 7),
+    };
+    if digits.is_empty() || digits.len() > max || !digits.chars().all(|c| c.is_digit(radix)) {
+        return None;
+    }
+    let v = u32::from_str_radix(digits, radix).ok()?;
+    Some(char::from_u32(v).filter(|_| v != 0).unwrap_or('\u{fffd}'))
 }
 
 #[cfg(test)]
@@ -349,6 +433,65 @@ mod tests {
             "``ui``\n```rust\nfn a() {}\n```"
         );
         assert_eq!(neutralize_fences("```uix\nx\n```"), "```uix\nx\n```");
+    }
+
+    /// 行末は \r\n・\r・\n のどれでも（CommonMark と同じ）。区切りはそのまま残す。
+    #[test]
+    fn every_line_ending_is_a_line_ending() {
+        let figure = "button 承認する -> workflow 経費";
+        for eol in ["\r", "\r\n", "\n"] {
+            let md = format!("結果{eol}```ui:app{eol}app 申請{eol}{figure}{eol}```{eol}");
+            assert_eq!(
+                neutralize_fences(&md),
+                format!("結果{eol}```text{eol}app 申請{eol}{figure}{eol}```{eol}"),
+                "{eol:?}"
+            );
+        }
+        // 開きのフェンスの前だけが \r の混在の形も書き換える。
+        assert_eq!(
+            neutralize_fences("結果\r```ui:app\napp 申請\n```"),
+            "結果\r```text\napp 申請\n```"
+        );
+    }
+
+    /// 情報文字列は文字参照・バックスラッシュエスケープを解いてから読む（画面の言語名と同じ）。
+    #[test]
+    fn info_strings_are_decoded_before_the_language_is_read() {
+        for info in [
+            "u&#105;:app",
+            "&#x75;&#X69;",
+            "&#121;ui",
+            "data\\_grid",
+            "data&#95;grid",
+            "d&#97;ta\\-grid",
+            "UI",
+            "x&#32;language-ui",
+            "x&#160;language-yui:ask",
+            "u&#105;&colon;app",
+            "&ThinSpace;language-ui",
+        ] {
+            assert_eq!(
+                neutralize_fences(&format!("```{info}\napp 申請\n```")),
+                "```text\napp 申請\n```",
+                "{info}"
+            );
+        }
+        for info in [
+            "u\\i",
+            "&#117;ix",
+            "rust",
+            "&#32;ui",
+            "u&#1234567;",
+            "&#x;ui",
+            "&#;ui",
+            "ui-x",
+        ] {
+            let md = format!("```{info}\nx\n```");
+            assert_eq!(neutralize_fences(&md), md, "{info}");
+        }
+        assert_eq!(numeric_reference("#0"), Some('\u{fffd}'));
+        assert_eq!(numeric_reference("#xD800"), Some('\u{fffd}'));
+        assert_eq!(numeric_reference("#12345678"), None);
     }
 
     #[test]
