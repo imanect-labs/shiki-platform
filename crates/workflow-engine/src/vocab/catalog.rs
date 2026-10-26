@@ -129,8 +129,28 @@ pub struct NodeCatalogEntry {
     pub timeout_default_sec: Option<u32>,
     /// step timeout の上限秒。
     pub timeout_max_sec: Option<u32>,
-    /// 出力の形（TS 風の表記・後続が `$from: nodes.<id>.output` の path で参照する）。予約語彙は空文字。
-    pub output_shape: &'static str,
+    /// 出力の形（TS 風の表記・人と AI が読む）。[`Self::output_fields`] から作る（項目に分けられない形は文）。
+    /// 予約語彙は空文字。
+    pub output_shape: String,
+    /// 出力の最上位の項目（後続が `$from: nodes.<id>.output` の `/<name>` で読む・右パネルの参照の候補）。
+    /// 項目の組でない出力（入力をそのまま通す・script の戻り値など）と予約語彙は空（D-42）。
+    pub output_fields: &'static [OutputField],
+}
+
+/// 出力の最上位の 1 項目（カタログの単一定義・D-42）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub struct OutputField {
+    /// 項目名（path は `/<name>`）。
+    pub name: &'static str,
+    /// 型（TS 風の表記・入れ子の形も含む）。
+    #[serde(rename = "type")]
+    #[ts(rename = "type")]
+    pub ty: &'static str,
+    /// 無いことがある（表記は `name?:`）。
+    pub optional: bool,
+    /// 補足（いつ入るか・何が入るか。空なら無し・表記は型の後ろの（…））。
+    pub note: &'static str,
 }
 
 /// カタログ全量（NodeType::ALL と同順・exhaustive match で漏れを構造的に防ぐ）。
@@ -444,6 +464,7 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         _ => (None, None),
     };
 
+    let shape = output_shape(nt);
     NodeCatalogEntry {
         node_type: nt,
         category,
@@ -458,8 +479,86 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         idempotency,
         timeout_default_sec,
         timeout_max_sec,
-        output_shape: output_shape(nt),
+        output_shape: shape.render(),
+        output_fields: shape.fields(),
     }
+}
+
+/// 出力の形（項目の組か、項目に分けられない形の文）。
+enum Shape {
+    /// 項目の組（前置き・最上位の項目・後置き）。表記は `前置き{ a: T, b?: U（補足） }後置き`。
+    Fields(&'static str, &'static [OutputField], &'static str),
+    /// 項目に分けられない形（入力をそのまま通す・戻り値そのものなど）。予約語彙は空文字。
+    Prose(&'static str),
+}
+
+impl Shape {
+    /// 人と AI が読む TS 風の表記（項目の組は項目から作る・手書きの文字列を別に持たない）。
+    fn render(&self) -> String {
+        match self {
+            Shape::Prose(text) => (*text).to_string(),
+            Shape::Fields(prefix, fields, suffix) => {
+                let items: Vec<String> = fields
+                    .iter()
+                    .map(|f| {
+                        let opt = if f.optional { "?" } else { "" };
+                        let note = if f.note.is_empty() {
+                            String::new()
+                        } else {
+                            format!("（{}）", f.note)
+                        };
+                        format!("{}{opt}: {}{note}", f.name, f.ty)
+                    })
+                    .collect();
+                format!("{prefix}{{ {} }}{suffix}", items.join(", "))
+            }
+        }
+    }
+
+    fn fields(&self) -> &'static [OutputField] {
+        match self {
+            Shape::Fields(_, fields, _) => fields,
+            Shape::Prose(_) => &[],
+        }
+    }
+}
+
+/// 出力の項目 1 つ（`field!("名前", "型")`・`field!("名前", "型", "補足")`）。`opt!` は省略されうる項目。
+macro_rules! field {
+    ($name:literal, $ty:literal) => {
+        OutputField {
+            name: $name,
+            ty: $ty,
+            optional: false,
+            note: "",
+        }
+    };
+    ($name:literal, $ty:literal, $note:literal) => {
+        OutputField {
+            name: $name,
+            ty: $ty,
+            optional: false,
+            note: $note,
+        }
+    };
+}
+macro_rules! opt {
+    ($name:literal, $ty:literal) => {
+        OutputField {
+            name: $name,
+            ty: $ty,
+            optional: true,
+            note: "",
+        }
+    };
+    ($name:literal, $ty:literal, $note:literal) => {
+        OutputField {
+            name: $name,
+            ty: $ty,
+            optional: true,
+            note: $note,
+        }
+    };
 }
 
 /// 出力の形（ノード種ごと・exhaustive）。AI の説明文と右パネルの「前のノードの出力」の単一定義。
@@ -467,62 +566,229 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
 /// 出力は能力ポート（api の `ProdNodePorts`・storage・data）と executor が組む JSON で、型としての
 /// 定義を持たない。ここを変えずに出力を変えると AI が誤った path を書くので、出力側を変えたら
 /// ここも直す。予約語彙は空文字（実装時に足す）。
-#[allow(clippy::too_many_lines)]
-const fn output_shape(nt: NodeType) -> &'static str {
+#[allow(clippy::too_many_lines)] // ノード種ごとの形の表（exhaustive に並べる方が漏れを見つけやすい）。
+fn output_shape(nt: NodeType) -> Shape {
     use NodeType as N;
+    use Shape::{Fields, Prose};
     match nt {
         N::ControlBranch | N::ControlSwitch | N::ControlJoin => {
-            "実行の入力をそのまま通す（分岐・合流の結果としては参照しない）"
+            Prose("実行の入力をそのまま通す（分岐・合流の結果としては参照しない）")
         }
-        N::ControlMap => {
-            "{ items: Array<unknown>（領域の出口ノードの出力・要素の順）, errors: Array<{ index: number, error: { code: string, message: string } }>（on_item_error: collect のとき） }"
-        }
-        N::ControlWait => "event なら届いたできごとの内容・時間待ちは null",
-        N::StorageRead => {
-            "{ id: string, name: string, content_type: string, size: number, text: string }"
-        }
-        N::StorageWrite => {
-            "{ id: string, name: string, version: number, sha256: string, size: number }"
-        }
-        N::StorageList => {
-            "{ items: Array<{ id: string, name: string, kind: string, size: number }> }（最大 100 件）"
-        }
-        N::RagSearch => {
-            "{ results: Array<{ file_id: string, file_name: string, content: string, score: number }> }"
-        }
-        N::LlmInvoke => "{ text: string, model: string }",
-        N::AgentInvoke => {
-            "{ text: string（最後の回答・Markdown）, complete: boolean（false は上限で打ち切った回答）, stop: \"completed\" | \"truncated\" | \"budget_steps\" | \"budget_time\" | \"budget_tokens\" | \"budget_cost\", model: string, citations: Array<{ n: number, file_id?: string, file_name?: string, url?: string, title?: string, snippet: string }>（使った資料・50 件まで）, tool_calls: Array<{ tool: string, ok: boolean }>, skipped_tools: Array<string>（指定したが使えなかった道具）, usage: { steps: number, tokens: number, cost_usd_micros: number } }"
-        }
-        N::HttpRequest => {
-            "{ status: number, host: string, body: unknown（JSON なら解析した値・それ以外は文字列） }"
-        }
-        N::ScriptRun => "main(input) の戻り値そのもの",
-        N::WorkflowStart => "{ run_id: string | null }（子の結果は待たない）",
-        N::WorkflowReply => {
-            "画面に出す節 { format: \"text\" | \"markdown\" | \"table\" | \"file_link\", label?: string, tone: string, truncated: boolean, text?: string（text・markdown）, columns?: Array<string>, rows?: Array<Array<string>>, total_rows?: number（table）, files?: Array<{ id: string, name: string }>（file_link） }（後続から参照するものではない）"
-        }
-        N::SkillInvoke => {
-            "script を持つ skill は main の戻り値・指示だけの skill は { text: string, model: string }"
-        }
-        N::CsvQuery => {
-            "{ columns: Array<string>, column_types: Array<string>, rows: Array<Array<unknown>>, total_rows: number, truncated: boolean }"
-        }
-        N::CsvPatch => "{ node_id: string, version: number, rows: number, cols: number }",
-        N::CsvWrite => "{ node_id: string, version: number, name: string }",
-        N::DataQuery => {
-            "{ items?: Array<{ id: string, data: { [列の参照名]: unknown }, rev: number, … }>, groups?: Array<集計の行>（aggregate のとき）, next_cursor?: string, count?: { exact: number } | { at_least: number }（with_count のとき） }"
-        }
-        N::DataRecordCreate | N::DataRecordUpdate | N::DataTransition => {
-            "レコード { id: string, table_id: string, data: { [列の参照名]: unknown }, rev: number, owner: string, created_at: string, updated_at: string }"
-        }
-        N::DataRecordDelete => "{ id: string, deleted: true }",
-        N::DataBulkUpsert => {
-            "{ import_id: string, status: string, rows_total: number, rows_applied: number, rows_invalid: number, rows_rejected: number, errors: Array<{ row: number, key: string | null, message: string }>, last_error: string | null }"
-        }
-        N::HumanApproval => {
-            "{ approval_id: string, decision: \"approve\" | \"reject\" | \"return\" | \"withdrawn\" | \"timeout\", to: string | null（判断で進んだ状態）, decided_by: string | null（判断した人の ID）, decided_at: string | null, comment: string | null, record_id: string, rev: number | null（判断の後の rev） }（行の値は載せない。必要なら後で「データを調べる」で読む）"
-        }
+        N::ControlMap => Fields(
+            "",
+            &[
+                field!("items", "Array<unknown>", "領域の出口ノードの出力・要素の順"),
+                opt!(
+                    "errors",
+                    "Array<{ index: number, error: { code: string, message: string } }>",
+                    "on_item_error: collect のとき"
+                ),
+            ],
+            "",
+        ),
+        N::ControlWait => Prose("event なら届いたできごとの内容・時間待ちは null"),
+        N::StorageRead => Fields(
+            "",
+            &[
+                field!("id", "string"),
+                field!("name", "string"),
+                field!("content_type", "string"),
+                field!("size", "number"),
+                field!("text", "string"),
+            ],
+            "",
+        ),
+        N::StorageWrite => Fields(
+            "",
+            &[
+                field!("id", "string"),
+                field!("name", "string"),
+                field!("version", "number"),
+                field!("sha256", "string"),
+                field!("size", "number"),
+            ],
+            "",
+        ),
+        N::StorageList => Fields(
+            "",
+            &[field!(
+                "items",
+                "Array<{ id: string, name: string, kind: string, size: number }>"
+            )],
+            "（最大 100 件）",
+        ),
+        N::RagSearch => Fields(
+            "",
+            &[field!(
+                "results",
+                "Array<{ file_id: string, file_name: string, content: string, score: number }>"
+            )],
+            "",
+        ),
+        N::LlmInvoke => Fields(
+            "",
+            &[field!("text", "string"), field!("model", "string")],
+            "",
+        ),
+        N::AgentInvoke => Fields(
+            "",
+            &[
+                field!("text", "string", "最後の回答・Markdown"),
+                field!("complete", "boolean", "false は上限で打ち切った回答"),
+                field!(
+                    "stop",
+                    "\"completed\" | \"truncated\" | \"budget_steps\" | \"budget_time\" | \"budget_tokens\" | \"budget_cost\""
+                ),
+                field!("model", "string"),
+                field!(
+                    "citations",
+                    "Array<{ n: number, file_id?: string, file_name?: string, url?: string, title?: string, snippet: string }>",
+                    "使った資料・50 件まで"
+                ),
+                field!("tool_calls", "Array<{ tool: string, ok: boolean }>"),
+                field!("skipped_tools", "Array<string>", "指定したが使えなかった道具"),
+                field!(
+                    "usage",
+                    "{ steps: number, tokens: number, cost_usd_micros: number }"
+                ),
+            ],
+            "",
+        ),
+        N::HttpRequest => Fields(
+            "",
+            &[
+                field!("status", "number"),
+                field!("host", "string"),
+                field!("body", "unknown", "JSON なら解析した値・それ以外は文字列"),
+            ],
+            "",
+        ),
+        N::ScriptRun => Prose("main(input) の戻り値そのもの"),
+        N::WorkflowStart => Fields(
+            "",
+            &[field!("run_id", "string | null")],
+            "（子の結果は待たない）",
+        ),
+        N::WorkflowReply => Fields(
+            "画面に出す節 ",
+            &[
+                field!(
+                    "format",
+                    "\"text\" | \"markdown\" | \"table\" | \"file_link\""
+                ),
+                opt!("label", "string"),
+                field!("tone", "string"),
+                field!("truncated", "boolean"),
+                opt!("text", "string", "text・markdown"),
+                opt!("columns", "Array<string>"),
+                opt!("rows", "Array<Array<string>>"),
+                opt!("total_rows", "number", "table"),
+                opt!("files", "Array<{ id: string, name: string }>", "file_link"),
+            ],
+            "（後続から参照するものではない）",
+        ),
+        N::SkillInvoke => Prose(
+            "script を持つ skill は main の戻り値・指示だけの skill は { text: string, model: string }",
+        ),
+        N::CsvQuery => Fields(
+            "",
+            &[
+                field!("columns", "Array<string>"),
+                field!("column_types", "Array<string>"),
+                field!("rows", "Array<Array<unknown>>"),
+                field!("total_rows", "number"),
+                field!("truncated", "boolean"),
+            ],
+            "",
+        ),
+        N::CsvPatch => Fields(
+            "",
+            &[
+                field!("node_id", "string"),
+                field!("version", "number"),
+                field!("rows", "number"),
+                field!("cols", "number"),
+            ],
+            "",
+        ),
+        N::CsvWrite => Fields(
+            "",
+            &[
+                field!("node_id", "string"),
+                field!("version", "number"),
+                field!("name", "string"),
+            ],
+            "",
+        ),
+        N::DataQuery => Fields(
+            "",
+            &[
+                opt!(
+                    "items",
+                    "Array<{ id: string, data: { [列の参照名]: unknown }, rev: number, … }>"
+                ),
+                opt!("groups", "Array<集計の行>", "aggregate のとき"),
+                opt!("next_cursor", "string"),
+                opt!(
+                    "count",
+                    "{ exact: number } | { at_least: number }",
+                    "with_count のとき"
+                ),
+            ],
+            "",
+        ),
+        N::DataRecordCreate | N::DataRecordUpdate | N::DataTransition => Fields(
+            "レコード ",
+            &[
+                field!("id", "string"),
+                field!("table_id", "string"),
+                field!("data", "{ [列の参照名]: unknown }"),
+                field!("rev", "number"),
+                field!("owner", "string"),
+                field!("created_at", "string"),
+                field!("updated_at", "string"),
+            ],
+            "",
+        ),
+        N::DataRecordDelete => Fields(
+            "",
+            &[field!("id", "string"), field!("deleted", "true")],
+            "",
+        ),
+        N::DataBulkUpsert => Fields(
+            "",
+            &[
+                field!("import_id", "string"),
+                field!("status", "string"),
+                field!("rows_total", "number"),
+                field!("rows_applied", "number"),
+                field!("rows_invalid", "number"),
+                field!("rows_rejected", "number"),
+                field!(
+                    "errors",
+                    "Array<{ row: number, key: string | null, message: string }>"
+                ),
+                field!("last_error", "string | null"),
+            ],
+            "",
+        ),
+        N::HumanApproval => Fields(
+            "",
+            &[
+                field!("approval_id", "string"),
+                field!(
+                    "decision",
+                    "\"approve\" | \"reject\" | \"return\" | \"withdrawn\" | \"timeout\""
+                ),
+                field!("to", "string | null", "判断で進んだ状態"),
+                field!("decided_by", "string | null", "判断した人の ID"),
+                field!("decided_at", "string | null"),
+                field!("comment", "string | null"),
+                field!("record_id", "string"),
+                field!("rev", "number | null", "判断の後の rev"),
+            ],
+            "（行の値は載せない。必要なら後で「データを調べる」で読む）",
+        ),
         N::NotifySend
         | N::ControlLoop
         | N::ControlAssert
@@ -554,7 +820,7 @@ const fn output_shape(nt: NodeType) -> &'static str {
         | N::AiTranscribe
         | N::AiSpeech
         | N::GraphqlQuery
-        | N::SandboxExec => "",
+        | N::SandboxExec => Prose(""),
     }
 }
 
@@ -638,6 +904,61 @@ mod tests {
             find(NodeType::LlmInvoke).output_shape,
             "{ text: string, model: string }"
         );
+    }
+
+    /// D-42: 出力の形の文字列は構造化した項目から作る（項目の組なら必ず項目を持つ・名前は一意）。
+    #[test]
+    fn output_shape_text_is_built_from_fields() {
+        let catalog = node_catalog();
+        let find = |nt: NodeType| catalog.iter().find(|e| e.node_type == nt).unwrap();
+        let record = find(NodeType::DataRecordCreate);
+        assert_eq!(record.output_fields[0].name, "id");
+        assert!(record
+            .output_shape
+            .starts_with("レコード { id: string, table_id: string,"));
+        let map = find(NodeType::ControlMap);
+        assert_eq!(
+            map.output_shape,
+            "{ items: Array<unknown>（領域の出口ノードの出力・要素の順）, errors?: Array<{ index: number, error: { code: string, message: string } }>（on_item_error: collect のとき） }"
+        );
+        assert!(map.output_fields[1].optional);
+        assert_eq!(
+            find(NodeType::StorageList).output_shape,
+            "{ items: Array<{ id: string, name: string, kind: string, size: number }> }（最大 100 件）"
+        );
+        // 項目に分けられない形は項目を持たない（参照の候補は「結果（全体）」だけ）。
+        for nt in [
+            NodeType::ScriptRun,
+            NodeType::ControlWait,
+            NodeType::SkillInvoke,
+        ] {
+            assert!(find(nt).output_fields.is_empty(), "{}", nt.as_str());
+            assert!(!find(nt).output_shape.is_empty());
+        }
+        for e in &catalog {
+            let mut names: Vec<&str> = e.output_fields.iter().map(|f| f.name).collect();
+            for f in e.output_fields {
+                assert!(
+                    e.output_shape.contains(&format!(
+                        "{}{}: {}",
+                        f.name,
+                        if f.optional { "?" } else { "" },
+                        f.ty
+                    )),
+                    "{}: {}",
+                    e.node_type.as_str(),
+                    f.name
+                );
+            }
+            names.sort_unstable();
+            names.dedup();
+            assert_eq!(
+                names.len(),
+                e.output_fields.len(),
+                "{}",
+                e.node_type.as_str()
+            );
+        }
     }
 
     #[test]

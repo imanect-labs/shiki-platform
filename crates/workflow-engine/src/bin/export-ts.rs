@@ -32,7 +32,7 @@ use workflow_engine::ir::{Policies, TriggerOverflow, WorkflowIr};
 use workflow_engine::vocab::{
     agent_tool_catalog, event_catalog, node_catalog, AgentTool, AgentToolCatalogEntry,
     EventCatalogEntry, EventPayloadField, EventSource, IdempotencyClass, NodeCatalogEntry,
-    NodeCategory, NodeType, RunEventKind, Scope,
+    NodeCategory, NodeType, OutputField, RunEventKind, Scope,
 };
 
 fn main() {
@@ -125,6 +125,7 @@ fn main() {
         // ---- カタログ ----
         NodeCategory,
         IdempotencyClass,
+        OutputField,
         NodeCatalogEntry,
         // ---- イベントのペイロードの形（D-47）----
         EventPayloadField,
