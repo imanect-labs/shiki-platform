@@ -863,8 +863,11 @@ step を `waiting_timer` にし `wake_at` を書いてワーカーを解放す�
 - 停止時に filter のイベント以外の参照（`input`・`nodes.*`・`run`・`each`）をリテラルへ束縛して `spec` に保存する
   （起床の判定は届いたイベントしか解決しない・ir.md §7.5）。データ変更の wait は `scope.record` を解決し、行に束縛
   するならその行を実行主体の権限で読んで（data.get・scope 天井は data.read）rev を `suspend_rev` に、テーブル単位なら
-  checkpoint の Tx の時点の outbox の最大 id を `after_event_id` に残す（停止より前の変更・自分の直前の書込では起きない。
-  テーブル単位では、この位置より前に採番されて後で commit した並行の書込を取りこぼし得る）。
+  checkpoint の Tx の時点の outbox の最大 id を `after_event_id` に残す（停止より前の変更・自分の直前の書込では起きない）。
+  取りこぼしの窓が両方向にある（未対応）: ①行に束縛した wait は、data.get から checkpoint の commit までの間に commit された
+  同じ行の変更を、②テーブル単位の wait は、この位置より後に採番されて購読の commit より先に配送された変更と、この位置より
+  前に採番されて後で commit した並行の書込を、どちらも購読がまだ見えないまま配送済みにして失い、timeout まで起きない。
+  承認（§9.6）は受付の突合で同じ窓を塞いでいるが、ふつうの wait にはまだ突合が無い。
 - イベント到来（マッチャ・§5.5）: `succeeded`・`taken_ports = {out}`・イベントペイロードを output に格納。
 - `timeout_at` 超過・`on_timeout: continue`: `succeeded`・`taken_ports = {timeout}`（ir.md §5.2 の `wait` ポート）。
 - `timeout_at` 超過・`on_timeout: fail`: `failed`。
@@ -907,8 +910,10 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
 承認は FSM で管理するテーブルの 1 行に束縛し、**判断は承認者本人の FSM 遷移**とする（ir.md §7.9）。エンジンはその行の
 `data.transition` を wait(event) の一種として待つ。
 
-- **停止**: 束縛した行を実行主体の権限で読み（data.get・scope 天井は data.read）、いまの状態（`from_state`）と rev
-  （`suspend_rev`）を残す。FSM にいまの状態から判断の行き先への遷移が無ければ `approval_not_decidable`（permanent）。
+- **停止**: 束縛した行を実行主体の権限で読み（`NodePorts::data_approval_target`＝data の `FsmStore::approval_target`。
+  scope 天井は data.get と同じく data.read。いまの状態・rev・FSM でその状態から進める状態・読めるユーザー／部署の列の値を
+  1 回で読む。data.get の出力には状態の列・FSM・列の種別が無いため）、いまの状態（`from_state`）と rev（`suspend_rev`）を
+  残す。FSM にいまの状態から判断の行き先への遷移が無ければ `approval_not_decidable`（permanent）。
   担当者（行のユーザー・部署の列は実行主体に読めること）を解決し、空なら `approval_no_assignee`。checkpoint の **同じ Tx**
   で step を `waiting_event` にし、台帳・担当者・購読（`source = data.transition`・`spec = { scope: { table, record },
   suspend_rev, approval: { approval_id, record_id, choices, on_timeout } }`）を書く。再実行・再開は同じ承認 id を保留中へ
@@ -919,7 +924,10 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
   遷移した人・判断の種別が一致するものだけを採る。テーブル画面・ミニアプリ・別のワークフローからの遷移でも同じ承認が決まる。
 - **受付の突合**（relay の tick・`reconciled_at IS NULL` の保留中）: 購読の commit より前に起きて配送済みになった遷移を、
   実行主体の見え方で行を読み直して決める（いまの状態が `from_state` なら待ち続け、判断の状態ならその出口、それ以外・
-  見えない（消えた）なら `withdrawn`）。承認の依頼の監査（`workflow.approval.request`）もここで書く。
+  見えない（消えた）なら `withdrawn`）。実行主体の委譲・権限が停止の後に外れて行を読めないときは、判断の遷移も実行主体に
+  見えず待っても決まらないので `withdrawn` にし、決着の監査に `reason: actor_unavailable` を残す（判断の遷移を受けた relay
+  も同じ。受信箱で判断されたのに run が期限まで待つ食い違いを作らない）。承認の依頼の監査（`workflow.approval.request`）も
+  ここで書く。
 - **行の削除**: outbox の削除を受けたら、実行主体の data.get が NotFound であることを確かめて `withdrawn` にする。
 - **期限**: `expire_due_waits` と同じ経路で台帳を `expired` にする（`on_timeout: continue` は `timeout` 出口・`fail` は run の
   失敗）。受信箱は承認の期限と run の期限の早い方を過ぎたら出さず、判断 API は 409 で拒む。期限ちょうどに遷移した場合は、
@@ -927,7 +935,9 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
 - **取消**: run の失敗・取消（`cancel_remaining_steps`・ドレイン）と同じ Tx で保留中の台帳を `cancelled` にする。
 - **受信箱**（`/approvals`）: 台帳で本人か所属ロール宛てで、run が実行中・step が待機中・期限前のものを引き、**行を承認者本人の
   権限で読み直して**、見える行で今の状態が `from_state` のものだけを出す（見えない行は件数にも数えない・出す列はマスク後）。
-  判断 API は承認者本人の権限で `FsmStore::transition(expected_rev)` を呼ぶ（ワークフローの権限で遷移しない）。
+  判断 API は承認者本人の権限で `FsmStore::transition(expected_rev)` を呼ぶ（ワークフローの権限で遷移しない）。遷移の前に
+  行がいまも `from_state` かを確かめ、違えば 409（判断の外で動いた行を、relay が取り下げる前の数秒に別の状態から判断の
+  行き先へ進めさせない）。
 - **決着の監査**: `workflow.approval.resolve`（起床・取り下げ・期限切れ・system）・`workflow.approval.decide`（判断 API・承認者）。
 - 待機中の run は `max_parallel_runs` に数えない（§8.3）。
 
