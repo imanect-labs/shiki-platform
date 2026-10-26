@@ -34,7 +34,7 @@ flowchart TB
     CTRL["制御ノード<br/>分岐/並列/join/待機"]
     SS[shiki script ノード]
     SKN["skill ノード"]
-    AIN["agent.invoke ノード<br/>（サンドボックス）"]
+    AIN["agent.invoke ノード<br/>（agent-core のツールループ）"]
     LLMN["llm.invoke ノード"]
     HTTP["http.request ノード<br/>＋シークレット参照"]
   end
@@ -114,7 +114,7 @@ jobq（自作 Postgres キュー）の延長＋状態機械として `crates/wor
 | 制御ノード | 分岐・並列・join・待機（時間/イベント） | ─ |
 | shiki script ノード | script-runtime で有界実行（§3） | ホスト関数経由＝能力ゲートウェイで通常認可 |
 | skill ノード | `skill:<name>@<version>` 参照（保存時に存在検証） | skill 宣言スコープ ∩ 実行主体 ReBAC |
-| `agent.invoke` ノード | サンドボックス（gVisor ティア既定・#346）で agent-core 起動 | ノード設定 ∩ 実行主体 ReBAC（下記） |
+| `agent.invoke` ノード | agent-core のツールループ（道具＝能力 API の閉集合・読み取りだけ・コードの実行の道具 `code.run` だけをサンドボックス（gVisor ティア既定・#346）で実行） | 提示した道具の要求スコープ ∩ declared_scopes ∩ 実行主体 ReBAC（道具の呼び出しごとに能力ゲートウェイを通る二重ゲート・下記） |
 | `llm.invoke` ノード | llm-gateway 直行（サンドボックスなし） | モデルカタログ・予算ガードレール |
 | `http.request` ノード | 外部 HTTP（egress allowlist 適用） | シークレット宛先束縛（§5）＋allowlist の AND |
 | `human.approval` ノード | テーブルの 1 行について担当者の判断を待って分岐する（受信箱 `/approvals`・workflow ir.md §7.9） | 判断は承認者本人の FSM 遷移（actor 述語）・行は実行主体の見え方で読む |
@@ -125,8 +125,9 @@ jobq（自作 Postgres キュー）の延長＋状態機械として `crates/wor
 
 ### 2.5 AI ノードの設定パネル（縮小のみ）
 
-ノードをクリックすると右パネルでサンドボックス設定（インターネットアクセス可否・egress allowlist・
-ストレージのマウントスコープ・許可ツール・モデル・時間/リソース上限）をきめ細かく設定できる。ただし:
+ノードをクリックすると右パネルで AI エージェントの設定（使ってよい道具・モデル・手順と時間の上限・
+web ページを読む道具の宛先）を設定できる。宛先は管理者が決める天井（`workflow.agent.web_allowlist`）の中から選ぶ
+（自由入力にしない・天井が空なら選べない）。ただし:
 
 - **ノード設定は capability の縮小のみ**。実効権限 = ノード設定 ∩ 実行主体の ReBAC であり、
   ノード設定で ReBAC 以上の権限は絶対に生えない（付与は有効化時の同意フローのみ。二重ゲート原則そのまま）。
@@ -138,7 +139,8 @@ jobq（自作 Postgres キュー）の延長＋状態機械として `crates/wor
 - TS 風の構文。**swc（Rust）でパース・TS→JS 変換**。
 - API は GAS に「それなり」に寄せる（命名・同期スタイル）。SpreadsheetApp 完全互換は謳わない。
 - **npm import は v1 不可**。標準ライブラリ＋ `Shiki.*` API のみ。
-  任意パッケージ・任意プロセスが要る処理は script の守備範囲外で、`agent.invoke` ノード（サンドボックス）へ昇格させる。
+  任意パッケージ・任意プロセスが要る処理は script の守備範囲外で、`sandbox.exec` ノード（予約）か、AI エージェント
+  （`agent.invoke`）の道具 `code.run`（隔離環境の Python・外部への通信なし）へ昇格させる。
   すみ分け: **script = ms 級起動のグルーコード / サンドボックス = 何でもできる重量級**。
 
 ### 3.2 ランタイム（QuickJS-in-wasmtime・javy 方式）
@@ -202,8 +204,9 @@ jobq（自作 Postgres キュー）の延長＋状態機械として `crates/wor
   実行主体の ReBAC で再検証する（ir.md §8）。
 - **script の実行は種別で分岐**: `.shiki`（shiki script）は script-runtime（§3.2・ms級起動・`Shiki.*`
   ホスト関数ブリッジ経由の通常認可）。`.sh`（shell script）は script-runtime では実行できない
-  （fs/プロセス起動が無い§3.2の隔離モデルの守備範囲外）ため、**agent.invoke のサンドボックス内で
-  実行する**（Phase 4/5 のサンドボックス・任意コマンド実行の枠をそのまま使う）。
+  （fs/プロセス起動が無い§3.2の隔離モデルの守備範囲外）ため、**サンドボックス内で実行する**（Phase 4/5 の
+  サンドボックス・任意コマンド実行の枠をそのまま使う）。ワークフローからの口は `sandbox.exec` ノード（予約）にする
+  （`agent.invoke` は agent-core のツールループで、任意のコマンドを実行する口ではない・BUG-6）。
 
 ## 5. シークレット管理（`crates/secrets`）
 

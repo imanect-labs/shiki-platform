@@ -39,7 +39,7 @@ shiki script は次の 3 つの用途（顔）を持つが、**同一言語・�
 
 ### 1.3 script は durable にならない
 
-1 実行は**有界**（wall-clock 上限 360s＝初期値・設定可・§4）。「3 日待つ」「リトライ」「補償」はすべて**ノード境界＝engine の仕事**であり（[miniapp-platform.md](../miniapp-platform.md) §2.1・durability はノード境界にのみ存在する）、script 内に long await を書く構文は**存在しない**。そもそも非同期 API 自体がない（§2・§5 の同期橋渡し）。長時間・多パッケージ・任意プロセスが要る処理は script の守備範囲外であり、`agent.invoke` ノード（サンドボックス）へ昇格させる（すみ分け: script＝ms 級起動のグルーコード／サンドボックス＝何でもできる重量級・[miniapp-platform.md](../miniapp-platform.md) §2.4）。
+1 実行は**有界**（wall-clock 上限 360s＝初期値・設定可・§4）。「3 日待つ」「リトライ」「補償」はすべて**ノード境界＝engine の仕事**であり（[miniapp-platform.md](../miniapp-platform.md) §2.1・durability はノード境界にのみ存在する）、script 内に long await を書く構文は**存在しない**。そもそも非同期 API 自体がない（§2・§5 の同期橋渡し）。長時間・多パッケージ・任意プロセスが要る処理は script の守備範囲外であり、`sandbox.exec` ノード（予約）か AI エージェント（`agent.invoke`）の道具 `code.run` へ昇格させる（すみ分け: script＝ms 級起動のグルーコード／サンドボックス＝何でもできる重量級・[miniapp-platform.md](../miniapp-platform.md) §2.4）。
 
 ---
 
@@ -319,7 +319,7 @@ Shiki.storage.write(folderRef: string, name: string, bytes: Uint8Array, contentT
 ```
 
 - `write` は新バージョンを作る（engine-dedup）。読み書きとも StorageService（既存チョークポイント）を経由し、権限・監査・再索引が無改造で効く。
-- `read` の上限はブリッジの server→runtime 応答上限（§4.3・4MB）に一致させる。それ以上のファイルを扱う処理は script の守備範囲外であり、storage ノード（spill 対応・[engine.md](./engine.md) §12）または `agent.invoke`（サンドボックスの仮想 FS）へ昇格させる。
+- `read` の上限はブリッジの server→runtime 応答上限（§4.3・4MB）に一致させる。それ以上のファイルを扱う処理は script の守備範囲外であり、storage ノード（spill 対応・[engine.md](./engine.md) §12）または `sandbox.exec` ノード（予約・サンドボックスの仮想 FS）へ昇格させる。
 - エラー: サイズ超過は `payload_too_large`、権限不足は `permission_denied`。
 
 ### 6.5 `Shiki.rag.search`（`rag.query`）

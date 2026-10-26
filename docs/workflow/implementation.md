@@ -27,11 +27,13 @@
   合流するだけである。
 - **オレンジ（認可）**: OpenFGA。**ただし通るのは `storage`/`rag`/`secret` の3系統のみ**
   （`ProdNodePorts` が `AuthContext` を組んで渡す経路。`crates/api/src/workflow_runtime/ports.rs`
-  の `storage_write`/`rag_search`/`resolve_secret`）。`llm.invoke`/`agent.invoke`/`http.request`
-  は OpenFGA を経由せず、`scope_ceiling`・レート制限・宛先束縛（secret 経由の allowlist）・
-  sandbox 制約でそれぞれ守られる（同ファイル `llm_invoke`/`agent_invoke`/`http_send` は
-  `auth_ctx` を呼ばない）。図はこれらチョークポイントをまとめて描いているが、認可の掛かり方は
-  一様ではない点に注意。
+  の `storage_write`/`rag_search`/`resolve_secret`）。`llm.invoke`/`http.request`
+  は OpenFGA を経由せず、`scope_ceiling`・レート制限・宛先束縛（secret 経由の allowlist）で
+  それぞれ守られる（同ファイル `llm_invoke`/`http_send` は `auth_ctx` を呼ばない）。
+  `agent.invoke`（BUG-6）はループ（`workflow_runtime/agent_port.rs`）自体は権限を判断せず、道具の
+  呼び出しをエンジンの `AgentToolGateway`（`nodes/agent_gateway.rs`・提示した道具か・scope 天井・
+  宛先・監査）へ中継し、そこから `auth_ctx` でチョークポイント（storage・rag の OpenFGA）へ届く。
+  図はこれらチョークポイントをまとめて描いているが、認可の掛かり方は一様ではない点に注意。
 - **ピンク（script-runtime）**: QuickJS on wasmtime のエンジン自体は `crates/script-runtime` に
   gRPC over UDS サーバ実装（`server.rs`）を持つが、**Stage A の本番配線はこれを使っていない**。
   `spawn_workflow_runtime`（`crates/api/src/workflow_runtime/mod.rs:153`）が
@@ -183,7 +185,7 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 | effect_journal | `effect_journal` テーブル（`0016:109`）＋ `capability/journal.rs`（`JournalDecision`・`op_digest`）。 |
 | fencing token | `step_execution.fencing_token` 列。`claim_ready_step`（`run/store.rs:154`）が claim のたびに +1。 |
 | 能力ゲートウェイ | `CapabilityNodeExecutor`（`nodes/exec.rs:30-36` 構造体・155-221行 `impl NodeExecutor`）。処理順は「制御ノード早期return → `check_ceiling` → `rate_check`（`nodes/capability.rs:30-44`）→ `effect_journal` 予約 → `NodePorts` 呼出 → `audit.record`」。 |
-| NodePorts / ProdNodePorts | トレイト定義は `nodes/ports.rs:140-`（`storage_write/storage_read/storage_list/rag_search/llm_invoke/agent_invoke/http_send/resolve_secret/workflow_start` の9メソッド）。実装は `crates/api/src/workflow_runtime/ports.rs:29-40`（`ProdNodePorts`）、`auth_ctx`（43-60行）が interactive/schedule・event で `AuthContext::new` と `AuthContext::for_workflow` を分岐。 |
+| NodePorts / ProdNodePorts | トレイト定義は `nodes/ports.rs:140-`（`storage_write/storage_read/storage_list/rag_search/llm_invoke/agent_invoke/http_send/resolve_secret/workflow_start` の9メソッド。agent.invoke の道具の `web_search/web_fetch/code_run/doc_read/storage_read_window` は既定実装つき（未構成）で足した。`agent_invoke` は道具の呼び出しを束ねる `AgentToolGateway`（エンジンの実装）を受け取る・BUG-6・D-22）。実装は `crates/api/src/workflow_runtime/ports.rs:29-40`（`ProdNodePorts`）、`auth_ctx`（43-60行）が interactive/schedule・event で `AuthContext::new` と `AuthContext::for_workflow` を分岐。 |
 | script-runtime | `crates/script-runtime`（`ScriptEngine::run`、`engine.rs:173-180`）。能力呼び出しの gRPC 双方向ストリームは `server.rs:68`/`142-163`（`drive_stream`）。 |
 | WorkflowRunLauncher | `run/launcher.rs`（`WorkflowRunLauncher`・`LauncherError`）。interactive API・スケジューラ・イベント relay が共有するrun作成の唯一の入口。 |
 | WorkflowWorker | `run/worker.rs`（`WorkerConfig`・`WorkflowWorker`）。 |
@@ -226,8 +228,9 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
    `AuthContext::for_workflow`、そうでなければ `AuthContext::new(..PrincipalKind::User..)` を組み、
    `storage_write`/`rag_search`/`resolve_secret` がこれをチョークポイントへ渡す。チョークポイント
    内部で通常どおり OpenFGA check が走る（ワークフロー専用の認可経路はない）。**`llm_invoke`/
-   `agent_invoke`/`http_send` は `auth_ctx` を呼ばず OpenFGA を経由しない**（§1 の注記のとおり
-   scope_ceiling・レート制限・宛先束縛・sandbox 制約で守る）。
+   `http_send` は `auth_ctx` を呼ばず OpenFGA を経由しない**（§1 の注記のとおり
+   scope_ceiling・レート制限・宛先束縛で守る）。`agent_invoke` の道具は `AgentToolGateway` を通ってから
+   `auth_ctx` でチョークポイントへ届く（BUG-6）。
 7. **checkpoint**: 結果（`output`/`taken_ports`）を `step_execution` に単一 TX で書き込み、
    `readiness.rs` の純関数が後続 step の ready/skip を判定する。
 

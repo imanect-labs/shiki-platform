@@ -390,6 +390,10 @@ flowchart LR
 - **agent-core（自作）**: LLM↔ツールのループ（計画→ツール→観測→継続）、ツールセット非依存、`Tool` トレイト。
   - チャット = 制約ツールセット（doc_search / code_interpreter / file_ops）＋短ホライズン。
   - 自律 = フルツール（shell/任意コマンド/CRUD）＋長ホライズン＋FUSEストレージ。
+  - **ワークフローの agent.invoke** = agent-core のプリセット（無人・閉集合の読み取りの道具＝能力 API の名前・承認者なし・
+    計画の道具と tool search なし・自律版の予算とループ検出・会計の利用元は workflow）。チャットのスレッドは作らず、
+    step が唯一の耐久単位になる。道具の呼び出しはエンジンの能力ゲートウェイ（`AgentToolGateway`・scope 天井・宛先・
+    監査）を通ってからチョークポイントへ届く（[workflow/ir.md §7.4](./workflow/ir.md)・PIT-79）。
 - 共通化: llm-gateway、Langfuseトレース、監査、トークン会計、権限境界。
 - **ツール選択**: デフォルト全提示・モデル自動選択。権限/破壊/コスト系のみ明示許可。
   - **tool search（#511）**: 出番の限られるツール（`ToolName::loading()` が `Deferred`）は名前だけを
@@ -606,7 +610,7 @@ flowchart TB
 - code_interpreter は選択ティアの制約インスタンス（ネット遮断・短命・実行後破棄）。**既定は gVisor**（native CPython）、
   wasm ティアを選んだ場合は Pyodide になる。ティアによって Python の実体（native / Pyodide）と
   利用可能ライブラリが変わる点は、上記「前提条件」の通り rootfs 側で揃える。
-- **ティア選択の導線（admin ポリシー）**: コード実行系（code_interpreter / agent shell / workflow の agent_invoke）の
+- **ティア選択の導線（admin ポリシー）**: コード実行系（code_interpreter / agent shell / workflow の agent.invoke の道具 code.run）の
   隔離ティアは server 設定 `chat.sandbox_backend`（`gvisor`（既定・#346 で反転済み）/ `wasm` /
   `firecracker`）で選ぶ。ユーザー/ノード設定には
   出さない。gVisor/FC は orchestrator 側で当該ティアが構成済み（runsc/rootfs 等）であることが前提で、未構成なら create は

@@ -374,7 +374,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `script.run` | script | shiki script 実行 | best-effort（script 次第・冪等キー供給） | 30s / 360s |
 | `skill.invoke` | skill | `skill:<name>@<version>` | skill 宣言に従う | 60s / 360s |
 | `llm.invoke` | AI | llm-gateway 直行 | pure（課金あり） | 120s / 600s |
-| `agent.invoke` | AI | サンドボックスで agent-core | best-effort | 600s / 3600s |
+| `agent.invoke` | AI | agent-core のツールループ（ループはホスト側・道具は能力 API・コードの実行の道具だけをサンドボックスで実行・§7.4） | best-effort | 600s / 3600s |
 | `http.request` | 外部 | 外部 HTTP | **best-effort**（Idempotency-Key 注入支援のみ） | 30s / 120s |
 | `human.approval` | 人間参加 | テーブルの 1 行について担当者の承認・却下・差し戻しを待って分岐する（判断は承認者本人の FSM 遷移・§7.9） | engine-dedup（台帳は step で 1 件） | 30s / 120s（停止まで。判断を待つ時間は `timeout_sec` と `run_timeout_sec`） |
 | `workflow.reply` | フロー連携 | 結果を画面に返す（ボタン・会話から起動した本人の画面に出す・スコープ不要・§7.10） | pure | 5s / 10s |
@@ -445,21 +445,43 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 ### 7.4 `agent.invoke`
 
 ```jsonc
-{ "id": "research", "type": "agent.invoke",
+{ "id": "review", "type": "agent.invoke",
   "params": {
-    "instruction": { "$from": "input" },
-    "egress_allowlist": ["api.example.com"],  // 縮小のみ
-    "mount_scope": { "folder": "…" },          // 縮小のみ
-    "allowed_tools": ["rag.search", "storage.read"],  // codegen ツール語彙・縮小のみ
-    "model": "…",
+    "instruction": "契約書を doc.read で読み、社内のチェックリストと照らして要注意の条項を挙げる",  // 自然文の依頼
+    "context": { "$from": "input" },              // 参考データ（指示ではない）・省略可
+    "allowed_tools": ["doc.read", "rag.search"],  // 道具の閉集合（codegen の AgentTool）・省略は道具なし
+    "model": "…",                                 // 省略は組織の既定（§7.3 と同じ）
+    "max_steps": 8,                               // 1〜24
+    "max_tokens": 100000,                         // この実行全体の合計
     "max_duration_sec": 600,
-    "max_tokens": 100000
+    "egress_allowlist": ["docs.example.com"]      // web.fetch の宛先だけ・管理者の天井の部分集合
   } }
 ```
 
-- サンドボックス設定（`egress_allowlist`・`mount_scope`・`allowed_tools`・`model`・`max_duration_sec`・`max_tokens`）は**縮小のみ**。実効権限 = 実行主体 ReBAC ∩ `declared_scopes` ∩ 本設定であり、ノード設定で権限を拡大できない（[miniapp-platform.md](../miniapp-platform.md) §2.5・二重ゲート）。
-- ツール名・スコープは codegen 語彙照合（§8 V3）。
-- **ティアは admin ポリシー `chat.sandbox_backend`（既定 gVisor・#346）**（ノード単位のティア選択ノブは出さない・[design.md](../design.md) §4.6）。
+- **agent-core のツールループを step から 1 回走らせる**（チャットのスレッドは作らない・step が唯一の耐久単位・承認者を置かない）。依頼は自然文で、モデルは道具で調べながら作業し、最後の回答を出力の `text` に書く。依頼をコードとして実行しない（コードの実行は道具 `code.run`）。
+- **道具（`allowed_tools`）は能力 API の名前の閉集合**（codegen の `AgentTool`・説明・入力の形・要求スコープ・結果の上限を単一定義にする）。
+
+  | 道具 | 中身 | 要求スコープ |
+  |---|---|---|
+  | `rag.search` | 権限を考慮した社内検索（1 件 1,500 字・20 件まで） | `rag.query` |
+  | `storage.list` | フォルダの一覧（100 件まで） | `storage.read` |
+  | `storage.read` | テキストのファイルを窓で読む（`offset`・`max_chars` ≤ 20,000・続きは `next_offset`）。PDF・Word などは `doc.read` へ誘導する | `storage.read` |
+  | `doc.read` | 索引済みの文書の本文を窓で読む（権限なしと不在は同じ応答・索引が無ければその旨） | `doc.read` |
+  | `web.search` | 公開 web の検索（**検索語が社外の検索サービスへ出る**・10 件まで） | `http.egress` |
+  | `web.fetch` | ページの取得（**社外へ出る**・宛先は下記・解決後の IP を検証しリダイレクトを追わない） | `http.egress` |
+  | `code.run` | 隔離環境で Python を実行（外部への通信は遮断・成果物は保存しない・出力 16KB まで） | `sandbox.exec` |
+
+  `data.list_tables` / `data.query` / `data.get` は予約（V3 `ir.unknown_tool`・DataPort の委譲台帳を通す形で後から足す）。**書込の道具は無い**（書き込みは後段の能力ノードで行う）。
+- **省略は道具なし**（有効化済みの定義の到達範囲を再同意なしに広げない）。保存時は**明示した道具の分だけ**要求スコープを `declared_scopes` に補う。同意計画は、社内を読む道具（`rag.search`・`storage.*`・`doc.read`）にフォルダの閲覧の委譲を提案する（範囲は有効化者が選ぶ）。
+- **縮小のみ**: 実効権限 = 実行主体 ReBAC ∩ `declared_scopes` ∩ 提示した道具の要求スコープ。道具の呼び出しは、エンジンの能力ゲートウェイ（提示した道具か → scope 天井 → 引数の上限 → 宛先 → 監査 via=agent）を通ってからチョークポイント（ReBAC・二段 authz・存在秘匿）へ届く（[engine.md](./engine.md) §6.5）。ノード設定で ReBAC 以上の権限は生えない（[miniapp-platform.md](../miniapp-platform.md) §2.5）。
+- **`egress_allowlist` は web.fetch の宛先にだけ効く**。管理者が決める天井（デプロイ設定 `workflow.agent.web_allowlist`・未設定なら `workflow.http_allowlist`）の部分集合でなければならない（V3 `ir.host_outside_ceiling`）。天井が空なら web.fetch は提示しない。web.fetch を選んだら空にできない（`ir.missing_egress`）。書き方はホスト名か `*.example.com`（`ir.bad_host`・20 件まで）。IR の作者と実行者が別になる使い方（共有・画面からの起動）で、作者が選んだホストへ実行者のデータを持ち出させないための天井である。
+- **上限**: `max_steps`（既定 8・最大 24）・`max_tokens`（この実行全体の合計・デプロイ設定が天井・既定 200,000）・`max_duration_sec`（10〜3600・既定 600）・1 回の実行の費用（デプロイ設定）。ノード設定は縮めることしかできない。道具の結果にも上限を掛ける（1 件 32,000 字・切ったら目印）。
+- **出力**: `{ "text", "complete", "stop", "model", "citations", "tool_calls", "skipped_tools", "usage" }`。
+  - `stop` は `completed` / `truncated` / `budget_steps` / `budget_time` / `budget_tokens` / `budget_cost`。上限で止まっても本文があれば成功（`complete: false`）、本文が無ければ失敗（`agent_incomplete`・何の上限かと直し方を文言に書く）。同じ道具の失敗を繰り返したら失敗（`agent_loop`）。
+  - `citations` は道具で読んだ資料（社内は `file_id`・`file_name`、web は `url`・`title`。50 件まで）、`tool_calls` は `{ tool, ok }` の列（100 件まで）、`skipped_tools` は指定したが提示しなかった道具（予約・scope 天井の外・web の天井が空・この環境で未配線）。
+- `mount_scope`・`output_schema` は効くようにしてから足す（効かない設定を契約に入れない）。
+- **旧い定義**（`instruction`・`egress_allowlist`・`max_duration_sec` だけ）は `ir_version` を上げずにそのまま読み、`instruction` を自然文として扱う（旧い実装は Python として実行し、自然文は必ず失敗していた・§9）。出力の形は `{ stdout, exit_code }` から変わった。
+- 道具 `code.run` の**隔離ティアは admin ポリシー `chat.sandbox_backend`（既定 gVisor・#346）**（ノード単位のティア選択ノブは出さない・[design.md](../design.md) §4.6）。
 
 ### 7.5 `control.wait`
 
@@ -522,7 +544,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `graphql.query` | 外部 | GraphQL 呼び出し（クエリ・変数の型付き UX）。gRPC はユースケースが薄く予約しない | `http.egress`（流用） |
 | `sandbox.exec` | 実行 | サンドボックス内の単発コマンド/Python 実行（secure-exec 基盤を転用。サンドボックス由来出力は敵対的として扱う・PIT-23） | `sandbox.exec`（危険度が高く独立スコープ） |
 
-`human.approval` は GAP-08 で実装した（§7.9）。
+`human.approval` は GAP-08 で実装した（§7.9）。`doc.read` と `sandbox.exec` の**スコープ**は agent.invoke の道具（`doc.read`・`code.run`）のために解禁した（同意画面では「文書の本文を読む」「隔離された環境でプログラムを動かす」と出す）。ノードは予約のまま。
 
 **ノードにしない**と確定したもの（予約対象外・理由の明文化）:
 
@@ -597,11 +619,11 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 |---|---|---|---|
 | V1 | スキーマ | JSON Schema（deny-unknown・型・必須） | `ir.schema_violation` |
 | V2 | グラフ | id 一意・エッジ参照存在・ポート存在・DAG・入エッジ制約・領域閉包・出口一意・到達可能性 | `ir.graph_cycle` 等 |
-| V3 | 語彙照合 | ノード type・declared_scopes・ツール名・モデル名を codegen 語彙と登録カタログ（モデルは組織が許可したもの・本人専用を除く）の閉じた集合へ照合。イベント source とトリガ・wait(event) の scope の形（§6.2・§7.5） | `ir.unknown_scope`・`ir.unknown_model`・`ir.model_choice_disabled`・`ir.unknown_event_source`・`ir.bad_event_scope` |
+| V3 | 語彙照合 | ノード type・declared_scopes・ツール名・モデル名を codegen 語彙と登録カタログ（モデルは組織が許可したもの・本人専用を除く）の閉じた集合へ照合。イベント source とトリガ・wait(event) の scope の形（§6.2・§7.5）。agent.invoke の道具と web.fetch の宛先（§7.4） | `ir.unknown_scope`・`ir.unknown_model`・`ir.model_choice_disabled`・`ir.unknown_event_source`・`ir.bad_event_scope`・`ir.unknown_tool`・`ir.missing_egress`・`ir.bad_host`・`ir.host_outside_ceiling` |
 | V4 | 参照存在 | skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノード URL ホストを許容）・テーブル/フォルダ id | `ir.unknown_skill` |
 | V5 | データフロー | `$from` の祖先性・default 要否・条件木の型整合（静的に分かる範囲）・regex コンパイル | `ir.bad_ref` |
 | V6 | script コンパイル | inline script の swc パース・禁止構文（[script.md](./script.md) §3。artifact 参照は version 固定なので存在のみ） | `ir.script_syntax` |
-| V7 | 上限 | ノード ≤ 200・エッジ ≤ 500・IR ≤ 1MB・条件木深さ ≤ 5・テンプレ var 数 ≤ 50・承認の期限 < `run_timeout_sec`・`workflow.reply` ≤ 10 | `ir.limit_exceeded` |
+| V7 | 上限 | ノード ≤ 200・エッジ ≤ 500・IR ≤ 1MB・条件木深さ ≤ 5・テンプレ var 数 ≤ 50・承認の期限 < `run_timeout_sec`・`workflow.reply` ≤ 10・agent.invoke の手順・時間・トークン・依頼の大きさ（§7.4） | `ir.limit_exceeded` |
 
 各ステージの詳細:
 
@@ -610,6 +632,8 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **V3 語彙照合**: ノード `type`・`declared_scopes`・ツール名（`allowed_tools`）・モデル名を codegen が生成した閉じた語彙と、テナントの登録カタログ（モデルは組織が許可したモデル・本人専用を除く）へ照合する。**ハルシネーション境界**であり、実在しない語彙を参照する IR（特に AI 生成）を保存前に拒否する。`llm.invoke` の `model` は省略可で、省略（空文字を含む）は照合しない（実行時に組織の既定で解決する・§7.3）。組織がモデルの選択を禁じていれば、既定と異なるモデルを `ir.model_choice_disabled` で拒否する。
 - **V4 参照存在**: skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノードの `http.request` URL ホストを許容する）・テーブル/フォルダ id の実在を検証する。`human.approval` は、テーブルが保存者に見えて FSM で管理されていること（見えないテーブルと FSM でないテーブルは同じ文言 `ir.unknown_table`）、判断の行き先が FSM の状態であること（`ir.unknown_state`）、`show_fields` と担当者の列がテーブルの列（担当者はユーザー・部署の列）であることを照合する（材料は保存 API が保存者の権限で引く）。
 - **V3 の承認**: `human.approval` は `data.read` と `notify.send` の宣言が要る（保存時の scope 補完が足す）。
+- **V3 の AI エージェント**: `allowed_tools` の未知の名前は V1（選択肢にない値）、予約の道具は `ir.unknown_tool`、要求スコープの宣言漏れは `ir.missing_scope`（path は `/params/allowed_tools/<i>`・保存時の scope 補完が足す）。`model` は `llm.invoke` と同じ照合（path は `/params/model`）。web.fetch を選んだときだけ、`egress_allowlist` を照合する（空は `ir.missing_egress`、形は `ir.bad_host`、管理者の天井の外は `ir.host_outside_ceiling`・path は `/params/egress_allowlist/<i>`）。
+- **V5 の AI エージェント**: 依頼（`instruction`）をリテラルで書くなら文字（`ir.expr_type_error`・参照と差し込みは実行時に文字かを確かめる）。
 - **V5 データフロー**: `$from` の `nodes.<id>` が祖先か、全パスで先行しない場合に `default` があるか、条件木の左右の型が静的に整合するか、`matches` の regex がコンパイルできるかを検証する（§3）。`control.wait` の `filter` では、届いたイベントを指す `event`（別名 `trigger` / `payload`）も書ける（§7.5）。
 - **保存を止めない警告**（V3・イベント）: 同じテーブルの `data.record.updated` と `data.transition`（`ir.overlapping_data_triggers`）、wait(event) の filter の別名（`ir.wait_filter_alias`）、続けて待つ承認の期限の合計が実行の期限以上（`ir.approval_timeouts_exceed_run`・§7.9）。
 - **V6 script コンパイル**: inline script を swc でパースし、禁止構文を弾く（[script.md](./script.md) §3）。artifact 参照は version 固定なので存在確認のみ。
@@ -639,6 +663,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **有効化（enable）は version 単位**: `workflow_registration` が `enabled_version` を指す（[engine.md](./engine.md) §2/§10）。新版を公開しても、enable を切り替えるまで旧版が動き続ける。
 - **`ir_version`（スキーマ版）は整数単調増加**。エンジンは N と N-1 を読める（それ以前は保存時マイグレーション必須）。フィールド追加であっても deny-unknown のため `ir_version` を上げる（安全側に倒す・頻度は低い想定）。
   - **ノード種の追加（予約語彙の解禁・新しい variant）は `ir_version` を上げない**。`Node.type` は文字列として読み V3 で語彙と照合するので、serde の形が変わらない（前例: `csv.*`・`data.*`・`human.approval`・`workflow.reply`）。上げるのはエンベロープや既存の構造体（トリガ・エッジ・ポリシー）へのフィールドの追加。
+  - **既存のノードの params への任意の項目の追加も `ir_version` を上げない**。旧い IR はそのまま読め、旧いエンジンは新しい項目を持つ IR を params の読み取りで拒否する（fail-closed・前例: `agent.invoke` の `allowed_tools`・`context`・`model`・`max_steps`・`max_tokens`）。
 - **削除は論理削除のみ**（実行履歴の run が version を参照し続けるため）。
 - **scope 拡大時の再同意**: 新 version の `declared_scopes` が旧版より広がった場合、有効化済みワークフローは再同意が済むまで新版へ切替不可（§2・fail-closed）。縮小のみなら差分同意なしで切替可能（同意フローの UI 契約は [engine.md](./engine.md) §10）。
 

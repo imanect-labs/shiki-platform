@@ -700,6 +700,8 @@ run 前チェックだけでは「実行中 run の失権」を止められな�
 
 `NodeContext` に `scope_ceiling = declared_scopes ∩ ノード設定` を運ぶ。**skill 実行中（skill ノード・script 付き skill）はさらに skill の宣言スコープを交差**する: `scope_ceiling = declared_scopes ∩ ノード設定 ∩ skill宣言スコープ`（miniapp-platform §7 の表のとおり。広い declared_scopes を持つワークフローに狭い目的でインストールされた skill が、ワークフローの権限で任意の能力を呼べてはならない）。**能力ゲートウェイ（既存チョークポイント）側で「操作の要求スコープ ∈ scope_ceiling」を検証してから、通常の OpenFGA check** を行う（二重ゲート）。個別ノード実装に検査を書かせない。実効権限 = 実行主体 ReBAC ∩ scope_ceiling であり、ノード設定・skill 宣言はいずれも縮小のみ（拡大不能・miniapp-platform §2.5）。
 
+**agent.invoke**（ir.md §7.4）は `scope_ceiling = declared_scopes ∩ 提示した道具の要求スコープ` で道具を提示する。ループ（api の agent-core）は道具の呼び出しを `AgentToolGateway`（エンジンの実装）へ中継するだけで権限を判断しない。ゲートウェイは script の `Shiki.*` と同じ一段目を通す: 提示した道具か（外れたら `invalid`・監査 reason=not_offered）→ scope 天井（外れたら `out_of_scope` の監査）→ 引数の上限（モデルが書く引数は敵対的入力）→ 宛先（web.fetch は `egress_allowlist ∩ workflow.agent.web_allowlist` を URL のホスト部の文字列で照合・外れたら監査 host_not_allowed）→ 監査（via=agent）→ NodePorts（`rag_search`・`storage_list`・`storage_read_window`・`doc_read`・`web_search`・`web_fetch`・`code_run`）→ 結果の上限。二段目（OpenFGA・二段 authz・存在秘匿）はポートの先のチョークポイントが担う。
+
 ### 6.6 OpenFGA モデリング（解決済み・実装済み）
 
 委譲 = 対象オブジェクトへの **通常 relation タプル**（subject = workflow プリンシパル）＋
@@ -829,6 +831,8 @@ UPDATE concurrency_counter SET current = current + 1
 
 rate limit は既存の Redis トークンバケット（テナント × 能力）を再利用する。能力ゲートウェイの呼び出し口でトークンを消費し、枯渇時は `rate_limited` エラーを返す。これは §7.5 の分類に接続し、attempt 非消費の遅延再スケジュールになる（step を失敗させない・Task 10.5 受け入れ条件）。
 
+**agent.invoke の同時実行**: agent.invoke の step は最大 3600 秒ワーカーのループを 1 本占有する。§8.1 のノード種の枠はワークフローごとなので、それだけでは同じプロセスの全テナントの step が止まり得る。そこでプロセス内の枠（`workflow.agent.max_concurrent`・未設定は run ワーカーの並行数の半分・最低 1）で抑え、取れなければ `concurrency_limited`（attempt 非消費の順番待ち・§7.5）を返す。枠は agent.invoke だけに掛かり、ほかの種類の step は進む。テナント単位の公平性は後続で入れる。
+
 ### 8.3 run 多重度・トリガ溢れ
 
 run の多重度は `policies.concurrency.max_parallel_runs`（ir.md §2）で制御する。超過したトリガ発火は `on_trigger_overflow` に従う。
@@ -870,6 +874,8 @@ step を `waiting_timer` にし `wake_at` を書いてワーカーを解放す�
 ### 9.3 キャンセル
 
 キャンセルは API（本人 or 管理者・ReBAC）→ `workflow_run.cancel_requested = true` ＋ Redis pub/sub 通知で伝播する。ワーカーは **step 境界**および **長時間オペ内部**（LLM ストリーム読取・sandbox 実行・http）で検知する。sandbox は sandbox-client 経由で kill する。
+
+実行中の step へは `NodeContext.cancel`（止める合図・`CancelSignal`）で伝える。ワーカーは heartbeat が **取り消し要求あり**（`Some(true)`）か **リースの喪失**（fencing 不一致＝`None`）を返したら合図を立てる（取り消しのときは止まるまでリースを延ばし続ける）。agent.invoke は手順の境界でこれを見て止まる（ポートは `workflow_run` を引かない）。リースを失った旧ワーカーの agent も止まるので、別のワーカーが同じ step を最初から走らせている間に費用を使い続けない。時間の上限は予算の期限で手順の境界に止め、止まらなければ猶予（30 秒）の後で打ち切る。
 
 猶予（初期値 10s）後にリースを放棄し、当該 step を `failed(cancelled)`、未実行 step を `skipped`、run を `cancelled` にする。ドレイン完了で run terminal（§3.1）。
 
@@ -965,6 +971,8 @@ run 作成時に `trace_id` を採番し `workflow_run` 行へ記録する。spa
 ### 11.2 AI ノードの Langfuse 突合
 
 `llm.invoke`/`agent.invoke` は llm-gateway/agent-core の Langfuse `trace_id` を `step_execution.langfuse_trace_id` に保存し、UI で突合リンクを出す（既存の監査 × Langfuse 突合の再利用）。
+
+agent.invoke の会計の利用元は `workflow`（自律版のループでも `agent` ではなく `workflow` として数える）。会計キーには attempt と nonce を入れる（`wf-agent:{run_id}:{step_path}:{attempt}:{nonce}`。リース回収では attempt が戻るので、step キーだけだと再実行の消費が重複排除されて過少に数えられる）。監査は step 1 件（`agent.invoke`・モデル・提示した道具・提示しなかった道具・停止理由・手順・道具の呼び出しの数。依頼の本文は載せない）と、道具の呼び出しごとに 1 件（via=agent）。
 
 ### 11.3 実行履歴 UI の正
 
