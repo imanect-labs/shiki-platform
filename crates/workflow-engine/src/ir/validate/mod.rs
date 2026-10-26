@@ -175,6 +175,16 @@ pub fn validate(
             );
         }
     }
+    // V1c: input_schema の項目の並びの注記 `x-order`（D-60）。起動の検証は注記として読み飛ばすので、
+    // 形（properties のキーの文字列の配列・重なりなし）は保存で止める。
+    if let Some(schema) = &ir.input_schema {
+        for (at, message) in crate::ir::input_schema::order_errors(schema) {
+            errors.push(
+                ValidationError::new("ir.schema_violation", message)
+                    .at_path(format!("/input_schema{at}")),
+            );
+        }
+    }
     // V7: 上限（他段より先に軽く弾く）。
     v7_limits(value, &ir, &mut errors);
     // V2: グラフ（id 一意・エッジ参照・DAG・入エッジ制約・領域閉包・到達性・reply は本体だけ）。
@@ -428,6 +438,34 @@ mod tests {
         let ir = json!({ "ir_version": 1, "name": "wf", "surprise": 1 });
         let errs = validate(&ir, &catalog()).unwrap_err();
         assert_eq!(errs[0].code, "ir.schema_violation");
+    }
+
+    /// D-60: input_schema の `x-order` は保存でき、形が合わなければ位置つきで保存を止める。
+    #[test]
+    fn v1c_input_order_is_checked_on_save() {
+        let ir = |order: serde_json::Value| {
+            json!({
+                "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+                "input_schema": { "type": "object", "x-order": order, "properties": {
+                    "title": { "type": "string" }, "amount": { "type": "integer" } } },
+                "nodes": [{ "id": "ask", "type": "llm.invoke", "params": { "prompt": "要約して" } }],
+                "edges": []
+            })
+        };
+        let saved = validate(&ir(json!(["title", "amount"])), &catalog()).expect("保存できる");
+        assert_eq!(
+            saved.input_schema.as_ref().and_then(|s| s.get("x-order")),
+            Some(&json!(["title", "amount"]))
+        );
+        let errs = validate(&ir(json!(["title", "amout"])), &catalog()).unwrap_err();
+        assert_eq!(errs.len(), 1, "{errs:#?}");
+        assert_eq!(errs[0].code, "ir.schema_violation");
+        assert_eq!(errs[0].path.as_deref(), Some("/input_schema/x-order/1"));
+        assert_eq!(
+            errs[0].message,
+            "x-order の「amout」は properties にありません"
+        );
+        assert_eq!(errs[0].node_id, None);
     }
 
     #[test]

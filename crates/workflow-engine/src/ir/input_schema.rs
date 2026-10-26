@@ -7,8 +7,13 @@
 //! `const`・`minimum`・`maximum`・`exclusiveMinimum`・`exclusiveMaximum`・`minLength`・
 //! `maxLength`・`pattern`・`minItems`・`maxItems`。`format` は `date`（`YYYY-MM-DD` の実在する日付）だけを
 //! 検査し、ほかの値は注記として読み飛ばす（画面の日付の欄が送る形を、API や会話の図からの起動でも守らせる・
-//! BUG-35）。注記（`title`・`description`・`default`・`examples`・`$schema`・`$comment`）は読み飛ばす。
-//! それ以外（`$ref`・`oneOf` など）は検証できないので**起動しない**（黙って緩く通さない・fail-closed）。
+//! BUG-35）。注記（`title`・`description`・`default`・`examples`・`$schema`・`$comment`・`x-order`）は
+//! 読み飛ばす。それ以外（`$ref`・`oneOf` など）は検証できないので**起動しない**（黙って緩く通さない・fail-closed）。
+//!
+//! `x-order` は画面に並べる項目のキーの順（D-60・BUG-34）。IR は jsonb の列に保存されるので、`properties` の
+//! キーの順は保存して読み直すと変わる。形の誤りは起動ではなく保存で止める（[`order_errors`]）。
+
+use std::collections::HashSet;
 
 use serde_json::{Map, Value};
 
@@ -43,7 +48,79 @@ const ANNOTATIONS: &[&str] = &[
     "format",
     "$schema",
     "$comment",
+    ORDER,
 ];
+
+/// 項目の並びの注記（`properties` のキーの配列・D-60）。
+pub const ORDER: &str = "x-order";
+
+/// `x-order` の形の誤り（保存時検証が `ir.schema_violation` にする）。スキーマの全階層を見る。
+///
+/// 返すのは（スキーマの中の位置の JSON Pointer, 文言）の一覧。`x-order` は文字列の配列で、同じオブジェクトの
+/// `properties` のキーだけを重ねずに書く（全部のキーを書かなくてよい。書かれていないキーは、画面がその後ろに
+/// 今の順で並べる）。起動の検証は注記として読み飛ばすので、形を守らせるのはここだけ。
+#[must_use]
+pub fn order_errors(schema: &Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    walk_order(schema, "", 0, &mut out);
+    out
+}
+
+fn walk_order(schema: &Value, ptr: &str, depth: usize, out: &mut Vec<(String, String)>) {
+    let Value::Object(s) = schema else {
+        return;
+    };
+    if depth > MAX_DEPTH || out.len() >= MAX_ERRORS {
+        return;
+    }
+    let props = s.get("properties").and_then(Value::as_object);
+    if let Some(order) = s.get(ORDER) {
+        if let Some((at, message)) = order_error(order, props) {
+            out.push((format!("{ptr}/{ORDER}{at}"), message));
+        }
+    }
+    for (k, sub) in props.into_iter().flatten() {
+        walk_order(
+            sub,
+            &format!("{ptr}/properties/{}", pointer_token(k)),
+            depth + 1,
+            out,
+        );
+    }
+    for key in ["items", "additionalProperties"] {
+        if let Some(sub) = s.get(key) {
+            walk_order(sub, &format!("{ptr}/{key}"), depth + 1, out);
+        }
+    }
+}
+
+/// 1 つの `x-order` の誤り（`x-order` の中の位置, 文言）。最初の 1 件だけ返す。
+fn order_error(order: &Value, props: Option<&Map<String, Value>>) -> Option<(String, String)> {
+    let Value::Array(keys) = order else {
+        return Some((
+            String::new(),
+            "x-order は項目のキー（文字列）の配列で書いてください".into(),
+        ));
+    };
+    let mut seen = HashSet::new();
+    for (i, key) in keys.iter().enumerate() {
+        let message = match key.as_str() {
+            None => "x-order には項目のキー（文字列）だけを書いてください".to_string(),
+            Some(k) if !props.is_some_and(|p| p.contains_key(k)) => {
+                format!("x-order の「{k}」は properties にありません")
+            }
+            Some(k) if !seen.insert(k) => format!("x-order の「{k}」が重なっています"),
+            Some(_) => continue,
+        };
+        return Some((format!("/{i}"), message));
+    }
+    None
+}
+
+/// JSON Pointer の 1 段（RFC 6901 の `~0`・`~1`）。
+fn pointer_token(key: &str) -> String {
+    key.replace('~', "~0").replace('/', "~1")
+}
 
 /// 入力をスキーマで検証する。誤りは「場所: 理由」の文（日本語）の一覧。
 pub fn validate_input(schema: &Value, input: &Value) -> Result<(), Vec<String>> {
@@ -491,6 +568,99 @@ mod tests {
         assert_eq!(
             errs,
             vec!["入力: 入力スキーマの required が不正です".to_string()]
+        );
+    }
+
+    /// D-60: `x-order` は起動の検証では読み飛ばす注記（入力の値には関わらない）。
+    #[test]
+    fn order_is_an_annotation_at_launch() {
+        let s = json!({ "type": "object", "x-order": ["title", "amount"], "properties": {
+            "amount": { "type": "integer" }, "title": { "type": "string" } } });
+        assert!(validate_input(&s, &json!({ "title": "出張", "amount": 1200 })).is_ok());
+        assert!(order_errors(&s).is_empty());
+        // 一部のキーだけ・空の配列も書ける（書かれていないキーは画面がその後ろに並べる）。
+        assert!(
+            order_errors(&json!({ "x-order": ["b"], "properties": { "a": {}, "b": {} } }))
+                .is_empty()
+        );
+        assert!(order_errors(&json!({ "type": "object", "x-order": [] })).is_empty());
+    }
+
+    /// D-60: `x-order` の形の誤り（文字列の配列でない・properties に無いキー・重なり）を、位置つきで返す。
+    #[test]
+    fn malformed_order_is_reported_with_its_position() {
+        let props = json!({ "a": { "type": "string" }, "b": { "type": "string" } });
+        let cases = [
+            (
+                json!("a"),
+                "/x-order",
+                "x-order は項目のキー（文字列）の配列で書いてください",
+            ),
+            (
+                json!(["a", 1]),
+                "/x-order/1",
+                "x-order には項目のキー（文字列）だけを書いてください",
+            ),
+            (
+                json!(["a", "c"]),
+                "/x-order/1",
+                "x-order の「c」は properties にありません",
+            ),
+            (
+                json!(["b", "a", "b"]),
+                "/x-order/2",
+                "x-order の「b」が重なっています",
+            ),
+        ];
+        for (order, at, message) in cases {
+            let s = json!({ "type": "object", "properties": props, "x-order": order });
+            assert_eq!(
+                order_errors(&s),
+                vec![(at.to_string(), message.to_string())],
+                "{order}"
+            );
+        }
+        // properties の無いスキーマのキーは、どれも properties にない。
+        assert_eq!(
+            order_errors(&json!({ "type": "object", "x-order": ["a"] })),
+            vec![(
+                "/x-order/0".to_string(),
+                "x-order の「a」は properties にありません".to_string()
+            )]
+        );
+    }
+
+    /// 入れ子のオブジェクト（properties・items・additionalProperties の中）の x-order も確かめる。
+    #[test]
+    fn nested_order_is_checked() {
+        let s = json!({ "type": "object", "x-order": ["addr", "a/b"], "properties": {
+            "addr": { "type": "object", "x-order": ["zip", "city"],
+                      "properties": { "zip": { "type": "string" } } },
+            "a/b": { "type": "object", "x-order": ["x"] },
+            "list": { "type": "array", "items": { "type": "object", "x-order": [1] } }
+        }, "additionalProperties": { "type": "object", "x-order": "x" } });
+        let mut errs = order_errors(&s);
+        errs.sort();
+        assert_eq!(
+            errs,
+            vec![
+                (
+                    "/additionalProperties/x-order".to_string(),
+                    "x-order は項目のキー（文字列）の配列で書いてください".to_string()
+                ),
+                (
+                    "/properties/addr/x-order/1".to_string(),
+                    "x-order の「city」は properties にありません".to_string()
+                ),
+                (
+                    "/properties/a~1b/x-order/0".to_string(),
+                    "x-order の「x」は properties にありません".to_string()
+                ),
+                (
+                    "/properties/list/items/x-order/0".to_string(),
+                    "x-order には項目のキー（文字列）だけを書いてください".to_string()
+                ),
+            ]
         );
     }
 
