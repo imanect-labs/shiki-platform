@@ -25,7 +25,7 @@ import { getViewerContext, type DataTable } from "@/lib/data-api";
 import { cn } from "@/lib/utils";
 import { paramField } from "../validation";
 import { Field, NumberInput } from "./common";
-import { DataTableSelect, useDataTables } from "./forms-data";
+import { DataTableSelect, useDataTables, type TableLookup } from "./data-tables";
 import type { FormProps, ServerCheck } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
@@ -41,6 +41,26 @@ const CHOICES: { key: ChoiceKey; title: string; defaultLabel: string; optional: 
 
 const MAX_ASSIGNEES = 20;
 const MAX_SHOW_FIELDS = 30;
+
+/// 承認に使えるテーブル（状態の遷移の規則・FSM で管理するもの）。
+function isFsmTable(t: DataTable): boolean {
+  return Boolean(t.schema.fsm_ref);
+}
+
+/// 承認するテーブルを束縛したのに、その定義を使えないときの、テーブルに依存する欄（進める状態・相手の列）の注記。
+/// 束縛していなければ null（それぞれの欄の「先にテーブルを選んでください」のまま）。
+function boundTableNote(found: TableLookup): string | null {
+  switch (found.state) {
+    case "none":
+      return null;
+    case "loading":
+      return "読み込み中…";
+    case "ok":
+      return isFsmTable(found.table) ? null : "状態の遷移の規則があるテーブルを選んでください";
+    default:
+      return "テーブルを読めないため選べません";
+  }
+}
 
 /// FSM で管理するテーブルの状態（状態の列の選択肢）。
 function statesOf(table: DataTable | null): string[] {
@@ -153,10 +173,13 @@ function unselectableNote(key: string, missing: boolean): { text: string; certai
 
 export function HumanApprovalForm(props: FormProps) {
   const { node, dispatch, refCandidates, inMapRegion, fieldErrors, serverCheck } = props;
-  const { tables } = useDataTables();
   const p = paramsOf<Params>(node);
-  const fsmTables = React.useMemo(() => (tables ?? []).filter((t) => Boolean(t.schema.fsm_ref)), [tables]);
-  const table = fsmTables.find((t) => t.id === p.record?.table) ?? null;
+  // 束縛済みのテーブルが一覧（200 件で打ち切る）に無くても、1 件取って足す（BUG-68）。
+  const source = useDataTables({ bound: [p.record?.table] });
+  const found = source.lookup(p.record?.table);
+  const table = found.state === "ok" && isFsmTable(found.table) ? found.table : null;
+  const tableNote = boundTableNote(found);
+  const noFsmTable = source.tables !== null && !source.tables.some(isFsmTable);
   const seesWholeTable = useSeesWholeTable(table?.id ?? null);
   const states = statesOf(table);
   const unreadableStates = statusUnreadable(table);
@@ -192,14 +215,14 @@ export function HumanApprovalForm(props: FormProps) {
       >
         <DataTableSelect
           value={record.table || null}
-          tables={tables === null ? null : fsmTables}
+          source={source}
+          eligible={isFsmTable}
+          ineligibleNote="このテーブルは状態の遷移の規則（FSM）で管理していないので、承認には使えません"
           label="承認するテーブル"
-          onChange={(id) =>
-            set(retargetTable(p, record, fsmTables.find((t) => t.id === id) ?? null, id))
-          }
+          onChange={(id) => set(retargetTable(p, record, source.tables?.find((t) => t.id === id) ?? null, id))}
         />
       </Field>
-      {tables !== null && fsmTables.length === 0 ? (
+      {noFsmTable ? (
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           状態の遷移の規則があるテーブルがありません。テーブルの設定で状態の列と遷移の規則を作ってください。
         </p>
@@ -218,6 +241,7 @@ export function HumanApprovalForm(props: FormProps) {
         table={table}
         assignees={p.assignees ?? []}
         seesWholeTable={seesWholeTable}
+        tableNote={tableNote}
         error={listError(fieldErrors.get("assignees"), serverCheck, "assignees", seesWholeTable)}
         onChange={(assignees) => set({ assignees })}
       />
@@ -233,6 +257,7 @@ export function HumanApprovalForm(props: FormProps) {
             value={value}
             states={states}
             statesUnreadable={unreadableStates}
+            tableNote={tableNote}
             error={fieldErrors.get(c.key)}
             onChange={(next) => set({ [c.key]: next })}
           />
@@ -292,6 +317,7 @@ export function HumanApprovalForm(props: FormProps) {
 ///
 /// `statesUnreadable`（選んだテーブルの状態の列が自分に読めない）なら、状態を選ぶ欄の代わりにそう出す。状態の
 /// 名前を手で書く欄にすると、選べない状態を当て推量で書かせることになり、保存もサーバの照合が止める。
+/// `tableNote`（束縛したテーブルの定義を使えない・読み込み中）も同じく、手で書く欄の代わりにその注記を出す。
 function ChoiceField({
   title,
   defaultLabel,
@@ -299,6 +325,7 @@ function ChoiceField({
   value,
   states,
   statesUnreadable,
+  tableNote,
   error,
   onChange,
 }: {
@@ -308,6 +335,7 @@ function ChoiceField({
   value: ApprovalChoice | undefined;
   states: string[];
   statesUnreadable: boolean;
+  tableNote: string | null;
   error?: string;
   onChange: (next: ApprovalChoice | undefined) => void;
 }) {
@@ -317,9 +345,10 @@ function ChoiceField({
   const unknownState = states.length > 0 && v.to !== "" && !states.includes(v.to) ? v.to : null;
   // 状態の列が読めないときのサーバの誤り（「進める状態を選んでください」など）は、選べない欄の下に出しても
   // 直しようがないので出さない（保存が止まる理由はこの欄の注記と、テーブルの欄の ir.unknown_table が言う）。
-  const stateError = statesUnreadable
-    ? undefined
-    : (error ?? (unknownState ? `このテーブルに無い状態: ${unknownState}` : undefined));
+  const stateError =
+    statesUnreadable || tableNote
+      ? undefined
+      : (error ?? (unknownState ? `このテーブルに無い状態: ${unknownState}` : undefined));
   return (
     <fieldset className="space-y-2 rounded-lg border p-2.5">
       <legend className="flex w-full items-center justify-between gap-2 px-1 text-xs font-medium">
@@ -337,6 +366,8 @@ function ChoiceField({
           <Field label="進める状態" error={stateError}>
             {statesUnreadable ? (
               <p className="text-[11px] text-destructive">このテーブルの状態の列を読めません</p>
+            ) : tableNote ? (
+              <p className="text-[11px] text-muted-foreground">{tableNote}</p>
             ) : states.length ? (
               <Select value={v.to || ""} onValueChange={(to) => onChange({ ...v, to })}>
                 <SelectTrigger aria-label={`${title}に進める状態`} className="h-8 text-[13px]">
@@ -389,7 +420,8 @@ function ChoiceField({
 ///
 /// 列が選べる列に無いとき、「テーブルに無い」と言うのは `seesWholeTable` が真のときだけ（受信箱に出す列と同じ）。
 /// owner 以外に返る定義には読めない列が無いので、読めないだけのユーザーの列を「無い」と言わない。`error` は
-/// 欄の下に出すサーバの誤り（[`listError`] で言い方を直したもの）。
+/// 欄の下に出すサーバの誤り（[`listError`] で言い方を直したもの）。`tableNote` は束縛したテーブルの定義を
+/// 使えないとき（読み込み中・読めない）の注記で、「先にテーブルを選んでください」の代わりに出す。
 function AssigneesField({
   node,
   refCandidates,
@@ -397,12 +429,14 @@ function AssigneesField({
   table,
   assignees,
   seesWholeTable,
+  tableNote,
   error,
   onChange,
 }: FormProps & {
   table: DataTable | null;
   assignees: ApprovalAssignee[];
   seesWholeTable: boolean;
+  tableNote: string | null;
   error?: string;
   onChange: (next: ApprovalAssignee[]) => void;
 }) {
@@ -465,7 +499,7 @@ function AssigneesField({
                 ) : (
                   <p className="text-[11px] text-muted-foreground">
                     {!table
-                      ? "先にテーブルを選んでください"
+                      ? (tableNote ?? "先にテーブルを選んでください")
                       : seesWholeTable
                         ? "このテーブルにユーザー・部署の列がありません"
                         : "あなたが読める列に、ユーザー・部署の列がありません"}

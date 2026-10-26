@@ -23,7 +23,7 @@ import { cn } from "@/lib/utils";
 import { SCOPE_LABELS } from "@/lib/workflow-scopes";
 import { FolderPicker } from "@/components/artifacts/folder-picker";
 import { DrivePicker } from "@/components/chat/drive-picker";
-import { DataTableSelect, useDataTables } from "@/components/workflow/editor/config-panel/forms-data";
+import { DataTableSelect, UNREADABLE_TABLE, useDataTables } from "@/components/workflow/editor/config-panel/data-tables";
 import { DriveItemName, isCsvFile } from "@/components/workflow/editor/config-panel/forms-files";
 import {
   disableWorkflow,
@@ -115,9 +115,20 @@ export function EnableDialog({
   const [dataTrigger, setDataTrigger] = React.useState(false);
   const [approval, setApproval] = React.useState(false);
   // 業務データのテーブル（data_table の委譲先を選ぶ・名前の表示にも使う）。
-  const needsTables = (plan?.grants ?? []).some((g) => g.objectKind === "data_table");
-  const { tables } = useDataTables(open && needsTables);
-  const tableName = (id: string | null) => (id ? tables?.find((t) => t.id === id)?.name : undefined);
+  const tableGrants = (plan?.grants ?? []).filter((g) => g.objectKind === "data_table");
+  // ブロックが束縛したテーブルが一覧（200 件で打ち切る）に無くても、1 件取って名前を出す（BUG-68）。
+  const tableSource = useDataTables({
+    enabled: open && tableGrants.length > 0,
+    bound: tableGrants.map((g) => g.objectId),
+  });
+  const tableName = (id: string | null) => {
+    const found = tableSource.lookup(id);
+    return found.state === "ok" ? found.table.name : undefined;
+  };
+  const tableLabel = (id: string) => {
+    const found = tableSource.lookup(id);
+    return found.state === "unreadable" ? `${UNREADABLE_TABLE}: ${id}` : `テーブル「${tableName(id) ?? id}」`;
+  };
   const pick = (i: number, picked: { id: string; name: string }) => {
     if (!plan) return;
     const grants = [...plan.grants];
@@ -326,7 +337,7 @@ export function EnableDialog({
                             : g.picked
                             ? `${TARGETS[g.objectKind]?.what ?? ""}「${g.picked.name}」`
                             : g.objectKind === "data_table" && g.objectId
-                            ? `テーブル「${tableName(g.objectId) ?? g.objectId}」`
+                            ? tableLabel(g.objectId)
                             : (g.objectKind === "file" || g.objectKind === "folder") && g.objectId
                             ? (
                                 <>
@@ -349,7 +360,7 @@ export function EnableDialog({
                           <DataTableSelect
                             label="渡すテーブル"
                             value={g.picked?.id ?? null}
-                            tables={tables}
+                            source={tableSource}
                             onChange={(id) => pick(i, { id, name: tableName(id) ?? id })}
                           />
                         </div>

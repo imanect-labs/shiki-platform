@@ -13,70 +13,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { ValueExpr } from "@/generated/workflow-ir";
-import { listTables, type DataQuery, type DataTable } from "@/lib/data-api";
+import type { DataQuery, DataTable } from "@/lib/data-api";
 import { buildFilter, resolveColumns, splitFilter } from "@/lib/data-view";
 import { cn } from "@/lib/utils";
 import { Field, NumberInput } from "./common";
+import { DataTableSelect, useDataTables, type DataTables } from "./data-tables";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
 
-/// 自分が使えるテーブルの一覧（パネルを開くたびに 1 回だけ読む・`enabled` が偽の間は読まない）。
-export function useDataTables(enabled = true): { tables: DataTable[] | null; error: string | null } {
-  const [tables, setTables] = React.useState<DataTable[] | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
-  React.useEffect(() => {
-    if (!enabled) return;
-    let active = true;
-    listTables()
-      .then((t) => active && setTables(t))
-      .catch((e) => {
-        if (!active) return;
-        setTables([]);
-        setError(e instanceof Error ? e.message : String(e));
-      });
-    return () => {
-      active = false;
-    };
-  }, [enabled]);
-  return { tables, error };
-}
-
-/// テーブルの選択（一覧から固定値で選ぶ）。
-export function DataTableSelect({
-  value,
-  onChange,
-  tables,
-  label = "対象のテーブル",
-  id,
-}: {
-  value: string | null;
-  onChange: (id: string) => void;
-  tables: DataTable[] | null;
-  label?: string;
-  id?: string;
-}) {
-  return (
-    <Select value={value ?? ""} onValueChange={onChange} disabled={tables === null}>
-      <SelectTrigger id={id} aria-label={label} className="h-8 text-[13px]">
-        <SelectValue placeholder={tables === null ? "読み込み中…" : "テーブルを選ぶ"} />
-      </SelectTrigger>
-      <SelectContent>
-        {(tables ?? []).map((t) => (
-          <SelectItem key={t.id} value={t.id}>
-            {t.name}
-          </SelectItem>
-        ))}
-        {tables && tables.length === 0 ? (
-          <div className="px-2 py-1.5 text-xs text-muted-foreground">使えるテーブルがありません</div>
-        ) : null}
-      </SelectContent>
-    </Select>
-  );
-}
-
 /// 対象テーブル（固定値の選択 ／ 前の結果から）。選んだテーブルを返す（列の候補に使う）。
-function TableField({ node, dispatch, refCandidates, inMapRegion, fieldErrors, tables }: FormProps & { tables: DataTable[] | null }) {
+function TableField({ node, dispatch, refCandidates, inMapRegion, fieldErrors, source }: FormProps & { source: DataTables }) {
   const p = paramsOf<{ table: ValueExpr }>(node);
   const literal = typeof p.table === "string" ? p.table : null;
   const dynamic = p.table !== undefined && literal === null;
@@ -85,7 +32,7 @@ function TableField({ node, dispatch, refCandidates, inMapRegion, fieldErrors, t
     <div className="space-y-1.5">
       {mode === "pick" ? (
         <Field label="対象のテーブル" error={fieldErrors.get("table")} hint="有効化のとき、このテーブルの権限を渡します">
-          <DataTableSelect value={literal} tables={tables} onChange={(id) => patchParams(dispatch, node, { table: id })} />
+          <DataTableSelect value={literal} source={source} onChange={(id) => patchParams(dispatch, node, { table: id })} />
         </Field>
       ) : (
         <ValueExprInput
@@ -109,9 +56,14 @@ function TableField({ node, dispatch, refCandidates, inMapRegion, fieldErrors, t
   );
 }
 
-function useTableOf(node: FormProps["node"], tables: DataTable[] | null): DataTable | null {
+/// ブロックの対象テーブル（固定値で束縛したもの）と、選ぶ欄に渡すテーブルの一覧（束縛済みのテーブルが一覧の
+/// 200 件に入らなくても、1 件ずつ取って足す・BUG-68）。
+function useNodeTable(node: FormProps["node"]): { source: DataTables; table: DataTable | null } {
   const p = paramsOf<{ table: ValueExpr }>(node);
-  return typeof p.table === "string" ? ((tables ?? []).find((t) => t.id === p.table) ?? null) : null;
+  const literal = typeof p.table === "string" ? p.table : null;
+  const source = useDataTables({ bound: [literal] });
+  const found = source.lookup(literal);
+  return { source, table: found.state === "ok" ? found.table : null };
 }
 
 function FieldKeysHint({ table }: { table: DataTable | null }) {
@@ -132,8 +84,7 @@ function FieldKeysHint({ table }: { table: DataTable | null }) {
 
 export function DataQueryForm(props: FormProps) {
   const { node, dispatch, fieldErrors } = props;
-  const { tables } = useDataTables();
-  const table = useTableOf(node, tables);
+  const { source, table } = useNodeTable(node);
   const p = paramsOf<NodeParamsByType["data.query"]>(node);
   const query: DataQuery = (p.query as DataQuery | undefined) ?? {};
   const columns = React.useMemo(() => (table ? resolveColumns(table.schema.fields, null, new Set()) : []), [table]);
@@ -144,7 +95,7 @@ export function DataQueryForm(props: FormProps) {
   };
   return (
     <div className="space-y-4">
-      <TableField {...props} tables={tables} />
+      <TableField {...props} source={source} />
       {table ? (
         <div className="space-y-1.5">
           <span className="text-xs font-medium">絞り込み・並べ替え</span>
@@ -180,12 +131,11 @@ export function DataQueryForm(props: FormProps) {
 
 export function DataRecordCreateForm(props: FormProps) {
   const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
-  const { tables } = useDataTables();
-  const table = useTableOf(node, tables);
+  const { source, table } = useNodeTable(node);
   const p = paramsOf<NodeParamsByType["data.record.create"]>(node);
   return (
     <div className="space-y-4">
-      <TableField {...props} tables={tables} />
+      <TableField {...props} source={source} />
       <ValueExprInput
         label="レコードの値"
         value={p.data as ValueExpr | undefined}
@@ -231,12 +181,11 @@ function RecordAndRev(props: FormProps) {
 
 export function DataRecordUpdateForm(props: FormProps) {
   const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
-  const { tables } = useDataTables();
-  const table = useTableOf(node, tables);
+  const { source, table } = useNodeTable(node);
   const p = paramsOf<NodeParamsByType["data.record.update"]>(node);
   return (
     <div className="space-y-4">
-      <TableField {...props} tables={tables} />
+      <TableField {...props} source={source} />
       <RecordAndRev {...props} />
       <ValueExprInput
         label="変更する値"
@@ -284,10 +233,10 @@ function StatusFieldHint({ table, patch }: { table: DataTable | null; patch: unk
 }
 
 export function DataRecordDeleteForm(props: FormProps) {
-  const { tables } = useDataTables();
+  const { source } = useNodeTable(props.node);
   return (
     <div className="space-y-4">
-      <TableField {...props} tables={tables} />
+      <TableField {...props} source={source} />
       <RecordAndRev {...props} />
     </div>
   );
@@ -295,8 +244,7 @@ export function DataRecordDeleteForm(props: FormProps) {
 
 export function DataTransitionForm(props: FormProps) {
   const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
-  const { tables } = useDataTables();
-  const table = useTableOf(node, tables);
+  const { source, table } = useNodeTable(node);
   const p = paramsOf<NodeParamsByType["data.transition"]>(node);
   const statusField = table?.schema.status_field
     ? table.schema.fields.find((f) => f.key === table.schema.status_field)
@@ -305,7 +253,7 @@ export function DataTransitionForm(props: FormProps) {
   const literal = typeof p.to === "string" ? p.to : null;
   return (
     <div className="space-y-4">
-      <TableField {...props} tables={tables} />
+      <TableField {...props} source={source} />
       <RecordAndRev {...props} />
       {options.length && (literal !== null || p.to === undefined) ? (
         <Field label="次の状態" error={fieldErrors.get("to")} hint="状態の遷移の規則（FSM）で許される先だけが実行できます">
@@ -339,12 +287,11 @@ export function DataTransitionForm(props: FormProps) {
 
 export function DataBulkUpsertForm(props: FormProps) {
   const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
-  const { tables } = useDataTables();
-  const table = useTableOf(node, tables);
+  const { source, table } = useNodeTable(node);
   const p = paramsOf<NodeParamsByType["data.bulk_upsert"]>(node);
   return (
     <div className="space-y-4">
-      <TableField {...props} tables={tables} />
+      <TableField {...props} source={source} />
       <ValueExprInput
         label="登録する行"
         value={p.rows as ValueExpr | undefined}

@@ -27,7 +27,7 @@ import { FolderPicker, type FolderChoice } from "@/components/artifacts/folder-p
 import { EVENT_CATALOG } from "@/generated/workflow-catalog";
 import type { Condition, Trigger } from "@/generated/workflow-ir";
 import { Field } from "./common";
-import { DataTableSelect, useDataTables } from "./forms-data";
+import { DataTableSelect, useDataTables } from "./data-tables";
 import { InputSchemaEditor, type InputRefUsage } from "./input-schema-editor";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
@@ -334,9 +334,11 @@ function FolderEventFields({ trigger, onChange }: { trigger: EventTrigger; onCha
 const ANY_STATE = "__any__";
 
 function TableEventFields({ trigger, onChange }: { trigger: EventTrigger; onChange: (next: Trigger) => void }) {
-  const { tables, error } = useDataTables();
   const tableId = (trigger.scope as { table?: string } | null)?.table ?? null;
-  const table = (tables ?? []).find((t) => t.id === tableId) ?? null;
+  // 束縛済みのテーブルが一覧（200 件で打ち切る）に無くても、1 件取って足す（BUG-68）。
+  const source = useDataTables({ bound: [tableId] });
+  const found = source.lookup(tableId);
+  const table = found.state === "ok" ? found.table : null;
   const statusField = table?.schema.status_field
     ? table.schema.fields.find((f) => f.key === table.schema.status_field)
     : undefined;
@@ -347,11 +349,11 @@ function TableEventFields({ trigger, onChange }: { trigger: EventTrigger; onChan
       <Field
         label="対象のテーブル"
         hint="有効化した人に見える行・列の変更だけで動きます。一括取込と、このワークフロー自身の書込では動きません。必須です"
-        error={error ? "テーブルの一覧を読み込めませんでした" : null}
+        error={source.error ? "テーブルの一覧を読み込めませんでした" : null}
       >
         <DataTableSelect
           value={tableId}
-          tables={tables}
+          source={source}
           onChange={(id) => {
             // テーブルを変えたら状態の条件は外す（別のテーブルの状態名は当てはまらない）。
             const { filter: _filter, ...rest } = trigger;
