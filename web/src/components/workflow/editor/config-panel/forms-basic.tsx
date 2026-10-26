@@ -1,14 +1,13 @@
 "use client";
 
-/// 能力ノードのフォーム（社内検索・AI に聞く・AI エージェント・別フロー起動・スキル）。
-/// ファイル（storage.* / csv.*）のフォームは forms-files.tsx にある。
+/// 能力ノードのフォーム（社内検索・AI に聞く・別フロー起動・スキル）。
+/// ファイル（storage.* / csv.*）のフォームは forms-files.tsx、AI エージェントは forms-agent.tsx にある。
 ///
 /// フィールドは codegen の typed 契約（NodeParamsByType）に対応する（効かない設定は出さない）。
 
 import * as React from "react";
 
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { Node as IrNode, ValueExpr } from "@/generated/workflow-ir";
 import type { EditorAction } from "../ir-state";
@@ -110,56 +109,6 @@ export function LlmInvokeForm({ node, dispatch, refCandidates, inMapRegion, fiel
           error={fieldErrors.get("max_tokens")}
         />
       )}
-    </div>
-  );
-}
-
-export function AgentInvokeForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
-  const p = paramsOf<NodeParamsByType["agent.invoke"]>(node);
-  const allowlist = (p.egress_allowlist as string[] | undefined) ?? [];
-  return (
-    <div className="space-y-3">
-      <ValueExprInput
-        label="エージェントへの依頼"
-        text
-        value={p.instruction as ValueExpr | undefined}
-        onChange={(v) => patchParams(dispatch, node, { instruction: v })}
-        refCandidates={refCandidates}
-        inMapRegion={inMapRegion}
-        multiline
-        placeholder="例: 添付の資料を確認して要点をまとめて"
-        error={fieldErrors.get("instruction")}
-      />
-      <Field
-        label="接続を許可する外部サイト（省略可）"
-        hint="1 行 1 ドメイン。空欄なら外部接続なし（安全側）"
-        error={fieldErrors.get("egress_allowlist")}
-      >
-        <Textarea
-          value={allowlist.join("\n")}
-          rows={2}
-          placeholder={"api.example.com"}
-          onChange={(e) =>
-            patchParams(dispatch, node, {
-              egress_allowlist: e.target.value
-                .split("\n")
-                .map((s) => s.trim())
-                .filter(Boolean),
-            })
-          }
-          className="font-mono text-xs"
-        />
-      </Field>
-      <Field label="実行時間の上限（秒・省略可）">
-        <NumberInput
-          value={typeof p.max_duration_sec === "number" ? p.max_duration_sec : null}
-          min={10}
-          max={3600}
-          onChange={(n) =>
-            patchParams(dispatch, node, { max_duration_sec: n ?? undefined })
-          }
-        />
-      </Field>
     </div>
   );
 }

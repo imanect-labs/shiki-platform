@@ -144,7 +144,8 @@ export function defaultParams(nodeType: string): unknown {
     case "llm.invoke":
       return { prompt: "" };
     case "agent.invoke":
-      return { instruction: "" };
+      // 道具は社内を読むものだけを選んだ状態で置く（省略は道具なし・社外へ出る道具は明示して選ぶ・BUG-6）。
+      return { instruction: "", allowed_tools: ["rag.search", "doc.read", "storage.list"] };
     case "http.request":
       return { url: "https://" };
     case "script.run":

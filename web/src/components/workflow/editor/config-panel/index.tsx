@@ -25,8 +25,8 @@ import { mapErrors, nodeErrorView } from "../validation";
 import { CommonSection } from "./common";
 import { HumanApprovalForm } from "./forms-approval";
 import { WorkflowReplyForm } from "./forms-reply";
+import { AgentInvokeForm } from "./forms-agent";
 import {
-  AgentInvokeForm,
   LlmInvokeForm,
   RagSearchForm,
   SkillInvokeForm,

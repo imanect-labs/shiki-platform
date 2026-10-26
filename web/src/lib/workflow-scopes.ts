@@ -11,6 +11,8 @@ export const SCOPE_LABELS: Record<string, string> = {
   "http.egress": "外部サービスへ送信する",
   "workflow.start": "別のワークフローを起動する",
   "notify.send": "人へのお知らせ（承認の依頼を含む）",
+  "doc.read": "文書の本文を読む",
+  "sandbox.exec": "隔離された環境でプログラムを動かす",
 };
 
 export function scopeLabel(scope: string): string {

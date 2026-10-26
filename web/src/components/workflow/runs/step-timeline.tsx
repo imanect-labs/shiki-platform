@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { getStep, type StepDetail, type StepOverview } from "@/lib/workflow-run-api";
 import { nodeIcon } from "@/components/workflow/editor/icons";
+import { AgentResult, isAgentOutput } from "./agent-result";
 import { formatDateTime, STEP_STATUS_LABELS } from "./status";
 
 /// node_id → 表示情報（run にピンされた version の IR から引く）。
@@ -203,6 +204,9 @@ function StepRow({
             <>
               {detail.error != null ? (
                 <JsonBlock title="エラーの詳細" value={detail.error} />
+              ) : null}
+              {info?.type === "agent.invoke" && isAgentOutput(detail.output) ? (
+                <AgentResult output={detail.output} />
               ) : null}
               {detail.output !== null && detail.output !== undefined ? (
                 <JsonBlock title="このブロックの結果" value={detail.output} />

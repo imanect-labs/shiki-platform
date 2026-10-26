@@ -165,6 +165,24 @@ export async function validateWorkflow(ir: WorkflowIr): Promise<ValidateResult> 
   return { errors: body.errors, warnings: body.warnings ?? [], declaredScopes: body.declared_scopes ?? null };
 }
 
+// ── AI エージェントの設定の天井（BUG-6）──────────────────────────────
+
+/// 読んでよいサイトの天井・手順と時間の上限（管理者の設定・保存時の照合と同じ値）。
+export type AgentSettings = Schemas["AgentSettingsResponse"];
+
+let agentSettings: Promise<AgentSettings> | null = null;
+
+/// AI エージェントの設定の天井（画面を開いている間は 1 回だけ取る・失敗したら次に取り直す）。
+export function getAgentSettings(): Promise<AgentSettings> {
+  agentSettings ??= apiFetch("/workflows/agent-settings")
+    .then((res) => ok<AgentSettings>(res))
+    .catch((e: unknown) => {
+      agentSettings = null;
+      throw e;
+    });
+  return agentSettings;
+}
+
 // ── エディタレイアウト（ノード座標・IR 外・非バージョン）──────────────
 
 export type EditorLayout = {
