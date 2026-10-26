@@ -496,6 +496,33 @@ test.describe("ミニアプリ（画面に返す結果）", () => {
         data_views: [{ alias: "requests", artifact_id: view.id, version: view.version }],
       },
     });
+    // 押した直後の最初の起動の一覧を、run が終わるまで止める（最初に見える起動を必ず「もう終わった」状態にする。
+    // 止めないと、ワーカーが拾う前の queued が先に見えることが多く、「動いていた → 終わった」の経路でも通ってしまう）。
+    // 状態は page.request（page.route に掛からない）で確かめる。
+    let pressed = false;
+    let held = false;
+    page.on("request", (req) => {
+      if (req.method() === "POST" && req.url().includes(`/api/mini-apps/${app.id}/ui-actions`)) pressed = true;
+    });
+    await page.route(
+      (url) => url.pathname === `/api/mini-apps/${app.id}/runs`,
+      async (route) => {
+        if (!pressed || held || route.request().method() !== "GET") return route.continue();
+        held = true;
+        await expect
+          .poll(
+            async () => {
+              const list = (await (await page.request.get(`/api/mini-apps/${app.id}/runs`)).json()) as {
+                runs: { status: string }[];
+              };
+              return list.runs.map((r) => r.status).join(",");
+            },
+            { timeout: 60_000, intervals: [500] },
+          )
+          .toBe("succeeded");
+        await route.continue();
+      },
+    );
     await page.goto(`/apps/${app.id}`);
     const grid = page.getByTestId("miniapp-data-grid-requests");
     await expect(grid.getByTestId("miniapp-data-grid-empty")).toBeVisible({ timeout: 30_000 });
@@ -503,6 +530,7 @@ test.describe("ミニアプリ（画面に返す結果）", () => {
     await apply(page, "900");
     const runs = page.getByTestId("yui-runs");
     await expect(runs.locator("li").first()).toHaveAttribute("data-status", "succeeded", { timeout: 60_000 });
+    expect(held).toBe(true);
     // 読み直さずに、フローが足した行が表に出る。
     await expect(grid.getByTestId("miniapp-data-grid-empty")).toHaveCount(0, { timeout: 30_000 });
     await expect(grid.locator("figcaption")).toContainText("1 件");
