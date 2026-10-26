@@ -507,4 +507,41 @@ test.describe("ミニアプリ（画面に返す結果）", () => {
     await expect(grid.getByTestId("miniapp-data-grid-empty")).toHaveCount(0, { timeout: 30_000 });
     await expect(grid.locator("figcaption")).toContainText("1 件");
   });
+
+  test("結果の Markdown のリンクは、自分のオリジンだけを内部として扱い、プロトコル相対の URL にもホスト名を添える", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await loginViaKeycloak(page);
+    const flow = uniqueName("reply-links");
+    await openAppWith(
+      page,
+      flow,
+      [
+        {
+          id: "links",
+          type: "workflow.reply",
+          params: {
+            format: "markdown",
+            value:
+              "[社内の承認](/approvals) ・ [社内ポータルで再認証](//login.evil.example/) ・ " +
+              "[外部の資料](https://example.com/doc)",
+          },
+        },
+      ],
+      [],
+    );
+    await apply(page, "100");
+    const result = page.getByTestId("yui-runs").getByTestId("yui-run-result");
+    await expect(result).toContainText("社内の承認", { timeout: 60_000 });
+    // 自分のオリジンへのリンクは注記なしで同じタブ。
+    const internal = result.getByRole("link", { name: "社内の承認" });
+    await expect(internal).not.toHaveAttribute("target", "_blank");
+    expect(await internal.evaluate((a) => (a as HTMLAnchorElement).origin === location.origin)).toBe(true);
+    // 「/」で始まっても別オリジンになるプロトコル相対の URL は外部: ホスト名を添えて別タブ。
+    await expect(result.getByRole("link", { name: "社内ポータルで再認証" })).toHaveAttribute("target", "_blank");
+    await expect(result).toContainText("社内ポータルで再認証（login.evil.example）");
+    await expect(result).toContainText("外部の資料（example.com）");
+    await expect(result).not.toContainText("社内の承認（");
+  });
 });

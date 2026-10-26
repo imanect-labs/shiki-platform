@@ -211,8 +211,9 @@ const components: Components = {
     // ホバーで原文カード、クリックで出典パネル（メッセージの引用文脈があるときのみ）。
     const cite = citeNumberFromHref(url);
     if (cite != null) return <CitationMarker n={cite}>{children}</CitationMarker>;
-    // その他の内部リンクはクライアント遷移。
-    if (url.startsWith("/")) {
+    // その他の内部リンク（自分のオリジン）はクライアント遷移。「//host/」のようなプロトコル相対の URL は
+    // "/" で始まっても別オリジンなので外部として扱う（同じタブで注記なしに別のサイトへ飛ばさない）。
+    if (isInternalUrl(url)) {
       return (
         <Link
           href={url}
@@ -316,6 +317,20 @@ function hostOf(url: string): string {
   }
 }
 
+/// 自分のオリジンへのリンクか（文字列の先頭ではなく、解決したオリジンで判定する）。
+///
+/// 「//evil.example/」（プロトコル相対）や「/\evil.example/」（ブラウザは \ を / と読む）は "/" で始まっても
+/// 別オリジンになる。サーバー側の描画（window が無い）では、"/" の後に "/" も "\" も続かないパスだけを内部とする。
+function isInternalUrl(url: string): boolean {
+  if (!url) return false;
+  if (typeof window === "undefined") return /^\/(?![/\\])/.test(url);
+  try {
+    return new URL(url, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 /// 外から来た文章（ワークフローが画面に返した結果など・GAP-09）の描き方。
 /// 画像は自動で読み込まず（外部への持ち出しに使える）リンクにし、外部リンクにはホスト名を添える
 /// （釣りのリンクに気づきやすくする）。
@@ -340,7 +355,8 @@ const untrustedComponents: Components = {
   a(props) {
     const url = props.href ?? "";
     const link = components.a ? React.createElement(components.a, props) : null;
-    if (url.startsWith("/") || url.startsWith("#") || !/^[a-z][a-z0-9+.-]*:/i.test(url)) return link;
+    // 内部リンク（自分のオリジン）だけはそのまま。プロトコル相対の「//host/」も外部としてホスト名を添える。
+    if (isInternalUrl(url)) return link;
     const host = hostOf(url);
     return (
       <>
