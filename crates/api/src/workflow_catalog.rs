@@ -105,11 +105,16 @@ pub async fn build_catalog_from(
     Ok(catalog)
 }
 
-/// 承認（human.approval）が束縛するテーブルを保存者の権限で引いて、V4 の材料にする（GAP-08）。
+/// 承認（human.approval）が束縛するテーブルを保存者の見え方で引いて、V4 の材料にする（GAP-08）。
 ///
 /// IR に承認ノードが無ければ `None`（照合しない）。見えないテーブルは入れない（V4 が「見つからないか FSM で
 /// 管理されていない」と同じ文言で止める）。FSM の状態は状態の列の選択肢（FSM の保存時にこれと一致することを
 /// data が確かめている）。
+///
+/// 定義は閲覧者向けの絞り込み（[`data::DataStore::get_table_for_viewer`]）を通す。テーブルの owner でない
+/// 保存者には読める列だけが入るので、読めない列は無い列と同じ誤り（`ir.unknown_field`）になり、種別
+/// （`ir.bad_assignee`）も返らない（無い列と読めない列を区別させない・data-platform §16.1）。状態の列が
+/// 読めなければ状態を入れない（`ir.unknown_table` で止め、「使える状態」の一覧も出さない）。
 pub async fn approval_tables(
     data: &data::DataStore,
     ctx: &authz::AuthContext,
@@ -141,7 +146,7 @@ pub async fn approval_tables(
     }
     let mut out = std::collections::BTreeMap::new();
     for id in ids {
-        let table = match data.get_table(ctx, id, None).await {
+        let table = match data.get_table_for_viewer(ctx, id, None).await {
             Ok(t) => t,
             Err(data::DataError::NotFound | data::DataError::Forbidden) => continue,
             Err(e) => return Err(format!("承認のテーブル: {e}")),

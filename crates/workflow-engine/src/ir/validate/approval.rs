@@ -1,9 +1,11 @@
 //! 承認（human.approval・GAP-08）の保存時検証（行数ゲート対応で分離）。
 //!
 //! - V3: 束縛した行を読み、判断の遷移を実行主体の見え方で受け取るので `data.read` の宣言が要る。
-//! - V4: テーブルは保存者に見えて FSM で管理されていること（見えないテーブルと FSM でないテーブルは同じ文言・
-//!   存在の手がかりを出さない）。判断の行き先は FSM の状態、受信箱に出す列と担当者の列はテーブルの列。
-//!   材料は API 層が保存者の権限で引いて [`Catalog::tables`] に詰める（`None` なら照合しない）。
+//! - V4: テーブルは保存者に見えて FSM で管理され、状態の列を保存者が読めること（見えないテーブル・FSM でない
+//!   テーブル・状態の列が読めないテーブルは同じ文言・存在の手がかりを出さない）。判断の行き先は FSM の状態、
+//!   受信箱に出す列と担当者の列はテーブルの列。材料は API 層が保存者の見え方（owner でなければ読める列だけ）で
+//!   引いて [`Catalog::tables`] に詰める（`None` なら照合しない）。読めない列は材料に入らないので、無い列と
+//!   同じ誤りになる。
 //! - V7: 期限は `policies.run_timeout_sec` 未満（run の期限が先に来ると承認は時間切れの出口へ流れず、run ごと
 //!   取り消される）。直列に並ぶ承認の期限の合計が run の期限以上なら警告する。
 
@@ -20,9 +22,9 @@ pub const APPROVAL_TIMEOUTS_EXCEED_RUN: &str = "ir.approval_timeouts_exceed_run"
 /// 承認に使うテーブルの材料（保存者の見え方・API 層が詰める）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CatalogTable {
-    /// FSM の状態（FSM で管理しないテーブルは `None`）。
+    /// FSM の状態（FSM で管理しないテーブル・状態の列を保存者が読めないテーブルは `None`）。
     pub states: Option<Vec<String>>,
-    /// 列の参照名 → 種別（data の `FieldType` の serde 名。例: `user_ref`）。
+    /// 保存者に読める列の参照名 → 種別（data の `FieldType` の serde 名。例: `user_ref`）。
     pub fields: BTreeMap<String, String>,
 }
 
@@ -78,7 +80,8 @@ pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
         else {
             errors.push(err(
                 "ir.unknown_table",
-                "承認するテーブルが見つからないか、状態の遷移（FSM）で管理されていません".into(),
+                "承認するテーブルが見つからないか、状態の遷移（FSM）で管理されていないか、状態の列を読めません"
+                    .into(),
                 "/params/record/table",
             ));
             continue;

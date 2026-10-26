@@ -1875,3 +1875,316 @@ async fn emit_workflow_checks_approvals_like_the_save_api() {
     assert!(!out.is_error, "{}", out.content);
     assert_eq!(out.workflow_refs.len(), 1);
 }
+
+impl Env {
+    /// 状態の遷移の規則つきの表で、`masked` の列だけを経理（carol）に限って読ませたもの（alice が owner）。
+    /// bob・carol はテーブルの editor（owner ではない）。
+    async fn masked_fsm_table(&self, masked: &str) -> Uuid {
+        let states = ["draft", "approved", "rejected"].map(String::from).to_vec();
+        let schema = |fsm: Option<FsmRef>| {
+            let mut status = FieldDef::new("status", FieldType::Select);
+            status.options = states.clone();
+            TableSchema {
+                fields: vec![
+                    FieldDef::new("title", FieldType::Text),
+                    FieldDef::new("approver", FieldType::UserRef),
+                    FieldDef::new("deputy", FieldType::UserRef),
+                    status,
+                ],
+                status_field: Some("status".into()),
+                row_policy: None,
+                field_policy: vec![FieldPolicy {
+                    field: masked.into(),
+                    readable_by: PolicyExpr::HasRole {
+                        role: self.keiri.clone(),
+                        subtree: true,
+                    },
+                }],
+                aggregate_min_rows: None,
+                fsm_ref: fsm,
+                rag: None,
+            }
+        };
+        let table = self
+            .data
+            .create_table(
+                &self.alice,
+                NewDataTable {
+                    name: format!("masked-{masked}-{}", Uuid::new_v4().simple()),
+                    schema: schema(None),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let t = |to: &str| FsmTransition {
+            from: "draft".into(),
+            to: to.into(),
+            actor: PolicyExpr::IsOwner,
+        };
+        let fsm_id = self
+            .fsms
+            .create(
+                &self.alice,
+                &format!("flow-{}", table.id.simple()),
+                table.id,
+                &FsmBody {
+                    states: states.clone(),
+                    transitions: vec![t("approved"), t("rejected")],
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        self.data
+            .update_table_schema(
+                &self.alice,
+                table.id,
+                schema(Some(FsmRef {
+                    artifact_id: fsm_id,
+                    version: 1,
+                })),
+                Some(1),
+                None,
+            )
+            .await
+            .unwrap();
+        let object = self.alice.ns().data_table(&table.id.to_string());
+        for u in [&self.bob, &self.carol] {
+            self.fga
+                .write_tuple(&u.subject(), Relation::Editor, &object)
+                .await
+                .unwrap();
+        }
+        table.id
+    }
+
+    /// 承認の照合（V4）の答えを、検証 API・保存 API・AI の emit_workflow の 3 つの口で集める（`key` が空でなければ
+    /// `<K>` に置き換える。書いた名前の違いだけを消して、答えの形を比べる）。
+    async fn v4_answers(
+        &self,
+        tool: &chat::EmitWorkflowTool,
+        who: &AuthContext,
+        ir: &Value,
+        key: &str,
+    ) -> [String; 3] {
+        use agent_core::Tool;
+        let body = || Body::from(json!({ "ir": ir }).to_string());
+        let (st, checked) = self
+            .send(req("POST", who, "/workflows/validate", body()))
+            .await;
+        assert_eq!(st, StatusCode::OK, "{checked}");
+        let (st, saved) = self.send(req("POST", who, "/workflows", body())).await;
+        let out = tool.call(who, json!({ "ir": ir }), None).await.unwrap();
+        [
+            checked["errors"].to_string(),
+            format!("{st} {saved}"),
+            format!("{} {}", out.is_error, out.content),
+        ]
+        .map(|s| {
+            if key.is_empty() {
+                s
+            } else {
+                s.replace(key, "<K>")
+            }
+        })
+    }
+
+    /// 検証 API が返す誤りの (code, path)。
+    async fn v4_codes(&self, who: &AuthContext, ir: &Value) -> Vec<(String, String)> {
+        let (st, body) = self
+            .send(req(
+                "POST",
+                who,
+                "/workflows/validate",
+                Body::from(json!({ "ir": ir }).to_string()),
+            ))
+            .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        body["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["code"].as_str().unwrap_or_default().to_string(),
+                    e["path"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    }
+}
+
+/// 承認の保存時の照合（V4）は保存者の見え方で行う。テーブルの owner でない編集者には、読めない列も無い列と
+/// 同じ誤り（code・path・message）になり、種別（ユーザーの列か）も返らない。状態の列が読めなければ、実在の状態を
+/// 書いても無い状態を書いても、FSM でないテーブル・無いテーブルと同じ誤りで止まり、「使える状態」の一覧は出ない。
+/// 検証 API・保存 API・AI の emit_workflow（`catalog_for`）のどれでも同じ。列を読める人（owner・経理）には従来どおり。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn approval_checks_do_not_tell_unreadable_columns_from_missing_ones() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    // メモ（文字の列）は経理（carol）だけが読める。
+    let expense = env.expense_table().await;
+    let deputy = env.masked_fsm_table("deputy").await;
+    let status = env.masked_fsm_table("status").await;
+    let plain = env
+        .data
+        .create_table(
+            &env.alice,
+            NewDataTable {
+                name: format!("plain-{}", Uuid::new_v4().simple()),
+                schema: expense_schema(None, &env.keiri),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    env.fga
+        .write_tuple(
+            &env.bob.subject(),
+            Relation::Editor,
+            &env.alice.ns().data_table(&plain.to_string()),
+        )
+        .await
+        .unwrap();
+    let source = api::workflow_catalog::ApiWorkflowCatalogSource::new(
+        None,
+        None,
+        api::workflow_catalog::WorkflowModels::new(None, Vec::new()),
+    )
+    .with_data(Arc::clone(&env.data));
+    let tool = chat::EmitWorkflowTool::new(Arc::new(env.workflows.clone()), Arc::new(source));
+    // [承認の行き先, 受信箱に出す列, 担当者の列]
+    let ir = |table: Uuid, [to, show, assignee]: [&str; 3]| {
+        json!({
+            "ir_version": 1, "name": format!("masked-oracle-{}", table.simple()),
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "ok", "type": "human.approval", "params": {
+                "title": "承認", "record": { "table": table.to_string(), "id": { "$from": "input", "path": "/id" } },
+                "assignees": [{ "field": assignee }], "approve": { "to": to }, "show_fields": ["title", show]
+            } }],
+            "edges": []
+        })
+    };
+    let ghost = "zz_nope";
+    // (表, 読めない名前を入れた引数, 無い名前を入れた引数, 読めない名前, 期待する code と path)
+    let pairs = [
+        (
+            expense,
+            ["approved", "memo", "approver"],
+            ["approved", ghost, "approver"],
+            "memo",
+            ("ir.unknown_field", "/params/show_fields/1"),
+        ),
+        (
+            expense,
+            ["approved", "title", "memo"],
+            ["approved", "title", ghost],
+            "memo",
+            ("ir.unknown_field", "/params/assignees/0/field"),
+        ),
+        (
+            deputy,
+            ["approved", "title", "deputy"],
+            ["approved", "title", ghost],
+            "deputy",
+            ("ir.unknown_field", "/params/assignees/0/field"),
+        ),
+        (
+            deputy,
+            ["approved", "deputy", "approver"],
+            ["approved", ghost, "approver"],
+            "deputy",
+            ("ir.unknown_field", "/params/show_fields/1"),
+        ),
+    ];
+    for (table, masked, missing, key, (code, path)) in pairs {
+        let codes = env.v4_codes(&env.bob, &ir(table, masked)).await;
+        assert_eq!(codes, vec![(code.to_string(), path.to_string())], "{key}");
+        let a = env
+            .v4_answers(&tool, &env.bob, &ir(table, masked), key)
+            .await;
+        let b = env
+            .v4_answers(&tool, &env.bob, &ir(table, missing), ghost)
+            .await;
+        assert_eq!(a, b, "読めない列 {key} と無い列で答えが違う");
+        assert!(a[1].starts_with("400 "), "{}", a[1]);
+        assert!(a[2].starts_with("true "), "{}", a[2]);
+    }
+
+    // 状態の列が読めない: 実在の状態でも無い状態でも、FSM でない表・無い表と同じ誤りで止まる（状態は出さない）。
+    let unseen = Uuid::new_v4();
+    let real = env
+        .v4_answers(
+            &tool,
+            &env.bob,
+            &ir(status, ["approved", "title", "approver"]),
+            "",
+        )
+        .await;
+    for (table, to) in [(status, ghost), (plain, "approved"), (unseen, "approved")] {
+        let other = env
+            .v4_answers(&tool, &env.bob, &ir(table, [to, "title", "approver"]), "")
+            .await;
+        // 表の id（名前に入れている）だけを揃えて比べる。
+        let norm = |s: &str, t: Uuid| {
+            s.replace(&t.simple().to_string(), "<T>")
+                .replace(&t.to_string(), "<T>")
+        };
+        for (x, y) in real.iter().zip(&other) {
+            assert_eq!(
+                norm(x, status),
+                norm(y, table),
+                "状態の列が読めない表と {table} で答えが違う"
+            );
+        }
+    }
+    assert_eq!(
+        env.v4_codes(&env.bob, &ir(status, ["approved", "title", "approver"]))
+            .await,
+        vec![(
+            "ir.unknown_table".to_string(),
+            "/params/record/table".to_string()
+        )]
+    );
+    for s in &real {
+        for state in ["draft", "approved", "rejected", "使える状態"] {
+            assert!(!s.contains(state), "状態の一覧を出さない: {s}");
+        }
+    }
+
+    // 列を読める人には従来どおり: 経理（owner でない）はメモ・代理・状態を使える。owner は無い列を言い切れ、
+    // 種別の違う担当者の列も分かる。
+    for (table, args) in [
+        (expense, ["approved", "memo", "approver"]),
+        (deputy, ["approved", "deputy", "deputy"]),
+        (status, ["approved", "title", "approver"]),
+    ] {
+        assert_eq!(env.v4_codes(&env.carol, &ir(table, args)).await, vec![]);
+    }
+    assert_eq!(
+        env.v4_codes(&env.carol, &ir(status, ["accepted", "title", "approver"]))
+            .await,
+        vec![(
+            "ir.unknown_state".to_string(),
+            "/params/approve/to".to_string()
+        )]
+    );
+    assert_eq!(
+        env.v4_codes(&env.alice, &ir(expense, ["approved", "memo", "memo"]))
+            .await,
+        vec![(
+            "ir.bad_assignee".to_string(),
+            "/params/assignees/0/field".to_string()
+        )]
+    );
+    assert_eq!(
+        env.v4_codes(&env.alice, &ir(expense, ["approved", ghost, "approver"]))
+            .await,
+        vec![(
+            "ir.unknown_field".to_string(),
+            "/params/show_fields/1".to_string()
+        )]
+    );
+}
