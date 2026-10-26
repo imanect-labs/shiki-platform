@@ -14,11 +14,10 @@ import * as React from "react";
 import { Conversation } from "@/components/chat/conversation";
 import { DocChatDraft, type FirstMessage } from "@/components/chat/doc-chat-draft";
 import { SkillDraftApplyContext } from "@/components/chat/skill-draft-card";
-import type { SkillBody } from "@/generated/gui-spec";
 import { createThread, postMessage } from "@/lib/chat-api";
 import { moveModelChoice, readModelChoice } from "@/lib/model-choice";
 import { clearPendingSelection, setPendingSelection } from "@/lib/selection-context";
-import { draftContextExcerpt, type SkillDraft } from "@/lib/skills/skill-draft";
+import { draftContextExcerpt, type AiSkillDraft, type SkillDraft } from "@/lib/skills/skill-draft";
 import { readToolChoice, settleToolChoice } from "@/lib/tool-choice";
 import { storageScopeGeneration } from "@/lib/user-storage";
 
@@ -51,7 +50,7 @@ export function SkillAssistant({
   /// 編集中の内容（発話に添える）。
   draft: SkillDraft;
   /// AI の下書きを受けたとき（エディタへ流し込む）。
-  onSkillDraft: (draft: { name: string; body: SkillBody }) => void;
+  onSkillDraft: (draft: AiSkillDraft) => void;
   /// モデル・ツールの選択の保存先の区別（スキルごと・新規）。
   scopeKey: string;
 }) {

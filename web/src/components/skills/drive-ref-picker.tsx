@@ -1,8 +1,11 @@
 "use client";
 
 /// スキルエディタのドライブ参照ピッカー（#919）。ID をコピーして貼る代わりに、ドライブを
-/// 辿るか名前で探して、ファイル・フォルダを選ぶ。選んだ項目はパス（パンくず）を引いてから
-/// 返す（本文のラベルにも、スキルを使う AI が読む文字列にもパスが載るように）。
+/// 辿るか名前で探して、ファイル・フォルダを選ぶ。
+///
+/// 本文に保存するラベルは**項目自身の名前だけ**にする（祖先フォルダの名前を指示文に書き込むと、
+/// スキルを共有・公開した相手にそのフォルダ構成が見えてしまう）。パスは表示のたびに閲覧者
+/// 本人の権限で引き直す。選んだ直後に「読み込み中」を挟まないよう、引いたパスは先に入れておく。
 ///
 /// `accept="folder"` は知識スコープ用（フォルダだけを選べる）。
 
@@ -87,22 +90,28 @@ export function DriveRefPicker({
   const list = useInfiniteList<NodeResponse>(fetchPage, [open, current.id, debounced]);
   const sentinelRef = useInfiniteSentinel(list.loadMore, open && list.hasMore && !list.loading);
   const items = folderOnly ? list.items.filter((n) => n.kind === "folder") : list.items;
+  // 検索結果で同じ名前が複数あるものだけ置き場所を引く（1 件ずつパンくずを引くので、
+  // 全件には出さない）。
+  const duplicated = React.useMemo(() => {
+    if (!searching) return new Set<string>();
+    const seen = new Map<string, number>();
+    for (const n of items) seen.set(n.name, (seen.get(n.name) ?? 0) + 1);
+    return new Set([...seen].filter(([, c]) => c > 1).map(([name]) => name));
+  }, [items, searching]);
 
   // パスを引いてから返す（引けなければ名前だけ）。二重に押しても 1 回だけ選ぶ。
   const pick = async (node: { id: string; name: string; kind: string }) => {
     if (resolving) return;
     setResolving(node.id);
     const kind = node.kind === "folder" ? "folder" : "file";
-    let label = node.name;
     try {
       const crumbs = await breadcrumb(node.id);
       const names = crumbs.map((c) => c.name.trim()).filter(Boolean);
-      if (names.length > 0) label = names.join("/");
+      if (names.length > 0) primeNodePath(node.id, names.join("/"));
     } catch {
-      /* パスが引けなくても名前で挿入する（表示は後で引き直す）。 */
+      /* パスが引けなくても挿入する（表示は後で引き直す）。 */
     }
-    primeNodePath(node.id, label);
-    onSelect({ kind, id: node.id, label });
+    onSelect({ kind, id: node.id, label: node.name });
     setResolving(null);
     onOpenChange(false);
   };
@@ -228,8 +237,8 @@ export function DriveRefPicker({
                       />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate">{n.name}</span>
-                        {/* 検索結果は同名を見分けられるよう置き場所も出す。 */}
-                        {searching ? <ParentPath id={n.id} /> : null}
+                        {/* 検索結果で同じ名前が並ぶときは、見分けられるよう置き場所も出す。 */}
+                        {duplicated.has(n.name) ? <ParentPath id={n.id} /> : null}
                       </span>
                       {busy ? (
                         <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />

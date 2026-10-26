@@ -93,11 +93,62 @@ export function draftToBody(d: SkillDraft): SkillBody {
   };
 }
 
-/// AI の下書きを編集中の状態へ当てる。AI が書かない項目（参照資料・コマンド）は今の値を保ち、
-/// 名前は未入力のときだけ下書きの名前を使う（既存スキルの名前は変えられない）。
-export function applyAiSkill(current: SkillDraft, name: string, body: SkillBody): SkillDraft {
-  const next = draftFromBody(current.name.trim() ? current.name : name, body);
-  return { ...next, references: current.references, command: current.command };
+/// save_skill が書ける項目（SkillBody のキー）。下書きの `fields` はこの部分集合。
+export type SkillField =
+  | "description"
+  | "instructions"
+  | "knowledge_scope"
+  | "allowed_tools"
+  | "model"
+  | "few_shot"
+  | "scripts";
+const SKILL_FIELDS: SkillField[] = [
+  "description",
+  "instructions",
+  "knowledge_scope",
+  "allowed_tools",
+  "model",
+  "few_shot",
+  "scripts",
+];
+
+/// AI が用意した下書きスキル。`fields` は AI が渡した項目で、それ以外は今の値を保つ
+/// （渡していない項目の body の値は検証用の仮の値）。null は全項目（旧形式）。
+export type AiSkillDraft = { name: string; body: SkillBody; fields: SkillField[] | null };
+
+/// 編集状態のうち、各項目が受け持つキー。
+const DRAFT_KEYS: Record<SkillField, (keyof SkillDraft)[]> = {
+  description: ["description"],
+  instructions: ["instructions"],
+  knowledge_scope: ["scopeFolders", "scopeFiles"],
+  allowed_tools: ["allowedTools"],
+  model: ["model", "temperature", "maxTokens"],
+  few_shot: ["fewShot"],
+  scripts: ["scripts"],
+};
+
+/// AI の下書きを編集中の状態へ当てる。AI が渡した項目だけを置き換え、それ以外（参照資料・
+/// コマンドを含む）は今の値を保つ。名前は未入力のときだけ下書きの名前を使う
+/// （既存スキルの名前は変えられない）。
+export function applyAiSkill(current: SkillDraft, draft: AiSkillDraft): SkillDraft {
+  const incoming = draftFromBody(draft.name, draft.body);
+  const next: SkillDraft = { ...current };
+  for (const field of draft.fields ?? SKILL_FIELDS) {
+    for (const key of DRAFT_KEYS[field]) {
+      (next as Record<keyof SkillDraft, unknown>)[key] = incoming[key];
+    }
+  }
+  if (!next.name.trim()) next.name = draft.name;
+  return next;
+}
+
+/// 下書きストアの本文へ AI の下書きを重ねる（渡した項目だけ・無ければ空のスキルに重ねる）。
+export function mergeAiSkill(prev: SkillBody | null, draft: AiSkillDraft): SkillBody {
+  const base = prev ?? draftToBody(emptySkillDraft());
+  if (!draft.fields) return draft.body;
+  const next = { ...base } as Record<SkillField, unknown>;
+  for (const field of draft.fields) next[field] = draft.body[field];
+  return next as unknown as SkillBody;
 }
 
 /// アシスタントへ渡す「編集中のスキル」（選択コンテキスト skill_draft の抜粋）。
@@ -129,14 +180,18 @@ export function skillDraftHref(threadId: string, name: string): string {
   return `/skills/new?thread=${encodeURIComponent(threadId)}&name=${encodeURIComponent(name)}`;
 }
 
-/// skill_draft イベント/ブロックの payload（`{name, skill}`）を検証する（fail-closed）。
+/// skill_draft イベント/ブロックの payload（`{name, skill, fields}`）を検証する（fail-closed）。
 /// 中身はサーバの保存時検証を通ったものだが、エディタが読む形だけはここで確かめる。
-export function parseSkillDraft(raw: unknown): { name: string; body: SkillBody } | null {
+export function parseSkillDraft(raw: unknown): AiSkillDraft | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
   if (typeof o.name !== "string" || o.name.length === 0) return null;
   const body = parseSkillBody(o.skill);
-  return body ? { name: o.name, body } : null;
+  if (!body) return null;
+  const fields = Array.isArray(o.fields)
+    ? o.fields.filter((f): f is SkillField => SKILL_FIELDS.includes(f as SkillField))
+    : null;
+  return { name: o.name, body, fields };
 }
 
 /// 下書きストアの本文（SkillBody の JSON 文字列）を読む。

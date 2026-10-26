@@ -21,6 +21,7 @@ import { TableRow } from "@tiptap/extension-table-row";
 import { TaskItem } from "@tiptap/extension-task-item";
 import { TaskList } from "@tiptap/extension-task-list";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
+import type { EditorView } from "@tiptap/pm/view";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { FolderSearch } from "lucide-react";
@@ -38,15 +39,38 @@ import type { DriveRef } from "@/lib/skills/drive-ref";
 import { DriveRefNode } from "./drive-ref-node";
 import { DriveRefPicker } from "./drive-ref-picker";
 
-/// md → エディタ doc（ドライブ参照のリンクは driveRef ノードへ）。
+/// md → エディタ doc（ドライブ参照のリンクは driveRef ノードへ・`<rules>` などのタグは文字のまま）。
 function docFromMarkdown(md: string) {
-  return { type: "doc", content: parseMarkdownToNodes(md, { driveRefs: true }) };
+  return {
+    type: "doc",
+    content: parseMarkdownToNodes(md, { driveRefs: true, htmlAsText: true }),
+  };
 }
 
 /// 参照を入れる場所。`at` は「@」から開いたときの「@」の位置（ラベルで置き換える）。
 type InsertTarget = { at: number | null };
 
-/// 行頭か空白の直後に打った「@」でピッカーを開く（メールアドレス等の途中では開かない）。
+/// 参照のトリガ文字（半角と、日本語入力で入る全角）。
+const AT_CHARS = new Set(["@", "＠"]);
+/// アトム（ドライブ参照）を文字として読むときの置き換え（境目の判定で空白扱いにしない）。
+const LEAF = "￼";
+
+/// `pos` に「@」を打ってよい位置か（行頭か空白の直後・コードの中ではない）。
+function atBoundary(view: EditorView, pos: number): boolean {
+  const $pos = view.state.doc.resolve(pos);
+  if ($pos.parent.type.spec.code) return false;
+  const before = $pos.parent.textBetween(
+    Math.max(0, $pos.parentOffset - 1),
+    $pos.parentOffset,
+    undefined,
+    LEAF,
+  );
+  return before === "" || /\s/.test(before);
+}
+
+/// 行頭か空白の直後に打った「@」（全角「＠」も）でピッカーを開く（メールアドレス等の
+/// 途中では開かない）。日本語入力の確定は handleTextInput を通らないので、変換の確定
+/// （compositionend）でも直前の 1 文字を見る。
 function atTrigger(open: (target: InsertTarget) => void) {
   return Extension.create({
     name: "driveRefAtTrigger",
@@ -56,19 +80,27 @@ function atTrigger(open: (target: InsertTarget) => void) {
           key: new PluginKey("driveRefAtTrigger"),
           props: {
             handleTextInput: (view, from, _to, text) => {
-              if (text !== "@") return false;
-              const $from = view.state.doc.resolve(from);
-              if ($from.parent.type.spec.code) return false;
-              const before = $from.parent.textBetween(
-                Math.max(0, $from.parentOffset - 1),
-                $from.parentOffset,
-                undefined,
-                "￼",
-              );
-              if (before !== "" && !/\s/.test(before)) return false;
+              // 入力は 1 文字とは限らない（変換の確定は「規程は＠」のようにまとめて入る）ので、
+              // 末尾の文字が「@」で、その直前が境目かを見る。
+              const at = from + text.length - 1;
+              if (!AT_CHARS.has(text.slice(-1))) return false;
+              const prev = text.length > 1 ? text[text.length - 2] : null;
+              if (prev !== null ? !/\s/.test(prev) : !atBoundary(view, from)) return false;
               // 「@」は既定どおり入力させ、その位置を覚えてピッカーを開く。
-              window.setTimeout(() => open({ at: from }), 0);
+              window.setTimeout(() => open({ at }), 0);
               return false;
+            },
+            handleDOMEvents: {
+              compositionend: (view) => {
+                // 確定した文字が文書へ入ってから見る。
+                window.setTimeout(() => {
+                  const pos = view.state.selection.from;
+                  if (pos < 1) return;
+                  const ch = view.state.doc.textBetween(pos - 1, pos, undefined, LEAF);
+                  if (AT_CHARS.has(ch) && atBoundary(view, pos - 1)) open({ at: pos - 1 });
+                }, 0);
+                return false;
+              },
             },
           },
         }),
@@ -145,7 +177,9 @@ export function SkillBodyEditor({ seed, onChangeMarkdown, onReady }: SkillBodyEd
         },
       },
       onUpdate: ({ editor }) => {
-        onChangeRef.current(serializeFragment(editor.state.doc.content));
+        // AI が読む指示文なので、エスケープは記法に化けるものだけにする（`doc_search` や
+        // `<rules>` を書き換えない）。
+        onChangeRef.current(serializeFragment(editor.state.doc.content, { literalText: true }));
       },
     },
     [extensions],
@@ -180,8 +214,8 @@ export function SkillBodyEditor({ seed, onChangeMarkdown, onReady }: SkillBodyEd
       const at = targetRef.current.at;
       targetRef.current = { at: null };
       const chain = editor.chain().focus();
-      // 「@」から開いたときは、その「@」をラベルで置き換える（その後に打った文字は残す）。
-      if (at !== null && editor.state.doc.textBetween(at, at + 1, undefined, "￼") === "@") {
+      // 「@」（全角も）から開いたときは、その文字をラベルで置き換える（その後に打った文字は残す）。
+      if (at !== null && AT_CHARS.has(editor.state.doc.textBetween(at, at + 1, undefined, LEAF))) {
         chain.deleteRange({ from: at, to: at + 1 }).setTextSelection(at);
       }
       chain.insertDriveRef(ref).run();

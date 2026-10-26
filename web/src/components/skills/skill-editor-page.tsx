@@ -30,11 +30,13 @@ import { getThreadMessages } from "@/lib/chat-api";
 import {
   applyAiSkill,
   draftFromBody,
+  mergeAiSkill,
   draftToBody,
   emptySkillDraft,
   parseSkillDraft,
   parseStoredSkillBody,
   skillDraftStore,
+  type AiSkillDraft,
   type SkillDraft,
 } from "@/lib/skills/skill-draft";
 import { useStorageScopeReady } from "@/lib/user-storage";
@@ -57,7 +59,7 @@ function snapshotOf(d: SkillDraft): string {
   return JSON.stringify([d.name.trim(), draftToBody(d)]);
 }
 
-/// 会話の履歴から、指定名の最後の下書きスキルを探す（別端末・ストアが消えたときの復元）。
+/// 会話の履歴から、指定名の下書きスキルを順に重ねて復元する（別端末・ストアが消えたとき）。
 async function recoverFromThread(threadId: string, name: string): Promise<SkillBody | null> {
   const { messages } = await getThreadMessages(threadId);
   let found: SkillBody | null = null;
@@ -65,7 +67,7 @@ async function recoverFromThread(threadId: string, name: string): Promise<SkillB
     for (const b of m.content) {
       if (b.type !== "skill_draft") continue;
       const d = parseSkillDraft(b.draft);
-      if (d && d.name === name) found = d.body;
+      if (d && d.name === name) found = mergeAiSkill(found, d);
     }
   }
   return found;
@@ -186,8 +188,11 @@ export function SkillEditorPage({ target }: { target: SkillEditorTarget }) {
 
   // AI の下書きをエディタへ流し込む（名前は未入力のときだけ・参照資料/コマンドは保つ）。
   const onSkillDraft = React.useCallback(
-    (d: { name: string; body: SkillBody }) => {
-      replaceDraft(applyAiSkill(draftRef.current, d.name, d.body));
+    (d: AiSkillDraft) => {
+      const next = applyAiSkill(draftRef.current, d);
+      // 本文を変えていない下書きでは本文エディタを置き換えない（取り消しの履歴を保つ）。
+      if (d.fields === null || d.fields.includes("instructions")) replaceDraft(next);
+      else setDraft(next);
       setError(null);
     },
     [replaceDraft],

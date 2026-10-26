@@ -68,8 +68,10 @@ impl Tool for SaveSkillTool {
         "スキル（呼び出せる業務知識: 指示文＋説明＋許可ツール等）の下書きを用意する。ユーザーが\
          「〜のスキルを作って」「このスキルを直して」等と依頼したときに使う。呼ぶとスキルエディタが\
          開き（開いていれば内容が置き換わり）、ユーザーが確認・編集してから自分で保存する（この\
-         ツールは保存しない）。直す場合は**同じ name で呼び直し**、変えない項目も含めて全体を渡す\
-         （渡さなかった項目は空になる）。instructions は SKILL.md 本文（Markdown）で、スキルを\
+         ツールは保存しない）。直す場合は**同じ name で呼び直し**、変える項目だけを渡す\
+         （渡さなかった項目はエディタの今の値のまま。既定（全ツール・システム既定のモデル・\
+         全範囲）へ戻す項目は null を渡す）。instructions は渡すなら全文を書く（部分の差分は不可）。\
+         新しく作るときは description と instructions を必ず渡す。instructions は SKILL.md 本文（Markdown）で、スキルを\
          使う AI への指示として書く。社内のファイル・フォルダを指すときは doc_search 等で得た\
          id を使い `[ファイル名](shiki://drive/file/<file_id>)`・\
          `[フォルダ名](shiki://drive/folder/<folder_id>)` の Markdown リンクで書く（エディタでは\
@@ -126,9 +128,22 @@ impl Tool for SaveSkillTool {
                         "required": ["user", "assistant"]
                     },
                     "description": "お手本の対話（任意・最大 8 対）"
+                },
+                "scripts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string", "description": "scripts/<名前>.shiki または .sh" },
+                            "kind": { "type": "string", "enum": ["shiki", "shell"] },
+                            "source": { "type": "string" }
+                        },
+                        "required": ["path", "kind", "source"]
+                    },
+                    "description": "同梱するスクリプト（任意・ユーザーが求めたときだけ）"
                 }
             },
-            "required": ["name", "description", "instructions"]
+            "required": ["name"]
         })
     }
     /// 下書きは artifact へ書かない（確定はエディタの保存）。承認ゲートは不要。
@@ -162,15 +177,27 @@ impl Tool for SaveSkillTool {
             )));
         }
         let mut body = Map::new();
+        // 渡された項目（null も「既定へ戻す」として含む）。エディタはこれだけを置き換え、
+        // 渡されなかった項目は今の値を保つ（直すたびに全体を書かせて取りこぼさせない）。
+        let mut fields = Vec::new();
         for key in BODY_FIELDS {
-            if let Some(v) = input.get(*key).filter(|v| !v.is_null()) {
+            let Some(v) = input.get(*key) else { continue };
+            fields.push(Value::String((*key).to_string()));
+            if !v.is_null() {
                 body.insert((*key).to_string(), v.clone());
             }
         }
-        // 必須の文字列が欠けたときも、型エラー 1 件ではなく「必須です」の全件を返す。
+        // 渡さなかった必須の文字列は、検証のためだけに仮の値を置く（エディタは置き換えない）。
+        // 渡した上で空なら「必須です」を返す。
         for key in ["description", "instructions"] {
-            body.entry(key)
-                .or_insert_with(|| Value::String(String::new()));
+            if !fields.iter().any(|f| f == key) {
+                body.insert(key.to_string(), Value::String("-".into()));
+            }
+        }
+        if fields.is_empty() {
+            return Err(ToolError::Invalid(
+                "直す項目（description・instructions など）を 1 つ以上渡してください".into(),
+            ));
         }
         // 保存 API と同じ検証（構造・上限・閉語彙）。通らない下書きはエディタへ流さない。
         let skill = match gui::validate_skill_body(&Value::Object(body)) {
@@ -185,7 +212,7 @@ impl Tool for SaveSkillTool {
         ));
         outcome
             .skill_drafts
-            .push(json!({ "name": name, "skill": skill }));
+            .push(json!({ "name": name, "skill": skill, "fields": fields }));
         Ok(outcome)
     }
 }
@@ -244,13 +271,50 @@ mod tests {
         // AI に書かせない項目は落とす（エディタが既存値を保つ）。
         assert!(draft["skill"]["command"].is_null());
         assert_eq!(draft["skill"]["references"], json!([]));
+        // 渡した項目だけがエディタで置き換わる。
+        assert_eq!(
+            draft["fields"],
+            json!(["description", "instructions", "allowed_tools"])
+        );
+    }
+
+    /// 直すときは変える項目だけを渡せる（渡さない項目はエディタの今の値のまま）。
+    /// null は「既定へ戻す」として fields に載る。
+    #[tokio::test]
+    async fn partial_update_reports_only_the_fields_it_sets() {
+        let tool = SaveSkillTool::new();
+        let out = tool
+            .call(
+                &ctx(),
+                json!({ "name": "x", "description": "より具体的な説明", "allowed_tools": null }),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let draft = &out.skill_drafts[0];
+        assert_eq!(draft["fields"], json!(["description", "allowed_tools"]));
+        assert_eq!(draft["skill"]["description"], "より具体的な説明");
+        assert!(draft["skill"]["allowed_tools"].is_null());
+
+        // 何も渡さない呼び出しは差し戻す。
+        assert!(tool
+            .call(&ctx(), json!({ "name": "x" }), None)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
     async fn invalid_body_returns_all_errors_for_self_correction() {
         let tool = SaveSkillTool::new();
         let out = tool
-            .call(&ctx(), json!({ "name": "x", "allowed_tools": [] }), None)
+            .call(
+                &ctx(),
+                json!({
+                    "name": "x", "description": " ", "instructions": "", "allowed_tools": []
+                }),
+                None,
+            )
             .await
             .unwrap();
         assert!(out.is_error);

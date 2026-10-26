@@ -88,8 +88,14 @@ import { upsertDraft, parseNoteDraft } from "@/lib/notes/draft-store";
 import { draftHref } from "@/lib/notes/draft-nav";
 import { parseSlideDraft, slideDraftHref, slideDraftStore } from "@/lib/slides/draft";
 import { csvDraftHref, csvDraftStore, parseCsvDraft } from "@/lib/csv/draft";
-import { parseSkillDraft, skillDraftHref, skillDraftStore } from "@/lib/skills/skill-draft";
-import type { SkillBody } from "@/generated/gui-spec";
+import {
+  mergeAiSkill,
+  parseSkillDraft,
+  parseStoredSkillBody,
+  skillDraftHref,
+  skillDraftStore,
+  type AiSkillDraft,
+} from "@/lib/skills/skill-draft";
 import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ContextUsageDialog } from "./context-meter";
@@ -190,7 +196,7 @@ export function Conversation({
   onCsvDraftOpened?: (name: string) => void;
   /// save_skill の下書き（skill_draft）を受けたときの導線（#919）。渡されない場合は run の
   /// 完了後にスキルエディタへ遷移する（主線）。スキルエディタ自身はその場で内容を流し込む。
-  onSkillDraftOpened?: (draft: { name: string; body: SkillBody }) => void;
+  onSkillDraftOpened?: (draft: AiSkillDraft) => void;
   /// 読み込んだ時点で最後の発話への応答が済んでいたら、その応答の下書きスキルも
   /// `onSkillDraftOpened` へ渡す。この画面で会話を作って最初の発話を送った直後に使う
   /// （応答が速いと購読より先に終わり、下書きのイベントを受け取れないため・#919）。
@@ -439,7 +445,9 @@ export function Conversation({
         updateStream((s) => (s ? { ...s, skillDrafts: [...s.skillDrafts, raw] } : s));
         const d = parseSkillDraft(raw);
         if (!d) return;
-        skillDraftStore.upsert(threadId, d.name, JSON.stringify(d.body), "ai");
+        // 渡した項目だけを重ねる（直すたびに他の項目を消さない）。
+        const prev = parseStoredSkillBody(skillDraftStore.get(threadId, d.name)?.content ?? "");
+        skillDraftStore.upsert(threadId, d.name, JSON.stringify(mergeAiSkill(prev, d)), "ai");
         if (onSkillDraftOpened) onSkillDraftOpened(d);
         // 遷移は run の完了後（途中で遷移すると SSE が切れ、後続の操作が止まる・#381 と同じ）。
         else pendingOpenRef.current = skillDraftHref(threadId, d.name);

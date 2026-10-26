@@ -10,14 +10,13 @@ import { ArrowLeft, ArrowRight, Sparkles } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 
-import type { SkillBody } from "@/generated/gui-spec";
-import { parseSkillDraft, skillDraftHref } from "@/lib/skills/skill-draft";
+import { parseSkillDraft, skillDraftHref, type AiSkillDraft } from "@/lib/skills/skill-draft";
 
 /// スキルエディタのアシスタントパネルの中では、カードを「遷移」ではなく「エディタに反映」にする
 /// （過去の案へ戻す・手で直した後にもう一度当てる用途。エディタを開いたまま別の新規スキル画面へ連れて行かない）。
-export const SkillDraftApplyContext = React.createContext<
-  ((draft: { name: string; body: SkillBody }) => void) | null
->(null);
+export const SkillDraftApplyContext = React.createContext<((draft: AiSkillDraft) => void) | null>(
+  null,
+);
 
 const ACTION =
   "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors duration-fast hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-10";
@@ -39,7 +38,9 @@ export function SkillDraftCard({ raw, threadId }: { raw: unknown; threadId: stri
           {draft.name}
         </span>
         <span className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">
-          {draft.body.description || "スキルの下書きを用意しました。"}
+          {(draft.fields?.includes("description") ?? true) && draft.body.description
+            ? draft.body.description
+            : "スキルの下書きを用意しました。"}
         </span>
       </span>
       {apply ? (

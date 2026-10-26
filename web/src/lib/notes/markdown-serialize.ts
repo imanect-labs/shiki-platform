@@ -19,11 +19,28 @@ import { driveRefHref } from "@/lib/skills/drive-ref";
 ///
 /// AI の削除の提案（`aiDeletion` の印）は、サーバの保存と同じく「承認したら」の形で描く
 /// （旧文と新文を並べない・#886）。
-export function serializeFragment(fragment: Fragment): string {
-  const blocks = collectBlocks(withoutDeletions(fragment));
-  const body = renderBlocks(blocks);
-  return body.length > 0 ? `${body}\n` : "";
+export function serializeFragment(fragment: Fragment, options: SerializeOptions = {}): string {
+  const prev = current;
+  current = options;
+  try {
+    const blocks = collectBlocks(withoutDeletions(fragment));
+    const body = renderBlocks(blocks);
+    return body.length > 0 ? `${body}\n` : "";
+  } finally {
+    current = prev;
+  }
 }
+
+export interface SerializeOptions {
+  /// エスケープを「読み直しで記法に化けるもの」だけに絞る（スキルエディタ・#919）。
+  /// SKILL.md は AI が読む指示文なので、`doc_search` を `doc\_search`、`<rules>` を
+  /// `\<rules\>` のように書き換えない。`<…>` は読み直しでも文字のまま残る
+  /// （[`parseMarkdownToNodes`] の `htmlAsText`・インライン HTML は文字）。
+  literalText?: boolean;
+}
+
+/// 描画中のオプション（描画は同期なので、呼び出しの間だけ立てる）。
+let current: SerializeOptions = {};
 
 /// 表の形を保つため、中身が無くなっても残すノード（Rust の md 読み出しと同じ）。
 const KEEP_EMPTY = new Set(["table", "tableRow", "tableCell", "tableHeader"]);
@@ -271,13 +288,38 @@ function renderCodeSpan(text: string): string {
 
 /// インライン特殊文字のバックスラッシュエスケープ（Rust `escape_inline` と一致）。
 function escapeInline(text: string): string {
+  if (current.literalText) return escapeLiteral(text);
   return text.replace(/[\\`*_[\]<>~|]/g, (c) => `\\${c}`);
+}
+
+/// `literalText` のエスケープ: `<` `>` はそのまま、`_` は語の境目（強調になり得る位置）だけ。
+/// 行頭の `>` は [`escapeBlockStart`] が引用化を断つ。
+function escapeLiteral(text: string): string {
+  const word = /[\p{L}\p{N}]/u;
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "_") {
+      const inWord = word.test(text[i - 1] ?? "") && word.test(text[i + 1] ?? "");
+      out += inWord ? c : "\\_";
+    } else if ("\\`*[]~|".includes(c)) {
+      out += `\\${c}`;
+    } else {
+      out += c;
+    }
+  }
+  return out;
 }
 
 /// 段落先頭行のブロック記法をエスケープする（`escapeInline` 済みの文字列に適用）。
 /// `*`/`>`/`` ` `` は `escapeInline` で既にエスケープ済みなので、残る `#`・`-`・`+`・
 /// 番号付きリスト（`1.`/`1)`）だけを対象にする。
 function escapeBlockStart(line: string): string {
+  // literalText では `>` をエスケープしないので、行頭の `>` は引用にならないようここで断つ。
+  if (current.literalText) {
+    const quote = /^(\s*)>/.exec(line);
+    if (quote) return `${quote[1]}\\${line.slice(quote[1].length)}`;
+  }
   const marker = /^(\s*)([#\-+])(\s|$)/.exec(line);
   if (marker) {
     return `${marker[1]}\\${line.slice(marker[1].length)}`;

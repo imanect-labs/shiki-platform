@@ -76,6 +76,11 @@ export interface ParseOptions {
   /// `[…](shiki://drive/<kind>/<id>)` のリンクを `driveRef` ノードにする（スキルエディタ・#919）。
   /// スキーマに driveRef を持つエディタだけが有効にする（ノートでは素のテキストに落とす）。
   driveRefs?: boolean;
+  /// 生 HTML ブロックを html コードブロックではなく本文の文字として残す（スキルエディタ・#919）。
+  /// SKILL.md では `<rules>…</rules>` のようなタグを区切りとして書くのが普通で、コード例に
+  /// 変えると AI が読む指示文の意味が変わる。タグだけの行はその文字のまま段落にし、間の行は
+  /// Markdown として読む。どちらも文字として扱うだけで、HTML として描画はしない。
+  htmlAsText?: boolean;
 }
 
 /// 変換中のオプション（変換は同期なので、呼び出しの間だけ立てる）。
@@ -138,11 +143,51 @@ function blockTokenToNode(tok: Tok): PmJson | PmJson[] | null {
     case "table":
       return tableNode(tok);
     case "html":
+      if (current.htmlAsText) return htmlBlockAsText(tok.text ?? "");
       // 生 HTML ブロックは実行不能な html コードブロックへ縮退（stored XSS 遮断）。
       return codeBlock("html", stripTrailingNewline(tok.text ?? ""));
     default:
       return tok.text ? paragraph([text(tok.text)]) : null;
   }
+}
+
+/// タグだけの行（`<rules>`・`</rules>`・`<br/>` など）。
+const TAG_LINE = /^\s*<\/?[A-Za-z][\w:-]*(\s[^<>]*)?\/?>\s*$/;
+
+/// 生 HTML ブロックを文字として読む（`htmlAsText`）。タグだけの行はその文字の段落にし、
+/// 間の行は Markdown として読む。中にまた現れた HTML は行ごとの文字の段落にする（再帰しない）。
+function htmlBlockAsText(raw: string): PmJson[] {
+  const out: PmJson[] = [];
+  const literal = (s: string) => {
+    for (const line of stripTrailingNewline(s).split("\n")) {
+      if (line.trim()) out.push(paragraph([text(line)]));
+    }
+  };
+  let buf: string[] = [];
+  const flush = () => {
+    const md = buf.join("\n");
+    buf = [];
+    if (!md.trim()) return;
+    for (const t of marked.lexer(md) as unknown as Tok[]) {
+      if (t.type === "html") {
+        literal(t.text ?? "");
+        continue;
+      }
+      const node = blockTokenToNode(t);
+      if (Array.isArray(node)) out.push(...node);
+      else if (node) out.push(node);
+    }
+  };
+  for (const line of stripTrailingNewline(raw).split("\n")) {
+    if (TAG_LINE.test(line)) {
+      flush();
+      out.push(paragraph([text(line.trim())]));
+    } else {
+      buf.push(line);
+    }
+  }
+  flush();
+  return out;
 }
 
 /// md 埋め込みフェンスの予約語（Rust `ast.rs` の `EMBED_FENCE_LANG` と対）。
@@ -286,10 +331,10 @@ function pushInline(out: PmJson[], tok: Tok, marks: MarkJson[]): void {
     case "link": {
       const ref = current.driveRefs ? parseDriveRefHref(tok.href ?? "") : null;
       if (ref) {
-        out.push({
-          type: "driveRef",
-          attrs: { kind: ref.kind, id: ref.id, label: decodeEntities(tok.text ?? "") },
-        });
+        // ラベルはエスケープを解いた文字（`tok.text` は `\_` などが残る生の文字列で、
+        // そのまま持つと保存のたびにバックスラッシュが増える）。
+        const label = tok.tokens?.length ? plainText(tok.tokens) : decodeEntities(tok.text ?? "");
+        out.push({ type: "driveRef", attrs: { kind: ref.kind, id: ref.id, label } });
         break;
       }
       // 危険スキーム（javascript:/data: 等）は Link 拡張の scheme ガードを迂回して
@@ -320,6 +365,17 @@ function pushInline(out: PmJson[], tok: Tok, marks: MarkJson[]): void {
     default:
       if (tok.text) pushText(out, decodeEntities(tok.text), marks);
   }
+}
+
+/// インライントークン列の素の文字（エスケープを解き、書式は落とす）。
+function plainText(tokens: Tok[]): string {
+  return tokens
+    .map((t) => {
+      if (t.type === "escape") return t.text ?? "";
+      if (t.tokens && t.tokens.length > 0) return plainText(t.tokens);
+      return decodeEntities(t.text ?? "");
+    })
+    .join("");
 }
 
 function recurseInline(out: PmJson[], tok: Tok, marks: MarkJson[], add: MarkJson): void {

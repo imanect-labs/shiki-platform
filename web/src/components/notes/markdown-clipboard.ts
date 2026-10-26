@@ -58,10 +58,10 @@ export const MarkdownClipboard = Extension.create({
             const text = data.getData("text/plain");
             if (!text || !looksLikeBlockMarkdown(text)) return false;
 
-            // スキーマにドライブ参照があるエディタ（スキル・#919）では参照のまま取り込む。
-            const nodes = parseMarkdownToNodes(text, {
-              driveRefs: Boolean(view.state.schema.nodes.driveRef),
-            });
+            // スキーマにドライブ参照があるエディタ（スキル・#919）では参照のまま取り込み、
+            // `<rules>` などのタグも本文の文字として残す（読み込みと同じ読み方）。
+            const skill = Boolean(view.state.schema.nodes.driveRef);
+            const nodes = parseMarkdownToNodes(text, { driveRefs: skill, htmlAsText: skill });
             let slice: Slice;
             try {
               const doc = view.state.schema.nodeFromJSON({ type: "doc", content: nodes });
