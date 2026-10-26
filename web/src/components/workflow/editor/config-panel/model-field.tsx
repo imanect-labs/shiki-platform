@@ -150,7 +150,8 @@ export function ModelField({
       ) : null}
       <ModelList
         data={data}
-        current={current?.id ?? null}
+        // 一覧に無いモデルを保存しているときは、どの行も選択中にしない（既定の行を選択中に見せない）。
+        current={value || null}
         onPick={pick}
         surface={surface}
         listRef={listRef}
