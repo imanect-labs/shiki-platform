@@ -124,8 +124,9 @@ export function defaultOutPort(nodeType: string): string {
 /// 「空文字キーのプロパティ」であり全体ではない・実行時に解決不能になる）。
 /// 利用者が書くしかない必須の文字の欄は `""` で入れる（右パネルが空のままなら「入力してください」と出す）。
 /// 文字を求める欄に入力全体（オブジェクト）を入れると、置いたまま実行したとき必ず失敗する（BUG-15）。
-/// 一覧から選ばせる欄（csv.* のファイル・data.* のテーブル）は入れない（保存時の検証の「項目がありません」が
-/// 欄の下に出る）。
+/// 一覧から選ばせる欄（storage.read・csv.* のファイル・data.* のテーブル）は入れない（保存時の検証の
+/// 「項目がありません」が欄の下に出る）。前の結果を指す既定を入れると、欄が「前の結果から」になり、
+/// スケジュールで有効化すると「入力が無いので失敗します」と出る（BUG-32）。
 export function defaultParams(nodeType: string): unknown {
   switch (nodeType) {
     case "control.branch":
@@ -137,7 +138,8 @@ export function defaultParams(nodeType: string): unknown {
     case "control.wait":
       return { kind: "duration", duration_sec: 60 };
     case "storage.read":
-      return { file: { $from: "input", path: "/file_id" } };
+      // ファイルはドライブから選ばせる（前の結果から読むなら欄で切り替える）。
+      return {};
     case "storage.write":
       return { name: "output.txt", content: { $from: "input" } };
     case "rag.search":
