@@ -57,10 +57,17 @@ pub fn valid_host_pattern(pattern: &str) -> bool {
 ///
 /// ホスト名は天井のどれかに一致すればよい（`*.example.com` は example.com のサブドメインを含む）。
 /// `*.sub.example.com` は、天井に同じ指定か、それを含む `*.example.com` があるときだけ収まる。
+/// 天井の完全一致のホスト `sub.example.com` は、そのサブドメイン（`*.sub.example.com`）を含まない。
 #[must_use]
 pub fn pattern_within(pattern: &str, ceiling: &[String]) -> bool {
     ceiling.iter().any(|c| match pattern.strip_prefix("*.") {
-        Some(sub) => c == pattern || secrets::host_allowed(c, sub),
+        // 天井がワイルドカードのときだけ、ワイルドカードを内側に含められる（完全一致の天井
+        // `H` に対して `host_allowed(H, H)` が真になるので、`*.H` を通さないよう先に見る）。
+        Some(sub) => {
+            let c = c.trim();
+            c.eq_ignore_ascii_case(pattern)
+                || (c.starts_with("*.") && secrets::host_allowed(c, sub))
+        }
         None => secrets::host_allowed(c, pattern),
     })
 }
@@ -354,6 +361,17 @@ mod tests {
         );
         let errs = errors(&p(&["docs.example.com"]), &scopes, &ceiling(&[]));
         assert!(errs.iter().any(|e| e.code == "ir.host_outside_ceiling"));
+        // 完全一致の天井に対するサブドメインのワイルドカードは外（保存時にも弾く）。
+        let errs = errors(
+            &p(&["*.docs.example.com"]),
+            &scopes,
+            &ceiling(&["docs.example.com"]),
+        );
+        assert!(
+            errs.iter().any(|e| e.code == "ir.host_outside_ceiling"
+                && e.path.as_deref() == Some("/params/egress_allowlist/0")),
+            "{errs:#?}"
+        );
         let errs = errors(&p(&[]), &scopes, &ceiling(&["docs.example.com"]));
         assert!(
             errs.iter().any(|e| e.code == "ir.missing_egress"),
@@ -392,6 +410,12 @@ mod tests {
         assert!(!pattern_within("example.com", &c));
         assert!(!pattern_within("*.other.test", &c));
         assert!(!pattern_within("evil-example.com", &c));
+        // 完全一致の天井は、そのサブドメインのワイルドカードを含まない（PIT-79 ③の縮小のみ）。
+        assert!(!pattern_within("*.api.other.test", &c));
+        let exact = vec!["docs.example.com".to_string()];
+        assert!(pattern_within("docs.example.com", &exact));
+        assert!(!pattern_within("*.docs.example.com", &exact));
+        assert!(!pattern_within("x.docs.example.com", &exact));
     }
 
     #[test]

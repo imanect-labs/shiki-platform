@@ -358,6 +358,41 @@ async fn web_fetch_stays_inside_the_ceiling() {
         && meta["detail"] == "evil.test"));
 }
 
+/// 天井の完全一致のホストは、そのサブドメインのワイルドカードを含まない（ノードの `*.H` は外す）。
+#[tokio::test]
+async fn an_exact_ceiling_host_does_not_admit_its_subdomains() {
+    let ports = Arc::new(AgentPorts::default());
+    *ports.calls.lock().unwrap() = vec![
+        (
+            AgentTool::WebFetch,
+            json!({ "url": "https://anything.docs.example.com/?q=secret" }),
+        ),
+        (
+            AgentTool::WebFetch,
+            json!({ "url": "https://docs.example.com/guide" }),
+        ),
+    ];
+    let audit = Arc::new(CapturingAudit::default());
+    let exec = executor(
+        Arc::clone(&ports),
+        Arc::clone(&audit),
+        web_limits(&["docs.example.com"]),
+    );
+    let params = json!({ "instruction": "x", "allowed_tools": ["web.fetch"],
+        "egress_allowlist": ["*.docs.example.com", "docs.example.com"] });
+    let res = exec
+        .execute("agent.invoke", &params, &ctx(&["http.egress"]))
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    let results = res.output["results"].as_array().unwrap();
+    assert_eq!(results[0]["code"], "forbidden", "{results:?}");
+    assert_eq!(results[1]["ok"], true, "{results:?}");
+    assert_eq!(
+        *ports.fetched.lock().unwrap(),
+        vec!["https://docs.example.com/guide".to_string()]
+    );
+}
+
 /// 道具の結果には上限を掛ける（社内検索の 1 件は短く、全体は切って目印を付ける）。
 #[tokio::test]
 async fn tool_results_are_capped() {
