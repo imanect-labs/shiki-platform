@@ -47,15 +47,26 @@ pub struct RelayDeps<'a> {
 pub async fn relay_events(deps: &RelayDeps<'_>) -> Result<(), anyhow::Error> {
     // 溜まっていれば 1 tick の中で続けて捌く（構造化データのレコード変更も outbox に乗るので、一括取込の
     // 直後は件数が多い。1 tick 1 バッチだと他の consumer と GC を長く止める・Task 15.6）。
+    let mut batch_err = None;
     for _ in 0..RELAY_BATCHES_PER_TICK {
-        if relay_events_batch(deps).await? < RELAY_BATCH {
-            break;
+        match relay_events_batch(deps).await {
+            Ok(n) if n < RELAY_BATCH => break,
+            Ok(_) => {}
+            Err(e) => {
+                batch_err = Some(e);
+                break;
+            }
         }
     }
-    retry_firings(deps).await?;
+    // 配送のバッチが一時障害で止まっても、発火の再試行と承認の突合は回す（先頭のイベントが詰まって、
+    // 全テナントの再試行・突合まで止まらないように）。誤りは最初のものを返す。
+    let retried = retry_firings(deps).await;
     // 承認の受付の突合（停止の commit より前に動いた行・承認の依頼の監査・GAP-08）。
-    super::relay_approval::reconcile_approvals(deps).await?;
-    Ok(())
+    let reconciled = super::relay_approval::reconcile_approvals(deps).await;
+    match batch_err {
+        Some(e) => Err(e),
+        None => retried.and(reconciled),
+    }
 }
 
 /// 起動に一時失敗したトリガの発火を再試行し、打ち切ったものを監査に残す（D-21）。
