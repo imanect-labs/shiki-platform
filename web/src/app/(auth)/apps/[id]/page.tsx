@@ -21,7 +21,6 @@ import { VersionsDialog } from "@/components/artifacts/versions-dialog";
 import { DataGridHostContext, miniAppDataGridHost } from "@/components/data/data-grid-host";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { useRunsRefresh, YuiActionContext, type YuiActionHost } from "@/components/prompt-kit/yui-actions";
-import { useMe } from "@/hooks/use-me";
 import {
   getArtifact,
   getMiniAppRun,
@@ -58,7 +57,6 @@ function runsFinishedSince(
 
 export default function MiniAppRunPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const me = useMe();
   const [app, setApp] = React.useState<ResolvedMiniApp | null>(null);
   const [meta, setMeta] = React.useState<ArtifactMeta | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -70,8 +68,9 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   const [shareOpen, setShareOpen] = React.useState(false);
   const [versionsOpen, setVersionsOpen] = React.useState(false);
   const [editOpen, setEditOpen] = React.useState(false);
-  // 編集は持ち主だけ（共有された人は使うだけ）。最新の版を見ているときに限る。
-  const canEdit = meta != null && me.data?.id === meta.owner && app?.version === meta.currentVersion;
+  // 編集はアプリの editor 以上（持ち主と、共有で「編集」にした人・BUG-18）。閲覧の共有は使うだけ。
+  // 編集できるかはサーバが返す（保存は PUT が改めて確かめる）。最新の版を見ているときに限る。
+  const canEdit = meta != null && app?.can_edit === true && app.version === meta.currentVersion;
 
   // 版・共有・編集はシェルのクローム（PC はバー右・スマホは右上）に置く。
   const appName = app?.body.description;
