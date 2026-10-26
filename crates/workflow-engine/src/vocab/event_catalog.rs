@@ -82,7 +82,11 @@ const STORAGE_WRITE_FIELDS: &[EventPayloadField] = &[
 
 /// データ変更（`data.record.created` / `data.record.updated` / `data.transition`）のペイロードの項目（GAP-07）。
 const DATA_CHANGE_FIELDS: &[EventPayloadField] = &[
-    field("source", "string", "できごとの種類（トリガの source と同じ）"),
+    field(
+        "source",
+        "string",
+        "できごとの種類（トリガの source と同じ）",
+    ),
     field("table_id", "string", "テーブルの ID"),
     field("record_id", "string", "追加・更新された行の ID"),
     field("rev", "number", "変更後の行の版"),
@@ -91,8 +95,16 @@ const DATA_CHANGE_FIELDS: &[EventPayloadField] = &[
         "string",
         "\"create\"（追加）・\"update\"（更新）・\"transition\"（状態の変更）",
     ),
-    field("from", "string | null", "変更前の状態（状態が変わったときだけ）"),
-    field("to", "string | null", "変更後の状態（状態が変わったときだけ）"),
+    field(
+        "from",
+        "string | null",
+        "変更前の状態（状態が変わったときだけ）",
+    ),
+    field(
+        "to",
+        "string | null",
+        "変更後の状態（状態が変わったときだけ）",
+    ),
     field(
         "changed",
         "Array<string>",
@@ -247,7 +259,10 @@ mod tests {
             blob_sha256: Value::Null,
         })
         .unwrap();
-        assert_eq!(keys(&storage), names(payload_fields(EventSource::StorageWrite)));
+        assert_eq!(
+            keys(&storage),
+            names(payload_fields(EventSource::StorageWrite))
+        );
         let data = DataChangePayload {
             source: "data.record.created".into(),
             table_id: "t".into(),

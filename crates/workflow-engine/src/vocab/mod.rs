@@ -15,11 +15,11 @@ mod node_type;
 mod scope;
 
 pub(crate) use catalog::static_output_ports;
+pub use catalog::{node_catalog, IdempotencyClass, NodeCatalogEntry, NodeCategory};
 pub use event_catalog::{
     event_catalog, payload_fields, DataChangePayload, EventCatalogEntry, EventPayloadField,
     StorageWritePayload, MAX_DATA_PAYLOAD_BYTES,
 };
-pub use catalog::{node_catalog, IdempotencyClass, NodeCatalogEntry, NodeCategory};
 pub use node_type::NodeType;
 pub use scope::Scope;
 
@@ -60,7 +60,7 @@ macro_rules! vocab_enum {
 pub(crate) use vocab_enum;
 
 vocab_enum! {
-    /// イベントトリガの source 閉集合（Stage A は storage.write のみ有効）。
+    /// イベントトリガの source 閉集合（Stage A は storage.write とデータ変更の 3 種が有効）。
     pub enum EventSource {
         StorageWrite => "storage.write",
         DataRecordCreated => "data.record.created",
@@ -75,9 +75,25 @@ vocab_enum! {
 }
 
 impl EventSource {
-    /// Stage A で有効な source（storage.write のみ・data 系は 9.10 後）。
+    /// Stage A で有効な source（storage.write とデータ変更の 3 種・GAP-07 を前倒し・D-1）。
     pub fn available_stage_a(self) -> bool {
-        matches!(self, EventSource::StorageWrite)
+        matches!(
+            self,
+            EventSource::StorageWrite
+                | EventSource::DataRecordCreated
+                | EventSource::DataRecordUpdated
+                | EventSource::DataTransition
+        )
+    }
+
+    /// データ変更の source か（scope は `{ "table": "<uuid>" }`・見え方は data の `change_event_view`）。
+    pub fn is_data(self) -> bool {
+        matches!(
+            self,
+            EventSource::DataRecordCreated
+                | EventSource::DataRecordUpdated
+                | EventSource::DataTransition
+        )
     }
 }
 
@@ -143,7 +159,11 @@ mod tests {
     #[test]
     fn event_source_stage_a() {
         assert!(EventSource::StorageWrite.available_stage_a());
-        assert!(!EventSource::DataTransition.available_stage_a());
+        assert!(EventSource::DataRecordCreated.available_stage_a());
+        assert!(EventSource::DataRecordUpdated.available_stage_a());
+        assert!(EventSource::DataTransition.available_stage_a());
+        assert!(EventSource::DataTransition.is_data());
+        assert!(!EventSource::StorageWrite.is_data());
         assert!(!EventSource::EventCustom.available_stage_a());
         assert!(!EventSource::WebhookReceived.available_stage_a());
     }

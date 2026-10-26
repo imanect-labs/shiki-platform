@@ -22,7 +22,25 @@ pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
         let ctx = NodeCtx {
             node,
             ancestors: ancestors.get(node.id.as_str()),
+            event_refs: false,
         };
+        // wait(event) の filter は、到来したイベント（event・互換の別名 trigger / payload）と、停止時に
+        // リテラルへ束縛する参照（input・nodes.*・run・each）を書ける（GAP-07 の T3）。
+        if node.node_type == crate::vocab::NodeType::ControlWait.as_str() {
+            if let Some(filter) = node.params.get("filter") {
+                let in_filter = NodeCtx {
+                    event_refs: true,
+                    ..ctx
+                };
+                check_value(filter, "/params/filter", Some(&in_filter), errors);
+            }
+            if let Some(params) = node.params.as_object() {
+                for (k, v) in params.iter().filter(|(k, _)| k.as_str() != "filter") {
+                    check_value(v, &child("/params", k), Some(&ctx), errors);
+                }
+                continue;
+            }
+        }
         check_value(&node.params, "/params", Some(&ctx), errors);
     }
     // トリガ filter の regex/型整合・参照（trigger しか解決できない）。
@@ -35,10 +53,13 @@ pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
     }
 }
 
+#[derive(Clone, Copy)]
 struct NodeCtx<'a> {
     node: &'a Node,
     /// このノードの祖先ノード id 集合（`$from: nodes.<id>` の祖先性検証用）。
     ancestors: Option<&'a HashSet<String>>,
+    /// wait(event) の filter の中か（到来したイベント `event` を参照できる）。
+    event_refs: bool,
 }
 
 /// 位置つきのエラー（ノードの params ならノード id も付ける・イベント filter は位置だけ）。
@@ -200,6 +221,8 @@ fn check_from(
     let source = from.from.as_str();
     match source {
         "input" | "trigger" | "run" => { /* 静的に許可 */ }
+        // wait(event) の filter では、到来したイベントを指す（trigger も filter の中ではイベントを指す）。
+        "event" | "payload" if ctx.event_refs => {}
         "each" => {
             // each.* は map 領域内（node.parent が map ノード）でのみ有効。領域外は実行時に
             // 現在要素が無く失敗するため保存時に弾く。

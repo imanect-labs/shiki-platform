@@ -8,7 +8,33 @@
 
 use serde_json::Value;
 
-use crate::vocab::{required_scope, NodeType};
+use crate::vocab::{required_scope, EventSource, NodeType, Scope};
+
+/// データ変更（`data.*` の source）を待つ・きっかけにするなら `data.read` が要る（変更を委譲元・実行主体の
+/// 見え方で読む・GAP-07）。トリガの `source` と control.wait の `params.source` を見る。
+fn needs_data_read(obj: &serde_json::Map<String, Value>) -> bool {
+    let is_data = |v: Option<&Value>| {
+        v.and_then(Value::as_str)
+            .and_then(EventSource::parse)
+            .is_some_and(EventSource::is_data)
+    };
+    let triggers = obj
+        .get("triggers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|t| {
+            t.get("kind").and_then(Value::as_str) == Some("event") && is_data(t.get("source"))
+        });
+    let waits = obj
+        .get("nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|n| n.get("type").and_then(Value::as_str) == Some(NodeType::ControlWait.as_str()))
+        .any(|n| is_data(n.get("params").and_then(|p| p.get("source"))));
+    triggers || waits
+}
 
 /// IR（JSON）の `declared_scopes` に、ノードが要するスコープを足した IR を返す（足した分を併せて返す）。
 /// 形が不正な IR はそのまま返す（検証が誤りを報告する）。
@@ -17,7 +43,7 @@ pub fn complete_declared_scopes(ir: &Value) -> (Value, Vec<String>) {
     let Some(obj) = out.as_object_mut() else {
         return (out, Vec::new());
     };
-    let required: std::collections::BTreeSet<&'static str> = obj
+    let mut required: std::collections::BTreeSet<&'static str> = obj
         .get("nodes")
         .and_then(Value::as_array)
         .into_iter()
@@ -26,8 +52,11 @@ pub fn complete_declared_scopes(ir: &Value) -> (Value, Vec<String>) {
         .filter_map(NodeType::parse)
         .filter(|nt| nt.available_stage_a())
         .filter_map(required_scope)
-        .map(crate::vocab::Scope::as_str)
+        .map(Scope::as_str)
         .collect();
+    if needs_data_read(obj) {
+        required.insert(Scope::DataRead.as_str());
+    }
     let declared = obj
         .entry("declared_scopes")
         .or_insert_with(|| Value::Array(Vec::new()));
@@ -48,6 +77,28 @@ pub fn complete_declared_scopes(ir: &Value) -> (Value, Vec<String>) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// データ変更のトリガ・wait(event) には data.read を足す（変更を読む見え方の権限・GAP-07）。
+    #[test]
+    fn data_change_triggers_and_waits_need_data_read() {
+        for ir in [
+            json!({ "name": "w", "triggers": [{ "kind": "event", "source": "data.record.created",
+                     "scope": { "table": "t" } }], "nodes": [] }),
+            json!({ "name": "w", "nodes": [{ "id": "w", "type": "control.wait",
+                     "params": { "kind": "event", "source": "data.transition", "scope": { "table": "t" } } }] }),
+        ] {
+            let (out, added) = complete_declared_scopes(&ir);
+            assert_eq!(added, vec!["data.read".to_string()], "{ir}");
+            assert_eq!(out["declared_scopes"], json!(["data.read"]));
+        }
+        let (_, added) = complete_declared_scopes(&json!({ "name": "w",
+            "triggers": [{ "kind": "event", "source": "storage.write", "scope": { "folder": "f" } }],
+            "nodes": [] }));
+        assert!(
+            added.is_empty(),
+            "ファイル保存のトリガは足さない（従来どおり）"
+        );
+    }
 
     #[test]
     fn adds_scopes_required_by_nodes_once() {

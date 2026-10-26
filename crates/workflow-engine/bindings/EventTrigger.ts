@@ -6,11 +6,11 @@ import type { Condition } from "./Condition";
  */
 export type EventTrigger = { 
 /**
- * イベント source（閉集合・V3 で照合。Stage A は storage.write のみ有効）。
+ * イベント source（閉集合・V3 で照合。Stage A は storage.write とデータ変更の 3 種が有効）。
  */
 source: EventSource, 
 /**
- * scope（テーブル/フォルダ束縛必須・全購読禁止）。
+ * scope（storage.write は `{ "folder" }`・データ変更は `{ "table" }` の束縛が必須・全購読禁止）。
  */
 scope: unknown, 
 /**

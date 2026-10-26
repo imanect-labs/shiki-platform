@@ -79,10 +79,10 @@ pub enum Catchup {
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct EventTrigger {
-    /// イベント source（閉集合・V3 で照合。Stage A は storage.write のみ有効）。
+    /// イベント source（閉集合・V3 で照合。Stage A は storage.write とデータ変更の 3 種が有効）。
     #[ts(type = "EventSource")]
     pub source: String,
-    /// scope（テーブル/フォルダ束縛必須・全購読禁止）。
+    /// scope（storage.write は `{ "folder" }`・データ変更は `{ "table" }` の束縛が必須・全購読禁止）。
     #[ts(type = "unknown")]
     pub scope: serde_json::Value,
     /// filter（条件木・省略可）。

@@ -138,7 +138,8 @@ pub struct WaitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "EventSource | null", optional)]
     pub source: Option<String>,
-    /// kind=event: scope 束縛（`{ "folder": "<uuid>" }`・祖先束縛で照合）。
+    /// kind=event: scope 束縛（storage.write は `{ "folder": "<uuid>" }`・祖先束縛で照合。データ変更は
+    /// `{ "table": "<uuid>", "record"?: 値式 }`・record は停止時に解決する）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "unknown", optional)]
     pub scope: Option<serde_json::Value>,
@@ -218,20 +219,13 @@ impl WaitParams {
                         return deny(name);
                     }
                 }
-                // scope は空（run 内購読のワイルドカード）か { "folder": "<uuid>" } のみ
-                // （実行時マッチャの fail-closed 規則と同一契約・非 folder 形状は保存時に弾く）。
+                // scope はオブジェクト（中身は source ごとに V3 が検査する: storage.write は
+                // { "folder": "<uuid>" }・データ変更は { "table": "<uuid>", "record"?: 値式 }・D-49）。
                 if let Some(scope) = &self.scope {
-                    let ok = scope.as_object().is_some_and(|o| {
-                        o.is_empty()
-                            || (o.len() == 1
-                                && o.get("folder")
-                                    .and_then(serde_json::Value::as_str)
-                                    .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok()))
-                    });
-                    if !ok {
+                    if !scope.is_object() {
                         return Err(ParamsIssue {
                             path: "/params/scope".to_string(),
-                            message: "wait(event) の scope は空か { \"folder\": \"<uuid>\" } のみ指定できます"
+                            message: "wait(event) の scope はオブジェクトで指定してください"
                                 .to_string(),
                         });
                     }
@@ -314,20 +308,16 @@ mod tests {
         assert_eq!(e.path, "/params/duration_sec");
     }
 
+    /// scope はオブジェクト（中身の形は source を見て V3 が検査する・D-49）。
     #[test]
-    fn event_scope_must_be_empty_or_single_folder_uuid() {
+    fn event_scope_must_be_an_object() {
         let mut p = wp(WaitKind::Event);
-        p.source = Some("file.created".into());
-        // 空オブジェクトは可（run 内ワイルドカード）。
-        p.scope = Some(json!({}));
-        assert!(p.check_cross_fields().is_ok());
-        // { folder: <uuid> } は可。
+        p.source = Some("storage.write".into());
         p.scope = Some(json!({ "folder": "11111111-1111-1111-1111-111111111111" }));
         assert!(p.check_cross_fields().is_ok());
-        // 非 uuid・別キー・複数キーは不可。
-        p.scope = Some(json!({ "folder": "not-a-uuid" }));
-        assert!(p.check_cross_fields().is_err());
-        p.scope = Some(json!({ "other": "x" }));
+        p.scope = Some(json!({ "table": "11111111-1111-1111-1111-111111111111" }));
+        assert!(p.check_cross_fields().is_ok());
+        p.scope = Some(json!("x"));
         assert!(p.check_cross_fields().is_err());
     }
 }

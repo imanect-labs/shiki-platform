@@ -149,22 +149,27 @@ impl RegistrationService {
         let current = self.view(tenant, workflow_id).await?;
         let registered = current.status != "none";
 
-        // イベントトリガの folder 束縛は**有効化者が読める範囲**に限る（fail-closed）。
-        // これが無いと editor が任意フォルダの書込イベントを購読でき、ペイロード
-        // （ファイル名/id 等のメタデータ）が読めないフォルダから漏れる側チャネルになる。
+        // イベントトリガの folder / table 束縛は**有効化者が読める範囲**に限る（fail-closed）。
+        // これが無いと editor が任意フォルダの書込イベント・任意テーブルの変更を購読でき、ペイロード
+        // （ファイル名/id・行の値）が読めないフォルダ・テーブルから漏れる側チャネルになる。
+        // 発火の時点でも、データ変更は委譲元の見え方で作る（data の change_event_view・GAP-07）。
         for t in &ir.triggers {
             let Trigger::Event(ev) = t else { continue };
-            let Some(folder) = ev.scope.get("folder").and_then(|v| v.as_str()) else {
+            let (what, obj) = if let Some(folder) = ev.scope.get("folder").and_then(|v| v.as_str())
+            {
+                (format!("folder {folder}"), enabler.ns().folder(folder))
+            } else if let Some(table) = ev.scope.get("table").and_then(|v| v.as_str()) {
+                (format!("table {table}"), enabler.ns().data_table(table))
+            } else {
                 continue; // 形状は保存時 V3 が強制済み（防御的 continue）。
             };
-            let obj = enabler.ns().folder(folder);
             let ok = self
                 .delegation
                 .enabler_holds(enabler, authz::Relation::Viewer, &obj)
                 .await?;
             if !ok {
                 return Err(EnableError::Delegation(DelegationError::OutOfScope(
-                    format!("event trigger folder {folder}（viewer なし）"),
+                    format!("event trigger {what}（viewer なし）"),
                 )));
             }
         }

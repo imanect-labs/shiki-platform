@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 
 use crate::capability::{check_scope_ceiling, CapabilityAudit, EffectJournal, ScopeCeiling};
 use crate::control::eval::{resolve_deep, EvalError};
-use crate::control::{branch_port, switch_port};
+use crate::control::{bind_wait_filter, branch_port, switch_port};
 use crate::ir::expr::ValueExpr;
 use crate::ir::params::{
     self, BranchParams, MapItemError, MapParams, SwitchParams, WaitKind, WaitParams, WaitTimeout,
@@ -28,7 +28,7 @@ use crate::ratelimit::{BucketConfig, TokenBucket};
 use crate::run::{
     MapFanout, NodeContext, NodeExecutor, NodeResult, OnItemError, OnTimeout, Suspend,
 };
-use crate::vocab::NodeType;
+use crate::vocab::{EventSource, NodeType};
 
 use super::ports::{ExecCtx, NodePorts};
 use super::resolver::ParamResolver;
@@ -253,14 +253,105 @@ impl CapabilityNodeExecutor {
                     }
                     None => None,
                 };
+                // イベント以外の参照（input・nodes.*・run・each）は停止時にリテラルへ束縛する（起床の判定は
+                // 届いたイベントしか解決しない・GAP-07 の T3）。
+                let filter = match p
+                    .filter
+                    .as_ref()
+                    .map(|c| bind_wait_filter(c, &r))
+                    .transpose()
+                {
+                    Ok(f) => f.and_then(|c| serde_json::to_value(c).ok()),
+                    Err(e) => return eval_failed("wait の filter", &e),
+                };
                 NodeResult::wait(Suspend::Event {
                     source,
                     scope: p.scope.unwrap_or_else(|| json!({})),
-                    filter: p.filter.and_then(|c| serde_json::to_value(c).ok()),
+                    filter,
                     timeout_at,
                     on_timeout,
+                    suspend_rev: None,
                 })
             }
+        }
+    }
+
+    /// control.wait の本体: [`Self::eval_wait`] の中断指示に、データ変更の wait の束縛を足す（GAP-07 の T3）。
+    ///
+    /// データ変更の wait は `scope.record`（値式）を停止時に解決し、実行主体の権限でその行を読んで rev を
+    /// `suspend_rev` に残す（これ以下の rev の変更＝停止より前の自分の書込では起きない）。行を読むのは
+    /// data.get の能力として scope 天井を通す（要求スコープ data.read）。
+    async fn node_wait(&self, params: &Value, ctx: &NodeContext) -> NodeResult {
+        let mut out = Self::eval_wait(params, ctx);
+        let Some(Suspend::Event {
+            source,
+            scope,
+            suspend_rev,
+            ..
+        }) = out.suspend.as_mut()
+        else {
+            return out;
+        };
+        if !EventSource::parse(source).is_some_and(EventSource::is_data) {
+            return out;
+        }
+        let table = scope
+            .get("table")
+            .and_then(Value::as_str)
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+        let Some(table) = table else {
+            return NodeResult::fail(
+                "bad_params",
+                "wait(event) の scope.table にテーブルの ID がありません",
+                false,
+            );
+        };
+        let record = match scope.get("record").cloned() {
+            None | Some(Value::Null) => None,
+            Some(raw) => {
+                let expr: ValueExpr =
+                    serde_json::from_value(raw).unwrap_or(ValueExpr::Literal(Value::Null));
+                let r = ParamResolver::new(ctx);
+                let id = match resolve_deep(&expr, &r) {
+                    Ok(v) => v,
+                    Err(e) => return eval_failed("wait の scope.record", &e),
+                };
+                match id.as_str().and_then(|s| uuid::Uuid::parse_str(s).ok()) {
+                    Some(id) => Some(id),
+                    None => {
+                        return NodeResult::fail(
+                            "bad_params",
+                            "wait(event) の scope.record が行の ID になりません",
+                            false,
+                        )
+                    }
+                }
+            }
+        };
+        let Some(record) = record else {
+            // テーブル単位の待ち: 停止より前のイベントは checkpoint の Tx で outbox の位置を残して無視する。
+            *scope = json!({ "table": table.to_string() });
+            return out;
+        };
+        if let ScopeCeiling::Denied(_) = Self::check_ceiling("data.get", ctx) {
+            self.audit.record_out_of_scope(
+                &Self::exec_ctx(ctx),
+                "data.get",
+                &json!({ "reason": "out_of_scope", "step": ctx.step_path }),
+            );
+            return NodeResult::fail("out_of_scope", "scope_ceiling 外の操作: data.get", false);
+        }
+        match self
+            .ports
+            .data_get(&Self::exec_ctx(ctx), table, record)
+            .await
+        {
+            Ok(rec) => {
+                *suspend_rev = rec.get("rev").and_then(Value::as_i64);
+                *scope = json!({ "table": table.to_string(), "record": record.to_string() });
+                out
+            }
+            Err(e) => NodeResult::fail(&e.code, e.message, e.retryable),
         }
     }
 
@@ -322,7 +413,7 @@ impl NodeExecutor for CapabilityNodeExecutor {
             NodeType::ControlSwitch => return Self::eval_switch(params, ctx),
             NodeType::ControlJoin => return NodeResult::ok(ctx.input.clone()),
             // wait/map は terminal 化せず durable に中断する（checkpoint 側で waiting_*/fan-out へ）。
-            NodeType::ControlWait => return Self::eval_wait(params, ctx),
+            NodeType::ControlWait => return self.node_wait(params, ctx).await,
             NodeType::ControlMap => return Self::eval_map(params, ctx),
             _ => {}
         }

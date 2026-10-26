@@ -11,6 +11,7 @@ mod template;
 pub use template::TEMPLATE_ESCAPED_VAR;
 mod v2_graph;
 mod v3_vocab;
+pub use v3_vocab::{OVERLAPPING_DATA_TRIGGERS, WAIT_FILTER_ALIAS};
 mod v5_dataflow;
 
 use std::collections::BTreeMap;
@@ -90,11 +91,13 @@ pub struct Catalog {
 /// 保存を止めない警告をすべて返す（保存 API・検証 API・チャットの emit_workflow が利用者へ示す）。
 ///
 /// 条件の意味論の切替で振る舞いが変わり得る条件（[`SEMANTICS_CHANGED`]・[`semantics_warnings`]）と、
-/// vars のキーを `{{key}}` と書いたテンプレート（[`TEMPLATE_ESCAPED_VAR`]）。
+/// vars のキーを `{{key}}` と書いたテンプレート（[`TEMPLATE_ESCAPED_VAR`]）と、同じテーブルで重なる
+/// データ変更トリガ（[`OVERLAPPING_DATA_TRIGGERS`]）と、wait(event) の filter の別名（[`WAIT_FILTER_ALIAS`]）。
 #[must_use]
 pub fn save_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     let mut out = semantics_warnings(ir);
     out.extend(template::warnings(ir));
+    out.extend(v3_vocab::event_warnings(ir));
     out
 }
 

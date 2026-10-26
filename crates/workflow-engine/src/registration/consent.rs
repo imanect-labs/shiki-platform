@@ -21,7 +21,8 @@ impl RegistrationService {
             }
         };
 
-        // イベントトリガの folder 束縛: トリガ元コンテキストの読取提案（典型パターン）。
+        // イベントトリガの束縛: トリガ元コンテキストの読取提案（典型パターン）。データ変更のトリガは、
+        // 委譲元（テーブルの viewer を委譲した人）の見え方で変更を読むので、テーブルの閲覧を提案する（GAP-07）。
         for (i, t) in ir.triggers.iter().enumerate() {
             if let Trigger::Event(ev) = t {
                 if let Some(folder) = ev.scope.get("folder").and_then(|v| v.as_str()) {
@@ -29,6 +30,17 @@ impl RegistrationService {
                         scope: "storage.read".into(),
                         object_kind: "folder".into(),
                         object_id: Some(folder.to_string()),
+                        object_name: None,
+                        relation: "viewer".into(),
+                        source: format!("trigger:{i}"),
+                        needs_user_pick: false,
+                    });
+                }
+                if let Some(table) = ev.scope.get("table").and_then(|v| v.as_str()) {
+                    push(SuggestedGrant {
+                        scope: "data.read".into(),
+                        object_kind: "data_table".into(),
+                        object_id: Some(table.to_string()),
                         object_name: None,
                         relation: "viewer".into(),
                         source: format!("trigger:{i}"),
@@ -161,25 +173,38 @@ impl RegistrationService {
                 }
                 // wait(event) のフォルダ束縛: 起床は実行主体が保存されたファイルを読めるときだけ
                 // （relay の閲覧確認）なので、schedule / event の run にはフォルダの閲覧の委譲が要る。
+                // データ変更の wait はテーブルの閲覧（変更は実行主体の見え方で受け取る・GAP-07）。
                 // scope の無い購読は委譲したものの中でしか起きないので、提案しない。
                 crate::vocab::NodeType::ControlWait => {
-                    let folder = node
-                        .params
-                        .get("scope")
-                        .and_then(|s| s.get("folder"))
-                        .and_then(serde_json::Value::as_str);
-                    if let (Some("event"), Some(folder)) =
-                        (node.params.get("kind").and_then(|k| k.as_str()), folder)
-                    {
-                        push(SuggestedGrant {
-                            scope: "storage.read".into(),
-                            object_kind: "folder".into(),
-                            object_id: Some(folder.to_string()),
-                            object_name: None,
-                            relation: "viewer".into(),
-                            source,
-                            needs_user_pick: false,
-                        });
+                    let scope = node.params.get("scope");
+                    let key = |k: &str| {
+                        scope
+                            .and_then(|s| s.get(k))
+                            .and_then(serde_json::Value::as_str)
+                    };
+                    if node.params.get("kind").and_then(|k| k.as_str()) == Some("event") {
+                        if let Some(folder) = key("folder") {
+                            push(SuggestedGrant {
+                                scope: "storage.read".into(),
+                                object_kind: "folder".into(),
+                                object_id: Some(folder.to_string()),
+                                object_name: None,
+                                relation: "viewer".into(),
+                                source: source.clone(),
+                                needs_user_pick: false,
+                            });
+                        }
+                        if let Some(table) = key("table") {
+                            push(SuggestedGrant {
+                                scope: "data.read".into(),
+                                object_kind: "data_table".into(),
+                                object_id: Some(table.to_string()),
+                                object_name: None,
+                                relation: "viewer".into(),
+                                source,
+                                needs_user_pick: false,
+                            });
+                        }
                     }
                 }
                 crate::vocab::NodeType::WorkflowStart => {
@@ -303,6 +328,50 @@ mod tests {
         assert_eq!(w.object_id.as_deref(), Some(FOLDER));
         assert!(!w.needs_user_pick);
         assert_eq!(plan.len(), 1, "{plan:?}");
+    }
+
+    /// データ変更の wait(event) もテーブルの閲覧の委譲を提案する（GAP-07 の T3）。
+    #[test]
+    fn data_wait_suggests_a_table_viewer_grant() {
+        let plan = plan(&json!([
+            { "id": "w", "type": "control.wait",
+              "params": { "kind": "event", "source": "data.record.updated", "scope": { "table": FILE } } }
+        ]));
+        let w = by_source(&plan, "w");
+        assert_eq!(
+            (
+                w.scope.as_str(),
+                w.object_kind.as_str(),
+                w.relation.as_str()
+            ),
+            ("data.read", "data_table", "viewer")
+        );
+        assert_eq!(w.object_id.as_deref(), Some(FILE));
+    }
+
+    /// データ変更トリガのテーブルは閲覧の委譲を提案する（変更は委譲元の見え方で読む・GAP-07）。
+    #[test]
+    fn data_change_trigger_suggests_a_table_viewer_grant() {
+        let ir = WorkflowIr::from_json(&json!({
+            "ir_version": 1, "name": "wf", "declared_scopes": ["data.read"],
+            "triggers": [{ "kind": "event", "source": "data.record.created", "scope": { "table": FILE } }],
+            "nodes": [], "edges": []
+        }))
+        .expect("test IR");
+        let plan = RegistrationService::consent_plan(&ir);
+        assert_eq!(plan.len(), 1, "{plan:?}");
+        let g = &plan[0];
+        assert_eq!(
+            (
+                g.scope.as_str(),
+                g.object_kind.as_str(),
+                g.relation.as_str()
+            ),
+            ("data.read", "data_table", "viewer")
+        );
+        assert_eq!(g.object_id.as_deref(), Some(FILE));
+        assert_eq!(g.source, "trigger:0");
+        assert!(!g.needs_user_pick);
     }
 
     /// 対象が値式（前の結果・入力・トリガ）なら、有効化者が選ぶ。csv.write のフォルダ省略も

@@ -35,6 +35,86 @@ impl ValueResolver for PayloadResolver<'_> {
     }
 }
 
+/// 到来したイベントを指す `$from` の source か（`event` が正・`trigger` / `payload` は互換の別名）。
+#[must_use]
+pub fn is_event_source(from: &str) -> bool {
+    matches!(from, "event" | "trigger" | "payload")
+}
+
+/// wait(event) の filter を停止時に束縛する（GAP-07 の T3）。
+///
+/// 到来したイベントを指す参照（[`is_event_source`]）はそのまま残し、それ以外（`input`・`nodes.*`・`run`・
+/// `each`）は `r`（停止したステップの解決文脈）で解決してリテラルに置き換える。起床の判定はイベントの
+/// ペイロードしか解決しないので、束縛しないと「前のブロックの結果と同じ行」のような filter は常に偽になる。
+/// 解決できない参照は停止の失敗（[`eval::EXPR_RESOLVE_ERROR`]・黙って待ち続けない）。
+pub fn bind_wait_filter(cond: &Condition, r: &dyn ValueResolver) -> Result<Condition, EvalError> {
+    Ok(match cond {
+        Condition::All(cs) => Condition::All(
+            cs.iter()
+                .map(|c| bind_wait_filter(c, r))
+                .collect::<Result<_, _>>()?,
+        ),
+        Condition::Any(cs) => Condition::Any(
+            cs.iter()
+                .map(|c| bind_wait_filter(c, r))
+                .collect::<Result<_, _>>()?,
+        ),
+        Condition::Not(c) => Condition::Not(Box::new(bind_wait_filter(c, r)?)),
+        Condition::Cmp(cmp) => Condition::Cmp(crate::ir::expr::Comparison {
+            left: bind_value(&cmp.left, r)?,
+            op: cmp.op,
+            right: cmp.right.as_ref().map(|v| bind_value(v, r)).transpose()?,
+        }),
+    })
+}
+
+/// 値式 1 つの束縛（[`bind_wait_filter`]）。
+fn bind_value(v: &ValueExpr, r: &dyn ValueResolver) -> Result<ValueExpr, EvalError> {
+    Ok(match v {
+        ValueExpr::From(f) if is_event_source(&f.from) => v.clone(),
+        ValueExpr::From(_) => ValueExpr::Literal(resolve_deep(v, r)?),
+        // テンプレートは差し込みごとに束縛する（イベントの差し込みは起床時に解決する）。
+        ValueExpr::Template(t) => ValueExpr::Template(crate::ir::expr::TemplateExpr {
+            template: t.template.clone(),
+            vars: t
+                .vars
+                .iter()
+                .map(|(k, x)| Ok((k.clone(), bind_value(x, r)?)))
+                .collect::<Result<_, EvalError>>()?,
+        }),
+        ValueExpr::Literal(json) => ValueExpr::Literal(bind_json(json, r)?),
+    })
+}
+
+/// リテラルの JSON の中の値式（`$from` / `$template`）を束縛する。
+fn bind_json(v: &Value, r: &dyn ValueResolver) -> Result<Value, EvalError> {
+    match v {
+        Value::Object(map) if map.contains_key("$from") || map.contains_key("$template") => {
+            match serde_json::from_value::<ValueExpr>(v.clone()) {
+                Ok(ValueExpr::Literal(_)) | Err(_) => Ok(v.clone()),
+                Ok(expr) => {
+                    let bound = bind_value(&expr, r)?;
+                    Ok(match bound {
+                        ValueExpr::Literal(x) => x,
+                        other => serde_json::to_value(other).unwrap_or(Value::Null),
+                    })
+                }
+            }
+        }
+        Value::Object(map) => Ok(Value::Object(
+            map.iter()
+                .map(|(k, x)| Ok((k.clone(), bind_json(x, r)?)))
+                .collect::<Result<_, EvalError>>()?,
+        )),
+        Value::Array(items) => items
+            .iter()
+            .map(|x| bind_json(x, r))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        other => Ok(other.clone()),
+    }
+}
+
 /// イベント filter がペイロードに一致するか。
 ///
 /// 評価エラー（型不一致など）は `Err`。呼び出し側は発火・起床させない（fail-closed・engine.md §5.6）。
@@ -115,6 +195,69 @@ mod tests {
             right: Some(ValueExpr::Literal(json!(10))),
         });
         assert_eq!(branch_port(&cond2, &r), Ok("false"));
+    }
+
+    /// wait(event) の filter は、イベント以外の参照だけを停止時のリテラルに束縛する（T3）。
+    #[test]
+    #[allow(clippy::panic)]
+    fn wait_filter_binds_everything_but_the_event() {
+        let r = MapResolver(
+            [
+                ("input".to_string(), json!({ "id": "r-1" })),
+                ("nodes.make.output".to_string(), json!({ "id": "r-2" })),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let event = |path: &str| {
+            ValueExpr::From(FromRef {
+                from: "event".into(),
+                path: Some(path.into()),
+                default: None,
+            })
+        };
+        let node = ValueExpr::From(FromRef {
+            from: "nodes.make.output".into(),
+            path: Some("/id".into()),
+            default: None,
+        });
+        let cond = Condition::All(vec![
+            Condition::Cmp(Comparison {
+                left: event("/record_id"),
+                op: CmpOp::Eq,
+                right: Some(node),
+            }),
+            Condition::Cmp(Comparison {
+                left: from("/id"),
+                op: CmpOp::Eq,
+                right: Some(event("/record_id")),
+            }),
+        ]);
+        let bound = bind_wait_filter(&cond, &r).unwrap();
+        let Condition::All(cs) = &bound else {
+            panic!("{bound:?}")
+        };
+        let Condition::Cmp(a) = &cs[0] else { panic!() };
+        assert!(matches!(&a.left, ValueExpr::From(f) if f.from == "event"));
+        assert_eq!(a.right, Some(ValueExpr::Literal(json!("r-2"))));
+        let Condition::Cmp(b) = &cs[1] else { panic!() };
+        assert_eq!(b.left, ValueExpr::Literal(json!("r-1")));
+        // 束縛した filter はイベントのペイロードだけで評価できる。
+        assert_eq!(
+            event_filter_matches(&bound, &json!({ "record_id": "r-2" })),
+            Ok(false),
+            "r-1 と r-2 の両方には一致しない"
+        );
+        // 解決できない参照は停止の失敗。
+        let missing = Condition::Cmp(Comparison {
+            left: event("/x"),
+            op: CmpOp::Eq,
+            right: Some(from("/nope")),
+        });
+        assert_eq!(
+            bind_wait_filter(&missing, &r).unwrap_err().code,
+            eval::EXPR_RESOLVE_ERROR
+        );
     }
 
     #[test]

@@ -24,9 +24,9 @@ use uuid::Uuid;
 pub use launcher::{LauncherError, WorkflowRunLauncher};
 pub use model::{idempotency_key, RunStatus, StepStatus};
 pub use store::{
-    CancelOutcome, EventWaitGate, EventWaitSubscriber, GcReport, HistoryGcWorker, ResumeOutcome,
-    RunDetail, RunEventRow, RunListFilter, RunListItem, RunOrigin, RunStatusReader, RunStore,
-    RunStoreError, StepDetail, StepOverview, WORKFLOW_GC_QUEUE,
+    CancelOutcome, DataWaitCandidate, EventWaitGate, EventWaitSubscriber, GcReport,
+    HistoryGcWorker, ResumeOutcome, RunDetail, RunEventRow, RunListFilter, RunListItem, RunOrigin,
+    RunStatusReader, RunStore, RunStoreError, StepDetail, StepOverview, WORKFLOW_GC_QUEUE,
 };
 pub use worker::{ConcurrencyLimits, WorkerConfig, WorkflowWorker, DEFAULT_LEASE_SECS};
 
@@ -93,13 +93,15 @@ pub enum Suspend {
     /// wait(event): イベント購読で `waiting_event`。マッチャがイベント到来で起床する。
     Event {
         source: String,
-        /// テーブル/フォルダ束縛（祖先束縛あり）。
+        /// テーブル/フォルダ束縛（フォルダは祖先束縛あり・データ変更の record は停止時に解決済み）。
         scope: Value,
-        /// 条件木（イベントペイロードに対して評価・省略可）。
+        /// 条件木（イベントペイロードに対して評価・省略可）。イベント以外の参照は停止時に束縛済み。
         filter: Option<Value>,
         /// on_timeout の期限（None=無期限）。
         timeout_at: Option<DateTime<Utc>>,
         on_timeout: OnTimeout,
+        /// 行に束縛したデータ変更の wait の、停止時の行の rev（これ以下の変更では起きない・GAP-07）。
+        suspend_rev: Option<i64>,
     },
 }
 

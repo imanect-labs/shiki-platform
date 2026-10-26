@@ -82,6 +82,7 @@ pub(super) async fn handle_suspend(
             filter,
             timeout_at,
             on_timeout,
+            suspend_rev,
         } => {
             sqlx::query(
                 "UPDATE step_execution SET status = 'waiting_event', \
@@ -94,10 +95,29 @@ pub(super) async fn handle_suspend(
             .execute(&mut **tx)
             .await
             .map_err(map_db)?;
+            // 登録より前のデータ変更では起こさない（GAP-07 の T3）: 行に束縛した wait は停止時の rev
+            // （suspend_rev）以下を、テーブル単位の wait はこの Tx の時点の outbox の位置（after_event_id）以下を
+            // 無視する。テーブル単位では、並行していた書込（この位置より前に採番され、後で commit したもの）を
+            // 取りこぼし得る（docs に明記）。
+            let after_event_id = if suspend_rev.is_none()
+                && crate::vocab::EventSource::parse(source)
+                    .is_some_and(crate::vocab::EventSource::is_data)
+            {
+                let id: i64 =
+                    sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM storage_event_outbox")
+                        .fetch_one(&mut **tx)
+                        .await
+                        .map_err(map_db)?;
+                Some(id)
+            } else {
+                None
+            };
             let spec = json!({
                 "scope": scope,
                 "filter": filter,
                 "on_timeout": match on_timeout { OnTimeout::Fail => "fail", OnTimeout::Continue => "continue" },
+                "suspend_rev": suspend_rev,
+                "after_event_id": after_event_id,
             });
             // 再実行（at-least-once）で二重登録しないよう UPSERT（fired をリセットして待ち直す）。
             sqlx::query(
@@ -134,7 +154,7 @@ pub(super) async fn handle_suspend(
 ///
 /// `taken_port=Some(p)` → `succeeded`・そのポート・`output`。`None` → `failed`（on_timeout=fail・run 失敗）。
 /// step が既に waiting_* でない（起床済み/キャンセル）なら no-op（冪等）。戻り値 = 起床したか。
-async fn wake_step_and_advance(
+pub(super) async fn wake_step_and_advance(
     db: &PgPool,
     tenant_id: &str,
     run_id: Uuid,
@@ -260,7 +280,7 @@ async fn wake_step_and_advance(
 }
 
 /// IR スナップショット JSON からグラフを組む（起床経路のヘルパ）。
-fn graph_from_snapshot(ir_json: Value) -> Option<RunGraph> {
+pub(super) fn graph_from_snapshot(ir_json: Value) -> Option<RunGraph> {
     serde_json::from_value::<WorkflowIr>(ir_json)
         .ok()
         .map(|ir| RunGraph::build(&ir))

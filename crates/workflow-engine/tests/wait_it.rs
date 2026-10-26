@@ -93,6 +93,7 @@ impl NodeExecutor for WaitMapExecutor {
                         filter: params.get("filter").cloned(),
                         timeout_at,
                         on_timeout,
+                        suspend_rev: None,
                     })
                 }
                 _ => NodeResult::fail("bad_params", "unknown wait", false),

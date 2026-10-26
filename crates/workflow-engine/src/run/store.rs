@@ -23,11 +23,13 @@ mod limits;
 mod map_region;
 mod ops;
 mod wait;
+mod wait_data;
 
 pub use gc::{GcReport, HistoryGcWorker, WORKFLOW_GC_QUEUE};
 pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
 pub use ops::{CancelOutcome, ResumeOutcome};
 pub use wait::{EventWaitGate, EventWaitSubscriber};
+pub use wait_data::DataWaitCandidate;
 
 /// step の durable テーブル記述子（複合キー・engine.md §9.5）。
 ///

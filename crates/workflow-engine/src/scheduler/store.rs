@@ -51,6 +51,68 @@ struct EventTriggerRow {
     spec: sqlx::types::Json<serde_json::Value>,
 }
 
+/// データ変更トリガの候補（テーブル束縛・GAP-07）。見え方と filter の評価は呼び出し側（relay）が行う。
+#[derive(Debug, Clone)]
+pub struct DataTriggerCandidate {
+    pub trigger: super::EventTriggerRef,
+    /// registration の org（ワークフロー主体の AuthContext を組む）。
+    pub org: String,
+    pub source: crate::vocab::EventSource,
+    pub table_id: Uuid,
+    /// トリガの filter（条件木の JSON・無ければ `None`）。
+    pub filter: Option<serde_json::Value>,
+}
+
+impl DataTriggerCandidate {
+    /// filter がペイロードに一致するか（fail-closed: 不正 filter・評価エラーは一致しない）。
+    #[must_use]
+    pub fn admits(&self, payload: &serde_json::Value) -> bool {
+        trigger_filter_admits(
+            self.filter.as_ref(),
+            payload,
+            &self.trigger.tenant_id,
+            &self.trigger.trigger_id,
+        )
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct DataTriggerRow {
+    tenant_id: String,
+    trigger_id: String,
+    workflow_id: Uuid,
+    org: String,
+    source: String,
+    table_id: String,
+    filter: Option<sqlx::types::Json<serde_json::Value>>,
+}
+
+/// トリガの filter がペイロードに一致するか（fail-closed: 不正 filter・型不一致などの評価エラーは一致しない・
+/// engine.md §5.6）。
+pub(crate) fn trigger_filter_admits(
+    filter: Option<&serde_json::Value>,
+    payload: &serde_json::Value,
+    tenant_id: &str,
+    trigger_id: &str,
+) -> bool {
+    let Some(filter_json) = filter.filter(|v| !v.is_null()) else {
+        return true;
+    };
+    match serde_json::from_value::<crate::ir::expr::Condition>(filter_json.clone()) {
+        Ok(cond) => match crate::control::event_filter_matches(&cond, payload) {
+            Ok(matched) => matched,
+            Err(e) => {
+                tracing::warn!(code = e.code, error = %e.message, tenant = tenant_id, trigger = %trigger_id, "トリガ filter の評価に失敗（fail-closed）");
+                false
+            }
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, tenant = tenant_id, trigger = %trigger_id, "トリガ filter が不正（fail-closed）");
+            false
+        }
+    }
+}
+
 /// スケジューラ/マッチャの永続化。
 #[derive(Clone)]
 pub struct SchedulerStore {
@@ -242,6 +304,58 @@ impl SchedulerStore {
         Ok(())
     }
 
+    /// データ変更トリガの候補を、テーブルの集合でまとめて引く（enabled かつ有効化バージョン一致のみ）。
+    ///
+    /// scope はテーブル束縛必須（`{ "table": "<uuid>" }`・V3 が正規形を強制）。table キーを持たない scope は
+    /// ワイルドカードに縮退させず一致しない（fail-closed）。
+    pub async fn data_trigger_candidates(
+        &self,
+        tenant_id: &str,
+        tables: &[Uuid],
+    ) -> Result<Vec<DataTriggerCandidate>, SchedulerStoreError> {
+        if tables.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sources: Vec<&str> = crate::vocab::EventSource::ALL
+            .iter()
+            .filter(|s| s.is_data())
+            .map(|s| s.as_str())
+            .collect();
+        let table_keys: Vec<String> = tables.iter().map(|t| t.hyphenated().to_string()).collect();
+        let rows: Vec<DataTriggerRow> = sqlx::query_as(
+            "SELECT t.tenant_id, t.trigger_id, t.workflow_id, r.org, t.source, \
+                    t.spec->'scope'->>'table' AS table_id, t.spec->'filter' AS filter \
+             FROM workflow_trigger t \
+             JOIN workflow_registration r \
+               ON r.tenant_id = t.tenant_id AND r.workflow_id = t.workflow_id \
+             WHERE t.tenant_id = $1 AND t.kind = 'event' AND t.source = ANY($2) \
+               AND t.enabled AND r.status = 'enabled' AND t.version = r.enabled_version \
+               AND (t.spec->'scope'->>'table') = ANY($3)",
+        )
+        .bind(tenant_id)
+        .bind(&sources)
+        .bind(&table_keys)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                Some(DataTriggerCandidate {
+                    trigger: super::EventTriggerRef {
+                        tenant_id: r.tenant_id,
+                        trigger_id: r.trigger_id,
+                        workflow_id: r.workflow_id,
+                    },
+                    org: r.org,
+                    source: crate::vocab::EventSource::parse(&r.source)?,
+                    table_id: Uuid::parse_str(&r.table_id).ok()?,
+                    filter: r.filter.map(|j| j.0).filter(|v| !v.is_null()),
+                })
+            })
+            .collect())
+    }
+
     /// イベント（storage.write）を該当する enabled トリガへマッチさせ run を起動する（engine.md §5.4）。
     ///
     /// `event_id`（outbox id）で `trigger_firing` を UNIQUE 記録し、outbox 1 件につき最大 1 run。
@@ -284,22 +398,8 @@ impl SchedulerStore {
         let mut fired = 0usize;
         for t in &triggers {
             // filter 評価（イベントペイロードに対して・fail-closed: 不正 filter/不一致は発火しない・§5.6）。
-            if let Some(filter_json) = t.spec.0.get("filter").filter(|v| !v.is_null()) {
-                match serde_json::from_value::<crate::ir::expr::Condition>(filter_json.clone()) {
-                    Ok(cond) => match crate::control::event_filter_matches(&cond, payload) {
-                        Ok(true) => {}
-                        Ok(false) => continue,
-                        // 型不一致などの評価エラーは発火しない（黙って発火させない・engine.md §5.6）。
-                        Err(e) => {
-                            tracing::warn!(code = e.code, error = %e.message, tenant = tenant_id, trigger = %t.trigger_id, "トリガ filter の評価に失敗（fail-closed）");
-                            continue;
-                        }
-                    },
-                    Err(e) => {
-                        tracing::warn!(error = %e, tenant = tenant_id, trigger = %t.trigger_id, "トリガ filter が不正（fail-closed）");
-                        continue;
-                    }
-                }
+            if !trigger_filter_admits(t.spec.0.get("filter"), payload, tenant_id, &t.trigger_id) {
+                continue;
             }
             // (trigger_id, event_id) で 1 イベント 1 run。占有・起動・結果の記録は firing の共通の経路
             // （一時失敗は再試行を待つ・D-21）。storage.write は因果の鎖をまだ使わない（BUG-29）。
