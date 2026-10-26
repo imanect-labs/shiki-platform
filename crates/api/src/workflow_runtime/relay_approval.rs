@@ -257,19 +257,20 @@ pub(super) async fn fail_unavailable(
     resolve(deps, subscriber, wait, &res, Some(ACTOR_UNAVAILABLE)).await
 }
 
-/// 1 tick で確かめる期限の来た承認の上限（残りは次の tick・期限切れの回収は別に全件を見る）。
+/// 期限の来た承認を 1 回に読む件数と、1 tick に読む回数の上限（超えた分は次の tick）。
 const DUE_BATCH: i64 = 256;
+const DUE_PAGES: i64 = 16;
 
 /// 承認の期限の回収（scheduler の tick・結合テストも同じ口を呼ぶ）。
 ///
-/// 期限の来た保留中の承認のうち、実行主体がテーブルを読めなくなったもの（委譲が無い・テーブル単位の NotFound /
-/// Forbidden）は、期限の出口（timeout）へ進めずに run を [`ACTOR_UNAVAILABLE`] で失敗させる（受付の突合・判断の
-/// 遷移を受けた relay と揃える・D-62）。残りを [`RunStore::expire_due_approvals`] で期限切れにして決着の監査を
-/// 書く。
+/// 期限の来た保留中の承認を 1 件ずつ、実行主体がまだテーブルを読めるかを確かめてから決める。読めなくなっていたら
+/// （委譲が無い・テーブル単位の NotFound / Forbidden）期限の出口（timeout）へ進めずに run を [`ACTOR_UNAVAILABLE`]
+/// で失敗させ（受付の突合・判断の遷移を受けた relay と揃える・D-62）、読めるなら期限切れにする（on_timeout で
+/// timeout の出口か run の失敗）。どちらも決着の監査を書く。
 ///
-/// `expire_due_waits` より先に呼ぶ（あちらも承認を期限切れにするので、先に確かめないと timeout の出口へ進む）。
-/// 確かめが一時障害で終わったら、期限切れにせずに `Err` を返す。呼び出し側はその tick の `expire_due_waits` を
-/// 見送る（確かめないまま期限の出口へ進めない・次の tick で確かめ直す）。
+/// `expire_due_waits` より先に呼ぶ（あちらも承認を期限切れにするので、確かめていない承認が timeout の出口へ進む）。
+/// 確かめが一時障害で終わったとき・1 tick の上限を超えたときは `Err` を返す。呼び出し側はその tick の
+/// `expire_due_waits` を見送る（確かめないまま期限の出口へ進めない・次の tick で続ける）。
 pub async fn expire_due_approvals(
     db: &sqlx::PgPool,
     runs: &RunStore,
@@ -279,35 +280,42 @@ pub async fn expire_due_approvals(
     tenant_scope: Option<&str>,
 ) -> Result<(), anyhow::Error> {
     let port = DataPort { data, fsms, db };
-    for p in runs.due_approvals(now, tenant_scope, DUE_BATCH).await? {
-        let ec = exec_ctx(&p.subscriber);
-        let lost = match port.actor(&ec, p.table_id, Relation::Viewer).await {
-            Err(e) if !e.retryable => Ok(true),
-            Err(e) => Err(format!("{}: {}", e.code, e.message)),
-            Ok(a) => table_unreadable(&a, p.table_id)
-                .await
-                .map_err(|e| e.to_string()),
-        };
-        match lost {
-            Ok(true) => {
-                let res = ApprovalResolution::actor_unavailable();
-                let reason = Some(ACTOR_UNAVAILABLE);
-                resolve_on(db, runs, &p.subscriber, &p.wait, &res, reason).await?;
-            }
-            Ok(false) => {}
-            // 確かめられないまま期限切れにすると、失権した実行主体で後続が走り得る。次の tick で確かめ直す。
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "承認 {} の期限の前の確かめに失敗: {e}",
-                    p.wait.approval_id
-                ));
-            }
+    for _ in 0..DUE_PAGES {
+        let due = runs.due_approvals(now, tenant_scope, DUE_BATCH).await?;
+        let last_page = i64::try_from(due.len()).is_ok_and(|n| n < DUE_BATCH);
+        for p in due {
+            let ec = exec_ctx(&p.subscriber);
+            let lost = match port.actor(&ec, p.table_id, Relation::Viewer).await {
+                Err(e) if !e.retryable => Ok(true),
+                Err(e) => Err(format!("{}: {}", e.code, e.message)),
+                Ok(a) => table_unreadable(&a, p.table_id)
+                    .await
+                    .map_err(|e| e.to_string()),
+            };
+            let (res, reason) = match lost {
+                Ok(true) => (
+                    ApprovalResolution::actor_unavailable(),
+                    Some(ACTOR_UNAVAILABLE),
+                ),
+                Ok(false) => (ApprovalResolution::expired(p.wait.on_timeout), None),
+                // 確かめられないまま期限切れにすると、失権した実行主体で後続が走り得る。次の tick で確かめ直す。
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "承認 {} の期限の前の確かめに失敗: {e}",
+                        p.wait.approval_id
+                    ));
+                }
+            };
+            resolve_on(db, runs, &p.subscriber, &p.wait, &res, reason).await?;
+        }
+        if last_page {
+            return Ok(());
         }
     }
-    for r in runs.expire_due_approvals(now, tenant_scope).await? {
-        audit_resolved(db, &r).await;
-    }
-    Ok(())
+    Err(anyhow::anyhow!(
+        "期限の来た承認が 1 tick の上限（{} 件）を超えました（次の tick で続ける）",
+        DUE_BATCH * DUE_PAGES
+    ))
 }
 
 /// 実行主体がテーブルそのものを読めないか（テーブル単位の NotFound / Forbidden）。行が見えないだけなら偽。
