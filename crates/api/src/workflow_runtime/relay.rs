@@ -5,14 +5,15 @@
 //!
 //! ファイル保存トリガは、①フォルダの祖先束縛で候補を引き ②filter ③workflow プリンシパル（委譲）が
 //! 保存されたファイルを読めるか（[`SavedFileGate`]・D-50）④因果の鎖（自分の保存で自分を起こさない・
-//! workflow.start の子も同じ・D-26）を通して発火する。
+//! workflow.start の子も同じ・D-26）を通して発火する。新しい版の保存（op = update）は同じファイルの続く
+//! 保存を 1 回にまとめてから起動する（`SchedulerStore::defer_event_trigger`・D-38）。
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use workflow_engine::{
-    EventWaitGate, EventWaitSubscriber, FileTriggerCandidate, RunStore, RunStoreError,
+    Coalesce, EventWaitGate, EventWaitSubscriber, FileTriggerCandidate, RunStore, RunStoreError,
     SchedulerStore,
 };
 
@@ -179,7 +180,8 @@ async fn relay_events_batch(deps: &RelayDeps<'_>) -> Result<usize, anyhow::Error
 ///
 /// filter（fail-closed）→ workflow プリンシパルの閲覧（委譲・D-50）→ 発火の順に通す。読めないファイルの
 /// id・書いた人を run 入力に載せない（委譲を外した後に保存されたファイルでは起動しない）。
-/// 因果の鎖はイベントを起こした書込の trace_id から引く（run の書込なら由来の run・D-26）。
+/// 因果の鎖はイベントを起こした書込の trace_id から引く（run の書込なら由来の run・D-26）。新しい版の保存
+/// （op = update）は同じファイルの続く保存とまとめるために待たせる（D-38）。
 async fn relay_file_triggers(
     deps: &RelayDeps<'_>,
     ev: &storage::event::OutboxEvent,
@@ -201,10 +203,19 @@ async fn relay_file_triggers(
         if !gate.admits_trigger(c).await? {
             continue;
         }
-        let out = deps
-            .sched
-            .fire_event_trigger(&c.trigger, ev.id, &write.payload, cause, deps.launcher)
-            .await?;
+        let out = if ev.op == "update" {
+            let coalesce = Coalesce {
+                key: ev.node_id.to_string(),
+                occurred_at: ev.created_at,
+            };
+            deps.sched
+                .defer_event_trigger(&c.trigger, ev.id, &write.payload, cause, &coalesce)
+                .await?
+        } else {
+            deps.sched
+                .fire_event_trigger(&c.trigger, ev.id, &write.payload, cause, deps.launcher)
+                .await?
+        };
         if let Some(reason) = out.suppressed_reason() {
             audit_suppressed(
                 deps.db,
@@ -304,9 +315,9 @@ struct StorageWriteEvent {
 /// 配るのはファイルの作成と新しい版の保存（op = create / update）だけで、削除・移動・名前の変更・
 /// 復元・フォルダの作成は配らない（トリガは「ファイルが保存されたとき」・BUG-8）。
 ///
-/// 祖先束縛の照合に使うフォルダは outbox の `parent_id`。新しい版の保存のうち、利用者のアップロード
-/// （finalize）・内容の更新（content_update）・提案の採用は `parent_id` を載せないので、フォルダを束縛した
-/// トリガ・wait には一致しない（載せるのはチャット・エージェントのワークスペースへの上書きだけ）。
+/// 祖先束縛の照合に使うフォルダは outbox の `parent_id`（保存した時点の親フォルダ）。作成と、新しい版の
+/// 保存（利用者のアップロード（finalize）・内容の更新（content_update・Office とノートの保存・csv.patch）・
+/// 提案の採用・ワークスペースへの上書き）のどれも載せる（BUG-28）。
 ///
 /// ペイロード（`$from trigger` と wait(event) の出力）の形は、ワークフローの語彙のカタログが単一定義
 /// （[`workflow_engine::vocab::StorageWritePayload`]・`payload_fields(storage.write)`・D-47）。web の参照の
@@ -393,7 +404,7 @@ mod tests {
                 "parent_id": FOLDER, "size": 12, "actor": "alice", "blob_sha256": "abc",
             })
         );
-        // 新しい版の保存も配る（親が載っている経路＝ワークスペースへの上書き）。
+        // 新しい版の保存も配る（アップロード・内容の更新・提案の採用・上書きのどれも親を載せる・BUG-28）。
         let up = event(
             "update",
             json!({ "kind": "file", "blob_sha256": "def", "size": 3, "parent_id": FOLDER }),
@@ -424,7 +435,7 @@ mod tests {
         }
     }
 
-    /// 親の無い（ルート直下・親を載せない経路の）保存はフォルダ束縛のトリガに一致しない。
+    /// 親の無い（ルート直下の）保存はフォルダ束縛のトリガに一致しない。
     #[test]
     fn save_without_parent_has_no_folder() {
         let ev = event(

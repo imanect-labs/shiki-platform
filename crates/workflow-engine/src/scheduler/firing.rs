@@ -11,6 +11,10 @@
 //!   超えれば `suppressed_depth`。起動した run には鎖を引き継ぐ。
 //! - **queued の上限**: 1 ワークフローの queued run が [`MAX_QUEUED_RUNS`] 以上なら `dropped_queue_full`。
 //!
+//! ファイルの新しい版の保存は、すぐには起動せず、同じファイルの続く保存を 1 回にまとめてから起動する
+//! （[`SchedulerStore::defer_event_trigger`]・`coalesce.rs`・D-38）。待っている発火も同じ `pending` の行で、
+//! 時刻が来たら再試行と同じ経路で起こす。
+//!
 //! run の重複は `workflow_run (tenant_id, trigger_id, trigger_event_id)` の部分一意で防ぐ（launch に
 //! `event_id` を渡す）。run の作成（launch の Tx）と firing の記録（この Tx）の間に落ちても、再配送・
 //! 再試行は同じ run を返すので二重にならない（PIT-31）。
@@ -62,6 +66,10 @@ pub enum FireOutcome {
     SuppressedDepth,
     /// queued の上限による破棄。
     DroppedQueueFull,
+    /// 同じ対象の続く保存を待っている（時刻が来たら最後の保存で起動する・D-38）。
+    Deferred,
+    /// 後の保存にまとめた（このイベントでは起動しない）。
+    Coalesced,
 }
 
 impl FireOutcome {
@@ -109,13 +117,13 @@ struct PendingRow {
 }
 
 /// 由来の run から引いた鎖（由来の run を含めた祖先ワークフロー）と、由来の run。
-struct Cause {
+pub(super) struct Cause {
     run_id: Uuid,
     chain: Vec<Uuid>,
 }
 
 /// 因果の鎖による抑止（発火先が鎖に含まれる＝自分の書込・循環、鎖が長すぎる）。抑止しないなら `None`。
-fn chain_suppression(
+pub(super) fn chain_suppression(
     cause: Option<&Cause>,
     workflow_id: Uuid,
 ) -> Option<(&'static str, FireOutcome)> {
@@ -132,7 +140,7 @@ fn chain_suppression(
 /// trace_id から由来の run を引き、鎖を作る（run の trace_id は run_id の 32 桁 hex・engine.md §11.1）。
 ///
 /// trace_id が run のものでなければ（利用者の操作の trace など）由来は無い。
-async fn cause_of(
+pub(super) async fn cause_of(
     conn: &mut sqlx::PgConnection,
     tenant_id: &str,
     cause_run_id: Option<Uuid>,
@@ -437,7 +445,7 @@ impl SchedulerStore {
 }
 
 /// firing の結果を記録して Tx を返す（起動しない結果）。
-async fn finish(
+pub(super) async fn finish(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     t: &EventTriggerRef,
     event_id: i64,

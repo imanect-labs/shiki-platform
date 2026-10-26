@@ -242,11 +242,13 @@ impl StorageService {
                 node_id: node.id,
                 version: node.version,
                 op: WriteOp::Update,
+                // 親フォルダはファイル保存トリガ・wait(event) の祖先束縛の照合に使う（作成と同じ・BUG-28）。
                 payload: json!({
                     "kind": "file",
                     "blob_sha256": sha,
                     "size": size,
                     "adopted_from_version": version,
+                    "parent_id": node.parent_id.map(|p| p.to_string()),
                 }),
             },
             trace_id,

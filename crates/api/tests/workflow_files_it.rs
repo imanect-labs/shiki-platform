@@ -8,7 +8,9 @@
 //!   他人の読めないファイルの保存では起きず、その id・書いた人は実行履歴に載らない。
 //! - **BUG-10**: 同意計画が csv.* の対象ファイルを提案し、その委譲で schedule の run（workflow
 //!   プリンシパル）が csv.query / csv.patch できる。委譲が無ければファイルが見えず（not_found）失敗する。
-//! - **BUG-29**: event の run が束縛フォルダへ書いても（storage.write・workflow.start の子の書込）、
+//! - **BUG-28**: 新しい版の保存（presigned の finalize・内容の更新・提案の採用）でも、フォルダに束縛した
+//!   トリガと wait(event) が起きる。同じファイルの続く保存は 1 回にまとめ、最後の版で起動する（D-38）。
+//! - **BUG-29**: event の run が束縛フォルダへ書いても（storage.write・csv.patch・workflow.start の子の書込）、
 //!   その保存で自分を起こさない（因果の鎖・D-26）。
 //! - **BUG-39**: 委譲を外した後は、保存されたファイルを workflow プリンシパルが読めないので発火しない（D-50）。
 //!
@@ -376,6 +378,55 @@ impl Env {
         .fetch_one(&self.pool)
         .await
         .unwrap()
+    }
+
+    /// 新しい版の保存をまとめて待っている発火を、時刻を進めて起こし、ワーカーで捌く（D-38）。
+    async fn fire_coalesced(&self) {
+        let sched = SchedulerStore::new(self.pool.clone());
+        sched
+            .retry_pending_firings(
+                Utc::now()
+                    + chrono::Duration::seconds(
+                        workflow_engine::scheduler::COALESCE_QUIET_SECS + 1,
+                    ),
+                Some(&self.tenant),
+                &self.launcher,
+            )
+            .await
+            .unwrap();
+        let worker = self.worker();
+        while worker.claim_and_run_once("w1").await.unwrap() {}
+    }
+
+    /// 利用者のアップロードで既存ファイルの新しい版を保存する（declare → presigned PUT → finalize）。
+    async fn upload_new_version(&self, ctx: &AuthContext, target: Uuid, content: &[u8]) -> i64 {
+        let sha = storage::content_address::sha256_hex(content);
+        let ticket = self
+            .storage
+            .begin_upload(
+                ctx,
+                None,
+                "",
+                "text/plain",
+                &sha,
+                content.len() as i64,
+                Some(target),
+                None,
+            )
+            .await
+            .unwrap();
+        let put = reqwest::Client::new()
+            .put(&ticket.upload_url)
+            .body(content.to_vec())
+            .send()
+            .await
+            .expect("presigned PUT");
+        assert!(put.status().is_success(), "PUT: {}", put.status());
+        self.storage
+            .finalize_upload(ctx, ticket.upload_id, None)
+            .await
+            .unwrap()
+            .version
     }
 
     /// 理由ごとの、トリガの抑止の監査の件数。
@@ -852,6 +903,168 @@ async fn scheduled_csv_nodes_run_with_the_files_delegated_in_the_consent_plan() 
     );
 }
 
+/// 新しい版の保存（利用者のアップロード・内容の更新・提案の採用）でも、フォルダに束縛したトリガが起動し、
+/// folder を指定した wait(event) が起きる（BUG-28）。run 入力の parent_id は保存先のフォルダ。トリガは同じ
+/// ファイルの続く保存を待ってから起動する（D-38）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn new_versions_start_file_triggers_and_wake_waits() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let inbox = env
+        .storage
+        .create_folder(&env.alice, None, "版の受付", None)
+        .await
+        .unwrap();
+    // 3 つの経路で版を重ねるファイル。作成のイベントは有効化より前に配り終える。
+    let mut files = Vec::new();
+    for name in ["upload.txt", "note.md", "proposal.txt"] {
+        let f = env
+            .storage
+            .write_file_internal(&env.alice, Some(inbox.id), name, b"v1", "text/plain", None)
+            .await
+            .unwrap();
+        files.push(f.id);
+    }
+    let e = &env;
+    let ids = files.clone();
+    env.relay_until("作成の配送", || {
+        let ids = ids.clone();
+        async move {
+            for id in ids {
+                if !e.delivered("create", id).await {
+                    return false;
+                }
+            }
+            true
+        }
+    })
+    .await;
+
+    let ir = json!({
+        "ir_version": 1, "name": "inbox-versions",
+        "declared_scopes": ["storage.read"],
+        "triggers": [ { "kind": "event", "source": "storage.write",
+                        "scope": { "folder": inbox.id.to_string() } } ],
+        "nodes": [ { "id": "rd", "type": "storage.read", "params": {
+            "file": { "$from": "trigger", "path": "/file_id" } } } ],
+        "edges": []
+    });
+    let (wf, _) = env
+        .workflows
+        .create(&env.alice, &ir, &Catalog::default(), None)
+        .await
+        .expect("保存");
+    let parsed = WorkflowIr::from_json(&ir).unwrap();
+    env.registration
+        .enable(&env.alice, wf, 1, &parsed, &env.grants_from_plan(&parsed))
+        .await
+        .expect("enable");
+    // folder を指定した wait(event) で待っている run。
+    let (waiter, _) = env
+        .workflows
+        .create(
+            &env.alice,
+            &json!({
+                "ir_version": 1, "name": "wait-for-version",
+                "declared_scopes": ["storage.read"],
+                "triggers": [ { "kind": "interactive" } ],
+                "nodes": [ { "id": "w", "type": "control.wait", "params": {
+                    "kind": "event", "source": "storage.write",
+                    "scope": { "folder": inbox.id.to_string() }, "timeout_sec": 600 } } ],
+                "edges": []
+            }),
+            &Catalog::default(),
+            None,
+        )
+        .await
+        .expect("保存");
+    let wait_run = env
+        .launcher
+        .start_interactive(&env.alice, waiter, &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let worker = env.worker();
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+
+    // 版を重ねる: 利用者のアップロード（finalize）・内容の更新（Office・ノートの保存）・提案の採用。
+    let v_upload = env
+        .upload_new_version(&env.alice, files[0], b"v2 upload")
+        .await;
+    let v_note = env
+        .storage
+        .update_file_content_internal(&env.alice, files[1], b"v2 note", "text/markdown", None)
+        .await
+        .unwrap()
+        .version;
+    let proposal = env
+        .storage
+        .propose_file_content_internal(&env.alice, files[2], b"v2 proposal", "text/plain", None)
+        .await
+        .unwrap();
+    let v_adopt = env
+        .storage
+        .adopt_proposal_version(&env.alice, files[2], proposal.version, None)
+        .await
+        .unwrap()
+        .version;
+    let ids = files.clone();
+    env.relay_until("版の保存の配送と wait の起床", || {
+        let ids = ids.clone();
+        async move {
+            for id in ids {
+                if !e.delivered("update", id).await {
+                    return false;
+                }
+            }
+            e.runs
+                .run_status(&e.tenant, wait_run)
+                .await
+                .unwrap()
+                .is_some_and(|s| s != RunStatus::Running)
+        }
+    })
+    .await;
+    // wait(event) は新しい版の保存ですぐ起きる（まとめるのはトリガだけ）。
+    assert_eq!(
+        env.runs.run_status(&env.tenant, wait_run).await.unwrap(),
+        Some(RunStatus::Succeeded)
+    );
+    let (_, w, _) = env.step(wait_run, "w").await;
+    let w = w.unwrap();
+    assert_eq!(w["op"], "update");
+    assert_eq!(w["parent_id"], inbox.id.to_string());
+    assert!(files.iter().any(|f| w["file_id"] == f.to_string()), "{w}");
+
+    // トリガは同じファイルの続く保存を待つので、まだ起動しない。時刻が来たら版ごとに 1 回起動する。
+    assert_eq!(env.runs_of(wf).await.len(), 0, "保存が続くのを待つ");
+    env.fire_coalesced().await;
+    let runs = env.runs_of(wf).await;
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    for (file, version, text) in [
+        (files[0], v_upload, "v2 upload"),
+        (files[1], v_note, "v2 note"),
+        (files[2], v_adopt, "v2 proposal"),
+    ] {
+        let (run, input, status) = runs
+            .iter()
+            .find(|(_, i, _)| i["file_id"] == file.to_string())
+            .unwrap_or_else(|| panic!("{text} の run: {runs:?}"));
+        assert_eq!(input["op"], "update", "{text}");
+        assert_eq!(input["version"], version, "{text}");
+        assert_eq!(input["parent_id"], inbox.id.to_string(), "{text}");
+        assert_eq!(input["actor"], "alice");
+        assert_eq!(
+            status,
+            "succeeded",
+            "{text}: {:?}",
+            env.step(*run, "rd").await
+        );
+        let (_, rd, _) = env.step(*run, "rd").await;
+        assert_eq!(rd.unwrap()["text"], text);
+    }
+}
+
 /// event の run が束縛フォルダへ書いても（storage.write・workflow.start の子の storage.write・トリガの
 /// ファイルへの csv.patch）、その保存で自分を起こさない（BUG-29・因果の鎖・D-26）。抑止は監査に残る。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -976,6 +1189,12 @@ async fn own_saves_and_started_children_do_not_restart_the_file_trigger() {
         || async move { !e.runs_of(wf).await.is_empty() && !pending_events().await },
     )
     .await;
+    // まとめて待っている版の保存があれば起こす（自分の保存は待たずに抑止しているので何も起きない）。
+    env.fire_coalesced().await;
+    env.relay_until("後片付けの配送", || async move {
+        !pending_events().await
+    })
+    .await;
 
     let runs = env.runs_of(wf).await;
     assert_eq!(runs.len(), 1, "人の保存 1 回につき 1 回だけ: {runs:?}");
@@ -1004,8 +1223,9 @@ async fn own_saves_and_started_children_do_not_restart_the_file_trigger() {
         let (_, p, _) = env.step(runs[0].0, "p").await;
         assert_eq!(p.unwrap()["version"], orders.version + 1, "CSV の新しい版");
     }
-    // 受付のメモ・子のメモのそれぞれで抑止した。
-    assert_eq!(env.suppressed("suppressed_cycle").await, 2);
+    // 受付のメモ・子のメモ・CSV の新しい版のそれぞれで抑止した。
+    let want = if env.tabular { 3 } else { 2 };
+    assert_eq!(env.suppressed("suppressed_cycle").await, want);
 }
 
 /// 委譲を外した後は、保存されたファイルを workflow プリンシパルが読めないので、トリガは発火しない
@@ -1102,6 +1322,7 @@ async fn file_trigger_does_not_fire_once_the_delegation_is_removed() {
         e.delivered("create", second_id).await && e.delivered("update", first_id).await
     })
     .await;
+    env.fire_coalesced().await;
     let runs = env.runs_of(wf).await;
     assert_eq!(
         runs.len(),
@@ -1120,4 +1341,98 @@ async fn file_trigger_does_not_fire_once_the_delegation_is_removed() {
     .await
     .unwrap();
     assert_eq!(recorded, 0, "読めないファイルの発火は記録もしない");
+}
+
+/// 同じファイルの新しい版の保存が短い間に続いても（Office・ノートの自動保存）、トリガは最後の版で 1 回だけ
+/// 起動する（D-38）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consecutive_new_versions_of_a_file_start_one_run() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let inbox = env
+        .storage
+        .create_folder(&env.alice, None, "議事録", None)
+        .await
+        .unwrap();
+    let note = env
+        .storage
+        .write_file_internal(
+            &env.alice,
+            Some(inbox.id),
+            "定例.md",
+            b"v1",
+            "text/markdown",
+            None,
+        )
+        .await
+        .unwrap();
+    let e = &env;
+    let note_id = note.id;
+    env.relay_until("作成の配送", || async move {
+        e.delivered("create", note_id).await
+    })
+    .await;
+    let ir = json!({
+        "ir_version": 1, "name": "minutes-saved",
+        "declared_scopes": ["storage.read"],
+        "triggers": [ { "kind": "event", "source": "storage.write",
+                        "scope": { "folder": inbox.id.to_string() } } ],
+        "nodes": [ { "id": "rd", "type": "storage.read", "params": {
+            "file": { "$from": "trigger", "path": "/file_id" } } } ],
+        "edges": []
+    });
+    let (wf, _) = env
+        .workflows
+        .create(&env.alice, &ir, &Catalog::default(), None)
+        .await
+        .expect("保存");
+    let parsed = WorkflowIr::from_json(&ir).unwrap();
+    env.registration
+        .enable(&env.alice, wf, 1, &parsed, &env.grants_from_plan(&parsed))
+        .await
+        .expect("enable");
+    let mut last = 0;
+    for body in [b"v2".as_slice(), b"v3", b"v4"] {
+        last = env
+            .storage
+            .update_file_content_internal(&env.alice, note.id, body, "text/markdown", None)
+            .await
+            .unwrap()
+            .version;
+    }
+    let updates = move || async move {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM storage_event_outbox o \
+               JOIN outbox_delivery d ON d.event_id = o.id AND d.consumer = 'workflow' \
+               WHERE o.tenant_id = $1 AND o.op = 'update' AND o.node_id = $2",
+        )
+        .bind(&e.tenant)
+        .bind(note_id)
+        .fetch_one(&e.pool)
+        .await
+        .unwrap()
+    };
+    env.relay_until("3 回の保存の配送", || async move { updates().await == 3 })
+        .await;
+    assert_eq!(env.runs_of(wf).await.len(), 0, "保存が続く間は起動しない");
+    env.fire_coalesced().await;
+    let runs = env.runs_of(wf).await;
+    assert_eq!(runs.len(), 1, "続く保存は 1 回にまとまる: {runs:?}");
+    let (run, input, status) = &runs[0];
+    assert_eq!(input["version"], last, "最後の版で起動する");
+    assert_eq!(status, "succeeded");
+    let (_, rd, _) = env.step(*run, "rd").await;
+    assert_eq!(rd.unwrap()["text"], "v4");
+    let outcomes: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT outcome, count(*) FROM trigger_firing WHERE tenant_id = $1 \
+         GROUP BY outcome ORDER BY outcome",
+    )
+    .bind(&env.tenant)
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        outcomes,
+        vec![("coalesced".to_string(), 2), ("fired".to_string(), 1)]
+    );
 }

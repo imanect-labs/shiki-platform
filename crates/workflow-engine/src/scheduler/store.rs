@@ -385,7 +385,7 @@ impl SchedulerStore {
     /// 含むので完全一致も包含）なら一致する。**scope はフォルダ束縛必須（全購読禁止・fail-closed）**: folder
     /// キーを持たない scope（未対応形状・欠落）はワイルドカードに縮退させず一切マッチしない（保存時 V3 が
     /// Stage A の形状 { "folder": "<uuid>" } を強制する）。filter の評価・workflow プリンシパルの閲覧の確認・
-    /// 発火（[`Self::fire_event_trigger`]）は呼び出し側（relay）が行う。
+    /// 発火（[`Self::fire_event_trigger`] / [`Self::defer_event_trigger`]）は呼び出し側（relay）が行う。
     pub async fn file_trigger_candidates(
         &self,
         tenant_id: &str,

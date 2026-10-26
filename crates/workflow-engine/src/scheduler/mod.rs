@@ -4,9 +4,11 @@
 //! - `cron`: cron 評価（5 フィールド＋IANA tz・watermark 前進）。
 //! - `store`: occurrence 冪等記録＋イベントトリガの候補の照合。
 //! - `firing`: trigger_firing の占有・抑止（因果の鎖・queued 上限）・起動・一時失敗の再試行。
+//! - `coalesce`: 同じファイルの続く保存を 1 回にまとめる発火（新しい版の保存・D-38）。
 //!
 //! run 起動は [`RunLauncher`] トレイト裏（実装は delegation チェック＋IR 取得＋create_run を束ねる）。
 
+pub mod coalesce;
 pub mod cron;
 pub mod firing;
 pub mod leader;
@@ -16,6 +18,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
 
+pub use coalesce::{Coalesce, COALESCE_MAX_SECS, COALESCE_QUIET_SECS};
 pub use firing::{
     cause_run_of_trace, EventTriggerRef, FireOutcome, GaveUpFiring, RetryReport,
     MAX_LAUNCH_ATTEMPTS, MAX_QUEUED_RUNS, MAX_TRIGGER_CHAIN,

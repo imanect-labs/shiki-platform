@@ -6,6 +6,7 @@
 //! - 因果の鎖: 自分の書込で自分を起こさない・循環・深さ（D-26）。起動した run に鎖を引き継ぐ
 //! - queued の上限で発火を捨てる
 //! - 待機中の run は max_parallel_runs に数えない（D-26・H10）
+//! - 同じファイルの続く保存は 1 回にまとめ、最後の保存で起動する（D-38）。自分の保存はまとめる前に抑止する
 
 #![allow(
     clippy::unwrap_used,
@@ -23,9 +24,10 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use uuid::Uuid;
 use workflow_engine::run::graph::RunGraph;
+use workflow_engine::scheduler::{COALESCE_MAX_SECS, COALESCE_QUIET_SECS};
 use workflow_engine::{
-    EventTriggerRef, FireOutcome, LaunchOutcome, RunLauncher, RunOrigin, RunStatus, RunStore,
-    SchedulerStore, SkipReason, WorkflowIr,
+    Coalesce, EventTriggerRef, FireOutcome, LaunchOutcome, RunLauncher, RunOrigin, RunStatus,
+    RunStore, SchedulerStore, SkipReason, WorkflowIr,
 };
 
 /// 決めた結果を順に返す launcher（尽きたら最後の結果を返し続ける）。呼ばれた event_id を記録する。
@@ -615,4 +617,170 @@ async fn waiting_runs_do_not_count_against_max_parallel_runs() {
         runs.run_status(&tenant, next).await.unwrap(),
         Some(RunStatus::Running)
     );
+}
+
+/// まとめて待っている発火の起動する時刻。
+async fn due_of(pool: &PgPool, tenant: &str, event_id: i64) -> Option<chrono::DateTime<Utc>> {
+    sqlx::query_scalar(
+        "SELECT next_attempt_at FROM trigger_firing \
+         WHERE tenant_id = $1 AND trigger_id = 'trg-1' AND event_id = $2",
+    )
+    .bind(tenant)
+    .bind(event_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// 同じファイルの続く保存は、最後の保存から静かな時間が経ってから 1 回だけ起動する（D-38）。後の保存が先に
+/// 届いても前の保存では起動しない。保存が途切れなくても、まとめ始めから上限の時間で起動する。
+#[tokio::test]
+async fn deferred_saves_of_one_file_coalesce_into_the_last_one() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let wf = Uuid::new_v4();
+    register(&pool, &tenant, wf, "trg-1").await;
+    let sched = SchedulerStore::new(pool.clone());
+    let launcher = ScriptedLauncher::new(vec![LaunchOutcome::Started(Uuid::new_v4())]);
+    let t = target(&tenant, wf, "trg-1");
+    // Postgres の timestamptz はマイクロ秒まで。
+    let t0 = chrono::SubsecRound::trunc_subsecs(Utc::now(), 6);
+    let at = |secs: i64, key: &str| Coalesce {
+        key: key.into(),
+        occurred_at: t0 + chrono::TimeDelta::seconds(secs),
+    };
+    for (event_id, secs) in [(10, 0), (11, 5), (12, 10)] {
+        let out = sched
+            .defer_event_trigger(
+                &t,
+                event_id,
+                &json!({ "version": event_id }),
+                None,
+                &at(secs, "f1"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out, FireOutcome::Deferred, "{event_id}");
+    }
+    assert_eq!(firing(&pool, &tenant, "trg-1", 10).await.0, "coalesced");
+    assert_eq!(firing(&pool, &tenant, "trg-1", 11).await.0, "coalesced");
+    assert_eq!(firing(&pool, &tenant, "trg-1", 12).await.0, "pending");
+    assert_eq!(
+        due_of(&pool, &tenant, 12).await,
+        Some(t0 + chrono::TimeDelta::seconds(10 + COALESCE_QUIET_SECS)),
+        "最後の保存から静かな時間"
+    );
+    // 別のファイルは別にまとめる。
+    let other = sched
+        .defer_event_trigger(&t, 13, &json!({}), None, &at(10, "f2"))
+        .await
+        .unwrap();
+    assert_eq!(other, FireOutcome::Deferred);
+    assert_eq!(firing(&pool, &tenant, "trg-1", 12).await.0, "pending");
+
+    // 時刻が来るまでは起動しない。来たら最後の保存の発火で 1 回だけ起動する。
+    let early = sched
+        .retry_pending_firings(
+            t0 + chrono::TimeDelta::seconds(30),
+            Some(&tenant),
+            &launcher,
+        )
+        .await
+        .unwrap();
+    assert_eq!(early.fired, 0);
+    let due = sched
+        .retry_pending_firings(
+            t0 + chrono::TimeDelta::seconds(10 + COALESCE_QUIET_SECS + 1),
+            Some(&tenant),
+            &launcher,
+        )
+        .await
+        .unwrap();
+    assert_eq!(due.fired, 2, "f1 と f2 で 1 回ずつ");
+    let mut calls = launcher.calls();
+    calls.sort_unstable();
+    assert_eq!(calls, vec![Some(12), Some(13)]);
+    assert_eq!(firing(&pool, &tenant, "trg-1", 12).await.0, "fired");
+    // 再配送は何もしない。起動し終えた後の保存は新しくまとめ始める。
+    let again = sched
+        .defer_event_trigger(&t, 12, &json!({}), None, &at(10, "f1"))
+        .await
+        .unwrap();
+    assert_eq!(again, FireOutcome::AlreadyHandled);
+    let next = sched
+        .defer_event_trigger(&t, 14, &json!({}), None, &at(80, "f1"))
+        .await
+        .unwrap();
+    assert_eq!(next, FireOutcome::Deferred);
+    assert_eq!(firing(&pool, &tenant, "trg-1", 14).await.0, "pending");
+
+    // 配る順が前後した（後の保存が先に待っている）ときは、前の保存をそちらへまとめる。
+    sched
+        .defer_event_trigger(&t, 21, &json!({}), None, &at(0, "f3"))
+        .await
+        .unwrap();
+    let late = sched
+        .defer_event_trigger(&t, 20, &json!({}), None, &at(0, "f3"))
+        .await
+        .unwrap();
+    assert_eq!(late, FireOutcome::Coalesced);
+    assert_eq!(firing(&pool, &tenant, "trg-1", 21).await.0, "pending");
+
+    // 保存が途切れなくても、まとめ始めから上限の時間で起動する。
+    sched
+        .defer_event_trigger(&t, 30, &json!({}), None, &at(0, "f4"))
+        .await
+        .unwrap();
+    sched
+        .defer_event_trigger(&t, 31, &json!({}), None, &at(COALESCE_MAX_SECS - 10, "f4"))
+        .await
+        .unwrap();
+    assert_eq!(
+        due_of(&pool, &tenant, 31).await,
+        Some(t0 + chrono::TimeDelta::seconds(COALESCE_MAX_SECS)),
+        "まとめ始めから上限"
+    );
+}
+
+/// 自分の保存（因果の鎖で抑止する保存）は、待っている人の保存を押し流さない（人の保存で起動する）。
+#[tokio::test]
+async fn own_saves_are_suppressed_before_coalescing() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let wf = Uuid::new_v4();
+    register(&pool, &tenant, wf, "trg-1").await;
+    let sched = SchedulerStore::new(pool.clone());
+    let t = target(&tenant, wf, "trg-1");
+    let now = Utc::now();
+    let key = Coalesce {
+        key: "f1".into(),
+        occurred_at: now,
+    };
+    let human = sched
+        .defer_event_trigger(&t, 1, &json!({ "actor": "alice" }), None, &key)
+        .await
+        .unwrap();
+    assert_eq!(human, FireOutcome::Deferred);
+    let own_run = cause_run(&pool, &tenant, wf, &[]).await;
+    let own = sched
+        .defer_event_trigger(&t, 2, &json!({}), Some(own_run), &key)
+        .await
+        .unwrap();
+    assert_eq!(own, FireOutcome::SuppressedCycle);
+    assert_eq!(
+        firing(&pool, &tenant, "trg-1", 1).await.0,
+        "pending",
+        "人の保存は待ったまま"
+    );
+    let launcher = ScriptedLauncher::new(vec![LaunchOutcome::Started(Uuid::new_v4())]);
+    let r = sched
+        .retry_pending_firings(
+            now + chrono::TimeDelta::seconds(COALESCE_QUIET_SECS + 1),
+            Some(&tenant),
+            &launcher,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.fired, 1);
+    assert_eq!(launcher.calls(), vec![Some(1)]);
 }
