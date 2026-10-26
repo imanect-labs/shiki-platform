@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import { FadeSlide } from "@/components/ui/motion-primitives";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import { REQUIRED_TEXT_EMPTY } from "@/lib/workflow-api";
+import { WARNING_CODES } from "@/lib/workflow-api";
 import { inputFieldsOf } from "@/lib/workflow-input-schema";
 import type { Node as IrNode, Trigger } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
@@ -207,7 +207,7 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
   const blankFields = React.useMemo(
     () =>
       allWarnings.flatMap((w) => {
-        const field = w.code === REQUIRED_TEXT_EMPTY ? paramField(w.path) : null;
+        const field = w.code === WARNING_CODES.REQUIRED_TEXT_EMPTY ? paramField(w.path) : null;
         return field ? [field] : [];
       }),
     [allWarnings],
@@ -218,7 +218,7 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
     return map;
   }, [errorView, node, blankFields]);
   const params = (node.params ?? {}) as Record<string, unknown>;
-  const nodeWarnings = allWarnings.filter((w) => !(w.code === REQUIRED_TEXT_EMPTY && paramField(w.path)));
+  const nodeWarnings = allWarnings.filter((w) => !(w.code === WARNING_CODES.REQUIRED_TEXT_EMPTY && paramField(w.path)));
 
   return (
     <>

@@ -8,9 +8,11 @@
 
 import { apiFetch } from "@/lib/api";
 import type { components } from "@/generated/api";
+import { WARNING_CODES } from "@/generated/workflow-catalog";
 import type { ValidationError, WorkflowIr } from "@/generated/workflow-ir";
 
 export type { ValidationError, WorkflowIr };
+export type { WarningCode } from "@/generated/workflow-catalog";
 
 type Schemas = components["schemas"];
 
@@ -39,16 +41,15 @@ export type SaveResult = Omit<Schemas["SaveWorkflowResponse"], "warnings"> & {
 /// スコープをサーバが補完した宣言（保存するとこの宣言になる・C-P1-2）。
 export type ValidateResult = { errors: ValidationError[]; warnings: ValidationError[]; declaredScopes: string[] | null };
 
-/// 意味論の切替で分岐の結果が変わり得る条件の警告コード（`workflow_engine::SEMANTICS_CHANGED`）。
-export const SEMANTICS_CHANGED = "ir.condition_semantics_changed";
-
-/// 必須の文字の欄が空の警告コード（`workflow_engine::REQUIRED_TEXT_EMPTY`・保存は通り、有効化と実行の前に
-/// 止まる・D-43）。設定パネルは注意の帯ではなく欄の下に出す。
-export const REQUIRED_TEXT_EMPTY = "ir.required_text_empty";
+/// 保存を止めない警告のコード（Rust の `workflow_engine::SAVE_WARNING_CODES` から生成した定数・手書きしない・
+/// BUG-48）。たとえば `WARNING_CODES.SEMANTICS_CHANGED` は意味論の切替で分岐の結果が変わり得る条件、
+/// `WARNING_CODES.REQUIRED_TEXT_EMPTY` は必須の文字の欄が空（保存は通り、有効化と実行の前に止まる・D-43。
+/// 設定パネルは注意の帯ではなく欄の下に出す）。
+export { WARNING_CODES };
 
 /// 警告の呼び名（条件の意味論の切替だけなら「条件」、ほかを含むなら「設定」）。
 export function warningNoun(warnings: { code: string }[]): string {
-  return warnings.every((w) => w.code === SEMANTICS_CHANGED) ? "条件" : "設定";
+  return warnings.every((w) => w.code === WARNING_CODES.SEMANTICS_CHANGED) ? "条件" : "設定";
 }
 
 /// 検証エラー（保存 400 / validate 200 の両方で同じ形）。

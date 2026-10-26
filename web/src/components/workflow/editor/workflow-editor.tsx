@@ -26,9 +26,9 @@ import { cn } from "@/lib/utils";
 import type { ValidationError, WorkflowIr } from "@/generated/workflow-ir";
 import {
   putLayout,
-  SEMANTICS_CHANGED,
   updateWorkflow,
   validateWorkflow,
+  WARNING_CODES,
   warningNoun,
   WorkflowValidationError,
   type EditorLayout,
@@ -187,7 +187,7 @@ export function WorkflowEditor({
         saved.warnings.length
           ? {
               title: `保存しました（v${saved.version}）・確認が必要な${warningNoun(saved.warnings)}が ${saved.warnings.length} 件あります`,
-              description: saved.warnings.some((w) => w.code === SEMANTICS_CHANGED)
+              description: saved.warnings.some((w) => w.code === WARNING_CODES.SEMANTICS_CHANGED)
                 ? "条件の比較のしかたが変わったため、分岐の結果が以前と変わる場合があります。注意の印のブロックを確認してください。"
                 : "注意の印のブロックを確認してください。",
             }
@@ -423,7 +423,7 @@ function WarningsSummary({
     return w.path?.startsWith("/triggers/") ? "きっかけの条件" : "ワークフロー";
   };
   const [open, setOpen] = React.useState(false);
-  const semantics = warnings.some((w) => w.code === SEMANTICS_CHANGED);
+  const semantics = warnings.some((w) => w.code === WARNING_CODES.SEMANTICS_CHANGED);
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
