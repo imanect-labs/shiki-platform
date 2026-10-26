@@ -57,6 +57,9 @@ pub struct ResolvedMiniAppResponse {
     pub version: i64,
     #[schema(value_type = Object)]
     pub body: serde_json::Value,
+    /// 使えない部品（壊れた任意のピン・BUG-17）。アプリは開けて、ここに挙がった部品だけが使えない。
+    /// `path` が部品の位置（`skill`）、`message` が利用者向けの理由。
+    pub unavailable: Vec<gui::GuiValidationError>,
 }
 
 /// resolve クエリ（version 省略時は current）。
@@ -153,6 +156,9 @@ pub async fn update_mini_app(
 }
 
 /// ミニアプリを解決する（実行画面用・部品はバンドル権限で読む）。
+///
+/// 任意の skill のピンが壊れていても（skill が削除された・本文が壊れている）アプリは開ける。
+/// 200 で返し、使えない部品とその理由を `unavailable` に載せる（BUG-17）。
 #[utoipa::path(
     get,
     path = "/mini-apps/{id}/resolved",
@@ -186,6 +192,7 @@ pub async fn resolve_mini_app(
         id: resolved.id,
         version: resolved.version,
         body,
+        unavailable: resolved.unavailable(),
     }))
 }
 

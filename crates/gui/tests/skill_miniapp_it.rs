@@ -14,6 +14,8 @@
     clippy::print_stderr
 )]
 
+mod common;
+
 use std::sync::Arc;
 
 use artifact::{ArtifactError, ArtifactKind, ArtifactRole, ArtifactStore, NewArtifact};
@@ -303,7 +305,8 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
         .expect("resolve");
     assert_eq!(resolved.version, 1);
     assert!(resolved.body.screen.contains("申請する"));
-    assert!(resolved.skill.is_some());
+    assert!(resolved.skill.ready().is_some());
+    assert!(resolved.unavailable().is_empty());
 
     // 存在しないピン・kind 不一致ピンは保存時に拒否される。
     let bad = json!({
@@ -604,7 +607,10 @@ async fn live_fga_bundle_authority_and_version_pinning() {
         .expect("bob resolve");
     assert_eq!(resolved.version, 2);
     assert_eq!(resolved.body.screen, "# 感想\n", "current は v2 の画面");
-    assert!(resolved.skill.is_some(), "skill もバンドル権限で読める");
+    assert!(
+        resolved.skill.ready().is_some(),
+        "skill もバンドル権限で読める"
+    );
 
     // 旧版ピンの resolve は旧画面を返す（再現性・6.10 受け入れ条件①）。
     let resolved_v1 = s
@@ -642,4 +648,155 @@ async fn live_fga_bundle_authority_and_version_pinning() {
     .await
     .unwrap();
     assert!(resolves >= 1, "miniapp.resolve が監査に残る");
+}
+
+/// 任意の skill のピンが壊れても（skill が削除された・本文が壊れている）アプリは開け、skill だけが使えないと
+/// 理由つきで返る。画面のボタンもそのまま使える（BUG-17）。ピンの無いアプリは「無い」のまま。
+#[tokio::test]
+async fn broken_optional_skill_pin_keeps_the_app_open() {
+    let Some(pool) = setup().await else { return };
+    let s = stores(pool.clone(), Arc::new(AllowAll));
+    let tenant = unique_tenant();
+    let alice = ctx(&tenant, "alice");
+
+    let (skill_id, _) = s
+        .skills
+        .create(&alice, "deleted-skill", &skill_body("v1"), None)
+        .await
+        .expect("skill");
+    let wf = workflow(&s, &alice, "expense-wf").await;
+    let screen = expense_screen("経費");
+    let body = |skill: Uuid| {
+        json!({
+            "description": "経費",
+            "screen": screen,
+            "skill": { "artifact_id": skill, "version": 1 },
+            "workflows": [ { "alias": "expense", "artifact_id": wf, "version": 1 } ]
+        })
+    };
+    let (app_id, _) = s
+        .mini_apps
+        .create(&alice, "skill-app", &body(skill_id), None)
+        .await
+        .expect("create");
+    assert!(s
+        .mini_apps
+        .resolve(&alice, app_id, None, None)
+        .await
+        .expect("削除前")
+        .skill
+        .ready()
+        .is_some());
+
+    // skill を消しても、アプリは開けて skill だけが使えない（理由は部品の位置つき）。
+    s.artifacts
+        .delete(&alice, skill_id, None)
+        .await
+        .expect("skill を消す");
+    let resolved = s
+        .mini_apps
+        .resolve(&alice, app_id, None, None)
+        .await
+        .expect("skill が消えてもアプリは開ける");
+    assert!(resolved.body.screen.contains("申請する"));
+    assert_eq!(
+        resolved.body.skill.map(|p| p.artifact_id),
+        Some(skill_id),
+        "ピンは本文に残る（消えたことを隠さない）"
+    );
+    assert!(resolved.skill.ready().is_none());
+    let reasons = resolved.unavailable();
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert_eq!(reasons[0].code, "miniapp.pin_unresolved");
+    assert_eq!(reasons[0].path.as_deref(), Some("skill"));
+    assert!(reasons[0].message.contains("見つかりません"), "{reasons:?}");
+
+    // 使えなかった部品は miniapp.resolve の監査にも残る。
+    let audited: serde_json::Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log \
+         WHERE tenant_id = $1 AND action = 'miniapp.resolve' ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&tenant)
+    .fetch_one(&pool)
+    .await
+    .expect("audit");
+    assert_eq!(
+        audited["unavailable"],
+        json!([{ "path": "skill", "code": "miniapp.pin_unresolved" }])
+    );
+
+    // 画面のボタンは skill に依らずそのまま使える。
+    let starter = Arc::new(CountingStarter::default());
+    let mut dispatcher = ActionDispatcher::new(storage::audit::AuditRecorder::new(pool.clone()));
+    dispatcher.set_workflow_starter(starter.clone());
+    let block = yui::extract_action_blocks(&screen).remove(0).hash;
+    s.mini_apps
+        .invoke_yui_action(
+            &alice,
+            &dispatcher,
+            app_id,
+            MiniAppActionRequest {
+                version: 1,
+                action_id: format!("{block}:a1"),
+                params: json!({ "amount": 500, "category": "交通費" })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+                idempotency_key: Some("broken-skill-0001".into()),
+            },
+            None,
+        )
+        .await
+        .expect("skill が消えてもボタンは使える");
+    assert_eq!(starter.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // 本文が今の検証を通らない skill（古い形式）も、skill だけを使えないとする。
+    let broken = s
+        .artifacts
+        .create(
+            &alice,
+            NewArtifact {
+                kind: ArtifactKind::Skill,
+                name: "old-format-skill".into(),
+                body: json!({ "description": "古い形式" }),
+            },
+            None,
+        )
+        .await
+        .expect("壊れた skill");
+    let (broken_app, _) = s
+        .mini_apps
+        .create(&alice, "broken-skill-app", &body(broken.id), None)
+        .await
+        .expect("本文は保存時に見ないので束ねられる");
+    let resolved = s
+        .mini_apps
+        .resolve(&alice, broken_app, None, None)
+        .await
+        .expect("本文が壊れた skill でもアプリは開ける");
+    let reasons = resolved.unavailable();
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert_eq!(reasons[0].code, "miniapp.skill_broken");
+    assert_eq!(reasons[0].path.as_deref(), Some("skill"));
+
+    // ピンの無いアプリは「無い」で、使えない部品も無い。
+    let (plain, _) = s
+        .mini_apps
+        .create(
+            &alice,
+            "plain-app",
+            &json!({ "description": "x", "screen": "# 説明だけ\n", "workflows": [] }),
+            None,
+        )
+        .await
+        .expect("plain");
+    let resolved = s
+        .mini_apps
+        .resolve(&alice, plain, None, None)
+        .await
+        .expect("plain");
+    assert!(matches!(resolved.skill, gui::ResolvedSkill::None));
+    assert!(resolved.unavailable().is_empty());
+
+    common::purge_tenant_rows(&pool, &tenant).await;
 }

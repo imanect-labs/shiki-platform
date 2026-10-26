@@ -5,6 +5,10 @@
 //! 解決（実行）時は**ミニアプリ本体の viewer**のみを要求し、部品はバンドル権限
 //! チョークポイント（[`ArtifactStore::get_version_via_bundle`]）で読む — 共有相手は
 //! 部品を個別共有されなくても実行できる（miniapp-platform §7）。
+//!
+//! 解決で読む部品は任意の skill のピンだけ（ワークフロー・保存ビューは、ボタン・表が使うときに読む）。
+//! skill が消えた・本文が壊れているだけならアプリ全体を止めず、skill だけを使えないと返す
+//! （[`ResolvedSkill::Unavailable`]・BUG-17）。
 
 use std::sync::Arc;
 use storage::audit::AuditAction;
@@ -28,8 +32,47 @@ pub struct ResolvedMiniApp {
     pub version: i64,
     /// 検証済みの本文（画面のボタンの実行先は `workflows` の別名に限る）。
     pub body: MiniAppBody,
-    /// skill 本文（ピンがある場合）。
-    pub skill: Option<SkillBody>,
+    /// 束ねた skill（任意のピン）。
+    pub skill: ResolvedSkill,
+}
+
+impl ResolvedMiniApp {
+    /// 使えない部品（壊れた任意のピン）の理由。`path` が部品の位置（`skill`）。
+    pub fn unavailable(&self) -> Vec<GuiValidationError> {
+        self.skill.unavailable().cloned().into_iter().collect()
+    }
+}
+
+/// 束ねた skill（任意のピン）の解決結果（BUG-17）。
+#[derive(Debug, Clone)]
+pub enum ResolvedSkill {
+    /// ピンが無い。
+    None,
+    /// バンドル権限で読め、本文の検証も通った。
+    Ready(Box<SkillBody>),
+    /// ピンはあるが使えない（skill が削除された・本文が壊れている）。アプリは開けて、skill だけが使えない。
+    ///
+    /// **ピンが無い（[`ResolvedSkill::None`]）のと同じに扱わないこと**。skill の知識スコープ・許可ツールは
+    /// 絞る側なので、外して動かすと広がる（skill の適用は fail-closed・Task 6.7）。
+    Unavailable(GuiValidationError),
+}
+
+impl ResolvedSkill {
+    /// 使える skill の本文（ピンが無い・使えないときは `None`）。
+    pub fn ready(&self) -> Option<&SkillBody> {
+        match self {
+            ResolvedSkill::Ready(body) => Some(body.as_ref()),
+            ResolvedSkill::None | ResolvedSkill::Unavailable(_) => None,
+        }
+    }
+
+    /// 使えない理由（使えないときだけ）。
+    pub fn unavailable(&self) -> Option<&GuiValidationError> {
+        match self {
+            ResolvedSkill::Unavailable(reason) => Some(reason),
+            ResolvedSkill::None | ResolvedSkill::Ready(_) => None,
+        }
+    }
 }
 
 /// ミニアプリの保存/解決。
@@ -120,18 +163,18 @@ impl MiniAppStore {
         // 描画前再検証: 保存済みでも壊れた本文（旧形式を含む）を実行面へ流さない。
         let body = validate_miniapp_body(&v.body).map_err(GuiError::Validation)?;
 
-        let skill = match &body.skill {
-            Some(pin) => {
-                let s = self
-                    .artifacts
-                    .get_version_via_bundle(ctx, id, pin.artifact_id, pin.version, trace_id)
-                    .await?;
-                Some(validate_skill_body(&s.body).map_err(GuiError::Validation)?)
-            }
-            None => None,
+        let skill = match body.skill {
+            Some(pin) => self.resolve_skill(ctx, id, pin, trace_id).await?,
+            None => ResolvedSkill::None,
         };
 
         // 解決を監査に残す（誰が・どの版を・どのピン集合で実行面へ持ち出したか・Task 6.12）。
+        // 使えなかった部品も残す（壊れたピンのまま開いた事実を追えるように・BUG-17）。
+        let unavailable: Vec<serde_json::Value> = skill
+            .unavailable()
+            .map(|e| json!({ "path": e.path, "code": e.code }))
+            .into_iter()
+            .collect();
         let entry = AuditEntry {
             action: AuditAction::MiniappResolve,
             object_type: "artifact",
@@ -143,6 +186,7 @@ impl MiniAppStore {
                 "skill": body.skill,
                 "workflows": body.workflows,
                 "data_views": body.data_views,
+                "unavailable": unavailable,
             }),
         };
         if let Err(e) = self.audit.record(ctx, entry).await {
@@ -155,6 +199,54 @@ impl MiniAppStore {
             body,
             skill,
         })
+    }
+
+    /// 任意の skill のピンをバンドル権限で読む（BUG-17）。
+    ///
+    /// skill が消えた（論理削除・版が無い）・本文が今の検証を通らないだけなら、アプリ全体を「見つかりません」に
+    /// せず skill だけを使えないと返す。権限の不足と内部の誤りは隠さずに返す（本体の viewer は直前に
+    /// 確かめているので、ここでの不足は剥奪との競合で、アプリごと開けないのが正しい）。
+    async fn resolve_skill(
+        &self,
+        ctx: &AuthContext,
+        app_id: Uuid,
+        pin: ComponentPin,
+        trace_id: Option<&str>,
+    ) -> Result<ResolvedSkill, GuiError> {
+        let read = self
+            .artifacts
+            .get_version_via_bundle(ctx, app_id, pin.artifact_id, pin.version, trace_id)
+            .await;
+        let reason = match read {
+            Ok(v) => match validate_skill_body(&v.body) {
+                Ok(body) => return Ok(ResolvedSkill::Ready(Box::new(body))),
+                Err(errors) => {
+                    tracing::warn!(
+                        app_id = %app_id,
+                        skill_id = %pin.artifact_id,
+                        version = pin.version,
+                        errors = ?errors,
+                        "ミニアプリの skill の本文が検証を通らない（skill だけを使えないとする）"
+                    );
+                    GuiValidationError::new(
+                        "miniapp.skill_broken",
+                        format!(
+                            "スキル（v{}）の本文を読めません（古い形式か、壊れています）",
+                            pin.version
+                        ),
+                    )
+                }
+            },
+            Err(ArtifactError::NotFound) => GuiValidationError::new(
+                "miniapp.pin_unresolved",
+                format!(
+                    "スキル（v{}）が見つかりません（削除されたか、その版がありません）",
+                    pin.version
+                ),
+            ),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(ResolvedSkill::Unavailable(reason.at("skill")))
     }
 
     /// 保存時のピン解決（**作成者の権限**で存在・kind・viewer を検証する）。
