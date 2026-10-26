@@ -18,7 +18,10 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # PR は新しい push で古い run を止める。main は止めない: rust-cache を保存するのは main だけ
+  # （下記 save-if）で、キャンセルされた run は保存しないため、連続 push で main のキャッシュが
+  # 一度も更新されなくなる（#920）。保留中の run は GitHub が 1 本しか保たないので溜まりはしない。
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # 既定の GITHUB_TOKEN を最小権限に絞る（各ジョブで必要に応じて昇格する）。
 permissions:
@@ -54,7 +57,14 @@ jobs:
         with:
           toolchain: "1.96.0"
           components: rustfmt, clippy
+      # キャッシュはリポジトリ全体で 10GB。超えると古いものから消され、全ジョブが毎回 cold
+      # ビルドになっていた（#920）。保存は main だけにし、PR は main のキャッシュを読むだけにする
+      # （PR の保存は refs/pull/N/merge スコープで他の PR・main から使えないのに枠だけ食う）。
+      # 保存するのは依存だけなので、テストが落ちても保存する（main の flake で更新が止まらないように）。
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: nextest
@@ -89,6 +99,7 @@ jobs:
         with:
           # release プロファイル専用キャッシュ（debug 系ジョブと混ぜて肥大化させない）。
           shared-key: release-server
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # CI 用に release ビルドを高速化する（compose smoke / web-e2e 用バイナリ・実行時の
       # 微差は許容）。codegen-units を上げて並列コード生成・opt-level=2 でコンパイル短縮。
       - run: cargo build --release --bin shiki-server
@@ -128,10 +139,11 @@ jobs:
       # 一度も同時に立ち上がらない。ローカルの `docker compose up` だけが壊れる。
       - name: compose port gate (ホストポートの二重 publish 禁止)
         run: bash scripts/check-compose-ports.sh
+      # machete はソースを字句で読むだけでビルドも依存の取得もしないため rust-cache は持たない
+      # （10GB の枠を空けるため・#920）。
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-machete
@@ -154,7 +166,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
+      # cargo-deny はビルドしない（cargo metadata 用のレジストリだけ要る）ので target は持たない。
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-targets: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-deny
@@ -184,6 +200,7 @@ jobs:
           workspaces: |
             .
             crates/tabular/runner
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: fmt / clippy (runner)
         run: |
           cargo fmt --manifest-path crates/tabular/runner/Cargo.toml --check
@@ -230,6 +247,8 @@ jobs:
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: fetch runsc (manifest 検証・PIT-33)
         run: bash scripts/fetch-native-assets.sh
       - name: build rootfs (numpy/pandas 同梱・--require-hashes)
@@ -289,6 +308,7 @@ jobs:
           # flake で失敗しても計装ビルドのキャッシュを保存する（保存しないと次回も cold で遅い）。
           # coverage flake（emit_workflow_it 等）が cache 温存を妨げていた根本対策。
           cache-on-failure: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-llvm-cov
@@ -437,9 +457,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
+      # rust ジョブのキャッシュは共有しない: rust は --workspace、ここは -p shiki-data で依存の
+      # フィーチャ集合が変わり（uuid の v5・reqwest の stream 等）、sqlx 系が作り直しになる。
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # ビルドと compose の起動（pull ＋ healthcheck 待ち）は独立なので background で並列化する。
       - name: compose up (postgres + openfga → healthy 待ち)
         id: compose-up
@@ -480,8 +503,11 @@ jobs:
         working-directory: deploy/compose
         run: docker compose logs --no-color | tail -200
 
-  web:
-    name: Web (gen:api / lint / build)
+  # Rust 定義からの型生成（gen:api）を 1 回だけ回し、web と web-e2e へ artifact で配る。
+  # 以前は web と web-e2e がそれぞれ同じビルド（Rust 5 バイナリ）を回し、web-e2e の分が
+  # 最長経路に 8〜12 分乗っていた（#920）。lint と切り離すので、lint が落ちても E2E は走る。
+  gen-api:
+    name: gen:api (Rust 定義から型生成)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -492,7 +518,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
+      # images.yml の web イメージの gen:api も同じ shared-key を読むだけで使う
+      # （同じ依存を 2 本保存しない・#920）。
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: gen-api
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 9
@@ -507,12 +538,47 @@ jobs:
       - name: gen:api (Rust 定義から型生成)
         working-directory: web
         run: pnpm gen:api
+      - name: upload generated types (web / web-e2e 用)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-generated
+          path: web/src/generated
+          if-no-files-found: error
+          retention-days: 1
+
+  web:
+    name: Web (lint / build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [gen-api]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Takumi Guard: pnpm install 前に npm プロキシを設定（匿名＝ブロックのみ）。
+      - uses: flatt-security/setup-takumi-guard-npm@14f07d0cbc739b42a1b7c70a04c2b84cd1318ddd # v1.4.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 9
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: download generated types (gen-api ジョブの成果物)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-generated
+          path: web/src/generated
       - name: lint
         working-directory: web
         run: pnpm lint
+      # `pnpm build` は prebuild で gen:api（cargo）を回してしまうため、next build を直接呼ぶ
+      # （このジョブには Rust ツールチェーンもキャッシュも無い。生成物は上で受け取り済み）。
       - name: build
         working-directory: web
-        run: pnpm build
+        run: pnpm exec next build
 
   compose-smoke:
     name: compose smoke (/healthz, /me, skillex)
@@ -528,6 +594,8 @@ jobs:
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: download shiki-server binary (build-server の成果物)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -595,16 +663,13 @@ jobs:
     name: "Web E2E (Playwright: ログイン→保護ページ→ログアウト)"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [build-server, tabular-runner]
+    # gen:api の生成物は gen-api ジョブから受け取る（Rust ツールチェーンも rust-cache も要らない）。
+    needs: [build-server, tabular-runner, gen-api]
     env:
       # shiki-server はビルド済みバイナリの runtime-only イメージ（CI override）を使う。
       COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: download shiki-server binary (build-server の成果物)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -628,7 +693,7 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       # BFF を web オリジン(:3000)経由で回すため、redirect_uri を web に向ける。
       # （compose-smoke は web 無しで :8080 を使うが、E2E はブラウザが :3000 を見る）
-      # compose 起動チェーンは web ビルド（install / gen:api / build / Playwright）と独立
+      # compose 起動チェーンは web ビルド（install / build / Playwright）と独立
       # なので background step で並列化する（2026-06 の parallel steps 機能）。
       - name: compose up (keycloak + shiki-server → healthy 待ち)
         id: compose-up
@@ -652,12 +717,16 @@ jobs:
       - name: install (web)
         working-directory: web
         run: pnpm install --frozen-lockfile
-      - name: gen:api (Rust 定義から型生成)
-        working-directory: web
-        run: pnpm gen:api
+      - name: download generated types (gen-api ジョブの成果物)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-generated
+          path: web/src/generated
+      # `pnpm build` は prebuild で gen:api（cargo）を回してしまうため、next build を直接呼ぶ
+      # （このジョブには Rust ツールチェーンもキャッシュも無い。生成物は上で受け取り済み）。
       - name: build (web)
         working-directory: web
-        run: pnpm build
+        run: pnpm exec next build
       - name: install Playwright browser
         working-directory: web
         run: pnpm exec playwright install --with-deps chromium
