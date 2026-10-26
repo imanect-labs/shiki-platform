@@ -422,3 +422,48 @@ test("承認を待つブロック: テーブルを変えると前のテーブル
   expect(params.assignees).toEqual([{ field: "owner_user" }]);
   expect(params.show_fields).toEqual(["title"]);
 });
+
+test("承認を待つブロック: テーブルに無い受信箱の列は外すボタン付きで出し、保存の誤りも欄に出す（GAP-08）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const s = await setup(page);
+  // テーブルに無い列を show_fields に持つ版を開く（AI が書いた・検証が入る前に保存した）。列の削除はテーブルの
+  // 設定が拒み、そういう IR の保存は検証が止めるので、エディタが読み込む IR だけを書き換える。
+  let injected = false;
+  await page.route(`**/api/workflows/${s.workflowId}`, async (route) => {
+    if (injected || route.request().method() !== "GET") return route.continue();
+    injected = true;
+    const res = await route.fetch();
+    const body = (await res.json()) as { ir: { nodes: { id: string; params: Record<string, unknown> }[] } };
+    const node = body.ir.nodes.find((n) => n.id === "ok");
+    if (node) node.params.show_fields = ["title", "ghost", "amount"];
+    await route.fulfill({ response: res, json: body });
+  });
+  await page.goto(`/workflows/${s.workflowId}`);
+  const canvas = page.locator(".react-flow");
+  await expect(canvas.getByText("上長の承認").first()).toBeVisible({ timeout: 15_000 });
+  expect(injected).toBe(true);
+  await canvas.getByText("上長の承認").first().click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  // 選べる列のボタンには出ない列を、外すボタン付きで出す。
+  await expect(panel.getByRole("button", { name: "件名", pressed: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "金額", pressed: true })).toBeVisible();
+  const stray = panel.getByRole("list", { name: "選べない列" });
+  await expect(stray).toContainText("このテーブルに無い列: ghost");
+
+  // ほかの欄を直して保存すると、サーバの検証（ir.unknown_field）で止まり、理由が受信箱に出す列の欄に出る。
+  await panel.getByPlaceholder("例: 経費申請の承認").fill("経費申請の承認（課長）");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(panel.getByText("列 ghost はこのテーブルにありません")).toBeVisible({ timeout: 15_000 });
+
+  // 外すと消え、保存できる（ほかの列は残る）。
+  await stray.getByRole("button", { name: "列 ghost を外す" }).click();
+  await expect(stray).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "金額", pressed: true })).toBeVisible();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+  const saved = (await (await page.request.get(`/api/workflows/${s.workflowId}`)).json()) as {
+    ir: { nodes: { id: string; params: Record<string, unknown> }[] };
+  };
+  expect(saved.ir.nodes.find((n) => n.id === "ok")?.params.show_fields).toEqual(["title", "amount"]);
+});

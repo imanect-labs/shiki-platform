@@ -163,7 +163,12 @@ export function HumanApprovalForm(props: FormProps) {
         );
       })}
 
-      <ShowFieldsField table={table} value={p.show_fields ?? []} onChange={(v) => set({ show_fields: v.length ? v : undefined })} />
+      <ShowFieldsField
+        table={table}
+        value={p.show_fields ?? []}
+        error={fieldErrors.get("show_fields")}
+        onChange={(v) => set({ show_fields: v.length ? v : undefined })}
+      />
 
       <Field
         label="判断の期限（時間・省略可）"
@@ -395,17 +400,24 @@ function AssigneesField({
 }
 
 /// 受信箱に出す列（担当者に読めない列は出ない）。
+///
+/// 保存済みの値のうち選べる列に無いもの（テーブルの列が消えた・AI が書いた・状態の列）はボタンに出ないので、
+/// 外すボタン付きで別に出す（出さないと見えないまま保存が ir.unknown_field で止まり、上限の数にも入る）。
 function ShowFieldsField({
   table,
   value,
+  error,
   onChange,
 }: {
   table: DataTable | null;
   value: string[];
+  error?: string;
   onChange: (next: string[]) => void;
 }) {
   if (!table) return null;
   const fields = table.schema.fields.filter((f) => f.key !== table.schema.status_field);
+  const selectable = new Set(fields.map((f) => f.key));
+  const stray = value.filter((k) => !selectable.has(k));
   return (
     <fieldset className="space-y-1.5">
       <legend className="text-xs font-medium">受信箱に出す列</legend>
@@ -427,6 +439,27 @@ function ShowFieldsField({
           );
         })}
       </div>
+      {stray.length ? (
+        <ul className="space-y-1" aria-label="選べない列">
+          {stray.map((k) => (
+            <li key={k} className="flex items-center justify-between gap-2 text-[11px] text-destructive">
+              <span className="min-w-0 break-all">
+                {k === table.schema.status_field ? `状態の列は選べません: ${k}` : `このテーブルに無い列: ${k}`}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 shrink-0"
+                aria-label={`列 ${k} を外す`}
+                onClick={() => onChange(value.filter((x) => x !== k))}
+              >
+                <X className="size-4" aria-hidden />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {error ? <p className="text-[11px] text-destructive">{error}</p> : null}
     </fieldset>
   );
 }
