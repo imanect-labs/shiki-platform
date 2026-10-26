@@ -126,6 +126,12 @@ pub fn save_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     out.extend(v3_vocab::event_warnings(ir));
     out.extend(approval::warnings(ir));
     out.extend(reply::warnings(ir));
+    // 表に無い警告は web の定数に出ない（警告を足したら表にも足す・テストのどの経路で起きても止める）。
+    debug_assert!(
+        out.iter()
+            .all(|w| SAVE_WARNING_CODES.iter().any(|(_, c)| *c == w.code)),
+        "SAVE_WARNING_CODES に無い警告: {out:?}"
+    );
     out
 }
 
