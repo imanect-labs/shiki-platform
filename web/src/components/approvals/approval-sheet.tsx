@@ -127,16 +127,25 @@ function ApprovalDetail({
       await decideApproval(item.approval_id, selected.kind, item.record.rev, comment);
       onDecided(item);
     } catch (e) {
-      setError(approvalErrorMessage(e));
-      // もう決まった・期限切れ・見えないは、一覧からも外す。
-      if (e instanceof ApprovalApiError && (e.status === 404 || e.code === "decided" || e.code === "expired")) {
-        onGone(item);
-      } else if (e instanceof ApprovalApiError && e.code === "rev_conflict") {
+      if (e instanceof ApprovalApiError && e.code === "rev_conflict") {
         // ほかの人が行を更新した: 1 件を取り直して新しい rev で押し直せるようにする（選んだ判断とコメントは残す）。
+        // 「読み直した」と言うのは取り直せたときだけ（取り直せなければ内容も rev も古いまま）。
         try {
           setItem(await getApproval(item.approval_id));
+          setError(approvalErrorMessage(e));
         } catch (again) {
-          if (again instanceof ApprovalApiError && again.status === 404) onGone(item);
+          if (again instanceof ApprovalApiError && again.status === 404) {
+            setError("ほかの人が先に行を更新し、この承認はもう決まっているか、見られなくなりました。");
+            onGone(item);
+          } else {
+            setError("ほかの人が先に行を更新しましたが、最新の内容を読み込めませんでした。閉じて開き直してください。");
+          }
+        }
+      } else {
+        setError(approvalErrorMessage(e));
+        // もう決まった・期限切れ・見えないは、一覧からも外す。
+        if (e instanceof ApprovalApiError && (e.status === 404 || e.code === "decided" || e.code === "expired")) {
+          onGone(item);
         }
       }
       setSending(false);

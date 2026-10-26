@@ -503,3 +503,53 @@ test("承認待ち: 見える承認が無いまま続きがあるページでも
   await expect(page.getByTestId("approval-item").filter({ hasText: s.tableName })).toBeVisible();
   await expect(page.getByTestId("approval-list-pending")).toHaveCount(0);
 });
+
+test("承認待ち: 判断の前に行が更新されたら、取り直せたときだけ「読み直した」と出し、新しい rev で判断できる（GAP-08）", async ({ page }) => {
+  test.setTimeout(180_000);
+  await loginViaKeycloak(page);
+  const s = await setup(page);
+  await waitForApproval(page, s);
+  await page.goto("/approvals");
+  const item = page.getByTestId("approval-item").filter({ hasText: s.tableName });
+  await item.click();
+  const sheet = page.getByTestId("approval-sheet");
+  await expect(sheet.getByText("12,000")).toBeVisible({ timeout: 15_000 });
+
+  // 開いている間に、ほかの人が行（金額）を更新する。
+  const headers = await csrfHeaders(page);
+  const current = (await (await page.request.get(`/api/data/tables/${s.tableId}/records/${s.recordId}`)).json()) as {
+    rev: number;
+  };
+  const updated = await page.request.patch(`/api/data/tables/${s.tableId}/records/${s.recordId}`, {
+    headers,
+    data: { patch: { amount: 15000 }, expected_rev: current.rev },
+  });
+  expect(updated.status(), await updated.text()).toBe(200);
+
+  // 1 回目: 判断は rev 不一致で断られ、取り直しも通信の失敗で読めない。「読み直した」とは言わない。
+  const one = new RegExp(`/api/approvals/[0-9a-f-]{36}$`);
+  let failRefetch = true;
+  await page.route(one, (route) =>
+    failRefetch && route.request().method() === "GET" ? route.abort("failed") : route.continue(),
+  );
+  await sheet.getByRole("radio", { name: /承認する/ }).click();
+  const first = page.waitForResponse((r) => r.url().includes("/decision") && r.request().method() === "POST");
+  await sheet.getByTestId("approval-send").click();
+  expect((await first).status()).toBe(409);
+  const alert = sheet.getByText(/ほかの人が先に行を更新しましたが、最新の内容を読み込めませんでした/);
+  await expect(alert).toBeVisible();
+  await expect(sheet.getByText(/最新の内容を読み直したので/)).toHaveCount(0);
+  await expect(sheet.getByText("12,000")).toBeVisible();
+
+  // 2 回目: 取り直せたら、新しい内容を見せて「読み直した」と出し、もう一度押すと判断が通る。
+  failRefetch = false;
+  const second = page.waitForResponse((r) => r.url().includes("/decision") && r.request().method() === "POST");
+  await sheet.getByTestId("approval-send").click();
+  expect((await second).status()).toBe(409);
+  await expect(sheet.getByText(/最新の内容を読み直したので、確かめてから判断してください/)).toBeVisible();
+  await expect(sheet.getByText("15,000")).toBeVisible();
+  const third = page.waitForResponse((r) => r.url().includes("/decision") && r.request().method() === "POST");
+  await sheet.getByTestId("approval-send").click();
+  expect((await third).status()).toBe(202);
+  await expect(sheet).toBeHidden();
+});
