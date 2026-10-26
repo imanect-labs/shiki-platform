@@ -2,13 +2,18 @@
 //!
 //! storage.write の 1 件を、トリガの run 入力（`$from trigger`）と wait(event) の到来イベントに
 //! 写して配る（engine.md §5.4・§5.5 の同一マッチャ）。データ変更は [`super::relay_data`] が配る。
+//!
+//! ファイル保存トリガは、①フォルダの祖先束縛で候補を引き ②filter ③workflow プリンシパル（委譲）が
+//! 保存されたファイルを読めるか（[`SavedFileGate`]・D-50）④因果の鎖（自分の保存で自分を起こさない・
+//! workflow.start の子も同じ・D-26）を通して発火する。
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use workflow_engine::{
-    EventWaitGate, EventWaitSubscriber, RunStore, RunStoreError, SchedulerStore,
+    EventWaitGate, EventWaitSubscriber, FileTriggerCandidate, RunStore, RunStoreError,
+    SchedulerStore,
 };
 
 /// 1 tick で捌く outbox の最大バッチ数と、1 バッチの件数（claim は配送済みの行を走査するので、1 回の件数を
@@ -32,8 +37,9 @@ pub struct RelayDeps<'a> {
 /// outbox の workflow 未配送イベントを処理する（storage.write とデータ変更・at-least-once）。
 ///
 /// 各イベントを ①トリガマッチ（run 起動）②wait(event) 起床、の両方へ配る（engine.md §5.5 同一マッチャ）。
-/// storage.write は祖先束縛 scope（イベント発生フォルダ id）＋filter で照合する。wait(event) はさらに、購読した
-/// run の実行主体が保存されたファイルを読めるときだけ起こす（`storage` の viewer 確認・[`SavedFileGate`]）。
+/// storage.write は祖先束縛 scope（イベント発生フォルダ id）＋filter で照合する。トリガは workflow プリンシパル、
+/// wait(event) は購読した run の実行主体が、保存されたファイルを読めるときだけ起こす（`storage` の viewer
+/// 確認・[`SavedFileGate`]）。
 /// データ変更（`data.record.changed` / `data.record.transitioned`）は [`super::relay_data`] が配る。
 /// 続けて、起動に一時失敗したトリガの発火を再試行する（D-21）。
 /// スケジューラの relay ループから呼ぶほか、結合テストが本番と同じ経路でイベントを配るために使う。
@@ -140,17 +146,7 @@ async fn relay_events_batch(deps: &RelayDeps<'_>) -> Result<usize, anyhow::Error
             ids.push(ev.id);
             continue;
         };
-        // match_event / wake_event_waits は自 tx（trigger_firing UNIQUE・wait_subscription fired）で冪等。
-        deps.sched
-            .match_event(
-                &ev.tenant_id,
-                "storage.write",
-                ev.id,
-                write.folder,
-                &write.payload,
-                deps.launcher,
-            )
-            .await?;
+        // トリガの発火 / wake_event_waits は自 tx（trigger_firing UNIQUE・wait_subscription fired）で冪等。
         // 確かめられなかった（認可基盤の一時障害など）ときは Err でバッチごと配送済みにせず、次の tick で
         // 配り直す（トリガの発火・起こした wait は自 tx で冪等）。
         let gate = SavedFileGate {
@@ -158,6 +154,7 @@ async fn relay_events_batch(deps: &RelayDeps<'_>) -> Result<usize, anyhow::Error
             file_id: ev.node_id,
             trace_id: ev.trace_id.as_deref(),
         };
+        relay_file_triggers(deps, ev, &write, &gate).await?;
         deps.runs
             .wake_event_waits(
                 &ev.tenant_id,
@@ -178,17 +175,101 @@ async fn relay_events_batch(deps: &RelayDeps<'_>) -> Result<usize, anyhow::Error
     Ok(events.len())
 }
 
-/// wait(event) を起こす前に、購読した run の実行主体が保存されたファイルを読めるか（viewer）を確かめる。
+/// 1 件のファイルの保存を、フォルダに束縛したファイル保存トリガへ配る。
 ///
-/// wait(event) の購読は scope が空でもよく（テナント内のどの保存にも一致する）、購読時に実行主体の権限も
-/// 確かめていない。読めないファイルの id・書いた人などを run の実行履歴に出さないよう、起こすたびに
-/// StorageService（読取の認可チョークポイント・強整合の OpenFGA check と監査）で確かめる。トリガは
-/// 有効化の時点で有効化者がフォルダを読めることを確かめている（`RegistrationService::enable`）ので
-/// 対象にしない。
+/// filter（fail-closed）→ workflow プリンシパルの閲覧（委譲・D-50）→ 発火の順に通す。読めないファイルの
+/// id・書いた人を run 入力に載せない（委譲を外した後に保存されたファイルでは起動しない）。
+/// 因果の鎖はイベントを起こした書込の trace_id から引く（run の書込なら由来の run・D-26）。
+async fn relay_file_triggers(
+    deps: &RelayDeps<'_>,
+    ev: &storage::event::OutboxEvent,
+    write: &StorageWriteEvent,
+    gate: &SavedFileGate<'_>,
+) -> Result<(), anyhow::Error> {
+    let candidates = deps
+        .sched
+        .file_trigger_candidates(&ev.tenant_id, write.folder)
+        .await?;
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let cause = workflow_engine::scheduler::cause_run_of_trace(ev.trace_id.as_deref());
+    for c in &candidates {
+        if !c.admits(&write.payload) {
+            continue;
+        }
+        if !gate.admits_trigger(c).await? {
+            continue;
+        }
+        let out = deps
+            .sched
+            .fire_event_trigger(&c.trigger, ev.id, &write.payload, cause, deps.launcher)
+            .await?;
+        if let Some(reason) = out.suppressed_reason() {
+            audit_suppressed(
+                deps.db,
+                &ev.tenant_id,
+                &c.org,
+                &c.trigger.trigger_id,
+                ev.id,
+                reason,
+                ev.trace_id.as_deref(),
+            )
+            .await;
+        }
+    }
+    Ok(())
+}
+
+/// 起こす前に、起こされる主体が保存されたファイルを読めるか（viewer）を確かめる。
+///
+/// - wait(event): 購読した run の実行主体（[`EventWaitGate`]）。購読は scope が空でもよく（テナント内の
+///   どの保存にも一致する）、購読時に実行主体の権限も確かめていない。
+/// - ファイル保存トリガ: workflow プリンシパル（委譲・D-50）。有効化の時点では有効化者がフォルダを読める
+///   ことしか確かめておらず（`RegistrationService::enable`）、フォルダを委譲しないまま有効化できる。委譲は
+///   再同意で外れうる（委譲元の失権は、起動の時点の委譲の確認 `check_run_start` が止める）。
+///
+/// 読めないファイルの id・書いた人などを run の入力・実行履歴に出さないよう、起こすたびに StorageService
+/// （読取の認可チョークポイント・強整合の OpenFGA check と監査）で確かめる。
 struct SavedFileGate<'a> {
     storage: &'a storage::StorageService,
     file_id: uuid::Uuid,
     trace_id: Option<&'a str>,
+}
+
+impl SavedFileGate<'_> {
+    /// 主体がファイルを読めるか。監査には確認の経路（`note`）を残す（利用者が開いた記録と見分ける）。
+    async fn readable(
+        &self,
+        ctx: &authz::AuthContext,
+        note: &serde_json::Map<String, Value>,
+    ) -> Result<bool, storage::StorageError> {
+        match self
+            .storage
+            .get_metadata_annotated(ctx, self.file_id, self.trace_id, note)
+            .await
+        {
+            Ok(_) => Ok(true),
+            // 読めない（存在を明かさない not_found を含む）・保存の後に消えたファイルでは起こさない。
+            Err(storage::StorageError::Forbidden | storage::StorageError::NotFound) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// ファイル保存トリガを発火してよいか（workflow プリンシパルが委譲でファイルを読めるか・D-50）。
+    async fn admits_trigger(&self, c: &FileTriggerCandidate) -> Result<bool, anyhow::Error> {
+        let ctx = authz::AuthContext::for_workflow(
+            c.trigger.tenant_id.clone(),
+            c.org.clone(),
+            &c.trigger.workflow_id.to_string(),
+        );
+        let mut note = serde_json::Map::new();
+        note.insert("via".into(), json!("workflow.trigger"));
+        note.insert("trigger_id".into(), json!(c.trigger.trigger_id));
+        self.readable(&ctx, &note)
+            .await
+            .map_err(|e| anyhow::anyhow!("ファイル保存トリガの閲覧確認に失敗: {e}"))
+    }
 }
 
 #[async_trait]
@@ -200,23 +281,13 @@ impl EventWaitGate for SavedFileGate<'_> {
             &sub.principal,
             &sub.principal_kind,
         );
-        // 監査に「wait(event) の起床の確認」であることを残す（利用者が開いた記録と見分ける）。
         let mut note = serde_json::Map::new();
         note.insert("via".into(), json!("workflow.wait_event"));
         note.insert("run_id".into(), json!(sub.run_id.to_string()));
         note.insert("step".into(), json!(sub.step_path));
-        match self
-            .storage
-            .get_metadata_annotated(&ctx, self.file_id, self.trace_id, &note)
+        self.readable(&ctx, &note)
             .await
-        {
-            Ok(_) => Ok(true),
-            // 読めない（存在を明かさない not_found を含む）・保存の後に消えたファイルでは起こさない。
-            Err(storage::StorageError::Forbidden | storage::StorageError::NotFound) => Ok(false),
-            Err(e) => Err(RunStoreError::Internal(format!(
-                "wait(event) の閲覧確認に失敗: {e}"
-            ))),
-        }
+            .map_err(|e| RunStoreError::Internal(format!("wait(event) の閲覧確認に失敗: {e}")))
     }
 }
 
@@ -236,8 +307,6 @@ struct StorageWriteEvent {
 /// 祖先束縛の照合に使うフォルダは outbox の `parent_id`。新しい版の保存のうち、利用者のアップロード
 /// （finalize）・内容の更新（content_update）・提案の採用は `parent_id` を載せないので、フォルダを束縛した
 /// トリガ・wait には一致しない（載せるのはチャット・エージェントのワークスペースへの上書きだけ）。
-/// 上書き保存で起動させるには、自分が書いたファイルで自分を起こし続ける循環の抑止が先に要るので、
-/// ここでは広げていない（同じ CSV を上書きする run が、その保存で再び起動する）。
 ///
 /// ペイロード（`$from trigger` と wait(event) の出力）の形は、ワークフローの語彙のカタログが単一定義
 /// （[`workflow_engine::vocab::StorageWritePayload`]・`payload_fields(storage.write)`・D-47）。web の参照の

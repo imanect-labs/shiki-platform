@@ -8,6 +8,13 @@
 //!   他人の読めないファイルの保存では起きず、その id・書いた人は実行履歴に載らない。
 //! - **BUG-10**: 同意計画が csv.* の対象ファイルを提案し、その委譲で schedule の run（workflow
 //!   プリンシパル）が csv.query / csv.patch できる。委譲が無ければファイルが見えず（not_found）失敗する。
+//! - **BUG-29**: event の run が束縛フォルダへ書いても（storage.write・workflow.start の子の書込）、
+//!   その保存で自分を起こさない（因果の鎖・D-26）。
+//! - **BUG-39**: 委譲を外した後は、保存されたファイルを workflow プリンシパルが読めないので発火しない（D-50）。
+//!
+//! relay はテナントを問わず未配送のイベントを掴む。別の OpenFGA ストアを持つテストが互いのイベントを
+//! 掴むと、閲覧の確認（トリガ・wait）と委譲の確認が別のストアに問うことになり起動しないので、このファイルの
+//! テストは直列に流す。
 //!
 //! `STORAGE_TEST_DATABASE_URL` と `OPENFGA_TEST_URL` が無いとスキップする。csv.* の部分は隔離ランナー
 //! （`SHIKI_TABULAR_RUNNER` か `crates/tabular/runner` のビルド成果物）が無いとスキップする。
@@ -36,6 +43,9 @@ use workflow_engine::{
     RegistrationService, RunStatus, RunStore, SchedulerStore, StepStatus, WorkerConfig, WorkflowIr,
     WorkflowRunLauncher, WorkflowStore,
 };
+
+/// このファイルのテストを直列にする（上のモジュールの説明）。
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct NoopAudit;
 impl workflow_engine::CapabilityAudit for NoopAudit {
@@ -269,9 +279,6 @@ impl Env {
     }
 
     /// 本番と同じ relay で outbox を配り、ワーカーで捌く。`done` が真になるまで繰り返す。
-    ///
-    /// relay はテナントを問わず未配送のイベントを掴むので、同じ DB で並行するテストに先に掴まれることが
-    /// ある（掴んだ側も同じ DB へ run を作るので、待てば届く）。
     async fn relay_until<F, Fut>(&self, what: &str, done: F)
     where
         F: Fn() -> Fut,
@@ -371,6 +378,19 @@ impl Env {
         .unwrap()
     }
 
+    /// 理由ごとの、トリガの抑止の監査の件数。
+    async fn suppressed(&self, reason: &str) -> i64 {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM audit_log WHERE tenant_id = $1 \
+               AND action = 'workflow.trigger.suppressed' AND metadata->>'reason' = $2",
+        )
+        .bind(&self.tenant)
+        .bind(reason)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+
     /// 同意計画の提案のうち対象が確定したものを、有効化の委譲にする（同意画面で全部を選んだのと同じ）。
     fn grants_from_plan(&self, ir: &WorkflowIr) -> Vec<GrantRequest> {
         RegistrationService::consent_plan(ir)
@@ -417,6 +437,7 @@ const ORDERS_CSV: &[u8] = b"item,qty\nA,1\nB,2\nC,3\n";
 /// 削除・フォルダの作成では発火しない。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn file_save_trigger_hands_the_saved_file_to_the_run() {
+    let _serial = SERIAL.lock().await;
     let Some(env) = setup().await else { return };
     let inbox = env
         .storage
@@ -530,6 +551,7 @@ async fn file_save_trigger_hands_the_saved_file_to_the_run() {
 /// wait(event) の起床にも、保存されたファイルの id が届く（同じペイロード・BUG-8）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wait_event_receives_the_saved_file() {
+    let _serial = SERIAL.lock().await;
     let Some(env) = setup().await else { return };
     let inbox = env
         .storage
@@ -614,6 +636,7 @@ async fn wait_event_receives_the_saved_file() {
 /// run（D-49 より前に保存したもの）を、run のピンした IR の scope を空にして再現する。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wait_event_without_scope_ignores_files_the_principal_cannot_read() {
+    let _serial = SERIAL.lock().await;
     let Some(env) = setup().await else { return };
     let bob = env.user("bob").await;
     let somewhere = env
@@ -736,6 +759,7 @@ async fn wait_event_without_scope_ignores_files_the_principal_cannot_read() {
 /// （BUG-10）。委譲が無いまま有効化すると、run はファイルが見えずに失敗する（存在を明かさない not_found）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn scheduled_csv_nodes_run_with_the_files_delegated_in_the_consent_plan() {
+    let _serial = SERIAL.lock().await;
     let Some(env) = setup().await else { return };
     if !env.tabular {
         return;
@@ -826,4 +850,274 @@ async fn scheduled_csv_nodes_run_with_the_files_delegated_in_the_consent_plan() 
         String::from_utf8_lossy(&bytes),
         "item,qty\nA,10\nB,2\nC,3\n"
     );
+}
+
+/// event の run が束縛フォルダへ書いても（storage.write・workflow.start の子の storage.write・トリガの
+/// ファイルへの csv.patch）、その保存で自分を起こさない（BUG-29・因果の鎖・D-26）。抑止は監査に残る。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn own_saves_and_started_children_do_not_restart_the_file_trigger() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let inbox = env
+        .storage
+        .create_folder(&env.alice, None, "注文の受付", None)
+        .await
+        .unwrap();
+    let folder = inbox.id.to_string();
+    // 子（B）: 同じフォルダにメモを残す。
+    let (child, _) = env
+        .workflows
+        .create(
+            &env.alice,
+            &json!({
+                "ir_version": 1, "name": "child-memo",
+                "declared_scopes": ["storage.write"],
+                "triggers": [ { "kind": "interactive" } ],
+                "nodes": [ { "id": "cw", "type": "storage.write", "params": {
+                    "folder": folder, "name": "子のメモ.txt", "content": "child" } } ],
+                "edges": []
+            }),
+            &Catalog::default(),
+            None,
+        )
+        .await
+        .expect("子を保存");
+    // A: 保存されたら受付のメモを同じフォルダに書き、子を起動し、保存された CSV を直す（新しい版）。
+    let mut nodes = vec![
+        json!({ "id": "memo", "type": "storage.write", "params": {
+            "folder": folder,
+            "name": { "$template": "受付-{f}.txt",
+                      "vars": { "f": { "$from": "trigger", "path": "/file_id" } } },
+            "content": "ack" } }),
+        json!({ "id": "kick", "type": "workflow.start", "params": {
+            "name": "child-memo", "input": {} } }),
+    ];
+    let mut edges = vec![json!({ "from": "memo", "to": "kick" })];
+    let mut scopes = vec!["storage.read", "storage.write", "workflow.start"];
+    if env.tabular {
+        nodes.push(json!({ "id": "p", "type": "csv.patch", "params": {
+            "file": { "$from": "trigger", "path": "/file_id" },
+            "base_rev": { "$from": "trigger", "path": "/version" },
+            "ops": [ { "op": "cell_update", "row": 0, "col": 1, "value": "9" } ] } }));
+        edges.push(json!({ "from": "kick", "to": "p" }));
+        scopes.push("csv.write");
+    }
+    let ir = json!({
+        "ir_version": 1, "name": "inbox-ack",
+        "declared_scopes": scopes,
+        "triggers": [ { "kind": "event", "source": "storage.write",
+                        "scope": { "folder": folder } } ],
+        "nodes": nodes, "edges": edges
+    });
+    let (wf, _) = env
+        .workflows
+        .create(&env.alice, &ir, &Catalog::default(), None)
+        .await
+        .expect("保存");
+    let parsed = WorkflowIr::from_json(&ir).unwrap();
+    let folder_obj = env.alice.ns().folder(&folder);
+    let mut grants = vec![
+        GrantRequest {
+            scope: "storage.read".into(),
+            object: folder_obj.clone(),
+            relation: Relation::Viewer,
+        },
+        GrantRequest {
+            scope: "storage.write".into(),
+            object: folder_obj.clone(),
+            relation: Relation::Editor,
+        },
+        GrantRequest {
+            scope: "workflow.start".into(),
+            object: env.alice.ns().artifact(&child.to_string()),
+            relation: Relation::Viewer,
+        },
+    ];
+    if env.tabular {
+        grants.push(GrantRequest {
+            scope: "csv.write".into(),
+            object: folder_obj,
+            relation: Relation::Editor,
+        });
+    }
+    env.registration
+        .enable(&env.alice, wf, 1, &parsed, &grants)
+        .await
+        .expect("enable");
+
+    let orders = env
+        .storage
+        .write_file_internal(
+            &env.alice,
+            Some(inbox.id),
+            "orders.csv",
+            ORDERS_CSV,
+            "text/csv",
+            None,
+        )
+        .await
+        .unwrap();
+    let e = &env;
+    let pending_events = move || async move {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM storage_event_outbox o \
+               WHERE o.tenant_id = $1 AND NOT (o.payload ? 'event_type') \
+                 AND NOT EXISTS (SELECT 1 FROM outbox_delivery d \
+                                 WHERE d.event_id = o.id AND d.consumer = 'workflow')) \
+             OR EXISTS (SELECT 1 FROM workflow_run WHERE tenant_id = $1 AND status = 'running')",
+        )
+        .bind(&e.tenant)
+        .fetch_one(&e.pool)
+        .await
+        .unwrap()
+    };
+    env.relay_until(
+        "run と子の完了・書いたファイルの配送",
+        || async move { !e.runs_of(wf).await.is_empty() && !pending_events().await },
+    )
+    .await;
+
+    let runs = env.runs_of(wf).await;
+    assert_eq!(runs.len(), 1, "人の保存 1 回につき 1 回だけ: {runs:?}");
+    assert_eq!(
+        runs[0].2,
+        "succeeded",
+        "memo: {:?} / kick: {:?}",
+        env.step(runs[0].0, "memo").await,
+        env.step(runs[0].0, "kick").await
+    );
+    assert_eq!(runs[0].1["file_id"], orders.id.to_string());
+    let children: Vec<(Vec<Uuid>, String)> = sqlx::query_as(
+        "SELECT trigger_chain, status FROM workflow_run WHERE tenant_id = $1 AND workflow_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(child)
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        children,
+        vec![(vec![wf], "succeeded".to_string())],
+        "子は親の鎖を引き継ぐ"
+    );
+    if env.tabular {
+        let (_, p, _) = env.step(runs[0].0, "p").await;
+        assert_eq!(p.unwrap()["version"], orders.version + 1, "CSV の新しい版");
+    }
+    // 受付のメモ・子のメモのそれぞれで抑止した。
+    assert_eq!(env.suppressed("suppressed_cycle").await, 2);
+}
+
+/// 委譲を外した後は、保存されたファイルを workflow プリンシパルが読めないので、トリガは発火しない
+/// （BUG-39・D-50）。run 入力に読めないファイルの id・書いた人が載らず、発火の記録も残らない。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_trigger_does_not_fire_once_the_delegation_is_removed() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let inbox = env
+        .storage
+        .create_folder(&env.alice, None, "委譲の受付", None)
+        .await
+        .unwrap();
+    let ir = json!({
+        "ir_version": 1, "name": "inbox-delegated",
+        "declared_scopes": ["storage.read"],
+        "triggers": [ { "kind": "event", "source": "storage.write",
+                        "scope": { "folder": inbox.id.to_string() } } ],
+        "nodes": [ { "id": "rd", "type": "storage.read", "params": {
+            "file": { "$from": "trigger", "path": "/file_id" } } } ],
+        "edges": []
+    });
+    let (wf, _) = env
+        .workflows
+        .create(&env.alice, &ir, &Catalog::default(), None)
+        .await
+        .expect("保存");
+    let parsed = WorkflowIr::from_json(&ir).unwrap();
+    env.registration
+        .enable(&env.alice, wf, 1, &parsed, &env.grants_from_plan(&parsed))
+        .await
+        .expect("enable");
+    let first = env
+        .storage
+        .write_file_internal(
+            &env.alice,
+            Some(inbox.id),
+            "first.txt",
+            b"1",
+            "text/plain",
+            None,
+        )
+        .await
+        .unwrap();
+    let e = &env;
+    env.relay_until("委譲がある間の起動", || async move {
+        e.runs_of(wf)
+            .await
+            .first()
+            .is_some_and(|(_, _, s)| s == "succeeded" || s == "failed")
+    })
+    .await;
+    assert_eq!(env.runs_of(wf).await[0].2, "succeeded");
+
+    // 同意をし直して、トリガのフォルダの閲覧を委譲から外す（別のフォルダだけを委譲する・トリガは有効のまま）。
+    // grants が空の再有効化は既存の委譲を保つ軽量切替なので、全面の再同意で外す。
+    let elsewhere = env
+        .storage
+        .create_folder(&env.alice, None, "別のフォルダ", None)
+        .await
+        .unwrap();
+    env.registration
+        .enable(
+            &env.alice,
+            wf,
+            1,
+            &parsed,
+            &[GrantRequest {
+                scope: "storage.read".into(),
+                object: env.alice.ns().folder(&elsewhere.id.to_string()),
+                relation: Relation::Viewer,
+            }],
+        )
+        .await
+        .expect("委譲を変えて有効化");
+    let second = env
+        .storage
+        .write_file_internal(
+            &env.alice,
+            Some(inbox.id),
+            "second.txt",
+            b"2",
+            "text/plain",
+            None,
+        )
+        .await
+        .unwrap();
+    env.storage
+        .update_file_content_internal(&env.alice, first.id, b"1b", "text/plain", None)
+        .await
+        .unwrap();
+    let (first_id, second_id) = (first.id, second.id);
+    env.relay_until("委譲を外した後の保存の配送", || async move {
+        e.delivered("create", second_id).await && e.delivered("update", first_id).await
+    })
+    .await;
+    let runs = env.runs_of(wf).await;
+    assert_eq!(
+        runs.len(),
+        1,
+        "委譲を外した後の保存では起動しない: {runs:?}"
+    );
+    let recorded: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM trigger_firing f WHERE f.tenant_id = $1 AND f.event_id IN ( \
+           SELECT o.id FROM storage_event_outbox o WHERE o.tenant_id = $1 \
+             AND ((o.node_id = $2 AND o.op = 'update') OR o.node_id = $3))",
+    )
+    .bind(&env.tenant)
+    .bind(first_id)
+    .bind(second_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(recorded, 0, "読めないファイルの発火は記録もしない");
 }

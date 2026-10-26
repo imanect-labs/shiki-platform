@@ -2,7 +2,8 @@
 //!
 //! `workflow.enabled` の時、本番 executor を組んで ①run ワーカー（`FOR UPDATE SKIP LOCKED` で
 //! 多重起動安全）②スケジューラ（`LeaderLease` 単一リーダー・cron tick）③イベント relay
-//! （outbox 配送台帳 `claim_undelivered("workflow")` → `match_event`）を detach タスクで走らせる。
+//! （outbox 配送台帳 `claim_undelivered("workflow")` → トリガの照合・wait の起床・`relay.rs`）を
+//! detach タスクで走らせる。
 //! RAG の `spawn_pipeline` と同型（プロセス生存中 loop・エラーは小休止して再試行）。
 
 mod auth;

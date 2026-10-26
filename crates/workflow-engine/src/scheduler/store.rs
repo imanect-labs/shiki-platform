@@ -40,15 +40,37 @@ struct ScheduleTriggerRow {
     created_at: DateTime<Utc>,
 }
 
-/// イベントトリガ 1 件（DB から読む）。
-#[derive(Debug, Clone, sqlx::FromRow)]
-#[allow(clippy::struct_field_names)]
-struct EventTriggerRow {
+/// ファイル保存トリガ（storage.write）の候補（フォルダの祖先束縛）。filter・閲覧の確認・発火は呼び出し側
+/// （relay）が行う。
+#[derive(Debug, Clone)]
+pub struct FileTriggerCandidate {
+    pub trigger: super::EventTriggerRef,
+    /// registration の org（ワークフロー主体の AuthContext を組む）。
+    pub org: String,
+    /// トリガの filter（条件木の JSON・無ければ `None`）。
+    pub filter: Option<serde_json::Value>,
+}
+
+impl FileTriggerCandidate {
+    /// filter がペイロードに一致するか（fail-closed: 不正 filter・評価エラーは一致しない）。
+    #[must_use]
+    pub fn admits(&self, payload: &serde_json::Value) -> bool {
+        trigger_filter_admits(
+            self.filter.as_ref(),
+            payload,
+            &self.trigger.tenant_id,
+            &self.trigger.trigger_id,
+        )
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct FileTriggerRow {
     tenant_id: String,
     trigger_id: String,
     workflow_id: Uuid,
-    /// トリガ spec（filter 条件木を含む）。
-    spec: sqlx::types::Json<serde_json::Value>,
+    org: String,
+    filter: Option<sqlx::types::Json<serde_json::Value>>,
 }
 
 /// データ変更トリガの候補（テーブル束縛・GAP-07）。見え方と filter の評価は呼び出し側（relay）が行う。
@@ -356,65 +378,52 @@ impl SchedulerStore {
             .collect())
     }
 
-    /// イベント（storage.write）を該当する enabled トリガへマッチさせ run を起動する（engine.md §5.4）。
+    /// ファイル保存トリガ（storage.write）の候補を、イベント発生フォルダで引く（enabled かつ有効化バージョン
+    /// 一致のみ・engine.md §5.4）。
     ///
-    /// `event_id`（outbox id）で `trigger_firing` を UNIQUE 記録し、outbox 1 件につき最大 1 run。
-    /// `event_folder` はイベント発生フォルダ id（**祖先束縛**の照合対象）・`payload` はイベントペイロード
-    /// （filter 評価と `$from trigger` 透過に使う）。戻り値 = 起動した run 数。
-    pub async fn match_event(
+    /// **祖先束縛**: トリガの folder scope が、イベント発生フォルダの祖先（node_closure・自分自身 depth 0 を
+    /// 含むので完全一致も包含）なら一致する。**scope はフォルダ束縛必須（全購読禁止・fail-closed）**: folder
+    /// キーを持たない scope（未対応形状・欠落）はワイルドカードに縮退させず一切マッチしない（保存時 V3 が
+    /// Stage A の形状 { "folder": "<uuid>" } を強制する）。filter の評価・workflow プリンシパルの閲覧の確認・
+    /// 発火（[`Self::fire_event_trigger`]）は呼び出し側（relay）が行う。
+    pub async fn file_trigger_candidates(
         &self,
         tenant_id: &str,
-        source: &str,
-        event_id: i64,
         event_folder: Option<Uuid>,
-        payload: &serde_json::Value,
-        launcher: &dyn RunLauncher,
-    ) -> Result<usize, SchedulerStoreError> {
-        // (tenant, kind=event, source) index で候補トリガを引く（enabled かつ有効化バージョン一致のみ）。
-        // **祖先束縛**: トリガの folder scope が、イベント発生フォルダの祖先（node_closure・自分自身 depth 0
-        // を含むので完全一致も包含）なら一致する。**scope はフォルダ束縛必須（全購読禁止・fail-closed）**:
-        // folder キーを持たない scope（未対応形状・欠落）はワイルドカードに縮退させず一切マッチしない
-        // （保存時 V3 が Stage A の形状 { "folder": "<uuid>" } を強制する）。
-        let triggers: Vec<EventTriggerRow> = sqlx::query_as(
-            "SELECT t.tenant_id, t.trigger_id, t.workflow_id, t.spec FROM workflow_trigger t \
+    ) -> Result<Vec<FileTriggerCandidate>, SchedulerStoreError> {
+        let Some(folder) = event_folder else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<FileTriggerRow> = sqlx::query_as(
+            "SELECT t.tenant_id, t.trigger_id, t.workflow_id, r.org, t.spec->'filter' AS filter \
+             FROM workflow_trigger t \
              JOIN workflow_registration r \
                ON r.tenant_id = t.tenant_id AND r.workflow_id = t.workflow_id \
-             WHERE t.tenant_id = $1 AND t.kind = 'event' AND t.source = $2 \
+             WHERE t.tenant_id = $1 AND t.kind = 'event' AND t.source = 'storage.write' \
                AND t.enabled AND r.status = 'enabled' \
                AND t.version = r.enabled_version \
                AND (t.spec->'scope' ? 'folder') \
                AND EXISTS ( SELECT 1 FROM node_closure c \
                             WHERE c.tenant_id = $1 \
                               AND c.ancestor = (t.spec->'scope'->>'folder')::uuid \
-                              AND c.descendant = $3 )",
+                              AND c.descendant = $2 )",
         )
         .bind(tenant_id)
-        .bind(source)
-        .bind(event_folder)
+        .bind(folder)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
-
-        let mut fired = 0usize;
-        for t in &triggers {
-            // filter 評価（イベントペイロードに対して・fail-closed: 不正 filter/不一致は発火しない・§5.6）。
-            if !trigger_filter_admits(t.spec.0.get("filter"), payload, tenant_id, &t.trigger_id) {
-                continue;
-            }
-            // (trigger_id, event_id) で 1 イベント 1 run。占有・起動・結果の記録は firing の共通の経路
-            // （一時失敗は再試行を待つ・D-21）。storage.write は因果の鎖をまだ使わない（BUG-29）。
-            let target = super::EventTriggerRef {
-                tenant_id: t.tenant_id.clone(),
-                trigger_id: t.trigger_id.clone(),
-                workflow_id: t.workflow_id,
-            };
-            if let super::FireOutcome::Fired(_) = self
-                .fire_event_trigger(&target, event_id, payload, None, launcher)
-                .await?
-            {
-                fired += 1;
-            }
-        }
-        Ok(fired)
+        Ok(rows
+            .into_iter()
+            .map(|r| FileTriggerCandidate {
+                trigger: super::EventTriggerRef {
+                    tenant_id: r.tenant_id,
+                    trigger_id: r.trigger_id,
+                    workflow_id: r.workflow_id,
+                },
+                org: r.org,
+                filter: r.filter.map(|j| j.0).filter(|v| !v.is_null()),
+            })
+            .collect())
     }
 }

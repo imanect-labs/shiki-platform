@@ -2,7 +2,7 @@
 //!
 //! - 複数インスタンス競走でもスケジュールは 1 回だけ発火（occurrence UNIQUE）
 //! - enqueue 直後クラッシュ→再 tick でも同一 occurrence の run は 1 つ（冪等）
-//! - storage 書込イベントでワークフローが起動する
+//! - storage 書込イベントでワークフローが起動する（候補の祖先束縛・scope の形・filter）
 //! - 無効化済みワークフローのトリガは発火しない
 //! - filter の評価エラー（大小比較の型不一致）では発火しない（fail-closed）
 //! - リーダーリースは同時に 1 つだけが保持する
@@ -59,6 +59,34 @@ async fn setup() -> Option<PgPool> {
         .await
         .expect("migrate");
     Some(pool)
+}
+
+/// ファイル保存トリガを relay と同じ手順で照合・発火する（候補 → filter → 発火）。発火した数を返す。
+///
+/// workflow プリンシパルの閲覧の確認（D-50）と新しい版のまとめ（D-38）は api の relay が行う
+/// （`workflow_files_it`）。ここでは候補の祖先束縛・scope の形・filter だけを確かめる。
+async fn match_file_event(
+    store: &SchedulerStore,
+    tenant: &str,
+    event_id: i64,
+    folder: Option<Uuid>,
+    payload: &serde_json::Value,
+    launcher: &dyn RunLauncher,
+) -> usize {
+    let mut fired = 0;
+    for c in store.file_trigger_candidates(tenant, folder).await.unwrap() {
+        if !c.admits(payload) {
+            continue;
+        }
+        let out = store
+            .fire_event_trigger(&c.trigger, event_id, payload, None, launcher)
+            .await
+            .unwrap();
+        if let workflow_engine::FireOutcome::Fired(_) = out {
+            fired += 1;
+        }
+    }
+    fired
 }
 
 /// registration（enabled/disabled）＋トリガを 1 本用意する。
@@ -356,46 +384,40 @@ async fn storage_write_event_triggers_run_once() {
     let payload = json!({ "parent_id": child.to_string() });
 
     // 祖先束縛: サブフォルダ（child）配下のイベントが parent 束縛トリガで発火する。
-    let fired = store
-        .match_event(
-            &tenant,
-            "storage.write",
-            42,
-            Some(child),
-            &payload,
-            launcher.as_ref(),
-        )
-        .await
-        .unwrap();
+    let fired = match_file_event(
+        &store,
+        &tenant,
+        42,
+        Some(child),
+        &payload,
+        launcher.as_ref(),
+    )
+    .await;
     assert_eq!(fired, 1, "サブフォルダ配下の書込が祖先束縛トリガで起動する");
 
     // 同一 event_id は再発火しない（outbox 1 件 1 run）。
-    let again = store
-        .match_event(
-            &tenant,
-            "storage.write",
-            42,
-            Some(child),
-            &payload,
-            launcher.as_ref(),
-        )
-        .await
-        .unwrap();
+    let again = match_file_event(
+        &store,
+        &tenant,
+        42,
+        Some(child),
+        &payload,
+        launcher.as_ref(),
+    )
+    .await;
     assert_eq!(again, 0);
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
 
     // 祖先関係にないフォルダのイベントはマッチしない。
-    let other = store
-        .match_event(
-            &tenant,
-            "storage.write",
-            43,
-            Some(unrelated),
-            &json!({ "parent_id": unrelated.to_string() }),
-            launcher.as_ref(),
-        )
-        .await
-        .unwrap();
+    let other = match_file_event(
+        &store,
+        &tenant,
+        43,
+        Some(unrelated),
+        &json!({ "parent_id": unrelated.to_string() }),
+        launcher.as_ref(),
+    )
+    .await;
     assert_eq!(other, 0);
 }
 
@@ -423,17 +445,15 @@ async fn event_trigger_with_non_folder_scope_never_fires() {
     let launcher = Arc::new(CountingLauncher {
         launches: AtomicUsize::new(0),
     });
-    let fired = store
-        .match_event(
-            &tenant,
-            "storage.write",
-            77,
-            Some(folder),
-            &json!({ "parent_id": folder.to_string() }),
-            launcher.as_ref(),
-        )
-        .await
-        .unwrap();
+    let fired = match_file_event(
+        &store,
+        &tenant,
+        77,
+        Some(folder),
+        &json!({ "parent_id": folder.to_string() }),
+        launcher.as_ref(),
+    )
+    .await;
     assert_eq!(fired, 0, "非 folder scope は発火しない（fail-closed）");
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 0);
 }
@@ -492,30 +512,26 @@ async fn event_trigger_filter_type_error_does_not_fire() {
     let launcher = Arc::new(CountingLauncher {
         launches: AtomicUsize::new(0),
     });
-    let fired = store
-        .match_event(
-            &tenant,
-            "storage.write",
-            91,
-            Some(folder),
-            &json!({ "size": 12 }),
-            launcher.as_ref(),
-        )
-        .await
-        .unwrap();
+    let fired = match_file_event(
+        &store,
+        &tenant,
+        91,
+        Some(folder),
+        &json!({ "size": 12 }),
+        launcher.as_ref(),
+    )
+    .await;
     assert_eq!(fired, 0, "数値と文字列の大小比較は発火しない");
     // 文字列どうしなら比べられる（"12" > "10"）。
-    let fired = store
-        .match_event(
-            &tenant,
-            "storage.write",
-            92,
-            Some(folder),
-            &json!({ "size": "12" }),
-            launcher.as_ref(),
-        )
-        .await
-        .unwrap();
+    let fired = match_file_event(
+        &store,
+        &tenant,
+        92,
+        Some(folder),
+        &json!({ "size": "12" }),
+        launcher.as_ref(),
+    )
+    .await;
     assert_eq!(fired, 1);
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
 }

@@ -114,6 +114,21 @@ struct Cause {
     chain: Vec<Uuid>,
 }
 
+/// 因果の鎖による抑止（発火先が鎖に含まれる＝自分の書込・循環、鎖が長すぎる）。抑止しないなら `None`。
+fn chain_suppression(
+    cause: Option<&Cause>,
+    workflow_id: Uuid,
+) -> Option<(&'static str, FireOutcome)> {
+    let c = cause?;
+    if c.chain.contains(&workflow_id) {
+        return Some(("suppressed_cycle", FireOutcome::SuppressedCycle));
+    }
+    if c.chain.len() > MAX_TRIGGER_CHAIN {
+        return Some(("suppressed_depth", FireOutcome::SuppressedDepth));
+    }
+    None
+}
+
 /// trace_id から由来の run を引き、鎖を作る（run の trace_id は run_id の 32 桁 hex・engine.md §11.1）。
 ///
 /// trace_id が run のものでなければ（利用者の操作の trace など）由来は無い。
@@ -163,8 +178,8 @@ fn next_attempt_at(now: DateTime<Utc>, attempts: i32) -> DateTime<Utc> {
 impl SchedulerStore {
     /// イベント 1 件で 1 つのトリガを発火する（占有 → 抑止 → 起動 → 記録・同じ Tx の行ロックで直列化）。
     ///
-    /// `cause_run_id` はイベントを起こした書込の由来の run（[`cause_run_of_trace`]）。`None` なら因果の鎖で
-    /// 抑止しない（storage.write の経路は鎖をまだ使わない・BUG-29）。
+    /// `cause_run_id` はイベントを起こした書込の由来の run（[`cause_run_of_trace`]）。`None`（利用者の操作など）
+    /// なら因果の鎖で抑止しない。
     pub async fn fire_event_trigger(
         &self,
         t: &EventTriggerRef,
@@ -227,27 +242,8 @@ impl SchedulerStore {
         launcher: &dyn RunLauncher,
     ) -> Result<FireOutcome, SchedulerStoreError> {
         let cause = cause_of(tx, &t.tenant_id, cause_run_id).await?;
-        if let Some(c) = &cause {
-            if c.chain.contains(&t.workflow_id) {
-                return finish(
-                    tx,
-                    t,
-                    event_id,
-                    "suppressed_cycle",
-                    FireOutcome::SuppressedCycle,
-                )
-                .await;
-            }
-            if c.chain.len() > MAX_TRIGGER_CHAIN {
-                return finish(
-                    tx,
-                    t,
-                    event_id,
-                    "suppressed_depth",
-                    FireOutcome::SuppressedDepth,
-                )
-                .await;
-            }
+        if let Some((outcome, out)) = chain_suppression(cause.as_ref(), t.workflow_id) {
+            return finish(tx, t, event_id, outcome, out).await;
         }
         let queued: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM workflow_run \

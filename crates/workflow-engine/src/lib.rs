@@ -59,8 +59,8 @@ pub use run::{
     WorkerConfig, WorkflowRunLauncher, WorkflowWorker, DEFAULT_LEASE_SECS, WORKFLOW_GC_QUEUE,
 };
 pub use scheduler::{
-    DataTriggerCandidate, EventTriggerRef, FireOutcome, LaunchOutcome, LeaderLease, RunLauncher,
-    SchedulerStore, SkipReason,
+    DataTriggerCandidate, EventTriggerRef, FileTriggerCandidate, FireOutcome, LaunchOutcome,
+    LeaderLease, RunLauncher, SchedulerStore, SkipReason,
 };
 pub use store::{WorkflowStore, WorkflowStoreError};
 pub use summary::{WorkflowSummary, WorkflowSummaryStore};

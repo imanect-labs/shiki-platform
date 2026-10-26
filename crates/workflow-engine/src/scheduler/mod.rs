@@ -21,7 +21,7 @@ pub use firing::{
     MAX_LAUNCH_ATTEMPTS, MAX_QUEUED_RUNS, MAX_TRIGGER_CHAIN,
 };
 pub use leader::LeaderLease;
-pub use store::{DataTriggerCandidate, SchedulerStore, SchedulerStoreError};
+pub use store::{DataTriggerCandidate, FileTriggerCandidate, SchedulerStore, SchedulerStoreError};
 
 /// トリガ発火から run を起動した結果（D-21・engine.md §5.4）。
 ///
