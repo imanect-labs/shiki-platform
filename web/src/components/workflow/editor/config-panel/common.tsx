@@ -1,7 +1,7 @@
 "use client";
 
 /// ノード共通の設定セクション（ブロック名・ID・リトライ・タイムアウト・エラー時の動作）と
-/// フォーム部品（フィールド枠・数値入力）。
+/// フォーム部品（フィールド枠・数値入力・見出しを名前にする入力の欄）。
 
 import * as React from "react";
 
@@ -13,14 +13,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { Node as IrNode } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { EditorAction } from "../ir-state";
 
-/// 欄の見出しの id（[`Field`] の中の [`NumberInput`] は aria-labelledby で見出しを名前にする。見出しは入力の
-/// 兄弟なので、そのままでは入力に名前が付かず、読み上げでも getByLabel でも引けない）。
-const FieldLabelContext = React.createContext<string | undefined>(undefined);
+/// 欄の見出しと注記の id。見出しは入力の兄弟なので、そのままでは入力に名前が付かず、読み上げでも getByLabel でも
+/// 引けない。[`Field`] の中の入力（[`FieldInput`]・[`FieldTextarea`]・[`FieldSelectTrigger`]・[`NumberInput`]・
+/// [`useFieldControl`] を使う欄）は aria-labelledby で見出しを名前に、aria-describedby で注記・誤りを説明にする
+/// （BUG-64）。
+type FieldIds = { labelId: string; descId: string | undefined };
+const FieldContext = React.createContext<FieldIds | undefined>(undefined);
 
 export function Field({
   label,
@@ -34,19 +38,68 @@ export function Field({
   children: React.ReactNode;
 }) {
   const labelId = React.useId();
+  const descId = React.useId();
+  const described = Boolean(error || hint);
+  const ids = React.useMemo(
+    () => ({ labelId, descId: described ? descId : undefined }),
+    [labelId, descId, described],
+  );
   return (
     <div className="space-y-1.5">
       <label id={labelId} className="text-xs font-medium text-foreground">
         {label}
       </label>
-      <FieldLabelContext.Provider value={labelId}>{children}</FieldLabelContext.Provider>
+      <FieldContext.Provider value={ids}>{children}</FieldContext.Provider>
       {error ? (
-        <p className="text-[11px] text-destructive">{error}</p>
+        <p id={descId} className="text-[11px] text-destructive">
+          {error}
+        </p>
       ) : hint ? (
-        <p className="text-[11px] text-muted-foreground">{hint}</p>
+        <p id={descId} className="text-[11px] text-muted-foreground">
+          {hint}
+        </p>
       ) : null}
     </div>
   );
+}
+
+/// [`Field`] の中の入力に付ける名前（見出し）と説明（注記・誤り）の属性。`named` は呼び出し側が aria-label /
+/// aria-labelledby で名付けた欄（見出しで上書きしない・aria-labelledby は aria-label より優先されるため）。
+/// [`Field`] の外では何も付けない。
+export function useFieldControl(named = false): { "aria-labelledby"?: string; "aria-describedby"?: string } {
+  const ids = React.useContext(FieldContext);
+  if (!ids) return {};
+  return {
+    ...(named ? {} : { "aria-labelledby": ids.labelId }),
+    ...(ids.descId ? { "aria-describedby": ids.descId } : {}),
+  };
+}
+
+type Named = { "aria-label"?: string; "aria-labelledby"?: string };
+const isNamed = (p: Named) => p["aria-label"] !== undefined || p["aria-labelledby"] !== undefined;
+
+/// [`Field`] の見出しを名前にする 1 行の入力。
+export function FieldInput(props: React.ComponentProps<typeof Input>) {
+  const a11y = useFieldControl(isNamed(props));
+  return <Input {...a11y} {...props} />;
+}
+
+/// [`Field`] の見出しを名前にする複数行の入力。
+export function FieldTextarea(props: React.ComponentProps<typeof Textarea>) {
+  const a11y = useFieldControl(isNamed(props));
+  return <Textarea {...a11y} {...props} />;
+}
+
+/// [`Field`] の見出しを名前にするブラウザの選択の欄（`<select>`）。
+export function FieldNativeSelect(props: React.ComponentProps<"select">) {
+  const a11y = useFieldControl(isNamed(props));
+  return <select {...a11y} {...props} />;
+}
+
+/// [`Field`] の見出しを名前にする選択の欄（選んだ値はボタンの中の文字として読める）。
+export function FieldSelectTrigger(props: React.ComponentProps<typeof SelectTrigger>) {
+  const a11y = useFieldControl(isNamed(props));
+  return <SelectTrigger {...a11y} {...props} />;
 }
 
 export function NumberInput({
@@ -64,12 +117,12 @@ export function NumberInput({
   placeholder?: string;
   error?: boolean;
 }) {
-  const labelledBy = React.useContext(FieldLabelContext);
+  const a11y = useFieldControl();
   return (
     <Input
       type="number"
       inputMode="numeric"
-      aria-labelledby={labelledBy}
+      {...a11y}
       value={value ?? ""}
       min={min}
       max={max}
@@ -100,7 +153,7 @@ export function CommonSection({
   return (
     <div className="space-y-3">
       <Field label="ブロック名" hint="キャンバスに表示される名前">
-        <Input
+        <FieldInput
           value={node.label ?? ""}
           placeholder={entry?.label_ja}
           onChange={(e) =>
@@ -117,7 +170,7 @@ export function CommonSection({
         label="ID"
         hint="他のブロックから参照するときの名前（小文字・数字・_）"
       >
-        <Input
+        <FieldInput
           value={idDraft}
           onChange={(e) => setIdDraft(e.target.value)}
           onBlur={() => {
@@ -191,9 +244,9 @@ export function CommonSection({
             })
           }
         >
-          <SelectTrigger className="h-8">
+          <FieldSelectTrigger className="h-8">
             <SelectValue />
-          </SelectTrigger>
+          </FieldSelectTrigger>
           <SelectContent>
             <SelectItem value="fail_run">フローを失敗にする</SelectItem>
             <SelectItem value="continue">エラー用の出口に流す</SelectItem>

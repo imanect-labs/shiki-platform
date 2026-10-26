@@ -24,7 +24,7 @@ import type {
   Condition,
   ValueExpr,
 } from "@/generated/workflow-ir";
-import { Field, NumberInput } from "./common";
+import { Field, FieldInput, FieldSelectTrigger, NumberInput } from "./common";
 import { paramsOf, patchParams } from "./params";
 import { InputFieldsContext, numericLiteral, ValueExprInput, type NumericMode } from "./value-expr-input";
 import { isFromRef } from "./value-refs";
@@ -150,7 +150,7 @@ export function ConditionEditor({
           value={flat.mode}
           onValueChange={(v) => update({ ...flat, mode: v as "all" | "any" })}
         >
-          <SelectTrigger className="h-8">
+          <SelectTrigger className="h-8" aria-label="条件の組み合わせ方">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -189,7 +189,7 @@ export function ConditionEditor({
                 update({ ...flat, comparisons });
               }}
             >
-              <SelectTrigger className="h-8 flex-1">
+              <SelectTrigger className="h-8 flex-1" aria-label="比べ方">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -376,9 +376,9 @@ export function MapForm({ node, dispatch, refCandidates, inMapRegion, fieldError
           value={(p.on_item_error as string | undefined) ?? "fail_map"}
           onValueChange={(v) => patchParams(dispatch, node, { on_item_error: v })}
         >
-          <SelectTrigger className="h-8">
+          <FieldSelectTrigger className="h-8">
             <SelectValue />
-          </SelectTrigger>
+          </FieldSelectTrigger>
           <SelectContent>
             <SelectItem value="fail_map">1 つでも失敗したら全体を失敗に</SelectItem>
             <SelectItem value="collect">失敗も結果に集めて続行</SelectItem>
@@ -433,9 +433,9 @@ export function WaitForm({ node, dispatch, refCandidates, inMapRegion, fieldErro
             }
           }}
         >
-          <SelectTrigger className="h-8">
+          <FieldSelectTrigger className="h-8">
             <SelectValue />
-          </SelectTrigger>
+          </FieldSelectTrigger>
           <SelectContent>
             <SelectItem value="duration">決めた時間だけ待つ</SelectItem>
             <SelectItem value="until">決めた日時まで待つ</SelectItem>
@@ -478,9 +478,9 @@ export function WaitForm({ node, dispatch, refCandidates, inMapRegion, fieldErro
               value={(p.source as string | undefined) ?? "storage.write"}
               onValueChange={(v) => patchParams(dispatch, node, { source: v })}
             >
-              <SelectTrigger className="h-8">
+              <FieldSelectTrigger className="h-8">
                 <SelectValue />
-              </SelectTrigger>
+              </FieldSelectTrigger>
               <SelectContent>
                 <SelectItem value="storage.write">ファイルが保存されたとき</SelectItem>
               </SelectContent>
@@ -491,7 +491,7 @@ export function WaitForm({ node, dispatch, refCandidates, inMapRegion, fieldErro
             hint="このフォルダ配下への保存を待ちます。必須です"
             error={fieldErrors.get("scope")}
           >
-            <Input
+            <FieldInput
               value={
                 ((p.scope as { folder?: string } | undefined)?.folder as string | undefined) ?? ""
               }
@@ -518,9 +518,9 @@ export function WaitForm({ node, dispatch, refCandidates, inMapRegion, fieldErro
               value={(p.on_timeout as string | undefined) ?? "fail"}
               onValueChange={(v) => patchParams(dispatch, node, { on_timeout: v })}
             >
-              <SelectTrigger className="h-8">
+              <FieldSelectTrigger className="h-8">
                 <SelectValue />
-              </SelectTrigger>
+              </FieldSelectTrigger>
               <SelectContent>
                 <SelectItem value="fail">失敗にする</SelectItem>
                 <SelectItem value="continue">「時間切れ」の出口に流す</SelectItem>
@@ -541,9 +541,9 @@ export function JoinForm({ node, dispatch }: FormProps) {
         value={(p.mode as string | undefined) ?? "all"}
         onValueChange={(v) => patchParams(dispatch, node, { mode: v })}
       >
-        <SelectTrigger className="h-8">
+        <FieldSelectTrigger className="h-8">
           <SelectValue />
-        </SelectTrigger>
+        </FieldSelectTrigger>
         <SelectContent>
           <SelectItem value="all">全部そろってから進む</SelectItem>
           <SelectItem value="any">最初の 1 つで進む</SelectItem>

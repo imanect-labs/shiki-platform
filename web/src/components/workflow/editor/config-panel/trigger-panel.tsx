@@ -26,7 +26,7 @@ import {
 import { FolderPicker, type FolderChoice } from "@/components/artifacts/folder-picker";
 import { EVENT_CATALOG } from "@/generated/workflow-catalog";
 import type { Condition, Trigger } from "@/generated/workflow-ir";
-import { Field } from "./common";
+import { Field, FieldInput, FieldSelectTrigger } from "./common";
 import { DataTableSelect, useDataTables } from "./data-tables";
 import { InputSchemaEditor, type InputRefUsage } from "./input-schema-editor";
 
@@ -127,9 +127,9 @@ function ScheduleEditor({
             if (v === "monthly") set({ kind: "monthly", day: 1, hour: 9, minute: 0 });
           }}
         >
-          <SelectTrigger className="h-8">
+          <FieldSelectTrigger className="h-8">
             <SelectValue />
-          </SelectTrigger>
+          </FieldSelectTrigger>
           <SelectContent>
             <SelectItem value="hourly">毎時</SelectItem>
             <SelectItem value="daily">毎日</SelectItem>
@@ -144,7 +144,7 @@ function ScheduleEditor({
 
       {preset.kind === "hourly" ? (
         <Field label="何分に">
-          <Input
+          <FieldInput
             type="number"
             min={0}
             max={59}
@@ -162,9 +162,9 @@ function ScheduleEditor({
                 value={String(preset.weekday)}
                 onValueChange={(v) => set({ ...preset, weekday: Number(v) })}
               >
-                <SelectTrigger className="h-8 w-24">
+                <FieldSelectTrigger className="h-8 w-24">
                   <SelectValue />
-                </SelectTrigger>
+                </FieldSelectTrigger>
                 <SelectContent>
                   {WEEKDAYS.map((w, i) => (
                     <SelectItem key={i} value={String(i)}>
@@ -177,7 +177,7 @@ function ScheduleEditor({
           ) : null}
           {preset.kind === "monthly" ? (
             <Field label="日にち">
-              <Input
+              <FieldInput
                 type="number"
                 min={1}
                 max={31}
@@ -214,7 +214,7 @@ function ScheduleEditor({
       ) : null}
 
       <Field label="cron 式（上級者向け）" hint="分 時 日 月 曜日">
-        <Input
+        <FieldInput
           value={trigger.cron}
           onChange={(e) => onChange({ ...trigger, cron: e.target.value })}
           className="h-8 font-mono text-xs max-md:text-base"
@@ -222,9 +222,9 @@ function ScheduleEditor({
       </Field>
       <Field label="タイムゾーン">
         <Select value={tz} onValueChange={(v) => onChange({ ...trigger, tz: v })}>
-          <SelectTrigger className="h-8">
+          <FieldSelectTrigger className="h-8">
             <SelectValue />
-          </SelectTrigger>
+          </FieldSelectTrigger>
           <SelectContent>
             <SelectItem value="Asia/Tokyo">日本（Asia/Tokyo）</SelectItem>
             <SelectItem value="UTC">UTC</SelectItem>
@@ -272,9 +272,9 @@ function EventEditor({ trigger, onChange }: { trigger: EventTrigger; onChange: (
             onChange({ kind: "event", source: v, scope: {} } as unknown as Trigger);
           }}
         >
-          <SelectTrigger className="h-8" aria-label="できごと">
+          <FieldSelectTrigger className="h-8">
             <SelectValue />
-          </SelectTrigger>
+          </FieldSelectTrigger>
           <SelectContent>
             {EVENT_SOURCES.map((e) => (
               <SelectItem key={e.source} value={e.source}>
@@ -300,7 +300,7 @@ function FolderEventFields({ trigger, onChange }: { trigger: EventTrigger; onCha
         hint="このフォルダ（配下含む）にファイルが保存されたとき（新しい版を含む）に動きます。同じファイルの続く保存は 1 回にまとめ、このワークフロー自身の保存では動きません。必須です"
       >
         <div className="flex items-center gap-1.5">
-          <Input
+          <FieldInput
             value={folderName ?? folder}
             readOnly
             placeholder="フォルダを選択…"
@@ -437,9 +437,9 @@ export function TriggerPanel({
               replace({ kind: "event", source: "storage.write", scope: {} } as unknown as Trigger);
           }}
         >
-          <SelectTrigger className="h-8">
+          <FieldSelectTrigger className="h-8">
             <SelectValue />
-          </SelectTrigger>
+          </FieldSelectTrigger>
           <SelectContent>
             <SelectItem value="interactive">手動で実行</SelectItem>
             <SelectItem value="schedule">スケジュール</SelectItem>

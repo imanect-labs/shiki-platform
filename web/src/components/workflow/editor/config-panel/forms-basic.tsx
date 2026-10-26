@@ -7,11 +7,10 @@
 
 import * as React from "react";
 
-import { Input } from "@/components/ui/input";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { Node as IrNode, ValidationError, ValueExpr } from "@/generated/workflow-ir";
 import type { EditorAction } from "../ir-state";
-import { Field, NumberInput } from "./common";
+import { Field, FieldInput, FieldNativeSelect, NumberInput } from "./common";
 import { ModelField } from "./model-field";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput, type RefCandidate } from "./value-expr-input";
@@ -172,7 +171,7 @@ export function SkillInvokeForm({ node, dispatch, refCandidates, inMapRegion, fi
         error={fieldErrors.get("skill")}
       >
         {installed && installed.length > 0 ? (
-          <select
+          <FieldNativeSelect
             className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm pointer-coarse:text-base"
             value={current}
             onChange={(e) => patchParams(dispatch, node, { skill: e.target.value })}
@@ -189,9 +188,9 @@ export function SkillInvokeForm({ node, dispatch, refCandidates, inMapRegion, fi
             {current && !installed.some((i) => `skill:${i.name}@${i.registryVersion}` === current) ? (
               <option value={current}>{current}（未インストール）</option>
             ) : null}
-          </select>
+          </FieldNativeSelect>
         ) : (
-          <Input
+          <FieldInput
             value={current}
             placeholder="skill:<name>@<version>"
             onChange={(e) => patchParams(dispatch, node, { skill: e.target.value })}

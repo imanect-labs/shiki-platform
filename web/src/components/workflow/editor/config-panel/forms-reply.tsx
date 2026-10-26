@@ -11,10 +11,10 @@ import { Plus, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { ReplyColumn, ReplyFormat, ReplyTone, ValueExpr } from "@/generated/workflow-ir";
-import { Field } from "./common";
+import { Field, FieldInput, FieldSelectTrigger } from "./common";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
@@ -59,9 +59,9 @@ export function WorkflowReplyForm({ node, dispatch, refCandidates, inMapRegion, 
             })
           }
         >
-          <SelectTrigger aria-label="形" className="h-8 text-[13px]">
+          <FieldSelectTrigger className="h-8 text-[13px]">
             <SelectValue />
-          </SelectTrigger>
+          </FieldSelectTrigger>
           <SelectContent>
             {FORMATS.map((f) => (
               <SelectItem key={f.value} value={f.value}>
@@ -72,10 +72,9 @@ export function WorkflowReplyForm({ node, dispatch, refCandidates, inMapRegion, 
         </Select>
       </Field>
       <Field label="見出し（省略可）" error={fieldErrors.get("label")} hint={`${MAX_LABEL} 字まで（例: 回答・指摘・参考にした資料）`}>
-        <Input
+        <FieldInput
           value={p.label ?? ""}
           maxLength={MAX_LABEL}
-          aria-label="見出し（省略可）"
           placeholder="例: 回答"
           onChange={(e) => set({ label: e.target.value.trim() ? e.target.value : undefined })}
           className="h-8"
@@ -83,9 +82,9 @@ export function WorkflowReplyForm({ node, dispatch, refCandidates, inMapRegion, 
       </Field>
       <Field label="色合い" error={fieldErrors.get("tone")} hint="業務上うまくいかなかったこと（先に借りられた等）は赤で返します">
         <Select value={p.tone ?? "neutral"} onValueChange={(v) => set({ tone: v === "neutral" ? undefined : v })}>
-          <SelectTrigger aria-label="色合い" className="h-8 text-[13px]">
+          <FieldSelectTrigger className="h-8 text-[13px]">
             <SelectValue />
-          </SelectTrigger>
+          </FieldSelectTrigger>
           <SelectContent>
             {TONES.map((t) => (
               <SelectItem key={t.value} value={t.value}>
@@ -117,18 +116,16 @@ export function WorkflowReplyForm({ node, dispatch, refCandidates, inMapRegion, 
         <fieldset className="space-y-2 rounded-lg border p-2.5">
           <legend className="px-1 text-xs font-medium">ファイルの取り出し方</legend>
           <Field label="ファイルの ID の位置" error={fieldErrors.get("file")} hint="既定は /id（社内検索の結果なら /file_id）">
-            <Input
+            <FieldInput
               value={p.file?.id_path ?? ""}
-              aria-label="ファイルの ID の位置"
               placeholder="/id"
               onChange={(e) => set({ file: { ...p.file, id_path: e.target.value || undefined } })}
               className="h-8 font-mono text-xs"
             />
           </Field>
           <Field label="ファイル名の位置" hint="既定は /name（社内検索の結果なら /file_name）">
-            <Input
+            <FieldInput
               value={p.file?.name_path ?? ""}
-              aria-label="ファイル名の位置"
               placeholder="/name"
               onChange={(e) => set({ file: { ...p.file, name_path: e.target.value || undefined } })}
               className="h-8 font-mono text-xs"

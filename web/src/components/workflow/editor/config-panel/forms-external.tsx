@@ -5,7 +5,6 @@
 import * as React from "react";
 
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -15,7 +14,7 @@ import {
 } from "@/components/ui/select";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { ValueExpr } from "@/generated/workflow-ir";
-import { Field } from "./common";
+import { Field, FieldInput, FieldSelectTrigger, FieldTextarea } from "./common";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
 import type { FormProps } from "./forms-basic";
@@ -33,9 +32,9 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
             value={(p.method as string | undefined) ?? "GET"}
             onValueChange={(v) => patchParams(dispatch, node, { method: v })}
           >
-            <SelectTrigger className="h-8">
+            <FieldSelectTrigger className="h-8">
               <SelectValue />
-            </SelectTrigger>
+            </FieldSelectTrigger>
             <SelectContent>
               {METHODS.map((m) => (
                 <SelectItem key={m} value={m}>
@@ -50,7 +49,7 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
           hint="ドメインは固定文字列で入力（安全のため差し込み不可）"
           error={fieldErrors.get("url")}
         >
-          <Input
+          <FieldInput
             value={(p.url as string | undefined) ?? ""}
             onChange={(e) => patchParams(dispatch, node, { url: e.target.value })}
             placeholder="https://api.example.com/v1"
@@ -84,7 +83,7 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
         error={fieldErrors.get("secret")}
       >
         <div className="space-y-1.5">
-          <Input
+          <FieldInput
             value={secret?.name ?? ""}
             onChange={(e) =>
               patchParams(dispatch, node, {
@@ -109,7 +108,7 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
                   })
                 }
               >
-                <SelectTrigger className="h-8">
+                <SelectTrigger className="h-8" aria-label="シークレットの渡し方">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -120,6 +119,7 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
               {secret.attach?.kind === "header" ? (
                 <Input
                   value={secret.attach?.header ?? ""}
+                  aria-label="シークレットを添付するヘッダ名"
                   onChange={(e) =>
                     patchParams(dispatch, node, {
                       secret: {
@@ -153,7 +153,7 @@ export function ScriptRunForm({ node, dispatch, refCandidates, inMapRegion, fiel
         hint="main(input) の戻り値が次のブロックへ渡ります"
         error={fieldErrors.get("source")}
       >
-        <Textarea
+        <FieldTextarea
           value={source?.inline ?? ""}
           rows={10}
           spellCheck={false}

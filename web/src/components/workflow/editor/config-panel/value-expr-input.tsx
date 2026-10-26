@@ -296,7 +296,11 @@ export function ValueExprInput({
             <InsertMenu ctx={ctx} onPick={insert} onClosed={() => textRef.current?.focus()} />
           ) : null}
           <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
-            <SelectTrigger className="h-6 w-auto gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none">
+            <SelectTrigger
+              // 欄の名前（label）を含めない（getByLabel(label) が入力の欄だけに当たるように）。
+              aria-label="値の決め方"
+              className="h-6 w-auto gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="end">

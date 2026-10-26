@@ -13,7 +13,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type {
   ApprovalAssignee,
@@ -23,7 +22,7 @@ import type {
 } from "@/generated/workflow-ir";
 import { getViewerContext, type DataTable } from "@/lib/data-api";
 import { cn } from "@/lib/utils";
-import { Field, NumberInput } from "./common";
+import { Field, FieldInput, FieldTextarea, NumberInput } from "./common";
 import { DataTableSelect, useDataTables, type TableLookup } from "./data-tables";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
@@ -162,7 +161,7 @@ export function HumanApprovalForm(props: FormProps) {
   return (
     <div className="space-y-4">
       <Field label="受信箱の件名" error={fieldErrors.get("title")} hint="担当者の受信箱に出る名前（120 字まで）">
-        <Input
+        <FieldInput
           value={p.title ?? ""}
           maxLength={120}
           placeholder="例: 経費申請の承認"
@@ -171,7 +170,7 @@ export function HumanApprovalForm(props: FormProps) {
         />
       </Field>
       <Field label="担当者への説明（省略可）" error={fieldErrors.get("instructions")}>
-        <Textarea
+        <FieldTextarea
           value={p.instructions ?? ""}
           maxLength={2000}
           rows={2}
@@ -367,6 +366,7 @@ function ChoiceField({
           <Field label="ボタンの文言（省略可）">
             <Input
               value={v.label ?? ""}
+              aria-label={`${title}のボタンの文言`}
               maxLength={40}
               placeholder={defaultLabel}
               onChange={(e) => onChange({ ...v, label: e.target.value || undefined })}
