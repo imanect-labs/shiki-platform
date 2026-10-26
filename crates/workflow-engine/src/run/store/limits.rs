@@ -3,7 +3,8 @@
 //! scheduler tick（リーダー）から呼ばれる:
 //! - [`RunStore::promote_queued_runs`] — max_parallel_runs 未満（待機中の run は数えない）の workflow の
 //!   最古 queued run を running へ昇格（entry step を ready 化・run.started 追記）。バックプレッシャの解放側。
-//!   1 つのワークフローの誤りは閉じ込めて次へ進む。ピンした IR を読めない run は failed で終わらせる。
+//!   1 つのワークフローの誤りは閉じ込めて次へ進む。ピンした IR が自分の知らない新しい版（`ir_version`）なら、
+//!   そのワークフローを飛ばして新しい版のリーダーに任せる。知っている版で読めない run は failed で終わらせる。
 //! - [`RunStore::expire_run_timeouts`] — `timeout_at` 超過の running run を fail_reason=run_timeout
 //!   でキャンセル・ドレインに載せる（最終 status は failed）。
 
@@ -27,6 +28,20 @@ pub struct PromoteReport {
     pub failed: usize,
     /// 誤りで途中までしか進められなかったワークフローの数（warn に残し、次の tick で取り直す）。
     pub skipped_workflows: usize,
+    /// 先頭の queued run のピンした IR が、このエンジンの知らない新しい版（`ir_version` が
+    /// [`MAX_IR_VERSION`](crate::ir::MAX_IR_VERSION) より大きい）のため、昇格せずに残したワークフローの数
+    /// （ローリングデプロイの途中・新しい版のリーダーが拾う・D-65）。
+    pub deferred_newer_ir: usize,
+}
+
+/// ピンした IR の `ir_version` が、このエンジンの知っている版より新しいか（読めないのは自分が古いから）。
+///
+/// 版が書かれていない・整数でないものは新しい版とは言えないので偽（知っている版で読めない IR として扱う）。
+fn is_newer_ir_version(ir_snapshot: &Value) -> bool {
+    ir_snapshot
+        .get("ir_version")
+        .and_then(Value::as_u64)
+        .is_some_and(|v| v > u64::from(crate::ir::MAX_IR_VERSION))
 }
 
 impl RunStore {
@@ -34,7 +49,10 @@ impl RunStore {
     ///
     /// **1 つのワークフローの誤りで、ほかのワークフロー（ほかのテナントを含む）の昇格を止めない。** 誤りは
     /// warn に残して次のワークフローへ進む（そのワークフローは次の tick で取り直す）。ピンした IR を読めない
-    /// run は待っても昇格できず先頭に居座るので、failed で終わらせて外す。`Err` は対象の列挙に失敗したときだけ。
+    /// run は待っても昇格できず先頭に居座るので、failed で終わらせて外す。ただし IR が自分の知らない新しい版
+    /// なら失敗させない（ローリングデプロイの途中で古い版のリーダーが新しい版の run を誤って永久に失敗させない・
+    /// D-65）。そのワークフローだけを飛ばして warn に残し、新しい版のリーダーに任せる。`Err` は対象の列挙に
+    /// 失敗したときだけ。
     pub async fn promote_queued_runs(
         &self,
         tenant_scope: Option<&str>,
@@ -97,6 +115,22 @@ impl RunStore {
             // ピンした IR を読めない run は、待っても昇格できない（先頭に居座って後ろの run も止める）。
             let ir = match crate::ir::WorkflowIr::from_json(&ir_snapshot.0) {
                 Ok(ir) => ir,
+                // 自分より新しい版の IR は、新しい版のリーダーなら読める。失敗させずにこのワークフローだけを
+                // 飛ばす（古い順を守るため、後ろの run も昇格しない・D-65）。
+                Err(e) if is_newer_ir_version(&ir_snapshot.0) => {
+                    tx.rollback().await.map_err(map_db)?;
+                    tracing::warn!(
+                        tenant_id,
+                        %workflow_id,
+                        %run_id,
+                        ir_version = ?ir_snapshot.0.get("ir_version"),
+                        max_ir_version = crate::ir::MAX_IR_VERSION,
+                        error = %e,
+                        "ピンした IR が新しい版のため、このワークフローの昇格を見送りました（新しい版のリーダーが拾う）"
+                    );
+                    report.deferred_newer_ir += 1;
+                    break;
+                }
                 Err(e) => {
                     fail_unreadable_run(&mut tx, tenant_id, run_id).await?;
                     tx.commit().await.map_err(map_db)?;
@@ -225,4 +259,26 @@ async fn fail_unreadable_run(
     .await
     .map_err(map_db)?;
     append_event(tx, tenant_id, run_id, RunEventKind::RunFailed, &Value::Null).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 新しい版と言えるのは、整数の `ir_version` が知っている最大の版より大きいときだけ（D-65）。
+    #[test]
+    fn only_a_larger_integer_ir_version_is_newer() {
+        let max = crate::ir::MAX_IR_VERSION;
+        assert!(is_newer_ir_version(
+            &json!({ "ir_version": max + 1, "x": 1 })
+        ));
+        assert!(is_newer_ir_version(&json!({ "ir_version": u64::MAX })));
+        assert!(!is_newer_ir_version(&json!({ "ir_version": max, "x": 1 })));
+        assert!(!is_newer_ir_version(&json!({ "ir_version": 0 })));
+        assert!(!is_newer_ir_version(&json!({})));
+        assert!(!is_newer_ir_version(&json!({ "ir_version": "2" })));
+        assert!(!is_newer_ir_version(&json!({ "ir_version": -1 })));
+        assert!(!is_newer_ir_version(&json!(null)));
+    }
 }

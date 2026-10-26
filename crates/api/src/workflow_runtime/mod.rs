@@ -490,15 +490,19 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
 /// queued run の昇格（scheduler tick・全テナント）。
 ///
 /// promote はワークフローごとに誤りを閉じ込める（1 つの誤りでほかのテナントの昇格を止めない・ピンした IR を
-/// 読めない run は failed で外す）。個々の理由は engine が warn に残すので、ここでは進められなかった数を残す。
+/// 知っている版で読めない run は failed で外し、新しい版の IR は新しい版のリーダーに任せる・D-65）。個々の
+/// 理由は engine が warn に残すので、ここでは進められなかった数を残す。
 async fn promote_queued(runs: &RunStore) {
     match runs.promote_queued_runs(None).await {
-        Ok(r) if r.failed > 0 || r.skipped_workflows > 0 => tracing::warn!(
-            promoted = r.promoted,
-            failed = r.failed,
-            skipped_workflows = r.skipped_workflows,
-            "queued promote で進められない run・ワークフローがありました"
-        ),
+        Ok(r) if r.failed > 0 || r.skipped_workflows > 0 || r.deferred_newer_ir > 0 => {
+            tracing::warn!(
+                promoted = r.promoted,
+                failed = r.failed,
+                skipped_workflows = r.skipped_workflows,
+                deferred_newer_ir = r.deferred_newer_ir,
+                "queued promote で進められない run・ワークフローがありました"
+            );
+        }
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "queued promote でエラー"),
     }
