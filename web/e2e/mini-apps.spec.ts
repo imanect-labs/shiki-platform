@@ -701,3 +701,139 @@ test.describe("ミニアプリ（画面に返す結果）", () => {
     await expect(result).not.toContainText("社内の承認（");
   });
 });
+
+/// ログイン済みページのセッションで backend API を叩く（PUT・DELETE 用・CSRF 二重送信つき）。
+async function apiSend(page: Page, method: "PUT" | "DELETE", path: string, body?: unknown) {
+  const cookies = await page.context().cookies();
+  const csrf = cookies.find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const res = await page.request.fetch(`/api${path}`, {
+    method,
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+    ...(body === undefined ? {} : { data: body }),
+  });
+  expect(res.ok(), `${method} ${path} → ${res.status()}`).toBeTruthy();
+}
+
+/// テストで作ったアーティファクトを片付ける（もう消えているものは飛ばす）。
+async function cleanupArtifacts(page: Page, ids: string[]) {
+  const cookies = await page.context().cookies();
+  const csrf = cookies.find((c) => c.name === "shiki_csrf")?.value ?? "";
+  for (const id of ids) {
+    const res = await page.request.delete(`/api/artifacts/${id}`, { headers: { "X-CSRF-Token": csrf } });
+    expect([204, 404], `DELETE /artifacts/${id} → ${res.status()}`).toContain(res.status());
+  }
+}
+
+/// 束ねた部品が壊れたとき（BUG-17）と、共有で編集にした人の編集（BUG-18）。
+test.describe("ミニアプリ（部品のピン・共同編集）", () => {
+  test("束ねたスキルが削除されても、アプリは開けてスキルだけが使えないと出し、エディタで外せる（BUG-17）", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await loginViaKeycloak(page);
+    const flow = uniqueName("skill-flow");
+    const wf = await apiPost(page, "/workflows", {
+      ir: {
+        ir_version: 1,
+        name: flow,
+        display_name: flow,
+        triggers: [{ kind: "interactive" }],
+        nodes: [
+          {
+            id: "compute",
+            type: "script.run",
+            label: "計算する",
+            params: { source: { inline: "function main(i){ return { ok: true }; }" } },
+          },
+        ],
+        edges: [],
+      },
+    });
+    const skill = await apiPost(page, "/skills", {
+      name: uniqueName("e2e-skill"),
+      body: { description: "経費規程の案内", instructions: "経費規程に沿って答える。" },
+    });
+    const app = await apiPost(page, "/mini-apps", {
+      name: uniqueName("skill-app"),
+      body: {
+        description: "経費の申請",
+        screen: expenseScreen(flow),
+        skill: { artifact_id: skill.id, version: 1 },
+        workflows: [{ alias: flow, artifact_id: wf.id, version: 1 }],
+      },
+    });
+    try {
+      await page.goto(`/apps/${app.id}`);
+      await expect(page.getByTestId("ui-figure")).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByText("・スキル適用")).toBeVisible();
+      await expect(page.getByTestId("miniapp-skill-unavailable")).toHaveCount(0);
+
+      // スキルを消しても「見つかりません」にならず、スキルだけが使えないと理由つきで出る。
+      await apiSend(page, "DELETE", `/artifacts/${skill.id}`);
+      await page.reload();
+      await expect(page.getByTestId("ui-figure")).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByText("アプリが見つかりません")).toHaveCount(0);
+      const notice = page.getByTestId("miniapp-skill-unavailable");
+      await expect(notice).toContainText("スキル（v1）が見つかりません");
+      await expect(notice).toContainText("画面とボタンはそのまま使えます");
+      await expect(page.getByText("・スキルは使えません")).toBeVisible();
+      // 画面のボタンはそのまま使える。
+      await apply(page, "300");
+      await expect(page.getByTestId("yui-runs").locator("li").first()).toHaveAttribute("data-status", "succeeded", {
+        timeout: 60_000,
+      });
+
+      // エディタは読めないスキルを選択欄に残して見せ、「なし」にすれば保存できる。
+      await page.getByRole("button", { name: "編集" }).click();
+      const dialog = page.getByRole("dialog");
+      const skillSelect = dialog.getByLabel("スキル（任意）");
+      await expect(skillSelect.locator("option:checked")).toHaveText("読めないスキル（v1）");
+      await expect(dialog.getByText("束ねているスキルは削除されたか、あなたには読めません")).toBeVisible();
+      await skillSelect.selectOption({ label: "なし" });
+      await expect(dialog.getByText("束ねているスキルは削除されたか、あなたには読めません")).toHaveCount(0);
+      await dialog.getByRole("button", { name: "保存" }).click();
+      await expect(page.getByText("v2 として保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByTestId("miniapp-skill-unavailable")).toHaveCount(0);
+      await expect(page.getByText("・スキルは使えません")).toHaveCount(0);
+    } finally {
+      // テストで作ったアプリ・ワークフロー・スキルを片付ける（スキルは途中で消していることがある）。
+      await cleanupArtifacts(page, [app.id, wf.id, skill.id]);
+    }
+  });
+
+  test("共有で「編集」にした人は編集ボタンから新しい版を保存できる（BUG-18）", async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    await loginViaKeycloak(page);
+    const app = await apiPost(page, "/mini-apps", {
+      name: uniqueName("editor-app"),
+      body: { description: "備品の案内", screen: "備品の置き場所と借り方の案内です。\n", workflows: [] },
+    });
+    const bobContext = await browser.newContext();
+    const bobPage = await bobContext.newPage();
+    try {
+      await loginAs(bobPage, "bob");
+      const bob = (await (await bobPage.request.get("/api/me")).json()) as { id: string };
+      await apiSend(page, "PUT", `/artifacts/${app.id}/shares`, { target: { type: "user", id: bob.id }, role: "editor" });
+
+      await bobPage.goto(`/apps/${app.id}`);
+      await expect(bobPage.getByRole("heading", { name: "備品の案内", level: 1 })).toBeVisible({ timeout: 15_000 });
+      // 閲覧の共有では出ない編集ボタンが、編集の共有では出る。
+      const edit = bobPage.getByRole("button", { name: "編集" });
+      await expect(edit).toBeVisible({ timeout: 15_000 });
+      await edit.click();
+      const dialog = bobPage.getByRole("dialog");
+      await dialog.getByLabel(/画面の見出し/).fill("備品の案内（改訂）");
+      await dialog.getByRole("button", { name: "保存" }).click();
+      await expect(bobPage.getByText("v2 として保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
+      await expect(bobPage.getByRole("heading", { name: "備品の案内（改訂）", level: 1 })).toBeVisible();
+
+      // 持ち主の画面にも bob が保存した版が出る。
+      await page.goto(`/apps/${app.id}`);
+      await expect(page.getByRole("heading", { name: "備品の案内（改訂）", level: 1 })).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByText("v2", { exact: true }).first()).toBeVisible();
+    } finally {
+      await cleanupArtifacts(page, [app.id]);
+      await bobContext.close().catch(() => undefined);
+    }
+  });
+});
