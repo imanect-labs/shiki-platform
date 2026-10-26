@@ -23,6 +23,8 @@ mod v2_graph;
 mod v3_vocab;
 pub use v3_vocab::{OVERLAPPING_DATA_TRIGGERS, WAIT_FILTER_ALIAS};
 mod v5_dataflow;
+mod warning_codes;
+pub use warning_codes::SAVE_WARNING_CODES;
 
 use std::collections::BTreeMap;
 
@@ -114,7 +116,8 @@ pub struct Catalog {
 /// データ変更トリガ（[`OVERLAPPING_DATA_TRIGGERS`]）と、wait(event) の filter の別名（[`WAIT_FILTER_ALIAS`]）と、
 /// 続けて待つ承認の期限の合計が実行の期限以上のもの（[`APPROVAL_TIMEOUTS_EXCEED_RUN`]）と、手動で動かす
 /// きっかけの無い IR の画面に返す結果（[`REPLY_WITHOUT_INTERACTIVE`]）と、必須の文字の欄が空のもの
-/// （[`REQUIRED_TEXT_EMPTY`]・有効化と実行の前には止める・D-43）。
+/// （[`REQUIRED_TEXT_EMPTY`]・有効化と実行の前には止める・D-43）。出しうるコードは [`SAVE_WARNING_CODES`] に
+/// 載せる（web はその表から生成した定数で受ける・BUG-48）。
 #[must_use]
 pub fn save_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     let mut out = semantics_warnings(ir);

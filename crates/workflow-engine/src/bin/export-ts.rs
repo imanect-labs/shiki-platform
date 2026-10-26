@@ -2,7 +2,7 @@
 //!
 //! - `workflow-ir.ts` — IR/params/検証エラーの型（ts-rs decl の連結）。
 //! - `workflow-catalog.ts` — `NODE_CATALOG` 定数（日本語ラベル・ポート・スコープ・可用性）・`EVENT_CATALOG`
-//!   定数（イベントのペイロードの項目・D-47）と
+//!   定数（イベントのペイロードの項目・D-47）と `WARNING_CODES` 定数（保存を止めない警告のコード・BUG-48）と
 //!   `NodeParamsByType` マップ型（右パネル UI の per-node フォーム契約・Task 10.6/10.12）。
 
 #![allow(clippy::expect_used, clippy::print_stdout)]
@@ -27,13 +27,33 @@ use workflow_engine::ir::params::{
 use workflow_engine::ir::trigger::{
     Catchup, EventTrigger, InteractiveTrigger, ScheduleTrigger, Trigger, TriggerKind,
 };
-use workflow_engine::ir::validate::ValidationError;
+use workflow_engine::ir::validate::{ValidationError, SAVE_WARNING_CODES};
 use workflow_engine::ir::{Policies, TriggerOverflow, WorkflowIr};
 use workflow_engine::vocab::{
     agent_tool_catalog, event_catalog, node_catalog, AgentTool, AgentToolCatalogEntry,
     EventCatalogEntry, EventPayloadField, EventSource, IdempotencyClass, NodeCatalogEntry,
     NodeCategory, NodeType, OutputField, RunEventKind, Scope,
 };
+
+/// 保存を止めない警告のコードの定数（定数の名前 → コード・Rust の表から引く・BUG-48）。
+fn warning_codes_ts() -> String {
+    let rows: Vec<String> = SAVE_WARNING_CODES
+        .iter()
+        .map(|(name, code)| {
+            format!(
+                "  {name}: {},",
+                serde_json::to_string(code).expect("警告のコードの直列化")
+            )
+        })
+        .collect();
+    format!(
+        "\n/// 保存を止めない警告のコード（保存・検証の応答の `warnings[].code`・Rust の SAVE_WARNING_CODES から生成）。\n\
+         export const WARNING_CODES = {{\n{}\n}} as const;\n\n\
+         /// 保存を止めない警告のコードの型。\n\
+         export type WarningCode = (typeof WARNING_CODES)[keyof typeof WARNING_CODES];\n",
+        rows.join("\n")
+    )
+}
 
 fn main() {
     // 出力先ディレクトリ（authz-vocab.ts と同じ generated 直下・単一ファイルにまとめる）。
@@ -174,7 +194,7 @@ fn main() {
             .collect::<Vec<_>>()
             .join("\n"),
         params_map.join("\n"),
-    );
+    ) + warning_codes_ts().as_str();
     std::fs::write(&catalog_path, catalog_contents).expect("カタログ TS 書き出し");
     println!(
         "ノードカタログを {} に書き出しました",
