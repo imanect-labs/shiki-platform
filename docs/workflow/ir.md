@@ -85,7 +85,7 @@ IR のトップレベルは以下の形を取る。
 
   **新バージョンで `declared_scopes` が広がった場合、有効化済みワークフローは再同意が済むまで新バージョンへ切替不可**（fail-closed。実行時の強制は [engine.md](./engine.md) §10 と対応）。縮小のみなら差分同意なしで切替可能。
 - **`policies`**: 全て省略可。省略時は既定値。`run_timeout_sec` は run 全体の壁時計上限、`max_parallel_runs` はこのワークフロー単位の run 同時実行上限、`on_trigger_overflow` は上限超過時の挙動（`queue` はバックプレッシャで滞留、`skip` は run 作成を見送る。実行時の滞留・滞留解除の詳細は [engine.md](./engine.md) §8）。`max_parallel_runs` が数えるのは実行中の run で、**wait（時間・できごと）で止まっている run は数えない**（承認やイベントを何日も待つ run が枠を占めて、新しい起動が進まなくなるのを防ぐ。起床して上限を一時的に超えるのは許す・D-26）。
-- **`input_schema`**: 対話トリガ（§6 `interactive`）の入力フォーム契約。JSON Schema のサブセット（型・必須・enum・range 程度。式・`$ref` 外部参照は持たない）。`llm.invoke` の `output_schema` も同じサブセットを使う（§7）。
+- **`input_schema`**: 対話トリガ（§6 `interactive`）の入力フォーム契約。JSON Schema のサブセット（型・必須・enum・range 程度。式・`$ref` 外部参照は持たない）。`llm.invoke` の `output_schema` も同じサブセットを使う（§7）。`format` は `date`（`YYYY-MM-DD` の実在する日付）だけを起動の前に検査し、ほかの値は注記として読み飛ばす（画面の日付の欄が送る形を、API・会話の図からの起動でも守らせる・BUG-35）。
 
 ---
 
@@ -119,6 +119,7 @@ IR のトップレベルは以下の形を取る。
   - `each` — **map 領域内のみ**。現在要素（`each.item` と `each.index`。§5.3）
 - **`path`**: RFC 6901 JSON Pointer。省略時は source 全体を指す。
 - **`default`**: 解決失敗（skipped ノードの出力・パス不在・null）時のフォールバック。**`default` がなく解決に失敗した場合、step は `expr_resolve_error` で失敗する**（黙って null を流さない）。実行時の解決アルゴリズムは [engine.md](./engine.md) §4。
+  - **例外: 値式全体の null は値として通す。** パラメータの値（またはリテラルの object / array の要素）そのものが `$from` で、指した値が null のとき、`default` が無ければ null をそのまま渡す（項目を空にする書込などのため・D-35）。パスが無い・skipped ノードの出力は従来どおり失敗する。`$template` の差し込み（§3.2）の null は、空文字や `null` の文字を黙って埋め込まないよう `expr_resolve_error` で失敗する。
 - **静的検証（§8 V5）**: `nodes.<id>` は**当該ノードの祖先**（DAG 上、いずれかのパスで先行するノード）でなければ保存拒否。**すべてのパスで先行するとは限らない**祖先（分岐の片側にしかいない等）を参照する場合は `default` 必須（そのパスが取られないと skipped になり解決失敗するため）。
 - **`secrets.*` という source は存在しない**。シークレットは参照名でノード設定に書き、エンジンが実行直前に解決・注入する（§7 `http.request` / [script.md](./script.md) §6）。値がデータフローに乗る経路を構造的に作らない。
 
@@ -133,6 +134,7 @@ IR のトップレベルは以下の形を取る。
 ```
 
 - **文字列組み立て専用**。`{name}` は `vars` のキーのみを参照できる（位置指定・ネスト・式は不可）。リテラルの `{` / `}` は `{{` / `}}` でエスケープする。
+- 閉じの無い `{`（`a { b`）と対にならない `}` は文字のまま出す（エラーにしない）。`{name` の閉じ忘れは差し込んだつもりで差し込まれないので、閉じの無い `{` は保存時に警告する（`ir.template_unclosed_brace`・§8・D-37）。
 - `vars` の値は参照（`$from`）またはリテラル。非文字列値は JSON 表現へ文字列化する（数値・bool はそのまま、object/array はコンパクト JSON）。
 - 上限: `vars` の数 ≤ 50（§8 V7）。
 
@@ -153,7 +155,9 @@ IR のトップレベルは以下の形を取る。
 - **合成**: `all` / `any` / `not`（ネスト深さ最大 5・§8 V7）。ルートは合成（`all`/`any`/`not`）でも単一の op リーフでもよい。
 - **op（閉じた集合）**: `eq` `neq` `lt` `lte` `gt` `gte` `in`（`right` = 配列リテラル）`contains`（string/array）`starts_with` `ends_with` `exists` `is_null` `matches`。
   - `matches`: 正規表現。**保存時にコンパイル検証する**（§8 V5）。Rust `regex` クレート（バックトラックなし）を用い、パターン長 ≤ 256。
-- **型厳密**: 左右の型が不一致（数値と文字列等）の比較を false へ黙って落とさず、`expr_type_error` として step / トリガ評価を失敗させる（監査に残る）。数値は serde_json の数値（i64/u64/f64）間でのみ数値比較する。
+- **意味論は data 側と共通の表に従う**（2 値論理・左辺は値の集合として見る・`1 = 1.0`。表は [query-optimizer.md §3.1](../data/query-optimizer.md)、固定は共通の表 `semantics_table.json` を workflow の評価器・data の参照評価器・実 SQL にかけるテスト）。型の扱いは演算子で分かれる（D-34）。
+  - **大小比較（`lt` `lte` `gt` `gte`）だけが型厳密**: 左右が数値どうし・文字列どうしでない組（数値と文字列・真偽値・オブジェクトなど）は false へ黙って落とさず、`expr_type_error` として step / トリガ評価を失敗させる（監査に残る。固定値の「100」と数値の 100 を比べて分岐が黙って逆に流れるのを防ぐ）。数値は serde_json の数値（i64/u64/f64）間でのみ数値比較する。値なし（未解決・null）と左辺が配列（多値）の大小比較は偽（表のとおり・多値の大小比較は data では使えない）。
+  - **それ以外の演算子の型違いは偽**（失敗にしない）: `eq`・`in` は型が違えば等しくない（`neq` は真）。`contains`・`starts_with`・`ends_with` は文字列でない要素を満たさない。`matches` は左右が文字列でなければ偽。
 - **暗黙変換なし**。truthy / falsy の概念を持たない（bool 以外を条件位置に置けない）。
 - トリガ filter の評価エラーの実行時の扱い（発火しない＋監査）は [engine.md](./engine.md) §5。
 
@@ -225,6 +229,7 @@ IR のトップレベルは以下の形を取る。
 | `workflow.reply` | `out`（＋ `on_error: continue` 時 `error`）（§7.10） |
 
 - `control.switch` の case ポート名は params の `cases` で宣言する値と一致させる（保存時にポート存在検証・§8 V2）。
+- `control.switch` の `value` が解決できない（`default` の無い `$from` のパスが無いなど・§3.1）ときは、`default` ポートへ流さず `expr_resolve_error` で失敗する。どの case にも一致しないのと、値が無いのを区別する（黙ってその他へ流さない・D-36）。「値が無ければその他へ」としたいときは、`$from` に `default` を書く（例: `{ "$from": "input", "path": "/kind", "default": "" }`）。
 
 ### 5.3 map 領域（動的 fan-out）
 
@@ -380,6 +385,8 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `workflow.reply` | フロー連携 | 結果を画面に返す（ボタン・会話から起動した本人の画面に出す・スコープ不要・§7.10） | pure | 5s / 10s |
 
 以下、設計上の要点を持つノード種を個別に規定する。params の網羅的スキーマは codegen 型が正であり、本節は制約と出力形を示す。
+
+**出力の形の正はノードカタログ**（`crates/workflow-engine/src/vocab/catalog.rs`）の `output_fields`（最上位の項目の名前・型・省略されうるか・補足）である。AI の説明文に載せる TS 風の表記（`output_shape`）はそこから作り、エディタの参照の候補も `output_fields` を読む（表記を字句解析しない・D-42）。項目の組でない出力（入力をそのまま通す・script の戻り値など）は文で書き、項目は空にする。
 
 ### 7.1 `data.transition`（FSM 遷移）
 
@@ -639,6 +646,8 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **V6 script コンパイル**: inline script を swc でパースし、禁止構文を弾く（[script.md](./script.md) §3）。artifact 参照は version 固定なので存在確認のみ。
 - **V7 上限**: サイズ・数量の上限を検証する（すべて初期値・設定で調整可）。`workflow.reply` の `value` がリテラルなら形と合うこと（text・markdown は文字・table は配列・file_link はオブジェクトか配列。`ir.reply_type`・path は `/params/value`）。
 - **保存を止めない警告**（`workflow.reply`）: interactive のトリガが無い IR の reply は画面に出ない（`ir.reply_without_interactive`）。
+- **保存を止めない警告**（テンプレート）: vars のキーを `{{key}}` と書いた（`ir.template_escaped_var`）・閉じの無い `{`（`ir.template_unclosed_brace`・§3.2・D-37）。
+- **保存を止めない警告**（必須の文字の欄）: `llm.invoke` の `prompt`・`agent.invoke` の `instruction`・`rag.search` の `query`・`csv.query` の `sql` が空（空白だけ・中身の無い `$template` を含む。参照は実行時まで分からないので対象外）なら `ir.required_text_empty`（path は `/params/<項目>`）。書きかけでも保存はできるが、有効化と実行の前に止める（§9・D-43）。
 
 **エラー形式**: 最初の 1 件で止めず、全件を配列で返す（dnd がノード上に表示するため）。
 
@@ -666,6 +675,9 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
   - **既存のノードの params への任意の項目の追加も `ir_version` を上げない**。旧い IR はそのまま読め、旧いエンジンは新しい項目を持つ IR を params の読み取りで拒否する（fail-closed・前例: `agent.invoke` の `allowed_tools`・`context`・`model`・`max_steps`・`max_tokens`）。
 - **削除は論理削除のみ**（実行履歴の run が version を参照し続けるため）。
 - **scope 拡大時の再同意**: 新 version の `declared_scopes` が旧版より広がった場合、有効化済みワークフローは再同意が済むまで新版へ切替不可（§2・fail-closed）。縮小のみなら差分同意なしで切替可能（同意フローの UI 契約は [engine.md](./engine.md) §10）。
+- **有効化と実行の前の確認**（保存は止めない・D-40・D-43）: 次の版は有効化できない（enable は委譲を書く前に 409 `not_ready` で全件の理由を返し、同意計画も同じ理由を `blockers` で返す）。
+  - 必須の文字の欄が空（§8 の `ir.required_text_empty`）。対話の起動（API・会話の図・ミニアプリ・`workflow.start`）も run を作らずに断る（400 `not_ready`）。
+  - schedule / event のきっかけを持つ版で、`folder` を省略した（または null の）`storage.write`・`csv.write`（`ir.write_folder_required`）。省略はルートへの保存で、schedule / event の run はワークフロー主体で動くのでルートには書けず、フォルダの委譲でも救えない。対話だけの版は止めない（起動した本人のルートに書ける）。
 
 ---
 
