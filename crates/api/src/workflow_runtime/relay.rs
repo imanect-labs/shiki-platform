@@ -63,10 +63,29 @@ pub async fn relay_events(deps: &RelayDeps<'_>) -> Result<(), anyhow::Error> {
     let retried = retry_firings(deps).await;
     // 承認の受付の突合（停止の commit より前に動いた行・承認の依頼の監査・GAP-08）。
     let reconciled = super::relay_approval::reconcile_approvals(deps).await;
-    match batch_err {
-        Some(e) => Err(e),
-        None => retried.and(reconciled),
+    tick_result(batch_err, retried, reconciled)
+}
+
+/// 1 tick の誤りをまとめる。配送のバッチの誤りを先に、無ければ再試行・突合の順に最初のものを返し、返さない
+/// 誤りは警告に残す（バッチが失敗し続けている間に突合も失敗していることを、運用者が見落とさないように）。
+fn tick_result(
+    batch: Option<anyhow::Error>,
+    retried: Result<(), anyhow::Error>,
+    reconciled: Result<(), anyhow::Error>,
+) -> Result<(), anyhow::Error> {
+    let mut first = batch;
+    for (what, r) in [
+        ("トリガの発火の再試行", retried),
+        ("承認の受付の突合", reconciled),
+    ] {
+        let Err(e) = r else { continue };
+        if first.is_none() {
+            first = Some(e);
+        } else {
+            tracing::warn!(error = %e, "{what}に失敗（先に起きた誤りを返すので、ここに残す）");
+        }
     }
+    first.map_or(Ok(()), Err)
 }
 
 /// 起動に一時失敗したトリガの発火を再試行し、打ち切ったものを監査に残す（D-21）。
@@ -383,6 +402,46 @@ fn storage_write_event(ev: &storage::event::OutboxEvent) -> Option<StorageWriteE
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    /// 警告を集める書き出し先（`tracing` の出力を確かめる）。
+    #[derive(Clone, Default)]
+    struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 配送のバッチが失敗したときも、再試行・突合の誤りを捨てずに警告に残す（返すのはバッチの誤り）。
+    #[test]
+    fn tick_errors_that_are_not_returned_are_logged() {
+        let out = Captured::default();
+        let sink = out.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || sink.clone())
+            .with_ansi(false)
+            .finish();
+        let r = tracing::subscriber::with_default(subscriber, || {
+            tick_result(
+                Some(anyhow::anyhow!("batch: openfga down")),
+                Err(anyhow::anyhow!("retry: db down")),
+                Err(anyhow::anyhow!("reconcile: db down")),
+            )
+        });
+        assert_eq!(r.unwrap_err().to_string(), "batch: openfga down");
+        let logged = String::from_utf8(out.0.lock().unwrap().clone()).unwrap();
+        assert!(logged.contains("retry: db down"), "{logged}");
+        assert!(logged.contains("reconcile: db down"), "{logged}");
+        // バッチが通ったら、再試行・突合の最初の誤りを返し、残りを警告に残す。
+        let r = tick_result(None, Ok(()), Err(anyhow::anyhow!("reconcile: db down")));
+        assert_eq!(r.unwrap_err().to_string(), "reconcile: db down");
+        assert!(tick_result(None, Ok(()), Ok(())).is_ok());
+    }
 
     fn event(op: &str, payload: Value) -> storage::event::OutboxEvent {
         storage::event::OutboxEvent {
