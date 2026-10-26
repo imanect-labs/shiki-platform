@@ -415,7 +415,10 @@ export const Composer = React.memo(function Composer({
           <TextSelect className="size-3.5 shrink-0 text-primary" aria-hidden />
           <span className="font-medium">{selectionKindLabel(selection.kind)}</span>
           <span className="min-w-0 flex-1 truncate text-muted-foreground">
-            {selection.excerpt.slice(0, 120)}
+            {/* 編集中のスキルは本文が JSON なので、名前だけを見せる（#919）。 */}
+            {selection.kind === "skill_draft"
+              ? selection.draft_name || "名前未設定"
+              : selection.excerpt.slice(0, 120)}
           </span>
           <button
             type="button"

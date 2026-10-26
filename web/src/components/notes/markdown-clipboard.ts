@@ -37,7 +37,11 @@ export const MarkdownClipboard = Extension.create({
           clipboardTextSerializer: (slice) => {
             if (slice.openStart > 0 && slice.openEnd > 0) {
               return slice.content.textBetween(0, slice.content.size, "\n\n", (leaf) =>
-                leaf.type.name === "hardBreak" ? "\n" : "",
+                leaf.type.name === "hardBreak"
+                  ? "\n"
+                  : leaf.type.name === "driveRef"
+                    ? String(leaf.attrs.label ?? "")
+                    : "",
               );
             }
             return serializeFragment(slice.content);
@@ -54,7 +58,10 @@ export const MarkdownClipboard = Extension.create({
             const text = data.getData("text/plain");
             if (!text || !looksLikeBlockMarkdown(text)) return false;
 
-            const nodes = parseMarkdownToNodes(text);
+            // スキーマにドライブ参照があるエディタ（スキル・#919）では参照のまま取り込む。
+            const nodes = parseMarkdownToNodes(text, {
+              driveRefs: Boolean(view.state.schema.nodes.driveRef),
+            });
             let slice: Slice;
             try {
               const doc = view.state.schema.nodeFromJSON({ type: "doc", content: nodes });

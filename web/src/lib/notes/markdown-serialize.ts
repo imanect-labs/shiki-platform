@@ -12,6 +12,8 @@
 
 import { Fragment, type Mark, type Node as PMNode } from "@tiptap/pm/model";
 
+import { driveRefHref } from "@/lib/skills/drive-ref";
+
 /// フラグメント（スライス内容・ドキュメント本体）を正規化 md へ描画する。
 /// 末尾は単一改行（Rust `render_markdown` と同じく空でなければ改行終端）。
 ///
@@ -216,6 +218,8 @@ function renderInlineChildren(node: PMNode): string {
   node.forEach((child) => {
     if (child.type.name === "hardBreak") {
       out += "\\\n";
+    } else if (child.type.name === "driveRef") {
+      out += renderDriveRef(child);
     } else if (child.isText) {
       out += renderText(child.text ?? "", child.marks);
     }
@@ -244,6 +248,14 @@ function renderText(text: string, marks: readonly Mark[]): string {
     body = `[${body}](${escapeLinkDest(href)})`;
   }
   return body;
+}
+
+/// ドライブ参照（スキルエディタ・#919）: `[パス](shiki://drive/<kind>/<id>)`。
+function renderDriveRef(node: PMNode): string {
+  const kind = node.attrs.kind === "folder" ? "folder" : "file";
+  const id = typeof node.attrs.id === "string" ? node.attrs.id : "";
+  const label = typeof node.attrs.label === "string" && node.attrs.label ? node.attrs.label : id;
+  return `[${escapeInline(label)}](${driveRefHref(kind, id)})`;
 }
 
 /// コードスパン: 内容のバッククォート連長より 1 長いフェンスで包む（CommonMark）。

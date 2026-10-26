@@ -198,6 +198,7 @@ const ALL_VOCAB: ToolActivityItem[] = [
   { name: "save_note", input: { name: "調査メモ" } },
   { name: "save_slide", input: { name: "提案資料" } },
   { name: "save_csv", input: { name: "売上明細" } },
+  { name: "save_skill", input: { name: "expense-assistant" } },
   { name: "save_document", input: { name: "報告書" } },
   { name: "save_sheet", input: { name: "予算表" } },
   { name: "slide.read", input: {} },

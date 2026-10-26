@@ -23,7 +23,7 @@ import {
   writeScoped,
 } from "@/lib/user-storage";
 
-export type DraftKind = "note" | "slide" | "csv" | "document";
+export type DraftKind = "note" | "slide" | "csv" | "document" | "skill";
 
 export type DraftSource = "ai" | "user";
 
@@ -31,7 +31,8 @@ export type DraftEntry = {
   threadId: string;
   /// 下書き名（拡張子なし・表示/保存名）。
   name: string;
-  /// 下書き本文（kind ごとの表現: note=Markdown / slide=正規化スライド JSON / csv=CSV 文字列）。
+  /// 下書き本文（kind ごとの表現: note=Markdown / slide=正規化スライド JSON / csv=CSV 文字列 /
+  /// skill=SkillBody の JSON 文字列）。
   content: string;
   /// 単調増加の版。エディタは自分が書いた版を覚えておき、その版の通知では再シードしない。
   rev: number;

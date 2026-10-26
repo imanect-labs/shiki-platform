@@ -9,18 +9,23 @@ test.describe("skill（作成・共有・チャット適用）", () => {
     await loginViaKeycloak(page);
     await page.goto("/skills");
 
-    // 作成ダイアログ。
+    // スキルエディタ（#919・専用ページ）。
     // 一覧が空のときは空状態にも同名の作成ボタンが出るため先頭（見出し行）を押す。
     await page.getByRole("button", { name: "スキルを作成" }).first().click();
-    const dialog = page.getByRole("dialog");
-    await expect(dialog).toContainText("スキルを作成");
+    await page.waitForURL(/\/skills\/new/);
     const name = uniqueName("e2e-skill");
-    await dialog.getByLabel(/名前/).fill(name);
-    await dialog.getByLabel(/説明/).fill("E2E 検証用のスキル");
-    await dialog.getByLabel(/指示文/).fill("あなたは E2E テストのアシスタントです。");
-    await dialog.getByRole("button", { name: "作成" }).click();
+    await page.getByTestId("skill-name-input").fill(name);
+    await page.getByTestId("skill-description-input").fill("E2E 検証用のスキル");
+    await page.getByTestId("skill-body-editor").click();
+    await page.keyboard.type("あなたは E2E テストのアシスタントです。");
+    await page.getByTestId("skill-save-button").click();
+
+    // 作成すると編集画面（/skills/{id}）へ移り、保存済みの版が出る。
+    await page.waitForURL(/\/skills\/[0-9a-f-]{36}/i, { timeout: 15_000 });
+    await expect(page.getByText("保存済み v1").first()).toBeVisible();
 
     // 一覧に現れる。
+    await page.goto("/skills");
     await expect(page.getByRole("heading", { name })).toBeVisible({ timeout: 15_000 });
 
     // 共有ダイアログが開き、bob に閲覧権限を付与できる（Task 6.7 ロール共有の実経路）。

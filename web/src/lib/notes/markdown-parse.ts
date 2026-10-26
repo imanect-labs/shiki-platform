@@ -15,6 +15,8 @@
 
 import { marked } from "marked";
 
+import { parseDriveRefHref } from "@/lib/skills/drive-ref";
+
 import { normalizeYuiInfo } from "./yui-language";
 
 /// ProseMirror ノード JSON（`Node.fromJSON` が受ける最小形）。
@@ -70,16 +72,31 @@ export function looksLikeBlockMarkdown(md: string): boolean {
   return tokens.some((t) => BLOCK_TOKEN_TYPES.has(t.type));
 }
 
+export interface ParseOptions {
+  /// `[…](shiki://drive/<kind>/<id>)` のリンクを `driveRef` ノードにする（スキルエディタ・#919）。
+  /// スキーマに driveRef を持つエディタだけが有効にする（ノートでは素のテキストに落とす）。
+  driveRefs?: boolean;
+}
+
+/// 変換中のオプション（変換は同期なので、呼び出しの間だけ立てる）。
+let current: ParseOptions = {};
+
 /// md をブロック ProseMirror ノード列へ変換する（失敗時は単一段落へ fail-safe）。
-export function parseMarkdownToNodes(md: string): PmJson[] {
+export function parseMarkdownToNodes(md: string, options: ParseOptions = {}): PmJson[] {
   let tokens: Tok[];
   try {
     tokens = marked.lexer(md) as unknown as Tok[];
   } catch {
     return [paragraph([text(md)])];
   }
-  const nodes = blockTokensToNodes(tokens);
-  return nodes.length > 0 ? nodes : [paragraph([])];
+  const prev = current;
+  current = options;
+  try {
+    const nodes = blockTokensToNodes(tokens);
+    return nodes.length > 0 ? nodes : [paragraph([])];
+  } finally {
+    current = prev;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +284,14 @@ function pushInline(out: PmJson[], tok: Tok, marks: MarkJson[]): void {
       break;
     }
     case "link": {
+      const ref = current.driveRefs ? parseDriveRefHref(tok.href ?? "") : null;
+      if (ref) {
+        out.push({
+          type: "driveRef",
+          attrs: { kind: ref.kind, id: ref.id, label: decodeEntities(tok.text ?? "") },
+        });
+        break;
+      }
       // 危険スキーム（javascript:/data: 等）は Link 拡張の scheme ガードを迂回して
       // 実行可能リンクになりうるため、ここで検証してリンク化しない（テキストは残す）。
       const safe = safeLinkHref(tok.href ?? "");
