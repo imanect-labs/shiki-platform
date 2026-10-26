@@ -47,8 +47,12 @@ export function useApprovalCount(): ApprovalCount | null {
   return value;
 }
 
-/// バッジの表記（0 件なら出さない・99 を超えたら 99+）。
+/// バッジの表記（0 件なら出さない・数え切れなかったら「数えた分+」）。
+///
+/// `more` は 99 件を超えたときのほか、見えない承認が多くてサーバが数えるのを打ち切ったときにも立つ（そのとき
+/// `count` は数えられた分で、0 のこともある）。打ち切りを 0 件として隠すと、その先にある承認を見落とす。
 export function approvalBadge(c: ApprovalCount | null): string | null {
-  if (!c || c.count === 0) return null;
-  return c.more ? "99+" : String(c.count);
+  if (!c) return null;
+  if (c.more) return `${Math.min(c.count, 99)}+`;
+  return c.count === 0 ? null : String(c.count);
 }

@@ -474,7 +474,7 @@ test("承認待ち: 見える承認が無いまま続きがあるページでも
   const s = await setup(page);
   await waitForApproval(page, s);
   // サーバは見えない承認を読み飛ばすが、1 回に読む台帳の行には上限があるので、見える承認が無いまま続きの位置
-  // だけを返すことがある。1 ページ目をその形にし、続きは本物の 1 ページ目を返す。
+  // だけを返すことがある。1 ページ目をその形にし、続きは本物の 1 ページ目を返す。件数も数え切れなかった形にする。
   const cursor = "e2e-scan-limit";
   await page.route(
     (url) => url.pathname === "/api/approvals",
@@ -487,9 +487,17 @@ test("承認待ち: 見える承認が無いまま続きがあるページでも
       return route.fulfill({ json: { items: [], next_cursor: cursor } });
     },
   );
+  await page.route(
+    (url) => url.pathname === "/api/approvals/count",
+    (route) => route.fulfill({ json: { count: 0, more: true } }),
+  );
   await page.goto("/approvals");
   await expect(page.getByTestId("approval-list-pending")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("承認待ちはありません", { exact: true })).toHaveCount(0);
+  // 数え切れなかった件数は 0 として隠さない。
+  await expect(
+    page.getByRole("button", { name: "承認（0+ 件）" }).or(page.getByRole("link", { name: "承認（0+ 件）" })).first(),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "さらに読み込む" }).click();
   await expect(page.getByTestId("approval-item").filter({ hasText: s.tableName })).toBeVisible();
