@@ -599,6 +599,11 @@ impl Env {
     /// alice の申請の表（下書き → 申請 → 受付 は作成者、受付 → 承認・却下 は承認者の列の人）。
     /// bob・carol・dave はテーブルの editor。carol は経理のロール。
     async fn expense_table(&self) -> Uuid {
+        self.expense_table_with(&[]).await
+    }
+
+    /// [`Self::expense_table`] に、承認者の列の人が進められる遷移（`extra`）を足した表。
+    async fn expense_table_with(&self, extra: &[(&str, &str)]) -> Uuid {
         let table = self
             .data
             .create_table(
@@ -621,16 +626,20 @@ impl Env {
             to: to.into(),
             actor,
         };
+        let mut transitions = vec![
+            t("draft", "submitted", PolicyExpr::IsOwner),
+            t("submitted", "reviewing", PolicyExpr::IsOwner),
+            t("reviewing", "approved", approver_only.clone()),
+            t("reviewing", "rejected", approver_only.clone()),
+        ];
+        for (from, to) in extra {
+            transitions.push(t(from, to, approver_only.clone()));
+        }
         let fsm = FsmBody {
             states: ["draft", "submitted", "reviewing", "approved", "rejected"]
                 .map(String::from)
                 .to_vec(),
-            transitions: vec![
-                t("draft", "submitted", PolicyExpr::IsOwner),
-                t("submitted", "reviewing", PolicyExpr::IsOwner),
-                t("reviewing", "approved", approver_only.clone()),
-                t("reviewing", "rejected", approver_only),
-            ],
+            transitions,
         };
         let fsm_id = self
             .fsms
@@ -1005,19 +1014,18 @@ async fn approvals_are_decided_by_the_approver_in_the_inbox() {
     assert_eq!(body["rev"], rev + 1);
     assert!(env.item_for(&env.bob, mine).await.is_none());
     assert_eq!(env.get(&env.bob, "/approvals/count").await.1["count"], 0);
-    // 二度目の判断はもう遷移できない。
-    let (st, _) = env
+    // 二度目の判断（relay が起こす前・行はもう承認の状態）は、行が停止時の状態でないので 409。
+    let (st, body) = env
         .decide(
             &env.bob,
             &id,
             json!({ "decision": "approve", "expected_rev": rev + 1 }),
         )
         .await;
-    assert!(
-        st == StatusCode::UNPROCESSABLE_ENTITY
-            || st == StatusCode::NOT_FOUND
-            || st == StatusCode::CONFLICT,
-        "{st}"
+    assert_eq!(
+        (st, body["code"].clone()),
+        (StatusCode::CONFLICT, json!("decided")),
+        "{body}"
     );
 
     env.settle().await;
@@ -1594,6 +1602,79 @@ async fn decisions_refused_before_the_transition_are_audited() {
         )
         .await;
     assert_eq!(st, StatusCode::NOT_FOUND, "{resp}");
+}
+
+/// 判断の外で行が動いた直後（relay が取り下げる前）に、いまの rev で判断しても 409 decided になり、行は判断の
+/// 行き先へ進まない（FSM にほかの状態から判断の行き先への遷移があっても）。コメントも残さず、断った判断は
+/// Deny として監査に残す。relay が遷移を受けたら、承認は取り下げになる。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_row_moved_outside_the_decision_cannot_be_decided() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    // 受付 → 下書き（差し戻し）→ 承認 と、判断の外の経路でも承認の状態へ進める表。
+    let table = env
+        .expense_table_with(&[("reviewing", "draft"), ("draft", "approved")])
+        .await;
+    let wf = env.enable(table, None).await;
+    let record = env.submit(table, "出張旅費", &env.bob).await;
+    env.settle().await;
+    let run = env.run_of(wf, record).await;
+    assert_eq!(env.step(run, "ok").await.0, "waiting_event");
+    let item = env
+        .item_for(&env.bob, record)
+        .await
+        .expect("bob の受信箱に出る");
+    let id = item["approval_id"].as_str().unwrap().to_string();
+    let rev = item["record"]["rev"].as_i64().unwrap();
+
+    // 判断の外（テーブル画面の状態のメニュー）で、bob が行を下書きへ戻した。
+    let moved = env
+        .fsms
+        .transition(&env.bob, table, record, "draft", rev, None)
+        .await
+        .unwrap();
+    // relay が取り下げる前に、いまの rev で承認する。下書きから承認へは FSM で進めるが、判断としては断る。
+    let (st, body) = env
+        .decide(
+            &env.bob,
+            &id,
+            json!({ "decision": "approve", "comment": "了解", "expected_rev": moved.rev }),
+        )
+        .await;
+    assert_eq!(
+        (st, body["code"].clone()),
+        (StatusCode::CONFLICT, json!("decided")),
+        "{body}"
+    );
+    let row = env
+        .data
+        .get_record(&env.bob, table, record, None)
+        .await
+        .unwrap();
+    assert_eq!(row.data["status"], "draft", "判断の行き先へ進めない");
+    assert_eq!(row.rev, moved.rev);
+    let comments: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_approval_comment WHERE tenant_id = $1 AND approval_id = $2",
+    )
+    .bind(TENANT)
+    .bind(Uuid::parse_str(&id).unwrap())
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(comments, 0, "断った判断のコメントを置かない");
+    let audits = env.decide_audits(&id, &env.bob).await;
+    assert_eq!(audits.len(), 1, "{audits:?}");
+    assert_eq!(audits[0].0, "deny");
+    assert_eq!(audits[0].1["comment"], true);
+
+    // relay が下書きへの遷移を受けたら、承認は取り下げになる（行と run の結論が揃う）。
+    env.settle().await;
+    let (st, ports, _) = env.step(run, "ok").await;
+    assert_eq!(
+        (st.as_str(), ports),
+        ("succeeded", vec!["withdrawn".to_string()])
+    );
+    assert_eq!(env.approval_of(run).await.1, "withdrawn");
 }
 
 /// AI（chat の emit_workflow）が書いた承認も、保存 API と同じ照合（V4）を通る。見えないテーブル・FSM で
