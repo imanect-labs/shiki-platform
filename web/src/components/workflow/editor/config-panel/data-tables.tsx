@@ -36,6 +36,16 @@ export type DataTables = {
 
 type Fetched = DataTable | "loading" | "unreadable" | "failed";
 
+/// 1 件で取りに行く id の形（手で打っている途中の文字では取りに行かない・「.」などで別の URL にならない）。
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/// 1 件取りの応答が、頼んだ id のテーブルか（転送などで別の応答が返っても、テーブルとして扱わない）。
+function isTableOf(id: string, v: unknown): v is DataTable {
+  if (typeof v !== "object" || v === null) return false;
+  const t = v as { id?: unknown; schema?: { fields?: unknown } };
+  return typeof t.id === "string" && t.id.toLowerCase() === id.toLowerCase() && Array.isArray(t.schema?.fields);
+}
+
 /// 自分が使えるテーブルの一覧と、束縛済みのテーブル（パネルを開くたびに一覧を 1 回だけ読む・`enabled` が偽の間は
 /// 読まない）。`bound` のうち一覧に無い id だけを 1 件ずつ取る。
 export function useDataTables({
@@ -81,9 +91,14 @@ export function useDataTables({
     for (const id of want) requested.current.add(id);
     const put = (id: string, v: Fetched) => setFetched((m) => new Map(m).set(id, v));
     for (const id of want) {
+      // UUID の形でない id（手で打っている途中など）は取りに行かずに読めないとする。
+      if (!UUID_RE.test(id)) {
+        put(id, "unreadable");
+        continue;
+      }
       put(id, "loading");
       getTable(id)
-        .then((t) => alive.current && put(id, t))
+        .then((t) => alive.current && put(id, isTableOf(id, t) ? t : "failed"))
         .catch((e) => {
           if (!alive.current) return;
           const status = e instanceof DataApiError ? e.status : 0;

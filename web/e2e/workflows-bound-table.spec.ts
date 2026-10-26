@@ -269,3 +269,27 @@ test("束縛済みのテーブルを読めない（無い・削除された）�
   await expect(panel.getByTestId("workflow-table-note")).toHaveCount(0);
   await expect(panel.getByRole("combobox", { name: "次の状態" })).toContainText("受付");
 });
+
+test("テーブル ID を手で打つ途中では 1 件ずつ取りに行かず、「.」を打っても設定の欄が壊れない（BUG-68）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const s = await setup(page);
+  // 一覧に無い束縛済みの id（1 件取り）以外に、/api/data/tables/{何か} を投げた回数を数える。
+  const single: string[] = [];
+  page.on("request", (r) => {
+    const m = /\/api\/data\/tables\/([^/?]+)$/.exec(new URL(r.url()).pathname);
+    if (r.method() === "GET" && m && m[1] !== s.tableId) single.push(m[1]);
+  });
+  await page.goto(`/workflows/${s.workflowId}`);
+  const canvas = page.locator(".react-flow");
+  await canvas.getByText("受け付ける").first().click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  await panel.getByRole("button", { name: "前の結果から指定する" }).click();
+  const input = panel.getByPlaceholder("テーブル ID");
+  await input.fill("");
+  await input.pressSequentially("1234.abcd-ef");
+  await expect(input).toHaveValue("1234.abcd-ef");
+  // 欄は描画されたまま（応答をテーブルとして扱って落ちない）。
+  await expect(panel.getByRole("button", { name: "一覧から選ぶ" })).toBeVisible();
+  expect(single).toEqual([]);
+});
