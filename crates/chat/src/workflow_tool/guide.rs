@@ -11,7 +11,9 @@ use std::fmt::Write as _;
 use serde_json::Value;
 use workflow_engine::ir::expr::CmpOp;
 use workflow_engine::ir::params::{compact_ts, params_shape};
-use workflow_engine::vocab::{event_catalog, node_catalog, EventSource, NodeType};
+use workflow_engine::vocab::{
+    agent_tool_catalog, event_catalog, node_catalog, EventSource, NodeType,
+};
 use workflow_engine::ValidationError;
 
 /// 説明文に載せる使えるモデルの件数の上限（説明文を膨らませない・検証エラーにも候補が出る）。
@@ -270,8 +272,34 @@ pub(super) fn emit_description(models: Option<&[String]>) -> String {
         models = models_section(models),
     );
     d.push_str(REPLY_GUIDE);
+    d.push_str(&agent_guide());
     d.push_str(&catalog_summary());
     d
+}
+
+/// AI エージェント（agent.invoke）の書き方（道具の一覧は道具のカタログの単一定義から作る・BUG-6）。
+fn agent_guide() -> String {
+    let tools = agent_tool_catalog()
+        .into_iter()
+        .filter(|e| e.available)
+        .map(|e| {
+            let outside = if e.reaches_outside {
+                "・社外へ出る"
+            } else {
+                ""
+            };
+            format!(
+                "{}（{}・スコープ {}{outside}）",
+                e.tool.as_str(),
+                e.label_ja,
+                e.required_scope.as_str()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" / ");
+    format!(
+        "【AI エージェント】agent.invoke は instruction（自然文の依頼。コードではない）を、allowed_tools に書いた道具で調べながら果たし、最後の回答を出力の /text に書く。allowed_tools を省くと道具なし。道具: {tools}。書込の道具は無い（書き込みは後ろのノードで行う）。web.fetch は egress_allowlist（管理者が許可したサイトの中から）が要る。context に参考データ（file_id など）を渡せる。手順の決まった処理は llm.invoke と能力ノードをつなぐ方が安く確実。\n"
+    )
 }
 
 /// 結果を画面に返すノード（workflow.reply）の書き方の指針（GAP-09・D-28）。
@@ -565,6 +593,35 @@ mod tests {
                               "file": { "id_path": "/file_id", "name_path": "/file_name" } } }
             ],
             "edges": [{ "from": "ok", "to": "refs" }]
+        });
+        validate(&ir, &Catalog::default()).unwrap();
+    }
+
+    /// AI エージェントの道具の一覧が道具のカタログから載り、書いた例は保存時検証を通る（BUG-6）。
+    #[test]
+    fn description_lists_agent_tools() {
+        let d = emit_description(None);
+        assert!(d.contains("【AI エージェント】"), "{d}");
+        assert!(
+            d.contains("rag.search（社内検索・スコープ rag.query）"),
+            "{d}"
+        );
+        assert!(
+            d.contains("web.fetch（Web ページを読む・スコープ http.egress・社外へ出る）"),
+            "{d}"
+        );
+        assert!(
+            !d.contains("data.query（テーブルを調べる"),
+            "予約の道具は載せない"
+        );
+        let ir = serde_json::json!({
+            "ir_version": 1, "name": "check-contract", "triggers": [{ "kind": "interactive" }],
+            "declared_scopes": ["rag.query", "doc.read"],
+            "nodes": [{ "id": "review", "type": "agent.invoke",
+                        "params": { "instruction": "契約書を読み、社内のチェックリストと照らして要注意の条項を挙げる",
+                                    "context": { "$from": "input" },
+                                    "allowed_tools": ["doc.read", "rag.search"] } }],
+            "edges": []
         });
         validate(&ir, &Catalog::default()).unwrap();
     }
