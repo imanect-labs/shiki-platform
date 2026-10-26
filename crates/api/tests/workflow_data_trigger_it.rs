@@ -459,6 +459,29 @@ impl Env {
         }
     }
 
+    /// run の wait の購読を relay から隠す・戻す（購読の commit の前に配送される窓を作る・BUG-42）。
+    ///
+    /// 隠している間の購読は、commit の前の購読と同じく relay にも受付の突合にも見えない（`NOT fired` で引く）。
+    async fn hide_wait(&self, run: Uuid, hidden: bool) {
+        let n = sqlx::query(
+            "UPDATE wait_subscription SET fired = $3 WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(&self.tenant)
+        .bind(run)
+        .bind(hidden)
+        .execute(&self.pool)
+        .await
+        .unwrap()
+        .rows_affected();
+        assert_eq!(n, 1, "隠す購読がある");
+    }
+
+    /// relay を回さずにワーカーだけで run を進める（wait の停止まで・購読はまだ突き合わせていない）。
+    async fn run_worker_only(&self) {
+        let worker = self.worker();
+        while worker.claim_and_run_once("w1").await.unwrap() {}
+    }
+
     /// 行のその rev の outbox から run の書込の印を外す（印を書く前の版が発行した行を作る・BUG-44）。
     async fn strip_origin_mark(&self, record: Uuid, rev: i64) {
         let n = sqlx::query(
@@ -1212,5 +1235,163 @@ async fn bulk_imports_started_in_a_run_keep_the_run_mark() {
         "run の取込だけに印が載る"
     );
     env.settle().await;
+    env.cleanup().await;
+}
+
+/// 行に束縛した wait は、停止の時点（行の rev を読んだ時点）から購読の commit までに配送された変更も、commit の
+/// 後の受付の突合で拾う（BUG-42）。突合しなければ、その変更は購読が見えないまま配送済みになり timeout まで起きない。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn record_wait_catches_a_change_relayed_before_its_subscription_commits() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.requests_table().await;
+    let t = table.to_string();
+    let (wf, _) = env
+        .workflows
+        .create(
+            &env.alice,
+            &json!({
+                "ir_version": 1, "name": "wait-for-answer",
+                "triggers": [{ "kind": "interactive" }],
+                "nodes": [
+                    { "id": "make", "type": "data.record.create", "params": {
+                        "table": t, "data": { "title": "下書き", "applicant": "alice", "status": "draft" } } },
+                    { "id": "w", "type": "control.wait", "params": {
+                        "kind": "event", "source": "data.record.updated",
+                        "scope": { "table": t, "record": { "$from": "nodes.make.output", "path": "/id" } },
+                        "filter": { "cmp": { "left": { "$from": "event", "path": "/changed" }, "op": "eq", "right": "title" } },
+                        "timeout_sec": 600 } }
+                ],
+                "edges": [{ "from": "make", "to": "w" }]
+            }),
+            &Catalog::default(),
+            None,
+        )
+        .await
+        .expect("保存");
+    let run = env
+        .launcher
+        .start_interactive(&env.alice, wf, &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    env.run_worker_only().await;
+    assert_eq!(env.step_output(run, "w").await.0, "waiting_event");
+    let (_, made) = env.step_output(run, "make").await;
+    let id = Uuid::parse_str(made.unwrap()["id"].as_str().unwrap()).unwrap();
+
+    // 窓: 購読がまだ見えない間に行が変わり、relay がその変更を配送済みにする。
+    env.hide_wait(run, true).await;
+    env.data
+        .update_record(&env.alice, table, id, json!({ "title": "確定" }), 1, None)
+        .await
+        .unwrap();
+    env.settle().await;
+    assert_eq!(
+        env.step_output(run, "w").await.0,
+        "waiting_event",
+        "購読が見えない間の配送では起きない"
+    );
+
+    // 購読が見えるようになった後（commit の後）の受付の突合で拾う。
+    env.hide_wait(run, false).await;
+    env.settle().await;
+    assert_eq!(
+        env.runs.run_status(&env.tenant, run).await.unwrap(),
+        Some(RunStatus::Succeeded),
+        "取りこぼした変更で起きる"
+    );
+    let (w, out) = env.step_output(run, "w").await;
+    assert_eq!(w, StepStatus::Succeeded.as_str());
+    let out = out.unwrap();
+    assert_eq!(out["record_id"], id.to_string());
+    assert_eq!(out["actor"], "alice");
+    assert_eq!(out["by_workflow"], false, "run の外の書込");
+    assert_eq!(
+        out["changes"]["title"],
+        json!({ "old": "下書き", "new": "確定" })
+    );
+    env.cleanup().await;
+}
+
+/// テーブル単位の wait も、停止の時点（outbox の位置を読んだ時点）から購読の commit までに配送された変更を、commit
+/// の後の受付の突合で拾う（BUG-42）。位置より前の変更（停止の前の自分の書込）では起きない。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn table_wait_catches_a_change_relayed_before_its_subscription_commits() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.requests_table().await;
+    let t = table.to_string();
+    let (wf, _) = env
+        .workflows
+        .create(
+            &env.alice,
+            &json!({
+                "ir_version": 1, "name": "wait-for-closing",
+                "triggers": [{ "kind": "interactive" }],
+                "nodes": [
+                    { "id": "make", "type": "data.record.create", "params": {
+                        "table": t, "data": { "title": "締め", "applicant": "alice", "status": "draft" } } },
+                    { "id": "w", "type": "control.wait", "params": {
+                        "kind": "event", "source": "data.record.created",
+                        "scope": { "table": t },
+                        "filter": { "cmp": { "left": { "$from": "event", "path": "/record/data/title" }, "op": "eq", "right": "締め" } },
+                        "timeout_sec": 600 } }
+                ],
+                "edges": [{ "from": "make", "to": "w" }]
+            }),
+            &Catalog::default(),
+            None,
+        )
+        .await
+        .expect("保存");
+    let run = env
+        .launcher
+        .start_interactive(&env.alice, wf, &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    env.run_worker_only().await;
+    assert_eq!(env.step_output(run, "w").await.0, "waiting_event");
+
+    // 窓: 購読がまだ見えない間に、ほかの人の行の作成が配送済みになる。
+    env.hide_wait(run, true).await;
+    let theirs = env
+        .data
+        .create_record(
+            &env.bob,
+            table,
+            json!({ "title": "締め", "applicant": "alice", "status": "draft" }),
+            None,
+        )
+        .await
+        .unwrap();
+    env.settle().await;
+    assert_eq!(env.step_output(run, "w").await.0, "waiting_event");
+
+    env.hide_wait(run, false).await;
+    env.settle().await;
+    assert_eq!(
+        env.runs.run_status(&env.tenant, run).await.unwrap(),
+        Some(RunStatus::Succeeded),
+        "取りこぼした変更で起きる"
+    );
+    let (_, out) = env.step_output(run, "w").await;
+    let out = out.unwrap();
+    assert_eq!(
+        out["record_id"],
+        theirs.id.to_string(),
+        "停止の前の自分の作成ではなく、取りこぼした作成で起きる"
+    );
+    assert_eq!(out["actor"], "bob");
+    let reconciled: bool = sqlx::query_scalar(
+        "SELECT reconciled_at IS NOT NULL FROM wait_subscription WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(run)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert!(reconciled, "突合は 1 回だけ（済んだ印が付く）");
     env.cleanup().await;
 }

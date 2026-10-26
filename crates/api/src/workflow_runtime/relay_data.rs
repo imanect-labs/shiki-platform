@@ -28,6 +28,9 @@ use super::data_port::{Actor, DataPort};
 use super::relay::{audit_suppressed, RelayDeps};
 use super::relay_origin::Causes;
 
+mod reconcile;
+pub(super) use reconcile::reconcile_data_waits;
+
 /// outbox の 1 件を写したデータ変更（候補の照合の材料）。
 struct DataEvent<'a> {
     event: &'a storage::event::OutboxEvent,
@@ -90,6 +93,17 @@ struct PrincipalKey {
     kind: String,
     id: String,
     org: String,
+}
+
+impl PrincipalKey {
+    /// wait を購読した run の実行主体。
+    fn of(s: &workflow_engine::EventWaitSubscriber) -> Self {
+        PrincipalKey {
+            kind: s.principal_kind.clone(),
+            id: s.principal.clone(),
+            org: s.org.clone(),
+        }
+    }
 }
 
 /// 1 バッチの中だけで使う主体・見え方の覚え（PIT-18: バッチを跨いで持たない）。
@@ -397,11 +411,7 @@ async fn relay_tenant_waits(
     evs: &[DataEvent<'_>],
     waits: &[DataWaitCandidate],
 ) -> Result<(), anyhow::Error> {
-    let who_of = |w: &DataWaitCandidate| PrincipalKey {
-        kind: w.subscriber.principal_kind.clone(),
-        id: w.subscriber.principal.clone(),
-        org: w.subscriber.org.clone(),
-    };
+    let who_of = |w: &DataWaitCandidate| PrincipalKey::of(&w.subscriber);
     for w in waits {
         let mine: Vec<&DataEvent<'_>> = evs
             .iter()

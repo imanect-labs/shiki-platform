@@ -576,3 +576,95 @@ async fn wait_event_timeout_fail_fails_run() {
         "on_timeout=fail は run を失敗させる"
     );
 }
+
+/// データ変更の wait は、停止の commit の後に 1 回だけ受付の突合の候補になる（BUG-42）。ファイルの保存の wait は
+/// 候補にならず、run が終わった wait は候補から外して突合を済ませた印を付ける。突合を済ませた wait は二度と
+/// 候補にならず、停止し直すと（再実行・再開）また 1 回だけ候補になる。
+#[tokio::test]
+async fn only_data_waits_await_one_reconcile_after_the_suspend() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let table = uuid::Uuid::new_v4().to_string();
+    let file_wait = create_run(
+        &store,
+        &tenant,
+        &wait_ir(json!({ "kind": "event", "source": "storage.write" })),
+    )
+    .await;
+    let data_ir = wait_ir(json!({ "kind": "event", "source": "data.record.created",
+                                  "scope": { "table": table } }));
+    let data_wait = create_run(&store, &tenant, &data_ir).await;
+    let ended = create_run(&store, &tenant, &data_ir).await;
+    let w = worker(pool.clone(), &tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+    sqlx::query("UPDATE workflow_run SET status = 'failed' WHERE tenant_id = $1 AND run_id = $2")
+        .bind(&tenant)
+        .bind(ended)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mine = |c: &[workflow_engine::DataWaitCandidate]| -> Vec<uuid::Uuid> {
+        c.iter()
+            .filter(|c| c.subscriber.tenant_id == tenant)
+            .map(|c| c.subscriber.run_id)
+            .collect()
+    };
+    let got = store.data_waits_to_reconcile(10_000).await.unwrap();
+    assert_eq!(mine(&got), vec![data_wait], "データ変更の wait だけ");
+    let c = got
+        .iter()
+        .find(|c| c.subscriber.run_id == data_wait)
+        .unwrap();
+    assert!(
+        c.after_event_id().is_some(),
+        "テーブル単位は停止時の位置を持つ"
+    );
+    assert_eq!(c.suspend_rev(), None);
+    let reconciled = |run: uuid::Uuid| {
+        let pool = pool.clone();
+        let tenant = tenant.clone();
+        async move {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT reconciled_at IS NOT NULL FROM wait_subscription \
+                 WHERE tenant_id = $1 AND run_id = $2",
+            )
+            .bind(&tenant)
+            .bind(run)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert!(
+        reconciled(file_wait).await,
+        "ファイルの保存の wait は作る時点で印"
+    );
+    assert!(reconciled(ended).await, "run が終わった wait は外して印");
+    assert!(!reconciled(data_wait).await);
+
+    store.mark_data_wait_reconciled(c).await.unwrap();
+    let again = store.data_waits_to_reconcile(10_000).await.unwrap();
+    assert!(mine(&again).is_empty(), "突合は 1 回だけ");
+
+    // 停止し直すと（再実行・再開の待ち直し）、また 1 回だけ候補になる。
+    sqlx::query(
+        "UPDATE step_execution SET status = 'ready' \
+         WHERE tenant_id = $1 AND run_id = $2 AND step_path = 'w'",
+    )
+    .bind(&tenant)
+    .bind(data_wait)
+    .execute(&pool)
+    .await
+    .unwrap();
+    while w.claim_and_run_once("w1").await.unwrap() {}
+    let resumed = store.data_waits_to_reconcile(10_000).await.unwrap();
+    assert_eq!(mine(&resumed), vec![data_wait]);
+
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+}

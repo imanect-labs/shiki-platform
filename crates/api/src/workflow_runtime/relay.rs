@@ -65,21 +65,26 @@ pub async fn relay_events(deps: &RelayDeps<'_>) -> Result<(), anyhow::Error> {
     let retried = retry_event_firings(deps, chrono::Utc::now(), None).await;
     // 承認の受付の突合（停止の commit より前に動いた行・承認の依頼の監査・GAP-08）。
     let reconciled = super::relay_approval::reconcile_approvals(deps).await;
-    tick_result(batch_err, retried, reconciled)
+    // データ変更の wait の受付の突合（停止の時点から購読の commit までに配送された変更・BUG-42）。
+    let waits = super::relay_data::reconcile_data_waits(deps).await;
+    tick_result(
+        batch_err,
+        [
+            ("トリガの発火の再試行", retried),
+            ("承認の受付の突合", reconciled),
+            ("データ変更の wait の受付の突合", waits),
+        ],
+    )
 }
 
 /// 1 tick の誤りをまとめる。配送のバッチの誤りを先に、無ければ再試行・突合の順に最初のものを返し、返さない
 /// 誤りは警告に残す（バッチが失敗し続けている間に突合も失敗していることを、運用者が見落とさないように）。
-fn tick_result(
+fn tick_result<const N: usize>(
     batch: Option<anyhow::Error>,
-    retried: Result<(), anyhow::Error>,
-    reconciled: Result<(), anyhow::Error>,
+    rest: [(&str, Result<(), anyhow::Error>); N],
 ) -> Result<(), anyhow::Error> {
     let mut first = batch;
-    for (what, r) in [
-        ("トリガの発火の再試行", retried),
-        ("承認の受付の突合", reconciled),
-    ] {
+    for (what, r) in rest {
         let Err(e) = r else { continue };
         if first.is_none() {
             first = Some(e);
@@ -542,8 +547,10 @@ mod tests {
         let r = tracing::subscriber::with_default(subscriber, || {
             tick_result(
                 Some(anyhow::anyhow!("batch: openfga down")),
-                Err(anyhow::anyhow!("retry: db down")),
-                Err(anyhow::anyhow!("reconcile: db down")),
+                [
+                    ("retry", Err(anyhow::anyhow!("retry: db down"))),
+                    ("reconcile", Err(anyhow::anyhow!("reconcile: db down"))),
+                ],
             )
         });
         assert_eq!(r.unwrap_err().to_string(), "batch: openfga down");
@@ -551,9 +558,15 @@ mod tests {
         assert!(logged.contains("retry: db down"), "{logged}");
         assert!(logged.contains("reconcile: db down"), "{logged}");
         // バッチが通ったら、再試行・突合の最初の誤りを返し、残りを警告に残す。
-        let r = tick_result(None, Ok(()), Err(anyhow::anyhow!("reconcile: db down")));
+        let r = tick_result(
+            None,
+            [
+                ("retry", Ok(())),
+                ("reconcile", Err(anyhow::anyhow!("reconcile: db down"))),
+            ],
+        );
         assert_eq!(r.unwrap_err().to_string(), "reconcile: db down");
-        assert!(tick_result(None, Ok(()), Ok(())).is_ok());
+        assert!(tick_result(None, [("retry", Ok(())), ("reconcile", Ok(()))]).is_ok());
     }
 
     fn event(op: &str, payload: Value) -> storage::event::OutboxEvent {

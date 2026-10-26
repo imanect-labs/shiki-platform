@@ -98,12 +98,15 @@ pub(super) async fn suspend(
         "suspend_rev": a.suspend_rev,
         "approval": wait,
     });
+    // 承認の取りこぼしは台帳の受付の突合（workflow_approval.reconciled_at）が埋めるので、データ変更の wait の
+    // 突合（BUG-42）は要らない（作る時点で印を付ける）。
     sqlx::query(
         "INSERT INTO wait_subscription \
-         (tenant_id, run_id, step_path, kind, wake_at, timeout_at, source, spec, fired) \
-         VALUES ($1, $2, $3, 'event', NULL, $4, $5, $6, false) \
+         (tenant_id, run_id, step_path, kind, wake_at, timeout_at, source, spec, fired, reconciled_at) \
+         VALUES ($1, $2, $3, 'event', NULL, $4, $5, $6, false, now()) \
          ON CONFLICT (tenant_id, run_id, step_path) DO UPDATE SET \
-         kind = 'event', wake_at = NULL, timeout_at = $4, source = $5, spec = $6, fired = false",
+         kind = 'event', wake_at = NULL, timeout_at = $4, source = $5, spec = $6, fired = false, \
+         reconciled_at = now()",
     )
     .bind(tenant)
     .bind(claimed.run_id)

@@ -274,6 +274,54 @@ pub async fn peek_app_events_after(
     Ok(rows.into_iter().map(OutboxRow::into_event).collect())
 }
 
+/// テーブル（`record_id` を渡せばその行）のデータ変更のイベント（`data.record.changed` と
+/// `data.record.transitioned`）のうち、位置が `after_id` より後で版が `after_version` より後のものを id 順に
+/// 最大 `limit` 件読む（読み取り専用・配送状態に触れない・配送済みかを問わない）。
+///
+/// ワークフローの wait(event) の受付の突合（BUG-42）が、購読の commit より先に配送された変更を引き直すのに
+/// 使う。保持期間の GC で消えたイベントは返らない。2 種のイベントを別々の部分索引
+/// （`storage_event_outbox_data_change_idx`・`storage_event_outbox_app_event_idx`）で引けるよう、述語は索引と
+/// 同じ形で書く。
+#[allow(clippy::too_many_arguments)]
+pub async fn data_change_events_after(
+    conn: &mut PgConnection,
+    tenant_id: &str,
+    table_id: Uuid,
+    record_id: Option<Uuid>,
+    after_id: i64,
+    after_version: i64,
+    limit: i64,
+) -> Result<Vec<OutboxEvent>, StorageError> {
+    const COLS: &str =
+        "o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
+                        o.payload, o.created_at";
+    const MATCH: &str = "o.tenant_id = $1 AND o.payload ->> 'table_id' = $2 \
+                         AND ($3::text IS NULL OR o.payload ->> 'record_id' = $3) \
+                         AND o.id > $4 AND o.version > $5";
+    let sql = format!(
+        "SELECT * FROM ( \
+           (SELECT {COLS} FROM storage_event_outbox o \
+             WHERE o.payload ->> 'event_type' = 'data.record.changed' AND {MATCH} \
+             ORDER BY o.id LIMIT $6) \
+           UNION ALL \
+           (SELECT {COLS} FROM storage_event_outbox o \
+             WHERE o.payload ? 'event_type' AND o.payload ->> 'event_type' <> 'data.record.changed' \
+               AND o.payload ->> 'event_type' = 'data.record.transitioned' AND {MATCH} \
+             ORDER BY o.id LIMIT $6) \
+         ) e ORDER BY e.id LIMIT $6"
+    );
+    let rows: Vec<OutboxRow> = sqlx::query_as(&sql)
+        .bind(tenant_id)
+        .bind(table_id.hyphenated().to_string())
+        .bind(record_id.map(|r| r.hyphenated().to_string()))
+        .bind(after_id)
+        .bind(after_version)
+        .bind(limit.max(0))
+        .fetch_all(conn)
+        .await?;
+    Ok(rows.into_iter().map(OutboxRow::into_event).collect())
+}
+
 #[derive(sqlx::FromRow)]
 struct OutboxRow {
     id: i64,

@@ -101,12 +101,12 @@ pub(super) async fn handle_suspend(
             .map_err(map_db)?;
             // 登録より前のデータ変更では起こさない（GAP-07 の T3）: 行に束縛した wait は停止時の rev
             // （suspend_rev）以下を、テーブル単位の wait はこの Tx の時点の outbox の位置（after_event_id）以下を
-            // 無視する。テーブル単位では、並行していた書込（この位置より前に採番され、後で commit したもの）を
+            // 無視する。停止の時点からこの commit までに配送された変更は、commit の後の受付の突合が 1 回だけ拾い
+            // 直す（BUG-42）。テーブル単位では、並行していた書込（この位置より前に採番され、後で commit したもの）を
             // 取りこぼし得る（docs に明記）。
-            let after_event_id = if suspend_rev.is_none()
-                && crate::vocab::EventSource::parse(source)
-                    .is_some_and(crate::vocab::EventSource::is_data)
-            {
+            let is_data = crate::vocab::EventSource::parse(source)
+                .is_some_and(crate::vocab::EventSource::is_data);
+            let after_event_id = if suspend_rev.is_none() && is_data {
                 let id: i64 =
                     sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM storage_event_outbox")
                         .fetch_one(&mut **tx)
@@ -123,13 +123,17 @@ pub(super) async fn handle_suspend(
                 "suspend_rev": suspend_rev,
                 "after_event_id": after_event_id,
             });
-            // 再実行（at-least-once）で二重登録しないよう UPSERT（fired をリセットして待ち直す）。
+            // 再実行（at-least-once）で二重登録しないよう UPSERT（fired をリセットして待ち直す）。データ変更の wait は
+            // この commit の後に 1 回だけ受付の突合を受ける（reconciled_at を空にする・BUG-42）。ほかは要らない。
             sqlx::query(
                 "INSERT INTO wait_subscription \
-                 (tenant_id, run_id, step_path, kind, wake_at, timeout_at, source, spec, fired) \
-                 VALUES ($1, $2, $3, 'event', NULL, $4, $5, $6, false) \
+                 (tenant_id, run_id, step_path, kind, wake_at, timeout_at, source, spec, fired, \
+                  reconciled_at) \
+                 VALUES ($1, $2, $3, 'event', NULL, $4, $5, $6, false, \
+                         CASE WHEN $7 THEN NULL ELSE now() END) \
                  ON CONFLICT (tenant_id, run_id, step_path) DO UPDATE SET \
-                 kind = 'event', wake_at = NULL, timeout_at = $4, source = $5, spec = $6, fired = false",
+                 kind = 'event', wake_at = NULL, timeout_at = $4, source = $5, spec = $6, fired = false, \
+                 reconciled_at = CASE WHEN $7 THEN NULL ELSE now() END",
             )
             .bind(tenant)
             .bind(run_id)
@@ -137,6 +141,7 @@ pub(super) async fn handle_suspend(
             .bind(*timeout_at)
             .bind(source)
             .bind(Json(&spec))
+            .bind(is_data)
             .execute(&mut **tx)
             .await
             .map_err(map_db)?;
