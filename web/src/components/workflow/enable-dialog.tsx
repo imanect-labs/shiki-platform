@@ -64,6 +64,12 @@ type GrantRow = SuggestedGrant & {
 /// フォルダに渡す閲覧の権限で読める（ファイルの権限はフォルダから受け継ぐ）。
 function dynamicText(g: GrantRow & { dynamic: NonNullable<GrantRow["dynamic"]> }, schedule: boolean): string {
   const { label, from, what } = g.dynamic;
+  // テーブルを対象にするのはデータ変更のきっかけ（変更された行のテーブル）だけ。
+  if (from === "trigger" && g.objectKind === "data_table") {
+    return g.relation === "viewer"
+      ? `「${label}」の${what}はきっかけ（変更された行のテーブル）で決まるため、ここでは選びません。きっかけのテーブルに渡す閲覧の権限で読めます。`
+      : `「${label}」の${what}はきっかけ（変更された行のテーブル）で決まるため、ここでは選びません。書き換えるには、そのテーブルの編集の権限が要ります。`;
+  }
   if (from === "trigger") {
     return g.relation === "viewer"
       ? `「${label}」の${what}はきっかけ（保存されたファイル）で決まるため、ここでは選びません。きっかけのフォルダに渡す閲覧の権限で読めます。`
