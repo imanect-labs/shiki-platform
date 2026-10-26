@@ -65,7 +65,8 @@ pub struct ApprovalDecisionDto {
 pub struct ApprovalFieldDto {
     pub key: String,
     pub display_name: String,
-    #[schema(value_type = Object)]
+    /// 列の種別（画面が値の見せ方を決める・ユーザーの列は表示名で出すなど）。
+    pub field_type: data::FieldType,
     pub value: serde_json::Value,
 }
 
@@ -282,15 +283,14 @@ async fn visible_items(
                 .iter()
                 .filter_map(|key| {
                     let value = rec.data.get(key)?.clone();
-                    let display_name = table
-                        .schema
-                        .field(key)
-                        .map(|f| f.display_name.clone())
+                    let def = table.schema.field(key)?;
+                    let display_name = Some(def.display_name.clone())
                         .filter(|d| !d.is_empty())
                         .unwrap_or_else(|| key.clone());
                     Some(ApprovalFieldDto {
                         key: key.clone(),
                         display_name,
+                        field_type: def.field_type,
                         value,
                     })
                 })
