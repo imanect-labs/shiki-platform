@@ -289,9 +289,10 @@ test("承認を待つブロック: テーブルの状態から行き先を選べ
   await page.goto(`/workflows/${s.workflowId}`);
   const canvas = page.locator(".react-flow");
   await expect(canvas.getByText("上長の承認").first()).toBeVisible({ timeout: 15_000 });
-  // 出口は承認・却下・取り下げ（差し戻しは指定していないので出ない）。
-  await expect(canvas.getByText("取り下げ").first()).toBeVisible();
-  await expect(canvas.getByText("差し戻し")).toHaveCount(0);
+  // 出口は承認・却下・取り下げ（差し戻しは指定していないので出ない）。出口のラベルは完全一致で数える
+  // （ブロックの説明「…承認・却下・差し戻しを待って分岐する」も部分一致で拾ってしまう）。
+  await expect(canvas.getByText("取り下げ", { exact: true }).first()).toBeVisible();
+  await expect(canvas.getByText("差し戻し", { exact: true })).toHaveCount(0);
 
   await canvas.getByText("上長の承認").first().click();
   const panel = page.getByRole("complementary", { name: "ブロックの設定" });
@@ -302,7 +303,7 @@ test("承認を待つブロック: テーブルの状態から行き先を選べ
   await panel.getByRole("switch", { name: "差し戻したときの出口を使う" }).click();
   await panel.getByRole("combobox", { name: "差し戻したときに進める状態" }).click();
   await page.getByRole("option", { name: "下書き" }).click();
-  await expect(canvas.getByText("差し戻し").first()).toBeVisible();
+  await expect(canvas.getByText("差し戻し", { exact: true })).toHaveCount(1);
 
   // 実行の期限を延ばす提案から 14 日にして保存する。
   const suggestion = panel.getByTestId("approval-run-timeout");
