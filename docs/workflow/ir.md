@@ -509,7 +509,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 - `kind`: `duration`（相対時間）/ `until`（絶対時刻）/ `event`（イベント待ち）。
 - `on_timeout: continue` のとき出力ポート `timeout` を持つ（§5.2）。
 - `kind: event` の `scope` は必須（D-49）: `storage.write` は `{ "folder": "<uuid>" }`（ファイルの作成と新しい版の保存の両方で起きる。トリガと違い、続く保存をまとめず最初に届いた保存で起きる）、データ変更は `{ "table": "<uuid リテラル>", "record"?: 値式 }`。`record` は**停止時に解決**し（解決できなければ `expr_resolve_error`）、その行の変更だけを待つ。データ変更の source では空の scope をワイルドカードにしない。保存済みの scope の無い `storage.write` の wait は、起床のたびに実行主体の閲覧を確かめて守る（`EventWaitGate`・D-33）。データ変更の wait は `data.read` が要る。
-- **登録より前の変更では起きない**: 行に束縛した wait は停止時に実行主体の権限でその行を読み（data.get）、その rev より後の変更だけで起きる。テーブル単位の wait は停止の時点の outbox の位置より後のイベントだけを見る（停止と並行していた書込は取りこぼし得る）。
+- **登録より前の変更では起きない**: 行に束縛した wait は停止時に実行主体の権限でその行を読み（data.get）、その rev より後の変更だけで起きる。テーブル単位の wait は停止の時点の outbox の位置より後のイベントだけを見る（停止と並行していた書込は取りこぼし得る）。停止の時点から待ち始めるまでの間に入った変更も、待ち始めた直後の 1 回の突き合わせで拾う（[engine.md](./engine.md) §9.2・BUG-42）。
 - **filter の `$from`**: `event` が届いたイベントを指す（`trigger` / `payload` は互換の別名で、保存時に警告 `ir.wait_filter_alias`）。それ以外（`input`・`nodes.*`・`run`・`each`）は**停止時に解決してリテラルへ束縛**してから購読に保存する（起床の判定は届いたイベントしか解決しない）。出力（`nodes.<id>.output`）は届いたイベントのペイロード（形は §6.2 と同じ・実行主体の見え方）。
 - wait の実行時挙動（waiting_timer / waiting_event・購読登録・起こし方）は [engine.md](./engine.md) §9。
 

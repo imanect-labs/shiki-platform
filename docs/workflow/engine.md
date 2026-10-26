@@ -237,10 +237,16 @@ create table wait_subscription (
     --   after_event_id（テーブル単位の data の wait の停止時の outbox の位置） }
     spec       jsonb       not null default '{}',
     fired      boolean     not null default false,
+    -- 受付の突合（§9.2）を済ませた時刻。データ変更の wait は停止のたびに空にし、ほか（ファイルの保存の wait・
+    -- 承認・timer）は作る時点で埋める。
+    reconciled_at timestamptz,
     primary key (tenant_id, run_id, step_path)
 );
 create index wait_subscription_event_idx on wait_subscription (tenant_id, source)
     where kind = 'event' and not fired;
+-- 受付の突合の走査（まだ突き合わせていないものだけ）。
+create index wait_subscription_reconcile_idx on wait_subscription (created_at)
+    where kind = 'event' and not fired and reconciled_at is null;
 -- データ変更の wait の候補（テーブル・行の束縛）。
 create index wait_subscription_record_idx on wait_subscription
     (tenant_id, source, (spec->'scope'->>'table'), (spec->'scope'->>'record'))
@@ -885,10 +891,15 @@ step を `waiting_timer` にし `wake_at` を書いてワーカーを解放す�
   （起床の判定は届いたイベントしか解決しない・ir.md §7.5）。データ変更の wait は `scope.record` を解決し、行に束縛
   するならその行を実行主体の権限で読んで（data.get・scope 天井は data.read）rev を `suspend_rev` に、テーブル単位なら
   checkpoint の Tx の時点の outbox の最大 id を `after_event_id` に残す（停止より前の変更・自分の直前の書込では起きない）。
-  取りこぼしの窓が両方向にある（未対応）: ①行に束縛した wait は、data.get から checkpoint の commit までの間に commit された
-  同じ行の変更を、②テーブル単位の wait は、この位置より後に採番されて購読の commit より先に配送された変更と、この位置より
-  前に採番されて後で commit した並行の書込を、どちらも購読がまだ見えないまま配送済みにして失い、timeout まで起きない。
-  承認（§9.6）は受付の突合で同じ窓を塞いでいるが、ふつうの wait にはまだ突合が無い。
+- **受付の突合**（データ変更の wait・BUG-42）: 停止の時点（rev・位置を読んだ時点）から購読の commit までに配送された
+  変更は、relay から購読が見えないまま配送済みになる。承認の受付の突合（§9.6）と同じ形で、購読の commit の後に 1 回
+  だけ（`wait_subscription.reconciled_at`・relay の tick）その変更を outbox から引き直し、relay と同じ照合（実行主体の
+  見え方・filter・停止より後か）で配る。行に束縛した wait は、実行主体の権限で行を読み直していまの rev が
+  `suspend_rev` より大きいときだけ、その行の `suspend_rev` より後の変更を引き直す。テーブル単位の wait は、
+  `after_event_id` より後のそのテーブルの変更を 500 件まで引き直す（commit の後に配送された変更は relay が照合済みで、
+  照合し直しても結果は変わらない）。一時障害は印を付けずに次の tick で突き合わせ直す。
+  残る窓: ①テーブル単位の wait の、位置より前に採番されて checkpoint の後で commit した並行の書込（位置で除くので
+  突合でも拾わない）。②突合までに outbox から GC された変更（突合は commit の直後の tick に走るので、ふつうは残っている）。
 - イベント到来（マッチャ・§5.5）: `succeeded`・`taken_ports = {out}`・イベントペイロードを output に格納。
 - `timeout_at` 超過・`on_timeout: continue`: `succeeded`・`taken_ports = {timeout}`（ir.md §5.2 の `wait` ポート）。
 - `timeout_at` 超過・`on_timeout: fail`: `failed`。
