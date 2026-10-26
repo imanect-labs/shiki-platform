@@ -218,8 +218,9 @@ export function AiModelsView() {
       await updateAiSettings(req);
       // チャットのモデル選択が古い一覧のまま残らないようにする。
       invalidateLlmModels();
-      toast({ title: "AI の設定を保存しました" });
+      // 読み直してから知らせる（先に知らせると、読み直しが終わるまでの入力が読み直した値で消える）。
       await load();
+      toast({ title: "AI の設定を保存しました" });
     } catch (e) {
       toast({
         title: "保存できませんでした",
