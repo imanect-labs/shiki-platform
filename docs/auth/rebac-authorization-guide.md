@@ -296,10 +296,16 @@ pub struct AuthContext {
     pub principal: Principal,   // 誰（OIDC sub 由来 or workflow プリンシパル）
     pub org: String,            // 所属組織（テナント内の最上位スコープ）
     pub tenant_id: String,      // SaaS 隔離境界。new() の必須引数（型レベルで欠落不能）
+    pub origin_run: Option<Uuid>, // ワークフローの run の中の操作ならその run（認可には使わない）
 }
 ```
 
 `tenant_id` は `new()` の**必須引数**なので、「tenant_id 無しの AuthContext」はコンパイルできない（`context.rs:52-62`）。
+
+`origin_run` は**認可の判断に使わない**由来の印で、ワークフローの実行時（ノードの実行・委譲元の文脈）だけが
+`in_run` で付ける。書込は outbox の consumer 非公開部に載せ、ワークフローの relay が因果の鎖（自分の書込で自分を
+起こさない）と `by_workflow` をここから引く。リクエストから組む文脈（下の図）は常に `None` で、要求が運ぶ値
+（trace_id など）からは決まらないので、利用者が run を名乗れない（[engine.md](../workflow/engine.md) §5.4・BUG-44）。
 
 ### リクエストから AuthContext まで（BFF 方式）
 
