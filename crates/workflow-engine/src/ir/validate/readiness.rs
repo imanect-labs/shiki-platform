@@ -131,7 +131,10 @@ mod tests {
         .unwrap()
     }
 
-    fn codes(errs: &[ValidationError]) -> Vec<(&str, Option<&str>, Option<&str>)> {
+    /// （コード・ノード id・path）の並び。
+    type Located<'a> = (&'a str, Option<&'a str>, Option<&'a str>);
+
+    fn codes(errs: &[ValidationError]) -> Vec<Located<'_>> {
         errs.iter()
             .map(|e| (e.code.as_str(), e.node_id.as_deref(), e.path.as_deref()))
             .collect()
