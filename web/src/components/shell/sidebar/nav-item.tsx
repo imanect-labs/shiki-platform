@@ -22,9 +22,13 @@ type BaseProps = {
   seasonIndex?: number;
   trailing?: React.ReactNode;
   /// 件数のバッジ（承認の受信箱など）。広げた表示では右端に数、レールではアイコンの右上に点を出す。
-  badge?: string | null;
+  badge?: NavBadge | null;
   className?: string;
 };
+
+/// 件数のバッジ。`text` はピルに出す字、`spoken` は読み上げ・ツールチップの「ラベル（…）」の括弧の中に入れる語
+/// （例: `{ text: "3", spoken: "3 件" }`）。
+export type NavBadge = { text: string; spoken: string };
 
 type LinkProps = BaseProps & { href: string; onClick?: () => void };
 type ButtonProps = BaseProps & {
@@ -65,7 +69,7 @@ function Inner({
   collapsed: boolean;
   seasonIndex?: number;
   trailing?: React.ReactNode;
-  badge?: string | null;
+  badge?: NavBadge | null;
 }) {
   // アクティブかつ季節指定がある場合だけアイコンを季節色に。それ以外は無地。
   const seasonTint = active && seasonIndex != null;
@@ -98,7 +102,7 @@ function Inner({
       {!collapsed ? (
         <>
           <span className="flex-1 truncate text-left">{label}</span>
-          {badge ? <CountBadge value={badge} /> : null}
+          {badge ? <CountBadge value={badge.text} /> : null}
           {trailing}
         </>
       ) : null}
@@ -136,7 +140,7 @@ export function NavItem(props: LinkProps | ButtonProps) {
     className,
   } = props;
   // 件数は読み上げのラベルにも含める（点・数字は aria-hidden）。
-  const spoken = badge ? `${label}（${badge} 件）` : label;
+  const spoken = badge ? `${label}（${badge.spoken}）` : label;
 
   const node =
     "href" in props && props.href !== undefined ? (

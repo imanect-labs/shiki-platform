@@ -722,6 +722,69 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   await bobCtx.close();
 });
 
+test("承認の件数のバッジ: 数え切れずに数えた分が 0 件なら「…」、1 件以上なら「N+」（PC・レール・スマホ・GAP-08）", async ({
+  browser,
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  // 見えない承認が多くてサーバが数えるのを打ち切った形（数えられた分は 0 件）。読み直しは画面を開き直して起こす。
+  let count = { count: 0, more: true };
+  const fake = (p: Page) =>
+    p.route(
+      (url) => url.pathname === "/api/approvals/count",
+      (route) => route.fulfill({ json: count }),
+    );
+  await fake(page);
+  const MAYBE = "承認（承認待ちがあるかもしれません）";
+  await page.goto("/drive");
+  const nav = page.getByRole("navigation", { name: "メインナビゲーション" });
+  // PC の広げた表示: 数の代わりに「…」。「0+」は出さない。
+  const wide = nav.getByRole("button", { name: MAYBE, exact: true });
+  await expect(wide).toBeVisible({ timeout: 15_000 });
+  await expect(wide).toHaveText(/^承認…$/);
+  await expect(nav).not.toContainText("0+");
+  // レール（折りたたみ）: 点を出し、読み上げ・ツールチップにも同じ語。
+  await page.getByRole("button", { name: "サイドバーを折りたたむ" }).click();
+  const rail = nav.getByRole("button", { name: MAYBE, exact: true });
+  await expect(rail).toBeVisible();
+  await expect(rail.locator("span.rounded-full")).toHaveCount(1);
+  await rail.hover();
+  await expect(page.getByRole("tooltip")).toHaveText(MAYBE);
+
+  // 1 件以上を数えたうえで打ち切ったら、今までどおり「N+」。
+  count = { count: 3, more: true };
+  await page.reload();
+  await expect(nav.getByRole("button", { name: "承認（3+ 件）", exact: true })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "サイドバーを開く" }).click();
+  await expect(nav.getByRole("button", { name: "承認（3+ 件）", exact: true })).toHaveText(/^承認3\+$/);
+
+  // スマホのドロワのナビも同じ。
+  count = { count: 0, more: true };
+  const ctx = await browser.newContext({
+    storageState: await page.context().storageState(),
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const phone = await ctx.newPage();
+  await fake(phone);
+  await phone.goto("/drive");
+  await phone.getByRole("button", { name: "メニューを開く", exact: true }).tap();
+  const drawer = phone.getByRole("dialog", { name: "ナビゲーション" }).getByRole("navigation", { name: "メインナビゲーション" });
+  const tile = drawer.getByRole("link", { name: MAYBE, exact: true });
+  await expect(tile).toBeVisible({ timeout: 15_000 });
+  await expect(tile).toHaveText(/^…承認$/);
+  await expect(drawer).not.toContainText("0+");
+  count = { count: 3, more: true };
+  await phone.reload();
+  await phone.getByRole("button", { name: "メニューを開く", exact: true }).tap();
+  await expect(drawer.getByRole("link", { name: "承認（3+ 件）", exact: true })).toHaveText(/^3\+承認$/, {
+    timeout: 15_000,
+  });
+  await ctx.close();
+});
+
 test("承認待ち: 見える承認が無いまま続きがあるページでも「承認待ちはありません」にせず、続きを読める（GAP-08）", async ({ page }) => {
   test.setTimeout(180_000);
   await loginViaKeycloak(page);
@@ -748,9 +811,12 @@ test("承認待ち: 見える承認が無いまま続きがあるページでも
   await page.goto("/approvals");
   await expect(page.getByTestId("approval-list-pending")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("承認待ちはありません", { exact: true })).toHaveCount(0);
-  // 数え切れなかった件数は 0 として隠さない。
+  // 数え切れなかった件数は 0 として隠さない（数えられた分が 0 件なら数は出さない）。
   await expect(
-    page.getByRole("button", { name: "承認（0+ 件）" }).or(page.getByRole("link", { name: "承認（0+ 件）" })).first(),
+    page
+      .getByRole("button", { name: "承認（承認待ちがあるかもしれません）" })
+      .or(page.getByRole("link", { name: "承認（承認待ちがあるかもしれません）" }))
+      .first(),
   ).toBeVisible();
 
   await page.getByRole("button", { name: "さらに読み込む" }).click();

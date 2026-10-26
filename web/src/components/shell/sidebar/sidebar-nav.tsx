@@ -18,7 +18,7 @@ import {
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { approvalBadge, useApprovalCount } from "@/hooks/use-approval-count";
-import { CountBadge, NavItem } from "./nav-item";
+import { CountBadge, NavItem, type NavBadge } from "./nav-item";
 import { SidebarDriveAccordion } from "./sidebar-drive-accordion";
 import { useSidebar } from "./sidebar-context";
 
@@ -35,7 +35,7 @@ function NavTile({
   label: string;
   href: string;
   active: boolean;
-  badge?: string | null;
+  badge?: NavBadge | null;
   onNavigate?: () => void;
 }) {
   return (
@@ -43,7 +43,7 @@ function NavTile({
       href={href}
       onClick={onNavigate}
       aria-current={active ? "page" : undefined}
-      aria-label={badge ? `${label}（${badge} 件）` : undefined}
+      aria-label={badge ? `${label}（${badge.spoken}）` : undefined}
       className={cn(
         "flex h-[62px] min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-0.5 text-[11px] tracking-[-0.02em] outline-none transition-colors",
         "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
@@ -57,7 +57,7 @@ function NavTile({
           className={cn("size-5 shrink-0", active ? "text-sidebar-foreground" : "text-sidebar-foreground/60")}
           aria-hidden
         />
-        {badge ? <CountBadge value={badge} className="absolute -right-3 -top-2 h-4 min-w-4 px-1 text-[10px]" /> : null}
+        {badge ? <CountBadge value={badge.text} className="absolute -right-3 -top-2 h-4 min-w-4 px-1 text-[10px]" /> : null}
       </span>
       <span className="max-w-full truncate">{label}</span>
     </Link>
