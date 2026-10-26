@@ -1,7 +1,7 @@
 //! outbox → イベントトリガ・wait(event) の relay（`mod.rs` から分割・行数規約）。
 //!
 //! storage.write の 1 件を、トリガの run 入力（`$from trigger`）と wait(event) の到来イベントに
-//! 写して配る（engine.md §5.4・§5.5 の同一マッチャ）。
+//! 写して配る（engine.md §5.4・§5.5 の同一マッチャ）。データ変更は [`super::relay_data`] が配る。
 
 use std::sync::Arc;
 
@@ -130,6 +130,8 @@ async fn relay_events_batch(deps: &RelayDeps<'_>) -> Result<usize, anyhow::Error
     if events.is_empty() {
         return Ok(0);
     }
+    // データ変更（data.record.changed / transitioned）はテーブル単位で候補を引くので、まとめて配る（GAP-07）。
+    super::relay_data::relay_data_events(deps, &events).await?;
     let mut ids = Vec::with_capacity(events.len());
     for ev in &events {
         // ファイルの保存でないイベント（data サービス由来・削除・移動・フォルダの作成など）は

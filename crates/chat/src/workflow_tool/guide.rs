@@ -234,7 +234,7 @@ pub(super) fn emit_description(models: Option<&[String]>) -> String {
     let _ = write!(
         d,
         "【骨格】{{\"ir_version\":1,\"name\":\"英小文字・数字・ハイフンの安定名（^[a-z][a-z0-9-]{{0,63}}$）\",\"display_name\":\"日本語の表示名\",\"declared_scopes\":[…]（省略可。ノードが要するスコープは保存時に補われる）,\"triggers\":[…],\"input_schema\":{{…}}（interactive の入力・省略可）,\"nodes\":[…],\"edges\":[…]}}\n\
-         - triggers: {{\"kind\":\"interactive\"}}（ボタン・チャットから実行）| {{\"kind\":\"schedule\",\"cron\":\"0 9 * * 1-5\",\"tz\":\"Asia/Tokyo\"}} | {{\"kind\":\"event\",\"source\":EventSource,\"scope\":{{\"folder\":\"<フォルダの uuid>\"}}}}（そのフォルダ（配下を含む）に新しいファイルが保存されたときに起動。既存のファイルの上書き保存での起動は当てにしない）。EventSource = {sources}。\n\
+         - triggers: {{\"kind\":\"interactive\"}}（ボタン・チャットから実行）| {{\"kind\":\"schedule\",\"cron\":\"0 9 * * 1-5\",\"tz\":\"Asia/Tokyo\"}} | {{\"kind\":\"event\",\"source\":\"storage.write\",\"scope\":{{\"folder\":\"<フォルダの uuid>\"}}}}（そのフォルダ（配下を含む）に新しいファイルが保存されたときに起動。既存のファイルの上書き保存での起動は当てにしない）| {{\"kind\":\"event\",\"source\":\"data.record.created\" か \"data.record.updated\" か \"data.transition\",\"scope\":{{\"table\":\"<テーブルの uuid>\"}},\"filter\"?:条件}}（テーブルの行が追加・更新・状態変更されたときに起動。有効化した人に見える行・列の変更だけで起き、一括取込とこのワークフロー自身の書込では起きない。状態は filter の /to で絞る）。EventSource = {sources}。control.wait（kind: event）の scope も同じ形が必須（データ変更は \"record\":値式 で行を絞れる・filter は {{\"$from\":\"event\"}} で届いたできごとを読む）。\n\
          - input_schema: JSON Schema のサブセット（type・properties・required・items・enum など。$ref・oneOf は使えない）。入力は {{\"$from\":\"input\",\"path\":\"/キー\"}} で読む。\n\
          - nodes の要素（? は省略可）: {node}。id は ^[a-z][a-z0-9_]{{0,63}}$（英小文字で始め、英小文字・数字・_ だけ。例: find_requests）。\n\
          - edges の要素: {edge}。キーはこの 3 つだけ（port というキーは無い）。from_port を省くと out。出口: 通常のノードは out、control.branch は true / false、control.switch は cases の port と default、on_error が \"continue\" のノードは error、control.wait（kind: event・on_timeout: \"continue\"）は timeout。無い出口につないだエッジは保存できない。\n\
@@ -504,9 +504,19 @@ mod tests {
         // 演算子の一覧とイベント source は型・語彙から生成する。
         assert!(d.contains("\"starts_with\""), "{d}");
         assert!(d.contains("EventSource = \"storage.write\""), "{d}");
-        // きっかけの内容の項目もイベントのカタログから生成する（D-47・BUG-36）。
+        // きっかけの内容の項目もイベントのカタログから生成する（D-47・BUG-36）。データ変更の 3 種は同じ形。
         assert!(
             d.contains("- storage.write: { file_id: string（保存されたファイルの ID）"),
+            "{d}"
+        );
+        assert!(
+            d.contains(
+                "- data.record.created / data.record.updated / data.transition: { source: string"
+            ),
+            "{d}"
+        );
+        assert!(
+            d.contains("\"scope\":{\"table\":\"<テーブルの uuid>\"}"),
             "{d}"
         );
         // 旧説明文の誤り（mustache の差し込み・port: next・<祖先ノードid>）を含まない。

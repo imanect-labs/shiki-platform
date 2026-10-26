@@ -11,6 +11,7 @@ mod llm_error;
 mod llm_model;
 mod ports;
 mod relay;
+mod relay_data;
 mod skill_port;
 
 use std::sync::Arc;

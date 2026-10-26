@@ -609,20 +609,37 @@ async fn wait_event_receives_the_saved_file() {
 
 /// scope の無い wait(event) でも、run の実行主体（alice）が読めない他人のファイルの保存では起きない。
 /// そのファイルの id・書いた人は実行履歴に載らず、alice が読めるファイルの保存で初めて起きる。
+///
+/// 新しく保存する wait(event) は scope が必須になった（D-49）。ここでは scope の無い保存済みの定義の
+/// run（D-49 より前に保存したもの）を、run のピンした IR の scope を空にして再現する。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wait_event_without_scope_ignores_files_the_principal_cannot_read() {
     let Some(env) = setup().await else { return };
     let bob = env.user("bob").await;
+    let somewhere = env
+        .storage
+        .create_folder(&env.alice, None, "somewhere", None)
+        .await
+        .unwrap();
     let ir = json!({
         "ir_version": 1, "name": "wait-any-upload",
         "declared_scopes": ["storage.read"],
         "triggers": [ { "kind": "interactive" } ],
         "nodes": [
             { "id": "w", "type": "control.wait", "params": {
-                "kind": "event", "source": "storage.write", "scope": {}, "timeout_sec": 600 } }
+                "kind": "event", "source": "storage.write",
+                "scope": { "folder": somewhere.id.to_string() }, "timeout_sec": 600 } }
         ],
         "edges": []
     });
+    // scope の無い wait は新しくは保存できない（D-49）。
+    let mut legacy = ir.clone();
+    legacy["nodes"][0]["params"]["scope"] = json!({});
+    let rejected = env
+        .workflows
+        .create(&env.alice, &legacy, &Catalog::default(), None)
+        .await;
+    assert!(rejected.is_err(), "scope の無い wait(event) は保存できない");
     let (wf, _) = env
         .workflows
         .create(&env.alice, &ir, &Catalog::default(), None)
@@ -634,6 +651,15 @@ async fn wait_event_without_scope_ignores_files_the_principal_cannot_read() {
         .await
         .unwrap()
         .unwrap();
+    sqlx::query(
+        "UPDATE workflow_run SET ir_snapshot = jsonb_set(ir_snapshot, '{nodes,0,params,scope}', '{}') \
+         WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(run)
+    .execute(&env.pool)
+    .await
+    .unwrap();
     let worker = env.worker();
     while worker.claim_and_run_once("w1").await.unwrap() {}
     let e = &env;

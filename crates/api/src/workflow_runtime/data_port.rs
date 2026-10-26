@@ -31,9 +31,9 @@ const MAX_LISTED_TABLES: i64 = 200;
 const MAX_REACHABLE_TABLES: i64 = 500;
 
 /// 読み書きする主体と、その主体で使うストア（ワークフロー主体なら委譲の天井つき）。
-struct Actor {
-    ctx: AuthContext,
-    data: DataStore,
+pub(super) struct Actor {
+    pub(super) ctx: AuthContext,
+    pub(super) data: DataStore,
     fsms: FsmStore,
 }
 
@@ -102,7 +102,9 @@ pub(super) struct DataPort<'a> {
 
 impl DataPort<'_> {
     /// 読み書きする主体（上の ①②③）。`relation` は委譲で要るテーブルの関係（読取 viewer・書込 editor）。
-    async fn actor(
+    ///
+    /// データ変更トリガ・wait(event) の relay（`relay_data`）も、変更の見え方をこの主体で作る（GAP-07）。
+    pub(super) async fn actor(
         &self,
         ec: &ExecCtx,
         table_id: Uuid,
