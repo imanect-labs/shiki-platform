@@ -22,9 +22,11 @@ export async function loginAs(page: Page, user: string, pass = PASS) {
   // /login は未ログインならそのまま Keycloak のログイン画面へ送る。
   await page.goto("/login");
   await submitKeycloakLogin(page, user, pass);
-  // ログイン完了＝/login 以外のアプリ画面に着地（オリジン非依存）。
-  await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 20_000 });
-  await expect(page.getByRole("button", { name: "アカウントメニューを開く" })).toBeVisible();
+  // ログイン完了＝Keycloak（/realms/）・BFF の往復（/auth/）・/login を抜けてアプリの画面に着地し（オリジン
+  // 非依存）、そのセッションで /api/me が読める。画面の部品（アカウントメニュー）では確かめない: スマホ幅では
+  // ドロワの中にあって見えない。
+  await page.waitForURL((url) => !/^\/(login|auth\/|realms\/)/.test(url.pathname), { timeout: 20_000 });
+  await expect.poll(async () => (await page.request.get("/api/me")).status(), { timeout: 10_000 }).toBe(200);
 }
 
 /// テスト用に一意な名前を作る（並行・再実行での衝突回避）。
