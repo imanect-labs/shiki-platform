@@ -18,16 +18,42 @@ use super::http::{check_destination, redirect_denied, summarize_response, HttpDe
 use super::ports::{ExecCtx, HttpSendReq, LlmInvokeReq, PortError, ResolvedSecretView};
 use super::resolver::{as_bytes, as_string, as_u32, opt_param, param, typed, ParamResolver};
 
+/// 出力に載せる本文の上限（バイト）。
+const BODY_CAP: usize = 1024 * 1024;
+
 /// レスポンス本文を JSON（不能ならテキスト）に整形する（1MB 上限）。
+#[cfg(test)]
 pub(super) fn parse_body(bytes: &[u8]) -> Value {
-    const CAP: usize = 1024 * 1024;
-    let slice: &[u8] = if bytes.len() > CAP {
-        &bytes[..CAP]
-    } else {
-        bytes
+    response_body(bytes, None)
+}
+
+/// 外部の応答の本文を JSON（1MB 以下で読めるとき・不能ならテキスト）に整形し、反射した secret の平文を
+/// `[REDACTED]` に置き換える（この呼び出しで解決した平文だけ・[`secrets::Redactor`] の形）。
+///
+/// テキストにする本文は、全体をマスクしてから 1MB に切る（切れ目が平文に掛かって前半だけが残らないように）。
+pub(super) fn response_body(bytes: &[u8], secret: Option<&ResolvedSecretView>) -> Value {
+    let redactor = reflected_redactor(secret);
+    if bytes.len() <= BODY_CAP {
+        if let Ok(v) = serde_json::from_slice::<Value>(bytes) {
+            return match &redactor {
+                Some(r) => r.redact_json(&v),
+                None => v,
+            };
+        }
+    }
+    let text = String::from_utf8_lossy(bytes);
+    let mut text = match &redactor {
+        Some(r) => r.redact_str(&text),
+        None => text.into_owned(),
     };
-    serde_json::from_slice::<Value>(slice)
-        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(slice).into_owned()))
+    if text.len() > BODY_CAP {
+        let mut end = BODY_CAP;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    Value::String(text)
 }
 
 /// llm_invoke ポートの出力から、実際に使ったモデルの名前を取る（ポートが返さなければ指定値）。
@@ -176,8 +202,8 @@ impl CapabilityNodeExecutor {
         );
         // 出力は次ノードへ本文を渡す（監査には出さない）。外部の応答に反射した secret の平文は、step の出力
         // （実行履歴・画面に返す結果）へ書く前にマスクする（記録時のレダクト・write-only 原則・GAP-09 の T0）。
-        let out = json!({ "status": resp.status, "host": host, "body": parse_body(&resp.body) });
-        Ok(redact_reflected(resolved_secret.as_ref(), out))
+        let body = response_body(&resp.body, resolved_secret.as_ref());
+        Ok(json!({ "status": resp.status, "host": host, "body": body }))
     }
 
     /// 宛先束縛（secret.allowed_hosts）× egress allowlist の AND を URL ホスト部リテラルで照合する。
@@ -215,19 +241,14 @@ impl CapabilityNodeExecutor {
     }
 }
 
-/// 外部の応答に反射した secret の平文を `[REDACTED]` に置き換える（この呼び出しで解決した平文だけ）。
+/// 外部の応答に反射した secret の平文をマスクする Redactor（この呼び出しで解決した平文だけ・無ければ `None`）。
 ///
-/// 完全一致だけをマスクする（4 文字未満の平文・符号化された形はマスクできない・`secrets::Redactor`）。
-pub(super) fn redact_reflected(secret: Option<&ResolvedSecretView>, out: Value) -> Value {
-    let Some(secret) = secret else {
-        return out;
-    };
+/// 完全一致と登録した変形（前後の空白を落とした形・JSON のエスケープ・%エンコード）だけをマスクする
+/// （4 文字未満の平文・ほかの符号化はマスクできない・`secrets::Redactor`）。
+fn reflected_redactor(secret: Option<&ResolvedSecretView>) -> Option<secrets::Redactor> {
     let mut redactor = secrets::Redactor::new();
-    redactor.add(&String::from_utf8_lossy(&secret.plaintext));
-    if redactor.is_empty() {
-        return out;
-    }
-    redactor.redact_json(&out)
+    redactor.add(&String::from_utf8_lossy(&secret?.plaintext));
+    (!redactor.is_empty()).then_some(redactor)
 }
 
 /// http.request の本文を JSON として送るか（オブジェクト・配列）。
@@ -265,6 +286,38 @@ mod tests {
     use super::{attach_secret, is_json_body, parse_body};
     use crate::ir::params::{SecretAttach, SecretAttachKind};
     use serde_json::json;
+
+    /// 反射した平文は、テキストの本文でも切る前に全体でマスクする（1MB の切れ目に掛かった前半も残さない）。
+    /// JSON のエスケープされた形・キーに載った形もマスクする。
+    #[test]
+    fn reflected_secrets_are_masked_before_the_body_is_cut() {
+        use super::{response_body, BODY_CAP};
+        let secret = super::ResolvedSecretView {
+            plaintext: b"abc/def+ghi=".to_vec(),
+            allowed_hosts: vec![],
+        };
+        let mut big = vec![b'x'; BODY_CAP - 5];
+        big.extend_from_slice(b"abc/def+ghi=");
+        big.extend_from_slice(&[b'y'; 10]);
+        let v = response_body(&big, Some(&secret));
+        let text = v.as_str().unwrap();
+        assert_eq!(text.len(), BODY_CAP);
+        assert!(text.ends_with("x[REDA"), "{}", &text[text.len() - 20..]);
+        // JSON として読めない本文は、エスケープされた形のまま反射しても落とす。
+        let v = response_body(br#"echo: {"auth": "Bearer abc\/def+ghi="#, Some(&secret));
+        assert_eq!(v, json!(r#"echo: {"auth": "Bearer [REDACTED]"#));
+        // JSON の本文はキーも値（%エンコードされた形）もマスクする。
+        let v = response_body(
+            br#"{"abc/def+ghi=": 1, "next": "https://x.test/?t=abc%2Fdef%2Bghi%3D"}"#,
+            Some(&secret),
+        );
+        assert_eq!(
+            v,
+            json!({ "[REDACTED]": 1, "next": "https://x.test/?t=[REDACTED]" })
+        );
+        // secret が無ければそのまま。
+        assert_eq!(response_body(b"abc/def+ghi=", None), json!("abc/def+ghi="));
+    }
 
     #[test]
     fn parse_body_json_text_and_cap() {
