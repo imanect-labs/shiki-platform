@@ -511,11 +511,7 @@ pub async fn decide_approval(
                 "期限を過ぎたため判断できません",
             )
         } else {
-            approval_error(
-                StatusCode::CONFLICT,
-                ApprovalErrorCode::Decided,
-                "この承認はもう決まっているか、取り消されています",
-            )
+            already_decided()
         });
     }
     let choice = row.choice(req.decision).cloned().ok_or_else(|| {
@@ -544,6 +540,7 @@ pub async fn decide_approval(
             "コメントは 2000 字以内で書いてください",
         ));
     }
+    still_at_from_state(&state, &ctx, &row, trace.as_deref()).await?;
     let next_rev = req.expected_rev.saturating_add(1);
     if let Some(body) = comment {
         let put = store(&state)
@@ -604,14 +601,48 @@ pub async fn decide_approval(
             }),
         )),
         Err(e) => {
+            // コメントの取り消しに失敗したことはログに残し、利用者には遷移の誤り（403・409・422）を返す
+            // （500 にすると、押した人には何が起きたか分からない）。
             if comment.is_some() {
-                store(&state)
+                if let Err(drop) = store(&state)
                     .drop_comment(&ctx.tenant_id, id, next_rev, &ctx.principal.id)
                     .await
-                    .map_err(internal)?;
+                {
+                    tracing::warn!(error = %drop, approval_id = %id, "判断に失敗したコメントの取り消しに失敗");
+                }
             }
             Err(decision_error(e))
         }
+    }
+}
+
+/// もう決まった・取り消された承認（409）。
+fn already_decided() -> ApiError {
+    approval_error(
+        StatusCode::CONFLICT,
+        ApprovalErrorCode::Decided,
+        "この承認はもう決まっているか、取り消されています",
+    )
+}
+
+/// 行がいまも停止時の状態か（違えば 409）。判断の外で動いた行は、relay が取り下げる前の数秒でも判断させない
+/// （rev を合わせれば、ほかの状態から判断の行き先へ進めてしまい、行は判断の状態なのに run は取り下げになる）。
+/// 読んだときの rev と expected_rev が違えば遷移が rev の不一致で止まるので、状態だけ見ればよい。
+async fn still_at_from_state(
+    state: &AppState,
+    ctx: &AuthContext,
+    row: &ApprovalRow,
+    trace: Option<&str>,
+) -> Result<(), ApiError> {
+    let now = state
+        .fsms
+        .allowed_transitions(ctx, row.table_id, row.record_id, trace)
+        .await
+        .map_err(decision_error)?;
+    if now.current.as_deref() == Some(row.from_state.as_str()) {
+        Ok(())
+    } else {
+        Err(already_decided())
     }
 }
 
