@@ -1677,6 +1677,113 @@ async fn a_row_moved_outside_the_decision_cannot_be_decided() {
     assert_eq!(env.approval_of(run).await.1, "withdrawn");
 }
 
+impl Env {
+    /// run の承認を写して、`user` 宛ての承認を新しい側に `from..=to` 件並べる（step も写す・台帳の担当者は
+    /// IR の作者が書けるので、本人に見えない行の承認が受信箱の台帳に並ぶことがある）。
+    async fn clone_approvals(&self, run: Uuid, user: &AuthContext, from: i32, to: i32) {
+        sqlx::query(
+            "INSERT INTO step_execution \
+             SELECT (jsonb_populate_record(NULL::step_execution, \
+                     to_jsonb(s) || jsonb_build_object('step_path', s.step_path || '-' || g))).* \
+             FROM step_execution s \
+             JOIN workflow_approval a ON a.tenant_id = s.tenant_id AND a.run_id = s.run_id \
+                                     AND a.step_path = s.step_path, \
+                  generate_series($3::int, $4::int) g \
+             WHERE a.tenant_id = $1 AND a.run_id = $2 AND a.step_path NOT LIKE '%-%'",
+        )
+        .bind(TENANT)
+        .bind(run)
+        .bind(from)
+        .bind(to)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO workflow_approval \
+             SELECT (jsonb_populate_record(NULL::workflow_approval, to_jsonb(a) || jsonb_build_object( \
+                     'approval_id', gen_random_uuid(), 'step_path', a.step_path || '-' || g, \
+                     'created_at', now() + g * interval '1 millisecond'))).* \
+             FROM workflow_approval a, generate_series($3::int, $4::int) g \
+             WHERE a.tenant_id = $1 AND a.run_id = $2 AND a.step_path NOT LIKE '%-%'",
+        )
+        .bind(TENANT)
+        .bind(run)
+        .bind(from)
+        .bind(to)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO workflow_approval_assignee (tenant_id, approval_id, kind, subject) \
+             SELECT tenant_id, approval_id, 'user', $3 FROM workflow_approval \
+             WHERE tenant_id = $1 AND run_id = $2 AND step_path LIKE '%-%' ON CONFLICT DO NOTHING",
+        )
+        .bind(TENANT)
+        .bind(run)
+        .bind(&user.principal.id)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+    }
+
+    /// 受信箱を 1 ページずつ最後まで読む（各ページの件数と、出た行の id）。
+    async fn inbox_pages(&self, user: &AuthContext) -> (Vec<usize>, Vec<Value>) {
+        let (mut sizes, mut records) = (Vec::new(), Vec::new());
+        let mut cursor: Option<String> = None;
+        loop {
+            let path = match &cursor {
+                Some(c) => format!("/approvals?cursor={c}"),
+                None => "/approvals".to_string(),
+            };
+            let (st, body) = self.get(user, &path).await;
+            assert_eq!(st, StatusCode::OK, "{body}");
+            let items = body["items"].as_array().unwrap();
+            sizes.push(items.len());
+            records.extend(items.iter().map(|i| i["record"]["id"].clone()));
+            match body["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => return (sizes, records),
+            }
+            assert!(sizes.len() < 20, "ページが終わらない: {sizes:?}");
+        }
+    }
+}
+
+/// 受信箱の新しい側に本人に見えない承認が並んでも、見える承認に辿り着ける。一覧は見える項目が 1 ページ分
+/// たまるか、読み直す台帳の行の上限まで読み進める。件数は上限で打ち切ったら more を立てる（0 で黙らない）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_inbox_reads_past_approvals_the_user_cannot_see() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.expense_table().await;
+    let wf = env.enable(table, None).await;
+    let mine = env.submit(table, "出張旅費", &env.bob).await;
+    let hidden = env.submit(table, "備品の購入", &env.dave).await;
+    env.settle().await;
+    let hidden_run = env.run_of(wf, hidden).await;
+    assert_eq!(env.step(hidden_run, "ok").await.0, "waiting_event");
+
+    // bob に見えない行（dave の申請）の承認を、bob 宛てに新しい側へ 60 件並べる（1 ページの 50 件を超える）。
+    env.clone_approvals(hidden_run, &env.bob, 1, 60).await;
+    let (st, body) = env.get(&env.bob, "/approvals").await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{body}");
+    assert_eq!(items[0]["record"]["id"], json!(mine));
+    assert!(body["next_cursor"].is_null(), "{body}");
+    let (_, count) = env.get(&env.bob, "/approvals/count").await;
+    assert_eq!(count, json!({ "count": 1, "more": false }));
+
+    // 見えない承認が読み直す行の上限（500）を超えると、1 ページ目は空でも続きの位置を返し、続きを読めば届く。
+    env.clone_approvals(hidden_run, &env.bob, 61, 520).await;
+    let (sizes, records) = env.inbox_pages(&env.bob).await;
+    assert_eq!(sizes.first(), Some(&0), "{sizes:?}");
+    assert_eq!(records, vec![json!(mine)], "{sizes:?}");
+    // 件数は数え切れなかったことを more で返す（数えた分は 0）。
+    let (_, count) = env.get(&env.bob, "/approvals/count").await;
+    assert_eq!(count, json!({ "count": 0, "more": true }));
+}
+
 /// AI（chat の emit_workflow）が書いた承認も、保存 API と同じ照合（V4）を通る。見えないテーブル・FSM で
 /// 管理しないテーブル・無い状態・無い列は保存できない（材料を IR から引くカタログ・`catalog_for`）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

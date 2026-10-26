@@ -39,8 +39,8 @@ use crate::{
 const PAGE: i64 = 50;
 /// 件数の打ち切り（バッジは 99+）。
 const COUNT_CAP: usize = 99;
-/// 件数を数えるときに読み直す台帳の行の上限（見えない行ばかりでも際限なく読まない）。
-const COUNT_SCAN: usize = 500;
+/// 一覧の 1 回・件数の 1 回で読み直す台帳の行の上限（見えない行ばかりでも際限なく読まない）。
+const SCAN_LIMIT: usize = 500;
 /// 所属ロールの上限（受信箱の照会の材料・超えた分は使わない）。
 const MAX_ROLES: usize = 1000;
 /// コメントの上限（文字数・台帳の check と同じ）。
@@ -110,8 +110,10 @@ pub struct ApprovalItem {
 /// 受信箱の一覧（新しい順・50 件ずつ）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApprovalListResponse {
+    /// 本人に見える承認（50 件まで）。見えない承認が続くと、読み直す台帳の行の上限で打ち切るので、
+    /// 50 件に満たない（空の）ことがある。そのときも `next_cursor` があれば続きがある。
     pub items: Vec<ApprovalItem>,
-    /// 次のページの位置（無ければ null）。
+    /// 次のページの位置（無ければ null・`items` が空でも続きを読める）。
     pub next_cursor: Option<String>,
 }
 
@@ -119,7 +121,8 @@ pub struct ApprovalListResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApprovalCountResponse {
     pub count: u32,
-    /// 99 件を超えている（バッジは 99+）。
+    /// 99 件を超えている、または見えない承認が多く数え切れなかった（読み直す台帳の行の上限で打ち切った・
+    /// `count` は数えられた分）。
     pub more: bool,
 }
 
@@ -238,17 +241,18 @@ async fn visible_items(
     }
     let mut seen: BTreeMap<Uuid, ApprovalItem> = BTreeMap::new();
     for table_id in tables {
-        let table = match state.data.get_table(ctx, table_id, trace).await {
-            Ok(t) => t,
-            Err(data::DataError::NotFound | data::DataError::Forbidden) => continue,
-            Err(e) => return Err(e.into()),
+        let Some(table) = per_table(state.data.get_table(ctx, table_id, trace).await, table_id)?
+        else {
+            continue;
         };
         let mine: Vec<&ApprovalRow> = rows.iter().filter(|r| r.table_id == table_id).collect();
         let ids: Vec<Uuid> = mine.iter().map(|r| r.record_id).collect();
-        let records = match state.data.get_records(ctx, table_id, &ids, trace).await {
-            Ok(v) => v,
-            Err(data::DataError::NotFound | data::DataError::Forbidden) => continue,
-            Err(e) => return Err(e.into()),
+        let Some(records) = per_table(
+            state.data.get_records(ctx, table_id, &ids, trace).await,
+            table_id,
+        )?
+        else {
+            continue;
         };
         let status_field = table.schema.status_field.clone().unwrap_or_default();
         for (row, rec) in mine.into_iter().zip(records) {
@@ -269,12 +273,10 @@ async fn visible_items(
                     .await
                 {
                     Ok(a) => Some(a.transitions),
-                    Err(
-                        data::DataError::Forbidden
-                        | data::DataError::NotFound
-                        | data::DataError::FieldUnavailable,
-                    ) => Some(Vec::new()),
-                    Err(e) => return Err(e.into()),
+                    Err(e) if e.is_transient() => return Err(e.into()),
+                    // 権限が無い・行が見えない・状態の列が読めない・その他の確定的な誤り: 判断できないと出す
+                    // （判断の API が改めて認可する）。
+                    Err(_) => Some(Vec::new()),
                 }
             } else {
                 None
@@ -340,7 +342,34 @@ async fn visible_items(
         .collect())
 }
 
+/// テーブル単位の読取の結果（見えない・権限が無い・確定的な誤りは、そのテーブルの項目を落とす `None`）。
+///
+/// 一時障害（[`data::DataError::is_transient`]）だけを応答の誤りにする（壊れたテーブル 1 つで受信箱と件数が
+/// まるごと 5xx にならないように）。
+fn per_table<T>(r: Result<T, data::DataError>, table_id: Uuid) -> Result<Option<T>, ApiError> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if e.is_transient() => Err(e.into()),
+        Err(data::DataError::NotFound | data::DataError::Forbidden) => Ok(None),
+        Err(e) => {
+            tracing::warn!(error = %e, %table_id, "承認のテーブルを読めないので受信箱に出さない");
+            Ok(None)
+        }
+    }
+}
+
+fn cursor_of(created_at: DateTime<Utc>, approval_id: Uuid) -> InboxCursor {
+    InboxCursor {
+        created_at,
+        approval_id,
+    }
+}
+
 /// 自分宛ての承認待ち（本人か所属ロール宛て・行が本人に見えるものだけ・新しい順に 50 件ずつ）。
+///
+/// 台帳を読み進めて、見える項目が 50 件たまるか、読み直した台帳の行が上限（500）に達するまで集める
+/// （新しい側に見えない承認が並んでも、見える承認に辿り着ける）。上限で打ち切ったときは、50 件に満たなくても
+/// 続きの位置を返す。
 #[utoipa::path(
     get,
     path = "/approvals",
@@ -365,32 +394,43 @@ pub async fn list_approvals(
         ),
     };
     let roles = my_roles(&state, &ctx).await?;
-    let rows = store(&state)
-        .inbox(
-            &ctx.tenant_id,
-            &ctx.org,
-            &ctx.principal.id,
-            &roles,
-            after,
-            PAGE,
-        )
-        .await
-        .map_err(internal)?;
-    let next_cursor = (rows.len() as i64 == PAGE)
-        .then(|| rows.last())
-        .flatten()
-        .map(|r| {
-            InboxCursor {
-                created_at: r.created_at,
-                approval_id: r.approval_id,
-            }
-            .encode()
-        });
-    let items = visible_items(&state, &ctx, rows, false, trace.as_deref()).await?;
+    let page = PAGE as usize;
+    let mut items: Vec<ApprovalItem> = Vec::new();
+    let mut scanned = 0usize;
+    let mut after = after;
+    let next = loop {
+        let rows = store(&state)
+            .inbox(
+                &ctx.tenant_id,
+                &ctx.org,
+                &ctx.principal.id,
+                &roles,
+                after,
+                PAGE,
+            )
+            .await
+            .map_err(internal)?;
+        let n = rows.len();
+        scanned += n;
+        let last = rows.last().map(|r| cursor_of(r.created_at, r.approval_id));
+        items.extend(visible_items(&state, &ctx, rows, false, trace.as_deref()).await?);
+        let exhausted = (n as i64) < PAGE;
+        if items.len() > page {
+            // 1 ページ分を超えた: 50 件目の後ろから続ける（その後ろの行は次のページで読み直す）。
+            items.truncate(page);
+            break items.last().map(|i| cursor_of(i.created_at, i.approval_id));
+        }
+        if items.len() == page || exhausted || scanned >= SCAN_LIMIT {
+            // 台帳を読み切ったら続きは無い。そうでなければ、読んだ行の後ろから続ける。
+            break if exhausted { None } else { last };
+        }
+        after = last;
+    };
+    let next_cursor = next.map(|c| c.encode());
     Ok(Json(ApprovalListResponse { items, next_cursor }))
 }
 
-/// 自分宛ての承認待ちの件数（一覧と同じ絞り込み・99 で打ち切り）。
+/// 自分宛ての承認待ちの件数（一覧と同じ絞り込み・99 で打ち切り・読み直す台帳の行の上限で打ち切ったら `more`）。
 #[utoipa::path(
     get,
     path = "/approvals/count",
@@ -408,6 +448,7 @@ pub async fn count_approvals(
     let roles = my_roles(&state, &ctx).await?;
     let mut count = 0usize;
     let mut scanned = 0usize;
+    let mut truncated = false;
     let mut after: Option<InboxCursor> = None;
     loop {
         let rows = store(&state)
@@ -423,20 +464,22 @@ pub async fn count_approvals(
             .map_err(internal)?;
         let n = rows.len();
         scanned += n;
-        after = rows.last().map(|r| InboxCursor {
-            created_at: r.created_at,
-            approval_id: r.approval_id,
-        });
+        after = rows.last().map(|r| cursor_of(r.created_at, r.approval_id));
         count += visible_items(&state, &ctx, rows, false, trace.as_deref())
             .await?
             .len();
-        if count > COUNT_CAP || (n as i64) < PAGE * 2 || scanned >= COUNT_SCAN {
+        if count > COUNT_CAP || (n as i64) < PAGE * 2 {
+            break;
+        }
+        if scanned >= SCAN_LIMIT {
+            // 見えない承認が多く数え切れなかった（数えた分より多いかもしれない）。
+            truncated = true;
             break;
         }
     }
     Ok(Json(ApprovalCountResponse {
         count: u32::try_from(count.min(COUNT_CAP)).unwrap_or(99),
-        more: count > COUNT_CAP,
+        more: count > COUNT_CAP || truncated,
     }))
 }
 
