@@ -222,6 +222,7 @@ IR のトップレベルは以下の形を取る。
 | `control.map` | `out`（領域完了後・結果配列） |
 | `control.wait`（event, `on_timeout: continue`） | `out` / `timeout` |
 | `human.approval` | `approved` / `withdrawn` ＋ `rejected`（`reject` を指定したとき）・`returned`（`return` を指定したとき）・`timeout`（期限を決めて `on_timeout: continue` のとき）（§7.9） |
+| `workflow.reply` | `out`（＋ `on_error: continue` 時 `error`）（§7.10） |
 
 - `control.switch` の case ポート名は params の `cases` で宣言する値と一致させる（保存時にポート存在検証・§8 V2）。
 
@@ -376,6 +377,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `agent.invoke` | AI | サンドボックスで agent-core | best-effort | 600s / 3600s |
 | `http.request` | 外部 | 外部 HTTP | **best-effort**（Idempotency-Key 注入支援のみ） | 30s / 120s |
 | `human.approval` | 人間参加 | テーブルの 1 行について担当者の承認・却下・差し戻しを待って分岐する（判断は承認者本人の FSM 遷移・§7.9） | engine-dedup（台帳は step で 1 件） | 30s / 120s（停止まで。判断を待つ時間は `timeout_sec` と `run_timeout_sec`） |
+| `workflow.reply` | フロー連携 | 結果を画面に返す（ボタン・会話から起動した本人の画面に出す・スコープ不要・§7.10） | pure | 5s / 10s |
 
 以下、設計上の要点を持つノード種を個別に規定する。params の網羅的スキーマは codegen 型が正であり、本節は制約と出力形を示す。
 
@@ -561,6 +563,30 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 - **置き場所**: event トリガのワークフローに置くことを推奨する（interactive の run に置くと、後続も申請者本人の権限で走る）。
 - 実行時（台帳・受付の突合・起床・期限・取消）は [engine.md](./engine.md) §9.6。
 
+### 7.10 `workflow.reply`（結果を画面に返す）
+
+```jsonc
+{ "id": "reply_answer", "type": "workflow.reply", "label": "回答",
+  "params": {
+    "format": "markdown",                 // text | markdown | table | file_link
+    "label": "回答",                       // 省略可・40 字まで
+    "tone": "neutral",                    // neutral（既定）| success | warning | error
+    "value": { "$from": "nodes.answer.output", "path": "/text" },
+    "columns": [ { "label": "条項", "path": "/clause" } ],      // table のときだけ・20 列まで
+    "file": { "id_path": "/file_id", "name_path": "/file_name" } // file_link のときだけ・既定 /id・/name
+  } }
+```
+
+- **表示されるのは、interactive の run を起動した本人（ミニアプリの画面のボタン・会話の図のボタンを押した人）の画面だけ**。schedule・event の run（実行主体は workflow プリンシパル）、`workflow.start` の子、ワークフロー画面から起動した run の結果はどこにも出ない（読取口が principal・principal_kind = user・org・trigger_kind = interactive で絞る・[engine.md](./engine.md) §11.6）。会話の結果も押した本人にだけ見せ、次の回答の履歴（モデル）には渡さない。
+- pure で、能力を呼ばず secret も解決しない。要求スコープは無い（scope 天井の許可に含める）。
+- **本体（`parent: null`）にだけ置ける**（map 領域の中は `ir.reply_in_map`・要素ごとの結果は map の集約出力を table で返す）。中間に置ける（「受け付けました」を返してから `control.wait`・`human.approval` へ進む）。分岐ごとに別の reply を置け、実行されなかった側は skipped で画面に出ない。
+- **整形**（executor）: text・markdown は文字（数値・真偽は文字にする・null は空・オブジェクトと配列は `invalid`）。table は配列の各要素（オブジェクトか配列）が 1 行で、`columns` があれば各セルを `path` で引き、無ければ先頭 20 行のキーを最大 20 列（並びは名前順）。セル 500 字・100 行（`total_rows` に元の行数）・null は空欄・オブジェクトは短い JSON。file_link はオブジェクトか配列で 20 件まで、ID が UUID でなければ `invalid`、同じ ID は 1 件にまとめる（社内検索の同じファイルの複数の抜粋）、名前は 200 字（無ければ「ファイル」）。1 節は 16KB まで（文字は境界で切り、行・件数は末尾から落とし、`truncated` を立てる）。解決できない参照は `expr_resolve_error`。
+- **出力**（画面に出す節そのもの）: `{ format, label?, tone, truncated, text? | columns, rows, total_rows | files: [{ id, name }] }`。正本はこの step の出力で、別の場所へ写さない（実行履歴の保持期間に従う）。
+- **結果の Markdown の中の操作を持つ図・表**（` ```ui `・` ```yui `・` ```data_grid `）は、読取のときにすべて ` ```text ` に書き換え、画面も操作の宛先を持たない文脈で描く（D-28）。結果からの再起動はできない。画像は読み込まずリンクにし、外部リンクにはホスト名を添える。
+- 固定の文言（`label`・`columns[].label`・リテラル・`$template` の地の文）はアプリを使う人全員に見える。値はすべて押した本人の権限で読んだもの。
+- **置き方の指針**: 成功の結果は副作用の最後に置く。業務上の失敗は、失敗し得るノードを `on_error: continue` にして `error` 出口の先に `tone: error` の reply を置く（run は処理済み失敗として成功になり、画面は「完了」と出す）。
+- 失敗した run の理由（利用者向けの分類・参照番号）は reply ではなく読取口が step の code から作る（[engine.md](./engine.md) §11.6）。
+
 ---
 
 ## 8. 保存時検証パイプライン（確定・順序固定）
@@ -575,19 +601,20 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 | V4 | 参照存在 | skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノード URL ホストを許容）・テーブル/フォルダ id | `ir.unknown_skill` |
 | V5 | データフロー | `$from` の祖先性・default 要否・条件木の型整合（静的に分かる範囲）・regex コンパイル | `ir.bad_ref` |
 | V6 | script コンパイル | inline script の swc パース・禁止構文（[script.md](./script.md) §3。artifact 参照は version 固定なので存在のみ） | `ir.script_syntax` |
-| V7 | 上限 | ノード ≤ 200・エッジ ≤ 500・IR ≤ 1MB・条件木深さ ≤ 5・テンプレ var 数 ≤ 50・承認の期限 < `run_timeout_sec` | `ir.limit_exceeded` |
+| V7 | 上限 | ノード ≤ 200・エッジ ≤ 500・IR ≤ 1MB・条件木深さ ≤ 5・テンプレ var 数 ≤ 50・承認の期限 < `run_timeout_sec`・`workflow.reply` ≤ 10 | `ir.limit_exceeded` |
 
 各ステージの詳細:
 
 - **V1 スキーマ**: トップレベルからノード params まで、JSON Schema で型・必須・deny-unknown を検証する。未知フィールドは全階層で拒否する（§2）。
-- **V2 グラフ**: `id` 一意、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1、全ノードのエントリからの到達可能性を検証する。
+- **V2 グラフ**: `id` 一意、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1、全ノードのエントリからの到達可能性を検証する。`workflow.reply` は map 領域に置けない（`ir.reply_in_map`・§7.10）。
 - **V3 語彙照合**: ノード `type`・`declared_scopes`・ツール名（`allowed_tools`）・モデル名を codegen が生成した閉じた語彙と、テナントの登録カタログ（モデルは組織が許可したモデル・本人専用を除く）へ照合する。**ハルシネーション境界**であり、実在しない語彙を参照する IR（特に AI 生成）を保存前に拒否する。`llm.invoke` の `model` は省略可で、省略（空文字を含む）は照合しない（実行時に組織の既定で解決する・§7.3）。組織がモデルの選択を禁じていれば、既定と異なるモデルを `ir.model_choice_disabled` で拒否する。
 - **V4 参照存在**: skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノードの `http.request` URL ホストを許容する）・テーブル/フォルダ id の実在を検証する。`human.approval` は、テーブルが保存者に見えて FSM で管理されていること（見えないテーブルと FSM でないテーブルは同じ文言 `ir.unknown_table`）、判断の行き先が FSM の状態であること（`ir.unknown_state`）、`show_fields` と担当者の列がテーブルの列（担当者はユーザー・部署の列）であることを照合する（材料は保存 API が保存者の権限で引く）。
 - **V3 の承認**: `human.approval` は `data.read` と `notify.send` の宣言が要る（保存時の scope 補完が足す）。
 - **V5 データフロー**: `$from` の `nodes.<id>` が祖先か、全パスで先行しない場合に `default` があるか、条件木の左右の型が静的に整合するか、`matches` の regex がコンパイルできるかを検証する（§3）。`control.wait` の `filter` では、届いたイベントを指す `event`（別名 `trigger` / `payload`）も書ける（§7.5）。
 - **保存を止めない警告**（V3・イベント）: 同じテーブルの `data.record.updated` と `data.transition`（`ir.overlapping_data_triggers`）、wait(event) の filter の別名（`ir.wait_filter_alias`）、続けて待つ承認の期限の合計が実行の期限以上（`ir.approval_timeouts_exceed_run`・§7.9）。
 - **V6 script コンパイル**: inline script を swc でパースし、禁止構文を弾く（[script.md](./script.md) §3）。artifact 参照は version 固定なので存在確認のみ。
-- **V7 上限**: サイズ・数量の上限を検証する（すべて初期値・設定で調整可）。
+- **V7 上限**: サイズ・数量の上限を検証する（すべて初期値・設定で調整可）。`workflow.reply` の `value` がリテラルなら形と合うこと（text・markdown は文字・table は配列・file_link はオブジェクトか配列。`ir.reply_type`・path は `/params/value`）。
+- **保存を止めない警告**（`workflow.reply`）: interactive のトリガが無い IR の reply は画面に出ない（`ir.reply_without_interactive`）。
 
 **エラー形式**: 最初の 1 件で止めず、全件を配列で返す（dnd がノード上に表示するため）。
 
@@ -611,6 +638,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **artifact version は不変**。run は開始時に `(workflow_id, version)` を**ピン**し、実行途中で新版に乗り換えない。
 - **有効化（enable）は version 単位**: `workflow_registration` が `enabled_version` を指す（[engine.md](./engine.md) §2/§10）。新版を公開しても、enable を切り替えるまで旧版が動き続ける。
 - **`ir_version`（スキーマ版）は整数単調増加**。エンジンは N と N-1 を読める（それ以前は保存時マイグレーション必須）。フィールド追加であっても deny-unknown のため `ir_version` を上げる（安全側に倒す・頻度は低い想定）。
+  - **ノード種の追加（予約語彙の解禁・新しい variant）は `ir_version` を上げない**。`Node.type` は文字列として読み V3 で語彙と照合するので、serde の形が変わらない（前例: `csv.*`・`data.*`・`human.approval`・`workflow.reply`）。上げるのはエンベロープや既存の構造体（トリガ・エッジ・ポリシー）へのフィールドの追加。
 - **削除は論理削除のみ**（実行履歴の run が version を参照し続けるため）。
 - **scope 拡大時の再同意**: 新 version の `declared_scopes` が旧版より広がった場合、有効化済みワークフローは再同意が済むまで新版へ切替不可（§2・fail-closed）。縮小のみなら差分同意なしで切替可能（同意フローの UI 契約は [engine.md](./engine.md) §10）。
 

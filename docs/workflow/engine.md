@@ -157,6 +157,9 @@ create table workflow_run (
     -- 因果の鎖（祖先ワークフロー）と由来の run（§5.4）。workflow.start の子は親の鎖 ∪ {親} を引き継ぐ。
     trigger_chain    uuid[]      not null default '{}',
     cause_run_id     uuid,
+    -- 結果を画面に返すノード（workflow.reply）の id（実行順＝トポロジカル順・同じ段なら IR 順）。読取口は
+    -- ir_snapshot を開かずに reply の step だけを引く（§11.6）。
+    reply_nodes      text[]      not null default '{}',
     started_at       timestamptz,
     finished_at      timestamptz,
     created_at       timestamptz not null default now(),
@@ -365,6 +368,9 @@ stateDiagram-v2
 ```
 
 - 補助状態 `waiting`（in-flight step が全部 wait 中）は **表示用の導出値**であり、カラムに持たない（真実は step 側）。
+  - 判定式: `status = running` ∧ `waiting_timer` か `waiting_event` の step がある ∧ `ready`・`running` の step が無い（多重度の数え方 §8.3 の「待機中の run」と同じ）。
+  - 何を待っているか（`waiting_for`）: 保留中の承認の台帳（`workflow_approval.status = pending`）がある `waiting_event` の step があれば `approval`、`waiting_event` があれば `event`、`waiting_timer` だけなら `timer`。
+  - 画面（ミニアプリ・会話の図のボタンの記録）は待機中を「実行中」と区別して出し、待機中だけなら読み直しの間隔を空ける（§11.6）。
 - `cancelling` も同様に導出であり、`cancel_requested = true ∧ status = running` の表示ラベルである。
 
 ### 3.2 step 状態機械
@@ -976,6 +982,21 @@ v1 は次の 2 つだけを提供する。step 単位の入力編集リプレイ
 ### 11.5 メトリクス
 
 queue 滞留・step 実行時間・リトライ率・リース失効率・スケジューラ遅延を Prometheus に出す。
+
+### 11.6 起動した本人への結果（workflow.reply・GAP-09）
+
+ミニアプリの画面のボタン・会話の図のボタンで起動した run の結果を、押した本人の画面に返す（[ir.md](./ir.md) §7.10）。
+
+- **正本は reply の step の `step_execution.output`**（executor が整形した節）。`miniapp_action_run`・`ui_action_run` へは写さない。実行履歴の保持期間（§12.2）にそのまま従い、run が GC で消えた後は状態だけが記録に残る（画面は「保持期間を過ぎたため、結果は表示できません」）。失敗した step からの再開・リース失効の再実行でも同じ step の行が上書きされるだけで二重にならない。
+- **読取口** `RunOutcomeReader`:
+  - `live_states(ctx, run_ids)`: 状態と `waiting_for`（§3.1）。`RunStatusReader` と同じく「状態だけ」で、呼び出し側が自分の境界で認可した run だけを渡す。
+  - `own_outcomes(ctx, run_ids, with_reply)`: SQL で `principal = 本人 ∧ principal_kind = 'user' ∧ org = ctx.org ∧ trigger_kind = 'interactive'` の run だけを返す（呼び出し側が他人の run_id を渡しても空）。返すのは reply の節（実行順・10 節・32KB まで・超えた分は `omitted`）と失敗の理由だけで、他の step の出力・run の入力・IR は返さない。
+- **二重の関門**: 呼び出し側（gui・chat）が「アプリの viewer（会話は閲覧者）∧ 押した本人（`invoked_by`）∧ org」を確かめ、読取口が上の条件で絞る。ワークフローの viewer は求めない（interactive の run の値は本人の ReBAC ∩ declared_scopes・secret は本人の can_use で読んだもので、作成者に由来するのは固定の文言だけ）。schedule・event の run、`workflow.start` の子、ワークフロー画面から起動した run の結果は出ない。
+- **失敗の理由**: 読取のときに最初の未処理の失敗 step（`failed` ∧ `taken_ports` が空 ∧ map の要素ではない・`updated_at` の順）の `error.code` と run の `fail_reason`（`run_timeout` を優先）から、利用者向けの分類（permission・conflict・not_found・temporary・quota・timeout・configuration・unknown）と文言を決め、参照番号（run_id の先頭 8 桁）を添える。map の要素の失敗で落ちた run は要素の側の code で分類する。生の `message` は返さない。終端で書き込まないので、再開した run に古い理由は残らない。一時障害・時間切れ・分類できない失敗の文言は押し直しを勧めない（押し直すと新しい冪等キーで別の run になる・PIT-31）。分類の表は `run/failure.rs` の 1 か所。
+- **表示の無害化**: 結果の Markdown の中の ` ```ui `・` ```yui `・` ```data_grid ` は読取のとき（gui・chat）にすべて ` ```text ` へ書き換える（`yui::neutralize_fences`）。
+- **会話**: 結果と失敗の理由は `invoked_by = 閲覧者` の行にだけ付け、次の回答の履歴（モデル）には状態の語だけを渡す。
+- **応答の大きさ**: 一覧（`GET /mini-apps/{id}/runs`・スレッドのメッセージ）が結果を付けるのは、未確定の run と最新の終わった 1 件だけ（会話はメッセージごと）。他は `has_reply` を見て `GET /mini-apps/{id}/runs/{run_id}`・`GET /threads/{thread_id}/ui-runs/{run_id}` で読む（同じ関門）。
+- **監査**: reply の生成は run_event（`step.succeeded`）に残る。本人が自分の結果を読む操作は監査しない（会話のツール結果を読む操作と同じ扱い）。
 
 ---
 
