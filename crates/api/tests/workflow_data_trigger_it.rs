@@ -645,6 +645,33 @@ async fn data_change_triggers_fire_on_changes_the_delegator_can_see() {
         .await
         .unwrap();
     assert_eq!(total, 3, "作成・更新・状態の変更で 1 回ずつ");
+
+    // 読めないテーブルの変更は購読できない（有効化者がテーブルの viewer でなければ有効化を拒む）。
+    let carol = user(&env.tenant, "carol");
+    let (spy, parsed) = env
+        .workflows
+        .create(
+            &carol,
+            &json!({
+                "ir_version": 1, "name": "carol-watch",
+                "triggers": [{ "kind": "event", "source": "data.record.created", "scope": { "table": t } }],
+                "nodes": passthrough(), "edges": []
+            }),
+            &Catalog::default(),
+            None,
+        )
+        .await
+        .expect("保存はできる（テーブルの実在は見ない）");
+    let refused = env.registration.enable(&carol, spy, 1, &parsed, &[]).await;
+    assert!(
+        matches!(
+            refused,
+            Err(workflow_engine::EnableError::Delegation(
+                workflow_engine::DelegationError::OutOfScope(_)
+            ))
+        ),
+        "{refused:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
