@@ -4,10 +4,11 @@
 /// 束ねたワークフローを起動する。起動の記録（本人の分）と、ワークフローが画面に返した結果（GAP-09）は
 /// 図の下に出し、終わるまで読み直す（待機中だけなら間隔を空ける・BUG-20）。起動が終わったら画面の表を
 /// 読み直す（BUG-19）。バージョン切替は「その版を解決して描画」＝再現性の確認にも使える。
+/// 束ねたスキルが使えない（削除された・本文が壊れている）ときもアプリは開き、見出しの下に理由を出す（BUG-17）。
 
 import * as React from "react";
 import { use } from "react";
-import { AppWindow, History, Loader2, Pencil, Share2 } from "lucide-react";
+import { AppWindow, History, Loader2, Pencil, Share2, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 
 import { ChromeIconButton, usePageChrome } from "@/components/shell/page-header-context";
@@ -150,6 +151,9 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
     if (finished) setGridRevision((n) => n + 1);
   }, [runs, runsLoaded]);
 
+  // 使えない部品（壊れた任意のピン）のうちスキルの分。画面とボタンはそのまま使える（BUG-17）。
+  const skillUnavailable = app?.unavailable.find((u) => u.path === "skill");
+
   // 編集の対象は読み込んだ版が変わったときだけ作り直す（記録の読み直しで編集中の入力を戻さない）。
   const editTarget = React.useMemo(
     () => (app ? { id: app.id, version: app.version, body: app.body } : undefined),
@@ -213,9 +217,21 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
             </h1>
             <p className="mt-0.5 text-xs text-muted-foreground">
               v{app.version}
-              {app.body.skill ? "・スキル適用" : ""}
+              {app.body.skill ? (skillUnavailable ? "・スキルは使えません" : "・スキル適用") : ""}
               {app.body.workflows.length > 0 ? `・ワークフロー ${app.body.workflows.length} 件` : ""}
             </p>
+            {skillUnavailable ? (
+              <p
+                role="note"
+                data-testid="miniapp-skill-unavailable"
+                className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400"
+              >
+                <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <span className="min-w-0 [overflow-wrap:anywhere]">
+                  {skillUnavailable.message}。このアプリのスキルだけが使えません。画面とボタンはそのまま使えます。
+                </span>
+              </p>
+            ) : null}
           </div>
 
           <YuiActionContext.Provider value={host}>

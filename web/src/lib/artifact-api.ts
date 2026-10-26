@@ -165,12 +165,16 @@ export async function getSkill(id: string, version?: number): Promise<SkillVersi
 
 export type MiniAppVersion = { id: string; version: number; body: MiniAppBody };
 
-export type ResolvedMiniApp = {
-  id: string;
-  version: number;
+/// 解決済みのミニアプリ（codegen の応答に、検証済みの本文の型を当てたもの）。
+///
+/// `unavailable` は使えない部品（壊れた任意のピン・`path` が部品の位置）、`can_edit` は閲覧者本人が編集できるか。
+export type ResolvedMiniApp = Omit<components["schemas"]["ResolvedMiniAppResponse"], "body"> & {
   /// 検証済みの本文（画面＝Yui の ```ui を含む Markdown と、束ねたワークフロー）。
   body: MiniAppBody;
 };
+
+/// 使えない部品の理由 1 件（codegen）。
+export type UnavailablePin = components["schemas"]["GuiValidationError"];
 
 /// 画面のボタンで起動したワークフロー 1 件（本人の分・#604・codegen）。
 export type MiniAppRun = components["schemas"]["MiniAppRun"];

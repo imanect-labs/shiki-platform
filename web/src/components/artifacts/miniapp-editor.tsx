@@ -106,6 +106,8 @@ export function MiniAppEditorDialog({
   const sourceEdited = React.useRef(false);
   const [inputs, setInputs] = React.useState<Record<string, WorkflowChoice["inputs"]>>({});
   const [skills, setSkills] = React.useState<ArtifactMeta[]>([]);
+  // スキルの一覧を読み終えたか（読めなかったときは false のまま・束ねたスキルを「読めない」と決めつけない）
+  const [skillsLoaded, setSkillsLoaded] = React.useState(false);
   const [workflows, setWorkflows] = React.useState<ArtifactMeta[]>([]);
   const [skillId, setSkillId] = React.useState("");
   const [pins, setPins] = React.useState<Pin[]>([]);
@@ -128,7 +130,13 @@ export function MiniAppEditorDialog({
     setBuilderKey((k) => k + 1);
     setInputs({});
     setError(null);
-    void listArtifacts("skill").then(setSkills).catch(() => setSkills([]));
+    setSkillsLoaded(false);
+    void listArtifacts("skill")
+      .then((list) => {
+        setSkills(list);
+        setSkillsLoaded(true);
+      })
+      .catch(() => setSkills([]));
     void listArtifacts("workflow").then(setWorkflows).catch(() => setWorkflows([]));
   }, [open, app]);
 
@@ -178,6 +186,14 @@ export function MiniAppEditorDialog({
     }
     setTab(next);
   };
+
+  // 束ねているスキルが自分の一覧に無い（削除された・自分には読めない）。選択欄に残して見せ、選び直しを促す
+  // （一覧に無いと選択欄は「なし」に見えるのに、保存ではそのピンを送って止まる・BUG-17）。
+  const pinnedSkill = app?.body.skill;
+  const missingSkill =
+    pinnedSkill != null && skillId === pinnedSkill.artifact_id && skillsLoaded && !skills.some((s) => s.id === skillId)
+      ? pinnedSkill
+      : null;
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -368,14 +384,26 @@ export function MiniAppEditorDialog({
             <label htmlFor="app-skill" className={FIELD}>
               スキル（任意）
             </label>
-            <select id="app-skill" value={skillId} onChange={(e) => setSkillId(e.target.value)} className={SELECT}>
+            <select
+              id="app-skill"
+              value={skillId}
+              onChange={(e) => setSkillId(e.target.value)}
+              className={SELECT}
+              aria-describedby={missingSkill ? "app-skill-missing" : undefined}
+            >
               <option value="">なし</option>
+              {missingSkill ? <option value={missingSkill.artifact_id}>読めないスキル（v{missingSkill.version}）</option> : null}
               {skills.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}（v{s.currentVersion}）
                 </option>
               ))}
             </select>
+            {missingSkill ? (
+              <p id="app-skill-missing" className="text-xs text-amber-700 dark:text-amber-400" role="note">
+                束ねているスキルは削除されたか、あなたには読めません。このままでは保存できないので、別のスキルか「なし」を選んでください。
+              </p>
+            ) : null}
           </div>
 
           {error ? (
