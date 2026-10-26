@@ -461,7 +461,7 @@ test("承認を待つブロック: テーブルに無い受信箱の列・担当
   // ほかの欄を直して保存すると、サーバの検証（ir.unknown_field）で止まり、理由が受信箱に出す列の欄に出る。
   await panel.getByPlaceholder("例: 経費申請の承認").fill("経費申請の承認（課長）");
   await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(panel.getByText("列 ghost はこのテーブルにありません")).toBeVisible({ timeout: 15_000 });
+  await expect(panel.getByText("列 ghost はこのテーブルに無いか、読めない列です")).toBeVisible({ timeout: 15_000 });
 
   // 外すと消え、保存できる（ほかの列は残る）。
   await stray.getByRole("button", { name: "列 ghost を外す" }).click();
@@ -681,12 +681,12 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   await expect(panel.getByText("このテーブルに無い列")).toHaveCount(0);
 
   // ほかの欄を直すと検証が走る。サーバは bob の見え方で照合するので、読めない金額・別の承認者も、無い ghost と
-  // 同じ「このテーブルにありません」で返す。欄の下にはどちらとも言わない言い方で出し、注記も断定に変えない。
-  const SHOW_GHOST = "列 ghost は、テーブルに無いか、あなたが読めない列です。外すまで保存できません";
+  // 同じ誤りで返す。サーバの文言もどちらとも言わない（BUG-65）ので、欄の下にはそのまま出し、注記も断定に変えない。
+  const SHOW_GHOST = "列 ghost はこのテーブルに無いか、読めない列です";
   await panel.getByPlaceholder("例: 経費申請の承認").fill("給与の申請の承認（部長）");
   await expect(panel.getByText(SHOW_GHOST)).toBeVisible({ timeout: 15_000 });
   await expect(
-    panel.getByText("担当者の列 secret_approver は、テーブルに無いか、あなたが読めない列です。外すまで保存できません"),
+    panel.getByText("担当者の列 secret_approver はこのテーブルに無いか、読めない列です"),
   ).toBeVisible();
   await expect(panel.getByText(/このテーブルにありません/)).toHaveCount(0);
   await expect(panel.getByText("このテーブルに無い列")).toHaveCount(0);
@@ -709,7 +709,7 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   await expect(panel.getByText(/列 amount は/)).toHaveCount(0);
   release();
   await expect(
-    panel.getByText("列 amount は、テーブルに無いか、あなたが読めない列です。外すまで保存できません"),
+    panel.getByText("列 amount はこのテーブルに無いか、読めない列です"),
   ).toBeVisible({ timeout: 15_000 });
   await expect(stray).not.toContainText("このテーブルに無い列");
   await bob.unroute("**/api/workflows/validate");

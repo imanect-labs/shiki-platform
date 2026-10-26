@@ -23,10 +23,9 @@ import type {
 } from "@/generated/workflow-ir";
 import { getViewerContext, type DataTable } from "@/lib/data-api";
 import { cn } from "@/lib/utils";
-import { paramField } from "../validation";
 import { Field, NumberInput } from "./common";
 import { DataTableSelect, useDataTables, type TableLookup } from "./data-tables";
-import type { FormProps, ServerCheck } from "./forms-basic";
+import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
 
@@ -136,35 +135,9 @@ function useSeesWholeTable(tableId: string | null): boolean {
   return whole?.id === tableId && whole.value;
 }
 
-/// 受信箱に出す列・担当者の列の欄の下に出すサーバの誤り（`message` はその欄に写した 1 件目）。
-///
-/// サーバは保存者の見え方で照合する（owner 以外は読める列だけ）ので、定義の全体が見えていない人には、読めない
-/// 列も無い列と同じ「このテーブルにありません」（ir.unknown_field）で返る（区別させない）。そのまま出すと読めない
-/// 列を「無い」と言うので、無いか読めない列という言い方に直す。列の名前は検証の対象だった IR の値で引く（検証の
-/// 後に外す・並べ替えると添字がずれる）。
-function listError(
-  message: string | undefined,
-  check: ServerCheck,
-  list: "show_fields" | "assignees",
-  seesWholeTable: boolean,
-): string | undefined {
-  if (!message || seesWholeTable) return message;
-  const shown = check.errors.find((e) => paramField(e.path) === list);
-  if (shown?.code !== "ir.unknown_field" || shown.message !== message) return message;
-  const p = check.node ? paramsOf<Params>(check.node) : null;
-  const at = list === "show_fields" ? /^\/params\/show_fields\/(\d+)$/ : /^\/params\/assignees\/(\d+)\/field$/;
-  const m = at.exec(shown.path ?? "");
-  const i = m ? Number(m[1]) : -1;
-  const key = list === "show_fields" ? p?.show_fields?.[i] : p?.assignees?.[i]?.field;
-  const what = list === "show_fields" ? "列" : "担当者の列";
-  return key
-    ? `${what} ${key} は、テーブルに無いか、あなたが読めない列です。外すまで保存できません`
-    : `${what}に、テーブルに無いか、あなたが読めない列があります。外すまで保存できません`;
-}
-
 /// 選べる列に無い保存済みの列の注記（`certain` は赤字で出す）。`missing`（定義の全体が見えている）でなければ、
-/// 読めないだけで実在する列かもしれないので「無い」と断定しない（サーバの ir.unknown_field も、owner 以外には
-/// 無い列と読めない列を区別しない）。
+/// 読めないだけで実在する列かもしれないので「無い」と断定しない（サーバの ir.unknown_field も、無い列と読めない列を
+/// 区別せず「このテーブルに無いか、読めない列です」と返す）。
 function unselectableNote(key: string, missing: boolean): { text: string; certain: boolean } {
   return missing
     ? { text: `このテーブルに無い列: ${key}`, certain: true }
@@ -172,7 +145,7 @@ function unselectableNote(key: string, missing: boolean): { text: string; certai
 }
 
 export function HumanApprovalForm(props: FormProps) {
-  const { node, dispatch, refCandidates, inMapRegion, fieldErrors, serverCheck } = props;
+  const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
   const p = paramsOf<Params>(node);
   // 束縛済みのテーブルが一覧（200 件で打ち切る）に無くても、1 件取って足す（BUG-68）。
   const source = useDataTables({ bound: [p.record?.table] });
@@ -242,7 +215,7 @@ export function HumanApprovalForm(props: FormProps) {
         assignees={p.assignees ?? []}
         seesWholeTable={seesWholeTable}
         tableNote={tableNote}
-        error={listError(fieldErrors.get("assignees"), serverCheck, "assignees", seesWholeTable)}
+        error={fieldErrors.get("assignees")}
         onChange={(assignees) => set({ assignees })}
       />
 
@@ -267,7 +240,7 @@ export function HumanApprovalForm(props: FormProps) {
       <ShowFieldsField
         table={table}
         value={p.show_fields ?? []}
-        error={listError(fieldErrors.get("show_fields"), serverCheck, "show_fields", seesWholeTable)}
+        error={fieldErrors.get("show_fields")}
         seesWholeTable={seesWholeTable}
         onChange={(v) => set({ show_fields: v.length ? v : undefined })}
       />
@@ -420,8 +393,9 @@ function ChoiceField({
 ///
 /// 列が選べる列に無いとき、「テーブルに無い」と言うのは `seesWholeTable` が真のときだけ（受信箱に出す列と同じ）。
 /// owner 以外に返る定義には読めない列が無いので、読めないだけのユーザーの列を「無い」と言わない。`error` は
-/// 欄の下に出すサーバの誤り（[`listError`] で言い方を直したもの）。`tableNote` は束縛したテーブルの定義を
-/// 使えないとき（読み込み中・読めない）の注記で、「先にテーブルを選んでください」の代わりに出す。
+/// 欄の下に出すサーバの誤り（サーバは、無い列と読めない列のどちらとも言わない文言で返す）。`tableNote` は
+/// 束縛したテーブルの定義を使えないとき（読み込み中・読めない）の注記で、「先にテーブルを選んでください」の
+/// 代わりに出す。
 function AssigneesField({
   node,
   refCandidates,
