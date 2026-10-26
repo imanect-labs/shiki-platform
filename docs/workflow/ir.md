@@ -86,6 +86,8 @@ IR のトップレベルは以下の形を取る。
   **新バージョンで `declared_scopes` が広がった場合、有効化済みワークフローは再同意が済むまで新バージョンへ切替不可**（fail-closed。実行時の強制は [engine.md](./engine.md) §10 と対応）。縮小のみなら差分同意なしで切替可能。
 - **`policies`**: 全て省略可。省略時は既定値。`run_timeout_sec` は run 全体の壁時計上限、`max_parallel_runs` はこのワークフロー単位の run 同時実行上限、`on_trigger_overflow` は上限超過時の挙動（`queue` はバックプレッシャで滞留、`skip` は run 作成を見送る。実行時の滞留・滞留解除の詳細は [engine.md](./engine.md) §8）。`max_parallel_runs` が数えるのは実行中の run で、**wait（時間・できごと）で止まっている run は数えない**（承認やイベントを何日も待つ run が枠を占めて、新しい起動が進まなくなるのを防ぐ。起床して上限を一時的に超えるのは許す・D-26）。
 - **`input_schema`**: 対話トリガ（§6 `interactive`）の入力フォーム契約。JSON Schema のサブセット（型・必須・enum・range 程度。式・`$ref` 外部参照は持たない）。`llm.invoke` の `output_schema` も同じサブセットを使う（§7）。`format` は `date`（`YYYY-MM-DD` の実在する日付）だけを起動の前に検査し、ほかの値は注記として読み飛ばす（画面の日付の欄が送る形を、API・会話の図からの起動でも守らせる・BUG-35）。
+  - **項目の並び（`x-order`）**: 注記 `"x-order": ["title", "amount"]`（`properties` のキーの配列）が、画面に並べる項目の順を持つ。IR は jsonb の列に保存されるので、`properties` のキーの順は保存して読み直すと辞書順に変わる（BUG-34・D-60）。画面（エディタの入力項目の表・実行のダイアログ・ミニアプリの部品の候補）は `x-order` に書かれたキーをその順に先に置き、書かれていないキーをその後ろに置く（無ければ今の順）。エディタの表は書き戻すたびに今の並びを `x-order` に書く。
+  - 起動の検証は `x-order` を注記として読み飛ばす。形（文字列の配列・同じオブジェクトの `properties` のキーだけ・重なりなし。全部のキーを書かなくてよい）は保存時検証が全階層で確かめ、合わなければ `ir.schema_violation` で止める（path は `/input_schema/x-order/<i>`・§8 V1）。
 
 ---
 
@@ -634,7 +636,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 
 各ステージの詳細:
 
-- **V1 スキーマ**: トップレベルからノード params まで、JSON Schema で型・必須・deny-unknown を検証する。未知フィールドは全階層で拒否する（§2）。
+- **V1 スキーマ**: トップレベルからノード params まで、JSON Schema で型・必須・deny-unknown を検証する。未知フィールドは全階層で拒否する（§2）。`input_schema` の項目の並び（`x-order`）の形もここで確かめる（§2・D-60）。
 - **V2 グラフ**: `id` 一意、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1、全ノードのエントリからの到達可能性を検証する。`workflow.reply` は map 領域に置けない（`ir.reply_in_map`・§7.10）。
 - **V3 語彙照合**: ノード `type`・`declared_scopes`・ツール名（`allowed_tools`）・モデル名を codegen が生成した閉じた語彙と、テナントの登録カタログ（モデルは組織が許可したモデル・本人専用を除く）へ照合する。**ハルシネーション境界**であり、実在しない語彙を参照する IR（特に AI 生成）を保存前に拒否する。`llm.invoke` の `model` は省略可で、省略（空文字を含む）は照合しない（実行時に組織の既定で解決する・§7.3）。組織がモデルの選択を禁じていれば、既定と異なるモデルを `ir.model_choice_disabled` で拒否する。
 - **V4 参照存在**: skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノードの `http.request` URL ホストを許容する）・テーブル/フォルダ id の実在を検証する。`human.approval` は、テーブルが保存者に見えて FSM で管理され、状態の列を保存者が読めること（見えないテーブル・FSM でないテーブル・状態の列が読めないテーブルは同じ文言 `ir.unknown_table`。状態の一覧は出さない）、判断の行き先が FSM の状態であること（`ir.unknown_state`）、`show_fields` と担当者の列がテーブルの列（担当者はユーザー・部署の列）であることを照合する。材料は保存 API（検証 API・AI の `emit_workflow` も同じ）が**保存者の見え方**（`DataStore::get_table_for_viewer`・テーブルの owner でなければ読める列だけ）で引く。読めない列は無い列と同じ `ir.unknown_field`（code・path・message が同じ）になり、種別の違い（`ir.bad_assignee`）も返さない（無い列と読めない列を区別させない・data-platform §16.1）。
@@ -672,6 +674,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **有効化（enable）は version 単位**: `workflow_registration` が `enabled_version` を指す（[engine.md](./engine.md) §2/§10）。新版を公開しても、enable を切り替えるまで旧版が動き続ける。
 - **`ir_version`（スキーマ版）は整数単調増加**。エンジンは N と N-1 を読める（それ以前は保存時マイグレーション必須）。フィールド追加であっても deny-unknown のため `ir_version` を上げる（安全側に倒す・頻度は低い想定）。
   - **ノード種の追加（予約語彙の解禁・新しい variant）は `ir_version` を上げない**。`Node.type` は文字列として読み V3 で語彙と照合するので、serde の形が変わらない（前例: `csv.*`・`data.*`・`human.approval`・`workflow.reply`）。上げるのはエンベロープや既存の構造体（トリガ・エッジ・ポリシー）へのフィールドの追加。
+  - **`input_schema` の注記の追加（`x-order`・D-60）も `ir_version` を上げない**。`input_schema` は JSON Schema の値で、エンベロープの形は変わらない。旧いエンジンは知らない語を持つスキーマの起動を断る（fail-closed）。
   - **既存のノードの params への任意の項目の追加も `ir_version` を上げない**。旧い IR はそのまま読め、旧いエンジンは新しい項目を持つ IR を params の読み取りで拒否する（fail-closed・前例: `agent.invoke` の `allowed_tools`・`context`・`model`・`max_steps`・`max_tokens`）。
   - **旧いエンジンは、自分の知らない新しい `ir_version` の IR にピンした run を失敗させない**（ローリングデプロイの途中）。待ち行列の昇格では、そのワークフローだけを見送って新しい版のエンジンに任せる（[engine.md](./engine.md) §8.3・D-65）。知っている版のまま読めない IR だけを失敗にする。
 - **削除は論理削除のみ**（実行履歴の run が version を参照し続けるため）。
