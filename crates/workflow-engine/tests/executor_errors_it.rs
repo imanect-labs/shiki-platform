@@ -159,6 +159,7 @@ fn ctx() -> NodeContext {
             "agent.invoke".into(),
             "workflow.start".into(),
         ],
+        cancel: workflow_engine::run::CancelSignal::default(),
     }
 }
 

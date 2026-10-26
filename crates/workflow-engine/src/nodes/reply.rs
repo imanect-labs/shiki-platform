@@ -320,6 +320,7 @@ mod tests {
             each: None,
             trace_id: None,
             scope_ceiling: Vec::new(),
+            cancel: crate::run::CancelSignal::default(),
         }
     }
 

@@ -174,6 +174,7 @@ fn ctx(record: Uuid) -> NodeContext {
         each: None,
         trace_id: None,
         scope_ceiling: vec!["data.read".into(), "notify.send".into()],
+        cancel: workflow_engine::run::CancelSignal::default(),
     }
 }
 

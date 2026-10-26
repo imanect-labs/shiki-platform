@@ -171,6 +171,7 @@ mod tests {
             each: None,
             trace_id: None,
             scope_ceiling: vec![],
+            cancel: crate::run::CancelSignal::default(),
         }
     }
 

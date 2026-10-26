@@ -133,6 +133,7 @@ fn ctx(scopes: Vec<String>) -> NodeContext {
         each: None,
         trace_id: Some("trace-1".into()),
         scope_ceiling: scopes,
+        cancel: workflow_engine::run::CancelSignal::default(),
     }
 }
 

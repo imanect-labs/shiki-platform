@@ -56,10 +56,10 @@ pub use registration::{
 };
 pub use retry::{backoff_with_jitter, classify, RetryClass};
 pub use run::{
-    ApprovalWait, ConcurrencyLimits, DataWaitCandidate, EventWaitGate, EventWaitSubscriber,
-    NodeContext, NodeExecutor, NodeResult, PendingApproval, ResolvedApproval, RunOrigin, RunStatus,
-    RunStore, RunStoreError, StepStatus, WorkerConfig, WorkflowRunLauncher, WorkflowWorker,
-    DEFAULT_LEASE_SECS, WORKFLOW_GC_QUEUE,
+    ApprovalWait, CancelSignal, ConcurrencyLimits, DataWaitCandidate, EventWaitGate,
+    EventWaitSubscriber, NodeContext, NodeExecutor, NodeResult, PendingApproval, ResolvedApproval,
+    RunOrigin, RunStatus, RunStore, RunStoreError, StepStatus, WorkerConfig, WorkflowRunLauncher,
+    WorkflowWorker, DEFAULT_LEASE_SECS, WORKFLOW_GC_QUEUE,
 };
 pub use run::{
     CancelOutcome, GcReport, HistoryGcWorker, ResumeOutcome, RunDetail, RunEventRow, RunListFilter,

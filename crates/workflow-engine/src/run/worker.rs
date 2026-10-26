@@ -179,11 +179,14 @@ impl WorkflowWorker {
             trace_id: Some(claimed.run_id.simple().to_string()),
             // 実効スコープ = declared_scopes（run 開始時に declared ⊆ 委譲 が保証済み）。
             scope_ceiling: ir.declared_scopes.clone(),
+            cancel: super::CancelSignal::default(),
         };
         // 実行中はリース失効を防ぐため定期 heartbeat を並走させる。これが無いと lease_secs を
         // 超える長いノードで別ワーカーが同 step を再 claim して**二重に副作用**を起こし得る（P1）。
-        // 実行完了で heartbeat タスクを止める。
+        // 実行完了で heartbeat タスクを止める。取り消し要求とリースの喪失は、実行中のノードへ合図で伝える
+        // （長く走る agent.invoke が手順の境界で止まる・engine.md §9.3）。
         let hb_store = self.store.clone();
+        let hb_cancel = ctx.cancel.clone();
         let hb_tenant = claimed.tenant_id.clone();
         let hb_step = claimed.step_path.clone();
         let hb_run = claimed.run_id;
@@ -197,15 +200,20 @@ impl WorkflowWorker {
             ticker.tick().await; // 初回即時分を消費。
             loop {
                 ticker.tick().await;
-                if hb_store
+                match hb_store
                     .heartbeat(&hb_tenant, hb_run, &hb_step, hb_fencing, hb_lease)
                     .await
-                    .ok()
-                    .flatten()
-                    .is_none()
                 {
-                    // fencing 不一致（別ワーカーが奪取）等はこれ以上延長しない。
-                    break;
+                    Ok(Some(false)) => {}
+                    // 取り消し要求: 止める合図を立て、止まるまではリースを延ばし続ける。
+                    Ok(Some(true)) => hb_cancel.cancel(),
+                    // fencing 不一致（別ワーカーが奪取）: 止める合図を立て、これ以上延長しない。
+                    Ok(None) => {
+                        hb_cancel.cancel();
+                        break;
+                    }
+                    // 一時的な失敗はこれ以上延長しない（従来どおり）。
+                    Err(_) => break,
                 }
             }
         });

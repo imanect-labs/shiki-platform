@@ -70,6 +70,30 @@ pub struct NodeContext {
     /// 「操作の要求スコープ ∈ scope_ceiling」を検証してから OpenFGA check を行う（二重ゲート）。
     /// run 開始時に declared ⊆ 委譲 が保証されるため実効スコープ = declared_scopes。
     pub scope_ceiling: Vec<String>,
+    /// 実行中の step を止める合図（run の取り消し・リースの喪失でワーカーが立てる・engine.md §9.3）。
+    /// 長く走るノード（agent.invoke）が手順の境界で見て止まる。ほかのノードは見なくてよい。
+    pub cancel: CancelSignal,
+}
+
+/// 実行中の step を止める合図（[`NodeContext::cancel`]）。複製は同じ合図を共有する。
+///
+/// ワーカーは heartbeat が「取り消し要求あり」（`Some(true)`）か「リースを失った」（fencing 不一致・`None`）を
+/// 返したときに立てる。リースを失ったのに走り続けると、別のワーカーが同じ step を最初から走らせている間も
+/// 費用がかかり続ける（BUG-6 の R3）。
+#[derive(Debug, Clone, Default)]
+pub struct CancelSignal(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl CancelSignal {
+    /// 合図を立てる（一度立てたら戻さない）。
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 合図が立っているか。
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 /// ノード実行の結果（成功/失敗と出力ポート）。
