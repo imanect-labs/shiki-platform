@@ -4,12 +4,14 @@
 //! - [`runs`] — run 起動・状態取得（Task 10.2/10.14）
 //! - [`registration`] — 有効化・同意・トリガ実体化（Task 10.4a・engine.md §10）
 
+pub mod agent_settings;
 pub mod list;
 pub mod registration;
 pub mod run_ops;
 pub mod runs;
 pub mod save;
 
+pub use agent_settings::{get_agent_settings, AgentSettingsResponse};
 pub use list::{
     get_workflow_layout, list_workflows, put_workflow_layout, LayoutBody, WorkflowListResponse,
     WorkflowSummaryDto,

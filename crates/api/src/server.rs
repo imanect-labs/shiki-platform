@@ -322,6 +322,10 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/workflows/validate", &["POST"], Session, || {
             post(routes::workflows::validate_workflow)
         }),
+        // AI エージェントの設定の天井（読んでよいサイト・手順の上限・BUG-6）。
+        r("/workflows/agent-settings", &["GET"], Session, || {
+            get(routes::workflows::get_agent_settings)
+        }),
         r("/workflows/{id}", &["GET", "PUT"], Session, || {
             get(routes::workflows::get_workflow).put(routes::workflows::update_workflow)
         }),
