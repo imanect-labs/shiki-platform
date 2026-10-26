@@ -131,6 +131,13 @@ function ApprovalDetail({
       // もう決まった・期限切れ・見えないは、一覧からも外す。
       if (e instanceof ApprovalApiError && (e.status === 404 || e.code === "decided" || e.code === "expired")) {
         onGone(item);
+      } else if (e instanceof ApprovalApiError && e.code === "rev_conflict") {
+        // ほかの人が行を更新した: 1 件を取り直して新しい rev で押し直せるようにする（選んだ判断とコメントは残す）。
+        try {
+          setItem(await getApproval(item.approval_id));
+        } catch (again) {
+          if (again instanceof ApprovalApiError && again.status === 404) onGone(item);
+        }
       }
       setSending(false);
     }
