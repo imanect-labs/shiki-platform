@@ -467,3 +467,31 @@ test("承認を待つブロック: テーブルに無い受信箱の列は外す
   };
   expect(saved.ir.nodes.find((n) => n.id === "ok")?.params.show_fields).toEqual(["title", "amount"]);
 });
+
+test("承認待ち: 見える承認が無いまま続きがあるページでも「承認待ちはありません」にせず、続きを読める（GAP-08）", async ({ page }) => {
+  test.setTimeout(180_000);
+  await loginViaKeycloak(page);
+  const s = await setup(page);
+  await waitForApproval(page, s);
+  // サーバは見えない承認を読み飛ばすが、1 回に読む台帳の行には上限があるので、見える承認が無いまま続きの位置
+  // だけを返すことがある。1 ページ目をその形にし、続きは本物の 1 ページ目を返す。
+  const cursor = "e2e-scan-limit";
+  await page.route(
+    (url) => url.pathname === "/api/approvals",
+    async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("cursor") === cursor) {
+        url.searchParams.delete("cursor");
+        return route.continue({ url: url.toString() });
+      }
+      return route.fulfill({ json: { items: [], next_cursor: cursor } });
+    },
+  );
+  await page.goto("/approvals");
+  await expect(page.getByTestId("approval-list-pending")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("承認待ちはありません", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "さらに読み込む" }).click();
+  await expect(page.getByTestId("approval-item").filter({ hasText: s.tableName })).toBeVisible();
+  await expect(page.getByTestId("approval-list-pending")).toHaveCount(0);
+});

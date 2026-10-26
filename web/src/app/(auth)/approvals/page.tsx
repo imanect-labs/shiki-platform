@@ -130,7 +130,7 @@ export default function ApprovalsPage() {
           <Loader2 className="size-4 animate-spin" aria-hidden />
           読み込み中…
         </div>
-      ) : items.length === 0 ? (
+      ) : items.length === 0 && !cursor ? (
         <EmptyState
           seasonal
           icon={ClipboardCheck}
@@ -139,13 +139,21 @@ export default function ApprovalsPage() {
         />
       ) : (
         <>
-          <ul className="flex flex-col gap-2" aria-label="承認待ちの一覧" data-testid="approval-list">
-            {items.map((item) => (
-              <li key={item.approval_id}>
-                <ApprovalRow item={item} onOpen={() => setOpen(item)} />
-              </li>
-            ))}
-          </ul>
+          {items.length ? (
+            <ul className="flex flex-col gap-2" aria-label="承認待ちの一覧" data-testid="approval-list">
+              {items.map((item) => (
+                <li key={item.approval_id}>
+                  <ApprovalRow item={item} onOpen={() => setOpen(item)} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            // サーバは見えない承認を読み飛ばすが、1 回に読む台帳の行には上限があるので、見える承認が 1 件も無い
+            // まま続きの位置だけが返ることがある（その先に見える承認があるかもしれない）。
+            <p className="rounded-xl border px-4 py-6 text-center text-sm text-muted-foreground" data-testid="approval-list-pending">
+              ここまでの分に、あなたが見られる承認待ちはありませんでした。古い分を続けて読み込めます。
+            </p>
+          )}
           {cursor ? (
             <div className="mt-4 flex justify-center">
               <Button variant="outline" size="sm" onClick={() => void more()} disabled={loadingMore}>
