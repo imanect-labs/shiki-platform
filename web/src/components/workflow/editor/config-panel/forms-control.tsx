@@ -26,7 +26,7 @@ import type {
 } from "@/generated/workflow-ir";
 import { Field, NumberInput } from "./common";
 import { paramsOf, patchParams } from "./params";
-import { InputFieldsContext, numericLiteral, ValueExprInput } from "./value-expr-input";
+import { InputFieldsContext, numericLiteral, ValueExprInput, type NumericMode } from "./value-expr-input";
 import { isFromRef } from "./value-refs";
 import type { FormProps } from "./forms-basic";
 import type { InputFieldInfo } from "@/lib/workflow-input-schema";
@@ -57,8 +57,9 @@ const NUMERIC_OPS: CmpOp[] = ["eq", "neq", "gt", "gte", "lt", "lte"];
 /// 数との大小比較は run の失敗（`expr_type_error`）に、等値は黙って偽になる。
 /// - 左辺が数値の入力項目なら、数として読めるものは数（`always`・桁区切りも外す）
 /// - 左辺が文字・選択肢・日付の入力項目なら、文字のまま（数字のコード「001」などを数にしない）
-/// - それ以外（前のブロックの結果・きっかけの内容など）は、数字だけを打ったときに数（`auto`）
-function numericModeFor(cmp: Comparison, inputFields: InputFieldInfo[]): "auto" | "always" | undefined {
+/// - それ以外（前のブロックの結果・きっかけの内容など）は、数字だけを打ったときに数。頭に 0 を重ねた数字を
+///   文字のまま残すのは等値だけ（`auto`）で、大小比較では数にする（`order`）
+function numericModeFor(cmp: Comparison, inputFields: InputFieldInfo[]): NumericMode | undefined {
   if (!NUMERIC_OPS.includes(cmp.op)) return undefined;
   const left = cmp.left as unknown;
   if (isFromRef(left) && left.$from === "input" && typeof left.path === "string" && /^\/[^/]+$/.test(left.path)) {
@@ -67,7 +68,7 @@ function numericModeFor(cmp: Comparison, inputFields: InputFieldInfo[]): "auto" 
     if (field?.kind === "number" || field?.kind === "integer") return "always";
     if (field && field.kind !== "other" && field.kind !== "boolean") return undefined;
   }
-  return "auto";
+  return cmp.op === "eq" || cmp.op === "neq" ? "auto" : "order";
 }
 
 type FlatCondition = { mode: "all" | "any"; comparisons: Comparison[] } | null;

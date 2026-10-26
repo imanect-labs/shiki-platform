@@ -69,17 +69,23 @@ function modeOf(value: ValueExpr | undefined): Mode {
   return "literal";
 }
 
-/// 固定値の文字を数として保存するか（条件の比べる値・BUG-31）。数として読めなければ文字のまま返す。
-/// - `auto`: 数字だけ（`-12`・`3.5`・全角の数字も）なら数にする。左辺の型が分からないので、頭に 0 を重ねた
-///   数字（コードの「001」「08」）と「-0」は文字のまま（数にすると文字の項目との等値が黙って偽になる）
+/// 固定値の数字を数として保存する欄の種類（[`numericLiteral`]）。
+/// - `auto`: 等値（eq / neq）で、左辺の型が分からない。数字だけ（`-12`・`3.5`・全角の数字も）なら数にするが、
+///   頭に 0 を重ねた数字（コードの「001」「08」）と「-0」は文字のまま（数にすると文字の項目との等値が黙って偽になる）
+/// - `order`: 大小比較（gt / gte / lt / lte）で、左辺の型が分からない。頭に 0 を重ねた数字も数にする（数字を
+///   文字で書いた値との大小比較は、数との比較なら実行で expr_type_error になり、保存時にもサーバが
+///   NumericString で警告する。文字との大小比較を数字の文字で書く理由は無い）
 /// - `always`: 数と比べると分かっている欄（左辺が数値の入力項目）。桁区切りの `,` も外して読む
+export type NumericMode = "auto" | "order" | "always";
+
+/// 固定値の文字を数として保存するか（条件の比べる値・BUG-31）。数として読めなければ文字のまま返す。
 /// 16 桁以上は数にしない（JavaScript の数で桁が落ち、別の値を保存してしまう・ID などは文字のまま）。
 /// 入力中の文字（「0.」「1.0」）は欄が下書きとして持つので、ここで数の正規形に潰しても打てなくならない。
-export function numericLiteral(text: string, mode: "auto" | "always"): string | number {
+export function numericLiteral(text: string, mode: NumericMode): string | number {
   const half = text.trim().replace(/[０-９．－]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
   const t = mode === "always" ? half.replace(/,/g, "") : half;
-  // 末尾の「.」（打っている途中の「0.」）も数として読む（欄を離れても文字の「0.」で保存しない）。
-  if (!/^-?\d+(\.\d*)?$/.test(t) || t.replace(/[-.]/g, "").length > 15) return text;
+  // 末尾の「.」（打っている途中の「0.」）と、整数部を省いた「.5」も数として読む（文字の「0.」「.5」で保存しない）。
+  if (!/^-?(\d+(\.\d*)?|\.\d+)$/.test(t) || t.replace(/[-.]/g, "").length > 15) return text;
   const n = Number(t);
   if (mode === "auto" && (/^-?0\d/.test(t) || Object.is(n, -0))) return text;
   return n;
@@ -124,7 +130,7 @@ type Props = {
   text?: boolean;
   /// 固定値の数字を数として保存する（条件の比べる値・[`numericLiteral`]・BUG-31）。数になった値は
   /// 「数値やリストとして扱う」をオンにしなくても数のまま見せ、その旨を欄の下に出す。
-  numeric?: "auto" | "always";
+  numeric?: NumericMode;
 };
 
 export function ValueExprInput({
