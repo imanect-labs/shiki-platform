@@ -845,6 +845,12 @@ waiting_event の step で止まっている run）は数えない**（D-26・H1
 占めて、新しい起動が queued のまま進まなくなるのを防ぐ。起床して上限を一時的に超えるのは許す。作成（create_run）と
 promote は同じ述語で数える。
 
+promote（scheduler tick・全テナント）は**ワークフローごとに誤りを閉じ込める**。1 つのワークフローの誤りは警告に
+残して次のワークフローへ進み（次の tick で取り直す）、ほかのワークフロー・ほかのテナントの昇格を止めない。
+ピンした IR（`ir_snapshot`）を読めない queued run は待っても昇格できず先頭に居座るので、失敗の経路と同じく残る
+step を cancelled にして `run.failed` を積み、`failed`（`fail_reason = internal`・失敗の分類は unknown）で終わらせて
+先頭から外す。
+
 ---
 
 ## 9. wait・キャンセル・タイムアウト
