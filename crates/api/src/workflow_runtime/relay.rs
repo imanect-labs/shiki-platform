@@ -281,10 +281,8 @@ async fn relay_events_batch(deps: &RelayDeps<'_>) -> Result<usize, anyhow::Error
     if events.is_empty() {
         return Ok(0);
     }
-    // イベントを起こした書込の由来の run（outbox の非公開部の印・因果の鎖と by_workflow・BUG-44）。
-    let causes = super::relay_origin::cause_runs(deps.db, &events).await?;
     // データ変更（data.record.changed / transitioned）はテーブル単位で候補を引くので、まとめて配る（GAP-07）。
-    super::relay_data::relay_data_events(deps, &events, &causes).await?;
+    super::relay_data::relay_data_events(deps, &events).await?;
     // 行の削除で、その行に束縛した保留中の承認を取り下げる（GAP-08）。
     super::relay_approval::withdraw_on_deletes(deps, &events).await?;
     let mut ids = Vec::with_capacity(events.len());
@@ -303,8 +301,7 @@ async fn relay_events_batch(deps: &RelayDeps<'_>) -> Result<usize, anyhow::Error
             file_id: ev.node_id,
             trace_id: ev.trace_id.as_deref(),
         };
-        let cause = causes.get(&ev.id).copied().flatten();
-        relay_file_triggers(deps, ev, &write, &gate, cause).await?;
+        relay_file_triggers(deps, ev, &write, &gate).await?;
         deps.runs
             .wake_event_waits(
                 &ev.tenant_id,
@@ -329,14 +326,13 @@ async fn relay_events_batch(deps: &RelayDeps<'_>) -> Result<usize, anyhow::Error
 ///
 /// filter（fail-closed）→ workflow プリンシパルの閲覧（委譲・D-50）→ 発火の順に通す。読めないファイルの
 /// id・書いた人を run 入力に載せない（委譲を外した後に保存されたファイルでは起動しない）。
-/// 因果の鎖は、イベントを起こした書込の由来の run（`cause`・outbox の非公開部の印・D-26・BUG-44）から引く。
+/// 因果の鎖は、イベントを起こした書込の由来の run（outbox の非公開部の印・D-26・BUG-44）から引く。
 /// 新しい版の保存（op = update）は同じファイルの続く保存とまとめるために待たせる（D-38）。
 async fn relay_file_triggers(
     deps: &RelayDeps<'_>,
     ev: &storage::event::OutboxEvent,
     write: &StorageWriteEvent,
     gate: &SavedFileGate<'_>,
-    cause: Option<Uuid>,
 ) -> Result<(), anyhow::Error> {
     let candidates = deps
         .sched
@@ -345,6 +341,11 @@ async fn relay_file_triggers(
     if candidates.is_empty() {
         return Ok(());
     }
+    let cause = super::relay_origin::cause_runs(deps.db, &[ev])
+        .await?
+        .get(&ev.id)
+        .copied()
+        .flatten();
     for c in &candidates {
         if !c.admits(&write.payload) {
             continue;

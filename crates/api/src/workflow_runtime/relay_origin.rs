@@ -38,9 +38,11 @@ fn classify(origin: WriteOrigin, trace_id: Option<&str>) -> Classified {
 }
 
 /// イベントの由来の run をまとめて引く（印は 1 回の照会・印の無い行の run の実在も 1 回の照会）。
+///
+/// 呼び出し側は、候補のトリガ・wait があるイベントだけを渡す（候補の無い配送で照会を増やさない）。
 pub(super) async fn cause_runs(
     db: &sqlx::PgPool,
-    events: &[OutboxEvent],
+    events: &[&OutboxEvent],
 ) -> Result<Causes, anyhow::Error> {
     if events.is_empty() {
         return Ok(Causes::new());
@@ -52,7 +54,7 @@ pub(super) async fn cause_runs(
     };
     let mut out = Causes::with_capacity(events.len());
     let mut legacy: Vec<(i64, &str, Uuid)> = Vec::new();
-    for ev in events {
+    for &ev in events {
         let origin = origins
             .get(&ev.id)
             .copied()

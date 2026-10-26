@@ -78,7 +78,8 @@ async fn reconcile_one(deps: &RelayDeps<'_>, w: &DataWaitCandidate) -> Result<()
     if evs.is_empty() {
         return Ok(());
     }
-    let causes = cause_runs(deps.db, &events).await?;
+    let refs: Vec<&storage::event::OutboxEvent> = evs.iter().map(|e| e.event).collect();
+    let causes = cause_runs(deps.db, &refs).await?;
     let mut cx = BatchCtx::new(deps, tenant, &causes);
     relay_tenant_waits(&mut cx, &evs, std::slice::from_ref(w)).await
 }

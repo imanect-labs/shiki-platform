@@ -26,7 +26,7 @@ use workflow_engine::{DataTriggerCandidate, DataWaitCandidate, ExecCtx, FireOutc
 
 use super::data_port::{Actor, DataPort};
 use super::relay::{audit_suppressed, RelayDeps};
-use super::relay_origin::Causes;
+use super::relay_origin::{cause_runs, Causes};
 
 mod reconcile;
 pub(super) use reconcile::reconcile_data_waits;
@@ -300,7 +300,6 @@ impl<'d, 'a> BatchCtx<'d, 'a> {
 pub(super) async fn relay_data_events(
     deps: &RelayDeps<'_>,
     events: &[storage::event::OutboxEvent],
-    causes: &Causes,
 ) -> Result<(), anyhow::Error> {
     let mut by_tenant: BTreeMap<&str, Vec<DataEvent<'_>>> = BTreeMap::new();
     for ev in events {
@@ -323,7 +322,10 @@ pub(super) async fn relay_data_events(
         if triggers.is_empty() && waits.is_empty() {
             continue;
         }
-        let mut cx = BatchCtx::new(deps, tenant_id, causes);
+        // 変更を起こした書込の由来の run（outbox の非公開部の印・因果の鎖と by_workflow・BUG-44）。
+        let refs: Vec<&storage::event::OutboxEvent> = evs.iter().map(|e| e.event).collect();
+        let causes = cause_runs(deps.db, &refs).await?;
+        let mut cx = BatchCtx::new(deps, tenant_id, &causes);
         relay_tenant_triggers(&mut cx, &evs, &triggers).await?;
         relay_tenant_waits(&mut cx, &evs, &waits).await?;
     }
