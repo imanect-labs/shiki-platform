@@ -739,6 +739,108 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   await bobCtx.close();
 });
 
+test("承認を待つブロック: 状態の列を読めないテーブルでは、進める状態の欄に「状態の列を読めません」と出す（GAP-08）", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  // alice: 状態の列を誰にも読めない列にした、状態の遷移の規則つきのテーブル。
+  const aliceCtx = await browser.newContext();
+  const alice = await aliceCtx.newPage();
+  await loginViaKeycloak(alice);
+  const cols = [
+    { key: "title", display_name: "件名", type: "text", indexed: true },
+    { key: "approver", display_name: "承認者", type: "user_ref", indexed: true },
+  ];
+  const maskedId = await maskedFsmTable(alice, "e2e-稟議", cols, ["status"]);
+  await aliceCtx.close();
+
+  // bob: そのテーブルの editor（owner ではない）。bob に返る定義には状態の列が無い（status_field も外れる）。
+  const bobCtx = await browser.newContext();
+  const bob = await bobCtx.newPage();
+  await loginAs(bob, "bob");
+  const me = (await (await bob.request.get("/api/me")).json()) as { id: string; tenant_id: string };
+  await grantTableEditor(bob, me.tenant_id, me.id, maskedId);
+  const masked = (await (await bob.request.get(`/api/data/tables/${maskedId}`)).json()) as {
+    name: string;
+    schema: { status_field?: string | null; fsm_ref?: unknown; fields: { key: string }[] };
+  };
+  expect(masked.schema.fields.map((f) => f.key)).toEqual(["title", "approver"]);
+  expect(masked.schema.status_field ?? null).toBeNull();
+  expect(masked.schema.fsm_ref).toBeTruthy();
+
+  // bob が owner のテーブル（状態の列を読める）に束ねた承認を作り、エディタで承認するテーブルを変える。
+  const ownId = await maskedFsmTable(bob, "e2e-bob の申請", cols, []);
+  const name = uniqueName("ringi-approval");
+  const flow = await bob.request.post("/api/workflows", {
+    headers: await csrfHeaders(bob),
+    data: {
+      ir: {
+        ir_version: 1,
+        name,
+        display_name: name,
+        triggers: [{ kind: "interactive" }],
+        nodes: [
+          {
+            id: "ok",
+            type: "human.approval",
+            label: "上長の承認",
+            params: {
+              title: "稟議の承認",
+              record: { table: ownId, id: { $from: "input", path: "/record_id" } },
+              assignees: [{ field: "approver" }],
+              approve: { to: "承認" },
+              reject: { to: "却下" },
+              show_fields: ["title"],
+            },
+          },
+        ],
+        edges: [],
+        input_schema: { type: "object", properties: { record_id: { type: "string" } } },
+        policies: { run_timeout_sec: 1209600 },
+      },
+    },
+  });
+  expect(flow.ok(), await flow.text()).toBeTruthy();
+  const workflowId = ((await flow.json()) as { id: string }).id;
+  await bob.goto(`/workflows/${workflowId}`);
+  const canvas = bob.locator(".react-flow");
+  await expect(canvas.getByText("上長の承認").first()).toBeVisible({ timeout: 15_000 });
+  await canvas.getByText("上長の承認").first().click();
+  const panel = bob.getByRole("complementary", { name: "ブロックの設定" });
+  await expect(panel.getByRole("combobox", { name: "承認したときに進める状態" })).toContainText("承認");
+
+  await panel.getByRole("combobox", { name: "承認するテーブル" }).click();
+  await bob.getByRole("option", { name: masked.name }).click();
+  // テーブルを選んだ後なので「先にテーブルを選んでください」とは言わず、状態の名前を当て推量で書く欄も出さない。
+  const UNREADABLE = "このテーブルの状態の列を読めません";
+  await expect(panel.getByText(UNREADABLE, { exact: true })).toHaveCount(2);
+  await expect(panel.getByPlaceholder("先にテーブルを選んでください")).toHaveCount(0);
+  await expect(panel.getByRole("textbox", { name: "承認したときに進める状態" })).toHaveCount(0);
+  await expect(panel.getByRole("combobox", { name: "承認したときに進める状態" })).toHaveCount(0);
+  // 両方にある列（件名・承認者）は残る。
+  await expect(panel.getByRole("button", { name: "件名", pressed: true })).toBeVisible();
+  await expect(panel.getByRole("combobox", { name: "相手 1 の列" })).toContainText("承認者");
+
+  // 検証はテーブルの欄で止め（状態の一覧は出さない）、選べない欄に「状態を選んでください」とは出さない。
+  await expect(
+    panel.getByText("承認するテーブルが見つからないか、状態の遷移（FSM）で管理されていないか、状態の列を読めません"),
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(panel.getByText("判断したときに進める状態を選んでください")).toHaveCount(0);
+  await expect(panel.getByText(UNREADABLE, { exact: true })).toHaveCount(2);
+
+  // 保存はサーバが止め、保存済みの定義は前のテーブルのまま。
+  const saving = bob.waitForResponse(
+    (r) => new URL(r.url()).pathname === `/api/workflows/${workflowId}` && r.request().method() === "PUT",
+  );
+  await bob.getByRole("button", { name: "保存", exact: true }).click();
+  expect((await saving).status()).toBe(400);
+  const saved = (await (await bob.request.get(`/api/workflows/${workflowId}`)).json()) as {
+    ir: { nodes: { id: string; params: { record: { table: string } } }[] };
+  };
+  expect(saved.ir.nodes.find((n) => n.id === "ok")?.params.record.table).toBe(ownId);
+  await bobCtx.close();
+});
+
 test("承認の件数のバッジ: 数え切れずに数えた分が 0 件なら「…」、1 件以上なら「N+」（PC・レール・スマホ・GAP-08）", async ({
   browser,
   page,

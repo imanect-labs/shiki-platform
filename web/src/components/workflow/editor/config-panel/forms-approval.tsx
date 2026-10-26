@@ -48,6 +48,15 @@ function statesOf(table: DataTable | null): string[] {
   return table.schema.fields.find((f) => f.key === table.schema.status_field)?.options ?? [];
 }
 
+/// FSM で管理するテーブルなのに、状態の列が自分に読めない（owner 以外に返る定義は読めない列を落とし、
+/// 状態の列が読めなければ `status_field` も外す・data の redact_table）。状態を選べず、保存もサーバの照合
+/// （保存者の見え方で行う）が ir.unknown_table で止める。
+function statusUnreadable(table: DataTable | null): boolean {
+  if (!table?.schema.fsm_ref) return false;
+  const key = table.schema.status_field;
+  return !key || !table.schema.fields.some((f) => f.key === key);
+}
+
 /// 承認するテーブルを変える 1 手（Undo 1 段）。前のテーブルの状態名を指す判断の行き先・列を指す受信箱の列と
 /// 担当者は、新しいテーブルに無ければ空に戻す（残すと選択肢に無い値は空欄に見え、気づかないまま実行で
 /// 無い状態への遷移になる）。新しいテーブルにもある値は残す。
@@ -150,6 +159,7 @@ export function HumanApprovalForm(props: FormProps) {
   const table = fsmTables.find((t) => t.id === p.record?.table) ?? null;
   const seesWholeTable = useSeesWholeTable(table?.id ?? null);
   const states = statesOf(table);
+  const unreadableStates = statusUnreadable(table);
   const set = (patch: Partial<Record<keyof Params, unknown>>) => patchParams(dispatch, node, patch);
   const record = p.record ?? { table: "", id: { $from: "trigger", path: "/record_id" } as ValueExpr };
 
@@ -222,6 +232,7 @@ export function HumanApprovalForm(props: FormProps) {
             optional={c.optional}
             value={value}
             states={states}
+            statesUnreadable={unreadableStates}
             error={fieldErrors.get(c.key)}
             onChange={(next) => set({ [c.key]: next })}
           />
@@ -278,12 +289,16 @@ export function HumanApprovalForm(props: FormProps) {
 }
 
 /// 判断 1 つ（行き先の状態・ボタンの文言・コメントの要否）。省略できる判断はスイッチで足す。
+///
+/// `statesUnreadable`（選んだテーブルの状態の列が自分に読めない）なら、状態を選ぶ欄の代わりにそう出す。状態の
+/// 名前を手で書く欄にすると、選べない状態を当て推量で書かせることになり、保存もサーバの照合が止める。
 function ChoiceField({
   title,
   defaultLabel,
   optional,
   value,
   states,
+  statesUnreadable,
   error,
   onChange,
 }: {
@@ -292,6 +307,7 @@ function ChoiceField({
   optional: boolean;
   value: ApprovalChoice | undefined;
   states: string[];
+  statesUnreadable: boolean;
   error?: string;
   onChange: (next: ApprovalChoice | undefined) => void;
 }) {
@@ -299,6 +315,11 @@ function ChoiceField({
   const v = value ?? { to: "" };
   // 保存済みの値がテーブルの状態に無い（テーブルの状態が変わった・AI が書いた）と、選択の欄は空に見える。
   const unknownState = states.length > 0 && v.to !== "" && !states.includes(v.to) ? v.to : null;
+  // 状態の列が読めないときのサーバの誤り（「進める状態を選んでください」など）は、選べない欄の下に出しても
+  // 直しようがないので出さない（保存が止まる理由はこの欄の注記と、テーブルの欄の ir.unknown_table が言う）。
+  const stateError = statesUnreadable
+    ? undefined
+    : (error ?? (unknownState ? `このテーブルに無い状態: ${unknownState}` : undefined));
   return (
     <fieldset className="space-y-2 rounded-lg border p-2.5">
       <legend className="flex w-full items-center justify-between gap-2 px-1 text-xs font-medium">
@@ -313,8 +334,10 @@ function ChoiceField({
       </legend>
       {on || !optional ? (
         <>
-          <Field label="進める状態" error={error ?? (unknownState ? `このテーブルに無い状態: ${unknownState}` : undefined)}>
-            {states.length ? (
+          <Field label="進める状態" error={stateError}>
+            {statesUnreadable ? (
+              <p className="text-[11px] text-destructive">このテーブルの状態の列を読めません</p>
+            ) : states.length ? (
               <Select value={v.to || ""} onValueChange={(to) => onChange({ ...v, to })}>
                 <SelectTrigger aria-label={`${title}に進める状態`} className="h-8 text-[13px]">
                   <SelectValue placeholder="状態を選ぶ" />
