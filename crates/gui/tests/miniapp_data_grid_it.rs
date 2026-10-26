@@ -18,6 +18,8 @@
     clippy::print_stderr
 )]
 
+mod common;
+
 use std::sync::Arc;
 
 use artifact::{ArtifactRole, ArtifactStore};
@@ -29,7 +31,9 @@ use data::{
     FieldPolicy, FieldType, NewDataTable, PolicyExpr, PolicyOperand, RefResolver, RowPolicy,
     SortKey, TableSchema,
 };
-use gui::{ActionDispatcher, ActionError, GuiError, MiniAppActionRequest, MiniAppStore};
+use gui::{
+    ActionDispatcher, ActionError, GuiError, MiniAppActionRequest, MiniAppStore, SkillStore,
+};
 use serde_json::{json, Map, Value};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
@@ -444,4 +448,213 @@ async fn data_grid_is_evaluated_with_each_viewers_own_permissions() {
     .await
     .expect("audit");
     assert!(audited >= 5, "表の描画が監査に残る: {audited}");
+}
+
+/// 表の描画・ページ送りは、ミニアプリの解決（`miniapp.resolve`・skill のバンドル読み）をやり直さない（BUG-24）。
+/// 1 ページごとに残るのは操作（`ui_action.invoke`）とビューの定義のバンドル読みだけ。本体の viewer は毎ページ
+/// 確かめ直すので、共有を外した直後のページ送りから読めない。束ねた skill を消しても表は描ける。
+#[tokio::test]
+async fn paging_does_not_resolve_the_app_again() {
+    let Some((pool, fga)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let data = DataStore::new(pool.clone(), Arc::clone(&fga), Arc::new(AllowRefs));
+    let artifacts = Arc::new(ArtifactStore::new(pool.clone(), Arc::clone(&fga)));
+    let views = DataViewStore::new(Arc::clone(&artifacts), data.clone());
+    let skills = SkillStore::new(Arc::clone(&artifacts));
+    let mini_apps = MiniAppStore::new(Arc::clone(&artifacts), pool.clone());
+    let mut dispatcher = ActionDispatcher::new(storage::audit::AuditRecorder::new(pool.clone()));
+    dispatcher.set_data_views(views.clone());
+
+    let table = data
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "備品".into(),
+                schema: TableSchema {
+                    fields: vec![FieldDef::new("title", FieldType::Text)],
+                    status_field: None,
+                    row_policy: None,
+                    field_policy: vec![],
+                    aggregate_min_rows: None,
+                    fsm_ref: None,
+                    rag: None,
+                },
+            },
+            None,
+        )
+        .await
+        .expect("table");
+    fga.write_tuple(
+        &bob.subject(),
+        Relation::Viewer,
+        &alice.ns().data_table(&table.id.to_string()),
+    )
+    .await
+    .expect("table viewer");
+    for title in ["机", "椅子", "棚"] {
+        data.create_record(&alice, table.id, json!({ "title": title }), None)
+            .await
+            .expect("seed");
+    }
+    let view_id = views
+        .create(
+            &alice,
+            "備品の一覧",
+            &DataViewBody {
+                table_id: table.id,
+                query: DataQuery::default(),
+                display: data::ViewSpec::default(),
+            },
+            None,
+        )
+        .await
+        .expect("view");
+    let (skill_id, _) = skills
+        .create(
+            &alice,
+            "備品の案内",
+            &json!({ "description": "備品の案内", "instructions": "備品の質問に答える。" }),
+            None,
+        )
+        .await
+        .expect("skill");
+    let (app_id, _) = mini_apps
+        .create(
+            &alice,
+            "備品アプリ",
+            &json!({
+                "description": "備品",
+                "screen": "```data_grid\n一覧\n```\n",
+                "skill": { "artifact_id": skill_id, "version": 1 },
+                "data_views": [{ "alias": "一覧", "artifact_id": view_id, "version": 1 }],
+            }),
+            None,
+        )
+        .await
+        .expect("mini app");
+    artifacts
+        .share(
+            &alice,
+            app_id,
+            &storage::ShareTarget::User { id: "bob".into() },
+            ArtifactRole::Viewer,
+            None,
+        )
+        .await
+        .expect("share app");
+
+    let grid = gui::data_grid_action_id("一覧");
+    let page = |who: AuthContext, params: Value| {
+        let mini_apps = mini_apps.clone();
+        let dispatcher = &dispatcher;
+        let grid = grid.clone();
+        async move {
+            mini_apps
+                .invoke_yui_action(&who, dispatcher, app_id, req(&grid, params), None)
+                .await
+        }
+    };
+    // 1 件ずつ 3 ページ送る。
+    let mut cursor: Option<String> = None;
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        let params = match &cursor {
+            Some(c) => json!({ "limit": 1, "cursor": c }),
+            None => json!({ "limit": 1 }),
+        };
+        let out = page(bob.clone(), params).await.expect("page");
+        let items = out["result"]["result"]["items"].as_array().expect("items");
+        assert_eq!(items.len(), 1, "{out}");
+        seen.push(
+            items[0]["data"]["title"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        );
+        cursor = out["result"]["result"]["next_cursor"]
+            .as_str()
+            .map(str::to_string);
+    }
+    seen.sort();
+    let mut all: Vec<String> = ["机", "椅子", "棚"].map(String::from).to_vec();
+    all.sort();
+    assert_eq!(seen, all, "3 ページで全行を 1 回ずつ");
+
+    // bob の 3 ページで残った監査: 解決（miniapp.resolve）と skill のバンドル読みは無い。
+    let count = |action: &'static str, object: Option<Uuid>| {
+        let pool = pool.clone();
+        let tenant = tenant.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND actor = 'bob' \
+                   AND action = $2 AND ($3::text IS NULL OR object_id = $3)",
+            )
+            .bind(&tenant)
+            .bind(action)
+            .bind(object.map(|id| id.to_string()))
+            .fetch_one(&pool)
+            .await
+            .expect("audit")
+        }
+    };
+    assert_eq!(
+        count("miniapp.resolve", None).await,
+        0,
+        "ページ送りで解決し直さない"
+    );
+    assert_eq!(
+        count("artifact.read_via_bundle", Some(skill_id)).await,
+        0,
+        "表は skill を読まない"
+    );
+    assert_eq!(
+        count("artifact.read_via_bundle", Some(view_id)).await,
+        3,
+        "ビューの定義のバンドル読みは 1 ページに 1 回"
+    );
+    assert_eq!(
+        count("ui_action.invoke", None).await,
+        3,
+        "操作は 1 ページに 1 回"
+    );
+
+    // 束ねた skill を消しても表は描ける（表は skill を使わない）。
+    artifacts
+        .delete(&alice, skill_id, None)
+        .await
+        .expect("skill を消す");
+    assert_eq!(
+        page(alice.clone(), json!({ "limit": 1 }))
+            .await
+            .expect("alice")["result"]["result"]["items"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+
+    // 本体の viewer はページごとに確かめ直す: 共有を外した直後のページ送りから読めない。
+    artifacts
+        .unshare(
+            &alice,
+            app_id,
+            &storage::ShareTarget::User { id: "bob".into() },
+            ArtifactRole::Viewer,
+            None,
+        )
+        .await
+        .expect("unshare");
+    let revoked = page(bob.clone(), json!({ "limit": 1 })).await;
+    assert!(
+        matches!(
+            revoked,
+            Err(ActionError::Forbidden) | Err(ActionError::NotFound)
+        ),
+        "共有を外したら次のページから読めない: {revoked:?}"
+    );
+
+    common::purge_tenant_rows(&pool, &tenant).await;
 }

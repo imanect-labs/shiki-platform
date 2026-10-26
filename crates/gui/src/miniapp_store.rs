@@ -151,17 +151,7 @@ impl MiniAppStore {
         version: Option<i64>,
         trace_id: Option<&str>,
     ) -> Result<ResolvedMiniApp, GuiError> {
-        let meta = self.artifacts.get(ctx, id, trace_id).await?;
-        if meta.kind != ArtifactKind::MiniApp {
-            return Err(GuiError::Artifact(ArtifactError::NotFound));
-        }
-        let version = version.unwrap_or(meta.current_version);
-        let v = self
-            .artifacts
-            .get_version(ctx, id, version, trace_id)
-            .await?;
-        // 描画前再検証: 保存済みでも壊れた本文（旧形式を含む）を実行面へ流さない。
-        let body = validate_miniapp_body(&v.body).map_err(GuiError::Validation)?;
+        let (version, body) = self.load_saved(ctx, id, version, trace_id).await?;
 
         let skill = match body.skill {
             Some(pin) => self.resolve_skill(ctx, id, pin, trace_id).await?,
@@ -199,6 +189,32 @@ impl MiniAppStore {
             body,
             skill,
         })
+    }
+
+    /// 保存済みの版の本文を読み、検証し直す（本体の viewer・kind・版の実在）。部品は読まず、監査も残さない。
+    ///
+    /// [`Self::resolve`] の前段で、画面の表の描画・ページ送りはこれだけを毎回通す（BUG-24）。権限は呼ぶたびに
+    /// 確かめ直す（剥奪は次の呼び出しから効く）。開いたことの監査（`miniapp.resolve`）は開いたときの解決が残し、
+    /// 表の 1 回ごとの操作は `ui_action.invoke` が残すので、ページを送るたびに解決をやり直して監査を重ねない。
+    pub(crate) async fn load_saved(
+        &self,
+        ctx: &AuthContext,
+        id: Uuid,
+        version: Option<i64>,
+        trace_id: Option<&str>,
+    ) -> Result<(i64, MiniAppBody), GuiError> {
+        let meta = self.artifacts.get(ctx, id, trace_id).await?;
+        if meta.kind != ArtifactKind::MiniApp {
+            return Err(GuiError::Artifact(ArtifactError::NotFound));
+        }
+        let version = version.unwrap_or(meta.current_version);
+        let v = self
+            .artifacts
+            .get_version(ctx, id, version, trace_id)
+            .await?;
+        // 描画前再検証: 保存済みでも壊れた本文（旧形式を含む）を実行面へ流さない。
+        let body = validate_miniapp_body(&v.body).map_err(GuiError::Validation)?;
+        Ok((version, body))
     }
 
     /// 任意の skill のピンをバンドル権限で読む（BUG-17）。
