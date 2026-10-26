@@ -36,6 +36,19 @@ pub trait WorkflowCatalogSource: Send + Sync {
             .await
             .map(|c| c.models.unwrap_or_default())
     }
+
+    /// 保存しようとしている IR に合わせたカタログ（IR が参照するものだけを引いて足す・承認のテーブルなど）。
+    ///
+    /// 保存 API は IR を見て承認（human.approval）が束縛するテーブルを [`Catalog::tables`] に詰め、V4 で FSM・
+    /// 状態・列を照合する。emit_workflow も同じ照合を通すため、IR を渡して組む（既定は IR を見ない
+    /// [`Self::catalog`]。照合の材料を IR から引く実装は上書きする）。
+    async fn catalog_for(
+        &self,
+        ctx: &AuthContext,
+        _ir: &serde_json::Value,
+    ) -> Result<Catalog, String> {
+        self.catalog(ctx).await
+    }
 }
 
 /// 検証エラー全件をモデルが自己修正しやすい形に整形する（params の誤りにはそのノード種の形を添える）。
@@ -136,7 +149,7 @@ impl Tool for EmitWorkflowTool {
         };
         let catalog = self
             .catalog
-            .catalog(ctx)
+            .catalog_for(ctx, &ir_json)
             .await
             .map_err(ToolError::Unavailable)?;
 

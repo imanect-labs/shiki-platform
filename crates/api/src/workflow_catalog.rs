@@ -179,6 +179,8 @@ pub struct ApiWorkflowCatalogSource {
     models: WorkflowModels,
     /// AI エージェントの web.fetch が読んでよいサイトの天井（保存 API と同じ設定・BUG-6）。
     web_ceiling: Option<Vec<String>>,
+    /// 承認（human.approval）が束縛するテーブルを引く（保存 API の `build_catalog_for` と同じ・GAP-08）。
+    data: Option<Arc<data::DataStore>>,
 }
 
 impl ApiWorkflowCatalogSource {
@@ -193,7 +195,15 @@ impl ApiWorkflowCatalogSource {
             skill_installs,
             models,
             web_ceiling: None,
+            data: None,
         }
+    }
+
+    /// 承認のテーブルを照合する（保存 API と同じ DataStore を渡す・V4・GAP-08）。
+    #[must_use]
+    pub fn with_data(mut self, data: Arc<data::DataStore>) -> Self {
+        self.data = Some(data);
+        self
     }
 
     /// web.fetch の天井を照合する（`workflow.agent.web_allowlist`・保存 API と同じ値を渡す）。
@@ -222,5 +232,18 @@ impl chat::WorkflowCatalogSource for ApiWorkflowCatalogSource {
     /// 説明文用のモデル一覧（secret・skill の一覧は引かない・照合と同じ集合）。
     async fn models(&self, ctx: &authz::AuthContext) -> Result<Vec<String>, String> {
         self.models.ids(ctx).await
+    }
+
+    /// 保存 API（`build_catalog_for`）と同じく、IR の承認が束縛するテーブルを保存者の権限で引いて足す。
+    async fn catalog_for(
+        &self,
+        ctx: &authz::AuthContext,
+        ir: &serde_json::Value,
+    ) -> Result<Catalog, String> {
+        let mut catalog = chat::WorkflowCatalogSource::catalog(self, ctx).await?;
+        if let Some(data) = &self.data {
+            catalog.tables = approval_tables(data, ctx, ir).await?;
+        }
+        Ok(catalog)
     }
 }
