@@ -118,13 +118,16 @@ create table trigger_firing (
     trigger_id uuid        not null,
     event_id   bigint      not null,            -- outbox イベントの id
     run_id     uuid,
-    -- 結果: pending（起動の一時失敗で再試行待ち）/ fired / skipped（委譲の不成立・多重度あふれ・無効化）/
-    -- suppressed_cycle / suppressed_depth（因果の鎖）/ dropped_queue_full / gave_up（再試行の打ち切り）。
+    -- 結果: pending（起動の一時失敗で再試行待ち・新しい版の保存をまとめて待っている）/ fired / skipped（委譲の
+    -- 不成立・多重度あふれ・無効化）/ suppressed_cycle / suppressed_depth（因果の鎖）/ dropped_queue_full /
+    -- gave_up（再試行の打ち切り）/ coalesced（同じファイルの後の保存にまとめた・§5.4）。
     outcome         text not null default 'fired',
     attempts        int  not null default 0,
-    next_attempt_at timestamptz,                -- pending の次の再試行（指数・最大 10 分間隔・5 回まで）
+    next_attempt_at timestamptz,                -- pending の次の再試行（指数・最大 10 分間隔・5 回まで）・起動する時刻
     payload         jsonb,                      -- 再試行の材料（起動したら消す）
     cause_run_id    uuid,                       -- 再試行の材料（因果の鎖の由来）
+    coalesce_key    text,                       -- まとめる単位（ファイルの id・新しい版の保存だけ）
+    coalesce_since  timestamptz,                -- まとめ始めた保存の時刻（上限の起点）
     created_at timestamptz not null default now(),
     unique (tenant_id, trigger_id, event_id)
 );
@@ -539,6 +542,24 @@ cron の評価区間は `workflow_trigger.last_planned_at`（watermark）→ 現
 4. 合致したら `trigger_firing` に UNIQUE(tenant_id, trigger_id, event_id) で INSERT して行をロックし、run を起動して
    結果（`outcome`）を同じ行に残す（outbox イベント 1 件 × トリガ 1 本につき最大 1 run）。
 
+**ファイル保存**（`storage.write`）は outbox の作成（op create）と新しい版の保存（op update・finalize の内容更新・
+content_update・提案の採用・ワークスペースへの上書き）から写す。どの経路も outbox に保存した時点の `parent_id` を
+載せ、上の 2 の祖先束縛はこれで照合する（BUG-28）。
+
+1. フォルダの祖先束縛で候補のトリガを引き、filter を評価する（上の 1〜3）。
+2. **workflow プリンシパル（有効化の委譲）が保存されたファイルを読めるか**を StorageService の viewer で確かめる
+   （`wait(event)` の起床と同じ `SavedFileGate`・強整合の check と監査・D-50）。読めなければ発火も記録もしない。
+   確かめられない一時障害はバッチを配り直す。
+3. 因果の鎖（下のデータ変更の 4 と同じ・D-26）。run の中の storage.write・csv.write・csv.patch は run の trace_id を
+   運ぶので、自分の保存・`workflow.start` の子の保存では起きない。
+4. 作成はすぐ起動する。**新しい版の保存は同じファイルの続く保存を 1 回にまとめる**（D-38）: firing を `pending`
+   （`next_attempt_at` = 起動する時刻・`coalesce_key` = ファイル）で待たせ、同じトリガ・同じファイルの後の保存が
+   来たら、待っている前の firing を `coalesced` にして後の firing へ寄せる。起動する時刻は最後の保存から 60 秒
+   （ノートの保存は編集中も最大 30 秒おきなので、その間隔より長くする）、ただしまとめ始めの保存から 10 分を上限とする。
+   時刻が来たら起動の再試行と同じ経路で起動する（run 入力は最後の保存のペイロード・`trigger_event_id` は最後の
+   イベント）。因果の鎖による抑止はまとめる前に判定する（run 自身の保存が、待っている人の保存を押し流さない）。
+   同じトリガ・同じファイルのまとめは advisory lock で直列にする。まとめたことは監査に残さない（後の保存で起動する）。
+
 **起動の結果と再試行**（D-21）: `RunLauncher::launch` は発火元の `event_id` を受け、`Started(run_id)` /
 `Skipped(理由)` / `Failed` を返す。見送り（委譲の不成立・`on_trigger_overflow = skip` の多重度あふれ・無効化）は
 再試行しない。一時失敗（IR の取得・DB・OpenFGA）は `pending` にして指数で間隔を延ばして再試行し（10 秒〜最大 10 分・
@@ -561,7 +582,7 @@ run も同じ `trigger_event_id` を持つので二重にならない。
    {その run のワークフロー} を鎖とする。発火先のワークフローが鎖に含まれれば `suppressed_cycle`（自分の書込・循環）、
    鎖が 4 段を超えれば `suppressed_depth`。起動した run に鎖と `cause_run_id` を書く。`workflow.start`・`Shiki.workflow.*`
    の子の run は、作成と同じ Tx で親の鎖 ∪ {親のワークフロー} を引き継ぐ。wait の起床には抑止をかけない。
-   前提: run の中の data の書込は run の trace_id を運ぶ。ファイル保存（storage.write）のトリガはまだ鎖を使わない（BUG-29）。
+   前提: run の中の data の書込・ファイルの保存は run の trace_id を運ぶ。ファイル保存のトリガも同じ鎖を使う（BUG-29）。
 5. **queued の上限**: 1 ワークフローの queued run が 1,000 件以上なら `dropped_queue_full` で捨てる。
 6. 抑止・破棄は 1 件ずつ監査（`workflow.trigger.suppressed`・reason）に残す。
 

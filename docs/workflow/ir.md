@@ -326,8 +326,9 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 - データ変更のトリガは `declared_scopes` に `data.read` が要る（保存の入口で補う）。有効化者はトリガのフォルダ・テーブルの viewer であること（有効化時に確かめる）。
 - `filter`（条件木・§3.3）でペイロードを絞る。filter 評価エラーの実行時扱い（発火しない＋監査）は [engine.md](./engine.md) §5。
 - **ペイロード**（run 入力・`$from trigger`）の形は source ごとに決まり、**語彙のカタログ（`EVENT_CATALOG` の `payload_fields`・`crates/workflow-engine/src/vocab/event_catalog.rs`）が正**（エディタの参照の候補と AI の説明文も同じ表から作る・D-47）:
-  - `storage.write`: `{ file_id, version, op（create | update）, kind（"file"）, parent_id, size, actor, blob_sha256 }`。ファイル名・content_type は載せない（`storage.read` の出力から取る）。
+  - `storage.write`: `{ file_id, version, op（create | update）, kind（"file"）, parent_id, size, actor, blob_sha256 }`。ファイル名・content_type は載せない（`storage.read` の出力から取る）。`parent_id` は保存した時点の親フォルダ（作成でも新しい版でも載る）。
   - データ変更: `{ source, table_id, record_id, rev, change（create | update | transition）, from, to（状態が変わったときだけ・ほかは null）, changed（変わった列の参照名）, changes（列ごとの { old, new }）, actor, by_workflow（ワークフローの書込による変更か）, occurred_at, record（今の行）, truncated }`。値は**有効化者（委譲元）の見え方**で作る: 委譲元に見えない行の変更・読めない列だけの更新では発火しない（記録もしない）。読めない列は `changed`・`changes`・`record` に載らない。64KB を超えると `record` と `changes` を落として `truncated: true`。
+- `storage.write` は**ファイルの作成**（op `create`）と**新しい版の保存**（op `update`: 利用者のアップロード・内容の更新（Office・ノートの保存・`csv.patch`）・提案の採用・上書き）で起きる。削除・移動・名前の変更・版の復元・フォルダの作成では起きない。新しい版の保存は**同じファイルの続く保存を 1 回にまとめる**: 同じトリガ・同じファイルの保存が 60 秒途切れてから、最後の版のペイロードで 1 回だけ起動する（保存が途切れなくても、まとめ始めから 10 分で起動する・D-38）。作成はまとめずにすぐ起動する。発火の時点で workflow プリンシパル（有効化の委譲）が保存されたファイルを読めなければ発火しない（記録もしない・D-50）。このワークフロー自身の保存とその子（`workflow.start`）の保存では発火しない（下のデータ変更と同じ因果の鎖・D-26）。
 - データ変更のトリガは次では発火しない（[engine.md](./engine.md) §5.4）: 一括取込（CSV の取込・`data.bulk_upsert` の作成行と更新行）、このワークフロー自身の書込とその子（`workflow.start`）の書込（因果の鎖）、鎖が 4 段を超える連鎖、queued の run が 1,000 件以上あるとき。状態の変更は行の更新でもあるので、同じテーブルに `data.record.updated` と `data.transition` を置くと 1 回の遷移で 2 回起動する（保存時に警告 `ir.overlapping_data_triggers`）。
 - filter の例: 遷移先 `/to eq "approved"`・変更した列 `/changed eq "amount"`（配列の eq は「含む」）・変更前後の値 `/changes/amount/new gte 100000`・今の値 `/record/data/category`・人の操作だけ `/by_workflow eq false`。
 
@@ -472,7 +473,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 
 - `kind`: `duration`（相対時間）/ `until`（絶対時刻）/ `event`（イベント待ち）。
 - `on_timeout: continue` のとき出力ポート `timeout` を持つ（§5.2）。
-- `kind: event` の `scope` は必須（D-49）: `storage.write` は `{ "folder": "<uuid>" }`、データ変更は `{ "table": "<uuid リテラル>", "record"?: 値式 }`。`record` は**停止時に解決**し（解決できなければ `expr_resolve_error`）、その行の変更だけを待つ。データ変更の source では空の scope をワイルドカードにしない。保存済みの scope の無い `storage.write` の wait は、起床のたびに実行主体の閲覧を確かめて守る（`EventWaitGate`・D-33）。データ変更の wait は `data.read` が要る。
+- `kind: event` の `scope` は必須（D-49）: `storage.write` は `{ "folder": "<uuid>" }`（ファイルの作成と新しい版の保存の両方で起きる。トリガと違い、続く保存をまとめず最初に届いた保存で起きる）、データ変更は `{ "table": "<uuid リテラル>", "record"?: 値式 }`。`record` は**停止時に解決**し（解決できなければ `expr_resolve_error`）、その行の変更だけを待つ。データ変更の source では空の scope をワイルドカードにしない。保存済みの scope の無い `storage.write` の wait は、起床のたびに実行主体の閲覧を確かめて守る（`EventWaitGate`・D-33）。データ変更の wait は `data.read` が要る。
 - **登録より前の変更では起きない**: 行に束縛した wait は停止時に実行主体の権限でその行を読み（data.get）、その rev より後の変更だけで起きる。テーブル単位の wait は停止の時点の outbox の位置より後のイベントだけを見る（停止と並行していた書込は取りこぼし得る）。
 - **filter の `$from`**: `event` が届いたイベントを指す（`trigger` / `payload` は互換の別名で、保存時に警告 `ir.wait_filter_alias`）。それ以外（`input`・`nodes.*`・`run`・`each`）は**停止時に解決してリテラルへ束縛**してから購読に保存する（起床の判定は届いたイベントしか解決しない）。出力（`nodes.<id>.output`）は届いたイベントのペイロード（形は §6.2 と同じ・実行主体の見え方）。
 - wait の実行時挙動（waiting_timer / waiting_event・購読登録・起こし方）は [engine.md](./engine.md) §9。
