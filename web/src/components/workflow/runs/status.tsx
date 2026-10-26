@@ -66,6 +66,8 @@ export const STEP_STATUS_LABELS: Record<string, string> = {
 /// run の fail_reason（engine 側の理由コード）の日本語説明。
 export const FAIL_REASON_LABELS: Record<string, string> = {
   run_timeout: "実行全体の制限時間を超えました",
+  // 承認を待つ間に委譲・テーブルの権限が外れた（engine の `approval::ACTOR_UNAVAILABLE`・D-62）。
+  actor_unavailable: "承認を待つ間に、ワークフローを実行する権限（委譲またはテーブルの権限）が外れたため止めました",
   step_failed: "途中のブロックが失敗しました",
   cancelled: "中止されました",
 };
