@@ -126,6 +126,9 @@ function RunTimeoutSuggestion({ ctx }: { ctx: EditorContext }) {
   );
 }
 
+/// シートの本文の下端の余白（浮いているボタンの高さ 44px ＋ 余裕）。
+const SHEET_BOTTOM_SPACE = "pb-20";
+
 /// 置いたときに空の文字で入れてある必須の欄（`defaultParams` の `""`）のうち、まだ空のもの。
 /// 保存は通るが中身の無い指示で動いてしまうので、欄の下で入力を促す（BUG-15）。
 function blankRequired(node: IrNode): string[] {
@@ -234,7 +237,9 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
           </Button>
         )}
       </div>
-      <div className="flex-1 space-y-5 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle">
+      {/* シートでは下端に余白を取る（画面の左下に浮くボタン・ブラウザの下端の操作部に最後の欄が隠れないよう、
+          末尾まで送ったときに欄を持ち上げる・BUG-40）。 */}
+      <div className={cn("flex-1 space-y-5 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle", sheet && SHEET_BOTTOM_SPACE)}>
         {errorView.banner.length > 0 ? (
           <ul className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-2 text-[11px] text-destructive">
             {errorView.banner.map((e, i) => (
@@ -353,7 +358,7 @@ export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
             </Button>
           )}
         </div>
-        <div className="flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle">
+        <div className={cn("flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle", sheet && SHEET_BOTTOM_SPACE)}>
           <TriggerPanel
             triggers={ir.triggers as Trigger[]}
             index={selection.index}
