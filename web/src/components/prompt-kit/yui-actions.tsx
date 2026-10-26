@@ -9,17 +9,17 @@
 import * as React from "react";
 import type { AppActionEvent, AppActionResult } from "@imanect/yui/react";
 import { figureActions, type Figure } from "@imanect/yui";
-import { CheckCircle2, CircleDashed, Loader2, MinusCircle, XCircle } from "lucide-react";
 
 import { UiActionAlreadyInvoked, UiActionUncertain } from "@/lib/artifact-api";
 import type { UiActionRun } from "@/lib/chat-api";
-import { cn } from "@/lib/utils";
 
 /// 起動したワークフローの記録 1 件（会話の記録・ミニアプリの記録の共通の形）。
-export type YuiRun = Pick<UiActionRun, "action_id" | "label" | "workflow_name" | "status" | "invoked_at"> & {
-  run_id?: string | null;
-  values?: { label: string; value: string }[];
-};
+/// 結果（`reply`）・失敗の理由（`failure`）は押した本人の記録にだけ付く（GAP-09）。
+export type YuiRun = Pick<UiActionRun, "action_id" | "label" | "workflow_name" | "status" | "invoked_at"> &
+  Partial<Pick<UiActionRun, "waiting_for" | "failure" | "reply" | "has_reply" | "result_expired">> & {
+    run_id?: string | null;
+    values?: { label: string; value: string }[];
+  };
 
 /// 図のボタンを実行できる場所（確定した回答のメッセージ・ミニアプリの画面）。無ければボタンは無効（表示だけ）。
 export type YuiActionHost = {
@@ -37,6 +37,8 @@ export type YuiActionHost = {
   unsaved?: "reloading" | "stopped";
   /// 実行の後に読み直す（新しい発話・起動の記録を出す）。
   onChanged: () => void;
+  /// 結果が付いていない古い記録を開いたときに、その 1 件を結果つきで読む（GAP-09）。
+  loadRun?: (runId: string) => Promise<YuiRun>;
   /// `app` の図を「アプリとして保存」する（会話の回答の図だけ）。
   saveAsApp?: (block: string, title: string) => void;
 };
@@ -157,62 +159,59 @@ export function useYuiActions(
   };
 }
 
-const STATUS: Record<UiActionRun["status"], { label: string; icon: React.ElementType; tone: string; spin?: boolean }> = {
-  starting: { label: "起動中", icon: Loader2, tone: "text-muted-foreground", spin: true },
-  queued: { label: "待ち", icon: CircleDashed, tone: "text-muted-foreground" },
-  running: { label: "実行中", icon: Loader2, tone: "text-muted-foreground", spin: true },
-  succeeded: { label: "成功", icon: CheckCircle2, tone: "text-primary" },
-  failed: { label: "失敗", icon: XCircle, tone: "text-destructive" },
-  cancelled: { label: "取り消し", icon: MinusCircle, tone: "text-muted-foreground" },
-  skipped: { label: "見送り（同時実行の上限）", icon: MinusCircle, tone: "text-muted-foreground" },
-};
-
-function time(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? ""
-    : d.toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-/// 図のボタンで起動したワークフローの記録（図の下・新しいものが下）。
-export function YuiRunList({ runs }: { runs: readonly YuiRun[] }) {
-  if (runs.length === 0) return null;
-  return (
-    <ul className="mt-2 space-y-1 text-[12px]" aria-label="起動したワークフロー" data-testid="yui-runs">
-      {runs.map((r) => {
-        const s = STATUS[r.status];
-        const Icon = s.icon;
-        const values = (r.values ?? []).map((v) => `${v.label}: ${v.value}`).join("・");
-        return (
-          <li
-            key={`${r.action_id}-${r.invoked_at}-${r.run_id ?? ""}`}
-            className="flex min-w-0 items-start gap-2 rounded-lg border border-border bg-secondary/30 px-2.5 py-1.5"
-            data-status={r.status}
-          >
-            <Icon className={cn("mt-0.5 size-3.5 shrink-0", s.tone, s.spin && "animate-spin")} aria-hidden />
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-baseline gap-x-2">
-                <span className="font-medium text-foreground">
-                  {r.label} → {r.workflow_name}
-                </span>
-                <span className={s.tone}>{s.label}</span>
-                <span className="text-muted-foreground">{time(r.invoked_at)}</span>
-              </div>
-              {values ? <p className="truncate text-muted-foreground" title={values}>{values}</p> : null}
-            </div>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
 /// 本文に ```ui（Yui）のブロックがあるか。生成の後にメッセージを読み直す（ボタンの束縛と id を得る）かの判断に使う。
 export function hasYuiBlock(text: string): boolean {
   return /^[ \t]*(?:>[ \t]*)*(?:`{3,}|~{3,})[ \t]*y?ui\b/im.test(text);
 }
 
-/// まだ終わっていない起動があるか（あれば会話を少しずつ読み直して状態を更新する）。
+/// 動いている起動があるか（起動中・順番待ち・実行中。待機中は含めない）。
 export function hasOpenRuns(runs: readonly YuiRun[] | undefined): boolean {
   return (runs ?? []).some((r) => r.status === "starting" || r.status === "queued" || r.status === "running");
+}
+
+/// 待機中（時間・できごと・承認を待っている）の起動があるか。
+export function hasWaitingRuns(runs: readonly YuiRun[] | undefined): boolean {
+  return (runs ?? []).some((r) => r.status === "waiting");
+}
+
+/// 待機中の起動しか無いときに読み直す間隔（何日も待つ承認を 3 秒ごとに読み直さない・BUG-20）。
+export const WAITING_REFRESH_MS = 30_000;
+
+/// 起動の記録を読み直す間隔。動いている起動があれば `activeMs`、待機中だけなら 30 秒、終わっていれば読み直さない。
+export function runsRefreshDelay(runs: readonly YuiRun[] | undefined, activeMs = 3000): number | null {
+  if (hasOpenRuns(runs)) return activeMs;
+  if (hasWaitingRuns(runs)) return WAITING_REFRESH_MS;
+  return null;
+}
+
+/// 起動の記録が終わるまで読み直す（間隔は [`runsRefreshDelay`]）。待機中だけのときは、画面に戻った時
+/// （フォーカス・タブの表示）にも読み直す。`tick` は読み直しを終えるたびに変わる値（失敗しても次を予約する）。
+export function useRunsRefresh(
+  runs: readonly YuiRun[] | undefined,
+  refresh: () => void,
+  tick: unknown,
+  activeMs = 3000,
+): void {
+  const delay = runsRefreshDelay(runs, activeMs);
+  const latest = React.useRef(refresh);
+  latest.current = refresh;
+  React.useEffect(() => {
+    if (delay == null) return;
+    const t = window.setTimeout(() => latest.current(), delay);
+    return () => window.clearTimeout(t);
+  }, [delay, tick]);
+  const waitingOnly = delay === WAITING_REFRESH_MS;
+  React.useEffect(() => {
+    if (!waitingOnly) return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") latest.current();
+    };
+    const onFocus = () => latest.current();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [waitingOnly]);
 }

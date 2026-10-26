@@ -23,7 +23,8 @@ import { toast } from "@/components/ui/use-toast";
 import { ChartInsertError, figureToChartInsert, insertChart, officeTargetKind } from "@/lib/office/chart-insert";
 import { cn } from "@/lib/utils";
 import { CodeBlock } from "./code-block";
-import { useYuiActions, YuiRunList } from "./yui-actions";
+import { useYuiActions } from "./yui-actions";
+import { YuiRunList } from "./yui-run-result";
 
 /// 生成中の本文はトークンごとに再描画されるので、props が変わらない限り描き直さない
 /// （確定済みの図・書きかけの行しか変わっていない図の解析とレイアウトを繰り返さない）。

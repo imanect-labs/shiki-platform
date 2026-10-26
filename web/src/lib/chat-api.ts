@@ -113,6 +113,11 @@ export type Message = {
 /// 本文の図のボタンで起動したワークフロー 1 件（#604・codegen）。
 export type UiActionRun = components["schemas"]["UiActionRun"];
 
+/// 本人が会話の図のボタンで起動した 1 件を、画面に返した結果つきで読む（古い行を開いたとき・GAP-09）。
+export async function getChatUiRun(threadId: string, runId: string): Promise<UiActionRun> {
+  return ok<UiActionRun>(await apiFetch(`/threads/${threadId}/ui-runs/${runId}`));
+}
+
 export type Attachment = { node_id: string; name: string };
 export type Citation = Extract<ContentBlock, { type: "citation" }>;
 

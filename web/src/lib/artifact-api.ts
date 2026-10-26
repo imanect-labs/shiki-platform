@@ -293,9 +293,15 @@ export async function invokeMiniAppYuiAction(
 }
 
 /// 本人がミニアプリの画面のボタンで起動した記録（新しい 20 件を古い順に）。
+/// ワークフローが画面に返した結果（`reply`）は、未確定の run と最新の終わった 1 件にだけ付く（GAP-09）。
 export async function listMiniAppRuns(appId: string): Promise<MiniAppRun[]> {
   const res = await ok<{ runs: MiniAppRun[] }>(await apiFetch(`/mini-apps/${appId}/runs`));
   return res.runs;
+}
+
+/// 本人が起動した 1 件を、画面に返した結果つきで読む（一覧で結果が付かない古い行を開いたとき）。
+export async function getMiniAppRun(appId: string, runId: string): Promise<MiniAppRun> {
+  return ok<MiniAppRun>(await apiFetch(`/mini-apps/${appId}/runs/${runId}`));
 }
 
 /// 回答の本文の ```ui app を、そのボタンの実行先ごとミニアプリとして保存する（#604）。

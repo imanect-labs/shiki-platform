@@ -22,6 +22,7 @@ import {
   notifyThreadsChanged,
   resumeMessage,
   setAutonomousMode,
+  getChatUiRun,
   streamMessage,
   submitApproval,
   subscribeThreadsChanged,
@@ -50,8 +51,8 @@ import { invokeChatYuiAction } from "@/lib/artifact-api";
 import { SaveAsAppDialog, type SaveAsAppTarget } from "@/components/artifacts/save-as-app-dialog";
 import { Loader } from "@/components/prompt-kit/loader";
 import {
-  hasOpenRuns,
   hasYuiBlock,
+  useRunsRefresh,
   YuiActionContext,
   type YuiActionHost,
 } from "@/components/prompt-kit/yui-actions";
@@ -1167,17 +1168,15 @@ const AssistantRow = React.memo(function AssistantRow({
       uiRuns: uiRuns ?? [],
       unsaved: provisional,
       onChanged,
+      // 結果が付いていない古い記録は、開いたときに 1 件だけ読む（押した本人の分だけ返る・GAP-09）。
+      loadRun: (runId) => getChatUiRun(threadId, runId),
       saveAsApp: (block, title) => onSaveAsApp({ threadId, messageId, block, title }),
     }),
     [threadId, messageId, boundActions, invokedActions, uiRuns, provisional, onChanged, onSaveAsApp],
   );
-  // 図のボタンで起動したワークフローが終わるまで、会話を少しずつ読み直して状態を出す。
-  const openRuns = hasOpenRuns(uiRuns);
-  React.useEffect(() => {
-    if (!openRuns) return;
-    const t = window.setTimeout(onChanged, 4000);
-    return () => window.clearTimeout(t);
-  }, [openRuns, uiRuns, onChanged]);
+  // 図のボタンで起動したワークフローが終わるまで、会話を少しずつ読み直して状態を出す。待機中（承認など）
+  // だけなら間隔を空け、画面に戻ったときに読み直す（BUG-20）。
+  useRunsRefresh(uiRuns, onChanged, uiRuns, 4000);
   // 本文と操作のまとまりを起きた順に（生成中と同じ配置）。
   const segments = React.useMemo(() => segmentsFromBlocks(blocks), [blocks]);
   // コピー・引用の対応付け用の本文全体。区切りは段落として繋ぐ（ライブ表示と揃える）。

@@ -169,7 +169,8 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
             />
           ) : null}
           <DataGrid
-            key={attempt}
+            // 索引の準備の読み直し・画面のボタンの起動の終わり（BUG-19）で、先頭から読み直す。
+            key={`${attempt}:${host.revision ?? 0}`}
             tableId={first.table_id}
             columns={columns}
             query={{}}

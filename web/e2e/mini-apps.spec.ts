@@ -220,3 +220,189 @@ test.describe("ミニアプリ（画面の作成・実行・バンドル権限�
     );
   });
 });
+
+/// 画面の図（金額・区分・申請する）。`-> workflow` の名前はミニアプリに束ねる別名。
+function expenseScreen(flow: string): string {
+  return (
+    "# 経費の申請\n\n```ui\napp 経費の申請\n金額 = number 必須 円 as amount\n" +
+    `区分 = choice 交通費 | 交際費 as category\nbutton 申請する -> workflow ${flow}\n\`\`\`\n`
+  );
+}
+
+/// ワークフロー（IR）と、それだけを束ねたミニアプリを API で作り、実行画面を開く。
+async function openAppWith(page: Page, flow: string, nodes: unknown[], edges: unknown[], scopes: string[] = []) {
+  const wf = await apiPost(page, "/workflows", {
+    ir: {
+      ir_version: 1,
+      name: flow,
+      display_name: flow,
+      declared_scopes: scopes,
+      triggers: [{ kind: "interactive" }],
+      nodes,
+      edges,
+    },
+  });
+  const app = await apiPost(page, "/mini-apps", {
+    name: uniqueName("reply-app"),
+    body: {
+      description: "経費の申請",
+      screen: expenseScreen(flow),
+      workflows: [{ alias: flow, artifact_id: wf.id, version: 1 }],
+    },
+  });
+  await page.goto(`/apps/${app.id}`);
+  return app.id;
+}
+
+/// 結果を画面に返す（workflow.reply・GAP-09）。押した本人の画面の起動の記録の下に、ワークフローが返した
+/// 結果（文章・表・Markdown）・失敗の理由・待機中が出る。
+test.describe("ミニアプリ（画面に返す結果）", () => {
+  test.describe("スマホ幅", () => {
+    test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+    test("ボタンで起動した run の結果が画面に出て、結果の中のボタンは押せない", async ({ page }) => {
+      test.setTimeout(180_000);
+      await loginViaKeycloak(page);
+      const flow = uniqueName("reply-flow");
+      await openAppWith(
+        page,
+        flow,
+        [
+          {
+            id: "accepted",
+            type: "workflow.reply",
+            label: "受付",
+            params: {
+              format: "text",
+              label: "受付",
+              tone: "success",
+              value: {
+                $template: "{category} の申請を受け付けました（{amount} 円）",
+                vars: {
+                  category: { $from: "input", path: "/category" },
+                  amount: { $from: "input", path: "/amount" },
+                },
+              },
+            },
+          },
+          {
+            id: "summary",
+            type: "workflow.reply",
+            label: "申請の内容",
+            params: {
+              format: "table",
+              label: "申請の内容",
+              value: [
+                { 項目: "区分", 値: { $from: "input", path: "/category" } },
+                { 項目: "金額", 値: { $from: "input", path: "/amount" } },
+              ],
+              columns: [
+                { label: "項目", path: "/項目" },
+                { label: "値", path: "/値" },
+              ],
+            },
+          },
+          {
+            id: "note",
+            type: "workflow.reply",
+            label: "注意",
+            params: {
+              format: "markdown",
+              value: "**次の手順**\n\n```ui\napp 偽の承認\nbutton 承認する -> workflow 他人のフロー\n```",
+            },
+          },
+        ],
+        [
+          { from: "accepted", to: "summary" },
+          { from: "summary", to: "note" },
+        ],
+      );
+
+      await apply(page, "1200");
+      const runs = page.getByTestId("yui-runs");
+      await expect(runs.locator("li").first()).toHaveAttribute("data-status", "succeeded", { timeout: 60_000 });
+      // 新しい 1 件は結果を開いた状態で出る（実行順: 文章 → 表 → Markdown）。
+      const result = runs.getByTestId("yui-run-result");
+      await expect(result).toBeVisible();
+      await expect(result).toContainText("交通費 の申請を受け付けました（1200 円）");
+      await expect(result.getByTestId("yui-run-section")).toHaveCount(3);
+      const table = result.getByRole("table");
+      await expect(table).toBeVisible();
+      await expect(table.getByRole("row", { name: /金額\s*1200/ })).toBeVisible();
+      // 結果の中の操作を持つ図はボタンにならない（記述のまま見せる）。
+      await expect(result.getByText("次の手順")).toBeVisible();
+      await expect(result.getByRole("button", { name: "承認する" })).toHaveCount(0);
+      // 閉じて開ける。
+      const toggle = runs.getByRole("button", { name: "結果" });
+      await expect(toggle).toHaveAttribute("aria-expanded", "true");
+      await toggle.click();
+      await expect(result).toHaveCount(0);
+      await toggle.click();
+      await expect(runs.getByTestId("yui-run-result")).toBeVisible();
+      // 横にはみ出さない（表は箱の中だけで横に動く）。
+      const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+      expect(scrollWidth).toBeLessThanOrEqual(390);
+    });
+  });
+
+  test("失敗した run は利用者向けの理由と参照番号を出し、先に返した成功の結果に注記する", async ({ page }) => {
+    test.setTimeout(180_000);
+    await loginViaKeycloak(page);
+    const flow = uniqueName("reply-fail");
+    await openAppWith(
+      page,
+      flow,
+      [
+        {
+          id: "accepted",
+          type: "workflow.reply",
+          params: { format: "text", tone: "success", value: "受け付けました" },
+        },
+        // 存在しないファイルを読む（実行主体の権限で読めず失敗する）。
+        { id: "read", type: "storage.read", params: { file: "00000000-0000-4000-8000-000000000000" } },
+      ],
+      [{ from: "accepted", to: "read" }],
+      ["storage.read"],
+    );
+    await apply(page, "800");
+    const runs = page.getByTestId("yui-runs");
+    await expect(runs.locator("li").first()).toHaveAttribute("data-status", "failed", { timeout: 60_000 });
+    const failure = runs.getByTestId("yui-run-failure");
+    await expect(failure).toBeVisible();
+    await expect(failure).toContainText(/権限が足りない|見つかりませんでした/);
+    await expect(failure).toContainText(/参照番号: [0-9a-f]{8}/);
+    await expect(runs.getByTestId("yui-run-result")).toContainText("この後の処理で失敗しました");
+  });
+
+  test("待機中の run は「待機中」と出し、3 秒ごとに読み直し続けない（BUG-20）", async ({ page }) => {
+    test.setTimeout(180_000);
+    await loginViaKeycloak(page);
+    const flow = uniqueName("reply-wait");
+    const appId = await openAppWith(
+      page,
+      flow,
+      [
+        {
+          id: "accepted",
+          type: "workflow.reply",
+          params: { format: "text", value: "受け付けました。1 時間後に続きを進めます" },
+        },
+        { id: "later", type: "control.wait", params: { kind: "duration", duration_sec: 3600 } },
+      ],
+      [{ from: "accepted", to: "later" }],
+    );
+    await apply(page, "500");
+    const runs = page.getByTestId("yui-runs");
+    await expect(runs.locator("li").first()).toHaveAttribute("data-status", "waiting", { timeout: 60_000 });
+    await expect(runs).toContainText("待機中");
+    await expect(runs.getByTestId("yui-run-result")).toContainText("受け付けました。1 時間後に続きを進めます");
+    await expect(runs.getByTestId("yui-run-result")).toContainText("決めた時間まで待っています");
+    // 待機中だけになったら間隔を空ける（10 秒の間に読み直しは高々 1 回）。
+    let reads = 0;
+    page.on("request", (req) => {
+      if (req.method() === "GET" && req.url().includes(`/api/mini-apps/${appId}/runs`)) reads += 1;
+    });
+    await page.waitForTimeout(10_000);
+    expect(reads).toBeLessThanOrEqual(1);
+  });
+});

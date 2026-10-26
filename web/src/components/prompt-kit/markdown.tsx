@@ -307,20 +307,70 @@ const components: Components = {
   },
 };
 
+/// URL のホスト名（読めなければ空）。
+function hostOf(url: string): string {
+  try {
+    return new URL(url, typeof window !== "undefined" ? window.location.href : "https://localhost").host;
+  } catch {
+    return "";
+  }
+}
+
+/// 外から来た文章（ワークフローが画面に返した結果など・GAP-09）の描き方。
+/// 画像は自動で読み込まず（外部への持ち出しに使える）リンクにし、外部リンクにはホスト名を添える
+/// （釣りのリンクに気づきやすくする）。
+const untrustedComponents: Components = {
+  ...components,
+  img({ src, alt }) {
+    const url = typeof src === "string" ? src : "";
+    const host = hostOf(url);
+    const label = `画像: ${alt?.trim() || "（説明なし）"}${host ? `（${host}）` : ""}`;
+    if (!url) return <span className="text-muted-foreground">{label}</span>;
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={cn("font-medium text-primary underline decoration-primary/30 underline-offset-2", WRAP_ANYWHERE)}
+      >
+        {label}
+      </a>
+    );
+  },
+  a(props) {
+    const url = props.href ?? "";
+    const link = components.a ? React.createElement(components.a, props) : null;
+    if (url.startsWith("/") || url.startsWith("#") || !/^[a-z][a-z0-9+.-]*:/i.test(url)) return link;
+    const host = hostOf(url);
+    return (
+      <>
+        {link}
+        {host ? <span className="ml-0.5 text-[0.85em] text-muted-foreground">（{host}）</span> : null}
+      </>
+    );
+  },
+};
+
 export function Markdown({
   children,
   className,
   streaming = false,
+  untrusted = false,
 }: {
   children: string;
   className?: string;
   /// 生成中の本文か（```ui の図が書きかけの行を描かないようにする）。
   streaming?: boolean;
+  /// 外から来た文章か（画像を読み込まずリンクにし、外部リンクにホスト名を添える）。
+  untrusted?: boolean;
 }) {
   return (
     <div className={cn("min-w-0 text-[15px] leading-relaxed text-foreground", WRAP_ANYWHERE, className)}>
       <SourceContext.Provider value={{ text: children, streaming }}>
-        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBrTags]} components={components}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, remarkBrTags]}
+          components={untrusted ? untrustedComponents : components}
+        >
           {children}
         </ReactMarkdown>
       </SourceContext.Provider>

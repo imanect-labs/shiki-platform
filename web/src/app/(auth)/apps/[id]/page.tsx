@@ -1,8 +1,9 @@
 "use client";
 
 /// ミニアプリ実行画面（Task 6.11・#604）: 画面（Yui の ```ui を含む Markdown）を描き、図のボタンで
-/// 束ねたワークフローを起動する。起動の記録（本人の分）は図の下に出し、終わるまで読み直す。
-/// バージョン切替は「その版を解決して描画」＝再現性の確認にも使える。
+/// 束ねたワークフローを起動する。起動の記録（本人の分）と、ワークフローが画面に返した結果（GAP-09）は
+/// 図の下に出し、終わるまで読み直す（待機中だけなら間隔を空ける・BUG-20）。起動が終わったら画面の表を
+/// 読み直す（BUG-19）。バージョン切替は「その版を解決して描画」＝再現性の確認にも使える。
 
 import * as React from "react";
 import { use } from "react";
@@ -18,10 +19,11 @@ import { MiniAppEditorDialog } from "@/components/artifacts/miniapp-editor";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
 import { DataGridHostContext, miniAppDataGridHost } from "@/components/data/data-grid-host";
 import { Markdown } from "@/components/prompt-kit/markdown";
-import { hasOpenRuns, YuiActionContext, type YuiActionHost } from "@/components/prompt-kit/yui-actions";
+import { useRunsRefresh, YuiActionContext, type YuiActionHost } from "@/components/prompt-kit/yui-actions";
 import { useMe } from "@/hooks/use-me";
 import {
   getArtifact,
+  getMiniAppRun,
   invokeMiniAppYuiAction,
   listMiniAppRuns,
   resolveMiniApp,
@@ -111,12 +113,23 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
       active = false;
     };
   }, [id, runsKey]);
-  const openRuns = hasOpenRuns(runs);
+  useRunsRefresh(runs, refreshRuns, runsLoaded);
+
+  // 起動が終わったら画面の表（```data_grid）を読み直す（ワークフローが書いた行を出す・BUG-19）。
+  // 前に読んだときに動いていた（起動中・順番待ち・実行中・待機中）起動が、終わった状態になったときだけ。
+  const [gridRevision, setGridRevision] = React.useState(0);
+  const openBefore = React.useRef<Set<string>>(new Set());
   React.useEffect(() => {
-    if (!openRuns) return;
-    const t = window.setTimeout(refreshRuns, 3000);
-    return () => window.clearTimeout(t);
-  }, [openRuns, runsLoaded, refreshRuns]);
+    const open = new Set<string>();
+    let finished = false;
+    for (const r of runs) {
+      const key = r.run_id ?? `${r.action_id}-${r.invoked_at}`;
+      if (["starting", "queued", "running", "waiting"].includes(r.status)) open.add(key);
+      else if (openBefore.current.has(key)) finished = true;
+    }
+    openBefore.current = open;
+    if (finished) setGridRevision((n) => n + 1);
+  }, [runs]);
 
   // 編集の対象は読み込んだ版が変わったときだけ作り直す（記録の読み直しで編集中の入力を戻さない）。
   const editTarget = React.useMemo(
@@ -137,15 +150,18 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
             // 押した版の記録だけを、その版の図の下に出す（版で画面が違うと識別子も違う）。
             uiRuns: runs.filter((r) => r.app_version === app.version),
             onChanged: refreshRuns,
+            // 結果が付いていない古い記録は、開いたときに 1 件だけ読む（本人の分だけ返る・GAP-09）。
+            loadRun: (runId) => getMiniAppRun(app.id, runId),
           }
         : null,
     [app, runs, refreshRuns],
   );
 
   // 画面の表（```data_grid）は束ねた保存ビューを閲覧者本人の権限でページごとに実行する（Task 15.5）。
+  // 起動が終わるたびに作り直し、表を読み直させる（BUG-19）。
   const gridHost = React.useMemo(
-    () => (app ? miniAppDataGridHost(app.id, app.version) : null),
-    [app],
+    () => (app ? miniAppDataGridHost(app.id, app.version, gridRevision) : null),
+    [app, gridRevision],
   );
 
   return (
