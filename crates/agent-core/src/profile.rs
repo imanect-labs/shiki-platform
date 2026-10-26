@@ -68,6 +68,9 @@ pub struct AgentOptions {
     pub session_id: Option<String>,
     /// tool search（遅延ツールを検索して読み込む）の設定。
     pub tool_search: ToolSearchOptions,
+    /// 会計の利用元の上書き（`None` はプロファイルとミニアプリの有無から決める）。ワークフローの
+    /// agent.invoke は自律版のループでも `Workflow` として数える（BUG-6）。
+    pub usage_source: Option<llm_gateway::UsageSource>,
 }
 
 /// tool search の設定（[`crate::tool_search`]）。
@@ -143,6 +146,7 @@ impl AgentOptions {
             parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
             session_id: None,
             tool_search: ToolSearchOptions::default(),
+            usage_source: None,
         }
     }
 
@@ -171,6 +175,7 @@ impl AgentOptions {
             parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
             session_id: None,
             tool_search: ToolSearchOptions::default(),
+            usage_source: None,
         }
     }
 }

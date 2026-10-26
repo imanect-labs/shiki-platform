@@ -633,10 +633,12 @@ fn preview(s: &str) -> String {
     format!("{}…", &s[..end])
 }
 
-/// 会計の利用元（管理画面の利用元別集計・#553）。ミニアプリ経由はミニアプリ、
-/// チャット制約版はチャット、自律版はエージェントとして数える。
+/// 会計の利用元（管理画面の利用元別集計・#553）。呼び出し側の上書き（ワークフローの agent.invoke）が
+/// あればそれ、無ければミニアプリ経由はミニアプリ、チャット制約版はチャット、自律版はエージェントとして数える。
 fn usage_source(opts: &AgentOptions, app_id: Option<uuid::Uuid>) -> llm_gateway::UsageSource {
-    if app_id.is_some() {
+    if let Some(source) = opts.usage_source {
+        source
+    } else if app_id.is_some() {
         llm_gateway::UsageSource::MiniApp
     } else if opts.profile.is_autonomous() {
         llm_gateway::UsageSource::Agent
