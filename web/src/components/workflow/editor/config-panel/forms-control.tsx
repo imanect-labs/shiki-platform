@@ -26,8 +26,10 @@ import type {
 } from "@/generated/workflow-ir";
 import { Field, NumberInput } from "./common";
 import { paramsOf, patchParams } from "./params";
-import { ValueExprInput } from "./value-expr-input";
+import { InputFieldsContext, numericLiteral, ValueExprInput } from "./value-expr-input";
+import { isFromRef } from "./value-refs";
 import type { FormProps } from "./forms-basic";
+import type { InputFieldInfo } from "@/lib/workflow-input-schema";
 
 const OP_LABELS: [CmpOp, string][] = [
   ["eq", "と等しい"],
@@ -46,6 +48,27 @@ const OP_LABELS: [CmpOp, string][] = [
 ];
 
 const NO_RIGHT: CmpOp[] = ["exists", "is_null"];
+
+/// 右辺の数字を数として保存する比較（等値と大小比較）。文字の判定（含む・始まる・終わる・パターン）は
+/// 文字のまま、`in` は候補のリストを JSON で書く。
+const NUMERIC_OPS: CmpOp[] = ["eq", "neq", "gt", "gte", "lt", "lte"];
+
+/// 比べる値（右辺）の数字を数として保存するか（BUG-31）。固定値の数字を文字の「50000」で保存すると、
+/// 数との大小比較は run の失敗（`expr_type_error`）に、等値は黙って偽になる。
+/// - 左辺が数値の入力項目なら、数として読めるものは数（`always`・桁区切りも外す）
+/// - 左辺が文字・選択肢・日付の入力項目なら、文字のまま（数字のコード「001」などを数にしない）
+/// - それ以外（前のブロックの結果・きっかけの内容など）は、数字だけを打ったときに数（`auto`）
+function numericModeFor(cmp: Comparison, inputFields: InputFieldInfo[]): "auto" | "always" | undefined {
+  if (!NUMERIC_OPS.includes(cmp.op)) return undefined;
+  const left = cmp.left as unknown;
+  if (isFromRef(left) && left.$from === "input" && typeof left.path === "string" && /^\/[^/]+$/.test(left.path)) {
+    const key = left.path.slice(1).replace(/~1/g, "/").replace(/~0/g, "~");
+    const field = inputFields.find((f) => f.key === key);
+    if (field?.kind === "number" || field?.kind === "integer") return "always";
+    if (field && field.kind !== "other" && field.kind !== "boolean") return undefined;
+  }
+  return "auto";
+}
 
 type FlatCondition = { mode: "all" | "any"; comparisons: Comparison[] } | null;
 
@@ -101,6 +124,7 @@ export function ConditionEditor({
   value: Condition | undefined;
   onChange: (next: Condition) => void;
 } & Pick<FormProps, "refCandidates" | "inMapRegion">) {
+  const inputFields = React.useContext(InputFieldsContext);
   const flat = flatten(value);
   if (flat === null) {
     return (
@@ -152,11 +176,15 @@ export function ConditionEditor({
               value={cmp.op}
               onValueChange={(v) => {
                 const comparisons = [...flat.comparisons];
-                comparisons[i] = {
-                  ...cmp,
-                  op: v as CmpOp,
-                  right: NO_RIGHT.includes(v as CmpOp) ? undefined : cmp.right,
-                };
+                const next = { ...cmp, op: v as CmpOp };
+                // 文字の判定から大小比較へ変えたときも、打ってあった数字を数に直す。
+                const mode = numericModeFor(next, inputFields);
+                next.right = NO_RIGHT.includes(next.op)
+                  ? undefined
+                  : mode && typeof cmp.right === "string"
+                    ? (numericLiteral(cmp.right, mode) as unknown as ValueExpr)
+                    : cmp.right;
+                comparisons[i] = next;
                 update({ ...flat, comparisons });
               }}
             >
@@ -187,6 +215,7 @@ export function ConditionEditor({
           {!NO_RIGHT.includes(cmp.op) ? (
             <ValueExprInput
               label="比べる値"
+              numeric={numericModeFor(cmp, inputFields)}
               value={cmp.right as ValueExpr | undefined}
               onChange={(v) => {
                 const comparisons = [...flat.comparisons];

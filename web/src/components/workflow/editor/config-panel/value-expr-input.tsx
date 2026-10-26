@@ -69,6 +69,17 @@ function modeOf(value: ValueExpr | undefined): Mode {
   return "literal";
 }
 
+/// 固定値の文字を数として保存するか（条件の比べる値・BUG-31）。数として読めなければ文字のまま返す。
+/// - `auto`: 数字だけ（`-12`・`3.5`・全角の数字も）なら数にする
+/// - `always`: 数と比べると分かっている欄（左辺が数値の入力項目）。桁区切りの `,` も外して読む
+/// 16 桁以上は数にしない（JavaScript の数で桁が落ち、別の値を保存してしまう・ID などは文字のまま）。
+export function numericLiteral(text: string, mode: "auto" | "always"): string | number {
+  const half = text.trim().replace(/[０-９．－]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
+  const t = mode === "always" ? half.replace(/,/g, "") : half;
+  if (!/^-?\d+(\.\d+)?$/.test(t) || t.replace(/[-.]/g, "").length > 15) return text;
+  return Number(t);
+}
+
 function literalText(value: unknown): { text: string; isJson: boolean } {
   if (typeof value === "string") return { text: value, isJson: false };
   if (value === undefined) return { text: "", isJson: false };
@@ -101,6 +112,9 @@ type Props = {
   json?: "object" | "array";
   /// 文字を求める欄（指示・検索語・名前・内容など）。「差し込む」と固定値の差し込みの注意を出す。
   text?: boolean;
+  /// 固定値の数字を数として保存する（条件の比べる値・[`numericLiteral`]・BUG-31）。数になった値は
+  /// 「数値やリストとして扱う」をオンにしなくても数のまま見せ、その旨を欄の下に出す。
+  numeric?: "auto" | "always";
 };
 
 export function ValueExprInput({
@@ -114,6 +128,7 @@ export function ValueExprInput({
   error,
   json,
   text,
+  numeric,
 }: Props) {
   const inputFields = React.useContext(InputFieldsContext);
   const triggerSources = React.useContext(TriggerSourcesContext);
@@ -128,7 +143,11 @@ export function ValueExprInput({
   const from = actual === "from" ? (value as RefValue) : null;
   const template = actual === "template" ? (value as TemplateExpr) : null;
   const literal = actual === "literal" ? literalText(value) : { text: "", isJson: false };
-  const [jsonMode, setJsonMode] = React.useState(literal.isJson);
+  // 数の欄（`numeric`）では、数は数字を打てば数になるので「数値やリストとして扱う」をオンにして見せない
+  // （リスト・真偽・null を書くときだけオンにする）。
+  const autoNumber = Boolean(numeric) && typeof value === "number";
+  const [jsonMode, setJsonMode] = React.useState(literal.isJson && !autoNumber);
+  const toText = (text: string): ValueExpr => (numeric ? numericLiteral(text, numeric) : text) as ValueExpr;
   // JSON 限定の欄の入力中の文字（読めない間も消さずに見せる）。
   const [jsonDraft, setJsonDraft] = React.useState<string | null>(null);
   const jsonError = React.useMemo(() => {
@@ -301,9 +320,14 @@ export function ValueExprInput({
                   // 不完全な JSON 入力中は文字列のまま保持。
                 }
               }
-              emit(text as unknown as ValueExpr);
+              emit(toText(text));
             }}
           />
+          {autoNumber && !jsonMode ? (
+            <p className="text-[11px] text-muted-foreground" data-testid="numeric-literal-note">
+              数値として比べます（文字として比べるなら「文章を組み立て」で書きます）
+            </p>
+          ) : null}
           {suspects.length > 0 ? (
             <div role="note" className="space-y-1.5 rounded-md border p-2 text-[11px] leading-relaxed" style={NOTE_STYLE} data-testid="literal-var-warning">
               <p className="flex items-start gap-1.5">
@@ -341,7 +365,7 @@ export function ValueExprInput({
                     // 解釈できないテキストは文字列のまま（入力継続で解釈される）。
                   }
                 } else if (literal.isJson) {
-                  emit(literal.text as unknown as ValueExpr);
+                  emit(toText(literal.text));
                 }
               }}
               className="scale-75"
