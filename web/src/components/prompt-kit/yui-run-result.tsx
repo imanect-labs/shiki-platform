@@ -168,22 +168,30 @@ function YuiRunRow({ run: r, latest }: { run: YuiRun; latest: boolean }) {
 /// 1 件の結果（待ちの状態・失敗の理由・返した節）。結果が付いていない古い記録は開いたときに読む。
 export function YuiRunResult({ run }: { run: YuiRun }) {
   const host = React.useContext(YuiActionContext);
-  const [loaded, setLoaded] = React.useState<YuiRun | null>(null);
+  // 読み込んだ結果（どの run のものか）。
+  const [fetched, setFetched] = React.useState<{ runId: string; run: YuiRun } | null>(null);
   const [loadError, setLoadError] = React.useState(false);
   const needsLoad = run.reply == null && Boolean(run.has_reply) && run.run_id != null;
-  const loadRun = host?.loadRun;
+  // 読み込みの関数は依存に入れない（画面は記録を読み直すたびに作り直すので、入れると開いている古い行の結果を
+  // 読み直しのたびに取り直す）。同じ run を読み込み済みなら取り直さない。
+  const loadRun = React.useRef(host?.loadRun);
+  loadRun.current = host?.loadRun;
+  const loaded = fetched && fetched.runId === run.run_id ? fetched.run : null;
+  const fetchedRunId = fetched?.runId ?? null;
   React.useEffect(() => {
-    if (!needsLoad || !loadRun || !run.run_id) return;
+    const load = loadRun.current;
+    const runId = run.run_id;
+    if (!needsLoad || !load || !runId || fetchedRunId === runId) return;
     let live = true;
     setLoadError(false);
-    loadRun(run.run_id).then(
-      (r) => live && setLoaded(r),
+    load(runId).then(
+      (r) => live && setFetched({ runId, run: r }),
       () => live && setLoadError(true),
     );
     return () => {
       live = false;
     };
-  }, [needsLoad, loadRun, run.run_id]);
+  }, [needsLoad, run.run_id, fetchedRunId]);
   const r = needsLoad && loaded ? { ...run, reply: loaded.reply, failure: loaded.failure ?? run.failure } : run;
   const sections = r.reply?.sections ?? [];
   const omitted = r.reply?.omitted ?? 0;
