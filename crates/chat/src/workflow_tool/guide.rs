@@ -234,7 +234,7 @@ pub(super) fn emit_description(models: Option<&[String]>) -> String {
     let _ = write!(
         d,
         "【骨格】{{\"ir_version\":1,\"name\":\"英小文字・数字・ハイフンの安定名（^[a-z][a-z0-9-]{{0,63}}$）\",\"display_name\":\"日本語の表示名\",\"declared_scopes\":[…]（省略可。ノードが要するスコープは保存時に補われる）,\"triggers\":[…],\"input_schema\":{{…}}（interactive の入力・省略可）,\"nodes\":[…],\"edges\":[…]}}\n\
-         - triggers: {{\"kind\":\"interactive\"}}（ボタン・チャットから実行）| {{\"kind\":\"schedule\",\"cron\":\"0 9 * * 1-5\",\"tz\":\"Asia/Tokyo\"}} | {{\"kind\":\"event\",\"source\":\"storage.write\",\"scope\":{{\"folder\":\"<フォルダの uuid>\"}}}}（そのフォルダ（配下を含む）に新しいファイルが保存されたときに起動。既存のファイルの上書き保存での起動は当てにしない）| {{\"kind\":\"event\",\"source\":\"data.record.created\" か \"data.record.updated\" か \"data.transition\",\"scope\":{{\"table\":\"<テーブルの uuid>\"}},\"filter\"?:条件}}（テーブルの行が追加・更新・状態変更されたときに起動。有効化した人に見える行・列の変更だけで起き、一括取込とこのワークフロー自身の書込では起きない。状態は filter の /to で絞る）。EventSource = {sources}。control.wait（kind: event）の scope も同じ形が必須（データ変更は \"record\":値式 で行を絞れる・filter は {{\"$from\":\"event\"}} で届いたできごとを読む）。\n\
+         - triggers: {{\"kind\":\"interactive\"}}（ボタン・チャットから実行）| {{\"kind\":\"schedule\",\"cron\":\"0 9 * * 1-5\",\"tz\":\"Asia/Tokyo\"}} | {{\"kind\":\"event\",\"source\":\"storage.write\",\"scope\":{{\"folder\":\"<フォルダの uuid>\"}}}}（そのフォルダ（配下を含む）にファイルが保存されたときに起動。新しいファイル（op \"create\"）と既存のファイルの新しい版（op \"update\"・上書き・Office やノートの保存）の両方で起き、filter の /op で絞れる。新しい版は同じファイルの保存が {coalesce} 秒途切れてから最後の版で 1 回だけ起動する。このワークフロー自身の保存（workflow.start の子を含む）では起きない）| {{\"kind\":\"event\",\"source\":\"data.record.created\" か \"data.record.updated\" か \"data.transition\",\"scope\":{{\"table\":\"<テーブルの uuid>\"}},\"filter\"?:条件}}（テーブルの行が追加・更新・状態変更されたときに起動。有効化した人に見える行・列の変更だけで起き、一括取込とこのワークフロー自身の書込では起きない。状態は filter の /to で絞る）。EventSource = {sources}。control.wait（kind: event）の scope も同じ形が必須（データ変更は \"record\":値式 で行を絞れる・filter は {{\"$from\":\"event\"}} で届いたできごとを読む）。\n\
          - input_schema: JSON Schema のサブセット（type・properties・required・items・enum など。$ref・oneOf は使えない）。入力は {{\"$from\":\"input\",\"path\":\"/キー\"}} で読む。\n\
          - nodes の要素（? は省略可）: {node}。id は ^[a-z][a-z0-9_]{{0,63}}$（英小文字で始め、英小文字・数字・_ だけ。例: find_requests）。\n\
          - edges の要素: {edge}。キーはこの 3 つだけ（port というキーは無い）。from_port を省くと out。出口: 通常のノードは out、control.branch は true / false、control.switch は cases の port と default、on_error が \"continue\" のノードは error、control.wait（kind: event・on_timeout: \"continue\"）は timeout。無い出口につないだエッジは保存できない。\n\
@@ -242,6 +242,7 @@ pub(super) fn emit_description(models: Option<&[String]>) -> String {
          - on_error が \"continue\" のノードが失敗すると、出力は {{\"error\":{{\"code\",\"message\",…}}}} になり error の出口へ進む（error につないだ先が無ければ run は失敗する）。\n\
          - map 領域: control.map は items の要素ごとに、\"parent\":\"<map の id>\" を持つノードを繰り返す。領域の中は parent が同じノードどうしだけをつなぐ（入口は入るエッジなし・出口はちょうど 1 つ・map ノードから領域へのエッジは書かない）。領域の中では {{\"$from\":\"each\",\"path\":\"/item\"}}（今の要素）と /index（番号）が使える。\n",
         sources = event_sources(),
+        coalesce = workflow_engine::scheduler::COALESCE_QUIET_SECS,
         node = NODE_SHAPE,
         edge = EDGE_SHAPE,
     );
@@ -504,6 +505,16 @@ mod tests {
         // 演算子の一覧とイベント source は型・語彙から生成する。
         assert!(d.contains("\"starts_with\""), "{d}");
         assert!(d.contains("EventSource = \"storage.write\""), "{d}");
+        // ファイル保存トリガは新しい版の保存でも起き、続く保存は 1 回にまとめる（BUG-28・D-38）。
+        assert!(d.contains("既存のファイルの新しい版（op \"update\""), "{d}");
+        assert!(
+            d.contains(&format!(
+                "同じファイルの保存が {} 秒途切れてから",
+                workflow_engine::scheduler::COALESCE_QUIET_SECS
+            )),
+            "{d}"
+        );
+        assert!(!d.contains("当てにしない"), "{d}");
         // きっかけの内容の項目もイベントのカタログから生成する（D-47・BUG-36）。データ変更の 3 種は同じ形。
         assert!(
             d.contains("- storage.write: { file_id: string（保存されたファイルの ID）"),
