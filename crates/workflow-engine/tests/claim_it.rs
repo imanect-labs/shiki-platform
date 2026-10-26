@@ -5,6 +5,8 @@
 //! - running 中の `attempt` は常に「今回が何回目か」（実行履歴 UI がそのまま表示する）
 //! - retryable 失敗は試行を 1 ずつ消費し、max_attempts で terminal 化する
 //! - cancel 要求済み run の step は sweeper が触らない（drain が回収する担当）
+//!
+//! 各テストは自分のテナント（`t-<uuid>`）に閉じ、最後にそのテナントの run を消す（[`cleanup`]・BUG-66）。
 
 #![allow(
     unreachable_pub,
@@ -83,6 +85,25 @@ async fn step_row(pool: &PgPool, tenant: &str, run_id: Uuid) -> (i32, i64, Strin
     .unwrap()
 }
 
+/// テストのテナントに作った run を消す（同じ DB を使うほかのテストや手元のサーバの tick に残さない・BUG-66）。
+///
+/// 計画のテスト（[`seed_steps`]）は ir_snapshot が空の running の run を 2,000 件作り、ほかのテストはリースの
+/// 切れた running・ready の step を残す。手元のサーバの sweeper・ワーカーはテナントを問わずそれを拾っていた。
+/// run を消せば step・run_event は FK で消える。
+async fn cleanup(pool: &PgPool, tenant: &str) {
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM step_execution WHERE tenant_id = $1")
+        .bind(tenant)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0, "run を消すと step も消える");
+}
+
 /// 計画テスト用に step を積む（数十行では Seq Scan が正当に選ばれるため、index が効く規模を作る）。
 async fn seed_steps(pool: &PgPool, tenant: &str, runs: i32, steps_per_run: i32) {
     sqlx::query(
@@ -150,6 +171,7 @@ async fn claim_plan_stays_index_ordered() {
              claim に OR 条件（リース失効 running の回収など）を足していないか:\n{plan}"
         );
     }
+    cleanup(&pool, &tenant).await;
 }
 
 /// リース失効 → sweeper が ready へ戻す。**attempt は消費されない**（engine.md §9.5）。
@@ -231,6 +253,7 @@ async fn sweeper_reclaims_expired_lease_without_consuming_attempt() {
         second.fencing_token > fencing_after,
         "再 claim も fencing を進める"
     );
+    cleanup(&pool, &tenant).await;
 }
 
 /// retryable 失敗は試行を 1 ずつ消費し、max_attempts 回実行したところで terminal 化する。
@@ -285,6 +308,7 @@ async fn retryable_failure_consumes_one_attempt_per_execution() {
     let statuses = store.step_statuses(&tenant, run_id).await.unwrap();
     let a = statuses.iter().find(|(p, _)| p == "a").unwrap();
     assert_eq!(a.1, StepStatus::Failed, "max_attempts 到達で terminal");
+    cleanup(&pool, &tenant).await;
 }
 
 /// cancel 要求済み run の失効リースは sweeper の対象外（`drain_cancel_requested` が回収する担当）。
@@ -313,4 +337,5 @@ async fn sweeper_skips_cancel_requested_runs() {
     assert_eq!(reclaimed, 0, "cancel 要求済み run は sweeper が触らない");
     let (_, _, status) = step_row(&pool, &tenant, run_id).await;
     assert_eq!(status, "running", "running のまま drain へ渡す");
+    cleanup(&pool, &tenant).await;
 }

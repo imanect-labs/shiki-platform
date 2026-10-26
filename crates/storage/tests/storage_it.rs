@@ -5422,6 +5422,27 @@ async fn rename_tenant_rows_moves_every_table() {
             .await
             .expect("node 再取得");
     assert_eq!(node_org.as_deref(), Some(org.as_str()));
+
+    // 後片付け（BUG-66）: 移した先のテナントの行を撤去する。仕込んだ workflow_run は ir_snapshot が空の
+    // queued のままで、残すと同じ DB を使う手元のサーバの昇格（全テナントを見る）に混ざっていた。
+    // app_function_schedule も次の実行時刻が今のまま残り、手元のサーバの定期実行が拾っていた。
+    service
+        .purge_tenant(&to, &org, "provisioner:test")
+        .await
+        .expect("後片付け");
+    let left: Vec<String> = storage::tenant_scope::count_tenant_rows(&pool, &tables, &to)
+        .await
+        .expect("後片付けの集計")
+        .into_iter()
+        .filter(|(t, n)| {
+            *n > 0
+                && !storage::tenant_scope::PURGE_RETAINED
+                    .iter()
+                    .any(|(r, _)| r == t)
+        })
+        .map(|(t, n)| format!("{t}={n}"))
+        .collect();
+    assert!(left.is_empty(), "後片付けで消えない行がある: {left:?}");
 }
 
 /// 中断アップロードの回収（#468）。

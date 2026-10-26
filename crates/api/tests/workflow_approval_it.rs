@@ -12,7 +12,9 @@
 //! - 期限を過ぎた承認は判断できず（409）、回収で timeout の出口へ進む
 //!
 //! relay はテナントを問わず未配送のイベントを掴むので、このファイルのテストは直列に流し、利用者 id は
-//! テストごとに一意にする（テナントは single 構成の既定 `default`）。
+//! テストごとに一意にする。テナントもテストごとに作り（`t-appr-<uuid>`）、最後にそのテナントの行を撤去する
+//! （[`Env::cleanup`]・BUG-66）。single 構成の既定 `default` で動かすと、手元の DB で流したときに手元のサーバと
+//! 同じテナントへ承認待ちの run が残り、前の回の残りが件数・受信箱の検査にも混ざっていた。
 
 #![allow(
     clippy::unwrap_used,
@@ -51,8 +53,6 @@ use workflow_engine::{
     RegistrationService, RunStore, SchedulerStore, WorkerConfig, WorkflowRunLauncher,
     WorkflowStore,
 };
-
-const TENANT: &str = "default";
 
 /// このファイルのテストを直列にする（上のモジュールの説明）。
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -147,7 +147,7 @@ impl storage::object_store::ObjectStore for NoopStore {
     }
 }
 
-fn config(db_url: &str) -> AppConfig {
+fn config(db_url: &str, tenant: &str) -> AppConfig {
     AppConfig {
         server: ServerConfig {
             host: "0.0.0.0".into(),
@@ -170,7 +170,7 @@ fn config(db_url: &str) -> AppConfig {
             post_logout_redirect_uri: "http://localhost:3000/".into(),
             scopes: "openid profile".into(),
             tenancy: Tenancy::Single,
-            tenant_id: Some(TENANT.into()),
+            tenant_id: Some(tenant.into()),
             provisioner_client_id: None,
             provisioner_client_secret: None,
             admin_base_url: None,
@@ -227,8 +227,8 @@ fn principal(id: &str) -> Principal {
     }
 }
 
-fn ctx(id: &str) -> AuthContext {
-    AuthContext::new(principal(id), "acme".into(), TENANT.into())
+fn ctx(id: &str, tenant: &str) -> AuthContext {
+    AuthContext::new(principal(id), "acme".into(), tenant.into())
 }
 
 struct Env {
@@ -253,6 +253,8 @@ struct Env {
     dave: AuthContext,
     /// 経理のロール id。
     keiri: String,
+    /// このテストのテナント（テストごとに一意・最後に [`Env::cleanup`] で撤去する）。
+    tenant: String,
 }
 
 async fn setup() -> Option<Env> {
@@ -364,16 +366,17 @@ async fn setup() -> Option<Env> {
         Arc::new(NoopAudit),
     ));
     let sfx = Uuid::new_v4().simple().to_string();
+    let tenant = format!("t-appr-{sfx}");
     let ids = ["alice", "bob", "carol", "dave"].map(|u| format!("{u}-{sfx}"));
     let sessions = Arc::new(MemorySessionStore::new());
     for u in &ids {
         sessions
             .put(
-                TENANT,
+                &tenant,
                 &format!("sid-{u}"),
                 &api::session::SessionRecord {
                     principal: principal(u),
-                    tenant_id: TENANT.into(),
+                    tenant_id: tenant.clone(),
                     access_token: "a".into(),
                     refresh_token: None,
                     id_token: None,
@@ -388,14 +391,14 @@ async fn setup() -> Option<Env> {
     }
     let app = build_app(
         &pool,
-        config(&db_url),
+        config(&db_url, &tenant),
         Arc::clone(&storage),
         sessions,
         &fga,
         Arc::clone(&data),
         Arc::clone(&artifacts),
     );
-    let alice = ctx(&ids[0]);
+    let alice = ctx(&ids[0], &tenant);
     // alice はドライブのルートにフォルダを作れる（組織の member）。
     fga.write_tuple(
         &alice.subject(),
@@ -417,10 +420,11 @@ async fn setup() -> Option<Env> {
         launcher,
         registration,
         alice,
-        bob: ctx(&ids[1]),
-        carol: ctx(&ids[2]),
-        dave: ctx(&ids[3]),
+        bob: ctx(&ids[1], &tenant),
+        carol: ctx(&ids[2], &tenant),
+        dave: ctx(&ids[3], &tenant),
         keiri: format!("keiri-{sfx}"),
+        tenant,
     })
 }
 
@@ -539,7 +543,10 @@ fn req(method: &str, user: &AuthContext, path: &str, body: Body) -> Request<Body
         .uri(path)
         .header(
             COOKIE,
-            format!("shiki_session=sid-{u}.{TENANT}; shiki_csrf=csrf-{u}"),
+            format!(
+                "shiki_session=sid-{u}.{}; shiki_csrf=csrf-{u}",
+                user.tenant_id
+            ),
         )
         .header("x-csrf-token", format!("csrf-{u}"))
         .header("content-type", "application/json")
@@ -800,7 +807,7 @@ impl Env {
             Arc::clone(&self.executor),
             WorkerConfig::default(),
         )
-        .scoped_to_tenant(TENANT);
+        .scoped_to_tenant(self.tenant.clone());
         while worker.claim_and_run_once("w1").await.unwrap() {}
     }
 
@@ -818,7 +825,7 @@ impl Env {
                  OR EXISTS (SELECT 1 FROM step_execution \
                             WHERE tenant_id = $1 AND status IN ('ready', 'running'))",
             )
-            .bind(TENANT)
+            .bind(&self.tenant)
             .fetch_one(&self.pool)
             .await
             .unwrap();
@@ -836,7 +843,7 @@ impl Env {
             "SELECT run_id FROM workflow_run WHERE tenant_id = $1 AND workflow_id = $2 \
                AND input->>'record_id' = $3",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(wf)
         .bind(record.to_string())
         .fetch_one(&self.pool)
@@ -849,7 +856,7 @@ impl Env {
             "SELECT status, taken_ports, output FROM step_execution \
              WHERE tenant_id = $1 AND run_id = $2 AND node_id = $3",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(run)
         .bind(node)
         .fetch_one(&self.pool)
@@ -913,7 +920,7 @@ async fn approvals_are_decided_by_the_approver_in_the_inbox() {
         "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'workflow.approval.request' \
            AND metadata->>'run_id' = $2",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(run.to_string())
     .fetch_one(&env.pool)
     .await
@@ -1072,12 +1079,13 @@ async fn approvals_are_decided_by_the_approver_in_the_inbox() {
         "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'workflow.approval.resolve' \
            AND metadata->>'run_id' = ANY($2)",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(vec![run.to_string(), other_run.to_string()])
     .fetch_one(&env.pool)
     .await
     .unwrap();
     assert_eq!(resolved, 2, "決着を監査に残す");
+    env.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1093,7 +1101,7 @@ async fn expired_approvals_cannot_be_decided_and_take_the_timeout_port() {
     let id: Uuid = sqlx::query_scalar(
         "SELECT approval_id FROM workflow_approval WHERE tenant_id = $1 AND run_id = $2",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(run)
     .fetch_one(&env.pool)
     .await
@@ -1120,7 +1128,7 @@ async fn expired_approvals_cannot_be_decided_and_take_the_timeout_port() {
     // 回収で timeout の出口へ進み、台帳は expired。
     let done = env
         .runs
-        .expire_due_approvals(chrono::Utc::now(), Some(TENANT))
+        .expire_due_approvals(chrono::Utc::now(), Some(env.tenant.as_str()))
         .await
         .unwrap();
     assert!(done.iter().any(|r| r.run_id == run));
@@ -1134,12 +1142,13 @@ async fn expired_approvals_cannot_be_decided_and_take_the_timeout_port() {
     let status: String = sqlx::query_scalar(
         "SELECT status FROM workflow_approval WHERE tenant_id = $1 AND approval_id = $2",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(id)
     .fetch_one(&env.pool)
     .await
     .unwrap();
     assert_eq!(status, "expired");
+    env.cleanup().await;
 }
 
 /// 停止の commit より前に起きた遷移（relay が購読を見つける前に配送済みにした変更）は、受付の突合で
@@ -1159,7 +1168,7 @@ async fn reconcile_settles_transitions_that_raced_the_suspend() {
     sqlx::query(
         "UPDATE workflow_approval SET reconciled_at = NULL WHERE tenant_id = $1 AND run_id = $2",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(run)
     .execute(&env.pool)
     .await
@@ -1179,7 +1188,7 @@ async fn reconcile_settles_transitions_that_raced_the_suspend() {
          WHERE o.tenant_id = $1 AND NOT EXISTS (SELECT 1 FROM outbox_delivery d \
                WHERE d.consumer = 'workflow' AND d.event_id = o.id)",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .execute(&env.pool)
     .await
     .unwrap();
@@ -1193,6 +1202,7 @@ async fn reconcile_settles_transitions_that_raced_the_suspend() {
     assert_eq!(out["decided_by"], json!(env.bob.principal.id));
     assert_eq!(out["rev"], row.rev + 1);
     assert_eq!(env.step(run, "done").await.0, "succeeded");
+    env.cleanup().await;
 }
 
 impl Env {
@@ -1201,7 +1211,7 @@ impl Env {
         sqlx::query_as(
             "SELECT approval_id, status FROM workflow_approval WHERE tenant_id = $1 AND run_id = $2",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(run)
         .fetch_one(&self.pool)
         .await
@@ -1214,7 +1224,7 @@ impl Env {
             "SELECT metadata FROM audit_log WHERE tenant_id = $1 \
                AND action = 'workflow.approval.resolve' AND object_id = $2 ORDER BY id DESC LIMIT 1",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(approval.to_string())
         .fetch_optional(&self.pool)
         .await
@@ -1257,7 +1267,7 @@ async fn deleting_the_row_withdraws_its_approval() {
            AND payload->>'change' = 'delete' AND payload->>'record_id' = $2 \
          ORDER BY id DESC LIMIT 1 RETURNING id",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(gone.to_string())
     .bind(kept.to_string())
     .fetch_one(&env.pool)
@@ -1283,6 +1293,7 @@ async fn deleting_the_row_withdraws_its_approval() {
     assert_eq!(env.approval_of(kept_run).await.1, "pending");
     assert!(env.item_for(&env.bob, kept).await.is_some());
     assert!(env.item_for(&env.bob, gone).await.is_none());
+    env.cleanup().await;
 }
 
 impl Env {
@@ -1299,7 +1310,7 @@ impl Env {
                  JOIN workflow_run r ON r.tenant_id = s.tenant_id AND r.run_id = s.run_id \
                  WHERE s.tenant_id = $1 AND s.run_id = $2 AND s.node_id = 'ok'",
             )
-            .bind(TENANT)
+            .bind(&self.tenant)
             .bind(run)
             .fetch_one(&self.pool)
             .await
@@ -1327,6 +1338,29 @@ impl Env {
         assert_eq!(audit["run_id"], json!(run));
     }
 
+    /// このテストのテナントの行をすべて撤去する（テストの最後に呼ぶ・BUG-66）。
+    ///
+    /// 撤去は本番の `StorageService::purge_tenant`（テナント境界の全テーブルを導出して消す）に任せる。
+    /// 承認待ちの run・購読・申請の行・outbox を同じ DB のほかのテストや手元のサーバに残さない。
+    async fn cleanup(&self) {
+        self.storage
+            .purge_tenant(&self.tenant, "acme", "provisioner:test")
+            .await
+            .expect("後片付け");
+        let left: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM workflow_run WHERE tenant_id = $1) \
+                  + (SELECT COUNT(*) FROM workflow_approval WHERE tenant_id = $1) \
+                  + (SELECT COUNT(*) FROM wait_subscription WHERE tenant_id = $1) \
+                  + (SELECT COUNT(*) FROM data_record WHERE tenant_id = $1) \
+                  + (SELECT COUNT(*) FROM storage_event_outbox WHERE tenant_id = $1)",
+        )
+        .bind(&self.tenant)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap();
+        assert_eq!(left, 0, "テストのテナントに行が残っている");
+    }
+
     /// テストで作った run を消す（step・承認の台帳は FK で消え、購読は先に消す・同じ DB のほかのテストやサーバに
     /// 残さない）。
     async fn forget_runs(&self, wf: Uuid) {
@@ -1336,13 +1370,13 @@ impl Env {
              WHERE w.tenant_id = r.tenant_id AND w.run_id = r.run_id \
                AND r.tenant_id = $1 AND r.workflow_id = $2",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(wf)
         .execute(&self.pool)
         .await
         .unwrap();
         sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1 AND workflow_id = $2")
-            .bind(TENANT)
+            .bind(&self.tenant)
             .bind(wf)
             .execute(&self.pool)
             .await
@@ -1375,7 +1409,7 @@ async fn runs_fail_when_the_delegation_is_revoked_while_waiting() {
     sqlx::query(
         "UPDATE workflow_delegation SET revoked_at = now() WHERE tenant_id = $1 AND workflow_id = $2",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(wf)
     .execute(&env.pool)
     .await
@@ -1385,7 +1419,7 @@ async fn runs_fail_when_the_delegation_is_revoked_while_waiting() {
     sqlx::query(
         "UPDATE workflow_approval SET reconciled_at = NULL WHERE tenant_id = $1 AND run_id = $2",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(first)
     .execute(&env.pool)
     .await
@@ -1406,6 +1440,7 @@ async fn runs_fail_when_the_delegation_is_revoked_while_waiting() {
     env.settle().await;
     env.assert_failed_unavailable(second, &["done", "ng"]).await;
     env.forget_runs(wf).await;
+    env.cleanup().await;
 }
 
 /// 期限の来た承認も、実行主体が失権していれば timeout の出口へ進めずに run を actor_unavailable で失敗させる
@@ -1431,7 +1466,7 @@ async fn due_approvals_of_an_unavailable_actor_fail_instead_of_timing_out() {
     sqlx::query(
         "UPDATE workflow_delegation SET revoked_at = now() WHERE tenant_id = $1 AND workflow_id = $2",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(revoked_wf)
     .execute(&env.pool)
     .await
@@ -1440,7 +1475,7 @@ async fn due_approvals_of_an_unavailable_actor_fail_instead_of_timing_out() {
         "UPDATE wait_subscription SET timeout_at = now() - interval '1 second' \
          WHERE tenant_id = $1 AND run_id = ANY($2) AND NOT fired",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(vec![revoked, kept])
     .execute(&env.pool)
     .await
@@ -1452,7 +1487,7 @@ async fn due_approvals_of_an_unavailable_actor_fail_instead_of_timing_out() {
         &env.data,
         &env.fsms,
         chrono::Utc::now(),
-        Some(TENANT),
+        Some(env.tenant.as_str()),
     )
     .await
     .unwrap();
@@ -1473,6 +1508,7 @@ async fn due_approvals_of_an_unavailable_actor_fail_instead_of_timing_out() {
     assert!(audit.get("reason").is_none(), "{audit}");
     env.forget_runs(revoked_wf).await;
     env.forget_runs(kept_wf).await;
+    env.cleanup().await;
 }
 
 impl Env {
@@ -1535,7 +1571,7 @@ async fn user_runs_fail_when_the_launcher_loses_the_table_while_waiting() {
     let principal: String = sqlx::query_scalar(
         "SELECT principal_kind FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(second)
     .fetch_one(&env.pool)
     .await
@@ -1559,7 +1595,7 @@ async fn user_runs_fail_when_the_launcher_loses_the_table_while_waiting() {
     sqlx::query(
         "UPDATE workflow_approval SET reconciled_at = NULL WHERE tenant_id = $1 AND run_id = $2",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(first)
     .execute(&env.pool)
     .await
@@ -1597,6 +1633,7 @@ async fn user_runs_fail_when_the_launcher_loses_the_table_while_waiting() {
         assert!(!f.message.contains("actor_unavailable"), "{}", f.message);
     }
     env.forget_runs(wf).await;
+    env.cleanup().await;
 }
 
 impl Env {
@@ -1606,7 +1643,7 @@ impl Env {
             "SELECT decision, metadata FROM audit_log WHERE tenant_id = $1 \
                AND action = 'workflow.approval.decide' AND object_id = $2 AND actor = $3 ORDER BY id",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(approval)
         .bind(&user.principal.id)
         .fetch_all(&self.pool)
@@ -1674,7 +1711,7 @@ async fn decisions_refused_before_the_transition_are_audited() {
         "INSERT INTO workflow_approval_assignee (tenant_id, approval_id, kind, subject) \
          VALUES ($1, $2, 'user', $3)",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(other_id)
     .bind(&env.bob.principal.id)
     .execute(&env.pool)
@@ -1716,6 +1753,7 @@ async fn decisions_refused_before_the_transition_are_audited() {
         )
         .await;
     assert_eq!(st, StatusCode::NOT_FOUND, "{resp}");
+    env.cleanup().await;
 }
 
 /// 判断の外で行が動いた直後（relay が取り下げる前）に、いまの rev で判断しても 409 decided になり、行は判断の
@@ -1770,7 +1808,7 @@ async fn a_row_moved_outside_the_decision_cannot_be_decided() {
     let comments: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM workflow_approval_comment WHERE tenant_id = $1 AND approval_id = $2",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(Uuid::parse_str(&id).unwrap())
     .fetch_one(&env.pool)
     .await
@@ -1789,6 +1827,7 @@ async fn a_row_moved_outside_the_decision_cannot_be_decided() {
         ("succeeded", vec!["withdrawn".to_string()])
     );
     assert_eq!(env.approval_of(run).await.1, "withdrawn");
+    env.cleanup().await;
 }
 
 impl Env {
@@ -1805,7 +1844,7 @@ impl Env {
                   generate_series($3::int, $4::int) g \
              WHERE a.tenant_id = $1 AND a.run_id = $2 AND a.step_path NOT LIKE '%-%'",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(run)
         .bind(from)
         .bind(to)
@@ -1820,7 +1859,7 @@ impl Env {
              FROM workflow_approval a, generate_series($3::int, $4::int) g \
              WHERE a.tenant_id = $1 AND a.run_id = $2 AND a.step_path NOT LIKE '%-%'",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(run)
         .bind(from)
         .bind(to)
@@ -1832,7 +1871,7 @@ impl Env {
              SELECT tenant_id, approval_id, 'user', $3 FROM workflow_approval \
              WHERE tenant_id = $1 AND run_id = $2 AND step_path LIKE '%-%' ON CONFLICT DO NOTHING",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(run)
         .bind(&user.principal.id)
         .execute(&self.pool)
@@ -1896,6 +1935,7 @@ async fn the_inbox_reads_past_approvals_the_user_cannot_see() {
     // 件数は数え切れなかったことを more で返す（数えた分は 0）。
     let (_, count) = env.get(&env.bob, "/approvals/count").await;
     assert_eq!(count, json!({ "count": 0, "more": true }));
+    env.cleanup().await;
 }
 
 /// AI（chat の emit_workflow）が書いた承認も、保存 API と同じ照合（V4）を通る。見えないテーブル・FSM で
@@ -1988,6 +2028,7 @@ async fn emit_workflow_checks_approvals_like_the_save_api() {
         .unwrap();
     assert!(!out.is_error, "{}", out.content);
     assert_eq!(out.workflow_refs.len(), 1);
+    env.cleanup().await;
 }
 
 impl Env {
@@ -2320,6 +2361,7 @@ async fn approval_checks_do_not_tell_unreadable_columns_from_missing_ones() {
             "/params/record/table".to_string()
         )]
     );
+    env.cleanup().await;
 }
 
 impl Env {
@@ -2335,7 +2377,7 @@ impl Env {
                                      AND a.step_path = s.step_path \
              WHERE a.tenant_id = $1 AND a.run_id = $2 AND a.step_path NOT LIKE '%-%'",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(run)
         .execute(&self.pool)
         .await
@@ -2349,7 +2391,7 @@ impl Env {
              WHERE a.tenant_id = $1 AND a.run_id = $2 AND a.step_path NOT LIKE '%-%' \
              RETURNING approval_id",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(run)
         .bind(table)
         .fetch_one(&self.pool)
@@ -2359,7 +2401,7 @@ impl Env {
             "INSERT INTO workflow_approval_assignee (tenant_id, approval_id, kind, subject) \
              VALUES ($1, $2, 'user', $3)",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(id)
         .bind(&user.principal.id)
         .execute(&self.pool)
@@ -2374,7 +2416,7 @@ impl Env {
             "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND actor = $2 \
                AND object_id = $3 AND decision = 'deny'",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(&user.principal.id)
         .bind(table.to_string())
         .fetch_one(&self.pool)
@@ -2420,7 +2462,7 @@ async fn inbox_reads_do_not_audit_tables_the_user_cannot_see() {
         "INSERT INTO workflow_approval_assignee (tenant_id, approval_id, kind, subject) \
          VALUES ($1, $2, 'user', $3)",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(hidden_approval)
     .bind(&env.bob.principal.id)
     .execute(&env.pool)
@@ -2454,6 +2496,7 @@ async fn inbox_reads_do_not_audit_tables_the_user_cannot_see() {
     assert_eq!(st, StatusCode::NOT_FOUND);
     assert!(env.table_denials(&env.bob, hidden).await >= 1);
     env.forget_runs(wf).await;
+    env.cleanup().await;
 }
 
 impl Env {
@@ -2464,7 +2507,7 @@ impl Env {
     ) -> (sqlx::Transaction<'static, sqlx::Postgres>, String) {
         let mut tx = self.pool.begin().await.unwrap();
         sqlx::query("SELECT 1 FROM data_record WHERE tenant_id = $1 AND id = $2 FOR UPDATE")
-            .bind(TENANT)
+            .bind(&self.tenant)
             .bind(record)
             .execute(&mut *tx)
             .await
@@ -2522,7 +2565,7 @@ impl Env {
             "SELECT rev, author, body FROM workflow_approval_comment \
              WHERE tenant_id = $1 AND approval_id = $2 ORDER BY author",
         )
-        .bind(TENANT)
+        .bind(&self.tenant)
         .bind(Uuid::parse_str(approval).unwrap())
         .fetch_all(&self.pool)
         .await
@@ -2590,7 +2633,7 @@ async fn cancelled_decisions_neither_lose_nor_strand_their_comment() {
         "INSERT INTO workflow_approval_comment (tenant_id, approval_id, rev, author, decision, body) \
          VALUES ($1, $2, $3, $4, 'approve', '置き残し')",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(Uuid::parse_str(&id).unwrap())
     .bind(rev + 1)
     .bind(&env.carol.principal.id)
@@ -2618,6 +2661,7 @@ async fn cancelled_decisions_neither_lose_nor_strand_their_comment() {
         "遷移した人のコメントだけを採る"
     );
     env.forget_runs(wf).await;
+    env.cleanup().await;
 }
 
 impl Env {
@@ -2629,7 +2673,7 @@ impl Env {
             &self.data,
             &self.fsms,
             at,
-            Some(TENANT),
+            Some(self.tenant.as_str()),
         )
         .await
         .unwrap();
@@ -2661,7 +2705,7 @@ async fn decisions_racing_the_deadline_keep_the_row_and_the_run_in_step() {
          WHERE tenant_id = $1 AND run_id = $2",
     ] {
         sqlx::query(sql)
-            .bind(TENANT)
+            .bind(&env.tenant)
             .bind(second_run)
             .execute(&env.pool)
             .await
@@ -2689,11 +2733,12 @@ async fn decisions_racing_the_deadline_keep_the_row_and_the_run_in_step() {
     );
     env.wait_blocked_on(&xid).await;
     let expiring = tokio::spawn({
-        let (pool, runs, data, fsms) = (
+        let (pool, runs, data, fsms, tenant) = (
             env.pool.clone(),
             env.runs.clone(),
             Arc::clone(&env.data),
             Arc::clone(&env.fsms),
+            env.tenant.clone(),
         );
         async move {
             api::workflow_runtime::expire_due_approvals(
@@ -2702,7 +2747,7 @@ async fn decisions_racing_the_deadline_keep_the_row_and_the_run_in_step() {
                 &data,
                 &fsms,
                 later,
-                Some(TENANT),
+                Some(tenant.as_str()),
             )
             .await
             .unwrap();
@@ -2751,7 +2796,7 @@ async fn decisions_racing_the_deadline_keep_the_row_and_the_run_in_step() {
         "UPDATE workflow_approval SET deadline = now() - interval '1 second' \
          WHERE tenant_id = $1 AND approval_id = $2",
     )
-    .bind(TENANT)
+    .bind(&env.tenant)
     .bind(Uuid::parse_str(&id).unwrap())
     .execute(&mut *ledger)
     .await
@@ -2797,4 +2842,5 @@ async fn decisions_racing_the_deadline_keep_the_row_and_the_run_in_step() {
     );
     assert_eq!(env.approval_of(run).await.1, "expired");
     env.forget_runs(wf).await;
+    env.cleanup().await;
 }
