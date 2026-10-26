@@ -42,6 +42,16 @@ function toolLabel(tool: string): string {
 }
 
 /// 出力が AI エージェントの結果の形か（回答の本文を持つ）。
+/// 出典の URL をリンクにしてよいか（http / https だけ。外部の検索サービスから来る値なので、ほかの scheme は文字で出す）。
+function webLink(url: string): string | null {
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
 export function isAgentOutput(output: unknown): output is AgentOutput {
   return typeof output === "object" && output !== null && typeof (output as AgentOutput).text === "string";
 }
@@ -111,9 +121,9 @@ export function AgentResult({ output }: { output: AgentOutput }) {
                   <FileText className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-hidden />
                 )}
                 <span className="min-w-0 break-all">
-                  {c.url ? (
+                  {c.url && webLink(c.url) ? (
                     <a
-                      href={c.url}
+                      href={webLink(c.url) ?? undefined}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-primary underline decoration-primary/30 underline-offset-2"
@@ -121,7 +131,7 @@ export function AgentResult({ output }: { output: AgentOutput }) {
                       {c.title || c.url}
                     </a>
                   ) : (
-                    <span>{c.file_name || c.file_id}</span>
+                    <span>{c.title || c.url || c.file_name || c.file_id}</span>
                   )}
                   {c.snippet ? <span className="block text-muted-foreground">{c.snippet}</span> : null}
                 </span>
