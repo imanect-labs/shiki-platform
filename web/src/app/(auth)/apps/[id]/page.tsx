@@ -32,6 +32,29 @@ import {
   type ResolvedMiniApp,
 } from "@/lib/artifact-api";
 
+/// 起動の状態のうち、まだ終わっていないもの（起動中・順番待ち・実行中・待機中）。
+const OPEN_RUN_STATUSES: ReadonlySet<MiniAppRun["status"]> = new Set(["starting", "queued", "running", "waiting"]);
+
+/// 前の一覧から終わった起動があるか（BUG-19）。前の一覧で動いていたものが終わったか、前の一覧に無かったものが
+/// 終わった状態で現れたら真。`prev` が null（最初の一覧）なら基準にするだけ。
+///
+/// 起動 1 件の鍵はボタンと押した時刻（run_id は起動中には無く、付いたときに鍵が変わってしまう）。戻り値の
+/// `seen` は鍵 → まだ動いているか。
+function runsFinishedSince(
+  prev: Map<string, boolean> | null,
+  runs: MiniAppRun[],
+): { seen: Map<string, boolean>; finished: boolean } {
+  const seen = new Map<string, boolean>();
+  let finished = false;
+  for (const r of runs) {
+    const key = `${r.action_id}-${r.invoked_at}`;
+    const open = OPEN_RUN_STATUSES.has(r.status);
+    seen.set(key, open);
+    if (prev && !open && prev.get(key) !== false) finished = true;
+  }
+  return { seen, finished };
+}
+
 export default function MiniAppRunPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const me = useMe();
@@ -116,20 +139,16 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   useRunsRefresh(runs, refreshRuns, runsLoaded);
 
   // 起動が終わったら画面の表（```data_grid）を読み直す（ワークフローが書いた行を出す・BUG-19）。
-  // 前に読んだときに動いていた（起動中・順番待ち・実行中・待機中）起動が、終わった状態になったときだけ。
+  // 前に読んだときに動いていた起動が終わった状態になったとき、または前の一覧に無かった起動がいきなり終わった
+  // 状態で現れたとき（短いフローは、押した直後の最初の一覧でもう終わっている）。最初の一覧は基準にするだけ。
   const [gridRevision, setGridRevision] = React.useState(0);
-  const openBefore = React.useRef<Set<string>>(new Set());
+  const seenRuns = React.useRef<Map<string, boolean> | null>(null);
   React.useEffect(() => {
-    const open = new Set<string>();
-    let finished = false;
-    for (const r of runs) {
-      const key = r.run_id ?? `${r.action_id}-${r.invoked_at}`;
-      if (["starting", "queued", "running", "waiting"].includes(r.status)) open.add(key);
-      else if (openBefore.current.has(key)) finished = true;
-    }
-    openBefore.current = open;
+    if (runsLoaded === 0) return;
+    const { seen, finished } = runsFinishedSince(seenRuns.current, runs);
+    seenRuns.current = seen;
     if (finished) setGridRevision((n) => n + 1);
-  }, [runs]);
+  }, [runs, runsLoaded]);
 
   // 編集の対象は読み込んだ版が変わったときだけ作り直す（記録の読み直しで編集中の入力を戻さない）。
   const editTarget = React.useMemo(
