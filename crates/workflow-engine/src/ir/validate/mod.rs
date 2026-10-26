@@ -7,6 +7,10 @@ mod agent;
 pub use agent::{pattern_within, valid_host_pattern};
 mod approval;
 pub use approval::{CatalogTable, APPROVAL_TIMEOUTS_EXCEED_RUN};
+mod readiness;
+pub use readiness::{
+    enable_blockers, required_text_empty, run_blockers, REQUIRED_TEXT_EMPTY, WRITE_FOLDER_REQUIRED,
+};
 mod refs;
 pub(crate) use refs::parse_skill_ref;
 mod reply;
@@ -109,11 +113,13 @@ pub struct Catalog {
 /// テンプレート（[`TEMPLATE_UNCLOSED_BRACE`]・D-37）と、同じテーブルで重なる
 /// データ変更トリガ（[`OVERLAPPING_DATA_TRIGGERS`]）と、wait(event) の filter の別名（[`WAIT_FILTER_ALIAS`]）と、
 /// 続けて待つ承認の期限の合計が実行の期限以上のもの（[`APPROVAL_TIMEOUTS_EXCEED_RUN`]）と、手動で動かす
-/// きっかけの無い IR の画面に返す結果（[`REPLY_WITHOUT_INTERACTIVE`]）。
+/// きっかけの無い IR の画面に返す結果（[`REPLY_WITHOUT_INTERACTIVE`]）と、必須の文字の欄が空のもの
+/// （[`REQUIRED_TEXT_EMPTY`]・有効化と実行の前には止める・D-43）。
 #[must_use]
 pub fn save_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     let mut out = semantics_warnings(ir);
     out.extend(template::warnings(ir));
+    out.extend(readiness::required_text_empty(ir));
     out.extend(v3_vocab::event_warnings(ir));
     out.extend(approval::warnings(ir));
     out.extend(reply::warnings(ir));

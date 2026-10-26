@@ -26,6 +26,10 @@ pub enum EnableError {
     ScopeExpansion { missing: Vec<String> },
     #[error(transparent)]
     Delegation(#[from] DelegationError),
+    /// IR が有効化できる状態にない（必須の文字の欄が空・schedule / event で保存先フォルダを省略・
+    /// D-40・D-43）。理由は [`crate::enable_blockers`] の全件（API は 409 ＋ errors で返す）。
+    #[error("有効化できない設定があります（{} 件）", .0.len())]
+    NotReady(Vec<crate::ValidationError>),
     #[error("内部エラー: {0}")]
     Internal(String),
 }
@@ -145,6 +149,12 @@ impl RegistrationService {
         ir: &WorkflowIr,
         grants: &[GrantRequest],
     ) -> Result<(), EnableError> {
+        // 保存は通しても動かせない設定（必須の文字の欄が空・無人の run の保存先の省略）は、委譲より先に
+        // 止める（タプルを書いてから断らない・D-40・D-43）。
+        let blockers = crate::enable_blockers(ir);
+        if !blockers.is_empty() {
+            return Err(EnableError::NotReady(blockers));
+        }
         let tenant = &enabler.tenant_id;
         let current = self.view(tenant, workflow_id).await?;
         let registered = current.status != "none";

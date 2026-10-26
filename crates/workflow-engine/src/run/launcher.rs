@@ -88,6 +88,11 @@ impl WorkflowRunLauncher {
     ) -> Result<Option<Uuid>, LauncherError> {
         // 入力の契約（input_schema）は run を作る前に必ず確かめる。対話起動の全経路
         // （API・会話の図のボタン・ミニアプリ）がここを通るので、画面の検証に頼らない。
+        // 保存は通しても空のまま動かせない欄（必須の文字の欄が空・D-43）は、入力より先に断る。
+        let blockers = crate::run_blockers(ir);
+        if !blockers.is_empty() {
+            return Err(LauncherError::NotReady(blockers));
+        }
         if let Some(schema) = &ir.input_schema {
             crate::ir::input_schema::validate_input(schema, input)
                 .map_err(|errors| LauncherError::Input(errors.join("\n")))?;
@@ -307,4 +312,20 @@ pub enum LauncherError {
     /// 入力が `input_schema` に合わない（呼び出し側は 400 に写す）。
     #[error("入力が正しくありません: {0}")]
     Input(String),
+    /// IR が実行できる状態にない（必須の文字の欄が空・D-43）。理由は [`crate::run_blockers`] の全件
+    /// （呼び出し側は 400 に写し、欄に写せるよう node_id・path を保つ）。
+    #[error("実行できない設定があります: {}", LauncherError::messages(.0))]
+    NotReady(Vec<crate::ValidationError>),
+}
+
+impl LauncherError {
+    /// 理由の文言を 1 つにまとめる（構造を持てない呼び出し側・ログ用）。
+    #[must_use]
+    pub fn messages(errors: &[crate::ValidationError]) -> String {
+        errors
+            .iter()
+            .map(|e| e.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
