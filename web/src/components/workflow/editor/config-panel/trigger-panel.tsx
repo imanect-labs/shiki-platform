@@ -297,7 +297,7 @@ function FolderEventFields({ trigger, onChange }: { trigger: EventTrigger; onCha
     <>
       <Field
         label="対象フォルダ"
-        hint="このフォルダ（配下含む）への保存で動きます。必須です"
+        hint="このフォルダ（配下含む）にファイルが保存されたとき（新しい版を含む）に動きます。同じファイルの続く保存は 1 回にまとめ、このワークフロー自身の保存では動きません。必須です"
       >
         <div className="flex items-center gap-1.5">
           <Input
