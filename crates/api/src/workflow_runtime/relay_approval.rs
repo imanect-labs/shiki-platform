@@ -5,9 +5,10 @@
 //!
 //! - **受付の突合**: 停止の commit より前に起きた遷移は、購読ができる前に配送済みになり得る。保留中で未突合の
 //!   承認を、実行主体の見え方で行を読み直して決める。いまの状態が停止時の状態なら待ち続け、判断の行き先なら
-//!   その出口へ、それ以外・行が見えない（消えた）なら取り下げる。実行主体の委譲・権限が停止の後に外れていたら、
-//!   判断の遷移が二度と見えないので取り下げ、理由（[`ACTOR_UNAVAILABLE`]）を決着の監査に残す（判断の遷移を
-//!   受けた relay も同じ扱い）。承認の依頼の監査もここで書く。
+//!   その出口へ、それ以外・行が見えない（消えた）なら取り下げる。実行主体の委譲・テーブルの権限が停止の後に
+//!   外れていたら（委譲が無い・テーブル単位の NotFound / Forbidden・user 主体の本人の失権を含む）、判断の遷移が
+//!   二度と見えないので取り下げ、理由（[`ACTOR_UNAVAILABLE`]）を決着の監査に残す（判断の遷移を受けた relay も
+//!   同じ扱い）。承認の依頼の監査もここで書く。
 //! - **行の削除**: outbox の削除（`data.record.changed` / delete）を受けたら、その行に束縛した保留中の承認を、
 //!   実行主体の `data_get` が NotFound であることを確かめて取り下げる（見えなくなっただけでは取り下げない）。
 //!
@@ -23,7 +24,7 @@ use workflow_engine::{
 };
 
 use super::auth::auth_ctx;
-use super::data_port::DataPort;
+use super::data_port::{Actor, DataPort};
 use super::relay::RelayDeps;
 
 /// 1 tick で突き合わせる承認の上限。
@@ -78,8 +79,9 @@ async fn audit(
     }
 }
 
-/// 承認を取り下げた理由（監査の `reason`）: 実行主体（委譲・権限）が行を読めなくなった。待っても判断の遷移が
-/// 実行主体に見えないので、受信箱で判断されても run は期限まで待ち、行と run の結論が食い違う。
+/// 承認を取り下げた理由（監査の `reason`）: 実行主体（委譲・テーブルの権限）がテーブルを読めなくなった。待っても
+/// 判断の遷移が実行主体に見えないので、受信箱で判断されても run は期限まで待ち、行と run の結論が食い違う。
+/// テーブルの削除とは区別しない（data は見えないテーブルと無いテーブルを同じ NotFound にする）。
 pub(super) const ACTOR_UNAVAILABLE: &str = "actor_unavailable";
 
 /// 承認が決着したことの監査（起床・取り下げ・期限切れ・system が記録）。
@@ -158,14 +160,30 @@ pub(super) async fn reconcile_approvals(deps: &RelayDeps<'_>) -> Result<(), anyh
                 .approval_target(&a.ctx, p.table_id, p.wait.record_id, None)
                 .await;
             match target {
-                Err(DataError::NotFound) => {
-                    resolve(deps, &p.subscriber, &p.wait, &withdrawn, None).await?;
-                }
                 Err(e) if e.is_transient() => {
                     tracing::warn!(error = %e, "承認の受付の突合に失敗（次の tick で再試行）");
                     continue;
                 }
-                // 権限が無い・状態の列が読めない・その他の確定的な誤り: 待ち続ける。
+                Err(e @ (DataError::NotFound | DataError::Forbidden)) => {
+                    // テーブルそのものを読めない（user 主体の本人・委譲元が ReBAC を失った）なら、判断の遷移が
+                    // 二度と見えないので理由つきで取り下げる。行が見えない・消えたなら理由なしで取り下げる。
+                    match table_unreadable(&a, p.table_id).await {
+                        Ok(true) => {
+                            let reason = Some(ACTOR_UNAVAILABLE);
+                            resolve(deps, &p.subscriber, &p.wait, &withdrawn, reason).await?;
+                        }
+                        Ok(false) if matches!(e, DataError::NotFound) => {
+                            resolve(deps, &p.subscriber, &p.wait, &withdrawn, None).await?;
+                        }
+                        // テーブルは読めるのに行の権限が無い: 待ち続ける。
+                        Ok(false) => {}
+                        Err(e) => {
+                            tracing::warn!(error = %e, "承認の受付の突合に失敗（次の tick で再試行）");
+                            continue;
+                        }
+                    }
+                }
+                // 状態の列が読めない・その他の確定的な誤り: 待ち続ける。
                 Err(_) => {}
                 Ok(v) if v.current.as_deref() == Some(p.from_state.as_str()) => {}
                 Ok(v) => {
@@ -217,6 +235,19 @@ pub(super) async fn reconcile_approvals(deps: &RelayDeps<'_>) -> Result<(), anyh
             .await?;
     }
     Ok(())
+}
+
+/// 実行主体がテーブルそのものを読めないか（テーブル単位の NotFound / Forbidden）。行が見えないだけなら偽。
+///
+/// 承認の行の読取（`approval_target`）の NotFound は、テーブルが見えないのか行が見えないのかを区別しないので、
+/// 断られたときだけテーブルを読み直して見分ける（一時障害は `Err`・次の tick で再試行）。
+async fn table_unreadable(a: &Actor, table_id: Uuid) -> Result<bool, DataError> {
+    match a.data.get_table(&a.ctx, table_id, None).await {
+        Err(DataError::NotFound | DataError::Forbidden) => Ok(true),
+        Err(e) if e.is_transient() => Err(e),
+        // 読めた・テーブルの読込のその他の確定的な誤り（読めないとは言えないので、従来どおり行で決める）。
+        Ok(_) | Err(_) => Ok(false),
+    }
 }
 
 /// 行の削除で、その行に束縛した保留中の承認を取り下げる（上のモジュールの説明）。

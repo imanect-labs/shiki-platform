@@ -8,12 +8,14 @@
 //!    **実行主体**で作る（[`DataPort::actor`] → data の `change_event_view`）。見えない行・読めない列だけの
 //!    変更では発火も起床もせず、記録もしない。委譲の有無は先に DB で確かめ、無ければ OpenFGA を呼ばない。
 //! 4. filter（fail-closed）→ トリガは因果の鎖・queued の上限を通して発火（[`SchedulerStore::fire_event_trigger`]）。
+//! 5. 承認の wait は、実行主体がテーブルそのものを読めない（委譲が無い・テーブル単位の NotFound / Forbidden）と
+//!    分かったら、判断の遷移が二度と見えないので取り下げて理由を残す（行が見えないだけなら取り下げない）。
 //!
 //! 主体と見え方は**このバッチの中だけ**で覚える（バッチを跨いで持たない・PIT-18）。
 //! 権限の判定（Forbidden / NotFound）は「発火しない」として扱い、一時的な障害だけを `Err` で返す
 //! （呼び出し側はバッチを配送済みにせず次の tick で配り直す）。
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use authz::{AuthContext, Relation};
 use data::{ChangeEventKind, ChangeEventRef, ChangeEventView, DataError};
@@ -95,6 +97,10 @@ struct BatchCtx<'d, 'a> {
     tenant_id: String,
     /// (主体, テーブル) → 主体（委譲が無い・権限が無いなら `None`）。
     actors: HashMap<(PrincipalKey, Uuid), Option<Actor>>,
+    /// 主体はあるが、テーブルそのものを読めなかった (主体, テーブル)（data のテーブル単位の
+    /// NotFound / Forbidden。行が見えないだけの `Ok(None)` とは区別する）。user 主体の run の本人や
+    /// 委譲元が ReBAC を失ったときはここに入る（委譲台帳は残るので `actors` は `Some`）。
+    unreadable: HashSet<(PrincipalKey, Uuid)>,
     /// (主体, outbox の id) → 見え方（見えなければ `None`）。
     views: HashMap<(PrincipalKey, i64), Option<ChangeEventView>>,
     /// outbox の id → 変更が run の書込によるものか。
@@ -107,6 +113,7 @@ impl<'d, 'a> BatchCtx<'d, 'a> {
             deps,
             tenant_id: tenant_id.to_string(),
             actors: HashMap::new(),
+            unreadable: HashSet::new(),
             views: HashMap::new(),
             by_workflow: HashMap::new(),
         }
@@ -167,7 +174,10 @@ impl<'d, 'a> BatchCtx<'d, 'a> {
                     .await
                 {
                     Ok(v) => v,
-                    Err(DataError::NotFound | DataError::Forbidden) => vec![None; missing.len()],
+                    Err(DataError::NotFound | DataError::Forbidden) => {
+                        self.unreadable.insert(akey.clone());
+                        vec![None; missing.len()]
+                    }
                     // 配り直せば直りうる誤りか（data の一時障害の判定・[`DataError::is_transient`]）。
                     Err(e) if e.is_transient() => {
                         return Err(anyhow::anyhow!("データ変更の見え方の作成に失敗: {e}"))
@@ -234,9 +244,11 @@ impl<'d, 'a> BatchCtx<'d, 'a> {
         }
     }
 
-    /// 主体がテーブルを読めない（委譲・権限が無い）と分かったか（[`Self::prefetch`] の後だけ真になりうる）。
-    fn actor_unavailable(&self, who: &PrincipalKey, table_id: Uuid) -> bool {
-        matches!(self.actors.get(&(who.clone(), table_id)), Some(None))
+    /// 主体がテーブルを読めない（委譲が無い・テーブルの権限が無い）と分かったか（[`Self::prefetch`] の後だけ
+    /// 真になりうる）。行が見えないだけ（行述語・読めない列だけの変更）では偽。
+    fn cannot_read(&self, who: &PrincipalKey, table_id: Uuid) -> bool {
+        let key = (who.clone(), table_id);
+        matches!(self.actors.get(&key), Some(None)) || self.unreadable.contains(&key)
     }
 
     /// 変更が run の書込によるものか（書込の trace_id が run のもの・run id 自体は載せない）。
@@ -428,7 +440,7 @@ async fn relay_tenant_waits(
                 // 承認を待つ run の実行主体が、停止の後に委譲・権限を失った: 判断の遷移は二度と見えないので、
                 // 取り下げて理由を残す（行は承認へ進んだのに run が期限まで待つ食い違いを作らない・GAP-08）。
                 if let Some(a) = w.approval() {
-                    if cx.actor_unavailable(&who_of(w), w.table_id) {
+                    if cx.cannot_read(&who_of(w), w.table_id) {
                         super::relay_approval::resolve(
                             cx.deps,
                             &w.subscriber,

@@ -1349,6 +1349,134 @@ async fn approvals_are_withdrawn_when_the_delegation_is_revoked() {
     assert_eq!(audit["reason"], "actor_unavailable");
 }
 
+impl Env {
+    /// 受付済みの申請（下書き → 申請 → 受付・alice）と、それを承認に掛ける対話のワークフロー（alice が起動）。
+    async fn interactive_approval(&self, table: Uuid) -> Uuid {
+        let t = table.to_string();
+        let ir = json!({
+            "ir_version": 1, "name": format!("ask-{}", Uuid::new_v4().simple()),
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "ok", "type": "human.approval", "params": {
+                "title": "経費申請の承認",
+                "record": { "table": t, "id": { "$from": "input", "path": "/record_id" } },
+                "assignees": [{ "field": "approver" }],
+                "approve": { "to": "approved" },
+                "reject": { "to": "rejected" } } }],
+            "edges": []
+        });
+        self.workflows
+            .create(&self.alice, &ir, &Catalog::default(), None)
+            .await
+            .expect("保存")
+            .0
+    }
+
+    /// 申請して受付まで進め（alice）、対話のワークフローで承認に掛ける（run は alice が主体の user run）。
+    async fn ask_interactively(&self, wf: Uuid, table: Uuid, title: &str) -> (Uuid, Uuid) {
+        let record = self.submit(table, title, &self.bob).await;
+        let row = self
+            .data
+            .get_record(&self.alice, table, record, None)
+            .await
+            .unwrap();
+        self.fsms
+            .transition(&self.alice, table, record, "reviewing", row.rev, None)
+            .await
+            .unwrap();
+        let run = self
+            .launcher
+            .start_interactive(&self.alice, wf, &json!({ "record_id": record }))
+            .await
+            .unwrap()
+            .expect("run");
+        (record, run)
+    }
+}
+
+/// user 主体の run（対話の起動）で、起動した本人が停止の後にテーブルを読めなくなったら、受付の突合でも
+/// 判断の遷移を受けた relay でも取り下げとして決め、理由を監査に残す。委譲台帳を持たない主体なので、
+/// テーブル単位の NotFound / Forbidden（行が見えないだけとは別）で見分ける。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn approvals_of_a_user_run_are_withdrawn_when_the_launcher_loses_the_table() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.expense_table().await;
+    let wf = env.interactive_approval(table).await;
+    let (_, first) = env.ask_interactively(wf, table, "研修の申込").await;
+    let (decided, second) = env.ask_interactively(wf, table, "書籍の購入").await;
+    env.settle().await;
+    let principal: String = sqlx::query_scalar(
+        "SELECT principal_kind FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(TENANT)
+    .bind(second)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(principal, "user");
+    assert_eq!(env.step(first, "ok").await.0, "waiting_event");
+    assert_eq!(env.step(second, "ok").await.0, "waiting_event");
+    let item = env
+        .item_for(&env.bob, decided)
+        .await
+        .expect("bob の受信箱に出る");
+
+    // 起動した alice がテーブルの権限（owner）を外された。委譲台帳は無いので、主体そのものは作れる。
+    let object = env.alice.ns().data_table(&table.to_string());
+    env.fga
+        .delete_tuple(&env.alice.subject(), Relation::Owner, &object)
+        .await
+        .unwrap();
+
+    // 受付の突合: テーブルを読めないので待ち続けずに理由つきで取り下げる。
+    sqlx::query(
+        "UPDATE workflow_approval SET reconciled_at = NULL WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(TENANT)
+    .bind(first)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    env.settle().await;
+    let (st, ports, _) = env.step(first, "ok").await;
+    assert_eq!(
+        (st.as_str(), ports),
+        ("succeeded", vec!["withdrawn".to_string()])
+    );
+    let (first_id, status) = env.approval_of(first).await;
+    assert_eq!(status, "withdrawn");
+    let audit = env.resolve_audit(first_id).await.expect("決着の監査");
+    assert_eq!(audit["reason"], "actor_unavailable");
+
+    // 判断の遷移: bob は受信箱から判断できる（行は bob の権限で承認へ進む）が、実行主体の alice にはテーブルが
+    // 見えない（change_event_views がテーブル単位で断る）。期限まで待たせず、取り下げとして決める。
+    let (st, body) = env
+        .decide(
+            &env.bob,
+            item["approval_id"].as_str().unwrap(),
+            json!({ "decision": "approve", "expected_rev": item["record"]["rev"] }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    env.settle().await;
+    let row = env
+        .data
+        .get_record(&env.bob, table, decided, None)
+        .await
+        .unwrap();
+    assert_eq!(row.data["status"], "approved");
+    let (st, ports, _) = env.step(second, "ok").await;
+    assert_eq!(
+        (st.as_str(), ports),
+        ("succeeded", vec!["withdrawn".to_string()])
+    );
+    let (second_id, status) = env.approval_of(second).await;
+    assert_eq!(status, "withdrawn");
+    let audit = env.resolve_audit(second_id).await.expect("決着の監査");
+    assert_eq!(audit["reason"], "actor_unavailable");
+    assert_eq!(audit["run_id"], json!(second));
+}
+
 /// AI（chat の emit_workflow）が書いた承認も、保存 API と同じ照合（V4）を通る。見えないテーブル・FSM で
 /// 管理しないテーブル・無い状態・無い列は保存できない（材料を IR から引くカタログ・`catalog_for`）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
