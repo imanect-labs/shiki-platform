@@ -5,9 +5,10 @@
 //!
 //! 扱うキーワード: `type`・`properties`・`required`・`additionalProperties`・`items`・`enum`・
 //! `const`・`minimum`・`maximum`・`exclusiveMinimum`・`exclusiveMaximum`・`minLength`・
-//! `maxLength`・`pattern`・`minItems`・`maxItems`。注記（`title`・`description`・`default`・
-//! `examples`・`format`・`$schema`・`$comment`）は読み飛ばす。それ以外（`$ref`・`oneOf` など）は
-//! 検証できないので**起動しない**（黙って緩く通さない・fail-closed）。
+//! `maxLength`・`pattern`・`minItems`・`maxItems`。`format` は `date`（`YYYY-MM-DD` の実在する日付）だけを
+//! 検査し、ほかの値は注記として読み飛ばす（画面の日付の欄が送る形を、API や会話の図からの起動でも守らせる・
+//! BUG-35）。注記（`title`・`description`・`default`・`examples`・`$schema`・`$comment`）は読み飛ばす。
+//! それ以外（`$ref`・`oneOf` など）は検証できないので**起動しない**（黙って緩く通さない・fail-closed）。
 
 use serde_json::{Map, Value};
 
@@ -190,6 +191,24 @@ fn check_string(s: &Map<String, Value>, text: &str, path: &str, errs: &mut Vec<S
             None => errs.push(format!("{}: 入力スキーマの pattern が不正です", at(path))),
         }
     }
+    if s.get("format").and_then(Value::as_str) == Some("date") && !is_full_date(text) {
+        errs.push(format!(
+            "{}: 日付（例: 2026-04-01）を入れてください",
+            at(path)
+        ));
+    }
+}
+
+/// RFC 3339 の full-date（`YYYY-MM-DD`・桁は固定）で、暦に実在する日付か。
+fn is_full_date(text: &str) -> bool {
+    let b = text.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+        && chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok()
 }
 
 fn check_array(
@@ -431,6 +450,37 @@ mod tests {
         assert!(validate_input(&json!({ "const": u64::MAX }), &json!(u64::MAX)).is_ok());
         assert!(validate_input(&json!({ "const": -1 }), &json!(u64::MAX)).is_err());
         assert!(validate_input(&json!({ "const": 2 }), &json!(2.0)).is_ok());
+    }
+
+    /// BUG-35: `format: date` は YYYY-MM-DD の実在する日付だけを受ける。ほかの format は注記のまま。
+    #[test]
+    fn date_format_is_checked() {
+        let s = json!({ "type": "object", "properties": {
+            "due": { "type": "string", "format": "date" },
+            "at": { "type": "string", "format": "date-time" } } });
+        assert!(validate_input(&s, &json!({ "due": "2026-04-01" })).is_ok());
+        assert!(validate_input(&s, &json!({ "due": "2028-02-29" })).is_ok());
+        for bad in [
+            "2026-4-1",
+            "2026/04/01",
+            "2026-02-30",
+            "２０２６-04-01",
+            "2026-04-01T09:00:00Z",
+            "",
+        ] {
+            let errs = validate_input(&s, &json!({ "due": bad })).unwrap_err();
+            assert_eq!(
+                errs,
+                vec!["due: 日付（例: 2026-04-01）を入れてください".to_string()],
+                "{bad}"
+            );
+        }
+        // date-time などは検査しない（注記）。文字でない値は type の誤りだけを返す。
+        assert!(validate_input(&s, &json!({ "at": "あした" })).is_ok());
+        assert!(
+            validate_input(&json!({ "format": "date" }), &json!(20_260_401)).is_ok(),
+            "type の無いスキーマの数値は format の対象外"
+        );
     }
 
     /// 名前でない required の要素は黙って捨てず、起動しない。
