@@ -4,7 +4,9 @@
 ///
 /// - スケジュール: プリセット（毎時/毎日/毎週/毎月）から cron を生成し、次回実行を
 ///   cron-parser でプレビュー。上級者向けに raw cron 欄も残す。
-/// - できごと: source（ファイル保存）＋対象フォルダ（既存の FolderPicker 再利用）。
+/// - できごと: source（ファイル保存・テーブルの行の追加／更新／状態の変更）。ファイル保存は対象フォルダ（既存の
+///   FolderPicker 再利用）、データ変更は対象テーブル（業務データのブロックと同じ選択欄）を必ず決める。状態の
+///   変更は「この状態になったとき」で絞れる（filter の `/to`・GAP-07）。
 /// - 手動: ボタンから実行。実行するときに入れてもらう入力項目（IR の `input_schema`・GAP-12）を編集する
 ///   （input_schema はワークフローに 1 つで、手動の実行・ミニアプリのボタン・チャットからの実行で共通）。
 
@@ -22,8 +24,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { FolderPicker, type FolderChoice } from "@/components/artifacts/folder-picker";
-import type { Trigger } from "@/generated/workflow-ir";
+import { EVENT_CATALOG } from "@/generated/workflow-catalog";
+import type { Condition, Trigger } from "@/generated/workflow-ir";
 import { Field } from "./common";
+import { DataTableSelect, useDataTables } from "./forms-data";
 import { InputSchemaEditor, type InputRefUsage } from "./input-schema-editor";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
@@ -238,28 +242,59 @@ function ScheduleEditor({
   );
 }
 
-function EventEditor({
-  trigger,
-  onChange,
-}: {
-  trigger: Extract<Trigger, { kind: "event" }>;
-  onChange: (next: Trigger) => void;
-}) {
+/// きっかけにできるできごと（イベントのカタログの単一定義・使えるものだけ）。
+const EVENT_SOURCES = EVENT_CATALOG.filter((e) => e.available);
+
+type EventTrigger = Extract<Trigger, { kind: "event" }>;
+
+/// 「この状態になったとき」の filter（`$from trigger` の `/to` と一致）から状態を読む。
+function transitionTarget(filter: Condition | undefined): string | null {
+  if (filter && "cmp" in filter) {
+    const { left, op, right } = filter.cmp;
+    const ref = left as { $from?: unknown; path?: unknown } | null;
+    const isTo = ref !== null && typeof ref === "object" && ref.$from === "trigger" && ref.path === "/to";
+    if (isTo && op === "eq" && typeof right === "string") return right;
+  }
+  return null;
+}
+
+function EventEditor({ trigger, onChange }: { trigger: EventTrigger; onChange: (next: Trigger) => void }) {
+  const source = EVENT_SOURCES.find((e) => e.source === trigger.source);
+  const isTable = source?.scope_key === "table";
+  return (
+    <div className="space-y-3">
+      <Field label="できごと">
+        <Select
+          value={trigger.source}
+          onValueChange={(v) => {
+            if (v === trigger.source) return;
+            // 束縛の種類（フォルダ／テーブル）が変わるので、範囲と条件は選び直してもらう。
+            onChange({ kind: "event", source: v, scope: {} } as unknown as Trigger);
+          }}
+        >
+          <SelectTrigger className="h-8" aria-label="できごと">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {EVENT_SOURCES.map((e) => (
+              <SelectItem key={e.source} value={e.source}>
+                {e.label_ja}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+      {isTable ? <TableEventFields trigger={trigger} onChange={onChange} /> : <FolderEventFields trigger={trigger} onChange={onChange} />}
+    </div>
+  );
+}
+
+function FolderEventFields({ trigger, onChange }: { trigger: EventTrigger; onChange: (next: Trigger) => void }) {
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [folderName, setFolderName] = React.useState<string | null>(null);
   const folder = (trigger.scope as { folder?: string } | null)?.folder ?? "";
   return (
-    <div className="space-y-3">
-      <Field label="できごと">
-        <Select value={trigger.source} onValueChange={(v) => onChange({ ...trigger, source: v as typeof trigger.source })}>
-          <SelectTrigger className="h-8">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="storage.write">ファイルが保存されたとき</SelectItem>
-          </SelectContent>
-        </Select>
-      </Field>
+    <>
       <Field
         label="対象フォルダ"
         hint="このフォルダ（配下含む）への保存で動きます。必須です"
@@ -291,7 +326,76 @@ function EventEditor({
           setPickerOpen(false);
         }}
       />
-    </div>
+    </>
+  );
+}
+
+/// 状態を絞らないときの選択肢の値（Select は空文字を値にできない）。
+const ANY_STATE = "__any__";
+
+function TableEventFields({ trigger, onChange }: { trigger: EventTrigger; onChange: (next: Trigger) => void }) {
+  const { tables, error } = useDataTables();
+  const tableId = (trigger.scope as { table?: string } | null)?.table ?? null;
+  const table = (tables ?? []).find((t) => t.id === tableId) ?? null;
+  const statusField = table?.schema.status_field
+    ? table.schema.fields.find((f) => f.key === table.schema.status_field)
+    : undefined;
+  const states = statusField?.options ?? [];
+  const target = transitionTarget(trigger.filter);
+  return (
+    <>
+      <Field
+        label="対象のテーブル"
+        hint="有効化した人に見える行・列の変更だけで動きます。一括取込と、このワークフロー自身の書込では動きません。必須です"
+        error={error ? "テーブルの一覧を読み込めませんでした" : null}
+      >
+        <DataTableSelect
+          value={tableId}
+          tables={tables}
+          onChange={(id) => {
+            // テーブルを変えたら状態の条件は外す（別のテーブルの状態名は当てはまらない）。
+            const { filter: _filter, ...rest } = trigger;
+            void _filter;
+            onChange({ ...rest, scope: { table: id } } as Trigger);
+          }}
+        />
+      </Field>
+      {trigger.source === "data.transition" ? (
+        <Field label="この状態になったとき" hint={states.length === 0 ? "状態の列があるテーブルで選べます" : "選ばないとどの状態への変更でも動きます"}>
+          <Select
+            value={target ?? ANY_STATE}
+            disabled={states.length === 0}
+            onValueChange={(v) => {
+              const { filter: _filter, ...rest } = trigger;
+              void _filter;
+              const next: EventTrigger =
+                v === ANY_STATE
+                  ? (rest as EventTrigger)
+                  : {
+                      ...rest,
+                      filter: { cmp: { left: { $from: "trigger", path: "/to" }, op: "eq", right: v } } as Condition,
+                    };
+              onChange(next as Trigger);
+            }}
+          >
+            <SelectTrigger className="h-8" aria-label="この状態になったとき">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ANY_STATE}>どの状態でも</SelectItem>
+              {states.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      ) : null}
+      {target === null && trigger.filter ? (
+        <p className="text-[11px] text-muted-foreground">条件（filter）は AI 編集や IR で設定されています</p>
+      ) : null}
+    </>
   );
 }
 

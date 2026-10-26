@@ -457,8 +457,8 @@ export function WaitForm({ node, dispatch, refCandidates, inMapRegion, fieldErro
             </Select>
           </Field>
           <Field
-            label="対象フォルダ ID（省略可）"
-            hint="指定するとそのフォルダ配下の保存だけ待ちます"
+            label="対象フォルダ ID"
+            hint="このフォルダ配下への保存を待ちます。必須です"
             error={fieldErrors.get("scope")}
           >
             <Input

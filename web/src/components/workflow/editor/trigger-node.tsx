@@ -11,6 +11,7 @@ import { CalendarClock, MousePointerClick, Zap } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
+import { EVENT_CATALOG } from "@/generated/workflow-catalog";
 import type { Trigger } from "@/generated/workflow-ir";
 
 export type TriggerNodeData = {
@@ -37,7 +38,12 @@ export function triggerView(trigger: Trigger): {
         detail: `${trigger.cron}（${trigger.tz}）`,
       };
     case "event":
-      return { icon: Zap, label: "できごと", detail: "フォルダへの保存など" };
+      // できごとの名前はイベントのカタログの単一定義から（ファイル保存・テーブルの行の追加／更新／状態の変更）。
+      return {
+        icon: Zap,
+        label: "できごと",
+        detail: EVENT_CATALOG.find((e) => e.source === trigger.source)?.label_ja ?? "フォルダへの保存など",
+      };
     default:
       return { icon: MousePointerClick, label: "手動で実行", detail: "ボタンから開始" };
   }
