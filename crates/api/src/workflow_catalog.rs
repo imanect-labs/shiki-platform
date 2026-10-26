@@ -105,6 +105,73 @@ pub async fn build_catalog_from(
     Ok(catalog)
 }
 
+/// 承認（human.approval）が束縛するテーブルを保存者の権限で引いて、V4 の材料にする（GAP-08）。
+///
+/// IR に承認ノードが無ければ `None`（照合しない）。見えないテーブルは入れない（V4 が「見つからないか FSM で
+/// 管理されていない」と同じ文言で止める）。FSM の状態は状態の列の選択肢（FSM の保存時にこれと一致することを
+/// data が確かめている）。
+pub async fn approval_tables(
+    data: &data::DataStore,
+    ctx: &authz::AuthContext,
+    ir: &serde_json::Value,
+) -> Result<Option<std::collections::BTreeMap<String, workflow_engine::CatalogTable>>, String> {
+    let ids: std::collections::BTreeSet<uuid::Uuid> = ir
+        .get("nodes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|n| {
+            n.get("type").and_then(serde_json::Value::as_str)
+                == Some(workflow_engine::vocab::NodeType::HumanApproval.as_str())
+        })
+        .filter_map(|n| n.pointer("/params/record/table")?.as_str())
+        .filter_map(|t| uuid::Uuid::parse_str(t).ok())
+        .collect();
+    let has_approval = ir
+        .get("nodes")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|ns| {
+            ns.iter().any(|n| {
+                n.get("type").and_then(serde_json::Value::as_str)
+                    == Some(workflow_engine::vocab::NodeType::HumanApproval.as_str())
+            })
+        });
+    if !has_approval {
+        return Ok(None);
+    }
+    let mut out = std::collections::BTreeMap::new();
+    for id in ids {
+        let table = match data.get_table(ctx, id, None).await {
+            Ok(t) => t,
+            Err(data::DataError::NotFound | data::DataError::Forbidden) => continue,
+            Err(e) => return Err(format!("承認のテーブル: {e}")),
+        };
+        let schema = &table.schema;
+        let states = schema
+            .fsm_ref
+            .as_ref()
+            .and(schema.status_field.as_deref())
+            .and_then(|k| schema.field(k))
+            .map(|f| f.options.clone());
+        let fields = schema
+            .fields
+            .iter()
+            .map(|f| {
+                let ty = serde_json::to_value(f.field_type)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default();
+                (f.key.clone(), ty)
+            })
+            .collect();
+        out.insert(
+            id.hyphenated().to_string(),
+            workflow_engine::CatalogTable { states, fields },
+        );
+    }
+    Ok(Some(out))
+}
+
 /// chat ワーカー（emit_workflow）へ注入するカタログ源。保存 API と同じ材料を持つ。
 pub struct ApiWorkflowCatalogSource {
     secrets: Option<Arc<secrets::SecretStore>>,

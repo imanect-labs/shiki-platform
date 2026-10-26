@@ -86,6 +86,8 @@ pub struct AppState {
     pub workflow_summaries: Arc<workflow_engine::WorkflowSummaryStore>,
     /// dnd エディタのレイアウト永続化（Task 10.12・IR 外・非バージョン）。
     pub workflow_layout: Arc<workflow_engine::EditorLayoutStore>,
+    /// 承認の受信箱の台帳（human.approval・GAP-08）。行は承認者本人の権限で data から読み直す。
+    pub workflow_approvals: Arc<workflow_engine::ApprovalStore>,
     /// API 層の監査レコーダ（有効化/無効化等の管理操作を 1 操作 1 行で記録）。
     pub audit: Arc<storage::audit::AuditRecorder>,
     /// ユーザーディレクトリ（共有相手検索。tenant_id スコープ）。

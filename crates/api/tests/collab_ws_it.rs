@@ -412,6 +412,7 @@ async fn setup() -> Option<Harness> {
     let audit_rec = Arc::new(storage::audit::AuditRecorder::new(pool.clone()));
     let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(pool.clone()));
     let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(pool.clone()));
+    let workflow_approvals = Arc::new(workflow_engine::ApprovalStore::new(pool.clone()));
     // 剥奪切断を短時間で検証するため再チェック間隔を 200ms に縮める。
     let collab_hub = Arc::new(
         collab::CollabHub::new(
@@ -485,6 +486,7 @@ async fn setup() -> Option<Harness> {
         workflow_registration,
         workflow_summaries,
         workflow_layout,
+        workflow_approvals,
         audit: audit_rec,
         workflow_runs: None,
         directory,

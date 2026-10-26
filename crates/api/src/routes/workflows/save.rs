@@ -77,7 +77,21 @@ pub struct ValidationErrorResponse {
 ///
 /// 実装は [`crate::workflow_catalog::build_catalog_from`]（emit_workflow と共有・乖離禁止）。
 /// モデルは gateway があれば呼び出し主体から見た組織の許可リスト（BUG-11）、無ければデプロイ設定。
-pub(crate) async fn build_catalog(
+///
+/// IR の承認ノードが束縛するテーブル（保存者の見え方・V4・GAP-08）も引いて足す。
+pub(crate) async fn build_catalog_for(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    ir: &serde_json::Value,
+) -> Result<Catalog, ApiError> {
+    let mut catalog = build_catalog_base(state, ctx).await?;
+    catalog.tables = crate::workflow_catalog::approval_tables(&state.data, ctx, ir)
+        .await
+        .map_err(ApiError::Internal)?;
+    Ok(catalog)
+}
+
+async fn build_catalog_base(
     state: &AppState,
     ctx: &authz::AuthContext,
 ) -> Result<Catalog, ApiError> {
@@ -138,7 +152,7 @@ pub async fn validate_workflow(
     AuthContextExt(ctx): AuthContextExt,
     Json(req): Json<ValidateWorkflowRequest>,
 ) -> Result<Json<ValidateWorkflowResponse>, ApiError> {
-    let catalog = build_catalog(&state, &ctx).await?;
+    let catalog = build_catalog_for(&state, &ctx, &req.ir).await?;
     // 保存と同じく、ノードが要するスコープを補完してから検証する（検証 C-P1-2・結果を保存と揃える）。
     let (ir, _) = workflow_engine::complete_declared_scopes(&req.ir);
     let (errors, warnings) = match workflow_engine::validate(&ir, &catalog) {
@@ -199,7 +213,7 @@ pub async fn create_workflow(
     trace: TraceIdExt,
     Json(req): Json<SaveWorkflowRequest>,
 ) -> Result<(StatusCode, Json<SaveWorkflowResponse>), ApiError> {
-    let catalog = build_catalog(&state, &ctx).await?;
+    let catalog = build_catalog_for(&state, &ctx, &req.ir).await?;
     let (id, ir) = state
         .workflows
         .create(&ctx, &req.ir, &catalog, trace.as_deref())
@@ -241,7 +255,7 @@ pub async fn update_workflow(
     Path(id): Path<Uuid>,
     Json(req): Json<SaveWorkflowRequest>,
 ) -> Result<Json<SaveWorkflowResponse>, ApiError> {
-    let catalog = build_catalog(&state, &ctx).await?;
+    let catalog = build_catalog_for(&state, &ctx, &req.ir).await?;
     let (version, ir) = state
         .workflows
         .update(

@@ -417,7 +417,32 @@ async fn relay_tenant_waits(
             if !w.admits(&payload) {
                 continue;
             }
-            cx.deps.runs.wake_data_wait(w, &payload).await?;
+            let woke = cx.deps.runs.wake_data_wait(w, &payload).await?;
+            if let (true, Some(a)) = (woke, w.approval()) {
+                // 承認の決着（判断の遷移・判断の外の遷移による取り下げ）を監査に残す（GAP-08）。
+                let status = workflow_engine::ApprovalResolution::transition(
+                    &a.choices,
+                    payload
+                        .get("to")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    None,
+                    None,
+                    None,
+                )
+                .status;
+                super::relay_approval::audit_resolved(
+                    cx.deps.db,
+                    &workflow_engine::ResolvedApproval {
+                        tenant_id: w.subscriber.tenant_id.clone(),
+                        org: w.subscriber.org.clone(),
+                        approval_id: a.approval_id,
+                        run_id: w.subscriber.run_id,
+                        status: status.to_string(),
+                    },
+                )
+                .await;
+            }
             woken.insert(key);
         }
     }

@@ -308,6 +308,9 @@ audit_actions! {
     ThreadYuiSaveAsApp = "thread.yui_save_as_app", "図をアプリとして保存", Chat;
     TrashList = "trash.list", "ごみ箱の一覧", File;
     UiActionInvoke = "ui_action.invoke", "画面部品の操作を実行", Agent;
+    WorkflowApprovalDecide = "workflow.approval.decide", "承認待ちを判断", Workflow;
+    WorkflowApprovalRequest = "workflow.approval.request", "承認を依頼", Workflow;
+    WorkflowApprovalResolve = "workflow.approval.resolve", "承認待ちが決着", Workflow;
     WorkflowCapabilityOutOfScope = "workflow.capability.out_of_scope", "宣言にない能力の呼び出しを拒否", Workflow;
     WorkflowDataDelegated = "workflow.data.delegated", "委譲されたテーブルかを確認", Workflow;
     WorkflowDisable = "workflow.disable", "ワークフローを無効化", Workflow;

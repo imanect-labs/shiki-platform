@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod app_install;
 pub mod app_platform;
+pub mod approvals;
 pub mod artifacts;
 pub mod auth;
 pub mod chat;

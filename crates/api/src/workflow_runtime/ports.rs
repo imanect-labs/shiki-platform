@@ -550,6 +550,17 @@ impl NodePorts for ProdNodePorts {
     async fn data_write(&self, ec: &ExecCtx, req: DataWriteReq) -> Result<Value, PortError> {
         self.data_port()?.write(ec, req).await
     }
+
+    async fn data_approval_target(
+        &self,
+        ec: &ExecCtx,
+        table_id: Uuid,
+        record_id: Uuid,
+    ) -> Result<workflow_engine::ApprovalTarget, PortError> {
+        self.data_port()?
+            .approval_target(ec, table_id, record_id)
+            .await
+    }
 }
 
 /// CSV セル（NULL は None）を JSON 値へ（NULL → null・値 → 文字列）。

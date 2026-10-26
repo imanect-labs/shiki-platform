@@ -12,6 +12,7 @@ mod llm_error;
 mod llm_model;
 mod ports;
 mod relay;
+mod relay_approval;
 mod relay_data;
 mod skill_port;
 
@@ -319,6 +320,7 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
     let relay_launcher = Arc::clone(&launcher_dyn);
     let relay_lease = lease.clone();
     let tick_runs = deps.runs.clone();
+    let tick_db = deps.db.clone();
     let tick_concurrency = concurrency_store;
     // claim の走査の下限（アイドルの間は outbox を走査しない・3 回目の検証 3-D-1）。
     let claim_hints = storage::event::ClaimHints::default();
@@ -369,6 +371,15 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                     // wait(timer) 起床・wait(event/timer) の timeout 回収（engine.md §5.1）。
                     if let Err(e) = tick_runs.wake_due_timers(now, None).await {
                         tracing::warn!(error = %e, "waiting_timer 起床でエラー");
+                    }
+                    // 承認の期限切れ（決着の監査を残す・GAP-08）。残りは expire_due_waits が回収する。
+                    match tick_runs.expire_due_approvals(now, None).await {
+                        Ok(done) => {
+                            for r in &done {
+                                relay_approval::audit_resolved(&tick_db, r).await;
+                            }
+                        }
+                        Err(e) => tracing::warn!(error = %e, "承認の期限切れの回収でエラー"),
                     }
                     if let Err(e) = tick_runs.expire_due_waits(now, None).await {
                         tracing::warn!(error = %e, "wait timeout 回収でエラー");

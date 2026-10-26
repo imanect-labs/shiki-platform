@@ -53,6 +53,8 @@ pub async fn relay_events(deps: &RelayDeps<'_>) -> Result<(), anyhow::Error> {
         }
     }
     retry_firings(deps).await?;
+    // 承認の受付の突合（停止の commit より前に動いた行・承認の依頼の監査・GAP-08）。
+    super::relay_approval::reconcile_approvals(deps).await?;
     Ok(())
 }
 
@@ -139,6 +141,8 @@ async fn relay_events_batch(deps: &RelayDeps<'_>) -> Result<usize, anyhow::Error
     }
     // データ変更（data.record.changed / transitioned）はテーブル単位で候補を引くので、まとめて配る（GAP-07）。
     super::relay_data::relay_data_events(deps, &events).await?;
+    // 行の削除で、その行に束縛した保留中の承認を取り下げる（GAP-08）。
+    super::relay_approval::withdraw_on_deletes(deps, &events).await?;
     let mut ids = Vec::with_capacity(events.len());
     for ev in &events {
         // ファイルの保存でないイベント（data サービス由来・削除・移動・フォルダの作成など）は

@@ -469,6 +469,7 @@ fn build_app(
         )),
         workflow_summaries: Arc::new(workflow_engine::WorkflowSummaryStore::new(pool.clone())),
         workflow_layout: Arc::new(workflow_engine::EditorLayoutStore::new(pool.clone())),
+        workflow_approvals: Arc::new(workflow_engine::ApprovalStore::new(pool.clone())),
         audit: Arc::new(storage::audit::AuditRecorder::new(pool.clone())),
         directory,
         tenants: Arc::new(storage::TenantStore::new(pool.clone())),

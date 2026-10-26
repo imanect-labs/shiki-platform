@@ -34,7 +34,7 @@ const MAX_REACHABLE_TABLES: i64 = 500;
 pub(super) struct Actor {
     pub(super) ctx: AuthContext,
     pub(super) data: DataStore,
-    fsms: FsmStore,
+    pub(super) fsms: FsmStore,
 }
 
 /// data のエラー → ポートのエラー（不可視と不在は同じ「見つからない」・再試行で直るものだけ retryable）。
@@ -243,6 +243,38 @@ impl DataPort<'_> {
             .await
             .map_err(map_data)?;
         serde_json::to_value(rec).map_err(|e| PortError::unavailable(format!("serialize: {e}")))
+    }
+
+    /// 承認の停止時に読む行の状態（実行主体の権限・委譲元の見え方・GAP-08）。
+    pub(super) async fn approval_target(
+        &self,
+        ec: &ExecCtx,
+        table_id: Uuid,
+        record_id: Uuid,
+    ) -> Result<workflow_engine::ApprovalTarget, PortError> {
+        let a = self.actor(ec, table_id, Relation::Viewer).await?;
+        let v = a
+            .fsms
+            .approval_target(&a.ctx, table_id, record_id, ec.trace_id.as_deref())
+            .await
+            .map_err(map_data)?;
+        Ok(workflow_engine::ApprovalTarget {
+            current: v.current,
+            rev: v.rev,
+            targets: v.targets,
+            refs: v
+                .refs
+                .into_iter()
+                .map(|(k, (role, value))| {
+                    let kind = if role {
+                        workflow_engine::AssigneeKind::Role
+                    } else {
+                        workflow_engine::AssigneeKind::User
+                    };
+                    (k, (kind, value))
+                })
+                .collect(),
+        })
     }
 
     /// 現在の rev（rev を指定しない書込が、読んだ rev で楽観ロックを掛けるため）。

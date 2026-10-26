@@ -327,6 +327,7 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
     let audit = Arc::new(storage::audit::AuditRecorder::new(db.clone()));
     let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(db.clone()));
     let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(db.clone()));
+    let workflow_approvals = Arc::new(workflow_engine::ApprovalStore::new(db.clone()));
     let collab_hub = Arc::new(collab::CollabHub::new(
         db.clone(),
         Arc::new(AllowAll),
@@ -367,6 +368,7 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         workflow_registration,
         workflow_summaries,
         workflow_layout,
+        workflow_approvals,
         audit,
         directory,
         tenants,
