@@ -7,6 +7,8 @@
 //! - queued の上限で発火を捨てる
 //! - 待機中の run は max_parallel_runs に数えない（D-26・H10）
 //! - 同じファイルの続く保存は 1 回にまとめ、最後の保存で起動する（D-38）。自分の保存はまとめる前に抑止する
+//!
+//! 各テストは自分のテナント（`t-<uuid>`）に閉じ、最後にそのテナントの行を消す（[`cleanup`]）。
 
 #![allow(
     clippy::unwrap_used,
@@ -141,6 +143,21 @@ async fn make_due(pool: &PgPool, tenant: &str) {
     .unwrap();
 }
 
+/// テストのテナントに作った行を消す（同じ DB を使うほかのテストや手元のサーバの tick に残さない）。
+///
+/// 既定の ir_snapshot（`{}`）のまま作った queued の run が残ると、手元のサーバの昇格（全テナントを見る）が
+/// それを読めずに止まっていた。run を消せば step・run_event・wait_subscription は FK で消え、registration を
+/// 消せばトリガも消える。
+async fn cleanup(pool: &PgPool, tenant: &str) {
+    for sql in [
+        "DELETE FROM trigger_firing WHERE tenant_id = $1",
+        "DELETE FROM workflow_run WHERE tenant_id = $1",
+        "DELETE FROM workflow_registration WHERE tenant_id = $1",
+    ] {
+        sqlx::query(sql).bind(tenant).execute(pool).await.unwrap();
+    }
+}
+
 /// 由来の run（ワークフロー `workflow_id`・鎖 `chain`）を 1 つ作る。
 async fn cause_run(pool: &PgPool, tenant: &str, workflow_id: Uuid, chain: &[Uuid]) -> Uuid {
     let run_id = Uuid::new_v4();
@@ -214,6 +231,7 @@ async fn transient_launch_failure_is_retried_with_the_same_event() {
         .unwrap();
     assert_eq!(again, FireOutcome::AlreadyHandled);
     assert_eq!(launcher.calls().len(), 2);
+    cleanup(&pool, &tenant).await;
 }
 
 /// 一時失敗が続けば上限で打ち切る（gave_up・監査の材料を返す）。
@@ -250,6 +268,7 @@ async fn repeated_failures_give_up_after_the_limit() {
     assert_eq!(gave_up.len(), 1, "打ち切りは 1 回だけ報告する");
     assert_eq!(gave_up[0].event_id, 7);
     assert_eq!(gave_up[0].workflow_id, wf);
+    cleanup(&pool, &tenant).await;
 }
 
 /// 委譲の不成立・多重度あふれの見送りは再試行しない。無効化したトリガの pending は起こさず見送る。
@@ -291,6 +310,7 @@ async fn skipped_launches_and_disabled_triggers_are_not_retried() {
     assert_eq!(r.fired, 0);
     assert!(started.calls().is_empty(), "無効化したトリガは起こさない");
     assert_eq!(firing(&pool, &tenant, "trg-1", 2).await.0, "skipped");
+    cleanup(&pool, &tenant).await;
 }
 
 /// 自分の書込で自分を起こさない・A→B→A の循環・深さの上限。起動した run は鎖を引き継ぐ。
@@ -389,6 +409,7 @@ async fn causal_chain_suppresses_self_cycles_and_depth() {
         .unwrap();
     assert_eq!(out, FireOutcome::SuppressedDepth);
     assert!(never.calls().is_empty());
+    cleanup(&pool, &tenant).await;
 }
 
 /// queued の run が上限に達したワークフローの発火は捨てる。
@@ -426,6 +447,7 @@ async fn queue_cap_drops_new_firings() {
         firing(&pool, &tenant, "trg-1", 5).await.0,
         "dropped_queue_full"
     );
+    cleanup(&pool, &tenant).await;
 }
 
 fn wait_ir(max_parallel_runs: u32) -> (Value, RunGraph) {
@@ -514,6 +536,7 @@ async fn same_event_creates_one_run() {
     .unwrap();
     assert_eq!(chain, vec![wf]);
     assert_eq!(cause, Some(first));
+    cleanup(&pool, &tenant).await;
 }
 
 /// 待機中の run は max_parallel_runs に数えない（11 件待っていても新しい run は running になる）。
@@ -617,6 +640,7 @@ async fn waiting_runs_do_not_count_against_max_parallel_runs() {
         runs.run_status(&tenant, next).await.unwrap(),
         Some(RunStatus::Running)
     );
+    cleanup(&pool, &tenant).await;
 }
 
 /// まとめて待っている発火の起動する時刻。
@@ -740,6 +764,7 @@ async fn deferred_saves_of_one_file_coalesce_into_the_last_one() {
         Some(t0 + chrono::TimeDelta::seconds(COALESCE_MAX_SECS)),
         "まとめ始めから上限"
     );
+    cleanup(&pool, &tenant).await;
 }
 
 /// 自分の保存（因果の鎖で抑止する保存）は、待っている人の保存を押し流さない（人の保存で起動する）。
@@ -783,4 +808,5 @@ async fn own_saves_are_suppressed_before_coalescing() {
         .unwrap();
     assert_eq!(r.fired, 1);
     assert_eq!(launcher.calls(), vec![Some(1)]);
+    cleanup(&pool, &tenant).await;
 }
