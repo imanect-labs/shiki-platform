@@ -43,11 +43,11 @@
 | 区分 | 件数 | 内訳 |
 | --- | --- | --- |
 | 既知の不具合（human 報告） | 5 | BUG-1〜5。5 件とも直した（ブランチ `workflow-app-quality`・未 PR）。BUG-3 は説明文まで。効果の測定（GAP-30）は未着手 |
-| 調査で見つけた不具合 | 36 | BUG-6〜41（§4）。第 1 弾で 13 件を直した（BUG-26・27 を含む）。BUG-26〜41 は第 1 弾の実装・レビュー・目視で見つけたもの |
-| 不足機能 | 41 | GAP-01〜41（§5）。P0 が 7 件 |
+| 調査で見つけた不具合 | 64 | BUG-6〜69（§4）。第 1 弾で 13 件（BUG-26・27 を含む）、修正の 2 回目で 30 件を直した（§10）。BUG-26〜41 は第 1 弾の実装・レビュー・目視で、BUG-42〜69 は 2 回目の実装・レビュー・E2E・目視で見つけたもの。BUG-40 は不具合ではなかった |
+| 不足機能 | 42 | GAP-01〜42（§5）。P0 が 7 件。前倒しした GAP-07・08・09 は 2 回目で入れた |
 | 新機能 | 2 | FEAT-1（決定モデル）・FEAT-2（アプリエディタ）（§6） |
 | 実践シナリオ | 12 | APP-01〜12（§7）。今の機能で組めるのは 2 本（03・08。日付や重複対策は script 頼み）、回避策つきで 5 本、一部だけ 1 本、不可 4 本 |
-| human 判断 | 54 | D-1〜D-54（§8）。D-1〜10・D-21〜54 は決定済み（D-7 は D-52 の H4 に吸収）。未決は D-11〜20（D-11 は推奨案で実装済み） |
+| human 判断 | 66 | D-1〜D-66（§8）。D-1〜10・D-21〜54 は決定済み（D-7 は D-52 の H4 に吸収）。未決は D-11〜20（D-11 は推奨案で実装済み）と、2 回目で出た D-55〜66 |
 
 ## 3. 既知の不具合（human 報告）
 
@@ -136,21 +136,21 @@ AI がワークフローを作る経路は、チャットの `emit_workflow` / `
 
 | ID | 優先度 | 内容 | 根拠 | 状態 | PR |
 | --- | --- | --- | --- | --- | --- |
-| BUG-6 | P0 | `agent.invoke` が自然文の指示を Python コードとして実行する。パレットと右パネルは「AI エージェント」「添付の資料を確認して要点をまとめて」と見せているので、その通りに書くと必ず失敗する | `api/src/workflow_runtime/ports.rs:267-326` | agent-core につなぐ（D-4）・設計中 | |
+| BUG-6 | P0 | `agent.invoke` が自然文の指示を Python コードとして実行する。パレットと右パネルは「AI エージェント」「添付の資料を確認して要点をまとめて」と見せているので、その通りに書くと必ず失敗する | `api/src/workflow_runtime/ports.rs:267-326` | 直した（agent-core のツールループにつないだ・D-22・D-29）。保存済みの定義の棚卸しと告知は BUG-46 | |
 | BUG-7 | P0 | V2 が `from_port` の存在を検証しない。存在しないポートのエッジが保存でき、実行時は dead edge になって下流が黙って skipped になる（run は成功扱い） | `ir/validate/v2_graph.rs:67-95`・ir.md §8 V2 | 直した | |
 | BUG-8 | P0 | ファイル保存トリガの run 入力にファイル ID・名前・op が無い（outbox の `{kind, blob_sha256, size, parent_id}` そのまま）。削除でも発火する | `api/src/workflow_runtime/mod.rs:438-456` | 直した。run 入力は `{file_id, version, op, kind, parent_id, size, actor, blob_sha256}`。発火はファイルの作成と版の保存だけ。調べ直すと、削除で起きていたのはトリガではなく scope の無い `wait(event)` だった（BUG-27）。新しい版の保存では起きない（BUG-28） | |
 | BUG-9 | P1 | エッジを選択・削除できない。エッジをクリックしてから Delete を押すと直前に選んでいたノードが消える。1 回の削除で Undo が 2 段に分かれ、座標も戻らない | `canvas.tsx:106-127,170-201`・`ir-state.ts` | 直した | |
 | BUG-10 | P1 | csv.* の同意計画が無く、schedule／event の run は権限不足で失敗する（有効化は成功してしまう） | `registration/consent.rs` | 直した | |
 | BUG-11 | P1 | 保存時のモデル照合が組織の許可リストを見ない。Compose では照合自体を飛ばす | `v3_vocab.rs:54-74`・`save.rs:78-84` | 直した | |
-| BUG-12 | P1 | モデル省略時にデプロイ既定で動き、組織の既定・Auto を無視する（skill・ミニアプリの AI も同じ） | `ports.rs:215-219`・`skill.rs:92`・`app-gateway/src/routes/ai.rs:133-136` | 組織の既定に揃える（D-5）・未着手 | |
+| BUG-12 | P1 | モデル省略時にデプロイ既定で動き、組織の既定・Auto を無視する（skill・ミニアプリの AI も同じ） | `ports.rs:215-219`・`skill.rs:92`・`app-gateway/src/routes/ai.rs:133-136` | 直した（ワークフロー・instructions だけの skill・ミニアプリの省略時を組織の既定で解決する・D-23・D-30） | |
 | BUG-13 | P1 | 任意項目の参照が解決できないと黙ってフォールバックする（folder→ルート、input→run 入力全体、path_suffix→空文字、workflow.start の input→null） | `capability.rs:88-92,244-248,368-372`・`script.rs:61-65`・`skill.rs:42-46`・`capability_ai.rs:139-145` | 直した | |
 | BUG-14 | P1 | 条件の大小比較で型が合わないと黙って false になる（ir.md §3.3 は `expr_type_error`）。固定値の数字は文字列として保存されるので、金額の比較が黙って逆に流れる | `control/eval.rs` の `compare_ordered` | 直した | |
 | BUG-15 | P1 | `llm.invoke`・`agent.invoke` の既定 params が入力全体（オブジェクト）を参照し、置いたまま実行すると「prompt が解決できません」で落ちる | `ir-state.ts:97-100` | 直した（同じ欠陥の rag.search は BUG-26） | |
 | BUG-16 | P2 | 「条件を追加」の既定の左辺が `path: "/"`（空文字キー）で、eq は常に偽・neq は常に真 | `forms-control.tsx:212` | 直した | |
 | BUG-17 | P1 | ミニアプリの任意の skill ピンが壊れると、アプリ全体が「見つかりません」になる | `crates/gui/src/miniapp_store.rs::resolve` | 未着手 | |
 | BUG-18 | P1 | 共有で editor にした人にミニアプリの編集ボタンが出ない（UI が owner だけに出す） | `apps/[id]/page.tsx:48` | 未着手 | |
-| BUG-19 | P1 | ボタンの run が終わってもミニアプリの表（data_grid）が読み直されない | `apps/[id]/page.tsx`・`data-grid.tsx` | 未着手 | |
-| BUG-20 | P2 | 待ち（wait）の run が「実行中」のまま表示され、開いている間 3 秒ごとに読み直し続ける | `RunStatus`・`apps/[id]/page.tsx` | 未着手 | |
+| BUG-19 | P1 | ボタンの run が終わってもミニアプリの表（data_grid）が読み直されない | `apps/[id]/page.tsx`・`data-grid.tsx` | 直した（すぐ終わった起動・run が後から付いた起動も取りこぼさない） | |
+| BUG-20 | P2 | 待ち（wait）の run が「実行中」のまま表示され、開いている間 3 秒ごとに読み直し続ける | `RunStatus`・`apps/[id]/page.tsx` | 直した（「待機中」「承認待ち」と出し、30 秒ごととフォーカス時に読み直す） | |
 | BUG-21 | P2 | 必須項目の欠落エラーが欄に写らない（サーバは日本語化し、web は英語の原文しか照合しない） | `validation.ts:37-50`・`params/mod.rs:97-102` | 直した | |
 | BUG-22 | P1 | `dev-up.sh` がカーソル鍵（`SHIKI__DATA__EPHEMERAL_CURSOR_KEY`）と tabular runner のパスを渡しておらず、native 起動が bail／csv.* が失敗する | `.claude/skills/pr/scripts/dev-up.sh:512-585,631` | 回避策あり（§9） | |
 | BUG-23 | P1 | `storage.read` がバイナリ文書（PDF・docx・xlsx）を不可逆に文字化けした text で返す | `capability.rs`（`from_utf8_lossy`） | GAP-14 で扱う | |
@@ -158,20 +158,48 @@ AI がワークフローを作る経路は、チャットの `emit_workflow` / `
 | BUG-25 | P2 | トリガの座標を添字（`trigger:${i}`）で保存しており、前のトリガを消すと別のトリガに付け替わる | `workflow-editor.tsx` | 直した | |
 | BUG-26 | P1 | `rag.search` の既定 query も入力全体のオブジェクトを指し、置いたまま実行すると必ず失敗する（BUG-15 と同じ欠陥） | `ir-state.ts:131-132` | 直した | |
 | BUG-27 | P0 | scope の無い `wait(event)` が、テナント内の誰のファイルの保存でも起きる。起床の前に実行主体の権限を確かめないので、読めないファイルの file_id・actor・parent_id・size が step 出力に残る。filter に actor を書けば特定の人の保存を見張れる | `run/store/wait.rs:351`・`nodes/exec.rs:255-258` | 直した（起こす前に実行主体の viewer を確かめる `EventWaitGate`・D-33）。同意計画に wait のフォルダの閲覧を足した | |
-| BUG-28 | P1 | 新しい版の保存（presigned の finalize・content_update・提案の採用）で、ファイル保存トリガと folder を指定した `wait(event)` が起きない（outbox に parent_id が無い）。同じ CSV を上書きしても run が起動しない | `storage/src/service/finalize.rs:414`・`content_update.rs:130`・`proposal.rs:244` | 未着手（循環の抑止が先・D-38）。AI の説明文は「上書き保存での起動は当てにしない」に直した | |
-| BUG-29 | P1 | ファイル保存トリガに自己発火・循環の抑止が無い。event で起動した run が束縛フォルダへ書くと、自分の保存で再び起動し続ける | `workflow_runtime/relay.rs` | 未着手（D-26 の因果の鎖を storage にも広げる・D-38） | |
-| BUG-30 | P2 | switch の case を消す・on_error を fail_run に戻す・on_timeout を変えると、消えた出口のエッジが残る。保存は `ir.unknown_port` で止まるが、キャンバスに描けず選んで消せない恐れがある | `forms-control.tsx`・`config-panel/common.tsx` | 未着手 | |
-| BUG-31 | P1 | 条件の右辺の固定値は文字列（`"50000"`）で保存される。BUG-14 を直したので、数値との大小比較は黙って偽ではなく run の失敗になる | `forms-control.tsx:190-193` | 一部（保存時に `ir.condition_semantics_changed` で警告する）。UI で数値として保存するのは未着手 | |
-| BUG-32 | P2 | `storage.read` の既定 params が `file: {$from: input, path: /file_id}` のままで、スケジュールで有効化すると「入力が無いので失敗します」と出る | `ir-state.ts:134-135` | 未着手 | |
-| BUG-33 | P1 | `/llm/models` に本人専用（ChatGPT プラン）のモデルが混ざる。ワークフローで選ぶと保存時の照合で弾かれる。応答に印が無いので web では除けない | `routes/llm_models.rs:132-133`・`model-field.tsx:41` | 未着手（API の形を変える・D-46） | |
-| BUG-34 | P2 | input_schema の項目の並びが、保存して開き直すとキーの辞書順に変わる（serde_json に preserve_order が無い） | workspace の serde_json | 未着手 | |
-| BUG-35 | P2 | input_schema の `format: date` をエンジンが検査しない（画面の入力欄が YYYY-MM-DD を送る前提） | `input_schema.rs` | 未着手 | |
-| BUG-36 | P1 | ファイル保存トリガの run 入力の項目（`/file_id` など）を、値の欄の参照の候補から選べない。形が relay.rs のコメントにしか無く、生成した型にもカタログにも無い | `value-refs.ts`（refOptions・pathHints） | 未着手（D-47） | |
-| BUG-37 | P2 | 組織がすべてのモデルを無効にすると、保存時のモデル照合が飛ぶ（「LLM が未構成」と「許可が 0 件」を同じ空で表している） | `workflow_catalog.rs:34-50`・`v3_vocab.rs:75` | 未着手 | |
-| BUG-38 | P2 | 有効化ダイアログが、`$from: trigger`（トリガで保存されたファイル）を「前のブロックの結果で決まる」と説明する。実際はトリガのフォルダの委譲で読める | `enable-dialog.tsx:112` | 未着手 | |
-| BUG-39 | P1 | ファイル保存トリガは有効化の時点で有効化した人の閲覧を確かめるだけで、発火の時点では workflow プリンシパルの閲覧を確かめない。委譲やフォルダの共有を外した後も、run 入力に file_id・actor が載る | `scheduler/store.rs`（match_event） | 未着手（D-50） | |
-| BUG-40 | P2 | スマホ幅で、画面左下に浮いているボタン（⚡）が、ブロックの設定シートの下端の欄（「数値やリストとして扱う（JSON）」のスイッチなど）に重なる | 実スタックの目視（2026-10-25） | 未着手 | |
-| BUG-41 | P3 | 短いつながりでは、出口のラベル（「はい」）が＋ボタンに重なる | 実スタックの目視（2026-10-25） | 未着手 | |
+| BUG-28 | P1 | 新しい版の保存（presigned の finalize・content_update・提案の採用）で、ファイル保存トリガと folder を指定した `wait(event)` が起きない（outbox に parent_id が無い）。同じ CSV を上書きしても run が起動しない | `storage/src/service/finalize.rs:414`・`content_update.rs:130`・`proposal.rs:244` | 直した（新しい版の保存でも起きる。同じファイルの続く保存は、最後の保存から 60 秒・最長 10 分でまとめて 1 回起動する・D-38） | |
+| BUG-29 | P1 | ファイル保存トリガに自己発火・循環の抑止が無い。event で起動した run が束縛フォルダへ書くと、自分の保存で再び起動し続ける | `workflow_runtime/relay.rs` | 直した（保存の trace_id から因果の鎖を引き、自分の保存と `workflow.start` の子の保存では自分を起こさない） | |
+| BUG-30 | P2 | switch の case を消す・on_error を fail_run に戻す・on_timeout を変えると、消えた出口のエッジが残る。保存は `ir.unknown_port` で止まるが、キャンバスに描けず選んで消せない恐れがある | `forms-control.tsx`・`config-panel/common.tsx` | 直した（出口を消す 1 手でそのエッジも外す） | |
+| BUG-31 | P1 | 条件の右辺の固定値は文字列（`"50000"`）で保存される。BUG-14 を直したので、数値との大小比較は黙って偽ではなく run の失敗になる | `forms-control.tsx:190-193` | 直した（数値の入力項目と比べる数字は数として保存する。打っている途中の「0.」などは潰さない） | |
+| BUG-32 | P2 | `storage.read` の既定 params が `file: {$from: input, path: /file_id}` のままで、スケジュールで有効化すると「入力が無いので失敗します」と出る | `ir-state.ts:134-135` | 直した（置いた直後はファイル未選択） | |
+| BUG-33 | P1 | `/llm/models` に本人専用（ChatGPT プラン）のモデルが混ざる。ワークフローで選ぶと保存時の照合で弾かれる。応答に印が無いので web では除けない | `routes/llm_models.rs:132-133`・`model-field.tsx:41` | 直した（`?purpose=workflow`・D-46） | |
+| BUG-34 | P2 | input_schema の項目の並びが、保存して開き直すとキーの辞書順に変わる（serde_json に preserve_order が無い） | workspace の serde_json | 調べた。preserve_order では直らない（IR は jsonb の列に保存され、キーが並べ替わる。digest も入力の順に依存してしまう）。D-60 の判断待ち | |
+| BUG-35 | P2 | input_schema の `format: date` をエンジンが検査しない（画面の入力欄が YYYY-MM-DD を送る前提） | `input_schema.rs` | 直した | |
+| BUG-36 | P1 | ファイル保存トリガの run 入力の項目（`/file_id` など）を、値の欄の参照の候補から選べない。形が relay.rs のコメントにしか無く、生成した型にもカタログにも無い | `value-refs.ts`（refOptions・pathHints） | 直した（イベントの payload_fields をカタログに単一定義し、参照の候補と AI の説明文に出す・D-47） | |
+| BUG-37 | P2 | 組織がすべてのモデルを無効にすると、保存時のモデル照合が飛ぶ（「LLM が未構成」と「許可が 0 件」を同じ空で表している） | `workflow_catalog.rs:34-50`・`v3_vocab.rs:75` | 直した（「照合しない」と「許可 0 件」を分けた） | |
+| BUG-38 | P2 | 有効化ダイアログが、`$from: trigger`（トリガで保存されたファイル）を「前のブロックの結果で決まる」と説明する。実際はトリガのフォルダの委譲で読める | `enable-dialog.tsx:112` | 直した | |
+| BUG-39 | P1 | ファイル保存トリガは有効化の時点で有効化した人の閲覧を確かめるだけで、発火の時点では workflow プリンシパルの閲覧を確かめない。委譲やフォルダの共有を外した後も、run 入力に file_id・actor が載る | `scheduler/store.rs`（match_event） | 直した（発火の前に workflow プリンシパルの閲覧を確かめる・D-50）。まとめて待たせた発火を起動する時点では確かめ直さない（BUG-50） | |
+| BUG-40 | P2 | スマホ幅で、画面左下に浮いているボタン（⚡）が、ブロックの設定シートの下端の欄（「数値やリストとして扱う（JSON）」のスイッチなど）に重なる | 実スタックの目視（2026-10-25） | 不具合ではなかった。⚡ は Next.js 15 が開発時だけ出す静的ルートの目印で、本番には出ない（2026-10-26 に確かめた）。2 回目で足したシートの下端の余白は害が無いので残した | |
+| BUG-41 | P3 | 短いつながりでは、出口のラベル（「はい」）が＋ボタンに重なる | 実スタックの目視（2026-10-25） | 直した（短いつながりでは出口のラベルを出さない） | |
+| BUG-42 | P1 | データ変更の `wait(event)` に、起床を取りこぼす窓がある。行に束縛した wait は、data_get で rev を読んでから checkpoint を commit するまでの間に入った変更を取りこぼす。テーブル単位の wait は、after_event_id の反対側（位置の後に採番され、購読の commit より先に配送された変更）を取りこぼす。どちらも timeout まで起きない | `nodes/exec.rs:360-370`・`run/store/wait.rs:106` | 未着手（承認の受付の突合と同じ形で、1 回だけ突き合わせる）。engine.md §9.2 に両方向の窓を書く提案は入れた | |
+| BUG-43 | P2 | 受信箱の件数（`/approvals/count`。web が 60 秒ごととフォーカス時に読む）は、毎回 OpenFGA の list_objects・台帳 500 行の照会・行ごとの読取（N+1）を行う。見えないテーブルでは、そのたびに Deny 監査が増える | `routes/approvals.rs`・`data/src/record.rs`（get_records） | 未着手 | |
+| BUG-44 | P2 | 因果の鎖と by_workflow は、書込の trace_id が 32 桁 hex なら run_id とみなす。利用者の HTTP 要求の trace_id も同じ形なので、すべての書込で EXISTS が走り、`trigger_firing.cause_run_id` に実在しない UUID が残る。将来 traceparent を受け付けると、run の trace_id を名乗って抑止を偽れる（推測） | `scheduler/firing.rs:167-175,480-482` | 未着手（run の書込の印を outbox の private payload に明示して載せる案） | |
+| BUG-45 | P3 | 判断 API で、判断できるかを確かめてから遷移するまでの間に期限が過ぎると、行は判断の状態に、run は時間切れの出口に進む | `routes/approvals.rs` | 未着手（engine.md §9.6 に注記がある） | |
+| BUG-46 | P2 | `agent.invoke` の出力が `{stdout, exit_code}` から `{text, …}` に変わった。保存済みの定義にある `$from nodes.<agent>.output path /stdout` は、実行時に `expr_resolve_error` になる | BUG6-T6 | 未着手（保存済みの定義の棚卸しと告知） | |
+| BUG-47 | P3 | 承認のコメントの鍵が `(approval_id, rev)` だけで、「置く → 遷移 → 失敗なら外す」の 3 手が 1 つの Tx に入っていない。外し損ねると次の rev の枠を塞ぎ、正しい承認者がコメント付きで判断しても 409 deciding になり続ける | `routes/approvals.rs`・migration 0107 | 未着手（鍵に作者を足し、外す処理を必ず走らせる） | |
+| BUG-48 | P3 | 保存時の警告コード `REQUIRED_TEXT_EMPTY` を、web が手書きの定数で持っている（警告コードの語彙を生成していない） | `web/src/lib/workflow-api.ts` | 未着手 | |
+| BUG-49 | P2 | 状態によって読取述語が変わるテーブルでは、判断の後に委譲元から行が見えなくなると、承認が起きない | GAP-08 の申し送り | 未着手（APP-01 などのテンプレートで、委譲元が全状態を読める形にする） | |
+| BUG-50 | P2 | まとめて待たせたファイル保存トリガの発火（最長 10 分）では、起動する時点で workflow プリンシパルの閲覧を確かめ直さない。待っている間に委譲を外すと、起動した run の入力に file_id・actor が載る（その run の `storage.read` 自体は失敗する） | `retry_pending_firings` | 未着手 | |
+| BUG-51 | P3 | 必須の文字の欄が空のときに止める確認（D-43）は、有効化と対話の起動の前にしか効かない。この変更より前に有効化した版では、schedule / event の run が空のまま起動しうる | `launch_delegated` | 未着手（RunLauncher の SkipReason に種類を足す必要がある） | |
+| BUG-52 | P1 | AI エージェントの Web の宛先の判定で、ノードの `*.H` を、天井の完全一致ホスト `H` の内側と誤って判定する。保存時の検証と実行時の判定の両方をすり抜けるので、ノード設定が天井を広げてしまう（PIT-79） | `ir/validate/agent.rs:61-66` | 直した | |
+| BUG-53 | P1 | 承認待ちの run の実行主体（起動した本人・委譲元）がテーブルを読めなくなっても、承認が取り下げにならない（拾うのは委譲が外れた場合だけ）。担当者が承認すると行は進むのに、run は期限まで待つ | `relay_data.rs:438-455`・`relay_approval.rs` | 直した | |
+| BUG-54 | P2 | 判断 API が早い段階で断った判断（editor が無い・行が見えない・行が動いた）に、`workflow.approval.decide` の Deny 監査が残らない。また見えない行の承認でも、「決まった」「期限切れ」「選択肢の誤り」を 404 より先に返してしまう | `routes/approvals.rs:505-543` | 直した | |
+| BUG-55 | P1 | 受信箱の 1 ページ目の 50 件がすべて本人に見えない承認だと、「承認待ちはありません」と出て続きに辿り着けない。件数も、500 行で打ち切ると 0 になる。壊れたテーブルの承認が 1 件あるだけで、受信箱と件数がまるごと 5xx になりうる | `routes/approvals.rs:367-435`・`approvals/page.tsx` | 直した | |
+| BUG-56 | P1 | 画面に返す結果の無害化（`neutralize_fences`）が、`\r` だけの行末と、情報文字列の文字参照・バックスラッシュエスケープを取りこぼす。そのため、操作を持つ図を描かせうる | `crates/yui/src/lib.rs:272-330` | 直した | |
+| BUG-57 | P1 | 外から来た文章（画面に返す結果・AI エージェントの回答）にある `//evil.example/...` が内部リンク扱いになり、外部リンクに添えるはずのホスト名が付かない | `prompt-kit/markdown.tsx:343` | 直した | |
+| BUG-58 | P1 | 外部 API の応答に反射した secret の平文を伏せる処理（T0）が、次の形を取りこぼす: JSON のキー、エスケープされた形（1MB を超える本文や JSON でない本文）、%エンコードした形、前後の空白を落とした形 | `nodes/capability_ai.rs`・`secrets/src/redact.rs` | 直した | |
+| BUG-59 | P2 | 承認を待つブロックの「受信箱に出す列」に、テーブルに無い列が残っても画面に出ず、外せない。保存時の誤りも欄に出ない | `forms-approval.tsx`（ShowFieldsField） | 直した | |
+| BUG-60 | P2 | モデル欄の「組織の既定に従う」の行の目印（data-testid）が、id が `default` のモデルの行と衝突する（実スタックの E2E で見つけた） | `model-field.tsx`・`model-list.tsx` | 直した | |
+| BUG-61 | P1 | 承認ノードの保存時の照合が、マスクしない全体のテーブル定義を使っている。テーブルの owner でない編集者でも、受信箱に出す列・担当者の列・判断の行き先に任意の名前を書いて保存すると、返る誤りの違いから、読めない列の存在・種別・状態の一覧を探れる（データ基盤の「無い列と読めない列は区別できない」に反する） | `api/src/workflow_catalog.rs`（approval_tables） | 直した | |
+| BUG-62 | P1 | 待ち行列の昇格（`promote_queued_runs`）で 1 つのワークフローが誤ると、`?` で全体を返す。そのため残りのワークフロー（他のテナントのものを含む）の昇格が止まり、読めない `ir_snapshot` の run も先頭に居座り続ける（main からある不備） | `run/store/limits.rs` | 直した | |
+| BUG-63 | P2 | 2 回目で足した結合テスト（`trigger_firing_it`）が、`ir_snapshot` が空の queued の run を大量に作って片付けない。同じ DB を使う他のテストや手元のサーバの昇格を壊す（手元の DB に 11,000 件残り、サーバのログに 5 秒ごとに警告が出ていた） | `workflow-engine/tests/trigger_firing_it.rs:402` | 直した | |
+| BUG-64 | P3 | 設定パネルの `Field` の中の Input・Textarea・Select に、欄の見出しが名前として付いていない（数値の欄だけは 2 回目で直した）。読み上げで欄を区別できず、E2E も placeholder で欄を探している | `config-panel` の `Field` | 未着手 | |
+| BUG-65 | P3 | 承認ノードの保存時の誤りの文言「列 X はこのテーブルにありません」が、読めない列にも返る（BUG-61 の直しで区別しなくなったため）。web は owner でない人向けに言い換えているが、AI の作成と API の生の応答には元の文言が出る | `ir/validate/approval.rs` | 未着手（「このテーブルに無いか、読めない列です」に揃える） | |
+| BUG-66 | P3 | 古い結合テストにも、行を片付けないものが残っている。`storage_it` の改名のテストは `ir_snapshot` が空の queued の run を、`claim_it` は空の running の run を残す。`workflow_approval_it` はテナント `default` で動くので、手元の DB で流すと手元のサーバと同じテナントに待ちの run が残る | `storage/tests/storage_it.rs:5345`・`claim_it.rs`・`workflow_approval_it.rs` | 未着手 | |
+| BUG-67 | P3 | web は、受信箱に出す列に状態の列を入れると「状態の列は選べません」と赤字で出す。しかし保存時の照合（V4）は、状態の列を受け付ける | `forms-approval.tsx` | 未着手（どちらかに揃える） | |
+| BUG-68 | P1 | テーブルの一覧 API（`GET /data/tables`）は 200 件で打ち切る。エディタの設定パネルは、この一覧から束縛済みのテーブルを探す。そのため束縛したテーブルが最初の 200 件に入らないと、欄が空になる。承認ブロックでは「承認するテーブル」が空欄になり、担当者は「先にテーブルを選んでください」と出て、進める状態はテキスト欄になる（実スタックの目視で見つけた。手元の DB のテーブルは 1,602 件） | `routes/data.rs:93`・`forms-data.tsx`（useDataTables） | 直した（一覧に無い束縛済みの id は 1 件を取って足す） | |
+| BUG-69 | P3 | 管理画面のモデル設定では、保存すると「保存しました」の通知が先に出る。読み直しが終わると、そのあいだに打った値が上書きされる。E2E（`admin-console.spec.ts:8`）が時々落ちる原因でもある（main からある競合） | `admin/ai-models-view.tsx`（save → load） | 直した（読み直してから知らせる） | |
 
 ## 5. 不足機能
 
@@ -182,14 +210,14 @@ GAP-01〜05・18・20 は §3〜§4 の不具合と同じものなので、こ�
 | ID | 優先度 | 内容 | 主に効く APP | 状態 |
 | --- | --- | --- | --- | --- |
 | GAP-06 | P0 | ワークフローから人に知らせる手段が無い（`notify.send` は予約、通知一覧の画面はモック） | 01・02・05・06・09・11・12 | 今回は見送り（D-2） |
-| GAP-07 | P0 | データ変更トリガ（作成・更新・状態遷移）と data の `wait(event)` が無い（roadmap では Task 13.14） | 01・02・05・11・12 | 前倒し（D-1）・設計中 |
-| GAP-08 | P1 | 承認待ち（`human.approval`）・期限・多段承認が無い | 01・05 | 前倒し（D-1）・設計中 |
-| GAP-09 | P1 | ミニアプリの画面に run の結果（出力・失敗理由）が返らない。アプリだけを共有された人に結果を返す経路も無い | 02・07・11・12 | 前倒し（D-3）・設計中 |
+| GAP-07 | P0 | データ変更トリガ（作成・更新・状態遷移）と data の `wait(event)` が無い（roadmap では Task 13.14） | 01・02・05・11・12 | 入れた（作成・更新・状態遷移のトリガと data の `wait(event)`。委譲元の見え方で発火し、一括取込では発火しない。自分の書込と循環は因果の鎖で止める）。エディタのきっかけで選べるのはテーブルと遷移先の状態だけで、遷移元・変更された列の選択は未着手 |
+| GAP-08 | P1 | 承認待ち（`human.approval`）・期限・多段承認が無い | 01・05 | 入れた（行に束縛した `human.approval`・受信箱・期限・取り下げ・受付の突合）。多段承認は承認ノードを並べて組む。実行履歴に担当者名を出すのは未着手 |
+| GAP-09 | P1 | ミニアプリの画面に run の結果（出力・失敗理由）が返らない。アプリだけを共有された人に結果を返す経路も無い | 02・07・11・12 | 入れた（`workflow.reply`。ミニアプリと会話のボタンで起動した run の結果を、押した本人にだけ返す） |
 | GAP-10 | P1 | Yui app の部品の不足（ファイル添付・ユーザー／部署・テーブルの行の選択） | 01・04・05・07・11 | D-19 待ち |
 | GAP-11 | P1 | ミニアプリ編集画面で保存ビュー（data_views）を束ねられない。ワークフローの版を上げる操作も無い | 全部 | 未着手 |
 | GAP-12 | P1 | エディタに input_schema（入力項目）の編集 UI が無い。画面の `as` 名との突き合わせも無い | interactive 全部 | 編集 UI は直した（キーを変えると参照も追随する）。画面の `as` 名との突き合わせは未着手 |
 | GAP-13 | P1 | `llm.invoke` の構造化出力（`output_schema`）が無い（ir.md §7.3 にあるが未実装） | 02・04・05・07・09・10 | 未着手 |
-| GAP-14 | P1 | PDF・Word の本文を読めない（`doc.read` を `rag::SearchService::read_document` の上に作る案） | 04・05・07・09 | 未着手 |
+| GAP-14 | P1 | PDF・Word の本文を読めない（`doc.read` を `rag::SearchService::read_document` の上に作る案） | 04・05・07・09 | 未着手（AI エージェントの道具 `doc.read` は 2 回目で入れた） |
 | GAP-15 | P1 | 発火時刻・相対日付・週月の丸めが無い（schedule のペイロードは Null） | 03・06・08・11 | 未着手 |
 | GAP-16 | P1 | 自然キーでの upsert と加算更新が無い | 06・08・10 | 未着手 |
 | GAP-17 | P1 | 実行した本人を `$from` で参照できない（`run` は `{run_id, tenant_id}` だけ） | 01・11 | 未着手 |
@@ -225,6 +253,7 @@ GAP-01〜05・18・20 は §3〜§4 の不具合と同じものなので、こ�
 | GAP-39 | P2 | ワークフローエディタの操作: 複数選択・コピー／貼り付け・接続の妥当性の事前検査（`isValidConnection`）・エッジの付け替え・キーボード操作（Esc・Ctrl+A など）・未接続ノードが入口として走る落とし穴 | 未着手 |
 | GAP-40 | P1 | ファイルを扱うフローの部品: `csv.patch` の base_rev を出力から取れない、`csv.query` の rows が文字列の 2 次元配列だけ、xlsx・Shift_JIS 非対応、有効化ダイアログでファイルを選べない。`csv.write` の content は文字列か base64 しか CSV として扱わず、`csv.query` の出力 `{columns, rows}` を渡すと JSON の文字列がそのまま .csv に保存される | 有効化ダイアログでファイルを選べるようにした。残りは未着手 |
 | GAP-41 | P2 | 誤りの文言が利用者向けでない（ミニアプリの 409 が「API 409」、503 が「結果を確かめられませんでした」、入力の誤りが `/amount` のような JSON Pointer、ワークフローの LLM エラーが英語の原文） | ワークフローの LLM エラーは直した（日本語にし、原文はログへ）。残りは未着手 |
+| GAP-42 | P2 | エディタのテーブルの選択は、一覧 API の先頭 200 件からしか選べない（名前で探す手段が無い）。束縛済みのテーブルの表示は BUG-68 で直した | 未着手 |
 
 ## 6. 新機能
 
@@ -449,7 +478,7 @@ GAP-01〜05・18・20 は §3〜§4 の不具合と同じものなので、こ�
 | D-28 | 画面に返す結果（GAP-09）: 新ノード `workflow.reply`（「結果を画面に返す」・ir_version を上げない）で宣言する／結果の保持は run 履歴の保持期間に従う（別の場所へ写さない）／結果に入った操作を持つ図（app・ask・plan）は表示専用に無効化する／会話のボタンから起動した run の結果は押した本人だけに見せる | このとおり | **推奨どおり承認**（2026-10-25） |
 | D-29 | agent.invoke（BUG-6）の安全方針: 書込の道具は v1 では提示しない（書込は後段のノードで行う）／`web.fetch` の宛先は管理者が決める天井（`workflow.agent.web_allowlist`）の部分集合だけ（天井が空なら提示しない）／`code.run` は独立の同意（予約の `sandbox.exec`）／`allowed_tools` の省略は道具なし／保存済みの定義は ir_version を上げずに自然文として読む／同時実行数をプロセス内で抑える | このとおり | **推奨どおり承認**（2026-10-25） |
 | D-30 | モデルの解決（BUG-12）の細則: 明示したモデルが後で無効になったら fail-closed／組織がモデル選択を禁じているときはワークフローでもモデルを指定させない／本人専用モデル（ChatGPT プラン）はワークフローの解決から外す／ミニアプリは省略時だけ解決し、明示モデルは置き換えない | このとおり | **推奨どおり承認**（2026-10-25） |
-| D-31 | 既存の閲覧の範囲（GAP-09 の調査で発見）: ワークフローの viewer が、他人が起動した interactive run の入力と step 出力（その人の権限で読んだデータ）を読める。続けるか | 別の Issue で扱う（GAP-09 は待たずに進める） | **推奨どおり承認**（2026-10-25） |
+| D-31 | 既存の閲覧の範囲（GAP-09 の調査で発見）: ワークフローの viewer が、他人が起動した interactive run の入力と step 出力（その人の権限で読んだデータ）を読める。続けるか | 別の Issue で扱う（GAP-09 は待たずに進める） | **推奨どおり承認**（2026-10-25）。Issue #917 を作った（2026-10-26） |
 | D-32 | 正本の改訂: 上の設計に伴う ir.md（§6・§7.3・§7.4・§7.8・§8・§9）・engine.md（パラメータ解決・待機中の run の数え方）・data-platform.md §9.2（run 入力に値を載せる）・design.md（トレイト表・モデルカタログ）・miniapp-platform.md の改訂を、実装の PR に提案として含める | 含める（human がレビューで確かめる） | **推奨どおり承認**（2026-10-25） |
 | D-33 | **トレイト境界**: エンジンに `EventWaitGate`（`wait(event)` を起こす前に、run の実行主体がイベントの対象を読めるかを確かめる口）を足した。実装は api 側の `SavedFileGate`（StorageService の `get_metadata_annotated` で viewer を確かめ、監査を残す）。BUG-27 の must 修正でレビュー担当が入れた | 承認する（既存の差し替えトレイト 6 種には触れていない。外すとテストが落ちることを確かめた） | **承認**（2026-10-25） |
 | D-34 | BUG-14 の範囲: ir.md §3.3 は型の合わない比較をすべて `expr_type_error` とする。実装は大小比較（lt・lte・gt・gte）だけを失敗にし、eq・in・contains などの型違いと、左辺が配列の大小比較は偽のまま | ir.md を実装に合わせて改訂する（data 側と共通の意味論表に揃える） | **推奨どおり承認**（2026-10-25） |
@@ -473,6 +502,18 @@ GAP-01〜05・18・20 は §3〜§4 の不具合と同じものなので、こ�
 | D-52 | FEAT-1（決定モデル）の判断 H1〜H12・H14・H15（§12 と付録 B） | H1 (a)・H2 (a)・H3 (c)・H4 (a)・H5 (b)・H6 (a)・H7 (c)・H8 (a)・H9 (a)・H10 先に承認・H11 (a)・H12 (a)・H14 SCOPE_FREE_APIS に入れる（認可の語彙）・H15 (a) validate の応答に `node_ports` を足す（API の追加） | **推奨どおり承認**（2026-10-25） |
 | D-53 | D-10（AI 作成の閉ループ）の判断 HD-1〜7（§12 と付録 B） | HD-1 (a) テーブルの改訂・アプリの改訂・試運転だけ承認・HD-2 (b)・HD-3 (a) crates/yui の表から生成・HD-4 (c) 既定 24 手・HD-5 (a) 約 $23 を配る・HD-6 (a) 実データで試運転・HD-7 (a) 開いている画面＋右のパネル | **推奨どおり承認**（2026-10-25） |
 | D-54 | GAP-30（評価ハーネス）の判断 1〜7（§12 と付録 B） | 1 は前提が消えた（`target/debug/shiki-server` は第 1 弾のビルドで上書き済み）。修正前の版（V0 = `81a9899b`）は別の worktree でビルドし直す。2 は中継で済み。3 (a)・4 (a)・5 (a)・6 (a)・7 (a) | **推奨どおり承認**（2026-10-25） |
+| D-55 | **トレイト境界**: `NodePorts::data_approval_target`（既定実装つき）と戻り値の公開型 `ApprovalTarget` を足した（GAP-08）。承認済みの D-21〜23・33 に含まれない。設計（付録 A「既存の `data_get` で行を読む」）には戻せない。`data_get` の `DataRecord` には、状態の列の識別・FSM の遷移・列の種別（user_ref / role_ref）が無く、停止時の `approval_not_decidable` と担当者の列の解決ができないため | 承認する（既定実装つきで、差し替えトレイト 6 種と OpenFGA には触れない）。別案は、`data.get` の出力に状態と FSM の行き先を足す | |
+| D-56 | **トレイト境界**: chat の `WorkflowCatalogSource` に `catalog_for(ctx, ir)` を足した（既定実装つきで、中身は `catalog` を呼ぶだけ）。`emit_workflow` が保存 API と同じく、承認のテーブルを IR から引いて V4 を効かせるため（レビューの should の修正） | 承認する | |
+| D-57 | `FsmStore::approval_target` は、テーブルの viewer に「いまの状態から FSM で進める状態の一覧」を返す。返すのは状態名だけで、actor 述語と遷移の定義の本文は返さない。既存の遷移 API と `allowed_transitions` は editor を要求するので、それより弱い主体に遷移の辺を見せることになる | 認める（委譲元が viewer だけのワークフロー、たとえば APP-05 の書類判定でも、承認を置けるようにするため） | |
+| D-58 | AI エージェントの道具 `doc.read` のスコープ: 予約されていた `doc.read` を解禁して使った（設計 HD-3 の推奨 (ii)）。もう一つの案はミニアプリの前例に倣う (i) `storage.read`。保存済みの定義の宣言に影響するので、早めに決めたい | (ii) のまま（本文の抽出は、生のファイルの読取とは別の能力として、同意画面で区別できる） | |
+| D-59 | AI エージェントの Web の天井 `workflow.agent.web_allowlist` が未設定のとき、`workflow.http_allowlist` に戻る（設計どおり）。そのため、`http.request` 用に広い許可を持つ環境では、AI の `web.fetch` もその許可を継ぐ | 戻さない。未設定なら `web.fetch` を提示しない（D-29 の「天井が空なら提示しない」と揃える。間接プロンプトインジェクションの出口を広げない・PIT-79） | |
+| D-60 | BUG-34（input_schema の並び）の直し方: (a) input_schema に注記のキーワード `x-order: ["title", "amount"]` を足し、エディタ・実行のダイアログ・ミニアプリのフォームをその順に並べる (b) エディタの layout に順を持つ (c) IR の列を json 型にする | (a)（(b) は画面の外で使えない。(c) は影響が大きすぎる） | |
+| D-61 | D-30 の細部 2 点: 本人専用モデルを、ミニアプリの省略時の解決からも外した／明示したモデルには、組織の `default_effort` を付けない（現状維持） | このまま（実装済み） | |
+| D-62 | 承認待ちの途中で実行主体の委譲・権限が外れたとき、承認を取り下げ（withdrawn）として決めた（理由 `actor_unavailable` を監査に残す）。取り下げの出口の後続ノードは委譲なしで走り、各チョークポイントの認可で失敗する | 取り下げの出口へは進めず、run を `actor_unavailable` で失敗させる（後続が中途半端に走らない。実行履歴に理由が出る） | |
+| D-63 | **差し替えトレイトの型**: `LlmError::UsageLimitExceeded`（月次の上限の超過を permanent にする）を足すか。`LlmProvider` の誤りの型（公開の enum）を変えることになる。いまは retryable の unavailable に写していて、`max_attempts`（既定 1）で止まる | 今回は入れない | |
+| D-64 | 正本との乖離: engine.md §11.3 は「step の output は記録時にレダクトする」と書くが、実装はレダクトしない（外部 API の応答に反射した secret の平文だけを T0 で伏せる。BUG-58） | 別の Issue にして、記録時のレダクトを実装するか、正本を直すかを決める | |
+| D-65 | 待ち行列の昇格（BUG-62 の直し）では、固定した IR を読めない queued の run を failed（`internal`）で終わらせる。ローリングデプロイの途中で古い版のリーダーが新しい版の IR を読めないと（`WorkflowIr` は deny_unknown_fields）、その run を誤って永久に失敗させる。直す前は、昇格全体が止まっていた | `ir_version` が自分の知っている版より新しい IR は失敗させず、そのワークフローだけを飛ばす（新しい版のリーダーが拾う）。知っている版で読めないものだけを失敗にする | |
+| D-66 | 承認の件数を数え切れず、数えた分が 0 件のとき（走査の上限に達した）のバッジの出し方 | 「…」を出し、読み上げは「承認（承認待ちがあるかもしれません）」とする（実装済み。1 件以上なら「N+」） | |
 
 ## 9. 検証環境 runbook
 
@@ -522,6 +563,12 @@ bash .claude/skills/pr/scripts/dev-up.sh
 - secrets が dev/compose とも配線されていない。`http.request` のシークレット参照を試すときは `SHIKI__SECRETS__MASTER_KEY_FILE`（32 バイト）と `SHIKI__WORKFLOW__HTTP_ALLOWLIST` を足す。
 - `smoke-bff.sh` は API=:8080・REDIRECT_URI=:8080 が前提で、dev-up の構成（:3000）では使えない。
 - チャットの生成が 429 で再試行されると、適用済みの文書編集がもう一度走る（#889）。
+- `sqlx::migrate!` は migration のファイルが増えても作り直されない（build.rs の rerun-if-changed が無い）。新しい migration を足した後に古いテストの実行ファイルが残っていると、`VersionMissing(108)` で全件が落ちる。流す前に `migrate!` を含む `.rs` を touch する（shiki-server の `crates/api/src/main.rs` も同じ）。
+- `crates/api/tests/app_platform_http.rs` は、固定の名前のマニフェスト（`http-expense` など）を作って片付けない。同じ DB で 2 回目を流すと 409 で落ちる。ゲートは新しい DB（例: `create database shiki_gates2`）で流す。手元のサーバの DB（`shiki`）とも分けられる。
+- native 起動では、ミニアプリの B1 のゲートウェイが 18091 で動く（compose の 8091 と衝突させないため）。`miniapp-b1.spec.ts` は `E2E_B1_ORIGIN=http://localhost:18091` を付けて流す。
+- `next dev` は、初めて開いたページをその場でコンパイルする。このマシンでは数秒かかり、`toHaveURL` などの 5 秒待ちが初回だけ落ちることがある（`sidebar-mobile`・`admin-console`）。2 回目で通れば環境の揺れとみなす。
+- 画面の左下に浮いている ⚡ は、Next.js 15 が開発時だけ出す静的ルートの目印で、本番には出ない（BUG-40 は不具合ではなかった）。
+- 手元のマシンは 2 CPU・RAM 10GB・swap 4GB。ビルドとテストが重なると swap が細る。E2E までは Keycloak を止めておける（`docker compose stop keycloak`。`dev-up.sh` が起動し直す）。
 
 ## 10. 作業ログ
 
@@ -542,6 +589,48 @@ bash .claude/skills/pr/scripts/dev-up.sh
 - **第 1 弾の確かめ（親）**: rebase 後に CI と同じゲートを流した。fmt・file-size・machete は通過。clippy は rebase で main 側（#912）と重なった `run_agent_mode` が行数の上限を 1 行超えたので、提示ツールの組み立てを `base_tools` にまとめて直した（`430f60fe`）。テストは engine・api・chat・gui で 1,007 件通過（結合テストの環境変数あり）、直したあとの chat は 220 件通過。web は install・gen:api・lint・next build が通過。
   - 実スタック（native・stub）で E2E を流した: `workflows-editor`・`workflows-enable` の 21 件（新規 16 件を含む）と、回帰の `ai-workflow`・`workflows-history`・`mini-apps` の 5 件がすべて通過。
   - 目視（PC 1440px・スマホ 390px）: キャンバス、AI に聞くの差し込み・モデル欄、CSV を集計の設定、条件、入力項目の表、スマホのシートで確かめた。スマホは横にはみ出さない（scrollWidth 390）。見つけたのは BUG-40・41。入力項目の並びが辞書順に変わる BUG-34 も画面で再現した。
+
+### 2026-10-26
+
+- **修正の 2 回目**（§11 の設計 4 本の実装と、1 回目の残り。84 コミット・未 PR）。担当 7 人を 1 人ずつ順番に回した（同じファイルに触れるうえ、マシンが 2 CPU のため）。そのあと Rust・web の独立レビューを当て、修正担当が指摘を直した。
+  - 担当の内訳: (1) モデル省略時の解決（BUG-12・33・37）(2) データ変更トリガ（GAP-07・BUG-36・D-47・D-49）(3) ファイル保存トリガの循環と上書き保存（BUG-28・29・39・D-38）(4) 承認待ち（GAP-08）(5) 画面に返す結果（GAP-09・BUG-19・20）(6) `agent.invoke`（BUG-6）(7) 1 回目の残り（BUG-30〜32・34・35・38・40・41・D-34〜37・40〜43）。
+  - migration は 0105〜0108 の 4 本（データ変更の発火・まとめて起動・承認の台帳・reply_nodes）。
+  - レビューの must は 3 件。web の 2 件（比べる値を打っている途中で「0.08」が 8 に潰れる件、BUG-19 の読み直し漏れ）は直した。Rust の 1 件は、承認されていないトレイトの追加（`NodePorts::data_approval_target`）で、D-55 として判断を仰ぐ。
+  - BUG-34 は直せないと分かった（D-60）。
+- **確かめ（親）**: CI と同じゲートを流した。fmt・file-size・migration・machete・clippy（ワークスペース全体）・web（install・gen:api・lint・next build）は通過。
+  - テストは、最初は 2 種類が落ちた。どちらも DB の使い回しが原因で、2 回目の変更によるものではない（§9.4 に罠として書いた）。
+    1. `app_platform_http` の 3 件が 409。1 回目のゲートで作った固定の名前のマニフェストが残っていた。
+    2. `policy_threat_it` が `VersionMissing(108)` で全件落ちた。`migrate!` を埋め込んだ古い実行ファイルが残っていた。
+  - 新しい DB で流し直すと、10 クレート・156 本の実行ファイルで 2,318 件が通過した（DB に承認 13 件・run 3,154 件が残り、結合テストが実際に走ったことを確かめた）。`policy_threat_it` は、CI の data-strategies ジョブと同じ 10 通りの読取経路で 31 件ずつ通過した。
+  - 修正担当の 15 コミットを、読むだけで再レビューした（Rust の修正・web の修正・新しい公開面のセキュリティの 3 観点。指摘 1 件ごとに反証を当てた）。本物と確かめたのは must 1 件（BUG-52）・should 9 件（BUG-53〜59 ほか）。反証で崩れたのは 1 件。
+  - 実スタック（native・stub）で、2 回目の E2E を 8 本 55 件流した。45 件が通過し、10 件が落ちた。内訳はモデル欄の目印の衝突 5 件（BUG-60）・スマホ幅のログインの手順 2 件（テスト側）・承認ブロックの出口 1 件・古い記録の結果の読み直し 1 件・AI エージェントの設定欄 1 件。
+  - 再レビューの指摘と E2E の失敗は、Rust → web の順に直し、読むだけの確かめを当てた。修正は Rust 12 コミット・web 12 コミット。web 担当は E2E の失敗 10 件を 5 つの原因に分けて直し、どの修正も外すとテストが落ちることを確かめた。確かめ役の指摘は should 1 件だった（owner でない編集者に、読めない列を「テーブルに無い列」と断定する）。2 コミットで直した。
+  - 最後の担当の報告から、次の 3 件を見つけて直した。
+    - BUG-61: 承認の保存時の照合で、読めない列があるかどうかが分かってしまう。データ基盤の「無い列と読めない列は区別できない」に反するので、must として扱った。
+    - BUG-62: 待ち行列の昇格が、1 件の誤りで全体まで止まる。
+    - BUG-63: テストが空の IR の run を残す。手元のサーバのログに、5 秒ごとに警告が出ていた。
+    - あわせてバッジの「…」（D-66）と、状態の列が読めないときの案内も直した（7 コミット）。確かめ役の指摘は 0 件だった。
+  - 親の最終ゲート（新しい DB `shiki_gates3`）は、fmt・file-size・migration・machete・clippy（ワークスペース全体）がすべて通った。
+    - テストは、11 クレート・159 本の実行ファイルで 2,370 件が通った（落ち 0）。
+    - `policy_threat_it` は、10 通りの読取経路で 31 件ずつ通った。
+    - web の build も通った。
+    - 生成物（`crates/gui/bindings`）に出た import の拡張子だけの差分は戻した。
+  - 実スタックで E2E を流した。
+    - 2 回目の spec 8 本は、63 件中 62 件が通った。落ちた 1 件（`workflows-editor.spec.ts:440`）は、単独で流し直すと通った。
+    - 回帰の 17 本は、53 件中 49 件が通った。落ちた 4 件の内訳は次のとおり。
+      - B1 のポート（native では 18091）が 1 件。`E2E_B1_ORIGIN` を付けると通った。
+      - `next dev` の初回コンパイル待ちが 2 件。流し直すと通った。
+      - main からある保存後の読み直しの競合が 1 件（BUG-69。読み直してから知らせる形に直し、4 回続けて通ることを確かめた）。
+  - 目視（PC 1440px・スマホ 390px）で、次の画面を確かめた。
+    - 受信箱と判断のシート、スマホのドロワ（3 列 2 行・件数のバッジ）
+    - 承認を待つブロック、AI に聞くのモデル欄（先頭に「組織の既定に従う（現在: Auto…）」）
+    - AI エージェントの道具の一覧（天井が空なので Web ページを読む道具は選べない）、結果を返すブロック
+    - スマホは横にはみ出さない（scrollWidth 390）。
+    - 見つけたのは BUG-68 で、束縛したテーブルが一覧の 200 件の外だと、承認ブロックの欄が空になる。直して、確かめ役の should 1 件（手で打つ途中の id で取りに行く）も直した。
+    - 1 回目の BUG-40 は、Next.js が開発時だけ出す目印によるもので、不具合ではなかった。
+  - BUG-68 を直したあと、web の lint・build を流し直して通った。E2E を流し直すと、2 回目の spec 9 本（BUG-68 の spec を含む）は 66 件すべて通った。回帰の 17 本は 53 件中 51 件が通った。落ちた 2 件のうち、`sidebar-mobile` は流し直すと通った。もう 1 件の `admin-console:8` は BUG-69 だった。
+- Issue: D-31 を #917 にした。
+- 実 LLM はまだ使っていない（累計 $0.0009）。
 
 ## 11. 前倒し機能の設計（第 1 弾・2026-10-25）
 設計 4 本を書き、それぞれに反証レビュー（セキュリティ・実現性・業務の 3 観点で誤りを探す）を当てた。4 本とも「要修正」で、指摘を反映した改訂版を正とする。全文は付録 A。human の判断は §8 の D-21〜D-32。
