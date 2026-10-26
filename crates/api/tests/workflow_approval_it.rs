@@ -1186,3 +1186,257 @@ async fn reconcile_settles_transitions_that_raced_the_suspend() {
     assert_eq!(out["rev"], row.rev + 1);
     assert_eq!(env.step(run, "done").await.0, "succeeded");
 }
+
+impl Env {
+    /// run の承認（台帳の id と状態）。
+    async fn approval_of(&self, run: Uuid) -> (Uuid, String) {
+        sqlx::query_as(
+            "SELECT approval_id, status FROM workflow_approval WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(TENANT)
+        .bind(run)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+
+    /// 承認の決着の監査（status と reason）。無ければ `None`。
+    async fn resolve_audit(&self, approval: Uuid) -> Option<Value> {
+        sqlx::query_scalar(
+            "SELECT metadata FROM audit_log WHERE tenant_id = $1 \
+               AND action = 'workflow.approval.resolve' AND object_id = $2 ORDER BY id DESC LIMIT 1",
+        )
+        .bind(TENANT)
+        .bind(approval.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .unwrap()
+    }
+}
+
+/// 承認待ちの行が消えたら取り下げの出口へ進み、台帳を withdrawn にして決着を監査に残す
+/// （relay の `withdraw_on_deletes`）。削除のイベントが来ても行がまだ実行主体に見えるなら取り下げない。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deleting_the_row_withdraws_its_approval() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.expense_table().await;
+    let wf = env.enable(table, None).await;
+    let gone = env.submit(table, "取りやめた出張", &env.bob).await;
+    let kept = env.submit(table, "続ける出張", &env.bob).await;
+    env.settle().await;
+    let gone_run = env.run_of(wf, gone).await;
+    let kept_run = env.run_of(wf, kept).await;
+    assert_eq!(env.step(gone_run, "ok").await.0, "waiting_event");
+    assert_eq!(env.step(kept_run, "ok").await.0, "waiting_event");
+
+    // 申請者が行を削除する。続けて、まだある行にも削除のイベント（同じ形・行だけ違う）が届いたことにする。
+    let row = env
+        .data
+        .get_record(&env.alice, table, gone, None)
+        .await
+        .unwrap();
+    env.data
+        .delete_record(&env.alice, table, gone, row.rev, None)
+        .await
+        .unwrap();
+    let forged: i64 = sqlx::query_scalar(
+        "INSERT INTO storage_event_outbox (org, tenant_id, node_id, version, op, actor, trace_id, payload) \
+         SELECT org, tenant_id, node_id, version, op, actor, trace_id, \
+                jsonb_set(payload, '{record_id}', to_jsonb($3::text)) \
+         FROM storage_event_outbox \
+         WHERE tenant_id = $1 AND payload->>'event_type' = 'data.record.changed' \
+           AND payload->>'change' = 'delete' AND payload->>'record_id' = $2 \
+         ORDER BY id DESC LIMIT 1 RETURNING id",
+    )
+    .bind(TENANT)
+    .bind(gone.to_string())
+    .bind(kept.to_string())
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert!(forged > 0);
+    env.settle().await;
+
+    let (st, ports, out) = env.step(gone_run, "ok").await;
+    assert_eq!(
+        (st.as_str(), ports),
+        ("succeeded", vec!["withdrawn".to_string()])
+    );
+    assert_eq!(out.unwrap()["decision"], "withdrawn");
+    let (gone_id, status) = env.approval_of(gone_run).await;
+    assert_eq!(status, "withdrawn");
+    let audit = env.resolve_audit(gone_id).await.expect("決着の監査");
+    assert_eq!(audit["status"], "withdrawn");
+    assert_eq!(audit["run_id"], json!(gone_run));
+
+    // まだ見える行は取り下げない（受信箱にも出続ける）。
+    assert_eq!(env.step(kept_run, "ok").await.0, "waiting_event");
+    assert_eq!(env.approval_of(kept_run).await.1, "pending");
+    assert!(env.item_for(&env.bob, kept).await.is_some());
+    assert!(env.item_for(&env.bob, gone).await.is_none());
+}
+
+/// 承認待ちの途中で実行主体（委譲元の委譲）が外れたら、受付の突合でも判断の遷移を受けた relay でも
+/// 取り下げとして決め、理由を監査に残す（受信箱で判断されたのに run が期限まで待つ食い違いを作らない）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn approvals_are_withdrawn_when_the_delegation_is_revoked() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.expense_table().await;
+    let wf = env.enable(table, None).await;
+    let unreconciled = env.submit(table, "研修の申込", &env.bob).await;
+    let decided = env.submit(table, "書籍の購入", &env.bob).await;
+    env.settle().await;
+    let first = env.run_of(wf, unreconciled).await;
+    let second = env.run_of(wf, decided).await;
+    assert_eq!(env.step(first, "ok").await.0, "waiting_event");
+    assert_eq!(env.step(second, "ok").await.0, "waiting_event");
+    let item = env
+        .item_for(&env.bob, decided)
+        .await
+        .expect("bob の受信箱に出る");
+
+    // 委譲元（alice）が委譲を外した（再同意で外れたのと同じ台帳の状態）。
+    sqlx::query(
+        "UPDATE workflow_delegation SET revoked_at = now() WHERE tenant_id = $1 AND workflow_id = $2",
+    )
+    .bind(TENANT)
+    .bind(wf)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+
+    // 受付の突合: 委譲が無いので行を読めない。待ち続けずに取り下げる。
+    sqlx::query(
+        "UPDATE workflow_approval SET reconciled_at = NULL WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(TENANT)
+    .bind(first)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    env.settle().await;
+    let (st, ports, _) = env.step(first, "ok").await;
+    assert_eq!(
+        (st.as_str(), ports),
+        ("succeeded", vec!["withdrawn".to_string()])
+    );
+    let (first_id, status) = env.approval_of(first).await;
+    assert_eq!(status, "withdrawn");
+    let audit = env.resolve_audit(first_id).await.expect("決着の監査");
+    assert_eq!(audit["reason"], "actor_unavailable");
+
+    // 判断の遷移: bob は受信箱から判断できる（行は bob の権限で承認へ進む）が、実行主体にはその遷移が
+    // 見えない。期限まで待たせず、取り下げとして決める。
+    let (st, body) = env
+        .decide(
+            &env.bob,
+            item["approval_id"].as_str().unwrap(),
+            json!({ "decision": "approve", "expected_rev": item["record"]["rev"] }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    env.settle().await;
+    let (st, ports, _) = env.step(second, "ok").await;
+    assert_eq!(
+        (st.as_str(), ports),
+        ("succeeded", vec!["withdrawn".to_string()])
+    );
+    let (second_id, status) = env.approval_of(second).await;
+    assert_eq!(status, "withdrawn");
+    let audit = env.resolve_audit(second_id).await.expect("決着の監査");
+    assert_eq!(audit["reason"], "actor_unavailable");
+}
+
+/// AI（chat の emit_workflow）が書いた承認も、保存 API と同じ照合（V4）を通る。見えないテーブル・FSM で
+/// 管理しないテーブル・無い状態・無い列は保存できない（材料を IR から引くカタログ・`catalog_for`）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn emit_workflow_checks_approvals_like_the_save_api() {
+    use agent_core::Tool;
+
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let fsm_table = env.expense_table().await;
+    let plain = env
+        .data
+        .create_table(
+            &env.alice,
+            NewDataTable {
+                name: format!("plain-{}", Uuid::new_v4().simple()),
+                schema: expense_schema(None, &env.keiri),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    // dave には見えないテーブル（alice の表）。
+    let hidden = env
+        .data
+        .create_table(
+            &env.alice,
+            NewDataTable {
+                name: format!("hidden-{}", Uuid::new_v4().simple()),
+                schema: expense_schema(None, &env.keiri),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    let source = api::workflow_catalog::ApiWorkflowCatalogSource::new(
+        None,
+        None,
+        api::workflow_catalog::WorkflowModels::new(None, Vec::new()),
+    )
+    .with_data(Arc::clone(&env.data));
+    let tool = chat::EmitWorkflowTool::new(Arc::new(env.workflows.clone()), Arc::new(source));
+    // [承認の行き先, 受信箱に出す列, 担当者の列]
+    let ir = |table: Uuid, [to, show, assignee]: [&str; 3]| {
+        json!({ "ir": {
+            "ir_version": 1, "name": format!("ai-approval-{}", Uuid::new_v4().simple()),
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "ok", "type": "human.approval", "params": {
+                "title": "承認", "record": { "table": table.to_string(), "id": { "$from": "input", "path": "/id" } },
+                "assignees": [{ "field": assignee }], "approve": { "to": to }, "show_fields": [show]
+            } }],
+            "edges": []
+        } })
+    };
+    let ok = ["approved", "title", "approver"];
+    let cases = [
+        (&env.alice, plain, ok, "ir.unknown_table"),
+        (&env.dave, hidden, ok, "ir.unknown_table"),
+        (
+            &env.alice,
+            fsm_table,
+            ["accepted", "title", "approver"],
+            "ir.unknown_state",
+        ),
+        (
+            &env.alice,
+            fsm_table,
+            ["approved", "note", "approver"],
+            "ir.unknown_field",
+        ),
+        (
+            &env.alice,
+            fsm_table,
+            ["approved", "title", "title"],
+            "ir.bad_assignee",
+        ),
+    ];
+    for (who, table, params, code) in cases {
+        let out = tool.call(who, ir(table, params), None).await.unwrap();
+        assert!(out.is_error, "{code}: {}", out.content);
+        assert!(out.content.contains(code), "{code}: {}", out.content);
+        assert!(out.workflow_refs.is_empty());
+    }
+    let out = tool
+        .call(&env.alice, ir(fsm_table, ok), None)
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert_eq!(out.workflow_refs.len(), 1);
+}
