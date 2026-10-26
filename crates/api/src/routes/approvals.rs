@@ -6,7 +6,8 @@
 //! - 判断は、承認者本人の `AuthContext` で `FsmStore::transition(expected_rev)` を呼ぶ（ワークフローの権限で
 //!   遷移しない）。actor 述語・行の可視性・テーブルの editor・rev はすべて data が判定する（判定の正は 1 か所・
 //!   テーブル画面から遷移しても同じ承認が決まる）。run を進めるのは、遷移の outbox を受けた relay。
-//! - 担当者でない・存在しない・行が見えないは、どれも同じ 404（存在の手がかりを出さない）。
+//! - 担当者でない・存在しない・行が見えないは、どれも同じ 404（存在の手がかりを出さない）。判断も、行が本人に
+//!   見えるかを台帳の状態（決まった・期限切れ）・選択肢・コメントの検査より前に確かめる。
 //!
 //! 判断に添えるコメントは、遷移の後の rev の鍵で遷移の前に置き、遷移に失敗したら外す（遷移と同時に起床しても
 //! 拾える・失敗した判断のコメントを残さない）。
@@ -502,6 +503,33 @@ pub async fn decide_approval(
         .await
         .map_err(internal)?
         .ok_or(ApiError::NotFound)?;
+    let to = row.choice(req.decision).map(|c| c.to.clone());
+    let comment = req
+        .comment
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty());
+    let audit = || DecisionAudit {
+        id,
+        row: &row,
+        decision: req.decision,
+        to: to.as_deref(),
+        comment: comment.is_some(),
+        trace: trace.as_deref(),
+    };
+    // 行が本人に見えるか・いまの状態を、台帳の状態と選択肢の判定より前に読む（担当でない・存在しない・
+    // 行が見えないは同じ 404。見えない行の承認が決まったか・選択肢・コメントの要否を誤りから読ませない）。
+    let now = match state
+        .fsms
+        .allowed_transitions(&ctx, row.table_id, row.record_id, trace.as_deref())
+        .await
+    {
+        Ok(now) => now,
+        Err(e) => {
+            audit().record(&state, &ctx, Decision::Deny).await;
+            return Err(decision_error(e));
+        }
+    };
     if !row.decidable {
         let expired = row.status == "pending" && row.deadline.is_some_and(|d| d <= Utc::now());
         return Err(if expired || row.status == "expired" {
@@ -521,11 +549,6 @@ pub async fn decide_approval(
             "この承認ではその判断はできません",
         )
     })?;
-    let comment = req
-        .comment
-        .as_deref()
-        .map(str::trim)
-        .filter(|c| !c.is_empty());
     if choice.comment == ApprovalComment::Required && comment.is_none() {
         return Err(approval_error(
             StatusCode::BAD_REQUEST,
@@ -540,7 +563,13 @@ pub async fn decide_approval(
             "コメントは 2000 字以内で書いてください",
         ));
     }
-    still_at_from_state(&state, &ctx, &row, trace.as_deref()).await?;
+    // 行がいまも停止時の状態か（違えば 409）。判断の外で動いた行は、relay が取り下げる前の数秒でも判断させない
+    // （rev を合わせれば、ほかの状態から判断の行き先へ進めてしまい、行は判断の状態なのに run は取り下げになる）。
+    // 読んだときの rev と expected_rev が違えば遷移が rev の不一致で止まるので、状態だけ見ればよい。
+    if now.current.as_deref() != Some(row.from_state.as_str()) {
+        audit().record(&state, &ctx, Decision::Deny).await;
+        return Err(already_decided());
+    }
     let next_rev = req.expected_rev.saturating_add(1);
     if let Some(body) = comment {
         let put = store(&state)
@@ -578,20 +607,7 @@ pub async fn decide_approval(
     } else {
         Decision::Deny
     };
-    let entry = AuditEntry {
-        action: AuditAction::WorkflowApprovalDecide,
-        object_type: "workflow_approval",
-        object_id: &id.to_string(),
-        decision,
-        trace_id: trace.as_deref(),
-        metadata: json!({
-            "decision": req.decision.as_str(), "to": choice.to, "run_id": row.run_id,
-            "table_id": row.table_id, "record_id": row.record_id, "comment": comment.is_some(),
-        }),
-    };
-    if let Err(e) = state.audit.record(&ctx, entry).await {
-        tracing::warn!(error = %e, "承認の判断の監査に失敗");
-    }
+    audit().record(&state, &ctx, decision).await;
     match result {
         Ok(rec) => Ok((
             StatusCode::ACCEPTED,
@@ -625,24 +641,37 @@ fn already_decided() -> ApiError {
     )
 }
 
-/// 行がいまも停止時の状態か（違えば 409）。判断の外で動いた行は、relay が取り下げる前の数秒でも判断させない
-/// （rev を合わせれば、ほかの状態から判断の行き先へ進めてしまい、行は判断の状態なのに run は取り下げになる）。
-/// 読んだときの rev と expected_rev が違えば遷移が rev の不一致で止まるので、状態だけ見ればよい。
-async fn still_at_from_state(
-    state: &AppState,
-    ctx: &AuthContext,
-    row: &ApprovalRow,
-    trace: Option<&str>,
-) -> Result<(), ApiError> {
-    let now = state
-        .fsms
-        .allowed_transitions(ctx, row.table_id, row.record_id, trace)
-        .await
-        .map_err(decision_error)?;
-    if now.current.as_deref() == Some(row.from_state.as_str()) {
-        Ok(())
-    } else {
-        Err(already_decided())
+/// 判断の監査（`workflow.approval.decide`）の材料。遷移の結果（Allow / Deny）と、遷移の前に断った判断
+/// （行が見えない 404・テーブルの editor が無い・状態の列が読めない 403・判断の外で行が動いた 409）の Deny を
+/// 同じ形で残す（data の遷移の監査と trace_id で突き合わせられる）。
+struct DecisionAudit<'a> {
+    id: Uuid,
+    row: &'a ApprovalRow,
+    decision: ApprovalDecisionKind,
+    /// 判断の行き先（この承認に無い判断なら `None`）。
+    to: Option<&'a str>,
+    comment: bool,
+    trace: Option<&'a str>,
+}
+
+impl DecisionAudit<'_> {
+    /// 監査を書く（書込の失敗は警告に留める・判断の応答は変えない）。
+    async fn record(&self, state: &AppState, ctx: &AuthContext, decision: Decision) {
+        let entry = AuditEntry {
+            action: AuditAction::WorkflowApprovalDecide,
+            object_type: "workflow_approval",
+            object_id: &self.id.to_string(),
+            decision,
+            trace_id: self.trace,
+            metadata: json!({
+                "decision": self.decision.as_str(), "to": self.to, "run_id": self.row.run_id,
+                "table_id": self.row.table_id, "record_id": self.row.record_id,
+                "comment": self.comment,
+            }),
+        };
+        if let Err(e) = state.audit.record(ctx, entry).await {
+            tracing::warn!(error = %e, "承認の判断の監査に失敗");
+        }
     }
 }
 

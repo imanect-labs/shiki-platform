@@ -1477,6 +1477,125 @@ async fn approvals_of_a_user_run_are_withdrawn_when_the_launcher_loses_the_table
     assert_eq!(audit["run_id"], json!(second));
 }
 
+impl Env {
+    /// 判断の監査（`workflow.approval.decide`）の (decision, metadata)（その人の分だけ・古い順）。
+    async fn decide_audits(&self, approval: &str, user: &AuthContext) -> Vec<(String, Value)> {
+        let rows: Vec<(String, sqlx::types::Json<Value>)> = sqlx::query_as(
+            "SELECT decision, metadata FROM audit_log WHERE tenant_id = $1 \
+               AND action = 'workflow.approval.decide' AND object_id = $2 AND actor = $3 ORDER BY id",
+        )
+        .bind(TENANT)
+        .bind(approval)
+        .bind(&user.principal.id)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap();
+        rows.into_iter().map(|(d, m)| (d, m.0)).collect()
+    }
+}
+
+/// 遷移の前に断った判断（テーブルの editor が無い 403・行が見えない 404）にも、遷移の失敗と同じ形の
+/// `workflow.approval.decide` の Deny を残す。見えない行の承認は、この承認に無い判断・コメントの要否・
+/// もう決まったかより先に 404 で断る（担当でない・存在しないと同じ・承認の形と状態を読ませない）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn decisions_refused_before_the_transition_are_audited() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.expense_table().await;
+    let wf = env.enable(table, None).await;
+    let mine = env.submit(table, "出張旅費", &env.bob).await;
+    let others = env.submit(table, "備品の購入", &env.dave).await;
+    env.settle().await;
+    let item = env
+        .item_for(&env.bob, mine)
+        .await
+        .expect("bob の受信箱に出る");
+    let id = item["approval_id"].as_str().unwrap().to_string();
+    let rev = item["record"]["rev"].as_i64().unwrap();
+    let run = env.run_of(wf, mine).await;
+
+    // 経理（carol・ロールの担当者）をテーブルの viewer だけにする: 行は見えるが遷移できない（403）。
+    let object = env.alice.ns().data_table(&table.to_string());
+    env.fga
+        .delete_tuple(&env.carol.subject(), Relation::Editor, &object)
+        .await
+        .unwrap();
+    env.fga
+        .write_tuple(&env.carol.subject(), Relation::Viewer, &object)
+        .await
+        .unwrap();
+    let (st, body) = env
+        .decide(
+            &env.carol,
+            &id,
+            json!({ "decision": "approve", "expected_rev": rev }),
+        )
+        .await;
+    assert_eq!(
+        (st, body["code"].clone()),
+        (StatusCode::FORBIDDEN, json!("not_allowed")),
+        "{body}"
+    );
+    let audits = env.decide_audits(&id, &env.carol).await;
+    assert_eq!(audits.len(), 1, "{audits:?}");
+    assert_eq!(audits[0].0, "deny");
+    assert_eq!(audits[0].1["decision"], "approve");
+    assert_eq!(audits[0].1["to"], "approved");
+    assert_eq!(audits[0].1["run_id"], json!(run));
+    assert_eq!(audits[0].1["table_id"], json!(table));
+    assert_eq!(audits[0].1["record_id"], json!(mine));
+
+    // bob を dave の申請の承認の担当者にも足す（担当者は IR の作者が書ける）。その行は bob に見えない。
+    let other_run = env.run_of(wf, others).await;
+    let (other_id, _) = env.approval_of(other_run).await;
+    sqlx::query(
+        "INSERT INTO workflow_approval_assignee (tenant_id, approval_id, kind, subject) \
+         VALUES ($1, $2, 'user', $3)",
+    )
+    .bind(TENANT)
+    .bind(other_id)
+    .bind(&env.bob.principal.id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    let other = other_id.to_string();
+    // この承認に無い判断（差し戻し）・コメント必須の判断（却下）でも、400 ではなく 404。
+    for body in [
+        json!({ "decision": "return", "expected_rev": 1 }),
+        json!({ "decision": "reject", "expected_rev": 1 }),
+    ] {
+        let (st, resp) = env.decide(&env.bob, &other, body).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{resp}");
+    }
+    let audits = env.decide_audits(&other, &env.bob).await;
+    assert_eq!(
+        audits.iter().map(|(d, _)| d.as_str()).collect::<Vec<_>>(),
+        ["deny", "deny"]
+    );
+    assert_eq!(audits[0].1["to"], Value::Null, "この承認に無い判断");
+    assert_eq!(audits[1].1["to"], "rejected");
+    // 決まった後も 409 ではなく 404（見えない行の承認が決まったかを読ませない）。
+    let row = env
+        .data
+        .get_record(&env.dave, table, others, None)
+        .await
+        .unwrap();
+    env.fsms
+        .transition(&env.dave, table, others, "approved", row.rev, None)
+        .await
+        .unwrap();
+    env.settle().await;
+    assert_eq!(env.approval_of(other_run).await.1, "approved");
+    let (st, resp) = env
+        .decide(
+            &env.bob,
+            &other,
+            json!({ "decision": "approve", "expected_rev": row.rev + 1 }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "{resp}");
+}
+
 /// AI（chat の emit_workflow）が書いた承認も、保存 API と同じ照合（V4）を通る。見えないテーブル・FSM で
 /// 管理しないテーブル・無い状態・無い列は保存できない（材料を IR から引くカタログ・`catalog_for`）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
