@@ -166,7 +166,7 @@ test("束縛済みのテーブルが一覧に無くても、承認・data.*・�
   const approveTo = panel.getByRole("combobox", { name: "承認したときに進める状態" });
   await expect(approveTo).toContainText("承認");
   await expect(panel.getByRole("combobox", { name: "却下したときに進める状態" })).toContainText("却下");
-  await expect(panel.getByPlaceholder("先にテーブルを選んでください")).toHaveCount(0);
+  await expect(panel.getByRole("textbox", { name: /に進める状態/ })).toHaveCount(0);
   await expect(panel.getByRole("combobox", { name: "相手 1 の列" })).toContainText("承認者");
   await expect(panel.getByRole("button", { name: "件名", pressed: true })).toBeVisible();
   await expect(panel.getByRole("button", { name: "金額", pressed: true })).toBeVisible();
@@ -253,7 +253,7 @@ test("束縛済みのテーブルを読めない（無い・削除された）�
   const panel = page.getByRole("complementary", { name: "ブロックの設定" });
   await expect(panel.getByRole("combobox", { name: "承認するテーブル" })).toContainText("読めないテーブル");
   await expect(panel.getByTestId("workflow-table-note")).toHaveText(NOTE);
-  await expect(panel.getByPlaceholder("先にテーブルを選んでください")).toHaveCount(0);
+  await expect(panel.getByRole("textbox", { name: /に進める状態/ })).toHaveCount(0);
   await expect(panel.getByText("先にテーブルを選んでください")).toHaveCount(0);
   // 承認・却下の進める状態と、相手 1 の列。
   await expect(panel.getByText("テーブルを読めないため選べません")).toHaveCount(3);
@@ -285,7 +285,7 @@ test("テーブル ID を手で打つ途中では 1 件ずつ取りに行かず�
   await canvas.getByText("受け付ける").first().click();
   const panel = page.getByRole("complementary", { name: "ブロックの設定" });
   await panel.getByRole("button", { name: "前の結果から指定する" }).click();
-  const input = panel.getByPlaceholder("テーブル ID");
+  const input = panel.getByRole("textbox", { name: "対象のテーブル", exact: true });
   await input.fill("");
   await input.pressSequentially("1234.abcd-ef");
   await expect(input).toHaveValue("1234.abcd-ef");

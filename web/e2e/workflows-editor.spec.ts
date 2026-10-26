@@ -97,7 +97,10 @@ test("エディタ: 意味論の切替で結果が変わり得る条件を、開
   await expect(page.getByTestId("node-warnings")).toContainText("配列値に contains");
 
   // 名前を変えて保存しても止まらず、保存の通知に警告の件数が出る。
-  await page.getByPlaceholder("条件分岐").fill("タグの判定（確認済み）");
+  await page
+    .getByRole("complementary", { name: "ブロックの設定" })
+    .getByRole("textbox", { name: "ブロック名" })
+    .fill("タグの判定（確認済み）");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.getByText(/保存しました（v2）・確認が必要な条件が 1 件あります/).first()).toBeVisible({
     timeout: 15_000,
@@ -347,7 +350,7 @@ test("設定パネル: ブロック名の連続入力は Undo 1 回で入力前�
   await openChainWithoutLayout(page);
   await page.getByTestId("rf__node-a").click();
   const panel = page.getByRole("complementary", { name: "ブロックの設定" });
-  const name = panel.getByPlaceholder("スクリプト", { exact: true });
+  const name = panel.getByRole("textbox", { name: "ブロック名" });
   await name.click();
   await name.press("End");
   await name.pressSequentially("の一次確認です");
@@ -470,7 +473,7 @@ test("既定の値: 追加した条件は入力全体を path なしで指し、
   await canvas.getByLabel("次のブロックを追加").first().click();
   await page.getByRole("button", { name: /^AI に聞く/ }).click();
   await expect(panel.getByText("入力してください")).toBeVisible();
-  await panel.getByPlaceholder("例: 次の文章を 3 行で要約してください").fill("今日の予定を 3 行でまとめてください");
+  await panel.getByRole("textbox", { name: "AI への指示", exact: true }).fill("今日の予定を 3 行でまとめてください");
   await expect(panel.getByText("入力してください")).toHaveCount(0);
 });
 
@@ -910,7 +913,7 @@ test("モデル: AI に聞くのモデルを一覧から選び、答えの長さ
   await expect(button).toContainText(target.label);
 
   // 答えの長さの上限は数で入れる（空欄で標準）。
-  await panel.getByPlaceholder("例: 1000").fill("800");
+  await panel.getByRole("spinbutton", { name: "答えの長さの上限（トークン・省略可）" }).fill("800");
 
   await saveFlow(page);
   const ir = await savedIr(page, id);
@@ -1084,7 +1087,7 @@ test("出口を消す設定: 振り分けの行き先を消す・失敗時をフ
 
   // 失敗したときを「フローを失敗にする」に戻すと、エラー時の出口のつながりが消える。
   await page.getByTestId("rf__node-t").click();
-  await panel.getByRole("combobox").filter({ hasText: "エラー用の出口に流す" }).click();
+  await panel.getByRole("combobox", { name: "失敗したとき" }).click();
   await page.getByRole("option", { name: "フローを失敗にする" }).click();
   await expect(error).toHaveCount(0);
   await page.locator(".react-flow__pane").click({ position: { x: 24, y: 24 } });

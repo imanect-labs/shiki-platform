@@ -63,7 +63,7 @@ test("データ変更トリガ: テーブルを選んで保存すると table �
   // きっかけを「できごと」→「テーブルに行が追加されたとき」にし、テーブルを選ぶ。
   await canvas.getByText("手動で実行").first().click();
   const triggerPanel = page.getByRole("complementary", { name: "きっかけの設定" });
-  await triggerPanel.getByRole("combobox").first().click();
+  await triggerPanel.getByRole("combobox", { name: "きっかけの種類" }).click();
   await page.getByRole("option", { name: "できごとが起きたとき" }).click();
   await triggerPanel.getByRole("combobox", { name: "できごと" }).click();
   await page.getByRole("option", { name: "テーブルに行が追加されたとき" }).click();

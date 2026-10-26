@@ -46,7 +46,10 @@ test("有効化: スケジュール設定→同意→有効→停止", async ({ 
   // トリガ（きっかけ）ノードをクリック → 設定パネルでスケジュールに切替。
   const canvas = page.locator(".react-flow");
   await canvas.getByText("手動で実行").first().click();
-  await page.getByRole("combobox").first().click();
+  await page
+    .getByRole("complementary", { name: "きっかけの設定" })
+    .getByRole("combobox", { name: "きっかけの種類" })
+    .click();
   await page.getByRole("option", { name: "スケジュール" }).click();
   // cron プリセット（毎日 9:00 既定）の次回実行プレビューが出る。
   await expect(page.getByText(/次回の実行/)).toBeVisible({ timeout: 10_000 });

@@ -459,7 +459,7 @@ test("承認を待つブロック: テーブルに無い受信箱の列・担当
   await expect(panel.getByText("ユーザー・部署の列ではありません: title")).toBeVisible();
 
   // ほかの欄を直して保存すると、サーバの検証（ir.unknown_field）で止まり、理由が受信箱に出す列の欄に出る。
-  await panel.getByPlaceholder("例: 経費申請の承認").fill("経費申請の承認（課長）");
+  await panel.getByRole("textbox", { name: "受信箱の件名" }).fill("経費申請の承認（課長）");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await expect(panel.getByText("列 ghost はこのテーブルに無いか、読めない列です")).toBeVisible({ timeout: 15_000 });
 
@@ -580,7 +580,7 @@ test("承認を待つブロック: 受信箱に出す列に状態の列があれ
   await expect(stray).toContainText("状態の列は選べません: status");
 
   // ほかの欄を直すと検証が走り、サーバも状態の列を止める（無い列の誤りとは別の言い方）。理由が欄に出る。
-  await panel.getByPlaceholder("例: 経費申請の承認").fill("経費申請の承認（課長）");
+  await panel.getByRole("textbox", { name: "受信箱の件名" }).fill("経費申請の承認（課長）");
   await expect(
     panel.getByText("列 status は状態の列なので、受信箱に出す列には選べません（状態は受信箱に別に出ます）"),
   ).toBeVisible({ timeout: 15_000 });
@@ -727,7 +727,7 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   // ほかの欄を直すと検証が走る。サーバは bob の見え方で照合するので、読めない金額・別の承認者も、無い ghost と
   // 同じ誤りで返す。サーバの文言もどちらとも言わない（BUG-65）ので、欄の下にはそのまま出し、注記も断定に変えない。
   const SHOW_GHOST = "列 ghost はこのテーブルに無いか、読めない列です";
-  await panel.getByPlaceholder("例: 経費申請の承認").fill("給与の申請の承認（部長）");
+  await panel.getByRole("textbox", { name: "受信箱の件名" }).fill("給与の申請の承認（部長）");
   await expect(panel.getByText(SHOW_GHOST)).toBeVisible({ timeout: 15_000 });
   await expect(
     panel.getByText("担当者の列 secret_approver はこのテーブルに無いか、読めない列です"),
@@ -858,7 +858,7 @@ test("承認を待つブロック: 状態の列を読めないテーブルでは
   // テーブルを選んだ後なので「先にテーブルを選んでください」とは言わず、状態の名前を当て推量で書く欄も出さない。
   const UNREADABLE = "このテーブルの状態の列を読めません";
   await expect(panel.getByText(UNREADABLE, { exact: true })).toHaveCount(2);
-  await expect(panel.getByPlaceholder("先にテーブルを選んでください")).toHaveCount(0);
+  await expect(panel.getByRole("textbox", { name: /に進める状態/ })).toHaveCount(0);
   await expect(panel.getByRole("textbox", { name: "承認したときに進める状態" })).toHaveCount(0);
   await expect(panel.getByRole("combobox", { name: "承認したときに進める状態" })).toHaveCount(0);
   // 両方にある列（件名・承認者）は残る。
