@@ -2309,3 +2309,137 @@ async fn approval_checks_do_not_tell_unreadable_columns_from_missing_ones() {
         )]
     );
 }
+
+impl Env {
+    /// 本人（`user`）宛ての承認の、テーブルだけを別の表（`table`）に差し替えた写しを 1 件足す（台帳の担当者・
+    /// テーブルは IR の作者が書けるので、本人に見えない表の承認が受信箱の台帳に並ぶことがある）。写しの id。
+    async fn approval_on_table(&self, run: Uuid, user: &AuthContext, table: Uuid) -> Uuid {
+        sqlx::query(
+            "INSERT INTO step_execution \
+             SELECT (jsonb_populate_record(NULL::step_execution, \
+                     to_jsonb(s) || jsonb_build_object('step_path', s.step_path || '-hidden'))).* \
+             FROM step_execution s \
+             JOIN workflow_approval a ON a.tenant_id = s.tenant_id AND a.run_id = s.run_id \
+                                     AND a.step_path = s.step_path \
+             WHERE a.tenant_id = $1 AND a.run_id = $2 AND a.step_path NOT LIKE '%-%'",
+        )
+        .bind(TENANT)
+        .bind(run)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+        let id: Uuid = sqlx::query_scalar(
+            "INSERT INTO workflow_approval \
+             SELECT (jsonb_populate_record(NULL::workflow_approval, to_jsonb(a) || jsonb_build_object( \
+                     'approval_id', gen_random_uuid(), 'step_path', a.step_path || '-hidden', \
+                     'table_id', $3::uuid, 'created_at', now()))).* \
+             FROM workflow_approval a \
+             WHERE a.tenant_id = $1 AND a.run_id = $2 AND a.step_path NOT LIKE '%-%' \
+             RETURNING approval_id",
+        )
+        .bind(TENANT)
+        .bind(run)
+        .bind(table)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO workflow_approval_assignee (tenant_id, approval_id, kind, subject) \
+             VALUES ($1, $2, 'user', $3)",
+        )
+        .bind(TENANT)
+        .bind(id)
+        .bind(&user.principal.id)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    /// `user` がテーブル `table` について残した Deny の監査の件数。
+    async fn table_denials(&self, user: &AuthContext, table: Uuid) -> i64 {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND actor = $2 \
+               AND object_id = $3 AND decision = 'deny'",
+        )
+        .bind(TENANT)
+        .bind(&user.principal.id)
+        .bind(table.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+}
+
+/// 受信箱の一覧・件数は、他人が書いた台帳の候補を本人に見える分へ絞るだけなので、見えないテーブルの承認が
+/// 並んでいても、読み直すたびに Deny の監査を増やさない（件数は 60 秒ごととフォーカス時に読まれる・BUG-43）。
+/// 本人がその承認を開いたときは、従来どおり 404 で断り Deny を残す。見える承認は同じテーブルの行をまとめて
+/// 読み、見えない行・状態が動いた行は出さない。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inbox_reads_do_not_audit_tables_the_user_cannot_see() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.expense_table().await;
+    let wf = env.enable(table, None).await;
+    let first = env.submit(table, "出張旅費", &env.bob).await;
+    let second = env.submit(table, "会議費", &env.bob).await;
+    let hidden_row = env.submit(table, "備品の購入", &env.dave).await;
+    env.settle().await;
+    // bob に見えない表（alice の表・bob には共有しない）の承認を、bob 宛てに 1 件並べる。
+    let hidden = env
+        .data
+        .create_table(
+            &env.alice,
+            NewDataTable {
+                name: format!("hidden-{}", Uuid::new_v4().simple()),
+                schema: expense_schema(None, &env.keiri),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    let run = env.run_of(wf, first).await;
+    let unseen = env.approval_on_table(run, &env.bob, hidden).await;
+    // bob に見えない行（dave の申請）の承認も bob 宛てに足す（同じ表の行のまとめ取りで落ちる）。
+    let hidden_run = env.run_of(wf, hidden_row).await;
+    let (hidden_approval, _) = env.approval_of(hidden_run).await;
+    sqlx::query(
+        "INSERT INTO workflow_approval_assignee (tenant_id, approval_id, kind, subject) \
+         VALUES ($1, $2, 'user', $3)",
+    )
+    .bind(TENANT)
+    .bind(hidden_approval)
+    .bind(&env.bob.principal.id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+
+    for _ in 0..3 {
+        let (st, count) = env.get(&env.bob, "/approvals/count").await;
+        assert_eq!(st, StatusCode::OK, "{count}");
+        assert_eq!(count, json!({ "count": 2, "more": false }));
+        let (st, body) = env.get(&env.bob, "/approvals").await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let mut ids: Vec<Value> = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["record"]["id"].clone())
+            .collect();
+        ids.sort_by_key(|v| v.to_string());
+        let mut want = vec![json!(first), json!(second)];
+        want.sort_by_key(|v| v.to_string());
+        assert_eq!(ids, want, "{body}");
+    }
+    assert_eq!(
+        env.table_denials(&env.bob, hidden).await,
+        0,
+        "一覧・件数の読み直しで Deny を残さない"
+    );
+    // 本人が開いた承認は 404 で断り、Deny を残す。
+    let (st, _) = env.get(&env.bob, &format!("/approvals/{unseen}")).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert!(env.table_denials(&env.bob, hidden).await >= 1);
+    env.forget_runs(wf).await;
+}

@@ -2,7 +2,9 @@
 //!
 //! - 一覧・件数・1 件は、台帳（`workflow_approval`）で本人か所属ロール宛ての保留中の承認を引き、**行を承認者
 //!   本人の `AuthContext` で data のチョークポイントを通して読み直して**、見える行で今の状態が停止時の状態の
-//!   ものだけを出す（二段 authz・見えない行は数えない）。出す列は担当者に読める列だけ（マスク後）。
+//!   ものだけを出す（二段 authz・見えない行は数えない）。出す列は担当者に読める列だけ（マスク後）。行は
+//!   テーブルごとに候補の id を 1 本のクエリで引く。一覧・件数は台帳の候補を絞るだけなので、見えないテーブルを
+//!   Deny の監査に残さない（本人が開いた 1 件は残す・BUG-43）。
 //! - 判断は、承認者本人の `AuthContext` で `FsmStore::transition(expected_rev)` を呼ぶ（ワークフローの権限で
 //!   遷移しない）。actor 述語・行の可視性・テーブルの editor・rev はすべて data が判定する（判定の正は 1 か所・
 //!   テーブル画面から遷移しても同じ承認が決まる）。run を進めるのは、遷移の outbox を受けた relay。
@@ -223,14 +225,25 @@ async fn my_roles(state: &AppState, ctx: &AuthContext) -> Result<Vec<String>, Ap
         .collect())
 }
 
+/// 台帳の行の読み方（見えないテーブルを Deny の監査に残すか）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reading {
+    /// 受信箱の一覧・件数: 他人（IR の作者）が書いた台帳の候補を、本人に見える分へ絞るだけ。見えない
+    /// テーブルは監査に残さず黙って落とす（件数を読み直すたびに Deny が増えない・BUG-43）。
+    Inbox,
+    /// 1 件の取得: 本人が開いた承認。判断ごとに本人が実行できるか（`FsmStore::allowed_transitions`）を添え、
+    /// 見えないテーブルは Deny の監査に残す。
+    Opened,
+}
+
 /// 台帳の行を、承認者本人の見え方で読み直した受信箱の項目にする（見えない・状態が動いたものは落とす）。
 ///
-/// `with_allowed` なら判断ごとに本人が実行できるか（`FsmStore::allowed_transitions`）を添える。
+/// 行はテーブルごとに候補の id を 1 本のクエリで引く（data のまとめ取り・行ごとの読取をしない・BUG-43）。
 async fn visible_items(
     state: &AppState,
     ctx: &AuthContext,
     rows: Vec<ApprovalRow>,
-    with_allowed: bool,
+    reading: Reading,
     trace: Option<&str>,
 ) -> Result<Vec<ApprovalItem>, ApiError> {
     let mut tables: Vec<Uuid> = Vec::new();
@@ -239,18 +252,16 @@ async fn visible_items(
             tables.push(r.table_id);
         }
     }
+    let with_allowed = reading == Reading::Opened;
     let mut seen: BTreeMap<Uuid, ApprovalItem> = BTreeMap::new();
     for table_id in tables {
-        let Some(table) = per_table(state.data.get_table(ctx, table_id, trace).await, table_id)?
-        else {
-            continue;
-        };
         let mine: Vec<&ApprovalRow> = rows.iter().filter(|r| r.table_id == table_id).collect();
         let ids: Vec<Uuid> = mine.iter().map(|r| r.record_id).collect();
-        let Some(records) = per_table(
-            state.data.get_records(ctx, table_id, &ids, trace).await,
-            table_id,
-        )?
+        let read = match reading {
+            Reading::Inbox => state.data.filter_visible_records(ctx, table_id, &ids).await,
+            Reading::Opened => opened_records(state, ctx, table_id, &ids, trace).await,
+        };
+        let Some(data::FilteredRecords { table, records }) = per_table(read, table_id)?.flatten()
         else {
             continue;
         };
@@ -342,6 +353,19 @@ async fn visible_items(
         .collect())
 }
 
+/// 本人が開いた承認の行を読む（見えないテーブルは data が Deny の監査に残して `Err(NotFound / Forbidden)`）。
+async fn opened_records(
+    state: &AppState,
+    ctx: &AuthContext,
+    table_id: Uuid,
+    ids: &[Uuid],
+    trace: Option<&str>,
+) -> Result<Option<data::FilteredRecords>, data::DataError> {
+    let table = state.data.get_table(ctx, table_id, trace).await?;
+    let records = state.data.get_records(ctx, table_id, ids, trace).await?;
+    Ok(Some(data::FilteredRecords { table, records }))
+}
+
 /// テーブル単位の読取の結果（見えない・権限が無い・確定的な誤りは、そのテーブルの項目を落とす `None`）。
 ///
 /// 一時障害（[`data::DataError::is_transient`]）だけを応答の誤りにする（壊れたテーブル 1 つで受信箱と件数が
@@ -413,7 +437,7 @@ pub async fn list_approvals(
         let n = rows.len();
         scanned += n;
         let last = rows.last().map(|r| cursor_of(r.created_at, r.approval_id));
-        items.extend(visible_items(&state, &ctx, rows, false, trace.as_deref()).await?);
+        items.extend(visible_items(&state, &ctx, rows, Reading::Inbox, trace.as_deref()).await?);
         let exhausted = (n as i64) < PAGE;
         if items.len() > page {
             // 1 ページ分を超えた: 50 件目の後ろから続ける（その後ろの行は次のページで読み直す）。
@@ -465,7 +489,7 @@ pub async fn count_approvals(
         let n = rows.len();
         scanned += n;
         after = rows.last().map(|r| cursor_of(r.created_at, r.approval_id));
-        count += visible_items(&state, &ctx, rows, false, trace.as_deref())
+        count += visible_items(&state, &ctx, rows, Reading::Inbox, trace.as_deref())
             .await?
             .len();
         if count > COUNT_CAP || (n as i64) < PAGE * 2 {
@@ -509,7 +533,7 @@ pub async fn get_approval(
         .map_err(internal)?
         .filter(|r| r.decidable)
         .ok_or(ApiError::NotFound)?;
-    visible_items(&state, &ctx, vec![row], true, trace.as_deref())
+    visible_items(&state, &ctx, vec![row], Reading::Opened, trace.as_deref())
         .await?
         .pop()
         .map(Json)
