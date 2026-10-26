@@ -263,9 +263,93 @@ pub fn extract_action_blocks(markdown: &str) -> Vec<ActionBlock> {
     out
 }
 
+/// 表示だけにする Markdown（外から来た文章）の中の図・表のフェンス（` ```ui `・` ```yui `・` ```data_grid `）を、
+/// すべて ` ```text ` に書き換える（ワークフローが画面に返した結果など・GAP-09）。
+///
+/// 閉じているか・入れ子（引用・箇条書きの中）か・エラーのある図かを問わず書き換える（操作を持つ図を偽のボタン
+/// として見せない・束ねていない表を描かない）。他の言語のコードブロックの中の行も書き換えるが、文字のまま
+/// 見せる場所なので害は無い（安全側）。正規表現に頼らず行頭を読む（失敗しても素通りさせない）。
+pub fn neutralize_fences(markdown: &str) -> String {
+    let mut out = String::with_capacity(markdown.len());
+    for (i, line) in markdown.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        match fence_to_neutralize(line) {
+            Some(end) => {
+                out.push_str(&line[..end]);
+                out.push_str("text");
+            }
+            None => out.push_str(line),
+        }
+    }
+    out
+}
+
+/// 書き換えるフェンスの開きなら、フェンスの文字の終わりの位置（その後ろの情報文字列を `text` にする）。
+fn fence_to_neutralize(line: &str) -> Option<usize> {
+    let b = line.as_bytes();
+    let mut i = 0;
+    // 行頭の空白・引用の印（>）・箇条書きの印（- * + / 1. 1)）を飛ばす。
+    loop {
+        while i < b.len() && matches!(b[i], b' ' | b'\t' | b'>') {
+            i += 1;
+        }
+        if i + 1 < b.len() && matches!(b[i], b'-' | b'*' | b'+') && matches!(b[i + 1], b' ' | b'\t')
+        {
+            i += 1;
+            continue;
+        }
+        let digits = b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if (1..=9).contains(&digits)
+            && i + digits + 1 < b.len()
+            && matches!(b[i + digits], b'.' | b')')
+            && matches!(b[i + digits + 1], b' ' | b'\t')
+        {
+            i += digits + 1;
+            continue;
+        }
+        break;
+    }
+    let ch = *b.get(i)?;
+    if ch != b'`' && ch != b'~' {
+        return None;
+    }
+    let run = b[i..].iter().take_while(|c| **c == ch).count();
+    if run < 3 {
+        return None;
+    }
+    let end = i + run;
+    let lang: String = line[end..]
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .collect::<String>()
+        .to_ascii_lowercase();
+    matches!(lang.as_str(), "ui" | "yui" | "data_grid" | "data-grid").then_some(end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neutralizes_every_figure_and_grid_fence() {
+        let md = "前置き\n```ui\napp 申請\nbutton 承認 -> workflow 経費\n```\n\n> ```yui:ask\n> ? q\n\n- ```data_grid\n  申請一覧\n\n1. ~~~~UI app\n```ui\nplan 書きかけ\n````DATA-GRID\n```text\nそのまま\n```";
+        let out = neutralize_fences(md);
+        assert_eq!(
+            out,
+            "前置き\n```text\napp 申請\nbutton 承認 -> workflow 経費\n```\n\n> ```text\n> ? q\n\n- ```text\n  申請一覧\n\n1. ~~~~text\n```text\nplan 書きかけ\n````text\n```text\nそのまま\n```"
+        );
+        // 書き換えた後は、操作を持つ図として読まれない。
+        assert!(extract_action_blocks(&out).is_empty());
+        // 図でないフェンス・2 文字のバッククォートは変えない。
+        assert_eq!(
+            neutralize_fences("``ui``\n```rust\nfn a() {}\n```"),
+            "``ui``\n```rust\nfn a() {}\n```"
+        );
+        assert_eq!(neutralize_fences("```uix\nx\n```"), "```uix\nx\n```");
+    }
 
     #[test]
     fn extracts_only_closed_action_blocks() {
