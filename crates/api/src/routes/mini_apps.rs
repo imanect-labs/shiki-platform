@@ -60,6 +60,9 @@ pub struct ResolvedMiniAppResponse {
     /// 使えない部品（壊れた任意のピン・BUG-17）。アプリは開けて、ここに挙がった部品だけが使えない。
     /// `path` が部品の位置（`skill`）、`message` が利用者向けの理由。
     pub unavailable: Vec<gui::GuiValidationError>,
+    /// 閲覧者本人がこのアプリを編集できる（アプリの editor 以上。共有で編集にした人を含む・BUG-18）。
+    /// 画面の出し分けだけに使う（保存は `PUT /mini-apps/{id}` が editor を改めて確かめる）。
+    pub can_edit: bool,
 }
 
 /// resolve クエリ（version 省略時は current）。
@@ -188,11 +191,23 @@ pub async fn resolve_mini_app(
         .map_err(map_gui_err)?;
     let body = serde_json::to_value(&resolved.body)
         .map_err(|e| ApiError::Internal(format!("mini_app body: {e}")))?;
+    // 編集できるか（表示の出し分けだけ）。保存（新しい版の追記）と同じ relation・同じ一貫性で確かめ、
+    // 共有で編集にした人にもボタンを出す（持ち主だけに出していた・BUG-18）。
+    let can_edit = state
+        .authz
+        .check(
+            &ctx.subject(),
+            authz::Relation::Editor,
+            &ctx.ns().artifact(&id.to_string()),
+            authz::Consistency::HigherConsistency,
+        )
+        .await?;
     Ok(Json(ResolvedMiniAppResponse {
         id: resolved.id,
         version: resolved.version,
         body,
         unavailable: resolved.unavailable(),
+        can_edit,
     }))
 }
 
