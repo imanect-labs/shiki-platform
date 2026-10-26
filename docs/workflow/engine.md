@@ -58,6 +58,9 @@ chat run と workflow run は「同じ run 抽象」（design §4.4.1・miniapp-
 | `step_execution` | step の正＝チェックポイント | PK(tenant_id, run_id, step_path) |
 | `run_event` | 追記ログ（UI/SSE/監査の材料） | PK(tenant_id, run_id, seq) |
 | `wait_subscription` | wait(event) の購読登録 | PK(tenant_id, run_id, step_path) |
+| `workflow_approval` | 承認待ち（human.approval）の受信箱の台帳 | PK(tenant_id, approval_id)・UNIQUE(tenant_id, run_id, step_path) |
+| `workflow_approval_assignee` | 承認を受信箱に出す相手（ユーザー・ロール） | PK(tenant_id, approval_id, kind, subject) |
+| `workflow_approval_comment` | 判断に添えたコメント（遷移の後の rev の鍵） | PK(tenant_id, approval_id, rev) |
 | `workflow_delegation` | 委譲の記録 | (tenant_id, workflow_id, delegator, scope, …) |
 | `concurrency_counter` | 3 階層同時実行カウンタ | PK(tenant_id, scope_kind, scope_key) |
 | `scheduler_lease` | リーダーリース | 単一行 CAS |
@@ -239,6 +242,50 @@ create index wait_subscription_event_idx on wait_subscription (tenant_id, source
 create index wait_subscription_record_idx on wait_subscription
     (tenant_id, source, (spec->'scope'->>'table'), (spec->'scope'->>'record'))
     where kind = 'event' and not fired;
+
+-- 承認待ち（human.approval・§9.6）の受信箱の台帳。run と一緒に消える（判断の証跡は監査と data の revision）。
+-- 担当者は「誰の受信箱に出すか」だけで、誰が承認できるかの正は FSM の actor 述語（OpenFGA の relation は増やさない）。
+create table workflow_approval (
+    tenant_id     text        not null,
+    approval_id   uuid        not null,          -- step の冪等キーから決める（再実行・再開で同じ）
+    org           text        not null,
+    workflow_id   uuid        not null,
+    run_id        uuid        not null,
+    step_path     text        not null,
+    node_id       text        not null,
+    table_id      uuid        not null,
+    record_id     uuid        not null,
+    title         text        not null,           -- 1〜120 字のリテラル（行の値は写さない）
+    instructions  text,                           -- 2000 字以内のリテラル
+    show_fields   text[]      not null default '{}',
+    decisions     jsonb       not null,           -- [{ kind, to, label, comment }]
+    from_state    text        not null,           -- 停止時の行の状態
+    suspend_rev   bigint      not null,           -- 停止時の行の rev（これ以下の遷移では起きない）
+    status        text        not null default 'pending',
+        -- pending | approved | rejected | returned | withdrawn | expired | cancelled
+    deadline      timestamptz,
+    decided_by    text, decided_at timestamptz, decided_to text, decided_rev bigint, comment text,
+    reconciled_at timestamptz,                    -- 受付の突合を済ませた時刻
+    created_at    timestamptz not null default now(),
+    updated_at    timestamptz not null default now(),
+    primary key (tenant_id, approval_id),
+    unique (tenant_id, run_id, step_path),
+    foreign key (tenant_id, run_id) references workflow_run (tenant_id, run_id) on delete cascade
+);
+create table workflow_approval_assignee (
+    tenant_id text not null, approval_id uuid not null,
+    kind text not null,                           -- user | role
+    subject text not null,
+    primary key (tenant_id, approval_id, kind, subject)
+);
+create table workflow_approval_comment (
+    tenant_id text not null, approval_id uuid not null,
+    rev bigint not null,                          -- 判断の遷移の後の rev
+    author text not null, decision text not null, -- approve | reject | return
+    body text not null,                           -- 2000 字以内
+    created_at timestamptz not null default now(),
+    primary key (tenant_id, approval_id, rev)
+);
 
 -- 委譲の記録。同意 UI・棚卸しの正（§6・§10）。
 create table workflow_delegation (
@@ -842,6 +889,35 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
 
 1. claim が +1 する（実行を 1 つ始めた）。
 2. 「この実行は試行として数えない」と決めた経路が、`ready` へ戻すのと**同一 UPDATE で** -1 する。該当は (a) 本節のリース失効回収＝ワーカーのクラッシュ、(b) `rate_limited` ＝並行上限の順番待ち（§8.2）。
+
+### 9.6 承認待ち（human.approval・GAP-08）
+
+承認は FSM で管理するテーブルの 1 行に束縛し、**判断は承認者本人の FSM 遷移**とする（ir.md §7.9）。エンジンはその行の
+`data.transition` を wait(event) の一種として待つ。
+
+- **停止**: 束縛した行を実行主体の権限で読み（data.get・scope 天井は data.read）、いまの状態（`from_state`）と rev
+  （`suspend_rev`）を残す。FSM にいまの状態から判断の行き先への遷移が無ければ `approval_not_decidable`（permanent）。
+  担当者（行のユーザー・部署の列は実行主体に読めること）を解決し、空なら `approval_no_assignee`。checkpoint の **同じ Tx**
+  で step を `waiting_event` にし、台帳・担当者・購読（`source = data.transition`・`spec = { scope: { table, record },
+  suspend_rev, approval: { approval_id, record_id, choices, on_timeout } }`）を書く。再実行・再開は同じ承認 id を保留中へ
+  戻して待ち直す。
+- **起床**（relay・§5.5 と同じ候補）: その行の遷移で `rev > suspend_rev` のものだけを、実行主体の見え方で受け取る。遷移先が
+  判断の状態ならその出口、それ以外は `withdrawn`。step の terminal 化と台帳の確定（`decided_by` は revision の `changed_by`）
+  を**同じ Tx**で行う（`wake_step_and_advance` の前段・後段の間に台帳を書く）。判断 API が添えたコメントは、遷移の後の rev・
+  遷移した人・判断の種別が一致するものだけを採る。テーブル画面・ミニアプリ・別のワークフローからの遷移でも同じ承認が決まる。
+- **受付の突合**（relay の tick・`reconciled_at IS NULL` の保留中）: 購読の commit より前に起きて配送済みになった遷移を、
+  実行主体の見え方で行を読み直して決める（いまの状態が `from_state` なら待ち続け、判断の状態ならその出口、それ以外・
+  見えない（消えた）なら `withdrawn`）。承認の依頼の監査（`workflow.approval.request`）もここで書く。
+- **行の削除**: outbox の削除を受けたら、実行主体の data.get が NotFound であることを確かめて `withdrawn` にする。
+- **期限**: `expire_due_waits` と同じ経路で台帳を `expired` にする（`on_timeout: continue` は `timeout` 出口・`fail` は run の
+  失敗）。受信箱は承認の期限と run の期限の早い方を過ぎたら出さず、判断 API は 409 で拒む。期限ちょうどに遷移した場合は、
+  run は時間切れへ進み行は判断の状態になり得る（後続の遷移が FSM で失敗して見える）。
+- **取消**: run の失敗・取消（`cancel_remaining_steps`・ドレイン）と同じ Tx で保留中の台帳を `cancelled` にする。
+- **受信箱**（`/approvals`）: 台帳で本人か所属ロール宛てで、run が実行中・step が待機中・期限前のものを引き、**行を承認者本人の
+  権限で読み直して**、見える行で今の状態が `from_state` のものだけを出す（見えない行は件数にも数えない・出す列はマスク後）。
+  判断 API は承認者本人の権限で `FsmStore::transition(expected_rev)` を呼ぶ（ワークフローの権限で遷移しない）。
+- **決着の監査**: `workflow.approval.resolve`（起床・取り下げ・期限切れ・system）・`workflow.approval.decide`（判断 API・承認者）。
+- 待機中の run は `max_parallel_runs` に数えない（§8.3）。
 
 ---
 

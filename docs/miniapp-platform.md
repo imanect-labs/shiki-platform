@@ -53,6 +53,8 @@ flowchart TB
 - 遷移の副作用は FSM から**すべて workflow-engine に委譲**する: 遷移コミット → outbox イベント → ワークフロートリガ。
 - **ワークフローが status を進めたいときも必ず通常の遷移 API を叩く**（ガード・認可を再評価）。
   エンジンに status を直接書かせて FSM の不変条件を破ってはならない。
+- **承認は FSM の遷移であり、ワークフローはそれを待って受信箱に出す**（`human.approval`・GAP-08）。誰が承認できるかの正は
+  FSM の actor 述語 1 か所で、担当者は受信箱に出す相手を決めるだけ（承認の権限の正を 2 か所に持たない・workflow ir.md §7.9）。
 
 ## 2. workflow-engine
 
@@ -115,6 +117,7 @@ jobq（自作 Postgres キュー）の延長＋状態機械として `crates/wor
 | `agent.invoke` ノード | サンドボックス（gVisor ティア既定・#346）で agent-core 起動 | ノード設定 ∩ 実行主体 ReBAC（下記） |
 | `llm.invoke` ノード | llm-gateway 直行（サンドボックスなし） | モデルカタログ・予算ガードレール |
 | `http.request` ノード | 外部 HTTP（egress allowlist 適用） | シークレット宛先束縛（§5）＋allowlist の AND |
+| `human.approval` ノード | テーブルの 1 行について担当者の判断を待って分岐する（受信箱 `/approvals`・workflow ir.md §7.9） | 判断は承認者本人の FSM 遷移（actor 述語）・行は実行主体の見え方で読む |
 
 **外部 SaaS コネクタは n8n 式のネイティブ実装をしない**。`http.request`＋シークレット参照を土台に、
 「Slack 通知」等は**それをラップした skill** として実装しスキルストアで配布する（first-party skill を少数公式提供）。

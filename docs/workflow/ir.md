@@ -221,6 +221,7 @@ IR のトップレベルは以下の形を取る。
 | `control.join` | `out` |
 | `control.map` | `out`（領域完了後・結果配列） |
 | `control.wait`（event, `on_timeout: continue`） | `out` / `timeout` |
+| `human.approval` | `approved` / `withdrawn` ＋ `rejected`（`reject` を指定したとき）・`returned`（`return` を指定したとき）・`timeout`（期限を決めて `on_timeout: continue` のとき）（§7.9） |
 
 - `control.switch` の case ポート名は params の `cases` で宣言する値と一致させる（保存時にポート存在検証・§8 V2）。
 
@@ -374,6 +375,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `llm.invoke` | AI | llm-gateway 直行 | pure（課金あり） | 120s / 600s |
 | `agent.invoke` | AI | サンドボックスで agent-core | best-effort | 600s / 3600s |
 | `http.request` | 外部 | 外部 HTTP | **best-effort**（Idempotency-Key 注入支援のみ） | 30s / 120s |
+| `human.approval` | 人間参加 | テーブルの 1 行について担当者の承認・却下・差し戻しを待って分岐する（判断は承認者本人の FSM 遷移・§7.9） | engine-dedup（台帳は step で 1 件） | 30s / 120s（停止まで。判断を待つ時間は `timeout_sec` と `run_timeout_sec`） |
 
 以下、設計上の要点を持つノード種を個別に規定する。params の網羅的スキーマは codegen 型が正であり、本節は制約と出力形を示す。
 
@@ -517,7 +519,8 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `ai.ocr` / `ai.image.analyze` / `ai.image.generate` / `ai.transcribe` / `ai.speech` | AI | モダリティ拡張（OCR・画像認識/生成・音声認識/合成）。文書処理基盤（Docling）との役割分担は実装時に設計 | ─（天井対象外） |
 | `graphql.query` | 外部 | GraphQL 呼び出し（クエリ・変数の型付き UX）。gRPC はユースケースが薄く予約しない | `http.egress`（流用） |
 | `sandbox.exec` | 実行 | サンドボックス内の単発コマンド/Python 実行（secure-exec 基盤を転用。サンドボックス由来出力は敵対的として扱う・PIT-23） | `sandbox.exec`（危険度が高く独立スコープ） |
-| `human.approval` | 人間参加 | 人間の承認を待って分岐する human-in-the-loop（`control.wait` のイベント待ちより明示的な一級概念。承認 UI・タイムアウト・代理承認を契約に含む） | `notify.send`（承認依頼通知を伴う） |
+
+`human.approval` は GAP-08 で実装した（§7.9）。
 
 **ノードにしない**と確定したもの（予約対象外・理由の明文化）:
 
@@ -528,6 +531,35 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 - **SQL 直接実行** — **作らない**。生 SQL は二段 authz・FSM 不変条件をバイパスし得るため、構造化データは宣言的な `data.query` に限定する。
 - **通知のサービス別ノード（Slack/Teams/メール等）** — 作らず `notify.send` の params（`channel`・connection 参照）に統合する。サービス追加が語彙追加にならない。
 - **Parallel / Merge** — DAG のファンアウト＋ `control.join` で表現済み。**Break Point** はエディタ/実行 UI の機能であって IR 語彙ではない。
+
+### 7.9 `human.approval`（承認待ち・レコード束縛）
+
+```jsonc
+{ "id": "manager_ok", "type": "human.approval", "label": "上長の承認",
+  "params": {
+    "title": "経費申請の承認", "instructions": "規程どおりか確認してください。",
+    "record": { "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+                "id": { "$from": "trigger", "path": "/record_id" } },
+    "assignees": [ { "field": "approver" }, { "field": "deputy" }, { "role": "keiri" } ],
+    "approve": { "to": "承認", "label": "承認する" },
+    "reject":  { "to": "却下", "comment": "required" },
+    "return":  { "to": "差し戻し", "comment": "required" },
+    "show_fields": ["title", "amount", "used_on"],
+    "timeout_sec": 259200, "on_timeout": "continue" } }
+```
+
+- **レコード束縛が必須**: 承認は FSM で管理するテーブルの 1 行に束縛する（`record.table` は UUID のリテラル・`record.id` は値式で停止時に解決）。
+- **判断は承認者本人の FSM 遷移**: 担当者が受信箱（`/approvals`）で判断すると、承認者本人の権限で行を `approve` / `reject` / `return` の `to` へ遷移する（`FsmStore::transition`）。**誰が承認できるかの正は FSM の actor 述語 1 か所**で、テーブル画面・ミニアプリ・別のワークフローから同じ遷移をしても同じ承認が決まる。代理承認は actor 述語（`any(approver eq $user.id, deputy eq $user.id)`）で表す。OpenFGA の relation は増やさない。
+- `assignees`（1〜20 件）は**受信箱に出す相手**だけを決める（権限の正ではない）: `{ "user": 値式 }`・`{ "role": 値式 }`・`{ "field": "<列>" }`（束縛した行のユーザー・部署の列・停止時に実行主体の権限で読む・読めなければ失敗）。
+- `title`（1〜120 字）・`instructions`（2000 字以内）はリテラルだけ（行の値を受信箱へ写さない）。受信箱に出す中身は、担当者本人の権限で行を読み直して作る（`show_fields` は 30 列まで・担当者に読めない列は出ない）。
+- `approve` は必須、`reject` / `return` は省略可。`to` は互いに異なる FSM の状態（保存時 V4）、`comment` は `required` / `optional`。
+- `timeout_sec`（リテラル・`policies.run_timeout_sec` 未満・V7）と `on_timeout`（`fail` 既定 / `continue` で `timeout` 出口）。期限なしの承認も run の期限が来れば取り消される。続けて待つ承認の期限の合計が run の期限以上なら保存時に警告する（`ir.approval_timeouts_exceed_run`）。エディタは承認を置くと `run_timeout_sec` を 14 日にする提案を出す。
+- **出口**（§5.2）: 判断の状態ならその出口、判断の外の状態へ遷移した・行が消えたら `withdrawn`。停止時の rev（`suspend_rev`）以下の遷移では起きない（直前の自分の遷移で取り下げにしない）。
+- **停止時の検査**: 行の状態（`from_state`）から判断の行き先への遷移が FSM に無ければ `approval_not_decidable`（permanent）。担当者がいなければ `approval_no_assignee`。
+- **出力**: `{ approval_id, decision: approve|reject|return|withdrawn|timeout, to, decided_by, decided_at, comment, record_id, rev }`（行の値は載せない）。
+- **要求スコープ**: `notify.send`（人へのお知らせ・承認の依頼を含む・D-25）と `data.read`（行を読み、判断の遷移を実行主体の見え方で受け取る）。保存時の scope 補完が両方を足し、同意計画はテーブルの閲覧を提案する。
+- **置き場所**: event トリガのワークフローに置くことを推奨する（interactive の run に置くと、後続も申請者本人の権限で走る）。
+- 実行時（台帳・受付の突合・起床・期限・取消）は [engine.md](./engine.md) §9.6。
 
 ---
 
@@ -543,16 +575,17 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 | V4 | 参照存在 | skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノード URL ホストを許容）・テーブル/フォルダ id | `ir.unknown_skill` |
 | V5 | データフロー | `$from` の祖先性・default 要否・条件木の型整合（静的に分かる範囲）・regex コンパイル | `ir.bad_ref` |
 | V6 | script コンパイル | inline script の swc パース・禁止構文（[script.md](./script.md) §3。artifact 参照は version 固定なので存在のみ） | `ir.script_syntax` |
-| V7 | 上限 | ノード ≤ 200・エッジ ≤ 500・IR ≤ 1MB・条件木深さ ≤ 5・テンプレ var 数 ≤ 50 | `ir.limit_exceeded` |
+| V7 | 上限 | ノード ≤ 200・エッジ ≤ 500・IR ≤ 1MB・条件木深さ ≤ 5・テンプレ var 数 ≤ 50・承認の期限 < `run_timeout_sec` | `ir.limit_exceeded` |
 
 各ステージの詳細:
 
 - **V1 スキーマ**: トップレベルからノード params まで、JSON Schema で型・必須・deny-unknown を検証する。未知フィールドは全階層で拒否する（§2）。
 - **V2 グラフ**: `id` 一意、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1、全ノードのエントリからの到達可能性を検証する。
 - **V3 語彙照合**: ノード `type`・`declared_scopes`・ツール名（`allowed_tools`）・モデル名を codegen が生成した閉じた語彙と、テナントの登録カタログ（モデルは組織が許可したモデル・本人専用を除く）へ照合する。**ハルシネーション境界**であり、実在しない語彙を参照する IR（特に AI 生成）を保存前に拒否する。`llm.invoke` の `model` は省略可で、省略（空文字を含む）は照合しない（実行時に組織の既定で解決する・§7.3）。組織がモデルの選択を禁じていれば、既定と異なるモデルを `ir.model_choice_disabled` で拒否する。
-- **V4 参照存在**: skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノードの `http.request` URL ホストを許容する）・テーブル/フォルダ id の実在を検証する。
+- **V4 参照存在**: skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノードの `http.request` URL ホストを許容する）・テーブル/フォルダ id の実在を検証する。`human.approval` は、テーブルが保存者に見えて FSM で管理されていること（見えないテーブルと FSM でないテーブルは同じ文言 `ir.unknown_table`）、判断の行き先が FSM の状態であること（`ir.unknown_state`）、`show_fields` と担当者の列がテーブルの列（担当者はユーザー・部署の列）であることを照合する（材料は保存 API が保存者の権限で引く）。
+- **V3 の承認**: `human.approval` は `data.read` と `notify.send` の宣言が要る（保存時の scope 補完が足す）。
 - **V5 データフロー**: `$from` の `nodes.<id>` が祖先か、全パスで先行しない場合に `default` があるか、条件木の左右の型が静的に整合するか、`matches` の regex がコンパイルできるかを検証する（§3）。`control.wait` の `filter` では、届いたイベントを指す `event`（別名 `trigger` / `payload`）も書ける（§7.5）。
-- **保存を止めない警告**（V3・イベント）: 同じテーブルの `data.record.updated` と `data.transition`（`ir.overlapping_data_triggers`）、wait(event) の filter の別名（`ir.wait_filter_alias`）。
+- **保存を止めない警告**（V3・イベント）: 同じテーブルの `data.record.updated` と `data.transition`（`ir.overlapping_data_triggers`）、wait(event) の filter の別名（`ir.wait_filter_alias`）、続けて待つ承認の期限の合計が実行の期限以上（`ir.approval_timeouts_exceed_run`・§7.9）。
 - **V6 script コンパイル**: inline script を swc でパースし、禁止構文を弾く（[script.md](./script.md) §3）。artifact 参照は version 固定なので存在確認のみ。
 - **V7 上限**: サイズ・数量の上限を検証する（すべて初期値・設定で調整可）。
 
