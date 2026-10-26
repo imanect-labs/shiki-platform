@@ -108,7 +108,7 @@ test("モデル: 先頭の「組織の既定に従う」に今の既定が出て
   await expect(button).toContainText(first.label);
   await button.click();
   const picker = page.getByTestId("workflow-model-picker");
-  const row = picker.getByTestId("model-option-default");
+  const row = picker.getByTestId("model-default-option");
   await expect(row).toContainText("組織の既定に従う");
   await expect(row).toContainText(`現在: ${orgDefaultLabel(data)}`);
   await row.click();
@@ -138,7 +138,7 @@ test("モデル: キーボードだけで一覧を開き、「組織の既定に
   // 開いた直後の注目は今のモデル（既定の行の次）。上へ 1 つで既定の行、Enter で選ぶ。
   await expect(picker.locator('[role="option"][data-active="true"]')).toContainText(models!.models[0].label);
   await page.keyboard.press("ArrowUp");
-  await expect(picker.getByTestId("model-option-default")).toHaveAttribute("data-active", "true");
+  await expect(picker.getByTestId("model-default-option")).toHaveAttribute("data-active", "true");
   await page.keyboard.press("Enter");
   await expect(picker).toHaveCount(0);
   await expect(button).toContainText("組織の既定（");
@@ -237,7 +237,7 @@ test("スマホ: シートの中の一覧で「組織の既定に従う」を選
   await sheet.getByTestId("workflow-model-button").click();
   const picker = sheet.getByTestId("workflow-model-picker");
   await expect(picker).toBeVisible();
-  await picker.getByTestId("model-option-default").click();
+  await picker.getByTestId("model-default-option").click();
   await expect(picker).toHaveCount(0);
   await expect(sheet.getByTestId("workflow-model-button")).toContainText(`組織の既定（${orgDefaultLabel(models!)}）`);
   expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);

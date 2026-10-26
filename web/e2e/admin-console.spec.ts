@@ -66,7 +66,7 @@ test.describe("チャットのモデル選択", () => {
     // 一覧（#583）の先頭のモデルを選ぶ。
     await button.click();
     await expect(page.getByTestId("model-picker")).toBeVisible();
-    const first = page.locator('[data-testid^="model-option-"]:not([data-testid="model-option-default"])').first();
+    const first = page.locator('[data-testid^="model-option-"]').first();
     const label = (await first.locator("[data-label]").innerText()).trim();
     await first.click();
     await page.keyboard.press("Escape");

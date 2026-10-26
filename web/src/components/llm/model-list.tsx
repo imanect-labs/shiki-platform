@@ -18,7 +18,12 @@ import type { LlmModelOption, LlmModelsResponse } from "@/lib/admin-ai-api";
 /// これ以上のモデル数なら検索欄を出す（数件なら一覧を見渡せるので要らない）。
 export const SEARCH_MIN_MODELS = 8;
 
-const DEFAULT_KEY = "__default";
+/// 一覧の行の識別（`null` は先頭の「既定」の行）。モデル ID は管理者が付ける任意の文字列なので、既定の行を
+/// 文字列の印（"default" など）で表すと、同じ ID のモデルと行の識別・data-testid が衝突する。
+type RowKey = string | null;
+
+/// 既定の行の data-testid（モデルの行の `model-option-${id}` と前置きを分け、どの ID とも重ならない）。
+const DEFAULT_ROW_TEST_ID = "model-default-option";
 
 /// 先頭に出す「既定」の行（`null` を選ぶ行）。
 export type ModelListDefaultRow = {
@@ -126,17 +131,18 @@ export function ModelList({
     (!query || matchesText(`${defaultRow.label} ${defaultRow.keywords ?? ""}`, query));
 
   // キーボードで動かす順（画面の並びと同じ・選べない行は飛ばす）。
-  const keys = [
-    ...(showDefault ? [DEFAULT_KEY] : []),
+  const keys: RowKey[] = [
+    ...(showDefault ? [null] : []),
     ...(modelsDisabled ? [] : groups.flatMap((g) => g.models.map((m) => m.id))),
   ];
-  const currentKey = current ?? DEFAULT_KEY;
+  const currentKey: RowKey = current;
   const [active, setActive] = React.useState(() => Math.max(0, keys.indexOf(currentKey)));
-  const activeKey = keys[Math.min(active, keys.length - 1)];
+  const activeAt = keys.length ? Math.min(active, keys.length - 1) : -1;
+  const activeKey: RowKey | undefined = activeAt >= 0 ? keys[activeAt] : undefined;
   // 行の id はモデル ID をそのまま使わない（空白や記号で aria の参照が壊れないよう、カタログ上の位置）。
-  const optionId = (key: string) =>
-    key === DEFAULT_KEY ? `${listId}-d` : `${listId}-m${data.models.findIndex((m) => m.id === key)}`;
-  const activeOptionId = activeKey ? optionId(activeKey) : undefined;
+  const optionId = (key: RowKey) =>
+    key === null ? `${listId}-d` : `${listId}-m${data.models.findIndex((m) => m.id === key)}`;
+  const activeOptionId = activeKey !== undefined ? optionId(activeKey) : undefined;
 
   // 開いたときとキーボードで動かしたときだけ、注目中の行を見える位置へ（マウスで動かしたときに
   // 一覧がずれないように）。開いた直後は一覧の高さがまだ決まっていない（ポップオーバーの位置計算で
@@ -162,7 +168,7 @@ export function ModelList({
     };
   }, [activeOptionId, listRef]);
 
-  const pickKey = (key: string) => onPick(key === DEFAULT_KEY ? null : key);
+  const pickKey = (key: RowKey) => onPick(key);
 
   const moveTo = (i: number) => {
     scrollToActive.current = true;
@@ -190,16 +196,16 @@ export function ModelList({
   };
 
   const row = (
-    key: string,
+    key: RowKey,
     label: React.ReactNode,
     abroad: { abroad: boolean; badge: boolean },
     testId: string,
   ) => {
     const selected = key === currentKey;
-    const disabled = modelsDisabled && key !== DEFAULT_KEY;
+    const disabled = modelsDisabled && key !== null;
     return (
       <div
-        key={key}
+        key={key ?? "default-row"}
         id={optionId(key)}
         role="option"
         aria-selected={selected}
@@ -281,7 +287,7 @@ export function ModelList({
         {!showDefault || !defaultRow
           ? null
           : row(
-              DEFAULT_KEY,
+              null,
               <span className="flex min-w-0 flex-1 items-baseline gap-2">
                 <span className="shrink-0">{defaultRow.label}</span>
                 {defaultRow.target ? (
@@ -289,7 +295,7 @@ export function ModelList({
                 ) : null}
               </span>,
               { abroad: false, badge: false },
-              "model-option-default",
+              DEFAULT_ROW_TEST_ID,
             )}
         {groups.map((g) => {
           // 国外処理はふつうプロバイダ単位で決まるので、全部そうなら見出しに 1 つだけ出す。
