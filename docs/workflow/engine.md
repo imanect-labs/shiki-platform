@@ -603,8 +603,8 @@ content_update・提案の採用・ワークスペースへの上書き）から
 2. **workflow プリンシパル（有効化の委譲）が保存されたファイルを読めるか**を StorageService の viewer で確かめる
    （`wait(event)` の起床と同じ `SavedFileGate`・強整合の check と監査・D-50）。読めなければ発火も記録もしない。
    確かめられない一時障害はバッチを配り直す。
-3. 因果の鎖（下のデータ変更の 4 と同じ・D-26）。run の中の storage.write・csv.write・csv.patch は run の trace_id を
-   運ぶので、自分の保存・`workflow.start` の子の保存では起きない。
+3. 因果の鎖（下のデータ変更の 4 と同じ・D-26）。run の中の storage.write・csv.write・csv.patch は run の印を
+   outbox に載せるので、自分の保存・`workflow.start` の子の保存では起きない。
 4. 作成はすぐ起動する。**新しい版の保存は同じファイルの続く保存を 1 回にまとめる**（D-38）: firing を `pending`
    （`next_attempt_at` = 起動する時刻・`coalesce_key` = ファイル）で待たせ、同じトリガ・同じファイルの後の保存が
    来たら、待っている前の firing を `coalesced` にして後の firing へ寄せる。起動する時刻は最後の保存から 60 秒
@@ -633,11 +633,21 @@ run も同じ `trigger_event_id` を持つので二重にならない。
    data の `change_event_view`）。委譲が無ければ（`workflow_delegation` を先に引いて）OpenFGA を呼ばない。見えない行・
    読めない列だけの変更では発火せず、発火しなかったことも記録しない。権限の判定（Forbidden / NotFound）は
    「発火しない」として配送済みにし、一時的な障害だけバッチを配り直す。主体と見え方はバッチの中だけで覚える（PIT-18）。
-4. **因果の鎖**: 書込の trace_id が run のもの（run_id の 32 桁 hex・§11.1）なら、その run の `trigger_chain` ∪
-   {その run のワークフロー} を鎖とする。発火先のワークフローが鎖に含まれれば `suppressed_cycle`（自分の書込・循環）、
-   鎖が 4 段を超えれば `suppressed_depth`。起動した run に鎖と `cause_run_id` を書く。`workflow.start`・`Shiki.workflow.*`
-   の子の run は、作成と同じ Tx で親の鎖 ∪ {親のワークフロー} を引き継ぐ。wait の起床には抑止をかけない。
-   前提: run の中の data の書込・ファイルの保存は run の trace_id を運ぶ。ファイル保存のトリガも同じ鎖を使う（BUG-29）。
+4. **因果の鎖**: イベントを起こした書込が run のもの（outbox の非公開部の run の印・下の「run の書込の印」）なら、
+   その run の `trigger_chain` ∪ {その run のワークフロー} を鎖とする。発火先のワークフローが鎖に含まれれば
+   `suppressed_cycle`（自分の書込・循環）、鎖が 4 段を超えれば `suppressed_depth`。起動した run に鎖と `cause_run_id`
+   を書く。`workflow.start`・`Shiki.workflow.*` の子の run は、作成と同じ Tx で親の鎖 ∪ {親のワークフロー} を引き継ぐ。
+   wait の起床には抑止をかけない。ペイロードの `by_workflow` も同じ印で決める。ファイル保存のトリガも同じ鎖を
+   使う（BUG-29）。
+
+**run の書込の印**（BUG-44）: run の中の書込（ノード・`Shiki.*`・委譲元の権限での書込・run が始めた一括取込の
+ワーカーが進める分）は、文脈（`AuthContext::origin_run`）に run を持つ。outbox の発行（storage の `emit_on` /
+`emit_many_on`・data と storage のどちらの書込も通る）は、それを consumer 非公開部 `private_payload` の `origin_run`
+に**必ず**載せる（run の書込でなければ `null`）。relay はこの印だけを読む（`write_origins`）。書込の trace_id からは
+run を推しはからない（利用者の要求の trace_id も run の trace_id と同じ 32 桁 hex の形なので、名乗れば抑止を偽れる）。
+`origin_run` のキーが無い行は、印を書く前の版が発行した行（移行の間・ローリングデプロイの古い版）だけで、その行に
+限り従来どおり trace_id を run_id とみなし、実在する run のときだけ由来にする（実在しない run の id を
+`cause_run_id` に残さない）。
 5. **queued の上限**: 1 ワークフローの queued run が 1,000 件以上なら `dropped_queue_full` で捨てる。
 6. 抑止・破棄は 1 件ずつ監査（`workflow.trigger.suppressed`・reason）に残す。
 

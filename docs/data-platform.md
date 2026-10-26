@@ -1311,6 +1311,9 @@ create unique index on outbox_delivery (consumer, delivery_seq);
 >   **非公開部 `private_payload`**（ストリームと統計の消費側だけが読む）に分ける。非公開部は `table_int`・`record_int` と、
 >   **変更前の値**（旧 owner・行述語が参照する列・対称リンク列・値頻度表の対象列の前後の値）。汎用の consumer（workflow /
 >   miniapp のトリガ・RAG relay）はこの列を読まないので、内部キーと旧値が外へ出る経路が構造的に無い
+> - 非公開部には、書込の由来の run の印 `origin_run`（ワークフローの run の中の書込ならその run・それ以外は `null`）も
+>   必ず載る（storage の書込も同じ・[engine.md](./workflow/engine.md) §5.4）。ワークフローの relay はこの印だけを
+>   `storage::event::write_origins` で読む（因果の鎖・`by_workflow`。ほかの非公開の材料は出さない）
 > - **ワークフローのデータ変更トリガ**（`data.record.created` / `data.record.updated` / `data.transition`・GAP-07）は、
 >   公開部の id から **`DataStore::change_event_view`** で主体の見え方を作る（今の行が主体に見えるか・その rev のリビジョンの
 >   マスク後の差分・`get_record` と同じ投影。トリガは委譲元・wait(event) は run の実行主体）。見えない行・読めない列だけの
