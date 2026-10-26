@@ -443,11 +443,16 @@ impl HostBridge {
         meta["via"] = json!("script");
         self.audit
             .record(&self.ec.tenant_id, "http.request", true, &meta);
-        Ok(json!({
+        // 外部の応答に反射した secret の平文は、script へ返す前にマスクする（GAP-09 の T0・ノード経路と同じ）。
+        let out = json!({
             "status": resp.status,
             "host": host,
             "body": super::capability_ai::parse_body(&resp.body),
-        }))
+        });
+        Ok(super::capability_ai::redact_reflected(
+            resolved.as_ref(),
+            out,
+        ))
     }
 
     /// workflow.start（cross-TX effect_journal で start-once）。

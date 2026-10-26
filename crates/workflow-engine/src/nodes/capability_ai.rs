@@ -16,7 +16,9 @@ use crate::run::NodeContext;
 use super::capability::parse_params;
 use super::exec::CapabilityNodeExecutor;
 use super::http::{check_destination, redirect_denied, summarize_response, HttpDenied};
-use super::ports::{AgentInvokeReq, ExecCtx, HttpSendReq, LlmInvokeReq, PortError};
+use super::ports::{
+    AgentInvokeReq, ExecCtx, HttpSendReq, LlmInvokeReq, PortError, ResolvedSecretView,
+};
 use super::resolver::{as_bytes, as_string, as_u32, opt_param, param, typed, ParamResolver};
 
 /// レスポンス本文を JSON（不能ならテキスト）に整形する（1MB 上限）。
@@ -215,8 +217,10 @@ impl CapabilityNodeExecutor {
             true,
             &summarize_response(resp.status, &host),
         );
-        // 出力は次ノードへ本文を渡す（履歴・監査には出さない）。
-        Ok(json!({ "status": resp.status, "host": host, "body": parse_body(&resp.body) }))
+        // 出力は次ノードへ本文を渡す（監査には出さない）。外部の応答に反射した secret の平文は、step の出力
+        // （実行履歴・画面に返す結果）へ書く前にマスクする（記録時のレダクト・write-only 原則・GAP-09 の T0）。
+        let out = json!({ "status": resp.status, "host": host, "body": parse_body(&resp.body) });
+        Ok(redact_reflected(resolved_secret.as_ref(), out))
     }
 
     /// 宛先束縛（secret.allowed_hosts）× egress allowlist の AND を URL ホスト部リテラルで照合する。
@@ -252,6 +256,21 @@ impl CapabilityNodeExecutor {
         }
         Ok(host)
     }
+}
+
+/// 外部の応答に反射した secret の平文を `[REDACTED]` に置き換える（この呼び出しで解決した平文だけ）。
+///
+/// 完全一致だけをマスクする（4 文字未満の平文・符号化された形はマスクできない・`secrets::Redactor`）。
+pub(super) fn redact_reflected(secret: Option<&ResolvedSecretView>, out: Value) -> Value {
+    let Some(secret) = secret else {
+        return out;
+    };
+    let mut redactor = secrets::Redactor::new();
+    redactor.add(&String::from_utf8_lossy(&secret.plaintext));
+    if redactor.is_empty() {
+        return out;
+    }
+    redactor.redact_json(&out)
 }
 
 /// http.request の本文を JSON として送るか（オブジェクト・配列）。

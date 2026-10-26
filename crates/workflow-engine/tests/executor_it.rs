@@ -59,6 +59,8 @@ struct FakePorts {
     last_llm_model: Mutex<Option<Option<String>>>,
     /// workflow_start へ渡った（name, input）（入れ子の値の展開の検証用）。
     last_start: Mutex<Option<(String, Value)>>,
+    /// 外部の応答に、送ったヘッダをそのまま反射する（Authorization を返す echo サーバー・GAP-09 の T0）。
+    http_echo: Mutex<bool>,
 }
 impl FakePorts {
     fn with_http_status(status: u16) -> Self {
@@ -109,11 +111,21 @@ impl NodePorts for FakePorts {
     }
     async fn http_send(&self, _ctx: &ExecCtx, req: HttpSendReq) -> Result<HttpSendResp, PortError> {
         let status = *self.http_status.lock().unwrap();
+        let body = if *self.http_echo.lock().unwrap() {
+            let headers: serde_json::Map<String, Value> = req
+                .headers
+                .iter()
+                .map(|(k, v)| (k.clone(), json!(v)))
+                .collect();
+            serde_json::to_vec(
+                &json!({ "ok": true, "headers": headers, "raw": format!("{:?}", req.headers) }),
+            )
+            .unwrap()
+        } else {
+            br#"{"ok":true}"#.to_vec()
+        };
         *self.last_http.lock().unwrap() = Some(req);
-        Ok(HttpSendResp {
-            status,
-            body: br#"{"ok":true}"#.to_vec(),
-        })
+        Ok(HttpSendResp { status, body })
     }
     async fn resolve_secret(
         &self,
@@ -412,6 +424,71 @@ async fn http_secret_never_appears_in_audit() {
         "監査に平文 secret が漏れない"
     );
     assert!(!dump.contains("\"body\""), "監査に本文キーが無い");
+}
+
+/// 外部の応答に反射した secret の平文は、step の出力に残らない（実行履歴・画面に返す結果へ出さない・
+/// GAP-09 の T0）。
+#[tokio::test]
+async fn http_reflected_secret_is_redacted_in_the_output() {
+    let ports = Arc::new(FakePorts::with_http_status(200));
+    *ports.secret_hosts.lock().unwrap() = vec!["api.example.com".into()];
+    *ports.http_echo.lock().unwrap() = true;
+    let exec = executor(Arc::clone(&ports), Arc::new(CapturingAudit::default()));
+    let params = json!({
+        "method": "POST",
+        "url": "https://api.example.com/post",
+        "secret": { "name": "tok", "attach": { "kind": "bearer" } }
+    });
+    let res = exec
+        .execute(
+            "http.request",
+            &params,
+            &ctx(json!({}), vec!["http.egress".into()]),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    let dump = res.output.to_string();
+    assert!(!dump.contains("super-secret-token"), "{dump}");
+    assert_eq!(
+        res.output["body"]["headers"]["Authorization"],
+        "Bearer [REDACTED]"
+    );
+    assert_eq!(res.output["body"]["ok"], true, "反射していない値は残る");
+}
+
+/// script の `Shiki.http.request` の戻り値も同じくマスクする（GAP-09 の T0）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_http_reflected_secret_is_redacted() {
+    const ECHO_SCRIPT: &str = r#"function main(input) {
+  const res = Shiki.http.request({
+    method: "POST",
+    url: "https://api.example.com/echo",
+    secret: { name: "tok" },
+    body: { q: 1 },
+  });
+  return res;
+}"#;
+    let ports = Arc::new(FakePorts::with_http_status(200));
+    *ports.secret_hosts.lock().unwrap() = vec!["api.example.com".into()];
+    *ports.http_echo.lock().unwrap() = true;
+    let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
+    let exec = CapabilityNodeExecutor::new(
+        Arc::clone(&ports) as Arc<dyn NodePorts>,
+        lazy_journal(),
+        Arc::new(CapturingAudit::default()) as Arc<dyn CapabilityAudit>,
+    )
+    .with_script_engine(engine, script_runtime::engine::Limits::default());
+    let res = exec
+        .execute(
+            "script.run",
+            &json!({ "source": { "inline": ECHO_SCRIPT } }),
+            &ctx(json!({}), vec!["http.egress".into()]),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    let dump = res.output.to_string();
+    assert!(dump.contains("[REDACTED]"), "{dump}");
+    assert!(!dump.contains("super-secret-token"), "{dump}");
 }
 
 #[tokio::test]
