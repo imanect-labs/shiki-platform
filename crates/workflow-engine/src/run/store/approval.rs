@@ -4,7 +4,8 @@
 //!   `suspend_rev`）を同じ Tx で書く。再実行・再開（at-least-once）でも同じ承認 id を上書きして待ち直す。
 //! - **起床**（relay・受付の突合・行の削除）: その行の遷移で `rev > suspend_rev` のものだけを、遷移先の状態に
 //!   応じた出口へ写す。判断の外の状態・行が消えたら取り下げ。step の terminal 化と台帳の確定を同じ Tx で行う。
-//! - **期限**: `expire_due_waits` と同じ Tx で台帳を `expired` にする。
+//! - **期限**: `expire_due_waits` と同じ Tx で台帳を `expired` にする。台帳の行をロックしてから決め、判断 API が
+//!   期限内に受け付けた判断（`accepted`・遷移は済み）があれば、期限切れにせずその判断で決める（BUG-45）。
 //! - **実行主体の失権**（D-62）: 待つ間に委譲・テーブルの権限が外れたら、出口へ進めずに run を失敗で終える
 //!   （step の `error.code`・run の `fail_reason` は `actor_unavailable`・台帳は `cancelled`）。判断は api の
 //!   relay（受付の突合・判断の遷移・期限の前の確かめ）が行い、ここは同じ Tx で確定するだけ。
@@ -24,7 +25,7 @@ use super::super::graph::RunGraph;
 use super::super::OnTimeout;
 use super::wait::{graph_from_snapshot, lock_waiting, settle_woken, EventWaitSubscriber};
 use super::{map_db, ClaimedStep, RunStore, RunStoreError};
-use crate::approval::{ApprovalChoiceSpec, ApprovalResolution, ApprovalSuspend};
+use crate::approval::{AcceptedDecision, ApprovalChoiceSpec, ApprovalResolution, ApprovalSuspend};
 use crate::vocab::EventSource;
 
 /// 購読の spec に載せる承認の材料（起床で遷移先を出口へ写す・期限切れの扱い）。
@@ -125,7 +126,7 @@ pub(super) async fn suspend(
            table_id = $8, record_id = $9, title = $10, instructions = $11, show_fields = $12, \
            decisions = $13, from_state = $14, suspend_rev = $15, deadline = $16, status = 'pending', \
            decided_by = NULL, decided_at = NULL, decided_to = NULL, decided_rev = NULL, comment = NULL, \
-           reconciled_at = NULL, updated_at = now()",
+           reconciled_at = NULL, accepted = NULL, updated_at = now()",
     )
     .bind(tenant)
     .bind(a.approval_id)
@@ -168,7 +169,8 @@ pub(super) async fn suspend(
     Ok(())
 }
 
-/// 承認を確定して step を起こす（step の terminal 化と台帳の確定を同じ Tx で）。戻り値 = 起こしたか。
+/// 承認を確定して step を起こす（step の terminal 化と台帳の確定を同じ Tx で）。戻り値 = 起こしたら、確定した
+/// 台帳の status（期限切れのつもりでも、判断 API が期限内に受け付けた判断があればその判断の status）。
 pub(super) async fn wake_approval(
     db: &PgPool,
     tenant_id: &str,
@@ -177,17 +179,17 @@ pub(super) async fn wake_approval(
     wait: &ApprovalWait,
     res: &ApprovalResolution,
     graph: &RunGraph,
-) -> Result<bool, RunStoreError> {
+) -> Result<Option<&'static str>, RunStoreError> {
     let mut tx = db.begin().await.map_err(map_db)?;
     if !lock_waiting(&mut tx, tenant_id, run_id, step_path).await? {
         tx.rollback().await.map_err(map_db)?;
-        return Ok(false);
+        return Ok(None);
     }
-    // 台帳の行をロックしてからコメントを読む。判断 API は、コメントを置いてから遷移して commit するまで、この行の
-    // ロックを持つ（[`crate::approval::ApprovalStore::begin_decision`]）。遷移と同時に起きても、その commit を
-    // 待って置いたコメントを拾う（BUG-47）。
-    sqlx::query_scalar::<_, Uuid>(
-        "SELECT approval_id FROM workflow_approval \
+    // 台帳の行をロックしてからコメントと受け付けた判断を読む。判断 API は、コメントを置いてから遷移して commit
+    // するまで、この行のロックを持つ（[`crate::approval::ApprovalStore::begin_decision`]）。遷移と同時に起きても、
+    // その commit を待って置いたコメントを拾う（BUG-47）。
+    let accepted: Option<Option<Json<Value>>> = sqlx::query_scalar(
+        "SELECT accepted FROM workflow_approval \
          WHERE tenant_id = $1 AND approval_id = $2 FOR UPDATE",
     )
     .bind(tenant_id)
@@ -195,6 +197,26 @@ pub(super) async fn wake_approval(
     .fetch_optional(&mut *tx)
     .await
     .map_err(map_db)?;
+    // 期限切れにする前に、判断 API が期限内に受け付けた判断（遷移は済み・relay の起床の前）があれば、その判断で
+    // 決める（行は判断の状態・run は時間切れ、と分かれない・BUG-45）。取り下げ・実行主体の失権は変えない。
+    // 読めない形なら（起こるはずはないが）使わず、従来どおり期限切れにする（起床を止めない）。
+    let accepted = accepted
+        .flatten()
+        .and_then(|Json(v)| serde_json::from_value::<AcceptedDecision>(v).ok());
+    let converted;
+    let res = match accepted {
+        Some(a) if res.status == "expired" => {
+            converted = ApprovalResolution::transition(
+                &wait.choices,
+                Some(a.to),
+                Some(a.by),
+                Some(a.at),
+                Some(a.rev),
+            );
+            &converted
+        }
+        _ => res,
+    };
     // 判断に添えたコメント（遷移の後の rev・遷移した人・判断の種別が一致するものだけ）。
     let comment: Option<String> = match (res.kind(), res.rev, res.decided_by.as_deref()) {
         (Some(kind), Some(rev), Some(by)) => sqlx::query_scalar(
@@ -252,7 +274,7 @@ pub(super) async fn wake_approval(
         record_failure(&mut tx, tenant_id, run_id, step_path, code).await?;
     }
     tx.commit().await.map_err(map_db)?;
-    Ok(true)
+    Ok(Some(res.status))
 }
 
 /// 承認の step の失敗の理由を、step の `error`（engine.md §2.2 の形）と run の `fail_reason` に書く
@@ -449,13 +471,14 @@ impl RunStore {
         Ok(())
     }
 
-    /// 保留中の承認を確定して step を起こす（受付の突合・行の削除・relay の遷移）。戻り値 = 起こしたか。
+    /// 保留中の承認を確定して step を起こす（受付の突合・行の削除・relay の遷移・期限）。戻り値 = 起こしたら、
+    /// 確定した台帳の status（期限切れのつもりでも、判断 API が期限内に受け付けた判断があればその判断の status）。
     pub async fn resolve_approval(
         &self,
         subscriber: &EventWaitSubscriber,
         wait: &ApprovalWait,
         res: &ApprovalResolution,
-    ) -> Result<bool, RunStoreError> {
+    ) -> Result<Option<&'static str>, RunStoreError> {
         let snapshot: Option<Json<Value>> = sqlx::query_scalar(
             "SELECT ir_snapshot FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
         )
@@ -465,7 +488,7 @@ impl RunStore {
         .await
         .map_err(map_db)?;
         let Some(graph) = snapshot.and_then(|s| graph_from_snapshot(s.0)) else {
-            return Ok(false);
+            return Ok(None);
         };
         wake_approval(
             &self.db,
@@ -512,13 +535,15 @@ impl RunStore {
                 continue;
             };
             let res = ApprovalResolution::expired(wait.on_timeout);
-            if wake_approval(&self.db, &tenant, run_id, &step_path, &wait, &res, &graph).await? {
+            if let Some(status) =
+                wake_approval(&self.db, &tenant, run_id, &step_path, &wait, &res, &graph).await?
+            {
                 out.push(ResolvedApproval {
                     tenant_id: tenant,
                     org,
                     approval_id: wait.approval_id,
                     run_id,
-                    status: res.status.to_string(),
+                    status: status.to_string(),
                 });
             }
         }

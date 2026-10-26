@@ -30,7 +30,7 @@ use storage::audit::{AuditAction, AuditEntry, Decision};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 use workflow_engine::ir::params::{ApprovalComment, ApprovalDecisionKind};
-use workflow_engine::{ApprovalRow, DecisionStart, InboxCursor};
+use workflow_engine::{AcceptedDecision, ApprovalRow, DecisionStart, InboxCursor};
 
 use crate::{
     error::ApiError,
@@ -728,8 +728,16 @@ impl DecideWork {
             .await;
         match result {
             Ok(rec) => {
-                // 遷移は済んでいる（取り消せない）ので、確定に失敗しても受け付けたと返す（コメントは失われ得る）。
-                if let Err(e) = decision_tx.commit().await {
+                // 受け付けた判断を台帳に記録して確定する（期限の回収はこれを見て期限切れにしない・BUG-45）。遷移は
+                // 済んでいる（取り消せない）ので、確定に失敗しても受け付けたと返す（コメントは失われ得る）。
+                let accepted = AcceptedDecision {
+                    kind: self.decision,
+                    to: self.to.clone(),
+                    by: ctx.principal.id.clone(),
+                    rev: rec.rev,
+                    at: rec.updated_at,
+                };
+                if let Err(e) = decision_tx.accept(&accepted).await {
                     tracing::error!(error = %e, approval_id = %self.id, "判断の受付の確定に失敗（遷移は済み）");
                 }
                 Ok((

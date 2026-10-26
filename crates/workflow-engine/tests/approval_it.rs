@@ -261,6 +261,17 @@ async fn approval_suspends_with_the_row_state_and_resolved_assignees() {
 
 // ---- DB ----
 
+/// 判断 API が受け付けた承認の判断（`who` が rev `rev` へ approved に進めた）。
+fn accepted(who: &str, rev: i64) -> workflow_engine::AcceptedDecision {
+    workflow_engine::AcceptedDecision {
+        kind: workflow_engine::ir::params::ApprovalDecisionKind::Approve,
+        to: "approved".into(),
+        by: who.into(),
+        rev,
+        at: chrono::Utc::now(),
+    }
+}
+
 async fn setup() -> Option<PgPool> {
     let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
@@ -418,7 +429,7 @@ impl Env {
         )
         .await
         .unwrap();
-        d.commit().await.unwrap();
+        d.accept(&accepted(who, rev)).await.unwrap();
     }
 
     /// 判断の受付を始める（台帳の行をロックする）。
@@ -562,11 +573,20 @@ async fn approval_waits_for_the_decision_and_settles_the_ledger() {
         i64::MAX
     ));
 
-    // bob が受信箱からコメントを添えて承認した（遷移の後の rev 5）。別の人も同じ rev に置ける（鍵に作者を含む・
-    // 置き残しが別の人の判断を塞がない・BUG-47）が、起床で採るのは遷移した人のものだけ。
-    for (who, body) in [("carol", "横入り"), ("bob", "規程どおりです")] {
-        env.comment(item.approval_id, 5, who, body).await;
-    }
+    // bob が受信箱からコメントを添えて承認した（遷移の後の rev 5）。別の人（carol）が同じ rev に置き残した
+    // コメントがあっても置ける（鍵に作者を含む・置き残しが別の人の判断を塞がない・BUG-47）。起床で採るのは
+    // 遷移した人のものだけ。
+    sqlx::query(
+        "INSERT INTO workflow_approval_comment (tenant_id, approval_id, rev, author, decision, body) \
+         VALUES ($1, $2, 5, 'carol', 'approve', '横入り')",
+    )
+    .bind(&env.tenant)
+    .bind(item.approval_id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    env.comment(item.approval_id, 5, "bob", "規程どおりです")
+        .await;
     assert!(env
         .runs
         .wake_data_wait(&c, &env.transition("approved", "bob", 5))
@@ -757,7 +777,7 @@ async fn decision_comments_live_and_die_with_the_decision_tx() {
     });
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert!(!woke.is_finished(), "起床は受付の commit を待つ");
-    d.commit().await.unwrap();
+    d.accept(&accepted("bob", 5)).await.unwrap();
     assert!(woke.await.unwrap());
     let (st, ports, out) = env.step(run, "ok").await;
     assert_eq!(
@@ -769,5 +789,80 @@ async fn decision_comments_live_and_die_with_the_decision_tx() {
         env.comments(a).await,
         vec![(5, "bob".to_string(), "規程どおりです".to_string())]
     );
+    env.forget_run(run).await;
+}
+
+/// 判断 API が期限内に受け付けた判断（遷移は済み・relay の起床の前）は、期限の回収で期限切れにされず、その判断で
+/// 決まる（行は判断の状態・run は時間切れ、と分かれない・BUG-45）。期限を過ぎてから受付が台帳の行を取ったら、
+/// 遷移する前に断る。受け付け済みの承認には、ほかの受付を通さない。
+#[tokio::test]
+async fn accepted_decisions_win_over_the_deadline() {
+    let Some(pool) = setup().await else { return };
+    let env = Env::new(pool).await;
+    let run = env.start(&approval_ir(Some(60))).await;
+    let c = env.candidate().await;
+    let a = c.approval().unwrap().approval_id;
+
+    // bob の判断を受け付けた（遷移は済み）。relay が遷移を配る前に、期限の回収が先に来た。
+    let mut d = env.open_decision(a).await;
+    d.put_comment(
+        5,
+        "bob",
+        workflow_engine::ir::params::ApprovalDecisionKind::Approve,
+        "規程どおりです",
+    )
+    .await
+    .unwrap();
+    d.accept(&accepted("bob", 5)).await.unwrap();
+    assert!(matches!(
+        env.inbox.begin_decision(&env.tenant, a).await.unwrap(),
+        workflow_engine::DecisionStart::Closed { expired: false }
+    ));
+    let later = chrono::Utc::now() + chrono::Duration::seconds(120);
+    let done = env
+        .runs
+        .expire_due_approvals(later, Some(&env.tenant))
+        .await
+        .unwrap();
+    assert_eq!(done.len(), 1);
+    assert_eq!(
+        done[0].status, "approved",
+        "期限切れにせず受け付けた判断で決める"
+    );
+    let (st, ports, out) = env.step(run, "ok").await;
+    assert_eq!(
+        (st, ports),
+        (StepStatus::Succeeded, vec!["approved".to_string()])
+    );
+    let out = out.unwrap();
+    assert_eq!(out["decision"], "approve");
+    assert_eq!(out["decided_by"], "bob");
+    assert_eq!(out["comment"], "規程どおりです");
+    assert_eq!(out["rev"], 5);
+    assert_eq!(env.ledger(run).await.0, "approved");
+    // 遅れて届いた遷移の配送は何もしない（冪等）。
+    assert!(!env
+        .runs
+        .wake_data_wait(&c, &env.transition("approved", "bob", 5))
+        .await
+        .unwrap());
+    env.forget_run(run).await;
+
+    // 期限を過ぎてから受付が台帳の行を取ったら、遷移の前に断る（期限はいまの時刻で決める）。
+    let run = env.start(&approval_ir(Some(60))).await;
+    let a = env.candidate().await.approval().unwrap().approval_id;
+    sqlx::query(
+        "UPDATE workflow_approval SET deadline = now() - interval '1 second' \
+         WHERE tenant_id = $1 AND approval_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(a)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        env.inbox.begin_decision(&env.tenant, a).await.unwrap(),
+        workflow_engine::DecisionStart::Closed { expired: true }
+    ));
     env.forget_run(run).await;
 }

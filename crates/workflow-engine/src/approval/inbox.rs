@@ -8,6 +8,7 @@
 //! 期限（承認の期限と run の期限の早い方）を過ぎたものも出さない（回収の tick を待たずに隠す）。
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::types::Json;
 use sqlx::PgPool;
@@ -219,13 +220,14 @@ impl ApprovalStore {
 
     /// 判断の受付を始める（判断 API・承認者本人の遷移の前）。台帳の行を `FOR UPDATE` でロックした Tx を返す。
     ///
-    /// コメントは [`DecisionTx::put_comment`] でこの Tx に置き、遷移に成功したら [`DecisionTx::commit`]、
+    /// コメントは [`DecisionTx::put_comment`] でこの Tx に置き、遷移に成功したら [`DecisionTx::accept`]、
     /// 失敗したら [`DecisionTx::rollback`] する（落としても取り消される）。置く → 遷移 → 失敗なら外す、の 3 手が
     /// 1 つの Tx に入るので、遷移に失敗した判断・要求の取り消しのコメントは残らない（BUG-47）。起床（relay・
     /// 期限・突合）は台帳の行をロックしてからコメントを読むので、遷移と同時に起きても commit を待って拾う。
     ///
-    /// 別の判断が行を持ったまま待ち切れなければ [`DecisionStart::Busy`]。台帳の行が無くなっていれば
-    /// [`DecisionStart::Closed`]。
+    /// 別の判断が行を持ったまま待ち切れなければ [`DecisionStart::Busy`]。台帳の行が無い・決まった・取り消された・
+    /// 別の判断を受け付け済み・期限を過ぎた（承認の期限と run の期限の早い方・いまの時刻で）なら
+    /// [`DecisionStart::Closed`]（遷移しない）。
     pub async fn begin_decision(
         &self,
         tenant_id: &str,
@@ -246,16 +248,62 @@ impl ApprovalStore {
         .fetch_optional(&mut *tx)
         .await;
         match locked {
-            Ok(Some(_)) => Ok(DecisionStart::Open(DecisionTx {
-                tx,
-                tenant_id: tenant_id.to_string(),
-                approval_id,
-            })),
-            Ok(None) => Ok(DecisionStart::Closed { expired: false }),
-            Err(e) if lock_not_available(&e) => Ok(DecisionStart::Busy),
-            Err(e) => Err(map_db(e)),
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok(DecisionStart::Closed { expired: false }),
+            Err(e) if lock_not_available(&e) => return Ok(DecisionStart::Busy),
+            Err(e) => return Err(map_db(e)),
         }
+        // ロックを取ってから、いま判断できるかを確かめ直す（別の文なので、待つ間に確定した起床・期限切れも見える）。
+        // 期限は**いまの時刻**（`clock_timestamp()`・Tx の開始時刻ではない）で決める。ここで期限前なら、遷移と
+        // 受け付けた判断の記録（[`DecisionTx::accept`]）を同じ Tx で commit するまで、期限の回収はこの行のロックを
+        // 待ち、受け付けた判断で決める（BUG-45）。
+        let state: Option<(String, bool, bool, bool)> = sqlx::query_as(
+            "SELECT a.status, a.accepted IS NOT NULL, \
+                    COALESCE(r.status = 'running' AND s.status = 'waiting_event', false), \
+                    COALESCE(a.deadline <= clock_timestamp(), false) \
+                      OR COALESCE(r.timeout_at <= clock_timestamp(), false) \
+             FROM workflow_approval a \
+             JOIN workflow_run r ON r.tenant_id = a.tenant_id AND r.run_id = a.run_id \
+             LEFT JOIN step_execution s ON s.tenant_id = a.tenant_id AND s.run_id = a.run_id \
+                                       AND s.step_path = a.step_path \
+             WHERE a.tenant_id = $1 AND a.approval_id = $2",
+        )
+        .bind(tenant_id)
+        .bind(approval_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_db)?;
+        let Some((status, accepted, waiting, past)) = state else {
+            return Ok(DecisionStart::Closed { expired: false });
+        };
+        if status != "pending" || accepted || !waiting {
+            return Ok(DecisionStart::Closed {
+                expired: status == "expired",
+            });
+        }
+        if past {
+            return Ok(DecisionStart::Closed { expired: true });
+        }
+        Ok(DecisionStart::Open(DecisionTx {
+            tx,
+            tenant_id: tenant_id.to_string(),
+            approval_id,
+        }))
     }
+}
+
+/// 判断 API が期限内に受け付けた判断（遷移は済み・起床の前・台帳の `accepted`）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptedDecision {
+    pub kind: ApprovalDecisionKind,
+    /// 判断で進めた状態。
+    pub to: String,
+    /// 判断した人（遷移した承認者本人）。
+    pub by: String,
+    /// 遷移の後の rev。
+    pub rev: i64,
+    /// 遷移の時刻。
+    pub at: DateTime<Utc>,
 }
 
 /// [`ApprovalStore::begin_decision`] の結果。
@@ -304,8 +352,21 @@ impl DecisionTx {
         Ok(())
     }
 
-    /// 遷移に成功した判断を確定する（コメントを見えるようにし、台帳の行のロックを外す）。
-    pub async fn commit(self) -> Result<(), RunStoreError> {
+    /// 遷移に成功した判断を確定する: 受け付けた判断を台帳に記録して commit する（コメントを見えるようにし、
+    /// 台帳の行のロックを外す）。期限の回収は、記録された判断があれば期限切れにせず、この判断で決める（BUG-45）。
+    pub async fn accept(mut self, accepted: &AcceptedDecision) -> Result<(), RunStoreError> {
+        let value = serde_json::to_value(accepted)
+            .map_err(|e| RunStoreError::Internal(format!("approval accepted: {e}")))?;
+        sqlx::query(
+            "UPDATE workflow_approval SET accepted = $3, updated_at = now() \
+             WHERE tenant_id = $1 AND approval_id = $2",
+        )
+        .bind(&self.tenant_id)
+        .bind(self.approval_id)
+        .bind(Json(&value))
+        .execute(&mut *self.tx)
+        .await
+        .map_err(map_db)?;
         self.tx.commit().await.map_err(map_db)
     }
 

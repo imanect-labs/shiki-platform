@@ -129,7 +129,8 @@ async fn resolve_on(
     res: &ApprovalResolution,
     reason: Option<&str>,
 ) -> Result<(), anyhow::Error> {
-    if runs.resolve_approval(subscriber, wait, res).await? {
+    // 監査には確定した status を書く（期限切れのつもりでも、判断 API が期限内に受け付けた判断で決まり得る）。
+    if let Some(status) = runs.resolve_approval(subscriber, wait, res).await? {
         audit_resolved_because(
             db,
             &ResolvedApproval {
@@ -137,7 +138,7 @@ async fn resolve_on(
                 org: subscriber.org.clone(),
                 approval_id: wait.approval_id,
                 run_id: subscriber.run_id,
-                status: res.status.to_string(),
+                status: status.to_string(),
             },
             reason,
         )

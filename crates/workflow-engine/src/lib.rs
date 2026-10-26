@@ -24,8 +24,9 @@ pub mod summary;
 pub mod vocab;
 
 pub use approval::{
-    approval_id_for, ApprovalChoiceSpec, ApprovalResolution, ApprovalRow, ApprovalStore,
-    ApprovalSuspend, AssigneeKind, AssigneeRef, DecisionStart, DecisionTx, InboxCursor,
+    approval_id_for, AcceptedDecision, ApprovalChoiceSpec, ApprovalResolution, ApprovalRow,
+    ApprovalStore, ApprovalSuspend, AssigneeKind, AssigneeRef, DecisionStart, DecisionTx,
+    InboxCursor,
 };
 pub use capability::{
     check_scope_ceiling, effective_scopes, CapabilityAudit, EffectJournal, JournalDecision,

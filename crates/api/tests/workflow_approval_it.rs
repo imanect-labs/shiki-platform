@@ -2619,3 +2619,182 @@ async fn cancelled_decisions_neither_lose_nor_strand_their_comment() {
     );
     env.forget_runs(wf).await;
 }
+
+impl Env {
+    /// 期限の回収（scheduler の tick と同じ口）を `at` の時刻で呼ぶ。
+    async fn expire_at(&self, at: chrono::DateTime<chrono::Utc>) {
+        api::workflow_runtime::expire_due_approvals(
+            &self.pool,
+            &self.runs,
+            &self.data,
+            &self.fsms,
+            at,
+            Some(TENANT),
+        )
+        .await
+        .unwrap();
+    }
+}
+
+/// 判断の遷移と期限の回収が競っても、行と run の結論が分かれない（BUG-45）。
+///
+/// 1. 期限の前に受け付けた判断の遷移が終わる前に、期限の回収が来た: 回収は判断の受付を待ち、期限切れにせず
+///    その判断で決める（行は承認・run も承認の出口）。
+/// 2. 判断を受け付ける前に期限が過ぎた（判断できるかを確かめてから台帳の行を取るまでの間）: 遷移せずに 409
+///    期限切れで断り、行は動かない（回収で時間切れの出口へ進む）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn decisions_racing_the_deadline_keep_the_row_and_the_run_in_step() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.expense_table().await;
+    let wf = env.enable(table, Some(3600)).await;
+    let first = env.submit(table, "出張旅費", &env.bob).await;
+    let second = env.submit(table, "会議費", &env.bob).await;
+    env.settle().await;
+    let later = chrono::Utc::now() + chrono::Duration::hours(2);
+    // 2 件目の期限は 1 日先へずらす（1 件目の回収で一緒に期限切れにしない）。
+    let second_run = env.run_of(wf, second).await;
+    for sql in [
+        "UPDATE workflow_approval SET deadline = deadline + interval '1 day' \
+         WHERE tenant_id = $1 AND run_id = $2",
+        "UPDATE wait_subscription SET timeout_at = timeout_at + interval '1 day' \
+         WHERE tenant_id = $1 AND run_id = $2",
+    ] {
+        sqlx::query(sql)
+            .bind(TENANT)
+            .bind(second_run)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+    }
+
+    // 1. 遷移を止めている間に、期限の回収が来る。
+    let item = env
+        .item_for(&env.bob, first)
+        .await
+        .expect("bob の受信箱に出る");
+    let id = item["approval_id"].as_str().unwrap().to_string();
+    let rev = item["record"]["rev"].as_i64().unwrap();
+    let (hold, xid) = env.hold_record(first).await;
+    let deciding = tokio::spawn(
+        env.app.clone().oneshot(req(
+            "POST",
+            &env.bob,
+            &format!("/approvals/{id}/decision"),
+            Body::from(
+                json!({ "decision": "approve", "comment": "期限の直前", "expected_rev": rev })
+                    .to_string(),
+            ),
+        )),
+    );
+    env.wait_blocked_on(&xid).await;
+    let expiring = tokio::spawn({
+        let (pool, runs, data, fsms) = (
+            env.pool.clone(),
+            env.runs.clone(),
+            Arc::clone(&env.data),
+            Arc::clone(&env.fsms),
+        );
+        async move {
+            api::workflow_runtime::expire_due_approvals(
+                &pool,
+                &runs,
+                &data,
+                &fsms,
+                later,
+                Some(TENANT),
+            )
+            .await
+            .unwrap();
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    hold.commit().await.unwrap();
+    let resp = deciding.await.unwrap().unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    expiring.await.unwrap();
+    env.settle().await;
+    let run = env.run_of(wf, first).await;
+    let (st, ports, out) = env.step(run, "ok").await;
+    assert_eq!(
+        (st.as_str(), ports),
+        ("succeeded", vec!["approved".to_string()]),
+        "行は承認へ進んだので、run も承認の出口へ"
+    );
+    let out = out.unwrap();
+    assert_eq!(out["decided_by"], json!(env.bob.principal.id));
+    assert_eq!(out["comment"], "期限の直前");
+    assert_eq!(env.approval_of(run).await.1, "approved");
+    assert_eq!(env.step(run, "late").await.0, "skipped");
+    let row = env
+        .data
+        .get_record(&env.alice, table, first, None)
+        .await
+        .unwrap();
+    assert_eq!(row.data["status"], "approved");
+    assert_eq!(
+        env.resolve_audit(Uuid::parse_str(&id).unwrap())
+            .await
+            .unwrap()["status"],
+        "approved"
+    );
+
+    // 2. 判断できるかを確かめた後、台帳の行を取る前に期限が過ぎる。
+    let item = env
+        .item_for(&env.bob, second)
+        .await
+        .expect("bob の受信箱に出る");
+    let id = item["approval_id"].as_str().unwrap().to_string();
+    let rev = item["record"]["rev"].as_i64().unwrap();
+    let mut ledger = env.pool.begin().await.unwrap();
+    sqlx::query(
+        "UPDATE workflow_approval SET deadline = now() - interval '1 second' \
+         WHERE tenant_id = $1 AND approval_id = $2",
+    )
+    .bind(TENANT)
+    .bind(Uuid::parse_str(&id).unwrap())
+    .execute(&mut *ledger)
+    .await
+    .unwrap();
+    let xid: String =
+        sqlx::query_scalar("SELECT (pg_current_xact_id()::text::bigint % 4294967296)::text")
+            .fetch_one(&mut *ledger)
+            .await
+            .unwrap();
+    let deciding = tokio::spawn(env.app.clone().oneshot(req(
+        "POST",
+        &env.bob,
+        &format!("/approvals/{id}/decision"),
+        Body::from(json!({ "decision": "approve", "expected_rev": rev }).to_string()),
+    )));
+    env.wait_blocked_on(&xid).await;
+    ledger.commit().await.unwrap();
+    let resp = deciding.await.unwrap().unwrap();
+    let status = resp.status();
+    let body: Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(
+        (status, body["code"].clone()),
+        (StatusCode::CONFLICT, json!("expired")),
+        "{body}"
+    );
+    let row = env
+        .data
+        .get_record(&env.alice, table, second, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        row.data["status"], "reviewing",
+        "期限切れの判断では行を進めない"
+    );
+    env.expire_at(later + chrono::Duration::days(2)).await;
+    env.settle().await;
+    let run = env.run_of(wf, second).await;
+    let (st, ports, _) = env.step(run, "ok").await;
+    assert_eq!(
+        (st.as_str(), ports),
+        ("succeeded", vec!["timeout".to_string()])
+    );
+    assert_eq!(env.approval_of(run).await.1, "expired");
+    env.forget_runs(wf).await;
+}

@@ -390,6 +390,7 @@ impl RunStore {
                     &graph,
                 )
                 .await?
+                .is_some()
                 {
                     woke += 1;
                 }

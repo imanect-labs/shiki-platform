@@ -181,7 +181,8 @@ impl RunStore {
                 &res,
                 &graph,
             )
-            .await;
+            .await
+            .map(|status| status.is_some());
         }
         wake_step_and_advance(
             &self.db,
