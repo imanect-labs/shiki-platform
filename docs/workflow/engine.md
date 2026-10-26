@@ -988,6 +988,8 @@ agent.invoke の会計の利用元は `workflow`（自律版のループでも `
 
 実行履歴 UI の正 = `workflow_run`/`step_execution` テーブル ＋ `run_event`。入出力プレビューは `output`（spill 時は blob 参照・§12）を **シークレットレダクト済み**で表示する。**レダクトは記録時（保存前）に実施**し、表示時レダクトに頼らない（secrets の write-only 原則・miniapp-platform §5）。
 
+外部の応答に反射した secret の平文（GAP-09 の T0）は、`http.request` ノードと `Shiki.http.request` が step の出力・script へ返す前に `[REDACTED]` に置き換える（その呼び出しで解決した平文だけ）。**マスクは完全一致**で、平文のほかに登録するのは反射しやすい変形だけ: 前後の空白を落とした形・JSON の文字列としてエスケープした形（標準・`\/`・`\uXXXX`）・%エンコードした形（RFC 3986・`encodeURIComponent`・フォーム）。JSON の本文はキーも置き換え、テキストにする本文（JSON として読めない・1MB 超）は全体をマスクしてから 1MB に切る。ほかの符号化（base64・HTML の文字参照など）・平文の一部・4 文字未満の平文はマスクできない。
+
 ### 11.4 再実行操作（v1）
 
 v1 は次の 2 つだけを提供する。step 単位の入力編集リプレイはやらない。
