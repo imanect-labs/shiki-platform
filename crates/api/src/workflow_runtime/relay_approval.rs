@@ -5,7 +5,9 @@
 //!
 //! - **受付の突合**: 停止の commit より前に起きた遷移は、購読ができる前に配送済みになり得る。保留中で未突合の
 //!   承認を、実行主体の見え方で行を読み直して決める。いまの状態が停止時の状態なら待ち続け、判断の行き先なら
-//!   その出口へ、それ以外・行が見えない（消えた）なら取り下げる。承認の依頼の監査もここで書く。
+//!   その出口へ、それ以外・行が見えない（消えた）なら取り下げる。実行主体の委譲・権限が停止の後に外れていたら、
+//!   判断の遷移が二度と見えないので取り下げ、理由（[`ACTOR_UNAVAILABLE`]）を決着の監査に残す（判断の遷移を
+//!   受けた relay も同じ扱い）。承認の依頼の監査もここで書く。
 //! - **行の削除**: outbox の削除（`data.record.changed` / delete）を受けたら、その行に束縛した保留中の承認を、
 //!   実行主体の `data_get` が NotFound であることを確かめて取り下げる（見えなくなっただけでは取り下げない）。
 //!
@@ -17,7 +19,7 @@ use serde_json::{json, Value};
 use storage::audit::{AuditAction, AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
 use workflow_engine::{
-    ApprovalResolution, EventWaitSubscriber, ExecCtx, PendingApproval, ResolvedApproval,
+    ApprovalResolution, ApprovalWait, EventWaitSubscriber, ExecCtx, ResolvedApproval,
 };
 
 use super::auth::auth_ctx;
@@ -76,38 +78,54 @@ async fn audit(
     }
 }
 
+/// 承認を取り下げた理由（監査の `reason`）: 実行主体（委譲・権限）が行を読めなくなった。待っても判断の遷移が
+/// 実行主体に見えないので、受信箱で判断されても run は期限まで待ち、行と run の結論が食い違う。
+pub(super) const ACTOR_UNAVAILABLE: &str = "actor_unavailable";
+
 /// 承認が決着したことの監査（起床・取り下げ・期限切れ・system が記録）。
 pub(crate) async fn audit_resolved(db: &sqlx::PgPool, r: &ResolvedApproval) {
+    audit_resolved_because(db, r, None).await;
+}
+
+/// 承認が決着したことの監査（理由つき・[`ACTOR_UNAVAILABLE`]）。
+pub(super) async fn audit_resolved_because(
+    db: &sqlx::PgPool,
+    r: &ResolvedApproval,
+    reason: Option<&str>,
+) {
+    let mut metadata = json!({ "run_id": r.run_id, "status": r.status });
+    if let Some(reason) = reason {
+        metadata["reason"] = json!(reason);
+    }
     audit(
         db,
         &system_ctx(&r.tenant_id, &r.org),
         AuditAction::WorkflowApprovalResolve,
         r.approval_id,
-        json!({ "run_id": r.run_id, "status": r.status }),
+        metadata,
     )
     .await;
 }
 
 /// 保留中の承認を確定し、起こしたら決着の監査を書く。
-async fn resolve(
+pub(super) async fn resolve(
     deps: &RelayDeps<'_>,
-    p: &PendingApproval,
+    subscriber: &EventWaitSubscriber,
+    wait: &ApprovalWait,
     res: &ApprovalResolution,
+    reason: Option<&str>,
 ) -> Result<(), anyhow::Error> {
-    if deps
-        .runs
-        .resolve_approval(&p.subscriber, &p.wait, res)
-        .await?
-    {
-        audit_resolved(
+    if deps.runs.resolve_approval(subscriber, wait, res).await? {
+        audit_resolved_because(
             deps.db,
             &ResolvedApproval {
-                tenant_id: p.subscriber.tenant_id.clone(),
-                org: p.subscriber.org.clone(),
-                approval_id: p.wait.approval_id,
-                run_id: p.subscriber.run_id,
+                tenant_id: subscriber.tenant_id.clone(),
+                org: subscriber.org.clone(),
+                approval_id: wait.approval_id,
+                run_id: subscriber.run_id,
                 status: res.status.to_string(),
             },
+            reason,
         )
         .await;
     }
@@ -125,13 +143,15 @@ pub(super) async fn reconcile_approvals(deps: &RelayDeps<'_>) -> Result<(), anyh
         let ec = exec_ctx(&p.subscriber);
         let actor = match port.actor(&ec, p.table_id, Relation::Viewer).await {
             Ok(a) => Some(a),
-            // 委譲・権限が無い: 行を読めないので待ち続ける（期限・run の期限で流れる）。
+            // 委譲・権限が無い（停止の後に外れた）: 実行主体には判断の遷移が見えず、待っても決まらない。
+            // 取り下げて理由を監査に残す（受信箱で判断されても run が期限まで待つ食い違いを作らない）。
             Err(e) if !e.retryable => None,
             Err(e) => {
                 tracing::warn!(code = %e.code, error = %e.message, "承認の受付の突合で行を読めません（次の tick で再試行）");
                 continue;
             }
         };
+        let withdrawn = ApprovalResolution::withdrawn();
         if let Some(a) = actor {
             let target = a
                 .fsms
@@ -139,7 +159,7 @@ pub(super) async fn reconcile_approvals(deps: &RelayDeps<'_>) -> Result<(), anyh
                 .await;
             match target {
                 Err(DataError::NotFound) => {
-                    resolve(deps, &p, &ApprovalResolution::withdrawn()).await?;
+                    resolve(deps, &p.subscriber, &p.wait, &withdrawn, None).await?;
                 }
                 Err(
                     e @ (DataError::Internal(_)
@@ -178,9 +198,12 @@ pub(super) async fn reconcile_approvals(deps: &RelayDeps<'_>) -> Result<(), anyh
                         decided_by.map(|(_, at)| at),
                         Some(v.rev),
                     );
-                    resolve(deps, &p, &res).await?;
+                    resolve(deps, &p.subscriber, &p.wait, &res, None).await?;
                 }
             }
+        } else {
+            let reason = Some(ACTOR_UNAVAILABLE);
+            resolve(deps, &p.subscriber, &p.wait, &withdrawn, reason).await?;
         }
         audit(
             deps.db,
@@ -242,7 +265,14 @@ pub(super) async fn withdraw_on_deletes(
                 _ => false,
             };
             if gone {
-                resolve(deps, &p, &ApprovalResolution::withdrawn()).await?;
+                resolve(
+                    deps,
+                    &p.subscriber,
+                    &p.wait,
+                    &ApprovalResolution::withdrawn(),
+                    None,
+                )
+                .await?;
             }
         }
     }

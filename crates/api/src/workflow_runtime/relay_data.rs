@@ -245,6 +245,11 @@ impl<'d, 'a> BatchCtx<'d, 'a> {
         }
     }
 
+    /// 主体がテーブルを読めない（委譲・権限が無い）と分かったか（[`Self::prefetch`] の後だけ真になりうる）。
+    fn actor_unavailable(&self, who: &PrincipalKey, table_id: Uuid) -> bool {
+        matches!(self.actors.get(&(who.clone(), table_id)), Some(None))
+    }
+
     /// 変更が run の書込によるものか（書込の trace_id が run のもの・run id 自体は載せない）。
     async fn by_workflow(&mut self, ev: &DataEvent<'_>) -> Result<bool, anyhow::Error> {
         if let Some(b) = self.by_workflow.get(&ev.event.id) {
@@ -431,6 +436,21 @@ async fn relay_tenant_waits(
                 continue;
             }
             let Some(view) = cx.view(&who_of(w), ev).await? else {
+                // 承認を待つ run の実行主体が、停止の後に委譲・権限を失った: 判断の遷移は二度と見えないので、
+                // 取り下げて理由を残す（行は承認へ進んだのに run が期限まで待つ食い違いを作らない・GAP-08）。
+                if let Some(a) = w.approval() {
+                    if cx.actor_unavailable(&who_of(w), w.table_id) {
+                        super::relay_approval::resolve(
+                            cx.deps,
+                            &w.subscriber,
+                            a,
+                            &workflow_engine::ApprovalResolution::withdrawn(),
+                            Some(super::relay_approval::ACTOR_UNAVAILABLE),
+                        )
+                        .await?;
+                        woken.insert(key);
+                    }
+                }
                 continue;
             };
             let payload = cx.payload(w.source, ev, view).await?;
