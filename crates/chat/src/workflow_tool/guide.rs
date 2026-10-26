@@ -35,7 +35,8 @@ pub(super) const EXAMPLE_SUMMARIZE: &str = r##"{
   "input_schema": {
     "type": "object",
     "properties": { "title": { "type": "string" }, "body": { "type": "string" } },
-    "required": ["title", "body"]
+    "required": ["title", "body"],
+    "x-order": ["title", "body"]
   },
   "nodes": [
     { "id": "summarize", "type": "llm.invoke", "label": "要約する",
@@ -238,7 +239,7 @@ pub(super) fn emit_description(models: Option<&[String]>) -> String {
         d,
         "【骨格】{{\"ir_version\":1,\"name\":\"英小文字・数字・ハイフンの安定名（^[a-z][a-z0-9-]{{0,63}}$）\",\"display_name\":\"日本語の表示名\",\"declared_scopes\":[…]（省略可。ノードが要するスコープは保存時に補われる）,\"triggers\":[…],\"input_schema\":{{…}}（interactive の入力・省略可）,\"nodes\":[…],\"edges\":[…]}}\n\
          - triggers: {{\"kind\":\"interactive\"}}（ボタン・チャットから実行）| {{\"kind\":\"schedule\",\"cron\":\"0 9 * * 1-5\",\"tz\":\"Asia/Tokyo\"}} | {{\"kind\":\"event\",\"source\":\"storage.write\",\"scope\":{{\"folder\":\"<フォルダの uuid>\"}}}}（そのフォルダ（配下を含む）にファイルが保存されたときに起動。新しいファイル（op \"create\"）と既存のファイルの新しい版（op \"update\"・上書き・Office やノートの保存）の両方で起き、filter の /op で絞れる。新しい版は同じファイルの保存が {coalesce} 秒途切れてから最後の版で 1 回だけ起動する。このワークフロー自身の保存（workflow.start の子を含む）では起きない）| {{\"kind\":\"event\",\"source\":\"data.record.created\" か \"data.record.updated\" か \"data.transition\",\"scope\":{{\"table\":\"<テーブルの uuid>\"}},\"filter\"?:条件}}（テーブルの行が追加・更新・状態変更されたときに起動。有効化した人に見える行・列の変更だけで起き、一括取込とこのワークフロー自身の書込では起きない。状態は filter の /to で絞る）。EventSource = {sources}。control.wait（kind: event）の scope も同じ形が必須（データ変更は \"record\":値式 で行を絞れる・filter は {{\"$from\":\"event\"}} で届いたできごとを読む）。\n\
-         - input_schema: JSON Schema のサブセット（type・properties・required・items・enum など。$ref・oneOf は使えない）。入力は {{\"$from\":\"input\",\"path\":\"/キー\"}} で読む。\n\
+         - input_schema: JSON Schema のサブセット（type・properties・required・items・enum など。$ref・oneOf は使えない）。入力は {{\"$from\":\"input\",\"path\":\"/キー\"}} で読む。任意の注記 \"x-order\":[\"title\",\"body\"] は、画面（エディタの入力項目・実行の入力欄・ミニアプリの部品の候補）に並べる項目の順（properties のキーだけを重ねずに書く。省くと properties のキーは保存で辞書順に並び替わる）。\n\
          - nodes の要素（? は省略可）: {node}。id は ^[a-z][a-z0-9_]{{0,63}}$（英小文字で始め、英小文字・数字・_ だけ。例: find_requests）。\n\
          - edges の要素: {edge}。キーはこの 3 つだけ（port というキーは無い）。from_port を省くと out。出口: 通常のノードは out、control.branch は true / false、control.switch は cases の port と default、on_error が \"continue\" のノードは error、control.wait（kind: event・on_timeout: \"continue\"）は timeout。無い出口につないだエッジは保存できない。\n\
          - 入るエッジは 1 ノード 1 本まで（複数を受けられるのは control.join だけ）。\n\
@@ -487,6 +488,7 @@ mod tests {
             "{\"$from\":\"run\",\"path\":\"/run_id\"}",
             "{\"$from\":\"nodes.summarize.output\",\"path\":\"/text\"}",
             "\"input_schema\"",
+            "\"x-order\":[\"title\",\"body\"]",
             "{\"field\":\"status\",\"op\":\"eq\",\"value\":\"pending\"}",
         ] {
             assert!(all.contains(needle), "例に {needle} が無い");
