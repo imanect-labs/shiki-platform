@@ -160,6 +160,14 @@ export function defaultParams(nodeType: string): unknown {
     case "csv.write":
       // 入力全体（オブジェクト）を入れると JSON の文字がそのまま .csv に保存される（失敗もしない）。
       return { name: "output.csv", content: "" };
+    case "human.approval":
+      // テーブル・判断の行き先・担当者は選ばせる（テーブルの列と状態から選ぶ）。行は既定でトリガの行。
+      return {
+        title: "",
+        record: { table: "", id: { $from: "trigger", path: "/record_id" } },
+        assignees: [],
+        approve: { to: "" },
+      };
     default:
       return {};
   }

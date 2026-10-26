@@ -23,6 +23,7 @@ import { nodeIcon } from "../icons";
 import { defaultParams } from "../ir-state";
 import { mapErrors, nodeErrorView } from "../validation";
 import { CommonSection } from "./common";
+import { HumanApprovalForm } from "./forms-approval";
 import {
   AgentInvokeForm,
   LlmInvokeForm,
@@ -80,7 +81,47 @@ const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "csv.query": CsvQueryForm,
   "csv.patch": CsvPatchForm,
   "csv.write": CsvWriteForm,
+  "human.approval": HumanApprovalForm,
 };
+
+/// 承認を待つブロックを置いたときに勧める実行の期限（14 日・承認は数日かかる・GAP-08）。
+const APPROVAL_RUN_TIMEOUT_SEC = 14 * 24 * 3600;
+
+/// 承認を待つ間に実行の期限が来ると、承認は時間切れの出口へ流れずに取り消される。期限を延ばす提案を出す。
+function RunTimeoutSuggestion({ ctx }: { ctx: EditorContext }) {
+  const policies = ctx.state.ir.policies;
+  const current = policies?.run_timeout_sec ?? 259_200;
+  if (current >= APPROVAL_RUN_TIMEOUT_SEC) return null;
+  const days = Math.round((current / 86_400) * 10) / 10;
+  return (
+    <div
+      role="note"
+      className="space-y-2 rounded-md border p-2.5 text-[11px] leading-relaxed"
+      style={{
+        borderColor: "color-mix(in oklab, var(--season-autumn) 45%, transparent)",
+        backgroundColor: "color-mix(in oklab, var(--season-autumn) 8%, transparent)",
+      }}
+      data-testid="approval-run-timeout"
+    >
+      <p>
+        実行の期限はいま {days} 日です。承認を待つ間に期限が来ると、承認は取り消され、時間切れの出口へも進みません。
+      </p>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-7 text-xs"
+        onClick={() =>
+          ctx.dispatch({
+            type: "update_meta",
+            patch: { policies: { ...policies, run_timeout_sec: APPROVAL_RUN_TIMEOUT_SEC } },
+          })
+        }
+      >
+        実行の期限を 14 日にする
+      </Button>
+    </div>
+  );
+}
 
 /// 置いたときに空の文字で入れてある必須の欄（`defaultParams` の `""`）のうち、まだ空のもの。
 /// 保存は通るが中身の無い指示で動いてしまうので、欄の下で入力を促す（BUG-15）。
@@ -214,6 +255,7 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
             </ul>
           </div>
         ) : null}
+        {node.type === "human.approval" ? <RunTimeoutSuggestion ctx={ctx} /> : null}
         {Form ? (
           // ノードを選び直したらフォームの手元の状態（入力方法の切り替えなど）を持ち越さない。
           <InputFieldsContext.Provider value={inputFields}>

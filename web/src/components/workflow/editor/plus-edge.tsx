@@ -33,6 +33,10 @@ const PORT_LABELS: Record<string, string> = {
   false: "いいえ",
   error: "エラー時",
   timeout: "時間切れ",
+  approved: "承認",
+  rejected: "却下",
+  returned: "差し戻し",
+  withdrawn: "取り下げ",
 };
 
 export function PlusEdge({

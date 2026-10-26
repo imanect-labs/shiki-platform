@@ -43,6 +43,16 @@ export function outputPorts(irNode: IrNode): string[] {
     // どの case にも一致しない値は実行エンジンが `default` へ流す（control/mod.rs）。
     // フォールバック経路を配線できるよう常に default ハンドルを出す（`out` は発しない）。
     ports = [...new Set([...cases.map((c) => c.port), "default"])];
+  } else if (irNode.type === "human.approval") {
+    // 却下・差し戻しは指定したときだけ。取り下げは常に・時間切れは continue のとき（vocab::approval_ports と同じ規則）。
+    const p = (irNode.params ?? {}) as { reject?: unknown; return?: unknown; on_timeout?: string };
+    ports = ["approved"];
+    if (p.reject != null) ports.push("rejected");
+    if (p.return != null) ports.push("returned");
+    ports.push("withdrawn");
+    if (p.on_timeout === "continue") ports.push("timeout");
+    if (irNode.on_error === "continue") ports.push("error");
+    return ports;
   } else {
     ports = [...(entry?.output_ports ?? ["out"])];
   }
@@ -63,6 +73,10 @@ const PORT_LABELS: Record<string, string> = {
   default: "その他",
   error: "エラー時",
   timeout: "時間切れ",
+  approved: "承認",
+  rejected: "却下",
+  returned: "差し戻し",
+  withdrawn: "取り下げ",
 };
 
 export function portLabel(port: string): string {
@@ -70,8 +84,8 @@ export function portLabel(port: string): string {
 }
 
 function portColor(port: string): string {
-  if (port === "error") return "!bg-destructive";
-  if (port === "timeout") return "!bg-[var(--season-autumn)]";
+  if (port === "error" || port === "rejected") return "!bg-destructive";
+  if (port === "timeout" || port === "returned" || port === "withdrawn") return "!bg-[var(--season-autumn)]";
   return "!bg-primary";
 }
 

@@ -34,7 +34,17 @@ const PORT_LABELS: Record<string, string> = {
   error: "エラー時",
   timeout: "時間切れ",
   default: "その他",
+  approved: "承認",
+  rejected: "却下",
+  returned: "差し戻し",
+  withdrawn: "取り下げ",
 };
+
+/// step の状態の文言（承認を待つブロックの待機は「承認待ち」・GAP-08）。
+function stepStatusLabel(status: string, type: string | undefined): string {
+  if (status === "waiting_event" && type === "human.approval") return "承認待ち（担当者の受信箱に出ています）";
+  return STEP_STATUS_LABELS[status] ?? status;
+}
 
 function statusIcon(status: string): React.ReactNode {
   switch (status) {
@@ -150,7 +160,7 @@ function StepRow({
               ))}
           </span>
           <span className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-            <span>{STEP_STATUS_LABELS[step.status] ?? step.status}</span>
+            <span>{stepStatusLabel(step.status, info?.type)}</span>
             {step.stepPath !== step.nodeId ? (
               <span className="truncate font-mono">{step.stepPath}</span>
             ) : null}

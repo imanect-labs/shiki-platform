@@ -82,6 +82,9 @@ export function EnableDialog({
   const [busy, setBusy] = React.useState(false);
   /// スケジュールで動くか（入力の無い実行で「入力からテーブルを決める」ブロックは動かない）。
   const [schedule, setSchedule] = React.useState(false);
+  /// データ変更で起動するか・承認を待つか（有効化の前に、値の残り方と受信箱を説明する・GAP-07・GAP-08）。
+  const [dataTrigger, setDataTrigger] = React.useState(false);
+  const [approval, setApproval] = React.useState(false);
   // 業務データのテーブル（data_table の委譲先を選ぶ・名前の表示にも使う）。
   const needsTables = (plan?.grants ?? []).some((g) => g.objectKind === "data_table");
   const { tables } = useDataTables(open && needsTables);
@@ -101,6 +104,10 @@ export function EnableDialog({
         // 提案の出どころ（`node:<id>`）のブロックが、対象を前の結果から決めているか。
         const nodes = new Map((wf?.ir.nodes ?? []).map((n) => [n.id, n]));
         setSchedule(Boolean(wf?.ir.triggers.some((t) => t.kind === "schedule")));
+        setDataTrigger(
+          Boolean(wf?.ir.triggers.some((t) => t.kind === "event" && String(t.source).startsWith("data."))),
+        );
+        setApproval(Boolean(wf?.ir.nodes.some((n) => n.type === "human.approval")));
         const grants: GrantRow[] = p.grants.map((g) => {
           const node = g.source.startsWith("node:") ? nodes.get(g.source.slice(5)) : undefined;
           const target = TARGETS[g.objectKind];
@@ -225,6 +232,19 @@ export function EnableDialog({
                 </ul>
               )}
             </div>
+
+            {dataTrigger ? (
+              <p className="text-xs leading-relaxed text-muted-foreground" data-testid="enable-data-trigger-note">
+                テーブルの行が変わったときに動きます。あなたに見える行・列の変更だけで動き、変更された行の、あなたに
+                見える値が実行履歴に残ります（実行履歴はこのワークフローを見られる人が読めます）。
+              </p>
+            ) : null}
+            {approval ? (
+              <p className="text-xs leading-relaxed text-muted-foreground" data-testid="enable-approval-note">
+                承認を待つ間、担当者の受信箱（サイドバーの「承認」）に出ます。担当者が判断するには、そのテーブルの編集
+                権限と、状態の遷移の規則で許されていることが要ります。
+              </p>
+            ) : null}
 
             {plan.grants.length > 0 ? (
               <div>

@@ -10,6 +10,7 @@ export const SCOPE_LABELS: Record<string, string> = {
   "rag.query": "社内ドキュメントを検索する",
   "http.egress": "外部サービスへ送信する",
   "workflow.start": "別のワークフローを起動する",
+  "notify.send": "人へのお知らせ（承認の依頼を含む）",
 };
 
 export function scopeLabel(scope: string): string {
