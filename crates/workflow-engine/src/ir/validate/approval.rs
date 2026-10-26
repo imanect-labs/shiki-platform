@@ -5,7 +5,7 @@
 //!   テーブル・状態の列が読めないテーブルは同じ文言・存在の手がかりを出さない）。判断の行き先は FSM の状態、
 //!   受信箱に出す列と担当者の列はテーブルの列。材料は API 層が保存者の見え方（owner でなければ読める列だけ）で
 //!   引いて [`Catalog::tables`] に詰める（`None` なら照合しない）。読めない列は材料に入らないので、無い列と
-//!   同じ誤りになる。
+//!   同じ誤りになる。文言も、無い列と読めない列のどちらとも言わない（「無いか、読めない列です」）。
 //! - V7: 期限は `policies.run_timeout_sec` 未満（run の期限が先に来ると承認は時間切れの出口へ流れず、run ごと
 //!   取り消される）。直列に並ぶ承認の期限の合計が run の期限以上なら警告する。
 
@@ -105,7 +105,7 @@ pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
             if !table.fields.contains_key(key) {
                 errors.push(err(
                     "ir.unknown_field",
-                    format!("列 {key} はこのテーブルにありません"),
+                    format!("列 {key} はこのテーブルに無いか、読めない列です"),
                     &format!("/params/show_fields/{i}"),
                 ));
             }
@@ -121,7 +121,7 @@ pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
                 )),
                 None => errors.push(err(
                     "ir.unknown_field",
-                    format!("担当者の列 {key} はこのテーブルにありません"),
+                    format!("担当者の列 {key} はこのテーブルに無いか、読めない列です"),
                     &format!("/params/assignees/{i}/field"),
                 )),
             }
@@ -342,6 +342,25 @@ mod tests {
         .unwrap_err();
         let codes: Vec<&str> = errs.iter().map(|e| e.code.as_str()).collect();
         assert_eq!(codes, ["ir.unknown_field", "ir.bad_assignee"], "{errs:?}");
+        // 材料は保存者の見え方なので、材料に無い列は「無い」とも「読めない」とも言い切らない（BUG-65）。
+        assert_eq!(
+            errs[0].message,
+            "列 ghost はこのテーブルに無いか、読めない列です"
+        );
+        let mut bad = approval("ok", None);
+        bad["params"]["assignees"] = json!([{ "field": "deputy" }]);
+        let errs = validate(
+            &ir(json!([bad]), json!([])),
+            &table(Some(&["submitted", "approved", "rejected"])),
+        )
+        .unwrap_err();
+        assert_eq!(
+            (errs[0].code.as_str(), errs[0].message.as_str()),
+            (
+                "ir.unknown_field",
+                "担当者の列 deputy はこのテーブルに無いか、読めない列です"
+            )
+        );
     }
 
     /// 期限は run の期限未満。続けて待つ承認の期限の合計が run の期限以上なら警告する。
