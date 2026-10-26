@@ -1064,6 +1064,62 @@ test("条件の比べる値: 数値の入力項目と比べる数字は数とし
   expect(code.cmp.right).toBe("001");
 });
 
+test("条件の比べる値: 1 文字ずつ打っても途中の「0.」「1.0」「-0」が数の形に潰れず、打ったとおりの値で保存する（BUG-31）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const cmp = (left: unknown, op: string) => ({ cmp: { left, op, right: "" } });
+  const id = await openIr(page, {
+    input_schema: {
+      type: "object",
+      properties: { rate: { type: "number", title: "率" }, amount: { type: "number", title: "金額" } },
+    },
+    nodes: [
+      scriptNode("s", "点数を出す"),
+      {
+        id: "br",
+        type: "control.branch",
+        label: "基準を満たすか",
+        params: {
+          condition: {
+            all: [
+              cmp({ $from: "input", path: "/rate" }, "lt"),
+              cmp({ $from: "input", path: "/amount" }, "gte"),
+              cmp({ $from: "nodes.s.output", path: "/score" }, "eq"),
+              cmp({ $from: "nodes.s.output", path: "/ratio" }, "lte"),
+              cmp({ $from: "nodes.s.output", path: "/code" }, "eq"),
+            ],
+          },
+        },
+      },
+    ],
+    edges: [{ from: "s", to: "br" }],
+  });
+  await page.getByTestId("rf__node-br").click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  const rights = panel.locator('[data-value-expr="比べる値"]');
+  // 数値の入力項目（率・金額）と、型の分からない前のブロックの結果（点数・比率・コード）。全角の数字も数にする。
+  // 頭に 0 を重ねたコード（001）は、型の分からない相手とは文字のまま比べる。
+  const typed = ["0.08", "-0.5", "1.05", "０．２５", "001"];
+  for (const [i, text] of typed.entries()) {
+    const input = rights.nth(i).getByLabel("比べる値");
+    await input.click();
+    await input.pressSequentially(text, { delay: 40 });
+    // 打っている途中も、打ち終わっても、欄には打った文字のまま出る。
+    await expect(input).toHaveValue(text);
+  }
+  for (const i of [0, 1, 2, 3]) await expect(rights.nth(i).getByTestId("numeric-literal-note")).toBeVisible();
+  await expect(rights.nth(4).getByTestId("numeric-literal-note")).toHaveCount(0);
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+  const wf = (await (await page.request.get(`/api/workflows/${id}`)).json()) as {
+    ir: { nodes: { id: string; params: { condition?: { all: { cmp: { right: unknown } }[] } } }[] };
+  };
+  const all = wf.ir.nodes.find((n) => n.id === "br")?.params.condition?.all ?? [];
+  expect(all.map((c) => c.cmp.right)).toEqual([0.08, -0.5, 1.05, 0.25, "001"]);
+});
+
 test("ファイルを読む: 置いた直後はファイルが未選択で、前の結果を指さない（BUG-32）", async ({ page }) => {
   test.setTimeout(120_000);
   await loginViaKeycloak(page);

@@ -70,14 +70,24 @@ function modeOf(value: ValueExpr | undefined): Mode {
 }
 
 /// 固定値の文字を数として保存するか（条件の比べる値・BUG-31）。数として読めなければ文字のまま返す。
-/// - `auto`: 数字だけ（`-12`・`3.5`・全角の数字も）なら数にする
+/// - `auto`: 数字だけ（`-12`・`3.5`・全角の数字も）なら数にする。左辺の型が分からないので、頭に 0 を重ねた
+///   数字（コードの「001」「08」）と「-0」は文字のまま（数にすると文字の項目との等値が黙って偽になる）
 /// - `always`: 数と比べると分かっている欄（左辺が数値の入力項目）。桁区切りの `,` も外して読む
 /// 16 桁以上は数にしない（JavaScript の数で桁が落ち、別の値を保存してしまう・ID などは文字のまま）。
+/// 入力中の文字（「0.」「1.0」）は欄が下書きとして持つので、ここで数の正規形に潰しても打てなくならない。
 export function numericLiteral(text: string, mode: "auto" | "always"): string | number {
   const half = text.trim().replace(/[０-９．－]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
   const t = mode === "always" ? half.replace(/,/g, "") : half;
-  if (!/^-?\d+(\.\d+)?$/.test(t) || t.replace(/[-.]/g, "").length > 15) return text;
-  return Number(t);
+  // 末尾の「.」（打っている途中の「0.」）も数として読む（欄を離れても文字の「0.」で保存しない）。
+  if (!/^-?\d+(\.\d*)?$/.test(t) || t.replace(/[-.]/g, "").length > 15) return text;
+  const n = Number(t);
+  if (mode === "auto" && (/^-?0\d/.test(t) || Object.is(n, -0))) return text;
+  return n;
+}
+
+/// 2 つの固定値が同じ値か（入力中の下書きが、いまの値から作ったものかを見る）。
+function sameLiteral(a: unknown, b: unknown): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
 }
 
 function literalText(value: unknown): { text: string; isJson: boolean } {
@@ -148,6 +158,25 @@ export function ValueExprInput({
   const autoNumber = Boolean(numeric) && typeof value === "number";
   const [jsonMode, setJsonMode] = React.useState(literal.isJson && !autoNumber);
   const toText = (text: string): ValueExpr => (numeric ? numericLiteral(text, numeric) : text) as ValueExpr;
+  // 固定値の欄に打った文字から作る値（「数値やリストとして扱う」なら JSON として読み、読めなければ文字）。
+  const literalOf = (text: string): ValueExpr => {
+    if (jsonMode) {
+      try {
+        return JSON.parse(text) as ValueExpr;
+      } catch {
+        // 不完全な JSON 入力中は文字列のまま保持。
+      }
+    }
+    return toText(text);
+  };
+  // 固定値の欄の入力中の文字。値を数・JSON に直すと「0.」「1.0」「-0」が正規形に潰れ、打ち続けると別の数
+  // （「0.08」が 8）になる・IME の変換が壊れるので、打った文字のまま見せる（BUG-31）。いまの値がこの文字から
+  // 作った値と違う（元に戻した・ほかの操作で書き換わった）ときは使わない。
+  const [literalDraft, setLiteralDraft] = React.useState<string | null>(null);
+  const shownLiteral =
+    mode === "literal" && literalDraft !== null && sameLiteral(literalOf(literalDraft), value)
+      ? literalDraft
+      : literal.text;
   // JSON 限定の欄の入力中の文字（読めない間も消さずに見せる）。
   const [jsonDraft, setJsonDraft] = React.useState<string | null>(null);
   const jsonError = React.useMemo(() => {
@@ -306,21 +335,14 @@ export function ValueExprInput({
           <TextField
             multiline={multiline}
             label={label}
-            value={literal.text}
+            value={shownLiteral}
             placeholder={placeholder}
             invalid={Boolean(error)}
             textRef={textRef}
             onSelect={remember}
             onChange={(text) => {
-              if (jsonMode) {
-                try {
-                  emit(JSON.parse(text) as ValueExpr);
-                  return;
-                } catch {
-                  // 不完全な JSON 入力中は文字列のまま保持。
-                }
-              }
-              emit(toText(text));
+              setLiteralDraft(text);
+              emit(literalOf(text));
             }}
           />
           {autoNumber && !jsonMode ? (
@@ -360,12 +382,12 @@ export function ValueExprInput({
                 // OFF: 文字列に戻す）。トグルだけで型が変わらない齟齬を防ぐ。
                 if (on) {
                   try {
-                    emit(JSON.parse(literal.text) as ValueExpr);
+                    emit(JSON.parse(shownLiteral) as ValueExpr);
                   } catch {
                     // 解釈できないテキストは文字列のまま（入力継続で解釈される）。
                   }
                 } else if (literal.isJson) {
-                  emit(toText(literal.text));
+                  emit(toText(shownLiteral));
                 }
               }}
               className="scale-75"
