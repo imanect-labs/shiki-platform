@@ -6,6 +6,7 @@ import { PenSquare, Search, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import {
+  APPROVALS_NAV,
   APPS_NAV,
   DATA_NAV,
   DRIVE_ICON,
@@ -16,7 +17,8 @@ import {
 } from "@/lib/nav-config";
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { NavItem } from "./nav-item";
+import { approvalBadge, useApprovalCount } from "@/hooks/use-approval-count";
+import { CountBadge, NavItem } from "./nav-item";
 import { SidebarDriveAccordion } from "./sidebar-drive-accordion";
 import { useSidebar } from "./sidebar-context";
 
@@ -26,12 +28,14 @@ function NavTile({
   label,
   href,
   active,
+  badge,
   onNavigate,
 }: {
   icon: LucideIcon;
   label: string;
   href: string;
   active: boolean;
+  badge?: string | null;
   onNavigate?: () => void;
 }) {
   return (
@@ -39,6 +43,7 @@ function NavTile({
       href={href}
       onClick={onNavigate}
       aria-current={active ? "page" : undefined}
+      aria-label={badge ? `${label}（${badge} 件）` : undefined}
       className={cn(
         "flex h-[62px] min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-0.5 text-[11px] tracking-[-0.02em] outline-none transition-colors",
         "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
@@ -47,27 +52,33 @@ function NavTile({
           : "text-sidebar-foreground/70 active:bg-sidebar-accent/60",
       )}
     >
-      <Icon
-        className={cn("size-5 shrink-0", active ? "text-sidebar-foreground" : "text-sidebar-foreground/60")}
-        aria-hidden
-      />
+      <span className="relative">
+        <Icon
+          className={cn("size-5 shrink-0", active ? "text-sidebar-foreground" : "text-sidebar-foreground/60")}
+          aria-hidden
+        />
+        {badge ? <CountBadge value={badge} className="absolute -right-3 -top-2 h-4 min-w-4 px-1 text-[10px]" /> : null}
+      </span>
       <span className="max-w-full truncate">{label}</span>
     </Link>
   );
 }
 
-/// スマホのドロワ上部: 「新しいチャット」（主ボタン）と検索を 1 段に、その下にナビ 5 マスを 1 行。
-/// 履歴に使える縦幅を広げるため、ドライブの子メニューはここに出さない（ドライブ画面側の ⋯ が導線）。
+/// スマホのドロワ上部: 「新しいチャット」（主ボタン）と検索を 1 段に、その下にナビ 6 マスを 3 列 2 行。
+/// 「ワークフロー」が 6 列では収まらない（省略される）ので 3 列にする。履歴に使える縦幅を広げるため、
+/// ドライブの子メニューはここに出さない（ドライブ画面側の ⋯ が導線）。
 function MobileNav({ onNavigate }: { onNavigate?: () => void }) {
   const router = useRouter();
   const pathname = usePathname();
   const { setSearchOpen } = useSidebar();
+  const approvals = approvalBadge(useApprovalCount());
   const tiles = [
     { key: "drive", label: "ドライブ", href: DRIVE_ROOT, icon: DRIVE_ICON },
     SKILLS_NAV,
     APPS_NAV,
     WORKFLOWS_NAV,
     DATA_NAV,
+    APPROVALS_NAV,
   ];
 
   return (
@@ -94,7 +105,7 @@ function MobileNav({ onNavigate }: { onNavigate?: () => void }) {
           <Search className="size-5" aria-hidden />
         </button>
       </div>
-      <nav aria-label="メインナビゲーション" className="grid grid-cols-5 gap-1">
+      <nav aria-label="メインナビゲーション" className="grid grid-cols-3 gap-1">
         {tiles.map((t) => (
           <NavTile
             key={t.key}
@@ -102,6 +113,7 @@ function MobileNav({ onNavigate }: { onNavigate?: () => void }) {
             label={t.label}
             href={t.href}
             active={isActivePath(t.href, pathname)}
+            badge={t.key === APPROVALS_NAV.key ? approvals : null}
             onNavigate={onNavigate}
           />
         ))}
@@ -122,11 +134,16 @@ export function SidebarNav({
   mobile?: boolean;
   onNavigate?: () => void;
 }) {
+  if (mobile) return <MobileNav onNavigate={onNavigate} />;
+  return <DesktopNav collapsed={collapsed} onNavigate={onNavigate} />;
+}
+
+/// PC のサイドバー上部（承認の件数はこの中だけで読む・スマホのドロワは [`MobileNav`] が読む）。
+function DesktopNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: () => void }) {
   const router = useRouter();
   const pathname = usePathname();
   const { setSearchOpen } = useSidebar();
-
-  if (mobile) return <MobileNav onNavigate={onNavigate} />;
+  const approvals = approvalBadge(useApprovalCount());
 
   const startNewChat = () => {
     router.push("/");
@@ -243,6 +260,17 @@ export function SidebarNav({
           active={isActivePath(DATA_NAV.href, pathname)}
           onClick={() => {
             router.push(DATA_NAV.href);
+            onNavigate?.();
+          }}
+        />
+        <NavItem
+          icon={APPROVALS_NAV.icon}
+          label={APPROVALS_NAV.label}
+          collapsed={collapsed}
+          badge={approvals}
+          active={isActivePath(APPROVALS_NAV.href, pathname)}
+          onClick={() => {
+            router.push(APPROVALS_NAV.href);
             onNavigate?.();
           }}
         />
