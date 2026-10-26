@@ -4,13 +4,13 @@
 //! [`super::data_records`]。権限・検証・監査は `DataStore`（単一チョークポイント）が担う。
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
-use data::{DataTable, NewDataTable, TableSchema};
+use data::{DataTable, NewDataTable, TableListQuery, TableSchema, MAX_TABLE_PAGE};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use axum::routing::{get, put};
@@ -36,10 +36,23 @@ pub struct UpdateSchemaRequest {
     pub expected_schema_version: Option<i64>,
 }
 
-/// テーブル一覧レスポンス。
+/// テーブル一覧レスポンス（更新の新しい順）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TableListResponse {
     pub items: Vec<DataTable>,
+    /// 続きの位置（`cursor` に渡すと次のページを返す・無ければ null で、これが最後のページ）。
+    pub next_cursor: Option<String>,
+}
+
+/// テーブル一覧の絞り込みと続き（GAP-42）。
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct TableListParams {
+    /// 名前に含む文字（大文字小文字を区別しない・前後の空白は除く・128 文字まで）。
+    pub q: Option<String>,
+    /// 前のページの `next_cursor`。
+    pub cursor: Option<String>,
+    /// 1 ページの件数（1〜200・既定 200）。
+    pub limit: Option<i64>,
 }
 
 /// テーブルを作成する（スキーマ検証＋索引台帳の初期化・201）。
@@ -75,12 +88,17 @@ pub async fn create_table(
     Ok((StatusCode::CREATED, Json(created)))
 }
 
-/// 自分が使えるテーブル一覧（ReBAC viewer 実効集合）。
+/// 自分が使えるテーブル一覧（ReBAC viewer 実効集合・更新の新しい順）。
+///
+/// `q` で名前を探し、`next_cursor` で続きを読む（エディタのテーブルの選択が、先頭の 200 件より先の
+/// テーブルを名前で探せるように・GAP-42）。検索と続きは viewer 実効集合の中だけで絞る。
 #[utoipa::path(
     get,
     path = "/data/tables",
+    params(TableListParams),
     responses(
         (status = 200, description = "一覧", body = TableListResponse),
+        (status = 400, description = "cursor が不正（code=cursor_invalid）・q が長すぎる", body = crate::error_body::BadRequestBody),
         (status = 401, description = "未認証"),
     ),
     security(("session" = [])),
@@ -88,10 +106,19 @@ pub async fn create_table(
 pub async fn list_tables(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
+    Query(p): Query<TableListParams>,
 ) -> Result<Json<TableListResponse>, ApiError> {
+    let query = TableListQuery {
+        q: p.q,
+        cursor: p.cursor,
+        limit: p.limit.unwrap_or(MAX_TABLE_PAGE),
+    };
     // スキーマ管理者（owner）以外には読める列だけ・ポリシーの定義なしで返す（検証 C-P2-5）。
-    let items = state.data.list_tables_for_viewer(&ctx, 200).await?;
-    Ok(Json(TableListResponse { items }))
+    let page = state.data.list_tables_for_viewer_page(&ctx, &query).await?;
+    Ok(Json(TableListResponse {
+        items: page.items,
+        next_cursor: page.next_cursor,
+    }))
 }
 
 /// テーブルのメタ＋スキーマを取得する（viewer）。

@@ -3350,6 +3350,23 @@ async fn structured_errors_and_table_definitions_never_reveal_masked_columns() {
     for leak in ["emp_no", "secret_code", "bmgr", "hidden-row"] {
         assert!(!text.contains(leak), "一覧 {leak}: {text}");
     }
+    // 名前で探す 1 ページ（GAP-42）も同じ規則で絞る。
+    let page = store
+        .list_tables_for_viewer_page(
+            &bob,
+            &data::TableListQuery {
+                q: Some("staff".into()),
+                cursor: None,
+                limit: 10,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    let text = serde_json::to_string(&page.items).unwrap();
+    for leak in ["emp_no", "secret_code", "bmgr", "hidden-row"] {
+        assert!(!text.contains(leak), "名前で探す一覧 {leak}: {text}");
+    }
     // carol（bmgr・owner ではない）は列は見えるが、ポリシーの定義は見えない。
     let seen = store
         .get_table_for_viewer(&carol, t.id, None)

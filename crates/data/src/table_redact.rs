@@ -52,6 +52,23 @@ impl DataStore {
         Ok(out)
     }
 
+    /// 閲覧者に見せるテーブル一覧の 1 ページ（名前の検索・続きの位置・GAP-42）。各テーブルは
+    /// [`Self::list_tables_for_viewer`] と同じ規則で絞る（検索は名前だけを見るので、列の絞り込みとは独立）。
+    pub async fn list_tables_for_viewer_page(
+        &self,
+        ctx: &AuthContext,
+        query: &crate::TableListQuery,
+    ) -> Result<crate::TablePage, DataError> {
+        let mut page = self.list_tables_page(ctx, query).await?;
+        let az = self.authz_memo();
+        let mut out = Vec::with_capacity(page.items.len());
+        for t in page.items {
+            out.push(self.redact_table(ctx, &az, t).await?);
+        }
+        page.items = out;
+        Ok(page)
+    }
+
     /// テーブル定義を閲覧者向けに絞る（owner はそのまま）。
     pub(crate) async fn redact_table(
         &self,

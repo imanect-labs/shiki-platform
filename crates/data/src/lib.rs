@@ -182,6 +182,7 @@ pub use stream::{
     StreamMessage, StreamReadyEvent, StreamResetEvent, StreamResetReason, LEDGER_CONSUMER,
     RECORD_CHANGED_EVENT,
 };
+pub use table_list::{TableListQuery, TablePage, MAX_TABLE_PAGE};
 pub use tenant_settings::{DataTenantSettings, MAX_COUNT_CAP, MAX_INDEXED_FIELDS_CEILING};
 pub use transition::TRANSITION_EVENT_TYPE;
 pub use validate::RefResolver;
