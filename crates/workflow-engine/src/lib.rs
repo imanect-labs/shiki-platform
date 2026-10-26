@@ -64,8 +64,8 @@ pub use run::{
     WorkflowWorker, DEFAULT_LEASE_SECS, WORKFLOW_GC_QUEUE,
 };
 pub use run::{
-    CancelOutcome, GcReport, HistoryGcWorker, ResumeOutcome, RunDetail, RunEventRow, RunListFilter,
-    RunListItem, RunStatusReader, StepDetail, StepOverview,
+    CancelOutcome, GcReport, HistoryGcWorker, PromoteReport, ResumeOutcome, RunDetail, RunEventRow,
+    RunListFilter, RunListItem, RunStatusReader, StepDetail, StepOverview,
 };
 pub use run::{
     FailureCategory, LiveState, OwnOutcome, ReplyBody, ReplyFile, ReplySection, ReplyTone,

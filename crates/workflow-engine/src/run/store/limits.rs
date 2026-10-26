@@ -3,6 +3,7 @@
 //! scheduler tick（リーダー）から呼ばれる:
 //! - [`RunStore::promote_queued_runs`] — max_parallel_runs 未満（待機中の run は数えない）の workflow の
 //!   最古 queued run を running へ昇格（entry step を ready 化・run.started 追記）。バックプレッシャの解放側。
+//!   1 つのワークフローの誤りは閉じ込めて次へ進む。ピンした IR を読めない run は failed で終わらせる。
 //! - [`RunStore::expire_run_timeouts`] — `timeout_at` 超過の running run を fail_reason=run_timeout
 //!   でキャンセル・ドレインに載せる（最終 status は failed）。
 
@@ -14,12 +15,30 @@ use crate::vocab::RunEventKind;
 
 use super::{append_event, map_db, RunStore, RunStoreError};
 
+/// ピンした IR（`ir_snapshot`）を読めずに failed で終わらせた run の `fail_reason`（内部の失敗・分類は unknown）。
+const FAIL_REASON_UNREADABLE_IR: &str = "internal";
+
+/// [`RunStore::promote_queued_runs`] の結果。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PromoteReport {
+    /// running へ昇格した run の数。
+    pub promoted: usize,
+    /// ピンした IR を読めず、failed（fail_reason=internal）で終わらせた run の数。
+    pub failed: usize,
+    /// 誤りで途中までしか進められなかったワークフローの数（warn に残し、次の tick で取り直す）。
+    pub skipped_workflows: usize,
+}
+
 impl RunStore {
-    /// queued run を（workflow ごとに）多重度上限まで promote する。戻り値 = 昇格数。
+    /// queued run を（workflow ごとに）多重度上限まで promote する。
+    ///
+    /// **1 つのワークフローの誤りで、ほかのワークフロー（ほかのテナントを含む）の昇格を止めない。** 誤りは
+    /// warn に残して次のワークフローへ進む（そのワークフローは次の tick で取り直す）。ピンした IR を読めない
+    /// run は待っても昇格できず先頭に居座るので、failed で終わらせて外す。`Err` は対象の列挙に失敗したときだけ。
     pub async fn promote_queued_runs(
         &self,
         tenant_scope: Option<&str>,
-    ) -> Result<usize, RunStoreError> {
+    ) -> Result<PromoteReport, RunStoreError> {
         // queued を持つ workflow を列挙（少数前提・部分 index 走査）。
         let targets: Vec<(String, Uuid)> = sqlx::query_as(
             "SELECT DISTINCT tenant_id, workflow_id FROM workflow_run \
@@ -29,20 +48,28 @@ impl RunStore {
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
-        let mut promoted = 0usize;
+        let mut report = PromoteReport::default();
         for (tenant, wf) in targets {
-            promoted += self.promote_for_workflow(&tenant, wf).await?;
+            if let Err(e) = self.promote_for_workflow(&tenant, wf, &mut report).await {
+                tracing::warn!(
+                    tenant_id = %tenant,
+                    workflow_id = %wf,
+                    error = %e,
+                    "queued run の昇格に失敗（ほかのワークフローは続ける・次の tick で取り直す）"
+                );
+                report.skipped_workflows += 1;
+            }
         }
-        Ok(promoted)
+        Ok(report)
     }
 
-    /// 1 workflow の queued を古い順に、running が上限未満の間だけ promote する。
+    /// 1 workflow の queued を古い順に、running が上限未満の間だけ promote する（数は `report` に足す）。
     async fn promote_for_workflow(
         &self,
         tenant_id: &str,
         workflow_id: Uuid,
-    ) -> Result<usize, RunStoreError> {
-        let mut promoted = 0usize;
+        report: &mut PromoteReport,
+    ) -> Result<(), RunStoreError> {
         loop {
             let mut tx = self.db.begin().await.map_err(map_db)?;
             // create_run と同じ advisory lock で多重度判定を直列化する。
@@ -67,11 +94,24 @@ impl RunStore {
                 tx.rollback().await.map_err(map_db)?;
                 break;
             };
-            let policies: crate::ir::Policies = ir_snapshot
-                .0
-                .get("policies")
-                .and_then(|p| serde_json::from_value(p.clone()).ok())
-                .unwrap_or_default();
+            // ピンした IR を読めない run は、待っても昇格できない（先頭に居座って後ろの run も止める）。
+            let ir = match crate::ir::WorkflowIr::from_json(&ir_snapshot.0) {
+                Ok(ir) => ir,
+                Err(e) => {
+                    fail_unreadable_run(&mut tx, tenant_id, run_id).await?;
+                    tx.commit().await.map_err(map_db)?;
+                    tracing::warn!(
+                        tenant_id,
+                        %workflow_id,
+                        %run_id,
+                        error = %e,
+                        "ピンした IR を読めない queued run を failed で終わらせました"
+                    );
+                    report.failed += 1;
+                    continue;
+                }
+            };
+            let policies = &ir.policies;
             // 待機中の run は数えない（create_run と同じ述語・D-26）。
             let running: i64 = sqlx::query_scalar(&format!(
                 "SELECT count(*) FROM workflow_run r \
@@ -101,8 +141,6 @@ impl RunStore {
             .map_err(map_db)?;
             // entry（入エッジ 0 本の本体ノード）を ready 化する。step_path = node_id（静的ノード）で、
             // create_run が queued では pending 留め置きにしたものだけが対象（他はそもそも pending）。
-            let ir = crate::ir::WorkflowIr::from_json(&ir_snapshot.0)
-                .map_err(|e| RunStoreError::Internal(format!("ir_snapshot: {e}")))?;
             let graph = crate::run::graph::RunGraph::build(&ir);
             for node_id in graph.root_body_nodes() {
                 if graph.is_root_source(node_id) {
@@ -129,9 +167,9 @@ impl RunStore {
             )
             .await?;
             tx.commit().await.map_err(map_db)?;
-            promoted += 1;
+            report.promoted += 1;
         }
-        Ok(promoted)
+        Ok(())
     }
 
     /// timeout_at 超過の running run を run_timeout 失敗としてキャンセル経路に載せる。
@@ -165,4 +203,26 @@ impl RunStore {
         }
         Ok(n)
     }
+}
+
+/// ピンした IR を読めない queued run を failed で終わらせる（run の失敗の経路と同じ: 残る step を cancelled に
+/// して run.failed を積む）。`fail_reason` は内部の失敗（分類は unknown・押し直しを勧めない文言になる）。
+async fn fail_unreadable_run(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    run_id: Uuid,
+) -> Result<(), RunStoreError> {
+    super::advance::cancel_remaining_steps(tx, tenant_id, run_id).await?;
+    sqlx::query(
+        "UPDATE workflow_run SET status = 'failed', fail_reason = $3, finished_at = now(), \
+             updated_at = now() \
+         WHERE tenant_id = $1 AND run_id = $2 AND status = 'queued'",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .bind(FAIL_REASON_UNREADABLE_IR)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    append_event(tx, tenant_id, run_id, RunEventKind::RunFailed, &Value::Null).await
 }

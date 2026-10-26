@@ -457,9 +457,7 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                         tracing::warn!(error = %e, "cancel ドレインでエラー");
                     }
                     // run 多重度の promote・run timeout・並行カウンタ突合（10.5）。
-                    if let Err(e) = tick_runs.promote_queued_runs(None).await {
-                        tracing::warn!(error = %e, "queued promote でエラー");
-                    }
+                    promote_queued(&tick_runs).await;
                     if let Err(e) = tick_runs.expire_run_timeouts(now, None).await {
                         tracing::warn!(error = %e, "run timeout 回収でエラー");
                     }
@@ -482,6 +480,23 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
         }
     });
     tracing::info!("ワークフロースケジューラ/イベント relay を起動しました");
+}
+
+/// queued run の昇格（scheduler tick・全テナント）。
+///
+/// promote はワークフローごとに誤りを閉じ込める（1 つの誤りでほかのテナントの昇格を止めない・ピンした IR を
+/// 読めない run は failed で外す）。個々の理由は engine が warn に残すので、ここでは進められなかった数を残す。
+async fn promote_queued(runs: &RunStore) {
+    match runs.promote_queued_runs(None).await {
+        Ok(r) if r.failed > 0 || r.skipped_workflows > 0 => tracing::warn!(
+            promoted = r.promoted,
+            failed = r.failed,
+            skipped_workflows = r.skipped_workflows,
+            "queued promote で進められない run・ワークフローがありました"
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "queued promote でエラー"),
+    }
 }
 
 async fn build_bucket(redis_url: &str) -> Result<TokenBucket, anyhow::Error> {
