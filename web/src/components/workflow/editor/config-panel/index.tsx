@@ -24,6 +24,7 @@ import { defaultParams } from "../ir-state";
 import { mapErrors, nodeErrorView } from "../validation";
 import { CommonSection } from "./common";
 import { HumanApprovalForm } from "./forms-approval";
+import { WorkflowReplyForm } from "./forms-reply";
 import {
   AgentInvokeForm,
   LlmInvokeForm,
@@ -82,6 +83,7 @@ const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "csv.patch": CsvPatchForm,
   "csv.write": CsvWriteForm,
   "human.approval": HumanApprovalForm,
+  "workflow.reply": WorkflowReplyForm,
 };
 
 /// 承認を待つブロックを置いたときに勧める実行の期限（14 日・承認は数日かかる・GAP-08）。

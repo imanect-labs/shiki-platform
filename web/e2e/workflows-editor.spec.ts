@@ -649,6 +649,43 @@ test("差し込む: 文字を求める欄だけに出し、CSV を保存の内�
   await expect(content.getByText("入力してください")).toHaveCount(0);
 });
 
+test("結果を画面に返す: 形・見出し・色合い・返す内容を設定して保存でき、表にすると列を選べる（GAP-09）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const id = await createLlmFlow(page, { prompt: "次の文章を要約してください" });
+  await openFlow(page, id);
+  const canvas = page.locator(".react-flow");
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+
+  // 尻尾のプラスから「結果を画面に返す」を足す。既定は文章で、返す内容は空なら入力を促す。
+  await canvas.getByLabel("次のブロックを追加").first().click();
+  await page.getByRole("button", { name: /^結果を画面に返す/ }).click();
+  await expect(canvas.getByText("結果を画面に返す").first()).toBeVisible();
+  const content = panel.locator('[data-value-expr="返す内容"]');
+  await expect(content.getByText("入力してください")).toBeVisible();
+  await expect(panel.getByTestId("reply-visibility-note")).toContainText("起動した本人の画面だけ");
+  await panel.getByLabel("見出し（省略可）").fill("受付");
+  await panel.getByRole("combobox", { name: "色合い" }).click();
+  await page.getByRole("option", { name: "うまくいった（緑）" }).click();
+  await content.getByLabel("返す内容").fill("受け付けました");
+  await saveFlow(page);
+  const reply = (await savedIr(page, id)).nodes.find((n) => n.id.startsWith("reply"));
+  expect(reply?.params).toEqual({ format: "text", label: "受付", tone: "success", value: "受け付けました" });
+
+  // 表にすると列（見出しと位置）を足せる。文章に戻すと列は外れる。
+  await panel.getByRole("combobox", { name: "形" }).click();
+  await page.getByRole("option", { name: "表" }).click();
+  await panel.getByRole("button", { name: "列を足す" }).click();
+  await panel.getByLabel("1 列目の見出し").fill("条項");
+  await panel.getByLabel("1 列目の位置").fill("/clause");
+  await expect(panel.getByLabel("1 列目の位置")).toHaveValue("/clause");
+  await panel.getByRole("combobox", { name: "形" }).click();
+  await page.getByRole("option", { name: "文章" }).click();
+  await expect(panel.getByRole("button", { name: "列を足す" })).toHaveCount(0);
+});
+
 test("入力項目: キーを変えるとブロックの参照も新しいキーになり、消すと残った参照を知らせる（GAP-12）", async ({
   page,
 }) => {

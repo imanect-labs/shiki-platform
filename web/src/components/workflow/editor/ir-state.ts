@@ -153,6 +153,9 @@ export function defaultParams(nodeType: string): unknown {
       return { skill: "" };
     case "workflow.start":
       return { name: "" };
+    case "workflow.reply":
+      // 返す内容は利用者が書く（空のままなら欄の下で入力を促す）。
+      return { format: "text", value: "" };
     case "csv.query":
       return { sql: "SELECT * FROM data LIMIT 100" };
     case "csv.patch":
