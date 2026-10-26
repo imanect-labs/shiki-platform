@@ -555,6 +555,7 @@ pub async fn get_approval(
         (status = 404, description = "担当でない・存在しない・行が見えない"),
         (status = 409, description = "もう決まった・期限切れ・別の担当者が判断中（code）・rev 不一致（code=rev_conflict）", body = ApprovalErrorBody),
         (status = 422, description = "いまの状態からは判断の行き先へ進めない（code=not_decidable）", body = ApprovalErrorBody),
+        (status = 429, description = "判断の受付が混み合っている（しばらくしてから再試行できる）"),
     ),
     security(("session" = [])),
 )]
@@ -683,6 +684,12 @@ impl DecideWork {
                     StatusCode::CONFLICT,
                     ApprovalErrorCode::Deciding,
                     "ほかの担当者がこの承認を判断しています。読み直してください",
+                ))
+            }
+            // 受付の同時実行の枠が空かなかった（プールを使い切らないよう、接続を持たずに待って断った）。
+            DecisionStart::Crowded => {
+                return Err(ApiError::RateLimited(
+                    "判断の受付が混み合っています。しばらくしてから再試行してください".into(),
                 ))
             }
             DecisionStart::Closed { expired: true } => return Err(expired_error()),

@@ -7,6 +7,8 @@
 //! 受信箱に出すのは、台帳が保留中で、run が実行中で、step が承認を待っている（waiting_event）ものだけ。
 //! 期限（承認の期限と run の期限の早い方）を過ぎたものも出さない（回収の tick を待たずに隠す）。
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,6 +16,7 @@ use sqlx::types::Json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::decision_gate::{self, DecisionGate, DecisionHold, Refused};
 use super::ApprovalChoiceSpec;
 use crate::ir::params::ApprovalDecisionKind;
 use crate::run::RunStoreError;
@@ -140,6 +143,8 @@ const ASSIGNED: &str = "EXISTS (SELECT 1 FROM workflow_approval_assignee x \
 #[derive(Clone)]
 pub struct ApprovalStore {
     db: PgPool,
+    /// 判断の受付の同時実行の枠（プールの上限より十分小さく抑える・[`decision_gate`]）。
+    decisions: Arc<DecisionGate>,
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -150,7 +155,11 @@ fn map_db(e: sqlx::Error) -> RunStoreError {
 impl ApprovalStore {
     #[must_use]
     pub fn new(db: PgPool) -> Self {
-        ApprovalStore { db }
+        let slots = decision_gate::slots_for(db.options().get_max_connections());
+        ApprovalStore {
+            db,
+            decisions: Arc::new(DecisionGate::new(slots)),
+        }
     }
 
     /// 本人（`user`）か所属ロール（`roles`）宛ての、いま判断できる承認（新しい順・`after` より古いもの）。
@@ -225,23 +234,26 @@ impl ApprovalStore {
     /// 1 つの Tx に入るので、遷移に失敗した判断・要求の取り消しのコメントは残らない（BUG-47）。起床（relay・
     /// 期限・突合）は台帳の行をロックしてからコメントを読むので、遷移と同時に起きても commit を待って拾う。
     ///
-    /// 別の判断が行を持ったまま待ち切れなければ [`DecisionStart::Busy`]。台帳の行が無い・決まった・取り消された・
-    /// 別の判断を受け付け済み・期限を過ぎた（承認の期限と run の期限の早い方・いまの時刻で）なら
-    /// [`DecisionStart::Closed`]（遷移しない）。
+    /// 受付は同時実行の枠（プロセス内・プールの上限の 4 分の 1）を接続を取る前に取り、接続を持たずに待つ。待ち切れ
+    /// なければ [`DecisionStart::Crowded`]（受付の 2 本目の接続を待つ間に、プールを使い切らない）。同じ承認の受付が
+    /// このプロセスで進んでいるか、ほかの受付・起床が台帳の行を持っていれば、待たずに [`DecisionStart::Busy`]
+    /// （`FOR UPDATE NOWAIT`・接続を持ったまま待たない）。台帳の行が無い・決まった・取り消された・別の判断を受け付け
+    /// 済み・期限を過ぎた（承認の期限と run の期限の早い方・いまの時刻で）なら [`DecisionStart::Closed`]（遷移しない）。
     pub async fn begin_decision(
         &self,
         tenant_id: &str,
         approval_id: Uuid,
     ) -> Result<DecisionStart, RunStoreError> {
+        let hold = match self.decisions.enter(tenant_id, approval_id).await {
+            Ok(h) => h,
+            Err(Refused::Busy) => return Ok(DecisionStart::Busy),
+            Err(Refused::Crowded) => return Ok(DecisionStart::Crowded),
+        };
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        // 別の担当者の判断（遷移の間ロックを持つ）を際限なく待たない（待てなければ「判断中」）。
-        sqlx::query("SET LOCAL lock_timeout = '3s'")
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db)?;
+        // 別の担当者の判断（遷移の間ロックを持つ）・起床が行を持っていれば、待たずに「判断中」。
         let locked = sqlx::query_scalar::<_, Uuid>(
             "SELECT approval_id FROM workflow_approval \
-             WHERE tenant_id = $1 AND approval_id = $2 FOR UPDATE",
+             WHERE tenant_id = $1 AND approval_id = $2 FOR UPDATE NOWAIT",
         )
         .bind(tenant_id)
         .bind(approval_id)
@@ -253,7 +265,8 @@ impl ApprovalStore {
             Err(e) if lock_not_available(&e) => return Ok(DecisionStart::Busy),
             Err(e) => return Err(map_db(e)),
         }
-        // ロックを取ってから、いま判断できるかを確かめ直す（別の文なので、待つ間に確定した起床・期限切れも見える）。
+        // ロックを取ってから、いま判断できるかを確かめ直す（別の文なので、API が判断できるかを確かめた後に確定した
+        // 起床・期限切れも見える）。
         // 期限は**いまの時刻**（`clock_timestamp()`・Tx の開始時刻ではない）で決める。ここで期限前なら、遷移と
         // 受け付けた判断の記録（[`DecisionTx::accept`]）を同じ Tx で commit するまで、期限の回収はこの行のロックを
         // 待ち、受け付けた判断で決める（BUG-45）。
@@ -288,6 +301,7 @@ impl ApprovalStore {
             tx,
             tenant_id: tenant_id.to_string(),
             approval_id,
+            _hold: hold,
         }))
     }
 }
@@ -310,17 +324,21 @@ pub struct AcceptedDecision {
 pub enum DecisionStart {
     /// 受け付けられる（台帳の行をロックした）。
     Open(DecisionTx),
-    /// 別の担当者の判断が台帳の行を持っていて、待ち切れなかった。
+    /// 別の担当者の判断（または起床）が台帳の行を持っている。
     Busy,
+    /// 判断の受付が混み合っていて、枠が空かなかった（しばらくしてから再試行できる）。
+    Crowded,
     /// もう判断できない（台帳の行が無い・決まった・取り消された。`expired` は期限を過ぎたから）。
     Closed { expired: bool },
 }
 
-/// 判断の受付の Tx（台帳の行のロックを持つ・[`ApprovalStore::begin_decision`]）。
+/// 判断の受付の Tx（台帳の行のロックと受付の枠を持つ・[`ApprovalStore::begin_decision`]）。
 pub struct DecisionTx {
     tx: sqlx::Transaction<'static, sqlx::Postgres>,
     tenant_id: String,
     approval_id: Uuid,
+    /// 受付の枠（確定・取り消し・drop で返す）。
+    _hold: DecisionHold,
 }
 
 impl DecisionTx {
@@ -376,7 +394,7 @@ impl DecisionTx {
     }
 }
 
-/// ロックを待ち切れなかった（`lock_timeout`・SQLSTATE 55P03）。
+/// 行のロックを取れなかった（`NOWAIT`・SQLSTATE 55P03）。
 fn lock_not_available(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(d) if d.code().as_deref() == Some("55P03"))
 }

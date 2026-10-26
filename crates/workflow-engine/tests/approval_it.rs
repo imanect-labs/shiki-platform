@@ -816,7 +816,8 @@ async fn decision_comments_live_and_die_with_the_decision_tx() {
     }
     assert!(env.comments(a).await.is_empty());
 
-    // 受付が行を持っている間の別の受付は、待ち切れずに「判断中」。
+    // 受付が行を持っている間の別の受付は、待たずに「判断中」（同じプロセスなら枠も接続も取らない・別のプロセス
+    // なら台帳の行の NOWAIT で・接続を持ったまま行のロックを待たない）。
     let mut d = env.open_decision(a).await;
     d.put_comment(5, "bob", approve, "規程どおりです")
         .await
@@ -825,6 +826,16 @@ async fn decision_comments_live_and_die_with_the_decision_tx() {
         env.inbox.begin_decision(&env.tenant, a).await.unwrap(),
         workflow_engine::DecisionStart::Busy
     ));
+    let other_process = ApprovalStore::new(env.pool.clone());
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        other_process.begin_decision(&env.tenant, a).await.unwrap(),
+        workflow_engine::DecisionStart::Busy
+    ));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "行のロックを待たない"
+    );
 
     // 受付の間に遷移が配送されても、起床は受付の commit を待ってコメントを拾う。
     let runs = env.runs.clone();
@@ -848,6 +859,61 @@ async fn decision_comments_live_and_die_with_the_decision_tx() {
         vec![(5, "bob".to_string(), "規程どおりです".to_string())]
     );
     env.forget_run(run).await;
+}
+
+/// 判断の受付は同時実行の枠（プールの上限の 4 分の 1・このテストのプール 5 本なら 1 つ）に収まり、枠が空くのを
+/// 接続を持たずに待つ。待ち切れなければ「混み合っている」。受付を返せば、待っていた別の承認の受付が始まる
+/// （受付の 2 本目の接続を待つ間に、判断の受付でプールを使い切らない）。
+#[tokio::test]
+async fn decisions_wait_for_a_slot_without_holding_a_connection() {
+    let Some(pool) = setup().await else { return };
+    let env = Env::new(pool).await;
+    let first = env.start(&approval_ir(None)).await;
+    let second = env.start(&approval_ir(None)).await;
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT approval_id FROM workflow_approval WHERE tenant_id = $1 ORDER BY created_at",
+    )
+    .bind(&env.tenant)
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(ids.len(), 2);
+    let d = env.open_decision(ids[0]).await;
+
+    // 枠が空かないまま待ち切れない。
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        env.inbox.begin_decision(&env.tenant, ids[1]).await.unwrap(),
+        workflow_engine::DecisionStart::Crowded
+    ));
+    assert!(started.elapsed() >= std::time::Duration::from_secs(2));
+
+    // 枠を待つ間は接続を持たない（プールの残りの 4 本をすべて取れる）。受付を返すと、待っていた受付が始まる。
+    let waiting = tokio::spawn({
+        let (inbox, tenant, id) = (env.inbox.clone(), env.tenant.clone(), ids[1]);
+        async move {
+            matches!(
+                inbox.begin_decision(&tenant, id).await.unwrap(),
+                workflow_engine::DecisionStart::Open(_)
+            )
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        held.push(
+            tokio::time::timeout(std::time::Duration::from_secs(2), env.pool.acquire())
+                .await
+                .expect("枠を待つ受付は接続を持たない")
+                .unwrap(),
+        );
+    }
+    assert!(!waiting.is_finished(), "枠が空くまで待つ");
+    drop(held);
+    d.rollback().await.unwrap();
+    assert!(waiting.await.unwrap(), "枠が空いたら受け付ける");
+    env.forget_run(first).await;
+    env.forget_run(second).await;
 }
 
 /// 判断 API が期限内に受け付けた判断（遷移は済み・relay の起床の前）は、期限の回収で期限切れにされず、その判断で

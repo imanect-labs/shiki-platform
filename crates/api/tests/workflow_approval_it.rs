@@ -2797,8 +2797,9 @@ impl Env {
 ///
 /// 1. 期限の前に受け付けた判断の遷移が終わる前に、期限の回収が来た: 回収は判断の受付を待ち、期限切れにせず
 ///    その判断で決める（行は承認・run も承認の出口）。
-/// 2. 判断を受け付ける前に期限が過ぎた（判断できるかを確かめてから台帳の行を取るまでの間）: 遷移せずに 409
-///    期限切れで断り、行は動かない（回収で時間切れの出口へ進む）。
+/// 2. 判断を受け付ける前に期限が過ぎた（判断できるかを確かめてから台帳の行を取るまでの間）: 遷移せずに断り
+///    （行を持つ Tx があれば待たずに 409 判断中・期限が確定した後は 409 期限切れ）、行は動かない（回収で時間切れの
+///    出口へ進む）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn decisions_racing_the_deadline_keep_the_row_and_the_run_in_step() {
     let _serial = SERIAL.lock().await;
@@ -2897,7 +2898,9 @@ async fn decisions_racing_the_deadline_keep_the_row_and_the_run_in_step() {
         "approved"
     );
 
-    // 2. 判断できるかを確かめた後、台帳の行を取る前に期限が過ぎる。
+    // 2. 判断できるかを確かめた後、台帳の行を取る前に期限が過ぎる（ほかの Tx が台帳の行を持ったまま期限を過ぎさせる）。
+    //    受付は行のロックを待たずに「判断中」で断り（接続を持ったまま待たない）、行は動かない。期限が確定した後の
+    //    判断は 409 期限切れ。
     let item = env
         .item_for(&env.bob, second)
         .await
@@ -2914,23 +2917,34 @@ async fn decisions_racing_the_deadline_keep_the_row_and_the_run_in_step() {
     .execute(&mut *ledger)
     .await
     .unwrap();
-    let xid: String =
-        sqlx::query_scalar("SELECT (pg_current_xact_id()::text::bigint % 4294967296)::text")
-            .fetch_one(&mut *ledger)
-            .await
-            .unwrap();
-    let deciding = tokio::spawn(env.app.clone().oneshot(req(
-        "POST",
-        &env.bob,
-        &format!("/approvals/{id}/decision"),
-        Body::from(json!({ "decision": "approve", "expected_rev": rev }).to_string()),
-    )));
-    env.wait_blocked_on(&xid).await;
-    ledger.commit().await.unwrap();
-    let resp = deciding.await.unwrap().unwrap();
+    let resp = tokio::time::timeout(
+        Duration::from_secs(2),
+        env.app.clone().oneshot(req(
+            "POST",
+            &env.bob,
+            &format!("/approvals/{id}/decision"),
+            Body::from(json!({ "decision": "approve", "expected_rev": rev }).to_string()),
+        )),
+    )
+    .await
+    .expect("台帳の行のロックを待たない")
+    .unwrap();
     let status = resp.status();
     let body: Value =
         serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(
+        (status, body["code"].clone()),
+        (StatusCode::CONFLICT, json!("deciding")),
+        "{body}"
+    );
+    ledger.commit().await.unwrap();
+    let (status, body) = env
+        .decide(
+            &env.bob,
+            &id,
+            json!({ "decision": "approve", "expected_rev": rev }),
+        )
+        .await;
     assert_eq!(
         (status, body["code"].clone()),
         (StatusCode::CONFLICT, json!("expired")),

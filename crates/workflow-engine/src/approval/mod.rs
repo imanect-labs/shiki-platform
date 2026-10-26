@@ -11,6 +11,7 @@
 //! - 停止・起床・期限・取消は run の状態機械と同じ Tx で台帳を確定する（`run/store/approval.rs`）。
 //! - 受信箱の照会と判断の受付は [`ApprovalStore`]（API が承認者本人の `AuthContext` で行を読み直す）。
 
+mod decision_gate;
 mod inbox;
 
 pub use inbox::{
