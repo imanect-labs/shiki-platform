@@ -2289,4 +2289,23 @@ async fn approval_checks_do_not_tell_unreadable_columns_from_missing_ones() {
             "/params/show_fields/1".to_string()
         )]
     );
+
+    // 受信箱に出す列に状態の列は選べない（無い列とは別の誤り・BUG-67）。状態の列が読めない人には、状態の列の
+    // 名前を書いても表の誤りだけが返る（状態の列の名前を探らせない）。
+    assert_eq!(
+        env.v4_codes(&env.bob, &ir(expense, ["approved", "status", "approver"]))
+            .await,
+        vec![(
+            "ir.bad_show_field".to_string(),
+            "/params/show_fields/1".to_string()
+        )]
+    );
+    assert_eq!(
+        env.v4_codes(&env.bob, &ir(status, ["approved", "status", "approver"]))
+            .await,
+        vec![(
+            "ir.unknown_table".to_string(),
+            "/params/record/table".to_string()
+        )]
+    );
 }

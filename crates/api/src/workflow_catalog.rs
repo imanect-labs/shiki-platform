@@ -114,7 +114,8 @@ pub async fn build_catalog_from(
 /// 定義は閲覧者向けの絞り込み（[`data::DataStore::get_table_for_viewer`]）を通す。テーブルの owner でない
 /// 保存者には読める列だけが入るので、読めない列は無い列と同じ誤り（`ir.unknown_field`）になり、種別
 /// （`ir.bad_assignee`）も返らない（無い列と読めない列を区別させない・data-platform §16.1）。状態の列が
-/// 読めなければ状態を入れない（`ir.unknown_table` で止め、「使える状態」の一覧も出さない）。
+/// 読めなければ状態を入れない（`ir.unknown_table` で止め、「使える状態」の一覧も出さない）。状態の列の名前も
+/// 同じときだけ入れる（受信箱に出す列に状態の列を選ぶと止める・BUG-67）。
 pub async fn approval_tables(
     data: &data::DataStore,
     ctx: &authz::AuthContext,
@@ -152,12 +153,14 @@ pub async fn approval_tables(
             Err(e) => return Err(format!("承認のテーブル: {e}")),
         };
         let schema = &table.schema;
-        let states = schema
+        // 状態の列（FSM で管理し、保存者が読めるときだけ・読めなければ定義の絞り込みが列ごと落とす）。
+        let status_def = schema
             .fsm_ref
             .as_ref()
             .and(schema.status_field.as_deref())
-            .and_then(|k| schema.field(k))
-            .map(|f| f.options.clone());
+            .and_then(|k| schema.field(k));
+        let states = status_def.map(|f| f.options.clone());
+        let status_field = status_def.map(|f| f.key.clone());
         let fields = schema
             .fields
             .iter()
@@ -171,7 +174,11 @@ pub async fn approval_tables(
             .collect();
         out.insert(
             id.hyphenated().to_string(),
-            workflow_engine::CatalogTable { states, fields },
+            workflow_engine::CatalogTable {
+                states,
+                status_field,
+                fields,
+            },
         );
     }
     Ok(Some(out))

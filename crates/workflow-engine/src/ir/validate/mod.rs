@@ -6,7 +6,7 @@
 mod agent;
 pub use agent::{pattern_within, valid_host_pattern};
 mod approval;
-pub use approval::{CatalogTable, APPROVAL_TIMEOUTS_EXCEED_RUN};
+pub use approval::{CatalogTable, APPROVAL_STATUS_FIELD_SHOWN, APPROVAL_TIMEOUTS_EXCEED_RUN};
 mod readiness;
 pub use readiness::{
     enable_blockers, required_text_empty, run_blockers, REQUIRED_TEXT_EMPTY, WRITE_FOLDER_REQUIRED,

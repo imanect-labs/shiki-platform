@@ -6,6 +6,9 @@
 //!   受信箱に出す列と担当者の列はテーブルの列。材料は API 層が保存者の見え方（owner でなければ読める列だけ）で
 //!   引いて [`Catalog::tables`] に詰める（`None` なら照合しない）。読めない列は材料に入らないので、無い列と
 //!   同じ誤りになる。文言も、無い列と読めない列のどちらとも言わない（「無いか、読めない列です」）。
+//!   受信箱に出す列に状態の列は選べない（受信箱は状態を別に出し、出すのは状態が停止時のままの行だけなので、
+//!   値はいつも同じ）。状態の列は保存者が読めるときだけ材料に入る（読めなければ上の `ir.unknown_table`）ので、
+//!   この誤りが読めない列の手がかりになることはない。
 //! - V7: 期限は `policies.run_timeout_sec` 未満（run の期限が先に来ると承認は時間切れの出口へ流れず、run ごと
 //!   取り消される）。直列に並ぶ承認の期限の合計が run の期限以上なら警告する。
 
@@ -19,11 +22,16 @@ use crate::vocab::{NodeType, Scope};
 /// 警告のコード: 直列に並ぶ承認の期限の合計が run の期限（`policies.run_timeout_sec`）以上。
 pub const APPROVAL_TIMEOUTS_EXCEED_RUN: &str = "ir.approval_timeouts_exceed_run";
 
+/// 誤りのコード: 受信箱に出す列に状態の列を選んだ（BUG-67）。
+pub const APPROVAL_STATUS_FIELD_SHOWN: &str = "ir.bad_show_field";
+
 /// 承認に使うテーブルの材料（保存者の見え方・API 層が詰める）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CatalogTable {
     /// FSM の状態（FSM で管理しないテーブル・状態の列を保存者が読めないテーブルは `None`）。
     pub states: Option<Vec<String>>,
+    /// 状態の列の参照名（`states` と同じく、保存者が読めて FSM で管理するときだけ）。
+    pub status_field: Option<String>,
     /// 保存者に読める列の参照名 → 種別（data の `FieldType` の serde 名。例: `user_ref`）。
     pub fields: BTreeMap<String, String>,
 }
@@ -102,7 +110,15 @@ pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
             }
         }
         for (i, key) in p.show_fields().iter().enumerate() {
-            if !table.fields.contains_key(key) {
+            if table.status_field.as_ref() == Some(key) {
+                errors.push(err(
+                    APPROVAL_STATUS_FIELD_SHOWN,
+                    format!(
+                        "列 {key} は状態の列なので、受信箱に出す列には選べません（状態は受信箱に別に出ます）"
+                    ),
+                    &format!("/params/show_fields/{i}"),
+                ));
+            } else if !table.fields.contains_key(key) {
                 errors.push(err(
                     "ir.unknown_field",
                     format!("列 {key} はこのテーブルに無いか、読めない列です"),
@@ -261,6 +277,7 @@ mod tests {
                 TABLE.to_string(),
                 CatalogTable {
                     states: states.map(|s| s.iter().map(ToString::to_string).collect()),
+                    status_field: states.map(|_| "status".to_string()),
                     fields: fields
                         .iter()
                         .map(|(k, t)| ((*k).to_string(), (*t).to_string()))
@@ -361,6 +378,22 @@ mod tests {
                 "担当者の列 deputy はこのテーブルに無いか、読めない列です"
             )
         );
+    }
+
+    /// 受信箱に出す列に状態の列は選べない（無い列とは別の誤り・BUG-67）。担当者の列の照合とは関係しない。
+    #[test]
+    fn the_status_field_is_not_a_show_field() {
+        let mut bad = approval("ok", None);
+        bad["params"]["show_fields"] = json!(["title", "status"]);
+        let errs = validate(
+            &ir(json!([bad]), json!([])),
+            &table(Some(&["submitted", "approved", "rejected"])),
+        )
+        .unwrap_err();
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].code, APPROVAL_STATUS_FIELD_SHOWN);
+        assert_eq!(errs[0].path.as_deref(), Some("/params/show_fields/1"));
+        assert!(errs[0].message.contains("状態の列"), "{}", errs[0].message);
     }
 
     /// 期限は run の期限未満。続けて待つ承認の期限の合計が run の期限以上なら警告する。
