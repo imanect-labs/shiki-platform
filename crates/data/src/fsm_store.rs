@@ -70,6 +70,35 @@ impl FsmStore {
             .await
     }
 
+    /// ワークフローの承認（human.approval）が停止時に読む行の状態（テーブルの viewer・GAP-08）。
+    ///
+    /// いまの状態・rev・FSM でその状態から進める状態（遷移の定義だけ）・読めるユーザー／ロールの列の値を返す。
+    /// FSM の本文はテーブルにピンされた版をテーブル側の参照として読むが、返すのは「いまの状態からの行き先」
+    /// だけ（actor 述語などの定義は返さない）。
+    pub async fn approval_target(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        record_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<crate::fsm_rules::ApprovalTargetView, DataError> {
+        let table = self.data.get_table(ctx, table_id, trace_id).await?;
+        let (fsm, status_field) = self
+            .data
+            .pinned_fsm(ctx, &table, trace_id)
+            .await?
+            .ok_or_else(|| {
+                DataError::input_detail(
+                    crate::InvalidCode::FsmInvalid,
+                    None,
+                    "このテーブルは状態遷移（FSM）で管理されていません",
+                )
+            })?;
+        self.data
+            .approval_target_with(ctx, &table, record_id, &fsm, &status_field)
+            .await
+    }
+
     /// FSM を保存する（対象テーブルのスキーマと照合検証 → artifact version 1）。
     pub async fn create(
         &self,

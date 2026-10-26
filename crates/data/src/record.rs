@@ -237,6 +237,42 @@ impl DataStore {
         Ok(records.remove(0))
     }
 
+    /// 同じテーブルのレコードをまとめて取得する（`ids` と同じ順・不可視・不在は `None`）。
+    ///
+    /// [`Self::get_record`] と同じ判定（テーブルの viewer・行述語・派生値は閲覧者本人の権限・マスク）を、
+    /// テーブルの読込・認可の問い（リクエストのメモ）・マスクの判定を 1 回にまとめて行う（承認の受信箱が担当の
+    /// 行を承認者本人の権限で読み直す・GAP-08）。テーブルが見えなければ `Err(NotFound / Forbidden)`。
+    pub async fn get_records(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        ids: &[Uuid],
+        trace_id: Option<&str>,
+    ) -> Result<Vec<Option<DataRecord>>, DataError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let az = self.authz_memo();
+        let table = self
+            .open_for_read(ctx, &az, table_id, AuditAction::DataRecordGet, trace_id)
+            .await?;
+        let mut found: Vec<(usize, DataRecord)> = Vec::with_capacity(ids.len());
+        for (i, id) in ids.iter().enumerate() {
+            if let Some(row) = self.select_visible_by_id(ctx, &az, &table, *id).await? {
+                found.push((i, row.into_record(&table.schema)));
+            }
+        }
+        let masked = self.masked_fields(ctx, &az, &table).await?;
+        let (slots, mut records): (Vec<usize>, Vec<DataRecord>) = found.into_iter().unzip();
+        self.project_read(ctx, &az, &table, &masked, &mut records)
+            .await?;
+        let mut out: Vec<Option<DataRecord>> = vec![None; ids.len()];
+        for (slot, rec) in slots.into_iter().zip(records) {
+            out[slot] = Some(rec);
+        }
+        Ok(out)
+    }
+
     /// レコードを削除する（editor・楽観ロック・削除リビジョン記録）。
     pub async fn delete_record(
         &self,

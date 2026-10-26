@@ -38,6 +38,21 @@ pub struct AllowedTransitions {
     pub transitions: Vec<String>,
 }
 
+/// ワークフローの承認（human.approval）が停止時に読む行の状態（[`crate::FsmStore::approval_target`]・GAP-08）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalTargetView {
+    /// 状態の列の参照名。
+    pub status_field: String,
+    /// いまの状態（未設定なら None）。
+    pub current: Option<String>,
+    /// いまの rev。
+    pub rev: i64,
+    /// FSM でいまの状態から進める状態（遷移の定義だけ・actor 述語は評価しない・定義順・重複なし）。
+    pub targets: Vec<String>,
+    /// ユーザー・ロールの列のうち主体に読めるもの（参照名 → (ロールの列か, 値)）。マスクされた列は入らない。
+    pub refs: std::collections::BTreeMap<String, (bool, Option<String>)>,
+}
+
 /// FSM 管理テーブルの状態の列と初期状態。
 pub(crate) struct FsmInitial {
     pub status_field: String,
@@ -166,6 +181,63 @@ impl DataStore {
             current,
             rev: row.rev,
             transitions,
+        })
+    }
+
+    /// 承認の停止時に読む行の状態（テーブルの viewer・行述語・フィールドマスク込み・不可視行は 404・状態の列が
+    /// 読めなければ 403 `FieldUnavailable`）。
+    ///
+    /// 進める状態は FSM の遷移の定義だけを見る（actor 述語は評価しない）。誰が判断できるかは判断の遷移
+    /// （[`crate::FsmStore::transition`]）が承認者本人で改めて決めるので、ここは「判断の行き先が定義に
+    /// あるか」を確かめる材料に限る。
+    pub(crate) async fn approval_target_with(
+        &self,
+        ctx: &AuthContext,
+        table: &DataTable,
+        record_id: Uuid,
+        fsm: &FsmBody,
+        status_field: &str,
+    ) -> Result<ApprovalTargetView, DataError> {
+        use crate::model::FieldType;
+        let az = self.authz_memo();
+        let masked = self.masked_fields(ctx, &az, table).await?;
+        if masked.contains(status_field) {
+            return Err(DataError::FieldUnavailable);
+        }
+        let row = self
+            .select_visible_by_id(ctx, &az, table, record_id)
+            .await?
+            .ok_or(DataError::NotFound)?;
+        let data = decode_record(&table.schema, &row.data.0);
+        let current = data
+            .get(status_field)
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let mut targets: Vec<String> = Vec::new();
+        if let Some(from) = &current {
+            for t in fsm.transitions.iter().filter(|t| &t.from == from) {
+                if !targets.contains(&t.to) {
+                    targets.push(t.to.clone());
+                }
+            }
+        }
+        let refs = table
+            .schema
+            .fields
+            .iter()
+            .filter(|f| matches!(f.field_type, FieldType::UserRef | FieldType::RoleRef))
+            .filter(|f| !masked.contains(&f.key))
+            .map(|f| {
+                let v = data.get(&f.key).and_then(Value::as_str).map(str::to_string);
+                (f.key.clone(), (f.field_type == FieldType::RoleRef, v))
+            })
+            .collect();
+        Ok(ApprovalTargetView {
+            status_field: status_field.to_string(),
+            current,
+            rev: row.rev,
+            targets,
+            refs,
         })
     }
 
