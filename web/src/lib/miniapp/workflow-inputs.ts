@@ -3,8 +3,11 @@
 ///
 /// 手がかりは部品の候補を出し、足りない必須の入力を知らせるためだけに使う（便宜）。値の検証は
 /// 起動のときにサーバーが同じスキーマで行うので、ここで読めない形は黙って飛ばしてよい。
+/// 手がかりは項目の並びの注記 `x-order` の順に並べる（部品の候補がワークフローの入力項目と同じ順に出る・D-60）。
 
 import type { WorkflowInputHint } from "@imanect/yui/editor";
+
+import { orderedProperties } from "@/lib/workflow-input-schema";
 
 type Prop = {
   type?: string | string[];
@@ -22,8 +25,9 @@ export function inputHints(schema: unknown): WorkflowInputHint[] {
   const s = schema as { properties?: Record<string, Prop>; required?: unknown };
   if (!s.properties || typeof s.properties !== "object") return [];
   const required = new Set(Array.isArray(s.required) ? s.required.filter((x): x is string => typeof x === "string") : []);
-  return Object.entries(s.properties).flatMap(([key, p]): WorkflowInputHint[] => {
-    if (!p || typeof p !== "object") return [];
+  return orderedProperties(schema).flatMap(([key, spec]): WorkflowInputHint[] => {
+    if (!spec || typeof spec !== "object") return [];
+    const p = spec as Prop;
     const type = Array.isArray(p.type) ? p.type.find((t) => t !== "null") : p.type;
     const hint: WorkflowInputHint = { key, required: required.has(key) };
     if (typeof p.title === "string" && p.title.trim()) hint.label = p.title.trim().slice(0, 40);

@@ -7,12 +7,14 @@
 /// パターン・入れ子など）の定義は壊さず「JSON で編集」で開く。
 /// キーはブロックの「差し込む」の候補になり、ミニアプリの画面の部品の `as` の名前と対応する。
 /// 誤り（キーの重なりなど）がある間は定義に書き戻さず、行の下に理由を出す。
+/// 項目は上下のボタンで並べ替えられる。並びは書き戻すたびに `x-order` に書く（保存して開き直しても、実行の
+/// ダイアログ・ミニアプリの部品の候補でも同じ順に並ぶ・D-60・BUG-34）。
 /// キーを変えると、ブロックの参照（`$from: "input"` の path）も同じ 1 手で新しいキーへ書き換える
 /// （呼び出し側へ旧キー → 新キーを渡す）。項目を消しても参照は残るので、定義に無いキーを使っている
 /// ブロックを一覧で知らせる。
 
 import * as React from "react";
-import { Plus, Trash2, TriangleAlert } from "lucide-react";
+import { ChevronDown, ChevronUp, Plus, Trash2, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -88,6 +90,25 @@ export function InputSchemaEditor({
       rows.map((r, j) => (j === i ? { ...r, ...patch } : r)),
       origins,
     );
+  // 並べ替えた行の同じボタンへフォーカスを移す（行は位置で描くので、押したボタンは別の項目の行に残る）。
+  const listRef = React.useRef<HTMLDivElement>(null);
+  const [focusMoved, setFocusMoved] = React.useState<{ index: number; dir: MoveDir } | null>(null);
+  React.useEffect(() => {
+    if (!focusMoved) return;
+    const row = listRef.current?.querySelectorAll<HTMLElement>('[data-testid="input-field-row"]')[focusMoved.index];
+    const button =
+      row?.querySelector<HTMLButtonElement>(`[data-move="${focusMoved.dir}"]:not(:disabled)`) ??
+      row?.querySelector<HTMLButtonElement>("[data-move]:not(:disabled)");
+    button?.focus();
+    setFocusMoved(null);
+  }, [focusMoved]);
+  const moveRow = (i: number, dir: MoveDir) => {
+    const j = dir === "up" ? i - 1 : i + 1;
+    if (j < 0 || j >= rows.length) return;
+    const swap = <T,>(xs: T[]) => xs.map((x, k) => (k === i ? xs[j] : k === j ? xs[i] : x));
+    update(swap(rows), swap(origins));
+    setFocusMoved({ index: j, dir });
+  };
   const addRow = (key?: string) => {
     const keys = new Set(rows.map((r) => r.key));
     let n = rows.length + 1;
@@ -120,20 +141,24 @@ export function InputSchemaEditor({
         <SchemaJson schema={schema} tableable={parsed !== null} onChange={onChange} />
       ) : (
         <>
-          {rows.map((row, i) => (
-            <FieldRow
-              key={i}
-              row={row}
-              error={errors.get(i) ?? null}
-              onChange={(patch) => patchRow(i, patch)}
-              onRemove={() =>
-                update(
-                  rows.filter((_, j) => j !== i),
-                  origins.filter((_, j) => j !== i),
-                )
-              }
-            />
-          ))}
+          <div ref={listRef} className="space-y-2.5">
+            {rows.map((row, i) => (
+              <FieldRow
+                key={i}
+                row={row}
+                error={errors.get(i) ?? null}
+                onChange={(patch) => patchRow(i, patch)}
+                onMove={(dir) => moveRow(i, dir)}
+                canMove={{ up: i > 0, down: i < rows.length - 1 }}
+                onRemove={() =>
+                  update(
+                    rows.filter((_, j) => j !== i),
+                    origins.filter((_, j) => j !== i),
+                  )
+                }
+              />
+            ))}
+          </div>
           {draft !== null ? (
             <p className="text-[11px] text-destructive" role="alert">
               直すまで入力項目の変更は保存されません
@@ -156,15 +181,21 @@ export function InputSchemaEditor({
   );
 }
 
+type MoveDir = "up" | "down";
+
 function FieldRow({
   row,
   error,
   onChange,
+  onMove,
+  canMove,
   onRemove,
 }: {
   row: InputFieldRow;
   error: string | null;
   onChange: (patch: Partial<InputFieldRow>) => void;
+  onMove: (dir: MoveDir) => void;
+  canMove: Record<MoveDir, boolean>;
   onRemove: () => void;
 }) {
   // 選択肢は 1 行 1 つで書く（入力中の空行は消さずに残す）。
@@ -185,6 +216,28 @@ function FieldRow({
           aria-label="表示名"
           className="h-8 min-w-0 flex-1 text-xs max-md:text-base"
         />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8 shrink-0"
+          aria-label={`入力項目「${name}」を上へ`}
+          data-move="up"
+          disabled={!canMove.up}
+          onClick={() => onMove("up")}
+        >
+          <ChevronUp className="size-3.5" aria-hidden />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8 shrink-0"
+          aria-label={`入力項目「${name}」を下へ`}
+          data-move="down"
+          disabled={!canMove.down}
+          onClick={() => onMove("down")}
+        >
+          <ChevronDown className="size-3.5" aria-hidden />
+        </Button>
         <Button
           variant="ghost"
           size="icon"

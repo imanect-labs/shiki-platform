@@ -180,6 +180,62 @@ test.describe("ミニアプリ（画面の作成・実行・バンドル権限�
     await expect(page.getByTestId("yui-runs")).toContainText("品名: ノート PC");
   });
 
+  test("「組み立てる」の実行先の入力の候補は、ワークフローの入力項目の並び（x-order）の順に出る（BUG-34・D-60）", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await loginViaKeycloak(page);
+    const flow = uniqueName("order-flow");
+    // キーの辞書順（due・memo・title）と違う順を x-order に書く。properties は保存で辞書順に並び替わる。
+    const wf = await apiPost(page, "/workflows", {
+      ir: {
+        ir_version: 1,
+        name: flow,
+        display_name: flow,
+        triggers: [{ kind: "interactive" }],
+        input_schema: {
+          type: "object",
+          properties: {
+            due: { type: "string", format: "date", title: "期日" },
+            memo: { type: "string", title: "メモ" },
+            title: { type: "string", title: "件名" },
+          },
+          required: ["title"],
+          "x-order": ["title", "memo", "due"],
+        },
+        nodes: [
+          {
+            id: "compute",
+            type: "script.run",
+            label: "計算する",
+            params: { source: { inline: "function main(i){ return { ok: true }; }" } },
+          },
+        ],
+        edges: [],
+      },
+    });
+
+    await page.goto("/apps");
+    await page.getByRole("button", { name: "アプリを作成" }).first().click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel("追加するワークフロー").selectOption({ label: `${flow}（v1）` });
+    await dialog.getByRole("button", { name: "追加" }).click();
+    // 雛形（金額・区分・申請する）の機能を選んだまま、まだ部品の無い入力が x-order の順に並ぶ。
+    const editor = dialog.getByTestId("screen-builder").locator("[data-yui=app-editor]");
+    const hints = editor
+      .locator(".ye-pal-group")
+      .filter({ has: page.locator(".ye-pal-title", { hasText: "実行先の入力（まだ無いもの）" }) })
+      .locator(".ye-pal-item");
+    await expect(hints).toHaveCount(3);
+    await expect(hints).toHaveText([/^件名送る名前 title・必須/, /^メモ送る名前 memo/, /^期日送る名前 due/]);
+    await dialog.getByRole("button", { name: "キャンセル" }).click();
+    await expect(dialog).toHaveCount(0);
+
+    const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+    const del = await page.request.delete(`/api/artifacts/${wf.id}`, { headers: { "X-CSRF-Token": csrf } });
+    expect(del.status(), await del.text()).toBeLessThan(300);
+  });
+
   test("会話の ```ui app を「アプリとして保存」して、そのまま使える", async ({ page }) => {
     test.setTimeout(180_000);
     await loginViaKeycloak(page);
