@@ -603,6 +603,26 @@ impl DataError {
         )
     }
 
+    /// 時間を置いて同じ要求を繰り返せば通りうる誤り（一時障害）か。偽なら確定的で、繰り返しても直らない。
+    ///
+    /// DB・認可基盤の障害（`Internal`）・読取の時間切れ・混雑・派生値の再計算中・索引の準備中・並行の
+    /// スキーマ切替などの競合（`Conflict`）・rev の不一致（rev を指定しない書込は読み直して通り得る）。
+    /// 権限・不在・入力の誤り・索引の承認待ち（管理者の承認が要る）は確定的。
+    ///
+    /// ワークフローの relay（配り直すか）と data ノードのポート（再試行するか）が、この 1 か所で決める。
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            DataError::Internal(_)
+                | DataError::ReadTimeout
+                | DataError::ReadOverloaded
+                | DataError::DerivedRecomputing { .. }
+                | DataError::IndexPreparing { .. }
+                | DataError::Conflict(_)
+                | DataError::RevConflict { .. }
+        )
+    }
+
     /// 競合の理由の文言（「競合しています」の前置きなし・行のエラー文言やログ用）。競合でなければ `None`。
     pub fn conflict_detail(&self) -> Option<String> {
         match self {
@@ -694,6 +714,40 @@ mod conflict_field_tests {
             "{e:?}"
         );
         assert_eq!(e.conflict_code(), Some("unique_violation"));
+    }
+
+    #[test]
+    fn transient_errors_are_the_ones_a_retry_can_pass() {
+        for e in [
+            DataError::Internal("db".into()),
+            DataError::ReadTimeout,
+            DataError::ReadOverloaded,
+            DataError::DerivedRecomputing { field: "f".into() },
+            DataError::IndexPreparing {
+                field: "f".into(),
+                progress: None,
+            },
+            DataError::Conflict("テーブルのスキーマが更新されました".into()),
+            DataError::RevConflict { current: 3 },
+        ] {
+            assert!(e.is_transient(), "{e:?}");
+        }
+        for e in [
+            DataError::NotFound,
+            DataError::Forbidden,
+            DataError::FieldUnavailable,
+            DataError::Invalid("x".into()),
+            DataError::NameTaken,
+            DataError::UniqueViolation { field: None },
+            DataError::Gone("x".into()),
+            DataError::IndexApprovalRequired {
+                field: "f".into(),
+                indexed: 8,
+                cap: 8,
+            },
+        ] {
+            assert!(!e.is_transient(), "{e:?}");
+        }
     }
 
     #[test]

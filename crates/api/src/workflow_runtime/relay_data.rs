@@ -81,18 +81,6 @@ fn data_event(ev: &storage::event::OutboxEvent) -> Option<DataEvent<'_>> {
     })
 }
 
-/// 配り直せば直りうる誤りか（DB・認可基盤の障害・読取の時間切れ・混雑・派生値の再計算中）。ほかは確定的。
-fn transient(e: &DataError) -> bool {
-    matches!(
-        e,
-        DataError::Internal(_)
-            | DataError::ReadTimeout
-            | DataError::ReadOverloaded
-            | DataError::DerivedRecomputing { .. }
-            | DataError::IndexPreparing { .. }
-    )
-}
-
 /// 見え方を作る主体（トリガは workflow 主体＝委譲元で、wait は run の実行主体）。
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct PrincipalKey {
@@ -180,7 +168,8 @@ impl<'d, 'a> BatchCtx<'d, 'a> {
                 {
                     Ok(v) => v,
                     Err(DataError::NotFound | DataError::Forbidden) => vec![None; missing.len()],
-                    Err(e) if transient(&e) => {
+                    // 配り直せば直りうる誤りか（data の一時障害の判定・[`DataError::is_transient`]）。
+                    Err(e) if e.is_transient() => {
                         return Err(anyhow::anyhow!("データ変更の見え方の作成に失敗: {e}"))
                     }
                     // 確定的な誤り（列・述語の評価など）は配り直しても直らない。1 件が全テナントの配送を

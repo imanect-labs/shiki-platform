@@ -85,8 +85,9 @@ struct RevisionRow {
 impl DataStore {
     /// レコード変更 1 件を `ctx` の見え方で返す（見えない変更は `Ok(None)`）。
     ///
-    /// テーブルが見えない・relation が無いときは `Err(NotFound / Forbidden)`（呼び出し側は「発火しない」に
-    /// 倒す）。それ以外の `Err` は一時的な障害で、呼び出し側は配り直す。
+    /// テーブルが見えない・relation が無いときは `Err(NotFound / Forbidden)`（テーブル単位の誤り・行が見えない
+    /// ときの `Ok(None)` とは区別する）。呼び出し側は「発火しない」に倒す。ほかの `Err` は
+    /// [`DataError::is_transient`] が真なら一時障害（配り直す）、偽なら確定的な誤り（配り直しても直らない）。
     pub async fn change_event_view(
         &self,
         ctx: &AuthContext,

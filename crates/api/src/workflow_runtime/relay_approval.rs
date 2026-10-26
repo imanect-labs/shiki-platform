@@ -161,11 +161,7 @@ pub(super) async fn reconcile_approvals(deps: &RelayDeps<'_>) -> Result<(), anyh
                 Err(DataError::NotFound) => {
                     resolve(deps, &p.subscriber, &p.wait, &withdrawn, None).await?;
                 }
-                Err(
-                    e @ (DataError::Internal(_)
-                    | DataError::ReadTimeout
-                    | DataError::ReadOverloaded),
-                ) => {
+                Err(e) if e.is_transient() => {
                     tracing::warn!(error = %e, "承認の受付の突合に失敗（次の tick で再試行）");
                     continue;
                 }

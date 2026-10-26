@@ -38,7 +38,10 @@ pub(super) struct Actor {
 }
 
 /// data のエラー → ポートのエラー（不可視と不在は同じ「見つからない」・再試行で直るものだけ retryable）。
+///
+/// 再試行で直るかは data の [`DataError::is_transient`] が決める（relay の配り直しと同じ判定）。
 pub(super) fn map_data(e: DataError) -> PortError {
+    let retryable = e.is_transient();
     match e {
         DataError::NotFound => PortError::new("not_found", "対象が見つかりません", false),
         DataError::Forbidden => PortError::forbidden("data の権限がありません"),
@@ -62,19 +65,26 @@ pub(super) fn map_data(e: DataError) -> PortError {
         // rev の不一致（rev を指定しない書込は再試行で読み直して通り得る）。
         e @ (DataError::Conflict(_)
         | DataError::RevConflict { .. }
-        | DataError::DerivedRecomputing { .. }) => {
-            PortError::new("conflict", e.conflict_detail().unwrap_or_default(), true)
-        }
+        | DataError::DerivedRecomputing { .. }) => PortError::new(
+            "conflict",
+            e.conflict_detail().unwrap_or_default(),
+            retryable,
+        ),
         DataError::Gone(m) => PortError::new("gone", m, false),
         DataError::ReadOverloaded => {
-            PortError::new("rate_limited", "data の読取が混み合っています", true)
+            PortError::new("rate_limited", "data の読取が混み合っています", retryable)
         }
         DataError::ReadTimeout => PortError::new(
             "read_timeout",
             "data の読取が時間内に終わりませんでした",
-            true,
+            retryable,
         ),
-        e @ (DataError::IndexPreparing { .. } | DataError::IndexApprovalRequired { .. }) => {
+        e @ DataError::IndexPreparing { .. } => {
+            PortError::new("index_preparing", e.to_string(), retryable)
+        }
+        // 索引の承認待ちは data の一時障害ではない（relay は配り直さない）が、管理者が承認すれば通るので、
+        // ノードの再試行の対象には残す（従来どおり）。
+        e @ DataError::IndexApprovalRequired { .. } => {
             PortError::new("index_preparing", e.to_string(), true)
         }
         e @ (DataError::QueryTooExpensive { .. } | DataError::Rejected(_)) => {
@@ -447,6 +457,40 @@ mod tests {
         assert!(map_data(DataError::Conflict("rev".into())).retryable);
         assert!(!map_data(DataError::Invalid("x".into())).retryable);
         assert!(map_data(DataError::Internal("db".into())).retryable);
+    }
+
+    /// 再試行するかは data の一時障害の判定と同じ（索引の承認待ちだけはノードの再試行に残す）。
+    #[test]
+    fn retryable_follows_the_data_transient_classification() {
+        for e in [
+            DataError::NotFound,
+            DataError::Forbidden,
+            DataError::FieldUnavailable,
+            DataError::Invalid("x".into()),
+            DataError::NameTaken,
+            DataError::ReadTimeout,
+            DataError::Conflict("スキーマが更新されました".into()),
+            DataError::RevConflict { current: 2 },
+            DataError::UniqueViolation { field: None },
+            DataError::DerivedRecomputing { field: "f".into() },
+            DataError::Internal("db".into()),
+            DataError::Gone("x".into()),
+            DataError::IndexPreparing {
+                field: "f".into(),
+                progress: None,
+            },
+            DataError::ReadOverloaded,
+        ] {
+            let (transient, label) = (e.is_transient(), format!("{e:?}"));
+            assert_eq!(map_data(e).retryable, transient, "{label}");
+        }
+        let approval = DataError::IndexApprovalRequired {
+            field: "f".into(),
+            indexed: 8,
+            cap: 8,
+        };
+        assert!(!approval.is_transient());
+        assert!(map_data(approval).retryable);
     }
 
     /// unique 違反は REST・取込・チャットと同じ `unique_violation`・再試行不可・列の表示名つき（3-B-3）。
