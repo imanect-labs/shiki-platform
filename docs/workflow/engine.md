@@ -966,9 +966,13 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
   permission）、台帳は `cancelled`、決着の監査に `reason: actor_unavailable` を残す。受付の突合・判断の遷移を受けた relay
   （受信箱で判断されたのに run が期限まで待つ食い違いを作らない）・期限の 3 経路で同じに扱う。
 - **行の削除**: outbox の削除を受けたら、実行主体の data.get が NotFound であることを確かめて `withdrawn` にする。
-- **期限**: `expire_due_waits` と同じ経路で台帳を `expired` にする（`on_timeout: continue` は `timeout` 出口・`fail` は run の
-  失敗）。その前に scheduler の tick が、期限の来た承認の実行主体がまだテーブルを読めるかを確かめ、読めなければ上の失権と
-  して run を失敗させる（確かめが一時障害で終わったら、その tick の wait timeout の回収を見送る）。受信箱は承認の期限と run の
+- **期限**: scheduler の tick が期限の来た承認を 1 件ずつ、実行主体がまだテーブルを読めるかを確かめてから決め、step の
+  terminal 化と同じ Tx で台帳を `expired` にする（`on_timeout: continue` は `timeout` 出口・`fail` は run の失敗）。読めなければ
+  上の失権として run を失敗させる。承認の期限切れを決めるのはこの回収だけで、wait(event) の timeout の回収
+  （`expire_due_waits`）は承認の購読を扱わない（確かめていない承認を `timeout` 出口へ進めない）。1 件の確かめ・確定が一時障害で
+  終わったら、その承認だけを決めずに残して次の tick で確かめ直し、ほかの承認（ほかのテナントの分を含む）と wait(event) の
+  timeout の回収は止めない。期限の来た承認は（期限, 承認 id）の順に続きの位置から読み、決められずに残った承認を同じ回収の
+  中で読み直さない（1 回の回収で読む件数には上限があり、残りは次の tick）。受信箱は承認の期限と run の
   期限の早い方を過ぎたら出さず、判断 API は 409 で拒む。判断 API は、台帳の行をロックした Tx の中で**いまの時刻**で期限を
   確かめ直してから遷移し、遷移に成功した判断を台帳（`accepted`）に記録して同じ Tx で commit する。期限の回収は台帳の行を
   ロックしてから決めるので、受付の途中ならその commit を待ち、受け付けた判断があれば期限切れにせず、その判断で決める（行は
