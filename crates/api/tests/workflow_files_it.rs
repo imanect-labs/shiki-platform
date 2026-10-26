@@ -382,21 +382,46 @@ impl Env {
     }
 
     /// 新しい版の保存をまとめて待っている発火を、時刻を進めて起こし、ワーカーで捌く（D-38）。
+    ///
+    /// 起動は本番の relay と同じ口（`retry_event_firings`）を通す（起動の前に workflow プリンシパルの閲覧を
+    /// 確かめ直す・BUG-50）。
     async fn fire_coalesced(&self) {
         let sched = SchedulerStore::new(self.pool.clone());
-        sched
-            .retry_pending_firings(
-                Utc::now()
-                    + chrono::Duration::seconds(
-                        workflow_engine::scheduler::COALESCE_QUIET_SECS + 1,
-                    ),
-                Some(&self.tenant),
-                &self.launcher,
-            )
-            .await
-            .unwrap();
+        api::workflow_runtime::retry_event_firings(
+            &api::workflow_runtime::RelayDeps {
+                db: &self.pool,
+                hints: &storage::event::ClaimHints::default(),
+                sched: &sched,
+                runs: &self.runs,
+                launcher: &self.launcher,
+                storage: &self.storage,
+                data: &self.data,
+                fsms: &self.fsms,
+            },
+            Utc::now()
+                + chrono::Duration::seconds(workflow_engine::scheduler::COALESCE_QUIET_SECS + 1),
+            Some(&self.tenant),
+        )
+        .await
+        .unwrap();
         let worker = self.worker();
         while worker.claim_and_run_once("w1").await.unwrap() {}
+    }
+
+    /// このテストのテナントに作った run・発火・登録を消す（同じ DB を使うほかのテストや手元のサーバの tick に
+    /// 残さない・BUG-63）。run を消せば step・wait_subscription は FK で消え、登録を消せばトリガも消える。
+    async fn cleanup(&self) {
+        for sql in [
+            "DELETE FROM trigger_firing WHERE tenant_id = $1",
+            "DELETE FROM workflow_run WHERE tenant_id = $1",
+            "DELETE FROM workflow_registration WHERE tenant_id = $1",
+        ] {
+            sqlx::query(sql)
+                .bind(&self.tenant)
+                .execute(&self.pool)
+                .await
+                .unwrap();
+        }
     }
 
     /// 利用者のアップロードで既存ファイルの新しい版を保存する（declare → presigned PUT → finalize）。
@@ -1436,4 +1461,114 @@ async fn consecutive_new_versions_of_a_file_start_one_run() {
         outcomes,
         vec![("coalesced".to_string(), 2), ("fired".to_string(), 1)]
     );
+}
+
+/// まとめて待たせた発火（新しい版の保存・最長 10 分）は、起動する時点にも workflow プリンシパルが保存された
+/// ファイルを読めるかを確かめ直す。待っている間に委譲を外したら起動せず、ファイルの id・書いた人を run の
+/// 入力に載せない（BUG-50・D-50）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deferred_file_trigger_rechecks_the_delegation_when_it_starts() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let inbox = env
+        .storage
+        .create_folder(&env.alice, None, "見積", None)
+        .await
+        .unwrap();
+    let doc = env
+        .storage
+        .write_file_internal(
+            &env.alice,
+            Some(inbox.id),
+            "見積.txt",
+            b"v1",
+            "text/plain",
+            None,
+        )
+        .await
+        .unwrap();
+    let e = &env;
+    let doc_id = doc.id;
+    env.relay_until("作成の配送", || async move {
+        e.delivered("create", doc_id).await
+    })
+    .await;
+    let ir = json!({
+        "ir_version": 1, "name": "quote-saved",
+        "declared_scopes": ["storage.read"],
+        "triggers": [ { "kind": "event", "source": "storage.write",
+                        "scope": { "folder": inbox.id.to_string() } } ],
+        "nodes": [ { "id": "rd", "type": "storage.read", "params": {
+            "file": { "$from": "trigger", "path": "/file_id" } } } ],
+        "edges": []
+    });
+    let (wf, _) = env
+        .workflows
+        .create(&env.alice, &ir, &Catalog::default(), None)
+        .await
+        .expect("保存");
+    let parsed = WorkflowIr::from_json(&ir).unwrap();
+    env.registration
+        .enable(&env.alice, wf, 1, &parsed, &env.grants_from_plan(&parsed))
+        .await
+        .expect("enable");
+    // 委譲がある間に新しい版を保存する（relay の時点では読めるので、起動を待たせる）。
+    env.storage
+        .update_file_content_internal(&env.alice, doc.id, b"v2", "text/plain", None)
+        .await
+        .unwrap();
+    env.relay_until("新しい版の配送", || async move {
+        e.delivered("update", doc_id).await
+    })
+    .await;
+    let waiting: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM trigger_firing WHERE tenant_id = $1 AND outcome = 'pending'",
+    )
+    .bind(&env.tenant)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(waiting, 1, "新しい版の保存は起動を待たせる");
+
+    // 待っている間に、トリガのフォルダの閲覧を委譲から外す（別のフォルダだけを委譲し直す・トリガは有効のまま。
+    // storage.read のスコープは委譲に残るので、run の開始の委譲の確認は通る）。
+    let elsewhere = env
+        .storage
+        .create_folder(&env.alice, None, "別のフォルダ", None)
+        .await
+        .unwrap();
+    env.registration
+        .enable(
+            &env.alice,
+            wf,
+            1,
+            &parsed,
+            &[GrantRequest {
+                scope: "storage.read".into(),
+                object: env.alice.ns().folder(&elsewhere.id.to_string()),
+                relation: Relation::Viewer,
+            }],
+        )
+        .await
+        .expect("委譲を変えて有効化");
+    env.fire_coalesced().await;
+    let runs = env.runs_of(wf).await;
+    assert!(
+        runs.is_empty(),
+        "委譲を外した後は、待たせていた発火でも起動しない（入力に file_id を載せない）: {runs:?}"
+    );
+    let outcomes: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT outcome, count(*) FROM trigger_firing WHERE tenant_id = $1 \
+         GROUP BY outcome ORDER BY outcome",
+    )
+    .bind(&env.tenant)
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        outcomes,
+        vec![("skipped".to_string(), 1)],
+        "見送りとして残し、再試行しない"
+    );
+    env.cleanup().await;
 }

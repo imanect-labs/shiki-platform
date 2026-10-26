@@ -6,15 +6,17 @@
 //! ファイル保存トリガは、①フォルダの祖先束縛で候補を引き ②filter ③workflow プリンシパル（委譲）が
 //! 保存されたファイルを読めるか（[`SavedFileGate`]・D-50）④因果の鎖（自分の保存で自分を起こさない・
 //! workflow.start の子も同じ・D-26）を通して発火する。新しい版の保存（op = update）は同じファイルの続く
-//! 保存を 1 回にまとめてから起動する（`SchedulerStore::defer_event_trigger`・D-38）。
+//! 保存を 1 回にまとめてから起動する（`SchedulerStore::defer_event_trigger`・D-38）。まとめて待たせた発火と
+//! 起動に一時失敗した発火は、起動する時点にも③を確かめ直す（[`retry_event_firings`]・BUG-50）。
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use uuid::Uuid;
 use workflow_engine::{
-    Coalesce, EventWaitGate, EventWaitSubscriber, FileTriggerCandidate, RunStore, RunStoreError,
-    SchedulerStore,
+    Coalesce, EventTriggerRef, EventWaitGate, EventWaitSubscriber, LaunchOutcome, RunLauncher,
+    RunStore, RunStoreError, SchedulerStore, SkipReason,
 };
 
 /// 1 tick で捌く outbox の最大バッチ数と、1 バッチの件数（claim は配送済みの行を走査するので、1 回の件数を
@@ -60,7 +62,7 @@ pub async fn relay_events(deps: &RelayDeps<'_>) -> Result<(), anyhow::Error> {
     }
     // 配送のバッチが一時障害で止まっても、発火の再試行と承認の突合は回す（先頭のイベントが詰まって、
     // 全テナントの再試行・突合まで止まらないように）。誤りは最初のものを返す。
-    let retried = retry_firings(deps).await;
+    let retried = retry_event_firings(deps, chrono::Utc::now(), None).await;
     // 承認の受付の突合（停止の commit より前に動いた行・承認の依頼の監査・GAP-08）。
     let reconciled = super::relay_approval::reconcile_approvals(deps).await;
     tick_result(batch_err, retried, reconciled)
@@ -88,11 +90,21 @@ fn tick_result(
     first.map_or(Ok(()), Err)
 }
 
-/// 起動に一時失敗したトリガの発火を再試行し、打ち切ったものを監査に残す（D-21）。
-async fn retry_firings(deps: &RelayDeps<'_>) -> Result<(), anyhow::Error> {
+/// 起動に一時失敗したトリガの発火と、まとめて待たせた発火（D-38）のうち時刻の来たものを起動し、打ち切った
+/// ものを監査に残す（D-21）。relay の tick と、結合テストが本番と同じ経路で起こすのに使う。
+///
+/// ファイル保存トリガの発火は、起動する時点にも workflow プリンシパルが保存されたファイルを読めるかを確かめ
+/// 直す（[`FileGatedLauncher`]・BUG-50）。待たせていた間（最長 10 分）・再試行を待つ間に委譲やフォルダの共有が
+/// 外れていたら起動しない（読めないファイルの id・書いた人を run の入力に載せない）。
+pub async fn retry_event_firings(
+    deps: &RelayDeps<'_>,
+    now: chrono::DateTime<chrono::Utc>,
+    tenant_scope: Option<&str>,
+) -> Result<(), anyhow::Error> {
+    let launcher = FileGatedLauncher { deps };
     let report = deps
         .sched
-        .retry_pending_firings(chrono::Utc::now(), None, deps.launcher)
+        .retry_pending_firings(now, tenant_scope, &launcher)
         .await?;
     for g in &report.gave_up {
         let org: Option<String> = sqlx::query_scalar(
@@ -114,6 +126,101 @@ async fn retry_firings(deps: &RelayDeps<'_>) -> Result<(), anyhow::Error> {
         .await;
     }
     Ok(())
+}
+
+/// 待たせた発火・再試行の起動の前に、ファイル保存トリガなら workflow プリンシパルの閲覧を確かめ直す起動口
+/// （relay の起動口を包む・[`retry_event_firings`]・BUG-50）。
+///
+/// 確かめるのは relay の発火の前と同じ [`SavedFileGate::admits_trigger`]（D-50）。読めなければ起動を見送り
+/// （再試行しない・`skipped`）、確かめられない一時障害は起動の一時失敗として再試行に回す。ファイル保存
+/// トリガでない発火（データ変更）はそのまま起動する。
+struct FileGatedLauncher<'d, 'a> {
+    deps: &'d RelayDeps<'a>,
+}
+
+impl FileGatedLauncher<'_, '_> {
+    /// 起動してよいか（ファイル保存トリガでなければ真）。
+    async fn admits(
+        &self,
+        tenant_id: &str,
+        workflow_id: Uuid,
+        trigger_id: &str,
+        payload: &Value,
+    ) -> Result<bool, anyhow::Error> {
+        let trigger: Option<(Option<String>, String)> = sqlx::query_as(
+            "SELECT t.source, r.org FROM workflow_trigger t \
+             JOIN workflow_registration r \
+               ON r.tenant_id = t.tenant_id AND r.workflow_id = t.workflow_id \
+             WHERE t.tenant_id = $1 AND t.trigger_id = $2 AND t.workflow_id = $3",
+        )
+        .bind(tenant_id)
+        .bind(trigger_id)
+        .bind(workflow_id)
+        .fetch_optional(self.deps.db)
+        .await?;
+        // 消えたトリガは再試行が先に見送る（ここに来ない）。来ても起動口の確認に任せる。
+        let Some((source, org)) = trigger else {
+            return Ok(true);
+        };
+        if source.as_deref() != Some("storage.write") {
+            return Ok(true);
+        }
+        // ペイロードにファイルが無ければ確かめようがないので起動しない（fail-closed）。
+        let Some(file_id) = payload
+            .get("file_id")
+            .and_then(Value::as_str)
+            .and_then(|s| Uuid::parse_str(s).ok())
+        else {
+            return Ok(false);
+        };
+        let gate = SavedFileGate {
+            storage: self.deps.storage,
+            file_id,
+            trace_id: None,
+        };
+        let t = EventTriggerRef {
+            tenant_id: tenant_id.to_string(),
+            trigger_id: trigger_id.to_string(),
+            workflow_id,
+        };
+        gate.admits_trigger(&t, &org).await
+    }
+}
+
+#[async_trait]
+impl RunLauncher for FileGatedLauncher<'_, '_> {
+    async fn launch(
+        &self,
+        tenant_id: &str,
+        workflow_id: Uuid,
+        trigger_kind: &str,
+        trigger_id: &str,
+        payload: &Value,
+        event_id: Option<i64>,
+    ) -> LaunchOutcome {
+        match self
+            .admits(tenant_id, workflow_id, trigger_id, payload)
+            .await
+        {
+            Ok(true) => {
+                self.deps
+                    .launcher
+                    .launch(
+                        tenant_id,
+                        workflow_id,
+                        trigger_kind,
+                        trigger_id,
+                        payload,
+                        event_id,
+                    )
+                    .await
+            }
+            Ok(false) => LaunchOutcome::Skipped(SkipReason::DelegationInvalid(
+                "ワークフローが保存されたファイルを読めなくなりました".into(),
+            )),
+            Err(e) => LaunchOutcome::Failed(format!("{e}")),
+        }
+    }
 }
 
 /// トリガの発火を抑止・打ち切ったことを監査に残す（件数ではなく 1 件ずつ・不可視による不発火は残さない）。
@@ -234,7 +341,7 @@ async fn relay_file_triggers(
         if !c.admits(&write.payload) {
             continue;
         }
-        if !gate.admits_trigger(c).await? {
+        if !gate.admits_trigger(&c.trigger, &c.org).await? {
             continue;
         }
         let out = if ev.op == "update" {
@@ -302,15 +409,18 @@ impl SavedFileGate<'_> {
     }
 
     /// ファイル保存トリガを発火してよいか（workflow プリンシパルが委譲でファイルを読めるか・D-50）。
-    async fn admits_trigger(&self, c: &FileTriggerCandidate) -> Result<bool, anyhow::Error> {
+    ///
+    /// relay の発火の前（[`relay_file_triggers`]）と、待たせた発火・再試行の起動の前（[`FileGatedLauncher`]・
+    /// BUG-50）の両方がこれで確かめる。
+    async fn admits_trigger(&self, t: &EventTriggerRef, org: &str) -> Result<bool, anyhow::Error> {
         let ctx = authz::AuthContext::for_workflow(
-            c.trigger.tenant_id.clone(),
-            c.org.clone(),
-            &c.trigger.workflow_id.to_string(),
+            t.tenant_id.clone(),
+            org.to_string(),
+            &t.workflow_id.to_string(),
         );
         let mut note = serde_json::Map::new();
         note.insert("via".into(), json!("workflow.trigger"));
-        note.insert("trigger_id".into(), json!(c.trigger.trigger_id));
+        note.insert("trigger_id".into(), json!(t.trigger_id));
         self.readable(&ctx, &note)
             .await
             .map_err(|e| anyhow::anyhow!("ファイル保存トリガの閲覧確認に失敗: {e}"))

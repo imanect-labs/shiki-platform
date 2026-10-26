@@ -28,7 +28,7 @@ use workflow_engine::{
 };
 
 pub use ports::ProdNodePorts;
-pub use relay::{relay_events, RelayDeps};
+pub use relay::{relay_events, retry_event_firings, RelayDeps};
 pub use relay_approval::expire_due_approvals;
 
 /// ワークフロー実行時の設定（既定は無効・compose/e2e で有効化）。
