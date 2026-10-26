@@ -42,6 +42,15 @@ export type ValidateResult = { errors: ValidationError[]; warnings: ValidationEr
 /// 意味論の切替で分岐の結果が変わり得る条件の警告コード（`workflow_engine::SEMANTICS_CHANGED`）。
 export const SEMANTICS_CHANGED = "ir.condition_semantics_changed";
 
+/// 必須の文字の欄が空の警告コード（`workflow_engine::REQUIRED_TEXT_EMPTY`・保存は通り、有効化と実行の前に
+/// 止まる・D-43）。設定パネルは注意の帯ではなく欄の下に出す。
+export const REQUIRED_TEXT_EMPTY = "ir.required_text_empty";
+
+/// 警告の呼び名（条件の意味論の切替だけなら「条件」、ほかを含むなら「設定」）。
+export function warningNoun(warnings: { code: string }[]): string {
+  return warnings.every((w) => w.code === SEMANTICS_CHANGED) ? "条件" : "設定";
+}
+
 /// 検証エラー（保存 400 / validate 200 の両方で同じ形）。
 export class WorkflowValidationError extends Error {
   constructor(public errors: ValidationError[]) {
@@ -254,14 +263,17 @@ export async function getRegistration(id: string): Promise<Registration> {
   };
 }
 
+/// 同意計画（`blockers` は有効化できない理由・空なら有効化できる・D-40・D-43）。
 export async function getConsentPlan(
   id: string,
   version: number,
-): Promise<{ declaredScopes: string[]; grants: SuggestedGrant[] }> {
+): Promise<{ declaredScopes: string[]; grants: SuggestedGrant[]; blockers: ValidationError[] }> {
   const res = await apiFetch(`/workflows/${id}/versions/${version}/consent-plan`);
   const body = await ok<Schemas["ConsentPlanResponse"]>(res);
   return {
     declaredScopes: body.declared_scopes,
+    // 要素は ts-rs 生成の `ValidationError`（OpenAPI と同じ Rust 型 `workflow_engine::ValidationError`）。
+    blockers: (body.blockers ?? []) as ValidationError[],
     grants: body.grants.map((g) => ({
       scope: g.scope,
       objectKind: g.object_kind,

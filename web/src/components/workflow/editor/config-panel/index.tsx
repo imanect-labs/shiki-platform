@@ -15,13 +15,14 @@ import { cn } from "@/lib/utils";
 import { FadeSlide } from "@/components/ui/motion-primitives";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { useMediaQuery } from "@/hooks/use-media-query";
+import { REQUIRED_TEXT_EMPTY } from "@/lib/workflow-api";
 import { inputFieldsOf } from "@/lib/workflow-input-schema";
 import type { Node as IrNode, Trigger } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { EditorContext } from "../workflow-editor";
 import { nodeIcon } from "../icons";
 import { defaultParams } from "../ir-state";
-import { mapErrors, nodeErrorView } from "../validation";
+import { mapErrors, nodeErrorView, paramField } from "../validation";
 import { CommonSection } from "./common";
 import { HumanApprovalForm } from "./forms-approval";
 import { WorkflowReplyForm } from "./forms-reply";
@@ -189,13 +190,26 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
     () => nodeErrorView(mapErrors(ctx.state.serverErrors).byNode.get(node.id) ?? []),
     [ctx.state.serverErrors, node.id],
   );
+  const allWarnings = React.useMemo(
+    () => mapErrors(ctx.state.serverWarnings).byNode.get(node.id) ?? [],
+    [ctx.state.serverWarnings, node.id],
+  );
+  // 必須の文字の欄が空の警告（D-43）は注意の帯ではなく、その欄の下に出す（保存はできるが有効化・実行で止まる）。
+  const blankFields = React.useMemo(
+    () =>
+      allWarnings.flatMap((w) => {
+        const field = w.code === REQUIRED_TEXT_EMPTY ? paramField(w.path) : null;
+        return field ? [field] : [];
+      }),
+    [allWarnings],
+  );
   const fieldErrors = React.useMemo(() => {
     const map = new Map(errorView.fields);
-    for (const key of blankRequired(node)) if (!map.has(key)) map.set(key, "入力してください");
+    for (const key of [...blankRequired(node), ...blankFields]) if (!map.has(key)) map.set(key, "入力してください");
     return map;
-  }, [errorView, node]);
+  }, [errorView, node, blankFields]);
   const params = (node.params ?? {}) as Record<string, unknown>;
-  const nodeWarnings = mapErrors(ctx.state.serverWarnings).byNode.get(node.id) ?? [];
+  const nodeWarnings = allWarnings.filter((w) => !(w.code === REQUIRED_TEXT_EMPTY && paramField(w.path)));
 
   return (
     <>

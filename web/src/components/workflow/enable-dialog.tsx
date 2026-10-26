@@ -33,6 +33,7 @@ import {
   type GrantInput,
   type Registration,
   type SuggestedGrant,
+  type ValidationError,
 } from "@/lib/workflow-api";
 
 
@@ -55,8 +56,26 @@ type GrantRow = SuggestedGrant & {
   picked?: { id: string; name: string };
   /// 対象（テーブル・ファイル）を実行の入力など前の結果から決めるブロック（`$from`）の権限。
   /// 有効化の時点では対象が決まらないので選ばせない（選ぶと権限だけ渡り、実行の対象とは無関係になる・C-P2-2）。
-  dynamic?: { label: string; fromInput: boolean; what: string };
+  /// `from` は決め方（実行の入力・きっかけの内容・前のブロックの結果）。
+  dynamic?: { label: string; from: "input" | "trigger" | "node"; what: string };
 };
+
+/// 対象を前の結果から決めるブロックの説明（BUG-38）。きっかけ（ファイル保存）で決まるファイルは、きっかけの
+/// フォルダに渡す閲覧の権限で読める（ファイルの権限はフォルダから受け継ぐ）。
+function dynamicText(g: GrantRow & { dynamic: NonNullable<GrantRow["dynamic"]> }, schedule: boolean): string {
+  const { label, from, what } = g.dynamic;
+  if (from === "trigger") {
+    return g.relation === "viewer"
+      ? `「${label}」の${what}はきっかけ（保存されたファイル）で決まるため、ここでは選びません。きっかけのフォルダに渡す閲覧の権限で読めます。`
+      : `「${label}」の${what}はきっかけ（保存されたファイル）で決まるため、ここでは選びません。書き換えるには、そのフォルダの編集の権限が要ります。`;
+  }
+  const source = from === "input" ? "実行の入力" : "前のブロックの結果";
+  const advice =
+    schedule && from === "input"
+      ? `スケジュールの実行には入力が無いので、このブロックは失敗します。自動で動かすならブロックで${what}を${g.objectKind === "data_table" ? "一覧" : "ドライブ"}から選んでください。`
+      : `自動で動かすときは、その${what}を使える権限が要ります。`;
+  return `「${label}」の${what}は${source}で決まるため、ここでは渡せません。${advice}`;
+}
 
 export function EnableDialog({
   open,
@@ -76,6 +95,10 @@ export function EnableDialog({
   const [plan, setPlan] = React.useState<{
     declaredScopes: string[];
     grants: GrantRow[];
+    /// 有効化できない理由（必須の文字の欄が空・無人の実行の保存先の省略・D-40・D-43）。
+    blockers: ValidationError[];
+    /// ブロックの表示名（理由の見出し）。
+    labels: Map<string, string>;
   } | null>(null);
   const [pickerFor, setPickerFor] = React.useState<number | null>(null);
   const [filePickerFor, setFilePickerFor] = React.useState<number | null>(null);
@@ -116,12 +139,17 @@ export function EnableDialog({
             const from = String((value as { $from: unknown }).$from);
             return {
               ...g,
-              dynamic: { label: node?.label || node?.id || "", fromInput: from === "input", what: target.what },
-            };
+              dynamic: {
+                label: node?.label || node?.id || "",
+                from: from === "input" ? "input" : from === "trigger" ? "trigger" : "node",
+                what: target.what,
+              },
+            } satisfies GrantRow;
           }
           return g;
         });
-        setPlan({ declaredScopes: p.declaredScopes, grants });
+        const labels = new Map((wf?.ir.nodes ?? []).map((n) => [n.id, n.label || n.id]));
+        setPlan({ declaredScopes: p.declaredScopes, grants, blockers: p.blockers, labels });
       })
       .catch((e) =>
         toast({
@@ -135,6 +163,7 @@ export function EnableDialog({
   // 対象未確定の grant は種類を問わず有効化をブロックする（fail-closed）。
   // ピッカーを出せるのはテーブル・フォルダ・ファイル。それ以外（将来の種類）は保存側の見直しを促す。
   const unresolved = (plan?.grants ?? []).filter((g) => g.needsUserPick && !g.picked && !g.dynamic);
+  const blockers = plan?.blockers ?? [];
 
   const enable = async () => {
     if (!plan) return;
@@ -246,6 +275,27 @@ export function EnableDialog({
               </p>
             ) : null}
 
+            {blockers.length > 0 ? (
+              <div
+                role="alert"
+                className="space-y-1.5 rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs"
+                data-testid="enable-blockers"
+              >
+                <p className="flex items-center gap-1.5 font-medium text-destructive">
+                  <AlertTriangle className="size-4 shrink-0" aria-hidden />
+                  このままでは有効化できません。エディタで次の設定を直してから、もう一度開いてください。
+                </p>
+                <ul className="list-disc space-y-1 pl-5 text-foreground/80">
+                  {blockers.map((b, i) => (
+                    <li key={i}>
+                      {b.node_id ? <span className="font-medium">「{plan.labels.get(b.node_id) ?? b.node_id}」</span> : null}
+                      {b.message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
             {plan.grants.length > 0 ? (
               <div>
                 <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">
@@ -266,11 +316,7 @@ export function EnableDialog({
                         </span>
                         <span className={cn("block text-muted-foreground", !g.dynamic && "truncate")}>
                           {g.dynamic
-                            ? `「${g.dynamic.label}」の${g.dynamic.what}は${g.dynamic.fromInput ? "実行の入力" : "前のブロックの結果"}で決まるため、ここでは渡せません。${
-                                schedule && g.dynamic.fromInput
-                                  ? `スケジュールの実行には入力が無いので、このブロックは失敗します。自動で動かすならブロックで${g.dynamic.what}を${g.objectKind === "data_table" ? "一覧" : "ドライブ"}から選んでください。`
-                                  : `自動で動かすときは、その${g.dynamic.what}を使える権限が要ります。`
-                              }`
+                            ? dynamicText({ ...g, dynamic: g.dynamic }, schedule)
                             : g.picked
                             ? `${TARGETS[g.objectKind]?.what ?? ""}「${g.picked.name}」`
                             : g.objectKind === "data_table" && g.objectId
@@ -339,9 +385,11 @@ export function EnableDialog({
               ) : (
                 <span />
               )}
-              <Button onClick={enable} disabled={busy || unresolved.length > 0}>
+              <Button onClick={enable} disabled={busy || unresolved.length > 0 || blockers.length > 0}>
                 {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-                {unresolved.length > 0
+                {blockers.length > 0
+                  ? `設定を直してください（${blockers.length} 件）`
+                  : unresolved.length > 0
                   ? `対象を選択してください（残り ${unresolved.length}）`
                   : reconsent
                     ? "もう一度有効化する"

@@ -300,6 +300,11 @@ export function FolderField({
 
 // ── ファイル（storage.*）────────────────────────────────────────────────
 
+/// 保存先フォルダの説明。スケジュール・できごとの実行はワークフローとして動くので、省略（ルートへの保存）だと
+/// 保存できない。有効化はその理由で止まる（D-40・`ir.write_folder_required`）。
+const UNATTENDED_FOLDER_HINT =
+  "スケジュール・できごとで動かすなら指定してください（省略すると保存できず、有効化できません）。有効化のとき、このフォルダの編集権限を渡します";
+
 export function StorageReadForm(props: FormProps) {
   return <FileField {...props} label="読むファイル" hint="有効化のとき、このファイルの閲覧権限を渡します" />;
 }
@@ -385,7 +390,7 @@ export function StorageWriteForm(props: FormProps) {
         multiline
         error={fieldErrors.get("content")}
       />
-      <FolderField {...props} label="保存先フォルダ（省略可）" optional hint="有効化のとき、このフォルダの編集権限を渡します" />
+      <FolderField {...props} label="保存先フォルダ（省略可）" optional hint={UNATTENDED_FOLDER_HINT} />
       <ContentTypeField {...props} />
     </div>
   );
@@ -706,7 +711,7 @@ export function CsvWriteForm(props: FormProps) {
         error={fieldErrors.get("content")}
       />
       <p className="text-[11px] text-muted-foreground">1 行目は見出し（列名）です。前の結果を渡すときは CSV の文字列を渡してください。</p>
-      <FolderField {...props} label="保存先フォルダ（省略可）" optional hint="有効化のとき、このフォルダの編集権限を渡します" />
+      <FolderField {...props} label="保存先フォルダ（省略可）" optional hint={UNATTENDED_FOLDER_HINT} />
     </div>
   );
 }

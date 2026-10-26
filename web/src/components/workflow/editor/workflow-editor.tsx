@@ -26,8 +26,10 @@ import { cn } from "@/lib/utils";
 import type { ValidationError, WorkflowIr } from "@/generated/workflow-ir";
 import {
   putLayout,
+  SEMANTICS_CHANGED,
   updateWorkflow,
   validateWorkflow,
+  warningNoun,
   WorkflowValidationError,
   type EditorLayout,
 } from "@/lib/workflow-api";
@@ -183,8 +185,10 @@ export function WorkflowEditor({
       toast(
         saved.warnings.length
           ? {
-              title: `保存しました（v${saved.version}）・確認が必要な条件が ${saved.warnings.length} 件あります`,
-              description: "条件の比較のしかたが変わったため、分岐の結果が以前と変わる場合があります。注意の印のブロックを確認してください。",
+              title: `保存しました（v${saved.version}）・確認が必要な${warningNoun(saved.warnings)}が ${saved.warnings.length} 件あります`,
+              description: saved.warnings.some((w) => w.code === SEMANTICS_CHANGED)
+                ? "条件の比較のしかたが変わったため、分岐の結果が以前と変わる場合があります。注意の印のブロックを確認してください。"
+                : "注意の印のブロックを確認してください。",
             }
           : { title: `保存しました（v${saved.version}）` },
       );
@@ -418,6 +422,7 @@ function WarningsSummary({
     return w.path?.startsWith("/triggers/") ? "きっかけの条件" : "ワークフロー";
   };
   const [open, setOpen] = React.useState(false);
+  const semantics = warnings.some((w) => w.code === SEMANTICS_CHANGED);
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -428,15 +433,21 @@ function WarningsSummary({
           style={{ borderColor: "color-mix(in oklab, var(--season-autumn) 50%, transparent)" }}
         >
           <TriangleAlert className="size-3.5 text-[var(--season-autumn)]" aria-hidden />
-          確認が必要な条件 {warnings.length} 件
+          確認が必要な{warningNoun(warnings)} {warnings.length} 件
         </button>
       </PopoverTrigger>
       <PopoverContent align="center" className="w-[min(26rem,calc(100vw-2rem))] p-0">
         <div className="border-b px-3 py-2.5">
-          <p className="text-sm font-medium">保存はできますが、結果が変わる場合があります</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            2026-10 から条件の比較のしかたが変わりました（配列は値の集合として比較・1 と 1.0 は等しい）。
-          </p>
+          {semantics ? (
+            <>
+              <p className="text-sm font-medium">保存はできますが、結果が変わる場合があります</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                2026-10 から条件の比較のしかたが変わりました（配列は値の集合として比較・1 と 1.0 は等しい）。
+              </p>
+            </>
+          ) : (
+            <p className="text-sm font-medium">保存はできますが、確認してください</p>
+          )}
         </div>
         <ul className="max-h-72 divide-y overflow-y-auto scrollbar-subtle">
           {warnings.map((w, i) => (
