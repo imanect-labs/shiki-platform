@@ -301,6 +301,8 @@ pub(super) async fn drain_one(
     .execute(&mut **tx)
     .await
     .map_err(map_db)?;
+    // 保留中の承認は取り消す（受信箱から消える・GAP-08）。
+    super::approval::cancel_pending(tx, tenant_id, run_id).await?;
     // running（リース有効）が残っていれば完走待ち（checkpoint 側 finalize が cancelled 化する）。
     let running: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM step_execution \

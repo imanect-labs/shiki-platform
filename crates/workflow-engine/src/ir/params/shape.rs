@@ -13,9 +13,10 @@ use ts_rs::{TypeVisitor, TS};
 use super::{
     AgentInvokeParams, BranchParams, CsvPatchParams, CsvQueryParams, CsvWriteParams,
     DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
-    DataRecordUpdateParams, DataTransitionParams, HttpRequestParams, JoinParams, LlmInvokeParams,
-    MapParams, RagSearchParams, ScriptRunParams, SkillInvokeParams, StorageListParams,
-    StorageReadParams, StorageWriteParams, SwitchParams, WaitParams, WorkflowStartParams,
+    DataRecordUpdateParams, DataTransitionParams, HttpRequestParams, HumanApprovalParams,
+    JoinParams, LlmInvokeParams, MapParams, RagSearchParams, ScriptRunParams, SkillInvokeParams,
+    StorageListParams, StorageReadParams, StorageWriteParams, SwitchParams, WaitParams,
+    WorkflowStartParams,
 };
 use crate::vocab::NodeType;
 
@@ -125,6 +126,7 @@ fn visit_params_type<V: ParamsTypeVisitor>(nt: NodeType, v: V) -> Option<V::Out>
         N::DataRecordDelete => v.visit::<DataRecordDeleteParams>(),
         N::DataTransition => v.visit::<DataTransitionParams>(),
         N::DataBulkUpsert => v.visit::<DataBulkUpsertParams>(),
+        N::HumanApproval => v.visit::<HumanApprovalParams>(),
         // 予約語彙（params 契約は実装フェーズで追加する・ir.md §7.8）。
         N::NotifySend
         | N::ControlLoop
@@ -157,8 +159,7 @@ fn visit_params_type<V: ParamsTypeVisitor>(nt: NodeType, v: V) -> Option<V::Out>
         | N::AiTranscribe
         | N::AiSpeech
         | N::GraphqlQuery
-        | N::SandboxExec
-        | N::HumanApproval => return None,
+        | N::SandboxExec => return None,
     })
 }
 

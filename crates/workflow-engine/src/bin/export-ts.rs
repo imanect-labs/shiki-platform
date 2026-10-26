@@ -14,11 +14,12 @@ use workflow_engine::ir::edge::Edge;
 use workflow_engine::ir::expr::{CmpOp, Comparison, Condition, FromRef, TemplateExpr, ValueExpr};
 use workflow_engine::ir::node::{Backoff, Node, OnError, RetryPolicy};
 use workflow_engine::ir::params::{
-    params_type_name, AgentInvokeParams, BranchParams, CsvPatchParams, CsvQueryParams,
-    CsvWriteParams, DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams,
-    DataRecordDeleteParams, DataRecordUpdateParams, DataTransitionParams, HttpMethod,
-    HttpRequestParams, HttpSecretRef, JoinMode, JoinParams, LlmInvokeParams, MapItemError,
-    MapParams, RagSearchParams, RedirectPolicy, ScriptRunParams, ScriptSourceSpec, SecretAttach,
+    params_type_name, AgentInvokeParams, ApprovalAssignee, ApprovalChoice, ApprovalComment,
+    ApprovalRecord, BranchParams, CsvPatchParams, CsvQueryParams, CsvWriteParams,
+    DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
+    DataRecordUpdateParams, DataTransitionParams, HttpMethod, HttpRequestParams, HttpSecretRef,
+    HumanApprovalParams, JoinMode, JoinParams, LlmInvokeParams, MapItemError, MapParams,
+    RagSearchParams, RedirectPolicy, ScriptRunParams, ScriptSourceSpec, SecretAttach,
     SecretAttachKind, SkillInvokeParams, StorageListParams, StorageReadParams, StorageWriteParams,
     SwitchCase, SwitchParams, WaitKind, WaitParams, WaitTimeout, WorkflowStartParams,
 };
@@ -108,6 +109,11 @@ fn main() {
         DataRecordDeleteParams,
         DataTransitionParams,
         DataBulkUpsertParams,
+        ApprovalRecord,
+        ApprovalAssignee,
+        ApprovalComment,
+        ApprovalChoice,
+        HumanApprovalParams,
         // ---- カタログ ----
         NodeCategory,
         IdempotencyClass,

@@ -150,6 +150,10 @@ fn output_ports(node: &Node) -> Option<BTreeSet<&str>> {
     let nt = NodeType::parse(&node.node_type)?;
     let (statics, dynamic) = static_output_ports(nt);
     let mut ports: BTreeSet<&str> = statics.iter().copied().collect();
+    if nt == NodeType::HumanApproval {
+        // 却下・差し戻し・時間切れは指定したときだけ（GAP-08）。
+        ports.extend(crate::vocab::approval_ports(&node.params));
+    }
     if dynamic {
         let cases = node
             .params
@@ -182,9 +186,14 @@ fn unknown_port_message(node: &Node, port: &str, ports: &BTreeSet<&str>) -> Stri
     let list = ports.iter().copied().collect::<Vec<_>>().join(", ");
     let hint = match port {
         "error" => "。error 出口は on_error を continue にしたときだけ使えます",
+        "timeout" if node.node_type == NodeType::HumanApproval.as_str() => {
+            "。timeout 出口は期限を決めて on_timeout を continue にしたときだけ使えます"
+        }
         "timeout" => {
             "。timeout 出口は wait(event) で on_timeout を continue にしたときだけ使えます"
         }
+        "rejected" => "。rejected 出口は reject（却下）を指定したときだけ使えます",
+        "returned" => "。returned 出口は return（差し戻し）を指定したときだけ使えます",
         "out" if node.node_type == "control.switch" => {
             "。振り分けは cases の port か default から出ます"
         }

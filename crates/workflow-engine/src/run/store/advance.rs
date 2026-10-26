@@ -302,6 +302,8 @@ pub(super) async fn cancel_remaining_steps(
     .execute(&mut **tx)
     .await
     .map_err(map_db)?;
+    // 保留中の承認は取り消す（受信箱から消える・GAP-08）。
+    super::approval::cancel_pending(tx, tenant_id, run_id).await?;
     Ok(())
 }
 

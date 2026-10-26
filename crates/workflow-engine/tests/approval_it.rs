@@ -1,0 +1,687 @@
+//! 承認待ち（human.approval・GAP-08）の engine 層の検証。
+//!
+//! 純ロジック（DB 不要）: 停止まで（行の状態・rev・FSM で進める状態・担当者の解決・決まらない承認の失敗）。
+//! DB 必要（`STORAGE_TEST_DATABASE_URL`）: 停止で台帳・担当者・購読が書かれる／直前の自分の遷移（rev が停止時
+//! 以下）では起きない／判断の遷移で出口へ進み、台帳が同じ Tx で確定してコメントが拾われる／判断の外の遷移は
+//! 取り下げ／期限切れは timeout 出口と台帳の expired／run の失敗で台帳が cancelled になり受信箱から消える／
+//! 受信箱は担当者（本人・所属ロール）だけ／受付の突合の材料と印。
+//!
+//! 行の見え方（実行主体・承認者本人）と FSM の遷移は data 側で効き、api の `workflow_approval_it` が実 PG ＋
+//! 実 OpenFGA で確かめる。
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::pedantic,
+    clippy::print_stderr
+)]
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use serde_json::{json, Value};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
+use uuid::Uuid;
+use workflow_engine::nodes::ports::{
+    AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
+    NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
+};
+use workflow_engine::run::graph::RunGraph;
+use workflow_engine::run::Suspend;
+use workflow_engine::{
+    ApprovalStore, ApprovalTarget, AssigneeKind, CapabilityAudit, CapabilityNodeExecutor,
+    EffectJournal, NodeContext, NodeExecutor, RunStatus, RunStore, StepStatus, WorkerConfig,
+    WorkflowWorker,
+};
+
+const TABLE: &str = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+
+/// 承認の停止で読む行だけを返す fake（状態・rev・進める状態・担当者の列）。
+struct ApprovalPorts {
+    target: Mutex<ApprovalTarget>,
+}
+
+impl ApprovalPorts {
+    fn new(current: &str, rev: i64, targets: &[&str]) -> Self {
+        ApprovalPorts {
+            target: Mutex::new(ApprovalTarget {
+                current: Some(current.into()),
+                rev,
+                targets: targets.iter().map(ToString::to_string).collect(),
+                refs: BTreeMap::from([
+                    (
+                        "approver".to_string(),
+                        (AssigneeKind::User, Some("bob".to_string())),
+                    ),
+                    ("deputy".to_string(), (AssigneeKind::User, None)),
+                ]),
+            }),
+        }
+    }
+}
+
+#[async_trait]
+impl NodePorts for ApprovalPorts {
+    async fn storage_write(&self, _c: &ExecCtx, _r: StorageWriteReq) -> Result<Value, PortError> {
+        unreachable!()
+    }
+    async fn storage_read(&self, _c: &ExecCtx, _f: Uuid) -> Result<Value, PortError> {
+        unreachable!()
+    }
+    async fn storage_list(&self, _c: &ExecCtx, _p: Option<Uuid>) -> Result<Value, PortError> {
+        unreachable!()
+    }
+    async fn rag_search(
+        &self,
+        _c: &ExecCtx,
+        _q: &str,
+        _k: Option<u32>,
+    ) -> Result<Value, PortError> {
+        unreachable!()
+    }
+    async fn llm_invoke(&self, _c: &ExecCtx, _r: LlmInvokeReq) -> Result<Value, PortError> {
+        unreachable!()
+    }
+    async fn agent_invoke(&self, _c: &ExecCtx, _r: AgentInvokeReq) -> Result<Value, PortError> {
+        unreachable!()
+    }
+    async fn http_send(&self, _c: &ExecCtx, _r: HttpSendReq) -> Result<HttpSendResp, PortError> {
+        unreachable!()
+    }
+    async fn resolve_secret(
+        &self,
+        _c: &ExecCtx,
+        _n: &str,
+    ) -> Result<ResolvedSecretView, PortError> {
+        unreachable!()
+    }
+    async fn skill_resolve(
+        &self,
+        _ctx: &ExecCtx,
+        _name: &str,
+        _version: &str,
+    ) -> Result<workflow_engine::nodes::ResolvedSkillView, PortError> {
+        Err(PortError::forbidden("skill 未解決"))
+    }
+    async fn workflow_start(&self, _c: &ExecCtx, _n: &str, _i: &Value) -> Result<Value, PortError> {
+        unreachable!()
+    }
+    async fn csv_query(&self, _c: &ExecCtx, _f: Uuid, _sql: &str) -> Result<Value, PortError> {
+        unreachable!()
+    }
+    async fn csv_patch(&self, _c: &ExecCtx, _r: CsvPatchReq) -> Result<Value, PortError> {
+        unreachable!()
+    }
+    async fn csv_write(&self, _c: &ExecCtx, _r: CsvWriteReq) -> Result<Value, PortError> {
+        unreachable!()
+    }
+    async fn data_approval_target(
+        &self,
+        _c: &ExecCtx,
+        table_id: Uuid,
+        _record_id: Uuid,
+    ) -> Result<ApprovalTarget, PortError> {
+        assert_eq!(table_id.to_string(), TABLE);
+        Ok(self.target.lock().unwrap().clone())
+    }
+}
+
+struct NoopAudit;
+impl CapabilityAudit for NoopAudit {
+    fn record(&self, _t: &str, _a: &str, _ok: bool, _m: &Value) {}
+}
+
+fn lazy_journal() -> EffectJournal {
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://unused:unused@127.0.0.1:1/none")
+        .unwrap();
+    EffectJournal::new(pool)
+}
+
+fn approval_params(timeout: Option<u32>) -> Value {
+    let mut p = json!({
+        "title": "経費申請の承認",
+        "instructions": "規程どおりか確認してください。",
+        "record": { "table": TABLE, "id": { "$from": "trigger", "path": "/record_id" } },
+        "assignees": [{ "field": "approver" }, { "field": "deputy" }, { "role": "keiri" }],
+        "approve": { "to": "approved" },
+        "reject": { "to": "rejected", "comment": "required" },
+        "show_fields": ["title", "amount"]
+    });
+    if let Some(t) = timeout {
+        p["timeout_sec"] = json!(t);
+        p["on_timeout"] = json!("continue");
+    }
+    p
+}
+
+fn ctx(record: Uuid) -> NodeContext {
+    NodeContext {
+        tenant_id: "t1".into(),
+        org: "acme".into(),
+        run_id: Uuid::nil(),
+        step_path: "ok".into(),
+        idempotency_key: "wf:t1:r:ok".into(),
+        attempt: 1,
+        principal: Uuid::nil().to_string(),
+        principal_kind: "workflow".into(),
+        input: json!({ "record_id": record }),
+        trigger: json!({ "record_id": record }),
+        node_outputs: Value::Null,
+        each: None,
+        trace_id: None,
+        scope_ceiling: vec!["data.read".into(), "notify.send".into()],
+    }
+}
+
+/// 停止まで: 行の状態と rev を残し、担当者は列の値（空の列は数えない）とロールで解決する。
+#[tokio::test]
+async fn approval_suspends_with_the_row_state_and_resolved_assignees() {
+    let ports = Arc::new(ApprovalPorts::new(
+        "submitted",
+        4,
+        &["approved", "rejected"],
+    ));
+    let exec = CapabilityNodeExecutor::new(ports.clone(), lazy_journal(), Arc::new(NoopAudit));
+    let record = Uuid::new_v4();
+    let res = exec
+        .execute("human.approval", &approval_params(None), &ctx(record))
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    let Some(Suspend::Approval(a)) = res.suspend else {
+        panic!("承認で止まる: {res:?}");
+    };
+    assert_eq!((a.from_state.as_str(), a.suspend_rev), ("submitted", 4));
+    assert_eq!(a.record_id, record);
+    let who: Vec<(AssigneeKind, &str)> = a
+        .assignees
+        .iter()
+        .map(|x| (x.kind, x.subject.as_str()))
+        .collect();
+    assert_eq!(
+        who,
+        [(AssigneeKind::User, "bob"), (AssigneeKind::Role, "keiri")]
+    );
+    assert_eq!(a.choices[0].label, "承認する", "既定の文言");
+    assert_eq!(
+        a.approval_id,
+        workflow_engine::approval_id_for("t1", "wf:t1:r:ok")
+    );
+
+    // FSM にいまの状態から判断の行き先への遷移が無ければ、待っても決まらない（permanent）。
+    ports.target.lock().unwrap().targets = vec!["approved".into()];
+    let res = exec
+        .execute("human.approval", &approval_params(None), &ctx(record))
+        .await;
+    let e = res.error.unwrap();
+    assert_eq!(e.code, "approval_not_decidable");
+    assert!(!e.retryable);
+    assert!(e.message.contains("rejected"), "{}", e.message);
+
+    // 担当者の列が読めなければ失敗（黙って外さない）。担当者が誰もいなければ失敗。
+    let mut p = approval_params(None);
+    p["assignees"] = json!([{ "field": "secret_approver" }]);
+    *ports.target.lock().unwrap() = ApprovalPorts::new("submitted", 4, &["approved", "rejected"])
+        .target
+        .into_inner()
+        .unwrap();
+    let e = exec
+        .execute("human.approval", &p, &ctx(record))
+        .await
+        .error
+        .unwrap();
+    assert_eq!(e.code, "approval_assignee_unreadable");
+    p["assignees"] = json!([{ "field": "deputy" }]);
+    let e = exec
+        .execute("human.approval", &p, &ctx(record))
+        .await
+        .error
+        .unwrap();
+    assert_eq!(e.code, "approval_no_assignee");
+
+    // data.read の天井が無ければ行を読まない。
+    let mut c = ctx(record);
+    c.scope_ceiling = vec!["notify.send".into()];
+    let e = exec
+        .execute("human.approval", &approval_params(None), &c)
+        .await
+        .error
+        .unwrap();
+    assert_eq!(e.code, "out_of_scope");
+}
+
+// ---- DB ----
+
+async fn setup() -> Option<PgPool> {
+    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await
+        .expect("connect");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migrate");
+    Some(pool)
+}
+
+/// `ok`(承認) → approved: `after_ok`・rejected: `after_ng`・withdrawn: `after_wd`・timeout: `after_to`。
+fn approval_ir(timeout: Option<u32>) -> Value {
+    let mut edges = vec![
+        json!({ "from": "ok", "from_port": "approved", "to": "after_ok" }),
+        json!({ "from": "ok", "from_port": "rejected", "to": "after_ng" }),
+        json!({ "from": "ok", "from_port": "withdrawn", "to": "after_wd" }),
+    ];
+    let mut nodes = vec![
+        json!({ "id": "ok", "type": "human.approval", "params": approval_params(timeout) }),
+        json!({ "id": "after_ok", "type": "control.join", "params": {} }),
+        json!({ "id": "after_ng", "type": "control.join", "params": {} }),
+        json!({ "id": "after_wd", "type": "control.join", "params": {} }),
+    ];
+    if timeout.is_some() {
+        nodes.push(json!({ "id": "after_to", "type": "control.join", "params": {} }));
+        edges.push(json!({ "from": "ok", "from_port": "timeout", "to": "after_to" }));
+    }
+    json!({
+        "ir_version": 1, "name": "expense",
+        "declared_scopes": ["data.read", "notify.send"],
+        "nodes": nodes, "edges": edges,
+        "policies": { "run_timeout_sec": 1_209_600 }
+    })
+}
+
+struct Env {
+    pool: PgPool,
+    runs: RunStore,
+    inbox: ApprovalStore,
+    tenant: String,
+    record: Uuid,
+    workflow: Uuid,
+}
+
+impl Env {
+    async fn new(pool: PgPool) -> Self {
+        Env {
+            runs: RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
+            inbox: ApprovalStore::new(pool.clone()),
+            pool,
+            tenant: format!("t-{}", Uuid::new_v4()),
+            record: Uuid::new_v4(),
+            workflow: Uuid::new_v4(),
+        }
+    }
+
+    /// 承認で止まるまで run を進める（停止時の行は rev 4・状態 submitted）。
+    async fn start(&self, ir: &Value) -> Uuid {
+        workflow_engine::WorkflowIr::from_json(ir).unwrap();
+        let parsed = workflow_engine::validate(ir, &workflow_engine::Catalog::default()).unwrap();
+        let graph = RunGraph::build(&parsed);
+        let run_id = self
+            .runs
+            .create_run(
+                &self.tenant,
+                "acme",
+                self.workflow,
+                1,
+                "event",
+                None,
+                &Uuid::nil().to_string(),
+                "workflow",
+                &json!({ "record_id": self.record }),
+                ir,
+                &graph,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        self.drain().await;
+        run_id
+    }
+
+    /// ready の step が尽きるまでワーカーを回す（停止時の行は rev 4・状態 submitted）。
+    async fn drain(&self) {
+        let ports = Arc::new(ApprovalPorts::new(
+            "submitted",
+            4,
+            &["approved", "rejected"],
+        ));
+        let exec: Arc<dyn NodeExecutor> = Arc::new(CapabilityNodeExecutor::new(
+            ports,
+            EffectJournal::new(self.pool.clone()),
+            Arc::new(NoopAudit),
+        ));
+        let w = WorkflowWorker::new(self.runs.clone(), exec, WorkerConfig::default())
+            .scoped_to_tenant(&self.tenant);
+        while w.claim_and_run_once("w1").await.unwrap() {}
+    }
+
+    async fn step(&self, run: Uuid, node: &str) -> (StepStatus, Vec<String>, Option<Value>) {
+        let (s, ports, out): (String, Vec<String>, Option<sqlx::types::Json<Value>>) =
+            sqlx::query_as(
+                "SELECT status, taken_ports, output FROM step_execution \
+                 WHERE tenant_id = $1 AND run_id = $2 AND node_id = $3",
+            )
+            .bind(&self.tenant)
+            .bind(run)
+            .bind(node)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap();
+        (StepStatus::parse(&s).unwrap(), ports, out.map(|j| j.0))
+    }
+
+    async fn ledger(&self, run: Uuid) -> (String, Option<String>, Option<String>, Option<String>) {
+        sqlx::query_as(
+            "SELECT status, decided_by, decided_to, comment FROM workflow_approval \
+             WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(&self.tenant)
+        .bind(run)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+
+    fn table(&self) -> Uuid {
+        Uuid::parse_str(TABLE).unwrap()
+    }
+
+    /// その行の遷移を待っている承認の候補（relay と同じ口）。
+    async fn candidate(&self) -> workflow_engine::DataWaitCandidate {
+        let mut c = self
+            .runs
+            .data_wait_candidates(&self.tenant, &[self.table()])
+            .await
+            .unwrap();
+        assert_eq!(c.len(), 1, "承認の購読が 1 件");
+        c.remove(0)
+    }
+
+    fn transition(&self, to: &str, actor: &str, rev: i64) -> Value {
+        json!({
+            "source": "data.transition", "table_id": TABLE, "record_id": self.record, "rev": rev,
+            "change": "transition", "from": "submitted", "to": to, "changed": ["status"],
+            "changes": {}, "actor": actor, "by_workflow": false,
+            "occurred_at": "2026-10-26T01:02:03Z", "record": null, "truncated": false
+        })
+    }
+}
+
+/// 停止で台帳・担当者・購読が書かれ、受信箱には担当者（本人・所属ロール）にだけ出る。直前の自分の遷移
+/// （停止時の rev 以下）では起きず、判断の遷移で approved へ進み、台帳とコメントが同じ Tx で確定する。
+#[tokio::test]
+async fn approval_waits_for_the_decision_and_settles_the_ledger() {
+    let Some(pool) = setup().await else { return };
+    let env = Env::new(pool).await;
+    let run = env.start(&approval_ir(None)).await;
+    assert_eq!(env.step(run, "ok").await.0, StepStatus::WaitingEvent);
+    assert_eq!(
+        env.runs.run_status(&env.tenant, run).await.unwrap(),
+        Some(RunStatus::Running)
+    );
+    let (status, ..) = env.ledger(run).await;
+    assert_eq!(status, "pending");
+
+    // 受信箱: bob（列の担当者）とロール keiri の人に出る。担当でない人には出ない。
+    let bob = env
+        .inbox
+        .inbox(&env.tenant, "acme", "bob", &[], None, 50)
+        .await
+        .unwrap();
+    assert_eq!(bob.len(), 1);
+    let item = &bob[0];
+    assert_eq!(
+        (item.from_state.as_str(), item.suspend_rev),
+        ("submitted", 4)
+    );
+    assert_eq!(item.show_fields, ["title", "amount"]);
+    assert!(item.decidable);
+    let keiri = env
+        .inbox
+        .inbox(&env.tenant, "acme", "carol", &["keiri".into()], None, 50)
+        .await
+        .unwrap();
+    assert_eq!(keiri.len(), 1);
+    for (who, roles) in [("carol", vec![]), ("dave", vec!["sales".to_string()])] {
+        assert!(env
+            .inbox
+            .inbox(&env.tenant, "acme", who, &roles, None, 50)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(env
+            .inbox
+            .get_assigned(&env.tenant, "acme", who, &roles, item.approval_id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+    assert!(env
+        .inbox
+        .inbox(&env.tenant, "other-org", "bob", &[], None, 50)
+        .await
+        .unwrap()
+        .is_empty());
+
+    // 受付の突合の材料に出て、印を付けると出ない。
+    let todo = env.runs.approvals_to_reconcile(1000).await.unwrap();
+    let mine = todo
+        .iter()
+        .find(|p| p.wait.approval_id == item.approval_id)
+        .unwrap();
+    assert_eq!(
+        (mine.from_state.as_str(), mine.suspend_rev, mine.assignees),
+        ("submitted", 4, 2)
+    );
+    env.runs
+        .mark_approval_reconciled(&env.tenant, item.approval_id)
+        .await
+        .unwrap();
+    let todo = env.runs.approvals_to_reconcile(1000).await.unwrap();
+    assert!(todo.iter().all(|p| p.wait.approval_id != item.approval_id));
+
+    // 直前の自分の遷移（停止時の rev 以下）では起きない。
+    let c = env.candidate().await;
+    assert!(c.approval().is_some());
+    assert!(!c.wants(
+        workflow_engine::vocab::EventSource::DataTransition,
+        env.table(),
+        env.record,
+        4,
+        i64::MAX
+    ));
+    assert!(c.wants(
+        workflow_engine::vocab::EventSource::DataTransition,
+        env.table(),
+        env.record,
+        5,
+        i64::MAX
+    ));
+
+    // bob が受信箱からコメントを添えて承認した（遷移の後の rev 5）。別の人の同じ鍵は置けない。
+    assert!(env
+        .inbox
+        .put_comment(
+            &env.tenant,
+            item.approval_id,
+            5,
+            "bob",
+            workflow_engine::ir::params::ApprovalDecisionKind::Approve,
+            "規程どおりです"
+        )
+        .await
+        .unwrap());
+    assert!(!env
+        .inbox
+        .put_comment(
+            &env.tenant,
+            item.approval_id,
+            5,
+            "carol",
+            workflow_engine::ir::params::ApprovalDecisionKind::Approve,
+            "横入り"
+        )
+        .await
+        .unwrap());
+    assert!(env
+        .runs
+        .wake_data_wait(&c, &env.transition("approved", "bob", 5))
+        .await
+        .unwrap());
+    // 二度目の起床（再配送）は何もしない。
+    assert!(!env
+        .runs
+        .wake_data_wait(&c, &env.transition("approved", "bob", 5))
+        .await
+        .unwrap());
+
+    let (st, ports, out) = env.step(run, "ok").await;
+    assert_eq!(
+        (st, ports),
+        (StepStatus::Succeeded, vec!["approved".to_string()])
+    );
+    let out = out.unwrap();
+    assert_eq!(out["decision"], "approve");
+    assert_eq!(out["to"], "approved");
+    assert_eq!(out["decided_by"], "bob");
+    assert_eq!(out["comment"], "規程どおりです");
+    assert_eq!(out["rev"], 5);
+    assert_eq!(out["record_id"], json!(env.record));
+    assert_eq!(
+        env.ledger(run).await,
+        (
+            "approved".into(),
+            Some("bob".into()),
+            Some("approved".into()),
+            Some("規程どおりです".into())
+        )
+    );
+    env.drain().await;
+    assert_eq!(env.step(run, "after_ok").await.0, StepStatus::Succeeded);
+    assert_eq!(env.step(run, "after_ng").await.0, StepStatus::Skipped);
+    assert_eq!(env.step(run, "after_wd").await.0, StepStatus::Skipped);
+    assert_eq!(
+        env.runs.run_status(&env.tenant, run).await.unwrap(),
+        Some(RunStatus::Succeeded)
+    );
+    // 判断の後は受信箱に出ない。
+    assert!(env
+        .inbox
+        .inbox(&env.tenant, "acme", "bob", &[], None, 50)
+        .await
+        .unwrap()
+        .is_empty());
+    let got = env
+        .inbox
+        .get_assigned(&env.tenant, "acme", "bob", &[], item.approval_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!got.decidable);
+}
+
+/// 判断の外の状態への遷移は取り下げ（コメントは判断の種別が合わないので拾わない）。
+#[tokio::test]
+async fn transitions_outside_the_decisions_withdraw_the_approval() {
+    let Some(pool) = setup().await else { return };
+    let env = Env::new(pool).await;
+    let run = env.start(&approval_ir(None)).await;
+    let c = env.candidate().await;
+    let a = c.approval().unwrap().approval_id;
+    env.inbox
+        .put_comment(
+            &env.tenant,
+            a,
+            5,
+            "alice",
+            workflow_engine::ir::params::ApprovalDecisionKind::Approve,
+            "x",
+        )
+        .await
+        .unwrap();
+    assert!(env
+        .runs
+        .wake_data_wait(&c, &env.transition("draft", "alice", 5))
+        .await
+        .unwrap());
+    let (st, ports, out) = env.step(run, "ok").await;
+    assert_eq!(
+        (st, ports),
+        (StepStatus::Succeeded, vec!["withdrawn".to_string()])
+    );
+    assert_eq!(out.unwrap()["comment"], Value::Null);
+    assert_eq!(env.ledger(run).await.0, "withdrawn");
+    env.drain().await;
+    assert_eq!(env.step(run, "after_wd").await.0, StepStatus::Succeeded);
+}
+
+/// 期限切れは timeout 出口へ進み、台帳は expired。確定したものを監査の材料として返す。
+#[tokio::test]
+async fn expired_approvals_take_the_timeout_port() {
+    let Some(pool) = setup().await else { return };
+    let env = Env::new(pool).await;
+    let run = env.start(&approval_ir(Some(60))).await;
+    let later = chrono::Utc::now() + chrono::Duration::seconds(120);
+    let done = env
+        .runs
+        .expire_due_approvals(later, Some(&env.tenant))
+        .await
+        .unwrap();
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0].status, "expired");
+    assert_eq!(done[0].run_id, run);
+    let (st, ports, out) = env.step(run, "ok").await;
+    assert_eq!(
+        (st, ports),
+        (StepStatus::Succeeded, vec!["timeout".to_string()])
+    );
+    assert_eq!(out.unwrap()["decision"], "timeout");
+    assert_eq!(env.ledger(run).await.0, "expired");
+    // 期限の回収（承認以外も見る口）は確定済みの承認を二度扱わない。
+    assert_eq!(
+        env.runs
+            .expire_due_waits(later, Some(&env.tenant))
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+/// run の取消で台帳は cancelled になり、受信箱から消える。
+#[tokio::test]
+async fn cancelling_the_run_cancels_the_pending_approval() {
+    let Some(pool) = setup().await else { return };
+    let env = Env::new(pool).await;
+    let run = env.start(&approval_ir(None)).await;
+    assert_eq!(
+        env.inbox
+            .inbox(&env.tenant, "acme", "bob", &[], None, 50)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    env.runs
+        .request_cancel(&env.tenant, env.workflow, run)
+        .await
+        .unwrap();
+    env.runs
+        .drain_cancel_requested(Some(&env.tenant))
+        .await
+        .unwrap();
+    assert_eq!(
+        env.runs.run_status(&env.tenant, run).await.unwrap(),
+        Some(RunStatus::Cancelled)
+    );
+    assert_eq!(env.ledger(run).await.0, "cancelled");
+    assert!(env
+        .inbox
+        .inbox(&env.tenant, "acme", "bob", &[], None, 50)
+        .await
+        .unwrap()
+        .is_empty());
+}

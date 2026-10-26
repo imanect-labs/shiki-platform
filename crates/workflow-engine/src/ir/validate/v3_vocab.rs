@@ -318,6 +318,8 @@ pub(super) fn v3_vocab(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Vali
             ),
         }
     }
+    // 承認は束縛した行を読む（data.read・GAP-08）。
+    super::approval::v3(ir, &declared, errors);
     // イベント source を閉集合＋Stage A available へ照合。
     for (i, t) in ir.triggers.iter().enumerate() {
         match t {

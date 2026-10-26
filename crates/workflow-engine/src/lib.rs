@@ -6,6 +6,7 @@
 //! - [`ir::validate`]: 保存時検証 V1〜V7（全件エラー収集）。
 //! - [`store`]: IR を artifact（kind=workflow）として保存・バージョン管理・取得する薄い層。
 
+pub mod approval;
 pub mod capability;
 pub mod concurrency;
 pub mod control;
@@ -22,6 +23,10 @@ pub mod store;
 pub mod summary;
 pub mod vocab;
 
+pub use approval::{
+    approval_id_for, ApprovalChoiceSpec, ApprovalResolution, ApprovalRow, ApprovalStore,
+    ApprovalSuspend, AssigneeKind, AssigneeRef, InboxCursor,
+};
 pub use capability::{
     check_scope_ceiling, effective_scopes, CapabilityAudit, EffectJournal, JournalDecision,
     ScopeCeiling,
@@ -34,15 +39,15 @@ pub use delegation::{
 };
 pub use ir::scopes::complete_declared_scopes;
 pub use ir::validate::{
-    save_warnings, semantics_warnings, validate, Catalog, ValidationError, SEMANTICS_CHANGED,
-    TEMPLATE_ESCAPED_VAR,
+    save_warnings, semantics_warnings, validate, Catalog, CatalogTable, ValidationError,
+    APPROVAL_TIMEOUTS_EXCEED_RUN, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR,
 };
 pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};
 pub use nodes::{
-    AgentInvokeReq, CapabilityNodeExecutor, CsvPatchReq, CsvWriteReq, DataWriteOp, DataWriteReq,
-    ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView,
-    ResolvedSkillView, StorageWriteReq,
+    AgentInvokeReq, ApprovalTarget, CapabilityNodeExecutor, CsvPatchReq, CsvWriteReq, DataWriteOp,
+    DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts, PortError,
+    ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
 };
 pub use ratelimit::{BucketConfig, TokenBucket};
 pub use registration::{
@@ -50,13 +55,14 @@ pub use registration::{
 };
 pub use retry::{backoff_with_jitter, classify, RetryClass};
 pub use run::{
-    CancelOutcome, GcReport, HistoryGcWorker, ResumeOutcome, RunDetail, RunEventRow, RunListFilter,
-    RunListItem, RunStatusReader, StepDetail, StepOverview,
+    ApprovalWait, ConcurrencyLimits, DataWaitCandidate, EventWaitGate, EventWaitSubscriber,
+    NodeContext, NodeExecutor, NodeResult, PendingApproval, ResolvedApproval, RunOrigin, RunStatus,
+    RunStore, RunStoreError, StepStatus, WorkerConfig, WorkflowRunLauncher, WorkflowWorker,
+    DEFAULT_LEASE_SECS, WORKFLOW_GC_QUEUE,
 };
 pub use run::{
-    ConcurrencyLimits, DataWaitCandidate, EventWaitGate, EventWaitSubscriber, NodeContext,
-    NodeExecutor, NodeResult, RunOrigin, RunStatus, RunStore, RunStoreError, StepStatus,
-    WorkerConfig, WorkflowRunLauncher, WorkflowWorker, DEFAULT_LEASE_SECS, WORKFLOW_GC_QUEUE,
+    CancelOutcome, GcReport, HistoryGcWorker, ResumeOutcome, RunDetail, RunEventRow, RunListFilter,
+    RunListItem, RunStatusReader, StepDetail, StepOverview,
 };
 pub use scheduler::{
     Coalesce, DataTriggerCandidate, EventTriggerRef, FileTriggerCandidate, FireOutcome,

@@ -442,6 +442,11 @@ impl NodeExecutor for CapabilityNodeExecutor {
             );
         }
 
+        // 承認は terminal 化せず durable に中断する（判断は承認者本人の FSM 遷移・GAP-08）。
+        if nt == NodeType::HumanApproval {
+            return self.node_human_approval(params, ctx).await;
+        }
+
         let ec = Self::exec_ctx(ctx);
         let r = ParamResolver::new(ctx);
 

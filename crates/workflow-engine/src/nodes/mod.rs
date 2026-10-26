@@ -5,6 +5,7 @@
 //! 純粋・自己完結な部分（http.request の宛先束縛照合・レスポンス要約）を提供する。ストレージ/
 //! RAG/LLM/エージェントの実結線は server 側（AppState のチョークポイント注入）で行う。
 
+pub mod approval;
 pub mod capability;
 pub mod capability_ai;
 pub mod capability_data;
@@ -17,7 +18,7 @@ pub mod skill;
 
 pub use exec::CapabilityNodeExecutor;
 pub use ports::{
-    AgentInvokeReq, CsvPatchReq, CsvWriteReq, DataWriteOp, DataWriteReq, ExecCtx, HttpSendReq,
-    HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView,
-    StorageWriteReq,
+    AgentInvokeReq, ApprovalTarget, CsvPatchReq, CsvWriteReq, DataWriteOp, DataWriteReq, ExecCtx,
+    HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView,
+    ResolvedSkillView, StorageWriteReq,
 };

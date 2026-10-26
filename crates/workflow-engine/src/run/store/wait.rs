@@ -61,6 +61,10 @@ pub(super) async fn handle_suspend(
     let run_id = claimed.run_id;
     let step_path = &claimed.step_path;
     let kind = match suspend {
+        Suspend::Approval(a) => {
+            super::approval::suspend(tx, claimed, a).await?;
+            "approval"
+        }
         Suspend::Timer { wake_at } => {
             sqlx::query(
                 "UPDATE step_execution SET status = 'waiting_timer', wake_at = $4, \
@@ -164,17 +168,37 @@ pub(super) async fn wake_step_and_advance(
     graph: &RunGraph,
 ) -> Result<bool, RunStoreError> {
     let mut tx = db.begin().await.map_err(map_db)?;
-    // run 行 FOR UPDATE で前進 TX を run 単位に直列化する（seq 衝突・join 取りこぼし防止）。
+    if !lock_waiting(&mut tx, tenant_id, run_id, step_path).await? {
+        tx.rollback().await.map_err(map_db)?;
+        return Ok(false); // 既に起床/キャンセル済み（冪等）。
+    }
+    settle_woken(
+        &mut tx, tenant_id, run_id, step_path, taken_port, output, graph,
+    )
+    .await?;
+    tx.commit().await.map_err(map_db)?;
+    Ok(true)
+}
+
+/// 起床の前段: run 行と step 行を FOR UPDATE で取り、step が待機中なら購読を消し込んで `true`。
+///
+/// run 行のロックで前進 TX を run 単位に直列化する（seq 衝突・join 取りこぼし防止）。`false` なら呼び出し側は
+/// ロールバックする（既に起床・キャンセル済み）。
+pub(super) async fn lock_waiting(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    run_id: Uuid,
+    step_path: &str,
+) -> Result<bool, RunStoreError> {
     let exists: Option<Uuid> = sqlx::query_scalar(
         "SELECT run_id FROM workflow_run WHERE tenant_id = $1 AND run_id = $2 FOR UPDATE",
     )
     .bind(tenant_id)
     .bind(run_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(map_db)?;
     if exists.is_none() {
-        tx.rollback().await.map_err(map_db)?;
         return Ok(false);
     }
     let status: Option<String> = sqlx::query_scalar(
@@ -184,7 +208,7 @@ pub(super) async fn wake_step_and_advance(
     .bind(tenant_id)
     .bind(run_id)
     .bind(step_path)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(map_db)?;
     let waiting = matches!(
@@ -192,10 +216,8 @@ pub(super) async fn wake_step_and_advance(
         Some(StepStatus::WaitingTimer | StepStatus::WaitingEvent)
     );
     if !waiting {
-        tx.rollback().await.map_err(map_db)?;
-        return Ok(false); // 既に起床/キャンセル済み（冪等）。
+        return Ok(false);
     }
-
     // 購読を消し込む（event/timeout 起床の再発火防止・timer は subscription 無しで no-op）。
     sqlx::query(
         "UPDATE wait_subscription SET fired = true \
@@ -204,10 +226,22 @@ pub(super) async fn wake_step_and_advance(
     .bind(tenant_id)
     .bind(run_id)
     .bind(step_path)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(map_db)?;
+    Ok(true)
+}
 
+/// 起床の後段: step を terminal 化して前進する（`taken_port=None` は run の失敗）。[`lock_waiting`] の後に呼ぶ。
+pub(super) async fn settle_woken(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    run_id: Uuid,
+    step_path: &str,
+    taken_port: Option<&str>,
+    output: Value,
+    graph: &RunGraph,
+) -> Result<(), RunStoreError> {
     let (new_status, ports, event_kind) = match taken_port {
         Some(p) => (
             StepStatus::Succeeded,
@@ -227,11 +261,11 @@ pub(super) async fn wake_step_and_advance(
     .bind(new_status.as_str())
     .bind(Json(&output))
     .bind(&ports)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(map_db)?;
     append_event(
-        &mut tx,
+        tx,
         tenant_id,
         run_id,
         RunEventKind::StepWoken,
@@ -239,7 +273,7 @@ pub(super) async fn wake_step_and_advance(
     )
     .await?;
     append_event(
-        &mut tx,
+        tx,
         tenant_id,
         run_id,
         event_kind,
@@ -249,34 +283,25 @@ pub(super) async fn wake_step_and_advance(
 
     if taken_port.is_none() {
         // on_timeout=fail: run を失敗させる（即 fail 経路と同じ・残りを cancel）。
-        super::advance::cancel_remaining_steps(&mut tx, tenant_id, run_id).await?;
+        super::advance::cancel_remaining_steps(tx, tenant_id, run_id).await?;
         sqlx::query(
             "UPDATE workflow_run SET status = 'failed', finished_at = now(), updated_at = now() \
              WHERE tenant_id = $1 AND run_id = $2 AND status = 'running'",
         )
         .bind(tenant_id)
         .bind(run_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(map_db)?;
-        append_event(
-            &mut tx,
-            tenant_id,
-            run_id,
-            RunEventKind::RunFailed,
-            &Value::Null,
-        )
-        .await?;
-        tx.commit().await.map_err(map_db)?;
-        return Ok(true);
+        append_event(tx, tenant_id, run_id, RunEventKind::RunFailed, &Value::Null).await?;
+        return Ok(());
     }
 
-    let run_failed = super::advance::advance_downstream(&mut tx, tenant_id, run_id, graph).await?;
+    let run_failed = super::advance::advance_downstream(tx, tenant_id, run_id, graph).await?;
     if !run_failed {
-        super::advance::finalize_run_if_done(&mut tx, tenant_id, run_id).await?;
+        super::advance::finalize_run_if_done(tx, tenant_id, run_id).await?;
     }
-    tx.commit().await.map_err(map_db)?;
-    Ok(true)
+    Ok(())
 }
 
 /// IR スナップショット JSON からグラフを組む（起床経路のヘルパ）。
@@ -353,6 +378,23 @@ impl RunStore {
             let Some(graph) = graph_from_snapshot(ir_json.0) else {
                 continue;
             };
+            // 承認の期限切れは台帳も同じ Tx で確定する（GAP-08）。
+            if let Some(wait) = super::approval::ApprovalWait::from_spec(&spec.0) {
+                if super::approval::wake_approval(
+                    &self.db,
+                    &tenant,
+                    run_id,
+                    &step_path,
+                    &wait,
+                    &crate::approval::ApprovalResolution::expired(wait.on_timeout),
+                    &graph,
+                )
+                .await?
+                {
+                    woke += 1;
+                }
+                continue;
+            }
             // on_timeout=continue → timeout ポート、fail → run 失敗（None）。
             let port = if spec.0.get("on_timeout").and_then(Value::as_str) == Some("continue") {
                 Some("timeout")

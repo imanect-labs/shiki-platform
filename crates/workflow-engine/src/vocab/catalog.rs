@@ -332,22 +332,43 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
         NodeType::HumanApproval => (
             C::Notify,
             "承認を待つ",
-            "担当者の承認・却下を待って分岐する",
+            "テーブルの行について担当者の承認・却下・差し戻しを待って分岐する",
         ),
     }
 }
 
 /// 静的な出力ポートと、ポートが params から動的に決まるか（ir.md §5.2）。
 ///
-/// switch のみ動的・branch は true/false・approval は §7.8 予約の approved/rejected。カタログと保存時検証
-/// V2（`from_port` の存在）が読む単一定義。
+/// switch のみ動的・branch は true/false・approval は approved / withdrawn（rejected・returned・timeout は
+/// 設定から足す構造ポート・[`approval_ports`]）。カタログと保存時検証 V2（`from_port` の存在）が読む単一定義。
 pub(crate) fn static_output_ports(nt: NodeType) -> (&'static [&'static str], bool) {
     match nt {
         NodeType::ControlBranch => (&["true", "false"], false),
         NodeType::ControlSwitch => (&[], true),
-        NodeType::HumanApproval => (&["approved", "rejected"], false),
+        NodeType::HumanApproval => (&["approved", "withdrawn"], false),
         _ => (&["out"], false),
     }
+}
+
+/// human.approval の出口（承認・却下・差し戻し・取り下げ・時間切れ）を params から導く（GAP-08）。
+///
+/// `rejected` は reject を、`returned` は return を指定したとき、`timeout` は on_timeout=continue のときだけ。
+/// V2（ポートの存在）・executor（起床で取る出口）・エディタ（ハンドル）が同じ規則を使う。
+#[must_use]
+pub fn approval_ports(params: &serde_json::Value) -> Vec<&'static str> {
+    let has = |k: &str| params.get(k).is_some_and(|v| !v.is_null());
+    let mut ports = vec!["approved"];
+    if has("reject") {
+        ports.push("rejected");
+    }
+    if has("return") {
+        ports.push("returned");
+    }
+    ports.push("withdrawn");
+    if params.get("on_timeout").and_then(serde_json::Value::as_str) == Some("continue") {
+        ports.push("timeout");
+    }
+    ports
 }
 
 /// 1 ノード種のエントリを組む。
@@ -372,7 +393,8 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         | NodeType::EventPublish
         | NodeType::CsvPatch
         | NodeType::CsvWrite
-        | NodeType::WorkflowCall => EngineDedup,
+        | NodeType::WorkflowCall
+        | NodeType::HumanApproval => EngineDedup,
         NodeType::ScriptRun
         | NodeType::AgentInvoke
         | NodeType::HttpRequest
@@ -401,7 +423,9 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         | NodeType::DataRecordUpdate
         | NodeType::DataRecordDelete
         | NodeType::DataTransition
-        | NodeType::HttpRequest => (Some(30), Some(120)),
+        | NodeType::HttpRequest
+        // 承認の step は行を読んで止まるまで（判断を待つ時間は timeout_sec・run_timeout_sec が決める）。
+        | NodeType::HumanApproval => (Some(30), Some(120)),
         NodeType::RagSearch => (Some(60), Some(120)),
         NodeType::NotifySend => (Some(30), Some(60)),
         NodeType::WorkflowStart => (Some(10), Some(30)),
@@ -484,6 +508,9 @@ const fn output_shape(nt: NodeType) -> &'static str {
         N::DataBulkUpsert => {
             "{ import_id: string, status: string, rows_total: number, rows_applied: number, rows_invalid: number, rows_rejected: number, errors: Array<{ row: number, key: string | null, message: string }>, last_error: string | null }"
         }
+        N::HumanApproval => {
+            "{ approval_id: string, decision: \"approve\" | \"reject\" | \"return\" | \"withdrawn\" | \"timeout\", to: string | null（判断で進んだ状態）, decided_by: string | null（判断した人の ID）, decided_at: string | null, comment: string | null, record_id: string, rev: number | null（判断の後の rev） }（行の値は載せない。必要なら後で「データを調べる」で読む）"
+        }
         N::NotifySend
         | N::ControlLoop
         | N::ControlAssert
@@ -515,8 +542,7 @@ const fn output_shape(nt: NodeType) -> &'static str {
         | N::AiTranscribe
         | N::AiSpeech
         | N::GraphqlQuery
-        | N::SandboxExec
-        | N::HumanApproval => "",
+        | N::SandboxExec => "",
     }
 }
 

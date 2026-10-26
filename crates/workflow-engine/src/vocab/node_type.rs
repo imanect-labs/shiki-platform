@@ -89,7 +89,7 @@ vocab_enum! {
         GraphqlQuery => "graphql.query",
         /// サンドボックス内の単発コマンド/Python 実行（secure-exec 基盤を転用）。
         SandboxExec => "sandbox.exec",
-        /// 人間の承認を待って分岐する human-in-the-loop。
+        /// 担当者の判断（承認・却下・差し戻し）を待って分岐する（テーブルの 1 行に束縛・GAP-08）。
         HumanApproval => "human.approval",
     }
 }
@@ -140,6 +140,7 @@ impl NodeType {
                 | NodeType::DataRecordDelete
                 | NodeType::DataTransition
                 | NodeType::DataBulkUpsert
+                | NodeType::HumanApproval
         )
     }
 }
@@ -182,13 +183,14 @@ mod tests {
                 "data.record.delete",
                 "data.bulk_upsert",
                 "skill.invoke",
+                "human.approval",
             ]
         );
     }
 
     #[test]
     fn reserved_vocab_is_parsed_but_gated() {
-        for name in ["notify.send", "sheet.read", "ai.review", "human.approval"] {
+        for name in ["notify.send", "sheet.read", "ai.review", "sandbox.exec"] {
             let nt = NodeType::parse(name).expect("予約語彙は閉集合に含まれる");
             assert!(!nt.available_stage_a(), "{name} は Stage A では無効のはず");
         }

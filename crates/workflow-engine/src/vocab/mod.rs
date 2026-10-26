@@ -15,7 +15,7 @@ mod node_type;
 mod scope;
 
 pub(crate) use catalog::static_output_ports;
-pub use catalog::{node_catalog, IdempotencyClass, NodeCatalogEntry, NodeCategory};
+pub use catalog::{approval_ports, node_catalog, IdempotencyClass, NodeCatalogEntry, NodeCategory};
 pub use event_catalog::{
     event_catalog, payload_fields, DataChangePayload, EventCatalogEntry, EventPayloadField,
     StorageWritePayload, MAX_DATA_PAYLOAD_BYTES,
@@ -151,7 +151,8 @@ mod tests {
         assert!(Scope::StorageRead.available_stage_a());
         assert!(Scope::DataRead.available_stage_a());
         assert!(Scope::DataWrite.available_stage_a());
-        assert!(!Scope::NotifySend.available_stage_a());
+        // 人へのお知らせ（承認の依頼を含む）は human.approval のために解禁した（D-25）。
+        assert!(Scope::NotifySend.available_stage_a());
         assert!(!Scope::SheetRead.available_stage_a());
         assert!(!Scope::SandboxExec.available_stage_a());
     }

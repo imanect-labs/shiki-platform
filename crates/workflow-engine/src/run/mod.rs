@@ -24,9 +24,10 @@ use uuid::Uuid;
 pub use launcher::{LauncherError, WorkflowRunLauncher};
 pub use model::{idempotency_key, RunStatus, StepStatus};
 pub use store::{
-    CancelOutcome, DataWaitCandidate, EventWaitGate, EventWaitSubscriber, GcReport,
-    HistoryGcWorker, ResumeOutcome, RunDetail, RunEventRow, RunListFilter, RunListItem, RunOrigin,
-    RunStatusReader, RunStore, RunStoreError, StepDetail, StepOverview, WORKFLOW_GC_QUEUE,
+    ApprovalWait, CancelOutcome, DataWaitCandidate, EventWaitGate, EventWaitSubscriber, GcReport,
+    HistoryGcWorker, PendingApproval, ResolvedApproval, ResumeOutcome, RunDetail, RunEventRow,
+    RunListFilter, RunListItem, RunOrigin, RunStatusReader, RunStore, RunStoreError, StepDetail,
+    StepOverview, WORKFLOW_GC_QUEUE,
 };
 pub use worker::{ConcurrencyLimits, WorkerConfig, WorkflowWorker, DEFAULT_LEASE_SECS};
 
@@ -103,10 +104,14 @@ pub enum Suspend {
         /// 行に束縛したデータ変更の wait の、停止時の行の rev（これ以下の変更では起きない・GAP-07）。
         suspend_rev: Option<i64>,
     },
+    /// human.approval: 束縛した行の遷移を待つ（`waiting_event`。台帳・担当者・購読を checkpoint の同じ Tx で
+    /// 書く・GAP-08）。
+    Approval(Box<crate::approval::ApprovalSuspend>),
 }
 
-/// wait(event) のタイムアウト方針（ir.md §7.5）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// wait(event) のタイムアウト方針（ir.md §7.5）。承認の購読の spec にも `fail` / `continue` で載る。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OnTimeout {
     /// 期限切れで run を失敗させる。
     Fail,

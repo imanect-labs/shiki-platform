@@ -267,6 +267,32 @@ pub trait NodePorts: Send + Sync {
     async fn data_write(&self, _ctx: &ExecCtx, _req: DataWriteReq) -> Result<Value, PortError> {
         Err(data_unconfigured())
     }
+
+    /// 承認（human.approval）の停止時に、束縛した行のいまの状態・rev・FSM でその状態から進める状態
+    /// （遷移の定義だけ・actor 述語は評価しない）・担当者の列の値を、実行主体の権限で読む（GAP-08）。
+    ///
+    /// 実装は data の `FsmStore`（テーブルの viewer・行述語・フィールドマスク込み）。既定は「未構成」。
+    async fn data_approval_target(
+        &self,
+        _ctx: &ExecCtx,
+        _table_id: Uuid,
+        _record_id: Uuid,
+    ) -> Result<ApprovalTarget, PortError> {
+        Err(data_unconfigured())
+    }
+}
+
+/// 承認の停止時に読む行の状態（[`NodePorts::data_approval_target`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalTarget {
+    /// いまの状態（未設定なら `None`）。
+    pub current: Option<String>,
+    /// いまの rev。
+    pub rev: i64,
+    /// FSM でいまの状態から進める状態（定義順・重複なし）。
+    pub targets: Vec<String>,
+    /// ユーザー・ロールの列のうち実行主体に読めるもの（参照名 → 種別と値）。読めない列は入らない。
+    pub refs: std::collections::BTreeMap<String, (crate::approval::AssigneeKind, Option<String>)>,
 }
 
 /// data ポート未構成のエラー（permanent・黙って成功扱いにしない）。

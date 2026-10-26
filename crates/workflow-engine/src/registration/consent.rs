@@ -207,6 +207,26 @@ impl RegistrationService {
                         }
                     }
                 }
+                // 承認（GAP-08）: 停止時に束縛した行を読み、判断の遷移を実行主体の見え方で受け取るので、
+                // schedule / event の run にはテーブルの閲覧の委譲が要る（判断そのものは承認者本人の権限）。
+                crate::vocab::NodeType::HumanApproval => {
+                    if let Some(table) = node
+                        .params
+                        .get("record")
+                        .and_then(|r| r.get("table"))
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        push(SuggestedGrant {
+                            scope: "data.read".into(),
+                            object_kind: "data_table".into(),
+                            object_id: Some(table.to_string()),
+                            object_name: None,
+                            relation: "viewer".into(),
+                            source,
+                            needs_user_pick: false,
+                        });
+                    }
+                }
                 crate::vocab::NodeType::WorkflowStart => {
                     let name = literal_str(&node.params, "name");
                     push(SuggestedGrant {
@@ -347,6 +367,27 @@ mod tests {
             ("data.read", "data_table", "viewer")
         );
         assert_eq!(w.object_id.as_deref(), Some(FILE));
+    }
+
+    /// 承認のテーブルは閲覧の委譲を提案する（停止時に行を読み、判断を実行主体の見え方で受け取る・GAP-08）。
+    #[test]
+    fn approval_suggests_a_table_viewer_grant() {
+        let plan = plan(&json!([
+            { "id": "ok", "type": "human.approval", "params": { "title": "承認",
+              "record": { "table": FILE, "id": { "$from": "trigger", "path": "/record_id" } },
+              "assignees": [{ "field": "approver" }], "approve": { "to": "approved" } } }
+        ]));
+        let g = by_source(&plan, "ok");
+        assert_eq!(
+            (
+                g.scope.as_str(),
+                g.object_kind.as_str(),
+                g.relation.as_str()
+            ),
+            ("data.read", "data_table", "viewer")
+        );
+        assert_eq!(g.object_id.as_deref(), Some(FILE));
+        assert!(!g.needs_user_pick);
     }
 
     /// データ変更トリガのテーブルは閲覧の委譲を提案する（変更は委譲元の見え方で読む・GAP-07）。

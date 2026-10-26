@@ -70,7 +70,8 @@ impl Scope {
     }
 
     /// 保存できるスコープ（V3 が照合する集合）。data.read / data.write は Task 15.7 で解禁。
-    /// notify.send / 予約分は未実装。
+    /// notify.send は人へのお知らせ（承認の依頼を含む）として解禁した（D-25・human.approval が要する。
+    /// notify.send ノード自体は予約のまま）。予約分は未実装。
     pub fn available_stage_a(self) -> bool {
         matches!(
             self,
@@ -83,6 +84,7 @@ impl Scope {
                 | Scope::WorkflowStart
                 | Scope::CsvRead
                 | Scope::CsvWrite
+                | Scope::NotifySend
         )
     }
 }

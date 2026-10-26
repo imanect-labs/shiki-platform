@@ -7,11 +7,15 @@
 //!
 //! 登録より前の変更では起こさない: 行に束縛した wait は停止時の rev（`suspend_rev`）より後の変更だけ、
 //! テーブル単位の wait は checkpoint の時点の outbox の位置（`after_event_id`）より後のイベントだけを見る。
+//!
+//! 承認（human.approval・GAP-08）もここで候補になる（その行の `data.transition`・`suspend_rev` より後）。起床は
+//! 遷移先の状態を出口へ写し、台帳を同じ Tx で確定する（`approval.rs`）。
 
 use serde_json::Value;
 use sqlx::types::Json;
 use uuid::Uuid;
 
+use super::approval::{wake_approval, ApprovalWait};
 use super::wait::{graph_from_snapshot, wake_step_and_advance, EventWaitSubscriber};
 use super::{map_db, RunStore, RunStoreError};
 use crate::vocab::EventSource;
@@ -27,9 +31,17 @@ pub struct DataWaitCandidate {
     suspend_rev: Option<i64>,
     after_event_id: Option<i64>,
     filter: Option<Value>,
+    /// 承認の購読（human.approval）なら、その材料。
+    approval: Option<ApprovalWait>,
 }
 
 impl DataWaitCandidate {
+    /// 承認の購読か（human.approval・起床で台帳を確定する）。
+    #[must_use]
+    pub fn approval(&self) -> Option<&ApprovalWait> {
+        self.approval.as_ref()
+    }
+
     /// このイベント（source・テーブル・行・変更後の rev・outbox の id）を待っているか。
     #[must_use]
     pub fn wants(
@@ -116,6 +128,7 @@ impl RunStore {
                     suspend_rev: spec.get("suspend_rev").and_then(Value::as_i64),
                     after_event_id: spec.get("after_event_id").and_then(Value::as_i64),
                     filter: spec.get("filter").filter(|f| !f.is_null()).cloned(),
+                    approval: ApprovalWait::from_spec(&spec),
                     subscriber: r.subscriber,
                 })
             })
@@ -140,6 +153,36 @@ impl RunStore {
         let Some(graph) = snapshot.and_then(|s| graph_from_snapshot(s.0)) else {
             return Ok(false);
         };
+        if let Some(wait) = &c.approval {
+            // 遷移先の状態を出口へ（判断の外の状態は取り下げ）。判断した人はリビジョンの changed_by。
+            let res = crate::approval::ApprovalResolution::transition(
+                &wait.choices,
+                payload
+                    .get("to")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                payload
+                    .get("actor")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                payload
+                    .get("occurred_at")
+                    .and_then(Value::as_str)
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .map(|t| t.with_timezone(&chrono::Utc)),
+                payload.get("rev").and_then(Value::as_i64),
+            );
+            return wake_approval(
+                &self.db,
+                &c.subscriber.tenant_id,
+                c.subscriber.run_id,
+                &c.subscriber.step_path,
+                wait,
+                &res,
+                &graph,
+            )
+            .await;
+        }
         wake_step_and_advance(
             &self.db,
             &c.subscriber.tenant_id,
@@ -177,6 +220,7 @@ mod tests {
             suspend_rev,
             after_event_id: after,
             filter: None,
+            approval: None,
         }
     }
 

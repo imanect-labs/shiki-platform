@@ -3,6 +3,8 @@
 //! AI 編集も dnd 保存も同一パイプラインを通す。最初の 1 件で止めず全エラーを配列で返す
 //! （dnd がノード上に表示）。V4 は secret 照合＋skill 照合（10.1b・#344）。
 
+mod approval;
+pub use approval::{CatalogTable, APPROVAL_TIMEOUTS_EXCEED_RUN};
 mod refs;
 pub(crate) use refs::parse_skill_ref;
 mod semantics;
@@ -86,18 +88,24 @@ pub struct Catalog {
     /// #344 Task 10.1b）。インストールはユーザー単位のため保存者基準で照合し、実行時は
     /// 実行主体の ReBAC で再検証する（fail-closed が最終防衛線・ir.md §8）。
     pub skills: BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// 承認（human.approval）が束縛するテーブル（UUID → 保存者に見える列と FSM の状態・V4・GAP-08）。
+    /// API 層が IR の承認ノードのテーブルを保存者の権限で引いて詰める（見えないテーブルは入れない）。
+    /// `None` は照合しない（テーブルを引けない構成・AI 編集の説明文の検査など）。
+    pub tables: Option<BTreeMap<String, CatalogTable>>,
 }
 
 /// 保存を止めない警告をすべて返す（保存 API・検証 API・チャットの emit_workflow が利用者へ示す）。
 ///
 /// 条件の意味論の切替で振る舞いが変わり得る条件（[`SEMANTICS_CHANGED`]・[`semantics_warnings`]）と、
 /// vars のキーを `{{key}}` と書いたテンプレート（[`TEMPLATE_ESCAPED_VAR`]）と、同じテーブルで重なる
-/// データ変更トリガ（[`OVERLAPPING_DATA_TRIGGERS`]）と、wait(event) の filter の別名（[`WAIT_FILTER_ALIAS`]）。
+/// データ変更トリガ（[`OVERLAPPING_DATA_TRIGGERS`]）と、wait(event) の filter の別名（[`WAIT_FILTER_ALIAS`]）と、
+/// 続けて待つ承認の期限の合計が実行の期限以上のもの（[`APPROVAL_TIMEOUTS_EXCEED_RUN`]）。
 #[must_use]
 pub fn save_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     let mut out = semantics_warnings(ir);
     out.extend(template::warnings(ir));
     out.extend(v3_vocab::event_warnings(ir));
+    out.extend(approval::warnings(ir));
     out
 }
 
@@ -156,8 +164,9 @@ pub fn validate(
     v2_graph::check(&ir, &mut errors);
     // V3: 語彙照合（node type・scope・event source・model）。
     v3_vocab::v3_vocab(&ir, catalog, &mut errors);
-    // V4: 参照存在（secret の宛先束縛事前チェック＋skill のインストール済み照合・#344）。
+    // V4: 参照存在（secret の宛先束縛事前チェック＋skill のインストール済み照合・#344・承認のテーブルと状態）。
     refs::v4_refs(&ir, catalog, &mut errors);
+    approval::v4(&ir, catalog, &mut errors);
     // V5: データフロー（$from 祖先性・default 要否・条件木型整合・regex）。
     v5_dataflow::check(&ir, &mut errors);
     // V6: script コンパイル（inline の swc パース・禁止構文）。
@@ -210,6 +219,8 @@ fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<Valida
     }
     // テンプレートの vars の数（ir.md §3.2・§8）。
     template::check_limits(ir, errors);
+    // 承認の期限は実行の期限未満（GAP-08）。
+    approval::v7(ir, errors);
     // 条件木の深さ（トリガ filter・branch/wait params の condition）。
     for t in &ir.triggers {
         if let crate::ir::Trigger::Event(ev) = t {
@@ -394,7 +405,7 @@ mod tests {
     fn v3_unknown_scope_and_node() {
         let ir = json!({
             "ir_version": 1, "name": "wf",
-            "declared_scopes": ["notify.send"],  // 未実装（予約語彙）
+            "declared_scopes": ["sheet.read"],  // 未実装（予約語彙）
             "nodes": [{ "id": "q", "type": "notify.send", "params": {} }],
             "edges": []
         });

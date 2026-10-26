@@ -15,6 +15,7 @@ use super::readiness::EdgeState;
 use crate::vocab::RunEventKind;
 
 mod advance;
+mod approval;
 mod backoff;
 mod claim;
 mod gc;
@@ -25,6 +26,7 @@ mod ops;
 mod wait;
 mod wait_data;
 
+pub use approval::{ApprovalWait, PendingApproval, ResolvedApproval};
 pub use gc::{GcReport, HistoryGcWorker, WORKFLOW_GC_QUEUE};
 pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
 pub use ops::{CancelOutcome, ResumeOutcome};

@@ -11,7 +11,8 @@ use serde_json::Value;
 use crate::vocab::{required_scope, EventSource, NodeType, Scope};
 
 /// データ変更（`data.*` の source）を待つ・きっかけにするなら `data.read` が要る（変更を委譲元・実行主体の
-/// 見え方で読む・GAP-07）。トリガの `source` と control.wait の `params.source` を見る。
+/// 見え方で読む・GAP-07）。トリガの `source` と control.wait の `params.source` を見る。承認（human.approval）も
+/// 停止時に束縛した行を読み、判断の遷移を実行主体の見え方で受け取るので要る（GAP-08）。
 fn needs_data_read(obj: &serde_json::Map<String, Value>) -> bool {
     let is_data = |v: Option<&Value>| {
         v.and_then(Value::as_str)
@@ -31,8 +32,13 @@ fn needs_data_read(obj: &serde_json::Map<String, Value>) -> bool {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|n| n.get("type").and_then(Value::as_str) == Some(NodeType::ControlWait.as_str()))
-        .any(|n| is_data(n.get("params").and_then(|p| p.get("source"))));
+        .any(|n| match n.get("type").and_then(Value::as_str) {
+            Some(t) if t == NodeType::ControlWait.as_str() => {
+                is_data(n.get("params").and_then(|p| p.get("source")))
+            }
+            Some(t) => t == NodeType::HumanApproval.as_str(),
+            None => false,
+        });
     triggers || waits
 }
 
@@ -91,6 +97,14 @@ mod tests {
             assert_eq!(added, vec!["data.read".to_string()], "{ir}");
             assert_eq!(out["declared_scopes"], json!(["data.read"]));
         }
+        // 承認は人へのお知らせ（notify.send）と、束縛した行を読む data.read の両方（GAP-08・D-25）。
+        let (out, added) = complete_declared_scopes(&json!({ "name": "w",
+            "nodes": [{ "id": "a", "type": "human.approval", "params": {} }] }));
+        assert_eq!(
+            added,
+            vec!["data.read".to_string(), "notify.send".to_string()]
+        );
+        assert_eq!(out["declared_scopes"], json!(["data.read", "notify.send"]));
         let (_, added) = complete_declared_scopes(&json!({ "name": "w",
             "triggers": [{ "kind": "event", "source": "storage.write", "scope": { "folder": "f" } }],
             "nodes": [] }));
