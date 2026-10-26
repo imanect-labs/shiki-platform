@@ -228,6 +228,10 @@ pub async fn retry_workflow_run(
                 .map_err(|e| match e {
                     // 元の入力が今の input_schema に合わない（版を固定しても入力は過去のもの）。
                     workflow_engine::run::LauncherError::Input(m) => ApiError::BadRequest(m),
+                    // 版の必須の文字の欄が空（その版は何度やっても動かない・D-43）。
+                    workflow_engine::run::LauncherError::NotReady(errors) => {
+                        super::runs::not_ready(&errors)
+                    }
                     other => ApiError::Internal(format!("再実行: {other}")),
                 })?;
             Ok((

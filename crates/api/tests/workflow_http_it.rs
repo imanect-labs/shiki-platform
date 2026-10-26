@@ -777,3 +777,122 @@ async fn saving_completes_declared_scopes_from_nodes() {
         json!(["data.read", "storage.read"])
     );
 }
+
+/// D-40・D-43: 必須の文字の欄が空の IR と、schedule で保存先フォルダを省略した IR は保存できる（警告つき）が、
+/// 同意計画が理由を返し、有効化は 409 `not_ready`、対話の起動は 400 で止まる。直せば有効化できる。
+#[tokio::test]
+async fn blank_required_text_and_missing_folder_save_but_block_enable_and_run() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let name = format!("http-ready-{}", &suffix[..12]);
+    let mut ir = json!({
+        "ir_version": 1,
+        "name": name,
+        "triggers": [
+            { "kind": "schedule", "cron": "0 9 * * *", "tz": "Asia/Tokyo" },
+            { "kind": "interactive" }
+        ],
+        "nodes": [
+            { "id": "ask", "type": "llm.invoke", "params": { "prompt": "" } },
+            { "id": "save", "type": "storage.write", "params": {
+                "name": "memo.txt", "content": { "$from": "nodes.ask.output", "path": "/text" } } }
+        ],
+        "edges": [{ "from": "ask", "to": "save" }]
+    });
+    let (st, body) = req(&env, "POST", "/workflows", Some(json!({ "ir": ir }))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let warnings = body["warnings"].as_array().unwrap();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w["code"] == "ir.required_text_empty"
+                && w["node_id"] == "ask"
+                && w["path"] == "/params/prompt"),
+        "{body}"
+    );
+    // 保存先の省略は保存時の警告にしない（対話の実行は本人のルートに書ける）。有効化の理由にだけ出す。
+    assert!(
+        warnings
+            .iter()
+            .all(|w| w["code"] != "ir.write_folder_required"),
+        "{body}"
+    );
+
+    let (st, body) = req(
+        &env,
+        "GET",
+        &format!("/workflows/{id}/versions/1/consent-plan"),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let codes: Vec<(&str, &str)> = body["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["code"].as_str().unwrap(), b["node_id"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        codes,
+        vec![
+            ("ir.required_text_empty", "ask"),
+            ("ir.write_folder_required", "save")
+        ],
+        "{body}"
+    );
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/enable"),
+        Some(json!({ "version": 1, "grants": [] })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "not_ready", "{body}");
+    assert_eq!(body["errors"].as_array().unwrap().len(), 2, "{body}");
+    assert_eq!(body["errors"][1]["path"], "/params/folder", "{body}");
+    // 有効化は記録されない。
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["status"], "none", "{reg}");
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/runs"),
+        Some(json!({ "input": {} })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "not_ready", "{body}");
+    assert_eq!(body["errors"][0]["path"], "/params/prompt", "{body}");
+    assert!(
+        body["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("AI への指示"),
+        "{body}"
+    );
+
+    // 直した版（指示を書き、保存先を決める）は理由が消え、有効化できる。
+    ir["nodes"][0]["params"]["prompt"] = json!("今日の予定をまとめてください");
+    ir["nodes"][1]["params"]["folder"] = json!("8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a3");
+    let (st, body) = req(
+        &env,
+        "PUT",
+        &format!("/workflows/{id}"),
+        Some(json!({ "ir": ir, "expected_version": 1 })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (st, body) = req(
+        &env,
+        "GET",
+        &format!("/workflows/{id}/versions/2/consent-plan"),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["blockers"], json!([]), "{body}");
+}

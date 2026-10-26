@@ -43,6 +43,7 @@ pub struct StartRunResponse {
     request_body = StartRunRequest,
     responses(
         (status = 202, description = "起動した", body = StartRunResponse),
+        (status = 400, description = "入力が input_schema に合わないか、実行できない設定がある（not_ready・errors 付き）"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
@@ -68,9 +69,21 @@ pub async fn start_workflow_run(
         .map_err(|e| match e {
             workflow_engine::run::LauncherError::Ir(_) => ApiError::NotFound,
             workflow_engine::run::LauncherError::Input(m) => ApiError::BadRequest(m),
+            // 必須の文字の欄が空のまま（保存は通る・実行の前に止める・D-43）。理由は欄に写せる形で返す。
+            workflow_engine::run::LauncherError::NotReady(errors) => not_ready(&errors),
             other => ApiError::Internal(format!("run 起動: {other}")),
         })?;
     Ok((StatusCode::ACCEPTED, Json(StartRunResponse { run_id })))
+}
+
+/// 実行できない設定（必須の文字の欄が空・D-43）の 400。有効化の 409 `not_ready` と同じ形で、理由を
+/// 検証エラーの形（node_id・path つき）で全件返す（画面が欄に写せる）。
+pub(super) fn not_ready(errors: &[workflow_engine::ValidationError]) -> ApiError {
+    ApiError::UnprocessableJson(serde_json::json!({
+        "code": "not_ready",
+        "message": "実行できない設定があります",
+        "errors": errors,
+    }))
 }
 
 /// ワークフロー閲覧権限＋kind を検証する（履歴系ハンドラ共通・存在秘匿）。

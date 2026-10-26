@@ -72,6 +72,9 @@ pub struct ConsentPlanResponse {
     /// 宣言スコープ（権限の天井・同意対象）。
     pub declared_scopes: Vec<String>,
     pub grants: Vec<SuggestedGrantItem>,
+    /// 有効化できない理由（必須の文字の欄が空・schedule / event で保存先フォルダを省略・D-40・D-43）。
+    /// 空なら有効化できる。enable は同じ理由を 409 `not_ready` で返す。
+    pub blockers: Vec<workflow_engine::ValidationError>,
 }
 
 /// 委譲 1 件の付与指定。
@@ -245,6 +248,7 @@ pub async fn consent_plan(
     Ok(Json(ConsentPlanResponse {
         declared_scopes: ir.declared_scopes.clone(),
         grants,
+        blockers: workflow_engine::enable_blockers(&ir),
     }))
 }
 
@@ -258,7 +262,7 @@ pub async fn consent_plan(
         (status = 200, description = "有効化済み", body = EnableResponse),
         (status = 403, description = "有効化者の権限範囲外の委譲が含まれる"),
         (status = 404, description = "存在しない/editor でない"),
-        (status = 409, description = "scope 拡大に grants が不足（missing_scopes 付き）"),
+        (status = 409, description = "scope 拡大に grants が不足（missing_scopes 付き）か、有効化できない設定がある（not_ready・errors 付き）"),
     ),
     tag = "workflows"
 )]
@@ -429,6 +433,12 @@ fn map_enable_err(e: EnableError) -> ApiError {
             tracing::warn!(detail = %d, "権限範囲外の委譲要求を拒否");
             ApiError::Forbidden
         }
+        // 保存は通しても動かせない設定（D-40・D-43）。理由は検証エラーと同じ形で全件返す（欄に写せる）。
+        EnableError::NotReady(errors) => ApiError::ConflictJson(json!({
+            "code": "not_ready",
+            "message": "有効化できない設定があります",
+            "errors": errors,
+        })),
         EnableError::Delegation(err) => ApiError::Internal(format!("delegation: {err}")),
         EnableError::Internal(m) => ApiError::Internal(m),
     }

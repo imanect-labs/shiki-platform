@@ -46,6 +46,9 @@ impl gui::WorkflowStarter for LauncherWorkflowStarter {
             .map_err(|e| match e {
                 workflow_engine::run::LauncherError::Ir(_) => gui::ActionError::NotFound,
                 workflow_engine::run::LauncherError::Input(m) => gui::ActionError::Invalid(m),
+                workflow_engine::run::LauncherError::NotReady(errors) => gui::ActionError::Invalid(
+                    workflow_engine::run::LauncherError::messages(&errors),
+                ),
                 other => gui::ActionError::Internal(format!("run 起動: {other}")),
             })
     }
@@ -64,6 +67,9 @@ impl gui::WorkflowStarter for LauncherWorkflowStarter {
             .map_err(|e| match e {
                 workflow_engine::run::LauncherError::Ir(_) => gui::ActionError::NotFound,
                 workflow_engine::run::LauncherError::Input(m) => gui::ActionError::Invalid(m),
+                workflow_engine::run::LauncherError::NotReady(errors) => gui::ActionError::Invalid(
+                    workflow_engine::run::LauncherError::messages(&errors),
+                ),
                 other => gui::ActionError::Internal(format!("run 起動: {other}")),
             })
     }

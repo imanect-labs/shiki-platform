@@ -433,6 +433,13 @@ impl NodePorts for ProdNodePorts {
                 workflow_engine::run::LauncherError::Input(m) => {
                     PortError::invalid(format!("workflow.start の入力: {m}"))
                 }
+                // 子ワークフローの必須の文字の欄が空（直すまで通らない・D-43）。
+                workflow_engine::run::LauncherError::NotReady(errors) => {
+                    PortError::invalid(format!(
+                        "workflow.start の起動先: {}",
+                        workflow_engine::run::LauncherError::messages(&errors)
+                    ))
+                }
                 other => PortError::unavailable(format!("workflow.start: {other}")),
             })?;
         Ok(json!({ "run_id": run_id.map(|r| r.to_string()) }))
