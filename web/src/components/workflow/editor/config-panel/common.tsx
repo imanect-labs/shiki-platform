@@ -18,6 +18,10 @@ import type { Node as IrNode } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { EditorAction } from "../ir-state";
 
+/// 欄の見出しの id（[`Field`] の中の [`NumberInput`] は aria-labelledby で見出しを名前にする。見出しは入力の
+/// 兄弟なので、そのままでは入力に名前が付かず、読み上げでも getByLabel でも引けない）。
+const FieldLabelContext = React.createContext<string | undefined>(undefined);
+
 export function Field({
   label,
   hint,
@@ -29,10 +33,13 @@ export function Field({
   error?: string | null;
   children: React.ReactNode;
 }) {
+  const labelId = React.useId();
   return (
     <div className="space-y-1.5">
-      <label className="text-xs font-medium text-foreground">{label}</label>
-      {children}
+      <label id={labelId} className="text-xs font-medium text-foreground">
+        {label}
+      </label>
+      <FieldLabelContext.Provider value={labelId}>{children}</FieldLabelContext.Provider>
       {error ? (
         <p className="text-[11px] text-destructive">{error}</p>
       ) : hint ? (
@@ -57,10 +64,12 @@ export function NumberInput({
   placeholder?: string;
   error?: boolean;
 }) {
+  const labelledBy = React.useContext(FieldLabelContext);
   return (
     <Input
       type="number"
       inputMode="numeric"
+      aria-labelledby={labelledBy}
       value={value ?? ""}
       min={min}
       max={max}
