@@ -58,39 +58,13 @@ function pathOf(segments: string[]): string | undefined {
   return segments.length > 0 ? `/${segments.map(pointerSegment).join("/")}` : undefined;
 }
 
-/// ノード種の出力の最上位の項目名（カタログの `output_shape` から）。読めなければ空。
+/// ノード種の出力の最上位の項目名（カタログの `output_fields`・D-42）。項目の組でない出力は空。
 ///
-/// 形はカタログの単一定義から生成される（crates/workflow-engine/src/vocab/catalog.rs）。生成物にまだ無い版でも
-/// 動くよう、項目があるときだけ読む。
+/// 項目はカタログの単一定義から生成される（crates/workflow-engine/src/vocab/catalog.rs）。表記の文字列
+/// （`output_shape`）は人と AI が読むためのもので、ここでは字句解析しない。
 export function outputKeys(nodeType: string | undefined): string[] {
   const entry = NODE_CATALOG.find((c) => c.type === nodeType);
-  return entry && "output_shape" in entry && typeof entry.output_shape === "string" ? shapeKeys(entry.output_shape) : [];
-}
-
-/// 出力の形（TS 風の表記・例 `{ text: string, model: string }`）の最上位の項目名。
-/// 「レコード { … }」のような短い前置きまでは読み、文の途中のオブジェクト（「… は { … }」）は読まない。
-export function shapeKeys(shape: string): string[] {
-  const open = shape.indexOf("{");
-  if (open < 0 || open > 8 || shape.slice(0, open).includes("（")) return [];
-  const keys: string[] = [];
-  let depth = 0;
-  let seg = "";
-  const flush = () => {
-    const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\??\s*:/.exec(seg);
-    if (m && !keys.includes(m[1])) keys.push(m[1]);
-    seg = "";
-  };
-  for (const ch of shape.slice(open + 1)) {
-    if ("{[(<（".includes(ch)) depth += 1;
-    if ("}])>）".includes(ch)) {
-      if (depth === 0) break;
-      depth -= 1;
-    }
-    if (ch === "," && depth === 0) flush();
-    else seg += ch;
-  }
-  flush();
-  return keys;
+  return (entry?.output_fields ?? []).map((f) => f.name);
 }
 
 /// きっかけの内容の項目（イベントトリガの source ごとのペイロードの項目・カタログの単一定義・D-47）。
