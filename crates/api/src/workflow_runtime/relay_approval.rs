@@ -1,26 +1,31 @@
-//! 承認待ち（human.approval・GAP-08）の受付の突合・行の削除による取り下げ・監査（relay から呼ぶ）。
+//! 承認待ち（human.approval・GAP-08）の受付の突合・行の削除による取り下げ・期限・監査（relay・tick から呼ぶ）。
 //!
 //! 判断の遷移そのものは、データ変更の wait(event) と同じ候補（[`super::relay_data`]）として起きる（その行の
-//! `data.transition` で `rev > suspend_rev` のもの・実行主体の見え方）。ここは残りの 2 つを受け持つ。
+//! `data.transition` で `rev > suspend_rev` のもの・実行主体の見え方）。ここは残りの 3 つを受け持つ。
 //!
 //! - **受付の突合**: 停止の commit より前に起きた遷移は、購読ができる前に配送済みになり得る。保留中で未突合の
 //!   承認を、実行主体の見え方で行を読み直して決める。いまの状態が停止時の状態なら待ち続け、判断の行き先なら
-//!   その出口へ、それ以外・行が見えない（消えた）なら取り下げる。実行主体の委譲・テーブルの権限が停止の後に
-//!   外れていたら（委譲が無い・テーブル単位の NotFound / Forbidden・user 主体の本人の失権を含む）、判断の遷移が
-//!   二度と見えないので取り下げ、理由（[`ACTOR_UNAVAILABLE`]）を決着の監査に残す（判断の遷移を受けた relay も
-//!   同じ扱い）。承認の依頼の監査もここで書く。
+//!   その出口へ、それ以外・行が見えない（消えた）なら取り下げる。承認の依頼の監査もここで書く。
 //! - **行の削除**: outbox の削除（`data.record.changed` / delete）を受けたら、その行に束縛した保留中の承認を、
 //!   実行主体の `data_get` が NotFound であることを確かめて取り下げる（見えなくなっただけでは取り下げない）。
+//! - **期限**（[`expire_due_approvals`]・scheduler の tick）: 期限の来た承認を期限切れにする（on_timeout で
+//!   timeout の出口か run の失敗）。その前に実行主体がまだテーブルを読めるかを確かめる。
+//!
+//! **実行主体の失権**（D-62）: 受付の突合・判断の遷移を受けた relay・期限の 3 つとも、実行主体の委譲・テーブルの
+//! 権限が停止の後に外れていたら（委譲が無い・テーブル単位の NotFound / Forbidden・user 主体の本人の失権を含む）、
+//! 判断の遷移が二度と見えず、どの出口へ進めても後続が委譲なしで中途半端に走るだけなので、出口へは進めずに run を
+//! [`ACTOR_UNAVAILABLE`] で失敗させる（[`ApprovalResolution::actor_unavailable`]）。決着の監査に同じ理由を残す。
 //!
 //! 権限の判定（Forbidden / NotFound）は承認の結論に使い、一時的な障害だけを `Err` で返す（次の tick で配り直す）。
 
 use authz::{AuthContext, Principal, PrincipalKind, Relation};
-use data::{ChangeEventKind, ChangeEventRef, DataError};
+use data::{ChangeEventKind, ChangeEventRef, DataError, DataStore, FsmStore};
 use serde_json::{json, Value};
 use storage::audit::{AuditAction, AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
+pub(super) use workflow_engine::approval::ACTOR_UNAVAILABLE;
 use workflow_engine::{
-    ApprovalResolution, ApprovalWait, EventWaitSubscriber, ExecCtx, ResolvedApproval,
+    ApprovalResolution, ApprovalWait, EventWaitSubscriber, ExecCtx, ResolvedApproval, RunStore,
 };
 
 use super::auth::auth_ctx;
@@ -79,11 +84,6 @@ async fn audit(
     }
 }
 
-/// 承認を取り下げた理由（監査の `reason`）: 実行主体（委譲・テーブルの権限）がテーブルを読めなくなった。待っても
-/// 判断の遷移が実行主体に見えないので、受信箱で判断されても run は期限まで待ち、行と run の結論が食い違う。
-/// テーブルの削除とは区別しない（data は見えないテーブルと無いテーブルを同じ NotFound にする）。
-pub(super) const ACTOR_UNAVAILABLE: &str = "actor_unavailable";
-
 /// 承認が決着したことの監査（起床・取り下げ・期限切れ・system が記録）。
 pub(crate) async fn audit_resolved(db: &sqlx::PgPool, r: &ResolvedApproval) {
     audit_resolved_because(db, r, None).await;
@@ -117,9 +117,21 @@ pub(super) async fn resolve(
     res: &ApprovalResolution,
     reason: Option<&str>,
 ) -> Result<(), anyhow::Error> {
-    if deps.runs.resolve_approval(subscriber, wait, res).await? {
+    resolve_on(deps.db, deps.runs, subscriber, wait, res, reason).await
+}
+
+/// [`resolve`] の本体（relay の外の tick からも呼ぶ）。
+async fn resolve_on(
+    db: &sqlx::PgPool,
+    runs: &RunStore,
+    subscriber: &EventWaitSubscriber,
+    wait: &ApprovalWait,
+    res: &ApprovalResolution,
+    reason: Option<&str>,
+) -> Result<(), anyhow::Error> {
+    if runs.resolve_approval(subscriber, wait, res).await? {
         audit_resolved_because(
-            deps.db,
+            db,
             &ResolvedApproval {
                 tenant_id: subscriber.tenant_id.clone(),
                 org: subscriber.org.clone(),
@@ -146,7 +158,7 @@ pub(super) async fn reconcile_approvals(deps: &RelayDeps<'_>) -> Result<(), anyh
         let actor = match port.actor(&ec, p.table_id, Relation::Viewer).await {
             Ok(a) => Some(a),
             // 委譲・権限が無い（停止の後に外れた）: 実行主体には判断の遷移が見えず、待っても決まらない。
-            // 取り下げて理由を監査に残す（受信箱で判断されても run が期限まで待つ食い違いを作らない）。
+            // 出口へ進めずに run を失敗させ、理由を監査に残す（D-62）。
             Err(e) if !e.retryable => None,
             Err(e) => {
                 tracing::warn!(code = %e.code, error = %e.message, "承認の受付の突合で行を読めません（次の tick で再試行）");
@@ -166,11 +178,10 @@ pub(super) async fn reconcile_approvals(deps: &RelayDeps<'_>) -> Result<(), anyh
                 }
                 Err(e @ (DataError::NotFound | DataError::Forbidden)) => {
                     // テーブルそのものを読めない（user 主体の本人・委譲元が ReBAC を失った）なら、判断の遷移が
-                    // 二度と見えないので理由つきで取り下げる。行が見えない・消えたなら理由なしで取り下げる。
+                    // 二度と見えないので run を失敗させる（D-62）。行が見えない・消えたなら理由なしで取り下げる。
                     match table_unreadable(&a, p.table_id).await {
                         Ok(true) => {
-                            let reason = Some(ACTOR_UNAVAILABLE);
-                            resolve(deps, &p.subscriber, &p.wait, &withdrawn, reason).await?;
+                            fail_unavailable(deps, &p.subscriber, &p.wait).await?;
                         }
                         Ok(false) if matches!(e, DataError::NotFound) => {
                             resolve(deps, &p.subscriber, &p.wait, &withdrawn, None).await?;
@@ -216,8 +227,7 @@ pub(super) async fn reconcile_approvals(deps: &RelayDeps<'_>) -> Result<(), anyh
                 }
             }
         } else {
-            let reason = Some(ACTOR_UNAVAILABLE);
-            resolve(deps, &p.subscriber, &p.wait, &withdrawn, reason).await?;
+            fail_unavailable(deps, &p.subscriber, &p.wait).await?;
         }
         audit(
             deps.db,
@@ -233,6 +243,69 @@ pub(super) async fn reconcile_approvals(deps: &RelayDeps<'_>) -> Result<(), anyh
         deps.runs
             .mark_approval_reconciled(&p.subscriber.tenant_id, p.wait.approval_id)
             .await?;
+    }
+    Ok(())
+}
+
+/// 実行主体が承認を待つ間に失権した承認を、出口へ進めずに run の失敗で確定し、理由を監査に残す（D-62）。
+pub(super) async fn fail_unavailable(
+    deps: &RelayDeps<'_>,
+    subscriber: &EventWaitSubscriber,
+    wait: &ApprovalWait,
+) -> Result<(), anyhow::Error> {
+    let res = ApprovalResolution::actor_unavailable();
+    resolve(deps, subscriber, wait, &res, Some(ACTOR_UNAVAILABLE)).await
+}
+
+/// 1 tick で確かめる期限の来た承認の上限（残りは次の tick・期限切れの回収は別に全件を見る）。
+const DUE_BATCH: i64 = 256;
+
+/// 承認の期限の回収（scheduler の tick・結合テストも同じ口を呼ぶ）。
+///
+/// 期限の来た保留中の承認のうち、実行主体がテーブルを読めなくなったもの（委譲が無い・テーブル単位の NotFound /
+/// Forbidden）は、期限の出口（timeout）へ進めずに run を [`ACTOR_UNAVAILABLE`] で失敗させる（受付の突合・判断の
+/// 遷移を受けた relay と揃える・D-62）。残りを [`RunStore::expire_due_approvals`] で期限切れにして決着の監査を
+/// 書く。
+///
+/// `expire_due_waits` より先に呼ぶ（あちらも承認を期限切れにするので、先に確かめないと timeout の出口へ進む）。
+/// 確かめが一時障害で終わったら、期限切れにせずに `Err` を返す。呼び出し側はその tick の `expire_due_waits` を
+/// 見送る（確かめないまま期限の出口へ進めない・次の tick で確かめ直す）。
+pub async fn expire_due_approvals(
+    db: &sqlx::PgPool,
+    runs: &RunStore,
+    data: &DataStore,
+    fsms: &FsmStore,
+    now: chrono::DateTime<chrono::Utc>,
+    tenant_scope: Option<&str>,
+) -> Result<(), anyhow::Error> {
+    let port = DataPort { data, fsms, db };
+    for p in runs.due_approvals(now, tenant_scope, DUE_BATCH).await? {
+        let ec = exec_ctx(&p.subscriber);
+        let lost = match port.actor(&ec, p.table_id, Relation::Viewer).await {
+            Err(e) if !e.retryable => Ok(true),
+            Err(e) => Err(format!("{}: {}", e.code, e.message)),
+            Ok(a) => table_unreadable(&a, p.table_id)
+                .await
+                .map_err(|e| e.to_string()),
+        };
+        match lost {
+            Ok(true) => {
+                let res = ApprovalResolution::actor_unavailable();
+                let reason = Some(ACTOR_UNAVAILABLE);
+                resolve_on(db, runs, &p.subscriber, &p.wait, &res, reason).await?;
+            }
+            Ok(false) => {}
+            // 確かめられないまま期限切れにすると、失権した実行主体で後続が走り得る。次の tick で確かめ直す。
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "承認 {} の期限の前の確かめに失敗: {e}",
+                    p.wait.approval_id
+                ));
+            }
+        }
+    }
+    for r in runs.expire_due_approvals(now, tenant_scope).await? {
+        audit_resolved(db, &r).await;
     }
     Ok(())
 }

@@ -5,6 +5,9 @@
 //! - **起床**（relay・受付の突合・行の削除）: その行の遷移で `rev > suspend_rev` のものだけを、遷移先の状態に
 //!   応じた出口へ写す。判断の外の状態・行が消えたら取り下げ。step の terminal 化と台帳の確定を同じ Tx で行う。
 //! - **期限**: `expire_due_waits` と同じ Tx で台帳を `expired` にする。
+//! - **実行主体の失権**（D-62）: 待つ間に委譲・テーブルの権限が外れたら、出口へ進めずに run を失敗で終える
+//!   （step の `error.code`・run の `fail_reason` は `actor_unavailable`・台帳は `cancelled`）。判断は api の
+//!   relay（受付の突合・判断の遷移・期限の前の確かめ）が行い、ここは同じ Tx で確定するだけ。
 //! - **取消**: run の失敗・取消（`cancel_remaining_steps`・ドレイン）と同じ Tx で保留中の台帳を `cancelled` にする。
 //!
 //! 判断に添えたコメントは、遷移の後の rev・遷移した人・判断の種別が一致するものだけを採る
@@ -214,22 +217,76 @@ pub(super) async fn wake_approval(
     .execute(&mut *tx)
     .await
     .map_err(map_db)?;
-    let output = json!({
-        "approval_id": wait.approval_id,
-        "decision": res.decision,
-        "to": res.to,
-        "decided_by": res.decided_by,
-        "decided_at": res.decided_at.map(|t| t.to_rfc3339()),
-        "comment": comment,
-        "record_id": wait.record_id,
-        "rev": res.rev,
-    });
+    // 理由つきの失敗（実行主体の失権）は出力を書かない（後続へは進まない・出力の decision の語彙を増やさない）。
+    let output = if res.failure.is_some() {
+        Value::Null
+    } else {
+        json!({
+            "approval_id": wait.approval_id,
+            "decision": res.decision,
+            "to": res.to,
+            "decided_by": res.decided_by,
+            "decided_at": res.decided_at.map(|t| t.to_rfc3339()),
+            "comment": comment,
+            "record_id": wait.record_id,
+            "rev": res.rev,
+        })
+    };
     settle_woken(
         &mut tx, tenant_id, run_id, step_path, res.port, output, graph,
     )
     .await?;
+    if let Some(code) = res.failure {
+        record_failure(&mut tx, tenant_id, run_id, step_path, code).await?;
+    }
     tx.commit().await.map_err(map_db)?;
     Ok(true)
+}
+
+/// 承認の step の失敗の理由を、step の `error`（engine.md §2.2 の形）と run の `fail_reason` に書く
+/// （[`settle_woken`] が run を失敗にした同じ Tx・実行履歴と画面に返す失敗の理由がこの code で分類する）。
+async fn record_failure(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    run_id: Uuid,
+    step_path: &str,
+    code: &str,
+) -> Result<(), RunStoreError> {
+    sqlx::query(
+        "UPDATE step_execution SET error = jsonb_build_object( \
+             'code', $4::text, 'message', $5::text, 'retryable', false, \
+             'node_id', node_id, 'attempt', attempt) \
+         WHERE tenant_id = $1 AND run_id = $2 AND step_path = $3",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .bind(step_path)
+    .bind(code)
+    .bind(failure_message(code))
+    .execute(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    sqlx::query(
+        "UPDATE workflow_run SET fail_reason = $3 \
+         WHERE tenant_id = $1 AND run_id = $2 AND status = 'failed'",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .bind(code)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    Ok(())
+}
+
+/// step の error に書く文言（実行履歴に出る・値や権限の詳細は含めない）。
+fn failure_message(code: &str) -> &'static str {
+    match code {
+        crate::approval::ACTOR_UNAVAILABLE => {
+            "承認を待つ間に、ワークフローを実行する権限（委譲またはテーブルの権限）が外れたため、止めました"
+        }
+        _ => "承認を待つ間に処理を続けられなくなったため、止めました",
+    }
 }
 
 /// run の失敗・取消で、その run の保留中の承認を取り消す（`cancel_remaining_steps`・ドレインと同じ Tx）。
@@ -299,6 +356,31 @@ impl RunStore {
         let sql =
             format!("{PENDING_FROM} AND a.reconciled_at IS NULL ORDER BY a.created_at LIMIT $1");
         let rows: Vec<PendingRow> = sqlx::query_as(&sql)
+            .bind(limit)
+            .fetch_all(&self.db)
+            .await
+            .map_err(map_db)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(PendingRow::into_pending)
+            .collect())
+    }
+
+    /// 期限の来た保留中の承認（期限の古い順）。期限切れにする前に、実行主体がまだテーブルを読めるかを
+    /// 確かめる材料（D-62・読めなければ期限の出口へ進めずに run を失敗させる）。
+    pub async fn due_approvals(
+        &self,
+        now: DateTime<Utc>,
+        tenant_scope: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<PendingApproval>, RunStoreError> {
+        let sql = format!(
+            "{PENDING_FROM} AND w.timeout_at <= $1 AND (($2::text IS NULL) OR (a.tenant_id = $2)) \
+             ORDER BY w.timeout_at LIMIT $3"
+        );
+        let rows: Vec<PendingRow> = sqlx::query_as(&sql)
+            .bind(now)
+            .bind(tenant_scope)
             .bind(limit)
             .fetch_all(&self.db)
             .await

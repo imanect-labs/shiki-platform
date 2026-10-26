@@ -438,17 +438,11 @@ async fn relay_tenant_waits(
             }
             let Some(view) = cx.view(&who_of(w), ev).await? else {
                 // 承認を待つ run の実行主体が、停止の後に委譲・権限を失った: 判断の遷移は二度と見えないので、
-                // 取り下げて理由を残す（行は承認へ進んだのに run が期限まで待つ食い違いを作らない・GAP-08）。
+                // 出口へ進めずに run を失敗させ、理由を残す（行は承認へ進んだのに run が期限まで待つ食い違いも、
+                // 後続が委譲なしで中途半端に走ることも作らない・GAP-08・D-62）。
                 if let Some(a) = w.approval() {
                     if cx.cannot_read(&who_of(w), w.table_id) {
-                        super::relay_approval::resolve(
-                            cx.deps,
-                            &w.subscriber,
-                            a,
-                            &workflow_engine::ApprovalResolution::withdrawn(),
-                            Some(super::relay_approval::ACTOR_UNAVAILABLE),
-                        )
-                        .await?;
+                        super::relay_approval::fail_unavailable(cx.deps, &w.subscriber, a).await?;
                         woken.insert(key);
                     }
                 }

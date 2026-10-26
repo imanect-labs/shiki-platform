@@ -1285,10 +1285,64 @@ async fn deleting_the_row_withdraws_its_approval() {
     assert!(env.item_for(&env.bob, gone).await.is_none());
 }
 
-/// 承認待ちの途中で実行主体（委譲元の委譲）が外れたら、受付の突合でも判断の遷移を受けた relay でも
-/// 取り下げとして決め、理由を監査に残す（受信箱で判断されたのに run が期限まで待つ食い違いを作らない）。
+impl Env {
+    /// 承認を待つ間に実行主体が失権した run の終わり方（D-62）: 取り下げの出口へ進めず、step は失敗
+    /// （出力なし・`error.code` = actor_unavailable）、run は failed（`fail_reason` = actor_unavailable）、後続は
+    /// 走らない。台帳は cancelled で、決着の監査に理由を残す。
+    async fn assert_failed_unavailable(&self, run: Uuid, later: &[&str]) {
+        let (st, ports, out) = self.step(run, "ok").await;
+        assert_eq!((st.as_str(), ports), ("failed", Vec::<String>::new()));
+        assert!(out.unwrap_or(Value::Null).is_null(), "出力を書かない");
+        let (error, status, reason): (Option<sqlx::types::Json<Value>>, String, Option<String>) =
+            sqlx::query_as(
+                "SELECT s.error, r.status, r.fail_reason FROM step_execution s \
+                 JOIN workflow_run r ON r.tenant_id = s.tenant_id AND r.run_id = s.run_id \
+                 WHERE s.tenant_id = $1 AND s.run_id = $2 AND s.node_id = 'ok'",
+            )
+            .bind(TENANT)
+            .bind(run)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap();
+        let error = error.expect("step の error").0;
+        assert_eq!(error["code"], "actor_unavailable", "{error}");
+        assert_eq!(error["retryable"], false);
+        assert_eq!(error["node_id"], "ok");
+        assert_eq!(
+            (status.as_str(), reason.as_deref()),
+            ("failed", Some("actor_unavailable"))
+        );
+        for node in later {
+            assert_eq!(
+                self.step(run, node).await.0,
+                "cancelled",
+                "{node} は走らない"
+            );
+        }
+        let (id, status) = self.approval_of(run).await;
+        assert_eq!(status, "cancelled");
+        let audit = self.resolve_audit(id).await.expect("決着の監査");
+        assert_eq!(audit["reason"], "actor_unavailable");
+        assert_eq!(audit["status"], "cancelled");
+        assert_eq!(audit["run_id"], json!(run));
+    }
+
+    /// テストで作った run を消す（step・購読・承認の台帳は FK で消える・同じ DB のほかのテストやサーバに残さない）。
+    async fn forget_runs(&self, wf: Uuid) {
+        sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1 AND workflow_id = $2")
+            .bind(TENANT)
+            .bind(wf)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// 承認待ちの途中で実行主体（委譲元の委譲）が外れたら、受付の突合でも判断の遷移を受けた relay でも、取り下げの
+/// 出口へ進めずに run を actor_unavailable で失敗させ、理由を監査に残す（D-62）。受信箱で判断されたのに run が
+/// 期限まで待つ食い違いも、後続が委譲なしで中途半端に走ることも作らない。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn approvals_are_withdrawn_when_the_delegation_is_revoked() {
+async fn runs_fail_when_the_delegation_is_revoked_while_waiting() {
     let _serial = SERIAL.lock().await;
     let Some(env) = setup().await else { return };
     let table = env.expense_table().await;
@@ -1315,7 +1369,7 @@ async fn approvals_are_withdrawn_when_the_delegation_is_revoked() {
     .await
     .unwrap();
 
-    // 受付の突合: 委譲が無いので行を読めない。待ち続けずに取り下げる。
+    // 受付の突合: 委譲が無いので行を読めない。待ち続けず、取り下げの出口へも進めずに run を失敗させる。
     sqlx::query(
         "UPDATE workflow_approval SET reconciled_at = NULL WHERE tenant_id = $1 AND run_id = $2",
     )
@@ -1325,18 +1379,10 @@ async fn approvals_are_withdrawn_when_the_delegation_is_revoked() {
     .await
     .unwrap();
     env.settle().await;
-    let (st, ports, _) = env.step(first, "ok").await;
-    assert_eq!(
-        (st.as_str(), ports),
-        ("succeeded", vec!["withdrawn".to_string()])
-    );
-    let (first_id, status) = env.approval_of(first).await;
-    assert_eq!(status, "withdrawn");
-    let audit = env.resolve_audit(first_id).await.expect("決着の監査");
-    assert_eq!(audit["reason"], "actor_unavailable");
+    env.assert_failed_unavailable(first, &["done", "ng"]).await;
 
     // 判断の遷移: bob は受信箱から判断できる（行は bob の権限で承認へ進む）が、実行主体にはその遷移が
-    // 見えない。期限まで待たせず、取り下げとして決める。
+    // 見えない。期限まで待たせず、承認の出口へも進めずに run を失敗させる。
     let (st, body) = env
         .decide(
             &env.bob,
@@ -1346,15 +1392,75 @@ async fn approvals_are_withdrawn_when_the_delegation_is_revoked() {
         .await;
     assert_eq!(st, StatusCode::ACCEPTED, "{body}");
     env.settle().await;
-    let (st, ports, _) = env.step(second, "ok").await;
+    env.assert_failed_unavailable(second, &["done", "ng"]).await;
+    env.forget_runs(wf).await;
+}
+
+/// 期限の来た承認も、実行主体が失権していれば timeout の出口へ進めずに run を actor_unavailable で失敗させる
+/// （受付の突合・判断の遷移を受けた relay と揃える・D-62）。失権していない承認は従来どおり timeout の出口へ進む。
+/// 回収は scheduler の tick と同じ口（`api::workflow_runtime::expire_due_approvals`）で呼ぶ。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn due_approvals_of_an_unavailable_actor_fail_instead_of_timing_out() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    // ワークフローごとに別のテーブル（同じ行の受付の遷移を 2 本の run で取り合わない）。
+    let (revoked_table, kept_table) = (env.expense_table().await, env.expense_table().await);
+    let revoked_wf = env.enable(revoked_table, Some(3600)).await;
+    let kept_wf = env.enable(kept_table, Some(3600)).await;
+    let revoked_record = env.submit(revoked_table, "出張の精算", &env.bob).await;
+    let kept_record = env.submit(kept_table, "会議室の予約", &env.bob).await;
+    env.settle().await;
+    let revoked = env.run_of(revoked_wf, revoked_record).await;
+    let kept = env.run_of(kept_wf, kept_record).await;
+    assert_eq!(env.step(revoked, "ok").await.0, "waiting_event");
+    assert_eq!(env.step(kept, "ok").await.0, "waiting_event");
+
+    // 受付の突合を済ませた後で委譲が外れ、誰も判断しないまま期限が来た（relay には何も届かない）。
+    sqlx::query(
+        "UPDATE workflow_delegation SET revoked_at = now() WHERE tenant_id = $1 AND workflow_id = $2",
+    )
+    .bind(TENANT)
+    .bind(revoked_wf)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE wait_subscription SET timeout_at = now() - interval '1 second' \
+         WHERE tenant_id = $1 AND run_id = ANY($2) AND NOT fired",
+    )
+    .bind(TENANT)
+    .bind(vec![revoked, kept])
+    .execute(&env.pool)
+    .await
+    .unwrap();
+
+    api::workflow_runtime::expire_due_approvals(
+        &env.pool,
+        &env.runs,
+        &env.data,
+        &env.fsms,
+        chrono::Utc::now(),
+        Some(TENANT),
+    )
+    .await
+    .unwrap();
+    env.settle().await;
+    env.assert_failed_unavailable(revoked, &["late", "done", "ng"])
+        .await;
+    // 失権していない承認は timeout の出口へ進み、台帳は expired（理由なし）。
+    let (st, ports, _) = env.step(kept, "ok").await;
     assert_eq!(
         (st.as_str(), ports),
-        ("succeeded", vec!["withdrawn".to_string()])
+        ("succeeded", vec!["timeout".to_string()])
     );
-    let (second_id, status) = env.approval_of(second).await;
-    assert_eq!(status, "withdrawn");
-    let audit = env.resolve_audit(second_id).await.expect("決着の監査");
-    assert_eq!(audit["reason"], "actor_unavailable");
+    assert_eq!(env.step(kept, "late").await.0, "succeeded");
+    let (kept_id, status) = env.approval_of(kept).await;
+    assert_eq!(status, "expired");
+    let audit = env.resolve_audit(kept_id).await.expect("決着の監査");
+    assert_eq!(audit["status"], "expired");
+    assert!(audit.get("reason").is_none(), "{audit}");
+    env.forget_runs(revoked_wf).await;
+    env.forget_runs(kept_wf).await;
 }
 
 impl Env {
@@ -1402,10 +1508,11 @@ impl Env {
 }
 
 /// user 主体の run（対話の起動）で、起動した本人が停止の後にテーブルを読めなくなったら、受付の突合でも
-/// 判断の遷移を受けた relay でも取り下げとして決め、理由を監査に残す。委譲台帳を持たない主体なので、
-/// テーブル単位の NotFound / Forbidden（行が見えないだけとは別）で見分ける。
+/// 判断の遷移を受けた relay でも、取り下げの出口へ進めずに run を actor_unavailable で失敗させ、理由を監査に
+/// 残す（D-62）。委譲台帳を持たない主体なので、テーブル単位の NotFound / Forbidden（行が見えないだけとは別）で
+/// 見分ける。起動した本人の画面に返す失敗の理由は権限の分類になる（GAP-09）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn approvals_of_a_user_run_are_withdrawn_when_the_launcher_loses_the_table() {
+async fn user_runs_fail_when_the_launcher_loses_the_table_while_waiting() {
     let _serial = SERIAL.lock().await;
     let Some(env) = setup().await else { return };
     let table = env.expense_table().await;
@@ -1436,7 +1543,7 @@ async fn approvals_of_a_user_run_are_withdrawn_when_the_launcher_loses_the_table
         .await
         .unwrap();
 
-    // 受付の突合: テーブルを読めないので待ち続けずに理由つきで取り下げる。
+    // 受付の突合: テーブルを読めないので待ち続けず、取り下げの出口へも進めずに run を失敗させる。
     sqlx::query(
         "UPDATE workflow_approval SET reconciled_at = NULL WHERE tenant_id = $1 AND run_id = $2",
     )
@@ -1446,18 +1553,10 @@ async fn approvals_of_a_user_run_are_withdrawn_when_the_launcher_loses_the_table
     .await
     .unwrap();
     env.settle().await;
-    let (st, ports, _) = env.step(first, "ok").await;
-    assert_eq!(
-        (st.as_str(), ports),
-        ("succeeded", vec!["withdrawn".to_string()])
-    );
-    let (first_id, status) = env.approval_of(first).await;
-    assert_eq!(status, "withdrawn");
-    let audit = env.resolve_audit(first_id).await.expect("決着の監査");
-    assert_eq!(audit["reason"], "actor_unavailable");
+    env.assert_failed_unavailable(first, &[]).await;
 
     // 判断の遷移: bob は受信箱から判断できる（行は bob の権限で承認へ進む）が、実行主体の alice にはテーブルが
-    // 見えない（change_event_views がテーブル単位で断る）。期限まで待たせず、取り下げとして決める。
+    // 見えない（change_event_views がテーブル単位で断る）。期限まで待たせず、run を失敗させる。
     let (st, body) = env
         .decide(
             &env.bob,
@@ -1473,16 +1572,19 @@ async fn approvals_of_a_user_run_are_withdrawn_when_the_launcher_loses_the_table
         .await
         .unwrap();
     assert_eq!(row.data["status"], "approved");
-    let (st, ports, _) = env.step(second, "ok").await;
-    assert_eq!(
-        (st.as_str(), ports),
-        ("succeeded", vec!["withdrawn".to_string()])
-    );
-    let (second_id, status) = env.approval_of(second).await;
-    assert_eq!(status, "withdrawn");
-    let audit = env.resolve_audit(second_id).await.expect("決着の監査");
-    assert_eq!(audit["reason"], "actor_unavailable");
-    assert_eq!(audit["run_id"], json!(second));
+    env.assert_failed_unavailable(second, &[]).await;
+
+    // 起動した本人の画面に返す失敗の理由は「権限が足りない」（生の理由は出さない・GAP-09）。
+    let outcomes = workflow_engine::RunOutcomeReader::new(env.pool.clone())
+        .own_outcomes(&env.alice, &[first, second], &[])
+        .await
+        .unwrap();
+    for run in [first, second] {
+        let f = outcomes[&run].failure.as_ref().expect("失敗の理由");
+        assert_eq!(f.category, workflow_engine::FailureCategory::Permission);
+        assert!(!f.message.contains("actor_unavailable"), "{}", f.message);
+    }
+    env.forget_runs(wf).await;
 }
 
 impl Env {

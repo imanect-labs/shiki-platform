@@ -23,6 +23,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         // 権限
         ("forbidden", Permission),
         ("out_of_scope", Permission),
+        // 承認を待つ間に実行主体（委譲・テーブルの権限）が外れた（D-62・`approval::ACTOR_UNAVAILABLE`）。
+        (crate::approval::ACTOR_UNAVAILABLE, Permission),
         // 競合
         ("conflict", Conflict),
         ("effect_conflict", Conflict),
@@ -159,6 +161,10 @@ mod tests {
             run_failure(id, Some("forbidden"), None).category,
             FailureCategory::Permission
         );
+        // 承認を待つ間の実行主体の失権は権限の分類（共有した人に確かめる文言・D-62）。
+        let f = run_failure(id, Some("actor_unavailable"), Some("actor_unavailable"));
+        assert_eq!(f.category, FailureCategory::Permission);
+        assert!(f.message.contains("権限が足りない"), "{}", f.message);
         // run の時間切れは step の code より優先する。
         assert_eq!(
             run_failure(id, Some("cancelled"), Some("run_timeout")).category,

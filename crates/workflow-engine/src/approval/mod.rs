@@ -100,15 +100,25 @@ pub const WITHDRAWN_PORT: &str = "withdrawn";
 /// 期限切れ（on_timeout=continue）の出口。
 pub const TIMEOUT_PORT: &str = "timeout";
 
-/// 承認の確定（起床・期限・取り下げ）で台帳と step の出力に書くもの。
+/// 承認を待つ間に実行主体（委譲・テーブルの権限）がテーブルを読めなくなったときの理由（D-62）。
+///
+/// step の `error.code`・run の `fail_reason`・決着の監査の `reason` に同じ値を書く（失敗の分類は
+/// [`crate::run::failure::KNOWN_CODES`] の permission）。判断の遷移が実行主体に二度と見えず、出口へ進めても
+/// 後続が委譲なしで中途半端に走るだけなので、出口へは進めずに run を失敗で終える。
+pub const ACTOR_UNAVAILABLE: &str = "actor_unavailable";
+
+/// 承認の確定（起床・期限・取り下げ・実行主体の失権）で台帳と step の出力に書くもの。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalResolution {
-    /// 台帳の status（approved / rejected / returned / withdrawn / expired）。
+    /// 台帳の status（approved / rejected / returned / withdrawn / expired / cancelled）。
     pub status: &'static str,
-    /// step の出力の decision（approve / reject / return / withdrawn / timeout）。
+    /// step の出力の decision（approve / reject / return / withdrawn / timeout）。`failure` があるときは
+    /// 出力を書かない（step は失敗で、後続へは進まない）。
     pub decision: &'static str,
-    /// 進む出口（None は on_timeout=fail の期限切れ＝run の失敗）。
+    /// 進む出口（None は run の失敗: on_timeout=fail の期限切れ・実行主体の失権）。
     pub port: Option<&'static str>,
+    /// run を失敗で終える理由（step の `error.code` と run の `fail_reason`・None は理由を書かない）。
+    pub failure: Option<&'static str>,
     /// 判断で進んだ状態（遷移のとき）。
     pub to: Option<String>,
     /// 遷移した人（revision の changed_by）。
@@ -133,6 +143,7 @@ impl ApprovalResolution {
             status: kind.map_or("withdrawn", ApprovalDecisionKind::status),
             decision: kind.map_or("withdrawn", ApprovalDecisionKind::as_str),
             port: Some(port),
+            failure: None,
             to,
             decided_by,
             decided_at,
@@ -147,6 +158,7 @@ impl ApprovalResolution {
             status: "withdrawn",
             decision: "withdrawn",
             port: Some(WITHDRAWN_PORT),
+            failure: None,
             to: None,
             decided_by: None,
             decided_at: None,
@@ -164,6 +176,23 @@ impl ApprovalResolution {
                 OnTimeout::Continue => Some(TIMEOUT_PORT),
                 OnTimeout::Fail => None,
             },
+            failure: None,
+            to: None,
+            decided_by: None,
+            decided_at: None,
+            rev: None,
+        }
+    }
+
+    /// 実行主体（委譲・テーブルの権限）が承認を待つ間に外れた（D-62）: 取り下げの出口へは進めず、run を
+    /// [`ACTOR_UNAVAILABLE`] で失敗させる。台帳は run の失敗と同じく `cancelled` にする。
+    #[must_use]
+    pub fn actor_unavailable() -> Self {
+        ApprovalResolution {
+            status: "cancelled",
+            decision: "cancelled",
+            port: None,
+            failure: Some(ACTOR_UNAVAILABLE),
             to: None,
             decided_by: None,
             decided_at: None,
@@ -236,6 +265,15 @@ mod tests {
             ApprovalResolution::expired(OnTimeout::Continue).port,
             Some("timeout")
         );
+        assert_eq!(e.failure, None);
+        // 実行主体の失権は出口へ進めず、理由つきで run を失敗させる（取り下げとは別・D-62）。
+        let a = ApprovalResolution::actor_unavailable();
+        assert_eq!(
+            (a.status, a.port, a.failure),
+            ("cancelled", None, Some("actor_unavailable"))
+        );
+        assert_eq!(a.kind(), None);
+        assert_eq!(ApprovalResolution::withdrawn().failure, None);
     }
 
     #[test]
