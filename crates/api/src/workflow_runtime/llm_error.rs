@@ -61,6 +61,45 @@ pub(super) fn llm_port_error(ec: &ExecCtx, e: &LlmError) -> PortError {
     }
 }
 
+/// agent.invoke のループの失敗を step の誤りへ写す（BUG-6）。
+///
+/// agent-core は LLM の誤りを `AgentError::Llm(<LlmError の文>)` に潰すので、接頭辞から種別を戻して
+/// llm.invoke と同じ利用者向けの文言・再試行の分類にする。利用枠の超過（`RateLimited`）は gateway が
+/// 利用者向けに整形した文言をそのまま出し、code は `rate_limited` にしない（attempt を消費しない再試行で
+/// 回り続けないように・retry.rs）。
+pub(super) fn agent_port_error(ec: &ExecCtx, e: &agent_core::AgentError) -> PortError {
+    use agent_core::AgentError as A;
+    match e {
+        A::Llm(raw) => llm_port_error(ec, &llm_error_from_text(raw)),
+        A::RateLimited(line) => llm_port_error(ec, &LlmError::RateLimited(line.clone())),
+        A::Cancelled => PortError::new("cancelled", "実行が取り消されました", false),
+        A::Sink(detail) => {
+            tracing::warn!(target: "workflow.llm", run_id = ?ec.run_id, step = ?ec.step_path, error = %detail, "agent.invoke の記録に失敗");
+            PortError::unavailable(message::GENERIC)
+        }
+    }
+}
+
+/// `LlmError` の Display（`llm config error: …` など）から種別を戻す（知らない形は内部の誤り）。
+fn llm_error_from_text(raw: &str) -> LlmError {
+    let detail = |prefix: &str| raw.strip_prefix(prefix).map(str::to_string);
+    if let Some(d) = detail("llm config error: ") {
+        LlmError::Config(d)
+    } else if let Some(d) = detail("llm provider unavailable: ") {
+        LlmError::Unavailable(d)
+    } else if let Some(d) = detail("llm rate limited: ") {
+        LlmError::RateLimited(d)
+    } else if let Some(d) = detail("llm bad request: ") {
+        LlmError::BadRequest(d)
+    } else {
+        LlmError::Internal(
+            raw.strip_prefix("llm internal error: ")
+                .unwrap_or(raw)
+                .to_string(),
+        )
+    }
+}
+
 /// `LlmError::Config` を利用者向けの 1 行の誤りにする（どれも設定を直すまで通らないので再試行しない）。
 ///
 /// モデル名はノードの設定に書いた値なので文言に含める（どの設定を直すかが分かる）。モデルは実行の前に
@@ -171,6 +210,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// エージェントのループの誤りも llm.invoke と同じ文言・再試行の分類になる（BUG-6）。
+    #[test]
+    fn agent_errors_follow_the_llm_mapping() {
+        use agent_core::AgentError as A;
+        let unknown =
+            agent_port_error(&ec(), &A::Llm("llm config error: unknown model: m9".into()));
+        assert_eq!(unknown.code, "model_unavailable");
+        assert!(!unknown.retryable);
+        let down = agent_port_error(
+            &ec(),
+            &A::Llm("llm provider unavailable: openai request failed: operation timed out".into()),
+        );
+        assert_eq!(down.message, message::TIMEOUT);
+        assert!(down.retryable);
+        let bad = agent_port_error(&ec(), &A::Llm("llm bad request: openai 400 {..}".into()));
+        assert_eq!(bad.message, message::REJECTED);
+        // 利用枠の超過は文言をそのまま出し、attempt を消費しない再試行（rate_limited）にしない。
+        let limit = agent_port_error(&ec(), &A::RateLimited("利用上限に達しました".into()));
+        assert_eq!(limit.message, "利用上限に達しました");
+        assert_ne!(limit.code, "rate_limited");
+        assert_eq!(agent_port_error(&ec(), &A::Cancelled).code, "cancelled");
+        let odd = agent_port_error(&ec(), &A::Llm("something odd".into()));
+        assert_eq!(odd.message, message::GENERIC);
     }
 
     /// gateway が利用者向けに書いた文言（利用上限・本人限定のモデル）はそのまま出す。

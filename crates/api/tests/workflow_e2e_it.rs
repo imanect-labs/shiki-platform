@@ -221,6 +221,7 @@ async fn interactive_run_completes_through_production_executor() {
         db: env.pool.clone(),
         data: None,
         fsms: None,
+        web_search: None,
     });
     let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
     let executor: Arc<dyn workflow_engine::NodeExecutor> = Arc::new(

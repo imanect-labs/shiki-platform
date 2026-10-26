@@ -105,14 +105,17 @@ async fn build_catalog_base(
             .map(|m| m.id.clone())
             .collect(),
     );
-    crate::workflow_catalog::build_catalog_from(
+    let mut catalog = crate::workflow_catalog::build_catalog_from(
         state.secrets.as_deref(),
         Some(&state.skill_installs),
         &models,
         ctx,
     )
     .await
-    .map_err(ApiError::Internal)
+    .map_err(ApiError::Internal)?;
+    // AI エージェントの web.fetch の宛先は管理者の天井の部分集合だけ（BUG-6・D-29）。
+    catalog.web_ceiling = Some(state.config.workflow.agent_web_ceiling());
+    Ok(catalog)
 }
 
 /// 検証のみのリクエスト（保存しない・dnd のライブ検証用）。

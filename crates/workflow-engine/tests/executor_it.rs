@@ -106,8 +106,13 @@ impl NodePorts for FakePorts {
         let model = req.model.unwrap_or_else(|| "org-default".into());
         Ok(json!({ "text": format!("echo:{}", req.prompt), "model": model }))
     }
-    async fn agent_invoke(&self, _ctx: &ExecCtx, _req: AgentInvokeReq) -> Result<Value, PortError> {
-        Ok(json!({ "stdout": "ok" }))
+    async fn agent_invoke(
+        &self,
+        _ctx: &ExecCtx,
+        _req: AgentInvokeReq,
+        _tools: Arc<dyn workflow_engine::AgentToolGateway>,
+    ) -> Result<Value, PortError> {
+        Ok(json!({ "text": "ok" }))
     }
     async fn http_send(&self, _ctx: &ExecCtx, req: HttpSendReq) -> Result<HttpSendResp, PortError> {
         let status = *self.http_status.lock().unwrap();

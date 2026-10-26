@@ -6,7 +6,7 @@
 //!
 //! - `.shiki` script を持つ skill → script-runtime（script.run と同じ engine/HostBridge・
 //!   `Shiki.*` は同じ能力ゲートウェイに合流＝scope ceiling が効く）
-//! - instructions のみの skill → agent.invoke 経路（サンドボックス・egress 全遮断）
+//! - instructions のみの skill → llm.invoke 経路（instructions を system・入力を prompt にした 1 回の生成）
 
 use serde_json::{json, Value};
 
@@ -77,12 +77,10 @@ impl CapabilityNodeExecutor {
             .await?
         } else {
             // instructions のみ: llm.invoke 経路（instructions を system・入力を prompt に）。
-            // agent_invoke ポートはコードのサンドボックス実行（ExecRequest::Python）であり、
-            // 自然言語 instructions を code として渡すと Python として実行されてしまう
-            // （レビュー指摘）。エージェンティックなツールループが要るスキルはチャット側の
-            // skill ツール（PR #354）が担い、ワークフローの instructions-only skill は
-            // 「skill 指示付きの LLM 呼び出し」として実行する。モデルは指定しない（ポートが実行主体の
-            // 組織の既定で解決する・BUG-12）。
+            // エージェンティックなツールループが要るスキルはチャット側の skill ツール（PR #354）が担い、
+            // ワークフローの instructions-only skill は「skill 指示付きの LLM 呼び出し」として実行する
+            // （agent.invoke のツールループへ移すかは後で決める・BUG-6）。モデルは指定しない（ポートが
+            // 実行主体の組織の既定で解決する・BUG-12）。
             self.rate_check(ec, "llm.invoke").await?;
             self.ports
                 .llm_invoke(

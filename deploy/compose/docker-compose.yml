@@ -629,10 +629,14 @@ services:
       # ワークフロー実行時（Phase 10）。launcher/worker/scheduler を有効化（エディタからの実行・
       # スケジュール発火・実行履歴 SSE が動く）。
       SHIKI__WORKFLOW__ENABLED: ${SHIKI__WORKFLOW__ENABLED:-true}
+      # ワークフローの AI エージェント（agent.invoke）の web ページを読む道具が読んでよいサイトの天井（BUG-6）。
+      # 例: '["docs.example.com", "*.example.org"]'。未設定なら SHIKI__WORKFLOW__HTTP_ALLOWLIST、それも空なら
+      # web ページを読む道具は提示しない（ノードの設定はこの部分集合に限る）。
+      # SHIKI__WORKFLOW__AGENT__WEB_ALLOWLIST: '["docs.example.com"]'
       # RAG（Phase 2）: インジェスト・パイプラインと検索。
       SHIKI__RAG__ENABLED: ${SHIKI__RAG__ENABLED:-true}
       SHIKI__CHAT__SANDBOX_ENDPOINT: http://sandbox-orchestrator:50000
-      # コード実行系（code_interpreter / shell / workflow agent_invoke）の隔離ティア（admin ポリシー）。
+      # コード実行系（code_interpreter / shell / workflow の agent.invoke の道具 code.run）の隔離ティア（admin ポリシー）。
       # gvisor（既定・#346。rootfs は numpy/pandas 同梱・orchestrator イメージに焼き込み済み）/
       # wasm / firecracker。runsc の動かない環境（KVM 不要だが非特権 userns が必要）では
       # `SHIKI__CHAT__SANDBOX_BACKEND=wasm` で明示的に退避する（自動降格はしない・design §4.6）。

@@ -12,6 +12,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::vocab::AgentTool;
+
 /// ノード実行時の認可・トレース文脈（ポート実装が `AuthContext` を組む素材）。
 #[derive(Debug, Clone)]
 pub struct ExecCtx {
@@ -94,16 +96,85 @@ pub struct LlmInvokeReq {
     pub idempotency_key: String,
 }
 
-/// agent.invoke の要求（サンドボックス起動・**capability は縮小のみ**）。
+/// agent.invoke の要求（agent-core のツールループを 1 回走らせる・BUG-6・D-22）。
+///
+/// 上限はエンジンがノード設定とデプロイ設定から丸めて渡す（縮めることしかできない）。道具は
+/// [`AgentToolGateway`] で渡し、ポート実装（api）は道具の呼び出しをそのまま中継する（権限を判断しない）。
 #[derive(Debug, Clone)]
 pub struct AgentInvokeReq {
-    /// 実行するコード/指示（ティアは admin ポリシー・既定 gVisor・#346・制約ツールセット）。
+    /// 依頼（自然文）。
+    pub instruction: String,
+    /// 参考データ（モデルには指示ではないデータとして別に渡す）。
+    pub context: Option<Value>,
+    /// 論理モデル名。`None` は組織の既定（llm.invoke と同じ解決・fail-closed）。
+    pub model: Option<String>,
+    /// 手順（モデルの応答）の上限（丸め済み）。
+    pub max_steps: u32,
+    /// この実行全体のトークンの上限（丸め済み）。
+    pub max_total_tokens: u64,
+    /// この実行全体の費用の上限（マイクロ USD・デプロイ設定）。
+    pub max_cost_usd_micros: i64,
+    /// 実行時間の上限（ミリ秒）。手順の境界で止める。
+    pub max_duration_ms: u64,
+    /// step の冪等キー（attempt 非依存）。
+    pub idempotency_key: String,
+    /// いまの attempt（会計キーの接頭辞に入れる。再試行・リース回収の消費を重複排除しない）。
+    pub attempt: i32,
+}
+
+/// agent.invoke の道具の呼び出しを束ねる口（実装はエンジン・D-22）。
+///
+/// ループ（api）は道具の呼び出しごとにこれを呼び、エンジンが「提示した道具か → scope 天井 → 引数の上限 →
+/// 宛先の照合（web.fetch）→ 監査（via=agent）→ [`NodePorts`] の各メソッド → 結果の上限」の順に処理する。
+/// script の `Shiki.*` と同じく、権限の一段目（scope 天井・宛先・監査）はエンジンの一点で効き、二段目
+/// （OpenFGA・二段 authz）はチョークポイントが担う。
+#[async_trait]
+pub trait AgentToolGateway: Send + Sync {
+    /// 提示してよい道具（allowed_tools ∩ 今のステージで選べる ∩ scope 天井 ∩ web の天井）。
+    fn tools(&self) -> &[AgentTool];
+
+    /// 止める合図（run の取り消し・リースの喪失）が立っているか。ループは手順の境界で見る。
+    fn is_cancelled(&self) -> bool;
+
+    /// 道具を 1 回呼ぶ。提示していない道具は `invalid`（監査に残す）。
+    async fn call(&self, tool: AgentTool, args: &Value) -> Result<Value, PortError>;
+}
+
+/// web.fetch の要求（宛先の照合はゲートウェイで済ませてから渡す）。
+#[derive(Debug, Clone)]
+pub struct WebFetchReq {
+    /// 照合を通った URL。
+    pub url: String,
+    /// 知りたい論点（長いページから関係する節だけを返す）。
+    pub query: Option<String>,
+    /// 続きを読む開始位置（字）。
+    pub offset: Option<u64>,
+}
+
+/// code.run の要求（隔離環境で Python を実行する・外部への通信は遮断）。
+#[derive(Debug, Clone)]
+pub struct CodeRunReq {
     pub code: String,
     /// 実行時間上限（ミリ秒）。
     pub timeout_ms: Option<u64>,
-    /// egress 許可ホスト（縮小のみ・空 = 全遮断）。ポートはこれを **上限として** spec を組む
-    /// （ノード設定で principal の ReBAC を超える権限は付与できない）。
-    pub egress_allowlist: Vec<String>,
+}
+
+/// doc.read の要求（索引済みの文書の本文を窓で読む）。
+#[derive(Debug, Clone, Default)]
+pub struct DocReadReq {
+    pub file_id: Uuid,
+    /// 読み始めた版（違えば結果で知らせる）。
+    pub version: Option<i64>,
+    /// このページ以降。
+    pub page: Option<i64>,
+    /// この文字列を含む見出しから。
+    pub heading: Option<String>,
+    /// 続きの位置（前回の結果に書かれた値）。
+    pub from: Option<i64>,
+    /// 続きの位置の中の字数。
+    pub offset: Option<i64>,
+    /// 1 回に読む字数。
+    pub max_chars: u32,
 }
 
 /// http.request が外部へ送る 1 リクエスト（宛先束縛照合は executor 側で済ませてから渡す）。
@@ -189,8 +260,16 @@ pub trait NodePorts: Send + Sync {
     /// executor が監査に使う。
     async fn llm_invoke(&self, ctx: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError>;
 
-    /// agent.invoke（`Sandbox` トレイト・ティアは admin ポリシー既定・capability 縮小のみ）。
-    async fn agent_invoke(&self, ctx: &ExecCtx, req: AgentInvokeReq) -> Result<Value, PortError>;
+    /// agent.invoke（agent-core のツールループを 1 回走らせる・LLM は llm-gateway を通す・BUG-6）。
+    ///
+    /// 道具の呼び出しは `tools`（エンジンの能力ゲートウェイ）へ中継する。返す Value は
+    /// `{ text, complete, stop, model, citations, tool_calls, skipped_tools, usage }`。
+    async fn agent_invoke(
+        &self,
+        ctx: &ExecCtx,
+        req: AgentInvokeReq,
+        tools: std::sync::Arc<dyn AgentToolGateway>,
+    ) -> Result<Value, PortError>;
 
     /// http.request の外部送信（宛先束縛照合は executor 済み）。
     async fn http_send(&self, ctx: &ExecCtx, req: HttpSendReq) -> Result<HttpSendResp, PortError>;
@@ -280,6 +359,52 @@ pub trait NodePorts: Send + Sync {
     ) -> Result<ApprovalTarget, PortError> {
         Err(data_unconfigured())
     }
+
+    // --- agent.invoke の道具（BUG-6・D-22）。既定は「未構成」（結線しない実装・テスト用）。---
+    //
+    // ゲートウェイ（scope 天井・宛先・監査）を通った呼び出しだけが来る。実装は実行主体の権限で
+    // チョークポイントを呼び、結果は道具の上限の中に収める。
+
+    /// web.search（`SearchProvider`・検索語が検索サービスへ出る）。返り値は `{ results: [{title, url, snippet}] }`。
+    async fn web_search(&self, _ctx: &ExecCtx, _query: &str) -> Result<Value, PortError> {
+        Err(tool_unconfigured("web.search"))
+    }
+
+    /// web.fetch（解決後の IP の検証・リダイレクト非追従）。返り値は `{ url, text, citations? }`。
+    async fn web_fetch(&self, _ctx: &ExecCtx, _req: WebFetchReq) -> Result<Value, PortError> {
+        Err(tool_unconfigured("web.fetch"))
+    }
+
+    /// code.run（`Sandbox`・egress 全遮断・成果物は保存しない）。返り値は `{ stdout, exit_code }`。
+    async fn code_run(&self, _ctx: &ExecCtx, _req: CodeRunReq) -> Result<Value, PortError> {
+        Err(tool_unconfigured("code.run"))
+    }
+
+    /// doc.read（`SearchService::read_document`＋viewer 判定・権限なしと不在は同じ応答）。返り値は `{ text }`。
+    async fn doc_read(&self, _ctx: &ExecCtx, _req: DocReadReq) -> Result<Value, PortError> {
+        Err(tool_unconfigured("doc.read"))
+    }
+
+    /// storage.read の窓読み（テキストだけ・`offset` 字目から `max_chars` 字）。
+    /// 返り値は `{ id, name, content_type, size, text, offset, next_offset }`（続きが無ければ next_offset は null）。
+    async fn storage_read_window(
+        &self,
+        _ctx: &ExecCtx,
+        _file_id: Uuid,
+        _offset: u64,
+        _max_chars: u32,
+    ) -> Result<Value, PortError> {
+        Err(tool_unconfigured("storage.read"))
+    }
+}
+
+/// 道具のポートが未構成のエラー（permanent・モデルには失敗として返る）。
+fn tool_unconfigured(tool: &str) -> PortError {
+    PortError::new(
+        "unsupported",
+        format!("道具 {tool} はこの環境では使えません"),
+        false,
+    )
 }
 
 /// 承認の停止時に読む行の状態（[`NodePorts::data_approval_target`]）。

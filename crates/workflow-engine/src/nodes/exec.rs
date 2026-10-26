@@ -30,6 +30,7 @@ use crate::run::{
 };
 use crate::vocab::{EventSource, NodeType};
 
+use super::capability_agent::AgentLimits;
 use super::ports::{ExecCtx, NodePorts};
 use super::resolver::ParamResolver;
 
@@ -47,6 +48,10 @@ pub struct CapabilityNodeExecutor {
     /// http.request の egress allowlist（secret 宛先束縛と AND・空なら secret 必須）。
     pub(super) http_allowlist: Vec<String>,
     pub(super) http_timeout_ms: u64,
+    /// agent.invoke の上限と天井（デプロイ設定・BUG-6）。
+    pub(super) agent_limits: AgentLimits,
+    /// agent.invoke の同時実行の枠（プロセス内・`agent_limits.max_concurrent`）。
+    pub(super) agent_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl CapabilityNodeExecutor {
@@ -70,7 +75,19 @@ impl CapabilityNodeExecutor {
             script_limits: Limits::default(),
             http_allowlist: Vec::new(),
             http_timeout_ms: 30_000,
+            agent_slots: Arc::new(tokio::sync::Semaphore::new(
+                AgentLimits::default().max_concurrent,
+            )),
+            agent_limits: AgentLimits::default(),
         }
+    }
+
+    /// agent.invoke の上限・web の天井・同時実行の枠を設定する（BUG-6・D-29）。
+    #[must_use]
+    pub fn with_agent_limits(mut self, limits: AgentLimits) -> Self {
+        self.agent_slots = Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent.max(1)));
+        self.agent_limits = limits;
+        self
     }
 
     /// 外部 API のレート制御を有効化する。

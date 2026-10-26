@@ -64,7 +64,12 @@ impl NodePorts for DataPorts {
     async fn llm_invoke(&self, _c: &ExecCtx, _r: LlmInvokeReq) -> Result<Value, PortError> {
         unreachable!()
     }
-    async fn agent_invoke(&self, _c: &ExecCtx, _r: AgentInvokeReq) -> Result<Value, PortError> {
+    async fn agent_invoke(
+        &self,
+        _c: &ExecCtx,
+        _r: AgentInvokeReq,
+        _tools: std::sync::Arc<dyn workflow_engine::AgentToolGateway>,
+    ) -> Result<Value, PortError> {
         unreachable!()
     }
     async fn http_send(&self, _c: &ExecCtx, _r: HttpSendReq) -> Result<HttpSendResp, PortError> {

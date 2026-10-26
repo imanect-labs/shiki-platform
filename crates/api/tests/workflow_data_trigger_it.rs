@@ -195,6 +195,7 @@ async fn setup() -> Option<Env> {
         db: pool.clone(),
         data: Some(Arc::clone(&data)),
         fsms: Some(Arc::clone(&fsms)),
+        web_search: None,
     });
     let executor: Arc<dyn NodeExecutor> = Arc::new(CapabilityNodeExecutor::new(
         ports,

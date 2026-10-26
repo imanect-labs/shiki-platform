@@ -72,7 +72,12 @@ impl NodePorts for FakePorts {
     async fn llm_invoke(&self, _c: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError> {
         self.gate(json!({ "text": format!("echo:{}", req.prompt) }))
     }
-    async fn agent_invoke(&self, _c: &ExecCtx, _r: AgentInvokeReq) -> Result<Value, PortError> {
+    async fn agent_invoke(
+        &self,
+        _c: &ExecCtx,
+        _r: AgentInvokeReq,
+        _tools: std::sync::Arc<dyn workflow_engine::AgentToolGateway>,
+    ) -> Result<Value, PortError> {
         self.gate(json!({ "stdout": "done" }))
     }
     async fn http_send(&self, _c: &ExecCtx, _r: HttpSendReq) -> Result<HttpSendResp, PortError> {

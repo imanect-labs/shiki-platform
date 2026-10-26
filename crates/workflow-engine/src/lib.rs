@@ -46,9 +46,10 @@ pub use ir::validate::{
 pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};
 pub use nodes::{
-    AgentInvokeReq, ApprovalTarget, CapabilityNodeExecutor, CsvPatchReq, CsvWriteReq, DataWriteOp,
-    DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts, PortError,
-    ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
+    AgentInvokeReq, AgentLimits, AgentToolGateway, ApprovalTarget, CapabilityNodeExecutor,
+    CodeRunReq, CsvPatchReq, CsvWriteReq, DataWriteOp, DataWriteReq, DocReadReq, ExecCtx,
+    HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView,
+    ResolvedSkillView, StorageWriteReq, WebFetchReq,
 };
 pub use ratelimit::{BucketConfig, TokenBucket};
 pub use registration::{

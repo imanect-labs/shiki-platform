@@ -1,6 +1,7 @@
-//! 能力呼び出しの本体（llm.invoke / agent.invoke / http.request）。node 経路と `Shiki.*` で共用。
+//! 能力呼び出しの本体（llm.invoke / http.request）。node 経路と `Shiki.*` で共用。
+//! agent.invoke は `capability_agent.rs`（ツールループ・BUG-6）。
 //!
-//! - llm/agent/http は外部 API のためレート制御を通す（`rate_limited` は attempt 非消費）。
+//! - llm/http は外部 API のためレート制御を通す（`rate_limited` は attempt 非消費）。
 //! - http.request は **宛先束縛（secret.allowed_hosts）× egress allowlist の AND** を URL ホスト部
 //!   リテラルで照合し、リダイレクトは既定拒否（SSRF/DNS rebinding/近似ホストを弾く・PIT-36）。
 //! - secret 平文・レスポンス本文は監査/journal に載せない（run 履歴に平文を出さない）。
@@ -8,17 +9,13 @@
 use secrets::DestinationBinding;
 use serde_json::{json, Value};
 
-use crate::ir::params::{
-    AgentInvokeParams, HttpRequestParams, LlmInvokeParams, SecretAttach, SecretAttachKind,
-};
+use crate::ir::params::{HttpRequestParams, LlmInvokeParams, SecretAttach, SecretAttachKind};
 use crate::run::NodeContext;
 
 use super::capability::parse_params;
 use super::exec::CapabilityNodeExecutor;
 use super::http::{check_destination, redirect_denied, summarize_response, HttpDenied};
-use super::ports::{
-    AgentInvokeReq, ExecCtx, HttpSendReq, LlmInvokeReq, PortError, ResolvedSecretView,
-};
+use super::ports::{ExecCtx, HttpSendReq, LlmInvokeReq, PortError, ResolvedSecretView};
 use super::resolver::{as_bytes, as_string, as_u32, opt_param, param, typed, ParamResolver};
 
 /// レスポンス本文を JSON（不能ならテキスト）に整形する（1MB 上限）。
@@ -82,46 +79,6 @@ impl CapabilityNodeExecutor {
             "llm.invoke",
             true,
             &json!({ "model": resolved_model(&out, model.as_deref()), "requested_model": model }),
-        );
-        Ok(out)
-    }
-
-    // --- agent.invoke ----------------------------------------------------
-
-    pub(super) async fn node_agent_invoke(
-        &self,
-        params: &Value,
-        _ctx: &NodeContext,
-        ec: &ExecCtx,
-        r: &ParamResolver<'_>,
-    ) -> Result<Value, PortError> {
-        self.rate_check(ec, "agent.invoke").await?;
-        let p: AgentInvokeParams = parse_params(params)?;
-        let what = "agent.invoke: instruction";
-        let code = typed(&param(&p.instruction, r, what)?, what, "文字列", as_string)?;
-        // egress_allowlist は縮小のみ（リテラル配列）。ポートが上限として spec を組む。
-        let egress_allowlist = p.egress_allowlist.clone();
-        let what = "agent.invoke: max_duration_sec";
-        let timeout_ms = opt_param(p.max_duration_sec.as_ref(), r, what)?
-            .map(|v| typed(&v, what, "0 以上の整数", as_u32))
-            .transpose()?
-            .map(|s| u64::from(s) * 1000);
-        let out = self
-            .ports
-            .agent_invoke(
-                ec,
-                AgentInvokeReq {
-                    code,
-                    timeout_ms,
-                    egress_allowlist,
-                },
-            )
-            .await?;
-        self.audit(
-            &ec.tenant_id,
-            "agent.invoke",
-            true,
-            &json!({ "sandboxed": true }),
         );
         Ok(out)
     }

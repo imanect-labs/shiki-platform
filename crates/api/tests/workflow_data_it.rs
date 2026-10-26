@@ -185,6 +185,7 @@ async fn setup() -> Option<Env> {
         db: pool.clone(),
         data: Some(Arc::clone(&data)),
         fsms: Some(fsms),
+        web_search: None,
     });
     let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
     let executor: Arc<dyn NodeExecutor> = Arc::new(

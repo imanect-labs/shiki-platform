@@ -6,6 +6,8 @@
 //! detach タスクで走らせる。
 //! RAG の `spawn_pipeline` と同型（プロセス生存中 loop・エラーは小休止して再試行）。
 
+mod agent_port;
+mod agent_tools;
 mod auth;
 mod data_port;
 mod llm_error;
@@ -63,6 +65,66 @@ pub struct WorkflowConfig {
     pub rate_capacity: u32,
     #[serde(default = "default_rate_refill")]
     pub rate_refill_per_sec: f64,
+    /// AI エージェント（agent.invoke）の上限と web の天井（BUG-6・D-29）。
+    #[serde(default)]
+    pub agent: AgentConfig,
+}
+
+/// AI エージェント（agent.invoke）の設定。ノードの設定はこれを天井に縮めるだけ。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// プロセス内で同時に走らせる agent.invoke の数（未設定は run ワーカーの並行数の半分・最低 1）。
+    /// 長く走る step がワーカーを占有して、ほかのテナントの step まで止めないようにする。
+    #[serde(default)]
+    pub max_concurrent: Option<usize>,
+    /// web.fetch が読んでよいサイトの天井（ホスト名か `*.example.com`）。未設定なら `http_allowlist`。
+    /// 空なら web.fetch は提示しない（ノードの `egress_allowlist` はこの部分集合に限る）。
+    #[serde(default)]
+    pub web_allowlist: Option<Vec<String>>,
+    /// ノードで手順の上限を省略したときの値（既定 8・最大 24）。
+    #[serde(default)]
+    pub default_max_steps: Option<u32>,
+    /// 1 回の実行の合計トークンの天井（既定 200,000）。
+    #[serde(default)]
+    pub max_total_tokens: Option<u64>,
+    /// 1 回の実行の費用の天井（マイクロ USD・既定 500,000 = $0.5）。
+    #[serde(default)]
+    pub max_cost_usd_micros: Option<i64>,
+}
+
+impl WorkflowConfig {
+    /// web.fetch が読んでよいサイトの天井（`agent.web_allowlist`、未設定なら `http_allowlist`）。
+    #[must_use]
+    pub fn agent_web_ceiling(&self) -> Vec<String> {
+        self.agent
+            .web_allowlist
+            .clone()
+            .unwrap_or_else(|| self.http_allowlist.clone())
+            .into_iter()
+            .map(|h| h.trim().to_ascii_lowercase())
+            .filter(|h| workflow_engine::valid_host_pattern(h))
+            .collect()
+    }
+
+    /// エンジンに渡す agent.invoke の上限。
+    #[must_use]
+    pub fn agent_limits(&self) -> workflow_engine::AgentLimits {
+        let d = workflow_engine::AgentLimits::default();
+        workflow_engine::AgentLimits {
+            max_concurrent: self
+                .agent
+                .max_concurrent
+                .unwrap_or(self.worker_concurrency / 2)
+                .max(1),
+            default_max_steps: self.agent.default_max_steps.unwrap_or(d.default_max_steps),
+            max_total_tokens: self.agent.max_total_tokens.unwrap_or(d.max_total_tokens),
+            max_cost_usd_micros: self
+                .agent
+                .max_cost_usd_micros
+                .unwrap_or(d.max_cost_usd_micros),
+            web_ceiling: self.agent_web_ceiling(),
+        }
+    }
 }
 
 impl Default for WorkflowConfig {
@@ -79,6 +141,7 @@ impl Default for WorkflowConfig {
             http_timeout_ms: default_http_timeout_ms(),
             rate_capacity: default_rate_capacity(),
             rate_refill_per_sec: default_rate_refill(),
+            agent: AgentConfig::default(),
         }
     }
 }
@@ -189,7 +252,7 @@ pub struct RuntimeDeps {
     pub search: Option<Arc<rag::SearchService>>,
     pub gateway: Arc<llm_gateway::LlmGateway>,
     pub sandbox: Option<Arc<dyn sandbox_client::Sandbox>>,
-    /// コード実行系（agent_invoke ノード）の隔離ティア（admin ポリシー・chat と同一の単一ソース）。
+    /// コード実行系（agent.invoke の code.run）の隔離ティア（admin ポリシー・chat と同一の単一ソース）。
     pub sandbox_backend: sandbox_client::SandboxBackend,
     pub secrets: Option<Arc<secrets::SecretStore>>,
     /// CSV 表データ（csv.query/patch/write ノード・Task 11P.9）。
@@ -203,6 +266,8 @@ pub struct RuntimeDeps {
     pub data: Arc<data::DataStore>,
     /// data.transition の FSM 定義の解決。
     pub fsms: Arc<data::FsmStore>,
+    /// 公開 web の検索（agent.invoke の web.search・チャットと同じ設定）。
+    pub web_search: Option<Arc<dyn websearch::SearchProvider>>,
 }
 
 /// 本番 executor を組む（能力ゲートウェイ → ポート・レート制御・script エンジン）。
@@ -224,16 +289,19 @@ async fn build_prod_executor(
         db: deps.db.clone(),
         data: Some(Arc::clone(&deps.data)),
         fsms: Some(Arc::clone(&deps.fsms)),
+        web_search: deps.web_search.clone(),
     });
     let journal = EffectJournal::new(deps.db.clone());
     let audit = Arc::new(RunAudit {
         db: deps.db.clone(),
         recorder: storage::audit::AuditRecorder::new(deps.db.clone()),
     });
-    let mut executor = CapabilityNodeExecutor::new(ports, journal, audit).with_http_allowlist(
-        deps.config.http_allowlist.clone(),
-        deps.config.http_timeout_ms,
-    );
+    let mut executor = CapabilityNodeExecutor::new(ports, journal, audit)
+        .with_http_allowlist(
+            deps.config.http_allowlist.clone(),
+            deps.config.http_timeout_ms,
+        )
+        .with_agent_limits(deps.config.agent_limits());
 
     // レート制御（Redis があれば・無ければ制限なしで続行）。
     if deps.config.rate_capacity > 0 {

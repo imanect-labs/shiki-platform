@@ -2,6 +2,7 @@
 //!
 //! [`workflow_engine::CapabilityNodeExecutor`] が能力ゲートウェイを通した後に呼ぶポートを、
 //! StorageService / SearchService / LlmGateway / Sandbox / SecretStore / RunLauncher へ結線する。
+//! agent.invoke のループは `agent_port.rs`、その道具の実装は `agent_tools.rs`（BUG-6）。
 //! `ExecCtx` から実行主体の `AuthContext`（interactive=user / schedule・event=workflow）を組み、
 //! 各チョークポイント内の OpenFGA 認可を通す（scope ceiling は executor 側＝二重ゲート）。
 
@@ -12,7 +13,7 @@ use futures::StreamExt;
 use llm_gateway::{
     GenerateRequest, GenerationRecord, LlmGateway, Message, Role, StreamDelta, Usage,
 };
-use sandbox_client::{ExecEvent, ExecRequest, Sandbox, SandboxSpec};
+use sandbox_client::Sandbox;
 use secrets::SecretStore;
 use serde_json::{json, Value};
 use sqlx::PgPool;
@@ -35,7 +36,7 @@ pub struct ProdNodePorts {
     pub search: Option<Arc<rag::SearchService>>,
     pub gateway: Arc<LlmGateway>,
     pub sandbox: Option<Arc<dyn Sandbox>>,
-    /// コード実行系（agent_invoke）の隔離ティア（admin ポリシー・design §4.6）。
+    /// コード実行系（agent.invoke の code.run）の隔離ティア（admin ポリシー・design §4.6）。
     pub sandbox_backend: sandbox_client::SandboxBackend,
     pub secrets: Option<Arc<SecretStore>>,
     /// CSV 表データ（csv.query/patch/write・隔離 DuckDB 経由の Task 11P.9）。
@@ -51,6 +52,8 @@ pub struct ProdNodePorts {
     pub data: Option<Arc<data::DataStore>>,
     /// data.transition の FSM 定義の解決（artifact チョークポイント経由）。
     pub fsms: Option<Arc<data::FsmStore>>,
+    /// 公開 web の検索（agent.invoke の web.search・チャットと同じ `SearchProvider`）。未結線なら提示しない。
+    pub web_search: Option<Arc<dyn websearch::SearchProvider>>,
 }
 
 impl ProdNodePorts {
@@ -271,63 +274,47 @@ impl NodePorts for ProdNodePorts {
         &self,
         ec: &ExecCtx,
         req: workflow_engine::AgentInvokeReq,
+        tools: Arc<dyn workflow_engine::AgentToolGateway>,
     ) -> Result<Value, PortError> {
-        let sandbox = self
-            .sandbox
-            .as_ref()
-            .ok_or_else(|| PortError::forbidden("sandbox が未構成です"))?;
-        // capability 縮小のみ: egress 全遮断の code_interpreter spec（ノード設定で egress/権限は拡大不能）。
-        // 隔離ティアだけは admin ポリシーに従う（wasm→gVisor は縮小方向＝より強い隔離なので不変条件を破らない）。
-        let spec = SandboxSpec::code_interpreter(
-            self.sandbox_backend,
-            ec.tenant_id.clone(),
-            ec.org.clone(),
-            ec.principal.clone(),
-        );
-        let handle = sandbox
-            .create(spec)
-            .await
-            .map_err(|e| PortError::unavailable(format!("sandbox create: {e}")))?;
-        let exec = sandbox
-            .exec(
-                &handle,
-                ExecRequest::Python {
-                    code: req.code,
-                    timeout_ms: req.timeout_ms,
-                },
-            )
-            .await;
-        // exec の失敗は空成功にせず伝播する（destroy してから返す）。
-        let mut stream = match exec {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = sandbox.destroy(&handle).await;
-                return Err(PortError::unavailable(format!("sandbox exec: {e}")));
-            }
-        };
-        let mut stdout = String::new();
-        let mut exit_code = None;
-        while let Some(ev) = stream.next().await {
-            match ev {
-                Ok(ExecEvent::Stdout(b)) => stdout.push_str(&String::from_utf8_lossy(&b)),
-                Ok(ExecEvent::Exited { code }) => exit_code = Some(code),
-                Ok(ExecEvent::LimitExceeded { kind, .. }) => {
-                    let _ = sandbox.destroy(&handle).await;
-                    return Err(PortError::new(
-                        "sandbox_limit",
-                        format!("サンドボックス上限超過: {kind:?}"),
-                        false,
-                    ));
-                }
-                Err(e) => {
-                    let _ = sandbox.destroy(&handle).await;
-                    return Err(PortError::unavailable(format!("sandbox stream: {e}")));
-                }
-                _ => {}
-            }
-        }
-        let _ = sandbox.destroy(&handle).await;
-        Ok(json!({ "stdout": stdout, "exit_code": exit_code }))
+        self.invoke_agent(ec, req, tools).await
+    }
+
+    async fn web_search(&self, ec: &ExecCtx, query: &str) -> Result<Value, PortError> {
+        super::agent_tools::web_search(self, ec, query).await
+    }
+
+    async fn web_fetch(
+        &self,
+        ec: &ExecCtx,
+        req: workflow_engine::WebFetchReq,
+    ) -> Result<Value, PortError> {
+        super::agent_tools::web_fetch(ec, req).await
+    }
+
+    async fn code_run(
+        &self,
+        ec: &ExecCtx,
+        req: workflow_engine::CodeRunReq,
+    ) -> Result<Value, PortError> {
+        super::agent_tools::code_run(self, ec, req).await
+    }
+
+    async fn doc_read(
+        &self,
+        ec: &ExecCtx,
+        req: workflow_engine::DocReadReq,
+    ) -> Result<Value, PortError> {
+        super::agent_tools::doc_read(self, ec, req).await
+    }
+
+    async fn storage_read_window(
+        &self,
+        ec: &ExecCtx,
+        file_id: Uuid,
+        offset: u64,
+        max_chars: u32,
+    ) -> Result<Value, PortError> {
+        super::agent_tools::storage_read_window(self, ec, file_id, offset, max_chars).await
     }
 
     async fn http_send(&self, _ec: &ExecCtx, req: HttpSendReq) -> Result<HttpSendResp, PortError> {

@@ -472,7 +472,9 @@ pub(crate) async fn wire_chat(
                     secrets.cloned(),
                     Some(Arc::clone(skill_installs)),
                     workflow_models,
-                ),
+                )
+                // AI エージェントの web.fetch の天井も保存 API と同じ値で照合する（BUG-6）。
+                .with_web_ceiling(config.workflow.agent_web_ceiling()),
             )),
             // AI ノート共同編集（document.edit / document.read・Task 11P.4）。
             collab: Some(Arc::clone(collab)),
@@ -588,6 +590,8 @@ pub(crate) async fn wire_workflow(
         // data ノード・`Shiki.data.*`（Task 15.7）は API と同じ DataStore / FsmStore を共有する。
         data: Arc::clone(data.0),
         fsms: Arc::clone(data.1),
+        // agent.invoke の web.search はチャットと同じ検索の設定を使う（BUG-6）。
+        web_search: crate::wiring_websearch::wire_websearch(config, http)?,
     })
     .await;
     Ok((Some(Arc::new(launcher)), Some(Arc::new(runs))))

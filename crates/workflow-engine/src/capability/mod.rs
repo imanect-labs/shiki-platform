@@ -60,6 +60,8 @@ pub fn effective_scopes(declared: &[String], delegated: &[String]) -> BTreeSet<S
 
 /// スコープ不要の内部制御 API（明示許可・これ以外の未マップ API は fail-closed で拒否）。
 /// llm.invoke / agent.invoke は内部推論（外部到達は http.egress・データ到達は storage/rag で縛る）。
+/// agent.invoke の道具（rag.search・web.fetch・code.run など）は、呼び出しごとに道具の要求スコープで縛る
+/// （`nodes/agent_gateway.rs`・BUG-6）。
 /// script.run 自体は無スコープ（内部の `Shiki.*` ホスト呼び出しが個別に scope ceiling で縛られる）。
 const SCOPE_FREE_APIS: &[&str] = &[
     "control.branch",
@@ -71,8 +73,8 @@ const SCOPE_FREE_APIS: &[&str] = &[
     "agent.invoke",
     "script.run",
     // skill.invoke 自体は専用スコープを持たない（内部推論・vocab/scope.rs:41）。skill が
-    // `.shiki` script / agent 経由で行う能力呼び出しは、その API のスコープが個別に効く
-    // （script の Shiki.* は HostBridge が、agent は agent.invoke 経路がゲートする・#344）。
+    // `.shiki` script で行う能力呼び出しは、その API のスコープが個別に効く
+    // （script の Shiki.* は HostBridge がゲートする・#344）。
     "skill.invoke",
     // 結果を画面に返すだけ（値を整形する pure ノード・外部にもデータにも届かない・GAP-09）。
     "workflow.reply",

@@ -89,7 +89,12 @@ impl NodePorts for NoPorts {
     async fn llm_invoke(&self, _: &ExecCtx, _: LlmInvokeReq) -> Result<Value, PortError> {
         Err(unused())
     }
-    async fn agent_invoke(&self, _: &ExecCtx, _: AgentInvokeReq) -> Result<Value, PortError> {
+    async fn agent_invoke(
+        &self,
+        _: &ExecCtx,
+        _: AgentInvokeReq,
+        _tools: std::sync::Arc<dyn workflow_engine::AgentToolGateway>,
+    ) -> Result<Value, PortError> {
         Err(unused())
     }
     async fn http_send(&self, _: &ExecCtx, _: HttpSendReq) -> Result<HttpSendResp, PortError> {

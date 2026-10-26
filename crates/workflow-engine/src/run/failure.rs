@@ -30,6 +30,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         // 見つからない
         ("not_found", NotFound),
         ("gone", NotFound),
+        // AI エージェントの道具の失敗（ふつうはモデルへ返り、step の失敗にはならない・BUG-6）。
+        ("doc_read_failed", NotFound),
         // 一時障害
         ("unavailable", Temporary),
         ("rate_limited", Temporary),
@@ -37,9 +39,12 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("index_preparing", Temporary),
         ("effect_in_progress", Temporary),
         ("concurrency_limited", Temporary),
+        ("fetch_failed", Temporary),
         // 利用の上限
         ("quota_exceeded", Quota),
         ("sandbox_limit", Quota),
+        // AI エージェントが手順・時間・使える量の上限に達しても回答を書けなかった（BUG-6）。
+        ("agent_incomplete", Quota),
         // 時間切れ
         ("timeout", Timeout),
         ("run_timeout", Timeout),
@@ -62,6 +67,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("approval_no_assignee", Configuration),
         ("approval_assignee_unreadable", Configuration),
         ("script_error", Configuration),
+        // AI エージェントが同じ道具の失敗を繰り返した（依頼・道具・読める資料を作成者が見直す・BUG-6）。
+        ("agent_loop", Configuration),
         ("frame_violation", Configuration),
         ("resource", Configuration),
         // 分類できない（理由が要素の側にある・内部の失敗）

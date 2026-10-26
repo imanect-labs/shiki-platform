@@ -2,7 +2,7 @@
 //! 全ノード種を実チョークポイント経由で流し、複合 DAG で相互作用まで検証する（W4 拡張）。
 //!
 //! カバー: script.run（＋Shiki.* hostcall・workflow.start）／storage.read/write/list／
-//! agent.invoke（FakeSandbox）／llm.invoke（stub gateway）／http.request（ローカルサーバ）／
+//! agent.invoke（stub gateway のツールループ＋道具 code.run の FakeSandbox）／llm.invoke（stub gateway）／http.request（ローカルサーバ）／
 //! control.branch/switch/join。rag.search は dispatch＋未構成ゲートのみ（happy path の
 //! SearchService 本体は rag クレートの結合テストが担保）。map/wait は Stage A 未実装
 //! （`unsupported_stage_a`）のため対象外。
@@ -199,6 +199,7 @@ impl Harness {
             db: self.pool.clone(),
             data: None,
             fsms: None,
+            web_search: None,
         })
     }
 
@@ -246,6 +247,7 @@ impl Harness {
             db: self.pool.clone(),
             data: None,
             fsms: None,
+            web_search: None,
         });
         Arc::new(CapabilityNodeExecutor::new(
             ports,
@@ -366,7 +368,7 @@ async fn spawn_http_echo() -> String {
 
 // ------- Test 1: 複合 mega DAG ----------------------------------------------
 
-/// script → storage.write → storage.read → branch → {agent / llm} → join → http → storage.write。
+/// script → storage.write → storage.read → branch → {agent（道具 code.run） / llm} → join → http → storage.write。
 /// 8 ノード種＋ノード間 dataflow＋dead branch skip を本番 executor で通す。
 #[tokio::test]
 async fn combined_pipeline_covers_many_node_types() {
@@ -382,7 +384,7 @@ async fn combined_pipeline_covers_many_node_types() {
     let ir = json!({
         "ir_version": 1,
         "name": "e2e-mega",
-        "declared_scopes": ["storage.read", "storage.write", "http.egress"],
+        "declared_scopes": ["storage.read", "storage.write", "http.egress", "sandbox.exec"],
         "nodes": [
             { "id": "gen", "type": "script.run", "params": {
                 "source": { "inline": "function main(i){ return { doc: 'content-' + i.name, n: i.n }; }" },
@@ -393,14 +395,17 @@ async fn combined_pipeline_covers_many_node_types() {
                 "file": { "$from": "nodes.src.output", "path": "/id" } } },
             { "id": "br", "type": "control.branch", "params": {
                 "condition": { "cmp": { "left": { "$from": "nodes.gen.output", "path": "/n" }, "op": "gt", "right": 5 } } } },
-            { "id": "ag", "type": "agent.invoke", "params": { "instruction": "do the work", "egress_allowlist": [] } },
+            // stub の LLM は依頼の calltool: で道具を 1 回呼び、2 手目で回答する（BUG-6）。
+            { "id": "ag", "type": "agent.invoke", "params": {
+                "instruction": "calltool:code.run {\"code\":\"print('work')\"}",
+                "allowed_tools": ["code.run"] } },
             { "id": "lm", "type": "llm.invoke", "params": { "prompt": "summarize" } },
             { "id": "jn", "type": "control.join", "params": { "mode": "all" } },
             { "id": "post", "type": "http.request", "params": {
                 "method": "POST", "url": HTTP_URL_PLACEHOLDER,
                 "body": { "$from": "nodes.readback.output", "path": "/text" } } },
             { "id": "result", "type": "storage.write", "params": {
-                "name": "result.txt", "content": { "$from": "nodes.ag.output", "path": "/stdout" } } }
+                "name": "result.txt", "content": { "$from": "nodes.ag.output", "path": "/text" } } }
         ],
         "edges": [
             { "from": "gen", "to": "src" },
@@ -450,18 +455,18 @@ async fn combined_pipeline_covers_many_node_types() {
         h.read_file_by_name("src.txt").await.as_deref(),
         Some("content-world")
     );
-    // dataflow: agent.invoke の stdout が最終 storage.write へ流れる。
+    // dataflow: agent.invoke の回答（/text）が最終 storage.write へ流れる。
     assert_eq!(
         h.read_file_by_name("result.txt").await.as_deref(),
-        Some("agent-did-work")
+        Some("回答: calltool:code.run {\"code\":\"print('work')\"}")
     );
 
-    // 能力縮小: FakeSandbox の spec は egress 遮断（ノード設定で ReBAC 超え不可）。
+    // 能力縮小: 道具 code.run の FakeSandbox の spec は egress 遮断（ノード設定で ReBAC 超え不可）。
     let specs = fake.created_specs();
-    assert!(!specs.is_empty(), "agent 用サンドボックスが作られた");
+    assert!(!specs.is_empty(), "code.run 用サンドボックスが作られた");
     assert!(
         specs[0].egress.static_allow.is_empty() && specs[0].egress.dynamic_allow.is_empty(),
-        "agent サンドボックスは egress 遮断（allowlist 空＝capability 縮小のみ）"
+        "code.run のサンドボックスは egress 遮断（capability 縮小のみ）"
     );
     // 隔離ティアは admin ポリシー（ここでは既定 wasm）が spec に反映される。
     assert_eq!(specs[0].backend, sandbox_client::SandboxBackend::Wasm);

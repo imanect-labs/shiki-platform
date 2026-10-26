@@ -491,7 +491,9 @@ const fn output_shape(nt: NodeType) -> &'static str {
             "{ results: Array<{ file_id: string, file_name: string, content: string, score: number }> }"
         }
         N::LlmInvoke => "{ text: string, model: string }",
-        N::AgentInvoke => "{ stdout: string, exit_code: number }",
+        N::AgentInvoke => {
+            "{ text: string（最後の回答・Markdown）, complete: boolean（false は上限で打ち切った回答）, stop: \"completed\" | \"truncated\" | \"budget_steps\" | \"budget_time\" | \"budget_tokens\" | \"budget_cost\", model: string, citations: Array<{ n: number, file_id?: string, file_name?: string, url?: string, title?: string, snippet: string }>（使った資料・50 件まで）, tool_calls: Array<{ tool: string, ok: boolean }>, skipped_tools: Array<string>（指定したが使えなかった道具）, usage: { steps: number, tokens: number, cost_usd_micros: number } }"
+        }
         N::HttpRequest => {
             "{ status: number, host: string, body: unknown（JSON なら解析した値・それ以外は文字列） }"
         }

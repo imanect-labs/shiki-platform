@@ -177,6 +177,8 @@ pub struct ApiWorkflowCatalogSource {
     secrets: Option<Arc<secrets::SecretStore>>,
     skill_installs: Option<Arc<app_platform::SkillInstallService>>,
     models: WorkflowModels,
+    /// AI エージェントの web.fetch が読んでよいサイトの天井（保存 API と同じ設定・BUG-6）。
+    web_ceiling: Option<Vec<String>>,
 }
 
 impl ApiWorkflowCatalogSource {
@@ -190,21 +192,31 @@ impl ApiWorkflowCatalogSource {
             secrets,
             skill_installs,
             models,
+            web_ceiling: None,
         }
+    }
+
+    /// web.fetch の天井を照合する（`workflow.agent.web_allowlist`・保存 API と同じ値を渡す）。
+    #[must_use]
+    pub fn with_web_ceiling(mut self, hosts: Vec<String>) -> Self {
+        self.web_ceiling = Some(hosts);
+        self
     }
 }
 
 #[async_trait::async_trait]
 impl chat::WorkflowCatalogSource for ApiWorkflowCatalogSource {
     async fn catalog(&self, ctx: &authz::AuthContext) -> Result<Catalog, String> {
-        build_catalog_from(
+        let mut catalog = build_catalog_from(
             self.secrets.as_deref(),
             self.skill_installs.as_deref(),
             &self.models,
             ctx,
         )
         .await
-        .map_err(|e| format!("カタログ構築に失敗: {e}"))
+        .map_err(|e| format!("カタログ構築に失敗: {e}"))?;
+        catalog.web_ceiling.clone_from(&self.web_ceiling);
+        Ok(catalog)
     }
 
     /// 説明文用のモデル一覧（secret・skill の一覧は引かない・照合と同じ集合）。
