@@ -46,6 +46,37 @@ function statesOf(table: DataTable | null): string[] {
   return table.schema.fields.find((f) => f.key === table.schema.status_field)?.options ?? [];
 }
 
+/// 承認するテーブルを変える 1 手（Undo 1 段）。前のテーブルの状態名を指す判断の行き先・列を指す受信箱の列と
+/// 担当者は、新しいテーブルに無ければ空に戻す（残すと選択肢に無い値は空欄に見え、気づかないまま実行で
+/// 無い状態への遷移になる）。新しいテーブルにもある値は残す。
+function retargetTable(
+  p: Partial<Params>,
+  record: NonNullable<Params["record"]>,
+  next: DataTable | null,
+  id: string,
+): Partial<Record<keyof Params, unknown>> {
+  const patch: Partial<Record<keyof Params, unknown>> = { record: { ...record, table: id } };
+  const states = statesOf(next);
+  const keys = new Set((next?.schema.fields ?? []).map((f) => f.key));
+  const refKeys = new Set(
+    (next?.schema.fields ?? []).filter((f) => f.type === "user_ref" || f.type === "role_ref").map((f) => f.key),
+  );
+  for (const c of CHOICES) {
+    const choice = p[c.key] as ApprovalChoice | undefined;
+    if (choice && choice.to && !states.includes(choice.to)) patch[c.key] = { ...choice, to: "" };
+  }
+  if (p.show_fields?.length) {
+    const kept = p.show_fields.filter((k) => keys.has(k) && k !== next?.schema.status_field);
+    if (kept.length !== p.show_fields.length) patch.show_fields = kept.length ? kept : undefined;
+  }
+  if (p.assignees?.some((a) => kindOf(a) === "field" && a.field && !refKeys.has(a.field))) {
+    patch.assignees = p.assignees.map((a) =>
+      kindOf(a) === "field" && a.field && !refKeys.has(a.field) ? { field: "" } : a,
+    );
+  }
+  return patch;
+}
+
 type AssigneeKind = "field" | "user" | "role";
 
 function kindOf(a: ApprovalAssignee): AssigneeKind {
@@ -95,7 +126,9 @@ export function HumanApprovalForm(props: FormProps) {
           value={record.table || null}
           tables={tables === null ? null : fsmTables}
           label="承認するテーブル"
-          onChange={(id) => set({ record: { ...record, table: id } })}
+          onChange={(id) =>
+            set(retargetTable(p, record, fsmTables.find((t) => t.id === id) ?? null, id))
+          }
         />
       </Field>
       {tables !== null && fsmTables.length === 0 ? (
@@ -193,6 +226,8 @@ function ChoiceField({
 }) {
   const on = value !== undefined;
   const v = value ?? { to: "" };
+  // 保存済みの値がテーブルの状態に無い（テーブルの状態が変わった・AI が書いた）と、選択の欄は空に見える。
+  const unknownState = states.length > 0 && v.to !== "" && !states.includes(v.to) ? v.to : null;
   return (
     <fieldset className="space-y-2 rounded-lg border p-2.5">
       <legend className="flex w-full items-center justify-between gap-2 px-1 text-xs font-medium">
@@ -207,7 +242,7 @@ function ChoiceField({
       </legend>
       {on || !optional ? (
         <>
-          <Field label="進める状態" error={error}>
+          <Field label="進める状態" error={error ?? (unknownState ? `このテーブルに無い状態: ${unknownState}` : undefined)}>
             {states.length ? (
               <Select value={v.to || ""} onValueChange={(to) => onChange({ ...v, to })}>
                 <SelectTrigger aria-label={`${title}に進める状態`} className="h-8 text-[13px]">
@@ -307,18 +342,23 @@ function AssigneesField({
             </div>
             {kind === "field" ? (
               refFields.length ? (
-                <Select value={a.field ?? ""} onValueChange={(field) => update(i, { field })}>
-                  <SelectTrigger aria-label={`相手 ${i + 1} の列`} className="h-8 text-[13px]">
-                    <SelectValue placeholder="列を選ぶ" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {refFields.map((f) => (
-                      <SelectItem key={f.key} value={f.key}>
-                        {f.display_name || f.key}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <>
+                  <Select value={a.field ?? ""} onValueChange={(field) => update(i, { field })}>
+                    <SelectTrigger aria-label={`相手 ${i + 1} の列`} className="h-8 text-[13px]">
+                      <SelectValue placeholder="列を選ぶ" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {refFields.map((f) => (
+                        <SelectItem key={f.key} value={f.key}>
+                          {f.display_name || f.key}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {a.field && !refFields.some((f) => f.key === a.field) ? (
+                    <p className="text-[11px] text-destructive">このテーブルに無い列: {a.field}</p>
+                  ) : null}
+                </>
               ) : (
                 <p className="text-[11px] text-muted-foreground">
                   {table ? "このテーブルにユーザー・部署の列がありません" : "先にテーブルを選んでください"}

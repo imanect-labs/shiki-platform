@@ -317,3 +317,107 @@ test("承認を待つブロック: テーブルの状態から行き先を選べ
   expect(saved.ir.policies.run_timeout_sec).toBe(1209600);
   expect(saved.ir.nodes.find((n) => n.id === "ok")?.params.return).toEqual({ to: "下書き" });
 });
+
+/// 状態の遷移の規則（FSM）で管理する別のテーブル（状態の名前・列が申請の表と違う）。
+async function otherFsmTable(page: Page): Promise<{ id: string; name: string }> {
+  const headers = await csrfHeaders(page);
+  const states = ["受付中", "対応済み", "差し戻し中"];
+  const name = uniqueName("e2e-問い合わせ");
+  const created = await page.request.post("/api/data/tables", {
+    headers,
+    data: {
+      name,
+      schema: {
+        fields: [
+          { key: "title", display_name: "件名", type: "text" },
+          { key: "owner_user", display_name: "担当者", type: "user_ref" },
+          { key: "status", display_name: "状態", type: "select", options: states },
+        ],
+        status_field: "status",
+      },
+    },
+  });
+  expect(created.status(), await created.text()).toBe(201);
+  const table = (await created.json()) as { id: string; schema: Record<string, unknown>; schema_version: number };
+  const fsm = await page.request.post("/api/data/fsms", {
+    headers,
+    data: {
+      name: uniqueName("e2e-問い合わせの流れ"),
+      table_id: table.id,
+      body: {
+        states,
+        transitions: [
+          { from: "受付中", to: "対応済み", actor: "public" },
+          { from: "受付中", to: "差し戻し中", actor: "public" },
+        ],
+      },
+    },
+  });
+  expect(fsm.status(), await fsm.text()).toBe(201);
+  const f = (await fsm.json()) as { id: string; version?: number };
+  const put = await page.request.put(`/api/data/tables/${table.id}/schema`, {
+    headers,
+    data: {
+      schema: { ...table.schema, fsm_ref: { artifact_id: f.id, version: f.version ?? 1 } },
+      expected_schema_version: table.schema_version,
+    },
+  });
+  expect(put.status(), await put.text()).toBe(200);
+  return { id: table.id, name };
+}
+
+test("承認を待つブロック: テーブルを変えると前のテーブルの状態・列が残らず、Undo 1 回で戻る（GAP-08）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const s = await setup(page);
+  const other = await otherFsmTable(page);
+  await page.goto(`/workflows/${s.workflowId}`);
+  const canvas = page.locator(".react-flow");
+  await expect(canvas.getByText("上長の承認").first()).toBeVisible({ timeout: 15_000 });
+  await canvas.getByText("上長の承認").first().click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  const approveTo = panel.getByRole("combobox", { name: "承認したときに進める状態" });
+  const rejectTo = panel.getByRole("combobox", { name: "却下したときに進める状態" });
+  const assignee = panel.getByRole("combobox", { name: "相手 1 の列" });
+  await expect(approveTo).toContainText("承認");
+  await expect(assignee).toContainText("承認者");
+
+  // 状態も列も違うテーブルへ変える: 判断の行き先・担当者の列は空に戻り、両方にある列（件名）だけ残る。
+  await panel.getByRole("combobox", { name: "承認するテーブル" }).click();
+  await page.getByRole("option", { name: other.name }).click();
+  await expect(approveTo).toContainText("状態を選ぶ");
+  await expect(rejectTo).toContainText("状態を選ぶ");
+  await expect(assignee).toContainText("列を選ぶ");
+  await expect(panel.getByText(/このテーブルに無い(状態|列)/)).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "件名", pressed: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "金額" })).toHaveCount(0);
+
+  // テーブルの変更は 1 手（Undo 1 回で、前のテーブルと行き先・列が揃って戻る）。
+  await page.locator(".react-flow__pane").click({ position: { x: 24, y: 24 } });
+  await page.keyboard.press("Control+z");
+  await canvas.getByText("上長の承認").first().click();
+  await expect(panel.getByRole("combobox", { name: "承認するテーブル" })).toContainText(s.tableName);
+  await expect(approveTo).toContainText("承認");
+  await expect(assignee).toContainText("承認者");
+
+  // もう一度変えて、新しいテーブルの状態・列を選んで保存する。
+  await panel.getByRole("combobox", { name: "承認するテーブル" }).click();
+  await page.getByRole("option", { name: other.name }).click();
+  await approveTo.click();
+  await page.getByRole("option", { name: "対応済み" }).click();
+  await rejectTo.click();
+  await page.getByRole("option", { name: "差し戻し中" }).click();
+  await assignee.click();
+  await page.getByRole("option", { name: "担当者" }).click();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+  const saved = (await (await page.request.get(`/api/workflows/${s.workflowId}`)).json()) as {
+    ir: { nodes: { id: string; params: Record<string, unknown> }[] };
+  };
+  const params = saved.ir.nodes.find((n) => n.id === "ok")?.params ?? {};
+  expect(params.record).toMatchObject({ table: other.id });
+  expect(params.approve).toEqual({ to: "対応済み" });
+  expect(params.reject).toEqual({ to: "差し戻し中", comment: "required" });
+  expect(params.assignees).toEqual([{ field: "owner_user" }]);
+  expect(params.show_fields).toEqual(["title"]);
+});
