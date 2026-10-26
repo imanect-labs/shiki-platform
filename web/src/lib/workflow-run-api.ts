@@ -11,8 +11,11 @@ async function ok<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let message = `API ${res.status}`;
     try {
-      const body = (await res.json()) as { message?: string };
-      if (body.message) message = body.message;
+      // 実行できない設定（`not_ready`・必須の文字の欄が空など・D-43）は理由を全件 `errors` で返す。
+      const body = (await res.json()) as { message?: string; errors?: { message?: string }[] };
+      const reasons = (body.errors ?? []).flatMap((e) => (e.message ? [e.message] : []));
+      if (reasons.length) message = reasons.join(" / ");
+      else if (body.message) message = body.message;
     } catch {
       // 本文なし
     }
