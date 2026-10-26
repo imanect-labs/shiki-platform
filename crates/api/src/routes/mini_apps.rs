@@ -226,6 +226,10 @@ pub async fn invoke_mini_app_action(
 }
 
 /// 本人がミニアプリの画面のボタンで起動した記録（新しい 20 件を古い順に）。
+///
+/// 状態は run の今の状態（待機中は `waiting` と `waiting_for`）。失敗した run には利用者向けの理由
+/// （`failure`）、ワークフローが画面に返した結果（`reply`）は未確定の run と最新の終わった 1 件にだけ付ける
+/// （他は `has_reply` を見て `/mini-apps/{id}/runs/{run_id}` で読む）。
 #[utoipa::path(
     get,
     path = "/mini-apps/{id}/runs",
@@ -250,6 +254,40 @@ pub async fn list_mini_app_runs(
         .await
         .map_err(map_gui_err)?;
     Ok(Json(MiniAppRunsResponse { runs }))
+}
+
+/// 本人が起動した 1 件（ワークフローが画面に返した結果を必ず付ける・GAP-09）。
+///
+/// 一覧（`/mini-apps/{id}/runs`）は応答を小さく保つため、結果を未確定の run と最新の終わった 1 件にだけ付ける。
+/// 古い行を開いたときはこれで読む。関門は一覧と同じ（アプリの viewer ∧ 押した本人 ∧ org、エンジン側でも
+/// 本人が起動した interactive の run だけ）。他人の run は存在を区別せず 404。
+#[utoipa::path(
+    get,
+    path = "/mini-apps/{id}/runs/{run_id}",
+    params(
+        ("id" = Uuid, Path, description = "ミニアプリ ID"),
+        ("run_id" = Uuid, Path, description = "起動した run の ID"),
+    ),
+    responses(
+        (status = 200, description = "起動の記録と結果", body = MiniAppRun),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限がない"),
+        (status = 404, description = "存在しない・本人が起動した run ではない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn get_mini_app_run(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path((id, run_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<MiniAppRun>, ApiError> {
+    let run = state
+        .mini_apps
+        .my_run(&ctx, id, run_id, trace.as_deref())
+        .await
+        .map_err(map_gui_err)?;
+    Ok(Json(run))
 }
 
 /// 回答の本文の ```ui app を、そのボタンの実行先ごとミニアプリとして保存する。

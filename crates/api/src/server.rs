@@ -300,6 +300,9 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/mini-apps/{id}/runs", &["GET"], Session, || {
             get(routes::mini_apps::list_mini_app_runs)
         }),
+        r("/mini-apps/{id}/runs/{run_id}", &["GET"], Session, || {
+            get(routes::mini_apps::get_mini_app_run)
+        }),
         r(
             "/threads/{thread_id}/messages/{message_id}/save-as-app",
             &["POST"],

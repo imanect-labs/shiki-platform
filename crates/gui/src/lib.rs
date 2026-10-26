@@ -29,6 +29,7 @@ pub mod dispatch;
 pub mod miniapp;
 pub mod miniapp_actions;
 mod miniapp_data;
+pub mod miniapp_runs;
 pub mod miniapp_store;
 pub mod resolver;
 pub mod skill;
@@ -45,6 +46,7 @@ pub use dispatch::{
 };
 pub use miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
 pub use miniapp_actions::{MiniAppActionRequest, MiniAppRun, MiniAppRunStatus, MiniAppRunValue};
+pub use miniapp_runs::displayable_reply;
 pub use miniapp_store::{MiniAppStore, ResolvedMiniApp};
 pub use resolver::WorkflowResolver;
 pub use skill::{

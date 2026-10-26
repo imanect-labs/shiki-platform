@@ -10,8 +10,6 @@
 //!
 //! [`WorkflowStarter::start_pinned_via_bundle`]: crate::dispatch::WorkflowStarter::start_pinned_via_bundle
 
-use std::collections::HashMap;
-
 use authz::AuthContext;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -58,8 +56,11 @@ pub struct MiniAppRunValue {
 pub enum MiniAppRunStatus {
     /// 起動の途中（run はまだ無い）。
     Starting,
+    /// 順番待ち（同時実行の上限で、空くのを待っている）。
     Queued,
     Running,
+    /// 待機中（時間・できごと・承認を待っている・[`MiniAppRun::waiting_for`]）。
+    Waiting,
     Succeeded,
     Failed,
     Cancelled,
@@ -68,7 +69,8 @@ pub enum MiniAppRunStatus {
 }
 
 impl MiniAppRunStatus {
-    fn parse(s: &str) -> Option<Self> {
+    /// 終わった状態（記録に写すもの）。
+    pub(crate) fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "succeeded" => Self::Succeeded,
             "failed" => Self::Failed,
@@ -95,18 +97,23 @@ pub struct MiniAppRun {
     #[serde(default)]
     pub values: Vec<MiniAppRunValue>,
     pub invoked_at: DateTime<Utc>,
+    /// 待機中に待っているもの（`status = waiting` のときだけ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for: Option<workflow_engine::WaitingFor>,
+    /// 失敗の理由（利用者向けの分類・`status = failed` のときだけ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<workflow_engine::RunFailure>,
+    /// ワークフローが画面に返した結果（一覧では未確定の run と最新の終わった 1 件だけに付ける。
+    /// 他は `has_reply` を見て `GET /mini-apps/{id}/runs/{run_id}` で読む）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<workflow_engine::RunReply>,
+    /// 結果があるか（`reply` を付けなかった行でも分かる）。
+    #[serde(default)]
+    pub has_reply: bool,
+    /// 実行履歴の保持期間を過ぎて run が消えた（状態だけが残り、結果は表示できない）。
+    #[serde(default)]
+    pub result_expired: bool,
 }
-
-type RunRow = (
-    String,
-    i64,
-    String,
-    String,
-    Option<Uuid>,
-    Option<String>,
-    Json<Vec<MiniAppRunValue>>,
-    DateTime<Utc>,
-);
 
 /// 本人の 1 送信を指す鍵（アプリ・ボタン・冪等キー）。
 struct RunKey<'a> {
@@ -279,127 +286,6 @@ impl MiniAppStore {
             }
         }
         result
-    }
-
-    /// 本人が画面のボタンで起動した記録（新しい [`MAX_RUNS`] 件を古い順に）。
-    ///
-    /// 本体の viewer を要求する（共有を外された人は自分の記録も読めない）。未確定の状態は run を
-    /// 読み、終わっていたら書き戻す。
-    pub async fn my_runs(
-        &self,
-        ctx: &AuthContext,
-        app_id: Uuid,
-        trace_id: Option<&str>,
-    ) -> Result<Vec<MiniAppRun>, GuiError> {
-        let meta = self.artifacts.get(ctx, app_id, trace_id).await?;
-        if meta.kind != artifact::ArtifactKind::MiniApp {
-            return Err(GuiError::Artifact(artifact::ArtifactError::NotFound));
-        }
-        let mut rows: Vec<RunRow> = sqlx::query_as(
-            "SELECT action_id, app_version, label, workflow_name, run_id, status, summary, invoked_at \
-             FROM miniapp_action_run \
-             WHERE tenant_id = $1 AND app_id = $2 AND invoked_by = $3 \
-             ORDER BY invoked_at DESC, idempotency_key DESC LIMIT $4",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(app_id)
-        .bind(&ctx.principal.id)
-        .bind(MAX_RUNS)
-        .fetch_all(&self.db)
-        .await
-        .map_err(|e| GuiError::Internal(format!("db: {e}")))?;
-        rows.reverse();
-        let open: Vec<Uuid> = rows
-            .iter()
-            .filter(|r| r.5.is_none())
-            .filter_map(|r| r.4)
-            .collect();
-        let live = self.live_statuses(ctx, app_id, &open).await;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(action_id, app_version, label, workflow_name, run_id, status, summary, at)| {
-                    let status = match (status.as_deref().and_then(MiniAppRunStatus::parse), run_id)
-                    {
-                        (Some(s), _) => s,
-                        (None, Some(id)) => {
-                            live.get(&id).copied().unwrap_or(MiniAppRunStatus::Queued)
-                        }
-                        (None, None) => MiniAppRunStatus::Starting,
-                    };
-                    MiniAppRun {
-                        action_id,
-                        app_version,
-                        label,
-                        workflow_name,
-                        run_id,
-                        status,
-                        values: summary.0,
-                        invoked_at: at,
-                    }
-                },
-            )
-            .collect())
-    }
-
-    /// 未確定の run の今の状態（読めなければ空・表示は「待ち」のまま）。終わったものは書き戻す。
-    async fn live_statuses(
-        &self,
-        ctx: &AuthContext,
-        app_id: Uuid,
-        run_ids: &[Uuid],
-    ) -> HashMap<Uuid, MiniAppRunStatus> {
-        if run_ids.is_empty() {
-            return HashMap::new();
-        }
-        let reader = workflow_engine::RunStatusReader::new(self.db.clone());
-        let statuses = match reader.statuses(ctx, run_ids).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "画面のボタンで起動した run の状態を読めない");
-                return HashMap::new();
-            }
-        };
-        let mut out = HashMap::new();
-        let mut done: Vec<(Uuid, &'static str)> = Vec::new();
-        for (id, s) in statuses {
-            let (status, terminal) = match s {
-                workflow_engine::RunStatus::Queued => (MiniAppRunStatus::Queued, None),
-                workflow_engine::RunStatus::Running => (MiniAppRunStatus::Running, None),
-                workflow_engine::RunStatus::Succeeded => {
-                    (MiniAppRunStatus::Succeeded, Some("succeeded"))
-                }
-                workflow_engine::RunStatus::Failed => (MiniAppRunStatus::Failed, Some("failed")),
-                workflow_engine::RunStatus::Cancelled => {
-                    (MiniAppRunStatus::Cancelled, Some("cancelled"))
-                }
-            };
-            out.insert(id, status);
-            if let Some(t) = terminal {
-                done.push((id, t));
-            }
-        }
-        if !done.is_empty() {
-            let ids: Vec<Uuid> = done.iter().map(|d| d.0).collect();
-            let sts: Vec<&str> = done.iter().map(|d| d.1).collect();
-            // 書き戻しは best-effort（失敗しても次の表示でまた読む）。
-            if let Err(e) = sqlx::query(
-                "UPDATE miniapp_action_run r SET status = x.status, finished_at = now() \
-                 FROM unnest($3::uuid[], $4::text[]) AS x(run_id, status) \
-                 WHERE r.tenant_id = $1 AND r.app_id = $2 AND r.run_id = x.run_id \
-                   AND r.status IS NULL",
-            )
-            .bind(&ctx.tenant_id)
-            .bind(app_id)
-            .bind(&ids)
-            .bind(&sts)
-            .execute(&self.db)
-            .await
-            {
-                tracing::warn!(error = %e, "画面のボタンで起動した run の状態の書き戻しに失敗");
-            }
-        }
-        out
     }
 
     async fn claim_run(
