@@ -9,11 +9,19 @@
 //! 現ステージで有効化する部分集合は `available_stage_a()` が返す。
 //! 未実装 variant の IR は V3 が「Stage A では未対応」として保存を拒否する。
 
+mod agent_tool;
 mod catalog;
 mod event_catalog;
 mod node_type;
 mod scope;
 
+pub use agent_tool::{
+    agent_tool_catalog, AgentTool, AgentToolCatalogEntry, AGENT_DURATION_RANGE_SEC,
+    DEFAULT_AGENT_DURATION_SEC, DEFAULT_AGENT_STEPS, DEFAULT_READ_WINDOW_CHARS, MAX_AGENT_STEPS,
+    MAX_CODE_BYTES, MAX_CODE_STDOUT_BYTES, MAX_CONTEXT_BYTES, MAX_EGRESS_HOSTS,
+    MAX_INSTRUCTION_BYTES, MAX_QUERY_CHARS, MAX_READ_WINDOW_CHARS, MAX_SEARCH_SNIPPET_CHARS,
+    MAX_SEARCH_TOP_K, MAX_TOOL_RESULT_CHARS, MAX_URL_CHARS, MAX_WEB_RESULTS,
+};
 pub(crate) use catalog::static_output_ports;
 pub use catalog::{approval_ports, node_catalog, IdempotencyClass, NodeCatalogEntry, NodeCategory};
 pub use event_catalog::{
@@ -154,7 +162,11 @@ mod tests {
         // 人へのお知らせ（承認の依頼を含む）は human.approval のために解禁した（D-25）。
         assert!(Scope::NotifySend.available_stage_a());
         assert!(!Scope::SheetRead.available_stage_a());
-        assert!(!Scope::SandboxExec.available_stage_a());
+        // エージェントの道具（doc.read・code.run）のために解禁した（D-29・BUG-6）。ノードは予約のまま。
+        assert!(Scope::DocRead.available_stage_a());
+        assert!(Scope::SandboxExec.available_stage_a());
+        assert!(!NodeType::SandboxExec.available_stage_a());
+        assert!(!NodeType::DocRead.available_stage_a());
     }
 
     #[test]

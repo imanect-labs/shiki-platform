@@ -29,7 +29,10 @@ fn model_candidates(models: &[String]) -> String {
 /// - 組織が選択を禁じていれば、既定と違うモデルを拒否する（実行時の解決と同じ規則・D-30）。
 /// - 組織が許可したモデルに無ければ拒否し、使えるモデルを添える（利用者も AI も候補から選び直せる）。
 ///   許可が 0 件の組織では、明示したモデルはすべて拒否する（照合を飛ばさない・BUG-37）。
-fn check_model(params: &serde_json::Value, catalog: &Catalog) -> Option<ValidationError> {
+pub(super) fn check_model(
+    params: &serde_json::Value,
+    catalog: &Catalog,
+) -> Option<ValidationError> {
     let model = params
         .get("model")
         .and_then(serde_json::Value::as_str)

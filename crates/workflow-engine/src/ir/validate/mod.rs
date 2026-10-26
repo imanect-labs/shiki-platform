@@ -3,6 +3,8 @@
 //! AI 編集も dnd 保存も同一パイプラインを通す。最初の 1 件で止めず全エラーを配列で返す
 //! （dnd がノード上に表示）。V4 は secret 照合＋skill 照合（10.1b・#344）。
 
+mod agent;
+pub use agent::{pattern_within, valid_host_pattern};
 mod approval;
 pub use approval::{CatalogTable, APPROVAL_TIMEOUTS_EXCEED_RUN};
 mod refs;
@@ -94,6 +96,10 @@ pub struct Catalog {
     /// API 層が IR の承認ノードのテーブルを保存者の権限で引いて詰める（見えないテーブルは入れない）。
     /// `None` は照合しない（テーブルを引けない構成・AI 編集の説明文の検査など）。
     pub tables: Option<BTreeMap<String, CatalogTable>>,
+    /// AI エージェントの web.fetch が読んでよいサイトの天井（管理者が決める `workflow.agent.web_allowlist`・
+    /// BUG-6・D-29）。ノードの `egress_allowlist` はこの部分集合に限る。`None` は照合しない（設定を引けない
+    /// 構成・AI 編集の説明文の検査など）。`Some(空)` は外部サイトを許可しない。
+    pub web_ceiling: Option<Vec<String>>,
 }
 
 /// 保存を止めない警告をすべて返す（保存 API・検証 API・チャットの emit_workflow が利用者へ示す）。
@@ -169,11 +175,18 @@ pub fn validate(
     reply::v2(&ir, &mut errors);
     // V3: 語彙照合（node type・scope・event source・model）。
     v3_vocab::v3_vocab(&ir, catalog, &mut errors);
+    agent::v3(
+        &ir,
+        catalog,
+        &ir.declared_scopes.iter().map(String::as_str).collect(),
+        &mut errors,
+    );
     // V4: 参照存在（secret の宛先束縛事前チェック＋skill のインストール済み照合・#344・承認のテーブルと状態）。
     refs::v4_refs(&ir, catalog, &mut errors);
     approval::v4(&ir, catalog, &mut errors);
     // V5: データフロー（$from 祖先性・default 要否・条件木型整合・regex）。
     v5_dataflow::check(&ir, &mut errors);
+    agent::v5(&ir, &mut errors);
     // V6: script コンパイル（inline の swc パース・禁止構文）。
     refs::v6_script(&ir, &mut errors);
 
@@ -228,6 +241,8 @@ fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<Valida
     approval::v7(ir, errors);
     // 画面に返す結果の数とリテラルの型（GAP-09）。
     reply::v7(ir, errors);
+    // AI エージェントの手順・時間・トークン・依頼の上限（BUG-6）。
+    agent::v7(ir, errors);
     // 条件木の深さ（トリガ filter・branch/wait params の condition）。
     for t in &ir.triggers {
         if let crate::ir::Trigger::Event(ev) = t {

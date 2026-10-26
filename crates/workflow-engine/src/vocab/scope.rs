@@ -40,13 +40,14 @@ impl Scope {
     /// 制御ノード（control.*）・transform.*・debug.log は天井対象外（`None`）。
     /// llm.* / ai.* / agent.invoke / skill.invoke も専用スコープを設けず内部推論として
     /// 天井対象外（外部到達は http.egress・データ到達は storage/rag 等のスコープで縛る）。
-    /// storage.list は read で足りる。
+    /// storage.list は read で足りる。エージェントの道具（`vocab::AgentTool`）も同じ表で引く
+    /// （web.* は http.egress・code.run は独立の sandbox.exec・doc.read は doc.read・BUG-6）。
     pub fn for_api(api: &str) -> Option<Self> {
         Some(match api {
             "storage.read" | "storage.list" => Scope::StorageRead,
             "storage.write" => Scope::StorageWrite,
             "rag.search" => Scope::RagQuery,
-            "http.request" | "graphql.query" => Scope::HttpEgress,
+            "http.request" | "graphql.query" | "web.search" | "web.fetch" => Scope::HttpEgress,
             "workflow.start" | "workflow.call" => Scope::WorkflowStart,
             "csv.query" => Scope::CsvRead,
             "csv.patch" | "csv.write" => Scope::CsvWrite,
@@ -64,14 +65,16 @@ impl Scope {
             "memory.get" => Scope::MemoryRead,
             "memory.set" => Scope::MemoryWrite,
             "event.publish" => Scope::EventPublish,
-            "sandbox.exec" => Scope::SandboxExec,
+            "sandbox.exec" | "code.run" => Scope::SandboxExec,
             _ => return None,
         })
     }
 
     /// 保存できるスコープ（V3 が照合する集合）。data.read / data.write は Task 15.7 で解禁。
     /// notify.send は人へのお知らせ（承認の依頼を含む）として解禁した（D-25・human.approval が要する。
-    /// notify.send ノード自体は予約のまま）。予約分は未実装。
+    /// notify.send ノード自体は予約のまま）。doc.read（文書の本文の読み取り）と sandbox.exec（隔離環境での
+    /// コードの実行）は agent.invoke の道具のために解禁した（D-29・BUG-6。doc.read・sandbox.exec のノードは
+    /// 予約のまま）。予約分は未実装。
     pub fn available_stage_a(self) -> bool {
         matches!(
             self,
@@ -85,6 +88,8 @@ impl Scope {
                 | Scope::CsvRead
                 | Scope::CsvWrite
                 | Scope::NotifySend
+                | Scope::DocRead
+                | Scope::SandboxExec
         )
     }
 }

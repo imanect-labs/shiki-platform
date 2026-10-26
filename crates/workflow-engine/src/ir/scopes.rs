@@ -8,7 +8,7 @@
 
 use serde_json::Value;
 
-use crate::vocab::{required_scope, EventSource, NodeType, Scope};
+use crate::vocab::{required_scope, AgentTool, EventSource, NodeType, Scope};
 
 /// データ変更（`data.*` の source）を待つ・きっかけにするなら `data.read` が要る（変更を委譲元・実行主体の
 /// 見え方で読む・GAP-07）。トリガの `source` と control.wait の `params.source` を見る。承認（human.approval）も
@@ -42,6 +42,22 @@ fn needs_data_read(obj: &serde_json::Map<String, Value>) -> bool {
     triggers || waits
 }
 
+/// agent.invoke の `allowed_tools` に明示した道具が要するスコープ（予約の道具・未知の名前は足さない）。
+fn agent_tool_scopes(obj: &serde_json::Map<String, Value>) -> Vec<&'static str> {
+    obj.get("nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|n| n.get("type").and_then(Value::as_str) == Some(NodeType::AgentInvoke.as_str()))
+        .filter_map(|n| n.pointer("/params/allowed_tools").and_then(Value::as_array))
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(AgentTool::parse)
+        .filter(|t| t.available())
+        .map(|t| t.required_scope().as_str())
+        .collect()
+}
+
 /// IR（JSON）の `declared_scopes` に、ノードが要するスコープを足した IR を返す（足した分を併せて返す）。
 /// 形が不正な IR はそのまま返す（検証が誤りを報告する）。
 pub fn complete_declared_scopes(ir: &Value) -> (Value, Vec<String>) {
@@ -63,6 +79,8 @@ pub fn complete_declared_scopes(ir: &Value) -> (Value, Vec<String>) {
     if needs_data_read(obj) {
         required.insert(Scope::DataRead.as_str());
     }
+    // AI エージェントは**明示した道具の分だけ**足す（省略は道具なし・BUG-6）。
+    required.extend(agent_tool_scopes(obj));
     let declared = obj
         .entry("declared_scopes")
         .or_insert_with(|| Value::Array(Vec::new()));
@@ -133,6 +151,31 @@ mod tests {
         let (again, added) = complete_declared_scopes(&out);
         assert!(added.is_empty());
         assert_eq!(again, out);
+    }
+
+    /// AI エージェントは明示した道具の分だけ足す（省略・予約・未知の名前では足さない・BUG-6）。
+    #[test]
+    fn agent_tools_add_only_their_own_scopes() {
+        let (out, added) = complete_declared_scopes(&json!({ "name": "w", "nodes": [
+            { "id": "a", "type": "agent.invoke",
+              "params": { "instruction": "x", "allowed_tools": ["rag.search", "doc.read", "web.fetch", "code.run", "data.query", "bogus"] } },
+            { "id": "b", "type": "agent.invoke", "params": { "instruction": "y" } }
+        ] }));
+        assert_eq!(
+            added,
+            vec!["doc.read", "http.egress", "rag.query", "sandbox.exec"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            out["declared_scopes"],
+            json!(["doc.read", "http.egress", "rag.query", "sandbox.exec"])
+        );
+        let (_, added) = complete_declared_scopes(&json!({ "name": "w", "nodes": [
+            { "id": "b", "type": "agent.invoke", "params": { "instruction": "y" } }
+        ] }));
+        assert!(added.is_empty(), "道具を省略したエージェントは何も足さない");
     }
 
     #[test]

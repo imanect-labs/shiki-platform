@@ -39,9 +39,9 @@ pub use delegation::{
 };
 pub use ir::scopes::complete_declared_scopes;
 pub use ir::validate::{
-    save_warnings, semantics_warnings, validate, Catalog, CatalogTable, ValidationError,
-    APPROVAL_TIMEOUTS_EXCEED_RUN, REPLY_WITHOUT_INTERACTIVE, SEMANTICS_CHANGED,
-    TEMPLATE_ESCAPED_VAR,
+    pattern_within, save_warnings, semantics_warnings, valid_host_pattern, validate, Catalog,
+    CatalogTable, ValidationError, APPROVAL_TIMEOUTS_EXCEED_RUN, REPLY_WITHOUT_INTERACTIVE,
+    SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR,
 };
 pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};

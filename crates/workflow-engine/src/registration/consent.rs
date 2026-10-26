@@ -227,6 +227,22 @@ impl RegistrationService {
                         });
                     }
                 }
+                // AI エージェント（BUG-6）: 社内を読む道具は、schedule / event の run が委譲したフォルダの中で
+                // 読む（実効 = 委譲 ∩ 実行時の ReBAC）。範囲は有効化者が選ぶ。web・コードの実行は対象を
+                // 持たない（スコープの同意だけ・宛先は管理者の天井）。
+                crate::vocab::NodeType::AgentInvoke => {
+                    for scope in agent_folder_scopes(&node.params) {
+                        push(SuggestedGrant {
+                            scope: scope.into(),
+                            object_kind: "folder".into(),
+                            object_id: None,
+                            object_name: None,
+                            relation: "viewer".into(),
+                            source: source.clone(),
+                            needs_user_pick: true,
+                        });
+                    }
+                }
                 crate::vocab::NodeType::WorkflowStart => {
                     let name = literal_str(&node.params, "name");
                     push(SuggestedGrant {
@@ -244,6 +260,32 @@ impl RegistrationService {
         }
         out
     }
+}
+
+/// agent.invoke の道具のうち、フォルダの閲覧の委譲が要るもののスコープ（重複なし・道具の順）。
+fn agent_folder_scopes(params: &serde_json::Value) -> Vec<&'static str> {
+    use crate::vocab::AgentTool;
+    let mut out: Vec<&'static str> = Vec::new();
+    let tools = params
+        .get("allowed_tools")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .filter_map(AgentTool::parse);
+    for t in tools {
+        let scope = match t {
+            AgentTool::RagSearch
+            | AgentTool::StorageList
+            | AgentTool::StorageRead
+            | AgentTool::DocRead => t.required_scope().as_str(),
+            _ => continue,
+        };
+        if !out.contains(&scope) {
+            out.push(scope);
+        }
+    }
+    out
 }
 
 /// params のフィールドが文字列リテラルならその値（`$from`/`$template` は None）。
@@ -413,6 +455,30 @@ mod tests {
         assert_eq!(g.object_id.as_deref(), Some(FILE));
         assert_eq!(g.source, "trigger:0");
         assert!(!g.needs_user_pick);
+    }
+
+    /// AI エージェントの社内を読む道具は、読む範囲のフォルダを有効化者が選ぶ（web・コードは対象を持たない）。
+    #[test]
+    fn agent_tools_suggest_folder_picks() {
+        let plan = plan(&json!([
+            { "id": "ag", "type": "agent.invoke", "params": { "instruction": "x",
+              "allowed_tools": ["rag.search", "storage.read", "storage.list", "doc.read", "web.search", "code.run"] } },
+            { "id": "none", "type": "agent.invoke", "params": { "instruction": "y" } }
+        ]));
+        let scopes: Vec<&str> = plan.iter().map(|g| g.scope.as_str()).collect();
+        assert_eq!(
+            scopes,
+            ["rag.query", "storage.read", "doc.read"],
+            "{plan:?}"
+        );
+        for g in &plan {
+            assert_eq!(g.source, "node:ag");
+            assert_eq!(
+                (g.object_kind.as_str(), g.relation.as_str()),
+                ("folder", "viewer")
+            );
+            assert!(g.needs_user_pick);
+        }
     }
 
     /// 対象が値式（前の結果・入力・トリガ）なら、有効化者が選ぶ。csv.write のフォルダ省略も
