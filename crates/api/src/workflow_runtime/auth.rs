@@ -4,8 +4,11 @@ use authz::{AuthContext, Principal, PrincipalKind};
 use workflow_engine::ExecCtx;
 
 /// `ExecCtx` から実行主体の `AuthContext` を組む（種別で subject を分ける）。
+///
+/// ノードの実行の文脈には run の印（`origin_run`）を付ける。書込はそれを outbox の非公開部に載せ、relay が
+/// 因果の鎖と `by_workflow` をそこから引く（書込の trace_id から run を推しはからない・BUG-44）。
 pub(super) fn auth_ctx(ec: &ExecCtx) -> AuthContext {
-    principal_ctx(&ec.tenant_id, &ec.org, &ec.principal, &ec.principal_kind)
+    principal_ctx(&ec.tenant_id, &ec.org, &ec.principal, &ec.principal_kind).in_run(ec.run_id)
 }
 
 /// run の実行主体（`workflow_run.principal` / `principal_kind`）の `AuthContext` を組む。

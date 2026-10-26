@@ -60,6 +60,14 @@ pub struct AuthContext {
     pub org: String,
     /// テナント識別子（SaaS の隔離境界。オンプレは単一固定）。
     pub tenant_id: String,
+    /// この操作をワークフローの run の中で行うなら、その run（run の書込の印・`in_run` で付ける）。
+    ///
+    /// 書込は outbox の consumer 非公開部（`private_payload`）にこれを載せ、ワークフローの relay が因果の鎖
+    /// （自分の書込で自分を起こさない）と `by_workflow` をここから引く。付けるのはワークフローの実行時
+    /// （ノードの実行・その委譲元の文脈）だけで、利用者の要求（HTTP）から組む文脈では常に `None`。要求が
+    /// 運ぶ値（trace_id など）からは決まらないので、利用者が run を名乗れない（BUG-44）。
+    /// **認可の判断には使わない**（主体・権限は `principal` が正）。
+    pub origin_run: Option<uuid::Uuid>,
 }
 
 impl AuthContext {
@@ -68,7 +76,15 @@ impl AuthContext {
             principal,
             org,
             tenant_id,
+            origin_run: None,
         }
+    }
+
+    /// run の中の操作として印を付ける（[`Self::origin_run`]・`None` なら外す）。
+    #[must_use]
+    pub fn in_run(mut self, run_id: Option<uuid::Uuid>) -> Self {
+        self.origin_run = run_id;
+        self
     }
 
     /// この認可コンテキストの tenant に束縛した識別子ビルダ（SAAS.1 のチョークポイント）。
@@ -111,6 +127,7 @@ impl AuthContext {
             },
             org,
             tenant_id,
+            origin_run: None,
         }
     }
 
@@ -127,6 +144,7 @@ impl AuthContext {
             },
             org,
             tenant_id,
+            origin_run: None,
         }
     }
 }

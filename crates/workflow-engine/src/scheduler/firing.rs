@@ -5,8 +5,8 @@
 //! retry_pending_firings`]）、回数の上限を超えたら `gave_up` にする（D-21・GAP-07 の T0）。
 //!
 //! 抑止（GAP-07・D-26）:
-//! - **因果の鎖**: イベントを起こした書込の trace_id が run のもの（run_id の 32 桁 hex）なら、その run の
-//!   `trigger_chain` ∪ {その run のワークフロー} を鎖とする。発火先のワークフローが鎖に含まれれば
+//! - **因果の鎖**: イベントを起こした書込が run のもの（outbox の consumer 非公開部の印・api の relay が引いて
+//!   `cause_run_id` で渡す・BUG-44）なら、その run の `trigger_chain` ∪ {その run のワークフロー} を鎖とする。発火先のワークフローが鎖に含まれれば
 //!   `suppressed_cycle`（自分の書込で自分を起こさない・A→B→A の循環）、鎖が [`MAX_TRIGGER_CHAIN`] を
 //!   超えれば `suppressed_depth`。起動した run には鎖を引き継ぐ。
 //! - **queued の上限**: 1 ワークフローの queued run が [`MAX_QUEUED_RUNS`] 以上なら `dropped_queue_full`。
@@ -137,9 +137,9 @@ pub(super) fn chain_suppression(
     None
 }
 
-/// trace_id から由来の run を引き、鎖を作る（run の trace_id は run_id の 32 桁 hex・engine.md §11.1）。
+/// 由来の run から鎖を作る（由来の run は呼び出し側が outbox の非公開部の印から引く・BUG-44）。
 ///
-/// trace_id が run のものでなければ（利用者の操作の trace など）由来は無い。
+/// 由来が無い（利用者の操作など）・由来の run が消えた（保持期間の GC）なら鎖は無い。
 pub(super) async fn cause_of(
     conn: &mut sqlx::PgConnection,
     tenant_id: &str,
@@ -164,7 +164,10 @@ pub(super) async fn cause_of(
     }))
 }
 
-/// 書込の trace_id から由来の run の id を読む（run の trace_id は run_id の 32 桁 hex）。
+/// 書込の trace_id を run の trace_id（run_id の 32 桁 hex）とみたときの run の id。
+///
+/// **印の無い outbox の行（印を書く前の版が発行した行）にだけ使う**（api の relay が、実在する run のときだけ
+/// 由来にする）。利用者の要求の trace_id も同じ形なので、印のある行の由来をこれで決めてはならない（BUG-44）。
 #[must_use]
 pub fn cause_run_of_trace(trace_id: Option<&str>) -> Option<Uuid> {
     let t = trace_id?;
@@ -186,8 +189,8 @@ fn next_attempt_at(now: DateTime<Utc>, attempts: i32) -> DateTime<Utc> {
 impl SchedulerStore {
     /// イベント 1 件で 1 つのトリガを発火する（占有 → 抑止 → 起動 → 記録・同じ Tx の行ロックで直列化）。
     ///
-    /// `cause_run_id` はイベントを起こした書込の由来の run（[`cause_run_of_trace`]）。`None`（利用者の操作など）
-    /// なら因果の鎖で抑止しない。
+    /// `cause_run_id` はイベントを起こした書込の由来の run（outbox の非公開部の印・BUG-44）。`None`（利用者の
+    /// 操作など）なら因果の鎖で抑止しない。
     pub async fn fire_event_trigger(
         &self,
         t: &EventTriggerRef,

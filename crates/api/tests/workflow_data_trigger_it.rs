@@ -442,6 +442,40 @@ impl Env {
     }
 }
 
+impl Env {
+    /// このテストのテナントに作った run・発火・登録を消す（同じ DB を使うほかのテストや手元のサーバの tick に
+    /// 残さない・BUG-63）。run を消せば step・wait_subscription は FK で消え、登録を消せばトリガも消える。
+    async fn cleanup(&self) {
+        for sql in [
+            "DELETE FROM trigger_firing WHERE tenant_id = $1",
+            "DELETE FROM workflow_run WHERE tenant_id = $1",
+            "DELETE FROM workflow_registration WHERE tenant_id = $1",
+        ] {
+            sqlx::query(sql)
+                .bind(&self.tenant)
+                .execute(&self.pool)
+                .await
+                .unwrap();
+        }
+    }
+
+    /// 行のその rev の outbox から run の書込の印を外す（印を書く前の版が発行した行を作る・BUG-44）。
+    async fn strip_origin_mark(&self, record: Uuid, rev: i64) {
+        let n = sqlx::query(
+            "UPDATE storage_event_outbox SET private_payload = private_payload - 'origin_run' \
+             WHERE tenant_id = $1 AND node_id = $2 AND version = $3",
+        )
+        .bind(&self.tenant)
+        .bind(record)
+        .bind(rev)
+        .execute(&self.pool)
+        .await
+        .unwrap()
+        .rows_affected();
+        assert!(n >= 1, "印を外す outbox の行がある");
+    }
+}
+
 /// 何もしない 1 ノード（run の入力だけを確かめる）。
 fn passthrough() -> Value {
     json!([{ "id": "noop", "type": "control.join", "params": {} }])
@@ -943,4 +977,240 @@ async fn relay_cost_for_a_batch_of_500_changes() {
             0
         );
     }
+}
+
+/// 因果の鎖と `by_workflow` は outbox の非公開部の run の印だけで決まり、書込の trace_id では決まらない
+/// （BUG-44）。利用者の書込が run の trace_id（run_id の 32 桁 hex）を名乗っても抑止されず `by_workflow` も
+/// 偽のまま。run の中の書込は印で `by_workflow` が真になり、起動した run に由来の run と鎖が残る。印の無い行
+/// （印を書く前の版の行）だけは従来どおり trace_id から引き、実在する run のときだけ由来にする。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn user_writes_cannot_claim_a_run_by_its_trace_id() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.requests_table().await;
+    let t = table.to_string();
+    let watcher = env
+        .enable(
+            &json!({
+                "ir_version": 1, "name": "on-updated-origin",
+                "triggers": [{ "kind": "event", "source": "data.record.updated", "scope": { "table": t } }],
+                "nodes": passthrough(), "edges": []
+            }),
+            table,
+            vec![],
+        )
+        .await;
+    // 対話で起動して行を書き換えるワークフロー（run の中の書込）。
+    let (writer, _) = env
+        .workflows
+        .create(
+            &env.alice,
+            &json!({
+                "ir_version": 1, "name": "retitle",
+                "triggers": [{ "kind": "interactive" }],
+                "nodes": [{ "id": "u", "type": "data.record.update", "params": {
+                    "table": t,
+                    "record": { "$from": "input", "path": "/id" },
+                    "patch": { "title": "ワークフローが更新" } } }],
+                "edges": []
+            }),
+            &Catalog::default(),
+            None,
+        )
+        .await
+        .expect("保存");
+    let rec = env
+        .data
+        .create_record(
+            &env.bob,
+            table,
+            json!({ "title": "備品", "applicant": "alice", "status": "draft" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let r = env
+        .data
+        .update_record(&env.bob, table, rec.id, json!({ "amount": 1 }), 1, None)
+        .await
+        .unwrap();
+    env.settle().await;
+    let first: Uuid = sqlx::query_scalar(
+        "SELECT run_id FROM workflow_run WHERE tenant_id = $1 AND workflow_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(watcher)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+
+    // 利用者が、監視するワークフロー自身の run の trace_id を名乗って書く（将来 traceparent を受け付けたときの形）。
+    let run_trace = first.simple().to_string();
+    let r = env
+        .data
+        .update_record(
+            &env.bob,
+            table,
+            rec.id,
+            json!({ "amount": 2 }),
+            r.rev,
+            Some(&run_trace),
+        )
+        .await
+        .unwrap();
+    env.settle().await;
+    let inputs = env.run_inputs(watcher).await;
+    assert_eq!(
+        inputs.len(),
+        2,
+        "名乗っても自分の書込として抑止しない: {inputs:?}"
+    );
+    assert_eq!(inputs[1]["by_workflow"], false);
+
+    // 印の無い行（印を書く前の版の行）は従来どおり trace_id から引く: 実在する run なら抑止、実在しない run の
+    // 形なら由来にしない。
+    let r = env
+        .data
+        .update_record(
+            &env.bob,
+            table,
+            rec.id,
+            json!({ "amount": 3 }),
+            r.rev,
+            Some(&run_trace),
+        )
+        .await
+        .unwrap();
+    env.strip_origin_mark(rec.id, r.rev).await;
+    env.settle().await;
+    assert_eq!(
+        env.run_inputs(watcher).await.len(),
+        2,
+        "印の無い行は実在する run の trace_id なら抑止する"
+    );
+    let ghost = Uuid::new_v4().simple().to_string();
+    let r = env
+        .data
+        .update_record(
+            &env.bob,
+            table,
+            rec.id,
+            json!({ "amount": 4 }),
+            r.rev,
+            Some(&ghost),
+        )
+        .await
+        .unwrap();
+    env.strip_origin_mark(rec.id, r.rev).await;
+    env.settle().await;
+    let inputs = env.run_inputs(watcher).await;
+    assert_eq!(
+        inputs.len(),
+        3,
+        "実在しない run の形は由来にしない: {inputs:?}"
+    );
+    assert_eq!(inputs[2]["by_workflow"], false);
+
+    // run の中の書込は印で決まる（trace_id は run のものだが、それは見ていない）。
+    let writer_run = env
+        .launcher
+        .start_interactive(&env.alice, writer, &json!({ "id": rec.id.to_string() }))
+        .await
+        .unwrap()
+        .unwrap();
+    env.settle().await;
+    let inputs = env.run_inputs(watcher).await;
+    assert_eq!(inputs.len(), 4, "{inputs:?}");
+    assert_eq!(inputs[3]["by_workflow"], true, "run の書込");
+    assert_eq!(inputs[3]["record"]["data"]["title"], "ワークフローが更新");
+    let (cause, chain): (Option<Uuid>, Vec<Uuid>) = sqlx::query_as(
+        "SELECT cause_run_id, trigger_chain FROM workflow_run \
+         WHERE tenant_id = $1 AND workflow_id = $2 ORDER BY created_at DESC, run_id LIMIT 1",
+    )
+    .bind(&env.tenant)
+    .bind(watcher)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(cause, Some(writer_run), "由来の run は印の run");
+    assert_eq!(chain, vec![writer], "鎖は由来の run のワークフロー");
+    let causes: Vec<Option<Uuid>> = sqlx::query_scalar(
+        "SELECT cause_run_id FROM workflow_run WHERE tenant_id = $1 AND workflow_id = $2 \
+         ORDER BY created_at, run_id",
+    )
+    .bind(&env.tenant)
+    .bind(watcher)
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        causes,
+        vec![None, None, None, Some(writer_run)],
+        "利用者の書込の run に由来の run を残さない"
+    );
+    env.cleanup().await;
+}
+
+/// run の中で始めた一括取込は、続きを進めるワーカーが組み直す文脈にも run の印を戻す（取込の行の outbox にも
+/// 印が載る・BUG-44）。run の外の取込の行の印は null。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_imports_started_in_a_run_keep_the_run_mark() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.requests_table().await;
+    let run = Uuid::new_v4();
+    let mut marks = Vec::new();
+    for (ctx, title) in [
+        (env.alice.clone().in_run(Some(run)), "run の取込"),
+        (env.alice.clone(), "人の取込"),
+    ] {
+        let import = env
+            .data
+            .start_bulk_upsert(
+                &ctx,
+                table,
+                vec![BulkUpsertRow {
+                    key: Some(title.into()),
+                    record_id: None,
+                    expected_rev: None,
+                    data: json!({ "title": title, "applicant": "alice", "status": "draft" }),
+                }],
+                BulkImportOptions::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        // ジョブのワーカーではなくここで進める（取込の行から文脈を組み直す経路はワーカーと同じ）。
+        sqlx::query("DELETE FROM job_queue WHERE queue = $1 AND payload->>'import_id' = $2")
+            .bind(data::BULK_IMPORT_QUEUE)
+            .bind(import.to_string())
+            .execute(&env.pool)
+            .await
+            .unwrap();
+        let step = env
+            .data
+            .run_bulk_import(&env.tenant, table, import)
+            .await
+            .unwrap();
+        assert_eq!(step.status, "done");
+        let mark: Option<Value> = sqlx::query_scalar(
+            "SELECT private_payload->'origin_run' FROM storage_event_outbox \
+             WHERE tenant_id = $1 AND payload->>'event_type' = 'data.record.changed' \
+               AND payload->>'change' = 'create' AND payload->>'table_id' = $2 \
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(&env.tenant)
+        .bind(table.to_string())
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
+        marks.push(mark);
+    }
+    assert_eq!(
+        marks,
+        vec![Some(json!(run.to_string())), Some(Value::Null)],
+        "run の取込だけに印が載る"
+    );
+    env.settle().await;
+    env.cleanup().await;
 }

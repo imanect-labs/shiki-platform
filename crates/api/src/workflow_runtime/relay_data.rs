@@ -26,6 +26,7 @@ use workflow_engine::{DataTriggerCandidate, DataWaitCandidate, ExecCtx, FireOutc
 
 use super::data_port::{Actor, DataPort};
 use super::relay::{audit_suppressed, RelayDeps};
+use super::relay_origin::Causes;
 
 /// outbox の 1 件を写したデータ変更（候補の照合の材料）。
 struct DataEvent<'a> {
@@ -103,19 +104,19 @@ struct BatchCtx<'d, 'a> {
     unreadable: HashSet<(PrincipalKey, Uuid)>,
     /// (主体, outbox の id) → 見え方（見えなければ `None`）。
     views: HashMap<(PrincipalKey, i64), Option<ChangeEventView>>,
-    /// outbox の id → 変更が run の書込によるものか。
-    by_workflow: HashMap<i64, bool>,
+    /// outbox の id → 変更を起こした書込の由来の run（outbox の非公開部の印・BUG-44）。
+    causes: &'d Causes,
 }
 
 impl<'d, 'a> BatchCtx<'d, 'a> {
-    fn new(deps: &'d RelayDeps<'a>, tenant_id: &str) -> Self {
+    fn new(deps: &'d RelayDeps<'a>, tenant_id: &str, causes: &'d Causes) -> Self {
         BatchCtx {
             deps,
             tenant_id: tenant_id.to_string(),
             actors: HashMap::new(),
             unreadable: HashSet::new(),
             views: HashMap::new(),
-            by_workflow: HashMap::new(),
+            causes,
         }
     }
 
@@ -251,34 +252,17 @@ impl<'d, 'a> BatchCtx<'d, 'a> {
         matches!(self.actors.get(&key), Some(None)) || self.unreadable.contains(&key)
     }
 
-    /// 変更が run の書込によるものか（書込の trace_id が run のもの・run id 自体は載せない）。
-    async fn by_workflow(&mut self, ev: &DataEvent<'_>) -> Result<bool, anyhow::Error> {
-        if let Some(b) = self.by_workflow.get(&ev.event.id) {
-            return Ok(*b);
-        }
-        let b = match workflow_engine::scheduler::cause_run_of_trace(ev.event.trace_id.as_deref()) {
-            None => false,
-            Some(run_id) => sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM workflow_run WHERE tenant_id = $1 AND run_id = $2)",
-            )
-            .bind(&self.tenant_id)
-            .bind(run_id)
-            .fetch_one(self.deps.db)
-            .await?,
-        };
-        self.by_workflow.insert(ev.event.id, b);
-        Ok(b)
+    /// 変更を起こした書込の由来の run（run の書込でなければ `None`）。
+    fn cause(&self, ev: &DataEvent<'_>) -> Option<Uuid> {
+        self.causes.get(&ev.event.id).copied().flatten()
     }
 
     /// run 入力・wait の出力になるペイロード（形はワークフローの語彙のカタログが正・D-47）。
-    async fn payload(
-        &mut self,
-        source: EventSource,
-        ev: &DataEvent<'_>,
-        view: ChangeEventView,
-    ) -> Result<Value, anyhow::Error> {
-        let by_workflow = self.by_workflow(ev).await?;
-        Ok(DataChangePayload {
+    ///
+    /// `by_workflow` は変更が run の書込によるものか（outbox の非公開部の印・run id 自体は載せない）。
+    fn payload(&self, source: EventSource, ev: &DataEvent<'_>, view: ChangeEventView) -> Value {
+        let by_workflow = self.cause(ev).is_some();
+        DataChangePayload {
             source: source.as_str().to_string(),
             table_id: view.table_id.to_string(),
             record_id: view.record_id.to_string(),
@@ -294,7 +278,7 @@ impl<'d, 'a> BatchCtx<'d, 'a> {
             record: serde_json::to_value(&view.record).ok(),
             truncated: false,
         }
-        .into_value())
+        .into_value()
     }
 }
 
@@ -302,6 +286,7 @@ impl<'d, 'a> BatchCtx<'d, 'a> {
 pub(super) async fn relay_data_events(
     deps: &RelayDeps<'_>,
     events: &[storage::event::OutboxEvent],
+    causes: &Causes,
 ) -> Result<(), anyhow::Error> {
     let mut by_tenant: BTreeMap<&str, Vec<DataEvent<'_>>> = BTreeMap::new();
     for ev in events {
@@ -324,7 +309,7 @@ pub(super) async fn relay_data_events(
         if triggers.is_empty() && waits.is_empty() {
             continue;
         }
-        let mut cx = BatchCtx::new(deps, tenant_id);
+        let mut cx = BatchCtx::new(deps, tenant_id, causes);
         relay_tenant_triggers(&mut cx, &evs, &triggers).await?;
         relay_tenant_waits(&mut cx, &evs, &waits).await?;
     }
@@ -376,12 +361,11 @@ async fn relay_tenant_triggers(
             let Some(view) = cx.view(&who, ev).await? else {
                 continue;
             };
-            let payload = cx.payload(t.source, ev, view).await?;
+            let payload = cx.payload(t.source, ev, view);
             if !t.admits(&payload) {
                 continue;
             }
-            let cause =
-                workflow_engine::scheduler::cause_run_of_trace(ev.event.trace_id.as_deref());
+            let cause = cx.cause(ev);
             let out = cx
                 .deps
                 .sched
@@ -448,7 +432,7 @@ async fn relay_tenant_waits(
                 }
                 continue;
             };
-            let payload = cx.payload(w.source, ev, view).await?;
+            let payload = cx.payload(w.source, ev, view);
             if !w.admits(&payload) {
                 continue;
             }

@@ -23,6 +23,7 @@
 mod ack;
 mod delivery;
 mod gc;
+mod origin;
 mod stream;
 
 pub use ack::{ack_consumers, register_ack_consumer, unregister_ack_consumer, RAG_ACK_CONSUMER};
@@ -36,6 +37,7 @@ pub use gc::{
     gc_delivered, gc_delivered_registered, outbox_backlog, ConsumerLag, HeadBlocker, OutboxBacklog,
     DEFAULT_GC_BATCH,
 };
+pub use origin::{write_origins, WriteOrigin, ORIGIN_RUN_KEY};
 pub use stream::{
     lock_consumer_seq, mark_delivered_seq, private_payloads, stream_bounds, stream_entries_after,
     undelivered_table_events, StreamBounds, StreamEntry,
@@ -86,6 +88,8 @@ pub struct WriteEvent {
 }
 
 /// 既存トランザクション上で 1 件発行する（書込と同一 txn で原子的に outbox へ入れる）。
+///
+/// consumer 非公開部には書込の由来の run の印だけを載せる（[`origin`]・run の書込でなければ `null`）。
 pub async fn emit_on(
     conn: &mut PgConnection,
     ctx: &AuthContext,
@@ -93,10 +97,11 @@ pub async fn emit_on(
     trace_id: Option<&str>,
 ) -> Result<(), StorageError> {
     let payload_str = event.payload.to_string();
+    let private_str = origin::with_origin(ctx, None).to_string();
     sqlx::query(
         "INSERT INTO storage_event_outbox \
-         (org, tenant_id, node_id, version, op, actor, trace_id, payload) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)",
+         (org, tenant_id, node_id, version, op, actor, trace_id, payload, private_payload) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)",
     )
     .bind(&ctx.org)
     .bind(&ctx.tenant_id)
@@ -106,6 +111,7 @@ pub async fn emit_on(
     .bind(&ctx.principal.id)
     .bind(trace_id)
     .bind(&payload_str)
+    .bind(&private_str)
     .execute(conn)
     .await?;
     Ok(())
@@ -115,7 +121,8 @@ pub async fn emit_on(
 ///
 /// `private_payload` は `storage_event_outbox.private_payload` へ入り、**汎用の consumer
 /// （[`claim`] / [`claim_undelivered`] / [`peek_app_events_after`]）は読まない**。購読ストリームの
-/// before 判定の旧値など、外へ出してはならない材料だけを置く（Phase 15 Task 15.6）。
+/// before 判定の旧値など、外へ出してはならない材料だけを置く（Phase 15 Task 15.6）。書込の由来の run の印は
+/// ここで必ず足す（[`origin`]・材料の無い件も印だけの非公開部を持つ）。
 pub async fn emit_many_on(
     conn: &mut PgConnection,
     ctx: &AuthContext,
@@ -129,13 +136,13 @@ pub async fn emit_many_on(
     let mut versions = Vec::with_capacity(events.len());
     let mut ops = Vec::with_capacity(events.len());
     let mut payloads = Vec::with_capacity(events.len());
-    let mut privates: Vec<Option<String>> = Vec::with_capacity(events.len());
+    let mut privates: Vec<String> = Vec::with_capacity(events.len());
     for (e, p) in events {
         node_ids.push(e.node_id);
         versions.push(e.version);
         ops.push(e.op.as_str().to_string());
         payloads.push(e.payload.to_string());
-        privates.push(p.as_ref().map(Value::to_string));
+        privates.push(origin::with_origin(ctx, p.as_ref()).to_string());
     }
     sqlx::query(
         "INSERT INTO storage_event_outbox \

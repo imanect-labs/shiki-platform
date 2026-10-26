@@ -173,7 +173,9 @@ impl DataPort<'_> {
             },
             ec.org.clone(),
             ec.tenant_id.clone(),
-        );
+        )
+        // 委譲元の権限で書いても、run の書込の印は残す（relay の因果の鎖・by_workflow・BUG-44）。
+        .in_run(ec.run_id);
         Ok(Actor {
             ctx: actor,
             data: self.data.within_reach(reach.clone()),

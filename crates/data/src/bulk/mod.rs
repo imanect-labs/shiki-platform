@@ -240,12 +240,14 @@ pub(crate) struct ImportRow {
     pub(crate) first_record_int: Option<i64>,
     /// 取込を始めたストアの天井（[`crate::TableReach`]・`None` は天井なし）。ワーカーが復元して進める。
     pub(crate) reach: Option<sqlx::types::Json<Value>>,
+    /// 取込を始めた run（run の書込の印・`AuthContext::origin_run`）。ワーカーが組み直す文脈にも付ける。
+    pub(crate) origin_run_id: Option<Uuid>,
 }
 
 /// [`ImportRow`] の SELECT 列。
 pub(crate) const IMPORT_COLS: &str = "id, tenant_int, table_int, table_id, principal_kind, \
      principal_id, org, trace_id, status, schema_version, abort_on_invalid, index_mode, index_hold, \
-     validate_cursor, apply_cursor, rows_valid, rows_invalid, first_record_int, reach";
+     validate_cursor, apply_cursor, rows_valid, rows_invalid, first_record_int, reach, origin_run_id";
 
 impl ImportRow {
     pub(crate) fn keys(&self) -> TableKeys {
@@ -260,7 +262,7 @@ impl ImportRow {
     }
 
     /// 取込の主体の `AuthContext` を組み直す（昇格しない・グループ等の IdP 由来の属性は持たない。
-    /// data の認可は principal の id と種別だけで OpenFGA に問う）。
+    /// data の認可は principal の id と種別だけで OpenFGA に問う）。取込を始めた run の印も戻す（BUG-44）。
     pub(crate) fn auth_context(&self, tenant_id: &str) -> Result<AuthContext, DataError> {
         let kind: PrincipalKind =
             serde_json::from_value(Value::String(self.principal_kind.clone()))
@@ -276,7 +278,8 @@ impl ImportRow {
             },
             self.org.clone(),
             tenant_id.to_string(),
-        ))
+        )
+        .in_run(self.origin_run_id))
     }
 }
 
@@ -556,8 +559,8 @@ impl DataStore {
         let inserted = sqlx::query(
             "INSERT INTO data_bulk_import (tenant_int, id, table_int, table_id, principal_kind, \
                principal_id, org, trace_id, schema_version, abort_on_invalid, index_mode, rows_total, \
-               reach) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+               reach, origin_run_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(keys.tenant_int)
         .bind(import_id)
@@ -577,6 +580,7 @@ impl DataStore {
                 .as_deref()
                 .map(|r| sqlx::types::Json(r.to_stored())),
         )
+        .bind(ctx.origin_run)
         .execute(&mut *tx)
         .await;
         match inserted {

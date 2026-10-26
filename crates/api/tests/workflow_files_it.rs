@@ -1572,3 +1572,101 @@ async fn deferred_file_trigger_rechecks_the_delegation_when_it_starts() {
     );
     env.cleanup().await;
 }
+
+/// 利用者の保存の trace_id が run の形（run_id の 32 桁 hex）でも、待たせた発火に由来の run を残さない。因果の鎖は
+/// outbox の非公開部の run の印だけで決まる（BUG-44）。保存の outbox には印（run の書込でなければ null）が載る。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn saves_with_a_run_shaped_trace_id_leave_no_cause_run() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let inbox = env
+        .storage
+        .create_folder(&env.alice, None, "由来", None)
+        .await
+        .unwrap();
+    let doc = env
+        .storage
+        .write_file_internal(
+            &env.alice,
+            Some(inbox.id),
+            "memo.txt",
+            b"v1",
+            "text/plain",
+            None,
+        )
+        .await
+        .unwrap();
+    let e = &env;
+    let doc_id = doc.id;
+    env.relay_until("作成の配送", || async move {
+        e.delivered("create", doc_id).await
+    })
+    .await;
+    let ir = json!({
+        "ir_version": 1, "name": "memo-saved",
+        "declared_scopes": ["storage.read"],
+        "triggers": [ { "kind": "event", "source": "storage.write",
+                        "scope": { "folder": inbox.id.to_string() } } ],
+        "nodes": [ { "id": "rd", "type": "storage.read", "params": {
+            "file": { "$from": "trigger", "path": "/file_id" } } } ],
+        "edges": []
+    });
+    let (wf, _) = env
+        .workflows
+        .create(&env.alice, &ir, &Catalog::default(), None)
+        .await
+        .expect("保存");
+    let parsed = WorkflowIr::from_json(&ir).unwrap();
+    env.registration
+        .enable(&env.alice, wf, 1, &parsed, &env.grants_from_plan(&parsed))
+        .await
+        .expect("enable");
+    // 利用者の要求の trace_id（OTel の 32 桁 hex・run の trace_id と同じ形）で新しい版を保存する。
+    let trace = Uuid::new_v4().simple().to_string();
+    env.storage
+        .update_file_content_internal(&env.alice, doc.id, b"v2", "text/plain", Some(&trace))
+        .await
+        .unwrap();
+    env.relay_until("新しい版の配送", || async move {
+        e.delivered("update", doc_id).await
+    })
+    .await;
+    let mark: Option<Value> = sqlx::query_scalar(
+        "SELECT private_payload FROM storage_event_outbox \
+         WHERE tenant_id = $1 AND node_id = $2 AND op = 'update'",
+    )
+    .bind(&env.tenant)
+    .bind(doc_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        mark,
+        Some(json!({ "origin_run": null })),
+        "保存の outbox に印が載る"
+    );
+    let causes: Vec<(String, Option<Uuid>)> =
+        sqlx::query_as("SELECT outcome, cause_run_id FROM trigger_firing WHERE tenant_id = $1")
+            .bind(&env.tenant)
+            .fetch_all(&env.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        causes,
+        vec![("pending".to_string(), None)],
+        "実在しない run の id を由来に残さない"
+    );
+    env.fire_coalesced().await;
+    let runs = env.runs_of(wf).await;
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    let (cause, chain): (Option<Uuid>, Vec<Uuid>) = sqlx::query_as(
+        "SELECT cause_run_id, trigger_chain FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(runs[0].0)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!((cause, chain), (None, vec![]));
+    env.cleanup().await;
+}
