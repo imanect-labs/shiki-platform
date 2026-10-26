@@ -1311,6 +1311,12 @@ create unique index on outbox_delivery (consumer, delivery_seq);
 >   **非公開部 `private_payload`**（ストリームと統計の消費側だけが読む）に分ける。非公開部は `table_int`・`record_int` と、
 >   **変更前の値**（旧 owner・行述語が参照する列・対称リンク列・値頻度表の対象列の前後の値）。汎用の consumer（workflow /
 >   miniapp のトリガ・RAG relay）はこの列を読まないので、内部キーと旧値が外へ出る経路が構造的に無い
+> - **ワークフローのデータ変更トリガ**（`data.record.created` / `data.record.updated` / `data.transition`・GAP-07）は、
+>   公開部の id から **`DataStore::change_event_view`** で主体の見え方を作る（今の行が主体に見えるか・その rev のリビジョンの
+>   マスク後の差分・`get_record` と同じ投影。トリガは委譲元・wait(event) は run の実行主体）。見えない行・読めない列だけの
+>   変更は `None`（発火しない）。非公開部は data crate の中でだけ読み、**一括取込の目印 `bulk` の真偽だけ**を
+>   `DataStore::bulk_flags` で返す（旧値・内部キーは出さない）。一括の目印は取込の作成行に加えて、一括 upsert の
+>   更新行（`update_locked` を通る）にも付く
 > - **派生値の再配信**: 参照先の変更で表示値が変わる参照元レコード（と、リンクの付け替えで対称列が変わる参照先レコード）には
 >   `change = derived` のイベントを積む。台帳 consumer の名前は設定で分けられ、同じ変更を複数のリレーが見るので、
 >   元のイベント id を `data_stream_fanout` へ先に書けた 1 つのリレーだけが積む（一意制約で重複しない）。1 段だけ辿り、
@@ -1370,7 +1376,8 @@ GET /data/tables/{table_id}/stream?since=<delivery_seq>     (SSE)
 >   まとめる。行ごとの可視性は判定せず（10 万行で 2 分かかっていた）、**件数・行・値を含めない**（見えない行まで数えた
 >   件数は「見えない行が何件取り込まれたか」を漏らす）。`id` はまとめた最後の位置で、`Last-Event-ID` で欠落なく再開できる。
 >   クライアントは「取り込まれた」と案内し、利用者の操作で取り直す（見える行だけが返る）。汎用の outbox consumer が読む payload は変えない
->   （ワークフロー・ミニアプリのトリガ・RAG は従来どおり 1 件ずつ受ける）。consumer は 1 回の claim を 500 件にして
+>   （ミニアプリのトリガ・RAG は従来どおり 1 件ずつ受ける。ワークフローのデータ変更トリガは一括取込の行では発火しない・wait は起こす）。
+>   要約にまとめるのは作成行だけで、一括 upsert の更新行は 1 件の更新と同じく行ごとに配る。consumer は 1 回の claim を 500 件にして
 >   取込の直後の滞留を短くした（検証 D-14）
 > - `keepalive` はコメント行の keep-alive に加えて送る名前つきのイベント（ブラウザの EventSource はコメント行を読めない）
 > - **配信の経路は HTTP/2 を前提にする（運用）**: 購読は表示中のタブごとに 1 本の長い接続を持つ。HTTP/1.1 では
@@ -1539,6 +1546,7 @@ absent  ──promote──▶  building  ──収束──▶  active  ──d
 | **shiki script（B2 関数）** | ✅ `Shiki.data.*`（gateway 経由） | 同上（`Shiki.data.transition` を追加・前置きは `script_runtime::prelude` で共通） |
 | **shiki script（ワークフロー/skill）** | ❌ `HostBridge` が `data.*` を受けない | **`nodes/script.rs` の dispatch に data アームを追加**。api 名は `ALLOWED_APIS` に既存（`data.transition` は追加） |
 | **ワークフローノード** | ❌ 語彙予約のみ・`available_stage_a` false | **`data.query` / `data.record.create` / `data.record.update` / `data.record.delete` / `data.transition` / `data.bulk_upsert` を解禁**。IR `Condition` と `DataQuery.filter` が同語彙なので変換層が不要。書込は `effect_journal`（EngineDedup）経由。schedule / event run は委譲元ユーザーの権限（workflow engine.md §6.8） |
+| **ワークフローのトリガ・wait** | ❌ 語彙予約のみ | **データ変更トリガ（`data.record.created` / `data.record.updated` / `data.transition`・`scope: { table }`）と wait(event) のデータ版**（GAP-07）。発火・起床の判定と run 入力は §9.2 の `change_event_view`（委譲元・実行主体の見え方）。一括取込では発火しない・自分の書込で自分を起こさない（workflow engine.md §5.4） |
 | **generative UI** | ❌ `TableProps` は静的データ埋め込み | **`ActionBinding` に `DataView { view_id, pinned_version }` を追加**し、`data_grid` コンポーネントを束縛で描画。クライアントが送れるのは `action_id + params` のみ（`ActionDispatcher` の不変条件を維持）。実装（Task 15.7）: ミニアプリの画面の `` ```data_grid ``（中身は束ねた保存ビューの別名）。ピンは `MiniAppBody.data_views` で、保存時に保存者の権限で解決する（`MiniAppStore`・ワークフローのピンと同じ流儀）。描画は `POST /mini-apps/{id}/ui-actions`（`action_id = data_grid:{別名}`・params は `DataViewPage` の `cursor` / `limit` だけ）で、定義はバンドル権限で読み、**行・列は閲覧者本人の権限で毎回評価**する（`DataViewStore::run_via_bundle`）。#604 で tool 束縛を撤去したので束縛は 3 種 |
 | **chat / agent-core** | ❌ data 系ツールがゼロ | **`data_query`（読取）・`data_record_write`（`requires_confirmation`）・`data_schema`（グラウンディング）**。`csv_tool.rs` の 3 ツールが最も近い先例。description には**発話ユーザーが viewer のテーブル一覧**を動的に載せる（`SkillTool` と同じ流儀・テーブル数は有界）。実装（Task 15.7）: `crates/chat/src/data_tool.rs`。一覧は 30 件まで、見えるテーブルが無ければ提示しない。`data_schema` は読めない列を載せない。`data_record_write` は作成・更新（status は FSM の遷移でだけ動く） |
 | **RAG** | ❌ 構造化データのフックがゼロ | **§11.1**。Task 15.8 で設計スパイク＋ PoC（[data/rag-integration.md](./data/rag-integration.md)）。本番の配線はポストアルファ |

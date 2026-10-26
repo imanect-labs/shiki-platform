@@ -84,7 +84,7 @@ IR のトップレベルは以下の形を取る。
   ```
 
   **新バージョンで `declared_scopes` が広がった場合、有効化済みワークフローは再同意が済むまで新バージョンへ切替不可**（fail-closed。実行時の強制は [engine.md](./engine.md) §10 と対応）。縮小のみなら差分同意なしで切替可能。
-- **`policies`**: 全て省略可。省略時は既定値。`run_timeout_sec` は run 全体の壁時計上限、`max_parallel_runs` はこのワークフロー単位の run 同時実行上限、`on_trigger_overflow` は上限超過時の挙動（`queue` はバックプレッシャで滞留、`skip` は run 作成を見送る。実行時の滞留・滞留解除の詳細は [engine.md](./engine.md) §8）。
+- **`policies`**: 全て省略可。省略時は既定値。`run_timeout_sec` は run 全体の壁時計上限、`max_parallel_runs` はこのワークフロー単位の run 同時実行上限、`on_trigger_overflow` は上限超過時の挙動（`queue` はバックプレッシャで滞留、`skip` は run 作成を見送る。実行時の滞留・滞留解除の詳細は [engine.md](./engine.md) §8）。`max_parallel_runs` が数えるのは実行中の run で、**wait（時間・できごと）で止まっている run は数えない**（承認やイベントを何日も待つ run が枠を占めて、新しい起動が進まなくなるのを防ぐ。起床して上限を一時的に超えるのは許す・D-26）。
 - **`input_schema`**: 対話トリガ（§6 `interactive`）の入力フォーム契約。JSON Schema のサブセット（型・必須・enum・range 程度。式・`$ref` 外部参照は持たない）。`llm.invoke` の `output_schema` も同じサブセットを使う（§7）。
 
 ---
@@ -296,11 +296,11 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 
 ```jsonc
 [
-  { "id": "t_sched", "type": "schedule", "cron": "0 9 * * MON", "tz": "Asia/Tokyo", "catchup": "skip" },
-  { "id": "t_event", "type": "event", "source": "data.transition",
-    "filter": { /* 条件木（対象: イベントペイロード）・§3.3 */ },
-    "scope": { "table": "expense" } },
-  { "id": "t_manual", "type": "interactive" }
+  { "id": "t_sched", "kind": "schedule", "cron": "0 9 * * MON", "tz": "Asia/Tokyo", "catchup": "skip" },
+  { "id": "t_event", "kind": "event", "source": "data.transition",
+    "filter": { "cmp": { "left": { "$from": "trigger", "path": "/to" }, "op": "eq", "right": "approved" } },
+    "scope": { "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1" } },
+  { "id": "t_manual", "kind": "interactive" }
 ]
 ```
 
@@ -320,8 +320,16 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 ### 6.2 `event`
 
 - **`source`** は閉じた集合 `storage.write` / `data.record.created` / `data.record.updated` / `data.transition`（既存 outbox イベント種に対応）。将来追加は codegen 語彙で行う。加えて `event.custom`（`event.publish` ノードが発行するカスタムイベント）と `webhook.received`（外部システムからの webhook 受信・署名検証とレート制限は受信エンドポイント側で設計）を**予約済み**（§7.8・Stage A では保存不可）。
-- **`scope`** で対象（テーブル・フォルダ）を**必須束縛**する。全イベント購読を許さない。フォルダ / テーブル id は保存時に存在検証する（§8 V4）。
+- **`scope`** で対象（テーブル・フォルダ）を**必須束縛**する。全イベント購読を許さない。フォルダ / テーブル id は保存時に存在検証する（§8 V4）。形は source ごとに決まる（§8 V3）:
+  - `storage.write`: `{ "folder": "<uuid>" }`（祖先束縛・配下のフォルダの保存でも起きる）。
+  - データ変更の 3 種: `{ "table": "<uuid リテラル（小文字・ハイフンつき）>" }` だけ。`$from`・空・他のキーは拒否する。保存ビュー単位の scope は v1 では入れない（同じ絞り込みは `filter` で書く）。
+- データ変更のトリガは `declared_scopes` に `data.read` が要る（保存の入口で補う）。有効化者はトリガのフォルダ・テーブルの viewer であること（有効化時に確かめる）。
 - `filter`（条件木・§3.3）でペイロードを絞る。filter 評価エラーの実行時扱い（発火しない＋監査）は [engine.md](./engine.md) §5。
+- **ペイロード**（run 入力・`$from trigger`）の形は source ごとに決まり、**語彙のカタログ（`EVENT_CATALOG` の `payload_fields`・`crates/workflow-engine/src/vocab/event_catalog.rs`）が正**（エディタの参照の候補と AI の説明文も同じ表から作る・D-47）:
+  - `storage.write`: `{ file_id, version, op（create | update）, kind（"file"）, parent_id, size, actor, blob_sha256 }`。ファイル名・content_type は載せない（`storage.read` の出力から取る）。
+  - データ変更: `{ source, table_id, record_id, rev, change（create | update | transition）, from, to（状態が変わったときだけ・ほかは null）, changed（変わった列の参照名）, changes（列ごとの { old, new }）, actor, by_workflow（ワークフローの書込による変更か）, occurred_at, record（今の行）, truncated }`。値は**有効化者（委譲元）の見え方**で作る: 委譲元に見えない行の変更・読めない列だけの更新では発火しない（記録もしない）。読めない列は `changed`・`changes`・`record` に載らない。64KB を超えると `record` と `changes` を落として `truncated: true`。
+- データ変更のトリガは次では発火しない（[engine.md](./engine.md) §5.4）: 一括取込（CSV の取込・`data.bulk_upsert` の作成行と更新行）、このワークフロー自身の書込とその子（`workflow.start`）の書込（因果の鎖）、鎖が 4 段を超える連鎖、queued の run が 1,000 件以上あるとき。状態の変更は行の更新でもあるので、同じテーブルに `data.record.updated` と `data.transition` を置くと 1 回の遷移で 2 回起動する（保存時に警告 `ir.overlapping_data_triggers`）。
+- filter の例: 遷移先 `/to eq "approved"`・変更した列 `/changed eq "amount"`（配列の eq は「含む」）・変更前後の値 `/changes/amount/new gte 100000`・今の値 `/record/data/category`・人の操作だけ `/by_workflow eq false`。
 
 ### 6.3 `interactive`
 
@@ -464,6 +472,9 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 
 - `kind`: `duration`（相対時間）/ `until`（絶対時刻）/ `event`（イベント待ち）。
 - `on_timeout: continue` のとき出力ポート `timeout` を持つ（§5.2）。
+- `kind: event` の `scope` は必須（D-49）: `storage.write` は `{ "folder": "<uuid>" }`、データ変更は `{ "table": "<uuid リテラル>", "record"?: 値式 }`。`record` は**停止時に解決**し（解決できなければ `expr_resolve_error`）、その行の変更だけを待つ。データ変更の source では空の scope をワイルドカードにしない。保存済みの scope の無い `storage.write` の wait は、起床のたびに実行主体の閲覧を確かめて守る（`EventWaitGate`・D-33）。データ変更の wait は `data.read` が要る。
+- **登録より前の変更では起きない**: 行に束縛した wait は停止時に実行主体の権限でその行を読み（data.get）、その rev より後の変更だけで起きる。テーブル単位の wait は停止の時点の outbox の位置より後のイベントだけを見る（停止と並行していた書込は取りこぼし得る）。
+- **filter の `$from`**: `event` が届いたイベントを指す（`trigger` / `payload` は互換の別名で、保存時に警告 `ir.wait_filter_alias`）。それ以外（`input`・`nodes.*`・`run`・`each`）は**停止時に解決してリテラルへ束縛**してから購読に保存する（起床の判定は届いたイベントしか解決しない）。出力（`nodes.<id>.output`）は届いたイベントのペイロード（形は §6.2 と同じ・実行主体の見え方）。
 - wait の実行時挙動（waiting_timer / waiting_event・購読登録・起こし方）は [engine.md](./engine.md) §9。
 
 ### 7.6 `script.run`
@@ -527,7 +538,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 |---|---|---|---|
 | V1 | スキーマ | JSON Schema（deny-unknown・型・必須） | `ir.schema_violation` |
 | V2 | グラフ | id 一意・エッジ参照存在・ポート存在・DAG・入エッジ制約・領域閉包・出口一意・到達可能性 | `ir.graph_cycle` 等 |
-| V3 | 語彙照合 | ノード type・declared_scopes・ツール名・モデル名を codegen 語彙と登録カタログ（モデルは組織が許可したもの・本人専用を除く）の閉じた集合へ照合 | `ir.unknown_scope`・`ir.unknown_model`・`ir.model_choice_disabled` |
+| V3 | 語彙照合 | ノード type・declared_scopes・ツール名・モデル名を codegen 語彙と登録カタログ（モデルは組織が許可したもの・本人専用を除く）の閉じた集合へ照合。イベント source とトリガ・wait(event) の scope の形（§6.2・§7.5） | `ir.unknown_scope`・`ir.unknown_model`・`ir.model_choice_disabled`・`ir.unknown_event_source`・`ir.bad_event_scope` |
 | V4 | 参照存在 | skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノード URL ホストを許容）・テーブル/フォルダ id | `ir.unknown_skill` |
 | V5 | データフロー | `$from` の祖先性・default 要否・条件木の型整合（静的に分かる範囲）・regex コンパイル | `ir.bad_ref` |
 | V6 | script コンパイル | inline script の swc パース・禁止構文（[script.md](./script.md) §3。artifact 参照は version 固定なので存在のみ） | `ir.script_syntax` |
@@ -539,7 +550,8 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **V2 グラフ**: `id` 一意、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1、全ノードのエントリからの到達可能性を検証する。
 - **V3 語彙照合**: ノード `type`・`declared_scopes`・ツール名（`allowed_tools`）・モデル名を codegen が生成した閉じた語彙と、テナントの登録カタログ（モデルは組織が許可したモデル・本人専用を除く）へ照合する。**ハルシネーション境界**であり、実在しない語彙を参照する IR（特に AI 生成）を保存前に拒否する。`llm.invoke` の `model` は省略可で、省略（空文字を含む）は照合しない（実行時に組織の既定で解決する・§7.3）。組織がモデルの選択を禁じていれば、既定と異なるモデルを `ir.model_choice_disabled` で拒否する。
 - **V4 参照存在**: skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノードの `http.request` URL ホストを許容する）・テーブル/フォルダ id の実在を検証する。
-- **V5 データフロー**: `$from` の `nodes.<id>` が祖先か、全パスで先行しない場合に `default` があるか、条件木の左右の型が静的に整合するか、`matches` の regex がコンパイルできるかを検証する（§3）。
+- **V5 データフロー**: `$from` の `nodes.<id>` が祖先か、全パスで先行しない場合に `default` があるか、条件木の左右の型が静的に整合するか、`matches` の regex がコンパイルできるかを検証する（§3）。`control.wait` の `filter` では、届いたイベントを指す `event`（別名 `trigger` / `payload`）も書ける（§7.5）。
+- **保存を止めない警告**（V3・イベント）: 同じテーブルの `data.record.updated` と `data.transition`（`ir.overlapping_data_triggers`）、wait(event) の filter の別名（`ir.wait_filter_alias`）。
 - **V6 script コンパイル**: inline script を swc でパースし、禁止構文を弾く（[script.md](./script.md) §3）。artifact 参照は version 固定なので存在確認のみ。
 - **V7 上限**: サイズ・数量の上限を検証する（すべて初期値・設定で調整可）。
 

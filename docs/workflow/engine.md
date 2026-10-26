@@ -112,12 +112,19 @@ create table schedule_occurrence (
     unique (tenant_id, workflow_id, trigger_id, scheduled_at)
 );
 
--- イベント発火の冪等記録。outbox イベント 1 件につき最大 1 run。
+-- イベント発火の冪等記録と結果。outbox イベント 1 件 × トリガ 1 本につき 1 行（最大 1 run）。
 create table trigger_firing (
     tenant_id  text        not null,
     trigger_id uuid        not null,
-    event_id   uuid        not null,            -- outbox イベントの id
+    event_id   bigint      not null,            -- outbox イベントの id
     run_id     uuid,
+    -- 結果: pending（起動の一時失敗で再試行待ち）/ fired / skipped（委譲の不成立・多重度あふれ・無効化）/
+    -- suppressed_cycle / suppressed_depth（因果の鎖）/ dropped_queue_full / gave_up（再試行の打ち切り）。
+    outcome         text not null default 'fired',
+    attempts        int  not null default 0,
+    next_attempt_at timestamptz,                -- pending の次の再試行（指数・最大 10 分間隔・5 回まで）
+    payload         jsonb,                      -- 再試行の材料（起動したら消す）
+    cause_run_id    uuid,                       -- 再試行の材料（因果の鎖の由来）
     created_at timestamptz not null default now(),
     unique (tenant_id, trigger_id, event_id)
 );
@@ -138,6 +145,12 @@ create table workflow_run (
     input            jsonb       not null default '{}',  -- ≤256KB・超過は blob 参照（§12）
     cancel_requested boolean     not null default false,
     trace_id         text,                       -- OTel（run 作成時採番・§11）
+    -- イベントトリガの run の発火元イベント。(trigger_id, trigger_event_id) の部分一意で、run の作成と
+    -- firing の記録の間に落ちても再配送・再試行で run を二重に作らない（§5.4・PIT-31）。
+    trigger_event_id bigint,
+    -- 因果の鎖（祖先ワークフロー）と由来の run（§5.4）。workflow.start の子は親の鎖 ∪ {親} を引き継ぐ。
+    trigger_chain    uuid[]      not null default '{}',
+    cause_run_id     uuid,
     started_at       timestamptz,
     finished_at      timestamptz,
     created_at       timestamptz not null default now(),
@@ -201,18 +214,28 @@ create table run_event (
     foreign key (tenant_id, run_id) references workflow_run (tenant_id, run_id)
 );
 
--- wait(event) の購読登録。マッチャが消し込む。
+-- wait の購読登録（timer / event）。マッチャ・スケジューラが消し込む。
 create table wait_subscription (
     tenant_id  text        not null,
     run_id     uuid        not null,
     step_path  text        not null,
-    source     text        not null,             -- 購読イベント種
-    filter     jsonb       not null,             -- 条件木（ir.md §3）
-    scope      jsonb       not null,             -- テーブル/フォルダ束縛
+    kind       text        not null,             -- timer | event
+    wake_at    timestamptz,                       -- timer の起床時刻
     timeout_at timestamptz,                       -- on_timeout の期限（§9）
+    source     text,                              -- 購読イベント種
+    -- { scope（テーブル/フォルダ束縛・record は停止時に解決済み）, filter（イベント以外の参照は束縛済み）,
+    --   on_timeout, suspend_rev（行に束縛した data の wait の停止時の rev）,
+    --   after_event_id（テーブル単位の data の wait の停止時の outbox の位置） }
+    spec       jsonb       not null default '{}',
+    fired      boolean     not null default false,
     primary key (tenant_id, run_id, step_path)
 );
-create index wait_subscription_match_idx on wait_subscription (tenant_id, source);
+create index wait_subscription_event_idx on wait_subscription (tenant_id, source)
+    where kind = 'event' and not fired;
+-- データ変更の wait の候補（テーブル・行の束縛）。
+create index wait_subscription_record_idx on wait_subscription
+    (tenant_id, source, (spec->'scope'->>'table'), (spec->'scope'->>'record'))
+    where kind = 'event' and not fired;
 
 -- 委譲の記録。同意 UI・棚卸しの正（§6・§10）。
 create table workflow_delegation (
@@ -263,7 +286,7 @@ create table effect_journal (
 - **全行 tenant_id・全クエリ tenant スコープ**: SaaS 共用プールで越境しない（Task 10.2 受け入れ条件）。
 - **`run_event` は単一ライタ・exactly-once**: `(tenant_id, run_id, seq)` PK で重複 seq を潰し、fencing 一致ワーカーのみが追記する（chat と同型パターン。§2.1 の「全テーブル tenant スコープ」を本表も満たす）。
 - **`step_execution` は step ごと 1 行**: attempt は列であり行を増やさない。attempt 履歴・遷移の連続は `run_event` に追記する。
-- **占有は冪等記録と同一 TX**: `schedule_occurrence`/`trigger_firing` の UNIQUE 挿入と `workflow_run` 作成・enqueue は単一 TX（§5・PIT-31）。
+- **占有は冪等記録の行ロックの下で**: `schedule_occurrence`/`trigger_firing` の UNIQUE 挿入・行ロックの下で run を起動する。run の作成は launcher の Tx で commit されるので、イベントトリガの run は `(trigger_id, trigger_event_id)` の部分一意で重複を防ぐ（再配送・再試行は既存の run を返す・§5.4・PIT-31）。
 - **`effect_journal` は副作用と同一 TX**: チョークポイント側で「副作用の実行」と「journal 追記」を分離不能にする（§7）。
 - **`step_path` 文法**: 静的ノードは `node_id`、map 要素内は `<map_id>[<index>].<node_id>`（ネストは連結。例 `map_files[3].parse`）。定義は ir.md §5.3 が正。
 - **エッジ状態は永続化しない（導出値）**: エッジテーブルは持たない。「解決済み」= 源 step が terminal、
@@ -513,11 +536,46 @@ cron の評価区間は `workflow_trigger.last_planned_at`（watermark）→ 現
    なら一致する。サブフォルダ配下の書込も親フォルダ束縛トリガで発火する。
 3. `filter` の条件木（ir.md §3）を **イベントペイロードに対して**評価する（`$from trigger`＝ペイロード・
    fail-closed: 型不一致/不正 filter は発火しない）。同一マッチャが `wait_subscription`（wait(event)）も消し込む（§5.5）。
-4. 合致したら `trigger_firing` に UNIQUE(tenant_id, trigger_id, event_id) で INSERT し、run 作成＋enqueue を **単一 TX**（outbox イベント 1 件につき最大 1 run）。
+4. 合致したら `trigger_firing` に UNIQUE(tenant_id, trigger_id, event_id) で INSERT して行をロックし、run を起動して
+   結果（`outcome`）を同じ行に残す（outbox イベント 1 件 × トリガ 1 本につき最大 1 run）。
+
+**起動の結果と再試行**（D-21）: `RunLauncher::launch` は発火元の `event_id` を受け、`Started(run_id)` /
+`Skipped(理由)` / `Failed` を返す。見送り（委譲の不成立・`on_trigger_overflow = skip` の多重度あふれ・無効化）は
+再試行しない。一時失敗（IR の取得・DB・OpenFGA）は `pending` にして指数で間隔を延ばして再試行し（10 秒〜最大 10 分・
+5 回まで）、超えたら `gave_up` にして監査（`workflow.trigger.suppressed`・reason=gave_up）に残す。再試行で起動する
+run も同じ `trigger_event_id` を持つので二重にならない。
+
+**データ変更**（`data.record.created` / `data.record.updated` / `data.transition`・GAP-07）は data の outbox
+（`data.record.changed` の create / update と `data.record.transitioned`）から写す。relay は tick（cron・timer・timeout）
+とは別のループで回し、データ変更の照合が重くても期限の回収を遅らせない。
+
+1. バッチの中のテーブルの集合で、候補のトリガ（`spec->'scope'->>'table'` の索引）と wait をテナントごとに 1 回ずつ
+   引く。候補の無いイベントは data を読まずに配送済みにする。
+2. 一括取込（CSV の取込・`data.bulk_upsert` の作成行と更新行）の行ではトリガを発火させない（private payload の
+   `bulk` の真偽だけを data の `bulk_flags` で読む）。wait は起こす。
+3. トリガは**委譲元**（テーブルの viewer をワークフローへ委譲した人）の見え方で変更を作る（§6.8 の主体と天井・
+   data の `change_event_view`）。委譲が無ければ（`workflow_delegation` を先に引いて）OpenFGA を呼ばない。見えない行・
+   読めない列だけの変更では発火せず、発火しなかったことも記録しない。権限の判定（Forbidden / NotFound）は
+   「発火しない」として配送済みにし、一時的な障害だけバッチを配り直す。主体と見え方はバッチの中だけで覚える（PIT-18）。
+4. **因果の鎖**: 書込の trace_id が run のもの（run_id の 32 桁 hex・§11.1）なら、その run の `trigger_chain` ∪
+   {その run のワークフロー} を鎖とする。発火先のワークフローが鎖に含まれれば `suppressed_cycle`（自分の書込・循環）、
+   鎖が 4 段を超えれば `suppressed_depth`。起動した run に鎖と `cause_run_id` を書く。`workflow.start`・`Shiki.workflow.*`
+   の子の run は、作成と同じ Tx で親の鎖 ∪ {親のワークフロー} を引き継ぐ。wait の起床には抑止をかけない。
+   前提: run の中の data の書込は run の trace_id を運ぶ。ファイル保存（storage.write）のトリガはまだ鎖を使わない（BUG-29）。
+5. **queued の上限**: 1 ワークフローの queued run が 1,000 件以上なら `dropped_queue_full` で捨てる。
+6. 抑止・破棄は 1 件ずつ監査（`workflow.trigger.suppressed`・reason）に残す。
+
+配信の位置: workflow consumer は既存の配送台帳（順序に依存しない作り）のまま使い、data のストリームの `delivery_seq`
+は使わない（delivery_seq はテーブルのストリーム用で保持 600 秒で GC される。トリガは at-least-once と一意キーで足り、
+全体の順序は要らない。同じ行の順序は rev で表し、後続の処理は expected_rev で守る）。
 
 ### 5.5 wait_subscription の消し込み（同一マッチャ）
 
 `wait(event)` の購読解決も **同じマッチャ**が行う。イベント到来時、`(tenant_id, source)` で `wait_subscription` を引き、`scope`＋`filter` に合致する購読について当該 step を **terminal 化（`succeeded`・out ポート・ペイロードを output に格納）して前進 TX を実行**する（購読行は消し込む・§9.2）。これによりトリガ発火と wait 解決が同一のイベント消費経路を通り、実装が二重化しない。
+
+データ変更の wait はテーブル（と任意で行）の束縛で引き、**空の scope をワイルドカードにしない**。変更は run の
+**実行主体**の見え方で作る（interactive は本人・schedule / event は委譲元・§6.8）。停止時の rev（`suspend_rev`）以下・
+停止時の outbox の位置（`after_event_id`）以下のイベントは見ない（§9.2）。
 
 ### 5.6 filter 評価エラーは fail-closed
 
@@ -607,6 +665,10 @@ workflow プリンシパルで評価すると本人系の述語が成り立た�
 実効権限 = scope 天井（§6.5）∩ 委譲したテーブル ∩ 委譲元の ReBAC・行述語。委譲していないテーブルは、
 委譲元が読めても読めない（委譲元の権限を丸ごと貸さない。入口だけでなく、リンクで辿る参照先も 3. で同じく絞る）。
 書込の監査・リビジョンの主体は委譲元になる。
+
+データ変更トリガ（§5.4）の**発火の判定とペイロード**も同じ 3 段の主体（委譲元・委譲したテーブルの天井）の見え方で作る
+（`DataStore::change_event_view`）。委譲元に見えない行・読めない列の変更は、発火・ペイロード・記録のどこにも出ない。
+wait(event) のデータ版は run の実行主体の見え方で起こす。
 
 ---
 
@@ -700,6 +762,11 @@ run の多重度は `policies.concurrency.max_parallel_runs`（ir.md §2）で�
 - `queue`（既定・バックプレッシャ）: run を `queued` のまま滞留させる。
 - `skip`: run を作成しない。ただし occurrence/firing には記録済みなので **再発火しない**（§5.3）。
 
+数えるのは `queued` と、実行中の `running`。**待機中の run（ready / running の step が無く、waiting_timer /
+waiting_event の step で止まっている run）は数えない**（D-26・H10 (1)）。承認やイベントを何日も待つ run が枠を
+占めて、新しい起動が queued のまま進まなくなるのを防ぐ。起床して上限を一時的に超えるのは許す。作成（create_run）と
+promote は同じ述語で数える。
+
 ---
 
 ## 9. wait・キャンセル・タイムアウト
@@ -715,6 +782,11 @@ step を `waiting_timer` にし `wake_at` を書いてワーカーを解放す�
 
 `wait_subscription` を登録して step を `waiting_event` にする。解決も §9.1 と同じく **step を直接 terminal 化**する:
 
+- 停止時に filter のイベント以外の参照（`input`・`nodes.*`・`run`・`each`）をリテラルへ束縛して `spec` に保存する
+  （起床の判定は届いたイベントしか解決しない・ir.md §7.5）。データ変更の wait は `scope.record` を解決し、行に束縛
+  するならその行を実行主体の権限で読んで（data.get・scope 天井は data.read）rev を `suspend_rev` に、テーブル単位なら
+  checkpoint の Tx の時点の outbox の最大 id を `after_event_id` に残す（停止より前の変更・自分の直前の書込では起きない。
+  テーブル単位では、この位置より前に採番されて後で commit した並行の書込を取りこぼし得る）。
 - イベント到来（マッチャ・§5.5）: `succeeded`・`taken_ports = {out}`・イベントペイロードを output に格納。
 - `timeout_at` 超過・`on_timeout: continue`: `succeeded`・`taken_ports = {timeout}`（ir.md §5.2 の `wait` ポート）。
 - `timeout_at` 超過・`on_timeout: fail`: `failed`。

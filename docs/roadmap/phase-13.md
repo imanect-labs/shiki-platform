@@ -271,6 +271,9 @@
         （窓内の同一内容再送は 1 件・窓外は通る）に振る舞う
 
 ### Task 13.14: フォーム→ワークフロー
+> **注記（2026-10）**: データ変更トリガ（`data.record.created` / `data.record.updated` / `data.transition` の解禁・
+> outbox からの relay・委譲元の見え方・一括取込と自己ループの抑止）は品質向上キャンペーン（GAP-07・D-1）で前倒しして
+> 実装した。本タスクの残りはフォーム送信（13.12 / 13.13）を起点にする配線と、その受け入れ条件。
 - **area**: api / **path**: `crates/data`, `crates/workflow-engine`, `crates/api`
 - **仕様**: `crates/data` のレコード作成で `data.record.created` を**同一トランザクションで outbox へ発行**し、
   `EventSource` の `available_stage_a()` を拡張して当該ソースを解禁する。フォーム送信を契機に通知・自動返信・
