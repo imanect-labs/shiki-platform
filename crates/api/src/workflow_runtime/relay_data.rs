@@ -113,34 +113,69 @@ impl<'d, 'a> BatchCtx<'d, 'a> {
     }
 
     /// 主体の見え方で作った変更（見えない・権限が無ければ `None`・一時障害は `Err`）。
+    ///
+    /// 先に [`Self::prefetch`] で同じテーブルの変更をまとめて作っておけば、ここは覚えから返す。
     async fn view(
         &mut self,
         who: &PrincipalKey,
         ev: &DataEvent<'_>,
     ) -> Result<Option<ChangeEventView>, anyhow::Error> {
-        let vkey = (who.clone(), ev.event.id);
-        if let Some(v) = self.views.get(&vkey) {
+        if let Some(v) = self.views.get(&(who.clone(), ev.event.id)) {
             return Ok(v.clone());
         }
-        let akey = (who.clone(), ev.table_id);
+        self.prefetch(who, ev.table_id, &[ev]).await?;
+        Ok(self
+            .views
+            .get(&(who.clone(), ev.event.id))
+            .cloned()
+            .flatten())
+    }
+
+    /// 同じテーブルの変更の見え方をまとめて作って覚える（テーブルの読込・認可の問い・マスクの判定を 1 回にする）。
+    async fn prefetch(
+        &mut self,
+        who: &PrincipalKey,
+        table_id: Uuid,
+        evs: &[&DataEvent<'_>],
+    ) -> Result<(), anyhow::Error> {
+        let missing: Vec<&DataEvent<'_>> = evs
+            .iter()
+            .copied()
+            .filter(|e| {
+                e.table_id == table_id && !self.views.contains_key(&(who.clone(), e.event.id))
+            })
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let akey = (who.clone(), table_id);
         if !self.actors.contains_key(&akey) {
-            let actor = self.actor(who, ev.table_id).await?;
+            let actor = self.actor(who, table_id).await?;
             self.actors.insert(akey.clone(), actor);
         }
-        let view = match self.actors.get(&akey).and_then(Option::as_ref) {
-            None => None,
-            Some(a) => match a
-                .data
-                .change_event_view(&a.ctx, &ev.change_ref(), None)
-                .await
-            {
-                Ok(v) => v,
-                Err(DataError::NotFound | DataError::Forbidden) => None,
-                Err(e) => return Err(anyhow::anyhow!("データ変更の見え方の作成に失敗: {e}")),
-            },
+        let views: Vec<Option<ChangeEventView>> = match self
+            .actors
+            .get(&akey)
+            .and_then(Option::as_ref)
+        {
+            None => vec![None; missing.len()],
+            Some(a) => {
+                let refs: Vec<ChangeEventRef> = missing.iter().map(|e| e.change_ref()).collect();
+                match a
+                    .data
+                    .change_event_views(&a.ctx, table_id, &refs, None)
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(DataError::NotFound | DataError::Forbidden) => vec![None; missing.len()],
+                    Err(e) => return Err(anyhow::anyhow!("データ変更の見え方の作成に失敗: {e}")),
+                }
+            }
         };
-        self.views.insert(vkey, view.clone());
-        Ok(view)
+        for (e, v) in missing.iter().zip(views) {
+            self.views.insert((who.clone(), e.event.id), v);
+        }
+        Ok(())
     }
 
     /// 主体（[`DataPort::actor`]）。ワークフロー主体は、委譲台帳で委譲元を先に確かめ（無ければ OpenFGA を
@@ -285,8 +320,22 @@ async fn relay_tenant_triggers(
         .map(|e| e.event.id)
         .collect();
     let bulk = cx.deps.data.bulk_flags(&cx.tenant_id, &ids).await?;
+    let fires = |ev: &DataEvent<'_>| !bulk.get(&ev.event.id).copied().unwrap_or(false);
+    // トリガごとに、そのテーブルの変更の見え方をまとめて作る（変更ごとに認可を引き直さない）。
+    for t in triggers {
+        let who = PrincipalKey {
+            kind: "workflow".into(),
+            id: t.trigger.workflow_id.to_string(),
+            org: t.org.clone(),
+        };
+        let mine: Vec<&DataEvent<'_>> = evs
+            .iter()
+            .filter(|e| e.table_id == t.table_id && e.source == t.source && fires(e))
+            .collect();
+        cx.prefetch(&who, t.table_id, &mine).await?;
+    }
     for ev in evs {
-        if bulk.get(&ev.event.id).copied().unwrap_or(false) {
+        if !fires(ev) {
             continue;
         }
         for t in triggers
@@ -338,17 +387,30 @@ async fn relay_tenant_waits(
     evs: &[DataEvent<'_>],
     waits: &[DataWaitCandidate],
 ) -> Result<(), anyhow::Error> {
+    let who_of = |w: &DataWaitCandidate| PrincipalKey {
+        kind: w.subscriber.principal_kind.clone(),
+        id: w.subscriber.principal.clone(),
+        org: w.subscriber.org.clone(),
+    };
+    for w in waits {
+        let mine: Vec<&DataEvent<'_>> = evs
+            .iter()
+            .filter(|e| w.wants(e.source, e.table_id, e.record_id, e.rev, e.event.id))
+            .collect();
+        cx.prefetch(&who_of(w), w.table_id, &mine).await?;
+    }
+    // 起こした wait は、同じバッチの後のイベントでは見ない（一括取込の続く行で同じ wait を何度も評価しない）。
+    let mut woken: BTreeSet<(Uuid, &str)> = BTreeSet::new();
     for ev in evs {
         for w in waits
             .iter()
             .filter(|w| w.wants(ev.source, ev.table_id, ev.record_id, ev.rev, ev.event.id))
         {
-            let who = PrincipalKey {
-                kind: w.subscriber.principal_kind.clone(),
-                id: w.subscriber.principal.clone(),
-                org: w.subscriber.org.clone(),
-            };
-            let Some(view) = cx.view(&who, ev).await? else {
+            let key = (w.subscriber.run_id, w.subscriber.step_path.as_str());
+            if woken.contains(&key) {
+                continue;
+            }
+            let Some(view) = cx.view(&who_of(w), ev).await? else {
                 continue;
             };
             let payload = cx.payload(w.source, ev, view).await?;
@@ -356,6 +418,7 @@ async fn relay_tenant_waits(
                 continue;
             }
             cx.deps.runs.wake_data_wait(w, &payload).await?;
+            woken.insert(key);
         }
     }
     Ok(())

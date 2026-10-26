@@ -277,7 +277,7 @@ impl Env {
             .create_table(
                 &self.alice,
                 NewDataTable {
-                    name: "requests".into(),
+                    name: format!("requests-{}", Uuid::new_v4().simple()),
                     schema: requests_schema(None),
                 },
                 None,
@@ -301,7 +301,13 @@ impl Env {
         };
         let fsm_id = self
             .fsms
-            .create(&self.alice, "flow", table.id, &fsm, None)
+            .create(
+                &self.alice,
+                &format!("flow-{}", table.id.simple()),
+                table.id,
+                &fsm,
+                None,
+            )
             .await
             .unwrap();
         self.data
@@ -853,4 +859,60 @@ async fn data_wait_wakes_only_on_later_changes_of_the_bound_row() {
         out["changes"]["title"],
         json!({ "old": "下書き（2）", "new": "確定" })
     );
+}
+
+/// relay の処理時間（設計 GAP-07 の性能の受け入れ: 500 件のバッチ・候補のトリガが 0 / 1 / 10）。
+///
+/// `WORKFLOW_RELAY_BENCH=1` のときだけ走る（CI では流さない・数字は報告に書く）。filter は一致しない条件にして、
+/// 見え方の作成と filter の評価までの費用を測る（run の作成は含めない）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_cost_for_a_batch_of_500_changes() {
+    if std::env::var("WORKFLOW_RELAY_BENCH").as_deref() != Ok("1") {
+        eprintln!("WORKFLOW_RELAY_BENCH=1 でないためスキップ");
+        return;
+    }
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    for triggers in [0usize, 1, 10] {
+        let table = env.requests_table().await;
+        let t = table.to_string();
+        for i in 0..triggers {
+            env.enable(
+                &json!({
+                    "ir_version": 1, "name": format!("bench-{triggers}-{i}"),
+                    "triggers": [{ "kind": "event", "source": "data.record.created", "scope": { "table": t },
+                        "filter": { "cmp": { "left": { "$from": "trigger", "path": "/record/data/title" }, "op": "eq", "right": "一致しない" } } }],
+                    "nodes": passthrough(), "edges": []
+                }),
+                table,
+                vec![],
+            )
+            .await;
+        }
+        // 先に溜まっている配送を流しておく（測るのはこのテーブルの 500 件だけ）。
+        env.settle().await;
+        for i in 0..500 {
+            env.data
+                .create_record(
+                    &env.bob,
+                    table,
+                    json!({ "title": format!("行 {i}"), "applicant": "alice", "status": "draft" }),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let started = std::time::Instant::now();
+        env.settle().await;
+        let elapsed = started.elapsed();
+        eprintln!("relay: 500 件・候補のトリガ {triggers} 本 → {elapsed:?}");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM workflow_run WHERE tenant_id = $1")
+                .bind(&env.tenant)
+                .fetch_one(&env.pool)
+                .await
+                .unwrap(),
+            0
+        );
+    }
 }

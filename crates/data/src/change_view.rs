@@ -93,84 +93,118 @@ impl DataStore {
         ev: &ChangeEventRef,
         trace_id: Option<&str>,
     ) -> Result<Option<ChangeEventView>, DataError> {
+        let mut out = self
+            .change_event_views(ctx, ev.table_id, std::slice::from_ref(ev), trace_id)
+            .await?;
+        Ok(out.pop().flatten())
+    }
+
+    /// 同じテーブルのレコード変更をまとめて `ctx` の見え方で返す（`refs` と同じ順・見えない変更は `None`）。
+    ///
+    /// テーブルの読込・認可の問い（リクエストのメモ）・マスク列の判定を 1 回にまとめる（relay のバッチで、
+    /// 変更ごとに OpenFGA を引き直さない）。`refs` の `table_id` は `table_id` と同じであること（違うものは `None`）。
+    pub async fn change_event_views(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        refs: &[ChangeEventRef],
+        trace_id: Option<&str>,
+    ) -> Result<Vec<Option<ChangeEventView>>, DataError> {
+        if refs.is_empty() {
+            return Ok(Vec::new());
+        }
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, ev.table_id, AuditAction::DataRecordGet, trace_id)
+            .open_for_read(ctx, &az, table_id, AuditAction::DataRecordGet, trace_id)
             .await?;
-        let Some(row) = self
-            .select_visible_by_id(ctx, &az, &table, ev.record_id)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let rev: Option<RevisionRow> = sqlx::query_as(
-            "SELECT record_id, rev, changed_by, change_kind, patch, created_at \
-             FROM data_record_revision \
-             WHERE tenant_id = $1 AND table_id = $2 AND record_id = $3 AND rev = $4",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(ev.table_id)
-        .bind(ev.record_id)
-        .bind(ev.rev)
-        .fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
-        .await
-        .map_err(map_db)?;
-        let Some(rev) = rev else {
-            return Ok(None);
-        };
         let masked = self.masked_fields(ctx, &az, &table).await?;
-        let mut patch = rev.patch.0;
-        crate::revision::upgrade_link_patches(&table.schema, &mut patch);
-        Self::apply_mask_patches(&masked, &mut patch);
-        let mut revs = [RecordRevision {
-            record_id: rev.record_id,
-            rev: rev.rev,
-            changed_by: rev.changed_by,
-            change_kind: rev.change_kind,
-            patch,
-            created_at: rev.created_at,
-        }];
-        self.filter_link_patches(ctx, &az, &table, &masked, &mut revs)
-            .await?;
-        let [rev] = revs;
         let status = table
             .schema
             .status_field
             .as_deref()
             .filter(|k| !masked.contains(*k));
-        let state = status.and_then(|k| rev.patch.iter().find(|p| p.field == k));
-        match ev.kind {
-            // 読めない列だけの変更では起こさない（変わったことも読めない列の情報）。
-            ChangeEventKind::Update if rev.patch.is_empty() => return Ok(None),
-            // 遷移は状態列が読めるときだけ（遷移元・遷移先そのものが状態列の値）。
-            ChangeEventKind::Transition if state.is_none() => return Ok(None),
-            _ => {}
+        let mut out = Vec::with_capacity(refs.len());
+        for ev in refs {
+            if ev.table_id != table_id {
+                out.push(None);
+                continue;
+            }
+            let Some(row) = self
+                .select_visible_by_id(ctx, &az, &table, ev.record_id)
+                .await?
+            else {
+                out.push(None);
+                continue;
+            };
+            let rev: Option<RevisionRow> = sqlx::query_as(
+                "SELECT record_id, rev, changed_by, change_kind, patch, created_at \
+                 FROM data_record_revision \
+                 WHERE tenant_id = $1 AND table_id = $2 AND record_id = $3 AND rev = $4",
+            )
+            .bind(&ctx.tenant_id)
+            .bind(table_id)
+            .bind(ev.record_id)
+            .bind(ev.rev)
+            .fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
+            .await
+            .map_err(map_db)?;
+            let Some(rev) = rev else {
+                out.push(None);
+                continue;
+            };
+            let mut patch = rev.patch.0;
+            crate::revision::upgrade_link_patches(&table.schema, &mut patch);
+            Self::apply_mask_patches(&masked, &mut patch);
+            let mut one = [RecordRevision {
+                record_id: rev.record_id,
+                rev: rev.rev,
+                changed_by: rev.changed_by,
+                change_kind: rev.change_kind,
+                patch,
+                created_at: rev.created_at,
+            }];
+            self.filter_link_patches(ctx, &az, &table, &masked, &mut one)
+                .await?;
+            let [rev] = one;
+            let state = status.and_then(|k| rev.patch.iter().find(|p| p.field == k));
+            let hidden = match ev.kind {
+                // 読めない列だけの変更では起こさない（変わったことも読めない列の情報）。
+                ChangeEventKind::Update => rev.patch.is_empty(),
+                // 遷移は状態列が読めるときだけ（遷移元・遷移先そのものが状態列の値）。
+                ChangeEventKind::Transition => state.is_none(),
+                ChangeEventKind::Create => false,
+            };
+            if hidden {
+                out.push(None);
+                continue;
+            }
+            let mut records = vec![row.into_record(&table.schema)];
+            self.project_read(ctx, &az, &table, &masked, &mut records)
+                .await?;
+            let record = records.remove(0);
+            let as_state = |v: &Value| v.as_str().map(str::to_string);
+            let mut fields: Vec<String> = rev.patch.iter().map(|p| p.field.clone()).collect();
+            fields.sort();
+            let diffs = rev
+                .patch
+                .iter()
+                .map(|p| (p.field.clone(), json!({ "old": p.old, "new": p.new })))
+                .collect();
+            out.push(Some(ChangeEventView {
+                table_id,
+                record_id: ev.record_id,
+                rev: ev.rev,
+                change: rev.change_kind,
+                from: state.and_then(|p| as_state(&p.old)),
+                to: state.and_then(|p| as_state(&p.new)),
+                changed: fields,
+                changes: diffs,
+                actor: rev.changed_by,
+                occurred_at: rev.created_at,
+                record,
+            }));
         }
-        let mut records = vec![row.into_record(&table.schema)];
-        self.project_read(ctx, &az, &table, &masked, &mut records)
-            .await?;
-        let record = records.remove(0);
-        let as_state = |v: &Value| v.as_str().map(str::to_string);
-        let mut fields: Vec<String> = rev.patch.iter().map(|p| p.field.clone()).collect();
-        fields.sort();
-        let diffs = rev
-            .patch
-            .iter()
-            .map(|p| (p.field.clone(), json!({ "old": p.old, "new": p.new })))
-            .collect();
-        Ok(Some(ChangeEventView {
-            table_id: ev.table_id,
-            record_id: ev.record_id,
-            rev: ev.rev,
-            change: rev.change_kind,
-            from: state.and_then(|p| as_state(&p.old)),
-            to: state.and_then(|p| as_state(&p.new)),
-            changed: fields,
-            changes: diffs,
-            actor: rev.changed_by,
-            occurred_at: rev.created_at,
-            record,
-        }))
+        Ok(out)
     }
 
     /// outbox のイベントのうち一括取込（CSV の取込・一括 upsert）の行かどうか（id → 真偽）。
