@@ -331,8 +331,11 @@ pub struct Message {
 pub enum UiActionRunStatus {
     /// 起動の途中（run はまだ無い）。
     Starting,
+    /// 順番待ち（同時実行の上限で、空くのを待っている）。
     Queued,
     Running,
+    /// 待機中（時間・できごと・承認を待っている・[`UiActionRun::waiting_for`]）。
+    Waiting,
     Succeeded,
     Failed,
     Cancelled,
@@ -353,6 +356,7 @@ impl UiActionRunStatus {
             Self::Starting => "starting",
             Self::Queued => "queued",
             Self::Running => "running",
+            Self::Waiting => "waiting",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
@@ -365,6 +369,7 @@ impl UiActionRunStatus {
             "starting" => Self::Starting,
             "queued" => Self::Queued,
             "running" => Self::Running,
+            "waiting" => Self::Waiting,
             "succeeded" => Self::Succeeded,
             "failed" => Self::Failed,
             "cancelled" => Self::Cancelled,
@@ -398,6 +403,22 @@ pub struct UiActionRun {
     /// 押したユーザー（principal id）。
     pub invoked_by: String,
     pub invoked_at: DateTime<Utc>,
+    /// 待機中に待っているもの（`status = waiting` のときだけ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for: Option<workflow_engine::WaitingFor>,
+    /// 失敗の理由（利用者向けの分類・押した本人にだけ付ける）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<workflow_engine::RunFailure>,
+    /// ワークフローが画面に返した結果（押した本人にだけ・未確定の run とメッセージごとの最新の終わった 1 件
+    /// だけに付ける。他は `has_reply` を見て `GET /threads/{thread_id}/ui-runs/{run_id}` で読む・GAP-09）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<workflow_engine::RunReply>,
+    /// 結果があるか（押した本人にだけ）。
+    #[serde(default)]
+    pub has_reply: bool,
+    /// 実行履歴の保持期間を過ぎて run が消えた（状態だけが残り、結果は表示できない）。
+    #[serde(default)]
+    pub result_expired: bool,
 }
 
 /// 生成 run の状態。

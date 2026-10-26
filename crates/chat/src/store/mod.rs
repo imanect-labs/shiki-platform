@@ -21,6 +21,7 @@ mod thread_manage;
 mod thread_pins;
 mod threads;
 mod ui_actions;
+mod ui_runs;
 mod yui_actions;
 
 pub use feedback::{MessageFeedback, FEEDBACK_CATEGORIES};

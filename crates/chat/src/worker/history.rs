@@ -13,7 +13,9 @@ const UI_RUNS_IN_HISTORY: usize = 5;
 
 /// 本文の図のボタンで起動したワークフローの記録を、履歴に添える文にする（#604・無ければ `None`）。
 ///
-/// 値は利用者が入れたもの（データ）なので、指示として読まれないよう区切って並べる。
+/// 値は利用者が入れたもの（データ）なので、指示として読まれないよう区切って並べる。ワークフローが画面に
+/// 返した結果（reply）と失敗の理由は入れない（押した本人の画面だけのもの。共有した会話で、次に話しかけた
+/// 別の編集者の回答に混ざらないように・GAP-09・PIT-56）。
 pub(super) fn ui_runs_text(runs: &[crate::model::UiActionRun]) -> Option<String> {
     use crate::model::UiActionRunStatus as S;
     use std::fmt::Write as _;
@@ -31,8 +33,12 @@ pub(super) fn ui_runs_text(runs: &[crate::model::UiActionRun]) -> Option<String>
     for r in &runs[skip..] {
         let status = match r.status {
             S::Starting => "起動中",
-            S::Queued => "待ち",
+            S::Queued => "順番待ち",
             S::Running => "実行中",
+            S::Waiting if r.waiting_for == Some(workflow_engine::WaitingFor::Approval) => {
+                "承認待ち"
+            }
+            S::Waiting => "待機中",
             S::Succeeded => "成功",
             S::Failed => "失敗",
             S::Cancelled => "取り消し",
@@ -291,6 +297,11 @@ mod tests {
             }],
             invoked_by: "alice".into(),
             invoked_at: chrono::Utc::now(),
+            waiting_for: None,
+            failure: None,
+            reply: None,
+            has_reply: false,
+            result_expired: false,
         };
         let id = uuid::Uuid::nil();
         let text = ui_runs_text(&[
@@ -313,6 +324,57 @@ mod tests {
         let text = ui_runs_text(&many).unwrap();
         assert!(text.contains("これより前の起動 3 件以上は省略"), "{text}");
         assert_eq!(text.matches("「申請する」").count(), 5);
+    }
+
+    /// 画面に返した結果と失敗の理由は履歴に入れない（押した本人の画面だけのもの）。待機中は状態の語だけ（GAP-09）。
+    #[test]
+    fn ui_runs_history_carries_status_words_but_never_results() {
+        use crate::model::{UiActionRun, UiActionRunStatus};
+        use workflow_engine::{
+            FailureCategory, ReplyBody, ReplySection, ReplyTone, RunFailure, RunReply, WaitingFor,
+        };
+        let run = |status, waiting_for| UiActionRun {
+            action_id: "0123456789abcdef:a1".into(),
+            label: "申請する".into(),
+            workflow_name: "expense".into(),
+            run_id: None,
+            status,
+            values: vec![],
+            invoked_by: "alice".into(),
+            invoked_at: chrono::Utc::now(),
+            waiting_for,
+            failure: Some(RunFailure {
+                category: FailureCategory::Conflict,
+                message: "ほかの操作と重なりました".into(),
+                reference: "0123abcd".into(),
+            }),
+            reply: Some(RunReply {
+                sections: vec![ReplySection {
+                    label: Some("回答".into()),
+                    tone: ReplyTone::Neutral,
+                    truncated: false,
+                    body: ReplyBody::Text {
+                        text: "押した人の機密の結果".into(),
+                    },
+                }],
+                omitted: 0,
+            }),
+            has_reply: true,
+            result_expired: false,
+        };
+        let text = ui_runs_text(&[
+            run(UiActionRunStatus::Waiting, Some(WaitingFor::Approval)),
+            run(UiActionRunStatus::Waiting, Some(WaitingFor::Timer)),
+            run(UiActionRunStatus::Queued, None),
+        ])
+        .unwrap();
+        assert!(text.contains("（承認待ち）"), "{text}");
+        assert!(text.contains("（待機中）"), "{text}");
+        assert!(text.contains("（順番待ち）"), "{text}");
+        assert!(
+            !text.contains("機密の結果") && !text.contains("重なりました"),
+            "{text}"
+        );
     }
 
     /// 追編集に要る参照（添付/ワークフロー/保存済みノート/下書き）が観測テキストへ載る。

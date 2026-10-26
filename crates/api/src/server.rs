@@ -255,6 +255,12 @@ pub fn route_table() -> Vec<RouteDecl> {
             Session,
             || post(routes::ui_actions::invoke_chat_ui_action),
         ),
+        r(
+            "/threads/{thread_id}/ui-runs/{run_id}",
+            &["GET"],
+            Session,
+            || get(routes::ui_actions::get_chat_ui_run),
+        ),
         // --- skill（Task 6.7・保存時検証つき。共有は /artifacts/{id}/shares を流用） ---
         r("/skills/catalog", &["GET"], Session, || {
             get(routes::skills_catalog::list_skill_catalog)

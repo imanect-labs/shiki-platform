@@ -157,6 +157,7 @@ use utoipa::{
         crate::routes::workflows::registration::enable_workflow,
         crate::routes::workflows::registration::disable_workflow,
         crate::routes::ui_actions::invoke_chat_ui_action,
+        crate::routes::ui_actions::get_chat_ui_run,
         crate::routes::skills::create_skill,
         crate::routes::skills::update_skill,
         crate::routes::skills::get_skill,

@@ -10,6 +10,8 @@
 //!    ワークフローは送信ごとの冪等キーで 1 回だけ起動する（`ui_action_run`）。
 //! 4. **結果**: 起動は `ui_action_run` に残り、メッセージと一緒に画面へ、次の回答の履歴へモデルに
 //!    渡る。終わった状態は表示のときに run から読み、終わっていたら書き戻す（以後 run が消えても残る）。
+//!    ワークフローが画面に返した結果（workflow.reply）と失敗の理由は押した本人の画面にだけ付け、モデルの
+//!    履歴には状態の語だけを渡す（GAP-09・`ui_runs.rs`）。
 //!
 //! 束縛（どのワークフローのどの版か）は回答の確定時に**回答した主体**の権限で解決して
 //! `ui_action_binding` に残したものだけを使う。画面から束縛は送れない。
@@ -29,7 +31,7 @@ use yui::ActionTarget;
 
 use super::ChatStore;
 use crate::gui_actions::map_chat_err;
-use crate::model::{Message, Role, UiActionRun, UiActionRunStatus, UiActionValue};
+use crate::model::{Message, Role, UiActionRun, UiActionValue};
 use crate::yui_actions::{self as ya, UiWorkflowBinding};
 use crate::ChatError;
 
@@ -62,7 +64,7 @@ pub struct YuiActionRequest {
     pub idempotency_key: Option<String>,
 }
 
-type RunRow = (
+pub(super) type RunRow = (
     Uuid,
     String,
     String,
@@ -517,7 +519,8 @@ impl ChatStore {
 
     /// スレッドの図のボタンの状態（押せるワークフローのボタン・起動の記録）をメッセージへ載せる。
     ///
-    /// 起動の記録で状態が未確定のものは run の状態を読み、終わっていたら書き戻す。
+    /// 起動の記録は run の今の状態を読み、終わっていたら書き戻す。結果（workflow.reply の節）と失敗の理由は
+    /// 押した本人にだけ付ける（GAP-09・`ui_runs.rs`）。
     pub(super) async fn attach_yui_state(
         &self,
         ctx: &AuthContext,
@@ -551,34 +554,22 @@ impl ChatStore {
         .await
         .map_err(|e| map_db(&e))?;
 
-        let open: Vec<Uuid> = rows
-            .iter()
-            .filter(|r| r.5.is_none())
-            .filter_map(|r| r.4)
-            .collect();
-        let live = self.live_run_statuses(ctx, thread_id, &open).await;
-
         let mut bound_by: HashMap<Uuid, Vec<String>> = HashMap::new();
         for (m, a) in bound {
             bound_by.entry(m).or_default().push(a);
         }
+        // 状態は run の今を優先し、結果と失敗の理由は押した本人の分にだけ付ける（ui_runs.rs）。
         let mut runs_by: HashMap<Uuid, Vec<UiActionRun>> = HashMap::new();
-        for (m, action_id, label, workflow_name, run_id, status, summary, by, at, _) in rows {
-            let status = match (status.as_deref().and_then(UiActionRunStatus::parse), run_id) {
-                (Some(s), _) => s,
-                (None, Some(id)) => live.get(&id).copied().unwrap_or(UiActionRunStatus::Queued),
-                (None, None) => UiActionRunStatus::Starting,
-            };
-            runs_by.entry(m).or_default().push(UiActionRun {
-                action_id,
-                label,
-                workflow_name,
-                run_id,
-                status,
-                values: summary.0,
-                invoked_by: by,
-                invoked_at: at,
-            });
+        for (m, run) in self
+            .ui_runs_of(
+                ctx,
+                thread_id,
+                rows,
+                &super::ui_runs::ReplyFor::OpenAndLatest,
+            )
+            .await
+        {
+            runs_by.entry(m).or_default().push(run);
         }
         for m in messages.iter_mut() {
             if let Some(ids) = bound_by.remove(&m.id) {
@@ -589,62 +580,5 @@ impl ChatStore {
             }
         }
         Ok(())
-    }
-
-    /// 未確定の run の今の状態（読めなければ空・表示は「待ち」のまま）。終わったものは書き戻す。
-    async fn live_run_statuses(
-        &self,
-        ctx: &AuthContext,
-        thread_id: Uuid,
-        run_ids: &[Uuid],
-    ) -> HashMap<Uuid, UiActionRunStatus> {
-        if run_ids.is_empty() {
-            return HashMap::new();
-        }
-        let reader = workflow_engine::RunStatusReader::new(self.db.clone());
-        let statuses = match reader.statuses(ctx, run_ids).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "図のボタンで起動した run の状態を読めない");
-                return HashMap::new();
-            }
-        };
-        let mut out = HashMap::new();
-        for (id, s) in statuses {
-            let status = match s {
-                workflow_engine::RunStatus::Queued => UiActionRunStatus::Queued,
-                workflow_engine::RunStatus::Running => UiActionRunStatus::Running,
-                workflow_engine::RunStatus::Succeeded => UiActionRunStatus::Succeeded,
-                workflow_engine::RunStatus::Failed => UiActionRunStatus::Failed,
-                workflow_engine::RunStatus::Cancelled => UiActionRunStatus::Cancelled,
-            };
-            out.insert(id, status);
-        }
-        let done: Vec<(Uuid, &str)> = out
-            .iter()
-            .filter(|(_, s)| s.is_terminal())
-            .map(|(id, s)| (*id, s.as_str()))
-            .collect();
-        if !done.is_empty() {
-            let ids: Vec<Uuid> = done.iter().map(|d| d.0).collect();
-            let sts: Vec<&str> = done.iter().map(|d| d.1).collect();
-            // 書き戻しは best-effort（失敗しても次の表示でまた読む）。
-            if let Err(e) = sqlx::query(
-                "UPDATE ui_action_run r SET status = x.status, finished_at = now() \
-                 FROM unnest($3::uuid[], $4::text[]) AS x(run_id, status) \
-                 WHERE r.tenant_id = $1 AND r.thread_id = $2 AND r.run_id = x.run_id \
-                   AND r.status IS NULL",
-            )
-            .bind(&ctx.tenant_id)
-            .bind(thread_id)
-            .bind(&ids)
-            .bind(&sts)
-            .execute(&self.db)
-            .await
-            {
-                tracing::warn!(error = %e, "図のボタンで起動した run の状態の書き戻しに失敗");
-            }
-        }
-        out
     }
 }

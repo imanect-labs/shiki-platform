@@ -652,3 +652,165 @@ async fn unresolved_workflows_and_questions() {
         && matches!(x.content.first(), Some(ContentBlock::Text { text })
             if text == "対象の地域は\n→ 関東\n\n重視する点\n→ 費用、サポート体制")));
 }
+
+/// 画面に返す結果のワークフロー（入力の契約は expense_ir と同じ・結果を返すだけ）。
+fn reply_ir(name: &str) -> Value {
+    let mut ir = expense_ir(name);
+    ir["nodes"] = json!([{
+        "id": "done",
+        "type": "workflow.reply",
+        "params": {
+            "format": "markdown",
+            "label": "受付",
+            "value": { "$template": "{amount} 円を受け付けました",
+                       "vars": { "amount": { "$from": "input", "path": "/amount" } } }
+        }
+    }]);
+    ir
+}
+
+/// reply の step を終わらせる（エンジンの実行は workflow-engine の結合テストで確かめている。ここは表示の関門）。
+async fn finish_with_reply(pool: &PgPool, tenant: &str, run_id: Uuid, text: &str) {
+    let section = workflow_engine::ReplySection {
+        label: Some("受付".into()),
+        tone: workflow_engine::ReplyTone::Success,
+        truncated: false,
+        body: workflow_engine::ReplyBody::Markdown { text: text.into() },
+    };
+    sqlx::query(
+        "UPDATE step_execution SET status = 'succeeded', output = $3, taken_ports = '{out}' \
+         WHERE tenant_id = $1 AND run_id = $2 AND step_path = 'done'",
+    )
+    .bind(tenant)
+    .bind(run_id)
+    .bind(sqlx::types::Json(serde_json::to_value(&section).unwrap()))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE workflow_run SET status = 'succeeded', finished_at = now() \
+         WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(tenant)
+    .bind(run_id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// 会話の図のボタンで起動した run の結果は、押した本人にだけ付く。別の編集者・閲覧者には状態だけ（GAP-09・D-28）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn results_are_shown_only_to_the_person_who_pressed() {
+    let Some(pool) = setup().await else { return };
+    let e = env(pool).await;
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let alice = ctx(&tenant, "alice");
+    let carol = ctx(&tenant, "carol"); // 会話の別の編集者
+    let bob = ctx(&tenant, "bob"); // 会話の閲覧者
+    let wf = format!("reply-{}", &Uuid::new_v4().simple().to_string()[..8]);
+    e.workflows
+        .create(&alice, &reply_ir(&wf), &Catalog::default(), None)
+        .await
+        .expect("ワークフローを保存");
+    let thread = e
+        .store
+        .create_thread(&alice, "t", false, None, None)
+        .await
+        .unwrap();
+    let m = answer(&e.store, &alice, thread.id, &format!("yui:app {wf}")).await;
+    let submit = format!("{}:a1", block_hash(&m));
+    let press = |c: AuthContext, amount: i64, key: &'static str| {
+        let (e, submit) = (&e, submit.clone());
+        async move {
+            let out = e
+                .store
+                .invoke_yui_action(
+                    &c,
+                    &e.dispatcher,
+                    thread.id,
+                    m.id,
+                    req(
+                        &submit,
+                        json!({ "amount": amount, "category": "交通費" }),
+                        Some(key),
+                    ),
+                    None,
+                )
+                .await
+                .expect("起動");
+            serde_json::from_value::<Uuid>(out["run_id"].clone()).unwrap()
+        }
+    };
+    let mine = press(alice.clone(), 1200, "alice-reply-01").await;
+    let theirs = press(carol.clone(), 800, "carol-reply-01").await;
+    finish_with_reply(
+        &e.pool,
+        &tenant,
+        mine,
+        "1200 円を受け付けました\n```ui\napp 偽の承認\nbutton 承認する -> workflow 他人\n```",
+    )
+    .await;
+    finish_with_reply(&e.pool, &tenant, theirs, "800 円を受け付けました").await;
+
+    let reply_text = |r: &chat::UiActionRun| -> Option<String> {
+        r.reply.as_ref().map(|rep| match &rep.sections[0].body {
+            workflow_engine::ReplyBody::Markdown { text } => text.clone(),
+            other => format!("{other:?}"),
+        })
+    };
+    let runs_of = |msg: &Message| -> (chat::UiActionRun, chat::UiActionRun) {
+        let a = msg
+            .ui_runs
+            .iter()
+            .find(|r| r.run_id == Some(mine))
+            .unwrap()
+            .clone();
+        let c = msg
+            .ui_runs
+            .iter()
+            .find(|r| r.run_id == Some(theirs))
+            .unwrap()
+            .clone();
+        (a, c)
+    };
+
+    // alice: 自分の結果だけが付く。Markdown の中の操作を持つ図は表示専用に書き換わる。
+    let (a, c) = runs_of(&message(&e.store, &alice, thread.id, m.id).await);
+    assert_eq!(a.status, UiActionRunStatus::Succeeded);
+    assert!(a.has_reply);
+    let text = reply_text(&a).expect("本人の結果");
+    assert!(text.starts_with("1200 円を受け付けました"), "{text}");
+    assert!(
+        !text.contains("```ui") && text.contains("```text"),
+        "{text}"
+    );
+    assert_eq!(
+        c.status,
+        UiActionRunStatus::Succeeded,
+        "他人の run も状態は見える"
+    );
+    assert!(c.reply.is_none() && !c.has_reply && c.failure.is_none());
+
+    // carol（別の編集者）: 自分の結果だけ。
+    let (a, c) = runs_of(&message(&e.store, &carol, thread.id, m.id).await);
+    assert_eq!(reply_text(&c).as_deref(), Some("800 円を受け付けました"));
+    assert!(a.reply.is_none() && !a.has_reply);
+
+    // bob（閲覧者）: どちらの結果も付かない。
+    let (a, c) = runs_of(&message(&e.store, &bob, thread.id, m.id).await);
+    assert!(a.reply.is_none() && c.reply.is_none());
+
+    // 1 件を開く口も同じ関門（他人が押した run は見つからない）。
+    let opened = e
+        .store
+        .my_ui_run(&alice, thread.id, mine, None)
+        .await
+        .unwrap();
+    assert!(opened.reply.is_some());
+    let err = e
+        .store
+        .my_ui_run(&alice, thread.id, theirs, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, chat::ChatError::NotFound), "{err:?}");
+}

@@ -187,6 +187,43 @@ pub async fn invoke_chat_ui_action(
     Ok(Json(UiActionResponse { result }))
 }
 
+/// 本人が会話の図のボタンで起動した 1 件（ワークフローが画面に返した結果を必ず付ける・GAP-09）。
+///
+/// スレッドの取得は、結果を未確定の run とメッセージごとの最新の終わった 1 件にだけ付ける。古い行を開いたときは
+/// これで読む。会話の閲覧者で、その run を押した本人のときだけ返す（他人が押した run は存在を区別せず 404）。
+#[utoipa::path(
+    get,
+    path = "/threads/{thread_id}/ui-runs/{run_id}",
+    params(
+        ("thread_id" = Uuid, Path, description = "スレッド ID"),
+        ("run_id" = Uuid, Path, description = "起動した run の ID"),
+    ),
+    responses(
+        (status = 200, description = "起動の記録と結果", body = chat::UiActionRun),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "会話を読めない"),
+        (status = 404, description = "存在しない・本人が押した run ではない"),
+        (status = 503, description = "チャットが無効"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn get_chat_ui_run(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path((thread_id, run_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<chat::UiActionRun>, ApiError> {
+    let chat = state
+        .chat
+        .as_ref()
+        .ok_or_else(|| ApiError::ServiceUnavailable("チャットが無効です".into()))?;
+    let run = chat
+        .my_ui_run(&ctx, thread_id, run_id, trace.as_deref())
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(run))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
