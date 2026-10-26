@@ -77,8 +77,10 @@ pub struct AgentConfig {
     /// 長く走る step がワーカーを占有して、ほかのテナントの step まで止めないようにする。
     #[serde(default)]
     pub max_concurrent: Option<usize>,
-    /// web.fetch が読んでよいサイトの天井（ホスト名か `*.example.com`）。未設定なら `http_allowlist`。
-    /// 空なら web.fetch は提示しない（ノードの `egress_allowlist` はこの部分集合に限る）。
+    /// web.fetch が読んでよいサイトの天井（ホスト名か `*.example.com`）。未設定・空なら web.fetch は
+    /// 提示しない（ノードの `egress_allowlist` はこの部分集合に限る）。`http_allowlist`（http.request の
+    /// 宛先）には戻さない: 広い宛先を http.request に許した環境で、AI の web.fetch まで同じ宛先を継いで
+    /// 間接プロンプトインジェクションの出口を広げないため（D-59・PIT-79）。
     #[serde(default)]
     pub web_allowlist: Option<Vec<String>>,
     /// ノードで手順の上限を省略したときの値（既定 8・最大 24）。
@@ -93,13 +95,16 @@ pub struct AgentConfig {
 }
 
 impl WorkflowConfig {
-    /// web.fetch が読んでよいサイトの天井（`agent.web_allowlist`、未設定なら `http_allowlist`）。
+    /// web.fetch が読んでよいサイトの天井（`agent.web_allowlist` だけ・未設定は空＝web.fetch を提示しない）。
+    ///
+    /// 保存時の照合（V3）・実行時の宛先・`GET /workflows/agent-settings`（エディタ）・AI 作成の照合は、
+    /// すべてこの値を使う（D-59。`http_allowlist` には戻さない）。
     #[must_use]
     pub fn agent_web_ceiling(&self) -> Vec<String> {
         self.agent
             .web_allowlist
             .clone()
-            .unwrap_or_else(|| self.http_allowlist.clone())
+            .unwrap_or_default()
             .into_iter()
             .map(|h| h.trim().to_ascii_lowercase())
             .filter(|h| workflow_engine::valid_host_pattern(h))
@@ -581,5 +586,52 @@ mod audit_tests {
         assert_eq!(row.4["workflow_version"], 3);
         assert_eq!(row.4["step"], "n1");
         assert_eq!(row.4["principal_kind"], "workflow");
+    }
+}
+
+#[cfg(test)]
+mod agent_config_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use figment::providers::{Format, Toml};
+
+    fn load(toml: &str) -> WorkflowConfig {
+        figment::Figment::from(Toml::string(toml))
+            .extract()
+            .expect("toml")
+    }
+
+    /// `agent.web_allowlist` が未設定なら、http.request の許可（`http_allowlist`）を継がず、web.fetch を
+    /// 提示しない（保存時の照合・実行時の宛先・エディタへ返す天井が同じ空になる・D-59）。
+    #[test]
+    fn web_ceiling_does_not_fall_back_to_the_http_allowlist() {
+        let cfg = load(r#"http_allowlist = ["api.example.com", "*.example.org"]"#);
+        assert!(cfg.agent.web_allowlist.is_none());
+        assert!(cfg.agent_web_ceiling().is_empty());
+        assert!(cfg.agent_limits().web_ceiling.is_empty());
+        // 空で設定したときも同じ（http_allowlist には戻らない）。
+        let cfg = load(
+            r#"
+            http_allowlist = ["api.example.com"]
+            [agent]
+            web_allowlist = []
+            "#,
+        );
+        assert!(cfg.agent_web_ceiling().is_empty());
+    }
+
+    /// 天井は `agent.web_allowlist` だけから作る（小文字にそろえ、書き方の誤ったものは外す）。
+    #[test]
+    fn web_ceiling_comes_only_from_the_agent_web_allowlist() {
+        let cfg = load(
+            r#"
+            http_allowlist = ["api.example.com"]
+            [agent]
+            web_allowlist = ["Docs.Example.com", " *.example.net ", "bad host", "https://x.example.com"]
+            "#,
+        );
+        let expected = vec!["docs.example.com".to_string(), "*.example.net".to_string()];
+        assert_eq!(cfg.agent_web_ceiling(), expected);
+        assert_eq!(cfg.agent_limits().web_ceiling, expected);
     }
 }

@@ -300,7 +300,7 @@ fn agent_guide() -> String {
         .collect::<Vec<_>>()
         .join(" / ");
     format!(
-        "【AI エージェント】agent.invoke は instruction（自然文の依頼。コードではない）を、allowed_tools に書いた道具で調べながら果たし、最後の回答を出力の /text に書く。allowed_tools を省くと道具なし。道具: {tools}。書込の道具は無い（書き込みは後ろのノードで行う）。web.fetch は egress_allowlist（管理者が許可したサイトの中から）が要る。context に参考データ（file_id など）を渡せる。手順の決まった処理は llm.invoke と能力ノードをつなぐ方が安く確実。\n"
+        "【AI エージェント】agent.invoke は instruction（自然文の依頼。コードではない）を、allowed_tools に書いた道具で調べながら果たし、最後の回答を出力の /text に書く。allowed_tools を省くと道具なし。道具: {tools}。書込の道具は無い（書き込みは後ろのノードで行う）。web.fetch は egress_allowlist（管理者が AI エージェント用に許可したサイトの中から選ぶ。http.request の許可先とは別で、管理者が許可していなければ web.fetch は使えない）が要る。context に参考データ（file_id など）を渡せる。手順の決まった処理は llm.invoke と能力ノードをつなぐ方が安く確実。\n"
     )
 }
 
@@ -622,6 +622,8 @@ mod tests {
             !d.contains("data.query（テーブルを調べる"),
             "予約の道具は載せない"
         );
+        // web.fetch の宛先は AI エージェント用の許可だけ（http.request の許可先を継がない・D-59）。
+        assert!(d.contains("http.request の許可先とは別"), "{d}");
         let ir = serde_json::json!({
             "ir_version": 1, "name": "check-contract", "triggers": [{ "kind": "interactive" }],
             "declared_scopes": ["rag.query", "doc.read"],

@@ -630,8 +630,8 @@ services:
       # スケジュール発火・実行履歴 SSE が動く）。
       SHIKI__WORKFLOW__ENABLED: ${SHIKI__WORKFLOW__ENABLED:-true}
       # ワークフローの AI エージェント（agent.invoke）の web ページを読む道具が読んでよいサイトの天井（BUG-6）。
-      # 例: '["docs.example.com", "*.example.org"]'。未設定なら SHIKI__WORKFLOW__HTTP_ALLOWLIST、それも空なら
-      # web ページを読む道具は提示しない（ノードの設定はこの部分集合に限る）。
+      # 例: '["docs.example.com", "*.example.org"]'。未設定・空なら web ページを読む道具は提示しない
+      # （SHIKI__WORKFLOW__HTTP_ALLOWLIST には戻さない・D-59。ノードの設定はこの部分集合に限る）。
       # SHIKI__WORKFLOW__AGENT__WEB_ALLOWLIST: '["docs.example.com"]'
       # RAG（Phase 2）: インジェスト・パイプラインと検索。
       SHIKI__RAG__ENABLED: ${SHIKI__RAG__ENABLED:-true}
