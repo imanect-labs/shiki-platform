@@ -361,7 +361,7 @@ export function EnableDialog({
                             label="渡すテーブル"
                             value={g.picked?.id ?? null}
                             source={tableSource}
-                            onChange={(id) => pick(i, { id, name: tableName(id) ?? id })}
+                            onChange={(id, t) => pick(i, { id, name: t.name })}
                           />
                         </div>
                       ) : null}

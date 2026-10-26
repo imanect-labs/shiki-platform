@@ -192,7 +192,7 @@ export function HumanApprovalForm(props: FormProps) {
           eligible={isFsmTable}
           ineligibleNote="このテーブルは状態の遷移の規則（FSM）で管理していないので、承認には使えません"
           label="承認するテーブル"
-          onChange={(id) => set(retargetTable(p, record, source.tables?.find((t) => t.id === id) ?? null, id))}
+          onChange={(id, t) => set(retargetTable(p, record, t, id))}
         />
       </Field>
       {noFsmTable ? (

@@ -285,9 +285,25 @@ const enc = encodeURIComponent;
 // テーブル
 // ---------------------------------------------------------------------------
 
+export type TableListPage = S["TableListResponse"];
+
+/// 自分が使えるテーブルの 1 ページ（更新の新しい順・GAP-42）。`q` は名前に含む文字（大文字小文字を区別しない）、
+/// `cursor` は前のページの `next_cursor`、`limit` は 1〜200（省略で 200）。
+export async function listTablesPage(
+  opts: { q?: string; cursor?: string | null; limit?: number } = {},
+  init?: RequestInit,
+): Promise<TableListPage> {
+  const params = new URLSearchParams();
+  if (opts.q?.trim()) params.set("q", opts.q.trim());
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  return ok<TableListPage>(await apiFetch(`/data/tables${qs ? `?${qs}` : ""}`, init));
+}
+
+/// 自分が使えるテーブルの先頭の 200 件（更新の新しい順）。それより先は [`listTablesPage`] で名前で探すか続きを読む。
 export async function listTables(): Promise<DataTable[]> {
-  const r = await ok<S["TableListResponse"]>(await apiFetch("/data/tables"));
-  return r.items;
+  return (await listTablesPage()).items;
 }
 
 export async function getTable(id: string): Promise<DataTable> {
