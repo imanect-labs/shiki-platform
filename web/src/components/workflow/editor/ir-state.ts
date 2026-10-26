@@ -12,6 +12,7 @@ import type { Edge, Node, Trigger, ValidationError, WorkflowIr } from "@/generat
 import type { EditorLayout } from "@/lib/workflow-api";
 import { carryTriggerPositions, seedLayout } from "./auto-layout";
 import { rewriteInputRefs } from "./config-panel/value-refs";
+import { outputPorts } from "./ports";
 
 export type Selection =
   | { kind: "none" }
@@ -250,6 +251,24 @@ function deleteElements(state: EditorState, nodeIds: string[], edges: Edge[]): E
   };
 }
 
+/// 設定の変更で消えた出口（switch の case を消す・on_error を fail_run に戻す・時間切れを「失敗にする」に
+/// 戻す・却下や差し戻しを外す）から出るエッジを外す（BUG-30）。残すと保存は `ir.unknown_port` で止まり、
+/// キャンバスには描けないので選んで消せない。同じ 1 手で外すので Undo で出口とエッジが一緒に戻る。
+/// 前から無い出口のエッジ（読み込んだ IR の誤り）は触らない（保存時の検証が示す）。
+function dropVanishedPortEdges(edges: Edge[], before: Node, after: Node): Edge[] {
+  const now = new Set(outputPorts(after));
+  const gone = new Set(outputPorts(before).filter((p) => !now.has(p)));
+  if (gone.size === 0) return edges;
+  const next = edges.filter((e) => !(e.from === before.id && gone.has(e.from_port ?? "out")));
+  return next.length === edges.length ? edges : next;
+}
+
+/// 選んでいたつながりが消えたら選択を外す。
+function keepSelection(selection: Selection, edges: Edge[]): Selection {
+  if (selection.kind !== "edge") return selection;
+  return edges.some((e) => edgeKey(e) === selection.key) ? selection : { kind: "none" };
+}
+
 /// `update_node` が変えた項目（params は変わった最上位のキーまで見る。`patchParams` は変えないキーの値を
 /// 使い回すので参照比較で足りる）。
 function editedField(prev: Node | undefined, patch: Partial<Node>): string {
@@ -386,16 +405,16 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       };
     }
     case "update_node": {
+      const prev = state.ir.nodes.find((n) => n.id === action.id);
+      const updated = prev ? ({ ...prev, ...action.patch } as Node) : undefined;
+      const edges = prev && updated ? dropVanishedPortEdges(state.ir.edges, prev, updated) : state.ir.edges;
       const ir = {
         ...state.ir,
-        nodes: state.ir.nodes.map((n) =>
-          n.id === action.id ? ({ ...n, ...action.patch } as Node) : n,
-        ),
+        nodes: state.ir.nodes.map((n) => (n.id === action.id && updated ? updated : n)),
+        edges,
       };
-      const field = editedField(
-        state.ir.nodes.find((n) => n.id === action.id),
-        action.patch,
-      );
+      const selection = keepSelection(state.selection, edges);
+      const field = editedField(prev, action.patch);
       const last = state.lastEdit;
       // 同じノードの同じ項目への連続入力は、直前の undo の段に含める（1 文字ごとに積むと
       // 上限 50 段がすぐ埋まり、Undo も 1 文字ずつしか戻らない）。
@@ -407,10 +426,11 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         action.at - last.at < COALESCE_MS &&
         state.undoStack.length > 0
       ) {
-        return { ...state, ir, dirty: true, redoStack: [], lastEdit: { ...last, at: action.at } };
+        return { ...state, ir, selection, dirty: true, redoStack: [], lastEdit: { ...last, at: action.at } };
       }
       return {
         ...withIr(state, ir),
+        selection,
         lastEdit: action.at === undefined ? null : { id: action.id, field, at: action.at },
       };
     }

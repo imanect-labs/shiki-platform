@@ -19,7 +19,8 @@ import { categoryVar } from "../category-accent";
 import type { AddTarget } from "./add-target";
 import { nodeIcon } from "./icons";
 import type { EditorAction, Selection } from "./ir-state";
-import { outputPorts, portLabel } from "./node-card";
+import { portLabel } from "./node-card";
+import { outputPorts } from "./ports";
 import { triggerSeasonIndex, triggerView } from "./trigger-node";
 import { mapErrors } from "./validation";
 
