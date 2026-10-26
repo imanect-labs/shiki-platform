@@ -310,7 +310,9 @@ function pushInline(out: PmJson[], tok: Tok, marks: MarkJson[]): void {
       }
       break;
     case "escape":
-      pushText(out, tok.text ?? "", marks);
+      // marked は `\<` `\>` `\&` の escape トークンを `&lt;` などの実体参照で返すので戻す
+      // （戻さないと、エスケープして保存した `<` `>` が読み直しで `&lt;` の文字になる）。
+      pushText(out, decodeEntities(tok.text ?? ""), marks);
       break;
     case "strong":
       recurseInline(out, tok, marks, { type: "bold" });
@@ -371,7 +373,7 @@ function pushInline(out: PmJson[], tok: Tok, marks: MarkJson[]): void {
 function plainText(tokens: Tok[]): string {
   return tokens
     .map((t) => {
-      if (t.type === "escape") return t.text ?? "";
+      if (t.type === "escape") return decodeEntities(t.text ?? "");
       if (t.tokens && t.tokens.length > 0) return plainText(t.tokens);
       return decodeEntities(t.text ?? "");
     })

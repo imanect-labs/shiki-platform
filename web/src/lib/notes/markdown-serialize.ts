@@ -11,8 +11,9 @@
 /// バイト単位一致ではなく「同じ意味・同じ正規形」を目標にする。
 
 import { Fragment, type Mark, type Node as PMNode } from "@tiptap/pm/model";
+import { marked } from "marked";
 
-import { driveRefHref } from "@/lib/skills/drive-ref";
+import { driveRefHref, isNodeId } from "@/lib/skills/drive-ref";
 
 /// フラグメント（スライス内容・ドキュメント本体）を正規化 md へ描画する。
 /// 末尾は単一改行（Rust `render_markdown` と同じく空でなければ改行終端）。
@@ -92,7 +93,10 @@ function renderBlock(node: PMNode): string {
       // 段落の先頭行がブロック記法（見出し #・箇条書き -/+・番号 1.）に一致すると、
       // 素テキストで貼り戻したとき別ブロックに再解釈される。先頭行だけエスケープして
       // 往復で意味が変わらないようにする（継続行は同一段落に属するので対象外）。
-      const rendered = renderInlineChildren(node);
+      let rendered = renderInlineChildren(node);
+      // literalText は `>` をエスケープしないので、強制改行の後の行頭 `>` も引用にならない
+      // ようにする（先頭行は下の escapeBlockStart が見る）。
+      if (current.literalText) rendered = rendered.replace(/(\\\n)([ \t]*)>/g, "$1$2\\>");
       const nl = rendered.indexOf("\n");
       return nl === -1
         ? escapeBlockStart(rendered)
@@ -272,6 +276,8 @@ function renderDriveRef(node: PMNode): string {
   const kind = node.attrs.kind === "folder" ? "folder" : "file";
   const id = typeof node.attrs.id === "string" ? node.attrs.id : "";
   const label = typeof node.attrs.label === "string" && node.attrs.label ? node.attrs.label : id;
+  // id が UUID の形でなければリンクにしない（リンク先へ文字を差し込ませない・名前だけ残す）。
+  if (!isNodeId(id)) return escapeInline(label);
   return `[${escapeInline(label)}](${driveRefHref(kind, id)})`;
 }
 
@@ -292,9 +298,25 @@ function escapeInline(text: string): string {
   return text.replace(/[\\`*_[\]<>~|]/g, (c) => `\\${c}`);
 }
 
-/// `literalText` のエスケープ: `<` `>` はそのまま、`_` は語の境目（強調になり得る位置）だけ。
-/// 行頭の `>` は [`escapeBlockStart`] が引用化を断つ。
+/// `literalText` のエスケープ: 読み直して素の文字に戻るなら何もしない（`a*b`・`[必須]`・
+/// `C:\share`・`doc_search` を書き換えない）。記法に化ける（強調・リンク・コード・エスケープ
+/// になる）ときだけ [`escapeLiteralAll`] で潰す。インラインの `<…>` は読み込みで文字のまま
+/// 残る（[`parseMarkdownToNodes`]）ので素の文字とみなす。行頭の `>` は [`escapeBlockStart`]。
 function escapeLiteral(text: string): string {
+  let tokens: { type: string; raw: string }[];
+  try {
+    tokens = marked.Lexer.lexInline(text) as unknown as { type: string; raw: string }[];
+  } catch {
+    return escapeLiteralAll(text);
+  }
+  const plain =
+    tokens.every((t) => t.type === "text" || t.type === "html") &&
+    tokens.map((t) => t.raw).join("") === text;
+  return plain ? text : escapeLiteralAll(text);
+}
+
+/// 記法に化ける文字列のエスケープ（`<` `>` はそのまま・`_` は語の境目だけ）。
+function escapeLiteralAll(text: string): string {
   const word = /[\p{L}\p{N}]/u;
   let out = "";
   for (let i = 0; i < text.length; i++) {

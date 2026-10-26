@@ -47,9 +47,40 @@ pub struct SelectionContext {
 /// 選択抜粋の上限（文字数・プロンプト肥大とメモリ圧迫の遮断）。
 pub const SELECTION_EXCERPT_MAX_CHARS: usize = 8_000;
 
-/// 編集中スキルの抜粋の上限（文字数）。指示文の上限（32KiB）＋設定が収まる大きさにする
-/// （切れた内容を AI が丸ごと書き直すと、切れた後ろが消えるため）。
+/// 編集中スキルの抜粋の上限（文字数）。指示文の上限（32KiB）＋設定が収まる大きさにする。
+/// これを超える（長い few-shot・script を持つ）スキルは、途中で切らずに長い項目を丸ごと
+/// 「省略」の印に置き換える（[`fit_skill_json`]）。切れた内容を AI が書き直すと後ろが消える。
 pub const SKILL_DRAFT_EXCERPT_MAX_CHARS: usize = 48_000;
+
+/// 省略した項目に入れる印。AI には「中身が見えていないので渡さない」ことを伝える
+/// （save_skill は渡さなかった項目をエディタの今の値のまま残す）。
+pub const SKILL_FIELD_OMITTED: &str =
+    "（長いため省略。中身が見えていないので、この項目は save_skill に渡さないこと）";
+
+/// スキルの JSON（オブジェクト）を `max` 文字以内に収める。収まらなければ、大きい項目から
+/// 順に [`SKILL_FIELD_OMITTED`] へ置き換える（項目の途中では切らない）。
+/// オブジェクトでなければ None（呼び出し側が通常の切り詰めにする）。
+#[must_use]
+pub fn fit_skill_json(value: &serde_json::Value, max: usize) -> Option<String> {
+    let serde_json::Value::Object(map) = value else {
+        return None;
+    };
+    let mut map = map.clone();
+    let len = |m: &serde_json::Map<String, serde_json::Value>| {
+        serde_json::to_string(m).map_or(usize::MAX, |s| s.chars().count())
+    };
+    while len(&map) > max {
+        // 名前（識別キー）は残す。まだ省略していない中で最も大きい項目を印に置き換える。
+        let largest = map
+            .iter()
+            .filter(|(k, v)| k.as_str() != "name" && v.as_str() != Some(SKILL_FIELD_OMITTED))
+            .max_by_key(|(_, v)| serde_json::to_string(v).map_or(0, |s| s.chars().count()))
+            .map(|(k, _)| k.clone());
+        let Some(key) = largest else { break };
+        map.insert(key, serde_json::Value::String(SKILL_FIELD_OMITTED.into()));
+    }
+    serde_json::to_string(&map).ok()
+}
 
 impl SelectionKind {
     /// 抜粋の上限（文字数）。
@@ -70,7 +101,13 @@ impl SelectionContext {
     pub fn clamped(mut self) -> Self {
         let max = self.kind.excerpt_max_chars();
         if self.excerpt.chars().count() > max {
-            self.excerpt = self.excerpt.chars().take(max).collect();
+            // 編集中のスキルは JSON なので、項目の途中で切らずに長い項目を省略の印にする。
+            let fitted = (self.kind == SelectionKind::SkillDraft)
+                .then(|| serde_json::from_str::<serde_json::Value>(&self.excerpt).ok())
+                .flatten()
+                .and_then(|v| fit_skill_json(&v, max))
+                .filter(|s| s.chars().count() <= max);
+            self.excerpt = fitted.unwrap_or_else(|| self.excerpt.chars().take(max).collect());
         }
         if let Some(name) = &self.draft_name {
             if name.chars().count() > 200 {

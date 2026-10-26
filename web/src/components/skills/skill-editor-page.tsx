@@ -108,6 +108,11 @@ export function SkillEditorPage({ target }: { target: SkillEditorTarget }) {
 
   // 読み込み。新規の下書きはユーザー確定（/me）後にストアを読む（#817）。
   const scopeReady = useStorageScopeReady();
+  // ユーザー確定を待つのは、下書きストア（ユーザー単位の localStorage）を読むときだけ。
+  // それ以外で依存にすると、/me の応答が遅れたときに読み直しが走り、開いた直後に打った
+  // 内容が消える。
+  const readsDraftStore = target.kind === "new" && Boolean(target.threadId && target.draftName);
+  const waitScope = readsDraftStore ? scopeReady : true;
   // 新規で会話を作ると URL に ?thread= が付くが、それで読み直す（編集中の内容を空に戻す）と
   // 流し込んだ下書きが消える。読み直すのは開く対象（スキル・チャットの下書き）が変わったときだけ。
   const targetKey =
@@ -132,7 +137,7 @@ export function SkillEditorPage({ target }: { target: SkillEditorTarget }) {
       }
       const { threadId: t, draftName } = target;
       if (t && draftName) {
-        if (!scopeReady) return;
+        if (!waitScope) return;
         let body = parseStoredSkillBody(skillDraftStore.get(t, draftName)?.content ?? "");
         if (!body) {
           body = await recoverFromThread(t, draftName).catch(() => null);
@@ -158,7 +163,7 @@ export function SkillEditorPage({ target }: { target: SkillEditorTarget }) {
     };
     // target は targetKey で比較する（毎レンダーの新しいオブジェクトで読み直さない）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetKey, scopeReady, replaceDraft]);
+  }, [targetKey, waitScope, replaceDraft]);
 
   // チャットの下書きから開いた新規は、手編集も同じキーへ書き戻す（再読み込みで消さない）。
   const storeThread = target.kind === "new" ? target.threadId : null;
@@ -187,7 +192,7 @@ export function SkillEditorPage({ target }: { target: SkillEditorTarget }) {
   );
 
   // AI の下書きをエディタへ流し込む（名前は未入力のときだけ・参照資料/コマンドは保つ）。
-  const onSkillDraft = React.useCallback(
+  const applyDraft = React.useCallback(
     (d: AiSkillDraft) => {
       const next = applyAiSkill(draftRef.current, d);
       // 本文を変えていない下書きでは本文エディタを置き換えない（取り消しの履歴を保つ）。
@@ -196,6 +201,19 @@ export function SkillEditorPage({ target }: { target: SkillEditorTarget }) {
       setError(null);
     },
     [replaceDraft],
+  );
+  // 届いた下書きは 1 度だけ自動で当てる。パネルを開き直すと実行中の run の下書きが再生され、
+  // 読み直しでも最後の下書きを拾い直すので、当てた後の手編集をそれで上書きしない。
+  // （パネルは閉じると外れるので、覚えておくのは画面の側。）
+  const appliedDraftsRef = React.useRef(new Set<string>());
+  const onSkillDraft = React.useCallback(
+    (d: AiSkillDraft) => {
+      const key = JSON.stringify(d);
+      if (appliedDraftsRef.current.has(key)) return;
+      appliedDraftsRef.current.add(key);
+      applyDraft(d);
+    },
+    [applyDraft],
   );
 
   const onThreadCreated = React.useCallback(
@@ -334,6 +352,7 @@ export function SkillEditorPage({ target }: { target: SkillEditorTarget }) {
             onThreadCreated={onThreadCreated}
             draft={draft}
             onSkillDraft={onSkillDraft}
+            onApplyDraft={applyDraft}
             scopeKey={target.kind === "edit" ? target.id : "new"}
           />
         }

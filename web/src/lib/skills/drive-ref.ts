@@ -14,6 +14,14 @@ const SCHEME = "shiki://drive/";
 const HREF_RE =
   /^shiki:\/\/drive\/(file|folder)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
+const NODE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/// storage node id（UUID）の形か。HTML の貼り付けなど外から来た id はこれで確かめてから使う
+/// （リンク先や API のパスへそのまま埋めると、文字や別のパスを差し込まれる）。
+export function isNodeId(id: string): boolean {
+  return NODE_ID_RE.test(id);
+}
+
 export function driveRefHref(kind: DriveRefKind, id: string): string {
   return `${SCHEME}${kind}/${id}`;
 }

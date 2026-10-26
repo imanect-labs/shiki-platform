@@ -22,6 +22,27 @@ async function createFolder(page: Page, name: string, parentId?: string): Promis
   return ((await res.json()) as { id: string }).id;
 }
 
+type EditorHandle = {
+  commands: { focus: (p: string) => void };
+  view: { hasFocus: () => boolean };
+  getText: () => string;
+};
+
+/// 本文の末尾へキャレットを置く。フォーカスは次の描画で移るので、移るのを待ってから打つ
+/// （人がキャレットを見てから打つのと同じ。待たないと打った文字がどこにも入らない）。
+async function focusBodyEnd(page: Page) {
+  await page.evaluate(() =>
+    (window as unknown as { __shikiSkillEditor: EditorHandle }).__shikiSkillEditor.commands.focus("end"),
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as { __shikiSkillEditor: EditorHandle }).__shikiSkillEditor.view.hasFocus(),
+      ),
+    )
+    .toBe(true);
+}
+
 type SavedBody = {
   instructions: string;
   knowledge_scope: unknown;
@@ -157,20 +178,38 @@ test("通常のチャットで作った下書きスキルをカードからエ�
 test("既存の指示文のタグや記号は、編集して保存しても書き換わらない", async ({ page }) => {
   await loginViaKeycloak(page);
   const instructions =
-    "<rules>\n- doc_search で規程を探す\n- snake_case の名前はそのまま\n</rules>\n\n<example>入力 a*b</example> を参考にする。\n";
+    "<rules>\n- doc_search で規程を探す\n- snake_case の名前はそのまま\n</rules>\n\n" +
+    "<example>入力 a*b</example> を参考にする。\n\n" +
+    "記号: [必須] C:\\share\\規程 A|B x~y\n";
   const id = await createSkill(page, uniqueName("literal-skill"), { instructions });
   await page.goto(`/skills/${id}`);
   const body = page.getByTestId("skill-body-editor");
   await expect(body).toContainText("<rules>");
-  await page.evaluate(() =>
-    (window as unknown as { __shikiSkillEditor: { commands: { focus: (p: string) => void } } })
-      .__shikiSkillEditor.commands.focus("end"),
-  );
+  await focusBodyEnd(page);
   await page.keyboard.type("追記");
+  // 日本語は 1 回の DOM 挿入で入るので、エディタの状態に読み込まれてから次のキーを押す。
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as { __shikiSkillEditor: { getText: () => string } })
+          .__shikiSkillEditor.getText(),
+      ),
+    )
+    .toContain("追記");
+  // 強制改行の後の行頭「>」は引用にせず文字のまま残す。
+  await page.keyboard.press("Shift+Enter");
+  await page.keyboard.type("> 10 件なら要約する");
   await page.getByTestId("skill-save-button").click();
   await expect(page.getByText("保存済み v2").first()).toBeVisible({ timeout: 15_000 });
 
   const saved = (await skillBody(page, id)).instructions;
+  // 記法に化けない記号は書き換えない（バックスラッシュを足さない）。
+  expect(saved).toContain("a*b");
+  expect(saved).toContain("[必須] C:\\share\\規程 A|B x~y");
+  // 開き直しても引用にならない（本文に「>」の文字が残る）。
+  await page.reload();
+  await expect(page.getByTestId("skill-body-editor")).toContainText("> 10 件なら要約する");
+  await expect(page.getByTestId("skill-body-editor").locator("blockquote")).toHaveCount(0);
   expect(saved).toContain("<rules>");
   expect(saved).toContain("</rules>");
   expect(saved).toContain("doc_search");

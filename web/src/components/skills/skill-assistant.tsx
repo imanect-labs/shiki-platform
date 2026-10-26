@@ -42,6 +42,7 @@ export function SkillAssistant({
   onThreadCreated,
   draft,
   onSkillDraft,
+  onApplyDraft,
   scopeKey,
 }: {
   /// この編集で使っている会話（無ければ最初の発話で作る）。
@@ -51,6 +52,8 @@ export function SkillAssistant({
   draft: SkillDraft;
   /// AI の下書きを受けたとき（エディタへ流し込む）。
   onSkillDraft: (draft: AiSkillDraft) => void;
+  /// 下書きカードの「エディタに反映」（同じ下書きでも人が押したら当て直す）。
+  onApplyDraft: (draft: AiSkillDraft) => void;
   /// モデル・ツールの選択の保存先の区別（スキルごと・新規）。
   scopeKey: string;
 }) {
@@ -110,7 +113,7 @@ export function SkillAssistant({
   );
 
   return (
-    <SkillDraftApplyContext.Provider value={onSkillDraft}>
+    <SkillDraftApplyContext.Provider value={onApplyDraft}>
       <div className="flex h-full min-h-0 w-full flex-col" data-testid="skill-assistant">
         {threadId ? (
           <Conversation

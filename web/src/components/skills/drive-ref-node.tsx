@@ -10,7 +10,7 @@ import { Node, mergeAttributes } from "@tiptap/core";
 import { NodeViewWrapper, ReactNodeViewRenderer, type NodeViewProps } from "@tiptap/react";
 import * as React from "react";
 
-import { driveRefHref, type DriveRef, type DriveRefKind } from "@/lib/skills/drive-ref";
+import { driveRefHref, isNodeId, type DriveRef, type DriveRefKind } from "@/lib/skills/drive-ref";
 import { DriveRefChip } from "./drive-ref-chip";
 
 declare module "@tiptap/core" {
@@ -55,11 +55,17 @@ export const DriveRefNode = Node.create({
     return [
       {
         tag: "a[data-drive-ref]",
-        getAttrs: (el) => ({
-          kind: el.getAttribute("data-kind") === "folder" ? "folder" : "file",
-          id: el.getAttribute("data-node-id") ?? "",
-          label: el.textContent ?? "",
-        }),
+        // 貼り付けの HTML は外から来る。id が UUID の形でなければ参照として取り込まない
+        // （保存形式のリンク先へ文字を差し込まれないように）。
+        getAttrs: (el) => {
+          const id = el.getAttribute("data-node-id") ?? "";
+          if (!isNodeId(id)) return false;
+          return {
+            kind: el.getAttribute("data-kind") === "folder" ? "folder" : "file",
+            id: id.toLowerCase(),
+            label: el.textContent ?? "",
+          };
+        },
       },
     ];
   },

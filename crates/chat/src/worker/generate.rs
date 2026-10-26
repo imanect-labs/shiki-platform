@@ -12,7 +12,7 @@ use llm_gateway::{Message as LlmMessage, Role as LlmRole};
 use uuid::Uuid;
 
 use super::approval_policy::restore_checkpoint;
-use super::history::{message_preview, message_text};
+use super::history::{message_preview, message_text_with, skill_snapshot_name};
 use super::opts::{autonomous_system_prompt, chat_opts, sanitize_for_prompt};
 use super::sink::WorkerSink;
 use super::ChatWorker;
@@ -41,10 +41,22 @@ impl ChatWorker {
         assistant_message_id: Uuid,
     ) -> Result<ThreadHistory, ChatError> {
         let msgs = self.store.get_messages(ctx, thread_id, None).await?;
+        // スキルごとに、最新の内容（編集中の内容・下書き）を持つメッセージの位置（#919）。
+        // それより前の内容は履歴では 1 行の印にする（往復のたびに全体を積み上げない）。
+        let mut latest_skill: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (i, m) in msgs.iter().enumerate() {
+            if m.id == assistant_message_id {
+                continue;
+            }
+            for name in m.content.iter().filter_map(skill_snapshot_name) {
+                latest_skill.insert(name.to_string(), i);
+            }
+        }
         let mut out = Vec::new();
         let mut attachments: Vec<agent_core::AttachmentRef> = Vec::new();
         let mut tools_in_use: Vec<String> = Vec::new();
-        for m in msgs {
+        for (i, m) in msgs.into_iter().enumerate() {
             if m.id == assistant_message_id {
                 continue; // 生成対象のプレースホルダは履歴に含めない
             }
@@ -67,7 +79,8 @@ impl ChatWorker {
                 Role::Assistant => LlmRole::Assistant,
                 _ => continue,
             };
-            let mut text = message_text(&m.content);
+            let mut text =
+                message_text_with(&m.content, &|name| latest_skill.get(name) == Some(&i));
             // 本文の図のボタンで起動したワークフローと、その結果（#604）。モデルが次の回答で
             // 「さっきの申請はどうなった」に答えられるように、回答の後ろに添える。
             if let Some(runs) = super::history::ui_runs_text(&m.ui_runs) {

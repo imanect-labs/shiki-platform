@@ -8,6 +8,7 @@
 
 import * as React from "react";
 
+import { isNodeId } from "@/lib/skills/drive-ref";
 import { breadcrumb } from "@/lib/storage";
 
 /// 共有解除・権限失効の後もパスを出し続けないための上限。
@@ -15,6 +16,29 @@ const TTL_MS = 60_000;
 
 const resolved = new Map<string, { path: string | null; at: number }>();
 const inflight = new Map<string, Promise<void>>();
+
+/// 同時に投げるパンくず取得の上限。知識スコープ（最大 100 件）と本文の参照を一度に開いても、
+/// サーバ（1 件ごとに祖先の数だけ認可を確かめる）へ一斉に投げない。
+const MAX_CONCURRENT = 4;
+let running = 0;
+const waiting: (() => void)[] = [];
+
+/// `task` を同時実行数の上限つきで実行する（空きが出るまで待つ）。
+async function limited<T>(task: () => Promise<T>): Promise<T> {
+  if (running >= MAX_CONCURRENT) {
+    // 終わった実行から枠をそのまま受け取る（running は数え直さない）。
+    await new Promise<void>((resolve) => waiting.push(resolve));
+  } else {
+    running += 1;
+  }
+  try {
+    return await task();
+  } finally {
+    const next = waiting.shift();
+    if (next) next();
+    else running -= 1;
+  }
+}
 
 function fresh(id: string): boolean {
   const hit = resolved.get(id);
@@ -24,7 +48,12 @@ function fresh(id: string): boolean {
 function fetchPath(id: string): Promise<void> {
   const existing = inflight.get(id);
   if (existing) return existing;
-  const p = breadcrumb(id)
+  // UUID の形でない id は API のパスへ埋めない（解決できないものとして扱う）。
+  if (!isNodeId(id)) {
+    resolved.set(id, { path: null, at: Date.now() });
+    return Promise.resolve();
+  }
+  const p = limited(() => breadcrumb(id))
     .then((crumbs) => {
       const names = crumbs.map((c) => c.name.trim()).filter(Boolean);
       resolved.set(id, { path: names.length > 0 ? names.join("/") : null, at: Date.now() });

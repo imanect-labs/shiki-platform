@@ -155,21 +155,33 @@ export function mergeAiSkill(prev: SkillBody | null, draft: AiSkillDraft): Skill
 /// save_skill の入力と同じ形にし、AI がそのまま直して呼び直せるようにする。
 export function draftContextExcerpt(d: SkillDraft): string {
   const body = draftToBody(d);
-  return JSON.stringify(
-    {
-      name: d.name.trim(),
-      description: body.description,
-      instructions: body.instructions,
-      ...(body.allowed_tools ? { allowed_tools: body.allowed_tools } : {}),
-      ...(body.knowledge_scope ? { knowledge_scope: body.knowledge_scope } : {}),
-      ...(body.model ? { model: body.model } : {}),
-      ...(body.few_shot.length > 0 ? { few_shot: body.few_shot } : {}),
-      ...(body.scripts.length > 0 ? { scripts: body.scripts } : {}),
-    },
-    null,
-    1,
-  );
+  const excerpt: Record<string, unknown> = {
+    name: d.name.trim(),
+    description: body.description,
+    instructions: body.instructions,
+    ...(body.allowed_tools ? { allowed_tools: body.allowed_tools } : {}),
+    ...(body.knowledge_scope ? { knowledge_scope: body.knowledge_scope } : {}),
+    ...(body.model ? { model: body.model } : {}),
+    ...(body.few_shot.length > 0 ? { few_shot: body.few_shot } : {}),
+    ...(body.scripts.length > 0 ? { scripts: body.scripts } : {}),
+  };
+  // 上限に収まらなければ、大きい項目から丸ごと「省略」の印にする（途中で切ると、AI が
+  // 切れた内容で書き直して後ろが消える）。サーバの `fit_skill_json` と同じ考え方。
+  while (JSON.stringify(excerpt).length > SKILL_EXCERPT_MAX_CHARS) {
+    const largest = Object.entries(excerpt)
+      .filter(([k, v]) => k !== "name" && v !== SKILL_FIELD_OMITTED)
+      .sort((a, b) => JSON.stringify(b[1]).length - JSON.stringify(a[1]).length)[0];
+    if (!largest) break;
+    excerpt[largest[0]] = SKILL_FIELD_OMITTED;
+  }
+  return JSON.stringify(excerpt);
 }
+
+/// 編集中スキルの抜粋の上限（サーバの `SKILL_DRAFT_EXCERPT_MAX_CHARS` と同じ値）。
+const SKILL_EXCERPT_MAX_CHARS = 48_000;
+/// 省略した項目に入れる印（サーバの `SKILL_FIELD_OMITTED` と同じ文言）。
+const SKILL_FIELD_OMITTED =
+  "（長いため省略。中身が見えていないので、この項目は save_skill に渡さないこと）";
 
 // ── 下書きスキル（skill_draft）──────────────────────────────────────────
 
