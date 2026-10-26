@@ -405,4 +405,106 @@ test.describe("ミニアプリ（画面に返す結果）", () => {
     await page.waitForTimeout(10_000);
     expect(reads).toBeLessThanOrEqual(1);
   });
+
+  test("古い記録の結果は開いたときに 1 回だけ読み、記録を読み直しても取り直さない（GAP-09）", async ({ page }) => {
+    test.setTimeout(240_000);
+    await loginViaKeycloak(page);
+    const flow = uniqueName("reply-old");
+    const appId = await openAppWith(
+      page,
+      flow,
+      [
+        {
+          id: "accepted",
+          type: "workflow.reply",
+          params: {
+            format: "text",
+            value: { $template: "{amount} 円で受け付けました", vars: { amount: { $from: "input", path: "/amount" } } },
+          },
+        },
+      ],
+      [],
+    );
+    const reads = new Map<string, number>();
+    const one = new RegExp(`/api/mini-apps/${appId}/runs/([0-9a-f-]{36})`);
+    page.on("request", (req) => {
+      const m = one.exec(req.url());
+      if (req.method() === "GET" && m) reads.set(m[1], (reads.get(m[1]) ?? 0) + 1);
+    });
+    const runs = page.getByTestId("yui-runs");
+    // 新しいものが下。2 回押すと、上の 1 件（最初の起動）は結果を付けずに返る古い記録になる。
+    await apply(page, "100");
+    await expect(runs.locator("li").last()).toHaveAttribute("data-status", "succeeded", { timeout: 60_000 });
+    await apply(page, "200");
+    await expect(runs.locator("li")).toHaveCount(2);
+    await expect(runs.locator("li").last()).toHaveAttribute("data-status", "succeeded", { timeout: 60_000 });
+    const old = runs.locator("li").first();
+    const oldId = (await old.getAttribute("data-run-id")) ?? "";
+    expect(oldId).not.toBe("");
+    await old.getByRole("button", { name: "結果" }).click();
+    await expect(old.getByTestId("yui-run-result")).toContainText("100 円で受け付けました");
+    expect(reads.get(oldId)).toBe(1);
+
+    // もう 1 回押して記録を何度か読み直させても、開いている古い行の結果は取り直さない。
+    await apply(page, "300");
+    await expect(runs.locator("li")).toHaveCount(3);
+    await expect(runs.locator("li").last()).toHaveAttribute("data-status", "succeeded", { timeout: 60_000 });
+    await expect(runs.locator("li").last().getByTestId("yui-run-result")).toContainText("300 円で受け付けました");
+    await expect(old.getByTestId("yui-run-result")).toContainText("100 円で受け付けました");
+    expect(reads.get(oldId)).toBe(1);
+  });
+
+  test("ボタンで行を足す短いフローが終わると、ページを読み直さずに画面の表に行が出る（BUG-19）", async ({ page }) => {
+    test.setTimeout(180_000);
+    await loginViaKeycloak(page);
+    const table = (await apiPost(page, "/data/tables", {
+      name: uniqueName("e2e-申請台帳"),
+      schema: { fields: [{ key: "title", display_name: "件名", type: "text" }] },
+    })) as { id: string; schema?: { fields: { key: string; display_name: string }[] } };
+    const titleKey = table.schema?.fields.find((f) => f.display_name === "件名")?.key ?? "title";
+    const view = (await apiPost(page, "/data/views", {
+      name: uniqueName("e2e-申請の一覧"),
+      table_id: table.id,
+      query: {},
+    })) as { id: string; version: number };
+    // 行を 1 つ足すだけのフロー（押した直後の最初の一覧で、もう終わっていることがある）。
+    const flow = uniqueName("grid-flow");
+    const wf = await apiPost(page, "/workflows", {
+      ir: {
+        ir_version: 1,
+        name: flow,
+        display_name: flow,
+        declared_scopes: ["data.write"],
+        triggers: [{ kind: "interactive" }],
+        nodes: [
+          {
+            id: "add",
+            type: "data.record.create",
+            label: "台帳に足す",
+            params: { table: table.id, data: { [titleKey]: { $from: "input", path: "/category" } } },
+          },
+        ],
+        edges: [],
+      },
+    });
+    const app = await apiPost(page, "/mini-apps", {
+      name: uniqueName("grid-app"),
+      body: {
+        description: "経費の申請",
+        screen: `${expenseScreen(flow)}\n\`\`\`data_grid\nrequests\n\`\`\`\n`,
+        workflows: [{ alias: flow, artifact_id: wf.id, version: 1 }],
+        data_views: [{ alias: "requests", artifact_id: view.id, version: view.version }],
+      },
+    });
+    await page.goto(`/apps/${app.id}`);
+    const grid = page.getByTestId("miniapp-data-grid-requests");
+    await expect(grid.getByTestId("miniapp-data-grid-empty")).toBeVisible({ timeout: 30_000 });
+
+    await apply(page, "900");
+    const runs = page.getByTestId("yui-runs");
+    await expect(runs.locator("li").first()).toHaveAttribute("data-status", "succeeded", { timeout: 60_000 });
+    // 読み直さずに、フローが足した行が表に出る。
+    await expect(grid.getByTestId("miniapp-data-grid-empty")).toHaveCount(0, { timeout: 30_000 });
+    await expect(grid.locator("figcaption")).toContainText("1 件");
+  });
 });
