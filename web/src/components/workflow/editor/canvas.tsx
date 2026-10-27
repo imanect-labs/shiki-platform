@@ -38,6 +38,7 @@ import { NodeCard, type NodeCardData } from "./node-card";
 import { TriggerNode, type TriggerNodeData } from "./trigger-node";
 import { PlusEdge, type PlusEdgeData } from "./plus-edge";
 import { PALETTE_DND_TYPE } from "./palette";
+import { edgePortsOf, type ServerPorts } from "./ports";
 
 const nodeTypes: NodeTypes = {
   irNode: NodeCard as never,
@@ -58,6 +59,10 @@ type Props = {
   serverErrors: ValidationError[];
   /// 保存を止めない警告（ノードに注意の印を出す）。
   serverWarnings?: ValidationError[];
+  /// サーバが導いた出口（判定のノードのハンドル・検証 API の `node_ports`）。
+  serverPorts?: ServerPorts;
+  /// `serverPorts` を導いたときの各ノードの params（今の設定の出口かを見る）。
+  serverPortsParams?: Readonly<Record<string, unknown>>;
   dispatch: React.Dispatch<EditorAction>;
 };
 
@@ -102,7 +107,19 @@ function shallowEqual(a: Record<string, unknown>, b: Record<string, unknown>): b
   return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
 }
 
-export function Canvas({ ir, layout, selection, serverErrors, serverWarnings, dispatch }: Props) {
+const NO_PORTS: ServerPorts = {};
+const NO_PARAMS: Readonly<Record<string, unknown>> = {};
+
+export function Canvas({
+  ir,
+  layout,
+  selection,
+  serverErrors,
+  serverWarnings,
+  serverPorts = NO_PORTS,
+  serverPortsParams = NO_PARAMS,
+  dispatch,
+}: Props) {
   const { fitView, screenToFlowPosition } = useReactFlow();
   const errors = React.useMemo(() => mapErrors(serverErrors), [serverErrors]);
   const warnings = React.useMemo(() => mapErrors(serverWarnings ?? []), [serverWarnings]);
@@ -140,6 +157,10 @@ export function Canvas({ ir, layout, selection, serverErrors, serverWarnings, di
         irNode: n,
         errors: errors.byNode.get(n.id) ?? NO_ERRORS,
         warnings: warnings.byNode.get(n.id) ?? NO_ERRORS,
+        knownPorts: serverPorts[n.id],
+        portsFresh: serverPortsParams[n.id] === n.params,
+        // 出口の一覧は文字列にして渡す（毎回新しい配列だと、変わらないノードまで作り直される）。
+        edgePortsKey: JSON.stringify(edgePortsOf(n.id, ir.edges)),
         onAddFrom,
       } satisfies NodeCardData,
     }));
@@ -155,7 +176,19 @@ export function Canvas({ ir, layout, selection, serverErrors, serverWarnings, di
       });
     });
     return nodes;
-  }, [ir.nodes, ir.triggers, tKeys, positions, selection, errors, warnings, onAddFrom]);
+  }, [
+    ir.nodes,
+    ir.edges,
+    ir.triggers,
+    tKeys,
+    positions,
+    selection,
+    errors,
+    warnings,
+    serverPorts,
+    serverPortsParams,
+    onAddFrom,
+  ]);
 
   // 導出値が変わったら手元の state へ合流させる（描画中に前回の導出値と比べて更新する）。
   const [nodes, setNodes] = React.useState<RfNode[]>(derivedNodes);

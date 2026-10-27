@@ -12,7 +12,7 @@ import type { Edge, Node, Trigger, ValidationError, WorkflowIr } from "@/generat
 import type { EditorLayout } from "@/lib/workflow-api";
 import { carryTriggerPositions, seedLayout } from "./auto-layout";
 import { rewriteInputRefs } from "./config-panel/value-refs";
-import { outputPorts } from "./ports";
+import { outputPorts, type ServerPorts } from "./ports";
 
 export type Selection =
   | { kind: "none" }
@@ -57,6 +57,13 @@ export type EditorState = {
   serverErrorsIr: WorkflowIr | null;
   /// 保存を止めない警告（`ir.condition_semantics_changed` など・保存/検証の応答の `warnings`）。
   serverWarnings: ValidationError[];
+  /// サーバが導いたノードの出口（検証 API の `node_ports`・判定のノードのハンドルを描く・H15）。
+  /// 直近の応答に載らなかったノード（設定が契約に合わない間）は、前に受け取った出口を残す（直している間に
+  /// ハンドルが消えたり出たりしない）。今の IR に無いノードの分は落とす。
+  serverPorts: ServerPorts;
+  /// `serverPorts` を導いたときのノードの params（参照）。今の params と同じなら、その出口は今の設定のもの
+  /// （無い出口のエッジを「無い出口」と言い切れる）。違えば次の応答までの古い出口。
+  serverPortsParams: Readonly<Record<string, unknown>>;
   /// 直前の `update_node`・`update_meta`（同じノード・ワークフローの同じ項目への連続入力を undo 1 段に
   /// まとめる。`update_meta` は id が空）。他の編集・選択の変更・undo/redo で切れる。
   lastEdit: { id: string; field: string; at: number } | null;
@@ -77,7 +84,9 @@ export type EditorAction =
   /// `at` は dispatch した時刻（`useEditorState` が付ける・連続入力をまとめる判定に使う）。
   | { type: "update_node"; id: string; patch: Partial<Node>; at?: number }
   /// switch の case 出口名変更（params 更新と当該ポートのエッジ from_port 追随を 1 手で行う）。
-  | { type: "rename_out_port"; id: string; fromPort: string; toPort: string; params: unknown }
+  /// `noMerge` は、新しい名前の出口からもうエッジが出ていれば付け替えない（判定の選択肢のキーの入力中に、
+  /// 別の出口の名前を通っても線を混ぜない）。
+  | { type: "rename_out_port"; id: string; fromPort: string; toPort: string; params: unknown; noMerge?: boolean }
   | { type: "rename_node"; id: string; nextId: string }
   /// `at` は `update_node` と同じ（入力項目の連続入力を undo 1 段にまとめる）。
   /// `inputRenames` は入力項目のキーの変更（旧キー → 新キー）。ブロックの参照（`$from: "input"` の path）を
@@ -96,6 +105,8 @@ export type EditorAction =
   /// `ir` は検証した IR（誤りの添字をその時点の値で引く）。誤りを消すだけなら省く。
   | { type: "set_errors"; errors: ValidationError[]; ir?: WorkflowIr }
   | { type: "set_warnings"; warnings: ValidationError[] }
+  /// 検証 API の `node_ports` を受け取る（[`EditorState::serverPorts`] へ合わせる）。`ir` は検証した IR。
+  | { type: "set_ports"; ports: Record<string, string[]>; ir: WorkflowIr }
   | { type: "saved"; version: number; savedIr: WorkflowIr; ir?: WorkflowIr; declaredScopes?: string[] }
   | { type: "layout_saved"; layout: EditorLayout }
   | { type: "undo" }
@@ -114,12 +125,13 @@ export function newNodeId(ir: WorkflowIr, nodeType: string): string {
   return `${base}_${n}`;
 }
 
-/// ノード種の既定の出力ポート（挿入・尻尾追加でエッジを張るときの継続側）。
+/// ノード種の既定の出力ポート（挿入・尻尾追加でエッジを張るときの継続側・置いたばかりの既定の設定での出口）。
 /// switch は cases から動的導出のため、常に存在するフォールバック `default` を使う
 /// （実行エンジンは `out` を発しないので `out` エッジは不発になる）。
+/// 判定（`decide_route`）は置いたときに振り分けを持たない（`defaultParams`）ので `out`（ir.md §7.11）。
 export function defaultOutPort(nodeType: string): string {
   const entry = NODE_CATALOG.find((c) => c.type === nodeType);
-  if (entry?.dynamic_ports) return "default";
+  if (entry?.port_rule === "switch_cases") return "default";
   return entry?.output_ports[0] ?? "out";
 }
 
@@ -171,6 +183,16 @@ export function defaultParams(nodeType: string): unknown {
     case "csv.write":
       // 入力全体（オブジェクト）を入れると JSON の文字がそのまま .csv に保存される（失敗もしない）。
       return { name: "output.csv", content: "" };
+    case "ai.decide":
+      // モデル・判定の材料・問いは利用者が書く（空のままなら欄の下で入力を促す・V1 が保存を止める）。
+      // 質問は選択肢 2 つの 1 件から始める。振り分けは置かない（出口は out だけ）。
+      return {
+        model: "",
+        state: "",
+        questions: [
+          { key: "q1", type: "choice", instructions: "", options: [{ key: "option_1" }, { key: "option_2" }] },
+        ],
+      };
     case "human.approval":
       // テーブル・判断の行き先・担当者は選ばせる（テーブルの列と状態から選ぶ）。行は既定でトリガの行。
       return {
@@ -261,9 +283,11 @@ function deleteElements(state: EditorState, nodeIds: string[], edges: Edge[]): E
 /// 戻す・却下や差し戻しを外す）から出るエッジを外す（BUG-30）。残すと保存は `ir.unknown_port` で止まり、
 /// キャンバスには描けないので選んで消せない。同じ 1 手で外すので Undo で出口とエッジが一緒に戻る。
 /// 前から無い出口のエッジ（読み込んだ IR の誤り）は触らない（保存時の検証が示す）。
-function dropVanishedPortEdges(edges: Edge[], before: Node, after: Node): Edge[] {
-  const now = new Set(outputPorts(after));
-  const gone = new Set(outputPorts(before).filter((p) => !now.has(p)));
+/// 判定のノードの出口はサーバの導出（`known`）なので、ここで外れるのはエラー時の出口だけ。振り分けを変えて
+/// 無くなった出口のエッジは、検証の応答の後に「無い出口」として描き、選んで消せる（`drawnPorts`）。
+function dropVanishedPortEdges(edges: Edge[], before: Node, after: Node, known?: readonly string[]): Edge[] {
+  const now = new Set(outputPorts(after, known));
+  const gone = new Set(outputPorts(before, known).filter((p) => !now.has(p)));
   if (gone.size === 0) return edges;
   const next = edges.filter((e) => !(e.from === before.id && gone.has(e.from_port ?? "out")));
   return next.length === edges.length ? edges : next;
@@ -413,7 +437,10 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
     case "update_node": {
       const prev = state.ir.nodes.find((n) => n.id === action.id);
       const updated = prev ? ({ ...prev, ...action.patch } as Node) : undefined;
-      const edges = prev && updated ? dropVanishedPortEdges(state.ir.edges, prev, updated) : state.ir.edges;
+      const edges =
+        prev && updated
+          ? dropVanishedPortEdges(state.ir.edges, prev, updated, state.serverPorts[prev.id])
+          : state.ir.edges;
       const ir = {
         ...state.ir,
         nodes: state.ir.nodes.map((n) => (n.id === action.id && updated ? updated : n)),
@@ -441,16 +468,21 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       };
     }
     case "rename_out_port": {
+      const taken =
+        action.noMerge &&
+        state.ir.edges.some((e) => e.from === action.id && (e.from_port ?? "out") === action.toPort);
       return withIr(state, {
         ...state.ir,
         nodes: state.ir.nodes.map((n) =>
           n.id === action.id ? ({ ...n, params: action.params } as Node) : n,
         ),
-        edges: state.ir.edges.map((e) =>
-          e.from === action.id && (e.from_port ?? "out") === action.fromPort
-            ? ({ ...e, from_port: action.toPort } as Edge)
-            : e,
-        ),
+        edges: taken
+          ? state.ir.edges
+          : state.ir.edges.map((e) =>
+              e.from === action.id && (e.from_port ?? "out") === action.fromPort
+                ? ({ ...e, from_port: action.toPort } as Edge)
+                : e,
+            ),
       });
     }
     case "rename_node": {
@@ -484,11 +516,19 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
           to: e.to === action.id ? nextId : e.to,
         })),
       });
+      // サーバが導いた出口も新しい id へ写す（次の検証の応答までハンドルを消さない）。
+      const known = state.serverPorts[action.id];
       return {
         ...renamed,
         layout: { ...state.layout, positions },
         layoutDirty: true,
         selection: { kind: "node", id: nextId },
+        ...(known
+          ? {
+              serverPorts: { ...state.serverPorts, [nextId]: known },
+              serverPortsParams: { ...state.serverPortsParams, [nextId]: state.serverPortsParams[action.id] },
+            }
+          : {}),
       };
     }
     case "update_meta": {
@@ -541,6 +581,12 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       return { ...state, serverErrors: action.errors, serverErrorsIr: action.ir ?? null };
     case "set_warnings":
       return { ...state, serverWarnings: action.warnings };
+    case "set_ports": {
+      const next = mergePorts(state, action.ports, action.ir);
+      return next.serverPorts === state.serverPorts && next.serverPortsParams === state.serverPortsParams
+        ? state
+        : { ...state, ...next };
+    }
     case "saved": {
       // 保存中に続けた編集が無ければ、サーバが補完した宣言スコープ（保存した版の値）を手元の IR に入れる
       // （履歴には積まない・保存済みの内容と同じなので dirty にしない）。
@@ -612,8 +658,53 @@ function initEditorState(initial: EditorInit): EditorState {
     serverErrors: [],
     serverErrorsIr: null,
     serverWarnings: [],
+    serverPorts: {},
+    serverPortsParams: {},
     lastEdit: null,
   };
+}
+
+/// 検証の応答の出口を手元へ合わせる。応答に載ったノードはその出口に、載らなかったノードは前の出口のまま
+/// （設定を直している間）、今の IR に無いノードは落とす。出口を導いたときの params（検証した IR の
+/// ノードのもの）も一緒に持つ。変わらなければ同じオブジェクトを返す（ノードの描画を作り直さない）。
+function mergePorts(
+  state: Pick<EditorState, "ir" | "serverPorts" | "serverPortsParams">,
+  ports: Record<string, string[]>,
+  checked: WorkflowIr,
+): Pick<EditorState, "serverPorts" | "serverPortsParams"> {
+  const prev = state.serverPorts;
+  const prevParams = state.serverPortsParams;
+  const nextPorts: Record<string, readonly string[]> = {};
+  const nextParams: Record<string, unknown> = {};
+  let portsChanged = false;
+  let paramsChanged = false;
+  const checkedById = new Map(checked.nodes.map((n) => [n.id, n]));
+  for (const n of state.ir.nodes) {
+    const before = prev[n.id];
+    const after = ports[n.id];
+    if (after) {
+      const reuse = before && sameList(before, after);
+      nextPorts[n.id] = reuse ? before : after;
+      if (!reuse) portsChanged = true;
+      nextParams[n.id] = checkedById.get(n.id)?.params;
+      if (nextParams[n.id] !== prevParams[n.id]) paramsChanged = true;
+    } else if (before) {
+      nextPorts[n.id] = before;
+      nextParams[n.id] = prevParams[n.id];
+    }
+  }
+  if (Object.keys(prev).length !== Object.keys(nextPorts).length) {
+    portsChanged = true;
+    paramsChanged = true;
+  }
+  return {
+    serverPorts: portsChanged ? nextPorts : prev,
+    serverPortsParams: paramsChanged ? nextParams : prevParams,
+  };
+}
+
+function sameList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
 }
 
 export function useEditorState(

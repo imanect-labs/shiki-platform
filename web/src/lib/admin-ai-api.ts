@@ -7,6 +7,8 @@ export type LlmModelOption = components["schemas"]["LlmModelOption"];
 export type EffortLevel = components["schemas"]["EffortLevel"];
 /// モデル一覧の見え方（chat: 本人から見た一覧・workflow: ワークフローの照合と同じ一覧＝本人専用を除く）。
 export type ModelPurpose = components["schemas"]["ModelPurpose"];
+/// モデルの種類（chat: 文章を生成する・decision: 判定のノード `ai.decide` 向けの判定用のモデル）。
+export type ModelModality = components["schemas"]["ModelModality"];
 export type AdminProvider = components["schemas"]["AdminProvider"];
 export type AdminModel = components["schemas"]["AdminModel"];
 export type AdminModelsResponse = components["schemas"]["AdminModelsResponse"];
@@ -46,9 +48,17 @@ async function json<T>(res: Response): Promise<T> {
 }
 
 /// 選べるモデル（一般ユーザー）。`workflow` はワークフローのモデル欄向け（保存時の照合・実行時の解決と
-/// 同じ一覧・組織の既定と Auto の振り先もその見え方・BUG-33）。
-export async function fetchLlmModels(purpose: ModelPurpose = "chat"): Promise<LlmModelsResponse> {
-  return json(await apiFetch(purpose === "chat" ? "/llm/models" : `/llm/models?purpose=${purpose}`));
+/// 同じ一覧・組織の既定と Auto の振り先もその見え方・BUG-33）。`modality: "decision"` は判定のノードの
+/// モデル欄向けで、組織で使える判定用のモデルだけを返す（Auto は無い）。
+export async function fetchLlmModels(
+  purpose: ModelPurpose = "chat",
+  modality: ModelModality = "chat",
+): Promise<LlmModelsResponse> {
+  const q = new URLSearchParams();
+  if (purpose !== "chat") q.set("purpose", purpose);
+  if (modality !== "chat") q.set("modality", modality);
+  const qs = q.toString();
+  return json(await apiFetch(qs ? `/llm/models?${qs}` : "/llm/models"));
 }
 
 export async function fetchAdminProviders(): Promise<AdminProvider[]> {

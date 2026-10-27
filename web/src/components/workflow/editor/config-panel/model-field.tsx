@@ -14,6 +14,11 @@
 /// - 読み込み中: Skeleton
 /// - 一覧を取れない: 自由入力に戻し、注意書きを出す（空欄で組織の既定・保存時の照合はサーバが行う）
 /// - 保存済みのモデルが一覧に無い: 「このモデルは使えません: X」を赤字で出す（値は消さない）
+///
+/// 「AI で判定」（ai.decide）は `modality="decision"` で使う。一覧は判定用のモデルだけ
+/// （`GET /llm/models?purpose=workflow&modality=decision`・保存時の照合と同じ集合）で、判定には組織の既定が
+/// 無いので既定の行を出さず、必ず選ばせる。組織がモデルの選択を禁じていても判定のモデルには掛けない
+/// （ir.md §7.11）。
 
 import * as React from "react";
 import { ChevronDown } from "lucide-react";
@@ -25,7 +30,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EFFORT_LABEL } from "@/components/admin/format";
 import { ModelList, type ModelListDefaultRow } from "@/components/llm/model-list";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import type { LlmModelsResponse } from "@/lib/admin-ai-api";
+import type { LlmModelsResponse, ModelModality } from "@/lib/admin-ai-api";
 import { useLlmModelsState } from "@/lib/model-choice";
 import { cn } from "@/lib/utils";
 import { Field } from "./common";
@@ -55,20 +60,25 @@ export function ModelField({
   value,
   onChange,
   error,
+  modality = "chat",
 }: {
   value: string | undefined;
   onChange: (next: string | undefined) => void;
   /// サーバの検証の誤り（`/params/model`）。
   error?: string | null;
+  /// `decision` は判定用のモデルの欄（既定の行なし・必ず選ぶ・組織の選択の禁止は掛けない）。
+  modality?: ModelModality;
 }) {
-  const state = useLlmModelsState("workflow");
+  const decision = modality === "decision";
+  const label = decision ? "判定用のモデル" : "モデル";
+  const state = useLlmModelsState("workflow", modality);
   const desktop = useMediaQuery(PANEL_QUERY);
   const [open, setOpen] = React.useState(false);
   const listRef = React.useRef<HTMLDivElement | null>(null);
 
   if (state.status === "loading") {
     return (
-      <Field label="モデル">
+      <Field label={label}>
         <div aria-busy="true" aria-label="モデルの一覧を読み込み中">
           <Skeleton className="h-8 w-full" />
         </div>
@@ -77,20 +87,19 @@ export function ModelField({
   }
 
   if (state.status === "error" || state.data.models.length === 0) {
+    const hint = decision
+      ? state.status === "error"
+        ? "判定用のモデルの一覧を読み込めませんでした。管理者が登録した判定用のモデルの ID をそのまま書いてください"
+        : "使える判定用のモデルがありません。管理者に、AI の設定で判定用のモデルを公開してもらってください"
+      : state.status === "error"
+        ? "モデルの一覧を読み込めませんでした。空欄なら組織の既定で動きます。指定するときは管理者が登録したモデル ID をそのまま書いてください"
+        : "使えるモデルがありません。管理者に AI の設定を確かめてもらってください";
     return (
-      <Field
-        label="モデル"
-        error={error}
-        hint={
-          state.status === "error"
-            ? "モデルの一覧を読み込めませんでした。空欄なら組織の既定で動きます。指定するときは管理者が登録したモデル ID をそのまま書いてください"
-            : "使えるモデルがありません。管理者に AI の設定を確かめてもらってください"
-        }
-      >
+      <Field label={label} error={error} hint={hint}>
         <Input
           value={value ?? ""}
           onChange={(e) => onChange(e.target.value || undefined)}
-          placeholder="空欄で組織の既定"
+          placeholder={decision ? "判定用のモデルの ID" : "空欄で組織の既定"}
           aria-label="モデル ID"
           aria-invalid={error ? true : undefined}
           className="h-8 font-mono text-xs max-md:text-base"
@@ -100,7 +109,8 @@ export function ModelField({
   }
 
   const data = state.data;
-  const locked = !data.allow_user_choice;
+  // 判定のモデルには組織の選択の禁止を掛けない（判定には組織の既定が無い・ir.md §7.11）。
+  const locked = !decision && !data.allow_user_choice;
   const current = value ? data.models.find((m) => m.id === value) : undefined;
   // 選択を禁じた組織では、既定と同じモデル（を書いた保存済みの定義）だけが通る（保存時の照合と同じ）。
   const lockedOut = locked && value !== undefined && value !== data.default_model;
@@ -116,17 +126,24 @@ export function ModelField({
     onChange(id ?? undefined);
     setOpen(false);
   };
-  const shown = value === undefined ? `組織の既定（${orgDefaultLabel(data)}）` : (current?.label ?? value);
-  const hint = locked
-    ? `${LOCKED_NOTE}。組織の既定で動きます`
-    : value === undefined
-      ? "省略すると組織の既定で動きます。管理者が既定を変えると、このブロックのモデルも変わります"
-      : current?.description || "管理者が使えるようにしたモデルから選びます";
+  const shown =
+    value === undefined || value === ""
+      ? decision
+        ? "選んでください"
+        : `組織の既定（${orgDefaultLabel(data)}）`
+      : (current?.label ?? value);
+  const hint = decision
+    ? current?.description || "管理者が判定用として使えるようにしたモデルから選びます"
+    : locked
+      ? `${LOCKED_NOTE}。組織の既定で動きます`
+      : value === undefined
+        ? "省略すると組織の既定で動きます。管理者が既定を変えると、このブロックのモデルも変わります"
+        : current?.description || "管理者が使えるようにしたモデルから選びます";
 
   const button = (
     <button
       type="button"
-      aria-label={`モデル: ${shown}（変更する）`}
+      aria-label={`${label}: ${shown}（変更する）`}
       aria-expanded={open}
       data-testid="workflow-model-button"
       onClick={desktop ? undefined : () => setOpen((o) => !o)}
@@ -136,7 +153,7 @@ export function ModelField({
         message && "border-destructive",
       )}
     >
-      <span className={cn("min-w-0 flex-1 truncate", value === undefined && "text-muted-foreground")}>{shown}</span>
+      <span className={cn("min-w-0 flex-1 truncate", !value && "text-muted-foreground")}>{shown}</span>
       {current ? <span className="shrink-0 text-[11px] text-muted-foreground">{current.provider_label}</span> : null}
       <ChevronDown className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} aria-hidden />
     </button>
@@ -155,14 +172,14 @@ export function ModelField({
         onPick={pick}
         surface={surface}
         listRef={listRef}
-        defaultRow={defaultRow(data)}
+        defaultRow={decision ? null : defaultRow(data)}
         modelsDisabled={locked}
       />
     </>
   );
 
   return (
-    <Field label="モデル" error={message} hint={hint}>
+    <Field label={label} error={message} hint={hint}>
       {desktop ? (
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild>{button}</PopoverTrigger>

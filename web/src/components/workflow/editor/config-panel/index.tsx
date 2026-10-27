@@ -27,6 +27,7 @@ import { CommonSection } from "./common";
 import { HumanApprovalForm } from "./forms-approval";
 import { WorkflowReplyForm } from "./forms-reply";
 import { AgentInvokeForm } from "./forms-agent";
+import { AiDecideForm } from "./forms-ai-decide";
 import {
   LlmInvokeForm,
   RagSearchForm,
@@ -65,6 +66,7 @@ const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "rag.search": RagSearchForm,
   "llm.invoke": LlmInvokeForm,
   "agent.invoke": AgentInvokeForm,
+  "ai.decide": AiDecideForm,
   "workflow.start": WorkflowStartForm,
   "control.branch": BranchForm,
   "control.switch": SwitchForm,
@@ -268,7 +270,8 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
         {nodeWarnings.length > 0 ? (
           <div
             role="note"
-            className="space-y-1 rounded-md border p-2 text-[11px] leading-relaxed"
+            // 長いキー・path（/answers/<キー>/… など）が枠からはみ出さないよう、どこでも折り返す。
+            className="space-y-1 rounded-md border p-2 text-[11px] leading-relaxed [overflow-wrap:anywhere]"
             style={{
               borderColor: "color-mix(in oklab, var(--season-autumn) 45%, transparent)",
               backgroundColor: "color-mix(in oklab, var(--season-autumn) 8%, transparent)",
@@ -296,6 +299,7 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
                 inMapRegion={inMapRegion}
                 fieldErrors={fieldErrors}
                 serverCheck={serverCheck}
+                serverPorts={ctx.state.serverPorts[node.id]}
               />
             </TriggerSourcesContext.Provider>
           </InputFieldsContext.Provider>

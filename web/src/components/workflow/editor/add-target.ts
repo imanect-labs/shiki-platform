@@ -5,7 +5,7 @@ import type { Edge, WorkflowIr } from "@/generated/workflow-ir";
 import type { EditorLayout } from "@/lib/workflow-api";
 import { NODE_W, nextPosition, resolvePositions } from "./auto-layout";
 import type { EditorAction } from "./ir-state";
-import { outputPorts } from "./ports";
+import { outputPorts, type ServerPorts } from "./ports";
 
 export type AddTarget =
   /// ノードが 1 つも無い（最初のブロック）。
@@ -18,14 +18,15 @@ export type AddTarget =
   | { kind: "before"; before: string };
 
 /// 「流れの末尾」: 先頭の入口から既定の出口を辿った最後のノードの後ろ（無ければ最初のブロック）。
-export function endTarget(ir: WorkflowIr): AddTarget {
+/// `serverPorts` はサーバが導いた出口（判定のノードの出口・検証 API の `node_ports`）。
+export function endTarget(ir: WorkflowIr, serverPorts: ServerPorts = {}): AddTarget {
   if (ir.nodes.length === 0) return { kind: "first" };
   const incoming = new Set(ir.edges.map((e) => e.to));
   let current = ir.nodes.find((n) => !incoming.has(n.id)) ?? ir.nodes[0];
   const seen = new Set<string>();
   for (;;) {
     seen.add(current.id);
-    const port = outputPorts(current)[0] ?? "out";
+    const port = outputPorts(current, serverPorts[current.id])[0] ?? "out";
     const next = ir.edges.find((e) => e.from === current.id && (e.from_port ?? "out") === port);
     const node = next ? ir.nodes.find((n) => n.id === next.to) : undefined;
     if (!node || seen.has(node.id)) return { kind: "after", from: current.id, port };

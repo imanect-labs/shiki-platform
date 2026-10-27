@@ -20,7 +20,7 @@ import type { AddTarget } from "./add-target";
 import { nodeIcon } from "./icons";
 import type { EditorAction, Selection } from "./ir-state";
 import { portLabel } from "./node-card";
-import { outputPorts } from "./ports";
+import { drawnPorts, edgePortsOf, type ServerPorts } from "./ports";
 import { triggerSeasonIndex, triggerView } from "./trigger-node";
 import { mapErrors } from "./validation";
 
@@ -29,6 +29,10 @@ type Props = {
   selection: Selection;
   serverErrors: ValidationError[];
   serverWarnings?: ValidationError[];
+  /// サーバが導いた出口（判定のノード・検証 API の `node_ports`）。
+  serverPorts?: ServerPorts;
+  /// `serverPorts` を導いたときの各ノードの params（今の設定の出口かを見る）。
+  serverPortsParams?: Readonly<Record<string, unknown>>;
   dispatch: React.Dispatch<EditorAction>;
   /// ＋が押された（追加先を親へ渡し、親がブロック選択のシートを開く）。
   onAdd: (target: AddTarget, contextLabel: string) => void;
@@ -149,11 +153,16 @@ function StepCard({
   );
 }
 
-function PortRow({ label }: { label: string }) {
+function PortRow({ label, missing = false }: { label: string; missing?: boolean }) {
   return (
-    <div className="flex items-center gap-1.5 pb-1 pt-2 text-xs font-medium text-muted-foreground">
+    <div
+      className={cn(
+        "flex items-center gap-1.5 pb-1 pt-2 text-xs font-medium",
+        missing ? "text-destructive" : "text-muted-foreground",
+      )}
+    >
       <CornerDownRight className="size-3.5" aria-hidden />
-      {label}
+      {missing ? `${label}（無い出口）` : label}
     </div>
   );
 }
@@ -167,7 +176,19 @@ function MergeRow({ name }: { name: string }) {
   );
 }
 
-export function MobileFlow({ ir, selection, serverErrors, serverWarnings, dispatch, onAdd }: Props) {
+const NO_PORTS: ServerPorts = {};
+const NO_PARAMS: Readonly<Record<string, unknown>> = {};
+
+export function MobileFlow({
+  ir,
+  selection,
+  serverErrors,
+  serverWarnings,
+  serverPorts = NO_PORTS,
+  serverPortsParams = NO_PARAMS,
+  dispatch,
+  onAdd,
+}: Props) {
   const errors = React.useMemo(() => mapErrors(serverErrors), [serverErrors]);
   const warnings = React.useMemo(() => mapErrors(serverWarnings ?? []), [serverWarnings]);
   const byId = React.useMemo(() => new Map(ir.nodes.map((n) => [n.id, n])), [ir.nodes]);
@@ -213,11 +234,19 @@ export function MobileFlow({ ir, selection, serverErrors, serverWarnings, dispat
       visited.add(node.id);
       push(depth, card(node));
 
-      const ports = outputPorts(node);
+      // 判定の出口はサーバの導出。今の設定に無い出口から出るエッジも行き先ごと見せる（無い出口の印つき）。
+      const drawn = drawnPorts(
+        node,
+        serverPorts[node.id],
+        edgePortsOf(node.id, ir.edges),
+        serverPortsParams[node.id] === node.params,
+      );
       const outs = ir.edges.filter((e) => e.from === node.id);
       const name = nodeName(node);
-      if (ports.length === 1) {
-        const port = ports[0];
+      // 出口がまだ決まらない判定（設定が契約に合わない間）は、キャンバスの尻尾の＋と同じく out の後ろに足せる。
+      const ports = drawn.length > 0 ? drawn : [{ port: "out", missing: false }];
+      if (ports.length === 1 && !ports[0].missing) {
+        const port = ports[0].port;
         const edges = outs.filter((e) => (e.from_port ?? "out") === port);
         if (edges.length === 0) {
           push(
@@ -256,9 +285,9 @@ export function MobileFlow({ ir, selection, serverErrors, serverWarnings, dispat
         return;
       }
       // 複数の出口（分岐・振り分け・エラー時）。
-      for (const port of ports) {
+      for (const { port, missing } of ports) {
         const label = portLabel(port) || port;
-        push(depth + 1, <PortRow label={label} />);
+        push(depth + 1, <PortRow label={label} missing={missing} />);
         const edges = outs.filter((e) => (e.from_port ?? "out") === port);
         if (edges.length === 0) {
           push(

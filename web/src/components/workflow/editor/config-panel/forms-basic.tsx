@@ -28,6 +28,8 @@ export type FormProps = {
   inMapRegion: boolean;
   fieldErrors: Map<string, string>;
   serverCheck: ServerCheck;
+  /// サーバが導いたこのノードの出口（判定のノード・検証 API の `node_ports`。まだ無ければ undefined）。
+  serverPorts?: readonly string[];
 };
 
 export function RagSearchForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {

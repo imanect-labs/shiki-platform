@@ -39,7 +39,15 @@ export type SaveResult = Omit<Schemas["SaveWorkflowResponse"], "warnings"> & {
 
 /// 検証の結果（`errors` 空 = 保存可能・`warnings` は保存を止めない）。`declaredScopes` はノードが要する
 /// スコープをサーバが補完した宣言（保存するとこの宣言になる・C-P1-2）。
-export type ValidateResult = { errors: ValidationError[]; warnings: ValidationError[]; declaredScopes: string[] | null };
+/// `nodePorts` はノードの出口（ノード id → 出口の名前・表示の順）。保存時検証 V2 と同じ Rust の関数が導く
+/// （エディタはこれで出口のハンドルを描き、導出を TS に書き写さない・H15）。params が契約に合わず出口を導けない
+/// ノードは載らない。
+export type ValidateResult = {
+  errors: ValidationError[];
+  warnings: ValidationError[];
+  declaredScopes: string[] | null;
+  nodePorts: Record<string, string[]>;
+};
 
 /// 保存を止めない警告のコード（Rust の `workflow_engine::SAVE_WARNING_CODES` から生成した定数・手書きしない・
 /// BUG-48）。たとえば `WARNING_CODES.SEMANTICS_CHANGED` は意味論の切替で分岐の結果が変わり得る条件、
@@ -172,7 +180,12 @@ export async function validateWorkflow(ir: WorkflowIr): Promise<ValidateResult> 
       warnings?: ValidationError[];
     }
   >(res);
-  return { errors: body.errors, warnings: body.warnings ?? [], declaredScopes: body.declared_scopes ?? null };
+  return {
+    errors: body.errors,
+    warnings: body.warnings ?? [],
+    declaredScopes: body.declared_scopes ?? null,
+    nodePorts: body.node_ports ?? {},
+  };
 }
 
 // ── AI エージェントの設定の天井（BUG-6）──────────────────────────────

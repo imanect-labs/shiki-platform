@@ -1,13 +1,33 @@
 /// ノードの出力ポート（描画を持たない・キャンバスのハンドル・追加先・エディタの reducer が同じ規則で使う）。
+///
+/// 出口の決まり方はカタログの `port_rule`（Rust の単一定義から生成・ir.md §5.2）が決める。
+/// - `decide_route`（AI で判定）: 出口はサーバが params から導いたもの（検証 API の `node_ports`）を使い、
+///   TS には導出を書かない（H15）。応答が来るまではカタログの静的な出口（無い）だけ。
+/// - それ以外（静的・振り分け・承認）は従来どおり手元で導く（設定を変えた同じ 1 手で消えた出口のエッジを外す・
+///   BUG-30）。
 
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
-import type { Node as IrNode } from "@/generated/workflow-ir";
+import type { Edge, Node as IrNode } from "@/generated/workflow-ir";
+
+/// 検証 API が導いた出口（ノード id → 出口の名前）。応答に無いノードは載らない。
+export type ServerPorts = Readonly<Record<string, readonly string[]>>;
+
+/// 出口をサーバの導出（`node_ports`）から描くノードか。
+export function portsFromServer(nodeType: string): boolean {
+  return NODE_CATALOG.find((c) => c.type === nodeType)?.port_rule === "decide_route";
+}
 
 /// ノードの出力ポート（カタログ＋設定から導出・ir.md §5.2）。
-export function outputPorts(irNode: IrNode): string[] {
+///
+/// `known` はこのノードについてサーバが導いた出口（`ServerPorts[node.id]`）。`decide_route` のノードだけが使う。
+export function outputPorts(irNode: IrNode, known?: readonly string[]): string[] {
   const entry = NODE_CATALOG.find((c) => c.type === irNode.type);
   let ports: string[];
-  if (irNode.type === "control.switch") {
+  if (entry?.port_rule === "decide_route") {
+    // 出口の集合はサーバの導出に従う。エラー時の出口（どのノードにも共通の構造ポート）だけは、
+    // 「失敗したとき」を変えた同じ 1 手で出し入れする（応答を待たずにハンドルとエッジを揃える）。
+    ports = (known ?? entry.output_ports).filter((p) => p !== "error");
+  } else if (irNode.type === "control.switch") {
     const cases = (irNode.params as { cases?: { port: string }[] } | null)?.cases ?? [];
     // どの case にも一致しない値は実行エンジンが `default` へ流す（control/mod.rs）。
     // フォールバック経路を配線できるよう常に default ハンドルを出す（`out` は発しない）。
@@ -33,4 +53,42 @@ export function outputPorts(irNode: IrNode): string[] {
   }
   if (irNode.on_error === "continue") ports.push("error");
   return ports;
+}
+
+/// 描く出口の 1 つ。`missing` は今の設定に無い出口（そこから出るエッジがある・保存は `ir.unknown_port` で止まる）。
+export type DrawnPort = { port: string; missing: boolean };
+
+/// 描く出口: 規則の出口に、規則に無い出口から出るエッジの出口を足したもの。
+///
+/// 無い出口のエッジもハンドルを描かないとキャンバスに線が出ず、選んで消せない（読み込んだ定義の誤り・判定の
+/// 振り分けを変えた後のエッジ）。判定のノードで、サーバの導出がまだ今の設定のものでない間（開いた直後・
+/// 設定を変えてから次の検証の応答まで・設定が契約に合わない間）は、エッジの出口を誤りと決めつけずにそのまま描く。
+///
+/// `edgePorts` はこのノードから出るエッジの出口（[`edgePortsOf`]）。`fresh` は `known` が今の設定から
+/// 導いたものか（エディタの `serverPortsParams` と今の params が同じ）。
+export function drawnPorts(
+  irNode: IrNode,
+  known: readonly string[] | undefined,
+  edgePorts: readonly string[],
+  fresh = true,
+): DrawnPort[] {
+  const ports = outputPorts(irNode, known);
+  const pending = portsFromServer(irNode.type) && (known === undefined || !fresh);
+  const out: DrawnPort[] = ports.map((port) => ({ port, missing: false }));
+  for (const port of edgePorts) {
+    if (out.some((p) => p.port === port)) continue;
+    out.push({ port, missing: !pending });
+  }
+  return out;
+}
+
+/// ノードから出るエッジの出口（重なりなし・エッジの順）。
+export function edgePortsOf(nodeId: string, edges: readonly Edge[]): string[] {
+  const out: string[] = [];
+  for (const e of edges) {
+    if (e.from !== nodeId) continue;
+    const port = e.from_port ?? "out";
+    if (!out.includes(port)) out.push(port);
+  }
+  return out;
 }

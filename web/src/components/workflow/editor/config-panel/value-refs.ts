@@ -1,7 +1,7 @@
 /// 値の入力欄（value-expr-input.tsx）の参照・差し込みの計算（描画を持たない・BUG-1）。
 ///
 /// - 参照の候補: 入力項目（input_schema の properties）・祖先ブロックの出力（設定で決まる項目を含む:
-///   「AI に聞く」の出力の形の `data/<項目>`）・map 領域内の each・
+///   「AI に聞く」の出力の形の `data/<項目>`・「AI で判定」の質問ごとの答え）・map 領域内の each・
 ///   きっかけの内容の項目（イベントのカタログの単一定義・D-47）・入力全体・きっかけの内容全体。
 ///   参照先の既定を「入力全体」にせず、ここから選ばせる。
 /// - 差し込み名の自動命名（path の末尾。同じ名前で別の参照があれば連番）。
@@ -74,6 +74,8 @@ export function outputKeys(nodeType: string | undefined): string[] {
 /// 設定で決まる項目をその後ろに足す:
 /// - 「AI に聞く」（llm.invoke）: `data` は出力の形（`output_schema`）を書いたときだけ出し、その項目ごとに
 ///   `data/<項目>` を足す（ir.md §7.3）。
+/// - 「AI で判定」（ai.decide）: 質問ごとに答え（`answers/<キー>/value`）と確からしさ（`/confidence`）、
+///   段階の質問は段階の番号（`/level_index`・0 から）を足す（ir.md §7.11）。
 export function outputRefFields(a: RefCandidate): { path: string[]; label: string }[] {
   const params = (a.params ?? {}) as Record<string, unknown>;
   const out: { path: string[]; label: string }[] = [];
@@ -85,6 +87,14 @@ export function outputRefFields(a: RefCandidate): { path: string[]; label: strin
       continue;
     }
     out.push({ path: [k], label: k });
+    if (a.type === "ai.decide" && k === "answers" && Array.isArray(params.questions)) {
+      for (const q of params.questions as { key?: unknown; type?: unknown }[]) {
+        if (typeof q?.key !== "string" || q.key === "") continue;
+        out.push({ path: [k, q.key, "value"], label: `${q.key} の答え` });
+        out.push({ path: [k, q.key, "confidence"], label: `${q.key} の確からしさ` });
+        if (q.type === "score") out.push({ path: [k, q.key, "level_index"], label: `${q.key} の段階の番号` });
+      }
+    }
   }
   return out;
 }

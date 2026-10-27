@@ -103,9 +103,11 @@ export function WorkflowEditor({
     const ir = state.ir;
     const timer = setTimeout(() => {
       validateWorkflow(ir)
-        .then(({ errors, warnings, declaredScopes }) => {
+        .then(({ errors, warnings, declaredScopes, nodePorts }) => {
           dispatch({ type: "set_errors", errors, ir });
           dispatch({ type: "set_warnings", warnings });
+          // 判定のノードの出口（サーバの導出・H15）。設定を変えると、この応答でハンドルが変わる。
+          dispatch({ type: "set_ports", ports: nodePorts, ir });
           if (declaredScopes) setScopes(declaredScopes);
         })
         .catch(() => {
@@ -119,9 +121,10 @@ export function WorkflowEditor({
   React.useEffect(() => {
     let active = true;
     validateWorkflow(initialIr)
-      .then(({ warnings, declaredScopes }) => {
+      .then(({ warnings, declaredScopes, nodePorts }) => {
         if (!active) return;
         dispatch({ type: "set_warnings", warnings });
+        dispatch({ type: "set_ports", ports: nodePorts, ir: initialIr });
         if (declaredScopes) setScopes(declaredScopes);
       })
       .catch(() => {
@@ -258,8 +261,8 @@ export function WorkflowEditor({
     [dispatch, state.ir, state.layout],
   );
   const requestAddAtEnd = React.useCallback(
-    () => setAdding({ target: endTarget(state.ir), label: "流れの末尾に追加" }),
-    [state.ir],
+    () => setAdding({ target: endTarget(state.ir, state.serverPorts), label: "流れの末尾に追加" }),
+    [state.ir, state.serverPorts],
   );
   const togglePalette = React.useCallback(() => setPaletteOpen((p) => !p), []);
   const chromeCtx: EditorChromeContext = {
@@ -286,6 +289,8 @@ export function WorkflowEditor({
                 selection={state.selection}
                 serverErrors={state.serverErrors}
                 serverWarnings={state.serverWarnings}
+                serverPorts={state.serverPorts}
+                serverPortsParams={state.serverPortsParams}
                 dispatch={dispatch}
               />
             </ReactFlowProvider>
@@ -301,7 +306,7 @@ export function WorkflowEditor({
             {desktop ? <ScopesPill scopes={scopes} className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2" /> : null}
             {paletteOpen && desktop ? (
               <FadeSlide from="left" className="absolute inset-y-3 left-3 z-10 w-64">
-                <Palette onPick={(nodeType) => pick(endTarget(state.ir), nodeType)} />
+                <Palette onPick={(nodeType) => pick(endTarget(state.ir, state.serverPorts), nodeType)} />
               </FadeSlide>
             ) : null}
             {!desktop ? (
@@ -340,6 +345,8 @@ export function WorkflowEditor({
             selection={state.selection}
             serverErrors={state.serverErrors}
             serverWarnings={state.serverWarnings}
+            serverPorts={state.serverPorts}
+            serverPortsParams={state.serverPortsParams}
             dispatch={dispatch}
             onAdd={(target, label) => setAdding({ target, label })}
           />
