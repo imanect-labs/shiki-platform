@@ -25,6 +25,16 @@ import { cn } from "@/lib/utils";
 import { CodeBlock } from "./code-block";
 import { useYuiActions, YuiRunList } from "./yui-actions";
 
+/// SVG ではなく HTML の部品で描く種類（@imanect/yui/react の YuiFigure と同じ分け方）。
+const HTML_KINDS: ReadonlySet<Kind> = new Set(["app", "ask", "plan", "calc"]);
+
+/// 図を本文の左端に揃えるための className。SVG の図は内側の余白（幅 400px 未満は 12px、それ以上は 16px）
+/// だけ外へ広げる。HTML で描く図（入力・ボタンを持つ種類）は余白を持たないので広げない
+/// （広げるとスマホで画面の端からはみ出す）。ノートの図も同じ揃え方にする。
+export function figureBleed(kind: Kind): string | undefined {
+  return HTML_KINDS.has(kind) ? undefined : "-mx-3 sm:-mx-4";
+}
+
 /// 生成中の本文はトークンごとに再描画されるので、props が変わらない限り描き直さない
 /// （確定済みの図・書きかけの行しか変わっていない図の解析とレイアウトを繰り返さない）。
 export const UiFigure = React.memo(function UiFigure({
@@ -179,10 +189,9 @@ export const UiFigure = React.memo(function UiFigure({
       {asTable ? (
         <div className="text-[14px]">{renderTable(text)}</div>
       ) : (
-        // 図の内側の余白（幅 400px 未満は 12px、それ以上は 16px）だけ外へ広げ、見出しを本文の左端に揃える。
         <YuiFigure
           figure={figure}
-          className="-mx-3 sm:-mx-4"
+          className={figureBleed(figure.kind)}
           {...(actions_?.onAction ? { onAction: actions_.onAction } : {})}
           {...(actions_?.actionDisabledReason ? { actionDisabledReason: actions_.actionDisabledReason } : {})}
           {...(actions_?.invokedActions ? { invokedActions: actions_.invokedActions } : {})}
@@ -190,11 +199,8 @@ export const UiFigure = React.memo(function UiFigure({
       )}
       {actions_ ? <YuiRunList runs={actions_.runs} /> : null}
       <figcaption
-        className={cn(
-          "mt-1 flex items-center justify-end gap-1 text-[11px] text-muted-foreground",
-          // 足したボタン（ノートの「ソース」）で狭い幅に収まらないときだけ折り返す（チャットは従来どおり）。
-          actions != null && "flex-wrap",
-        )}
+        // 狭い幅（スマホ）に収まらないときはボタンごとに次の行へ送る（ボタンの文字の途中では折り返さない）。
+        className="mt-1 flex flex-wrap items-center justify-end gap-1 text-[11px] text-muted-foreground"
       >
         {note ? <span className="mr-auto">{note}</span> : null}
         {actions_?.saveAsApp ? (
@@ -289,7 +295,7 @@ export function ToolbarButton({
       aria-pressed={pressed}
       aria-label={label}
       className={cn(
-        "flex items-center gap-1 rounded-md px-1.5 py-1 transition-colors hover:bg-secondary hover:text-foreground",
+        "flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 transition-colors hover:bg-secondary hover:text-foreground",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         "data-[state=open]:bg-secondary data-[state=open]:text-foreground",
         className,
