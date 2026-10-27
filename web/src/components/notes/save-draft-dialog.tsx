@@ -72,75 +72,81 @@ export function SaveDraftDialog({
   const canSave = name.trim().length > 0 && !saving;
 
   return (
-    <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>ドライブに保存</DialogTitle>
-            <DialogDescription>{description}</DialogDescription>
-          </DialogHeader>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>ドライブに保存</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
 
-          <div className="space-y-3">
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium">{entityLabel}名</span>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={`${entityLabel}名`}
-                data-testid="save-draft-name"
-                autoFocus
-              />
-            </label>
+        <div className="space-y-3">
+          <label className="block space-y-1.5">
+            <span className="text-sm font-medium">{entityLabel}名</span>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={`${entityLabel}名`}
+              data-testid="save-draft-name"
+              autoFocus
+            />
+          </label>
 
-            <div className="space-y-1.5">
-              <span className="text-sm font-medium">保存先</span>
+          <div className="space-y-1.5">
+            <span className="text-sm font-medium">保存先</span>
+            <button
+              type="button"
+              onClick={() => setPickerOpen(true)}
+              data-testid="save-draft-location"
+              className="flex w-full items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-left text-sm transition-colors hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+              <span className="min-w-0 flex-1 truncate">
+                {folder ? folder.name : "マイドライブ（ルート）"}
+              </span>
+              <FolderInput className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            </button>
+            {folder ? (
               <button
                 type="button"
-                onClick={() => setPickerOpen(true)}
-                data-testid="save-draft-location"
-                className="flex w-full items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-left text-sm transition-colors hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => setFolder(null)}
+                className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
               >
-                <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                <span className="min-w-0 flex-1 truncate">
-                  {folder ? folder.name : "マイドライブ（ルート）"}
-                </span>
-                <FolderInput className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                ルートに戻す
               </button>
-              {folder ? (
-                <button
-                  type="button"
-                  onClick={() => setFolder(null)}
-                  className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                >
-                  ルートに戻す
-                </button>
-              ) : null}
-            </div>
+            ) : null}
           </div>
+        </div>
 
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>
-              キャンセル
-            </Button>
-            <Button
-              type="button"
-              disabled={!canSave}
-              data-testid="save-draft-confirm"
-              onClick={() => onConfirm({ name: name.trim(), parentId: folder?.id ?? null })}
-            >
-              {saving ? "保存中…" : "保存"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+            disabled={saving}
+          >
+            キャンセル
+          </Button>
+          <Button
+            type="button"
+            disabled={!canSave}
+            data-testid="save-draft-confirm"
+            onClick={() => onConfirm({ name: name.trim(), parentId: folder?.id ?? null })}
+          >
+            {saving ? "保存中…" : "保存"}
+          </Button>
+        </DialogFooter>
 
-      <FolderPicker
-        open={pickerOpen}
-        onOpenChange={setPickerOpen}
-        purpose="scope"
-        onSelect={(f) => setFolder({ id: f.id, name: f.name })}
-      />
-    </>
+        {/* ピッカーは DialogContent の**中**に置く（React ツリー上の子ダイアログにする）。外の兄弟に
+              置くと、ピッカーでの選択がこのダイアログの外側操作とみなされて一緒に閉じ、開き直すと
+              保存先がルートへ戻る（＝サブフォルダへ保存できない）。 */}
+        <FolderPicker
+          open={pickerOpen}
+          onOpenChange={setPickerOpen}
+          purpose="destination"
+          onSelect={(f) => setFolder({ id: f.id, name: f.name })}
+        />
+      </DialogContent>
+    </Dialog>
   );
 }
 

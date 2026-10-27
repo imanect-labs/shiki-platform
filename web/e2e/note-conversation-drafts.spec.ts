@@ -25,6 +25,16 @@ async function createNoteViaApi(page: Page, name: string): Promise<string> {
   }, name);
 }
 
+async function createFolderViaApi(page: Page, name: string, parentId?: string): Promise<string> {
+  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const res = await page.request.post("/api/folders", {
+    headers: { "X-CSRF-Token": csrf },
+    data: { name, parent_id: parentId ?? null },
+  });
+  expect(res.status(), await res.text()).toBeLessThan(300);
+  return ((await res.json()) as { id: string }).id;
+}
+
 /// ホームから会話を開始して text を送信する。
 async function sendFromHome(page: Page, text: string) {
   await page.goto("/");
@@ -77,6 +87,39 @@ test("下書き: チャット→下書き画面→ドライブに保存で会話
   await page.getByTestId("note-conversation-switcher").getByRole("button").first().click();
   await expect(page.getByRole("menuitem", { name: /会話 1/ })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: /会話 2/ })).toHaveCount(0);
+});
+
+test("下書き: 保存先にサブフォルダ（ルート以外）を選んで保存できる", async ({ page }) => {
+  await loginViaKeycloak(page); // alice
+  const parentName = uniqueName("保存先親");
+  const childName = uniqueName("保存先子");
+  const parentId = await createFolderViaApi(page, parentName);
+  const childId = await createFolderViaApi(page, childName, parentId);
+  const noteName = uniqueName("下書き保存先");
+  await sendFromHome(page, `savenote:${noteName}`);
+  await page.waitForURL(/\/notes\/draft/, { timeout: 25_000 });
+  await expect(
+    page.getByTestId("draft-note-editor").getByRole("heading", { name: noteName }),
+  ).toBeVisible({ timeout: 20_000 });
+
+  // 保存ダイアログ → 保存先ピッカーで「親 → 子」へ降りて子を選ぶ。
+  await page.getByTestId("draft-save-button").click();
+  await page.getByTestId("save-draft-location").click();
+  const picker = page.getByRole("dialog", { name: "フォルダを選択" });
+  await picker.getByRole("button", { name: parentName, exact: true }).click();
+  await picker.getByRole("button", { name: childName, exact: true }).click();
+  await picker.getByRole("button", { name: `「${childName}」を選択` }).click();
+  await expect(picker).toBeHidden();
+  await expect(page.getByTestId("save-draft-location")).toContainText(childName);
+
+  const created = page.waitForResponse(
+    (r) => r.url().endsWith("/api/notes") && r.request().method() === "POST",
+  );
+  await page.getByTestId("save-draft-confirm").click();
+  const res = await created;
+  expect(res.status(), await res.text()).toBe(200);
+  expect(((await res.json()) as { parent_id: string | null }).parent_id).toBe(childId);
+  await page.waitForURL(/\/notes\/[0-9a-f-]{36}/i, { timeout: 25_000 });
 });
 
 test("下書き: 同じ会話で複数の下書きをタブで切り替える", async ({ page }) => {
@@ -140,6 +183,29 @@ test("分割ビュー: 会話の切替と「新しい会話」（1:N・旧会話
   await page.getByTestId("note-conversation-switcher").getByRole("button").first().click();
   await expect(page.getByRole("menuitem", { name: /会話 1/ })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: /会話 2/ })).toBeVisible();
+});
+
+test("エージェントモードでも開いているノートを編集対象として AI に渡す", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const nodeId = await createNoteViaApi(page, uniqueName("agent-origin"));
+  await openNote(page, nodeId);
+  await page.getByTestId("note-ask-ai").click();
+  const panel = page.getByTestId("note-chat-panel");
+  const composer = panel.getByLabel("メッセージを入力");
+  await expect(composer).toBeVisible({ timeout: 20_000 });
+
+  // エージェントモード ON で送る（stub は echosystem: で受け取った system をそのまま返す）。
+  // 開いているノートの node_id が届かないと、AI は新規下書きへ逃げてルートに別ファイルを作る。
+  const agentSwitch = panel.getByRole("switch", { name: "エージェントモード" });
+  await agentSwitch.click();
+  await expect(agentSwitch).toHaveAttribute("aria-checked", "true");
+  await composer.fill("echosystem: 確認");
+  await panel.getByRole("button", { name: "送信" }).click();
+  // 自律プロファイルの system で走ったこと（通常チャットの経路で通っていないこと）も確かめる。
+  await expect(panel.getByText(/あなたは自律エージェントです/).first()).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(panel.getByText(new RegExp(`node_id: ${nodeId}`)).first()).toBeVisible();
 });
 
 test("図の挿入: AI が ```ui の図をノート本文へ自動挿入する（document.embed）", async ({ page }) => {
