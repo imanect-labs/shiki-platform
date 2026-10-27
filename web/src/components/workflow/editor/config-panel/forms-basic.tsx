@@ -27,6 +27,8 @@ export type FormProps = {
   refCandidates: RefCandidate[];
   inMapRegion: boolean;
   fieldErrors: Map<string, string>;
+  /// 欄の下に出す保存時の警告（params の項目名 → 文言・欄に写すコードだけ。index.tsx の FIELD_WARNING_CODES）。
+  fieldWarnings?: Map<string, string>;
   serverCheck: ServerCheck;
   /// サーバが導いたこのノードの出口（判定のノード・検証 API の `node_ports`。まだ無ければ undefined）。
   serverPorts?: readonly string[];
@@ -62,7 +64,15 @@ export function RagSearchForm({ node, dispatch, refCandidates, inMapRegion, fiel
   );
 }
 
-export function LlmInvokeForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors, serverCheck }: FormProps) {
+export function LlmInvokeForm({
+  node,
+  dispatch,
+  refCandidates,
+  inMapRegion,
+  fieldErrors,
+  fieldWarnings,
+  serverCheck,
+}: FormProps) {
   const p = paramsOf<NodeParamsByType["llm.invoke"]>(node);
   // 出力の上限は数で入れる。前の結果から決める定義（AI が作ったものなど）はそのまま値の欄で見せる。
   const maxTokensLiteral = p.max_tokens === undefined || typeof p.max_tokens === "number";
@@ -89,6 +99,7 @@ export function LlmInvokeForm({ node, dispatch, refCandidates, inMapRegion, fiel
         model={typeof p.model === "string" ? p.model : undefined}
         onChange={(effort) => patchParams(dispatch, node, { effort })}
         error={fieldErrors.get("effort")}
+        warning={fieldWarnings?.get("effort")}
       />
       <ValueExprInput
         label="前提の指示（省略可）"

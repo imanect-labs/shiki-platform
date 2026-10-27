@@ -132,6 +132,10 @@ function RunTimeoutSuggestion({ ctx }: { ctx: EditorContext }) {
 /// シートの本文の下端の余白（浮いているボタンの高さ 44px ＋ 余裕）。
 const SHEET_BOTTOM_SPACE = "pb-20";
 
+/// 欄の下に出す保存時の警告のコード（注意の帯には出さない・生成した定数で引く）。書いた思考の深さが組織の設定に
+/// 従うので使われない（D-75）。必須の文字の欄の空（`REQUIRED_TEXT_EMPTY`）は「入力してください」として別に扱う。
+const FIELD_WARNING_CODES: ReadonlySet<string> = new Set([WARNING_CODES.EFFORT_IGNORED]);
+
 /// 置いたときに空の文字で入れてある必須の欄（`defaultParams` の `""`）のうち、まだ空のもの。
 /// 保存は通るが中身の無い指示で動いてしまうので、欄の下で入力を促す（BUG-15）。
 function blankRequired(node: IrNode): string[] {
@@ -221,8 +225,20 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
     for (const key of [...blankRequired(node), ...blankFields]) if (!map.has(key)) map.set(key, "入力してください");
     return map;
   }, [errorView, node, blankFields]);
+  // 欄に写す警告（書いた思考の深さが組織の設定に従うので使われない・D-75 など）は、その欄の下に出す。
+  const fieldWarnings = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const w of allWarnings) {
+      const field = FIELD_WARNING_CODES.has(w.code) ? paramField(w.path) : null;
+      if (field && !map.has(field)) map.set(field, w.message);
+    }
+    return map;
+  }, [allWarnings]);
   const params = (node.params ?? {}) as Record<string, unknown>;
-  const nodeWarnings = allWarnings.filter((w) => !(w.code === WARNING_CODES.REQUIRED_TEXT_EMPTY && paramField(w.path)));
+  const nodeWarnings = allWarnings.filter(
+    (w) =>
+      !((w.code === WARNING_CODES.REQUIRED_TEXT_EMPTY || FIELD_WARNING_CODES.has(w.code)) && paramField(w.path)),
+  );
   // このノードから出るエッジの出口（中身が同じなら同じ配列を渡す）。
   const edgePortsKey = JSON.stringify(edgePortsOf(node.id, ctx.state.ir.edges));
   const edgePorts = React.useMemo(() => JSON.parse(edgePortsKey) as string[], [edgePortsKey]);
@@ -312,6 +328,7 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
                 refCandidates={refCandidates}
                 inMapRegion={inMapRegion}
                 fieldErrors={fieldErrors}
+                fieldWarnings={fieldWarnings}
                 serverCheck={serverCheck}
                 serverPorts={ctx.state.serverPorts[node.id]}
                 serverPortsFresh={ctx.state.serverPortsParams[node.id] === node.params}

@@ -4,6 +4,7 @@
 /// フォーム部品（フィールド枠・数値入力・見出しを名前にする入力の欄）。
 
 import * as React from "react";
+import { TriangleAlert } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import {
@@ -26,20 +27,23 @@ import type { EditorAction } from "../ir-state";
 type FieldIds = { labelId: string; descId: string | undefined };
 const FieldContext = React.createContext<FieldIds | undefined>(undefined);
 
+/// `warning` は保存を止めない警告（サーバの保存時の警告のうち、欄に写すもの）。誤りが無ければ注記の代わりに出す。
 export function Field({
   label,
   hint,
   error,
+  warning,
   children,
 }: {
   label: string;
   hint?: string;
   error?: string | null;
+  warning?: string | null;
   children: React.ReactNode;
 }) {
   const labelId = React.useId();
   const descId = React.useId();
-  const described = Boolean(error || hint);
+  const described = Boolean(error || warning || hint);
   const ids = React.useMemo(
     () => ({ labelId, descId: described ? descId : undefined }),
     [labelId, descId, described],
@@ -53,6 +57,11 @@ export function Field({
       {error ? (
         <p id={descId} className="text-[11px] text-destructive">
           {error}
+        </p>
+      ) : warning ? (
+        <p id={descId} className="flex items-start gap-1 text-[11px] leading-relaxed text-foreground" data-field-warning>
+          <TriangleAlert className="mt-px size-3.5 shrink-0 text-[var(--season-autumn)]" aria-hidden />
+          <span className="min-w-0 [overflow-wrap:anywhere]">{warning}</span>
         </p>
       ) : hint ? (
         <p id={descId} className="text-[11px] text-muted-foreground">
