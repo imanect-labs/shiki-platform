@@ -31,6 +31,8 @@ import { Input } from "@/components/ui/input";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import {
   createMiniApp,
+  getArtifact,
+  getSkill,
   listArtifacts,
   updateMiniApp,
   type ArtifactMeta,
@@ -41,6 +43,21 @@ import { cn } from "@/lib/utils";
 import { getWorkflowVersion } from "@/lib/workflow-api";
 
 type Pin = MiniAppBody["workflows"][number];
+
+/// 束ねているスキルのピンを読めるか（スキルの一覧は先頭のページしか返さないので、一覧に無いことでは決めない・
+/// ピンの版を直に読んで、404・403 のときだけ読めないとする・BUG-17）。
+type PinnedSkill =
+  | { state: "checking" }
+  | { state: "readable"; name: string | null }
+  | { state: "unreadable" }
+  /// 通信・サーバの誤りで決められない（読めないと決めつけない）。
+  | { state: "unknown" };
+
+/// 誤りの状態コード（`artifact-api` の `ok` が添える）。
+function statusOf(e: unknown): number | null {
+  const status = (e as { status?: unknown } | null)?.status;
+  return typeof status === "number" ? status : null;
+}
 
 /// 新しいアプリの画面の雛形（最初に選んだワークフローの名前を入れる）。
 function templateScreen(workflow: string): string {
@@ -106,8 +123,7 @@ export function MiniAppEditorDialog({
   const sourceEdited = React.useRef(false);
   const [inputs, setInputs] = React.useState<Record<string, WorkflowChoice["inputs"]>>({});
   const [skills, setSkills] = React.useState<ArtifactMeta[]>([]);
-  // スキルの一覧を読み終えたか（読めなかったときは false のまま・束ねたスキルを「読めない」と決めつけない）
-  const [skillsLoaded, setSkillsLoaded] = React.useState(false);
+  const [pinnedSkill, setPinnedSkill] = React.useState<PinnedSkill>({ state: "checking" });
   const [workflows, setWorkflows] = React.useState<ArtifactMeta[]>([]);
   const [skillId, setSkillId] = React.useState("");
   const [pins, setPins] = React.useState<Pin[]>([]);
@@ -130,14 +146,29 @@ export function MiniAppEditorDialog({
     setBuilderKey((k) => k + 1);
     setInputs({});
     setError(null);
-    setSkillsLoaded(false);
-    void listArtifacts("skill")
-      .then((list) => {
-        setSkills(list);
-        setSkillsLoaded(true);
-      })
-      .catch(() => setSkills([]));
+    void listArtifacts("skill").then(setSkills).catch(() => setSkills([]));
     void listArtifacts("workflow").then(setWorkflows).catch(() => setWorkflows([]));
+    // 束ねているスキルは一覧（先頭のページだけ）に有るかでなく、ピンの版を直に読んで確かめる。
+    setPinnedSkill({ state: "checking" });
+    const pin = app?.body.skill;
+    if (!pin) return;
+    let live = true;
+    void getSkill(pin.artifact_id, pin.version)
+      .then(async () => {
+        // 名前は選択欄に出すためだけに読む（読めなくても、版が読めたので読めるスキルとして扱う）。
+        const name = await getArtifact(pin.artifact_id).then(
+          (m) => m.name,
+          () => null,
+        );
+        if (live) setPinnedSkill({ state: "readable", name });
+      })
+      .catch((e: unknown) => {
+        const status = statusOf(e);
+        if (live) setPinnedSkill({ state: status === 403 || status === 404 ? "unreadable" : "unknown" });
+      });
+    return () => {
+      live = false;
+    };
   }, [open, app]);
 
   const addWorkflow = () => {
@@ -187,13 +218,20 @@ export function MiniAppEditorDialog({
     setTab(next);
   };
 
-  // 束ねているスキルが自分の一覧に無い（削除された・自分には読めない）。選択欄に残して見せ、選び直しを促す
-  // （一覧に無いと選択欄は「なし」に見えるのに、保存ではそのピンを送って止まる・BUG-17）。
-  const pinnedSkill = app?.body.skill;
+  // 束ねているスキルが一覧に無いとき（一覧の先頭のページの外・削除された・自分には読めない）も選択欄に残して見せる
+  // （一覧に無いと選択欄は「なし」に見えてしまう）。読めないと確かめられたときだけ、選び直しを促す（BUG-17）。
+  const pin = app?.body.skill ?? null;
+  const pinOutsideList = pin != null && !skills.some((s) => s.id === pin.artifact_id) ? pin : null;
   const missingSkill =
-    pinnedSkill != null && skillId === pinnedSkill.artifact_id && skillsLoaded && !skills.some((s) => s.id === skillId)
-      ? pinnedSkill
+    pinOutsideList != null && skillId === pinOutsideList.artifact_id && pinnedSkill.state === "unreadable"
+      ? pinOutsideList
       : null;
+  const pinLabel = (p: NonNullable<MiniAppBody["skill"]>) =>
+    pinnedSkill.state === "unreadable"
+      ? `読めないスキル（v${p.version}）`
+      : pinnedSkill.state === "readable" && pinnedSkill.name
+        ? `${pinnedSkill.name}（v${p.version}）`
+        : `束ねているスキル（v${p.version}）`;
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -392,7 +430,7 @@ export function MiniAppEditorDialog({
               aria-describedby={missingSkill ? "app-skill-missing" : undefined}
             >
               <option value="">なし</option>
-              {missingSkill ? <option value={missingSkill.artifact_id}>読めないスキル（v{missingSkill.version}）</option> : null}
+              {pinOutsideList ? <option value={pinOutsideList.artifact_id}>{pinLabel(pinOutsideList)}</option> : null}
               {skills.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}（v{s.currentVersion}）
