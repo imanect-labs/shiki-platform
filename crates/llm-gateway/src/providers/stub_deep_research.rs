@@ -105,7 +105,7 @@ pub(super) fn deep_research_call(req: &GenerateRequest, prompt_tokens: u64) -> O
                     "fs_append",
                     serde_json::json!({
                         "name": "notes.md",
-                        "content": "E1 | https://example.com/stub-1 | 2026-07-30 | 一次 | 市場は 1.2 兆円 | 「1兆2000億円」\n"
+                        "content": "E1 | https://example.com/stub-1 | 2026-07-30 | 一次 | 市場は 1.2 兆円 | 「1兆2000億円」\nE2 | https://example.org/stub-2 | 2026-03-31 | 二次 | 別集計では 9800 億円 | 「9800億円」\n"
                     }),
                 )],
             ));
@@ -480,6 +480,23 @@ mod tests {
         let report = deep_research_final();
         assert!(report.contains("```ui\nbar "), "{report}");
         assert!(report.contains("note: 出典: "), "{report}");
+    }
+
+    /// 図の数値（1.2 兆円・9800 億円）はどちらも証拠台帳（notes.md）に載っている。
+    #[tokio::test]
+    async fn figure_values_are_in_evidence_ledger() {
+        let mut messages = vec![user("/deep-research auto SaaS 市場")];
+        messages.push(assistant_tool_use("web_search"));
+        messages.push(tool_result());
+        let calls = calls_of(deep_research_call(&req(messages, ALL), 0).expect("step1")).await;
+        let ledger = calls
+            .iter()
+            .find(|(n, i)| n == "fs_append" && i["name"] == "notes.md")
+            .and_then(|(_, i)| i["content"].as_str().map(str::to_string))
+            .expect("notes.md への追記");
+        for value in ["1兆2000億円", "9800億円"] {
+            assert!(ledger.contains(value), "{value} が台帳に無い: {ledger}");
+        }
     }
 
     /// 未配線のツールは呼ばない（web 検索が無い構成でも run が壊れない）。
