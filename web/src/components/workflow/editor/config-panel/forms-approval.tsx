@@ -24,7 +24,8 @@ import { getViewerContext, type DataTable } from "@/lib/data-api";
 import { cn } from "@/lib/utils";
 import { Field, FieldInput, FieldTextarea, NumberInput } from "./common";
 import { DataTableSelect, useDataTables, type TableLookup } from "./data-tables";
-import type { FormProps } from "./forms-basic";
+import { nodeErrorView } from "../validation";
+import type { FormProps, ServerCheck } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
 
@@ -134,6 +135,20 @@ function useSeesWholeTable(tableId: string | null): boolean {
   return whole?.id === tableId && whole.value;
 }
 
+/// 受信箱に出す列の欄の下に出すサーバの誤り（最初の 1 件）。
+///
+/// 状態の列を指す誤り（保存時の照合の `ir.bad_show_field`）は、選べない列の行の注記（外すボタン付き）が同じことを
+/// 言うので、欄の下には重ねない（BUG-82）。どの列を指すかは、誤りの path の添字を検証した時点の値で引く（検証の後に
+/// 並びが変わっても、今の並びに当てて取り違えない）。
+function showFieldsServerError(check: ServerCheck, statusField: string | null | undefined): string | undefined {
+  const checked = (check.node?.params as Partial<Params> | undefined)?.show_fields ?? [];
+  const pointsAtStatus = (path: string | null | undefined) => {
+    const m = /^\/params\/show_fields\/(\d+)$/.exec(path ?? "");
+    return Boolean(m && statusField && checked[Number(m[1])] === statusField);
+  };
+  return nodeErrorView(check.errors.filter((e) => !pointsAtStatus(e.path))).fields.get("show_fields");
+}
+
 /// 選べる列に無い保存済みの列の注記（`certain` は赤字で出す）。`missing`（定義の全体が見えている）でなければ、
 /// 読めないだけで実在する列かもしれないので「無い」と断定しない（サーバの ir.unknown_field も、無い列と読めない列を
 /// 区別せず「このテーブルに無いか、読めない列です」と返す）。
@@ -144,7 +159,7 @@ function unselectableNote(key: string, missing: boolean): { text: string; certai
 }
 
 export function HumanApprovalForm(props: FormProps) {
-  const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
+  const { node, dispatch, refCandidates, inMapRegion, fieldErrors, serverCheck } = props;
   const p = paramsOf<Params>(node);
   // 束縛済みのテーブルが一覧（200 件で打ち切る）に無くても、1 件取って足す（BUG-68）。
   const source = useDataTables({ bound: [p.record?.table] });
@@ -244,7 +259,7 @@ export function HumanApprovalForm(props: FormProps) {
       <ShowFieldsField
         table={table}
         value={p.show_fields ?? []}
-        error={fieldErrors.get("show_fields")}
+        error={showFieldsServerError(serverCheck, table?.schema.status_field)}
         seesWholeTable={seesWholeTable}
         onChange={(v) => set({ show_fields: v.length ? v : undefined })}
       />
@@ -542,7 +557,7 @@ function ShowFieldsField({
     .filter((k) => !selectable.has(k))
     .map((k) =>
       k === table.schema.status_field
-        ? { key: k, text: `状態の列は選べません: ${k}`, certain: true }
+        ? { key: k, text: `状態の列は選べません（状態は受信箱に別に出ます）: ${k}`, certain: true }
         : { key: k, ...unselectableNote(k, seesWholeTable) },
     );
   return (

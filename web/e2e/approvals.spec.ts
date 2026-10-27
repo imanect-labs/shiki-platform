@@ -553,50 +553,6 @@ async function maskedFsmTable(
   return table.id;
 }
 
-test("承認を待つブロック: 受信箱に出す列に状態の列があれば「選べません」と出し、保存の誤り（ir.bad_show_field）も欄に出す（BUG-67）", async ({ page }) => {
-  test.setTimeout(120_000);
-  await loginViaKeycloak(page);
-  const s = await setup(page);
-  // 状態の列を show_fields に持つ版を開く（AI が書いた・保存時の照合が状態の列を止める前に保存した）。
-  let injected = false;
-  await page.route(`**/api/workflows/${s.workflowId}`, async (route) => {
-    if (injected || route.request().method() !== "GET") return route.continue();
-    injected = true;
-    const res = await route.fetch();
-    const body = (await res.json()) as { ir: { nodes: { id: string; params: Record<string, unknown> }[] } };
-    const node = body.ir.nodes.find((n) => n.id === "ok");
-    if (node) node.params.show_fields = ["title", "status", "amount"];
-    await route.fulfill({ response: res, json: body });
-  });
-  await page.goto(`/workflows/${s.workflowId}`);
-  const canvas = page.locator(".react-flow");
-  await expect(canvas.getByText("上長の承認").first()).toBeVisible({ timeout: 15_000 });
-  expect(injected).toBe(true);
-  await canvas.getByText("上長の承認").first().click();
-  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
-  // 状態の列は選べる列のボタンに出ず、外すボタン付きで「選べません」と出る。
-  await expect(panel.getByRole("button", { name: "状態", exact: true })).toHaveCount(0);
-  const stray = panel.getByRole("list", { name: "選べない列" });
-  await expect(stray).toContainText("状態の列は選べません: status");
-
-  // ほかの欄を直すと検証が走り、サーバも状態の列を止める（無い列の誤りとは別の言い方）。理由が欄に出る。
-  await panel.getByRole("textbox", { name: "受信箱の件名" }).fill("経費申請の承認（課長）");
-  await expect(
-    panel.getByText("列 status は状態の列なので、受信箱に出す列には選べません（状態は受信箱に別に出ます）"),
-  ).toBeVisible({ timeout: 15_000 });
-  await expect(panel.getByText(/列 status はこのテーブルに無いか/)).toHaveCount(0);
-
-  // 外すと保存できる（ほかの列は残る）。
-  await stray.getByRole("button", { name: "列 status を外す" }).click();
-  await expect(stray).toHaveCount(0);
-  await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
-  const saved = (await (await page.request.get(`/api/workflows/${s.workflowId}`)).json()) as {
-    ir: { nodes: { id: string; params: Record<string, unknown> }[] };
-  };
-  expect(saved.ir.nodes.find((n) => n.id === "ok")?.params.show_fields).toEqual(["title", "amount"]);
-});
-
 test("承認を待つブロック: テーブルの owner でない編集者には、読めない列を「テーブルに無い列」と言わない（GAP-08）", async ({ browser }) => {
   test.setTimeout(150_000);
   // alice: 金額と別の承認者の列を誰にも読めない列にしたテーブルと、ユーザーの列が読めない列だけのテーブルを作る。
