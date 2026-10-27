@@ -196,12 +196,16 @@ test("エージェントモードでも開いているノートを編集対象�
 
   // エージェントモード ON で送る（stub は echosystem: で受け取った system をそのまま返す）。
   // 開いているノートの node_id が届かないと、AI は新規下書きへ逃げてルートに別ファイルを作る。
-  await panel.getByRole("switch", { name: "エージェントモード" }).click();
+  const agentSwitch = panel.getByRole("switch", { name: "エージェントモード" });
+  await agentSwitch.click();
+  await expect(agentSwitch).toHaveAttribute("aria-checked", "true");
   await composer.fill("echosystem: 確認");
   await panel.getByRole("button", { name: "送信" }).click();
-  await expect(panel.getByText(new RegExp(`node_id: ${nodeId}`)).first()).toBeVisible({
+  // 自律プロファイルの system で走ったこと（通常チャットの経路で通っていないこと）も確かめる。
+  await expect(panel.getByText(/あなたは自律エージェントです/).first()).toBeVisible({
     timeout: 30_000,
   });
+  await expect(panel.getByText(new RegExp(`node_id: ${nodeId}`)).first()).toBeVisible();
 });
 
 test("図の挿入: AI が ```ui の図をノート本文へ自動挿入する（document.embed）", async ({ page }) => {

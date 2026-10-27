@@ -51,7 +51,13 @@ export function FolderPicker({
     [open, current.id],
   );
   const list = useInfiniteList<NodeResponse>(fetchPage, [open, current.id]);
-  const sentinelRef = useInfiniteSentinel(list.loadMore, open && list.hasMore && !list.loading);
+  // 一覧はフォルダだけに絞って出すため、読み足した行がファイルばかりだと sentinel が見えたままになり
+  // IntersectionObserver が再発火しない。取得完了ごとに件数を渡し、見えていれば続きを読む。
+  const sentinelRef = useInfiniteSentinel(
+    list.loadMore,
+    open && list.hasMore && !list.loading,
+    list.loadingMore ? undefined : list.items.length,
+  );
 
   React.useEffect(() => {
     if (open) setStack([{ name: "マイドライブ" }]);
