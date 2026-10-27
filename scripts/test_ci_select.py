@@ -4,6 +4,7 @@
 """
 
 import importlib.util
+import subprocess
 import tempfile
 import textwrap
 import unittest
@@ -176,6 +177,67 @@ class SelectTest(unittest.TestCase):
     def test_full_run_flag(self):
         sel = ci.select(self.members, [], full_run=True)
         self.assertTrue(sel["full"] and sel["rust"] and sel["python"])
+        self.assertTrue(sel["e2e_all"])
+
+    def test_e2e_without_compose_or_table(self):
+        sel = ci.select(self.members, ["ingestion-worker/app.py"])
+        self.assertEqual((sel["compose"], sel["e2e_all"], sel["e2e"], sel["e2e_args"]), (False, False, [], ""))
+        # 対応表が渡されなければ E2E は全部（e2e_args が空 = playwright test に引数を渡さない）。
+        sel = ci.select(self.members, ["web/src/app/page.tsx"])
+        self.assertEqual((sel["e2e_all"], sel["e2e_args"]), (True, ""))
+
+    def test_table_only_change_does_not_start_jobs(self):
+        sel = ci.select(self.members, ["ci/scenarios.toml"])
+        self.assertFalse(sel["full"] or sel["rust"] or sel["compose"])
+
+    def test_always_run_errors(self):
+        root = Path(self._tmp.name)
+        tests = root / "crates" / "data" / "tests"
+        tests.mkdir()
+        (tests / "cross_tenant_it.rs").write_text("")
+        (tests / "plain_it.rs").write_text("")
+        errors = "\n".join(ci.always_run_errors(root, self.members))
+        self.assertIn("crates/data/tests/cross_tenant_it.rs", errors)  # 脅威テストらしい名前
+        self.assertNotIn("plain_it", errors)
+        self.assertIn("policy_threat_it", errors)  # ALWAYS_RUN にあるのに実在しない
+
+
+class SelectionGapTest(unittest.TestCase):
+    JUNIT = textwrap.dedent(
+        """\
+        <testsuites><testsuite name="shiki-data::record_stream_it">
+          <testcase name="slow" classname="shiki-data::record_stream_it"><failure message="x"/></testcase>
+          <testcase name="ok" classname="shiki-data::record_stream_it"/>
+          <testcase name="retried" classname="shiki-yui"><flakyFailure message="y"/></testcase>
+        </testsuite></testsuites>
+        """
+    )
+    LOG = "error: test failed, to rerun pass `-p shiki-chat --test threads_it`\n" \
+          "error: test failed, to rerun pass `-p shiki-yui --lib`\n"
+    REPORT = (
+        '{"suites": [{"title": "notes.spec.ts", "file": "notes.spec.ts", "specs": [], "suites": ['
+        '{"title": "x", "file": "notes.spec.ts", "specs": [{"file": "notes.spec.ts", "tests": [{"status": "unexpected"}]}]}]},'
+        '{"title": "data.spec.ts", "file": "data.spec.ts", "specs": [{"file": "data.spec.ts", "tests": [{"status": "flaky"}]}]}]}'
+    )
+
+    def test_failed_tests_are_parsed(self):
+        self.assertEqual(
+            ci.failed_rust_tests([self.JUNIT], [self.LOG]),
+            {("shiki-data", "record_stream_it"), ("shiki-chat", "threads_it"), ("shiki-yui", "")},
+        )
+        self.assertEqual(ci.failed_e2e_specs([self.REPORT]), {"notes.spec.ts"})
+
+    def test_gap_lists_only_tests_the_pr_would_not_select(self):
+        sel = {"full": False, "packages": ["shiki-chat"], "e2e_all": False, "e2e": ["auth.spec.ts"]}
+        failed = {("shiki-data", "record_stream_it"), ("shiki-chat", "threads_it"), ("shiki-data", "policy_threat_it")}
+        r = ci.selection_gap(sel, failed, {"notes.spec.ts", "auth.spec.ts"})
+        self.assertEqual(r["missed"], ["shiki-data::record_stream_it", "E2E notes.spec.ts"])
+        # 常に回す脅威テストと、選ばれていたものは「PR でも選ばれる」側。
+        self.assertEqual(r["caught"], ["shiki-chat::threads_it", "shiki-data::policy_threat_it", "E2E auth.spec.ts"])
+
+    def test_full_selection_has_no_gap(self):
+        sel = {"full": True, "packages": [], "e2e_all": True, "e2e": []}
+        self.assertEqual(ci.selection_gap(sel, {("x", "y")}, {"z.spec.ts"})["missed"], [])
 
 
 class RealWorkspaceTest(unittest.TestCase):
@@ -187,6 +249,19 @@ class RealWorkspaceTest(unittest.TestCase):
             with self.subTest(pkg=pkg, test=test):
                 self.assertIn(pkg, members)
                 self.assertTrue((REPO / members[pkg]["dir"] / "tests" / f"{test}.rs").exists())
+
+    def test_always_run_and_exemptions_are_consistent(self):
+        self.assertEqual(ci.always_run_errors(REPO, ci.workspace_packages(REPO)), [])
+
+    def test_e2e_args_select_only_the_mapped_specs(self):
+        members = ci.workspace_packages(REPO)
+        tracked = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True).stdout
+        scenarios = ci.ci_scenarios.Scenarios.from_repo(REPO, [f for f in tracked.splitlines() if f])
+        sel = ci.select(members, ["crates/api/src/routes/data.rs"], scenarios=scenarios)
+        self.assertFalse(sel["e2e_all"])
+        self.assertIn(r"e2e/data-grid\.spec\.ts$", sel["e2e_args"].split())
+        self.assertIn(r"e2e/auth\.spec\.ts$", sel["e2e_args"].split())
+        self.assertNotIn(r"e2e/notes\.spec\.ts$", sel["e2e_args"].split())
 
     def test_authz_change_reaches_most_of_the_workspace(self):
         members = ci.workspace_packages(REPO)

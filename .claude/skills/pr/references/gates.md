@@ -25,7 +25,7 @@ sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E
 | --- | --- | --- |
 | Rust (fmt/clippy/test) | `cargo fmt --all --check`<br>`cargo clippy --all-targets --all-features -- -D warnings`<br>`cargo nextest run --workspace --all-features` | `crates/` 差分 |
 | Build shiki-server | （ローカルでは不要。compose 系ジョブへ release バイナリを artifact 共有するための CI 専用ジョブ） | — |
-| Quality gates | `bash scripts/check-file-size.sh`<br>`bash scripts/check-migration-versions.sh`<br>`bash scripts/check-compose-ports.sh`<br>`cargo machete crates` | 常に（`.rs` 追加・依存追加・migration 追加時は必須） |
+| Quality gates | `bash scripts/check-file-size.sh`<br>`bash scripts/check-migration-versions.sh`<br>`bash scripts/check-compose-ports.sh`<br>`python3 -m unittest discover -s scripts -p 'test_*.py'`<br>`python3 scripts/ci-select.py check`<br>`cargo machete crates` | 常に（`.rs` 追加・依存追加・migration 追加・E2E spec／ページ／クレート追加時は必須） |
 | cargo-deny | `cargo deny --all-features check` | `Cargo.toml` / `Cargo.lock` 差分 |
 | Coverage (gate 80%) | 下記「カバレッジ」節 | `crates/` 差分（CI は Rust の変更があれば回す。`.rs` の新規追加時は特に注意） |
 | Web | `pnpm install --frozen-lockfile`<br>`pnpm gen:api`<br>`pnpm lint`<br>`pnpm build` | `web/` 差分 |
@@ -33,7 +33,7 @@ sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E
 | Tabular runner | `cargo fmt --manifest-path crates/tabular/runner/Cargo.toml --check`<br>`cargo clippy --manifest-path crates/tabular/runner/Cargo.toml --release -- -D warnings`<br>`cargo build --manifest-path crates/tabular/runner/Cargo.toml --release`<br>→ `SHIKI_TABULAR_RUNNER=crates/tabular/runner/target/release/shiki-tabular-runner cargo test -p shiki-tabular --test runner_adversarial_it` | `crates/tabular/` 差分 |
 | compose smoke | `bash deploy/compose/smoke-bff.sh` | 認証・起動経路・compose 定義の変更時 |
 | Keycloak User Profile smoke | `bash deploy/compose/smoke-keycloak-user-profile.sh`（compose の Keycloak 相手。`KC=` で URL 指定可） | `deploy/keycloak/` 差分・Keycloak admin REST 経路（`crates/api/src/keycloak_admin.rs`）の変更時 |
-| Web E2E | `references/verify.md` 参照 | `web/` 差分 |
+| Web E2E | `references/verify.md` 参照 | `web/` 差分（CI は下記「テストの選択」の spec だけを回す） |
 | Sandbox gVisor IT | `bash scripts/fetch-native-assets.sh && bash scripts/build-sandbox-rootfs.sh`<br>→ `SANDBOX_GVISOR_IT=1 RUNSC_BIN=deploy/sandbox-assets/bin/runsc GVISOR_ROOTFS=deploy/sandbox-assets/rootfs cargo test -p shiki-sandbox-orchestrator --test gvisor_it -- --test-threads=1` | `crates/sandbox-*` 差分（CI では**非ブロッキング**） |
 
 `scripts/local-gates.sh` は、この表のうち**自動化できるもの**（file-size / fmt / clippy / test / machete / deny / doctest / tabular / web / python）を差分から判定して実行する。
@@ -44,6 +44,22 @@ sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E
 - **`cargo build --all` は不要**。CI では廃止済み（`clippy --all-targets` が全ターゲットの型検査を兼ねる）。
 - **rust ジョブは compose 非依存** = env ゲートされた結合テストはスキップされ、実質ユニットのみ走る。結合テストは coverage ジョブと compose ジョブが担保する。ローカルで IT も回すなら下記「結合テスト」節の env を与える。
 - **doctest は nextest が実行しない**。coverage 側（`cargo llvm-cov --all`）で走るため、doctest を書いたら `cargo test --doc` を別途回す。
+
+## テストの選択と対応表（CI が回すものを決める表）
+
+PR の CI は変更ファイルから回すジョブ・テストを選ぶ（`scripts/ci-select.py`・#921/#922。結果は Job Summary の「テストの選択」）。
+Rust はクレートの依存グラフから自動で決まる。手で保つ表は 2 つで、**載せ忘れは quality ジョブの
+`python3 scripts/ci-select.py check` が落とす**（エラー文言がどこに何を足すかを示す）:
+
+- **`ci/scenarios.toml`（E2E の担当シナリオ対応表）**: E2E spec を足した → その spec が開くページのシナリオの `e2e` へ。
+  ページ（`page.tsx`）を足した → そのページを開く spec のシナリオの `pages` へ。クレートを足した → どこからも依存されない
+  なら `crates`・`[all]`・`[none]` のどれかへ。部品・lib は import から自動で辿るので載せない。
+- **`scripts/ci-select.py` の `ALWAYS_RUN`**: 名前が脅威テストらしい結合テスト（`threat`・`tenant`・`authz`・`scope` 等）を
+  足した → 毎回回すなら `ALWAYS_RUN`、回さなくてよいなら理由を付けて `ALWAYS_RUN_EXEMPT` へ。
+
+対応表で決まらない変更は E2E を全部回す（漏れずに遅くなるだけ。PR に「E2E の担当シナリオ対応表に無い」警告が出たら
+載せる）。main は常に全量で、PR では選ばれないテストが main で落ちると selection-gap ジョブが Issue を起票する
+（選択規則の漏れか flaky）。
 
 ## 結合テスト（IT）をローカルで回す
 
