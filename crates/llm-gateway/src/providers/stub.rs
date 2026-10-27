@@ -5,6 +5,7 @@
 //! - 直近 user メッセージ本文を語単位でストリーミングして返す。
 //! - `slow:<秒> <本文>` は本文を出したあと指定秒だけ生成を続ける（生成中の UI＝順番待ち・停止の検証用）。
 //! - `long:<段落数>` は番号付き段落の長文を数文字ずつ流す（生成中に読み返すスクロールの検証用）。
+//!   `longthink:<段落数>` は同じ数の段落の思考を流してから長文を流す（思考パネルを開いたままの検証用）。
 //! - リクエストにツールがあり、かつ最初のターン（tool_result がまだ無い）で本文が
 //!   既知のプレフィックス（`search:` / `python:` / `websearch:` / `webfetch:`）で始まるとき、
 //!   対応するツールを 1 回だけ呼び出す（agent ループ・各ツールの決定的検証）。プレフィックス
@@ -25,9 +26,10 @@ use std::time::Duration;
 use futures::stream::{self, StreamExt};
 
 use super::stub_deep_research::deep_research_call;
-use super::stub_fixtures::{long_reply, yui_reply};
+use super::stub_fixtures::{long_reply, long_thinking, yui_reply};
 use super::stub_stream::{
-    paced_chunks_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
+    paced_chunks_stream, paced_thinking_then_text_stream, slow_text_stream, text_stream,
+    tool_call_stream, tool_calls_stream,
 };
 use super::stub_triggers::{
     conversation_title_call, echo_system_call, generic_tool_call, note_suggest_call,
@@ -284,14 +286,21 @@ fn yui_call(user_text: &str, prompt_tokens: u64) -> Option<DeltaStream> {
 }
 
 /// 長文の回答 `long:<段落数>`: 番号付き段落を数文字ずつ流す（生成中に上へスクロールして
-/// 読み返しても追従で引き戻されないことを e2e で確かめる）。段落数の省略・不正は 40。
+/// 読み返しても追従で引き戻されないことを e2e で確かめる）。`longthink:<段落数>` は同じ数の
+/// 段落の思考を先に流す（思考パネルを開いたまま読み返す検証用）。段落数の省略・不正は 40。
 fn long_call(user_text: &str, prompt_tokens: u64) -> Option<DeltaStream> {
-    let n = user_text
-        .strip_prefix("long:")?
-        .trim()
-        .parse()
-        .unwrap_or(40);
-    Some(paced_chunks_stream(
+    let (rest, think) = match user_text.strip_prefix("longthink:") {
+        Some(rest) => (rest, true),
+        None => (user_text.strip_prefix("long:")?, false),
+    };
+    let n = rest.trim().parse().unwrap_or(40);
+    let thinking = if think {
+        long_thinking(n)
+    } else {
+        String::new()
+    };
+    Some(paced_thinking_then_text_stream(
+        &thinking,
         &long_reply(n),
         prompt_tokens,
         6,
@@ -532,6 +541,28 @@ mod tests {
         assert!(text.contains("## 第1章") && text.contains("段落1。") && text.contains("段落2。"));
         assert!(!text.contains("段落3。"), "{text}");
         assert!(chunks.iter().all(|c| c.chars().count() <= 6));
+    }
+
+    #[tokio::test]
+    async fn stub_streams_long_thinking_before_reply() {
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "longthink:1")]);
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let (mut thinking, mut text) = (String::new(), String::new());
+        while let Some(ev) = s.next().await {
+            match ev.unwrap() {
+                StreamDelta::ThinkingDelta { text: t } => {
+                    assert!(text.is_empty(), "思考は本文より先に流し切る");
+                    thinking.push_str(&t);
+                }
+                StreamDelta::TextDelta { text: t } => text.push_str(&t),
+                _ => {}
+            }
+        }
+        assert!(
+            thinking.starts_with("思考1。") && !thinking.contains("思考2。"),
+            "{thinking}"
+        );
+        assert!(text.contains("段落1。"), "{text}");
     }
 
     #[tokio::test]

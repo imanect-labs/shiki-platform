@@ -10,6 +10,7 @@ import { usePreferences } from "@/lib/preferences";
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
 import type { Citation } from "@/lib/chat-api";
+import { useRememberedOpen } from "./disclosure-memory";
 import { ToolActivity, type ToolActivityItem } from "./tool-activity";
 
 export function ChainOfThought({
@@ -21,6 +22,7 @@ export function ChainOfThought({
   phase = null,
   /// 次のイベントを待っている間の文言（待った時間で進む）。待っていなければ null。
   waitingLabel = null,
+  memoryKey = null,
 }: {
   thinking: string;
   tools: ToolActivityItem[];
@@ -28,11 +30,14 @@ export function ChainOfThought({
   streaming?: boolean;
   phase?: string | null;
   waitingLabel?: string | null;
+  /// 開閉を覚えておく鍵（回答 ID ＋まとまりの位置）。確定で行が作り直されても開閉を保つ。
+  memoryKey?: string | null;
 }) {
-  // 押して開閉するまでは設定の既定（思考過程を開いて表示・#952）に従う。
-  const [open, setOpen] = React.useState<boolean | null>(null);
+  // 押して開閉するまでは設定の既定（思考過程を開いて表示・#952）に従う。押した後の開閉は、確定で
+  // 行が作り直されても保つ。
+  const [open, setOpen] = useRememberedOpen(memoryKey && `${memoryKey}:thinking`, null);
   const expandByDefault = usePreferences().prefs.expand_reasoning;
-  const [showDetail, setShowDetail] = React.useState(false);
+  const [showDetail, setShowDetail] = useRememberedOpen(memoryKey && `${memoryKey}:detail`);
 
   const hasThinking = thinking.trim().length > 0;
   const hasTools = tools.length > 0;
@@ -88,7 +93,7 @@ export function ChainOfThought({
                 <div>
                   <button
                     type="button"
-                    onClick={() => setShowDetail((v) => !v)}
+                    onClick={() => setShowDetail(!showDetail)}
                     className="flex items-center gap-1 text-[12px] text-muted-foreground/80 transition-colors hover:text-foreground"
                     aria-expanded={showDetail}
                   >
@@ -118,6 +123,7 @@ export function ChainOfThought({
         phaseOverride={phase}
         citations={citations}
         waitingLabel={waitingLabel}
+        memoryKey={memoryKey && `${memoryKey}:tools`}
       />
     </div>
   );

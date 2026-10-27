@@ -1,4 +1,4 @@
-//! 決定的スタブの固定応答（`yui:` 駆動の ```ui の図・`long:` 駆動の長文）。
+//! 決定的スタブの固定応答（`yui:` 駆動の ```ui の図・`long:` / `longthink:` 駆動の長文）。
 //!
 //! [`super::stub`] から分離したフィクスチャ群。ファイルサイズと関心の分離のため独立させる。
 
@@ -64,5 +64,21 @@ pub(super) fn long_reply(paragraphs: usize) -> String {
         );
     }
     out.push_str("以上です。");
+    out
+}
+
+/// `longthink:<段落数>` の思考（番号付きの長い思考テキスト）。
+///
+/// 思考パネルを開いたまま、思考が流れている最中に読み返せることを e2e で確かめるための長文。
+pub(super) fn long_thinking(paragraphs: usize) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for i in 1..=paragraphs {
+        let _ = write!(
+            out,
+            "思考{i}。質問の意図を整理し、どの順で説明すると読みやすいかを検討している。\
+             前の段落との重複を避けつつ、根拠になる情報を確かめてから次へ進む。\n\n"
+        );
+    }
     out
 }

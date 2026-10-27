@@ -62,6 +62,7 @@ import { useTurnJump } from "@/hooks/use-turn-jump";
 import { MessageFeedbackButtons, ThreadFeedbackProvider } from "./message-feedback";
 import { MessageFooter } from "./message-footer";
 import { MessageCitationsProvider, SourcePanelProvider } from "./citations/citation-context";
+import { DisclosureMemoryProvider } from "./disclosure-memory";
 import { CitationSources } from "./citations/citation-sources";
 import { EvidenceTable, EvidenceToggle } from "./citations/evidence-table";
 import { SourcePanelAside, SourcePanelSheet } from "./citations/source-panel";
@@ -816,6 +817,7 @@ export function Conversation({
   return (
     <SourcePanelProvider key={threadId}>
       <ThreadFeedbackProvider threadId={threadId}>
+      <DisclosureMemoryProvider>
       <div className="flex h-full min-h-0">
         <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
           {/* page: 統一ヘッダスロットへタイトル＋共有/設定を注入（横バー二重を解消）。
@@ -985,6 +987,7 @@ export function Conversation({
         {sourceAside ? <SourcePanelAside /> : null}
       </div>
       {!sourceAside ? <SourcePanelSheet /> : null}
+      </DisclosureMemoryProvider>
       </ThreadFeedbackProvider>
     </SourcePanelProvider>
   );
@@ -1301,7 +1304,11 @@ const AssistantRow = React.memo(function AssistantRow({
         <div className="w-full min-w-0">
           <YuiActionContext.Provider value={yuiHost}>
             <div className="space-y-2">
-              <MessageTimeline segments={segments} citations={citations} />
+              <MessageTimeline
+                segments={segments}
+                citations={citations}
+                memoryKey={savedMessageId ?? messageId}
+              />
             </div>
           </YuiActionContext.Provider>
           {workflowRefs.map((b, i) => (
@@ -1407,6 +1414,7 @@ function StreamingRow({
             segments={segments}
             citations={stream.citations}
             streaming
+            memoryKey={stream.assistantMessageId}
             phase={runningSubtask(stream.plan)}
             waitingLabel={waiting.label}
           />

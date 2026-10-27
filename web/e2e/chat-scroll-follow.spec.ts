@@ -124,4 +124,40 @@ test.describe("生成中のスクロール追従", () => {
 
     await expectFollowAfterJump(phone);
   });
+
+  test("思考を開いたまま読み返していても、生成が終わって思考が閉じたり位置が飛んだりしない", async ({
+    page,
+  }) => {
+    await loginViaKeycloak(page);
+    await page.goto("/");
+    const input = page.getByLabel("メッセージを入力");
+    await input.fill("longthink:25");
+    await input.press("Enter");
+    await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
+    // 思考が流れている間に、思考パネルと詳細な思考を開く。
+    await page.getByRole("button", { name: /考えています/ }).click();
+    await page.getByRole("button", { name: "詳細な思考を表示" }).click();
+    await expect.poll(async () => (await metrics(page)).top, { timeout: 30_000 }).toBeGreaterThan(300);
+
+    const box = await page.getByTestId("conversation-scroller").boundingBox();
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 3);
+    for (let i = 0; i < 40; i += 1) {
+      await page.mouse.wheel(0, -2);
+      await page.waitForTimeout(16);
+    }
+    await expectPositionHeld(page);
+
+    // 読んでいる詳細な思考の位置（画面上の y）。
+    const detail = page.getByText(/^思考1。/);
+    const where = async () => ({
+      top: (await metrics(page)).top,
+      y: Math.round((await detail.boundingBox())?.y ?? Number.NaN),
+    });
+    const before = await where();
+    await expect(page.getByRole("button", { name: "生成を停止" })).toHaveCount(0, { timeout: 60_000 });
+    // 確定（生成中の行 → 確定した行）と、その後の読み直し（→ サーバの行）を待つ。
+    await page.waitForTimeout(3_000);
+    await expect(page.getByRole("button", { name: "詳細な思考を隠す" })).toBeVisible();
+    expect(await where()).toEqual(before);
+  });
 });
