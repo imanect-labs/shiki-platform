@@ -296,11 +296,14 @@ test("deep research auto: 確認を省略して 1 ターンで完走する", asy
   await expect(page.getByText("結論と確度").first()).toBeVisible({ timeout: 90_000 });
   await expect(page.locator('[data-ui-kind="ask"], [data-ui-kind="plan"]')).toHaveCount(0);
   await expect(page.getByTestId("note-draft-card").first()).toBeVisible();
-  // 進捗カードは節目ごとに進み、提出で全部完了になる（スタブは手順書どおり 0→1→2→4 / 4）。
+  // 進捗カードは提出で全部完了になり、途中で減らない。途中の状態はイベントが 1 回の描画に
+  // まとまると飛ぶ（スタブは待たずに進む）ので、順序の完全一致ではなく単調性と終着点を見る。
   const progress = await page.evaluate(
     () => (window as unknown as { __planProgress: string[] }).__planProgress,
   );
-  expect(progress, "進捗カードの表示の変化").toEqual(["0/4", "1/4", "2/4", "4/4"]);
+  const done = progress.map((p) => Number(p.split("/")[0]));
+  expect(progress.at(-1), `進捗カードの表示の変化: ${progress.join(" → ")}`).toBe("4/4");
+  expect(done, "進捗が途中で減らない").toEqual([...done].sort((a, b) => a - b));
   if (SHOTS) {
     await page.screenshot({ path: `${SHOTS}/deep-research-auto.png`, fullPage: true });
   }
