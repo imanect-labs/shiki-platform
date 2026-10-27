@@ -37,7 +37,7 @@ ignore = [
     # encode_all/decode_all だけを使う。seekable 機能は無効で、自前のクレートは zstd を直接使わない。
     # zstd を直接使うようになったら見直し、上流が zstd 0.14 に上がったら外す（#932）。
     { id = "RUSTSEC-2026-0391", reason = "影響は stream::raw::{Encoder,Decoder}::with_context のみ。tantivy は bulk API、wasmtime は encode_all/decode_all だけを使う。" },
-    { id = "RUSTSEC-2026-0398", reason = "影響は seekable 機能の Seekable::decompress のみ。seekable 機能は無効。" },
+    { id = "RUSTSEC-2026-0398", reason = "影響は seekable 機能の Seekable::decompress・AdvancedSeekable::decompress のみ。seekable 機能は無効。" },
     { id = "RUSTSEC-2026-0403", reason = "影響は DCtx::decompress_stream（stream::write::Decoder 経由）のみ。bulk API・decode_all は対象外と advisory に明記。" },
 ]
 
