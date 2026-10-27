@@ -213,27 +213,8 @@ export function CommonSection({
             }
           />
         </Field>
-        <Field
-          label="時間制限（秒）"
-          hint={
-            entry?.timeout_default_sec
-              ? `空欄で標準 ${entry.timeout_default_sec} 秒`
-              : "空欄で標準"
-          }
-        >
-          <NumberInput
-            value={node.timeout_sec ?? null}
-            min={1}
-            max={entry?.timeout_max_sec ?? undefined}
-            onChange={(n) =>
-              dispatch({
-                type: "update_node",
-                id: node.id,
-                patch: { timeout_sec: n } as Partial<IrNode>,
-              })
-            }
-          />
-        </Field>
+        {/* 時間の上限（ノードの timeout_sec）は、エンジンが読まず何も起きないので出さない（BUG-96・付録 D の
+            N2.6）。保存済みの値は IR に残す。 */}
       </div>
       <Field
         label="失敗したとき"
