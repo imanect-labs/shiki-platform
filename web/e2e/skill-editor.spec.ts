@@ -251,3 +251,52 @@ test("全角の「＠」でもドライブの参照を開ける", async ({ page 
   await page.keyboard.insertText("規程は ＠");
   await expect(page.getByRole("dialog", { name: "ドライブから参照" })).toBeVisible();
 });
+
+test("参照のラベルの括弧は、保存してもリンクを壊さない", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const folderId = await createFolder(page, uniqueName("規程"));
+  // 名前に「]」を含む項目の参照（ラベルは入れたときの名前）。
+  const instructions = `次を参照: [旧\\[規程\\]](shiki://drive/folder/${folderId})`;
+  const id = await createSkill(page, uniqueName("bracket-skill"), { instructions });
+  await page.goto(`/skills/${id}`);
+  await expect(page.getByTestId("skill-body-editor").getByTestId("drive-ref-chip")).toHaveCount(1);
+  await focusBodyEnd(page);
+  await page.keyboard.type("x");
+  await page.getByTestId("skill-save-button").click();
+  await expect(page.getByText("保存済み v2").first()).toBeVisible({ timeout: 15_000 });
+
+  // 括弧はエスケープされ、読み直しても 1 つの参照のまま（リンクの外へ文字がこぼれない）。
+  const saved = (await skillBody(page, id)).instructions;
+  expect(saved).toContain(`[旧\\[規程\\]](shiki://drive/folder/${folderId})`);
+  await page.reload();
+  const body = page.getByTestId("skill-body-editor");
+  await expect(body.getByTestId("drive-ref-chip")).toHaveCount(1);
+  await expect(body).not.toContainText("shiki://");
+});
+
+test("未保存の変更があるとき、アプリ内のリンクで離れる前に確かめる", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const id = await createSkill(page, uniqueName("guard-skill"), {});
+  await page.goto(`/skills/${id}`);
+  await page.getByTestId("skill-description-input").fill("直しかけの説明");
+
+  // サイドバーなどのリンクで離れようとすると、破棄の確認が出る。
+  await page.locator('a[href="/skills"]').first().click();
+  const dialog = page.getByTestId("text-discard-dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.getByTestId("text-discard-cancel").click();
+  await expect(page).toHaveURL(new RegExp(`/skills/${id}`));
+  await expect(page.getByTestId("skill-description-input")).toHaveValue("直しかけの説明");
+
+  // ブラウザの「戻る」でも確かめる（編集を続ければ同じ画面に残る）。
+  await page.goBack();
+  await expect(dialog).toBeVisible();
+  await dialog.getByTestId("text-discard-cancel").click();
+  await expect(page).toHaveURL(new RegExp(`/skills/${id}`));
+  await expect(page.getByTestId("skill-description-input")).toHaveValue("直しかけの説明");
+
+  // 破棄すれば移る。
+  await page.locator('a[href="/skills"]').first().click();
+  await dialog.getByTestId("text-discard-confirm").click();
+  await expect(page).toHaveURL(/\/skills$/);
+});

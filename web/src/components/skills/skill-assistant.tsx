@@ -51,7 +51,7 @@ export function SkillAssistant({
   /// 編集中の内容（発話に添える）。
   draft: SkillDraft;
   /// AI の下書きを受けたとき（エディタへ流し込む）。
-  onSkillDraft: (draft: AiSkillDraft) => void;
+  onSkillDraft: (draft: AiSkillDraft, key: string | null) => void;
   /// 下書きカードの「エディタに反映」（同じ下書きでも人が押したら当て直す）。
   onApplyDraft: (draft: AiSkillDraft) => void;
   /// モデル・ツールの選択の保存先の区別（スキルごと・新規）。

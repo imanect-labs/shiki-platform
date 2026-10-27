@@ -278,7 +278,9 @@ function renderDriveRef(node: PMNode): string {
   const label = typeof node.attrs.label === "string" && node.attrs.label ? node.attrs.label : id;
   // id が UUID の形でなければリンクにしない（リンク先へ文字を差し込ませない・名前だけ残す）。
   if (!isNodeId(id)) return escapeInline(label);
-  return `[${escapeInline(label)}](${driveRefHref(kind, id)})`;
+  // ラベルの `[`・`]` は必ず潰す（素の文字に読み戻せても、リンクのラベル内では括弧の対応を崩す）。
+  const text = current.literalText ? escapeLiteralAll(label) : escapeInline(label);
+  return `[${text}](${driveRefHref(kind, id)})`;
 }
 
 /// コードスパン: 内容のバッククォート連長より 1 長いフェンスで包む（CommonMark）。

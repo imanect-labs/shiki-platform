@@ -196,7 +196,9 @@ export function Conversation({
   onCsvDraftOpened?: (name: string) => void;
   /// save_skill の下書き（skill_draft）を受けたときの導線（#919）。渡されない場合は run の
   /// 完了後にスキルエディタへ遷移する（主線）。スキルエディタ自身はその場で内容を流し込む。
-  onSkillDraftOpened?: (draft: AiSkillDraft) => void;
+  /// `key` はその下書きのイベントを指す（応答のメッセージ id ＋ 応答の中の何番目か）。パネルの
+  /// 開き直しでの再生と読み直しで同じ値になり、同じ内容を言い直した別の下書きとは区別できる。
+  onSkillDraftOpened?: (draft: AiSkillDraft, key: string | null) => void;
   /// 読み込んだ時点で最後の発話への応答が済んでいたら、その応答の下書きスキルも
   /// `onSkillDraftOpened` へ渡す。この画面で会話を作って最初の発話を送った直後に使う
   /// （応答が速いと購読より先に終わり、下書きのイベントを受け取れないため・#919）。
@@ -442,13 +444,16 @@ export function Conversation({
       },
       onSkillDraft: (raw) => {
         // note_draft と同型: ストリームに残しつつ下書きストアへ upsert（source=ai＝流し込み）。
+        const cur = streamRef.current;
+        const owner = cur?.assistantMessageId ?? null;
+        const key = cur && owner ? `${owner}:${cur.skillDrafts.length}` : null;
         updateStream((s) => (s ? { ...s, skillDrafts: [...s.skillDrafts, raw] } : s));
         const d = parseSkillDraft(raw);
         if (!d) return;
         // 渡した項目だけを重ねる（直すたびに他の項目を消さない）。
         const prev = parseStoredSkillBody(skillDraftStore.get(threadId, d.name)?.content ?? "");
         skillDraftStore.upsert(threadId, d.name, JSON.stringify(mergeAiSkill(prev, d)), "ai");
-        if (onSkillDraftOpened) onSkillDraftOpened(d);
+        if (onSkillDraftOpened) onSkillDraftOpened(d, key);
         // 遷移は run の完了後（途中で遷移すると SSE が切れ、後続の操作が止まる・#381 と同じ）。
         else pendingOpenRef.current = skillDraftHref(threadId, d.name);
       },
@@ -736,12 +741,17 @@ export function Conversation({
         if (adoptSkillDraftOnLoad && onSkillDraftOpened && !resuming && !adoptedDraftRef.current) {
           adoptedDraftRef.current = true;
           const lastUser = shown.map((m) => m.role).lastIndexOf("user");
-          const drafts = shown
+          // 最後の下書きと、それが応答の中で何番目か（ストリームで受けたときと同じ key にする）。
+          const found = shown
             .slice(lastUser + 1)
-            .flatMap((m) => m.content)
-            .filter((b): b is Extract<ContentBlock, { type: "skill_draft" }> => b.type === "skill_draft");
-          const latest = drafts.length > 0 ? parseSkillDraft(drafts[drafts.length - 1].draft) : null;
-          if (latest) onSkillDraftOpened(latest);
+            .flatMap((m) =>
+              m.content
+                .filter((b): b is Extract<ContentBlock, { type: "skill_draft" }> => b.type === "skill_draft")
+                .map((b, i) => ({ draft: b.draft, key: `${m.id}:${i}` })),
+            )
+            .at(-1);
+          const latest = found ? parseSkillDraft(found.draft) : null;
+          if (found && latest) onSkillDraftOpened(latest, found.key);
         }
         if (resuming) {
           // 進行中 run の id を復元し、承認待ちなら承認/却下を送れるようにする（Task 5.6）。

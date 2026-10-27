@@ -24,6 +24,8 @@ import {
   EditorUnavailable,
 } from "@/components/shell/editor-loading";
 import { ChromePrimaryButton, usePageChrome } from "@/components/shell/page-header-context";
+import { DiscardDialog } from "@/components/file-preview/text-edit-dialogs";
+import { useUnsavedGuard } from "@/components/file-preview/use-unsaved-guard";
 import { toast } from "@/components/ui/use-toast";
 import { createSkill, getArtifact, getSkill, updateSkill } from "@/lib/artifact-api";
 import { getThreadMessages } from "@/lib/chat-api";
@@ -204,11 +206,13 @@ export function SkillEditorPage({ target }: { target: SkillEditorTarget }) {
   );
   // 届いた下書きは 1 度だけ自動で当てる。パネルを開き直すと実行中の run の下書きが再生され、
   // 読み直しでも最後の下書きを拾い直すので、当てた後の手編集をそれで上書きしない。
+  // 見分けは内容ではなくイベント（応答のメッセージ id ＋ 位置）で行う（AI が同じ内容を
+  // 当て直したときは、間の手編集を上書きして当てる）。
   // （パネルは閉じると外れるので、覚えておくのは画面の側。）
   const appliedDraftsRef = React.useRef(new Set<string>());
   const onSkillDraft = React.useCallback(
-    (d: AiSkillDraft) => {
-      const key = JSON.stringify(d);
+    (d: AiSkillDraft, eventKey: string | null) => {
+      const key = eventKey ?? JSON.stringify(d);
       if (appliedDraftsRef.current.has(key)) return;
       appliedDraftsRef.current.add(key);
       applyDraft(d);
@@ -274,15 +278,22 @@ export function SkillEditorPage({ target }: { target: SkillEditorTarget }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [save]);
 
-  // 未保存の変更があるまま閉じようとしたら確かめる（下書きストアに残る新規は除く）。
-  React.useEffect(() => {
-    if (!dirty || storeKey) return;
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [dirty, storeKey]);
+  // 未保存の変更があるまま離れようとしたら確かめる（下書きストアに残る新規は除く）。
+  // タブを閉じる・アプリ内のリンクは常に止める。ブラウザの「戻る」は編集画面で未保存の変更が
+  // あるときだけ受け止める（同じ URL の履歴を 1 つ積む仕組みなので、作成直後の URL の置き換えと
+  // 重ならないよう、手を入れてから積む。新規は会話を始めると URL に thread が付くので使わない）。
+  const unsaved = !storeKey && dirty;
+  const [discardThen, setDiscardThen] = React.useState<(() => void) | null>(null);
+  const guard = React.useCallback(
+    (go: () => void) => {
+      // 保存の途中で離れると、終わったかどうか分からなくなる。終わるまで待ってもらう。
+      if (saving) toast({ title: "保存しています", description: "保存が終わってからもう一度お試しください。" });
+      else if (unsaved) setDiscardThen(() => go);
+      else go();
+    },
+    [saving, unsaved],
+  );
+  useUnsavedGuard({ editing: target.kind === "edit" && unsaved, dirty: unsaved || saving, confirm: guard });
 
   const title = draft.name.trim() || "新しいスキル";
   const status = isNew ? (
@@ -420,6 +431,15 @@ export function SkillEditorPage({ target }: { target: SkillEditorTarget }) {
           </div>
         </div>
       </AssistantLayout>
+      <DiscardDialog
+        open={discardThen != null}
+        onClose={() => setDiscardThen(null)}
+        onDiscard={() => {
+          const go = discardThen;
+          setDiscardThen(null);
+          go?.();
+        }}
+      />
     </div>
   );
 }
