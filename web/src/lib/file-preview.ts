@@ -131,6 +131,11 @@ export function previewKind(node: { name: string; content_type?: string | null }
   return null;
 }
 
+/// 描画して見せられる HTML か（テキストとして開いたうえで、ソースと切り替えて見せる）。
+export function isRenderableHtml(node: { name: string; content_type?: string | null }): boolean {
+  return textLanguage(node.name) === "html" || baseContentType(node.content_type) === "text/html";
+}
+
 /// テキストの言語（shiki の言語名）。分からなければ "text"。
 export function textLanguage(name: string): string {
   const lower = name.toLowerCase();
