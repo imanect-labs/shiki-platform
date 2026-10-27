@@ -315,6 +315,86 @@ async fn catchup_none_fires_on_time_and_drops_misfires() {
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 3);
 }
 
+/// 発火は曜日を標準の読み方（0 と 7 が日曜、1 が月曜）で数える。画面の「毎週・月曜日」（`MON`）と保存済みの
+/// `1` は月曜に、`0` は日曜に発火する（cron クレートの番号で読むと 1 が日曜だった・BUG-95）。
+#[tokio::test]
+async fn schedule_fires_on_the_standard_weekday() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let store = SchedulerStore::new(pool.clone());
+    let launcher = Arc::new(CountingLauncher {
+        launches: AtomicUsize::new(0),
+    });
+    // 2026-10-25 は日曜。土曜 12:00 から月曜 12:00 までに、どの曜日の 9:00 で発火したか。
+    let saturday = Utc.with_ymd_and_hms(2026, 10, 24, 12, 0, 0).unwrap();
+    let sunday_noon = Utc.with_ymd_and_hms(2026, 10, 25, 12, 0, 0).unwrap();
+    let monday_noon = Utc.with_ymd_and_hms(2026, 10, 26, 12, 0, 0).unwrap();
+    let cases = [
+        ("1", "trg-mon-1"),
+        ("MON", "trg-mon-name"),
+        ("0", "trg-sun-0"),
+        ("7", "trg-sun-7"),
+    ];
+    for (dow, trigger) in cases {
+        register(
+            &pool,
+            &tenant,
+            Uuid::new_v4(),
+            "enabled",
+            trigger,
+            "schedule",
+            None,
+            json!({ "cron": format!("0 9 * * {dow}"), "tz": "UTC", "catchup": "all" }),
+        )
+        .await;
+    }
+    sqlx::query("UPDATE workflow_trigger SET last_planned_at = $2 WHERE tenant_id = $1")
+        .bind(&tenant)
+        .bind(saturday)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let on_sunday = store
+        .tick_schedules(sunday_noon, Some(&tenant), launcher.as_ref())
+        .await
+        .unwrap();
+    let on_monday = store
+        .tick_schedules(monday_noon, Some(&tenant), launcher.as_ref())
+        .await
+        .unwrap();
+    let fired: Vec<(String, chrono::DateTime<Utc>)> = sqlx::query_as(
+        "SELECT trigger_id, scheduled_at FROM schedule_occurrence WHERE tenant_id = $1 \
+         ORDER BY scheduled_at, trigger_id",
+    )
+    .bind(&tenant)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    for table in [
+        "schedule_occurrence",
+        "workflow_trigger",
+        "workflow_registration",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let sunday_9 = Utc.with_ymd_and_hms(2026, 10, 25, 9, 0, 0).unwrap();
+    let monday_9 = Utc.with_ymd_and_hms(2026, 10, 26, 9, 0, 0).unwrap();
+    assert_eq!((on_sunday, on_monday), (2, 2));
+    assert_eq!(
+        fired,
+        [
+            ("trg-sun-0".to_string(), sunday_9),
+            ("trg-sun-7".to_string(), sunday_9),
+            ("trg-mon-1".to_string(), monday_9),
+            ("trg-mon-name".to_string(), monday_9),
+        ]
+    );
+}
+
 /// フォルダノード＋自己 closure（depth 0）を作る。`parent` を渡すと祖先 closure も張る。
 async fn mk_folder(pool: &PgPool, tenant: &str, id: Uuid, parent: Option<Uuid>) {
     sqlx::query(

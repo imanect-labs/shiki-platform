@@ -254,7 +254,7 @@ pub(super) fn emit_description(
     let _ = write!(
         d,
         "【骨格】{{\"ir_version\":1,\"name\":\"英小文字・数字・ハイフンの安定名（^[a-z][a-z0-9-]{{0,63}}$）\",\"display_name\":\"日本語の表示名\",\"declared_scopes\":[…]（省略可。ノードが要するスコープは保存時に補われる）,\"triggers\":[…],\"input_schema\":{{…}}（interactive の入力・省略可）,\"nodes\":[…],\"edges\":[…]}}\n\
-         - triggers: {{\"kind\":\"interactive\"}}（ボタン・チャットから実行）| {{\"kind\":\"schedule\",\"cron\":\"0 9 * * 1-5\",\"tz\":\"Asia/Tokyo\"}} | {{\"kind\":\"event\",\"source\":\"storage.write\",\"scope\":{{\"folder\":\"<フォルダの uuid>\"}}}}（そのフォルダ（配下を含む）にファイルが保存されたときに起動。新しいファイル（op \"create\"）と既存のファイルの新しい版（op \"update\"・上書き・Office やノートの保存）の両方で起き、filter の /op で絞れる。新しい版は同じファイルの保存が {coalesce} 秒途切れてから最後の版で 1 回だけ起動する。このワークフロー自身の保存（workflow.start の子を含む）では起きない）| {{\"kind\":\"event\",\"source\":\"data.record.created\" か \"data.record.updated\" か \"data.transition\",\"scope\":{{\"table\":\"<テーブルの uuid>\"}},\"filter\"?:条件}}（テーブルの行が追加・更新・状態変更されたときに起動。有効化した人に見える行・列の変更だけで起き、一括取込とこのワークフロー自身の書込では起きない。状態は filter の /to で絞る）。EventSource = {sources}。control.wait（kind: event）の scope も同じ形が必須（データ変更は \"record\":値式 で行を絞れる・filter は {{\"$from\":\"event\"}} で届いたできごとを読む）。\n\
+         - triggers: {{\"kind\":\"interactive\"}}（ボタン・チャットから実行）| {{\"kind\":\"schedule\",\"cron\":\"0 9 * * 1-5\",\"tz\":\"Asia/Tokyo\"}}（分 時 日 月 曜日。この例は平日の 9 時。曜日は 0 と 7 が日曜、1 が月曜〜6 が土曜で、MON〜SUN の名前でも書ける）| {{\"kind\":\"event\",\"source\":\"storage.write\",\"scope\":{{\"folder\":\"<フォルダの uuid>\"}}}}（そのフォルダ（配下を含む）にファイルが保存されたときに起動。新しいファイル（op \"create\"）と既存のファイルの新しい版（op \"update\"・上書き・Office やノートの保存）の両方で起き、filter の /op で絞れる。新しい版は同じファイルの保存が {coalesce} 秒途切れてから最後の版で 1 回だけ起動する。このワークフロー自身の保存（workflow.start の子を含む）では起きない）| {{\"kind\":\"event\",\"source\":\"data.record.created\" か \"data.record.updated\" か \"data.transition\",\"scope\":{{\"table\":\"<テーブルの uuid>\"}},\"filter\"?:条件}}（テーブルの行が追加・更新・状態変更されたときに起動。有効化した人に見える行・列の変更だけで起き、一括取込とこのワークフロー自身の書込では起きない。状態は filter の /to で絞る）。EventSource = {sources}。control.wait（kind: event）の scope も同じ形が必須（データ変更は \"record\":値式 で行を絞れる・filter は {{\"$from\":\"event\"}} で届いたできごとを読む）。\n\
          - input_schema: JSON Schema のサブセット（type・properties・required・items・enum など。$ref・oneOf は使えない）。入力は {{\"$from\":\"input\",\"path\":\"/キー\"}} で読む。任意の注記 \"x-order\":[\"title\",\"body\"] は、画面（エディタの入力項目・実行の入力欄・ミニアプリの部品の候補）に並べる項目の順（properties のキーだけを重ねずに書く。省くと properties のキーは保存で辞書順に並び替わる）。\n\
          - nodes の要素（? は省略可）: {node}。id は ^[a-z][a-z0-9_]{{0,63}}$（英小文字で始め、英小文字・数字・_ だけ。例: find_requests）。cache は ai.decide だけに書ける（【AI で判定】）。\n\
          - edges の要素: {edge}。キーはこの 3 つだけ（port というキーは無い）。from_port を省くと out。出口: 通常のノードは out、control.branch は true / false、control.switch は cases の port と default、on_error が \"continue\" のノードは error、control.wait（kind: event・on_timeout: \"continue\"）は timeout、ai.decide は route で決まる（【AI で判定】）。無い出口につないだエッジは保存できない。\n\
@@ -809,5 +809,55 @@ mod tests {
         )];
         let h = validation_hints(&whole, &ir);
         assert!(h.contains(&format!("edges の要素 = {EDGE_SHAPE}")), "{h}");
+    }
+
+    /// 説明文と例のスケジュール（0 9 * * 1-5）は、サーバーの発火で平日（月〜金）の 9 時に動く（BUG-95。曜日を
+    /// cron クレートの番号で読むと日曜〜木曜になっていた）。
+    #[test]
+    fn schedule_examples_run_on_weekdays() {
+        use chrono::{Datelike, TimeZone, Timelike};
+        let zone: chrono_tz::Tz = "Asia/Tokyo".parse().unwrap();
+        // 日本時間の 2026-10-25（日）0:00 から 1 週間。
+        let after = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 24, 14, 59, 0)
+            .unwrap();
+        let until = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 31, 14, 59, 0)
+            .unwrap();
+        let weekdays = |cron: &str, tz: &str| -> Vec<(u32, u32)> {
+            workflow_engine::scheduler::cron::occurrences_between(cron, tz, after, until, 100)
+                .unwrap()
+                .iter()
+                .map(|t| {
+                    let local = t.with_timezone(&zone);
+                    (local.weekday().num_days_from_sunday(), local.hour())
+                })
+                .collect()
+        };
+        let weekday_9am: Vec<(u32, u32)> = (1..=5).map(|d| (d, 9)).collect();
+        let ir = embedded(EXAMPLE_REVIEW);
+        let schedule = &ir["triggers"][0];
+        assert_eq!(schedule["kind"], "schedule");
+        assert_eq!(
+            weekdays(
+                schedule["cron"].as_str().unwrap(),
+                schedule["tz"].as_str().unwrap()
+            ),
+            weekday_9am
+        );
+        // 説明文の骨格に書いた例も同じ式で、平日と言い添えている。
+        let d = emit_description(None, None);
+        let examples: Vec<&str> = d
+            .match_indices("\"cron\":\"")
+            .map(|(i, m)| {
+                let rest = &d[i + m.len()..];
+                &rest[..rest.find('"').unwrap()]
+            })
+            .collect();
+        assert!(!examples.is_empty());
+        for cron in examples {
+            assert_eq!(weekdays(cron, "Asia/Tokyo"), weekday_9am, "{cron}");
+        }
+        assert!(d.contains("この例は平日の 9 時"), "{d}");
     }
 }

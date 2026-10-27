@@ -375,13 +375,18 @@ pub(super) fn v3_vocab(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Vali
                     ));
                 }
             }
-            // schedule は cron（5 フィールド）＋IANA tz をパース検証する（実行時の発火不能を保存時に弾く）。
+            // schedule は cron（5 フィールド・曜日は標準の読み方）＋IANA tz をパース検証する（実行時の発火不能を
+            // 保存時に弾く・発火と同じ関数・BUG-95）。英語の原文は文言に入れずログへ回す（付録 D の N4.3）。
             crate::ir::Trigger::Schedule(sc) => {
                 if let Err(e) = crate::scheduler::cron::validate(&sc.cron, &sc.tz) {
-                    errors.push(ValidationError::new(
-                        "ir.bad_schedule",
-                        format!("スケジュールが不正です: {e}"),
-                    ));
+                    tracing::debug!(error = %e, cron = %sc.cron, tz = %sc.tz, "スケジュールを読めない");
+                    errors.push(
+                        ValidationError::new(
+                            "ir.bad_schedule",
+                            format!("きっかけ: {}", e.user_message()),
+                        )
+                        .at_path(format!("/triggers/{i}/{}", e.field())),
+                    );
                 }
             }
             crate::ir::Trigger::Interactive(_) => {}
@@ -401,6 +406,53 @@ mod tests {
             "nodes": [{ "id": "ask", "type": "llm.invoke", "params": params }],
             "edges": []
         })
+    }
+
+    /// スケジュールは発火と同じ読み方で保存時に確かめる。日曜の 0 は保存でき、写せない曜日と読めない時間帯は、
+    /// 直す欄を指して利用者向けの文で返す（英語の原文を出さない・BUG-95・付録 D の N4.3）。
+    #[test]
+    fn schedule_triggers_are_checked_with_the_standard_weekdays() {
+        let ir = |cron: &str, tz: &str| {
+            json!({
+                "ir_version": 1, "name": "wf",
+                "triggers": [{ "kind": "interactive" }, { "kind": "schedule", "cron": cron, "tz": tz }],
+                "nodes": [], "edges": []
+            })
+        };
+        for ok in [
+            "0 9 * * 0",
+            "0 9 * * 7",
+            "0 9 * * SUN",
+            "0 9 * * 1-5",
+            "0 9 * * MON-FRI",
+        ] {
+            assert!(
+                validate(&ir(ok, "Asia/Tokyo"), &Catalog::default()).is_ok(),
+                "{ok}"
+            );
+        }
+        let errs = validate(&ir("0 9 * * 5-1", "Asia/Tokyo"), &Catalog::default()).unwrap_err();
+        let e = errs.iter().find(|e| e.code == "ir.bad_schedule").unwrap();
+        assert_eq!(e.path.as_deref(), Some("/triggers/1/cron"));
+        assert!(
+            e.message
+                .starts_with("きっかけ: スケジュールの曜日の書き方"),
+            "{}",
+            e.message
+        );
+        let errs = validate(&ir("0 9 * *", "Asia/Tokyo"), &Catalog::default()).unwrap_err();
+        let e = errs.iter().find(|e| e.code == "ir.bad_schedule").unwrap();
+        assert_eq!(e.path.as_deref(), Some("/triggers/1/cron"));
+        assert!(!e.message.contains("フィールド"), "{}", e.message);
+        let errs = validate(&ir("0 9 * * *", "Mars/Base"), &Catalog::default()).unwrap_err();
+        let e = errs.iter().find(|e| e.code == "ir.bad_schedule").unwrap();
+        assert_eq!(
+            (e.path.as_deref(), e.message.as_str()),
+            (
+                Some("/triggers/1/tz"),
+                "きっかけ: 時間帯を選び直してください。"
+            )
+        );
     }
 
     fn models(ids: &[&str]) -> Catalog {
