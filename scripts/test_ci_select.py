@@ -78,13 +78,68 @@ class SelectTest(unittest.TestCase):
         self.assertEqual((sel["rust"], sel["web"], sel["python"], sel["compose"]), (False, False, True, False))
 
     def test_full_triggers(self):
-        for f in ["Cargo.lock", "migrations/0105_x.sql", ".github/workflows/ci.yml", "deploy/compose/docker-compose.yml",
+        for f in ["Cargo.toml", "crates/data/Cargo.toml", "migrations/0105_x.sql", ".github/workflows/ci.yml", "deploy/compose/docker-compose.yml",
                   "vendor/secure-exec/src/lib.rs", "rust-toolchain.toml", "scripts/ci-select.py"]:
             with self.subTest(f=f):
                 sel = ci.select(self.members, [f])
                 self.assertTrue(sel["full"])
                 self.assertEqual(sel["nextest_filter"], "all()")
                 self.assertEqual(len(sel["packages"]), len(self.members))
+
+    LOCK_BASE = textwrap.dedent(
+        """
+        [[package]]
+        name = "itoa"
+        version = "1.0.0"
+        source = "registry+https://github.com/rust-lang/crates.io-index"
+        checksum = "aaa"
+
+        [[package]]
+        name = "serde_json"
+        version = "1.0.0"
+        source = "registry+https://github.com/rust-lang/crates.io-index"
+        checksum = "bbb"
+        dependencies = ["itoa"]
+
+        [[package]]
+        name = "shiki-storage"
+        version = "0.0.0"
+        dependencies = ["serde_json", "shiki-authz"]
+
+        [[package]]
+        name = "shiki-yui"
+        version = "0.0.0"
+
+        [[package]]
+        name = "shiki-authz"
+        version = "0.0.0"
+        """
+    )
+
+    def test_cargo_lock_selects_only_users_of_changed_dependencies(self):
+        # itoa だけ上がった: itoa → serde_json → shiki-storage と、その依存元（data・api）を選ぶ。
+        head = self.LOCK_BASE.replace('version = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "aaa"',
+                                      'version = "1.0.1"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "ccc"')
+        self.assertNotEqual(head, self.LOCK_BASE)
+        sel = ci.select(self.members, ["Cargo.lock"], lock=(self.LOCK_BASE, head))
+        self.assertFalse(sel["full"])
+        self.assertEqual(sel["packages"], ["shiki-api", "shiki-data", "shiki-storage"])
+
+    def test_cargo_lock_dependency_list_change_is_detected(self):
+        # shiki-yui の依存だけが増えた（版は 0.0.0 のまま）: yui とその依存元を選ぶ。
+        head = self.LOCK_BASE.replace('name = "shiki-yui"\nversion = "0.0.0"\n',
+                                      'name = "shiki-yui"\nversion = "0.0.0"\ndependencies = ["itoa"]\n')
+        self.assertNotEqual(head, self.LOCK_BASE)
+        sel = ci.select(self.members, ["Cargo.lock"], lock=(self.LOCK_BASE, head))
+        self.assertEqual(sel["packages"], ["shiki-yui"])
+
+    def test_cargo_lock_unreadable_or_missing_is_full(self):
+        self.assertTrue(ci.select(self.members, ["Cargo.lock"])["full"])
+        self.assertTrue(ci.select(self.members, ["Cargo.lock"], lock=(self.LOCK_BASE, "not = [toml"))["full"])
+
+    def test_cargo_lock_without_dependency_change_selects_nothing(self):
+        sel = ci.select(self.members, ["Cargo.lock"], lock=(self.LOCK_BASE, self.LOCK_BASE + "\n"))
+        self.assertEqual((sel["full"], sel["rust"], sel["packages"]), (False, False, []))
 
     def test_unknown_path_is_full(self):
         for f in ["scripts/gen-api.sh", "deploy/keycloak/realm.json", "crates/README-unowned.txt"]:

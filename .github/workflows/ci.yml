@@ -363,6 +363,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # GITHUB_TOKEN を .git/config に残さない（このジョブは依存の build.rs や結合テストを動かす。
+          # PR へのコメントは GH_TOKEN を env で渡すので不要）。
+          persist-credentials: false
           # 変更行カバレッジは PR のマージコミットと base（HEAD^1）の差分で取る。
           fetch-depth: 2
       # llvm-cov target ＋ compose ボリュームでディスクが逼迫するため先に解放する。

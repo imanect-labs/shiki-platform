@@ -25,9 +25,10 @@ from pathlib import Path
 
 # 変更されたら全量にするパス。依存グラフ・ツールチェーン・CI 自体・全テストが共有する入力
 # （migrations は Postgres を使う全テストが流す）・compose（結合テストの実行環境）。
+# Cargo.lock は含めない: 差分から実際に変わったパッケージを求め、それに依存するクレートだけを選ぶ
+# （lock_changed_packages）。読めなければ全量。
 FULL_TRIGGERS = (
     "Cargo.toml",
-    "Cargo.lock",
     "rust-toolchain.toml",
     "deny.toml",
     ".config/",
@@ -128,7 +129,43 @@ def is_ignored(path: str) -> bool:
     return "/" not in path and path.endswith(".md")
 
 
-def select(members: dict[str, dict], files: list[str], full_run: bool = False) -> dict:
+def parse_lock(text: str) -> dict[str, dict]:
+    """Cargo.lock → {"名前 版": {"name", "id"（版・出所・checksum）, "deps"（依存先の名前）}}。"""
+    data = tomllib.loads(text)
+    out: dict[str, dict] = {}
+    for pkg in data.get("package", []):
+        key = f"{pkg['name']} {pkg['version']}"
+        out[key] = {
+            "name": pkg["name"],
+            # 依存の一覧も比べる（workspace のクレートは版が 0.0.0 のまま依存だけが変わる）。
+            "id": (pkg.get("version"), pkg.get("source"), pkg.get("checksum"),
+                   tuple(sorted(pkg.get("dependencies", [])))),
+            # 依存は "name" / "name version" / "name version (source)"。名前で辿る（同名の版違いは
+            # まとめて扱うので選び過ぎるだけで、漏れはしない）。
+            "deps": {d.split(" ")[0] for d in pkg.get("dependencies", [])},
+        }
+    return out
+
+
+def lock_changed_packages(old: str, new: str, members: dict[str, dict]) -> set[str]:
+    """Cargo.lock の差分で変わった依存を（推移的に）使う workspace クレート。"""
+    before, after = parse_lock(old), parse_lock(new)
+    changed = {after[k]["name"] for k in after if k not in before or before[k]["id"] != after[k]["id"]}
+    changed |= {before[k]["name"] for k in before if k not in after}
+    users = set(changed)
+    grew = True
+    while grew:
+        grew = False
+        for pkg in after.values():
+            if pkg["name"] not in users and pkg["deps"] & users:
+                users.add(pkg["name"])
+                grew = True
+    return users & set(members)
+
+
+def select(members: dict[str, dict], files: list[str], full_run: bool = False,
+           lock: tuple[str, str] | None = None) -> dict:
+    """lock は Cargo.lock の（base, head）の中身。Cargo.lock が変わったときだけ渡す。"""
     files = [f for f in files if f and not is_ignored(f)]
     reasons: list[str] = []
     full = full_run
@@ -140,6 +177,21 @@ def select(members: dict[str, dict], files: list[str], full_run: bool = False) -
         if any(f == t or (t.endswith("/") and f.startswith(t)) for t in FULL_TRIGGERS):
             full = True
             reasons.append(f"全量: {f}")
+        elif f == "Cargo.lock":
+            try:
+                if lock is None:
+                    raise ValueError("Cargo.lock の中身が渡されていない")
+                used = lock_changed_packages(lock[0], lock[1], members)
+            except (ValueError, KeyError, tomllib.TOMLDecodeError) as e:
+                full = True
+                reasons.append(f"全量（Cargo.lock を読めない: {e}）")
+            else:
+                seeds |= used
+                reasons.append(f"Cargo.lock: 変わった依存を使うクレート {len(used)} 件")
+        elif re.fullmatch(r"crates/[^/]+/Cargo\.toml", f):
+            # 依存・フィーチャの変更は、フィーチャ統合で依存を共有する他のクレートのビルドも変える。
+            full = True
+            reasons.append(f"全量（クレートの依存定義）: {f}")
         elif f.startswith("crates/"):
             pkg = owner(members, f)
             if pkg is None:
@@ -197,6 +249,10 @@ def changed_files(base: str, head: str) -> list[str]:
         text=True,
     ).stdout
     return [line for line in out.splitlines() if line]
+
+
+def git_show(rev: str, path: str) -> str:
+    return subprocess.run(["git", "show", f"{rev}:{path}"], check=True, capture_output=True, text=True).stdout
 
 
 def changed_lines(base: str, head: str) -> dict[str, set[int]]:
@@ -329,7 +385,13 @@ def cmd_select(args: argparse.Namespace) -> int:
     root = Path(args.root)
     members = workspace_packages(root)
     files = [] if args.full else changed_files(args.base, args.head)
-    sel = select(members, files, full_run=args.full)
+    lock = None
+    if "Cargo.lock" in files:
+        try:
+            lock = (git_show(args.base, "Cargo.lock"), git_show(args.head, "Cargo.lock"))
+        except subprocess.CalledProcessError:
+            lock = None  # 片側に無い（追加・削除）: select が全量に倒す
+    sel = select(members, files, full_run=args.full, lock=lock)
     for reason in sel["reasons"]:
         print(f"# {reason}", file=sys.stderr)
     write_outputs(
