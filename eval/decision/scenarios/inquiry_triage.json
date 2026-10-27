@@ -1,0 +1,516 @@
+{
+  "scenario": "inquiry_triage",
+  "app": "APP-02",
+  "title": "問い合わせの一次仕分け",
+  "description": "問い合わせの表に行が追加されたら、判定用のモデルで種類・優先度・強い不満を判定し、種類の確からしさがしきい値以上なら振り分けの規則から担当を引いて「仕分け済み」にする。しきい値に届かない・判定に失敗したときは AI の推定を書いて「要確認」にし、人が仕分ける。返信の下書きと社内 FAQ の検索（rag.search）は入れていない（付録 B §5 の T8 の範囲）。",
+  "dataset": "inquiry_triage",
+  "theta": 0.6,
+  "prompt_version": "v3",
+  "placeholders": {
+    "{{table.inquiries}}": "問い合わせの表の id（tables の ref=inquiries を作ったもの）",
+    "{{table.routing_rules}}": "振り分けの規則の表の id（ref=routing_rules）",
+    "{{model.decide}}": "判定用のモデルの id（評価と同じ decide-haiku・E2E は stub の決定器）",
+    "{{role.billing}}": "請求の担当の部署（role_ref）",
+    "{{role.support}}": "不具合と使い方の担当の部署（role_ref）",
+    "{{role.sales}}": "解約とその他の担当の部署（role_ref）"
+  },
+  "tables": [
+    {
+      "ref": "inquiries",
+      "name": "問い合わせ",
+      "schema": {
+        "fields": [
+          {
+            "key": "subject",
+            "display_name": "件名",
+            "type": "text",
+            "required": true
+          },
+          {
+            "key": "status",
+            "display_name": "状態",
+            "type": "select",
+            "options": [
+              "受付",
+              "仕分け済み",
+              "要確認",
+              "回答済み",
+              "完了"
+            ],
+            "indexed": true
+          },
+          {
+            "key": "category",
+            "display_name": "種類",
+            "type": "select",
+            "options": [
+              "請求",
+              "不具合",
+              "使い方",
+              "解約",
+              "その他"
+            ],
+            "indexed": true
+          },
+          {
+            "key": "priority",
+            "display_name": "優先度",
+            "type": "select",
+            "options": [
+              "低",
+              "中",
+              "高",
+              "緊急"
+            ],
+            "indexed": true
+          },
+          {
+            "key": "assignee_team",
+            "display_name": "担当",
+            "type": "role_ref",
+            "indexed": true
+          },
+          {
+            "key": "angry",
+            "display_name": "強い不満",
+            "type": "select",
+            "options": [
+              "はい",
+              "いいえ"
+            ]
+          },
+          {
+            "key": "ai_guess",
+            "display_name": "AI の推定",
+            "type": "text"
+          },
+          {
+            "key": "sender",
+            "display_name": "差出人",
+            "type": "text"
+          },
+          {
+            "key": "body",
+            "display_name": "本文",
+            "type": "text",
+            "required": true
+          }
+        ],
+        "status_field": "status"
+      },
+      "fsm": {
+        "states": [
+          "受付",
+          "仕分け済み",
+          "要確認",
+          "回答済み",
+          "完了"
+        ],
+        "transitions": [
+          {
+            "from": "受付",
+            "to": "仕分け済み",
+            "actor": "public"
+          },
+          {
+            "from": "受付",
+            "to": "要確認",
+            "actor": "public"
+          },
+          {
+            "from": "要確認",
+            "to": "仕分け済み",
+            "actor": "public"
+          },
+          {
+            "from": "仕分け済み",
+            "to": "回答済み",
+            "actor": {
+              "field_cmp": {
+                "field": "assignee_team",
+                "op": "in",
+                "value": {
+                  "user_roles": {
+                    "subtree": true
+                  }
+                }
+              }
+            }
+          },
+          {
+            "from": "回答済み",
+            "to": "完了",
+            "actor": {
+              "field_cmp": {
+                "field": "assignee_team",
+                "op": "in",
+                "value": {
+                  "user_roles": {
+                    "subtree": true
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "ref": "routing_rules",
+      "name": "問い合わせの振り分けの規則",
+      "schema": {
+        "fields": [
+          {
+            "key": "category_key",
+            "display_name": "判定の答え",
+            "type": "text",
+            "required": true,
+            "unique": true,
+            "indexed": true
+          },
+          {
+            "key": "category",
+            "display_name": "種類",
+            "type": "select",
+            "options": [
+              "請求",
+              "不具合",
+              "使い方",
+              "解約",
+              "その他"
+            ],
+            "required": true
+          },
+          {
+            "key": "team",
+            "display_name": "担当",
+            "type": "role_ref",
+            "required": true
+          }
+        ]
+      },
+      "rows": [
+        {
+          "category_key": "billing",
+          "category": "請求",
+          "team": "{{role.billing}}"
+        },
+        {
+          "category_key": "bug",
+          "category": "不具合",
+          "team": "{{role.support}}"
+        },
+        {
+          "category_key": "howto",
+          "category": "使い方",
+          "team": "{{role.support}}"
+        },
+        {
+          "category_key": "cancel",
+          "category": "解約",
+          "team": "{{role.sales}}"
+        },
+        {
+          "category_key": "other",
+          "category": "その他",
+          "team": "{{role.sales}}"
+        }
+      ]
+    }
+  ],
+  "grants": [
+    {
+      "scope": "data.read",
+      "table": "inquiries",
+      "relation": "viewer"
+    },
+    {
+      "scope": "data.write",
+      "table": "inquiries",
+      "relation": "editor"
+    },
+    {
+      "scope": "data.read",
+      "table": "routing_rules",
+      "relation": "viewer"
+    }
+  ],
+  "workflow": {
+    "ir_version": 1,
+    "name": "inquiry-triage",
+    "display_name": "問い合わせの一次仕分け",
+    "description": "問い合わせを AI で判定し、確かなものは担当へ振り分け、確かでないものは要確認にする（APP-02）",
+    "triggers": [
+      {
+        "kind": "event",
+        "source": "data.record.created",
+        "scope": {
+          "table": "{{table.inquiries}}"
+        }
+      }
+    ],
+    "nodes": [
+      {
+        "id": "triage",
+        "type": "ai.decide",
+        "label": "問い合わせを判定",
+        "params": {
+          "model": "{{model.decide}}",
+          "state": {
+            "件名": {
+              "$from": "trigger",
+              "path": "/record/data/subject"
+            },
+            "本文": {
+              "$from": "trigger",
+              "path": "/record/data/body"
+            },
+            "差出人": {
+              "$from": "trigger",
+              "path": "/record/data/sender",
+              "default": ""
+            }
+          },
+          "questions": [
+            {
+              "key": "category",
+              "instructions": "この問い合わせの主な用件はどれか。差出人が何をしてほしいか（主訴）で選ぶ。",
+              "type": "choice",
+              "options": [
+                {
+                  "key": "billing",
+                  "description": "契約中のサービスの請求・支払い・料金・領収書・返金（解約に伴う料金の計算を含む。ただし解約そのものの申し出は cancel）"
+                },
+                {
+                  "key": "bug",
+                  "description": "製品が期待どおりに動かない・エラー・障害・遅い・表示がおかしい（請求や支払いの画面での不具合を含む）"
+                },
+                {
+                  "key": "howto",
+                  "description": "製品の機能・設定・操作方法についての質問（不具合ではないもの）"
+                },
+                {
+                  "key": "cancel",
+                  "description": "解約・契約の終了・自動更新の停止の申し出、または解約の手続きや解約した後のデータの扱いについての質問"
+                },
+                {
+                  "key": "other",
+                  "description": "上のどれにも当たらないもの（営業・取材・採用・機能の要望・お礼・サポートの対応への苦情・導入の前の相談など）"
+                }
+              ]
+            },
+            {
+              "key": "priority",
+              "instructions": "対応の緊急度。緊急: 多くの利用者の業務が止まっている・データが消えた・今日中の締めや支払いに間に合わない。高: 特定の利用者の業務が止まっている・請求や金額の誤り・期限が近い。中: 不便だが回避できる・通常の手続きや変更の依頼。低: 一般的な質問・お礼・営業・要望。",
+              "type": "score",
+              "levels": [
+                "低",
+                "中",
+                "高",
+                "緊急"
+              ]
+            },
+            {
+              "key": "angry",
+              "instructions": "差出人が強い不満や怒りを示しているか",
+              "type": "boolean",
+              "yes": "苦情・怒り・強い不満の表明がある",
+              "no": "淡々とした連絡・質問・依頼"
+            }
+          ],
+          "route": {
+            "question": "category",
+            "by": "confidence",
+            "min_confidence": 0.6
+          }
+        },
+        "on_error": "continue"
+      },
+      {
+        "id": "rule",
+        "type": "data.query",
+        "label": "振り分けの規則を引く",
+        "params": {
+          "table": "{{table.routing_rules}}",
+          "query": {
+            "filter": {
+              "cmp": {
+                "field": "category_key",
+                "op": "eq",
+                "value": {
+                  "$from": "nodes.triage.output",
+                  "path": "/answers/category/value"
+                }
+              }
+            },
+            "limit": 1
+          }
+        }
+      },
+      {
+        "id": "shape",
+        "type": "script.run",
+        "label": "書き込む値に整える",
+        "params": {
+          "source": {
+            "inline": "function main(input) {\n  // 判定の答え（選択肢のキー・段階の名前・はい/いいえ）を、問い合わせの表の列の値に写す。\n  const a = input.answers;\n  const rule = input.rule;\n  if (!rule) throw new Error(\"振り分けの規則に無い種類です: \" + a.category.value);\n  return {\n    category: rule.category,\n    assignee_team: rule.team,\n    priority: a.priority.level,\n    angry: a.angry.value ? \"はい\" : \"いいえ\",\n  };\n}"
+          },
+          "input": {
+            "answers": {
+              "$from": "nodes.triage.output",
+              "path": "/answers"
+            },
+            "rule": {
+              "$from": "nodes.rule.output",
+              "path": "/items/0/data"
+            }
+          }
+        }
+      },
+      {
+        "id": "assign",
+        "type": "data.record.update",
+        "label": "種類と担当を書く",
+        "params": {
+          "table": "{{table.inquiries}}",
+          "record": {
+            "$from": "trigger",
+            "path": "/record_id"
+          },
+          "patch": {
+            "$from": "nodes.shape.output"
+          }
+        }
+      },
+      {
+        "id": "triaged",
+        "type": "data.transition",
+        "label": "仕分け済みにする",
+        "params": {
+          "table": "{{table.inquiries}}",
+          "record": {
+            "$from": "trigger",
+            "path": "/record_id"
+          },
+          "to": "仕分け済み"
+        }
+      },
+      {
+        "id": "guess",
+        "type": "data.record.update",
+        "label": "AI の推定を書く",
+        "params": {
+          "table": "{{table.inquiries}}",
+          "record": {
+            "$from": "trigger",
+            "path": "/record_id"
+          },
+          "patch": {
+            "ai_guess": {
+              "$template": "種類は {category} と推定（確からしさ {confidence}・しきい値に届かない）・優先度は {priority}",
+              "vars": {
+                "category": {
+                  "$from": "nodes.triage.output",
+                  "path": "/answers/category/value"
+                },
+                "confidence": {
+                  "$from": "nodes.triage.output",
+                  "path": "/answers/category/confidence"
+                },
+                "priority": {
+                  "$from": "nodes.triage.output",
+                  "path": "/answers/priority/level"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "failed_note",
+        "type": "data.record.update",
+        "label": "判定の失敗を書く",
+        "params": {
+          "table": "{{table.inquiries}}",
+          "record": {
+            "$from": "trigger",
+            "path": "/record_id"
+          },
+          "patch": {
+            "ai_guess": {
+              "$template": "AI が判定できませんでした（{code}）",
+              "vars": {
+                "code": {
+                  "$from": "nodes.triage.output",
+                  "path": "/error/code"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "unsure",
+        "type": "control.join",
+        "label": "人が仕分ける",
+        "params": {
+          "mode": "any"
+        }
+      },
+      {
+        "id": "review",
+        "type": "data.transition",
+        "label": "要確認にする",
+        "params": {
+          "table": "{{table.inquiries}}",
+          "record": {
+            "$from": "trigger",
+            "path": "/record_id"
+          },
+          "to": "要確認"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "from": "triage",
+        "from_port": "out",
+        "to": "rule"
+      },
+      {
+        "from": "rule",
+        "to": "shape"
+      },
+      {
+        "from": "shape",
+        "to": "assign"
+      },
+      {
+        "from": "assign",
+        "to": "triaged"
+      },
+      {
+        "from": "triage",
+        "from_port": "uncertain",
+        "to": "guess"
+      },
+      {
+        "from": "triage",
+        "from_port": "error",
+        "to": "failed_note"
+      },
+      {
+        "from": "guess",
+        "to": "unsure"
+      },
+      {
+        "from": "failed_note",
+        "to": "unsure"
+      },
+      {
+        "from": "unsure",
+        "to": "review"
+      }
+    ]
+  }
+}
