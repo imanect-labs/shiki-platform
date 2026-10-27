@@ -230,6 +230,16 @@ fn render(file: &ResultFile) -> String {
     if let Some(s) = &file.stopped {
         let _ = writeln!(out, "- **途中で止めた**: {s}");
     }
+    if let Some(f) = &file.frozen {
+        let thetas: Vec<String> = f.theta.iter().map(|(k, v)| format!("{k} {v:.1}")).collect();
+        let _ = writeln!(
+            out,
+            "- 凍結: プロンプト {}・θ（{}）・材料 {}",
+            f.prompt_version,
+            thetas.join("・"),
+            f.based_on
+        );
+    }
     for ds in &file.datasets {
         let _ = writeln!(out, "\n### {}\n", ds.name);
         if let Some(t) = ds.suggested_theta {
@@ -275,26 +285,28 @@ fn render(file: &ResultFile) -> String {
     out
 }
 
-/// `results/summary.md` を、results の全 JSON から作り直す（名前の順）。
+/// `results/summary.md` を、results の全 JSON から作り直す（始めた時刻の順）。
 pub(crate) fn write_summary() {
     let dir = eval_dir().join("results");
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
+    let mut files: Vec<ResultFile> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .map(|p| {
+            let text =
+                std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+            serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+        })
         .collect();
-    files.sort();
+    files.sort_by(|a, b| a.started_at.cmp(&b.started_at));
     let mut out = String::from(
         "# 判定の評価の結果（FEAT-1 の T7）\n\n\
          このファイルは `crates/llm-gateway/tests/decision_eval.rs` が results の JSON から書き出す（手で直さない）。\n\
          区間は Wilson の 95% 信頼区間。誤り（拒否・不正出力・途切れ・一時障害）は正解ではない・自動で処理しないとして数える。\n\
          経費の「経理確認」は「規程のフラグ OR AI が true OR 確からしさが θ 未満 OR 誤り」。\n\n",
     );
-    for p in files {
-        let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
-        let file: ResultFile =
-            serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
-        out.push_str(&render(&file));
+    for file in &files {
+        out.push_str(&render(file));
     }
     std::fs::write(dir.join("summary.md"), out).unwrap_or_else(|e| panic!("summary.md: {e}"));
 }

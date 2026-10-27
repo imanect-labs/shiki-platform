@@ -111,6 +111,11 @@ async fn decision_eval() {
         return;
     }
     let stage_name = env_or("DECISION_EVAL_STAGE", "");
+    if stage_name == "summary" {
+        // 実 LLM を呼ばずに、results の JSON から summary.md だけを書き直す。
+        report::write_summary();
+        return;
+    }
     let stage = data::stage(&stage_name).unwrap_or_else(|| {
         panic!("DECISION_EVAL_STAGE は E0・E4・E1・E2・E3 のどれか（{stage_name}）")
     });

@@ -78,5 +78,5 @@ E1 の後に `adjudication/<データ名>.jsonl` を書く。中身は、test �
 ## 結果
 
 - `results/<日付>-<段>[-<タグ>].json`: 設定・費用・待ち時間・データごとの指標（反復ごと）・θ の案か合格基準・呼び出しごとの答え。
-- `results/summary.md`: results の全 JSON からランナーが書き出す（手で直さない）。
+- `results/summary.md`: results の全 JSON からランナーが書き出す（始めた時刻の順・手で直さない）。`DECISION_EVAL_STAGE=summary` で、実 LLM を呼ばずに書き直せる。
 - 使った額は台帳の §10 に記録する。
