@@ -51,8 +51,8 @@ test("有効化: スケジュール設定→同意→有効→停止", async ({ 
     .getByRole("combobox", { name: "きっかけの種類" })
     .click();
   await page.getByRole("option", { name: "スケジュール" }).click();
-  // cron プリセット（毎日 9:00 既定）の次回実行プレビューが出る。
-  await expect(page.getByText(/次回の実行/)).toBeVisible({ timeout: 10_000 });
+  // cron プリセット（毎日 9:00 既定）の次の実行が出る（サーバーが発火と同じ読み方で数える・BUG-95）。
+  await expect(page.getByText(/^次の実行（日本時間）:/)).toBeVisible({ timeout: 10_000 });
 
   // 保存してから有効化（dirty 中は有効化できないガードの裏取り）。
   const enableButton = page.getByRole("button", { name: "自動実行を有効化" });

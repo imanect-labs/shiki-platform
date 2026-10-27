@@ -206,6 +206,18 @@ export function getAgentSettings(): Promise<AgentSettings> {
   return agentSettings;
 }
 
+// ── スケジュールの次の実行（BUG-95）──────────────────────────────────
+
+/// 次の実行の見通し（`next` は UTC の時刻・読めない式は `error` に保存時と同じ文言）。
+export type SchedulePreview = Schemas["SchedulePreviewResponse"];
+
+/// スケジュールの式が次に実行する時刻を、サーバーの発火と同じ読み方で数える（ブラウザーで cron を読まない。
+/// 曜日の読み方がサーバーとずれるため）。
+export async function previewSchedule(cron: string, tz: string): Promise<SchedulePreview> {
+  const res = await apiFetch("/workflows/schedule-preview", json("POST", { cron, tz }));
+  return ok<SchedulePreview>(res);
+}
+
 // ── エディタレイアウト（ノード座標・IR 外・非バージョン）──────────────
 
 export type EditorLayout = {

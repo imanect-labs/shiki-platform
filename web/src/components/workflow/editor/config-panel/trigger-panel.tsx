@@ -2,8 +2,8 @@
 
 /// トリガ（きっかけ）の設定パネル。
 ///
-/// - スケジュール: プリセット（毎時/毎日/毎週/毎月）から cron を生成し、次回実行を
-///   cron-parser でプレビュー。上級者向けに raw cron 欄も残す。
+/// - スケジュール: プリセット（毎時/毎日/平日/毎週/毎月）から cron を生成し（曜日は MON〜SUN の名前で書く）、
+///   次の実行をサーバーで数えて出す（発火と同じ読み方・BUG-95）。上級者向けに raw cron 欄も残す。
 /// - できごと: source（ファイル保存・テーブルの行の追加／更新／状態の変更）。ファイル保存は対象フォルダ（既存の
 ///   FolderPicker 再利用）、データ変更は対象テーブル（業務データのブロックと同じ選択欄）を必ず決める。状態の
 ///   変更は「この状態になったとき」で絞れる（filter の `/to`・GAP-07）。
@@ -11,7 +11,6 @@
 ///   （input_schema はワークフローに 1 つで、手動の実行・ミニアプリのボタン・チャットからの実行で共通）。
 
 import * as React from "react";
-import parser from "cron-parser";
 import { FolderOpen, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -27,15 +26,41 @@ import { FolderPicker, type FolderChoice } from "@/components/artifacts/folder-p
 import { EVENT_CATALOG } from "@/generated/workflow-catalog";
 import type { Condition, Trigger } from "@/generated/workflow-ir";
 import { Field, FieldInput, FieldSelectTrigger } from "./common";
+import { previewSchedule } from "@/lib/workflow-api";
 import { DataTableSelect, useDataTables } from "./data-tables";
 import { InputSchemaEditor, type InputRefUsage } from "./input-schema-editor";
 
-const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+/// 曜日（cron に書く名前と画面の名前・月曜から）。cron には数でなく名前で書く（曜日の番号の読み方の違いで
+/// 1 日ずれないように・BUG-95。サーバーは 0 と 7 を日曜、1 を月曜として読む）。
+const WEEKDAYS = [
+  { cron: "MON", label: "月曜日" },
+  { cron: "TUE", label: "火曜日" },
+  { cron: "WED", label: "水曜日" },
+  { cron: "THU", label: "木曜日" },
+  { cron: "FRI", label: "金曜日" },
+  { cron: "SAT", label: "土曜日" },
+  { cron: "SUN", label: "日曜日" },
+] as const;
+type Weekday = (typeof WEEKDAYS)[number]["cron"];
+
+/// 平日（月〜金）の曜日の欄。
+const WEEKDAYS_MON_FRI = "MON-FRI";
+
+/// 標準の cron の曜日の数（0 と 7 が日曜）。
+const WEEKDAY_BY_NUMBER: Weekday[] = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
+
+/// 曜日の欄の 1 つの曜日（名前か 0〜7 の数）を名前にする（1 つの曜日でなければ null）。
+function weekdayOf(dow: string): Weekday | null {
+  if (/^[0-7]$/.test(dow)) return WEEKDAY_BY_NUMBER[Number(dow)];
+  const upper = dow.toUpperCase();
+  return WEEKDAYS.find((w) => w.cron === upper)?.cron ?? null;
+}
 
 type Preset =
   | { kind: "hourly"; minute: number }
   | { kind: "daily"; hour: number; minute: number }
-  | { kind: "weekly"; weekday: number; hour: number; minute: number }
+  | { kind: "weekdays"; hour: number; minute: number }
+  | { kind: "weekly"; weekday: Weekday; hour: number; minute: number }
   | { kind: "monthly"; day: number; hour: number; minute: number }
   | { kind: "custom" };
 
@@ -45,6 +70,8 @@ function presetToCron(p: Preset): string | null {
       return `${p.minute} * * * *`;
     case "daily":
       return `${p.minute} ${p.hour} * * *`;
+    case "weekdays":
+      return `${p.minute} ${p.hour} * * ${WEEKDAYS_MON_FRI}`;
     case "weekly":
       return `${p.minute} ${p.hour} * * ${p.weekday}`;
     case "monthly":
@@ -54,7 +81,7 @@ function presetToCron(p: Preset): string | null {
   }
 }
 
-/// cron からプリセットを推定する（一致しなければ custom）。
+/// cron からプリセットを推定する（一致しなければ custom）。保存済みの数の曜日（0〜7）も標準の読み方で読む。
 function cronToPreset(cron: string): Preset {
   const m = cron.trim().split(/\s+/);
   if (m.length !== 5) return { kind: "custom" };
@@ -62,40 +89,102 @@ function cronToPreset(cron: string): Preset {
   const n = (s: string) => (/^\d+$/.test(s) ? Number(s) : null);
   if (n(min) !== null && hour === "*" && day === "*" && month === "*" && dow === "*")
     return { kind: "hourly", minute: n(min)! };
-  if (n(min) !== null && n(hour) !== null && day === "*" && month === "*" && dow === "*")
-    return { kind: "daily", hour: n(hour)!, minute: n(min)! };
-  if (n(min) !== null && n(hour) !== null && day === "*" && month === "*" && n(dow) !== null)
-    return { kind: "weekly", weekday: n(dow)!, hour: n(hour)!, minute: n(min)! };
-  if (n(min) !== null && n(hour) !== null && n(day) !== null && month === "*" && dow === "*")
-    return { kind: "monthly", day: n(day)!, hour: n(hour)!, minute: n(min)! };
+  if (n(min) === null || n(hour) === null || month !== "*") return { kind: "custom" };
+  const time = { hour: n(hour)!, minute: n(min)! };
+  if (day === "*" && dow === "*") return { kind: "daily", ...time };
+  if (day === "*" && (dow.toUpperCase() === WEEKDAYS_MON_FRI || dow === "1-5"))
+    return { kind: "weekdays", ...time };
+  const weekday = day === "*" ? weekdayOf(dow) : null;
+  if (weekday) return { kind: "weekly", weekday, ...time };
+  if (n(day) !== null && dow === "*") return { kind: "monthly", day: n(day)!, ...time };
   return { kind: "custom" };
 }
 
-function nextFires(cron: string, tz: string, count = 2): string[] {
-  // backend スケジューラは 5 フィールド（分 時 日 月 曜日）のみ受け付ける。
-  // cron-parser は秒付き 6 フィールドも解釈できてしまうため、先に形を照合する
-  //（プレビューが出るのに保存/有効化で落ちる齟齬を防ぐ）。
-  if (cron.trim().split(/\s+/).length !== 5) return [];
-  try {
-    const it = parser.parseExpression(cron, { tz });
-    const out: string[] = [];
-    for (let i = 0; i < count; i += 1) {
-      const d = it.next().toDate();
-      out.push(
-        d.toLocaleString("ja-JP", {
-          timeZone: tz,
-          month: "numeric",
-          day: "numeric",
-          weekday: "short",
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-      );
-    }
-    return out;
-  } catch {
-    return [];
+/// 時刻を「10/28（火）9:00」の形にする（時間帯はスケジュールの時間帯）。
+function formatFire(iso: string, tz: string): string {
+  const parts = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: tz,
+    month: "numeric",
+    day: "numeric",
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(iso));
+  const get = (t: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("month")}/${get("day")}（${get("weekday")}）${get("hour")}:${get("minute")}`;
+}
+
+/// 時間帯の呼び名（次の実行の見出しの括弧に入れる）。
+function zoneLabel(tz: string): string {
+  if (tz === "Asia/Tokyo") return "日本時間";
+  return tz;
+}
+
+/// 次の実行の見通し（サーバーの発火と同じ読み方で数える・式と時間帯が変わるたびに少し待って取り直す）。
+type FirePreview =
+  | { key: string; state: "ok"; next: string[] }
+  | { key: string; state: "invalid"; message: string }
+  | { key: string; state: "unavailable" };
+
+function useFirePreview(cron: string, tz: string): FirePreview | null {
+  const key = `${cron}\u0000${tz}`;
+  const [preview, setPreview] = React.useState<FirePreview | null>(null);
+  React.useEffect(() => {
+    let active = true;
+    const timer = setTimeout(() => {
+      previewSchedule(cron, tz)
+        .then((p) => {
+          if (!active) return;
+          setPreview(
+            p.error
+              ? { key, state: "invalid", message: p.error }
+              : { key, state: "ok", next: p.next },
+          );
+        })
+        .catch(() => {
+          if (active) setPreview({ key, state: "unavailable" });
+        });
+    }, 300);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [cron, tz, key]);
+  // 前の式の結果は出さない（打ち替えた直後に古い曜日を見せない）。
+  return preview?.key === key ? preview : null;
+}
+
+function FirePreviewLine({ preview, tz }: { preview: FirePreview | null; tz: string }) {
+  if (!preview) {
+    return (
+      <p className="text-[11px] text-muted-foreground" aria-live="polite">
+        次の実行を確かめています…
+      </p>
+    );
   }
+  if (preview.state === "invalid") {
+    return (
+      <p className="text-[11px] text-destructive" role="alert">
+        {preview.message}
+      </p>
+    );
+  }
+  if (preview.state === "unavailable" || preview.next.length === 0) {
+    return (
+      <p className="text-[11px] text-muted-foreground" aria-live="polite">
+        次の実行を確かめられませんでした。
+      </p>
+    );
+  }
+  return (
+    <p
+      className="rounded-md border bg-muted/40 p-2 text-[11px] text-muted-foreground"
+      aria-live="polite"
+    >
+      次の実行（{zoneLabel(tz)}）: {preview.next.map((t) => formatFire(t, tz)).join("、")}
+    </p>
+  );
 }
 
 function ScheduleEditor({
@@ -107,7 +196,7 @@ function ScheduleEditor({
 }) {
   const preset = cronToPreset(trigger.cron);
   const tz = trigger.tz || "Asia/Tokyo";
-  const fires = nextFires(trigger.cron, tz);
+  const fires = useFirePreview(trigger.cron, tz);
   const set = (p: Preset) => {
     const cron = presetToCron(p);
     if (cron) onChange({ ...trigger, cron });
@@ -123,7 +212,8 @@ function ScheduleEditor({
           onValueChange={(v) => {
             if (v === "hourly") set({ kind: "hourly", minute: 0 });
             if (v === "daily") set({ kind: "daily", hour: 9, minute: 0 });
-            if (v === "weekly") set({ kind: "weekly", weekday: 1, hour: 9, minute: 0 });
+            if (v === "weekdays") set({ kind: "weekdays", hour: 9, minute: 0 });
+            if (v === "weekly") set({ kind: "weekly", weekday: "MON", hour: 9, minute: 0 });
             if (v === "monthly") set({ kind: "monthly", day: 1, hour: 9, minute: 0 });
           }}
         >
@@ -133,6 +223,7 @@ function ScheduleEditor({
           <SelectContent>
             <SelectItem value="hourly">毎時</SelectItem>
             <SelectItem value="daily">毎日</SelectItem>
+            <SelectItem value="weekdays">平日（月〜金）</SelectItem>
             <SelectItem value="weekly">毎週</SelectItem>
             <SelectItem value="monthly">毎月</SelectItem>
             <SelectItem value="custom" disabled={preset.kind !== "custom"}>
@@ -154,21 +245,27 @@ function ScheduleEditor({
           />
         </Field>
       ) : null}
-      {preset.kind === "daily" || preset.kind === "weekly" || preset.kind === "monthly" ? (
+      {preset.kind === "daily" ||
+      preset.kind === "weekdays" ||
+      preset.kind === "weekly" ||
+      preset.kind === "monthly" ? (
         <div className="flex flex-wrap items-end gap-2">
           {preset.kind === "weekly" ? (
             <Field label="曜日">
               <Select
-                value={String(preset.weekday)}
-                onValueChange={(v) => set({ ...preset, weekday: Number(v) })}
+                value={preset.weekday}
+                onValueChange={(v) => {
+                  const weekday = weekdayOf(v);
+                  if (weekday) set({ ...preset, weekday });
+                }}
               >
                 <FieldSelectTrigger className="h-8 w-24">
                   <SelectValue />
                 </FieldSelectTrigger>
                 <SelectContent>
-                  {WEEKDAYS.map((w, i) => (
-                    <SelectItem key={i} value={String(i)}>
-                      {w}曜日
+                  {WEEKDAYS.map((w) => (
+                    <SelectItem key={w.cron} value={w.cron}>
+                      {w.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -213,9 +310,13 @@ function ScheduleEditor({
         </div>
       ) : null}
 
-      <Field label="cron 式（上級者向け）" hint="分 時 日 月 曜日">
+      <Field
+        label="cron 式（上級者向け）"
+        hint="分 時 日 月 曜日 の 5 つを半角スペースで区切って書きます。曜日は MON〜SUN の名前で書けます。"
+      >
         <FieldInput
           value={trigger.cron}
+          placeholder="例: 0 9 * * MON-FRI"
           onChange={(e) => onChange({ ...trigger, cron: e.target.value })}
           className="h-8 font-mono text-xs max-md:text-base"
         />
@@ -231,13 +332,7 @@ function ScheduleEditor({
           </SelectContent>
         </Select>
       </Field>
-      {fires.length > 0 ? (
-        <p className="rounded-md border bg-muted/40 p-2 text-[11px] text-muted-foreground">
-          次回の実行: {fires.join("、")}
-        </p>
-      ) : (
-        <p className="text-[11px] text-destructive">cron 式を確認してください</p>
-      )}
+      <FirePreviewLine preview={fires} tz={tz} />
     </div>
   );
 }
