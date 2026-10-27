@@ -34,6 +34,21 @@ impl RecordShareRole {
     }
 }
 
+/// 共有先 id の形の検査（前後の空白・subject の構造文字 `:` `#` `|` 等を弾く）。FGA の subject を組み立てる
+/// 前に通す（不正な id を authz の内部エラーではなく 400 にし、タプルの形を崩させない）。
+pub(crate) fn check_share_target_id(target: &ShareTarget) -> Result<(), DataError> {
+    let id = match target {
+        ShareTarget::User { id } | ShareTarget::Role { id } => id,
+    };
+    if id != id.trim() {
+        return Err(DataError::Invalid(
+            "共有先 id の前後に空白は使えません".into(),
+        ));
+    }
+    authz::validate_local_id(id)
+        .map_err(|v| DataError::Invalid(format!("共有先 id が不正です: {v}")))
+}
+
 impl DataStore {
     /// レコードを個別共有する（冪等）。
     pub async fn share_record(
@@ -94,23 +109,14 @@ impl DataStore {
 
     /// 共有先の検査: id の形（subject を壊す文字の拒否）と、ユーザー・ロール（部署）とも**同一テナントの
     /// ディレクトリに居ること**（存在しない・他テナントの id への共有タプルを作らない・存在しないロールへの
-    /// 共有を「成功」として監査に残さない・検証 2-B-P3-3）。解除は検査しない（残った不正なタプルを消せる
-    /// ように）。
-    async fn validate_share_target(
+    /// 共有を「成功」として監査に残さない・検証 2-B-P3-3）。解除は存在を検査しない（残った不正なタプルを
+    /// 消せるように）。テーブルの共有（[`crate::table_share`]）も同じ検査を通す。
+    pub(crate) async fn validate_share_target(
         &self,
         ctx: &AuthContext,
         target: &ShareTarget,
     ) -> Result<(), DataError> {
-        let id = match target {
-            ShareTarget::User { id } | ShareTarget::Role { id } => id,
-        };
-        if id != id.trim() {
-            return Err(DataError::Invalid(
-                "共有先 id の前後に空白は使えません".into(),
-            ));
-        }
-        authz::validate_local_id(id)
-            .map_err(|v| DataError::Invalid(format!("共有先 id が不正です: {v}")))?;
+        check_share_target_id(target)?;
         let (exists, what) = match target {
             ShareTarget::User { id } => (
                 self.resolver

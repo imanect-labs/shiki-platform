@@ -320,6 +320,27 @@ export async function getViewerContext(id: string): Promise<TableViewerContext> 
 }
 
 // ---------------------------------------------------------------------------
+// テーブルの共有（owner だけ・viewer / editor・#864）
+// ---------------------------------------------------------------------------
+
+export type TableShareRole = S["TableShareRole"];
+export type ShareTableRequest = S["ShareTableRequest"];
+/// 共有先 1 件（表示名・email はサーバがテナント内ディレクトリから解決・#741）。
+export type TableShareEntry = S["TableShareEntry"];
+
+export async function listTableShares(id: string): Promise<TableShareEntry[]> {
+  return ok<TableShareEntry[]>(await apiFetch(`/data/tables/${enc(id)}/shares`));
+}
+
+export async function shareTable(id: string, req: ShareTableRequest): Promise<void> {
+  await ok<void>(await apiFetch(`/data/tables/${enc(id)}/shares`, send("PUT", req)));
+}
+
+export async function unshareTable(id: string, req: ShareTableRequest): Promise<void> {
+  await ok<void>(await apiFetch(`/data/tables/${enc(id)}/shares`, send("DELETE", req)));
+}
+
+// ---------------------------------------------------------------------------
 // クエリ・レコード
 // ---------------------------------------------------------------------------
 

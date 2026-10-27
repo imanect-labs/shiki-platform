@@ -84,6 +84,7 @@ mod stream;
 mod table_list;
 mod table_load;
 mod table_redact;
+mod table_share;
 mod tenant_settings;
 mod transition;
 mod validate;
@@ -179,6 +180,7 @@ pub use stream::{
     StreamMessage, StreamReadyEvent, StreamResetEvent, StreamResetReason, LEDGER_CONSUMER,
     RECORD_CHANGED_EVENT,
 };
+pub use table_share::TableShareRole;
 pub use tenant_settings::{DataTenantSettings, MAX_COUNT_CAP, MAX_INDEXED_FIELDS_CEILING};
 pub use transition::TRANSITION_EVENT_TYPE;
 pub use validate::RefResolver;
