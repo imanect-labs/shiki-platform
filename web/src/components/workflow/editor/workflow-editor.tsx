@@ -186,6 +186,13 @@ export function WorkflowEditor({
       if (saved.declared_scopes) setScopes(saved.declared_scopes);
       dispatch({ type: "set_errors", errors: [] });
       dispatch({ type: "set_warnings", warnings: saved.warnings });
+      // 判定のノードの出口（node_ports）は保存の応答に無い。設定を変えてからライブ検証の前に保存すると、dirty が
+      // 下りて検証が走らず、古い出口のまま残る。保存した IR で 1 回だけ確かめて出口を合わせる（best-effort）。
+      validateWorkflow(irToSave)
+        .then(({ nodePorts }) => dispatch({ type: "set_ports", ports: nodePorts, ir: irToSave }))
+        .catch(() => {
+          // 付加情報（保存は済んでいる）。次の編集のライブ検証で改めて受ける。
+        });
       toast(
         saved.warnings.length
           ? {

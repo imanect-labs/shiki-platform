@@ -30,6 +30,10 @@ export type FormProps = {
   serverCheck: ServerCheck;
   /// サーバが導いたこのノードの出口（判定のノード・検証 API の `node_ports`。まだ無ければ undefined）。
   serverPorts?: readonly string[];
+  /// `serverPorts` が今の設定から導いたものか（違えば次の検証の応答までの古い出口）。
+  serverPortsFresh?: boolean;
+  /// このノードから出るエッジの出口（重なりなし・判定の選択肢のキーの付け替えで、どの出口に線があるかを見る）。
+  edgePorts?: readonly string[];
 };
 
 export function RagSearchForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {

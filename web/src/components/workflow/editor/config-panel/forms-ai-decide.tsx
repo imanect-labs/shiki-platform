@@ -19,6 +19,7 @@ import { TriangleAlert } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 import { NODE_CATALOG, type NodeParamsByType } from "@/generated/workflow-catalog";
 import type {
   DecideQuestion,
@@ -33,6 +34,7 @@ import type {
 import { portLabel } from "../node-card";
 import { Field, FieldSelectTrigger, useFieldControl } from "./common";
 import { DecideQuestions, kindLabel, type QuestionErrors } from "./decide-questions";
+import { planOptionRename, planRouteRename, renameShape } from "./decide-renames";
 import type { FormProps } from "./forms-basic";
 import { ModelField } from "./model-field";
 import { paramsOf, patchParams } from "./params";
@@ -103,6 +105,8 @@ export function AiDecideForm({
   fieldErrors,
   serverCheck,
   serverPorts,
+  serverPortsFresh = true,
+  edgePorts = [],
 }: FormProps) {
   const p = paramsOf<NodeParamsByType["ai.decide"]>(node) as Params;
   const questions = React.useMemo(() => (p.questions ?? []) as DecideQuestion[], [p.questions]);
@@ -113,30 +117,56 @@ export function AiDecideForm({
   );
 
   const patch = (next: Record<string, unknown>) => patchParams(dispatch, node, next);
+  // 打ち変えの途中で、ほかの選択肢・質問と同じキーを通っている間の付け替えの記憶（decide-renames.ts）。
+  // 選択肢は「質問の位置:選択肢の位置」→ その選択肢のエッジが残っている出口、振り分けは持ち主の質問の位置。
+  const heldPorts = React.useRef(new Map<string, string>());
+  const heldRoute = React.useRef<number | undefined>(undefined);
   // 質問の一覧を書き戻す。振り分けに使う質問が無くなったら振り分けも外す（残すと保存できない）。
   const setQuestions = (next: DecideQuestion[]) => {
+    // 並べ替え・追加・削除・種類の変更で位置とキーが変わったら、付け替えの記憶は捨てる（別の行を指さない）。
+    if (renameShape(next) !== renameShape(questions)) {
+      heldPorts.current.clear();
+      heldRoute.current = undefined;
+    }
     const keep = route && next.some((q) => q.key === route.question);
     patch({ questions: next, ...(route && !keep ? { route: undefined } : {}) });
   };
-  const onRenameKey = (_i: number, from: string, to: string, next: DecideQuestion[]) => {
-    // 振り分けに使う質問のキーを変えたら、振り分けも同じ 1 手で付け替える。
-    patch({ questions: next, ...(route && route.question === from ? { route: { ...route, question: to } } : {}) });
+  const onRenameKey = (i: number, _from: string, to: string, next: DecideQuestion[]) => {
+    // 振り分けに使う質問のキーを変えたら、振り分けも同じ 1 手で付け替える。ほかの質問のキーを打ち変えて振り分けの
+    // 質問のキーを通っても、振り分けは動かさない。
+    const plan = route
+      ? planRouteRename({ prevKeys: questions.map((q) => q.key), index: i, to, route: route.question, held: heldRoute.current })
+      : null;
+    heldRoute.current = plan?.held;
+    patch({ questions: next, ...(route && plan?.question != null ? { route: { ...route, question: plan.question } } : {}) });
   };
   const onRenameOption = (i: number, from: string, to: string, next: DecideQuestion[]) => {
     const q = questions[i];
     // 答えで分けている質問の選択肢のキーは出口の名前なので、そこから出るエッジも付け替える（switch と同じ）。
-    if (route && q && route.question === q.key && (route.by ?? "value") === "value" && from !== to) {
-      dispatch({
-        type: "rename_out_port",
-        id: node.id,
-        fromPort: from,
-        toPort: to,
-        params: { ...(node.params as Record<string, unknown>), questions: next },
-        noMerge: true,
-      });
+    // 出口の名前＝選択肢のキーという規則だけを写している（集合は node_ports・decide-renames.ts）。
+    const byValue = route && q && route.question === q.key && (route.by ?? "value") === "value";
+    const prevKeys = (q?.options ?? []).map((o) => o.key);
+    const index = (next[i]?.options ?? []).findIndex((o, j) => o.key !== prevKeys[j]);
+    if (!byValue || from === to || index < 0) {
+      patch({ questions: next });
       return;
     }
-    patch({ questions: next });
+    const slot = `${i}:${index}`;
+    const plan = planOptionRename({ prevKeys, index, to, held: heldPorts.current.get(slot), edgePorts });
+    if (plan.held === undefined) heldPorts.current.delete(slot);
+    else heldPorts.current.set(slot, plan.held);
+    if (!plan.move) {
+      patch({ questions: next });
+      return;
+    }
+    dispatch({
+      type: "rename_out_port",
+      id: node.id,
+      fromPort: plan.move.from,
+      toPort: plan.move.to,
+      params: { ...(node.params as Record<string, unknown>), questions: next },
+      noMerge: true,
+    });
   };
 
   return (
@@ -179,6 +209,13 @@ export function AiDecideForm({
         errors={errors.route}
         routeError={fieldErrors.get("route")}
         ports={serverPorts}
+        portsState={
+          serverPortsFresh
+            ? "fresh"
+            : (serverCheck.node?.params as unknown) === node.params
+              ? "unresolved"
+              : "pending"
+        }
       />
       {CACHE_LIMITS ? (
         <CacheSection
@@ -268,6 +305,7 @@ function RouteSection({
   errors,
   routeError,
   ports,
+  portsState,
 }: {
   questions: DecideQuestion[];
   route: DecideRoute | undefined;
@@ -277,6 +315,8 @@ function RouteSection({
   routeError?: string;
   /// サーバが導いた出口（まだ無ければ undefined）。
   ports: readonly string[] | undefined;
+  /// 出口が今の設定のものか（`pending` は検証の応答待ち・`unresolved` は今の設定では導けなかった）。
+  portsState: ExitsState;
 }) {
   const mode: RouteMode = route ? (route.by ?? "value") : "none";
   // 振り分けに使える質問（選択肢・はい/いいえ。段階では振り分けない）。
@@ -348,7 +388,7 @@ function RouteSection({
           </Field>
         </>
       ) : null}
-      <ExitsPreview ports={ports} hasRoute={route !== undefined} />
+      <ExitsPreview ports={ports} state={portsState} hasRoute={route !== undefined} />
       <CalibrationNote />
     </div>
   );
@@ -377,26 +417,48 @@ function ThresholdInput({ value, onChange }: { value: number; onChange: (next: n
   );
 }
 
-/// 出口の一覧（サーバが導いたもの）。応答が来るまで・設定が契約に合わない間は、その旨を出す。
-function ExitsPreview({ ports, hasRoute }: { ports: readonly string[] | undefined; hasRoute: boolean }) {
+/// 出口の鮮度: 今の設定のもの・検証の応答待ち・今の設定では導けない（前の出口を残している）。
+type ExitsState = "fresh" | "pending" | "unresolved";
+
+/// 出口の一覧（サーバが導いたもの）。応答が来るまで・設定が契約に合わない間は、その旨を出す。古い出口を今の出口と
+/// 取り違えないよう、今の設定のものでなければ薄く描いて注記する。
+function ExitsPreview({
+  ports,
+  state,
+  hasRoute,
+}: {
+  ports: readonly string[] | undefined;
+  state: ExitsState;
+  hasRoute: boolean;
+}) {
+  const stale = state !== "fresh";
   return (
-    <div className="space-y-1.5" data-testid="decide-exits">
+    <div className="space-y-1.5" data-testid="decide-exits" data-state={state}>
       <p className="text-xs font-medium text-foreground">出口</p>
       {ports && ports.length > 0 ? (
-        <ul className="flex flex-wrap gap-1.5">
-          {ports.map((port) => (
-            <li
-              key={port}
-              className="rounded-full border bg-background px-2 py-0.5 text-[11px]"
-              data-port={port}
-            >
-              {port === "out" ? "次へ" : portLabel(port) || port}
-              {portLabel(port) && port !== "out" && portLabel(port) !== port ? (
-                <span className="ml-1 font-mono text-muted-foreground">{port}</span>
-              ) : null}
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className={cn("flex flex-wrap gap-1.5", stale && "opacity-60")} aria-describedby={stale ? "decide-exits-stale" : undefined}>
+            {ports.map((port) => (
+              <li
+                key={port}
+                className="rounded-full border bg-background px-2 py-0.5 text-[11px]"
+                data-port={port}
+              >
+                {portLabel(port)}
+                {portLabel(port) !== port ? (
+                  <span className="ml-1 font-mono text-muted-foreground">{port}</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          {stale ? (
+            <p id="decide-exits-stale" className="text-[11px] text-muted-foreground" data-testid="decide-exits-stale">
+              {state === "unresolved"
+                ? "今の設定では出口が決まりません。上は前の設定の出口です（設定を直すと更新されます）"
+                : "設定を変えました。確かめた後に出口を更新します"}
+            </p>
+          ) : null}
+        </>
       ) : (
         <p className="text-[11px] text-muted-foreground">出口は設定を直すと出ます（保存時の検証が決めます）</p>
       )}

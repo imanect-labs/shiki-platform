@@ -22,6 +22,7 @@ import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { EditorContext } from "../workflow-editor";
 import { nodeIcon } from "../icons";
 import { defaultParams } from "../ir-state";
+import { edgePortsOf } from "../ports";
 import { mapErrors, nodeErrorView, paramField } from "../validation";
 import { CommonSection } from "./common";
 import { HumanApprovalForm } from "./forms-approval";
@@ -222,6 +223,9 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
   }, [errorView, node, blankFields]);
   const params = (node.params ?? {}) as Record<string, unknown>;
   const nodeWarnings = allWarnings.filter((w) => !(w.code === WARNING_CODES.REQUIRED_TEXT_EMPTY && paramField(w.path)));
+  // このノードから出るエッジの出口（中身が同じなら同じ配列を渡す）。
+  const edgePortsKey = JSON.stringify(edgePortsOf(node.id, ctx.state.ir.edges));
+  const edgePorts = React.useMemo(() => JSON.parse(edgePortsKey) as string[], [edgePortsKey]);
 
   return (
     <>
@@ -310,6 +314,8 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
                 fieldErrors={fieldErrors}
                 serverCheck={serverCheck}
                 serverPorts={ctx.state.serverPorts[node.id]}
+                serverPortsFresh={ctx.state.serverPortsParams[node.id] === node.params}
+                edgePorts={edgePorts}
               />
             </TriggerSourcesContext.Provider>
           </InputFieldsContext.Provider>
