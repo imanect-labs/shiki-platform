@@ -304,3 +304,44 @@ test("狭い画面では、シートの中に広げた一覧で名前を探し�
     await cleanup(page, made);
   }
 });
+
+test("読み込んだ一覧に状態の遷移の規則があるテーブルが無くても、続きがあれば「作ってください」と断定しない（GAP-42）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const made: Made = { tables: [], artifacts: [] };
+  const listed = await fsmTable(page, made, uniqueName("e2e-束ねた表"), ["下書き", "申請中", "受付", "承認", "却下"]);
+  const id = await flow(page, made, listed);
+  // いちばん新しい表は状態の遷移の規則を持たない（1 件のページにはこの表だけが入り、続きの位置が付く）。
+  const plain = await page.request.post("/api/data/tables", {
+    headers: await csrfHeaders(page),
+    data: {
+      name: uniqueName("e2e-規則の無い表"),
+      schema: { fields: [{ key: "title", display_name: "件名", type: "text", indexed: true }] },
+    },
+  });
+  expect(plain.status(), await plain.text()).toBe(201);
+  made.tables.push(((await plain.json()) as { id: string }).id);
+  try {
+    await truncateList(page);
+    // 束ねた表の 1 件取りも読めないことにして、読み込んだ表を規則の無い 1 件だけにする。
+    await page.route(new RegExp(`/api/data/tables/${listed}$`), (route) =>
+      route.request().method() === "GET" ? route.fulfill({ status: 404, json: {} }) : route.continue(),
+    );
+    await page.goto(`/workflows/${id}`);
+    const canvas = page.locator(".react-flow");
+    await expect(canvas.getByText("上長の承認").first()).toBeVisible({ timeout: 15_000 });
+    await canvas.getByText("上長の承認").first().click();
+    const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+    const note = panel.getByTestId("approval-no-fsm-table");
+    await expect(note).toHaveText(
+      "読み込んだテーブルに、状態の遷移の規則があるものはありません。選ぶ欄で名前で探してください。",
+    );
+    await expect(panel.getByText("テーブルの設定で状態の列と遷移の規則を作ってください")).toHaveCount(0);
+  } finally {
+    await page.unroute(/\/api\/data\/tables(\?.*)?$/);
+    await page.unroute(new RegExp(`/api/data/tables/${listed}$`));
+    await cleanup(page, made);
+  }
+});
