@@ -22,6 +22,7 @@ import { moveToolChoice, readToolChoice, writeToolChoice } from "@/lib/tool-choi
 import { titleFrom } from "@/lib/chat-store";
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { microSeasonOf } from "@/lib/microseason";
+import { notableDayOf } from "@/lib/notable-days";
 import {
   createKindDef,
   createPrompt,
@@ -164,17 +165,11 @@ export default function HomePage() {
       <div className="flex flex-col items-center gap-6 sm:gap-8">
         <div className="text-center">
           {loading ? (
-            <>
-              <Skeleton className="mx-auto mb-3 h-4 w-48" />
-              <Skeleton className="mx-auto h-9 w-72" />
-            </>
+            <Skeleton className="mx-auto h-9 w-72" />
           ) : (
-            <>
-              <SeasonLine />
-              <h1 className="text-[28px] font-semibold tracking-tight text-foreground sm:text-[32px]">
-                {name ? `${name} さん、${timeGreeting(new Date())}` : "Shiki へようこそ"}
-              </h1>
-            </>
+            <h1 className="text-[28px] font-semibold tracking-tight text-foreground sm:text-[32px]">
+              {name ? `${name} さん、${timeGreeting(new Date())}` : "Shiki へようこそ"}
+            </h1>
           )}
           <p className="mt-2 hidden text-sm text-muted-foreground sm:block">
             何でも尋ねてください。社内文書も自動で検索して答えます。
@@ -215,16 +210,7 @@ export default function HomePage() {
 
         <PromptSuggestions items={suggestions} onPick={pick} />
 
-        {/* 荒い破線の区切り（中央に四季の葉を一つ・差し色＝今の季節・太枠のみ）。軽やかな「間」。 */}
-        <div className="flex w-full max-w-2xl items-center gap-3 px-2" aria-hidden>
-          <span className="shiki-dash-x h-4 flex-1" />
-          <Leaf
-            className="size-5 shrink-0"
-            style={{ color: seasonVar(currentSeasonIndex()) }}
-            strokeWidth={2.5}
-          />
-          <span className="shiki-dash-x h-4 flex-1" />
-        </div>
+        <SeasonDivider />
 
         <ContinueSection threads={feed.threads} shares={feed.shares} />
 
@@ -244,28 +230,37 @@ function timeGreeting(now: Date): string {
   return "こんばんは";
 }
 
-const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"] as const;
+/// 荒い破線の区切り（中央に四季の葉を一つ・差し色＝今の季節・太枠のみ）。軽やかな「間」。
+/// 葉の横に七十二候と「〜の日」を小さく添える（上の入力まわりを詰めないよう、季節の話はここに集める）。
+/// 日付はサーバと端末でずれるので、文字は端末で描いてから出す（hydration の食い違いを作らない）。
+function SeasonDivider() {
+  const [label, setLabel] = React.useState<{ kou: string; term: string; day: string | null } | null>(
+    null,
+  );
+  React.useEffect(() => {
+    const now = new Date();
+    const kou = microSeasonOf(now);
+    setLabel({ kou: kou.name, term: kou.term, day: notableDayOf(now) });
+  }, []);
 
-/// あいさつの上の一行（日付と七十二候）。葉の差し色は今の季節。
-/// サーバと端末で時刻がずれるため、`useMe` の読み込み後（クライアント）にだけ描く。
-function SeasonLine() {
-  const now = new Date();
-  const kou = microSeasonOf(now);
   return (
-    <p className="mb-2 inline-flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
-      <Leaf
-        className="size-3.5 shrink-0"
-        style={{ color: seasonVar(currentSeasonIndex()) }}
-        strokeWidth={2.5}
-        aria-hidden
-      />
-      <span>
-        {now.getMonth() + 1}月{now.getDate()}日（{WEEKDAYS[now.getDay()]}）・
-        <span title={`二十四節気「${kou.term}」の候`}>
-          {kou.name}
-          <span className="hidden sm:inline">（{kou.reading}）</span>
-        </span>
+    <div className="flex w-full max-w-2xl items-center gap-3 px-2">
+      <span className="shiki-dash-x h-4 flex-1" aria-hidden />
+      <span className="inline-flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+        <Leaf
+          className="size-5 shrink-0"
+          style={{ color: seasonVar(currentSeasonIndex()) }}
+          strokeWidth={2.5}
+          aria-hidden
+        />
+        {label ? (
+          <span>
+            <span title={`二十四節気「${label.term}」の候`}>{label.kou}</span>
+            {label.day ? `・${label.day}` : null}
+          </span>
+        ) : null}
       </span>
-    </p>
+      <span className="shiki-dash-x h-4 flex-1" aria-hidden />
+    </div>
   );
 }
