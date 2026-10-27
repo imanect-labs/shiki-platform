@@ -13,12 +13,14 @@ use data::DataQuery;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::ParamsIssue;
 use crate::ir::expr::ValueExpr;
 
 /// `data.bulk_upsert` の 1 ノードあたりの行数上限（同期で取込を最後まで進めるため・step 出力 256KB と釣り合う）。
 pub const MAX_WORKFLOW_BULK_ROWS: usize = 5_000;
 
-/// `data.query` — テーブルを検索・集計する（viewer・行述語とフィールドマスクは実行主体の権限で適用・pure）。
+/// `data.query` — テーブルから条件に合うレコードを読む（集計も書ける・viewer・行述語とフィールドマスクは実行主体の
+/// 権限で適用・pure）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
@@ -32,6 +34,21 @@ pub struct DataQueryParams {
         optional
     )]
     pub query: Option<DataQuery>,
+}
+
+impl DataQueryParams {
+    /// 読む件数の上限（`query.limit`）は 1〜[`data::MAX_QUERY_LIMIT`]。範囲の外は保存で止める（BUG-108。data は
+    /// 黙って 200 件に切り詰めるので、201 以上を書いても読める件数は増えない）。
+    pub(crate) fn check_cross_fields(&self) -> Result<(), ParamsIssue> {
+        let max = data::MAX_QUERY_LIMIT;
+        match self.query.as_ref().and_then(|q| q.limit) {
+            Some(limit) if !(1..=max).contains(&limit) => Err(ParamsIssue {
+                path: "/params/query/limit".to_string(),
+                message: format!("「読む件数の上限」は 1〜{max} 件にしてください。"),
+            }),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// `data.record.create` — レコードを 1 件作る（editor・EngineDedup）。
@@ -115,4 +132,38 @@ pub struct DataBulkUpsertParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub abort_on_invalid: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::ir::params::check_params;
+    use crate::vocab::NodeType;
+
+    /// 読む件数の上限は 1〜200。範囲の外は保存で止め、直す欄（`/params/query/limit`）を指す（BUG-108。以前は
+    /// 201 以上も保存でき、実行で黙って 200 件に切り詰められていた）。
+    #[test]
+    fn query_limit_must_be_within_the_page_size() {
+        let params = |limit: serde_json::Value| json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", "query": { "limit": limit } });
+        for ok in [1, 50, 200] {
+            assert!(
+                check_params(NodeType::DataQuery, &params(json!(ok))).is_ok(),
+                "{ok}"
+            );
+        }
+        assert!(check_params(
+            NodeType::DataQuery,
+            &json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1" })
+        )
+        .is_ok());
+        for bad in [0, 201, 1000] {
+            let issue = check_params(NodeType::DataQuery, &params(json!(bad))).unwrap_err();
+            assert_eq!(issue.path, "/params/query/limit", "{bad}");
+            assert_eq!(
+                issue.message,
+                "「読む件数の上限」は 1〜200 件にしてください。"
+            );
+        }
+    }
 }

@@ -141,7 +141,7 @@ pub use query::admission::{QuerySuggestion, DEFAULT_READ_BUDGET_MS, DEFAULT_TENA
 pub use query::ir::{
     AggregateGroup, CondCmp, CondOp, Condition, CountResult, DataQuery, GroupSortKey, HavingCmp,
     HavingCond, JoinSpec, LinkCond, Metric, MetricSpec, QueryParseError, QueryResult, SortKey,
-    DATA_QUERY_KEYS,
+    DATA_QUERY_KEYS, MAX_LIMIT as MAX_QUERY_LIMIT,
 };
 pub use query::limits::{
     QueryLimits, MAX_AST_DEPTH, MAX_AST_NODES, MAX_COMPILE_MS, MAX_COMPILE_WORK, MAX_JOIN_DEPTH,

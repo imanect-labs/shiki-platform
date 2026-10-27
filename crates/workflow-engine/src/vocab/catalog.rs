@@ -270,7 +270,8 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
         NodeType::DataQuery => (
             C::Data,
             "データを調べる",
-            "業務データ（テーブル）を検索・集計する",
+            // 集計は画面では作れない（AI 向けには params の形の説明で補う・BUG-108・付録 D の N3.3.1）。
+            "テーブルから、条件に合うレコードを読みます。一度に読めるのは最大 200 件です。",
         ),
         NodeType::DataRecordCreate => (
             C::Data,

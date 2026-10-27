@@ -2,7 +2,8 @@
 import type { ValueExpr } from "./ValueExpr";
 
 /**
- * `data.query` — テーブルを検索・集計する（viewer・行述語とフィールドマスクは実行主体の権限で適用・pure）。
+ * `data.query` — テーブルから条件に合うレコードを読む（集計も書ける・viewer・行述語とフィールドマスクは実行主体の
+ * 権限で適用・pure）。
  */
 export type DataQueryParams = { 
 /**

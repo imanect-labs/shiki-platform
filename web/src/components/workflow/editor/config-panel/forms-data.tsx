@@ -89,6 +89,9 @@ export function DataQueryForm(props: FormProps) {
   const query: DataQuery = (p.query as DataQuery | undefined) ?? {};
   const columns = React.useMemo(() => (table ? resolveColumns(table.schema.fields, null, new Set()) : []), [table]);
   const f = splitFilter(query.filter);
+  // 読む件数の上限の誤り（保存時の照合・`/params/query/limit`・BUG-108）は、その欄の下に出す（探す条件の下に重ねない）。
+  const limitError = fieldErrors.get("query/limit") ?? null;
+  const queryError = fieldErrors.get("query") ?? null;
   const setQuery = (next: DataQuery) => {
     const cleaned = Object.fromEntries(Object.entries(next).filter(([, v]) => v !== undefined && v !== null));
     patchParams(dispatch, node, { query: Object.keys(cleaned).length ? cleaned : undefined });
@@ -114,14 +117,22 @@ export function DataQueryForm(props: FormProps) {
               onChange={(sort) => setQuery({ ...query, sort: sort.length ? sort : undefined })}
             />
           </div>
-          {fieldErrors.get("query") ? <p className="text-[11px] text-destructive">{fieldErrors.get("query")}</p> : null}
+          {queryError && queryError !== limitError ? (
+            <p className="text-[11px] text-destructive">{queryError}</p>
+          ) : null}
         </div>
       ) : null}
-      <Field label="取得件数（省略可）" hint="空欄で 50 件・最大 200 件">
+      <Field
+        label="読む件数の上限（省略可）"
+        hint="空欄なら 50 件、最大 200 件です。条件に合うレコードがこれより多いときは、並べ替えの順で先頭から読みます。"
+        error={limitError}
+      >
         <NumberInput
           value={typeof query.limit === "number" ? query.limit : null}
           min={1}
           max={200}
+          placeholder="例: 20"
+          error={Boolean(limitError)}
           onChange={(n) => setQuery({ ...query, limit: n ?? undefined })}
         />
       </Field>

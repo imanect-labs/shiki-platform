@@ -86,16 +86,26 @@ export function nodeErrorView(errors: ValidationError[]): NodeErrorView {
       banner.push({ message: e.message });
       continue;
     }
-    if (fields.has(field)) continue;
     const message =
       head === null && serde
         ? serde.message
         : e.message.startsWith(PARAMS_PREFIX)
           ? e.message.slice(PARAMS_PREFIX.length)
           : e.message;
-    fields.set(field, message);
+    // 入れ子の欄（`/params/query/limit` → `query/limit`）にも写す。1 つの項目の中に欄が複数あるフォーム
+    // （「データを調べる」の探す条件と読む件数の上限）が、直す欄の下に出せるように（BUG-108）。
+    const sub = paramSubField(e.path);
+    if (sub && !fields.has(sub)) fields.set(sub, message);
+    if (!fields.has(field)) fields.set(field, message);
   }
   return { fields, banner };
+}
+
+/// `/params/<field>/<sub>/...` の 2 段の名前（`<field>/<sub>`）。2 段に満たなければ null。
+export function paramSubField(path: string | undefined | null): string | null {
+  if (!path?.startsWith("/params/")) return null;
+  const [head, sub] = path.slice("/params/".length).split("/");
+  return head && sub ? `${head}/${sub}` : null;
 }
 
 /// `/params/<field>/...` の先頭フィールド名（右パネルのフィールドハイライト用）。

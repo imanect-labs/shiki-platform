@@ -276,7 +276,8 @@ pub(super) fn emit_description(
          - url・secret・skill・model など型が string の項目はリテラルの文字列だけ（参照は書けない）。テーブル・フォルダ・ファイルの id は実在する uuid を書く（data_schema・doc_search などで調べる。推測しない）。\n\
          - schedule・event で動かすワークフローの storage.write・csv.write には folder を必ず書く（省略はルートへの保存で、自動の実行はルートに書けないので有効化できない）。llm.invoke の prompt・agent.invoke の instruction・rag.search の query・csv.query の sql は空にしない（空のままでは有効化も実行もできない）。\n\
          - 条件（control.branch の condition・トリガと control.wait の filter）: {{\"cmp\":{{\"left\":値,\"op\":CmpOp,\"right\":値}}}}・{{\"all\":[条件…]}}・{{\"any\":[条件…]}}・{{\"not\":条件}}。CmpOp = {ops}（exists・is_null は right を書かない）。例: {cond}\n\
-         - data.query の filter は形が違う: {{\"cmp\":{{\"field\":\"<列の参照名>\",\"op\":CmpOp,\"value\":値}}}}（all / any / not は同じ）。\n",
+         - data.query の filter は形が違う: {{\"cmp\":{{\"field\":\"<列の参照名>\",\"op\":CmpOp,\"value\":値}}}}（all / any / not は同じ）。query.limit は 1〜{max_limit}（省略は 50。範囲の外は保存できない）。集計は query の group_by と aggregate（[{{\"metric\":\"count\"}}] や {{\"metric\":\"sum\",\"field\":\"<数値の列>\"}}）で書け、結果は groups に入る（エディタの画面では作れない）。\n",
+        max_limit = data::MAX_QUERY_LIMIT,
         ops = compact_ts::<CmpOp>(),
         cond = minify(EXAMPLE_CONDITION),
     );

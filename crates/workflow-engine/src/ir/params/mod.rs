@@ -218,7 +218,14 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
         NodeType::CsvQuery => check_as::<CsvQueryParams>(raw),
         NodeType::CsvPatch => check_as::<CsvPatchParams>(raw),
         NodeType::CsvWrite => check_as::<CsvWriteParams>(raw),
-        NodeType::DataQuery => check_as::<DataQueryParams>(raw),
+        NodeType::DataQuery => {
+            check_as::<DataQueryParams>(raw)?;
+            let parsed: DataQueryParams = parse(raw).map_err(|message| ParamsIssue {
+                path: "/params".to_string(),
+                message,
+            })?;
+            parsed.check_cross_fields()
+        }
         NodeType::DataRecordCreate => check_as::<DataRecordCreateParams>(raw),
         NodeType::DataRecordUpdate => check_as::<DataRecordUpdateParams>(raw),
         NodeType::DataRecordDelete => check_as::<DataRecordDeleteParams>(raw),
