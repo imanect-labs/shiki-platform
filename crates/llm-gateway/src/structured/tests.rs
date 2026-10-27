@@ -352,6 +352,10 @@ fn schema_rejections_are_classified_without_leaking_the_body() {
             .is_some_and(|e| is_schema_rejection(&e))
     );
 
+    // 思考の深さ（output_config.effort）を受けないモデルの 400 は出力の形の誤りにしない（従来の 400 のまま）。
+    let effort = r#"{"type":"error","error":{"type":"invalid_request_error","message":"output_config.effort: Extra inputs are not permitted"},"request_id":"req_z"}"#;
+    assert!(schema_rejection("anthropic", reqwest::StatusCode::BAD_REQUEST, effort).is_none());
+
     // スキーマと関係のない 400・400 以外は分類しない（従来の扱いに任せる）。
     let too_long = r#"{"error":{"message":"prompt is too long: 250000 tokens > 200000 maximum"}}"#;
     assert!(schema_rejection("anthropic", reqwest::StatusCode::BAD_REQUEST, too_long).is_none());

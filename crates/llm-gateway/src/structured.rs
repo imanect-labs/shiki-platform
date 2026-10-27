@@ -414,9 +414,16 @@ pub(crate) fn schema_rejection(
     let too_complex = ["too complex", "grammar", "too many optional", "union type"]
         .iter()
         .any(|k| lower.contains(k));
-    let about_format = ["output_config", "response_format", "json_schema", "guided"]
-        .iter()
-        .any(|k| lower.contains(k));
+    // 出力の形の欄を名指しした拒否だけ（`output_config` 全体で見ると、同じ欄の `effort` を受けないモデルの 400 まで
+    // スキーマの誤りになり、利用者は出力の形を直しに行ってしまう）。
+    let about_format = [
+        "output_config.format",
+        "response_format",
+        "json_schema",
+        "guided",
+    ]
+    .iter()
+    .any(|k| lower.contains(k));
     if !too_complex && !about_format {
         return None;
     }
