@@ -909,7 +909,8 @@ step を `waiting_timer` にし `wake_at` を書いてワーカーを解放す�
   突合でも拾わない）。②突合までに outbox から GC された変更（突合は commit の直後の tick に走るので、ふつうは残っている）。
 - イベント到来（マッチャ・§5.5）: `succeeded`・`taken_ports = {out}`・イベントペイロードを output に格納。
 - `timeout_at` 超過・`on_timeout: continue`: `succeeded`・`taken_ports = {timeout}`（ir.md §5.2 の `wait` ポート）。
-- `timeout_at` 超過・`on_timeout: fail`: `failed`。
+- `timeout_at` 超過・`on_timeout: fail`: `failed`。step は出力を書かずに `error.code = wait_timeout`〔retryable でない〕、run は
+  `fail_reason = wait_timeout` になり、失敗の分類は時間切れ（承認の `approval_timeout` と同じ形・BUG-112）。
 
 いずれも購読行を消し込み、§4.1 の前進 TX で後続を解決する。
 
