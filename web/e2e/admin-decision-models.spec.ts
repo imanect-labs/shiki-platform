@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak } from "./helpers";
+import { loginViaKeycloak, stubDecisionModel } from "./helpers";
 
 /// 判定用のモデル（FEAT-1・modality=decision）の管理画面とモデル一覧の E2E。
 ///
@@ -15,6 +15,7 @@ type AdminModel = {
   label: string;
   enabled: boolean;
   modality: "chat" | "decision";
+  provider_id: string;
   decision_via?: string | null;
 };
 
@@ -47,7 +48,7 @@ test.describe("判定用のモデル", () => {
   test("管理画面で判定用と分かり、既定・Auto に選べず、チャットの一覧に出ない", async ({ page }) => {
     await loginViaKeycloak(page);
     const before = await adminModels(page);
-    const decision = before.find((m) => m.modality === "decision" && !m.decision_via);
+    const decision = await stubDecisionModel(page, before);
     test.skip(!decision, "判定用のモデル（stub の決定器）がカタログに無い構成");
     if (!decision) return;
     const chatIds = before.filter((m) => m.modality === "chat").map((m) => m.id);

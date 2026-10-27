@@ -33,3 +33,19 @@ export async function loginAs(page: Page, user: string, pass = PASS) {
 export function uniqueName(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`;
 }
+
+/// 実 LLM を呼ばない stub の決定器の判定用のモデル（カタログに無ければ undefined）。
+///
+/// 「元にする chat モデルを持たない判定用のモデル」だけでは選ばない: TypeSafe 互換の判定用のモデル（外部の API）も
+/// `decision_via` を持たないので、振り先のプロバイダの種別が stub であることまで確かめる。
+export async function stubDecisionModel<T extends { id: string; modality: string; provider_id: string; decision_via?: string | null }>(
+  page: Page,
+  models: T[],
+): Promise<T | undefined> {
+  const res = await page.request.get("/api/org-admin/ai/providers");
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const stub = new Set(
+    ((await res.json()) as { id: string; kind: string }[]).filter((p) => p.kind === "stub").map((p) => p.id),
+  );
+  return models.find((m) => m.modality === "decision" && !m.decision_via && stub.has(m.provider_id));
+}

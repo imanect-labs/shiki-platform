@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type Locator, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { loginViaKeycloak, stubDecisionModel, uniqueName } from "./helpers";
 
 /// 「AI で判定」（ai.decide・FEAT-1 の T6）のエディタの画面を確かめる。
 ///
@@ -13,7 +13,7 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 /// stub・SHIKI__WORKFLOW__ENABLED=true。判定用のモデルを組織で公開し、finally で元に戻す。実 LLM は呼ばない
 /// （元にする chat モデルを持たない stub の決定器だけを使う）。作った表・状態の流れ・ワークフローは最後に消す。
 
-type AdminModel = { id: string; enabled: boolean; modality: "chat" | "decision"; decision_via?: string | null };
+type AdminModel = { id: string; enabled: boolean; modality: "chat" | "decision"; provider_id: string; decision_via?: string | null };
 
 async function csrfHeader(page: Page): Promise<Record<string, string>> {
   const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
@@ -142,7 +142,7 @@ test.describe("AI で判定（エディタ）", () => {
   test.beforeEach(async ({ page }) => {
     await loginViaKeycloak(page);
     // 元にする chat モデルを持たない判定用のモデル（stub の決定器）だけを使う（実 LLM を呼ばない）。
-    decision = (await adminModels(page)).find((m) => m.modality === "decision" && !m.decision_via);
+    decision = await stubDecisionModel(page, await adminModels(page));
     test.skip(!decision, "判定用のモデル（stub の決定器）がカタログに無い構成");
   });
 
@@ -298,8 +298,10 @@ test.describe("AI で判定（エディタ）", () => {
       const node = page.getByTestId("rf__node-decide_1");
       await expect(node).toBeVisible();
       const panel = page.getByRole("complementary", { name: "ブロックの設定" });
-      // 置いたばかりは設定が足りないので、出口はまだ出ない（その旨をカードに出す）。
-      await expect(node.getByTestId("node-ports-pending")).toBeVisible({ timeout: 10_000 });
+      // 置いたばかり（モデル未選択・問いが空）でも、振り分けが無ければ出口は out に決まる（出口は振り分けに関わる
+      // 項目だけから導く）。
+      await expect.poll(() => handleIds(node), { timeout: 10_000 }).toEqual(["out"]);
+      await expect(node.getByTestId("node-ports-pending")).toHaveCount(0);
 
       // 判定用のモデル（判定用のモデルだけが一覧に出る・既定の行は無い）。
       await panel.getByRole("button", { name: /^判定用のモデル: 選んでください/ }).click();
@@ -513,3 +515,212 @@ async function phonePage(browser: Browser, page: Page): Promise<Page> {
   });
   return ctx.newPage();
 }
+
+/// レビューの指摘の直し（打ち変えの途中の重なり・出口が決まる前のエラー時の出口・保存の直後の出口・書きかけの質問）。
+test.describe("AI で判定（エディタ・編集の途中）", () => {
+  let decision: AdminModel | undefined;
+
+  test.beforeEach(async ({ page }) => {
+    await loginViaKeycloak(page);
+    decision = await stubDecisionModel(page, await adminModels(page));
+    test.skip(!decision, "判定用のモデル（stub の決定器）がカタログに無い構成");
+  });
+
+  test("キーを 1 文字ずつ打ち変えて、ほかの選択肢・質問のキーを通っても、ほかのエッジと振り分けを移さない", async ({ page }) => {
+    test.setTimeout(180_000);
+    const d = decision!;
+    const made: Made = { tables: [], artifacts: [] };
+    try {
+      if (!d.enabled) await setEnabled(page, [{ id: d.id, enabled: true }]);
+      const name = uniqueName("wf-decide-rename");
+      const base = decideNode(d.id, { question: "category", min_confidence: 0.8 }, { $from: "input", path: "/body" });
+      const node = {
+        ...base,
+        params: {
+          ...base.params,
+          questions: [...base.params.questions, { key: "angry", type: "boolean", instructions: "強い不満を示しているか" }],
+        },
+      };
+      const id = await createWorkflow(page, made, {
+        ir_version: 1,
+        name,
+        display_name: name,
+        triggers: [{ kind: "interactive" }],
+        input_schema: { type: "object", properties: { body: { type: "string" } }, required: ["body"] },
+        nodes: [
+          node,
+          { id: "on_billing", type: "control.join", label: "請求の対応", params: {} },
+          { id: "on_bug", type: "control.join", label: "不具合の対応", params: {} },
+          { id: "on_uncertain", type: "control.join", label: "人が確認", params: {} },
+          { id: "reply", type: "llm.invoke", label: "返信を書く", params: { prompt: "" } },
+        ],
+        edges: [
+          { from: "triage", from_port: "billing", to: "on_billing" },
+          { from: "triage", from_port: "bug", to: "on_bug" },
+          { from: "triage", from_port: "uncertain", to: "on_uncertain" },
+          { from: "on_billing", to: "reply" },
+        ],
+      });
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.goto(`/workflows/${id}`);
+      const card = page.getByTestId("rf__node-triage");
+      await expect.poll(() => handleIds(card), { timeout: 15_000 }).toEqual(["billing", "bug", "uncertain"]);
+      await card.click();
+      const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+
+      // 選択肢 2（bug）のキーを billing_issue へ 1 文字ずつ打ち変える。途中で選択肢 1 と同じ billing を通る。
+      const question = panel.getByRole("group", { name: /^質問 1/ });
+      const key2 = question.getByRole("textbox", { name: "選択肢 2 のキー" });
+      await key2.fill("");
+      await key2.pressSequentially("billing_issue");
+      await expect(key2).toHaveValue("billing_issue");
+      await expect.poll(() => handleIds(card), { timeout: 10_000 }).toEqual(["billing", "billing_issue", "uncertain"]);
+      await expect(card.getByText("（無い出口）")).toHaveCount(0);
+
+      // 振り分けに使っていない質問（angry）のキーを打ち変えて、振り分けの質問のキー（category）を通っても、
+      // 振り分けは category のまま。
+      const q2 = panel.getByRole("group", { name: /^質問 2/ });
+      const q2key = q2.getByRole("textbox", { name: "キー", exact: true });
+      await q2key.fill("");
+      await q2key.pressSequentially("category_x");
+      await expect(panel.getByRole("combobox", { name: "振り分けに使う質問" })).toContainText("category");
+      await expect(panel.getByRole("combobox", { name: "振り分けに使う質問" })).not.toContainText("category_x");
+
+      // 後ろのブロックの「差し込む」に、質問ごとの答えが出る（ai.decide の出力の下位の項目）。
+      await page.getByTestId("rf__node-reply").click();
+      await panel
+        .locator('[data-value-expr="AI への指示"]')
+        .getByRole("button", { name: "差し込む" })
+        .click();
+      for (const label of ["category の答え", "category の確からしさ", "category_x の答え"]) {
+        await expect(page.getByRole("menuitem", { name: `「問い合わせを判定」の ${label}`, exact: true })).toBeVisible();
+      }
+      await page.keyboard.press("Escape");
+
+      await page.getByRole("button", { name: "保存", exact: true }).click();
+      await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+      const ir = await savedIr(page, id);
+      expect(ir.edges).toEqual(
+        expect.arrayContaining([
+          { from: "triage", from_port: "billing", to: "on_billing" },
+          { from: "triage", from_port: "billing_issue", to: "on_bug" },
+          { from: "triage", from_port: "uncertain", to: "on_uncertain" },
+        ]),
+      );
+      const saved = ir.nodes.find((n) => n.id === "triage")!;
+      expect((saved.params.route as { question: string }).question).toBe("category");
+      expect((saved.params.questions as { key: string }[]).map((q) => q.key)).toEqual(["category", "category_x"]);
+    } finally {
+      await cleanup(page, made);
+      if (!d.enabled) await setEnabled(page, [{ id: d.id, enabled: false }]);
+    }
+  });
+
+  test("出口が決まる前に失敗したときを続けるにしても、尻尾の＋はエラー時の出口につながない", async ({ page }) => {
+    test.setTimeout(180_000);
+    const made: Made = { tables: [], artifacts: [] };
+    try {
+      const name = uniqueName("wf-decide-tail");
+      const id = await createWorkflow(page, made, {
+        ir_version: 1,
+        name,
+        display_name: name,
+        triggers: [{ kind: "interactive" }],
+        nodes: [],
+        edges: [],
+      });
+      // サーバがまだ出口を導いていない間（検証の応答の前・設定が契約に合わない間）を保つため、検証の応答から
+      // 判定のノードの出口を外す。
+      await page.route("**/api/workflows/validate", async (route) => {
+        const res = await route.fetch();
+        const body = (await res.json()) as { node_ports?: Record<string, string[]> };
+        delete body.node_ports?.decide_1;
+        await route.fulfill({ response: res, json: body });
+      });
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.goto(`/workflows/${id}`);
+      await page.getByRole("button", { name: "最初のブロック" }).click();
+      await page.getByRole("button", { name: /^AI で判定/ }).click();
+      const card = page.getByTestId("rf__node-decide_1");
+      await expect(card).toBeVisible();
+      const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+      await choose(page, panel.getByRole("combobox", { name: "失敗したとき" }), "エラー用の出口に流す");
+      await page.getByRole("button", { name: "パネルを閉じる" }).click();
+      // 出口（続きの処理の出口）が決まるまでは、エラー時の出口があってもその旨を出し、エラー時は名前付きの行で描く。
+      await expect(card.getByTestId("node-ports-pending")).toBeVisible({ timeout: 10_000 });
+      await expect(card.locator('[data-port="error"]')).toHaveText("エラー時");
+      await settleViewport(page);
+      await expectHandlesBesideLabels(card);
+      await page.screenshot({ path: "test-results/decide-pending-error-pc.png" });
+
+      // 尻尾の＋から足したブロックは、既定の出口（out）につながる（error ではない）。
+      await card.getByRole("button", { name: "次のブロックを追加" }).click();
+      await page.getByRole("button", { name: /^合流/ }).first().click();
+      await expect(page.locator('[data-testid^="rf__edge-e:decide_1|out|"]')).toHaveCount(1);
+      await expect(page.locator('[data-testid^="rf__edge-e:decide_1|error|"]')).toHaveCount(0);
+      await expect(card.locator('[data-port="out"]')).toHaveText("次へ");
+
+      // スマホ幅の縦の一覧も、出口が決まる前は「次へ」と「エラー時」を分けて出す（error の後ろに足さない）。
+      await page.screenshot({ path: "test-results/decide-pending-error-tail-pc.png" });
+      // 設定は保存できない（書きかけ）ので、同じ画面の幅を変えて手元の定義のまま見る（設定のパネルは閉じておく）。
+      const close = page.getByRole("button", { name: "パネルを閉じる" });
+      if (await close.isVisible()) await close.click();
+      await page.setViewportSize({ width: 390, height: 844 });
+      const flow = page.getByTestId("workflow-mobile-flow");
+      await expect(flow).toBeVisible({ timeout: 15_000 });
+      await expect(flow.getByText("次へ", { exact: true })).toBeVisible();
+      await expect(flow.getByText("エラー時", { exact: true })).toBeVisible();
+      await expect(flow.getByRole("button", { name: "「AI で判定」の「エラー時」にブロックを追加" })).toBeVisible();
+      await page.screenshot({ path: "test-results/decide-pending-error-phone.png" });
+    } finally {
+      await cleanup(page, made);
+    }
+  });
+
+  test("振り分けを変えてすぐ保存しても、書きかけの質問があっても、出口は今の設定のものになる", async ({ page }) => {
+    test.setTimeout(180_000);
+    const d = decision!;
+    const made: Made = { tables: [], artifacts: [] };
+    try {
+      if (!d.enabled) await setEnabled(page, [{ id: d.id, enabled: true }]);
+      const name = uniqueName("wf-decide-fresh");
+      const id = await createWorkflow(page, made, {
+        ir_version: 1,
+        name,
+        display_name: name,
+        triggers: [{ kind: "interactive" }],
+        input_schema: { type: "object", properties: { body: { type: "string" } }, required: ["body"] },
+        nodes: [
+          decideNode(d.id, undefined, { $from: "input", path: "/body" }),
+          { id: "auto", type: "control.join", label: "自動で処理", params: {} },
+        ],
+        edges: [{ from: "triage", from_port: "out", to: "auto" }],
+      });
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.goto(`/workflows/${id}`);
+      const card = page.getByTestId("rf__node-triage");
+      await expect.poll(() => handleIds(card), { timeout: 15_000 }).toEqual(["out"]);
+      await card.click();
+      const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+
+      // 振り分けを変えてすぐ（ライブ検証の前に）保存する。保存の後に出口を取り直す。
+      await choose(page, panel.getByRole("combobox", { name: "振り分け", exact: true }), "確かなときだけ進める");
+      await page.keyboard.press("Control+s");
+      await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+      await expect.poll(() => handleIds(card), { timeout: 10_000 }).toEqual(["out", "uncertain"]);
+      await expect(panel.getByTestId("decide-exits")).toHaveAttribute("data-state", "fresh");
+
+      // 質問を足して（問いは空・書きかけ）、答えで分けるに変える。出口は振り分けの質問から決まる。
+      await panel.getByRole("button", { name: "質問を追加" }).click();
+      await choose(page, panel.getByRole("combobox", { name: "振り分け", exact: true }), "答えで分ける");
+      await expect.poll(() => handleIds(card), { timeout: 10_000 }).toEqual(["billing", "bug", "uncertain", "out"]);
+      await expect(card.locator('[data-port="out"]')).toHaveText("次へ（無い出口）");
+      await expect(panel.getByTestId("decide-exits")).toHaveAttribute("data-state", "fresh");
+      await expect(panel.getByTestId("decide-exits")).toContainText("billing");
+      await page.screenshot({ path: "test-results/decide-draft-question-pc.png" });
+    } finally {
+      await cleanup(page, made);
+      if (!d.enabled) await setEnabled(page, [{ id: d.id, enabled: false }]);
+    }
+  });
+});

@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type Locator, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { loginViaKeycloak, stubDecisionModel, uniqueName } from "./helpers";
 
 /// 「AI で判定」の答えの使い回し（決定キャッシュ・step 属性 `cache`・FEAT-1 の T10）。
 ///
@@ -12,7 +12,7 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 /// stub・SHIKI__WORKFLOW__ENABLED=true。判定用のモデルを組織で公開し、finally で元に戻す。実 LLM は呼ばない
 /// （元にする chat モデルを持たない stub の決定器だけを使う）。作ったワークフローは最後に消す。
 
-type AdminModel = { id: string; enabled: boolean; modality: "chat" | "decision"; decision_via?: string | null };
+type AdminModel = { id: string; enabled: boolean; modality: "chat" | "decision"; provider_id: string; decision_via?: string | null };
 
 async function csrfHeader(page: Page): Promise<Record<string, string>> {
   const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
@@ -151,7 +151,7 @@ test.describe("AI で判定の答えの使い回し（決定キャッシュ）",
   test.beforeEach(async ({ page }) => {
     await loginViaKeycloak(page);
     // 元にする chat モデルを持たない判定用のモデル（stub の決定器）だけを使う（実 LLM を呼ばない）。
-    decision = (await adminModels(page)).find((m) => m.modality === "decision" && !m.decision_via);
+    decision = await stubDecisionModel(page, await adminModels(page));
     test.skip(!decision, "判定用のモデル（stub の決定器）がカタログに無い構成");
   });
 
