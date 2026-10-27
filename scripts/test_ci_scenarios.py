@@ -128,6 +128,23 @@ class SelectTest(unittest.TestCase):
         self.assertTrue(r["all"])
         self.assertEqual(r["unmapped"], ["web/src/app/(auth)/new/page.tsx"])
 
+    def test_deleted_file_is_judged_by_its_importers(self):
+        r = run(scenarios(), ["web/src/components/data/removed.tsx", "web/src/components/data/grid.tsx"])
+        self.assertEqual((r["all"], r["specs"], r["unmapped"]), (False, ["auth.spec.ts", "data-grid.spec.ts"], []))
+
+    def test_non_code_file_follows_its_importers(self):
+        src = dict(SOURCES)
+        src["web/src/components/data/grid.css"] = ""
+        src["web/src/components/data/grid.tsx"] += 'import "./grid.css";\n'
+        r = run(scenarios(sources=src), ["web/src/components/data/grid.css"])
+        self.assertEqual(r["specs"], ["auth.spec.ts", "data-grid.spec.ts"])
+
+    def test_file_reaching_an_all_path_runs_everything(self):
+        src = dict(SOURCES)
+        src["web/src/middleware.ts"] = 'import "@/components/data/grid";\n'
+        table = TABLE.replace('paths = ["web/e2e/helpers.ts"]', 'paths = ["web/e2e/helpers.ts", "web/src/middleware.ts"]')
+        self.assertTrue(run(scenarios(table, src), ["web/src/components/data/grid.tsx"])["all"])
+
     def test_spec_change_runs_that_spec(self):
         self.assertEqual(run(scenarios(), ["web/e2e/notes.spec.ts"])["specs"], ["auth.spec.ts", "notes.spec.ts"])
         self.assertEqual(run(scenarios(), ["web/e2e/perf.manual.spec.ts"])["specs"], ["auth.spec.ts"])
@@ -212,6 +229,11 @@ class CheckTest(unittest.TestCase):
         self.assertTrue(any("手動" in e for e in self.errors(table)))
         table = TABLE.replace('crates = ["shiki-collab"]', 'crates = ["shiki-collab", "shiki-authz"]')
         self.assertTrue(any("shiki-authz" in e for e in self.errors(table)))
+
+    def test_none_crate_that_the_server_depends_on_fails(self):
+        members = dict(MEMBERS)
+        members["shiki-data"] = {"dir": "crates/data", "deps": {"shiki-authz", "shiki-bench"}}
+        self.assertTrue(any("shiki-bench" in e and "[none]" in e for e in self.errors(members=members)))
 
     def test_unknown_keys_are_rejected(self):
         with self.assertRaises(ValueError):

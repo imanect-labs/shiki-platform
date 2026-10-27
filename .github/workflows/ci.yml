@@ -67,18 +67,22 @@ jobs:
         with:
           persist-credentials: false
           # PR はマージコミット（HEAD^1 = base の先端・HEAD^2 = PR の先端）と比べるので親まで取る。
-          fetch-depth: 2
+          # main への push は、まとめて push されたコミットの前（github.event.before）まで遡れるよう深めに取る。
+          fetch-depth: ${{ github.event_name == 'push' && 20 || 2 }}
       - id: select
         env:
           EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
         run: |
           if [ "$EVENT" = "pull_request" ]; then
             python3 scripts/ci-select.py select --base HEAD^1 --head HEAD
           else
             python3 scripts/ci-select.py select --full
             # main で落ちたテストが PR で選ばれていたかを selection-gap ジョブで突き合わせるため、この変更を
-            # PR として選んだ結果を残す（squash マージなので HEAD^1..HEAD が PR の差分）。
-            python3 scripts/ci-select.py select --base HEAD^1 --head HEAD --github-output "" --summary "" \
+            # PR として選んだ結果を残す。push 前の先端（before）からの差分で、取れなければ HEAD^1（squash マージ）。
+            base=HEAD^1
+            if git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then base=$BEFORE; fi
+            python3 scripts/ci-select.py select --base "$base" --head HEAD --github-output "" --summary "" \
               --json pr-selection.json \
               || echo "::warning::PR としての選択を出せなかった（selection-gap は突き合わせない）"
           fi
@@ -131,7 +135,8 @@ jobs:
       - name: cargo nextest run (選択したテスト)
         env:
           FILTER: ${{ needs.changes.outputs.nextest_filter }}
-        run: cargo nextest run --workspace --all-features --no-tests=warn -E "$FILTER"
+        # --no-fail-fast: 落ちたテストをすべて JUnit に残す（main の selection-gap が突き合わせる）。
+        run: cargo nextest run --workspace --all-features --no-tests=warn --no-fail-fast -E "$FILTER"
       # main で落ちたテストを selection-gap ジョブへ渡す（JUnit は .config/nextest.toml で出す）。
       - name: upload failed tests (main)
         if: failure() && github.event_name == 'push'
@@ -457,10 +462,13 @@ jobs:
         # モデル）のまま。nextest はプロセス毎実行で in-process 共有状態に依存する IT を壊す
         # 実績があり不採用。速度は debuginfo 削減の計装ビルド短縮＋cache-on-failure で稼ぐ。
         # ログは main で落ちたテストを selection-gap ジョブへ渡すために残す（`to rerun pass -p …` の行）。
+        # shell 未指定の run は `bash -e` で pipefail が無く、`| tee` が失敗を握りつぶすので明示する。
+        # 全量（main）は --no-fail-fast で落ちたテストをすべて記録する（selection-gap の突き合わせ用）。
         run: |
+          set -o pipefail
           run_tests() {
             if [ "$FULL" = "true" ]; then
-              cargo llvm-cov --all --no-report
+              cargo llvm-cov --all --no-report --no-fail-fast
               return
             fi
             # 変更したクレート＋依存するクレートのテスト（-p は changes ジョブが組んだもの・語分割させる）。
@@ -924,7 +932,8 @@ jobs:
   # （同じテストの Issue が開いていればコメントを足す）。main は止めない（全量なので落ちたこと自体は見えている）。
   selection-gap:
     name: 選択漏れの検知（main）
-    needs: [changes, rust, coverage, web-e2e]
+    needs: [changes, rust, coverage, data-strategies, cargo-deny, build-server, compose-smoke, web-e2e,
+            tabular-runner, gen-api, web, python]
     if: always() && github.event_name == 'push' && contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -953,6 +962,9 @@ jobs:
           fi
           python3 scripts/ci-select.py selection-gap --selection selection/pr-selection.json --dir failures \
             --output gap.md
+        env:
+          # 落ちたジョブのうち、PR ではジョブごと回らないものも突き合わせる。
+          NEEDS: ${{ toJSON(needs) }}
       - name: Issue を起票（同じテストの Issue が開いていればコメント）
         if: steps.gap.outputs.found == 'true'
         env:

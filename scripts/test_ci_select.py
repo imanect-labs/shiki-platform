@@ -235,6 +235,15 @@ class SelectionGapTest(unittest.TestCase):
         # 常に回す脅威テストと、選ばれていたものは「PR でも選ばれる」側。
         self.assertEqual(r["caught"], ["shiki-chat::threads_it", "shiki-data::policy_threat_it", "E2E auth.spec.ts"])
 
+    def test_failed_job_the_pr_would_skip_is_a_gap(self):
+        sel = {"full": False, "rust": False, "web": True, "compose": True, "python": False,
+               "packages": [], "e2e_all": False, "e2e": []}
+        r = ci.selection_gap(sel, set(), set(), ["python", "compose-smoke", "tabular-runner", "changes"])
+        self.assertEqual(r["missed"], ["ジョブ python（PR では回らない）"])
+
+    def test_truncated_junit_is_skipped(self):
+        self.assertEqual(ci.failed_rust_tests(["<testsuites><testsuite>"], []), set())
+
     def test_full_selection_has_no_gap(self):
         sel = {"full": True, "packages": [], "e2e_all": True, "e2e": []}
         self.assertEqual(ci.selection_gap(sel, {("x", "y")}, {"z.spec.ts"})["missed"], [])
@@ -257,11 +266,14 @@ class RealWorkspaceTest(unittest.TestCase):
         members = ci.workspace_packages(REPO)
         tracked = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True).stdout
         scenarios = ci.ci_scenarios.Scenarios.from_repo(REPO, [f for f in tracked.splitlines() if f])
-        sel = ci.select(members, ["crates/api/src/routes/data.rs"], scenarios=scenarios)
+        sel = ci.select(members, ["web/src/app/(auth)/workflows/page.tsx"], scenarios=scenarios)
         self.assertFalse(sel["e2e_all"])
-        self.assertIn(r"e2e/data-grid\.spec\.ts$", sel["e2e_args"].split())
-        self.assertIn(r"e2e/auth\.spec\.ts$", sel["e2e_args"].split())
-        self.assertNotIn(r"e2e/notes\.spec\.ts$", sel["e2e_args"].split())
+        args = sel["e2e_args"].split()
+        self.assertIn(r"e2e/workflows-editor\.spec\.ts$", args)
+        self.assertIn(r"e2e/auth\.spec\.ts$", args)
+        self.assertNotIn(r"e2e/data-grid\.spec\.ts$", args)
+        # API ルートは使う spec を import から辿れないので全部回す（shiki-api が [all]）。
+        self.assertTrue(ci.select(members, ["crates/api/src/routes/data.rs"], scenarios=scenarios)["e2e_all"])
 
     def test_authz_change_reaches_most_of_the_workspace(self):
         members = ci.workspace_packages(REPO)

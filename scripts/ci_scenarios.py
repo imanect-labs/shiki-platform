@@ -27,8 +27,9 @@ E2E_DIR = "web/e2e/"
 ENTRY_STEMS = {"page", "layout", "template", "loading", "error", "not-found", "global-error", "default"}
 # API ルート（BFF のプロキシ等）。全ページが通るので、ここに届く変更は E2E を全部回す。
 ROUTE_STEM = "route"
-CODE_EXT = (".ts", ".tsx", ".js", ".jsx", ".mjs")
-RESOLVE_SUFFIXES = ("", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".json", ".css", "/index.ts", "/index.tsx", "/index.js")
+CODE_EXT = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+RESOLVE_SUFFIXES = ("", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".css",
+                    "/index.ts", "/index.tsx", "/index.js", "/index.jsx", "/index.mjs")
 
 # spec 名は Playwright の引数（正規表現）と GITHUB_OUTPUT に流すので、想定外の文字は通さない。
 SPEC_NAME = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.spec\.ts$")
@@ -260,9 +261,17 @@ class Scenarios:
         return {"all": every, "specs": specs, "reasons": reasons, "unmapped": sorted(set(unmapped))}
 
     def _select_web(self, f: str, add, go_all) -> None:
-        reached = importers(self.graph, f) if f in self.graph else {f}
+        if f not in self.files and not is_entry(f):
+            # 削除されたファイル。import していた側も同じ PR で変わっている（変えなければビルドが落ちる）ので、
+            # そちらで判定する。削除されたページは下の is_entry の経路でそのページのシナリオになる。
+            return
+        reached = importers(self.graph, f)
         if any(is_route_handler(r) for r in reached):
             go_all(f"E2E 全部（API ルートに届く）: {f}")
+            return
+        shared = sorted(r for r in reached if matches(r, self.table["all"]["paths"]))
+        if shared:
+            go_all(f"E2E 全部（[all].paths の {shared[0]} に届く）: {f}")
             return
         pages: set[str] = set()
         for r in reached:
@@ -340,6 +349,14 @@ class Scenarios:
                 errors.append(f"対応表のクレートが無い: {c}（改名・削除したら {TABLE} からも消す）")
             elif ("[all]" in places or "[none]" in places) and len(places) > 1:
                 errors.append(f"クレート {c} が {', '.join(places)} に重なっている（[all]・[none] は他と併記しない）")
+        for c in sorted(self.table["none"]):
+            if c in members:
+                reaches = sorted(closure(c) - set(self.table["none"]))
+                if reaches:
+                    errors.append(
+                        f"[none] のクレート {c} に依存するクレートがある: {', '.join(reaches)}（サーバーに載るなら "
+                        f"[none] から外し、scenario の crates か [all] に移す・{TABLE}）"
+                    )
         for c in sorted(members):
             state, _ = self.crate_state(c, closure(c))
             if state == "unmapped":

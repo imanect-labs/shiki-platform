@@ -524,7 +524,12 @@ def failed_rust_tests(junit_texts: list[str], cargo_logs: list[str]) -> set[tupl
     """
     failed = set()
     for text in junit_texts:
-        for case in ET.fromstring(text).iter("testcase"):
+        try:
+            root = ET.fromstring(text)
+        except ET.ParseError as e:  # タイムアウトで途中まで書かれた JUnit など
+            print(f"::warning::JUnit を読めない（突き合わせから外す）: {e}")
+            continue
+        for case in root.iter("testcase"):
             if case.find("failure") is not None or case.find("error") is not None:
                 binary_id = case.get("classname", "")
                 pkg, _, binary = binary_id.partition("::")
@@ -553,8 +558,31 @@ def failed_e2e_specs(reports: list[str]) -> set[str]:
     return failed
 
 
-def selection_gap(sel: dict, rust_failed: set[tuple[str, str]], e2e_failed: set[str]) -> dict:
-    """落ちたテストのうち、sel（その変更を PR として選んだ結果）で選ばれていなかったもの。"""
+# ジョブ → それを回すかを決める選択結果のキー（ci.yml の各ジョブの if: と同じ）。
+JOB_FLAGS = {
+    "rust": "rust", "coverage": "rust", "data-strategies": "rust", "cargo-deny": "rust",
+    "build-server": "compose", "compose-smoke": "compose", "web-e2e": "compose",
+    "tabular-runner": ("rust", "compose"), "gen-api": ("web", "compose"),
+    "web": "web", "python": "python",
+}
+
+
+def skipped_jobs(sel: dict, failed_jobs: list[str]) -> list[str]:
+    """落ちたジョブのうち、sel ではジョブごと回らないもの（テスト単位の突き合わせができない分）。"""
+    out = []
+    for job in failed_jobs:
+        keys = JOB_FLAGS.get(job)
+        if keys is None:
+            continue
+        keys = (keys,) if isinstance(keys, str) else keys
+        if not any(sel.get(k, False) for k in keys):
+            out.append(job)
+    return out
+
+
+def selection_gap(sel: dict, rust_failed: set[tuple[str, str]], e2e_failed: set[str],
+                  failed_jobs: list[str] = ()) -> dict:
+    """落ちたテスト・ジョブのうち、sel（その変更を PR として選んだ結果）で選ばれていなかったもの。"""
 
     def rust_selected(pkg: str, binary: str) -> bool:
         return sel["full"] or pkg in sel["packages"] or (pkg, binary) in ALWAYS_RUN
@@ -565,7 +593,8 @@ def selection_gap(sel: dict, rust_failed: set[tuple[str, str]], e2e_failed: set[
     def label(pkg: str, binary: str) -> str:
         return f"{pkg}::{binary}" if binary else f"{pkg}（lib）"
 
-    missed = [label(*t) for t in sorted(rust_failed) if not rust_selected(*t)]
+    missed = [f"ジョブ {j}（PR では回らない）" for j in skipped_jobs(sel, list(failed_jobs))]
+    missed += [label(*t) for t in sorted(rust_failed) if not rust_selected(*t)]
     missed += [f"E2E {s}" for s in sorted(e2e_failed) if not e2e_selected(s)]
     caught = [label(*t) for t in sorted(rust_failed) if rust_selected(*t)]
     caught += [f"E2E {s}" for s in sorted(e2e_failed) if e2e_selected(s)]
@@ -578,7 +607,10 @@ def cmd_selection_gap(args: argparse.Namespace) -> int:
     junit = [p.read_text(encoding="utf-8") for p in sorted(base.rglob("*.xml"))]
     logs = [p.read_text(encoding="utf-8", errors="replace") for p in sorted(base.rglob("*.log"))]
     reports = [p.read_text(encoding="utf-8") for p in sorted(base.rglob("e2e-results.json"))]
-    result = selection_gap(sel, failed_rust_tests(junit, logs), failed_e2e_specs(reports))
+    # ci.yml は toJSON(needs) を渡す（{ジョブ: {result, outputs}}）。
+    needs = json.loads(args.needs) if args.needs else {}
+    failed_jobs = sorted(j for j, v in needs.items() if v.get("result") == "failure")
+    result = selection_gap(sel, failed_rust_tests(junit, logs), failed_e2e_specs(reports), failed_jobs)
     print(json.dumps(result, ensure_ascii=False))
     if not result["missed"]:
         return 0
@@ -676,6 +708,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--dir", required=True, help="落ちたジョブの記録（JUnit・cargo test のログ・Playwright の JSON）")
     g.add_argument("--output", required=True, help="Issue 本文（Markdown）の書き出し先")
     g.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"))
+    g.add_argument("--needs", default=os.environ.get("NEEDS"), help="ジョブの結果（toJSON(needs)）")
     g.set_defaults(func=cmd_selection_gap)
 
     d = sub.add_parser("diff-coverage")

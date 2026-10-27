@@ -4,10 +4,11 @@
 #   - web/src/** : import を辿って、その変更が届くページ（page.tsx・layout.tsx 等）を求め、ページが属する
 #                  シナリオの spec を回す。部品・lib の対応は import から自動で決まるので、ここには書かない。
 #   - crates/**  : 変更したクレートに（推移的に）依存するクレートを求め、それを `crates` に持つシナリオを回す。
-#                  `paths` に当たるファイル（API のルート等）は、そのシナリオだけを回す。
+#                  API ルート（crates/api）は shiki-api が [all] なので全部回す（ルートを使う spec は import から
+#                  辿れず、手で書くと漏れるため）。`paths` はファイル単位で決めたい入力があるときだけ使う。
 #   - web/e2e/X.spec.ts : その spec だけを回す（helpers・fixtures は全部）。
 #
-# 更新が要るとき（quality ジョブの `python3 scripts/ci-select.py check-scenarios` が落として知らせる）:
+# 更新が要るとき（quality ジョブの `python3 scripts/ci-select.py check` が落として知らせる）:
 #   - E2E spec を足した → その spec が開くページのシナリオの `e2e` に足す
 #   - ページ（page.tsx）を足した → そのページを開く spec のシナリオの `pages` に足す（無ければシナリオを作る）
 #   - クレートを足した → どこからも依存されないなら `crates`・[all]・[none] のどれかに載せる
@@ -27,7 +28,17 @@ paths = [
     "web/e2e/helpers.ts",
     "web/e2e/fixtures/**",
 ]
-crates = ["shiki-api", "shiki-authz", "shiki-storage", "shiki-llm-gateway", "shiki-artifact"]
+# shiki-api・shiki-authz・shiki-storage・shiki-workflow-engine・shiki-gui は gen:api で web の型と
+# 実行時の値（認可語彙・ツール一覧など）を生成するので、変更は import では辿れない形で全ページに届く。
+crates = [
+    "shiki-api",
+    "shiki-authz",
+    "shiki-storage",
+    "shiki-llm-gateway",
+    "shiki-artifact",
+    "shiki-workflow-engine",
+    "shiki-gui",
+]
 
 # E2E の実行環境（compose の shiki-server とその依存）に載らないクレート。変更しても E2E は回さない。
 [none]
@@ -42,9 +53,9 @@ crates = [
 ]
 
 # ホーム（チャットの入力欄）とスレッド。ほとんどのクレートは shiki-chat から依存されるので、ここに届く。
+# チャットの部品（アシスタントパネル・選択範囲の AI）は各エディタでも使うので、そのシナリオも shiki-chat を持つ。
 [scenario.home]
 pages = ["web/src/app/(auth)/page.tsx", "web/src/app/(auth)/c/**"]
-paths = ["crates/api/src/routes/chat*.rs"]
 crates = ["shiki-chat"]
 e2e = [
     "admin-console.spec.ts",
@@ -81,15 +92,7 @@ e2e = [
 # ドライブとファイルのビューア（ノート・Office・スライド・CSV はドライブから開く spec が多い）。
 [scenario.drive]
 pages = ["web/src/app/(auth)/drive/**", "web/src/app/(auth)/file/**", "web/src/app/(auth)/pdf/**"]
-paths = [
-    "crates/api/src/routes/files.rs",
-    "crates/api/src/routes/folders.rs",
-    "crates/api/src/routes/file_versions.rs",
-    "crates/api/src/routes/shares.rs",
-    "crates/api/src/routes/share_links.rs",
-    "crates/api/src/routes/share_profiles.rs",
-]
-crates = []
+crates = ["shiki-chat"]
 e2e = [
     "agent-full-stack.spec.ts",
     "ai-live-edit-video.spec.ts",
@@ -125,8 +128,7 @@ e2e = [
 
 [scenario.notes]
 pages = ["web/src/app/(auth)/notes/**"]
-paths = ["crates/api/src/routes/collab.rs", "crates/api/src/routes/doc_blocks.rs"]
-crates = ["shiki-collab"]
+crates = ["shiki-collab", "shiki-chat"]
 e2e = [
     "agent-full-stack.spec.ts",
     "ai-live-edit-video.spec.ts",
@@ -148,8 +150,7 @@ e2e = [
 
 [scenario.office]
 pages = ["web/src/app/(auth)/office/**"]
-paths = ["crates/api/src/routes/office.rs", "crates/api/src/wiring_office.rs"]
-crates = ["shiki-office"]
+crates = ["shiki-office", "shiki-chat"]
 e2e = [
     "agent-full-stack.spec.ts",
     "composer-create.spec.ts",
@@ -165,8 +166,7 @@ e2e = [
 
 [scenario.slides]
 pages = ["web/src/app/(auth)/slides/**"]
-paths = []
-crates = ["shiki-collab"]
+crates = ["shiki-collab", "shiki-chat"]
 e2e = [
     "composer-create.spec.ts",
     "slide-ai-edit.spec.ts",
@@ -178,8 +178,7 @@ e2e = [
 
 [scenario.csv]
 pages = ["web/src/app/(auth)/csv/**"]
-paths = ["crates/api/src/routes/tabular.rs"]
-crates = ["shiki-tabular"]
+crates = ["shiki-tabular", "shiki-chat"]
 e2e = [
     "composer-create.spec.ts",
     "csv-conversation-drafts.spec.ts",
@@ -189,7 +188,6 @@ e2e = [
 
 [scenario.data]
 pages = ["web/src/app/(auth)/data/**"]
-paths = ["crates/api/src/routes/data*.rs"]
 crates = ["shiki-data"]
 e2e = [
     "admin-data.spec.ts",
@@ -204,25 +202,17 @@ e2e = [
 
 [scenario.search]
 pages = ["web/src/app/(auth)/search/**"]
-paths = ["crates/api/src/routes/search.rs"]
 crates = ["shiki-rag"]
 e2e = ["search-page.spec.ts"]
 
 [scenario.skills]
 pages = ["web/src/app/(auth)/skills/**"]
-paths = ["crates/api/src/routes/skills*.rs", "crates/api/src/skill_catalog.rs"]
-crates = ["shiki-gui"]
+crates = ["shiki-chat"]
 e2e = ["skill-editor.spec.ts", "skills.spec.ts"]
 
 [scenario.workflows]
 pages = ["web/src/app/(auth)/workflows/**"]
-paths = [
-    "crates/api/src/routes/workflows/**",
-    "crates/api/src/workflow_runtime/**",
-    "crates/api/src/workflow_catalog.rs",
-    "crates/api/src/workflow_semantics_audit.rs",
-]
-crates = ["shiki-workflow-engine"]
+crates = ["shiki-chat"]
 e2e = [
     "ai-workflow.spec.ts",
     "share-export.spec.ts",
@@ -234,35 +224,20 @@ e2e = [
 
 [scenario.apps]
 pages = ["web/src/app/(auth)/apps/**"]
-paths = [
-    "crates/api/src/routes/mini_apps.rs",
-    "crates/api/src/routes/app_install.rs",
-    "crates/api/src/routes/app_platform.rs",
-    "crates/api/src/miniapp_triggers*.rs",
-]
-crates = ["shiki-app-platform", "shiki-app-gateway"]
+crates = ["shiki-app-platform", "shiki-app-gateway", "shiki-chat"]
 e2e = ["mini-apps.spec.ts", "miniapp-b1.spec.ts"]
 
 [scenario.admin]
 pages = ["web/src/app/(admin)/**"]
-paths = [
-    "crates/api/src/routes/admin.rs",
-    "crates/api/src/routes/org_admin_*.rs",
-    "crates/api/src/routes/org_audit.rs",
-    "crates/api/src/routes/llm_models.rs",
-    "crates/api/src/insights/**",
-]
 crates = []
 e2e = ["admin-console.spec.ts", "admin-data.spec.ts", "ai-insights.spec.ts", "audit-log.spec.ts"]
 
 [scenario.settings]
 pages = ["web/src/app/(settings)/**"]
-paths = ["crates/api/src/routes/me_*.rs"]
 crates = []
 e2e = ["admin-data.spec.ts", "custom-instructions.spec.ts", "sidebar-mobile.spec.ts"]
 
 [scenario.reference]
 pages = ["web/src/app/reference/**"]
-paths = []
 crates = []
 e2e = ["tool-activity-gallery.spec.ts"]
