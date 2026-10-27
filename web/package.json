@@ -9,6 +9,7 @@
     "start": "next start -p 3000",
     "lint": "next lint",
     "gen:api": "bash ../scripts/gen-api.sh",
+    "gen:yui": "node scripts/gen-yui-reference.mjs",
     "e2e": "playwright test",
     "e2e:install": "playwright install --with-deps chromium",
     "build:editor-sandbox": "node editor-sandbox/build.mjs"

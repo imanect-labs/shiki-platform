@@ -875,3 +875,105 @@ async fn rejected_generation_fails_once_without_retrying() {
     // ジョブは再試行の待ち行列に戻らず DLQ へ移る。
     assert_eq!(dead, 1, "DLQ へ移ること");
 }
+
+/// 図を書かせる構成（`yui: true`）では、system に種類の早見が届き、`ui_reference` が提示されて
+/// 種類ごとの書き方を返す。書かせない構成では提示しない（stub の `calltool:` が呼べず本文になる）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ui_reference_is_offered_only_when_yui_is_enabled() {
+    // 生成ジョブの待ち行列を他のテストのワーカーと共有しない（設定の違うワーカーに拾われない）。
+    let Some(pool) = isolated_setup("chat_yui").await else {
+        return;
+    };
+    let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
+        .await
+        .unwrap();
+
+    /// 1 発話を流し、本文と ui_reference の観測（あれば）を返す。
+    async fn ask(store: &ChatStore, c: &AuthContext, text: &str) -> (String, Option<String>) {
+        let thread = store.create_thread(c, "t", true, None, None).await.unwrap();
+        let res = store
+            .post_message(c, thread.id, text, &[], None, Some(true), false, &[], None)
+            .await
+            .unwrap();
+        let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+        let (mut body, mut call_id, mut observed) = (String::new(), None, None);
+        for _ in 0..500 {
+            let next = tokio::time::timeout(Duration::from_secs(60), rx.next())
+                .await
+                .expect("イベント待ちがタイムアウト（ワーカーが生成しない）");
+            let Some(ev) = next else { break };
+            match ev.event {
+                StreamEventKind::Token { text: t } => body.push_str(&t),
+                StreamEventKind::ToolCall { id, name, .. } if name == "ui_reference" => {
+                    call_id = Some(id);
+                }
+                StreamEventKind::ToolResult {
+                    tool_call_id,
+                    ok,
+                    content,
+                } if Some(&tool_call_id) == call_id.as_ref() => {
+                    assert!(ok, "ui_reference が失敗: {content}");
+                    observed = Some(content);
+                }
+                StreamEventKind::Done { .. } => break,
+                StreamEventKind::Error { message } => panic!("生成失敗: {message}"),
+                _ => {}
+            }
+        }
+        (body, observed)
+    }
+
+    let worker_config = |yui: bool| WorkerConfig {
+        system_prompt: if yui {
+            chat::with_yui_guide("あなたはアシスタントです。")
+        } else {
+            "あなたはアシスタントです。".into()
+        },
+        model: Some("m".into()),
+        lease_secs: 120,
+        max_steps: 4,
+        yui,
+        ..Default::default()
+    };
+    let call = r#"calltool:ui_reference {"kinds":["pie","calc"]}"#;
+
+    let worker = ChatWorker::new(
+        pool.clone(),
+        store.clone(),
+        test_deps(stub_gateway(pool.clone())),
+        worker_config(true),
+    );
+    worker.spawn(1);
+    let c = ctx(&format!("t-{}", uuid::Uuid::new_v4()));
+    let (system, _) = ask(&store, &c, "echosystem:").await;
+    assert!(
+        system.contains("種類の早見:"),
+        "早見が system に無い: {system}"
+    );
+    assert!(system.contains("`pie` 円グラフ"), "円グラフが早見に無い");
+    let (_, observed) = ask(&store, &c, call).await;
+    let observed = observed.expect("yui が有効なら ui_reference が提示される");
+    assert!(observed.contains("## pie 円グラフ"), "{observed}");
+    assert!(observed.contains("## calc 計算機"), "{observed}");
+    assert!(observed.contains("```ui\npie "), "作例を含む: {observed}");
+
+    // 書かせない構成は別の DB で（上のワーカーに拾われない）。
+    let Some(pool) = isolated_setup("chat_yui_off").await else {
+        return;
+    };
+    let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
+        .await
+        .unwrap();
+    let worker = ChatWorker::new(
+        pool.clone(),
+        store.clone(),
+        test_deps(stub_gateway(pool.clone())),
+        worker_config(false),
+    );
+    worker.spawn(1);
+    let (_, observed) = ask(&store, &c, call).await;
+    assert!(
+        observed.is_none(),
+        "yui が無効なら ui_reference は提示しない"
+    );
+}

@@ -720,6 +720,14 @@ jobs:
       - name: install
         working-directory: web
         run: pnpm install --frozen-lockfile
+      # チャットの ```ui の説明（crates/chat/src/worker/yui_reference.json）は @imanect/yui から
+      # 生成して commit する。依存を上げて作り直し忘れたら落とす（手書きの説明に戻さない）。
+      - name: gen:yui が最新か
+        working-directory: web
+        run: |
+          pnpm gen:yui
+          git diff --exit-code -- ../crates/chat/src/worker/yui_reference.json \
+            || { echo "::error::yui_reference.json が古い。cd web && pnpm gen:yui で作り直して commit する"; exit 1; }
       - name: download generated types (gen-api ジョブの成果物)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

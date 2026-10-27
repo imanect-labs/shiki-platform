@@ -274,6 +274,18 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
   },
 
   // 画面・ワークフロー。
+  // 回答に ```ui の図・UI を書く前に、種類ごとの書き方を読む（`@imanect/yui/guide`）。
+  ui_reference: {
+    icon: LayoutTemplate,
+    category: "meta",
+    lead: (t) => (t ? `図（${t}）の書き方を` : "図の書き方を"),
+    verb: "確認",
+    suru: true,
+    target: (input) => {
+      const kinds = Array.isArray(input.kinds) ? input.kinds.filter((k): k is string => typeof k === "string") : [];
+      return kinds.length > 0 ? clip(kinds.join("・"), 30) : null;
+    },
+  },
   emit_ui: { icon: LayoutTemplate, category: "write", lead: () => "画面を", verb: "組み立て", failed: "組み立てられませんでした" },
   emit_workflow: {
     icon: Workflow,

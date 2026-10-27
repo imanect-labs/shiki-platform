@@ -22,6 +22,10 @@ pub struct WorkerConfig {
     /// 通常チャットで旧・無条件 RAG 注入経路（`run_classic_mode`）を使うか（既定 false）。
     /// false ならモデル裁量ループ（issue #102）。運用で確実に毎ターン検索したい場合のみ true。
     pub classic_rag: bool,
+    /// 回答に ```ui ブロック（Yui）の図・UI を書かせるか（#530）。true なら `ui_reference`
+    /// （種類ごとの書き方）を提示する。system プロンプトの早見は配線側が
+    /// [`super::with_yui_guide`] で足す（既定 false。運用設定 `chat.yui` の既定は true）。
+    pub yui: bool,
     /// 通常チャット 1 発話の累積トークン上限（新規ぶん・#426）。
     ///
     /// 通常チャットはこれまで max_steps だけで止まり、検索・本文の読み出しが積む量にも課金にも
@@ -77,6 +81,7 @@ impl Default for WorkerConfig {
             lease_secs: 30,
             max_steps: 6,
             classic_rag: false,
+            yui: false,
             // 既定: 新規ぶん 30 万トークン・1 USD（自律の 1 割強）。6 ステップで検索と本文の
             // 読み出しを重ねても届かない量で、暴走だけを止める。
             chat_max_tokens: 300_000,

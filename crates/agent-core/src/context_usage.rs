@@ -233,6 +233,8 @@ fn reads_material(name: &str) -> bool {
         | ToolName::FsDelete
         | ToolName::Shell
         | ToolName::Subagent
+        // 書き方の説明で、回答の根拠になる資料ではない。
+        | ToolName::UiReference
         | ToolName::EmitUi
         | ToolName::EmitWorkflow
         | ToolName::DocumentEdit

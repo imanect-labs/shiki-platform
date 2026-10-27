@@ -387,7 +387,7 @@ pub(crate) async fn wire_chat(
         .clone()
         .unwrap_or_else(|| chat::WorkerConfig::default().system_prompt);
     let worker_config = chat::WorkerConfig {
-        // 図（```ui ブロック）を書かせるなら書き方を足す（#530）。
+        // 図・UI（```ui ブロック）を書かせるなら使い方と種類の早見を足す（#530）。
         system_prompt: if config.chat.yui {
             chat::with_yui_guide(&system_prompt)
         } else {
@@ -418,6 +418,8 @@ pub(crate) async fn wire_chat(
             .tool_search
             .unwrap_or_else(|| chat::WorkerConfig::default().tool_search),
         classic_rag: config.chat.classic_rag,
+        // 早見は system に足し、種類ごとの書き方は ui_reference で読ませる（#530）。
+        yui: config.chat.yui,
         timezone: match &config.chat.timezone {
             Some(name) => chat::parse_timezone(name)
                 .map_err(|e| anyhow::anyhow!("SHIKI__CHAT__TIMEZONE: {e}"))?,
