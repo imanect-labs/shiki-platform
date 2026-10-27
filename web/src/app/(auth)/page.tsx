@@ -5,37 +5,69 @@ import { useRouter } from "next/navigation";
 import { Leaf } from "lucide-react";
 
 import { useMe } from "@/hooks/use-me";
-import { createThread, type Attachment } from "@/lib/chat-api";
+import { useHomeFeed } from "@/hooks/use-home-feed";
+import {
+  createThread,
+  setAutonomousMode,
+  type Attachment,
+  type AutonomousMode,
+  type WorkspaceChoice,
+} from "@/lib/chat-api";
 import type { ActiveCommand } from "@/lib/slash-command";
 import { stashPending } from "@/lib/pending-message";
 import { storageScopeGeneration } from "@/lib/user-storage";
 import { HOME_SCOPE, moveModelChoice } from "@/lib/model-choice";
-import { moveToolChoice } from "@/lib/tool-choice";
+import { moveToolChoice, readToolChoice, writeToolChoice } from "@/lib/tool-choice";
 import { titleFrom } from "@/lib/chat-store";
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
+import { microSeasonOf } from "@/lib/microseason";
+import {
+  createKindDef,
+  createPrompt,
+  homeModeDef,
+  homeSuggestions,
+  type CreateKind,
+  type HomeMode,
+} from "@/lib/home-modes";
+import { type ArtifactMeta } from "@/lib/artifact-api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Composer } from "@/components/chat/composer";
 import { ComposerArrow } from "@/components/home/composer-arrow";
-import { SkillPicker } from "@/components/home/skill-picker";
-import { type ArtifactMeta } from "@/lib/artifact-api";
-import { type WorkspaceChoice } from "@/lib/chat-api";
+import { ContinueSection } from "@/components/home/continue-section";
+import { HomeModeOptions } from "@/components/home/home-mode-options";
+import { HomeModeTabs } from "@/components/home/home-mode-tabs";
 import { PromptSuggestions } from "@/components/chat/prompt-suggestions";
 import { ShortcutGrid } from "@/components/home/shortcut-grid";
 import { toast } from "@/components/ui/use-toast";
 
 /// ホーム＝新規チャットの起点。中央のコンポーザに入力するとスレッドを作成して会話画面へ
-/// 遷移し、最初のメッセージは会話画面側で SSE 送信する。下部に候補プロンプトとショートカット。
+/// 遷移し、最初のメッセージは会話画面側で SSE 送信する。
+///
+/// 上から: 日付と七十二候 → あいさつ → モード切替とその設定 → コンポーザ → 候補 → 葉の区切り →
+/// 続きから／最近の共有 → ショートカット（#964）。
 export default function HomePage() {
   const router = useRouter();
   const { data, loading } = useMe();
+  const feed = useHomeFeed();
   const [starting, setStarting] = React.useState(false);
-  // 選択中の skill（次に開始するチャットへ version 込みでピンされる・Phase 6）。
+  const [mode, setMode] = React.useState<HomeMode>("chat");
+  // 選択中の skill（チャットモードで次に開始するチャットへ version 込みでピンされる・Phase 6）。
   const [skill, setSkill] = React.useState<ArtifactMeta | null>(null);
-  // エージェントモード（＝Autonomous）とワークスペースの作成場所（Phase 6 UX）。
-  const [autonomous, setAutonomous] = React.useState(false);
+  // エージェントモードのワークスペースの作成場所と承認モード（Phase 6 UX・#350）。
   const [workspace, setWorkspace] = React.useState<WorkspaceChoice | null>(null);
+  const [approvalMode, setApprovalMode] = React.useState<AutonomousMode>("require_approval");
+  const [createKind, setCreateKind] = React.useState<CreateKind>("note");
   // 表示名はメールのローカル部から導出する（表示名フィールドはサーバ側実装が入る後続 PR で対応）。
   const name = data?.email?.split("@")[0] ?? null;
+
+  const sharedFileNames = React.useMemo(
+    () => (feed.shares ?? []).filter((n) => n.kind !== "folder").map((n) => n.name),
+    [feed.shares],
+  );
+  const suggestions = React.useMemo(
+    () => homeSuggestions(mode, sharedFileNames),
+    [mode, sharedFileNames],
+  );
 
   const startChat = async (
     text: string,
@@ -50,20 +82,33 @@ export default function HomePage() {
       // スラッシュコマンドは skill を確実にピンし、長ホライズン（エージェントモード）で開始する。
       // 通常チャットは max_steps=6 で、質問→計画→調査のような多段の作法が途中で切れるため。
       const commanded = command != null;
-      const asAutonomous = autonomous || commanded;
-      // スキルピッカーの選択は**ピン**（このスレッドで最初からロード済み）。
+      const asAutonomous = mode === "agent" || commanded;
+      // 作成モードは作るものの種類を先頭に添える（会話に出る発話もこの文。隠れた指示は足さない）。
+      const body = mode === "create" && !commanded ? createPrompt(createKind, text) : text;
+      // スキルピッカー（チャットモード）の選択は**ピン**（このスレッドで最初からロード済み）。
       // コマンドは**その発話だけ**の適用なので、ピンにはせず送信時に渡す（#387）。
-      const thread = await createThread(titleFrom(text), asAutonomous, {
-        skill: skill ? { artifactId: skill.id, version: skill.currentVersion } : undefined,
+      const pinned = mode === "chat" ? skill : null;
+      const thread = await createThread(titleFrom(body), asAutonomous, {
+        skill: pinned ? { artifactId: pinned.id, version: pinned.currentVersion } : undefined,
         workspace: asAutonomous ? workspace ?? undefined : undefined,
       });
-      // ⚠️ 承認モードはここで触らない（Codex P1）。コマンドを選ぶ行為は「長ホライズンで
-      // 実行してよい」の同意であって「事前許可の範囲を広げてよい」の同意ではない。
-      // 承認モードは thread に永続する設定なので、緩和は明示操作に限る。
+      // 承認モードは、エージェントのモードで利用者が明示的に選んだときだけ緩める（Codex P1）。
+      // コマンドを選ぶ行為は「長ホライズンで実行してよい」の同意であって「事前許可の範囲を
+      // 広げてよい」の同意ではない。thread に永続する設定なので、最初の発話を送る前に確定させる。
+      if (mode === "agent" && approvalMode !== "require_approval") {
+        try {
+          await setAutonomousMode(thread.id, approvalMode);
+        } catch {
+          toast({
+            description:
+              "承認モードを変更できませんでした（組織の設定で禁止されている可能性があります）。承認必須で始めます。",
+          });
+        }
+      }
       stashPending(
         thread.id,
         {
-          text,
+          text: body,
           attachments,
           autonomous: asAutonomous,
           skills: command
@@ -76,6 +121,11 @@ export default function HomePage() {
       moveModelChoice(HOME_SCOPE, thread.id);
       // ツールの選択も最初の発話に載せるため新しいスレッドへ移す（#734）。
       moveToolChoice(HOME_SCOPE, thread.id);
+      // 社内検索のモードは、最初の発話で社内文書検索を必ず使う（その発話にだけ効く選択）。
+      if (mode === "search") {
+        const tools = readToolChoice(thread.id);
+        if (!tools.includes("doc_search")) writeToolChoice(thread.id, [...tools, "doc_search"]);
+      }
       router.push(`/c/${thread.id}`);
     } catch {
       toast({ description: "チャットを開始できませんでした。ログイン状態をご確認ください。" });
@@ -83,42 +133,64 @@ export default function HomePage() {
     }
   };
 
+  const placeholder =
+    mode === "create" ? createKindDef(createKind).placeholder : homeModeDef(mode).placeholder;
+
   return (
     <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-4 py-10">
       <div className="flex flex-col items-center gap-8">
         <div className="text-center">
           {loading ? (
-            <Skeleton className="mx-auto h-9 w-72" />
+            <>
+              <Skeleton className="mx-auto mb-3 h-4 w-48" />
+              <Skeleton className="mx-auto h-9 w-72" />
+            </>
           ) : (
-            <h1 className="text-[28px] font-semibold tracking-tight text-foreground sm:text-[32px]">
-              {name ? `${name} さん、こんにちは` : "Shiki へようこそ"}
-            </h1>
+            <>
+              <SeasonLine />
+              <h1 className="text-[28px] font-semibold tracking-tight text-foreground sm:text-[32px]">
+                {name ? `${name} さん、${timeGreeting(new Date())}` : "Shiki へようこそ"}
+              </h1>
+            </>
           )}
           <p className="mt-2 text-sm text-muted-foreground">
             何でも尋ねてください。社内文書も自動で検索して答えます。
           </p>
         </div>
 
-        <div className="relative w-full max-w-2xl">
-          {/* 入力欄の右上から、手描き風の点線矢印で「ここから話しかけてね」を演出 */}
-          <ComposerArrow className="absolute -top-16 right-4 z-10 hidden md:block" />
-          <Composer
-            onSubmit={startChat}
-            // 書きかけは残す（別の画面へ行って戻っても続きから書ける）。
-            draftKey="shiki.composer.draft:home"
-            autoFocus
-            disabled={starting}
-            className="w-full"
-            autonomous={autonomous}
-            onAutonomousChange={setAutonomous}
+        <div className="flex w-full flex-col items-center gap-3">
+          <HomeModeTabs value={mode} onChange={setMode} />
+          <HomeModeOptions
+            mode={mode}
+            skill={skill}
+            onSkillChange={setSkill}
             workspace={workspace}
             onWorkspaceChange={setWorkspace}
+            approvalMode={approvalMode}
+            onApprovalModeChange={setApprovalMode}
+            createKind={createKind}
+            onCreateKindChange={setCreateKind}
           />
+          <div className="relative mt-1 w-full max-w-2xl">
+            {/* 入力欄の右外から、手描き風の点線矢印で「ここから話しかけてね」を演出（文字に重ねない）。 */}
+            <ComposerArrow className="absolute -right-28 -top-16 z-10 hidden xl:block" />
+            <Composer
+              onSubmit={startChat}
+              // 書きかけは残す（別の画面へ行って戻っても続きから書ける）。
+              draftKey="shiki.composer.draft:home"
+              autoFocus
+              disabled={starting}
+              placeholder={placeholder}
+              className="w-full"
+              // モードの切替は入力欄の外（上）に置くので、入力欄にはトグルを出さない。
+              // エージェントのときは「+」の作成の保存先にワークスペースを使う。
+              autonomous={mode === "agent"}
+              workspace={workspace}
+            />
+          </div>
         </div>
 
-        <SkillPicker selected={skill} onSelect={setSkill} />
-
-        <PromptSuggestions onPick={(text) => startChat(text, [])} />
+        <PromptSuggestions items={suggestions} onPick={(text) => startChat(text, [])} />
 
         {/* 荒い破線の区切り（中央に四季の葉を一つ・差し色＝今の季節・太枠のみ）。軽やかな「間」。 */}
         <div className="flex w-full max-w-2xl items-center gap-3 px-2" aria-hidden>
@@ -131,8 +203,43 @@ export default function HomePage() {
           <span className="shiki-dash-x h-4 flex-1" />
         </div>
 
+        <ContinueSection threads={feed.threads} shares={feed.shares} />
+
         <ShortcutGrid />
       </div>
     </div>
+  );
+}
+
+/// 時間帯のあいさつ（端末の時刻）。
+function timeGreeting(now: Date): string {
+  const h = now.getHours();
+  if (h >= 4 && h < 11) return "おはようございます";
+  if (h >= 11 && h < 18) return "こんにちは";
+  return "こんばんは";
+}
+
+const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"] as const;
+
+/// あいさつの上の一行（日付と七十二候）。葉の差し色は今の季節。
+/// サーバと端末で時刻がずれるため、`useMe` の読み込み後（クライアント）にだけ描く。
+function SeasonLine() {
+  const now = new Date();
+  const kou = microSeasonOf(now);
+  return (
+    <p className="mb-2 inline-flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
+      <Leaf
+        className="size-3.5 shrink-0"
+        style={{ color: seasonVar(currentSeasonIndex()) }}
+        strokeWidth={2.5}
+        aria-hidden
+      />
+      <span>
+        {now.getMonth() + 1}月{now.getDate()}日（{WEEKDAYS[now.getDay()]}）・
+        <span title={`二十四節気「${kou.term}」の候`}>
+          {kou.name}（{kou.reading}）
+        </span>
+      </span>
+    </p>
   );
 }

@@ -1,28 +1,23 @@
 import {
-  Bot,
+  Database,
   FileSearch,
-  FileText,
   FolderOpen,
   LayoutGrid,
   type LucideIcon,
-  MessageSquareText,
   Share2,
   Sparkles,
-  Star,
+  Workflow,
 } from "lucide-react";
 
-/// ホーム下部の機能ショートカット（画像1 の Genspark ワークスペース風）。
-/// ロードマップ（docs/requirements.md FR-2〜11）準拠の枠として配置し、backend が
-/// 未実装の機能は `ready: false` として「準備中」を明示する（フェイク遷移を作らない）。
+/// ホーム下部の機能ショートカット。実在する画面への入口だけを置く（「準備中」の枠は作らない・#964）。
+/// チャット・エージェント・作成は入力欄の上のモードで選ぶので、ここには並べない。
+/// お気に入りは星を付ける機能がまだ無い（/drive/favorites は空の案内だけ）ため載せない。
 
 export type HomeShortcut = {
   key: string;
   label: string;
   icon: LucideIcon;
-  /// 実装済みで遷移できる項目のみ href を持つ。
-  href?: string;
-  /// false の項目は未実装（押下不可・「準備中」表示）。
-  ready: boolean;
+  href: string;
 };
 
 export type HomeShortcutCategory = {
@@ -33,37 +28,22 @@ export type HomeShortcutCategory = {
 
 export const HOME_SHORTCUT_CATEGORIES: HomeShortcutCategory[] = [
   {
-    key: "assistant",
-    label: "アシスタント",
-    items: [
-      // FR-4 LLMチャット（本 issue でプレビュー動作）。
-      { key: "chat", label: "AIチャット", icon: MessageSquareText, href: "/", ready: true },
-      // FR-3 permission-aware RAG（Phase 2 で実装済み）。
-      { key: "rag", label: "文書検索", icon: FileSearch, href: "/search", ready: true },
-      // FR-5 サンドボックス＆AIエージェント。
-      { key: "agent", label: "エージェント", icon: Bot, ready: false },
-    ],
-  },
-  {
     key: "knowledge",
     label: "ナレッジ",
     items: [
-      // FR-2 ストレージ（Drive UI は #20、ここはホームへの導線）。
-      { key: "drive", label: "ドライブ", icon: FolderOpen, href: "/drive", ready: true },
-      { key: "shared", label: "共有済み", icon: Share2, href: "/drive/shared", ready: true },
-      { key: "favorites", label: "お気に入り", icon: Star, ready: false },
+      { key: "drive", label: "ドライブ", icon: FolderOpen, href: "/drive" },
+      { key: "shared", label: "共有済み", icon: Share2, href: "/drive/shared" },
+      { key: "rag", label: "文書検索", icon: FileSearch, href: "/search" },
     ],
   },
   {
     key: "apps",
-    label: "ミニアプリ",
+    label: "アプリ",
     items: [
-      // FR-6 / FR-11 generative UI ＆ 業務ミニアプリ基盤。
-      { key: "miniapps", label: "ミニアプリ", icon: LayoutGrid, ready: false },
-      // FR-7 prompt template（gem/GPTs 相当）。
-      { key: "prompts", label: "プロンプト", icon: Sparkles, ready: false },
-      // FR-8 資料作成。
-      { key: "docs", label: "資料作成", icon: FileText, ready: false },
+      { key: "miniapps", label: "ミニアプリ", icon: LayoutGrid, href: "/apps" },
+      { key: "skills", label: "スキル", icon: Sparkles, href: "/skills" },
+      { key: "workflows", label: "ワークフロー", icon: Workflow, href: "/workflows" },
+      { key: "data", label: "データ", icon: Database, href: "/data" },
     ],
   },
 ];
