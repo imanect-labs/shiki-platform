@@ -9,6 +9,8 @@
 //!   凍結（`frozen.json`）の値。評価で測ったものと違う質問・しきい値でシナリオを流さない（PIT-80）。
 //! - 判定のノードの出口は、確からしさで振り分ける `out`・`uncertain` と、失敗を人へ回す `error`。
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
