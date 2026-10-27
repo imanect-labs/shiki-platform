@@ -145,6 +145,10 @@ test("deep research: 質問（ask）→ 計画（plan）→ 調査 → レポー
   await draft.click();
   await expect(page.getByText("出典 1 系統・別集計とは不一致").first()).toBeVisible();
   await expect(page.getByText("独立 2 系統が一致")).toHaveCount(0);
+  // レポートの ```ui はノートでも図として描かれる（文字のままにしない）。
+  const figure = page.getByTestId("note-yui-figure").first();
+  await expect(figure.locator('[data-testid="ui-figure"][data-ui-kind="bar"]')).toBeVisible();
+  await expect(figure).toContainText("公表値の比較");
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/deep-research-report.png`, fullPage: true });
 
   // 承認カードは出ない（作業メモはシステム領域＝事前許可・#392）。
@@ -254,6 +258,22 @@ test("回答済み・開始済みの質問・計画は巻き戻らず、二度�
 });
 
 test("deep research auto: 確認を省略して 1 ターンで完走する", async ({ page }) => {
+  // 進捗カード（PlanPanel）は run の間だけ出て、終わると消える。表示の変化を画面の中で記録し、
+  // 0 のまま止まらず最後まで進んだことを後から確かめる（出たきり動かない回帰を防ぐ）。
+  await page.addInitScript(() => {
+    const seen: string[] = [];
+    (window as unknown as { __planProgress: string[] }).__planProgress = seen;
+    const record = () => {
+      const el = document.querySelector('[data-testid="plan-progress"]');
+      const text = el?.textContent?.trim();
+      if (text && seen[seen.length - 1] !== text) seen.push(text);
+    };
+    new MutationObserver(record).observe(document, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  });
   await loginViaKeycloak(page);
   await page.goto("/");
   await createDeepResearchSkill(page);
@@ -273,6 +293,11 @@ test("deep research auto: 確認を省略して 1 ターンで完走する", asy
   await expect(page.getByText("結論と確度").first()).toBeVisible({ timeout: 90_000 });
   await expect(page.locator('[data-ui-kind="ask"], [data-ui-kind="plan"]')).toHaveCount(0);
   await expect(page.getByTestId("note-draft-card").first()).toBeVisible();
+  // 進捗カードは節目ごとに進み、提出で全部完了になる（スタブは手順書どおり 0→1→2→4 / 4）。
+  const progress = await page.evaluate(
+    () => (window as unknown as { __planProgress: string[] }).__planProgress,
+  );
+  expect(progress, "進捗カードの表示の変化").toEqual(["0/4", "1/4", "2/4", "4/4"]);
   if (SHOTS) {
     await page.screenshot({ path: `${SHOTS}/deep-research-auto.png`, fullPage: true });
   }

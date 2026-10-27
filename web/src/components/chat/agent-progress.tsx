@@ -74,10 +74,10 @@ export function PlanPanel({ subtasks }: { subtasks: PlanSubtask[] }) {
   if (subtasks.length === 0) return null;
   const done = subtasks.filter((s) => s.status === "done").length;
   return (
-    <div className="rounded-xl border border-border bg-card/60 p-3">
+    <div className="rounded-xl border border-border bg-card/60 p-3" data-testid="plan-panel">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-[13px] font-semibold text-foreground/80">計画</span>
-        <span className="text-[12px] tabular-nums text-muted-foreground">
+        <span className="text-[12px] tabular-nums text-muted-foreground" data-testid="plan-progress">
           {done}/{subtasks.length}
         </span>
       </div>
