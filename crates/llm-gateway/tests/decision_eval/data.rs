@@ -159,6 +159,9 @@ pub(crate) struct Frozen {
     pub(crate) questions_sha256: BTreeMap<String, String>,
     #[serde(default)]
     pub(crate) based_on: String,
+    /// 凍結の理由（θ の決め方など）。
+    #[serde(default)]
+    pub(crate) notes: String,
 }
 
 pub(crate) fn frozen() -> Option<Frozen> {

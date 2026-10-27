@@ -445,6 +445,23 @@ fn datasets_have_the_designed_counts() {
 }
 
 #[test]
+fn the_freeze_matches_the_questions_and_the_prompt() {
+    // 凍結（frozen.json）は今の質問のファイルと同じで、しきい値は候補のどれか。質問を変えたら凍結し直す。
+    let Some(f) = data::frozen() else { return };
+    for name in DATASETS {
+        let ds = data::load(name);
+        assert_eq!(
+            f.questions_sha256.get(name),
+            Some(&ds.questions_sha256),
+            "{name}"
+        );
+        let t = f.theta[name];
+        assert!(THETAS.iter().any(|x| (x - t).abs() < 1e-9), "{name}: {t}");
+    }
+    assert!(f.prompt_version.starts_with('v'));
+}
+
+#[test]
 fn wilson_interval_matches_known_values() {
     let r = metrics::ratio(8, 10);
     assert!((r.p.unwrap() - 0.8).abs() < 1e-12);
