@@ -116,6 +116,11 @@ pub(super) async fn decide(
             })?;
             if let Some(obj) = out.as_object_mut() {
                 obj.insert("cached".into(), Value::Bool(cached));
+                // 答えた決定器の名前（出力と監査の `provider`・国外処理の TypeSafe か LLM に判定させたものかを
+                // 項目で絞れるように）。
+                if let Some(name) = ports.gateway.decider_name(&req.model) {
+                    obj.insert("provider".into(), Value::from(name));
+                }
             }
             Ok(out)
         }

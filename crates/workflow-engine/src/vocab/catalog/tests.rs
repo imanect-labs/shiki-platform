@@ -71,6 +71,7 @@ fn structural_flags_match_vocab() {
             "answers",
             "model",
             "resolved_model",
+            "provider",
             "calibrated",
             "method",
             "samples",

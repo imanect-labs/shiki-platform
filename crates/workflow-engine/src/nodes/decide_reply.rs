@@ -33,6 +33,9 @@ pub(super) struct Reply {
     /// 決定キャッシュの答えか（ポートが足す・無ければ false）。
     #[serde(default)]
     pub cached: bool,
+    /// 答えた決定器の名前（`llm_decider` / `typesafe` / `stub`・ポートが足す・無ければ null）。
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 /// 答え 1 件（llm-gateway の `Answer` の形）。

@@ -126,6 +126,7 @@ impl CapabilityNodeExecutor {
             "answers": reply.answers_output(&p.questions),
             "model": p.model,
             "resolved_model": reply.resolved_model,
+            "provider": reply.provider,
             "calibrated": reply.calibrated,
             "method": reply.method,
             "samples": reply.samples,
@@ -145,6 +146,7 @@ impl CapabilityNodeExecutor {
             &json!({
                 "model": p.model,
                 "resolved_model": reply.resolved_model,
+                "provider": reply.provider,
                 "method": reply.method,
                 "samples": reply.samples,
                 "calibrated": reply.calibrated,

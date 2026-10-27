@@ -720,6 +720,11 @@ fn output_shape(nt: NodeType) -> Shape {
                 field!("model", "string", "指定した判定用のモデル"),
                 field!("resolved_model", "string", "実際に答えた決定器の版"),
                 field!(
+                    "provider",
+                    "string | null",
+                    "答えた決定器（llm_decider・typesafe・stub）"
+                ),
+                field!(
                     "calibrated",
                     "boolean",
                     "false は確からしさが較正されていない（AI の自己申告・得票率）"

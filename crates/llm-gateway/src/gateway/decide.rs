@@ -67,6 +67,13 @@ impl LlmGateway {
             .map(|d| d.response)
     }
 
+    /// 判定用のモデルに組んだ決定器の名前（`llm_decider` / `typesafe` / `stub`・出力と監査の `provider`）。
+    /// カタログに無い・判定用でないモデルは `None`。決定器は構築時に決まり、実行中は変わらない。
+    #[must_use]
+    pub fn decider_name(&self, model: &str) -> Option<&'static str> {
+        self.inner.deciders.get(model).map(|d| d.provider.name())
+    }
+
     /// 決定キャッシュを通して判定する（ワークフローの ai.decide の step 属性 `cache`・T10）。
     ///
     /// 範囲は `ctx` のテナント＋組織と `cache.workflow_id`。当たっても組織の許可（判定用のモデルと元の

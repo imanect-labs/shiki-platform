@@ -1465,6 +1465,7 @@ async fn decide_routes_through_the_production_port() {
         json!({ "question": "category", "port": "billing" })
     );
     assert_eq!(output["model"], "decide-stub");
+    assert_eq!(output["provider"], "stub", "答えた決定器の名前");
     assert_eq!(output["calibrated"], false);
     assert!(output["resolved_model"]
         .as_str()
@@ -1594,6 +1595,7 @@ async fn decide_fails_closed_once_the_model_or_its_base_is_disabled() {
     );
     let (output, _) = h.step_output(run_id).await;
     assert_eq!(output["model"], "decide-via");
+    assert_eq!(output["provider"], "llm_decider", "{output}");
     assert_eq!(output["method"], "verbalized", "{output}");
     assert!(
         output["resolved_model"]

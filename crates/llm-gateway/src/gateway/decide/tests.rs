@@ -107,6 +107,11 @@ async fn decision_entries_build_llm_and_stub_deciders() {
         ]
     );
     assert!(!gw.inner.deciders.contains_key("fast"));
+    // 出力と監査の `provider` は構築した決定器の名前（chat モデル・カタログ外は無い）。
+    assert_eq!(gw.decider_name("decide-local"), Some("llm_decider"));
+    assert_eq!(gw.decider_name("decide-stub"), Some("stub"));
+    assert_eq!(gw.decider_name("fast"), None);
+    assert_eq!(gw.decider_name("nope"), None);
     // 判定用のモデルに思考の深さは選ばせない（元のモデルへ送る深さはカタログで決まる）。
     let local = gw.catalog().get("decide-local").unwrap().clone();
     assert!(!gw.supports_effort(&local));

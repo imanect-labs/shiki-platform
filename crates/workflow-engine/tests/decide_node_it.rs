@@ -251,7 +251,8 @@ fn reply(category: &str, confidence: f64) -> Value {
             "angry": { "type": "boolean", "value": true, "probability": 0.75, "confidence": 0.75 }
         },
         "usage": { "prompt_tokens": 120, "completion_tokens": 30 },
-        "calibrated": false, "method": "verbalized", "samples": 1
+        "calibrated": false, "method": "verbalized", "samples": 1,
+        "provider": "llm_decider"
     })
 }
 
@@ -290,6 +291,12 @@ async fn the_step_cache_reaches_the_port_and_a_hit_is_reported() {
     let rows = audit.rows();
     assert_eq!(rows[0].1["cached"], true);
     assert!(!rows[0].1.to_string().contains("請求書"));
+    // 決定器の名前を返さないポート（既定の実装・古いポート）では null。
+    let mut bare = reply("billing", 0.9);
+    bare.as_object_mut().unwrap().remove("provider");
+    let res = run(ScriptedDecider::new(vec![Ok(bare)]) as _, &audit, &p).await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(res.output["provider"], serde_json::Value::Null);
 }
 
 fn code(r: &NodeResult) -> (String, bool) {
@@ -318,6 +325,7 @@ async fn routes_by_value_to_the_chosen_option() {
             },
             "model": "decide-stub",
             "resolved_model": "claude-haiku-5-5+llm_decider/v1/k1/low",
+            "provider": "llm_decider",
             "calibrated": false, "method": "verbalized", "samples": 1, "cached": false,
             "routed": { "question": "category", "port": "billing" }
         })
@@ -346,6 +354,7 @@ async fn routes_by_value_to_the_chosen_option() {
         json!({
             "model": "decide-stub",
             "resolved_model": "claude-haiku-5-5+llm_decider/v1/k1/low",
+            "provider": "llm_decider",
             "method": "verbalized", "samples": 1, "calibrated": false, "cached": false,
             "questions": ["category", "priority", "angry"],
             "port": "billing",
