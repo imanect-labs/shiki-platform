@@ -85,7 +85,7 @@ IR のトップレベルは以下の形を取る。
 
   **新バージョンで `declared_scopes` が広がった場合、有効化済みワークフローは再同意が済むまで新バージョンへ切替不可**（fail-closed。実行時の強制は [engine.md](./engine.md) §10 と対応）。縮小のみなら差分同意なしで切替可能。
 - **`policies`**: 全て省略可。省略時は既定値。`run_timeout_sec` は run 全体の壁時計上限、`max_parallel_runs` はこのワークフロー単位の run 同時実行上限、`on_trigger_overflow` は上限超過時の挙動（`queue` はバックプレッシャで滞留、`skip` は run 作成を見送る。実行時の滞留・滞留解除の詳細は [engine.md](./engine.md) §8）。`max_parallel_runs` が数えるのは実行中の run で、**wait（時間・できごと）で止まっている run は数えない**（承認やイベントを何日も待つ run が枠を占めて、新しい起動が進まなくなるのを防ぐ。起床して上限を一時的に超えるのは許す・D-26）。
-- **`input_schema`**: 対話トリガ（§6 `interactive`）の入力フォーム契約。JSON Schema のサブセット（型・必須・enum・range 程度。式・`$ref` 外部参照は持たない）。`llm.invoke` の `output_schema` も同じサブセットを使う（§7）。`format` は `date`（`YYYY-MM-DD` の実在する日付）だけを起動の前に検査し、ほかの値は注記として読み飛ばす（画面の日付の欄が送る形を、API・会話の図からの起動でも守らせる・BUG-35）。
+- **`input_schema`**: 対話トリガ（§6 `interactive`）の入力フォーム契約。JSON Schema のサブセット（型・必須・enum・range 程度。式・`$ref` 外部参照は持たない）。`llm.invoke` の `output_schema` は同じキーワードの集合に、構造化出力のための追加の制約（根は object・オブジェクトは閉じる・上限など）を課したもの（§7.3）。`format` は `date`（`YYYY-MM-DD` の実在する日付）だけを起動の前に検査し、ほかの値は注記として読み飛ばす（画面の日付の欄が送る形を、API・会話の図からの起動でも守らせる・BUG-35）。
   - **項目の並び（`x-order`）**: 注記 `"x-order": ["title", "amount"]`（`properties` のキーの配列）が、画面に並べる項目の順を持つ。IR は jsonb の列に保存されるので、`properties` のキーの順は保存して読み直すと辞書順に変わる（BUG-34・D-60）。画面（エディタの入力項目の表・実行のダイアログ・ミニアプリの部品の候補）は `x-order` に書かれたキーをその順に先に置き、書かれていないキーをその後ろに置く（無ければ今の順）。エディタの表は書き戻すたびに今の並びを `x-order` に書く。
   - 起動の検証は `x-order` を注記として読み飛ばす。形（文字列の配列・同じオブジェクトの `properties` のキーだけ・重なりなし。全部のキーを書かなくてよい）は保存時検証が全階層で確かめ、合わなければ `ir.schema_violation` で止める（path は `/input_schema/x-order/<i>`・§8 V1）。
 
@@ -439,17 +439,44 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 { "id": "classify", "type": "llm.invoke",
   "params": {
     "model": "…",                  // 省略可。省略すると組織の既定（Auto を含む）。指定時は組織が許可したモデルへ保存時照合＋実行時再照合
-    "effort": "low",               // 予約（未実装）
+    "effort": "low",               // 省略可。low | medium | high（思考の深さ）
     "prompt": { "$template": "…", "vars": { /* … */ } },
-    "output_schema": { /* JSON Schema サブセット（input_schema と同じ）→ structured output */ }
+    "max_tokens": 2048,            // 省略可（gateway の既定）
+    "output_schema": {             // 省略可。書くと構造化出力（出力に検証済みの data が付く）
+      "type": "object",
+      "required": ["category", "summary"],
+      "properties": {
+        "category": { "type": "string", "enum": ["billing", "bug", "howto", "cancel", "other"] },
+        "summary":  { "type": "string", "maxLength": 200 }
+      } }
   } }
 ```
 
 - `model` を省略すると（空文字も同じ）、**実行のたびに**実行主体の組織（tenant_id ＋ org）の AI 設定で解決する。チャットと同じ規則（llm-gateway の `resolve_choice`）で、既定が Auto なら Auto の振り先と思考強度を使う。本人専用のモデル（ChatGPT プラン）は、実行主体によらず候補から外す（誰が起動しても同じモデルになる）。
 - `model` を指定すると、保存時に組織が許可したモデル（本人専用を除く）と照合する（§8 V3）。実行時にも同じ規則で照らし直し、使えなくなっていれば組織の既定へ戻さずに失敗する（[engine.md](./engine.md) §6 の fail-closed）。
 - 組織がモデルの選択を許していないときは、既定と異なる `model` を `ir.model_choice_disabled` で拒否する（実行時も同じ規則で失敗する）。
+- `effort` は思考の深さ（`low` / `medium` / `high`）。省略すると組織の既定（既定が Auto なら Auto の思考強度）。書くと組織の既定より優先する。思考に対応しないモデルでは gateway が送らない（[design.md](../design.md) §4.5）。
 - 出力は `{ "text", "model" }`。`model` は実際に使ったモデルの論理名で、会計・監査にも同じ名前を残す。
-- `output_schema` を指定すると structured output になる。スキーマは `input_schema` と同じ JSON Schema サブセット（§2）。
+- `output_schema` を書くと構造化出力になり、出力は `{ "text", "model", "data" }` になる。`data` は形で検証済みの値で、`text` はモデルが返した JSON の文字列。後続は `/data/<項目>` で読む（分類の値を script で解析しなくてよい）。
+- **`output_schema` の制約**（保存時に V1 が検査する。誤りは `ir.schema_violation`・path は `/params/output_schema/...`）:
+  - キーワードは `input_schema` と同じ集合（§2）。`$ref`・`anyOf`・`oneOf` などは書けない。リテラルだけで、`$from` は書けない。
+  - 根は `type: "object"`。各スキーマは JSON のオブジェクトで書く（`true` / `false` は書けない）。
+  - オブジェクトは閉じる。`additionalProperties` は `false` か省略で、**省略は閉じたものとして扱う**（`input_schema` の「省略は開いている」とは逆。実行時は `false` を書き足した形で検証し、プロバイダへ送る）。
+  - `type` の配列は `[T, "null"]` だけ（1 つの型と null の組）。
+  - プロパティ名は `^[A-Za-z_][A-Za-z0-9_]{0,63}$`。`required` の名前は `properties` にあり、重ならない。`required`・`additionalProperties` は object の項目にだけ、`items` は array の項目にだけ書ける。
+  - `pattern` はコンパイルできること。`enum` は空でなく、値は文字列・数値・真偽・null。
+  - 上限: 入れ子の深さ 5（根から `properties` / `items` をたどる段数）・プロパティ 100・enum の値 256・JSON 16 KiB・任意の項目（`required` に無いもの）24・null を許す項目 16。数はどれも入れ子を含めた全体。任意の項目と null を許す項目の上限は、Anthropic の構造化出力の上限（1 回の要求の全スキーマの合計）に合わせた。
+  - 数値の範囲・文字列の長さ・`pattern`・配列の件数など、プロバイダの制約付きデコードが受けない制約は、gateway が送る前に落として説明文に書き足す。正しさは実行時の事後検証で守る。
+- **構造化出力の実行**（`workflow_engine::nodes::llm_structured`）:
+  1. 答えが上限トークン（`max_tokens`）で切れたら `llm_output_truncated`、モデルが回答を拒否したら `llm_refused` で失敗する。どちらも直させない。
+  2. 本文を JSON として読み（前後のコードフェンスは剥がして読み直す）、形で検証する。
+  3. 合わなければ 1 回だけ直させる。直す点は最大 5 件・各 200 字までを伝え、会話は user で終える（直前の出力を assistant に置き、直しの依頼を user に置く）。
+  4. 直しても合わなければ `llm_output_invalid`。プロバイダがスキーマを受け付けなかったとき（複雑すぎる・使えない書き方）も `llm_output_invalid` で、直させない。
+  - 3 つの失敗はどれも再試行しない（step の `retry` で作り直し続けない）。`on_error: "continue"` なら error の出口へ進む。
+  - 修復の呼び出しの会計のキーは `#c1`、使えなかった呼び出しは `#f{uuid}`（[engine.md](./engine.md) §7.2-7.3）。
+- `output_schema` を書いて `max_tokens` を 1024 未満のリテラルにすると、保存時に警告する（`ir.output_schema_few_tokens`。思考の分も上限に数えるので、JSON の途中で切れやすい）。
+- `output_schema` を書かない自由な本文は従来どおり: 上限で切れても拒否されても、そのときの本文で成功する。
+- `temperature` は IR に持たない。決定性は、構造化出力で値域を縛ること（enum）・モデルの版を固定すること・checkpoint（成功した step は再開しても再実行しない）で担保する。
 
 ### 7.4 `agent.invoke`
 
