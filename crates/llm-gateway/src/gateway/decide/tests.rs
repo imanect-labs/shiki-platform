@@ -94,6 +94,14 @@ async fn decision_entries_build_llm_and_stub_deciders() {
         ]
     );
     assert!(!gw.inner.deciders.contains_key("fast"));
+    // 判定用のモデルに思考の深さは選ばせない（元のモデルへ送る深さはカタログで決まる）。
+    let local = gw.catalog().get("decide-local").unwrap().clone();
+    assert!(!gw.supports_effort(&local));
+    let explicit = ModelEntry {
+        supports_effort: Some(true),
+        ..local
+    };
+    assert!(!gw.supports_effort(&explicit));
 }
 
 #[tokio::test]

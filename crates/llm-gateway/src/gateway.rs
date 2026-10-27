@@ -226,15 +226,17 @@ impl LlmGateway {
             .collect()
     }
 
-    /// モデルが思考強度を受け付けるか（カタログの明示 → プロバイダ種別の既定）。
+    /// モデルが思考強度を受け付けるか（カタログの明示 → プロバイダ種別の既定）。判定用のモデルは
+    /// 受け付けない（元のモデルへ送る思考の深さはカタログの `decision.effort` で決まる）。
     #[must_use]
     pub fn supports_effort(&self, entry: &ModelEntry) -> bool {
-        entry.supports_effort.unwrap_or_else(|| {
-            self.inner
-                .providers
-                .get(entry.provider_id())
-                .is_some_and(|s| s.config.kind.effort_by_default())
-        })
+        entry.is_chat()
+            && entry.supports_effort.unwrap_or_else(|| {
+                self.inner
+                    .providers
+                    .get(entry.provider_id())
+                    .is_some_and(|s| s.config.kind.effort_by_default())
+            })
     }
 
     /// テナントの AI 設定を読む（行が無ければ既定＝全モデル有効・Auto）。
