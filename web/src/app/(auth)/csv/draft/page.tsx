@@ -94,11 +94,13 @@ function DraftCsvPageInner() {
     getThreadMessages(threadId)
       .then(({ messages }) => {
         if (cancelled) return;
+        // ローカルに無い名前だけ、履歴の下書きを順に流し直す（同名の呼び直しは最後の状態になる）。
+        const local = new Set(csvDraftStore.list(threadId).map((d) => d.name));
         for (const m of messages) {
           for (const b of m.content) {
             if (b.type === "csv_draft") {
               const d = parseCsvDraft(b.draft);
-              if (d && !csvDraftStore.get(threadId, d.name)) {
+              if (d && !local.has(d.name)) {
                 csvDraftStore.upsert(threadId, d.name, d.csv, "ai", d.parentId);
               }
             }

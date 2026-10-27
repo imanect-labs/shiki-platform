@@ -126,11 +126,13 @@ function DraftSlidePageInner() {
     getThreadMessages(threadId)
       .then(({ messages }) => {
         if (cancelled) return;
+        // ローカルに無い名前だけ、履歴の下書きを順に流し直す（同名の呼び直しは最後の状態になる）。
+        const local = new Set(slideDraftStore.list(threadId).map((d) => d.name));
         for (const m of messages) {
           for (const b of m.content) {
             if (b.type === "slide_draft") {
               const d = parseSlideDraft(b.draft);
-              if (d && !slideDraftStore.get(threadId, d.name)) {
+              if (d && !local.has(d.name)) {
                 slideDraftStore.upsert(threadId, d.name, d.content, "ai", d.parentId);
               }
             }

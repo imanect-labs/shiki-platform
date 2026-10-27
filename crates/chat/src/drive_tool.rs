@@ -403,6 +403,13 @@ impl Tool for DriveMoveTool {
                 Err(e) => return Ok(move_error(&e)),
             },
         };
+        // 今と同じ名前への変更は変更なしとして扱う（版と更新日時を無駄に進めない）。
+        let new_name = new_name.filter(|n| *n != current.name);
+        if new_name.is_none() && destination.is_none() {
+            return Ok(ToolOutcome::error(
+                "変更がありません（名前が今と同じです）。別の名前か移動先を指定してください。",
+            ));
+        }
         let node = match self
             .drive
             .update(

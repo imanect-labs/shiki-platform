@@ -317,6 +317,26 @@ async fn rename_only_keeps_parent() {
 }
 
 #[tokio::test]
+async fn rename_to_same_name_is_not_written() {
+    let file = Uuid::new_v4();
+    let drive = Arc::new(FakeDrive {
+        paths: vec![(file, vec![crumb(file, NodeKind::File, "a.md")])],
+        ..FakeDrive::default()
+    });
+    let out = DriveMoveTool::new(drive.clone())
+        .call(
+            &ctx(),
+            serde_json::json!({ "node_id": file, "new_name": "a.md" }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(out.content.contains("変更がありません"), "{}", out.content);
+    assert!(drive.updates().is_empty(), "書込を発生させない");
+}
+
+#[tokio::test]
 async fn move_rejects_missing_change_and_bad_destination() {
     let tool = DriveMoveTool::new(Arc::new(FakeDrive::default()));
     let id = Uuid::new_v4();

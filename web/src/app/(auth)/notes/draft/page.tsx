@@ -99,11 +99,14 @@ function DraftNotePageInner() {
     getThreadMessages(threadId)
       .then(({ messages }) => {
         if (cancelled) return;
+        // ローカルに無い名前だけ、履歴の下書きを**順に流し直す**（同名の後の呼び直しで本文・保存先が
+        // 更新されていれば最後の状態になる。最初の 1 件だけ拾うと古い内容・保存先で開いてしまう）。
+        const local = new Set(listDrafts(threadId).map((d) => d.name));
         for (const m of messages) {
           for (const b of m.content) {
             if (b.type === "note_draft") {
               const d = parseNoteDraft(b.draft);
-              if (d && !getDraft(threadId, d.name)) {
+              if (d && !local.has(d.name)) {
                 upsertDraft(threadId, d.name, d.markdown, "ai", d.parentId);
               }
             }
