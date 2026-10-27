@@ -151,7 +151,10 @@ export function HumanApprovalForm(props: FormProps) {
   const found = source.lookup(p.record?.table);
   const table = found.state === "ok" && isFsmTable(found.table) ? found.table : null;
   const tableNote = boundTableNote(found);
-  const noFsmTable = source.tables !== null && !source.tables.some(isFsmTable);
+  // 読み込んだ分に状態の遷移の規則があるテーブルが無い。一覧を打ち切っている（続きがある）ときは、先頭のページの外に
+  // あるかもしれないので「作ってください」と断定せず、名前で探すよう促す（GAP-42）。
+  const noFsmTable =
+    source.tables === null || source.tables.some(isFsmTable) ? null : source.nextCursor === null ? "none" : "not_loaded";
   const seesWholeTable = useSeesWholeTable(table?.id ?? null);
   const states = statesOf(table);
   const unreadableStates = statusUnreadable(table);
@@ -195,8 +198,10 @@ export function HumanApprovalForm(props: FormProps) {
         />
       </Field>
       {noFsmTable ? (
-        <p className="text-[11px] leading-relaxed text-muted-foreground">
-          状態の遷移の規則があるテーブルがありません。テーブルの設定で状態の列と遷移の規則を作ってください。
+        <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="approval-no-fsm-table">
+          {noFsmTable === "none"
+            ? "状態の遷移の規則があるテーブルがありません。テーブルの設定で状態の列と遷移の規則を作ってください。"
+            : "読み込んだテーブルに、状態の遷移の規則があるものはありません。選ぶ欄で名前で探してください。"}
         </p>
       ) : null}
       <ValueExprInput
