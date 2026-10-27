@@ -108,7 +108,7 @@ flowchart LR
 | `ObjectStore` | RustFS (S3 互換) | GCS |
 | `VectorStore` | Qdrant（小規模は pgvector） | Qdrant / マネージド |
 | `LlmProvider` | vLLM（ローカル） | Vertex / 外部API / LiteLLM アダプタ（§4.5） |
-| `DecisionProvider` | llm_decider（vLLM 上の chat モデルに判定を真似させる） | llm_decider（外部 API の chat モデル）/ 決定モデルの API の互換アダプタ（opt-in・§4.5） |
+| `DecisionProvider` | llm_decider（vLLM 上の chat モデルに判定を真似させる） | llm_decider（外部 API の chat モデル）/ TypeSafe System One 互換（`typesafe_systemone`・実験的・既定は無効で組織の opt-in・国外処理・モックでだけ検証・§4.5） |
 | `Sandbox` | wasm（agentos）/ Firecracker（KVM有）/ gVisor | wasm（agentos）/ gVisor / Firecracker（§4.6 3ティア） |
 | `DocumentParser` | Docling（ローカル） | Docling / 商用OCR |
 | `EmbeddingProvider` | Ruri / BGE-m3 | 同左 / 外部 |
@@ -601,6 +601,18 @@ flowchart LR
     [PIT-80](./design-caveats.md)）。温度は送らず、思考の深さは既定 low・上限のトークン数は low で 2048（深いと 4096）。
     決定器の版 `resolved_model`（`{元の実 ID}+llm_decider/{プロンプトの版}/k{回数}/{思考の深さ}`）を応答に載せ、
     プロンプトを改訂したら版を上げる（しきい値の測り直しのきっかけ）。
+  - **TypeSafe System One 互換（`typesafe_systemone`・FEAT-1 の T9・実験的）**: 非生成の決定モデルの API（Jev）を
+    呼ぶ決定器。判定専用のプロバイダ種別で、chat モデルを振ると起動を止める。`POST {base_url}/v1/systemone`（既定の
+    接続先は `https://api.typesafe.ai`・Bearer）に `{model, state, questions: {キー: {type, instructions, criteria}}}` を
+    送る（はい/いいえは `noul`）。判定用のモデルは `decision_via`・`decision` を書かず、`requires_opt_in = true`（既定は
+    無効・組織の管理者が有効にするまで外へ送らない）・`processed_abroad = true`（米国で処理）・版を固定した `real_id`
+    （`jev-1.13.0` など。別名 `-latest`・`-preview` は版ガードと決定キャッシュの版が合わないので起動を止める）・API キーを
+    必須とする。請求の単位は判定用のモデル自身（入力トークンだけ課金される）。確からしさは shiki の意味（選んだ答えの
+    確率・はい/いいえは max(p, 1-p)）に揃え、TypeSafe の `confidence`（分布の偏りの統計）は使わない。公開文書は較正を
+    主張していないので `calibrated: false`（`method: native`）。応答の `model` が設定の版で始まらなければ使わない
+    （課金された分は会計に載せる）。429 は定型文、401/403 は設定の誤り、そのほかの 4xx は要求の誤り、5xx・タイムアウト
+    （最初の応答 10 秒・全体 30 秒）は一時障害に写し、ベンダーの本文は利用者に出さない。API キーが無いので、公開文書の
+    形を返すモックでだけ確かめた（実 API・日本語の精度・決定性は未検証）。設定例には載せない。
   - 判定の失敗の種類（要求の誤り・拒否・途切れ・形に合わない）は、`LlmError` の列挙を変えずに定型文の頭で表し、
     呼び出し側は `decide_error_kind` で見分ける。
 - `LlmProvider` トレイト実装そのもの。別プロセス化しない（ホップ0、部品削減）。外部クライアント向け API も同一プロセスで公開し、別サービス化は §4.1.1 の条件（3 つ目の消費者）で再検討する。
