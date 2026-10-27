@@ -192,6 +192,8 @@ const ALL_VOCAB: ToolActivityItem[] = [
   { name: "shell", input: { cmd: "ls -la" } },
   { name: "emit_workflow", input: {} },
   { name: "read_workflow", input: {} },
+  { name: "search_workflows", input: { query: "経費" } },
+  { name: "search_workflows", input: {} },
   { name: "document.read", input: {} },
   { name: "document.edit", input: {} },
   { name: "document.embed", input: {} },

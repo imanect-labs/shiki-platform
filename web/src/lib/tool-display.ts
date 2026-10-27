@@ -289,6 +289,15 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     verb: "読み込み",
     failed: "読み込めませんでした",
   },
+  // 本人に見えるワークフローを探す（図のボタンに実在する名前を書くため・読み取りのみ）。
+  search_workflows: {
+    icon: Workflow,
+    category: "search",
+    lead: (t) => (t ? `${t}でワークフローを` : "ワークフローを"),
+    verb: "検索",
+    suru: true,
+    target: quoted("query"),
+  },
 
   // ノート（md ドキュメント）。
   "document.read": {
