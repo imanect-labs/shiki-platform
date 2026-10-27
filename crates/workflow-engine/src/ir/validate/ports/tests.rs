@@ -35,12 +35,9 @@ fn shared_fixture_cases_match() {
 #[test]
 fn node_ports_covers_every_derivable_node() {
     let doc: Value = serde_json::from_str(PORT_CASES).unwrap();
-    let nodes: Vec<Value> = doc["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|c| c["node"].clone())
-        .collect();
+    let cases = doc["cases"].as_array().unwrap();
+    let nodes: Vec<Value> = cases.iter().map(|c| c["node"].clone()).collect();
+    let underivable = cases.iter().filter(|c| c["ports"].is_null()).count();
     let ir = WorkflowIr::from_json(&json!({
         "ir_version": 1, "name": "wf", "nodes": nodes, "edges": []
     }))
@@ -51,7 +48,9 @@ fn node_ports_covers_every_derivable_node() {
         ["billing", "bug", "other", "uncertain"]
     );
     assert!(!got.contains_key("decide_bad"));
-    assert_eq!(got.len(), ir.nodes.len() - 1);
+    assert!(!got.contains_key("decide_dup"));
+    assert_eq!(got["decide_draft"], ["billing", "bug", "uncertain"]);
+    assert_eq!(got.len(), ir.nodes.len() - underivable);
 }
 
 /// 2 ノード（`a` の出口 `port` → `b`）の IR を V2 に通し、ir.unknown_port のエラーを返す。
@@ -126,4 +125,21 @@ fn a_value_routed_decide_rejects_out_and_default_edges() {
 fn an_invalid_decide_is_left_to_v1() {
     let bad = decide(json!({ "question": "nope", "min_confidence": 0.8 }));
     assert!(unknown_ports(bad, "anything").is_empty());
+}
+
+/// ほかの質問を書きかけ（問いが空）でも、振り分けの出口は決まり、V2 は無い出口（out）へのエッジを報告する
+/// （エディタが古い出口を描き続けて、利用者が out へつながない）。
+#[test]
+fn a_draft_question_does_not_hide_the_routed_ports() {
+    let mut draft = decide(json!({ "question": "category", "min_confidence": 0.8 }));
+    draft["params"]["questions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "key": "q3", "type": "boolean", "instructions": "" }));
+    assert_eq!(
+        output_ports(&node(&draft)).unwrap(),
+        ["billing", "bug", "uncertain"]
+    );
+    assert_eq!(unknown_ports(draft.clone(), "out").len(), 1);
+    assert!(unknown_ports(draft, "billing").is_empty());
 }

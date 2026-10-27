@@ -52,6 +52,16 @@
       "ports": ["true", "false", "uncertain", "error"]
     },
     {
+      "name": "書きかけの質問（問いが空）やモデルの未選択があっても、出口は振り分けの質問から決まる",
+      "node": { "id": "decide_draft", "type": "ai.decide", "params": { "model": "", "state": { "$from": "input" }, "questions": [ { "key": "category", "type": "choice", "instructions": "種類はどれか", "options": [ { "key": "billing" }, { "key": "bug" } ] }, { "key": "q2", "type": "choice", "instructions": "", "options": [ { "key": "option_1" }, { "key": "option_2" } ] } ], "route": { "question": "category", "min_confidence": 0.8 } } },
+      "ports": ["billing", "bug", "uncertain"]
+    },
+    {
+      "name": "振り分けの質問の選択肢のキーが重なると出口にできないので導けない",
+      "node": { "id": "decide_dup", "type": "ai.decide", "params": { "model": "decide-stub", "state": { "$from": "input" }, "questions": [ { "key": "category", "type": "choice", "instructions": "種類はどれか", "options": [ { "key": "billing" }, { "key": "billing" } ] } ], "route": { "question": "category", "min_confidence": 0.8 } } },
+      "ports": null
+    },
+    {
       "name": "段階の質問では振り分けられない（params の誤り）ので導けない",
       "node": { "id": "decide_bad", "type": "ai.decide", "params": { "model": "decide-stub", "state": { "$from": "input" }, "questions": [ { "key": "priority", "type": "score", "instructions": "緊急度", "levels": ["低", "高"] } ], "route": { "question": "priority", "min_confidence": 0.8 } } },
       "ports": null

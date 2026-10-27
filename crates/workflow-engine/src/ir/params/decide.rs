@@ -284,23 +284,44 @@ impl AiDecideParams {
 
     /// 出口（ポート）の一覧（`error` などの構造ポートは含めない・順序は表示の順）。
     ///
-    /// [`Self::check_cross_fields`] を通った params だけに意味がある。振り分けの質問が無い・振り分けられない
-    /// 種類なら `None`（V2 は検査しない・V1 が報告する）。
+    /// 出口を決めるのに要る項目（振り分けと、振り分けに使う質問の種類・選択肢のキー）だけを確かめる。ほかの質問の
+    /// 誤り（書きかけの問いなど）・モデルの未選択・しきい値の範囲では `None` にしない（エディタは出口を描き続け、
+    /// 利用者が古い出口へつながない・V1 がそれらを報告する）。振り分けの質問が無い・同じキーの質問が複数ある・
+    /// 振り分けられない種類・選択肢のキーが出口の名前にできない（形・予約名・重なり・件数）なら `None`
+    /// （V2 は検査しない・V1 が報告する）。
     #[must_use]
     pub fn ports(&self) -> Option<Vec<String>> {
         let Some(route) = &self.route else {
             return Some(vec!["out".to_string()]);
         };
-        let q = self.question(&route.question)?;
+        let mut found = self.questions.iter().filter(|q| q.key == route.question);
+        let q = found.next()?;
+        if found.next().is_some() {
+            return None;
+        }
         let mut ports: Vec<String> = match (route.by(), q.kind) {
+            // 段階（score）の質問では振り分けない（どちらの分け方でも V1 が拒否する）。
+            (_, DecideQuestionType::Score) => return None,
             (DecideRouteBy::Confidence, _) => vec!["out".to_string()],
             (DecideRouteBy::Value, DecideQuestionType::Choice) => {
-                q.options.iter().flatten().map(|o| o.key.clone()).collect()
+                // 選択肢のキーが出口の名前になるので、V1 と同じ決まり（形・予約名・重なり・件数）を満たすこと
+                // （説明の長さは出口に関わらないので見ない）。
+                let options = q.options.as_deref().unwrap_or_default();
+                let mut seen = std::collections::BTreeSet::new();
+                let named = (MIN_DECIDE_OPTIONS..=MAX_DECIDE_OPTIONS).contains(&options.len())
+                    && options.iter().all(|o| {
+                        key_ok(&o.key)
+                            && !RESERVED_DECIDE_KEYS.contains(&o.key.as_str())
+                            && seen.insert(o.key.as_str())
+                    });
+                if !named {
+                    return None;
+                }
+                options.iter().map(|o| o.key.clone()).collect()
             }
             (DecideRouteBy::Value, DecideQuestionType::Boolean) => {
                 vec!["true".to_string(), "false".to_string()]
             }
-            (DecideRouteBy::Value, DecideQuestionType::Score) => return None,
         };
         ports.push(UNCERTAIN_PORT.to_string());
         Some(ports)

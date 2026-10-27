@@ -22,8 +22,9 @@ fn push(ports: &mut Vec<String>, port: &str) {
 
 /// ノードの出口（順序は表示の順・重なりなし）。
 ///
-/// 未知の type は `None`（V3 が拒否する）。ai.decide の params が契約に合わないときも `None`（V1 が報告する。
-/// 出口を決められないので V2 は検査しない＝同じ誤りを二重に出さない）。
+/// 未知の type は `None`（V3 が拒否する）。ai.decide の params が型に合わないとき・出口に関わる項目（振り分けと、
+/// その質問の種類・選択肢のキー）が契約に合わないときも `None`（V1 が報告する。出口を決められないので V2 は
+/// 検査しない＝同じ誤りを二重に出さない）。ほかの質問の誤り・モデルの未選択では出口を導く。
 #[must_use]
 pub fn output_ports(node: &Node) -> Option<Vec<String>> {
     let nt = NodeType::parse(&node.node_type)?;
@@ -53,9 +54,10 @@ pub fn output_ports(node: &Node) -> Option<Vec<String>> {
                 push(&mut ports, p);
             }
         }
+        // 出口に関わる項目（振り分け・その質問の種類と選択肢のキー）だけで決める（ほかの質問の書きかけでは
+        // 導けなくしない・AiDecideParams::ports）。
         PortRule::DecideRoute => {
             let params: AiDecideParams = serde_json::from_value(node.params.clone()).ok()?;
-            params.check_cross_fields().ok()?;
             for p in params.ports()? {
                 push(&mut ports, &p);
             }

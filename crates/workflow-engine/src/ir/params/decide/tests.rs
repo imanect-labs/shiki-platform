@@ -239,6 +239,66 @@ fn ports_follow_the_route() {
     assert_eq!(by_bool.ports().unwrap(), ["true", "false", "uncertain"]);
 }
 
+/// 出口は振り分けに関わる項目だけで決まる。ほかの質問の書きかけ（問いが空）・モデルの未選択・しきい値の範囲の
+/// 外では導ける（エディタが古い出口を出し続けない）。振り分けの質問と選択肢のキーが出口にできないときは導けない。
+#[test]
+fn ports_need_only_the_routed_question() {
+    // 型だけ読む（V1 の整合の検査は通さない）。
+    let typed = |v: &Value| -> AiDecideParams { serde_json::from_value(v.clone()).unwrap() };
+    let mut v = with_route(json!({ "question": "category", "min_confidence": 0.3 }));
+    v["model"] = json!("");
+    v["questions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "key": "draft", "type": "choice", "instructions": "", "options": [] }));
+    let p = typed(&v);
+    assert!(p.check_cross_fields().is_err(), "V1 は誤りを報告する");
+    assert_eq!(p.ports().unwrap(), ["billing", "bug", "other", "uncertain"]);
+    // 振り分けに使う質問の問いが空でも、出口（選択肢のキー）は決まる。
+    let blank = with(
+        with_route(json!({ "question": "category", "min_confidence": 0.8 })),
+        "/questions/0/instructions",
+        json!(""),
+    );
+    assert_eq!(
+        typed(&blank).ports().unwrap(),
+        ["billing", "bug", "other", "uncertain"]
+    );
+
+    let ports_with = |pointer: &str, value: Value| {
+        let v = with(
+            with_route(json!({ "question": "category", "min_confidence": 0.8 })),
+            pointer,
+            value,
+        );
+        typed(&v).ports()
+    };
+    // 選択肢のキーが重なる・予約名・形に合わない・1 件だけ。
+    assert_eq!(
+        ports_with("/questions/0/options/1/key", json!("billing")),
+        None
+    );
+    assert_eq!(ports_with("/questions/0/options/1/key", json!("out")), None);
+    assert_eq!(ports_with("/questions/0/options/1/key", json!("Bug")), None);
+    assert_eq!(
+        ports_with("/questions/0/options", json!([{ "key": "billing" }])),
+        None
+    );
+    // 振り分けの質問のキーが重なる（どちらの質問か決まらない）・無い質問・段階の質問（どちらの分け方でも）。
+    assert_eq!(ports_with("/questions/2/key", json!("category")), None);
+    assert_eq!(ports_with("/route/question", json!("nope")), None);
+    for by in ["value", "confidence"] {
+        let v = with_route(json!({ "question": "priority", "by": by, "min_confidence": 0.8 }));
+        assert_eq!(typed(&v).ports(), None, "{by}");
+    }
+    // 選択肢の説明の長さは出口に関わらない。
+    assert!(ports_with(
+        "/questions/0/options/0/description",
+        json!("あ".repeat(600))
+    )
+    .is_some());
+}
+
 /// 実行時の振り分けは、しきい値以上で答えに従い、届かなければ uncertain。選んだ出口は必ず ports にある。
 #[test]
 fn port_for_picks_one_of_the_ports() {
