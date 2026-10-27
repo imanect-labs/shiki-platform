@@ -42,16 +42,19 @@ pub use ir::scopes::complete_declared_scopes;
 pub use ir::validate::{
     enable_blockers, pattern_within, required_text_empty, run_blockers, save_warnings,
     semantics_warnings, valid_host_pattern, validate, Catalog, CatalogTable, ValidationError,
-    APPROVAL_STATUS_FIELD_SHOWN, APPROVAL_TIMEOUTS_EXCEED_RUN, REPLY_WITHOUT_INTERACTIVE,
-    REQUIRED_TEXT_EMPTY, SAVE_WARNING_CODES, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR,
-    TEMPLATE_UNCLOSED_BRACE, WRITE_FOLDER_REQUIRED,
+    APPROVAL_STATUS_FIELD_SHOWN, APPROVAL_TIMEOUTS_EXCEED_RUN, OUTPUT_SCHEMA_FEW_TOKENS,
+    REPLY_WITHOUT_INTERACTIVE, REQUIRED_TEXT_EMPTY, SAVE_WARNING_CODES, SEMANTICS_CHANGED,
+    TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE, WRITE_FOLDER_REQUIRED,
 };
 pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};
+pub use nodes::llm_structured::{
+    LLM_OUTPUT_INVALID, LLM_OUTPUT_TRUNCATED, LLM_REFUSED, REPAIR_CALL_SUFFIX,
+};
 pub use nodes::{
     AgentInvokeReq, AgentLimits, AgentToolGateway, ApprovalTarget, CapabilityNodeExecutor,
     CodeRunReq, CsvPatchReq, CsvWriteReq, DataWriteOp, DataWriteReq, DocReadReq, ExecCtx,
-    HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView,
+    HttpSendReq, HttpSendResp, LlmInvokeReq, LlmRepair, NodePorts, PortError, ResolvedSecretView,
     ResolvedSkillView, StorageWriteReq, WebFetchReq,
 };
 pub use ratelimit::{BucketConfig, TokenBucket};

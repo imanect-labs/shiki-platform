@@ -95,6 +95,17 @@ pub(super) const EXAMPLE_REVIEW: &str = r#"{
   ]
 }"#;
 
+/// 出力の形（llm.invoke の output_schema・GAP-13）の例のノード（問い合わせの種類を enum で決める）。
+pub(super) const EXAMPLE_STRUCTURED_NODE: &str = r#"{ "id": "classify", "type": "llm.invoke", "label": "種類を判定",
+  "params": {
+    "prompt": { "$template": "次の問い合わせの種類を決め、1 行で要約してください。\n{body}",
+                "vars": { "body": { "$from": "input", "path": "/body" } } },
+    "effort": "low",
+    "output_schema": { "type": "object", "required": ["category", "summary"],
+      "properties": {
+        "category": { "type": "string", "enum": ["billing", "bug", "howto", "other"] },
+        "summary": { "type": "string", "maxLength": 100 } } } } }"#;
+
 /// 条件木の例（all / any / not / cmp・control.branch の condition にそのまま置ける）。
 pub(super) const EXAMPLE_CONDITION: &str = r#"{ "all": [
   { "cmp": { "left": { "$from": "input", "path": "/amount" }, "op": "gte", "right": 50000 } },
@@ -274,10 +285,28 @@ pub(super) fn emit_description(models: Option<&[String]>) -> String {
         ex2 = example_json(EXAMPLE_REVIEW),
         models = models_section(models),
     );
+    d.push_str(&structured_guide());
     d.push_str(REPLY_GUIDE);
     d.push_str(&agent_guide());
     d.push_str(&catalog_summary());
     d
+}
+
+/// AI の出力の形と思考の深さ（llm.invoke の output_schema・effort・GAP-13）。上限はエンジンの定数から作る。
+fn structured_guide() -> String {
+    use workflow_engine::ir::output_schema::{
+        MAX_DEPTH, MAX_ENUM_VALUES, MAX_OPTIONAL, MAX_PROPERTIES, MAX_UNIONS,
+    };
+    use workflow_engine::ir::validate::MIN_STRUCTURED_MAX_TOKENS;
+    format!(
+        "【AI の出力の形】llm.invoke に output_schema（JSON Schema のリテラル）を書くと、出力は {{ text, model, data }} になり、data に形で検証した値が入る（後続は {{\"$from\":\"nodes.<id>.output\",\"path\":\"/data/<項目>\"}} で読む。分類・抽出は script で JSON を解析せずにこれを使い、選択肢は enum で縛る）。\n\
+         - 根は {{\"type\":\"object\"}}。オブジェクトは決めた項目だけ（additionalProperties は false か省略。省略しても閉じたものとして扱う）。type は 1 つの型か [型, \"null\"]。項目名は英字か _ で始め英数字と _ だけ。使えるのは input_schema と同じキーワード（$ref・anyOf・oneOf は使えない）。\n\
+         - 上限: 入れ子 {MAX_DEPTH} 段・項目 {MAX_PROPERTIES}・任意の項目（required に無い項目）{MAX_OPTIONAL}・null を許す項目 {MAX_UNIONS}・enum の値 {MAX_ENUM_VALUES}（どれも全体で数える）。\n\
+         - 形に合わない出力は 1 回だけ直させ、それでも合わなければ step は llm_output_invalid で失敗する。上限で切れたら llm_output_truncated、AI が回答を拒否したら llm_refused（どちらも直さない）。max_tokens を書くなら {MIN_STRUCTURED_MAX_TOKENS} 以上（思考の分も数える）。\n\
+         - effort（\"low\" | \"medium\" | \"high\"）は思考の深さ。省略は組織の既定。分類・抽出は low で足りることが多い。\n\
+         例（ノード）: {example}\n",
+        example = minify(EXAMPLE_STRUCTURED_NODE),
+    )
 }
 
 /// AI エージェント（agent.invoke）の書き方（道具の一覧は道具のカタログの単一定義から作る・BUG-6）。
@@ -647,12 +676,50 @@ mod tests {
                 && d.contains("params { model?: string, prompt: ValueExpr"),
             "{d}"
         );
-        assert!(d.contains("出力 { text: string, model: string }"));
+        assert!(d.contains(
+            "出力 { text: string, model: string, data?: unknown（output_schema を書いたとき"
+        ));
         assert!(d.contains("SwitchCase = { port: string, equals: unknown }"));
         for e in node_catalog() {
             let line = format!("- {}（", e.node_type.as_str());
             assert_eq!(d.contains(&line), e.available, "{}", e.node_type.as_str());
         }
+    }
+
+    /// 出力の形と思考の深さの書き方が載り、例のノードはそのまま保存時検証を通る（GAP-13）。
+    #[test]
+    fn description_explains_output_schema_and_effort() {
+        let d = emit_description(None);
+        assert!(d.contains("【AI の出力の形】"), "{d}");
+        assert!(d.contains("\"path\":\"/data/<項目>\""), "{d}");
+        assert!(d.contains("任意の項目（required に無い項目）24"), "{d}");
+        assert!(d.contains("max_tokens を書くなら 1024 以上"), "{d}");
+        assert!(
+            d.contains("effort（\"low\" | \"medium\" | \"high\"）"),
+            "{d}"
+        );
+        // params の形にも ts-rs の宣言から載る。
+        assert!(
+            d.contains("effort?: LlmEffort, output_schema?: Record<string, unknown>"),
+            "{d}"
+        );
+        assert!(
+            d.contains("LlmEffort = \"low\" | \"medium\" | \"high\""),
+            "{d}"
+        );
+        let node: Value = serde_json::from_str(&minify(EXAMPLE_STRUCTURED_NODE)).unwrap();
+        assert!(
+            node["params"].get("model").is_none(),
+            "例に model を書かない"
+        );
+        let ir = serde_json::json!({
+            "ir_version": 1, "name": "triage", "triggers": [{ "kind": "interactive" }],
+            "input_schema": { "type": "object", "properties": { "body": { "type": "string" } },
+                              "required": ["body"] },
+            "nodes": [node], "edges": []
+        });
+        let parsed = validate(&ir, &Catalog::default()).unwrap();
+        assert!(workflow_engine::save_warnings(&parsed).is_empty());
     }
 
     #[test]

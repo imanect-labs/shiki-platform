@@ -627,7 +627,15 @@ fn output_shape(nt: NodeType) -> Shape {
         ),
         N::LlmInvoke => Fields(
             "",
-            &[field!("text", "string"), field!("model", "string")],
+            &[
+                field!("text", "string"),
+                field!("model", "string"),
+                opt!(
+                    "data",
+                    "unknown",
+                    "output_schema を書いたとき・その形で検証済みの値"
+                ),
+            ],
             "",
         ),
         N::AgentInvoke => Fields(
@@ -900,9 +908,10 @@ mod tests {
                 .find(|e| e.node_type == nt)
                 .unwrap()
         };
+        // 出力の形（output_schema）を書いたときだけ、検証済みの data が付く（GAP-13）。
         assert_eq!(
             find(NodeType::LlmInvoke).output_shape,
-            "{ text: string, model: string }"
+            "{ text: string, model: string, data?: unknown（output_schema を書いたとき・その形で検証済みの値） }"
         );
     }
 

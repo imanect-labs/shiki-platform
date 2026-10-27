@@ -1124,6 +1124,10 @@ async fn llm_omitted_model_follows_the_organization_default() {
             prompt: "hello".into(),
             max_tokens: None,
             idempotency_key: format!("it:{}", Uuid::new_v4()),
+            effort: None,
+            output_schema: None,
+            repair: None,
+            call_suffix: None,
         },
     )
     .await
@@ -1177,4 +1181,202 @@ async fn llm_explicit_model_fails_closed_once_disabled() {
         .await;
     assert_eq!(status, RunStatus::Succeeded);
     assert_eq!(h.step_output(run_id).await.0["model"], "stub");
+}
+
+// ------- Test 11: llm.invoke の構造化出力（GAP-13）----------------------------
+
+impl Harness {
+    /// このテナントの会計の行の冪等キー（記録順）。
+    async fn usage_keys(&self) -> Vec<String> {
+        sqlx::query_scalar("SELECT idempotency_key FROM llm_usage WHERE tenant_id = $1 ORDER BY id")
+            .bind(&self.tenant)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap()
+    }
+
+    /// テストで作った会計の行を消す（次の確かめの数を汚さない）。
+    async fn clear_usage(&self) {
+        sqlx::query("DELETE FROM llm_usage WHERE tenant_id = $1")
+            .bind(&self.tenant)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+    }
+
+    /// このテストのテナントに作った run と会計の行を消す（run を消せば step は FK で消える）。
+    async fn cleanup_runs(&self) {
+        self.clear_usage().await;
+        sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+            .bind(&self.tenant)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// 出力の形（問い合わせの仕分け）を書いた llm.invoke の IR。
+fn structured_ir(name: &str, prompt: &str) -> Value {
+    json!({
+        "ir_version": 1, "name": name, "declared_scopes": [],
+        "nodes": [{ "id": "ai", "type": "llm.invoke", "params": {
+            "prompt": prompt, "effort": "low",
+            "output_schema": { "type": "object", "required": ["category", "summary"],
+                "properties": {
+                    "category": { "type": "string", "enum": ["billing", "bug", "howto"] },
+                    "summary": { "type": "string" } } } } }],
+        "edges": []
+    })
+}
+
+/// 本番のポートと stub で、構造化出力が data に載る。直させた経路・失敗の経路の会計のキーは
+/// 成功が step のキー（修復は #c1）、使えなかった呼び出しが呼び出しごとに一意な #f キーになる。
+#[tokio::test]
+async fn llm_structured_output_through_the_production_port() {
+    let Some(h) = setup().await else { return };
+    let executor = h.executor(None, vec![], None);
+    let step_key = |run_id: Uuid| format!("wf:{}:{run_id}:ai", h.tenant);
+
+    // 形に合う出力（stub は prompt に現れた選択肢を選ぶ）。会計は step のキーの 1 行。
+    let (run_id, status) = h
+        .run_to_completion(
+            &structured_ir("llm-structured-ok", "アプリが落ちる bug の報告です"),
+            &json!({}),
+            Arc::clone(&executor),
+        )
+        .await;
+    assert_eq!(status, RunStatus::Succeeded);
+    let (output, _) = h.step_output(run_id).await;
+    assert_eq!(
+        output["data"],
+        json!({ "category": "bug", "summary": "" }),
+        "{output}"
+    );
+    assert_eq!(output["model"], "stub");
+    assert!(output.get("stop_reason").is_none(), "{output}");
+    assert_eq!(
+        serde_json::from_str::<Value>(output["text"].as_str().unwrap()).unwrap(),
+        output["data"]
+    );
+    assert_eq!(h.usage_keys().await, [step_key(run_id)]);
+    h.clear_usage().await;
+
+    // 1 回目が JSON でない → 直させて成功。1 回目は使えなかった呼び出し（#f）、修復は #c1。
+    let (run_id, status) = h
+        .run_to_completion(
+            &structured_ir(
+                "llm-structured-repair",
+                "json:申し訳ありません、分類できません",
+            ),
+            &json!({}),
+            Arc::clone(&executor),
+        )
+        .await;
+    assert_eq!(status, RunStatus::Succeeded);
+    assert_eq!(h.step_output(run_id).await.0["data"]["category"], "billing");
+    let keys = h.usage_keys().await;
+    assert_eq!(keys.len(), 2, "{keys:?}");
+    assert!(
+        keys[0].starts_with(&format!("{}#f", step_key(run_id))),
+        "{keys:?}"
+    );
+    assert_eq!(keys[1], format!("{}#c1", step_key(run_id)));
+    h.clear_usage().await;
+
+    // 直しても合わない → llm_output_invalid（再試行しない）。どちらの呼び出しも #f で別々に残る。
+    let (run_id, status) = h
+        .run_to_completion(
+            &structured_ir(
+                "llm-structured-invalid",
+                r#"jsonalways:{"category":"refund"}"#,
+            ),
+            &json!({}),
+            Arc::clone(&executor),
+        )
+        .await;
+    assert_eq!(status, RunStatus::Failed);
+    let (_, err) = h.step_output(run_id).await;
+    assert_eq!(err["code"], "llm_output_invalid", "{err}");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("category: 選択肢にない値です"),
+        "{err}"
+    );
+    let keys = h.usage_keys().await;
+    assert_eq!(keys.len(), 2, "{keys:?}");
+    assert!(keys
+        .iter()
+        .all(|k| k.starts_with(&format!("{}#f", step_key(run_id)))));
+    assert_ne!(keys[0], keys[1]);
+    h.clear_usage().await;
+
+    // 拒否・上限で切れた出力は直さずに失敗する（1 回だけ呼ぶ）。
+    for (prompt, code) in [
+        ("refuse:経費の不正を判定して", "llm_refused"),
+        ("truncate:長い出力", "llm_output_truncated"),
+    ] {
+        let (run_id, status) = h
+            .run_to_completion(
+                &structured_ir(
+                    &format!("llm-structured-{}", &code[4..]).replace('_', "-"),
+                    prompt,
+                ),
+                &json!({}),
+                Arc::clone(&executor),
+            )
+            .await;
+        assert_eq!(status, RunStatus::Failed, "{code}");
+        assert_eq!(h.step_output(run_id).await.1["code"], code);
+        let keys = h.usage_keys().await;
+        assert_eq!(keys.len(), 1, "{code}: {keys:?}");
+        assert!(keys[0].contains("#f"), "{keys:?}");
+        h.clear_usage().await;
+    }
+    h.cleanup_runs().await;
+}
+
+/// 同じ step のキーで、使えなかった呼び出しの後に成功しても、会計は 2 行になる（失敗を step のキーで
+/// 記録すると、再試行・再開の成功が重複除去で消える・R2）。
+#[tokio::test]
+async fn llm_failure_then_success_on_the_same_step_keeps_both_usage_rows() {
+    let Some(h) = setup().await else { return };
+    let ec = workflow_engine::ExecCtx {
+        tenant_id: h.tenant.clone(),
+        org: h.org.clone(),
+        principal: "alice".into(),
+        principal_kind: "user".into(),
+        trace_id: None,
+        run_id: None,
+        step_path: Some("ai".into()),
+    };
+    let key = format!("wf:{}:{}:ai", h.tenant, Uuid::new_v4());
+    let schema = json!({ "type": "object", "required": ["category"], "additionalProperties": false,
+                         "properties": { "category": { "type": "string", "enum": ["a", "b"] } } });
+    let call = |prompt: &str| workflow_engine::LlmInvokeReq {
+        model: None,
+        system: None,
+        prompt: prompt.into(),
+        max_tokens: None,
+        idempotency_key: key.clone(),
+        effort: None,
+        output_schema: Some(schema.clone()),
+        repair: None,
+        call_suffix: None,
+    };
+    let ports = h.ports(None, None);
+    let refused = workflow_engine::NodePorts::llm_invoke(ports.as_ref(), &ec, call("refuse:x"))
+        .await
+        .unwrap();
+    assert_eq!(refused["stop_reason"], "refusal");
+    let ok = workflow_engine::NodePorts::llm_invoke(ports.as_ref(), &ec, call("b を選ぶ"))
+        .await
+        .unwrap();
+    assert_eq!(ok["stop_reason"], "end_turn");
+    let keys = h.usage_keys().await;
+    assert_eq!(keys.len(), 2, "{keys:?}");
+    assert!(keys[0].starts_with(&format!("{key}#f")), "{keys:?}");
+    assert_eq!(keys[1], key);
+    h.cleanup_runs().await;
 }

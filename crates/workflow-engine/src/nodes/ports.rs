@@ -83,6 +83,8 @@ pub struct StorageWriteReq {
 }
 
 /// llm.invoke の要求（llm-gateway 直行・モデル/予算はゲートウェイ側カタログで解決）。
+///
+/// 構造化出力（GAP-13）の項目はどれも `Option` で、`None` は従来どおりの自由な本文。
 #[derive(Debug, Clone)]
 pub struct LlmInvokeReq {
     /// 論理モデル名。`None` は組織の既定（ポート実装が実行主体の組織の設定で解決する・Auto を含む）。
@@ -92,8 +94,27 @@ pub struct LlmInvokeReq {
     /// user メッセージ本文（Stage A は単発）。
     pub prompt: String,
     pub max_tokens: Option<u32>,
-    /// 生成記録の冪等キー（`<run_id>:<attempt>:<call_ordinal>` 相当）。
+    /// step の冪等キー（attempt を含まない・会計の鍵の素。使い方は [`NodePorts::llm_invoke`]）。
     pub idempotency_key: String,
+    /// 思考の深さ。`None` は組織の既定。書くと組織の既定より優先する（対応しないモデルでは gateway が落とす）。
+    pub effort: Option<crate::ir::params::LlmEffort>,
+    /// 出力の形（閉じた JSON Schema・[`crate::ir::output_schema::close_objects`] 済み）。`Some` ならポートは
+    /// 構造化出力を求める（gateway の `response_format`）。出力の検証と修復はエンジンが行う。
+    pub output_schema: Option<Value>,
+    /// 形に合わなかった出力の直しの依頼（エンジンが組む）。`Some` なら会話を
+    /// `[user: prompt][assistant: previous_output][user: instruction]` にする（user で終える）。
+    pub repair: Option<LlmRepair>,
+    /// 会計の冪等キーの接尾辞（修復の呼び出しは `#c1`・engine.md §7.3 の呼び出し連番）。
+    pub call_suffix: Option<String>,
+}
+
+/// 構造化出力の修復の依頼（[`LlmInvokeReq::repair`]）。
+#[derive(Debug, Clone)]
+pub struct LlmRepair {
+    /// 形に合わなかった直前の出力（モデルの本文のまま）。
+    pub previous_output: String,
+    /// 直す点と出し直しの依頼（エンジンが組んだ文）。
+    pub instruction: String,
 }
 
 /// agent.invoke の要求（agent-core のツールループを 1 回走らせる・BUG-6・D-22）。
@@ -256,8 +277,16 @@ pub trait NodePorts: Send + Sync {
 
     /// llm.invoke（`LlmGateway.stream` ＋ `record_generation`・trace_id を記録）。
     ///
-    /// 返す Value は `{ text, model }`。`model` は解決後の論理モデル名（実際に使ったモデル・会計と同じ名前）で、
-    /// executor が監査に使う。
+    /// 返す Value は `{ text, model, stop_reason? }`。`model` は解決後の論理モデル名（実際に使ったモデル・会計と
+    /// 同じ名前）で、executor が監査に使う。`stop_reason`（`end_turn`・`max_tokens`・`refusal` など）は任意で、
+    /// 無ければ自然終了とみなす。node の出力には載せない。
+    ///
+    /// 会計の冪等キー（engine.md §7.2-7.3）:
+    /// - 使えた呼び出しは `idempotency_key` ＋ `call_suffix`（1 回目は step のキー・修復は `#c1`）。
+    /// - 使えなかった呼び出し（途中で切れた・`output_schema` があって上限で切れた・拒否された・形に合わない）で
+    ///   使用量のあるものは `{idempotency_key}#f{uuid}`（呼び出しごとに一意）。step のキーで記録すると、
+    ///   再試行・再開で後から成功した分が重複除去で消えるため。形に合うかは
+    ///   [`crate::ir::output_schema::validate_output`]（エンジンと同じ検査）で見る。
     async fn llm_invoke(&self, ctx: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError>;
 
     /// agent.invoke（agent-core のツールループを 1 回走らせる・LLM は llm-gateway を通す・BUG-6）。

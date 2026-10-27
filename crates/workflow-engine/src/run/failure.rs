@@ -65,6 +65,16 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("model_unavailable", Configuration),
         ("model_choice_disabled", Configuration),
         ("no_model", Configuration),
+        // 構造化出力（llm.invoke の output_schema・GAP-13）。プロンプト・出力の形・max_tokens を作成者が見直す。
+        (
+            crate::nodes::llm_structured::LLM_OUTPUT_INVALID,
+            Configuration,
+        ),
+        (
+            crate::nodes::llm_structured::LLM_OUTPUT_TRUNCATED,
+            Configuration,
+        ),
+        (crate::nodes::llm_structured::LLM_REFUSED, Configuration),
         ("approval_not_decidable", Configuration),
         ("approval_no_assignee", Configuration),
         ("approval_assignee_unreadable", Configuration),
@@ -170,6 +180,12 @@ mod tests {
             run_failure(id, Some("cancelled"), Some("run_timeout")).category,
             FailureCategory::Timeout
         );
+        // 構造化出力の失敗は作成者が設定（プロンプト・出力の形・max_tokens）を見直す分類（GAP-13）。
+        for code in ["llm_output_invalid", "llm_output_truncated", "llm_refused"] {
+            let f = run_failure(id, Some(code), None);
+            assert_eq!(f.category, FailureCategory::Configuration, "{code}");
+            assert!(f.message.contains("作成者に連絡"), "{code}: {}", f.message);
+        }
         assert_eq!(
             run_failure(id, Some("never-seen"), None).category,
             FailureCategory::Unknown

@@ -5,9 +5,9 @@
 //! [`super::save_warnings`] が出しうるコードは、すべてこの表に載せる（下のテストが確かめる）。
 
 use super::{
-    APPROVAL_TIMEOUTS_EXCEED_RUN, OVERLAPPING_DATA_TRIGGERS, REPLY_WITHOUT_INTERACTIVE,
-    REQUIRED_TEXT_EMPTY, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE,
-    WAIT_FILTER_ALIAS,
+    APPROVAL_TIMEOUTS_EXCEED_RUN, OUTPUT_SCHEMA_FEW_TOKENS, OVERLAPPING_DATA_TRIGGERS,
+    REPLY_WITHOUT_INTERACTIVE, REQUIRED_TEXT_EMPTY, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR,
+    TEMPLATE_UNCLOSED_BRACE, WAIT_FILTER_ALIAS,
 };
 
 /// 定数の名前と値の組の表を作る（名前は Rust の定数の名前をそのまま使い、別の綴りを持たない）。
@@ -27,6 +27,7 @@ pub const SAVE_WARNING_CODES: &[(&str, &str)] = named![
     WAIT_FILTER_ALIAS,
     APPROVAL_TIMEOUTS_EXCEED_RUN,
     REPLY_WITHOUT_INTERACTIVE,
+    OUTPUT_SCHEMA_FEW_TOKENS,
 ];
 
 #[cfg(test)]
@@ -132,6 +133,16 @@ mod tests {
                     interactive(),
                     json!([approval("first"), approval("second")]),
                     json!([{ "from": "first", "from_port": "approved", "to": "second" }]),
+                ),
+            ),
+            (
+                OUTPUT_SCHEMA_FEW_TOKENS,
+                ir(
+                    interactive(),
+                    json!([{ "id": "ai", "type": "llm.invoke", "params": {
+                        "prompt": "分類して", "max_tokens": 256,
+                        "output_schema": { "type": "object" } } }]),
+                    json!([]),
                 ),
             ),
             (

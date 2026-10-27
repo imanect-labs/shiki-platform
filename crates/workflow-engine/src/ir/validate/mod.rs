@@ -7,6 +7,8 @@ mod agent;
 pub use agent::{pattern_within, valid_host_pattern};
 mod approval;
 pub use approval::{CatalogTable, APPROVAL_STATUS_FIELD_SHOWN, APPROVAL_TIMEOUTS_EXCEED_RUN};
+mod llm;
+pub use llm::{MIN_STRUCTURED_MAX_TOKENS, OUTPUT_SCHEMA_FEW_TOKENS};
 mod readiness;
 pub use readiness::{
     enable_blockers, required_text_empty, run_blockers, REQUIRED_TEXT_EMPTY, WRITE_FOLDER_REQUIRED,
@@ -115,7 +117,8 @@ pub struct Catalog {
 /// テンプレート（[`TEMPLATE_UNCLOSED_BRACE`]・D-37）と、同じテーブルで重なる
 /// データ変更トリガ（[`OVERLAPPING_DATA_TRIGGERS`]）と、wait(event) の filter の別名（[`WAIT_FILTER_ALIAS`]）と、
 /// 続けて待つ承認の期限の合計が実行の期限以上のもの（[`APPROVAL_TIMEOUTS_EXCEED_RUN`]）と、手動で動かす
-/// きっかけの無い IR の画面に返す結果（[`REPLY_WITHOUT_INTERACTIVE`]）と、必須の文字の欄が空のもの
+/// きっかけの無い IR の画面に返す結果（[`REPLY_WITHOUT_INTERACTIVE`]）と、出力の形を書いた llm.invoke の
+/// 小さすぎる上限トークン（[`OUTPUT_SCHEMA_FEW_TOKENS`]・GAP-13）と、必須の文字の欄が空のもの
 /// （[`REQUIRED_TEXT_EMPTY`]・有効化と実行の前には止める・D-43）。出しうるコードは [`SAVE_WARNING_CODES`] に
 /// 載せる（web はその表から生成した定数で受ける・BUG-48）。
 #[must_use]
@@ -126,6 +129,7 @@ pub fn save_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     out.extend(v3_vocab::event_warnings(ir));
     out.extend(approval::warnings(ir));
     out.extend(reply::warnings(ir));
+    out.extend(llm::warnings(ir));
     // 表に無い警告は web の定数に出ない（警告を足したら表にも足す・テストのどの経路で起きても止める）。
     debug_assert!(
         out.iter()

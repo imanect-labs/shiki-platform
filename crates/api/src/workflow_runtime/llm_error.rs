@@ -61,6 +61,26 @@ pub(super) fn llm_port_error(ec: &ExecCtx, e: &LlmError) -> PortError {
     }
 }
 
+/// llm.invoke の失敗を step の誤りへ写す。出力の形（output_schema）を求めた呼び出しで、プロバイダが
+/// スキーマを受け付けなかったもの（複雑すぎる・使えない書き方）は、出力の形の誤り（`llm_output_invalid`・
+/// 再試行しない・直させない）にする。文言は gateway の定型文（プロバイダの本文は含まない）。
+pub(super) fn structured_port_error(ec: &ExecCtx, e: &LlmError, structured: bool) -> PortError {
+    if structured && llm_gateway::structured::is_schema_rejection(e) {
+        tracing::warn!(
+            target: "workflow.llm",
+            tenant = %ec.tenant_id,
+            run_id = ?ec.run_id,
+            step = ?ec.step_path,
+            error = %e,
+            "llm.invoke の出力の形をプロバイダが受け付けなかった"
+        );
+        if let LlmError::BadRequest(message) = e {
+            return PortError::new(workflow_engine::LLM_OUTPUT_INVALID, message.clone(), false);
+        }
+    }
+    llm_port_error(ec, e)
+}
+
 /// agent.invoke のループの失敗を step の誤りへ写す（BUG-6）。
 ///
 /// agent-core は LLM の誤りを `AgentError::Llm(<LlmError の文>)` に潰すので、接頭辞から種別を戻して
@@ -210,6 +230,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 出力の形をプロバイダが拒んだ誤りは、出力の形の誤り（再試行しない）として定型文で出す。
+    /// 形を求めていない呼び出し・ほかの 4xx は従来どおり。
+    #[test]
+    fn schema_rejections_become_output_invalid() {
+        let rejected = LlmError::BadRequest(
+            "出力の形（JSON Schema）が複雑すぎて、モデルが受け付けませんでした。".into(),
+        );
+        let got = structured_port_error(&ec(), &rejected, true);
+        assert_eq!(got.code, "llm_output_invalid");
+        assert!(!got.retryable);
+        assert!(
+            got.message.starts_with("出力の形（JSON Schema）"),
+            "{}",
+            got.message
+        );
+        assert_eq!(
+            structured_port_error(&ec(), &rejected, false).message,
+            message::REJECTED
+        );
+        let other = LlmError::BadRequest("openai 400 prompt too long".into());
+        assert_eq!(
+            structured_port_error(&ec(), &other, true).message,
+            message::REJECTED
+        );
+        let down = structured_port_error(&ec(), &LlmError::Unavailable("x".into()), true);
+        assert!(down.retryable);
     }
 
     /// エージェントのループの誤りも llm.invoke と同じ文言・再試行の分類になる（BUG-6）。

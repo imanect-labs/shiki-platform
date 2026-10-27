@@ -13,6 +13,7 @@ pub mod capability_ai;
 pub mod capability_data;
 pub mod exec;
 pub mod http;
+pub mod llm_structured;
 pub mod ports;
 pub mod reply;
 pub mod resolver;
@@ -24,5 +25,6 @@ pub use exec::CapabilityNodeExecutor;
 pub use ports::{
     AgentInvokeReq, AgentToolGateway, ApprovalTarget, CodeRunReq, CsvPatchReq, CsvWriteReq,
     DataWriteOp, DataWriteReq, DocReadReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
-    NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq, WebFetchReq,
+    LlmRepair, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
+    WebFetchReq,
 };

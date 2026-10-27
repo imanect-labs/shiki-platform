@@ -9,10 +9,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::StreamExt;
-use llm_gateway::{
-    GenerateRequest, GenerationRecord, LlmGateway, Message, Role, StreamDelta, Usage,
-};
+use llm_gateway::LlmGateway;
 use sandbox_client::Sandbox;
 use secrets::SecretStore;
 use serde_json::{json, Value};
@@ -20,8 +17,6 @@ use sqlx::PgPool;
 use storage::model::ChildSort;
 
 use super::auth::auth_ctx;
-use super::llm_error::llm_port_error;
-use super::llm_model::resolve_for_workflow;
 use storage::StorageService;
 use uuid::Uuid;
 use workflow_engine::{
@@ -218,56 +213,7 @@ impl NodePorts for ProdNodePorts {
     }
 
     async fn llm_invoke(&self, ec: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
-        // モデルは実行のたびに実行主体の組織の設定で決める（省略は組織の既定・BUG-12）。解決後の名前を
-        // 生成・会計・出力に同じ値で使う（gateway の既定に任せると会計の名前とずれる）。
-        let choice = resolve_for_workflow(&self.gateway, ec, &ctx, req.model.as_deref()).await?;
-        let mut greq = GenerateRequest::new(vec![Message::text(Role::User, req.prompt.clone())]);
-        greq.model = Some(choice.model.clone());
-        greq.effort = choice.effort;
-        greq.system = req.system.clone();
-        greq.max_tokens = req.max_tokens;
-        // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
-        let started_at = chrono::Utc::now();
-        let mut stream = self
-            .gateway
-            .stream(&ctx, greq)
-            .await
-            .map_err(|e| llm_port_error(ec, &e))?;
-        let mut text = String::new();
-        let mut usage = Usage::default();
-        while let Some(item) = stream.next().await {
-            match item.map_err(|e| llm_port_error(ec, &e))? {
-                StreamDelta::TextDelta { text: t } => text.push_str(&t),
-                StreamDelta::Done { usage: u, .. } => usage = u,
-                _ => {}
-            }
-        }
-        let model = choice.model;
-        // 生成記録（trace_id で監査 ↔ Langfuse ↔ OTel を束ねる・本文プレビューは短く）。
-        self.gateway
-            .record_generation(
-                &ctx,
-                &GenerationRecord {
-                    idempotency_key: req.idempotency_key,
-                    model: model.clone(),
-                    usage,
-                    trace_id: ec.trace_id.clone(),
-                    input_preview: preview(&req.prompt),
-                    output_preview: preview(&text),
-                    app_id: None,
-                    source: llm_gateway::UsageSource::Workflow,
-                    // **false 固定。** 1 つの run に llm.invoke ノードが複数あると、
-                    // 全ノードが run レベルの同じ trace_id を共有する。true にすると
-                    // 後続ノードのプロンプトが trace input を上書きして、
-                    // 最初のノードの入力が消える。ここからは「run 全体の入力」を
-                    // 知る術が無いので、trace input は送らない（generation 側には残る）。
-                    first_in_trace: false,
-                    started_at: Some(started_at),
-                },
-            )
-            .await;
-        Ok(json!({ "text": text, "model": model }))
+        super::llm_port::invoke(self, ec, req).await
     }
 
     async fn agent_invoke(
@@ -560,10 +506,4 @@ impl NodePorts for ProdNodePorts {
 /// CSV セル（NULL は None）を JSON 値へ（NULL → null・値 → 文字列）。
 fn cell_to_json(cell: Option<&str>) -> Value {
     cell.map_or(Value::Null, |s| Value::String(s.to_string()))
-}
-
-/// 監査/記録用の短いプレビュー（先頭 200 文字・改行畳み）。
-fn preview(s: &str) -> String {
-    let flat: String = s.chars().take(200).collect();
-    flat.replace('\n', " ")
 }

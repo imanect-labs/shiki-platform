@@ -12,6 +12,7 @@ mod auth;
 mod data_port;
 mod llm_error;
 mod llm_model;
+mod llm_port;
 mod ports;
 mod relay;
 mod relay_approval;

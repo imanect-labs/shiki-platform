@@ -318,9 +318,17 @@ mod tests {
         assert_eq!(s.type_name, "LlmInvokeParams");
         assert_eq!(
             s.body,
-            "{ model?: string, prompt: ValueExpr, system?: ValueExpr, max_tokens?: ValueExpr }"
+            "{ model?: string, prompt: ValueExpr, system?: ValueExpr, max_tokens?: ValueExpr, \
+             effort?: LlmEffort, output_schema?: Record<string, unknown> }"
         );
-        assert!(s.refs.is_empty(), "{:?}", s.refs);
+        // 参照する型（思考の深さの 3 段階）も同じ宣言から載る（GAP-13）。
+        assert_eq!(
+            s.refs,
+            vec![(
+                "LlmEffort".to_string(),
+                "\"low\" | \"medium\" | \"high\"".to_string()
+            )]
+        );
         for nt in NodeType::ALL {
             if let Some(s) = params_shape(*nt) {
                 let all = s.render();

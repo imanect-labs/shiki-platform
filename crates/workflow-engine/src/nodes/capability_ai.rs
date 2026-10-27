@@ -9,6 +9,7 @@
 use secrets::DestinationBinding;
 use serde_json::{json, Value};
 
+use crate::ir::output_schema::{check_output_schema, close_objects};
 use crate::ir::params::{HttpRequestParams, LlmInvokeParams, SecretAttach, SecretAttachKind};
 use crate::run::NodeContext;
 
@@ -56,6 +57,14 @@ pub(super) fn response_body(bytes: &[u8], secret: Option<&ResolvedSecretView>) -
     Value::String(text)
 }
 
+/// llm_invoke ポートの出力から停止理由を外す（node の出力の形は `{ text, model }`・ポートの任意のキー）。
+pub(super) fn without_stop_reason(mut out: Value) -> Value {
+    if let Value::Object(map) = &mut out {
+        map.remove("stop_reason");
+    }
+    out
+}
+
 /// llm_invoke ポートの出力から、実際に使ったモデルの名前を取る（ポートが返さなければ指定値）。
 pub(super) fn resolved_model<'a>(out: &'a Value, requested: Option<&'a str>) -> Option<&'a str> {
     out.get("model").and_then(Value::as_str).or(requested)
@@ -85,27 +94,49 @@ impl CapabilityNodeExecutor {
         let max_tokens = opt_param(p.max_tokens.as_ref(), r, what)?
             .map(|v| typed(&v, what, "0 以上の整数", as_u32))
             .transpose()?;
-        let out = self
-            .ports
-            .llm_invoke(
-                ec,
-                LlmInvokeReq {
-                    model: model.clone(),
-                    system,
-                    prompt,
-                    max_tokens,
-                    idempotency_key: ctx.idempotency_key.clone(),
-                },
-            )
-            .await?;
+        // 出力の形は保存時に検査済み（V1）。保存を通らない経路の IR でも黙って緩く送らない（多層防御）。
+        let schema = match &p.output_schema {
+            Some(s) => {
+                check_output_schema(s).map_err(|issue| {
+                    PortError::new(
+                        "bad_params",
+                        format!("llm.invoke: output_schema{}: {}", issue.path, issue.message),
+                        false,
+                    )
+                })?;
+                Some(close_objects(s))
+            }
+            None => None,
+        };
+        let req = LlmInvokeReq {
+            model: model.clone(),
+            system,
+            prompt,
+            max_tokens,
+            idempotency_key: ctx.idempotency_key.clone(),
+            effort: p.effort,
+            output_schema: schema.clone(),
+            repair: None,
+            call_suffix: None,
+        };
+        let (out, repaired) = match &schema {
+            Some(schema) => {
+                let (out, repaired) = self.invoke_structured(ec, req, schema).await?;
+                (out, Some(repaired))
+            }
+            None => (
+                without_stop_reason(self.ports.llm_invoke(ec, req).await?),
+                None,
+            ),
+        };
         // prompt 本文は監査に載せない（モデル名のみ）。model は実際に使ったモデル（ポートが解決した名前）、
-        // requested_model はノードの設定（null は組織の既定に従った）。
-        self.audit(
-            &ec.tenant_id,
-            "llm.invoke",
-            true,
-            &json!({ "model": resolved_model(&out, model.as_deref()), "requested_model": model }),
-        );
+        // requested_model はノードの設定（null は組織の既定に従った）。構造化出力なら直させたかも残す。
+        let mut meta =
+            json!({ "model": resolved_model(&out, model.as_deref()), "requested_model": model });
+        if let Some(repaired) = repaired {
+            meta["repaired"] = json!(repaired);
+        }
+        self.audit(&ec.tenant_id, "llm.invoke", true, &meta);
         Ok(out)
     }
 

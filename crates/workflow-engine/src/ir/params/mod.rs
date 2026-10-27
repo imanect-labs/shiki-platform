@@ -7,7 +7,8 @@
 //! 方針:
 //! - **実行時に強制されないフィールドは契約に含めない**（UI が効かない制限を約束しない・
 //!   fail-closed）。例: `agent.invoke` の `allowed_tools`/`mount_scope`、`http.request` の
-//!   `redirect: follow_stripped`、`llm.invoke` の `output_schema` は enforcement 実装時に追加する。
+//!   `redirect: follow_stripped` は enforcement 実装時に追加する（`llm.invoke` の `output_schema` は
+//!   構造化出力の検証と修復を入れたときに足した・GAP-13）。
 //! - 予約語彙（Stage A 未実装ノード）の params 型は実装フェーズで追加する（ir.md §7.8）。
 //! - 検証エラーは `/params/<field>/...` の JSON Pointer 風 path を持ち、dnd がフォーム
 //!   フィールドへハイライトを写像できる（ir.md §8 のエラー形式）。
@@ -22,7 +23,7 @@ mod shape;
 mod storage;
 mod tabular;
 
-pub use ai::{AgentInvokeParams, LlmInvokeParams, SkillInvokeParams};
+pub use ai::{AgentInvokeParams, LlmEffort, LlmInvokeParams, SkillInvokeParams};
 pub use control::{
     BranchParams, JoinMode, JoinParams, MapItemError, MapParams, SwitchCase, SwitchParams,
     WaitKind, WaitParams, WaitTimeout,
@@ -162,7 +163,14 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
         NodeType::StorageWrite => check_as::<StorageWriteParams>(raw),
         NodeType::StorageList => check_as::<StorageListParams>(raw),
         NodeType::RagSearch => check_as::<RagSearchParams>(raw),
-        NodeType::LlmInvoke => check_as::<LlmInvokeParams>(raw),
+        NodeType::LlmInvoke => {
+            check_as::<LlmInvokeParams>(raw)?;
+            let parsed: LlmInvokeParams = parse(raw).map_err(|message| ParamsIssue {
+                path: "/params".to_string(),
+                message,
+            })?;
+            parsed.check_cross_fields()
+        }
         NodeType::AgentInvoke => check_as::<AgentInvokeParams>(raw),
         NodeType::HttpRequest => {
             check_as::<HttpRequestParams>(raw)?;
@@ -344,6 +352,12 @@ mod tests {
                         "system": "あなたは要約器です", "max_tokens": 512 }),
             ),
             (
+                NodeType::LlmInvoke,
+                json!({ "prompt": "分類して", "effort": "low", "max_tokens": 2048,
+                        "output_schema": { "type": "object", "required": ["category"],
+                            "properties": { "category": { "type": "string", "enum": ["a", "b"] } } } }),
+            ),
+            (
                 NodeType::AgentInvoke,
                 json!({ "instruction": { "$from": "input" },
                         "egress_allowlist": ["api.example.com"], "max_duration_sec": 300 }),
@@ -440,6 +454,38 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.path, "/params/source");
+    }
+
+    /// 出力の形は保存時に検査し、誤りは `/params/output_schema/...` の位置で返す（GAP-13）。
+    #[test]
+    fn llm_output_schema_is_checked_with_its_position() {
+        let err = check_params(
+            NodeType::LlmInvoke,
+            &json!({ "prompt": "p", "output_schema": { "type": "object", "properties": {
+                "a": { "type": ["string", "integer"] } } } }),
+        )
+        .unwrap_err();
+        assert_eq!(err.path, "/params/output_schema/properties/a/type");
+        let err = check_params(
+            NodeType::LlmInvoke,
+            &json!({ "prompt": "p", "output_schema": { "type": "array" } }),
+        )
+        .unwrap_err();
+        assert_eq!(err.path, "/params/output_schema/type");
+        // 思考の深さは 3 段階だけ。出力の形はリテラルの JSON Schema（値式ではない）。
+        let err = check_params(
+            NodeType::LlmInvoke,
+            &json!({ "prompt": "p", "effort": "max" }),
+        )
+        .unwrap_err();
+        assert_eq!(err.path, "/params/effort");
+        let err = check_params(
+            NodeType::LlmInvoke,
+            &json!({ "prompt": "p", "output_schema": { "$from": "input" } }),
+        )
+        .unwrap_err();
+        assert_eq!(err.path, "/params/output_schema/$from");
+        assert!(err.message.contains("$from"), "{}", err.message);
     }
 
     #[test]

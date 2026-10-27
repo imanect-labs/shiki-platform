@@ -91,9 +91,14 @@ impl CapabilityNodeExecutor {
                         prompt: input.to_string(),
                         max_tokens: None,
                         idempotency_key: ctx.idempotency_key.clone(),
+                        effort: None,
+                        output_schema: None,
+                        repair: None,
+                        call_suffix: None,
                     },
                 )
-                .await?
+                .await
+                .map(super::capability_ai::without_stop_reason)?
         };
 
         // llm 経由のときは実際に使ったモデル（組織の既定で解決した名前）も残す。

@@ -8,6 +8,8 @@ pub mod expr;
 /// 対話トリガの入力の検証（`input_schema`）。
 pub mod input_schema;
 pub mod node;
+/// llm.invoke の出力の形（`output_schema`・保存時の検査・閉じる正規化・出力の検証）。
+pub mod output_schema;
 pub mod params;
 pub mod scopes;
 pub mod trigger;
