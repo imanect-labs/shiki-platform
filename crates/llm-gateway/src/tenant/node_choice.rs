@@ -12,7 +12,9 @@
 //!
 //! ワークフローの `llm.invoke` に書いた思考の深さ（`effort`）は [`resolve_workflow_choice`] が扱う。組織がモデルの
 //! 選択を禁じているときと、モデルを省略して組織の既定の Auto で動くときは使わず、組織の設定に従う（チャットと
-//! 揃える・D-75。チャットは Auto で利用者の指定を使わず、選択を禁じた組織では選ぶ画面を出さない）。
+//! 揃える・D-75。チャットは Auto で利用者の指定を使わず、選択を禁じた組織では選ぶ画面を出さない）。選択を禁じた
+//! 組織で既定と同じモデルを明示したノードは、省略と同じに解決する（組織の既定の思考強度で動く。チャットは選ぶ
+//! 画面が無いので既定で動き、ここで思考強度なしにするとチャットと食い違う）。
 
 use super::{
     resolve_choice, ChoiceError, ModelChoice, ResolvedChoice, TenantLlmSettings, AUTO_MODEL,
@@ -73,7 +75,9 @@ pub fn node_effort_applies(settings: &TenantLlmSettings, model: Option<&str>) ->
 /// ワークフローのノード（`llm.invoke`）のモデルと思考の深さを解決する。
 ///
 /// [`resolve_node_choice`] と同じ規則に、ノードの思考の深さの規則（[`node_effort_applies`]）を足す。使わない
-/// ときは書かなかったのと同じに解決する（省略は組織の既定の思考強度か Auto の設定・明示したモデルは思考強度なし）。
+/// ときは書かなかったのと同じに解決する（省略は組織の既定の思考強度か Auto の設定・選べる組織で明示したモデルは
+/// 思考強度なし）。選択を禁じた組織で既定と同じモデルを明示したものは、省略と同じに解決する（使うモデルは同じで、
+/// 思考強度は組織の既定。チャットと揃える）。`auto` の文字列は既定が Auto でもモデルとして扱わず拒否する。
 pub fn resolve_workflow_choice(
     catalog: &ModelCatalog,
     auto: &AutoConfig,
@@ -83,6 +87,8 @@ pub fn resolve_workflow_choice(
     effort: Option<Effort>,
 ) -> Result<ResolvedChoice, ChoiceError> {
     let effort = effort.filter(|_| node_effort_applies(settings, model));
+    let model = model
+        .filter(|m| settings.allow_user_choice || *m != settings.default_model || *m == AUTO_MODEL);
     resolve_node_choice(catalog, auto, settings, supports_effort, model, effort)
 }
 
@@ -237,21 +243,45 @@ mod tests {
             (r.model.as_str(), r.effort, r.auto),
             ("b", Some(Effort::Low), true)
         );
-        // 選択を禁じた組織: 省略は組織の既定の思考強度（High）、既定と同じ明示は思考強度なし（書かないのと同じ）。
+        // 選択を禁じた組織: 省略も既定と同じモデルの明示も、組織の既定の思考強度（High）で動く（チャットと同じ。
+        // ノードの指定と、明示したモデルを思考強度なしにする規則のどちらも使わない）。
         let mut locked = settings("a");
         locked.allow_user_choice = false;
-        let r = workflow(&locked, None, low).unwrap();
-        assert_eq!((r.model.as_str(), r.effort), ("a", Some(Effort::High)));
-        let r = workflow(&locked, Some("a"), low).unwrap();
-        assert_eq!((r.model.as_str(), r.effort), ("a", None));
+        for model in [None, Some(""), Some("a")] {
+            let r = workflow(&locked, model, low).unwrap();
+            assert_eq!(
+                (r.model.as_str(), r.effort, r.auto),
+                ("a", Some(Effort::High), false),
+                "{model:?}"
+            );
+            let r = workflow(&locked, model, None).unwrap();
+            assert_eq!((r.model.as_str(), r.effort), ("a", Some(Effort::High)));
+        }
         assert_eq!(
             workflow(&locked, Some("b"), low),
             Err(ChoiceError::ChoiceDisabled)
+        );
+        // 思考強度に対応しない既定のモデルは、明示しても思考強度なし。
+        let mut local_locked = settings("local");
+        local_locked.allow_user_choice = false;
+        let r = workflow(&local_locked, Some("local"), low).unwrap();
+        assert_eq!((r.model.as_str(), r.effort), ("local", None));
+        // 既定のモデルを組織で無効にしていれば、明示しても省略と同じく拒否する（既定へ戻すのではない）。
+        let mut disabled = locked.clone();
+        disabled.allowed_models = Some(vec!["b".into()]);
+        assert_eq!(
+            workflow(&disabled, Some("a"), None),
+            Err(ChoiceError::ModelNotAllowed("a".into()))
         );
         let mut auto_locked = settings(AUTO_MODEL);
         auto_locked.allow_user_choice = false;
         let r = workflow(&auto_locked, None, Some(Effort::High)).unwrap();
         assert_eq!((r.model.as_str(), r.effort), ("b", Some(Effort::Low)));
+        // 既定が Auto で選択を禁じた組織でも、`auto` の文字列はモデルとして扱わない（IR に Auto は書けない）。
+        assert_eq!(
+            workflow(&auto_locked, Some(AUTO_MODEL), None),
+            Err(ChoiceError::ModelNotAllowed(AUTO_MODEL.into()))
+        );
 
         // 規則そのもの（保存時の警告と同じ）。
         assert!(node_effort_applies(&settings(AUTO_MODEL), Some("a")));

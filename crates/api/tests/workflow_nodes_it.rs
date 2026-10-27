@@ -1253,8 +1253,8 @@ async fn llm_node_effort_follows_the_organization_rules() {
     assert_eq!(sent(omitted).await, "effort: high");
     assert_eq!(sent(pinned).await, "effort: low");
 
-    // 組織がモデルの選択を禁じる: 省略は組織の既定の思考強度（medium）、既定と同じモデルの明示は思考強度なし
-    // （どちらも書かなかったのと同じ）。
+    // 組織がモデルの選択を禁じる: 省略も既定と同じモデルの明示も、組織の既定の思考強度（medium）で動く
+    // （チャットと同じ。選ぶ画面の無いチャットは組織の既定で動く）。
     h.set_llm_settings(llm_gateway::SettingsPatch {
         default_model: Some("stub-think".into()),
         allow_user_choice: Some(false),
@@ -1262,7 +1262,7 @@ async fn llm_node_effort_follows_the_organization_rules() {
     })
     .await;
     assert_eq!(sent(omitted).await, "effort: medium");
-    assert_eq!(sent(pinned).await, "effort: none");
+    assert_eq!(sent(pinned).await, "effort: medium");
 
     h.cleanup_runs().await;
     for sql in [
