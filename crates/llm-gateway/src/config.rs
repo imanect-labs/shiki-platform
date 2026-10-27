@@ -166,12 +166,74 @@ pub struct ModelEntry {
     /// `json_schema` など）は `prompt` として扱う。どのモードでも呼び出し側が出力を検証する。
     #[serde(default)]
     pub structured_output: Option<StructuredOutputMode>,
+    /// モデルの種類（文章を生成する chat か、質問に答えて確からしさを付ける decision か・FEAT-1）。
+    /// 決定モデルはチャットのモデル選択・既定・Auto に出ず、[`LlmGateway::decide`] でだけ使う。
+    ///
+    /// [`LlmGateway::decide`]: crate::gateway::LlmGateway::decide
+    #[serde(default)]
+    pub modality: Modality,
+    /// 決定モデルを LLM に真似させるときの、元にする chat モデルの ID（llm_decider）。決定モデルでだけ書く。
+    /// `provider` はこのモデルと同じにする（会計・利用上限の軸を揃える。構築時に確かめる）。
+    #[serde(default)]
+    pub decision_via: Option<String>,
+    /// llm_decider の出し方（省略は自己申告 1 回・思考の深さ low）。決定モデルでだけ書く。
+    #[serde(default)]
+    pub decision: Option<DecisionTuning>,
+}
+
+/// モデルの種類（[`ModelEntry::modality`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Modality {
+    /// 文章を生成する（チャット・エージェント・`llm.invoke`）。
+    #[default]
+    Chat,
+    /// 質問に決められた選択肢で答え、確からしさを付ける（ワークフローの `ai.decide`）。
+    Decision,
+}
+
+/// llm_decider の出し方（[`ModelEntry::decision`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionTuning {
+    /// 1 回の判定で呼ぶ回数。1 は自己申告の確からしさ、3・5 は多数決の得票率（構築時に 1・3・5 だけ受ける）。
+    #[serde(default = "default_decision_samples")]
+    pub samples: u8,
+    /// 元の chat モデルへ送る思考の深さ（対応しないモデルでは送らない）。
+    #[serde(default = "default_decision_effort")]
+    pub effort: crate::model::Effort,
+}
+
+const fn default_decision_samples() -> u8 {
+    1
+}
+
+const fn default_decision_effort() -> crate::model::Effort {
+    crate::model::Effort::Low
+}
+
+impl Default for DecisionTuning {
+    fn default() -> Self {
+        DecisionTuning {
+            samples: default_decision_samples(),
+            effort: default_decision_effort(),
+        }
+    }
 }
 
 impl ModelEntry {
     /// 送出する実モデル ID。
     pub fn resolved_id(&self) -> &str {
         self.real_id.as_deref().unwrap_or(&self.id)
+    }
+
+    /// 文章を生成するモデルか（チャットのモデル選択・既定・Auto に出してよいか）。
+    pub fn is_chat(&self) -> bool {
+        self.modality == Modality::Chat
+    }
+
+    /// 決定モデルか。
+    pub fn is_decision(&self) -> bool {
+        self.modality == Modality::Decision
     }
 
     /// 振り先プロバイダの ID。
@@ -518,6 +580,30 @@ mod tests {
             m.cost_usd_micros(&usage(u64::MAX, u64::MAX, 0, 0)),
             i64::MAX
         );
+    }
+
+    #[test]
+    fn decision_fields_default_to_a_chat_model_and_read_from_toml_shape() {
+        assert_eq!(ModelEntry::default().modality, Modality::Chat);
+        assert!(ModelEntry::default().is_chat());
+        let m: ModelEntry = serde_json::from_value(serde_json::json!({
+            "id": "decide-haiku",
+            "modality": "decision",
+            "decision_via": "haiku",
+            "decision": { "samples": 5 }
+        }))
+        .unwrap();
+        assert!(m.is_decision() && !m.is_chat());
+        assert_eq!(m.decision_via.as_deref(), Some("haiku"));
+        // 省略した項目は既定（思考の深さ low）。
+        assert_eq!(
+            m.decision,
+            Some(DecisionTuning {
+                samples: 5,
+                effort: crate::model::Effort::Low
+            })
+        );
+        assert_eq!(DecisionTuning::default().samples, 1);
     }
 
     #[test]

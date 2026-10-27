@@ -35,6 +35,8 @@ use std::sync::Arc;
 
 /// ChatGPT プランの照合・モデルの見え方（gateway.rs の行数上限のため分割）。
 mod chatgpt_gate;
+/// 判定のチョークポイントと決定器の構築（同上・FEAT-1）。
+mod decide;
 /// ノード（ワークフロー・ミニアプリ）のモデル解決（同上）。
 mod node_choice;
 
@@ -124,6 +126,8 @@ struct Inner {
     langfuse: Option<LangfuseClient>,
     /// ChatGPT プランのアダプタ（生成は呼び出し主体に結び付けて行う・#854）。
     chatgpt_plan: Option<Arc<ChatGptPlanProvider>>,
+    /// 判定用のモデルの ID → 決定器（構築時にカタログから組む・FEAT-1）。
+    deciders: decide::Deciders,
 }
 
 impl LlmGateway {
@@ -177,6 +181,7 @@ impl LlmGateway {
                 m.provider_id()
             )));
         }
+        let deciders = decide::build_deciders(&config, &providers)?;
         Ok(LlmGateway {
             inner: Arc::new(Inner {
                 providers,
@@ -186,6 +191,7 @@ impl LlmGateway {
                 limits: UsageLimiter::new(db),
                 langfuse,
                 chatgpt_plan,
+                deciders,
                 config,
             }),
         })
@@ -356,7 +362,8 @@ impl LlmGateway {
     ///
     /// 呼び出し元の組織が許可していないモデルはここで拒否する（#553）。チャット・ミニアプリ・
     /// ワークフロー・エージェントのどの経路も必ずここを通るので、管理画面での許可・無効化
-    /// （国外処理モデルを止める等）が経路によらず効く。
+    /// （国外処理モデルを止める等）が経路によらず効く。判定用のモデルは生成に使えない（`Config`・
+    /// 判定は [`Self::decide`]）。
     pub async fn stream(
         &self,
         ctx: &AuthContext,
@@ -372,26 +379,17 @@ impl LlmGateway {
             .catalog
             .get(&logical)
             .ok_or_else(|| LlmError::Config(format!("unknown model: {logical}")))?;
-        let slot = self
-            .inner
-            .providers
-            .get(entry.provider_id())
-            .ok_or_else(|| LlmError::Config(format!("unknown provider for model: {logical}")))?;
+        if entry.is_decision() {
+            return Err(LlmError::Config(format!(
+                "decision model cannot generate text: {logical}"
+            )));
+        }
+        let slot = self.slot_for(entry)?;
         if slot.config.kind == ProviderKind::ChatgptPlan {
             // 連携者のプラン枠。本人以外（他の利用者・ワークフロー等）には使わせない。
             self.ensure_chatgpt_owner(ctx)?;
         }
-        let permitted = self
-            .inner
-            .tenants
-            .permits(ctx, entry)
-            .await
-            .map_err(|e| LlmError::Unavailable(format!("tenant llm settings: {e}")))?;
-        if !permitted {
-            return Err(LlmError::Config(format!(
-                "model is not enabled for this organization: {logical}"
-            )));
-        }
+        self.ensure_permitted(ctx, entry).await?;
         self.check_limits(ctx, &slot.config).await?;
         if !self.supports_effort(entry) {
             req.effort = None;
@@ -475,6 +473,11 @@ impl LlmGateway {
     ///
     /// 会計は同期（金額クリティカル・冪等）、Langfuse は best-effort（非同期・失敗は warn）。
     pub async fn record_generation(&self, ctx: &AuthContext, rec: &GenerationRecord) {
+        self.record_named(ctx, rec, "chat.generation").await;
+    }
+
+    /// [`Self::record_generation`] の本体（`name` は Langfuse の generation 名）。
+    async fn record_named(&self, ctx: &AuthContext, rec: &GenerationRecord, name: &str) {
         // **会計より先に取る。** 会計 DB が詰まると、その待ち時間が
         // そのまま生成の所要時間として記録されてしまう。
         let ended_at = chrono::Utc::now();
@@ -524,7 +527,7 @@ impl LlmGateway {
                 first_in_trace: rec.first_in_trace,
                 started_at: rec.started_at,
                 ended_at,
-                name: "chat.generation",
+                name,
                 model: &rec.model,
                 provider: &provider,
                 input: &rec.input_preview,

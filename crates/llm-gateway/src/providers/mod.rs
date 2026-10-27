@@ -3,9 +3,17 @@
 pub mod anthropic;
 /// 識別ヘッダ（User-Agent・会話 ID）の共通処理。
 mod identity;
+/// chat モデルに決定を真似させる決定器（FEAT-1）。
+pub mod llm_decider;
+/// llm_decider のプロンプト・出力の形・読み取り（llm_decider.rs から分割）。
+mod llm_decider_prompt;
+/// llm_decider の確からしさの出し方（llm_decider.rs から分割）。
+mod llm_decider_vote;
 pub mod openai;
 pub mod openai_responses;
 pub mod stub;
+/// stub の決定器（FEAT-1）。
+pub mod stub_decider;
 mod stub_deep_research;
 mod stub_deep_research_specs;
 mod stub_fixtures;

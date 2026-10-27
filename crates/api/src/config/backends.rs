@@ -389,6 +389,9 @@ impl LlmConfig {
                     requires_opt_in: m.requires_opt_in,
                     reasoning_in_content: m.reasoning_in_content,
                     structured_output: m.structured_output,
+                    modality: m.modality,
+                    decision_via: m.decision_via.clone(),
+                    decision: m.decision,
                 })
                 .collect()
         };
@@ -474,6 +477,15 @@ pub struct LlmModelEntry {
     /// [`llm_gateway::ModelEntry::structured_output`]）。
     #[serde(default)]
     pub structured_output: Option<llm_gateway::StructuredOutputMode>,
+    /// モデルの種類（`chat` / `decision`・省略は chat。[`llm_gateway::ModelEntry::modality`]）。
+    #[serde(default)]
+    pub modality: llm_gateway::Modality,
+    /// 判定用のモデルの元にする chat モデルの ID（[`llm_gateway::ModelEntry::decision_via`]）。
+    #[serde(default)]
+    pub decision_via: Option<String>,
+    /// 判定の出し方（`samples`・`effort`。[`llm_gateway::ModelEntry::decision`]）。
+    #[serde(default)]
+    pub decision: Option<llm_gateway::DecisionTuning>,
 }
 
 /// Langfuse 計装の設定（設定表現）。

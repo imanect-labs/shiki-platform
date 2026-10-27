@@ -10,7 +10,7 @@ use workflow_engine::Catalog;
 
 /// llm.invoke の model を照合する集合の材料。
 ///
-/// gateway があれば**組織の許可リストから本人専用のモデルを除いたもの**（BUG-11・BUG-12）。
+/// gateway があれば**組織の許可リストから本人専用のモデルを除いた chat モデル**（BUG-11・BUG-12・FEAT-1）。
 /// 実行時は gateway が同じ設定（[`llm_gateway::LlmGateway::settings_without_personal`]）でモデルを
 /// 解決するので、保存時もそこへ揃える（管理者が無効にしたモデル・opt-in 前のモデルを保存で弾く）。
 /// ChatGPT プランのモデルは連携した本人の枠で、ワークフローは誰が起動しても使わないため、本人であっても除く。
@@ -54,9 +54,10 @@ impl WorkflowModels {
                     .await
                     .map_err(|e| format!("組織の AI 設定: {e}"))?;
                 Ok(WorkflowModelCheck {
+                    // llm.invoke に書けるのは chat モデルだけ（判定用のモデルは生成に使えない・FEAT-1）。
                     ids: Some(
                         settings
-                            .enabled_models(gw.catalog())
+                            .enabled_chat_models(gw.catalog())
                             .into_iter()
                             .map(|m| m.id.clone())
                             .collect(),

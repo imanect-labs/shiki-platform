@@ -3,7 +3,8 @@
 //!
 //! 省略はチャットと同じ規則（[`resolve_choice`]）で組織の既定（Auto を含む）に従う。チャットと違うのは
 //! 明示したモデルの扱いだけで、次のとおりにする。
-//! - 使えないモデル（カタログ外・組織で無効・本人専用で外したもの）は既定へ戻さず拒否する（fail-closed・D-30）。
+//! - 使えないモデル（カタログ外・組織で無効・本人専用で外したもの・判定用のモデル）は既定へ戻さず拒否する
+//!   （fail-closed・D-30）。
 //! - `auto` という文字列はモデルとして扱わない（IR のモデル欄に Auto は書けない・保存時検証 V3 と揃える）。
 //! - 思考強度は呼び出し側の指定だけを送る（組織の `default_effort` を足さない。IR に effort が無いので、
 //!   明示モデルのワークフローは今までどおり思考強度なしで動く）。
@@ -43,7 +44,8 @@ pub fn resolve_node_choice(
     if !settings.allow_user_choice && model != settings.default_model {
         return Err(ChoiceError::ChoiceDisabled);
     }
-    if model == AUTO_MODEL || !settings.is_enabled(catalog, model) {
+    // 判定用のモデル（chat ではない）は生成に使えない（`ai.decide` の判定にだけ使う）。
+    if model == AUTO_MODEL || !settings.is_chat_enabled(catalog, model) {
         return Err(ChoiceError::ModelNotAllowed(model.to_string()));
     }
     let effort = effort.filter(|_| catalog.get(model).is_some_and(&supports_effort));

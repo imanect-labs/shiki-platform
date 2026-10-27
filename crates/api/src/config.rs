@@ -297,6 +297,8 @@ mod backends;
 #[cfg(test)]
 mod data_tests;
 #[cfg(test)]
+mod decision_tests;
+#[cfg(test)]
 mod tests;
 
 pub use auth::{AuthConfig, SessionConfig, Tenancy};
