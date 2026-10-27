@@ -52,7 +52,7 @@ pub(super) async fn storage_read_window(
             "フォルダは読めません。中のファイルは storage.list で一覧してください。",
         ));
     }
-    if meta.content_type.as_deref().is_some_and(is_binary_type) {
+    if super::text_file::is_binary(&meta.name, meta.content_type.as_deref()) {
         return Err(PortError::invalid(NOT_TEXT));
     }
     if meta.size_bytes.unwrap_or(0) > MAX_WINDOW_FILE_BYTES {
@@ -67,9 +67,8 @@ pub(super) async fn storage_read_window(
         Err(S::Invalid(m)) => return Err(PortError::invalid(m)),
         Err(e) => return Err(PortError::unavailable(format!("storage: {e}"))),
     };
-    let text = match std::str::from_utf8(&bytes) {
-        Ok(t) if !t.contains('\0') => t,
-        _ => return Err(PortError::invalid(NOT_TEXT)),
+    let Some(text) = super::text_file::utf8_text(&bytes) else {
+        return Err(PortError::invalid(NOT_TEXT));
     };
     let (window, next) = char_window(text, offset, max_chars);
     Ok(json!({
@@ -93,21 +92,6 @@ fn char_window(text: &str, offset: u64, max_chars: u32) -> (String, Option<u64>)
         .next()
         .map(|_| offset + u64::try_from(window.chars().count()).unwrap_or(0));
     (window, next)
-}
-
-/// テキストとして読めない種類（窓読みの前に断る・中身でも確かめる）。
-fn is_binary_type(ct: &str) -> bool {
-    let ct = ct.to_ascii_lowercase();
-    ct.starts_with("image/")
-        || ct.starts_with("audio/")
-        || ct.starts_with("video/")
-        || ct.contains("pdf")
-        || ct.contains("officedocument")
-        || ct.contains("msword")
-        || ct.contains("ms-excel")
-        || ct.contains("ms-powerpoint")
-        || ct.contains("opendocument")
-        || ct.contains("zip")
 }
 
 /// doc.read（chat と同じ `DocReadTool`＝viewer 判定・可読集合の pre-filter・存在秘匿・索引待ちの応答）。
@@ -294,26 +278,6 @@ mod tests {
         assert_eq!(char_window(text, 8, 4), ("けこ".to_string(), None));
         assert_eq!(char_window(text, 10, 4), (String::new(), None));
         assert_eq!(char_window(text, 6, 4), ("きくけこ".to_string(), None));
-    }
-
-    #[test]
-    fn binary_types_are_refused_before_reading() {
-        for ct in [
-            "application/pdf",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "image/png",
-            "application/zip",
-        ] {
-            assert!(is_binary_type(ct), "{ct}");
-        }
-        for ct in [
-            "text/plain",
-            "text/markdown",
-            "text/csv",
-            "application/json",
-        ] {
-            assert!(!is_binary_type(ct), "{ct}");
-        }
     }
 
     #[test]

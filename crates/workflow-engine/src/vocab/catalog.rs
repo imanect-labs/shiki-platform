@@ -207,7 +207,8 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
         NodeType::StorageRead => (
             C::Storage,
             "ファイルを読む",
-            "ドライブのファイルの内容を取得する",
+            // 文章として読めないファイルは読まない（BUG-101・付録 D の N3.5.1）。
+            "ファイルの中身を文章として読みます。PDF や Word の本文は読めません。",
         ),
         NodeType::StorageWrite => (
             C::Storage,

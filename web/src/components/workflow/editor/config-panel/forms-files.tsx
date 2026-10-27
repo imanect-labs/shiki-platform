@@ -306,7 +306,14 @@ const UNATTENDED_FOLDER_HINT =
   "スケジュール・できごとで動かすなら指定してください（省略すると保存できず、有効化できません）。有効化のとき、このフォルダの編集権限を渡します";
 
 export function StorageReadForm(props: FormProps) {
-  return <FileField {...props} label="読むファイル" hint="有効化のとき、このファイルの閲覧権限を渡します" />;
+  // 文章として読めないファイル（PDF・Word・画像など）は実行で失敗する（BUG-101・付録 D の N3.5.1）。
+  return (
+    <FileField
+      {...props}
+      label="読むファイル"
+      hint="テキストのファイル（.txt、.md、.csv、.json など）を読みます。PDF や Word の本文は読めません。有効化のとき、このファイルの閲覧権限を渡します"
+    />
+  );
 }
 
 /// 保存するファイルの種類（Content-Type）。省略すると application/octet-stream で保存される。

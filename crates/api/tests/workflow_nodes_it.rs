@@ -785,6 +785,99 @@ async fn wait_then_error_port_through_production_executor() {
     );
 }
 
+/// storage.read は文章として読めるファイルだけを読む（BUG-101）。PDF・Word などの種類（MIME か拡張子）と、
+/// UTF-8 でない中身（Shift_JIS のテキストなど）は `not_text_file`（やり直さない）で失敗し、文字化けした中身を
+/// 成功として後ろへ渡さない。
+#[tokio::test]
+async fn storage_read_refuses_files_that_are_not_text() {
+    let Some(h) = setup().await else { return };
+    let executor = h.executor(None, vec![], None);
+    let ir = json!({
+        "ir_version": 1, "name": "read-text-only",
+        "declared_scopes": ["storage.read"],
+        "triggers": [{ "kind": "interactive" }],
+        "nodes": [
+            { "id": "rd", "type": "storage.read", "params": { "file": { "$from": "input", "path": "/file" } } }
+        ],
+        "edges": []
+    });
+    let wf_id = h.save(&ir).await;
+    let files: [(&str, &[u8], &str); 5] = [
+        ("メモ.txt", "経費の申請\n".as_bytes(), "text/plain"),
+        (
+            "契約書.pdf",
+            b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj",
+            "application/pdf",
+        ),
+        // MIME が分からなくても拡張子で断る（中身を読み込まない）。
+        (
+            "報告.docx",
+            b"PK\x03\x04\x14\x00\x06\x00",
+            "application/octet-stream",
+        ),
+        // テキストの種類でも UTF-8 でない中身（Shift_JIS の「経費」）は断る。
+        ("sjis.txt", b"\x8c\x6f\x94\xef", "text/plain"),
+        // NUL を含む中身は文章にしない。
+        ("data.log", b"abc\x00def", "application/octet-stream"),
+    ];
+    let mut outcomes = Vec::new();
+    let mut written = Vec::new();
+    for (name, bytes, ct) in files {
+        let node = h
+            .storage
+            .write_file_internal(&h.alice, None, name, bytes, ct, None)
+            .await
+            .expect("upload");
+        written.push(node.id);
+        let (run_id, status) = h
+            .run(
+                wf_id,
+                &json!({ "file": node.id.to_string() }),
+                Arc::clone(&executor),
+            )
+            .await;
+        let (code, retryable, output): (Option<String>, Option<bool>, Option<Value>) =
+            sqlx::query_as(
+                "SELECT error->>'code', (error->>'retryable')::bool, output FROM step_execution \
+                 WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'rd'",
+            )
+            .bind(&h.tenant)
+            .bind(run_id)
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+        outcomes.push((name, status, code, retryable, output));
+    }
+    // 片付け（run の履歴・アップロードしたファイル・ワークフロー）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    for id in written {
+        h.storage
+            .soft_delete_file(&h.alice, id, None)
+            .await
+            .unwrap();
+    }
+    h.artifacts.delete(&h.alice, wf_id, None).await.unwrap();
+
+    let (_, status, code, _, output) = &outcomes[0];
+    assert_eq!((*status, code.as_deref()), (RunStatus::Succeeded, None));
+    assert_eq!(output.as_ref().unwrap()["text"], "経費の申請\n");
+    for (name, status, code, retryable, _) in &outcomes[1..] {
+        assert_eq!(*status, RunStatus::Failed, "{name}");
+        assert_eq!(
+            (code.as_deref(), *retryable),
+            (
+                Some(workflow_engine::nodes::ports::NOT_TEXT_FILE),
+                Some(false)
+            ),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        workflow_engine::run::failure::category_of(workflow_engine::nodes::ports::NOT_TEXT_FILE),
+        workflow_engine::FailureCategory::Configuration
+    );
+}
+
 // ------- Test 7: csv.query ノード（本番 executor＋隔離 DuckDB ランナー・Task 11P.9）--------
 
 /// 隔離ランナーの実体（`SHIKI_TABULAR_RUNNER` か除外クレートの既定ビルド先）。

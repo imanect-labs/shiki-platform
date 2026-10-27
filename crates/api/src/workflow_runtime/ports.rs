@@ -126,18 +126,34 @@ impl NodePorts for ProdNodePorts {
     }
 
     async fn storage_read(&self, ec: &ExecCtx, file_id: Uuid) -> Result<Value, PortError> {
+        use super::text_file::{is_binary, not_text_kind, not_utf8_text, utf8_text};
         let ctx = auth_ctx(ec);
-        let (node, bytes) = self
+        let trace = ec.trace_id.as_deref();
+        // 文章でない種類（PDF・Office・画像など）は中身を読む前に断る（大きな文書を読み込んでから捨てない）。
+        let meta = self
             .storage
-            .read_file_internal(&ctx, file_id, ec.trace_id.as_deref())
+            .get_metadata(&ctx, file_id, trace)
             .await
             .map_err(map_storage)?;
+        if is_binary(&meta.name, meta.content_type.as_deref()) {
+            return Err(not_text_kind());
+        }
+        let (node, bytes) = self
+            .storage
+            .read_file_internal(&ctx, file_id, trace)
+            .await
+            .map_err(map_storage)?;
+        if is_binary(&node.name, node.content_type.as_deref()) {
+            return Err(not_text_kind());
+        }
+        // UTF-8 でない中身を文字化けのまま成功させない（BUG-101）。
+        let text = utf8_text(&bytes).ok_or_else(not_utf8_text)?;
         Ok(json!({
             "id": node.id.to_string(),
             "name": node.name,
             "content_type": node.content_type,
             "size": node.size_bytes,
-            "text": String::from_utf8_lossy(&bytes),
+            "text": text,
         }))
     }
 

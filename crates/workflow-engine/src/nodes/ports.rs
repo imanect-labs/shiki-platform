@@ -276,6 +276,9 @@ pub struct ResolvedSkillView {
     pub allowed_scopes: Option<Vec<String>>,
 }
 
+/// storage.read で、文章として読めないファイルを読もうとしたときの code（BUG-101・permanent・失敗の分類は設定の誤り）。
+pub const NOT_TEXT_FILE: &str = "not_text_file";
+
 /// 能力ノードが叩く既存チョークポイントの単一ポート（server 側で具象注入）。
 ///
 /// 各メソッドは `ExecCtx` から `AuthContext` を組み、チョークポイント（OpenFGA 認可込み）を呼ぶ。
@@ -286,7 +289,9 @@ pub trait NodePorts: Send + Sync {
     /// storage.write（`write_file_internal` の in-TX 冪等版）。返り値は書込結果の要約。
     async fn storage_write(&self, ctx: &ExecCtx, req: StorageWriteReq) -> Result<Value, PortError>;
 
-    /// storage.read（`read_file_internal`）。返り値はメタ＋本文の要約（本文は base64 等）。
+    /// storage.read（`read_file_internal`）。返り値はメタ（id・name・content_type・size）＋本文の文章（text）。
+    /// 文章として読めないファイル（PDF・Office・画像など、または UTF-8 でない中身）は [`NOT_TEXT_FILE`] で失敗する
+    /// （文字化けした中身を成功として渡さない・BUG-101）。
     async fn storage_read(&self, ctx: &ExecCtx, file_id: Uuid) -> Result<Value, PortError>;
 
     /// storage.list（`list_children`）。返り値は子ノードのメタ配列。

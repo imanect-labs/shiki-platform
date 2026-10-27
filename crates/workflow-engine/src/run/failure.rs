@@ -87,6 +87,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("approval_not_decidable", Configuration),
         ("approval_no_assignee", Configuration),
         ("approval_assignee_unreadable", Configuration),
+        // 文章として読めないファイルを storage.read で読もうとした（PDF・Office・画像・UTF-8 でない中身・BUG-101）。
+        (crate::nodes::ports::NOT_TEXT_FILE, Configuration),
         ("script_error", Configuration),
         // AI エージェントが同じ道具の失敗を繰り返した（依頼・道具・読める資料を作成者が見直す・BUG-6）。
         ("agent_loop", Configuration),
