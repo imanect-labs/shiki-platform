@@ -219,7 +219,7 @@ function FieldRow({
         <Button
           variant="ghost"
           size="icon"
-          className="size-8 shrink-0"
+          className="size-8 shrink-0 pointer-coarse:size-11"
           aria-label={`入力項目「${name}」を上へ`}
           data-move="up"
           disabled={!canMove.up}
@@ -230,7 +230,7 @@ function FieldRow({
         <Button
           variant="ghost"
           size="icon"
-          className="size-8 shrink-0"
+          className="size-8 shrink-0 pointer-coarse:size-11"
           aria-label={`入力項目「${name}」を下へ`}
           data-move="down"
           disabled={!canMove.down}
@@ -241,7 +241,8 @@ function FieldRow({
         <Button
           variant="ghost"
           size="icon"
-          className="size-8 shrink-0"
+          // 指で押す端末では 44px にし、並べ替えの組から離して置く（「下へ」のつもりで消さない）。
+          className="size-8 shrink-0 pointer-coarse:ml-2 pointer-coarse:size-11"
           aria-label={`入力項目「${name}」を削除`}
           onClick={onRemove}
         >
