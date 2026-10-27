@@ -165,6 +165,8 @@ fn ctx() -> NodeContext {
             "workflow.start".into(),
         ],
         cancel: workflow_engine::run::CancelSignal::default(),
+        workflow_id: Uuid::nil(),
+        cache: None,
     }
 }
 

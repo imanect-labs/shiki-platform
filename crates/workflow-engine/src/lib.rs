@@ -54,9 +54,9 @@ pub use nodes::llm_structured::{
 };
 pub use nodes::{
     AgentInvokeReq, AgentLimits, AgentToolGateway, ApprovalTarget, CapabilityNodeExecutor,
-    CodeRunReq, CsvPatchReq, CsvWriteReq, DataWriteOp, DataWriteReq, DocReadReq, ExecCtx,
-    HttpSendReq, HttpSendResp, LlmDecideReq, LlmInvokeReq, LlmRepair, NodePorts, PortError,
-    ResolvedSecretView, ResolvedSkillView, StorageWriteReq, WebFetchReq,
+    CodeRunReq, CsvPatchReq, CsvWriteReq, DataWriteOp, DataWriteReq, DecideCache, DocReadReq,
+    ExecCtx, HttpSendReq, HttpSendResp, LlmDecideReq, LlmInvokeReq, LlmRepair, NodePorts,
+    PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq, WebFetchReq,
 };
 pub use ratelimit::{BucketConfig, TokenBucket};
 pub use registration::{

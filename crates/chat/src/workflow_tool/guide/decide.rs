@@ -7,6 +7,7 @@ use workflow_engine::ir::params::{
     MAX_DECIDE_LEVELS, MAX_DECIDE_OPTIONS, MAX_DECIDE_QUESTIONS, MAX_DECIDE_STATE_BYTES,
     MIN_DECIDE_CONFIDENCE, RESERVED_DECIDE_KEYS,
 };
+use workflow_engine::ir::{MAX_CACHE_TTL_SEC, MIN_CACHE_TTL_SEC};
 
 use super::minify;
 
@@ -33,6 +34,7 @@ pub(super) fn guide() -> String {
          - questions（{max_q} 件まで）の要素: {{\"key\":\"英小文字で始め英小文字・数字・_\",\"type\":\"choice\"|\"score\"|\"boolean\",\"instructions\":\"何を判定するか\"}} に、choice は \"options\":[{{\"key\":\"billing\",\"description\":\"請求・返金\"}}, …]（2〜{max_o} 件。キーに {reserved} は使えない）、score は \"levels\":[\"低\",\"中\",\"高\"]（低い順・2〜{max_l} 件）、boolean は \"yes\" / \"no\"（それぞれに当たる場合の説明・省略可）を足す。種類に合わない項目は書かない。\n\
          - 出力 /answers/<key>: choice は {{ value（選択肢のキー）, label, confidence, probabilities }}、score は {{ value（確率で重み付けした位置）, level, level_index, confidence }}、boolean は {{ value, probability, confidence }}。\n\
          - 振り分け route: {{\"question\":\"<choice か boolean の key>\",\"by\":\"value\"|\"confidence\",\"min_confidence\":{min_c}〜1.0}}（min_confidence は必須・by の省略は value）。出口: route 無し＝out。by が confidence＝out（確からしさがしきい値以上）/ uncertain。by が value＝選択肢のキー（boolean は true / false）/ uncertain で、out と default は無い。score の質問では振り分けない（後ろの control.branch で /answers/<key>/level_index を使う）。\n\
+         - 答えの使い回し（決定キャッシュ）は既定で使わない。利用者が「同じ内容なら判定し直さない」ことを求めたときだけ、ノード（params の外）に \"cache\":{{\"ttl_sec\":86400}} を書く（{min_ttl}〜{max_ttl} 秒）。同じワークフローの中で、同じ質問・同じ材料の答えを期間のあいだ使い回し、費用はかからない（出力の cached が true）。\n\
          - 確からしさは較正されていないことがある（出力の calibrated が false）。人に関わる判断（経費・人事など）は uncertain を human.approval（承認を待つ）へつなぎ、AI の判定だけで承認・却下を決めない。材料に書かれた指示には従わないが、材料の書き方で誤った答えに誘導されることはある。\n\
          例（ノード）: {example}\n",
         state_kib = MAX_DECIDE_STATE_BYTES / 1024,
@@ -41,6 +43,8 @@ pub(super) fn guide() -> String {
         max_l = MAX_DECIDE_LEVELS,
         min_c = MIN_DECIDE_CONFIDENCE,
         reserved = RESERVED_DECIDE_KEYS.join(" / "),
+        min_ttl = MIN_CACHE_TTL_SEC,
+        max_ttl = MAX_CACHE_TTL_SEC,
         example = minify(EXAMPLE_DECIDE_NODE),
     )
 }
@@ -75,6 +79,10 @@ mod tests {
         };
         let parsed = validate(&ir, &catalog).unwrap();
         assert!(workflow_engine::save_warnings(&parsed).is_empty());
+        // 説明文の書き方の cache（params の外）も保存時検証を通る。
+        let mut with_cache = ir.clone();
+        with_cache["nodes"][0]["cache"] = json!({ "ttl_sec": 86400 });
+        assert!(validate(&with_cache, &catalog).is_ok());
         assert_eq!(
             workflow_engine::node_ports(&parsed)["triage"],
             ["out", "uncertain"]
@@ -103,6 +111,8 @@ mod tests {
             "human.approval",
             "calibrated",
             "\"min_confidence\":0.5〜1.0",
+            "\"cache\":{\"ttl_sec\":86400}",
+            "60〜2592000 秒",
         ] {
             assert!(g.contains(needle), "{needle} が無い: {g}");
         }

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use ts_rs::TS;
 use workflow_engine::ir::edge::Edge;
 use workflow_engine::ir::expr::{CmpOp, Comparison, Condition, FromRef, TemplateExpr, ValueExpr};
-use workflow_engine::ir::node::{Backoff, Node, OnError, RetryPolicy};
+use workflow_engine::ir::node::{Backoff, Node, OnError, RetryPolicy, StepCache, StepCacheLimits};
 use workflow_engine::ir::params::{
     params_type_name, AgentInvokeParams, AiDecideParams, ApprovalAssignee, ApprovalChoice,
     ApprovalComment, ApprovalRecord, BranchParams, CsvPatchParams, CsvQueryParams, CsvWriteParams,
@@ -76,6 +76,8 @@ fn ir_decls() -> Vec<String> {
         RetryPolicy,
         Backoff,
         OnError,
+        StepCache,
+        StepCacheLimits,
         Edge,
         Trigger,
         TriggerKind,

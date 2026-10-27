@@ -25,6 +25,9 @@ pub const FAIL_TRIGGER: &str = "stub:fail";
 /// 判定材料にこの文字列があれば、先頭の質問の答えを欠いた応答を返す。
 pub const MALFORMED_TRIGGER: &str = "stub:malformed";
 
+/// stub の決定器の版（応答の `resolved_model`・決定キャッシュのキー）。
+pub const STUB_DECIDER_VERSION: &str = "stub-decider/v1";
+
 /// 手がかりがあったときの確からしさ。
 const HIT: f64 = 0.9;
 /// 手がかりが無いときの確からしさ（choice・score）と、boolean の「はい」の確率。
@@ -138,7 +141,7 @@ impl DecisionProvider for StubDecider {
             }
         }
         Ok(DecideResponse {
-            resolved_model: "stub-decider/v1".into(),
+            resolved_model: STUB_DECIDER_VERSION.into(),
             answers,
             usage,
             calibrated: false,

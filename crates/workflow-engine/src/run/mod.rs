@@ -74,6 +74,10 @@ pub struct NodeContext {
     /// 実行中の step を止める合図（run の取り消し・リースの喪失でワーカーが立てる・engine.md §9.3）。
     /// 長く走るノード（agent.invoke）が手順の境界で見て止まる。ほかのノードは見なくてよい。
     pub cancel: CancelSignal,
+    /// 実行中の run のワークフロー（ai.decide の決定キャッシュの範囲・T10）。ノード実行外・試験は nil。
+    pub workflow_id: Uuid,
+    /// ノードの step 属性 `cache`（ai.decide の決定キャッシュ・既定は使わない・ir.md §7.11）。
+    pub cache: Option<crate::ir::StepCache>,
 }
 
 /// 実行中の step を止める合図（[`NodeContext::cancel`]）。複製は同じ合図を共有する。

@@ -30,6 +30,9 @@ pub(super) struct Reply {
     pub calibrated: bool,
     pub method: Method,
     pub samples: u8,
+    /// 決定キャッシュの答えか（ポートが足す・無ければ false）。
+    #[serde(default)]
+    pub cached: bool,
 }
 
 /// 答え 1 件（llm-gateway の `Answer` の形）。

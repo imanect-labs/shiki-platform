@@ -321,6 +321,8 @@ mod tests {
             trace_id: None,
             scope_ceiling: Vec::new(),
             cancel: crate::run::CancelSignal::default(),
+            workflow_id: Uuid::nil(),
+            cache: None,
         }
     }
 

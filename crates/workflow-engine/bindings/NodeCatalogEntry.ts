@@ -3,6 +3,7 @@ import type { IdempotencyClass } from "./IdempotencyClass";
 import type { NodeCategory } from "./NodeCategory";
 import type { OutputField } from "./OutputField";
 import type { PortRule } from "./PortRule";
+import type { StepCacheLimits } from "./StepCacheLimits";
 
 /**
  * カタログの 1 エントリ（1 ノード種）。
@@ -67,6 +68,10 @@ timeout_default_sec: number | null,
  * step timeout の上限秒。
  */
 timeout_max_sec: number | null, 
+/**
+ * step 属性 `cache` を付けられるか（付けられる種はその期限の決まり・いまは ai.decide の決定キャッシュだけ）。
+ */
+step_cache: StepCacheLimits | null, 
 /**
  * 出力の形（TS 風の表記・人と AI が読む）。[`Self::output_fields`] から作る（項目に分けられない形は文）。
  * 予約語彙は空文字。

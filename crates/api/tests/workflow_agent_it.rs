@@ -374,6 +374,8 @@ async fn agent_does_not_offer_tools_outside_the_scope_ceiling() {
         trace_id: None,
         scope_ceiling: vec![],
         cancel: workflow_engine::CancelSignal::default(),
+        workflow_id: Uuid::nil(),
+        cache: None,
     };
     let res = exec
         .execute(

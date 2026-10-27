@@ -19,7 +19,10 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 pub use edge::Edge;
-pub use node::{Backoff, Node, OnError, RetryPolicy};
+pub use node::{
+    Backoff, Node, OnError, RetryPolicy, StepCache, StepCacheLimits, DEFAULT_CACHE_TTL_SEC,
+    MAX_CACHE_TTL_SEC, MIN_CACHE_TTL_SEC,
+};
 pub use trigger::{Trigger, TriggerKind};
 
 /// IR エンベロープ（トップレベル・ir.md §2）。

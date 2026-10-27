@@ -84,6 +84,13 @@ impl LlmDecider {
         }
     }
 
+    /// 答えるときの決定器の版（`{元の実 ID}+llm_decider/{プロンプトの版}/k{回数}/{思考の深さ}`・決定キャッシュの
+    /// キーにも入る）。
+    #[must_use]
+    pub fn resolved_model(&self) -> &str {
+        &self.resolved
+    }
+
     /// 1 回目の要求（形の指定はモデルのモードに合わせて整えたもの）。
     fn base_request(&self, req: &DecideRequest) -> GenerateRequest {
         let mut g = GenerateRequest::new(vec![Message::text(Role::User, prompt::user_text(req))]);

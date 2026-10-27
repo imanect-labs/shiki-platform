@@ -194,6 +194,8 @@ fn ctx(scopes: &[&str]) -> NodeContext {
         trace_id: Some("trace-1".into()),
         scope_ceiling: scopes.iter().map(ToString::to_string).collect(),
         cancel: workflow_engine::CancelSignal::default(),
+        workflow_id: Uuid::nil(),
+        cache: None,
     }
 }
 

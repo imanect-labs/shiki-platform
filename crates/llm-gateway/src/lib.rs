@@ -47,6 +47,7 @@ pub use config::{
     ModelEntry, ProviderConfig, ProviderKind, ProviderLimit, UsageLimitsConfig,
     DEFAULT_PROVIDER_ID,
 };
+pub use decision::cache::{Decided, DecisionCache};
 pub use decision::{
     decide_error_kind, Answer, ChoiceOption, DecideCall, DecideErrorKind, DecideFailure,
     DecideRequest, DecideResponse, DecisionMethod, DecisionProvider, Question, QuestionKind,

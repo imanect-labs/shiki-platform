@@ -132,6 +132,8 @@ pub struct NodeCatalogEntry {
     pub timeout_default_sec: Option<u32>,
     /// step timeout の上限秒。
     pub timeout_max_sec: Option<u32>,
+    /// step 属性 `cache` を付けられるか（付けられる種はその期限の決まり・いまは ai.decide の決定キャッシュだけ）。
+    pub step_cache: Option<crate::ir::StepCacheLimits>,
     /// 出力の形（TS 風の表記・人と AI が読む）。[`Self::output_fields`] から作る（項目に分けられない形は文）。
     /// 予約語彙は空文字。
     pub output_shape: String,
@@ -515,9 +517,18 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         idempotency,
         timeout_default_sec,
         timeout_max_sec,
+        step_cache: step_cache(nt),
         output_shape: shape.render(),
         output_fields: shape.fields(),
     }
+}
+
+/// step 属性 `cache` の決まり（付けられない種は None・保存時検証が `ir.cache_unsupported` にする）。
+#[must_use]
+pub fn step_cache(nt: NodeType) -> Option<crate::ir::StepCacheLimits> {
+    // 判定の決定キャッシュ（T10・D-52 の H6）。生成（llm.invoke）は答えの形が決まらず、同じ入力でも
+    // 別の文章を期待されることがあるので付けない。
+    (nt == NodeType::AiDecide).then_some(crate::ir::StepCacheLimits::DECISION)
 }
 
 /// 出力の形（項目の組か、項目に分けられない形の文）。
@@ -715,6 +726,11 @@ fn output_shape(nt: NodeType) -> Shape {
                 ),
                 field!("method", "\"native\" | \"verbalized\" | \"vote\""),
                 field!("samples", "number", "1 回の判定で答えさせた回数"),
+                field!(
+                    "cached",
+                    "boolean",
+                    "決定キャッシュの答えを使い回したか（ノードに cache を書いたときだけ true になり得る）"
+                ),
                 field!(
                     "routed",
                     "{ question: string, port: string } | null",

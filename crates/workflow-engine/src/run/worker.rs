@@ -180,6 +180,8 @@ impl WorkflowWorker {
             // 実効スコープ = declared_scopes（run 開始時に declared ⊆ 委譲 が保証済み）。
             scope_ceiling: ir.declared_scopes.clone(),
             cancel: super::CancelSignal::default(),
+            workflow_id: claimed.workflow_id,
+            cache: node.cache,
         };
         // 実行中はリース失効を防ぐため定期 heartbeat を並走させる。これが無いと lease_secs を
         // 超える長いノードで別ワーカーが同 step を再 claim して**二重に副作用**を起こし得る（P1）。

@@ -26,6 +26,8 @@ fn ctx(input: Value) -> NodeContext {
         trace_id: None,
         scope_ceiling: vec![],
         cancel: crate::run::CancelSignal::default(),
+        workflow_id: Uuid::nil(),
+        cache: None,
     }
 }
 

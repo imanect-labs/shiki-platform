@@ -4,10 +4,13 @@
 //! 組織の許可（判定用のモデルと、元にする chat モデルの両方）・利用上限・会計はチョークポイントの中で行う
 //! （ここでは会計しない。冪等キーは step のキーをそのまま渡し、使えなかった判定はチョークポイントが
 //! `{key}#f{uuid}` で記録する）。誤りは利用者向けの日本語へ写し、原文はサーバのログだけに残す。
+//!
+//! ノードに step 属性 `cache` があれば決定キャッシュを通す（`LlmGateway::decide_cached`・範囲はこの実行の
+//! テナント＋組織とワークフロー・T10）。当たったかは返す JSON の `cached` に載せる。
 
 use llm_gateway::{
-    decide_error_kind, ChoiceOption, DecideCall, DecideErrorKind, DecideRequest, LlmError,
-    Question, QuestionKind, UsageSource,
+    decide_error_kind, ChoiceOption, DecideCall, DecideErrorKind, DecideRequest, DecisionCache,
+    LlmError, Question, QuestionKind, UsageSource,
 };
 use serde_json::Value;
 use workflow_engine::ir::params::{DecideQuestion, DecideQuestionType};
@@ -84,11 +87,35 @@ pub(super) async fn decide(
         source: UsageSource::Workflow,
         app_id: None,
     };
-    match ports.gateway.decide(&ctx, &dreq, &call).await {
-        Ok(resp) => serde_json::to_value(&resp).map_err(|e| {
-            tracing::error!(target: "workflow.decide", run_id = ?ec.run_id, step = ?ec.step_path, error = %e, "判定の結果を直列化できない");
-            PortError::unavailable("判定の結果を読めませんでした。もう一度実行してください。")
-        }),
+    let decided = match req.cache {
+        Some(cache) => {
+            let scope = DecisionCache {
+                workflow_id: cache.workflow_id,
+                ttl: std::time::Duration::from_secs(u64::from(cache.ttl_sec)),
+            };
+            ports
+                .gateway
+                .decide_cached(&ctx, &dreq, &call, &scope)
+                .await
+                .map(|d| (d.response, d.cached))
+        }
+        None => ports
+            .gateway
+            .decide(&ctx, &dreq, &call)
+            .await
+            .map(|r| (r, false)),
+    };
+    match decided {
+        Ok((resp, cached)) => {
+            let mut out = serde_json::to_value(&resp).map_err(|e| {
+                tracing::error!(target: "workflow.decide", run_id = ?ec.run_id, step = ?ec.step_path, error = %e, "判定の結果を直列化できない");
+                PortError::unavailable("判定の結果を読めませんでした。もう一度実行してください。")
+            })?;
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert("cached".into(), Value::Bool(cached));
+            }
+            Ok(out)
+        }
         Err(e) => {
             // 原文はサーバのログにだけ残す（どの run のどの step かで引けるように）。
             tracing::warn!(

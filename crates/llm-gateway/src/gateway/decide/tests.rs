@@ -83,7 +83,7 @@ async fn decision_entries_build_llm_and_stub_deciders() {
     .unwrap();
     let names: Vec<(&str, &str)> = ["decide-local", "decide-vote", "decide-stub"]
         .into_iter()
-        .map(|id| (id, gw.inner.deciders[id].name()))
+        .map(|id| (id, gw.inner.deciders[id].provider.name()))
         .collect();
     assert_eq!(
         names,
@@ -91,6 +91,19 @@ async fn decision_entries_build_llm_and_stub_deciders() {
             ("decide-local", "llm_decider"),
             ("decide-vote", "llm_decider"),
             ("decide-stub", "stub")
+        ]
+    );
+    // 決定器の版（決定キャッシュのキーに入る）は構築時に決まり、決定器が答える版と同じ。
+    let versions: Vec<&str> = ["decide-local", "decide-vote", "decide-stub"]
+        .into_iter()
+        .map(|id| gw.inner.deciders[id].version.as_str())
+        .collect();
+    assert_eq!(
+        versions,
+        [
+            "local+llm_decider/v1/k1/none",
+            "local+llm_decider/v1/k5/none",
+            "stub-decider/v1"
         ]
     );
     assert!(!gw.inner.deciders.contains_key("fast"));

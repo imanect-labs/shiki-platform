@@ -1218,9 +1218,14 @@ impl Harness {
             .unwrap();
     }
 
-    /// このテストのテナントに作った run と会計の行を消す（run を消せば step は FK で消える）。
+    /// このテストのテナントに作った run・会計・決定キャッシュの行を消す（run を消せば step は FK で消える）。
     async fn cleanup_runs(&self) {
         self.clear_usage().await;
+        sqlx::query("DELETE FROM llm_decision_cache WHERE tenant_id = $1")
+            .bind(&self.tenant)
+            .execute(&self.pool)
+            .await
+            .unwrap();
         sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
             .bind(&self.tenant)
             .execute(&self.pool)
@@ -1575,4 +1580,76 @@ async fn decide_fails_closed_once_the_model_or_its_base_is_disabled() {
     );
     assert_eq!(h.workflow_usage_models().await, ["stub-smart"]);
     h.cleanup_runs().await;
+}
+
+// ------- Test 13: ai.decide の決定キャッシュ（T10）------------------------------
+
+/// cache を書いた判定は、同じワークフローの 2 回目の run で答えを使い回し（決定器を呼ばず会計は 1 行だけ）、
+/// 同じ IR を別のワークフローとして保存したものでは使い回さない。cache を書かなければ毎回判定する。
+#[tokio::test]
+async fn decide_cache_reuses_answers_within_the_workflow_only() {
+    let Some(h) = setup().await else { return };
+    let executor = h.executor(None, vec![], None);
+    let step_key = |run_id: Uuid| format!("wf:{}:{run_id}:ai", h.tenant);
+    let cached_ir = |name: &str| {
+        let mut ir = decide_ir(name, "decide-stub");
+        ir["nodes"][0]["cache"] = json!({ "ttl_sec": 3600 });
+        ir
+    };
+    let input = json!({ "body": "billing の件で連絡しました" });
+
+    let wf = h.save(&cached_ir("decide-cache")).await;
+    let (first, status) = h.run(wf, &input, Arc::clone(&executor)).await;
+    assert_eq!(status, RunStatus::Succeeded);
+    assert_eq!(h.step_output(first).await.0["cached"], false);
+    let (second, status) = h.run(wf, &input, Arc::clone(&executor)).await;
+    assert_eq!(status, RunStatus::Succeeded);
+    let (output, _) = h.step_output(second).await;
+    assert_eq!(output["cached"], true, "{output}");
+    assert_eq!(output["answers"]["category"]["value"], "billing");
+    assert_eq!(output["routed"]["port"], "billing");
+    assert_eq!(
+        h.step_map(second).await["on_billing"],
+        StepStatus::Succeeded
+    );
+    assert_eq!(
+        h.usage_keys().await,
+        [step_key(first)],
+        "当たりは会計しない"
+    );
+
+    // 同じ IR の別のワークフローでは使い回さない（範囲はワークフローごと）。
+    let other = h.save(&cached_ir("decide-cache-other")).await;
+    let (third, _) = h.run(other, &input, Arc::clone(&executor)).await;
+    assert_eq!(h.step_output(third).await.0["cached"], false);
+    assert_eq!(h.usage_keys().await.len(), 2);
+
+    // cache を書かない判定は毎回判定する（既定は使わない）。
+    let plain = h.save(&decide_ir("decide-no-cache", "decide-stub")).await;
+    for _ in 0..2 {
+        let (run_id, _) = h.run(plain, &input, Arc::clone(&executor)).await;
+        assert_eq!(h.step_output(run_id).await.0["cached"], false);
+    }
+    assert_eq!(h.usage_keys().await.len(), 4);
+
+    // 当たった後に組織で判定用のモデルを止めると、当たりでも非再試行で失敗する（許可は毎回確かめる）。
+    h.set_llm_settings(llm_gateway::SettingsPatch {
+        models: vec![("decide-stub".into(), false)],
+        ..Default::default()
+    })
+    .await;
+    let (run_id, status) = h.run(wf, &input, Arc::clone(&executor)).await;
+    assert_eq!(status, RunStatus::Failed);
+    let (_, err) = h.step_output(run_id).await;
+    assert_eq!(err["code"], "model_unavailable", "{err}");
+    assert_eq!(err["retryable"], false);
+    h.cleanup_runs().await;
+    // 組織の AI 設定（このテストで保存したもの）も消す。
+    for table in ["tenant_llm_model", "tenant_llm_settings"] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&h.tenant)
+            .execute(&h.pool)
+            .await
+            .unwrap();
+    }
 }

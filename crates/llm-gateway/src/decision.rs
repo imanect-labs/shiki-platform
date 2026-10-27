@@ -25,6 +25,8 @@ use crate::gateway::UsageSource;
 use crate::model::Usage;
 use crate::provider::LlmError;
 
+/// 決定キャッシュ（ワークフローの ai.decide の step 属性 `cache`・T10）。
+pub mod cache;
 /// 要求と応答の検査（上限・突き合わせ）。
 pub mod check;
 

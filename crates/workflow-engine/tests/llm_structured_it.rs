@@ -145,6 +145,8 @@ fn ctx() -> NodeContext {
         trace_id: None,
         scope_ceiling: vec![],
         cancel: workflow_engine::run::CancelSignal::default(),
+        workflow_id: Uuid::nil(),
+        cache: None,
     }
 }
 

@@ -11,6 +11,8 @@
 //!   つなぐのは作者・D-7）。較正されていない確からしさでも同じ規則で振り分ける（H4・出力の `calibrated`）。
 //! - 失敗は再試行の分類に従う（設定・応答の誤りは permanent・到達障害は retryable）。会計はチョークポイントが
 //!   済ませているので、ここでは記録しない。
+//! - 決定キャッシュ（step 属性 `cache`・T10）は、書いたノードだけポートへ範囲（このワークフロー）と期限を
+//!   渡す。当たったかは出力と監査の `cached` に出す（当たっても許可はチョークポイントが確かめる）。
 
 use serde_json::{json, Value};
 
@@ -20,7 +22,7 @@ use crate::run::{NodeContext, NodeResult};
 use super::capability::parse_params;
 use super::decide_reply;
 use super::exec::CapabilityNodeExecutor;
-use super::ports::{ExecCtx, LlmDecideReq, PortError};
+use super::ports::{DecideCache, ExecCtx, LlmDecideReq, PortError};
 use super::resolver::{param, ParamResolver};
 
 /// 判定の材料が大きすぎる（permanent・材料を絞る）。
@@ -84,6 +86,11 @@ impl CapabilityNodeExecutor {
                     state,
                     questions: p.questions.clone(),
                     idempotency_key: ctx.idempotency_key.clone(),
+                    // 決定キャッシュはノードに cache を書いたときだけ（既定は使わない・H6）。
+                    cache: ctx.cache.map(|c| DecideCache {
+                        workflow_id: ctx.workflow_id,
+                        ttl_sec: c.ttl_sec,
+                    }),
                 },
             )
             .await?;
@@ -119,6 +126,7 @@ impl CapabilityNodeExecutor {
             "calibrated": reply.calibrated,
             "method": reply.method,
             "samples": reply.samples,
+            "cached": reply.cached,
             "routed": routed_out,
         });
         // 材料と全部の答えは載せない（出口と、振り分けに使った質問の確からしさだけ・H5）。
@@ -137,6 +145,7 @@ impl CapabilityNodeExecutor {
                 "method": reply.method,
                 "samples": reply.samples,
                 "calibrated": reply.calibrated,
+                "cached": reply.cached,
                 "questions": keys,
                 "port": port,
                 "routed": routed_audit,

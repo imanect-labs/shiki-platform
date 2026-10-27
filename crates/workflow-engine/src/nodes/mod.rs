@@ -26,7 +26,7 @@ pub use capability_agent::AgentLimits;
 pub use exec::CapabilityNodeExecutor;
 pub use ports::{
     AgentInvokeReq, AgentToolGateway, ApprovalTarget, CodeRunReq, CsvPatchReq, CsvWriteReq,
-    DataWriteOp, DataWriteReq, DocReadReq, ExecCtx, HttpSendReq, HttpSendResp, LlmDecideReq,
-    LlmInvokeReq, LlmRepair, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView,
-    StorageWriteReq, WebFetchReq,
+    DataWriteOp, DataWriteReq, DecideCache, DocReadReq, ExecCtx, HttpSendReq, HttpSendResp,
+    LlmDecideReq, LlmInvokeReq, LlmRepair, NodePorts, PortError, ResolvedSecretView,
+    ResolvedSkillView, StorageWriteReq, WebFetchReq,
 };

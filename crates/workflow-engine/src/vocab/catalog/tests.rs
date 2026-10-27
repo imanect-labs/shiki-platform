@@ -74,9 +74,19 @@ fn structural_flags_match_vocab() {
             "calibrated",
             "method",
             "samples",
+            "cached",
             "routed"
         ]
     );
+    // 決定キャッシュ（step 属性 cache・T10）を付けられるのは判定だけ。
+    assert_eq!(
+        decide.step_cache,
+        Some(crate::ir::StepCacheLimits::DECISION)
+    );
+    assert!(node_catalog()
+        .iter()
+        .filter(|e| e.node_type != NodeType::AiDecide)
+        .all(|e| e.step_cache.is_none()));
     let json = serde_json::to_value(decide).unwrap();
     assert_eq!(json["port_rule"], "decide_route");
 }

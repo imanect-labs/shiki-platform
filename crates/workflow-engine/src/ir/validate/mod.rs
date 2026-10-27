@@ -7,6 +7,8 @@ mod agent;
 pub use agent::{pattern_within, valid_host_pattern};
 mod approval;
 pub use approval::{CatalogTable, APPROVAL_STATUS_FIELD_SHOWN, APPROVAL_TIMEOUTS_EXCEED_RUN};
+mod cache;
+pub use cache::CACHE_UNSUPPORTED;
 mod decide;
 pub use decide::{DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL};
 mod llm;
@@ -202,6 +204,8 @@ pub fn validate(
             );
         }
     }
+    // V1d: step 属性 `cache`（付けられる種・期限の範囲・T10）。
+    cache::v1(&ir, &mut errors);
     // V1c: input_schema の項目の並びの注記 `x-order`（D-60）。起動の検証は注記として読み飛ばすので、
     // 形（properties のキーの文字列の配列・重なりなし）は保存で止める。
     if let Some(schema) = &ir.input_schema {

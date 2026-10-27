@@ -212,6 +212,8 @@ fn ctx() -> NodeContext {
         trace_id: None,
         scope_ceiling: vec![],
         cancel: workflow_engine::run::CancelSignal::default(),
+        workflow_id: Uuid::nil(),
+        cache: None,
     }
 }
 
@@ -257,6 +259,39 @@ async fn run(ports: Arc<dyn NodePorts>, audit: &Arc<Audit>, p: &Value) -> NodeRe
     executor(ports, audit).execute("ai.decide", p, &ctx()).await
 }
 
+/// step 属性 `cache` を書いたノードだけ、ポートへこのワークフローと期限を渡す。当たったかは出力と監査の
+/// `cached` に出る（材料・ほかの答えは監査に載せないまま）。
+#[tokio::test]
+async fn the_step_cache_reaches_the_port_and_a_hit_is_reported() {
+    let mut hit = reply("billing", 0.9);
+    hit["cached"] = json!(true);
+    let ports = ScriptedDecider::new(vec![Ok(hit)]);
+    let audit = Arc::new(Audit::default());
+    let p = params(json!({ "question": "category", "min_confidence": 0.8 }));
+    let workflow_id = Uuid::new_v4();
+    let ctx = NodeContext {
+        workflow_id,
+        cache: Some(workflow_engine::ir::StepCache { ttl_sec: 3600 }),
+        ..ctx()
+    };
+    let res = executor(Arc::clone(&ports) as _, &audit)
+        .execute("ai.decide", &p, &ctx)
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(res.taken_ports, ["billing"]);
+    assert_eq!(res.output["cached"], true);
+    assert_eq!(
+        ports.reqs()[0].cache,
+        Some(workflow_engine::DecideCache {
+            workflow_id,
+            ttl_sec: 3600
+        })
+    );
+    let rows = audit.rows();
+    assert_eq!(rows[0].1["cached"], true);
+    assert!(!rows[0].1.to_string().contains("請求書"));
+}
+
 fn code(r: &NodeResult) -> (String, bool) {
     let e = r.error.as_ref().unwrap();
     (e.code.clone(), e.retryable)
@@ -283,7 +318,7 @@ async fn routes_by_value_to_the_chosen_option() {
             },
             "model": "decide-stub",
             "resolved_model": "claude-haiku-5-5+llm_decider/v1/k1/low",
-            "calibrated": false, "method": "verbalized", "samples": 1,
+            "calibrated": false, "method": "verbalized", "samples": 1, "cached": false,
             "routed": { "question": "category", "port": "billing" }
         })
     );
@@ -297,6 +332,10 @@ async fn routes_by_value_to_the_chosen_option() {
     let keys: Vec<&str> = reqs[0].questions.iter().map(|q| q.key.as_str()).collect();
     assert_eq!(keys, ["category", "priority", "angry"]);
     assert_eq!(reqs[0].idempotency_key, "wf:t1:0:judge");
+    assert_eq!(
+        reqs[0].cache, None,
+        "cache を書かなければ決定キャッシュは使わない"
+    );
 
     // 監査には出口と、振り分けに使った質問の確からしさだけ（材料・ほかの答えは載せない・H5）。
     let rows = audit.rows();
@@ -307,7 +346,7 @@ async fn routes_by_value_to_the_chosen_option() {
         json!({
             "model": "decide-stub",
             "resolved_model": "claude-haiku-5-5+llm_decider/v1/k1/low",
-            "method": "verbalized", "samples": 1, "calibrated": false,
+            "method": "verbalized", "samples": 1, "calibrated": false, "cached": false,
             "questions": ["category", "priority", "angry"],
             "port": "billing",
             "routed": { "question": "category", "confidence": 0.9 }

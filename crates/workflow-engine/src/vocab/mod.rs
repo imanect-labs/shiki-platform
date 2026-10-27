@@ -24,8 +24,8 @@ pub use agent_tool::{
 };
 pub(crate) use catalog::output_port_rule;
 pub use catalog::{
-    approval_ports, node_catalog, IdempotencyClass, NodeCatalogEntry, NodeCategory, OutputField,
-    PortRule,
+    approval_ports, node_catalog, step_cache, IdempotencyClass, NodeCatalogEntry, NodeCategory,
+    OutputField, PortRule,
 };
 pub use event_catalog::{
     event_catalog, payload_fields, DataChangePayload, EventCatalogEntry, EventPayloadField,

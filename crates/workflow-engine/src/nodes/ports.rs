@@ -123,6 +123,18 @@ pub struct LlmDecideReq {
     /// step の冪等キー（attempt を含まない）。使えた判定はこのキーで、使えなかった判定は `{key}#f{uuid}` で
     /// チョークポイントが会計する（ポートでは記録しない）。
     pub idempotency_key: String,
+    /// 決定キャッシュ（ノードの step 属性 `cache` を書いたときだけ `Some`・既定は使わない・T10）。
+    pub cache: Option<DecideCache>,
+}
+
+/// 決定キャッシュの指定（[`LlmDecideReq::cache`]）。範囲はテナント＋組織（ポートが `ExecCtx` から取る）と
+/// このワークフロー。当たっても組織の許可はチョークポイントが確かめ、会計はしない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecideCache {
+    /// 使い回す範囲のワークフロー。
+    pub workflow_id: Uuid,
+    /// 答えを使い回す期間（秒・保存時に範囲を確かめたもの）。
+    pub ttl_sec: u32,
 }
 
 /// 構造化出力の修復の依頼（[`LlmInvokeReq::repair`]）。
@@ -309,7 +321,8 @@ pub trait NodePorts: Send + Sync {
     /// ai.decide（`LlmGateway::decide`・組織の許可・利用上限・会計はチョークポイントの中・FEAT-1）。
     ///
     /// 返す Value は判定の結果 `{ resolved_model, answers: { <key>: { type, … } }, calibrated, method, samples }`
-    /// （llm-gateway の `DecideResponse` の形）。エンジンが型付きで読み、質問と突き合わせてから出力を組む。
+    /// （llm-gateway の `DecideResponse` の形）に、決定キャッシュの答えなら `cached: true` を足したもの（無ければ
+    /// false とみなす）。エンジンが型付きで読み、質問と突き合わせてから出力を組む。
     /// 既定は「未構成」（判定のチョークポイントを結線しない実装・テスト用・H1）。
     async fn llm_decide(&self, _ctx: &ExecCtx, _req: LlmDecideReq) -> Result<Value, PortError> {
         Err(PortError::new(

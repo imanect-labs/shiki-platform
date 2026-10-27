@@ -128,6 +128,8 @@ struct Inner {
     chatgpt_plan: Option<Arc<ChatGptPlanProvider>>,
     /// 判定用のモデルの ID → 決定器（構築時にカタログから組む・FEAT-1）。
     deciders: decide::Deciders,
+    /// 判定の決定キャッシュ（ai.decide の step 属性 `cache`・T10）。
+    decision_cache: crate::decision::cache::DecisionCacheStore,
 }
 
 impl LlmGateway {
@@ -188,6 +190,7 @@ impl LlmGateway {
                 accounting: UsageRecorder::new(db.clone()),
                 tenants: TenantLlmStore::new(db.clone()),
                 usage: UsageReporter::new(db.clone()),
+                decision_cache: crate::decision::cache::DecisionCacheStore::new(db.clone()),
                 limits: UsageLimiter::new(db),
                 langfuse,
                 chatgpt_plan,
