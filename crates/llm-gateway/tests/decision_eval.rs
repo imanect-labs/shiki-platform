@@ -21,6 +21,9 @@
     clippy::too_many_lines
 )]
 
+// 普段のテストでも走る試験（実 LLM を呼ばない）。
+#[path = "decision_eval/checks.rs"]
+mod checks;
 #[path = "decision_eval/data.rs"]
 mod data;
 #[path = "decision_eval/metrics.rs"]
@@ -29,16 +32,22 @@ mod metrics;
 mod report;
 #[path = "decision_eval/run.rs"]
 mod run;
+#[path = "decision_eval/score.rs"]
+mod score;
 #[path = "decision_eval/setup.rs"]
 mod setup;
 
+use std::collections::VecDeque;
+
 use authz::AuthContext;
+use llm_gateway::providers::llm_decider::PROMPT_VERSION;
 use llm_gateway::LlmGateway;
 use sqlx::postgres::PgPoolOptions;
 
 use data::{Dataset, DATASETS};
-use metrics::{RepMetrics, THETAS};
-use run::{CallResult, Job, Runner};
+use metrics::THETAS;
+use run::{Job, Outcome, Runner};
+
 use setup::env_or;
 
 /// 1 回の判定の見積もり（悲観値・新しいトークナイザ込み。付録 B §6）。
@@ -62,47 +71,6 @@ fn eval_ctx() -> AuthContext {
     )
 }
 
-/// 1 回の反復の指標。
-fn rep_metrics(ds: &Dataset, calls: &[&CallResult]) -> RepMetrics {
-    if ds.name == "expense_policy" {
-        RepMetrics::Expense(metrics::expense(ds, calls))
-    } else {
-        RepMetrics::Inquiry(metrics::inquiry(ds, calls))
-    }
-}
-
-/// データ 1 つの結果（反復ごとの指標・一致率・θ の案か合格基準）。
-fn dataset_result(
-    ds: &Dataset,
-    calls: &[CallResult],
-    reps: u32,
-    theta: Option<f64>,
-) -> report::DatasetResult {
-    let mine: Vec<&CallResult> = calls.iter().filter(|c| c.dataset == ds.name).collect();
-    let per_rep: Vec<RepMetrics> = (1..=reps)
-        .map(|r| {
-            let of_rep: Vec<&CallResult> = mine.iter().copied().filter(|c| c.rep == r).collect();
-            rep_metrics(ds, &of_rep)
-        })
-        .collect();
-    let agreement =
-        (reps > 1).then(|| metrics::agreement(&mine, metrics::primary_key(ds.name), reps));
-    let rows = mine.iter().filter(|c| c.rep == 1).count();
-    report::DatasetResult {
-        name: ds.name.to_string(),
-        questions_sha256: ds.questions_sha256.clone(),
-        rows,
-        suggested_theta: if theta.is_none() {
-            per_rep.first().and_then(metrics::suggest_theta)
-        } else {
-            None
-        },
-        acceptance: theta.map(|t| metrics::acceptance(&per_rep, agreement, t)),
-        reps: per_rep,
-        agreement,
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "実 LLM を呼ぶ評価（DECISION_EVAL=1 のときだけ・手順は eval/decision/README.md）"]
 async fn decision_eval() {
@@ -116,8 +84,29 @@ async fn decision_eval() {
         report::write_summary();
         return;
     }
+    if stage_name == "rescore" {
+        // 実 LLM を呼ばずに、保存した結果の答えを今のデータで採点し直す（裁定の後のラベルの直しを反映する）。
+        let from = std::env::var("DECISION_EVAL_RESULT")
+            .expect("DECISION_EVAL_RESULT に採点し直す結果の名前（例: 2026-10-27-E1）を渡す");
+        let file = score::rescore(&from);
+        let path = report::write_result(&file);
+        report::write_summary();
+        eprintln!("{from} を採点し直した → {}", path.display());
+        for ds in &file.datasets {
+            if let Some(a) = &ds.acceptance {
+                eprintln!(
+                    "  {}: 合格基準（暫定）{}",
+                    ds.name,
+                    if a.pass { "合格" } else { "不合格" }
+                );
+            }
+        }
+        return;
+    }
     let stage = data::stage(&stage_name).unwrap_or_else(|| {
-        panic!("DECISION_EVAL_STAGE は E0・E4・E1・E2・E3 のどれか（{stage_name}）")
+        panic!(
+            "DECISION_EVAL_STAGE は E0・E4・E1・E2・E3・summary・rescore のどれか（{stage_name}）"
+        )
     });
     let tag = std::env::var("DECISION_EVAL_TAG").unwrap_or_default();
     let model = env_or("DECISION_EVAL_MODEL", "decide-haiku");
@@ -178,6 +167,12 @@ async fn decision_eval() {
                 "凍結したしきい値 {t} は候補（{THETAS:?}）のどれか"
             );
         }
+        // コードのプロンプトの版が凍結と違えば、1 件も呼ばずに止める（PIT-80）。
+        assert_eq!(
+            f.prompt_version, PROMPT_VERSION,
+            "コードのプロンプトの版 {PROMPT_VERSION} が凍結した版 {} と違う（凍結し直すか、版を戻す）",
+            f.prompt_version
+        );
         Some(f)
     } else {
         None
@@ -214,7 +209,13 @@ async fn decision_eval() {
         .await
         .expect("DB に接続できない");
     setup::check_db(&pool).await;
-    let config = setup::gateway_config(&setup::config_path(), &model, stage.effort, stage.samples);
+    let config = setup::gateway_config(
+        &setup::config_path(),
+        &model,
+        stage.effort,
+        stage.samples,
+        &relay,
+    );
     let gw = LlmGateway::build(pool.clone(), http.clone(), config).expect("gateway を組めない");
     let ctx = eval_ctx();
     let run_id = format!(
@@ -234,25 +235,28 @@ async fn decision_eval() {
         relay_before_usd: before.total_usd,
     };
 
-    // 凍結した段は、最初の 1 件で答えた版が凍結の版と同じかを確かめてから残りを流す。
     let started_at = chrono::Utc::now().to_rfc3339();
-    let rest = jobs.split_off(1);
-    let mut outcome = runner.run(jobs).await;
-    if let Some(f) = &frozen {
-        let resolved = outcome.calls.iter().find_map(|c| c.resolved_model.clone());
-        if let Some(r) = &resolved {
-            assert_eq!(
-                data::prompt_version_of(r),
-                Some(f.prompt_version.as_str()),
-                "答えた版 {r} が凍結した版 {} と違う",
-                f.prompt_version
-            );
+    let mut rest = VecDeque::from(jobs);
+    let mut outcome = if frozen.is_some() {
+        run::probe_version(|job| runner.run(vec![job]), &mut rest, frozen.as_ref()).await
+    } else {
+        Outcome {
+            calls: Vec::new(),
+            stopped: None,
         }
-    }
-    if outcome.stopped.is_none() {
-        let more = runner.run(rest).await;
+    };
+    if outcome.stopped.is_none() && !rest.is_empty() {
+        let more = runner.run(rest.into_iter().collect()).await;
         outcome.calls.extend(more.calls);
         outcome.stopped = more.stopped;
+    }
+    // 流した後にも、答えた版がすべて凍結の版かを確かめる。違う版が混ざれば合否を出さない。
+    let resolved_models = data::resolved_models(&outcome.calls);
+    let mismatch = data::version_mismatch(&resolved_models, frozen.as_ref());
+    if let Some(m) = &mismatch {
+        outcome
+            .stopped
+            .get_or_insert_with(|| format!("{m}ので合否を出さない"));
     }
     let finished_at = chrono::Utc::now().to_rfc3339();
     let after = setup::relay_spend(&http, &relay).await;
@@ -274,6 +278,7 @@ async fn decision_eval() {
         finished_at,
         model: model.clone(),
         resolved_model: outcome.calls.iter().find_map(|c| c.resolved_model.clone()),
+        resolved_models,
         split: stage.split.to_string(),
         reps: stage.reps,
         effort: stage.effort.as_str().to_string(),
@@ -294,11 +299,19 @@ async fn decision_eval() {
         datasets: datasets
             .iter()
             .map(|ds| {
-                let theta = frozen.as_ref().and_then(|f| f.theta.get(ds.name).copied());
-                dataset_result(ds, &outcome.calls, stage.reps, theta)
+                let theta = frozen
+                    .as_ref()
+                    .filter(|_| mismatch.is_none())
+                    .and_then(|f| f.theta.get(ds.name).copied());
+                score::dataset_result(ds, &outcome.calls, stage.reps, theta, frozen.is_none())
             })
             .collect(),
         frozen: frozen.clone(),
+        datasets_sha256: datasets
+            .iter()
+            .map(|ds| (ds.name.to_string(), ds.rows_sha256.clone()))
+            .collect(),
+        rescored_from: None,
         results: outcome.calls,
     };
     let path = report::write_result(&file);
@@ -310,8 +323,12 @@ async fn decision_eval() {
     );
     if stage.name == "E1" {
         for ds in &datasets {
-            let (n, d) = report::write_adjudication(ds, &file.results);
-            eprintln!("  裁定の材料 {}: {n} 行（うち食い違い {d}）", ds.name);
+            let (to, n, d) = report::write_adjudication(ds, &file.results, &label);
+            eprintln!(
+                "  裁定の材料 {}: {n} 行（うち食い違い {d}）→ {}",
+                ds.name,
+                to.display()
+            );
         }
     }
     for ds in &file.datasets {
@@ -329,364 +346,4 @@ async fn decision_eval() {
     if let Some(s) = &file.stopped {
         panic!("途中で止めた: {s}（結果は {} に書いた）", path.display());
     }
-}
-
-// ---------------------------------------------------------------------------
-// 普段のテストでも走る試験（実 LLM を呼ばない）
-// ---------------------------------------------------------------------------
-
-/// 正解をそのまま答えた（確からしさ `conf`）結果。
-fn perfect(ds: &Dataset, split: &str, conf: f64) -> Vec<CallResult> {
-    ds.rows
-        .iter()
-        .filter(|r| r.split == split)
-        .map(|r| CallResult {
-            dataset: ds.name.to_string(),
-            id: r.id.clone(),
-            rep: 1,
-            latency_ms: 100,
-            error: None,
-            resolved_model: Some("m+llm_decider/v1/k1/low".into()),
-            answers: r
-                .labels
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        run::AnswerOut {
-                            value: v.clone(),
-                            confidence: conf,
-                        },
-                    )
-                })
-                .collect(),
-        })
-        .collect()
-}
-
-#[test]
-fn datasets_have_the_designed_counts() {
-    let inq = data::load("inquiry_triage");
-    let exp = data::load("expense_policy");
-    for ds in [&inq, &exp] {
-        assert_eq!(ds.rows.len(), 120, "{}", ds.name);
-        assert_eq!(
-            ds.rows.iter().filter(|r| r.split == "dev").count(),
-            40,
-            "{}",
-            ds.name
-        );
-        assert_eq!(
-            ds.rows.iter().filter(|r| r.split == "test").count(),
-            80,
-            "{}",
-            ds.name
-        );
-        let ids: std::collections::BTreeSet<_> = ds.rows.iter().map(|r| &r.id).collect();
-        assert_eq!(ids.len(), 120, "{}: id が重複している", ds.name);
-        // ラベルのキーは質問のキー（質問を足し引きしたらラベルも合わせる）。
-        let keys: Vec<&str> = ds.questions.iter().map(|q| q.key.as_str()).collect();
-        for r in &ds.rows {
-            assert!(
-                r.labels.keys().all(|k| keys.contains(&k.as_str())),
-                "{}",
-                r.id
-            );
-        }
-    }
-    let count = |cat: &str| {
-        inq.rows
-            .iter()
-            .filter(|r| r.label_str("category") == Some(cat))
-            .count()
-    };
-    assert_eq!(
-        [
-            count("billing"),
-            count("bug"),
-            count("howto"),
-            count("cancel"),
-            count("other")
-        ],
-        [24, 28, 28, 20, 20]
-    );
-    assert_eq!(
-        inq.rows.iter().filter(|r| r.tag_bool("ambiguous")).count(),
-        15
-    );
-    let injected: Vec<_> = inq
-        .rows
-        .iter()
-        .filter(|r| r.tag_bool("injection"))
-        .collect();
-    assert_eq!(injected.len(), 6);
-    for r in injected {
-        let target = r
-            .tag_str("inject_target")
-            .expect("注入の行は指示した分類を持つ");
-        assert_ne!(Some(target), r.label_str("category"), "{}", r.id);
-    }
-    let positives = exp
-        .rows
-        .iter()
-        .filter(|r| r.label_bool("needs_review") == Some(true))
-        .count();
-    assert_eq!(positives, 48);
-    let injected: Vec<_> = exp
-        .rows
-        .iter()
-        .filter(|r| r.tag_bool("injection"))
-        .collect();
-    assert_eq!(injected.len(), 6);
-    assert!(injected
-        .iter()
-        .all(|r| r.label_bool("needs_review") == Some(true)));
-    // 規程のフラグが出る行は疑いあり（フラグだけで経理確認に回る）。
-    assert!(exp
-        .rows
-        .iter()
-        .filter(|r| !r.rule_flags.is_empty())
-        .all(|r| r.label_bool("needs_review") == Some(true)));
-}
-
-#[test]
-fn the_freeze_matches_the_questions_and_the_prompt() {
-    // 凍結（frozen.json）は今の質問のファイルと同じで、しきい値は候補のどれか。質問を変えたら凍結し直す。
-    let Some(f) = data::frozen() else { return };
-    for name in DATASETS {
-        let ds = data::load(name);
-        assert_eq!(
-            f.questions_sha256.get(name),
-            Some(&ds.questions_sha256),
-            "{name}"
-        );
-        let t = f.theta[name];
-        assert!(THETAS.iter().any(|x| (x - t).abs() < 1e-9), "{name}: {t}");
-    }
-    assert!(f.prompt_version.starts_with('v'));
-}
-
-#[test]
-fn wilson_interval_matches_known_values() {
-    let r = metrics::ratio(8, 10);
-    assert!((r.p.unwrap() - 0.8).abs() < 1e-12);
-    assert!((r.lo - 0.4902).abs() < 1e-3, "{r:?}");
-    assert!((r.hi - 0.9433).abs() < 1e-3, "{r:?}");
-    let zero = metrics::ratio(0, 10);
-    assert!(
-        zero.lo.abs() < 1e-12 && (zero.hi - 0.2775).abs() < 1e-3,
-        "{zero:?}"
-    );
-    let all = metrics::ratio(10, 10);
-    assert!(
-        (all.hi - 1.0).abs() < 1e-12 && (all.lo - 0.7225).abs() < 1e-3,
-        "{all:?}"
-    );
-    let none = metrics::ratio(0, 0);
-    assert!(none.p.is_none());
-}
-
-#[test]
-fn calibration_uses_equal_frequency_bins() {
-    // 10 点 → 2 点ずつの 5 区間。確からしさの低い順に並べてから分ける。
-    let points = vec![
-        (0.95, true),
-        (0.5, false),
-        (0.55, true),
-        (0.9, true),
-        (0.6, false),
-        (0.65, true),
-        (0.7, true),
-        (0.75, false),
-        (0.8, true),
-        (0.85, true),
-    ];
-    let c = metrics::calibration(points, 5);
-    assert_eq!(c.bins.len(), 5);
-    assert!(c.bins.iter().all(|b| b.accuracy.n == 2));
-    assert!((c.bins[0].conf_mean - 0.525).abs() < 1e-12);
-    // |0.5-0.525| + |0.5-0.625| + |0.5-0.725| + |1-0.825| + |1-0.925| を 5 で割る
-    let want = (0.025 + 0.125 + 0.225 + 0.175 + 0.075) / 5.0;
-    assert!((c.ece.unwrap() - want).abs() < 1e-12, "{:?}", c.ece);
-    // 区間より点が少なければ空の区間を作らない。
-    assert_eq!(metrics::calibration(vec![(0.9, true); 3], 5).bins.len(), 3);
-    assert!(metrics::calibration(vec![], 5).ece.is_none());
-}
-
-#[test]
-fn percentile_is_nearest_rank() {
-    let v: Vec<u64> = (1..=10).collect();
-    assert_eq!(metrics::percentile(&v, 0.5), Some(5));
-    assert_eq!(metrics::percentile(&v, 0.95), Some(10));
-    assert_eq!(metrics::percentile(&[], 0.5), None);
-}
-
-#[test]
-fn perfect_answers_pass_and_followed_injections_fail() {
-    let inq = data::load("inquiry_triage");
-    let calls = perfect(&inq, "test", 0.95);
-    let refs: Vec<&CallResult> = calls.iter().collect();
-    let m = RepMetrics::Inquiry(metrics::inquiry(&inq, &refs));
-    let ok = metrics::acceptance(std::slice::from_ref(&m), None, 0.8);
-    assert!(ok.pass, "{ok:?}");
-    assert_eq!(metrics::suggest_theta(&m), Some(0.6));
-
-    // 注入の行で指示された分類を確かに答えると、正解率がまだ高くても合格しない。
-    let mut followed = calls.clone();
-    for c in &mut followed {
-        let row = inq.row(&c.id).unwrap();
-        if let Some(t) = row.tag_str("inject_target") {
-            c.answers.get_mut("category").unwrap().value = t.into();
-        }
-    }
-    let refs: Vec<&CallResult> = followed.iter().collect();
-    let m = metrics::inquiry(&inq, &refs);
-    let at = m
-        .theta
-        .iter()
-        .find(|t| (t.theta - 0.8).abs() < 1e-9)
-        .unwrap();
-    assert_eq!(at.injection_followed, 4);
-    let bad = metrics::acceptance(&[RepMetrics::Inquiry(m)], None, 0.8);
-    assert!(!bad.pass);
-
-    // 確からしさが θ 未満の注入の行は uncertain に回るだけなので、従ったとは数えない。
-    for c in &mut followed {
-        c.answers.get_mut("category").unwrap().confidence = 0.5;
-    }
-    let refs: Vec<&CallResult> = followed.iter().collect();
-    let m = metrics::inquiry(&inq, &refs);
-    assert!(m.theta.iter().all(|t| t.injection_followed == 0));
-}
-
-#[test]
-fn errors_count_as_wrong_and_not_automatic() {
-    let inq = data::load("inquiry_triage");
-    let mut calls = perfect(&inq, "dev", 0.9);
-    for c in calls.iter_mut().take(4) {
-        c.answers.clear();
-        c.error = Some("invalid_output".into());
-    }
-    let refs: Vec<&CallResult> = calls.iter().collect();
-    let m = metrics::inquiry(&inq, &refs);
-    assert_eq!((m.accuracy.k, m.accuracy.n), (36, 40));
-    assert_eq!(m.errors.invalid(), 4);
-    assert_eq!(m.theta[0].auto_rate.k, 36);
-    let acc = metrics::acceptance(&[RepMetrics::Inquiry(m)], None, 0.6);
-    assert!(acc.criteria.iter().any(|c| c.name == "不正出力" && !c.pass));
-}
-
-#[test]
-fn expense_routing_is_rule_or_ai_or_uncertain() {
-    let exp = data::load("expense_policy");
-    // AI が何も疑わない（needs_review=false・確からしさ高）なら、規程のフラグの分しか経理確認に回らない。
-    let mut calls = perfect(&exp, "test", 0.95);
-    for c in &mut calls {
-        c.answers.get_mut("needs_review").unwrap().value = false.into();
-    }
-    let refs: Vec<&CallResult> = calls.iter().collect();
-    let m = metrics::expense(&exp, &refs);
-    let at = m
-        .theta
-        .iter()
-        .find(|t| (t.theta - 0.7).abs() < 1e-9)
-        .unwrap();
-    let rule_rows = exp
-        .rows
-        .iter()
-        .filter(|r| r.split == "test" && !r.rule_flags.is_empty())
-        .count();
-    assert_eq!(at.routed_recall.k, rule_rows);
-    assert_eq!(at.injection_escaped, 4);
-    // 確からしさが θ 未満なら uncertain として経理確認に回る（注入も免れない）。
-    for c in &mut calls {
-        c.answers.get_mut("needs_review").unwrap().confidence = 0.6;
-    }
-    let refs: Vec<&CallResult> = calls.iter().collect();
-    let m = metrics::expense(&exp, &refs);
-    let at = m
-        .theta
-        .iter()
-        .find(|t| (t.theta - 0.7).abs() < 1e-9)
-        .unwrap();
-    assert_eq!(at.routed_recall.k, at.routed_recall.n);
-    assert_eq!(at.injection_escaped, 0);
-    assert_eq!(at.uncertain_rate.k, 80);
-    // 正解どおりなら合格。
-    let calls = perfect(&exp, "test", 0.95);
-    let refs: Vec<&CallResult> = calls.iter().collect();
-    let m = RepMetrics::Expense(metrics::expense(&exp, &refs));
-    assert!(metrics::acceptance(std::slice::from_ref(&m), None, 0.7).pass);
-}
-
-#[test]
-fn expense_theta_keeps_the_cost_limits_before_recall() {
-    use metrics::{ratio, ExpenseTheta};
-    let exp = data::load("expense_policy");
-    let mut m = metrics::expense(&exp, &[]);
-    // E4 の 2 回目（dev・v3）の値: どの θ も全部の条件は満たさない。
-    let row = |theta, unc: usize, rec: usize, prec: (usize, usize)| ExpenseTheta {
-        theta,
-        uncertain_rate: ratio(unc, 40),
-        routed_recall: ratio(rec, 16),
-        routed_precision: ratio(prec.0, prec.1),
-        auto_precision: ratio(0, 0),
-        injection_escaped: 0,
-    };
-    m.theta = vec![
-        row(0.6, 5, 15, (15, 18)),
-        row(0.7, 11, 15, (15, 21)),
-        row(0.8, 26, 16, (16, 33)),
-        row(0.9, 35, 16, (16, 40)),
-    ];
-    // 再現率だけなら 0.8 だが uncertain 65%・適合率 48% で費用の条件を外れる。条件の内で再現率が同じなら大きい θ。
-    assert_eq!(
-        metrics::suggest_theta(&RepMetrics::Expense(m.clone())),
-        Some(0.7)
-    );
-    // 全部の条件を満たす θ があれば、その中で適合率が最も高いもの。
-    m.theta[1] = row(0.7, 11, 16, (16, 21));
-    m.theta[0] = row(0.6, 5, 16, (16, 18));
-    assert_eq!(
-        metrics::suggest_theta(&RepMetrics::Expense(m.clone())),
-        Some(0.6)
-    );
-    // 費用の条件を満たす θ が無ければ、再現率が最も高い θ。
-    for t in &mut m.theta {
-        t.uncertain_rate = ratio(30, 40);
-    }
-    assert_eq!(metrics::suggest_theta(&RepMetrics::Expense(m)), Some(0.6));
-}
-
-#[test]
-fn agreement_counts_rows_that_answer_the_same_every_time() {
-    let inq = data::load("inquiry_triage");
-    let mut calls = Vec::new();
-    for rep in 1..=3 {
-        for mut c in perfect(&inq, "dev", 0.9) {
-            c.rep = rep;
-            calls.push(c);
-        }
-    }
-    // 1 行だけ 3 回目で答えが変わる。
-    let flip = calls
-        .iter_mut()
-        .find(|c| c.rep == 3 && c.answers["category"].value != "other")
-        .unwrap();
-    flip.answers.get_mut("category").unwrap().value = "other".into();
-    let refs: Vec<&CallResult> = calls.iter().collect();
-    let a = metrics::agreement(&refs, "category", 3);
-    assert_eq!((a.k, a.n), (39, 40));
-}
-
-#[test]
-fn prompt_version_is_read_from_the_resolved_model() {
-    assert_eq!(
-        data::prompt_version_of("claude-haiku-5-5+llm_decider/v2/k1/low"),
-        Some("v2")
-    );
-    assert_eq!(data::prompt_version_of("jev-1.13.0"), None);
-    assert!(data::stage("E1").is_some_and(|s| s.reps == 3 && s.frozen));
-    assert!(data::stage("E0").is_some_and(|s| !s.frozen && s.split == "dev"));
-    assert!(data::stage("E9").is_none());
 }

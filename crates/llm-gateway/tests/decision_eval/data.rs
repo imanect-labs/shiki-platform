@@ -57,6 +57,8 @@ pub(crate) struct Dataset {
     pub(crate) questions: Vec<Question>,
     /// 質問のファイルの sha256（凍結の確かめに使う）。
     pub(crate) questions_sha256: String,
+    /// 行のファイル（`*.jsonl`）の sha256（どのデータで採点したかを結果に残す）。
+    pub(crate) rows_sha256: String,
 }
 
 impl Dataset {
@@ -82,6 +84,7 @@ pub(crate) fn load(name: &'static str) -> Dataset {
     let dir = eval_dir().join("datasets");
     let rows_text = std::fs::read_to_string(dir.join(format!("{name}.jsonl")))
         .unwrap_or_else(|e| panic!("{name}.jsonl を読めない: {e}"));
+    let rows_sha256 = hex(&Sha256::digest(rows_text.as_bytes()));
     let rows = rows_text
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -100,7 +103,17 @@ pub(crate) fn load(name: &'static str) -> Dataset {
         rows,
         questions,
         questions_sha256: hex(&Sha256::digest(&questions_text)),
+        rows_sha256,
     }
+}
+
+/// 名前（結果のファイルに書いたもの）から評価データを読む。
+pub(crate) fn load_named(name: &str) -> Dataset {
+    let name = DATASETS
+        .iter()
+        .find(|n| **n == name)
+        .unwrap_or_else(|| panic!("評価データ {name} は無い（{DATASETS:?}）"));
+    load(name)
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -174,4 +187,29 @@ pub(crate) fn prompt_version_of(resolved_model: &str) -> Option<&str> {
     resolved_model
         .split_once("+llm_decider/")
         .and_then(|(_, rest)| rest.split('/').next())
+}
+
+/// 答えた版（`resolved_model`）の一覧（重複を除いて辞書順）。
+pub(crate) fn resolved_models(calls: &[crate::run::CallResult]) -> Vec<String> {
+    calls
+        .iter()
+        .filter_map(|c| c.resolved_model.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// 答えた版のどれかが凍結した版と違えば、その説明（凍結の無い段・答えの無い実行は `None`）。
+pub(crate) fn version_mismatch(resolved: &[String], frozen: Option<&Frozen>) -> Option<String> {
+    let f = frozen?;
+    let other: Vec<&String> = resolved
+        .iter()
+        .filter(|r| prompt_version_of(r) != Some(f.prompt_version.as_str()))
+        .collect();
+    (!other.is_empty()).then(|| {
+        format!(
+            "答えた版（{other:?}）が凍結した版 {} と違う",
+            f.prompt_version
+        )
+    })
 }

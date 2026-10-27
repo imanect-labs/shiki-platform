@@ -30,6 +30,7 @@ APP-02（問い合わせの仕分け）と APP-01（経費の規程違反の疑�
 
 プロンプトの改訂は `crates/llm-gateway/src/providers/llm_decider_prompt.rs` の `PROMPT_VERSION` を上げるコミットにする（答えた版 `resolved_model` に載る）。
 E4 の後に `frozen.json`（プロンプトの版・データごとの θ・質問のファイルの sha256）を書き、test の段はそれを読む。test の段は、凍結と違う質問・違う版では走らない。
+版は 3 か所で確かめる: (1) 起動の前に、コードの `PROMPT_VERSION`（`llm_gateway::providers::llm_decider::PROMPT_VERSION`）が凍結の版と同じか（違えば 1 件も呼ばない） (2) 先頭の仕事を 1 件ずつ流し、答え（`resolved_model`）が出た時点でその版を確かめてから残りを流す（誤りで終わった呼び出しには版が載らないので、3 件続けて答えが得られなければ止める） (3) 流した後に、全部の答えの版が凍結の版か（違う版が混ざれば合否を出さない）。普段のテストも、`frozen.json` の版がコードの版と同じかを確かめる。
 
 ## 実行
 
@@ -52,6 +53,8 @@ cargo test -p shiki-llm-gateway --test decision_eval -- --ignored --nocapture de
 - 起動の前に「呼び出し × サンプル数 × $0.0013」で見積もり、`DECISION_EVAL_BUDGET_USD`（既定 2.0）か中継の残額（上限 − 累計）を超えるなら走らない。
 - 実行中も、中継の累計の差分が上限を超えたら新しい呼び出しを始めない。
 - 429/5xx（`RateLimited`・`Unavailable`）が 3 回続いたら止める。設定の誤り（`Config`）は 1 回で止める。
+- 中継の累計を読めなかったら止める（使った額を確かめられないため）。
+- 評価する判定用のモデルの請求先（`provider`）に `[llm.limits]` の枠（プロバイダの枠かユーザーごとの上限）が掛からない設定・請求先の接続先（`base_url`）が中継と同じ origin でない設定では走らない（中継を通らない呼び出しは累計に載らず、実行中に止められない）。
 - 止めても、それまでの結果は書く（テストは失敗にする）。
 
 ## 指標
@@ -59,7 +62,7 @@ cargo test -p shiki-llm-gateway --test decision_eval -- --ignored --nocapture de
 - 正解率・再現率・適合率には Wilson の 95% 信頼区間を付ける。誤り（拒否・不正出力・途切れ・一時障害）は「正解ではない」「自動で処理しない」として数える（ワークフローでは error の出口から人へ回る）。
 - θ（0.6/0.7/0.8/0.9）ごとに、問い合わせは自動処理率（確からしさ ≥ θ）と自動処理分の精度、注入で指示された分類へ自動で振り分けた件数を出す。
 - 経費の「経理確認」は「規程のフラグ OR AI の needs_review が true OR 確からしさが θ 未満 OR 誤り」で決める（AI は確認を足すことしかできない・PIT-80 ③）。θ ごとに uncertain の割合・経理確認の再現率と適合率・注入の取りこぼしを出す。AI の needs_review の正解率は、規程のフラグが出ない行（中身で判断する行）で比べる（問いで「上限・休日・領収書だけを理由にしなくてよい」と言っているため）。
-- 較正: 等頻度 5 区間の ECE と、区間ごとの正解率の表。
+- 較正: 等頻度 5 区間の ECE と、区間ごとの件数・正解率の表。同じ確からしさの点は同じ区間に入れる（同値のまとまりは、並べた位置の真ん中が入る区間へ入れる）。自己申告の確からしさは 0.7・0.85 などに偏るので、区間は 5 より少なくなることがある。結果は点の並び（呼び出しの完了順）によらない（この規則より前の結果の ECE は、同値を並びの順で分けていたので、並びで値が動く）。
 - 拒否・不正出力（形に合わない・要求と合わない）・途切れ（stop_reason=max_tokens）は別々に数える。p50/p95 の待ち時間、1,000 件あたりの費用（中継の差分から）。
 - 3 回反復の一致率（主な質問の答えが全反復で同じだった行の割合）。
 
@@ -74,6 +77,16 @@ cargo test -p shiki-llm-gateway --test decision_eval -- --ignored --nocapture de
 
 E1 の後に `adjudication/<データ名>.jsonl` を書く。中身は、test でモデルとラベルが食い違った行（どれかの反復で、主な質問の答えがラベルと違うか誤りになった行。経費は規程のフラグの無い行の needs_review で見る）の全件と、test から種を固定して抜いた 20%（16 件）。
 各行は `id`・`reasons`（`disagreement`・`random_20pct`）・`state`（本文）・`labels`・`tags`・`model_answers`（反復ごとの答えと確からしさ）・`adjudication`（`labels` と `note` が空）。human が `adjudication.labels` に正しいラベルを書き、ラベルを直したら `build_datasets.py` の該当行を直して作り直す。
+裁定を書いた行（`adjudication.labels` が空でない行）があるファイルは上書きしない。E1 を流し直したときの材料は `adjudication/<データ名>-<結果の名前>.jsonl` に書く。
+
+ラベルを直した後の合否は、E1 を流し直さず（費用がかかり、答えも変わってラベルの直しと標本の揺れが混ざる）、保存した答えを今のデータで採点し直して出す:
+
+```bash
+DECISION_EVAL=1 DECISION_EVAL_STAGE=rescore DECISION_EVAL_RESULT=2026-10-27-E1 \
+  cargo test -p shiki-llm-gateway --test decision_eval -- --ignored --nocapture decision_eval
+```
+
+実 LLM も DB も中継も使わない。結果は `results/<元の名前>-rescored.json`（採点に使ったデータの sha256・元の結果の名前を載せる）と summary.md に書く。質問が元の結果と違えば止める（答えは別の質問へのもの）。凍結した段なら、元の結果に残した凍結のしきい値で照らす。
 
 ## 結果
 

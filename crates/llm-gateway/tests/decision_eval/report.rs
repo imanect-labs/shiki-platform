@@ -1,7 +1,7 @@
 //! 結果の書き出し: `results/<日付>-<段>.json`・`results/summary.md`（全結果から作り直す）・
 //! `adjudication/<データ名>.jsonl`（E1 の後・human の裁定の材料）。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,11 @@ pub(crate) struct ResultFile {
     pub(crate) started_at: String,
     pub(crate) finished_at: String,
     pub(crate) model: String,
+    /// 最初に答えた版（後方互換。全部の版は [`Self::resolved_models`]）。
     pub(crate) resolved_model: Option<String>,
+    /// 答えた版の一覧（重複を除く・凍結した段は全部が凍結の版でなければ合否を出さない）。
+    #[serde(default)]
+    pub(crate) resolved_models: Vec<String>,
     pub(crate) split: String,
     pub(crate) reps: u32,
     pub(crate) effort: String,
@@ -57,8 +61,21 @@ pub(crate) struct ResultFile {
     pub(crate) latency_p95_ms: Option<u64>,
     pub(crate) stopped: Option<String>,
     pub(crate) frozen: Option<Frozen>,
+    /// 採点に使ったデータ（`*.jsonl`）の sha256（データ名 → 値。この欄より前の結果には無い）。
+    #[serde(default)]
+    pub(crate) datasets_sha256: BTreeMap<String, String>,
+    /// 保存した答えを今のデータで採点し直した結果なら、元の結果の名前（実 LLM は呼んでいない）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rescored_from: Option<String>,
     pub(crate) datasets: Vec<DatasetResult>,
     pub(crate) results: Vec<CallResult>,
+}
+
+/// 結果（`results/<label>.json`）を読む。
+pub(crate) fn read_result(label: &str) -> ResultFile {
+    let path = eval_dir().join("results").join(format!("{label}.json"));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
 pub(crate) fn write_result(file: &ResultFile) -> std::path::PathBuf {
@@ -187,13 +204,14 @@ fn render_rep(out: &mut String, rep: usize, m: &RepMetrics) {
         RepMetrics::Expense(m) => &m.calibration,
     };
     if !cal.bins.is_empty() {
-        out.push_str("\n  | 信頼度の区間（等頻度） | 平均 | 正解率 |\n  | --- | --- | --- |\n");
+        out.push_str("\n  | 信頼度の区間（等頻度・同じ値は分けない） | 件数 | 平均 | 正解率 |\n  | --- | --- | --- | --- |\n");
         for b in &cal.bins {
             let _ = writeln!(
                 out,
-                "  | {:.2}〜{:.2} | {:.3} | {} |",
+                "  | {:.2}〜{:.2} | {} | {:.3} | {} |",
                 b.conf_min,
                 b.conf_max,
+                b.accuracy.n,
                 b.conf_mean,
                 pct(&b.accuracy)
             );
@@ -229,6 +247,21 @@ fn render(file: &ResultFile) -> String {
     );
     if let Some(s) = &file.stopped {
         let _ = writeln!(out, "- **途中で止めた**: {s}");
+    }
+    if file.resolved_models.len() > 1 {
+        let _ = writeln!(out, "- 答えた版: {}", file.resolved_models.join("・"));
+    }
+    if let Some(from) = &file.rescored_from {
+        let sha: Vec<String> = file
+            .datasets_sha256
+            .iter()
+            .map(|(k, v)| format!("{k} {}", &v[..v.len().min(12)]))
+            .collect();
+        let _ = writeln!(
+            out,
+            "- **採点し直し**: {from} の答えを、今のデータ（{}）と今の指標の計算で採点し直した（実 LLM は呼んでいない）",
+            sha.join("・")
+        );
     }
     if let Some(f) = &file.frozen {
         let thetas: Vec<String> = f.theta.iter().map(|(k, v)| format!("{k} {v:.1}")).collect();
@@ -303,7 +336,9 @@ pub(crate) fn write_summary() {
         "# 判定の評価の結果（FEAT-1 の T7）\n\n\
          このファイルは `crates/llm-gateway/tests/decision_eval.rs` が results の JSON から書き出す（手で直さない）。\n\
          区間は Wilson の 95% 信頼区間。誤り（拒否・不正出力・途切れ・一時障害）は正解ではない・自動で処理しないとして数える。\n\
-         経費の「経理確認」は「規程のフラグ OR AI が true OR 確からしさが θ 未満 OR 誤り」。\n\n",
+         経費の「経理確認」は「規程のフラグ OR AI が true OR 確からしさが θ 未満 OR 誤り」。\n\
+         ECE は等頻度 5 区間で、同じ確からしさの点は同じ区間に入れる（同値が多いと区間は 5 より少なくなる。\
+         この規則より前に書いた結果の ECE は、同値を並びの順で分けていた）。\n\n",
     );
     for file in &files {
         out.push_str(&render(file));
@@ -319,7 +354,14 @@ const ADJUDICATION_SEED: &str = "decision-eval-adjudication-v1";
 ///
 /// 食い違いは主な質問で見る（問い合わせは category、経費は規程のフラグの無い行の needs_review）。
 /// どれかの反復で食い違うか誤りになった行を入れる。裁定の欄（`adjudication`）は空で書く。
-pub(crate) fn write_adjudication(ds: &Dataset, results: &[CallResult]) -> (usize, usize) {
+///
+/// 書く先は `adjudication/<データ名>.jsonl`。ただし、そこに human が裁定を書いた行（`adjudication.labels` が
+/// 空でない行）があれば上書きせず、`adjudication/<データ名>-<結果の名前>.jsonl` に書く（裁定を失わない）。
+pub(crate) fn write_adjudication(
+    ds: &Dataset,
+    results: &[CallResult],
+    label: &str,
+) -> (std::path::PathBuf, usize, usize) {
     let key = primary_key(ds.name);
     let test: Vec<_> = ds.rows.iter().filter(|r| r.split == "test").collect();
     let take = (test.len() as f64 * ADJUDICATION_SAMPLE).round() as usize;
@@ -383,10 +425,26 @@ pub(crate) fn write_adjudication(ds: &Dataset, results: &[CallResult]) -> (usize
     }
     let dir = eval_dir().join("adjudication");
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
-    let path = dir.join(format!("{}.jsonl", ds.name));
+    let mut path = dir.join(format!("{}.jsonl", ds.name));
+    if has_adjudicated(&path) {
+        path = dir.join(format!("{}-{label}.jsonl", ds.name));
+    }
     std::fs::write(&path, lines.join("\n") + "\n")
         .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    (lines.len(), disagreements)
+    (path, lines.len(), disagreements)
+}
+
+/// 裁定の材料のファイルに、human が裁定を書いた行（`adjudication.labels` が空でない）があるか。
+pub(crate) fn has_adjudicated(path: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    text.lines().any(|l| {
+        serde_json::from_str::<Value>(l).is_ok_and(|v| {
+            v.pointer("/adjudication/labels")
+                .is_some_and(|x| !x.is_null())
+        })
+    })
 }
 
 /// 同じ名前の結果がもうあるか（上書きしない）。

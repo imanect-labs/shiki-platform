@@ -3,9 +3,10 @@
 //! 止める規則（付録 B §6）:
 //! - 実行中の累計（中継の累計額の差分）が 1 回の起動の上限を超えたら、新しい呼び出しを始めない。
 //! - 429/5xx（`RateLimited`・`Unavailable`）が 3 回続いたら止める。設定の誤り（`Config`）は 1 回で止める。
+//! - 中継の累計を読めなかったら止める（使った額を確かめられないため。落とさず、それまでの結果を書く）。
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
 
 use authz::AuthContext;
@@ -18,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::data::Dataset;
-use crate::setup::relay_spend;
+use crate::setup::try_relay_spend;
 
 /// 質問 1 件への答え（値は choice・score なら名前、boolean なら真偽値）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -202,7 +203,17 @@ impl Runner<'_> {
                     .get_or_insert_with(|| "429/5xx が 3 回続いたので止めた".into());
             }
             calls.push(result);
-            let spent = relay_spend(self.http, self.relay).await.total_usd - self.relay_before_usd;
+            // 累計を読めなければ、使った額を確かめられないので新しい呼び出しを始めない（落とさずに結果を書く）。
+            let spent = match try_relay_spend(self.http, self.relay).await {
+                Ok(s) => s.total_usd - self.relay_before_usd,
+                Err(e) => {
+                    stop.set(true);
+                    stopped
+                        .borrow_mut()
+                        .get_or_insert_with(|| format!("{e}ので止めた"));
+                    f64::NAN
+                }
+            };
             if spent > self.budget_usd {
                 stop.set(true);
                 stopped.borrow_mut().get_or_insert_with(|| {
@@ -222,4 +233,48 @@ impl Runner<'_> {
             stopped: stopped.into_inner(),
         }
     }
+}
+
+/// 凍結した段で、答えた版を確かめるために先頭から 1 件ずつ流す回数の上限（答えが得られなければ止める）。
+pub(crate) const VERSION_PROBES: usize = 3;
+
+/// 凍結した段で、答えた版を確かめる（成功した答えが出るまで、先頭の仕事を 1 件ずつ `run_one` で流す）。
+///
+/// 誤りで終わった呼び出しには版が載らないので、[`VERSION_PROBES`] 件続けて答えが得られなければ止める。答えた版が
+/// 凍結の版と違えば止める（残りは流さない）。止めない限り、残りの仕事は `rest` に残る。
+pub(crate) async fn probe_version<J, F, Fut>(
+    mut run_one: F,
+    rest: &mut VecDeque<J>,
+    frozen: Option<&crate::data::Frozen>,
+) -> Outcome
+where
+    F: FnMut(J) -> Fut,
+    Fut: std::future::Future<Output = Outcome>,
+{
+    let mut outcome = Outcome {
+        calls: Vec::new(),
+        stopped: None,
+    };
+    for _ in 0..VERSION_PROBES {
+        let Some(job) = rest.pop_front() else {
+            return outcome;
+        };
+        let one = run_one(job).await;
+        outcome.calls.extend(one.calls);
+        outcome.stopped = one.stopped;
+        let resolved = crate::data::resolved_models(&outcome.calls);
+        if !resolved.is_empty() {
+            if let Some(m) = crate::data::version_mismatch(&resolved, frozen) {
+                outcome.stopped = Some(format!("{m}ので止めた"));
+            }
+            return outcome;
+        }
+        if outcome.stopped.is_some() {
+            return outcome;
+        }
+    }
+    outcome.stopped = Some(format!(
+        "先頭の {VERSION_PROBES} 件で答えが得られず、答えた版を確かめられないので止めた"
+    ));
+    outcome
 }

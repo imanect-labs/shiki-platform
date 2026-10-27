@@ -60,31 +60,65 @@ struct TomlProvider {
     api_key: Option<String>,
 }
 
+/// URL の origin（scheme・host・port）。読めなければ `None`。
+fn origin(url: &str) -> Option<(String, String, Option<u16>)> {
+    let u = reqwest::Url::parse(url).ok()?;
+    Some((
+        u.scheme().to_string(),
+        u.host_str()?.to_string(),
+        u.port_or_known_default(),
+    ))
+}
+
 /// TOML から gateway の設定を組み、判定用のモデル `model` の出し方を段に合わせる。
 ///
-/// 利用上限（`[llm.limits]`）が無効なら止める（評価は本番と同じ枠の検査を通す）。
+/// 次のどれかなら止める（評価は本番と同じ枠の検査を通し、実行中の歯止め（中継の累計）が効く経路で呼ぶ）:
+/// - 利用上限（`[llm.limits]`）が無効か、評価する判定用のモデルの請求先（`provider`）に枠が掛からない
+///   （ユーザーごとの上限もプロバイダの枠も無い）。
+/// - 判定用のモデルの請求先が stub でなく、その接続先（`base_url`）が中継（`relay`）と同じ origin でない
+///   （中継を通らない呼び出しは累計に載らず、実行中に止められない）。
 pub(crate) fn gateway_config(
     path: &Path,
     model: &str,
     effort: Effort,
     samples: u8,
+    relay: &str,
 ) -> GatewayConfig {
     use figment::providers::{Format, Toml};
     assert!(path.exists(), "設定が無い: {}", path.display());
     let llm: TomlLlm = figment::Figment::from(Toml::file_exact(path))
         .extract_inner("llm")
         .unwrap_or_else(|e| panic!("{} の [llm] を読めない: {e}", path.display()));
-    assert!(
-        llm.limits.enabled && !llm.limits.is_noop(),
-        "{} の [llm.limits] が無効（評価は枠の検査を有効にして走る）",
-        path.display()
-    );
     let mut models = llm.models;
     let entry = models
         .iter_mut()
         .find(|m| m.id == model)
         .unwrap_or_else(|| panic!("判定用のモデル {model} が設定に無い"));
     assert!(entry.is_decision(), "{model} は判定用のモデルではない");
+    let provider = entry.provider_id().to_string();
+    assert!(
+        llm.limits.per_user().is_some() || llm.limits.provider_limit(&provider).is_some(),
+        "{} の [llm.limits] が、判定用のモデル {model} の請求先 {provider} に掛からない\
+         （評価は枠の検査を有効にして走る）",
+        path.display()
+    );
+    let (kind, base_url) = if provider == DEFAULT_PROVIDER_ID {
+        (llm.backend, llm.base_url.clone())
+    } else {
+        let p = llm
+            .providers
+            .iter()
+            .find(|p| p.id == provider)
+            .unwrap_or_else(|| panic!("判定用のモデル {model} の請求先 {provider} が設定に無い"));
+        (p.backend, p.base_url.clone())
+    };
+    if kind != ProviderKind::Stub {
+        assert!(
+            base_url.as_deref().and_then(origin).is_some() && base_url.as_deref().and_then(origin) == origin(relay),
+            "判定用のモデル {model} の請求先 {provider} の接続先（{base_url:?}）が中継（{relay}）でない\
+             （中継を通さないと、実行中に累計で止められない）"
+        );
+    }
     entry.decision = Some(DecisionTuning { samples, effort });
     GatewayConfig {
         provider: ProviderConfig {
@@ -166,15 +200,25 @@ pub(crate) struct RelaySpend {
 }
 
 pub(crate) async fn relay_spend(http: &reqwest::Client, base: &str) -> RelaySpend {
+    try_relay_spend(http, base)
+        .await
+        .unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// 中継の累計額（読めなければ理由）。実行中は失敗しても落とさず、止めて結果を書く（[`crate::run`]）。
+pub(crate) async fn try_relay_spend(
+    http: &reqwest::Client,
+    base: &str,
+) -> Result<RelaySpend, String> {
     let url = format!("{}/spend", base.trim_end_matches('/'));
     let resp = http
         .get(&url)
         .send()
         .await
-        .unwrap_or_else(|e| panic!("中継の累計額を読めない（{url}）: {e}"));
+        .map_err(|e| format!("中継の累計額を読めない（{url}）: {e}"))?;
     resp.json()
         .await
-        .unwrap_or_else(|e| panic!("中継の累計額の形が違う（{url}）: {e}"))
+        .map_err(|e| format!("中継の累計額の形が違う（{url}）: {e}"))
 }
 
 /// 会計（llm_usage）に載ったこの実行の分（行数・額）。

@@ -19,6 +19,9 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 
+/// プロンプトの版（答えた版 `resolved_model` の `llm_decider/<版>/` に載る）。評価の凍結（`eval/decision/frozen.json`）
+/// はこの値と照らす（版を上げたら凍結し直す・PIT-80）。
+pub use super::llm_decider_prompt::PROMPT_VERSION;
 use super::llm_decider_prompt::{self as prompt, Reply};
 use super::llm_decider_vote::aggregate;
 use crate::config::DecisionTuning;

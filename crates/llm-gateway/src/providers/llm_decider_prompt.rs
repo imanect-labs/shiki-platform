@@ -29,7 +29,7 @@ use crate::decision::{DecideRequest, Question, QuestionKind};
 /// - v3: 出力の形の質問の名前に番号を付け（`01_category`）、作者が並べた順に答えさせる。前の質問で見つけた
 ///   問題を後の質問にも反映し、答えどうしを食い違わせないよう system に書く（T7 の E4 で、まとめの質問
 ///   `needs_review` が辞書順で先に書かれ、後で見つけた費目の不一致と食い違った）。
-pub(super) const PROMPT_VERSION: &str = "v3";
+pub const PROMPT_VERSION: &str = "v3";
 
 /// 出力の形の名前（OpenAI 互換の `json_schema.name`）。
 pub(super) const SCHEMA_NAME: &str = "decision";
