@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { AlertCircle, Globe2, Sparkles, UserRound } from "lucide-react";
+import { AlertCircle, Globe2, ListChecks, Sparkles, UserRound } from "lucide-react";
 
 import {
   fetchAdminModels,
@@ -86,9 +86,16 @@ function isEmpty(req: UpdateAiSettingsRequest): boolean {
   return Object.keys(req).length === 0;
 }
 
+/// 判定用のモデル（ワークフローの「AI で判定」でだけ使う・既定と Auto の振り先にできない）か。
+const isDecision = (m: AdminModel) => m.modality === "decision";
+
 /// 画面上の検証（サーバも同じ規則で検証する。ここは早めに気付かせるため）。
 function validate(models: AdminModel[], d: Draft): string | null {
-  if (!models.some((m) => d.enabled[m.id])) return "少なくとも 1 つのモデルを公開してください";
+  if (!models.some((m) => !isDecision(m) && d.enabled[m.id])) {
+    return models.some(isDecision)
+      ? "チャットで使えるモデル（判定用以外）を少なくとも 1 つ公開してください"
+      : "少なくとも 1 つのモデルを公開してください";
+  }
   if (d.default_model !== AUTO && !d.enabled[d.default_model])
     return "既定のモデルが非公開になっています";
   if (d.jpy.trim() !== "") {
@@ -108,6 +115,36 @@ function PersonalBadge() {
       <UserRound className="size-3" aria-hidden />
       本人専用
     </Badge>
+  );
+}
+
+/// 判定用のモデルの説明（バッジの title）。
+const DECISION_HINT =
+  "ワークフローの「AI で判定」でだけ使います。チャットのモデル選択・既定・Auto の振り先には出ません。";
+
+function DecisionBadge() {
+  return (
+    <Badge variant="muted" className="gap-1 px-1.5 py-0 text-[10.5px]" title={DECISION_HINT}>
+      <ListChecks className="size-3" aria-hidden />
+      判定用
+    </Badge>
+  );
+}
+
+/// 判定用のモデルの元にする chat モデル（判定するには元のモデルも公開しておく）。
+function DecisionVia({ via, label, on }: { via: string; label: string; on: boolean }) {
+  return (
+    <p
+      className={cn(
+        "mt-0.5 text-xs",
+        on ? "text-muted-foreground" : "text-[oklch(0.4_0.1_70)] dark:text-[oklch(0.87_0.09_85)]",
+      )}
+      data-via={via}
+    >
+      {on
+        ? `元のモデル: ${label}（判定に使います）`
+        : `元のモデル ${label} が非公開のため判定できません`}
+    </p>
   );
 }
 
@@ -208,7 +245,8 @@ export function AiModelsView() {
   const problem = validate(models, draft);
   const label = (id: string | null | undefined) =>
     models.find((m) => m.id === id)?.label ?? id ?? "—";
-  const enabledModels = models.filter((m) => draft.enabled[m.id]);
+  // Auto の振り先に選べるのは公開した chat モデルだけ（判定用は選べない）。
+  const enabledModels = models.filter((m) => draft.enabled[m.id] && !isDecision(m));
   const isPersonal = (id: string | null | undefined) => models.some((m) => m.id === id && m.personal);
 
   const save = async () => {
@@ -275,17 +313,31 @@ export function AiModelsView() {
                         </Badge>
                       ) : null}
                       {m.personal ? <PersonalBadge /> : null}
+                      {isDecision(m) ? <DecisionBadge /> : null}
                     </div>
                     {m.description ? (
                       <p className="mt-0.5 text-xs text-muted-foreground">{m.description}</p>
                     ) : null}
+                    {m.decision_via ? (
+                      <DecisionVia
+                        via={m.decision_via}
+                        label={label(m.decision_via)}
+                        on={!!draft.enabled[m.decision_via]}
+                      />
+                    ) : null}
                     <p className="mt-1 text-xs text-muted-foreground">
                       {m.provider_label}・思考の深さ {m.supports_effort ? "3 段階" : "なし"}
                     </p>
-                    <p className="mt-0.5 font-mono text-xs text-muted-foreground">
-                      入力 {formatPrice(m.prompt_price_micros_per_mtok)} / 出力{" "}
-                      {formatPrice(m.completion_price_micros_per_mtok)}（100 万トークン）
-                    </p>
+                    {m.decision_via ? (
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        単価は元のモデルのもの（答えさせた回数分）
+                      </p>
+                    ) : (
+                      <p className="mt-0.5 font-mono text-xs text-muted-foreground">
+                        入力 {formatPrice(m.prompt_price_micros_per_mtok)} / 出力{" "}
+                        {formatPrice(m.completion_price_micros_per_mtok)}（100 万トークン）
+                      </p>
+                    )}
                   </div>
                   <label className="flex shrink-0 items-center gap-2 pt-0.5 text-xs text-muted-foreground">
                     公開
@@ -296,13 +348,15 @@ export function AiModelsView() {
                     />
                   </label>
                 </div>
-                <DefaultRadio
-                  name="default-model-mobile"
-                  ariaLabel={`${m.label} を既定にする`}
-                  checked={draft.default_model === m.id}
-                  disabled={!on}
-                  onChange={() => set({ default_model: m.id })}
-                />
+                {isDecision(m) ? null : (
+                  <DefaultRadio
+                    name="default-model-mobile"
+                    ariaLabel={`${m.label} を既定にする`}
+                    checked={draft.default_model === m.id}
+                    disabled={!on}
+                    onChange={() => set({ default_model: m.id })}
+                  />
+                )}
               </li>
             );
           })}
@@ -370,28 +424,50 @@ export function AiModelsView() {
                           </Badge>
                         ) : null}
                         {m.personal ? <PersonalBadge /> : null}
+                        {isDecision(m) ? <DecisionBadge /> : null}
                       </div>
                       {m.description ? (
                         <div className="mt-0.5 text-xs text-muted-foreground">{m.description}</div>
+                      ) : null}
+                      {m.decision_via ? (
+                        <DecisionVia
+                          via={m.decision_via}
+                          label={label(m.decision_via)}
+                          on={!!draft.enabled[m.decision_via]}
+                        />
                       ) : null}
                     </td>
                     <td className="px-2 py-2.5 font-mono text-xs text-muted-foreground">{m.id}</td>
                     <td className="px-2 py-2.5">{m.provider_label}</td>
                     <td className="px-2 py-2.5">{m.supports_effort ? "3 段階" : "—"}</td>
                     <td className="px-2 py-2.5 text-right font-mono text-xs text-muted-foreground">
-                      {formatPrice(m.prompt_price_micros_per_mtok)} /{" "}
-                      {formatPrice(m.completion_price_micros_per_mtok)}
+                      {m.decision_via ? (
+                        <span className="font-sans" title="答えさせた回数分を、元のモデルの単価で数えます">
+                          元のモデルの単価
+                        </span>
+                      ) : (
+                        <>
+                          {formatPrice(m.prompt_price_micros_per_mtok)} /{" "}
+                          {formatPrice(m.completion_price_micros_per_mtok)}
+                        </>
+                      )}
                     </td>
                     <td className="px-4 py-2.5 text-center">
-                      <input
-                        type="radio"
-                        name="default-model"
-                        aria-label={`${m.label} を既定にする`}
-                        checked={draft.default_model === m.id}
-                        disabled={!on}
-                        onChange={() => set({ default_model: m.id })}
-                        className="size-4 accent-[var(--primary)] disabled:opacity-40"
-                      />
+                      {isDecision(m) ? (
+                        <span className="text-muted-foreground" title="判定用のモデルは既定にできません">
+                          —
+                        </span>
+                      ) : (
+                        <input
+                          type="radio"
+                          name="default-model"
+                          aria-label={`${m.label} を既定にする`}
+                          checked={draft.default_model === m.id}
+                          disabled={!on}
+                          onChange={() => set({ default_model: m.id })}
+                          className="size-4 accent-[var(--primary)] disabled:opacity-40"
+                        />
+                      )}
                     </td>
                   </tr>
                 );
