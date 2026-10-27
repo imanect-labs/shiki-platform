@@ -198,6 +198,43 @@ export async function addRecord(page: Page, tableId: string, data: Record<string
   return (await res.json()) as DataRecord;
 }
 
+/// 行の列を書き換える（応答の状態コードと本文を返す・権限の試験に使う）。
+export async function patchRecord(
+  page: Page,
+  tableId: string,
+  rec: DataRecord,
+  data: Record<string, unknown>,
+): Promise<{ status: number; record?: DataRecord }> {
+  const res = await page.request.patch(`/api/data/tables/${tableId}/records/${rec.id}`, {
+    headers: await csrfHeaders(page),
+    data: { patch: data, expected_rev: rec.rev },
+  });
+  return { status: res.status(), record: res.ok() ? ((await res.json()) as DataRecord) : undefined };
+}
+
+/// 行の状態を進める（状態の遷移の API・応答の状態コードを返す）。
+export async function transitionRecord(page: Page, tableId: string, rec: DataRecord, to: string): Promise<number> {
+  const res = await page.request.post(`/api/data/tables/${tableId}/records/${rec.id}/transition`, {
+    headers: await csrfHeaders(page),
+    data: { to, expected_rev: rec.rev },
+  });
+  return res.status();
+}
+
+/// テンプレートの規程の script（`rules` ノード）を、ワークフローの外で関数として読む（評価データの rule_flags・
+/// 規程の例と照らすため）。script は `main(input)` を定義する素の JavaScript。
+export function expenseRulesScript(s: Scenario): (input: Record<string, unknown>) => {
+  flags: string[];
+  state: Record<string, unknown>;
+  applicant: unknown;
+  approver: unknown;
+} {
+  const nodes = (s.workflow as unknown as { nodes: { id: string; params: { source?: { inline?: string } } }[] }).nodes;
+  const src = nodes.find((n) => n.id === "rules")?.params.source?.inline;
+  if (!src) throw new Error("rules の script が無い");
+  return new Function(`${src}\nreturn main;`)() as ReturnType<typeof expenseRulesScript>;
+}
+
 export async function getRecord(page: Page, tableId: string, id: string): Promise<DataRecord> {
   const res = await page.request.get(`/api/data/tables/${tableId}/records/${id}`);
   expect(res.ok(), await res.text()).toBeTruthy();
@@ -251,12 +288,13 @@ export async function stepOutput<T>(page: Page, workflowId: string, runId: strin
   return ((await res.json()) as { output: T }).output;
 }
 
-/// 評価データの経費の申請（判定の材料の形）を、経費の表の 1 行にする（承認者は渡す）。
-export function expenseRecord(state: Record<string, unknown>, approver: string): Record<string, unknown> {
+/// 評価データの経費の申請（判定の材料の形）を、経費の表の 1 行にする（申請者が入れる列だけ。申請者と上長の列は
+/// ワークフローが行の作成者と承認者の表から入れる）。
+export function expenseRecord(state: Record<string, unknown>): Record<string, unknown> {
   const used = String(state["利用日"]).slice(0, 10);
   const data: Record<string, unknown> = {
     title: `${state["費目"]} ${state["品名・内容"]}`,
-    applicant: state["申請者"],
+    applicant_name: state["申請者"],
     department: state["部署"],
     used_on: used,
     category: state["費目"],
@@ -265,7 +303,6 @@ export function expenseRecord(state: Record<string, unknown>, approver: string):
     item: state["品名・内容"],
     purpose: state["摘要"],
     receipt: state["領収書"],
-    approver,
   };
   if (state["人数"] !== undefined) data.people = state["人数"];
   if (state["参加者"] !== undefined) data.attendees = state["参加者"];

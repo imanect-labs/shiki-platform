@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import pathlib
 import random
 
@@ -271,22 +272,66 @@ ENTERTAINMENT_PER_PERSON = 15_000
 NO_RECEIPT_LIMIT = 5_000
 ASSET_LIMIT = 100_000
 MEAL_CATEGORIES = ("会議費", "接待交際費")
+PER_PERSON_CAPS = {"会議費": MEETING_PER_PERSON, "接待交際費": ENTERTAINMENT_PER_PERSON}
+RULE_CASES = ROOT / "scenarios" / "rule_cases.json"
+
+
+def _number(v):
+    """数として読む（空・真偽値・数でないものは None）。scenarios の規程の script の num と同じ。"""
+    if v is None or v == "" or isinstance(v, bool):
+        return None
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) else None
 
 
 def rule_flags(e, date):
+    """経費の規程のフラグ。scenarios/expense_policy.json の規程の script（policyFlags）と同じ規程・同じ文言。
+
+    入力が欠けたら確認へ回す側に倒す: 金額が正でなければそれだけを返す。人数が無い（か 1 以上の整数でない）
+    会議費・接待交際費は 1 人として上限を確かめる。領収書が「あり」でなければ無いとみなす。
+    """
+    amount = _number(e.get("amount"))
+    if amount is None or amount <= 0:
+        return ["金額が 0 以下か数でない"]
     flags = []
-    people = e["people"]
-    if e["category"] == "会議費" and people and e["amount"] / people > MEETING_PER_PERSON:
-        flags.append("会議費の 1 人あたりの上限（5,000 円）を超える")
-    if e["category"] == "接待交際費" and people and e["amount"] / people > ENTERTAINMENT_PER_PERSON:
-        flags.append("接待交際費の 1 人あたりの上限（15,000 円）を超える")
-    if e["receipt"] == "なし" and e["amount"] >= NO_RECEIPT_LIMIT and e["category"] != "交通費":
+    n = _number(e.get("people"))
+    people = int(n) if n is not None and n.is_integer() and n >= 1 else None
+    cap = PER_PERSON_CAPS.get(e["category"])
+    if cap is not None:
+        if people is None:
+            if amount > cap:
+                flags.append("人数が無いか正しくなく、1 人として数えると上限を超える（会議費・接待交際費）")
+        elif amount / people > cap:
+            flags.append(
+                "会議費の 1 人あたりの上限（5,000 円）を超える"
+                if e["category"] == "会議費"
+                else "接待交際費の 1 人あたりの上限（15,000 円）を超える"
+            )
+    if e.get("receipt") != "あり" and amount >= NO_RECEIPT_LIMIT and e["category"] != "交通費":
         flags.append("領収書が無く 5,000 円以上")
     if e["category"] in MEAL_CATEGORIES and date.weekday() >= 5:
         flags.append("休日の飲食（会議費・接待交際費）")
-    if e["category"] == "消耗品費" and e["amount"] >= ASSET_LIMIT:
+    if e["category"] == "消耗品費" and amount >= ASSET_LIMIT:
         flags.append("10 万円以上は資産の計上の対象（消耗品費では申請できない）")
     return flags
+
+
+def check_rule_cases():
+    """規程の例（scenarios/rule_cases.json）を rule_flags で確かめる（script の側は web の E2E が確かめる）。"""
+    cases = json.loads(RULE_CASES.read_text(encoding="utf-8"))["cases"]
+    for c in cases:
+        r = c["record"]
+        e = {
+            "category": r["category"],
+            "amount": r.get("amount"),
+            "people": r.get("people"),
+            "receipt": r.get("receipt"),
+        }
+        got = rule_flags(e, dt.date.fromisoformat(r["used_on"]))
+        assert got == c["flags"], (c["name"], got, c["flags"])
 
 
 def exp(kind, category, amount, vendor, item, purpose, *, people=None, attendees=None,
@@ -506,6 +551,7 @@ def write(name, prefix, rows, rng):
 
 
 def main():
+    check_rule_cases()
     rng = random.Random(SEED)
     inquiries = build_inquiries(rng)
     expenses = build_expenses(rng)

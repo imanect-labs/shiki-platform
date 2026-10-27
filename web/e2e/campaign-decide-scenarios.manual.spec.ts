@@ -22,7 +22,7 @@ import {
   type RunDetail,
   type ScenarioName,
 } from "./decide-scenarios";
-import { loginViaKeycloak } from "./helpers";
+import { cleanupAll, loginAs, loginViaKeycloak } from "./helpers";
 
 /// 判定の受け入れシナリオを実 LLM（Claude Haiku 5.5 の判定用のモデル）で流す（FEAT-1 の T8・手で流す）。
 ///
@@ -37,6 +37,8 @@ import { loginViaKeycloak } from "./helpers";
 /// - `CAMPAIGN_KEEP=1` なら片付けを後に回し（SQL の裏取りと画面の確かめのため）、作ったものを
 ///   `CAMPAIGN_STATE`（既定 test-results/decide-scenarios-state.json）に書く。後で `CAMPAIGN_CLEANUP=1` で消す。
 /// - `E2E_SHOTS_DIR` を渡すと、PC とスマホの画面を撮る。
+/// - APP-01 の申請は alice が出し、承認者の表に「alice の上長は bob」の行を入れる（申請者と上長の列はワークフローが
+///   入れる。上長が決まらないと規程のフラグで経理確認に回り、測りたい判定が混ざる）。
 /// 前提: `SHIKI_CONFIG=~/.config/shiki-dev/llm-haiku.toml` のスタック・中継（127.0.0.1:8787）。
 /// 流し方: `CAMPAIGN=1 E2E_BASE_URL=http://localhost:3000 pnpm exec playwright test campaign-decide-scenarios --workers=1`
 
@@ -251,9 +253,11 @@ async function runScenario(
   out: Created,
   toRecord: (r: DatasetRow) => Record<string, unknown>,
   budget: { start: number },
+  prepare?: (out: Created) => Promise<void>,
 ): Promise<{ results: RowResult[]; stopped: boolean }> {
   const s = loadScenario(name);
   await instantiate(page, s, values, out);
+  if (prepare) await prepare(out);
   const tableId = Object.values(out.tables)[0].id;
   const rows = pick(name);
   const added: { row: DatasetRow; record_id: string }[] = [];
@@ -284,6 +288,12 @@ test.describe("判定の受け入れシナリオ（実 LLM）", () => {
     const me = (await (await page.request.get("/api/me")).json()) as Me;
     expect(me.roles.length, "部署に属していない（担当・経理の部署の代わりが無い）").toBeGreaterThan(0);
     const team = (i: number) => me.roles[i % me.roles.length];
+    // APP-01 の上長（承認者の表に入れる bob の id）。
+    const bobCtx = await browser.newContext();
+    const bob = await bobCtx.newPage();
+    await loginAs(bob, "bob");
+    const manager = ((await (await bob.request.get("/api/me")).json()) as Me).id;
+    await bobCtx.close();
     const started = new Date();
     const budget = { start: await spent() };
     const restore = await publishDecisionModel(page);
@@ -308,8 +318,11 @@ test.describe("判定の受け入れシナリオ（実 LLM）", () => {
         "expense_policy",
         { "{{model.decide}}": MODEL, "{{role.accounting}}": team(0) },
         exp,
-        (r) => expenseRecord(r.state, me.id),
+        (r) => expenseRecord(r.state),
         budget,
+        async (made) => {
+          await addRecord(page, made.tables.approvers.id, { member: me.id, manager });
+        },
       );
       const spend = Math.round(((await spent()) - budget.start) * 1e6) / 1e6;
       const report = {
@@ -359,15 +372,22 @@ test.describe("判定の受け入れシナリオ（実 LLM）", () => {
       expect(report.scenarios.inquiry_triage.metrics.injected_followed_auto).toEqual([]);
       expect(report.scenarios.expense_policy.metrics.injected_escaped).toEqual([]);
     } finally {
-      await restore();
-      if (KEEP) {
-        mkdirSync(path.dirname(STATE), { recursive: true });
-        writeFileSync(STATE, JSON.stringify({ created: [inq, exp] }, null, 2));
-        console.log(`片付けは後で: CAMPAIGN_CLEANUP=1 CAMPAIGN_STATE=${STATE}`);
-      } else {
-        await cleanup(page, inq);
-        await cleanup(page, exp);
-      }
+      // 判定用のモデルの公開を戻すのと片付けは、どれかが投げても全部走らせる。
+      await cleanupAll(
+        restore,
+        async () => {
+          if (!KEEP) return;
+          mkdirSync(path.dirname(STATE), { recursive: true });
+          writeFileSync(STATE, JSON.stringify({ created: [inq, exp] }, null, 2));
+          console.log(`片付けは後で: CAMPAIGN_CLEANUP=1 CAMPAIGN_STATE=${STATE}`);
+        },
+        async () => {
+          if (!KEEP) await cleanup(page, inq);
+        },
+        async () => {
+          if (!KEEP) await cleanup(page, exp);
+        },
+      );
     }
   });
 
@@ -375,6 +395,6 @@ test.describe("判定の受け入れシナリオ（実 LLM）", () => {
     test.skip(!CLEANUP_ONLY, "CAMPAIGN_CLEANUP=1 のときだけ");
     await loginViaKeycloak(page);
     const state = JSON.parse(readFileSync(STATE, "utf8")) as { created: Created[] };
-    for (const c of state.created) await cleanup(page, c);
+    await cleanupAll(...state.created.map((c) => () => cleanup(page, c)));
   });
 });
