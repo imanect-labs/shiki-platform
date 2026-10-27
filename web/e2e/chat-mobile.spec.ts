@@ -94,7 +94,7 @@ test.describe("スマホのチャット", () => {
     await expect(phone.getByTestId("home-mode-agent")).toHaveAttribute("aria-selected", "true");
     await expect(phone.getByLabel("メッセージを入力")).toHaveAttribute("placeholder", /計画を立て/);
     await expect(phone.getByRole("button", { name: /作業フォルダ/ })).toBeVisible();
-    await expect(phone.getByRole("radiogroup", { name: "承認モード" })).toBeVisible();
+    await expect(phone.getByRole("radiogroup", { name: "承認", exact: true })).toBeVisible();
     // 横にはみ出さない（モードの切替・設定の段がスマホ幅に収まる）。
     const overflow = await phone.evaluate(
       () => document.documentElement.scrollWidth - window.innerWidth,

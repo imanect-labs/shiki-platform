@@ -6,6 +6,7 @@
 /// - エージェント: エージェントモードで始める（作業フォルダ・承認モードを選べる）。
 /// - 作成: 作るものの種類を本文の先頭に添えて送る（AI が対応する保存ツールで下書きを作る）。
 
+import type { Attachment } from "@/lib/chat-api";
 import {
   Bot,
   FileSpreadsheet,
@@ -24,25 +25,41 @@ export type HomeModeDef = {
   key: HomeMode;
   label: string;
   icon: LucideIcon;
-  /// 入力欄のプレースホルダ（PC）。作成モードは種類ごとの文言を使う。
+  /// 入力欄のプレースホルダ。作成モードは種類ごとの文言を使う。
   placeholder: string;
+  /// スマホ（1 行の入力欄）向けの短いプレースホルダ。
+  short: string;
 };
 
 export const HOME_MODES: readonly HomeModeDef[] = [
-  { key: "chat", label: "チャット", icon: MessageSquareText, placeholder: "何でも尋ねて、社内文書も検索" },
+  {
+    key: "chat",
+    label: "チャット",
+    icon: MessageSquareText,
+    placeholder: "何でも尋ねて、社内文書も検索",
+    short: "Shiki に質問・依頼",
+  },
   {
     key: "search",
     label: "社内検索",
     icon: Search,
     placeholder: "社内の文書から探して答えます（見る権限のある文書だけ）",
+    short: "社内の文書から探す",
   },
   {
     key: "agent",
     label: "エージェント",
     icon: Bot,
     placeholder: "やってほしいことを書いてください。計画を立て、確認しながら進めます",
+    short: "エージェントに依頼",
   },
-  { key: "create", label: "作成", icon: NotebookPen, placeholder: "作りたいものを書いてください" },
+  {
+    key: "create",
+    label: "作成",
+    icon: NotebookPen,
+    placeholder: "作りたいものを書いてください",
+    short: "作りたいもの",
+  },
 ];
 
 export function homeModeDef(mode: HomeMode): HomeModeDef {
@@ -59,6 +76,8 @@ export type CreateKindDef = {
   /// 送る本文の先頭に添える語（AI にどの形式で作るかを伝える。会話にもそのまま表示される）。
   lead: string;
   placeholder: string;
+  /// スマホ（1 行の入力欄）向けの短いプレースホルダ。
+  short: string;
 };
 
 export const CREATE_KINDS: readonly CreateKindDef[] = [
@@ -68,6 +87,7 @@ export const CREATE_KINDS: readonly CreateKindDef[] = [
     icon: NotebookPen,
     lead: "ノートで作成",
     placeholder: "ノートで書きたいことを入力（例: 新製品の企画メモ）",
+    short: "ノートで作りたいもの",
   },
   {
     key: "document",
@@ -75,6 +95,7 @@ export const CREATE_KINDS: readonly CreateKindDef[] = [
     icon: FileText,
     lead: "ドキュメント（Word）で作成",
     placeholder: "ドキュメントで作りたいものを入力（例: 取引先への提案書）",
+    short: "ドキュメントで作りたいもの",
   },
   {
     key: "sheet",
@@ -82,6 +103,7 @@ export const CREATE_KINDS: readonly CreateKindDef[] = [
     icon: FileSpreadsheet,
     lead: "Excel で作成",
     placeholder: "Excel で作りたいものを入力（例: 月次の経費集計表）",
+    short: "Excel で作りたいもの",
   },
   {
     key: "slide",
@@ -89,6 +111,7 @@ export const CREATE_KINDS: readonly CreateKindDef[] = [
     icon: Presentation,
     lead: "スライドで作成",
     placeholder: "スライドで作りたいものを入力（例: 第3四半期の営業報告 5 枚）",
+    short: "スライドで作りたいもの",
   },
   {
     key: "csv",
@@ -96,6 +119,7 @@ export const CREATE_KINDS: readonly CreateKindDef[] = [
     icon: Sheet,
     lead: "CSV で作成",
     placeholder: "CSV で作りたいものを入力（例: 取引先一覧のひな形）",
+    short: "CSV で作りたいもの",
   },
 ];
 
@@ -108,8 +132,17 @@ export function createPrompt(kind: CreateKind, text: string): string {
   return `${createKindDef(kind).lead}：${text.trim()}`;
 }
 
-/// 候補プロンプト（押すと即その文で始める）。`meta` は出どころの小さな注記。
-export type Suggestion = { text: string; meta?: string };
+/// 候補プロンプト（押すと即その文で始める）。
+export type Suggestion = {
+  /// 送る本文。
+  text: string;
+  /// チップに出す文（未指定なら `text`）。
+  label?: string;
+  /// 出どころの小さな注記。
+  meta?: string;
+  /// 一緒に添付する文書（最近共有された文書から作った候補）。
+  attachment?: Attachment;
+};
 
 /// 実データ（最近共有された文書）が無いときにも出す、モードごとの既定の候補。
 export const DEFAULT_SUGGESTIONS: Record<HomeMode, readonly Suggestion[]> = {
@@ -139,20 +172,38 @@ export const DEFAULT_SUGGESTIONS: Record<HomeMode, readonly Suggestion[]> = {
   ],
 };
 
-/// 拡張子を外した文書名（候補の文に入れる）。
-function docTitle(name: string): string {
-  return name.replace(/\.[^./]+$/u, "") || name;
+/// チップに出す文書名。拡張子と、文字の向きを変える制御文字などの書式文字（Cf）を除き、長すぎれば詰める。
+/// 文書名は共有した人が自由に付けられるので、見た目を偽る文字を画面に出さない。
+function docLabel(name: string): string {
+  const base = name.replace(/\p{Cf}/gu, "").replace(/\.[^./]+$/u, "") || name;
+  return base.length > 30 ? `${base.slice(0, 29)}…` : base;
 }
 
 /// モードの候補を作る。チャット・社内検索では、最近自分に共有された文書から先頭に 2 つまで作り、
 /// 残りを既定の候補で埋める（共有が無い人にも 4 つ出る）。
-export function homeSuggestions(mode: HomeMode, sharedFileNames: readonly string[]): Suggestion[] {
-  const docs = sharedFileNames.slice(0, 2).map(docTitle);
+///
+/// 文書から作る候補は、文書を**添付**して決まった文で尋ねる。文書名は共有した人が付けた任意の文字列
+/// なので、利用者の発話の本文には入れない（名前に紛れた指示が利用者の言葉として届かないように）。
+export function homeSuggestions(
+  mode: HomeMode,
+  sharedFiles: readonly { id: string; name: string }[],
+): Suggestion[] {
+  const docs = sharedFiles.slice(0, 2);
   const fromShares: Suggestion[] =
     mode === "chat"
-      ? docs.map((n) => ({ text: `「${n}」の要点を教えて`, meta: "共有された文書" }))
+      ? docs.map((d) => ({
+          text: "添付した文書の要点を教えて",
+          label: `「${docLabel(d.name)}」の要点を教えて`,
+          meta: "共有された文書",
+          attachment: { node_id: d.id, name: d.name },
+        }))
       : mode === "search"
-        ? docs.map((n) => ({ text: `「${n}」に関係する資料を探して`, meta: "共有された文書" }))
+        ? docs.map((d) => ({
+            text: "添付した文書に関係する社内の資料を探して",
+            label: `「${docLabel(d.name)}」に関係する資料を探して`,
+            meta: "共有された文書",
+            attachment: { node_id: d.id, name: d.name },
+          }))
         : [];
   return [...fromShares, ...DEFAULT_SUGGESTIONS[mode]].slice(0, 4);
 }

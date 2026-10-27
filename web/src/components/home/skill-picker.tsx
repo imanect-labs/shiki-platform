@@ -18,7 +18,8 @@ export function SkillPicker({
   onSelect: (skill: ArtifactMeta | null) => void;
   empty?: React.ReactNode;
 }) {
-  const [skills, setSkills] = React.useState<ArtifactMeta[]>([]);
+  // null は読み込み中（その間は説明も出さない。読み終えてから説明→チップへ入れ替わる揺れを避ける）。
+  const [skills, setSkills] = React.useState<ArtifactMeta[] | null>(null);
 
   React.useEffect(() => {
     let active = true;
@@ -30,6 +31,7 @@ export function SkillPicker({
     };
   }, []);
 
+  if (skills === null) return null;
   if (skills.length === 0) return <>{empty}</>;
 
   return (

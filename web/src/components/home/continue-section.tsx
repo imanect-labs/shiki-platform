@@ -3,8 +3,8 @@
 import * as React from "react";
 import Link from "next/link";
 import {
-  Bot,
   FileSpreadsheet,
+  Folder,
   FileText,
   MessageSquareText,
   NotebookPen,
@@ -12,7 +12,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { cn } from "@/lib/utils";
 import type { Thread } from "@/lib/chat-api";
 import type { NodeResponse } from "@/lib/storage";
 import { relativeTime } from "@/lib/format";
@@ -22,8 +21,8 @@ import { threadDisplay, threadHref } from "@/lib/thread-link";
 import { Skeleton } from "@/components/ui/skeleton";
 
 /// ホームの「続きから」（最近の会話）と「最近の共有」（自分に共有されたもの）を左右に並べる（#964）。
-/// 見出しと区切りはショートカットのカテゴリと同じ（小さな見出し・縦の破線）。
-/// 片方が空なら残った方だけを出し、両方とも空（使い始め）なら段ごと出さない。
+/// 見出しと区切りはショートカットのカテゴリと同じ（小さな見出し・縦の破線）。幅が足りず縦に積むときは
+/// 区切りを出さない。片方が空なら残った方だけを出し、両方とも空（使い始め）なら何も出さない。
 export function ContinueSection({
   threads,
   shares,
@@ -33,78 +32,78 @@ export function ContinueSection({
 }) {
   // 相対時刻の基準。描画のたびに変えない（一覧が揺れない）。
   const [now] = React.useState(() => Date.now());
-  const loading = threads === null || shares === null;
-  const showThreads = loading || threads.length > 0;
-  const showShares = loading || shares.length > 0;
+  // 読み込み中（null）は骨組みを出し、読み終えて空なら列ごと出さない（列ごとに判定する）。
+  const showThreads = threads === null || threads.length > 0;
+  const showShares = shares === null || shares.length > 0;
   if (!showThreads && !showShares) return null;
 
   return (
-    <div className="flex w-full max-w-[700px] flex-wrap gap-y-6">
-      {showThreads ? (
-        <Column title="続きから">
-          {threads === null ? (
-            <RowsSkeleton />
-          ) : (
-            threads.map((t, i) => {
-              const d = threadDisplay(t);
-              return (
+    <div className="@container w-full max-w-[700px]">
+      <div className="flex flex-col gap-6 @min-[600px]:flex-row @min-[600px]:gap-0">
+        {showThreads ? (
+          <Column title="続きから">
+            {threads === null ? (
+              <RowsSkeleton />
+            ) : (
+              threads.map((t, i) => {
+                const d = threadDisplay(t);
+                return (
+                  <Row
+                    key={t.id}
+                    href={threadHref(t)}
+                    icon={d.kind === "note" ? NotebookPen : d.kind === "office" ? FileText : MessageSquareText}
+                    seasonIndex={i}
+                    title={d.title || "無題の会話"}
+                    meta={`${d.detail ?? "チャット"}・${relativeTime(t.updatedAt, now)}`}
+                  />
+                );
+              })
+            )}
+          </Column>
+        ) : null}
+        {showThreads && showShares ? (
+          <span aria-hidden className="shiki-divide-l hidden w-[1.5px] shrink-0 @min-[600px]:block" />
+        ) : null}
+        {showShares ? (
+          <Column title="最近の共有">
+            {shares === null ? (
+              <RowsSkeleton />
+            ) : (
+              shares.map((n, i) => (
                 <Row
-                  key={t.id}
-                  href={threadHref(t)}
-                  icon={d.kind === "note" ? NotebookPen : d.kind === "office" ? FileText : t.agentMode ? Bot : MessageSquareText}
-                  seasonIndex={i}
-                  title={d.title || "無題の会話"}
-                  meta={`${d.kind === null ? (t.agentMode ? "エージェント" : "チャット") : (d.detail ?? "文書の会話")}・${relativeTime(t.updatedAt, now)}`}
+                  key={n.id}
+                  href={resourcePath(n)}
+                  icon={nodeIcon(n)}
+                  seasonIndex={i + 2}
+                  title={n.name}
+                  meta={[n.updated_by_name, relativeTime(n.updated_at, now)]
+                    .filter(Boolean)
+                    .join("・")}
                 />
-              );
-            })
-          )}
-        </Column>
-      ) : null}
-      {showShares ? (
-        <Column title="最近の共有" divided={showThreads}>
-          {shares === null ? (
-            <RowsSkeleton />
-          ) : (
-            shares.map((n, i) => (
-              <Row
-                key={n.id}
-                href={resourcePath(n)}
-                icon={nodeIcon(n.name)}
-                seasonIndex={i + 2}
-                title={n.name}
-                meta={[n.updated_by_name, relativeTime(n.updated_at, now)].filter(Boolean).join("・")}
-              />
-            ))
-          )}
-        </Column>
-      ) : null}
+              ))
+            )}
+          </Column>
+        ) : null}
+      </div>
     </div>
   );
 }
 
-function nodeIcon(name: string): LucideIcon {
-  const lower = name.toLowerCase();
+function nodeIcon(node: Pick<NodeResponse, "kind" | "name">): LucideIcon {
+  if (node.kind === "folder") return Folder;
+  const lower = node.name.toLowerCase();
   if (lower.endsWith(".md")) return NotebookPen;
   if (lower.endsWith(".xlsx") || lower.endsWith(".csv")) return FileSpreadsheet;
   if (lower.endsWith(".pptx") || lower.endsWith(".slide")) return Presentation;
   return FileText;
 }
 
-function Column({
-  title,
-  divided = false,
-  children,
-}: {
-  title: string;
-  divided?: boolean;
-  children: React.ReactNode;
-}) {
+function Column({ title, children }: { title: string; children: React.ReactNode }) {
   const id = React.useId();
   return (
     <section
       aria-labelledby={id}
-      className={cn("min-w-0 flex-[1_1_300px] px-5", divided && "shiki-divide-l")}
+      className="min-w-0 flex-1 px-5"
     >
       <h3
         id={id}

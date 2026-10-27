@@ -8,10 +8,14 @@ import { cn } from "@/lib/utils";
 import type { ArtifactMeta } from "@/lib/artifact-api";
 import type { AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
 import { CREATE_KINDS, type CreateKind, type HomeMode } from "@/lib/home-modes";
-import { APPROVAL_MODES } from "@/components/chat/approval-mode-select";
+import { APPROVAL_MODES, approvalModeDef } from "@/components/chat/approval-mode-select";
 import { FolderPicker } from "@/components/artifacts/folder-picker";
 import { SkillPicker } from "@/components/home/skill-picker";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { HOME_MODE_PANEL_ID, homeModeTabId } from "./home-mode-tabs";
+import { useRovingSelect } from "./use-roving-select";
+
+const APPROVAL_KEYS = APPROVAL_MODES.map((m) => m.mode);
+const CREATE_KEYS = CREATE_KINDS.map((k) => k.key);
 
 /// モード切替の下に 1 段だけ出す、そのモードの設定（#964）。
 /// - チャット: スキル（無ければ一言の説明）
@@ -42,9 +46,18 @@ export function HomeModeOptions({
   onCreateKindChange: (k: CreateKind) => void;
 }) {
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
+  const approvalRoving = useRovingSelect(APPROVAL_KEYS, approvalMode, onApprovalModeChange);
+  const createRoving = useRovingSelect(CREATE_KEYS, createKind, onCreateKindChange);
+  const approval = approvalModeDef(approvalMode);
 
   return (
-    <div className="flex min-h-8 w-full justify-center" data-testid="home-mode-options">
+    <div
+      id={HOME_MODE_PANEL_ID}
+      role="tabpanel"
+      aria-labelledby={homeModeTabId(mode)}
+      className="flex min-h-8 w-full justify-center"
+      data-testid="home-mode-options"
+    >
       <Row hidden={mode !== "chat"}>
         <SkillPicker
           selected={skill}
@@ -63,72 +76,91 @@ export function HomeModeOptions({
         </Link>
       </Row>
 
-      <Row hidden={mode !== "agent"}>
-        <span className="inline-flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">作業フォルダ</span>
-          <button
-            type="button"
-            onClick={() => setWsPickerOpen(true)}
-            aria-label={`作業フォルダ: ${workspace ? workspace.folderName : "マイドライブ"}`}
-            title="エージェントが作業するワークスペースの場所を選ぶ"
-            className={cn(OPTION, "text-foreground/75")}
-          >
-            <HardDrive className="size-3.5 shrink-0" aria-hidden />
-            <span className="max-w-[160px] truncate">
-              {workspace ? workspace.folderName : "マイドライブ"}
+      <div hidden={mode !== "agent"} className="flex flex-col items-center gap-1.5">
+        <Row>
+          <span className="inline-flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">作業フォルダ</span>
+            <button
+              type="button"
+              onClick={() => setWsPickerOpen(true)}
+              aria-label={`作業フォルダ: ${workspace ? workspace.folderName : "マイドライブ"}`}
+              title="エージェントが作業するワークスペースの場所を選ぶ"
+              className={cn(OPTION, "text-foreground/75")}
+            >
+              <HardDrive className="size-3.5 shrink-0" aria-hidden />
+              <span className="max-w-[160px] truncate">
+                {workspace ? workspace.folderName : "マイドライブ"}
+              </span>
+              <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+            </button>
+          </span>
+          <span className="inline-flex items-center gap-2 sm:ml-2">
+            <span id="home-approval-label" className="text-xs text-muted-foreground">
+              承認
             </span>
-            <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-          </button>
-        </span>
-        <span className="inline-flex items-center gap-2 sm:ml-2">
-          <span className="text-xs text-muted-foreground">承認</span>
-          <div
-            role="radiogroup"
-            aria-label="承認モード"
-            className="inline-flex gap-0.5 rounded-lg border border-border bg-muted/40 p-0.5"
-          >
-            {APPROVAL_MODES.map((m) => {
-              const active = m.mode === approvalMode;
-              return (
-                <Tooltip key={m.mode}>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      role="radio"
-                      aria-checked={active}
-                      data-testid={`home-approval-${m.mode}`}
-                      onClick={() => onApprovalModeChange(m.mode)}
-                      className={cn(
-                        "h-6 rounded-md px-2.5 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-                        active
-                          ? "border border-border bg-background shadow-xs"
-                          : "text-muted-foreground hover:text-foreground",
-                        active && (m.danger ? "text-destructive" : "text-foreground"),
-                      )}
-                    >
-                      {m.label}
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-64">{m.description}</TooltipContent>
-                </Tooltip>
-              );
-            })}
-          </div>
-        </span>
-      </Row>
+            <div
+              role="radiogroup"
+              aria-labelledby="home-approval-label"
+              aria-describedby="home-approval-description"
+              className="inline-flex gap-0.5 rounded-lg border border-border bg-muted/40 p-0.5"
+            >
+              {APPROVAL_MODES.map((m, i) => {
+                const active = m.mode === approvalMode;
+                return (
+                  <button
+                    key={m.mode}
+                    ref={approvalRoving.ref(i)}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    tabIndex={approvalRoving.tabIndex(i)}
+                    title={m.description}
+                    data-testid={`home-approval-${m.mode}`}
+                    onClick={() => onApprovalModeChange(m.mode)}
+                    onKeyDown={approvalRoving.onKeyDown(i)}
+                    className={cn(
+                      "h-6 rounded-md px-2.5 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+                      active
+                        ? "border border-border bg-background shadow-xs"
+                        : "text-muted-foreground hover:text-foreground",
+                      active && (m.danger ? "text-destructive" : "text-foreground"),
+                    )}
+                  >
+                    {m.label}
+                  </button>
+                );
+              })}
+            </div>
+          </span>
+        </Row>
+        {/* 既定（承認必須）から緩めたときは、何が起きるかを常に文字で出す（ホバーの無いタッチ端末でも分かる）。 */}
+        <p
+          id="home-approval-description"
+          hidden={approvalMode === "require_approval"}
+          className={cn(
+            "text-center text-xs",
+            approval.danger ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {approval.description}
+        </p>
+      </div>
 
       <Row hidden={mode !== "create"} role="radiogroup" aria-label="作るもの">
-        {CREATE_KINDS.map((k) => {
+        {CREATE_KINDS.map((k, i) => {
           const active = k.key === createKind;
           const Icon = k.icon;
           return (
             <button
               key={k.key}
+              ref={createRoving.ref(i)}
               type="button"
               role="radio"
               aria-checked={active}
+              tabIndex={createRoving.tabIndex(i)}
               data-testid={`home-create-${k.key}`}
               onClick={() => onCreateKindChange(k.key)}
+              onKeyDown={createRoving.onKeyDown(i)}
               className={cn(
                 OPTION,
                 active
@@ -158,11 +190,11 @@ const OPTION =
   "inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-card px-3 text-[12.5px] outline-none transition-colors hover:border-foreground/20 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
 function Row({
-  hidden,
+  hidden = false,
   children,
   ...aria
 }: {
-  hidden: boolean;
+  hidden?: boolean;
   children: React.ReactNode;
   role?: string;
   "aria-label"?: string;

@@ -41,10 +41,25 @@ test.describe("ホームのモード切替", () => {
     await expect(page.getByRole("dialog")).toContainText("ワークスペースの場所");
     await page.keyboard.press("Escape");
 
-    // エージェントのモードで送ると、エージェントモードの会話として始まる。
+    // 承認モードを既定から緩めると、何が起きるかが文字で出る（ホバーの無い端末でも分かる）。
+    await page.getByTestId("home-approval-auto").click();
+    await expect(page.getByTestId("home-approval-auto")).toHaveAttribute("aria-checked", "true");
+    await expect(page.locator("#home-approval-description")).toBeVisible();
+
+    // エージェントのモードで送ると、選んだ承認モードを最初の発話より先にスレッドへ設定し、
+    // エージェントモードの会話として始まる。
+    const modePut = page.waitForRequest(
+      (r) => r.method() === "PUT" && /\/api\/threads\/[^/]+\/autonomous-mode$/.test(r.url()),
+    );
+    const posted = page.waitForRequest(
+      (r) => r.method() === "POST" && /\/api\/threads\/[^/]+\/messages$/.test(r.url()),
+    );
     const input = page.getByLabel("メッセージを入力");
     await input.fill(`エージェントで始める ${Date.now().toString(36)}`);
     await page.getByRole("button", { name: "送信" }).click();
+    expect(JSON.parse((await modePut).postData() ?? "{}")).toEqual({ mode: "auto" });
+    const body = JSON.parse((await posted).postData() ?? "{}") as { autonomous?: boolean };
+    expect(body.autonomous).toBe(true);
     await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
     await expect(page.getByRole("switch", { name: "エージェントモード" })).toHaveAttribute(
       "aria-checked",
@@ -64,9 +79,39 @@ test.describe("ホームのモード切替", () => {
     await expect(input).toHaveAttribute("placeholder", /Excel/);
 
     const what = `月次の経費集計表 ${Date.now().toString(36)}`;
+    const posted = page.waitForRequest(
+      (r) => r.method() === "POST" && /\/api\/threads\/[^/]+\/messages$/.test(r.url()),
+    );
     await input.fill(what);
     await page.getByRole("button", { name: "送信" }).click();
+    const body = JSON.parse((await posted).postData() ?? "{}") as { text?: string };
+    expect(body.text).toBe(`Excel で作成：${what}`);
     await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
-    await expect(page.getByText(`Excel で作成：${what}`).first()).toBeVisible({ timeout: 20_000 });
+  });
+
+  test("社内検索のモードで送ると、最初の発話で社内文書検索を必ず使う", async ({ page }) => {
+    await loginViaKeycloak(page);
+    await page.goto("/");
+
+    await page.getByTestId("home-mode-search").click();
+    // 既定のチャットに比べて、承認モードの設定は出さない（承認の PUT も飛ばない）。
+    await expect(page.getByRole("radiogroup", { name: "承認", exact: true })).toBeHidden();
+    let modePut = false;
+    page.on("request", (r) => {
+      if (r.method() === "PUT" && /\/autonomous-mode$/.test(r.url())) modePut = true;
+    });
+
+    const posted = page.waitForRequest(
+      (r) => r.method() === "POST" && /\/api\/threads\/[^/]+\/messages$/.test(r.url()),
+    );
+    await page.getByLabel("メッセージを入力").fill(`経費精算の締め日 ${Date.now().toString(36)}`);
+    await page.getByRole("button", { name: "送信" }).click();
+    const body = JSON.parse((await posted).postData() ?? "{}") as {
+      tools?: string[];
+      autonomous?: boolean;
+    };
+    expect(body.tools).toContain("doc_search");
+    expect(body.autonomous ?? false).toBe(false);
+    expect(modePut).toBe(false);
   });
 });

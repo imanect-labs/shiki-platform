@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Leaf } from "lucide-react";
 
 import { useMe } from "@/hooks/use-me";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { useHomeFeed } from "@/hooks/use-home-feed";
 import {
   createThread,
@@ -28,6 +29,7 @@ import {
   homeSuggestions,
   type CreateKind,
   type HomeMode,
+  type Suggestion,
 } from "@/lib/home-modes";
 import { type ArtifactMeta } from "@/lib/artifact-api";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -50,7 +52,7 @@ export default function HomePage() {
   const { data, loading } = useMe();
   const feed = useHomeFeed();
   const [starting, setStarting] = React.useState(false);
-  const [mode, setMode] = React.useState<HomeMode>("chat");
+  const [mode, setModeState] = React.useState<HomeMode>("chat");
   // 選択中の skill（チャットモードで次に開始するチャットへ version 込みでピンされる・Phase 6）。
   const [skill, setSkill] = React.useState<ArtifactMeta | null>(null);
   // エージェントモードのワークスペースの作成場所と承認モード（Phase 6 UX・#350）。
@@ -59,14 +61,29 @@ export default function HomePage() {
   const [createKind, setCreateKind] = React.useState<CreateKind>("note");
   // 表示名はメールのローカル部から導出する（表示名フィールドはサーバ側実装が入る後続 PR で対応）。
   const name = data?.email?.split("@")[0] ?? null;
+  const desktop = useMediaQuery("(min-width: 768px)");
+  // 会話画面へ移る前に画面を離れていたら、遷移で引き戻さない（承認モードの設定を待つ間に別の画面へ行った等）。
+  const mounted = React.useRef(true);
+  React.useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
 
-  const sharedFileNames = React.useMemo(
-    () => (feed.shares ?? []).filter((n) => n.kind !== "folder").map((n) => n.name),
+  // スキルはチャットのモードでだけ選べる。他のモードへ移ったら、見えない選択を残さない。
+  const setMode = (next: HomeMode) => {
+    if (next !== "chat") setSkill(null);
+    setModeState(next);
+  };
+
+  const sharedFiles = React.useMemo(
+    () => (feed.shares ?? []).filter((n) => n.kind !== "folder"),
     [feed.shares],
   );
   const suggestions = React.useMemo(
-    () => homeSuggestions(mode, sharedFileNames),
-    [mode, sharedFileNames],
+    () => homeSuggestions(mode, sharedFiles),
+    [mode, sharedFiles],
   );
 
   const startChat = async (
@@ -88,20 +105,22 @@ export default function HomePage() {
       // スキルピッカー（チャットモード）の選択は**ピン**（このスレッドで最初からロード済み）。
       // コマンドは**その発話だけ**の適用なので、ピンにはせず送信時に渡す（#387）。
       const pinned = mode === "chat" ? skill : null;
+      // 作業フォルダはエージェントのモードで選んだときだけ使う（他のモードでは見えていない選択）。
       const thread = await createThread(titleFrom(body), asAutonomous, {
         skill: pinned ? { artifactId: pinned.id, version: pinned.currentVersion } : undefined,
-        workspace: asAutonomous ? workspace ?? undefined : undefined,
+        workspace: mode === "agent" ? workspace ?? undefined : undefined,
       });
       // 承認モードは、エージェントのモードで利用者が明示的に選んだときだけ緩める（Codex P1）。
       // コマンドを選ぶ行為は「長ホライズンで実行してよい」の同意であって「事前許可の範囲を
       // 広げてよい」の同意ではない。thread に永続する設定なので、最初の発話を送る前に確定させる。
       if (mode === "agent" && approvalMode !== "require_approval") {
-        try {
-          await setAutonomousMode(thread.id, approvalMode);
-        } catch {
+        const applied = await setAutonomousMode(thread.id, approvalMode)
+          .then((r) => r.mode)
+          .catch(() => null);
+        if (applied !== approvalMode) {
           toast({
             description:
-              "承認モードを変更できませんでした（組織の設定で禁止されている可能性があります）。承認必須で始めます。",
+              "選んだ承認モードにできませんでした（組織の設定で禁止されている可能性があります）。承認必須で始めます。",
           });
         }
       }
@@ -126,15 +145,17 @@ export default function HomePage() {
         const tools = readToolChoice(thread.id);
         if (!tools.includes("doc_search")) writeToolChoice(thread.id, [...tools, "doc_search"]);
       }
-      router.push(`/c/${thread.id}`);
+      if (mounted.current) router.push(`/c/${thread.id}`);
     } catch {
       toast({ description: "チャットを開始できませんでした。ログイン状態をご確認ください。" });
       setStarting(false);
     }
   };
 
-  const placeholder =
-    mode === "create" ? createKindDef(createKind).placeholder : homeModeDef(mode).placeholder;
+  // スマホの入力欄は 1 行なので、短い文言にする（長い文は途中で切れて読めない）。
+  const def = mode === "create" ? createKindDef(createKind) : homeModeDef(mode);
+  const placeholder = desktop ? def.placeholder : def.short;
+  const pick = (s: Suggestion) => startChat(s.text, s.attachment ? [s.attachment] : []);
 
   return (
     <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-4 py-10">
@@ -190,7 +211,7 @@ export default function HomePage() {
           </div>
         </div>
 
-        <PromptSuggestions items={suggestions} onPick={(text) => startChat(text, [])} />
+        <PromptSuggestions items={suggestions} onPick={pick} />
 
         {/* 荒い破線の区切り（中央に四季の葉を一つ・差し色＝今の季節・太枠のみ）。軽やかな「間」。 */}
         <div className="flex w-full max-w-2xl items-center gap-3 px-2" aria-hidden>
