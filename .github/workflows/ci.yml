@@ -61,11 +61,11 @@ jobs:
       # ビルドになっていた（#920）。保存は main だけにし、PR は main のキャッシュを読むだけにする
       # （PR の保存は refs/pull/N/merge スコープで他の PR・main から使えないのに枠だけ食う）。
       # 保存するのは依存だけなので、テストが落ちても保存する（main の flake で更新が止まらないように）。
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: nextest
       - run: cargo fmt --all --check
@@ -95,7 +95,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # release プロファイル専用キャッシュ（debug 系ジョブと混ぜて肥大化させない）。
           shared-key: release-server
@@ -144,7 +144,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-machete
       - name: cargo machete (未使用依存の検出)
@@ -167,11 +167,11 @@ jobs:
         with:
           toolchain: "1.96.0"
       # cargo-deny はビルドしない（cargo metadata 用のレジストリだけ要る）ので target は持たない。
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-targets: "false"
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-deny
       - name: cargo deny check (advisories / licenses / bans / sources)
@@ -195,7 +195,7 @@ jobs:
         with:
           toolchain: "1.96.0"
       # 除外クレート（別 target）とメイン target を別々にキャッシュする。
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
             .
@@ -246,7 +246,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: fetch runsc (manifest 検証・PIT-33)
@@ -273,7 +273,7 @@ jobs:
           persist-credentials: false
       # Takumi Guard: uv sync 前に PyPI プロキシを設定（匿名＝ブロックのみ）。
       - uses: flatt-security/setup-takumi-guard-pypi@a01b3b2a6436d3df60d4e29c805ad83a704aadc5 # v1.3.0
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           cache-dependency-glob: "ingestion-worker/uv.lock"
@@ -303,13 +303,13 @@ jobs:
         with:
           toolchain: "1.96.0"
           components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # flake で失敗しても計装ビルドのキャッシュを保存する（保存しないと次回も cold で遅い）。
           # coverage flake（emit_workflow_it 等）が cache 温存を妨げていた根本対策。
           cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-llvm-cov
       # live 依存（OpenFGA / Redis）を起動し、結合テストのカバレッジも算入する。
@@ -459,7 +459,7 @@ jobs:
           toolchain: "1.96.0"
       # rust ジョブのキャッシュは共有しない: rust は --workspace、ここは -p shiki-data で依存の
       # フィーチャ集合が変わり（uuid の v5・reqwest の stream 等）、sqlx 系が作り直しになる。
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -520,7 +520,7 @@ jobs:
           toolchain: "1.96.0"
       # images.yml の web イメージの gen:api も同じ shared-key を読むだけで使う
       # （同じ依存を 2 本保存しない・#920）。
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: gen-api
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -593,7 +593,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: download shiki-server binary (build-server の成果物)
