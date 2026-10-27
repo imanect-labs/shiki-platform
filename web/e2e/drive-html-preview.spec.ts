@@ -3,10 +3,20 @@ import { expect, test } from "@playwright/test";
 import { loginViaKeycloak, uniqueName } from "./helpers";
 
 /// ドライブに置いた HTML は、開くと描画された姿で見える。スクリプトは動かず（sandbox ＋ CSP）、
-/// 外部リンクは新しいタブで開くように、相対リンクは外される。「ソース」で中身のコードに切り替えられる。
+/// 外部リンクは新しいタブで開くように、相対リンクは外される。外部の画像は閲覧者が選ぶまで読み込まない。
+/// 「ソース」で中身のコードに切り替えられる。
 test("ドライブの HTML を描画して表示し、スクリプトは動かさない", async ({ page }) => {
   await loginViaKeycloak(page);
   await page.goto("/drive");
+  // 外部の画像は実際には取りに行かず、取りに来たかだけを数える。
+  const external: string[] = [];
+  await page.route("https://img.example/**", (route) => {
+    external.push(route.request().url());
+    return route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40"/></svg>',
+    });
+  });
 
   const fileName = `${uniqueName("レポート")}.html`;
   const html = `<!doctype html>
@@ -14,6 +24,7 @@ test("ドライブの HTML を描画して表示し、スクリプトは動か�
 <head><style>h1 { color: rgb(200, 0, 0); }</style></head>
 <body>
   <h1 id="title">描画された見出し</h1>
+  <img id="remote" src="https://img.example/logo.svg" alt="外部画像">
   <p><a id="jump" href="#bottom">一番下へ</a> <a id="ext" href="https://example.com/">外部リンク</a> <a id="rel" href="other.html">相対リンク</a></p>
   <svg width="200" height="40"><a id="svglink" xlink:href="https://example.com/"><text x="4" y="28">SVG リンク</text></a></svg>
   <div style="height: 2000px"></div>
@@ -46,12 +57,20 @@ test("ドライブの HTML を描画して表示し、スクリプトは動か�
   await expect(frame.locator("#ext")).toHaveAttribute("target", "_blank");
   await expect(frame.locator("#rel")).not.toHaveAttribute("href", /.*/);
   // SVG のリンクは rel を持てず、押すと iframe の中が外部ページへ遷移するので外す。
-  await frame.getByText("SVG リンク").click();
+  await frame.getByText("SVG リンク").click({ force: true });
   await expect(frame.locator("#title")).toHaveText("描画された見出し");
   // ページ内リンクは文書の中でスクロールする（iframe がアプリのページへ遷移しない）。
   await frame.locator("#jump").click();
   await expect(frame.locator("#bottom")).toBeInViewport();
   await expect(frame.locator("#title")).toHaveText("描画された見出し");
+
+  // ファイルの内容であることを常に示す。外部の画像は「表示する」を押すまで取りに行かない。
+  await expect(page.getByTestId("html-preview-notice")).toBeVisible();
+  expect(external).toHaveLength(0);
+  await page.getByTestId("html-allow-external").click();
+  await expect(frame.locator("#remote")).toHaveJSProperty("naturalWidth", 40);
+  expect(external).toEqual(["https://img.example/logo.svg"]);
+  await expect(page.getByTestId("html-allow-external")).toHaveCount(0);
 
   // ソースに切り替えるとコードが見え、戻すと描画に戻る。
   await page.getByTestId("html-view-source").click();
