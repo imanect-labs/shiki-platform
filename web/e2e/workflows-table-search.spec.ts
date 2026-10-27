@@ -222,6 +222,9 @@ async function pickOutsideTheFirstPage(page: Page, made: Made) {
   await more.click();
   await expect(picker.getByRole("option", { name: targetName })).toBeVisible();
   expect(await picker.getByRole("option").count()).toBeGreaterThan(before);
+  // 足した最初の候補へ移り、一覧にフォーカスが移る（押したボタンが消えても行き場を失わない）。
+  await expect(picker.getByRole("listbox", { name: "対象のテーブル" })).toBeFocused();
+  await expect(picker.getByRole("option").nth(before)).toHaveAttribute("data-active", "true");
   await page.keyboard.press("Escape");
 
   // 保存すると、承認のブロックは探して選んだ表に束ねられている。
@@ -284,6 +287,14 @@ test("狭い画面では、シートの中に広げた一覧で名前を探し�
     await option.tap();
     await expect(picker).toHaveCount(0);
     await expect(select).toContainText(targetName);
+    await expect(sheet).toBeVisible();
+    // 選んだ後も Esc で閉じた後も、フォーカスはシートの容器へ落ちずに選ぶ欄へ戻る。
+    await expect(select).toBeFocused();
+    await select.tap();
+    await expect(picker).toBeVisible();
+    await phone.keyboard.press("Escape");
+    await expect(picker).toHaveCount(0);
+    await expect(select).toBeFocused();
     await expect(sheet).toBeVisible();
     // 横にはみ出さない。
     expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
