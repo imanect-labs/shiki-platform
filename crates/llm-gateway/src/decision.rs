@@ -82,7 +82,7 @@ pub struct ChoiceOption {
 /// 判定の結果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DecideResponse {
-    /// 実際に答えた決定器の版（例 `claude-haiku-5-5+llm_decider/v1/k1/low`）。版が変わったら
+    /// 実際に答えた決定器の版（例 `claude-haiku-5-5+llm_decider/v2/k1/low`）。版が変わったら
     /// しきい値を測り直す（PIT-80）。
     pub resolved_model: String,
     /// 質問のキー → 答え（要求の質問と同じキーの集合）。

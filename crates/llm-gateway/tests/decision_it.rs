@@ -228,7 +228,7 @@ async fn an_llm_decision_is_billed_as_its_base_chat_model() {
         .await
         .unwrap();
     assert!(
-        got.resolved_model.starts_with("fast+llm_decider/v1/k1/"),
+        got.resolved_model.starts_with("fast+llm_decider/v2/k1/"),
         "{}",
         got.resolved_model
     );

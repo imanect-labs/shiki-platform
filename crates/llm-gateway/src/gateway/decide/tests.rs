@@ -101,8 +101,8 @@ async fn decision_entries_build_llm_and_stub_deciders() {
     assert_eq!(
         versions,
         [
-            "local+llm_decider/v1/k1/none",
-            "local+llm_decider/v1/k5/none",
+            "local+llm_decider/v2/k1/none",
+            "local+llm_decider/v2/k5/none",
             "stub-decider/v1"
         ]
     );

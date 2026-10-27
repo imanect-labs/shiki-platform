@@ -69,8 +69,8 @@ fn ok(text: &str) -> Reply {
     Ok((text.to_string(), StopReason::EndTurn, usage(100, 20)))
 }
 
-const GOOD: &str = r#"{"category":{"value":"billing","confidence":90},"priority":{"value":"中","confidence":70},"angry":{"value":false,"confidence":80}}"#;
-const BAD: &str = r#"{"category":{"value":"refund","confidence":90},"priority":{"value":"中","confidence":70},"angry":{"value":false,"confidence":80}}"#;
+const GOOD: &str = r#"{"category":{"answer":"billing","confidence":90},"priority":{"answer":"中","confidence":70},"angry":{"answer":false,"confidence":80}}"#;
+const BAD: &str = r#"{"category":{"answer":"refund","confidence":90},"priority":{"answer":"中","confidence":70},"angry":{"answer":false,"confidence":80}}"#;
 
 fn decider(p: &Arc<Scripted>, mode: StructuredOutputMode, tuning: DecisionTuning) -> LlmDecider {
     LlmDecider::new(
@@ -130,7 +130,7 @@ async fn the_request_uses_a_closed_schema_low_effort_and_no_temperature() {
     assert_eq!(t[0].0, Role::User);
     assert!(t[0].1.starts_with("<state>"));
 
-    assert_eq!(got.resolved_model, "claude-haiku-5-5+llm_decider/v1/k1/low");
+    assert_eq!(got.resolved_model, "claude-haiku-5-5+llm_decider/v2/k1/low");
     assert_eq!(got.method, DecisionMethod::Verbalized);
     assert_eq!(got.samples, 1);
     assert!(!got.calibrated);
@@ -172,7 +172,7 @@ async fn prompt_mode_moves_the_schema_into_system_and_effort_follows_the_model()
     // 思考の深さに対応しないモデルには送らない（版にもそう残す）。深い設定の上限は 4096。
     assert_eq!(g.effort, None);
     assert_eq!(g.max_tokens, Some(4096));
-    assert_eq!(got.resolved_model, "local-model+llm_decider/v1/k1/none");
+    assert_eq!(got.resolved_model, "local-model+llm_decider/v2/k1/none");
 }
 
 #[tokio::test]
@@ -233,7 +233,7 @@ async fn refusals_and_truncation_are_not_repaired() {
 
 #[tokio::test]
 async fn majority_vote_calls_k_times_and_sums_usage() {
-    let other = r#"{"category":{"value":"bug","confidence":60},"priority":{"value":"高","confidence":70},"angry":{"value":true,"confidence":80}}"#;
+    let other = r#"{"category":{"answer":"bug","confidence":60},"priority":{"answer":"高","confidence":70},"angry":{"answer":true,"confidence":80}}"#;
     let p = Scripted::new(vec![ok(GOOD), ok(other), ok(GOOD), ok(other), ok(GOOD)]);
     let got = decider(&p, StructuredOutputMode::JsonSchema, k(5))
         .decide(&request())
@@ -242,7 +242,7 @@ async fn majority_vote_calls_k_times_and_sums_usage() {
     assert_eq!(p.seen().len(), 5);
     assert_eq!(got.method, DecisionMethod::Vote);
     assert_eq!(got.samples, 5);
-    assert_eq!(got.resolved_model, "claude-haiku-5-5+llm_decider/v1/k5/low");
+    assert_eq!(got.resolved_model, "claude-haiku-5-5+llm_decider/v2/k5/low");
     assert_eq!(got.usage, usage(500, 100));
     assert!(
         matches!(&got.answers["category"], Answer::Choice { value, confidence, .. } if value == "billing" && (*confidence - 0.6).abs() < 1e-9)
