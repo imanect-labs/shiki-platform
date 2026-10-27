@@ -191,6 +191,8 @@ async fn an_answer_out_of_range_is_repaired_once() {
     );
     assert_eq!(t[1].1, BAD);
     assert!(t[2].1.contains("category"), "{}", t[2].1);
+    // 直させる依頼（user の turn）に、モデルが出した値を写さない（PIT-56）。
+    assert!(!t[2].1.contains("refund"), "{}", t[2].1);
     // 直させた分も使用量に数える。
     assert_eq!(got.usage, usage(200, 40));
 }
@@ -206,6 +208,8 @@ async fn an_answer_still_out_of_range_after_repair_fails_with_its_usage() {
         decide_error_kind(&f.error),
         Some(DecideErrorKind::InvalidOutput)
     );
+    // 利用者に出る要約にも、モデルが出した値を載せない。
+    assert!(!f.error.to_string().contains("refund"), "{}", f.error);
     assert_eq!(f.usage, usage(200, 40));
     assert_eq!(p.seen().len(), 2, "直させるのは 1 回だけ");
 }
