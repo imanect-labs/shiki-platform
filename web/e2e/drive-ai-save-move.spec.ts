@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { loginViaKeycloak, uniqueName } from "./helpers";
 
@@ -36,6 +36,17 @@ async function parentOf(page: Page, fileId: string): Promise<string | null> {
   const res = await page.request.get(`/api/files/${fileId}`);
   expect(res.status()).toBe(200);
   return ((await res.json()) as { parent_id: string | null }).parent_id;
+}
+
+/// ノート画面のアシスタントでは遷移せず下書きカードが出る。ストリームの完了（回答のコピーボタン）を
+/// 待ってからカードを開く（完了時に表示が確定版へ差し替わるので、途中のカードは DOM から外れる）。
+async function openDraftFromPanel(panel: Locator) {
+  await expect(panel.getByRole("button", { name: "コピー" }).last()).toBeVisible({
+    timeout: 30_000,
+  });
+  const card = panel.getByTestId("note-draft-card").last();
+  await expect(card).toBeVisible();
+  await card.getByRole("link", { name: "下書きを開く" }).click();
 }
 
 async function sendFromHome(page: Page, text: string) {
@@ -121,8 +132,7 @@ test("下書き: 由来ノートのある会話はそのノートのフォルダ
   const draftName = uniqueName("同じ場所に");
   await composer.fill(`savenote:${draftName}`);
   await panel.getByRole("button", { name: "送信" }).click();
-  // ノート画面のアシスタントでは遷移せずカードが出る。カードから下書き画面を開く。
-  await panel.getByRole("link", { name: "下書きを開く" }).click();
+  await openDraftFromPanel(panel);
   await page.waitForURL(/\/notes\/draft/, { timeout: 30_000 });
   await page.getByTestId("draft-save-button").click();
   await expect(page.getByTestId("save-draft-location")).toContainText(folderName, {
@@ -152,7 +162,7 @@ test("下書き: 保存先の解決中は保存できず、AI の \"root\" 指�
   const draftName = uniqueName("ルートへ");
   await composer.fill(`savenote:${draftName}`);
   await panel.getByRole("button", { name: "送信" }).click();
-  await panel.getByRole("link", { name: "下書きを開く" }).click();
+  await openDraftFromPanel(panel);
   await page.waitForURL(/\/notes\/draft/, { timeout: 30_000 });
 
   // 解決（パンくず）を遅らせても、解決前に保存は押せない（ルートへ誤って作らない）。
