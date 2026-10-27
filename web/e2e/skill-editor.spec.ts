@@ -300,3 +300,23 @@ test("未保存の変更があるとき、アプリ内のリンクで離れる�
   await dialog.getByTestId("text-discard-confirm").click();
   await expect(page).toHaveURL(/\/skills$/);
 });
+
+test("行頭の記号は、保存しても箇条書き・水平線・コードにならない", async ({ page }) => {
+  await loginViaKeycloak(page);
+  // 段落の行頭に記号を文字として置いた指示文（保存形式はエスケープ済み）。
+  const instructions = "\\* 注意\n\n\\*\\*\\*\n\n\\`\\`\\`\n\n\\~~~\n";
+  const id = await createSkill(page, uniqueName("lead-skill"), { instructions });
+  await page.goto(`/skills/${id}`);
+  const body = page.getByTestId("skill-body-editor");
+  await expect(body).toContainText("* 注意");
+  await focusBodyEnd(page);
+  await page.keyboard.type("x");
+  await page.getByTestId("skill-save-button").click();
+  await expect(page.getByText("保存済み v2").first()).toBeVisible({ timeout: 15_000 });
+
+  await page.reload();
+  await expect(body).toContainText("* 注意");
+  await expect(body).toContainText("***");
+  await expect(body).toContainText("```");
+  await expect(body.locator("ul, hr, pre")).toHaveCount(0);
+});

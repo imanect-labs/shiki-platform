@@ -94,9 +94,15 @@ function renderBlock(node: PMNode): string {
       // 素テキストで貼り戻したとき別ブロックに再解釈される。先頭行だけエスケープして
       // 往復で意味が変わらないようにする（継続行は同一段落に属するので対象外）。
       let rendered = renderInlineChildren(node);
-      // literalText は `>` をエスケープしないので、強制改行の後の行頭 `>` も引用にならない
-      // ようにする（先頭行は下の escapeBlockStart が見る）。
-      if (current.literalText) rendered = rendered.replace(/(\\\n)([ \t]*)>/g, "$1$2\\>");
+      // literalText は素の文字に読み戻せる記号を残すので、強制改行の後の行頭も
+      // [`escapeLiteralLineStart`] で引用・箇条書き・水平線・フェンスにならないようにする
+      // （先頭行は下の escapeBlockStart が見る）。
+      if (current.literalText) {
+        rendered = rendered.replace(
+          /(\\\n)([^\n]*)/g,
+          (_, br: string, line: string) => br + escapeLiteralLineStart(line),
+        );
+      }
       const nl = rendered.indexOf("\n");
       return nl === -1
         ? escapeBlockStart(rendered)
@@ -339,10 +345,9 @@ function escapeLiteralAll(text: string): string {
 /// `*`/`>`/`` ` `` は `escapeInline` で既にエスケープ済みなので、残る `#`・`-`・`+`・
 /// 番号付きリスト（`1.`/`1)`）だけを対象にする。
 function escapeBlockStart(line: string): string {
-  // literalText では `>` をエスケープしないので、行頭の `>` は引用にならないようここで断つ。
   if (current.literalText) {
-    const quote = /^(\s*)>/.exec(line);
-    if (quote) return `${quote[1]}\\${line.slice(quote[1].length)}`;
+    const escaped = escapeLiteralLineStart(line);
+    if (escaped !== line) return escaped;
   }
   const marker = /^(\s*)([#\-+])(\s|$)/.exec(line);
   if (marker) {
@@ -360,6 +365,16 @@ function escapeBlockStart(line: string): string {
     return `${rule[1]}\\${line.slice(rule[1].length)}`;
   }
   return line;
+}
+
+/// `literalText` の行頭: [`escapeLiteral`] は素の文字に読み戻せる記号（`>`・`*`・`` ` ``・`~`・
+/// `_`）を残すが、行頭ではブロック記法（引用・`*` の箇条書き・`***`/`___` の水平線・
+/// `` ``` ``/`~~~` のフェンス）になるので、先頭の記号だけ断つ。
+function escapeLiteralLineStart(line: string): string {
+  const m =
+    /^(\s*)(?:>|\*(?=\s|$)|([*_])(?:[ \t]*\2){2,}[ \t]*$|`{3,}|~{3,})/.exec(line);
+  if (!m) return line;
+  return `${m[1]}\\${line.slice(m[1].length)}`;
 }
 
 /// リンク先: 空白・括弧を含む URL は <> で包む（Rust `escape_link_dest`）。
