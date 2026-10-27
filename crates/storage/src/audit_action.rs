@@ -201,6 +201,9 @@ audit_actions! {
     DataTableDelete = "data.table.delete", "テーブルを削除", Data;
     DataTableFixedPlan = "data.table.fixed_plan", "テーブルの固定計画を切り替え", Admin;
     DataTableGet = "data.table.get", "テーブルを参照", Data;
+    DataTableShare = "data.table.share", "テーブルを共有", Share;
+    DataTableSharesList = "data.table.shares.list", "テーブルの共有先を参照", Share;
+    DataTableUnshare = "data.table.unshare", "テーブルの共有を解除", Share;
     DataTableUpdateSchema = "data.table.update_schema", "テーブルの列を変更", Data;
     DataTenantSettingsUpdate = "data.tenant_settings.update", "データの設定を変更", Admin;
     DataViewList = "data.view.list", "ビューの一覧", Data;

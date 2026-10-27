@@ -872,6 +872,17 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 | ③ フィールドマスク | `field_policy` で応答から除去＋filter/sort から 403 | **変更なし**（§5.2 に継承）。**Phase 15 で追補**: 読めない列には作成・一括取込でも書けない（更新と同じ 403）。読めない列に依存する派生列（数式・計算・ルックアップ・ロールアップ。経由するリンク列か参照先で辿る列が読めない）も、その閲覧者には読めない列と同じ扱い（応答・検索・SSE・閲覧者文脈で一律）。履歴は読めない列の変更記録を返さない（読めない列だけの版は版ごと返さない）。**テーブル定義の応答**（`GET /data/tables`・`GET /data/tables/{id}`・ゲートウェイの `data.schema`）は、スキーマ管理者（テーブルの owner）以外には**読める列だけ**を返し、`field_policy`・`row_policy`・RAG の投影設定を返さない（検証 C-P2-5・`DataStore::get_table_for_viewer`） |
 | ④ 行個別共有 | `data_record` スパースタプル（`= ANY($n::uuid[])`） | **タプルは変更なし**（uuid のまま）。材料解決時に `record_int` へ引き直して `= ANY($n::bigint[])` で効かせる |
 
+> **テーブルの共有（#864）**: ①のタプルは、テーブルの **owner だけ**が `PUT / DELETE / GET /data/tables/{id}/shares`
+> （`DataStore::share_table` / `unshare_table` / `list_table_shares`）でユーザー・部署（`role#member`）へ付け外しできる。
+> 付与できる役割は **viewer / editor だけ**で、owner は付け外ししない。見えないテーブルは 404、見えるが owner でなければ 403
+> （**ミニアプリ所有のテーブル（`app_id` あり）は付与・解除・一覧とも 403**: アクセスはアプリのインストールとスコープで配るので、
+> インストールした人が owner を持っていても /data からは触らせない（インストールが付けたロールのタプルを外させない）。拒否は監査に deny）。
+> 削除済みのテーブルは、タプルが残っている相手にも 404。共有先は id の形と同一テナントのディレクトリに
+> 居ることを検査し（レコードの個別共有と同じ・存在しない相手は 400）、監査（`data.table.share` / `unshare` / `shares.list`）に
+> 失敗したらタプルを補償する。共有しても行述語・フィールドマスクは開いた人の権限で効く。付け外しの後は
+> `after_table_rebac_changed` を呼ぶので、**取消は即時に反映**する（REST は次の要求から 404、開いている購読は TTL を待たず
+> 次のバッチで `stream.reset{authz_changed}`）。材料化の前提（§7.4）もその場で検査し直す。
+
 ### 6.1 材料解決
 
 `crates/data/src/policy/material.rs` をそのまま使う。**キャッシュ禁止の原則も維持**
@@ -1453,7 +1464,8 @@ before の可視性は、書込トランザクションが outbox へ**変更前
 > 共有解除・テーブル削除は data が自分で、ロールの付け外し（IdP 同期）とテーブルの ReBAC の付け外しは変えた側が
 > `DataStore::notify_authz_changed` / `after_table_rebac_changed` で世代を進め、配信は毎バッチ（250 ms）世代を読み比べる。
 > 引き直した材料が前回と違えば（viewer の喪失・ロール・共有・マスクの変化）、行ごとの差分では取りこぼすので
-> **購読ごと `stream.reset{reason: authz_changed}` で閉じる**。
+> **購読ごと `stream.reset{reason: authz_changed}` で閉じる**。テーブルの editor の得失（共有の viewer ⇄ editor の変更）も
+> 見える行は変わらないが画面の操作（編集・追加・取込）が変わるので同じく閉じ、グリッドは閲覧者の文脈を取り直す。
 
 ### 9.5 編集の並行制御
 

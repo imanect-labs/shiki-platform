@@ -1213,3 +1213,168 @@ async fn resolve_user_names_is_tenant_and_org_scoped() {
     assert_eq!(st, StatusCode::UNAUTHORIZED, "未認証は 401");
     assert!(!body.to_string().contains("Ann"));
 }
+
+/// テーブルの共有（`/data/tables/{id}/shares`・#864）: owner だけが付与・解除・一覧でき、一覧は相手の表示名・
+/// メールを添える。付与した相手は一覧・取得で見え、解除で即時に 404 に戻る。owner 以外は 403、見えない人は 404、
+/// 同じテナントに居ない相手・役割の語彙外は 400。
+#[tokio::test]
+async fn table_share_routes_grant_list_and_revoke() {
+    let Some(env) = setup().await else { return };
+    let dir = storage::DirectoryStore::new(env.pool.clone());
+    dir.upsert_user("carol", TENANT, "acme", "carol@acme.example", "Carol")
+        .await
+        .unwrap();
+    let role = format!("sales-{}", Uuid::new_v4().simple());
+    dir.upsert_role(&role, TENANT, "acme", "営業部")
+        .await
+        .unwrap();
+    // 別テナントにだけ居るユーザー（共有先にできない）。
+    dir.upsert_user(
+        "mallory-864",
+        "other-tenant",
+        "acme",
+        "m@x.example",
+        "Mallory",
+    )
+    .await
+    .unwrap();
+    let t = table(&env, "share").await; // alice: owner／bob: viewer
+    let base = format!("/data/tables/{}", t.id);
+    let shares = format!("{base}/shares");
+    let carol_viewer = json!({ "target": { "type": "user", "id": "carol" }, "role": "viewer" });
+
+    // 共有前の carol には見えない（共有の操作も 404）。
+    assert_eq!(
+        send(&env, get("carol", &base)).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        send(&env, put_json("carol", &shares, &carol_viewer))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        send(&env, get("carol", &shares)).await.0,
+        StatusCode::NOT_FOUND
+    );
+    // bob（viewer・owner でない）は 403。
+    assert_eq!(
+        send(&env, put_json("bob", &shares, &carol_viewer)).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(&env, get("bob", &shares)).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    // alice が carol（viewer）と部署（editor）へ共有する。
+    let (st, body) = send(&env, put_json("alice", &shares, &carol_viewer)).await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
+    let role_editor = json!({ "target": { "type": "role", "id": role }, "role": "editor" });
+    let (st, body) = send(&env, put_json("alice", &shares, &role_editor)).await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(send(&env, get("carol", &base)).await.0, StatusCode::OK);
+    let (st, body) = send(&env, get("carol", "/data/tables")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["id"] == json!(t.id)),
+        "共有されたテーブルが一覧に出る: {body}"
+    );
+
+    let (st, body) = send(&env, get("alice", &shares)).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let items = body.as_array().unwrap();
+    let carol = items
+        .iter()
+        .find(|e| e["target"] == json!({ "type": "user", "id": "carol" }))
+        .unwrap_or_else(|| panic!("carol が一覧に無い: {body}"));
+    assert_eq!(carol["role"], json!("viewer"));
+    assert_eq!(carol["display_name"], json!("Carol"));
+    assert_eq!(carol["email"], json!("carol@acme.example"));
+    let dept = items
+        .iter()
+        .find(|e| e["target"] == json!({ "type": "role", "id": role }))
+        .unwrap_or_else(|| panic!("部署が一覧に無い: {body}"));
+    assert_eq!(dept["role"], json!("editor"));
+    assert_eq!(dept["display_name"], json!("営業部"));
+    assert!(
+        items.iter().all(|e| e["target"]["id"] != json!("alice")),
+        "owner は一覧に出ない: {body}"
+    );
+
+    // 共有先の誤り: 存在しない・別テナント・形の不正は 400、役割の語彙外（owner）も 400 系。
+    for target in [
+        json!({ "type": "user", "id": "ghost-864" }),
+        json!({ "type": "user", "id": "mallory-864" }),
+        json!({ "type": "role", "id": "no-such-role-864" }),
+        json!({ "type": "user", "id": "carol|x" }),
+    ] {
+        let (st, body) = send(
+            &env,
+            put_json(
+                "alice",
+                &shares,
+                &json!({ "target": target, "role": "viewer" }),
+            ),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{target}: {body}");
+    }
+    let (st, _) = send(
+        &env,
+        put_json(
+            "alice",
+            &shares,
+            &json!({ "target": { "type": "user", "id": "carol" }, "role": "owner" }),
+        ),
+    )
+    .await;
+    assert!(st.is_client_error() && st != StatusCode::NOT_FOUND, "{st}");
+
+    // 解除で即時に 404 に戻る（冪等）。
+    for _ in 0..2 {
+        let (st, body) = send(
+            &env,
+            req(
+                "DELETE",
+                "alice",
+                &shares,
+                "application/json",
+                Body::from(carol_viewer.to_string()),
+            ),
+        )
+        .await;
+        assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
+    }
+    assert_eq!(
+        send(&env, get("carol", &base)).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT action, decision FROM audit_log WHERE tenant_id = $1 \
+           AND object_type = 'data_table' AND object_id = $2 AND action LIKE 'data.table.%share%' \
+         ORDER BY id",
+    )
+    .bind(TENANT)
+    .bind(t.id.to_string())
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    for (action, decision) in [
+        ("data.table.share", "allow"),
+        ("data.table.unshare", "allow"),
+        ("data.table.share", "deny"),
+        ("data.table.shares.list", "deny"),
+    ] {
+        assert!(
+            rows.iter().any(|(a, d)| a == action && d == decision),
+            "{action} {decision} の監査行: {rows:?}"
+        );
+    }
+}
