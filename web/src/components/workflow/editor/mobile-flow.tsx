@@ -20,7 +20,7 @@ import type { AddTarget } from "./add-target";
 import { nodeIcon } from "./icons";
 import type { EditorAction, Selection } from "./ir-state";
 import { portLabel } from "./node-card";
-import { drawnPorts, edgePortsOf, type ServerPorts } from "./ports";
+import { defaultOutPort, drawnPorts, edgePortsOf, exitsPending, type ServerPorts } from "./ports";
 import { triggerSeasonIndex, triggerView } from "./trigger-node";
 import { mapErrors } from "./validation";
 
@@ -243,8 +243,13 @@ export function MobileFlow({
       );
       const outs = ir.edges.filter((e) => e.from === node.id);
       const name = nodeName(node);
-      // 出口がまだ決まらない判定（設定が契約に合わない間）は、キャンバスの尻尾の＋と同じく out の後ろに足せる。
-      const ports = drawn.length > 0 ? drawn : [{ port: "out", missing: false }];
+      // 出口（続きの処理の出口）がまだ決まらない判定（設定が契約に合わない間）は、キャンバスの尻尾の＋と同じく
+      // 既定の出口（out）の後ろに足せる。error だけがあっても、それを 1 出口として扱わない（error の後ろに足さない）。
+      const ports = exitsPending(node, serverPorts[node.id])
+        ? [{ port: defaultOutPort(node.type), missing: false }, ...drawn.filter((p) => p.port !== defaultOutPort(node.type))]
+        : drawn.length > 0
+          ? drawn
+          : [{ port: "out", missing: false }];
       if (ports.length === 1 && !ports[0].missing) {
         const port = ports[0].port;
         const edges = outs.filter((e) => (e.from_port ?? "out") === port);
@@ -286,7 +291,7 @@ export function MobileFlow({
       }
       // 複数の出口（分岐・振り分け・エラー時）。
       for (const { port, missing } of ports) {
-        const label = portLabel(port) || port;
+        const label = portLabel(port);
         push(depth + 1, <PortRow label={label} missing={missing} />);
         const edges = outs.filter((e) => (e.from_port ?? "out") === port);
         if (edges.length === 0) {

@@ -12,7 +12,7 @@ import type { Edge, Node, Trigger, ValidationError, WorkflowIr } from "@/generat
 import type { EditorLayout } from "@/lib/workflow-api";
 import { carryTriggerPositions, seedLayout } from "./auto-layout";
 import { rewriteInputRefs } from "./config-panel/value-refs";
-import { outputPorts, type ServerPorts } from "./ports";
+import { defaultOutPort, outputPorts, type ServerPorts } from "./ports";
 
 export type Selection =
   | { kind: "none" }
@@ -125,15 +125,8 @@ export function newNodeId(ir: WorkflowIr, nodeType: string): string {
   return `${base}_${n}`;
 }
 
-/// ノード種の既定の出力ポート（挿入・尻尾追加でエッジを張るときの継続側・置いたばかりの既定の設定での出口）。
-/// switch は cases から動的導出のため、常に存在するフォールバック `default` を使う
-/// （実行エンジンは `out` を発しないので `out` エッジは不発になる）。
-/// 判定（`decide_route`）は置いたときに振り分けを持たない（`defaultParams`）ので `out`（ir.md §7.11）。
-export function defaultOutPort(nodeType: string): string {
-  const entry = NODE_CATALOG.find((c) => c.type === nodeType);
-  if (entry?.port_rule === "switch_cases") return "default";
-  return entry?.output_ports[0] ?? "out";
-}
+// ノード種の既定の出力ポートは ports.ts（尻尾の＋・末尾への追加と同じ規則）。
+export { defaultOutPort };
 
 /// カタログの既定 params（必須フィールドの雛形・右パネルで埋める前提の最小形）。
 /// **入力全体を指す `$from` は `path` を持たない**（JSON Pointer の `"/"` は

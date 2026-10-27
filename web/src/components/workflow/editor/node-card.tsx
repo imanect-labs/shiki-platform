@@ -24,8 +24,9 @@ import type { Node as IrNode, ValidationError } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import { AddNodeMenu } from "./add-node-menu";
 import { nodeIcon } from "./icons";
-import { drawnPorts, portsFromServer, type DrawnPort } from "./ports";
+import { continuationPort, drawnPorts, exitsPending, isStructuralPort, type DrawnPort } from "./ports";
 import { categoryVar } from "../category-accent";
+import { portLabel } from "../port-labels";
 
 export type NodeCardData = {
   irNode: IrNode;
@@ -43,23 +44,7 @@ export type NodeCardData = {
   [key: string]: unknown;
 };
 
-const PORT_LABELS: Record<string, string> = {
-  out: "",
-  true: "はい",
-  false: "いいえ",
-  default: "その他",
-  error: "エラー時",
-  timeout: "時間切れ",
-  approved: "承認",
-  rejected: "却下",
-  returned: "差し戻し",
-  withdrawn: "取り下げ",
-  uncertain: "要確認",
-};
-
-export function portLabel(port: string): string {
-  return PORT_LABELS[port] ?? port;
-}
+export { portLabel } from "../port-labels";
 
 function portColor(port: string): string {
   if (port === "error" || port === "rejected") return "!bg-destructive";
@@ -71,7 +56,7 @@ function portColor(port: string): string {
 
 /// 出口の表示名（無い出口は印を添える）。
 function drawnLabel(p: DrawnPort): string {
-  const name = portLabel(p.port) || p.port;
+  const name = portLabel(p.port);
   return p.missing ? `${name}（無い出口）` : name;
 }
 
@@ -85,6 +70,35 @@ function parsePorts(key: string | undefined): string[] {
   }
 }
 
+/// 名前付きの出口の行（名前の横にハンドル）。
+function PortRow({ port: p }: { port: DrawnPort }) {
+  return (
+    <div className="relative flex h-6 items-center justify-end" data-port={p.port}>
+      <span
+        className={cn(
+          "min-w-0 truncate text-[11px]",
+          p.missing ? "font-medium text-destructive" : "text-muted-foreground",
+        )}
+      >
+        {drawnLabel(p)}
+      </span>
+      <Handle
+        id={p.port}
+        type="source"
+        position={Position.Right}
+        // 行（relative）の縦の中央に置く。行ごとに `i * 24px` ずらすと、行の中でさらにずれて
+        // 2 つ目以降のハンドルが下の行の名前の横に出る（線を別の出口からつなぐ取り違えになる）。
+        style={{ top: "50%" }}
+        isConnectableStart={!p.missing}
+        className={cn(
+          "!absolute !-right-[13px] !size-2.5 !border-2 !border-background pointer-coarse:!size-4",
+          p.missing ? "!bg-destructive/40 !border-destructive" : portColor(p.port),
+        )}
+      />
+    </div>
+  );
+}
+
 export function NodeCard({ id, data, selected }: NodeProps & { data: NodeCardData }) {
   const { irNode, errors, onAddFrom } = data;
   const warnings = data.warnings ?? [];
@@ -94,8 +108,17 @@ export function NodeCard({ id, data, selected }: NodeProps & { data: NodeCardDat
     () => drawnPorts(irNode, data.knownPorts, parsePorts(data.edgePortsKey), data.portsFresh ?? true),
     [irNode, data.knownPorts, data.edgePortsKey, data.portsFresh],
   );
-  // 尻尾の＋でつなぐ出口（今の設定にある最初の出口）。
-  const tailPort = ports.find((p) => !p.missing)?.port ?? "out";
+  // 尻尾の＋でつなぐ出口（今の設定にある、続きの処理の最初の出口。error・timeout にはつながない）。
+  const tailPort = continuationPort(
+    irNode.type,
+    ports.filter((p) => !p.missing).map((p) => p.port),
+  );
+  // 判定で出口（続きの処理の出口）がまだ決まらない間は、error があってもその旨を出す。
+  const pending = exitsPending(irNode, data.knownPorts);
+  // 名前付きの出口の行の数。2 行以上なら、右辺の中ほどは出口のハンドルとそこから出る線・線の名前で埋まるので、
+  // 尻尾の＋はカードの右下へ下ろす（重ねると＋と線の名前が読めず、押し間違える）。
+  const labeledRows = pending ? ports.length : ports.length === 1 && !ports[0].missing ? 0 : ports.length;
+  const tailBelow = labeledRows > 1;
   // 出口が変わったら（振り分けの出口名の変更・エラー時の出口の追加など）ハンドルの位置を測り直す。
   // キャンバスは計測結果を引き継ぐので、大きさが変わらない変更では React Flow が自分では測り直さない。
   const updateNodeInternals = useUpdateNodeInternals();
@@ -202,11 +225,20 @@ export function NodeCard({ id, data, selected }: NodeProps & { data: NodeCardDat
       </div>
 
       {/* 出力ポート（複数のときはラベル付きで下部に列挙）。 */}
-      {ports.length === 0 && portsFromServer(irNode.type) ? (
-        // 判定の出口はサーバが設定から導く（設定が契約に合うまでは決まらない）。
-        <p className="border-t px-3.5 py-1.5 text-[11px] text-muted-foreground" data-testid="node-ports-pending">
-          出口は設定を直すと出ます
-        </p>
+      {pending ? (
+        // 判定の出口はサーバが設定から導く（設定が契約に合うまでは決まらない）。エラー時の出口・エッジの出口は
+        // 名前付きの行で描く（1 つだけでも名前の無いハンドルにしない）。
+        <div className="border-t px-3.5 py-1.5">
+          <p className="text-[11px] text-muted-foreground" data-testid="node-ports-pending">
+            出口は設定を直すと出ます
+          </p>
+          {/* 続きの処理の出口（エッジの出口）を上に、エラー時の出口を下に。 */}
+          {[...ports]
+            .sort((a, b) => Number(isStructuralPort(a.port)) - Number(isStructuralPort(b.port)))
+            .map((p) => (
+              <PortRow key={p.port} port={p} />
+            ))}
+        </div>
       ) : ports.length === 1 && !ports[0].missing ? (
         <Handle
           id={ports[0].port}
@@ -220,29 +252,7 @@ export function NodeCard({ id, data, selected }: NodeProps & { data: NodeCardDat
       ) : ports.length > 0 ? (
         <div className="border-t px-3.5 py-1.5">
           {ports.map((p) => (
-            <div key={p.port} className="relative flex h-6 items-center justify-end" data-port={p.port}>
-              <span
-                className={cn(
-                  "min-w-0 truncate text-[11px]",
-                  p.missing ? "font-medium text-destructive" : "text-muted-foreground",
-                )}
-              >
-                {drawnLabel(p)}
-              </span>
-              <Handle
-                id={p.port}
-                type="source"
-                position={Position.Right}
-                // 行（relative）の縦の中央に置く。行ごとに `i * 24px` ずらすと、行の中でさらにずれて
-                // 2 つ目以降のハンドルが下の行の名前の横に出る（線を別の出口からつなぐ取り違えになる）。
-                style={{ top: "50%" }}
-                isConnectableStart={!p.missing}
-                className={cn(
-                  "!absolute !-right-[13px] !size-2.5 !border-2 !border-background pointer-coarse:!size-4",
-                  p.missing ? "!bg-destructive/40 !border-destructive" : portColor(p.port),
-                )}
-              />
-            </div>
+            <PortRow key={p.port} port={p} />
           ))}
         </div>
       ) : null}
@@ -262,7 +272,10 @@ export function NodeCard({ id, data, selected }: NodeProps & { data: NodeCardDat
               "hover:border-primary hover:bg-primary hover:text-primary-foreground hover:scale-110",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               menuOpen && "opacity-100 border-primary bg-primary text-primary-foreground",
+              tailBelow &&
+                "right-3 top-auto -bottom-3 translate-y-0 pointer-coarse:right-3 pointer-coarse:-bottom-4",
             )}
+            data-tail={tailBelow ? "below" : "side"}
           >
             <Plus className="size-4" aria-hidden />
           </button>

@@ -25,21 +25,10 @@ import { getStep, type StepDetail, type StepOverview } from "@/lib/workflow-run-
 import { nodeIcon } from "@/components/workflow/editor/icons";
 import { AgentResult, isAgentOutput } from "./agent-result";
 import { formatDateTime, STEP_STATUS_LABELS } from "./status";
+import { portLabel } from "../port-labels";
 
 /// node_id → 表示情報（run にピンされた version の IR から引く）。
 export type NodeInfo = { label: string; type: string };
-
-const PORT_LABELS: Record<string, string> = {
-  true: "はい",
-  false: "いいえ",
-  error: "エラー時",
-  timeout: "時間切れ",
-  default: "その他",
-  approved: "承認",
-  rejected: "却下",
-  returned: "差し戻し",
-  withdrawn: "取り下げ",
-};
 
 /// step の状態の文言（承認を待つブロックの待機は「承認待ち」・GAP-08）。
 function stepStatusLabel(status: string, type: string | undefined): string {
@@ -156,7 +145,7 @@ function StepRow({
               .filter((p) => p !== "next" && p !== "out")
               .map((p) => (
                 <Badge key={p} variant="muted" className="px-1.5 py-0 text-[10px]">
-                  {PORT_LABELS[p] ?? p}
+                  {portLabel(p)}
                 </Badge>
               ))}
           </span>

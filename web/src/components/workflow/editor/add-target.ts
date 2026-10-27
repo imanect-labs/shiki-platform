@@ -5,7 +5,7 @@ import type { Edge, WorkflowIr } from "@/generated/workflow-ir";
 import type { EditorLayout } from "@/lib/workflow-api";
 import { NODE_W, nextPosition, resolvePositions } from "./auto-layout";
 import type { EditorAction } from "./ir-state";
-import { outputPorts, type ServerPorts } from "./ports";
+import { continuationPort, outputPorts, type ServerPorts } from "./ports";
 
 export type AddTarget =
   /// ノードが 1 つも無い（最初のブロック）。
@@ -26,7 +26,8 @@ export function endTarget(ir: WorkflowIr, serverPorts: ServerPorts = {}): AddTar
   const seen = new Set<string>();
   for (;;) {
     seen.add(current.id);
-    const port = outputPorts(current, serverPorts[current.id])[0] ?? "out";
+    // 続きの処理の出口（error・timeout へはつながない・尻尾の＋と同じ）。
+    const port = continuationPort(current.type, outputPorts(current, serverPorts[current.id]));
     const next = ir.edges.find((e) => e.from === current.id && (e.from_port ?? "out") === port);
     const node = next ? ir.nodes.find((n) => n.id === next.to) : undefined;
     if (!node || seen.has(node.id)) return { kind: "after", from: current.id, port };

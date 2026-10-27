@@ -55,6 +55,38 @@ export function outputPorts(irNode: IrNode, known?: readonly string[]): string[]
   return ports;
 }
 
+/// 構造ポート（どのノードにも付き得る、失敗・時間切れのときの出口）。続きの処理の出口ではないので、尻尾の＋・
+/// 流れの末尾への追加ではつながない。
+const STRUCTURAL_PORTS = new Set(["error", "timeout"]);
+
+/// ノード種の既定の出力ポート（挿入・尻尾追加でエッジを張るときの継続側・置いたばかりの既定の設定での出口）。
+/// switch は cases から動的導出のため、常に存在するフォールバック `default` を使う
+/// （実行エンジンは `out` を発しないので `out` エッジは不発になる）。
+/// 判定（`decide_route`）は置いたときに振り分けを持たない（`defaultParams`）ので `out`（ir.md §7.11）。
+export function defaultOutPort(nodeType: string): string {
+  const entry = NODE_CATALOG.find((c) => c.type === nodeType);
+  if (entry?.port_rule === "switch_cases") return "default";
+  return entry?.output_ports[0] ?? "out";
+}
+
+/// 続きの処理をつなぐ出口（尻尾の＋・流れの末尾への追加）: 構造ポートを除いた最初の出口。無ければ既定の出口
+/// （判定で出口がまだ決まらない間に「失敗したとき: 続ける」にしても、error へはつながない）。
+/// `ports` は描く出口（今の設定に無い出口は除いて渡す）か、規則の出口。
+export function continuationPort(nodeType: string, ports: readonly string[]): string {
+  return ports.find((p) => !STRUCTURAL_PORTS.has(p)) ?? defaultOutPort(nodeType);
+}
+
+/// 構造ポート（error・timeout）か。
+export function isStructuralPort(port: string): boolean {
+  return STRUCTURAL_PORTS.has(port);
+}
+
+/// 判定のノードで、サーバの出口（続きの処理の出口）がまだ無いか（置いたばかり・設定が契約に合わない間）。
+/// 構造ポート（error）だけでは出口が決まったことにしない。
+export function exitsPending(irNode: IrNode, known: readonly string[] | undefined): boolean {
+  return portsFromServer(irNode.type) && !outputPorts(irNode, known).some((p) => !STRUCTURAL_PORTS.has(p));
+}
+
 /// 描く出口の 1 つ。`missing` は今の設定に無い出口（そこから出るエッジがある・保存は `ir.unknown_port` で止まる）。
 export type DrawnPort = { port: string; missing: boolean };
 

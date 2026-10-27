@@ -17,6 +17,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn } from "@/lib/utils";
 import type { Edge as IrEdge } from "@/generated/workflow-ir";
 import { AddNodeMenu } from "./add-node-menu";
+import { portLabel } from "../port-labels";
 
 export type PlusEdgeData = {
   irEdge: IrEdge;
@@ -37,17 +38,6 @@ export function portLabelFits(p: { sourceX: number; sourceY: number; labelX: num
   const width = [...p.text].length * 10 + 14 + 4 + 20;
   return p.labelX - width / 2 >= p.sourceX + TAIL_RIGHT || Math.abs(p.labelY - p.sourceY) >= NEAR_Y;
 }
-
-const PORT_LABELS: Record<string, string> = {
-  true: "はい",
-  false: "いいえ",
-  error: "エラー時",
-  timeout: "時間切れ",
-  approved: "承認",
-  rejected: "却下",
-  returned: "差し戻し",
-  withdrawn: "取り下げ",
-};
 
 export function PlusEdge({
   id,
@@ -71,7 +61,8 @@ export function PlusEdge({
   const [menuOpen, setMenuOpen] = React.useState(false);
   const hasError = data.errorMessages.length > 0;
   const port = data.irEdge.from_port ?? "out";
-  const portName = PORT_LABELS[port] ?? (port !== "out" ? port : "");
+  // 既定の出口（次へ）はつながりに名前を出さない（どのノードにもある・カードの出口の並びに出ている）。
+  const portName = port === "out" ? "" : portLabel(port);
   // 短いつながりではラベルを出さない（尻尾の＋に重なる・BUG-41）。選んでいる間は＋の上に重ねずに出す。
   const portText =
     portName && (selected || portLabelFits({ sourceX, sourceY, labelX, labelY, text: portName })) ? portName : "";
