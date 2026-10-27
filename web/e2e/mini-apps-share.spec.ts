@@ -2,10 +2,12 @@ import { test, expect, type Browser, type Page } from "@playwright/test";
 
 import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
 
-/// ミニアプリの実行画面の共有ボタン（BUG-78）の E2E。
+/// ミニアプリの実行画面の共有ボタンと、共同編集者の保存の誤り（BUG-78・BUG-80）の E2E。
 /// - 共有（相手の一覧と付与・解除）は owner だけができるので、共有ボタンは owner にだけ出す（解決の応答の `can_share`）。
 ///   閲覧・編集の共有を受けた人には出さない。
-/// 作ったアプリは最後に消す。`E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
+/// - 共同編集者が自分の読めない部品を束ねたアプリを保存すると止まる（部品の権限の扱いは D-16 で未決）。そのときの誤りは
+///   部品を別名と版で言い、部品の id も本文の中の位置（`workflows[0]`）も出さない。
+/// 作ったアプリ・ワークフローは最後に消す。`E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 
@@ -21,6 +23,27 @@ async function api(page: Page, method: "POST" | "PUT" | "DELETE", path: string, 
   });
   expect(res.ok(), `${method} ${path} → ${res.status()} ${await res.text()}`).toBeTruthy();
   return res;
+}
+
+async function createFlow(page: Page, name: string): Promise<string> {
+  const res = await api(page, "POST", "/workflows", {
+    ir: {
+      ir_version: 1,
+      name,
+      display_name: name,
+      triggers: [{ kind: "interactive" }],
+      nodes: [
+        {
+          id: "compute",
+          type: "script.run",
+          label: "計算する",
+          params: { source: { inline: "function main(i){ return { ok: true }; }" } },
+        },
+      ],
+      edges: [],
+    },
+  });
+  return ((await res.json()) as { id: string }).id;
 }
 
 async function createApp(page: Page, body: Record<string, unknown>): Promise<string> {
@@ -115,6 +138,69 @@ test("ミニアプリの共有ボタンは owner にだけ出し、閲覧・編�
     if (SHOTS) await phone.screenshot({ path: `${SHOTS}/bug78-editor-phone.png` });
   } finally {
     await cleanup(page, [appId]);
+    await bobCtx.close().catch(() => undefined);
+    await phone?.context().close().catch(() => undefined);
+  }
+});
+
+test("共同編集者が読めないワークフローを束ねたアプリを保存すると、部品を名前と版で言い、id を出さない（BUG-80）", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await loginViaKeycloak(page);
+  const flow = uniqueName("lend-flow");
+  const wfId = await createFlow(page, flow);
+  const appId = await createApp(page, {
+    description: "備品の貸出",
+    screen: `# 貸出の受付\n\n\`\`\`ui\napp 貸出の受付\n備品 = text 必須 as item\nbutton 借りる -> workflow ${flow}\n\`\`\`\n`,
+    workflows: [{ alias: flow, artifact_id: wfId, version: 1 }],
+  });
+  const bobCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const bob = await bobCtx.newPage();
+  let phone: Page | null = null;
+  const expected = `ワークフロー「${flow}」（v1）が見つからないか、あなたには読めません`;
+  try {
+    await loginAs(bob, "bob");
+    const bobId = ((await (await bob.request.get("/api/me")).json()) as { id: string }).id;
+    // アプリだけを編集で共有する（束ねたワークフローは共有しない）。
+    await share(page, appId, bobId, "editor");
+
+    await bob.goto(`/apps/${appId}`);
+    await expect(bob.getByRole("heading", { name: "備品の貸出", level: 1 })).toBeVisible({ timeout: 15_000 });
+    await bob.getByRole("button", { name: "編集" }).click();
+    const dialog = bob.getByRole("dialog");
+    await dialog.getByLabel(/画面の見出し/).fill("備品の貸出（改訂）");
+    await dialog.getByRole("button", { name: "保存" }).click();
+    const alert = dialog.getByRole("alert");
+    await expect(alert).toContainText(expected, { timeout: 15_000 });
+    // 部品の id・種類の内部名・本文の中の位置（workflows[0]）を出さない。
+    await expect(alert).toHaveText(expected);
+    await expect(alert).not.toContainText(wfId);
+    await expect(alert).not.toContainText("kind=");
+    await expect(alert).not.toContainText("workflows[0]");
+    await alert.scrollIntoViewIfNeeded();
+    if (SHOTS) await bob.screenshot({ path: `${SHOTS}/bug80-collaborator-pc.png` });
+
+    // スマホのシートでも同じ文言で、横にはみ出さない。
+    phone = await phoneOf(browser, bob);
+    await phone.goto(`/apps/${appId}`);
+    await expect(phone.getByRole("heading", { name: "備品の貸出", level: 1 })).toBeVisible({ timeout: 15_000 });
+    await phone.getByRole("button", { name: "編集" }).click();
+    const sheet = phone.getByRole("dialog");
+    await sheet.getByRole("button", { name: "保存" }).click();
+    const phoneAlert = sheet.getByRole("alert");
+    await expect(phoneAlert).toContainText(expected, { timeout: 15_000 });
+    await expect(phoneAlert).toHaveText(expected);
+    await phoneAlert.scrollIntoViewIfNeeded();
+    expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    if (SHOTS) await phone.screenshot({ path: `${SHOTS}/bug80-collaborator-phone.png` });
+
+    // 保存は止まったまま（版は増えない）。
+    const resolved = (await (await page.request.get(`/api/mini-apps/${appId}/resolved`)).json()) as { version: number };
+    expect(resolved.version).toBe(1);
+  } finally {
+    await cleanup(page, [appId, wfId]);
     await bobCtx.close().catch(() => undefined);
     await phone?.context().close().catch(() => undefined);
   }

@@ -275,8 +275,9 @@ impl MiniAppStore {
         let body = validate_miniapp_body(raw_body).map_err(GuiError::Validation)?;
         let mut errors = Vec::new();
         if let Some(pin) = &body.skill {
+            let what = format!("スキル（v{}）", pin.version);
             if let Err(e) = self
-                .check_pin(ctx, pin, ArtifactKind::Skill, trace_id)
+                .check_pin(ctx, pin, ArtifactKind::Skill, &what, trace_id)
                 .await
             {
                 errors.push(e.at("skill"));
@@ -287,8 +288,9 @@ impl MiniAppStore {
                 artifact_id: wf.artifact_id,
                 version: wf.version,
             };
+            let what = format!("ワークフロー「{}」（v{}）", wf.alias, wf.version);
             if let Err(e) = self
-                .check_pin(ctx, &pin, ArtifactKind::Workflow, trace_id)
+                .check_pin(ctx, &pin, ArtifactKind::Workflow, &what, trace_id)
                 .await
             {
                 errors.push(e.at(format!("workflows[{i}]")));
@@ -302,8 +304,9 @@ impl MiniAppStore {
                 version: view.version,
             };
             let path = format!("data_views[{i}]");
+            let what = format!("保存ビュー「{}」（v{}）", view.alias, view.version);
             match self
-                .check_pin(ctx, &pin, ArtifactKind::DataView, trace_id)
+                .check_pin(ctx, &pin, ArtifactKind::DataView, &what, trace_id)
                 .await
             {
                 Ok(raw) => {
@@ -311,10 +314,7 @@ impl MiniAppStore {
                         errors.push(
                             GuiValidationError::new(
                                 "miniapp.data_view_broken",
-                                format!(
-                                    "保存ビュー {}（v{}）の本文を読めません",
-                                    view.artifact_id, view.version
-                                ),
+                                format!("{what}の本文を読めません（古い形式か、壊れています）"),
                             )
                             .at(path),
                         );
@@ -331,21 +331,21 @@ impl MiniAppStore {
     }
 
     /// 1 ピンの存在・kind・viewer 検証（作成者権限・存在秘匿の同一メッセージ）。
+    ///
+    /// `what` は誤りの文言で部品を指す言い方（例: `ワークフロー「expense」（v1）`）。文言は利用者に出るので、
+    /// 部品の id は入れない（BUG-80）。無い・kind が違う・読めないは同じ文言にする（存在を区別させない）。
     async fn check_pin(
         &self,
         ctx: &AuthContext,
         pin: &ComponentPin,
         kind: ArtifactKind,
+        what: &str,
         trace_id: Option<&str>,
     ) -> Result<serde_json::Value, GuiValidationError> {
         let unresolved = || {
             GuiValidationError::new(
                 "miniapp.pin_unresolved",
-                format!(
-                    "参照 {}（kind={}）が見つからないか権限がありません",
-                    pin.artifact_id,
-                    kind.as_str()
-                ),
+                format!("{what}が見つからないか、あなたには読めません"),
             )
         };
         let meta = self

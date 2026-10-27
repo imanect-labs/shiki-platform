@@ -323,16 +323,73 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
         panic!("validation error expected");
     };
     assert!(errors.iter().any(|e| e.code == "miniapp.pin_unresolved"));
+    // 誤りの文言は部品を別名と版で指し、部品の id を出さない（利用者の画面にそのまま出る・BUG-80）。
+    let missing = bad["workflows"][0]["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let unresolved = errors
+        .iter()
+        .find(|e| e.code == "miniapp.pin_unresolved")
+        .unwrap();
+    assert_eq!(
+        unresolved.message,
+        "ワークフロー「expense」（v1）が見つからないか、あなたには読めません"
+    );
+    assert_eq!(unresolved.path.as_deref(), Some("workflows[0]"));
+    assert!(!unresolved.message.contains(&missing));
     let wrong_kind = json!({
         "description": "x",
         "screen": expense_screen("x"),
         "workflows": [ { "alias": "expense", "artifact_id": skill_id, "version": 1 } ]
     });
-    assert!(s
+    let err = s
         .mini_apps
         .create(&c, "kind-app", &wrong_kind, None)
         .await
-        .is_err());
+        .expect_err("kind 不一致のピン");
+    let GuiError::Validation(errors) = err else {
+        panic!("validation error expected");
+    };
+    // kind が違う部品も、無い部品と同じ文言（存在を区別させない）で、id も kind も出さない。
+    assert_eq!(
+        errors
+            .iter()
+            .map(|e| (e.code.as_str(), e.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(
+            "miniapp.pin_unresolved",
+            "ワークフロー「expense」（v1）が見つからないか、あなたには読めません"
+        )]
+    );
+    // 束ねたスキルも同じ（スキルには別名が無いので版で指す）。
+    let missing_skill = Uuid::new_v4();
+    let bad_skill = json!({
+        "description": "x",
+        "screen": expense_screen("x"),
+        "skill": { "artifact_id": missing_skill, "version": 3 },
+        "workflows": [ { "alias": "expense", "artifact_id": wf, "version": 1 } ]
+    });
+    let err = s
+        .mini_apps
+        .create(&c, "skill-missing-app", &bad_skill, None)
+        .await
+        .expect_err("無いスキルのピン");
+    let GuiError::Validation(errors) = err else {
+        panic!("validation error expected");
+    };
+    assert_eq!(
+        errors
+            .iter()
+            .map(|e| (e.code.as_str(), e.message.as_str(), e.path.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![(
+            "miniapp.pin_unresolved",
+            "スキル（v3）が見つからないか、あなたには読めません",
+            Some("skill")
+        )]
+    );
+    assert!(!errors[0].message.contains(&missing_skill.to_string()));
 
     // 画面のボタンの実行先が束ねたワークフローに無ければ拒否される（実行先 ⊆ ピン集合）。
     let unbundled = json!({

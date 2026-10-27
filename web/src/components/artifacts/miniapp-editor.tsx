@@ -35,6 +35,7 @@ import {
   getSkill,
   listArtifacts,
   updateMiniApp,
+  validationMessages,
   type ArtifactMeta,
   type MiniAppVersion,
 } from "@/lib/artifact-api";
@@ -264,7 +265,8 @@ export function MiniAppEditorDialog({
       onSaved(saved);
       onOpenChange(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "保存に失敗しました");
+      // 検証エラーは 1 件 1 行で、位置（workflows[0] など）を添えずに出す（BUG-80）。
+      setError(validationMessages(err) ?? (err instanceof Error ? err.message : "保存に失敗しました"));
     } finally {
       setBusy(false);
     }

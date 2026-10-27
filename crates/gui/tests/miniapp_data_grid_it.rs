@@ -294,6 +294,13 @@ async fn data_grid_is_evaluated_with_each_viewers_own_permissions() {
             Some("data_views[0]".to_string())
         )]
     );
+    // 文言は利用者の画面に出るので、ビューを別名と版で指し、id を出さない（BUG-80）。
+    let message = &err.validation_errors().unwrap()[0].message;
+    assert_eq!(
+        message,
+        "保存ビュー「承認待ち」（v1）が見つからないか、あなたには読めません"
+    );
+    assert!(!message.contains(&view_id.to_string()));
     // 画面の表が束ねていない別名を参照していたら拒否。
     let unbundled = json!({
         "description": "x",

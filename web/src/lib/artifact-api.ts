@@ -31,13 +31,18 @@ export type ArtifactMeta = {
 
 export type VersionMeta = { version: number; createdBy: string; createdAt: string };
 
+/// 保存時の検証エラー 1 件（codegen）。
+type GuiValidationError = components["schemas"]["GuiValidationError"];
+
 async function ok<T>(res: Response): Promise<T> {
   if (!res.ok) {
     // 検証エラー（400 の {errors:[...]}）は本文をそのまま投げて UI が全件表示できるようにする。
     let detail = "";
+    let errors: GuiValidationError[] | undefined;
     try {
-      const body = (await res.json()) as { errors?: { code: string; message: string; path?: string }[] };
+      const body = (await res.json()) as { errors?: GuiValidationError[] };
       if (body.errors?.length) {
+        errors = body.errors;
         detail = body.errors
           .map((e) => (e.path ? `${e.message}（${e.path}）` : e.message))
           .join(" / ");
@@ -46,9 +51,18 @@ async function ok<T>(res: Response): Promise<T> {
       // 本文なし
     }
     // 状態コードを添える（見つからない・権限がない＝403/404 を画面が「見つかりません」として出し分ける）。
-    throw Object.assign(new Error(detail || `API ${res.status}`), { status: res.status });
+    throw Object.assign(new Error(detail || `API ${res.status}`), { status: res.status, errors });
   }
   return (await res.json()) as T;
+}
+
+/// 投げられた誤りが保存時の検証エラーなら、その文言を 1 件 1 行で返す（無ければ null）。
+///
+/// 位置（`workflows[0]` などの path）は添えない。利用者に出す画面向けで、部品のピンの誤りは文言が部品を別名と版で
+/// 言う（BUG-80）。
+export function validationMessages(e: unknown): string | null {
+  const errors = (e as { errors?: GuiValidationError[] } | null)?.errors;
+  return errors?.length ? errors.map((x) => x.message).join("\n") : null;
 }
 
 function json(body: unknown): RequestInit {
