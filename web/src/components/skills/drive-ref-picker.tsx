@@ -124,7 +124,7 @@ export function DriveRefPicker({
           <DialogDescription>
             {folderOnly
               ? "知識スコープに含めるフォルダを選んでください（配下のファイルすべてが対象になります）。"
-              : "スキルの指示文で参照するファイルかフォルダを選んでください。本文にはパスのラベルとして入ります。"}
+              : "指示文で参照するファイル・フォルダを選びます。本文にはパスのラベルで入ります。"}
           </DialogDescription>
         </DialogHeader>
 

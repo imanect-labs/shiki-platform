@@ -1,7 +1,7 @@
 "use client";
 
 /// スキルエディタの設定（#919）。本文の上に「プロパティ」（知識スコープ・使うツール・モデル既定）、
-/// 本文の下に「お手本の対話」と「script」を置く（ノートのプロパティ欄と同じ並び）。
+/// 本文の下に「お手本の対話」と「スクリプト」を置く（ノートのプロパティ欄と同じ並び）。
 /// 値は [`SkillDraft`]（保存 API の SkillBody と相互変換する編集状態）を直接読み書きする。
 
 import {
@@ -58,7 +58,7 @@ function PropertyRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-1.5 py-2 sm:grid-cols-[9.5rem_minmax(0,1fr)] sm:gap-3">
+    <div className="shiki-dash-bottom grid grid-cols-1 gap-1.5 py-2 sm:grid-cols-[9.5rem_minmax(0,1fr)] sm:gap-3">
       <div className="flex min-h-8 items-center gap-2 text-[13px] text-muted-foreground">
         <Icon className="size-4 shrink-0" aria-hidden />
         <span>{label}</span>
@@ -92,8 +92,9 @@ function Pill({
       className={cn(
         "inline-flex min-h-8 items-center gap-1 rounded-full border px-3 text-[13px] outline-none transition-colors",
         "focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-10",
+        // 選択は塗りで示す（枠の色は変えない・設計言語）。
         active
-          ? "border-primary/40 bg-primary/10 font-medium text-foreground"
+          ? "border-transparent bg-accent font-medium text-accent-foreground"
           : "border-border text-muted-foreground hover:border-foreground/25 hover:text-foreground",
       )}
     >
@@ -117,7 +118,7 @@ export function SkillProperties({ draft, update }: { draft: SkillDraft; update: 
   };
 
   return (
-    <section aria-label="スキルの設定" className="divide-y divide-border/60 border-y border-border/60">
+    <section aria-label="スキルの設定" className="shiki-dash-top">
       <PropertyRow
         icon={FolderTree}
         label="知識スコープ"
@@ -276,7 +277,7 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="border-t border-border/60 pt-4" aria-label={title}>
+    <section className="shiki-dash-top pt-4" aria-label={title}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           <Icon className="size-4 text-muted-foreground" aria-hidden />
@@ -312,7 +313,7 @@ export function SkillExtras({ draft, update }: { draft: SkillDraft; update: Upda
         addLabel="例を追加"
       >
         {draft.fewShot.map((ex, i) => (
-          <div key={i} className="space-y-1.5 rounded-lg border border-border p-3">
+          <div key={i} className="space-y-1.5 rounded-lg border border-border/60 bg-card/40 p-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-muted-foreground">例 {i + 1}</span>
               <button
@@ -353,14 +354,14 @@ export function SkillExtras({ draft, update }: { draft: SkillDraft; update: Upda
 
       <Section
         icon={ScrollText}
-        title="script"
+        title="スクリプト"
         description="スキルに同梱するスクリプト（任意・実行は今後のフェーズ）。"
         count={draft.scripts.length}
         onAdd={() => update("scripts", [...draft.scripts, { path: "", kind: "shiki", source: "" }])}
-        addLabel="script を追加"
+        addLabel="スクリプトを追加"
       >
         {draft.scripts.map((sc, i) => (
-          <div key={i} className="space-y-1.5 rounded-lg border border-border p-3">
+          <div key={i} className="space-y-1.5 rounded-lg border border-border/60 bg-card/40 p-3">
             <div className="flex items-center gap-2">
               <Input
                 value={sc.path}
