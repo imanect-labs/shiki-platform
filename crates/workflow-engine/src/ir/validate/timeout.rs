@@ -17,7 +17,7 @@ fn grouped(n: u32) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -60,6 +60,7 @@ pub(super) fn v7(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_pass_by_value)]
 mod tests {
     use serde_json::json;
 

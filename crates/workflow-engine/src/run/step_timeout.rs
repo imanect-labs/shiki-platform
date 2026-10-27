@@ -79,6 +79,7 @@ pub fn timeout_message(limit_sec: u32) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_pass_by_value)]
 mod tests {
     use super::*;
     use serde_json::json;

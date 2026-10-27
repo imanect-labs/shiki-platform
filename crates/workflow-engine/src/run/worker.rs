@@ -133,6 +133,32 @@ impl WorkflowWorker {
         Ok(true)
     }
 
+    /// ノードを実行する。step の時間の上限（ノード種の既定と上限・ir.md §4・engine.md §9.4・BUG-96）を過ぎたら
+    /// 実行を打ち切り、止める合図を立てて、やり直せる失敗（`step_timeout`）として試す回数の規則に従わせる。
+    async fn execute_within_limit(
+        &self,
+        node: &crate::ir::node::Node,
+        ctx: &NodeContext,
+    ) -> NodeResult {
+        let run = self.executor.execute(&node.node_type, &node.params, ctx);
+        let Some(limit) = super::step_timeout::step_timeout_sec(node) else {
+            return run.await;
+        };
+        if let Ok(result) = tokio::time::timeout(Duration::from_secs(u64::from(limit)), run).await {
+            return result;
+        }
+        ctx.cancel.cancel();
+        tracing::warn!(
+            run_id = %ctx.run_id, step = %ctx.step_path, limit,
+            "step が時間の上限を過ぎたので打ち切った"
+        );
+        NodeResult::fail(
+            super::step_timeout::STEP_TIMEOUT,
+            super::step_timeout::timeout_message(limit),
+            true,
+        )
+    }
+
     async fn execute_and_advance(&self, claimed: &ClaimedStep) -> Result<(), String> {
         // IR スナップショットからグラフとノード情報を得る。
         let ir: WorkflowIr =
@@ -249,35 +275,7 @@ impl WorkflowWorker {
             }
         }
 
-        // step の時間の上限（ノード種の既定と上限・ir.md §4・engine.md §9.4・BUG-96）。過ぎたら実行を打ち切り、
-        // やり直せる失敗として試す回数の規則に従わせる（止める合図も立てる）。
-        let result: NodeResult = match super::step_timeout::step_timeout_sec(node) {
-            Some(limit) => match tokio::time::timeout(
-                Duration::from_secs(u64::from(limit)),
-                self.executor.execute(&node.node_type, &node.params, &ctx),
-            )
-            .await
-            {
-                Ok(result) => result,
-                Err(_) => {
-                    ctx.cancel.cancel();
-                    tracing::warn!(
-                        run_id = %claimed.run_id, step = %claimed.step_path, limit,
-                        "step が時間の上限を過ぎたので打ち切った"
-                    );
-                    NodeResult::fail(
-                        super::step_timeout::STEP_TIMEOUT,
-                        super::step_timeout::timeout_message(limit),
-                        true,
-                    )
-                }
-            },
-            None => {
-                self.executor
-                    .execute(&node.node_type, &node.params, &ctx)
-                    .await
-            }
-        };
+        let result = self.execute_within_limit(node, &ctx).await;
         heartbeat.abort();
 
         let advanced = self
