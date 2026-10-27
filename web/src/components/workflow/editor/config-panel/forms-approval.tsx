@@ -137,16 +137,29 @@ function useSeesWholeTable(tableId: string | null): boolean {
 
 /// 受信箱に出す列の欄の下に出すサーバの誤り（最初の 1 件）。
 ///
-/// 状態の列を指す誤り（保存時の照合の `ir.bad_show_field`）は、選べない列の行の注記（外すボタン付き）が同じことを
-/// 言うので、欄の下には重ねない（BUG-82）。どの列を指すかは、誤りの path の添字を検証した時点の値で引く（検証の後に
-/// 並びが変わっても、今の並びに当てて取り違えない）。
-function showFieldsServerError(check: ServerCheck, statusField: string | null | undefined): string | undefined {
+/// 選べない列の行の注記（外すボタン付き）が同じことを断定して言う列を指す誤りは、欄の下には重ねない（1 回だけ言う）:
+/// - 状態の列（保存時の照合の `ir.bad_show_field`・BUG-82）。
+/// - 定義の全体が見えているとき（`seesWholeTable`）の、テーブルに無い列（`ir.unknown_field`）。行の注記は
+///   「このテーブルに無い列」と言う。全体が見えないときは、注記が断定しない（読めないだけかもしれない）ので、
+///   サーバの文言を残す。
+/// どの列を指すかは、誤りの path の添字を検証した時点の値で引く（検証の後に並びが変わっても、今の並びに当てて
+/// 取り違えない）。
+function showFieldsServerError(
+  check: ServerCheck,
+  table: DataTable | null,
+  seesWholeTable: boolean,
+): string | undefined {
   const checked = (check.node?.params as Partial<Params> | undefined)?.show_fields ?? [];
-  const pointsAtStatus = (path: string | null | undefined) => {
+  const statusField = table?.schema.status_field;
+  const keys = new Set((table?.schema.fields ?? []).map((f) => f.key));
+  const saidByNote = (path: string | null | undefined) => {
     const m = /^\/params\/show_fields\/(\d+)$/.exec(path ?? "");
-    return Boolean(m && statusField && checked[Number(m[1])] === statusField);
+    const key = m ? checked[Number(m[1])] : undefined;
+    if (key === undefined) return false;
+    if (statusField && key === statusField) return true;
+    return table !== null && seesWholeTable && !keys.has(key);
   };
-  return nodeErrorView(check.errors.filter((e) => !pointsAtStatus(e.path))).fields.get("show_fields");
+  return nodeErrorView(check.errors.filter((e) => !saidByNote(e.path))).fields.get("show_fields");
 }
 
 /// 選べる列に無い保存済みの列の注記（`certain` は赤字で出す）。`missing`（定義の全体が見えている）でなければ、
@@ -259,7 +272,7 @@ export function HumanApprovalForm(props: FormProps) {
       <ShowFieldsField
         table={table}
         value={p.show_fields ?? []}
-        error={showFieldsServerError(serverCheck, table?.schema.status_field)}
+        error={showFieldsServerError(serverCheck, table, seesWholeTable)}
         seesWholeTable={seesWholeTable}
         onChange={(v) => set({ show_fields: v.length ? v : undefined })}
       />

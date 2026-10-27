@@ -458,10 +458,19 @@ test("承認を待つブロック: テーブルに無い受信箱の列・担当
   await expect(panel.getByText("このテーブルに無い列: ghost_user")).toBeVisible();
   await expect(panel.getByText("ユーザー・部署の列ではありません: title")).toBeVisible();
 
-  // ほかの欄を直して保存すると、サーバの検証（ir.unknown_field）で止まり、理由が受信箱に出す列の欄に出る。
+  // ほかの欄を直して保存すると、サーバの検証（ir.unknown_field）で止まる。テーブルの全体が見えている（owner）ので、
+  // 理由は選べない列の行の注記（「このテーブルに無い列」）だけで言い、欄の下にサーバの文言を重ねない。
   await panel.getByRole("textbox", { name: "受信箱の件名" }).fill("経費申請の承認（課長）");
+  const saving = page.waitForResponse(
+    (r) => new URL(r.url()).pathname === `/api/workflows/${s.workflowId}` && r.request().method() === "PUT",
+  );
   await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(panel.getByText("列 ghost はこのテーブルに無いか、読めない列です")).toBeVisible({ timeout: 15_000 });
+  const refused = await saving;
+  expect(refused.status()).toBe(400);
+  expect(await refused.text()).toContain("ir.unknown_field");
+  await expect(page.getByText("保存できません（検証エラー）").first()).toBeVisible({ timeout: 15_000 });
+  await expect(stray).toContainText("このテーブルに無い列: ghost");
+  await expect(panel.getByText("列 ghost はこのテーブルに無いか、読めない列です")).toHaveCount(0);
 
   // 外すと消え、保存できる（ほかの列は残る）。
   await stray.getByRole("button", { name: "列 ghost を外す" }).click();

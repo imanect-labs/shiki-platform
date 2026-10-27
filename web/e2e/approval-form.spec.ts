@@ -5,7 +5,8 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 /// 承認を待つブロック（human.approval）の設定の欄の E2E（BUG-82・BUG-83）。
 /// - 受信箱に出す列に状態の列があると、選べない列の行の注記（外すボタン付き）と、保存時の照合の誤り
 ///   （`ir.bad_show_field`）が同じことを 2 回言っていた。行の注記にまとめ、欄の下には重ねない（BUG-67 の E2E を
-///   approvals.spec.ts から移して書き直した）。
+///   approvals.spec.ts から移して書き直した）。テーブルに無い列も、定義の全体が見えている（行の注記が「無い」と
+///   断定する）ときは同じく行の注記だけで言う（見えないときはサーバの文言を残す・approvals.spec.ts）。
 /// - 任意の出口（却下・差し戻し）を使わないときは、中身の無い枠を出さず見出しの行だけにする。
 /// テーブル・状態の遷移の規則・ワークフローは有効化せずに作り（run を起こさない）、最後に消す。
 /// `E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
@@ -134,7 +135,7 @@ function exitGroup(scope: Locator, title: string) {
 
 const borderTop = (el: Element) => getComputedStyle(el).borderTopWidth;
 
-test("受信箱に出す列の状態の列は、選べない列の行の注記だけで言い、保存時の照合の誤りを重ねない（BUG-82）", async ({
+test("受信箱に出す列の状態の列・テーブルに無い列は、選べない列の行の注記だけで言い、保存時の照合の誤りを重ねない（BUG-82）", async ({
   page,
   browser,
 }) => {
@@ -165,10 +166,13 @@ test("受信箱に出す列の状態の列は、選べない列の行の注記�
     const body = JSON.stringify(await (await validated).json());
     expect(body).toContain("ir.bad_show_field");
     expect(body).toContain("ir.unknown_field");
-    // 無い列の誤りは欄の下に出る。状態の列の誤りは行の注記と同じことなので、欄の下には出さない（1 回だけ言う）。
-    await expect(panel.getByText("列 ghost はこのテーブルに無いか、読めない列です")).toBeVisible({ timeout: 15_000 });
+    // 状態の列の誤りも、テーブルに無い列の誤り（テーブルの全体が見えている owner なので、行の注記が「無い」と断定して
+    // 言う）も、行の注記と同じことなので欄の下には出さない（1 回だけ言う）。応答が画面に当たるのを待ってから数える。
+    await page.waitForTimeout(1_000);
+    await expect(panel.getByText("列 ghost はこのテーブルに無いか、読めない列です")).toHaveCount(0);
     await expect(panel.getByText(/列 status は状態の列なので/)).toHaveCount(0);
     await expect(panel.getByText(/状態の列/)).toHaveCount(1);
+    await expect(panel.getByText(/ghost/)).toHaveCount(1);
     await stray.scrollIntoViewIfNeeded();
     if (SHOTS) await panel.screenshot({ path: `${SHOTS}/bug82-show-fields-pc.png` });
 
@@ -188,13 +192,15 @@ test("受信箱に出す列の状態の列は、選べない列の行の注記�
     );
     await sheet.getByRole("textbox", { name: "受信箱の件名" }).fill("備品の申請の承認（係長）");
     expect(JSON.stringify(await (await phoneValidated).json())).toContain("ir.bad_show_field");
-    await expect(sheet.getByText("列 ghost はこのテーブルに無いか、読めない列です")).toBeVisible({ timeout: 15_000 });
+    await phone.waitForTimeout(1_000);
+    await expect(sheet.getByText("列 ghost はこのテーブルに無いか、読めない列です")).toHaveCount(0);
     await expect(sheet.getByText(/状態の列/)).toHaveCount(1);
+    await expect(sheet.getByText(/ghost/)).toHaveCount(1);
     await phoneStray.scrollIntoViewIfNeeded();
     expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
     if (SHOTS) await phone.screenshot({ path: `${SHOTS}/bug82-show-fields-phone.png` });
 
-    // 無い列を外すと、欄の下の誤りは消える（状態の列の注記は残る）。
+    // 無い列を外しても、状態の列の注記は残り、欄の下には何も重ねない。
     const revalidated = page.waitForResponse(
       (r) => r.url().endsWith("/api/workflows/validate") && r.request().method() === "POST",
     );
