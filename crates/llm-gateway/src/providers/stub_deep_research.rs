@@ -59,7 +59,15 @@ pub(super) fn deep_research_call(req: &GenerateRequest, prompt_tokens: u64) -> O
 
     // 調査フェーズ。1 ステップに複数ツールを載せ、冪等 read の有界並列（#349）と
     // 逐次書込が同じステップに混在する実際の形を再現する。
-    let calls: Vec<(String, serde_json::Value)> = match steps {
+    // 進捗カード（`plan` メタツール）は手順書どおり**節目のステップで一緒に**進める。
+    let mut calls: Vec<(String, serde_json::Value)> = match steps {
+        0 => progress(req, ["doing", "todo", "todo", "todo"]),
+        2 => progress(req, ["done", "doing", "todo", "todo"]),
+        3 => progress(req, ["done", "done", "doing", "todo"]),
+        5 => progress(req, ["done", "done", "done", "done"]),
+        _ => Vec::new(),
+    };
+    calls.extend(match steps {
         // ① 検索 ＋ brief の作成。
         0 => tools_of(
             req,
@@ -97,7 +105,7 @@ pub(super) fn deep_research_call(req: &GenerateRequest, prompt_tokens: u64) -> O
                     "fs_append",
                     serde_json::json!({
                         "name": "notes.md",
-                        "content": "E1 | https://example.com/stub-1 | 2026-07-30 | 一次 | 市場は 1.2 兆円 | 「1兆2000億円」\n"
+                        "content": "E1 | https://example.com/stub-1 | 2026-07-30 | 一次 | 市場は 1.2 兆円 | 「1兆2000億円」\nE2 | https://example.org/stub-2 | 2026-03-31 | 二次 | 別集計では 9800 億円 | 「9800億円」\n"
                     }),
                 )],
             ));
@@ -148,7 +156,7 @@ pub(super) fn deep_research_call(req: &GenerateRequest, prompt_tokens: u64) -> O
             )],
         ),
         _ => Vec::new(),
-    };
+    });
     if calls.is_empty() {
         // 最後の発話も**反映後**の本文にする。検証で直した箇所を会話で言い直したら、
         // ユーザーが受け取るものとして直っていないのと同じ。出典は本文の末尾にリンクで並べる
@@ -177,11 +185,32 @@ fn tools_of(
         .collect()
 }
 
+/// 進捗カードの項目（計画の問い＋執筆・検証・提出）。状態は項目と同じ順に渡す。
+const DEEP_RESEARCH_PROGRESS: [&str; 4] = [
+    "2026 年の実数はいくらか",
+    "レポートを書く",
+    "裏取り（検証）",
+    "ノートにまとめて提出",
+];
+
+/// 進捗カードの更新（`plan` メタツール・全項目を同じ title で全置換）。提示に無ければ呼ばない。
+fn progress(req: &GenerateRequest, statuses: [&str; 4]) -> Vec<(String, serde_json::Value)> {
+    let subtasks: Vec<serde_json::Value> = DEEP_RESEARCH_PROGRESS
+        .iter()
+        .zip(statuses)
+        .map(|(title, status)| serde_json::json!({ "title": title, "status": status }))
+        .collect();
+    tools_of(
+        req,
+        &[("plan", serde_json::json!({ "subtasks": subtasks }))],
+    )
+}
+
 /// `/deep-research` の起動トークン（本番のコマンド文字列と同一）。
 const DEEP_RESEARCH_COMMAND: &str = "/deep-research";
 
 /// 決定的なレポート本文（出典つき・両論併記・未確認の明示を含む最小形）。
-const DEEP_RESEARCH_REPORT: &str = "## 結論と確度\n\n国内 SaaS 市場は 2026 年時点で 1.2 兆円規模とみられる（独立 2 系統が一致）。\n成長率は出典 1 系統のみで、確度は低い。\n\n## 市場規模\n\n2026 年の国内市場規模は 1 兆 2000 億円と公表されている（https://example.com/stub-1）。\n一方、3 月時点の別集計では 9800 億円とされ、集計範囲の違いが残る（https://example.org/stub-2）。\n\n## 見つからなかったこと\n\n地域別の内訳は公表資料では確認できなかった。\n";
+const DEEP_RESEARCH_REPORT: &str = "## 結論と確度\n\n国内 SaaS 市場は 2026 年時点で 1.2 兆円規模とみられる（独立 2 系統が一致）。\n成長率は出典 1 系統のみで、確度は低い。\n\n## 市場規模\n\n2026 年の国内市場規模は 1 兆 2000 億円と公表されている（https://example.com/stub-1）。\n一方、3 月時点の別集計では 9800 億円とされ、集計範囲の違いが残る（https://example.org/stub-2）。\n\n```ui\nbar 2026 年の国内 SaaS 市場規模（公表値の比較）\nunit: 億円\n集計 | 市場規模\n7 月公表 | 12000\n3 月時点の別集計 | 9800\nnote: 出典: 国内 SaaS 市場調査（2026 年版）・別集計（2026 年 3 月時点）。集計範囲が異なる\n```\n\n公表値の差は 2200 億円で、集計範囲の違いで説明できるかは確認できていない。\n\n## 見つからなかったこと\n\n地域別の内訳は公表資料では確認できなかった。\n";
 
 /// 会話の最後に並べる出典（本文で引用したものだけ・一次を上に）。
 const DEEP_RESEARCH_SOURCES: &str = "\n## 出典\n\n- [国内 SaaS 市場調査（2026 年版）](https://example.com/stub-1)（一次）\n- [別集計（2026 年 3 月時点）](https://example.org/stub-2)（二次）\n";
@@ -405,6 +434,69 @@ mod tests {
         let text = text_of(last).await;
         assert!(text.contains("## 出典"), "{text}");
         assert!(text.contains("](https://example.com/stub-1)"), "{text}");
+    }
+
+    /// 進捗カード（`plan`）は最初に 1 回出したきりにせず、節目のステップで一緒に進めて
+    /// 提出時にすべて done になる（カードが 0 のまま動かない回帰を防ぐ）。
+    #[tokio::test]
+    async fn progress_card_advances_to_done() {
+        let mut with_plan = ALL.to_vec();
+        with_plan.push("plan");
+        let mut messages = vec![user("/deep-research auto SaaS 市場")];
+        let mut done_counts = Vec::new();
+        for _ in 0..6 {
+            let s = deep_research_call(&req(messages.clone(), &with_plan), 0).expect("継続");
+            let calls = calls_of(s).await;
+            if let Some((_, input)) = calls.iter().find(|(n, _)| n == "plan") {
+                let subtasks = input["subtasks"].as_array().expect("subtasks");
+                assert_eq!(
+                    subtasks.len(),
+                    DEEP_RESEARCH_PROGRESS.len(),
+                    "毎回全項目を渡す"
+                );
+                for (st, title) in subtasks.iter().zip(DEEP_RESEARCH_PROGRESS) {
+                    assert_eq!(st["title"], title, "title を変えると別項目になる");
+                    assert!(st["status"].is_string(), "status を全項目に書く");
+                }
+                done_counts.push(subtasks.iter().filter(|s| s["status"] == "done").count());
+            }
+            assert!(
+                calls.iter().any(|(n, _)| n != "plan"),
+                "plan だけのステップを作らない"
+            );
+            messages.push(assistant_tool_use("prev"));
+            messages.push(tool_result());
+        }
+        assert_eq!(
+            done_counts,
+            vec![0, 1, 2, 4],
+            "節目ごとに進み、提出で完了する"
+        );
+    }
+
+    /// 提出するレポートには図（```ui）が入り、図の出典を note に書く（ノートで図として描かれる）。
+    #[test]
+    fn report_includes_figure_with_source_note() {
+        let report = deep_research_final();
+        assert!(report.contains("```ui\nbar "), "{report}");
+        assert!(report.contains("note: 出典: "), "{report}");
+    }
+
+    /// 図の数値（1.2 兆円・9800 億円）はどちらも証拠台帳（notes.md）に載っている。
+    #[tokio::test]
+    async fn figure_values_are_in_evidence_ledger() {
+        let mut messages = vec![user("/deep-research auto SaaS 市場")];
+        messages.push(assistant_tool_use("web_search"));
+        messages.push(tool_result());
+        let calls = calls_of(deep_research_call(&req(messages, ALL), 0).expect("step1")).await;
+        let ledger = calls
+            .iter()
+            .find(|(n, i)| n == "fs_append" && i["name"] == "notes.md")
+            .and_then(|(_, i)| i["content"].as_str().map(str::to_string))
+            .expect("notes.md への追記");
+        for value in ["1兆2000億円", "9800億円"] {
+            assert!(ledger.contains(value), "{value} が台帳に無い: {ledger}");
+        }
     }
 
     /// 未配線のツールは呼ばない（web 検索が無い構成でも run が壊れない）。
