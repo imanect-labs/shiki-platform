@@ -79,7 +79,8 @@ impl AutonomousMode {
         /// 新規作成（csv.write / save_document / save_sheet・#381）は既存データを壊さず
         /// 削除で戻せるため、csv.write と同じ扱いにする。移動・名前変更（drive.move・#942）は
         /// 含めない: 共有フォルダへ移すと閲覧・RAG の可視範囲が広がって移し戻しても開示は取り消せず、
-        /// ルートへ移すと継承していた権限が外れて戻せなくなることがある（human 決定）。
+        /// ルートへ移すと継承していた権限が外れて戻せなくなることがある（human 決定）。全自動（bypass）は
+        /// 他の不可逆ツールと同じく `allow_all` で自動承認する（明示オプトイン・org で禁止可）。
         const VERSIONED_WRITES: [ToolName; 9] = [
             ToolName::FsWrite,
             ToolName::FsEdit,
