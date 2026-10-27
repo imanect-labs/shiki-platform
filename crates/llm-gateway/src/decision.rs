@@ -199,6 +199,9 @@ pub enum DecideErrorKind {
     Truncated,
     /// 応答が決められた形に合わなかった（1 回直させても合わなかった）。
     InvalidOutput,
+    /// 決定器の応答が要求と合わない（答えの過不足・値域の外・版の不一致・応答の形の崩れ）。決定器か設定の誤りで、
+    /// 同じ要求を送り直しても直らない。原因はログ用で、利用者には出さない。
+    InvalidResponse,
 }
 
 /// 要求の誤り（[`DecideErrorKind::InvalidRequest`]）の頭。
@@ -211,12 +214,26 @@ pub(crate) const TRUNCATED: &str =
     "判定モデルの応答が上限の長さで途切れました。質問の数を減らしてください。";
 /// 形に合わない（[`DecideErrorKind::InvalidOutput`]）の頭。
 pub(crate) const INVALID_OUTPUT_HEAD: &str = "判定モデルの応答が決められた形に合いませんでした";
+/// 決定器の応答が要求と合わない（[`DecideErrorKind::InvalidResponse`]・`LlmError::Internal`）の頭。続きは原因（ログ用）。
+pub(crate) const INVALID_RESPONSE_HEAD: &str = "decision provider returned an invalid response: ";
+
+/// 決定器の応答が要求と合わない誤り（[`DecideErrorKind::InvalidResponse`]）。`why` はログ用の原因。
+///
+/// 種類は `Internal` のまま（`Internal` を一律に再試行しないものにはしない。ストリームの読み取りの失敗など
+/// 一時的なものも含むため）。頭の定型文で見分ける。
+pub(crate) fn invalid_response(why: impl std::fmt::Display) -> LlmError {
+    LlmError::Internal(format!("{INVALID_RESPONSE_HEAD}{why}"))
+}
 
 /// 判定の失敗の種類を見分ける（それ以外の失敗は `None`・[`LlmError`] の分類に従う）。
 #[must_use]
 pub fn decide_error_kind(err: &LlmError) -> Option<DecideErrorKind> {
-    let LlmError::BadRequest(m) = err else {
-        return None;
+    let m = match err {
+        LlmError::BadRequest(m) => m,
+        LlmError::Internal(m) if m.starts_with(INVALID_RESPONSE_HEAD) => {
+            return Some(DecideErrorKind::InvalidResponse);
+        }
+        _ => return None,
     };
     if m.starts_with(INVALID_REQUEST_HEAD) {
         Some(DecideErrorKind::InvalidRequest)
@@ -288,9 +305,20 @@ mod tests {
             kind(LlmError::BadRequest(format!("{INVALID_OUTPUT_HEAD}（x）"))),
             Some(DecideErrorKind::InvalidOutput)
         );
-        // 定型文でない誤り（プロバイダの 4xx・設定の誤り）は従来の分類に任せる。
+        // 決定器の応答の不整合は Internal の頭で見分ける（再試行しない）。
+        assert_eq!(
+            kind(invalid_response("答えのキーが質問と合わない")),
+            Some(DecideErrorKind::InvalidResponse)
+        );
+        // 定型文でない誤り（プロバイダの 4xx・設定の誤り・一時的な内部の誤り）は従来の分類に任せる。
         assert_eq!(kind(LlmError::BadRequest("prompt too long".into())), None);
         assert_eq!(kind(LlmError::Config(REFUSED.into())), None);
+        assert_eq!(kind(LlmError::Internal("stream read failed".into())), None);
+        assert_eq!(
+            kind(LlmError::BadRequest(format!("{INVALID_RESPONSE_HEAD}x"))),
+            None,
+            "頭は Internal のときだけ"
+        );
     }
 
     #[test]

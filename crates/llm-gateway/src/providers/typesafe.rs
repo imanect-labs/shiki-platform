@@ -33,8 +33,8 @@ use serde_json::{json, Map, Value};
 use super::timeouts::RequestClock;
 use crate::config::{LlmTimeouts, ModelEntry, ProviderConfig};
 use crate::decision::{
-    Answer, DecideFailure, DecideRequest, DecideResponse, DecisionMethod, DecisionProvider,
-    QuestionKind,
+    invalid_response, Answer, DecideFailure, DecideRequest, DecideResponse, DecisionMethod,
+    DecisionProvider, QuestionKind,
 };
 use crate::model::{GenerateRequest, Usage};
 use crate::provider::{rate_limit_message, DeltaStream, LlmError, LlmProvider};
@@ -386,13 +386,14 @@ impl DecisionProvider for TypesafeDecider {
         }
         let text = clock.body_text(resp).await.map_err(fail)?;
         let raw: Value = serde_json::from_str(&text).map_err(|e| {
-            fail(LlmError::Internal(format!(
+            fail(invalid_response(format!(
                 "typesafe: 応答が JSON でない: {e}"
             )))
         })?;
         // ここから先の失敗は、課金された分（使用量）を会計に載せる。
         let usage = usage_of(&raw);
-        let bad = |why: String| DecideFailure::new(LlmError::Internal(why), usage);
+        // 応答が要求と合わない（形の崩れ・版の不一致・値域の外）。送り直しても直らないので再試行させない。
+        let bad = |why: String| DecideFailure::new(invalid_response(why), usage);
         let wire: WireResponse = serde_json::from_value(raw)
             .map_err(|e| bad(format!("typesafe: 応答の形が違う: {e}")))?;
         if !wire.model.starts_with(&self.real_id) {

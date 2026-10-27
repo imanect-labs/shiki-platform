@@ -14,6 +14,9 @@ use llm_gateway::{
 };
 use serde_json::Value;
 use workflow_engine::ir::params::{DecideQuestion, DecideQuestionType};
+use workflow_engine::nodes::decide::{
+    DECISION_INVALID_RESPONSE, DECISION_INVALID_RESPONSE_MESSAGE,
+};
 use workflow_engine::{ExecCtx, LlmDecideReq, PortError};
 
 use super::auth::auth_ctx;
@@ -137,15 +140,27 @@ pub(super) async fn decide(
 ///
 /// - 判定の定型文（要求の誤り・拒否・途切れ・形に合わない）は利用者向けの日本語なのでそのまま出し、どれも
 ///   再試行しない（拒否・途切れ・形の誤りは llm.invoke の構造化出力と同じ code で分類する）。
+/// - 決定器の応答が要求と合わない（チョークポイントの突き合わせ・TypeSafe の版の不一致や形の崩れ）は、エンジンの
+///   突き合わせと同じ `decision_invalid_response`（再試行しない・送り直しても直らず、試すたびに課金される）。
+///   原因はログ用なので出さない。それ以外の内部の誤り（読み取りの失敗など一時的なもの）は従来どおり再試行する。
 /// - 設定の誤り（未登録・判定用でない・組織で無効。元の chat モデルが無効なときも）は設定を直すまで通らない。
 /// - 到達障害・利用上限は llm.invoke と同じ（再試行・gateway の 1 行）。
 pub(super) fn decide_port_error(model: &str, e: &LlmError) -> PortError {
+    if decide_error_kind(e) == Some(DecideErrorKind::InvalidResponse) {
+        return PortError::new(
+            DECISION_INVALID_RESPONSE,
+            DECISION_INVALID_RESPONSE_MESSAGE,
+            false,
+        );
+    }
     if let (Some(kind), LlmError::BadRequest(message)) = (decide_error_kind(e), e) {
         let code = match kind {
             DecideErrorKind::InvalidRequest => "invalid",
             DecideErrorKind::Refused => workflow_engine::LLM_REFUSED,
             DecideErrorKind::Truncated => workflow_engine::LLM_OUTPUT_TRUNCATED,
             DecideErrorKind::InvalidOutput => workflow_engine::LLM_OUTPUT_INVALID,
+            // 上で扱った（Internal の頭で表す・ここには来ない）。
+            DecideErrorKind::InvalidResponse => DECISION_INVALID_RESPONSE,
         };
         return PortError::new(code, message.clone(), false);
     }
@@ -290,6 +305,25 @@ mod tests {
             assert_eq!(got.message, msg);
             assert!(!got.retryable);
         }
+        // 決定器の応答が要求と合わない（チョークポイントの突き合わせ・TypeSafe の版の不一致）は再試行しない。
+        // 原因（版・キー）は利用者に出さない。
+        for raw in [
+            "decision provider returned an invalid response: 答えのキーが質問と合わない",
+            "decision provider returned an invalid response: typesafe: 設定の版 jev-1.13.0 ではなく jev-1.14.0 が答えた",
+        ] {
+            let got = decide_port_error("m", &LlmError::Internal(raw.into()));
+            assert_eq!(got.code, "decision_invalid_response", "{raw}");
+            assert!(!got.retryable, "{raw}");
+            assert!(
+                !got.message.contains("jev") && !got.message.contains("キー"),
+                "{}",
+                got.message
+            );
+        }
+        // 頭の無い内部の誤り（読み取りの失敗など一時的なもの）は従来どおり再試行する。
+        let internal = decide_port_error("m", &LlmError::Internal("stream read failed".into()));
+        assert!(internal.retryable);
+        assert_ne!(internal.code, "decision_invalid_response");
         // それ以外は llm.invoke と同じ（到達障害・利用上限は再試行・原文を出さない）。
         let down = decide_port_error("m", &LlmError::Unavailable("anthropic 503 {..}".into()));
         assert!(down.retryable);

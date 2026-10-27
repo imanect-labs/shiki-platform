@@ -27,8 +27,11 @@ use super::resolver::{param, ParamResolver};
 
 /// 判定の材料が大きすぎる（permanent・材料を絞る）。
 pub const DECISION_STATE_TOO_LARGE: &str = "decision_state_too_large";
-/// 判定の応答が質問と合わない（permanent・ポートの実装の誤り）。
+/// 判定の応答が質問と合わない（permanent・ポートか決定器の実装・設定の誤り）。
 pub const DECISION_INVALID_RESPONSE: &str = "decision_invalid_response";
+/// [`DECISION_INVALID_RESPONSE`] の利用者向けの文（原因はサーバのログだけに残す・ポートも同じ文を使う）。
+pub const DECISION_INVALID_RESPONSE_MESSAGE: &str =
+    "判定モデルの応答が質問と合いませんでした。管理者にお問い合わせください。";
 
 /// 能力 API 名（監査・レート制御・スコープの語彙）。
 const API: &str = "ai.decide";
@@ -106,7 +109,7 @@ impl CapabilityNodeExecutor {
             );
             PortError::new(
                 DECISION_INVALID_RESPONSE,
-                "判定モデルの応答が質問と合いませんでした。管理者にお問い合わせください。",
+                DECISION_INVALID_RESPONSE_MESSAGE,
                 false,
             )
         })?;

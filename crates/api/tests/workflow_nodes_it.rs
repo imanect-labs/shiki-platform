@@ -1505,6 +1505,28 @@ async fn decide_routes_through_the_production_port() {
         keys[0].starts_with(&format!("{}#f", step_key(run_id))),
         "{keys:?}"
     );
+    h.clear_usage().await;
+
+    // 決定器が要求と合わない答えを返した（チョークポイントの突き合わせで弾いた）→ 送り直しても直らないので
+    // 再試行しない decision_invalid_response（試すたびに #f で課金されない）。原因は利用者に出さない。
+    let (run_id, status) = h
+        .run(
+            wf_id,
+            &json!({ "body": "stub:malformed" }),
+            Arc::clone(&executor),
+        )
+        .await;
+    assert_eq!(status, RunStatus::Failed);
+    let (_, err) = h.step_output(run_id).await;
+    assert_eq!(err["code"], "decision_invalid_response", "{err}");
+    assert_eq!(err["retryable"], false, "{err}");
+    assert!(
+        !err["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid response"),
+        "{err}"
+    );
     h.cleanup_runs().await;
 }
 

@@ -233,6 +233,11 @@ async fn other_versions_and_malformed_answers_fail_with_their_usage() {
         "{:?}",
         f.error
     );
+    // 応答の不整合（再試行しない）と分かる。
+    assert_eq!(
+        llm_gateway::decide_error_kind(&f.error),
+        Some(llm_gateway::DecideErrorKind::InvalidResponse)
+    );
     assert_eq!(f.usage.prompt_tokens, 120);
 
     let mut missing = published_reply("jev-1.13.0");
@@ -247,6 +252,10 @@ async fn other_versions_and_malformed_answers_fail_with_their_usage() {
         matches!(&f.error, LlmError::Internal(m) if m.contains("billing")),
         "{:?}",
         f.error
+    );
+    assert_eq!(
+        llm_gateway::decide_error_kind(&f.error),
+        Some(llm_gateway::DecideErrorKind::InvalidResponse)
     );
     assert_eq!(f.usage.prompt_tokens, 120);
 }

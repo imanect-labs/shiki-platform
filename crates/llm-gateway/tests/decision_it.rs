@@ -262,6 +262,12 @@ async fn a_failed_decision_does_not_hide_the_later_success() {
         .await
         .unwrap_err();
     assert!(matches!(err, LlmError::Internal(_)), "{err:?}");
+    // 応答の不整合と分かる定型文の頭が付く（呼び出し側が再試行しない decision_invalid_response に写す）。
+    assert_eq!(
+        llm_gateway::decide_error_kind(&err),
+        Some(llm_gateway::DecideErrorKind::InvalidResponse),
+        "{err:?}"
+    );
     gw.decide(&flow, &request("decide-stub", "不具合"), &call(key))
         .await
         .unwrap();

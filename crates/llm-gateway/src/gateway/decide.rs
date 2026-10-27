@@ -10,7 +10,8 @@
 //!    会計と利用上限（5・8）は通さない（決定器を呼ばないので費用が出ない）。
 //! 5. 請求先プロバイダの利用上限（判定用のモデルの `provider` は元のモデルと同じ）。
 //! 6. 決定器（構築時に組んだもの）を呼ぶ。
-//! 7. 応答を要求と突き合わせる（答えの過不足・値域・確率の範囲 → `Internal`）。
+//! 7. 応答を要求と突き合わせる（答えの過不足・値域・確率の範囲 → `Internal`。頭の定型文で
+//!    [`crate::decision::DecideErrorKind::InvalidResponse`] と分かる・呼び出し側は再試行しない）。
 //! 8. 会計（ストリームではないので、呼び出し側の記録漏れが無いようにここで行う）。使えた判定は呼び出し側の
 //!    キー、使えなかった判定（失敗・突き合わせで弾いたもの）で使用量のあるものは `{key}#f{uuid}`。
 //!    失敗を呼び出し側のキーで記録すると、後の再試行・run の再開で成功した分が重複除去で消える。
@@ -26,7 +27,8 @@ use crate::config::{GatewayConfig, ModelEntry, ProviderKind};
 use crate::decision::cache::{cache_key, Decided, DecisionCache};
 use crate::decision::check::{check_request, check_response};
 use crate::decision::{
-    DecideCall, DecideRequest, DecideResponse, DecisionProvider, INVALID_REQUEST_HEAD,
+    invalid_response, DecideCall, DecideRequest, DecideResponse, DecisionProvider,
+    INVALID_REQUEST_HEAD,
 };
 use crate::model::Usage;
 use crate::provider::LlmError;
@@ -152,9 +154,7 @@ impl LlmGateway {
                 Err(why) => {
                     tracing::error!(model = %entry.id, decider = provider.name(), %why, "決定器が要求と合わない答えを返した");
                     account(resp.usage, false).await;
-                    return Err(LlmError::Internal(format!(
-                        "decision provider returned an invalid response: {why}"
-                    )));
+                    return Err(invalid_response(why));
                 }
             },
             Err(failure) => {
