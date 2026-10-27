@@ -12,6 +12,19 @@ use crate::vocab::{step_timeout_limits, NodeType};
 /// 欄の見出し（付録 D の N2.6）。
 const LABEL: &str = "時間の上限";
 
+/// 4 桁以上を 3 桁ごとにカンマで区切る（付録 C の P11・3,600）。
+fn grouped(n: u32) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 pub(super) fn v7(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
     for node in &ir.nodes {
         let (Some(t), Some(nt)) = (node.timeout_sec, NodeType::parse(&node.node_type)) else {
@@ -28,14 +41,18 @@ pub(super) fn v7(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
             );
         };
         if !(1..=max).contains(&t) {
-            push(format!("「{LABEL}」は 1〜{max} 秒にしてください。"));
+            push(format!(
+                "「{LABEL}」は 1〜{} 秒にしてください。",
+                grouped(max)
+            ));
             continue;
         }
         if nt == NodeType::AgentInvoke {
             let duration = agent_duration_sec(&node.params);
             if t < duration {
+                let d = grouped(duration);
                 push(format!(
-                    "「{LABEL}」は「AI の作業時間の上限」（{duration} 秒）より短くできません。{duration} 秒以上にするか、空欄にしてください。"
+                    "「{LABEL}」は「AI の作業時間の上限」（{d} 秒）より短くできません。{d} 秒以上にするか、空欄にしてください。"
                 ));
             }
         }
@@ -102,5 +119,12 @@ mod tests {
         assert_eq!(errs.len(), 1);
         assert!(errs[0].contains("（600 秒）より短くできません"), "{errs:?}");
         assert!(timeout_errors(agent(300, json!({ "max_duration_sec": 300 }))).is_empty());
+        let long = timeout_errors(agent(3_000, json!({ "max_duration_sec": 3_600 })));
+        assert!(long[0].contains("（3,600 秒）"), "{long:?}");
+        let over = timeout_errors(
+            json!({ "id": "a", "type": "agent.invoke", "timeout_sec": 4_000,
+            "params": { "instruction": "x" } }),
+        );
+        assert_eq!(over, ["「時間の上限」は 1〜3,600 秒にしてください。"]);
     }
 }

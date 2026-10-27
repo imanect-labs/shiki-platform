@@ -66,10 +66,16 @@ pub fn agent_duration_sec(params: &Value) -> u32 {
     }
 }
 
-/// 打ち切ったときの step の誤りの文言（実行履歴に出る・ブロック名は実行履歴が出す）。
+/// 打ち切ったときの step の誤りの文言（実行履歴に出る・ブロック名は実行履歴が出す・期間は分と秒で言う）。
 #[must_use]
 pub fn timeout_message(limit_sec: u32) -> String {
-    format!("時間の上限（{limit_sec} 秒）を過ぎたため、このブロックを止めました。")
+    let (m, s) = (limit_sec / 60, limit_sec % 60);
+    let period = match (m, s) {
+        (0, s) => format!("{s} 秒"),
+        (m, 0) => format!("{m} 分"),
+        (m, s) => format!("{m} 分 {s} 秒"),
+    };
+    format!("時間の上限（{period}）を過ぎたため、このブロックを止めました。")
 }
 
 #[cfg(test)]
@@ -115,6 +121,16 @@ mod tests {
             step_timeout(&node("http.request", None, json!({}))),
             Some(Duration::from_secs(30))
         );
+    }
+
+    #[test]
+    fn messages_say_the_period_in_minutes() {
+        assert_eq!(
+            timeout_message(30),
+            "時間の上限（30 秒）を過ぎたため、このブロックを止めました。"
+        );
+        assert!(timeout_message(120).contains("（2 分）"));
+        assert!(timeout_message(150).contains("（2 分 30 秒）"));
     }
 
     /// 制御のノードと未知の種は打ち切らない（待機の時間は params が決める）。
