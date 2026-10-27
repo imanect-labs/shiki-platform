@@ -79,16 +79,20 @@ export function NewMenuDesktop({ create }: { create: CreateHandlers }) {
 /// スマホの右下の「＋ 新規」と、タップで出る下からのシート（アップロード／新規フォルダ／
 /// 各種の新規作成）。PC はツールバーのボタンのまま（md 以上では出さない）。
 export function NewFab({
+  open,
+  onOpenChange: setOpen,
   create,
   onUpload,
   onNewFolder,
 }: {
+  /// シートの開閉。アップロードはファイルを選ぶまで開いておき、選んだら呼び出し側で閉じるので外に持つ。
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   create: CreateHandlers;
+  /// 端末のファイルを選ぶ。シートは開いたままにするので、ファイルを選んだら呼び出し側で閉じる。
   onUpload: () => void;
   onNewFolder: () => void;
 }) {
-  const [open, setOpen] = React.useState(false);
-  // ファイル選択はユーザー操作の文脈の中で呼ぶ（iOS は遅らせると開かない）。
   const run = (fn: () => void) => {
     setOpen(false);
     fn();
@@ -110,13 +114,23 @@ export function NewFab({
         新規
       </button>
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="bottom" className="gap-0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-5.5">
+        <SheetContent
+          side="bottom"
+          data-testid="drive-new-sheet"
+          className="gap-0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-5.5"
+        >
           <SheetTitle className="px-1 pb-3 pt-1 text-[17px]">新規</SheetTitle>
           <SheetDescription className="sr-only">
             ファイルのアップロード、フォルダや文書の新規作成ができます。
           </SheetDescription>
           <div className="grid grid-cols-2 gap-2">
-            <Tile icon={Upload} label="アップロード" onClick={() => run(onUpload)} />
+            <Tile
+              icon={Upload}
+              label="アップロード"
+              // ファイル選択はタップの操作の中で開く（iOS は遅らせると開かない）。シートは開いたままにし、
+              // ファイルを選んだら閉じる（取り消したら残る・チャットの「+」と同じ）。
+              onClick={onUpload}
+            />
             <Tile icon={FolderPlus} label="新規フォルダ" onClick={() => run(onNewFolder)} />
           </div>
           <p className="px-1 pb-1 pt-4 text-xs font-medium text-muted-foreground">作成して開く</p>

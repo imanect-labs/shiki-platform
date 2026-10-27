@@ -167,6 +167,7 @@ export function DriveBrowser() {
   const [activeNode, setActiveNode] = React.useState<NodeResponse | null>(null);
   const [dragging, setDragging] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const [fabOpen, setFabOpen] = React.useState(false);
   // 「新しいバージョン」用の隠し入力と対象ノード。
   const versionInputRef = React.useRef<HTMLInputElement>(null);
   const versionTargetRef = React.useRef<NodeResponse | null>(null);
@@ -386,8 +387,12 @@ export function DriveBrowser() {
         multiple
         hidden
         onChange={(e) => {
-          void uploader.uploadFiles(Array.from(e.target.files ?? []));
+          const files = Array.from(e.target.files ?? []);
           e.target.value = "";
+          if (files.length === 0) return;
+          // スマホの「＋ 新規」のシートはファイルを選ぶまで開いておき、選んだら閉じる。
+          setFabOpen(false);
+          void uploader.uploadFiles(files);
         }}
       />
       <input
@@ -536,7 +541,13 @@ export function DriveBrowser() {
       </div>
 
       {/* スマホの「＋ 新規」（アップロード／新規フォルダ／新規作成を 1 つに集約） */}
-      <NewFab create={create} onUpload={openUpload} onNewFolder={openNewFolder} />
+      <NewFab
+        open={fabOpen}
+        onOpenChange={setFabOpen}
+        create={create}
+        onUpload={openUpload}
+        onNewFolder={openNewFolder}
+      />
 
       {/* ダイアログ群 */}
       <UploadConflictDialog
