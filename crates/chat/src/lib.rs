@@ -79,5 +79,5 @@ pub use store::{
     YuiActionRequest, YuiAppDraft, CHAT_GENERATION_QUEUE, FEEDBACK_CATEGORIES,
 };
 pub use worker::{parse_timezone, with_yui_guide, ChatWorker, WorkerConfig, WorkerDeps};
-pub use workflow_tool::{EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};
+pub use workflow_tool::{DecisionModel, EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};
 pub use workspace::StorageWorkspaceStore;

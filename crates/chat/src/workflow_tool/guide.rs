@@ -19,7 +19,7 @@ use workflow_engine::vocab::{
 use workflow_engine::ValidationError;
 
 /// 説明文に載せる使えるモデルの件数の上限（説明文を膨らませない・検証エラーにも候補が出る）。
-const MAX_LISTED_MODELS: usize = 30;
+pub(super) const MAX_LISTED_MODELS: usize = 30;
 
 /// nodes の要素の形（`ir::node::Node` のキー・テストで型のキーと突き合わせる）。
 const NODE_SHAPE: &str = r#"{"id":"<ノード id>","type":"<ノード種>","label":"日本語の短い名前","params":{…},"parent"?:"<map の id>","on_error"?:"fail_run"|"continue","retry"?:{"max_attempts":3},"timeout_sec"?:60,"cache"?:{"ttl_sec":86400}}"#;
@@ -242,8 +242,12 @@ fn trigger_payloads() -> String {
     out
 }
 
-/// emit_workflow の説明文（`models` は発話ユーザーの組織で使えるモデル）。
-pub(super) fn emit_description(models: Option<&[String]>) -> String {
+/// emit_workflow の説明文（`models` は発話ユーザーの組織で使える llm.invoke のモデル・`decision_models` は ai.decide の
+/// 判定用のモデル。どちらも `None` は載せない）。
+pub(super) fn emit_description(
+    models: Option<&[String]>,
+    decision_models: Option<&[super::DecisionModel]>,
+) -> String {
     let mut d = String::from(
         "ワークフロー（自動化フロー）を JSON IR として保存する。新規作成は ir だけを渡し、既存の編集は workflow_id と expected_version も渡す（編集の前に必ず read_workflow で今の IR を読む）。保存しただけでは実行されない。検証に失敗するとエラーが全件返るので、全部直して再実行する。成功するとユーザーにカードが表示され、エディタで開ける。\n",
     );
@@ -287,7 +291,7 @@ pub(super) fn emit_description(models: Option<&[String]>) -> String {
         models = models_section(models),
     );
     d.push_str(&structured_guide());
-    d.push_str(&decide::guide());
+    d.push_str(&decide::guide(decision_models));
     d.push_str(REPLY_GUIDE);
     d.push_str(&agent_guide());
     d.push_str(&catalog_summary());
@@ -571,7 +575,7 @@ mod tests {
 
     #[test]
     fn description_explains_the_notation_the_engine_implements() {
-        let d = emit_description(None);
+        let d = emit_description(None, None);
         assert!(d.contains("差し込みは {名前}"), "{d}");
         assert!(
             d.contains("{{ と }} は差し込みではなく波括弧そのもの"),
@@ -621,7 +625,7 @@ mod tests {
     /// 画面に返す結果の書き方の指針が載る（副作用の最後・error の出口・固定の文言は全員に見える・GAP-09）。
     #[test]
     fn description_explains_where_to_put_replies() {
-        let d = emit_description(None);
+        let d = emit_description(None, None);
         assert!(d.contains("- workflow.reply（結果を画面に返す）"), "{d}");
         assert!(d.contains("成功の結果は副作用"), "{d}");
         assert!(
@@ -647,7 +651,7 @@ mod tests {
     /// AI エージェントの道具の一覧が道具のカタログから載り、書いた例は保存時検証を通る（BUG-6）。
     #[test]
     fn description_lists_agent_tools() {
-        let d = emit_description(None);
+        let d = emit_description(None, None);
         assert!(d.contains("【AI エージェント】"), "{d}");
         assert!(
             d.contains("rag.search（社内検索・スコープ rag.query）"),
@@ -678,7 +682,7 @@ mod tests {
     /// 各ノードの params の形と出力の形が説明文に載る（ts-rs の宣言・カタログから生成）。
     #[test]
     fn description_lists_params_and_outputs_of_available_nodes() {
-        let d = emit_description(None);
+        let d = emit_description(None, None);
         assert!(
             d.contains("- llm.invoke（AI に聞く）")
                 && d.contains("params { model?: string, prompt: ValueExpr"),
@@ -697,7 +701,7 @@ mod tests {
     /// 出力の形と思考の深さの書き方が載り、例のノードはそのまま保存時検証を通る（GAP-13）。
     #[test]
     fn description_explains_output_schema_and_effort() {
-        let d = emit_description(None);
+        let d = emit_description(None, None);
         assert!(d.contains("【AI の出力の形】"), "{d}");
         assert!(d.contains("\"path\":\"/data/<項目>\""), "{d}");
         assert!(d.contains("任意の項目（required に無い項目）24"), "{d}");
@@ -742,15 +746,15 @@ mod tests {
     #[test]
     fn description_lists_the_models_of_the_user() {
         let ids: Vec<String> = vec!["fast-model".into(), "smart-model".into()];
-        let d = emit_description(Some(&ids));
+        let d = emit_description(Some(&ids), None);
         assert!(d.contains(
             "次の id のどれかを書く（このユーザーの組織で使えるもの）: fast-model, smart-model。"
         ));
         let many: Vec<String> = (0..35).map(|i| format!("m{i}")).collect();
-        let d = emit_description(Some(&many));
+        let d = emit_description(Some(&many), None);
         assert!(d.contains("m29（ほか 5 件）"), "件数の上限");
         assert!(!d.contains("m30"));
-        let d = emit_description(Some(&[]));
+        let d = emit_description(Some(&[]), None);
         assert!(d.contains("model は書かない"), "指定できるモデルが無い構成");
     }
 
@@ -760,7 +764,7 @@ mod tests {
     fn description_says_an_omitted_model_follows_the_organization_default() {
         let ids: Vec<String> = vec!["fast-model".into()];
         for models in [None, Some(&ids[..]), Some(&[][..])] {
-            let d = emit_description(models);
+            let d = emit_description(models, None);
             assert!(
                 d.contains("省略すると組織の既定のモデルで動く"),
                 "{models:?}"
@@ -769,10 +773,10 @@ mod tests {
             assert!(!d.contains("デプロイの既定"), "{models:?}");
             // 判定（ai.decide）は組織の既定が無いので model を書く。それ以外の例には書かない。
             assert!(
-                !d.replace(&decide::guide(), "").contains("\"model\":"),
+                !d.replace(&decide::guide(None), "").contains("\"model\":"),
                 "{models:?}: 例に model を書かない"
             );
-            assert!(d.contains(&decide::guide()));
+            assert!(d.contains(&decide::guide(None)));
         }
     }
 

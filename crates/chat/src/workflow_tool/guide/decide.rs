@@ -9,7 +9,58 @@ use workflow_engine::ir::params::{
 };
 use workflow_engine::ir::{MAX_CACHE_TTL_SEC, MIN_CACHE_TTL_SEC};
 
-use super::minify;
+use super::{minify, MAX_LISTED_MODELS};
+use crate::workflow_tool::DecisionModel;
+
+/// 説明文に載せる表示名の上限（文字数・管理者が付けた名前で説明文を膨らませない）。
+const MAX_LABEL_CHARS: usize = 60;
+
+/// model の書き方の 1 行（`models` は発話ユーザーの組織で使える判定用のモデル・`None` は載せない・D-79）。
+///
+/// 一覧は保存時の照合（[`workflow_engine::Catalog::decision_models`]）と同じ集合で、id の後ろに表示名を添える
+/// （利用者が画面の名前で頼んでも id を選べる）。表示名は改行などの制御文字を空白にし、長ければ切る。
+fn model_line(models: Option<&[DecisionModel]>) -> String {
+    const BASE: &str =
+        "- model は判定用のモデルの id（必須・リテラル。文章を生成するモデルは書けない";
+    match models {
+        None => format!("{BASE}。使えるものは検証エラーの候補に出る）。"),
+        Some([]) => format!(
+            "{BASE}）。このユーザーの組織で使える判定用のモデルは無いので、ai.decide は保存できない（分類は llm.invoke の output_schema の enum で書く）。"
+        ),
+        Some(list) => {
+            let shown = list
+                .iter()
+                .take(MAX_LISTED_MODELS)
+                .map(|m| match m.label.as_deref().map(clean_label) {
+                    Some(label) if !label.is_empty() && label != m.id => {
+                        format!("{}（{label}）", m.id)
+                    }
+                    _ => m.id.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let rest = list.len().saturating_sub(MAX_LISTED_MODELS);
+            let more = if rest > 0 {
+                format!("（ほか {rest} 件）")
+            } else {
+                String::new()
+            };
+            format!("{BASE}）。このユーザーの組織で使えるもの（id（表示名））: {shown}{more}。")
+        }
+    }
+}
+
+/// 表示名を 1 行に収める（制御文字は空白・前後の空白は落とす・上限で切る）。
+fn clean_label(label: &str) -> String {
+    label
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(MAX_LABEL_CHARS)
+        .collect()
+}
 
 /// 判定の例のノード（問い合わせの種類を確からしさで振り分け、緊急度と不満も答えさせる）。model は書く
 /// （判定には組織の既定が無い）。
@@ -26,11 +77,11 @@ const EXAMPLE_DECIDE_NODE: &str = r#"{ "id": "triage", "type": "ai.decide", "lab
         "yes": "苦情・強い不満・解約の示唆がある", "no": "通常の問い合わせ" } ],
     "route": { "question": "category", "by": "confidence", "min_confidence": 0.8 } } }"#;
 
-/// 説明文の 1 節。
-pub(super) fn guide() -> String {
+/// 説明文の 1 節（`models` は発話ユーザーの組織で使える判定用のモデル・`None` は載せない）。
+pub(super) fn guide(models: Option<&[DecisionModel]>) -> String {
     format!(
         "【AI で判定】ai.decide は、判定の材料（state・値式。文字・オブジェクト・配列で {state_kib} KiB まで）について、質問（questions・リテラルだけ）に決められた値域で答え、確からしさ（0〜1）を付けて返す。分類・はい/いいえ・段階の判定は llm.invoke よりこれを使う（答えが必ず選択肢の中に入る）。\n\
-         - model は判定用のモデルの id（必須・リテラル。文章を生成するモデルは書けない。使えるものは検証エラーの候補に出る）。\n\
+         {model_line}\n\
          - questions（{max_q} 件まで）の要素: {{\"key\":\"英小文字で始め英小文字・数字・_\",\"type\":\"choice\"|\"score\"|\"boolean\",\"instructions\":\"何を判定するか\"}} に、choice は \"options\":[{{\"key\":\"billing\",\"description\":\"請求・返金\"}}, …]（2〜{max_o} 件。キーに {reserved} は使えない）、score は \"levels\":[\"低\",\"中\",\"高\"]（低い順・2〜{max_l} 件）、boolean は \"yes\" / \"no\"（それぞれに当たる場合の説明・省略可）を足す。種類に合わない項目は書かない。\n\
          - 出力 /answers/<key>: choice は {{ value（選択肢のキー）, label, confidence, probabilities }}、score は {{ value（確率で重み付けした位置）, level, level_index, confidence }}、boolean は {{ value, probability, confidence }}。\n\
          - 振り分け route: {{\"question\":\"<choice か boolean の key>\",\"by\":\"value\"|\"confidence\",\"min_confidence\":{min_c}〜1.0}}（min_confidence は必須・by の省略は value）。出口: route 無し＝out。by が confidence＝out（確からしさがしきい値以上）/ uncertain。by が value＝選択肢のキー（boolean は true / false）/ uncertain で、out と default は無い。score の質問では振り分けない（後ろの control.branch で /answers/<key>/level_index を使う）。\n\
@@ -46,6 +97,7 @@ pub(super) fn guide() -> String {
         min_ttl = MIN_CACHE_TTL_SEC,
         max_ttl = MAX_CACHE_TTL_SEC,
         example = minify(EXAMPLE_DECIDE_NODE),
+        model_line = model_line(models),
     )
 }
 
@@ -101,9 +153,57 @@ mod tests {
         );
     }
 
+    /// 組織の判定用のモデルを id と表示名で載せる（保存時の照合と同じ集合・D-79）。0 件なら保存できないと言い、
+    /// 載せない構成では従来どおり検証エラーの候補に任せる。
+    #[test]
+    fn the_guide_lists_the_decision_models_of_the_user() {
+        let models = [
+            DecisionModel {
+                id: "decide-haiku".into(),
+                label: Some("Haiku 5.5 で判定\n（自己申告）".into()),
+            },
+            DecisionModel {
+                id: "decide-stub".into(),
+                label: None,
+            },
+            DecisionModel {
+                id: "decide-same".into(),
+                label: Some("decide-same".into()),
+            },
+        ];
+        let g = guide(Some(&models));
+        assert!(
+            g.contains(
+                "このユーザーの組織で使えるもの（id（表示名））: decide-haiku（Haiku 5.5 で判定 （自己申告））, decide-stub, decide-same。"
+            ),
+            "{g}"
+        );
+        assert!(!g.contains("検証エラーの候補に出る"), "{g}");
+        let none = guide(Some(&[]));
+        assert!(
+            none.contains("使える判定用のモデルは無いので、ai.decide は保存できない"),
+            "{none}"
+        );
+        assert!(guide(None).contains("使えるものは検証エラーの候補に出る"));
+        // 件数が多ければ上限まで載せて残りは件数だけ。表示名は長ければ切る。
+        let many: Vec<DecisionModel> = (0..MAX_LISTED_MODELS + 2)
+            .map(|i| DecisionModel {
+                id: format!("d{i}"),
+                label: Some("あ".repeat(100)),
+            })
+            .collect();
+        let g = guide(Some(&many));
+        assert!(g.contains("（ほか 2 件）"), "{g}");
+        assert!(
+            g.contains(&format!("d0（{}）", "あ".repeat(MAX_LABEL_CHARS))),
+            "{g}"
+        );
+        assert!(!g.contains(&"あ".repeat(MAX_LABEL_CHARS + 1)), "{g}");
+    }
+
     #[test]
     fn the_guide_states_the_port_rules_and_limits() {
-        let g = guide();
+        let g = guide(None);
         for needle in [
             "by が value＝選択肢のキー（boolean は true / false）/ uncertain で、out と default は無い",
             "route 無し＝out",

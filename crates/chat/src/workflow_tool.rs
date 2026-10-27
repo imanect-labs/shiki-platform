@@ -18,6 +18,15 @@ use workflow_engine::{Catalog, ValidationError, WorkflowStore, WorkflowStoreErro
 
 mod guide;
 
+/// ai.decide の model に書ける判定用のモデル（emit_workflow の説明文に id と表示名を載せる・D-79）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionModel {
+    /// model に書く id（[`Catalog::decision_models`] の要素）。
+    pub id: String,
+    /// 管理画面・モデル欄と同じ表示名（引けない実装では `None`・説明文には id だけを載せる）。
+    pub label: Option<String>,
+}
+
 /// 発話ユーザー視点のカタログ（secret 名→許可ホスト・モデル一覧）を供給する差し込み点。
 ///
 /// カタログの中身は API 層の資産（SecretStore・LLM 設定）なので、chat はトレイト裏で受け取る。
@@ -35,6 +44,22 @@ pub trait WorkflowCatalogSource: Send + Sync {
         self.catalog(ctx)
             .await
             .map(|c| c.models.unwrap_or_default())
+    }
+
+    /// ai.decide に書ける判定用のモデル（[`Catalog::decision_models`] と同じ集合・照合しない構成と許可が 0 件は
+    /// どちらも空・D-79）。
+    ///
+    /// emit_workflow の説明文に run ごとに id と表示名を載せる（保存時の誤りの候補で知る往復を減らす）。既定は
+    /// カタログ全体を組んで id だけを取り出す（表示名は無い）。表示名を引ける実装・判定用のモデルだけを安く
+    /// 引ける実装は上書きする。
+    async fn decision_models(&self, ctx: &AuthContext) -> Result<Vec<DecisionModel>, String> {
+        self.catalog(ctx).await.map(|c| {
+            c.decision_models
+                .unwrap_or_default()
+                .into_iter()
+                .map(|id| DecisionModel { id, label: None })
+                .collect()
+        })
     }
 
     /// 保存しようとしている IR に合わせたカタログ（IR が参照するものだけを引いて足す・承認のテーブルなど）。
@@ -82,6 +107,10 @@ fn format_validation_errors(errors: &[ValidationError], ir: &serde_json::Value) 
 pub struct EmitWorkflowTool {
     store: Arc<WorkflowStore>,
     catalog: Arc<dyn WorkflowCatalogSource>,
+    /// 説明文に載せる llm.invoke のモデル（`None` は載せない）。
+    models: Option<Vec<String>>,
+    /// 説明文に載せる ai.decide の判定用のモデル（`None` は載せない）。
+    decision_models: Option<Vec<DecisionModel>>,
     description: String,
 }
 
@@ -91,15 +120,31 @@ impl EmitWorkflowTool {
         EmitWorkflowTool {
             store,
             catalog,
-            description: guide::emit_description(None),
+            models: None,
+            decision_models: None,
+            description: guide::emit_description(None, None),
         }
     }
 
     /// 発話ユーザーの組織で使えるモデルを説明文に載せる（run ごとに組む・空なら model を書かない旨を書く）。
     #[must_use]
     pub fn with_models(mut self, models: &[String]) -> Self {
-        self.description = guide::emit_description(Some(models));
+        self.models = Some(models.to_vec());
+        self.rebuild_description();
         self
+    }
+
+    /// 発話ユーザーの組織で使える判定用のモデル（id と表示名）を説明文に載せる（run ごとに組む・D-79）。
+    #[must_use]
+    pub fn with_decision_models(mut self, models: &[DecisionModel]) -> Self {
+        self.decision_models = Some(models.to_vec());
+        self.rebuild_description();
+        self
+    }
+
+    fn rebuild_description(&mut self) {
+        self.description =
+            guide::emit_description(self.models.as_deref(), self.decision_models.as_deref());
     }
 }
 
@@ -286,7 +331,7 @@ mod tests {
     /// ノードカタログに登録した data ノードは emit_workflow の説明へ自動で載る（Task 15.7・手書きしない）。
     #[test]
     fn emit_description_lists_data_nodes_from_the_catalog() {
-        let d = guide::emit_description(None);
+        let d = guide::emit_description(None, None);
         for t in [
             "data.query",
             "data.record.create",
@@ -299,6 +344,48 @@ mod tests {
         }
         assert!(d.contains("スコープ data.read。"));
         assert!(d.contains("スコープ data.write。"));
+    }
+
+    /// 判定用のモデルの一覧の既定実装は、カタログの判定用のモデルを id だけで返す（表示名を引けない実装・D-79）。
+    /// emit_workflow はそれを説明文に載せ、llm.invoke のモデルと並べて組み直す。
+    #[tokio::test]
+    async fn decision_models_default_to_the_catalog_ids_and_reach_the_description() {
+        struct Fixed;
+        #[async_trait::async_trait]
+        impl WorkflowCatalogSource for Fixed {
+            async fn catalog(&self, _ctx: &AuthContext) -> Result<Catalog, String> {
+                Ok(Catalog {
+                    models: Some(vec!["fast".into()]),
+                    decision_models: Some(vec!["judge".into()]),
+                    ..Catalog::default()
+                })
+            }
+        }
+        let ctx = AuthContext::for_workflow("t".into(), "o".into(), "wf");
+        let listed = Fixed.decision_models(&ctx).await.unwrap();
+        assert_eq!(
+            listed,
+            [DecisionModel {
+                id: "judge".into(),
+                label: None
+            }]
+        );
+        let models = Fixed.models(&ctx).await.unwrap();
+        let both = guide::emit_description(Some(&models), Some(&listed));
+        assert!(
+            both.contains("使えるもの（id（表示名））: judge。"),
+            "{both}"
+        );
+        assert!(
+            both.contains("のどれかを書く（このユーザーの組織で使えるもの）: fast。"),
+            "{both}"
+        );
+        // 判定用のモデルを載せないときは、従来どおり検証エラーの候補に任せる。
+        let without = guide::emit_description(Some(&models), None);
+        assert!(
+            without.contains("使えるものは検証エラーの候補に出る"),
+            "{without}"
+        );
     }
 
     /// params の誤りには、そのノード種の params の形を添える（LLM が自分で直せるように）。

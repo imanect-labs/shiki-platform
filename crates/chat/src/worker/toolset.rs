@@ -106,7 +106,7 @@ impl ChatWorker {
     /// AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）。
     ///
     /// ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。emit_workflow の
-    /// 説明文には発話ユーザーの組織で使えるモデルを載せる（保存時の照合と同じ集合）。引けなければ
+    /// 説明文には発話ユーザーの組織で使えるモデルと判定用のモデルを載せる（保存時の照合と同じ集合）。引けなければ
     /// run を落とさず、モデルを載せない説明文にする（候補は検証エラーで返る）。
     pub(super) async fn push_workflow_tools(
         &self,
@@ -121,6 +121,13 @@ impl ChatWorker {
             Ok(models) => emit = emit.with_models(&models),
             Err(e) => {
                 tracing::warn!(error = %e, "モデル一覧の取得に失敗（emit_workflow の説明文に載せない）");
+            }
+        }
+        // 判定用のモデル（ai.decide）も id と表示名を載せる（保存時の誤りの候補で知る往復を減らす・D-79）。
+        match catalog.decision_models(ctx).await {
+            Ok(models) => emit = emit.with_decision_models(&models),
+            Err(e) => {
+                tracing::warn!(error = %e, "判定用のモデルの一覧の取得に失敗（emit_workflow の説明文に載せない）");
             }
         }
         tools.push(Arc::new(emit));

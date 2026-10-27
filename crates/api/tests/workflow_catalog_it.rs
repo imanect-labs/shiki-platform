@@ -407,6 +407,7 @@ fn gateway_with_decision(pool: PgPool) -> LlmGateway {
                     chat("local"),
                     ModelEntry {
                         id: "judge".into(),
+                        display_name: Some("local で判定".into()),
                         modality: Modality::Decision,
                         decision_via: Some("local".into()),
                         ..Default::default()
@@ -506,6 +507,24 @@ async fn the_save_api_and_emit_workflow_agree_on_decision_models() {
             saved.decision_models, emitted.decision_models,
             "step {step}"
         );
+        // emit_workflow の説明文に載せる判定用のモデル（id と表示名）も同じ集合（D-79）。
+        let listed = chat::WorkflowCatalogSource::decision_models(&source, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            listed.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
+            saved.decision_models.clone().unwrap_or_default(),
+            "step {step}"
+        );
+        if step == 0 {
+            assert_eq!(
+                listed,
+                [chat::DecisionModel {
+                    id: "judge".into(),
+                    label: Some("local で判定".into()),
+                }]
+            );
+        }
         for ir in [decide_ir("judge"), decide_ir("fast"), llm_ir("judge")] {
             let codes = |c: &workflow_engine::Catalog| -> Vec<String> {
                 workflow_engine::validate(&ir, c)

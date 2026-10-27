@@ -108,6 +108,40 @@ impl WorkflowModels {
     pub async fn ids(&self, ctx: &authz::AuthContext) -> Result<Vec<String>, String> {
         Ok(self.check(ctx).await?.ids.unwrap_or_default())
     }
+
+    /// ai.decide に書ける判定用のモデルの id と表示名（カタログ順・照合しない構成では空・D-79）。
+    ///
+    /// 集合は [`Self::check`] の `decision_ids` と同じ（組織が許可し、元にする chat モデルも許可されているもの）。
+    /// 表示名は管理画面・モデル欄と同じ（[`llm_gateway::ModelEntry::label`]）。デプロイ設定だけの構成では表示名を持たない。
+    pub async fn decision_models(
+        &self,
+        ctx: &authz::AuthContext,
+    ) -> Result<Vec<chat::DecisionModel>, String> {
+        match self {
+            WorkflowModels::Configured(_) => Ok(self
+                .check(ctx)
+                .await?
+                .decision_ids
+                .unwrap_or_default()
+                .into_iter()
+                .map(|id| chat::DecisionModel { id, label: None })
+                .collect()),
+            WorkflowModels::Gateway(gw) => {
+                let settings = gw
+                    .settings_without_personal(ctx)
+                    .await
+                    .map_err(|e| format!("組織の AI 設定: {e}"))?;
+                Ok(settings
+                    .enabled_decision_models(gw.catalog())
+                    .into_iter()
+                    .map(|m| chat::DecisionModel {
+                        id: m.id.clone(),
+                        label: Some(m.label().to_string()),
+                    })
+                    .collect())
+            }
+        }
+    }
 }
 
 /// カタログを組む（secrets 未配線ならモデルのみ・skill_installs 未配線なら skill 照合は空集合）。
@@ -283,6 +317,14 @@ impl chat::WorkflowCatalogSource for ApiWorkflowCatalogSource {
     /// 説明文用のモデル一覧（secret・skill の一覧は引かない・照合と同じ集合）。
     async fn models(&self, ctx: &authz::AuthContext) -> Result<Vec<String>, String> {
         self.models.ids(ctx).await
+    }
+
+    /// 説明文用の判定用のモデルの一覧（id と表示名・照合と同じ集合・D-79）。
+    async fn decision_models(
+        &self,
+        ctx: &authz::AuthContext,
+    ) -> Result<Vec<chat::DecisionModel>, String> {
+        self.models.decision_models(ctx).await
     }
 
     /// 保存 API（`build_catalog_for`）と同じく、IR の承認が束縛するテーブルを保存者の権限で引いて足す。
