@@ -801,6 +801,54 @@ test.describe("ミニアプリ（部品のピン・共同編集）", () => {
     }
   });
 
+  test("束ねたスキルがスキルの一覧の先頭のページに無くても、エディタは読めないと決めつけずにピンを残す（BUG-17）", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await loginViaKeycloak(page);
+    const skillName = uniqueName("e2e-skill-outside");
+    const skill = await apiPost(page, "/skills", {
+      name: skillName,
+      body: { description: "経費規程の案内", instructions: "経費規程に沿って答える。" },
+    });
+    const app = await apiPost(page, "/mini-apps", {
+      name: uniqueName("outside-app"),
+      body: {
+        description: "経費の案内",
+        screen: "経費の申請の案内です。\n",
+        skill: { artifact_id: skill.id, version: 1 },
+        workflows: [],
+      },
+    });
+    // スキルの一覧（GET /artifacts の先頭のページ）に束ねたスキルが入らない状況を作る（実際に 51 件は作らない）。
+    const skillList = /\/api\/artifacts\?kind=skill$/;
+    try {
+      await page.route(skillList, (route) => route.fulfill({ json: { items: [] } }));
+      await page.goto(`/apps/${app.id}`);
+      await expect(page.getByRole("heading", { name: "経費の案内", level: 1 })).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByTestId("miniapp-skill-unavailable")).toHaveCount(0);
+      await page.getByRole("button", { name: "編集" }).click();
+      const dialog = page.getByRole("dialog");
+      const skillSelect = dialog.getByLabel("スキル（任意）");
+      // ピンの版を直に読めたので、名前つきで選んだまま。「読めない」とは言わない。
+      await expect(skillSelect.locator("option:checked")).toHaveText(`${skillName}（v1）`);
+      await expect(dialog.getByText("束ねているスキルは削除されたか、あなたには読めません")).toHaveCount(0);
+      await dialog.getByLabel(/画面の見出し/).fill("経費の案内（改訂）");
+      await dialog.getByRole("button", { name: "保存" }).click();
+      await expect(page.getByText("v2 として保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
+      // 保存した版もスキルのピンをそのまま持つ。
+      const resolved = (await (await page.request.get(`/api/mini-apps/${app.id}/resolved`)).json()) as {
+        version: number;
+        body: { skill: { artifact_id: string; version: number } | null };
+      };
+      expect(resolved.version).toBe(2);
+      expect(resolved.body.skill).toEqual({ artifact_id: skill.id, version: 1 });
+    } finally {
+      await page.unroute(skillList);
+      await cleanupArtifacts(page, [app.id, skill.id]);
+    }
+  });
+
   test("共有で「編集」にした人は編集ボタンから新しい版を保存できる（BUG-18）", async ({ page, browser }) => {
     test.setTimeout(180_000);
     await loginViaKeycloak(page);
