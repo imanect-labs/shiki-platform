@@ -167,7 +167,8 @@ export type MiniAppVersion = { id: string; version: number; body: MiniAppBody };
 
 /// 解決済みのミニアプリ（codegen の応答に、検証済みの本文の型を当てたもの）。
 ///
-/// `unavailable` は使えない部品（壊れた任意のピン・`path` が部品の位置）、`can_edit` は閲覧者本人が編集できるか。
+/// `unavailable` は使えない部品（壊れた任意のピン・`path` が部品の位置）、`can_edit` は閲覧者本人が編集できるか、
+/// `can_share` は共有できるか（owner だけ・BUG-78）。
 export type ResolvedMiniApp = Omit<components["schemas"]["ResolvedMiniAppResponse"], "body"> & {
   /// 検証済みの本文（画面＝Yui の ```ui を含む Markdown と、束ねたワークフロー）。
   body: MiniAppBody;

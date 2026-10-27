@@ -71,6 +71,9 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   // 編集はアプリの editor 以上（持ち主と、共有で「編集」にした人・BUG-18）。閲覧の共有は使うだけ。
   // 編集できるかはサーバが返す（保存は PUT が改めて確かめる）。最新の版を見ているときに限る。
   const canEdit = meta != null && app?.can_edit === true && app.version === meta.currentVersion;
+  // 共有（相手の一覧と付与・解除）はアプリの owner だけができる。出すかはサーバの答え（`can_share`）で決め、
+  // 閲覧・編集の共有を受けた人には出さない（一覧が空に見え、付与が 403 になる・BUG-78）。
+  const canShare = app?.can_share === true;
 
   // 版・共有・編集はシェルのクローム（PC はバー右・スマホは右上）に置く。
   const appName = app?.body.description;
@@ -89,13 +92,15 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
           <ChromeIconButton label="バージョン" onClick={() => setVersionsOpen(true)}>
             <History aria-hidden />
           </ChromeIconButton>
-          <ChromeIconButton label="共有" onClick={() => setShareOpen(true)}>
-            <Share2 aria-hidden />
-          </ChromeIconButton>
+          {canShare ? (
+            <ChromeIconButton label="共有" onClick={() => setShareOpen(true)}>
+              <Share2 aria-hidden />
+            </ChromeIconButton>
+          ) : null}
         </>
       ) : undefined,
     }),
-    [appName, app?.version, Boolean(app), canEdit],
+    [appName, app?.version, Boolean(app), canEdit, canShare],
   );
 
   React.useEffect(() => {
@@ -239,17 +244,19 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
             </DataGridHostContext.Provider>
           </YuiActionContext.Provider>
 
-          <ArtifactShareDialog
-            open={shareOpen}
-            onOpenChange={setShareOpen}
-            artifactId={app.id}
-            name={app.body.description}
-            shareUrl={
-              typeof window !== "undefined"
-                ? `${window.location.origin}/apps/${app.id}`
-                : undefined
-            }
-          />
+          {canShare ? (
+            <ArtifactShareDialog
+              open={shareOpen}
+              onOpenChange={setShareOpen}
+              artifactId={app.id}
+              name={app.body.description}
+              shareUrl={
+                typeof window !== "undefined"
+                  ? `${window.location.origin}/apps/${app.id}`
+                  : undefined
+              }
+            />
+          ) : null}
           <VersionsDialog
             open={versionsOpen}
             onOpenChange={setVersionsOpen}
