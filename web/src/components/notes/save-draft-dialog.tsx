@@ -51,7 +51,7 @@ export function SaveDraftDialog({
   onConfirm,
   entityLabel = "ノート",
   description = "下書きをノートとして保存します。保存後はバージョン管理・共有・共同編集ができます。",
-  defaultFolder = null,
+  defaultFolder,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -62,8 +62,9 @@ export function SaveDraftDialog({
   entityLabel?: string;
   /// ダイアログの説明文（対象種別ごとに差し替え）。
   description?: string;
-  /// 保存先の初期値（`null`=ルート・`undefined`=解決中）。
-  defaultFolder?: { id: string; name: string } | null;
+  /// 保存先の初期値（`null`=ルート・`undefined`=解決中）。既定値を置かない（置くと解決中が
+  /// ルートに化け、解決前に押した保存がルートへ作られる）。
+  defaultFolder: { id: string; name: string } | null | undefined;
 }) {
   const [name, setName] = React.useState(defaultName);
   const [folder, setFolder] = React.useState<{ id: string; name: string } | null>(null);

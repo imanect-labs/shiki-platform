@@ -2,8 +2,8 @@
 
 /// 下書きを「ドライブに保存」するときの保存先の初期値（#942）。
 ///
-/// 優先順: ① AI が指定した保存先（下書きの `parent_id`）→ ② 会話の由来ノートと同じフォルダ →
-/// ③ ルート（`null`）。どれも**初期値**にすぎず、確定はユーザーが保存ダイアログで行う。
+/// 優先順: ① AI が指定した保存先（下書きの `parent_id`。`"root"` ならルート）→ ② 会話の由来ノートと
+/// 同じフォルダ → ③ ルート（`null`）。どれも**初期値**にすぎず、確定はユーザーが保存ダイアログで行う。
 /// 読めない・消えたフォルダは黙って次の候補へ落とす（存在を推測させる表示をしない）。
 
 import * as React from "react";
@@ -25,6 +25,8 @@ async function resolveSaveFolder(
   threadId: string,
   aiParentId: string | undefined,
 ): Promise<SaveFolder | null> {
+  // AI が明示的にルートを指定したら、由来ノートの場所へは戻さない。
+  if (aiParentId === "root") return null;
   if (aiParentId) {
     const folder = await folderOf(aiParentId).catch(() => null);
     if (folder) return folder;

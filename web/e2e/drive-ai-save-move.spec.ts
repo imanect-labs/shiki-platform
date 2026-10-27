@@ -135,3 +135,55 @@ test("下書き: 由来ノートのある会話はそのノートのフォルダ
   const res = await created;
   expect(((await res.json()) as { parent_id: string | null }).parent_id).toBe(folderId);
 });
+
+test("下書き: 保存先の解決中は保存できず、AI の \"root\" 指定は由来ノートのフォルダより優先する", async ({
+  page,
+}) => {
+  await loginViaKeycloak(page);
+  const folderName = uniqueName("由来フォルダ2");
+  const folderId = await createFolder(page, folderName);
+  const noteId = await createNote(page, uniqueName("由来ノート2"), folderId);
+  await page.goto(`/notes/${noteId}`);
+  await expect(page.getByTestId("note-sync-status")).toHaveText("同期済み", { timeout: 20_000 });
+  await page.getByTestId("note-ask-ai").click();
+  const panel = page.getByTestId("note-chat-panel");
+  const composer = panel.getByLabel("メッセージを入力");
+  await expect(composer).toBeVisible({ timeout: 20_000 });
+  const draftName = uniqueName("ルートへ");
+  await composer.fill(`savenote:${draftName}`);
+  await panel.getByRole("button", { name: "送信" }).click();
+  await panel.getByRole("link", { name: "下書きを開く" }).click();
+  await page.waitForURL(/\/notes\/draft/, { timeout: 30_000 });
+
+  // 解決（パンくず）を遅らせても、解決前に保存は押せない（ルートへ誤って作らない）。
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  await page.route("**/api/nodes/*/breadcrumb", async (route) => {
+    await gate;
+    await route.continue();
+  });
+  await page.getByTestId("draft-save-button").click();
+  await expect(page.getByTestId("save-draft-location")).toContainText("保存先を確認中");
+  await expect(page.getByTestId("save-draft-confirm")).toBeDisabled();
+  release();
+  await expect(page.getByTestId("save-draft-location")).toContainText(folderName, {
+    timeout: 15_000,
+  });
+  await expect(page.getByTestId("save-draft-confirm")).toBeEnabled();
+  await page.unroute("**/api/nodes/*/breadcrumb");
+  await page.keyboard.press("Escape");
+
+  // AI が同じ下書きを "root" 指定で流し直すと、由来ノートのフォルダではなくルートが初期値になる。
+  const draftComposer = page.getByLabel("メッセージを入力");
+  await draftComposer.fill(
+    `calltool:save_note {"name":"${draftName}","markdown":"# ${draftName}","parent_id":"root"}`,
+  );
+  await page.getByRole("button", { name: "送信" }).click();
+  await expect(page.getByText(`ノート「${draftName}」の下書きを作成`).nth(1)).toBeVisible({
+    timeout: 30_000,
+  });
+  await page.getByTestId("draft-save-button").click();
+  await expect(page.getByTestId("save-draft-location")).toContainText("マイドライブ（ルート）", {
+    timeout: 15_000,
+  });
+});

@@ -39,7 +39,7 @@ export type DraftEntry = {
   /// 最終更新の出所（ai=流し込み→再シード / user=手編集→再シードしない）。
   source: DraftSource;
   updatedAt: number;
-  /// AI が指定した保存先フォルダ（保存ダイアログの初期値にするだけ・確定は人・#942）。
+  /// AI が指定した保存先フォルダの id か `"root"`（保存ダイアログの初期値にするだけ・確定は人・#942）。
   parentId?: string;
 };
 
@@ -47,8 +47,7 @@ export type DraftStore = {
   /// 変更購読（React 外からも使える）。
   subscribe(cb: () => void): () => void;
   /// 下書きを upsert する（同キーは rev+1 で更新）。戻り値は確定エントリ。
-  /// `parentId` は AI の流し込み（source=ai）で指定されたときだけ差し替え（`"root"` は消す）、
-  /// それ以外は前の値を保つ。
+  /// `parentId` は AI の流し込み（source=ai）で指定されたときだけ差し替え、それ以外は前の値を保つ。
   upsert(
     threadId: string,
     name: string,
@@ -178,13 +177,9 @@ export function createDraftStore(kind: DraftKind): DraftStore {
       const store = { ...read() };
       const k = keyOf(threadId, name);
       const prev = store[k];
-      // AI の "root" は「ルートへ戻す」（前の指定を消す）。指定なしは前の指定を保つ。
-      const nextParent =
-        source === "ai" && parentId
-          ? parentId === "root"
-            ? undefined
-            : parentId
-          : prev?.parentId;
+      // AI の指定（フォルダ id か "root"＝ルートへ戻す）で差し替え、指定なしは前の指定を保つ。
+      // "root" も消さずに持つ（消すと「指定なし」と区別できず、由来ノートのフォルダへ戻ってしまう）。
+      const nextParent = source === "ai" && parentId ? parentId : prev?.parentId;
       const entry: DraftEntry = {
         threadId,
         name,
