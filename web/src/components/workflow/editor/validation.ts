@@ -53,8 +53,9 @@ export type NodeErrorView = {
   /// 欄の下に出す誤り（params の最上位の項目名 → 文言・同じ欄の 2 件目以降は捨てる）。
   fields: Map<string, string>;
   /// 上の帯に出す誤り（欄に写せないもの）。`removable` は params の最上位にある使えない項目で、
-  /// 帯から取り除ける（フォームはその項目の欄を描かないので、ほかに消す手段が無い）。
-  banner: { message: string; removable?: string }[];
+  /// 帯から取り除ける（フォームはその項目の欄を描かないので、ほかに消す手段が無い）。`removableAttr` は
+  /// params の外の step 属性（`cache`）の誤りで、帯から属性ごと外せる（付けられない種には欄が無い）。
+  banner: { message: string; removable?: string; removableAttr?: "cache" }[];
 };
 
 const PARAMS_PREFIX = "params が不正です: ";
@@ -68,6 +69,11 @@ export function nodeErrorView(errors: ValidationError[]): NodeErrorView {
   const fields = new Map<string, string>();
   const banner: NodeErrorView["banner"] = [];
   for (const e of errors) {
+    // step 属性 `cache`（決定キャッシュ・付けられるのは ai.decide だけ）の誤りは帯へ。外せばいつでも直る。
+    if (e.path === "/cache" || e.path?.startsWith("/cache/")) {
+      banner.push({ message: e.message, removableAttr: "cache" });
+      continue;
+    }
     const head = paramField(e.path);
     // 文言から項目名を拾うのは params の読み取りの誤り（path が無いか `/params`）だけ。
     const serde = !e.path || e.path === "/params" || head !== null ? serdeParamError(e.message) : null;

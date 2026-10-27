@@ -262,6 +262,16 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
                   >
                     取り除く
                   </button>
+                ) : e.removableAttr === "cache" && node.cache ? (
+                  <button
+                    type="button"
+                    className="shrink-0 font-medium underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() =>
+                      ctx.dispatch({ type: "update_node", id: node.id, patch: { cache: null } as Partial<IrNode> })
+                    }
+                  >
+                    使い回しをやめる
+                  </button>
                 ) : null}
               </li>
             ))}

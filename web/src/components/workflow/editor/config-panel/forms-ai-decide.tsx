@@ -8,6 +8,8 @@
 /// - 振り分け（`route`）: しない／答えで分ける／確かなときだけ進める、使う質問、しきい値。
 /// - 出口はサーバが設定から導いたもの（検証 API の `node_ports`）を見せる。TS に導出を書かない（H15）。
 /// - 確からしさは較正されていない（AI の自己申告・得票率）ことを常に出す（D-52 の H4・PIT-80）。
+/// - 答えの使い回し（step 属性 `cache`・決定キャッシュ・T10）は既定で切る。期間の決まりはノードカタログの
+///   `step_cache`（Rust の単一定義）から読み、範囲の外の候補は出さない。
 ///
 /// 保存時の検証の誤りは、検証した時点の定義のキーで質問・選択肢を引いて、その欄の下に出す
 /// （検証の後に並べ替えても取り違えない）。
@@ -16,12 +18,15 @@ import * as React from "react";
 import { TriangleAlert } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
-import type { NodeParamsByType } from "@/generated/workflow-catalog";
+import { Switch } from "@/components/ui/switch";
+import { NODE_CATALOG, type NodeParamsByType } from "@/generated/workflow-catalog";
 import type {
   DecideQuestion,
   DecideRoute,
   DecideRouteBy,
   Node as IrNode,
+  StepCache,
+  StepCacheLimits,
   ValidationError,
   ValueExpr,
 } from "@/generated/workflow-ir";
@@ -175,6 +180,83 @@ export function AiDecideForm({
         routeError={fieldErrors.get("route")}
         ports={serverPorts}
       />
+      {CACHE_LIMITS ? (
+        <CacheSection
+          limits={CACHE_LIMITS}
+          value={node.cache ?? null}
+          onChange={(cache) => dispatch({ type: "update_node", id: node.id, patch: { cache } as Partial<IrNode> })}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/// 決定キャッシュの期間の決まり（ノードカタログの `step_cache`・Rust の単一定義）。
+const CACHE_LIMITS: StepCacheLimits | null =
+  NODE_CATALOG.find((e) => e.type === "ai.decide")?.step_cache ?? null;
+
+/// 期間の候補（秒）。決まりの範囲の内のものだけ出す。
+const CACHE_TTL_PRESETS = [3600, 86_400, 7 * 86_400, 30 * 86_400];
+
+/// 期間を人が読める単位で（日・時間・分・秒の大きい方から割り切れるもの）。
+function ttlLabel(secs: number): string {
+  if (secs % 86_400 === 0) return `${secs / 86_400} 日`;
+  if (secs % 3600 === 0) return `${secs / 3600} 時間`;
+  if (secs % 60 === 0) return `${secs / 60} 分`;
+  return `${secs} 秒`;
+}
+
+/// 答えの使い回し（決定キャッシュ・step 属性 `cache`）。既定は切る（D-52 の H6）。
+function CacheSection({
+  limits,
+  value,
+  onChange,
+}: {
+  limits: StepCacheLimits;
+  value: StepCache | null;
+  onChange: (next: StepCache | null) => void;
+}) {
+  const on = value !== null;
+  const ttl = value?.ttl_sec ?? limits.default_ttl_sec;
+  const presets = CACHE_TTL_PRESETS.filter((s) => s >= limits.min_ttl_sec && s <= limits.max_ttl_sec);
+  // 保存済みの値が候補に無い（AI・JSON で書いた）ときは、そのまま選べるように足す。
+  const options = presets.includes(ttl) ? presets : [...presets, ttl].sort((a, b) => a - b);
+  return (
+    <div className="space-y-3 border-t pt-4" data-testid="decide-cache">
+      <label className="flex items-center justify-between gap-3">
+        <span className="text-xs font-medium text-foreground">同じ内容なら答えを使い回す</span>
+        <Switch
+          aria-label="同じ内容なら答えを使い回す"
+          checked={on}
+          onCheckedChange={(checked) => onChange(checked ? { ttl_sec: limits.default_ttl_sec } : null)}
+          data-testid="decide-cache-switch"
+        />
+      </label>
+      {on ? (
+        <Field
+          label="使い回す期間"
+          hint={`${ttlLabel(limits.min_ttl_sec)}〜${ttlLabel(limits.max_ttl_sec)}。過ぎたら、もう一度 AI に判定させます`}
+        >
+          <Select value={String(ttl)} onValueChange={(v) => onChange({ ttl_sec: Number(v) })}>
+            <FieldSelectTrigger className="h-8" data-testid="decide-cache-ttl">
+              <SelectValue />
+            </FieldSelectTrigger>
+            <SelectContent>
+              {options.map((s) => (
+                <SelectItem key={s} value={String(s)}>
+                  {ttlLabel(s)}
+                  {presets.includes(s) ? null : <span className="ml-1.5 text-muted-foreground">（設定済み）</span>}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      ) : null}
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        {on
+          ? "このワークフローの中で、質問・判定の材料・判定用のモデルの版がすべて同じなら、前の答えをそのまま使います（AI を呼ばないので費用はかかりません。組織のモデルの許可は毎回確かめます）。答えは期間のあいだサーバに残ります（材料そのものは残しません）。"
+          : "使い回さず、毎回 AI に判定させます。同じ問い合わせを何度も流すフローで費用を抑えたいときに使います。"}
+      </p>
     </div>
   );
 }
