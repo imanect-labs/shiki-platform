@@ -328,6 +328,11 @@ function FieldRow({
       <Input
         value={row.description}
         onChange={(e) => onChange({ description: e.target.value })}
+        // 前後の空白は欄を離れたときに落とす（入力中に落とすと語の間の空白が打てない）。
+        onBlur={(e) => {
+          const trimmed = e.target.value.trim();
+          if (trimmed !== e.target.value) onChange({ description: trimmed });
+        }}
         placeholder="説明（AI への手がかり・省略可）"
         aria-label="説明"
         className="h-8 text-xs max-md:text-base"

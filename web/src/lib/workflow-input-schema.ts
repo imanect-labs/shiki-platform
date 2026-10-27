@@ -149,7 +149,9 @@ function fieldSchema(f: InputFieldRow): Record<string, unknown> {
       : f.kind === "enum"
         ? { type: "string", enum: f.options }
         : { type: f.kind };
-  if (f.title.trim() !== "") out.title = f.title.trim();
+  // 入力中の値をそのまま書く（trim すると、語の間に打った空白が次の描画で消えて打てない）。前後の空白は欄を
+  // 離れたときに落とす（input-schema-editor.tsx）。空かどうかだけを trim で見る。
+  if (f.title.trim() !== "") out.title = f.title;
   if (f.description !== undefined) out.description = f.description;
   return out;
 }

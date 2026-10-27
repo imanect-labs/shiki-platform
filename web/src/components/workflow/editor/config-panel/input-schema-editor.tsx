@@ -212,6 +212,11 @@ function FieldRow({
         <Input
           value={row.title}
           onChange={(e) => onChange({ title: e.target.value })}
+          // 前後の空白は欄を離れたときに落とす（入力中に落とすと語の間の空白が打てない）。
+          onBlur={(e) => {
+            const trimmed = e.target.value.trim();
+            if (trimmed !== e.target.value) onChange({ title: trimmed });
+          }}
           placeholder="表示名（例: 件名）"
           aria-label="表示名"
           className="h-8 min-w-0 flex-1 text-xs max-md:text-base"

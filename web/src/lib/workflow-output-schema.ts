@@ -148,7 +148,9 @@ function fieldSchema(f: OutputFieldRow): Record<string, unknown> {
         ? { type: "array", items: { type: "string" } }
         : { type: f.kind };
   if (f.title !== undefined) out.title = f.title;
-  if (f.description.trim() !== "") out.description = f.description.trim();
+  // 入力中の値をそのまま書く（trim すると、語の間に打った空白が次の描画で消えて打てない）。前後の空白は欄を
+  // 離れたときに落とす（output-schema-editor.tsx）。空かどうかだけを trim で見る。
+  if (f.description.trim() !== "") out.description = f.description;
   return out;
 }
 

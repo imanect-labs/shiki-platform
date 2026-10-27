@@ -128,7 +128,9 @@ test("AI に聞く: 出力の形を表で組んで保存し、開き直しても
     await row1.getByRole("textbox", { name: "項目名" }).fill("category");
     await choose(page, row1.getByRole("combobox", { name: "種類" }), "選択肢");
     await row1.getByRole("textbox", { name: "選択肢" }).fill("billing\nbug\nhowto");
-    await row1.getByRole("textbox", { name: "説明" }).fill("問い合わせの種類");
+    // 説明は 1 文字ずつ打つ（語の間の空白が打てる・前後の空白は欄を離れたときに落ちる）。
+    await row1.getByRole("textbox", { name: "説明" }).pressSequentially("Inquiry type（問い合わせの 種類） ");
+    await expect(row1.getByRole("textbox", { name: "説明" })).toHaveValue("Inquiry type（問い合わせの 種類） ");
 
     await editor.getByRole("button", { name: "出力の項目を追加" }).click();
     const row2 = editor.getByRole("group", { name: "出力の項目 2" });
@@ -163,7 +165,7 @@ test("AI に聞く: 出力の形を表で組んで保存し、開き直しても
     expect(params.output_schema).toEqual({
       type: "object",
       properties: {
-        category: { type: "string", enum: ["billing", "bug", "howto"], description: "問い合わせの種類" },
+        category: { type: "string", enum: ["billing", "bug", "howto"], description: "Inquiry type（問い合わせの 種類）" },
         tags: { type: "array", items: { type: "string" } },
         summary: { type: "string" },
       },

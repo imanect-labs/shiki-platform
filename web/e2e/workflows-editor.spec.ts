@@ -555,8 +555,11 @@ test("差し込む: 入力項目を足し、AI に聞くの指示に差し込ん
   const triggerPanel = page.getByRole("complementary", { name: "きっかけの設定" });
   await triggerPanel.getByRole("button", { name: "項目を追加" }).click();
   const row = triggerPanel.getByTestId("input-field-row");
-  await row.getByLabel("表示名").fill("件名");
+  // 表示名は 1 文字ずつ打つ（語の間の空白が打てる・前後の空白は欄を離れたときに落ちる）。
+  await row.getByLabel("表示名").pressSequentially("件名 A ");
+  await expect(row.getByLabel("表示名")).toHaveValue("件名 A ");
   await row.getByLabel("キー").fill("title");
+  await expect(row.getByLabel("表示名")).toHaveValue("件名 A");
   await row.getByRole("switch", { name: "必須" }).click();
 
   // 指示を書き、末尾に「差し込む」から件名を入れる（固定値から文章の組み立てに切り替わる）。
@@ -565,18 +568,18 @@ test("差し込む: 入力項目を足し、AI に聞くの指示に差し込ん
   const prompt = panel.locator('[data-value-expr="AI への指示"]');
   await prompt.getByLabel("AI への指示").fill("次の件名を 1 行で要約してください: ");
   await prompt.getByRole("button", { name: "差し込む" }).click();
-  await page.getByRole("menuitem", { name: "件名（title）" }).click();
+  await page.getByRole("menuitem", { name: "件名 A（title）" }).click();
   await expect(prompt.getByLabel("AI への指示")).toHaveValue("次の件名を 1 行で要約してください: {title}");
   await expect(prompt.getByRole("combobox").filter({ hasText: "文章を組み立て" })).toBeVisible();
   await expect(prompt.getByTestId("template-var").getByLabel("差し込み名")).toHaveValue("title");
-  await expect(prompt.getByRole("combobox", { name: "「title」に入る値" })).toContainText("件名（title）");
+  await expect(prompt.getByRole("combobox", { name: "「title」に入る値" })).toContainText("件名 A（title）");
 
   // 保存した定義: 入力項目は JSON Schema、指示は $template と vars（入力の /title を指す）。
   await saveFlow(page);
   const ir = await savedIr(page, id);
   expect(ir.input_schema).toEqual({
     type: "object",
-    properties: { title: { type: "string", title: "件名" } },
+    properties: { title: { type: "string", title: "件名 A" } },
     required: ["title"],
     "x-order": ["title"],
   });
