@@ -27,6 +27,8 @@ pub const MAX_APPROVAL_ASSIGNEES: usize = 20;
 pub const MAX_APPROVAL_SHOW_FIELDS: usize = 30;
 /// 選択肢のラベルの上限（文字数）。
 pub const MAX_APPROVAL_LABEL_CHARS: usize = 40;
+/// 判断の行き先（`to`）が空のときの文言（V1 と、2 件目以降の空欄を言う V4 が同じ文言を使う・BUG-84）。
+pub(crate) const APPROVAL_TO_REQUIRED: &str = "判断したときに進める状態を選んでください";
 
 /// 承認を束縛する行（FSM で管理するテーブルの 1 行）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -270,10 +272,7 @@ impl HumanApprovalParams {
             // params の項目名は判断の語彙と同じ（approve / reject / return）。
             let path = kind.as_str();
             if c.to.trim().is_empty() {
-                return issue(
-                    &format!("{path}/to"),
-                    "判断したときに進める状態を選んでください".to_string(),
-                );
+                return issue(&format!("{path}/to"), APPROVAL_TO_REQUIRED.to_string());
             }
             if tos.contains(&c.to.as_str()) {
                 return issue(

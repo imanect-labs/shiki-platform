@@ -14,8 +14,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
-use super::{Catalog, ValidationError};
-use crate::ir::params::HumanApprovalParams;
+use super::{params_message, Catalog, ValidationError};
+use crate::ir::params::{HumanApprovalParams, APPROVAL_TO_REQUIRED};
 use crate::ir::WorkflowIr;
 use crate::vocab::{NodeType, Scope};
 
@@ -95,9 +95,25 @@ pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
             continue;
         };
         for (kind, choice) in p.choices() {
+            // params の項目名は判断の語彙と同じ（approve / reject / return）。
+            let path = format!("/params/{}/to", kind.as_str());
+            if choice.to.trim().is_empty() {
+                // 空の行き先は「状態「」は…ありません」ではなく、V1 と同じ文言で選ぶよう促す。V1 は最初の 1 件しか
+                // 返さないので、2 件目以降の空欄はここで言う。V1 が同じ欄に言っていれば重ねない（BUG-84）。
+                let said = errors.iter().any(|e| {
+                    e.node_id.as_deref() == Some(node.id.as_str())
+                        && e.path.as_deref() == Some(path.as_str())
+                });
+                if !said {
+                    errors.push(err(
+                        "ir.schema_violation",
+                        params_message(APPROVAL_TO_REQUIRED),
+                        &path,
+                    ));
+                }
+                continue;
+            }
             if !states.contains(&choice.to) {
-                // params の項目名は判断の語彙と同じ（approve / reject / return）。
-                let path = format!("/params/{}/to", kind.as_str());
                 errors.push(err(
                     "ir.unknown_state",
                     format!(
@@ -377,6 +393,53 @@ mod tests {
                 "ir.unknown_field",
                 "担当者の列 deputy はこのテーブルに無いか、読めない列です"
             )
+        );
+    }
+
+    /// 空の行き先（テーブルを選び直した直後など）は「状態「」は…ありません」と言わず、V1 と同じ文言で選ぶよう
+    /// 促す。V1 は最初の 1 件しか返さないので 2 件目以降の空欄もここで言い、同じ欄には重ねない（BUG-84）。
+    #[test]
+    fn empty_destinations_ask_to_choose_a_state() {
+        let catalog = table(Some(&["submitted", "approved", "rejected", "returned"]));
+        let mut both = approval("ok", None);
+        both["params"]["approve"]["to"] = json!("");
+        both["params"]["reject"]["to"] = json!(" ");
+        both["params"]["return"] = json!({ "to": "" });
+        let errs = validate(&ir(json!([both]), json!([])), &catalog).unwrap_err();
+        let at: Vec<(&str, &str)> = errs
+            .iter()
+            .map(|e| (e.path.as_deref().unwrap_or_default(), e.message.as_str()))
+            .collect();
+        let want = format!("params が不正です: {APPROVAL_TO_REQUIRED}");
+        assert_eq!(
+            at,
+            [
+                ("/params/approve/to", want.as_str()),
+                ("/params/reject/to", want.as_str()),
+                ("/params/return/to", want.as_str()),
+            ],
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().all(|e| !e.message.contains("状態「")),
+            "{errs:?}"
+        );
+
+        // 空でない行き先は従来どおり状態の一覧と照らす（空欄と並んでも）。
+        let mut mixed = approval("ok", None);
+        mixed["params"]["approve"]["to"] = json!("");
+        mixed["params"]["reject"]["to"] = json!("ghost");
+        let errs = validate(&ir(json!([mixed]), json!([])), &catalog).unwrap_err();
+        let codes: Vec<(&str, &str)> = errs
+            .iter()
+            .map(|e| (e.code.as_str(), e.path.as_deref().unwrap_or_default()))
+            .collect();
+        assert_eq!(
+            codes,
+            [
+                ("ir.schema_violation", "/params/approve/to"),
+                ("ir.unknown_state", "/params/reject/to"),
+            ]
         );
     }
 

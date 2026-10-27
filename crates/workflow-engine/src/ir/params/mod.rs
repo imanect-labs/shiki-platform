@@ -44,6 +44,7 @@ pub use external::{
     HttpMethod, HttpRequestParams, HttpSecretRef, RedirectPolicy, ScriptRunParams,
     ScriptSourceSpec, SecretAttach, SecretAttachKind, WorkflowStartParams,
 };
+pub(crate) use human::APPROVAL_TO_REQUIRED;
 pub use human::{
     ApprovalAssignee, ApprovalChoice, ApprovalComment, ApprovalDecisionKind, ApprovalRecord,
     HumanApprovalParams, MAX_APPROVAL_ASSIGNEES, MAX_APPROVAL_INSTRUCTIONS_CHARS,

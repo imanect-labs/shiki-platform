@@ -155,6 +155,11 @@ pub fn save_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     out
 }
 
+/// params の契約の誤りの文言（V1b と、V1 が 1 件目しか返さない誤りの続きを言う段が同じ形で書く）。
+fn params_message(message: &str) -> String {
+    format!("params が不正です: {message}")
+}
+
 /// IR の JSON を V1〜V7 で検証する。エラーが 1 件でもあれば `Err(全件)`。
 ///
 /// 成功時はパース済み [`WorkflowIr`] を返す（保存に使う）。
@@ -195,12 +200,9 @@ pub fn validate(
         }
         if let Err(issue) = crate::ir::params::check_params(nt, &node.params) {
             errors.push(
-                ValidationError::new(
-                    "ir.schema_violation",
-                    format!("params が不正です: {}", issue.message),
-                )
-                .at_node(&node.id)
-                .at_path(issue.path),
+                ValidationError::new("ir.schema_violation", params_message(&issue.message))
+                    .at_node(&node.id)
+                    .at_path(issue.path),
             );
         }
     }
