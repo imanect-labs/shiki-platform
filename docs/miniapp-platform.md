@@ -115,7 +115,8 @@ jobq（自作 Postgres キュー）の延長＋状態機械として `crates/wor
 | shiki script ノード | script-runtime で有界実行（§3） | ホスト関数経由＝能力ゲートウェイで通常認可 |
 | skill ノード | `skill:<name>@<version>` 参照（保存時に存在検証） | skill 宣言スコープ ∩ 実行主体 ReBAC |
 | `agent.invoke` ノード | agent-core のツールループ（道具＝能力 API の閉集合・読み取りだけ・コードの実行の道具 `code.run` だけをサンドボックス（gVisor ティア既定・#346）で実行） | 提示した道具の要求スコープ ∩ declared_scopes ∩ 実行主体 ReBAC（道具の呼び出しごとに能力ゲートウェイを通る二重ゲート・下記） |
-| `llm.invoke` ノード | llm-gateway 直行（サンドボックスなし） | モデルカタログ・予算ガードレール |
+| `llm.invoke` ノード | llm-gateway 直行（サンドボックスなし）。出力の形（`output_schema`）を書くと構造化出力になり、形で検証した値が出力の `data` に載る（workflow ir.md §7.3） | モデルカタログ（組織が許可した chat モデル）・予算ガードレール |
+| `ai.decide` ノード | AI で判定: 判定の材料（値式・信頼しないデータ）について、質問（リテラル）に選択肢・段階・はい/いいえで答え、確からしさを付けて返す。答えと確からしさで出口を選ぶ（しきい値未満は `uncertain`・workflow ir.md §7.11） | llm-gateway の判定のチョークポイント（判定用のモデルと元にする chat モデルの両方の組織の許可・利用上限・会計）。スコープ天井の対象外 |
 | `http.request` ノード | 外部 HTTP（egress allowlist 適用） | シークレット宛先束縛（§5）＋allowlist の AND |
 | `human.approval` ノード | テーブルの 1 行について担当者の判断を待って分岐する（受信箱 `/approvals`・workflow ir.md §7.9） | 判断は承認者本人の FSM 遷移（actor 述語）・行は実行主体の見え方で読む |
 

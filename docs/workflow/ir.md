@@ -229,7 +229,10 @@ IR のトップレベルは以下の形を取る。
 | `control.wait`（event, `on_timeout: continue`） | `out` / `timeout` |
 | `human.approval` | `approved` / `withdrawn` ＋ `rejected`（`reject` を指定したとき）・`returned`（`return` を指定したとき）・`timeout`（期限を決めて `on_timeout: continue` のとき）（§7.9） |
 | `workflow.reply` | `out`（＋ `on_error: continue` 時 `error`）（§7.10） |
+| `ai.decide` | `route` 無し＝`out`。`by: confidence`＝`out` / `uncertain`。`by: value`＝選択肢のキー（choice）か `true` / `false`（boolean）＋ `uncertain`（`out`・`default` は無い）（§7.11） |
 
+- **ポートの決まり方はノードカタログの `port_rule` が単一定義**（`static`＝静的なポートだけ・`switch_cases`＝`cases[].port` と `default`・`approval_choices`＝`approved` / `withdrawn` に指定した判断と時間切れ・`decide_route`＝`route` から）。どの規則でも `on_error: continue` なら `error`、wait(event) で `on_timeout: continue` なら `timeout` が加わる。実際の集合は Rust の 1 つの関数（`workflow_engine::node_ports`）が params から導き、保存時検証 V2（§8）と検証 API（`POST /workflows/validate`）の応答の `node_ports`（ノード id → 出口の名前・表示の順）が同じ関数を使う。エディタはこの応答でハンドルを描き、導出を TS に書き写さない。カタログの `dynamic_ports` は互換のための印（switch と ai.decide で true）で、どう決まるかは `port_rule` を見る。
+- params が契約に合わず出口を導けないノード（振り分けの質問が無い ai.decide など）は、V2 が出口を検査しない（V1 が報告する・同じ誤りを二重に出さない）。検証 API の `node_ports` にも載らない。
 - `control.switch` の case ポート名は params の `cases` で宣言する値と一致させる（保存時にポート存在検証・§8 V2）。
 - `control.switch` の `value` が解決できない（`default` の無い `$from` のパスが無いなど・§3.1）ときは、`default` ポートへ流さず `expr_resolve_error` で失敗する。どの case にも一致しないのと、値が無いのを区別する（黙ってその他へ流さない・D-36）。「値が無ければその他へ」としたいときは、`$from` に `default` を書く（例: `{ "$from": "input", "path": "/kind", "default": "" }`）。
 
@@ -382,6 +385,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `skill.invoke` | skill | `skill:<name>@<version>` | skill 宣言に従う | 60s / 360s |
 | `llm.invoke` | AI | llm-gateway 直行 | pure（課金あり） | 120s / 600s |
 | `agent.invoke` | AI | agent-core のツールループ（ループはホスト側・道具は能力 API・コードの実行の道具だけをサンドボックスで実行・§7.4） | best-effort | 600s / 3600s |
+| `ai.decide` | AI | 判定用のモデルで、質問に決められた値域（選択肢・段階・はい/いいえ）で答え、確からしさを付けて返す（llm-gateway の判定のチョークポイント・§7.11） | pure（課金あり） | 60s / 300s |
 | `http.request` | 外部 | 外部 HTTP | **best-effort**（Idempotency-Key 注入支援のみ） | 30s / 120s |
 | `human.approval` | 人間参加 | テーブルの 1 行について担当者の承認・却下・差し戻しを待って分岐する（判断は承認者本人の FSM 遷移・§7.9） | engine-dedup（台帳は step で 1 件） | 30s / 120s（停止まで。判断を待つ時間は `timeout_sec` と `run_timeout_sec`） |
 | `workflow.reply` | フロー連携 | 結果を画面に返す（ボタン・会話から起動した本人の画面に出す・スコープ不要・§7.10） | pure | 5s / 10s |
@@ -645,6 +649,62 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 - **置き方の指針**: 成功の結果は副作用の最後に置く。業務上の失敗は、失敗し得るノードを `on_error: continue` にして `error` 出口の先に `tone: error` の reply を置く（run は処理済み失敗として成功になり、画面は「完了」と出す）。
 - 失敗した run の理由（利用者向けの分類・参照番号）は reply ではなく読取口が step の code から作る（[engine.md](./engine.md) §11.6）。
 
+### 7.11 `ai.decide`（AI で判定・決定モデル）
+
+```jsonc
+{ "id": "triage", "type": "ai.decide", "label": "問い合わせを判定",
+  "params": {
+    "model": "decide-haiku",                                  // 判定用のモデルの id（必須・リテラル）
+    "state": { "$from": "nodes.create.output", "path": "/data" },  // 判定の材料（値式・信頼しないデータ）
+    "questions": [                                            // リテラルだけ・1〜20 件・順序を保つ
+      { "key": "category", "type": "choice", "instructions": "問い合わせの種類はどれか",
+        "options": [ { "key": "billing", "description": "請求・返金" }, { "key": "bug", "description": "不具合" },
+                     { "key": "howto", "description": "使い方" }, { "key": "other", "description": "その他" } ] },
+      { "key": "priority", "type": "score", "instructions": "対応の緊急度", "levels": ["低", "中", "高", "緊急"] },
+      { "key": "angry", "type": "boolean", "instructions": "顧客は強い不満を示しているか",
+        "yes": "苦情・強い不満・解約の示唆がある", "no": "通常の問い合わせ" } ],
+    "route": { "question": "category", "by": "confidence", "min_confidence": 0.8 }   // 省略可
+  },
+  "on_error": "continue" }
+```
+
+- **何をするか**: 判定の材料について、質問ごとに決められた値域で答え、確からしさ（0〜1）を付けて返す。文章は生成しない。呼ぶのは llm-gateway の判定のチョークポイント `LlmGateway::decide`（[design.md](../design.md) §4.5）で、組織の許可（判定用のモデルと、LLM に判定させるなら元にする chat モデルの両方）・利用上限・会計はその中で行う。
+- **`model`**: 判定用のモデル（カタログの `modality = "decision"`）の id。判定には組織の既定が無いので必須で、リテラルだけ（`$from` は型で弾く）。保存時に組織が許可した判定用のモデル（元にする chat モデルも許可されているもの）へ照合し（§8 V3）、実行時にもチョークポイントが照らし直す（無効なら既定へ戻さずに `model_unavailable` で失敗する）。組織がモデルの選択を禁じていても（`ir.model_choice_disabled`）、判定のモデルには掛けない。
+- **`state`**: 値式。実行時に文字・オブジェクト・配列のどれかに解決され、JSON にして 32 KiB まで（超えたら `decision_state_too_large`・permanent）。**信頼しないデータ**として扱う（決定器は材料の中の指示に従わない。LLM に判定させる決定器は材料を封筒に包み、閉じタグを中和する・PIT-56）。リテラルで書くなら文字・オブジェクト・配列（V1）。
+- **`questions`**（リテラルだけ・V1 で検査する）:
+  - `key` は `^[a-z][a-z0-9_]{0,63}$` でノードの中で一意。`instructions` は 1〜2000 字。`type` は `choice` / `score` / `boolean`。
+  - `choice`: `options`（2〜100 件）。選択肢の `key` は同じ形で一意、予約名（`out`・`uncertain`・`error`・`default`・`timeout`・`true`・`false`）は不可（出口の名前と取り違えないため）。`description` は 500 字以内・省略可。
+  - `score`: `levels`（低い順・2〜10 件・一意・各 1〜100 字）。
+  - `boolean`: `yes` / `no`（それぞれに当たる場合の説明・500 字以内・省略可）。
+  - 種類に合わない項目（choice に `levels` など）は拒否する。
+  - 質問をリテラルに限るのは、材料（信頼しないデータ）と質問（作者のコード）を分け、出口を保存時に静的に決めるため。
+- **`route`**（省略可）: `{ question, by, min_confidence }`。`question` は choice か boolean の質問（score は振り分けない。後ろの `control.branch` で `/answers/<key>/level_index` を使う）。`by` は `value`（既定）か `confidence`。`min_confidence` は 0.5〜1.0 で必須（しきい値は版ごとに実測で決めるもので、既定を置かない・PIT-80）。
+- **出口**（§5.2）: `route` 無し＝`out`。`by: confidence`＝確からしさがしきい値**以上**なら `out`、届かなければ `uncertain`。`by: value`＝しきい値以上なら答えの選択肢のキー（boolean は `true` / `false`）、届かなければ `uncertain`。`out`・`default` は出さないので、値で振り分ける判定からそれらへ張ったエッジは保存できない（`ir.unknown_port`）。`on_error: continue` なら `error` が加わる。
+- **較正されていない確からしさでも同じ規則で振り分ける**（D-52 の H4）。出力の `calibrated` が false の決定器（LLM の自己申告・得票率）は確からしさが高めに出がちなので、しきい値は版ごとに実測で決める（PIT-80）。
+- **しきい値未満は `uncertain` へ出すだけ**で、承認待ちを知らない。人に関わる判断（経費・人事など）は `uncertain` を `human.approval`（§7.9）へつなぎ、AI の判定だけで承認・却下を決めない構成にする（D-7）。材料の書き方で誤った答えに誘導されることはある（値域の内側の誤誘導は防げない）。
+- **出力**:
+
+  ```jsonc
+  { "answers": {
+      "category": { "type": "choice", "value": "billing", "label": "請求・返金", "confidence": 0.9,
+                    "probabilities": { "billing": 0.9, "bug": 0.03, "howto": 0.04, "other": 0.03 } },
+      "priority": { "type": "score", "value": 1.0, "level": "中", "level_index": 1, "confidence": 0.8,
+                    "probabilities": [0.05, 0.8, 0.1, 0.05] },
+      "angry":    { "type": "boolean", "value": false, "probability": 0.2, "confidence": 0.8 } },
+    "model": "decide-haiku",
+    "resolved_model": "claude-haiku-5-5+llm_decider/v1/k1/low",
+    "calibrated": false, "method": "verbalized", "samples": 1,
+    "routed": { "question": "category", "port": "out" } }       // route が無ければ null
+  ```
+
+  `label` は選択肢の説明（無ければキー）。score の `value` は確率で重み付けした位置（0〜段階の数-1）、`level_index` は選んだ段階。`resolved_model` は実際に答えた決定器の版で、版が変わったらしきい値を測り直す。`method` は `native`（決定器が出す確率）・`verbalized`（LLM の自己申告）・`vote`（多数決の得票率）。
+- **応答の突き合わせ**: エンジンはポートの応答を型付きで読み、質問と突き合わせる（答えの過不足・種類の取り違え・選択肢の外・確率や確からしさの範囲の外は `decision_invalid_response`・permanent）。チョークポイントも同じ突き合わせをする（多層防御）。
+- **失敗**: 判定用のモデルが未登録・判定用でない・組織で無効（元の chat モデルが無効なときも）は `model_unavailable`、判定の拒否は `llm_refused`、応答の途切れは `llm_output_truncated`、決められた形に合わない応答は `llm_output_invalid`（どれも permanent）。到達障害・利用上限は llm.invoke と同じ（再試行の分類・[engine.md](./engine.md) §7）。
+- **監査**: 出口と、振り分けに使った質問の確からしさだけを残す（要求したモデル・`resolved_model`・`method`・`samples`・`calibrated`・質問のキー）。**判定の材料と全部の答えは載せない**（D-52 の H5。run の step の出力には残る）。
+- **会計**: チョークポイントが記録する。使えた判定は step の冪等キー、使えなかった判定（失敗・突き合わせで弾いたもの）で使用量のあるものは `{step のキー}#f{uuid}`（[engine.md](./engine.md) §7.2）。LLM に判定させる決定器は、元の chat モデルの名前・プロバイダの枠で数える。
+- **要求スコープ**: 無い（scope 天井の対象外。llm.invoke と同じ内部推論で、データへの到達は材料を読んだ前のノードの data / storage のスコープで縛られる・D-52 の H14）。
+- **保存を止めない警告**: しきい値が 0.6 未満（`ir.decide_low_confidence`）、値で振り分ける選択肢が 10 件以上（`ir.decide_many_ports`・確からしさで分けて後ろの振り分けで `/answers/<key>/value` を使う方が読みやすい）、モデルの名前が `-latest` / `-preview` を含む（`ir.decide_unpinned_model`）。
+
 ---
 
 ## 8. 保存時検証パイプライン（確定・順序固定）
@@ -655,7 +715,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 |---|---|---|---|
 | V1 | スキーマ | JSON Schema（deny-unknown・型・必須） | `ir.schema_violation` |
 | V2 | グラフ | id 一意・エッジ参照存在・ポート存在・DAG・入エッジ制約・領域閉包・出口一意・到達可能性 | `ir.graph_cycle` 等 |
-| V3 | 語彙照合 | ノード type・declared_scopes・ツール名・モデル名を codegen 語彙と登録カタログ（モデルは組織が許可したもの・本人専用を除く）の閉じた集合へ照合。イベント source とトリガ・wait(event) の scope の形（§6.2・§7.5）。agent.invoke の道具と web.fetch の宛先（§7.4） | `ir.unknown_scope`・`ir.unknown_model`・`ir.model_choice_disabled`・`ir.unknown_event_source`・`ir.bad_event_scope`・`ir.unknown_tool`・`ir.missing_egress`・`ir.bad_host`・`ir.host_outside_ceiling` |
+| V3 | 語彙照合 | ノード type・declared_scopes・ツール名・モデル名を codegen 語彙と登録カタログ（モデルは組織が許可したもの・本人専用を除く）の閉じた集合へ照合。モデルの種類（文章を生成する chat・判定用の decision）。イベント source とトリガ・wait(event) の scope の形（§6.2・§7.5）。agent.invoke の道具と web.fetch の宛先（§7.4） | `ir.unknown_scope`・`ir.unknown_model`・`ir.model_choice_disabled`・`ir.model_modality_mismatch`・`ir.unknown_event_source`・`ir.bad_event_scope`・`ir.unknown_tool`・`ir.missing_egress`・`ir.bad_host`・`ir.host_outside_ceiling` |
 | V4 | 参照存在 | skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノード URL ホストを許容）・テーブル/フォルダ id | `ir.unknown_skill` |
 | V5 | データフロー | `$from` の祖先性・default 要否・条件木の型整合（静的に分かる範囲）・regex コンパイル | `ir.bad_ref` |
 | V6 | script コンパイル | inline script の swc パース・禁止構文（[script.md](./script.md) §3。artifact 参照は version 固定なので存在のみ） | `ir.script_syntax` |
@@ -664,8 +724,9 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 各ステージの詳細:
 
 - **V1 スキーマ**: トップレベルからノード params まで、JSON Schema で型・必須・deny-unknown を検証する。未知フィールドは全階層で拒否する（§2）。`input_schema` の項目の並び（`x-order`）の形もここで確かめる（§2・D-60）。
-- **V2 グラフ**: `id` 一意、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1、全ノードのエントリからの到達可能性を検証する。`workflow.reply` は map 領域に置けない（`ir.reply_in_map`・§7.10）。
+- **V2 グラフ**: `id` 一意、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在（出口はカタログの `port_rule` から導く。検証 API はノードごとの出口を `node_ports` で返す）、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1、全ノードのエントリからの到達可能性を検証する。`workflow.reply` は map 領域に置けない（`ir.reply_in_map`・§7.10）。
 - **V3 語彙照合**: ノード `type`・`declared_scopes`・ツール名（`allowed_tools`）・モデル名を codegen が生成した閉じた語彙と、テナントの登録カタログ（モデルは組織が許可したモデル・本人専用を除く）へ照合する。**ハルシネーション境界**であり、実在しない語彙を参照する IR（特に AI 生成）を保存前に拒否する。`llm.invoke` の `model` は省略可で、省略（空文字を含む）は照合しない（実行時に組織の既定で解決する・§7.3）。組織がモデルの選択を禁じていれば、既定と異なるモデルを `ir.model_choice_disabled` で拒否する。
+- **V3 のモデルの種類**: カタログのモデルは文章を生成する chat と判定用の decision に分かれる（[design.md](../design.md) §4.5）。`llm.invoke`・`agent.invoke` の `model` は組織が許可した chat モデル、`ai.decide` の `model` は組織が許可した判定用のモデル（LLM に判定させるなら元にする chat モデルも許可されているもの）へ照合する。種類を取り違えたもの（`llm.invoke` に判定用のモデル・`ai.decide` に chat モデル）は `ir.model_modality_mismatch`（path は `/params/model`・使えるモデルを添える）、どちらにも無いものは `ir.unknown_model`。判定用のモデルが 0 件の組織では `ai.decide` をすべて拒否する。照合の材料（組織の許可リスト）は保存 API・検証 API・AI の `emit_workflow` が同じ関数（`build_catalog_from`）で組み、種類の振り分けもその中だけで行う（保存と AI 編集で結果を変えない）。
 - **V4 参照存在**: skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノードの `http.request` URL ホストを許容する）・テーブル/フォルダ id の実在を検証する。`human.approval` は、テーブルが保存者に見えて FSM で管理され、状態の列を保存者が読めること（見えないテーブル・FSM でないテーブル・状態の列が読めないテーブルは同じ文言 `ir.unknown_table`。状態の一覧は出さない）、判断の行き先が FSM の状態であること（`ir.unknown_state`）、`show_fields` と担当者の列がテーブルの列（担当者はユーザー・部署の列）であること、`show_fields` に状態の列が無いこと（`ir.bad_show_field`。状態の列は保存者が読めるときだけ材料に入るので、読めない列の手がかりにならない）を照合する。材料は保存 API（検証 API・AI の `emit_workflow` も同じ）が**保存者の見え方**（`DataStore::get_table_for_viewer`・テーブルの owner でなければ読める列だけ）で引く。読めない列は無い列と同じ `ir.unknown_field`（code・path・message が同じ。文言も「このテーブルに無いか、読めない列です」とどちらとも言わない）になり、種別の違い（`ir.bad_assignee`）も返さない（無い列と読めない列を区別させない・data-platform §16.1）。
 - **V3 の承認**: `human.approval` は `data.read` と `notify.send` の宣言が要る（保存時の scope 補完が足す）。
 - **V3 の AI エージェント**: `allowed_tools` の未知の名前は V1（選択肢にない値）、予約の道具は `ir.unknown_tool`、要求スコープの宣言漏れは `ir.missing_scope`（path は `/params/allowed_tools/<i>`・保存時の scope 補完が足す）。`model` は `llm.invoke` と同じ照合（path は `/params/model`）。web.fetch を選んだときだけ、`egress_allowlist` を照合する（空は `ir.missing_egress`、形は `ir.bad_host`、管理者の天井の外は `ir.host_outside_ceiling`・path は `/params/egress_allowlist/<i>`）。
@@ -675,6 +736,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **V6 script コンパイル**: inline script を swc でパースし、禁止構文を弾く（[script.md](./script.md) §3）。artifact 参照は version 固定なので存在確認のみ。
 - **V7 上限**: サイズ・数量の上限を検証する（すべて初期値・設定で調整可）。`workflow.reply` の `value` がリテラルなら形と合うこと（text・markdown は文字・table は配列・file_link はオブジェクトか配列。`ir.reply_type`・path は `/params/value`）。
 - **保存を止めない警告**（`workflow.reply`）: interactive のトリガが無い IR の reply は画面に出ない（`ir.reply_without_interactive`）。
+- **保存を止めない警告**（`ai.decide`）: しきい値が低い（`ir.decide_low_confidence`）・値で振り分ける出口が多い（`ir.decide_many_ports`）・版の固定されていないモデル名（`ir.decide_unpinned_model`）（§7.11）。
 - **保存を止めない警告**（テンプレート）: vars のキーを `{{key}}` と書いた（`ir.template_escaped_var`）・閉じの無い `{`（`ir.template_unclosed_brace`・§3.2・D-37）。
 - **保存を止めない警告**（必須の文字の欄）: `llm.invoke` の `prompt`・`agent.invoke` の `instruction`・`rag.search` の `query`・`csv.query` の `sql` が空（空白だけ・中身の無い `$template` を含む。参照は実行時まで分からないので対象外）なら `ir.required_text_empty`（path は `/params/<項目>`）。書きかけでも保存はできるが、有効化と実行の前に止める（§9・D-43）。
 
