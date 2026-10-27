@@ -27,7 +27,7 @@ sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E
 | Build shiki-server | （ローカルでは不要。compose 系ジョブへ release バイナリを artifact 共有するための CI 専用ジョブ） | — |
 | Quality gates | `bash scripts/check-file-size.sh`<br>`bash scripts/check-migration-versions.sh`<br>`bash scripts/check-compose-ports.sh`<br>`cargo machete crates` | 常に（`.rs` 追加・依存追加・migration 追加時は必須） |
 | cargo-deny | `cargo deny --all-features check` | `Cargo.toml` / `Cargo.lock` 差分 |
-| Coverage (gate 80%) | 下記「カバレッジ」節 | `.rs` の**新規追加**時 |
+| Coverage (gate 80%) | 下記「カバレッジ」節 | `crates/` 差分（CI は Rust の変更があれば回す。`.rs` の新規追加時は特に注意） |
 | Web | `pnpm install --frozen-lockfile`<br>`pnpm gen:api`<br>`pnpm lint`<br>`pnpm build` | `web/` 差分 |
 | Python | `cd ingestion-worker && uv sync --frozen`<br>`uv run ruff check .`<br>`uv run pytest -m "not slow" -q` | `ingestion-worker/` 差分 |
 | Tabular runner | `cargo fmt --manifest-path crates/tabular/runner/Cargo.toml --check`<br>`cargo clippy --manifest-path crates/tabular/runner/Cargo.toml --release -- -D warnings`<br>`cargo build --manifest-path crates/tabular/runner/Cargo.toml --release`<br>→ `SHIKI_TABULAR_RUNNER=crates/tabular/runner/target/release/shiki-tabular-runner cargo test -p shiki-tabular --test runner_adversarial_it` | `crates/tabular/` 差分 |
@@ -65,7 +65,10 @@ export RAG_TEST_QDRANT_API_KEY=shiki-qdrant-dev-key  # compose の Qdrant は AP
 
 ## カバレッジ 80% ゲート
 
-CI は **workspace 総計の行カバレッジ**を `cargo llvm-cov --fail-under-lines 80` で判定する（per-crate ではない）。
+CI は 2 段で判定する（#921）。
+
+- **PR**: changes ジョブ（`scripts/ci-select.py`）が選んだテスト（変更したクレート＋依存するクレート＋常に回す脅威テスト）だけを計測し、**変更した行**の 80% 以上で判定する（`scripts/ci-select.py diff-coverage`）。未達の行はカバレッジコメントと Job Summary に出る。ローカルでは CI と同じ除外（ci.yml の coverage ジョブの `COV_IGNORE`）を付けて `cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex "$COV_IGNORE"` の後に `python3 scripts/ci-select.py diff-coverage --lcov lcov.info --ignore "$COV_IGNORE" --base "$(git merge-base origin/main HEAD)" --head HEAD`（base は merge-base。`origin/main` を直接渡すと main 側の変更が混ざる）。ファイルの移動・改名は検出して動かしただけの行は数えないが、1000 行ゲートのための**分割**は移した行が新規行として数えられる。元が 80% 未満なら分割と同じ PR でテストを足すか、分割だけの PR にして理由を書く。
+- **main**: 全テストを計測し、**workspace 総計の行カバレッジ**を `cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex "$COV_IGNORE"` で判定する（per-crate ではない）。PR の変更行が通っても、テストの無い新規ファイルが総計を下げると main で落ちる。
 
 **最頻の落とし穴**: 新規 API ルートファイル（`crates/api/src/routes/*.rs`）はハンドラを叩く HTTP テストが無いと 0〜30% になり、**総計を 80% 未満へ引きずり落とす**。過去に複数 PR がこれで落ちている。
 

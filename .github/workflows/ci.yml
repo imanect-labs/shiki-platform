@@ -4,16 +4,18 @@ on:
   pull_request:
     # docs のみの変更で重量 CI（Rust フルビルド×複数ジョブ・compose）を回さない。
     # file-size ゲートは *.rs のみ対象（scripts/check-file-size.sh）のため取りこぼしは無い。
+    # .md を外すのは最上位だけ。crates/ の下の .md は include_str! でコンパイルに入るものがある
+    # （crates/chat/src/worker/yui_guide.md）ので回す（どのテストを回すかは changes ジョブが選ぶ）。
     # ブランチ保護の required checks は未設定なので pending 固着も起きない。
     paths-ignore:
       - "docs/**"
-      - "**.md"
+      - "*.md"
       - ".claude/**"
   push:
     branches: [main]
     paths-ignore:
       - "docs/**"
-      - "**.md"
+      - "*.md"
       - ".claude/**"
 
 concurrency:
@@ -41,8 +43,43 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  # PR の変更ファイルから、回すジョブと Rust テストの対象を選ぶ（#921・scripts/ci-select.py）。
+  # 関係ない変更で全テストを回さない。判定できないパス・依存グラフや CI 自体の変更は全量に倒し、
+  # 認可・テナント越境の脅威テストは Rust の変更があれば選択に関係なく coverage ジョブで回す（結合テストの
+  # 環境があるのは coverage ジョブだけ）。main への push は常に全量（取りこぼしは main で検知して選択規則を直す）。
+  changes:
+    name: 変更から回すジョブ・テストを選ぶ
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.select.outputs.full }}
+      rust: ${{ steps.select.outputs.rust }}
+      web: ${{ steps.select.outputs.web }}
+      python: ${{ steps.select.outputs.python }}
+      compose: ${{ steps.select.outputs.compose }}
+      nextest_filter: ${{ steps.select.outputs.nextest_filter }}
+      cargo_packages: ${{ steps.select.outputs.cargo_packages }}
+      always_run_tests: ${{ steps.select.outputs.always_run_tests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # PR はマージコミット（HEAD^1 = base の先端・HEAD^2 = PR の先端）と比べるので親まで取る。
+          fetch-depth: 2
+      - id: select
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            python3 scripts/ci-select.py select --base HEAD^1 --head HEAD
+          else
+            python3 scripts/ci-select.py select --full
+          fi
+
   rust:
     name: Rust (fmt / clippy / test / build)
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -74,7 +111,12 @@ jobs:
       # 非依存＝env-gate の IT はスキップされ実質ユニットのみ・DB 競合なし）。doctest は
       # nextest 非対応だが coverage ジョブの `cargo llvm-cov --all` 側で実行される。
       # clippy --all-targets が全ターゲットの型検査を兼ねるため `cargo build --all` は廃止。
-      - run: cargo nextest run --workspace --all-features
+      # テストは changes ジョブが選んだもの（変更したクレート＋依存するクレート＋常に回す脅威テスト・
+      # 全量なら all()）。clippy は選択せず全体を見る（型の不整合は依存元から伝わるため）。
+      - name: cargo nextest run (選択したテスト)
+        env:
+          FILTER: ${{ needs.changes.outputs.nextest_filter }}
+        run: cargo nextest run --workspace --all-features --no-tests=warn -E "$FILTER"
 
   # shiki-server の release バイナリを 1 回だけビルドして compose ジョブ（smoke / web-e2e）へ
   # artifact 共有する。以前は各 compose ジョブが Docker 内で cargo フルビルドしており、
@@ -82,6 +124,8 @@ jobs:
   # 各 10 分超＋crates.io ダウンロード flake の源だった。
   build-server:
     name: Build shiki-server (release・compose ジョブ共有)
+    needs: [changes]
+    if: needs.changes.outputs.compose == 'true'
     # deploy/Dockerfile.ci（ubuntu:24.04）と glibc を一致させるため 24.04 に固定する。
     # ubuntu-latest が 26.04 へ進んだら Dockerfile.ci と同時に上げること。
     runs-on: ubuntu-24.04
@@ -139,6 +183,9 @@ jobs:
       # 一度も同時に立ち上がらない。ローカルの `docker compose up` だけが壊れる。
       - name: compose port gate (ホストポートの二重 publish 禁止)
         run: bash scripts/check-compose-ports.sh
+      # テストの選択（changes ジョブ）を誤ると必要なテストが黙って回らなくなるので、選択規則を検査する。
+      - name: test selector (scripts/ci-select.py の検査)
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
       # machete はソースを字句で読むだけでビルドも依存の取得もしないため rust-cache は持たない
       # （10GB の枠を空けるため・#920）。
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
@@ -153,6 +200,8 @@ jobs:
 
   cargo-deny:
     name: cargo-deny (advisories / licenses / bans / sources)
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -182,6 +231,9 @@ jobs:
   # クォータ超過の adversarial テストを走らせる（メイン rust ジョブに DuckDB を混ぜない）。
   tabular-runner:
     name: Tabular runner (隔離 DuckDB・PIT-39 adversarial)
+    # compose（smoke / E2E）のイメージにランナーを焼くので、compose を回すときも要る。
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.compose == 'true'
     # runtime-only イメージ（ubuntu:24.04）と glibc を一致させるため 24.04 固定。
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -228,6 +280,8 @@ jobs:
   # **非ブロッキング**（continue-on-error）。required 化は安定後に外す。
   sandbox-gvisor:
     name: Sandbox gVisor IT (runsc・非ブロッキング)
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     continue-on-error: true
@@ -262,6 +316,8 @@ jobs:
 
   python:
     name: Python (ingestion-worker ruff / pytest)
+    needs: [changes]
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -286,16 +342,32 @@ jobs:
       - name: pytest (fast)
         run: uv run pytest -m "not slow" -q
 
+  # main は全テストを計測して全体の行カバレッジ 80% で判定する。PR は changes ジョブが選んだテストだけを
+  # 計測し、**変更した行**のカバレッジ 80% で判定する（全体の数値は選んだテストだけの値になり意味が無いため・
+  # #921 の human 決定）。
   coverage:
     name: Coverage (cargo-llvm-cov, gate 80%)
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     # カバレッジ表を PR にコメントするため pull-requests:write を昇格付与する。
     permissions:
       contents: read
       pull-requests: write
+    env:
+      # 除外: バイナリ entrypoint（配線のみ）・vendor（所有フォーク）・実 sidecar 駆動の I/O 境界
+      # （sandbox の wasm backend / gRPC client は実 V8/Pyodide を要し gated IT `SANDBOX_IT=1` で検証・CI 分母外）
+      COV_IGNORE: 'src/(bin/|main\.rs)|/examples/|vendor/(secure-exec|openjtd)/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
+      IS_PR: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # GITHUB_TOKEN を .git/config に残さない（このジョブは依存の build.rs や結合テストを動かす。
+          # PR へのコメントは GH_TOKEN を env で渡すので不要）。
+          persist-credentials: false
+          # 変更行カバレッジは PR のマージコミットと base（HEAD^1）の差分で取る。
+          fetch-depth: 2
       # llvm-cov target ＋ compose ボリュームでディスクが逼迫するため先に解放する。
       - name: free disk space (不要プリインストール削除)
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
@@ -350,21 +422,44 @@ jobs:
           RAG_TEST_QDRANT_URL: http://localhost:6333
           # compose の Qdrant は API キー付き（.env.example の dev 値・#812）。
           RAG_TEST_QDRANT_API_KEY: shiki-qdrant-dev-key
+          FULL: ${{ needs.changes.outputs.full }}
+          CARGO_PACKAGES: ${{ needs.changes.outputs.cargo_packages }}
+          ALWAYS_RUN_TESTS: ${{ needs.changes.outputs.always_run_tests }}
         # coverage は cargo test（バイナリ逐次＝in-process 共有 fixture が壊れない安全な実行
         # モデル）のまま。nextest はプロセス毎実行で in-process 共有状態に依存する IT を壊す
         # 実績があり不採用。速度は debuginfo 削減の計装ビルド短縮＋cache-on-failure で稼ぐ。
-        run: cargo llvm-cov --all --no-report
+        run: |
+          if [ "$FULL" = "true" ]; then
+            cargo llvm-cov --all --no-report
+            exit 0
+          fi
+          # 変更したクレート＋依存するクレートのテスト（-p は changes ジョブが組んだもの・語分割させる）。
+          # shellcheck disable=SC2086
+          cargo llvm-cov --no-report $CARGO_PACKAGES
+          # 常に回す脅威テストは 1 回の起動でまとめて回す。パッケージごとに `-p` で起動すると依存の
+          # フィーチャ集合が変わり、計装ビルドが何度もやり直しになる（--workspace なら main と同じ）。
+          # shellcheck disable=SC2086
+          cargo llvm-cov --no-report --workspace $ALWAYS_RUN_TESTS
       - name: coverage report (lcov + summary + job summary)
         run: |
-          cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'src/(bin/|main\.rs)|/examples/|vendor/(secure-exec|openjtd)/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
+          cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex "$COV_IGNORE"
           # サマリ表を再利用するためファイルに保存（Job Summary と PR コメントの両方で使う）。
-          cargo llvm-cov report --summary-only --ignore-filename-regex 'src/(bin/|main\.rs)|/examples/|vendor/(secure-exec|openjtd)/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs' | tee coverage-summary.txt
+          cargo llvm-cov report --summary-only --ignore-filename-regex "$COV_IGNORE" | tee coverage-summary.txt
           {
             echo '### Rust test coverage'
             echo '```'
             cat coverage-summary.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      # PR の判定に使う変更行カバレッジ。閾値の判定は PR へのコメントの後（下の gate）で行う。
+      - name: "diff coverage (PR: 変更した行)"
+        if: env.IS_PR == 'true'
+        run: |
+          status=0
+          python3 scripts/ci-select.py diff-coverage --lcov lcov.info --ignore "$COV_IGNORE" --min 80 \
+            --output diff-coverage.md || status=$?
+          echo "$status" > diff-coverage.status
+          cat diff-coverage.md >> "$GITHUB_STEP_SUMMARY"
       # カバレッジ表を PR にコメントする（マーカーで既存コメントを更新＝スティッキー）。
       # ゲート fail 時も結果が見えるよう always() で実行する。push(main) では PR が無いのでスキップ。
       - name: comment coverage table on PR
@@ -372,20 +467,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
+          FULL: ${{ needs.changes.outputs.full }}
         run: |
           [ -f coverage-summary.txt ] || { echo "サマリ未生成のためスキップ"; exit 0; }
           marker='<!-- coverage-report -->'
           total_line=$(grep '^TOTAL' coverage-summary.txt || true)
-          {
+          # PR の判定は変更行カバレッジ。全体の数値は、テストを選んだ run では選んだテストだけの値なので参考にとどめる。
+          header() {
             echo "$marker"
             echo '## 📊 Rust test coverage'
-            echo "閾値ゲート: 行 **80%** 以上（\`cargo llvm-cov --fail-under-lines 80\`）"
+            echo "PR の閾値ゲート: **変更した行**の **80%** 以上（全体の 80% ゲートは main で判定）"
+            echo
+            if [ -f diff-coverage.md ]; then cat diff-coverage.md; else echo '変更行カバレッジは未計測です。'; fi
             echo
             if [ -n "$total_line" ]; then
+              if [ "$FULL" = "true" ]; then echo '全体（全テスト）:'; else echo '全体（参考・選んだテストだけの値）:'; fi
               echo '```'
               echo "$total_line"
               echo '```'
             fi
+          }
+          {
+            header
             echo '<details>'
             echo '<summary>ファイル別内訳を表示</summary>'
             echo
@@ -398,15 +501,7 @@ jobs:
           # 本文は引数ではなくファイルで渡す（大きな本文で「Argument list too long」にならない）。
           if [ "$(wc -c < body.md)" -gt 60000 ]; then
             {
-              echo "$marker"
-              echo '## 📊 Rust test coverage'
-              echo "閾値ゲート: 行 **80%** 以上（\`cargo llvm-cov --fail-under-lines 80\`）"
-              echo
-              if [ -n "$total_line" ]; then
-                echo '```'
-                echo "$total_line"
-                echo '```'
-              fi
+              header
               echo
               echo 'ファイル別内訳はコメントの上限を超えるため省略しました（Coverage ジョブのログを参照）。'
             } > body.md
@@ -420,12 +515,17 @@ jobs:
             gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -F body=@body.md >/dev/null
             echo "新規コメントを作成"
           fi
-      # 全体カバレッジ 80% の絶対床ゲート。下回ったら CI を fail させる（カバレッジを下げない）。
+      # main: 全体カバレッジ 80% の絶対床ゲート。下回ったら CI を fail させる（カバレッジを下げない）。
       # コメント投稿後に判定する（fail 時もコメントは投稿済み）。
-      - name: coverage gate (fail under 80% lines)
-        # 除外: バイナリ entrypoint（配線のみ）・vendor（所有フォーク）・実 sidecar 駆動の I/O 境界
-        # （sandbox の wasm backend / gRPC client は実 V8/Pyodide を要し gated IT `SANDBOX_IT=1` で検証・CI 分母外）
-        run: cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex 'src/(bin/|main\.rs)|/examples/|vendor/(secure-exec|openjtd)/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
+      - name: "coverage gate (main: 全体の 80%)"
+        if: env.IS_PR != 'true'
+        run: cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex "$COV_IGNORE"
+      # PR: 変更した行の 80%（未達の行はコメントと Job Summary に出ている）。
+      - name: "coverage gate (PR: 変更した行の 80%)"
+        if: env.IS_PR == 'true'
+        run: |
+          status=$(cat diff-coverage.status)
+          [ "$status" = "0" ] || { echo "変更した行のカバレッジが 80% 未満です（diff-coverage.md 参照）"; exit 1; }
       - name: upload coverage (lcov)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -446,6 +546,9 @@ jobs:
   # 別ジョブにしてテストバイナリを 1 回だけビルドし、同じバイナリを変種ごとに実行する。
   data-strategies:
     name: Data (policy_threat_it × read strategies)
+    # 行述語の脅威モデル（認可）なので、Rust の変更があれば選択に関係なく回す。
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -508,6 +611,8 @@ jobs:
   # 最長経路に 8〜12 分乗っていた（#920）。lint と切り離すので、lint が落ちても E2E は走る。
   gen-api:
     name: gen:api (Rust 定義から型生成)
+    needs: [changes]
+    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.compose == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -550,7 +655,8 @@ jobs:
     name: Web (lint / build)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [gen-api]
+    needs: [changes, gen-api]
+    if: needs.changes.outputs.web == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Takumi Guard: pnpm install 前に npm プロキシを設定（匿名＝ブロックのみ）。
@@ -584,7 +690,8 @@ jobs:
     name: compose smoke (/healthz, /me, skillex)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: [build-server, tabular-runner]
+    needs: [changes, build-server, tabular-runner]
+    if: needs.changes.outputs.compose == 'true'
     env:
       # shiki-server はビルド済みバイナリの runtime-only イメージ（CI override）を使う。
       COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
@@ -664,7 +771,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # gen:api の生成物は gen-api ジョブから受け取る（Rust ツールチェーンも rust-cache も要らない）。
-    needs: [build-server, tabular-runner, gen-api]
+    needs: [changes, build-server, tabular-runner, gen-api]
+    if: needs.changes.outputs.compose == 'true'
     env:
       # shiki-server はビルド済みバイナリの runtime-only イメージ（CI override）を使う。
       COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
