@@ -167,6 +167,7 @@ function ancestorsOf(ctx: EditorContext, nodeId: string): RefCandidate[] {
       label:
         n.label || NODE_CATALOG.find((c) => c.type === n.type)?.label_ja || n.id,
       type: n.type,
+      params: n.params,
     }));
 }
 

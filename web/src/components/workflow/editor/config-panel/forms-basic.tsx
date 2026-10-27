@@ -8,10 +8,12 @@
 import * as React from "react";
 
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
-import type { Node as IrNode, ValidationError, ValueExpr } from "@/generated/workflow-ir";
+import type { LlmEffort, Node as IrNode, ValidationError, ValueExpr } from "@/generated/workflow-ir";
 import type { EditorAction } from "../ir-state";
 import { Field, FieldInput, FieldNativeSelect, NumberInput } from "./common";
+import { EffortField } from "./effort-field";
 import { ModelField } from "./model-field";
+import { OutputSchemaEditor } from "./output-schema-editor";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput, type RefCandidate } from "./value-expr-input";
 
@@ -54,7 +56,7 @@ export function RagSearchForm({ node, dispatch, refCandidates, inMapRegion, fiel
   );
 }
 
-export function LlmInvokeForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
+export function LlmInvokeForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors, serverCheck }: FormProps) {
   const p = paramsOf<NodeParamsByType["llm.invoke"]>(node);
   // 出力の上限は数で入れる。前の結果から決める定義（AI が作ったものなど）はそのまま値の欄で見せる。
   const maxTokensLiteral = p.max_tokens === undefined || typeof p.max_tokens === "number";
@@ -75,6 +77,12 @@ export function LlmInvokeForm({ node, dispatch, refCandidates, inMapRegion, fiel
         value={typeof p.model === "string" ? p.model : undefined}
         onChange={(model) => patchParams(dispatch, node, { model })}
         error={fieldErrors.get("model")}
+      />
+      <EffortField
+        value={p.effort as LlmEffort | undefined}
+        model={typeof p.model === "string" ? p.model : undefined}
+        onChange={(effort) => patchParams(dispatch, node, { effort })}
+        error={fieldErrors.get("effort")}
       />
       <ValueExprInput
         label="前提の指示（省略可）"
@@ -113,6 +121,12 @@ export function LlmInvokeForm({ node, dispatch, refCandidates, inMapRegion, fiel
           error={fieldErrors.get("max_tokens")}
         />
       )}
+      <OutputSchemaEditor
+        schema={p.output_schema}
+        onChange={(output_schema) => patchParams(dispatch, node, { output_schema })}
+        serverErrors={serverCheck.errors}
+        checkedNode={serverCheck.node}
+      />
     </div>
   );
 }

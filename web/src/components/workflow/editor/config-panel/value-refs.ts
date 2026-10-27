@@ -1,6 +1,7 @@
 /// 値の入力欄（value-expr-input.tsx）の参照・差し込みの計算（描画を持たない・BUG-1）。
 ///
-/// - 参照の候補: 入力項目（input_schema の properties）・祖先ブロックの出力・map 領域内の each・
+/// - 参照の候補: 入力項目（input_schema の properties）・祖先ブロックの出力（設定で決まる項目を含む:
+///   「AI に聞く」の出力の形の `data/<項目>`）・map 領域内の each・
 ///   きっかけの内容の項目（イベントのカタログの単一定義・D-47）・入力全体・きっかけの内容全体。
 ///   参照先の既定を「入力全体」にせず、ここから選ばせる。
 /// - 差し込み名の自動命名（path の末尾。同じ名前で別の参照があれば連番）。
@@ -12,9 +13,11 @@
 import { EVENT_CATALOG, NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { FromRef, TemplateExpr, ValueExpr } from "@/generated/workflow-ir";
 import type { InputFieldInfo } from "@/lib/workflow-input-schema";
+import { outputSchemaKeys } from "@/lib/workflow-output-schema";
 
 /// `nodes.<id>.output` の参照候補（祖先ブロック）。`type` があれば出力の形から項目の候補も出す。
-export type RefCandidate = { id: string; label: string; type?: string };
+/// `params` はそのブロックの設定（設定で決まる出力の項目の候補を出すのに使う）。
+export type RefCandidate = { id: string; label: string; type?: string; params?: unknown };
 
 /// 組み立てる参照（`path`・`default` は省略できる）。
 export type RefValue = Pick<FromRef, "$from"> & Partial<Pick<FromRef, "path" | "default">>;
@@ -67,6 +70,25 @@ export function outputKeys(nodeType: string | undefined): string[] {
   return (entry?.output_fields ?? []).map((f) => f.name);
 }
 
+/// 祖先ブロックの出力の項目の候補（path の段と表示）。最上位はカタログの `output_fields`（[`outputKeys`]）で、
+/// 設定で決まる項目をその後ろに足す:
+/// - 「AI に聞く」（llm.invoke）: `data` は出力の形（`output_schema`）を書いたときだけ出し、その項目ごとに
+///   `data/<項目>` を足す（ir.md §7.3）。
+export function outputRefFields(a: RefCandidate): { path: string[]; label: string }[] {
+  const params = (a.params ?? {}) as Record<string, unknown>;
+  const out: { path: string[]; label: string }[] = [];
+  for (const k of outputKeys(a.type)) {
+    if (a.type === "llm.invoke" && k === "data") {
+      if (params.output_schema === undefined || params.output_schema === null) continue;
+      out.push({ path: [k], label: k });
+      for (const key of outputSchemaKeys(params.output_schema)) out.push({ path: [k, key], label: `${k}.${key}` });
+      continue;
+    }
+    out.push({ path: [k], label: k });
+  }
+  return out;
+}
+
 /// きっかけの内容の項目（イベントトリガの source ごとのペイロードの項目・カタログの単一定義・D-47）。
 /// 複数のきっかけが同じ項目を持てば 1 つにまとめる。
 export function triggerFields(sources: string[] | undefined): { name: string; description: string }[] {
@@ -89,7 +111,9 @@ export function refOptions({ inputFields, ancestors, inMapRegion, triggerSources
   }
   for (const a of ancestors) {
     const from = `nodes.${a.id}.output`;
-    for (const k of outputKeys(a.type)) add({ $from: from, path: pathOf([k]) }, `「${a.label}」の ${k}`, "前のブロックの結果");
+    for (const f of outputRefFields(a)) {
+      add({ $from: from, path: pathOf(f.path) }, `「${a.label}」の ${f.label}`, "前のブロックの結果");
+    }
     add({ $from: from }, `「${a.label}」の結果（全体）`, "前のブロックの結果");
   }
   if (inMapRegion) {
@@ -122,7 +146,7 @@ export function pathHints(from: string, ctx: RefContext): string[] {
   const m = /^nodes\.(.+)\.output$/.exec(from);
   if (m) {
     const a = ctx.ancestors.find((x) => x.id === m[1]);
-    return outputKeys(a?.type).map((k) => `/${k}`);
+    return a ? outputRefFields(a).map((f) => pathOf(f.path) ?? "") : [];
   }
   return [];
 }
