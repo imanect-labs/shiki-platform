@@ -57,12 +57,13 @@ function statusIcon(status: string): React.ReactNode {
   }
 }
 
-function errorMessage(error: unknown): string | null {
+/// step の誤りの文言と、添えるコード（`actor_unavailable` など）。コードは文言の後ろに括弧で添えて出す。
+function errorMessage(error: unknown): { text: string; code: string | null } | null {
   if (!error) return null;
-  if (typeof error === "string") return error;
+  if (typeof error === "string") return { text: error, code: null };
   const e = error as { message?: string; code?: string };
-  if (e.message) return e.code ? `${e.message}（${e.code}）` : e.message;
-  return JSON.stringify(error);
+  if (e.message) return { text: e.message, code: e.code || null };
+  return { text: JSON.stringify(error), code: null };
 }
 
 function JsonBlock({ title, value }: { title: string; value: unknown }) {
@@ -166,7 +167,21 @@ function StepRow({
           {failed && message ? (
             <span className="mt-1 flex items-start gap-1 text-[11px] text-destructive">
               <AlertCircle className="mt-0.5 size-3 shrink-0" aria-hidden />
-              <span className="min-w-0 break-all">{message}</span>
+              {/* 文言は語の区切りで折り、収まらない長い語だけを途中で折る。コードは語の途中で折らない
+                  （括弧ごと 1 つの塊にし、行に収まらなければ次の行へ送る。1 行にも収まらなければ省略する・
+                  全文は開いたときの「エラーの詳細」と title に出る・BUG-72）。 */}
+              <span className="min-w-0 [overflow-wrap:anywhere]">
+                {message.text}
+                {message.code ? (
+                  <span
+                    className="inline-block max-w-full truncate align-bottom"
+                    title={message.code}
+                    data-testid="step-error-code"
+                  >
+                    （{message.code}）
+                  </span>
+                ) : null}
+              </span>
             </span>
           ) : null}
         </span>
