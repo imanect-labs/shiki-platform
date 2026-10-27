@@ -3,9 +3,9 @@
 /// 下書きノートを「ドライブに保存」するダイアログ（issue #282）と、下書き画面（ノート・
 /// スライド・CSV）共通のクローム・状態バッジ・タブ・空状態。
 ///
-/// 名前と保存先フォルダ（既定＝ルート／マイドライブ）を選び、POST /notes で実体化する。
-/// 保存先は human 決定「保存先ピッカー（既定=ルート）」に従い、既定はルート直下・任意で
-/// フォルダを選べる（後で移動も可）。保存自体は呼び出し側（onConfirm）が行う。
+/// 名前と保存先フォルダを選び、POST /notes で実体化する。保存先の初期値は呼び出し側が
+/// `defaultFolder` で渡す（AI の指定 → 由来ノートのフォルダ → ルートの順・#942）。任意で
+/// フォルダを選び直せる（後で移動も可）。保存自体は呼び出し側（onConfirm）が行う。
 
 import { FileWarning, Folder, FolderInput, MessageSquare, PencilLine, Save } from "lucide-react";
 import Link from "next/link";
@@ -34,6 +34,15 @@ import { cn } from "@/lib/utils";
 
 export type SaveTarget = { name: string; parentId: string | null };
 
+/// 保存の失敗をユーザー向けの文言にする。保存先フォルダへ書けない（403）ときは、選び直せば
+/// 済むことを伝える（初期値は AI の指定や由来ノートの場所で、閲覧だけのフォルダのこともある）。
+export function saveFailedMessage(e: unknown, parentId: string | null): string {
+  const forbidden = e instanceof Error && /\(403\)/.test(e.message);
+  return forbidden && parentId
+    ? "このフォルダには保存する権限がありません。保存先を選び直してください。"
+    : "保存に失敗しました。";
+}
+
 export function SaveDraftDialog({
   open,
   onOpenChange,
@@ -42,6 +51,7 @@ export function SaveDraftDialog({
   onConfirm,
   entityLabel = "ノート",
   description = "下書きをノートとして保存します。保存後はバージョン管理・共有・共同編集ができます。",
+  defaultFolder,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -52,10 +62,15 @@ export function SaveDraftDialog({
   entityLabel?: string;
   /// ダイアログの説明文（対象種別ごとに差し替え）。
   description?: string;
+  /// 保存先の初期値（`null`=ルート・`undefined`=解決中）。既定値を置かない（置くと解決中が
+  /// ルートに化け、解決前に押した保存がルートへ作られる）。
+  defaultFolder: { id: string; name: string } | null | undefined;
 }) {
   const [name, setName] = React.useState(defaultName);
   const [folder, setFolder] = React.useState<{ id: string; name: string } | null>(null);
   const [pickerOpen, setPickerOpen] = React.useState(false);
+  /// ユーザーが保存先を選び直したか（選び直した後は初期値で上書きしない）。
+  const [folderTouched, setFolderTouched] = React.useState(false);
 
   // ダイアログを**開いた瞬間だけ**既定名へ戻す（open が false→true の遷移時のみ）。開いたまま
   // defaultName（呼び出し元の activeName）が AI 流し込みで変わっても、ユーザーの入力中の名前/保存先を
@@ -64,12 +79,22 @@ export function SaveDraftDialog({
   React.useEffect(() => {
     if (open && !prevOpen.current) {
       setName(defaultName);
-      setFolder(null);
+      setFolderTouched(false);
     }
     prevOpen.current = open;
   }, [open, defaultName]);
+  // 保存先の初期値は解決が遅れて届くことがあるので、選び直していない間は追従する。
+  React.useEffect(() => {
+    if (open && !folderTouched) setFolder(defaultFolder ?? null);
+  }, [open, defaultFolder, folderTouched]);
+  const chooseFolder = (next: { id: string; name: string } | null) => {
+    setFolderTouched(true);
+    setFolder(next);
+  };
 
-  const canSave = name.trim().length > 0 && !saving;
+  // 保存先の初期値を解決している間は保存させない（意図せずルートへ作らない）。
+  const resolving = defaultFolder === undefined && !folderTouched;
+  const canSave = name.trim().length > 0 && !saving && !resolving;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -101,14 +126,14 @@ export function SaveDraftDialog({
             >
               <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden />
               <span className="min-w-0 flex-1 truncate">
-                {folder ? folder.name : "マイドライブ（ルート）"}
+                {resolving ? "保存先を確認中…" : folder ? folder.name : "マイドライブ（ルート）"}
               </span>
               <FolderInput className="size-4 shrink-0 text-muted-foreground" aria-hidden />
             </button>
             {folder ? (
               <button
                 type="button"
-                onClick={() => setFolder(null)}
+                onClick={() => chooseFolder(null)}
                 className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
               >
                 ルートに戻す
@@ -143,7 +168,7 @@ export function SaveDraftDialog({
           open={pickerOpen}
           onOpenChange={setPickerOpen}
           purpose="destination"
-          onSelect={(f) => setFolder({ id: f.id, name: f.name })}
+          onSelect={(f) => chooseFolder({ id: f.id, name: f.name })}
         />
       </DialogContent>
     </Dialog>

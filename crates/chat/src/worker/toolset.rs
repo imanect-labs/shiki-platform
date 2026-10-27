@@ -174,6 +174,15 @@ impl ChatWorker {
                 creator.clone(),
             )));
         }
+        // ドライブのファイル・フォルダを探す／移動する（種別を問わない・#942）。認可は
+        // StorageService が発話ユーザーの権限で行う（移動は承認ゲート対象）。
+        if let Some(storage) = &self.storage {
+            let drive: Arc<dyn crate::drive_tool::DriveOps> = storage.clone();
+            tools.push(Arc::new(crate::drive_tool::DriveFindTool::new(
+                drive.clone(),
+            )));
+            tools.push(Arc::new(crate::drive_tool::DriveMoveTool::new(drive)));
+        }
         if let Some(tabular) = &self.tabular {
             tools.push(Arc::new(crate::csv_tool::CsvQueryTool::new(
                 tabular.clone(),

@@ -71,6 +71,7 @@ e2e = [
     "csv-conversation-drafts.spec.ts",
     "custom-instructions.spec.ts",
     "deep-research.spec.ts",
+    "drive-ai-save-move.spec.ts",
     "mini-apps.spec.ts",
     "note-conversation-drafts.spec.ts",
     "office-chart-insert.spec.ts",
@@ -133,6 +134,7 @@ e2e = [
     "agent-full-stack.spec.ts",
     "ai-live-edit-video.spec.ts",
     "composer-create.spec.ts",
+    "drive-ai-save-move.spec.ts",
     "immersive-editor.spec.ts",
     "note-ai-edit.spec.ts",
     "note-ai-suggest.spec.ts",
@@ -196,6 +198,7 @@ e2e = [
     "data-grid.spec.ts",
     "data-import.spec.ts",
     "data-schema.spec.ts",
+    "data-share.spec.ts",
     "data-ui.spec.ts",
     "select-escape.spec.ts",
 ]

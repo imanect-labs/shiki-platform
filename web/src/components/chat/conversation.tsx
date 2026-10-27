@@ -421,7 +421,7 @@ export function Conversation({
         updateStream((s) => (s ? { ...s, noteDrafts: [...s.noteDrafts, raw] } : s));
         const d = parseNoteDraft(raw);
         if (!d) return;
-        upsertDraft(threadId, d.name, d.markdown, "ai");
+        upsertDraft(threadId, d.name, d.markdown, "ai", d.parentId);
         if (onNoteDraftOpened) onNoteDraftOpened(d.name);
         else router.push(draftHref(threadId, d.name));
       },
@@ -431,7 +431,7 @@ export function Conversation({
         updateStream((s) => (s ? { ...s, slideDrafts: [...s.slideDrafts, raw] } : s));
         const d = parseSlideDraft(raw);
         if (!d) return;
-        slideDraftStore.upsert(threadId, d.name, d.content, "ai");
+        slideDraftStore.upsert(threadId, d.name, d.content, "ai", d.parentId);
         if (onSlideDraftOpened) onSlideDraftOpened(d.name);
         else router.push(slideDraftHref(threadId, d.name));
       },
@@ -440,7 +440,7 @@ export function Conversation({
         updateStream((s) => (s ? { ...s, csvDrafts: [...s.csvDrafts, raw] } : s));
         const d = parseCsvDraft(raw);
         if (!d) return;
-        csvDraftStore.upsert(threadId, d.name, d.csv, "ai");
+        csvDraftStore.upsert(threadId, d.name, d.csv, "ai", d.parentId);
         if (onCsvDraftOpened) onCsvDraftOpened(d.name);
         else router.push(csvDraftHref(threadId, d.name));
       },

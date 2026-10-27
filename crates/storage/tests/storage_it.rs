@@ -1862,6 +1862,31 @@ async fn name_search_filters_by_permission_and_neutralizes_wildcards() {
         .unwrap();
     assert!(page.items.is_empty(), "% は文字として扱われヒットしない");
 
+    // 種別で絞る（#942）: SQL で絞るので、名前順で先に並ぶファイルに埋もれずフォルダが返る。
+    // 「営業」を含み名前順でフォルダより前に並ぶファイルを置き、limit=1 でも取り違えないことを見る
+    // （件数で切ってから種別で捨てる実装なら、このファイルだけ取って空になる）。
+    upload(&cx.service, &cx.http, &alice, None, "a営業メモ.txt", b"s")
+        .await
+        .unwrap();
+    let page = cx
+        .service
+        .search_nodes_by_name_kind(&alice, "営業", Some(NodeKind::Folder), sort, None, 1, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        page.items.iter().map(|n| n.id).collect::<Vec<_>>(),
+        vec![dept.id]
+    );
+    let page = cx
+        .service
+        .search_nodes_by_name_kind(&alice, "報告", Some(NodeKind::Folder), sort, None, 50, None)
+        .await
+        .unwrap();
+    assert!(
+        page.items.is_empty(),
+        "フォルダだけに絞るとファイルは返らない"
+    );
+
     // 権限フィルタ: bob には共有前は何も見えない。共有後はフォルダ配下だけ見える。
     let page = cx
         .service

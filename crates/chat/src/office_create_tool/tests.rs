@@ -26,8 +26,8 @@ fn ctx() -> AuthContext {
     )
 }
 
-/// 記録する 1 回分の呼び出し（名前・種別・貼り込み ops）。
-type RecordedCall = (String, OfficeKind, Vec<LiveOp>);
+/// 記録する 1 回分の呼び出し（名前・種別・貼り込み ops・保存先）。
+type RecordedCall = (String, OfficeKind, Vec<LiveOp>, Option<Uuid>);
 /// フェイクが返す結果（`Err(())` は作成自体の失敗）。
 type FakeResult = Option<Result<(CreatedOffice, Option<LiveSaveResult>), ()>>;
 
@@ -80,6 +80,7 @@ impl OfficeCreate for FakeCreator {
     async fn create(
         &self,
         _ctx: &AuthContext,
+        parent_id: Option<Uuid>,
         name: &str,
         kind: OfficeKind,
         ops: &[LiveOp],
@@ -88,7 +89,7 @@ impl OfficeCreate for FakeCreator {
         self.calls
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((name.to_string(), kind, ops.to_vec()));
+            .push((name.to_string(), kind, ops.to_vec(), parent_id));
         let result = self
             .result
             .lock()
@@ -155,9 +156,10 @@ async fn save_document_creates_docx_and_pastes_html() {
         .unwrap();
     assert!(!out.is_error, "{}", out.content);
 
-    let (name, kind, ops) = fake.last_call();
+    let (name, kind, ops, parent) = fake.last_call();
     assert_eq!(name, "提案書.docx");
     assert_eq!(kind, OfficeKind::Document);
+    assert_eq!(parent, None, "保存先の省略はドライブのルート");
     let LiveOp::AppendHtml { html } = &ops[0] else {
         panic!("append_html で貼り込む: {ops:?}");
     };
@@ -199,18 +201,24 @@ async fn save_sheet_creates_xlsx_and_sets_cells() {
         "売上.xlsx",
         LiveSaveResult::Saved { version: 2 },
     );
+    let folder = Uuid::new_v4();
     let out = sheet_tool(fake.clone())
         .call(
             &ctx(),
-            serde_json::json!({ "name": "売上.xlsx", "rows": [["部門", "金額"], ["営業", 120]] }),
+            serde_json::json!({
+                "name": "売上.xlsx",
+                "rows": [["部門", "金額"], ["営業", 120]],
+                "parent_id": folder,
+            }),
             None,
         )
         .await
         .unwrap();
     assert!(!out.is_error, "{}", out.content);
-    let (name, kind, ops) = fake.last_call();
+    let (name, kind, ops, parent) = fake.last_call();
     assert_eq!(name, "売上.xlsx", "拡張子を二重付与しない");
     assert_eq!(kind, OfficeKind::Spreadsheet);
+    assert_eq!(parent, Some(folder), "指定した保存先フォルダへ作る（#942）");
     let LiveOp::SetCells { anchor, rows } = &ops[0] else {
         panic!("set_cells で貼り込む: {ops:?}");
     };
@@ -249,7 +257,7 @@ async fn raw_html_never_reaches_the_paste_op() {
         )
         .await
         .unwrap();
-    let (_, _, ops) = fake.last_call();
+    let (_, _, ops, _) = fake.last_call();
     let LiveOp::AppendHtml { html } = &ops[0] else {
         panic!("append_html で貼り込む: {ops:?}");
     };

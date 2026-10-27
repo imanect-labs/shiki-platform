@@ -20,6 +20,7 @@ import {
   DraftNotFound,
   DraftTabs,
   SaveDraftDialog,
+  saveFailedMessage,
   draftChrome,
   type SaveTarget,
 } from "@/components/notes/save-draft-dialog";
@@ -38,6 +39,7 @@ import {
   useDrafts,
 } from "@/lib/notes/draft-store";
 import { serializeFragment } from "@/lib/notes/markdown-serialize";
+import { useDefaultSaveFolder } from "@/lib/drafts/save-folder";
 import { useStorageScopeReady } from "@/lib/user-storage";
 
 /// useSearchParams を使うため Suspense 境界でラップする（静的生成の CSR bailout 要件・Next.js）。
@@ -64,6 +66,9 @@ function DraftNotePageInner() {
   const nonceRef = React.useRef(0);
   const [chatOpen, setChatOpen] = React.useState(true);
   const [saveOpen, setSaveOpen] = React.useState(false);
+  // 保存先の初期値（AI の指定 → 由来ノートのフォルダ → ルート・#942）。保存ダイアログを開いたときだけ引く。
+  const aiParentId = drafts.find((d) => d.name === activeName)?.parentId;
+  const defaultFolder = useDefaultSaveFolder(threadId, aiParentId, saveOpen);
   const [saving, setSaving] = React.useState(false);
   const [recovered, setRecovered] = React.useState(false);
   const editorRef = React.useRef<Editor | null>(null);
@@ -94,12 +99,15 @@ function DraftNotePageInner() {
     getThreadMessages(threadId)
       .then(({ messages }) => {
         if (cancelled) return;
+        // ローカルに無い名前だけ、履歴の下書きを**順に流し直す**（同名の後の呼び直しで本文・保存先が
+        // 更新されていれば最後の状態になる。最初の 1 件だけ拾うと古い内容・保存先で開いてしまう）。
+        const local = new Set(listDrafts(threadId).map((d) => d.name));
         for (const m of messages) {
           for (const b of m.content) {
             if (b.type === "note_draft") {
               const d = parseNoteDraft(b.draft);
-              if (d && !getDraft(threadId, d.name)) {
-                upsertDraft(threadId, d.name, d.markdown, "ai");
+              if (d && !local.has(d.name)) {
+                upsertDraft(threadId, d.name, d.markdown, "ai", d.parentId);
               }
             }
           }
@@ -162,8 +170,8 @@ function DraftNotePageInner() {
           // 実体化したノートを、この会話をアクティブにして開く（通常 collab へ昇格）。
           router.replace(threadId ? `/notes/${node.id}?thread=${threadId}` : `/notes/${node.id}`);
         })
-        .catch(() => {
-          toast({ description: "保存に失敗しました。" });
+        .catch((e: unknown) => {
+          toast({ description: saveFailedMessage(e, target.parentId) });
           setSaving(false);
         });
     },
@@ -233,6 +241,7 @@ function DraftNotePageInner() {
         defaultName={activeName}
         saving={saving}
         onConfirm={doSave}
+        defaultFolder={defaultFolder}
       />
     </div>
   );
