@@ -14,6 +14,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use uuid::Uuid;
+use workflow_engine::vocab::EventSource;
 use workflow_engine::{
     Coalesce, EventTriggerRef, EventWaitGate, EventWaitSubscriber, LaunchOutcome, RunLauncher,
     RunStore, RunStoreError, SchedulerStore, SkipReason,
@@ -143,15 +144,42 @@ struct FileGatedLauncher<'d, 'a> {
     deps: &'d RelayDeps<'a>,
 }
 
+/// 待たせた発火を起動する前の確かめ方（[`FileGatedLauncher::admits`]）。
+#[derive(Debug, PartialEq, Eq)]
+enum LaunchGate {
+    /// ファイル保存トリガでない（データ変更）。そのまま起動する。
+    Launch,
+    /// トリガか登録が消えた（新しい版の有効化でトリガが外れた・登録が消えたなど）。閲覧を確かめないまま起動せず、
+    /// 有効化されていないものとして見送る（fail-closed）。
+    Gone,
+    /// ファイル保存トリガ。登録の org で、workflow プリンシパルの閲覧を確かめる。
+    CheckFile { org: String },
+}
+
+impl LaunchGate {
+    /// トリガの行（`source`・登録の `org`）から確かめ方を決める。source は語彙の単一定義と比べる。
+    fn of(trigger: Option<(Option<String>, String)>) -> Self {
+        match trigger {
+            None => LaunchGate::Gone,
+            Some((source, org))
+                if source.as_deref() == Some(EventSource::StorageWrite.as_str()) =>
+            {
+                LaunchGate::CheckFile { org }
+            }
+            Some(_) => LaunchGate::Launch,
+        }
+    }
+}
+
 impl FileGatedLauncher<'_, '_> {
-    /// 起動してよいか（ファイル保存トリガでなければ真）。
+    /// 起動してよいか（`None` = 起動する・`Some` = その理由で見送る）。
     async fn admits(
         &self,
         tenant_id: &str,
         workflow_id: Uuid,
         trigger_id: &str,
         payload: &Value,
-    ) -> Result<bool, anyhow::Error> {
+    ) -> Result<Option<SkipReason>, anyhow::Error> {
         let trigger: Option<(Option<String>, String)> = sqlx::query_as(
             "SELECT t.source, r.org FROM workflow_trigger t \
              JOIN workflow_registration r \
@@ -163,20 +191,24 @@ impl FileGatedLauncher<'_, '_> {
         .bind(workflow_id)
         .fetch_optional(self.deps.db)
         .await?;
-        // 消えたトリガは再試行が先に見送る（ここに来ない）。来ても起動口の確認に任せる。
-        let Some((source, org)) = trigger else {
-            return Ok(true);
+        let unreadable = || {
+            Some(SkipReason::DelegationInvalid(
+                "ワークフローが保存されたファイルを読めなくなりました".into(),
+            ))
         };
-        if source.as_deref() != Some("storage.write") {
-            return Ok(true);
-        }
+        let org = match LaunchGate::of(trigger) {
+            LaunchGate::Launch => return Ok(None),
+            // 再試行は消えたトリガを先に見送るが、その確かめと起動の間に消えたものもここで止める。
+            LaunchGate::Gone => return Ok(Some(SkipReason::NotEnabled)),
+            LaunchGate::CheckFile { org } => org,
+        };
         // ペイロードにファイルが無ければ確かめようがないので起動しない（fail-closed）。
         let Some(file_id) = payload
             .get("file_id")
             .and_then(Value::as_str)
             .and_then(|s| Uuid::parse_str(s).ok())
         else {
-            return Ok(false);
+            return Ok(unreadable());
         };
         let gate = SavedFileGate {
             storage: self.deps.storage,
@@ -188,7 +220,11 @@ impl FileGatedLauncher<'_, '_> {
             trigger_id: trigger_id.to_string(),
             workflow_id,
         };
-        gate.admits_trigger(&t, &org).await
+        Ok(if gate.admits_trigger(&t, &org).await? {
+            None
+        } else {
+            unreadable()
+        })
     }
 }
 
@@ -207,7 +243,7 @@ impl RunLauncher for FileGatedLauncher<'_, '_> {
             .admits(tenant_id, workflow_id, trigger_id, payload)
             .await
         {
-            Ok(true) => {
+            Ok(None) => {
                 self.deps
                     .launcher
                     .launch(
@@ -220,9 +256,7 @@ impl RunLauncher for FileGatedLauncher<'_, '_> {
                     )
                     .await
             }
-            Ok(false) => LaunchOutcome::Skipped(SkipReason::DelegationInvalid(
-                "ワークフローが保存されたファイルを読めなくなりました".into(),
-            )),
+            Ok(Some(reason)) => LaunchOutcome::Skipped(reason),
             Err(e) => LaunchOutcome::Failed(format!("{e}")),
         }
     }
@@ -305,7 +339,7 @@ async fn relay_events_batch(deps: &RelayDeps<'_>) -> Result<usize, anyhow::Error
         deps.runs
             .wake_event_waits(
                 &ev.tenant_id,
-                "storage.write",
+                EventSource::StorageWrite.as_str(),
                 write.folder,
                 &write.payload,
                 &gate,
@@ -534,6 +568,25 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    /// 待たせた発火の起動の前の確かめ方: トリガか登録が消えていたら閲覧を確かめないまま起動せず見送り、ファイル保存
+    /// トリガ（語彙の `storage.write`）だけ閲覧を確かめ、ほかのトリガはそのまま起動する（BUG-50）。
+    #[test]
+    fn launch_gate_fails_closed_when_the_trigger_is_gone() {
+        assert_eq!(LaunchGate::of(None), LaunchGate::Gone);
+        assert_eq!(
+            LaunchGate::of(Some((Some("storage.write".into()), "acme".into()))),
+            LaunchGate::CheckFile { org: "acme".into() }
+        );
+        assert_eq!(
+            LaunchGate::of(Some((Some("data.record.created".into()), "acme".into()))),
+            LaunchGate::Launch
+        );
+        assert_eq!(
+            LaunchGate::of(Some((None, "acme".into()))),
+            LaunchGate::Launch
+        );
     }
 
     /// 配送のバッチが失敗したときも、再試行・突合の誤りを捨てずに警告に残す（返すのはバッチの誤り）。
