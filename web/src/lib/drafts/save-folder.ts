@@ -38,12 +38,17 @@ async function resolveSaveFolder(
 }
 
 /// 保存先の初期値を引く。`undefined` は解決中、`null` はルート。
+///
+/// 引くのは `enabled`（保存ダイアログが開いている）間だけ。下書き画面を開いただけで
+/// 会話・ノート・パンくずを取りに行かない（保存しないまま閉じることも多い）。
 export function useDefaultSaveFolder(
   threadId: string,
   aiParentId: string | undefined,
+  enabled: boolean,
 ): SaveFolder | null | undefined {
   const [folder, setFolder] = React.useState<SaveFolder | null | undefined>(undefined);
   React.useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     setFolder(undefined);
     void resolveSaveFolder(threadId, aiParentId).then((f) => {
@@ -52,6 +57,6 @@ export function useDefaultSaveFolder(
     return () => {
       cancelled = true;
     };
-  }, [threadId, aiParentId]);
+  }, [threadId, aiParentId, enabled]);
   return folder;
 }

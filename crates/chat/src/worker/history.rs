@@ -269,13 +269,7 @@ pub(super) fn message_text_with(
             // 「さっき編集した Excel をもう一度直して」を node_id 解決できるようにする（#381）。
             // 作成系（save_document / save_sheet）と編集系（office.* / document.edit / csv.patch）
             // が共有する参照ブロック。version も載せて「どの版まで進んだか」を観測させる。
-            ContentBlock::DocumentRef { document } => {
-                let id = document.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let name = document.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let version = document.get("version").and_then(serde_json::Value::as_i64);
-                let version = version.map(|v| format!(", v{v}")).unwrap_or_default();
-                parts.push(format!("[編集済み文書: {name}（node_id: {id}{version}）]"));
-            }
+            ContentBlock::DocumentRef { document } => parts.push(document_ref_text(document)),
             // レガシー下書き Word（#381 で廃止）。過去履歴では名前だけ観測させる
             // （下書きストアも画面も無いため「直すには同名で save_document」は誤誘導になる）。
             ContentBlock::DocumentDraft { draft } => {
@@ -289,6 +283,28 @@ pub(super) fn message_text_with(
         }
     }
     parts.join("\n")
+}
+
+/// 文書参照（document_ref）の履歴上の表記。
+///
+/// 移動・名前変更（drive.move・#942）は中身を変えていないので「編集済み」と言わず、移動先を添える。
+fn document_ref_text(document: &serde_json::Value) -> String {
+    let id = document.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let name = document.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    if document.get("moved").and_then(serde_json::Value::as_bool) == Some(true) {
+        let to = document
+            .get("moved_to")
+            .and_then(|v| v.as_str())
+            .map(|d| format!(", 移動先: {d}"))
+            .unwrap_or_default();
+        return format!("[移動した文書: {name}（node_id: {id}{to}）]");
+    }
+    let version = document
+        .get("version")
+        .and_then(serde_json::Value::as_i64)
+        .map(|v| format!(", v{v}"))
+        .unwrap_or_default();
+    format!("[編集済み文書: {name}（node_id: {id}{version}）]")
 }
 
 /// この会話で使われている（使う前提の）ツール名を `out` へ足す（重複なし）。
@@ -444,6 +460,29 @@ mod tests {
         origin_document_tools, tools_in_use, ui_runs_text, SkillViews,
     };
     use crate::model::ContentBlock;
+
+    /// 移動した文書は「編集済み」と言わず、移動先を添える（#942）。
+    #[test]
+    fn moved_document_ref_is_not_called_edited() {
+        let id = uuid::Uuid::nil();
+        let moved = ContentBlock::DocumentRef {
+            document: crate::document_ref::moved_payload(id, "報告書.docx", Some("管理部 / 経理")),
+        };
+        let edited = ContentBlock::DocumentRef {
+            document: crate::document_ref::payload(id, "報告書.docx", Some(3)),
+        };
+        let text = message_text(&[moved, edited]);
+        assert!(
+            text.contains(&format!(
+                "[移動した文書: 報告書.docx（node_id: {id}, 移動先: 管理部 / 経理）]"
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("[編集済み文書: 報告書.docx（node_id: {id}, v3）]")),
+            "{text}"
+        );
+    }
 
     /// 図のボタンで起動したワークフローと結果は、データとして区切って履歴に添える（#604）。
     #[test]

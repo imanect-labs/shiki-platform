@@ -54,9 +54,17 @@ test("drive.find でフォルダを探し、drive.move は承認してから移�
   // 探す（読み取りのみ・承認なし）。思考プロセスの行に検索した語が出る。
   await sendFromHome(page, `calltool:drive.find {"query":"${folderName}","kind":"folder"}`);
   await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
-  await expect(page.getByText(`ドライブで「${folderName}」を検索`).first()).toBeVisible({
+  await expect(page.getByText(`ドライブで「${folderName}」を検索しました`).first()).toBeVisible({
     timeout: 30_000,
   });
+  // 行の文言だけでは「見つからなかった」も成功に見えるので、モデルへ返した結果に id があることを確かめる。
+  const threadId = page.url().match(/\/c\/([0-9a-f-]+)/i)?.[1] ?? "";
+  await expect
+    .poll(async () => {
+      const res = await page.request.get(`/api/threads/${threadId}/messages`);
+      return JSON.stringify(await res.json());
+    })
+    .toContain(`(id: ${folderId})`);
 
   // 移す（承認ゲート対象）。承認するまでは移動しない。
   const input = page.getByLabel("メッセージを入力");

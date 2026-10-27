@@ -255,8 +255,9 @@ struct SaveSlideInput {
     #[serde(default)]
     theme_id: Option<String>,
     /// 保存先フォルダ（保存ダイアログの初期値にするだけ・確定は人・#942）。
-    #[serde(default)]
-    parent_id: Option<Uuid>,
+    /// `"root"` はルートへ戻す指定、省略は前回の指定を保つ。
+    #[serde(default, deserialize_with = "crate::drive_tool::de_draft_parent")]
+    parent_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -307,7 +308,7 @@ impl Tool for SaveSlideTool {
                     }
                 },
                 "theme_id": { "type": "string", "enum": theme_ids, "description": "テーマ（省略可・カタログの閉集合）" },
-                "parent_id": { "type": "string", "format": "uuid", "description": "保存先フォルダの id（保存画面の初期値・省略でルート）" }
+                "parent_id": { "type": "string", "description": "保存先フォルダの id（保存画面の初期値になる）。ルートに戻すときは \"root\"。省略すると前回の指定のまま" }
             },
             "required": ["name", "slides"]
         })

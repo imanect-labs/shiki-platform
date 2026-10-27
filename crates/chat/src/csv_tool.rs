@@ -298,8 +298,9 @@ struct SaveCsvInput {
     /// CSV 本文（ヘッダ行＋データ行）。
     csv: String,
     /// 保存先フォルダ（保存ダイアログの初期値にするだけ・確定は人・#942）。
-    #[serde(default)]
-    parent_id: Option<Uuid>,
+    /// `"root"` はルートへ戻す指定、省略は前回の指定を保つ。
+    #[serde(default, deserialize_with = "crate::drive_tool::de_draft_parent")]
+    parent_id: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -321,7 +322,7 @@ impl Tool for SaveCsvTool {
             "properties": {
                 "name": { "type": "string", "description": "CSV 名（.csv は自動付与）。同じ name で呼び直すと同じ下書きを更新する" },
                 "csv": { "type": "string", "description": "CSV 本文（1 行目がヘッダ・RFC4180 のクォート）" },
-                "parent_id": { "type": "string", "format": "uuid", "description": "保存先フォルダの id（保存画面の初期値・省略でルート）" }
+                "parent_id": { "type": "string", "description": "保存先フォルダの id（保存画面の初期値になる）。ルートに戻すときは \"root\"。省略すると前回の指定のまま" }
             },
             "required": ["name", "csv"]
         })

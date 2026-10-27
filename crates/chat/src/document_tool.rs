@@ -127,8 +127,9 @@ struct SaveNoteInput {
     /// 本文 md。
     markdown: String,
     /// 保存先フォルダ（保存ダイアログの初期値にするだけ・確定は人・#942）。
-    #[serde(default)]
-    parent_id: Option<Uuid>,
+    /// `"root"` はルートへ戻す指定、省略は前回の指定を保つ。
+    #[serde(default, deserialize_with = "crate::drive_tool::de_draft_parent")]
+    parent_id: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -149,7 +150,7 @@ impl Tool for SaveNoteTool {
             "properties": {
                 "name": { "type": "string", "description": "ノート名（.md は自動付与）。同じ name で呼び直すと同じ下書きを更新する" },
                 "markdown": { "type": "string", "description": "ノート本文の Markdown" },
-                "parent_id": { "type": "string", "format": "uuid", "description": "保存先フォルダの id（保存画面の初期値・省略でルート）" }
+                "parent_id": { "type": "string", "description": "保存先フォルダの id（保存画面の初期値になる）。ルートに戻すときは \"root\"。省略すると前回の指定のまま" }
             },
             "required": ["name", "markdown"]
         })
@@ -184,7 +185,7 @@ impl Tool for SaveNoteTool {
             "markdown": markdown,
         });
         if let Some(parent) = input.parent_id {
-            draft["parent_id"] = serde_json::Value::String(parent.to_string());
+            draft["parent_id"] = serde_json::Value::String(parent);
         }
         outcome.note_drafts.push(draft);
         Ok(outcome)

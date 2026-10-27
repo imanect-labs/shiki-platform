@@ -34,6 +34,15 @@ import { cn } from "@/lib/utils";
 
 export type SaveTarget = { name: string; parentId: string | null };
 
+/// 保存の失敗をユーザー向けの文言にする。保存先フォルダへ書けない（403）ときは、選び直せば
+/// 済むことを伝える（初期値は AI の指定や由来ノートの場所で、閲覧だけのフォルダのこともある）。
+export function saveFailedMessage(e: unknown, parentId: string | null): string {
+  const forbidden = e instanceof Error && /\(403\)/.test(e.message);
+  return forbidden && parentId
+    ? "このフォルダには保存する権限がありません。保存先を選び直してください。"
+    : "保存に失敗しました。";
+}
+
 export function SaveDraftDialog({
   open,
   onOpenChange,

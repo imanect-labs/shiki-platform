@@ -121,7 +121,7 @@ pub(crate) async fn execute_tool(
 }
 
 /// 下書きペイロードへ AI 指定の保存先を足す（無ければそのまま・#942）。
-fn with_parent(mut draft: serde_json::Value, parent_id: Option<uuid::Uuid>) -> serde_json::Value {
+fn with_parent(mut draft: serde_json::Value, parent_id: Option<&str>) -> serde_json::Value {
     if let (Some(id), Some(obj)) = (parent_id, draft.as_object_mut()) {
         obj.insert(
             "parent_id".into(),
@@ -173,7 +173,7 @@ pub(crate) async fn emit_tool_events(
         sink.emit(AgentEvent::SlideDraft {
             draft: with_parent(
                 serde_json::json!({ "name": draft.name, "content": draft.content }),
-                draft.parent_id,
+                draft.parent_id.as_deref(),
             ),
         })
         .await?;
@@ -182,7 +182,7 @@ pub(crate) async fn emit_tool_events(
         sink.emit(AgentEvent::CsvDraft {
             draft: with_parent(
                 serde_json::json!({ "name": draft.name, "csv": draft.csv }),
-                draft.parent_id,
+                draft.parent_id.as_deref(),
             ),
         })
         .await?;
@@ -231,9 +231,8 @@ mod tests {
     fn with_parent_adds_only_when_present() {
         let base = serde_json::json!({ "name": "売上", "csv": "a\n1\n" });
         assert_eq!(with_parent(base.clone(), None), base);
-        let id = uuid::Uuid::new_v4();
-        let out = with_parent(base, Some(id));
-        assert_eq!(out["parent_id"], id.to_string());
+        let out = with_parent(base, Some("root"));
+        assert_eq!(out["parent_id"], "root");
         assert_eq!(out["name"], "売上");
     }
 }

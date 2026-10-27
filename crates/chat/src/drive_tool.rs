@@ -18,8 +18,39 @@ use uuid::Uuid;
 
 /// 1 回の検索で返す件数の上限（パス解決を件数分行うため小さく保つ）。
 const MAX_FIND_RESULTS: usize = 20;
-/// 種別で絞る前に取る件数（絞り込みで空にならないよう多めに取る・`search_nodes_by_name` の上限 100）。
-const FIND_FETCH: usize = 50;
+
+/// 作成系ツールの保存先 `parent_id` を読む（#942）。省略・空文字・`"root"` はルート（`None`）。
+///
+/// 省略可能な 1 引数の書き方の揺れ（空で埋める・drive.move と同じ `"root"`）で呼び出し全体を
+/// 失敗させない。それ以外で UUID でなければ入力エラー（モデルが drive.find で引き直せる）。
+pub(crate) fn de_parent_id<'de, D>(d: D) -> Result<Option<Uuid>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<String> = Option::deserialize(d)?;
+    match raw.as_deref().map(str::trim) {
+        None | Some("" | "root") => Ok(None),
+        Some(s) => Uuid::parse_str(s)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
+}
+
+/// 下書き系ツールの保存先 `parent_id` を読む（#942）。保存ダイアログの初期値になるだけなので、
+/// 「指定なし（前回の指定を保つ）」と「ルートに戻す（`"root"`）」を区別して下書きへ載せる。
+pub(crate) fn de_draft_parent<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<String> = Option::deserialize(d)?;
+    match raw.as_deref().map(str::trim) {
+        None | Some("") => Ok(None),
+        Some("root") => Ok(Some("root".into())),
+        Some(s) => Uuid::parse_str(s)
+            .map(|id| Some(id.to_string()))
+            .map_err(serde::de::Error::custom),
+    }
+}
 
 /// ツールが使うドライブ操作（テストで差し替える境界・本番は [`StorageService`]）。
 #[async_trait::async_trait]
@@ -29,6 +60,7 @@ pub trait DriveOps: Send + Sync {
         &self,
         ctx: &AuthContext,
         query: &str,
+        kind: Option<NodeKind>,
         limit: usize,
         trace_id: Option<&str>,
     ) -> Result<Vec<Node>, StorageError>;
@@ -58,11 +90,20 @@ impl DriveOps for StorageService {
         &self,
         ctx: &AuthContext,
         query: &str,
+        kind: Option<NodeKind>,
         limit: usize,
         trace_id: Option<&str>,
     ) -> Result<Vec<Node>, StorageError> {
         let page = self
-            .search_nodes_by_name(ctx, query, ChildSort::default(), None, limit, trace_id)
+            .search_nodes_by_name_kind(
+                ctx,
+                query,
+                kind,
+                ChildSort::default(),
+                None,
+                limit,
+                trace_id,
+            )
             .await?;
         Ok(page.items)
     }
@@ -182,7 +223,8 @@ impl Tool for DriveFindTool {
             })?),
         };
         let limit = input.limit.unwrap_or(10).clamp(1, MAX_FIND_RESULTS);
-        let nodes = match self.drive.find(ctx, query, FIND_FETCH, trace_id).await {
+        // 種別の絞り込みと件数の上限は検索側（SQL）で効かせる（取ってから捨てない）。
+        let hits = match self.drive.find(ctx, query, kind, limit, trace_id).await {
             Ok(nodes) => nodes,
             Err(StorageError::Forbidden | StorageError::NotFound) => {
                 return Ok(ToolOutcome::error("ドライブを検索する権限がありません。"));
@@ -192,11 +234,6 @@ impl Tool for DriveFindTool {
                 return Ok(ToolOutcome::error("ドライブの検索に失敗しました。"));
             }
         };
-        let hits: Vec<Node> = nodes
-            .into_iter()
-            .filter(|n| kind.is_none_or(|k| n.kind == k))
-            .take(limit)
-            .collect();
         if hits.is_empty() {
             return Ok(ToolOutcome::ok(format!(
                 "「{query}」に一致する{}は見つかりませんでした。",
@@ -334,19 +371,27 @@ impl Tool for DriveMoveTool {
                 "destination_folder_id か new_name のどちらかを指定してください".into(),
             ));
         }
-        // 種別と今の名前は自身のパンくず（viewer 必須）から得る。
-        let current = match self.drive.path(ctx, input.node_id, trace_id).await {
+        // 種別と今の名前は自身のパンくず（viewer 必須）から、移動先の表示名は移動先のパンくずから
+        // 得る（互いに独立なので並列に引く・実際の権限判定は update が editor で行う）。
+        let dest_folder = destination.flatten();
+        let (current, dest_path) =
+            futures::join!(self.drive.path(ctx, input.node_id, trace_id), async {
+                match dest_folder {
+                    Some(folder) => Some(self.drive.path(ctx, folder, trace_id).await),
+                    None => None,
+                }
+            });
+        let current = match current {
             Ok(path) => match path.last() {
                 Some(c) if c.id == input.node_id => c.clone(),
                 _ => return Ok(move_error(&StorageError::NotFound)),
             },
             Err(e) => return Ok(move_error(&e)),
         };
-        // 移動先の表示名（ルート以外は読めること・実際の権限判定は update が editor で行う）。
-        let dest_label = match destination {
-            None => None,
-            Some(None) => Some("マイドライブ（ルート）".to_string()),
-            Some(Some(folder)) => match self.drive.path(ctx, folder, trace_id).await {
+        let dest_label = match (destination, dest_path) {
+            (None, _) => None,
+            (Some(None), _) | (Some(Some(_)), None) => Some("マイドライブ（ルート）".to_string()),
+            (Some(Some(_)), Some(path)) => match path {
                 Ok(path) if path.last().is_some_and(|c| c.kind == NodeKind::Folder) => {
                     Some(path_text(&path))
                 }

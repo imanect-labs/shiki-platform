@@ -212,8 +212,8 @@ struct SaveDocumentInput {
     /// 本文 Markdown（HTML に変換して Collabora へ貼り込む）。
     #[serde(default)]
     markdown: String,
-    /// 保存先フォルダ（省略でドライブのルート・#942）。
-    #[serde(default)]
+    /// 保存先フォルダ（省略・空・`"root"` でドライブのルート・#942）。
+    #[serde(default, deserialize_with = "crate::drive_tool::de_parent_id")]
     parent_id: Option<Uuid>,
 }
 
@@ -238,7 +238,7 @@ impl Tool for SaveDocumentTool {
             "properties": {
                 "name": { "type": "string", "description": "文書名（.docx は自動付与）" },
                 "markdown": { "type": "string", "description": "本文の Markdown（省略すると空の文書を作る）" },
-                "parent_id": { "type": "string", "format": "uuid", "description": "保存先フォルダの id（省略でドライブのルート）" }
+                "parent_id": { "type": "string", "description": "保存先フォルダの id（省略または \"root\" でドライブのルート）" }
             },
             "required": ["name"]
         })
@@ -312,8 +312,8 @@ struct SaveSheetInput {
     /// A1 起点に貼り込む値の矩形（1 行目はヘッダにするのが自然）。
     #[serde(default)]
     rows: Vec<Vec<CellValue>>,
-    /// 保存先フォルダ（省略でドライブのルート・#942）。
-    #[serde(default)]
+    /// 保存先フォルダ（省略・空・`"root"` でドライブのルート・#942）。
+    #[serde(default, deserialize_with = "crate::drive_tool::de_parent_id")]
     parent_id: Option<Uuid>,
 }
 
@@ -347,7 +347,7 @@ impl Tool for SaveSheetTool {
                         "items": { "description": "セル値（文字列・数値・真偽値のいずれか）" }
                     }
                 },
-                "parent_id": { "type": "string", "format": "uuid", "description": "保存先フォルダの id（省略でドライブのルート）" }
+                "parent_id": { "type": "string", "description": "保存先フォルダの id（省略または \"root\" でドライブのルート）" }
             },
             "required": ["name"]
         })

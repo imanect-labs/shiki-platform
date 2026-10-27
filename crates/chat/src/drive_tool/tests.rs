@@ -57,6 +57,9 @@ fn crumb(id: Uuid, kind: NodeKind, name: &str) -> Crumb {
 /// 1 回分の update 呼び出し（種別・対象・新しい名前・移動先）。
 type UpdateCall = (NodeKind, Uuid, Option<String>, Option<Option<Uuid>>);
 
+/// 1 回分の find 呼び出し（問い合わせ・種別・件数）。
+type FindQuery = (String, Option<NodeKind>, usize);
+
 #[derive(Default)]
 struct FakeDrive {
     found: Vec<Node>,
@@ -64,7 +67,7 @@ struct FakeDrive {
     paths: Vec<(Uuid, Vec<Crumb>)>,
     update_err: Option<fn() -> StorageError>,
     updates: Mutex<Vec<UpdateCall>>,
-    find_queries: Mutex<Vec<(String, usize)>>,
+    find_queries: Mutex<Vec<FindQuery>>,
 }
 
 impl FakeDrive {
@@ -82,14 +85,22 @@ impl DriveOps for FakeDrive {
         &self,
         _ctx: &AuthContext,
         query: &str,
+        kind: Option<NodeKind>,
         limit: usize,
         _trace_id: Option<&str>,
     ) -> Result<Vec<Node>, StorageError> {
         self.find_queries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((query.to_string(), limit));
-        Ok(self.found.clone())
+            .push((query.to_string(), kind, limit));
+        // 本体（SQL）と同じく、種別と件数は検索側で絞る。
+        Ok(self
+            .found
+            .iter()
+            .filter(|n| kind.is_none_or(|k| n.kind == k))
+            .take(limit)
+            .cloned()
+            .collect())
     }
 
     async fn path(
@@ -156,11 +167,11 @@ async fn find_lists_matches_with_place_and_filters_by_kind() {
     assert!(out.content.contains(&format!(
         "[フォルダ] 経理 (id: {folder}) 場所: 管理部 / 経理"
     )));
-    // 種別で絞った（ファイルは出さない）。問い合わせは前後の空白を落とし、多めに取る。
+    // 種別で絞った（ファイルは出さない）。種別と件数は検索側へ渡し、前後の空白は落とす。
     assert!(!out.content.contains("経理メモ.md"));
     assert_eq!(
         drive.find_queries.lock().unwrap().as_slice(),
-        &[("経理".to_string(), FIND_FETCH)]
+        &[("経理".to_string(), Some(NodeKind::Folder), 10)]
     );
     assert!(tool.is_read_only());
     assert!(!tool.requires_confirmation());
@@ -390,4 +401,40 @@ async fn move_maps_storage_errors() {
         assert!(out.is_error);
         assert!(out.content.contains(expected), "{}", out.content);
     }
+}
+
+/// 作成系の保存先は省略・空・"root" をルート（None）として受け、UUID 以外は入力エラーにする。
+#[test]
+fn parent_id_accepts_root_and_empty() {
+    #[derive(Deserialize)]
+    struct In {
+        #[serde(default, deserialize_with = "super::de_parent_id")]
+        parent_id: Option<Uuid>,
+    }
+    #[derive(Deserialize)]
+    struct Draft {
+        #[serde(default, deserialize_with = "super::de_draft_parent")]
+        parent_id: Option<String>,
+    }
+    let id = Uuid::new_v4();
+    for (raw, want) in [
+        (serde_json::json!({}), None),
+        (serde_json::json!({ "parent_id": "" }), None),
+        (serde_json::json!({ "parent_id": "root" }), None),
+        (serde_json::json!({ "parent_id": id.to_string() }), Some(id)),
+    ] {
+        assert_eq!(serde_json::from_value::<In>(raw).unwrap().parent_id, want);
+    }
+    assert!(serde_json::from_value::<In>(serde_json::json!({ "parent_id": "経理" })).is_err());
+    // 下書きは「指定なし」と「ルートへ戻す」を区別する。
+    let d = |v| serde_json::from_value::<Draft>(v).unwrap().parent_id;
+    assert_eq!(d(serde_json::json!({ "parent_id": " " })), None);
+    assert_eq!(
+        d(serde_json::json!({ "parent_id": "root" })).as_deref(),
+        Some("root")
+    );
+    assert_eq!(
+        d(serde_json::json!({ "parent_id": id.to_string() })),
+        Some(id.to_string())
+    );
 }

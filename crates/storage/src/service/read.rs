@@ -237,6 +237,25 @@ impl StorageService {
         limit: usize,
         trace_id: Option<&str>,
     ) -> Result<ChildPage, StorageError> {
+        self.search_nodes_by_name_kind(ctx, query, None, sort, cursor, limit, trace_id)
+            .await
+    }
+
+    /// [`Self::search_nodes_by_name`] を種別（ファイル/フォルダ）で絞る版（#942）。
+    ///
+    /// 絞り込みは SQL 側で行う（取ってから捨てると、上位をもう一方の種別が占めたときに
+    /// 目的のものが 1 件も返らず、捨てる行の分まで OpenFGA check が走る）。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn search_nodes_by_name_kind(
+        &self,
+        ctx: &AuthContext,
+        query: &str,
+        kind: Option<NodeKind>,
+        sort: ChildSort,
+        cursor: Option<&str>,
+        limit: usize,
+        trace_id: Option<&str>,
+    ) -> Result<ChildPage, StorageError> {
         self.require(
             ctx,
             Relation::Member,
@@ -289,6 +308,7 @@ impl StorageService {
                  WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL AND system = false \
                    AND name ILIKE ALL($3) \
                    AND ($4::text IS NULL OR ({sort_col}, id) {keyset_cmp} ($4::{sort_cast}, $5)) \
+                   AND ($7::text IS NULL OR kind = $7) \
                  ORDER BY {sort_col} {order_dir}, id {order_dir} LIMIT $6"
             );
             let rows: Vec<NodeRow> = sqlx::query_as(&sql)
@@ -298,6 +318,7 @@ impl StorageService {
                 .bind(after_val.as_deref())
                 .bind(after_id)
                 .bind(batch)
+                .bind(kind.map(NodeKind::as_str))
                 .fetch_all(&self.db)
                 .await?;
             if (rows.len() as i64) < batch {

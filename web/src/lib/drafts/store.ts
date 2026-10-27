@@ -47,7 +47,8 @@ export type DraftStore = {
   /// 変更購読（React 外からも使える）。
   subscribe(cb: () => void): () => void;
   /// 下書きを upsert する（同キーは rev+1 で更新）。戻り値は確定エントリ。
-  /// `parentId` は AI の流し込み（source=ai）で指定されたときだけ差し替え、それ以外は前の値を保つ。
+  /// `parentId` は AI の流し込み（source=ai）で指定されたときだけ差し替え（`"root"` は消す）、
+  /// それ以外は前の値を保つ。
   upsert(
     threadId: string,
     name: string,
@@ -177,7 +178,13 @@ export function createDraftStore(kind: DraftKind): DraftStore {
       const store = { ...read() };
       const k = keyOf(threadId, name);
       const prev = store[k];
-      const nextParent = source === "ai" && parentId ? parentId : prev?.parentId;
+      // AI の "root" は「ルートへ戻す」（前の指定を消す）。指定なしは前の指定を保つ。
+      const nextParent =
+        source === "ai" && parentId
+          ? parentId === "root"
+            ? undefined
+            : parentId
+          : prev?.parentId;
       const entry: DraftEntry = {
         threadId,
         name,
@@ -212,7 +219,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /// 下書きイベント/ブロックの payload（`{name, <field>, parent_id?}`）を厳格に検証する（fail-closed）。
 /// note=`markdown` / slide=`content` / csv=`csv` のフィールド名差をここで吸収する。
-/// `parent_id`（AI が指定した保存先・#942）は UUID の形のときだけ拾い、それ以外は無視する。
+/// `parent_id`（AI が指定した保存先・#942）は UUID の形か `"root"`（ルートへ戻す）のときだけ拾い、
+/// それ以外は無視する。
 export function parseDraftPayload(
   raw: unknown,
   field: string,
@@ -223,6 +231,8 @@ export function parseDraftPayload(
   if (typeof o.name !== "string" || o.name.length === 0) return null;
   if (typeof content !== "string") return null;
   const parentId =
-    typeof o.parent_id === "string" && UUID_RE.test(o.parent_id) ? o.parent_id : undefined;
+    typeof o.parent_id === "string" && (o.parent_id === "root" || UUID_RE.test(o.parent_id))
+      ? o.parent_id
+      : undefined;
   return { name: o.name, content, ...(parentId ? { parentId } : {}) };
 }
