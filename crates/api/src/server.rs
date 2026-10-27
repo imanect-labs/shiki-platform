@@ -322,6 +322,10 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/workflows/validate", &["POST"], Session, || {
             post(routes::workflows::validate_workflow)
         }),
+        // スケジュールの次の実行の見通し（発火と同じ読み方・BUG-95）。
+        r("/workflows/schedule-preview", &["POST"], Session, || {
+            post(routes::workflows::preview_schedule)
+        }),
         // AI エージェントの設定の天井（読んでよいサイト・手順の上限・BUG-6）。
         r("/workflows/agent-settings", &["GET"], Session, || {
             get(routes::workflows::get_agent_settings)
