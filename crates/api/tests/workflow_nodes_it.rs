@@ -43,6 +43,7 @@ struct Harness {
     org: String,
     tenant: String,
     alice: AuthContext,
+    artifacts: Arc<artifact::ArtifactStore>,
     workflows: WorkflowStore,
     runs: RunStore,
     launcher: WorkflowRunLauncher,
@@ -186,6 +187,7 @@ async fn setup() -> Option<Harness> {
         org,
         tenant,
         alice,
+        artifacts,
         workflows,
         runs,
         launcher,
@@ -1665,6 +1667,34 @@ async fn decide_cache_reuses_answers_within_the_workflow_only() {
     let (_, err) = h.step_output(run_id).await;
     assert_eq!(err["code"], "model_unavailable", "{err}");
     assert_eq!(err["retryable"], false);
+
+    // ワークフローを消すと（削除の API と同じ ArtifactStore::delete・論理削除）、その答えも同じ TX で消える
+    // （migration 0114 のトリガ）。ほかのワークフローの答えは残る。
+    let cached_rows = |wf: Uuid| {
+        let pool = h.pool.clone();
+        let tenant = h.tenant.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM llm_decision_cache WHERE tenant_id = $1 AND workflow_id = $2",
+            )
+            .bind(&tenant)
+            .bind(wf)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(cached_rows(wf).await, 1);
+    assert_eq!(cached_rows(other).await, 1);
+    h.artifacts.delete(&h.alice, wf, None).await.unwrap();
+    assert_eq!(
+        cached_rows(wf).await,
+        0,
+        "消したワークフローの答えは残さない"
+    );
+    assert_eq!(cached_rows(other).await, 1);
+    h.artifacts.delete(&h.alice, other, None).await.unwrap();
+    assert_eq!(cached_rows(other).await, 0);
     h.cleanup_runs().await;
     // 組織の AI 設定（このテストで保存したもの）も消す。
     for table in ["tenant_llm_model", "tenant_llm_settings"] {

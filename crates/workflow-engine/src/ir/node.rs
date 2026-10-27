@@ -58,7 +58,8 @@ pub struct StepCache {
 pub const DEFAULT_CACHE_TTL_SEC: u32 = 86_400;
 /// `cache.ttl_sec` の下限（1 分）。
 pub const MIN_CACHE_TTL_SEC: u32 = 60;
-/// `cache.ttl_sec` の上限（30 日。判定の答えを run の保持より長く溜め込まない目安）。
+/// `cache.ttl_sec` の上限（30 日）。答えは実行履歴の保持期間（`tenant.workflow_retention_days`）を過ぎると日次の
+/// 実行履歴 GC が消す（run/store/gc.rs）ので、保持期間がこれより短いテナントではそちらが実際の上限になる。
 pub const MAX_CACHE_TTL_SEC: u32 = 30 * 86_400;
 
 const fn default_cache_ttl_sec() -> u32 {
