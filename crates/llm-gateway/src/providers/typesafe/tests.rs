@@ -179,3 +179,22 @@ fn usage_is_read_even_from_a_malformed_body() {
     assert_eq!((u.prompt_tokens, u.completion_tokens), (120, 12));
     assert_eq!(usage_of(&json!({})), Usage::default());
 }
+
+/// 版ガードは区切りまで見る（`jev-1.1` に固定した設定は `jev-1.13.0` の答えを受けない）。
+#[test]
+fn the_version_guard_needs_a_delimiter_after_the_pinned_id() {
+    assert!(same_version("jev-1.13.0", "jev-1.13.0"));
+    for suffixed in ["jev-1.13.0-20261027", "jev-1.13.0+build.7", "jev-1.13.0@us"] {
+        assert!(same_version("jev-1.13.0", suffixed), "{suffixed}");
+    }
+    for other in [
+        "jev-1.13.0.1",
+        "jev-1.130",
+        "jev-1.14.0",
+        "jev-1.1",
+        "x-jev-1.13.0",
+    ] {
+        assert!(!same_version("jev-1.13.0", other), "{other}");
+    }
+    assert!(!same_version("jev-1.1", "jev-1.13.0"));
+}

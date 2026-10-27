@@ -19,7 +19,8 @@
 //! - **較正は主張しない**（`calibrated = false`）: 公開文書は confidence を「分布の要約の 1 つ」とし、自分のデータで
 //!   しきい値を試すよう書いている（較正の主張は見当たらない）。確率そのものは決定器が出す（`method = native`）。
 //! - **版ガード**: 応答の `model` は答えた版（別名を送っても版の ID が返る）。設定の実 ID（版を固定したもの・
-//!   `jev-1.13.0` など）で始まらなければ使わない（費用は会計に載せる）。
+//!   `jev-1.13.0` など）と同じか、その直後が区切り（`-`・`+`・`@`）でなければ使わない（費用は会計に載せる）。
+//!   `jev-1.1` に固定して `jev-1.13.0` が答えたものは別の版として扱う。
 //! - 誤り: 429 は利用者に本文を出さない定型文（`RateLimited`）、401/403 は設定の誤り（`Config`・キー）、そのほかの
 //!   4xx は `BadRequest`、5xx・タイムアウト（最初の応答 10 秒・全体 30 秒）・切断は `Unavailable`。本文はログにだけ
 //!   残す（gateway の呼び出し側が利用者向けの文に写す）。
@@ -352,6 +353,14 @@ fn to_answer(key: &str, kind: &QuestionKind, a: WireAnswer) -> Result<Answer, St
     }
 }
 
+/// 応答の `model` が設定の版か（同じか、版の直後が区切り `-`・`+`・`@` のもの）。接頭辞だけで比べると、
+/// `jev-1.1` に固定した設定が `jev-1.13.0` の答えを受け入れてしまう（しきい値を測った版と違う版で振り分ける）。
+pub(crate) fn same_version(real_id: &str, answered: &str) -> bool {
+    answered
+        .strip_prefix(real_id)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['-', '+', '@']))
+}
+
 #[async_trait::async_trait]
 impl DecisionProvider for TypesafeDecider {
     fn name(&self) -> &'static str {
@@ -396,7 +405,7 @@ impl DecisionProvider for TypesafeDecider {
         let bad = |why: String| DecideFailure::new(invalid_response(why), usage);
         let wire: WireResponse = serde_json::from_value(raw)
             .map_err(|e| bad(format!("typesafe: 応答の形が違う: {e}")))?;
-        if !wire.model.starts_with(&self.real_id) {
+        if !same_version(&self.real_id, &wire.model) {
             return Err(bad(format!(
                 "typesafe: 設定の版 {} ではなく {} が答えた",
                 self.real_id, wire.model
