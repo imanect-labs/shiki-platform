@@ -190,7 +190,7 @@ IR のトップレベルは以下の形を取る。
 - **`retry`** の既定は `max_attempts: 1`（リトライなし）。**リトライは at-least-once を顕在化させる行為**なので、明示オプトインとする（PIT-31 の思想）。attempt を跨いで冪等キーは不変であり、その供給と dedupe の詳細は [engine.md](./engine.md) §7。
   - `backoff.kind`: `exponential`（`base_sec`・`max_sec`・`jitter`）。full jitter の実行は [engine.md](./engine.md) §7。
 - **`timeout_sec`**: ノード種ごとに既定値と上限がある（§7 の表）。上限超過値は保存拒否（§8 V7 の趣旨）。step timeout の実行時の扱い（retryable か等）は [engine.md](./engine.md) §9。
-- **`cache`**（step 属性・§7.8 で予約したもの）: 結果の使い回し。書けるのはノードカタログの `step_cache` がある種だけで、いまは `ai.decide` の決定キャッシュ（§7.11）。ほかの種に書くと保存時に `ir.cache_unsupported`。`ttl_sec` は 60〜2,592,000 秒（1 分〜30 日・省略は 86,400 秒＝1 日・範囲の外は `ir.schema_violation`）。キーは書けない（種が決める）。省略が既定で、使い回さない。
+- **`cache`**（step 属性・§7.8 で予約したもの）: 結果の使い回し。書けるのはノードカタログの `step_cache` がある種だけで、いまは `ai.decide` の決定キャッシュ（§7.11）。ほかの種に書くと保存時に `ir.cache_unsupported`。`ttl_sec` は 60〜2,592,000 秒（1 分〜30 日・省略は 86,400 秒＝1 日・範囲の外は `ir.schema_violation`）。答えは実行履歴の保持期間を超えて残らない（保持期間が短ければそちらが上限・§7.11）。キーは書けない（種が決める）。省略が既定で、使い回さない。
 - **`on_error`**:
   - `fail_run`（既定）: エラーで run 全体を failed にする。
   - `continue`: ノードは出力ポート `error` を持ち、エラーオブジェクトが `error` ポートの下流へ流れる。
@@ -235,6 +235,7 @@ IR のトップレベルは以下の形を取る。
 
 - **ポートの決まり方はノードカタログの `port_rule` が単一定義**（`static`＝静的なポートだけ・`switch_cases`＝`cases[].port` と `default`・`approval_choices`＝`approved` / `withdrawn` に指定した判断と時間切れ・`decide_route`＝`route` から）。どの規則でも `on_error: continue` なら `error`、wait(event) で `on_timeout: continue` なら `timeout` が加わる。実際の集合は Rust の 1 つの関数（`workflow_engine::node_ports`）が params から導き、保存時検証 V2（§8）と検証 API（`POST /workflows/validate`）の応答の `node_ports`（ノード id → 出口の名前・表示の順）が同じ関数を使う。エディタはこの応答でハンドルを描き、導出を TS に書き写さない。カタログの `dynamic_ports` は互換のための印（switch と ai.decide で true）で、どう決まるかは `port_rule` を見る。
 - params が契約に合わず出口を導けないノード（振り分けの質問が無い ai.decide など）は、V2 が出口を検査しない（V1 が報告する・同じ誤りを二重に出さない）。検証 API の `node_ports` にも載らない。
+- ai.decide の出口は、出口に関わる項目（`route` と、その質問の種類・選択肢のキー）だけから導く。ほかの質問の誤り（書きかけの問い）・モデルの未選択・しきい値の範囲では導けなくしない（エディタが古い出口を今の出口として描き、利用者が無い出口へつながないように）。導けないのは、`route` の質問が無い・同じキーの質問が複数ある・段階（score）の質問・選択肢のキーが出口の名前にできない（形・予約名・重なり・件数）ときだけ。
 - `control.switch` の case ポート名は params の `cases` で宣言する値と一致させる（保存時にポート存在検証・§8 V2）。
 - `control.switch` の `value` が解決できない（`default` の無い `$from` のパスが無いなど・§3.1）ときは、`default` ポートへ流さず `expr_resolve_error` で失敗する。どの case にも一致しないのと、値が無いのを区別する（黙ってその他へ流さない・D-36）。「値が無ければその他へ」としたいときは、`$from` に `default` を書く（例: `{ "$from": "input", "path": "/kind", "default": "" }`）。
 
@@ -696,19 +697,21 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
       "angry":    { "type": "boolean", "value": false, "probability": 0.2, "confidence": 0.8 } },
     "model": "decide-haiku",
     "resolved_model": "claude-haiku-5-5+llm_decider/v1/k1/low",
+    "provider": "llm_decider",                                   // 答えた決定器（llm_decider・typesafe・stub）
     "calibrated": false, "method": "verbalized", "samples": 1,
     "cached": false,                                             // 決定キャッシュの答えなら true
     "routed": { "question": "category", "port": "out" } }       // route が無ければ null
   ```
 
-  `label` は選択肢の説明（無ければキー）。score の `value` は確率で重み付けした位置（0〜段階の数-1）、`level_index` は選んだ段階。`resolved_model` は実際に答えた決定器の版で、版が変わったらしきい値を測り直す。`method` は `native`（決定器が出す確率）・`verbalized`（LLM の自己申告）・`vote`（多数決の得票率）。
-- **応答の突き合わせ**: エンジンはポートの応答を型付きで読み、質問と突き合わせる（答えの過不足・種類の取り違え・選択肢の外・確率や確からしさの範囲の外は `decision_invalid_response`・permanent）。チョークポイントも同じ突き合わせをする（多層防御）。
+  `label` は選択肢の説明（無ければキー）。score の `value` は確率で重み付けした位置（0〜段階の数-1）、`level_index` は選んだ段階。`resolved_model` は実際に答えた決定器の版で、版が変わったらしきい値を測り直す。`provider` は答えた決定器の名前（国外処理の TypeSafe 互換か、LLM に判定させたものかを項目で絞れる・ポートが名前を返さなければ null）。`method` は `native`（決定器が出す確率）・`verbalized`（LLM の自己申告）・`vote`（多数決の得票率）。
+- **応答の突き合わせ**: エンジンはポートの応答を型付きで読み、質問と突き合わせる（答えの過不足・種類の取り違え・選択肢の外・確率のキーが選択肢と一致しない・確率や確からしさの範囲の外は `decision_invalid_response`・permanent）。チョークポイントも同じ規則で突き合わせ（多層防御）、合わない応答（決定モデルの API が設定と違う版で答えた・応答の形が崩れたものも）はポートが同じ `decision_invalid_response` に写す（送り直しても直らないので再試行しない。試すたびに `#f` で課金されない）。
 - **失敗**: 判定用のモデルが未登録・判定用でない・組織で無効（元の chat モデルが無効なときも）は `model_unavailable`、判定の拒否は `llm_refused`、応答の途切れは `llm_output_truncated`、決められた形に合わない応答は `llm_output_invalid`（どれも permanent）。到達障害・利用上限は llm.invoke と同じ（再試行の分類・[engine.md](./engine.md) §7）。
-- **監査**: 出口と、振り分けに使った質問の確からしさだけを残す（要求したモデル・`resolved_model`・`method`・`samples`・`calibrated`・`cached`・質問のキー）。**判定の材料と全部の答えは載せない**（D-52 の H5。run の step の出力には残る）。
+- **監査**: 出口と、振り分けに使った質問の確からしさだけを残す（要求したモデル・`resolved_model`・`provider`・`method`・`samples`・`calibrated`・`cached`・質問のキー）。**判定の材料と全部の答えは載せない**（D-52 の H5。run の step の出力には残る）。
 - **決定キャッシュ**（step 属性 `cache`・§4・D-52 の H6）: 書いたノードだけ、同じ答えを使い回す（既定は使わない）。
   - **キー**: `sha256(キーの版 ‖ 決定器の版 ‖ 正規化した質問 ‖ 正規化した判定材料)`。正規化はオブジェクトのキーを並べ替えた JSON（配列の順・質問と選択肢の並びは保つ。プロンプトの順になるため）。決定器の版は応答の `resolved_model` と同じもので、構築時にカタログから決まる（LLM に判定させる決定器は元の実 ID・プロンプトの版・回数・思考の深さ）。プロンプトの改訂・モデルの差し替え・回数の変更は別のキーになる。答えた版が構築時の版と違う応答（決定モデルの API が別の版で答えた等）は書かない。
   - **範囲**: テナント＋組織＋ワークフロー。組織全体で共有すると、他人が同じ文面を判定させたかを当たり外れで推測できる。別のワークフロー（同じ IR を別に保存したものも）・別の組織では当たらない。
   - **期限**: 書き込みから `ttl_sec`。読むときはノードの今の `ttl_sec` でも絞る（短くしたら古い答えは当たらない）。期限を過ぎた行は書き込みのたびにテナントの中で消す。DB（`llm_decision_cache`）に持つのは答え（使用量は 0 にしたもの）とキーで、判定の材料そのものは持たない。
+  - **掃除**: 答えは run の step の出力と同じく、実行履歴の保持期間（`tenant.workflow_retention_days`・[engine.md](./engine.md) §12.2）を超えて残さない。ワークフローを消すと、その答えは同じ TX の中で消える（論理削除に掛けるトリガ）。期限切れの行・保持期間より前に書いた行（`ttl_sec` が保持期間より長くても）・ワークフローの無い行は、日次の実行履歴 GC がテナントごとに消す。保持期間が `ttl_sec` より短いテナントでは、保持期間が実際の上限になる。
   - **当たっても組織の許可を確かめる**: 判定用のモデルと元の chat モデルの両方（チョークポイント `LlmGateway::decide_cached`・[design.md](../design.md) §4.5）。管理者が止めたら当たりでも `model_unavailable` で失敗する。**当たりは会計しない**（決定器を呼ばないので費用が出ない・利用上限も確かめない）。失敗した判定は使い回さない。
   - 当たったかは出力と監査の `cached` に出る。キャッシュの読み書きの失敗は判定を止めない（外れとして決定器を呼ぶ・書けなければ使い回さないだけ）。
 - **会計**: チョークポイントが記録する。使えた判定は step の冪等キー、使えなかった判定（失敗・突き合わせで弾いたもの）で使用量のあるものは `{step のキー}#f{uuid}`（[engine.md](./engine.md) §7.2）。LLM に判定させる決定器は、元の chat モデルの名前・プロバイダの枠で数える。
