@@ -54,6 +54,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         (crate::approval::APPROVAL_TIMEOUT, Timeout),
         // wait(event) の待つ期限が切れて run を止めた（on_timeout=fail・BUG-112・[`WAIT_TIMEOUT`]）。
         (WAIT_TIMEOUT, Timeout),
+        // step を時間の上限で打ち切った（ノードの timeout_sec・retryable・BUG-96）。
+        (super::step_timeout::STEP_TIMEOUT, Timeout),
         // 設定の誤り（作成者が直すまで通らない）
         ("invalid", Configuration),
         ("bad_params", Configuration),

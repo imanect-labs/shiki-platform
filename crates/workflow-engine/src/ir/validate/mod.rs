@@ -27,6 +27,7 @@ mod semantics;
 pub use semantics::{semantics_warnings, SEMANTICS_CHANGED};
 mod template;
 pub use template::{TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE};
+mod timeout;
 mod v2_graph;
 mod v3_vocab;
 pub use v3_vocab::{OVERLAPPING_DATA_TRIGGERS, WAIT_FILTER_ALIAS};
@@ -299,6 +300,8 @@ fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<Valida
     reply::v7(ir, errors);
     // AI エージェントの手順・時間・トークン・依頼の上限（BUG-6）。
     agent::v7(ir, errors);
+    // ノードの時間の上限（ノード種の上限・AI エージェントは作業時間の上限以上・BUG-96）。
+    timeout::v7(ir, errors);
     // 条件木の深さ（トリガ filter・branch/wait params の condition）。
     for t in &ir.triggers {
         if let crate::ir::Trigger::Event(ev) = t {

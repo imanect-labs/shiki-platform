@@ -472,8 +472,37 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         _ => Pure,
     };
 
-    // timeout 既定/上限（ir.md §7 の表が規定する種のみ・制御と未規定の予約は None）。
-    let (timeout_default_sec, timeout_max_sec) = match nt {
+    let (timeout_default_sec, timeout_max_sec) = step_timeout_limits(nt);
+
+    let shape = output_shape(nt);
+    NodeCatalogEntry {
+        node_type: nt,
+        category,
+        category_label_ja: category.label_ja(),
+        label_ja,
+        description_ja,
+        output_ports,
+        dynamic_ports,
+        port_rule,
+        multi_input: nt == NodeType::ControlJoin,
+        required_scope: required_scope(nt),
+        available: nt.available_stage_a(),
+        idempotency,
+        timeout_default_sec,
+        timeout_max_sec,
+        step_cache: step_cache(nt),
+        output_shape: shape.render(),
+        output_fields: shape.fields(),
+    }
+}
+
+/// step の時間の上限の既定と最大（秒・ir.md §7 の表が規定する種のみ・制御と未規定の予約は None）。
+///
+/// カタログの `timeout_default_sec`・`timeout_max_sec` と、実行の打ち切り（`run::step_timeout`）・保存時の照合（V7）が
+/// この 1 つの表を読む（BUG-96）。
+#[must_use]
+pub fn step_timeout_limits(nt: NodeType) -> (Option<u32>, Option<u32>) {
+    match nt {
         NodeType::StorageRead
         | NodeType::StorageWrite
         | NodeType::StorageList
@@ -501,27 +530,6 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         NodeType::LlmInvoke | NodeType::DataBulkUpsert => (Some(120), Some(600)),
         NodeType::AgentInvoke => (Some(600), Some(3600)),
         _ => (None, None),
-    };
-
-    let shape = output_shape(nt);
-    NodeCatalogEntry {
-        node_type: nt,
-        category,
-        category_label_ja: category.label_ja(),
-        label_ja,
-        description_ja,
-        output_ports,
-        dynamic_ports,
-        port_rule,
-        multi_input: nt == NodeType::ControlJoin,
-        required_scope: required_scope(nt),
-        available: nt.available_stage_a(),
-        idempotency,
-        timeout_default_sec,
-        timeout_max_sec,
-        step_cache: step_cache(nt),
-        output_shape: shape.render(),
-        output_fields: shape.fields(),
     }
 }
 

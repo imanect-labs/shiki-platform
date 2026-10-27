@@ -5,6 +5,7 @@
 //! - [`graph`]: IR から前進に必要な隣接情報を前計算する。
 //! - [`store`]: run/step の永続化（durable の claim/リース/fencing に載る）＋前進 TX。
 //! - [`worker`]: ready step を claim して実行し前進させるワーカーループ。
+//! - [`step_timeout`]: step の時間の上限（ノード種の既定と上限・打ち切りはやり直せる失敗）。
 //!
 //! ノード種ごとの実処理は [`NodeExecutor`] トレイト裏（能力ノードは Task 10.6a/10.8/10.10）。
 //! 制御ノード（branch/join 等）は [`store`] の前進ロジックが直接扱う（能力を呼ばない・pure）。
@@ -15,6 +16,7 @@ pub mod launcher;
 pub mod model;
 pub mod outcome;
 pub mod readiness;
+pub mod step_timeout;
 pub mod store;
 pub mod worker;
 

@@ -249,10 +249,35 @@ impl WorkflowWorker {
             }
         }
 
-        let result: NodeResult = self
-            .executor
-            .execute(&node.node_type, &node.params, &ctx)
-            .await;
+        // step の時間の上限（ノード種の既定と上限・ir.md §4・engine.md §9.4・BUG-96）。過ぎたら実行を打ち切り、
+        // やり直せる失敗として試す回数の規則に従わせる（止める合図も立てる）。
+        let result: NodeResult = match super::step_timeout::step_timeout_sec(node) {
+            Some(limit) => match tokio::time::timeout(
+                Duration::from_secs(u64::from(limit)),
+                self.executor.execute(&node.node_type, &node.params, &ctx),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => {
+                    ctx.cancel.cancel();
+                    tracing::warn!(
+                        run_id = %claimed.run_id, step = %claimed.step_path, limit,
+                        "step が時間の上限を過ぎたので打ち切った"
+                    );
+                    NodeResult::fail(
+                        super::step_timeout::STEP_TIMEOUT,
+                        super::step_timeout::timeout_message(limit),
+                        true,
+                    )
+                }
+            },
+            None => {
+                self.executor
+                    .execute(&node.node_type, &node.params, &ctx)
+                    .await
+            }
+        };
         heartbeat.abort();
 
         let advanced = self
