@@ -375,7 +375,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 
 | type | 区分 | 概要 | 冪等性 | timeout 既定/最大 |
 |---|---|---|---|---|
-| `storage.read` | 能力 | ファイル読み（≤ 10MB） | pure | 30s / 120s |
+| `storage.read` | 能力 | 文章のファイルを読む（≤ 10MB。PDF・Office・画像などの種類〔MIME か拡張子〕と、UTF-8 でない中身は `not_text_file` で失敗・BUG-101） | pure | 30s / 120s |
 | `storage.write` | 能力 | ファイル書き（新バージョン） | engine-dedup | 30s / 120s |
 | `storage.list` | 能力 | フォルダ一覧 | pure | 30s / 120s |
 | `data.query` | 能力 | 宣言的クエリ（**data の `DataQuery` をそのまま使う**・比較値に `$from` 可） | pure | 30s / 120s |
