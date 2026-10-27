@@ -196,6 +196,7 @@ e2e = [
     "data-grid.spec.ts",
     "data-import.spec.ts",
     "data-schema.spec.ts",
+    "data-share.spec.ts",
     "data-ui.spec.ts",
     "select-escape.spec.ts",
 ]
