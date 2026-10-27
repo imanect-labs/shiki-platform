@@ -974,7 +974,9 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
   （受信箱で判断されたのに run が期限まで待つ食い違いを作らない）・期限の 3 経路で同じに扱う。
 - **行の削除**: outbox の削除を受けたら、実行主体の data.get が NotFound であることを確かめて `withdrawn` にする。
 - **期限**: scheduler の tick が期限の来た承認を 1 件ずつ、実行主体がまだテーブルを読めるかを確かめてから決め、step の
-  terminal 化と同じ Tx で台帳を `expired` にする（`on_timeout: continue` は `timeout` 出口・`fail` は run の失敗）。読めなければ
+  terminal 化と同じ Tx で台帳を `expired` にする（`on_timeout: continue` は `timeout` 出口・`fail` は run の失敗。失敗のときは
+  step が出力を書かずに `error.code = approval_timeout`〔retryable でない〕、run が `fail_reason = approval_timeout` になり、
+  失敗の分類は時間切れ・BUG-70）。読めなければ
   上の失権として run を失敗させる。承認の期限切れを決めるのはこの回収だけで、wait(event) の timeout の回収
   （`expire_due_waits`）は承認の購読を扱わない（確かめていない承認を `timeout` 出口へ進めない）。1 件の確かめ・確定が一時障害で
   終わったら、その承認だけを決めずに残して次の tick で確かめ直し、ほかの承認（ほかのテナントの分を含む）と wait(event) の
