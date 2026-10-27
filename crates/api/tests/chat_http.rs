@@ -1275,3 +1275,109 @@ async fn custom_instructions_round_trip_over_http() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+/// JSON の本文で要求を送り、状態コードと本文を返す（作成・削除の補助）。
+async fn send_json(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    (cookie, csrf): (&str, &str),
+    body: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(COOKIE, cookie)
+                .header("x-csrf-token", csrf)
+                .header("content-type", "application/json")
+                .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    (status, body_json(resp).await)
+}
+
+/// 束ねた skill が使えない（削除された）ミニアプリを指定したスレッドは作らない（BUG-17）。アプリ自体は開けるように
+/// なったが、スレッドに壊れた skill のピンを載せると発話のたびに run が失敗するので、作成の時点で理由つきで断る。
+#[tokio::test]
+async fn threads_are_not_created_for_a_mini_app_whose_skill_is_unavailable() {
+    let Some((state, sessions)) = build_state(true).await else {
+        return;
+    };
+    let (cookie, csrf) = login(&sessions, "sid-chat-miniapp-skill").await;
+    let app = build_router(state);
+    let auth = (cookie.as_str(), csrf);
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+
+    let (st, skill) = send_json(
+        &app,
+        "POST",
+        "/skills",
+        auth,
+        Some(serde_json::json!({
+            "name": format!("chat-skill-{suffix}"),
+            "body": { "description": "経費規程の案内", "instructions": "経費規程に沿って答える。" },
+        })),
+    )
+    .await;
+    assert!(st.is_success(), "{st}: {skill}");
+    let skill_id = skill["id"].as_str().unwrap().to_string();
+    let (st, mini_app) = send_json(
+        &app,
+        "POST",
+        "/mini-apps",
+        auth,
+        Some(serde_json::json!({
+            "name": format!("chat-app-{suffix}"),
+            "body": {
+                "description": "経費の案内",
+                "screen": "経費の申請の案内です。\n",
+                "skill": { "artifact_id": skill_id, "version": 1 },
+                "workflows": [],
+            },
+        })),
+    )
+    .await;
+    assert!(st.is_success(), "{st}: {mini_app}");
+    let app_id = mini_app["id"].as_str().unwrap().to_string();
+    let pin = serde_json::json!({ "mini_app": { "artifact_id": app_id, "version": 1 } });
+
+    // skill が読めるうちはスレッドを作れる。
+    let (st, thread) = send_json(&app, "POST", "/threads", auth, Some(pin.clone())).await;
+    assert_eq!(st, StatusCode::OK, "{thread}");
+    let tid = thread["id"].as_str().unwrap().to_string();
+    let (st, _) = send_json(&app, "DELETE", &format!("/threads/{tid}"), auth, None).await;
+    assert!(st.is_success(), "{st}");
+
+    // skill を消すと、そのアプリでのスレッドの作成は理由つきで断る（スレッドは作らない）。
+    let (st, _) = send_json(
+        &app,
+        "DELETE",
+        &format!("/artifacts/{skill_id}"),
+        auth,
+        None,
+    )
+    .await;
+    assert!(st.is_success(), "{st}");
+    let (st, body) = send_json(&app, "POST", "/threads", auth, Some(pin)).await;
+    if st.is_success() {
+        // 直しが外れていたときに作られたスレッドも残さない。
+        if let Some(tid) = body["id"].as_str() {
+            send_json(&app, "DELETE", &format!("/threads/{tid}"), auth, None).await;
+        }
+    }
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["errors"][0]["code"], "miniapp.pin_unresolved",
+        "{body}"
+    );
+    assert_eq!(body["errors"][0]["path"], "skill", "{body}");
+
+    let (st, _) = send_json(&app, "DELETE", &format!("/artifacts/{app_id}"), auth, None).await;
+    assert!(st.is_success(), "{st}");
+}
