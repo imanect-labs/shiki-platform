@@ -575,6 +575,47 @@ async fn wait_event_timeout_fail_fails_run() {
         Some(RunStatus::Failed),
         "on_timeout=fail は run を失敗させる"
     );
+    // step の error.code と run の fail_reason に時間切れの理由が残り、画面に返す失敗の理由（GAP-09）も
+    // 「時間切れ」の分類になる（BUG-112。理由が無いと「分類できない失敗」になっていた）。
+    let (code, retryable, reason): (Option<String>, Option<bool>, Option<String>) = sqlx::query_as(
+        "SELECT s.error->>'code', (s.error->>'retryable')::bool, r.fail_reason \
+         FROM step_execution s JOIN workflow_run r ON r.tenant_id = s.tenant_id AND r.run_id = s.run_id \
+         WHERE s.tenant_id = $1 AND s.run_id = $2 AND s.node_id = 'w'",
+    )
+    .bind(&tenant)
+    .bind(run_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let alice = authz::AuthContext::new(
+        authz::Principal {
+            kind: authz::PrincipalKind::User,
+            id: "alice".into(),
+            email: None,
+            groups: vec![],
+            roles: vec![],
+            tenant_id: Some(tenant.clone()),
+        },
+        "acme".into(),
+        tenant.clone(),
+    );
+    let outcomes = workflow_engine::RunOutcomeReader::new(pool.clone())
+        .own_outcomes(&alice, &[run_id], &[])
+        .await
+        .unwrap();
+    for sql in [
+        "DELETE FROM wait_subscription WHERE tenant_id = $1",
+        "DELETE FROM workflow_run WHERE tenant_id = $1",
+    ] {
+        sqlx::query(sql).bind(&tenant).execute(&pool).await.unwrap();
+    }
+    let want = workflow_engine::run::failure::WAIT_TIMEOUT;
+    assert_eq!(
+        (code.as_deref(), retryable, reason.as_deref()),
+        (Some(want), Some(false), Some(want))
+    );
+    let failure = outcomes[&run_id].failure.as_ref().expect("失敗の理由");
+    assert_eq!(failure.category, workflow_engine::FailureCategory::Timeout);
 }
 
 /// データ変更の wait は、停止の commit の後に 1 回だけ受付の突合の候補になる（BUG-42）。ファイルの保存の wait は

@@ -52,6 +52,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("run_timeout", Timeout),
         // 承認の期限が切れて run を止めた（on_timeout=fail・BUG-70・`approval::APPROVAL_TIMEOUT`）。
         (crate::approval::APPROVAL_TIMEOUT, Timeout),
+        // wait(event) の待つ期限が切れて run を止めた（on_timeout=fail・BUG-112・[`WAIT_TIMEOUT`]）。
+        (WAIT_TIMEOUT, Timeout),
         // 設定の誤り（作成者が直すまで通らない）
         ("invalid", Configuration),
         ("bad_params", Configuration),
@@ -100,6 +102,10 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         (crate::nodes::decide::DECISION_INVALID_RESPONSE, Unknown),
     ]
 };
+
+/// wait(event) の待つ期限が切れ、`on_timeout = fail` で run を止めたときの理由（BUG-112・step の `error.code` と
+/// run の `fail_reason`）。分類は時間切れ。
+pub const WAIT_TIMEOUT: &str = "wait_timeout";
 
 /// 押し直しを勧めない注記（途中まで進んだ副作用を二重にしない・PIT-31）。
 const CHECK_BEFORE_RETRY: &str =

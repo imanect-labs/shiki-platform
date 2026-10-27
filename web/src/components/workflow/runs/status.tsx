@@ -70,6 +70,9 @@ export const FAIL_REASON_LABELS: Record<string, string> = {
   actor_unavailable: "承認を待つ間に、ワークフローを実行する権限（委譲またはテーブルの権限）が外れたため止めました",
   // 承認の期限が切れ、期限切れの扱いが「失敗にする」だった（engine の `approval::APPROVAL_TIMEOUT`・BUG-70）。
   approval_timeout: "承認の期限までに判断されなかったため止めました",
+  // 変更を待つ期限が切れ、期限を過ぎたときの扱いが「実行を失敗にする」だった（engine の
+  // `run::failure::WAIT_TIMEOUT`・BUG-112。手書きの対応物は BUG-113 で生成に替える）。
+  wait_timeout: "待つ期限までに変更が起きなかったため、実行を止めました。",
   step_failed: "途中のブロックが失敗しました",
   cancelled: "中止されました",
 };

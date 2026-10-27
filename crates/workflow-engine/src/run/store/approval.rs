@@ -24,7 +24,9 @@ use uuid::Uuid;
 
 use super::super::graph::RunGraph;
 use super::super::OnTimeout;
-use super::wait::{graph_from_snapshot, lock_waiting, settle_woken, EventWaitSubscriber};
+use super::wait::{
+    graph_from_snapshot, lock_waiting, record_failure, settle_woken, EventWaitSubscriber,
+};
 use super::{map_db, ClaimedStep, RunStore, RunStoreError};
 use crate::approval::{AcceptedDecision, ApprovalChoiceSpec, ApprovalResolution, ApprovalSuspend};
 use crate::vocab::EventSource;
@@ -294,46 +296,18 @@ pub(super) async fn wake_approval(
     )
     .await?;
     if let Some(code) = res.failure {
-        record_failure(&mut tx, tenant_id, run_id, step_path, code).await?;
+        record_failure(
+            &mut tx,
+            tenant_id,
+            run_id,
+            step_path,
+            code,
+            failure_message(code),
+        )
+        .await?;
     }
     tx.commit().await.map_err(map_db)?;
     Ok(Some(res.status))
-}
-
-/// 承認の step の失敗の理由を、step の `error`（engine.md §2.2 の形）と run の `fail_reason` に書く
-/// （[`settle_woken`] が run を失敗にした同じ Tx・実行履歴と画面に返す失敗の理由がこの code で分類する）。
-async fn record_failure(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    tenant_id: &str,
-    run_id: Uuid,
-    step_path: &str,
-    code: &str,
-) -> Result<(), RunStoreError> {
-    sqlx::query(
-        "UPDATE step_execution SET error = jsonb_build_object( \
-             'code', $4::text, 'message', $5::text, 'retryable', false, \
-             'node_id', node_id, 'attempt', attempt) \
-         WHERE tenant_id = $1 AND run_id = $2 AND step_path = $3",
-    )
-    .bind(tenant_id)
-    .bind(run_id)
-    .bind(step_path)
-    .bind(code)
-    .bind(failure_message(code))
-    .execute(&mut **tx)
-    .await
-    .map_err(map_db)?;
-    sqlx::query(
-        "UPDATE workflow_run SET fail_reason = $3 \
-         WHERE tenant_id = $1 AND run_id = $2 AND status = 'failed'",
-    )
-    .bind(tenant_id)
-    .bind(run_id)
-    .bind(code)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_db)?;
-    Ok(())
 }
 
 /// step の error に書く文言（実行履歴に出る・値や権限の詳細は含めない）。

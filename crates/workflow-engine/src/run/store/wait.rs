@@ -22,6 +22,7 @@ use super::{append_event, map_db, ClaimedStep, RunStore, RunStoreError};
 use crate::control::event_filter_matches;
 use crate::ir::expr::Condition;
 use crate::ir::WorkflowIr;
+use crate::run::failure::WAIT_TIMEOUT;
 use crate::vocab::RunEventKind;
 
 /// wait(event) を購読した run（起こす前に、実行主体がイベントを受け取ってよいかを確かめる材料）。
@@ -309,6 +310,84 @@ pub(super) async fn settle_woken(
     Ok(())
 }
 
+/// 待ちの step の失敗の理由を、step の `error`（engine.md §2.2 の形）と run の `fail_reason` に書く
+/// （[`settle_woken`] が run を失敗にした同じ Tx・実行履歴と画面に返す失敗の理由がこの code で分類する）。
+///
+/// 承認（実行主体の失権・承認の期限切れ）と wait(event) の期限切れ（`on_timeout = fail`）が使う（BUG-70・BUG-112）。
+pub(super) async fn record_failure(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    run_id: Uuid,
+    step_path: &str,
+    code: &str,
+    message: &str,
+) -> Result<(), RunStoreError> {
+    sqlx::query(
+        "UPDATE step_execution SET error = jsonb_build_object( \
+             'code', $4::text, 'message', $5::text, 'retryable', false, \
+             'node_id', node_id, 'attempt', attempt) \
+         WHERE tenant_id = $1 AND run_id = $2 AND step_path = $3",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .bind(step_path)
+    .bind(code)
+    .bind(message)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    sqlx::query(
+        "UPDATE workflow_run SET fail_reason = $3 \
+         WHERE tenant_id = $1 AND run_id = $2 AND status = 'failed'",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .bind(code)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    Ok(())
+}
+
+/// wait(event) の期限切れ（`on_timeout = fail`）で step を失敗にし、run を [`WAIT_TIMEOUT`] で失敗させる（BUG-112）。
+///
+/// [`wake_step_and_advance`] の失敗の経路と同じ手順に、理由を書く段を足したもの。既に起床・取り消し済みなら
+/// no-op（冪等）。戻り値 = 失敗にしたか。
+async fn fail_waiting_step(
+    db: &PgPool,
+    tenant_id: &str,
+    run_id: Uuid,
+    step_path: &str,
+    graph: &RunGraph,
+) -> Result<bool, RunStoreError> {
+    let mut tx = db.begin().await.map_err(map_db)?;
+    if !lock_waiting(&mut tx, tenant_id, run_id, step_path).await? {
+        tx.rollback().await.map_err(map_db)?;
+        return Ok(false);
+    }
+    settle_woken(
+        &mut tx,
+        tenant_id,
+        run_id,
+        step_path,
+        None,
+        Value::Null,
+        graph,
+    )
+    .await?;
+    record_failure(
+        &mut tx,
+        tenant_id,
+        run_id,
+        step_path,
+        WAIT_TIMEOUT,
+        "待つ期限までに変更が起きなかったため、止めました",
+    )
+    .await?;
+    tx.commit().await.map_err(map_db)?;
+    Ok(true)
+}
+
 /// IR スナップショット JSON からグラフを組む（起床経路のヘルパ）。
 pub(super) fn graph_from_snapshot(ir_json: Value) -> Option<RunGraph> {
     serde_json::from_value::<WorkflowIr>(ir_json)
@@ -388,23 +467,22 @@ impl RunStore {
             let Some(graph) = graph_from_snapshot(ir_json.0) else {
                 continue;
             };
-            // on_timeout=continue → timeout ポート、fail → run 失敗（None）。
-            let port = if spec.0.get("on_timeout").and_then(Value::as_str) == Some("continue") {
-                Some("timeout")
+            // on_timeout=continue → timeout ポート、fail → 時間切れの理由（WAIT_TIMEOUT）で run を失敗させる。
+            let woken = if spec.0.get("on_timeout").and_then(Value::as_str) == Some("continue") {
+                wake_step_and_advance(
+                    &self.db,
+                    &tenant,
+                    run_id,
+                    &step_path,
+                    Some("timeout"),
+                    Value::Null,
+                    &graph,
+                )
+                .await?
             } else {
-                None
+                fail_waiting_step(&self.db, &tenant, run_id, &step_path, &graph).await?
             };
-            if wake_step_and_advance(
-                &self.db,
-                &tenant,
-                run_id,
-                &step_path,
-                port,
-                Value::Null,
-                &graph,
-            )
-            .await?
-            {
+            if woken {
                 woke += 1;
             }
         }
