@@ -41,6 +41,16 @@ pub struct WorkflowModelCheck {
     pub decision_ids: Option<Vec<String>>,
 }
 
+/// 組織がモデルの選択を禁じているときの既定（[`Catalog::model_lock`]）。
+fn model_lock(settings: &llm_gateway::TenantLlmSettings) -> Option<String> {
+    (!settings.allow_user_choice).then(|| settings.default_model.clone())
+}
+
+/// 組織の既定が Auto か（[`Catalog::default_is_auto`]）。
+fn default_is_auto(settings: &llm_gateway::TenantLlmSettings) -> bool {
+    settings.default_model == llm_gateway::AUTO_MODEL
+}
+
 impl WorkflowModels {
     /// gateway があればそれを、無ければデプロイ設定の id を材料にする。
     #[must_use]
@@ -88,9 +98,9 @@ impl WorkflowModels {
                             .map(|m| m.id.clone())
                             .collect(),
                     ),
-                    lock: (!settings.allow_user_choice).then_some(settings.default_model.clone()),
+                    lock: model_lock(&settings),
                     // 実行時の解決（`resolve_workflow_choice`）と同じ設定で、省略したモデルが Auto で動くか。
-                    default_is_auto: settings.default_model == llm_gateway::AUTO_MODEL,
+                    default_is_auto: default_is_auto(&settings),
                     // ai.decide に書けるのは判定用のモデルだけ（元の chat モデルが無効なものは除く・FEAT-1）。
                     decision_ids: Some(
                         settings
@@ -338,5 +348,70 @@ impl chat::WorkflowCatalogSource for ApiWorkflowCatalogSource {
             catalog.tables = approval_tables(data, ctx, ir).await?;
         }
         Ok(catalog)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use llm_gateway::tenant::node_effort_applies;
+    use llm_gateway::{TenantLlmSettings, AUTO_MODEL};
+    use serde_json::json;
+    use workflow_engine::{
+        complete_declared_scopes, save_warnings, validate, Catalog, EFFORT_IGNORED,
+    };
+
+    use super::{default_is_auto, model_lock};
+
+    /// 保存時の警告（使われない思考の深さ・workflow-engine）は、実行時の規則（llm-gateway の
+    /// `node_effort_applies`）と、組織の設定とモデルの指定のすべての組み合わせで一致する（保存時の照合 V3 で
+    /// 保存できない組み合わせは除く）。2 つの規則は別の crate にあるので、両方に依存する api で照らす。
+    #[test]
+    fn the_effort_warning_matches_the_runtime_rule() {
+        let mut checked = 0;
+        for default in [AUTO_MODEL, "a"] {
+            for allow in [true, false] {
+                let settings = TenantLlmSettings {
+                    default_model: default.into(),
+                    allow_user_choice: allow,
+                    ..TenantLlmSettings::default()
+                };
+                let catalog = Catalog {
+                    models: Some(vec!["a".into(), "b".into()]),
+                    model_lock: model_lock(&settings),
+                    default_is_auto: default_is_auto(&settings),
+                    ..Catalog::default()
+                };
+                for model in [None, Some(""), Some("a"), Some("b")] {
+                    let mut params = json!({ "prompt": "p", "effort": "low" });
+                    if let Some(m) = model {
+                        params["model"] = json!(m);
+                    }
+                    let ir = json!({
+                        "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+                        "nodes": [{ "id": "ai", "type": "llm.invoke", "params": params }],
+                        "edges": []
+                    });
+                    let (ir, _) = complete_declared_scopes(&ir);
+                    let Ok(parsed) = validate(&ir, &catalog) else {
+                        // 選択を禁じた組織で既定と違うモデル（V3 の ir.model_choice_disabled）。
+                        assert!(!allow, "{default} {model:?}");
+                        continue;
+                    };
+                    let warned = save_warnings(&parsed, &catalog)
+                        .iter()
+                        .any(|w| w.code == EFFORT_IGNORED);
+                    assert_eq!(
+                        warned,
+                        !node_effort_applies(&settings, model),
+                        "既定 {default}・選択を許す {allow}・モデル {model:?}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        // 選べる組織は 4 通りずつ、選択を禁じた組織は省略 2 通り（＋既定と同じモデル 1 通り）。
+        assert_eq!(checked, 4 + 4 + 2 + 3);
     }
 }
