@@ -189,7 +189,7 @@ IR のトップレベルは以下の形を取る。
 - **`id`**: `^[a-z][a-z0-9_]{0,63}$`。ワークフロー内一意（§8 V2）。参照（`nodes.<id>`）・エッジ・`step_path`（[engine.md](./engine.md) §2）の識別子になる。
 - **`retry`** の既定は `max_attempts: 1`（リトライなし）。**リトライは at-least-once を顕在化させる行為**なので、明示オプトインとする（PIT-31 の思想）。attempt を跨いで冪等キーは不変であり、その供給と dedupe の詳細は [engine.md](./engine.md) §7。
   - `backoff.kind`: `exponential`（`base_sec`・`max_sec`・`jitter`）。full jitter の実行は [engine.md](./engine.md) §7。
-- **`timeout_sec`**: ノード種ごとに既定値と上限がある（§7 の表）。上限超過値は保存拒否（§8 V7 の趣旨）。step timeout の実行時の扱い（retryable か等）は [engine.md](./engine.md) §9。
+- **`timeout_sec`**: ノード種ごとに既定値と上限がある（§7 の表。正はノードカタログの `timeout_default_sec`・`timeout_max_sec`）。1 未満と上限超過値は保存拒否（§8 V7・`ir.limit_exceeded`・path `/timeout_sec`）。`agent.invoke` は `max_duration_sec`（省略は 600 秒）より短くできない。打ち切らない種（制御ノード・予約語彙）に書いた値は読まない（保存も止めない）。step timeout の実行時の扱い（retryable か等）は [engine.md](./engine.md) §9.4（BUG-96）。
 - **`cache`**（step 属性・§7.8 で予約したもの）: 結果の使い回し。書けるのはノードカタログの `step_cache` がある種だけで、いまは `ai.decide` の決定キャッシュ（§7.11）。ほかの種に書くと保存時に `ir.cache_unsupported`。`ttl_sec` は 60〜2,592,000 秒（1 分〜30 日・省略は 86,400 秒＝1 日・範囲の外は `ir.schema_violation`）。答えは実行履歴の保持期間を超えて残らない（保持期間が短ければそちらが上限・§7.11）。キーは書けない（種が決める）。省略が既定で、使い回さない。
 - **`on_error`**:
   - `fail_run`（既定）: エラーで run 全体を failed にする。
@@ -378,6 +378,8 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `storage.read` | 能力 | 文章のファイルを読む（≤ 10MB。PDF・Office・画像などの種類〔MIME か拡張子〕と、UTF-8 でない中身は `not_text_file` で失敗・BUG-101） | pure | 30s / 120s |
 | `storage.write` | 能力 | ファイル書き（新バージョン） | engine-dedup | 30s / 120s |
 | `storage.list` | 能力 | フォルダ一覧 | pure | 30s / 120s |
+| `csv.query` | 能力 | CSV に読み取り専用の SQL を実行して集計・抽出する（隔離ランナー） | pure | 30s / 120s |
+| `csv.patch` / `csv.write` | 能力 | CSV のセル・行・列を書き換えて新しいバージョンを保存する／新しい CSV を保存する | engine-dedup | 30s / 120s |
 | `data.query` | 能力 | 宣言的クエリ（**data の `DataQuery` をそのまま使う**・比較値に `$from` 可・`query.limit` は 1〜200 で範囲の外は保存時に `ir.schema_violation`・BUG-108） | pure | 30s / 120s |
 | `data.record.create` / `data.record.update` / `data.record.delete` | 能力 | レコード書込（rev 楽観ロック・rev 省略時は実行時点の rev） | engine-dedup | 30s / 120s |
 | `data.transition` | 能力 | **FSM 遷移 API を叩く**（直接 status 書込は構造的に不可能） | engine-dedup | 30s / 120s |
@@ -734,7 +736,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 | V4 | 参照存在 | skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノード URL ホストを許容）・テーブル/フォルダ id | `ir.unknown_skill` |
 | V5 | データフロー | `$from` の祖先性・default 要否・条件木の型整合（静的に分かる範囲）・regex コンパイル | `ir.bad_ref` |
 | V6 | script コンパイル | inline script の swc パース・禁止構文（[script.md](./script.md) §3。artifact 参照は version 固定なので存在のみ） | `ir.script_syntax` |
-| V7 | 上限 | ノード ≤ 200・エッジ ≤ 500・IR ≤ 1MB・条件木深さ ≤ 5・テンプレ var 数 ≤ 50・承認の期限 < `run_timeout_sec`・`workflow.reply` ≤ 10・agent.invoke の手順・時間・トークン・依頼の大きさ（§7.4） | `ir.limit_exceeded` |
+| V7 | 上限 | ノード ≤ 200・エッジ ≤ 500・IR ≤ 1MB・条件木深さ ≤ 5・テンプレ var 数 ≤ 50・承認の期限 < `run_timeout_sec`・`workflow.reply` ≤ 10・agent.invoke の手順・時間・トークン・依頼の大きさ（§7.4）・ノードの `timeout_sec`（1〜ノード種の上限・agent.invoke は `max_duration_sec` 以上・§4） | `ir.limit_exceeded` |
 
 各ステージの詳細:
 

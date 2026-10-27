@@ -927,6 +927,16 @@ step を `waiting_timer` にし `wake_at` を書いてワーカーを解放す�
 step の `timeout_sec`（ノード種ごとに既定・上限あり・ir.md §7）は run の `run_timeout_sec`（既定 3 日・最大 30 日・ir.md §2）より内側にある。
 
 - step timeout: retryable 扱い（policy 次第で再試行）。
+  - ワーカーが、ノードの `timeout_sec`（省略・0 はノード種の既定）をノード種の上限で頭打ちにした時間でノードの実行を
+    打ち切る（実行中のフューチャを捨て、止める合図 `NodeContext.cancel` も立てる）。step は `error.code = step_timeout`
+    〔retryable〕で失敗し、§7.5 のリトライ分類どおり試す回数が残っていれば backoff 後にやり直す。失敗の分類は時間切れ。
+  - 既定と上限はノードカタログの表（`vocab::step_timeout_limits`）が単一定義で、カタログ・打ち切り（`run::step_timeout`）・
+    保存時の照合（V7）が同じ表を読む。上限を超える値で保存された版も、実行では上限で打ち切る。
+  - 制御ノード（branch・switch・join・map・wait）は打ち切らない（wait と承認を待つ時間は params の期限と run timeout が
+    決める）。`agent.invoke` は自分の作業時間の上限（`max_duration_sec`）で止まるので、それに猶予（120 秒）を足した
+    時間より先に打ち切らない（ノードの上限を超えても）。
+  - 打ち切りで捨てた実行の副作用は §7 の at-least-once の範囲（内部能力は effect_journal の予約の回収窓・外部 http は
+    exactly-once を約束しない）。途中で切れた LLM の呼び出しの使用量は記録されないことがある。
 - run timeout: run failed ＋ in-flight step をドレイン。
 
 ### 9.5 リース失効（ワーカー死）
