@@ -185,6 +185,25 @@ test("分割ビュー: 会話の切替と「新しい会話」（1:N・旧会話
   await expect(page.getByRole("menuitem", { name: /会話 2/ })).toBeVisible();
 });
 
+test("エージェントモードでも開いているノートを編集対象として AI に渡す", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const nodeId = await createNoteViaApi(page, uniqueName("agent-origin"));
+  await openNote(page, nodeId);
+  await page.getByTestId("note-ask-ai").click();
+  const panel = page.getByTestId("note-chat-panel");
+  const composer = panel.getByLabel("メッセージを入力");
+  await expect(composer).toBeVisible({ timeout: 20_000 });
+
+  // エージェントモード ON で送る（stub は echosystem: で受け取った system をそのまま返す）。
+  // 開いているノートの node_id が届かないと、AI は新規下書きへ逃げてルートに別ファイルを作る。
+  await panel.getByRole("switch", { name: "エージェントモード" }).click();
+  await composer.fill("echosystem: 確認");
+  await panel.getByRole("button", { name: "送信" }).click();
+  await expect(panel.getByText(new RegExp(`node_id: ${nodeId}`)).first()).toBeVisible({
+    timeout: 30_000,
+  });
+});
+
 test("図の挿入: AI が ```ui の図をノート本文へ自動挿入する（document.embed）", async ({ page }) => {
   await loginViaKeycloak(page);
   const nodeId = await createNoteViaApi(page, uniqueName("embed-ai"));

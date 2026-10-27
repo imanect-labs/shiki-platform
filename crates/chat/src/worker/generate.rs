@@ -256,6 +256,9 @@ impl ChatWorker {
                     self.config.autonomous_max_cost_usd_micros,
                 );
                 opts.system = Some(autonomous_system_prompt(&self.config.system_prompt));
+                // ドキュメントアシスタントでエージェントモードを ON にした会話も、開いている
+                // ドキュメントを編集対象にする（無いと新規下書きへ逃げ、ルートに別ファイルができる）。
+                self.system_with_origin_document(run, &mut opts).await;
                 self.config.model.clone_into(&mut opts.model);
                 // 承認 3 モード（#350・既定は承認必須）。実行中のトグルは approver の
                 // current_policy が各破壊系呼び出しの直前に反映する。
