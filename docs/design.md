@@ -108,6 +108,7 @@ flowchart LR
 | `ObjectStore` | RustFS (S3 互換) | GCS |
 | `VectorStore` | Qdrant（小規模は pgvector） | Qdrant / マネージド |
 | `LlmProvider` | vLLM（ローカル） | Vertex / 外部API / LiteLLM アダプタ（§4.5） |
+| `DecisionProvider` | llm_decider（vLLM 上の chat モデルに判定を真似させる） | llm_decider（外部 API の chat モデル）/ 決定モデルの API の互換アダプタ（opt-in・§4.5） |
 | `Sandbox` | wasm（agentos）/ Firecracker（KVM有）/ gVisor | wasm（agentos）/ gVisor / Firecracker（§4.6 3ティア） |
 | `DocumentParser` | Docling（ローカル） | Docling / 商用OCR |
 | `EmbeddingProvider` | Ruri / BGE-m3 | 同左 / 外部 |
@@ -560,6 +561,42 @@ flowchart LR
   - プロバイダがスキーマを拒んだ 4xx（Anthropic の上限は、1 回の要求の全スキーマの合計で任意項目 24・
     union 型〔`anyOf`・型の配列〕16・strict ツール 20、文法のコンパイル 180 秒）は、プロバイダの本文を
     利用者に出さない定型文の誤りにし（本文はログにだけ残す）、呼び出し側が出力の形の誤りとして扱えるようにする。
+- **決定モデル（FEAT-1・D-6）**: 文章を生成せず、質問ごとに決められた選択肢（choice）・段階（score）・
+  はい/いいえ（boolean）で答え、確からしさ（0〜1）を付けて返すモデル。生成と入出力の形が違うので、
+  `LlmProvider` とは別の差し替えトレイト `DecisionProvider`（`decide(&DecideRequest) -> Result<DecideResponse,
+  DecideFailure>`）にする（非生成モデルを別トレイトにした `EmbeddingProvider` と同じ）。ワークフローの `ai.decide` が使う。
+  - **カタログ**: モデルに種類 `modality`（`chat` 既定 / `decision`）を持つ。判定用のモデルはチャットのモデル選択・
+    既定・Auto の振り先に出ず、`stream` に渡すと拒否する。LLM に判定を真似させるエントリ（llm_decider）は、元にする
+    chat モデルを `decision_via` で指し、`provider` を元のモデルと同じにする（会計・利用上限の軸を揃える）。元のモデルが
+    本人専用（`chatgpt_plan`）なら起動を止め、元のモデルが国外処理なら判定用のモデルも国外処理と表示させる。
+    `decision.samples`（1・3・5）と `decision.effort`（既定 low）で出し方を決める。`decision_via` の無い判定用の
+    モデルは、振り先が stub のときだけ決まった規則で答える stub の決定器になる（テスト・E2E 用）。
+  - **組織の許可**: 許可リストは種類を問わず全部を持ち（管理者の保存のたびに組み直すので、chat に絞ると判定用の
+    モデルが黙って消える）、呼び出し元ごとに種類で絞る。チャットの選択・既定・Auto・`resolve_choice`・
+    `llm.invoke` の照合・`GET /llm/models`（既定）は chat モデルだけ。chat モデルが 1 つも有効でない保存と、
+    既定・Auto の振り先に判定用のモデルを選ぶ保存は 400。`GET /llm/models?modality=decision` は判定ノードの
+    モデル欄向けで、元の chat モデルも有効な判定用のモデルだけを返す（`auto` は無い）。管理コンソールでは
+    判定用のモデルに「判定用」と元のモデルを出し、既定にはできない。
+  - **チョークポイント `LlmGateway::decide`**: `stream` と同じ順で確かめる。カタログ（判定用でなければ拒否）→
+    要求の上限（質問 20 件・選択肢 2〜100・段階 2〜10・判定材料 64 KiB）→ 組織の許可を判定用のモデルと
+    **元の chat モデルの両方**で（fail-closed。国外処理のモデルを止めた組織で判定用のモデルが抜け道にならない）→
+    請求先プロバイダの利用上限 → 決定器 → 応答と要求の突き合わせ（答えの過不足・値域・確率の範囲。合わなければ
+    内部の誤り）。**会計はチョークポイントの中で行う**（ストリームではないので、呼び出し側の記録漏れを構造的に
+    無くす）。請求の単位は llm_decider なら元のモデル（その単価・プロバイダ）。使えた判定は呼び出し側の冪等キー、
+    使えなかった判定（決定器の失敗・突き合わせで弾いたもの）で使用量のあるものは `{key}#f{uuid}` で記録する
+    （呼び出し側のキーで記録すると、後の再試行・run の再開で成功した分が重複除去で消える）。決定器は失敗しても、
+    それまでに使ったトークン量を `DecideFailure` で返す。判定材料と答えは Langfuse にも送らない（質問のキーだけ）。
+  - **llm_decider**: 判定材料（state）を信頼しないデータとして `<state>…</state>` の封筒に包み、中の
+    `<state`・`</state` を中和する（[PIT-56](./design-caveats.md)）。system は固定文で、封筒の外にはこちらの文と
+    作者が書いた質問だけを置く。出力の形は根のプロパティを質問のキーにして全部必須にし（`{value, confidence}`・
+    value は選択肢のキー／段階の名前の列挙か真偽値）、元のモデルの構造化出力のモードで送り、本文は型付きで読み直す。
+    形に合わない答えは 1 回だけ直させ、拒否と上限での途切れは直させない。確からしさは自己申告（1 回・選んだ値を
+    max(申告, 1/n)）か多数決（k 回を並べて呼んだ得票率）で、どちらも**較正されていない**（`calibrated: false`・
+    [PIT-80](./design-caveats.md)）。温度は送らず、思考の深さは既定 low・上限のトークン数は low で 2048（深いと 4096）。
+    決定器の版 `resolved_model`（`{元の実 ID}+llm_decider/{プロンプトの版}/k{回数}/{思考の深さ}`）を応答に載せ、
+    プロンプトを改訂したら版を上げる（しきい値の測り直しのきっかけ）。
+  - 判定の失敗の種類（要求の誤り・拒否・途切れ・形に合わない）は、`LlmError` の列挙を変えずに定型文の頭で表し、
+    呼び出し側は `decide_error_kind` で見分ける。
 - `LlmProvider` トレイト実装そのもの。別プロセス化しない（ホップ0、部品削減）。外部クライアント向け API も同一プロセスで公開し、別サービス化は §4.1.1 の条件（3 つ目の消費者）で再検討する。
 - **外部クライアント向け LLM API（全社共通ゲートウェイ・§4.1.1・2026-09-29 決定）**: skillex 等の社内他製品向けに、
   shiki-server が**同一バイナリで** LLM API を公開する（OpenAI 互換を想定。パス・形は実装タスク〔parallel-tracks SK.8〕で確定）。
