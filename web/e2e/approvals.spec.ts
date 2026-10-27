@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+import { grantTableEditor, loginAs, loginViaKeycloak, uniqueName } from "./helpers";
 
 /// 承認待ち（human.approval・GAP-08）の e2e:
 /// - 申請（テーブルの行を申請へ進める）→ ワークフローが受け付けて承認を待つ → 承認者が /approvals の受信箱から
@@ -478,36 +478,6 @@ test("承認を待つブロック: テーブルに無い受信箱の列・担当
   expect(params.show_fields).toEqual(["title", "amount"]);
   expect(params.assignees).toEqual([{ field: "approver" }]);
 });
-
-const FGA_URL = process.env.E2E_OPENFGA_URL ?? "http://localhost:8082";
-const FGA_STORE = process.env.E2E_OPENFGA_STORE ?? "shiki";
-
-/// テーブルを `userId` の editor にする。テーブルの共有はまだ画面にも API にも無い（作った人だけが owner になる）
-/// ので、サーバと同じ OpenFGA の store にタプルを直接書く（名前は authz の Namespace と同じ `<型>:<tenant>|<id>`）。
-async function grantTableEditor(page: Page, tenant: string, userId: string, tableId: string): Promise<void> {
-  let storeId: string | null = null;
-  let token = "";
-  // store の名前の絞り込みが効かない版でも見つかるよう、全ページを見る（authz の find_store と同じ）。
-  for (;;) {
-    const q = new URLSearchParams({ name: FGA_STORE, page_size: "100" });
-    if (token) q.set("continuation_token", token);
-    const res = await page.request.get(`${FGA_URL}/stores?${q}`);
-    expect(res.ok(), await res.text()).toBeTruthy();
-    const body = (await res.json()) as { stores: { id: string; name: string }[]; continuation_token?: string };
-    storeId = body.stores.find((s) => s.name === FGA_STORE)?.id ?? null;
-    if (storeId || !body.continuation_token) break;
-    token = body.continuation_token;
-  }
-  expect(storeId, `OpenFGA の store ${FGA_STORE} が見つかりません`).not.toBeNull();
-  const res = await page.request.post(`${FGA_URL}/stores/${storeId}/write`, {
-    data: {
-      writes: {
-        tuple_keys: [{ user: `user:${tenant}|${userId}`, relation: "editor", object: `data_table:${tenant}|${tableId}` }],
-      },
-    },
-  });
-  expect(res.ok(), await res.text()).toBeTruthy();
-}
 
 /// alice が作る、`masked` の列を誰にも読めない列（マスク）にした、状態の遷移の規則つきのテーブル。
 async function maskedFsmTable(

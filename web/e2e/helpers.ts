@@ -112,3 +112,62 @@ export async function pinStubOrgDefault(page: Page): Promise<() => Promise<void>
   await put(auto ? { auto_model: stub[0].id } : { default_model: stub[0].id });
   return async () => put(auto ? { auto_model: settings.auto_model } : { default_model: settings.default_model });
 }
+
+/// 後片付けを互いに独立して全部走らせる（どれかが投げても残りを走らせ、最初の誤りを最後に投げる）。
+export async function cleanupAll(...steps: (() => Promise<unknown>)[]): Promise<void> {
+  const errors: unknown[] = [];
+  for (const step of steps) {
+    try {
+      await step();
+    } catch (e) {
+      errors.push(e);
+    }
+  }
+  if (errors.length > 0) throw errors[0];
+}
+
+const FGA_URL = process.env.E2E_OPENFGA_URL ?? "http://localhost:8082";
+const FGA_STORE = process.env.E2E_OPENFGA_STORE ?? "shiki";
+
+/// サーバと同じ OpenFGA の store の id。
+async function fgaStore(page: Page): Promise<string> {
+  let storeId: string | null = null;
+  let token = "";
+  // store の名前の絞り込みが効かない版でも見つかるよう、全ページを見る（authz の find_store と同じ）。
+  for (;;) {
+    const q = new URLSearchParams({ name: FGA_STORE, page_size: "100" });
+    if (token) q.set("continuation_token", token);
+    const res = await page.request.get(`${FGA_URL}/stores?${q}`);
+    expect(res.ok(), await res.text()).toBeTruthy();
+    const body = (await res.json()) as { stores: { id: string; name: string }[]; continuation_token?: string };
+    storeId = body.stores.find((s) => s.name === FGA_STORE)?.id ?? null;
+    if (storeId || !body.continuation_token) break;
+    token = body.continuation_token;
+  }
+  expect(storeId, `OpenFGA の store ${FGA_STORE} が見つかりません`).not.toBeNull();
+  return storeId!;
+}
+
+/// テーブルを `userId` の editor にし、外す関数を返す。テーブルの共有はまだ画面にも API にも無い（作った人だけが
+/// owner になる）ので、サーバと同じ OpenFGA の store にタプルを直接書く（名前は authz の Namespace と同じ
+/// `<型>:<tenant>|<id>`）。
+export async function grantTableEditor(
+  page: Page,
+  tenant: string,
+  userId: string,
+  tableId: string,
+): Promise<() => Promise<void>> {
+  const storeId = await fgaStore(page);
+  const tuple = { user: `user:${tenant}|${userId}`, relation: "editor", object: `data_table:${tenant}|${tableId}` };
+  const res = await page.request.post(`${FGA_URL}/stores/${storeId}/write`, {
+    data: { writes: { tuple_keys: [tuple] } },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  return async () => {
+    const del = await page.request.post(`${FGA_URL}/stores/${storeId}/write`, {
+      data: { deletes: { tuple_keys: [tuple] } },
+    });
+    expect(del.ok(), await del.text()).toBeTruthy();
+  };
+}
+

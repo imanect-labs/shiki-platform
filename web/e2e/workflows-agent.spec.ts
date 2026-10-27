@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, pinStubOrgDefault } from "./helpers";
+import { cleanupAll, loginViaKeycloak, pinStubOrgDefault } from "./helpers";
 
 /// AI エージェント（agent.invoke）の e2e（BUG-6）:
 /// ブロックを置く → 依頼を書く → 使ってよい道具を選ぶ → 保存（要る権限が補われる）→ 実行 → 実行履歴に
@@ -83,12 +83,13 @@ test("AI エージェント: 依頼を書き、道具を選んで保存・実行
     await expect(result).toContainText("回答: 旅費規程の要点をまとめて", { timeout: 15_000 });
     await expect(result.getByText("道具は使っていません")).toBeVisible();
   } finally {
-    await restore();
-    if (id) {
+    // 組織の設定を戻すのと作ったワークフローを消すのは、片方が投げても両方走らせる。
+    await cleanupAll(restore, async () => {
+      if (!id) return;
       const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
       const res = await page.request.delete(`/api/artifacts/${id}`, { headers: { "x-csrf-token": csrf } });
       expect(res.status(), await res.text()).toBeLessThan(300);
-    }
+    });
   }
 });
 
