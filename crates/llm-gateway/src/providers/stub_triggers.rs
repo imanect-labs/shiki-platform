@@ -21,6 +21,19 @@ pub(super) fn echo_system_call(
     })
 }
 
+/// `echoeffort:` … 受け取った思考の深さ（`low` / `medium` / `high`・無ければ `none`）を本文で返す（ワークフローの
+/// ノードの思考の深さの解決〔組織の設定に従うときは使わない〕が実際にモデルへ届く値になることの検証・D-75）。
+pub(super) fn echo_effort_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    user_text.starts_with("echoeffort:").then(|| {
+        let effort = req.effort.map_or("none", crate::model::Effort::as_str);
+        text_stream(&format!("effort: {effort}"), prompt_tokens)
+    })
+}
+
 /// `<conversation>` で包んだ発話（会話の自動タイトル・chat の worker/title.rs）には、包みの中の
 /// 最初の空でない行を返す（「回答: 」を付けない）。付けると、画面のどこにでもタイトルとして
 /// 「回答:」が出て、本文の回答を探す e2e が履歴の行に当たってしまう。

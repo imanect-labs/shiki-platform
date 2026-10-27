@@ -952,7 +952,7 @@ async fn saved_workflows_with_array_conditions_are_listed() {
         .await
         .unwrap();
     assert!(workflow_engine::semantics_warnings(&template_ir).is_empty());
-    let saved = workflow_engine::save_warnings(&template_ir);
+    let saved = workflow_engine::save_warnings(&template_ir, &workflow_engine::Catalog::default());
     assert_eq!(saved.len(), 1, "{saved:?}");
     assert_eq!(saved[0].code, workflow_engine::TEMPLATE_ESCAPED_VAR);
 

@@ -78,7 +78,7 @@ mod tests {
             ..Catalog::default()
         };
         let parsed = validate(&ir, &catalog).unwrap();
-        assert!(workflow_engine::save_warnings(&parsed).is_empty());
+        assert!(workflow_engine::save_warnings(&parsed, &catalog).is_empty());
         // 説明文の書き方の cache（params の外）も保存時検証を通る。
         let mut with_cache = ir.clone();
         with_cache["nodes"][0]["cache"] = json!({ "ttl_sec": 86400 });

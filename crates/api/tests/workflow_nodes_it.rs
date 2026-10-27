@@ -119,7 +119,8 @@ async fn setup() -> Option<Harness> {
                     session_header: None,
                     ..Default::default()
                 },
-                // stub-smart は組織の既定の切り替え（BUG-12）を見るための 2 つ目のモデル。判定用のモデルは
+                // stub-smart は組織の既定の切り替え（BUG-12）を見るための 2 つ目のモデル。stub-think は思考の深さに
+                // 対応するモデル（ノードの思考の深さがモデルへ届くかを見る・D-75）。判定用のモデルは
                 // stub の決定器（decide-stub）と、stub-smart を元に LLM に判定させる decide-via（FEAT-1）。
                 catalog: llm_gateway::ModelCatalog {
                     default_model: "stub".into(),
@@ -130,6 +131,11 @@ async fn setup() -> Option<Harness> {
                             ..Default::default()
                         })
                         .chain([
+                            llm_gateway::ModelEntry {
+                                id: "stub-think".into(),
+                                supports_effort: Some(true),
+                                ..Default::default()
+                            },
                             llm_gateway::ModelEntry {
                                 id: "decide-stub".into(),
                                 modality: llm_gateway::Modality::Decision,
@@ -1197,6 +1203,78 @@ async fn llm_explicit_model_fails_closed_once_disabled() {
         .await;
     assert_eq!(status, RunStatus::Succeeded);
     assert_eq!(h.step_output(run_id).await.0["model"], "stub");
+}
+
+/// ノードに書いた思考の深さ（low）は、選べる組織で特定のモデルで動くときだけモデルへ届く。モデルを省略して Auto で
+/// 動くときと、組織がモデルの選択を禁じているときは使わず、組織の設定に従う（チャットと揃える・D-75）。stub は
+/// `echoeffort:` に受け取った思考の深さを返す。
+#[tokio::test]
+async fn llm_node_effort_follows_the_organization_rules() {
+    let Some(h) = setup().await else { return };
+    let executor = h.executor(None, vec![], None);
+    let effort_ir = |name: &str, model: Option<&str>| {
+        let mut ir = llm_ir(name, model);
+        ir["nodes"][0]["params"]["prompt"] = json!("echoeffort:");
+        ir["nodes"][0]["params"]["effort"] = json!("low");
+        ir
+    };
+    let omitted = h.save(&effort_ir("effort-omitted", None)).await;
+    let pinned = h
+        .save(&effort_ir("effort-pinned", Some("stub-think")))
+        .await;
+    let sent = |wf: Uuid| {
+        let executor = Arc::clone(&executor);
+        let h = &h;
+        async move {
+            let (run_id, status) = h.run(wf, &json!({}), executor).await;
+            assert_eq!(status, RunStatus::Succeeded);
+            let (output, _) = h.step_output(run_id).await;
+            output["text"].as_str().unwrap_or_default().to_string()
+        }
+    };
+
+    // 既定が特定のモデル（選べる組織）: 省略してもノードの指定が組織の既定（medium）より優先する。
+    h.set_llm_settings(llm_gateway::SettingsPatch {
+        default_model: Some("stub-think".into()),
+        default_effort: Some(llm_gateway::Effort::Medium),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(sent(omitted).await, "effort: low");
+
+    // 既定が Auto: 省略は Auto の思考強度（high）で、ノードの指定を使わない。モデルを選べば使う。
+    h.set_llm_settings(llm_gateway::SettingsPatch {
+        default_model: Some(llm_gateway::AUTO_MODEL.into()),
+        auto_model: Some(Some("stub-think".into())),
+        auto_effort: Some(Some(llm_gateway::Effort::High)),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(sent(omitted).await, "effort: high");
+    assert_eq!(sent(pinned).await, "effort: low");
+
+    // 組織がモデルの選択を禁じる: 省略は組織の既定の思考強度（medium）、既定と同じモデルの明示は思考強度なし
+    // （どちらも書かなかったのと同じ）。
+    h.set_llm_settings(llm_gateway::SettingsPatch {
+        default_model: Some("stub-think".into()),
+        allow_user_choice: Some(false),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(sent(omitted).await, "effort: medium");
+    assert_eq!(sent(pinned).await, "effort: none");
+
+    h.cleanup_runs().await;
+    for sql in [
+        "DELETE FROM tenant_llm_model WHERE tenant_id = $1",
+        "DELETE FROM tenant_llm_settings WHERE tenant_id = $1",
+    ] {
+        sqlx::query(sql)
+            .bind(&h.tenant)
+            .execute(&h.pool)
+            .await
+            .unwrap();
+    }
 }
 
 // ------- Test 11: llm.invoke の構造化出力（GAP-13）----------------------------

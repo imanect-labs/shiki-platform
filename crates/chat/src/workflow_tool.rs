@@ -183,7 +183,7 @@ impl Tool for EmitWorkflowTool {
                 );
                 // 保存は止めない警告（条件の意味論の切替で分岐の結果が変わり得る条件・Task 15.7・
                 // テンプレートの `{{key}}` など）。保存 API と同じ集合。
-                let warnings = workflow_engine::save_warnings(&ir);
+                let warnings = workflow_engine::save_warnings(&ir, &catalog);
                 if !warnings.is_empty() {
                     text.push_str("\n注意（保存はしました・意図どおりか確かめてください）:");
                     for w in &warnings {

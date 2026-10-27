@@ -12,7 +12,7 @@ pub use cache::CACHE_UNSUPPORTED;
 mod decide;
 pub use decide::{DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL};
 mod llm;
-pub use llm::{MIN_STRUCTURED_MAX_TOKENS, OUTPUT_SCHEMA_FEW_TOKENS};
+pub use llm::{EFFORT_IGNORED, MIN_STRUCTURED_MAX_TOKENS, OUTPUT_SCHEMA_FEW_TOKENS};
 mod ports;
 pub use ports::{node_ports, output_ports};
 mod readiness;
@@ -103,6 +103,9 @@ pub struct Catalog {
     /// model を拒否する（ワークフローでもモデルを選ばせない・D-30）。判定のモデルには掛けない（判定には
     /// 組織の既定が無く、実行時の判定のチョークポイントも選択の禁止を見ない）。
     pub model_lock: Option<String>,
+    /// 組織の既定が Auto か（モデルを省略した llm.invoke は Auto の思考強度で動き、ノードに書いた思考の深さを
+    /// 使わない・D-75。保存時の警告 [`EFFORT_IGNORED`] に使う）。分からない構成（LLM が未構成）では false。
+    pub default_is_auto: bool,
     /// ai.decide に書ける判定用のモデル（組織が許可し、元にする chat モデルも許可されているもの・FEAT-1）。
     ///
     /// [`Self::models`] と同じく、`None` は照合しない（LLM が未構成）。`Some` は空でも照合する（判定用の
@@ -131,13 +134,14 @@ pub struct Catalog {
 /// データ変更トリガ（[`OVERLAPPING_DATA_TRIGGERS`]）と、wait(event) の filter の別名（[`WAIT_FILTER_ALIAS`]）と、
 /// 続けて待つ承認の期限の合計が実行の期限以上のもの（[`APPROVAL_TIMEOUTS_EXCEED_RUN`]）と、手動で動かす
 /// きっかけの無い IR の画面に返す結果（[`REPLY_WITHOUT_INTERACTIVE`]）と、出力の形を書いた llm.invoke の
-/// 小さすぎる上限トークン（[`OUTPUT_SCHEMA_FEW_TOKENS`]・GAP-13）と、判定のしきい値が低い・出口が多い・
+/// 小さすぎる上限トークン（[`OUTPUT_SCHEMA_FEW_TOKENS`]・GAP-13）と、組織の設定に従うので使われない思考の深さ
+/// （[`EFFORT_IGNORED`]・D-75・組織の設定は `catalog` から読む）と、判定のしきい値が低い・出口が多い・
 /// 版が固定されていないもの（[`DECIDE_LOW_CONFIDENCE`]・[`DECIDE_MANY_PORTS`]・[`DECIDE_UNPINNED_MODEL`]・
 /// FEAT-1）と、必須の文字の欄が空のもの
 /// （[`REQUIRED_TEXT_EMPTY`]・有効化と実行の前には止める・D-43）。出しうるコードは [`SAVE_WARNING_CODES`] に
 /// 載せる（web はその表から生成した定数で受ける・BUG-48）。
 #[must_use]
-pub fn save_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
+pub fn save_warnings(ir: &WorkflowIr, catalog: &Catalog) -> Vec<ValidationError> {
     let mut out = semantics_warnings(ir);
     out.extend(template::warnings(ir));
     out.extend(readiness::required_text_empty(ir));
@@ -145,6 +149,7 @@ pub fn save_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     out.extend(approval::warnings(ir));
     out.extend(reply::warnings(ir));
     out.extend(llm::warnings(ir));
+    out.extend(llm::org_warnings(ir, catalog));
     out.extend(decide::warnings(ir));
     // 表に無い警告は web の定数に出ない（警告を足したら表にも足す・テストのどの経路で起きても止める）。
     debug_assert!(
@@ -415,7 +420,7 @@ mod tests {
             "edges": []
         });
         let parsed = validate(&ir, &catalog()).expect("保存は止めない");
-        let w = save_warnings(&parsed);
+        let w = save_warnings(&parsed, &Catalog::default());
         assert_eq!(w.len(), 2, "{w:#?}");
         assert!(w.iter().all(|e| e.code == TEMPLATE_ESCAPED_VAR));
         // 条件の意味論の切替の一覧（shiki-admin workflow-conditions）には混ぜない。

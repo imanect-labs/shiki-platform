@@ -109,7 +109,7 @@ fn the_model_lock_does_not_apply_to_decisions() {
 fn warnings_flag_low_thresholds_many_ports_and_unpinned_models() {
     let parse = |v: Value| crate::ir::WorkflowIr::from_json(&v).unwrap();
     let codes = |v: Value| -> Vec<String> {
-        save_warnings(&parse(v))
+        save_warnings(&parse(v), &Catalog::default())
             .into_iter()
             .map(|w| w.code)
             .collect()

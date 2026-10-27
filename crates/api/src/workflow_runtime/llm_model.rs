@@ -6,24 +6,27 @@
 //! - 明示したモデルが組織で使えなくなっていれば、既定へ戻さずに失敗する（fail-closed）。
 //! - 組織がモデルの選択を禁じていれば、既定と違うモデルは失敗する。
 //! - 本人専用のモデル（ChatGPT プラン）は起動した人によらず使わない（誰が起動しても同じモデル）。
+//! - ノードに書いた思考の深さは、組織がモデルの選択を禁じているときと、モデルを省略して Auto で動くときは
+//!   使わない（組織の設定に従う・チャットと揃える・D-75。保存時に `ir.effort_ignored` で知らせる）。
 //!
 //! 失敗は設定を直すまで通らないので再試行しない。組織の設定を読めないときだけ再試行する。
 
 use authz::AuthContext;
-use llm_gateway::{ChoiceError, LlmGateway, ResolvedChoice};
+use llm_gateway::{ChoiceError, Effort, LlmGateway, ResolvedChoice};
 use workflow_engine::{ExecCtx, PortError};
 
 /// モデルが使えない（未登録・組織で無効・選択の禁止）ときの step の誤りの code。
 const MODEL_UNAVAILABLE: &str = "model_unavailable";
 
-/// 実行のたびに実行主体の組織の設定でモデルを解決する。
+/// 実行のたびに実行主体の組織の設定でモデルと思考の深さを解決する（`effort` はノードに書いた思考の深さ）。
 pub(super) async fn resolve_for_workflow(
     gateway: &LlmGateway,
     ec: &ExecCtx,
     ctx: &AuthContext,
     model: Option<&str>,
+    effort: Option<Effort>,
 ) -> Result<ResolvedChoice, PortError> {
-    match gateway.resolve_node_choice(ctx, model, None).await {
+    match gateway.resolve_workflow_choice(ctx, model, effort).await {
         Ok(Ok(choice)) => Ok(choice),
         Ok(Err(e)) => Err(choice_port_error(gateway, &e)),
         Err(e) => {
@@ -156,7 +159,7 @@ mod tests {
             step_path: Some("ai".into()),
         };
         let ctx = super::super::auth::auth_ctx(&ec);
-        let e = resolve_for_workflow(&gw, &ec, &ctx, None)
+        let e = resolve_for_workflow(&gw, &ec, &ctx, None, None)
             .await
             .unwrap_err();
         assert_eq!(e.code, "unavailable");

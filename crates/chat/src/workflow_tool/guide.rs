@@ -102,7 +102,6 @@ pub(super) const EXAMPLE_STRUCTURED_NODE: &str = r#"{ "id": "classify", "type": 
   "params": {
     "prompt": { "$template": "次の問い合わせの種類を決め、1 行で要約してください。\n{body}",
                 "vars": { "body": { "$from": "input", "path": "/body" } } },
-    "effort": "low",
     "output_schema": { "type": "object", "required": ["category", "summary"],
       "properties": {
         "category": { "type": "string", "enum": ["billing", "bug", "howto", "other"] },
@@ -306,9 +305,10 @@ fn structured_guide() -> String {
          - 根は {{\"type\":\"object\"}}。オブジェクトは決めた項目だけ（additionalProperties は false か省略。省略しても閉じたものとして扱う）。type は 1 つの型か [型, \"null\"]。項目名は英字か _ で始め英数字と _ だけ。使えるのは input_schema と同じキーワード（$ref・anyOf・oneOf は使えない）。\n\
          - 上限: 入れ子 {MAX_DEPTH} 段・項目 {MAX_PROPERTIES}・任意の項目（required に無い項目）{MAX_OPTIONAL}・null を許す項目 {MAX_UNIONS}・enum の値 {MAX_ENUM_VALUES}（どれも全体で数える）。\n\
          - 形に合わない出力は 1 回だけ直させ、それでも合わなければ step は llm_output_invalid で失敗する。上限で切れたら llm_output_truncated、AI が回答を拒否したら llm_refused（どちらも直さない）。max_tokens を書くなら {MIN_STRUCTURED_MAX_TOKENS} 以上（思考の分も数える）。\n\
-         - effort（\"low\" | \"medium\" | \"high\"）は思考の深さ。省略は組織の既定。分類・抽出は low で足りることが多い。\n\
+         - effort（\"low\" | \"medium\" | \"high\"）は思考の深さ。省略は組織の既定。model を省略して組織の既定の Auto で動くときと、組織がモデルの選択を禁じているときは組織の設定に従い、書いても使われない（保存時に {effort_ignored} の警告）ので、model を選んだときだけ書く。分類・抽出は low で足りることが多い。\n\
          例（ノード）: {example}\n",
         example = minify(EXAMPLE_STRUCTURED_NODE),
+        effort_ignored = workflow_engine::EFFORT_IGNORED,
     )
 }
 
@@ -423,13 +423,13 @@ mod tests {
                 ..Catalog::default()
             }
         };
+        let auto = Catalog {
+            default_is_auto: true,
+            ..Catalog::default()
+        };
         for (name, raw) in examples() {
             let ir_json = embedded(raw);
             let ir = WorkflowIr::from_json(&ir_json).unwrap_or_else(|e| panic!("{name}: {e}"));
-            assert!(
-                workflow_engine::save_warnings(&ir).is_empty(),
-                "{name}: 警告が出る例は載せない"
-            );
             // そのまま有効化できる（schedule の例の保存先フォルダの省略などを載せない・D-40・D-43）。
             assert_eq!(
                 workflow_engine::enable_blockers(&ir),
@@ -439,9 +439,14 @@ mod tests {
             for (label, catalog) in [
                 ("カタログなし", &Catalog::default()),
                 ("カタログあり", &with_models),
+                ("既定が Auto", &auto),
                 ("選択の禁止・許可 0 件", &locked),
             ] {
                 validate(&ir_json, catalog).unwrap_or_else(|e| panic!("{name}（{label}）: {e:?}"));
+                assert!(
+                    workflow_engine::save_warnings(&ir, catalog).is_empty(),
+                    "{name}（{label}）: 警告が出る例は載せない"
+                );
             }
             // 1 行にしても元の JSON と同じ値（文字列の中の空白・改行は残る）。
             let original: Value = serde_json::from_str(raw).unwrap();
@@ -722,7 +727,16 @@ mod tests {
             "nodes": [node], "edges": []
         });
         let parsed = validate(&ir, &Catalog::default()).unwrap();
-        assert!(workflow_engine::save_warnings(&parsed).is_empty());
+        // model を書かない例なので、組織の既定が Auto でも警告が出ない（effort を書かない・D-75）。
+        for catalog in [
+            Catalog::default(),
+            Catalog {
+                default_is_auto: true,
+                ..Catalog::default()
+            },
+        ] {
+            assert!(workflow_engine::save_warnings(&parsed, &catalog).is_empty());
+        }
     }
 
     #[test]

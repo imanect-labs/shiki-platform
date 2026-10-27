@@ -249,7 +249,8 @@ impl ProdNodePorts {
         gateway: Arc<dyn AgentToolGateway>,
     ) -> Result<Value, PortError> {
         let ctx = auth_ctx(ec);
-        let choice = resolve_for_workflow(&self.gateway, ec, &ctx, req.model.as_deref()).await?;
+        let choice =
+            resolve_for_workflow(&self.gateway, ec, &ctx, req.model.as_deref(), None).await?;
         let log = Arc::new(Mutex::new(RunLog::default()));
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         let mut skipped: Vec<&str> = Vec::new();

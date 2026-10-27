@@ -246,6 +246,73 @@ async fn a_locked_organization_only_accepts_its_default_model() {
     workflow_engine::validate(&llm_ir_without_model(), &catalog).unwrap();
 }
 
+/// ノードに書いた思考の深さが使われない組織の設定（省略して Auto・選択の禁止）では、保存時に警告する。材料は保存 API と
+/// emit_workflow が共有するカタログ（実行時の解決と同じ設定）から読む（D-75）。
+#[tokio::test]
+async fn effort_warnings_follow_the_organization_settings() {
+    let Some(pool) = pool().await else { return };
+    let gw = gateway(pool.clone());
+    let ctx = user();
+    let models = WorkflowModels::new(Some(gw.clone()), Vec::new());
+    let with_effort = |model: Option<&str>| {
+        let mut ir = llm_ir_without_model();
+        ir["nodes"][0]["params"]["effort"] = json!("low");
+        if let Some(m) = model {
+            ir["nodes"][0]["params"]["model"] = json!(m);
+        }
+        ir
+    };
+    let warned = |ir: &serde_json::Value, catalog: &workflow_engine::Catalog| -> bool {
+        let parsed = workflow_engine::validate(ir, catalog).unwrap();
+        workflow_engine::save_warnings(&parsed, catalog)
+            .iter()
+            .any(|w| w.code == workflow_engine::EFFORT_IGNORED)
+    };
+
+    // 未保存の組織は Auto: 省略は警告し、モデルを選べば使われるので警告しない。
+    let catalog = build_catalog_from(None, None, &models, &ctx).await.unwrap();
+    assert!(catalog.default_is_auto);
+    assert!(warned(&with_effort(None), &catalog));
+    assert!(!warned(&with_effort(Some("fast")), &catalog));
+
+    // 既定が特定のモデル（選べる）: 省略でも使われる。
+    let patch = SettingsPatch {
+        default_model: Some("local".into()),
+        ..Default::default()
+    };
+    gw.update_tenant_settings(&ctx, &patch)
+        .await
+        .unwrap()
+        .unwrap();
+    let catalog = build_catalog_from(None, None, &models, &ctx).await.unwrap();
+    assert!(!catalog.default_is_auto);
+    assert!(!warned(&with_effort(None), &catalog));
+
+    // 選択の禁止: 省略でも既定と同じモデルの明示でも使われない。
+    let patch = SettingsPatch {
+        allow_user_choice: Some(false),
+        ..Default::default()
+    };
+    gw.update_tenant_settings(&ctx, &patch)
+        .await
+        .unwrap()
+        .unwrap();
+    let catalog = build_catalog_from(None, None, &models, &ctx).await.unwrap();
+    assert!(warned(&with_effort(None), &catalog));
+    assert!(warned(&with_effort(Some("local")), &catalog));
+
+    for sql in [
+        "DELETE FROM tenant_llm_model WHERE tenant_id = $1",
+        "DELETE FROM tenant_llm_settings WHERE tenant_id = $1",
+    ] {
+        sqlx::query(sql)
+            .bind(&ctx.tenant_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
+
 fn llm_ir_without_model() -> serde_json::Value {
     json!({
         "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],

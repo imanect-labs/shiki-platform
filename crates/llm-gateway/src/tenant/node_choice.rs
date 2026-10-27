@@ -6,9 +6,13 @@
 //! - 使えないモデル（カタログ外・組織で無効・本人専用で外したもの・判定用のモデル）は既定へ戻さず拒否する
 //!   （fail-closed・D-30）。
 //! - `auto` という文字列はモデルとして扱わない（IR のモデル欄に Auto は書けない・保存時検証 V3 と揃える）。
-//! - 思考強度は呼び出し側の指定だけを送る（組織の `default_effort` を足さない。IR に effort が無いので、
-//!   明示モデルのワークフローは今までどおり思考強度なしで動く）。
+//! - 思考強度は呼び出し側の指定だけを送る（組織の `default_effort` を足さない。effort を書かない明示モデルの
+//!   ワークフローは今までどおり思考強度なしで動く）。
 //! - 選択の禁止（`allow_user_choice=false`）はチャットと同じく、既定と同じモデル以外を拒否する。
+//!
+//! ワークフローの `llm.invoke` に書いた思考の深さ（`effort`）は [`resolve_workflow_choice`] が扱う。組織がモデルの
+//! 選択を禁じているときと、モデルを省略して組織の既定の Auto で動くときは使わず、組織の設定に従う（チャットと
+//! 揃える・D-75。チャットは Auto で利用者の指定を使わず、選択を禁じた組織では選ぶ画面を出さない）。
 
 use super::{
     resolve_choice, ChoiceError, ModelChoice, ResolvedChoice, TenantLlmSettings, AUTO_MODEL,
@@ -54,6 +58,32 @@ pub fn resolve_node_choice(
         effort,
         auto: false,
     })
+}
+
+/// ワークフローのノードに書いた思考の深さを使うか（D-75）。
+///
+/// 組織がモデルの選択を禁じているとき（`allow_user_choice=false`）と、モデルを省略して組織の既定の Auto で
+/// 動くときは使わない。保存時の警告（workflow-engine の `ir.effort_ignored`）も同じ規則で出す。
+#[must_use]
+pub fn node_effort_applies(settings: &TenantLlmSettings, model: Option<&str>) -> bool {
+    let omitted = model.is_none_or(str::is_empty);
+    settings.allow_user_choice && !(omitted && settings.default_model == AUTO_MODEL)
+}
+
+/// ワークフローのノード（`llm.invoke`）のモデルと思考の深さを解決する。
+///
+/// [`resolve_node_choice`] と同じ規則に、ノードの思考の深さの規則（[`node_effort_applies`]）を足す。使わない
+/// ときは書かなかったのと同じに解決する（省略は組織の既定の思考強度か Auto の設定・明示したモデルは思考強度なし）。
+pub fn resolve_workflow_choice(
+    catalog: &ModelCatalog,
+    auto: &AutoConfig,
+    settings: &TenantLlmSettings,
+    supports_effort: impl Fn(&ModelEntry) -> bool,
+    model: Option<&str>,
+    effort: Option<Effort>,
+) -> Result<ResolvedChoice, ChoiceError> {
+    let effort = effort.filter(|_| node_effort_applies(settings, model));
+    resolve_node_choice(catalog, auto, settings, supports_effort, model, effort)
 }
 
 #[cfg(test)]
@@ -174,6 +204,62 @@ mod tests {
             Err(ChoiceError::ModelNotAllowed(AUTO_MODEL.into()))
         );
         assert_eq!(resolve(&auto_locked, None, None).unwrap().model, "b");
+    }
+
+    fn workflow(
+        settings: &TenantLlmSettings,
+        model: Option<&str>,
+        effort: Option<Effort>,
+    ) -> Result<ResolvedChoice, ChoiceError> {
+        resolve_workflow_choice(
+            &catalog(),
+            &auto(),
+            settings,
+            |e| e.supports_effort.unwrap_or(false),
+            model,
+            effort,
+        )
+    }
+
+    /// ノードの思考の深さは、選べる組織で特定のモデルで動くときだけ使う。省略して Auto で動くときと、選択を禁じた
+    /// 組織では使わず、組織の設定（Auto の思考強度・既定の思考強度）に従う（チャットと揃える・D-75）。
+    #[test]
+    fn node_effort_follows_the_chat_rules() {
+        let low = Some(Effort::Low);
+        // 選べる組織: 明示したモデル・既定が特定のモデルの省略は、ノードの指定を使う。
+        let r = workflow(&settings(AUTO_MODEL), Some("a"), low).unwrap();
+        assert_eq!((r.model.as_str(), r.effort), ("a", low));
+        let r = workflow(&settings("a"), None, low).unwrap();
+        assert_eq!((r.model.as_str(), r.effort), ("a", low));
+        // 省略して Auto で動く: Auto の思考強度（Low）。ノードに High と書いても使わない。
+        let r = workflow(&settings(AUTO_MODEL), Some(""), Some(Effort::High)).unwrap();
+        assert_eq!(
+            (r.model.as_str(), r.effort, r.auto),
+            ("b", Some(Effort::Low), true)
+        );
+        // 選択を禁じた組織: 省略は組織の既定の思考強度（High）、既定と同じ明示は思考強度なし（書かないのと同じ）。
+        let mut locked = settings("a");
+        locked.allow_user_choice = false;
+        let r = workflow(&locked, None, low).unwrap();
+        assert_eq!((r.model.as_str(), r.effort), ("a", Some(Effort::High)));
+        let r = workflow(&locked, Some("a"), low).unwrap();
+        assert_eq!((r.model.as_str(), r.effort), ("a", None));
+        assert_eq!(
+            workflow(&locked, Some("b"), low),
+            Err(ChoiceError::ChoiceDisabled)
+        );
+        let mut auto_locked = settings(AUTO_MODEL);
+        auto_locked.allow_user_choice = false;
+        let r = workflow(&auto_locked, None, Some(Effort::High)).unwrap();
+        assert_eq!((r.model.as_str(), r.effort), ("b", Some(Effort::Low)));
+
+        // 規則そのもの（保存時の警告と同じ）。
+        assert!(node_effort_applies(&settings(AUTO_MODEL), Some("a")));
+        assert!(node_effort_applies(&settings("a"), None));
+        assert!(!node_effort_applies(&settings(AUTO_MODEL), None));
+        assert!(!node_effort_applies(&settings(AUTO_MODEL), Some("")));
+        assert!(!node_effort_applies(&locked, Some("a")));
+        assert!(!node_effort_applies(&locked, None));
     }
 
     #[test]

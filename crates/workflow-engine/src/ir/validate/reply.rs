@@ -120,7 +120,7 @@ mod tests {
             json!([{ "kind": "interactive" }]),
         );
         let parsed = validate(&v, &Catalog::default()).unwrap();
-        assert!(save_warnings(&parsed).is_empty());
+        assert!(save_warnings(&parsed, &Catalog::default()).is_empty());
     }
 
     #[test]
@@ -189,7 +189,7 @@ mod tests {
             json!([{ "kind": "schedule", "cron": "0 9 * * *", "tz": "Asia/Tokyo" }]),
         );
         let parsed = validate(&v, &Catalog::default()).unwrap();
-        let w = save_warnings(&parsed);
+        let w = save_warnings(&parsed, &Catalog::default());
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].code, REPLY_WITHOUT_INTERACTIVE);
         assert_eq!(w[0].node_id.as_deref(), Some("r"));

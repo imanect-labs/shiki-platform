@@ -16,6 +16,8 @@
 //!   遅延ツールを次のターンで呼ぶ（[`super::stub_triggers::tool_search_call`]）。
 //! - `echosystem:` … 受け取った system プロンプトをそのまま本文で返す（system の組み立て
 //!   ＝今日の日付などが実際にモデルへ届くことの検証用・#546）。
+//! - `echoeffort:` … 受け取った思考の深さ（無ければ `none`）を `effort: <値>` で返す（ノードの思考の深さの解決が
+//!   実際にモデルへ届く値になることの検証用・D-75）。
 //! - `<conversation>…</conversation>` … 包みの中の最初の行を返す（会話の自動タイトル用。
 //!   「回答: 」を付けない）。
 //! - 構造化出力（形の指定があるとき）… スキーマに合う最小の値・`json:` / `jsonalways:` /
@@ -32,8 +34,8 @@ use super::stub_stream::{
 };
 use super::stub_structured::structured_call;
 use super::stub_triggers::{
-    conversation_title_call, echo_system_call, generic_tool_call, note_suggest_call,
-    note_tool_call, tool_search_call,
+    conversation_title_call, echo_effort_call, echo_system_call, generic_tool_call,
+    note_suggest_call, note_tool_call, tool_search_call,
 };
 use super::timeouts::RequestClock;
 use crate::config::LlmTimeouts;
@@ -260,7 +262,7 @@ fn parallel_read_call(
     (!calls.is_empty()).then(|| tool_calls_stream(calls, prompt_tokens))
 }
 
-/// 本文を決め打ちで返す駆動（図・推論の引き継ぎ・受け取った system の返却）をまとめて試す。
+/// 本文を決め打ちで返す駆動（図・推論の引き継ぎ・受け取った system と思考の深さの返却）をまとめて試す。
 fn fixed_reply_call(
     req: &GenerateRequest,
     user_text: &str,
@@ -269,6 +271,7 @@ fn fixed_reply_call(
     yui_call(user_text, prompt_tokens)
         .or_else(|| reasoning_call(req, user_text, prompt_tokens))
         .or_else(|| echo_system_call(req, user_text, prompt_tokens))
+        .or_else(|| echo_effort_call(req, user_text, prompt_tokens))
         .or_else(|| conversation_title_call(user_text, prompt_tokens))
 }
 

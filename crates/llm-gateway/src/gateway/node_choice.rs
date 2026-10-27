@@ -54,4 +54,24 @@ impl LlmGateway {
             effort,
         ))
     }
+
+    /// ワークフローの `llm.invoke` のモデルと思考の深さを解決する（ノードの思考の深さの規則つき・D-75）。
+    ///
+    /// 設定は [`Self::resolve_node_choice`] と同じ。規則は [`crate::tenant::resolve_workflow_choice`] にある。
+    pub async fn resolve_workflow_choice(
+        &self,
+        ctx: &AuthContext,
+        model: Option<&str>,
+        effort: Option<Effort>,
+    ) -> Result<Result<ResolvedChoice, ChoiceError>, sqlx::Error> {
+        let settings = self.settings_without_personal(ctx).await?;
+        Ok(tenant::resolve_workflow_choice(
+            &self.inner.config.catalog,
+            &self.inner.config.auto,
+            &settings,
+            |e| self.supports_effort(e),
+            model,
+            effort,
+        ))
+    }
 }

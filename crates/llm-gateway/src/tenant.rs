@@ -21,7 +21,7 @@ use crate::model::Effort;
 
 /// ノード（ワークフロー・ミニアプリ）のモデル指定の解決（tenant.rs の行数上限のため分割）。
 mod node_choice;
-pub use node_choice::resolve_node_choice;
+pub use node_choice::{node_effort_applies, resolve_node_choice, resolve_workflow_choice};
 /// モデルの種類による絞り込み（同上）。
 mod modality;
 

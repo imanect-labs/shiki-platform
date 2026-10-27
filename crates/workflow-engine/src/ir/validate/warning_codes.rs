@@ -6,7 +6,7 @@
 
 use super::{
     APPROVAL_TIMEOUTS_EXCEED_RUN, DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL,
-    OUTPUT_SCHEMA_FEW_TOKENS, OVERLAPPING_DATA_TRIGGERS, REPLY_WITHOUT_INTERACTIVE,
+    EFFORT_IGNORED, OUTPUT_SCHEMA_FEW_TOKENS, OVERLAPPING_DATA_TRIGGERS, REPLY_WITHOUT_INTERACTIVE,
     REQUIRED_TEXT_EMPTY, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE,
     WAIT_FILTER_ALIAS,
 };
@@ -29,6 +29,7 @@ pub const SAVE_WARNING_CODES: &[(&str, &str)] = named![
     APPROVAL_TIMEOUTS_EXCEED_RUN,
     REPLY_WITHOUT_INTERACTIVE,
     OUTPUT_SCHEMA_FEW_TOKENS,
+    EFFORT_IGNORED,
     DECIDE_LOW_CONFIDENCE,
     DECIDE_MANY_PORTS,
     DECIDE_UNPINNED_MODEL,
@@ -42,7 +43,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    use crate::ir::validate::save_warnings;
+    use crate::ir::validate::{save_warnings, Catalog};
     use crate::ir::WorkflowIr;
 
     const TABLE: &str = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
@@ -86,8 +87,30 @@ mod tests {
                        "min_confidence": min_confidence.parse::<f64>().unwrap() } } })
     }
 
-    /// 各警告を 1 つずつ起こす IR。
-    fn samples() -> Vec<(&'static str, WorkflowIr)> {
+    /// 各警告を 1 つずつ起こす IR（組織の設定で出る警告は、その設定のカタログと組にする・それ以外は既定）。
+    fn samples() -> Vec<(&'static str, WorkflowIr, Catalog)> {
+        let mut out: Vec<(&'static str, WorkflowIr, Catalog)> = ir_samples()
+            .into_iter()
+            .map(|(code, ir)| (code, ir, Catalog::default()))
+            .collect();
+        out.push((
+            EFFORT_IGNORED,
+            ir(
+                interactive(),
+                json!([{ "id": "ai", "type": "llm.invoke", "params": {
+                    "prompt": "分類して", "effort": "low" } }]),
+                json!([]),
+            ),
+            Catalog {
+                default_is_auto: true,
+                ..Catalog::default()
+            },
+        ));
+        out
+    }
+
+    /// IR だけで起きる警告の例。
+    fn ir_samples() -> Vec<(&'static str, WorkflowIr)> {
         vec![
             (
                 SEMANTICS_CHANGED,
@@ -201,8 +224,11 @@ mod tests {
     #[test]
     fn the_table_lists_every_save_warning() {
         let samples = samples();
-        for (code, ir) in &samples {
-            let got: Vec<String> = save_warnings(ir).into_iter().map(|w| w.code).collect();
+        for (code, ir, catalog) in &samples {
+            let got: Vec<String> = save_warnings(ir, catalog)
+                .into_iter()
+                .map(|w| w.code)
+                .collect();
             assert!(got.iter().any(|c| c == code), "{code} が出ない: {got:?}");
             for c in &got {
                 assert!(
@@ -212,7 +238,7 @@ mod tests {
             }
         }
         let listed: BTreeSet<&str> = SAVE_WARNING_CODES.iter().map(|(_, v)| *v).collect();
-        let raised: BTreeSet<&str> = samples.iter().map(|(c, _)| *c).collect();
+        let raised: BTreeSet<&str> = samples.iter().map(|(c, _, _)| *c).collect();
         assert_eq!(listed, raised, "表に載せた警告を起こす例が足りない");
         assert_eq!(
             listed.len(),

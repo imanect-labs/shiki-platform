@@ -42,8 +42,12 @@ pub struct SaveWorkflowResponse {
 
 /// 保存した IR の警告（`ir.condition_semantics_changed`・`ir.template_escaped_var` など）。
 /// 条件の意味論の切替に当たるものは、運用が気付けるようログにも残す。
-fn save_warnings(ir: &workflow_engine::WorkflowIr, id: Uuid) -> Vec<ValidationError> {
-    let warnings = workflow_engine::save_warnings(ir);
+fn save_warnings(
+    ir: &workflow_engine::WorkflowIr,
+    catalog: &Catalog,
+    id: Uuid,
+) -> Vec<ValidationError> {
+    let warnings = workflow_engine::save_warnings(ir, catalog);
     let semantics = warnings
         .iter()
         .filter(|w| w.code == workflow_engine::SEMANTICS_CHANGED)
@@ -165,7 +169,7 @@ pub async fn validate_workflow(
     let (errors, warnings, node_ports) = match workflow_engine::validate(&ir, &catalog) {
         Ok(ir) => (
             Vec::new(),
-            workflow_engine::save_warnings(&ir),
+            workflow_engine::save_warnings(&ir, &catalog),
             workflow_engine::node_ports(&ir),
         ),
         // スキーマ（V1）を通る IR なら、他の誤りがあっても警告と出口は出す（エディタが同時に表示する）。
@@ -173,7 +177,7 @@ pub async fn validate_workflow(
             let (warnings, ports) = workflow_engine::WorkflowIr::from_json(&ir)
                 .map(|ir| {
                     (
-                        workflow_engine::save_warnings(&ir),
+                        workflow_engine::save_warnings(&ir, &catalog),
                         workflow_engine::node_ports(&ir),
                     )
                 })
@@ -236,7 +240,7 @@ pub async fn create_workflow(
         .create(&ctx, &req.ir, &catalog, trace.as_deref())
         .await
         .map_err(map_store_err)?;
-    let warnings = save_warnings(&ir, id);
+    let warnings = save_warnings(&ir, &catalog, id);
     Ok((
         StatusCode::CREATED,
         Json(SaveWorkflowResponse {
@@ -285,7 +289,7 @@ pub async fn update_workflow(
         )
         .await
         .map_err(map_store_err)?;
-    let warnings = save_warnings(&ir, id);
+    let warnings = save_warnings(&ir, &catalog, id);
     Ok(Json(SaveWorkflowResponse {
         id,
         version,

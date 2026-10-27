@@ -36,15 +36,11 @@ const fn gateway_effort(e: LlmEffort) -> Effort {
     }
 }
 
-/// 生成の要求を組む（`model` は解決済みの論理名・`resolved_effort` は組織の既定から決めた思考の深さ）。
+/// 生成の要求を組む（`model` と `effort` は解決済みの論理名と思考の深さ・[`resolve_for_workflow`]）。
 ///
-/// ノードに書いた思考の深さは組織の既定より優先する（対応しないモデルでは gateway が落とす）。修復の依頼が
-/// あれば、会話を `[user: prompt][assistant: 直前の出力][user: 依頼]` にする（user で終える・prefill にしない）。
-fn build_request(
-    req: &LlmInvokeReq,
-    model: &str,
-    resolved_effort: Option<Effort>,
-) -> GenerateRequest {
+/// ノードに書いた思考の深さは解決で決まる（組織の設定に従うときは使わない・D-75）。ここで足し直さない。修復の
+/// 依頼があれば、会話を `[user: prompt][assistant: 直前の出力][user: 依頼]` にする（user で終える・prefill にしない）。
+fn build_request(req: &LlmInvokeReq, model: &str, effort: Option<Effort>) -> GenerateRequest {
     let mut messages = vec![Message::text(Role::User, req.prompt.clone())];
     if let Some(r) = &req.repair {
         messages.push(Message::text(Role::Assistant, r.previous_output.clone()));
@@ -52,7 +48,7 @@ fn build_request(
     }
     let mut greq = GenerateRequest::new(messages);
     greq.model = Some(model.to_string());
-    greq.effort = req.effort.map(gateway_effort).or(resolved_effort);
+    greq.effort = effort;
     greq.system.clone_from(&req.system);
     greq.max_tokens = req.max_tokens;
     greq.response_format = req
@@ -113,7 +109,14 @@ pub(super) async fn invoke(
     let ctx = auth_ctx(ec);
     // モデルは実行のたびに実行主体の組織の設定で決める（省略は組織の既定・BUG-12）。解決後の名前を
     // 生成・会計・出力に同じ値で使う（gateway の既定に任せると会計の名前とずれる）。
-    let choice = resolve_for_workflow(&ports.gateway, ec, &ctx, req.model.as_deref()).await?;
+    let choice = resolve_for_workflow(
+        &ports.gateway,
+        ec,
+        &ctx,
+        req.model.as_deref(),
+        req.effort.map(gateway_effort),
+    )
+    .await?;
     let greq = build_request(&req, &choice.model, choice.effort);
     let structured = req.output_schema.is_some();
     // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
@@ -226,9 +229,10 @@ mod tests {
         assert_eq!(texts(&g), vec![(Role::User, "分類して".to_string())]);
     }
 
-    /// ノードの思考の深さは組織の既定より優先し、出力の形は response_format で求める。
+    /// 思考の深さは解決したものだけを送り、ノードの指定で上書きしない（組織の設定に従うときに解決が外したものを
+    /// 戻さない・D-75）。出力の形は response_format で求める。
     #[test]
-    fn structured_request_carries_effort_and_schema() {
+    fn structured_request_carries_the_resolved_effort_and_schema() {
         let schema = json!({ "type": "object", "additionalProperties": false });
         let r = LlmInvokeReq {
             effort: Some(LlmEffort::Low),
@@ -236,7 +240,7 @@ mod tests {
             ..req()
         };
         let g = build_request(&r, "fast", Some(Effort::High));
-        assert_eq!(g.effort, Some(Effort::Low));
+        assert_eq!(g.effort, Some(Effort::High), "解決した思考の深さ");
         assert_eq!(
             g.response_format,
             Some(ResponseFormat::JsonSchema {
@@ -244,8 +248,9 @@ mod tests {
                 schema
             })
         );
-        // 組織の既定が無いモデル（思考に対応しない）でもノードの指定は送る（gateway が落とす）。
-        assert_eq!(build_request(&r, "fast", None).effort, Some(Effort::Low));
+        assert_eq!(build_request(&r, "fast", None).effort, None);
+        // ノードの指定は解決に渡す（llm-gateway の resolve_workflow_choice が規則を持つ）。
+        assert_eq!(r.effort.map(gateway_effort), Some(Effort::Low));
     }
 
     /// 修復は [user: prompt][assistant: 直前の出力][user: 依頼] の会話で、user で終える。

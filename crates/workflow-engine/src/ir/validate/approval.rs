@@ -479,7 +479,7 @@ mod tests {
             json!([{ "from": "first", "from_port": "approved", "to": "second" }]),
         );
         let parsed = validate(&serial, &Catalog::default()).unwrap();
-        let w = save_warnings(&parsed);
+        let w = save_warnings(&parsed, &Catalog::default());
         assert!(
             w.iter().any(|e| e.code == APPROVAL_TIMEOUTS_EXCEED_RUN),
             "{w:?}"
@@ -493,7 +493,7 @@ mod tests {
             json!([]),
         );
         let parsed = validate(&parallel, &Catalog::default()).unwrap();
-        assert!(save_warnings(&parsed)
+        assert!(save_warnings(&parsed, &Catalog::default())
             .iter()
             .all(|e| e.code != APPROVAL_TIMEOUTS_EXCEED_RUN));
     }

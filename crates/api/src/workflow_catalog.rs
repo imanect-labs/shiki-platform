@@ -33,6 +33,8 @@ pub struct WorkflowModelCheck {
     pub ids: Option<Vec<String>>,
     /// 組織がモデルの選択を禁じているときの既定（`auto` かモデル ID）。
     pub lock: Option<String>,
+    /// 組織の既定が Auto か（[`Catalog::default_is_auto`]・ノードの思考の深さの警告・D-75）。LLM 未構成は false。
+    pub default_is_auto: bool,
     /// ai.decide に書ける判定用のモデル id（カタログ順・[`Catalog::decision_models`]）。`None` は照合しない
     /// （LLM 未構成）。gateway があれば、組織が許可し、元にする chat モデルも許可されているものだけ
     /// （`/llm/models?purpose=workflow&modality=decision` と同じ集合）。
@@ -68,6 +70,7 @@ impl WorkflowModels {
                 Ok(WorkflowModelCheck {
                     ids: configured.then(|| of(llm_gateway::Modality::Chat)),
                     lock: None,
+                    default_is_auto: false,
                     decision_ids: configured.then(|| of(llm_gateway::Modality::Decision)),
                 })
             }
@@ -86,6 +89,8 @@ impl WorkflowModels {
                             .collect(),
                     ),
                     lock: (!settings.allow_user_choice).then_some(settings.default_model.clone()),
+                    // 実行時の解決（`resolve_workflow_choice`）と同じ設定で、省略したモデルが Auto で動くか。
+                    default_is_auto: settings.default_model == llm_gateway::AUTO_MODEL,
                     // ai.decide に書けるのは判定用のモデルだけ（元の chat モデルが無効なものは除く・FEAT-1）。
                     decision_ids: Some(
                         settings
@@ -134,6 +139,7 @@ pub async fn build_catalog_from(
     let check = models.check(ctx).await?;
     catalog.models = check.ids;
     catalog.model_lock = check.lock;
+    catalog.default_is_auto = check.default_is_auto;
     catalog.decision_models = check.decision_ids;
     Ok(catalog)
 }
