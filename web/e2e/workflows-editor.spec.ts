@@ -767,61 +767,65 @@ test("入力項目: 並びは保存して開き直しても変わらず、上下
   await loginViaKeycloak(page);
   const models = await llmModels(page);
   const id = await createLlmFlow(page, { model: models?.models[0]?.id, prompt: "次の申請を要約してください" });
-  await openFlow(page, id);
-  const canvas = page.locator(".react-flow");
-  const triggerPanel = page.getByRole("complementary", { name: "きっかけの設定" });
-  const shownOrder = () =>
-    triggerPanel
-      .getByTestId("input-field-row")
-      .getByLabel("表示名")
-      .evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value));
-  const reopen = async () => {
-    await page.reload();
-    await expect(canvas.getByText("要約する").first()).toBeVisible({ timeout: 15_000 });
+  // 途中で落ちても作ったワークフローを残さない（BUG-63・66）。
+  try {
+    await openFlow(page, id);
+    const canvas = page.locator(".react-flow");
+    const triggerPanel = page.getByRole("complementary", { name: "きっかけの設定" });
+    const shownOrder = () =>
+      triggerPanel
+        .getByTestId("input-field-row")
+        .getByLabel("表示名")
+        .evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value));
+    const reopen = async () => {
+      await page.reload();
+      await expect(canvas.getByText("要約する").first()).toBeVisible({ timeout: 15_000 });
+      await canvas.getByText("手動で実行").first().click();
+    };
+
+    // BUG-34 の再現手順: キーの辞書順（amount・category・title）と違う順に 3 つ足して保存し、開き直す。
     await canvas.getByText("手動で実行").first().click();
-  };
+    for (const [title, key] of [
+      ["件名", "title"],
+      ["金額", "amount"],
+      ["区分", "category"],
+    ]) {
+      await triggerPanel.getByRole("button", { name: "項目を追加" }).click();
+      const row = triggerPanel.getByTestId("input-field-row").last();
+      await row.getByLabel("表示名").fill(title);
+      await row.getByLabel("キー", { exact: true }).fill(key);
+    }
+    await expect.poll(shownOrder).toEqual(["件名", "金額", "区分"]);
+    await saveFlow(page);
+    expect((await savedIr(page, id)).input_schema).toMatchObject({ "x-order": ["title", "amount", "category"] });
+    await reopen();
+    await expect.poll(shownOrder).toEqual(["件名", "金額", "区分"]);
 
-  // BUG-34 の再現手順: キーの辞書順（amount・category・title）と違う順に 3 つ足して保存し、開き直す。
-  await canvas.getByText("手動で実行").first().click();
-  for (const [title, key] of [
-    ["件名", "title"],
-    ["金額", "amount"],
-    ["区分", "category"],
-  ]) {
-    await triggerPanel.getByRole("button", { name: "項目を追加" }).click();
-    const row = triggerPanel.getByTestId("input-field-row").last();
-    await row.getByLabel("表示名").fill(title);
-    await row.getByLabel("キー", { exact: true }).fill(key);
+    // 上下のボタンで並べ替える。フォーカスは動かした項目のボタンに付いていき、続けてキーボードで動かせる
+    // （先頭まで来て「上へ」が押せなくなったら「下へ」に移る）。
+    await triggerPanel.getByRole("button", { name: "入力項目「区分」を上へ" }).click();
+    await expect.poll(shownOrder).toEqual(["件名", "区分", "金額"]);
+    await expect(triggerPanel.getByRole("button", { name: "入力項目「区分」を上へ" })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(shownOrder).toEqual(["区分", "件名", "金額"]);
+    await expect(triggerPanel.getByRole("button", { name: "入力項目「区分」を上へ" })).toBeDisabled();
+    await expect(triggerPanel.getByRole("button", { name: "入力項目「区分」を下へ" })).toBeFocused();
+    await expect(triggerPanel.getByRole("button", { name: "入力項目「金額」を下へ" })).toBeDisabled();
+    await saveFlow(page);
+    expect((await savedIr(page, id)).input_schema).toMatchObject({ "x-order": ["category", "title", "amount"] });
+    await reopen();
+    await expect.poll(shownOrder).toEqual(["区分", "件名", "金額"]);
+
+    // 実行のダイアログも同じ順に並ぶ（開くだけで実行はしない）。
+    await page.getByRole("button", { name: "実行", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "いま実行する" });
+    await expect(dialog.getByRole("textbox", { name: "件名" })).toBeVisible();
+    expect(await dialog.locator("label").allTextContents()).toEqual(["区分", "件名", "金額"]);
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+  } finally {
+    await deleteFlow(page, id);
   }
-  await expect.poll(shownOrder).toEqual(["件名", "金額", "区分"]);
-  await saveFlow(page);
-  expect((await savedIr(page, id)).input_schema).toMatchObject({ "x-order": ["title", "amount", "category"] });
-  await reopen();
-  await expect.poll(shownOrder).toEqual(["件名", "金額", "区分"]);
-
-  // 上下のボタンで並べ替える。フォーカスは動かした項目のボタンに付いていき、続けてキーボードで動かせる
-  // （先頭まで来て「上へ」が押せなくなったら「下へ」に移る）。
-  await triggerPanel.getByRole("button", { name: "入力項目「区分」を上へ" }).click();
-  await expect.poll(shownOrder).toEqual(["件名", "区分", "金額"]);
-  await expect(triggerPanel.getByRole("button", { name: "入力項目「区分」を上へ" })).toBeFocused();
-  await page.keyboard.press("Enter");
-  await expect.poll(shownOrder).toEqual(["区分", "件名", "金額"]);
-  await expect(triggerPanel.getByRole("button", { name: "入力項目「区分」を上へ" })).toBeDisabled();
-  await expect(triggerPanel.getByRole("button", { name: "入力項目「区分」を下へ" })).toBeFocused();
-  await expect(triggerPanel.getByRole("button", { name: "入力項目「金額」を下へ" })).toBeDisabled();
-  await saveFlow(page);
-  expect((await savedIr(page, id)).input_schema).toMatchObject({ "x-order": ["category", "title", "amount"] });
-  await reopen();
-  await expect.poll(shownOrder).toEqual(["区分", "件名", "金額"]);
-
-  // 実行のダイアログも同じ順に並ぶ（開くだけで実行はしない）。
-  await page.getByRole("button", { name: "実行", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "いま実行する" });
-  await expect(dialog.getByRole("textbox", { name: "件名" })).toBeVisible();
-  expect(await dialog.locator("label").allTextContents()).toEqual(["区分", "件名", "金額"]);
-  await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(0);
-  await deleteFlow(page, id);
 });
 
 test("差し込む: {{key}} を直すボタンと差し込み名の変更で、本文の {名前} と vars が対応したまま保存される（BUG-1）", async ({

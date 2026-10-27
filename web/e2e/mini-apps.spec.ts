@@ -215,25 +215,26 @@ test.describe("ミニアプリ（画面の作成・実行・バンドル権限�
       },
     });
 
-    await page.goto("/apps");
-    await page.getByRole("button", { name: "アプリを作成" }).first().click();
-    const dialog = page.getByRole("dialog");
-    await dialog.getByLabel("追加するワークフロー").selectOption({ label: `${flow}（v1）` });
-    await dialog.getByRole("button", { name: "追加" }).click();
-    // 雛形（金額・区分・申請する）の機能を選んだまま、まだ部品の無い入力が x-order の順に並ぶ。
-    const editor = dialog.getByTestId("screen-builder").locator("[data-yui=app-editor]");
-    const hints = editor
-      .locator(".ye-pal-group")
-      .filter({ has: page.locator(".ye-pal-title", { hasText: "実行先の入力（まだ無いもの）" }) })
-      .locator(".ye-pal-item");
-    await expect(hints).toHaveCount(3);
-    await expect(hints).toHaveText([/^件名送る名前 title・必須/, /^メモ送る名前 memo/, /^期日送る名前 due/]);
-    await dialog.getByRole("button", { name: "キャンセル" }).click();
-    await expect(dialog).toHaveCount(0);
-
-    const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
-    const del = await page.request.delete(`/api/artifacts/${wf.id}`, { headers: { "X-CSRF-Token": csrf } });
-    expect(del.status(), await del.text()).toBeLessThan(300);
+    // 途中で落ちても作ったワークフローを残さない（BUG-63・66）。
+    try {
+      await page.goto("/apps");
+      await page.getByRole("button", { name: "アプリを作成" }).first().click();
+      const dialog = page.getByRole("dialog");
+      await dialog.getByLabel("追加するワークフロー").selectOption({ label: `${flow}（v1）` });
+      await dialog.getByRole("button", { name: "追加" }).click();
+      // 雛形（金額・区分・申請する）の機能を選んだまま、まだ部品の無い入力が x-order の順に並ぶ。
+      const editor = dialog.getByTestId("screen-builder").locator("[data-yui=app-editor]");
+      const hints = editor
+        .locator(".ye-pal-group")
+        .filter({ has: page.locator(".ye-pal-title", { hasText: "実行先の入力（まだ無いもの）" }) })
+        .locator(".ye-pal-item");
+      await expect(hints).toHaveCount(3);
+      await expect(hints).toHaveText([/^件名送る名前 title・必須/, /^メモ送る名前 memo/, /^期日送る名前 due/]);
+      await dialog.getByRole("button", { name: "キャンセル" }).click();
+      await expect(dialog).toHaveCount(0);
+    } finally {
+      await cleanupArtifacts(page, [wf.id]);
+    }
   });
 
   test("会話の ```ui app を「アプリとして保存」して、そのまま使える", async ({ page }) => {
