@@ -147,6 +147,21 @@ export function NumberInput({
   );
 }
 
+/// 秒を「N 秒」か「N 分」で言う（1 分未満だけ秒・付録 C の P11）。
+function period(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m === 0) return `${s} 秒`;
+  return s === 0 ? `${m.toLocaleString("ja-JP")} 分` : `${m.toLocaleString("ja-JP")} 分 ${s} 秒`;
+}
+
+/// 時間の上限の注記（数はカタログの timeout_default_sec と timeout_max_sec から・付録 D の N2.6）。
+function timeoutHint(defaultSec: number, maxSec: number, agent: boolean): string {
+  const def = defaultSec >= 60 ? `${defaultSec.toLocaleString("ja-JP")} 秒（${period(defaultSec)}）` : `${defaultSec} 秒`;
+  const agentNote = agent ? "「AI の作業時間の上限」より短くはできません。" : "";
+  return `空欄なら ${def}で、最大 ${maxSec.toLocaleString("ja-JP")} 秒です。${agentNote}過ぎると、このブロックは失敗します。`;
+}
+
 /// 共通セクション（全ノード種）。
 export function CommonSection({
   node,
@@ -213,8 +228,27 @@ export function CommonSection({
             }
           />
         </Field>
-        {/* 時間の上限（ノードの timeout_sec）は、エンジンが読まず何も起きないので出さない（BUG-96・付録 D の
-            N2.6）。保存済みの値は IR に残す。 */}
+        {/* 時間の上限（ノードの timeout_sec）。エンジンが打ち切るようになったので出す（BUG-96・付録 D の N2.6）。
+            打ち切らない種（流れの制御など・カタログに既定が無い）では出さない。 */}
+        {entry?.timeout_default_sec && entry.timeout_max_sec ? (
+          <Field
+            label="時間の上限（秒・省略可）"
+            hint={timeoutHint(entry.timeout_default_sec, entry.timeout_max_sec, node.type === "agent.invoke")}
+          >
+            <NumberInput
+              value={node.timeout_sec ?? null}
+              min={1}
+              max={entry.timeout_max_sec}
+              onChange={(n) =>
+                dispatch({
+                  type: "update_node",
+                  id: node.id,
+                  patch: { timeout_sec: n } as Partial<IrNode>,
+                })
+              }
+            />
+          </Field>
+        ) : null}
       </div>
       <Field
         label="失敗したとき"
