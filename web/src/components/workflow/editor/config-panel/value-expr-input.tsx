@@ -131,6 +131,8 @@ type Props = {
   /// 固定値の数字を数として保存する（条件の比べる値・[`numericLiteral`]・BUG-31）。数になった値は
   /// 「数値やリストとして扱う」をオンにしなくても数のまま見せ、その旨を欄の下に出す。
   numeric?: NumericMode;
+  /// 欄の下の注記（値の決め方によらず出す）。
+  hint?: string;
 };
 
 export function ValueExprInput({
@@ -145,6 +147,7 @@ export function ValueExprInput({
   json,
   text,
   numeric,
+  hint,
 }: Props) {
   const inputFields = React.useContext(InputFieldsContext);
   const triggerSources = React.useContext(TriggerSourcesContext);
@@ -429,6 +432,7 @@ export function ValueExprInput({
         />
       ) : null}
 
+      {hint ? <p className="text-[11px] text-muted-foreground">{hint}</p> : null}
       {/* 手元で JSON として読めない理由を出しているときは、サーバの同じ欄の誤りを重ねて出さない。 */}
       {error && !jsonError ? <p className="text-[11px] text-destructive">{error}</p> : null}
     </div>

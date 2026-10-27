@@ -101,14 +101,17 @@ function build(flat: NonNullable<FlatCondition>): Condition {
 
 /// switch case のリテラルをテキストから型付きで解釈する（完全一致比較のため型が正）。
 /// 数値・true/false・JSON（[ / { / " 始まり）は解釈し、それ以外は文字列として扱う。
+///
+/// 数にするのは、打った文字が数の書き方そのもの（数に直して書き戻すと同じ文字）のときだけ。頭に 0 のある番号
+/// （001・郵便番号・社員番号）、1.0、桁が落ちる長い数字は文字のまま比べる（BUG-100。001 を 1 にすると
+/// テキストの「001」と一致しない）。前後に空白のある値も整えずに文字のまま（そのまま比べる）。
 function parseCaseLiteral(text: string): unknown {
-  const t = text.trim();
-  if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
-  if (t === "true") return true;
-  if (t === "false") return false;
-  if (/^[\[{"]/.test(t)) {
+  if (/^-?\d+(\.\d+)?$/.test(text) && String(Number(text)) === text) return Number(text);
+  if (text === "true") return true;
+  if (text === "false") return false;
+  if (/^[\[{"]/.test(text)) {
     try {
-      return JSON.parse(t);
+      return JSON.parse(text);
     } catch {
       // 入力途中は文字列のまま。
     }
@@ -281,10 +284,11 @@ export function SwitchForm({ node, dispatch, refCandidates, inMapRegion, fieldEr
         refCandidates={refCandidates}
         inMapRegion={inMapRegion}
         error={fieldErrors.get("value")}
+        hint="この値と同じ値の行き先へ進みます。値がないと、このブロックは失敗します。"
       />
       <Field
         label="行き先"
-        hint="値が一致した行き先へ。どれにも一致しないと「default」へ"
+        hint="上から順に比べて、最初に一致した行き先へ進みます。どれにも一致しないときは「その他」へ進みます。"
         error={fieldErrors.get("cases")}
       >
         <div className="space-y-1.5">
