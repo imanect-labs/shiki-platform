@@ -325,8 +325,9 @@ fn provider_kind(backend: LlmBackend) -> anyhow::Result<llm_gateway::ProviderKin
         LlmBackend::Anthropic => ProviderKind::Anthropic,
         LlmBackend::OpenaiResponses => ProviderKind::OpenaiResponses,
         LlmBackend::Stub => ProviderKind::Stub,
+        LlmBackend::TypesafeSystemone => ProviderKind::TypesafeSystemone,
         other => anyhow::bail!(
-            "llm.backend={other:?} は未実装です（openai-compat/openai_responses/anthropic/stub のみ）"
+            "llm.backend={other:?} は未実装です（openai-compat/openai_responses/anthropic/stub/typesafe_systemone のみ）"
         ),
     })
 }
@@ -617,8 +618,19 @@ fn non_empty(v: Option<&str>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{non_empty, primary_provider};
+    use super::{non_empty, primary_provider, provider_kind};
     use api::config::{LlmBackend, LlmConfig};
+
+    /// TypeSafe System One 互換（判定専用・実験的）は設定の backend 名で選べる（設定に書いたときだけ組まれる）。
+    #[test]
+    fn the_typesafe_backend_maps_to_its_provider_kind() {
+        let b: LlmBackend = serde_json::from_str("\"typesafe_systemone\"").unwrap();
+        assert_eq!(
+            provider_kind(b).unwrap(),
+            llm_gateway::ProviderKind::TypesafeSystemone
+        );
+        assert!(provider_kind(LlmBackend::Gemini).is_err());
+    }
 
     #[test]
     fn primary_provider_carries_display_name() {

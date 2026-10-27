@@ -145,6 +145,13 @@ impl RequestClock {
             .unwrap_or_default())
     }
 
+    /// 成功した応答の本文を読み切る（ストリームでない API 用・無通信と全体の残りで頭打ち）。
+    pub(crate) async fn body_text(&self, resp: reqwest::Response) -> Result<String, LlmError> {
+        self.within(self.timeouts.idle, Kind::Idle, resp.text())
+            .await?
+            .map_err(|e| LlmError::Unavailable(format!("{} body: {e}", self.label)))
+    }
+
     /// 中立形のストリームに無通信・全体の上限を掛ける（HTTP を介さないスタブ用）。
     ///
     /// 差分と差分の間が無通信の上限を超えるか、全体の締め切りを過ぎたら、実プロバイダと同じ

@@ -24,6 +24,10 @@ pub enum ProviderKind {
     OpenaiResponses,
     /// 連携者の ChatGPT プラン（Sign in with ChatGPT・#854）。接続は [`GatewayConfig::chatgpt`]。
     ChatgptPlan,
+    /// TypeSafe System One 互換の決定モデルの API（判定専用・FEAT-1 の T9・実験的）。文章は生成しないので、
+    /// ここへ振れるのは判定用のモデルだけ（chat モデルを振ると起動が止まる）。既定の接続先は
+    /// `https://api.typesafe.ai`。
+    TypesafeSystemone,
     /// テスト/CI 用の決定的スタブ（外部依存なし）。
     #[default]
     Stub,
@@ -37,6 +41,7 @@ impl ProviderKind {
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenaiResponses => "openai_responses",
             ProviderKind::ChatgptPlan => "chatgpt_plan",
+            ProviderKind::TypesafeSystemone => "typesafe_systemone",
             ProviderKind::Stub => "stub",
         }
     }

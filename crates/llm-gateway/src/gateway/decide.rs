@@ -32,6 +32,7 @@ use crate::model::Usage;
 use crate::provider::LlmError;
 use crate::providers::llm_decider::LlmDecider;
 use crate::providers::stub_decider::{StubDecider, STUB_DECIDER_VERSION};
+use crate::providers::typesafe;
 use crate::structured;
 
 /// 決定器と、その版（構築時にカタログから決まる・決定キャッシュのキーに入れる）。
@@ -274,11 +275,14 @@ fn record(
 /// - `decision_via` があれば llm_decider。元のモデルは同じカタログの chat モデルで、`provider` が同じ
 ///   （会計・利用上限の軸を揃える）、本人専用のプラン（chatgpt_plan）ではない、国外処理なら判定用の
 ///   モデルも国外処理と表示する。
-/// - 無ければ、振り先が stub のときだけ stub の決定器（テスト用）。
-/// - 既定のモデルと Auto の振り先は chat モデルであること。chat モデルに判定用の項目は書けない。
+/// - 無ければ、振り先が TypeSafe System One 互換（`typesafe_systemone`・実験的・opt-in）ならその決定器、stub なら
+///   stub の決定器（テスト用）。
+/// - 既定のモデルと Auto の振り先は chat モデルであること。chat モデルに判定用の項目は書けず、判定専用の
+///   プロバイダ（`typesafe_systemone`）へも振れない。
 pub(super) fn build_deciders(
     config: &GatewayConfig,
     providers: &HashMap<String, ProviderSlot>,
+    http: &reqwest::Client,
 ) -> Result<Deciders, LlmError> {
     let catalog = &config.catalog;
     let bad = |m: &ModelEntry, why: &str| LlmError::Config(format!("model {}: {why}", m.id));
@@ -299,6 +303,15 @@ pub(super) fn build_deciders(
                 return Err(bad(
                     m,
                     "decision_via / decision are only for decision models",
+                ));
+            }
+            if providers
+                .get(m.provider_id())
+                .is_some_and(|s| s.config.kind == ProviderKind::TypesafeSystemone)
+            {
+                return Err(bad(
+                    m,
+                    "typesafe_systemone serves decision models only (not chat models)",
                 ));
             }
             continue;
@@ -348,6 +361,14 @@ pub(super) fn build_deciders(
                 );
                 DeciderSlot {
                     version: decider.resolved_model().to_string(),
+                    provider: Arc::new(decider),
+                }
+            }
+            None if slot.config.kind == ProviderKind::TypesafeSystemone => {
+                let decider =
+                    typesafe::from_config(http, m, &slot.config).map_err(|why| bad(m, &why))?;
+                DeciderSlot {
+                    version: decider.version().to_string(),
                     provider: Arc::new(decider),
                 }
             }

@@ -176,6 +176,83 @@ async fn misconfigured_decision_entries_fail_to_build() {
     .contains("auto.model"));
 }
 
+/// TypeSafe 互換（`typesafe`・判定専用）のプロバイダを足した構成。
+fn typesafe_config(models: Vec<ModelEntry>, api_key: Option<&str>) -> GatewayConfig {
+    let mut c = config(models);
+    c.extra_providers.push(ProviderConfig {
+        id: "typesafe".into(),
+        kind: ProviderKind::TypesafeSystemone,
+        api_key: api_key.map(str::to_string),
+        ..Default::default()
+    });
+    c
+}
+
+/// 実験的なので既定は無効: 国外処理・組織の opt-in・版の固定を書いた判定用のモデルだけが組める。
+fn jev(id: &str) -> ModelEntry {
+    ModelEntry {
+        real_id: Some("jev-1.13.0".into()),
+        processed_abroad: true,
+        requires_opt_in: true,
+        ..decision(id, None, Some("typesafe"))
+    }
+}
+
+#[tokio::test]
+async fn typesafe_decision_entries_build_only_when_opted_in_and_pinned() {
+    let gw = LlmGateway::build(
+        lazy_db(),
+        reqwest::Client::new(),
+        typesafe_config(vec![jev("decide-jev")], Some("k")),
+    )
+    .unwrap();
+    let slot = &gw.inner.deciders["decide-jev"];
+    assert_eq!(slot.provider.name(), "typesafe");
+    assert_eq!(slot.version, "jev-1.13.0");
+    let build_with = |m: ModelEntry, key: Option<&str>| {
+        config_error(LlmGateway::build(
+            lazy_db(),
+            reqwest::Client::new(),
+            typesafe_config(vec![m], key),
+        ))
+    };
+    for (m, needle) in [
+        (
+            ModelEntry {
+                processed_abroad: false,
+                ..jev("d")
+            },
+            "processed_abroad",
+        ),
+        (
+            ModelEntry {
+                requires_opt_in: false,
+                ..jev("d")
+            },
+            "requires_opt_in",
+        ),
+        (
+            ModelEntry {
+                real_id: Some("jev-latest".into()),
+                ..jev("d")
+            },
+            "pin a versioned real_id",
+        ),
+        (
+            ModelEntry {
+                decision: Some(DecisionTuning::default()),
+                ..jev("d")
+            },
+            "answers natively",
+        ),
+    ] {
+        assert!(build_with(m, Some("k")).contains(needle), "{needle}");
+    }
+    assert!(build_with(jev("d"), None).contains("api_key"));
+    // 文章を生成するモデルは判定専用のプロバイダへ振れない。
+    assert!(build_with(chat("c", Some("typesafe")), Some("k")).contains("decision models only"));
+}
+
 fn ctx() -> AuthContext {
     AuthContext::for_workflow("t".into(), "o".into(), "wf")
 }

@@ -28,5 +28,7 @@ mod think_tags;
 mod timeouts;
 /// ツール名の wire 写像（全アダプタ共通・#582）。
 mod tool_names;
+/// TypeSafe System One 互換の決定器（FEAT-1 の T9・実験的・既定は無効）。
+pub mod typesafe;
 /// プロバイダの `usage` を中立形（キャッシュ内訳つき）へ写す（#581）。
 mod usage;

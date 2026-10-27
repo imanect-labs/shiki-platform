@@ -68,7 +68,7 @@ pub(crate) fn org_admin_ai_route_decls() -> Vec<RouteDecl> {
 pub struct AdminProvider {
     pub id: String,
     pub label: String,
-    /// アダプタ種別（`anthropic` / `openai` / `openai_responses` / `stub`）。
+    /// アダプタ種別（`anthropic` / `openai` / `openai_responses` / `chatgpt_plan` / `stub` / `typesafe_systemone`）。
     pub kind: String,
     /// 接続先（`scheme://host[:port]` まで）。既定エンドポイントを使う場合は `null`。
     pub endpoint: Option<String>,

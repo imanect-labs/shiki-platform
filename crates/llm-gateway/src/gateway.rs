@@ -183,7 +183,7 @@ impl LlmGateway {
                 m.provider_id()
             )));
         }
-        let deciders = decide::build_deciders(&config, &providers)?;
+        let deciders = decide::build_deciders(&config, &providers, &http)?;
         Ok(LlmGateway {
             inner: Arc::new(Inner {
                 providers,
@@ -597,6 +597,10 @@ fn build_provider(
         );
     match pc.kind {
         ProviderKind::Stub => Ok(Arc::new(StubProvider::new().with_timeouts(timeouts))),
+        // 判定専用（文章を生成しない・決定器は gateway/decide.rs が組む・FEAT-1 の T9）。
+        ProviderKind::TypesafeSystemone => {
+            Ok(Arc::new(crate::providers::typesafe::DecisionOnlyProvider))
+        }
         ProviderKind::Openai => {
             let base = pc
                 .base_url

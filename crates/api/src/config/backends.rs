@@ -511,6 +511,9 @@ pub enum LlmBackend {
     Gemini,
     /// Vertex AI（枠・未実装）。
     Vertex,
+    /// TypeSafe System One 互換の決定モデルの API（判定専用・実験的・FEAT-1 の T9）。`[[llm.providers]]` に書き、
+    /// 判定用のモデル（`modality = "decision"`・`requires_opt_in = true`・`processed_abroad = true`）だけを振る。
+    TypesafeSystemone,
     /// テスト/CI 用の決定的スタブ（外部依存なし）。
     #[default]
     Stub,
