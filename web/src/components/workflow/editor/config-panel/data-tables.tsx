@@ -189,6 +189,12 @@ export function DataTableSelect({
 }) {
   const desktop = useMediaQuery(PANEL_QUERY);
   const [open, setOpen] = React.useState(false);
+  const triggerRef = React.useRef<HTMLButtonElement | null>(null);
+  // シートの中の一覧はフォーカスを持ったまま消えるので、閉じたら選ぶ欄へ戻す（ポップオーバーは Radix が戻す）。
+  const close = () => {
+    setOpen(false);
+    if (!desktop) triggerRef.current?.focus({ preventScroll: true });
+  };
   const listId = React.useId();
   const loading = source.tables === null;
   const bound = source.lookup(value);
@@ -214,10 +220,11 @@ export function DataTableSelect({
   const pick = (t: DataTable) => {
     source.remember(t);
     onChange(t.id, t);
-    setOpen(false);
+    close();
   };
   const trigger = (
     <button
+      ref={triggerRef}
       type="button"
       id={id}
       role="combobox"
@@ -278,7 +285,7 @@ export function DataTableSelect({
       ) : (
         <>
           {trigger}
-          {open ? <InlineList onClose={() => setOpen(false)}>{list("sheet")}</InlineList> : null}
+          {open ? <InlineList onClose={close}>{list("sheet")}</InlineList> : null}
         </>
       )}
       {note ? (

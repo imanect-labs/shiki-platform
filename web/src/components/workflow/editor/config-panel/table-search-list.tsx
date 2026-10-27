@@ -102,10 +102,18 @@ export function TableSearchList({
   const error = searching ? (found?.q === q ? found.error : null) : more.error;
   const loadingMore = searching ? false : more.loading;
   const [paging, setPaging] = React.useState(false);
+  const inputRef = React.useRef<HTMLInputElement | null>(null);
+  const listRef = React.useRef<HTMLDivElement | null>(null);
+  const moreRef = React.useRef<HTMLButtonElement | null>(null);
+  // 「さらに読み込む」の後のフォーカスの行き先（足した最初の候補の位置・失敗ならボタンへ）。押したボタンは読み込み中に
+  // 押せなくなり、続きが尽きれば消えるので、そのままではフォーカスが行き場を失う。
+  const landAfterMore = React.useRef<number | "retry" | null>(null);
 
   const loadMore = async () => {
     if (!next || paging) return;
+    const from = items.length;
     setPaging(true);
+    landAfterMore.current = "retry";
     try {
       if (searching) {
         const p = await listTablesPage({ q, cursor: next, limit: SEARCH_PAGE });
@@ -117,6 +125,7 @@ export function TableSearchList({
         const p = await listTablesPage({ cursor: next, limit: SEARCH_PAGE });
         setMore((m) => ({ items: [...m.items, ...p.items], next: p.next_cursor ?? null, loading: false, error: null }));
       }
+      landAfterMore.current = from;
     } catch (e) {
       if (searching) setFound((f) => (f && f.q === q ? { ...f, error: errorText(e) } : f));
       else setMore((m) => ({ ...m, loading: false, error: errorText(e) }));
@@ -140,6 +149,21 @@ export function TableSearchList({
     reveal.current = true;
     setActive(i);
   };
+  // 読み込みが終わったら、足した最初の候補へ移って一覧にフォーカスする（足した候補が無ければ探す欄・失敗ならボタン）。
+  React.useEffect(() => {
+    const land = landAfterMore.current;
+    if (land === null || paging) return;
+    landAfterMore.current = null;
+    if (land === "retry") {
+      (moreRef.current ?? inputRef.current)?.focus({ preventScroll: true });
+    } else if (items.length > land) {
+      reveal.current = true;
+      setActive(land);
+      listRef.current?.focus({ preventScroll: true });
+    } else {
+      inputRef.current?.focus({ preventScroll: true });
+    }
+  }, [paging, items.length]);
 
   const onKeyDown = (e: React.KeyboardEvent, fromList: boolean) => {
     // 日本語入力の変換中の Enter・矢印は IME のもの（確定・候補選択）。奪わない。
@@ -178,6 +202,7 @@ export function TableSearchList({
           aria-hidden
         />
         <input
+          ref={inputRef}
           type="text"
           role="combobox"
           aria-expanded
@@ -205,6 +230,7 @@ export function TableSearchList({
         {status}
       </span>
       <div
+        ref={listRef}
         id={listId}
         role="listbox"
         aria-label={label}
@@ -285,6 +311,7 @@ export function TableSearchList({
             </p>
           ) : null}
           <button
+            ref={moreRef}
             type="button"
             onClick={() => void loadMore()}
             disabled={paging || loadingMore}
