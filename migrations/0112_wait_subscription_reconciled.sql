@@ -6,12 +6,15 @@
 -- 同じ形で、購読の commit の後に 1 回だけ、取りこぼし得た変更を突き合わせ直す。
 --
 -- reconciled_at = 突合を済ませた時刻。突合の要らない購読（ファイルの保存の wait・承認・時刻の wait）は作る時点で
--- 印を付け、走査の索引に載せない。既存の購読も同じく印を付ける（データ変更の wait は 1 回だけ突き合わせる）。
+-- 印を付け、走査の索引に載せない。既存の未発火の購読も同じく印を付ける（データ変更の wait は 1 回だけ突き合わせる）。
+-- 発火済みの購読は走査も索引も見ず、待ち直すときは UPSERT が印を付け直すので書き換えない（run の保持期間ぶんの
+-- 履歴を 1 つの Tx で書き換えない・BUG-81）。
 
 alter table wait_subscription add column reconciled_at timestamptz;
 
 update wait_subscription set reconciled_at = now()
- where fired or kind <> 'event' or coalesce(source, '') not like 'data.%' or spec ? 'approval';
+ where not fired
+   and (kind <> 'event' or coalesce(source, '') not like 'data.%' or spec ? 'approval');
 
 -- 突合の走査（未発火で、まだ突き合わせていないものだけ・作成の古い順）。
 create index wait_subscription_reconcile_idx
