@@ -147,7 +147,10 @@ test("deep research: 質問（ask）→ 計画（plan）→ 調査 → レポー
   await expect(page.getByText("独立 2 系統が一致")).toHaveCount(0);
   // レポートの ```ui はノートでも図として描かれる（文字のままにしない）。
   const figure = page.getByTestId("note-yui-figure").first();
-  await expect(figure.locator('[data-testid="ui-figure"][data-ui-kind="bar"]')).toBeVisible();
+  // 下書き画面のエディタ（図の描画を含む）は開いてから読み込まれるので、少し長めに待つ。
+  await expect(figure.locator('[data-testid="ui-figure"][data-ui-kind="bar"]')).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(figure).toContainText("公表値の比較");
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/deep-research-report.png`, fullPage: true });
 
