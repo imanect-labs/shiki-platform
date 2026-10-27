@@ -173,11 +173,13 @@ fn check_answer(key: &str, kind: &QuestionKind, answer: &Answer) -> Result<(), S
             if !options.iter().any(|o| &o.key == value) {
                 return Err(format!("{key}: 選択肢に無い値 {value}"));
             }
-            let all_known = probabilities
-                .keys()
-                .all(|k| options.iter().any(|o| &o.key == k));
-            if !all_known || !unit(*confidence) || !probabilities.values().all(|p| unit(*p)) {
-                return Err(format!("{key}: 確率が範囲の外か、選択肢に無いキーがある"));
+            // 確率のキーは選択肢と同じ集合（エンジンの突き合わせと同じ規則・一部の選択肢だけの確率は使わない）。
+            let same_keys = probabilities.len() == options.len()
+                && options.iter().all(|o| probabilities.contains_key(&o.key));
+            if !same_keys || !unit(*confidence) || !probabilities.values().all(|p| unit(*p)) {
+                return Err(format!(
+                    "{key}: 確率が範囲の外か、確率のキーが選択肢と合わない"
+                ));
             }
         }
         (
@@ -302,11 +304,18 @@ mod tests {
         }
     }
 
+    /// 選択肢 x・y の質問への答え（確率は両方の選択肢に付ける）。
     fn picked(value: &str, confidence: f64) -> Answer {
         Answer::Choice {
             value: value.into(),
             confidence,
-            probabilities: BTreeMap::from([(value.to_string(), confidence)]),
+            probabilities: ["x", "y"]
+                .into_iter()
+                .map(|k| {
+                    let p = if k == value { confidence } else { 0.0 };
+                    (k.to_string(), p)
+                })
+                .collect(),
         }
     }
 
@@ -330,6 +339,23 @@ mod tests {
             confidence: 0.9,
         };
         assert!(check_response(&r, &resp(vec![("a", boolean)])).is_err());
+        // 確率のキーは選択肢と同じ集合（一部の選択肢だけ・選択肢に無いキーは使わない。エンジンと同じ規則）。
+        let partial = Answer::Choice {
+            value: "x".into(),
+            confidence: 0.9,
+            probabilities: BTreeMap::from([("x".to_string(), 0.9)]),
+        };
+        assert!(check_response(&r, &resp(vec![("a", partial)])).is_err());
+        let extra = Answer::Choice {
+            value: "x".into(),
+            confidence: 0.9,
+            probabilities: BTreeMap::from([
+                ("x".to_string(), 0.9),
+                ("y".to_string(), 0.1),
+                ("z".to_string(), 0.0),
+            ]),
+        };
+        assert!(check_response(&r, &resp(vec![("a", extra)])).is_err());
     }
 
     #[test]
