@@ -1,11 +1,12 @@
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import { expect, test, type Browser, type Locator, type Page } from "@playwright/test";
 
 import { loginViaKeycloak, uniqueName } from "./helpers";
 
-/// 承認を待つブロック（human.approval）の設定の欄の E2E（BUG-82）。
+/// 承認を待つブロック（human.approval）の設定の欄の E2E（BUG-82・BUG-83）。
 /// - 受信箱に出す列に状態の列があると、選べない列の行の注記（外すボタン付き）と、保存時の照合の誤り
 ///   （`ir.bad_show_field`）が同じことを 2 回言っていた。行の注記にまとめ、欄の下には重ねない（BUG-67 の E2E を
 ///   approvals.spec.ts から移して書き直した）。
+/// - 任意の出口（却下・差し戻し）を使わないときは、中身の無い枠を出さず見出しの行だけにする。
 /// テーブル・状態の遷移の規則・ワークフローは有効化せずに作り（run を起こさない）、最後に消す。
 /// `E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
 
@@ -126,6 +127,13 @@ async function injectParams(page: Page, workflowId: string, patch: Record<string
   return () => injected;
 }
 
+/// 任意の出口の欄（見出しにスイッチがある fieldset）。
+function exitGroup(scope: Locator, title: string) {
+  return scope.locator("fieldset", { has: scope.page().getByRole("switch", { name: `${title}の出口を使う` }) });
+}
+
+const borderTop = (el: Element) => getComputedStyle(el).borderTopWidth;
+
 test("受信箱に出す列の状態の列は、選べない列の行の注記だけで言い、保存時の照合の誤りを重ねない（BUG-82）", async ({
   page,
   browser,
@@ -207,6 +215,70 @@ test("受信箱に出す列の状態の列は、選べない列の行の注記�
     expect(saved.ir.nodes.find((n) => n.id === "ok")?.params.show_fields).toEqual(["title", "amount"]);
   } finally {
     await page.unrouteAll({ behavior: "ignoreErrors" });
+    await phone?.context().close().catch(() => undefined);
+    await deleteFixture(page, f);
+  }
+});
+
+test("使わない任意の出口は、中身の無い枠を出さず見出しの行だけにする（BUG-83）", async ({ page, browser }) => {
+  test.setTimeout(150_000);
+  await loginViaKeycloak(page);
+  const f = await createFixture(page);
+  let phone: Page | null = null;
+  try {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`/workflows/${f.workflowId}`);
+    const canvas = page.locator(".react-flow");
+    await expect(canvas.getByText("上長の承認").first()).toBeVisible({ timeout: 15_000 });
+    await canvas.getByText("上長の承認").first().click();
+    const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+    // テーブルの定義を読み終える（状態の選択肢が出る）まで待つ。
+    await expect(panel.getByRole("combobox", { name: "承認したときに進める状態" })).toBeVisible({ timeout: 15_000 });
+
+    // 差し戻しは使っていない: 枠線も中身も無く、見出しとスイッチの行だけ。
+    const ret = exitGroup(panel, "差し戻したとき");
+    await expect(panel.getByRole("switch", { name: "差し戻したときの出口を使う" })).not.toBeChecked();
+    expect(await ret.evaluate(borderTop)).toBe("0px");
+    await expect(ret.getByText("進める状態")).toHaveCount(0);
+    await expect(ret).toHaveAttribute("data-state", "off");
+    // 使っている却下は、枠の中に欄がある。
+    const rej = exitGroup(panel, "却下したとき");
+    await expect(rej).toHaveAttribute("data-state", "on");
+    expect(await rej.evaluate(borderTop)).toBe("1px");
+    await rej.scrollIntoViewIfNeeded();
+    if (SHOTS) await panel.screenshot({ path: `${SHOTS}/bug83-exit-off-pc.png` });
+
+    // スイッチを入れると枠と欄が出て、切ると見出しの行に戻る。
+    await panel.getByRole("switch", { name: "差し戻したときの出口を使う" }).click();
+    await expect(ret).toHaveAttribute("data-state", "on");
+    expect(await ret.evaluate(borderTop)).toBe("1px");
+    await expect(panel.getByRole("combobox", { name: "差し戻したときに進める状態" })).toBeVisible();
+    await panel.getByRole("switch", { name: "差し戻したときの出口を使う" }).click();
+    await expect(ret).toHaveAttribute("data-state", "off");
+    expect(await ret.evaluate(borderTop)).toBe("0px");
+    await expect(panel.getByRole("combobox", { name: "差し戻したときに進める状態" })).toHaveCount(0);
+    // 却下も切れば同じ形になる（必須の承認は切れない）。
+    await panel.getByRole("switch", { name: "却下したときの出口を使う" }).click();
+    await expect(rej).toHaveAttribute("data-state", "off");
+    expect(await rej.evaluate(borderTop)).toBe("0px");
+    await expect(panel.getByRole("switch", { name: "承認したときの出口を使う" })).toHaveCount(0);
+    if (SHOTS) await panel.screenshot({ path: `${SHOTS}/bug83-exits-off-pc.png` });
+
+    // スマホのシートでも同じ（保存していないので、元の版＝却下は使う・差し戻しは使わない）。
+    phone = await phoneOf(browser, page);
+    await phone.goto(`/workflows/${f.workflowId}`);
+    const flow = phone.getByTestId("workflow-mobile-flow");
+    await expect(flow).toBeVisible({ timeout: 15_000 });
+    await flow.getByRole("button", { name: /上長の承認/ }).filter({ hasText: "上長の承認" }).click();
+    const sheet = phone.getByRole("dialog");
+    await expect(sheet.getByRole("combobox", { name: "承認したときに進める状態" })).toBeVisible({ timeout: 15_000 });
+    const phoneRet = exitGroup(sheet, "差し戻したとき");
+    await expect(phoneRet).toHaveAttribute("data-state", "off");
+    expect(await phoneRet.evaluate(borderTop)).toBe("0px");
+    await phoneRet.scrollIntoViewIfNeeded();
+    expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    if (SHOTS) await phone.screenshot({ path: `${SHOTS}/bug83-exit-off-phone.png` });
+  } finally {
     await phone?.context().close().catch(() => undefined);
     await deleteFixture(page, f);
   }

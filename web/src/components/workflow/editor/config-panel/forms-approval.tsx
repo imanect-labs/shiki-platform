@@ -341,10 +341,13 @@ function ChoiceField({
     statesUnreadable || tableNote
       ? undefined
       : (error ?? (unknownState ? `このテーブルに無い状態: ${unknownState}` : undefined));
+  // 使わない（スイッチを切った）任意の出口は、中身の無い枠を出さず見出しの行だけにする。枠の上辺に載る見出しが
+  // 空の枠に重なって見えるため（BUG-83）。見出しの文字の位置は、枠を出すときと揃える。
+  const framed = on || !optional;
   return (
-    <fieldset className="space-y-2 rounded-lg border p-2.5">
+    <fieldset className={cn("space-y-2", framed ? "rounded-lg border p-2.5" : "px-2.5")} data-state={framed ? "on" : "off"}>
       <legend className="flex w-full items-center justify-between gap-2 px-1 text-xs font-medium">
-        <span>{title}</span>
+        <span className={cn(!framed && "text-muted-foreground")}>{title}</span>
         {optional ? (
           <Switch
             aria-label={`${title}の出口を使う`}
@@ -353,7 +356,7 @@ function ChoiceField({
           />
         ) : null}
       </legend>
-      {on || !optional ? (
+      {framed ? (
         <>
           <Field label="進める状態" error={stateError}>
             {statesUnreadable ? (
