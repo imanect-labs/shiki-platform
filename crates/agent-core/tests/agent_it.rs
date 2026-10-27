@@ -133,6 +133,7 @@ impl Tool for MockSearchTool {
             note_drafts: vec![],
             slide_drafts: vec![],
             csv_drafts: vec![],
+            skill_drafts: vec![],
             document_refs: vec![],
             skill_invocations: vec![],
             subagent_runs: vec![],

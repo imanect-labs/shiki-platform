@@ -82,11 +82,20 @@ import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
 import { SlideDraftCard } from "./slide-draft-card";
 import { CsvDraftCard } from "./csv-draft-card";
+import { SkillDraftCard } from "./skill-draft-card";
 import { DocumentRefCard, LegacyDocumentDraftCard, parseDocumentRef, documentRefHref } from "./document-ref-card";
 import { upsertDraft, parseNoteDraft } from "@/lib/notes/draft-store";
 import { draftHref } from "@/lib/notes/draft-nav";
 import { parseSlideDraft, slideDraftHref, slideDraftStore } from "@/lib/slides/draft";
 import { csvDraftHref, csvDraftStore, parseCsvDraft } from "@/lib/csv/draft";
+import {
+  mergeAiSkill,
+  parseSkillDraft,
+  parseStoredSkillBody,
+  skillDraftHref,
+  skillDraftStore,
+  type AiSkillDraft,
+} from "@/lib/skills/skill-draft";
 import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ContextUsageDialog } from "./context-meter";
@@ -113,6 +122,8 @@ type StreamState = {
   slideDrafts: unknown[];
   /// 未保存の下書き CSV（Task 11.11・save_csv の下書き確定型）。
   csvDrafts: unknown[];
+  /// 未保存の下書きスキル（#919・save_skill の下書き確定型）。
+  skillDrafts: unknown[];
   /// AI が作成/編集した文書の参照（#381・save_document / save_sheet / 各編集ツール）。
   documentRefs: unknown[];
   /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
@@ -152,6 +163,7 @@ const EMPTY_STREAM: StreamState = {
   noteDrafts: [],
   slideDrafts: [],
   csvDrafts: [],
+  skillDrafts: [],
   documentRefs: [],
   plan: [],
   approval: null,
@@ -167,6 +179,8 @@ export function Conversation({
   onNoteDraftOpened,
   onSlideDraftOpened,
   onCsvDraftOpened,
+  onSkillDraftOpened,
+  adoptSkillDraftOnLoad = false,
   onDocumentCreated,
 }: {
   threadId: string;
@@ -180,6 +194,15 @@ export function Conversation({
   onSlideDraftOpened?: (name: string) => void;
   /// save_csv の下書き（csv_draft）を受けたときの導線（Task 11.11・note と同型）。
   onCsvDraftOpened?: (name: string) => void;
+  /// save_skill の下書き（skill_draft）を受けたときの導線（#919）。渡されない場合は run の
+  /// 完了後にスキルエディタへ遷移する（主線）。スキルエディタ自身はその場で内容を流し込む。
+  /// `key` はその下書きのイベントを指す（応答のメッセージ id ＋ 応答の中の何番目か）。パネルの
+  /// 開き直しでの再生と読み直しで同じ値になり、同じ内容を言い直した別の下書きとは区別できる。
+  onSkillDraftOpened?: (draft: AiSkillDraft, key: string | null) => void;
+  /// 読み込んだ時点で最後の発話への応答が済んでいたら、その応答の下書きスキルも
+  /// `onSkillDraftOpened` へ渡す。この画面で会話を作って最初の発話を送った直後に使う
+  /// （応答が速いと購読より先に終わり、下書きのイベントを受け取れないため・#919）。
+  adoptSkillDraftOnLoad?: boolean;
   /// AI が Office 文書を**新規作成**したときの導線（#381）。渡されない場合は
   /// 作成された文書（Collabora）へ遷移する（主線）。編集の参照では発火しない。
   onDocumentCreated?: (href: string) => void;
@@ -196,6 +219,8 @@ export function Conversation({
   // 届くため、その場で router.push すると Conversation がアンマウントされて SSE 購読が閉じ、
   // 複合依頼の後続ツールの承認カードが出せず run が承認待ちで止まる。
   const pendingOpenRef = React.useRef<string | null>(null);
+  // 読み込み時に下書きスキルを渡したか（`adoptSkillDraftOnLoad`・1 回だけ）。
+  const adoptedDraftRef = React.useRef(false);
   const [error, setError] = React.useState<string | null>(null);
   // 実行への注意喚起（承認モードのクランプ等・#350）。エラーではないが黙らせない。
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -417,6 +442,21 @@ export function Conversation({
         if (onCsvDraftOpened) onCsvDraftOpened(d.name);
         else router.push(csvDraftHref(threadId, d.name));
       },
+      onSkillDraft: (raw) => {
+        // note_draft と同型: ストリームに残しつつ下書きストアへ upsert（source=ai＝流し込み）。
+        const cur = streamRef.current;
+        const owner = cur?.assistantMessageId ?? null;
+        const key = cur && owner ? `${owner}:${cur.skillDrafts.length}` : null;
+        updateStream((s) => (s ? { ...s, skillDrafts: [...s.skillDrafts, raw] } : s));
+        const d = parseSkillDraft(raw);
+        if (!d) return;
+        // 渡した項目だけを重ねる（直すたびに他の項目を消さない）。
+        const prev = parseStoredSkillBody(skillDraftStore.get(threadId, d.name)?.content ?? "");
+        skillDraftStore.upsert(threadId, d.name, JSON.stringify(mergeAiSkill(prev, d)), "ai");
+        if (onSkillDraftOpened) onSkillDraftOpened(d, key);
+        // 遷移は run の完了後（途中で遷移すると SSE が切れ、後続の操作が止まる・#381 と同じ）。
+        else pendingOpenRef.current = skillDraftHref(threadId, d.name);
+      },
       onDocumentRef: (raw) => {
         updateStream((s) => (s ? { ...s, documentRefs: [...s.documentRefs, raw] } : s));
         const doc = parseDocumentRef(raw);
@@ -493,6 +533,7 @@ export function Conversation({
     onNoteDraftOpened,
     onSlideDraftOpened,
     onCsvDraftOpened,
+    onSkillDraftOpened,
     onDocumentCreated,
     router,
   ]);
@@ -696,6 +737,22 @@ export function Conversation({
         );
         setMessages(shown.filter((m) => !queuedRunOf.has(m.id)));
         const resuming = activeRunId !== null;
+        // 初回の読み込みでだけ（その後の読み直しで、手で直した内容を上書きしない）。
+        if (adoptSkillDraftOnLoad && onSkillDraftOpened && !resuming && !adoptedDraftRef.current) {
+          adoptedDraftRef.current = true;
+          const lastUser = shown.map((m) => m.role).lastIndexOf("user");
+          // 最後の下書きと、それが応答の中で何番目か（ストリームで受けたときと同じ key にする）。
+          const found = shown
+            .slice(lastUser + 1)
+            .flatMap((m) =>
+              m.content
+                .filter((b): b is Extract<ContentBlock, { type: "skill_draft" }> => b.type === "skill_draft")
+                .map((b, i) => ({ draft: b.draft, key: `${m.id}:${i}` })),
+            )
+            .at(-1);
+          const latest = found ? parseSkillDraft(found.draft) : null;
+          if (found && latest) onSkillDraftOpened(latest, found.key);
+        }
         if (resuming) {
           // 進行中 run の id を復元し、承認待ちなら承認/却下を送れるようにする（Task 5.6）。
           // 自律 run なら再訪時もエージェントモード UI（承認モードセレクタ含む）を復元する
@@ -979,6 +1036,8 @@ function finalizeStream(
   for (const draft of s.slideDrafts) blocks.push({ type: "slide_draft", draft });
   // 未保存の下書き CSV カード（Task 11.11）。
   for (const draft of s.csvDrafts) blocks.push({ type: "csv_draft", draft });
+  // 未保存の下書きスキルカード（#919）。
+  for (const draft of s.skillDrafts) blocks.push({ type: "skill_draft", draft });
   // AI が作成/編集した文書への参照カード（#381）。
   for (const document of s.documentRefs) blocks.push({ type: "document_ref", document });
   if (blocks.length === 0) return;
@@ -1051,7 +1110,11 @@ const UserRow = React.memo(function UserRow({
             data-testid="message-selection-chip"
             className="inline-flex max-w-full items-center gap-1 truncate rounded-full border border-border bg-card px-2.5 py-1 text-[12px] text-foreground/80"
           >
-            {selectionKindLabel(s.context.kind)}: {s.context.excerpt.slice(0, 80)}
+            {selectionKindLabel(s.context.kind)}:{" "}
+            {/* 編集中のスキルは本文が JSON なので、名前だけを見せる（#919）。 */}
+            {s.context.kind === "skill_draft"
+              ? s.context.draft_name || "名前未設定"
+              : s.context.excerpt.slice(0, 80)}
           </span>
         ))}
         {files.length > 0 ? (
@@ -1207,6 +1270,9 @@ const AssistantRow = React.memo(function AssistantRow({
   const csvDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "csv_draft" }> => b.type === "csv_draft",
   );
+  const skillDrafts = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "skill_draft" }> => b.type === "skill_draft",
+  );
   const documentRefs = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "document_ref" }> => b.type === "document_ref",
   );
@@ -1238,6 +1304,9 @@ const AssistantRow = React.memo(function AssistantRow({
           ))}
           {csvDrafts.map((b, i) => (
             <CsvDraftCard key={i} raw={b.draft} threadId={threadId} />
+          ))}
+          {skillDrafts.map((b, i) => (
+            <SkillDraftCard key={i} raw={b.draft} threadId={threadId} />
           ))}
           {documentRefs.map((b, i) => (
             <DocumentRefCard key={i} raw={b.document} />
@@ -1352,6 +1421,9 @@ function StreamingRow({
           ))}
           {stream.csvDrafts.map((draft, i) => (
             <CsvDraftCard key={i} raw={draft} threadId={threadId} />
+          ))}
+          {stream.skillDrafts.map((draft, i) => (
+            <SkillDraftCard key={i} raw={draft} threadId={threadId} />
           ))}
           {stream.documentRefs.map((document, i) => (
             <DocumentRefCard key={i} raw={document} />

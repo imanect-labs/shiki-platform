@@ -512,6 +512,8 @@ export type StreamHandlers = {
   onSlideDraft?: (draft: unknown) => void;
   /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。下書き画面を開く/流し込む。
   onCsvDraft?: (draft: unknown) => void;
+  /// 未保存の下書きスキル（save_skill の下書き確定型・#919）。スキルエディタを開く/流し込む。
+  onSkillDraft?: (draft: unknown) => void;
   /// AI が作成/編集した文書への参照（#381）。カード化し、新規作成ならエディタへ遷移する。
   onDocumentRef?: (document: unknown) => void;
   /// skill ツールの発動記録（#344）。会話中に読み込んだスキルのチップ表示に使う。
@@ -618,6 +620,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "csv_draft":
         handlers.onCsvDraft?.(kind.draft);
+        break;
+      case "skill_draft":
+        handlers.onSkillDraft?.(kind.draft);
         break;
       case "document_ref":
         handlers.onDocumentRef?.(kind.document);

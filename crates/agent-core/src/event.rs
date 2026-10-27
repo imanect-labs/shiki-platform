@@ -81,6 +81,10 @@ pub enum AgentEvent {
     /// `{name, csv}`（csv=CSV 本文）。**まだ作成していない**下書き
     /// （chat 側で csv_draft へ写り、フロントが下書き CSV 画面で詰めてから確定する）。
     CsvDraft { draft: serde_json::Value },
+    /// 未保存の下書きスキル（save_skill の下書き確定型・#919）。`{name, skill}`。
+    /// **まだ保存していない**下書き（chat 側で skill_draft へ写り、フロントがスキルエディタで
+    /// 詰めてから人が保存する）。
+    SkillDraft { draft: serde_json::Value },
     /// AI が作成/編集した文書への参照（#381）。`{id, name, kind, version}`。
     /// **StorageService 上に実在するノードのみ**がここへ乗る（chat 側で document_ref へ写り、
     /// 「〜を編集しました（v3）→ 開く」カードになる）。作成系と編集系が共有する。

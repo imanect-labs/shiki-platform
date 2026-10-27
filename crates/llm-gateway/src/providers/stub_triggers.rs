@@ -83,6 +83,43 @@ pub(super) fn generic_tool_call(
     Some(tool_call_stream(t.name.clone(), input, prompt_tokens))
 }
 
+/// スキルのツールの決定的駆動: `useskill:<name>` → skill（カタログ引き・#344）、
+/// `saveskill:<name>` → save_skill（下書きスキル・固定の説明/指示文/使うツール・#919）。
+fn skill_tool_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let call = |tool: &str, input: serde_json::Value| {
+        req.tools
+            .iter()
+            .find(|t| t.name == tool)
+            .map(|t| tool_call_stream(t.name.clone(), input, prompt_tokens))
+    };
+    if let Some(name) = user_text.strip_prefix("useskill:").map(str::trim) {
+        // カタログ掲載名を指定して instructions を読み込む。
+        return call("skill", serde_json::json!({ "name": name }));
+    }
+    // スキルエディタからの発話は先頭に編集中のスキル（選択コンテキスト）が付くので、
+    // 依頼は最後の行で見る。
+    let last_line = user_text.lines().last().unwrap_or_default().trim();
+    if let Some(name) = last_line.strip_prefix("saveskill:").map(str::trim) {
+        return call(
+            "save_skill",
+            serde_json::json!({
+                "name": name,
+                "description": "経費精算の質問に社内規程を根拠に答える",
+                "instructions": "# 経費精算アシスタント\n\nあなたは経費規程に詳しいアシスタントです。\n\n\
+                                 - 規程を doc_search で探し、根拠を示して答える\n\
+                                 - 規程に無いことは推測せず、経理部への確認を勧める\n",
+                "allowed_tools": ["doc_search", "doc_read"],
+                "few_shot": [{ "user": "交通費は何日以内に申請？", "assistant": "規程では 30 日以内です。" }]
+            }),
+        );
+    }
+    None
+}
+
 /// ドキュメント下書き/編集ツールの決定的駆動（issue #282 / Task 11.3 の e2e）。
 /// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（```ui の bar）、
 /// `saveslide:<name>` → save_slide（下書きスライド・固定 3 枚）、
@@ -100,9 +137,8 @@ pub(super) fn note_tool_call(
             .find(|t| t.name == tool)
             .map(|t| tool_call_stream(t.name.clone(), input, prompt_tokens))
     };
-    if let Some(name) = user_text.strip_prefix("useskill:").map(str::trim) {
-        // skill ツールのカタログ引き（#344）。カタログ掲載名を指定して instructions を読み込む。
-        return call("skill", serde_json::json!({ "name": name }));
+    if let Some(stream) = skill_tool_call(req, user_text, prompt_tokens) {
+        return Some(stream);
     }
     if let Some(name) = user_text.strip_prefix("savenote:").map(str::trim) {
         return call(

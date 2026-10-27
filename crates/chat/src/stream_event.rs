@@ -64,6 +64,8 @@ pub enum StreamEventKind {
     SlideDraft { draft: serde_json::Value },
     /// 未保存の下書き CSV カード（save_csv の下書き確定型・Task 11.11）。
     CsvDraft { draft: serde_json::Value },
+    /// 未保存の下書きスキルカード（save_skill の下書き確定型・#919）。
+    SkillDraft { draft: serde_json::Value },
     /// AI が作成/編集した文書への参照カード（#381）。`document = {id, name, kind, version}`。
     DocumentRef { document: serde_json::Value },
     /// **レガシー**: 未保存の下書き Word 文書カード（#332・#381 で廃止）。
@@ -135,6 +137,7 @@ impl StreamEventKind {
             StreamEventKind::NoteDraft { .. } => "note_draft",
             StreamEventKind::SlideDraft { .. } => "slide_draft",
             StreamEventKind::CsvDraft { .. } => "csv_draft",
+            StreamEventKind::SkillDraft { .. } => "skill_draft",
             StreamEventKind::DocumentRef { .. } => "document_ref",
             StreamEventKind::DocumentDraft { .. } => "document_draft",
             StreamEventKind::SkillInvoked { .. } => "skill_invoked",

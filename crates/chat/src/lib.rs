@@ -43,6 +43,7 @@ pub mod office_tool;
 pub mod selection;
 pub(crate) mod skill;
 pub mod skill_catalog;
+pub mod skill_draft_tool;
 pub(crate) mod skill_search_tool;
 pub(crate) mod skill_tool;
 pub mod slide_templates;
@@ -73,6 +74,7 @@ pub use skill_catalog::{
     merge_entries as merge_skill_catalog_entries, OwnedSkillCatalog, SkillCatalogEntry,
     SkillCatalogSource,
 };
+pub use skill_draft_tool::SaveSkillTool;
 pub use slide_tool::{SaveSlideTool, SlideEditTool, SlideReadTool};
 pub use store::{
     ChatStore, ClaimedRun, CurrentRun, MessageFeedback, PostResult, RunContext, ThreadOrigin,

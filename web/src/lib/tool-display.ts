@@ -339,6 +339,14 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     suru: true,
     target: named(),
   },
+  save_skill: {
+    icon: Sparkles,
+    category: "write",
+    lead: (t) => (t ? `スキル「${t}」の下書きを` : "スキルの下書きを"),
+    verb: "作成",
+    suru: true,
+    target: named(),
+  },
   save_document: {
     icon: FileText,
     category: "write",
