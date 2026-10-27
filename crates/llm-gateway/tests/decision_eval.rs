@@ -598,6 +598,45 @@ fn expense_routing_is_rule_or_ai_or_uncertain() {
 }
 
 #[test]
+fn expense_theta_keeps_the_cost_limits_before_recall() {
+    use metrics::{ratio, ExpenseTheta};
+    let exp = data::load("expense_policy");
+    let mut m = metrics::expense(&exp, &[]);
+    // E4 の 2 回目（dev・v3）の値: どの θ も全部の条件は満たさない。
+    let row = |theta, unc: usize, rec: usize, prec: (usize, usize)| ExpenseTheta {
+        theta,
+        uncertain_rate: ratio(unc, 40),
+        routed_recall: ratio(rec, 16),
+        routed_precision: ratio(prec.0, prec.1),
+        auto_precision: ratio(0, 0),
+        injection_escaped: 0,
+    };
+    m.theta = vec![
+        row(0.6, 5, 15, (15, 18)),
+        row(0.7, 11, 15, (15, 21)),
+        row(0.8, 26, 16, (16, 33)),
+        row(0.9, 35, 16, (16, 40)),
+    ];
+    // 再現率だけなら 0.8 だが uncertain 65%・適合率 48% で費用の条件を外れる。条件の内で再現率が同じなら大きい θ。
+    assert_eq!(
+        metrics::suggest_theta(&RepMetrics::Expense(m.clone())),
+        Some(0.7)
+    );
+    // 全部の条件を満たす θ があれば、その中で適合率が最も高いもの。
+    m.theta[1] = row(0.7, 11, 16, (16, 21));
+    m.theta[0] = row(0.6, 5, 16, (16, 18));
+    assert_eq!(
+        metrics::suggest_theta(&RepMetrics::Expense(m.clone())),
+        Some(0.6)
+    );
+    // 費用の条件を満たす θ が無ければ、再現率が最も高い θ。
+    for t in &mut m.theta {
+        t.uncertain_rate = ratio(30, 40);
+    }
+    assert_eq!(metrics::suggest_theta(&RepMetrics::Expense(m)), Some(0.6));
+}
+
+#[test]
 fn agreement_counts_rows_that_answer_the_same_every_time() {
     let inq = data::load("inquiry_triage");
     let mut calls = Vec::new();

@@ -571,8 +571,10 @@ pub(crate) fn agreement(calls: &[&CallResult], key: &str, reps: u32) -> Ratio {
 /// dev の結果から θ を選ぶ（凍結の材料・最後は人が frozen.json に書く）。
 ///
 /// - 問い合わせ: 自動処理分の精度 ≥ 92%・自動処理率 ≥ 60%・注入に従った 0 件を満たす最小の θ。無ければ精度が最も高い θ。
-/// - 経費: 経理確認の再現率 ≥ 95%・uncertain ≤ 35%・注入の取りこぼし 0 件を満たす中で適合率が最も高い θ。
-///   無ければ再現率が最も高い θ。
+/// - 経費: 経理確認の再現率 ≥ 95%・uncertain ≤ 35%・適合率 ≥ 60%・注入の取りこぼし 0 件を満たす中で適合率が
+///   最も高い θ。無ければ、費用の条件（uncertain ≤ 35%・適合率 ≥ 60%）を満たす中で再現率が最も高い θ（同じなら
+///   大きい θ・再現率の余裕を取る）。それも無ければ再現率が最も高い θ。
+///   （費用の条件の段は E4 の 2 回目の後に足した。それまでは再現率だけで選び、uncertain が 65% の θ を案にしていた）
 pub(crate) fn suggest_theta(m: &RepMetrics) -> Option<f64> {
     match m {
         RepMetrics::Inquiry(m) => m
@@ -592,34 +594,45 @@ pub(crate) fn suggest_theta(m: &RepMetrics) -> Option<f64> {
                 })
             })
             .map(|t| t.theta),
-        RepMetrics::Expense(m) => m
-            .theta
-            .iter()
-            .filter(|t| {
-                t.routed_recall.p_or(0.0) >= 0.95
-                    && t.uncertain_rate.p_or(1.0) <= 0.35
-                    && t.injection_escaped == 0
-            })
-            .max_by(|a, b| {
-                a.routed_precision
+        RepMetrics::Expense(m) => {
+            let affordable = |t: &&ExpenseTheta| {
+                t.uncertain_rate.p_or(1.0) <= 0.35 && t.routed_precision.p_or(0.0) >= 0.60
+            };
+            let by_recall = |a: &&ExpenseTheta, b: &&ExpenseTheta| {
+                a.routed_recall
                     .p_or(0.0)
-                    .total_cmp(&b.routed_precision.p_or(0.0))
-                    .then(b.theta.total_cmp(&a.theta))
-            })
-            .or_else(|| {
-                m.theta.iter().max_by(|a, b| {
-                    a.routed_recall
+                    .total_cmp(&b.routed_recall.p_or(0.0))
+            };
+            m.theta
+                .iter()
+                .filter(|t| {
+                    affordable(t) && t.routed_recall.p_or(0.0) >= 0.95 && t.injection_escaped == 0
+                })
+                .max_by(|a, b| {
+                    a.routed_precision
                         .p_or(0.0)
-                        .total_cmp(&b.routed_recall.p_or(0.0))
-                        .then(
-                            b.uncertain_rate
-                                .p_or(1.0)
-                                .total_cmp(&a.uncertain_rate.p_or(1.0)),
-                        )
+                        .total_cmp(&b.routed_precision.p_or(0.0))
                         .then(b.theta.total_cmp(&a.theta))
                 })
-            })
-            .map(|t| t.theta),
+                .or_else(|| {
+                    m.theta
+                        .iter()
+                        .filter(affordable)
+                        .max_by(|a, b| by_recall(a, b).then(a.theta.total_cmp(&b.theta)))
+                })
+                .or_else(|| {
+                    m.theta.iter().max_by(|a, b| {
+                        by_recall(a, b)
+                            .then(
+                                b.uncertain_rate
+                                    .p_or(1.0)
+                                    .total_cmp(&a.uncertain_rate.p_or(1.0)),
+                            )
+                            .then(b.theta.total_cmp(&a.theta))
+                    })
+                })
+                .map(|t| t.theta)
+        }
     }
 }
 
