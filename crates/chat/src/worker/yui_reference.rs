@@ -46,6 +46,25 @@ pub(super) static REFERENCE: LazyLock<YuiReference> = LazyLock::new(
     },
 );
 
+/// ツールを渡さない経路（classic）の system に足す、早見に載せた種類すべての書き方。
+///
+/// system の決まりは「ui_reference で読む」と言うので、ここで「読めないので次に全部載せる」と
+/// 上書きする。ask・plan は早見に無い（門が指示する）ので載せない。
+pub(super) fn classic_kind_guides() -> String {
+    let reference = &*REFERENCE;
+    let guides = reference
+        .kinds
+        .iter()
+        .filter(|(kind, _)| reference.index.contains(&format!("`{kind}`")))
+        .map(|(_, guide)| guide.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!(
+        "\n\n# 種類ごとの書き方\n\
+         この会話では ui_reference を使えないので、早見の種類の書き方を次に載せる（読みに行かずにこれに従う）。\n\n{guides}"
+    )
+}
+
 /// 種類ごとの書き方を返すツール（読み取りのみ・外部への入出力なし）。
 pub(super) struct UiReferenceTool;
 
@@ -159,6 +178,17 @@ mod tests {
             dep, REFERENCE.yui_version,
             "web/package.json の @imanect/yui を変えたら `cd web && pnpm gen:yui` で説明を作り直す"
         );
+    }
+
+    /// classic（ツール無し）には、早見の種類すべての書き方を載せ、ask・plan は載せない。
+    #[test]
+    fn classic_kind_guides_cover_index_kinds_only() {
+        let out = classic_kind_guides();
+        assert!(out.starts_with("\n\n# 種類ごとの書き方\n"));
+        for kind in ["bar", "pie", "calc", "stack", "compare"] {
+            assert!(out.contains(&format!("## {kind} ")), "{kind} が無い");
+        }
+        assert!(!out.contains("## ask ") && !out.contains("## plan "));
     }
 
     #[test]

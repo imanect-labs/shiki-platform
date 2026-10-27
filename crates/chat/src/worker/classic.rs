@@ -46,6 +46,11 @@ impl ChatWorker {
         // 直近ユーザー発話で事前検索し、文脈注入＋引用イベント。
         let query = history.last().map(message_preview).unwrap_or_default();
         let mut system = self.config.system_prompt.clone();
+        // classic はツールを渡さないので ui_reference を呼べない。図を書かせる構成なら、
+        // 種類ごとの書き方を system に全部載せる（早見だけでは書き方が分からず崩れる）。
+        if self.config.yui {
+            system.push_str(&super::yui_reference::classic_kind_guides());
+        }
         // 本人のカスタム指示（#900）は skill の指示文より前（エージェント経路と同じ順）。
         if let Some(section) = self.custom_instructions_section(ctx).await {
             system.push_str(&section);
