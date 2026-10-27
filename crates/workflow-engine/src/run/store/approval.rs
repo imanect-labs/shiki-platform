@@ -273,7 +273,8 @@ pub(super) async fn wake_approval(
     .execute(&mut *tx)
     .await
     .map_err(map_db)?;
-    // 理由つきの失敗（実行主体の失権）は出力を書かない（後続へは進まない・出力の decision の語彙を増やさない）。
+    // 理由つきの失敗（実行主体の失権・on_timeout=fail の期限切れ）は出力を書かない（後続へは進まない・出力の
+    // decision の語彙を増やさない）。
     let output = if res.failure.is_some() {
         Value::Null
     } else {
@@ -341,6 +342,7 @@ fn failure_message(code: &str) -> &'static str {
         crate::approval::ACTOR_UNAVAILABLE => {
             "承認を待つ間に、ワークフローを実行する権限（委譲またはテーブルの権限）が外れたため、止めました"
         }
+        crate::approval::APPROVAL_TIMEOUT => "承認の期限までに判断されなかったため、止めました",
         _ => "承認を待つ間に処理を続けられなくなったため、止めました",
     }
 }

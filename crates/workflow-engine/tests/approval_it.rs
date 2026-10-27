@@ -336,6 +336,12 @@ impl Env {
 
     /// 承認で止まるまで run を進める（停止時の行は rev 4・状態 submitted）。
     async fn start(&self, ir: &Value) -> Uuid {
+        self.start_by(ir, &Uuid::nil().to_string(), "workflow", "event")
+            .await
+    }
+
+    /// [`Self::start`] を、起動した主体ときっかけを決めて行う（本人が手で起動した run の結果を読むテスト用）。
+    async fn start_by(&self, ir: &Value, principal: &str, kind: &str, trigger: &str) -> Uuid {
         workflow_engine::WorkflowIr::from_json(ir).unwrap();
         let parsed = workflow_engine::validate(ir, &workflow_engine::Catalog::default()).unwrap();
         let graph = RunGraph::build(&parsed);
@@ -346,10 +352,10 @@ impl Env {
                 "acme",
                 self.workflow,
                 1,
-                "event",
+                trigger,
                 None,
-                &Uuid::nil().to_string(),
-                "workflow",
+                principal,
+                kind,
                 &json!({ "record_id": self.record }),
                 ir,
                 &graph,
@@ -701,6 +707,77 @@ async fn expired_approvals_take_the_timeout_port() {
             .unwrap(),
         0
     );
+}
+
+/// 期限切れで on_timeout=fail なら、出口へ進めずに run を時間切れの理由で失敗させる。step の `error.code` と run の
+/// `fail_reason` に理由が残り、画面に返す失敗の理由（GAP-09）も「時間切れ」の分類になる（BUG-70）。
+#[tokio::test]
+async fn expired_approvals_that_fail_keep_the_timeout_reason() {
+    let Some(pool) = setup().await else { return };
+    let env = Env::new(pool.clone()).await;
+    let mut ir = approval_ir(None);
+    ir["nodes"][0]["params"]["timeout_sec"] = json!(60);
+    ir["nodes"][0]["params"]["on_timeout"] = json!("fail");
+    let run = env.start_by(&ir, "alice", "user", "interactive").await;
+    let later = chrono::Utc::now() + chrono::Duration::seconds(120);
+    let done = env
+        .runs
+        .expire_due_approvals(later, Some(&env.tenant))
+        .await
+        .unwrap();
+    assert_eq!(
+        done.iter().map(|d| d.status.as_str()).collect::<Vec<_>>(),
+        ["expired"]
+    );
+    let (st, ports, _) = env.step(run, "ok").await;
+    assert_eq!((st, ports), (StepStatus::Failed, Vec::<String>::new()));
+    let (code, retryable, reason, status): (Option<String>, Option<bool>, Option<String>, String) =
+        sqlx::query_as(
+            "SELECT s.error->>'code', (s.error->>'retryable')::bool, r.fail_reason, r.status \
+             FROM step_execution s JOIN workflow_run r ON r.tenant_id = s.tenant_id AND r.run_id = s.run_id \
+             WHERE s.tenant_id = $1 AND s.run_id = $2 AND s.node_id = 'ok'",
+        )
+        .bind(&env.tenant)
+        .bind(run)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let want = workflow_engine::approval::APPROVAL_TIMEOUT;
+    assert_eq!(
+        (
+            code.as_deref(),
+            retryable,
+            reason.as_deref(),
+            status.as_str()
+        ),
+        (Some(want), Some(false), Some(want), "failed")
+    );
+    assert_eq!(env.ledger(run).await.0, "expired");
+
+    let alice = authz::AuthContext::new(
+        authz::Principal {
+            kind: authz::PrincipalKind::User,
+            id: "alice".into(),
+            email: None,
+            groups: vec![],
+            roles: vec![],
+            tenant_id: Some(env.tenant.clone()),
+        },
+        "acme".into(),
+        env.tenant.clone(),
+    );
+    let outcomes = workflow_engine::RunOutcomeReader::new(pool)
+        .own_outcomes(&alice, &[run], &[])
+        .await
+        .unwrap();
+    let failure = outcomes[&run].failure.as_ref().expect("失敗の理由");
+    assert_eq!(failure.category, workflow_engine::FailureCategory::Timeout);
+    assert!(
+        failure.message.contains("時間内に終わらなかった"),
+        "{}",
+        failure.message
+    );
+    env.forget_run(run).await;
 }
 
 /// wait の timeout の回収（承認以外の口）は承認を期限切れにしない（実行主体を確かめる api の回収だけが決める・

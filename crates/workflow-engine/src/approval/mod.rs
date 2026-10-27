@@ -110,6 +110,12 @@ pub const TIMEOUT_PORT: &str = "timeout";
 /// 後続が委譲なしで中途半端に走るだけなので、出口へは進めずに run を失敗で終える。
 pub const ACTOR_UNAVAILABLE: &str = "actor_unavailable";
 
+/// 承認の期限が切れ、`on_timeout = fail` で run を止めたときの理由（BUG-70）。
+///
+/// step の `error.code`・run の `fail_reason` に書く（失敗の分類は [`crate::run::failure::KNOWN_CODES`] の
+/// 時間切れ）。書かないと、画面に返す失敗の理由（GAP-09）が「分類できない失敗」になる。
+pub const APPROVAL_TIMEOUT: &str = "approval_timeout";
+
 /// 承認の確定（起床・期限・取り下げ・実行主体の失権）で台帳と step の出力に書くもの。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalResolution {
@@ -169,17 +175,18 @@ impl ApprovalResolution {
         }
     }
 
-    /// 期限切れ（continue なら timeout 出口・fail なら run の失敗）。
+    /// 期限切れ（continue なら timeout 出口・fail なら run を [`APPROVAL_TIMEOUT`] で失敗させる）。
     #[must_use]
     pub fn expired(on_timeout: OnTimeout) -> Self {
+        let (port, failure) = match on_timeout {
+            OnTimeout::Continue => (Some(TIMEOUT_PORT), None),
+            OnTimeout::Fail => (None, Some(APPROVAL_TIMEOUT)),
+        };
         ApprovalResolution {
             status: "expired",
             decision: "timeout",
-            port: match on_timeout {
-                OnTimeout::Continue => Some(TIMEOUT_PORT),
-                OnTimeout::Fail => None,
-            },
-            failure: None,
+            port,
+            failure,
             to: None,
             decided_by: None,
             decided_at: None,
@@ -264,11 +271,14 @@ mod tests {
         assert_eq!(r.kind(), None);
         let e = ApprovalResolution::expired(OnTimeout::Fail);
         assert_eq!((e.status, e.port), ("expired", None));
+        let c = ApprovalResolution::expired(OnTimeout::Continue);
+        assert_eq!((c.port, c.failure), (Some("timeout"), None));
+        // on_timeout=fail は時間切れの理由つきで run を失敗させる（画面の失敗の分類が時間切れになる・BUG-70）。
+        assert_eq!(e.failure, Some(APPROVAL_TIMEOUT));
         assert_eq!(
-            ApprovalResolution::expired(OnTimeout::Continue).port,
-            Some("timeout")
+            crate::run::failure::category_of(APPROVAL_TIMEOUT),
+            crate::run::FailureCategory::Timeout
         );
-        assert_eq!(e.failure, None);
         // 実行主体の失権は出口へ進めず、理由つきで run を失敗させる（取り下げとは別・D-62）。
         let a = ApprovalResolution::actor_unavailable();
         assert_eq!(

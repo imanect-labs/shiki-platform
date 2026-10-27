@@ -50,6 +50,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         // 時間切れ
         ("timeout", Timeout),
         ("run_timeout", Timeout),
+        // 承認の期限が切れて run を止めた（on_timeout=fail・BUG-70・`approval::APPROVAL_TIMEOUT`）。
+        (crate::approval::APPROVAL_TIMEOUT, Timeout),
         // 設定の誤り（作成者が直すまで通らない）
         ("invalid", Configuration),
         ("bad_params", Configuration),
