@@ -32,6 +32,7 @@ pub mod model;
 pub mod provider;
 pub mod providers;
 mod retry;
+pub mod structured;
 pub mod tenant;
 pub mod tool_loading;
 pub mod usage_report;
@@ -46,9 +47,11 @@ pub use config::{
 };
 pub use gateway::{GenerationRecord, LlmGateway, ProviderInfo, UsageSource};
 pub use model::{
-    Block, Effort, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef, Usage,
+    Block, Effort, GenerateRequest, Message, ResponseFormat, Role, StopReason, StreamDelta,
+    ToolDef, Usage,
 };
 pub use provider::{DeltaStream, LlmError, LlmProvider};
+pub use structured::StructuredOutputMode;
 pub use tenant::{
     ChoiceError, ModelChoice, ResolvedChoice, SettingsError, SettingsPatch, TenantLlmSettings,
     AUTO_MODEL,

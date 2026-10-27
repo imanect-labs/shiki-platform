@@ -25,6 +25,7 @@ use crate::providers::{
     openai_responses::OpenAiResponsesProvider, stub::StubProvider,
 };
 use crate::retry::{resume_unsettled, stream_with_retry, MIDSTREAM_RETRIES, UNAVAILABLE_BACKOFF};
+use crate::structured;
 use crate::tenant::{
     self, apply_patch, resolve_choice, ChoiceError, ModelChoice, ResolvedChoice, SettingsError,
     SettingsPatch, TenantLlmSettings, TenantLlmStore,
@@ -351,6 +352,8 @@ impl LlmGateway {
     /// 最大 2 回再試行する（[`UNAVAILABLE_BACKOFF`]・フォールバックの床）。思考強度に
     /// 対応しないモデルへは effort を落としてから送る。
     ///
+    /// `response_format` はモデルの構造化出力のモードに合わせて整えてから渡す（[`structured::apply_mode`]）。
+    ///
     /// 呼び出し元の組織が許可していないモデルはここで拒否する（#553）。チャット・ミニアプリ・
     /// ワークフロー・エージェントのどの経路も必ずここを通るので、管理画面での許可・無効化
     /// （国外処理モデルを止める等）が経路によらず効く。
@@ -393,6 +396,8 @@ impl LlmGateway {
         if !self.supports_effort(entry) {
             req.effort = None;
         }
+        // 構造化出力はモデルのモードに合わせ、写せないものは system の指示に落とす（GAP-13）。
+        structured::apply_mode(&mut req, structured::mode_for(slot.config.kind, entry));
         req.model = Some(entry.resolved_id().to_string());
 
         // 連携者のプラン枠は、トークンの取得時にも呼び出し主体と照合し直す（再試行のたびにも）。

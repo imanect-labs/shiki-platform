@@ -137,6 +137,7 @@ impl ChatWorker {
             max_tokens,
             temperature,
             session_id: Some(run.thread_id.to_string()),
+            response_format: None,
         };
         // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
         let started_at = chrono::Utc::now();

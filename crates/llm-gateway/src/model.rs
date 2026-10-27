@@ -148,6 +148,25 @@ impl Effort {
     }
 }
 
+/// 応答の形の指定（構造化出力・GAP-13）。プロバイダ差は gateway とアダプタが吸収する。
+///
+/// どう効かせるか（プロバイダの制約付きデコードに写すか、system の指示に落とすか）はカタログの
+/// [`StructuredOutputMode`](crate::structured::StructuredOutputMode) で決まり、gateway の `stream` が
+/// アダプタへ渡す前に整える（[`crate::structured::apply_mode`]）。**どのモードでも出力は検証されて
+/// いない文字列として返る**ので、呼び出し側が本文をパースしてスキーマで検証する（正しさの正はそちら）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseFormat {
+    /// JSON Schema に合う JSON オブジェクトを本文で返させる。`name` は OpenAI 互換の
+    /// `json_schema.name`（Anthropic は使わない）。根は object（呼び出し側が保存時に検査する）。
+    JsonSchema {
+        name: String,
+        schema: serde_json::Value,
+    },
+    /// JSON オブジェクトであることだけを求める（スキーマなし）。
+    JsonObject,
+}
+
 /// 生成リクエスト（中立形）。プロバイダ差はアダプタが吸収する。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenerateRequest {
@@ -171,6 +190,9 @@ pub struct GenerateRequest {
     /// 手がかりにだけ使う（認可・課金には使わない）。使わないプロバイダは無視する。
     #[serde(default)]
     pub session_id: Option<String>,
+    /// 応答の形（構造化出力）。`None` は自由な本文。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
 }
 
 impl GenerateRequest {
@@ -185,6 +207,7 @@ impl GenerateRequest {
             max_tokens: None,
             temperature: None,
             session_id: None,
+            response_format: None,
         }
     }
 }
@@ -248,6 +271,9 @@ pub enum StopReason {
     ToolUse,
     /// max_tokens 到達。
     MaxTokens,
+    /// プロバイダの安全分類器などによる拒否（Anthropic の `stop_reason: "refusal"`・OpenAI 互換の
+    /// `refusal`／`finish_reason: "content_filter"`）。本文は求めた形に合わないことがある。
+    Refusal,
     /// その他/未知。
     Other,
 }

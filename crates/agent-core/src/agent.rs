@@ -271,6 +271,7 @@ async fn land_on_budget(
             max_tokens: opts.max_tokens,
             temperature: opts.temperature,
             session_id: opts.session_id.clone(),
+            response_format: None,
         },
     );
     let Some(stream) = await_unless_cancelled(setup, sink).await else {
@@ -390,6 +391,7 @@ async fn run_step(
         // skill のモデル既定（Task 6.9）。None は provider 既定。
         temperature: opts.temperature,
         session_id: opts.session_id.clone(),
+        response_format: None,
     };
     // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
     let started_at = chrono::Utc::now();

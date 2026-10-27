@@ -18,6 +18,7 @@ use super::tool_names::ToolNameMap;
 use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
+use crate::structured::{openai_response_format, schema_rejection};
 use crate::tool_loading::{context_tools, with_loaded_note};
 
 /// OpenAI 互換アダプタ。
@@ -108,6 +109,11 @@ impl OpenAiProvider {
         // 載せない（カタログの supports_effort で落とす）ので、ここに来たら素直に写す。
         if let Some(effort) = req.effort {
             body["reasoning_effort"] = json!(effort.as_str());
+        }
+        // 構造化出力。ここに来るのはカタログで json_schema / json_object を有効にしたモデルだけ
+        // （既定の prompt モードでは gateway が system の指示に落として外す）。
+        if let Some(format) = &req.response_format {
+            body["response_format"] = openai_response_format(format);
         }
         // 遅延ツールは読み込まれた分だけ載せる（OpenAI 互換に参照の展開は無い・tool_loading）。
         let tools = context_tools(&req.tools, &req.messages);
@@ -359,6 +365,7 @@ fn map_finish_reason(fr: Option<&str>) -> StopReason {
     match fr {
         Some("tool_calls") => StopReason::ToolUse,
         Some("length") => StopReason::MaxTokens,
+        Some("content_filter") => StopReason::Refusal,
         Some("stop") => StopReason::EndTurn,
         _ => StopReason::Other,
     }
@@ -387,18 +394,8 @@ impl LlmProvider for OpenAiProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = clock.error_text(resp).await?;
-            // 429 は 4xx だが**こちらの組み立てが悪いわけではない**（プロバイダ側の枠）。
-            // BadRequest に落とすと「直せば通る」と誤解され、リトライ方針も表示も間違える。
-            // `LlmError::Unavailable` の doc どおり一時障害として扱う。
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                return Err(LlmError::RateLimited(crate::provider::rate_limit_message(
-                    &text,
-                )));
-            }
-            if status.is_client_error() {
-                return Err(LlmError::BadRequest(format!("openai {status}: {text}")));
-            }
-            return Err(LlmError::Unavailable(format!("openai {status}: {text}")));
+            let structured = body.get("response_format").is_some();
+            return Err(status_error(status, &text, structured));
         }
 
         let (tx, rx) = mpsc::unbounded::<Result<StreamDelta, LlmError>>();
@@ -409,8 +406,9 @@ impl LlmProvider for OpenAiProvider {
             let mut started: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
             let mut usage = Usage::default();
             let mut stop = StopReason::EndTurn;
-            // 最後に受け取った finish_reason が "stop" か（終端が欠けたストリームは昇格させない）。
-            let mut said_stop = false;
+            // 最後に受け取った finish_reason が "stop" か（終端が欠けたストリームは昇格させない）・
+            // モデルが拒否を返したか（`delta.refusal`。本文として流し、停止理由を拒否にする）。
+            let (mut said_stop, mut refused) = (false, false);
             // 終わりの合図（`[DONE]` か finish_reason）を受け取ったか・SSE でない行（[`cut_short`]）。
             let (mut completed, mut stray) = (false, String::new());
             // 本文先頭の `<think>…</think>` は思考として流す（対象モデルだけ・#584）。
@@ -452,6 +450,10 @@ impl LlmProvider for OpenAiProvider {
                             for piece in split_content(think_tags.as_mut(), text) {
                                 let _ = tx.unbounded_send(Ok(piece_delta(piece)));
                             }
+                        }
+                        if let Some(d) = refusal_delta(delta) {
+                            refused = true;
+                            let _ = tx.unbounded_send(Ok(d));
                         }
                         // vLLM / 一部モデルは reasoning_content で思考を返す。
                         if let Some(think) = delta.get("reasoning_content").and_then(Value::as_str)
@@ -506,6 +508,9 @@ impl LlmProvider for OpenAiProvider {
             if !stops.is_empty() && said_stop {
                 stop = StopReason::ToolUse;
             }
+            if refused {
+                stop = StopReason::Refusal;
+            }
             for s in stops {
                 let _ = tx.unbounded_send(Ok(s));
             }
@@ -517,6 +522,39 @@ impl LlmProvider for OpenAiProvider {
 
         Ok(rx.boxed())
     }
+}
+
+/// 成功でない応答の誤り（本文 `text` は読み終えたもの）。`structured` は構造化出力を求めた要求か。
+fn status_error(status: reqwest::StatusCode, text: &str, structured: bool) -> LlmError {
+    // 429 は 4xx だが**こちらの組み立てが悪いわけではない**（プロバイダ側の枠）。
+    // BadRequest に落とすと「直せば通る」と誤解され、リトライ方針も表示も間違える。
+    // `LlmError::Unavailable` の doc どおり一時障害として扱う。
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return LlmError::RateLimited(crate::provider::rate_limit_message(text));
+    }
+    if status.is_client_error() {
+        // 構造化出力のスキーマを拒んだもの（vLLM の guided decoding 等）は定型文にする。
+        if let Some(e) = structured
+            .then(|| schema_rejection("openai", status, text))
+            .flatten()
+        {
+            return e;
+        }
+        return LlmError::BadRequest(format!("openai {status}: {text}"));
+    }
+    LlmError::Unavailable(format!("openai {status}: {text}"))
+}
+
+/// モデルの拒否（`delta.refusal`）を本文の差分にする。通常の応答でも `"refusal": null`
+/// （実装によっては `""`）が来るので、中身のあるものだけを拒否とみなす。
+fn refusal_delta(delta: &Value) -> Option<StreamDelta> {
+    let r = delta
+        .get("refusal")
+        .and_then(Value::as_str)
+        .filter(|r| !r.is_empty())?;
+    Some(StreamDelta::TextDelta {
+        text: r.to_string(),
+    })
 }
 
 /// 429 の指示どおりに待つ上限（これより長い待ちは、利用者へ「上限に達した」と返す）。

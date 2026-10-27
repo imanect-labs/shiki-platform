@@ -18,6 +18,8 @@
 //!   ＝今日の日付などが実際にモデルへ届くことの検証用・#546）。
 //! - `<conversation>…</conversation>` … 包みの中の最初の行を返す（会話の自動タイトル用。
 //!   「回答: 」を付けない）。
+//! - 構造化出力（形の指定があるとき）… スキーマに合う最小の値・`json:` / `jsonalways:` /
+//!   `refuse:` / `truncate:`（[`super::stub_structured`]）。
 
 use std::time::Duration;
 
@@ -28,6 +30,7 @@ use super::stub_fixtures::yui_reply;
 use super::stub_stream::{
     paced_chunks_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
 };
+use super::stub_structured::structured_call;
 use super::stub_triggers::{
     conversation_title_call, echo_system_call, generic_tool_call, note_suggest_call,
     note_tool_call, tool_search_call,
@@ -318,6 +321,10 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
     }
     // --- 図 `yui:<kind>`（#530）・推論の引き継ぎ `reasoning:`（#542）・`echosystem:`（#546）。 ---
     if let Some(s) = fixed_reply_call(req, &user_text, prompt_tokens) {
+        return s;
+    }
+    // --- 構造化出力（GAP-13）: 形の指定があればスキーマに合う値・`json:` 等の駆動で返す。 ---
+    if let Some(s) = structured_call(req, &user_text, prompt_tokens) {
         return s;
     }
     // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---

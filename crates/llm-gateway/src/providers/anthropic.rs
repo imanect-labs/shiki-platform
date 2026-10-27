@@ -19,6 +19,7 @@ use super::tool_names::ToolNameMap;
 use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
+use crate::structured::{anthropic_format, schema_rejection};
 use crate::tool_loading::{context_tools, with_loaded_note};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -121,11 +122,23 @@ impl AnthropicProvider {
                 })
                 .collect::<Vec<_>>());
         }
+        // output_config は effort と構造化出力の format を**併合**する（片方で丸ごと上書きすると、
+        // effort 付きの呼び出しで形の指定が黙って消える・GAP-13）。
+        let mut output_config = serde_json::Map::new();
         if let Some(effort) = req.effort {
             // adaptive thinking + effort（Claude 4.6+）。budget_tokens は使わない。
             body["thinking"] = json!({ "type": "adaptive" });
-            body["output_config"] = json!({ "effort": effort.as_str() });
+            output_config.insert("effort".into(), json!(effort.as_str()));
         }
+        // format だけのときは thinking を足さない（思考の既定はモデルに任せる）。
+        if let Some(format) = req.response_format.as_ref().and_then(anthropic_format) {
+            output_config.insert("format".into(), format);
+        }
+        if !output_config.is_empty() {
+            body["output_config"] = Value::Object(output_config);
+        }
+        // temperature / top_p / top_k は送らない（新しいモデルは既定以外を 400 で拒む。決定性は
+        // 構造化出力・版の固定で担保する）。
         body
     }
 }
@@ -257,6 +270,7 @@ fn map_stop_reason(sr: Option<&str>) -> StopReason {
     match sr {
         Some("tool_use") => StopReason::ToolUse,
         Some("max_tokens") => StopReason::MaxTokens,
+        Some("refusal") => StopReason::Refusal,
         Some("end_turn" | "stop_sequence") => StopReason::EndTurn,
         _ => StopReason::Other,
     }
@@ -292,6 +306,13 @@ impl LlmProvider for AnthropicProvider {
                     return Err(LlmError::RateLimited(crate::provider::rate_limit_message(
                         &text,
                     )));
+                }
+                // 構造化出力のスキーマを拒んだもの（複雑すぎる等）は、本文を出さない定型文にする。
+                if let Some(e) = body
+                    .pointer("/output_config/format")
+                    .and_then(|_| schema_rejection("anthropic", status, &text))
+                {
+                    return Err(e);
                 }
                 return Err(LlmError::BadRequest(format!("anthropic {status}: {text}")));
             }
@@ -460,6 +481,76 @@ mod tests {
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "high");
         assert_eq!(body["max_tokens"], 4096);
+    }
+
+    fn structured_request() -> GenerateRequest {
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "分類して")]);
+        req.response_format = Some(crate::model::ResponseFormat::JsonSchema {
+            name: "triage".into(),
+            schema: json!({
+                "type": "object",
+                "required": ["category"],
+                "properties": {
+                    "category": { "type": "string", "enum": ["billing", "bug"] },
+                    "score": { "type": "integer", "minimum": 1 },
+                },
+            }),
+        });
+        req
+    }
+
+    #[test]
+    fn effort_and_format_are_merged_into_output_config() {
+        // 併合の回帰テスト: effort を書いても format が消えない（以前は output_config を上書きしていた）。
+        let mut req = structured_request();
+        req.effort = Some(crate::model::Effort::Low);
+        let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "low");
+        let format = &body["output_config"]["format"];
+        assert_eq!(format["type"], "json_schema");
+        assert_eq!(format["schema"]["additionalProperties"], false);
+        assert_eq!(
+            format["schema"]["properties"]["category"]["enum"],
+            json!(["billing", "bug"])
+        );
+        // 受けない制約は落として説明に書く（正しさは呼び出し側の事後検証）。
+        assert!(format["schema"]["properties"]["score"]
+            .get("minimum")
+            .is_none());
+    }
+
+    #[test]
+    fn format_alone_adds_no_thinking_or_effort() {
+        let req = structured_request();
+        let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
+        assert!(body.get("thinking").is_none());
+        assert!(body["output_config"].get("effort").is_none());
+        assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+        // スキーマを求めない形は Anthropic に無いので送らない（gateway が指示に落とす）。
+        let mut plain = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        plain.response_format = Some(crate::model::ResponseFormat::JsonObject);
+        let body = provider().build_body(&plain, &ToolNameMap::for_request(&plain));
+        assert!(body.get("output_config").is_none());
+    }
+
+    #[test]
+    fn sampling_parameters_are_never_sent() {
+        // 新しいモデル（Haiku 5.5 等）は temperature・top_p・top_k の既定以外を 400 で拒む。
+        // 中立形に temperature が来ても（skill のモデル既定など）送らないことを固定する。
+        let mut req = structured_request();
+        req.temperature = Some(0.0);
+        req.effort = Some(crate::model::Effort::High);
+        let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
+        for key in ["temperature", "top_p", "top_k"] {
+            assert!(body.get(key).is_none(), "{key}: {body}");
+        }
+    }
+
+    #[test]
+    fn refusal_stop_reason_is_kept() {
+        assert_eq!(map_stop_reason(Some("refusal")), StopReason::Refusal);
+        assert_eq!(map_stop_reason(Some("pause_turn")), StopReason::Other);
     }
 
     fn provider() -> AnthropicProvider {

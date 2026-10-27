@@ -388,6 +388,7 @@ impl LlmConfig {
                     supports_effort: m.supports_effort,
                     requires_opt_in: m.requires_opt_in,
                     reasoning_in_content: m.reasoning_in_content,
+                    structured_output: m.structured_output,
                 })
                 .collect()
         };
@@ -469,6 +470,10 @@ pub struct LlmModelEntry {
     /// （[`llm_gateway::ModelEntry::reasoning_in_content`]）。
     #[serde(default)]
     pub reasoning_in_content: bool,
+    /// 構造化出力の効かせ方（`json_schema` / `json_object` / `prompt`・省略は種別の既定。
+    /// [`llm_gateway::ModelEntry::structured_output`]）。
+    #[serde(default)]
+    pub structured_output: Option<llm_gateway::StructuredOutputMode>,
 }
 
 /// Langfuse 計装の設定（設定表現）。

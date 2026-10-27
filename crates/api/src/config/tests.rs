@@ -524,6 +524,7 @@ fn catalog_carries_provider_and_display_metadata() {
         processed_abroad: true,
         supports_effort: Some(true),
         reasoning_in_content: true,
+        structured_output: Some(llm_gateway::StructuredOutputMode::JsonSchema),
         ..Default::default()
     }];
     let m = &cfg.llm.model_catalog().models[0];
@@ -533,6 +534,11 @@ fn catalog_carries_provider_and_display_metadata() {
     assert!(m.processed_abroad);
     assert_eq!(m.supports_effort, Some(true));
     assert!(m.reasoning_in_content);
+    // 構造化出力のモード（GAP-13）も gateway のカタログへ届く。
+    assert_eq!(
+        m.structured_output,
+        Some(llm_gateway::StructuredOutputMode::JsonSchema)
+    );
 }
 
 #[test]

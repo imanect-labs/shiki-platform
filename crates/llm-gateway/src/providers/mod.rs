@@ -11,6 +11,8 @@ mod stub_deep_research_specs;
 mod stub_fixtures;
 /// stub のストリーム生成ヘルパ（stub.rs から分割）。
 mod stub_stream;
+/// stub の構造化出力（GAP-13・stub.rs から分割）。
+mod stub_structured;
 mod stub_triggers;
 /// 本文先頭の `<think>…</think>` を思考へ振り分ける（Chat Completions・#584）。
 mod think_tags;

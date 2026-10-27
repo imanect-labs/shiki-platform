@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::model::Usage;
+use crate::structured::StructuredOutputMode;
 
 /// プロバイダ種別（アダプタ選択）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -159,6 +160,12 @@ pub struct ModelEntry {
     /// 取り違えて回答から消さないため）。
     #[serde(default)]
     pub reasoning_in_content: bool,
+    /// 構造化出力（[`ResponseFormat`](crate::model::ResponseFormat)）の効かせ方。省略はプロバイダ
+    /// 種別とモデルの既定（[`crate::structured::mode_for`]: Anthropic の対応モデルは `json_schema`、
+    /// OpenAI 互換は `prompt`）。種別が写せないモード（Anthropic の `json_object`・Responses API の
+    /// `json_schema` など）は `prompt` として扱う。どのモードでも呼び出し側が出力を検証する。
+    #[serde(default)]
+    pub structured_output: Option<StructuredOutputMode>,
 }
 
 impl ModelEntry {
