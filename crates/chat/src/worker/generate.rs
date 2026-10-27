@@ -256,9 +256,6 @@ impl ChatWorker {
                     self.config.autonomous_max_cost_usd_micros,
                 );
                 opts.system = Some(autonomous_system_prompt(&self.config.system_prompt));
-                // ドキュメントアシスタントでエージェントモードを ON にした会話も、開いている
-                // ドキュメントを編集対象にする（無いと新規下書きへ逃げ、ルートに別ファイルができる）。
-                self.system_with_origin_document(run, &mut opts).await;
                 self.config.model.clone_into(&mut opts.model);
                 // 承認 3 モード（#350・既定は承認必須）。実行中のトグルは approver の
                 // current_policy が各破壊系呼び出しの直前に反映する。
@@ -294,13 +291,14 @@ impl ChatWorker {
             }
         } else {
             // 通常チャット: deny_all（既定）のまま。破壊系は都度ユーザー承認が要る（要確認ツールの設計意図）。
-            let mut opts = chat_opts(self);
-            self.system_with_origin_document(run, &mut opts).await;
-            opts
+            chat_opts(self)
         };
         let approver = Some(approver);
 
         let (mut opts, mut history) = (opts, history);
+        // 開いているドキュメントは通常チャット・エージェントモードの両方で編集対象にする（自律側で
+        // 欠けると新規下書きへ逃げ、保存のたびにルートへ別ファイルができていた）。
+        self.system_with_origin_document(run, &mut opts).await;
         opts.session_id = Some(run.thread_id.to_string());
         // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
         opts.tool_search.always_load.extend(tools_in_use);
