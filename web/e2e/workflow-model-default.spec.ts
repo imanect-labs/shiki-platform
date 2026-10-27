@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { loginViaKeycloak, pinStubOrgDefault, uniqueName } from "./helpers";
 
 /// ワークフローの「AI に聞く」のモデル欄: 「組織の既定に従う」の行（BUG-12・BUG-33・D-5・D-30・D-46）。
 ///
@@ -72,6 +72,12 @@ async function createLlmFlow(page: Page, model?: string): Promise<string> {
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   return ((await res.json()) as { id: string }).id;
+}
+
+async function deleteFlow(page: Page, id: string) {
+  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const res = await page.request.delete(`/api/artifacts/${id}`, { headers: { "x-csrf-token": csrf } });
+  expect(res.status(), await res.text()).toBeLessThan(300);
 }
 
 async function openBlock(page: Page, id: string) {
@@ -150,33 +156,44 @@ test("モデル: キーボードだけで一覧を開き、「組織の既定に
 test("モデル: 省略したブロックを実行すると、step の出力の model が組織の既定になる", async ({ page }) => {
   test.setTimeout(120_000);
   await loginViaKeycloak(page);
-  const models = await workflowModels(page);
-  test.skip(!models || models.models.length === 0, "LLM が構成されていない（使えるモデルがない）環境");
-  const expected = orgDefaultModel(models!);
-  const id = await createLlmFlow(page);
+  const before = await workflowModels(page);
+  test.skip(!before || before.models.length === 0, "LLM が構成されていない（使えるモデルがない）環境");
+  // 実行するので、組織の既定（Auto の振り先）が実 LLM なら stub に替えて流し、最後に戻す（BUG-85）。
+  const restore = await pinStubOrgDefault(page);
+  let id: string | null = null;
+  try {
+    const models = (await workflowModels(page))!;
+    const expected = orgDefaultModel(models);
+    id = await createLlmFlow(page);
 
-  const start = await page.request.post(`/api/workflows/${id}/runs`, {
-    headers: await csrfHeader(page),
-    data: { input: {} },
-  });
-  expect(start.status(), await start.text()).toBe(202);
-  const runId = ((await start.json()) as { run_id: string | null }).run_id;
-  expect(runId).toBeTruthy();
+    const start = await page.request.post(`/api/workflows/${id}/runs`, {
+      headers: await csrfHeader(page),
+      data: { input: {} },
+    });
+    expect(start.status(), await start.text()).toBe(202);
+    const runId = ((await start.json()) as { run_id: string | null }).run_id;
+    expect(runId).toBeTruthy();
 
-  // 実行は非同期なので、step が終わるまで待つ。
-  let step: { status: string; output: { model?: string; text?: string } } | null = null;
-  await expect
-    .poll(
-      async () => {
-        const res = await page.request.get(`/api/workflows/${id}/runs/${runId}/steps?path=ask`);
-        if (!res.ok()) return "pending";
-        step = (await res.json()) as typeof step;
-        return step!.status;
-      },
-      { timeout: 60_000 },
-    )
-    .toBe("succeeded");
-  expect(step!.output.model).toBe(expected);
+    // 実行は非同期なので、step が終わるまで待つ。
+    let step: { status: string; output: { model?: string; text?: string } } | null = null;
+    await expect
+      .poll(
+        async () => {
+          const res = await page.request.get(`/api/workflows/${id}/runs/${runId}/steps?path=ask`);
+          if (!res.ok()) return "pending";
+          step = (await res.json()) as typeof step;
+          return step!.status;
+        },
+        { timeout: 60_000 },
+      )
+      .toBe("succeeded");
+    expect(step!.output.model).toBe(expected);
+    // stub が答えた（実 LLM ではない）ことも本文で確かめる（stub は「回答: <指示>」を返す）。
+    expect(step!.output.text).toContain("回答: 今日の予定をまとめてください");
+  } finally {
+    await restore();
+    if (id) await deleteFlow(page, id);
+  }
 });
 
 test("モデル: 組織がモデルの選択を禁じていると、モデルの行は選べず、既定と違うモデルは外すよう促す", async ({

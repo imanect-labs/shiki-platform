@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak } from "./helpers";
+import { loginViaKeycloak, pinStubOrgDefault } from "./helpers";
 
 /// AI エージェント（agent.invoke）の e2e（BUG-6）:
 /// ブロックを置く → 依頼を書く → 使ってよい道具を選ぶ → 保存（要る権限が補われる）→ 実行 → 実行履歴に
@@ -19,64 +19,77 @@ async function savedIr(page: Page, id: string): Promise<SavedIr> {
 test("AI エージェント: 依頼を書き、道具を選んで保存・実行すると、実行履歴に回答が残る（BUG-6）", async ({ page }) => {
   test.setTimeout(180_000);
   await loginViaKeycloak(page);
-  const settings = (await (await page.request.get("/api/workflows/agent-settings")).json()) as {
-    web_allowlist: string[];
-  };
+  // モデルを省略した AI エージェントを実行するので、組織の既定（Auto の振り先）が実 LLM なら stub に替えて流し、
+  // 最後に戻す（BUG-85）。作ったワークフローも消す。
+  const restore = await pinStubOrgDefault(page);
+  let id = "";
+  try {
+    const settings = (await (await page.request.get("/api/workflows/agent-settings")).json()) as {
+      web_allowlist: string[];
+    };
 
-  await page.goto("/workflows");
-  await expect(page.getByText("読み込み中…")).toHaveCount(0);
-  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
-  await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
-  const id = page.url().split("/").pop() ?? "";
+    await page.goto("/workflows");
+    await expect(page.getByText("読み込み中…")).toHaveCount(0);
+    await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
+    await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
+    id = page.url().split("/").pop() ?? "";
 
-  // 最初のブロックに「AI エージェント」を置く。既定は社内を読む道具だけが選ばれている。
-  await page.getByRole("button", { name: "最初のブロック" }).click();
-  await page.getByRole("button", { name: /^AI エージェント/ }).click();
-  const canvas = page.locator(".react-flow");
-  await expect(canvas.getByText("AI エージェント").first()).toBeVisible();
-  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
-  const tools = panel.getByTestId("agent-tools");
-  await expect(tools.getByRole("checkbox", { name: /社内検索/ })).toBeChecked();
-  await expect(tools.getByRole("checkbox", { name: /文書の本文を読む/ })).toBeChecked();
-  await expect(tools.getByRole("checkbox", { name: /フォルダの一覧/ })).toBeChecked();
-  await expect(tools.getByRole("checkbox", { name: /Web 検索/ })).not.toBeChecked();
-  // 社外へ届く道具には目印が付く。管理者が外部サイトを許可していなければ Web ページを読む道具は選べない。
-  await expect(tools.getByText("社外へ出る").first()).toBeVisible();
-  const fetchBox = tools.getByRole("checkbox", { name: /Web ページを読む/ });
-  if (settings.web_allowlist.length === 0) {
-    await expect(fetchBox).toBeDisabled();
-    await expect(tools.getByText("管理者が外部サイトを許可していないため選べません")).toBeVisible();
-  } else {
-    await expect(fetchBox).toBeEnabled();
+    // 最初のブロックに「AI エージェント」を置く。既定は社内を読む道具だけが選ばれている。
+    await page.getByRole("button", { name: "最初のブロック" }).click();
+    await page.getByRole("button", { name: /^AI エージェント/ }).click();
+    const canvas = page.locator(".react-flow");
+    await expect(canvas.getByText("AI エージェント").first()).toBeVisible();
+    const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+    const tools = panel.getByTestId("agent-tools");
+    await expect(tools.getByRole("checkbox", { name: /社内検索/ })).toBeChecked();
+    await expect(tools.getByRole("checkbox", { name: /文書の本文を読む/ })).toBeChecked();
+    await expect(tools.getByRole("checkbox", { name: /フォルダの一覧/ })).toBeChecked();
+    await expect(tools.getByRole("checkbox", { name: /Web 検索/ })).not.toBeChecked();
+    // 社外へ届く道具には目印が付く。管理者が外部サイトを許可していなければ Web ページを読む道具は選べない。
+    await expect(tools.getByText("社外へ出る").first()).toBeVisible();
+    const fetchBox = tools.getByRole("checkbox", { name: /Web ページを読む/ });
+    if (settings.web_allowlist.length === 0) {
+      await expect(fetchBox).toBeDisabled();
+      await expect(tools.getByText("管理者が外部サイトを許可していないため選べません")).toBeVisible();
+    } else {
+      await expect(fetchBox).toBeEnabled();
+    }
+
+    // 依頼を書き、文書の本文を読む道具を外して保存する。要る権限（スコープ）は保存で補われる。
+    const instruction = panel.locator('[data-value-expr="エージェントへの依頼"]');
+    await instruction.getByLabel("エージェントへの依頼").fill("旅費規程の要点をまとめて");
+    await tools.getByRole("checkbox", { name: /文書の本文を読む/ }).uncheck();
+    await panel.getByLabel("手順の上限（回）").fill("4");
+    await page.getByRole("button", { name: "保存", exact: true }).click();
+    await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+    const ir = await savedIr(page, id);
+    const agent = ir.nodes.find((n) => n.type === "agent.invoke");
+    expect(agent?.params).toMatchObject({
+      instruction: "旅費規程の要点をまとめて",
+      allowed_tools: ["rag.search", "storage.list"],
+      max_steps: 4,
+    });
+    expect(ir.declared_scopes).toEqual(expect.arrayContaining(["rag.query", "storage.read"]));
+    expect(ir.declared_scopes).not.toContain("doc.read");
+
+    // 実行 → 実行履歴で成功し、ブロックを開くとエージェントの回答が出る（依頼を Python として実行しない）。
+    await page.getByRole("button", { name: "実行", exact: true }).click();
+    await page.getByRole("button", { name: "実行する" }).click();
+    await page.waitForURL(/\/runs\?run=/, { timeout: 20_000 });
+    const sheet = page.locator('[role="dialog"]');
+    await expect(sheet.locator("h2").getByText("成功")).toBeVisible({ timeout: 90_000 });
+    await sheet.getByRole("button", { name: /AI エージェント/ }).first().click();
+    const result = sheet.getByTestId("agent-result");
+    await expect(result).toContainText("回答: 旅費規程の要点をまとめて", { timeout: 15_000 });
+    await expect(result.getByText("道具は使っていません")).toBeVisible();
+  } finally {
+    await restore();
+    if (id) {
+      const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+      const res = await page.request.delete(`/api/artifacts/${id}`, { headers: { "x-csrf-token": csrf } });
+      expect(res.status(), await res.text()).toBeLessThan(300);
+    }
   }
-
-  // 依頼を書き、文書の本文を読む道具を外して保存する。要る権限（スコープ）は保存で補われる。
-  const instruction = panel.locator('[data-value-expr="エージェントへの依頼"]');
-  await instruction.getByLabel("エージェントへの依頼").fill("旅費規程の要点をまとめて");
-  await tools.getByRole("checkbox", { name: /文書の本文を読む/ }).uncheck();
-  await panel.getByLabel("手順の上限（回）").fill("4");
-  await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
-  const ir = await savedIr(page, id);
-  const agent = ir.nodes.find((n) => n.type === "agent.invoke");
-  expect(agent?.params).toMatchObject({
-    instruction: "旅費規程の要点をまとめて",
-    allowed_tools: ["rag.search", "storage.list"],
-    max_steps: 4,
-  });
-  expect(ir.declared_scopes).toEqual(expect.arrayContaining(["rag.query", "storage.read"]));
-  expect(ir.declared_scopes).not.toContain("doc.read");
-
-  // 実行 → 実行履歴で成功し、ブロックを開くとエージェントの回答が出る（依頼を Python として実行しない）。
-  await page.getByRole("button", { name: "実行", exact: true }).click();
-  await page.getByRole("button", { name: "実行する" }).click();
-  await page.waitForURL(/\/runs\?run=/, { timeout: 20_000 });
-  const sheet = page.locator('[role="dialog"]');
-  await expect(sheet.locator("h2").getByText("成功")).toBeVisible({ timeout: 90_000 });
-  await sheet.getByRole("button", { name: /AI エージェント/ }).first().click();
-  const result = sheet.getByTestId("agent-result");
-  await expect(result).toContainText("回答: 旅費規程の要点をまとめて", { timeout: 15_000 });
-  await expect(result.getByText("道具は使っていません")).toBeVisible();
 });
 
 test("AI エージェント: スマホのシートでも道具の一覧を選べ、横にはみ出さない（BUG-6）", async ({ browser, page }) => {
