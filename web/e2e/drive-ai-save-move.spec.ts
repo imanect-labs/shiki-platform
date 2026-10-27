@@ -38,15 +38,17 @@ async function parentOf(page: Page, fileId: string): Promise<string | null> {
   return ((await res.json()) as { parent_id: string | null }).parent_id;
 }
 
-/// ノート画面のアシスタントでは遷移せず下書きカードが出る。ストリームの完了（回答のコピーボタン）を
-/// 待ってからカードを開く（完了時に表示が確定版へ差し替わるので、途中のカードは DOM から外れる）。
-async function openDraftFromPanel(panel: Locator) {
-  await expect(panel.getByRole("button", { name: "コピー" }).last()).toBeVisible({
-    timeout: 30_000,
-  });
-  const card = panel.getByTestId("note-draft-card").last();
-  await expect(card).toBeVisible();
-  await card.getByRole("link", { name: "下書きを開く" }).click();
+/// ノート画面のアシスタントで下書きができたら下書き画面を開く。通常は自動で下書き画面へ遷移する。
+/// 遷移しなかったときだけカードから開く。遷移とカードの描画は競合するので、どちらかが起きるまで待ってから判断する
+/// （遷移済みのカードを押しに行くと、DOM から外れた要素を待ち続ける）。
+async function openDraftFromPanel(page: Page, panel: Locator) {
+  const onDraft = () => /\/notes\/draft/.test(page.url());
+  const link = panel.getByTestId("note-draft-card").last().getByRole("link", { name: "下書きを開く" });
+  await expect
+    .poll(async () => onDraft() || (await link.isVisible().catch(() => false)), { timeout: 30_000 })
+    .toBe(true);
+  if (!onDraft()) await link.click({ timeout: 5_000 }).catch(() => {});
+  await page.waitForURL(/\/notes\/draft/, { timeout: 30_000 });
 }
 
 async function sendFromHome(page: Page, text: string) {
@@ -132,7 +134,7 @@ test("下書き: 由来ノートのある会話はそのノートのフォルダ
   const draftName = uniqueName("同じ場所に");
   await composer.fill(`savenote:${draftName}`);
   await panel.getByRole("button", { name: "送信" }).click();
-  await openDraftFromPanel(panel);
+  await openDraftFromPanel(page, panel);
   await page.waitForURL(/\/notes\/draft/, { timeout: 30_000 });
   await page.getByTestId("draft-save-button").click();
   await expect(page.getByTestId("save-draft-location")).toContainText(folderName, {
@@ -162,7 +164,7 @@ test("下書き: 保存先の解決中は保存できず、AI の \"root\" 指�
   const draftName = uniqueName("ルートへ");
   await composer.fill(`savenote:${draftName}`);
   await panel.getByRole("button", { name: "送信" }).click();
-  await openDraftFromPanel(panel);
+  await openDraftFromPanel(page, panel);
   await page.waitForURL(/\/notes\/draft/, { timeout: 30_000 });
 
   // 解決（パンくず）を遅らせても、解決前に保存は押せない（ルートへ誤って作らない）。
